@@ -1,0 +1,64 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClInclude Include="errcode.h" />
+    <ClInclude Include="include.h" />
+    <ClInclude Include="macro.h" />
+    <ClInclude Include="os.h" />
+    <ClInclude Include="utils.h" />
+    <ClInclude Include="timer.h" />
+    <ClInclude Include="thread.h">
+      <Filter>thread</Filter>
+    </ClInclude>
+    <ClInclude Include="rwlock.h">
+      <Filter>thread</Filter>
+    </ClInclude>
+    <ClInclude Include="mutex.h">
+      <Filter>thread</Filter>
+    </ClInclude>
+    <ClInclude Include="cond.h">
+      <Filter>thread</Filter>
+    </ClInclude>
+    <ClInclude Include="snowflake.h">
+      <Filter>algorithm</Filter>
+    </ClInclude>
+    <ClInclude Include="queue.h">
+      <Filter>algorithm</Filter>
+    </ClInclude>
+    <ClInclude Include="chan.h">
+      <Filter>algorithm</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="utils.cpp" />
+    <ClCompile Include="thread.cpp">
+      <Filter>thread</Filter>
+    </ClCompile>
+    <ClCompile Include="rwlock.cpp">
+      <Filter>thread</Filter>
+    </ClCompile>
+    <ClCompile Include="mutex.cpp">
+      <Filter>thread</Filter>
+    </ClCompile>
+    <ClCompile Include="cond.cpp">
+      <Filter>thread</Filter>
+    </ClCompile>
+    <ClCompile Include="snowflake.cpp">
+      <Filter>algorithm</Filter>
+    </ClCompile>
+    <ClCompile Include="queue.cpp">
+      <Filter>algorithm</Filter>
+    </ClCompile>
+    <ClCompile Include="chan.cpp">
+      <Filter>algorithm</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="thread">
+      <UniqueIdentifier>{c3602f97-56c6-40eb-9d7b-15045b57eb2d}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="algorithm">
+      <UniqueIdentifier>{27f9d699-1248-4959-b1d9-b0ceeff862a6}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>
