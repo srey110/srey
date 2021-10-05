@@ -2,6 +2,7 @@
 #include "utils.h"
 #include "test_utils.h"
 #include "test_chan.h"
+#include "test_lock.h"
 
 #ifdef WIN32
 #include "../vld/vld.h"
@@ -16,11 +17,23 @@
 #endif//_DEBUG
 #endif //OS_WIN
 
+CPPUNIT_TEST_SUITE_REGISTRATION(ctest_lock);
 CPPUNIT_TEST_SUITE_REGISTRATION(ctest_chan);
 CPPUNIT_TEST_SUITE_REGISTRATION(ctest_utils);
 
 int main(int argc, char* argv[])
 {
+#ifdef OS_WIN
+    WSAData wsData;
+    WORD wVersionReq(MAKEWORD(2, 2));
+    uint32_t irtn = WSAStartup(wVersionReq, &wsData);
+    if (0 != irtn)
+    {
+        PRINTF("%s", "WSAStartup version 2.2 error.");
+        return 1;
+    }
+#endif
+
     std::ofstream xmlrst(srey::getpath() + "test.xml");
     CPPUNIT_NS::Test *suite = CPPUNIT_NS::TestFactoryRegistry::getRegistry().makeTest();
     CPPUNIT_NS::TextUi::TestRunner runner;
@@ -28,6 +41,10 @@ int main(int argc, char* argv[])
     runner.addTest(suite);
     runner.setOutputter(new CPPUNIT_NS::XmlOutputter(&runner.result(), xmlrst));
     runner.run();
+
+#ifdef OS_WIN
+    WSACleanup();
+#endif
 
     return 0;
 }

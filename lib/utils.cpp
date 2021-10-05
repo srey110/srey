@@ -1,4 +1,6 @@
 #include "utils.h"
+#include "netaddr.h"
+#include "buffer.h"
 #include "errcode.h"
 
 SREY_NS_BEGIN
@@ -51,40 +53,6 @@ uint32_t procsnum()
 #else
 	return (uint32_t)sysconf(_SC_NPROCESSORS_ONLN);
 #endif
-}
-std::string formatv(const char *pformat, va_list args)
-{
-    size_t uisize = ONEK;
-    char *pbuff = new(std::nothrow) char[uisize];
-    ASSERTAB(NULL != pbuff, ERRSTR_MEMORY);
-    int32_t inum = INIT_NUMBER;
-
-    while (true)
-    {        ZERO(pbuff, uisize);
-        inum = vsnprintf(pbuff, uisize, pformat, args);
-        if ((inum > -1)
-            && (inum < (int32_t)uisize))
-        {
-            std::string strret(pbuff);
-            SAFE_DELARR(pbuff);
-
-            return strret;
-        }
-        //分配更大空间
-        uisize = (inum > -1) ? (inum + 1) : uisize * 2;
-        SAFE_DELARR(pbuff);
-        pbuff = new(std::nothrow) char[uisize];
-        ASSERTAB(NULL != pbuff, ERRSTR_MEMORY);
-    }
-}
-std::string formatstr(const char *pformat, ...)
-{
-    va_list va;
-    va_start(va, pformat);
-    std::string strret = formatv(pformat, va);
-    va_end(va);
-
-    return strret;
 }
 bool fileexist(const char *pname)
 {
@@ -248,6 +216,144 @@ int32_t socknread(const SOCKET &fd)
 
     return iread;
 #endif
+}
+int32_t sockrecv(const SOCKET &fd, class cbuffer *pbuf)
+{
+    return 0;
+}
+SOCKET socklsn(const char *ip, const uint16_t &port, const int32_t &backlog)
+{
+    if (INIT_NUMBER == backlog)
+    {
+        return INVALID_SOCK;
+    }
+
+    cnetaddr addr;
+    if (!addr.setaddr(ip, port))
+    {
+        return INVALID_SOCK;
+    }
+
+    SOCKET fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (INVALID_SOCK == fd)
+    {
+        return INVALID_SOCK;
+    }
+    if (ERR_OK != bind(fd, addr.getaddr(), (int32_t)addr.getsize()))
+    {
+        SAFE_CLOSESOCK(fd);
+        return INVALID_SOCK;
+    }
+    if (ERR_OK != listen(fd, (-1 == backlog) ? 128 : backlog))
+    {
+        SAFE_CLOSESOCK(fd);
+        return INVALID_SOCK;
+    }
+
+    return fd;
+}
+SOCKET sockcnt(const char *ip, const uint16_t &port)
+{
+    cnetaddr addr;
+    if (!addr.setaddr(ip, port))
+    {
+        return INVALID_SOCK;
+    }
+
+    SOCKET fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (INVALID_SOCK == fd)
+    {
+        return INVALID_SOCK;
+    }
+    if (ERR_OK != connect(fd, addr.getaddr(), (int32_t)addr.getsize()))
+    {
+        SAFE_CLOSESOCK(fd);
+        return INVALID_SOCK;
+    }
+
+    return fd;
+}
+void sockopts(SOCKET &fd)
+{
+    int nodelay =1;
+    int keepalive = 1;
+
+    (void)setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (char *)&nodelay, (int)sizeof(nodelay));
+    (void)setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, (char *)&keepalive, (int)sizeof(keepalive));
+
+#ifdef OS_WIN
+    unsigned long nonblocking = 1;
+    (void)ioctlsocket(fd, FIONBIO, &nonblocking);
+#else
+    int flags = fcntl(fd, F_GETFL, NULL);
+    if (ERR_FAILED == flags)
+    {
+        PRINTF("fcntl(%d, F_GETFL) error.", fd);
+        return;
+    }
+    if (!(flags & O_NONBLOCK)) 
+    {
+        if (ERR_FAILED == fcntl(fd, F_SETFL, flags | O_NONBLOCK))
+        {
+            PRINTF("fcntl(%d, F_SETFL)", fd);
+            return;
+        }
+    }
+#endif
+}
+bool sockpair(SOCKET acSock[2])
+{
+    SOCKET fdlsn = socklsn("127.0.0.1", 0, 1);
+    if (INVALID_SOCK == fdlsn)
+    {
+        return false;
+    }
+
+    cnetaddr addr;
+    if (!addr.setlocaddr(fdlsn))
+    {
+        SAFE_CLOSESOCK(fdlsn);
+        return false;
+    }
+    SOCKET fdcn = sockcnt(addr.getip().c_str(), addr.getport());
+    if (INVALID_SOCK == fdcn)
+    {
+        SAFE_CLOSESOCK(fdlsn);
+        return false;
+    }
+
+    struct sockaddr_in listen_addr;
+    int32_t isize = sizeof(listen_addr);
+    SOCKET fdacp = accept(fdlsn, (struct sockaddr *) &listen_addr, &isize);
+    if (INVALID_SOCK == fdacp)
+    {
+        SAFE_CLOSESOCK(fdlsn);
+        SAFE_CLOSESOCK(fdcn);
+        return false;
+    }
+    SAFE_CLOSESOCK(fdlsn);
+    if (!addr.setlocaddr(fdcn))
+    {
+        SAFE_CLOSESOCK(fdacp);
+        SAFE_CLOSESOCK(fdcn);
+        return false;
+    }
+    struct sockaddr_in *connect_addr = (sockaddr_in*)addr.getaddr();
+    if (listen_addr.sin_family != connect_addr->sin_family
+        || listen_addr.sin_addr.s_addr != connect_addr->sin_addr.s_addr
+        || listen_addr.sin_port != connect_addr->sin_port)
+    {
+        SAFE_CLOSESOCK(fdacp);
+        SAFE_CLOSESOCK(fdcn);
+        return false;
+    }
+
+    sockopts(fdacp);
+    sockopts(fdcn);
+    acSock[0] = fdacp;
+    acSock[1] = fdcn;
+
+    return true;
 }
 const uint16_t crc16_tab[256] = {
     0x0000, 0xC0C1, 0xC181, 0x0140, 0xC301, 0x03C0, 0x0280, 0xC241,
@@ -502,6 +608,106 @@ uint64_t murmurhash3(const void *key, const size_t &len, const uint32_t &seed)
     ((uint32_t*)out)[3] = h4;
 
     return *(uint64_t*)out;
+}
+std::string formatv(const char *pformat, va_list args)
+{
+    size_t uisize = ONEK;
+    char *pbuff = new(std::nothrow) char[uisize];
+    ASSERTAB(NULL != pbuff, ERRSTR_MEMORY);
+    int32_t inum = INIT_NUMBER;
+
+    while (true)
+    {        ZERO(pbuff, uisize);
+        inum = vsnprintf(pbuff, uisize, pformat, args);
+        if ((inum > -1)
+            && (inum < (int32_t)uisize))
+        {
+            std::string strret(pbuff);
+            SAFE_DELARR(pbuff);
+
+            return strret;
+        }
+        //分配更大空间
+        uisize = (inum > -1) ? (inum + 1) : uisize * 2;
+        SAFE_DELARR(pbuff);
+        pbuff = new(std::nothrow) char[uisize];
+        ASSERTAB(NULL != pbuff, ERRSTR_MEMORY);
+    }
+}
+std::string formatstr(const char *pformat, ...)
+{
+    va_list va;
+    va_start(va, pformat);
+    std::string strret = formatv(pformat, va);
+    va_end(va);
+
+    return strret;
+}
+const char *ptrim = " \r\n\t\v";
+std::string triml(const std::string &str)
+{
+    size_t startpos = str.find_first_not_of(ptrim);
+    return (startpos == std::string::npos) ? "" : str.substr(startpos);
+}
+std::string trimr(const std::string &str)
+{
+    size_t endpos = str.find_last_not_of(ptrim);
+    return (endpos == std::string::npos) ? "" : str.substr(0, endpos + 1);
+}
+std::string trim(const std::string &str)
+{
+    return trimr(triml(str));
+}
+void addtoken(std::vector<std::string> &tokens, const std::string &strtmp, const bool &empty)
+{
+    if (empty)
+    {
+        tokens.push_back(strtmp);
+        return;
+    }
+    if (!strtmp.empty())
+    {
+        tokens.push_back(strtmp);
+    }
+}
+std::vector<std::string> split(const std::string &str, const char *pflag, const bool empty)
+{
+    std::vector<std::string> tokens;
+    if (str.empty())
+    {
+        return tokens;
+    }
+    size_t ilens = strlen(pflag);
+    if (INIT_NUMBER == ilens)
+    {
+        addtoken(tokens, str, empty);
+        return tokens;
+    }
+
+    std::string::size_type start = INIT_NUMBER;
+    std::string::size_type pos = str.find(pflag, start);
+    if (std::string::npos == pos)
+    {
+        addtoken(tokens, str, empty);
+        return tokens;
+    }
+
+    std::string strtmp;    
+    while (std::string::npos != pos)
+    {
+        strtmp = str.substr(start, pos - start);
+        addtoken(tokens, strtmp, empty);
+
+        start = pos + ilens;
+        pos = str.find(pflag, start);
+        if (std::string::npos == pos)
+        {
+            strtmp = str.substr(start);
+            addtoken(tokens, strtmp, empty);
+        }
+    }
+
+    return tokens;
 }
 
 SREY_NS_END

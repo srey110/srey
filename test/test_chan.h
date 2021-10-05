@@ -27,7 +27,7 @@ private:
     void test_bufselect(void);
 
 private:
-    bool _test_chan(int32_t icap, bool bselect);
+    void _test_chan(int32_t icap, bool bselect);
 
 private:
     cthread *pth1;

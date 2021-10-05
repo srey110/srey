@@ -3,8 +3,6 @@
 
 #include "macro.h"
 
-typedef void(*thread_cb)(void*);//线程回调函数
-
 SREY_NS_BEGIN
 
 class ctask
@@ -16,6 +14,8 @@ public:
     virtual void run() {};
     virtual void afterrun() {};
 };
+
+typedef void(*thread_cb)(void*);//线程回调函数
 
 class cthread
 {
@@ -76,8 +76,11 @@ public:
 private:
     uint32_t threadid;
     uint32_t start;
+    
+#ifdef OS_WIN
+    HANDLE pthread;
+#else
     pthread_t pthread;//线程句柄
-#ifndef OS_WIN
     pthread_attr_t attr;
 #endif
     ctask *task;

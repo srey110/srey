@@ -19,27 +19,34 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="buffer.h" />
     <ClInclude Include="chan.h" />
     <ClInclude Include="cond.h" />
     <ClInclude Include="errcode.h" />
     <ClInclude Include="include.h" />
+    <ClInclude Include="lockguard.h" />
     <ClInclude Include="macro.h" />
     <ClInclude Include="mutex.h" />
+    <ClInclude Include="netaddr.h" />
     <ClInclude Include="os.h" />
     <ClInclude Include="queue.h" />
     <ClInclude Include="rwlock.h" />
     <ClInclude Include="snowflake.h" />
+    <ClInclude Include="spinlock.h" />
     <ClInclude Include="thread.h" />
     <ClInclude Include="timer.h" />
     <ClInclude Include="utils.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="buffer.cpp" />
     <ClCompile Include="chan.cpp" />
     <ClCompile Include="cond.cpp" />
     <ClCompile Include="mutex.cpp" />
+    <ClCompile Include="netaddr.cpp" />
     <ClCompile Include="queue.cpp" />
     <ClCompile Include="rwlock.cpp" />
     <ClCompile Include="snowflake.cpp" />
+    <ClCompile Include="spinlock.cpp" />
     <ClCompile Include="thread.cpp" />
     <ClCompile Include="utils.cpp" />
   </ItemGroup>

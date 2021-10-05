@@ -5,6 +5,10 @@
 
 bool bexit = false;
 int32_t iloop = INIT_NUMBER;
+int32_t ich1 = INIT_NUMBER;
+int32_t ich2 = INIT_NUMBER;
+int32_t ich3 = INIT_NUMBER;
+int32_t ich4 = INIT_NUMBER;
 
 class creadchan : public ctask
 {
@@ -14,29 +18,37 @@ public:
 
     void beforrun()
     {
+        ich1 = INIT_NUMBER;
+        ich2 = INIT_NUMBER;
+        ich3 = INIT_NUMBER;
+        ich4 = INIT_NUMBER;
         PRINTF("%s", "run read chan thread.");
     };
     void run() 
-    {
+    {        
         while (!bexit)
         {
             if (pchans[0]->canrecv())
             {
+                ich1++;
                 int32_t i;
                 pchans[0]->recv(&i);
             }
             if (pchans[1]->canrecv())
             {
+                ich2++;
                 int64_t i;
                 pchans[1]->recv(&i);
             }
             if (pchans[2]->canrecv())
             {
+                ich3++;
                 double d;
                 pchans[2]->recv(&d);
             }
             if (pchans[3]->canrecv())
             {
+                ich4++;
                 std::string str;
                 pchans[3]->recv(&str);
             }
@@ -59,6 +71,10 @@ public:
 
     void beforrun()
     {
+        ich1 = INIT_NUMBER;
+        ich2 = INIT_NUMBER;
+        ich3 = INIT_NUMBER;
+        ich4 = INIT_NUMBER;
         PRINTF("%s", "run select read chan thread.");
     };
     void run()
@@ -73,24 +89,28 @@ public:
                 {
                 case 0:
                 {
+                    ich1++;
                     int32_t *p = (int32_t *)pval;
                     SAFE_DEL(p);
                 }
                 break;
                 case 1:
                 {
+                    ich2++;
                     int64_t *p = (int64_t *)pval;
                     SAFE_DEL(p);
                 }
                 break;
                 case 2:
                 {
+                    ich3++;
                     double *p = (double *)pval;
                     SAFE_DEL(p);
                 }
                 break;
                 case 3:
                 {
+                    ich4++;
                     std::string *p = (std::string *)pval;
                     SAFE_DEL(p);
                 }
@@ -118,7 +138,7 @@ void write_cb(void *pparam)
     for (int32_t i = 0; i < iloop; i++)
     {
         pchans[0]->send(i);
-        int64_t ui = 15800000 + i;        
+        int64_t ui = 15800000 + i;
         pchans[1]->send(ui);
         double d = 3.14 + i;
         pchans[2]->send(d);
@@ -176,7 +196,7 @@ void selwr_cb(void *pparam)
     }
     PRINTF("%s", "select write chan thread finish.");
 }
-bool ctest_chan::_test_chan(int32_t icap, bool bselect)
+void ctest_chan::_test_chan(int32_t icap, bool bselect)
 {
     bexit = false;
     pth1 = new(std::nothrow) cthread();
@@ -244,21 +264,25 @@ bool ctest_chan::_test_chan(int32_t icap, bool bselect)
     SAFE_DELARR(pchans);
     SAFE_DEL(pth1);
     SAFE_DEL(pth2);
-
-    return bempty;
 }
 void ctest_chan::test_buffchan(void)
 {
-    iloop = 100000;
-    CPPUNIT_ASSERT(_test_chan(CAPSIZE, false));
+    iloop = 10000;
+    _test_chan(CAPSIZE, false);
+    CPPUNIT_ASSERT(iloop == ich1 && iloop == ich2
+        && iloop == ich3 && iloop == ich4);
 }
 void ctest_chan::test_unbuffchan(void)
 {
-    iloop = 100000;
-    CPPUNIT_ASSERT(_test_chan(INIT_NUMBER, false));
+    iloop = 10000;
+    _test_chan(INIT_NUMBER, false);
+    CPPUNIT_ASSERT(iloop == ich1 && iloop == ich2 
+        && iloop == ich3 && iloop == ich4);
 }
 void ctest_chan::test_bufselect(void)
 {
-    iloop = 100000;
-    CPPUNIT_ASSERT(_test_chan(CAPSIZE, true));
+    iloop = 10000;
+    _test_chan(CAPSIZE, true);
+    CPPUNIT_ASSERT(iloop == ich1 && iloop == ich2 
+        && iloop == ich3 && iloop == ich4);
 }

@@ -28,6 +28,14 @@ void cmutex::lock()
     (void)pthread_mutex_lock(&mutex);
 #endif
 }
+bool cmutex::trylock()
+{
+#ifdef OS_WIN
+    return TRUE == TryEnterCriticalSection(&mutex);
+#else
+    return ERR_OK == pthread_mutex_trylock(&mutex);
+#endif
+}
 void cmutex::unlock()
 {
 #ifdef OS_WIN

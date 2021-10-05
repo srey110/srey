@@ -3,7 +3,21 @@
 
 #include "include.h"
 
+#define MALLOC malloc
+#define CALLOC calloc
+#define REALLOC realloc
+#define FREE free
 #define ZERO(name, len) memset(name, 0, len)
+
+#define SAFE_FREE(v_para)\
+do\
+{\
+    if (NULL != v_para)\
+    {\
+        FREE(v_para);\
+        v_para = NULL;\
+    }\
+}while(false)
 #define SAFE_DEL(v_para)\
 do\
 {\
@@ -35,9 +49,6 @@ do\
 #ifdef OS_WIN
     #define PATH_SEPARATOR '\\'
     #define SOCKET intptr_t
-    #define socket_t int 
-    typedef HANDLE pthread_t;
-    typedef CRITICAL_SECTION pthread_mutex_t;
     #define PATH_LENS MAX_PATH
 #else
     #define PATH_SEPARATOR '/'
@@ -69,6 +80,7 @@ do\
 #define INIT_NUMBER 0
 #define ONEK 1024
 #define TIME_LENS 64
+#define INVALID_SOCK -1
 
 #ifdef OS_WIN
     #define IS_EAGAIN(e) (WSAEWOULDBLOCK == (e) || EAGAIN == (e))
@@ -98,6 +110,8 @@ do\
     #define CLOSESOCKET closesocket
     #define ATOMIC_ADD InterlockedExchangeAdd
     #define ATOMIC_SET InterlockedExchange
+    //比较*ptr与oldval的值，如果两者相等，则将newval更新到*ptr并返回操作之前*ptr的值 成功 返回值等于oldval
+    #define ATOMIC_CAS(ptr, oldval, newval) InterlockedCompareExchange(ptr, newval, oldval)
     #define LASTERROR() GetLastError()
     #define SOCKERROR() WSAGetLastError()
     #define ERRORSTR(errcode) 
@@ -124,11 +138,23 @@ do\
     #define CLOSESOCKET close
     #define ATOMIC_ADD __sync_fetch_and_add
     #define ATOMIC_SET __sync_lock_test_and_set
+    //比较*ptr与oldval的值，如果两者相等，则将newval更新到*ptr并返回操作之前*ptr的值 成功 返回值等于oldval
+    //type __sync_val_compare_and_swap (type *ptr, type oldval type newval); 
+    #define ATOMIC_CAS(ptr, oldval, newval) __sync_val_compare_and_swap (ptr, oldval, newval)
     #define LASTERROR() (errno)
     #define SOCKERROR() (errno)
     #define ERRORSTR(errcode) strerror(errcode)
 #endif
 
 #define ATOMIC_GET(ppsrc) ATOMIC_ADD(ppsrc, 0)
+#define SAFE_CLOSESOCK(fd)\
+do\
+{\
+    if (INVALID_SOCK != fd)\
+    {\
+        CLOSESOCKET(fd);\
+        fd = INVALID_SOCK;\
+    }\
+}while(false)
 
 #endif//MACRO_H_

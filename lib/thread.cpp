@@ -9,7 +9,7 @@ SREY_NS_BEGIN
 #define THREAD_STOP   2
 
 #ifdef OS_WIN
-uint32_t _taskcb(void *parg)
+uint32_t __stdcall _taskcb(void *parg)
 #else
 void *_taskcb(void *pArg)
 #endif

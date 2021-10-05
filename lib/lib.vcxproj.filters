@@ -28,6 +28,14 @@
     <ClInclude Include="chan.h">
       <Filter>algorithm</Filter>
     </ClInclude>
+    <ClInclude Include="netaddr.h" />
+    <ClInclude Include="buffer.h" />
+    <ClInclude Include="spinlock.h">
+      <Filter>thread</Filter>
+    </ClInclude>
+    <ClInclude Include="lockguard.h">
+      <Filter>thread</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="utils.cpp" />
@@ -51,6 +59,11 @@
     </ClCompile>
     <ClCompile Include="chan.cpp">
       <Filter>algorithm</Filter>
+    </ClCompile>
+    <ClCompile Include="netaddr.cpp" />
+    <ClCompile Include="buffer.cpp" />
+    <ClCompile Include="spinlock.cpp">
+      <Filter>thread</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>

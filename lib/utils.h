@@ -21,20 +21,6 @@ uint32_t threadid();
 */
 uint32_t procsnum();
 /*
-* \brief          格式化字符串
-* \param pformat  格式
-* \param args     变参
-* \return         格式化后的字符串
-*/
-std::string formatv(const char *pformat, va_list args);
-/*
-* \brief          格式化字符串
-* \param pformat  格式
-* \param ...      变参
-* \return         格式化后的字符串
-*/
-std::string formatstr(const char *pformat, ...);
-/*
 * \brief          判断文件是否存在
 * \param pname    文件名
 * \return         true 存在
@@ -106,6 +92,39 @@ void nowmtime(const char *pformat, char atime[TIME_LENS]);
 */
 int32_t socknread(const SOCKET &fd);
 /*
+* \brief          socket讀取數據
+* \param fd       socket句柄
+* \return         ERR_FAILED 失败，需要關閉socket
+* \return         长度
+*/
+int32_t sockrecv(const SOCKET &fd, class cbuffer *pbuf);
+/*
+* \brief          创建一监听socket
+* \param ip       ip
+* \param port     port
+* \param backlog  等待连接队列的最大长度 -1 使用128
+* \return         INVALID_SOCK 失败
+*/
+SOCKET socklsn(const char *ip, const uint16_t &port, const int32_t &backlog);
+/*
+* \brief          创建一socket链接
+* \param ip       ip
+* \param port     port
+* \return         INVALID_SOCK 失败
+*/
+SOCKET sockcnt(const char *ip, const uint16_t &port);
+/*
+* \brief          设置socket参数 TCP_NODELAY  SO_KEEPALIVE 非阻塞
+* \param fd       SOCKET
+*/
+void sockopts(SOCKET &fd);
+/*
+* \brief          一组相互链接的socket
+* \param sock     SOCKET
+* \return         true 成功
+*/
+bool sockpair(SOCKET sock[2]);
+/*
 * \brief          计算crc16
 * \param pval     待计算
 * \param ilen     pval长度
@@ -137,6 +156,46 @@ uint64_t siphash64(const uint8_t *pin, const size_t &inlen,
 * \return         murmur hash值
 */
 uint64_t murmurhash3(const void *key, const size_t &len, const uint32_t &seed);
+/*
+* \brief          格式化字符串
+* \param pformat  格式
+* \param args     变参
+* \return         格式化后的字符串
+*/
+std::string formatv(const char *pformat, va_list args);
+/*
+* \brief          格式化字符串
+* \param pformat  格式
+* \param ...      变参
+* \return         格式化后的字符串
+*/
+std::string formatstr(const char *pformat, ...);
+/*
+* \brief          移除左边特殊字符串
+* \param str      待拆字符串
+* \return         处理后的数据
+*/
+std::string triml(const std::string &str);
+/*
+* \brief          移除右边特殊字符串
+* \param str      待拆字符串
+* \return         处理后的数据
+*/
+std::string trimr(const std::string &str);
+/*
+* \brief          移除两边特殊字符串
+* \param str      待拆字符串
+* \return         处理后的数据
+*/
+std::string trim(const std::string &str);
+/*
+* \brief          拆分字符串
+* \param str      待拆字符串
+* \param pflag    拆分标志
+* \param empty    是否包含空字符串
+* \return         拆分后的数据，不包含空字符串
+*/
+std::vector<std::string> split(const std::string &str, const char *pflag, const bool empty = true);
 
 SREY_NS_END
 

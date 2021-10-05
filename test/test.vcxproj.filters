@@ -4,10 +4,12 @@
     <ClCompile Include="test.cpp" />
     <ClCompile Include="test_utils.cpp" />
     <ClCompile Include="test_chan.cpp" />
+    <ClCompile Include="test_lock.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="test_utils.h" />
     <ClInclude Include="test.h" />
     <ClInclude Include="test_chan.h" />
+    <ClInclude Include="test_lock.h" />
   </ItemGroup>
 </Project>

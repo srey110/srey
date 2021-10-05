@@ -13,6 +13,8 @@ class ctest_utils : public CPPUNIT_NS::TestFixture
     CPPUNIT_TEST(test_file);
     CPPUNIT_TEST(test_time);
     CPPUNIT_TEST(test_hash);
+    CPPUNIT_TEST(test_str);
+    CPPUNIT_TEST(test_sock);
 
     CPPUNIT_TEST_SUITE_END();
 
@@ -27,6 +29,8 @@ private:
     void test_file(void);
     void test_time(void);
     void test_hash(void);
+    void test_str(void);
+    void test_sock(void);
 };
 
 #endif//TEST_UTILS_H_

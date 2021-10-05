@@ -1,6 +1,8 @@
 #include "test_utils.h"
 #include "utils.h"
 #include "timer.h"
+#include "thread.h"
+#include "netaddr.h"
 
 using namespace srey;
 
@@ -80,4 +82,64 @@ void ctest_utils::test_hash(void)
     CPPUNIT_ASSERT(ulcrc32 == crc32(pmsg, isize));
     CPPUNIT_ASSERT(ulsp == siphash64((const uint8_t *)pmsg, isize, 89, 78));
     CPPUNIT_ASSERT(ulmm == murmurhash3(pmsg, isize, 89));
+}
+void ctest_utils::test_str(void)
+{
+    std::string str = "가adc가";
+    std::string str2 = triml(str);
+    CPPUNIT_ASSERT(str2 == str);
+    str2 = trimr(str);
+    CPPUNIT_ASSERT(str2 == str);
+
+    str = " \r\n\t\v가\nadc가";
+    str2 = triml(str);
+    CPPUNIT_ASSERT(str2 == "가\nadc가");
+
+    str = "가\nadc가 \r\n\t\v";
+    str2 = trimr(str);
+    CPPUNIT_ASSERT(str2 == "가\nadc가");
+
+    str = "    \r\n\t\v";
+    str2 = trimr(str);
+    CPPUNIT_ASSERT(str2 == "");
+
+    str = "    \r\n\t\v";
+    str2 = triml(str);
+    CPPUNIT_ASSERT(str2 == "");
+
+    str = " \t 가\nadc가 \r\n\t\v";
+    str2 = trim(str);
+    CPPUNIT_ASSERT(str2 == "가\nadc가");
+
+    str = " \t 가\nadc가 \r\n\t\v\t\t";
+    std::vector<std::string> vrtn = split(str, "\t");
+    CPPUNIT_ASSERT(vrtn.size() == 5);
+}
+void ctest_utils::test_sock(void)
+{
+     SOCKET socks[2];
+     bool bok = sockpair(socks);
+     CPPUNIT_ASSERT(bok);
+     if (!bok)
+     {
+         return;
+     }
+
+     std::string strrecv = "";
+     std::string strsend = "this is test." ;
+     send(socks[0], strsend.c_str(), (int32_t)strsend.length(), 0);
+     int32_t ilens = socknread(socks[1]);
+     if (ilens > 0)
+     {
+         char *pbuf = new(std::nothrow) char[ilens + 1];
+         ZERO(pbuf, ilens + 1);
+         recv(socks[1], pbuf, ilens, 0);
+         strrecv = pbuf;
+         SAFE_DELARR(pbuf);
+     }
+
+     SAFE_CLOSESOCK(socks[0]);
+     SAFE_CLOSESOCK(socks[1]);
+
+     CPPUNIT_ASSERT(strrecv == strsend);
 }
