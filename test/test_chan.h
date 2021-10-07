@@ -2,8 +2,6 @@
 #define TEST_CHAN_H_
 
 #include "test.h"
-#include "chan.h"
-#include "thread.h"
 
 using namespace SREY_NS;
 

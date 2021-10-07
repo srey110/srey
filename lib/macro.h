@@ -41,6 +41,10 @@ do\
 #define SREY_NS_END }
 #define SREY_NS srey
 
+#define DISALLOWCOPY(ClassName)   \
+    ClassName(const ClassName&);    \
+    void operator=(const ClassName&)
+
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))
 //s向上 取n(n 为2的倍数)的整数倍
@@ -49,6 +53,7 @@ do\
 #ifdef OS_WIN
     #define PATH_SEPARATOR '\\'
     #define SOCKET intptr_t
+    #define socklen_t int
     #define PATH_LENS MAX_PATH
 #else
     #define PATH_SEPARATOR '/'
@@ -57,10 +62,14 @@ do\
     #define PATH_LENS PATH_MAX
 #endif
 
-#define H_CONCAT2(a, b) a b
-#define H_CONCAT3(a, b, c) a b c
+#define CONCAT2(a, b) a b
+#define CONCAT3(a, b, c) a b c
 #define __FILENAME__ (strrchr(__FILE__, PATH_SEPARATOR) ? strrchr(__FILE__, PATH_SEPARATOR) + 1 : __FILE__)
-#define PRINTF(fmt, ...) printf(H_CONCAT3("[%s %s %d] ", fmt, "\n"),  __FILENAME__, __FUNCTION__, __LINE__, ##__VA_ARGS__)
+#define PRINTF(fmt, ...) printf(CONCAT3("[%s %d] ", fmt, "\n"),  __FILENAME__, __LINE__, ##__VA_ARGS__)
+
+//typeid(name).name() 变量类型
+//变量名称字符串
+#define VARNAME(name) #name
 
 //动态变量名
 #define __ANONYMOUS(type, name, line)  type  name##line
@@ -73,7 +82,7 @@ do\
     if (!(Exp))\
     {\
         PRINTF("%s", pszMsg);\
-        abort();\
+        assert(false);\
     }\
 } while (false);
 
@@ -90,7 +99,7 @@ do\
     #define SNPRINTF _snprintf
     #define SWPRINTF swprintf
     #define STRNCPY strncpy_s
-    #define ITOA _itoa_s
+    #define ITOA _itoa
     #define STAT _stat
     #define USLEEP(us)\
     do\
@@ -106,6 +115,7 @@ do\
     #define TIMEB _timeb
     #define FTIME _ftime
     #define ACCESS _access
+    #define MKDIR _mkdir
     #define SHUTDOWN(sock) shutdown(sock, SD_BOTH)
     #define CLOSESOCKET closesocket
     #define ATOMIC_ADD InterlockedExchangeAdd
@@ -134,6 +144,7 @@ do\
     #define TIMEB timeb
     #define FTIME ftime
     #define ACCESS access
+    #define MKDIR(path) mkdir(path, S_IRUSR|S_IWUSR)
     #define SHUTDOWN(sock) shutdown(sock, SHUT_RDWR)
     #define CLOSESOCKET close
     #define ATOMIC_ADD __sync_fetch_and_add

@@ -6,6 +6,7 @@
 #include <cppunit/config/SourcePrefix.h>
 #include <cppunit/extensions/HelperMacros.h>
 #include <cppunit/extensions/TestFactoryRegistry.h>
+#include "lib.h"
 
 #endif//TEST_H_
 

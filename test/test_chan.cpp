@@ -1,5 +1,4 @@
 #include "test_chan.h"
-#include "errcode.h"
 
 #define CAPSIZE 5
 
@@ -22,7 +21,7 @@ public:
         ich2 = INIT_NUMBER;
         ich3 = INIT_NUMBER;
         ich4 = INIT_NUMBER;
-        PRINTF("%s", "run read chan thread.");
+        //PRINTF("%s", "run read chan thread.");
     };
     void run() 
     {        
@@ -56,7 +55,7 @@ public:
     };
     void afterrun()
     {
-        PRINTF("%s", "read chan thread finish.");
+        //PRINTF("%s", "read chan thread finish.");
     };
 
 private:
@@ -75,7 +74,7 @@ public:
         ich2 = INIT_NUMBER;
         ich3 = INIT_NUMBER;
         ich4 = INIT_NUMBER;
-        PRINTF("%s", "run select read chan thread.");
+        //PRINTF("%s", "run select read chan thread.");
     };
     void run()
     {
@@ -123,7 +122,7 @@ public:
     };
     void afterrun()
     {
-        PRINTF("%s", "select read chan thread finish.");
+        //PRINTF("%s", "select read chan thread finish.");
     };
 
 private:
@@ -134,7 +133,7 @@ void write_cb(void *pparam)
 {
     char acbuf[64];
     cchan **pchans = (cchan **)pparam;
-    PRINTF("%s", "run write chan thread.");
+    //PRINTF("%s", "run write chan thread.");
     for (int32_t i = 0; i < iloop; i++)
     {
         pchans[0]->send(i);
@@ -146,7 +145,7 @@ void write_cb(void *pparam)
         SNPRINTF(acbuf, sizeof(acbuf) - 1, "test send buff, %d", i);
         pchans[3]->send(acbuf, sizeof(acbuf));
     }
-    PRINTF("%s", "write chan thread finish.");
+    //PRINTF("%s", "write chan thread finish.");
 }
 void selwr_cb(void *pparam)
 {
@@ -156,7 +155,7 @@ void selwr_cb(void *pparam)
     void *sendmsg[4];
     int32_t icount = INIT_NUMBER;
     int32_t index = INIT_NUMBER;
-    PRINTF("%s", "run select write chan thread.");
+    //PRINTF("%s", "run select write chan thread.");
     for (int32_t i = 0; i < iloop; i++)
     {
         for (int32_t k = 0; k < 4; k++)
@@ -194,7 +193,7 @@ void selwr_cb(void *pparam)
             }
         }
     }
-    PRINTF("%s", "select write chan thread finish.");
+    //PRINTF("%s", "select write chan thread finish.");
 }
 void ctest_chan::_test_chan(int32_t icap, bool bselect)
 {
@@ -267,6 +266,7 @@ void ctest_chan::_test_chan(int32_t icap, bool bselect)
 }
 void ctest_chan::test_buffchan(void)
 {
+    PRINTF("%s", "test_buffchan");
     iloop = 10000;
     _test_chan(CAPSIZE, false);
     CPPUNIT_ASSERT(iloop == ich1 && iloop == ich2
@@ -274,6 +274,7 @@ void ctest_chan::test_buffchan(void)
 }
 void ctest_chan::test_unbuffchan(void)
 {
+    PRINTF("%s", "test_unbuffchan");
     iloop = 10000;
     _test_chan(INIT_NUMBER, false);
     CPPUNIT_ASSERT(iloop == ich1 && iloop == ich2 
@@ -281,6 +282,7 @@ void ctest_chan::test_unbuffchan(void)
 }
 void ctest_chan::test_bufselect(void)
 {
+    PRINTF("%s", "test_bufselect");
     iloop = 10000;
     _test_chan(CAPSIZE, true);
     CPPUNIT_ASSERT(iloop == ich1 && iloop == ich2 

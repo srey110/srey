@@ -4,14 +4,10 @@
 
 SREY_NS_BEGIN
 
-#define THREAD_NORUN  0
-#define THREAD_RUNING 1
-#define THREAD_STOP   2
-
 #ifdef OS_WIN
 uint32_t __stdcall _taskcb(void *parg)
 #else
-void *_taskcb(void *pArg)
+void *_taskcb(void *parg)
 #endif
 {
     cthread *pthread = (cthread *)parg;
@@ -34,7 +30,7 @@ void *_taskcb(void *pArg)
 #ifdef OS_WIN
 uint32_t __stdcall _funccb(void *parg)
 #else
-void *_funccb(void *pArg)
+void *_funccb(void *parg)
 #endif
 {
     cthread *pthread = (cthread *)parg;
@@ -55,34 +51,36 @@ void *_funccb(void *pArg)
 cthread::cthread()
 {
     threadid = INIT_NUMBER;
-
-#ifndef OS_WIN
-    pthread_attr_init(&attr);
-    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-#endif
-}
-cthread::~cthread()
-{
-#ifndef OS_WIN
-    pthread_attr_destroy(&attr);
-#endif
+    start = THREAD_STOP;
 }
 void cthread::creat(ctask *ptask)
 {
-    start = THREAD_NORUN;
+    if (THREAD_STOP != state())
+    {
+        PRINTF("%s", "thread not stop.");
+        return;
+    }
+    ATOMIC_SET(&start, THREAD_WAITRUN);
+
     task = ptask;
 
 #ifdef OS_WIN
     pthread = (HANDLE)_beginthreadex(NULL, 0, _taskcb, this, 0, NULL);
     ASSERTAB(NULL != pthread, "_beginthreadex error.");
 #else
-    ASSERTAB((ERR_OK == pthread_create(&pthread, &attr, _taskcb, (void*)this)),
+    ASSERTAB((ERR_OK == pthread_create(&pthread, NULL, _taskcb, (void*)this)),
         "pthread_create error.");   
 #endif
 }
 void cthread::creat(thread_cb func, void *pparam)
 {
-    start = THREAD_NORUN;
+    if (THREAD_STOP != state())
+    {
+        PRINTF("%s", "thread not stop.");
+        return;
+    }
+    ATOMIC_SET(&start, THREAD_WAITRUN);
+
     funccb = func;
     param = pparam;
 
@@ -90,7 +88,7 @@ void cthread::creat(thread_cb func, void *pparam)
     pthread = (HANDLE)_beginthreadex(NULL, 0, _funccb, this, 0, NULL);
     ASSERTAB(NULL != pthread, "_beginthreadex error.");
 #else
-    ASSERTAB((ERR_OK == pthread_create(&pthread, &attr, _funccb, (void*)this)),
+    ASSERTAB((ERR_OK == pthread_create(&pthread, NULL, _funccb, (void*)this)),
         "pthread_create error.");
 #endif
 }
@@ -100,7 +98,7 @@ uint32_t cthread::state()
 }
 void cthread::waitstart()
 {
-    while (THREAD_NORUN == state());
+    while (THREAD_WAITRUN == state());
 }
 void cthread::join()
 {
@@ -111,7 +109,10 @@ void cthread::join()
 #ifdef OS_WIN
     (void)WaitForSingleObject(pthread, INFINITE);
 #else
-    (void)pthread_join(pthread, NULL);
+    if (ERR_OK != pthread_join(pthread, NULL))
+    {
+        PRINTF("%s", "pthread_join error.");
+    }
 #endif
 }
 

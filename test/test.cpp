@@ -1,5 +1,4 @@
 #include <fstream>
-#include "utils.h"
 #include "test_utils.h"
 #include "test_chan.h"
 #include "test_lock.h"
@@ -34,10 +33,10 @@ int main(int argc, char* argv[])
     }
 #endif
 
-    std::ofstream xmlrst(srey::getpath() + "test.xml");
+    std::string xmlpath = srey::getpath() + PATH_SEPARATOR + "test.xml";
+    std::ofstream xmlrst(xmlpath.c_str());
     CPPUNIT_NS::Test *suite = CPPUNIT_NS::TestFactoryRegistry::getRegistry().makeTest();
     CPPUNIT_NS::TextUi::TestRunner runner;
-
     runner.addTest(suite);
     runner.setOutputter(new CPPUNIT_NS::XmlOutputter(&runner.result(), xmlrst));
     runner.run();

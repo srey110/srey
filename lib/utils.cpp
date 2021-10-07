@@ -1,6 +1,7 @@
 #include "utils.h"
-#include "netaddr.h"
 #include "buffer.h"
+#include "md5/md5.h"
+#include "sha1/sha1.h"
 #include "errcode.h"
 
 SREY_NS_BEGIN
@@ -70,13 +71,11 @@ bool isfile(const char *pname)
     {
         return true;
     }
-#else
-    if (S_ISREG & st.st_mode)
-    {
-        return true;
-    }
-#endif
     return false;
+#else    
+    return S_ISREG(st.st_mode);
+#endif
+    
 }
 bool isdir(const char *pname)
 {
@@ -90,13 +89,11 @@ bool isdir(const char *pname)
     {
         return true;
     }
-#else
-    if (S_ISDIR & st.st_mode)
-    {
-        return true;
-    }
-#endif
     return false;
+#else    
+    return S_ISDIR(st.st_mode);
+#endif
+    
 }
 int64_t filesize(const char *pname)
 {
@@ -141,7 +138,92 @@ std::string getpath()
         return "";
     }
 
-    return dirnam(path) + PATH_SEPARATOR;
+    return dirnam(path);
+}
+void filefind(const char *ppath, std::list<std::string> &lstname, const bool bdir)
+{
+#ifdef OS_WIN
+    WIN32_FIND_DATA fd = { 0 };
+    std::string strfpname(ppath + std::string("\\*"));
+    HANDLE hsearch = FindFirstFile(strfpname.c_str(), &fd);
+    if (INVALID_HANDLE_VALUE == hsearch)
+    {
+        return;
+    }
+
+    if ((bdir ? (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) : !(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+        && !(fd.dwFileAttributes & FILE_ATTRIBUTE_SYSTEM)
+        && !(fd.dwFileAttributes & FILE_ATTRIBUTE_DEVICE)
+        && !(fd.dwFileAttributes & FILE_ATTRIBUTE_HIDDEN))
+    {
+        if (strcmp(fd.cFileName, ".")
+            && strcmp(fd.cFileName, ".."))
+        {
+            lstname.push_back(fd.cFileName);
+        }
+    }
+
+    for (;;)
+    {
+        memset(&fd, 0, sizeof(fd));
+        if (!FindNextFile(hsearch, &fd))
+        {
+            if (ERROR_NO_MORE_FILES == GetLastError())
+            {
+                break;
+            }
+            FindClose(hsearch);
+            return;
+        }
+
+        if ((bdir ? (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) : !(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+            && !(fd.dwFileAttributes & FILE_ATTRIBUTE_SYSTEM)
+            && !(fd.dwFileAttributes & FILE_ATTRIBUTE_DEVICE)
+            && !(fd.dwFileAttributes & FILE_ATTRIBUTE_HIDDEN))
+        {
+            if (strcmp(fd.cFileName, ".")
+                && strcmp(fd.cFileName, ".."))
+            {
+                lstname.push_back(fd.cFileName);
+            }
+        }
+    }
+
+    FindClose(hsearch);
+    return;
+#else
+    DIR *dir;
+    struct dirent *ptr;
+    struct stat strfinfo = { 0 };
+    char afullname[PATH_LENS] = { 0 };
+    dir = opendir(ppath);
+    if (NULL == dir)
+    {
+        return;
+    }
+
+    while ((ptr = readdir(dir)) != NULL)
+    {
+        SNPRINTF(afullname, sizeof(afullname) - 1, "%s/%s", ppath, ptr->d_name);
+        if (lstat(afullname, &strfinfo) < 0)
+        {
+            closedir(dir);
+            return;
+        }
+
+        if ((bdir ? S_ISDIR(strfinfo.st_mode) : !S_ISDIR(strfinfo.st_mode)))
+        {
+            if (strcmp(ptr->d_name, ".")
+                && strcmp(ptr->d_name, ".."))
+            {
+                lstname.push_back(ptr->d_name);
+            }
+        }
+    }
+
+    closedir(dir);
+    return;
+#endif
 }
 void timeofday(struct timeval *ptv)
 {
@@ -195,165 +277,13 @@ void nowmtime(const char *pformat, char atime[TIME_LENS])
     ZERO(atime, TIME_LENS);
     strftime(atime, TIME_LENS - 1, pformat, localtime(&t));
     size_t uilen = strlen(atime);
-    SNPRINTF(atime + uilen, TIME_LENS - uilen - 1, " %d", tv.tv_usec / 1000);
+    SNPRINTF(atime + uilen, TIME_LENS - uilen - 1, " %03d", (int32_t)(tv.tv_usec / 1000));
 }
-int32_t socknread(const SOCKET &fd)
+std::string nowmtime()
 {
-#ifdef OS_WIN
-    unsigned long ulread = INIT_NUMBER;
-    if (ioctlsocket(fd, FIONREAD, &ulread) < 0)
-    {
-        return ERR_FAILED;
-    }
-
-    return (int32_t)ulread;
-#else
-    int32_t iread = INIT_NUMBER;
-    if (ioctl(fd, FIONREAD, &iread) < 0)
-    {
-        return ERR_FAILED;
-    }
-
-    return iread;
-#endif
-}
-int32_t sockrecv(const SOCKET &fd, class cbuffer *pbuf)
-{
-    return 0;
-}
-SOCKET socklsn(const char *ip, const uint16_t &port, const int32_t &backlog)
-{
-    if (INIT_NUMBER == backlog)
-    {
-        return INVALID_SOCK;
-    }
-
-    cnetaddr addr;
-    if (!addr.setaddr(ip, port))
-    {
-        return INVALID_SOCK;
-    }
-
-    SOCKET fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (INVALID_SOCK == fd)
-    {
-        return INVALID_SOCK;
-    }
-    if (ERR_OK != bind(fd, addr.getaddr(), (int32_t)addr.getsize()))
-    {
-        SAFE_CLOSESOCK(fd);
-        return INVALID_SOCK;
-    }
-    if (ERR_OK != listen(fd, (-1 == backlog) ? 128 : backlog))
-    {
-        SAFE_CLOSESOCK(fd);
-        return INVALID_SOCK;
-    }
-
-    return fd;
-}
-SOCKET sockcnt(const char *ip, const uint16_t &port)
-{
-    cnetaddr addr;
-    if (!addr.setaddr(ip, port))
-    {
-        return INVALID_SOCK;
-    }
-
-    SOCKET fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (INVALID_SOCK == fd)
-    {
-        return INVALID_SOCK;
-    }
-    if (ERR_OK != connect(fd, addr.getaddr(), (int32_t)addr.getsize()))
-    {
-        SAFE_CLOSESOCK(fd);
-        return INVALID_SOCK;
-    }
-
-    return fd;
-}
-void sockopts(SOCKET &fd)
-{
-    int nodelay =1;
-    int keepalive = 1;
-
-    (void)setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (char *)&nodelay, (int)sizeof(nodelay));
-    (void)setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, (char *)&keepalive, (int)sizeof(keepalive));
-
-#ifdef OS_WIN
-    unsigned long nonblocking = 1;
-    (void)ioctlsocket(fd, FIONBIO, &nonblocking);
-#else
-    int flags = fcntl(fd, F_GETFL, NULL);
-    if (ERR_FAILED == flags)
-    {
-        PRINTF("fcntl(%d, F_GETFL) error.", fd);
-        return;
-    }
-    if (!(flags & O_NONBLOCK)) 
-    {
-        if (ERR_FAILED == fcntl(fd, F_SETFL, flags | O_NONBLOCK))
-        {
-            PRINTF("fcntl(%d, F_SETFL)", fd);
-            return;
-        }
-    }
-#endif
-}
-bool sockpair(SOCKET acSock[2])
-{
-    SOCKET fdlsn = socklsn("127.0.0.1", 0, 1);
-    if (INVALID_SOCK == fdlsn)
-    {
-        return false;
-    }
-
-    cnetaddr addr;
-    if (!addr.setlocaddr(fdlsn))
-    {
-        SAFE_CLOSESOCK(fdlsn);
-        return false;
-    }
-    SOCKET fdcn = sockcnt(addr.getip().c_str(), addr.getport());
-    if (INVALID_SOCK == fdcn)
-    {
-        SAFE_CLOSESOCK(fdlsn);
-        return false;
-    }
-
-    struct sockaddr_in listen_addr;
-    int32_t isize = sizeof(listen_addr);
-    SOCKET fdacp = accept(fdlsn, (struct sockaddr *) &listen_addr, &isize);
-    if (INVALID_SOCK == fdacp)
-    {
-        SAFE_CLOSESOCK(fdlsn);
-        SAFE_CLOSESOCK(fdcn);
-        return false;
-    }
-    SAFE_CLOSESOCK(fdlsn);
-    if (!addr.setlocaddr(fdcn))
-    {
-        SAFE_CLOSESOCK(fdacp);
-        SAFE_CLOSESOCK(fdcn);
-        return false;
-    }
-    struct sockaddr_in *connect_addr = (sockaddr_in*)addr.getaddr();
-    if (listen_addr.sin_family != connect_addr->sin_family
-        || listen_addr.sin_addr.s_addr != connect_addr->sin_addr.s_addr
-        || listen_addr.sin_port != connect_addr->sin_port)
-    {
-        SAFE_CLOSESOCK(fdacp);
-        SAFE_CLOSESOCK(fdcn);
-        return false;
-    }
-
-    sockopts(fdacp);
-    sockopts(fdcn);
-    acSock[0] = fdacp;
-    acSock[1] = fdcn;
-
-    return true;
+    char atime[TIME_LENS];
+    nowmtime("%H:%M:%S", atime);
+    return atime;
 }
 const uint16_t crc16_tab[256] = {
     0x0000, 0xC0C1, 0xC181, 0x0140, 0xC301, 0x03C0, 0x0280, 0xC241,
@@ -477,141 +407,194 @@ uint32_t crc32(const char *pval, const size_t &ilen)
 
     return uicrc ^ ~0U;
 }
-uint64_t siphash64(const uint8_t *pin, const size_t &inlen,
-    const uint64_t &seed0, const uint64_t &seed1)
+void md5(const char *pval, const size_t &ilens, char md5str[33])
 {
-#define U8TO64_LE(p) \
-    {  (((uint64_t)((p)[0])) | ((uint64_t)((p)[1]) << 8) | \
-        ((uint64_t)((p)[2]) << 16) | ((uint64_t)((p)[3]) << 24) | \
-        ((uint64_t)((p)[4]) << 32) | ((uint64_t)((p)[5]) << 40) | \
-        ((uint64_t)((p)[6]) << 48) | ((uint64_t)((p)[7]) << 56)) }
-#define U64TO8_LE(p, v) \
-    { U32TO8_LE((p), (uint32_t)((v))); \
-      U32TO8_LE((p) + 4, (uint32_t)((v) >> 32)); }
-#define U32TO8_LE(p, v) \
-    { (p)[0] = (uint8_t)((v)); \
-      (p)[1] = (uint8_t)((v) >> 8); \
-      (p)[2] = (uint8_t)((v) >> 16); \
-      (p)[3] = (uint8_t)((v) >> 24); }
-#define ROTL(x, b) (uint64_t)(((x) << (b)) | ((x) >> (64 - (b))))
-#define SIPROUND \
-    { v0 += v1; v1 = ROTL(v1, 13); \
-      v1 ^= v0; v0 = ROTL(v0, 32); \
-      v2 += v3; v3 = ROTL(v3, 16); \
-      v3 ^= v2; \
-      v0 += v3; v3 = ROTL(v3, 21); \
-      v3 ^= v0; \
-      v2 += v1; v1 = ROTL(v1, 17); \
-      v1 ^= v2; v2 = ROTL(v2, 32); }
-    uint64_t k0 = U8TO64_LE((uint8_t*)&seed0);
-    uint64_t k1 = U8TO64_LE((uint8_t*)&seed1);
-    uint64_t v3 = UINT64_C(0x7465646279746573) ^ k1;
-    uint64_t v2 = UINT64_C(0x6c7967656e657261) ^ k0;
-    uint64_t v1 = UINT64_C(0x646f72616e646f6d) ^ k1;
-    uint64_t v0 = UINT64_C(0x736f6d6570736575) ^ k0;
-    const uint8_t *end = pin + inlen - (inlen % sizeof(uint64_t));
-    for (; pin != end; pin += 8) {
-        uint64_t m = U8TO64_LE(pin);
-        v3 ^= m;
-        SIPROUND; SIPROUND;
-        v0 ^= m;
-    }
-    const int32_t left = inlen & 7;
-    uint64_t b = ((uint64_t)inlen) << 56;
-    switch (left) {
-    case 7: b |= ((uint64_t)pin[6]) << 48;
-    case 6: b |= ((uint64_t)pin[5]) << 40;
-    case 5: b |= ((uint64_t)pin[4]) << 32;
-    case 4: b |= ((uint64_t)pin[3]) << 24;
-    case 3: b |= ((uint64_t)pin[2]) << 16;
-    case 2: b |= ((uint64_t)pin[1]) << 8;
-    case 1: b |= ((uint64_t)pin[0]); break;
-    case 0: break;
-    }
-    v3 ^= b;
-    SIPROUND; SIPROUND;
-    v0 ^= b;
-    v2 ^= 0xff;
-    SIPROUND; SIPROUND; SIPROUND; SIPROUND;
-    b = v0 ^ v1 ^ v2 ^ v3;
-    uint64_t out = 0;
-    U64TO8_LE((uint8_t*)&out, b);
+    md5_byte_t digest[16];
+    md5_state_t stmd5;
+    ZERO(md5str, sizeof(md5str));
 
-    return out;
+    md5_init(&stmd5);
+    md5_append(&stmd5, (md5_byte_t*)pval, (int)ilens);
+    md5_finish(&stmd5, digest);
+    md5_tostring(digest, md5str);
 }
-uint64_t murmurhash3(const void *key, const size_t &len, const uint32_t &seed)
+void sha1(const char *pval, const size_t &ilens, char md5str[20])
 {
-#define	ROTL32(x, r) ((x << r) | (x >> (32 - r)))
-#define FMIX32(h) h^=h>>16; h*=0x85ebca6b; h^=h>>13; h*=0xc2b2ae35; h^=h>>16;
-    const uint8_t * data = (const uint8_t*)key;
-    const int32_t nblocks = (int32_t)len / 16;
-    uint32_t h1 = seed;
-    uint32_t h2 = seed;
-    uint32_t h3 = seed;
-    uint32_t h4 = seed;
-    uint32_t c1 = 0x239b961b;
-    uint32_t c2 = 0xab0e9789;
-    uint32_t c3 = 0x38b34ae5;
-    uint32_t c4 = 0xa1e38b93;
-    const uint32_t * blocks = (const uint32_t *)(data + nblocks * 16);
-    for (int32_t i = -nblocks; i; i++) {
-        uint32_t k1 = blocks[i * 4 + 0];
-        uint32_t k2 = blocks[i * 4 + 1];
-        uint32_t k3 = blocks[i * 4 + 2];
-        uint32_t k4 = blocks[i * 4 + 3];
-        k1 *= c1; k1 = ROTL32(k1, 15); k1 *= c2; h1 ^= k1;
-        h1 = ROTL32(h1, 19); h1 += h2; h1 = h1 * 5 + 0x561ccd1b;
-        k2 *= c2; k2 = ROTL32(k2, 16); k2 *= c3; h2 ^= k2;
-        h2 = ROTL32(h2, 17); h2 += h3; h2 = h2 * 5 + 0x0bcaa747;
-        k3 *= c3; k3 = ROTL32(k3, 17); k3 *= c4; h3 ^= k3;
-        h3 = ROTL32(h3, 15); h3 += h4; h3 = h3 * 5 + 0x96cd1c35;
-        k4 *= c4; k4 = ROTL32(k4, 18); k4 *= c1; h4 ^= k4;
-        h4 = ROTL32(h4, 13); h4 += h1; h4 = h4 * 5 + 0x32ac3b17;
-    }
-    const uint8_t * tail = (const uint8_t*)(data + nblocks * 16);
-    uint32_t k1 = 0;
-    uint32_t k2 = 0;
-    uint32_t k3 = 0;
-    uint32_t k4 = 0;
-    switch (len & 15) {
-    case 15: k4 ^= tail[14] << 16;
-    case 14: k4 ^= tail[13] << 8;
-    case 13: k4 ^= tail[12] << 0;
-        k4 *= c4; k4 = ROTL32(k4, 18); k4 *= c1; h4 ^= k4;
-    case 12: k3 ^= tail[11] << 24;
-    case 11: k3 ^= tail[10] << 16;
-    case 10: k3 ^= tail[9] << 8;
-    case  9: k3 ^= tail[8] << 0;
-        k3 *= c3; k3 = ROTL32(k3, 17); k3 *= c4; h3 ^= k3;
-    case  8: k2 ^= tail[7] << 24;
-    case  7: k2 ^= tail[6] << 16;
-    case  6: k2 ^= tail[5] << 8;
-    case  5: k2 ^= tail[4] << 0;
-        k2 *= c2; k2 = ROTL32(k2, 16); k2 *= c3; h2 ^= k2;
-    case  4: k1 ^= tail[3] << 24;
-    case  3: k1 ^= tail[2] << 16;
-    case  2: k1 ^= tail[1] << 8;
-    case  1: k1 ^= tail[0] << 0;
-        k1 *= c1; k1 = ROTL32(k1, 15); k1 *= c2; h1 ^= k1;
-    };
-    h1 ^= len; h2 ^= len; h3 ^= len; h4 ^= len;
-    h1 += h2; h1 += h3; h1 += h4;
-    h2 += h1; h3 += h1; h4 += h1;
-    FMIX32(h1); FMIX32(h2); FMIX32(h3); FMIX32(h4);
-    h1 += h2; h1 += h3; h1 += h4;
-    h2 += h1; h3 += h1; h4 += h1;
-
-    char out[16] = { 0 };
-    ((uint32_t*)out)[0] = h1;
-    ((uint32_t*)out)[1] = h2;
-    ((uint32_t*)out)[2] = h3;
-    ((uint32_t*)out)[3] = h4;
-
-    return *(uint64_t*)out;
+    SHA1_CTX ctx;
+    SHA1Init(&ctx);
+    SHA1Update(&ctx, (const uint8_t *)pval, (uint32_t)ilens);
+    SHA1Final((uint8_t *)md5str, &ctx);
 }
-std::string formatv(const char *pformat, va_list args)
+/* BASE 64 encode table */
+static const char base64en[] = 
 {
-    size_t uisize = ONEK;
+    'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H',
+    'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P',
+    'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X',
+    'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f',
+    'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n',
+    'o', 'p', 'q', 'r', 's', 't', 'u', 'v',
+    'w', 'x', 'y', 'z', '0', '1', '2', '3',
+    '4', '5', '6', '7', '8', '9', '+', '/',
+};
+#define BASE64_PAD      '='
+#define BASE64DE_FIRST  '+'
+#define BASE64DE_LAST   'z'
+/* ASCII order for BASE 64 decode, -1 in unused character */
+static const signed char base64de[] = 
+{
+    62,  -1,  -1,  -1,  63,  52,  53,  54,
+    55,  56,  57,  58,  59,  60,  61,  -1,
+    -1,  -1,  -1,  -1,  -1,  -1,   0,   1,
+    2,   3,   4,   5,   6,   7,   8,   9,
+    10,  11,  12,  13,  14,  15,  16,  17,
+    18,  19,  20,  21,  22,  23,  24,  25,
+    -1,  -1,  -1,  -1,  -1,  -1,  26,  27,
+    28,  29,  30,  31,  32,  33,  34,  35,
+    36,  37,  38,  39,  40,  41,  42,  43,
+    44,  45,  46,  47,  48,  49,  50,  51,
+};
+int32_t b64encode(const char *pval, const size_t &ilens, char *pout)
+{
+    int32_t s;
+    uint32_t i, j;
+    for (i = j = 0; i < ilens; i++) 
+    {
+        s = i % 3;
+        switch (s) 
+        {
+        case 0:
+            pout[j++] = base64en[(pval[i] >> 2) & 0x3F];
+            continue;
+        case 1:
+            pout[j++] = base64en[((pval[i - 1] & 0x3) << 4) + ((pval[i] >> 4) & 0xF)];
+            continue;
+        case 2:
+            pout[j++] = base64en[((pval[i - 1] & 0xF) << 2) + ((pval[i] >> 6) & 0x3)];
+            pout[j++] = base64en[pval[i] & 0x3F];
+        }
+    }
+
+    /* move back */
+    i -= 1;
+    /* check the last and add padding */
+    switch (i % 3)
+    {
+    case 0:
+        pout[j++] = base64en[(pval[i] & 0x3) << 4];
+        pout[j++] = BASE64_PAD;
+        pout[j++] = BASE64_PAD;
+        break;
+    case 1:
+        pout[j++] = base64en[(pval[i] & 0xF) << 2];
+        pout[j++] = BASE64_PAD;
+        break;
+    }
+
+    return j;
+}
+int32_t b64decode(const char *pval, const size_t &ilens, char *pout)
+{
+    int32_t c,s;
+    uint32_t i, j;
+    for (i = j = 0; i < ilens; i++) 
+    {
+        s = i % 4;
+        if (pval[i] == '=')
+        {
+            return (int32_t)j;
+        }
+        if (pval[i] < BASE64DE_FIRST
+            || pval[i] > BASE64DE_LAST
+            || (c = base64de[pval[i] - BASE64DE_FIRST]) == -1)
+        {
+            return ERR_FAILED;
+        }
+
+        switch (s) 
+        {
+        case 0:
+            pout[j] = ((uint32_t)c << 2) & 0xFF;
+            continue;
+        case 1:
+            pout[j++] += ((uint32_t)c >> 4) & 0x3;
+            if (i < (ilens - 3) || pval[ilens - 2] != '=')
+            {
+                pout[j] = ((uint32_t)c & 0xF) << 4;
+            }                
+            continue;
+        case 2:
+            pout[j++] += ((uint32_t)c >> 2) & 0xF;
+            if (i < (ilens - 2) || pval[ilens - 1] != '=')
+            {
+                pout[j] = ((uint32_t)c & 0x3) << 6;
+            }                
+            continue;
+        case 3:
+            pout[j++] += (uint8_t)c;
+        }
+    }
+
+    return (int32_t)j;
+}
+char *toupper(char *pval)
+{
+    char* ptmp = pval;
+    while (*ptmp != '\0') 
+    {
+        if (*ptmp >= 'a' 
+            && *ptmp <= 'z') 
+        {
+            *ptmp &= ~0x20;
+        }
+
+        ++ptmp;
+    }
+
+    return pval;
+}
+char *tolower(char *pval) 
+{
+    char *ptmp  = pval;
+    while (*ptmp != '\0') 
+    {
+        if (*ptmp >= 'A' && *ptmp <= 'Z') 
+        {
+            *ptmp |= 0x20;
+        }
+
+        ++ptmp;
+    }
+
+    return pval;
+}
+std::string tohex(const char *pval, const size_t &ilens, const bool bspace)
+{
+    char atmp[6] = {0};
+    std::string strhex;
+    for (size_t i = 0; i < ilens; i++)
+    {
+        if (bspace)
+        {
+            SNPRINTF(atmp, sizeof(atmp), "%02X ", (uint8_t)pval[i]);
+        }
+        else
+        {
+            SNPRINTF(atmp, sizeof(atmp), "%02X", (uint8_t)pval[i]);
+        }        
+        strhex += atmp;
+    }
+    if (!strhex.empty()
+        && bspace)
+    {
+        strhex.erase(strhex.end() - 1);
+    }
+
+    return strhex;
+}
+char *formatv(const char *pformat, va_list args, const size_t &iinit)
+{
+    size_t uisize = iinit;
     char *pbuff = new(std::nothrow) char[uisize];
     ASSERTAB(NULL != pbuff, ERRSTR_MEMORY);
     int32_t inum = INIT_NUMBER;
@@ -622,10 +605,7 @@ std::string formatv(const char *pformat, va_list args)
         if ((inum > -1)
             && (inum < (int32_t)uisize))
         {
-            std::string strret(pbuff);
-            SAFE_DELARR(pbuff);
-
-            return strret;
+            return pbuff;
         }
         //分配更大空间
         uisize = (inum > -1) ? (inum + 1) : uisize * 2;
@@ -634,12 +614,26 @@ std::string formatv(const char *pformat, va_list args)
         ASSERTAB(NULL != pbuff, ERRSTR_MEMORY);
     }
 }
+char *formatv(const char *pformat, ...)
+{
+    va_list va;
+
+    va_start(va, pformat);
+    char *pbuf = formatv(pformat, va);
+    va_end(va);
+
+    return pbuf;
+}
 std::string formatstr(const char *pformat, ...)
 {
     va_list va;
+
     va_start(va, pformat);
-    std::string strret = formatv(pformat, va);
+    char *pbuf = formatv(pformat, va);
     va_end(va);
+
+    std::string strret(pbuf);
+    SAFE_DELARR(pbuf);
 
     return strret;
 }
@@ -670,26 +664,25 @@ void addtoken(std::vector<std::string> &tokens, const std::string &strtmp, const
         tokens.push_back(strtmp);
     }
 }
-std::vector<std::string> split(const std::string &str, const char *pflag, const bool empty)
+void split(const std::string &str, const char *pflag, std::vector<std::string> &tokens, const bool empty)
 {
-    std::vector<std::string> tokens;
     if (str.empty())
     {
-        return tokens;
+        return;
     }
+
     size_t ilens = strlen(pflag);
     if (INIT_NUMBER == ilens)
     {
         addtoken(tokens, str, empty);
-        return tokens;
+        return;
     }
-
     std::string::size_type start = INIT_NUMBER;
     std::string::size_type pos = str.find(pflag, start);
     if (std::string::npos == pos)
     {
         addtoken(tokens, str, empty);
-        return tokens;
+        return;
     }
 
     std::string strtmp;    
@@ -706,8 +699,6 @@ std::vector<std::string> split(const std::string &str, const char *pflag, const 
             addtoken(tokens, strtmp, empty);
         }
     }
-
-    return tokens;
 }
 
 SREY_NS_END

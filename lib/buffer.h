@@ -11,7 +11,7 @@ public:
     cbuffer();
     ~cbuffer();
     bool add(void *data, size_t datlen);
-    void drain();
+    void drain() {};
 
 private:
     //存放数据起始位置

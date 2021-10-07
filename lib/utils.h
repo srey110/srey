@@ -58,6 +58,14 @@ std::string dirnam(const char *path);
 */
 std::string getpath();
 /*
+* \brief          获取路径下所有文件
+* \param ppath    路径
+* \param lstname  结果
+* \param bdir     true 文件夹
+* \return         文件/文件夹
+*/
+void filefind(const char *ppath ,std::list<std::string> &lstname, const bool bdir = false);
+/*
 * \brief          获取时间
 * \param ptv      timeval
 */
@@ -85,45 +93,10 @@ void nowtime(const char *pformat, char atime[TIME_LENS]);
 */
 void nowmtime(const char *pformat, char atime[TIME_LENS]);
 /*
-* \brief          获取socket可读长度
-* \param fd       socket句柄
-* \return         ERR_FAILED 失败
-* \return         长度
+* \brief          固定格式输出当前时间戳 毫秒
+* \param atime    当前时间 毫秒
 */
-int32_t socknread(const SOCKET &fd);
-/*
-* \brief          socket讀取數據
-* \param fd       socket句柄
-* \return         ERR_FAILED 失败，需要關閉socket
-* \return         长度
-*/
-int32_t sockrecv(const SOCKET &fd, class cbuffer *pbuf);
-/*
-* \brief          创建一监听socket
-* \param ip       ip
-* \param port     port
-* \param backlog  等待连接队列的最大长度 -1 使用128
-* \return         INVALID_SOCK 失败
-*/
-SOCKET socklsn(const char *ip, const uint16_t &port, const int32_t &backlog);
-/*
-* \brief          创建一socket链接
-* \param ip       ip
-* \param port     port
-* \return         INVALID_SOCK 失败
-*/
-SOCKET sockcnt(const char *ip, const uint16_t &port);
-/*
-* \brief          设置socket参数 TCP_NODELAY  SO_KEEPALIVE 非阻塞
-* \param fd       SOCKET
-*/
-void sockopts(SOCKET &fd);
-/*
-* \brief          一组相互链接的socket
-* \param sock     SOCKET
-* \return         true 成功
-*/
-bool sockpair(SOCKET sock[2]);
+std::string nowmtime();
 /*
 * \brief          计算crc16
 * \param pval     待计算
@@ -139,30 +112,75 @@ uint16_t crc16(const char *pval, const size_t &ilen);
 */
 uint32_t crc32(const char *pval, const size_t &ilen);
 /*
-* \brief          siphash
-* \param pin      待计算
-* \param inlen    pin长度
-* \param seed0    seed
-* \param seed1    seed
-* \return         siphash值
+* \brief          计算md5
+* \param pval     待计算
+* \param ilens    pval长度
+* \param md5str   md5值
 */
-uint64_t siphash64(const uint8_t *pin, const size_t &inlen, 
-    const uint64_t &seed0, const uint64_t &seed1);
+void md5(const char *pval, const size_t &ilens, char md5str[33]);
 /*
-* \brief          murmur hash3
-* \param key      待计算
-* \param len      key长度
-* \param seed     seed
-* \return         murmur hash值
+* \brief          计算sha1
+* \param pval     待计算
+* \param ilens    pval长度
+* \param md5str   sha1值
 */
-uint64_t murmurhash3(const void *key, const size_t &len, const uint32_t &seed);
+void sha1(const char *pval, const size_t &ilens, char md5str[20]);
+
+//长度
+#define B64_ENSIZE(s)   (((s) + 2) / 3 * 4)
+#define B64_DESIZE(s)   (((s)) / 4 * 3)
+/*
+* \brief          转base64
+* \param pval     待转换的
+* \param ilens    pval长度
+* \return         ERR_FAILED 失败
+* \return         编码长度
+*/
+int32_t b64encode(const char *pval, const size_t &ilens, char *pout);
+/*
+* \brief          base64解码
+* \param pval     待转换的
+* \param ilens    pval长度
+* \return         ERR_FAILED 失败 
+* \return         解码长度
+*/
+int32_t b64decode(const char *pval, const size_t &ilens, char *pout);
+/*
+* \brief          字符串转大写
+* \param pval     待转换的字符串
+* \return         转换化后的字符串
+*/
+char *toupper(char *pval);
+/*
+* \brief          字符串转小写
+* \param pval     待转换的字符串
+* \return         转换化后的字符串
+*/
+char *tolower(char *pval);
+/*
+* \brief          转16进制字符串
+* \param pval     待转换的
+* \param ilens    pval长度 
+* \param bspace   是否以空格分开
+* \return         转换化后的字符串
+*/
+std::string tohex(const char *pval, const size_t &ilens, const bool bspace = true);
 /*
 * \brief          格式化字符串
 * \param pformat  格式
 * \param args     变参
-* \return         格式化后的字符串
+* \param iinit    初始化时内存大小
+* \return         格式化后的字符串,需要delete
 */
-std::string formatv(const char *pformat, va_list args);
+char *formatv(const char *pformat, va_list args, const size_t &iinit = 256);
+/*
+* \brief          格式化字符串
+* \param pformat  格式
+* \param iinit    初始化时内存大小
+* \param args     变参
+* \return         格式化后的字符串,需要delete
+*/
+char *formatv(const char *pformat, ...);
 /*
 * \brief          格式化字符串
 * \param pformat  格式
@@ -195,7 +213,7 @@ std::string trim(const std::string &str);
 * \param empty    是否包含空字符串
 * \return         拆分后的数据，不包含空字符串
 */
-std::vector<std::string> split(const std::string &str, const char *pflag, const bool empty = true);
+void split(const std::string &str, const char *pflag, std::vector<std::string> &tokens, const bool empty = true);
 
 SREY_NS_END
 

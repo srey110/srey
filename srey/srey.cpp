@@ -19,7 +19,7 @@ int main(int argc, char *argv[])
     objtimer.start();
     USLEEP(1000);
     uint64_t uielapsed = objtimer.elapsed();
-    PRINTF("%I64d", uielapsed);
+    PRINTF("%d", (int32_t)uielapsed);
 
     csnowflake objsfid(5, 8);
     objtimer.start();
@@ -28,7 +28,7 @@ int main(int argc, char *argv[])
         objsfid.id();
     }
     uielapsed = objtimer.elapsed();
-    PRINTF("%I64d", uielapsed);
+    PRINTF("%d", (int32_t)uielapsed);
 
     return 0;
 }

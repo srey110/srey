@@ -16,6 +16,7 @@
 #include <math.h>
 #include <string.h>
 #include <stdint.h>
+#include <limits.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/timeb.h>
@@ -62,9 +63,6 @@
     #include <net/if.h>
     #include <sys/syscall.h>
     #include <net/if_arp.h>
-#ifdef OS_LINUX
-    #include <linux/limits.h>
-#endif
 #endif // OS_WIN
 
 #endif//INCLUDE_H_

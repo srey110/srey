@@ -5,7 +5,7 @@ SREY_NS_BEGIN
 
 cqueue::cqueue(const int32_t &icapacity)
 {
-    ASSERTAB((icapacity > 0  && icapacity <= INT_MAX / sizeof(void*)), "capacity too large");
+    ASSERTAB((icapacity > 0  && icapacity <= INT_MAX / (int32_t)sizeof(void*)), "capacity too large");
 
     size = INIT_NUMBER;
     next = INIT_NUMBER;

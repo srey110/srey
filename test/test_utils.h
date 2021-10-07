@@ -7,7 +7,7 @@ class ctest_utils : public CPPUNIT_NS::TestFixture
 {
     CPPUNIT_TEST_SUITE(ctest_utils);
 
-    CPPUNIT_TEST(test_ntohl64);
+    CPPUNIT_TEST(test_loger);
     CPPUNIT_TEST(test_threadidprocsnum);
     CPPUNIT_TEST(test_format);
     CPPUNIT_TEST(test_file);
@@ -23,7 +23,6 @@ public:
     ~ctest_utils(void) {};
 
 private:
-    void test_ntohl64(void);
     void test_threadidprocsnum(void);
     void test_format(void);
     void test_file(void);
@@ -31,6 +30,7 @@ private:
     void test_hash(void);
     void test_str(void);
     void test_sock(void);
+    void test_loger(void);
 };
 
 #endif//TEST_UTILS_H_

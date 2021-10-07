@@ -15,13 +15,17 @@ public:
     virtual void afterrun() {};
 };
 
+#define THREAD_WAITRUN  0
+#define THREAD_RUNING   1
+#define THREAD_STOP     2
+
 typedef void(*thread_cb)(void*);//线程回调函数
 
 class cthread
 {
 public:
     cthread();
-    ~cthread();
+    ~cthread() {};
     /*
     * \brief             创建一线程,别多次调用
     * \param ptask       ctask
@@ -46,7 +50,7 @@ public:
     */
     uint32_t state();
     /*
-    * \brief          获取、设置线程id
+    * \brief          获取、设置启动的线程id
     */
     void setid(const uint32_t &uiid)
     {
@@ -56,7 +60,6 @@ public:
     {
         return ATOMIC_GET(&threadid);
     };
-
     uint32_t *getstart()
     {
         return &start;
@@ -81,7 +84,6 @@ private:
     HANDLE pthread;
 #else
     pthread_t pthread;//线程句柄
-    pthread_attr_t attr;
 #endif
     ctask *task;
     void *param;

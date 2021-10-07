@@ -1,4 +1,5 @@
 #include "spinlock.h"
+#include "errcode.h"
 
 SREY_NS_BEGIN
 

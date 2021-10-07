@@ -248,6 +248,7 @@ int32_t cchan::select(cchan *precv[], const int32_t &irecv_count, void **precv_o
             select_ctx stselect;
             stselect.recv = true;
             stselect.pchan = pchan;
+            stselect.pmsg_in = NULL;
             stselect.index = i;
             pselect[icount++] = stselect;
         }
