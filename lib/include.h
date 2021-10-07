@@ -19,7 +19,6 @@
 #include <limits.h>
 #include <sys/types.h>
 #include <sys/stat.h>
-#include <sys/timeb.h>
 
 #ifdef OS_WIN
     #include <winsock2.h>

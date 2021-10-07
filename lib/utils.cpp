@@ -411,7 +411,6 @@ void md5(const char *pval, const size_t &ilens, char md5str[33])
 {
     md5_byte_t digest[16];
     md5_state_t stmd5;
-    ZERO(md5str, sizeof(md5str));
 
     md5_init(&stmd5);
     md5_append(&stmd5, (md5_byte_t*)pval, (int)ilens);

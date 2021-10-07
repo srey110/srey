@@ -21,7 +21,7 @@ MAINFILE="srey.cpp"
 TESTFILE="test.cpp"
 
 #附加包含库
-INCLUDELIB="-lrt -ldl -lpthread"
+INCLUDELIB="-lrt -lpthread"
 if [ "$1" = "test" ]
 then
     Dir=$Dir" depend/cppunit-1.13.2/include "$TESTDIR
@@ -30,8 +30,10 @@ else
     Dir=$Dir" "$MAINDIR
 fi
 #系统位数
+OSNAME=`uname`
 X64=""
 OS_Version=`uname -m`
+echo $OSNAME $OS_Version
 if [ "$OS_Version" = "x86_64" ]
 then
 	X64="x64"
@@ -56,11 +58,12 @@ GCC="g++"
 ARCH="ar -rv"
 INCLUDEPATH=""
 OBJFILE=""
+CFLAGS=""
 if [ "$1" = "test" ]
 then
-    CFLAGS="-O0 -g -Wall"
+    CFLAGS=$CFLAGS" -O0 -g -Wall"
 else
-    CFLAGS="-O3 -g -Wall"
+    CFLAGS=$CFLAGS" -O3 -g -Wall"
 fi
 if [ "$X64" = "x64" ]
 then

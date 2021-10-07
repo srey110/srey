@@ -9,7 +9,7 @@ class ctask
 {
 public:
     ctask(){};
-    ~ctask() {};
+    virtual ~ctask() {};
     virtual void beforrun() {};
     virtual void run() {};
     virtual void afterrun() {};

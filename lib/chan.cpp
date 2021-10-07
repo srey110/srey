@@ -316,12 +316,12 @@ bool cchan::send(const int32_t &ival)
 }
 bool cchan::recv(int32_t *pval)
 {
-    int32_t *pwrapped = NULL;
-    bool bsuccess = recv((void**)&pwrapped);
+    void *pwrapped = NULL;
+    bool bsuccess = recv(&pwrapped);
     if (NULL != pwrapped)
     {
-        *pval = *pwrapped;
-        SAFE_DEL(pwrapped);
+        *pval = *(int32_t *)pwrapped;
+        delete((int32_t *)pwrapped);
     }
 
     return bsuccess;
@@ -346,12 +346,12 @@ bool cchan::send(const int64_t &ival)
 }
 bool cchan::recv(int64_t *pval)
 {
-    int64_t *pwrapped = NULL;
-    bool bsuccess = recv((void**)&pwrapped);
+    void *pwrapped = NULL;
+    bool bsuccess = recv(&pwrapped);
     if (NULL != pwrapped)
     {
-        *pval = *pwrapped;
-        SAFE_DEL(pwrapped);
+        *pval = *(int64_t *)pwrapped;
+        delete((int64_t *)pwrapped);
     }
 
     return bsuccess;
@@ -376,12 +376,12 @@ bool cchan::send(const double &dval)
 }
 bool cchan::recv(double *pval)
 {
-    double *pwrapped = NULL;
-    bool bsuccess = recv((void**)&pwrapped);
+    void *pwrapped = NULL;
+    bool bsuccess = recv(&pwrapped);
     if (NULL != pwrapped)
     {
-        *pval = *pwrapped;
-        SAFE_DEL(pwrapped);
+        *pval = *(double *)pwrapped;
+        delete((double *)pwrapped);
     }
 
     return bsuccess;
@@ -406,12 +406,12 @@ bool cchan::send(const void *pval, const size_t &isize)
 }
 bool cchan::recv(std::string *pbuf)
 {
-    std::string *pwrapped = NULL;
-    bool bsuccess = recv((void**)&pwrapped);
+    void *pwrapped = NULL;
+    bool bsuccess = recv(&pwrapped);
     if (NULL != pwrapped)
     {
-        *pbuf = *pwrapped;
-        SAFE_DEL(pwrapped);
+        *pbuf = *(std::string *)pwrapped;
+        delete((std::string *)pwrapped);
     }
 
     return bsuccess;

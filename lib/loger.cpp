@@ -110,25 +110,25 @@ public:
     };
     void run()
     {
-        loginfo *pinfo;
+        void *pinfo;
         while (INIT_NUMBER == ATOMIC_GET(&uiloop))
         {
             pinfo = NULL;
-            if (!pchan->recv((void **)&pinfo))
+            if (!pchan->recv(&pinfo))
             {
-                freeloginfo(pinfo);
+                freeloginfo((loginfo *)pinfo);
                 continue;
             }
 
-            printlog(pinfo);
+            printlog((loginfo *)pinfo);
             if (!getfile())
             {
-                freeloginfo(pinfo);
+                freeloginfo((loginfo *)pinfo);
                 continue;
             }
 
-            writelog(pinfo);
-            freeloginfo(pinfo);
+            writelog((loginfo *)pinfo);
+            freeloginfo((loginfo *)pinfo);
         }
     };
     void stop()
