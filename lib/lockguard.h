@@ -9,16 +9,16 @@ template<class T>
 class clockguard
 {
 public:
-    clockguard(T& t) : lock(t) 
+    clockguard(T *t) : lock(t) 
     {
-        lock.lock();
+        lock->lock();
     }
     ~clockguard() 
     {
-        lock.unlock();
+        lock->unlock();
     }
 protected:
-    T& lock;
+    T *lock;
 };
 
 SREY_NS_END

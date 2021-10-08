@@ -41,7 +41,7 @@ void mulock(void *pparam)
 {
     for (int32_t i = 0; i < ilp; i++)
     {
-        clockguard<cmutex> lg(mu);
+        clockguard<cmutex> lg(&mu);
         inum++;
     }
 }
@@ -74,7 +74,7 @@ void spinlock(void *pparam)
 {
     for (int32_t i = 0; i < ilp; i++)
     {
-        clockguard<cspinlock> lg(splock);
+        clockguard<cspinlock> lg(&splock);
         inum++;
     }
 }

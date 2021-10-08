@@ -172,7 +172,7 @@ std::string tohex(const char *pval, const size_t &ilens, const bool bspace = tru
 * \param iinit    初始化时内存大小
 * \return         格式化后的字符串,需要delete
 */
-char *formatv(const char *pformat, va_list args, const size_t &iinit = 256);
+char *formatv(const char *pformat, va_list args, const size_t &iinit = 128);
 /*
 * \brief          格式化字符串
 * \param pformat  格式

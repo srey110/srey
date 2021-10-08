@@ -187,29 +187,29 @@ void ctest_utils::test_loger(void)
         SETLOGLV(LOGLV_DEBUG);
         SETLOGPRT(true);
         printf("%s", "\n---------------------------------------------------------\n");
-        LOGER_DEBUG("%s %d", "test debug", icount++);
-        LOGER_INFO("%s %d", "test info", icount++);
-        LOGER_WARN("%s %d", "test warn", icount++);
-        LOGER_ERROR("%s %d", "test error", icount++);
-        LOGER_FATAL("%s %d", "test fatal", icount++);
+        LOG_DEBUG("%s %d", "test debug", icount++);
+        LOG_INFO("%s %d", "test info", icount++);
+        LOG_WARN("%s %d", "test warn", icount++);
+        LOG_ERROR("%s %d", "test error", icount++);
+        LOG_FATAL("%s %d", "test fatal", icount++);
 
         MSLEEP(100);
         printf("%s", "-----------------Not have debug---------------------------\n");
         SETLOGLV(LOGLV_INFO);
-        LOGER_DEBUG("%s %d", "test debug", icount++);
-        LOGER_INFO("%s %d", "test info", icount++);
-        LOGER_WARN("%s %d", "test warn", icount++);
-        LOGER_ERROR("%s %d", "test error", icount++);
-        LOGER_FATAL("%s %d", "test fatal", icount++);
+        LOG_DEBUG("%s %d", "test debug", icount++);
+        LOG_INFO("%s %d", "test info", icount++);
+        LOG_WARN("%s %d", "test warn", icount++);
+        LOG_ERROR("%s %d", "test error", icount++);
+        LOG_FATAL("%s %d", "test fatal", icount++);
 
         MSLEEP(100);
         printf("%s", "-----------------nothing print---------------------------\n");
         SETLOGPRT(false);
-        LOGER_DEBUG("%s %d", "test debug", icount++);
-        LOGER_INFO("%s %d", "test info", icount++);
-        LOGER_WARN("%s %d", "test warn", icount++);
-        LOGER_ERROR("%s %d", "test error", icount++);
-        LOGER_FATAL("%s %d", "test fatal", icount++);
+        LOG_DEBUG("%s %d", "test debug", icount++);
+        LOG_INFO("%s %d", "test info", icount++);
+        LOG_WARN("%s %d", "test warn", icount++);
+        LOG_ERROR("%s %d", "test error", icount++);
+        LOG_FATAL("%s %d", "test fatal", icount++);
     }
 
     CPPUNIT_ASSERT(true);

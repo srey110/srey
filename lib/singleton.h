@@ -12,7 +12,7 @@ class csingleton
 public:
     csingleton()
     {
-        assert(NULL == instance);
+        ASSERTAB(NULL == instance, "multiple initialization");
         instance = static_cast<T*>(this);
     };
     virtual ~csingleton(){ };

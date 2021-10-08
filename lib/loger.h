@@ -45,19 +45,22 @@ private:
     class clogertask *ptask;
 };
 
-#define LOGERINST cloger::getinstance()
-
-#define SETLOGLV(lv) LOGERINST->setlv(lv)
-#define SETLOGPRT(bprt) LOGERINST->setprint(bprt)
+#define SETLOGLV(lv) cloger::getinstance()->setlv(lv)
+#define SETLOGPRT(bprt) cloger::getinstance()->setprint(bprt)
 
 #define LOG(lv,format, ...)\
-    (LOGERINST->log(lv, CONCAT2("[%s][%s][%s %d]", format), \
-    nowmtime().c_str(), LOGERINST->getlvstr(lv), __FILENAME__, __LINE__, ##__VA_ARGS__))
-#define LOGER_FATAL(format, ...) LOG(LOGLV_FATAL, format, ##__VA_ARGS__)
-#define LOGER_ERROR(format, ...) LOG(LOGLV_ERROR, format, ##__VA_ARGS__)
-#define LOGER_WARN(format, ...)  LOG(LOGLV_WARN, format, ##__VA_ARGS__)
-#define LOGER_INFO(format, ...)  LOG(LOGLV_INFO, format, ##__VA_ARGS__)
-#define LOGER_DEBUG(format, ...) LOG(LOGLV_DEBUG, format, ##__VA_ARGS__)
+    (cloger::getinstance()->log(lv, CONCAT2("[%s][%s][%s %d]", format), \
+    nowmtime().c_str(), cloger::getinstance()->getlvstr(lv), __FILENAME__, __LINE__, ##__VA_ARGS__))
+#undef LOG_FATAL
+#define LOG_FATAL(format, ...) LOG(LOGLV_FATAL, format, ##__VA_ARGS__)
+#undef LOG_ERROR
+#define LOG_ERROR(format, ...) LOG(LOGLV_ERROR, format, ##__VA_ARGS__)
+#undef LOG_WARN
+#define LOG_WARN(format, ...)  LOG(LOGLV_WARN, format, ##__VA_ARGS__)
+#undef LOG_INFO
+#define LOG_INFO(format, ...)  LOG(LOGLV_INFO, format, ##__VA_ARGS__)
+#undef LOG_DEBUG
+#define LOG_DEBUG(format, ...) LOG(LOGLV_DEBUG, format, ##__VA_ARGS__)
 
 SREY_NS_END
 

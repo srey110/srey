@@ -606,9 +606,10 @@ char *formatv(const char *pformat, va_list args, const size_t &iinit)
         {
             return pbuff;
         }
-        //分配更大空间
-        uisize = (inum > -1) ? (inum + 1) : uisize * 2;
         SAFE_DELARR(pbuff);
+
+        //分配更大空间
+        uisize = (inum > -1) ? (inum + 1) : uisize * 2;        
         pbuff = new(std::nothrow) char[uisize];
         ASSERTAB(NULL != pbuff, ERRSTR_MEMORY);
     }
