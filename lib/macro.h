@@ -1,7 +1,7 @@
 #ifndef MACRO_H_
 #define MACRO_H_
 
-#include "include.h"
+#include "fmterror.h"
 
 #define MALLOC malloc
 #define CALLOC calloc
@@ -76,12 +76,12 @@ do\
 #define _ANONYMOUS(type, line)  __ANONYMOUS(type, _anonymous, line)
 #define ANONYMOUS(type)  _ANONYMOUS(type, __LINE__) 
 
-#define ASSERTAB(Exp, pszMsg)\
+#define ASSERTAB(exp, pmsg)\
 do\
 {\
-    if (!(Exp))\
+    if (!(exp))\
     {\
-        PRINTF("%s", pszMsg);\
+        PRINTF("%s", pmsg);\
         assert(false);\
     }\
 } while (false);
@@ -90,6 +90,10 @@ do\
 #define ONEK 1024
 #define TIME_LENS 64
 #define INVALID_SOCK -1
+
+#define MSEC    1000 //毫秒
+#define USEC    1000000//微秒
+#define NANOSEC 1000000000//纳秒
 
 #ifdef OS_WIN
     #define IS_EAGAIN(e) (WSAEWOULDBLOCK == (e) || EAGAIN == (e))
@@ -108,7 +112,7 @@ do\
         stft.QuadPart = -(10 * (__int64)us);\
         HANDLE htimer = CreateWaitableTimer(NULL, TRUE, NULL);\
         SetWaitableTimer(htimer, &stft, 0, NULL, NULL, 0);\
-        WaitForSingleObject(htimer, INFINITE);\
+        (void)WaitForSingleObject(htimer, INFINITE);\
         CloseHandle(htimer);\
     } while (false)
     #define MSLEEP(ms) Sleep(ms)
@@ -119,12 +123,11 @@ do\
     #define SHUTDOWN(sock) shutdown(sock, SD_BOTH)
     #define CLOSESOCKET closesocket
     #define ATOMIC_ADD InterlockedExchangeAdd
-    #define ATOMIC_SET InterlockedExchange
+    #define ATOMIC_SET InterlockedExchange    
     //比较*ptr与oldval的值，如果两者相等，则将newval更新到*ptr并返回操作之前*ptr的值 成功 返回值等于oldval
     #define ATOMIC_CAS(ptr, oldval, newval) InterlockedCompareExchange(ptr, newval, oldval)
-    #define LASTERROR() GetLastError()
-    #define SOCKERROR() WSAGetLastError()
-    #define ERRORSTR(errcode) 
+    #define ERRNO GetLastError()
+    #define ERRORSTR(errcode) _fmterror(errcode).c_str()
 #else
     #if EAGAIN == EWOULDBLOCK
         #define IS_EAGAIN(e) (EAGAIN == (e))
@@ -147,17 +150,23 @@ do\
     #define MKDIR(path) mkdir(path, S_IRUSR|S_IWUSR)
     #define SHUTDOWN(sock) shutdown(sock, SHUT_RDWR)
     #define CLOSESOCKET close
+#ifdef OS_SOLARIS
+    #define ATOMIC_ADD atomic_add_32_nv
+    #define ATOMIC_SET atomic_swap_32
+    #define ATOMIC_CAS(ptr, oldval, newval) atomic_cas_32(ptr, oldval, newval)
+#else
     #define ATOMIC_ADD __sync_fetch_and_add
     #define ATOMIC_SET __sync_lock_test_and_set
     //比较*ptr与oldval的值，如果两者相等，则将newval更新到*ptr并返回操作之前*ptr的值 成功 返回值等于oldval
     //type __sync_val_compare_and_swap (type *ptr, type oldval type newval); 
-    #define ATOMIC_CAS(ptr, oldval, newval) __sync_val_compare_and_swap (ptr, oldval, newval)
-    #define LASTERROR() (errno)
-    #define SOCKERROR() (errno)
+    #define ATOMIC_CAS(ptr, oldval, newval) __sync_val_compare_and_swap(ptr, oldval, newval)
+#endif    
+    #define ERRNO errno
     #define ERRORSTR(errcode) strerror(errcode)
 #endif
 
 #define ATOMIC_GET(ppsrc) ATOMIC_ADD(ppsrc, 0)
+
 #define SAFE_CLOSESOCK(fd)\
 do\
 {\

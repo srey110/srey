@@ -50,29 +50,30 @@ public:
     */
     uint32_t state();
     /*
-    * \brief          获取、设置启动的线程id
-    */
-    void setid(const uint32_t &uiid)
-    {
-        ATOMIC_SET(&threadid, uiid);
-    };
+    * \brief          获取启动的线程id
+    */    
     uint32_t getid()
     {
         return ATOMIC_GET(&threadid);
     };
-    uint32_t *getstart()
+    
+    void _setid(const uint32_t &uiid)
+    {
+        ATOMIC_SET(&threadid, uiid);
+    };
+    uint32_t *_getstart()
     {
         return &start;
     };
-    ctask *gettask()
+    ctask *_gettask()
     {
         return task;
     };
-    thread_cb getfunc()
+    thread_cb _getfunc()
     {
         return funccb;
     };
-    void *getparam()
+    void *_getparam()
     {
         return param;
     };

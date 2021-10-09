@@ -9,7 +9,7 @@ cspinlock::cspinlock()
     ASSERTAB(InitializeCriticalSectionAndSpinCount(&spin, -1),
         "InitializeCriticalSectionAndSpinCount error.");
 #else
-    ASSERTAB(ERR_OK == pthread_spin_init(&spin, PTHREAD_PROCESS_PRIVATE), "pthread_spin_init error.");
+    ASSERTAB(ERR_OK == pthread_spin_init(&spin, PTHREAD_PROCESS_PRIVATE), ERRORSTR(ERRNO));
 #endif
 }
 cspinlock::~cspinlock()
@@ -25,7 +25,7 @@ void cspinlock::lock()
 #ifdef OS_WIN
     EnterCriticalSection(&spin);
 #else
-    (void)pthread_spin_lock(&spin);
+    ASSERTAB(ERR_OK == pthread_spin_lock(&spin), ERRORSTR(ERRNO));
 #endif
 }
 bool cspinlock::trylock()
@@ -41,7 +41,7 @@ void cspinlock::unlock()
 #ifdef OS_WIN
     LeaveCriticalSection(&spin);
 #else
-    (void)pthread_spin_unlock(&spin);
+    ASSERTAB(ERR_OK == pthread_spin_unlock(&spin), ERRORSTR(ERRNO));
 #endif
 }
 

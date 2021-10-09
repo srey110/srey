@@ -59,9 +59,15 @@ void ctest_utils::test_time(void)
     PRINTF("\nsec%s\nmsec %s", as, ams);
 
     ctimer timer;
-    timer.start();
-    USLEEP(1000);
-    PRINTF("sleep 1000 us use: %d us", (int32_t)timer.elapsed());
+    for (int i = 0; i < 5; i++)
+    {
+        timer.start();
+        for (int jj = 0; jj < 10000; jj++)
+        {
+            SNPRINTF(ams, sizeof(ams) - 1, "%d", jj);
+        }
+        PRINTF("loop 10000 SNPRINTF use: %d nanosec", (int32_t)timer.elapsed());
+    }    
 
     CPPUNIT_ASSERT(true);
 }

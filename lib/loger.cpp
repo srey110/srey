@@ -282,7 +282,7 @@ void cloger::log(const LOG_LEVEL &emlv, const char *pformat, ...)
         SAFE_DEL(pinfo);
     }
 }
-const char *cloger::getlvstr(const LOG_LEVEL &emlv)
+const char *cloger::_getlvstr(const LOG_LEVEL &emlv)
 {
     switch (emlv)
     {

@@ -2,12 +2,6 @@
 
 SREY_NS_BEGIN
 
-//                           整个buffer
-//|                           totallen                   |
-//|--------------|-----------|---------------------------|
-//|misalign(偏移)|off(数据区)|剩余空间                   |
-//|orig_buffer   |buffer     |
-
 cbuffer::cbuffer()
 {
     buffer = NULL;

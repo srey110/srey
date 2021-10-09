@@ -2,7 +2,6 @@
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
     <ClInclude Include="errcode.h" />
-    <ClInclude Include="include.h" />
     <ClInclude Include="macro.h" />
     <ClInclude Include="os.h" />
     <ClInclude Include="thread.h">
@@ -35,9 +34,6 @@
     <ClInclude Include="sha1\sha1.h">
       <Filter>3rd\sha1</Filter>
     </ClInclude>
-    <ClInclude Include="timer.h">
-      <Filter>utils</Filter>
-    </ClInclude>
     <ClInclude Include="utils.h">
       <Filter>utils</Filter>
     </ClInclude>
@@ -60,6 +56,10 @@
     <ClInclude Include="singleton.h">
       <Filter>utils</Filter>
     </ClInclude>
+    <ClInclude Include="timer.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="fmterror.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="thread.cpp">
@@ -107,6 +107,10 @@
     <ClCompile Include="loger.cpp">
       <Filter>utils</Filter>
     </ClCompile>
+    <ClCompile Include="timer.cpp">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="fmterror.cpp" />
   </ItemGroup>
   <ItemGroup>
     <Filter Include="thread">

@@ -9,7 +9,7 @@ ccond::ccond()
     InitializeConditionVariable(&cond);
 #else
     ASSERTAB(ERR_OK == pthread_cond_init(&cond, (const pthread_condattr_t*)NULL), 
-        "pthread_cond_init error.");
+        ERRORSTR(ERRNO));
 #endif
 }
 ccond::~ccond()
@@ -22,10 +22,10 @@ void ccond::wait(cmutex *pmu)
 {
 #ifdef OS_WIN
     ASSERTAB(SleepConditionVariableCS(&cond, pmu->getmutex(), INFINITE),
-        "SleepConditionVariableCS error.");
+        ERRORSTR(ERRNO));
 #else
     ASSERTAB(ERR_OK == pthread_cond_wait(&cond, pmu->getmutex()),
-        "pthread_cond_wait error.");
+        ERRORSTR(ERRNO));
 #endif
 }
 void ccond::timedwait(cmutex *pmu, const uint32_t &uims)
@@ -34,7 +34,7 @@ void ccond::timedwait(cmutex *pmu, const uint32_t &uims)
     BOOL brtn = SleepConditionVariableCS(&cond, pmu->getmutex(), (DWORD)uims);
     if (!brtn)
     {
-        ASSERTAB(ERROR_TIMEOUT == LASTERROR(), "SleepConditionVariableCS error.");
+        ASSERTAB(ERROR_TIMEOUT == ERRNO, ERRORSTR(ERRNO));
     }
 #else
     long seconds = uims / 1000;
@@ -53,7 +53,7 @@ void ccond::timedwait(cmutex *pmu, const uint32_t &uims)
     }
 
     int32_t irtn = pthread_cond_timedwait(&cond, pmu->getmutex(), &timewait);
-    ASSERTAB((ERR_OK == irtn || ETIMEDOUT == irtn), "pthread_cond_timedwait error.");
+    ASSERTAB((ERR_OK == irtn || ETIMEDOUT == irtn), ERRORSTR(ERRNO));
 #endif
 }
 void ccond::signal()
@@ -61,7 +61,7 @@ void ccond::signal()
 #ifdef OS_WIN
     WakeConditionVariable(&cond);
 #else
-    (void)pthread_cond_signal(&cond);
+    ASSERTAB(ERR_OK == pthread_cond_signal(&cond), ERRORSTR(ERRNO));
 #endif
 }
 void ccond::broadcast()
@@ -69,7 +69,7 @@ void ccond::broadcast()
 #ifdef OS_WIN
     WakeAllConditionVariable(&cond);
 #else
-    (void)pthread_cond_broadcast(&cond);
+    ASSERTAB(ERR_OK == pthread_cond_broadcast(&cond), ERRORSTR(ERRNO));
 #endif
 }
 

@@ -29,8 +29,14 @@ then
 else
     Dir=$Dir" "$MAINDIR
 fi
-#系统位数
+#系统
 OSNAME=`uname`
+if [ "$OSNAME" = "SunOS" ]
+then
+	#关机:init 5   找不到gcc: export PATH=$PATH:/usr/sfw/bin:/usr/ccs/bin
+	INCLUDELIB=$INCLUDELIB" -lsocket"
+fi
+#位数
 X64=""
 OS_Version=`uname -m`
 echo $OSNAME $OS_Version

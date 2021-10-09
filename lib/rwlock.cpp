@@ -10,7 +10,7 @@ crwlock::crwlock()
     exclusive = false;
 #else
     ASSERTAB((ERR_OK == pthread_rwlock_init(&lock, NULL)),
-        "pthread_rwlock_init error.");
+        ERRORSTR(ERRNO));
 #endif
 }
 crwlock::~crwlock()
@@ -24,7 +24,7 @@ void crwlock::rdlock()
 #ifdef OS_WIN
     AcquireSRWLockShared(&lock);
 #else
-    (void)pthread_rwlock_rdlock(&lock);
+    ASSERTAB(ERR_OK == pthread_rwlock_rdlock(&lock), ERRORSTR(ERRNO));
 #endif
 }
 bool crwlock::tryrdlock()
@@ -41,7 +41,7 @@ void crwlock::wrlock()
     AcquireSRWLockExclusive(&lock);
     exclusive = true;
 #else
-    (void)pthread_rwlock_wrlock(&lock);
+    ASSERTAB(ERR_OK == pthread_rwlock_wrlock(&lock), ERRORSTR(ERRNO));
 #endif
 }
 bool crwlock::trywrlock()
@@ -71,7 +71,7 @@ void crwlock::unlock()
         ReleaseSRWLockShared(&lock);
     }
 #else
-    (void)pthread_rwlock_unlock(&lock);
+    ASSERTAB(ERR_OK == pthread_rwlock_unlock(&lock), ERRORSTR(ERRNO));
 #endif
 }
 

@@ -60,15 +60,15 @@ bool cnetaddr::setlocaddr(const SOCKET &fd)
 
     return true;
 }
-sockaddr *cnetaddr::getaddr(void)
+sockaddr *cnetaddr::getaddr()
 {
     return (sockaddr*)&ipv4;
 }
-size_t cnetaddr::getsize(void)
+size_t cnetaddr::getsize()
 {
     return sizeof(ipv4);
 }
-std::string cnetaddr::getip(void)
+std::string cnetaddr::getip()
 {
     char atmp[128] = { 0 };
     int32_t ilens = sizeof(atmp);

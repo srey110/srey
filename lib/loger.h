@@ -35,7 +35,7 @@ public:
     * \param pformat  ¸ñÊ½»¯×Ö·û
     */
     void log(const LOG_LEVEL &emlv, const char *pformat, ...);
-    const char *getlvstr(const LOG_LEVEL &emlv);
+    const char *_getlvstr(const LOG_LEVEL &emlv);
 
 private:
     uint32_t uilv;
@@ -50,7 +50,7 @@ private:
 
 #define LOG(lv,format, ...)\
     (cloger::getinstance()->log(lv, CONCAT2("[%s][%s][%s %d]", format), \
-    nowmtime().c_str(), cloger::getinstance()->getlvstr(lv), __FILENAME__, __LINE__, ##__VA_ARGS__))
+    nowmtime().c_str(), cloger::getinstance()->_getlvstr(lv), __FILENAME__, __LINE__, ##__VA_ARGS__))
 #undef LOG_FATAL
 #define LOG_FATAL(format, ...) LOG(LOGLV_FATAL, format, ##__VA_ARGS__)
 #undef LOG_ERROR

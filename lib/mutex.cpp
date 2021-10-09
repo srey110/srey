@@ -9,7 +9,7 @@ cmutex::cmutex()
     InitializeCriticalSection(&mutex);
 #else
     ASSERTAB(ERR_OK == pthread_mutex_init(&mutex, (const pthread_mutexattr_t*)NULL), 
-        "pthread_mutex_init error.");
+        ERRORSTR(ERRNO));
 #endif
 }
 cmutex::~cmutex()
@@ -25,7 +25,7 @@ void cmutex::lock()
 #ifdef OS_WIN
     EnterCriticalSection(&mutex);
 #else
-    (void)pthread_mutex_lock(&mutex);
+    ASSERTAB(ERR_OK == pthread_mutex_lock(&mutex), ERRORSTR(ERRNO));
 #endif
 }
 bool cmutex::trylock()
@@ -41,7 +41,7 @@ void cmutex::unlock()
 #ifdef OS_WIN
     LeaveCriticalSection(&mutex);
 #else
-    (void)pthread_mutex_unlock(&mutex);
+    ASSERTAB(ERR_OK == pthread_mutex_unlock(&mutex), ERRORSTR(ERRNO));
 #endif
 }
 

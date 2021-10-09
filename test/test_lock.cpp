@@ -105,6 +105,7 @@ void ctest_lock::test_sptrylock(void)
 }
 void rwlock_w(void *pparam)
 {
+    uint32_t uiId = threadid();
     for (int32_t i = 0; i < ilp;)
     {
         rwlock.wrlock();
@@ -115,10 +116,14 @@ void rwlock_w(void *pparam)
             i++;
         }
         rwlock.unlock();
+#ifdef OS_SOLARIS
+        PRINTF("%d", uiId);
+#endif
     }
 }
 void rwlock_r(void *pparam)
 {
+    uint32_t uiId = threadid();
     for (int32_t i = 0; i < ilp * 2; )
     {
         rwlock.rdlock();
@@ -131,6 +136,9 @@ void rwlock_r(void *pparam)
             i++;
         }
         rwlock.unlock();
+#ifdef OS_SOLARIS
+        PRINTF("%d", uiId);
+#endif
     }
 }
 void ctest_lock::_testrwlock(void(*wfunc)(void *pparam), void(*rfunc)(void *pparam))

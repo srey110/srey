@@ -8,6 +8,7 @@
 
 UsAge="UsAge:\"./mklib.sh\""
 
+OSName=`uname`
 X64=""
 OS_Version=`uname -m`
 if [ "$OS_Version" = "x86_64" ]
@@ -16,7 +17,6 @@ then
 	echo "x86_64"
 fi
 
-OSName=`uname`
 LibPath=`pwd`
 LibPath=$LibPath/
 RstPath="bin/x86"

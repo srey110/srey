@@ -1,5 +1,4 @@
 #include "utils.h"
-#include "buffer.h"
 #include "md5/md5.h"
 #include "sha1/sha1.h"
 #include "errcode.h"
@@ -599,13 +598,15 @@ char *formatv(const char *pformat, va_list args, const size_t &iinit)
     int32_t inum = INIT_NUMBER;
 
     while (true)
-    {        ZERO(pbuff, uisize);
+    {
+        ZERO(pbuff, uisize);
         inum = vsnprintf(pbuff, uisize, pformat, args);
         if ((inum > -1)
             && (inum < (int32_t)uisize))
         {
             return pbuff;
-        }
+        }
+
         SAFE_DELARR(pbuff);
 
         //分配更大空间

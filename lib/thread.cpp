@@ -11,11 +11,11 @@ void *_taskcb(void *parg)
 #endif
 {
     cthread *pthread = (cthread *)parg;
-    pthread->setid(threadid());
-    uint32_t *pstart = pthread->getstart();
+    pthread->_setid(threadid());
+    uint32_t *pstart = pthread->_getstart();
     ATOMIC_SET(pstart, THREAD_RUNING);
 
-    ctask *ptask = pthread->gettask();
+    ctask *ptask = pthread->_gettask();
     ptask->beforrun();
     ptask->run();
     ptask->afterrun();
@@ -34,11 +34,11 @@ void *_funccb(void *parg)
 #endif
 {
     cthread *pthread = (cthread *)parg;
-    pthread->setid(threadid());
-    uint32_t *pstart = pthread->getstart();
+    pthread->_setid(threadid());
+    uint32_t *pstart = pthread->_getstart();
     ATOMIC_SET(pstart, THREAD_RUNING);
 
-    pthread->getfunc()(pthread->getparam());
+    pthread->_getfunc()(pthread->_getparam());
 
     ATOMIC_SET(pstart, THREAD_STOP);
 #ifdef OS_WIN
@@ -66,10 +66,10 @@ void cthread::creat(ctask *ptask)
 
 #ifdef OS_WIN
     pthread = (HANDLE)_beginthreadex(NULL, 0, _taskcb, this, 0, NULL);
-    ASSERTAB(NULL != pthread, "_beginthreadex error.");
+    ASSERTAB(NULL != pthread, ERRORSTR(ERRNO));
 #else
     ASSERTAB((ERR_OK == pthread_create(&pthread, NULL, _taskcb, (void*)this)),
-        "pthread_create error.");   
+        ERRORSTR(ERRNO));
 #endif
 }
 void cthread::creat(thread_cb func, void *pparam)
@@ -86,10 +86,10 @@ void cthread::creat(thread_cb func, void *pparam)
 
 #ifdef OS_WIN
     pthread = (HANDLE)_beginthreadex(NULL, 0, _funccb, this, 0, NULL);
-    ASSERTAB(NULL != pthread, "_beginthreadex error.");
+    ASSERTAB(NULL != pthread, ERRORSTR(ERRNO));
 #else
     ASSERTAB((ERR_OK == pthread_create(&pthread, NULL, _funccb, (void*)this)),
-        "pthread_create error.");
+        ERRORSTR(ERRNO));
 #endif
 }
 uint32_t cthread::state()
@@ -107,12 +107,9 @@ void cthread::join()
         return;
     }
 #ifdef OS_WIN
-    (void)WaitForSingleObject(pthread, INFINITE);
+    ASSERTAB(WAIT_OBJECT_0 == WaitForSingleObject(pthread, INFINITE), ERRORSTR(ERRNO));
 #else
-    if (ERR_OK != pthread_join(pthread, NULL))
-    {
-        PRINTF("%s", "pthread_join error.");
-    }
+    ASSERTAB(ERR_OK == pthread_join(pthread, NULL), ERRORSTR(ERRNO));
 #endif
 }
 
