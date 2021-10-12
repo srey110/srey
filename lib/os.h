@@ -4,8 +4,10 @@
 /*check system*/
 #if defined(_WIN32) || defined(_WIN64)
     #define OS_WIN
+    #define ATOMIC_WIN
 #elif defined(linux) || defined(__linux) || defined(__linux__)
-    #define OS_LINUX
+    #define OS_LINUX   
+    #define ATOMIC_GUN
 #elif defined(__APPLE__) && (defined(__GNUC__) || defined(__xlC__) || defined(__xlc__))
     #include <TargetConditionals.h>
     #if defined(TARGET_OS_MAC) && TARGET_OS_MAC
@@ -14,14 +16,19 @@
         #define OS_IOS
     #endif
     #define OS_DARWIN
+    #define ATOMIC_MAC
 #elif defined(__FreeBSD__) || defined(__FreeBSD_kernel__) || defined(__NetBSD__) || defined(__OpenBSD__)
     #define OS_BSD
+    #define ATOMIC_GUN
 #elif defined(sun) || defined(__sun) || defined(__sun__)
-    #define OS_SOLARIS
+    #define OS_SUN
+    #define ATOMIC_SUN
 #elif defined _hpux
     #define OS_HPUX
+    #define ATOMIC_GUN
 #elif defined _AIX
     #define OS_AIX
+    #define ATOMIC_GUN
 #else
     #error "Unsupported operating system platform!"
 #endif
@@ -75,6 +82,7 @@
     #include <ObjBase.h>
     #include <Windows.h>
     #include <MSTcpIP.h>
+    #include <sys/timeb.h>
 #else
     #include <unistd.h>
     #include <signal.h>
@@ -108,7 +116,7 @@
     #ifdef OS_AIX
         #include <sys/systemcfg.h>
     #endif
-    #ifdef OS_SOLARIS
+    #ifdef OS_SUN
         #include <atomic.h>
         #include <sys/filio.h>
     #endif

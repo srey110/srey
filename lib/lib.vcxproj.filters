@@ -25,9 +25,6 @@
     <ClInclude Include="lockguard.h">
       <Filter>thread</Filter>
     </ClInclude>
-    <ClInclude Include="buffer.h">
-      <Filter>utils</Filter>
-    </ClInclude>
     <ClInclude Include="md5\md5.h">
       <Filter>3rd\md5</Filter>
     </ClInclude>
@@ -59,7 +56,10 @@
     <ClInclude Include="timer.h">
       <Filter>utils</Filter>
     </ClInclude>
-    <ClInclude Include="fmterror.h" />
+    <ClInclude Include="macfunc.h" />
+    <ClInclude Include="chainbuffer.h">
+      <Filter>utils</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="thread.cpp">
@@ -79,9 +79,6 @@
     </ClCompile>
     <ClCompile Include="spinlock.cpp">
       <Filter>thread</Filter>
-    </ClCompile>
-    <ClCompile Include="buffer.cpp">
-      <Filter>utils</Filter>
     </ClCompile>
     <ClCompile Include="md5\md5.c">
       <Filter>3rd\md5</Filter>
@@ -110,7 +107,10 @@
     <ClCompile Include="timer.cpp">
       <Filter>utils</Filter>
     </ClCompile>
-    <ClCompile Include="fmterror.cpp" />
+    <ClCompile Include="macfunc.cpp" />
+    <ClCompile Include="chainbuffer.cpp">
+      <Filter>utils</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <Filter Include="thread">

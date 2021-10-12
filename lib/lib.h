@@ -3,22 +3,24 @@
 
 #include "errcode.h"
 
-#include "thread.h"
-#include "spinlock.h"
-#include "rwlock.h"
-#include "mutex.h"
-#include "lockguard.h"
-#include "cond.h"
-
-#include "utils.h"
-#include "timer.h"
-#include "snowflake.h"
-#include "loger.h"
-
-#include "queue.h"
 #include "chan.h"
+#include "queue.h"
 
-#include "netutils.h"
 #include "netaddr.h"
+#include "netutils.h"
+
+#include "cond.h"
+#include "lockguard.h"
+#include "mutex.h"
+#include "rwlock.h"
+#include "spinlock.h"
+#include "thread.h"
+
+#include "chainbuffer.h"
+#include "loger.h"
+#include "singleton.h"
+#include "snowflake.h"
+#include "timer.h"
+#include "utils.h"
 
 #endif//LIB_H_

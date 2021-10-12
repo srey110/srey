@@ -18,7 +18,7 @@ int32_t socknread(const SOCKET &fd);
 * \return         ERR_FAILED 失败，需要關閉socket
 * \return         长度
 */
-int32_t sockrecv(const SOCKET &fd, class cbuffer *pbuf);
+//int32_t sockrecv(const SOCKET &fd, class cchainbuffer *pbuf);
 /*
 * \brief          创建一监听socket
 * \param ip       ip

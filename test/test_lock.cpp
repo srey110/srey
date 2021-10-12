@@ -10,15 +10,23 @@ crwlock rwlock;
 
 void ctest_lock::test_atomic(void)
 {
-    inum = INIT_NUMBER;
-    ATOMIC_ADD(&inum, 1);
-    CPPUNIT_ASSERT(inum == 1);
-    ATOMIC_SET(&inum, 3);
-    CPPUNIT_ASSERT(inum == 3);
-    int32_t itmp = ATOMIC_GET(&inum);
+    volatile ATOMIC_T ui32 = INIT_NUMBER;
+    ATOMIC_ADD(&ui32, 1);
+    CPPUNIT_ASSERT(ui32 == 1);
+
+    ATOMIC_SET(&ui32, 3);
+    CPPUNIT_ASSERT(ui32 == 3);
+
+    ATOMIC_T itmp = ATOMIC_GET(&ui32);
     CPPUNIT_ASSERT(itmp == 3);
-    itmp = ATOMIC_CAS(&inum, 3, 4);
-    CPPUNIT_ASSERT(itmp == 3 && inum == 4);
+
+    itmp = INIT_NUMBER;
+    itmp = ATOMIC_CAS(&ui32, 3, 4);
+    CPPUNIT_ASSERT(itmp == 3 && ui32 == 4);
+
+    itmp = INIT_NUMBER;
+    itmp = ATOMIC_CAS(&ui32, 5, 4);
+    CPPUNIT_ASSERT(itmp == 4 && ui32 == 4);
 }
 void ctest_lock::_testlock(void(*lockfunc)(void *pparam))
 {
@@ -105,7 +113,9 @@ void ctest_lock::test_sptrylock(void)
 }
 void rwlock_w(void *pparam)
 {
+#ifdef OS_SUN
     uint32_t uiId = threadid();
+#endif
     for (int32_t i = 0; i < ilp;)
     {
         rwlock.wrlock();
@@ -116,14 +126,16 @@ void rwlock_w(void *pparam)
             i++;
         }
         rwlock.unlock();
-#ifdef OS_SOLARIS
+#ifdef OS_SUN
         PRINTF("%d", uiId);
 #endif
     }
 }
 void rwlock_r(void *pparam)
 {
+#ifdef OS_SUN
     uint32_t uiId = threadid();
+#endif
     for (int32_t i = 0; i < ilp * 2; )
     {
         rwlock.rdlock();
@@ -136,7 +148,7 @@ void rwlock_r(void *pparam)
             i++;
         }
         rwlock.unlock();
-#ifdef OS_SOLARIS
+#ifdef OS_SUN
         PRINTF("%d", uiId);
 #endif
     }

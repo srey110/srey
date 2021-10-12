@@ -8,11 +8,24 @@ SREY_NS_BEGIN
 class ctask
 {
 public:
-    ctask(){};
+    ctask() : uiloop(INIT_NUMBER)
+    {};
     virtual ~ctask() {};
     virtual void beforrun() {};
     virtual void run() {};
     virtual void afterrun() {};
+
+    bool loop()
+    {
+        return INIT_NUMBER == ATOMIC_GET(&uiloop);
+    };
+    void stoploop()
+    {
+        ATOMIC_SET(&uiloop, 1);
+    };
+
+private:
+    volatile ATOMIC_T uiloop;
 };
 
 #define THREAD_WAITRUN  0
@@ -46,22 +59,18 @@ public:
     */
     void join();
     /*
-    * \brief          获取当前状态
-    */
-    uint32_t state();
-    /*
     * \brief          获取启动的线程id
     */    
     uint32_t getid()
     {
-        return ATOMIC_GET(&threadid);
+        return (uint32_t)ATOMIC_GET(&threadid);
     };
     
-    void _setid(const uint32_t &uiid)
+    void _setid(const ATOMIC_T &uiid)
     {
         ATOMIC_SET(&threadid, uiid);
     };
-    uint32_t *_getstart()
+    volatile ATOMIC_T *_getstart()
     {
         return &start;
     };
@@ -78,8 +87,8 @@ public:
         return param;
     };
 private:
-    uint32_t threadid;
-    uint32_t start;
+    volatile ATOMIC_T threadid;
+    volatile ATOMIC_T start;
     
 #ifdef OS_WIN
     HANDLE pthread;

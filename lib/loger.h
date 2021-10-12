@@ -38,8 +38,8 @@ public:
     const char *_getlvstr(const LOG_LEVEL &emlv);
 
 private:
-    uint32_t uilv;
-    uint32_t uiprint;
+    volatile ATOMIC_T uilv;
+    volatile ATOMIC_T uiprint;
     class cchan *pchan;
     class cthread *pthread;
     class clogertask *ptask;

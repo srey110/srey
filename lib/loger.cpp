@@ -39,8 +39,8 @@ struct loginfo
 class clogertask : public ctask
 {
 public:
-    clogertask(cchan *chan, uint32_t *print) : 
-        uiloop(INIT_NUMBER), pchan(chan), isprint(print), pfile(NULL)
+    clogertask(cchan *chan, volatile ATOMIC_T *print) :
+        pchan(chan), isprint(print), pfile(NULL)
     {
         //创建文件夹
         path = getpath() + PATH_SEPARATOR + "logs";
@@ -111,7 +111,7 @@ public:
     void run()
     {
         void *pinfo;
-        while (INIT_NUMBER == ATOMIC_GET(&uiloop))
+        while (loop())
         {
             pinfo = NULL;
             if (!pchan->recv(&pinfo))
@@ -130,10 +130,6 @@ public:
             writelog((loginfo *)pinfo);
             freeloginfo((loginfo *)pinfo);
         }
-    };
-    void stop()
-    {
-        ATOMIC_ADD(&uiloop, 1);
     };
 
 private:
@@ -210,9 +206,8 @@ private:
     };
 
 private:
-    uint32_t uiloop;
     cchan *pchan;
-    uint32_t *isprint;
+    volatile ATOMIC_T *isprint;
     FILE *pfile;
 #ifdef OS_WIN
     HANDLE hout;
@@ -240,7 +235,7 @@ cloger::~cloger()
     while (pchan->size() > INIT_NUMBER);
 
     pchan->close();
-    ptask->stop();
+    ptask->stoploop();
     pthread->join();
 
     SAFE_DEL(pchan);

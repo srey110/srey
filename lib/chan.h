@@ -66,14 +66,37 @@ public:
     static int32_t select(cchan *precv[], const int32_t &irecv_count, void **precv_out,
         cchan *psend[], const int32_t &isend_count, void *psend_msgs[]);
 
-    bool send(const int32_t &ival);
-    bool recv(int32_t *pval);
-    bool send(const int64_t &ival);
-    bool recv(int64_t *pval);
-    bool send(const double &dval);
-    bool recv(double *pval);
-    bool send(const void *pval, const size_t &isize);
-    bool recv(std::string *pbuf);
+    template <typename T>
+    bool sendt(const T &val)
+    {
+        T *pwrapped = new(std::nothrow) T();
+        if (NULL == pwrapped)
+        {
+            return false;
+        }
+        *pwrapped = val;
+
+        bool bsuccess = send(pwrapped);
+        if (!bsuccess)
+        {
+            SAFE_DEL(pwrapped);
+        }
+
+        return bsuccess;
+    };
+    template <typename T>
+    bool recvt(T &val)
+    {
+        void *pwrapped = NULL;
+        bool bsuccess = recv(&pwrapped);
+        if (NULL != pwrapped)
+        {
+            val = *((T*)pwrapped);
+            delete((T *)pwrapped);
+        }
+
+        return bsuccess;
+    };
 
 private:
     bool _bufferedsend(void *pdata);

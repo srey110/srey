@@ -217,6 +217,108 @@ void ctest_utils::test_loger(void)
         LOG_ERROR("%s %d", "test error", icount++);
         LOG_FATAL("%s %d", "test fatal", icount++);
     }
-
+    SETLOGLV(LOGLV_DEBUG);
+    SETLOGPRT(true);
     CPPUNIT_ASSERT(true);
+}
+struct fillerparam
+{
+    char *pbuf;
+    int32_t ok;
+};
+int32_t filler(void *pudata, const uint32_t &uicount, char *pcave[2], size_t casize[2])
+{    
+    fillerparam *pfiller = (fillerparam *)pudata;
+    //size_t uitotal = strlen(pfiller->pbuf);
+    size_t offset = 0;
+    for (uint32_t i = 0; i < uicount; i++)
+    {
+        memcpy(pcave[i], pfiller->pbuf + offset, casize[i]);
+        offset += casize[i];
+    }
+
+    return pfiller->ok;
+}
+bool each(void *pudata, const char *pdata, const size_t &uilens)
+{   
+    PRINTF("buffer: %s", tohex(pdata, uilens).c_str());
+    return true;
+}
+void ctest_utils::test_buffer(void)
+{
+    cchainbuffer objbuf(false);
+    const char *pbuf1 = "1234567890";
+    const char *pbuf2 = "0987654321";
+    const char *pbuf3 = "abcdefdhijklmnopqrst";
+    const char *pbuf4 = "ABCDEFDHIJKLMNOPQRST";
+    char actmp[128];
+    size_t irtn = INIT_NUMBER;
+
+    objbuf.produce(pbuf1, strlen(pbuf1));
+    ZERO(actmp, sizeof(actmp));
+    irtn = objbuf.copy(actmp, strlen(pbuf1));
+    CPPUNIT_ASSERT(std::string(actmp) == pbuf1);
+
+    objbuf.produce(pbuf3, strlen(pbuf3));
+    ZERO(actmp, sizeof(actmp));
+    irtn = objbuf.copy(actmp, objbuf.size());
+    CPPUNIT_ASSERT(std::string(actmp) == (std::string(pbuf1) + pbuf3));
+
+    objbuf.foreach(0, each, NULL);
+
+    //1234567890ab  cdefdhijklmnopqrst
+    int32_t ipos = objbuf.search(0, objbuf.size(), "304", 3);
+    CPPUNIT_ASSERT(ERR_FAILED == ipos);
+    ipos = objbuf.search(0, 12, "bc", 2);
+    CPPUNIT_ASSERT(11 == ipos);
+    ipos = objbuf.search(0, 10, "ab", 2);
+    CPPUNIT_ASSERT(-1 == ipos);
+    ipos = objbuf.search(0, 11, "ab", 2);
+    CPPUNIT_ASSERT(10 == ipos);
+    ipos = objbuf.search(0, 11, "12", 2);
+    CPPUNIT_ASSERT(0 == ipos);
+    ipos = objbuf.search(12, objbuf.size(), "cd", 2);
+    CPPUNIT_ASSERT(12 == ipos);
+    ipos = objbuf.search(12, objbuf.size(), "qrst", 4);
+    CPPUNIT_ASSERT(26 == ipos);
+    ipos = objbuf.search(0, objbuf.size(), "0abcdef", 7);
+    CPPUNIT_ASSERT(9 == ipos);
+
+    irtn = objbuf.del(strlen(pbuf1) * 2);
+    ZERO(actmp, sizeof(actmp));
+    objbuf.copy(actmp, objbuf.size());
+    CPPUNIT_ASSERT(std::string(actmp) == "klmnopqrst");
+
+    irtn = objbuf.remove(actmp, objbuf.size());
+    CPPUNIT_ASSERT(std::string(actmp) == "klmnopqrst"
+        && INIT_NUMBER == objbuf.size());
+
+    fillerparam stfiller;
+    stfiller.ok = (int32_t)strlen(pbuf2);
+    stfiller.pbuf = (char *)pbuf2;
+    objbuf.produce(strlen(pbuf2), filler, (void *)&stfiller);
+    ZERO(actmp, sizeof(actmp));
+    objbuf.copy(actmp, objbuf.size());
+    CPPUNIT_ASSERT(std::string(actmp) == pbuf2);
+
+    irtn = objbuf.del(objbuf.size());
+    ZERO(actmp, sizeof(actmp));
+    irtn = objbuf.copy(actmp, objbuf.size());
+    CPPUNIT_ASSERT(INIT_NUMBER == irtn);
+    
+    stfiller.ok = (int32_t)strlen(pbuf4);
+    stfiller.pbuf = (char *)pbuf4;
+    objbuf.produce(strlen(pbuf4), filler, (void *)&stfiller);
+    ZERO(actmp, sizeof(actmp));
+    irtn = objbuf.copy(actmp, objbuf.size());
+    CPPUNIT_ASSERT(std::string(actmp) == pbuf4);
+
+    irtn = objbuf.del(objbuf.size());
+    CPPUNIT_ASSERT(irtn == strlen(pbuf4));
+
+    int32_t ival = 150;
+    objbuf.produce(&ival, sizeof(ival));
+
+    objbuf.gett(ival);
+    CPPUNIT_ASSERT(ival == 150);
 }

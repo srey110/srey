@@ -19,14 +19,14 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="buffer.h" />
+    <ClInclude Include="chainbuffer.h" />
     <ClInclude Include="chan.h" />
     <ClInclude Include="cond.h" />
     <ClInclude Include="errcode.h" />
-    <ClInclude Include="fmterror.h" />
     <ClInclude Include="lib.h" />
     <ClInclude Include="lockguard.h" />
     <ClInclude Include="loger.h" />
+    <ClInclude Include="macfunc.h" />
     <ClInclude Include="macro.h" />
     <ClInclude Include="md5\md5.h" />
     <ClInclude Include="mutex.h" />
@@ -44,11 +44,11 @@
     <ClInclude Include="utils.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="buffer.cpp" />
+    <ClCompile Include="chainbuffer.cpp" />
     <ClCompile Include="chan.cpp" />
     <ClCompile Include="cond.cpp" />
-    <ClCompile Include="fmterror.cpp" />
     <ClCompile Include="loger.cpp" />
+    <ClCompile Include="macfunc.cpp" />
     <ClCompile Include="md5\md5.c" />
     <ClCompile Include="mutex.cpp" />
     <ClCompile Include="netaddr.cpp" />

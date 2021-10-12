@@ -1,4 +1,4 @@
-#include "fmterror.h"
+#include "macfunc.h"
 
 #ifdef OS_WIN
 std::string _fmterror(DWORD error)
@@ -21,5 +21,17 @@ std::string _fmterror(DWORD error)
     return strerr;
 }
 #endif
+#ifdef ATOMIC_GUN
+uint32_t _fetchandset(volatile uint32_t *ptr, uint32_t value)
+{
+    uint32_t oldvar;
 
-
+    do
+    {
+        oldvar = *ptr;
+    } 
+    while (__sync_val_compare_and_swap(ptr, oldvar, value) != oldvar);
+        
+    return oldvar;
+}
+#endif

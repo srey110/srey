@@ -33,7 +33,8 @@ fi
 OSNAME=`uname`
 if [ "$OSNAME" = "SunOS" ]
 then
-	#关机:init 5   找不到gcc: export PATH=$PATH:/usr/sfw/bin:/usr/ccs/bin
+	PATH=$PATH:/usr/sfw/bin:/usr/ccs/bin
+	export PATH
 	INCLUDELIB=$INCLUDELIB" -lsocket"
 fi
 #位数

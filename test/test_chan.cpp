@@ -31,25 +31,25 @@ public:
             {
                 ich1++;
                 int32_t i;
-                pchans[0]->recv(&i);
+                pchans[0]->recvt(i);
             }
             if (pchans[1]->canrecv())
             {
                 ich2++;
                 int64_t i;
-                pchans[1]->recv(&i);
+                pchans[1]->recvt(i);
             }
             if (pchans[2]->canrecv())
             {
                 ich3++;
                 double d;
-                pchans[2]->recv(&d);
+                pchans[2]->recvt(d);
             }
             if (pchans[3]->canrecv())
             {
                 ich4++;
                 std::string str;
-                pchans[3]->recv(&str);
+                pchans[3]->recvt(str);
             }
         }
     };
@@ -136,14 +136,14 @@ void write_cb(void *pparam)
     //PRINTF("%s", "run write chan thread.");
     for (int32_t i = 0; i < iloop; i++)
     {
-        pchans[0]->send(i);
+        pchans[0]->sendt(i);
         int64_t ui = 15800000 + i;
-        pchans[1]->send(ui);
+        pchans[1]->sendt(ui);
         double d = 3.14 + i;
-        pchans[2]->send(d);
+        pchans[2]->sendt(d);
         ZERO(acbuf, sizeof(acbuf));
         SNPRINTF(acbuf, sizeof(acbuf) - 1, "test send buff, %d", i);
-        pchans[3]->send(acbuf, sizeof(acbuf));
+        pchans[3]->sendt(std::string(acbuf));
     }
     //PRINTF("%s", "write chan thread finish.");
 }

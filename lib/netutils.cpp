@@ -24,10 +24,10 @@ int32_t socknread(const SOCKET &fd)
     return iread;
 #endif
 }
-int32_t sockrecv(const SOCKET &fd, class cbuffer *pbuf)
-{
-    return 0;
-}
+//int32_t sockrecv(const SOCKET &fd, class cchainbuffer *pbuf)
+//{
+//    return 0;
+//}
 SOCKET socklsn(const char *ip, const uint16_t &port, const int32_t &backlog)
 {
     if (INIT_NUMBER == backlog)

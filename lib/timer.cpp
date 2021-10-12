@@ -22,7 +22,7 @@ uint64_t ctimer::nanosec()
     read_wall_time(&t, TIMEBASE_SZ);
     time_base_to_time(&t, TIMEBASE_SZ);
     return (((uint64_t)t.tb_high) * NANOSEC + t.tb_low);
-#elif defined(OS_SOLARIS)
+#elif defined(OS_SUN)
     return gethrtime();
 #else
     struct timespec ts;

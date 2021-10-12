@@ -11,8 +11,8 @@ void *_taskcb(void *parg)
 #endif
 {
     cthread *pthread = (cthread *)parg;
-    pthread->_setid(threadid());
-    uint32_t *pstart = pthread->_getstart();
+    pthread->_setid((ATOMIC_T)threadid());
+    volatile ATOMIC_T *pstart = pthread->_getstart();
     ATOMIC_SET(pstart, THREAD_RUNING);
 
     ctask *ptask = pthread->_gettask();
@@ -34,8 +34,8 @@ void *_funccb(void *parg)
 #endif
 {
     cthread *pthread = (cthread *)parg;
-    pthread->_setid(threadid());
-    uint32_t *pstart = pthread->_getstart();
+    pthread->_setid((ATOMIC_T)threadid());
+    volatile ATOMIC_T *pstart = pthread->_getstart();
     ATOMIC_SET(pstart, THREAD_RUNING);
 
     pthread->_getfunc()(pthread->_getparam());
@@ -55,12 +55,11 @@ cthread::cthread()
 }
 void cthread::creat(ctask *ptask)
 {
-    if (THREAD_STOP != state())
+    if (THREAD_STOP != ATOMIC_CAS(&start, THREAD_STOP, THREAD_WAITRUN))
     {
         PRINTF("%s", "thread not stop.");
         return;
     }
-    ATOMIC_SET(&start, THREAD_WAITRUN);
 
     task = ptask;
 
@@ -74,12 +73,11 @@ void cthread::creat(ctask *ptask)
 }
 void cthread::creat(thread_cb func, void *pparam)
 {
-    if (THREAD_STOP != state())
+    if (THREAD_STOP != ATOMIC_CAS(&start, THREAD_STOP, THREAD_WAITRUN))
     {
         PRINTF("%s", "thread not stop.");
         return;
     }
-    ATOMIC_SET(&start, THREAD_WAITRUN);
 
     funccb = func;
     param = pparam;
@@ -92,17 +90,13 @@ void cthread::creat(thread_cb func, void *pparam)
         ERRORSTR(ERRNO));
 #endif
 }
-uint32_t cthread::state()
-{
-    return ATOMIC_GET(&start);
-}
 void cthread::waitstart()
 {
-    while (THREAD_WAITRUN == state());
+    while (THREAD_WAITRUN == ATOMIC_GET(&start));
 }
 void cthread::join()
 {
-    if (THREAD_STOP == state())
+    if (THREAD_STOP == ATOMIC_GET(&start))
     {
         return;
     }
