@@ -25,7 +25,7 @@ bool _consumecopy(void *pudata, const char *pbuf, const size_t &uisize);
 class cchainbuffer
 {
 public:
-    cchainbuffer(const bool block = true);
+    explicit cchainbuffer(const bool block = true);
     ~cchainbuffer();
     /*
     * \brief          Ìí¼ÓÊý¾Ý

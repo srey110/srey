@@ -8,7 +8,7 @@ SREY_NS_BEGIN
 class cspinlock
 {
 public:
-    cspinlock(const uint32_t &uispcount = ONEK)
+    explicit cspinlock(const uint32_t &uispcount = ONEK)
     {
 #ifdef OS_WIN
         ASSERTAB(InitializeCriticalSectionAndSpinCount(&m_spin, uispcount),

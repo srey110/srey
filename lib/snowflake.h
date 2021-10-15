@@ -8,7 +8,7 @@ SREY_NS_BEGIN
 class csnowflake
 {
 public:
-    csnowflake(const int32_t &icenterid, const int32_t &iworkid);
+    explicit csnowflake(const int32_t &icenterid, const int32_t &iworkid);
     ~csnowflake() {};
     /*
     * \brief          Éú³Éid

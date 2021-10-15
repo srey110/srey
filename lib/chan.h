@@ -13,7 +13,7 @@ public:
     /*
     * \param   icapacity 大于0 带缓存非阻塞
     */
-    cchan(const int32_t &icapacity);
+    explicit cchan(const int32_t &icapacity);
     ~cchan();
 
     /*

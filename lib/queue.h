@@ -8,7 +8,7 @@ SREY_NS_BEGIN
 class cqueue
 {
 public:
-    cqueue(const int32_t &icapacity)
+    explicit cqueue(const int32_t &icapacity)
     {
         ASSERTAB((icapacity > 0 && icapacity <= INT_MAX / (int32_t)sizeof(void*)), "capacity too large");
         m_size = INIT_NUMBER;
