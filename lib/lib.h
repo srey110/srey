@@ -6,6 +6,8 @@
 #include "chan.h"
 #include "queue.h"
 
+#include "ev.h"
+#include "evtype.h"
 #include "netaddr.h"
 #include "netutils.h"
 
@@ -22,5 +24,6 @@
 #include "snowflake.h"
 #include "timer.h"
 #include "utils.h"
+#include "wot.h"
 
 #endif//LIB_H_

@@ -2,6 +2,7 @@
 #define MACRO_H_
 
 #include "macfunc.h"
+#include "errcode.h"
 
 #define MALLOC malloc
 #define CALLOC calloc
@@ -52,14 +53,15 @@ do\
 
 #ifdef OS_WIN
     #define PATH_SEPARATOR '\\'
-    #define SOCKET intptr_t
     #define socklen_t int
     #define PATH_LENS MAX_PATH
+    #define INVALID_SOCK INVALID_SOCKET
 #else
     #define PATH_SEPARATOR '/'
     #define SIGNAL_EXIT SIGRTMIN + 10
     #define SOCKET int
     #define PATH_LENS PATH_MAX
+    #define INVALID_SOCK -1
 #endif
 
 #define CONCAT2(a, b) a b
@@ -89,7 +91,6 @@ do\
 #define INIT_NUMBER 0
 #define ONEK 1024
 #define TIME_LENS 64
-#define INVALID_SOCK -1
 
 #define MSEC    1000 //∫¡√Î
 #define USEC    1000000//Œ¢√Î

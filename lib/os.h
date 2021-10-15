@@ -85,40 +85,42 @@
     #include <sys/timeb.h>
 #else
     #include <unistd.h>
-    #include <signal.h>
-    #include <netinet/in.h>
+    #include <signal.h>    
     #include <errno.h>
     #include <dirent.h>
     #include <libgen.h>    
     #include <dlfcn.h>
     #include <locale.h>
+    #include <arpa/inet.h>
+    #include <netdb.h>
+    #include <semaphore.h>
     #include <syslog.h>
     #include <sys/statvfs.h>
     #include <sys/msg.h>
     #include <sys/sem.h>
     #include <sys/ipc.h>
-    #include <sys/errno.h>
-    #include <netinet/tcp.h>
-    #include <sys/socket.h>
-    #include <netinet/in.h>
-    #include <arpa/inet.h>
-    #include <netdb.h>
-    #include <semaphore.h>
+    #include <sys/errno.h>    
+    #include <sys/socket.h>    
     #include <sys/socketvar.h>
     #include <sys/resource.h>
     #include <sys/mman.h>
     #include <sys/time.h>
     #include <sys/wait.h>
     #include <sys/ioctl.h>
-    #include <net/if.h>
     #include <sys/syscall.h>
+    #include <net/if.h>    
     #include <net/if_arp.h>
-    #ifdef OS_AIX
+    #include <netinet/in.h>
+    #include <netinet/tcp.h>
+    #if defined(OS_LINUX) 
+    #elif defined(OS_AIX)
         #include <sys/systemcfg.h>
-    #endif
-    #ifdef OS_SUN
+    #elif defined(OS_DARWIN)
+        #include <mach/mach_time.h>
+    #elif defined(OS_SUN)
         #include <atomic.h>
         #include <sys/filio.h>
+    #else
     #endif
 #endif // OS_WIN
 

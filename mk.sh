@@ -12,7 +12,7 @@ UsAge="UsAge:\"./mk.sh\" or \"./mk.sh test\" or \"./mk.sh clean\""
 PROGRAMNAME="srey"
 PROTESTNAME="test"
 #文件夹
-Dir="lib lib/sha1 lib/md5"
+Dir="lib lib/epoll lib/evport lib/kqueue lib/md5 lib/sha1"
 #main函数所在文件夹
 MAINDIR="srey"
 TESTDIR="test"

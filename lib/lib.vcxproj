@@ -23,6 +23,8 @@
     <ClInclude Include="chan.h" />
     <ClInclude Include="cond.h" />
     <ClInclude Include="errcode.h" />
+    <ClInclude Include="ev.h" />
+    <ClInclude Include="evtype.h" />
     <ClInclude Include="lib.h" />
     <ClInclude Include="lockguard.h" />
     <ClInclude Include="loger.h" />
@@ -42,24 +44,20 @@
     <ClInclude Include="thread.h" />
     <ClInclude Include="timer.h" />
     <ClInclude Include="utils.h" />
+    <ClInclude Include="wot.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="chainbuffer.cpp" />
     <ClCompile Include="chan.cpp" />
-    <ClCompile Include="cond.cpp" />
+    <ClCompile Include="ev.cpp" />
     <ClCompile Include="loger.cpp" />
     <ClCompile Include="macfunc.cpp" />
     <ClCompile Include="md5\md5.c" />
-    <ClCompile Include="mutex.cpp" />
     <ClCompile Include="netaddr.cpp" />
     <ClCompile Include="netutils.cpp" />
-    <ClCompile Include="queue.cpp" />
-    <ClCompile Include="rwlock.cpp" />
     <ClCompile Include="sha1\sha1.c" />
     <ClCompile Include="snowflake.cpp" />
-    <ClCompile Include="spinlock.cpp" />
     <ClCompile Include="thread.cpp" />
-    <ClCompile Include="timer.cpp" />
     <ClCompile Include="utils.cpp" />
   </ItemGroup>
   <PropertyGroup Label="Globals">

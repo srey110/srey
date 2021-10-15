@@ -20,10 +20,10 @@ private:
     uint64_t _untilnextms();
 
 private:
-    int32_t workid;
-    int32_t centerid;
-    long sequence;
-    uint64_t lasttime;
+    int32_t m_workid;
+    int32_t m_centerid;
+    long m_sequence;
+    uint64_t m_lasttime;
 };
 
 SREY_NS_END

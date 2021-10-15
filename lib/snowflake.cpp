@@ -27,15 +27,15 @@ csnowflake::csnowflake(const int32_t &icenterid, const int32_t &iworkid)
     ASSERTAB(icenterid <= MaxDatacenterId && icenterid >= 0 
         && iworkid <= MaxWorkerId && iworkid >= 0, "param error.");
 
-    centerid = icenterid;
-    workid = iworkid;
-    sequence = INIT_NUMBER;
-    lasttime = nowmsec();
+    m_centerid = icenterid;
+    m_workid = iworkid;
+    m_sequence = INIT_NUMBER;
+    m_lasttime = nowmsec();
 }
 uint64_t csnowflake::_untilnextms()
 {
     uint64_t ulcur = nowmsec();
-    while (ulcur <= lasttime)
+    while (ulcur <= m_lasttime)
     {
         ulcur = nowmsec();
     }
@@ -45,11 +45,11 @@ uint64_t csnowflake::_untilnextms()
 uint64_t csnowflake::id()
 {
     uint64_t uicur = nowmsec();
-    ASSERTAB(uicur >= lasttime, "time error.");
-    if (uicur == lasttime)
+    ASSERTAB(uicur >= m_lasttime, "time error.");
+    if (uicur == m_lasttime)
     {
-        sequence = (sequence + 1) & SequenceMask;
-        if (INIT_NUMBER == sequence)
+        m_sequence = (m_sequence + 1) & SequenceMask;
+        if (INIT_NUMBER == m_sequence)
         {
             //当前毫秒内计数满了，则等待下一秒
             uicur = _untilnextms();
@@ -57,15 +57,15 @@ uint64_t csnowflake::id()
     }
     else
     {
-        sequence = INIT_NUMBER;
+        m_sequence = INIT_NUMBER;
     }
 
-    lasttime = uicur;
+    m_lasttime = uicur;
 
     return ((uint64_t)(uicur - Epoch) << TimestampLeftShift) |
-        ((uint64_t)centerid << DatacenterIdShift) |
-        ((uint64_t)workid << WorkerIdShift) |
-        sequence;
+        ((uint64_t)m_centerid << DatacenterIdShift) |
+        ((uint64_t)m_workid << WorkerIdShift) |
+        m_sequence;
 }
 
 SREY_NS_END

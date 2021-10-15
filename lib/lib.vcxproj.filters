@@ -60,25 +60,22 @@
     <ClInclude Include="chainbuffer.h">
       <Filter>utils</Filter>
     </ClInclude>
+    <ClInclude Include="evtype.h">
+      <Filter>net</Filter>
+    </ClInclude>
+    <ClInclude Include="ev.h">
+      <Filter>net</Filter>
+    </ClInclude>
+    <ClInclude Include="wot.h">
+      <Filter>utils</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="thread.cpp">
       <Filter>thread</Filter>
     </ClCompile>
-    <ClCompile Include="rwlock.cpp">
-      <Filter>thread</Filter>
-    </ClCompile>
-    <ClCompile Include="mutex.cpp">
-      <Filter>thread</Filter>
-    </ClCompile>
-    <ClCompile Include="cond.cpp">
-      <Filter>thread</Filter>
-    </ClCompile>
     <ClCompile Include="snowflake.cpp">
       <Filter>utils</Filter>
-    </ClCompile>
-    <ClCompile Include="spinlock.cpp">
-      <Filter>thread</Filter>
     </ClCompile>
     <ClCompile Include="md5\md5.c">
       <Filter>3rd\md5</Filter>
@@ -95,21 +92,18 @@
     <ClCompile Include="netutils.cpp">
       <Filter>net</Filter>
     </ClCompile>
-    <ClCompile Include="queue.cpp">
-      <Filter>chan</Filter>
-    </ClCompile>
     <ClCompile Include="chan.cpp">
       <Filter>chan</Filter>
     </ClCompile>
     <ClCompile Include="loger.cpp">
       <Filter>utils</Filter>
     </ClCompile>
-    <ClCompile Include="timer.cpp">
-      <Filter>utils</Filter>
-    </ClCompile>
     <ClCompile Include="macfunc.cpp" />
     <ClCompile Include="chainbuffer.cpp">
       <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="ev.cpp">
+      <Filter>net</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -133,6 +127,18 @@
     </Filter>
     <Filter Include="chan">
       <UniqueIdentifier>{87aaac95-e823-4955-958c-0ef0c55ba418}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="net\epoll">
+      <UniqueIdentifier>{c81b7481-b9cc-4bc0-8d7a-45534fa8ff67}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="net\evport">
+      <UniqueIdentifier>{d58a599b-6ca9-49a4-a6b6-2cdfc4537312}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="net\iocp">
+      <UniqueIdentifier>{67cbf2a7-ccbb-41a3-9cdd-eb0083d1ef93}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="net\kqueue">
+      <UniqueIdentifier>{68541321-4eaa-42cd-8b60-66b08cb28bac}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
 </Project>

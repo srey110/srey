@@ -96,7 +96,12 @@ void nowmtime(const char *pformat, char atime[TIME_LENS]);
 * \brief          固定格式输出当前时间戳 毫秒
 * \param atime    当前时间 毫秒
 */
-std::string nowmtime();
+inline std::string nowtime()
+{
+    char atime[TIME_LENS];
+    nowmtime("%H:%M:%S", atime);
+    return atime;
+};
 /*
 * \brief          计算crc16
 * \param pval     待计算

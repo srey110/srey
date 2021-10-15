@@ -24,34 +24,90 @@ public:
     * \brief          channel是否关闭
     * \return         true 已经关闭
     */
-    bool isclosed();
+    bool isclosed()
+    {
+        m_mmu.lock();
+        bool bclosed = m_closed;
+        m_mmu.unlock();
+
+        return bclosed;
+    };
     /*
     * \brief          写入数据
     * \param pdata    待写入的数据
     * \return         true 成功
     */
-    bool send(void *pdata);
+    bool send(void *pdata)
+    {
+        if (isclosed())
+        {
+            return false;
+        }
+        return NULL != m_queue ? _bufferedsend(pdata) : _unbufferedsend(pdata);
+    };
     /*
     * \brief          读取数据
     * \param pdata    读取到的数据
     * \return         true 成功
     */
-    bool recv(void **pdata);
+    bool recv(void **pdata)
+    {
+        return NULL != m_queue ? _bufferedrecv(pdata) : _unbufferedrecv(pdata);
+    };
     /*
     * \brief          数据总数
     * \return         数据总数
     */
-    int32_t size();
+    int32_t size()
+    {
+        int32_t uisize = INIT_NUMBER;
+        if (NULL != m_queue)
+        {
+            m_mmu.lock();
+            uisize = m_queue->getsize();
+            m_mmu.unlock();
+        }
+        return uisize;
+    };
     /*
     * \brief          是否可读
     * \return         true 有数据
     */
-    bool canrecv();
+    bool canrecv()
+    {
+        if (NULL != m_queue)
+        {
+            return size() > INIT_NUMBER;
+        }
+
+        m_mmu.lock();
+        bool bcanrecv = m_wwaiting > INIT_NUMBER;
+        m_mmu.unlock();
+
+        return bcanrecv;
+    };
     /*
     * \brief          是否可写
     * \return         true 可写
     */
-    bool cansend();
+    bool cansend()
+    {
+        bool bsend;
+        if (NULL != m_queue)
+        {
+            m_mmu.lock();
+            bsend = m_queue->getsize() < m_queue->getcap();
+            m_mmu.unlock();
+        }
+        else
+        {
+            m_mmu.lock();
+            bsend = m_rwaiting > INIT_NUMBER;
+            m_mmu.unlock();
+        }
+
+        return bsend;
+    };
     /*
     * \brief             随机选取一可读写的channel来执行读写,阻塞的不支持
     * \param precv_ctx   读cchan
@@ -97,6 +153,11 @@ public:
 
         return bsuccess;
     };
+    template <typename T>
+    bool recvt(T **val)
+    {
+        return recv((void **)val);
+    };
 
 private:
     bool _bufferedsend(void *pdata);
@@ -105,16 +166,16 @@ private:
     bool _unbufferedrecv(void **pdata);   
 
 private:
-    cmutex r_mu;//读锁
-    cmutex w_mu;//写锁    
-    cmutex m_mu;//读写信号锁
-    ccond r_cond;
-    ccond w_cond;
-    bool closed;
-    int32_t r_waiting;
-    int32_t w_waiting;
-    void *data;
-    cqueue *queue;
+    cmutex m_rmu;//读锁
+    cmutex m_wmu;//写锁    
+    cmutex m_mmu;//读写信号锁
+    ccond m_rcond;
+    ccond m_wcond;
+    bool m_closed;
+    int32_t m_rwaiting;
+    int32_t m_wwaiting;
+    void *m_data;
+    cqueue *m_queue;
 };
 
 SREY_NS_END

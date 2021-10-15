@@ -9,23 +9,23 @@ template<class T>
 class clockguard
 {
 public:
-    clockguard(T *t, const bool &block = true) : m_block(block), lock(t)
+    clockguard(T *t, const bool &block = true) : m_block(block), m_lock(t)
     {
         if (m_block)
         {
-            lock->lock();
+            m_lock->lock();
         }        
     }
     ~clockguard() 
     {
         if (m_block)
         {
-            lock->unlock();
+            m_lock->unlock();
         }        
     }
 protected:
     bool m_block;
-    T *lock;
+    T *m_lock;
 };
 
 SREY_NS_END

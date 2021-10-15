@@ -247,12 +247,22 @@ bool each(void *pudata, const char *pdata, const size_t &uilens)
 void ctest_utils::test_buffer(void)
 {
     cchainbuffer objbuf(false);
+
     const char *pbuf1 = "1234567890";
     const char *pbuf2 = "0987654321";
     const char *pbuf3 = "abcdefdhijklmnopqrst";
     const char *pbuf4 = "ABCDEFDHIJKLMNOPQRST";
     char actmp[128];
     size_t irtn = INIT_NUMBER;
+
+    int32_t ifmt = objbuf.producefmt("%s", pbuf1);
+    CPPUNIT_ASSERT(ifmt == (int32_t)strlen(pbuf1));
+    ifmt = objbuf.producefmt("%s", pbuf3);
+    CPPUNIT_ASSERT(ifmt == (int32_t)strlen(pbuf3));
+    ZERO(actmp, sizeof(actmp));
+    irtn = objbuf.copy(actmp, objbuf.size());
+    CPPUNIT_ASSERT(std::string(actmp) == std::string(pbuf1) + std::string(pbuf3));
+    objbuf.del(objbuf.size());
 
     objbuf.produce(pbuf1, strlen(pbuf1));
     ZERO(actmp, sizeof(actmp));
@@ -265,9 +275,10 @@ void ctest_utils::test_buffer(void)
     CPPUNIT_ASSERT(std::string(actmp) == (std::string(pbuf1) + pbuf3));
 
     objbuf.foreach(0, each, NULL);
-
-    //1234567890ab  cdefdhijklmnopqrst
-    int32_t ipos = objbuf.search(0, objbuf.size(), "304", 3);
+    //1234567890ab cdefdhijklmnopqrst
+    int32_t ipos = objbuf.search(0, objbuf.size() - 1, "0abcdefdhijklmnopqrst", strlen("0abcdefdhijklmnopqrst"));
+    CPPUNIT_ASSERT(9 == ipos);
+    ipos = objbuf.search(0, objbuf.size() - 2, "0abcdefdhijklmnopqrst", strlen("0abcdefdhijklmnopqrst"));
     CPPUNIT_ASSERT(ERR_FAILED == ipos);
     ipos = objbuf.search(0, 12, "bc", 2);
     CPPUNIT_ASSERT(11 == ipos);
@@ -319,6 +330,7 @@ void ctest_utils::test_buffer(void)
     int32_t ival = 150;
     objbuf.produce(&ival, sizeof(ival));
 
+    ival = INIT_NUMBER;
     objbuf.gett(ival);
     CPPUNIT_ASSERT(ival == 150);
 }

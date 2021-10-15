@@ -1,7 +1,6 @@
 #include "utils.h"
 #include "md5/md5.h"
 #include "sha1/sha1.h"
-#include "errcode.h"
 
 SREY_NS_BEGIN
 
@@ -277,12 +276,6 @@ void nowmtime(const char *pformat, char atime[TIME_LENS])
     strftime(atime, TIME_LENS - 1, pformat, localtime(&t));
     size_t uilen = strlen(atime);
     SNPRINTF(atime + uilen, TIME_LENS - uilen - 1, " %03d", (int32_t)(tv.tv_usec / 1000));
-}
-std::string nowmtime()
-{
-    char atime[TIME_LENS];
-    nowmtime("%H:%M:%S", atime);
-    return atime;
 }
 const uint16_t crc16_tab[256] = {
     0x0000, 0xC0C1, 0xC181, 0x0140, 0xC301, 0x03C0, 0x0280, 0xC241,

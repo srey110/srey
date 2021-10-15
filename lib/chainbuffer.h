@@ -6,6 +6,15 @@
 
 SREY_NS_BEGIN
 
+struct buffernode
+{
+    struct buffernode *prior;
+    struct buffernode *next;
+    size_t bufferlens;
+    size_t misalign;
+    size_t offset;
+    char *buffer;
+};
 struct consumecopy
 {
     size_t offset;
@@ -21,9 +30,17 @@ public:
     /*
     * \brief          添加数据
     * \param pdata    数据
-    * \param uisize   数据长度     
+    * \param uisize   数据长度
     */
     void produce(const void *pdata, const size_t &uisize);
+    /*
+    * \brief          添加数据
+    * \param pfmt     格式
+    * \param ...      变参
+    * \return         ERR_FAILED 失败
+    * \return         成功添加的数据长度
+    */
+    int32_t producefmt(const char *pfmt, ...);
     /*
     * \brief            添加数据
     * \param uisize     数据长度
@@ -41,7 +58,11 @@ public:
     * \brief          数据总长度
     * \return         数据总长度
     */
-    size_t size();
+    size_t size()
+    {
+        clockguard<cmutex> lockthis(&m_mutex, m_lock);
+        return m_totallens;
+    };
     /*
     * \brief          拷贝出数据
     * \param pdata    数据存放地址
@@ -82,8 +103,8 @@ public:
         stccpy.offset = INIT_NUMBER;
         stccpy.data = (char*)&val;
 
-        clockguard<cmutex> lockthis(&mutex, lock);
-        if (totallens >= sizeof(val))
+        clockguard<cmutex> lockthis(&m_mutex, m_lock);
+        if (m_totallens >= sizeof(val))
         {
             ASSERTAB(sizeof(val) == _consume(sizeof(val), _consumecopy, &stccpy), "gett error.");
             return true;
@@ -114,25 +135,116 @@ public:
     void dump();
 
 private:
-    uint32_t _produce(const size_t &uisize, char *pcave[2], size_t casize[2], struct buffernode *nodes[2]);
+    uint32_t _produce(const size_t &uisize, char *pcave[2], size_t casize[2], struct buffernode *nodes[2]); //预分配   
+    void _expand(const size_t &uisize);//保证连续足够的内存    
+    int32_t _producefmt(const char *pfmt, va_list args);
     size_t _consume(const size_t &uisize, bool(*consumer)(void *, const char *, const size_t &),
         void *pudata, const bool &bdel = true);
     char *_search(struct buffernode *pnode, const char *pstart, const size_t &uissize,
-        const char *pwhat, const size_t &uiwsize, const bool &bend);
-    struct buffernode *_newnode(const size_t &uisize);
-    struct buffernode *_newnode(const size_t &uiconsult, const size_t &uisize);
-    void _freenode(struct buffernode *pnode);
-    void _insert(struct buffernode *pnode);
-    bool _should_realign(struct buffernode *pnode, const size_t &uisize);
-    void _align(struct buffernode *pnode);    
+        const char *pwhat, const size_t &uiwsize, 
+        const size_t &uitotaloff, const size_t &uiend, const bool &bend);
+    bool _checkenogh(const size_t &uisize)
+    {
+        //为空
+        if (NULL == m_tail)
+        {
+            _insert(_newnode(uisize));
+            return true;
+        }
+        //剩余字节数
+        if ((m_tail->bufferlens - m_tail->misalign - m_tail->offset) >= uisize)
+        {
+            return true;
+        }
+        //通过调整能否放下
+        if (_should_realign(m_tail, uisize))
+        {
+            _align(m_tail);
+            return true;
+        }
+
+        return false;
+    };
+    struct buffernode *_newnode(const size_t &uisize)
+    {
+        size_t uitotal = ROUND_UP(uisize + sizeof(struct buffernode), m_minisize);
+        char *pbuf = new(std::nothrow) char[uitotal];
+        ASSERTAB(NULL != pbuf, ERRSTR_MEMORY);
+
+        struct buffernode *pnode = (struct buffernode *)pbuf;
+        ZERO(pnode, sizeof(struct buffernode));
+        pnode->bufferlens = uitotal - sizeof(struct buffernode);
+        pnode->buffer = (char *)(pnode + 1);
+
+        return pnode;
+    };
+    struct buffernode *_newnode(const size_t &uiconsult, const size_t &uisize)
+    {
+        size_t uialloc = uiconsult;
+        if (uialloc <= ONEK * 2)
+        {
+            uialloc <<= 1;
+        }
+        if (uisize > uialloc)
+        {
+            uialloc = uisize;
+        }
+
+        return _newnode(uialloc);
+    };
+    void _deltail()
+    {
+        if (m_head == m_tail)
+        {
+            return;
+        }
+        if (INIT_NUMBER != m_tail->offset)
+        {
+            return;
+        }
+
+        struct buffernode *ptmp = m_tail->prior;
+        _freenode(m_tail);
+        ptmp->next = NULL;
+        m_tail = ptmp;
+    };
+    void _freenode(struct buffernode *pnode)
+    {
+        char *pbuf = (char*)pnode;
+        SAFE_DELARR(pbuf);
+    };
+    void _insert(struct buffernode *pnode)
+    {
+        //第一次
+        if (NULL == m_tail)
+        {
+            m_head = m_tail = pnode;
+            return;
+        }
+
+        pnode->prior = m_tail;
+        m_tail->next = pnode;
+        m_tail = pnode;
+    };
+    bool _should_realign(struct buffernode *pnode, const size_t &uisize)
+    {
+        return (pnode->bufferlens - pnode->offset >= uisize) &&
+            (pnode->offset < pnode->bufferlens / 2) &&
+            (pnode->offset <= ONEK *2);
+    };
+    void _align(struct buffernode *pnode)
+    {
+        memmove(pnode->buffer, pnode->buffer + pnode->misalign, pnode->offset);
+        pnode->misalign = INIT_NUMBER;
+    };
 
 private:
-    bool lock;
-    struct buffernode *head;
-    struct buffernode *tail;
-    size_t minisize;//512 1024
-    size_t totallens;//数据总长度
-    cmutex mutex;
+    bool m_lock;
+    struct buffernode *m_head;
+    struct buffernode *m_tail;
+    size_t m_minisize;//512 1024
+    size_t m_totallens;//数据总长度
+    cmutex m_mutex;
 };
 
 SREY_NS_END

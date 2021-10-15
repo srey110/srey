@@ -1,8 +1,4 @@
-#include "utils.h"
-#include "timer.h"
-#include "thread.h"
-#include "chan.h"
-#include "snowflake.h"
+#include "lib.h"
 
 using namespace SREY_NS;
 
@@ -15,20 +11,46 @@ using namespace SREY_NS;
 
 int main(int argc, char *argv[])
 {
+    cev ev;
     ctimer objtimer;
-    objtimer.start();
-    USLEEP(1000);
-    uint64_t uielapsed = objtimer.elapsed();
-    PRINTF("%d", (int32_t)uielapsed);
+    cthread thread;
+    thread.creat(&ev);
+    thread.waitstart();
 
-    csnowflake objsfid(5, 8);
-    objtimer.start();
-    for (int32_t i = 0; i < 200000; i++)
+    srand((uint32_t)objtimer.nanosec() / 1000);
+
+    cchan chan(ONEK);
+    u_long ultime;
+    u_long ullast = INIT_NUMBER;
+    uint64_t uladd = INIT_NUMBER;
+    uint64_t ulcount = INIT_NUMBER;
+    uint64_t uidiff = INIT_NUMBER;
+    uint32_t uitmp;
+    struct twnode *node;
+    while (true)
     {
-        objsfid.id();
+        if (chan.canrecv())
+        {
+            if (chan.recvt(&node))
+            {
+                ultime = (uint32_t)(objtimer.nanosec() / (1000 * 1000));
+                uitmp = (uint32_t)(ultime - node->expires);
+                uidiff += uitmp;
+                ulcount++;
+                printf("total:%d  time out:%d  diff:%d  per:%d\n", (uint32_t)uladd, (uint32_t)ulcount, uitmp, (uint32_t)((double)uidiff / ulcount));
+                SAFE_DEL(node);
+            }
+        }
+
+        if (ullast % 100 == INIT_NUMBER)
+        {
+            ev.addtimer(&chan, rand() % (10 * 1000) + 10, NULL);
+            uladd++;
+        }
+
+        MSLEEP(10);
+        ullast += 10;
     }
-    uielapsed = objtimer.elapsed();
-    PRINTF("%d", (int32_t)uielapsed);
 
     return 0;
 }

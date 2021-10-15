@@ -1,5 +1,4 @@
 #include "netaddr.h"
-#include "errcode.h"
 
 SREY_NS_BEGIN
 
@@ -22,15 +21,15 @@ bool cnetaddr::setaddr(const char *ip, const uint16_t &port)
 
         return false;
     }
-    memcpy(&ipv4, paddr->ai_addr, paddr->ai_addrlen);
-    ipv4.sin_port = htons(port);
+    memcpy(&m_ipv4, paddr->ai_addr, paddr->ai_addrlen);
+    m_ipv4.sin_port = htons(port);
     freeaddrinfo(paddr);
 
     return true;
 }
 void cnetaddr::setaddr(const struct sockaddr *paddr)
 {
-    memcpy(&ipv4, paddr, sizeof(ipv4));
+    memcpy(&m_ipv4, paddr, sizeof(m_ipv4));
 }
 bool cnetaddr::setremaddr(const SOCKET &fd)
 {
@@ -62,17 +61,17 @@ bool cnetaddr::setlocaddr(const SOCKET &fd)
 }
 sockaddr *cnetaddr::getaddr()
 {
-    return (sockaddr*)&ipv4;
+    return (sockaddr*)&m_ipv4;
 }
 size_t cnetaddr::getsize()
 {
-    return sizeof(ipv4);
+    return sizeof(m_ipv4);
 }
 std::string cnetaddr::getip()
 {
     char atmp[128] = { 0 };
     int32_t ilens = sizeof(atmp);
-    if (ERR_OK != getnameinfo((const sockaddr*)&ipv4, (socklen_t)sizeof(ipv4), atmp, ilens, NULL, 0, NI_NUMERICHOST))
+    if (ERR_OK != getnameinfo((const sockaddr*)&m_ipv4, (socklen_t)sizeof(m_ipv4), atmp, ilens, NULL, 0, NI_NUMERICHOST))
     {
         return "";
     }
@@ -81,7 +80,7 @@ std::string cnetaddr::getip()
 }
 uint16_t cnetaddr::getport()
 {
-    return ntohs(ipv4.sin_port);
+    return ntohs(m_ipv4.sin_port);
 }
 
 SREY_NS_END

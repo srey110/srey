@@ -12,22 +12,22 @@ class csingleton
 public:
     csingleton()
     {
-        ASSERTAB(NULL == instance, "multiple initialization");
-        instance = static_cast<T*>(this);
+        ASSERTAB(NULL == m_instance, "multiple initialization");
+        m_instance = static_cast<T*>(this);
     };
     virtual ~csingleton(){ };
     static T* getinstance()
     {
-        return instance;
+        return m_instance;
     };
 
 private:
     DISALLOWCOPY(csingleton);
-    static T *instance;
+    static T *m_instance;
 };
 
 #define SINGLETON_INIT(T)							\
-    template <>	 T * csingleton<T>::instance = NULL;	\
+    template <>	 T * csingleton<T>::m_instance = NULL;	\
 
 SREY_NS_END
 

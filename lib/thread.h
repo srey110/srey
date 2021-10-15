@@ -8,37 +8,36 @@ SREY_NS_BEGIN
 class ctask
 {
 public:
-    ctask() : uiloop(INIT_NUMBER)
+    ctask() : m_stop(INIT_NUMBER)
     {};
     virtual ~ctask() {};
     virtual void beforrun() {};
     virtual void run() {};
     virtual void afterrun() {};
 
-    bool loop()
+    bool isstop()
     {
-        return INIT_NUMBER == ATOMIC_GET(&uiloop);
+        return INIT_NUMBER != ATOMIC_GET(&m_stop);
     };
-    void stoploop()
+    void stop()
     {
-        ATOMIC_SET(&uiloop, 1);
+        ATOMIC_SET(&m_stop, 1);
     };
 
 private:
-    volatile ATOMIC_T uiloop;
+    volatile ATOMIC_T m_stop;
 };
 
 #define THREAD_WAITRUN  0
 #define THREAD_RUNING   1
 #define THREAD_STOP     2
-
 typedef void(*thread_cb)(void*);//线程回调函数
 
 class cthread
 {
 public:
     cthread();
-    ~cthread() {};
+    ~cthread();
     /*
     * \brief             创建一线程,别多次调用
     * \param ptask       ctask
@@ -63,41 +62,41 @@ public:
     */    
     uint32_t getid()
     {
-        return (uint32_t)ATOMIC_GET(&threadid);
+        return (uint32_t)ATOMIC_GET(&m_threadid);
     };
     
     void _setid(const ATOMIC_T &uiid)
     {
-        ATOMIC_SET(&threadid, uiid);
+        ATOMIC_SET(&m_threadid, uiid);
     };
-    volatile ATOMIC_T *_getstart()
+    volatile ATOMIC_T *_getstate()
     {
-        return &start;
+        return &m_state;
     };
     ctask *_gettask()
     {
-        return task;
+        return m_task;
     };
     thread_cb _getfunc()
     {
-        return funccb;
+        return m_func;
     };
     void *_getparam()
     {
-        return param;
+        return m_param;
     };
 private:
-    volatile ATOMIC_T threadid;
-    volatile ATOMIC_T start;
+    volatile ATOMIC_T m_threadid;
+    volatile ATOMIC_T m_state;
     
 #ifdef OS_WIN
-    HANDLE pthread;
+    HANDLE m_thread;
 #else
-    pthread_t pthread;//线程句柄
+    pthread_t m_thread;//线程句柄
 #endif
-    ctask *task;
-    void *param;
-    thread_cb funccb;
+    ctask *m_task;
+    void *m_param;
+    thread_cb m_func;
 };
 
 SREY_NS_END

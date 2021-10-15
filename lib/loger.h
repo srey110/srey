@@ -6,14 +6,14 @@
 
 SREY_NS_BEGIN
 
-typedef enum LOG_LEVEL
+enum LOG_LEVEL
 {
     LOGLV_FATAL = 0,
     LOGLV_ERROR,
     LOGLV_WARN,
     LOGLV_INFO,
     LOGLV_DEBUG,
-}LOG_LEVEL;
+};
 
 class cloger : public csingleton<cloger>
 {
@@ -38,11 +38,11 @@ public:
     const char *_getlvstr(const LOG_LEVEL &emlv);
 
 private:
-    volatile ATOMIC_T uilv;
-    volatile ATOMIC_T uiprint;
-    class cchan *pchan;
-    class cthread *pthread;
-    class clogertask *ptask;
+    volatile ATOMIC_T m_lv;
+    volatile ATOMIC_T m_print;
+    class cchan *m_chan;
+    class cthread *m_thread;
+    class clogertask *m_task;
 };
 
 #define SETLOGLV(lv) cloger::getinstance()->setlv(lv)
@@ -50,7 +50,7 @@ private:
 
 #define LOG(lv,format, ...)\
     (cloger::getinstance()->log(lv, CONCAT2("[%s][%s][%s %d]", format), \
-    nowmtime().c_str(), cloger::getinstance()->_getlvstr(lv), __FILENAME__, __LINE__, ##__VA_ARGS__))
+    nowtime().c_str(), cloger::getinstance()->_getlvstr(lv), __FILENAME__, __LINE__, ##__VA_ARGS__))
 #undef LOG_FATAL
 #define LOG_FATAL(format, ...) LOG(LOGLV_FATAL, format, ##__VA_ARGS__)
 #undef LOG_ERROR

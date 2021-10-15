@@ -1,6 +1,5 @@
 #include "thread.h"
 #include "utils.h"
-#include "errcode.h"
 
 SREY_NS_BEGIN
 
@@ -12,15 +11,15 @@ void *_taskcb(void *parg)
 {
     cthread *pthread = (cthread *)parg;
     pthread->_setid((ATOMIC_T)threadid());
-    volatile ATOMIC_T *pstart = pthread->_getstart();
-    ATOMIC_SET(pstart, THREAD_RUNING);
+    volatile ATOMIC_T *pstate = pthread->_getstate();
+    ATOMIC_SET(pstate, THREAD_RUNING);
 
     ctask *ptask = pthread->_gettask();
     ptask->beforrun();
     ptask->run();
     ptask->afterrun();
 
-    ATOMIC_SET(pstart, THREAD_STOP);
+    ATOMIC_SET(pstate, THREAD_STOP);
 #ifdef OS_WIN
     return ERR_OK;
 #else
@@ -35,12 +34,12 @@ void *_funccb(void *parg)
 {
     cthread *pthread = (cthread *)parg;
     pthread->_setid((ATOMIC_T)threadid());
-    volatile ATOMIC_T *pstart = pthread->_getstart();
-    ATOMIC_SET(pstart, THREAD_RUNING);
+    volatile ATOMIC_T *pstate = pthread->_getstate();
+    ATOMIC_SET(pstate, THREAD_RUNING);
 
     pthread->_getfunc()(pthread->_getparam());
 
-    ATOMIC_SET(pstart, THREAD_STOP);
+    ATOMIC_SET(pstate, THREAD_STOP);
 #ifdef OS_WIN
     return ERR_OK;
 #else
@@ -50,60 +49,64 @@ void *_funccb(void *parg)
 
 cthread::cthread()
 {
-    threadid = INIT_NUMBER;
-    start = THREAD_STOP;
+    m_threadid = INIT_NUMBER;
+    m_state = THREAD_STOP;
+}
+cthread::~cthread()
+{
+    join();
 }
 void cthread::creat(ctask *ptask)
 {
-    if (THREAD_STOP != ATOMIC_CAS(&start, THREAD_STOP, THREAD_WAITRUN))
+    if (THREAD_STOP != ATOMIC_CAS(&m_state, THREAD_STOP, THREAD_WAITRUN))
     {
         PRINTF("%s", "thread not stop.");
         return;
     }
 
-    task = ptask;
+    m_task = ptask;
 
 #ifdef OS_WIN
-    pthread = (HANDLE)_beginthreadex(NULL, 0, _taskcb, this, 0, NULL);
-    ASSERTAB(NULL != pthread, ERRORSTR(ERRNO));
+    m_thread = (HANDLE)_beginthreadex(NULL, 0, _taskcb, this, 0, NULL);
+    ASSERTAB(NULL != m_thread, ERRORSTR(ERRNO));
 #else
-    ASSERTAB((ERR_OK == pthread_create(&pthread, NULL, _taskcb, (void*)this)),
+    ASSERTAB((ERR_OK == pthread_create(&m_thread, NULL, _taskcb, (void*)this)),
         ERRORSTR(ERRNO));
 #endif
 }
 void cthread::creat(thread_cb func, void *pparam)
 {
-    if (THREAD_STOP != ATOMIC_CAS(&start, THREAD_STOP, THREAD_WAITRUN))
+    if (THREAD_STOP != ATOMIC_CAS(&m_state, THREAD_STOP, THREAD_WAITRUN))
     {
         PRINTF("%s", "thread not stop.");
         return;
     }
 
-    funccb = func;
-    param = pparam;
+    m_func = func;
+    m_param = pparam;
 
 #ifdef OS_WIN
-    pthread = (HANDLE)_beginthreadex(NULL, 0, _funccb, this, 0, NULL);
-    ASSERTAB(NULL != pthread, ERRORSTR(ERRNO));
+    m_thread = (HANDLE)_beginthreadex(NULL, 0, _funccb, this, 0, NULL);
+    ASSERTAB(NULL != m_thread, ERRORSTR(ERRNO));
 #else
-    ASSERTAB((ERR_OK == pthread_create(&pthread, NULL, _funccb, (void*)this)),
+    ASSERTAB((ERR_OK == pthread_create(&m_thread, NULL, _funccb, (void*)this)),
         ERRORSTR(ERRNO));
 #endif
 }
 void cthread::waitstart()
 {
-    while (THREAD_WAITRUN == ATOMIC_GET(&start));
+    while (THREAD_WAITRUN == ATOMIC_GET(&m_state));
 }
 void cthread::join()
 {
-    if (THREAD_STOP == ATOMIC_GET(&start))
+    if (THREAD_STOP == ATOMIC_GET(&m_state))
     {
         return;
     }
 #ifdef OS_WIN
-    ASSERTAB(WAIT_OBJECT_0 == WaitForSingleObject(pthread, INFINITE), ERRORSTR(ERRNO));
+    ASSERTAB(WAIT_OBJECT_0 == WaitForSingleObject(m_thread, INFINITE), ERRORSTR(ERRNO));
 #else
-    ASSERTAB(ERR_OK == pthread_join(pthread, NULL), ERRORSTR(ERRNO));
+    ASSERTAB(ERR_OK == pthread_join(m_thread, NULL), ERRORSTR(ERRNO));
 #endif
 }
 

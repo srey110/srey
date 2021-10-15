@@ -57,7 +57,7 @@ public:
     uint16_t getport();
 
 private:
-    sockaddr_in	ipv4;
+    sockaddr_in	m_ipv4;
 };
 
 SREY_NS_END

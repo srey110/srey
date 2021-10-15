@@ -1,6 +1,5 @@
 #include "chan.h"
 #include "utils.h"
-#include "errcode.h"
 
 SREY_NS_BEGIN
 
@@ -8,23 +7,23 @@ typedef struct select_ctx
 {
     bool recv;
     cchan *pchan;
-    void *pmsg_in;
+    void *pmsgin;
     int32_t index;
 } select_ctx;
 
 cchan::cchan(const int32_t &icapacity)
 {
-    queue = NULL;
+    m_queue = NULL;
     if (icapacity > INIT_NUMBER)
     {
-        queue = new(std::nothrow) cqueue(icapacity);
-        ASSERTAB(NULL != queue, ERRSTR_MEMORY);
+        m_queue = new(std::nothrow) cqueue(icapacity);
+        ASSERTAB(NULL != m_queue, ERRSTR_MEMORY);
     }
 
-    closed = false;
-    r_waiting = INIT_NUMBER;
-    w_waiting = INIT_NUMBER;
-    data = NULL;
+    m_closed = false;
+    m_rwaiting = INIT_NUMBER;
+    m_wwaiting = INIT_NUMBER;
+    m_data = NULL;
 
     struct timeval ts;
     timeofday(&ts);
@@ -32,202 +31,138 @@ cchan::cchan(const int32_t &icapacity)
 }
 cchan::~cchan()
 {
-    SAFE_DEL(queue);
+    SAFE_DEL(m_queue);
 }
 void cchan::close()
 {
-    m_mu.lock();
-    if (!closed)
+    m_mmu.lock();
+    if (!m_closed)
     {
-        closed = true;
-        r_cond.broadcast();
-        w_cond.broadcast();
+        m_closed = true;
+        m_rcond.broadcast();
+        m_wcond.broadcast();
     }
-    m_mu.unlock();
-}
-bool cchan::isclosed()
-{
-    m_mu.lock();
-    bool bclosed = closed;
-    m_mu.unlock();
-
-    return bclosed;
+    m_mmu.unlock();
 }
 bool cchan::_bufferedsend(void *pdata)
 {
-    m_mu.lock();
-    while (queue->getsize() == queue->getcap())
+    m_mmu.lock();
+    while (m_queue->getsize() == m_queue->getcap())
     {
         //队列满 阻塞直到有数据被移除.
-        w_waiting++;
-        w_cond.wait(&m_mu);
-        w_waiting--;
+        m_wwaiting++;
+        m_wcond.wait(&m_mmu);
+        m_wwaiting--;
     }
 
-    bool bsuccess = queue->push(pdata);
+    bool bsuccess = m_queue->push(pdata);
 
-    if (r_waiting > INIT_NUMBER)
+    if (m_rwaiting > INIT_NUMBER)
     {
         //通知可读.
-        r_cond.signal();
+        m_rcond.signal();
     }
 
-    m_mu.unlock();
+    m_mmu.unlock();
 
     return bsuccess;
 }
 bool cchan::_bufferedrecv(void **pdata)
 {
-    m_mu.lock();
-    while (INIT_NUMBER == queue->getsize())
+    m_mmu.lock();
+    while (INIT_NUMBER == m_queue->getsize())
     {
-        if (closed)
+        if (m_closed)
         {
-            m_mu.unlock();
+            m_mmu.unlock();
             return false;
         }
 
         //阻塞直到有数据.
-        r_waiting++;
-        r_cond.wait(&m_mu);
-        r_waiting--;
+        m_rwaiting++;
+        m_rcond.wait(&m_mmu);
+        m_rwaiting--;
     }
 
-    void *pmsg = queue->pop();
+    void *pmsg = m_queue->pop();
     if (NULL != pdata)
     {
         *pdata = pmsg;
     }
 
-    if (w_waiting > INIT_NUMBER)
+    if (m_wwaiting > INIT_NUMBER)
     {
         //通知可写.
-        w_cond.signal();
+        m_wcond.signal();
     }
 
-    m_mu.unlock();
+    m_mmu.unlock();
 
     return true;
 }
 bool cchan::_unbufferedsend(void* pdata)
 {
-    w_mu.lock();
-    m_mu.lock();
+    m_wmu.lock();
+    m_mmu.lock();
 
-    if (closed)
+    if (m_closed)
     {
-        m_mu.unlock();
-        w_mu.unlock();
+        m_mmu.unlock();
+        m_wmu.unlock();
         return false;
     }
 
-    data = pdata;
-    w_waiting++;
+    m_data = pdata;
+    m_wwaiting++;
 
-    if (r_waiting > INIT_NUMBER)
+    if (m_rwaiting > INIT_NUMBER)
     {
         // 激发读取.
-        r_cond.signal();
+        m_rcond.signal();
     }
 
     //阻塞直到数据被取出.
-    w_cond.wait(&m_mu);
+    m_wcond.wait(&m_mmu);
 
-    m_mu.unlock();
-    w_mu.unlock();
+    m_mmu.unlock();
+    m_wmu.unlock();
 
     return true;
 }
 bool cchan::_unbufferedrecv(void **pdata)
 {
-    r_mu.lock();
-    m_mu.lock();
+    m_rmu.lock();
+    m_mmu.lock();
 
-    while (!closed 
-        && INIT_NUMBER == w_waiting)
+    while (!m_closed 
+        && INIT_NUMBER == m_wwaiting)
     {
         //阻塞直到有数据.
-        r_waiting++;
-        r_cond.wait(&m_mu);
-        r_waiting--;
+        m_rwaiting++;
+        m_rcond.wait(&m_mmu);
+        m_rwaiting--;
     }
 
-    if (closed)
+    if (m_closed)
     {
-        m_mu.unlock();
-        r_mu.unlock();
+        m_mmu.unlock();
+        m_rmu.unlock();
         return false;
     }
 
     if (NULL != pdata)
     {
-        *pdata = data;
+        *pdata = m_data;
     }
-    w_waiting--;
+    m_wwaiting--;
 
     //通知可写.
-    w_cond.signal();
+    m_wcond.signal();
 
-    m_mu.unlock();
-    r_mu.unlock();
+    m_mmu.unlock();
+    m_rmu.unlock();
 
     return true;
-}
-bool cchan::send(void *pdata)
-{
-    if (isclosed())
-    {
-        return false;
-    }
-
-    return NULL != queue ? _bufferedsend(pdata) : _unbufferedsend(pdata);
-}
-bool cchan::recv(void **pdata)
-{
-    return NULL != queue ? _bufferedrecv(pdata) : _unbufferedrecv(pdata);
-}
-int32_t cchan::size()
-{
-    int32_t size = INIT_NUMBER;
-    if (NULL != queue)
-    {
-        m_mu.lock();
-        size = queue->getsize();
-        m_mu.unlock();
-    }
-
-    return size;
-}
-bool cchan::canrecv()
-{
-    if (NULL != queue)
-    {
-        return size() > INIT_NUMBER;
-    }
-
-    m_mu.lock();
-    bool bcanrecv = w_waiting > INIT_NUMBER;
-    m_mu.unlock();
-
-    return bcanrecv;
-}
-bool cchan::cansend()
-{
-    bool bsend;
-    if (NULL != queue)
-    {
-        m_mu.lock();
-        bsend = queue->getsize() < queue->getcap();
-        m_mu.unlock();
-    }
-    else
-    {
-        m_mu.lock();
-        bsend = r_waiting > INIT_NUMBER;
-        m_mu.unlock();
-    }
-
-    return bsend;
 }
 int32_t cchan::select(cchan *precv[], const int32_t &irecv_count, void **precv_out,
     cchan *psend[], const int32_t &isend_count, void *psend_msgs[])
@@ -248,7 +183,7 @@ int32_t cchan::select(cchan *precv[], const int32_t &irecv_count, void **precv_o
             select_ctx stselect;
             stselect.recv = true;
             stselect.pchan = pchan;
-            stselect.pmsg_in = NULL;
+            stselect.pmsgin = NULL;
             stselect.index = i;
             pselect[icount++] = stselect;
         }
@@ -261,7 +196,7 @@ int32_t cchan::select(cchan *precv[], const int32_t &irecv_count, void **precv_o
             select_ctx stselect;
             stselect.recv = false;
             stselect.pchan = pchan;
-            stselect.pmsg_in = psend_msgs[i];
+            stselect.pmsgin = psend_msgs[i];
             stselect.index = i + irecv_count;
             pselect[icount++] = stselect;
         }
@@ -284,7 +219,7 @@ int32_t cchan::select(cchan *precv[], const int32_t &irecv_count, void **precv_o
     }
     else
     {
-        if (!stselect.pchan->send(stselect.pmsg_in))
+        if (!stselect.pchan->send(stselect.pmsgin))
         {
             SAFE_DELARR(pselect);
             return ERR_FAILED;
