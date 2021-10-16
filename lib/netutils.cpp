@@ -3,7 +3,7 @@
 
 SREY_NS_BEGIN
 
-void socknodelay(const SOCKET &fd)
+void socknodelay(SOCKET &fd)
 {
     int32_t iflag = 1;
     if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (char *)&iflag, (int32_t)sizeof(iflag)) < ERR_OK)
@@ -12,7 +12,7 @@ void socknodelay(const SOCKET &fd)
             (int32_t)fd, iflag, (int32_t)sizeof(iflag), ERRORSTR(ERRNO));
     }
 }
-void socknbio(const SOCKET &fd)
+void socknbio(SOCKET &fd)
 {
 #ifdef OS_WIN
     u_long ulflag = 1;
@@ -37,7 +37,7 @@ void socknbio(const SOCKET &fd)
     }
 #endif
 }
-void sockraddr(const SOCKET &fd)
+void sockraddr(SOCKET &fd)
 {
     int32_t iflag = 1;
     if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (char *)&iflag, (int32_t)sizeof(iflag)) < ERR_OK)
@@ -54,7 +54,7 @@ bool checkrport()
     return false;
 #endif
 }
-void sockrport(const SOCKET &lsfd)
+void sockrport(SOCKET &lsfd)
 {
 #ifdef SO_REUSEPORT
     int32_t iflag = 1;
@@ -65,7 +65,7 @@ void sockrport(const SOCKET &lsfd)
    }
 #endif 
 }
-void sockkpa(const SOCKET &fd, const int32_t &idelay, const int32_t &iintvl)
+void sockkpa(SOCKET &fd, const int32_t &idelay, const int32_t &iintvl)
 {
     int32_t iflag = 1;
     if (setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, (char *)&iflag, (int32_t)sizeof(iflag)) < ERR_OK)
@@ -127,15 +127,15 @@ void sockkpa(const SOCKET &fd, const int32_t &idelay, const int32_t &iintvl)
 
 #endif
 }
-SOCKET _socklsn(const char *ip, const uint16_t &port, const int32_t &backlog)
+SOCKET _socklsn(const char *pip, const uint16_t &usport, const int32_t &ibacklog)
 {
-    if (INIT_NUMBER == backlog)
+    if (INIT_NUMBER == ibacklog)
     {
         return INVALID_SOCK;
     }
 
     cnetaddr addr;
-    if (!addr.setaddr(ip, port))
+    if (!addr.setaddr(pip, usport))
     {
         return INVALID_SOCK;
     }
@@ -146,15 +146,15 @@ SOCKET _socklsn(const char *ip, const uint16_t &port, const int32_t &backlog)
         PRINTF("socket(AF_INET, SOCK_STREAM, 0) failed. %s", ERRORSTR(ERRNO));
         return INVALID_SOCK;
     }
-    if (ERR_OK != bind(fd, addr.getaddr(), (int32_t)addr.getsize()))
+    if (ERR_OK != bind(fd, addr.getaddr(), addr.getsize()))
     {
         PRINTF("bind(%d, ...) failed. %s", (int32_t)fd, ERRORSTR(ERRNO));
         SAFE_CLOSESOCK(fd);
         return INVALID_SOCK;
     }
-    if (ERR_OK != listen(fd, backlog))
+    if (ERR_OK != listen(fd, ibacklog))
     {
-        PRINTF("listen(%d, %d) failed. %s", (int32_t)fd, backlog, ERRORSTR(ERRNO));
+        PRINTF("listen(%d, %d) failed. %s", (int32_t)fd, ibacklog, ERRORSTR(ERRNO));
         SAFE_CLOSESOCK(fd);
         return INVALID_SOCK;
     }
@@ -175,7 +175,7 @@ SOCKET _sockcnt(const char *ip, const uint16_t &port)
         PRINTF("socket(AF_INET, SOCK_STREAM, 0) failed. %s", ERRORSTR(ERRNO));
         return INVALID_SOCK;
     }
-    if (ERR_OK != connect(fd, addr.getaddr(), (int32_t)addr.getsize()))
+    if (ERR_OK != connect(fd, addr.getaddr(), addr.getsize()))
     {
         PRINTF("connect(%d, ...) failed. %s", (int32_t)fd, ERRORSTR(ERRNO));
         SAFE_CLOSESOCK(fd);
@@ -193,7 +193,7 @@ bool sockpair(SOCKET acSock[2])
     }
 
     cnetaddr addr;
-    if (!addr.setlocaddr(fdlsn))
+    if (!addr.setloaddr(fdlsn))
     {
         SAFE_CLOSESOCK(fdlsn);
         return false;
@@ -206,8 +206,8 @@ bool sockpair(SOCKET acSock[2])
     }
 
     struct sockaddr_in listen_addr;
-    int32_t isize = sizeof(listen_addr);
-    SOCKET fdacp = accept(fdlsn, (struct sockaddr *) &listen_addr, (socklen_t*)&isize);
+    socklen_t isize = (socklen_t)sizeof(listen_addr);
+    SOCKET fdacp = accept(fdlsn, (struct sockaddr *) &listen_addr, &isize);
     if (INVALID_SOCK == fdacp)
     {
         PRINTF("accept(%d, ...) failed. %s", (int32_t)fdlsn, ERRORSTR(ERRNO));
@@ -216,7 +216,7 @@ bool sockpair(SOCKET acSock[2])
         return false;
     }
     SAFE_CLOSESOCK(fdlsn);
-    if (!addr.setlocaddr(fdcn))
+    if (!addr.setloaddr(fdcn))
     {
         SAFE_CLOSESOCK(fdacp);
         SAFE_CLOSESOCK(fdcn);

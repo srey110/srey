@@ -82,6 +82,7 @@
     #include <ObjBase.h>
     #include <Windows.h>
     #include <MSTcpIP.h>
+    #include <mswsock.h>
     #include <sys/timeb.h>
 #else
     #include <unistd.h>

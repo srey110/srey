@@ -9,12 +9,116 @@ using namespace SREY_NS;
 #pragma comment(lib, "vld.lib")
 #endif
 
+class AB
+{
+public:
+    AB()
+    {
+        paaa = new int;
+    };
+    ~AB()
+    {
+        printf("111111111111111\n");
+        delete paaa;
+    };
+
+private:
+    int *paaa;
+};
+
+struct A
+{
+    int aa;
+    char ac[100];
+    AB abcx;
+};
+struct B : A
+{
+    int bbb;
+    char *p;
+    void c()
+    {
+        int i = 0;
+    }
+};
+
 int main(int argc, char *argv[])
 {
-    cev ev;
+    A *p = new B();
+    delete p;
+    cchan chanscok(100);
+    ciocp iocp;  
+    SOCKET acpair[2];  
+    iocp.start();
+
+    //   ::/0  ::1
+    iocp.listener(&chanscok, "0.0.0.0", 15000, true);
+    /*iocp.listener(&chanscok, "0.0.0.0", 15001, false);
+    iocp.listener(&chanscok, "fe80::c95e:3ff8:a284:fe13%17", 15002, true);
+    iocp.listener(&chanscok, "0.0.0.0", 15003, true);
+
+    iocp.connectter(&chanscok, "fe80::c95e:3ff8:a284:fe13%17", 15002, false);
+    iocp.connectter(&chanscok, "127.0.0.1", 15003);
+
+    sockpair(acpair);
+
+    iocp.addsock(&chanscok, acpair[0]);
+    iocp.addsock(&chanscok, acpair[1]);
+
+    cnetaddr addrss;
+    SOCKET sock = socket(AF_INET, SOCK_DGRAM, 0);
+    addrss.setaddr("0.0.0.0", 0);
+    int32_t irtn = bind(sock, addrss.getaddr(), addrss.getsize());
+    if (ERR_OK != irtn)
+    {
+        PRINTF("%s", ERRORSTR(ERRNO));
+    }
+    iocp.addsock(&chanscok, sock);
+
+    sock = socket(AF_INET6, SOCK_DGRAM, 0);
+    addrss.setaddr("fe80::c95e:3ff8:a284:fe13%17", 0);
+    irtn = bind(sock, addrss.getaddr(), addrss.getsize());
+    if (ERR_OK != irtn)
+    {
+        PRINTF("%s", ERRORSTR(ERRNO));
+    }
+    iocp.addsock(&chanscok, sock);*/
+    //piocpev->stop();
+
+    struct event *pev;
+    while (true)
+    {
+        if (!chanscok.recvt(&pev))
+        {
+            continue;
+        }
+
+        switch (pev->evtype)
+        {
+            break;
+        case EV_ACCEPT:
+            {
+                struct sockctx *pctx = (struct sockctx *)pev->data;
+                printf("accept socket %d\n", (int32_t)pctx->sock);
+            }
+            break;
+        case EV_CONNECT:
+            break;
+        case EV_CLOSE:
+            break;
+        case EV_READ:
+            break;
+        case EV_WRITE:
+            break;
+        }
+        SAFE_DEL(pev);
+    }
+
+    return 0;
+    ctimeev timeev;
     ctimer objtimer;
     cthread thread;
-    thread.creat(&ev);
+    thread.creat(&timeev);
     thread.waitstart();
 
     srand((uint32_t)objtimer.nanosec() / 1000);
@@ -44,7 +148,7 @@ int main(int argc, char *argv[])
 
         if (ullast % 100 == INIT_NUMBER)
         {
-            ev.addtimer(&chan, rand() % (10 * 1000) + 10, NULL);
+            timeev.addtimer(&chan, rand() % (10 * 1000) + 10, NULL);
             uladd++;
         }
 

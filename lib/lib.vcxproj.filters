@@ -60,13 +60,17 @@
     <ClInclude Include="chainbuffer.h">
       <Filter>utils</Filter>
     </ClInclude>
-    <ClInclude Include="evtype.h">
-      <Filter>net</Filter>
-    </ClInclude>
-    <ClInclude Include="ev.h">
-      <Filter>net</Filter>
-    </ClInclude>
     <ClInclude Include="wot.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="iocp\iocp.h">
+      <Filter>net\iocp</Filter>
+    </ClInclude>
+    <ClInclude Include="netev.h">
+      <Filter>net</Filter>
+    </ClInclude>
+    <ClInclude Include="evtype.h" />
+    <ClInclude Include="timeev.h">
       <Filter>utils</Filter>
     </ClInclude>
   </ItemGroup>
@@ -102,8 +106,8 @@
     <ClCompile Include="chainbuffer.cpp">
       <Filter>utils</Filter>
     </ClCompile>
-    <ClCompile Include="ev.cpp">
-      <Filter>net</Filter>
+    <ClCompile Include="iocp\iocp.cpp">
+      <Filter>net\iocp</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>

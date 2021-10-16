@@ -23,8 +23,8 @@
     <ClInclude Include="chan.h" />
     <ClInclude Include="cond.h" />
     <ClInclude Include="errcode.h" />
-    <ClInclude Include="ev.h" />
     <ClInclude Include="evtype.h" />
+    <ClInclude Include="iocp\iocp.h" />
     <ClInclude Include="lib.h" />
     <ClInclude Include="lockguard.h" />
     <ClInclude Include="loger.h" />
@@ -33,6 +33,7 @@
     <ClInclude Include="md5\md5.h" />
     <ClInclude Include="mutex.h" />
     <ClInclude Include="netaddr.h" />
+    <ClInclude Include="netev.h" />
     <ClInclude Include="netutils.h" />
     <ClInclude Include="os.h" />
     <ClInclude Include="queue.h" />
@@ -42,6 +43,7 @@
     <ClInclude Include="snowflake.h" />
     <ClInclude Include="spinlock.h" />
     <ClInclude Include="thread.h" />
+    <ClInclude Include="timeev.h" />
     <ClInclude Include="timer.h" />
     <ClInclude Include="utils.h" />
     <ClInclude Include="wot.h" />
@@ -49,7 +51,7 @@
   <ItemGroup>
     <ClCompile Include="chainbuffer.cpp" />
     <ClCompile Include="chan.cpp" />
-    <ClCompile Include="ev.cpp" />
+    <ClCompile Include="iocp\iocp.cpp" />
     <ClCompile Include="loger.cpp" />
     <ClCompile Include="macfunc.cpp" />
     <ClCompile Include="md5\md5.c" />

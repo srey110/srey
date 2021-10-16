@@ -91,6 +91,9 @@ do\
 #define INIT_NUMBER 0
 #define ONEK 1024
 #define TIME_LENS 64
+#define SOCKKPA_DELAY 60
+#define SOCKKPA_INTVL 1
+#define SOCKK_BACKLOG 128
 
 #define MSEC    1000 //∫¡√Î
 #define USEC    1000000//Œ¢√Î

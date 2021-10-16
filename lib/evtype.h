@@ -12,16 +12,15 @@ enum EVTYPE
     EV_CONNECT,
     EV_CLOSE,
     EV_READ,
-    EV_WRITE
+    EV_WRITE,
+    EV_ADDLIS
 };
 
-struct EV
+struct event
 {
-    EVTYPE evtype;      //类型
-    class cchan *chan;  //接收消息的chan
+    EVTYPE evtype;      //类型  
+    int32_t code;       //ERR_OK 成功
     void *data;         //用户数据
-
-    virtual ~EV() {};
 };
 
 SREY_NS_END

@@ -7,9 +7,10 @@
 
 SREY_NS_BEGIN
 
-struct twnode : EV
+struct twnode : event
 {
     u_long expires;     //超时时间
+    class cchan *chan;  //接收消息的chan
     struct twnode *next;
 };
 struct twslot
@@ -75,6 +76,7 @@ public:
         pnode->chan = pchan;
         pnode->expires = _msec() + uimsec;
         pnode->next = NULL;
+        pnode->code = ERR_OK;
         pnode->evtype = EV_TIME;
 
         return m_chan->send((void *)pnode);
