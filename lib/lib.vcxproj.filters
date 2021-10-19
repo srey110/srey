@@ -1,0 +1,116 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClInclude Include="errcode.h" />
+    <ClInclude Include="macro.h" />
+    <ClInclude Include="os.h" />
+    <ClInclude Include="md5\md5.h">
+      <Filter>3rd\md5</Filter>
+    </ClInclude>
+    <ClInclude Include="sha1\sha1.h">
+      <Filter>3rd\sha1</Filter>
+    </ClInclude>
+    <ClInclude Include="lib.h" />
+    <ClInclude Include="mfunc.h" />
+    <ClInclude Include="cond.h">
+      <Filter>thread</Filter>
+    </ClInclude>
+    <ClInclude Include="mutex.h">
+      <Filter>thread</Filter>
+    </ClInclude>
+    <ClInclude Include="rwlock.h">
+      <Filter>thread</Filter>
+    </ClInclude>
+    <ClInclude Include="spinlock.h">
+      <Filter>thread</Filter>
+    </ClInclude>
+    <ClInclude Include="thread.h">
+      <Filter>thread</Filter>
+    </ClInclude>
+    <ClInclude Include="queue.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="chan.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="timer.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="evtype.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="wot.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="netaddr.h">
+      <Filter>net</Filter>
+    </ClInclude>
+    <ClInclude Include="netutils.h">
+      <Filter>net</Filter>
+    </ClInclude>
+    <ClInclude Include="snowflake.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="utils.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="md5\md5.c">
+      <Filter>3rd\md5</Filter>
+    </ClCompile>
+    <ClCompile Include="sha1\sha1.c">
+      <Filter>3rd\sha1</Filter>
+    </ClCompile>
+    <ClCompile Include="chan.c">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="netaddr.c">
+      <Filter>net</Filter>
+    </ClCompile>
+    <ClCompile Include="netutils.c">
+      <Filter>net</Filter>
+    </ClCompile>
+    <ClCompile Include="snowflake.c">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="utils.c">
+      <Filter>utils</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="thread">
+      <UniqueIdentifier>{c3602f97-56c6-40eb-9d7b-15045b57eb2d}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="3rd">
+      <UniqueIdentifier>{04d282d5-d125-439a-916c-62b01b05a4b6}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="3rd\md5">
+      <UniqueIdentifier>{347a11da-ff24-4bdd-a5cb-540ee892e8c9}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="3rd\sha1">
+      <UniqueIdentifier>{dc81c5db-a752-4968-bdab-d33733bb2cfa}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="utils">
+      <UniqueIdentifier>{27f9d699-1248-4959-b1d9-b0ceeff862a6}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="net">
+      <UniqueIdentifier>{bcc74df3-4dc9-456c-b9ce-be3bd9b20b95}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="chan">
+      <UniqueIdentifier>{87aaac95-e823-4955-958c-0ef0c55ba418}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="net\epoll">
+      <UniqueIdentifier>{c81b7481-b9cc-4bc0-8d7a-45534fa8ff67}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="net\evport">
+      <UniqueIdentifier>{d58a599b-6ca9-49a4-a6b6-2cdfc4537312}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="net\iocp">
+      <UniqueIdentifier>{67cbf2a7-ccbb-41a3-9cdd-eb0083d1ef93}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="net\kqueue">
+      <UniqueIdentifier>{68541321-4eaa-42cd-8b60-66b08cb28bac}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>
