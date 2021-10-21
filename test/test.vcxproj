@@ -20,10 +20,12 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="test.c" />
+    <ClCompile Include="test_buffer.c" />
     <ClCompile Include="test_thread.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="test.h" />
+    <ClInclude Include="test_buffer.h" />
     <ClInclude Include="test_thread.h" />
   </ItemGroup>
   <PropertyGroup Label="Globals">

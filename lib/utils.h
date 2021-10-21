@@ -13,13 +13,7 @@ uint64_t ntohl64(const uint64_t ulval);
 * \brief          cpu核数
 * \return         cpu核数
 */
-uint32_t procsnum();
-/*
-* \brief          判断文件是否存在
-* \param pname    文件名
-* \return         ERR_OK 存在
-*/
-int32_t fileexist(const char *pname);
+uint16_t procsnum();
 /*
 * \brief          判断是否为文件
 * \param pname    文件名
@@ -40,17 +34,11 @@ int32_t isdir(const char *pname);
 */
 int64_t filesize(const char *pname);
 /*
-* \brief          文件路径
-* \param path     全路径
-* \param acpath   路径
-*/
-void dirnam(const char *path, char acpath[PATH_LENS]);
-/*
 * \brief          获取当前程序所在路径
 * \param acpath   路径
 * \return         ERR_OK 成功
 */
-int32_t getpath(char acpath[PATH_LENS]);
+int32_t getprocpath(char acpath[PATH_LENS]);
 /*
 * \brief          获取时间
 * \param ptv      timeval

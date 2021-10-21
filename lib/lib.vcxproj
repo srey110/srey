@@ -19,11 +19,14 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="buffer.h" />
     <ClInclude Include="chan.h" />
     <ClInclude Include="cond.h" />
     <ClInclude Include="errcode.h" />
+    <ClInclude Include="event.h" />
     <ClInclude Include="evtype.h" />
     <ClInclude Include="lib.h" />
+    <ClInclude Include="loger.h" />
     <ClInclude Include="macro.h" />
     <ClInclude Include="md5\md5.h" />
     <ClInclude Include="mfunc.h" />
@@ -42,7 +45,10 @@
     <ClInclude Include="wot.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="buffer.c" />
     <ClCompile Include="chan.c" />
+    <ClCompile Include="event.c" />
+    <ClCompile Include="loger.c" />
     <ClCompile Include="md5\md5.c" />
     <ClCompile Include="netaddr.c" />
     <ClCompile Include="netutils.c" />

@@ -27,15 +27,23 @@ do\
 
 #if defined(OS_WIN)
     #define PATH_SEPARATOR '\\'
+    #define PATH_SEPARATORSTR "\\"
     #define socklen_t int
     #define PATH_LENS MAX_PATH
     #define INVALID_SOCK INVALID_SOCKET
 #else
     #define PATH_SEPARATOR '/'
+    #define PATH_SEPARATORSTR "/"
     #define SIGNAL_EXIT SIGRTMIN + 10
     #define SOCKET int
-    #define PATH_LENS PATH_MAX
     #define INVALID_SOCK -1
+    #if defined(PATH_MAX)
+        #define PATH_LENS PATH_MAX
+    #elif defined(MAXPATHLEN)
+        #define PATH_LENS MAXPATHLEN
+    #else
+        #define PATH_LENS 256
+    #endif
 #endif
 
 #define CONCAT2(a, b) a b

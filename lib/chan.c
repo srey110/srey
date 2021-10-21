@@ -4,7 +4,7 @@ typedef struct select_ctx
 {
     int32_t recv;
     int32_t index;
-    void *pmsgin;
+    void *pmsg_in;
     struct chan_ctx *chan;
 } select_ctx;
 
@@ -120,8 +120,8 @@ int32_t _unbufferedsend(struct chan_ctx *pctx, void* pdata)
     }
 
     pctx->data = pdata;
-    pctx->wwaiting++;
 
+    pctx->wwaiting++;
     if (pctx->rwaiting > 0)
     {
         // 激发读取.
@@ -158,8 +158,8 @@ int32_t _unbufferedrecv(struct chan_ctx *pctx, void **pdata)
     }
 
     *pdata = pctx->data;
-    pctx->wwaiting--;
 
+    pctx->wwaiting--;
     //通知可写.
     cond_signal(&pctx->wcond);
 
@@ -246,12 +246,11 @@ int32_t chan_select(struct chan_ctx *precv[], const int32_t irecv_count, void **
         struct chan_ctx *pchan = precv[i];
         if (ERR_OK == chan_canrecv(pchan))
         {
-            struct select_ctx stselect;
-            stselect.recv = 1;
-            stselect.chan = pchan;
-            stselect.pmsgin = NULL;
-            stselect.index = i;
-            pselect[icount++] = stselect;
+            pselect[icount].recv = 1;
+            pselect[icount].chan = pchan;
+            pselect[icount].pmsg_in = NULL;
+            pselect[icount].index = i;
+            icount++;
         }
     }
     for (i = 0; i < isend_count; i++)
@@ -259,25 +258,23 @@ int32_t chan_select(struct chan_ctx *precv[], const int32_t irecv_count, void **
         struct chan_ctx *pchan = psend[i];
         if (ERR_OK == chan_cansend(pchan))
         {
-            struct select_ctx stselect;
-            stselect.recv = 0;
-            stselect.chan = pchan;
-            stselect.pmsgin = psend_msgs[i];
-            stselect.index = i + irecv_count;
-            pselect[icount++] = stselect;
+            pselect[icount].recv = 0;
+            pselect[icount].chan = pchan;
+            pselect[icount].pmsg_in = psend_msgs[i];
+            pselect[icount].index = i + irecv_count;
+            icount++;
         }
     }
-
     if (0 == icount)
     {
         SAFE_FREE(pselect);
         return ERR_FAILED;
     }
 
-    struct select_ctx stselect = pselect[rand() % icount];
-    if (1 == stselect.recv)
+    struct select_ctx *pselected = &pselect[rand() % icount];
+    if (1 == pselected->recv)
     {
-        if (ERR_OK != chan_recv(stselect.chan, precv_out))
+        if (ERR_OK != chan_recv(pselected->chan, precv_out))
         {
             SAFE_FREE(pselect);
             return ERR_FAILED;
@@ -285,14 +282,14 @@ int32_t chan_select(struct chan_ctx *precv[], const int32_t irecv_count, void **
     }
     else
     {
-        if (ERR_OK != chan_send(stselect.chan, stselect.pmsgin))
+        if (ERR_OK != chan_send(pselected->chan, pselected->pmsg_in))
         {
             SAFE_FREE(pselect);
             return ERR_FAILED;
         }
     }
 
-    int32_t idex = stselect.index;
+    int32_t idex = pselected->index;
     SAFE_FREE(pselect);
 
     return idex;

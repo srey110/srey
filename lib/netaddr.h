@@ -3,13 +3,11 @@
 
 #include "macro.h"
 
-#define  IPV4 0
-#define  IPV6 1
 struct netaddr_ctx
 {
-    int32_t m_type;
-    struct sockaddr_in	m_ipv4;
-    struct sockaddr_in6 m_ipv6;
+    int32_t type;
+    struct sockaddr_in	ipv4;
+    struct sockaddr_in6 ipv6;
 }netaddr_ctx;
 
 /*

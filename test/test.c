@@ -1,4 +1,5 @@
 #include "test_thread.h"
+#include "test_buffer.h"
 
 #ifdef OS_WIN
 #include "../vld/vld.h"
@@ -9,6 +10,7 @@
 
 int main(int argc, char *argv[])
 {
+    test_buffer();
     test_thread();
 
     return 0;

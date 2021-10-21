@@ -14,8 +14,18 @@
         #define OS_IOS
     #endif
     #define OS_DARWIN
-#elif defined(__FreeBSD__) || defined(__FreeBSD_kernel__) || defined(__NetBSD__) || defined(__OpenBSD__)
+#elif defined(__FreeBSD__) || defined(__FreeBSD_kernel__) 
     #define OS_BSD
+    #define OS_FBSD
+#elif defined(__NetBSD__)
+    #define OS_BSD
+    #define OS_NBSD
+#elif defined(__OpenBSD__)
+    #define OS_BSD
+    #define OS_OBSD
+endif defined(__DragonFly__)
+    #define OS_BSD
+    #define OS_DFBSD
 #elif defined(sun) || defined(__sun) || defined(__sun__)
     #define OS_SUN
 #elif defined _hpux
@@ -93,19 +103,23 @@
     #include <sys/wait.h>
     #include <sys/ioctl.h>
     #include <sys/syscall.h>
+    #include <sys/uio.h>
     #include <net/if.h>    
     #include <net/if_arp.h>
     #include <netinet/in.h>
     #include <netinet/tcp.h>
-    #include <arpa/inet.h>
+    #include <arpa/inet.h>    
     #if defined(OS_LINUX) 
     #elif defined(OS_AIX)
         #include <sys/systemcfg.h>
     #elif defined(OS_DARWIN)
         #include <mach/mach_time.h>
+        #include <mach-o/dyld.h>
     #elif defined(OS_SUN)
         #include <atomic.h>
         #include <sys/filio.h>
+    #elif defined (OS_BSD)
+        #include <sys/sysctl.h>
     #else
     #endif
 #endif // OS_WIN

@@ -32,20 +32,16 @@ uint64_t ntohl64(const uint64_t ulval)
 
 	return ulval;
 }
-uint32_t procsnum()
+uint16_t procsnum()
 {
 #if defined(OS_WIN)
 	SYSTEM_INFO stinfo;
 	GetSystemInfo(&stinfo);
 
-	return (uint32_t)stinfo.dwNumberOfProcessors;
+	return (uint16_t)stinfo.dwNumberOfProcessors;
 #else
-	return (uint32_t)sysconf(_SC_NPROCESSORS_ONLN);
+	return (uint16_t)sysconf(_SC_NPROCESSORS_ONLN);
 #endif
-}
-int32_t fileexist(const char *pname)
-{
-    return ACCESS(pname, 0);
 }
 int32_t isfile(const char *pname)
 {
@@ -92,29 +88,70 @@ int64_t filesize(const char *pname)
 
     return st.st_size;
 }
-void dirnam(const char *path, char acpath[PATH_LENS])
+void _dirnam(const char *path, char acpath[PATH_LENS])
 {
     size_t ilens = sizeof(acpath);
     ZERO(acpath, ilens);
     char *pret = strrchr(path, PATH_SEPARATOR);
     memcpy(acpath, path, pret - path);
+    acpath[pret - path] = '\0';
 }
-int32_t getpath(char acpath[PATH_LENS])
+int32_t getprocpath(char acpath[PATH_LENS])
 {
-    char actmp[PATH_LENS];
-    int32_t isize = 0;
+    char actmp[PATH_LENS] = {0};
+    size_t ilens = sizeof(actmp);
 #if defined(OS_WIN)
-    isize = (int32_t)GetModuleFileName(NULL, actmp, sizeof(actmp) - 1);
-#else
-    isize = readlink("/proc/self/exe", actmp, sizeof(actmp) - 1);
-#endif
-    if (0 >= isize
-        || sizeof(actmp) <= (size_t)isize)
+    if (0 == GetModuleFileName(NULL, actmp, (DWORD)ilens - 1))
     {
+        PRINTF("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
+#elif defined(OS_LINUX)
+    if (0 > readlink("/proc/self/exe", actmp, ilens - 1))
+    {
+        PRINTF("%s", ERRORSTR(ERRNO));
+        return ERR_FAILED;
+    }
+#elif defined(OS_NBSD)
+    if (0 > readlink("/proc/curproc/exe", actmp, ilens - 1))
+    {
+        PRINTF("%s", ERRORSTR(ERRNO));
+        return ERR_FAILED;
+    }
+#elif defined(OS_DFBSD)
+    if (0 > readlink("/proc/curproc/file", actmp, ilens - 1))
+    {
+        PRINTF("%s", ERRORSTR(ERRNO));
+        return ERR_FAILED;
+    }
+#elif defined(OS_SUN)  
+    char acin[64] = { 0 };
+    SNPRINTF(acin, sizeof(acin) - 1, "/proc/%d/path/a.out", (uint32_t)getpid());
+    if (0 > readlink(acin, actmp, ilens - 1))
+    {
+        PRINTF("%s", ERRORSTR(ERRNO));
+        return ERR_FAILED;
+    }
+#elif defined(OS_MAC)
+    if (0 != _NSGetExecutablePath(actmp, &ilens))
+    {
+        PRINTF("%s", ERRORSTR(ERRNO));
+        return ERR_FAILED;
+    }
+#elif defined(OS_FBSD)
+    int32_t ainame[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME };
+    ainame[3] = getpid();
+    if (0 != sysctl(ainame, 4, actmp, &ilens, NULL, 0))
+    {
+        PRINTF("%s", ERRORSTR(ERRNO));
+        return ERR_FAILED;
+    }
+#else
+    PRINTF("%s", "not support.");
+    return ERR_FAILED;
+#endif
 
-    dirnam(actmp, acpath);
+    _dirnam(actmp, acpath);
     return ERR_OK;
 }
 void timeofday(struct timeval *ptv)

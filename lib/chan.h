@@ -19,11 +19,12 @@ typedef struct chan_ctx
     void *data;
 }chan_ctx;
 /*
+* \brief   初始化
 * \param   icapacity 大于0 带缓存非阻塞
 */
 void chan_init(struct chan_ctx *pctx, const int32_t icapacity);
 /*
-* \param   释放
+* \brief   释放
 */
 void chan_free(struct chan_ctx *pctx);
 

@@ -3,9 +3,11 @@
   <ItemGroup>
     <ClCompile Include="test.c" />
     <ClCompile Include="test_thread.c" />
+    <ClCompile Include="test_buffer.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="test_thread.h" />
     <ClInclude Include="test.h" />
+    <ClInclude Include="test_buffer.h" />
   </ItemGroup>
 </Project>

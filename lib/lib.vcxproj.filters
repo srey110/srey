@@ -36,12 +36,6 @@
     <ClInclude Include="timer.h">
       <Filter>utils</Filter>
     </ClInclude>
-    <ClInclude Include="evtype.h">
-      <Filter>utils</Filter>
-    </ClInclude>
-    <ClInclude Include="wot.h">
-      <Filter>utils</Filter>
-    </ClInclude>
     <ClInclude Include="netaddr.h">
       <Filter>net</Filter>
     </ClInclude>
@@ -53,6 +47,21 @@
     </ClInclude>
     <ClInclude Include="utils.h">
       <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="loger.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="buffer.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="wot.h">
+      <Filter>event</Filter>
+    </ClInclude>
+    <ClInclude Include="evtype.h">
+      <Filter>event</Filter>
+    </ClInclude>
+    <ClInclude Include="event.h">
+      <Filter>event</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -76,6 +85,15 @@
     </ClCompile>
     <ClCompile Include="utils.c">
       <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="loger.c">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="buffer.c">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="event.c">
+      <Filter>event</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -111,6 +129,9 @@
     </Filter>
     <Filter Include="net\kqueue">
       <UniqueIdentifier>{68541321-4eaa-42cd-8b60-66b08cb28bac}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="event">
+      <UniqueIdentifier>{8433cff8-29d1-442a-a30f-10c3f600fbae}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
 </Project>
