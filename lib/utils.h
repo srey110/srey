@@ -8,7 +8,35 @@
 * \param ulval    需要转换的值
 * \return         转换后的值
 */
-uint64_t ntohl64(const uint64_t ulval);
+static inline uint64_t ntohl64(const uint64_t ulval)
+{
+    //大小端
+    static union
+    {
+        char a[4];
+        uint32_t ul;
+    }endian = { { 'L', '?', '?', 'B' } };
+    #define ENDIAN ((char)endian.ul) 
+    if ('L' == ENDIAN)
+    {
+        uint64_t uiret = 0;
+        uint32_t ulhigh, ullow;
+
+        ullow = ulval & 0xFFFFFFFF;
+        ulhigh = (ulval >> 32) & 0xFFFFFFFF;
+
+        ullow = ntohl(ullow);
+        ulhigh = ntohl(ulhigh);
+
+        uiret = ullow;
+        uiret <<= 32;
+        uiret |= ulhigh;
+
+        return uiret;
+    }
+
+    return ulval;
+};
 /*
 * \brief          cpu核数
 * \return         cpu核数
@@ -43,29 +71,76 @@ int32_t getprocpath(char acpath[PATH_LENS]);
 * \brief          获取时间
 * \param ptv      timeval
 */
-void timeofday(struct timeval *ptv);
+static inline void timeofday(struct timeval *ptv)
+{
+#if defined(OS_WIN)
+    #define U64_LITERAL(n) n##ui64
+    #define EPOCH_BIAS U64_LITERAL(116444736000000000)
+    #define UNITS_PER_SEC U64_LITERAL(10000000)
+    #define USEC_PER_SEC U64_LITERAL(1000000)
+    #define UNITS_PER_USEC U64_LITERAL(10)
+    union
+    {
+        FILETIME ft_ft;
+        uint64_t ft_64;
+    } ft;
+
+    GetSystemTimeAsFileTime(&ft.ft_ft);
+    ft.ft_64 -= EPOCH_BIAS;
+    ptv->tv_sec = (long)(ft.ft_64 / UNITS_PER_SEC);
+    ptv->tv_usec = (long)((ft.ft_64 / UNITS_PER_USEC) % USEC_PER_SEC);
+#else
+    (void)gettimeofday(ptv, NULL);
+#endif
+};
 /*
 * \brief          获取当前时间戳  毫秒
 * \return         时间  毫秒
 */
-uint64_t nowmsec();
+static inline uint64_t nowmsec()
+{
+    struct timeval tv;
+    timeofday(&tv);
+    return (uint64_t)tv.tv_usec / 1000 + (uint64_t)tv.tv_sec * 1000;
+};
 /*
 * \brief          获取当前时间戳  秒
 * \return         时间  秒
 */
-uint64_t nowsec();
+static inline uint64_t nowsec()
+{
+    struct timeval tv;
+    timeofday(&tv);
+    return (uint64_t)tv.tv_sec;
+};
 /*
 * \brief          格式化输出当前时间戳 秒
 * \param pformat  格式   %Y-%m-%d %H:%M:%S 
 * \param atime    格式后的时间字符串  秒       
 */ 
-void nowtime(const char *pformat, char atime[TIME_LENS]);
+static inline void nowtime(const char *pformat, char atime[TIME_LENS])
+{
+    struct timeval tv;
+    timeofday(&tv);
+    time_t t = tv.tv_sec;
+    ZERO(atime, TIME_LENS);
+    strftime(atime, TIME_LENS - 1, pformat, localtime(&t));
+};
 /*
 * \brief          格式化输出当前时间戳 毫秒
 * \param pformat  格式   %Y-%m-%d %H:%M:%S
 * \param atime    格式后的时间字符串 毫秒
 */
-void nowmtime(const char *pformat, char atime[TIME_LENS]);
+static inline void nowmtime(const char *pformat, char atime[TIME_LENS])
+{
+    struct timeval tv;
+    timeofday(&tv);
+    time_t t = tv.tv_sec;
+    ZERO(atime, TIME_LENS);
+    strftime(atime, TIME_LENS - 1, pformat, localtime(&t));
+    size_t uilen = strlen(atime);
+    SNPRINTF(atime + uilen, TIME_LENS - uilen - 1, " %03d", (int32_t)(tv.tv_usec / 1000));
+};
 /*
 * \brief          计算crc16
 * \param pval     待计算

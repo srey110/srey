@@ -78,6 +78,7 @@ do\
 #define ONEK 1024
 #define TIME_LENS 64
 #define IP_LENS   64
+#define PORT_LENS 8
 #define SOCKKPA_DELAY 60
 #define SOCKKPA_INTVL 1
 #define SOCKK_BACKLOG 128

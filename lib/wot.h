@@ -25,7 +25,7 @@ typedef struct twslot_ctx
 struct wot_ctx
 {
     u_long jiffies;
-    struct chan_ctx chan;
+    struct chan_ctx *chan;
     struct twslot_ctx tv1[TVR_SIZE];
     struct twslot_ctx tv2[TVN_SIZE];
     struct twslot_ctx tv3[TVN_SIZE];
@@ -34,9 +34,10 @@ struct wot_ctx
 }wot_ctx;
 /*
 * \brief               初始化
+* \param  pchan        wot_add用
 * \param  uicurtick    当前tick
 */
-static inline void wot_init(struct wot_ctx *pctx, const u_long ulcurtick)
+static void wot_init(struct wot_ctx *pctx, struct chan_ctx *pchan, const u_long ulcurtick)
 {
     ZERO(pctx->tv1, sizeof(pctx->tv1));
     ZERO(pctx->tv2, sizeof(pctx->tv2));
@@ -44,9 +45,9 @@ static inline void wot_init(struct wot_ctx *pctx, const u_long ulcurtick)
     ZERO(pctx->tv4, sizeof(pctx->tv4));
     ZERO(pctx->tv5, sizeof(pctx->tv5));
     pctx->jiffies = ulcurtick;
-    chan_init(&pctx->chan, ONEK);
+    pctx->chan = pchan;
 };
-static inline void _free(struct twslot_ctx *pslot, const size_t uilens)
+static void _free(struct twslot_ctx *pslot, const size_t uilens)
 {
     struct twnode_ctx *pnode, *pdel;
     for (size_t i = 0; i < uilens; i++)
@@ -63,14 +64,13 @@ static inline void _free(struct twslot_ctx *pslot, const size_t uilens)
 /*
 * \brief          释放
 */
-static inline void wot_free(struct wot_ctx *pctx)
+static void wot_free(struct wot_ctx *pctx)
 {
     _free(pctx->tv1, TVR_SIZE);
     _free(pctx->tv2, TVN_SIZE);
     _free(pctx->tv3, TVN_SIZE);
     _free(pctx->tv4, TVN_SIZE);
     _free(pctx->tv5, TVN_SIZE);
-    chan_free(&pctx->chan);
 };
 /*
 * \brief               添加一超时事件
@@ -92,7 +92,12 @@ static inline int32_t wot_add(struct wot_ctx *pctx, struct chan_ctx *pchan,
     pnode->expires = ulcurtick + uitick;
     pnode->next = NULL;
 
-    return chan_send(&pctx->chan, (void *)pnode);
+    if (ERR_OK != chan_send(pctx->chan, (void *)&pnode->ev))
+    {
+        SAFE_FREE(pnode);
+        return ERR_FAILED;
+    }
+    return ERR_OK;
 };
 static inline void _insert(struct twslot_ctx *pslot, struct twnode_ctx *pnode)
 {
@@ -196,18 +201,13 @@ static inline void _run(struct wot_ctx *pctx)
 /*
 * \brief          执行时间轮
 */
-static inline void wot_run(struct wot_ctx *pctx, const u_long ulcurtick)
+static inline void wot_run(struct wot_ctx *pctx, struct ev_ctx *pev, const u_long ulcurtick)
 {
-    void *ptmp;
-    struct twnode_ctx *pnode;
-    while (ERR_OK == chan_canrecv(&pctx->chan))
+    if (NULL != pev
+        && EV_TIME == pev->evtype)
     {
-        ptmp = NULL;
-        if (ERR_OK == chan_recv(&pctx->chan, &ptmp))
-        {
-            pnode = (struct twnode_ctx *)ptmp;
-            _insert(_getslot(pctx, pnode), pnode);
-        }
+        struct twnode_ctx *pnode = UPCAST(pev, struct twnode_ctx, ev);
+        _insert(_getslot(pctx, pnode), pnode);
     }
 
     while (pctx->jiffies <= ulcurtick)

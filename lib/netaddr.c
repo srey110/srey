@@ -1,8 +1,5 @@
 #include "netaddr.h"
 
-#define  IPV4 0
-#define  IPV6 1
-
 void _clear(struct netaddr_ctx *pctx)
 {
     ZERO(&pctx->ipv4, sizeof(pctx->ipv4));
@@ -73,7 +70,7 @@ int32_t netaddr_sethost(struct netaddr_ctx *pctx, const char *phost, const uint1
 
     return ERR_OK;
 }
-int32_t _setaddr(struct netaddr_ctx *pctx, const struct sockaddr *paddr)
+int32_t netaddr_setaddr(struct netaddr_ctx *pctx, const struct sockaddr *paddr)
 {
     if (NULL == paddr)
     {
@@ -111,7 +108,7 @@ int32_t netaddr_remoteaddr(struct netaddr_ctx *pctx, const SOCKET fd)
         return ERRNO;
     }
 
-    return _setaddr(pctx, &staddr);
+    return netaddr_setaddr(pctx, &staddr);
 }
 int32_t netaddr_localaddr(struct netaddr_ctx *pctx, const SOCKET fd)
 {
@@ -130,63 +127,5 @@ int32_t netaddr_localaddr(struct netaddr_ctx *pctx, const SOCKET fd)
         return ERRNO;
     }
 
-    return _setaddr(pctx, &staddr);
-}
-struct sockaddr *netaddr_addr(struct netaddr_ctx *pctx)
-{
-    if (IPV4 == pctx->type)
-    {
-        return (struct sockaddr*)&pctx->ipv4;
-    }
-    else
-    {
-        return (struct sockaddr*)&pctx->ipv6;
-    }
-}
-socklen_t netaddr_size(struct netaddr_ctx *pctx)
-{
-    if (IPV4 == pctx->type)
-    {
-        return (socklen_t)sizeof(pctx->ipv4);
-    }
-    else
-    {
-        return (socklen_t)sizeof(pctx->ipv6);
-    }
-}
-int32_t netaddr_ip(struct netaddr_ctx *pctx, char acip[IP_LENS])
-{
-    int32_t irtn;
-    int32_t ilens = (int32_t)sizeof(acip);
-    ZERO(acip, ilens);
-
-    if (IPV4 == pctx->type)
-    {
-        irtn = getnameinfo((struct sockaddr*)&pctx->ipv4, (socklen_t)sizeof(pctx->ipv4), acip, ilens, NULL, 0, NI_NUMERICHOST);
-    }
-    else
-    {
-        irtn = getnameinfo((struct sockaddr*)&pctx->ipv6, (socklen_t)sizeof(pctx->ipv6), acip, ilens, NULL, 0, NI_NUMERICHOST);
-    }
-
-    return irtn;
-}
-uint16_t netaddr_port(struct netaddr_ctx *pctx)
-{
-    if (IPV4 == pctx->type)
-    {
-        return ntohs(pctx->ipv4.sin_port);
-    }
-    else
-    {
-        return ntohs(pctx->ipv6.sin6_port);
-    }
-}
-int32_t netaddr_isipv4(struct netaddr_ctx *pctx)
-{
-    return IPV4 == pctx->type ? ERR_OK : ERR_FAILED;
-}
-int32_t netaddr_addrfamily(struct netaddr_ctx *pctx)
-{
-    return IPV4 == pctx->type ? AF_INET : AF_INET6;
+    return netaddr_setaddr(pctx, &staddr);
 }

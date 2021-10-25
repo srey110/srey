@@ -81,6 +81,8 @@ endif defined(__DragonFly__)
     #include <direct.h>
     #include <process.h>
     #include <ObjBase.h>
+    #include <minwindef.h>
+    #include <guiddef.h>
     #include <Windows.h>
     #include <MSTcpIP.h>
     #include <mswsock.h>

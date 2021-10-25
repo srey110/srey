@@ -3,6 +3,7 @@
 typedef struct buffernode_ctx
 {
     struct buffernode_ctx *next;
+    int32_t used;
     size_t buffer_len;
     size_t misalign;
     size_t off;
@@ -17,6 +18,7 @@ typedef struct buffernode_ctx
 #define RECOED_IOV(ch, lens) \
     piov[index].IOV_PTR_FIELD = NODE_SPACE_PTR(ch);\
     piov[index].IOV_LEN_FIELD = (IOV_LEN_TYPE)lens;\
+    ch->used = 1;\
     index++
 
 //新建一节点
@@ -222,7 +224,7 @@ size_t _buffer_expand_iov(struct buffer_ctx *pctx, const size_t uilens,
         if (uiused == uicount)
         {
             break;
-        }            
+        }
     }
     //没有达到最大节点数，空间还不够
     if (uiused < uicount) 
@@ -295,35 +297,32 @@ static void _last_with_data(struct buffer_ctx *pctx)
         }
     }
 }
-size_t _buffer_commit_iov(struct buffer_ctx *pctx, IOV_TYPE *piov, const size_t uicount)
+size_t _buffer_commit_iov(struct buffer_ctx *pctx, size_t uilens, IOV_TYPE *piov, const size_t uicount)
 {
-    struct buffernode_ctx *pnode, **pfirst, **pfill;
-    size_t uiadded = 0;
-    int32_t i;
     if (0 == uicount)
     {
         return 0;
     }
-    //只有一个
-    if (uicount == 1
-        && (pctx->tail && piov[0].IOV_PTR_FIELD == (void *)NODE_SPACE_PTR(pctx->tail)))
-    {
-        if ((size_t)piov[0].IOV_LEN_FIELD > (size_t)NODE_SPACE_LEN(pctx->tail))
-        {
-            return 0;
-        }
 
-        pctx->tail->off += piov[0].IOV_LEN_FIELD;
-        uiadded = piov[0].IOV_LEN_FIELD;
-        if (0 != uiadded)
+    //只有一个
+    if (1 == uicount
+        && NULL != pctx->tail 
+        && piov[0].IOV_PTR_FIELD == (void *)NODE_SPACE_PTR(pctx->tail))
+    {
+        ASSERTAB(uilens <= (size_t)NODE_SPACE_LEN(pctx->tail), "logic error.");
+        pctx->tail->used = 0;
+        pctx->tail->off += uilens;
+        pctx->total_len += uilens;
+        if (0 != uilens)
         {
             _last_with_data(pctx);
-        }
-        pctx->total_len += uiadded;
+        }        
 
-        return uiadded;
+        return uilens;
     }
 
+    int32_t i;
+    struct buffernode_ctx *pnode, **pfirst, **pfill;
     pfirst = pctx->tail_with_data;
     if (NULL == *pfirst)
     {
@@ -333,33 +332,49 @@ size_t _buffer_commit_iov(struct buffer_ctx *pctx, IOV_TYPE *piov, const size_t 
     {
         pfirst = &(*pfirst)->next;
     }
-    pnode = *pfirst;
+    
     //检查
+    pnode = *pfirst;
     for (i = 0; i < uicount; ++i)
     {
         if (NULL == pnode)
         {
             return 0;
         }
-        if (piov[i].IOV_PTR_FIELD != (void *)NODE_SPACE_PTR(pnode)
-            || (size_t)piov[i].IOV_LEN_FIELD > NODE_SPACE_LEN(pnode))
+        if (piov[i].IOV_PTR_FIELD != (void *)NODE_SPACE_PTR(pnode))
         {
             return 0;
         }
         pnode = pnode->next;
     }
     //填充
-    pfill = pfirst;
+    size_t uiadded = 0;
+    pfill = pfirst;    
     for (i = 0; i < uicount; ++i)
     {
-        (*pfill)->off += piov[i].IOV_LEN_FIELD;
-        uiadded += piov[i].IOV_LEN_FIELD;
-        if (0 != piov[i].IOV_LEN_FIELD)
+        (*pfill)->used = 0;
+        if (uilens > 0)
+        {
+            if (uilens >= piov[i].IOV_LEN_FIELD)
+            {
+                (*pfill)->off += piov[i].IOV_LEN_FIELD;
+                uiadded += piov[i].IOV_LEN_FIELD;
+                uilens -= piov[i].IOV_LEN_FIELD;
+            }
+            else
+            {
+                (*pfill)->off += uilens;
+                uiadded += uilens;
+                uilens = 0;
+            }
+        }
+        if ((*pfill)->off > 0)
         {
             pctx->tail_with_data = pfill;
         }
         pfill = &(*pfill)->next;
     }
+    ASSERTAB(0 == uilens, "logic error.");
     pctx->total_len += uiadded;
 
     return uiadded;
@@ -380,7 +395,7 @@ int32_t buffer_append(struct buffer_ctx *pctx, void *pdata, const size_t uilen)
     char *ptmp = (char*)pdata;
 
     buffer_lock(pctx);
-    if (0 != pctx->freeze_tail)
+    if (0 != pctx->freeze_write)
     {
         buffer_unlock(pctx);
         PRINTF("%s", "tail locked.");
@@ -391,7 +406,6 @@ int32_t buffer_append(struct buffer_ctx *pctx, void *pdata, const size_t uilen)
     size_t uiremain = uilen;
     size_t i, uioff = 0;
     size_t uinum = _buffer_expand_iov(pctx, uilen, piov, 2);
-    uinum = 3;
     for (i = 0; i < uinum, uiremain > 0; i++)
     {
         if ((IOV_LEN_TYPE)uiremain >= piov[i].IOV_LEN_FIELD)
@@ -407,8 +421,7 @@ int32_t buffer_append(struct buffer_ctx *pctx, void *pdata, const size_t uilen)
             uiremain = 0;
         }
     }
-    uinum = _buffer_commit_iov(pctx, piov, i);
-    ASSERTAB(uinum == uilen, "commit lens not equ buffer lens.");
+    ASSERTAB(uilen == _buffer_commit_iov(pctx, uilen, piov, uinum), "commit lens not equ buffer lens.");
 
     buffer_unlock(pctx);
     return ERR_OK;
@@ -416,7 +429,7 @@ int32_t buffer_append(struct buffer_ctx *pctx, void *pdata, const size_t uilen)
 int32_t buffer_appendv(struct buffer_ctx *pctx, const char *pfmt, ...)
 {
     buffer_lock(pctx);
-    if (0 != pctx->freeze_tail)
+    if (0 != pctx->freeze_write)
     {
         buffer_unlock(pctx);
         PRINTF("%s", "tail locked.");
@@ -427,6 +440,7 @@ int32_t buffer_appendv(struct buffer_ctx *pctx, const char *pfmt, ...)
     int32_t irtn, isize;
 
     struct buffernode_ctx *pnode = _buffer_expand_single(pctx, FIRST_FORMAT_IN_EXPAND);
+    pnode->used = 1;
     va_start(va, pfmt);
     while (1)
     {
@@ -435,15 +449,17 @@ int32_t buffer_appendv(struct buffer_ctx *pctx, const char *pfmt, ...)
         if ((irtn > -1)
             && (irtn < isize))
         {
+            pnode->used = 0;
             pnode->off += irtn;
             pctx->total_len += irtn;
             break;
         }
 
+        pnode->used = 0;
         pnode = _buffer_expand_single(pctx, irtn + 1);
+        pnode->used = 1;
     }
     va_end(va);
-
     buffer_unlock(pctx);
     return ERR_OK;
 }
@@ -479,7 +495,7 @@ static int32_t _copyout(struct buffer_ctx *pctx, void *pout, size_t uilens)
 int32_t buffer_copyout(struct buffer_ctx *pctx, void *pout, size_t uilens)
 {
     buffer_lock(pctx);
-    if (0 != pctx->freeze_head)
+    if (0 != pctx->freeze_read)
     {
         buffer_unlock(pctx);
         PRINTF("%s", "head locked.");
@@ -491,7 +507,7 @@ int32_t buffer_copyout(struct buffer_ctx *pctx, void *pout, size_t uilens)
 
     return irtn;
 }
-static int32_t _drain(struct buffer_ctx *pctx, size_t uilen)
+int32_t _buffer_drain(struct buffer_ctx *pctx, size_t uilen)
 {
     struct buffernode_ctx *pnode, *pnext;
     size_t uiremain, uioldlen;
@@ -501,7 +517,9 @@ static int32_t _drain(struct buffer_ctx *pctx, size_t uilen)
         return 0;
     }
 
-    if (uilen >= uioldlen)
+    if (uilen >= uioldlen
+        && NULL != pctx->tail
+        && 0 == pctx->tail->used)
     {
         uilen = uioldlen;
         for (pnode = pctx->head; NULL != pnode; pnode = pnext)
@@ -515,38 +533,60 @@ static int32_t _drain(struct buffer_ctx *pctx, size_t uilen)
         pctx->total_len = 0;
         return (int32_t)uilen;
     }
-
+    
+    if (uilen > uioldlen)
+    {
+        uilen = uioldlen;
+    }
     pctx->total_len -= uilen;
     uiremain = uilen;
     for (pnode = pctx->head; uiremain >= pnode->off; pnode = pnext)
     {
         pnext = pnode->next;
         uiremain -= pnode->off;
-        if (pnode == *pctx->tail_with_data
-            || &pnode->next == pctx->tail_with_data)
+        if (pnode == *pctx->tail_with_data)
         {
             pctx->tail_with_data = &pctx->head;
         }
-        SAFE_FREE(pnode);
+        if (&pnode->next == pctx->tail_with_data)
+        {
+            pctx->tail_with_data = &pctx->head;
+        }
+
+        if (0 == pnode->used)
+        {
+            SAFE_FREE(pnode);
+        }
+        else
+        {
+            ASSERTAB(0 == uiremain, "logic error.");
+            pnode->misalign += pnode->off;
+            pnode->off = 0;
+            break;
+        }
     }
 
     pctx->head = pnode;
-    pnode->misalign += uiremain;
-    pnode->off -= uiremain;
+    if (NULL != pnode)
+    {
+        ASSERTAB(uiremain <= pnode->off, "logic error.");
+        pnode->misalign += uiremain;
+        pnode->off -= uiremain;
+    }
 
     return (int32_t)uilen;
 }
 int32_t buffer_drain(struct buffer_ctx *pctx, size_t uilen)
 {
     buffer_lock(pctx);
-    if (0 != pctx->freeze_head)
+    if (0 != pctx->freeze_read)
     {
         buffer_unlock(pctx);
         PRINTF("%s", "head locked.");
         return ERR_FAILED;
     }
 
-    int32_t irtn = _drain(pctx, uilen);
+    int32_t irtn = _buffer_drain(pctx, uilen);
     buffer_unlock(pctx);
 
     return irtn;
@@ -554,7 +594,7 @@ int32_t buffer_drain(struct buffer_ctx *pctx, size_t uilen)
 int32_t buffer_remove(struct buffer_ctx *pctx, void *pout, size_t uilen)
 {
     buffer_lock(pctx);
-    if (0 != pctx->freeze_head)
+    if (0 != pctx->freeze_read)
     {
         buffer_unlock(pctx);
         PRINTF("%s", "head locked.");
@@ -564,7 +604,7 @@ int32_t buffer_remove(struct buffer_ctx *pctx, void *pout, size_t uilen)
     int32_t irn = _copyout(pctx, pout, uilen);
     if (irn > 0)
     {
-        ASSERTAB(irn == _drain(pctx, irn), "drain lens not equ copy lens.");
+        ASSERTAB(irn == _buffer_drain(pctx, irn), "drain lens not equ copy lens.");
     }
     buffer_unlock(pctx);
 
@@ -662,7 +702,7 @@ static int32_t _search(struct buffer_ctx *pctx, size_t uistart, char *pwhat, siz
 int32_t buffer_search(struct buffer_ctx *pctx, size_t uistart, void *pwhat, size_t uiwlens)
 {
     buffer_lock(pctx);
-    if (0 != pctx->freeze_head)
+    if (0 != pctx->freeze_read)
     {
         buffer_unlock(pctx);
         PRINTF("%s", "head locked.");
@@ -674,33 +714,38 @@ int32_t buffer_search(struct buffer_ctx *pctx, size_t uistart, void *pwhat, size
 
     return irtn;
 }
-size_t _buffer_get_iov(struct buffer_ctx *pctx, size_t uihowmuch,
-    IOV_TYPE *piov, size_t uiovsize, size_t *prealsize)
+size_t _buffer_get_iov(struct buffer_ctx *pctx, size_t uiatmost,
+    IOV_TYPE *piov, size_t uicount)
 {
-    struct buffernode_ctx *pnode = pctx->head;
-    size_t i = 0;
-    *prealsize = 0;
-
-    while (NULL != pnode
-        && i < uiovsize
-        && uihowmuch) 
+    if (uiatmost > pctx->total_len)
     {
-        piov[i].IOV_PTR_FIELD = (void *)(pnode->buffer + pnode->misalign);
-        if (uihowmuch >= pnode->off)
+        uiatmost = pctx->total_len;
+    }
+    if (0 == uiatmost)
+    {
+        return 0;
+    }
+
+    size_t index = 0;
+    struct buffernode_ctx *pnode = pctx->head;
+    while (NULL != pnode
+        && index < uicount
+        && uiatmost > 0) 
+    {
+        piov[index].IOV_PTR_FIELD = (void *)(pnode->buffer + pnode->misalign);
+        if (uiatmost >= pnode->off)
         {
-            piov[i++].IOV_LEN_FIELD = (IOV_LEN_TYPE)pnode->off;
-            uihowmuch -= pnode->off;
-            *prealsize += pnode->off;
+            piov[index].IOV_LEN_FIELD = (IOV_LEN_TYPE)pnode->off;
+            uiatmost -= pnode->off;
         }
         else
         {
-            piov[i++].IOV_LEN_FIELD = (IOV_LEN_TYPE)uihowmuch;
-            *prealsize += uihowmuch;
-            break;
+            piov[index].IOV_LEN_FIELD = (IOV_LEN_TYPE)uiatmost;
         }
+        index++;
 
         pnode = pnode->next;
     }
 
-    return i;
+    return index;
 }

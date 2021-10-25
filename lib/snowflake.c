@@ -30,7 +30,7 @@ void sfid_init(struct sfid_ctx *pctx, const int32_t icenterid, const int32_t iwo
     pctx->sequence = 0;
     pctx->lasttime = nowmsec();
 }
-uint64_t _untilnextms(struct sfid_ctx *pctx)
+static uint64_t _untilnextms(struct sfid_ctx *pctx)
 {
     uint64_t ulcur = nowmsec();
     while (ulcur <= pctx->lasttime)

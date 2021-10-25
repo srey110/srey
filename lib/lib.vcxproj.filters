@@ -55,13 +55,26 @@
       <Filter>utils</Filter>
     </ClInclude>
     <ClInclude Include="wot.h">
-      <Filter>event</Filter>
+      <Filter>utils</Filter>
     </ClInclude>
-    <ClInclude Include="evtype.h">
-      <Filter>event</Filter>
+    <ClInclude Include="evtype.h" />
+    <ClInclude Include="server.h">
+      <Filter>server</Filter>
     </ClInclude>
-    <ClInclude Include="event.h">
-      <Filter>event</Filter>
+    <ClInclude Include="iocp\iocp.h">
+      <Filter>net\iocp</Filter>
+    </ClInclude>
+    <ClInclude Include="kqueue\kqueue.h">
+      <Filter>net\kqueue</Filter>
+    </ClInclude>
+    <ClInclude Include="evport\evport.h">
+      <Filter>net\evport</Filter>
+    </ClInclude>
+    <ClInclude Include="epoll\epoll.h">
+      <Filter>net\epoll</Filter>
+    </ClInclude>
+    <ClInclude Include="sock.h">
+      <Filter>net</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -92,8 +105,20 @@
     <ClCompile Include="buffer.c">
       <Filter>utils</Filter>
     </ClCompile>
-    <ClCompile Include="event.c">
-      <Filter>event</Filter>
+    <ClCompile Include="server.c">
+      <Filter>server</Filter>
+    </ClCompile>
+    <ClCompile Include="iocp\iocp.c">
+      <Filter>net\iocp</Filter>
+    </ClCompile>
+    <ClCompile Include="kqueue\kqueue.c">
+      <Filter>net\kqueue</Filter>
+    </ClCompile>
+    <ClCompile Include="evport\evport.c">
+      <Filter>net\evport</Filter>
+    </ClCompile>
+    <ClCompile Include="epoll\epoll.c">
+      <Filter>net\epoll</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -130,7 +155,7 @@
     <Filter Include="net\kqueue">
       <UniqueIdentifier>{68541321-4eaa-42cd-8b60-66b08cb28bac}</UniqueIdentifier>
     </Filter>
-    <Filter Include="event">
+    <Filter Include="server">
       <UniqueIdentifier>{8433cff8-29d1-442a-a30f-10c3f600fbae}</UniqueIdentifier>
     </Filter>
   </ItemGroup>

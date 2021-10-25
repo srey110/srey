@@ -62,7 +62,7 @@ const char *_getlvstr(const LOG_LEVEL emlv)
 
     return "UNKNOWN";
 }
-void _worker_init(struct logworker_ctx *pctx)
+static void _worker_init(struct logworker_ctx *pctx)
 {
     pctx->path = NULL;
     pctx->file = NULL;
@@ -102,7 +102,7 @@ void _worker_init(struct logworker_ctx *pctx)
     }
 #endif  
 }
-void _worker_free(struct logworker_ctx *pctx)
+static void _worker_free(struct logworker_ctx *pctx)
 {
     if (NULL != pctx->file)
     {
@@ -111,7 +111,7 @@ void _worker_free(struct logworker_ctx *pctx)
     }
     SAFE_FREE(pctx->path);
 }
-int32_t _worker_getfile(struct logworker_ctx *pctx)
+static inline int32_t _worker_getfile(struct logworker_ctx *pctx)
 {
     if (NULL == pctx->path)
     {
@@ -146,14 +146,14 @@ int32_t _worker_getfile(struct logworker_ctx *pctx)
 
     return ERR_OK;
 }
-void _worker_writelog(struct logworker_ctx *pctx, struct loginfo_ctx *pinfo)
+static inline void _worker_writelog(struct logworker_ctx *pctx, struct loginfo_ctx *pinfo)
 {
     const char *pn = "\n";
     (void)fwrite(pinfo->time, 1, strlen(pinfo->time), pctx->file);
     (void)fwrite(pinfo->plog, 1, strlen(pinfo->plog), pctx->file);
     (void)fwrite(pn, 1, strlen(pn), pctx->file);
 }
-void _worker_printlog(struct logworker_ctx *pctx, struct loginfo_ctx *pinfo)
+static inline void _worker_printlog(struct logworker_ctx *pctx, struct loginfo_ctx *pinfo)
 {
     if (0 == ATOMIC_GET(&pctx->ploger->print))
     {
@@ -207,7 +207,7 @@ void _worker_printlog(struct logworker_ctx *pctx, struct loginfo_ctx *pinfo)
     }
 #endif
 }
-void _worker_freeloginfo(loginfo_ctx *pinfo)
+static inline void _worker_freeloginfo(loginfo_ctx *pinfo)
 {
     if (NULL != pinfo)
     {
@@ -215,7 +215,7 @@ void _worker_freeloginfo(loginfo_ctx *pinfo)
         SAFE_FREE(pinfo);
     }
 }
-void _loger(void *pparam, void *p2, void *p3)
+static void _loger(void *pparam, void *p2, void *p3)
 {
     struct logworker_ctx stworker;
     stworker.ploger = (struct loger_ctx *)pparam;
@@ -270,7 +270,7 @@ void loger_setprint(struct loger_ctx *pctx, const int32_t iprint)
 {
     ATOMIC_SET(&pctx->print, iprint);
 }
-void _nowmtime(char atime[TIME_LENS])
+static inline void _nowmtime(char atime[TIME_LENS])
 {
     struct timeval tv;
     timeofday(&tv);

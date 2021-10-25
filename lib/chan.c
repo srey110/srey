@@ -28,8 +28,6 @@ void chan_init(struct chan_ctx *pctx, const int32_t icapacity)
     mutex_init(&pctx->mmutex);
     cond_init(&pctx->rcond);
     cond_init(&pctx->wcond);
-
-    srand((uint32_t)time(NULL));
 }
 void chan_free(struct chan_ctx *pctx)
 {
@@ -167,68 +165,6 @@ int32_t _unbufferedrecv(struct chan_ctx *pctx, void **pdata)
     mutex_unlock(&pctx->rmutex);
 
     return ERR_OK;
-}
-int32_t chan_isclosed(struct chan_ctx *pctx)
-{
-    mutex_lock(&pctx->mmutex);
-    int32_t iclosed = pctx->closed;
-    mutex_unlock(&pctx->mmutex);
-
-    return iclosed;
-}
-int32_t chan_send(struct chan_ctx *pctx, void *pdata)
-{
-    if (0 != chan_isclosed(pctx))
-    {
-        return ERR_FAILED;
-    }
-    return NULL != pctx->queue ? _bufferedsend(pctx, pdata) : _unbufferedsend(pctx, pdata);
-};
-int32_t chan_recv(struct chan_ctx *pctx, void **pdata)
-{
-    return NULL != pctx->queue ? _bufferedrecv(pctx, pdata) : _unbufferedrecv(pctx, pdata);
-}
-int32_t chan_size(struct chan_ctx *pctx)
-{
-    int32_t isize = 0;
-    if (NULL != pctx->queue)
-    {
-        mutex_lock(&pctx->mmutex);
-        isize = queue_size(pctx->queue);
-        mutex_unlock(&pctx->mmutex);
-    }
-    return isize;
-}
-int32_t chan_canrecv(struct chan_ctx *pctx)
-{
-    if (NULL != pctx->queue)
-    {
-        return  chan_size(pctx) > 0 ? ERR_OK : ERR_FAILED;
-    }
-
-    mutex_lock(&pctx->mmutex);
-    int32_t icanrecv = pctx->wwaiting > 0 ? ERR_OK : ERR_FAILED;
-    mutex_unlock(&pctx->mmutex);
-
-    return icanrecv;
-}
-int32_t chan_cansend(struct chan_ctx *pctx)
-{
-    int32_t isend;
-    if (NULL != pctx->queue)
-    {
-        mutex_lock(&pctx->mmutex);
-        isend = queue_size(pctx->queue) < queue_cap(pctx->queue) ? ERR_OK : ERR_FAILED;
-        mutex_unlock(&pctx->mmutex);
-    }
-    else
-    {
-        mutex_lock(&pctx->mmutex);
-        isend = pctx->rwaiting > 0 ? ERR_OK : ERR_FAILED;
-        mutex_unlock(&pctx->mmutex);
-    }
-
-    return isend;
 }
 int32_t chan_select(struct chan_ctx *precv[], const int32_t irecv_count, void **precv_out,
     struct chan_ctx *psend[], const int32_t isend_count, void *psend_msgs[])

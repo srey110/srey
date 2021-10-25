@@ -2,36 +2,6 @@
 #include "md5/md5.h"
 #include "sha1/sha1.h"
 
-uint64_t ntohl64(const uint64_t ulval)
-{
-	//´óÐ¡¶Ë
-	static union
-	{
-		char a[4];
-        uint32_t ul;
-	}endian = { { 'L', '?', '?', 'B' } };
-	#define ENDIAN ((char)endian.ul) 
-
-	if ('L' == ENDIAN)
-	{
-		uint64_t uiret = 0;
-        uint32_t ulhigh, ullow;
-
-		ullow = ulval & 0xFFFFFFFF;
-		ulhigh = (ulval >> 32) & 0xFFFFFFFF;
-
-		ullow = ntohl(ullow);
-		ulhigh = ntohl(ulhigh);
-
-        uiret = ullow;
-        uiret <<= 32;
-        uiret |= ulhigh;
-
-		return uiret;
-	}
-
-	return ulval;
-}
 uint16_t procsnum()
 {
 #if defined(OS_WIN)
@@ -153,60 +123,6 @@ int32_t getprocpath(char acpath[PATH_LENS])
 
     _dirnam(actmp, acpath);
     return ERR_OK;
-}
-void timeofday(struct timeval *ptv)
-{
-#if defined(OS_WIN)
-    #define U64_LITERAL(n) n##ui64
-    #define EPOCH_BIAS U64_LITERAL(116444736000000000)
-    #define UNITS_PER_SEC U64_LITERAL(10000000)
-    #define USEC_PER_SEC U64_LITERAL(1000000)
-    #define UNITS_PER_USEC U64_LITERAL(10)
-    union
-    {
-        FILETIME ft_ft;
-        uint64_t ft_64;
-    } ft;
-
-    GetSystemTimeAsFileTime(&ft.ft_ft);
-    ft.ft_64 -= EPOCH_BIAS;
-    ptv->tv_sec = (long)(ft.ft_64 / UNITS_PER_SEC);
-    ptv->tv_usec = (long)((ft.ft_64 / UNITS_PER_USEC) % USEC_PER_SEC);
-#else
-    (void)gettimeofday(ptv, NULL);
-#endif
-}
-uint64_t nowmsec()
-{
-    struct timeval tv;
-    timeofday(&tv);
-
-    return (uint64_t)tv.tv_usec / 1000 + (uint64_t)tv.tv_sec * 1000;
-}
-uint64_t nowsec()
-{
-    struct timeval tv;
-    timeofday(&tv);
-
-    return (uint64_t)tv.tv_sec;
-}
-void nowtime(const char *pformat, char atime[TIME_LENS])
-{
-    struct timeval tv;
-    timeofday(&tv);
-    time_t t = tv.tv_sec;
-    ZERO(atime, TIME_LENS);
-    strftime(atime, TIME_LENS - 1, pformat, localtime(&t));
-}
-void nowmtime(const char *pformat, char atime[TIME_LENS])
-{
-    struct timeval tv;
-    timeofday(&tv);
-    time_t t = tv.tv_sec;
-    ZERO(atime, TIME_LENS);
-    strftime(atime, TIME_LENS - 1, pformat, localtime(&t));
-    size_t uilen = strlen(atime);
-    SNPRINTF(atime + uilen, TIME_LENS - uilen - 1, " %03d", (int32_t)(tv.tv_usec / 1000));
 }
 const uint16_t crc16_tab[256] = {
     0x0000, 0xC0C1, 0xC181, 0x0140, 0xC301, 0x03C0, 0x0280, 0xC241,

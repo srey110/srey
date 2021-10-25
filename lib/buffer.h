@@ -23,8 +23,8 @@ typedef struct buffer_ctx
     struct buffernode_ctx *head;
     struct buffernode_ctx *tail;
     struct buffernode_ctx **tail_with_data;
-    int32_t freeze_head;
-    int32_t freeze_tail;
+    uint8_t freeze_read;
+    uint8_t freeze_write;
     size_t total_len;//数据总长度
     mutex_ctx mutex;
 }buffer_ctx;
@@ -67,6 +67,7 @@ int32_t buffer_copyout(struct buffer_ctx *pctx, void *pout, size_t uilen);
 * \return         ERR_FAILED 失败
 * \return         实际删除数
 */
+int32_t _buffer_drain(struct buffer_ctx *pctx, size_t uilen);
 int32_t buffer_drain(struct buffer_ctx *pctx, size_t uilen);
 /*
 * \brief          拷贝并删除数据
@@ -123,20 +124,20 @@ size_t _buffer_expand_iov(struct buffer_ctx *pctx, const size_t uilens,
     IOV_TYPE *piov, const size_t uicount);
 /*
 * \brief          提交填充了数据的iov，该iov由_buffer_expand_iov扩展。
+* \param uilens    数据长度
 * \param piov     iov数组
 * \param uicount  piov个数
 * \return         添加了多少数据
 */
-size_t _buffer_commit_iov(struct buffer_ctx *pctx, IOV_TYPE *piov, const size_t uicount);
+size_t _buffer_commit_iov(struct buffer_ctx *pctx, size_t uilens ,IOV_TYPE *piov, const size_t uicount);
 /*
 * \brief             返回buffer中的数据并装填进piov
-* \param uihowmuch   需要装填的数据长度
+* \param uiatmost    需要装填的数据长度
 * \param piov        iov数组
-* \param uiovsize    iov数组长度
-* \param prealsize   实际装填的数据长度
+* \param uicount     iov数组长度
 * \return            有数据的piov个数
 */
-size_t _buffer_get_iov(struct buffer_ctx *pctx, size_t uihowmuch, 
-    IOV_TYPE *piov, size_t uiovsize, size_t *prealsize);
+size_t _buffer_get_iov(struct buffer_ctx *pctx, size_t uiatmost, 
+    IOV_TYPE *piov, size_t uicount);
 
 #endif//BUFFER_H_
