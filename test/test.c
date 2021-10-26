@@ -10,7 +10,7 @@
 
 int main(int argc, char *argv[])
 {
-    test_buffer();
+    //test_buffer();
     test_thread();
 
     return 0;

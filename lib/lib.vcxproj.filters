@@ -11,7 +11,6 @@
       <Filter>3rd\sha1</Filter>
     </ClInclude>
     <ClInclude Include="lib.h" />
-    <ClInclude Include="mfunc.h" />
     <ClInclude Include="cond.h">
       <Filter>thread</Filter>
     </ClInclude>
@@ -139,9 +138,6 @@
     </Filter>
     <Filter Include="net">
       <UniqueIdentifier>{bcc74df3-4dc9-456c-b9ce-be3bd9b20b95}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="chan">
-      <UniqueIdentifier>{87aaac95-e823-4955-958c-0ef0c55ba418}</UniqueIdentifier>
     </Filter>
     <Filter Include="net\epoll">
       <UniqueIdentifier>{c81b7481-b9cc-4bc0-8d7a-45534fa8ff67}</UniqueIdentifier>

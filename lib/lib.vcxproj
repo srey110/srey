@@ -32,7 +32,6 @@
     <ClInclude Include="loger.h" />
     <ClInclude Include="macro.h" />
     <ClInclude Include="md5\md5.h" />
-    <ClInclude Include="mfunc.h" />
     <ClInclude Include="mutex.h" />
     <ClInclude Include="netaddr.h" />
     <ClInclude Include="netutils.h" />

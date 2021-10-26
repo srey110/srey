@@ -86,17 +86,25 @@ static inline struct sock_ctx *server_addsock(struct server_ctx *pctx, SOCKET fd
 {
     return netio_addsock(pctx->netio, fd);
 };
-
 /*
 * \brief                 可读写。在调用server_addsock成功或收到 EV_ACCEPT、EV_CONNECT消息后调用一次
 *                        需要手动释放ev_ctx
 * \param pchan           chan 接收EV_RECV、EV_SEND消息
-* \param ucpostsendev    是否投递EV_SEND消息, 0不投递
+* \param postsendev      是否投递EV_SEND消息, 0不投递
 * \return                ERR_OK 成功
 */
-static inline int32_t server_enable_rw(struct sock_ctx *psock, struct chan_ctx *pchan, const uint8_t ucpostsendev)
+static inline int32_t server_enable_rw(struct sock_ctx *psock, struct chan_ctx *pchan, const uint8_t postsendev)
 {
-    return netio_enable_rw(psock, pchan, ucpostsendev);
+    return netio_enable_rw(psock, pchan, postsendev);
+};
+/*
+* \brief          关闭socket  收到EV_CLOSE后释放资源
+* \param fd       socket句柄
+* \return         sock_ctx
+*/
+static inline void server_close(struct sock_ctx *psock)
+{
+    netio_close(psock);
 };
 /*
 * \brief          发送消息
@@ -105,6 +113,15 @@ static inline int32_t server_enable_rw(struct sock_ctx *psock, struct chan_ctx *
 static inline int32_t server_send(struct sock_ctx *psock, void *pdata, size_t ilens)
 {
     return netio_send(psock, pdata, ilens);
+};
+/*
+* \brief          udp发送消息
+* \return         ERR_OK 成功
+*/
+static inline int32_t server_sendto(struct sock_ctx *psock, const char *phost, uint16_t usport,
+    IOV_TYPE *wsabuf, size_t uicount)
+{
+    return netio_sendto(psock, phost, usport, wsabuf, uicount);
 };
 
 #endif//EVENT_H_

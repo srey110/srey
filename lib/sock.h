@@ -5,7 +5,6 @@
 #include "netaddr.h"
 #include "mutex.h"
 #include "chan.h"
-#include "buffer.h"
 
 typedef struct netio_ctx
 {
@@ -27,13 +26,13 @@ typedef struct sock_ctx
     struct buffer_ctx *bufsend;
     struct netaddr_ctx addr;
 }sock_ctx;
-static inline struct sock_ctx *sockctx_new(const uint8_t uclistener)
+static inline struct sock_ctx *sockctx_new(const uint8_t uclistener, const uint8_t socktype)
 {
     struct sock_ctx *pctx = (struct sock_ctx *)MALLOC(sizeof(struct sock_ctx));
     ASSERTAB(NULL != pctx, ERRSTR_MEMORY);
     pctx->sock = INVALID_SOCK;
-    pctx->listener = uclistener;    
-    pctx->socktype = SOCK_STREAM;
+    pctx->listener = uclistener;
+    pctx->socktype = socktype;
     pctx->channum = 1;
     pctx->chan = NULL;
     pctx->data = NULL;
@@ -42,14 +41,19 @@ static inline struct sock_ctx *sockctx_new(const uint8_t uclistener)
         pctx->chanmutex = (mutex_ctx *)MALLOC(sizeof(mutex_ctx));
         ASSERTAB(NULL != pctx->chanmutex, ERRSTR_MEMORY);
         mutex_init(pctx->chanmutex);
-
         pctx->bufrecv = (struct buffer_ctx *)MALLOC(sizeof(struct buffer_ctx));
         ASSERTAB(NULL != pctx->bufrecv, ERRSTR_MEMORY);
         buffer_init(pctx->bufrecv);
-
-        pctx->bufsend = (struct buffer_ctx *)MALLOC(sizeof(struct buffer_ctx));
-        ASSERTAB(NULL != pctx->bufsend, ERRSTR_MEMORY);
-        buffer_init(pctx->bufsend);
+        if (SOCK_STREAM == pctx->socktype)
+        {
+            pctx->bufsend = (struct buffer_ctx *)MALLOC(sizeof(struct buffer_ctx));
+            ASSERTAB(NULL != pctx->bufsend, ERRSTR_MEMORY);
+            buffer_init(pctx->bufsend);
+        }
+        else
+        {
+            pctx->bufsend = NULL;
+        }
     }
 
     return pctx;
@@ -58,7 +62,10 @@ static inline void sockctx_free(struct sock_ctx *pctx)
 {
     if (0 == pctx->listener)
     {
-        buffer_free(pctx->bufsend);
+        if (SOCK_STREAM == pctx->socktype)
+        {
+            buffer_free(pctx->bufsend);
+        }
         buffer_free(pctx->bufrecv);
         mutex_free(pctx->chanmutex);
 

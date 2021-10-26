@@ -67,7 +67,7 @@ static inline void thread_init(struct thread_ctx *pctx)
 static inline void thread_creat(struct thread_ctx *pctx, void(*cb)(void*, void*, void*),
     void *pparam1, void *pparam2, void *pparam3)
 {
-    if (THREAD_STOP != ATOMIC_CAS(&pctx->state, THREAD_STOP, THREAD_WAITRUN))
+    if (!ATOMIC_CAS(&pctx->state, THREAD_STOP, THREAD_WAITRUN))
     {
         PRINTF("%s", "thread not stop.");
         return;

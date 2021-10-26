@@ -1,7 +1,7 @@
 #ifndef MACRO_H_
 #define MACRO_H_
 
-#include "mfunc.h"
+#include "os.h"
 #include "errcode.h"
 
 #define MALLOC malloc
@@ -9,7 +9,6 @@
 #define REALLOC realloc
 #define FREE free
 #define ZERO(name, len) memset(name, 0, len)
-
 #define SAFE_FREE(v_para)\
 do\
 {\
@@ -110,10 +109,40 @@ do\
     #define TIMEB _timeb
     #define FTIME _ftime
     #define ACCESS _access
-    #define MKDIR _mkdir
-    #define SHUTDOWN(sock) shutdown(sock, SD_BOTH)
+    #define MKDIR _mkdir    
+    #define SHUT_RD   SD_RECEIVE
+    #define SHUT_WR   SD_SEND
+    #define SHUT_RDWR SD_BOTH
     #define CLOSESOCKET closesocket    
     #define ERRNO GetLastError()
+    static inline const char *_fmterror(DWORD error)
+    {
+        char *perror = NULL;
+        if (0 == FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+            NULL,
+            error,
+            MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US),
+            (LPTSTR)&perror,
+            0,
+            NULL))
+        {
+            return "FormatMessageA error.";
+        }
+
+        char *ppos = strrchr(perror, '\r');
+        if (NULL != ppos)
+        {
+            ppos[0] = '\0';
+        }
+        static char errstr[512];
+        size_t ilens = strlen(perror);
+        ilens = ilens >= sizeof(errstr) ? sizeof(errstr) - 1 : ilens;
+        memcpy(errstr, perror, ilens);        
+        errstr[ilens] = '\0';
+        LocalFree(perror);
+
+        return errstr;
+    };
     #define ERRORSTR(errcode) _fmterror(errcode)
 #else
     #if EAGAIN == EWOULDBLOCK
@@ -135,7 +164,6 @@ do\
     #define FTIME ftime
     #define ACCESS access
     #define MKDIR(path) mkdir(path, S_IRUSR|S_IWUSR)
-    #define SHUTDOWN(sock) shutdown(sock, SHUT_RDWR)
     #define CLOSESOCKET close
     #define ERRNO errno
     #define ERRORSTR(errcode) strerror(errcode)
@@ -149,7 +177,7 @@ do\
     #define ATOMIC_SET(ptr, val)   InterlockedExchange(ptr, val)
     //比较*ptr与oldval的值，如果两者相等，则将newval更新到*ptr并返回操作之前*ptr的值 成功 返回值等于oldval
     //LONG InterlockedCompareExchange(LONG volatile *Destination, LONG ExChange, LONG Comperand);
-    #define ATOMIC_CAS(ptr, oldval, newval)   InterlockedCompareExchange(ptr, newval, oldval)
+    #define ATOMIC_CAS(ptr, oldval, newval)   (InterlockedCompareExchange(ptr, newval, oldval) == oldval)
 #elif defined(OS_SUN)
     typedef uint32_t atomic_t;
     //uint32_t atomic_add_32_nv(volatile uint32_t *target, int32_t delta); return the new value of target.
@@ -157,16 +185,40 @@ do\
     //uint32_t atomic_swap_32(volatile uint32_t *target, uint32_t newval);  return the old of *target.
     #define ATOMIC_SET(ptr, val)   atomic_swap_32(ptr, val)
     //uint32_t atomic_cas_32(volatile uint32_t *target, uint32_t cmp, uint32_t newval);
-    #define ATOMIC_CAS(ptr, oldval, newval)   atomic_cas_32(ptr, oldval, newval)
+    #define ATOMIC_CAS(ptr, oldval, newval)   (atomic_cas_32(ptr, oldval, newval) == oldval)
+#elif defined(OS_DARWIN)
+    typedef int32_t atomic_t;
+    //int32_t OSAtomicAdd32(int32_t theAmount, volatile int32_t *theValue)
+    #define ATOMIC_ADD(ptr, val)   OSAtomicAdd32(val, ptr)
+    static inline atomic_t _fetchandset(volatile atomic_t *ptr, atomic_t value)
+    {
+        atomic_t oldvar;
+        do
+        {
+            oldvar = *ptr;
+        } while (!OSAtomicCompareAndSwap32(oldvar, value, ptr));
+        return oldvar;
+    };
+    #define ATOMIC_SET(ptr, val)   _fetchandset(ptr, val)
+    //bool OSAtomicCompareAndSwap32(int32_t oldValue, int32_t newValue, volatile int32_t *theValue)
+    #define ATOMIC_CAS(ptr, oldval, newval)   OSAtomicCompareAndSwap32(oldval, newval, ptr)
 #else
     typedef uint32_t atomic_t;
     //type __sync_fetch_and_add (type *ptr, type value, ...)//返回旧值
     #define ATOMIC_ADD(ptr, val)   __sync_fetch_and_add(ptr, val)
+    static inline atomic_t _fetchandset(volatile atomic_t *ptr, atomic_t value)
+    {
+        atomic_t oldvar;
+        do
+        {
+            oldvar = *ptr;
+        } while (!__sync_bool_compare_and_swap(ptr, oldvar, value));
+        return oldvar;
+    };
     #define ATOMIC_SET(ptr, val)   _fetchandset(ptr, val)  //返回旧值
-    //type __sync_val_compare_and_swap (type *ptr, type oldval type newval); 
-    #define ATOMIC_CAS(ptr, oldval, newval)   __sync_val_compare_and_swap(ptr, oldval, newval)
+    //bool __sync_bool_compare_and_swap (type *ptr, type oldval type newval); 
+    #define ATOMIC_CAS(ptr, oldval, newval)  __sync_bool_compare_and_swap(ptr, oldval, newval)
 #endif
-
 #define ATOMIC_GET(ptr) ATOMIC_ADD(ptr, 0)
 
 #define SAFE_CLOSESOCK(fd)\

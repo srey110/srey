@@ -70,7 +70,6 @@ endif defined(__DragonFly__)
 #include <limits.h>
 #include <sys/types.h>
 #include <sys/stat.h>
-
 #if defined(OS_WIN)
     #include <winsock2.h>
     #include <ws2ipdef.h>
@@ -117,6 +116,7 @@ endif defined(__DragonFly__)
     #elif defined(OS_DARWIN)
         #include <mach/mach_time.h>
         #include <mach-o/dyld.h>
+        #include <libkern/OSAtomic.h>
     #elif defined(OS_SUN)
         #include <atomic.h>
         #include <sys/filio.h>
