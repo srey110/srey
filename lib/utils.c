@@ -2,7 +2,7 @@
 #include "md5/md5.h"
 #include "sha1/sha1.h"
 
-uint16_t procsnum()
+uint16_t procscnt()
 {
 #if defined(OS_WIN)
 	SYSTEM_INFO stinfo;

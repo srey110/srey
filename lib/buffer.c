@@ -180,13 +180,13 @@ struct buffernode_ctx *_buffer_expand_single(struct buffer_ctx *pctx, const size
     return ptmp;
 }
 size_t _buffer_expand_iov(struct buffer_ctx *pctx, const size_t uilens, 
-    IOV_TYPE *piov, const size_t uicount)
+    IOV_TYPE *piov, const size_t uicnt)
 {
     struct buffernode_ctx *pnode = pctx->tail, *ptmp, *pnext;
     size_t uiavail, uiremain, uiused, uispace;
     size_t index = 0;
     
-    ASSERTAB(uicount >= 2, "param error.");
+    ASSERTAB(uicnt >= 2, "param error.");
     if (NULL == pnode)
     {
         pnode = _node_new(uilens);
@@ -221,13 +221,13 @@ size_t _buffer_expand_iov(struct buffer_ctx *pctx, const size_t uilens,
         {
             return index;
         }
-        if (uiused == uicount)
+        if (uiused == uicnt)
         {
             break;
         }
     }
     //没有达到最大节点数，空间还不够
-    if (uiused < uicount) 
+    if (uiused < uicnt) 
     {
         uiremain = uilens - uiavail;
         ASSERTAB(NULL == pnode, "pnode not equ NULL.");
@@ -297,15 +297,15 @@ static void _last_with_data(struct buffer_ctx *pctx)
         }
     }
 }
-size_t _buffer_commit_iov(struct buffer_ctx *pctx, size_t uilens, IOV_TYPE *piov, const size_t uicount)
+size_t _buffer_commit_iov(struct buffer_ctx *pctx, size_t uilens, IOV_TYPE *piov, const size_t uicnt)
 {
-    if (0 == uicount)
+    if (0 == uicnt)
     {
         return 0;
     }
 
     //只有一个
-    if (1 == uicount
+    if (1 == uicnt
         && NULL != pctx->tail 
         && piov[0].IOV_PTR_FIELD == (void *)NODE_SPACE_PTR(pctx->tail))
     {
@@ -335,7 +335,7 @@ size_t _buffer_commit_iov(struct buffer_ctx *pctx, size_t uilens, IOV_TYPE *piov
     
     //检查
     pnode = *pfirst;
-    for (i = 0; i < uicount; ++i)
+    for (i = 0; i < uicnt; ++i)
     {
         if (NULL == pnode)
         {
@@ -350,7 +350,7 @@ size_t _buffer_commit_iov(struct buffer_ctx *pctx, size_t uilens, IOV_TYPE *piov
     //填充
     size_t uiadded = 0;
     pfill = pfirst;    
-    for (i = 0; i < uicount; ++i)
+    for (i = 0; i < uicnt; ++i)
     {
         (*pfill)->used = 0;
         if (uilens > 0)
@@ -647,7 +647,7 @@ static buffernode_ctx *_search_start(struct buffernode_ctx *pnode, size_t uistar
 
     return NULL;
 }
-static int32_t _search(struct buffer_ctx *pctx, size_t uistart, char *pwhat, size_t uiwlens)
+static int32_t _search(struct buffer_ctx *pctx, const size_t uistart, char *pwhat, size_t uiwlens)
 {
     if (uistart >= pctx->total_len
         || uiwlens > pctx->total_len)
@@ -699,7 +699,7 @@ static int32_t _search(struct buffer_ctx *pctx, size_t uistart, char *pwhat, siz
 
     return ERR_FAILED;
 }
-int32_t buffer_search(struct buffer_ctx *pctx, size_t uistart, void *pwhat, size_t uiwlens)
+int32_t buffer_search(struct buffer_ctx *pctx, const size_t uistart, void *pwhat, size_t uiwlens)
 {
     buffer_lock(pctx);
     if (0 != pctx->freeze_read)
@@ -715,7 +715,7 @@ int32_t buffer_search(struct buffer_ctx *pctx, size_t uistart, void *pwhat, size
     return irtn;
 }
 size_t _buffer_get_iov(struct buffer_ctx *pctx, size_t uiatmost,
-    IOV_TYPE *piov, size_t uicount)
+    IOV_TYPE *piov, const size_t uicnt)
 {
     if (uiatmost > pctx->total_len)
     {
@@ -729,7 +729,7 @@ size_t _buffer_get_iov(struct buffer_ctx *pctx, size_t uiatmost,
     size_t index = 0;
     struct buffernode_ctx *pnode = pctx->head;
     while (NULL != pnode
-        && index < uicount
+        && index < uicnt
         && uiatmost > 0) 
     {
         piov[index].IOV_PTR_FIELD = (void *)(pnode->buffer + pnode->misalign);

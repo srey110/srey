@@ -26,7 +26,7 @@ typedef struct ev_udp_send_ctx
 {
     ev_ctx ev;
     IOV_TYPE *wsabuf;
-    size_t iovcount;
+    size_t iovcnt;
     struct netaddr_ctx addr;
 }ev_udp_send_ctx;
 static inline struct ev_ctx *ev_new_accept(struct sock_ctx *psock)

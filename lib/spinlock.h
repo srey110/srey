@@ -13,10 +13,10 @@ typedef pthread_spinlock_t spin_ctx;
 /*
 * \brief          ≥ı ºªØ  ONEK
 */
-static inline void spin_init(spin_ctx *pctx, const uint32_t uispcount)
+static inline void spin_init(spin_ctx *pctx, const uint32_t uispcnt)
 {
 #if defined(OS_WIN)
-    ASSERTAB(InitializeCriticalSectionAndSpinCount(pctx, uispcount), ERRORSTR(ERRNO));
+    ASSERTAB(InitializeCriticalSectionAndSpinCount(pctx, uispcnt), ERRORSTR(ERRNO));
 #elif defined(OS_DARWIN)
 #else
     ASSERTAB(ERR_OK == pthread_spin_init(pctx, PTHREAD_PROCESS_PRIVATE), ERRORSTR(ERRNO));

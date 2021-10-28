@@ -41,7 +41,7 @@ static inline uint64_t ntohl64(const uint64_t ulval)
 * \brief          cpu核数
 * \return         cpu核数
 */
-uint16_t procsnum();
+uint16_t procscnt();
 /*
 * \brief          判断是否为文件
 * \param pname    文件名

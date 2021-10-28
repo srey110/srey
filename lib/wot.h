@@ -161,7 +161,6 @@ static inline u_long _cascade(struct wot_ctx *pctx, struct twslot_ctx *pslot, co
         _insert(_getslot(pctx, pnode), pnode);
         pnode = pnext;
     }
-
     _clear(&pslot[ulindex]);
 
     return ulindex;

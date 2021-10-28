@@ -127,15 +127,15 @@ static inline int32_t chan_cansend(struct chan_ctx *pctx)
 /*
 * \brief             随机选取一可读写的channel来执行读写,阻塞的不支持
 * \param precv       读cchan
-* \param irecv_count 读cchan数量
+* \param irecvcnt    读cchan数量
 * \param precv_out   读到的数据
 * \param psend       写cchan
-* \param isend_count 写cchan数量
+* \param isendcnt    写cchan数量
 * \param psend_msgs  每个cchan需要发送的数据
 * \return            ERR_FAILED 失败
 * \return            cchan 下标
 */
-int32_t chan_select(struct chan_ctx *precv[], const int32_t irecv_count, void **precv_out,
-    struct chan_ctx *psend[], const int32_t isend_count, void *psend_msgs[]);
+int32_t chan_select(struct chan_ctx *precv[], const int32_t irecvcnt, void **precv_out,
+    struct chan_ctx *psend[], const int32_t isendcnt, void *psend_msgs[]);
 
 #endif//CHAN_H_

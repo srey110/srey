@@ -19,6 +19,8 @@
 #include "utils.h"
 #include "wot.h"
 
+#include "netaddr.h"
+#include "netutils.h"
 #include "server.h"
 
 #endif//LIB_H_

@@ -166,48 +166,48 @@ int32_t _unbufferedrecv(struct chan_ctx *pctx, void **pdata)
 
     return ERR_OK;
 }
-int32_t chan_select(struct chan_ctx *precv[], const int32_t irecv_count, void **precv_out,
-    struct chan_ctx *psend[], const int32_t isend_count, void *psend_msgs[])
+int32_t chan_select(struct chan_ctx *precv[], const int32_t irecvcnt, void **precv_out,
+    struct chan_ctx *psend[], const int32_t isendcnt, void *psend_msgs[])
 {
-    struct select_ctx *pselect = MALLOC(sizeof(struct select_ctx) * (irecv_count + isend_count));
+    struct select_ctx *pselect = MALLOC(sizeof(struct select_ctx) * (irecvcnt + isendcnt));
     if (NULL == pselect)
     {
         return ERR_FAILED;
     }
 
     int32_t i;
-    int32_t icount = 0;
-    for (i = 0; i < irecv_count; i++)
+    int32_t icnt = 0;
+    for (i = 0; i < irecvcnt; i++)
     {
         struct chan_ctx *pchan = precv[i];
         if (ERR_OK == chan_canrecv(pchan))
         {
-            pselect[icount].recv = 1;
-            pselect[icount].chan = pchan;
-            pselect[icount].pmsg_in = NULL;
-            pselect[icount].index = i;
-            icount++;
+            pselect[icnt].recv = 1;
+            pselect[icnt].chan = pchan;
+            pselect[icnt].pmsg_in = NULL;
+            pselect[icnt].index = i;
+            icnt++;
         }
     }
-    for (i = 0; i < isend_count; i++)
+    for (i = 0; i < isendcnt; i++)
     {
         struct chan_ctx *pchan = psend[i];
         if (ERR_OK == chan_cansend(pchan))
         {
-            pselect[icount].recv = 0;
-            pselect[icount].chan = pchan;
-            pselect[icount].pmsg_in = psend_msgs[i];
-            pselect[icount].index = i + irecv_count;
-            icount++;
+            pselect[icnt].recv = 0;
+            pselect[icnt].chan = pchan;
+            pselect[icnt].pmsg_in = psend_msgs[i];
+            pselect[icnt].index = i + irecvcnt;
+            icnt++;
         }
     }
-    if (0 == icount)
+    if (0 == icnt)
     {
         SAFE_FREE(pselect);
         return ERR_FAILED;
     }
 
-    struct select_ctx *pselected = &pselect[rand() % icount];
+    struct select_ctx *pselected = &pselect[rand() % icnt];
     if (1 == pselected->recv)
     {
         if (ERR_OK != chan_recv(pselected->chan, precv_out))

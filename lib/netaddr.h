@@ -30,13 +30,13 @@ int32_t netaddr_setaddr(struct netaddr_ctx *pctx, const struct sockaddr *paddr);
 * \param fd       SOCKET
 * \return         ERR_OK 成功
 */
-int32_t netaddr_remoteaddr(struct netaddr_ctx *pctx, const SOCKET fd);
+int32_t netaddr_remoteaddr(struct netaddr_ctx *pctx, SOCKET fd);
 /*
 * \brief          获取本地地址信息
 * \param fd       SOCKET
 * \return         ERR_OK 成功
 */
-int32_t netaddr_localaddr(struct netaddr_ctx *pctx, const SOCKET fd);
+int32_t netaddr_localaddr(struct netaddr_ctx *pctx, SOCKET fd);
 /*
 * \brief          返回地址
 * \return         sockaddr *

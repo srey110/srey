@@ -91,7 +91,7 @@ int32_t netaddr_setaddr(struct netaddr_ctx *pctx, const struct sockaddr *paddr)
 
     return ERR_OK;
 }
-int32_t netaddr_remoteaddr(struct netaddr_ctx *pctx, const SOCKET fd)
+int32_t netaddr_remoteaddr(struct netaddr_ctx *pctx, SOCKET fd)
 {
     if (INVALID_SOCK == fd)
     {
@@ -110,7 +110,7 @@ int32_t netaddr_remoteaddr(struct netaddr_ctx *pctx, const SOCKET fd)
 
     return netaddr_setaddr(pctx, &staddr);
 }
-int32_t netaddr_localaddr(struct netaddr_ctx *pctx, const SOCKET fd)
+int32_t netaddr_localaddr(struct netaddr_ctx *pctx, SOCKET fd)
 {
     if (INVALID_SOCK == fd)
     {

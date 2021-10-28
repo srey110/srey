@@ -1,10 +1,10 @@
 #include "lib.h"
 
 #ifdef OS_WIN
-//#include "../vld/vld.h"
+#include "../vld/vld.h"
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "lib.lib")
-//#pragma comment(lib, "vld.lib")
+#pragma comment(lib, "vld.lib")
 #endif
 
 struct server_ctx sv;
@@ -42,13 +42,16 @@ void _timeout_cb(void *p1, void *p2, void *p3)
         if (ERR_OK == chan_recv(pchan_timeout, &pev))
         {
             pnode = UPCAST(pev, struct twnode_ctx, ev);
-            PRINTF("time out diff:%d,link count %d recv pack %d send pack %d udp recv %d udp send %d  close time %d", 
-                (int32_t)(server_tick(&sv) - pnode->expires), 
+            PRINTF("time out diff:%d,link count %d recv pack %d send pack %d udp recv %d udp send %d  close time %d",
+                (int32_t)(server_tick(&sv) - pnode->expires),
                 ATOMIC_GET(&uilinknum), ATOMIC_GET(&uirecvsize), ATOMIC_GET(&uisendsize),
                 ATOMIC_GET(&uiudprecvsize), ATOMIC_GET(&uiudpsendsize), ATOMIC_GET(&uitcpclose));
             /*psock = pnode->ev.data;
-            ilens = _fill_data(acpack, sizeof(acpack));
-            server_send(psock, acpack, ilens);*/
+            if (NULL != psock)
+            {
+                ilens = _fill_data(acpack, sizeof(acpack));
+                server_sock_send(psock, acpack, ilens);
+            }*/
             SAFE_FREE(pnode);
 
             server_timeout(&sv, pchan_timeout, 200, NULL);
@@ -66,7 +69,7 @@ void _accept_cb(void *p1, void *p2, void *p3)
         if (ERR_OK == chan_recv(pchan_accept, &pev))
         {
             psock = pev->data;
-            server_enable_rw(psock, &pchan_recvs[rand() % usthreadnum], 1);
+            server_sock_enablerw(psock, &pchan_recvs[rand() % usthreadnum], 1);
             ATOMIC_ADD(&uilinknum, 1);
             SAFE_FREE(pev);
         }
@@ -85,9 +88,9 @@ void _connet_cb(void *p1, void *p2, void *p3)
             psock = pev->data;
             if (ERR_OK == pev->code)
             {
-                server_enable_rw(psock, &pchan_recvs[rand() % usthreadnum], 1);
+                server_sock_enablerw(psock, &pchan_recvs[rand() % usthreadnum], 1);
                 ATOMIC_ADD(&uilinknum, 1);
-            }            
+            }
             SAFE_FREE(pev);
         }
     }
@@ -118,7 +121,7 @@ void _recv_cb(void *p1, void *p2, void *p3)
                     struct ev_udp_recv_ctx *pudpev = UPCAST(pev, struct ev_udp_recv_ctx, ev);
                     ATOMIC_ADD(&uirecvsize, 1);
                     buffer_drain(psock->bufrecv, pev->code);
-                    server_sendto(psock, pudpev->host, pudpev->port, wsabuf, 2);
+                    server_sock_sendto(psock, pudpev->host, pudpev->port, wsabuf, 2);
                     SAFE_FREE(pudpev);
                     ATOMIC_ADD(&uiudprecvsize, 1);
                 }
@@ -134,23 +137,20 @@ void _recv_cb(void *p1, void *p2, void *p3)
 
             switch (pev->evtype)
             {
-            case EV_RECV:
-                ATOMIC_ADD(&uirecvsize, 1);                
-                buffer_drain(psock->bufrecv, pev->code);
-                size_t ilens = _fill_data(acpack, sizeof(acpack));
-                netio_send(psock, acpack, ilens);
-                break;
-            case EV_SEND:
-                ATOMIC_ADD(&uisendsize, 1);
-                break;
-            case EV_CLOSE:
-                ATOMIC_ADD(&uilinknum, -1);
-                ATOMIC_ADD(&uitcpclose, 1);
-                /*buffer_lock(psock->bufsend);
-                ASSERTAB(0 == psock->bufsend->freeze_read, "xxxxxxxxxxxxx");
-                buffer_unlock(psock->bufsend);*/
-                sockctx_free(psock);
-                break;
+                case EV_RECV:
+                    ATOMIC_ADD(&uirecvsize, 1);                
+                    buffer_drain(psock->bufrecv, pev->code);
+                    size_t ilens = _fill_data(acpack, sizeof(acpack));
+                    server_sock_send(psock, acpack, ilens);
+                    break;
+                case EV_SEND:
+                    ATOMIC_ADD(&uisendsize, 1);
+                    break;
+                case EV_CLOSE:
+                    ATOMIC_ADD(&uilinknum, -1);
+                    ATOMIC_ADD(&uitcpclose, 1);             
+                    server_sock_free(&sv, psock);
+                    break;
             }
             
             SAFE_FREE(pev);
@@ -165,7 +165,7 @@ void _send_cb(void *p1, void *p2, void *p3)
     while (0 == ATOMIC_GET(&uistop))
     {
         ilens = _fill_data(acpack, sizeof(acpack));
-        server_send(psock, acpack, ilens);
+        server_sock_send(psock, acpack, ilens);
         MSLEEP(100);
     }
 }
@@ -216,7 +216,7 @@ int main(int argc, char *argv[])
 {
     LOGINIT();
 
-    usthreadnum = procsnum() * 2 + 2;
+    usthreadnum = procscnt() * 2 + 2;
     struct chan_ctx chan_timeout;
     chan_init(&chan_timeout, ONEK);
     struct thread_ctx thread_timeout;
@@ -255,80 +255,48 @@ int main(int argc, char *argv[])
     struct sock_ctx *plisten = server_listen(&sv, pchan_accept, usthreadnum, plistenhost, uslistenport);
     ASSERTAB(NULL != plisten, "1");
     server_timeout(&sv, &chan_timeout, 200, NULL);
-
-
+    
     struct sock_ctx *psock;
-
     psock = server_connect(&sv, &chan_connect, pconnhost, usconnport);
     ASSERTAB(NULL != psock, "server_connect error.");
-    server_timeout(&sv, &chan_timeout, 200, psock);
-    MSLEEP(1000);
+    //server_timeout(&sv, &chan_timeout, 200, psock);
     ATOMIC_ADD(&uilinknum, 1);
-    
-    //server_close(psock);
-    //server_close(psock);
-
-    /*SOCKET fd = _creat_tcp_sock(pconnhost, usconnport);
-    ASSERTAB(INVALID_SOCK != fd, "_creat_tcp_sock error.");
-    psock = server_addsock(&sv, fd);
-    ASSERTAB(NULL != psock, "server_addsock error.");
-    server_enable_rw(psock, &pchan_recv[rand() % usthreadnum], 1);
-    server_timeout(&sv, &chan_timeout, 200, psock);
-    struct thread_ctx thread_send;
-    thread_init(&thread_send);
-    thread_creat(&thread_send, _send_cb, psock, NULL, NULL);*/
-
-    /*SOCKET udpfd = _creat_udp_sock(pudphost, usudpport);
-    ASSERTAB(INVALID_SOCK != udpfd, "_creat_udp_sock error.");
-    struct sock_ctx *pudpsock = server_addsock(&sv, udpfd);
-    ASSERTAB(NULL != pudpsock, "server_addsock error.");
-    server_enable_rw(pudpsock, &pchan_recv[rand() % usthreadnum], 1);
-    ATOMIC_ADD(&uilinknum, 1);*/
-
-   /* MSLEEP(1000 * 2);
-    server_close(pudpsock);*/
 
     char acpack[ONEK];
     size_t ilens;
-    size_t uicounttime = 0;
-    while (0 == ATOMIC_GET(&sv.stop))
+    size_t uicounttime = 0;    
+    while (0 == ATOMIC_GET(&uistop))
     {
-        /*ilens = _fill_data(acpack, sizeof(acpack));
-        server_send(psock, acpack, ilens);
-        server_send(psock, acpack, ilens);
-        server_send(psock, acpack, ilens);
-        server_send(psock, acpack, ilens);
-        server_send(psock, acpack, ilens);
-        server_send(psock, acpack, ilens);
-        server_close(psock);*/
-        /*udpfd = _creat_udp_sock(pudphost, usudpport);
+        /*SOCKET udpfd = _creat_udp_sock(pudphost, usudpport);
         ASSERTAB(INVALID_SOCK != udpfd, "_creat_udp_sock error.");
         struct sock_ctx *pudpsock = server_addsock(&sv, udpfd);
         ASSERTAB(NULL != pudpsock, "server_addsock error.");
-        server_enable_rw(pudpsock, &pchan_recv[rand() % usthreadnum], 1);
-        ATOMIC_ADD(&uilinknum, 1);
+        server_sock_enablerw(pudpsock, &pchan_recv[rand() % usthreadnum], 1);
+        ATOMIC_ADD(&uilinknum, 1);*/
+        MSLEEP(1000 * 5);
+        //server_sock_close(&sv, pudpsock);
 
-        MSLEEP(1000 * 2);
-        server_close(pudpsock);*/
-
-        //ilens = _fill_data(acpack, sizeof(acpack));
-        //server_send(psock, acpack, ilens);
-        MSLEEP(100000);
         /*uicounttime += 100;
-        if (uicounttime >= 1000 * 10)
+        MSLEEP(100);
+        if (uicounttime >= 1000)
         {
-            SAFE_CLOSESOCK(psock->sock);
-            ATOMIC_SET(&uistop, 1);
             break;
         }*/
     }
-    MSLEEP(1000);
+    
+    server_sock_close(&sv,plisten);    
+    server_sock_close(&sv,psock);
+    MSLEEP(1000 * 1);
+    ATOMIC_SET(&uistop, 1);
     chan_close(&chan_timeout);
     thread_join(&thread_timeout);
-    chan_free(&chan_timeout);    
+    server_free(&sv);
+
     chan_close(&chan_connect);
     thread_join(&thread_connect);
-    chan_free(&chan_connect);
+
+    chan_free(&chan_connect);   
+    chan_free(&chan_timeout);
     for (uint16_t ui = 0; ui < usthreadnum; ui++)
     {
         chan_close(&pchan_accept[ui]);
@@ -338,9 +306,7 @@ int main(int argc, char *argv[])
         chan_free(&pchan_accept[ui]);
         chan_free(&pchan_recv[ui]);
     }
-
-    server_free(&sv);
-    sockctx_free(plisten);
+    
 
     SAFE_FREE(pchan_accept);
     SAFE_FREE(pchan_recv);

@@ -1,7 +1,6 @@
 #include "iocp/iocp.h"
 #include "thread.h"
 #include "netutils.h"
-#include "utils.h"
 #include "loger.h"
 
 #if defined(OS_WIN)
@@ -12,13 +11,11 @@
 #define MAX_RECV_FROM_IOV_SIZE   4096
 #define MAX_RECV_FROM_IOV_COUNT  4
 #define MAX_ACCEPT_SOCKEX   128
-#define NOTIFIEXIT_KEY ((ULONG_PTR)-1)
-
-typedef BOOL(WINAPI *DisconnectExPtr)(SOCKET, LPOVERLAPPED, DWORD, DWORD);
+#define NOTIFI_EXIT_KEY  ((ULONG_PTR)-1)
 typedef BOOL(WINAPI *AcceptExPtr)(SOCKET, SOCKET, PVOID, DWORD, DWORD, DWORD, LPDWORD, LPOVERLAPPED);
 typedef BOOL(WINAPI *ConnectExPtr)(SOCKET, const struct sockaddr *, int, PVOID, DWORD, LPDWORD, LPOVERLAPPED);
 typedef void (WINAPI *GetAcceptExSockaddrsPtr)(PVOID, DWORD, DWORD, DWORD, LPSOCKADDR *, LPINT, LPSOCKADDR *, LPINT);
-typedef struct sock_ol//EV_CLOSE  EV_CONNECT
+typedef struct sock_ol//EV_CLOSE
 {
     OVERLAPPED overlapped;
     int32_t evtype;
@@ -31,17 +28,17 @@ typedef struct accept_ol//EV_ACCEPT
     SOCKET sock;
     char addrbuf[(sizeof(struct sockaddr_storage) + 16) * 2];
 }accept_ol;
-struct recv_ol//EV_RECV
+struct recv_ol//EV_RECV  EV_CONNECT
 {
     struct sock_ol ol;
     DWORD flag;
-    size_t iovcount;
+    size_t iovcnt;
     IOV_TYPE wsabuf[MAX_RECV_IOV_COUNT];
 }recv_ol;
 struct send_ol//EV_SEND
 {
     struct sock_ol ol;
-    size_t iovcount;
+    size_t iovcnt;
     IOV_TYPE wsabuf[MAX_SEND_IOV_COUNT];
 }send_ol;
 struct rw_ol
@@ -53,7 +50,7 @@ struct recv_from_ol//udp EV_RECV
 {
     struct sock_ol ol;
     DWORD flag;
-    size_t iovcount;
+    size_t iovcnt;
     IOV_TYPE wsabuf[MAX_RECV_FROM_IOV_COUNT];
     struct sockaddr_storage  rmtaddr;  //存储数据来源IP地址
     int32_t addrlen;                   //存储数据来源IP地址长度
@@ -61,7 +58,7 @@ struct recv_from_ol//udp EV_RECV
 struct send_to_ol//udp EV_SEND
 {
     struct sock_ol ol;
-    size_t iovcount;
+    size_t iovcnt;
     IOV_TYPE *wsabuf;
     struct netaddr_ctx addr;
 }send_to_ol;
@@ -72,7 +69,6 @@ typedef struct iocp_ctx
     AcceptExPtr acceptex;
     ConnectExPtr connectex;
     GetAcceptExSockaddrsPtr acceptaddrsex;
-    DisconnectExPtr disconnectex;
 }iocp_ctx;
 //获取EX函数
 static void *_getexfunc(const SOCKET fd, GUID  *pguid)
@@ -111,12 +107,11 @@ static void _initexfunc(struct iocp_ctx *piocp)
     piocp->acceptex = (AcceptExPtr)_getexfunc(sock, &accept_uid);
     piocp->connectex = (ConnectExPtr)_getexfunc(sock, &connect_uid);
     piocp->acceptaddrsex = (GetAcceptExSockaddrsPtr)_getexfunc(sock, &acceptaddrs_uid);
-    piocp->disconnectex = (DisconnectExPtr)_getexfunc(sock, &disconnect_uid);
 
     SAFE_CLOSESOCK(sock);
 }
 //初始化
-struct netio_ctx *netio_new(volatile atomic_t *pstop)
+struct netio_ctx *netio_new()
 {
     WSADATA wsdata;
     WORD ver = MAKEWORD(2, 2);
@@ -124,20 +119,18 @@ struct netio_ctx *netio_new(volatile atomic_t *pstop)
 
     struct iocp_ctx *piocp = (struct iocp_ctx *)MALLOC(sizeof(struct iocp_ctx));
     ASSERTAB(NULL != piocp, ERRSTR_MEMORY);
-    piocp->netio.stop = pstop;
-    piocp->netio.threadnum = (int32_t)procsnum() * 2 + 2;
-    piocp->netio.thread = MALLOC(sizeof(struct thread_ctx) * piocp->netio.threadnum);
+    piocp->netio.threadcnt = (int32_t)procscnt() * 2 + 2;
+    piocp->netio.thread = MALLOC(sizeof(struct thread_ctx) * piocp->netio.threadcnt);
     ASSERTAB(NULL != piocp->netio.thread, ERRSTR_MEMORY);
-    for (int32_t i = 0; i < piocp->netio.threadnum; i++)
+    for (int32_t i = 0; i < piocp->netio.threadcnt; i++)
     {
         thread_init(&piocp->netio.thread[i]);
     }
-
     _initexfunc(piocp);
     piocp->ioport = CreateIoCompletionPort(INVALID_HANDLE_VALUE, 
         NULL,
         0,
-        piocp->netio.threadnum);
+        piocp->netio.threadcnt);
     ASSERTAB(NULL != piocp->ioport, ERRORSTR(ERRNO));
 
     return &piocp->netio;
@@ -147,18 +140,18 @@ void netio_free(struct netio_ctx *pctx)
 {
     int32_t i;
     struct iocp_ctx *piocp = UPCAST(pctx, struct iocp_ctx, netio);
-    for (i = 0; i < piocp->netio.threadnum; i++)
+    for (i = 0; i < piocp->netio.threadcnt; i++)
     {
         if (!PostQueuedCompletionStatus(piocp->ioport, 
             0,
-            NOTIFIEXIT_KEY, 
+            NOTIFI_EXIT_KEY, 
             NULL))
         {
             int32_t irtn = ERRNO;
             LOG_ERROR("error code:%d message:%s", irtn, ERRORSTR(irtn));
         }
     }
-    for (i = 0; i < piocp->netio.threadnum; i++)
+    for (i = 0; i < piocp->netio.threadcnt; i++)
     {
         thread_join(&piocp->netio.thread[i]);
     }
@@ -172,20 +165,19 @@ void netio_free(struct netio_ctx *pctx)
 static inline int32_t _post_accept(struct iocp_ctx *piocp, struct sock_ctx *plistensock, struct accept_ol *poverlapped)
 {
     int32_t irtn;
-    SOCKET sock = WSASocket(netaddr_addrfamily(&plistensock->addr), 
+    SOCKET sock = WSASocket(netaddr_addrfamily(&plistensock->addr),
         SOCK_STREAM,
         IPPROTO_TCP,
-        NULL, 
-        0, 
+        NULL,
+        0,
         WSA_FLAG_OVERLAPPED);
     if (INVALID_SOCK == sock)
     {
-        irtn = ERRNO;
-        LOG_ERROR("error code:%d message:%s", irtn, ERRORSTR(irtn));
-        return irtn;
+        return ERRNO;
     }
     
     poverlapped->sock = sock;
+    ATOMIC_ADD(&plistensock->ref, 1);
     if (!piocp->acceptex(plistensock->sock,         //ListenSocket
         poverlapped->sock,                          //AcceptSocket
         &poverlapped->addrbuf,
@@ -198,8 +190,35 @@ static inline int32_t _post_accept(struct iocp_ctx *piocp, struct sock_ctx *plis
         irtn = ERRNO;
         if (ERROR_IO_PENDING != irtn)
         {
-            LOG_FATAL("error code:%d message:%s", irtn, ERRORSTR(irtn));
-            SAFE_CLOSESOCK(sock);
+            SAFE_CLOSESOCK(poverlapped->sock);
+            ATOMIC_ADD(&plistensock->ref, -1);
+            return irtn;
+        }
+    }
+
+    return ERR_OK;
+}
+//ConnectEX
+static inline int32_t _post_connect(struct iocp_ctx *piocp, struct sock_ctx *psock)
+{
+    struct rw_ol *prwol = (struct rw_ol *)psock->exdata;
+    ZERO(&prwol->recvol.ol.overlapped, sizeof(prwol->recvol.ol.overlapped));
+    prwol->recvol.ol.evtype = EV_CONNECT;
+    prwol->recvol.ol.bytes = 0;
+
+    ATOMIC_ADD(&psock->ref, 1);
+    if (!piocp->connectex(psock->sock,
+        netaddr_addr(&psock->addr),
+        netaddr_size(&psock->addr),
+        NULL,
+        0,
+        &prwol->recvol.ol.bytes,
+        &prwol->recvol.ol.overlapped))
+    {
+        int32_t irtn = ERRNO;
+        if (ERROR_IO_PENDING != irtn)
+        {
+            ATOMIC_ADD(&psock->ref, -1);
             return irtn;
         }
     }
@@ -207,8 +226,8 @@ static inline int32_t _post_accept(struct iocp_ctx *piocp, struct sock_ctx *plis
     return ERR_OK;
 }
 //申请iov
-static inline size_t _recv_iov_application(struct buffer_ctx *pbuf, size_t uisize, 
-    IOV_TYPE *wsabuf, size_t uiovlens)
+static inline size_t _recv_iov_application(struct buffer_ctx *pbuf, const size_t uisize, 
+    IOV_TYPE *wsabuf, const size_t uiovlens)
 {
     buffer_lock(pbuf);
     ASSERTAB(0 == pbuf->freeze_write, "buffer tail already freezed.");
@@ -220,11 +239,11 @@ static inline size_t _recv_iov_application(struct buffer_ctx *pbuf, size_t uisiz
 }
 //提交iov
 static inline void _recv_iov_commit(struct buffer_ctx *pbuf, size_t ilens, 
-    IOV_TYPE *piov, const size_t uicount)
+    IOV_TYPE *piov, const size_t uicnt)
 {
     buffer_lock(pbuf);
     ASSERTAB(0 != pbuf->freeze_write, "buffer tail already unfreezed.");
-    size_t uisize = _buffer_commit_iov(pbuf, ilens, piov, uicount);
+    size_t uisize = _buffer_commit_iov(pbuf, ilens, piov, uicnt);
     ASSERTAB(uisize == ilens, "_buffer_commit_iov lens error.");
     pbuf->freeze_write = 0;
     buffer_unlock(pbuf);
@@ -232,15 +251,16 @@ static inline void _recv_iov_commit(struct buffer_ctx *pbuf, size_t ilens,
 //WSARecv
 static inline int32_t _post_recv(struct sock_ctx *psock)
 {
-    struct rw_ol *prwol = (struct rw_ol *)psock->data;
+    struct rw_ol *prwol = (struct rw_ol *)psock->exdata;
     ZERO(&prwol->recvol.ol.overlapped, sizeof(prwol->recvol.ol.overlapped));
     prwol->recvol.flag = 0;
-    prwol->recvol.iovcount = _recv_iov_application(psock->bufrecv, 
+    prwol->recvol.iovcnt = _recv_iov_application(psock->bufrecv, 
         MAX_RECV_IOV_SIZE, prwol->recvol.wsabuf, MAX_RECV_IOV_COUNT);
 
+    ATOMIC_ADD(&psock->ref, 1);
     int32_t irtn = WSARecv(psock->sock,
         prwol->recvol.wsabuf,
-        (DWORD)prwol->recvol.iovcount,
+        (DWORD)prwol->recvol.iovcnt,
         &prwol->recvol.ol.bytes,
         &prwol->recvol.flag,
         &prwol->recvol.ol.overlapped,
@@ -250,7 +270,8 @@ static inline int32_t _post_recv(struct sock_ctx *psock)
         irtn = ERRNO;
         if (WSA_IO_PENDING != irtn)
         {
-            _recv_iov_commit(psock->bufrecv, 0, prwol->recvol.wsabuf, prwol->recvol.iovcount);
+            _recv_iov_commit(psock->bufrecv, 0, prwol->recvol.wsabuf, prwol->recvol.iovcnt);
+            ATOMIC_ADD(&psock->ref, -1);
             return irtn;
         }
     }
@@ -259,18 +280,18 @@ static inline int32_t _post_recv(struct sock_ctx *psock)
 }
 static inline int32_t _post_recv_from(struct sock_ctx *psock)
 {
-    struct recv_from_ol *poverlapped = (struct recv_from_ol *)psock->data;
+    struct recv_from_ol *poverlapped = (struct recv_from_ol *)psock->exdata;
     ZERO(&(poverlapped->ol.overlapped), sizeof(poverlapped->ol.overlapped));
     poverlapped->flag = 0;
     poverlapped->ol.bytes = 0;
     poverlapped->addrlen = sizeof(poverlapped->rmtaddr);
-    poverlapped->iovcount = _recv_iov_application(psock->bufrecv, 
+    poverlapped->iovcnt = _recv_iov_application(psock->bufrecv, 
         MAX_RECV_FROM_IOV_SIZE, poverlapped->wsabuf, MAX_RECV_FROM_IOV_COUNT);
 
-    int32_t irtn = WSARecvFrom(
-        psock->sock,
+    ATOMIC_ADD(&psock->ref, 1);
+    int32_t irtn = WSARecvFrom(psock->sock,
         poverlapped->wsabuf,
-        (DWORD)poverlapped->iovcount,
+        (DWORD)poverlapped->iovcnt,
         &poverlapped->ol.bytes,
         &poverlapped->flag,
         (struct sockaddr*)&(poverlapped->rmtaddr),
@@ -282,7 +303,8 @@ static inline int32_t _post_recv_from(struct sock_ctx *psock)
         irtn = ERRNO;
         if (WSA_IO_PENDING != irtn)
         {
-            _recv_iov_commit(psock->bufrecv, 0, poverlapped->wsabuf, poverlapped->iovcount);
+            _recv_iov_commit(psock->bufrecv, 0, poverlapped->wsabuf, poverlapped->iovcnt);
+            ATOMIC_ADD(&psock->ref, -1);
             return irtn;
         }
     }
@@ -290,21 +312,21 @@ static inline int32_t _post_recv_from(struct sock_ctx *psock)
     return ERR_OK;
 }
 static inline size_t _send_iov_application(struct buffer_ctx *pbuf, size_t uisize,
-    IOV_TYPE *wsabuf, size_t uiovlens)
+    IOV_TYPE *wsabuf, const size_t uiovlens)
 {
-    size_t uicount = 0;
+    size_t uicnt = 0;
     buffer_lock(pbuf);
     if (0 == pbuf->freeze_read)
     {
-        uicount = _buffer_get_iov(pbuf, uisize, wsabuf, uiovlens);
-        if (uicount > 0)
+        uicnt = _buffer_get_iov(pbuf, uisize, wsabuf, uiovlens);
+        if (uicnt > 0)
         {
             pbuf->freeze_read = 1;
         }
     }
     buffer_unlock(pbuf);
 
-    return uicount;
+    return uicnt;
 }
 static inline void _send_iov_commit(struct buffer_ctx *pbuf, size_t uilens)
 {
@@ -323,20 +345,20 @@ static inline void _send_iov_commit_failed(struct buffer_ctx *pbuf)
 }
 static inline int32_t _post_send(struct sock_ctx *psock)
 {
-    struct rw_ol *prwol = (struct rw_ol *)psock->data;    
-    size_t uicount = _send_iov_application(psock->bufsend, 
+    struct rw_ol *prwol = (struct rw_ol *)psock->exdata;    
+    size_t uicnt = _send_iov_application(psock->bufsend, 
         MAX_SEND_IOV_SIZE, prwol->sendol.wsabuf, MAX_SEND_IOV_COUNT);
-    if (0 == uicount)
+    if (0 == uicnt)
     {
         return ERR_OK;
     }
     
     ZERO(&prwol->sendol.ol.overlapped, sizeof(prwol->sendol.ol.overlapped));
-    prwol->sendol.iovcount = uicount;
-
+    prwol->sendol.iovcnt = uicnt;    
+    ATOMIC_ADD(&psock->refsend, 1);
     int32_t irtn = WSASend(psock->sock,
         prwol->sendol.wsabuf,
-        (DWORD)uicount,
+        (DWORD)uicnt,
         &prwol->sendol.ol.bytes,
         0,
         &prwol->sendol.ol.overlapped,
@@ -346,103 +368,74 @@ static inline int32_t _post_send(struct sock_ctx *psock)
         irtn = ERRNO;
         if (WSA_IO_PENDING != irtn)
         {
-            _send_iov_commit_failed(psock->bufsend);
+            _send_iov_commit_failed(psock->bufsend);  
+            ATOMIC_ADD(&psock->refsend, -1);
             return irtn;
         }
     }
 
     return ERR_OK;
 }
-//ConnectEX
-static inline int32_t _post_connect(struct iocp_ctx *piocp, struct sock_ctx *psock)
+int32_t netio_sendto(struct sock_ctx *psock, const char *phost, const uint16_t usport,
+    IOV_TYPE *wsabuf, const size_t uicnt)
 {
-    struct sock_ol *poverlapped = (struct sock_ol *)MALLOC(sizeof(struct sock_ol));
+    struct send_to_ol *poverlapped = (struct send_to_ol *)MALLOC(sizeof(struct send_to_ol));
     ASSERTAB(NULL != poverlapped, ERRSTR_MEMORY);
-    psock->data = poverlapped;
-    ZERO(&poverlapped->overlapped, sizeof(poverlapped->overlapped));
-    poverlapped->evtype = EV_CONNECT;
-    poverlapped->sockctx = psock;    
-    poverlapped->bytes = 0;
+    ZERO(&poverlapped->ol.overlapped, sizeof(poverlapped->ol.overlapped));
+    poverlapped->ol.bytes = 0;
+    poverlapped->ol.evtype = EV_SEND;
+    poverlapped->ol.sockctx = psock;
+    poverlapped->iovcnt = uicnt;
+    poverlapped->wsabuf = wsabuf;
+    int32_t irtn = netaddr_sethost(&poverlapped->addr, phost, usport);
+    if (ERR_OK != irtn)
+    {
+        SAFE_FREE(poverlapped);
+        return irtn;
+    }
 
-    if (!piocp->connectex(psock->sock,
-        netaddr_addr(&psock->addr),
-        netaddr_size(&psock->addr),
-        NULL,
+    ATOMIC_ADD(&psock->refsend, 1);
+    irtn = WSASendTo(psock->sock,
+        poverlapped->wsabuf,
+        (DWORD)poverlapped->iovcnt,
+        &poverlapped->ol.bytes,
         0,
-        &poverlapped->bytes,
-        &poverlapped->overlapped))
+        netaddr_addr(&poverlapped->addr),
+        netaddr_size(&poverlapped->addr),
+        &poverlapped->ol.overlapped,
+        NULL);
+    if (ERR_OK != irtn)
     {
-        int32_t irtn = ERRNO;
+        irtn = ERRNO;
         if (ERROR_IO_PENDING != irtn)
         {
-            LOG_WARN("error code:%d message:%s", irtn, ERRORSTR(irtn));
-            SAFE_FREE(psock->data);
+            SAFE_FREE(poverlapped);
+            ATOMIC_ADD(&psock->refsend, -1);
             return irtn;
         }
     }
 
-    return ERR_OK;
+    return irtn;
 }
-static inline int32_t _post_disconnect(struct iocp_ctx *piocp, struct sock_ctx *psock)
-{    
-    struct sock_ol *pcloseol = (struct sock_ol *)MALLOC(sizeof(struct sock_ol));
-    ASSERTAB(NULL != pcloseol, ERRSTR_MEMORY);
-    ZERO(&pcloseol->overlapped, sizeof(pcloseol->overlapped));
-    pcloseol->evtype = EV_CLOSE;
-    pcloseol->sockctx = psock;
-    struct rw_ol *prwol = (struct rw_ol *)psock->data;
-    shutdown(psock->sock, SHUT_WR);
-    //buffer_lock(psock->bufsend);
-    //if (1 == psock->bufsend->freeze_read)
-    //{
-    //    if (!CancelIoEx((HANDLE)psock->sock, &prwol->sendol.ol.overlapped))
-    //    {
-    //        LOG_ERROR("%s", ERRORSTR(ERRNO));
-    //    }
-    //    //psock->bufsend->freeze_read = 0;
-    //}
-    //buffer_unlock(psock->bufsend);
-    if (!piocp->disconnectex(psock->sock, &pcloseol->overlapped, 0, 0))
-    {
-        int32_t irtn = ERRNO;
-        if (ERROR_IO_PENDING != irtn)
-        {
-            LOG_WARN("error code:%d message:%s", irtn, ERRORSTR(irtn));
-            SAFE_FREE(pcloseol);
-            return irtn;
-        }
-    }
-
-    return ERR_OK;
-}
-void netio_close(struct sock_ctx *psock)
+static inline void _on_accept(struct iocp_ctx *piocp, struct sock_ol *psockol, const int32_t ierr)
 {
-    PRINTF("netio_close %d", (int32_t)psock->sock);
-    struct rw_ol *prwol = (struct rw_ol *)psock->data;
-    shutdown(psock->sock, SHUT_RDWR);
-    if (!CancelIoEx((HANDLE)psock->sock, NULL))
-    {
-        int32_t irtn = ERRNO;
-        LOG_WARN("error code:%d message:%s", irtn, ERRORSTR(irtn));
-    }
-    /*if (SOCK_DGRAM == psock->socktype)
-    {*/
-        //CLOSESOCKET(psock->sock);
-    //}
-}
-static inline void _on_accept(struct iocp_ctx *piocp, struct sock_ol *psockol, int32_t ierr)
-{
+    int32_t irtn;
     struct accept_ol *pacceptol = UPCAST(psockol, struct accept_ol, ol);
     SOCKET sock = pacceptol->sock;
     if (ERR_OK != ierr)
     {
-        LOG_ERROR("error code:%d message:%s", ierr, ERRORSTR(ierr));
         CLOSESOCKET(sock);
-        //还有其他不能继续的?
-        if (ERROR_OPERATION_ABORTED != ierr)
+        if (0 != ATOMIC_GET(&pacceptol->ol.sockctx->closed))
         {
-            (void)_post_accept(piocp, pacceptol->ol.sockctx, pacceptol);
+            ATOMIC_ADD(&pacceptol->ol.sockctx->ref, -1);
+            return;
         }
+        irtn = _post_accept(piocp, pacceptol->ol.sockctx, pacceptol);
+        if (ERR_OK != irtn)
+        {
+            LOG_WARN("socket:%d error code:%d message:%s", (int32_t)sock, irtn, ERRORSTR(irtn));
+        }
+        ATOMIC_ADD(&pacceptol->ol.sockctx->ref, -1);
         return;
     }
     //获取地址
@@ -452,7 +445,11 @@ static inline void _on_accept(struct iocp_ctx *piocp, struct sock_ol *psockol, i
         sizeof(pacceptol->addrbuf) / 2, sizeof(pacceptol->addrbuf) / 2,
         &plocal, &ilocal, &premote, &iremote);
     // 新加一个socket，继续AcceptEX
-    (void)_post_accept(piocp, pacceptol->ol.sockctx, pacceptol);
+    irtn = _post_accept(piocp, pacceptol->ol.sockctx, pacceptol);
+    if (ERR_OK != irtn)
+    {
+        LOG_WARN("socket:%d error code:%d message:%s", (int32_t)sock, irtn, ERRORSTR(irtn));
+    }
     //设置，让getsockname, getpeername, shutdown可用
     (void)setsockopt(sock, SOL_SOCKET, SO_UPDATE_ACCEPT_CONTEXT,
         (char *)&pacceptol->ol.sockctx->sock, sizeof(&pacceptol->ol.sockctx->sock));
@@ -464,11 +461,12 @@ static inline void _on_accept(struct iocp_ctx *piocp, struct sock_ol *psockol, i
     if (NULL == CreateIoCompletionPort((HANDLE)pctx->sock, 
         piocp->ioport,
         (ULONG_PTR)pctx,
-        piocp->netio.threadnum))
+        piocp->netio.threadcnt))
     {
-        int32_t irtn = ERRNO;
-        LOG_ERROR("error code:%d message:%s", irtn, ERRORSTR(irtn));
-        sockctx_free(pctx);
+        irtn = ERRNO;
+        LOG_ERROR("socke:%d error code:%d message:%s", (int32_t)pctx->sock, irtn, ERRORSTR(irtn));
+        sockctx_free(pctx, 1);
+        ATOMIC_ADD(&pacceptol->ol.sockctx->ref, -1);
         return;
     }
     //用listen的chan投递EV_ACCEPT
@@ -477,79 +475,85 @@ static inline void _on_accept(struct iocp_ctx *piocp, struct sock_ol *psockol, i
     {
         LOG_ERROR("%s", "post accept event failed.");
         SAFE_FREE(pev);
-        sockctx_free(pctx);
+        sockctx_free(pctx, 1);
     }
+    ATOMIC_ADD(&pacceptol->ol.sockctx->ref, -1);
 }
-static inline void _on_connect(struct sock_ol *psockol, int32_t ierr)
+static inline void _on_connect(struct sock_ol *psockol, const int32_t ierr)
 {
     struct sock_ctx *psock = psockol->sockctx;
-    SAFE_FREE(psock->data);
     //投递EV_CONNECT
     struct ev_ctx *pev = ev_new_connect(psock, ierr);
     if (ERR_OK != sockctx_post_ev(psock, pev))
     {
         LOG_ERROR("%s", "post connect event failed.");
         SAFE_FREE(pev);
-        sockctx_free(psock);
-    }
-}
-static inline void _send_close_ev(struct sock_ctx *psock)
-{
-    struct ev_ctx *pev = ev_new_close(psock);
-    if (ERR_OK != sockctx_post_ev(psock, pev))
-    {
-        LOG_ERROR("%s", "post close event failed.");
-        SAFE_FREE(pev);
-        sockctx_free(psock);
-    }
-}
-static inline void _on_close(struct sock_ol *psockol, int32_t ierr)
-{
-    struct sock_ctx *psock = psockol->sockctx;
-    SAFE_FREE(psockol);
-    _send_close_ev(psock);
-}
-static inline int32_t _is_close(struct iocp_ctx *piocp, struct sock_ol *psockol, int32_t ierr, DWORD dbytes)
-{
-    if ((dbytes > 0
-        && ERR_OK == ierr))
-    {
-        return ERR_FAILED;
+        sockctx_free(psock, 1);
+        return;
     }
 
-    struct sock_ctx *psock = psockol->sockctx;
-    if (SOCK_DGRAM == psock->socktype)
+    ATOMIC_ADD(&psock->ref, -1);
+}
+static inline int32_t _send_close_ev(struct sock_ctx *psock)
+{
+    if (ATOMIC_CAS(&psock->closed, 0, 1))
     {
-        struct recv_from_ol *precvfromol = UPCAST(psockol, struct recv_from_ol, ol);
-        _recv_iov_commit(psock->bufrecv, 0, precvfromol->wsabuf, precvfromol->iovcount);
-        //投递EV_CLOSE
-        _send_close_ev(psock);
-    }
-    else
-    {
-        struct rw_ol *prwol = (struct rw_ol *)psock->data;
-        _recv_iov_commit(psock->bufrecv, 0, prwol->recvol.wsabuf, prwol->recvol.iovcount); 
-        (void)_post_disconnect(piocp, psock);
+        struct ev_ctx *pev = ev_new_close(psock);
+        if (ERR_OK != sockctx_post_ev(psock, pev))
+        {
+            LOG_ERROR("%s", "post close event failed.");
+            SAFE_FREE(pev);
+            sockctx_free(psock, 1);
+            return ERR_FAILED;
+        }
     }
 
     return ERR_OK;
 }
-static inline void _on_recv(struct iocp_ctx *piocp, struct sock_ol *psockol, int32_t ierr, DWORD dbytes)
+static inline int32_t _is_close(struct sock_ol *psockol, const int32_t ierr, const DWORD dbytes)
 {
-    if (ERR_OK == _is_close(piocp, psockol, ierr, dbytes))
+    if (0 == dbytes
+        || ERR_OK != ierr)
     {
-        return;
+        struct sock_ctx *psock = psockol->sockctx;
+        if (SOCK_DGRAM == psock->socktype)
+        {
+            struct recv_from_ol *precvfromol = UPCAST(psockol, struct recv_from_ol, ol);
+            _recv_iov_commit(psock->bufrecv, 0, precvfromol->wsabuf, precvfromol->iovcnt);
+        }
+        else
+        {
+            struct rw_ol *prwol = (struct rw_ol *)psock->exdata;
+            _recv_iov_commit(psock->bufrecv, 0, prwol->recvol.wsabuf, prwol->recvol.iovcnt);
+        }
+
+        return ERR_OK;
     }
 
+    return ERR_FAILED;
+}
+static inline void _on_recv(struct sock_ol *psockol, const int32_t ierr, const DWORD dbytes)
+{    
     struct sock_ctx *psock = psockol->sockctx;
+    if (ERR_OK == _is_close(psockol, ierr, dbytes))
+    {
+        //投递EV_CLOSE
+        if (ERR_OK == _send_close_ev(psock))
+        {
+            ATOMIC_ADD(&psock->ref, -1);
+        }
+        return;
+    }
+    
+    int32_t irtn;
     if (SOCK_DGRAM == psock->socktype)
     {
         struct recv_from_ol *precvfromol = UPCAST(psockol, struct recv_from_ol, ol);
-        _recv_iov_commit(psock->bufrecv, (size_t)dbytes, precvfromol->wsabuf, precvfromol->iovcount);
+        _recv_iov_commit(psock->bufrecv, (size_t)dbytes, precvfromol->wsabuf, precvfromol->iovcnt);
         //投递EV_RECV消息
         struct ev_udp_recv_ctx *pudpev = ev_new_recv_from(psock, dbytes);
         char acport[PORT_LENS];
-        int32_t irtn = getnameinfo((struct sockaddr *)&precvfromol->rmtaddr, precvfromol->addrlen,
+        irtn = getnameinfo((struct sockaddr *)&precvfromol->rmtaddr, precvfromol->addrlen,
             pudpev->host, sizeof(pudpev->host), acport, sizeof(acport),
             NI_NUMERICHOST | NI_NUMERICSERV);
         if (ERR_OK != irtn)
@@ -568,17 +572,11 @@ static inline void _on_recv(struct iocp_ctx *piocp, struct sock_ol *psockol, int
         }
         //继续接收
         irtn = _post_recv_from(psock);
-        if (ERR_OK != irtn)
-        {
-            LOG_ERROR("error code:%d message:%s", irtn, ERRORSTR(irtn));
-            //投递EV_CLOSE
-            _send_close_ev(psock);
-        }
     }
     else
     {
-        struct rw_ol *prwol = (struct rw_ol *)psock->data;
-        _recv_iov_commit(psock->bufrecv, (size_t)dbytes, prwol->recvol.wsabuf, prwol->recvol.iovcount);
+        struct rw_ol *prwol = (struct rw_ol *)psock->exdata;
+        _recv_iov_commit(psock->bufrecv, (size_t)dbytes, prwol->recvol.wsabuf, prwol->recvol.iovcnt);
         //投递EV_RECV消息
         struct ev_ctx *pev = ev_new_recv(psock, (size_t)dbytes);
         if (ERR_OK != sockctx_post_ev(psock, pev))
@@ -587,24 +585,34 @@ static inline void _on_recv(struct iocp_ctx *piocp, struct sock_ol *psockol, int
             SAFE_FREE(pev);
         }
         //继续接收
-        int32_t irtn = _post_recv(psock);
-        if (ERR_OK != irtn)
-        {
-            LOG_ERROR("error code:%d message:%s", irtn, ERRORSTR(irtn));
-            (void)_post_disconnect(piocp, psock);
-        }
+        irtn = _post_recv(psock);
     }
-}
-static inline void _on_send(struct sock_ol *psockol, int32_t ierr, DWORD dbytes)
-{
-    if (0 == dbytes
-        || ERR_OK != ierr)
+    if (ERR_OK != irtn)
     {
-        _send_iov_commit_failed(psockol->sockctx->bufsend);
+        //投递EV_CLOSE
+        if (ERR_OK == _send_close_ev(psock))
+        {
+            ATOMIC_ADD(&psock->ref, -1);
+        }
         return;
     }
 
+    ATOMIC_ADD(&psock->ref, -1);
+}
+static inline void _on_send(struct sock_ol *psockol, const int32_t ierr, const DWORD dbytes)
+{
     struct sock_ctx *psock = psockol->sockctx;
+    if (0 == dbytes
+        || ERR_OK != ierr)
+    {
+        if (SOCK_STREAM == psock->socktype)
+        {
+            _send_iov_commit_failed(psock->bufsend);
+        }
+        ATOMIC_ADD(&psock->refsend, -1);
+        return;
+    }
+
     if (SOCK_DGRAM == psock->socktype)
     {
         struct send_to_ol *psendtool = UPCAST(psockol, struct send_to_ol, ol);
@@ -613,7 +621,7 @@ static inline void _on_send(struct sock_ol *psockol, int32_t ierr, DWORD dbytes)
             //投递EV_SEND消息
             struct ev_udp_send_ctx *pev = ev_new_send_to(psock, (size_t)dbytes);
             netaddr_setaddr(&pev->addr, netaddr_addr(&psendtool->addr));
-            pev->iovcount = psendtool->iovcount;
+            pev->iovcnt = psendtool->iovcnt;
             pev->wsabuf = psendtool->wsabuf;
             if (ERR_OK != sockctx_post_ev(psock, &pev->ev))
             {
@@ -626,9 +634,7 @@ static inline void _on_send(struct sock_ol *psockol, int32_t ierr, DWORD dbytes)
     else
     {
         _send_iov_commit(psock->bufsend, (size_t)dbytes);
-        int32_t irtn = _post_send(psock);
-        if (0 != psock->postsendev
-            && ERR_OK == irtn)
+        if (0 != psock->postsendev)
         {
             //投递EV_SEND消息
             struct ev_ctx *pev = ev_new_send(psock, (size_t)dbytes);
@@ -638,7 +644,10 @@ static inline void _on_send(struct sock_ol *psockol, int32_t ierr, DWORD dbytes)
                 SAFE_FREE(pev);
             }
         }
-    }    
+        (void)_post_send(psock);
+    }
+
+    ATOMIC_ADD(&psock->refsend, -1);
 }
 //IOCP循环
 static void _icop_loop(void *p1, void *p2, void *p3)
@@ -650,28 +659,30 @@ static void _icop_loop(void *p1, void *p2, void *p3)
     OVERLAPPED *poverlapped;
     struct sock_ol *psockol;
     struct iocp_ctx *piocp = (struct iocp_ctx *)p1;
-    while (0 == ATOMIC_GET(piocp->netio.stop))
+    while (1)
     {
         ierr = ERR_OK;
         bok = GetQueuedCompletionStatus(piocp->ioport, 
-            &dbytes, 
-            &ulkey, 
-            &poverlapped, 
+            &dbytes,
+            &ulkey,
+            &poverlapped,
             INFINITE);
-        if (NOTIFIEXIT_KEY == ulkey)
+        if (NOTIFI_EXIT_KEY == ulkey)
         {
             break;
         }
         if (!bok)
         {
             ierr = ERRNO;
-            if (NULL == poverlapped
-                || WAIT_TIMEOUT == ierr)
+            if (WAIT_TIMEOUT == ierr)
             {
                 continue;
             }
         }
-
+        if (NULL == poverlapped)
+        {
+            continue;
+        }
         psockol = UPCAST(poverlapped, struct sock_ol, overlapped);
         switch (psockol->evtype)
         {
@@ -682,13 +693,10 @@ static void _icop_loop(void *p1, void *p2, void *p3)
                 _on_connect(psockol, ierr);
                 break;
             case EV_RECV:
-                _on_recv(piocp, psockol, ierr, dbytes);
+                _on_recv(psockol, ierr, dbytes);
                 break;
             case EV_SEND:
                 _on_send(psockol, ierr, dbytes);
-                break;
-            case EV_CLOSE:
-                _on_close(psockol, ierr);
                 break;
         }
     }
@@ -697,7 +705,7 @@ static void _icop_loop(void *p1, void *p2, void *p3)
 void netio_run(struct netio_ctx *pctx)
 {
     struct iocp_ctx *piocp = UPCAST(pctx, struct iocp_ctx, netio);
-    for (int32_t i = 0; i < piocp->netio.threadnum; i++)
+    for (int32_t i = 0; i < piocp->netio.threadcnt; i++)
     {
         thread_creat(&piocp->netio.thread[i], _icop_loop, piocp, NULL, NULL);
         thread_waitstart(&piocp->netio.thread[i]);
@@ -712,7 +720,7 @@ static inline struct sock_ctx *_init_tcp_sock(struct chan_ctx *pchan,
     if (ERR_OK != irtn)
     {
         LOG_ERROR("error code:%d message:%s", irtn, gai_strerror(irtn));        
-        sockctx_free(psock);
+        sockctx_free(psock, 0);
         return NULL;
     }
 
@@ -727,7 +735,7 @@ static inline struct sock_ctx *_init_tcp_sock(struct chan_ctx *pchan,
     {
         irtn = ERRNO;
         LOG_ERROR("error code:%d message:%s", irtn, ERRORSTR(irtn));
-        sockctx_free(psock);
+        sockctx_free(psock, 0);
         return NULL;
     }
 
@@ -739,17 +747,17 @@ int32_t _accptex(struct iocp_ctx *piocp, struct sock_ctx *psock)
     if (NULL == CreateIoCompletionPort((HANDLE)psock->sock,
         piocp->ioport,
         (ULONG_PTR)psock,
-        piocp->netio.threadnum))
+        piocp->netio.threadcnt))
     {
         irtn = ERRNO;
-        LOG_ERROR("error code:%d message:%s", irtn, ERRORSTR(irtn));
+        LOG_ERROR("socke:%d error code:%d message:%s", (int32_t)psock->sock, irtn, ERRORSTR(irtn));
         return irtn;
     }
 
-    ASSERTAB(NULL == psock->data, "date used by another.");
+    ASSERTAB(NULL == psock->exdata, "date used by another.");
     struct accept_ol *poverlapped = MALLOC(sizeof(struct accept_ol) * MAX_ACCEPT_SOCKEX);
     ASSERTAB(NULL != poverlapped, ERRSTR_MEMORY);
-    psock->data = poverlapped;
+    psock->exdata = poverlapped;
 
     for (int32_t i = 0; i < MAX_ACCEPT_SOCKEX; i++)
     {
@@ -761,47 +769,49 @@ int32_t _accptex(struct iocp_ctx *piocp, struct sock_ctx *psock)
         irtn = _post_accept(piocp, psock, &poverlapped[i]);
         if (ERR_OK != irtn)
         {
-            SAFE_FREE(psock->data);
-            return irtn;
+            LOG_ERROR("error code:%d message:%s", irtn, ERRORSTR(irtn));
         }
+        ASSERTAB(ERR_OK == irtn, ERRORSTR(irtn));
     }
 
     return ERR_OK;
 }
 struct sock_ctx *netio_listen(struct netio_ctx *pctx, struct chan_ctx *pchan,
-    size_t ichannum, const char *phost, const uint16_t usport)
+    const uint32_t uichancnt, const char *phost, const uint16_t usport)
 {
-    ASSERTAB(ichannum >= 1, "param error.");
+    ASSERTAB(uichancnt >= 1, "param error.");
     struct sock_ctx *psock = _init_tcp_sock(pchan, phost, usport, 1);
     if (NULL == psock)
     {
         return NULL;
     }
 
-    psock->channum = ichannum;
+    psock->chancnt = uichancnt;
     sockraddr(psock->sock);
     if (ERR_OK != bind(psock->sock, netaddr_addr(&psock->addr), netaddr_size(&psock->addr)))
     {
-        LOG_ERROR("%s", ERRORSTR(ERRNO));
-        sockctx_free(psock);
+        int32_t irtn = ERRNO;
+        LOG_ERROR("socke:%d error code:%d message:%s", (int32_t)psock->sock, irtn, ERRORSTR(irtn));
+        sockctx_free(psock, 1);
         return NULL;
     }
     if (ERR_OK != listen(psock->sock, SOCKK_BACKLOG))
     {
-        LOG_ERROR("%s", ERRORSTR(ERRNO));
-        sockctx_free(psock);
+        int32_t irtn = ERRNO;
+        LOG_ERROR("socke:%d error code:%d message:%s", (int32_t)psock->sock, irtn, ERRORSTR(irtn));
+        sockctx_free(psock, 1);
         return NULL;
     }
 
     if (ERR_OK != _accptex(UPCAST(pctx, struct iocp_ctx, netio), psock))
     {
-        sockctx_free(psock);
+        sockctx_free(psock, 1);
         return NULL;
     }
 
     return psock;
 }
-int32_t _trybind(struct sock_ctx *psock)
+static inline int32_t _trybind(struct sock_ctx *psock)
 {
     int32_t irtn;
     struct netaddr_ctx addr;
@@ -815,35 +825,61 @@ int32_t _trybind(struct sock_ctx *psock)
     }
     if (ERR_OK != irtn)
     {
-        LOG_ERROR("error code:%d message:%s", irtn, gai_strerror(irtn));
+        LOG_ERROR("sock:%d error code:%d message:%s", (int32_t)psock->sock, irtn, gai_strerror(irtn));
         return irtn;
     }
 
     if (ERR_OK != bind(psock->sock, netaddr_addr(&addr), netaddr_size(&addr)))
     {
         irtn = ERRNO;
-        LOG_ERROR("error code:%d message:%s", irtn, ERRORSTR(irtn));
+        LOG_ERROR("socke:%d error code:%d message:%s", (int32_t)psock->sock, irtn, ERRORSTR(irtn));
         return irtn;
     }
 
     return ERR_OK;
 }
-static int32_t _connectex(struct iocp_ctx *piocp, struct sock_ctx *psock)
+static inline struct rw_ol *_new_rwol(struct sock_ctx *psock)
 {
-    ASSERTAB(NULL == psock->data, "date used by another.");
+    struct rw_ol *prwol;
+    if (NULL != psock->exdata)
+    {
+        prwol = (struct rw_ol *)psock->exdata;
+        prwol->recvol.ol.evtype = EV_RECV;
+        prwol->recvol.ol.bytes = 0;
+        return prwol;
+    }
 
-    int32_t irtn;
+    prwol = (struct rw_ol *)MALLOC(sizeof(struct rw_ol));
+    ASSERTAB(NULL != prwol, ERRSTR_MEMORY);
+    psock->exdata = prwol;
+    prwol->sendol.ol.evtype = EV_SEND;
+    prwol->sendol.ol.sockctx = psock;
+    prwol->sendol.ol.bytes = 0;
+    prwol->recvol.ol.sockctx = psock;
+    prwol->recvol.ol.evtype = EV_RECV;
+    prwol->recvol.ol.bytes = 0;
+
+    return prwol;
+}
+static inline int32_t _connectex(struct iocp_ctx *piocp, struct sock_ctx *psock)
+{
+    ASSERTAB(NULL == psock->exdata, "date used by another.");
     if (NULL == CreateIoCompletionPort((HANDLE)psock->sock, 
         piocp->ioport,
         (ULONG_PTR)psock,
-        piocp->netio.threadnum))
+        piocp->netio.threadcnt))
     {
-        irtn = ERRNO;
-        LOG_ERROR("error code:%d message:%s", irtn, ERRORSTR(irtn));
-        return irtn;
+        return ERRNO;
     }
-    
-    return _post_connect(piocp, psock);
+
+    (void)_new_rwol(psock);
+    int32_t irtn = _post_connect(piocp, psock);
+    if (ERR_OK != irtn)
+    {
+        SAFE_FREE(psock->exdata);
+    }
+
+    return irtn;
 }
 struct sock_ctx *netio_connect(struct netio_ctx *pctx, struct chan_ctx *pchan,
     const char *phost, const uint16_t usport)
@@ -857,12 +893,14 @@ struct sock_ctx *netio_connect(struct netio_ctx *pctx, struct chan_ctx *pchan,
     int32_t irtn = _trybind(psock);
     if (ERR_OK != irtn)
     {
-        sockctx_free(psock);
+        sockctx_free(psock, 1);
         return NULL;
     }
-    if (ERR_OK != _connectex(UPCAST(pctx, struct iocp_ctx, netio), psock))
+    irtn = _connectex(UPCAST(pctx, struct iocp_ctx, netio), psock);
+    if (ERR_OK != irtn)
     {
-        sockctx_free(psock);
+        LOG_ERROR("socke:%d error code:%d message:%s", (int32_t)psock->sock, irtn, ERRORSTR(irtn));
+        sockctx_free(psock, 1);
         return NULL;
     }
 
@@ -886,11 +924,11 @@ struct sock_ctx *netio_addsock(struct netio_ctx *pctx, SOCKET fd)
     if (NULL == CreateIoCompletionPort((HANDLE)psock->sock,
         piocp->ioport,
         (ULONG_PTR)psock,
-        piocp->netio.threadnum))
+        piocp->netio.threadcnt))
     {
         int32_t irtn = ERRNO;
-        LOG_ERROR("error code:%d message:%s", irtn, ERRORSTR(irtn));
-        sockctx_free(psock);
+        LOG_ERROR("socke:%d error code:%d message:%s", (int32_t)psock->sock, irtn, ERRORSTR(irtn));
+        sockctx_free(psock, 1);
         return NULL;
     }
 
@@ -901,95 +939,42 @@ int32_t netio_enable_rw(struct sock_ctx *psock, struct chan_ctx *pchan, const ui
     ASSERTAB(0 == psock->listener, "can't enbale read write on listen socket.");
     psock->chan = pchan;
     psock->postsendev = postsendev;
-    if (SOCK_STREAM == psock->socktype)
-    {
-        socknodelay(psock->sock);
-        sockkpa(psock->sock, SOCKKPA_DELAY, SOCKKPA_INTVL);
-    }
 
     int32_t irtn;
-    ASSERTAB(NULL == psock->data, "data used by another.");
     if (SOCK_DGRAM == psock->socktype)
     {
+        ASSERTAB(NULL == psock->exdata, "exdata used by another.");
         struct recv_from_ol *precvfromol = (struct recv_from_ol *)MALLOC(sizeof(struct recv_from_ol));
-        ASSERTAB(NULL != precvfromol, ERRSTR_MEMORY);        
-        psock->data = precvfromol;
+        ASSERTAB(NULL != precvfromol, ERRSTR_MEMORY);
+        psock->exdata = precvfromol;
         precvfromol->ol.evtype = EV_RECV;
         precvfromol->ol.sockctx = psock;
-
         irtn = _post_recv_from(psock);
         if (ERR_OK != irtn)
         {
-            LOG_ERROR("error code:%d message:%s", irtn, ERRORSTR(irtn));
-            SAFE_FREE(psock->data);
+            SAFE_FREE(psock->exdata);
         }
-
-        return irtn;
     }
-
-    struct rw_ol *prwol = (struct rw_ol *)MALLOC(sizeof(struct rw_ol));
-    ASSERTAB(NULL != prwol, ERRSTR_MEMORY);
-    psock->data = prwol;
-    prwol->sendol.ol.evtype = EV_SEND;
-    prwol->sendol.ol.sockctx = psock;
-    prwol->sendol.ol.bytes = 0;
-    prwol->recvol.ol.sockctx = psock;
-    prwol->recvol.ol.evtype = EV_RECV;
-    prwol->recvol.ol.bytes = 0;
-
-    irtn = _post_recv(psock);
-    if (ERR_OK != irtn)
+    else
     {
-        LOG_ERROR("error code:%d message:%s", irtn, ERRORSTR(irtn));
-        SAFE_FREE(psock->data);
-    }
+        socknodelay(psock->sock);
+        closereset(psock->sock);
+        sockkpa(psock->sock, SOCKKPA_DELAY, SOCKKPA_INTVL);
 
-    return irtn;
-}
-int32_t netio_send(struct sock_ctx *psock, void *pdata, size_t ilens)
-{
-    ASSERTAB(ERR_OK == buffer_append(psock->bufsend, pdata, ilens), "buffer_append failed.");
-    return _post_send(psock);
-}
-int32_t netio_sendto(struct sock_ctx *psock, const char *phost, uint16_t usport,
-    IOV_TYPE *wsabuf, size_t uicount)
-{
-    struct send_to_ol *poverlapped = (struct send_to_ol *)MALLOC(sizeof(struct send_to_ol));
-    ASSERTAB(NULL != poverlapped, ERRSTR_MEMORY);
-    ZERO(&poverlapped->ol.overlapped, sizeof(poverlapped->ol.overlapped));
-    poverlapped->ol.bytes = 0;
-    poverlapped->ol.evtype = EV_SEND;
-    poverlapped->ol.sockctx = psock;
-    poverlapped->iovcount = uicount;
-    poverlapped->wsabuf = wsabuf;
-    int32_t irtn = netaddr_sethost(&poverlapped->addr, phost, usport);
-    if (ERR_OK != irtn)
-    {
-        LOG_ERROR("error code:%d message:%s", irtn, gai_strerror(irtn));
-        SAFE_FREE(poverlapped);
-        return irtn;
-    }
-
-    irtn = WSASendTo(psock->sock,
-        poverlapped->wsabuf,
-        (DWORD)poverlapped->iovcount,
-        &poverlapped->ol.bytes,
-        0,
-        netaddr_addr(&poverlapped->addr),
-        netaddr_size(&poverlapped->addr),
-        &poverlapped->ol.overlapped,
-        NULL);
-    if (ERR_OK != irtn)
-    {
-        irtn = ERRNO;
-        if (ERROR_IO_PENDING != irtn)
+        (void)_new_rwol(psock);
+        irtn = _post_recv(psock);
+        if (ERR_OK != irtn)
         {
-            LOG_ERROR("error code:%d message:%s", irtn, ERRORSTR(irtn));
-            return irtn;
+            SAFE_FREE(psock->exdata);
         }
-    }
+    }    
 
     return irtn;
+}
+int32_t netio_send(struct sock_ctx *psock, void *pdata, const size_t uilens)
+{
+    ASSERTAB(ERR_OK == buffer_append(psock->bufsend, pdata, uilens), "buffer_append failed.");
+    return _post_send(psock);
 }
 
 #endif // OS_WIN

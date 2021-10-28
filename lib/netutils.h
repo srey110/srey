@@ -64,6 +64,11 @@ void sockrport(SOCKET lsfd);
 */
 void sockkpa(SOCKET fd, const int32_t idelay, const int32_t iintvl);
 /*
+* \brief          设置SO_LINGER
+* \param fd       SOCKET
+*/
+void closereset(SOCKET fd);
+/*
 * \brief          一组相互链接的socket
 * \param sock     SOCKET
 * \return         ERR_OK 成功

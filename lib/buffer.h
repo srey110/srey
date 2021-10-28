@@ -85,7 +85,7 @@ int32_t buffer_remove(struct buffer_ctx *pctx, void *pout, size_t uilen);
 * \return         ERR_FAILED 未找到 或者 头部被锁定
 * \return         第一次出现的位置
 */
-int32_t buffer_search(struct buffer_ctx *pctx, size_t uistart, void *pwhat, size_t uiwlens);
+int32_t buffer_search(struct buffer_ctx *pctx, const size_t uistart, void *pwhat, size_t uiwlens);
 //锁
 static inline void buffer_lock(struct buffer_ctx *pctx)
 {
@@ -116,28 +116,28 @@ struct buffernode_ctx *_buffer_expand_single(struct buffer_ctx *pctx, const size
 /*
 * \brief          扩展节点，非连续内存,填充数据到 piov后使用_buffer_commit_iov提交本次操作
 * \param uilen    扩展多少
-* \param piov     扩展后可用于存储的iov数组 长度为uicount个
-* \param uicount  最多使用多少个节点
-* \return         实际扩展的节点数，小于等于uicount
+* \param piov     扩展后可用于存储的iov数组 长度为uicnt个
+* \param uicnt    最多使用多少个节点
+* \return         实际扩展的节点数，小于等于uicnt
 */
 size_t _buffer_expand_iov(struct buffer_ctx *pctx, const size_t uilens, 
-    IOV_TYPE *piov, const size_t uicount);
+    IOV_TYPE *piov, const size_t uicnt);
 /*
 * \brief          提交填充了数据的iov，该iov由_buffer_expand_iov扩展。
 * \param uilens    数据长度
 * \param piov     iov数组
-* \param uicount  piov个数
+* \param uicnt    piov个数
 * \return         添加了多少数据
 */
-size_t _buffer_commit_iov(struct buffer_ctx *pctx, size_t uilens ,IOV_TYPE *piov, const size_t uicount);
+size_t _buffer_commit_iov(struct buffer_ctx *pctx, size_t uilens ,IOV_TYPE *piov, const size_t uicnt);
 /*
 * \brief             返回buffer中的数据并装填进piov
 * \param uiatmost    需要装填的数据长度
 * \param piov        iov数组
-* \param uicount     iov数组长度
+* \param uicnt       iov数组长度
 * \return            有数据的piov个数
 */
 size_t _buffer_get_iov(struct buffer_ctx *pctx, size_t uiatmost, 
-    IOV_TYPE *piov, size_t uicount);
+    IOV_TYPE *piov, const size_t uicnt);
 
 #endif//BUFFER_H_

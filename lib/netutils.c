@@ -56,7 +56,7 @@ void sockrport(SOCKET lsfd)
 {
 #ifdef SO_REUSEPORT
     int32_t iflag = 1;
-   if (setsockopt(lsfd, SOL_SOCKET, SO_REUSEPORT, &iflag, sizeof(iflag)) < ERR_OK)
+   if (setsockopt(lsfd, SOL_SOCKET, SO_REUSEPORT, (char *)&iflag, (int32_t)sizeof(iflag)) < ERR_OK)
    {
        PRINTF("setsockopt(%d, SOL_SOCKET, SO_REUSEPORT, %d, %d) failed. %s",
            lsfd, iflag, (int32_t)sizeof(iflag), ERRORSTR(ERRNO));
@@ -93,21 +93,21 @@ void sockkpa(SOCKET fd, const int32_t idelay, const int32_t iintvl)
 #ifdef TCP_KEEPIDLE
     int32_t icnt = 5;
     //多久后发送keepalive 秒
-    if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &idelay, sizeof(idelay)) < ERR_OK)
+    if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, (char *)&idelay, (int32_t)sizeof(idelay)) < ERR_OK)
     {
         PRINTF("setsockopt(%d, IPPROTO_TCP, TCP_KEEPIDLE, %d, %d) failed. %s",
             fd, idelay, (int32_t)sizeof(idelay), ERRORSTR(ERRNO));
         return;
     }
     //时间间隔
-    if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &iintvl, sizeof(iintvl)) < ERR_OK)
+    if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, (char *)&iintvl, (int32_t)sizeof(iintvl)) < ERR_OK)
     {
         PRINTF("setsockopt(%d, IPPROTO_TCP, TCP_KEEPINTVL, %d, %d) failed. %s",
             fd, iintvl, (int32_t)sizeof(iintvl), ERRORSTR(ERRNO));
         return;
     }
     //重试次数
-    if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &icnt, sizeof(icnt)) < ERR_OK)
+    if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, (char *)&icnt, (int32_t)sizeof(icnt)) < ERR_OK)
     {
         PRINTF("setsockopt(%d, IPPROTO_TCP, TCP_KEEPCNT, %d, %d) failed. %s",
             fd, icnt, (int32_t)sizeof(icnt), ERRORSTR(ERRNO));
@@ -116,7 +116,7 @@ void sockkpa(SOCKET fd, const int32_t idelay, const int32_t iintvl)
 #endif
 
 #if defined(TCP_KEEPALIVE) && !defined(OS_SUN)
-    if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPALIVE, &idelay, sizeof(idelay)) < ERR_OK)
+    if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPALIVE, (char *)&idelay, (int32_t)sizeof(idelay)) < ERR_OK)
     {
         PRINTF("setsockopt(%d, IPPROTO_TCP, TCP_KEEPALIVE, %d, %d) failed. %s",
             fd, idelay, (int32_t)sizeof(idelay), ERRORSTR(ERRNO));
@@ -124,6 +124,15 @@ void sockkpa(SOCKET fd, const int32_t idelay, const int32_t iintvl)
 #endif
 
 #endif
+}
+void closereset(SOCKET fd)
+{
+    struct linger stlg = { 1, 0 };
+    if (setsockopt(fd, SOL_SOCKET, SO_LINGER, (char *)&stlg, (int32_t)sizeof(stlg)) < ERR_OK)
+    {
+        PRINTF("setsockopt(%d, SOL_SOCKET, SO_LINGER, 1 0) failed. %s",
+            (int32_t)fd, ERRORSTR(ERRNO));
+    }
 }
 SOCKET _socklsn(const char *pip, const uint16_t usport, const int32_t ibacklog)
 {
