@@ -32,6 +32,24 @@ static inline int32_t socknread(SOCKET fd)
 #endif
 };
 /*
+* \brief          ªÒ»°sa_family
+* \param fd       SOCKET
+* \return         ERR_FAILED  ß∞‹
+* \return         sa_family  SOCK_STREAM  SOCK_DGRAM
+*/
+static inline int32_t socktype(SOCKET fd)
+{
+    int32_t itype = 0;
+    int32_t ilen = (int32_t)sizeof(itype);
+    if (getsockopt(fd, SOL_SOCKET, SO_TYPE, (char *)&itype, &ilen) < ERR_OK)
+    {
+        PRINTF("getsockname(%d, ...) failed. %s", (int32_t)fd, ERRORSTR(ERRNO));
+        return ERR_FAILED;
+    }
+
+    return itype;
+}
+/*
 * \brief          …Ë÷√socket TCP_NODELAY
 * \param fd       SOCKET
 */

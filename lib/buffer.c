@@ -179,12 +179,12 @@ struct buffernode_ctx *_buffer_expand_single(struct buffer_ctx *pctx, const size
     SAFE_FREE(pnode);
     return ptmp;
 }
-size_t _buffer_expand_iov(struct buffer_ctx *pctx, const size_t uilens, 
-    IOV_TYPE *piov, const size_t uicnt)
+uint32_t _buffer_expand_iov(struct buffer_ctx *pctx, const size_t uilens, 
+    IOV_TYPE *piov, const uint32_t uicnt)
 {
     struct buffernode_ctx *pnode = pctx->tail, *ptmp, *pnext;
     size_t uiavail, uiremain, uiused, uispace;
-    size_t index = 0;
+    uint32_t index = 0;
     
     ASSERTAB(uicnt >= 2, "param error.");
     if (NULL == pnode)
@@ -297,7 +297,7 @@ static void _last_with_data(struct buffer_ctx *pctx)
         }
     }
 }
-size_t _buffer_commit_iov(struct buffer_ctx *pctx, size_t uilens, IOV_TYPE *piov, const size_t uicnt)
+size_t _buffer_commit_iov(struct buffer_ctx *pctx, size_t uilens, IOV_TYPE *piov, const uint32_t uicnt)
 {
     if (0 == uicnt)
     {
@@ -321,7 +321,7 @@ size_t _buffer_commit_iov(struct buffer_ctx *pctx, size_t uilens, IOV_TYPE *piov
         return uilens;
     }
 
-    int32_t i;
+    uint32_t i;
     struct buffernode_ctx *pnode, **pfirst, **pfill;
     pfirst = pctx->tail_with_data;
     if (NULL == *pfirst)
@@ -405,7 +405,7 @@ int32_t buffer_append(struct buffer_ctx *pctx, void *pdata, const size_t uilen)
     IOV_TYPE piov[2];
     size_t uiremain = uilen;
     size_t i, uioff = 0;
-    size_t uinum = _buffer_expand_iov(pctx, uilen, piov, 2);
+    uint32_t uinum = _buffer_expand_iov(pctx, uilen, piov, 2);
     for (i = 0; i < uinum, uiremain > 0; i++)
     {
         if ((IOV_LEN_TYPE)uiremain >= piov[i].IOV_LEN_FIELD)
@@ -714,8 +714,8 @@ int32_t buffer_search(struct buffer_ctx *pctx, const size_t uistart, void *pwhat
 
     return irtn;
 }
-size_t _buffer_get_iov(struct buffer_ctx *pctx, size_t uiatmost,
-    IOV_TYPE *piov, const size_t uicnt)
+uint32_t _buffer_get_iov(struct buffer_ctx *pctx, size_t uiatmost,
+    IOV_TYPE *piov, const uint32_t uicnt)
 {
     if (uiatmost > pctx->total_len)
     {
@@ -726,7 +726,7 @@ size_t _buffer_get_iov(struct buffer_ctx *pctx, size_t uiatmost,
         return 0;
     }
 
-    size_t index = 0;
+    uint32_t index = 0;
     struct buffernode_ctx *pnode = pctx->head;
     while (NULL != pnode
         && index < uicnt

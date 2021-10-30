@@ -4,39 +4,24 @@
 #include "macro.h"
 
 /*
-* \brief          uint64_t字节序转换
+* \brief          判断系统是否为大端
 * \param ulval    需要转换的值
 * \return         转换后的值
 */
-static inline uint64_t ntohl64(const uint64_t ulval)
+static inline int32_t bigendian() 
 {
-    //大小端
-    static union
+    union 
     {
-        char a[4];
-        uint32_t ul;
-    }endian = { { 'L', '?', '?', 'B' } };
-    #define ENDIAN ((char)endian.ul) 
-    if ('L' == ENDIAN)
+        char c;
+        short s;
+    }u;
+    u.s = 0x1122;
+    if (0x11 == u.c)
     {
-        uint64_t uiret = 0;
-        uint32_t ulhigh, ullow;
-
-        ullow = ulval & 0xFFFFFFFF;
-        ulhigh = (ulval >> 32) & 0xFFFFFFFF;
-
-        ullow = ntohl(ullow);
-        ulhigh = ntohl(ulhigh);
-
-        uiret = ullow;
-        uiret <<= 32;
-        uiret |= ulhigh;
-
-        return uiret;
+        return ERR_OK;
     }
-
-    return ulval;
-};
+    return ERR_FAILED;
+}
 /*
 * \brief          cpu核数
 * \return         cpu核数

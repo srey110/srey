@@ -10,17 +10,10 @@
 #define TVR_SIZE (1 << TVR_BITS)
 #define TVN_MASK (TVN_SIZE - 1)
 #define TVR_MASK (TVR_SIZE - 1)
-typedef struct twnode_ctx
-{
-    struct ev_ctx ev;
-    u_long expires;         //超时时间
-    struct chan_ctx *chan;  //接收消息的chan
-    struct twnode_ctx *next;
-}twnode_ctx;
 typedef struct twslot_ctx
 {
-    struct twnode_ctx *head;
-    struct twnode_ctx *tail;
+    struct ev_time_ctx *head;
+    struct ev_time_ctx *tail;
 }twslot_ctx;
 struct wot_ctx
 {
@@ -49,7 +42,7 @@ static void wot_init(struct wot_ctx *pctx, struct chan_ctx *pchan, const u_long 
 };
 static void _free(struct twslot_ctx *pslot, const size_t uilens)
 {
-    struct twnode_ctx *pnode, *pdel;
+    struct ev_time_ctx *pnode, *pdel;
     for (size_t i = 0; i < uilens; i++)
     {
         pnode = pslot[i].head;
@@ -83,12 +76,12 @@ static void wot_free(struct wot_ctx *pctx)
 static inline int32_t wot_add(struct wot_ctx *pctx, struct chan_ctx *pchan,
     const u_long ulcurtick, const uint32_t uitick, const void *pdata)
 {
-    struct twnode_ctx *pnode = (struct twnode_ctx *)MALLOC(sizeof(struct twnode_ctx));
+    struct ev_time_ctx *pnode = (struct ev_time_ctx *)MALLOC(sizeof(struct ev_time_ctx));
     ASSERTAB(NULL != pnode, ERRSTR_MEMORY);
-    pnode->ev.data = (void*)pdata;
     pnode->ev.code = ERR_OK;
     pnode->ev.evtype = EV_TIME;
     pnode->chan = pchan;
+    pnode->data = (void*)pdata;
     pnode->expires = ulcurtick + uitick;
     pnode->next = NULL;
 
@@ -99,7 +92,7 @@ static inline int32_t wot_add(struct wot_ctx *pctx, struct chan_ctx *pchan,
     }
     return ERR_OK;
 };
-static inline void _insert(struct twslot_ctx *pslot, struct twnode_ctx *pnode)
+static inline void _insert(struct twslot_ctx *pslot, struct ev_time_ctx *pnode)
 {
     if (NULL == pslot->head)
     {
@@ -110,7 +103,7 @@ static inline void _insert(struct twslot_ctx *pslot, struct twnode_ctx *pnode)
     pslot->tail->next = pnode;
     pslot->tail = pnode;
 };
-static inline struct twslot_ctx *_getslot(struct wot_ctx *pctx, struct twnode_ctx *pnode)
+static inline struct twslot_ctx *_getslot(struct wot_ctx *pctx, struct ev_time_ctx *pnode)
 {
     struct twslot_ctx *pslot;
     u_long ulidx = pnode->expires - pctx->jiffies;
@@ -152,8 +145,8 @@ static inline void _clear(struct twslot_ctx *pslot)
 };
 static inline u_long _cascade(struct wot_ctx *pctx, struct twslot_ctx *pslot, const u_long ulindex)
 {
-    struct twnode_ctx *pnext;
-    struct twnode_ctx *pnode = pslot[ulindex].head;
+    struct ev_time_ctx *pnext;
+    struct ev_time_ctx *pnode = pslot[ulindex].head;
     while (NULL != pnode)
     {
         pnext = pnode->next;
@@ -181,8 +174,8 @@ static inline void _run(struct wot_ctx *pctx)
     ++pctx->jiffies;
 
     //执行
-    struct twnode_ctx *pnext;
-    struct twnode_ctx *pnode = pctx->tv1[ulidx].head;
+    struct ev_time_ctx *pnext;
+    struct ev_time_ctx *pnode = pctx->tv1[ulidx].head;
     while (NULL != pnode)
     {
         pnext = pnode->next;
@@ -205,7 +198,7 @@ static inline void wot_run(struct wot_ctx *pctx, struct ev_ctx *pev, const u_lon
     if (NULL != pev
         && EV_TIME == pev->evtype)
     {
-        struct twnode_ctx *pnode = UPCAST(pev, struct twnode_ctx, ev);
+        struct ev_time_ctx *pnode = UPCAST(pev, struct ev_time_ctx, ev);
         _insert(_getslot(pctx, pnode), pnode);
     }
 

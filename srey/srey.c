@@ -7,7 +7,7 @@
 #pragma comment(lib, "vld.lib")
 #endif
 
-struct server_ctx sv;
+struct event_ctx sv;
 uint16_t usthreadnum = 0;
 uint64_t ulaccuracy = 1000 * 1000 * 10;
 volatile uint32_t uirecvsize = 0;
@@ -31,79 +31,80 @@ size_t _fill_data(char *acpack, size_t ilens)
 }
 void _timeout_cb(void *p1, void *p2, void *p3)
 {
-    char acpack[ONEK];
-    size_t ilens;
     struct ev_ctx *pev;
-    struct sock_ctx *psock;
-    struct twnode_ctx *pnode;
+    struct ev_time_ctx *pnode;
     struct chan_ctx *pchan_timeout = p1;
     while (0 == ATOMIC_GET(&uistop))
     {
         if (ERR_OK == chan_recv(pchan_timeout, &pev))
         {
-            pnode = UPCAST(pev, struct twnode_ctx, ev);
+            pnode = UPCAST(pev, struct ev_time_ctx, ev);
             PRINTF("time out diff:%d,link count %d recv pack %d send pack %d udp recv %d udp send %d  close time %d",
-                (int32_t)(server_tick(&sv) - pnode->expires),
+                (int32_t)(event_tick(&sv) - pnode->expires),
                 ATOMIC_GET(&uilinknum), ATOMIC_GET(&uirecvsize), ATOMIC_GET(&uisendsize),
                 ATOMIC_GET(&uiudprecvsize), ATOMIC_GET(&uiudpsendsize), ATOMIC_GET(&uitcpclose));
-            /*psock = pnode->ev.data;
-            if (NULL != psock)
-            {
-                ilens = _fill_data(acpack, sizeof(acpack));
-                server_sock_send(psock, acpack, ilens);
-            }*/
             SAFE_FREE(pnode);
 
-            server_timeout(&sv, pchan_timeout, 200, NULL);
+            event_timeout(&sv, pchan_timeout, 200, NULL);
         }
     }
 }
 void _accept_cb(void *p1, void *p2, void *p3)
 {
     struct ev_ctx *pev;
-    struct sock_ctx *psock;
+    struct ev_sock_ctx *psockev;
     struct chan_ctx *pchan_accept = p1;
     struct chan_ctx *pchan_recvs = p2;
     while (0 == ATOMIC_GET(&uistop))
     {
         if (ERR_OK == chan_recv(pchan_accept, &pev))
-        {
-            psock = pev->data;
-            server_sock_enablerw(psock, &pchan_recvs[rand() % usthreadnum], 1);
+        {            
+            psockev = UPCAST(pev, struct ev_sock_ctx, ev);
+            struct buffer_ctx *pbuf = MALLOC(sizeof(struct buffer_ctx));
+            buffer_init(pbuf);
+            event_enable_rw(psockev->sock, &pchan_recvs[rand() % usthreadnum], pbuf);
             ATOMIC_ADD(&uilinknum, 1);
-            SAFE_FREE(pev);
+
+            SAFE_FREE(psockev);
         }
     }
 }
 void _connet_cb(void *p1, void *p2, void *p3)
 {
     struct ev_ctx *pev;
-    struct sock_ctx *psock;
+    struct ev_sock_ctx *psockev;
     struct chan_ctx *pchan_connect = p1;
     struct chan_ctx *pchan_recvs = p2;
     while (0 == ATOMIC_GET(&uistop))
     {
         if (ERR_OK == chan_recv(pchan_connect, &pev))
         {
-            psock = pev->data;
-            if (ERR_OK == pev->code)
+            psockev = UPCAST(pev, struct ev_sock_ctx, ev);
+            if (ERR_OK == psockev->ev.code)
             {
-                server_sock_enablerw(psock, &pchan_recvs[rand() % usthreadnum], 1);
+                struct buffer_ctx *pbuf = MALLOC(sizeof(struct buffer_ctx));
+                buffer_init(pbuf);
+                event_enable_rw(psockev->sock, &pchan_recvs[rand() % usthreadnum], pbuf);
                 ATOMIC_ADD(&uilinknum, 1);
             }
-            SAFE_FREE(pev);
+            else
+            {
+                PRINTF("connect error %s", ERRORSTR(psockev->ev.code));
+            }
+            SAFE_FREE(psockev);
         }
     }
 }
 void _recv_cb(void *p1, void *p2, void *p3)
 {
     struct ev_ctx *pev;
-    struct sock_ctx *psock;
+    struct ev_sock_ctx *psockev;
     struct chan_ctx *pchan_recv = p1;
-    char acpack[ONEK];
+    char acpack[ONEK * 2];
     const char *psz1 = "123456xxxxxxxxxxxxxx789";
     const char *psz2 = "abcdefcccccccccccccccccgjijk";
     IOV_TYPE wsabuf[2];
+    struct netaddr_ctx addr;
     wsabuf[0].IOV_PTR_FIELD = (char*)psz1;
     wsabuf[0].IOV_LEN_FIELD = (IOV_LEN_TYPE)strlen(psz1);
     wsabuf[1].IOV_PTR_FIELD = (char*)psz2;
@@ -112,36 +113,23 @@ void _recv_cb(void *p1, void *p2, void *p3)
     {
         if (ERR_OK == chan_recv(pchan_recv, &pev))
         {
-            psock = pev->data;
-            if (SOCK_DGRAM == psock->socktype
-                && (pev->evtype == EV_RECV || pev->evtype == EV_SEND))
-            {
-                if (pev->evtype == EV_RECV)
-                {
-                    struct ev_udp_recv_ctx *pudpev = UPCAST(pev, struct ev_udp_recv_ctx, ev);
-                    ATOMIC_ADD(&uirecvsize, 1);
-                    buffer_drain(psock->bufrecv, pev->code);
-                    server_sock_sendto(psock, pudpev->host, pudpev->port, wsabuf, 2);
-                    SAFE_FREE(pudpev);
-                    ATOMIC_ADD(&uiudprecvsize, 1);
-                }
-                else
-                {
-                    struct ev_udp_send_ctx *pudpev = UPCAST(pev, struct ev_udp_send_ctx, ev);
-                    ATOMIC_ADD(&uisendsize, 1);
-                    SAFE_FREE(pudpev);
-                    ATOMIC_ADD(&uiudpsendsize, 1);
-                }                
-                continue;
-            }
-
-            switch (pev->evtype)
+            psockev = UPCAST(pev, struct ev_sock_ctx, ev);
+            switch (psockev->ev.evtype)
             {
                 case EV_RECV:
-                    ATOMIC_ADD(&uirecvsize, 1);                
-                    buffer_drain(psock->bufrecv, pev->code);
-                    size_t ilens = _fill_data(acpack, sizeof(acpack));
-                    server_sock_send(psock, acpack, ilens);
+                    ASSERTAB((size_t)psockev->ev.code == 
+                        buffer_remove(psockev->buffer, acpack, (size_t)psockev->ev.code), "error");
+                    if (psockev->socktpe == SOCK_STREAM)
+                    {
+                        ATOMIC_ADD(&uirecvsize, 1);
+                        send(psockev->sock, acpack, psockev->ev.code, 0);
+                    }
+                    else
+                    {
+                        ATOMIC_ADD(&uiudprecvsize, 1);
+                        ASSERTAB(ERR_OK == netaddr_sethost(&addr, psockev->ip, psockev->port), "error");
+                        sendto(psockev->sock, acpack, psockev->ev.code, 0, netaddr_addr(&addr), netaddr_size(&addr));
+                    }
                     break;
                 case EV_SEND:
                     ATOMIC_ADD(&uisendsize, 1);
@@ -149,24 +137,12 @@ void _recv_cb(void *p1, void *p2, void *p3)
                 case EV_CLOSE:
                     ATOMIC_ADD(&uilinknum, -1);
                     ATOMIC_ADD(&uitcpclose, 1);             
-                    server_sock_free(&sv, psock);
+                    buffer_free(psockev->buffer);
+                    SAFE_FREE(psockev->buffer);
                     break;
             }
-            
-            SAFE_FREE(pev);
+            SAFE_FREE(psockev);
         }
-    }
-}
-void _send_cb(void *p1, void *p2, void *p3)
-{
-    char acpack[ONEK];
-    size_t ilens;
-    struct sock_ctx *psock = p1;
-    while (0 == ATOMIC_GET(&uistop))
-    {
-        ilens = _fill_data(acpack, sizeof(acpack));
-        server_sock_send(psock, acpack, ilens);
-        MSLEEP(100);
     }
 }
 SOCKET _creat_tcp_sock(const char *phost, uint16_t usport)
@@ -197,7 +173,7 @@ SOCKET _creat_udp_sock(const char *phost, uint16_t usport)
     {
         return INVALID_SOCK;
     }
-    SOCKET fd = socket(AF_INET, SOCK_DGRAM, 0);
+    SOCKET fd = socket(netaddr_family(&addr), SOCK_DGRAM, 0);
     if (INVALID_SOCK == fd)
     {
         return INVALID_SOCK;
@@ -215,8 +191,8 @@ SOCKET _creat_udp_sock(const char *phost, uint16_t usport)
 int main(int argc, char *argv[])
 {
     LOGINIT();
-
-    usthreadnum = procscnt() * 2 + 2;
+    int32_t ibig = bigendian();
+    usthreadnum = procscnt() * 2;
     struct chan_ctx chan_timeout;
     chan_init(&chan_timeout, ONEK);
     struct thread_ctx thread_timeout;
@@ -243,54 +219,52 @@ int main(int argc, char *argv[])
         thread_creat(&pthread_recv[ui], _recv_cb, &pchan_recv[ui], NULL, NULL);
     }
 
-    server_init(&sv, ulaccuracy);
-    server_run(&sv);
+    event_init(&sv, (u_long)ulaccuracy);
+    event_loop(&sv);
 
-    const char *plistenhost = "0.0.0.0";
+    const char *plistenhost = "0:0:0:0:0:0:0:0";
     uint16_t uslistenport = 15000;
-    const char *pconnhost = "127.0.0.1";
+    const char *pconnhost = "fe80::c95e:3ff8:a284:fe13%17";
     uint16_t usconnport = 15000;
-    const char *pudphost = "0.0.0.0";
+    const char *pudphost = "0:0:0:0:0:0:0:0";
     uint16_t usudpport = 15001;
-    struct sock_ctx *plisten = server_listen(&sv, pchan_accept, usthreadnum, plistenhost, uslistenport);
-    ASSERTAB(NULL != plisten, "1");
-    server_timeout(&sv, &chan_timeout, 200, NULL);
+    SOCKET sock_listener = event_listener(&sv, pchan_accept, (uint8_t)usthreadnum, plistenhost, uslistenport);
+    ASSERTAB(INVALID_SOCK != sock_listener, "1");
+    event_timeout(&sv, &chan_timeout, 200, NULL);
     
-    struct sock_ctx *psock;
-    psock = server_connect(&sv, &chan_connect, pconnhost, usconnport);
-    ASSERTAB(NULL != psock, "server_connect error.");
-    //server_timeout(&sv, &chan_timeout, 200, psock);
+    SOCKET sock_connecter = event_connecter(&sv, &chan_connect, pconnhost, usconnport);
+    ASSERTAB(INVALID_SOCK != sock_connecter, "server_connect error.");
+    PRINTF("event_connecter %d", (int32_t)sock_connecter);
     ATOMIC_ADD(&uilinknum, 1);
+    int32_t itype = socktype(sock_connecter);
 
-    char acpack[ONEK];
-    size_t ilens;
-    size_t uicounttime = 0;    
+    size_t uicounttime = 0;
     while (0 == ATOMIC_GET(&uistop))
     {
-        /*SOCKET udpfd = _creat_udp_sock(pudphost, usudpport);
+        SOCKET udpfd = _creat_udp_sock(pudphost, usudpport);
         ASSERTAB(INVALID_SOCK != udpfd, "_creat_udp_sock error.");
-        struct sock_ctx *pudpsock = server_addsock(&sv, udpfd);
-        ASSERTAB(NULL != pudpsock, "server_addsock error.");
-        server_sock_enablerw(pudpsock, &pchan_recv[rand() % usthreadnum], 1);
-        ATOMIC_ADD(&uilinknum, 1);*/
+        ASSERTAB(ERR_OK == event_addsock(&sv, udpfd), "server_addsock error.");
+        struct buffer_ctx *pbuf = MALLOC(sizeof(struct buffer_ctx));
+        buffer_init(pbuf);
+        event_enable_rw(udpfd, &pchan_recv[rand() % usthreadnum], pbuf);
+        ATOMIC_ADD(&uilinknum, 1);
         MSLEEP(1000 * 5);
-        //server_sock_close(&sv, pudpsock);
+        CLOSESOCKET(udpfd);
 
-        /*uicounttime += 100;
+        uicounttime += 100;
         MSLEEP(100);
-        if (uicounttime >= 1000)
+        /*if (uicounttime >= 1000)
         {
             break;
         }*/
     }
-    
-    server_sock_close(&sv,plisten);    
-    server_sock_close(&sv,psock);
+    CLOSESOCKET(sock_connecter);
+    CLOSESOCKET(sock_listener);
     MSLEEP(1000 * 1);
     ATOMIC_SET(&uistop, 1);
     chan_close(&chan_timeout);
     thread_join(&thread_timeout);
-    server_free(&sv);
+    event_free(&sv);
 
     chan_close(&chan_connect);
     thread_join(&thread_connect);
@@ -306,7 +280,6 @@ int main(int argc, char *argv[])
         chan_free(&pchan_accept[ui]);
         chan_free(&pchan_recv[ui]);
     }
-    
 
     SAFE_FREE(pchan_accept);
     SAFE_FREE(pchan_recv);

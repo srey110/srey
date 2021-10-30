@@ -224,10 +224,10 @@ do\
 #define SAFE_CLOSESOCK(fd)\
 do\
 {\
-    if (INVALID_SOCK != fd)\
+    if (INVALID_SOCK != (fd))\
     {\
         CLOSESOCKET(fd);\
-        fd = INVALID_SOCK;\
+        (fd) = INVALID_SOCK;\
     }\
 }while(0)
 

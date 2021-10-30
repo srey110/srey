@@ -120,8 +120,8 @@ struct buffernode_ctx *_buffer_expand_single(struct buffer_ctx *pctx, const size
 * \param uicnt    最多使用多少个节点
 * \return         实际扩展的节点数，小于等于uicnt
 */
-size_t _buffer_expand_iov(struct buffer_ctx *pctx, const size_t uilens, 
-    IOV_TYPE *piov, const size_t uicnt);
+uint32_t _buffer_expand_iov(struct buffer_ctx *pctx, const size_t uilens,
+    IOV_TYPE *piov, const uint32_t uicnt);
 /*
 * \brief          提交填充了数据的iov，该iov由_buffer_expand_iov扩展。
 * \param uilens    数据长度
@@ -129,7 +129,7 @@ size_t _buffer_expand_iov(struct buffer_ctx *pctx, const size_t uilens,
 * \param uicnt    piov个数
 * \return         添加了多少数据
 */
-size_t _buffer_commit_iov(struct buffer_ctx *pctx, size_t uilens ,IOV_TYPE *piov, const size_t uicnt);
+size_t _buffer_commit_iov(struct buffer_ctx *pctx, size_t uilens ,IOV_TYPE *piov, const uint32_t uicnt);
 /*
 * \brief             返回buffer中的数据并装填进piov
 * \param uiatmost    需要装填的数据长度
@@ -137,7 +137,7 @@ size_t _buffer_commit_iov(struct buffer_ctx *pctx, size_t uilens ,IOV_TYPE *piov
 * \param uicnt       iov数组长度
 * \return            有数据的piov个数
 */
-size_t _buffer_get_iov(struct buffer_ctx *pctx, size_t uiatmost, 
-    IOV_TYPE *piov, const size_t uicnt);
+uint32_t _buffer_get_iov(struct buffer_ctx *pctx, size_t uiatmost,
+    IOV_TYPE *piov, const uint32_t uicnt);
 
 #endif//BUFFER_H_

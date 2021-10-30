@@ -35,12 +35,6 @@
     <ClInclude Include="timer.h">
       <Filter>utils</Filter>
     </ClInclude>
-    <ClInclude Include="netaddr.h">
-      <Filter>net</Filter>
-    </ClInclude>
-    <ClInclude Include="netutils.h">
-      <Filter>net</Filter>
-    </ClInclude>
     <ClInclude Include="snowflake.h">
       <Filter>utils</Filter>
     </ClInclude>
@@ -53,27 +47,35 @@
     <ClInclude Include="buffer.h">
       <Filter>utils</Filter>
     </ClInclude>
-    <ClInclude Include="wot.h">
-      <Filter>utils</Filter>
-    </ClInclude>
-    <ClInclude Include="evtype.h" />
-    <ClInclude Include="server.h">
-      <Filter>server</Filter>
-    </ClInclude>
     <ClInclude Include="iocp\iocp.h">
-      <Filter>net\iocp</Filter>
+      <Filter>event\iocp</Filter>
     </ClInclude>
     <ClInclude Include="kqueue\kqueue.h">
-      <Filter>net\kqueue</Filter>
+      <Filter>event\kqueue</Filter>
     </ClInclude>
     <ClInclude Include="evport\evport.h">
-      <Filter>net\evport</Filter>
+      <Filter>event\evport</Filter>
     </ClInclude>
     <ClInclude Include="epoll\epoll.h">
-      <Filter>net\epoll</Filter>
+      <Filter>event\epoll</Filter>
     </ClInclude>
-    <ClInclude Include="sock.h">
-      <Filter>net</Filter>
+    <ClInclude Include="evtype.h">
+      <Filter>event</Filter>
+    </ClInclude>
+    <ClInclude Include="netaddr.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="netutils.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="wot.h">
+      <Filter>event</Filter>
+    </ClInclude>
+    <ClInclude Include="event.h">
+      <Filter>event</Filter>
+    </ClInclude>
+    <ClInclude Include="iocp\overlap.h">
+      <Filter>event\iocp</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -85,12 +87,6 @@
     </ClCompile>
     <ClCompile Include="chan.c">
       <Filter>utils</Filter>
-    </ClCompile>
-    <ClCompile Include="netaddr.c">
-      <Filter>net</Filter>
-    </ClCompile>
-    <ClCompile Include="netutils.c">
-      <Filter>net</Filter>
     </ClCompile>
     <ClCompile Include="snowflake.c">
       <Filter>utils</Filter>
@@ -104,20 +100,29 @@
     <ClCompile Include="buffer.c">
       <Filter>utils</Filter>
     </ClCompile>
-    <ClCompile Include="server.c">
-      <Filter>server</Filter>
-    </ClCompile>
     <ClCompile Include="iocp\iocp.c">
-      <Filter>net\iocp</Filter>
+      <Filter>event\iocp</Filter>
     </ClCompile>
     <ClCompile Include="kqueue\kqueue.c">
-      <Filter>net\kqueue</Filter>
+      <Filter>event\kqueue</Filter>
     </ClCompile>
     <ClCompile Include="evport\evport.c">
-      <Filter>net\evport</Filter>
+      <Filter>event\evport</Filter>
     </ClCompile>
     <ClCompile Include="epoll\epoll.c">
-      <Filter>net\epoll</Filter>
+      <Filter>event\epoll</Filter>
+    </ClCompile>
+    <ClCompile Include="netaddr.c">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="netutils.c">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="event.c">
+      <Filter>event</Filter>
+    </ClCompile>
+    <ClCompile Include="iocp\overlap.c">
+      <Filter>event\iocp</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -136,23 +141,20 @@
     <Filter Include="utils">
       <UniqueIdentifier>{27f9d699-1248-4959-b1d9-b0ceeff862a6}</UniqueIdentifier>
     </Filter>
-    <Filter Include="net">
+    <Filter Include="event">
       <UniqueIdentifier>{bcc74df3-4dc9-456c-b9ce-be3bd9b20b95}</UniqueIdentifier>
     </Filter>
-    <Filter Include="net\epoll">
+    <Filter Include="event\epoll">
       <UniqueIdentifier>{c81b7481-b9cc-4bc0-8d7a-45534fa8ff67}</UniqueIdentifier>
     </Filter>
-    <Filter Include="net\evport">
+    <Filter Include="event\evport">
       <UniqueIdentifier>{d58a599b-6ca9-49a4-a6b6-2cdfc4537312}</UniqueIdentifier>
     </Filter>
-    <Filter Include="net\iocp">
+    <Filter Include="event\iocp">
       <UniqueIdentifier>{67cbf2a7-ccbb-41a3-9cdd-eb0083d1ef93}</UniqueIdentifier>
     </Filter>
-    <Filter Include="net\kqueue">
+    <Filter Include="event\kqueue">
       <UniqueIdentifier>{68541321-4eaa-42cd-8b60-66b08cb28bac}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="server">
-      <UniqueIdentifier>{8433cff8-29d1-442a-a30f-10c3f600fbae}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
 </Project>

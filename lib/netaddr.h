@@ -117,7 +117,7 @@ static inline int32_t netaddr_isipv4(struct netaddr_ctx *pctx)
 /*
 * \return         AF_INET or AF_INET6;
 */
-static inline int32_t netaddr_addrfamily(struct netaddr_ctx *pctx)
+static inline uint8_t netaddr_family(struct netaddr_ctx *pctx)
 {
     return IPV4 == pctx->type ? AF_INET : AF_INET6;
 };
