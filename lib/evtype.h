@@ -25,23 +25,27 @@ typedef struct ev_time_ctx
 typedef struct ev_sock_ctx
 {
     struct ev_ctx ev;
-    uint8_t socktpe;
+    uint16_t socktpe;
     uint16_t port;
     SOCKET sock;
-    struct buffer_ctx *buffer;
+    struct sock_ctx *sockctx;
     char ip[IP_LENS];
 }ev_sock_ctx;
 
-static inline int32_t post_ev(struct chan_ctx *pchan, const uint8_t ucnt, struct ev_ctx *pev)
+static inline int32_t post_ev(struct chan_ctx *pchan, const uint16_t ucnt, struct ev_ctx *pev)
 {
+    int32_t irtn;
+    chan_lock(pchan);
     if (1 == ucnt)
     {
-        return chan_send(pchan, pev);
+        irtn = _chan_send(pchan, pev);
     }
     else
     {
-        return chan_send(&pchan[rand() % ucnt], pev);
+        irtn = _chan_send(&pchan[rand() % ucnt], pev);
     }
+    chan_unlock(pchan);
+    return irtn;
 };
 static inline struct ev_sock_ctx *ev_sock_accept(SOCKET sock)
 {
@@ -65,26 +69,38 @@ static inline struct ev_sock_ctx *ev_sock_connect(SOCKET sock, const int32_t ier
 
     return pev;
 };
-static inline struct ev_sock_ctx *ev_sock_close(SOCKET sock, struct buffer_ctx *pbuffer, const uint8_t utype)
+static inline struct ev_sock_ctx *ev_sock_close(SOCKET sock, struct sock_ctx *psockctx, const uint16_t utype)
 {
     struct ev_sock_ctx *pev = (struct ev_sock_ctx *)MALLOC(sizeof(struct ev_sock_ctx));
     ASSERTAB(NULL != pev, ERRSTR_MEMORY);
     pev->ev.code = ERR_OK;
     pev->ev.evtype = EV_CLOSE;
     pev->sock = sock;
-    pev->buffer = pbuffer;
+    pev->sockctx = psockctx;
     pev->socktpe = utype;
 
     return pev;
 };
-static inline struct ev_sock_ctx *ev_sock_recv(SOCKET sock, const int32_t ilens, struct buffer_ctx *pbuffer, const uint8_t utype)
+static inline struct ev_sock_ctx *ev_sock_recv(SOCKET sock, const int32_t ilens, struct sock_ctx *psockctx, const uint16_t utype)
 {
     struct ev_sock_ctx *pev = (struct ev_sock_ctx *)MALLOC(sizeof(struct ev_sock_ctx));
     ASSERTAB(NULL != pev, ERRSTR_MEMORY);
     pev->ev.code = ilens;
     pev->ev.evtype = EV_RECV;
     pev->sock = sock;
-    pev->buffer = pbuffer;
+    pev->sockctx = psockctx;
+    pev->socktpe = utype;
+
+    return pev;
+};
+static inline struct ev_sock_ctx *ev_sock_send(SOCKET sock, const int32_t ilens, struct sock_ctx *psockctx, const uint16_t utype)
+{
+    struct ev_sock_ctx *pev = (struct ev_sock_ctx *)MALLOC(sizeof(struct ev_sock_ctx));
+    ASSERTAB(NULL != pev, ERRSTR_MEMORY);
+    pev->ev.code = ilens;
+    pev->ev.evtype = EV_SEND;
+    pev->sock = sock;
+    pev->sockctx = psockctx;
     pev->socktpe = utype;
 
     return pev;

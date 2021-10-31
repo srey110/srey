@@ -2,7 +2,7 @@
 #define WOT_H_
 
 #include "evtype.h"
-#include "chan.h"
+#include "loger.h"
 
 #define TVN_BITS (6)
 #define TVR_BITS (8)
@@ -18,7 +18,8 @@ typedef struct twslot_ctx
 struct wot_ctx
 {
     u_long jiffies;
-    struct chan_ctx *chan;
+    mutex_ctx lockeq;
+    struct twslot_ctx reqadd;
     struct twslot_ctx tv1[TVR_SIZE];
     struct twslot_ctx tv2[TVN_SIZE];
     struct twslot_ctx tv3[TVN_SIZE];
@@ -30,7 +31,7 @@ struct wot_ctx
 * \param  pchan        wot_add用
 * \param  uicurtick    当前tick
 */
-static void wot_init(struct wot_ctx *pctx, struct chan_ctx *pchan, const u_long ulcurtick)
+static void wot_init(struct wot_ctx *pctx, const u_long ulcurtick)
 {
     ZERO(pctx->tv1, sizeof(pctx->tv1));
     ZERO(pctx->tv2, sizeof(pctx->tv2));
@@ -38,7 +39,8 @@ static void wot_init(struct wot_ctx *pctx, struct chan_ctx *pchan, const u_long 
     ZERO(pctx->tv4, sizeof(pctx->tv4));
     ZERO(pctx->tv5, sizeof(pctx->tv5));
     pctx->jiffies = ulcurtick;
-    pctx->chan = pchan;
+    pctx->reqadd.head = pctx->reqadd.tail = NULL;
+    mutex_init(&pctx->lockeq);
 };
 static void _free(struct twslot_ctx *pslot, const size_t uilens)
 {
@@ -64,33 +66,8 @@ static void wot_free(struct wot_ctx *pctx)
     _free(pctx->tv3, TVN_SIZE);
     _free(pctx->tv4, TVN_SIZE);
     _free(pctx->tv5, TVN_SIZE);
-};
-/*
-* \brief               添加一超时事件
-* \param  pchan        接收超时消息
-* \param  ulcurtick    当前tick
-* \param  uitick       超时时间  多少个tick
-* \param  pdata        用户数据
-* \return              ERR_OK 成功
-*/
-static inline int32_t wot_add(struct wot_ctx *pctx, struct chan_ctx *pchan,
-    const u_long ulcurtick, const uint32_t uitick, const void *pdata)
-{
-    struct ev_time_ctx *pnode = (struct ev_time_ctx *)MALLOC(sizeof(struct ev_time_ctx));
-    ASSERTAB(NULL != pnode, ERRSTR_MEMORY);
-    pnode->ev.code = ERR_OK;
-    pnode->ev.evtype = EV_TIME;
-    pnode->chan = pchan;
-    pnode->data = (void*)pdata;
-    pnode->expires = ulcurtick + uitick;
-    pnode->next = NULL;
-
-    if (ERR_OK != chan_send(pctx->chan, (void *)&pnode->ev))
-    {
-        SAFE_FREE(pnode);
-        return ERR_FAILED;
-    }
-    return ERR_OK;
+    _free(&pctx->reqadd, 1);
+    mutex_free(&pctx->lockeq);
 };
 static inline void _insert(struct twslot_ctx *pslot, struct ev_time_ctx *pnode)
 {
@@ -102,6 +79,29 @@ static inline void _insert(struct twslot_ctx *pslot, struct ev_time_ctx *pnode)
 
     pslot->tail->next = pnode;
     pslot->tail = pnode;
+};
+/*
+* \brief               添加一超时事件
+* \param  pchan        接收超时消息
+* \param  ulcurtick    当前tick
+* \param  uitick       超时时间  多少个tick
+* \param  pdata        用户数据
+*/
+static inline void wot_add(struct wot_ctx *pctx, struct chan_ctx *pchan,
+    const u_long ulcurtick, const uint32_t uitick, const void *pdata)
+{
+    struct ev_time_ctx *pnode = (struct ev_time_ctx *)MALLOC(sizeof(struct ev_time_ctx));
+    ASSERTAB(NULL != pnode, ERRSTR_MEMORY);
+    pnode->ev.code = ERR_OK;
+    pnode->ev.evtype = EV_TIME;
+    pnode->chan = pchan;
+    pnode->data = (void*)pdata;
+    pnode->expires = ulcurtick + uitick;
+    pnode->next = NULL;
+
+    mutex_lock(&pctx->lockeq);
+    _insert(&pctx->reqadd, pnode);
+    mutex_unlock(&pctx->lockeq);
 };
 static inline struct twslot_ctx *_getslot(struct wot_ctx *pctx, struct ev_time_ctx *pnode)
 {
@@ -179,28 +179,34 @@ static inline void _run(struct wot_ctx *pctx)
     while (NULL != pnode)
     {
         pnext = pnode->next;
+        pnode->next = NULL;
         //将超时信息发出去,发送出去后pnode有可能已经被释放，所以先取的next
-        if (ERR_OK != chan_send(pnode->chan, (void*)&pnode->ev))
+        if (ERR_OK != chan_trysend(pnode->chan, (void*)&pnode->ev))
         {
+            LOG_FATAL("%s", "time wheel chan send failed.");
             SAFE_FREE(pnode);
-            PRINTF("%s", "time wheel chan send failed.");
         }
         pnode = pnext;
     }
-
     _clear(&pctx->tv1[ulidx]);
 };
 /*
 * \brief          执行时间轮
 */
-static inline void wot_run(struct wot_ctx *pctx, struct ev_ctx *pev, const u_long ulcurtick)
+static inline void wot_run(struct wot_ctx *pctx, const u_long ulcurtick)
 {
-    if (NULL != pev
-        && EV_TIME == pev->evtype)
+    struct ev_time_ctx *pnode, *pnext;
+    mutex_lock(&pctx->lockeq);
+    pnode = pctx->reqadd.head;
+    while (NULL != pnode)
     {
-        struct ev_time_ctx *pnode = UPCAST(pev, struct ev_time_ctx, ev);
+        pnext = pnode->next;
+        pnode->next = NULL;
         _insert(_getslot(pctx, pnode), pnode);
+        pnode = pnext;
     }
+    _clear(&pctx->reqadd);
+    mutex_unlock(&pctx->lockeq);
 
     while (pctx->jiffies <= ulcurtick)
     {

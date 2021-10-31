@@ -60,8 +60,6 @@ int64_t filesize(const char *pname)
 }
 void _dirnam(const char *path, char acpath[PATH_LENS])
 {
-    size_t ilens = sizeof(acpath);
-    ZERO(acpath, ilens);
     char *pret = strrchr(path, PATH_SEPARATOR);
     memcpy(acpath, path, pret - path);
     acpath[pret - path] = '\0';

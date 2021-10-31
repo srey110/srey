@@ -18,7 +18,7 @@ static inline void queue_init(struct queue_ctx *pctx, const int32_t icapacity)
     ASSERTAB((icapacity > 0 && icapacity <= INT_MAX / (int32_t)sizeof(void*)), "capacity too large");
     pctx->size = 0;
     pctx->next = 0;
-    pctx->capacity = icapacity;
+    pctx->capacity = ROUND_UP(icapacity, 2);
     pctx->data = (void **)MALLOC(sizeof(void*) * pctx->capacity);
     ASSERTAB(NULL != pctx->data, ERRSTR_MEMORY);
 };
@@ -29,6 +29,42 @@ static inline void queue_free(struct queue_ctx *pctx)
 {
     SAFE_FREE(pctx->data);
 };
+/*
+* \brief          扩容
+*/
+static inline void queue_expand(struct queue_ctx *pctx)
+{
+    int32_t inewcap = pctx->capacity * 2;
+    ASSERTAB(inewcap <= INT_MAX / (int32_t)sizeof(void*), "capacity too large");
+    void **pnew = (void **)MALLOC(sizeof(void*) * inewcap);
+    if (NULL == pnew)
+    {
+        PRINTF("%s", ERRSTR_MEMORY);
+        return;
+    }
+    if (0 == pctx->size)
+    {
+        SAFE_FREE(pctx->data);
+        pctx->next = 0;
+        pctx->data = pnew;
+        pctx->capacity = inewcap;
+        return;
+    }
+    if (pctx->next + pctx->size <= pctx->capacity)
+    {
+        memcpy(pnew, pctx->data + pctx->next, pctx->size * sizeof(void*));
+    }
+    else
+    {
+        memcpy(pnew, pctx->data + pctx->next, (pctx->capacity - pctx->next) * sizeof(void*));
+        memcpy(pnew + (pctx->capacity - pctx->next), pctx->data, 
+            (pctx->size - (pctx->capacity - pctx->next)) * sizeof(void*));
+    }
+    SAFE_FREE(pctx->data);
+    pctx->next = 0;
+    pctx->data = pnew;
+    pctx->capacity = inewcap;
+}
 /*
 * \brief          添加数据
 * \param pval     需要添加的数据

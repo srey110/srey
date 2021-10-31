@@ -7,47 +7,124 @@
 
 typedef struct chan_ctx
 {
-    mutex_ctx rmutex;//读锁
-    mutex_ctx wmutex;//写锁    
+    uint16_t expand;
+    uint16_t closed;
+    int32_t rwaiting;
+    int32_t wwaiting;
     mutex_ctx mmutex;//读写信号锁
     cond_ctx rcond;
     cond_ctx wcond;
-    int32_t closed;
-    int32_t rwaiting;
-    int32_t wwaiting;
-    struct queue_ctx *queue;
-    void *data;
+    struct queue_ctx queue;
 }chan_ctx;
 /*
-* \brief   初始化
-* \param   icapacity 大于0 带缓存非阻塞
+* \brief             初始化
+* \param icapacity   队列容量
+* \param iexpandqu   是的能自动扩充， 0 否
 */
-void chan_init(struct chan_ctx *pctx, const int32_t icapacity);
+static inline void chan_init(struct chan_ctx *pctx, const int32_t icapacity, const uint16_t iexpandqu)
+{
+    ASSERTAB(icapacity > 0, "capacity must big than 0.");
+    pctx->expand = iexpandqu;
+    pctx->closed = 0;
+    pctx->rwaiting = 0;
+    pctx->wwaiting = 0;
+    queue_init(&pctx->queue, icapacity);
+    mutex_init(&pctx->mmutex);
+    cond_init(&pctx->rcond);
+    cond_init(&pctx->wcond);
+};
 /*
 * \brief   释放
 */
-void chan_free(struct chan_ctx *pctx);
-
+static inline void chan_free(struct chan_ctx *pctx)
+{
+    mutex_free(&pctx->mmutex);
+    cond_free(&pctx->rcond);
+    cond_free(&pctx->wcond);
+    queue_free(&pctx->queue);
+};
+static inline void chan_lock(struct chan_ctx *pctx)
+{
+    mutex_lock(&pctx->mmutex);
+};
+static inline void chan_unlock(struct chan_ctx *pctx)
+{
+    mutex_unlock(&pctx->mmutex);
+};
 /*
 * \brief  关闭channel，关闭后不能写入
 */
-void chan_close(struct chan_ctx *pctx);
+static inline void chan_close(struct chan_ctx *pctx)
+{
+    mutex_lock(&pctx->mmutex);
+    if (0 == pctx->closed)
+    {
+        pctx->closed = 1;
+        cond_broadcast(&pctx->rcond);
+        cond_broadcast(&pctx->wcond);
+    }
+    mutex_unlock(&pctx->mmutex);
+};
 /*
 * \brief          channel是否关闭
 * \return         0 未关闭
 */
-static inline int32_t chan_isclosed(struct chan_ctx *pctx)
+static inline uint16_t chan_isclosed(struct chan_ctx *pctx)
 {
     mutex_lock(&pctx->mmutex);
     int32_t iclosed = pctx->closed;
     mutex_unlock(&pctx->mmutex);
-
     return iclosed;
 };
-int32_t _bufferedsend(struct chan_ctx *pctx, void *pdata);
-int32_t _bufferedrecv(struct chan_ctx *pctx, void **pdata);
-int32_t _unbufferedsend(struct chan_ctx *pctx, void* pdata);
-int32_t _unbufferedrecv(struct chan_ctx *pctx, void **pdata);
+static inline int32_t _chan_send(struct chan_ctx *pctx, void *pdata)
+{
+    if (0 != pctx->expand
+        && queue_size(&pctx->queue) == queue_cap(&pctx->queue))
+    {
+        queue_expand(&pctx->queue);
+    }
+    while (0 == pctx->closed
+        && queue_size(&pctx->queue) == queue_cap(&pctx->queue))
+    {
+        //队列满 阻塞直到有数据被移除.
+        pctx->wwaiting++;
+        cond_wait(&pctx->wcond, &pctx->mmutex);
+        pctx->wwaiting--;
+    }
+    if (0 != pctx->closed)
+    {
+        return ERR_FAILED;
+    }    
+    (void)queue_push(&pctx->queue, pdata);
+    if (pctx->rwaiting > 0)
+    {
+        //通知可读.
+        cond_signal(&pctx->rcond);
+    }
+    return ERR_OK;
+};
+static inline void *_chan_recv(struct chan_ctx *pctx)
+{
+    while (0 == queue_size(&pctx->queue))
+    {
+        if (0 != pctx->closed)
+        {
+            return NULL;
+        }
+
+        //阻塞直到有数据.
+        pctx->rwaiting++;
+        cond_wait(&pctx->rcond, &pctx->mmutex);
+        pctx->rwaiting--;
+    }
+    void *pdata = queue_pop(&pctx->queue);
+    if (pctx->wwaiting > 0)
+    {
+        //通知可写.
+        cond_signal(&pctx->wcond);
+    }
+    return pdata;
+};
 /*
 * \brief          写入数据
 * \param pdata    待写入的数据
@@ -55,20 +132,49 @@ int32_t _unbufferedrecv(struct chan_ctx *pctx, void **pdata);
 */
 static inline int32_t chan_send(struct chan_ctx *pctx, void *pdata)
 {
-    if (0 != chan_isclosed(pctx))
+    int irtn = ERR_FAILED;
+    mutex_lock(&pctx->mmutex);
+    if (0 == pctx->closed)
     {
-        return ERR_FAILED;
+        irtn = _chan_send(pctx, pdata);
     }
-    return NULL != pctx->queue ? _bufferedsend(pctx, pdata) : _unbufferedsend(pctx, pdata);
+    mutex_unlock(&pctx->mmutex);
+    return irtn;
+};
+static inline int32_t chan_trysend(struct chan_ctx *pctx, void *pdata)
+{
+    int irtn = ERR_FAILED;
+    mutex_lock(&pctx->mmutex);
+    if (0 == pctx->closed
+        && queue_size(&pctx->queue) < queue_cap(&pctx->queue))
+    {
+        irtn = _chan_send(pctx, pdata);
+    }
+    mutex_unlock(&pctx->mmutex);
+    return irtn;
 };
 /*
 * \brief          读取数据
 * \param pdata    读取到的数据
 * \return         ERR_OK 成功
 */
-static inline int32_t chan_recv(struct chan_ctx *pctx, void **pdata)
+static inline void *chan_recv(struct chan_ctx *pctx)
 {
-    return NULL != pctx->queue ? _bufferedrecv(pctx, pdata) : _unbufferedrecv(pctx, pdata);
+    mutex_lock(&pctx->mmutex);
+    void *pdata = _chan_recv(pctx);
+    mutex_unlock(&pctx->mmutex);
+    return pdata;
+};
+static inline void *chan_tryrecv(struct chan_ctx *pctx)
+{
+    void *pdata = NULL;
+    mutex_lock(&pctx->mmutex);
+    if (queue_size(&pctx->queue) > 0)
+    {
+        pdata = _chan_recv(pctx);
+    }
+    mutex_unlock(&pctx->mmutex);
+    return pdata;
 };
 /*
 * \brief          数据总数
@@ -76,66 +182,10 @@ static inline int32_t chan_recv(struct chan_ctx *pctx, void **pdata)
 */
 static inline int32_t chan_size(struct chan_ctx *pctx)
 {
-    int32_t isize = 0;
-    if (NULL != pctx->queue)
-    {
-        mutex_lock(&pctx->mmutex);
-        isize = queue_size(pctx->queue);
-        mutex_unlock(&pctx->mmutex);
-    }
+    mutex_lock(&pctx->mmutex);
+    int32_t isize = queue_size(&pctx->queue);
+    mutex_unlock(&pctx->mmutex);
     return isize;
 };
-/*
-* \brief          是否可读
-* \return         ERR_OK 有数据
-*/
-static inline int32_t chan_canrecv(struct chan_ctx *pctx)
-{
-    if (NULL != pctx->queue)
-    {
-        return  chan_size(pctx) > 0 ? ERR_OK : ERR_FAILED;
-    }
-
-    mutex_lock(&pctx->mmutex);
-    int32_t icanrecv = pctx->wwaiting > 0 ? ERR_OK : ERR_FAILED;
-    mutex_unlock(&pctx->mmutex);
-
-    return icanrecv;
-};
-/*
-* \brief          是否可写
-* \return         ERR_OK 可写
-*/
-static inline int32_t chan_cansend(struct chan_ctx *pctx)
-{
-    int32_t isend;
-    if (NULL != pctx->queue)
-    {
-        mutex_lock(&pctx->mmutex);
-        isend = queue_size(pctx->queue) < queue_cap(pctx->queue) ? ERR_OK : ERR_FAILED;
-        mutex_unlock(&pctx->mmutex);
-    }
-    else
-    {
-        mutex_lock(&pctx->mmutex);
-        isend = pctx->rwaiting > 0 ? ERR_OK : ERR_FAILED;
-        mutex_unlock(&pctx->mmutex);
-    }
-
-    return isend;
-};
-/*
-* \brief             随机选取一可读写的channel来执行读写,阻塞的不支持
-* \param precv       读cchan
-* \param irecvcnt    读cchan数量
-* \param precv_out   读到的数据
-* \param psend       写cchan
-* \param isendcnt    写cchan数量
-* \param psend_msgs  每个cchan需要发送的数据
-* \return            ERR_FAILED 失败
-* \return            cchan 下标
-*/
-int32_t chan_select(struct chan_ctx *precv[], const int32_t irecvcnt, void **precv_out,
-    struct chan_ctx *psend[], const int32_t isendcnt, void *psend_msgs[]);
 
 #endif//CHAN_H_

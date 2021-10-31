@@ -35,7 +35,7 @@ static inline int32_t socknread(SOCKET fd)
 * \brief          ªÒ»°sa_family
 * \param fd       SOCKET
 * \return         ERR_FAILED  ß∞‹
-* \return         sa_family  SOCK_STREAM  SOCK_DGRAM
+* \return         SOCK_STREAM  SOCK_DGRAM
 */
 static inline int32_t socktype(SOCKET fd)
 {

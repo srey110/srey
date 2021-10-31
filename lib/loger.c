@@ -224,20 +224,18 @@ static void _loger(void *pparam, void *p2, void *p3)
     void *pinfo;
     while (0 == ATOMIC_GET(&stworker.ploger->stop))
     {
-        pinfo = NULL;
-        if (ERR_OK != chan_recv(&stworker.ploger->chan, &pinfo))
+        pinfo = chan_recv(&stworker.ploger->chan);
+        if (NULL == pinfo)
         {
             _worker_freeloginfo((loginfo_ctx *)pinfo);
             continue;
         }
-
         _worker_printlog(&stworker, (loginfo_ctx *)pinfo);
         if (ERR_OK != _worker_getfile(&stworker))
         {
             _worker_freeloginfo((loginfo_ctx *)pinfo);
             continue;
         }
-
         _worker_writelog(&stworker, (loginfo_ctx *)pinfo);
         _worker_freeloginfo((loginfo_ctx *)pinfo);
     }
@@ -250,16 +248,16 @@ void loger_init(struct loger_ctx *pctx)
     pctx->stop = 0;
     pctx->lv = LOGLV_DEBUG;
     pctx->print = 1;
-    chan_init(&pctx->chan, ONEK);
-    thread_init(&pctx->thread);
-    thread_creat(&pctx->thread, _loger, pctx, NULL, NULL);
+    chan_init(&pctx->chan, ONEK * 4, 0);
+    thread_init(&pctx->thloger);
+    thread_creat(&pctx->thloger, _loger, pctx, NULL, NULL);
 }
 void loger_free(struct loger_ctx *pctx)
 {
     while (chan_size(&pctx->chan) > 0);
     ATOMIC_SET(&pctx->stop, 1);
     chan_close(&pctx->chan);
-    thread_join(&pctx->thread);
+    thread_join(&pctx->thloger);
     chan_free(&pctx->chan);
 }
 void loger_setlv(struct loger_ctx *pctx, const LOG_LEVEL emlv)
@@ -301,7 +299,7 @@ void loger_log(struct loger_ctx *pctx, const LOG_LEVEL emlv, const char *pformat
     pinfo->plog = formatargs(pformat, va);
     va_end(va);
 
-    if (ERR_OK != chan_send(&pctx->chan, (void*)pinfo))
+    if (ERR_OK != chan_trysend(&pctx->chan, (void*)pinfo))
     {
         PRINTF("write log error. %s", pinfo->plog);
         SAFE_FREE(pinfo->plog);

@@ -23,8 +23,8 @@ typedef struct buffer_ctx
     struct buffernode_ctx *head;
     struct buffernode_ctx *tail;
     struct buffernode_ctx **tail_with_data;
-    uint8_t freeze_read;
-    uint8_t freeze_write;
+    uint16_t freeze_read;
+    uint16_t freeze_write;
     size_t total_len;//数据总长度
     mutex_ctx mutex;
 }buffer_ctx;
@@ -37,6 +37,15 @@ void buffer_init(struct buffer_ctx *pctx);
 * \brief          释放
 */
 void buffer_free(struct buffer_ctx *pctx);
+//锁
+static inline void buffer_lock(struct buffer_ctx *pctx)
+{
+    mutex_lock(&pctx->mutex);
+};
+static inline void buffer_unlock(struct buffer_ctx *pctx)
+{
+    mutex_unlock(&pctx->mutex);
+};
 /*
 * \brief          添加数据
 * \param pdata    数据
@@ -44,7 +53,14 @@ void buffer_free(struct buffer_ctx *pctx);
 * \return         ERR_OK 成功
 * \return         ERR_FAILED 失败
 */
-int32_t buffer_append(struct buffer_ctx *pctx, void *pdata, const size_t uilen);
+int32_t _buffer_append(struct buffer_ctx *pctx, void *pdata, const size_t uilen);
+static inline int32_t buffer_append(struct buffer_ctx *pctx, void *pdata, const size_t uilen)
+{
+    buffer_lock(pctx);
+    int32_t irtn = _buffer_append(pctx, pdata, uilen);
+    buffer_unlock(pctx);
+    return irtn;
+};
 /*
 * \brief          添加数据
 * \param pfmt     格式
@@ -86,15 +102,6 @@ int32_t buffer_remove(struct buffer_ctx *pctx, void *pout, size_t uilen);
 * \return         第一次出现的位置
 */
 int32_t buffer_search(struct buffer_ctx *pctx, const size_t uistart, void *pwhat, size_t uiwlens);
-//锁
-static inline void buffer_lock(struct buffer_ctx *pctx)
-{
-    mutex_lock(&pctx->mutex);
-};
-static inline void buffer_unlock(struct buffer_ctx *pctx)
-{
-    mutex_unlock(&pctx->mutex);
-};
 /*
 * \brief          数据长度
 * \return         数据长度

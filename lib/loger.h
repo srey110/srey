@@ -19,7 +19,7 @@ struct loger_ctx
     volatile atomic_t lv;
     volatile atomic_t print;
     struct chan_ctx chan;
-    struct thread_ctx thread;    
+    struct thread_ctx thloger;    
 }loger_ctx;
 /*
 * \brief  ≥ı ºªØ
@@ -53,8 +53,8 @@ extern struct loger_ctx g_logerctx;
 #define SETLOGLV(lv) loger_setlv(&g_logerctx, lv)
 #define SETLOGPRT(bprt) loger_setprint(&g_logerctx, bprt)
 #define LOG(lv,format, ...)\
-    (loger_log(&g_logerctx, lv, CONCAT2("[%s][%s %d]", format), \
-     _getlvstr(lv), __FILENAME__, __LINE__, ##__VA_ARGS__))
+    (loger_log(&g_logerctx, lv, CONCAT2("[%s][%s %s %d]", format), \
+     _getlvstr(lv), __FILENAME__, __FUNCTION__, __LINE__, ##__VA_ARGS__))
 #undef LOG_FATAL
 #define LOG_FATAL(format, ...) LOG(LOGLV_FATAL, format, ##__VA_ARGS__)
 #undef LOG_ERROR

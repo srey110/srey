@@ -14,7 +14,7 @@ typedef struct thread_ctx
 {
     volatile atomic_t threadid;
     volatile atomic_t state;
-    pthread_t thread;
+    pthread_t pthread;
     void *param1;
     void *param2;
     void *param3;
@@ -79,10 +79,10 @@ static inline void thread_creat(struct thread_ctx *pctx, void(*cb)(void*, void*,
     pctx->param3 = pparam3;
 
 #if defined(OS_WIN)
-    pctx->thread = (HANDLE)_beginthreadex(NULL, 0, _funccb, (void*)pctx, 0, NULL);
-    ASSERTAB(NULL != pctx->thread, ERRORSTR(ERRNO));
+    pctx->pthread = (HANDLE)_beginthreadex(NULL, 0, _funccb, (void*)pctx, 0, NULL);
+    ASSERTAB(NULL != pctx->pthread, ERRORSTR(ERRNO));
 #else
-    ASSERTAB((ERR_OK == pthread_create(&pctx->thread, NULL, _funccb, (void*)pctx)),
+    ASSERTAB((ERR_OK == pthread_create(&pctx->pthread, NULL, _funccb, (void*)pctx)),
         ERRORSTR(ERRNO));
 #endif
 };
@@ -103,9 +103,9 @@ static inline void thread_join(struct thread_ctx *pctx)
         return;
     }
 #if defined(OS_WIN)
-    ASSERTAB(WAIT_OBJECT_0 == WaitForSingleObject(pctx->thread, INFINITE), ERRORSTR(ERRNO));
+    ASSERTAB(WAIT_OBJECT_0 == WaitForSingleObject(pctx->pthread, INFINITE), ERRORSTR(ERRNO));
 #else
-    ASSERTAB(ERR_OK == pthread_join(pctx->thread, NULL), ERRORSTR(ERRNO));
+    ASSERTAB(ERR_OK == pthread_join(pctx->pthread, NULL), ERRORSTR(ERRNO));
 #endif
 };
 /*

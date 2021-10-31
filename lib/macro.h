@@ -48,7 +48,7 @@ do\
 #define CONCAT2(a, b) a b
 #define CONCAT3(a, b, c) a b c
 #define __FILENAME__ (strrchr(__FILE__, PATH_SEPARATOR) ? strrchr(__FILE__, PATH_SEPARATOR) + 1 : __FILE__)
-#define PRINTF(fmt, ...) printf(CONCAT3("[%s %d] ", fmt, "\n"),  __FILENAME__, __LINE__, ##__VA_ARGS__)
+#define PRINTF(fmt, ...) printf(CONCAT3("[%s %s %d] ", fmt, "\n"),  __FILENAME__, __FUNCTION__, __LINE__, ##__VA_ARGS__)
 
 #ifndef offsetof
 #define offsetof(type, field) ((off_t)(&((type *)0)->field))
@@ -76,7 +76,7 @@ do\
 
 #define ONEK 1024
 #define TIME_LENS 64
-#define IP_LENS   64
+#define IP_LENS   65
 #define PORT_LENS 8
 #define SOCKKPA_DELAY 60
 #define SOCKKPA_INTVL 1

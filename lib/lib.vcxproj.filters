@@ -85,9 +85,6 @@
     <ClCompile Include="sha1\sha1.c">
       <Filter>3rd\sha1</Filter>
     </ClCompile>
-    <ClCompile Include="chan.c">
-      <Filter>utils</Filter>
-    </ClCompile>
     <ClCompile Include="snowflake.c">
       <Filter>utils</Filter>
     </ClCompile>

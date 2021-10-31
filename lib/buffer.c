@@ -390,14 +390,11 @@ void buffer_free(struct buffer_ctx *pctx)
     _free_all_node(pctx->head);
     mutex_free(&pctx->mutex);
 }
-int32_t buffer_append(struct buffer_ctx *pctx, void *pdata, const size_t uilen)
+int32_t _buffer_append(struct buffer_ctx *pctx, void *pdata, const size_t uilen)
 {
     char *ptmp = (char*)pdata;
-
-    buffer_lock(pctx);
     if (0 != pctx->freeze_write)
     {
-        buffer_unlock(pctx);
         PRINTF("%s", "tail locked.");
         return ERR_FAILED;
     }
@@ -423,7 +420,6 @@ int32_t buffer_append(struct buffer_ctx *pctx, void *pdata, const size_t uilen)
     }
     ASSERTAB(uilen == _buffer_commit_iov(pctx, uilen, piov, uinum), "commit lens not equ buffer lens.");
 
-    buffer_unlock(pctx);
     return ERR_OK;
 }
 int32_t buffer_appendv(struct buffer_ctx *pctx, const char *pfmt, ...)
@@ -741,6 +737,7 @@ uint32_t _buffer_get_iov(struct buffer_ctx *pctx, size_t uiatmost,
         else
         {
             piov[index].IOV_LEN_FIELD = (IOV_LEN_TYPE)uiatmost;
+            uiatmost = 0;
         }
         index++;
 

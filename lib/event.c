@@ -7,48 +7,52 @@ void event_init(struct event_ctx *pctx, const u_long ulaccuracy)
     pctx->stop = 0;
     srand((uint32_t)time(NULL));
 
-    thread_init(&pctx->thread);
-    chan_init(&pctx->chan, ONEK);
+    thread_init(&pctx->thwot);
+    thread_init(&pctx->thfree);
+    chan_init(&pctx->chfree, ONEK * 4, 1);
     timer_init(&pctx->timer);
-    wot_init(&pctx->wot, &pctx->chan, event_tick(pctx));
     netev_init(&pctx->netev);
 }
 void event_free(struct event_ctx *pctx)
 {
     netev_free(&pctx->netev);
     ATOMIC_SET(&pctx->stop, 1);
-    chan_close(&pctx->chan);
-    thread_join(&pctx->thread);
+    thread_join(&pctx->thwot);
+    chan_close(&pctx->chfree);    
+    thread_join(&pctx->thfree); 
     wot_free(&pctx->wot);
-    chan_free(&pctx->chan);
+    chan_free(&pctx->chfree);
 }
-static inline struct ev_ctx *_get_ev(struct chan_ctx *pchan)
+static void _delay_free(void *p1, void *p2, void *p3)
 {
-    if (ERR_OK != chan_canrecv(pchan))
-    {
-        return NULL;
-    }
-
     void *ptmp;
-    if (ERR_OK == chan_recv(pchan, &ptmp))
-    {
-        return (struct ev_ctx *)ptmp;
-    }
-    return NULL;
-}
-static void _loop(void *p1, void *p2, void *p3)
-{
-    struct ev_ctx *pev;
+    struct sock_ctx *psock;
+    struct ev_time_ctx *ptimeev;
     struct event_ctx *pctx = (struct event_ctx *)p1;
     while (0 == ATOMIC_GET(&pctx->stop))
     {
-        pev = _get_ev(&pctx->chan);
-        wot_run(&pctx->wot, pev, event_tick(pctx));
+        ptmp = chan_recv(&pctx->chfree);
+        if (NULL != ptmp)
+        {
+            ptimeev = UPCAST(ptmp, struct ev_time_ctx, ev);
+            psock = (struct sock_ctx *)ptimeev->data;
+            SAFE_FREE(ptimeev);
+            event_sock_free(pctx, psock);
+        }      
+    }
+}
+static void _wot_loop(void *p1, void *p2, void *p3)
+{
+    struct event_ctx *pctx = (struct event_ctx *)p1;
+    wot_init(&pctx->wot, event_tick(pctx));
+    while (0 == ATOMIC_GET(&pctx->stop))
+    {
+        wot_run(&pctx->wot, event_tick(pctx));
     }
 }
 void event_loop(struct event_ctx *pctx)
 {
-    thread_creat(&pctx->thread, _loop, pctx, NULL, NULL);
-    thread_waitstart(&pctx->thread);
+    thread_creat(&pctx->thfree, _delay_free, pctx, NULL, NULL);
+    thread_creat(&pctx->thwot, _wot_loop, pctx, NULL, NULL);
     netev_loop(&pctx->netev);
 }

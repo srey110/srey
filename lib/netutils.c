@@ -205,7 +205,7 @@ int32_t sockpair(SOCKET acSock[2])
         SAFE_CLOSESOCK(fdlsn);
         return ERR_FAILED;
     }
-    char acip[64];
+    char acip[IP_LENS];
     if (ERR_OK != netaddr_ip(&addr, acip))
     {
         SAFE_CLOSESOCK(fdlsn);

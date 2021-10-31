@@ -50,7 +50,6 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="buffer.c" />
-    <ClCompile Include="chan.c" />
     <ClCompile Include="epoll\epoll.c" />
     <ClCompile Include="event.c" />
     <ClCompile Include="evport\evport.c" />

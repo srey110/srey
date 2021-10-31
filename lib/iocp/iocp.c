@@ -50,24 +50,24 @@ void netev_init(struct netev_ctx *pctx)
     WORD ver = MAKEWORD(2, 2);
     ASSERTAB(ERR_OK == WSAStartup(ver, &wsdata), ERRORSTR(ERRNO));
 
-    pctx->threadcnt = (int32_t)procscnt() * 2;
-    pctx->thread = MALLOC(sizeof(struct thread_ctx) * pctx->threadcnt);
-    ASSERTAB(NULL != pctx->thread, ERRSTR_MEMORY);
-    for (int32_t i = 0; i < pctx->threadcnt; i++)
+    pctx->thcnt = (int32_t)procscnt() * 2;
+    pctx->thiocp = MALLOC(sizeof(struct thread_ctx) * pctx->thcnt);
+    ASSERTAB(NULL != pctx->thiocp, ERRSTR_MEMORY);
+    for (int32_t i = 0; i < pctx->thcnt; i++)
     {
-        thread_init(&pctx->thread[i]);
+        thread_init(&pctx->thiocp[i]);
     }
     _initexfunc(pctx);
     pctx->iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE,
         NULL,
         0,
-        pctx->threadcnt);
+        pctx->thcnt);
     ASSERTAB(NULL != pctx->iocp, ERRORSTR(ERRNO));
 }
 void netev_free(struct netev_ctx *pctx)
 {
     int32_t i;
-    for (i = 0; i < pctx->threadcnt; i++)
+    for (i = 0; i < pctx->thcnt; i++)
     {
         if (!PostQueuedCompletionStatus(pctx->iocp,
             0,
@@ -78,13 +78,13 @@ void netev_free(struct netev_ctx *pctx)
             LOG_ERROR("error code:%d message:%s", irtn, ERRORSTR(irtn));
         }
     }
-    for (i = 0; i < pctx->threadcnt; i++)
+    for (i = 0; i < pctx->thcnt; i++)
     {
-        thread_join(&pctx->thread[i]);
+        thread_join(&pctx->thiocp[i]);
     }
 
     (void)CloseHandle(pctx->iocp);
-    SAFE_FREE(pctx->thread);
+    SAFE_FREE(pctx->thiocp);
     (void)WSACleanup();
 }
 static void _icop_loop(void *p1, void *p2, void *p3)
@@ -121,14 +121,14 @@ static void _icop_loop(void *p1, void *p2, void *p3)
         }
 
         struct overlap_ctx *polctx = UPCAST(poverlap, struct overlap_ctx, overlapped);
-        polctx->overlap_cb(pctx, polctx, dbytes, ierr);
+        polctx->overlap_cb(pctx, polctx, (uint32_t)dbytes, ierr);
     }
 }
 void netev_loop(struct netev_ctx *pctx)
 {
-    for (int32_t i = 0; i < pctx->threadcnt; i++)
+    for (int32_t i = 0; i < pctx->thcnt; i++)
     {
-        thread_creat(&pctx->thread[i], _icop_loop, pctx, NULL, NULL);
+        thread_creat(&pctx->thiocp[i], _icop_loop, pctx, NULL, NULL);
     }
 }
 
