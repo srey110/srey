@@ -4,10 +4,7 @@
 #include "timer.h"
 #include "thread.h"
 #include "wot.h"
-#include "iocp/iocp.h"
-#include "epoll/epoll.h"
-#include "evport/evport.h"
-#include "kqueue/kqueue.h"
+#include "netapi.h"
 
 typedef struct event_ctx
 {
@@ -18,7 +15,7 @@ typedef struct event_ctx
     struct chan_ctx chfree;//延迟释放
     struct thread_ctx thwot;//超时线程
     struct thread_ctx thfree;
-    struct netev_ctx netev;//网络
+    struct netev_ctx *netev;//网络
 }event_ctx;
 /*
 * \brief             初始化
@@ -64,7 +61,7 @@ static inline void event_timeout(struct event_ctx *pctx,
 static inline SOCKET event_listener(struct event_ctx *pctx, struct chan_ctx *pchan,
     const uint32_t uichancnt, const char *phost, const uint16_t usport)
 {
-    return netev_listener(&pctx->netev, pchan, uichancnt, phost, usport);
+    return netev_listener(pctx->netev, pchan, uichancnt, phost, usport);
 };
 /*
 * \brief            新建一连接
@@ -76,7 +73,7 @@ static inline SOCKET event_listener(struct event_ctx *pctx, struct chan_ctx *pch
 static inline SOCKET event_connecter(struct event_ctx *pctx, struct chan_ctx *pchan,
     const char *phost, const uint16_t usport)
 {
-    return netev_connecter(&pctx->netev, pchan, phost, usport);
+    return netev_connecter(pctx->netev, pchan, phost, usport);
 };
 /*
 * \brief            将已有SOCKET加进去,失败关闭fd句柄, EV_ACCEPT 和自定义socket
@@ -85,7 +82,7 @@ static inline SOCKET event_connecter(struct event_ctx *pctx, struct chan_ctx *pc
 */
 static inline int32_t event_addsock(struct event_ctx *pctx, SOCKET fd)
 {
-    return netev_addsock(&pctx->netev, fd);
+    return netev_addsock(pctx->netev, fd);
 };
 /*
 * \brief              开始接收数据。在调用event_addsock成功或收到EV_CONNECT消息后调用一次
@@ -96,7 +93,7 @@ static inline int32_t event_addsock(struct event_ctx *pctx, SOCKET fd)
 */
 static inline struct sock_ctx *event_enablerw(struct event_ctx *pctx, SOCKET fd, struct chan_ctx *pchan, const int32_t ipostsendev)
 {
-    return netev_enable_rw(&pctx->netev, fd, pchan, ipostsendev);
+    return netev_enable_rw(pctx->netev, fd, pchan, ipostsendev);
 };
 /*
 * \brief              释放sock_ctx

@@ -1,4 +1,5 @@
 #include "overlap.h"
+#include "netapi.h"
 #include "buffer.h"
 #include "netaddr.h"
 #include "netutils.h"

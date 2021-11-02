@@ -22,20 +22,18 @@
     <ClInclude Include="buffer.h" />
     <ClInclude Include="chan.h" />
     <ClInclude Include="cond.h" />
-    <ClInclude Include="epoll\epoll.h" />
+    <ClInclude Include="epoll\epsock.h" />
     <ClInclude Include="errcode.h" />
     <ClInclude Include="event.h" />
-    <ClInclude Include="evport\evport.h" />
     <ClInclude Include="evtype.h" />
-    <ClInclude Include="iocp\iocp.h" />
     <ClInclude Include="iocp\overlap.h" />
-    <ClInclude Include="kqueue\kqueue.h" />
     <ClInclude Include="lib.h" />
     <ClInclude Include="loger.h" />
     <ClInclude Include="macro.h" />
     <ClInclude Include="md5\md5.h" />
     <ClInclude Include="mutex.h" />
     <ClInclude Include="netaddr.h" />
+    <ClInclude Include="netapi.h" />
     <ClInclude Include="netutils.h" />
     <ClInclude Include="os.h" />
     <ClInclude Include="queue.h" />
@@ -51,6 +49,7 @@
   <ItemGroup>
     <ClCompile Include="buffer.c" />
     <ClCompile Include="epoll\epoll.c" />
+    <ClCompile Include="epoll\epsock.c" />
     <ClCompile Include="event.c" />
     <ClCompile Include="evport\evport.c" />
     <ClCompile Include="iocp\iocp.c" />

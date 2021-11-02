@@ -11,11 +11,11 @@ void event_init(struct event_ctx *pctx, const u_long ulaccuracy)
     thread_init(&pctx->thfree);
     chan_init(&pctx->chfree, ONEK * 4, 1);
     timer_init(&pctx->timer);
-    netev_init(&pctx->netev);
+    pctx->netev = netev_new();
 }
 void event_free(struct event_ctx *pctx)
 {
-    netev_free(&pctx->netev);
+    netev_free(pctx->netev);
     pctx->stop = 1;
     thread_join(&pctx->thwot);
     chan_close(&pctx->chfree);    
@@ -62,5 +62,5 @@ void event_loop(struct event_ctx *pctx)
 {
     thread_creat(&pctx->thfree, _delay_free, pctx, NULL, NULL);
     thread_creat(&pctx->thwot, _wot_loop, pctx, NULL, NULL);
-    netev_loop(&pctx->netev);
+    netev_loop(pctx->netev);
 }

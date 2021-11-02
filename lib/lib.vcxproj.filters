@@ -47,18 +47,6 @@
     <ClInclude Include="buffer.h">
       <Filter>utils</Filter>
     </ClInclude>
-    <ClInclude Include="iocp\iocp.h">
-      <Filter>event\iocp</Filter>
-    </ClInclude>
-    <ClInclude Include="kqueue\kqueue.h">
-      <Filter>event\kqueue</Filter>
-    </ClInclude>
-    <ClInclude Include="evport\evport.h">
-      <Filter>event\evport</Filter>
-    </ClInclude>
-    <ClInclude Include="epoll\epoll.h">
-      <Filter>event\epoll</Filter>
-    </ClInclude>
     <ClInclude Include="evtype.h">
       <Filter>event</Filter>
     </ClInclude>
@@ -76,6 +64,12 @@
     </ClInclude>
     <ClInclude Include="iocp\overlap.h">
       <Filter>event\iocp</Filter>
+    </ClInclude>
+    <ClInclude Include="epoll\epsock.h">
+      <Filter>event\epoll</Filter>
+    </ClInclude>
+    <ClInclude Include="netapi.h">
+      <Filter>event</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -120,6 +114,9 @@
     </ClCompile>
     <ClCompile Include="iocp\overlap.c">
       <Filter>event\iocp</Filter>
+    </ClCompile>
+    <ClCompile Include="epoll\epsock.c">
+      <Filter>event\epoll</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>

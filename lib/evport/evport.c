@@ -1,4 +1,4 @@
-#include "evport/evport.h"
+#include "netapi.h"
 
 #if defined(OS_SUN)
 

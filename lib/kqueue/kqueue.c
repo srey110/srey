@@ -1,4 +1,4 @@
-#include "kqueue/kqueue.h"
+#include "netapi.h"
 
 #if defined(OS_DARWIN) || defined(OS_BSD)
 

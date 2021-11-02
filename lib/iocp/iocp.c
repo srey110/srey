@@ -1,4 +1,5 @@
-#include "iocp/iocp.h"
+#include "overlap.h"
+#include "netapi.h"
 #include "thread.h"
 #include "netutils.h"
 #include "loger.h"
@@ -45,12 +46,14 @@ static void _initexfunc(struct netev_ctx *pctx)
     pctx->disconnectex = _getexfunc(sock, &disconnect_uid);
     SOCK_CLOSE(sock);
 }
-void netev_init(struct netev_ctx *pctx)
+struct netev_ctx *netev_new()
 {
     WSADATA wsdata;
     WORD ver = MAKEWORD(2, 2);
     ASSERTAB(ERR_OK == WSAStartup(ver, &wsdata), ERRORSTR(ERRNO));
 
+    struct netev_ctx *pctx = MALLOC(sizeof(struct netev_ctx));
+    ASSERTAB(NULL != pctx, ERRSTR_MEMORY);
     pctx->thcnt = (int32_t)procscnt() * 2;
     pctx->thiocp = MALLOC(sizeof(struct thread_ctx) * pctx->thcnt);
     ASSERTAB(NULL != pctx->thiocp, ERRSTR_MEMORY);
@@ -64,6 +67,8 @@ void netev_init(struct netev_ctx *pctx)
         0,
         pctx->thcnt);
     ASSERTAB(NULL != pctx->iocp, ERRORSTR(ERRNO));
+
+    return pctx;
 }
 void netev_free(struct netev_ctx *pctx)
 {
@@ -87,6 +92,8 @@ void netev_free(struct netev_ctx *pctx)
     (void)CloseHandle(pctx->iocp);
     SAFE_FREE(pctx->thiocp);
     (void)WSACleanup();
+
+    SAFE_FREE(pctx);
 }
 static void _icop_loop(void *p1, void *p2, void *p3)
 {
@@ -96,7 +103,7 @@ static void _icop_loop(void *p1, void *p2, void *p3)
     int32_t ierr;
     OVERLAPPED *poverlap;
     struct netev_ctx *pctx = (struct netev_ctx *)p1;
-    while (1)
+    for (;;)
     {
         ierr = ERR_OK;
         brtn = GetQueuedCompletionStatus(pctx->iocp,
