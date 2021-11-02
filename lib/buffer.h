@@ -23,12 +23,23 @@ typedef struct buffer_ctx
     struct buffernode_ctx *head;
     struct buffernode_ctx *tail;
     struct buffernode_ctx **tail_with_data;
-    uint16_t freeze_read;
-    uint16_t freeze_write;
+    int32_t freeze_read;
+    int32_t freeze_write;
     size_t total_len;//数据总长度
     mutex_ctx mutex;
 }buffer_ctx;
-
+typedef struct piece_node_ctx
+{
+    struct piece_node_ctx *next;
+    size_t size;
+    void *data;
+}piece_node_ctx;
+typedef struct piece_iov_ctx
+{
+    struct piece_node_ctx *head;
+    struct piece_node_ctx *tail;
+    void(*free_data)(void *);
+}piece_iov_ctx;
 /*
 * \brief          初始化
 */
@@ -111,7 +122,6 @@ static inline size_t buffer_size(struct buffer_ctx *pctx)
     buffer_lock(pctx);
     size_t uisize = pctx->total_len;
     buffer_unlock(pctx);
-
     return uisize;
 }
 /*
@@ -146,5 +156,147 @@ size_t _buffer_commit_iov(struct buffer_ctx *pctx, size_t uilens ,IOV_TYPE *piov
 */
 uint32_t _buffer_get_iov(struct buffer_ctx *pctx, size_t uiatmost,
     IOV_TYPE *piov, const uint32_t uicnt);
+
+static inline uint32_t buffer_write_iov_application(struct buffer_ctx *pbuf, const size_t uisize,
+    IOV_TYPE *piov, const uint32_t uiovcnt)
+{
+    buffer_lock(pbuf);
+    ASSERTAB(0 == pbuf->freeze_write, "buffer tail already freezed.");
+    pbuf->freeze_write = 1;
+    uint32_t uicoun = _buffer_expand_iov(pbuf, uisize, piov, uiovcnt);
+    buffer_unlock(pbuf);
+    return uicoun;
+};
+static inline void buffer_write_iov_commit(struct buffer_ctx *pbuf, size_t ilens,
+    IOV_TYPE *piov, const uint32_t uiovcnt)
+{
+    buffer_lock(pbuf);
+    ASSERTAB(0 != pbuf->freeze_write, "buffer tail already unfreezed.");
+    size_t uisize = _buffer_commit_iov(pbuf, ilens, piov, uiovcnt);
+    ASSERTAB(uisize == ilens, "_buffer_commit_iov lens error.");
+    pbuf->freeze_write = 0;
+    buffer_unlock(pbuf);
+};
+static inline uint32_t buffer_read_iov_application(struct buffer_ctx *pbuf, size_t uisize,
+    IOV_TYPE *piov, const uint32_t uiovcnt)
+{
+    buffer_lock(pbuf);
+    ASSERTAB(0 == pbuf->freeze_read, "buffer head already freezed");
+    uint32_t uicnt = _buffer_get_iov(pbuf, uisize, piov, uiovcnt);
+    if (uicnt > 0)
+    {
+        pbuf->freeze_read = 1;
+    }
+    buffer_unlock(pbuf);
+    return uicnt;
+};
+static inline void buffer_read_iov_commit(struct buffer_ctx *pbuf, size_t uisize)
+{
+    buffer_lock(pbuf);
+    ASSERTAB(1 == pbuf->freeze_read, "buffer head already unfreezed.");
+    if (uisize > 0)
+    {
+        ASSERTAB(uisize == _buffer_drain(pbuf, uisize), "drain size not equ commit size.");
+    }
+    pbuf->freeze_read = 0;
+    buffer_unlock(pbuf);
+};
+static inline size_t _buffer_iov_size(IOV_TYPE *piov, const uint32_t uiovcnt)
+{
+    size_t isize = 0;
+    for (uint32_t i = 0; i < uiovcnt; i++)
+    {
+        isize += (size_t)piov[i].IOV_LEN_FIELD;
+    }
+    return isize;
+};
+static inline void buffer_piece_node_free(struct piece_iov_ctx *ppiece)
+{
+    struct piece_node_ctx *pnext, *pnode = ppiece->head;
+    while (NULL != pnode)
+    {
+        pnext = pnode->next;
+        if (NULL != ppiece->free_data)
+        {
+            ppiece->free_data(pnode->data);
+        }
+        SAFE_FREE(pnode);
+        pnode = pnext;
+    }
+};
+static inline int32_t buffer_piece_inser(struct buffer_ctx *pbuf, struct piece_iov_ctx *ppiece,
+    void *pnodedata, void *pdata, const size_t uilens)
+{
+    struct piece_node_ctx *pnode = MALLOC(sizeof(struct piece_node_ctx));
+    if (NULL == pnode)
+    {
+        PRINTF("%s", ERRSTR_MEMORY);
+        return ERR_FAILED;
+    }
+    pnode->data = pnodedata;
+    pnode->size = uilens;
+    pnode->next = NULL;
+
+    buffer_lock(pbuf);
+    if (NULL == ppiece->head)
+    {
+        ppiece->head = ppiece->tail = pnode;
+    }
+    else
+    {
+        ppiece->tail->next = pnode;
+        ppiece->tail = pnode;
+    }
+    ASSERTAB(ERR_OK == _buffer_append(pbuf, pdata, uilens), "buffer_append error.");
+    buffer_unlock(pbuf);
+
+    return ERR_OK;
+};
+static inline uint32_t buffer_piece_read_iov_application(struct buffer_ctx *pbuf, struct piece_iov_ctx *ppiece, 
+    IOV_TYPE *piov, const uint32_t uiovcnt, void **pdata)
+{
+    uint32_t uicnt = 0;
+    buffer_lock(pbuf);
+    ASSERTAB(0 == pbuf->freeze_read, "buffer head already freezed");
+    if (NULL != ppiece->head)
+    {
+        *pdata = ppiece->head->data;
+        uicnt = _buffer_get_iov(pbuf, ppiece->head->size, piov, uiovcnt);
+        if (uicnt > 0)
+        {
+            ASSERTAB(ppiece->head->size == _buffer_iov_size(piov, uicnt),
+                "the data size not equ node size.");
+            pbuf->freeze_read = 1;
+        }
+    }
+    buffer_unlock(pbuf);
+    return uicnt;
+};
+static inline void buffer_piece_read_iov_commit(struct buffer_ctx *pbuf, struct piece_iov_ctx *ppiece, size_t uilens)
+{
+    buffer_lock(pbuf);
+    ASSERTAB(1 == pbuf->freeze_read, "buffer head already unfreezed.");
+    if (uilens > 0)
+    {
+        struct piece_node_ctx *pnode = ppiece->head;
+        ASSERTAB(NULL != pnode && uilens == pnode->size, "buffer head is NULL or commit size not equ node size.");
+        ASSERTAB(uilens == _buffer_drain(pbuf, uilens), "drain size not equ commit size.");
+        if (NULL == pnode->next)
+        {
+            ppiece->head = ppiece->tail = NULL;
+        }
+        else
+        {
+            ppiece->head = pnode->next;
+        }
+        if (NULL != ppiece->free_data)
+        {
+            ppiece->free_data(pnode->data);
+        }
+        SAFE_FREE(pnode);
+    }
+    pbuf->freeze_read = 0;
+    buffer_unlock(pbuf);
+};
 
 #endif//BUFFER_H_

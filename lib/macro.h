@@ -27,7 +27,6 @@ do\
 #if defined(OS_WIN)
     #define PATH_SEPARATOR '\\'
     #define PATH_SEPARATORSTR "\\"
-    #define socklen_t int
     #define PATH_LENS MAX_PATH
     #define INVALID_SOCK INVALID_SOCKET
 #else
@@ -113,7 +112,7 @@ do\
     #define SHUT_RD   SD_RECEIVE
     #define SHUT_WR   SD_SEND
     #define SHUT_RDWR SD_BOTH
-    #define CLOSESOCKET closesocket    
+    #define SOCK_CLOSE closesocket    
     #define ERRNO GetLastError()
     static inline const char *_fmterror(DWORD error)
     {
@@ -164,7 +163,7 @@ do\
     #define FTIME ftime
     #define ACCESS access
     #define MKDIR(path) mkdir(path, S_IRUSR|S_IWUSR)
-    #define CLOSESOCKET close
+    #define SOCK_CLOSE close
     #define ERRNO errno
     #define ERRORSTR(errcode) strerror(errcode)
 #endif
@@ -221,12 +220,12 @@ do\
 #endif
 #define ATOMIC_GET(ptr) ATOMIC_ADD(ptr, 0)
 
-#define SAFE_CLOSESOCK(fd)\
+#define SAFE_CLOSE_SOCK(fd)\
 do\
 {\
     if (INVALID_SOCK != (fd))\
     {\
-        CLOSESOCKET(fd);\
+        SOCK_CLOSE(fd);\
         (fd) = INVALID_SOCK;\
     }\
 }while(0)

@@ -36,12 +36,12 @@ typedef struct logworker_ctx
     CONSOLE_SCREEN_BUFFER_INFO stcsbi;
 #endif
     char date[TIME_LENS];
-    char filename[PATH_LENS];
+    char lognam[PATH_LENS];
     char *path;
     struct loger_ctx *ploger;
 }logworker_ctx;
 struct loger_ctx g_logerctx;
-
+#define LOG_FOLDER  "logs"
 const char *_getlvstr(const LOG_LEVEL emlv)
 {
     switch (emlv)
@@ -66,15 +66,15 @@ static void _worker_init(struct logworker_ctx *pctx)
 {
     pctx->path = NULL;
     pctx->file = NULL;
-    ZERO(pctx->filename, sizeof(pctx->filename));
+    ZERO(pctx->lognam, sizeof(pctx->lognam));
 
     //创建文件夹
     char acpath[PATH_LENS];
     ASSERTAB(ERR_OK == getprocpath(acpath), "getpath failed.");
-    size_t ilens = strlen(acpath) + strlen(PATH_SEPARATORSTR) + strlen("logs") + 1;
+    size_t ilens = strlen(acpath) + strlen(PATH_SEPARATORSTR) + strlen(LOG_FOLDER) + 1;
     pctx->path = CALLOC(ilens, sizeof(char));
     ASSERTAB(NULL != pctx->path, ERRSTR_MEMORY);
-    SNPRINTF(pctx->path, ilens - 1, "%s%s%s", acpath, PATH_SEPARATORSTR, "logs");
+    SNPRINTF(pctx->path, ilens - 1, "%s%s%s", acpath, PATH_SEPARATORSTR, LOG_FOLDER);
     PRINTF("log path: %s.", pctx->path);
 
     if (ERR_OK != ACCESS(pctx->path, 0))
@@ -119,7 +119,7 @@ static inline int32_t _worker_getfile(struct logworker_ctx *pctx)
     }
     //判断日期是否更改，更改则更换log文件名
     nowtime("%Y%m%d", pctx->date);
-    if (0 != strcmp(pctx->date, pctx->filename))
+    if (0 != strcmp(pctx->date, pctx->lognam))
     {
         if (NULL != pctx->file)
         {
@@ -128,14 +128,14 @@ static inline int32_t _worker_getfile(struct logworker_ctx *pctx)
         }
 
         size_t ilens = strlen(pctx->date);
-        memcpy(pctx->filename, pctx->date, ilens);
-        pctx->filename[ilens] = '\0';
+        memcpy(pctx->lognam, pctx->date, ilens);
+        pctx->lognam[ilens] = '\0';
     }
     //打开文件
     if (NULL == pctx->file)
     {
         char actmp[PATH_LENS] = { 0 };
-        SNPRINTF(actmp, sizeof(actmp) - 1, "%s%s%s%s", pctx->path, PATH_SEPARATORSTR, pctx->filename, ".log");
+        SNPRINTF(actmp, sizeof(actmp) - 1, "%s%s%s%s", pctx->path, PATH_SEPARATORSTR, pctx->lognam, ".log");
         pctx->file = fopen(actmp, "a");
         if (NULL == pctx->file)
         {
@@ -152,10 +152,11 @@ static inline void _worker_writelog(struct logworker_ctx *pctx, struct loginfo_c
     (void)fwrite(pinfo->time, 1, strlen(pinfo->time), pctx->file);
     (void)fwrite(pinfo->plog, 1, strlen(pinfo->plog), pctx->file);
     (void)fwrite(pn, 1, strlen(pn), pctx->file);
+    (void)fflush(pctx->file);
 }
 static inline void _worker_printlog(struct logworker_ctx *pctx, struct loginfo_ctx *pinfo)
 {
-    if (0 == ATOMIC_GET(&pctx->ploger->print))
+    if (0 == pctx->ploger->print)
     {
         return;
     }
@@ -222,7 +223,7 @@ static void _loger(void *pparam, void *p2, void *p3)
     _worker_init(&stworker);
 
     void *pinfo;
-    while (0 == ATOMIC_GET(&stworker.ploger->stop))
+    while (0 == stworker.ploger->stop)
     {
         pinfo = chan_recv(&stworker.ploger->chan);
         if (NULL == pinfo)
@@ -255,18 +256,18 @@ void loger_init(struct loger_ctx *pctx)
 void loger_free(struct loger_ctx *pctx)
 {
     while (chan_size(&pctx->chan) > 0);
-    ATOMIC_SET(&pctx->stop, 1);
+    pctx->stop = 11;
     chan_close(&pctx->chan);
     thread_join(&pctx->thloger);
     chan_free(&pctx->chan);
 }
 void loger_setlv(struct loger_ctx *pctx, const LOG_LEVEL emlv)
 {
-    ATOMIC_SET(&pctx->lv, emlv);
+    pctx->lv = emlv;
 }
 void loger_setprint(struct loger_ctx *pctx, const int32_t iprint)
 {
-    ATOMIC_SET(&pctx->print, iprint);
+    pctx->print = iprint;
 }
 static inline void _nowmtime(char atime[TIME_LENS])
 {
@@ -280,7 +281,7 @@ static inline void _nowmtime(char atime[TIME_LENS])
 }
 void loger_log(struct loger_ctx *pctx, const LOG_LEVEL emlv, const char *pformat, ...)
 {
-    if (emlv > (int32_t)ATOMIC_GET(&pctx->lv))
+    if (emlv > pctx->lv)
     {
         return;
     }

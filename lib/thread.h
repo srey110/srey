@@ -12,8 +12,8 @@ typedef HANDLE pthread_t;
 #endif
 typedef struct thread_ctx
 {
-    volatile atomic_t threadid;
-    volatile atomic_t state;
+    uint32_t threadid;
+    int32_t state;
     pthread_t pthread;
     void *param1;
     void *param2;
@@ -39,12 +39,12 @@ static void *_funccb(void *parg)
 #endif
 {
     struct thread_ctx *pctx = (struct thread_ctx *)parg;
-    ATOMIC_SET(&pctx->threadid, (atomic_t)threadid());
-    ATOMIC_SET(&pctx->state, THREAD_RUNING);
+    pctx->threadid = threadid();
+    pctx->state = THREAD_RUNING;
 
     pctx->cb(pctx->param1, pctx->param2, pctx->param3);
 
-    ATOMIC_SET(&pctx->state, THREAD_STOP);
+    pctx->state = THREAD_STOP;
 #if defined(OS_WIN)
     return ERR_OK;
 #else
@@ -67,12 +67,13 @@ static inline void thread_init(struct thread_ctx *pctx)
 static inline void thread_creat(struct thread_ctx *pctx, void(*cb)(void*, void*, void*),
     void *pparam1, void *pparam2, void *pparam3)
 {
-    if (!ATOMIC_CAS(&pctx->state, THREAD_STOP, THREAD_WAITRUN))
+    if (THREAD_STOP != pctx->state)
     {
         PRINTF("%s", "thread not stop.");
         return;
     }
 
+    pctx->state = THREAD_WAITRUN;
     pctx->cb = cb;
     pctx->param1 = pparam1;
     pctx->param2 = pparam2;
@@ -91,14 +92,14 @@ static inline void thread_creat(struct thread_ctx *pctx, void(*cb)(void*, void*,
 */
 static inline void thread_waitstart(struct thread_ctx *pctx)
 {
-    while (THREAD_WAITRUN == ATOMIC_GET(&pctx->state));
+    while (THREAD_WAITRUN == pctx->state);
 };
 /*
 * \brief          等待线程结束
 */
 static inline void thread_join(struct thread_ctx *pctx)
 {
-    if (THREAD_STOP == ATOMIC_GET(&pctx->state))
+    if (THREAD_STOP == pctx->state)
     {
         return;
     }
@@ -113,7 +114,7 @@ static inline void thread_join(struct thread_ctx *pctx)
 */
 static inline uint32_t thread_id(struct thread_ctx *pctx)
 {
-    return (uint32_t)ATOMIC_GET(&pctx->threadid);
+    return pctx->threadid;
 };
 
 #endif//THREAD_H_

@@ -111,6 +111,7 @@ endif defined(__DragonFly__)
     #include <netinet/tcp.h>
     #include <arpa/inet.h>    
     #if defined(OS_LINUX) 
+        #include <sys/epoll.h>
     #elif defined(OS_AIX)
         #include <sys/systemcfg.h>
     #elif defined(OS_DARWIN)

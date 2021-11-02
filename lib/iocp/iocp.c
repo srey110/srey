@@ -42,7 +42,8 @@ static void _initexfunc(struct netev_ctx *pctx)
     pctx->acceptex = _getexfunc(sock, &accept_uid);
     pctx->connectex = _getexfunc(sock, &connect_uid);
     pctx->acceptaddrsex = _getexfunc(sock, &acceptaddrs_uid);
-    SAFE_CLOSESOCK(sock);
+    pctx->disconnectex = _getexfunc(sock, &disconnect_uid);
+    SOCK_CLOSE(sock);
 }
 void netev_init(struct netev_ctx *pctx)
 {

@@ -16,7 +16,7 @@ void event_init(struct event_ctx *pctx, const u_long ulaccuracy)
 void event_free(struct event_ctx *pctx)
 {
     netev_free(&pctx->netev);
-    ATOMIC_SET(&pctx->stop, 1);
+    pctx->stop = 1;
     thread_join(&pctx->thwot);
     chan_close(&pctx->chfree);    
     thread_join(&pctx->thfree); 
@@ -25,27 +25,35 @@ void event_free(struct event_ctx *pctx)
 }
 static void _delay_free(void *p1, void *p2, void *p3)
 {
-    void *ptmp;
+    struct ev_ctx *pev;
     struct sock_ctx *psock;
     struct ev_time_ctx *ptimeev;
     struct event_ctx *pctx = (struct event_ctx *)p1;
-    while (0 == ATOMIC_GET(&pctx->stop))
+    while (0 == pctx->stop)
     {
-        ptmp = chan_recv(&pctx->chfree);
-        if (NULL != ptmp)
+        pev = (struct ev_ctx *)chan_recv(&pctx->chfree);
+        if (NULL != pev)
         {
-            ptimeev = UPCAST(ptmp, struct ev_time_ctx, ev);
+            ptimeev = UPCAST(pev, struct ev_time_ctx, ev);
             psock = (struct sock_ctx *)ptimeev->data;
-            SAFE_FREE(ptimeev);
-            event_sock_free(pctx, psock);
-        }      
+            if (ERR_OK == _sock_can_free(psock))
+            {
+                _sock_free(psock);
+                SAFE_FREE(ptimeev);
+            }
+            else
+            {
+                ptimeev->expires = 10 + event_tick(pctx);
+                _wot_add(&pctx->wot, ptimeev);
+            }
+        }
     }
 }
 static void _wot_loop(void *p1, void *p2, void *p3)
 {
     struct event_ctx *pctx = (struct event_ctx *)p1;
     wot_init(&pctx->wot, event_tick(pctx));
-    while (0 == ATOMIC_GET(&pctx->stop))
+    while (0 == pctx->stop)
     {
         wot_run(&pctx->wot, event_tick(pctx));
     }

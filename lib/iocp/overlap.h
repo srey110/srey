@@ -13,6 +13,7 @@ typedef struct netev_ctx
     BOOL(WINAPI *acceptex)(SOCKET, SOCKET, PVOID, DWORD, DWORD, DWORD, LPDWORD, LPOVERLAPPED);
     BOOL(WINAPI *connectex)(SOCKET, const struct sockaddr *, int, PVOID, DWORD, LPDWORD, LPOVERLAPPED);
     void (WINAPI *acceptaddrsex)(PVOID, DWORD, DWORD, DWORD, LPSOCKADDR *, LPINT, LPSOCKADDR *, LPINT);
+    BOOL(WINAPI *disconnectex)(SOCKET, LPOVERLAPPED, DWORD, DWORD);
 }netev_ctx;
 typedef struct overlap_ctx
 {
@@ -22,14 +23,19 @@ typedef struct overlap_ctx
 }overlap_ctx;
 
 SOCKET netev_listener(struct netev_ctx *piocpctx, struct chan_ctx *pchan,
-    const uint16_t uchancnt, const char *phost, const uint16_t usport);
+    const uint32_t uichancnt, const char *phost, const uint16_t usport);
+int32_t netev_addsock(struct netev_ctx *piocpctx, SOCKET fd);
 SOCKET netev_connecter(struct netev_ctx *piocpctx, struct chan_ctx *pchan,
     const char *phost, const uint16_t usport);
-int32_t netev_addsock(struct netev_ctx *piocpctx, SOCKET fd);
+struct sock_ctx *netev_enable_rw(struct netev_ctx *piocpctx, SOCKET fd, 
+    struct chan_ctx *pchan, const int32_t ipostsendev);
 
-struct sock_ctx *netev_enable_rw(SOCKET fd, struct chan_ctx *pchan, const uint16_t upostsendev);
 void sock_change_chan(struct sock_ctx *psockctx, struct chan_ctx *pchan);
 struct buffer_ctx *sock_recvbuf(struct sock_ctx *psockctx);
+struct buffer_ctx *sock_sendbuf(struct sock_ctx *psockctx);
+SOCKET sock_handle(struct sock_ctx *psockctx);
+void sock_close(struct sock_ctx *psockctx);
+
 int32_t tcp_send(struct sock_ctx *psockctx, void *pdata, const size_t uilens);
 int32_t tcp_send_buf(struct sock_ctx *psockctx);
 int32_t udp_send(struct sock_ctx *psockctx, void *pdata, const size_t uilens,

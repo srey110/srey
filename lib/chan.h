@@ -7,8 +7,8 @@
 
 typedef struct chan_ctx
 {
-    uint16_t expand;
-    uint16_t closed;
+    int32_t expand;
+    int32_t closed;
     int32_t rwaiting;
     int32_t wwaiting;
     mutex_ctx mmutex;//读写信号锁
@@ -21,7 +21,7 @@ typedef struct chan_ctx
 * \param icapacity   队列容量
 * \param iexpandqu   是的能自动扩充， 0 否
 */
-static inline void chan_init(struct chan_ctx *pctx, const int32_t icapacity, const uint16_t iexpandqu)
+static inline void chan_init(struct chan_ctx *pctx, const int32_t icapacity, const int32_t iexpandqu)
 {
     ASSERTAB(icapacity > 0, "capacity must big than 0.");
     pctx->expand = iexpandqu;
@@ -43,14 +43,6 @@ static inline void chan_free(struct chan_ctx *pctx)
     cond_free(&pctx->wcond);
     queue_free(&pctx->queue);
 };
-static inline void chan_lock(struct chan_ctx *pctx)
-{
-    mutex_lock(&pctx->mmutex);
-};
-static inline void chan_unlock(struct chan_ctx *pctx)
-{
-    mutex_unlock(&pctx->mmutex);
-};
 /*
 * \brief  关闭channel，关闭后不能写入
 */
@@ -64,17 +56,6 @@ static inline void chan_close(struct chan_ctx *pctx)
         cond_broadcast(&pctx->wcond);
     }
     mutex_unlock(&pctx->mmutex);
-};
-/*
-* \brief          channel是否关闭
-* \return         0 未关闭
-*/
-static inline uint16_t chan_isclosed(struct chan_ctx *pctx)
-{
-    mutex_lock(&pctx->mmutex);
-    int32_t iclosed = pctx->closed;
-    mutex_unlock(&pctx->mmutex);
-    return iclosed;
 };
 static inline int32_t _chan_send(struct chan_ctx *pctx, void *pdata)
 {
@@ -132,7 +113,7 @@ static inline void *_chan_recv(struct chan_ctx *pctx)
 */
 static inline int32_t chan_send(struct chan_ctx *pctx, void *pdata)
 {
-    int irtn = ERR_FAILED;
+    int32_t irtn = ERR_FAILED;
     mutex_lock(&pctx->mmutex);
     if (0 == pctx->closed)
     {
@@ -143,7 +124,7 @@ static inline int32_t chan_send(struct chan_ctx *pctx, void *pdata)
 };
 static inline int32_t chan_trysend(struct chan_ctx *pctx, void *pdata)
 {
-    int irtn = ERR_FAILED;
+    int32_t irtn = ERR_FAILED;
     mutex_lock(&pctx->mmutex);
     if (0 == pctx->closed
         && queue_size(&pctx->queue) < queue_cap(&pctx->queue))
@@ -176,6 +157,14 @@ static inline void *chan_tryrecv(struct chan_ctx *pctx)
     mutex_unlock(&pctx->mmutex);
     return pdata;
 };
+static inline void chan_lock(struct chan_ctx *pctx)
+{
+    mutex_lock(&pctx->mmutex);
+};
+static inline void chan_unlock(struct chan_ctx *pctx)
+{
+    mutex_unlock(&pctx->mmutex);
+};
 /*
 * \brief          数据总数
 * \return         数据总数
@@ -186,6 +175,17 @@ static inline int32_t chan_size(struct chan_ctx *pctx)
     int32_t isize = queue_size(&pctx->queue);
     mutex_unlock(&pctx->mmutex);
     return isize;
+};
+/*
+* \brief          channel是否关闭
+* \return         0 未关闭
+*/
+static inline int32_t chan_closed(struct chan_ctx *pctx)
+{
+    mutex_lock(&pctx->mmutex);
+    int32_t iclosed = pctx->closed;
+    mutex_unlock(&pctx->mmutex);
+    return iclosed;
 };
 
 #endif//CHAN_H_

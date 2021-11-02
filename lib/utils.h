@@ -26,7 +26,7 @@ static inline int32_t bigendian()
 * \brief          cpu核数
 * \return         cpu核数
 */
-uint16_t procscnt();
+uint32_t procscnt();
 /*
 * \brief          判断是否为文件
 * \param pname    文件名

@@ -12,7 +12,7 @@
 typedef struct event_ctx
 {
     u_long accuracy;//计时器精度
-    volatile atomic_t stop;//停止标志
+    int32_t stop;//停止标志
     struct wot_ctx wot;//时间轮
     struct timer_ctx timer;//计时器
     struct chan_ctx chfree;//延迟释放
@@ -54,16 +54,17 @@ static inline void event_timeout(struct event_ctx *pctx,
 };
 /*
 * \brief           新建一监听
-* \param pchan     chan 接收EV_ACCEPT消息, 需要手动释放ev_ctx(ev_sock_ctx)
-* \param uchancnt  pchan 数量
+* \param pchan     chan 接收EV_ACCEPT消息, 接收到的socket通过event_addsock加进管理,
+ *                 需要手动释放ev_ctx(ev_sock_ctx)
+* \param uichancnt pchan 数量
 * \param phost     ip
 * \param usport    port
 * \return          INVALID_SOCK 失败
 */
 static inline SOCKET event_listener(struct event_ctx *pctx, struct chan_ctx *pchan,
-    const uint16_t uchancnt, const char *phost, const uint16_t usport)
+    const uint32_t uichancnt, const char *phost, const uint16_t usport)
 {
-    return netev_listener(&pctx->netev, pchan, uchancnt, phost, usport);
+    return netev_listener(&pctx->netev, pchan, uichancnt, phost, usport);
 };
 /*
 * \brief            新建一连接
@@ -78,7 +79,7 @@ static inline SOCKET event_connecter(struct event_ctx *pctx, struct chan_ctx *pc
     return netev_connecter(&pctx->netev, pchan, phost, usport);
 };
 /*
-* \brief            将已有SOCKET加进去,失败关闭fd句柄
+* \brief            将已有SOCKET加进去,失败关闭fd句柄, EV_ACCEPT 和自定义socket
 * \param fd         socket句柄
 * \return           ERR_OK 成功
 */
@@ -87,24 +88,22 @@ static inline int32_t event_addsock(struct event_ctx *pctx, SOCKET fd)
     return netev_addsock(&pctx->netev, fd);
 };
 /*
-* \brief              开始接收数据。在调用event_addsock成功或收到 EV_ACCEPT、EV_CONNECT消息后调用一次
+* \brief              开始接收数据。在调用event_addsock成功或收到EV_CONNECT消息后调用一次
 *                     失败关闭fd句柄
 * \param pchan        接收EV_RECV、EV_SEND、EV_CLOSE消息
-* \param upostsendev  0 不发送EV_SEND
+* \param ipostsendev  0 不发送EV_SEND
 * \return             sock_ctx
 */
-static inline struct sock_ctx *event_enable_rw(SOCKET fd, struct chan_ctx *pchan, const uint16_t upostsendev)
+static inline struct sock_ctx *event_enablerw(struct event_ctx *pctx, SOCKET fd, struct chan_ctx *pchan, const int32_t ipostsendev)
 {
-    return netev_enable_rw(fd, pchan, upostsendev);
+    return netev_enable_rw(&pctx->netev, fd, pchan, ipostsendev);
 };
 /*
-* \brief              开始接收数据。在调用event_addsock成功或收到 EV_ACCEPT、EV_CONNECT消息后调用一次
-*                     失败关闭fd句柄
-* \param pchan        接收EV_RECV、EV_SEND、EV_CLOSE消息
-* \param upostsendev  0 不发送EV_SEND
-* \return             sender_ctx
+* \brief              释放sock_ctx
+* \param pctx         event_ctx
+* \param psockctx     psockctx
 */
-static inline void event_sock_free(struct event_ctx *pctx, struct sock_ctx *psockctx)
+static inline void event_freesock(struct event_ctx *pctx, struct sock_ctx *psockctx)
 {
     if (ERR_OK == _sock_can_free(psockctx))
     {
@@ -114,6 +113,48 @@ static inline void event_sock_free(struct event_ctx *pctx, struct sock_ctx *psoc
     {
         event_timeout(pctx, &pctx->chfree, 10, psockctx);
     }
-}
+};
+/*
+* \brief              关闭socket
+* \param psockctx     sock_ctx
+*/
+static inline void event_closesock(struct sock_ctx *psockctx)
+{
+    sock_close(psockctx);
+};
+/*
+* \brief              更改接收数据的pchan
+* \param psockctx     event_enable_rw 返回值
+* \param pchan        chan_ctx
+*/
+static inline void event_changechan(struct sock_ctx *psockctx, struct chan_ctx *pchan)
+{
+    sock_change_chan(psockctx, pchan);
+};
+static inline struct buffer_ctx *event_recvbuf(struct sock_ctx *psockctx)
+{
+    return sock_recvbuf(psockctx);
+};
+static inline struct buffer_ctx *event_sendbuf(struct sock_ctx *psockctx)
+{
+    return sock_sendbuf(psockctx);
+};
+static inline SOCKET event_handle(struct sock_ctx *psockctx)
+{
+    return sock_handle(psockctx);
+};
+static inline int32_t event_send(struct sock_ctx *psockctx, void *pdata, const size_t uilens)
+{
+    return tcp_send(psockctx, pdata, uilens);
+};
+static inline int32_t event_send_buf(struct sock_ctx *psockctx)
+{
+    return tcp_send_buf(psockctx);
+};
+static inline int32_t event_sendto(struct sock_ctx *psockctx, void *pdata, const size_t uilens,
+    const char *pip, const uint16_t uport)
+{
+    return udp_send(psockctx, pdata, uilens, pip, uport);
+};
 
 #endif//EVENT_H_

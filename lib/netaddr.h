@@ -81,15 +81,15 @@ static inline struct sockaddr *netaddr_addr(struct netaddr_ctx *pctx)
 * \brief          地址长度
 * \return         地址长度
 */
-static inline socklen_t netaddr_size(struct netaddr_ctx *pctx)
+static inline int32_t netaddr_size(struct netaddr_ctx *pctx)
 {
     if (AF_INET == pctx->type)
     {
-        return (socklen_t)sizeof(pctx->ipv4);
+        return (int32_t)sizeof(pctx->ipv4);
     }
     else
     {
-        return (socklen_t)sizeof(pctx->ipv6);
+        return (int32_t)sizeof(pctx->ipv6);
     }
 };
 /*
@@ -137,7 +137,7 @@ static inline uint16_t netaddr_port(struct netaddr_ctx *pctx)
 /*
 * \return         AF_INET or AF_INET6;
 */
-static inline uint16_t netaddr_family(struct netaddr_ctx *pctx)
+static inline int32_t netaddr_family(struct netaddr_ctx *pctx)
 {
     return pctx->type;
 };

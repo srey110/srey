@@ -15,9 +15,9 @@ typedef enum LOG_LEVEL
 }LOG_LEVEL;
 struct loger_ctx
 {
-    volatile atomic_t stop;
-    volatile atomic_t lv;
-    volatile atomic_t print;
+    int32_t stop;
+    int32_t lv;
+    int32_t print;
     struct chan_ctx chan;
     struct thread_ctx thloger;    
 }loger_ctx;

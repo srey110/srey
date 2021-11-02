@@ -98,7 +98,7 @@ int32_t netaddr_remoteaddr(struct netaddr_ctx *pctx, SOCKET fd)
     if (AF_INET == ifamily)
     {
         struct sockaddr_in addr = { 0 };
-        socklen_t isocklens = (socklen_t)sizeof(struct sockaddr_in);
+        int32_t isocklens = (int32_t)sizeof(struct sockaddr_in);
         if (ERR_OK != getpeername(fd, (struct sockaddr *)&addr, &isocklens))
         {
             return ERRNO;
@@ -108,7 +108,7 @@ int32_t netaddr_remoteaddr(struct netaddr_ctx *pctx, SOCKET fd)
     else
     {
         struct sockaddr_in6 addr = { 0 };
-        socklen_t isocklens = (socklen_t)sizeof(struct sockaddr_in6);
+        int32_t isocklens = (int32_t)sizeof(struct sockaddr_in6);
         if (ERR_OK != getpeername(fd, (struct sockaddr *)&addr, &isocklens))
         {
             return ERRNO;
@@ -133,7 +133,7 @@ int32_t netaddr_localaddr(struct netaddr_ctx *pctx, SOCKET fd)
     if (AF_INET == ifamily)
     {
         struct sockaddr_in addr = { 0 };
-        socklen_t isocklens = (socklen_t)sizeof(struct sockaddr_in);
+        int32_t isocklens = (int32_t)sizeof(struct sockaddr_in);
         if (ERR_OK != getsockname(fd, (struct sockaddr *)&addr, &isocklens))
         {
             return ERRNO;
@@ -143,7 +143,7 @@ int32_t netaddr_localaddr(struct netaddr_ctx *pctx, SOCKET fd)
     else
     {
         struct sockaddr_in6 addr = { 0 };
-        socklen_t isocklens = (socklen_t)sizeof(struct sockaddr_in6);
+        int32_t isocklens = (int32_t)sizeof(struct sockaddr_in6);
         if (ERR_OK != getsockname(fd, (struct sockaddr *)&addr, &isocklens))
         {
             return ERRNO;

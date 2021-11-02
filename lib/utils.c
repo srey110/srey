@@ -2,15 +2,15 @@
 #include "md5/md5.h"
 #include "sha1/sha1.h"
 
-uint16_t procscnt()
+uint32_t procscnt()
 {
 #if defined(OS_WIN)
 	SYSTEM_INFO stinfo;
 	GetSystemInfo(&stinfo);
 
-	return (uint16_t)stinfo.dwNumberOfProcessors;
+	return (uint32_t)stinfo.dwNumberOfProcessors;
 #else
-	return (uint16_t)sysconf(_SC_NPROCESSORS_ONLN);
+	return (uint32_t)sysconf(_SC_NPROCESSORS_ONLN);
 #endif
 }
 int32_t isfile(const char *pname)

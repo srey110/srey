@@ -87,21 +87,24 @@ static inline void _insert(struct twslot_ctx *pslot, struct ev_time_ctx *pnode)
 * \param  uitick       超时时间  多少个tick
 * \param  pdata        用户数据
 */
+static inline void _wot_add(struct wot_ctx *pctx, struct ev_time_ctx *pnode)
+{
+    pnode->next = NULL;
+    mutex_lock(&pctx->lockeq);
+    _insert(&pctx->reqadd, pnode);
+    mutex_unlock(&pctx->lockeq);
+}
 static inline void wot_add(struct wot_ctx *pctx, struct chan_ctx *pchan,
     const u_long ulcurtick, const uint32_t uitick, const void *pdata)
 {
     struct ev_time_ctx *pnode = (struct ev_time_ctx *)MALLOC(sizeof(struct ev_time_ctx));
     ASSERTAB(NULL != pnode, ERRSTR_MEMORY);
-    pnode->ev.code = ERR_OK;
+    pnode->ev.result = ERR_OK;
     pnode->ev.evtype = EV_TIME;
     pnode->chan = pchan;
     pnode->data = (void*)pdata;
     pnode->expires = ulcurtick + uitick;
-    pnode->next = NULL;
-
-    mutex_lock(&pctx->lockeq);
-    _insert(&pctx->reqadd, pnode);
-    mutex_unlock(&pctx->lockeq);
+    _wot_add(pctx, pnode);
 };
 static inline struct twslot_ctx *_getslot(struct wot_ctx *pctx, struct ev_time_ctx *pnode)
 {
@@ -180,7 +183,6 @@ static inline void _run(struct wot_ctx *pctx)
     {
         pnext = pnode->next;
         pnode->next = NULL;
-        //将超时信息发出去,发送出去后pnode有可能已经被释放，所以先取的next
         if (ERR_OK != chan_trysend(pnode->chan, (void*)&pnode->ev))
         {
             LOG_FATAL("%s", "time wheel chan send failed.");
