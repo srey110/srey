@@ -314,8 +314,7 @@ static inline void _tcp_close(struct overlap_recv_ctx *precvol)
     {
         struct ev_sock_ctx *pev = ev_sock_close(precvol->ol.sock,
             precvol->sockctx, precvol->sockctx->socktype);
-        struct chan_ctx *pchan = _get_rsc_chan(precvol->sockctx);
-        int32_t irtn = chan_send(pchan, &pev->ev);
+        int32_t irtn = chan_send(_get_rsc_chan(precvol->sockctx), &pev->ev);
         mutex_unlock(&precvol->sockctx->lock_postsc);
         if (ERR_OK != irtn)
         {
@@ -399,8 +398,7 @@ static inline void _udp_close(struct overlap_recv_from_ctx *precvfol)
     {
         struct ev_sock_ctx *pev = ev_sock_close(precvfol->ol.sock,
             precvfol->sockctx, precvfol->sockctx->socktype);
-        struct chan_ctx *pchan = _get_rsc_chan(precvfol->sockctx);
-        int32_t irtn = chan_send(pchan, &pev->ev);
+        int32_t irtn = chan_send(_get_rsc_chan(precvfol->sockctx), &pev->ev);
         mutex_unlock(&precvfol->sockctx->lock_postsc);
         if (ERR_OK != irtn)
         {
@@ -447,8 +445,7 @@ static inline void _on_recv_from(struct netev_ctx *piocpctx,
     {
         pev->port = atoi(acport);
     }
-    struct chan_ctx *pchan = _get_rsc_chan(precvfol->sockctx);
-    if (ERR_OK != chan_send(pchan, &pev->ev))
+    if (ERR_OK != chan_send(_get_rsc_chan(precvfol->sockctx), &pev->ev))
     {
         LOG_ERROR("%s", "post recv event failed.");
         SAFE_FREE(pev);
@@ -515,8 +512,7 @@ static inline void _on_send(struct netev_ctx *piocpctx,
         {
             struct ev_sock_ctx *pev = ev_sock_send(psendol->ol.sock, (int32_t)uibyte,
                 psendol->sockctx, psendol->sockctx->socktype);
-            struct chan_ctx *pchan = _get_rsc_chan(psendol->sockctx);
-            if (ERR_OK != chan_send(pchan, &pev->ev))
+            if (ERR_OK != chan_send(_get_rsc_chan(psendol->sockctx), &pev->ev))
             {
                 LOG_ERROR("%s", "post send event failed.");
                 SAFE_FREE(pev);
@@ -588,8 +584,7 @@ static inline void _on_sendto(struct netev_ctx *piocpctx,
         {
             struct ev_sock_ctx *pev = ev_sock_send(psendtool->ol.sock, (int32_t)uibyte,
                 psendtool->sockctx, psendtool->sockctx->socktype);
-            struct chan_ctx *pchan = _get_rsc_chan(psendtool->sockctx);
-            if (ERR_OK != chan_send(pchan, &pev->ev))
+            if (ERR_OK != chan_send(_get_rsc_chan(psendtool->sockctx), &pev->ev))
             {
                 LOG_ERROR("%s", "post send event failed.");
                 SAFE_FREE(pev);
@@ -955,7 +950,7 @@ static inline struct sock_ctx *_sockctx_init(SOCKET sock, int32_t isocktyep)
     return psockctx;
 }
 void _sock_free(struct sock_ctx *psockctx)
-{
+{    
     if (SOCK_DGRAM == psockctx->socktype)
     {
         struct overlap_sendto_ctx *psendtool = (struct overlap_sendto_ctx *)psockctx->overlap;
