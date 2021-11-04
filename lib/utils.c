@@ -373,6 +373,56 @@ int32_t b64decode(const char *pval, const size_t ilens, char *pout)
 
     return (int32_t)j;
 }
+char *xorencode(const char ackey[4], const size_t uiround, char *pbuf, const size_t uilens)
+{
+    for (size_t i = 0; i < uiround; i++)
+    {
+        pbuf[0] = ((pbuf[0] + ackey[1]) ^ ackey[2]) ^ ackey[3];
+        for (size_t j = 1; j < uilens; j++)
+        {
+            pbuf[j] = (pbuf[j - 1] + pbuf[j]) ^ ackey[0];
+        }
+    }
+    return pbuf;
+}
+char *xordecode(const char ackey[4], const size_t uiround, char *pbuf, const size_t uilens)
+{
+    for (size_t i = 0; i < uiround; i++)
+    {
+        for (size_t j = uilens - 1; j > 0; j--)
+        {
+            pbuf[j] = (pbuf[j] ^ ackey[0]) - pbuf[j - 1];
+        }
+        pbuf[0] = ((pbuf[0] ^ ackey[3]) ^ ackey[2]) - ackey[1];
+    }
+    return pbuf;
+}
+size_t hash(const char *pfirst, size_t uilen)
+{
+    size_t uirtn = 0;
+    for (; uilen > 0; --uilen)
+    {
+        uirtn = (uirtn * 131) + *pfirst++;
+    }
+    return uirtn;
+}
+size_t fnv1a_hash(const char *pfirst, size_t uilen)
+{
+#if defined(ARCH_X64)
+    #define OFFSET_BASIS 14695981039346656037ULL
+    #define PRIME 1099511628211ULL
+#else
+    #define OFFSET_BASIS 2166136261UL
+    #define PRIME 16777619UL
+#endif
+    size_t ulrtn = OFFSET_BASIS;
+    for (; uilen > 0; --uilen)
+    {
+        ulrtn ^= (size_t)*pfirst++;
+        ulrtn *= PRIME;
+    }
+    return ulrtn;
+}
 char *strtoupper(char *pval)
 {
     char* ptmp = pval;

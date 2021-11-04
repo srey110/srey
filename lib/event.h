@@ -19,7 +19,7 @@ typedef struct event_ctx
 }event_ctx;
 /*
 * \brief             初始化
-* \param ulaccuracy  时间精度
+* \param ulaccuracy  时间精度 0 默认 10毫秒
 */
 void event_init(struct event_ctx *pctx, const u_long ulaccuracy);
 /*
@@ -108,7 +108,7 @@ static inline void event_freesock(struct event_ctx *pctx, struct sock_ctx *psock
     }
     else
     {
-        event_timeout(pctx, &pctx->chfree, 10, psockctx);
+        event_timeout(pctx, &pctx->chfree, 5, psockctx);
     }
 };
 /*
@@ -142,16 +142,11 @@ static inline SOCKET event_handle(struct sock_ctx *psockctx)
 };
 static inline int32_t event_send(struct sock_ctx *psockctx, void *pdata, const size_t uilens)
 {
-    return tcp_send(psockctx, pdata, uilens);
+    return sock_send(psockctx, pdata, uilens);
 };
 static inline int32_t event_send_buf(struct sock_ctx *psockctx)
 {
-    return tcp_send_buf(psockctx);
-};
-static inline int32_t event_sendto(struct sock_ctx *psockctx, void *pdata, const size_t uilens,
-    const char *pip, const uint16_t uport)
-{
-    return udp_send(psockctx, pdata, uilens, pip, uport);
+    return sock_send_buf(psockctx);
 };
 
 #endif//EVENT_H_

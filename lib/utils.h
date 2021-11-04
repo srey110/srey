@@ -174,6 +174,14 @@ int32_t b64encode(const char *pval, const size_t ilens, char *pout);
 * \return         解码长度
 */
 int32_t b64decode(const char *pval, const size_t ilens, char *pout);
+char *xorencode(const char ackey[4], const size_t uiround, char *pbuf, const size_t uilens);
+char *xordecode(const char ackey[4], const size_t uiround, char *pbuf, const size_t uilens);
+/*
+* \brief          hash
+* \return         hash
+*/
+size_t hash(const char *pfirst, size_t uilen);
+size_t fnv1a_hash(const char *pfirst, size_t uilen);
 /*
 * \brief          字符串转大写
 * \param pval     待转换的字符串

@@ -127,7 +127,6 @@ static void _icop_loop(void *p1, void *p2, void *p3)
         {
             continue;
         }
-
         struct overlap_ctx *polctx = UPCAST(poverlap, struct overlap_ctx, overlapped);
         polctx->overlap_cb(pctx, polctx, (uint32_t)dbytes, ierr);
     }

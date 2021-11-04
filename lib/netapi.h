@@ -21,10 +21,8 @@ struct buffer_ctx *sock_sendbuf(struct sock_ctx *psockctx);
 SOCKET sock_handle(struct sock_ctx *psockctx);
 void sock_close(struct sock_ctx *psockctx);
 
-int32_t tcp_send(struct sock_ctx *psockctx, void *pdata, const size_t uilens);
-int32_t tcp_send_buf(struct sock_ctx *psockctx);
-int32_t udp_send(struct sock_ctx *psockctx, void *pdata, const size_t uilens,
-    const char *pip, const uint16_t uport);
+int32_t sock_send(struct sock_ctx *psockctx, void *pdata, const size_t uilens);
+int32_t sock_send_buf(struct sock_ctx *psockctx);
 
 int32_t _sock_can_free(struct sock_ctx *psockctx);
 void _sock_free(struct sock_ctx *psockctx);

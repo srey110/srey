@@ -2,8 +2,7 @@
 
 void event_init(struct event_ctx *pctx, const u_long ulaccuracy)
 {
-    ASSERTAB(ulaccuracy > 0, "param error.");
-    pctx->accuracy = ulaccuracy;
+    pctx->accuracy = (0 == ulaccuracy ? 1000 * 1000 * 10 : ulaccuracy);
     pctx->stop = 0;
     srand((uint32_t)time(NULL));
 
@@ -43,7 +42,7 @@ static void _delay_free(void *p1, void *p2, void *p3)
             }
             else
             {
-                ptimeev->expires = 10 + event_tick(pctx);
+                ptimeev->expires = 5 + event_tick(pctx);
                 _wot_add(&pctx->wot, ptimeev);
             }
         }

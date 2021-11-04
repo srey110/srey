@@ -8,7 +8,6 @@ typedef struct overlap_ctx
 {
     OVERLAPPED overlapped;
     void(*overlap_cb)(struct netev_ctx *piocpctx, struct overlap_ctx *polctx, const uint32_t uibyte, const int32_t ierr);
-    SOCKET sock;
 }overlap_ctx;
 typedef struct netev_ctx
 {
