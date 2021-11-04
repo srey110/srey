@@ -14,6 +14,8 @@ volatile uint32_t uirecvsize = 0;
 volatile uint32_t uisendsize = 0;
 volatile uint32_t uilinknum = 0;
 volatile uint32_t uistop = 0;
+volatile uint32_t uiudprecvsize = 0;
+volatile uint32_t uiudpsendsize = 0;
 volatile uint32_t uitcpclose = 0;
 const int32_t ipostsendev = 1;
 size_t _fill_data(char *acpack, size_t ilens)
@@ -39,9 +41,10 @@ void _timeout_cb(void *p1, void *p2, void *p3)
         if (NULL != pev)
         {
             pnode = UPCAST(pev, struct ev_time_ctx, ev);
-            PRINTF("time out diff:%d,link count %d recv pack %d send pack %d close time %d",
-                (int32_t)(event_tick(&sv) - pnode->expires), ATOMIC_GET(&uilinknum), 
-                ATOMIC_GET(&uirecvsize), ATOMIC_GET(&uisendsize), ATOMIC_GET(&uitcpclose));
+            PRINTF("time out diff:%d,link count %d recv pack %d send pack %d udp recv %d udp send %d  close time %d",
+                (int32_t)(event_tick(&sv) - pnode->expires),
+                ATOMIC_GET(&uilinknum), ATOMIC_GET(&uirecvsize), ATOMIC_GET(&uisendsize),
+                ATOMIC_GET(&uiudprecvsize), ATOMIC_GET(&uiudpsendsize), ATOMIC_GET(&uitcpclose));
             SAFE_FREE(pnode);
 
             event_timeout(&sv, pchan_timeout, 200, NULL);
@@ -129,19 +132,35 @@ void _recv_cb(void *p1, void *p2, void *p3)
                             isendsize = ilens;
                             ilens = 0;
                         }
-                        ATOMIC_ADD(&uirecvsize, 1);
-                        event_send(psockev->sockctx, acpack, isendsize);
-                        //send(psockev->sock, acpack, isendsize, 0);
-                        //if (0 == icloseonece)
-                        //{
-                        //    //PRINTF("event_closesock %d", event_handle(psockev->sockctx));
-                        //    event_closesock(psockev->sockctx);
-                        //    icloseonece = 1;
-                        //}
+                        if (event_socktype(psockev->sockctx) == SOCK_STREAM)
+                        {
+                            ATOMIC_ADD(&uirecvsize, 1);
+                            event_send(psockev->sockctx, acpack, isendsize);
+                            //send(psockev->sock, acpack, isendsize, 0);
+                            if (rand() % 10 == 0)
+                            {
+                                event_closesock(psockev->sockctx);
+                            }
+                        }
+                        else
+                        {
+                            ATOMIC_ADD(&uiudprecvsize, 1);
+                            event_sendto(psockev->sockctx, acpack, isendsize, psockev->ip, psockev->port);
+                            //netaddr_sethost(&addr, psockev->ip, psockev->port);
+                            //sendto(psockev->sock, acpack, isendsize, 0, netaddr_addr(&addr), netaddr_size(&addr));
+                        }
                     }
                     break;
                 case EV_SEND: 
-                    ATOMIC_ADD(&uisendsize, 1);
+                    if (event_socktype(psockev->sockctx) == SOCK_STREAM)
+                    {
+                        ATOMIC_ADD(&uisendsize, 1);
+                    }
+                    else
+                    {
+                        ATOMIC_ADD(&uiudpsendsize, 1);
+
+                    }
                     break;
                 case EV_CLOSE:
                     ATOMIC_ADD(&uilinknum, -1);
@@ -152,6 +171,27 @@ void _recv_cb(void *p1, void *p2, void *p3)
             SAFE_FREE(psockev);
         }
     }
+}
+SOCKET _creat_udp_sock(const char *phost, uint16_t usport)
+{
+    struct netaddr_ctx addr;
+    if (ERR_OK != netaddr_sethost(&addr, phost, usport))
+    {
+        return INVALID_SOCK;
+    }
+    SOCKET fd = socket(netaddr_family(&addr), SOCK_DGRAM, 0);
+    if (INVALID_SOCK == fd)
+    {
+        return INVALID_SOCK;
+    }
+    sockraddr(fd);
+    if (ERR_OK != bind(fd, netaddr_addr(&addr), netaddr_size(&addr)))
+    {
+        SOCK_CLOSE(fd);
+        return INVALID_SOCK;
+    }
+
+    return fd;
 }
 int main(int argc, char *argv[])
 {
@@ -204,15 +244,28 @@ int main(int argc, char *argv[])
 
     size_t uicounttime = 0;
     while (0 == ATOMIC_GET(&uistop))
-    {
-        uicounttime += 100;
-        MSLEEP(100);
+    {        
+        SOCKET udpfd = _creat_udp_sock(pudphost, usudpport);
+        if (INVALID_SOCK != udpfd)
+        {
+            if (ERR_OK == event_addsock(&sv, udpfd))
+            {
+                struct sock_ctx *pudpctx = event_enablerw(&sv, udpfd, &pchan_recv[rand() % usthreadnum], ipostsendev);
+                ATOMIC_ADD(&uilinknum, 1);
+                if (NULL != pudpctx)
+                {
+                    MSLEEP(1000 * 5);
+                    sock_close(pudpctx);
+                }
+            }            
+        }
+        uicounttime += 200;
+        MSLEEP(200);
         /*if (uicounttime >= 10000)
         {
             break;
         }*/
-    }
-    
+    }    
     SOCK_CLOSE(sock_connecter);
     SOCK_CLOSE(sock_listener);
     MSLEEP(1000 * 1);

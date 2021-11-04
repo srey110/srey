@@ -156,13 +156,13 @@ SOCKET _socklsn(const char *pip, const uint16_t usport, const int32_t ibacklog)
     if (ERR_OK != bind(fd, netaddr_addr(&addr), netaddr_size(&addr)))
     {
         PRINTF("bind(%d, ...) failed. %s", (int32_t)fd, ERRORSTR(ERRNO));
-        SAFE_CLOSE_SOCK(fd);
+        SOCK_CLOSE(fd);
         return INVALID_SOCK;
     }
     if (ERR_OK != listen(fd, ibacklog))
     {
         PRINTF("listen(%d, %d) failed. %s", (int32_t)fd, ibacklog, ERRORSTR(ERRNO));
-        SAFE_CLOSE_SOCK(fd);
+        SOCK_CLOSE(fd);
         return INVALID_SOCK;
     }
 
@@ -185,7 +185,7 @@ SOCKET _sockcnt(const char *ip, const uint16_t port)
     if (ERR_OK != connect(fd, netaddr_addr(&addr), netaddr_size(&addr)))
     {
         PRINTF("connect(%d, ...) failed. %s", (int32_t)fd, ERRORSTR(ERRNO));
-        SAFE_CLOSE_SOCK(fd);
+        SOCK_CLOSE(fd);
         return INVALID_SOCK;
     }
 
@@ -202,20 +202,20 @@ int32_t sockpair(SOCKET acSock[2])
     struct netaddr_ctx addr;
     if (ERR_OK != netaddr_localaddr(&addr, fdlsn))
     {
-        SAFE_CLOSE_SOCK(fdlsn);
+        SOCK_CLOSE(fdlsn);
         return ERR_FAILED;
     }
     char acip[IP_LENS];
     if (ERR_OK != netaddr_ip(&addr, acip))
     {
-        SAFE_CLOSE_SOCK(fdlsn);
+        SOCK_CLOSE(fdlsn);
         return ERR_FAILED;
     }
 
     SOCKET fdcn = _sockcnt(acip, netaddr_port(&addr));
     if (INVALID_SOCK == fdcn)
     {
-        SAFE_CLOSE_SOCK(fdlsn);
+        SOCK_CLOSE(fdlsn);
         return ERR_FAILED;
     }
 
@@ -225,15 +225,15 @@ int32_t sockpair(SOCKET acSock[2])
     if (INVALID_SOCK == fdacp)
     {
         PRINTF("accept(%d, ...) failed. %s", (int32_t)fdlsn, ERRORSTR(ERRNO));
-        SAFE_CLOSE_SOCK(fdlsn);
-        SAFE_CLOSE_SOCK(fdcn);
+        SOCK_CLOSE(fdlsn);
+        SOCK_CLOSE(fdcn);
         return ERR_FAILED;
     }
-    SAFE_CLOSE_SOCK(fdlsn);
+    SOCK_CLOSE(fdlsn);
     if (ERR_OK != netaddr_localaddr(&addr, fdcn))
     {
-        SAFE_CLOSE_SOCK(fdacp);
-        SAFE_CLOSE_SOCK(fdcn);
+        SOCK_CLOSE(fdacp);
+        SOCK_CLOSE(fdcn);
         return ERR_FAILED;
     }
     struct sockaddr_in *connect_addr = (struct sockaddr_in*)netaddr_addr(&addr);
@@ -241,8 +241,8 @@ int32_t sockpair(SOCKET acSock[2])
         || listen_addr.sin_addr.s_addr != connect_addr->sin_addr.s_addr
         || listen_addr.sin_port != connect_addr->sin_port)
     {
-        SAFE_CLOSE_SOCK(fdacp);
-        SAFE_CLOSE_SOCK(fdcn);
+        SOCK_CLOSE(fdacp);
+        SOCK_CLOSE(fdcn);
         return ERR_FAILED;
     }
 

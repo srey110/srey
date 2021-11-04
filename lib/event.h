@@ -140,6 +140,10 @@ static inline SOCKET event_handle(struct sock_ctx *psockctx)
 {
     return sock_handle(psockctx);
 };
+static inline int32_t event_socktype(struct sock_ctx *psockctx)
+{
+    return sock_type(psockctx);
+};
 static inline int32_t event_send(struct sock_ctx *psockctx, void *pdata, const size_t uilens)
 {
     return sock_send(psockctx, pdata, uilens);
@@ -147,6 +151,11 @@ static inline int32_t event_send(struct sock_ctx *psockctx, void *pdata, const s
 static inline int32_t event_send_buf(struct sock_ctx *psockctx)
 {
     return sock_send_buf(psockctx);
+};
+static inline int32_t event_sendto(struct sock_ctx *psockctx, void *pdata, const size_t uilens,
+    const char *pip, const uint16_t uport)
+{
+    return sock_sendto(psockctx, pdata, uilens, pip, uport);
 };
 
 #endif//EVENT_H_

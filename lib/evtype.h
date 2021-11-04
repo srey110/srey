@@ -25,8 +25,10 @@ typedef struct ev_time_ctx
 typedef struct ev_sock_ctx
 {
     struct ev_ctx ev;
+    uint16_t port;
     SOCKET sock;
     struct sock_ctx *sockctx;
+    char ip[IP_LENS];
 }ev_sock_ctx;
 static inline struct ev_sock_ctx *ev_sock_accept(SOCKET sock)
 {
