@@ -50,20 +50,23 @@ typedef struct overlap_conn_ctx
     DWORD bytes;
     SOCKET sock;
 }overlap_conn_ctx;
-
 typedef struct overlap_recv_ctx
 {
     struct overlap_ctx ol;//overlapped
+    struct overlap_tcp_ctx *tcpctx;
     uint32_t iovcnt;
     DWORD bytes;
     DWORD flag;
+    struct buffer_ctx recvbuf;
     IOV_TYPE wsabuf[MAX_RECV_IOV_COUNT];
 }overlap_recv_ctx;
 typedef struct overlap_send_ctx
 {
     struct overlap_ctx ol;//overlapped
+    struct overlap_tcp_ctx *tcpctx;
     uint32_t iovcnt;
     DWORD bytes;
+    struct buffer_ctx sendbuf;
     IOV_TYPE wsabuf[MAX_SEND_IOV_COUNT];
 }overlap_send_ctx;
 typedef struct sock_ctx
@@ -77,10 +80,8 @@ typedef struct sock_ctx
     struct chan_ctx *chan;//EV_CLOSE  EV_RECV  EV_SEND
     struct netev_ctx *netev;
     SOCKET sock;
-    mutex_ctx lock_changech;//更改chan时   
-    mutex_ctx lock_postsc;//EV_CLOSE投递后不再投递EV_SEND 
-    struct buffer_ctx recvbuf;
-    struct buffer_ctx sendbuf;
+    mutex_ctx lock_changech;//更改chan时
+    mutex_ctx lock_post;//EV_CLOSE投递后不再投递    
 }sock_ctx;
 typedef struct overlap_tcp_ctx
 {
@@ -88,31 +89,31 @@ typedef struct overlap_tcp_ctx
     struct overlap_recv_ctx recvol;
     struct overlap_send_ctx sendol;
 }overlap_tcp_ctx;
-
 typedef struct overlap_recv_from_ctx
 {
     struct overlap_ctx ol;//overlapped
+    struct overlap_udp_ctx *udpctx;
     int32_t addrlen;
     uint32_t iovcnt;
     DWORD bytes;
     DWORD flag;
+    struct buffer_ctx recvbuf;
     IOV_TYPE wsabuf[MAX_RECV_FROM_IOV_COUNT];
     struct sockaddr_storage rmtaddr;//存储数据来源IP地址    
 }overlap_recv_from_ctx;
-typedef struct overlap_sendto_ctx
-{
-    struct overlap_ctx ol;//overlapped    
-    uint32_t iovcnt;
-    DWORD bytes;
-    struct piece_iov_ctx piece;
-    IOV_TYPE wsabuf[MAX_SENDTO_IOV_COUNT];
-}overlap_sendto_ctx;
 typedef struct overlap_udp_ctx
 {
     struct sock_ctx sockctx;
     struct overlap_recv_from_ctx recvfol;
-    struct overlap_sendto_ctx sendtool;
 }overlap_udp_ctx;
+typedef struct overlap_sendto_ctx
+{
+    struct overlap_ctx ol;//overlapped  
+    struct overlap_udp_ctx *udpctx;
+    DWORD bytes;
+    IOV_TYPE wsabuf;
+    mutex_ctx lock_send;
+}overlap_sendto_ctx;
 
 static inline int32_t _post_acpcon_ev(struct chan_ctx *pchan, const uint32_t uicnt, struct ev_ctx *pev)
 {
@@ -151,7 +152,7 @@ static inline void _check_free_listener(struct listener_ctx *plistener)
         LOG_WARN("free listener %d.", (int32_t)plistener->sock);
         SOCK_CLOSE(plistener->sock);
         mutex_free(&plistener->mutex);
-        SAFE_FREE(plistener);
+        FREE(plistener);
     }
 }
 static inline int32_t _post_accept(struct netev_ctx *piocpctx,
@@ -187,6 +188,7 @@ static inline int32_t _post_accept(struct netev_ctx *piocpctx,
             return irtn;
         }
     }
+
     return ERR_OK;
 }
 static inline void _on_accept(struct netev_ctx *piocpctx, 
@@ -206,6 +208,7 @@ static inline void _on_accept(struct netev_ctx *piocpctx,
         SOCK_CLOSE(sock);
         return;
     }
+
     irtn = setsockopt(sock, SOL_SOCKET, SO_UPDATE_ACCEPT_CONTEXT,
         (char *)&pacceptol->listener->sock, sizeof(&pacceptol->listener->sock));
     if (irtn < ERR_OK)
@@ -221,7 +224,7 @@ static inline void _on_accept(struct netev_ctx *piocpctx,
         pacceptol->listener->chancnt, &pev->ev))
     {
         LOG_ERROR("%s", "post accept event failed.");
-        SAFE_FREE(pev);
+        FREE(pev);
         SOCK_CLOSE(sock);
     }
 }
@@ -239,15 +242,15 @@ static inline void _on_connect(struct netev_ctx *piocpctx,
     if (ERR_OK != _post_acpcon_ev(pconnol->chan, 1, &pev->ev))
     {
         LOG_ERROR("%s", "post accept event failed.");
-        SAFE_FREE(pev);
+        FREE(pev);
         SAFE_CLOSE_SOCK(sock);
     }
-    SAFE_FREE(pconnol);
+    FREE(pconnol);
 }
 static inline void _on_disconnectex(struct netev_ctx *piocpctx,
     struct overlap_ctx *polctx, const uint32_t uibyte, const int32_t ierr)
 {
-    SAFE_FREE(polctx);
+    FREE(polctx);
 }
 void sock_close(struct sock_ctx *psockctx)
 {
@@ -255,12 +258,13 @@ void sock_close(struct sock_ctx *psockctx)
     {
         return;
     }
-    //有问题
+
     if (SOCK_DGRAM == psockctx->socktype)
     {
         SOCK_CLOSE(psockctx->sock);
         return;
     }
+
     struct overlap_ctx *pdisconol =
         (struct overlap_ctx *)MALLOC(sizeof(struct overlap_ctx));
     if (NULL == pdisconol)
@@ -269,6 +273,7 @@ void sock_close(struct sock_ctx *psockctx)
         SOCK_CLOSE(psockctx->sock);
         return;
     }
+
     ZERO(&pdisconol->overlapped, sizeof(pdisconol->overlapped));
     pdisconol->overlap_cb = _on_disconnectex;
     //对端会收到0字节
@@ -278,7 +283,7 @@ void sock_close(struct sock_ctx *psockctx)
         if (ERROR_IO_PENDING != irtn)
         {
             NET_ERROR(irtn, "error code:%d message:%s", irtn, ERRORSTR(irtn));
-            SAFE_FREE(pdisconol);
+            FREE(pdisconol);
             SOCK_CLOSE(psockctx->sock);
             return;
         }
@@ -297,7 +302,7 @@ static inline int32_t _post_recv(struct overlap_tcp_ctx *ptcp)
     ZERO(&ptcp->recvol.ol.overlapped, sizeof(ptcp->recvol.ol.overlapped));
     ptcp->recvol.flag = 0;
     ptcp->recvol.bytes = 0;
-    ptcp->recvol.iovcnt = buffer_write_iov_application(&ptcp->sockctx.recvbuf,
+    ptcp->recvol.iovcnt = buffer_write_iov_application(&ptcp->recvol.recvbuf,
         MAX_RECV_IOV_SIZE, ptcp->recvol.wsabuf, MAX_RECV_IOV_COUNT);
 
     ATOMIC_ADD(&ptcp->sockctx.recvref, 1);
@@ -313,12 +318,13 @@ static inline int32_t _post_recv(struct overlap_tcp_ctx *ptcp)
         irtn = ERRNO;
         if (WSA_IO_PENDING != irtn)
         {
-            buffer_write_iov_commit(&ptcp->sockctx.recvbuf, 0,
+            buffer_write_iov_commit(&ptcp->recvol.recvbuf, 0,
                 ptcp->recvol.wsabuf, ptcp->recvol.iovcnt);
             ATOMIC_ADD(&ptcp->sockctx.recvref, -1);
             return irtn;
         }
     }
+
     return ERR_OK;
 }
 static inline void _on_tcp_close(struct overlap_tcp_ctx *ptcp)
@@ -327,14 +333,15 @@ static inline void _on_tcp_close(struct overlap_tcp_ctx *ptcp)
     {
         return;
     }
+
     struct ev_sock_ctx *pev = ev_sock_close(ptcp->sockctx.sock, &ptcp->sockctx);
-    mutex_lock(&ptcp->sockctx.lock_postsc);
+    mutex_lock(&ptcp->sockctx.lock_post);
     int32_t irtn = chan_send(_get_rsc_chan(&ptcp->sockctx), &pev->ev);
-    mutex_unlock(&ptcp->sockctx.lock_postsc);
+    mutex_unlock(&ptcp->sockctx.lock_post);
     if (ERR_OK != irtn)
     {
         LOG_ERROR("%s", "post close event failed.");
-        SAFE_FREE(pev);
+        FREE(pev);
         _sock_free(&ptcp->sockctx);
     }
 }
@@ -342,24 +349,26 @@ static inline void _on_recv(struct netev_ctx *piocpctx,
     struct overlap_ctx *polctx, const uint32_t uibyte, const int32_t ierr)
 {
     struct overlap_recv_ctx *precvol = UPCAST(polctx, struct overlap_recv_ctx, ol);
-    struct overlap_tcp_ctx *ptcp = UPCAST(precvol, struct overlap_tcp_ctx, recvol);
+    struct overlap_tcp_ctx *ptcp = precvol->tcpctx;
     if (0 == uibyte
         || ERR_OK != ierr)
     {
-        buffer_write_iov_commit(&ptcp->sockctx.recvbuf, 0, precvol->wsabuf, precvol->iovcnt);
+        buffer_write_iov_commit(&precvol->recvbuf, 0, precvol->wsabuf, precvol->iovcnt);
         _on_tcp_close(ptcp);
         ATOMIC_ADD(&ptcp->sockctx.recvref, -1);
         return;
     }
 
-    buffer_write_iov_commit(&ptcp->sockctx.recvbuf, (size_t)uibyte, precvol->wsabuf, precvol->iovcnt);
+    buffer_write_iov_commit(&precvol->recvbuf, (size_t)uibyte, precvol->wsabuf, precvol->iovcnt);
     //投递EV_RECV消息
-    struct ev_sock_ctx *pev = ev_sock_recv(ptcp->sockctx.sock, (int32_t)uibyte, &ptcp->sockctx);
+    struct ev_sock_ctx *pev = ev_sock_recv(ptcp->sockctx.sock, 
+        (int32_t)uibyte, &ptcp->sockctx, &precvol->recvbuf);
     if (ERR_OK != chan_send(_get_rsc_chan(&ptcp->sockctx), &pev->ev))
     {
         LOG_ERROR("%s", "post recv event failed.");
-        SAFE_FREE(pev);
+        FREE(pev);
     }
+
     int32_t irtn = _post_recv(ptcp);
     if (ERR_OK != irtn)
     {
@@ -374,12 +383,13 @@ static inline int32_t _post_send(struct overlap_tcp_ctx *ptcp)
     {
         return ERR_FAILED;
     }
-    uint32_t uicnt = buffer_read_iov_application(&ptcp->sockctx.sendbuf,
+    uint32_t uicnt = buffer_read_iov_application(&ptcp->sendol.sendbuf,
         MAX_SEND_IOV_SIZE, ptcp->sendol.wsabuf, MAX_SEND_IOV_COUNT);
     if (0 == uicnt)
     {
         return ERR_FAILED;
     }
+
     ZERO(&ptcp->sendol.ol.overlapped, sizeof(ptcp->sendol.ol.overlapped));
     ptcp->sendol.iovcnt = uicnt;
 
@@ -396,44 +406,46 @@ static inline int32_t _post_send(struct overlap_tcp_ctx *ptcp)
         irtn = ERRNO;
         if (WSA_IO_PENDING != irtn)
         {
-            buffer_read_iov_commit(&ptcp->sockctx.sendbuf, 0);
+            buffer_read_iov_commit(&ptcp->sendol.sendbuf, 0);
             NET_ERROR(irtn, "error code:%d message:%s", irtn, ERRORSTR(irtn));
             ATOMIC_ADD(&ptcp->sockctx.sendref, -1);
             return irtn;
         }
     }
+
     return ERR_OK;
 }
 static inline void _on_send(struct netev_ctx *piocpctx,
     struct overlap_ctx *polctx, const uint32_t uibyte, const int32_t ierr)
 {
     struct overlap_send_ctx *psendol = UPCAST(polctx, struct overlap_send_ctx, ol);
-    struct overlap_tcp_ctx *ptcp = UPCAST(psendol, struct overlap_tcp_ctx, sendol);
+    struct overlap_tcp_ctx *ptcp = psendol->tcpctx;
     if (0 == uibyte
         || ERR_OK != ierr)
     {
-        buffer_read_iov_commit(&ptcp->sockctx.sendbuf, 0);
+        buffer_read_iov_commit(&psendol->sendbuf, 0);
         ATOMIC_ADD(&ptcp->sockctx.sendref, -1);
         return;
     }
 
-    buffer_read_iov_commit(&ptcp->sockctx.sendbuf, uibyte);
+    buffer_read_iov_commit(&psendol->sendbuf, uibyte);
     if (0 != ptcp->sockctx.postsendev)
     {
         //投递EV_SEND消息
-        mutex_lock(&ptcp->sockctx.lock_postsc);
+        mutex_lock(&ptcp->sockctx.lock_post);
         if (0 == ATOMIC_GET(&ptcp->sockctx.closed))
         {
             struct ev_sock_ctx *pev = ev_sock_send(ptcp->sockctx.sock,
-                (int32_t)uibyte, &ptcp->sockctx);
+                (int32_t)uibyte, &ptcp->sockctx, &psendol->sendbuf);
             if (ERR_OK != chan_send(_get_rsc_chan(&ptcp->sockctx), &pev->ev))
             {
                 LOG_ERROR("%s", "post send event failed.");
-                SAFE_FREE(pev);
+                FREE(pev);
             }
         }
-        mutex_unlock(&ptcp->sockctx.lock_postsc);
+        mutex_unlock(&ptcp->sockctx.lock_post);
     }
+
     (void)_post_send(ptcp);
     ATOMIC_ADD(&ptcp->sockctx.sendref, -1);
 }
@@ -443,7 +455,7 @@ static inline int32_t _post_recv_from(struct overlap_udp_ctx *pudp)
     pudp->recvfol.flag = 0;
     pudp->recvfol.bytes = 0;
     pudp->recvfol.addrlen = (int32_t)sizeof(pudp->recvfol.rmtaddr);
-    pudp->recvfol.iovcnt = buffer_write_iov_application(&pudp->sockctx.recvbuf,
+    pudp->recvfol.iovcnt = buffer_write_iov_application(&pudp->recvfol.recvbuf,
         MAX_RECV_FROM_IOV_SIZE, pudp->recvfol.wsabuf, MAX_RECV_FROM_IOV_COUNT);
 
     ATOMIC_ADD(&pudp->sockctx.recvref, 1);
@@ -461,12 +473,13 @@ static inline int32_t _post_recv_from(struct overlap_udp_ctx *pudp)
         irtn = ERRNO;
         if (WSA_IO_PENDING != irtn)
         {
-            buffer_write_iov_commit(&pudp->sockctx.recvbuf, 0,
+            buffer_write_iov_commit(&pudp->recvfol.recvbuf, 0,
                 pudp->recvfol.wsabuf, pudp->recvfol.iovcnt);
             ATOMIC_ADD(&pudp->sockctx.recvref, -1);
             return irtn;
         }
     }
+
     return ERR_OK;
 }
 static inline void _on_udp_close(struct overlap_udp_ctx *pudp)
@@ -475,35 +488,35 @@ static inline void _on_udp_close(struct overlap_udp_ctx *pudp)
     {
         return;
     }
+
     struct ev_sock_ctx *pev = ev_sock_close(pudp->sockctx.sock, &pudp->sockctx);
-    mutex_lock(&pudp->sockctx.lock_postsc);
+    mutex_lock(&pudp->sockctx.lock_post);
     int32_t irtn = chan_send(_get_rsc_chan(&pudp->sockctx), &pev->ev);
-    mutex_unlock(&pudp->sockctx.lock_postsc);
+    mutex_unlock(&pudp->sockctx.lock_post);
     if (ERR_OK != irtn)
     {
         LOG_ERROR("%s", "post close event failed.");
-        SAFE_FREE(pev);
-        _sock_free(&pudp->sockctx);
+        FREE(pev);
     }
 }
 static inline void _on_recv_from(struct netev_ctx *piocpctx,
     struct overlap_ctx *polctx, const uint32_t uibyte, const int32_t ierr)
 {
     struct overlap_recv_from_ctx *precvfol = UPCAST(polctx, struct overlap_recv_from_ctx, ol);
-    struct overlap_udp_ctx *pudp = UPCAST(precvfol, struct overlap_udp_ctx, recvfol);
+    struct overlap_udp_ctx *pudp = precvfol->udpctx;
     if (0 == uibyte
         || ERR_OK != ierr)
     {
-        PRINTF("%s", "111111111111111111111111");
-        buffer_write_iov_commit(&pudp->sockctx.recvbuf, 0, precvfol->wsabuf, precvfol->iovcnt);
+        buffer_write_iov_commit(&precvfol->recvbuf, 0, precvfol->wsabuf, precvfol->iovcnt);
         _on_udp_close(pudp);
         ATOMIC_ADD(&pudp->sockctx.recvref, -1);
         return;
     }
 
-    buffer_write_iov_commit(&pudp->sockctx.recvbuf, (size_t)uibyte, precvfol->wsabuf, precvfol->iovcnt);
+    buffer_write_iov_commit(&precvfol->recvbuf, (size_t)uibyte, precvfol->wsabuf, precvfol->iovcnt);
     //投递EV_RECV消息
-    struct ev_sock_ctx *pev = ev_sock_recv(pudp->sockctx.sock, (int32_t)uibyte, &pudp->sockctx);
+    struct ev_sock_ctx *pev = ev_sock_recv(pudp->sockctx.sock,
+        (int32_t)uibyte, &pudp->sockctx, &precvfol->recvbuf);
     char acport[PORT_LENS];
     int32_t irtn = getnameinfo((struct sockaddr *)&precvfol->rmtaddr, precvfol->addrlen,
         pev->ip, sizeof(pev->ip), acport, sizeof(acport),
@@ -520,8 +533,9 @@ static inline void _on_recv_from(struct netev_ctx *piocpctx,
     if (ERR_OK != chan_send(_get_rsc_chan(&pudp->sockctx), &pev->ev))
     {
         LOG_ERROR("%s", "post recv event failed.");
-        SAFE_FREE(pev);
+        FREE(pev);
     }
+
     irtn = _post_recv_from(pudp);
     if (ERR_OK != irtn)
     {
@@ -530,76 +544,43 @@ static inline void _on_recv_from(struct netev_ctx *piocpctx,
     }
     ATOMIC_ADD(&pudp->sockctx.recvref, -1);
 }
-static inline int32_t _post_sendto(struct overlap_udp_ctx *pudp)
-{
-    if (0 != ATOMIC_GET(&pudp->sockctx.closed))
-    {
-        return ERR_FAILED;
-    }
-    struct netaddr_ctx *paddr = NULL;
-    uint32_t uicnt = buffer_piece_read_iov_application(&pudp->sockctx.sendbuf,
-        &pudp->sendtool.piece, pudp->sendtool.wsabuf, MAX_SENDTO_IOV_COUNT, (void **)&paddr);
-    if (0 == uicnt)
-    {
-        return ERR_FAILED;
-    }
-    ZERO(&pudp->sendtool.ol.overlapped, sizeof(pudp->sendtool.ol.overlapped));
-    pudp->sendtool.bytes = 0;
-    pudp->sendtool.iovcnt = uicnt;
-
-    ATOMIC_ADD(&pudp->sockctx.sendref, 1);
-    int32_t irtn = WSASendTo(pudp->sockctx.sock,
-        pudp->sendtool.wsabuf,
-        (DWORD)pudp->sendtool.iovcnt,
-        &pudp->sendtool.bytes,
-        0,
-        netaddr_addr(paddr),
-        netaddr_size(paddr),
-        &pudp->sendtool.ol.overlapped,
-        NULL);
-    if (ERR_OK != irtn)
-    {
-        irtn = ERRNO;
-        if (ERROR_IO_PENDING != irtn)
-        {
-            buffer_piece_read_iov_commit(&pudp->sockctx.sendbuf, &pudp->sendtool.piece, 0);
-            NET_ERROR(irtn, "error code:%d message:%s", irtn, ERRORSTR(irtn));
-            ATOMIC_ADD(&pudp->sockctx.sendref, -1);
-            return irtn;
-        }
-    }
-    return ERR_OK;
-}
 static inline void _on_sendto(struct netev_ctx *piocpctx,
     struct overlap_ctx *polctx, const uint32_t uibyte, const int32_t ierr)
 {
-    struct overlap_sendto_ctx *psendtool = UPCAST(polctx, struct overlap_sendto_ctx, ol);
-    struct overlap_udp_ctx *pudp = UPCAST(psendtool, struct overlap_udp_ctx, sendtool);
+    struct overlap_sendto_ctx *psendtool = UPCAST(polctx, struct overlap_sendto_ctx, ol);  
+    struct overlap_udp_ctx *pudp = psendtool->udpctx;
     if (0 == uibyte
         || ERR_OK != ierr)
     {
-        buffer_piece_read_iov_commit(&pudp->sockctx.sendbuf, &psendtool->piece, 0);
+        mutex_lock(&psendtool->lock_send);
+        mutex_unlock(&psendtool->lock_send);
+        mutex_free(&psendtool->lock_send);
+        FREE(psendtool);
         ATOMIC_ADD(&pudp->sockctx.sendref, -1);
         return;
     }
 
-    buffer_piece_read_iov_commit(&pudp->sockctx.sendbuf, &psendtool->piece, uibyte);
     if (0 != pudp->sockctx.postsendev)
     {
         //投递EV_SEND消息
-        mutex_lock(&pudp->sockctx.lock_postsc);
+        mutex_lock(&pudp->sockctx.lock_post);
         if (0 == ATOMIC_GET(&pudp->sockctx.closed))
         {
-            struct ev_sock_ctx *pev = ev_sock_send(pudp->sockctx.sock, (int32_t)uibyte, &pudp->sockctx);
+            struct ev_sock_ctx *pev = ev_sock_send(pudp->sockctx.sock, 
+                (int32_t)uibyte, &pudp->sockctx, NULL);
             if (ERR_OK != chan_send(_get_rsc_chan(&pudp->sockctx), &pev->ev))
             {
                 LOG_ERROR("%s", "post send event failed.");
-                SAFE_FREE(pev);
+                FREE(pev);
             }
         }
-        mutex_unlock(&pudp->sockctx.lock_postsc);
+        mutex_unlock(&pudp->sockctx.lock_post);
     }
-    (void)_post_sendto(pudp);
+
+    mutex_lock(&psendtool->lock_send);    
+    mutex_unlock(&psendtool->lock_send);
+    mutex_free(&psendtool->lock_send);
+    FREE(psendtool);
     ATOMIC_ADD(&pudp->sockctx.sendref, -1);
 }
 static int32_t _accptex(struct netev_ctx *piocpctx, 
@@ -646,7 +627,7 @@ static int32_t _accptex(struct netev_ctx *piocpctx,
                 SOCK_CLOSE(plistener->overlap_acpt[i].sock);
             }
             mutex_free(&plistener->mutex);
-            SAFE_FREE(plistener);
+            FREE(plistener);
             return irtn;
         }
     }
@@ -765,7 +746,7 @@ static inline int32_t _connectex(struct netev_ctx *piocpctx,
         if (ERROR_IO_PENDING != irtn)
         {
             NET_ERROR(irtn, "error code:%d message:%s", irtn, ERRORSTR(irtn));
-            SAFE_FREE(poverlapped);
+            FREE(poverlapped);
             return irtn;
         }
     }
@@ -843,6 +824,28 @@ SOCKET sock_handle(struct sock_ctx *psockctx)
 {
     return psockctx->sock;
 }
+struct buffer_ctx *sock_recv_buffer(struct sock_ctx *psockctx)
+{
+    if (SOCK_DGRAM == psockctx->socktype)
+    {
+        return &_sockctx_to_udpol(psockctx)->recvfol.recvbuf;
+    }
+    else
+    {
+        return &_sockctx_to_tcpol(psockctx)->recvol.recvbuf;
+    }
+}
+struct buffer_ctx *sock_send_buffer(struct sock_ctx *psockctx)
+{
+    if (SOCK_DGRAM == psockctx->socktype)
+    {
+        return NULL;
+    }
+    else
+    {
+        return &_sockctx_to_tcpol(psockctx)->sendol.sendbuf;
+    }
+}
 int32_t sock_type(struct sock_ctx *psockctx)
 {
     return psockctx->socktype;
@@ -860,6 +863,7 @@ static inline int32_t _check_olresult(struct overlap_ctx *poverlap, SOCKET sock)
             return ERR_FAILED;
         }
     }
+
     return ERR_OK;
 }
 int32_t _sock_can_free(struct sock_ctx *psockctx)
@@ -871,57 +875,47 @@ int32_t _sock_can_free(struct sock_ctx *psockctx)
     {
         return ERR_OK;
     }
+
     psockctx->freecnt++;
     if (psockctx->freecnt >= 5)
     {
         psockctx->freecnt = 0;
-        LOG_WARN("free sock_ctx type: use long time. sock %d sending:%d recving:%d",
+        LOG_WARN("free sock_ctx type:%d use long time. sock %d sending:%d recving:%d",
             psockctx->socktype, (int32_t)psockctx->sock, uisendref, uirecvref);
-        if (0 != uisendref)
+        if (SOCK_DGRAM == psockctx->socktype)
         {
-            struct overlap_ctx *pol;
-            if (SOCK_STREAM == psockctx->socktype)
+            if (0 != uirecvref)
             {
-                pol = &_sockctx_to_tcpol(psockctx)->sendol.ol;
+                if (ERR_OK != _check_olresult(&_sockctx_to_udpol(psockctx)->recvfol.ol, psockctx->sock))
+                {
+                    return ERR_FAILED;
+                }
+            }            
+        }
+        else
+        {
+            if (0 != uisendref)
+            {
+                if (ERR_OK != _check_olresult(&_sockctx_to_tcpol(psockctx)->sendol.ol, psockctx->sock))
+                {
+                    return ERR_FAILED;
+                }
             }
-            else
+            if (0 != uirecvref)
             {
-                pol = &_sockctx_to_udpol(psockctx)->sendtool.ol;                
-            }
-            if (ERR_OK != _check_olresult(pol, psockctx->sock))
-            {
-                return ERR_FAILED;
+                if (ERR_OK != _check_olresult(&_sockctx_to_tcpol(psockctx)->recvol.ol, psockctx->sock))
+                {
+                    return ERR_FAILED;
+                }
             }
         }
-        if (0 != uirecvref)
-        {
-            struct overlap_ctx *pol;
-            if (SOCK_STREAM == psockctx->socktype)
-            {
-                pol = &_sockctx_to_tcpol(psockctx)->recvol.ol;
-            }
-            else
-            {
-                pol = &_sockctx_to_udpol(psockctx)->recvfol.ol;                
-            }
-            if (ERR_OK != _check_olresult(pol, psockctx->sock))
-            {
-                return ERR_FAILED;
-            }
-        }
+
         return ERR_OK;
     }
+
     return ERR_FAILED;
 }
-struct buffer_ctx *sock_recvbuf(struct sock_ctx *psockctx)
-{
-    return &psockctx->recvbuf;
-}
-struct buffer_ctx *sock_sendbuf(struct sock_ctx *psockctx)
-{
-    return &psockctx->sendbuf;
-}
-static inline struct overlap_tcp_ctx *_sockctx_tcp_init()
+static inline struct overlap_tcp_ctx *_sockctx_tcp_init(SOCKET fd)
 {
     struct overlap_tcp_ctx *ptcp = 
         (struct overlap_tcp_ctx *)MALLOC(sizeof(struct overlap_tcp_ctx));
@@ -930,28 +924,22 @@ static inline struct overlap_tcp_ctx *_sockctx_tcp_init()
         LOG_ERROR("%s", ERRSTR_MEMORY);
         return NULL;
     }
+
+    socknodelay(fd);
+    closereset(fd);
+    sockkpa(fd, SOCKKPA_DELAY, SOCKKPA_INTVL);
+
     ptcp->sendol.ol.overlap_cb = _on_send;
-    ptcp->recvol.ol.overlap_cb = _on_recv;    
+    ptcp->sendol.tcpctx = ptcp;
+    buffer_init(&ptcp->sendol.sendbuf);
+    ptcp->recvol.ol.overlap_cb = _on_recv;  
+    ptcp->recvol.tcpctx = ptcp;
+    buffer_init(&ptcp->recvol.recvbuf);
+
     return ptcp;
 }
-static inline struct overlap_udp_ctx *_sockctx_udp_init()
-{
-    struct overlap_udp_ctx *pudp =
-        (struct overlap_udp_ctx *)MALLOC(sizeof(struct overlap_udp_ctx));
-    if (NULL == pudp)
-    {
-        LOG_ERROR("%s", ERRSTR_MEMORY);
-        return NULL;
-    }
-    pudp->sendtool.piece.free_data = FREE;
-    pudp->sendtool.piece.head = NULL;
-    pudp->sendtool.piece.tail = NULL;
-    pudp->sendtool.ol.overlap_cb = _on_sendto;
-    pudp->recvfol.ol.overlap_cb = _on_recv_from;
-    return pudp;
-}
-static inline void _sockctx_init(struct sock_ctx *psockctx, 
-    struct netev_ctx *piocpctx, SOCKET fd, struct chan_ctx *pchan, 
+static inline void _sockctx_init(struct sock_ctx *psockctx,
+    struct netev_ctx *piocpctx, SOCKET fd, struct chan_ctx *pchan,
     const int32_t isocktype, const int32_t ipostsendev)
 {
     psockctx->socktype = isocktype;
@@ -962,27 +950,52 @@ static inline void _sockctx_init(struct sock_ctx *psockctx,
     psockctx->closed = 0;
     psockctx->freecnt = 0;
     psockctx->sendref = 0;
-    psockctx->recvref = 0;    
-    buffer_init(&psockctx->recvbuf);
-    buffer_init(&psockctx->sendbuf);
-    mutex_init(&psockctx->lock_postsc);
+    psockctx->recvref = 0;
+    mutex_init(&psockctx->lock_post);
     mutex_init(&psockctx->lock_changech);
+}
+static inline struct overlap_udp_ctx *_sockctx_udp_init(SOCKET fd)
+{
+    struct overlap_udp_ctx *pudpctx = 
+        (struct overlap_udp_ctx *)MALLOC(sizeof(struct overlap_udp_ctx));
+    if (NULL == pudpctx)
+    {
+        LOG_ERROR("%s", ERRSTR_MEMORY);
+        return NULL;
+    }
+
+    DWORD dbytes = 0;
+    BOOL bbehavior = FALSE;
+    if (WSAIoctl(fd, SIO_UDP_CONNRESET,
+        &bbehavior, sizeof(bbehavior),
+        NULL, 0, &dbytes,
+        NULL, NULL) < ERR_OK)
+    {
+        LOG_WARN("WSAIoctl(%d, SIO_UDP_CONNRESET...) failed. %s", (int32_t)fd, ERRORSTR(ERRNO));
+    }
+    
+    pudpctx->recvfol.ol.overlap_cb = _on_recv_from;
+    pudpctx->recvfol.udpctx = pudpctx;
+    buffer_init(&pudpctx->recvfol.recvbuf);
+
+    return pudpctx;
 }
 void _sock_free(struct sock_ctx *psockctx)
 {
     SOCK_CLOSE(psockctx->sock);
     mutex_free(&psockctx->lock_changech);
-    mutex_free(&psockctx->lock_postsc);
-    buffer_free(&psockctx->recvbuf);
-    buffer_free(&psockctx->sendbuf);
+    mutex_free(&psockctx->lock_post);    
     if (SOCK_STREAM == psockctx->socktype)
     {
-        FREE(_sockctx_to_tcpol(psockctx));
+        struct overlap_tcp_ctx *ptcp = _sockctx_to_tcpol(psockctx);
+        buffer_free(&ptcp->recvol.recvbuf);
+        buffer_free(&ptcp->sendol.sendbuf);
+        FREE(ptcp);
     }
     else
     {
-        struct overlap_udp_ctx *pudp = _sockctx_to_udpol(psockctx);
-        buffer_piece_node_free(&pudp->sendtool.piece);
+        struct overlap_udp_ctx *pudp = UPCAST(psockctx, struct overlap_udp_ctx, sockctx);
+        buffer_free(&pudp->recvfol.recvbuf);
         FREE(pudp);
     }
 }
@@ -995,33 +1008,33 @@ struct sock_ctx *netev_enable_rw(struct netev_ctx *piocpctx, SOCKET fd,
         SOCK_CLOSE(fd);
         return NULL;
     }
+
     int32_t irtn;
     struct sock_ctx *psockctx;
     if (SOCK_STREAM == iscoktype)
     {
-        struct overlap_tcp_ctx *ptcp = _sockctx_tcp_init();
+        struct overlap_tcp_ctx *ptcp = _sockctx_tcp_init(fd);
         if (NULL == ptcp)
         {
             SOCK_CLOSE(fd);
             return NULL;
         }
-        socknodelay(fd);
-        closereset(fd);
-        sockkpa(fd, SOCKKPA_DELAY, SOCKKPA_INTVL);
+
         psockctx = &ptcp->sockctx;
         _sockctx_init(psockctx, piocpctx, fd, pchan, iscoktype, ipostsendev);
-        irtn = _post_recv(ptcp);
+        irtn = _post_recv(ptcp);        
     }
     else
     {
-        struct overlap_udp_ctx *pudp = _sockctx_udp_init();
+        struct overlap_udp_ctx *pudp = _sockctx_udp_init(fd);
         if (NULL == pudp)
         {
             SOCK_CLOSE(fd);
             return NULL;
         }
+
         psockctx = &pudp->sockctx;
-        _sockctx_init(psockctx, piocpctx, fd, pchan, iscoktype, ipostsendev);
+        _sockctx_init(&pudp->sockctx, piocpctx, fd, pchan, iscoktype, ipostsendev);
         irtn = _post_recv_from(pudp);
     }
     if (ERR_OK != irtn)
@@ -1039,12 +1052,14 @@ int32_t _tcp_trysend(struct overlap_tcp_ctx *ptcp)
     {
         return ERR_OK;
     }
+
     int32_t irtn = _post_send(ptcp);
     ATOMIC_ADD(&ptcp->sockctx.sendref, -1);
     if (ERR_OK != irtn)
     {
         return irtn;
     }
+
     return ERR_OK;
 }
 int32_t sock_send(struct sock_ctx *psockctx, void *pdata, const size_t uilens)
@@ -1053,9 +1068,10 @@ int32_t sock_send(struct sock_ctx *psockctx, void *pdata, const size_t uilens)
     {
         return ERR_FAILED;
     }
+
     ASSERTAB(SOCK_STREAM == psockctx->socktype, "only support tcp.");
     struct overlap_tcp_ctx *ptcp = _sockctx_to_tcpol(psockctx);
-    ASSERTAB(ERR_OK == buffer_append(&ptcp->sockctx.sendbuf, pdata, uilens), "buffer_append error.");
+    ASSERTAB(ERR_OK == buffer_append(&ptcp->sendol.sendbuf, pdata, uilens), "buffer_append error.");
     return _tcp_trysend(ptcp);
 }
 int32_t sock_send_buf(struct sock_ctx *psockctx)
@@ -1064,45 +1080,79 @@ int32_t sock_send_buf(struct sock_ctx *psockctx)
     {
         return ERR_FAILED;
     }
+
     ASSERTAB(SOCK_STREAM == psockctx->socktype, "only support tcp.");
     return _tcp_trysend(_sockctx_to_tcpol(psockctx));
 }
-int32_t sock_sendto(struct sock_ctx *psockctx, void *pdata, const size_t uilens,
-    const char *pip, const uint16_t uport)
-{    
-    if (0 != psockctx->closed)
+static inline int32_t _post_sendto(struct overlap_sendto_ctx *psendtool, struct netaddr_ctx *paddr)
+{
+    if (0 != ATOMIC_GET(&psendtool->udpctx->sockctx.closed))
     {
         return ERR_FAILED;
     }
+
+    ZERO(&psendtool->ol.overlapped, sizeof(psendtool->ol.overlapped));
+    psendtool->bytes = 0;
+    psendtool->ol.overlap_cb = _on_sendto;
+    mutex_init(&psendtool->lock_send);
+
+    ATOMIC_ADD(&psendtool->udpctx->sockctx.sendref, 1);
+    mutex_lock(&psendtool->lock_send);
+    int32_t irtn = WSASendTo(psendtool->udpctx->sockctx.sock,
+        &psendtool->wsabuf,
+        1,
+        &psendtool->bytes,
+        0,
+        netaddr_addr(paddr),
+        netaddr_size(paddr),
+        &psendtool->ol.overlapped,
+        NULL);
+    mutex_unlock(&psendtool->lock_send);
+    if (ERR_OK != irtn)
+    {
+        irtn = ERRNO;
+        if (ERROR_IO_PENDING != irtn)
+        {
+            NET_ERROR(irtn, "error code:%d message:%s", irtn, ERRORSTR(irtn));
+            ATOMIC_ADD(&psendtool->udpctx->sockctx.sendref, -1);
+            return irtn;
+        }
+    }
+
+    return ERR_OK;
+}
+int32_t sock_sendto(struct sock_ctx *psockctx, void *pdata, const size_t uilens,
+    const char *pip, const uint16_t uport)
+{
+    if (0 != ATOMIC_GET(&psockctx->closed))
+    {
+        return ERR_FAILED;
+    }
+
     ASSERTAB(SOCK_DGRAM == psockctx->socktype, "only support udp.");
-    struct netaddr_ctx *paddr = MALLOC(sizeof(struct netaddr_ctx));
-    if (NULL == paddr)
+    struct netaddr_ctx addr;
+    int32_t irtn = netaddr_sethost(&addr, pip, uport);
+    if (ERR_OK != irtn)
+    {
+        LOG_ERROR("error code:%d message:%s", irtn, gai_strerror(irtn));
+        return irtn;
+    }
+
+    struct overlap_sendto_ctx *psendtool = 
+        (struct overlap_sendto_ctx *)MALLOC(sizeof(struct overlap_sendto_ctx));
+    if (NULL == psendtool)
     {
         LOG_ERROR("%s", ERRSTR_MEMORY);
         return ERR_FAILED;
     }
-    int32_t irtn = netaddr_sethost(paddr, pip, uport);
+
+    psendtool->udpctx = UPCAST(psockctx, struct overlap_udp_ctx, sockctx);
+    psendtool->wsabuf.IOV_PTR_FIELD = pdata;
+    psendtool->wsabuf.IOV_LEN_FIELD = (IOV_LEN_TYPE)uilens;
+    irtn = _post_sendto(psendtool, &addr);
     if (ERR_OK != irtn)
     {
-        LOG_ERROR("error code:%d message:%s", irtn, gai_strerror(irtn));
-        SAFE_FREE(paddr);
-        return irtn;
-    }
-    struct overlap_udp_ctx *pudp = _sockctx_to_udpol(psockctx);
-    irtn = buffer_piece_inser(&pudp->sockctx.sendbuf, &pudp->sendtool.piece, paddr, pdata, uilens);
-    if (ERR_OK != irtn)
-    {
-        SAFE_FREE(paddr);
-        return irtn;
-    }
-    if (!ATOMIC_CAS(&pudp->sockctx.sendref, 0, 1))
-    {
-        return ERR_OK;
-    }
-    irtn = _post_sendto(pudp);
-    ATOMIC_ADD(&pudp->sockctx.sendref, -1);
-    if (ERR_OK != irtn)
-    {
+        FREE(psendtool);
         return irtn;
     }
 

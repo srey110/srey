@@ -128,21 +128,21 @@ static inline void event_changechan(struct sock_ctx *psockctx, struct chan_ctx *
 {
     sock_change_chan(psockctx, pchan);
 };
-static inline struct buffer_ctx *event_recvbuf(struct sock_ctx *psockctx)
-{
-    return sock_recvbuf(psockctx);
-};
-static inline struct buffer_ctx *event_sendbuf(struct sock_ctx *psockctx)
-{
-    return sock_sendbuf(psockctx);
-};
-static inline SOCKET event_handle(struct sock_ctx *psockctx)
+static inline SOCKET event_sockhandle(struct sock_ctx *psockctx)
 {
     return sock_handle(psockctx);
 };
 static inline int32_t event_socktype(struct sock_ctx *psockctx)
 {
     return sock_type(psockctx);
+};
+static inline struct buffer_ctx *event_recvbuffer(struct sock_ctx *psockctx)
+{
+    return sock_recv_buffer(psockctx);
+};
+static inline struct buffer_ctx *event_sendbuffer(struct sock_ctx *psockctx)
+{
+    return sock_send_buffer(psockctx);
 };
 static inline int32_t event_send(struct sock_ctx *psockctx, void *pdata, const size_t uilens)
 {

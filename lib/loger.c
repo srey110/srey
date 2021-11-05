@@ -109,7 +109,7 @@ static void _worker_free(struct logworker_ctx *pctx)
         fclose(pctx->file);
         pctx->file = NULL;
     }
-    SAFE_FREE(pctx->path);
+    FREE(pctx->path);
 }
 static inline int32_t _worker_getfile(struct logworker_ctx *pctx)
 {
@@ -212,8 +212,8 @@ static inline void _worker_freeloginfo(loginfo_ctx *pinfo)
 {
     if (NULL != pinfo)
     {
-        SAFE_FREE(pinfo->plog);
-        SAFE_FREE(pinfo);
+        FREE(pinfo->plog);
+        FREE(pinfo);
     }
 }
 static void _loger(void *pparam, void *p2, void *p3)
@@ -303,7 +303,7 @@ void loger_log(struct loger_ctx *pctx, const LOG_LEVEL emlv, const char *pformat
     if (ERR_OK != chan_trysend(&pctx->chan, (void*)pinfo))
     {
         PRINTF("write log error. %s", pinfo->plog);
-        SAFE_FREE(pinfo->plog);
-        SAFE_FREE(pinfo);
+        FREE(pinfo->plog);
+        FREE(pinfo);
     }
 }

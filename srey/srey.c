@@ -45,7 +45,7 @@ void _timeout_cb(void *p1, void *p2, void *p3)
                 (int32_t)(event_tick(&sv) - pnode->expires),
                 ATOMIC_GET(&uilinknum), ATOMIC_GET(&uirecvsize), ATOMIC_GET(&uisendsize),
                 ATOMIC_GET(&uiudprecvsize), ATOMIC_GET(&uiudpsendsize), ATOMIC_GET(&uitcpclose));
-            SAFE_FREE(pnode);
+            FREE(pnode);
 
             event_timeout(&sv, pchan_timeout, 200, NULL);
         }
@@ -68,7 +68,7 @@ void _accept_cb(void *p1, void *p2, void *p3)
                 event_enablerw(&sv, psockev->sock, &pchan_recvs[rand() % usthreadnum], ipostsendev);
                 ATOMIC_ADD(&uilinknum, 1);
             }
-            SAFE_FREE(psockev);
+            FREE(psockev);
         }
     }
 }
@@ -93,7 +93,7 @@ void _connet_cb(void *p1, void *p2, void *p3)
             {
                 PRINTF("connect error %s", ERRORSTR(psockev->ev.result));
             }
-            SAFE_FREE(psockev);
+            FREE(psockev);
         }
     }
 }
@@ -117,7 +117,7 @@ void _recv_cb(void *p1, void *p2, void *p3)
             {
                 case EV_RECV:
                     ilens = (size_t)psockev->ev.result;
-                    pbuf = sock_recvbuf(psockev->sockctx);
+                    pbuf = psockev->buffer;
                     while (ilens > 0)
                     {
                         if (ilens >= sizeof(acpack))
@@ -159,7 +159,6 @@ void _recv_cb(void *p1, void *p2, void *p3)
                     else
                     {
                         ATOMIC_ADD(&uiudpsendsize, 1);
-
                     }
                     break;
                 case EV_CLOSE:
@@ -168,7 +167,7 @@ void _recv_cb(void *p1, void *p2, void *p3)
                     event_freesock(&sv, psockev->sockctx);
                     break;
             }
-            SAFE_FREE(psockev);
+            FREE(psockev);
         }
     }
 }
@@ -242,6 +241,8 @@ int main(int argc, char *argv[])
     PRINTF("event_connecter %d", (int32_t)sock_connecter);
     ATOMIC_ADD(&uilinknum, 1);
 
+    
+
     size_t uicounttime = 0;
     while (0 == ATOMIC_GET(&uistop))
     {        
@@ -254,10 +255,10 @@ int main(int argc, char *argv[])
                 ATOMIC_ADD(&uilinknum, 1);
                 if (NULL != pudpctx)
                 {
-                    MSLEEP(1000 * 5);
+                    MSLEEP(10000000 * 5);
                     sock_close(pudpctx);
                 }
-            }            
+            }
         }
         uicounttime += 200;
         MSLEEP(200);
@@ -289,10 +290,10 @@ int main(int argc, char *argv[])
         chan_free(&pchan_recv[ui]);
     }
 
-    SAFE_FREE(pchan_accept);
-    SAFE_FREE(pchan_recv);
-    SAFE_FREE(pthread_recv);
-    SAFE_FREE(pthread_accept);
+    FREE(pchan_accept);
+    FREE(pchan_recv);
+    FREE(pthread_recv);
+    FREE(pthread_accept);
 
     LOGFREE();
     return 0;

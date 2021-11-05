@@ -27,7 +27,7 @@ static inline void queue_init(struct queue_ctx *pctx, const int32_t icapacity)
 */
 static inline void queue_free(struct queue_ctx *pctx)
 {
-    SAFE_FREE(pctx->data);
+    FREE(pctx->data);
 };
 /*
 * \brief          À©ÈÝ
@@ -44,7 +44,7 @@ static inline void queue_expand(struct queue_ctx *pctx)
     }
     if (0 == pctx->size)
     {
-        SAFE_FREE(pctx->data);
+        FREE(pctx->data);
         pctx->next = 0;
         pctx->data = pnew;
         pctx->capacity = inewcap;
@@ -60,7 +60,7 @@ static inline void queue_expand(struct queue_ctx *pctx)
         memcpy(pnew + (pctx->capacity - pctx->next), pctx->data, 
             (pctx->size - (pctx->capacity - pctx->next)) * sizeof(void*));
     }
-    SAFE_FREE(pctx->data);
+    FREE(pctx->data);
     pctx->next = 0;
     pctx->data = pnew;
     pctx->capacity = inewcap;

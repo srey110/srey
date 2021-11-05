@@ -480,8 +480,7 @@ char *formatargs(const char *pformat, va_list args)
             return pbuff;
         }
 
-        SAFE_FREE(pbuff);
-
+        FREE(pbuff);
         //分配更大空间
         uisize = (inum > -1) ? (inum + 1) : uisize * 2;        
         pbuff = MALLOC(uisize);

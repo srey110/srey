@@ -56,7 +56,7 @@ static void _free_all_node(struct buffernode_ctx *pnode)
     for (; NULL != pnode; pnode = pnext) 
     {
         pnext = pnode->next;
-        SAFE_FREE(pnode);
+        FREE(pnode);
     }
 }
 //pnode 及后面节点是否为空
@@ -176,7 +176,7 @@ struct buffernode_ctx *_buffer_expand_single(struct buffer_ctx *pctx, const size
     }
 
     ptmp->next = pnode->next;
-    SAFE_FREE(pnode);
+    FREE(pnode);
     return ptmp;
 }
 uint32_t _buffer_expand_iov(struct buffer_ctx *pctx, const size_t uilens, 
@@ -262,7 +262,7 @@ uint32_t _buffer_expand_iov(struct buffer_ctx *pctx, const size_t uilens,
     {
         pnext = pnode->next;
         ASSERTAB(0 == pnode->off, "node not empty.");
-        SAFE_FREE(pnode);
+        FREE(pnode);
     }
     ASSERTAB(uilens >= uiavail, "logic error.");
     uiremain = uilens - uiavail;
@@ -521,7 +521,7 @@ int32_t _buffer_drain(struct buffer_ctx *pctx, size_t uilen)
         for (pnode = pctx->head; NULL != pnode; pnode = pnext)
         {
             pnext = pnode->next;
-            SAFE_FREE(pnode);
+            FREE(pnode);
         }
 
         pctx->head = pctx->tail = NULL;
@@ -551,7 +551,7 @@ int32_t _buffer_drain(struct buffer_ctx *pctx, size_t uilen)
 
         if (0 == pnode->used)
         {
-            SAFE_FREE(pnode);
+            FREE(pnode);
         }
         else
         {

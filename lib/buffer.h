@@ -220,7 +220,7 @@ static inline void buffer_piece_node_free(struct piece_iov_ctx *ppiece)
         {
             ppiece->free_data(pnode->data);
         }
-        SAFE_FREE(pnode);
+        FREE(pnode);
         pnode = pnext;
     }
 };
@@ -293,7 +293,7 @@ static inline void buffer_piece_read_iov_commit(struct buffer_ctx *pbuf, struct 
         {
             ppiece->free_data(pnode->data);
         }
-        SAFE_FREE(pnode);
+        FREE(pnode);
     }
     pbuf->freeze_read = 0;
     buffer_unlock(pbuf);

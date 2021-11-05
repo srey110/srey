@@ -38,7 +38,7 @@ static void _delay_free(void *p1, void *p2, void *p3)
             if (ERR_OK == _sock_can_free(psock))
             {
                 _sock_free(psock);
-                SAFE_FREE(ptimeev);
+                FREE(ptimeev);
             }
             else
             {

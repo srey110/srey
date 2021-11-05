@@ -19,9 +19,9 @@ struct sock_ctx *netev_enable_rw(struct netev_ctx *piocpctx, SOCKET fd,
     struct chan_ctx *pchan, const int32_t ipostsendev);
 
 void sock_change_chan(struct sock_ctx *psockctx, struct chan_ctx *pchan);
-struct buffer_ctx *sock_recvbuf(struct sock_ctx *psockctx);
-struct buffer_ctx *sock_sendbuf(struct sock_ctx *psockctx);
 SOCKET sock_handle(struct sock_ctx *psockctx);
+struct buffer_ctx *sock_recv_buffer(struct sock_ctx *psockctx);
+struct buffer_ctx *sock_send_buffer(struct sock_ctx *psockctx);
 int32_t sock_type(struct sock_ctx *psockctx);
 void sock_close(struct sock_ctx *psockctx);
 

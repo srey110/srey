@@ -90,10 +90,9 @@ void netev_free(struct netev_ctx *pctx)
     }
 
     (void)CloseHandle(pctx->iocp);
-    SAFE_FREE(pctx->thiocp);
+    FREE(pctx->thiocp);
     (void)WSACleanup();
-
-    SAFE_FREE(pctx);
+    FREE(pctx);
 }
 static void _icop_loop(void *p1, void *p2, void *p3)
 {

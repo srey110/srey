@@ -52,7 +52,7 @@ static void _free(struct twslot_ctx *pslot, const size_t uilens)
         {
             pdel = pnode;
             pnode = pnode->next;
-            SAFE_FREE(pdel);
+            FREE(pdel);
         }
     }
 };
@@ -186,7 +186,7 @@ static inline void _run(struct wot_ctx *pctx)
         if (ERR_OK != chan_trysend(pnode->chan, (void*)&pnode->ev))
         {
             LOG_FATAL("%s", "time wheel chan send failed.");
-            SAFE_FREE(pnode);
+            FREE(pnode);
         }
         pnode = pnext;
     }
