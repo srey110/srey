@@ -241,25 +241,24 @@ int main(int argc, char *argv[])
     PRINTF("event_connecter %d", (int32_t)sock_connecter);
     ATOMIC_ADD(&uilinknum, 1);
 
-    
+    SOCKET udpfd = _creat_udp_sock(pudphost, usudpport);
+    if (INVALID_SOCK != udpfd)
+    {
+        if (ERR_OK == event_addsock(&sv, udpfd))
+        {
+            struct sock_ctx *pudpctx = event_enablerw(&sv, udpfd, &pchan_recv[rand() % usthreadnum], ipostsendev);
+            ATOMIC_ADD(&uilinknum, 1);
+            if (NULL != pudpctx)
+            {
+                //MSLEEP(1000 * 5);
+                //sock_close(pudpctx);
+            }
+        }
+    }
 
     size_t uicounttime = 0;
     while (0 == ATOMIC_GET(&uistop))
-    {        
-        SOCKET udpfd = _creat_udp_sock(pudphost, usudpport);
-        if (INVALID_SOCK != udpfd)
-        {
-            if (ERR_OK == event_addsock(&sv, udpfd))
-            {
-                struct sock_ctx *pudpctx = event_enablerw(&sv, udpfd, &pchan_recv[rand() % usthreadnum], ipostsendev);
-                ATOMIC_ADD(&uilinknum, 1);
-                if (NULL != pudpctx)
-                {
-                    MSLEEP(10000000 * 5);
-                    sock_close(pudpctx);
-                }
-            }
-        }
+    {
         uicounttime += 200;
         MSLEEP(200);
         /*if (uicounttime >= 10000)

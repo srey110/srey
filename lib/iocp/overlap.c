@@ -22,6 +22,7 @@
             && WSAENOTCONN != err \
             && WSAESHUTDOWN != err\
             && ERROR_OPERATION_ABORTED != err\
+            && ERROR_NOT_FOUND != err\
             && WSAECONNABORTED != err)\
             LOG_ERROR(format, ##__VA_ARGS__)
 
@@ -247,6 +248,14 @@ static inline void _on_connect(struct netev_ctx *piocpctx,
     }
     FREE(pconnol);
 }
+static inline struct overlap_tcp_ctx *_sockctx_to_tcpol(struct sock_ctx *psockctx)
+{
+    return UPCAST(psockctx, struct overlap_tcp_ctx, sockctx);
+}
+static inline struct overlap_udp_ctx *_sockctx_to_udpol(struct sock_ctx *psockctx)
+{
+    return UPCAST(psockctx, struct overlap_udp_ctx, sockctx);
+}
 static inline void _on_disconnectex(struct netev_ctx *piocpctx,
     struct overlap_ctx *polctx, const uint32_t uibyte, const int32_t ierr)
 {
@@ -261,7 +270,12 @@ void sock_close(struct sock_ctx *psockctx)
 
     if (SOCK_DGRAM == psockctx->socktype)
     {
-        SOCK_CLOSE(psockctx->sock);
+        if (!CancelIoEx((HANDLE)psockctx->sock, NULL))
+        {
+            int32_t irtn = ERRNO;
+            NET_ERROR(irtn, "error code:%d message:%s", irtn, ERRORSTR(irtn));
+            SOCK_CLOSE(psockctx->sock);
+        }
         return;
     }
 
@@ -288,14 +302,6 @@ void sock_close(struct sock_ctx *psockctx)
             return;
         }
     }
-}
-static inline struct overlap_tcp_ctx *_sockctx_to_tcpol(struct sock_ctx *psockctx)
-{
-    return UPCAST(psockctx, struct overlap_tcp_ctx, sockctx);
-}
-static inline struct overlap_udp_ctx *_sockctx_to_udpol(struct sock_ctx *psockctx)
-{
-    return UPCAST(psockctx, struct overlap_udp_ctx, sockctx);
 }
 static inline int32_t _post_recv(struct overlap_tcp_ctx *ptcp)
 {
@@ -509,7 +515,7 @@ static inline void _on_recv_from(struct netev_ctx *piocpctx,
     {
         buffer_write_iov_commit(&precvfol->recvbuf, 0, precvfol->wsabuf, precvfol->iovcnt);
         _on_udp_close(pudp);
-        ATOMIC_ADD(&pudp->sockctx.recvref, -1);
+        ATOMIC_ADD(&pudp->sockctx.recvref, -1);        
         return;
     }
 
@@ -882,34 +888,18 @@ int32_t _sock_can_free(struct sock_ctx *psockctx)
         psockctx->freecnt = 0;
         LOG_WARN("free sock_ctx type:%d use long time. sock %d sending:%d recving:%d",
             psockctx->socktype, (int32_t)psockctx->sock, uisendref, uirecvref);
-        if (SOCK_DGRAM == psockctx->socktype)
+        if (0 != uirecvref)
         {
-            if (0 != uirecvref)
-            {
-                if (ERR_OK != _check_olresult(&_sockctx_to_udpol(psockctx)->recvfol.ol, psockctx->sock))
-                {
-                    return ERR_FAILED;
-                }
-            }            
+            return ERR_FAILED;
         }
-        else
+        if (0 != uisendref
+            && SOCK_STREAM == psockctx->socktype)
         {
-            if (0 != uisendref)
+            if (ERR_OK != _check_olresult(&_sockctx_to_tcpol(psockctx)->sendol.ol, psockctx->sock))
             {
-                if (ERR_OK != _check_olresult(&_sockctx_to_tcpol(psockctx)->sendol.ol, psockctx->sock))
-                {
-                    return ERR_FAILED;
-                }
-            }
-            if (0 != uirecvref)
-            {
-                if (ERR_OK != _check_olresult(&_sockctx_to_tcpol(psockctx)->recvol.ol, psockctx->sock))
-                {
-                    return ERR_FAILED;
-                }
+                return ERR_FAILED;
             }
         }
-
         return ERR_OK;
     }
 
