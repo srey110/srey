@@ -1,9 +1,4 @@
 #include "overlap.h"
-#include "netapi.h"
-#include "thread.h"
-#include "netutils.h"
-#include "loger.h"
-#include "utils.h"
 
 #if defined(OS_WIN)
 
@@ -54,7 +49,7 @@ struct netev_ctx *netev_new()
 
     struct netev_ctx *pctx = MALLOC(sizeof(struct netev_ctx));
     ASSERTAB(NULL != pctx, ERRSTR_MEMORY);
-    pctx->thcnt = (int32_t)procscnt() * 2;
+    pctx->thcnt = _get_net_threadcnt();
     pctx->thiocp = MALLOC(sizeof(struct thread_ctx) * pctx->thcnt);
     ASSERTAB(NULL != pctx->thiocp, ERRSTR_MEMORY);
     for (int32_t i = 0; i < pctx->thcnt; i++)

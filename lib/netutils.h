@@ -15,7 +15,6 @@ static inline int32_t socknread(SOCKET fd)
     u_long ulread = 0;
     if (ioctlsocket(fd, FIONREAD, &ulread) < ERR_OK)
     {
-        PRINTF("ioctlsocket(%d, FIONREAD, nread) failed. %s", (int32_t)fd, ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
 
@@ -24,7 +23,6 @@ static inline int32_t socknread(SOCKET fd)
     int32_t iread = 0;
     if (ioctl(fd, FIONREAD, &iread) < ERR_OK)
     {
-        PRINTF("ioctl(%d, FIONREAD, nread) failed. %s", fd, ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
 
@@ -41,9 +39,9 @@ static inline int32_t socktype(SOCKET fd)
 {
     int32_t itype = 0;
     int32_t ilen = (int32_t)sizeof(itype);
-    if (getsockopt(fd, SOL_SOCKET, SO_TYPE, (char *)&itype, &ilen) < ERR_OK)
+    if (getsockopt(fd, SOL_SOCKET, SO_TYPE, (char *)&itype, (socklen_t*)&ilen) < ERR_OK)
     {
-        PRINTF("getsockname(%d, ...) failed. %s", (int32_t)fd, ERRORSTR(ERRNO));
+        PRINTF("getsockopt(%d, ...) failed. %s", (int32_t)fd, ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
 

@@ -19,7 +19,7 @@ static inline void queue_init(struct queue_ctx *pctx, const int32_t icapacity)
     pctx->size = 0;
     pctx->next = 0;
     pctx->capacity = ROUND_UP(icapacity, 2);
-    pctx->data = (void **)MALLOC(sizeof(void*) * pctx->capacity);
+    pctx->data = MALLOC(sizeof(void*) * pctx->capacity);
     ASSERTAB(NULL != pctx->data, ERRSTR_MEMORY);
 };
 /*
@@ -36,7 +36,7 @@ static inline void queue_expand(struct queue_ctx *pctx)
 {
     int32_t inewcap = pctx->capacity * 2;
     ASSERTAB(inewcap <= INT_MAX / (int32_t)sizeof(void*), "capacity too large");
-    void **pnew = (void **)MALLOC(sizeof(void*) * inewcap);
+    void **pnew = MALLOC(sizeof(void*) * inewcap);
     if (NULL == pnew)
     {
         PRINTF("%s", ERRSTR_MEMORY);

@@ -403,7 +403,7 @@ int32_t _buffer_append(struct buffer_ctx *pctx, void *pdata, const size_t uilen)
     size_t uiremain = uilen;
     size_t i, uioff = 0;
     uint32_t uinum = _buffer_expand_iov(pctx, uilen, piov, 2);
-    for (i = 0; i < uinum, uiremain > 0; i++)
+    for (i = 0; i < uinum && uiremain > 0; i++)
     {
         if ((IOV_LEN_TYPE)uiremain >= piov[i].IOV_LEN_FIELD)
         {

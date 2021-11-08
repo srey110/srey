@@ -26,16 +26,31 @@ static inline int32_t sockaddrfamily(SOCKET fd)
     }
     return info.iAddressFamily;
 #else
+#ifdef SO_DOMAIN
     int32_t ifamily = 0;
     int32_t ilens = (int32_t)sizeof(ifamily);
-    if (getsockopt(fd, SOL_SOCKET, SO_DOMAIN, (char*)&ifamily, &ilens) < 0)
+    if (getsockopt(fd, SOL_SOCKET, SO_DOMAIN, &ifamily, (socklen_t*)&ilens) < 0)
     {
         PRINTF("getsockopt(%d, SOL_SOCKET, SO_DOMAIN, ...) failed. %s", (int32_t)fd, ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
     return ifamily;
 #endif
+    return AF_INET;
+#endif
 }
+static inline void netaddr_empty_addr(struct netaddr_ctx *pctx, const int32_t ifamily)
+{
+    pctx->type = ifamily;
+    if (AF_INET == pctx->type)
+    {
+        pctx->ipv4.sin_family = AF_INET;
+    }
+    else
+    {
+        pctx->ipv6.sin6_family = AF_INET6;
+    }
+};
 /*
 * \brief          …Ë÷√µÿ÷∑
 * \param phost    ip

@@ -50,7 +50,7 @@ do\
 #define PRINTF(fmt, ...) printf(CONCAT3("[%s %s %d] ", fmt, "\n"),  __FILENAME__, __FUNCTION__, __LINE__, ##__VA_ARGS__)
 
 #ifndef offsetof
-#define offsetof(type, field) ((off_t)(&((type *)0)->field))
+#define offsetof(type, field) ((size_t)(&((type *)0)->field))
 #endif
 #define UPCAST(ptr, type, field) ((type *)(((char*)(ptr)) - offsetof(type, field)))
 
@@ -149,6 +149,10 @@ do\
     #else
         #define IS_EAGAIN(e) (EAGAIN == (e) || EWOULDBLOCK == (e))
     #endif
+    #define ERR_RW_RETRIABLE(e)	((e) == EINTR || IS_EAGAIN(e))
+    #define ERR_CONNECT_RETRIABLE(e) ((e) == EINTR || (e) == EINPROGRESS)
+    #define ERR_ACCEPT_RETRIABLE(e)	((e) == EINTR || IS_EAGAIN(e) || (e) == ECONNABORTED)
+    #define ERR_CONNECT_REFUSED(e) ((e) == ECONNREFUSED)
     #define STRCMP strcasecmp
     #define STRNCMP strncasecmp
     #define STRTOK strtok_r

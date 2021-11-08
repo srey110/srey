@@ -1,20 +1,8 @@
 #include "overlap.h"
-#include "netapi.h"
-#include "buffer.h"
-#include "netaddr.h"
-#include "netutils.h"
-#include "loger.h"
-#include "mutex.h"
 
 #if defined(OS_WIN)
 
 #define MAX_ACCEPT_SOCKEX   SOCKK_BACKLOG
-#define MAX_RECV_IOV_SIZE   4096
-#define MAX_RECV_IOV_COUNT  4
-#define MAX_SEND_IOV_SIZE   4096
-#define MAX_SEND_IOV_COUNT  16
-#define MAX_RECV_FROM_IOV_COUNT  4
-#define MAX_SENDTO_IOV_COUNT 16
 #define NET_ERROR(err, format, ...) \
             if (ERR_FAILED != err\
             && WSAECONNRESET != err \
@@ -242,7 +230,7 @@ static inline void _on_connect(struct netev_ctx *piocpctx,
     struct ev_sock_ctx *pev = ev_sock_connect(pconnol->sock, ierr);
     if (ERR_OK != _post_acpcon_ev(pconnol->chan, 1, &pev->ev))
     {
-        LOG_ERROR("%s", "post accept event failed.");
+        LOG_ERROR("%s", "post connect event failed.");
         FREE(pev);
         SAFE_CLOSE_SOCK(sock);
     }
@@ -279,8 +267,7 @@ void sock_close(struct sock_ctx *psockctx)
         return;
     }
 
-    struct overlap_ctx *pdisconol =
-        (struct overlap_ctx *)MALLOC(sizeof(struct overlap_ctx));
+    struct overlap_ctx *pdisconol = MALLOC(sizeof(struct overlap_ctx));
     if (NULL == pdisconol)
     {
         LOG_ERROR("%s", ERRSTR_MEMORY);
@@ -604,8 +591,7 @@ static int32_t _accptex(struct netev_ctx *piocpctx,
         return irtn;
     }
 
-    struct listener_ctx *plistener = 
-        (struct listener_ctx *)MALLOC(sizeof(struct listener_ctx));
+    struct listener_ctx *plistener = MALLOC(sizeof(struct listener_ctx));
     if (NULL == plistener)
     {
         LOG_ERROR("%s", ERRSTR_MEMORY);
@@ -727,8 +713,7 @@ static inline int32_t _connectex(struct netev_ctx *piocpctx,
         return irtn;
     }
 
-    struct overlap_conn_ctx *poverlapped = 
-        (struct overlap_conn_ctx *)MALLOC(sizeof(struct overlap_conn_ctx));
+    struct overlap_conn_ctx *poverlapped = MALLOC(sizeof(struct overlap_conn_ctx));
     if (NULL == poverlapped)
     {
         LOG_ERROR("%s", ERRSTR_MEMORY);
@@ -907,8 +892,7 @@ int32_t _sock_can_free(struct sock_ctx *psockctx)
 }
 static inline struct overlap_tcp_ctx *_sockctx_tcp_init(SOCKET fd)
 {
-    struct overlap_tcp_ctx *ptcp = 
-        (struct overlap_tcp_ctx *)MALLOC(sizeof(struct overlap_tcp_ctx));
+    struct overlap_tcp_ctx *ptcp = MALLOC(sizeof(struct overlap_tcp_ctx));
     if (NULL == ptcp)
     {
         LOG_ERROR("%s", ERRSTR_MEMORY);
@@ -946,8 +930,7 @@ static inline void _sockctx_init(struct sock_ctx *psockctx,
 }
 static inline struct overlap_udp_ctx *_sockctx_udp_init(SOCKET fd)
 {
-    struct overlap_udp_ctx *pudpctx = 
-        (struct overlap_udp_ctx *)MALLOC(sizeof(struct overlap_udp_ctx));
+    struct overlap_udp_ctx *pudpctx = MALLOC(sizeof(struct overlap_udp_ctx));
     if (NULL == pudpctx)
     {
         LOG_ERROR("%s", ERRSTR_MEMORY);
@@ -1128,8 +1111,7 @@ int32_t sock_sendto(struct sock_ctx *psockctx, void *pdata, const size_t uilens,
         return irtn;
     }
 
-    struct overlap_sendto_ctx *psendtool = 
-        (struct overlap_sendto_ctx *)MALLOC(sizeof(struct overlap_sendto_ctx));
+    struct overlap_sendto_ctx *psendtool = MALLOC(sizeof(struct overlap_sendto_ctx));
     if (NULL == psendtool)
     {
         LOG_ERROR("%s", ERRSTR_MEMORY);

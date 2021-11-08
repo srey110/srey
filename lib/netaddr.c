@@ -99,23 +99,20 @@ int32_t netaddr_remoteaddr(struct netaddr_ctx *pctx, SOCKET fd)
     {
         struct sockaddr_in addr = { 0 };
         int32_t isocklens = (int32_t)sizeof(struct sockaddr_in);
-        if (ERR_OK != getpeername(fd, (struct sockaddr *)&addr, &isocklens))
+        if (ERR_OK != getpeername(fd, (struct sockaddr *)&addr, (socklen_t *)&isocklens))
         {
             return ERRNO;
         }
         netaddr_setaddr(pctx, (struct sockaddr *)&addr);
+        return ERR_OK;
     }
-    else
+    struct sockaddr_in6 addr = { 0 };
+    int32_t isocklens = (int32_t)sizeof(struct sockaddr_in6);
+    if (ERR_OK != getpeername(fd, (struct sockaddr *)&addr, (socklen_t *)&isocklens))
     {
-        struct sockaddr_in6 addr = { 0 };
-        int32_t isocklens = (int32_t)sizeof(struct sockaddr_in6);
-        if (ERR_OK != getpeername(fd, (struct sockaddr *)&addr, &isocklens))
-        {
-            return ERRNO;
-        }
-        netaddr_setaddr(pctx, (struct sockaddr *)&addr);
+        return ERRNO;
     }
-
+    netaddr_setaddr(pctx, (struct sockaddr *)&addr);
     return ERR_OK;
 }
 int32_t netaddr_localaddr(struct netaddr_ctx *pctx, SOCKET fd)
@@ -134,22 +131,19 @@ int32_t netaddr_localaddr(struct netaddr_ctx *pctx, SOCKET fd)
     {
         struct sockaddr_in addr = { 0 };
         int32_t isocklens = (int32_t)sizeof(struct sockaddr_in);
-        if (ERR_OK != getsockname(fd, (struct sockaddr *)&addr, &isocklens))
+        if (ERR_OK != getsockname(fd, (struct sockaddr *)&addr, (socklen_t *)&isocklens))
         {
             return ERRNO;
         }
-        netaddr_setaddr(pctx, (struct sockaddr *)&addr);   
-    }
-    else
+        netaddr_setaddr(pctx, (struct sockaddr *)&addr); 
+        return ERR_OK;
+    }    
+    struct sockaddr_in6 addr = { 0 };
+    int32_t isocklens = (int32_t)sizeof(struct sockaddr_in6);
+    if (ERR_OK != getsockname(fd, (struct sockaddr *)&addr, (socklen_t *)&isocklens))
     {
-        struct sockaddr_in6 addr = { 0 };
-        int32_t isocklens = (int32_t)sizeof(struct sockaddr_in6);
-        if (ERR_OK != getsockname(fd, (struct sockaddr *)&addr, &isocklens))
-        {
-            return ERRNO;
-        }
-        netaddr_setaddr(pctx, (struct sockaddr *)&addr);
+        return ERRNO;
     }
-
+    netaddr_setaddr(pctx, (struct sockaddr *)&addr);
     return ERR_OK;
 }

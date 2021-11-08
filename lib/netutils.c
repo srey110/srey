@@ -142,11 +142,11 @@ SOCKET _socklsn(const char *pip, const uint16_t usport, const int32_t ibacklog)
     }
 
     struct netaddr_ctx addr;
-    if (ERRNO != netaddr_sethost(&addr, pip, usport))
+    if (ERR_OK != netaddr_sethost(&addr, pip, usport))
     {
+        PRINTF("%s", "netaddr_sethost failed.");
         return INVALID_SOCK;
     }
-
     SOCKET fd = socket(AF_INET, SOCK_STREAM, 0);
     if (INVALID_SOCK == fd)
     {
@@ -198,17 +198,18 @@ int32_t sockpair(SOCKET acSock[2])
     {
         return ERR_FAILED;
     }
-
     struct netaddr_ctx addr;
     if (ERR_OK != netaddr_localaddr(&addr, fdlsn))
     {
         SOCK_CLOSE(fdlsn);
+        PRINTF("%s", "netaddr_localaddr failed.");
         return ERR_FAILED;
     }
     char acip[IP_LENS];
     if (ERR_OK != netaddr_ip(&addr, acip))
     {
         SOCK_CLOSE(fdlsn);
+        PRINTF("%s", "netaddr_ip failed.");
         return ERR_FAILED;
     }
 
@@ -220,8 +221,8 @@ int32_t sockpair(SOCKET acSock[2])
     }
 
     struct sockaddr_in listen_addr;
-    int32_t isize = (int32_t)sizeof(listen_addr);
-    SOCKET fdacp = accept(fdlsn, (struct sockaddr *) &listen_addr, &isize);
+    socklen_t isize = (socklen_t)sizeof(listen_addr);
+    SOCKET fdacp = accept(fdlsn, (struct sockaddr *) &listen_addr, (socklen_t*)&isize);
     if (INVALID_SOCK == fdacp)
     {
         PRINTF("accept(%d, ...) failed. %s", (int32_t)fdlsn, ERRORSTR(ERRNO));

@@ -4,11 +4,12 @@
 #include "chan.h"
 
 #define EV_TIME    0x01
-#define EV_ACCEPT  0x02
-#define EV_CONNECT 0x03
-#define EV_CLOSE   0x04
-#define EV_RECV    0x05
-#define EV_SEND    0x06
+#define EV_READ    0x02
+#define EV_WRITE   0x04
+#define EV_CLOSE   0x08
+#define EV_ACCEPT  0x10
+#define EV_CONNECT 0x20
+
 typedef struct ev_ctx
 {
     int32_t evtype;     //ÀàÐÍ  
@@ -70,7 +71,7 @@ static inline struct ev_sock_ctx *ev_sock_recv(SOCKET sock, const int32_t ilens,
     struct ev_sock_ctx *pev = (struct ev_sock_ctx *)MALLOC(sizeof(struct ev_sock_ctx));
     ASSERTAB(NULL != pev, ERRSTR_MEMORY);
     pev->ev.result = ilens;
-    pev->ev.evtype = EV_RECV;
+    pev->ev.evtype = EV_READ;
     pev->sock = sock;
     pev->sockctx = psockctx;
     pev->buffer = pbuf;
@@ -82,7 +83,7 @@ static inline struct ev_sock_ctx *ev_sock_send(SOCKET sock, const int32_t ilens,
     struct ev_sock_ctx *pev = (struct ev_sock_ctx *)MALLOC(sizeof(struct ev_sock_ctx));
     ASSERTAB(NULL != pev, ERRSTR_MEMORY);
     pev->ev.result = ilens;
-    pev->ev.evtype = EV_SEND;
+    pev->ev.evtype = EV_WRITE;
     pev->sock = sock;
     pev->sockctx = psockctx;
     pev->buffer = pbuf;

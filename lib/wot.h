@@ -31,7 +31,7 @@ struct wot_ctx
 * \param  pchan        wot_add用
 * \param  uicurtick    当前tick
 */
-static void wot_init(struct wot_ctx *pctx, const u_long ulcurtick)
+static inline void wot_init(struct wot_ctx *pctx, const u_long ulcurtick)
 {
     ZERO(pctx->tv1, sizeof(pctx->tv1));
     ZERO(pctx->tv2, sizeof(pctx->tv2));
@@ -42,7 +42,7 @@ static void wot_init(struct wot_ctx *pctx, const u_long ulcurtick)
     pctx->reqadd.head = pctx->reqadd.tail = NULL;
     mutex_init(&pctx->lockeq);
 };
-static void _free(struct twslot_ctx *pslot, const size_t uilens)
+static inline void _free(struct twslot_ctx *pslot, const size_t uilens)
 {
     struct ev_time_ctx *pnode, *pdel;
     for (size_t i = 0; i < uilens; i++)
@@ -59,7 +59,7 @@ static void _free(struct twslot_ctx *pslot, const size_t uilens)
 /*
 * \brief          释放
 */
-static void wot_free(struct wot_ctx *pctx)
+static inline void wot_free(struct wot_ctx *pctx)
 {
     _free(pctx->tv1, TVR_SIZE);
     _free(pctx->tv2, TVN_SIZE);

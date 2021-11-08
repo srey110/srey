@@ -22,7 +22,6 @@
     <ClInclude Include="buffer.h" />
     <ClInclude Include="chan.h" />
     <ClInclude Include="cond.h" />
-    <ClInclude Include="epoll\epsock.h" />
     <ClInclude Include="errcode.h" />
     <ClInclude Include="event.h" />
     <ClInclude Include="evtype.h" />
@@ -43,24 +42,27 @@
     <ClInclude Include="spinlock.h" />
     <ClInclude Include="thread.h" />
     <ClInclude Include="timer.h" />
+    <ClInclude Include="unix\uevpub.h" />
+    <ClInclude Include="unix\epoll.h" />
+    <ClInclude Include="unix\evport.h" />
+    <ClInclude Include="unix\kqueue.h" />
+    <ClInclude Include="unix\uev.h" />
     <ClInclude Include="utils.h" />
     <ClInclude Include="wot.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="buffer.c" />
-    <ClCompile Include="epoll\epoll.c" />
-    <ClCompile Include="epoll\epsock.c" />
     <ClCompile Include="event.c" />
-    <ClCompile Include="evport\evport.c" />
     <ClCompile Include="iocp\iocp.c" />
     <ClCompile Include="iocp\overlap.c" />
-    <ClCompile Include="kqueue\kqueue.c" />
     <ClCompile Include="loger.c" />
     <ClCompile Include="md5\md5.c" />
     <ClCompile Include="netaddr.c" />
     <ClCompile Include="netutils.c" />
     <ClCompile Include="sha1\sha1.c" />
     <ClCompile Include="snowflake.c" />
+    <ClCompile Include="unix\uev.c" />
+    <ClCompile Include="unix\usock.c" />
     <ClCompile Include="utils.c" />
   </ItemGroup>
   <PropertyGroup Label="Globals">

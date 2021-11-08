@@ -1,7 +1,7 @@
 #ifndef OVERLAPID_TCP_H_
 #define OVERLAPID_TCP_H_
 
-#include "evtype.h"
+#include "netapi.h"
 
 #if defined(OS_WIN)
 typedef struct overlap_ctx

@@ -24,7 +24,7 @@ size_t _fill_data(char *acpack, size_t ilens)
     ASSERTAB(isize <= ilens - 1, "failed.");
     for (size_t i = 0; i < isize; i++)
     {
-        acpack[i] = 'a' + rand() %  ('z' - 'a' + 1);
+        acpack[i] = 'a' + rand() % ('z' - 'a' + 1);
     }
     acpack[isize] = '\0';
 
@@ -115,7 +115,7 @@ void _recv_cb(void *p1, void *p2, void *p3)
             psockev = UPCAST(pev, struct ev_sock_ctx, ev);
             switch (psockev->ev.evtype)
             {
-                case EV_RECV:
+                case EV_READ:
                     ilens = (size_t)psockev->ev.result;
                     pbuf = psockev->buffer;
                     while (ilens > 0)
@@ -132,27 +132,27 @@ void _recv_cb(void *p1, void *p2, void *p3)
                             isendsize = ilens;
                             ilens = 0;
                         }
-                        if (event_socktype(psockev->sockctx) == SOCK_STREAM)
-                        {
+                        /*if (event_socktype(psockev->sockctx) == SOCK_STREAM)
+                        {*/
                             ATOMIC_ADD(&uirecvsize, 1);
-                            event_send(psockev->sockctx, acpack, isendsize);
-                            //send(psockev->sock, acpack, isendsize, 0);
-                            if (rand() % 10 == 0)
+                            //event_send(psockev->sockctx, acpack, isendsize);
+                            send(psockev->sock, acpack, isendsize, 0);
+                            /*if (rand() % 10 == 0)
                             {
                                 event_closesock(psockev->sockctx);
-                            }
-                        }
-                        else
-                        {
-                            ATOMIC_ADD(&uiudprecvsize, 1);
-                            event_sendto(psockev->sockctx, acpack, isendsize, psockev->ip, psockev->port);
-                            //netaddr_sethost(&addr, psockev->ip, psockev->port);
-                            //sendto(psockev->sock, acpack, isendsize, 0, netaddr_addr(&addr), netaddr_size(&addr));
-                        }
+                            }*/
+                        //}
+                        //else
+                        //{
+                        //    ATOMIC_ADD(&uiudprecvsize, 1);
+                        //    event_sendto(psockev->sockctx, acpack, isendsize, psockev->ip, psockev->port);
+                        //    //netaddr_sethost(&addr, psockev->ip, psockev->port);
+                        //    //sendto(psockev->sock, acpack, isendsize, 0, netaddr_addr(&addr), netaddr_size(&addr));
+                        //}
                     }
                     break;
-                case EV_SEND: 
-                    if (event_socktype(psockev->sockctx) == SOCK_STREAM)
+                case EV_WRITE:
+                    /*if (event_socktype(psockev->sockctx) == SOCK_STREAM)
                     {
                         ATOMIC_ADD(&uisendsize, 1);
                     }
@@ -160,7 +160,7 @@ void _recv_cb(void *p1, void *p2, void *p3)
                     {
                         ATOMIC_ADD(&uiudpsendsize, 1);
                     }
-                    break;
+                    break;*/
                 case EV_CLOSE:
                     ATOMIC_ADD(&uilinknum, -1);
                     ATOMIC_ADD(&uitcpclose, 1);
@@ -192,11 +192,28 @@ SOCKET _creat_udp_sock(const char *phost, uint16_t usport)
 
     return fd;
 }
+#ifndef OS_WIN
+void sigHandEntry(int iSigNum)
+{
+    PRINTF("catch signal %d.", iSigNum);
+    uistop = 1;
+}
+#endif
 int main(int argc, char *argv[])
 {
+#ifndef OS_WIN
+    signal(SIGPIPE, SIG_IGN);//若某一端关闭连接，而另一端仍然向它写数据，第一次写数据后会收到RST响应，此后再写数据，内核将向进程发出SIGPIPE信号
+    signal(SIGINT, sigHandEntry);//终止进程
+    signal(SIGHUP, sigHandEntry);//终止进程
+    signal(SIGTSTP, sigHandEntry);//ctrl+Z
+    signal(SIGTERM, sigHandEntry);//终止一个进程
+    signal(SIGKILL, sigHandEntry);//立即结束程序
+    signal(SIGABRT, sigHandEntry);//中止一个程序
+    //signal(H_SIGNAL_EXIT, sigHandEntry);
+#endif
     LOGINIT();
     int32_t ibig = bigendian();
-    usthreadnum = procscnt() * 2;
+    usthreadnum = _get_net_threadcnt();
     struct chan_ctx chan_timeout;
     chan_init(&chan_timeout, ONEK, 0);
     struct thread_ctx thread_timeout;
@@ -225,36 +242,36 @@ int main(int argc, char *argv[])
 
     event_init(&sv, (u_long)ulaccuracy);
     event_loop(&sv);
-
-    const char *plistenhost = "0:0:0:0:0:0:0:0";
+    event_timeout(&sv, &chan_timeout, 200, NULL);
+    //0:0:0:0:0:0:0:0   fe80::c95e:3ff8:a284:fe13%17
+    const char *plistenhost = "0.0.0.0";
     uint16_t uslistenport = 15000;
-    const char *pconnhost = "fe80::c95e:3ff8:a284:fe13%17";
+    const char *pconnhost = "127.0.0.1";
     uint16_t usconnport = 15000;
-    const char *pudphost = "0:0:0:0:0:0:0:0";
+    const char *pudphost = "0.0.0.0";
     uint16_t usudpport = 15001;
     SOCKET sock_listener = event_listener(&sv, pchan_accept, usthreadnum, plistenhost, uslistenport);
-    ASSERTAB(INVALID_SOCK != sock_listener, "1");
-    event_timeout(&sv, &chan_timeout, 200, NULL);
-    
+    ASSERTAB(INVALID_SOCK != sock_listener, "1");    
+    MSLEEP(200);
     SOCKET sock_connecter = event_connecter(&sv, &chan_connect, pconnhost, usconnport);
     ASSERTAB(INVALID_SOCK != sock_connecter, "server_connect error.");
     PRINTF("event_connecter %d", (int32_t)sock_connecter);
     ATOMIC_ADD(&uilinknum, 1);
 
-    SOCKET udpfd = _creat_udp_sock(pudphost, usudpport);
-    if (INVALID_SOCK != udpfd)
-    {
-        if (ERR_OK == event_addsock(&sv, udpfd))
-        {
-            struct sock_ctx *pudpctx = event_enablerw(&sv, udpfd, &pchan_recv[rand() % usthreadnum], ipostsendev);
-            ATOMIC_ADD(&uilinknum, 1);
-            if (NULL != pudpctx)
-            {
-                //MSLEEP(1000 * 5);
-                //sock_close(pudpctx);
-            }
-        }
-    }
+    //SOCKET udpfd = _creat_udp_sock(pudphost, usudpport);
+    //if (INVALID_SOCK != udpfd)
+    //{
+    //    if (ERR_OK == event_addsock(&sv, udpfd))
+    //    {
+    //        struct sock_ctx *pudpctx = event_enablerw(&sv, udpfd, &pchan_recv[rand() % usthreadnum], ipostsendev);
+    //        ATOMIC_ADD(&uilinknum, 1);
+    //        if (NULL != pudpctx)
+    //        {
+    //            //MSLEEP(1000 * 5);
+    //            //sock_close(pudpctx);
+    //        }
+    //    }
+    //}
 
     size_t uicounttime = 0;
     while (0 == ATOMIC_GET(&uistop))

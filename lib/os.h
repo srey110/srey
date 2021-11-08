@@ -119,10 +119,12 @@ endif defined(__DragonFly__)
         #include <mach-o/dyld.h>
         #include <libkern/OSAtomic.h>
     #elif defined(OS_SUN)
+        #include <port.h>
         #include <atomic.h>
         #include <sys/filio.h>
     #elif defined (OS_BSD)
         #include <sys/sysctl.h>
+        #include <sys/event.h>
     #else
     #endif
 #endif // OS_WIN

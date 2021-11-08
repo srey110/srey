@@ -65,11 +65,23 @@
     <ClInclude Include="iocp\overlap.h">
       <Filter>event\iocp</Filter>
     </ClInclude>
-    <ClInclude Include="epoll\epsock.h">
-      <Filter>event\epoll</Filter>
-    </ClInclude>
     <ClInclude Include="netapi.h">
       <Filter>event</Filter>
+    </ClInclude>
+    <ClInclude Include="unix\epoll.h">
+      <Filter>event\unix</Filter>
+    </ClInclude>
+    <ClInclude Include="unix\evport.h">
+      <Filter>event\unix</Filter>
+    </ClInclude>
+    <ClInclude Include="unix\kqueue.h">
+      <Filter>event\unix</Filter>
+    </ClInclude>
+    <ClInclude Include="unix\uev.h">
+      <Filter>event\unix</Filter>
+    </ClInclude>
+    <ClInclude Include="unix\uevpub.h">
+      <Filter>event\unix</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -94,15 +106,6 @@
     <ClCompile Include="iocp\iocp.c">
       <Filter>event\iocp</Filter>
     </ClCompile>
-    <ClCompile Include="kqueue\kqueue.c">
-      <Filter>event\kqueue</Filter>
-    </ClCompile>
-    <ClCompile Include="evport\evport.c">
-      <Filter>event\evport</Filter>
-    </ClCompile>
-    <ClCompile Include="epoll\epoll.c">
-      <Filter>event\epoll</Filter>
-    </ClCompile>
     <ClCompile Include="netaddr.c">
       <Filter>utils</Filter>
     </ClCompile>
@@ -115,8 +118,11 @@
     <ClCompile Include="iocp\overlap.c">
       <Filter>event\iocp</Filter>
     </ClCompile>
-    <ClCompile Include="epoll\epsock.c">
-      <Filter>event\epoll</Filter>
+    <ClCompile Include="unix\uev.c">
+      <Filter>event\unix</Filter>
+    </ClCompile>
+    <ClCompile Include="unix\usock.c">
+      <Filter>event\unix</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -138,17 +144,11 @@
     <Filter Include="event">
       <UniqueIdentifier>{bcc74df3-4dc9-456c-b9ce-be3bd9b20b95}</UniqueIdentifier>
     </Filter>
-    <Filter Include="event\epoll">
-      <UniqueIdentifier>{c81b7481-b9cc-4bc0-8d7a-45534fa8ff67}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="event\evport">
-      <UniqueIdentifier>{d58a599b-6ca9-49a4-a6b6-2cdfc4537312}</UniqueIdentifier>
-    </Filter>
     <Filter Include="event\iocp">
       <UniqueIdentifier>{67cbf2a7-ccbb-41a3-9cdd-eb0083d1ef93}</UniqueIdentifier>
     </Filter>
-    <Filter Include="event\kqueue">
-      <UniqueIdentifier>{68541321-4eaa-42cd-8b60-66b08cb28bac}</UniqueIdentifier>
+    <Filter Include="event\unix">
+      <UniqueIdentifier>{86eb2742-f59a-4494-8c33-ac60a8ec8548}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
 </Project>

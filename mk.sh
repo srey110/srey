@@ -12,7 +12,7 @@ UsAge="UsAge:\"./mk.sh\" or \"./mk.sh test\" or \"./mk.sh clean\""
 PROGRAMNAME="srey"
 PROTESTNAME="test"
 #文件夹
-Dir="lib lib/epoll lib/evport lib/kqueue lib/md5 lib/sha1"
+Dir="lib lib/unix lib/md5 lib/sha1"
 #main函数所在文件夹
 MAINDIR="srey"
 TESTDIR="test"
@@ -34,7 +34,7 @@ if [ "$OSNAME" = "SunOS" ]
 then
 	PATH=$PATH:/usr/sfw/bin:/usr/ccs/bin
 	export PATH
-	INCLUDELIB=$INCLUDELIB" -lsocket"
+	INCLUDELIB=$INCLUDELIB" -lsocket -lnsl"
 fi
 #位数
 X64=""
@@ -59,8 +59,8 @@ EXCEPTL=$MAINFILE" "$TESTFILE
 
 MAKEFILEPATH=`pwd`
 LIBPATH="-L$MAKEFILEPATH/$RSTPATH"
-CC="gcc -std=gnu99"
-GCC="g++"
+CC="gcc -std=gnu99 -g -Wall"
+GCC="g++ -g -Wall"
 ARCH="ar -rv"
 INCLUDEPATH=""
 OBJFILE=""
