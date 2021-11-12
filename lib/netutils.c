@@ -134,17 +134,12 @@ void closereset(SOCKET fd)
             (int32_t)fd, ERRORSTR(ERRNO));
     }
 }
-SOCKET _socklsn(const char *pip, const uint16_t usport, const int32_t ibacklog)
+SOCKET _sock_listen()
 {
-    if (0 == ibacklog)
-    {
-        return INVALID_SOCK;
-    }
-
     struct netaddr_ctx addr;
-    if (ERR_OK != netaddr_sethost(&addr, pip, usport))
+    if (ERR_OK != netaddr_sethost(&addr, "127.0.0.1", 0))
     {
-        PRINTF("%s", "netaddr_sethost failed.");
+        PRINTF("%s", ERRORSTR(ERRNO));
         return INVALID_SOCK;
     }
     SOCKET fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -159,30 +154,24 @@ SOCKET _socklsn(const char *pip, const uint16_t usport, const int32_t ibacklog)
         SOCK_CLOSE(fd);
         return INVALID_SOCK;
     }
-    if (ERR_OK != listen(fd, ibacklog))
+    if (ERR_OK != listen(fd, 1))
     {
-        PRINTF("listen(%d, %d) failed. %s", (int32_t)fd, ibacklog, ERRORSTR(ERRNO));
+        PRINTF("listen(%d, 1) failed. %s", (int32_t)fd, ERRORSTR(ERRNO));
         SOCK_CLOSE(fd);
         return INVALID_SOCK;
     }
 
     return fd;
 }
-SOCKET _sockcnt(const char *ip, const uint16_t port)
+SOCKET _sockcnt(struct netaddr_ctx *paddr)
 {
-    struct netaddr_ctx addr;
-    if (ERR_OK != netaddr_sethost(&addr, ip, port))
-    {
-        return INVALID_SOCK;
-    }
-
     SOCKET fd = socket(AF_INET, SOCK_STREAM, 0);
     if (INVALID_SOCK == fd)
     {
         PRINTF("socket(AF_INET, SOCK_STREAM, 0) failed. %s", ERRORSTR(ERRNO));
         return INVALID_SOCK;
     }
-    if (ERR_OK != connect(fd, netaddr_addr(&addr), netaddr_size(&addr)))
+    if (ERR_OK != connect(fd, netaddr_addr(paddr), netaddr_size(paddr)))
     {
         PRINTF("connect(%d, ...) failed. %s", (int32_t)fd, ERRORSTR(ERRNO));
         SOCK_CLOSE(fd);
@@ -193,36 +182,27 @@ SOCKET _sockcnt(const char *ip, const uint16_t port)
 }
 int32_t sockpair(SOCKET acSock[2])
 {
-    SOCKET fdlsn = _socklsn("127.0.0.1", 0, 1);
+    SOCKET fdlsn = _sock_listen();
     if (INVALID_SOCK == fdlsn)
     {
         return ERR_FAILED;
     }
     struct netaddr_ctx addr;
-    if (ERR_OK != netaddr_localaddr(&addr, fdlsn))
+    if (ERR_OK != netaddr_localaddr(&addr, fdlsn, AF_INET))
     {
         SOCK_CLOSE(fdlsn);
         PRINTF("%s", "netaddr_localaddr failed.");
         return ERR_FAILED;
     }
-    char acip[IP_LENS];
-    if (ERR_OK != netaddr_ip(&addr, acip))
-    {
-        SOCK_CLOSE(fdlsn);
-        PRINTF("%s", "netaddr_ip failed.");
-        return ERR_FAILED;
-    }
-
-    SOCKET fdcn = _sockcnt(acip, netaddr_port(&addr));
+    SOCKET fdcn = _sockcnt(&addr);
     if (INVALID_SOCK == fdcn)
     {
         SOCK_CLOSE(fdlsn);
         return ERR_FAILED;
     }
-
     struct sockaddr_in listen_addr;
-    socklen_t isize = (socklen_t)sizeof(listen_addr);
-    SOCKET fdacp = accept(fdlsn, (struct sockaddr *) &listen_addr, (socklen_t*)&isize);
+    socklen_t iaddrlens = (socklen_t)sizeof(listen_addr);
+    SOCKET fdacp = accept(fdlsn, (struct sockaddr *) &listen_addr, &iaddrlens);
     if (INVALID_SOCK == fdacp)
     {
         PRINTF("accept(%d, ...) failed. %s", (int32_t)fdlsn, ERRORSTR(ERRNO));
@@ -231,7 +211,7 @@ int32_t sockpair(SOCKET acSock[2])
         return ERR_FAILED;
     }
     SOCK_CLOSE(fdlsn);
-    if (ERR_OK != netaddr_localaddr(&addr, fdcn))
+    if (ERR_OK != netaddr_localaddr(&addr, fdcn, AF_INET))
     {
         SOCK_CLOSE(fdacp);
         SOCK_CLOSE(fdcn);

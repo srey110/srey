@@ -10,16 +10,14 @@
 #if defined(OS_WIN)
 typedef HANDLE pthread_t;
 #endif
-typedef struct thread_ctx
+struct thread_ctx
 {
     uint32_t threadid;
     int32_t state;
     pthread_t pthread;
-    void *param1;
-    void *param2;
-    void *param3;
-    void(*cb)(void*, void*, void*);
-}thread_ctx;
+    void *data;
+    void(*th_cb)(void*);
+};
 /*
 * \brief          获取当前线程Id
 * \return         线程Id
@@ -42,7 +40,7 @@ static void *_funccb(void *parg)
     pctx->threadid = threadid();
     pctx->state = THREAD_RUNING;
 
-    pctx->cb(pctx->param1, pctx->param2, pctx->param3);
+    pctx->th_cb(pctx->data);
 
     pctx->state = THREAD_STOP;
 #if defined(OS_WIN)
@@ -64,8 +62,7 @@ static inline void thread_init(struct thread_ctx *pctx)
 * \param thread_cb   回调函数
 * \param pparam      回调函数参数,方便多个参数的时候
 */
-static inline void thread_creat(struct thread_ctx *pctx, void(*cb)(void*, void*, void*),
-    void *pparam1, void *pparam2, void *pparam3)
+static inline void thread_creat(struct thread_ctx *pctx, void(*cb)(void*), void *pdata)
 {
     if (THREAD_STOP != pctx->state)
     {
@@ -74,10 +71,8 @@ static inline void thread_creat(struct thread_ctx *pctx, void(*cb)(void*, void*,
     }
 
     pctx->state = THREAD_WAITRUN;
-    pctx->cb = cb;
-    pctx->param1 = pparam1;
-    pctx->param2 = pparam2;
-    pctx->param3 = pparam3;
+    pctx->th_cb = cb;
+    pctx->data = pdata;
 
 #if defined(OS_WIN)
     pctx->pthread = (HANDLE)_beginthreadex(NULL, 0, _funccb, (void*)pctx, 0, NULL);

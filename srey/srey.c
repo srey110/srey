@@ -6,171 +6,6 @@
 #pragma comment(lib, "lib.lib")
 #pragma comment(lib, "vld.lib")
 #endif
-
-struct event_ctx sv;
-uint32_t usthreadnum = 0;
-uint64_t ulaccuracy = 1000 * 1000 * 10;
-volatile uint32_t uirecvsize = 0;
-volatile uint32_t uisendsize = 0;
-volatile uint32_t uilinknum = 0;
-volatile uint32_t uistop = 0;
-volatile uint32_t uiudprecvsize = 0;
-volatile uint32_t uiudpsendsize = 0;
-volatile uint32_t uitcpclose = 0;
-const int32_t ipostsendev = 1;
-size_t _fill_data(char *acpack, size_t ilens)
-{
-    size_t isize = 50 + rand() % (ilens - 50);
-    ASSERTAB(isize <= ilens - 1, "failed.");
-    for (size_t i = 0; i < isize; i++)
-    {
-        acpack[i] = 'a' + rand() % ('z' - 'a' + 1);
-    }
-    acpack[isize] = '\0';
-
-    return isize;
-}
-void _timeout_cb(void *p1, void *p2, void *p3)
-{
-    struct ev_ctx *pev;
-    struct ev_time_ctx *pnode;
-    struct chan_ctx *pchan_timeout = p1;
-    while (0 == ATOMIC_GET(&uistop))
-    {
-        pev = chan_recv(pchan_timeout);
-        if (NULL != pev)
-        {
-            pnode = UPCAST(pev, struct ev_time_ctx, ev);
-            PRINTF("time out diff:%d,link count %d recv pack %d send pack %d udp recv %d udp send %d  close time %d",
-                (int32_t)(event_tick(&sv) - pnode->expires),
-                ATOMIC_GET(&uilinknum), ATOMIC_GET(&uirecvsize), ATOMIC_GET(&uisendsize),
-                ATOMIC_GET(&uiudprecvsize), ATOMIC_GET(&uiudpsendsize), ATOMIC_GET(&uitcpclose));
-            FREE(pnode);
-
-            event_timeout(&sv, pchan_timeout, 200, NULL);
-        }
-    }
-}
-void _accept_cb(void *p1, void *p2, void *p3)
-{
-    struct ev_ctx *pev;
-    struct ev_sock_ctx *psockev;
-    struct chan_ctx *pchan_accept = p1;
-    struct chan_ctx *pchan_recvs = p2;
-    while (0 == ATOMIC_GET(&uistop))
-    {
-        pev = chan_recv(pchan_accept);
-        if (NULL != pev)
-        {
-            psockev = UPCAST(pev, struct ev_sock_ctx, ev);
-            if (ERR_OK == event_addsock(&sv, psockev->sock))
-            {
-                event_enablerw(&sv, psockev->sock, &pchan_recvs[rand() % usthreadnum], ipostsendev);
-                ATOMIC_ADD(&uilinknum, 1);
-            }
-            FREE(psockev);
-        }
-    }
-}
-void _connet_cb(void *p1, void *p2, void *p3)
-{
-    struct ev_ctx *pev;
-    struct ev_sock_ctx *psockev;
-    struct chan_ctx *pchan_connect = p1;
-    struct chan_ctx *pchan_recvs = p2;
-    while (0 == ATOMIC_GET(&uistop))
-    {
-        pev = chan_recv(pchan_connect);
-        if (NULL != pev)
-        {
-            psockev = UPCAST(pev, struct ev_sock_ctx, ev);
-            if (ERR_OK == psockev->ev.result)
-            {
-                event_enablerw(&sv, psockev->sock, &pchan_recvs[rand() % usthreadnum], ipostsendev);
-                ATOMIC_ADD(&uilinknum, 1);
-            }
-            else
-            {
-                PRINTF("connect error %s", ERRORSTR(psockev->ev.result));
-            }
-            FREE(psockev);
-        }
-    }
-}
-void _recv_cb(void *p1, void *p2, void *p3)
-{
-    struct ev_ctx *pev;
-    struct ev_sock_ctx *psockev;
-    struct chan_ctx *pchan_recv = p1;
-    char acpack[ONEK * 4];
-    struct buffer_ctx *pbuf;
-    //struct netaddr_ctx addr;
-    int icloseonece = 0;
-    size_t ilens, isendsize;
-    while (0 == ATOMIC_GET(&uistop))
-    {
-        pev = chan_recv(pchan_recv);
-        if (NULL != pev)
-        {
-            psockev = UPCAST(pev, struct ev_sock_ctx, ev);
-            switch (psockev->ev.evtype)
-            {
-                case EV_READ:
-                    ilens = (size_t)psockev->ev.result;
-                    pbuf = psockev->buffer;
-                    while (ilens > 0)
-                    {
-                        if (ilens >= sizeof(acpack))
-                        {
-                            ASSERTAB(sizeof(acpack) == buffer_remove(pbuf, acpack, sizeof(acpack)), "remove buffer lens error.");
-                            isendsize = sizeof(acpack);
-                            ilens -= sizeof(acpack);
-                        }
-                        else
-                        {
-                            ASSERTAB(ilens == buffer_remove(pbuf, acpack, ilens), "remove buffer lens error.");
-                            isendsize = ilens;
-                            ilens = 0;
-                        }
-                        /*if (event_socktype(psockev->sockctx) == SOCK_STREAM)
-                        {*/
-                            ATOMIC_ADD(&uirecvsize, 1);
-                            //event_send(psockev->sockctx, acpack, isendsize);
-                            send(psockev->sock, acpack, isendsize, 0);
-                            /*if (rand() % 10 == 0)
-                            {
-                                event_closesock(psockev->sockctx);
-                            }*/
-                        //}
-                        //else
-                        //{
-                        //    ATOMIC_ADD(&uiudprecvsize, 1);
-                        //    event_sendto(psockev->sockctx, acpack, isendsize, psockev->ip, psockev->port);
-                        //    //netaddr_sethost(&addr, psockev->ip, psockev->port);
-                        //    //sendto(psockev->sock, acpack, isendsize, 0, netaddr_addr(&addr), netaddr_size(&addr));
-                        //}
-                    }
-                    break;
-                case EV_WRITE:
-                    /*if (event_socktype(psockev->sockctx) == SOCK_STREAM)
-                    {
-                        ATOMIC_ADD(&uisendsize, 1);
-                    }
-                    else
-                    {
-                        ATOMIC_ADD(&uiudpsendsize, 1);
-                    }
-                    break;*/
-                case EV_CLOSE:
-                    ATOMIC_ADD(&uilinknum, -1);
-                    ATOMIC_ADD(&uitcpclose, 1);
-                    event_freesock(&sv, psockev->sockctx);
-                    break;
-            }
-            FREE(psockev);
-        }
-    }
-}
 SOCKET _creat_udp_sock(const char *phost, uint16_t usport)
 {
     struct netaddr_ctx addr;
@@ -192,13 +27,130 @@ SOCKET _creat_udp_sock(const char *phost, uint16_t usport)
 
     return fd;
 }
+int32_t istop = 0;
 #ifndef OS_WIN
 void sigHandEntry(int iSigNum)
 {
     PRINTF("catch signal %d.", iSigNum);
-    uistop = 1;
+    istop = 1;
 }
 #endif
+struct netev_ctx *pnetev;
+volatile atomic_t ullinkNum = 0;
+volatile atomic_t ultcprecvnum = 0;
+volatile atomic_t ultcpsendnum = 0;
+volatile atomic_t uludprecvnum = 0;
+volatile atomic_t uludpsendnum = 0;
+void u_read_cb(struct sock_ctx *pscok, struct buffer_ctx *pbuf, size_t uilens, const char *pip, uint16_t uport, void *pdata)
+{    
+    int32_t itype = sock_type(pscok);
+    if (SOCK_STREAM == itype)
+    {
+        ATOMIC_ADD(&ultcprecvnum, 1);
+    }
+    else
+    {
+        ATOMIC_ADD(&uludprecvnum, 1);
+    }
+    size_t isendsize;
+    char acpack[4096];
+    while (uilens > 0)
+    {
+        if (uilens >= sizeof(acpack))
+        {
+            ASSERTAB(sizeof(acpack) == buffer_remove(pbuf, acpack, sizeof(acpack)), "remove buffer lens error.");
+            isendsize = sizeof(acpack);
+            uilens -= sizeof(acpack);
+        }
+        else
+        {
+            ASSERTAB(uilens == buffer_remove(pbuf, acpack, uilens), "remove buffer lens error.");
+            isendsize = uilens;
+            uilens = 0;
+        }
+        if (itype == SOCK_STREAM)
+        {  
+            sock_send(pscok, acpack, isendsize);
+            if (rand() % 10 == 0)
+            {
+                sock_close(pscok);
+            }
+        }
+        else
+        {
+            //sock_sendto(pscok, pip, uport, acpack, isendsize);
+            struct netaddr_ctx addr;
+            netaddr_sethost(&addr, pip, uport);
+            sendto(pscok->sock, acpack, isendsize, 0, netaddr_addr(&addr), netaddr_size(&addr));
+        }
+    }
+}
+void u_write_cb(struct sock_ctx *pscok, size_t uilens, void *pdata)
+{
+    if (SOCK_STREAM == sock_type(pscok))
+    {
+        ATOMIC_ADD(&ultcpsendnum, 1);
+    }
+    else
+    {
+        ATOMIC_ADD(&uludpsendnum, 1);
+    }
+}
+void u_close_cb(struct sock_ctx *pscok, void *pdata)
+{
+    sock_free(pscok);
+    ATOMIC_ADD(&ullinkNum, -1);
+}
+void u_accept_cb(struct sock_ctx *pscok, void *pdata)
+{
+    ASSERTAB(ERR_OK == netev_enable_rw(pnetev, pscok, u_read_cb, u_write_cb, u_close_cb, pdata), "u_accept_cb");
+    ATOMIC_ADD(&ullinkNum, 1);
+}
+void u_connect_cb(struct sock_ctx *pscok, int32_t ierr, void *pdata)
+{
+    if (ERR_OK != ierr)
+    {
+        sock_free(pscok);
+        PRINTF("u_connect_cb %d", ierr);
+        return;
+    }
+    ASSERTAB(ERR_OK == netev_enable_rw(pnetev, pscok, u_read_cb, u_write_cb, u_close_cb, pdata), "u_connect_cb");
+    ATOMIC_ADD(&ullinkNum, 1);
+}
+void print_info_cb(struct tw_node_ctx *ptw, void *pdata)
+{
+    PRINTF("link %d tcp recv %d send %d  udp recv %d send %d", 
+        (uint32_t)ATOMIC_GET(&ullinkNum), 
+        (uint32_t)ATOMIC_GET(&ultcprecvnum), (uint32_t)ATOMIC_GET(&ultcpsendnum),
+        (uint32_t)ATOMIC_GET(&uludprecvnum), (uint32_t)ATOMIC_GET(&uludpsendnum));
+}
+//int32_t ifamily = AF_INET6;
+//const char *bindip = "::";
+//const char *linkip = "::1";
+int32_t ifamily = AF_INET;
+const char *bindip = "0.0.0.0";
+const char *linkip = "127.0.0.1";
+void udp_close(struct tw_node_ctx *ptw, void *pdata)
+{
+    struct sock_ctx *pudp = pdata;
+    if (NULL != pudp)
+    {
+        sock_close(pudp);
+    }
+
+    SOCKET udp = _creat_udp_sock(bindip, 15001);
+    if (INVALID_SOCK != udp)
+    {
+        struct sock_ctx *pnewudp = netev_add_sock(pnetev, udp, SOCK_DGRAM, ifamily);
+        ASSERTAB(ERR_OK == netev_enable_rw(pnetev, pnewudp, u_read_cb, u_write_cb, u_close_cb, NULL), "netev_enable_rw udp");
+        tw_udata(ptw, pnewudp);
+        ATOMIC_ADD(&ullinkNum, 1);
+    }
+    else
+    {
+        tw_udata(ptw, NULL);
+    }
+}
 int main(int argc, char *argv[])
 {
 #ifndef OS_WIN
@@ -209,108 +161,35 @@ int main(int argc, char *argv[])
     signal(SIGTERM, sigHandEntry);//终止一个进程
     signal(SIGKILL, sigHandEntry);//立即结束程序
     signal(SIGABRT, sigHandEntry);//中止一个程序
-    //signal(H_SIGNAL_EXIT, sigHandEntry);
+    //signal(H_SIGNAL_EXIT, sigHandEntry);   
 #endif
-    LOGINIT();
-    int32_t ibig = bigendian();
-    usthreadnum = _get_net_threadcnt();
-    struct chan_ctx chan_timeout;
-    chan_init(&chan_timeout, ONEK, 0);
-    struct thread_ctx thread_timeout;
-    thread_init(&thread_timeout);
-    thread_creat(&thread_timeout, _timeout_cb, &chan_timeout, NULL, NULL);
-    
-    struct chan_ctx *pchan_recv = MALLOC(sizeof(struct chan_ctx) * usthreadnum);
-    struct chan_ctx chan_connect;
-    chan_init(&chan_connect, ONEK, 0);
-    struct thread_ctx thread_connect;
-    thread_init(&thread_connect);
-    thread_creat(&thread_connect, _connet_cb, &chan_connect, pchan_recv, NULL);
-    
-    struct chan_ctx *pchan_accept = MALLOC(sizeof(struct chan_ctx) * usthreadnum);    
-    struct thread_ctx *pthread_accept = MALLOC(sizeof(struct thread_ctx) * usthreadnum);   
-    struct thread_ctx *pthread_recv = MALLOC(sizeof(struct thread_ctx) * usthreadnum);
-    for (uint32_t ui = 0; ui < usthreadnum; ui++)
+    unlimit();
+    LOGINIT();    
+    u_long ulaccuracy = 1000 * 1000 * 10;
+    struct timer_ctx timer;
+    timer_init(&timer);
+    struct tw_ctx tw;
+    pnetev = netev_new(&tw, 0);
+    netev_loop(pnetev);
+    tw_init(&tw, (u_long)(timer_nanosec(&timer) / ulaccuracy));
+    struct listener_ctx *plsn = netev_listener(pnetev, bindip, 15000, u_accept_cb, NULL);
+    MSLEEP(100);
+    struct sock_ctx *pconnsock = netev_connecter(pnetev, 100, linkip, 15000, u_connect_cb, NULL);
+
+    SOCKET udp = _creat_udp_sock(bindip, 15001);
+    struct sock_ctx *pudp = netev_add_sock(pnetev, udp, SOCK_DGRAM, ifamily);
+    ASSERTAB(ERR_OK == netev_enable_rw(pnetev, pudp, u_read_cb, u_write_cb, u_close_cb, NULL), "netev_enable_rw udp");
+    ATOMIC_ADD(&ullinkNum, 1);
+    //tw_add(&tw, 500, -1, udp_close, pudp);
+    tw_add(&tw, 200, -1, print_info_cb, NULL);
+    //int32_t itwcnt = 0;
+    while (0 == istop)
     {
-        chan_init(&pchan_accept[ui], ONEK * 4, 0);
-        chan_init(&pchan_recv[ui], ONEK * 4, 0);
-        thread_init(&pthread_accept[ui]);
-        thread_init(&pthread_recv[ui]);
-        thread_creat(&pthread_accept[ui], _accept_cb, &pchan_accept[ui], pchan_recv, NULL);
-        thread_creat(&pthread_recv[ui], _recv_cb, &pchan_recv[ui], NULL, NULL);
-    }
-
-    event_init(&sv, (u_long)ulaccuracy);
-    event_loop(&sv);
-    event_timeout(&sv, &chan_timeout, 200, NULL);
-    //0:0:0:0:0:0:0:0   fe80::c95e:3ff8:a284:fe13%17
-    const char *plistenhost = "0.0.0.0";
-    uint16_t uslistenport = 15000;
-    const char *pconnhost = "127.0.0.1";
-    uint16_t usconnport = 15000;
-    const char *pudphost = "0.0.0.0";
-    uint16_t usudpport = 15001;
-    SOCKET sock_listener = event_listener(&sv, pchan_accept, usthreadnum, plistenhost, uslistenport);
-    ASSERTAB(INVALID_SOCK != sock_listener, "1");    
-    MSLEEP(200);
-    SOCKET sock_connecter = event_connecter(&sv, &chan_connect, pconnhost, usconnport);
-    ASSERTAB(INVALID_SOCK != sock_connecter, "server_connect error.");
-    PRINTF("event_connecter %d", (int32_t)sock_connecter);
-    ATOMIC_ADD(&uilinknum, 1);
-
-    //SOCKET udpfd = _creat_udp_sock(pudphost, usudpport);
-    //if (INVALID_SOCK != udpfd)
-    //{
-    //    if (ERR_OK == event_addsock(&sv, udpfd))
-    //    {
-    //        struct sock_ctx *pudpctx = event_enablerw(&sv, udpfd, &pchan_recv[rand() % usthreadnum], ipostsendev);
-    //        ATOMIC_ADD(&uilinknum, 1);
-    //        if (NULL != pudpctx)
-    //        {
-    //            //MSLEEP(1000 * 5);
-    //            //sock_close(pudpctx);
-    //        }
-    //    }
-    //}
-
-    size_t uicounttime = 0;
-    while (0 == ATOMIC_GET(&uistop))
-    {
-        uicounttime += 200;
-        MSLEEP(200);
-        /*if (uicounttime >= 10000)
-        {
-            break;
-        }*/
+        tw_run(&tw, (u_long)(timer_nanosec(&timer) / ulaccuracy));
+        MSLEEP(10);
     }    
-    SOCK_CLOSE(sock_connecter);
-    SOCK_CLOSE(sock_listener);
-    MSLEEP(1000 * 1);
-    ATOMIC_SET(&uistop, 1);
-    chan_close(&chan_timeout);
-    thread_join(&thread_timeout);
-    event_free(&sv);
-
-    chan_close(&chan_connect);
-    thread_join(&thread_connect);
-
-    chan_free(&chan_connect);   
-    chan_free(&chan_timeout);
-    for (uint16_t ui = 0; ui < usthreadnum; ui++)
-    {
-        chan_close(&pchan_accept[ui]);
-        chan_close(&pchan_recv[ui]);
-        thread_join(&pthread_accept[ui]);
-        thread_join(&pthread_recv[ui]);
-        chan_free(&pchan_accept[ui]);
-        chan_free(&pchan_recv[ui]);
-    }
-
-    FREE(pchan_accept);
-    FREE(pchan_recv);
-    FREE(pthread_recv);
-    FREE(pthread_accept);
-
+    tw_free(&tw);
+    netev_free(pnetev);
     LOGFREE();
     return 0;
 }

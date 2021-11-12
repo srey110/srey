@@ -4,24 +4,15 @@
 #include "macro.h"
 
 /*
+* \brief          开启coredump socket链接数限制
+*/
+void unlimit();
+/*
 * \brief          判断系统是否为大端
 * \param ulval    需要转换的值
 * \return         转换后的值
 */
-static inline int32_t bigendian() 
-{
-    union 
-    {
-        char c;
-        short s;
-    }u;
-    u.s = 0x1122;
-    if (0x11 == u.c)
-    {
-        return ERR_OK;
-    }
-    return ERR_FAILED;
-}
+int32_t bigendian();
 /*
 * \brief          cpu核数
 * \return         cpu核数

@@ -3,7 +3,7 @@
 
 #include "macro.h"
 
-typedef struct timer_ctx
+struct timer_ctx
 {
 #if defined(OS_WIN)
     double interval;
@@ -13,7 +13,7 @@ typedef struct timer_ctx
 #else
 #endif
     uint64_t starttick;
-}timer_ctx;
+};
 /*
 * \brief          ≥ı ºªØ
 */

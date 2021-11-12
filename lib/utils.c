@@ -2,6 +2,38 @@
 #include "md5/md5.h"
 #include "sha1/sha1.h"
 
+void unlimit()
+{
+#ifdef OS_WIN
+
+#else
+    struct rlimit stnew;
+    stnew.rlim_cur = stnew.rlim_max = RLIM_INFINITY;
+    if (ERR_OK != setrlimit(RLIMIT_CORE, &stnew))
+    {
+        PRINTF("setrlimit(RLIMIT_CORE) failed.%s", ERRORSTR(ERRNO));
+    }
+    stnew.rlim_cur = stnew.rlim_max = 65536;
+    if (ERR_OK != setrlimit(RLIMIT_NOFILE, &stnew))
+    {
+        PRINTF("setrlimit(RLIMIT_NOFILE) failed.%s", ERRORSTR(ERRNO));
+    }
+#endif
+}
+int32_t bigendian()
+{
+    union
+    {
+        char c;
+        short s;
+    }u;
+    u.s = 0x1122;
+    if (0x11 == u.c)
+    {
+        return ERR_OK;
+    }
+    return ERR_FAILED;
+}
 uint32_t procscnt()
 {
 #if defined(OS_WIN)

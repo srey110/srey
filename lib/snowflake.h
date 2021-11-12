@@ -3,13 +3,13 @@
 
 #include "macro.h"
 
-typedef struct sfid_ctx
+struct sfid_ctx
 {
     int32_t workid;
     int32_t centerid;
     long sequence;
     uint64_t lasttime;
-}sfid_ctx;
+};
 /*
 * \brief          ≥ı ºªØ
 */

@@ -22,13 +22,13 @@
 #define CLR_WHT_BLK     "\033[47;30m"   /* °×µ×ºÚ×Ö */
 #endif
 
-typedef struct loginfo_ctx
+struct loginfo_ctx
 {
     LOG_LEVEL lv;
     char *plog;
     char time[TIME_LENS];
-}loginfo_ctx;
-typedef struct logworker_ctx
+};
+struct logworker_ctx
 {
     FILE *file;
 #if defined(OS_WIN)
@@ -39,7 +39,7 @@ typedef struct logworker_ctx
     char lognam[PATH_LENS];
     char *path;
     struct loger_ctx *ploger;
-}logworker_ctx;
+};
 struct loger_ctx g_logerctx;
 #define LOG_FOLDER  "logs"
 const char *_getlvstr(const LOG_LEVEL emlv)
@@ -208,7 +208,7 @@ static inline void _worker_printlog(struct logworker_ctx *pctx, struct loginfo_c
     }
 #endif
 }
-static inline void _worker_freeloginfo(loginfo_ctx *pinfo)
+static inline void _worker_freeloginfo(struct loginfo_ctx *pinfo)
 {
     if (NULL != pinfo)
     {
@@ -216,7 +216,7 @@ static inline void _worker_freeloginfo(loginfo_ctx *pinfo)
         FREE(pinfo);
     }
 }
-static void _loger(void *pparam, void *p2, void *p3)
+static void _loger(void *pparam)
 {
     struct logworker_ctx stworker;
     stworker.ploger = (struct loger_ctx *)pparam;
@@ -228,17 +228,17 @@ static void _loger(void *pparam, void *p2, void *p3)
         pinfo = chan_recv(&stworker.ploger->chan);
         if (NULL == pinfo)
         {
-            _worker_freeloginfo((loginfo_ctx *)pinfo);
+            _worker_freeloginfo((struct loginfo_ctx *)pinfo);
             continue;
         }
-        _worker_printlog(&stworker, (loginfo_ctx *)pinfo);
+        _worker_printlog(&stworker, (struct loginfo_ctx *)pinfo);
         if (ERR_OK != _worker_getfile(&stworker))
         {
-            _worker_freeloginfo((loginfo_ctx *)pinfo);
+            _worker_freeloginfo((struct loginfo_ctx *)pinfo);
             continue;
         }
-        _worker_writelog(&stworker, (loginfo_ctx *)pinfo);
-        _worker_freeloginfo((loginfo_ctx *)pinfo);
+        _worker_writelog(&stworker, (struct loginfo_ctx *)pinfo);
+        _worker_freeloginfo((struct loginfo_ctx *)pinfo);
     }
 
     _worker_free(&stworker);
@@ -251,12 +251,12 @@ void loger_init(struct loger_ctx *pctx)
     pctx->print = 1;
     chan_init(&pctx->chan, ONEK * 4, 0);
     thread_init(&pctx->thloger);
-    thread_creat(&pctx->thloger, _loger, pctx, NULL, NULL);
+    thread_creat(&pctx->thloger, _loger, pctx);
 }
 void loger_free(struct loger_ctx *pctx)
 {
     while (chan_size(&pctx->chan) > 0);
-    pctx->stop = 11;
+    pctx->stop = 1;
     chan_close(&pctx->chan);
     thread_join(&pctx->thloger);
     chan_free(&pctx->chan);
@@ -285,7 +285,7 @@ void loger_log(struct loger_ctx *pctx, const LOG_LEVEL emlv, const char *pformat
     {
         return;
     }
-    struct loginfo_ctx *pinfo = MALLOC(sizeof(loginfo_ctx));
+    struct loginfo_ctx *pinfo = MALLOC(sizeof(struct loginfo_ctx));
     if (NULL == pinfo)
     {
         PRINTF("%s", ERRSTR_MEMORY);

@@ -3,13 +3,13 @@
 
 #include "macro.h"
 
-typedef struct queue_ctx
+struct queue_ctx
 {
     int32_t size;
     int32_t next;
     int32_t capacity;
     void **data;
-}queue_ctx;
+};
 /*
 * \brief          初始化
 */
@@ -64,6 +64,16 @@ static inline void queue_expand(struct queue_ctx *pctx)
     pctx->next = 0;
     pctx->data = pnew;
     pctx->capacity = inewcap;
+}
+/*
+* \brief          尝试扩容
+*/
+static inline void queue_tryexpand(struct queue_ctx *pctx)
+{
+    if (pctx->size == pctx->capacity)
+    {
+        queue_expand(pctx);
+    }
 }
 /*
 * \brief          添加数据

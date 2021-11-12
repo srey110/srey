@@ -8,7 +8,7 @@ struct netaddr_ctx
     int32_t type;
     struct sockaddr_in	ipv4;
     struct sockaddr_in6 ipv6;
-}netaddr_ctx;
+};
 /*
 * \brief          获取sin_family
 * \param fd       SOCKET
@@ -70,13 +70,13 @@ void netaddr_setaddr(struct netaddr_ctx *pctx, const struct sockaddr *paddr);
 * \param fd       SOCKET
 * \return         ERR_OK 成功
 */
-int32_t netaddr_remoteaddr(struct netaddr_ctx *pctx, SOCKET fd);
+int32_t netaddr_remoteaddr(struct netaddr_ctx *pctx, SOCKET fd, const int32_t ifamily);
 /*
 * \brief          获取本地地址信息
 * \param fd       SOCKET
 * \return         ERR_OK 成功
 */
-int32_t netaddr_localaddr(struct netaddr_ctx *pctx, SOCKET fd);
+int32_t netaddr_localaddr(struct netaddr_ctx *pctx, SOCKET fd, const int32_t ifamily);
 /*
 * \brief          返回地址
 * \return         sockaddr *
@@ -96,15 +96,15 @@ static inline struct sockaddr *netaddr_addr(struct netaddr_ctx *pctx)
 * \brief          地址长度
 * \return         地址长度
 */
-static inline int32_t netaddr_size(struct netaddr_ctx *pctx)
+static inline socklen_t netaddr_size(struct netaddr_ctx *pctx)
 {
     if (AF_INET == pctx->type)
     {
-        return (int32_t)sizeof(pctx->ipv4);
+        return (socklen_t)sizeof(pctx->ipv4);
     }
     else
     {
-        return (int32_t)sizeof(pctx->ipv6);
+        return (socklen_t)sizeof(pctx->ipv6);
     }
 };
 /*

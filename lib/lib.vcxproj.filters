@@ -56,32 +56,11 @@
     <ClInclude Include="netutils.h">
       <Filter>utils</Filter>
     </ClInclude>
-    <ClInclude Include="wot.h">
-      <Filter>event</Filter>
+    <ClInclude Include="tw.h">
+      <Filter>utils</Filter>
     </ClInclude>
-    <ClInclude Include="event.h">
-      <Filter>event</Filter>
-    </ClInclude>
-    <ClInclude Include="iocp\overlap.h">
-      <Filter>event\iocp</Filter>
-    </ClInclude>
-    <ClInclude Include="netapi.h">
-      <Filter>event</Filter>
-    </ClInclude>
-    <ClInclude Include="unix\epoll.h">
-      <Filter>event\unix</Filter>
-    </ClInclude>
-    <ClInclude Include="unix\evport.h">
-      <Filter>event\unix</Filter>
-    </ClInclude>
-    <ClInclude Include="unix\kqueue.h">
-      <Filter>event\unix</Filter>
-    </ClInclude>
-    <ClInclude Include="unix\uev.h">
-      <Filter>event\unix</Filter>
-    </ClInclude>
-    <ClInclude Include="unix\uevpub.h">
-      <Filter>event\unix</Filter>
+    <ClInclude Include="netev\netev.h">
+      <Filter>event\netev</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -103,26 +82,20 @@
     <ClCompile Include="buffer.c">
       <Filter>utils</Filter>
     </ClCompile>
-    <ClCompile Include="iocp\iocp.c">
-      <Filter>event\iocp</Filter>
-    </ClCompile>
     <ClCompile Include="netaddr.c">
       <Filter>utils</Filter>
     </ClCompile>
     <ClCompile Include="netutils.c">
       <Filter>utils</Filter>
     </ClCompile>
-    <ClCompile Include="event.c">
-      <Filter>event</Filter>
+    <ClCompile Include="netev\netev.c">
+      <Filter>event\netev</Filter>
     </ClCompile>
-    <ClCompile Include="iocp\overlap.c">
-      <Filter>event\iocp</Filter>
+    <ClCompile Include="netev\overlap.c">
+      <Filter>event\netev</Filter>
     </ClCompile>
-    <ClCompile Include="unix\uev.c">
-      <Filter>event\unix</Filter>
-    </ClCompile>
-    <ClCompile Include="unix\usock.c">
-      <Filter>event\unix</Filter>
+    <ClCompile Include="netev\usock.c">
+      <Filter>event\netev</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -144,11 +117,8 @@
     <Filter Include="event">
       <UniqueIdentifier>{bcc74df3-4dc9-456c-b9ce-be3bd9b20b95}</UniqueIdentifier>
     </Filter>
-    <Filter Include="event\iocp">
-      <UniqueIdentifier>{67cbf2a7-ccbb-41a3-9cdd-eb0083d1ef93}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="event\unix">
-      <UniqueIdentifier>{86eb2742-f59a-4494-8c33-ac60a8ec8548}</UniqueIdentifier>
+    <Filter Include="event\netev">
+      <UniqueIdentifier>{6f43b84f-1490-491a-93d1-c4d6cb223b24}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
 </Project>

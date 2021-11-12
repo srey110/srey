@@ -1,6 +1,6 @@
 #include "buffer.h"
 
-typedef struct buffernode_ctx
+struct buffernode_ctx
 {
     struct buffernode_ctx *next;
     int32_t used;
@@ -8,7 +8,7 @@ typedef struct buffernode_ctx
     size_t misalign;
     size_t off;
     char *buffer;
-}buffernode_ctx;
+};
 
 #define MAX_COPY_IN_EXPAND 4096
 #define MAX_REALIGN_IN_EXPAND 2048
@@ -626,7 +626,7 @@ static int32_t _search_memcmp(struct buffernode_ctx *pnode, size_t uioff, char *
 
     return ERR_OK;
 }
-static buffernode_ctx *_search_start(struct buffernode_ctx *pnode, size_t uistart, size_t *ptotaloff)
+static struct buffernode_ctx *_search_start(struct buffernode_ctx *pnode, size_t uistart, size_t *ptotaloff)
 {
     while (NULL != pnode
         && 0 != pnode->off)

@@ -18,7 +18,7 @@
 #define IOV_LEN_FIELD iov_len
 #define IOV_LEN_TYPE size_t
 #endif
-typedef struct buffer_ctx
+struct buffer_ctx
 {
     struct buffernode_ctx *head;
     struct buffernode_ctx *tail;
@@ -27,19 +27,19 @@ typedef struct buffer_ctx
     int32_t freeze_write;
     size_t total_len;//数据总长度
     mutex_ctx mutex;
-}buffer_ctx;
-typedef struct piece_node_ctx
+};
+struct piece_node_ctx
 {
     struct piece_node_ctx *next;
     size_t size;
     void *data;
-}piece_node_ctx;
-typedef struct piece_iov_ctx
+};
+struct piece_iov_ctx
 {
     struct piece_node_ctx *head;
     struct piece_node_ctx *tail;
     void(*free_data)(void *);
-}piece_iov_ctx;
+};
 /*
 * \brief          初始化
 */
@@ -227,7 +227,7 @@ static inline void buffer_piece_node_free(struct piece_iov_ctx *ppiece)
 static inline int32_t buffer_piece_inser(struct buffer_ctx *pbuf, struct piece_iov_ctx *ppiece,
     void *pnodedata, void *pdata, const size_t uilens)
 {
-    struct piece_node_ctx *pnode = MALLOC(sizeof(struct piece_node_ctx));
+    struct piece_node_ctx *pnode = (struct piece_node_ctx *)MALLOC(sizeof(struct piece_node_ctx));
     if (NULL == pnode)
     {
         PRINTF("%s", ERRSTR_MEMORY);

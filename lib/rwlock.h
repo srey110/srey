@@ -3,7 +3,7 @@
 
 #include "macro.h"
 
-typedef struct rwlock_ctx
+struct rwlock_ctx
 {
 #if defined(OS_WIN)
     uint32_t wlock;
@@ -11,7 +11,7 @@ typedef struct rwlock_ctx
 #else
     pthread_rwlock_t rwlock;
 #endif
-}rwlock_ctx;
+};
 /*
 * \brief          ≥ı ºªØ
 */

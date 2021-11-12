@@ -104,6 +104,7 @@ endif defined(__DragonFly__)
     #include <sys/wait.h>
     #include <sys/ioctl.h>
     #include <sys/syscall.h>
+    #include <sys/resource.h>
     #include <sys/uio.h>
     #include <net/if.h>    
     #include <net/if_arp.h>

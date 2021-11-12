@@ -5,7 +5,7 @@
 #include "mutex.h"
 #include "cond.h"
 
-typedef struct chan_ctx
+struct chan_ctx
 {
     int32_t expand;
     int32_t closed;
@@ -15,7 +15,7 @@ typedef struct chan_ctx
     cond_ctx rcond;
     cond_ctx wcond;
     struct queue_ctx queue;
-}chan_ctx;
+};
 /*
 * \brief             初始化
 * \param icapacity   队列容量
@@ -59,10 +59,9 @@ static inline void chan_close(struct chan_ctx *pctx)
 };
 static inline int32_t _chan_send(struct chan_ctx *pctx, void *pdata)
 {
-    if (0 != pctx->expand
-        && queue_size(&pctx->queue) == queue_cap(&pctx->queue))
+    if (0 != pctx->expand)
     {
-        queue_expand(&pctx->queue);
+        queue_tryexpand(&pctx->queue);
     }
     while (0 == pctx->closed
         && queue_size(&pctx->queue) == queue_cap(&pctx->queue))
