@@ -265,19 +265,23 @@ static inline int32_t _on_tcp_read(struct watcher_ctx *pwatcher, struct usock_ct
     pusock->r_cb(&pusock->sock, &pusock->buf_r, (size_t)ireaded, NULL, 0, pusock->udata);
     return ERR_OK;
 }
+static inline void _chech_sending(struct watcher_ctx *pwatcher, struct usock_ctx *pusock)
+{
+    mutex_lock(&pusock->lock_send);
+    if (0 == buffer_size(&pusock->buf_w))
+    {
+        _uev_del(pwatcher, &pusock->sock, EV_WRITE);
+        pusock->sending = 0;
+    }
+    mutex_unlock(&pusock->lock_send);
+}
 static inline int32_t _on_tcp_send(struct watcher_ctx *pwatcher, struct usock_ctx *pusock)
 {
     uint32_t uiovcnt = buffer_read_iov_application(&pusock->buf_w, MAX_SEND_IOV_SIZE, 
         pusock->wsabuf_w, MAX_SEND_IOV_COUNT);
     if (0 == uiovcnt)
     {
-        mutex_lock(&pusock->lock_send);
-        if (0 == buffer_size(&pusock->buf_w))
-        {
-            _uev_del(pwatcher, &pusock->sock, EV_WRITE);
-            pusock->sending = 0;
-        }
-        mutex_unlock(&pusock->lock_send);
+        _chech_sending(pwatcher, pusock);
         return ERR_OK;
     }
 
@@ -344,13 +348,7 @@ static inline int32_t _on_udp_send(struct watcher_ctx *pwatcher, struct usock_ct
         &pusock->piece, pusock->wsabuf_w, MAX_SEND_IOV_COUNT, &paddr);
     if (0 == uiovcnt)
     {
-        mutex_lock(&pusock->lock_send);
-        if (0 == buffer_size(&pusock->buf_w))
-        {
-            _uev_del(pwatcher, &pusock->sock, EV_WRITE);
-            pusock->sending = 0;
-        }
-        mutex_unlock(&pusock->lock_send);
+        _chech_sending(pwatcher, pusock);
         return ERR_OK;
     }
 
