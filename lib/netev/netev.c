@@ -8,7 +8,7 @@
     #define _CMD_STOP    0x01
     #define _CMD_ADD     0x02
     #define _CMD_DEL     0x03
-    #define _CMD_CLOSE   0x04    
+    #define _CMD_CLOSE   0x04
 #endif
 int32_t _netev_threadcnt(const uint32_t uthcnt)
 {
@@ -281,6 +281,7 @@ void _add_close_qu(struct watcher_ctx *pwatcher, struct sock_ctx *psock)
     {
         return;
     }
+
     psock->flags |= _FLAGS_CLOSE;
     _uev_del(pwatcher, psock, EV_READ | EV_WRITE);    
     queue_tryexpand(&pwatcher->qu_close);
@@ -470,8 +471,7 @@ static inline void _netev_wait(struct watcher_ctx *pwatcher, int32_t *pstop)
 #if defined(NETEV_EPOLL)
     icnt = epoll_wait(pwatcher->evfd, pwatcher->events, pwatcher->event_cnt, -1);
 #elif defined(NETEV_KQUEUE)
-    icnt = kevent(pwatcher->evfd, NULL, 0,
-        pwatcher->events, pwatcher->event_cnt, NULL);
+    icnt = kevent(pwatcher->evfd, NULL, 0, pwatcher->events, pwatcher->event_cnt, NULL);
 #elif defined(NETEV_EVPORT)
     uint32_t uicnt = 1;
     (void)port_getn(pwatcher->evfd, pwatcher->events, pwatcher->event_cnt, &uicnt, NULL);

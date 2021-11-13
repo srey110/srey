@@ -13,7 +13,7 @@
 #include "tw.h"
 
 #if defined(OS_WIN)
-    //#define NETEV_IOCP
+    #define NETEV_IOCP
 #elif defined(OS_LINUX)
     #define NETEV_EPOLL
 #elif defined(OS_BSD)
@@ -89,20 +89,11 @@ typedef void(*connect_cb)(struct sock_ctx *, int32_t, void *);
 typedef void(*read_cb)(struct sock_ctx *, struct buffer_ctx *, size_t, const char*, uint16_t, void *);
 typedef void(*write_cb)(struct sock_ctx *, size_t, void *);
 typedef void(*close_cb)(struct sock_ctx *, void *);
-//AF_INET  AF_INET6    SOCK_STREAM  SOCK_DGRAM
-static inline SOCKET sock_create(int32_t ifamily, int32_t itype)
-{
-#ifdef NETEV_IOCP
-    return WSASocket(ifamily, itype, SOCK_STREAM == itype ? IPPROTO_TCP : IPPROTO_UDP, NULL, 0, WSA_FLAG_OVERLAPPED);
-#else
-    return socket(ifamily, itype, 0);
-#endif
-};
-SOCKET sock_listen(struct netaddr_ctx *paddr);
 
 struct netev_ctx *netev_new(struct tw_ctx *ptw, const uint32_t uthcnt);
 void netev_free(struct netev_ctx *pctx);
 void netev_loop(struct netev_ctx *pctx); 
+
 struct listener_ctx *netev_listener(struct netev_ctx *pctx,
     const char *phost, const uint16_t usport, accept_cb acp_cb, void *pdata);
 struct sock_ctx *netev_add_sock(struct netev_ctx *pctx, SOCKET sock, int32_t itype, int32_t ifamily);
@@ -123,6 +114,16 @@ int32_t sock_sendto(struct sock_ctx *psock, const char *phost, uint16_t uport,
 void sock_close(struct sock_ctx *psock);
 void sock_free(struct sock_ctx *psock);
 void listener_free(struct listener_ctx *plsn);
+//AF_INET  AF_INET6    SOCK_STREAM  SOCK_DGRAM
+static inline SOCKET sock_create(int32_t ifamily, int32_t itype)
+{
+#ifdef NETEV_IOCP
+    return WSASocket(ifamily, itype, SOCK_STREAM == itype ? IPPROTO_TCP : IPPROTO_UDP, NULL, 0, WSA_FLAG_OVERLAPPED);
+#else
+    return socket(ifamily, itype, 0);
+#endif
+};
+SOCKET sock_listen(struct netaddr_ctx *paddr);
 
 int32_t _netev_threadcnt(const uint32_t uthcnt);
 struct watcher_ctx *_netev_get_watcher(struct netev_ctx *pctx, SOCKET fd);

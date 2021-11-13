@@ -6,28 +6,18 @@
 # Date Time  :2011/06/15 
 #***********************************************
 
-UsAge="UsAge:\"./mk.sh\" or \"./mk.sh test\" or \"./mk.sh clean\""
+UsAge="UsAge:\"./mk.sh\" or \"./mk.sh clean\""
 
 #生成程序的名称
 PROGRAMNAME="srey"
-PROTESTNAME="test"
 #文件夹
 Dir="lib lib/netev lib/md5 lib/sha1"
 #main函数所在文件夹
 MAINDIR="srey"
-TESTDIR="test"
 #main函数所在文件
 MAINFILE="srey.c"
-TESTFILE="test.c"
-
 #附加包含库
 INCLUDELIB="-lrt -lpthread"
-if [ "$1" = "test" ]
-then
-    Dir=$Dir" "$TESTDIR
-else
-    Dir=$Dir" "$MAINDIR
-fi
 #系统
 OSNAME=`uname`
 if [ "$OSNAME" = "SunOS" ]
@@ -59,22 +49,12 @@ EXCEPTL=$MAINFILE" "$TESTFILE
 
 MAKEFILEPATH=`pwd`
 LIBPATH="-L$MAKEFILEPATH/$RSTPATH"
-CC="gcc -std=gnu99 -g -Wall"
-GCC="g++ -g -Wall"
+CC="gcc -std=gnu99"
+GCC="g++"
 ARCH="ar -rv"
 INCLUDEPATH=""
 OBJFILE=""
-CFLAGS=""
-if [ "$1" = "test" ]
-then
-    CFLAGS=$CFLAGS"-O0 -g -Wall"
-else
-    CFLAGS=$CFLAGS"-O3 -g -Wall"
-fi
-if [ "$X64" = "x64" ]
-then
-    CFLAGS=$CFLAGS" -m64"
-fi
+CFLAGS="-O3 -g -Wall"
 
 LIBDIR=$Dir
 
@@ -116,15 +96,14 @@ Make()
             exit 1
         fi
 		
-		ExtFlags=""
 		SourceFile=`ls *.cpp 2>/dev/null`
         for EachFile in $SourceFile
         do
             IsExcePTL $EachFile
             if [ "$?" = "0" ]
             then
-                echo "$GCC $CFLAGS $ExtFlags -c $EachFile"
-                $GCC $CFLAGS $ExtFlags -c $EachFile $INCLUDEPATH
+                echo "$GCC $CFLAGS -c $EachFile"
+                $GCC $CFLAGS -c $EachFile $INCLUDEPATH
                 if [ "$?" != "0" ]
                 then
                     echo "---------------------Error---------------------"
@@ -139,8 +118,8 @@ Make()
             IsExcePTL $EachFile
             if [ "$?" = "0" ]
             then
-                echo "$CC $CFLAGS $ExtFlags -c $EachFile"
-                $CC $CFLAGS $ExtFlags -c $EachFile $INCLUDEPATH
+                echo "$CC $CFLAGS -c $EachFile"
+                $CC $CFLAGS -c $EachFile $INCLUDEPATH
                 if [ "$?" != "0" ]
                 then
                     echo "---------------------Error---------------------"
@@ -185,8 +164,6 @@ Clean()
     echo "start rm $PROGRAMNAME"
     rm -rf $PROGRAMNAME
 
-	echo "start rm $PROTESTNAME"
-	rm -rf $PROTESTNAME
     cd $MAKEFILEPATH
 }
 
@@ -198,12 +175,7 @@ do
         then
             Clean
             exit 0
-        fi
-		if [ "$1" = "test" ]
-        then
-            break
-        fi
-        
+        fi        
         echo "$UsAge"
         exit 1
     elif [ $# -gt 1 ]
@@ -218,16 +190,10 @@ done
 GetIncludePath
 Make
 
-if [ "$1" = "test" ]
-then
-    mkmaindir=$MAKEFILEPATH/$TESTDIR
-	mkmaincpp=$TESTFILE
-	proname=$PROTESTNAME
-else
-    mkmaindir=$MAKEFILEPATH/$MAINDIR
-	mkmaincpp=$MAINFILE
-	proname=$PROGRAMNAME
-fi
+mkmaindir=$MAKEFILEPATH/$MAINDIR
+mkmaincpp=$MAINFILE
+proname=$PROGRAMNAME
+
 
 cd $mkmaindir
 

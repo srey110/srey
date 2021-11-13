@@ -52,19 +52,31 @@ void u_read_cb(struct sock_ctx *pscok, struct buffer_ctx *pbuf, size_t uilens, c
     {
         ATOMIC_ADD(&uludprecvnum, 1);
     }
+    int32_t iremoved;
     size_t isendsize;
     char acpack[4096];
+    size_t uold = uilens;
     while (uilens > 0)
     {
         if (uilens >= sizeof(acpack))
         {
-            ASSERTAB(sizeof(acpack) == buffer_remove(pbuf, acpack, sizeof(acpack)), "remove buffer lens error.");
+            iremoved = buffer_remove(pbuf, acpack, sizeof(acpack));
+            if (sizeof(acpack) != iremoved)
+            {
+                PRINTF("%d  %d %d  %d", iremoved, uilens, sock_type(pscok), uold);
+                ASSERTAB(0, "remove buffer lens error.");
+            }            
             isendsize = sizeof(acpack);
             uilens -= sizeof(acpack);
         }
         else
         {
-            ASSERTAB(uilens == buffer_remove(pbuf, acpack, uilens), "remove buffer lens error.");
+            iremoved = buffer_remove(pbuf, acpack, sizeof(acpack));
+            if (uilens != iremoved)
+            {
+                PRINTF("%d  %d", iremoved, uilens);
+                ASSERTAB(0, "remove buffer lens error.");
+            }
             isendsize = uilens;
             uilens = 0;
         }
@@ -78,10 +90,10 @@ void u_read_cb(struct sock_ctx *pscok, struct buffer_ctx *pbuf, size_t uilens, c
         }
         else
         {
-            //sock_sendto(pscok, pip, uport, acpack, isendsize);
-            struct netaddr_ctx addr;
+            sock_sendto(pscok, pip, uport, acpack, isendsize);
+            /*struct netaddr_ctx addr;
             netaddr_sethost(&addr, pip, uport);
-            sendto(pscok->sock, acpack, isendsize, 0, netaddr_addr(&addr), netaddr_size(&addr));
+            sendto(pscok->sock, acpack, isendsize, 0, netaddr_addr(&addr), netaddr_size(&addr));*/
         }
     }
 }
@@ -180,7 +192,7 @@ int main(int argc, char *argv[])
     struct sock_ctx *pudp = netev_add_sock(pnetev, udp, SOCK_DGRAM, ifamily);
     ASSERTAB(ERR_OK == netev_enable_rw(pnetev, pudp, u_read_cb, u_write_cb, u_close_cb, NULL), "netev_enable_rw udp");
     ATOMIC_ADD(&ullinkNum, 1);
-    //tw_add(&tw, 500, -1, udp_close, pudp);
+    tw_add(&tw, 500, -1, udp_close, pudp);
     tw_add(&tw, 200, -1, print_info_cb, NULL);
     //int32_t itwcnt = 0;
     while (0 == istop)

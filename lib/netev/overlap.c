@@ -59,6 +59,7 @@ struct overlap_ctx
     struct buffer_ctx buf_r;
     struct buffer_ctx buf_w;
     mutex_ctx lock_close;//CLOSE后不再触发write_cb
+    mutex_ctx lock_send;
     IOV_TYPE wsabuf_r[MAX_RECV_IOV_COUNT];
     IOV_TYPE wsabuf_w[MAX_SEND_IOV_COUNT];
     struct sockaddr_storage rmtaddr;//存储数据来源IP地址
@@ -309,7 +310,6 @@ static inline int32_t _post_send(struct overlap_ctx *polctx)
         if (WSA_IO_PENDING != irtn)
         {
             buffer_read_iov_commit(&polctx->buf_w, 0);
-            NET_ERROR(irtn, "%s", ERRORSTR(irtn));
             ATOMIC_ADD(&polctx->ref_w, -1);
             return irtn;
         }
@@ -338,9 +338,11 @@ static inline void _on_send_cb(struct watcher_ctx *pwatcher, struct sock_ctx *ps
         }
         mutex_unlock(&polctx->lock_close);
     }
-
+    //防止_post_send时无数据，并且ref_w还未执行-1，此时执行_tcp_trysend并不会触发发送
+    mutex_lock(&polctx->lock_send);
     (void)_post_send(polctx);
     ATOMIC_ADD(&polctx->ref_w, -1);
+    mutex_unlock(&polctx->lock_send);
 }
 static inline void _on_sendto_cb(struct watcher_ctx *pwatcher, struct sock_ctx *psock, int32_t iev, int32_t *pstop)
 {
@@ -452,6 +454,7 @@ struct sock_ctx *netev_add_sock(struct netev_ctx *pctx, SOCKET sock, int32_t ity
     buffer_init(&pol->buf_r);
     buffer_init(&pol->buf_w);
     mutex_init(&pol->lock_close);
+    mutex_init(&pol->lock_send);
 
     return &pol->overlap_r;
 }
@@ -576,6 +579,7 @@ static inline void _sock_free(void *pdata)
     buffer_free(&pol->buf_r);
     buffer_free(&pol->buf_w);
     mutex_free(&pol->lock_close);
+    mutex_free(&pol->lock_send);
     FREE(pol);
 }
 static inline void _sock_delay_free(struct tw_node_ctx *ptw, void *pdata)
@@ -691,7 +695,10 @@ int32_t netev_enable_rw(struct netev_ctx *pctx, struct sock_ctx *psock,
     {
         return ERR_OK;
     }
-    
+    pol->udata = pdata;
+    pol->c_cb = c_cb;
+    pol->r_cb = r_cb;
+    pol->w_cb = w_cb;
     if (!(pol->flags & _FLAGS_READY))
     {
         _netev_add(&pctx->watcher[0], psock, EV_READ | EV_WRITE);
@@ -711,10 +718,6 @@ int32_t netev_enable_rw(struct netev_ctx *pctx, struct sock_ctx *psock,
         return irtn;
     }
     pol->flags |= _FLAGS_LOOP;
-    pol->udata = pdata;
-    pol->c_cb = c_cb;
-    pol->r_cb = r_cb;
-    pol->w_cb = w_cb;
 
     return ERR_OK;
 }
@@ -769,18 +772,17 @@ void sock_close(struct sock_ctx *psock)
 }
 static inline int32_t _tcp_trysend(struct overlap_ctx *polctx)
 {
-    if (!ATOMIC_CAS(&polctx->ref_w, 0, 1))
-    {
-        return ERR_OK;
-    }
-    int32_t irtn = _post_send(polctx);
-    ATOMIC_ADD(&polctx->ref_w, -1);
-    if (ERR_OK != irtn)
-    {
-        return irtn;
-    }
+    int32_t irtn = ERR_OK;
 
-    return ERR_OK;
+    mutex_lock(&polctx->lock_send);
+    if (ATOMIC_CAS(&polctx->ref_w, 0, 1))
+    {
+        irtn = _post_send(polctx);
+        ATOMIC_ADD(&polctx->ref_w, -1);
+    } 
+    mutex_unlock(&polctx->lock_send);
+
+    return irtn;
 }
 int32_t sock_send(struct sock_ctx *psock, void *pdata, const size_t uilens)
 {
