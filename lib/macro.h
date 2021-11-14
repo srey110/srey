@@ -42,6 +42,7 @@ do\
     #else
         #define PATH_LENS 256
     #endif
+    #define SIGNAL_EXIT    SIGRTMIN + 10
 #endif
 
 #define CONCAT2(a, b) a b

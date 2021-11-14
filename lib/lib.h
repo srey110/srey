@@ -21,6 +21,6 @@
 
 #include "netaddr.h"
 #include "netutils.h"
-#include "netev/netev.h"
+#include "event.h"
 
 #endif//LIB_H_

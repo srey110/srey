@@ -124,6 +124,7 @@ static inline SOCKET sock_create(int32_t ifamily, int32_t itype)
 #endif
 };
 SOCKET sock_listen(struct netaddr_ctx *paddr);
+SOCKET sock_udp_bind(const char *phost, const uint16_t usport);
 
 int32_t _netev_threadcnt(const uint32_t uthcnt);
 struct watcher_ctx *_netev_get_watcher(struct netev_ctx *pctx, SOCKET fd);

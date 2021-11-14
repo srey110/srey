@@ -235,8 +235,8 @@ static inline int32_t _check_closed(struct usock_ctx *pusock, ssize_t ireaded, u
         }
         return ERR_FAILED;
     }
-
     buffer_write_iov_commit(&pusock->buf_r, (size_t)ireaded, pusock->wsabuf_r, uiovcnt);
+
     return ERR_FAILED;
 }
 static inline int32_t _on_tcp_read(struct watcher_ctx *pwatcher, struct usock_ctx *pusock)
@@ -257,12 +257,12 @@ static inline int32_t _on_tcp_read(struct watcher_ctx *pwatcher, struct usock_ct
     {
         return ERR_FAILED;
     }
-    if (ireaded <= 0)
+    if (ireaded < 0)
     {
         return ERR_OK;
     }
-
     pusock->r_cb(&pusock->sock, &pusock->buf_r, (size_t)ireaded, NULL, 0, pusock->udata);
+
     return ERR_OK;
 }
 static inline void _chech_sending(struct watcher_ctx *pwatcher, struct usock_ctx *pusock)
@@ -296,12 +296,12 @@ static inline int32_t _on_tcp_send(struct watcher_ctx *pwatcher, struct usock_ct
         }
         return ERR_OK;
     }
-
     buffer_read_iov_commit(&pusock->buf_w, (size_t)isend);
     if (NULL != pusock->w_cb)
     {
         pusock->w_cb(&pusock->sock, (size_t)isend, pusock->udata);
     }
+
     return ERR_OK;
 }
 static inline void _init_msghdr(struct msghdr *pmsg, struct netaddr_ctx *paddr, IOV_TYPE *wsabuf, uint32_t iiovcnt)
@@ -330,11 +330,10 @@ static inline int32_t _on_udp_read(struct watcher_ctx *pwatcher, struct usock_ct
     {
         return ERR_FAILED;
     }
-    if (ireaded <= 0)
+    if (ireaded < 0)
     {
         return ERR_OK;
     }
-
     char acip[IP_LENS];
     netaddr_ip(&addr, acip);
     pusock->r_cb(&pusock->sock, &pusock->buf_r, (size_t)ireaded, acip, netaddr_port(&addr), pusock->udata);
@@ -365,7 +364,6 @@ static inline int32_t _on_udp_send(struct watcher_ctx *pwatcher, struct usock_ct
         }
         return ERR_OK;
     }
-
     buffer_piece_read_iov_commit(&pusock->buf_w, &pusock->piece, (size_t)isend);
     if (NULL != pusock->w_cb)
     {

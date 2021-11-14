@@ -6,35 +6,7 @@
 #pragma comment(lib, "lib.lib")
 #pragma comment(lib, "vld.lib")
 #endif
-SOCKET _creat_udp_sock(const char *phost, uint16_t usport)
-{
-    struct netaddr_ctx addr;
-    if (ERR_OK != netaddr_sethost(&addr, phost, usport))
-    {
-        return INVALID_SOCK;
-    }
-    SOCKET fd = socket(netaddr_family(&addr), SOCK_DGRAM, 0);
-    if (INVALID_SOCK == fd)
-    {
-        return INVALID_SOCK;
-    }
-    sockraddr(fd);
-    if (ERR_OK != bind(fd, netaddr_addr(&addr), netaddr_size(&addr)))
-    {
-        SOCK_CLOSE(fd);
-        return INVALID_SOCK;
-    }
-
-    return fd;
-}
 int32_t istop = 0;
-#ifndef OS_WIN
-void sigHandEntry(int iSigNum)
-{
-    PRINTF("catch signal %d.", iSigNum);
-    istop = 1;
-}
-#endif
 struct netev_ctx *pnetev;
 volatile atomic_t ullinkNum = 0;
 volatile atomic_t ultcprecvnum = 0;
@@ -63,7 +35,7 @@ void u_read_cb(struct sock_ctx *pscok, struct buffer_ctx *pbuf, size_t uilens, c
             iremoved = buffer_remove(pbuf, acpack, sizeof(acpack));
             if (sizeof(acpack) != iremoved)
             {
-                PRINTF("%d  %d %d  %d", iremoved, uilens, sock_type(pscok), uold);
+                PRINTF("%d  %d %d  %d", iremoved, (int32_t)uilens, sock_type(pscok), (int32_t)uold);
                 ASSERTAB(0, "remove buffer lens error.");
             }            
             isendsize = sizeof(acpack);
@@ -74,7 +46,7 @@ void u_read_cb(struct sock_ctx *pscok, struct buffer_ctx *pbuf, size_t uilens, c
             iremoved = buffer_remove(pbuf, acpack, sizeof(acpack));
             if (uilens != iremoved)
             {
-                PRINTF("%d  %d", iremoved, uilens);
+                PRINTF("%d  %d", iremoved, (int32_t)uilens);
                 ASSERTAB(0, "remove buffer lens error.");
             }
             isendsize = uilens;
@@ -91,9 +63,6 @@ void u_read_cb(struct sock_ctx *pscok, struct buffer_ctx *pbuf, size_t uilens, c
         else
         {
             sock_sendto(pscok, pip, uport, acpack, isendsize);
-            /*struct netaddr_ctx addr;
-            netaddr_sethost(&addr, pip, uport);
-            sendto(pscok->sock, acpack, isendsize, 0, netaddr_addr(&addr), netaddr_size(&addr));*/
         }
     }
 }
@@ -150,7 +119,7 @@ void udp_close(struct tw_node_ctx *ptw, void *pdata)
         sock_close(pudp);
     }
 
-    SOCKET udp = _creat_udp_sock(bindip, 15001);
+    SOCKET udp = sock_udp_bind(bindip, 15001);
     if (INVALID_SOCK != udp)
     {
         struct sock_ctx *pnewudp = netev_add_sock(pnetev, udp, SOCK_DGRAM, ifamily);
@@ -163,45 +132,34 @@ void udp_close(struct tw_node_ctx *ptw, void *pdata)
         tw_udata(ptw, NULL);
     }
 }
+void sig_exit(int32_t isig)
+{
+    istop = 1;
+}
 int main(int argc, char *argv[])
 {
-#ifndef OS_WIN
-    signal(SIGPIPE, SIG_IGN);//若某一端关闭连接，而另一端仍然向它写数据，第一次写数据后会收到RST响应，此后再写数据，内核将向进程发出SIGPIPE信号
-    signal(SIGINT, sigHandEntry);//终止进程
-    signal(SIGHUP, sigHandEntry);//终止进程
-    signal(SIGTSTP, sigHandEntry);//ctrl+Z
-    signal(SIGTERM, sigHandEntry);//终止一个进程
-    signal(SIGKILL, sigHandEntry);//立即结束程序
-    signal(SIGABRT, sigHandEntry);//中止一个程序
-    //signal(H_SIGNAL_EXIT, sigHandEntry);   
-#endif
+    sighandle(sig_exit);
     unlimit();
-    LOGINIT();    
-    u_long ulaccuracy = 1000 * 1000 * 10;
-    struct timer_ctx timer;
-    timer_init(&timer);
-    struct tw_ctx tw;
-    pnetev = netev_new(&tw, 0);
-    netev_loop(pnetev);
-    tw_init(&tw, (u_long)(timer_nanosec(&timer) / ulaccuracy));
+
+    LOGINIT();
+    struct event_ctx *pevent = event_new();
+    event_loop(pevent);
+    pnetev = event_netev(pevent);
     struct listener_ctx *plsn = netev_listener(pnetev, bindip, 15000, u_accept_cb, NULL);
     MSLEEP(100);
     struct sock_ctx *pconnsock = netev_connecter(pnetev, 100, linkip, 15000, u_connect_cb, NULL);
 
-    SOCKET udp = _creat_udp_sock(bindip, 15001);
+    SOCKET udp = sock_udp_bind(bindip, 15001);
     struct sock_ctx *pudp = netev_add_sock(pnetev, udp, SOCK_DGRAM, ifamily);
     ASSERTAB(ERR_OK == netev_enable_rw(pnetev, pudp, u_read_cb, u_write_cb, u_close_cb, NULL), "netev_enable_rw udp");
     ATOMIC_ADD(&ullinkNum, 1);
-    tw_add(&tw, 500, -1, udp_close, pudp);
-    tw_add(&tw, 200, -1, print_info_cb, NULL);
-    //int32_t itwcnt = 0;
+    tw_add(event_tw(pevent), 5000, -1, udp_close, pudp);
+    tw_add(event_tw(pevent), 2000, -1, print_info_cb, NULL);
     while (0 == istop)
     {
-        tw_run(&tw, (u_long)(timer_nanosec(&timer) / ulaccuracy));
         MSLEEP(10);
-    }    
-    tw_free(&tw);
-    netev_free(pnetev);
+    }
+    event_free(pevent);
     LOGFREE();
     return 0;
 }

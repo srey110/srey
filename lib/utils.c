@@ -2,10 +2,142 @@
 #include "md5/md5.h"
 #include "sha1/sha1.h"
 
+#ifdef OS_WIN
+#pragma warning(disable:4091)
+#include <DbgHelp.h>
+static volatile atomic_t g_exindex = 0;
+typedef BOOL(WINAPI *WRITEMINIDUMP)(HANDLE,
+    DWORD,
+    HANDLE,
+    MINIDUMP_TYPE,
+    CONST PMINIDUMP_EXCEPTION_INFORMATION,
+    CONST PMINIDUMP_USER_STREAM_INFORMATION,
+    CONST PMINIDUMP_CALLBACK_INFORMATION);
+BOOL _GetImpersonationToken(HANDLE *phandle)
+{
+    if (!OpenThreadToken(GetCurrentThread(),
+        TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES,
+        TRUE,
+        phandle))
+    {
+        if (ERROR_NO_TOKEN == ERRNO)
+        {
+            if (!OpenProcessToken(GetCurrentProcess(),
+                TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES,
+                phandle))
+            {
+                return FALSE;
+            }
+        }
+        else
+        {
+            return FALSE;
+        }
+    }
+    return TRUE;
+}
+BOOL _EnablePrivilege(LPCTSTR ppriv, HANDLE phandle, TOKEN_PRIVILEGES *pprivold)
+{
+    TOKEN_PRIVILEGES tpriv;
+    tpriv.PrivilegeCount = 1;
+    tpriv.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+    if (!LookupPrivilegeValue(0, ppriv, &tpriv.Privileges[0].Luid))
+    {
+        return FALSE;
+    }
+    DWORD dsize = sizeof(TOKEN_PRIVILEGES);
+    return AdjustTokenPrivileges(phandle, FALSE, &tpriv, dsize, pprivold, &dsize);
+}
+void _ResetPrivilege(HANDLE phandle, TOKEN_PRIVILEGES *pprivold)
+{
+    (void)AdjustTokenPrivileges(phandle, FALSE, pprivold, 0, NULL, NULL);
+}
+LONG _on_exception(EXCEPTION_POINTERS *pexception)
+{
+    char acpath[PATH_LENS];
+    if (ERR_OK != getprocpath(acpath))
+    {
+        PRINTF("%s", "getprocpath faild.");
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    char acdmp[PATH_LENS] = {0};
+    SNPRINTF(acdmp, sizeof(acdmp) - 1, "%s%s%lld_%d.dmp",
+        acpath, PATH_SEPARATORSTR, nowsec(), (int32_t)ATOMIC_ADD(&g_exindex, 1));
+
+    HANDLE ptoken = NULL;
+    if (!_GetImpersonationToken(&ptoken))
+    {
+        PRINTF("%s", "GetImpersonationToken faild.");
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    HMODULE pdbghelp = LoadLibrary("dbghelp.dll");
+    if (NULL == pdbghelp)
+    {
+        char acdbghelp[PATH_LENS] = { 0 };
+        SNPRINTF(acdbghelp, sizeof(acdbghelp) - 1, "%s%s%s",
+            acpath, PATH_SEPARATORSTR, "dbghelp.dll");
+        pdbghelp = LoadLibrary(acdbghelp);
+        if (NULL == pdbghelp)
+        {
+            PRINTF("%s", "LoadLibrary(dbghelp.dll) faild.");
+            return EXCEPTION_CONTINUE_SEARCH;
+        }
+    }
+    WRITEMINIDUMP pwritedmp = (WRITEMINIDUMP)GetProcAddress(pdbghelp, "MiniDumpWriteDump");
+    if (NULL == pwritedmp)
+    {
+        PRINTF("%s", "GetProcAddress(, MiniDumpWriteDump) faild.");
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    HANDLE pdmpfile = CreateFile(acdmp,
+        GENERIC_WRITE,
+        FILE_SHARE_WRITE,
+        NULL,
+        CREATE_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL,
+        NULL);
+    if (INVALID_HANDLE_VALUE == pdmpfile)
+    {
+        PRINTF("CreateFile(%s,...) faild.", acdmp);
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    LONG lrtn = EXCEPTION_CONTINUE_SEARCH;
+    TOKEN_PRIVILEGES tprivold;
+    MINIDUMP_EXCEPTION_INFORMATION exinfo;
+    exinfo.ThreadId = GetCurrentThreadId();
+    exinfo.ExceptionPointers = pexception;
+    exinfo.ClientPointers = FALSE;
+    BOOL bprienabled = _EnablePrivilege(SE_DEBUG_NAME, ptoken, &tprivold);
+    BOOL bok = pwritedmp(GetCurrentProcess(),
+        GetCurrentProcessId(),
+        pdmpfile,
+        MiniDumpNormal,
+        &exinfo,
+        NULL,
+        NULL);
+    if (bok)
+    {
+        lrtn = EXCEPTION_EXECUTE_HANDLER;
+    }
+    else
+    {
+        PRINTF("%s", "write dmp faild.");
+    }
+    if (bprienabled)
+    {
+        _ResetPrivilege(ptoken, &tprivold);
+    }    
+    CloseHandle(pdmpfile);
+    TerminateProcess(GetCurrentProcess(), 0);
+
+    return lrtn;
+}
+#endif
 void unlimit()
 {
 #ifdef OS_WIN
-
+    SetUnhandledExceptionFilter(_on_exception);
 #else
     struct rlimit stnew;
     stnew.rlim_cur = stnew.rlim_max = RLIM_INFINITY;
@@ -18,6 +150,49 @@ void unlimit()
     {
         PRINTF("setrlimit(RLIMIT_NOFILE) failed.%s", ERRORSTR(ERRNO));
     }
+#endif
+}
+static void(*g_sig_cb)(int32_t);
+#ifdef OS_WIN
+BOOL WINAPI _consolehandler(DWORD msgType)
+{
+    BOOL brtn = FALSE;
+    switch (msgType)
+    {
+    case CTRL_C_EVENT:
+    case CTRL_CLOSE_EVENT:
+    case CTRL_BREAK_EVENT:
+    case CTRL_LOGOFF_EVENT:
+    case CTRL_SHUTDOWN_EVENT:
+        brtn = TRUE;
+        break;
+
+    default:
+        brtn = FALSE;
+        break;
+    }
+    if (brtn)
+    {
+        g_sig_cb((int32_t)msgType);
+    }
+
+    return brtn;
+}
+#endif
+void sighandle(void(*exit_cb)(int32_t))
+{
+    g_sig_cb = exit_cb;
+#ifdef OS_WIN
+    (void)SetConsoleCtrlHandler((PHANDLER_ROUTINE)_consolehandler, TRUE);
+#else
+    signal(SIGPIPE, SIG_IGN);//若某一端关闭连接，而另一端仍然向它写数据，第一次写数据后会收到RST响应，此后再写数据，内核将向进程发出SIGPIPE信号
+    signal(SIGINT, g_sig_cb);//终止进程
+    signal(SIGHUP, g_sig_cb);//终止进程
+    signal(SIGTSTP, g_sig_cb);//ctrl+Z
+    signal(SIGTERM, g_sig_cb);//终止一个进程
+    signal(SIGKILL, g_sig_cb);//立即结束程序
+    signal(SIGABRT, g_sig_cb);//中止一个程序
+    signal(SIGNAL_EXIT, g_sig_cb);
 #endif
 }
 int32_t bigendian()

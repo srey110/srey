@@ -46,7 +46,7 @@ struct overlap_ctx
     int32_t addrlen;
     volatile atomic_t closed;
     volatile atomic_t ref_r;
-    volatile atomic_t ref_w;    
+    volatile atomic_t ref_w;
     DWORD bytes_r;
     DWORD flag_r;
     DWORD bytes_w;
@@ -180,6 +180,7 @@ static inline void _on_close(struct overlap_ctx *polctx)
     {
         return;
     }
+
     mutex_lock(&polctx->lock_close);
     polctx->c_cb(&polctx->overlap_r, polctx->udata);
     mutex_unlock(&polctx->lock_close);

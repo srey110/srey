@@ -23,6 +23,7 @@
     <ClInclude Include="chan.h" />
     <ClInclude Include="cond.h" />
     <ClInclude Include="errcode.h" />
+    <ClInclude Include="event.h" />
     <ClInclude Include="evtype.h" />
     <ClInclude Include="lib.h" />
     <ClInclude Include="loger.h" />
@@ -45,6 +46,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="buffer.c" />
+    <ClCompile Include="event.c" />
     <ClCompile Include="loger.c" />
     <ClCompile Include="md5\md5.c" />
     <ClCompile Include="netaddr.c" />

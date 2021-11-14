@@ -8,6 +8,10 @@
 */
 void unlimit();
 /*
+* \brief          信号处理
+*/
+void sighandle(void(*exit_cb)(int32_t));
+/*
 * \brief          判断系统是否为大端
 * \param ulval    需要转换的值
 * \return         转换后的值

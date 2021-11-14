@@ -528,6 +528,7 @@ void netev_loop(struct netev_ctx *pctx)
     for (int32_t i = 0; i < pctx->thcnt; i++)
     {
         thread_creat(&pctx->watcher[i].thev, _loop, &pctx->watcher[i]);
+        thread_waitstart(&pctx->watcher[i].thev);
     }
 }
 uint32_t sock_id(struct sock_ctx *psock)
@@ -561,6 +562,28 @@ SOCKET sock_listen(struct netaddr_ctx *paddr)
     if (ERR_OK != listen(sock, SOCKK_BACKLOG))
     {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
+        SOCK_CLOSE(sock);
+        return INVALID_SOCK;
+    }
+
+    return sock;
+}
+SOCKET sock_udp_bind(const char *phost, const uint16_t usport)
+{
+    struct netaddr_ctx addr;
+    if (ERR_OK != netaddr_sethost(&addr, phost, usport))
+    {
+        return INVALID_SOCK;
+    }
+    SOCKET sock = sock_create(netaddr_family(&addr), SOCK_DGRAM);
+    if (INVALID_SOCK == sock)
+    {
+        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        return INVALID_SOCK;
+    }
+    sockraddr(sock);
+    if (ERR_OK != bind(sock, netaddr_addr(&addr), netaddr_size(&addr)))
+    {
         SOCK_CLOSE(sock);
         return INVALID_SOCK;
     }

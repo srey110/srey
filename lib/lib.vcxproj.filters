@@ -62,6 +62,9 @@
     <ClInclude Include="netev\netev.h">
       <Filter>event\netev</Filter>
     </ClInclude>
+    <ClInclude Include="event.h">
+      <Filter>event</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="md5\md5.c">
@@ -96,6 +99,9 @@
     </ClCompile>
     <ClCompile Include="netev\usock.c">
       <Filter>event\netev</Filter>
+    </ClCompile>
+    <ClCompile Include="event.c">
+      <Filter>event</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>

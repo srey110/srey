@@ -14,10 +14,10 @@ typedef enum LOG_LEVEL
     LOGLV_DEBUG,
 }LOG_LEVEL;
 struct loger_ctx
-{
-    int32_t stop;
+{    
     int32_t lv;
     int32_t print;
+    volatile int32_t stop;
     struct chan_ctx chan;
     struct thread_ctx thloger;    
 };

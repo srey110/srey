@@ -12,8 +12,7 @@ typedef HANDLE pthread_t;
 #endif
 struct thread_ctx
 {
-    uint32_t threadid;
-    int32_t state;
+    volatile int32_t state;
     pthread_t pthread;
     void *data;
     void(*th_cb)(void*);
@@ -37,9 +36,7 @@ static void *_funccb(void *parg)
 #endif
 {
     struct thread_ctx *pctx = (struct thread_ctx *)parg;
-    pctx->threadid = threadid();
     pctx->state = THREAD_RUNING;
-
     pctx->th_cb(pctx->data);
 
     pctx->state = THREAD_STOP;
@@ -54,7 +51,6 @@ static void *_funccb(void *parg)
 */
 static inline void thread_init(struct thread_ctx *pctx)
 {
-    pctx->threadid = 0;
     pctx->state = THREAD_STOP;
 };
 /*
@@ -103,13 +99,6 @@ static inline void thread_join(struct thread_ctx *pctx)
 #else
     ASSERTAB(ERR_OK == pthread_join(pctx->pthread, NULL), ERRORSTR(ERRNO));
 #endif
-};
-/*
-* \brief          获取启动的线程id
-*/
-static inline uint32_t thread_id(struct thread_ctx *pctx)
-{
-    return pctx->threadid;
 };
 
 #endif//THREAD_H_
