@@ -47,7 +47,7 @@ static void _tw_loop(void *pparam)
     while (0 == pctx->stop)
     {
         tw_run(&pctx->tw, _cur_tick(pctx));
-        USLEEP(10);
+        USLEEP(1);
     }
 }
 void event_loop(struct event_ctx *pctx)
