@@ -61,7 +61,7 @@ static inline int32_t _chan_send(struct chan_ctx *pctx, void *pdata)
 {
     if (0 != pctx->expand)
     {
-        queue_tryexpand(&pctx->queue);
+        queue_expand(&pctx->queue);
     }
     while (0 == pctx->closed
         && queue_size(&pctx->queue) == queue_cap(&pctx->queue))

@@ -8,6 +8,7 @@ struct queue_ctx
     int32_t size;
     int32_t next;
     int32_t capacity;
+    int32_t initcap;
     void **data;
 };
 /*
@@ -15,11 +16,12 @@ struct queue_ctx
 */
 static inline void queue_init(struct queue_ctx *pctx, const int32_t icapacity)
 {
-    ASSERTAB((icapacity > 0 && icapacity <= INT_MAX / (int32_t)sizeof(void*)), "capacity too large");
+    ASSERTAB((icapacity > 0 && icapacity <= INT_MAX), "capacity too large");
     pctx->size = 0;
     pctx->next = 0;
     pctx->capacity = ROUND_UP(icapacity, 2);
-    pctx->data = MALLOC(sizeof(void*) * pctx->capacity);
+    pctx->initcap = pctx->capacity;
+    pctx->data = (void **)MALLOC(sizeof(void*) * pctx->capacity);
     ASSERTAB(NULL != pctx->data, ERRSTR_MEMORY);
 };
 /*
@@ -30,50 +32,38 @@ static inline void queue_free(struct queue_ctx *pctx)
     FREE(pctx->data);
 };
 /*
-* \brief          扩容
+* \brief          扩容,收缩
 */
 static inline void queue_expand(struct queue_ctx *pctx)
 {
-    int32_t inewcap = pctx->capacity * 2;
-    ASSERTAB(inewcap <= INT_MAX / (int32_t)sizeof(void*), "capacity too large");
-    void **pnew = MALLOC(sizeof(void*) * inewcap);
-    if (NULL == pnew)
-    {
-        PRINTF("%s", ERRSTR_MEMORY);
-        return;
-    }
-    if (0 == pctx->size)
+    //收缩
+    if (0 == pctx->size
+        && pctx->capacity > pctx->initcap)
     {
         FREE(pctx->data);
-        pctx->next = 0;
-        pctx->data = pnew;
-        pctx->capacity = inewcap;
+        pctx->data = (void **)MALLOC(sizeof(void*) * pctx->initcap);
+        ASSERTAB(NULL != pctx->data, ERRSTR_MEMORY);
+        pctx->capacity = pctx->initcap;
         return;
     }
-    if (pctx->next + pctx->size <= pctx->capacity)
+    if (pctx->size < pctx->capacity)
     {
-        memcpy(pnew, pctx->data + pctx->next, pctx->size * sizeof(void*));
+        return;
     }
-    else
+
+    int32_t inewcap = pctx->capacity * 2;
+    ASSERTAB((inewcap > 0 && inewcap <= INT_MAX), "capacity too large");
+    void **pnew = (void **)MALLOC(sizeof(void*) * inewcap);
+    ASSERTAB(NULL != pnew, ERRSTR_MEMORY);
+
+    for (int32_t i = 0; i < pctx->capacity; i++)
     {
-        memcpy(pnew, pctx->data + pctx->next, (pctx->capacity - pctx->next) * sizeof(void*));
-        memcpy(pnew + (pctx->capacity - pctx->next), pctx->data, 
-            (pctx->size - (pctx->capacity - pctx->next)) * sizeof(void*));
+        pnew[i] = pctx->data[(pctx->next + i) % pctx->capacity];
     }
     FREE(pctx->data);
     pctx->next = 0;
     pctx->data = pnew;
     pctx->capacity = inewcap;
-}
-/*
-* \brief          尝试扩容
-*/
-static inline void queue_tryexpand(struct queue_ctx *pctx)
-{
-    if (pctx->size == pctx->capacity)
-    {
-        queue_expand(pctx);
-    }
 }
 /*
 * \brief          添加数据
@@ -118,15 +108,6 @@ static inline void *queue_pop(struct queue_ctx *pctx)
     }
 
     return pval;
-};
-/*
-* \brief          获取第一个数据
-* \return         NULL 无数据
-* \return         数据
-*/
-static inline void *queue_peek(struct queue_ctx *pctx)
-{
-    return pctx->size > 0 ? pctx->data[pctx->next] : NULL;
 };
 static inline int32_t queue_size(struct queue_ctx *pctx)
 {

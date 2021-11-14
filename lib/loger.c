@@ -249,7 +249,7 @@ void loger_init(struct loger_ctx *pctx)
     pctx->stop = 0;
     pctx->lv = LOGLV_DEBUG;
     pctx->print = 1;
-    chan_init(&pctx->chan, ONEK * 4, 0);
+    chan_init(&pctx->chan, ONEK * 4, 1);
     thread_init(&pctx->thloger);
     thread_creat(&pctx->thloger, _loger, pctx);
 }
@@ -300,7 +300,7 @@ void loger_log(struct loger_ctx *pctx, const LOG_LEVEL emlv, const char *pformat
     pinfo->plog = formatargs(pformat, va);
     va_end(va);
 
-    if (ERR_OK != chan_trysend(&pctx->chan, (void*)pinfo))
+    if (ERR_OK != chan_send(&pctx->chan, (void*)pinfo))
     {
         PRINTF("write log error. %s", pinfo->plog);
         FREE(pinfo->plog);

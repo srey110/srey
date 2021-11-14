@@ -137,7 +137,7 @@ static inline void _uev_cmd(struct watcher_ctx *pwatcher, int32_t icmd, int32_t 
     pcmd->events = ievents;
     pcmd->sockctx = psock;
     mutex_lock(&pwatcher->lock_qucmd);    
-    queue_tryexpand(&pwatcher->qu_cmd);
+    queue_expand(&pwatcher->qu_cmd);
     queue_push(&pwatcher->qu_cmd, pcmd);
     (void)send(pwatcher->socks[1], trigger, sizeof(trigger), 0);
     mutex_unlock(&pwatcher->lock_qucmd);
@@ -284,7 +284,7 @@ void _add_close_qu(struct watcher_ctx *pwatcher, struct sock_ctx *psock)
 
     psock->flags |= _FLAGS_CLOSE;
     _uev_del(pwatcher, psock, EV_READ | EV_WRITE);    
-    queue_tryexpand(&pwatcher->qu_close);
+    queue_expand(&pwatcher->qu_close);
     queue_push(&pwatcher->qu_close, psock);
 }
 static inline void _cmd_cb(struct watcher_ctx *pwatcher, struct sock_ctx *psock, int32_t iev, int32_t *pstop)
