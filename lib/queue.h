@@ -50,7 +50,7 @@ static inline void queue_expand(struct queue_ctx *pctx)
     {
         return;
     }
-
+    //À©ÈÝ
     int32_t inewcap = pctx->capacity * 2;
     ASSERTAB((inewcap > 0 && inewcap <= INT_MAX), "capacity too large");
     void **pnew = (void **)MALLOC(sizeof(void*) * inewcap);

@@ -74,13 +74,14 @@ static inline int32_t _chan_send(struct chan_ctx *pctx, void *pdata)
     if (0 != pctx->closed)
     {
         return ERR_FAILED;
-    }    
+    }
     (void)queue_push(&pctx->queue, pdata);
     if (pctx->rwaiting > 0)
     {
         //通知可读.
         cond_signal(&pctx->rcond);
     }
+
     return ERR_OK;
 };
 static inline void *_chan_recv(struct chan_ctx *pctx)
@@ -103,6 +104,7 @@ static inline void *_chan_recv(struct chan_ctx *pctx)
         //通知可写.
         cond_signal(&pctx->wcond);
     }
+
     return pdata;
 };
 /*
