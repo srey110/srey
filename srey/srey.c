@@ -142,6 +142,12 @@ int main(int argc, char *argv[])
     unlimit();
 
     LOGINIT();
+    LOG_DEBUG("%s", "LOG_DEBUG");
+    LOG_INFO("%s", "LOG_INFO");
+    LOG_WARN("%s", "LOG_WARN");
+    LOG_ERROR("%s", "LOG_ERROR");
+    LOG_FATAL("%s", "LOG_FATAL");
+
     struct event_ctx *pevent = event_new();
     event_loop(pevent);
     pnetev = event_netev(pevent);
@@ -159,6 +165,9 @@ int main(int argc, char *argv[])
     {
         MSLEEP(10);
     }
+    sock_close(pconnsock);
+    listener_free(plsn);
+    MSLEEP(1000);
     event_free(pevent);
     LOGFREE();
     return 0;

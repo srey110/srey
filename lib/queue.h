@@ -3,13 +3,21 @@
 
 #include "macro.h"
 
+struct message_ctx
+{
+    uint32_t flags;
+    int32_t idata;
+    void *pdata;
+    size_t uldata;
+};
 struct queue_ctx
 {
     int32_t size;
     int32_t next;
     int32_t capacity;
     int32_t initcap;
-    void **data;
+    volatile atomic_t flags;
+    struct message_ctx *msg;
 };
 /*
 * \brief          初始化
@@ -19,17 +27,18 @@ static inline void queue_init(struct queue_ctx *pctx, const int32_t icapacity)
     ASSERTAB((icapacity > 0 && icapacity <= INT_MAX), "capacity too large");
     pctx->size = 0;
     pctx->next = 0;
+    pctx->flags = 0;
     pctx->capacity = ROUND_UP(icapacity, 2);
     pctx->initcap = pctx->capacity;
-    pctx->data = (void **)MALLOC(sizeof(void*) * pctx->capacity);
-    ASSERTAB(NULL != pctx->data, ERRSTR_MEMORY);
+    pctx->msg = (struct message_ctx *)MALLOC(sizeof(struct message_ctx) * pctx->capacity);
+    ASSERTAB(NULL != pctx->msg, ERRSTR_MEMORY);
 };
 /*
 * \brief          释放
 */
 static inline void queue_free(struct queue_ctx *pctx)
 {
-    FREE(pctx->data);
+    FREE(pctx->msg);
 };
 /*
 * \brief          扩容,收缩
@@ -40,9 +49,9 @@ static inline void queue_expand(struct queue_ctx *pctx)
     if (0 == pctx->size
         && pctx->capacity > pctx->initcap)
     {
-        FREE(pctx->data);
-        pctx->data = (void **)MALLOC(sizeof(void*) * pctx->initcap);
-        ASSERTAB(NULL != pctx->data, ERRSTR_MEMORY);
+        FREE(pctx->msg);
+        pctx->msg = (struct message_ctx *)MALLOC(sizeof(struct message_ctx) * pctx->initcap);
+        ASSERTAB(NULL != pctx->msg, ERRSTR_MEMORY);
         pctx->capacity = pctx->initcap;
         return;
     }
@@ -53,16 +62,16 @@ static inline void queue_expand(struct queue_ctx *pctx)
     //扩容
     int32_t inewcap = pctx->capacity * 2;
     ASSERTAB((inewcap > 0 && inewcap <= INT_MAX), "capacity too large");
-    void **pnew = (void **)MALLOC(sizeof(void*) * inewcap);
+    struct message_ctx *pnew = (struct message_ctx *)MALLOC(sizeof(struct message_ctx) * inewcap);
     ASSERTAB(NULL != pnew, ERRSTR_MEMORY);
 
     for (int32_t i = 0; i < pctx->capacity; i++)
     {
-        pnew[i] = pctx->data[(pctx->next + i) % pctx->capacity];
+        pnew[i] = pctx->msg[(pctx->next + i) % pctx->capacity];
     }
-    FREE(pctx->data);
+    FREE(pctx->msg);
     pctx->next = 0;
-    pctx->data = pnew;
+    pctx->msg = pnew;
     pctx->capacity = inewcap;
 }
 /*
@@ -70,7 +79,7 @@ static inline void queue_expand(struct queue_ctx *pctx)
 * \param pval     需要添加的数据
 * \return         ERR_OK 成功
 */
-static inline int32_t queue_push(struct queue_ctx *pctx, void *pval)
+static inline int32_t queue_push(struct queue_ctx *pctx, struct message_ctx *pval)
 {
     if (pctx->size >= pctx->capacity)
     {
@@ -82,7 +91,7 @@ static inline int32_t queue_push(struct queue_ctx *pctx, void *pval)
     {
         ipos -= pctx->capacity;
     }
-    pctx->data[ipos] = pval;
+    pctx->msg[ipos] = *pval;
     pctx->size++;
 
     return ERR_OK;
@@ -90,24 +99,24 @@ static inline int32_t queue_push(struct queue_ctx *pctx, void *pval)
 /*
 * \brief          弹出一数据
 * \return         NULL 无数据
-* \return         数据
+* \return         ERR_OK 有数据
 */
-static inline void *queue_pop(struct queue_ctx *pctx)
+static inline int32_t queue_pop(struct queue_ctx *pctx, struct message_ctx *pval)
 {
-    void *pval = NULL;
-
-    if (pctx->size > 0)
+    if (0 == pctx->size)
     {
-        pval = pctx->data[pctx->next];
-        pctx->next++;
-        pctx->size--;
-        if (pctx->next >= pctx->capacity)
-        {
-            pctx->next -= pctx->capacity;
-        }
+        return ERR_FAILED;
+    }
+    
+    *pval = pctx->msg[pctx->next];
+    pctx->next++;
+    pctx->size--;
+    if (pctx->next >= pctx->capacity)
+    {
+        pctx->next -= pctx->capacity;
     }
 
-    return pval;
+    return ERR_OK;
 };
 static inline int32_t queue_size(struct queue_ctx *pctx)
 {

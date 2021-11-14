@@ -132,13 +132,13 @@ static inline void _uev_resize_events(struct watcher_ctx *pwatcher)
 static char trigger[1] = { '1' };
 static inline void _uev_cmd(struct watcher_ctx *pwatcher, int32_t icmd, int32_t ievents, struct sock_ctx *psock)
 {
-    struct cmd_ctx *pcmd = MALLOC(sizeof(struct cmd_ctx));
-    pcmd->cmd = icmd;
-    pcmd->events = ievents;
-    pcmd->sockctx = psock;
+    struct message_ctx msg;
+    msg.flags = icmd;
+    msg.idata = ievents;
+    msg.pdata = psock;
     mutex_lock(&pwatcher->lock_qucmd);    
     queue_expand(&pwatcher->qu_cmd);
-    queue_push(&pwatcher->qu_cmd, pcmd);
+    (void)queue_push(&pwatcher->qu_cmd, &msg);
     (void)send(pwatcher->socks[1], trigger, sizeof(trigger), 0);
     mutex_unlock(&pwatcher->lock_qucmd);
 }
@@ -283,38 +283,43 @@ void _add_close_qu(struct watcher_ctx *pwatcher, struct sock_ctx *psock)
     }
 
     psock->flags |= _FLAGS_CLOSE;
+    struct message_ctx msg;
+    msg.pdata = psock;
     _uev_del(pwatcher, psock, EV_READ | EV_WRITE);    
     queue_expand(&pwatcher->qu_close);
-    queue_push(&pwatcher->qu_close, psock);
+    (void)queue_push(&pwatcher->qu_close, &msg);
 }
 static inline void _cmd_cb(struct watcher_ctx *pwatcher, struct sock_ctx *psock, int32_t iev, int32_t *pstop)
-{    
+{
     (void)read(psock->sock, pwatcher->trigger, sizeof(pwatcher->trigger));
-    struct cmd_ctx *pcmd;
+    int32_t icnt = 0;
+    struct message_ctx msg;
     mutex_lock(&pwatcher->lock_qucmd);
-    while (NULL != (pcmd = queue_pop(&pwatcher->qu_cmd)))
+    while (ERR_OK == queue_pop(&pwatcher->qu_cmd, &msg)
+        && icnt <= sizeof(pwatcher->trigger))
     {
-        switch (pcmd->cmd)
+        icnt++;
+        switch (msg.flags)
         {
         case _CMD_STOP:
             *pstop = 1;
             break;
         case _CMD_ADD:
-            if (ERR_OK != _uev_add(pwatcher, pcmd->sockctx, pcmd->events))
+            if (ERR_OK != _uev_add(pwatcher, msg.pdata, msg.idata))
             {
-                _add_close_qu(pwatcher, pcmd->sockctx);
+                _add_close_qu(pwatcher, msg.pdata);
             }
             break;
         case _CMD_DEL:
-            _uev_del(pwatcher, pcmd->sockctx, pcmd->events);
+            _uev_del(pwatcher, msg.pdata, msg.idata);
             break;
         case _CMD_CLOSE://Ö÷¶¯¹Ø±Õ
-            _add_close_qu(pwatcher, pcmd->sockctx);
+            _add_close_qu(pwatcher, msg.pdata);
             break;
         }
-        FREE(pcmd);
     }
     mutex_unlock(&pwatcher->lock_qucmd);
+
 #ifdef NETEV_EVPORT
     if (0 == *pstop)
     {
@@ -495,9 +500,10 @@ static inline void _netev_wait(struct watcher_ctx *pwatcher, int32_t *pstop)
             psock->ev_cb(pwatcher, psock, iev, pstop);
         }
     }
-    while (NULL != (psock = queue_pop(&pwatcher->qu_close)))
+    struct message_ctx msg;
+    while (ERR_OK == queue_pop(&pwatcher->qu_close, &msg))
     {
-        _uev_sock_close(psock);
+        _uev_sock_close(msg.pdata);
     }
     if (0 == *pstop
         && icnt >= pwatcher->event_cnt)

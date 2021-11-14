@@ -55,7 +55,10 @@ ARCH="ar -rv"
 INCLUDEPATH=""
 OBJFILE=""
 CFLAGS="-O3 -g -Wall"
-
+if [ "$OSNAME" = "FreeBSD" ]
+then
+	CFLAGS=$CFLAGS" -Wno-uninitialized"
+fi
 LIBDIR=$Dir
 
 GetIncludePath()

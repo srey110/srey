@@ -36,12 +36,6 @@
     #elif defined(NETEV_EVPORT)
         typedef port_event_t events_t;
     #endif
-    struct cmd_ctx
-    {
-        int32_t cmd;
-        int32_t events;
-        struct sock_ctx *sockctx;
-    };
 #endif
 struct watcher_ctx
 {
@@ -60,7 +54,7 @@ struct watcher_ctx
     mutex_ctx lock_qucmd;
     struct queue_ctx qu_cmd;
     struct queue_ctx qu_close;
-    char trigger[256];
+    char trigger[128];
 #endif
     struct netev_ctx *netev;
     struct thread_ctx thev;

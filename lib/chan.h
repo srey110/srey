@@ -57,7 +57,7 @@ static inline void chan_close(struct chan_ctx *pctx)
     }
     mutex_unlock(&pctx->mmutex);
 };
-static inline int32_t _chan_send(struct chan_ctx *pctx, void *pdata)
+static inline int32_t _chan_send(struct chan_ctx *pctx, struct message_ctx *pdata)
 {
     if (0 != pctx->expand)
     {
@@ -84,13 +84,13 @@ static inline int32_t _chan_send(struct chan_ctx *pctx, void *pdata)
 
     return ERR_OK;
 };
-static inline void *_chan_recv(struct chan_ctx *pctx)
+static inline int32_t _chan_recv(struct chan_ctx *pctx, struct message_ctx *pdata)
 {
     while (0 == queue_size(&pctx->queue))
     {
         if (0 != pctx->closed)
         {
-            return NULL;
+            return ERR_FAILED;
         }
 
         //阻塞直到有数据.
@@ -98,21 +98,21 @@ static inline void *_chan_recv(struct chan_ctx *pctx)
         cond_wait(&pctx->rcond, &pctx->mmutex);
         pctx->rwaiting--;
     }
-    void *pdata = queue_pop(&pctx->queue);
+    int32_t irtn = queue_pop(&pctx->queue, pdata);
     if (pctx->wwaiting > 0)
     {
         //通知可写.
         cond_signal(&pctx->wcond);
     }
 
-    return pdata;
+    return irtn;
 };
 /*
 * \brief          写入数据
 * \param pdata    待写入的数据
 * \return         ERR_OK 成功
 */
-static inline int32_t chan_send(struct chan_ctx *pctx, void *pdata)
+static inline int32_t chan_send(struct chan_ctx *pctx, struct message_ctx *pdata)
 {
     int32_t irtn = ERR_FAILED;
     mutex_lock(&pctx->mmutex);
@@ -123,7 +123,7 @@ static inline int32_t chan_send(struct chan_ctx *pctx, void *pdata)
     mutex_unlock(&pctx->mmutex);
     return irtn;
 };
-static inline int32_t chan_trysend(struct chan_ctx *pctx, void *pdata)
+static inline int32_t chan_trysend(struct chan_ctx *pctx, struct message_ctx *pdata)
 {
     int32_t irtn = ERR_FAILED;
     mutex_lock(&pctx->mmutex);
@@ -140,23 +140,23 @@ static inline int32_t chan_trysend(struct chan_ctx *pctx, void *pdata)
 * \param pdata    读取到的数据
 * \return         ERR_OK 成功
 */
-static inline void *chan_recv(struct chan_ctx *pctx)
+static inline int32_t chan_recv(struct chan_ctx *pctx, struct message_ctx *pdata)
 {
     mutex_lock(&pctx->mmutex);
-    void *pdata = _chan_recv(pctx);
+    int32_t irtn = _chan_recv(pctx, pdata);
     mutex_unlock(&pctx->mmutex);
-    return pdata;
+    return irtn;
 };
-static inline void *chan_tryrecv(struct chan_ctx *pctx)
+static inline int32_t chan_tryrecv(struct chan_ctx *pctx, struct message_ctx *pdata)
 {
-    void *pdata = NULL;
+    int32_t irtn = ERR_FAILED;
     mutex_lock(&pctx->mmutex);
     if (queue_size(&pctx->queue) > 0)
     {
-        pdata = _chan_recv(pctx);
+        irtn = _chan_recv(pctx, pdata);
     }
     mutex_unlock(&pctx->mmutex);
-    return pdata;
+    return irtn;
 };
 static inline void chan_lock(struct chan_ctx *pctx)
 {

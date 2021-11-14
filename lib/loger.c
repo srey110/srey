@@ -22,12 +22,6 @@
 #define CLR_WHT_BLK     "\033[47;30m"   /* °×µ×ºÚ×Ö */
 #endif
 
-struct loginfo_ctx
-{
-    LOG_LEVEL lv;
-    char *plog;
-    char time[TIME_LENS];
-};
 struct logworker_ctx
 {
     FILE *file;
@@ -61,6 +55,16 @@ const char *_getlvstr(const LOG_LEVEL emlv)
     }
 
     return "UNKNOWN";
+}
+static inline void _nowmtime(char atime[TIME_LENS])
+{
+    struct timeval tv;
+    timeofday(&tv);
+    time_t t = tv.tv_sec;
+    ZERO(atime, TIME_LENS);
+    strftime(atime, TIME_LENS - 1, "[%H:%M:%S", localtime(&t));
+    size_t uilen = strlen(atime);
+    SNPRINTF(atime + uilen, TIME_LENS - uilen - 1, " %03d]", (int32_t)(tv.tv_usec / 1000));
 }
 static void _worker_init(struct logworker_ctx *pctx)
 {
@@ -146,15 +150,15 @@ static inline int32_t _worker_getfile(struct logworker_ctx *pctx)
 
     return ERR_OK;
 }
-static inline void _worker_writelog(struct logworker_ctx *pctx, struct loginfo_ctx *pinfo)
+static inline void _worker_writelog(struct logworker_ctx *pctx, const char *ptime, struct message_ctx *pmsg)
 {
     const char *pn = "\n";
-    (void)fwrite(pinfo->time, 1, strlen(pinfo->time), pctx->file);
-    (void)fwrite(pinfo->plog, 1, strlen(pinfo->plog), pctx->file);
+    (void)fwrite(ptime, 1, strlen(ptime), pctx->file);
+    (void)fwrite(pmsg->pdata, 1, strlen((const char *)pmsg->pdata), pctx->file);
     (void)fwrite(pn, 1, strlen(pn), pctx->file);
     (void)fflush(pctx->file);
 }
-static inline void _worker_printlog(struct logworker_ctx *pctx, struct loginfo_ctx *pinfo)
+static inline void _worker_printlog(struct logworker_ctx *pctx, const char *ptime, struct message_ctx *pmsg)
 {
     if (0 == pctx->ploger->print)
     {
@@ -165,7 +169,7 @@ static inline void _worker_printlog(struct logworker_ctx *pctx, struct loginfo_c
     {
         return;
     }
-    switch (pinfo->lv)
+    switch (pmsg->idata)
     {
     case LOGLV_FATAL:
         SetConsoleTextAttribute(pctx->hout, FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | BACKGROUND_RED);
@@ -185,60 +189,52 @@ static inline void _worker_printlog(struct logworker_ctx *pctx, struct loginfo_c
     default:
         break;
     }
-    printf("%s%s\n", pinfo->time, pinfo->plog);
+    printf("%s%s\n", ptime, (const char *)pmsg->pdata);
     SetConsoleTextAttribute(pctx->hout, pctx->stcsbi.wAttributes);
 #else
-    switch (pinfo->lv)
+    switch (pmsg->idata)
     {
     case LOGLV_FATAL:
-        printf("%s%s%s%s\n", CLR_RED_WHT, pinfo->time, pinfo->plog, CLR_CLR);
+        printf("%s%s%s%s\n", CLR_RED_WHT, ptime, (const char *)pmsg->pdata, CLR_CLR);
         break;
     case LOGLV_ERROR:
-        printf("%s%s%s%s\n", CLR_RED, pinfo->time, pinfo->plog, CLR_CLR);
+        printf("%s%s%s%s\n", CLR_RED, ptime, (const char *)pmsg->pdata, CLR_CLR);
         break;
     case LOGLV_WARN:
-        printf("%s%s%s%s\n", CLR_YELLOW, pinfo->time, pinfo->plog, CLR_CLR);
+        printf("%s%s%s%s\n", CLR_YELLOW, ptime, (const char *)pmsg->pdata, CLR_CLR);
         break;
     case LOGLV_INFO:
-        printf("%s%s%s%s\n", CLR_GREEN, pinfo->time, pinfo->plog, CLR_CLR);
+        printf("%s%s%s%s\n", CLR_GREEN, ptime, (const char *)pmsg->pdata, CLR_CLR);
         break;
     case LOGLV_DEBUG:
-        printf("%s%s%s%s\n", CLR_WHITE, pinfo->time, pinfo->plog, CLR_CLR);
+        printf("%s%s%s%s\n", CLR_WHITE, ptime, (const char *)pmsg->pdata, CLR_CLR);
         break;
     }
 #endif
-}
-static inline void _worker_freeloginfo(struct loginfo_ctx *pinfo)
-{
-    if (NULL != pinfo)
-    {
-        FREE(pinfo->plog);
-        FREE(pinfo);
-    }
 }
 static void _loger(void *pparam)
 {
     struct logworker_ctx stworker;
     stworker.ploger = (struct loger_ctx *)pparam;
     _worker_init(&stworker);
-
-    void *pinfo;
+    char atime[TIME_LENS];
+    struct message_ctx msg;
     while (0 == stworker.ploger->stop)
     {
-        pinfo = chan_recv(&stworker.ploger->chan);
-        if (NULL == pinfo)
+        if (ERR_OK != chan_recv(&stworker.ploger->chan, &msg))
         {
-            _worker_freeloginfo((struct loginfo_ctx *)pinfo);
             continue;
         }
-        _worker_printlog(&stworker, (struct loginfo_ctx *)pinfo);
+
+        _nowmtime(atime);
+        _worker_printlog(&stworker, atime, &msg);
         if (ERR_OK != _worker_getfile(&stworker))
         {
-            _worker_freeloginfo((struct loginfo_ctx *)pinfo);
+            FREE(msg.pdata);
             continue;
         }
-        _worker_writelog(&stworker, (struct loginfo_ctx *)pinfo);
-        _worker_freeloginfo((struct loginfo_ctx *)pinfo);
+        _worker_writelog(&stworker, atime, &msg);
+        FREE(msg.pdata);
     }
 
     _worker_free(&stworker);
@@ -269,41 +265,21 @@ void loger_setprint(struct loger_ctx *pctx, const int32_t iprint)
 {
     pctx->print = iprint;
 }
-static inline void _nowmtime(char atime[TIME_LENS])
-{
-    struct timeval tv;
-    timeofday(&tv);
-    time_t t = tv.tv_sec;
-    ZERO(atime, TIME_LENS);
-    strftime(atime, TIME_LENS - 1, "[%H:%M:%S", localtime(&t));
-    size_t uilen = strlen(atime);
-    SNPRINTF(atime + uilen, TIME_LENS - uilen - 1, " %03d]", (int32_t)(tv.tv_usec / 1000));
-}
 void loger_log(struct loger_ctx *pctx, const LOG_LEVEL emlv, const char *pformat, ...)
 {
     if (emlv > pctx->lv)
     {
         return;
     }
-    struct loginfo_ctx *pinfo = MALLOC(sizeof(struct loginfo_ctx));
-    if (NULL == pinfo)
-    {
-        PRINTF("%s", ERRSTR_MEMORY);
-        return;
-    }
-
-    pinfo->lv = emlv;
-    _nowmtime(pinfo->time);
-
+    
+    struct message_ctx msg;
+    msg.idata = emlv;
     va_list va;
     va_start(va, pformat);
-    pinfo->plog = formatargs(pformat, va);
+    msg.pdata = formatargs(pformat, va);
     va_end(va);
-
-    if (ERR_OK != chan_send(&pctx->chan, (void*)pinfo))
+    if (ERR_OK != chan_send(&pctx->chan, &msg))
     {
-        PRINTF("write log error. %s", pinfo->plog);
-        FREE(pinfo->plog);
-        FREE(pinfo);
+        FREE(msg.pdata);
     }
 }
