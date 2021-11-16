@@ -5,16 +5,6 @@
 #define _FLAGS_LOOP  0x02
 #define MAX_DELAYFREE_CNT  20
 #define MAX_ACCEPT_SOCKEX SOCKK_BACKLOG
-#define NET_ERROR(err, format, ...) \
-            if (ERR_FAILED != err\
-            && WSAECONNRESET != err \
-            && WSAENOTSOCK != err \
-            && WSAENOTCONN != err \
-            && WSAESHUTDOWN != err\
-            && ERROR_OPERATION_ABORTED != err\
-            && ERROR_NOT_FOUND != err\
-            && WSAECONNABORTED != err)\
-            LOG_ERROR(format, ##__VA_ARGS__)
 struct overlap_acpt_ctx
 {
     struct sock_ctx sock;
@@ -102,14 +92,12 @@ static inline void _on_accept_cb(struct watcher_ctx *pwatcher, struct sock_ctx *
     int32_t irtn = _post_accept(pacpol);
     if (ERR_OK != irtn)
     {
-        NET_ERROR(irtn, "%s", ERRORSTR(irtn));
         SOCK_CLOSE(sock);
         ATOMIC_ADD(&pacpol->listener->acpcnt, -1);
         return;
     }
     if (ERR_OK != pwatcher->err)
     {
-        NET_ERROR(pwatcher->err, "%s", ERRORSTR(pwatcher->err));
         SOCK_CLOSE(sock);
         return;
     }
@@ -119,7 +107,6 @@ static inline void _on_accept_cb(struct watcher_ctx *pwatcher, struct sock_ctx *
     if (irtn < ERR_OK)
     {
         irtn = ERRNO;
-        NET_ERROR(irtn, "%s", ERRORSTR(irtn));
         SOCK_CLOSE(sock);
         return;
     }
@@ -202,7 +189,6 @@ static inline void _on_recv_cb(struct watcher_ctx *pwatcher, struct sock_ctx *ps
     int32_t irtn = _post_recv(polctx);
     if (ERR_OK != irtn)
     {
-        NET_ERROR(irtn, "%s", ERRORSTR(irtn));
         _on_close(polctx);
     }
     ATOMIC_ADD(&polctx->ref_r, -1);
@@ -262,7 +248,6 @@ static inline void _on_recvfrom_cb(struct watcher_ctx *pwatcher, struct sock_ctx
     irtn = _post_recv_from(polctx);
     if (ERR_OK != irtn)
     {
-        NET_ERROR(irtn, "%s", ERRORSTR(irtn));
         _on_close(polctx);
     }
     ATOMIC_ADD(&polctx->ref_r, -1);
@@ -561,7 +546,6 @@ static inline int32_t _acceptex(struct listener_ctx *plsn)
         irtn = _post_accept(pacpol);
         if (ERR_OK != irtn)
         {
-            NET_ERROR(irtn, "%s", ERRORSTR(irtn));
             for (int32_t j = 0; j < i; j++)
             {
                 SAFE_CLOSE_SOCK(plsn->overlap_acpt[j].sock.sock);
@@ -678,7 +662,6 @@ static inline int32_t _connectex(struct watcher_ctx *pwatcher, struct overlap_ct
         int32_t irtn = ERRNO;
         if (ERROR_IO_PENDING != irtn)
         {
-            NET_ERROR(irtn, "%s", ERRORSTR(irtn));
             ATOMIC_ADD(&pol->ref_r, -1);
             return irtn;
         }
@@ -801,7 +784,6 @@ void sock_close(struct sock_ctx *psock)
         int32_t irtn = ERRNO;
         if (ERROR_IO_PENDING != irtn)
         {
-            NET_ERROR(irtn, "%s", ERRORSTR(irtn));
             FREE(pdisconol);
             SAFE_CLOSE_SOCK(pol->overlap_r.sock);
             return;
