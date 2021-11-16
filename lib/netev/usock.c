@@ -46,7 +46,6 @@ struct usock_ctx
     mutex_ctx lock_send;
     IOV_TYPE wsabuf_r[MAX_RECV_IOV_COUNT];
     IOV_TYPE wsabuf_w[MAX_SEND_IOV_COUNT];
-    struct piece_iov_ctx piece;
 };
 static inline struct lsn_ctx * _get_lsn(struct sock_ctx *psock)
 {
@@ -135,7 +134,6 @@ void listener_free(struct listener_ctx *plsn)
 static inline void _sock_free(void *pdata)
 {
     struct usock_ctx *pusock = pdata;
-    buffer_piece_node_free(&pusock->piece);
     buffer_free(&pusock->buf_r);
     buffer_free(&pusock->buf_w);
     mutex_free(&pusock->lock_conn_timeout);
@@ -176,13 +174,13 @@ void sock_free(struct sock_ctx *psock)
 }
 void sock_close(struct sock_ctx *psock)
 {
+    if (psock->flags & _FLAGS_CLOSE)
+    {
+        return;
+    }
     if (0 == psock->events)
     {
         SAFE_CLOSE_SOCK(psock->sock);
-        return;
-    }
-    if (psock->flags & _FLAGS_CLOSE)
-    {
         return;
     }
     struct usock_ctx *pusock = _get_usock(psock);
@@ -239,7 +237,7 @@ static inline int32_t _check_closed(struct usock_ctx *pusock, ssize_t ireaded, u
 
     return ERR_FAILED;
 }
-static inline int32_t _on_tcp_read(struct watcher_ctx *pwatcher, struct usock_ctx *pusock)
+static inline int32_t _on_recv_cb(struct watcher_ctx *pwatcher, struct usock_ctx *pusock)
 {
     int32_t icnt = socknread(pusock->sock.sock);
     if (ERR_FAILED == icnt)
@@ -265,7 +263,7 @@ static inline int32_t _on_tcp_read(struct watcher_ctx *pwatcher, struct usock_ct
 
     return ERR_OK;
 }
-static inline void _chech_sending(struct watcher_ctx *pwatcher, struct usock_ctx *pusock)
+static inline void _check_sending(struct watcher_ctx *pwatcher, struct usock_ctx *pusock)
 {
     mutex_lock(&pusock->lock_send);
     if (0 == buffer_size(&pusock->buf_w))
@@ -275,13 +273,13 @@ static inline void _chech_sending(struct watcher_ctx *pwatcher, struct usock_ctx
     }
     mutex_unlock(&pusock->lock_send);
 }
-static inline int32_t _on_tcp_send(struct watcher_ctx *pwatcher, struct usock_ctx *pusock)
+static inline int32_t _on_send_cb(struct watcher_ctx *pwatcher, struct usock_ctx *pusock)
 {
     uint32_t uiovcnt = buffer_read_iov_application(&pusock->buf_w, MAX_SEND_IOV_SIZE, 
         pusock->wsabuf_w, MAX_SEND_IOV_COUNT);
     if (0 == uiovcnt)
     {
-        _chech_sending(pwatcher, pusock);
+        _check_sending(pwatcher, pusock);
         return ERR_OK;
     }
 
@@ -312,7 +310,7 @@ static inline void _init_msghdr(struct msghdr *pmsg, struct netaddr_ctx *paddr, 
     pmsg->msg_iov = wsabuf;
     pmsg->msg_iovlen = iiovcnt;
 }
-static inline int32_t _on_udp_read(struct watcher_ctx *pwatcher, struct usock_ctx *pusock)
+static inline int32_t _on_recvfrom_cb(struct watcher_ctx *pwatcher, struct usock_ctx *pusock)
 {
     int32_t icnt = socknread(pusock->sock.sock);
     if (ERR_FAILED == icnt)
@@ -340,23 +338,29 @@ static inline int32_t _on_udp_read(struct watcher_ctx *pwatcher, struct usock_ct
 
     return ERR_OK;
 }
-static inline int32_t _on_udp_send(struct watcher_ctx *pwatcher, struct usock_ctx *pusock)
+static inline int32_t _on_sendto_cb(struct watcher_ctx *pwatcher, struct usock_ctx *pusock)
 {
-    void *paddr;
-    uint32_t uiovcnt = buffer_piece_read_iov_application(&pusock->buf_w,
-        &pusock->piece, pusock->wsabuf_w, MAX_SEND_IOV_COUNT, &paddr);
+    struct udp_msg_ctx udpmsg;
+    uint32_t uiovcnt = buffer_piece_read_application(&pusock->buf_w, &udpmsg, sizeof(struct udp_msg_ctx),
+        pusock->wsabuf_w, MAX_SEND_IOV_COUNT, _udp_data_lens);
     if (0 == uiovcnt)
     {
-        _chech_sending(pwatcher, pusock);
+        _check_sending(pwatcher, pusock);
+        return ERR_OK;
+    }
+    struct netaddr_ctx addr;
+    if (ERR_OK != netaddr_sethost(&addr, udpmsg.ip, udpmsg.port))
+    {
+        buffer_read_iov_commit(&pusock->buf_w, udpmsg.size);
         return ERR_OK;
     }
 
     struct msghdr msg;
-    _init_msghdr(&msg, paddr, pusock->wsabuf_w, uiovcnt);
+    _init_msghdr(&msg, &addr, pusock->wsabuf_w, uiovcnt);
     ssize_t isend = sendmsg(pusock->sock.sock, &msg, 0);
+    buffer_read_iov_commit(&pusock->buf_w, udpmsg.size);
     if (isend <= 0)
     {
-        buffer_piece_read_iov_commit(&pusock->buf_w, &pusock->piece, 0);
         int32_t irtn = ERRNO;
         if (!ERR_RW_RETRIABLE(irtn))
         {
@@ -364,7 +368,6 @@ static inline int32_t _on_udp_send(struct watcher_ctx *pwatcher, struct usock_ct
         }
         return ERR_OK;
     }
-    buffer_piece_read_iov_commit(&pusock->buf_w, &pusock->piece, (size_t)isend);
     if (NULL != pusock->w_cb)
     {
         pusock->w_cb(&pusock->sock, (size_t)isend, pusock->udata);
@@ -380,11 +383,11 @@ static inline void _on_rw_cb(struct watcher_ctx *pwatcher, struct sock_ctx *psoc
     {
         if (SOCK_STREAM == pusock->socktype)
         {
-            irtn = _on_tcp_read(pwatcher, pusock);
+            irtn = _on_recv_cb(pwatcher, pusock);
         }
         else
         {
-            irtn = _on_udp_read(pwatcher, pusock);
+            irtn = _on_recvfrom_cb(pwatcher, pusock);
         }
         if (ERR_OK != irtn)
         {
@@ -396,11 +399,11 @@ static inline void _on_rw_cb(struct watcher_ctx *pwatcher, struct sock_ctx *psoc
     {
         if (SOCK_STREAM == pusock->socktype)
         {
-            irtn = _on_tcp_send(pwatcher, pusock);
+            irtn = _on_send_cb(pwatcher, pusock);
         }
         else
         {
-            irtn = _on_udp_send(pwatcher, pusock);
+            irtn = _on_sendto_cb(pwatcher, pusock);
         }
         if (ERR_OK != irtn)
         {
@@ -411,7 +414,7 @@ static inline void _on_rw_cb(struct watcher_ctx *pwatcher, struct sock_ctx *psoc
 
     _evport_readd(pwatcher, psock);
 }
-static inline int32_t _sock_trysend(struct usock_ctx *pusock)
+static inline int32_t _post_send(struct usock_ctx *pusock)
 {
     mutex_lock(&pusock->lock_send);
     if (0 == pusock->sending)
@@ -433,7 +436,7 @@ int32_t sock_send(struct sock_ctx *psock, void *pdata, const size_t uilens)
     struct usock_ctx *pusock = _get_usock(psock);
     ASSERTAB(SOCK_STREAM == pusock->socktype, "only support tcp.");
     ASSERTAB(ERR_OK == buffer_append(&pusock->buf_w, pdata, uilens), "buffer_append error.");
-    return _sock_trysend(pusock);
+    return _post_send(pusock);
 }
 int32_t sock_send_buffer(struct sock_ctx *psock)
 {
@@ -444,7 +447,7 @@ int32_t sock_send_buffer(struct sock_ctx *psock)
 
     struct usock_ctx *pusock = _get_usock(psock);
     ASSERTAB(SOCK_STREAM == pusock->socktype, "only support tcp.");
-    return _sock_trysend(pusock);
+    return _post_send(pusock);
 }
 int32_t sock_sendto(struct sock_ctx *psock, const char *phost, uint16_t uport,
     void *pdata, const size_t uilens)
@@ -453,27 +456,22 @@ int32_t sock_sendto(struct sock_ctx *psock, const char *phost, uint16_t uport,
     {
         return ERR_FAILED;
     }
-
+    size_t iplens = strlen(phost);
+    if (iplens >= IP_LENS)
+    {
+        return ERR_FAILED;
+    }
     struct usock_ctx *pusock = _get_usock(psock);
     ASSERTAB(SOCK_DGRAM == pusock->socktype, "only support tcp.");
-    struct netaddr_ctx *paddr = MALLOC(sizeof(struct netaddr_ctx));
-    if (NULL == paddr)
-    {
-        LOG_ERROR("%s", ERRSTR_MEMORY);
-        return ERR_FAILED;
-    }
-    if (ERR_OK != netaddr_sethost(paddr, phost, uport))
-    {
-        FREE(paddr);
-        return ERR_FAILED;
-    }
-    if (ERR_OK != buffer_piece_inser(&pusock->buf_w, &pusock->piece, paddr, pdata, uilens))
-    {
-        FREE(paddr);
-        return ERR_FAILED;
-    }
 
-    return _sock_trysend(pusock);
+    struct udp_msg_ctx msg;
+    msg.port = uport;
+    msg.size = uilens;
+    memcpy(msg.ip, phost, iplens);
+    msg.ip[iplens] = '\0';
+    buffer_piece_append(&pusock->buf_w, &msg, sizeof(struct udp_msg_ctx), pdata, uilens);
+
+    return _post_send(pusock);
 }
 int32_t netev_enable_rw(struct netev_ctx *pctx, struct sock_ctx *psock,
     read_cb r_cb, write_cb w_cb, close_cb c_cb, void *pdata)
@@ -564,8 +562,6 @@ struct sock_ctx *netev_add_sock(struct netev_ctx *pctx, SOCKET sock, int32_t ity
     pusock->sock.ev_cb = _on_rw_cb;    
     pusock->netev = pctx;
     pusock->watcher = _netev_get_watcher(pctx, sock);
-    pusock->piece.head = pusock->piece.tail = NULL;
-    pusock->piece.free_data = FREE;
     buffer_init(&pusock->buf_r);
     buffer_init(&pusock->buf_w);
     mutex_init(&pusock->lock_conn_timeout);

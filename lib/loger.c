@@ -56,7 +56,7 @@ const char *_getlvstr(const LOG_LEVEL emlv)
 
     return "UNKNOWN";
 }
-static inline void _nowmtime(char atime[TIME_LENS])
+static inline void _log_time(char atime[TIME_LENS])
 {
     struct timeval tv;
     timeofday(&tv);
@@ -226,7 +226,7 @@ static void _loger(void *pparam)
             continue;
         }
 
-        _nowmtime(atime);
+        _log_time(atime);
         _worker_printlog(&stworker, atime, &msg);
         if (ERR_OK != _worker_getfile(&stworker))
         {

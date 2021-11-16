@@ -64,14 +64,6 @@ struct overlap_ctx
     IOV_TYPE wsabuf_w[MAX_SEND_IOV_COUNT];
     struct sockaddr_storage rmtaddr;//存储数据来源IP地址
 };
-struct overlap_sendto_ctx
-{
-    struct sock_ctx overlap_sendto;
-    struct overlap_ctx *udpctx;
-    DWORD bytes;
-    IOV_TYPE wsabuf;
-    mutex_ctx lock_send;
-};
 static inline int32_t _post_accept(struct overlap_acpt_ctx *pacpol)
 {
     SOCKET sock = sock_create(pacpol->listener->family, SOCK_STREAM);
@@ -295,6 +287,7 @@ static inline int32_t _post_send(struct overlap_ctx *polctx)
         return ERR_FAILED;
     }
     ZERO(&polctx->overlap_w.overlapped, sizeof(polctx->overlap_w.overlapped));
+    polctx->bytes_w = 0;
     polctx->iovcnt_w = uicnt;
 
     ATOMIC_ADD(&polctx->ref_w, 1);
@@ -345,21 +338,65 @@ static inline void _on_send_cb(struct watcher_ctx *pwatcher, struct sock_ctx *ps
     ATOMIC_ADD(&polctx->ref_w, -1);
     mutex_unlock(&polctx->lock_send);
 }
+static inline int32_t _post_sendto(struct overlap_ctx *polctx)
+{
+    if (0 != ATOMIC_GET(&polctx->closed))
+    {
+        return ERR_FAILED;
+    }
+    struct udp_msg_ctx udpmsg;
+    uint32_t uiovcnt = buffer_piece_read_application(&polctx->buf_w, &udpmsg, sizeof(struct udp_msg_ctx),
+        polctx->wsabuf_w, MAX_SEND_IOV_COUNT, _udp_data_lens);
+    if (0 == uiovcnt)
+    {
+        return ERR_FAILED;
+    }
+    struct netaddr_ctx addr;
+    if (ERR_OK != netaddr_sethost(&addr, udpmsg.ip, udpmsg.port))
+    {
+        buffer_read_iov_commit(&polctx->buf_w, udpmsg.size);
+        return ERR_FAILED;
+    }
+
+    ZERO(&polctx->overlap_w.overlapped, sizeof(polctx->overlap_w.overlapped));
+    polctx->bytes_w = 0;
+    polctx->iovcnt_w = uiovcnt;
+    ATOMIC_ADD(&polctx->ref_w, 1);
+    int32_t irtn = WSASendTo(polctx->overlap_r.sock,
+        polctx->wsabuf_w,
+        (DWORD)polctx->iovcnt_w,
+        &polctx->bytes_w,
+        0,
+        netaddr_addr(&addr),
+        netaddr_size(&addr),
+        &polctx->overlap_w.overlapped,
+        NULL);
+    if (ERR_OK != irtn)
+    {
+        irtn = ERRNO;
+        if (ERROR_IO_PENDING != irtn)
+        {
+            buffer_read_iov_commit(&polctx->buf_w, udpmsg.size);
+            ATOMIC_ADD(&polctx->ref_w, -1);
+            return irtn;
+        }
+    }
+
+    return ERR_OK;
+}
 static inline void _on_sendto_cb(struct watcher_ctx *pwatcher, struct sock_ctx *psock, int32_t iev, int32_t *pstop)
 {
-    struct overlap_sendto_ctx *psendtool = UPCAST(psock, struct overlap_sendto_ctx, overlap_sendto);
-    struct overlap_ctx *polctx = psendtool->udpctx;
+    struct overlap_ctx *polctx = UPCAST(psock, struct overlap_ctx, overlap_w);
     if (0 == pwatcher->bytes
         || ERR_OK != pwatcher->err)
     {
-        mutex_lock(&psendtool->lock_send);
-        mutex_unlock(&psendtool->lock_send);
-        mutex_free(&psendtool->lock_send);
-        FREE(psendtool);
+        size_t iovsize = _buffer_iov_size(polctx->wsabuf_w, polctx->iovcnt_w);
+        buffer_read_iov_commit(&polctx->buf_w, iovsize);
         ATOMIC_ADD(&polctx->ref_w, -1);
         return;
     }
-    
+
+    buffer_read_iov_commit(&polctx->buf_w, (size_t)pwatcher->bytes);
     if (NULL != polctx->w_cb)
     {
         mutex_lock(&polctx->lock_close);
@@ -370,11 +407,10 @@ static inline void _on_sendto_cb(struct watcher_ctx *pwatcher, struct sock_ctx *
         mutex_unlock(&polctx->lock_close);
     }
 
-    mutex_lock(&psendtool->lock_send);
-    mutex_unlock(&psendtool->lock_send);
-    mutex_free(&psendtool->lock_send);
-    FREE(psendtool);
+    mutex_lock(&polctx->lock_send);
+    (void)_post_sendto(polctx);
     ATOMIC_ADD(&polctx->ref_w, -1);
+    mutex_unlock(&polctx->lock_send);
 }
 static inline int32_t _trybind(SOCKET sock, const int32_t ifamily)
 {
@@ -442,6 +478,7 @@ struct sock_ctx *netev_add_sock(struct netev_ctx *pctx, SOCKET sock, int32_t ity
             LOG_WARN("WSAIoctl(%d, SIO_UDP_CONNRESET...) failed. %s", (int32_t)sock, ERRORSTR(ERRNO));
         }
         pol->overlap_r.ev_cb = _on_recvfrom_cb;
+        pol->overlap_w.ev_cb = _on_sendto_cb;
     }
     else
     {
@@ -449,8 +486,8 @@ struct sock_ctx *netev_add_sock(struct netev_ctx *pctx, SOCKET sock, int32_t ity
         socknodelay(sock);
         sockkpa(sock, SOCKKPA_DELAY, SOCKKPA_INTVL);
         pol->overlap_r.ev_cb = _on_recv_cb;
+        pol->overlap_w.ev_cb = _on_send_cb;
     }
-    pol->overlap_w.ev_cb = _on_send_cb;
     pol->netev = pctx;
     buffer_init(&pol->buf_r);
     buffer_init(&pol->buf_w);
@@ -730,13 +767,13 @@ static inline void _on_disconnectex(struct watcher_ctx *pwatcher,
 void sock_close(struct sock_ctx *psock)
 {
     struct overlap_ctx *pol = _get_overlap(psock);
+    if (0 != ATOMIC_GET(&pol->closed))
+    {
+        return;
+    }
     if (!(pol->flags & _FLAGS_LOOP))
     {
         SAFE_CLOSE_SOCK(pol->overlap_r.sock);
-        return;
-    }
-    if (0 != ATOMIC_GET(&pol->closed))
-    {
         return;
     }
     if (SOCK_DGRAM == pol->socktype)
@@ -820,38 +857,6 @@ struct buffer_ctx *sock_buffer_w(struct sock_ctx *psock)
     struct overlap_ctx *polctx = _get_overlap(psock);
     return &polctx->buf_w;
 }
-static inline int32_t _post_sendto(struct overlap_sendto_ctx *psendtool, struct netaddr_ctx *paddr)
-{
-    ZERO(&psendtool->overlap_sendto.overlapped, sizeof(psendtool->overlap_sendto.overlapped));
-    psendtool->bytes = 0;
-    psendtool->overlap_sendto.ev_cb = _on_sendto_cb;
-    mutex_init(&psendtool->lock_send);
-
-    ATOMIC_ADD(&psendtool->udpctx->ref_w, 1);
-    mutex_lock(&psendtool->lock_send);
-    int32_t irtn = WSASendTo(psendtool->udpctx->overlap_r.sock,
-        &psendtool->wsabuf,
-        1,
-        &psendtool->bytes,
-        0,
-        netaddr_addr(paddr),
-        netaddr_size(paddr),
-        &psendtool->overlap_sendto.overlapped,
-        NULL);
-    mutex_unlock(&psendtool->lock_send);
-    if (ERR_OK != irtn)
-    {
-        irtn = ERRNO;
-        if (ERROR_IO_PENDING != irtn)
-        {
-            NET_ERROR(irtn, "%s", ERRORSTR(irtn));
-            ATOMIC_ADD(&psendtool->udpctx->ref_w, -1);
-            return irtn;
-        }
-    }
-
-    return ERR_OK;
-}
 int32_t sock_sendto(struct sock_ctx *psock, const char *phost, uint16_t uport, 
     void *pdata, const size_t uilens)
 {
@@ -860,30 +865,28 @@ int32_t sock_sendto(struct sock_ctx *psock, const char *phost, uint16_t uport,
     {
         return ERR_FAILED;
     }
-    ASSERTAB(SOCK_DGRAM == polctx->socktype, "only support udp.");
-    struct netaddr_ctx addr;
-    int32_t irtn = netaddr_sethost(&addr, phost, uport);
-    if (ERR_OK != irtn)
+    size_t iplens = strlen(phost);
+    if (iplens >= IP_LENS)
     {
-        LOG_ERROR("%s", ERRORSTR(ERRNO));
-        return irtn;
-    }
-    struct overlap_sendto_ctx *psendtool = MALLOC(sizeof(struct overlap_sendto_ctx));
-    if (NULL == psendtool)
-    {
-        LOG_ERROR("%s", ERRSTR_MEMORY);
         return ERR_FAILED;
     }
-    psendtool->udpctx = polctx;
-    psendtool->wsabuf.IOV_PTR_FIELD = pdata;
-    psendtool->wsabuf.IOV_LEN_FIELD = (IOV_LEN_TYPE)uilens;
-    irtn = _post_sendto(psendtool, &addr);
-    if (ERR_OK != irtn)
-    {
-        FREE(psendtool);
-        return irtn;
-    }
+    ASSERTAB(SOCK_DGRAM == polctx->socktype, "only support udp.");
+    struct udp_msg_ctx msg;
+    msg.port = uport;
+    msg.size = uilens;
+    memcpy(msg.ip, phost, iplens);
+    msg.ip[iplens] = '\0';
+    buffer_piece_append(&polctx->buf_w, &msg, sizeof(struct udp_msg_ctx), pdata, uilens);
 
-    return ERR_OK;
+    int32_t irtn = ERR_OK;
+    mutex_lock(&polctx->lock_send);
+    if (ATOMIC_CAS(&polctx->ref_w, 0, 1))
+    {
+        irtn = _post_sendto(polctx);
+        ATOMIC_ADD(&polctx->ref_w, -1);
+    }
+    mutex_unlock(&polctx->lock_send);
+
+    return irtn;
 }
 #endif

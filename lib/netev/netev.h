@@ -54,10 +54,16 @@ struct watcher_ctx
     mutex_ctx lock_qucmd;
     struct queue_ctx qu_cmd;
     struct queue_ctx qu_close;
-    char trigger[128];
+    char trigger[ONEK];
 #endif
     struct netev_ctx *netev;
     struct thread_ctx thev;
+};
+struct udp_msg_ctx
+{
+    uint16_t port;
+    size_t size;
+    char ip[IP_LENS];
 };
 struct netev_ctx
 {
@@ -130,5 +136,9 @@ void _uev_cmd_close(struct watcher_ctx *pwatcher, struct sock_ctx *psock);
 void _add_close_qu(struct watcher_ctx *pwatcher, struct sock_ctx *psock);
 void _uev_sock_close(struct sock_ctx *psock);
 #endif
+static inline size_t _udp_data_lens(void *pdata)
+{
+    return ((struct udp_msg_ctx *)pdata)->size;
+}
 
 #endif//NETEV_H_

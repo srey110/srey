@@ -459,7 +459,7 @@ int32_t buffer_appendv(struct buffer_ctx *pctx, const char *pfmt, ...)
     buffer_unlock(pctx);
     return ERR_OK;
 }
-static int32_t _copyout(struct buffer_ctx *pctx, void *pout, size_t uilens)
+int32_t _buffer_copyout(struct buffer_ctx *pctx, void *pout, size_t uilens)
 {
     struct buffernode_ctx *pnode = pctx->head;
     char *pdata = pout;
@@ -498,7 +498,7 @@ int32_t buffer_copyout(struct buffer_ctx *pctx, void *pout, size_t uilens)
         return ERR_FAILED;
     }
     
-    int32_t irtn = _copyout(pctx, pout, uilens);
+    int32_t irtn = _buffer_copyout(pctx, pout, uilens);
     buffer_unlock(pctx);
 
     return irtn;
@@ -597,7 +597,7 @@ int32_t buffer_remove(struct buffer_ctx *pctx, void *pout, size_t uilen)
         return ERR_FAILED;
     }
 
-    int32_t irn = _copyout(pctx, pout, uilen);
+    int32_t irn = _buffer_copyout(pctx, pout, uilen);
     if (irn > 0)
     {
         ASSERTAB(irn == _buffer_drain(pctx, irn), "drain lens not equ copy lens.");

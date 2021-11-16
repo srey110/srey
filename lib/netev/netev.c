@@ -136,10 +136,10 @@ static inline void _uev_cmd(struct watcher_ctx *pwatcher, int32_t icmd, int32_t 
     msg.flags = icmd;
     msg.idata = ievents;
     msg.pdata = psock;
-    mutex_lock(&pwatcher->lock_qucmd);    
+    mutex_lock(&pwatcher->lock_qucmd);
     queue_expand(&pwatcher->qu_cmd);
     (void)queue_push(&pwatcher->qu_cmd, &msg);
-    (void)send(pwatcher->socks[1], trigger, sizeof(trigger), 0);
+    (void)send(pwatcher->socks[1], trigger, (int32_t)sizeof(trigger), 0);
     mutex_unlock(&pwatcher->lock_qucmd);
 }
 int32_t _uev_add(struct watcher_ctx *pwatcher, struct sock_ctx *psock, int32_t iev)
@@ -292,13 +292,17 @@ void _add_close_qu(struct watcher_ctx *pwatcher, struct sock_ctx *psock)
 static inline void _cmd_cb(struct watcher_ctx *pwatcher, struct sock_ctx *psock, int32_t iev, int32_t *pstop)
 {
     (void)read(psock->sock, pwatcher->trigger, sizeof(pwatcher->trigger));
-    int32_t icnt = 0;
+    int32_t irtn;
     struct message_ctx msg;
-    mutex_lock(&pwatcher->lock_qucmd);
-    while (ERR_OK == queue_pop(&pwatcher->qu_cmd, &msg)
-        && icnt <= sizeof(pwatcher->trigger))
+    while (1)
     {
-        icnt++;
+        mutex_lock(&pwatcher->lock_qucmd);
+        irtn = queue_pop(&pwatcher->qu_cmd, &msg);
+        mutex_unlock(&pwatcher->lock_qucmd);
+        if (ERR_OK != irtn)
+        {
+            break;
+        }
         switch (msg.flags)
         {
         case _CMD_STOP:
@@ -318,8 +322,6 @@ static inline void _cmd_cb(struct watcher_ctx *pwatcher, struct sock_ctx *psock,
             break;
         }
     }
-    mutex_unlock(&pwatcher->lock_qucmd);
-
 #ifdef NETEV_EVPORT
     if (0 == *pstop)
     {
@@ -486,19 +488,8 @@ static inline void _netev_wait(struct watcher_ctx *pwatcher, int32_t *pstop)
     struct sock_ctx *psock;
     for (int32_t i = 0; i < icnt; i++)
     {
-#if defined(NETEV_KQUEUE)
-        if (pwatcher->events[i].flags & EV_ERROR)
-        {
-            continue;
-        }
-#endif
-        psock = NULL;
         iev = _trans_ev(&pwatcher->events[i], &psock);
-        if (0 != iev
-            && NULL != psock)
-        {
-            psock->ev_cb(pwatcher, psock, iev, pstop);
-        }
+        psock->ev_cb(pwatcher, psock, iev, pstop);
     }
     struct message_ctx msg;
     while (ERR_OK == queue_pop(&pwatcher->qu_close, &msg))
