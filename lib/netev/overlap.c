@@ -425,14 +425,17 @@ static inline int32_t _trybind(SOCKET sock, const int32_t ifamily)
 }
 struct sock_ctx *netev_add_sock(struct netev_ctx *pctx, SOCKET sock, int32_t itype, int32_t ifamily)
 {
-    struct netaddr_ctx addr;
-    int32_t irtn = netaddr_localaddr(&addr, sock, ifamily);
-    if (ERR_OK != irtn)
+    if (SOCK_DGRAM == itype)
     {
-        irtn = _trybind(sock, ifamily);
+        struct netaddr_ctx addr;
+        int32_t irtn = netaddr_localaddr(&addr, sock, ifamily);
         if (ERR_OK != irtn)
         {
-            return NULL;
+            irtn = _trybind(sock, ifamily);
+            if (ERR_OK != irtn)
+            {
+                return NULL;
+            }
         }
     }
     struct overlap_ctx *pol = MALLOC(sizeof(struct overlap_ctx));
