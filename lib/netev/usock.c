@@ -555,7 +555,7 @@ struct sock_ctx *netev_add_sock(struct netev_ctx *pctx, SOCKET sock, int32_t ity
         sockkpa(sock, SOCKKPA_DELAY, SOCKKPA_INTVL);
     }
     pusock->socktype = itype;
-    pusock->family = ifamily;    
+    pusock->family = ifamily;
     uint32_t uid = (uint32_t)ATOMIC_ADD(&pctx->id, 1);
     pusock->sock.sock = sock;
     pusock->sock.id = uid;
@@ -603,10 +603,10 @@ struct listener_ctx *netev_listener(struct netev_ctx *pctx,
     struct lsn_ctx *plsnctx;
     for (i = 0; i < plsn->lsncnt; i++)
     {
-        plsnctx = &plsn->lsn[i];    
+        plsnctx = &plsn->lsn[i];
         plsnctx->listener = plsn;
         plsnctx->sock.id = (uint32_t)ATOMIC_ADD(&pctx->id, 1);
-        plsnctx->sock.events = 0;               
+        plsnctx->sock.events = 0;
         plsnctx->sock.flags = _FLAGS_LSN;
         plsnctx->sock.ev_cb = _on_accept_cb;
         plsnctx->sock.sock = sock_listen(&addr);
