@@ -53,14 +53,7 @@ static inline struct sockaddr *netaddr_addr(union netaddr_ctx *pctx)
 */
 static inline socklen_t netaddr_size(union netaddr_ctx *pctx)
 {
-    if (AF_INET == pctx->addr.sa_family)
-    {
-        return (socklen_t)sizeof(pctx->ipv4);
-    }
-    else
-    {
-        return (socklen_t)sizeof(pctx->ipv6);
-    }
+    return AF_INET == pctx->addr.sa_family ? (socklen_t)sizeof(pctx->ipv4) : (socklen_t)sizeof(pctx->ipv6);
 };
 /*
 * \brief          »ñÈ¡IP
@@ -95,14 +88,7 @@ static inline int32_t netaddr_ip(union netaddr_ctx *pctx, char acip[IP_LENS])
 */
 static inline uint16_t netaddr_port(union netaddr_ctx *pctx)
 {
-    if (AF_INET == pctx->addr.sa_family)
-    {
-        return ntohs(pctx->ipv4.sin_port);
-    }
-    else
-    {
-        return ntohs(pctx->ipv6.sin6_port);
-    }
+    return AF_INET == pctx->addr.sa_family ? ntohs(pctx->ipv4.sin_port) : ntohs(pctx->ipv6.sin6_port);
 };
 /*
 * \return         AF_INET or AF_INET6;
