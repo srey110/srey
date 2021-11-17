@@ -536,7 +536,7 @@ SOCKET sock_handle(struct sock_ctx *psock)
 {
     return psock->sock;
 }
-SOCKET sock_listen(struct netaddr_ctx *paddr)
+SOCKET sock_listen(union netaddr_ctx *paddr)
 {
     SOCKET sock = sock_create(netaddr_family(paddr), SOCK_STREAM);
     if (INVALID_SOCK == sock)
@@ -567,7 +567,7 @@ SOCKET sock_listen(struct netaddr_ctx *paddr)
 }
 SOCKET sock_udp_bind(const char *phost, const uint16_t usport)
 {
-    struct netaddr_ctx addr;
+    union netaddr_ctx addr;
     if (ERR_OK != netaddr_sethost(&addr, phost, usport))
     {
         return INVALID_SOCK;

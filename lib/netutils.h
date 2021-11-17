@@ -46,7 +46,37 @@ static inline int32_t socktype(SOCKET fd)
     }
 
     return itype;
-}
+};
+/*
+* \brief          ªÒ»°sin_family
+* \param fd       SOCKET
+* \return         ERR_FAILED  ß∞‹
+*/
+static inline int32_t sockaddrfamily(SOCKET fd)
+{
+#if defined(OS_WIN)
+    WSAPROTOCOL_INFO info;
+    int32_t ilens = (int32_t)sizeof(info);
+    if (getsockopt(fd, SOL_SOCKET, SO_PROTOCOL_INFO, (char *)&info, &ilens) < ERR_OK)
+    {
+        PRINTF("getsockopt(%d, SOL_SOCKET, SO_PROTOCOL_INFO, ...) failed. %s", (int32_t)fd, ERRORSTR(ERRNO));
+        return ERR_FAILED;
+    }
+    return info.iAddressFamily;
+#else
+#ifdef SO_DOMAIN
+    int32_t ifamily = 0;
+    int32_t ilens = (int32_t)sizeof(ifamily);
+    if (getsockopt(fd, SOL_SOCKET, SO_DOMAIN, &ifamily, (socklen_t*)&ilens) < 0)
+    {
+        PRINTF("getsockopt(%d, SOL_SOCKET, SO_DOMAIN, ...) failed. %s", (int32_t)fd, ERRORSTR(ERRNO));
+        return ERR_FAILED;
+    }
+    return ifamily;
+#endif
+    return AF_INET;
+#endif
+};
 /*
 * \brief          …Ë÷√socket TCP_NODELAY
 * \param fd       SOCKET

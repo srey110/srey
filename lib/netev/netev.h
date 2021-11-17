@@ -49,7 +49,7 @@ struct watcher_ctx
 #else
     int32_t evfd;
     int32_t event_cnt;
-    SOCKET socks[2];    
+    SOCKET socks[2];
     events_t *events;
     mutex_ctx lock_qucmd;
     struct queue_ctx qu_cmd;
@@ -123,7 +123,7 @@ static inline SOCKET sock_create(int32_t ifamily, int32_t itype)
     return socket(ifamily, itype, 0);
 #endif
 };
-SOCKET sock_listen(struct netaddr_ctx *paddr);
+SOCKET sock_listen(union netaddr_ctx *paddr);
 SOCKET sock_udp_bind(const char *phost, const uint16_t usport);
 
 int32_t _netev_threadcnt(const uint32_t uthcnt);

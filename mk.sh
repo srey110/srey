@@ -6,7 +6,7 @@
 # Date Time  :2011/06/15 
 #***********************************************
 
-UsAge="UsAge:\"./mk.sh\" or \"./mk.sh clean\""
+UsAge="UsAge:\"./mk.sh\" or \"./mk.sh pg\" or \"./mk.sh clean\""
 
 #生成程序的名称
 PROGRAMNAME="srey"
@@ -58,6 +58,13 @@ CFLAGS="-O3 -g -Wall"
 if [ "$OSNAME" = "FreeBSD" ]
 then
 	CFLAGS=$CFLAGS" -Wno-uninitialized"
+fi
+if [ $# -eq 1 ]
+then
+    if [ "$1" = "pg" ]
+    then
+        CFLAGS=$CFLAGS" -pg"
+    fi
 fi
 LIBDIR=$Dir
 
@@ -178,7 +185,11 @@ do
         then
             Clean
             exit 0
-        fi        
+        fi
+		if [ "$1" = "pg" ]
+        then
+            break
+        fi
         echo "$UsAge"
         exit 1
     elif [ $# -gt 1 ]

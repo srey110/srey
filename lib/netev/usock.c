@@ -302,7 +302,7 @@ static inline int32_t _on_send_cb(struct watcher_ctx *pwatcher, struct usock_ctx
 
     return ERR_OK;
 }
-static inline void _init_msghdr(struct msghdr *pmsg, struct netaddr_ctx *paddr, IOV_TYPE *wsabuf, uint32_t iiovcnt)
+static inline void _init_msghdr(struct msghdr *pmsg, union netaddr_ctx *paddr, IOV_TYPE *wsabuf, uint32_t iiovcnt)
 {
     ZERO(pmsg, sizeof(struct msghdr));
     pmsg->msg_name = netaddr_addr(paddr);
@@ -319,7 +319,7 @@ static inline int32_t _on_recvfrom_cb(struct watcher_ctx *pwatcher, struct usock
     }
 
     struct msghdr msg;
-    struct netaddr_ctx addr;
+    union netaddr_ctx addr;
     netaddr_empty_addr(&addr, pusock->family);
     uint32_t uiovcnt = buffer_write_iov_application(&pusock->buf_r, icnt, pusock->wsabuf_r, MAX_RECV_IOV_COUNT);
     _init_msghdr(&msg, &addr, pusock->wsabuf_r, uiovcnt);
@@ -348,7 +348,7 @@ static inline int32_t _on_sendto_cb(struct watcher_ctx *pwatcher, struct usock_c
         _check_sending(pwatcher, pusock);
         return ERR_OK;
     }
-    struct netaddr_ctx addr;
+    union netaddr_ctx addr;
     if (ERR_OK != netaddr_sethost(&addr, udpmsg.ip, udpmsg.port))
     {
         buffer_read_iov_commit(&pusock->buf_w, udpmsg.size);
@@ -552,7 +552,7 @@ struct sock_ctx *netev_add_sock(struct netev_ctx *pctx, SOCKET sock, int32_t ity
     {
         closereset(sock);
         socknodelay(sock);
-        sockkpa(sock, SOCKKPA_DELAY, SOCKKPA_INTVL);
+        //sockkpa(sock, SOCKKPA_DELAY, SOCKKPA_INTVL);
     }
     pusock->socktype = itype;
     pusock->family = ifamily;
@@ -573,7 +573,7 @@ struct listener_ctx *netev_listener(struct netev_ctx *pctx,
     const char *phost, const uint16_t usport, accept_cb acp_cb, void *pdata)
 {
     ASSERTAB(NULL != acp_cb, ERRSTR_NULLP);
-    struct netaddr_ctx addr;
+    union netaddr_ctx addr;
     int32_t irn = netaddr_sethost(&addr, phost, usport);
     if (ERR_OK != irn)
     {
@@ -646,7 +646,7 @@ static inline void _conn_timeout(struct tw_node_ctx *pnode, void *pdata)
     mutex_unlock(&pusock->lock_conn_timeout);
 
     _uev_cmd_close(pusock->watcher, &pusock->sock);
-    struct netaddr_ctx addr;
+    union netaddr_ctx addr;
     if (ERR_OK == netaddr_remoteaddr(&addr, pusock->sock.sock, pusock->family))
     {
         char acip[IP_LENS];
@@ -662,7 +662,7 @@ struct sock_ctx *netev_connecter(struct netev_ctx *pctx, uint32_t utimeout,
     const char *phost, const uint16_t usport, connect_cb conn_cb, void *pdata)
 {
     ASSERTAB(NULL != conn_cb, ERRSTR_NULLP);
-    struct netaddr_ctx addr;
+    union netaddr_ctx addr;
     int32_t irtn = netaddr_sethost(&addr, phost, usport);
     if (ERR_OK != irtn)
     {

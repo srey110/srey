@@ -44,9 +44,6 @@
     <ClInclude Include="loger.h">
       <Filter>utils</Filter>
     </ClInclude>
-    <ClInclude Include="buffer.h">
-      <Filter>utils</Filter>
-    </ClInclude>
     <ClInclude Include="evtype.h">
       <Filter>event</Filter>
     </ClInclude>
@@ -65,6 +62,9 @@
     <ClInclude Include="event.h">
       <Filter>event</Filter>
     </ClInclude>
+    <ClInclude Include="buffer.h">
+      <Filter>utils</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="md5\md5.c">
@@ -80,9 +80,6 @@
       <Filter>utils</Filter>
     </ClCompile>
     <ClCompile Include="loger.c">
-      <Filter>utils</Filter>
-    </ClCompile>
-    <ClCompile Include="buffer.c">
       <Filter>utils</Filter>
     </ClCompile>
     <ClCompile Include="netaddr.c">
@@ -102,6 +99,9 @@
     </ClCompile>
     <ClCompile Include="event.c">
       <Filter>event</Filter>
+    </ClCompile>
+    <ClCompile Include="buffer.c">
+      <Filter>utils</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>

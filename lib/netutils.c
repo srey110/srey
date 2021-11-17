@@ -136,7 +136,7 @@ void closereset(SOCKET fd)
 }
 SOCKET _sock_listen()
 {
-    struct netaddr_ctx addr;
+    union netaddr_ctx addr;
     if (ERR_OK != netaddr_sethost(&addr, "127.0.0.1", 0))
     {
         PRINTF("%s", ERRORSTR(ERRNO));
@@ -163,7 +163,7 @@ SOCKET _sock_listen()
 
     return fd;
 }
-SOCKET _sockcnt(struct netaddr_ctx *paddr)
+SOCKET _sockcnt(union netaddr_ctx *paddr)
 {
     SOCKET fd = socket(AF_INET, SOCK_STREAM, 0);
     if (INVALID_SOCK == fd)
@@ -187,7 +187,7 @@ int32_t sockpair(SOCKET acSock[2])
     {
         return ERR_FAILED;
     }
-    struct netaddr_ctx addr;
+    union netaddr_ctx addr;
     if (ERR_OK != netaddr_localaddr(&addr, fdlsn, AF_INET))
     {
         SOCK_CLOSE(fdlsn);

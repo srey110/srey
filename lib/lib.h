@@ -9,7 +9,6 @@
 #include "spinlock.h"
 #include "thread.h"
 
-#include "buffer.h"
 #include "chan.h"
 #include "evtype.h"
 #include "loger.h"

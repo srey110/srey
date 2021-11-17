@@ -2,54 +2,16 @@
 #define NETADDR_H_
 
 #include "macro.h"
-
-struct netaddr_ctx
+union netaddr_ctx
 {
-    int32_t type;
-    struct sockaddr_in	ipv4;
+    struct sockaddr addr;
+    struct sockaddr_in ipv4;
     struct sockaddr_in6 ipv6;
 };
-/*
-* \brief          获取sin_family
-* \param fd       SOCKET
-* \return         ERR_FAILED 失败
-*/
-static inline int32_t sockaddrfamily(SOCKET fd)
+static inline void netaddr_empty_addr(union netaddr_ctx *pctx, const int32_t ifamily)
 {
-#if defined(OS_WIN)
-    WSAPROTOCOL_INFO info;
-    int32_t ilens = (int32_t)sizeof(info);
-    if (getsockopt(fd, SOL_SOCKET, SO_PROTOCOL_INFO, (char *)&info, &ilens) < ERR_OK)
-    {
-        PRINTF("getsockopt(%d, SOL_SOCKET, SO_PROTOCOL_INFO, ...) failed. %s", (int32_t)fd, ERRORSTR(ERRNO));
-        return ERR_FAILED;
-    }
-    return info.iAddressFamily;
-#else
-#ifdef SO_DOMAIN
-    int32_t ifamily = 0;
-    int32_t ilens = (int32_t)sizeof(ifamily);
-    if (getsockopt(fd, SOL_SOCKET, SO_DOMAIN, &ifamily, (socklen_t*)&ilens) < 0)
-    {
-        PRINTF("getsockopt(%d, SOL_SOCKET, SO_DOMAIN, ...) failed. %s", (int32_t)fd, ERRORSTR(ERRNO));
-        return ERR_FAILED;
-    }
-    return ifamily;
-#endif
-    return AF_INET;
-#endif
-}
-static inline void netaddr_empty_addr(struct netaddr_ctx *pctx, const int32_t ifamily)
-{
-    pctx->type = ifamily;
-    if (AF_INET == pctx->type)
-    {
-        pctx->ipv4.sin_family = AF_INET;
-    }
-    else
-    {
-        pctx->ipv6.sin6_family = AF_INET6;
-    }
+    ZERO(&pctx->ipv6, sizeof(pctx->ipv6));
+    pctx->addr.sa_family = ifamily;
 };
 /*
 * \brief          设置地址
@@ -57,48 +19,41 @@ static inline void netaddr_empty_addr(struct netaddr_ctx *pctx, const int32_t if
 * \param usport   port
 * \return         ERR_OK 成功 gai_strerror获取错误信息
 */
-int32_t netaddr_sethost(struct netaddr_ctx *pctx, const char *phost, const uint16_t usport);
+int32_t netaddr_sethost(union netaddr_ctx *pctx, const char *phost, const uint16_t usport);
 /*
 * \brief          设置地址
 * \param phost    ip
 * \param usport   port
 * \return         ERR_OK 成功
 */
-void netaddr_setaddr(struct netaddr_ctx *pctx, const struct sockaddr *paddr);
+void netaddr_setaddr(union netaddr_ctx *pctx, const struct sockaddr *paddr);
 /*
 * \brief          获取远端地址信息
 * \param fd       SOCKET
 * \return         ERR_OK 成功
 */
-int32_t netaddr_remoteaddr(struct netaddr_ctx *pctx, SOCKET fd, const int32_t ifamily);
+int32_t netaddr_remoteaddr(union netaddr_ctx *pctx, SOCKET fd, const int32_t ifamily);
 /*
 * \brief          获取本地地址信息
 * \param fd       SOCKET
 * \return         ERR_OK 成功
 */
-int32_t netaddr_localaddr(struct netaddr_ctx *pctx, SOCKET fd, const int32_t ifamily);
+int32_t netaddr_localaddr(union netaddr_ctx *pctx, SOCKET fd, const int32_t ifamily);
 /*
 * \brief          返回地址
 * \return         sockaddr *
 */
-static inline struct sockaddr *netaddr_addr(struct netaddr_ctx *pctx)
+static inline struct sockaddr *netaddr_addr(union netaddr_ctx *pctx)
 {
-    if (AF_INET == pctx->type)
-    {
-        return (struct sockaddr*)&pctx->ipv4;
-    }
-    else
-    {
-        return (struct sockaddr*)&pctx->ipv6;
-    }
+    return &pctx->addr;
 };
 /*
 * \brief          地址长度
 * \return         地址长度
 */
-static inline socklen_t netaddr_size(struct netaddr_ctx *pctx)
+static inline socklen_t netaddr_size(union netaddr_ctx *pctx)
 {
-    if (AF_INET == pctx->type)
+    if (AF_INET == pctx->addr.sa_family)
     {
         return (socklen_t)sizeof(pctx->ipv4);
     }
@@ -112,10 +67,10 @@ static inline socklen_t netaddr_size(struct netaddr_ctx *pctx)
 * \param acip     ip
 * \return         ERR_OK 成功
 */
-static inline int32_t netaddr_ip(struct netaddr_ctx *pctx, char acip[IP_LENS])
+static inline int32_t netaddr_ip(union netaddr_ctx *pctx, char acip[IP_LENS])
 {
     ZERO(acip, IP_LENS);
-    if (AF_INET == pctx->type)
+    if (AF_INET == pctx->addr.sa_family)
     {
         if (NULL == inet_ntop(AF_INET, &pctx->ipv4.sin_addr, acip, IP_LENS))
         {
@@ -138,9 +93,9 @@ static inline int32_t netaddr_ip(struct netaddr_ctx *pctx, char acip[IP_LENS])
 * \brief          获取端口
 * \return         端口
 */
-static inline uint16_t netaddr_port(struct netaddr_ctx *pctx)
+static inline uint16_t netaddr_port(union netaddr_ctx *pctx)
 {
-    if (AF_INET == pctx->type)
+    if (AF_INET == pctx->addr.sa_family)
     {
         return ntohs(pctx->ipv4.sin_port);
     }
@@ -152,9 +107,9 @@ static inline uint16_t netaddr_port(struct netaddr_ctx *pctx)
 /*
 * \return         AF_INET or AF_INET6;
 */
-static inline int32_t netaddr_family(struct netaddr_ctx *pctx)
+static inline int32_t netaddr_family(union netaddr_ctx *pctx)
 {
-    return pctx->type;
+    return pctx->addr.sa_family;
 };
 
 #endif//NETADDR_H_

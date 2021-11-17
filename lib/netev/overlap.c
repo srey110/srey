@@ -336,7 +336,7 @@ static inline int32_t _post_sendto(struct overlap_ctx *polctx)
     {
         return ERR_FAILED;
     }
-    struct netaddr_ctx addr;
+    union netaddr_ctx addr;
     if (ERR_OK != netaddr_sethost(&addr, udpmsg.ip, udpmsg.port))
     {
         buffer_read_iov_commit(&polctx->buf_w, udpmsg.size);
@@ -400,7 +400,7 @@ static inline void _on_sendto_cb(struct watcher_ctx *pwatcher, struct sock_ctx *
 static inline int32_t _trybind(SOCKET sock, const int32_t ifamily)
 {
     int32_t irtn;
-    struct netaddr_ctx addr;
+    union netaddr_ctx addr;
     if (AF_INET == ifamily)
     {
         irtn = netaddr_sethost(&addr, "127.0.0.1", 0);
@@ -427,7 +427,7 @@ struct sock_ctx *netev_add_sock(struct netev_ctx *pctx, SOCKET sock, int32_t ity
 {
     if (SOCK_DGRAM == itype)
     {
-        struct netaddr_ctx addr;
+        union netaddr_ctx addr;
         int32_t irtn = netaddr_localaddr(&addr, sock, ifamily);
         if (ERR_OK != irtn)
         {
@@ -472,7 +472,7 @@ struct sock_ctx *netev_add_sock(struct netev_ctx *pctx, SOCKET sock, int32_t ity
     {
         closereset(sock);
         socknodelay(sock);
-        sockkpa(sock, SOCKKPA_DELAY, SOCKKPA_INTVL);
+        //sockkpa(sock, SOCKKPA_DELAY, SOCKKPA_INTVL);
         pol->overlap_r.ev_cb = _on_recv_cb;
         pol->overlap_w.ev_cb = _on_send_cb;
     }
@@ -564,7 +564,7 @@ struct listener_ctx *netev_listener(struct netev_ctx *pctx,
     const char *phost, const uint16_t usport, accept_cb acp_cb, void *pdata)
 {
     ASSERTAB(NULL != acp_cb, ERRSTR_NULLP);
-    struct netaddr_ctx addr;
+    union netaddr_ctx addr;
     int32_t irtn = netaddr_sethost(&addr, phost, usport);
     if (ERR_OK != irtn)
     {
@@ -649,7 +649,7 @@ void sock_free(struct sock_ctx *psock)
         tw_add(pol->netev->tw, 10, -1, _sock_delay_free, pol);
     }    
 }
-static inline int32_t _connectex(struct watcher_ctx *pwatcher, struct overlap_ctx *pol, struct netaddr_ctx *paddr)
+static inline int32_t _connectex(struct watcher_ctx *pwatcher, struct overlap_ctx *pol, union netaddr_ctx *paddr)
 {
     pol->overlap_r.ev_cb = _on_connect_cb;
 
@@ -676,7 +676,7 @@ struct sock_ctx *netev_connecter(struct netev_ctx *pctx, uint32_t utimeout,
     const char *phost, const uint16_t usport, connect_cb conn_cb, void *pdata)
 {
     ASSERTAB(NULL != conn_cb, ERRSTR_NULLP);
-    struct netaddr_ctx addr;
+    union netaddr_ctx addr;
     int32_t irtn = netaddr_sethost(&addr, phost, usport);
     if (ERR_OK != irtn)
     {
@@ -687,6 +687,11 @@ struct sock_ctx *netev_connecter(struct netev_ctx *pctx, uint32_t utimeout,
     if (INVALID_SOCK == sock)
     {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
+        return NULL;
+    }
+    irtn = _trybind(sock, netaddr_family(&addr));
+    if (ERR_OK != irtn)
+    {
         return NULL;
     }
     struct sock_ctx *psock = netev_add_sock(pctx, sock, SOCK_STREAM, netaddr_family(&addr));
