@@ -1,15 +1,14 @@
 #include "buffer.h"
 
-struct buffernode_ctx
+struct bufnode_ctx
 {
-    struct buffernode_ctx *next;
+    struct bufnode_ctx *next;
     int32_t used;
     size_t buffer_len;
     size_t misalign;
     size_t off;
     char *buffer;
 };
-
 #define MAX_COPY_IN_EXPAND 4096
 #define MAX_REALIGN_IN_EXPAND 2048
 #define FIRST_FORMAT_IN_EXPAND 64
@@ -22,37 +21,37 @@ struct buffernode_ctx
     index++
 
 //新建一节点
-static inline struct buffernode_ctx *_node_new(const size_t uisize)
+static inline struct bufnode_ctx *_node_new(const size_t uisize)
 {
-    size_t uitotal = ROUND_UP(uisize + sizeof(struct buffernode_ctx),
+    size_t uitotal = ROUND_UP(uisize + sizeof(struct bufnode_ctx),
         sizeof(void *) < 8 ? 512 : ONEK);
     char *pbuf = MALLOC(uitotal);
     ASSERTAB(NULL != pbuf, ERRSTR_MEMORY);
 
-    struct buffernode_ctx *pnode = (struct buffernode_ctx *)pbuf;
-    ZERO(pnode, sizeof(struct buffernode_ctx));
-    pnode->buffer_len = uitotal - sizeof(struct buffernode_ctx);
+    struct bufnode_ctx *pnode = (struct bufnode_ctx *)pbuf;
+    ZERO(pnode, sizeof(struct bufnode_ctx));
+    pnode->buffer_len = uitotal - sizeof(struct bufnode_ctx);
     pnode->buffer = (char *)(pnode + 1);
 
     return pnode;
 }
 //通过调整是否足够
-static inline int _should_realign(struct buffernode_ctx *pnode, const size_t uilens)
+static inline int _should_realign(struct bufnode_ctx *pnode, const size_t uilens)
 {
     return pnode->buffer_len - pnode->off >= uilens &&
         (pnode->off < pnode->buffer_len / 2) &&
         (pnode->off <= MAX_REALIGN_IN_EXPAND);
 }
 //调整
-static inline void _align(struct buffernode_ctx *pnode)
+static inline void _align(struct bufnode_ctx *pnode)
 {
     memmove(pnode->buffer, pnode->buffer + pnode->misalign, pnode->off);
     pnode->misalign = 0;
 }
 //释放pnode及后面节点
-static void _free_all_node(struct buffernode_ctx *pnode)
+static void _free_all_node(struct bufnode_ctx *pnode)
 {
-    struct buffernode_ctx *pnext;
+    struct bufnode_ctx *pnext;
     for (; NULL != pnode; pnode = pnext) 
     {
         pnext = pnode->next;
@@ -60,7 +59,7 @@ static void _free_all_node(struct buffernode_ctx *pnode)
     }
 }
 //pnode 及后面节点是否为空
-static int _node_all_empty(struct buffernode_ctx *pnode)
+static int _node_all_empty(struct bufnode_ctx *pnode)
 {
     for (; NULL != pnode; pnode = pnode->next)
     {
@@ -72,9 +71,9 @@ static int _node_all_empty(struct buffernode_ctx *pnode)
     return 1;
 }
 //释放空节点
-static struct buffernode_ctx **_free_trailing_empty_node(struct buffer_ctx *pctx)
+static struct bufnode_ctx **_free_trailing_empty_node(struct buffer_ctx *pctx)
 {
-    struct buffernode_ctx **pnode = pctx->tail_with_data;
+    struct bufnode_ctx **pnode = pctx->tail_with_data;
     while (NULL != (*pnode) 
         && (*pnode)->off != 0)
     {
@@ -90,7 +89,7 @@ static struct buffernode_ctx **_free_trailing_empty_node(struct buffer_ctx *pctx
     return pnode;
 }
 //插入,会清理空节点
-static inline void _node_insert(struct buffer_ctx *pctx, struct buffernode_ctx *pnode)
+static inline void _node_insert(struct buffer_ctx *pctx, struct bufnode_ctx *pnode)
 {
      if (NULL == *pctx->tail_with_data)
      {
@@ -100,7 +99,7 @@ static inline void _node_insert(struct buffer_ctx *pctx, struct buffernode_ctx *
     }
     else 
     {
-        struct buffernode_ctx **plast = _free_trailing_empty_node(pctx);
+        struct bufnode_ctx **plast = _free_trailing_empty_node(pctx);
         *plast = pnode;
         if (0 != pnode->off)
         {
@@ -111,16 +110,16 @@ static inline void _node_insert(struct buffer_ctx *pctx, struct buffernode_ctx *
     pctx->total_len += pnode->off;
 }
 //新建节点并插入
-static inline struct buffernode_ctx *_node_insert_new(struct buffer_ctx *pctx, const size_t uilens)
+static inline struct bufnode_ctx *_node_insert_new(struct buffer_ctx *pctx, const size_t uilens)
 {
-    struct buffernode_ctx *pnode = _node_new(uilens);
+    struct bufnode_ctx *pnode = _node_new(uilens);
     _node_insert(pctx, pnode);
     return pnode;
 }
 //扩展空间，保证连续内存
-struct buffernode_ctx *_buffer_expand_single(struct buffer_ctx *pctx, const size_t uilens)
+struct bufnode_ctx *_buffer_expand_single(struct buffer_ctx *pctx, const size_t uilens)
 {
-    struct buffernode_ctx *pnode, **plast;
+    struct bufnode_ctx *pnode, **plast;
     plast = pctx->tail_with_data;
 
     //最后一个有数据的节点满的
@@ -165,7 +164,7 @@ struct buffernode_ctx *_buffer_expand_single(struct buffer_ctx *pctx, const size
     }
     
     //数据迁移
-    struct buffernode_ctx *ptmp = _node_new(pnode->off + uilens);
+    struct bufnode_ctx *ptmp = _node_new(pnode->off + uilens);
     ptmp->off = pnode->off;
     memcpy(ptmp->buffer, pnode->buffer + pnode->misalign, pnode->off);
     ASSERTAB(*plast == pnode, "tail_with_data not equ pnode.");
@@ -182,7 +181,7 @@ struct buffernode_ctx *_buffer_expand_single(struct buffer_ctx *pctx, const size
 uint32_t _buffer_expand_iov(struct buffer_ctx *pctx, const size_t uilens, 
     IOV_TYPE *piov, const uint32_t uicnt)
 {
-    struct buffernode_ctx *pnode = pctx->tail, *ptmp, *pnext;
+    struct bufnode_ctx *ptmp, *pnext, *pnode = pctx->tail;
     size_t uiavail, uiremain, uiused, uispace;
     uint32_t index = 0;
     
@@ -208,7 +207,7 @@ uint32_t _buffer_expand_iov(struct buffer_ctx *pctx, const size_t uilens,
                 uiavail += uispace;
                 ++uiused;
                 RECOED_IOV(pnode, uispace);
-            }            
+            }
         }
         else 
         {
@@ -283,7 +282,7 @@ uint32_t _buffer_expand_iov(struct buffer_ctx *pctx, const size_t uilens,
 }
 static void _last_with_data(struct buffer_ctx *pctx)
 {
-    struct buffernode_ctx **pnode = pctx->tail_with_data;
+    struct bufnode_ctx **pnode = pctx->tail_with_data;
     if (NULL == *pnode)
     {
         return;
@@ -316,13 +315,13 @@ size_t _buffer_commit_iov(struct buffer_ctx *pctx, size_t uilens, IOV_TYPE *piov
         if (0 != uilens)
         {
             _last_with_data(pctx);
-        }        
+        }
 
         return uilens;
     }
 
     uint32_t i;
-    struct buffernode_ctx *pnode, **pfirst, **pfill;
+    struct bufnode_ctx *pnode, **pfirst, **pfill;
     pfirst = pctx->tail_with_data;
     if (NULL == *pfirst)
     {
@@ -435,7 +434,7 @@ int32_t buffer_appendv(struct buffer_ctx *pctx, const char *pfmt, ...)
     va_list va;
     int32_t irtn, isize;
 
-    struct buffernode_ctx *pnode = _buffer_expand_single(pctx, FIRST_FORMAT_IN_EXPAND);
+    struct bufnode_ctx *pnode = _buffer_expand_single(pctx, FIRST_FORMAT_IN_EXPAND);
     pnode->used = 1;
     va_start(va, pfmt);
     while (1)
@@ -461,7 +460,7 @@ int32_t buffer_appendv(struct buffer_ctx *pctx, const char *pfmt, ...)
 }
 int32_t _buffer_copyout(struct buffer_ctx *pctx, void *pout, size_t uilens)
 {
-    struct buffernode_ctx *pnode = pctx->head;
+    struct bufnode_ctx *pnode = pctx->head;
     char *pdata = pout;
     if (uilens > pctx->total_len)
     {
@@ -505,7 +504,7 @@ int32_t buffer_copyout(struct buffer_ctx *pctx, void *pout, size_t uilens)
 }
 int32_t _buffer_drain(struct buffer_ctx *pctx, size_t uilen)
 {
-    struct buffernode_ctx *pnode, *pnext;
+    struct bufnode_ctx *pnode, *pnext;
     size_t uiremain, uioldlen;
     uioldlen = pctx->total_len;
     if (0 == uioldlen)
@@ -606,7 +605,7 @@ int32_t buffer_remove(struct buffer_ctx *pctx, void *pout, size_t uilen)
 
     return irn;
 }
-static int32_t _search_memcmp(struct buffernode_ctx *pnode, size_t uioff, char *pwhat, size_t uiwlens)
+static int32_t _search_memcmp(struct bufnode_ctx *pnode, size_t uioff, char *pwhat, size_t uiwlens)
 {
     size_t uincomp;
     while (uiwlens > 0
@@ -626,7 +625,7 @@ static int32_t _search_memcmp(struct buffernode_ctx *pnode, size_t uioff, char *
 
     return ERR_OK;
 }
-static struct buffernode_ctx *_search_start(struct buffernode_ctx *pnode, size_t uistart, size_t *ptotaloff)
+static struct bufnode_ctx *_search_start(struct bufnode_ctx *pnode, size_t uistart, size_t *ptotaloff)
 {
     while (NULL != pnode
         && 0 != pnode->off)
@@ -653,7 +652,7 @@ static int32_t _search(struct buffer_ctx *pctx, const size_t uistart, char *pwha
     
     //查找开始位置所在节点
     size_t uitotaloff = 0;
-    struct buffernode_ctx *pnode = _search_start(pctx->head, uistart, &uitotaloff);
+    struct bufnode_ctx *pnode = _search_start(pctx->head, uistart, &uitotaloff);
     ASSERTAB(NULL != pnode && 0 != pnode->off, "can't search start node.");
 
     char *pschar, *pstart;
@@ -723,7 +722,7 @@ uint32_t _buffer_get_iov(struct buffer_ctx *pctx, size_t uiatmost,
     }
 
     uint32_t index = 0;
-    struct buffernode_ctx *pnode = pctx->head;
+    struct bufnode_ctx *pnode = pctx->head;
     while (NULL != pnode
         && index < uicnt
         && uiatmost > 0) 

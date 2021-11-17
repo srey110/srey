@@ -138,6 +138,30 @@ void sig_exit(int32_t isig)
 }
 int main(int argc, char *argv[])
 {
+    /*uint32_t uicnt;
+    int32_t ilens;
+    int32_t i, iloop = 1000000;
+    struct timer_ctx timer;
+    timer_init(&timer);
+    timer_start(&timer);
+    for (i = 0; i < iloop; i++)
+    {
+        ilens = rand() % 2048 + 50;
+        char *buf = MALLOC(ilens);
+        FREE(buf);
+    }
+    PRINTF("MALLOC %d", (uint32_t)(timer_elapsed(&timer) / (1000 * 1000)));
+    struct buffer_ctx buffer;
+    buffer_init(&buffer);
+    IOV_TYPE wsabuf_r[MAX_RECV_IOV_COUNT];
+    timer_start(&timer);
+    for (i = 0; i < iloop; i++)
+    {
+        ilens = rand() % 2048 + 50;
+        uicnt = _buffer_expand_iov(&buffer, ilens, wsabuf_r, 4);
+        _buffer_commit_iov(&buffer, 0, wsabuf_r, uicnt);
+    }
+    PRINTF("iov %d", (uint32_t)(timer_elapsed(&timer) / (1000 * 1000)));*/
     sighandle(sig_exit);
     unlimit();
 

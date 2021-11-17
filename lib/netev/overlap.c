@@ -46,13 +46,13 @@ struct overlap_ctx
     close_cb c_cb;
     void *udata;
     struct netev_ctx *netev;
+    union netaddr_ctx *prmtaddr;//UDP
     struct buffer_ctx buf_r;
     struct buffer_ctx buf_w;
     mutex_ctx lock_close;//CLOSE后不再触发write_cb
     mutex_ctx lock_send;
     IOV_TYPE wsabuf_r[MAX_RECV_IOV_COUNT];
     IOV_TYPE wsabuf_w[MAX_SEND_IOV_COUNT];
-    struct sockaddr_storage rmtaddr;//存储数据来源IP地址
 };
 static inline int32_t _post_accept(struct overlap_acpt_ctx *pacpol)
 {
@@ -126,8 +126,7 @@ static inline struct overlap_ctx *_get_overlap(struct sock_ctx *psock)
 static inline int32_t _post_recv(struct overlap_ctx *polctx)
 {
     ZERO(&polctx->overlap_r.overlapped, sizeof(polctx->overlap_r.overlapped));
-    polctx->flag_r = 0;
-    polctx->bytes_r = 0;
+    polctx->flag_r = polctx->bytes_r = 0;
     polctx->iovcnt_r = buffer_write_iov_application(&polctx->buf_r,
         MAX_RECV_IOV_SIZE, polctx->wsabuf_r, MAX_RECV_IOV_COUNT);
 
@@ -196,11 +195,10 @@ static inline void _on_recv_cb(struct watcher_ctx *pwatcher, struct sock_ctx *ps
 static inline int32_t _post_recv_from(struct overlap_ctx *polctx)
 {
     ZERO(&polctx->overlap_r.overlapped, sizeof(polctx->overlap_r.overlapped));
-    polctx->flag_r = 0;
-    polctx->bytes_r = 0;
-    polctx->addrlen = (int32_t)sizeof(polctx->rmtaddr);
+    polctx->flag_r = polctx->bytes_r = 0;
+    polctx->addrlen = (int32_t)netaddr_size(polctx->prmtaddr);
     polctx->iovcnt_r = buffer_write_iov_application(&polctx->buf_r,
-        MAX_RECV_IOV_SIZE, polctx->wsabuf_r, MAX_RECV_IOV_COUNT);
+        MAX_RECVFROM_IOV_SIZE, polctx->wsabuf_r, MAX_RECV_IOV_COUNT);
 
     ATOMIC_ADD(&polctx->ref_r, 1);
     int32_t irtn = WSARecvFrom(polctx->overlap_r.sock,
@@ -208,7 +206,7 @@ static inline int32_t _post_recv_from(struct overlap_ctx *polctx)
         (DWORD)polctx->iovcnt_r,
         &polctx->bytes_r,
         &polctx->flag_r,
-        (struct sockaddr*)&polctx->rmtaddr,
+        netaddr_addr(polctx->prmtaddr),
         &polctx->addrlen,
         &polctx->overlap_r.overlapped,
         NULL);
@@ -234,19 +232,11 @@ static inline void _on_recvfrom_cb(struct watcher_ctx *pwatcher, struct sock_ctx
         return;
     }
 
-    char achost[IP_LENS];
-    char acport[PORT_LENS];
-    uint16_t uport = 0;
-    int32_t irtn = getnameinfo((struct sockaddr *)&polctx->rmtaddr, polctx->addrlen,
-        achost, sizeof(achost), acport, sizeof(acport),
-        NI_NUMERICHOST | NI_NUMERICSERV);
-    if (ERR_OK == irtn)
-    {
-        uport = atoi(acport);
-    }
-    polctx->r_cb(psock, &polctx->buf_r, (size_t)pwatcher->bytes, achost, uport, polctx->udata);
-    irtn = _post_recv_from(polctx);
-    if (ERR_OK != irtn)
+    char acip[IP_LENS];
+    netaddr_ip(polctx->prmtaddr, acip);
+    uint16_t uport = netaddr_port(polctx->prmtaddr);
+    polctx->r_cb(psock, &polctx->buf_r, (size_t)pwatcher->bytes, acip, uport, polctx->udata);
+    if (ERR_OK != _post_recv_from(polctx))
     {
         _on_close(polctx);
     }
@@ -336,13 +326,6 @@ static inline int32_t _post_sendto(struct overlap_ctx *polctx)
     {
         return ERR_FAILED;
     }
-    union netaddr_ctx addr;
-    if (ERR_OK != netaddr_sethost(&addr, udpmsg.ip, udpmsg.port))
-    {
-        buffer_read_iov_commit(&polctx->buf_w, udpmsg.size);
-        return ERR_FAILED;
-    }
-
     ZERO(&polctx->overlap_w.overlapped, sizeof(polctx->overlap_w.overlapped));
     polctx->bytes_w = 0;
     polctx->iovcnt_w = uiovcnt;
@@ -352,8 +335,8 @@ static inline int32_t _post_sendto(struct overlap_ctx *polctx)
         (DWORD)polctx->iovcnt_w,
         &polctx->bytes_w,
         0,
-        netaddr_addr(&addr),
-        netaddr_size(&addr),
+        netaddr_addr(&udpmsg.addr),
+        netaddr_size(&udpmsg.addr),
         &polctx->overlap_w.overlapped,
         NULL);
     if (ERR_OK != irtn)
@@ -425,37 +408,35 @@ static inline int32_t _trybind(SOCKET sock, const int32_t ifamily)
 }
 struct sock_ctx *netev_add_sock(struct netev_ctx *pctx, SOCKET sock, int32_t itype, int32_t ifamily)
 {
-    if (SOCK_DGRAM == itype)
-    {
-        union netaddr_ctx addr;
-        int32_t irtn = netaddr_localaddr(&addr, sock, ifamily);
-        if (ERR_OK != irtn)
-        {
-            irtn = _trybind(sock, ifamily);
-            if (ERR_OK != irtn)
-            {
-                return NULL;
-            }
-        }
-    }
     struct overlap_ctx *pol = MALLOC(sizeof(struct overlap_ctx));
     if (NULL == pol)
     {
         LOG_ERROR("%s", ERRSTR_MEMORY);
         return NULL;
     }
-
     ZERO(pol, sizeof(struct overlap_ctx));
-    pol->socktype = itype;
-    pol->family = ifamily;
-    pol->overlap_r.sock = sock;
-    pol->overlap_w.sock = sock;
-    uint32_t uid = (uint32_t)ATOMIC_ADD(&pctx->id, 1);
-    pol->overlap_r.id = uid;
-    pol->overlap_w.id = uid;
-    socknbio(sock);
     if (SOCK_DGRAM == itype)
     {
+        pol->prmtaddr = MALLOC(sizeof(union netaddr_ctx));
+        if (NULL == pol->prmtaddr)
+        {
+            LOG_ERROR("%s", ERRSTR_MEMORY);
+            FREE(pol);
+            return NULL;
+        }
+        int32_t irtn = netaddr_localaddr(pol->prmtaddr, sock, ifamily);
+        if (ERR_OK != irtn)
+        {
+            irtn = _trybind(sock, ifamily);
+            if (ERR_OK != irtn)
+            {
+                FREE(pol->prmtaddr);
+                FREE(pol);
+                return NULL;
+            }
+        }
+
+        netaddr_empty_addr(pol->prmtaddr, ifamily);
         DWORD dbytes = 0;
         BOOL bbehavior = FALSE;
         if (WSAIoctl(sock, SIO_UDP_CONNRESET,
@@ -476,6 +457,14 @@ struct sock_ctx *netev_add_sock(struct netev_ctx *pctx, SOCKET sock, int32_t ity
         pol->overlap_r.ev_cb = _on_recv_cb;
         pol->overlap_w.ev_cb = _on_send_cb;
     }
+    socknbio(sock);
+    pol->socktype = itype;
+    pol->family = ifamily;
+    pol->overlap_r.sock = sock;
+    pol->overlap_w.sock = sock;
+    uint32_t uid = (uint32_t)ATOMIC_ADD(&pctx->id, 1);
+    pol->overlap_r.id = uid;
+    pol->overlap_w.id = uid;
     pol->netev = pctx;
     buffer_init(&pol->buf_r);
     buffer_init(&pol->buf_w);
@@ -545,7 +534,7 @@ static inline int32_t _acceptex(struct listener_ctx *plsn)
     int32_t irtn;
     for (int32_t i = 0; i < MAX_ACCEPT_SOCKEX; i++)
     {
-        pacpol = &plsn->overlap_acpt[i];        
+        pacpol = &plsn->overlap_acpt[i];
         irtn = _post_accept(pacpol);
         if (ERR_OK != irtn)
         {
@@ -601,6 +590,10 @@ static inline void _sock_free(void *pdata)
 {
     struct overlap_ctx *pol = pdata;
     SAFE_CLOSE_SOCK(pol->overlap_r.sock);
+    if (SOCK_DGRAM == pol->socktype)
+    {
+        FREE(pol->prmtaddr);
+    }
     buffer_free(&pol->buf_r);
     buffer_free(&pol->buf_w);
     mutex_free(&pol->lock_close);
@@ -647,7 +640,7 @@ void sock_free(struct sock_ctx *psock)
     else
     {
         tw_add(pol->netev->tw, 10, -1, _sock_delay_free, pol);
-    }    
+    }
 }
 static inline int32_t _connectex(struct watcher_ctx *pwatcher, struct overlap_ctx *pol, union netaddr_ctx *paddr)
 {
@@ -855,17 +848,14 @@ int32_t sock_sendto(struct sock_ctx *psock, const char *phost, uint16_t uport,
     {
         return ERR_FAILED;
     }
-    size_t iplens = strlen(phost);
-    if (iplens >= IP_LENS)
-    {
-        return ERR_FAILED;
-    }
     ASSERTAB(SOCK_DGRAM == polctx->socktype, "only support udp.");
     struct udp_msg_ctx msg;
-    msg.port = uport;
+    if (ERR_OK != netaddr_sethost(&msg.addr, phost, uport))
+    {
+        LOG_ERROR("%s", "netaddr_sethost failed.");
+        return ERR_FAILED;
+    }
     msg.size = uilens;
-    memcpy(msg.ip, phost, iplens);
-    msg.ip[iplens] = '\0';
     buffer_piece_append(&polctx->buf_w, &msg, sizeof(struct udp_msg_ctx), pdata, uilens);
 
     int32_t irtn = ERR_OK;

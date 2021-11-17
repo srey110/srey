@@ -20,9 +20,9 @@
 #endif
 struct buffer_ctx
 {
-    struct buffernode_ctx *head;
-    struct buffernode_ctx *tail;
-    struct buffernode_ctx **tail_with_data;
+    struct bufnode_ctx *head;
+    struct bufnode_ctx *tail;
+    struct bufnode_ctx **tail_with_data;
     int32_t freeze_read;
     int32_t freeze_write;
     size_t total_len;//数据总长度
@@ -118,7 +118,7 @@ static inline size_t buffer_size(struct buffer_ctx *pctx)
 * \param uilen    扩展多少
 * \return         扩展了的节点
 */
-struct buffernode_ctx *_buffer_expand_single(struct buffer_ctx *pctx, const size_t uilens);
+struct bufnode_ctx *_buffer_expand_single(struct buffer_ctx *pctx, const size_t uilens);
 /*
 * \brief          扩展节点，非连续内存,填充数据到 piov后使用_buffer_commit_iov提交本次操作
 * \param uilen    扩展多少
@@ -221,7 +221,6 @@ static inline uint32_t buffer_piece_read_application(struct buffer_ctx *pbuf, vo
         if (uisize > 0)
         {
             uiovcnt = _buffer_get_iov(pbuf, uisize, piov, uiovmax);
-            ASSERTAB(uiovcnt > 0, "get iov error.");
             pbuf->freeze_read = 1;
         }
     }    

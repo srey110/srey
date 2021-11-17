@@ -22,7 +22,7 @@
     #define NETEV_EVPORT
 #endif
 
-#define MAX_RECVFROM_IOV_SIZE   4096
+#define MAX_RECVFROM_IOV_SIZE   4096 //UDP最大接收长度
 #define MAX_RECV_IOV_SIZE       4096
 #define MAX_RECV_IOV_COUNT      4
 #define MAX_SEND_IOV_SIZE       4096
@@ -61,9 +61,8 @@ struct watcher_ctx
 };
 struct udp_msg_ctx
 {
-    uint16_t port;
     size_t size;
-    char ip[IP_LENS];
+    union netaddr_ctx addr;
 };
 struct netev_ctx
 {

@@ -317,6 +317,10 @@ static inline int32_t _on_recvfrom_cb(struct watcher_ctx *pwatcher, struct usock
     {
         return ERR_FAILED;
     }
+    if (icnt > MAX_RECVFROM_IOV_SIZE)
+    {
+        icnt = MAX_RECVFROM_IOV_SIZE;
+    }
 
     struct msghdr msg;
     union netaddr_ctx addr;
@@ -348,15 +352,9 @@ static inline int32_t _on_sendto_cb(struct watcher_ctx *pwatcher, struct usock_c
         _check_sending(pwatcher, pusock);
         return ERR_OK;
     }
-    union netaddr_ctx addr;
-    if (ERR_OK != netaddr_sethost(&addr, udpmsg.ip, udpmsg.port))
-    {
-        buffer_read_iov_commit(&pusock->buf_w, udpmsg.size);
-        return ERR_OK;
-    }
 
     struct msghdr msg;
-    _init_msghdr(&msg, &addr, pusock->wsabuf_w, uiovcnt);
+    _init_msghdr(&msg, &udpmsg.addr, pusock->wsabuf_w, uiovcnt);
     ssize_t isend = sendmsg(pusock->sock.sock, &msg, 0);
     buffer_read_iov_commit(&pusock->buf_w, udpmsg.size);
     if (isend <= 0)
@@ -456,19 +454,15 @@ int32_t sock_sendto(struct sock_ctx *psock, const char *phost, uint16_t uport,
     {
         return ERR_FAILED;
     }
-    size_t iplens = strlen(phost);
-    if (iplens >= IP_LENS)
-    {
-        return ERR_FAILED;
-    }
     struct usock_ctx *pusock = _get_usock(psock);
     ASSERTAB(SOCK_DGRAM == pusock->socktype, "only support tcp.");
-
     struct udp_msg_ctx msg;
-    msg.port = uport;
+    if (ERR_OK != netaddr_sethost(&msg.addr, phost, uport))
+    {
+        LOG_ERROR("%s", "netaddr_sethost failed.");
+        return ERR_FAILED;
+    }
     msg.size = uilens;
-    memcpy(msg.ip, phost, iplens);
-    msg.ip[iplens] = '\0';
     buffer_piece_append(&pusock->buf_w, &msg, sizeof(struct udp_msg_ctx), pdata, uilens);
 
     return _post_send(pusock);
@@ -646,17 +640,6 @@ static inline void _conn_timeout(struct tw_node_ctx *pnode, void *pdata)
     mutex_unlock(&pusock->lock_conn_timeout);
 
     _uev_cmd_close(pusock->watcher, &pusock->sock);
-    union netaddr_ctx addr;
-    if (ERR_OK == netaddr_remoteaddr(&addr, pusock->sock.sock, pusock->family))
-    {
-        char acip[IP_LENS];
-        netaddr_ip(&addr, acip);
-        LOG_WARN("sock %d connect %s %d time out.", pusock->sock.sock, acip, netaddr_port(&addr));
-    }
-    else
-    {
-        LOG_WARN("sock %d connect time out.", pusock->sock.sock);
-    }
 }
 struct sock_ctx *netev_connecter(struct netev_ctx *pctx, uint32_t utimeout,
     const char *phost, const uint16_t usport, connect_cb conn_cb, void *pdata)
