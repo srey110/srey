@@ -169,7 +169,7 @@ static inline uint32_t buffer_read_iov_application(struct buffer_ctx *pbuf, size
     IOV_TYPE *piov, const uint32_t uiovcnt)
 {
     buffer_lock(pbuf);
-    ASSERTAB(0 == pbuf->freeze_read, "buffer head already freezed");
+    ASSERTAB(0 == pbuf->freeze_read, "buffer head already freezed.");
     uint32_t uicnt = _buffer_get_iov(pbuf, uisize, piov, uiovcnt);
     if (uicnt > 0)
     {
@@ -201,7 +201,7 @@ static inline size_t _buffer_iov_size(IOV_TYPE *piov, const uint32_t uiovcnt)
 static inline void buffer_piece_append(struct buffer_ctx *pbuf, void *pdata1, size_t uilens1, void *pdata2, size_t uilens2)
 {
     buffer_lock(pbuf);
-    ASSERTAB(0 == pbuf->freeze_write, "tail locked.");
+    ASSERTAB(0 == pbuf->freeze_write, "buffer tail already freezed.");
     _buffer_append(pbuf, pdata1, uilens1);
     _buffer_append(pbuf, pdata2, uilens2);
     buffer_unlock(pbuf);
@@ -211,7 +211,7 @@ static inline uint32_t buffer_piece_read_application(struct buffer_ctx *pbuf, vo
 {
     uint32_t uiovcnt = 0;
     buffer_lock(pbuf);
-    ASSERTAB(0 == pbuf->freeze_read, "head locked.");
+    ASSERTAB(0 == pbuf->freeze_read, "buffer head already freezed.");
     if (pbuf->total_len > 0)
     {
         ASSERTAB(pbuf->total_len >= uilens1, "lens error.");
