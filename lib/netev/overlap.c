@@ -472,7 +472,7 @@ struct sock_ctx *netev_add_sock(struct netev_ctx *pctx, SOCKET sock, int32_t ity
     {
         closereset(sock);
         socknodelay(sock);
-        //sockkpa(sock, SOCKKPA_DELAY, SOCKKPA_INTVL);
+        sockkpa(sock, SOCKKPA_DELAY, SOCKKPA_INTVL);
         pol->overlap_r.ev_cb = _on_recv_cb;
         pol->overlap_w.ev_cb = _on_send_cb;
     }

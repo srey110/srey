@@ -552,7 +552,7 @@ struct sock_ctx *netev_add_sock(struct netev_ctx *pctx, SOCKET sock, int32_t ity
     {
         closereset(sock);
         socknodelay(sock);
-        //sockkpa(sock, SOCKKPA_DELAY, SOCKKPA_INTVL);
+        sockkpa(sock, SOCKKPA_DELAY, SOCKKPA_INTVL);
     }
     pusock->socktype = itype;
     pusock->family = ifamily;
