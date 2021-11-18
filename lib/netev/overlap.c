@@ -3,7 +3,6 @@
 #ifdef NETEV_IOCP
 #define _FLAGS_READY 0x01
 #define _FLAGS_LOOP  0x02
-#define MAX_DELAYFREE_CNT  20
 #define MAX_ACCEPT_SOCKEX SOCKK_BACKLOG
 struct overlap_acpt_ctx
 {
@@ -329,6 +328,7 @@ static inline int32_t _post_sendto(struct overlap_ctx *polctx)
     ZERO(&polctx->overlap_w.overlapped, sizeof(polctx->overlap_w.overlapped));
     polctx->bytes_w = 0;
     polctx->iovcnt_w = uiovcnt;
+
     ATOMIC_ADD(&polctx->ref_w, 1);
     int32_t irtn = WSASendTo(polctx->overlap_r.sock,
         polctx->wsabuf_w,
@@ -374,7 +374,6 @@ static inline void _on_sendto_cb(struct watcher_ctx *pwatcher, struct sock_ctx *
         }
         mutex_unlock(&polctx->lock_close);
     }
-
     mutex_lock(&polctx->lock_send);
     (void)_post_sendto(polctx);
     ATOMIC_ADD(&polctx->ref_w, -1);
@@ -510,7 +509,7 @@ void listener_free(struct listener_ctx *plsn)
     }
     else
     {
-        tw_add(plsn->netev->tw, 10, -1, _listener_delay_free, plsn);
+        tw_add(plsn->netev->tw, DELAYFREE_TIME, -1, _listener_delay_free, plsn);
     }
 }
 static inline int32_t _acceptex(struct listener_ctx *plsn)
@@ -639,7 +638,7 @@ void sock_free(struct sock_ctx *psock)
     }
     else
     {
-        tw_add(pol->netev->tw, 10, -1, _sock_delay_free, pol);
+        tw_add(pol->netev->tw, DELAYFREE_TIME, -1, _sock_delay_free, pol);
     }
 }
 static inline int32_t _connectex(struct watcher_ctx *pwatcher, struct overlap_ctx *pol, union netaddr_ctx *paddr)

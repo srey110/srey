@@ -106,8 +106,8 @@ static inline void _uev_init_watcher(struct watcher_ctx *pwatcher)
     ASSERTAB(ERR_OK == sockpair(pwatcher->socks), "init socket pair failed.");
     mutex_init(&pwatcher->lock_qucmd);
     thread_init(&pwatcher->thev);
-    queue_init(&pwatcher->qu_close, ONEK);
-    queue_init(&pwatcher->qu_cmd, ONEK);
+    queue_init(&pwatcher->qu_close, ONEK * 2);
+    queue_init(&pwatcher->qu_cmd, ONEK * 4);
 }
 static inline void _uev_free_watcher(struct watcher_ctx *pwatcher)
 {
@@ -511,8 +511,7 @@ static void _loop(void *param)
     struct sock_ctx sock;
     sock.sock = pwatcher->socks[0];
     sock.ev_cb = _cmd_cb;
-    sock.events = 0;
-    sock.id = 0;
+    sock.events = sock.id = 0;
     ASSERTAB(ERR_OK == _uev_add(pwatcher, &sock, EV_READ), "_uev_add failed.");
 #endif
     while (0 == istop)

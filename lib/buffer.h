@@ -200,10 +200,40 @@ static inline size_t _buffer_iov_size(IOV_TYPE *piov, const uint32_t uiovcnt)
 };
 static inline void buffer_piece_append(struct buffer_ctx *pbuf, void *pdata1, size_t uilens1, void *pdata2, size_t uilens2)
 {
+    IOV_TYPE piov[2];
+    size_t uitotal = uilens1 + uilens2;
     buffer_lock(pbuf);
     ASSERTAB(0 == pbuf->freeze_write, "buffer tail already freezed.");
-    _buffer_append(pbuf, pdata1, uilens1);
-    _buffer_append(pbuf, pdata2, uilens2);
+    uint32_t uinum = _buffer_expand_iov(pbuf, uitotal, piov, 2);
+    if (uilens1 > piov[0].IOV_LEN_FIELD)
+    {
+        char *pdata = (char*)pdata1;
+        memcpy(piov[0].IOV_PTR_FIELD, pdata, piov[0].IOV_LEN_FIELD);
+        size_t uiremain = uilens1 - piov[0].IOV_LEN_FIELD;
+        memcpy(piov[1].IOV_PTR_FIELD, pdata + piov[0].IOV_LEN_FIELD, uiremain);
+        memcpy(piov[1].IOV_PTR_FIELD + uiremain, pdata2, uilens2);
+    }
+    else if(uilens1 == piov[0].IOV_LEN_FIELD)
+    {
+        memcpy(piov[0].IOV_PTR_FIELD, pdata1, uilens1);
+        memcpy(piov[1].IOV_PTR_FIELD, pdata2, uilens2);
+    }
+    else//<
+    {
+        memcpy(piov[0].IOV_PTR_FIELD, pdata1, uilens1);        
+        size_t uiremain = piov[0].IOV_LEN_FIELD - uilens1;
+        if (uiremain >= uilens2)
+        {
+            memcpy(piov[0].IOV_PTR_FIELD + uilens1, pdata2, uilens2);
+        }
+        else
+        {
+            char *pdata = (char*)pdata2;
+            memcpy(piov[0].IOV_PTR_FIELD + uilens1, pdata, uiremain);
+            memcpy(piov[1].IOV_PTR_FIELD, pdata + uiremain, uilens2 - uiremain);
+        }
+    }
+    ASSERTAB(uitotal == _buffer_commit_iov(pbuf, uitotal, piov, uinum), "commit lens not equ buffer lens.");
     buffer_unlock(pbuf);
 };
 static inline uint32_t buffer_piece_read_application(struct buffer_ctx *pbuf, void *pdata1, size_t uilens1,

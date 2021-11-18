@@ -41,20 +41,10 @@ static inline void queue_free(struct queue_ctx *pctx)
     FREE(pctx->msg);
 };
 /*
-* \brief          À©ÈÝ,ÊÕËõ
+* \brief          À©ÈÝ
 */
 static inline void queue_expand(struct queue_ctx *pctx)
 {
-    //ÊÕËõ
-    if (0 == pctx->size
-        && pctx->capacity > pctx->initcap)
-    {
-        FREE(pctx->msg);
-        pctx->msg = (struct message_ctx *)MALLOC(sizeof(struct message_ctx) * pctx->initcap);
-        ASSERTAB(NULL != pctx->msg, ERRSTR_MEMORY);
-        pctx->capacity = pctx->initcap;
-        return;
-    }
     if (pctx->size < pctx->capacity)
     {
         return;

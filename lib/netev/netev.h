@@ -27,6 +27,8 @@
 #define MAX_RECV_IOV_COUNT      4
 #define MAX_SEND_IOV_SIZE       4096
 #define MAX_SEND_IOV_COUNT      16
+#define DELAYFREE_TIME     10
+#define MAX_DELAYFREE_CNT  20
 #ifndef NETEV_IOCP
     #define _FLAGS_CLOSE 0x08
     #if defined(NETEV_EPOLL)

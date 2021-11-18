@@ -6,7 +6,6 @@
 #define _FLAGS_CONN  0x02
 #define _FLAGS_NORM  0x04
 //#define _FLAGS_CLOSE 0x08  netev.hÖÐ
-#define MAX_DELAYFREE_CNT  20
 struct lsn_ctx
 {
     struct sock_ctx sock;
@@ -128,7 +127,7 @@ void listener_free(struct listener_ctx *plsn)
     }
     else
     {
-        tw_add(plsn->netev->tw, 10, -1, _listener_delay_free, plsn);
+        tw_add(plsn->netev->tw, DELAYFREE_TIME, -1, _listener_delay_free, plsn);
     }
 }
 static inline void _sock_free(void *pdata)
@@ -169,7 +168,7 @@ void sock_free(struct sock_ctx *psock)
     }
     else
     {
-        tw_add(pusock->netev->tw, 10, -1, _sock_delay_free, pusock);
+        tw_add(pusock->netev->tw, DELAYFREE_TIME, -1, _sock_delay_free, pusock);
     }
 }
 void sock_close(struct sock_ctx *psock)
