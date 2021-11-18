@@ -303,11 +303,12 @@ static inline int32_t _on_send_cb(struct watcher_ctx *pwatcher, struct usock_ctx
 }
 static inline void _init_msghdr(struct msghdr *pmsg, union netaddr_ctx *paddr, IOV_TYPE *wsabuf, uint32_t iiovcnt)
 {
-    ZERO(pmsg, sizeof(struct msghdr));
     pmsg->msg_name = netaddr_addr(paddr);
     pmsg->msg_namelen = netaddr_size(paddr);
     pmsg->msg_iov = wsabuf;
     pmsg->msg_iovlen = iiovcnt;
+    pmsg->msg_control = NULL;
+    pmsg->msg_controllen = pmsg->msg_flags = 0;
 }
 static inline int32_t _on_recvfrom_cb(struct watcher_ctx *pwatcher, struct usock_ctx *pusock)
 {
