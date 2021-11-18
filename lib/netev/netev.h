@@ -68,9 +68,10 @@ struct udp_msg_ctx
 };
 struct netev_ctx
 {
-    volatile atomic_t id;
     int32_t thcnt;
     struct tw_ctx *tw;
+    uint32_t(*id_creater)(void *);
+    void *id_data;
     struct watcher_ctx *watcher;
 };
 struct sock_ctx
@@ -91,7 +92,7 @@ typedef void(*read_cb)(struct sock_ctx *, struct buffer_ctx *, size_t, const cha
 typedef void(*write_cb)(struct sock_ctx *, size_t, void *);
 typedef void(*close_cb)(struct sock_ctx *, void *);
 
-struct netev_ctx *netev_new(struct tw_ctx *ptw, const uint32_t uthcnt);
+struct netev_ctx *netev_new(struct tw_ctx *ptw, const uint32_t uthcnt, uint32_t (*id_creater)(void *), void *pid);
 void netev_free(struct netev_ctx *pctx);
 void netev_loop(struct netev_ctx *pctx); 
 

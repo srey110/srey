@@ -26,13 +26,14 @@ struct watcher_ctx *_netev_get_watcher(struct netev_ctx *pctx, SOCKET fd)
     return &pctx->watcher[fnv1a_hash((const char *)&fd, sizeof(fd)) % pctx->thcnt];
 #endif
 }
-static inline struct netev_ctx *_new_pub_ev(struct tw_ctx *ptw, const uint32_t uthcnt)
+static inline struct netev_ctx *_new_pub_ev(struct tw_ctx *ptw, const uint32_t uthcnt, uint32_t(*id_creater)(void *), void *pid)
 {
     struct netev_ctx *pev = MALLOC(sizeof(struct netev_ctx));
     ASSERTAB(NULL != pev, ERRSTR_MEMORY);
     pev->thcnt = _netev_threadcnt(uthcnt);
     pev->tw = ptw;
-    pev->id = 1;
+    pev->id_creater = id_creater;
+    pev->id_data = pid;
     pev->watcher = MALLOC(sizeof(struct watcher_ctx) * pev->thcnt);
     ASSERTAB(NULL != pev->watcher, ERRSTR_MEMORY);
     return pev;
@@ -330,9 +331,9 @@ static inline void _cmd_cb(struct watcher_ctx *pwatcher, struct sock_ctx *psock,
 #endif
 }
 #endif
-struct netev_ctx *netev_new(struct tw_ctx *ptw, const uint32_t uthcnt)
+struct netev_ctx *netev_new(struct tw_ctx *ptw, const uint32_t uthcnt, uint32_t(*id_creater)(void *), void *pid)
 {
-    struct netev_ctx *pev = _new_pub_ev(ptw, uthcnt);
+    struct netev_ctx *pev = _new_pub_ev(ptw, uthcnt, id_creater, pid);
 #ifdef NETEV_IOCP
     WSADATA wsdata;
     WORD ver = MAKEWORD(2, 2);

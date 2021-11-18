@@ -20,6 +20,6 @@
 
 #include "netaddr.h"
 #include "netutils.h"
-#include "event.h"
+#include "srey.h"
 
 #endif//LIB_H_

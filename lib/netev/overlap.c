@@ -461,7 +461,7 @@ struct sock_ctx *netev_add_sock(struct netev_ctx *pctx, SOCKET sock, int32_t ity
     pol->family = ifamily;
     pol->overlap_r.sock = sock;
     pol->overlap_w.sock = sock;
-    uint32_t uid = (uint32_t)ATOMIC_ADD(&pctx->id, 1);
+    uint32_t uid = (NULL != pctx->id_creater ? pctx->id_creater(pctx->id_data) : 0);
     pol->overlap_r.id = uid;
     pol->overlap_w.id = uid;
     pol->netev = pctx;

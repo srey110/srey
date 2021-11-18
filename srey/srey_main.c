@@ -148,9 +148,9 @@ int main(int argc, char *argv[])
     LOG_ERROR("%s", "LOG_ERROR");
     LOG_FATAL("%s", "LOG_FATAL");
 
-    struct event_ctx *pevent = event_new();
-    event_loop(pevent);
-    pnetev = event_netev(pevent);
+    struct srey_ctx *pevent = srey_new();
+    srey_loop(pevent);
+    pnetev = srey_netev(pevent);
     struct listener_ctx *plsn = netev_listener(pnetev, bindip, 15000, u_accept_cb, NULL);
     MSLEEP(100);
     struct sock_ctx *pconnsock = netev_connecter(pnetev, 100, linkip, 15000, u_connect_cb, NULL);
@@ -159,8 +159,8 @@ int main(int argc, char *argv[])
     struct sock_ctx *pudp = netev_add_sock(pnetev, udp, SOCK_DGRAM, ifamily);
     ASSERTAB(ERR_OK == netev_enable_rw(pnetev, pudp, u_read_cb, u_write_cb, u_close_cb, NULL), "netev_enable_rw udp");
     ATOMIC_ADD(&ullinkNum, 1);
-    //tw_add(event_tw(pevent), 5000, -1, udp_close, pudp);
-    tw_add(event_tw(pevent), 2000, -1, print_info_cb, NULL);
+    //tw_add(srey_tw(pevent), 5000, -1, udp_close, pudp);
+    tw_add(srey_tw(pevent), 2000, -1, print_info_cb, NULL);
     while (0 == istop)
     {
         MSLEEP(10);
@@ -168,7 +168,7 @@ int main(int argc, char *argv[])
     sock_close(pconnsock);
     listener_free(plsn);
     MSLEEP(1000);
-    event_free(pevent);
+    srey_free(pevent);
     LOGFREE();
     return 0;
 }

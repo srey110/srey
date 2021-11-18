@@ -59,11 +59,14 @@
     <ClInclude Include="netev\netev.h">
       <Filter>event\netev</Filter>
     </ClInclude>
-    <ClInclude Include="event.h">
-      <Filter>event</Filter>
-    </ClInclude>
     <ClInclude Include="buffer.h">
       <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="srey.h">
+      <Filter>service</Filter>
+    </ClInclude>
+    <ClInclude Include="worker.h">
+      <Filter>service</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -97,11 +100,14 @@
     <ClCompile Include="netev\usock.c">
       <Filter>event\netev</Filter>
     </ClCompile>
-    <ClCompile Include="event.c">
-      <Filter>event</Filter>
-    </ClCompile>
     <ClCompile Include="buffer.c">
       <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="srey.c">
+      <Filter>service</Filter>
+    </ClCompile>
+    <ClCompile Include="worker.c">
+      <Filter>service</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -125,6 +131,9 @@
     </Filter>
     <Filter Include="event\netev">
       <UniqueIdentifier>{6f43b84f-1490-491a-93d1-c4d6cb223b24}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="service">
+      <UniqueIdentifier>{70f5fcad-95b6-4089-8ec5-a34b12a92699}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
 </Project>

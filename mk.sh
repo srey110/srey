@@ -15,7 +15,7 @@ Dir="lib lib/netev lib/md5 lib/sha1"
 #main函数所在文件夹
 MAINDIR="srey"
 #main函数所在文件
-MAINFILE="srey.c"
+MAINFILE="srey_main.c"
 #附加包含库
 INCLUDELIB="-lrt -lpthread"
 #系统
