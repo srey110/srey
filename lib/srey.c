@@ -18,7 +18,6 @@ static inline u_long _cur_tick(struct srey_ctx *pctx)
 }
 static inline uint32_t _id_creater(void *pparam)
 {
-    ATOMIC_CAS(&((struct srey_ctx *)pparam)->ids, INT_MAX, 1);
     return (uint32_t)ATOMIC_ADD(&((struct srey_ctx *)pparam)->ids, 1);
 }
 struct srey_ctx *srey_new()

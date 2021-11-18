@@ -6,14 +6,6 @@
     #define OS_WIN
 #elif defined(linux) || defined(__linux) || defined(__linux__)
     #define OS_LINUX
-#elif defined(__APPLE__) && (defined(__GNUC__) || defined(__xlC__) || defined(__xlc__))
-    #include <TargetConditionals.h>
-    #if defined(TARGET_OS_MAC) && TARGET_OS_MAC
-        #define OS_MAC
-    #elif defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
-        #define OS_IOS
-    #endif
-    #define OS_DARWIN
 #elif defined(__FreeBSD__) || defined(__FreeBSD_kernel__) 
     #define OS_BSD
     #define OS_FBSD
@@ -28,10 +20,6 @@ endif defined(__DragonFly__)
     #define OS_DFBSD
 #elif defined(sun) || defined(__sun) || defined(__sun__)
     #define OS_SUN
-#elif defined _hpux
-    #define OS_HPUX
-#elif defined _AIX
-    #define OS_AIX
 #else
     #error "Unsupported operating system platform!"
 #endif
@@ -113,12 +101,6 @@ endif defined(__DragonFly__)
     #include <arpa/inet.h>    
     #if defined(OS_LINUX) 
         #include <sys/epoll.h>
-    #elif defined(OS_AIX)
-        #include <sys/systemcfg.h>
-    #elif defined(OS_DARWIN)
-        #include <mach/mach_time.h>
-        #include <mach-o/dyld.h>
-        #include <libkern/OSAtomic.h>
     #elif defined(OS_SUN)
         #include <port.h>
         #include <atomic.h>

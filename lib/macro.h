@@ -190,22 +190,6 @@ do\
     #define ATOMIC_SET(ptr, val)   atomic_swap_32(ptr, val)
     //uint32_t atomic_cas_32(volatile uint32_t *target, uint32_t cmp, uint32_t newval);
     #define ATOMIC_CAS(ptr, oldval, newval)   (atomic_cas_32(ptr, oldval, newval) == oldval)
-#elif defined(OS_DARWIN)
-    typedef int32_t atomic_t;
-    //int32_t OSAtomicAdd32(int32_t theAmount, volatile int32_t *theValue)
-    #define ATOMIC_ADD(ptr, val)   OSAtomicAdd32(val, ptr)
-    static inline atomic_t _fetchandset(volatile atomic_t *ptr, atomic_t value)
-    {
-        atomic_t oldvar;
-        do
-        {
-            oldvar = *ptr;
-        } while (!OSAtomicCompareAndSwap32(oldvar, value, ptr));
-        return oldvar;
-    };
-    #define ATOMIC_SET(ptr, val)   _fetchandset(ptr, val)
-    //bool OSAtomicCompareAndSwap32(int32_t oldValue, int32_t newValue, volatile int32_t *theValue)
-    #define ATOMIC_CAS(ptr, oldval, newval)   OSAtomicCompareAndSwap32(oldval, newval, ptr)
 #else
     typedef uint32_t atomic_t;
     //type __sync_fetch_and_add (type *ptr, type value, ...)//·µ»Ø¾ÉÖµ
