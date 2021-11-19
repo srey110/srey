@@ -4,21 +4,23 @@
 struct srey_ctx
 {
     volatile int32_t stop;//停止标志
-    volatile atomic_t ids;
-    u_long accuracy;//计时器精度
+    volatile atomic_t sockids;
+    uint32_t accuracy;//计时器精度
     struct thread_ctx thtw;
     struct timer_ctx timer;//计时器
     struct tw_ctx tw;//时间轮
     struct netev_ctx *netev;//网络
 };
 
-static inline u_long _cur_tick(struct srey_ctx *pctx)
+static inline uint32_t _cur_tick(struct srey_ctx *pctx)
 {
-    return (u_long)(timer_nanosec(&pctx->timer) / pctx->accuracy);
+    return (uint32_t)(timer_nanosec(&pctx->timer) / pctx->accuracy);
 }
-static inline uint32_t _id_creater(void *pparam)
+static inline uint32_t _sock_id_creater(void *pparam)
 {
-    return (uint32_t)ATOMIC_ADD(&((struct srey_ctx *)pparam)->ids, 1);
+    struct srey_ctx *psrey = pparam;
+    ATOMIC_CAS(&psrey->sockids, UINT_MAX, 1);
+    return (uint32_t)ATOMIC_ADD(&psrey->sockids, 1);
 }
 struct srey_ctx *srey_new()
 {
@@ -31,18 +33,18 @@ struct srey_ctx *srey_new()
 
     srand((uint32_t)time(NULL));
     pctx->stop = 0;
-    pctx->ids = 1;
+    pctx->sockids = 1;
     pctx->accuracy = 1000 * 1000;
     thread_init(&pctx->thtw);
     timer_init(&pctx->timer);
     tw_init(&pctx->tw, _cur_tick(pctx));
-    pctx->netev = netev_new(&pctx->tw, 0, _id_creater, pctx);
+    pctx->netev = netev_new(&pctx->tw, 0, _sock_id_creater, pctx);
     return pctx;
 }
 void srey_free(struct srey_ctx *pctx)
 {
-    netev_free(pctx->netev);
     pctx->stop = 1;
+    netev_free(pctx->netev);
     thread_join(&pctx->thtw);
     tw_free(&pctx->tw);
     FREE(pctx);

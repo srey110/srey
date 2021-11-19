@@ -10,6 +10,7 @@
 #include "netaddr.h"
 #include "buffer.h"
 #include "queue.h"
+#include "map.h"
 #include "tw.h"
 
 #if defined(OS_WIN)
@@ -53,6 +54,7 @@ struct watcher_ctx
     int32_t event_cnt;
     SOCKET socks[2];
     events_t *events;
+    struct map_ctx *map;
     mutex_ctx lock_qucmd;
     struct queue_ctx qu_cmd;
     struct queue_ctx qu_close;
@@ -135,8 +137,12 @@ void _netev_add(struct watcher_ctx *pwatcher, struct sock_ctx *psock, int32_t ie
 int32_t _uev_add(struct watcher_ctx *pwatcher, struct sock_ctx *psock, int32_t iev);
 void _uev_del(struct watcher_ctx *pwatcher, struct sock_ctx *psock, int32_t iev);
 void _uev_cmd_close(struct watcher_ctx *pwatcher, struct sock_ctx *psock);
+void _uev_cmd_conn(struct watcher_ctx *pwatcher, struct sock_ctx *psock);
+void _uev_cmd_timeout(struct watcher_ctx *pwatcher, uint32_t uid);
 void _add_close_qu(struct watcher_ctx *pwatcher, struct sock_ctx *psock);
 void _uev_sock_close(struct sock_ctx *psock);
+void _conn_timeout_add(struct watcher_ctx *pwatcher, struct sock_ctx *psock);
+struct sock_ctx * _conn_timeout_remove(struct watcher_ctx *pwatcher, uint32_t uid);
 #endif
 static inline size_t _udp_data_lens(void *pdata)
 {

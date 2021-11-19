@@ -29,19 +29,15 @@ struct usock_ctx
     int32_t family;
     int32_t socktype;//SOCK_STREAM  SOCK_DGRAM
     int32_t sending;
-    volatile atomic_t ref_tw;
     volatile atomic_t ref_r;
     connect_cb conn_cb;
     read_cb r_cb;
     write_cb w_cb;
     close_cb c_cb;
     void *udata;
-    struct netev_ctx *netev;
-    struct tw_node_ctx *twconn;
     struct watcher_ctx *watcher;
     struct buffer_ctx buf_r;
     struct buffer_ctx buf_w;
-    mutex_ctx lock_conn_timeout;//connectºÍtimeout
     mutex_ctx lock_send;
     IOV_TYPE wsabuf_r[MAX_RECV_IOV_COUNT];
     IOV_TYPE wsabuf_w[MAX_SEND_IOV_COUNT];
@@ -77,9 +73,8 @@ void _uev_sock_close(struct sock_ctx *psock)
         pusock->ref_r = 0;
     }
 }
-static inline void _listener_free(void *pdata)
+static inline void _listener_free(struct listener_ctx *plsn)
 {
-    struct listener_ctx *plsn = pdata;
     for (int32_t i = 0; i < plsn->lsncnt; i++)
     {
         SAFE_CLOSE_SOCK(plsn->lsn[i].sock.sock);
@@ -87,22 +82,22 @@ static inline void _listener_free(void *pdata)
     FREE(plsn->lsn);
     FREE(plsn);
 }
-static inline void _listener_delay_free(struct tw_node_ctx *ptw, void *pdata)
+static inline void _listener_delay_free(struct ud_ctx *pud)
 {
-    struct listener_ctx *plsn = pdata;
-    plsn->freecnt++;
+    struct listener_ctx *plsn = (struct listener_ctx *)pud->handle;
     atomic_t iacpcnt = ATOMIC_GET(&plsn->acpcnt);
     if (0 == iacpcnt)
     {
         _listener_free(plsn);
-        tw_remove(ptw);
         return;
     }
+    plsn->freecnt++;
     if (plsn->freecnt >= MAX_DELAYFREE_CNT)
     {
         LOG_WARN("free listener use long time. acpcnt %d", (int32_t)iacpcnt);
         plsn->freecnt = 0;
     }
+    tw_add(plsn->netev->tw, DELAYFREE_TIME, _listener_delay_free, pud);
 }
 void listener_free(struct listener_ctx *plsn)
 {
@@ -127,48 +122,48 @@ void listener_free(struct listener_ctx *plsn)
     }
     else
     {
-        tw_add(plsn->netev->tw, DELAYFREE_TIME, -1, _listener_delay_free, plsn);
+        struct ud_ctx ud;
+        ud.handle = (uintptr_t)plsn;
+        tw_add(plsn->netev->tw, DELAYFREE_TIME, _listener_delay_free, &ud);
     }
 }
-static inline void _sock_free(void *pdata)
+static inline void _sock_free(struct usock_ctx *pusock)
 {
-    struct usock_ctx *pusock = pdata;
     buffer_free(&pusock->buf_r);
     buffer_free(&pusock->buf_w);
-    mutex_free(&pusock->lock_conn_timeout);
     mutex_free(&pusock->lock_send);
     FREE(pusock);
 }
-static inline void _sock_delay_free(struct tw_node_ctx *ptw, void *pdata)
+static inline void _sock_delay_free(struct ud_ctx *pud)
 {
-    struct usock_ctx *pusock = pdata;
-    pusock->freecnt++;
-    if (0 == pusock->ref_r
-        && 0 == pusock->ref_tw)
+    struct usock_ctx *pusock = (struct usock_ctx *)pud->handle;
+    if (0 == pusock->ref_r)
     {
         _sock_free(pusock);
-        tw_remove(ptw);
         return;
     }
+    pusock->freecnt++;
     if (pusock->freecnt >= MAX_DELAYFREE_CNT)
     {
-        LOG_WARN("free socket use long time id %d type %d . ref_r %d  ref_tw %d",
-            pusock->sock.id, pusock->socktype, pusock->ref_r, pusock->ref_tw);
+        LOG_WARN("free socket use long time id %d type %d . ref_r %d",
+            pusock->sock.id, pusock->socktype, pusock->ref_r);
         pusock->freecnt = 0;
     }
+    tw_add(pusock->watcher->netev->tw, DELAYFREE_TIME, _sock_delay_free, pud);
 }
 void sock_free(struct sock_ctx *psock)
 {
     struct usock_ctx *pusock = _get_usock(psock); 
     SAFE_CLOSE_SOCK(pusock->sock.sock);
-    if (0 == pusock->ref_r
-        && 0 == pusock->ref_tw)
+    if (0 == pusock->ref_r)
     {
         _sock_free(pusock);
     }
     else
     {
-        tw_add(pusock->netev->tw, DELAYFREE_TIME, -1, _sock_delay_free, pusock);
+        struct ud_ctx ud;
+        ud.handle = (uintptr_t)pusock;
+        tw_add(pusock->watcher->netev->tw, DELAYFREE_TIME, _sock_delay_free, &ud);
     }
 }
 void sock_close(struct sock_ctx *psock)
@@ -501,17 +496,11 @@ static inline int32_t _sock_err(SOCKET sock)
 }
 static inline void _on_connect_cb(struct watcher_ctx *pwatcher, struct sock_ctx *psock, int32_t iev, int32_t *pstop)
 {
-    struct usock_ctx *pusock = _get_usock(psock);
-    mutex_lock(&pusock->lock_conn_timeout);
-    if (0 == pusock->ref_tw)
+    if (NULL == _conn_timeout_remove(pwatcher, psock->id))
     {
-        mutex_unlock(&pusock->lock_conn_timeout);
         return;
     }
-    pusock->ref_tw = 0;
-    tw_remove(pusock->twconn);
-    mutex_unlock(&pusock->lock_conn_timeout);
-
+    struct usock_ctx *pusock = _get_usock(psock);
     int32_t irtn = _sock_err(pusock->sock.sock);
     if (ERR_OK != irtn)
     {
@@ -549,14 +538,12 @@ struct sock_ctx *netev_add_sock(struct netev_ctx *pctx, SOCKET sock, int32_t ity
     }
     pusock->socktype = itype;
     pusock->family = ifamily;
-    pusock->sock.id = (NULL != pctx->id_creater ? pctx->id_creater(pctx->id_data) : 0);
+    pusock->sock.id = pctx->id_creater(pctx->id_data);
     pusock->sock.sock = sock;
-    pusock->sock.ev_cb = _on_rw_cb;    
-    pusock->netev = pctx;
+    pusock->sock.ev_cb = _on_rw_cb;
     pusock->watcher = _netev_get_watcher(pctx, sock);
     buffer_init(&pusock->buf_r);
     buffer_init(&pusock->buf_w);
-    mutex_init(&pusock->lock_conn_timeout);
     mutex_init(&pusock->lock_send);
 
     return &pusock->sock;
@@ -597,7 +584,7 @@ struct listener_ctx *netev_listener(struct netev_ctx *pctx,
     {
         plsnctx = &plsn->lsn[i];
         plsnctx->listener = plsn;
-        plsnctx->sock.id = (NULL != pctx->id_creater ? pctx->id_creater(pctx->id_data) : 0);
+        plsnctx->sock.id = pctx->id_creater(pctx->id_data);
         plsnctx->sock.events = 0;
         plsnctx->sock.flags = _FLAGS_LSN;
         plsnctx->sock.ev_cb = _on_accept_cb;
@@ -624,20 +611,9 @@ struct listener_ctx *netev_listener(struct netev_ctx *pctx,
     
     return plsn;
 }
-static inline void _conn_timeout(struct tw_node_ctx *pnode, void *pdata)
+static inline void _conn_timeout(struct ud_ctx *pud)
 {
-    struct usock_ctx *pusock = pdata;
-    //Ö´ĞĞÁËconnect
-    mutex_lock(&pusock->lock_conn_timeout);
-    if (0 == pusock->ref_tw)
-    {
-        mutex_unlock(&pusock->lock_conn_timeout);
-        return;
-    }
-    pusock->ref_tw = 0;
-    mutex_unlock(&pusock->lock_conn_timeout);
-
-    _uev_cmd_close(pusock->watcher, &pusock->sock);
+    _uev_cmd_timeout((struct watcher_ctx *)pud->handle, pud->id);
 }
 struct sock_ctx *netev_connecter(struct netev_ctx *pctx, uint32_t utimeout,
     const char *phost, const uint16_t usport, connect_cb conn_cb, void *pdata)
@@ -682,9 +658,11 @@ struct sock_ctx *netev_connecter(struct netev_ctx *pctx, uint32_t utimeout,
         return NULL;
     }
     pusock->ref_r = 1;
-    pusock->ref_tw = 1;
-    pusock->twconn = tw_add(pusock->netev->tw, utimeout, 1, _conn_timeout, pusock);
-    _netev_add(pusock->watcher, &pusock->sock, EV_WRITE);
+    struct ud_ctx ud;
+    ud.id = pusock->sock.id;
+    ud.handle = (uintptr_t)pusock->watcher;
+    tw_add(pusock->watcher->netev->tw, utimeout, _conn_timeout, &ud);
+    _uev_cmd_conn(pusock->watcher, &pusock->sock);
 
     return &pusock->sock;
 }

@@ -4,11 +4,13 @@
 #ifdef NETEV_IOCP
     #define NOTIFI_EXIT_KEY  ((ULONG_PTR)-1)
 #else
-    #define _ININT_EVENT 512
-    #define _CMD_STOP    0x01
-    #define _CMD_ADD     0x02
-    #define _CMD_DEL     0x03
-    #define _CMD_CLOSE   0x04
+    #define _ININT_EVENT      512
+    #define _CMD_STOP         0x01
+    #define _CMD_ADD          0x02
+    #define _CMD_DEL          0x03
+    #define _CMD_CLOSE        0x04
+    #define _CMD_CONN         0x05
+    #define _CMD_CONN_TIMEOUT 0x06
 #endif
 int32_t _netev_threadcnt(const uint32_t uthcnt)
 {
@@ -88,6 +90,15 @@ static inline void _set_cloexec(int32_t fd)
     }
 }
 #endif
+static inline uint64_t _hash_conn_timeout(void *pval)
+{
+    struct ud_ctx *pud = pval;
+    return fnv1a_hash((const char *)&pud->id, sizeof(pud->id));
+}
+static inline int32_t _compare_conn_timeout(void *pval1, void *pval2, void *pudata)
+{
+    return ((struct ud_ctx *)pval1)->id == ((struct ud_ctx *)pval2)->id ? ERR_OK : ERR_FAILED;
+}
 static inline void _uev_init_watcher(struct watcher_ctx *pwatcher)
 {
 #if defined(NETEV_EPOLL)
@@ -105,6 +116,7 @@ static inline void _uev_init_watcher(struct watcher_ctx *pwatcher)
     pwatcher->events = MALLOC(sizeof(events_t) * pwatcher->event_cnt);
     ASSERTAB(NULL != pwatcher->events, ERRSTR_MEMORY);
     ASSERTAB(ERR_OK == sockpair(pwatcher->socks), "init socket pair failed.");
+    pwatcher->map = map_new(sizeof(struct ud_ctx), _hash_conn_timeout, _compare_conn_timeout, NULL);
     mutex_init(&pwatcher->lock_qucmd);
     thread_init(&pwatcher->thev);
     queue_init(&pwatcher->qu_close, ONEK * 2);
@@ -114,6 +126,7 @@ static inline void _uev_free_watcher(struct watcher_ctx *pwatcher)
 {
     SOCK_CLOSE(pwatcher->socks[0]);
     SOCK_CLOSE(pwatcher->socks[1]);
+    map_free(pwatcher->map);
     mutex_free(&pwatcher->lock_qucmd);
     (void)close(pwatcher->evfd);
     queue_free(&pwatcher->qu_close);
@@ -131,12 +144,13 @@ static inline void _uev_resize_events(struct watcher_ctx *pwatcher)
     }
 };
 static char trigger[1] = { '1' };
-static inline void _uev_cmd(struct watcher_ctx *pwatcher, int32_t icmd, int32_t ievents, struct sock_ctx *psock)
+static inline void _uev_cmd(struct watcher_ctx *pwatcher, int32_t icmd, int32_t ievents, void *pdata, size_t uldata)
 {
     struct message_ctx msg;
     msg.flags = icmd;
     msg.idata = ievents;
-    msg.pdata = psock;
+    msg.pdata = pdata;
+    msg.uldata = uldata;
     mutex_lock(&pwatcher->lock_qucmd);
     queue_expand(&pwatcher->qu_cmd);
     (void)queue_push(&pwatcher->qu_cmd, &msg);
@@ -274,7 +288,15 @@ void _uev_del(struct watcher_ctx *pwatcher, struct sock_ctx *psock, int32_t iev)
 }
 void _uev_cmd_close(struct watcher_ctx *pwatcher, struct sock_ctx *psock)
 {
-    _uev_cmd(pwatcher, _CMD_CLOSE, 0, psock);
+    _uev_cmd(pwatcher, _CMD_CLOSE, 0, psock, 0);
+}
+void _uev_cmd_conn(struct watcher_ctx *pwatcher, struct sock_ctx *psock)
+{
+    _uev_cmd(pwatcher, _CMD_CONN, EV_WRITE, psock, 0);
+}
+void _uev_cmd_timeout(struct watcher_ctx *pwatcher, uint32_t uid)
+{
+    _uev_cmd(pwatcher, _CMD_CONN_TIMEOUT, 0, NULL, uid);
 }
 void _add_close_qu(struct watcher_ctx *pwatcher, struct sock_ctx *psock)
 {
@@ -289,6 +311,21 @@ void _add_close_qu(struct watcher_ctx *pwatcher, struct sock_ctx *psock)
     _uev_del(pwatcher, psock, EV_READ | EV_WRITE);    
     queue_expand(&pwatcher->qu_close);
     (void)queue_push(&pwatcher->qu_close, &msg);
+}
+void _conn_timeout_add(struct watcher_ctx *pwatcher, struct sock_ctx *psock)
+{
+    struct ud_ctx ud;
+    ud.id = psock->id;
+    ud.handle = (uintptr_t)psock;
+    _map_set(pwatcher->map, &ud);
+}
+struct sock_ctx * _conn_timeout_remove(struct watcher_ctx *pwatcher, uint32_t uid)
+{
+    struct ud_ctx key;
+    key.id = uid;
+    struct ud_ctx val;
+    int32_t irtn = _map_remove(pwatcher->map, &key, &val);
+    return ERR_OK == irtn ? (struct sock_ctx *)val.handle : NULL;
 }
 static inline void _cmd_cb(struct watcher_ctx *pwatcher, struct sock_ctx *psock, int32_t iev, int32_t *pstop)
 {
@@ -320,6 +357,26 @@ static inline void _cmd_cb(struct watcher_ctx *pwatcher, struct sock_ctx *psock,
             break;
         case _CMD_CLOSE://Ö÷¶¯¹Ø±Õ
             _add_close_qu(pwatcher, msg.pdata);
+            break;
+        case _CMD_CONN:
+            if (ERR_OK != _uev_add(pwatcher, msg.pdata, msg.idata))
+            {
+                _add_close_qu(pwatcher, msg.pdata);
+            }
+            else
+            {
+                _conn_timeout_add(pwatcher, msg.pdata);
+            }
+            break;
+        case _CMD_CONN_TIMEOUT:
+            {
+                struct sock_ctx *psock = _conn_timeout_remove(pwatcher, (uint32_t)msg.uldata);
+                if (NULL != psock)
+                {
+                    LOG_WARN("sock %d connect timeout.", (uint32_t)msg.uldata);
+                    _add_close_qu(pwatcher, psock);
+                }
+            }
             break;
         }
     }
@@ -375,7 +432,7 @@ void netev_free(struct netev_ctx *pctx)
             LOG_ERROR("%s", ERRORSTR(ERRNO));
         }
 #else
-        _uev_cmd(&pctx->watcher[i], _CMD_STOP, 0, NULL);
+        _uev_cmd(&pctx->watcher[i], _CMD_STOP, 0, NULL, 0);
 #endif
     }
     for (i = 0; i < pctx->thcnt; i++)
@@ -406,7 +463,7 @@ void _netev_add(struct watcher_ctx *pwatcher, struct sock_ctx *psock, int32_t ie
     }
     psock->events |= iev;
 #else
-    _uev_cmd(pwatcher, _CMD_ADD, iev, psock);
+    _uev_cmd(pwatcher, _CMD_ADD, iev, psock, 0);
 #endif
 }
 #ifndef NETEV_IOCP

@@ -27,6 +27,7 @@
     <ClInclude Include="lib.h" />
     <ClInclude Include="loger.h" />
     <ClInclude Include="macro.h" />
+    <ClInclude Include="map.h" />
     <ClInclude Include="md5\md5.h" />
     <ClInclude Include="mutex.h" />
     <ClInclude Include="netaddr.h" />
@@ -39,6 +40,7 @@
     <ClInclude Include="snowflake.h" />
     <ClInclude Include="spinlock.h" />
     <ClInclude Include="srey.h" />
+    <ClInclude Include="structs.h" />
     <ClInclude Include="thread.h" />
     <ClInclude Include="timer.h" />
     <ClInclude Include="tw.h" />
@@ -48,6 +50,7 @@
   <ItemGroup>
     <ClCompile Include="buffer.c" />
     <ClCompile Include="loger.c" />
+    <ClCompile Include="map.c" />
     <ClCompile Include="md5\md5.c" />
     <ClCompile Include="netaddr.c" />
     <ClCompile Include="netev\netev.c" />

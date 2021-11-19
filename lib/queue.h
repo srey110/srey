@@ -1,15 +1,8 @@
 #ifndef QUEUE_H_
 #define QUEUE_H_
 
-#include "macro.h"
+#include "structs.h"
 
-struct message_ctx
-{
-    uint32_t flags;
-    int32_t idata;
-    void *pdata;
-    size_t uldata;
-};
 struct queue_ctx
 {
     int32_t size;

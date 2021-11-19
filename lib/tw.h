@@ -1,6 +1,7 @@
 #ifndef TW_H_
 #define TW_H_
 
+#include "structs.h"
 #include "mutex.h"
 
 #define TVN_BITS (6)
@@ -12,13 +13,11 @@
 #define INDEX(N) ((pctx->jiffies >> (TVR_BITS + (N) * TVN_BITS)) & TVN_MASK)
 struct tw_node_ctx
 {
-    void *data;//用户数据
-    void(*tw_cb)(struct tw_node_ctx *, void *);//回调函数
-    int32_t removed;
-    int32_t repeat;//循环次数  -1 永远 其他  次数
-    u_long timeout;//超时时间
-    u_long expires;
     struct tw_node_ctx *next;
+    void(*tw_cb)(struct ud_ctx *);//回调函数
+    uint32_t timeout;//超时时间
+    uint32_t expires;
+    struct ud_ctx ud;//用户数据
 };
 struct tw_slot_ctx
 {
@@ -27,7 +26,7 @@ struct tw_slot_ctx
 };
 struct tw_ctx
 {
-    u_long jiffies;
+    uint32_t jiffies;
     mutex_ctx lockreq;
     struct tw_slot_ctx reqadd;
     struct tw_slot_ctx tv1[TVR_SIZE];
@@ -41,14 +40,14 @@ struct tw_ctx
 * \param  pchan        wot_add用
 * \param  uicurtick    当前tick
 */
-static inline void tw_init(struct tw_ctx *pctx, const u_long ulcurtick)
+static inline void tw_init(struct tw_ctx *pctx, const uint32_t uicurtick)
 {
     ZERO(pctx->tv1, sizeof(pctx->tv1));
     ZERO(pctx->tv2, sizeof(pctx->tv2));
     ZERO(pctx->tv3, sizeof(pctx->tv3));
     ZERO(pctx->tv4, sizeof(pctx->tv4));
     ZERO(pctx->tv5, sizeof(pctx->tv5));
-    pctx->jiffies = ulcurtick;
+    pctx->jiffies = uicurtick;
     pctx->reqadd.head = pctx->reqadd.tail = NULL;
     mutex_init(&pctx->lockreq);
 };
@@ -91,69 +90,45 @@ static inline void _insert(struct tw_slot_ctx *pslot, struct tw_node_ctx *pnode)
 };
 /*
 * \brief               添加超时事件
-* \param  ultimeout    超时时间
-* \param  irepeat      循环次数  -1：永远 其他：次数,
+* \param  uitimeout    超时时间
 * \param  tw_cb        回调函数
-* \param  free_data    用户数据 释放函数,用于程序退出时
-* \param  pdata        用户数据 
+* \param  pud          用户数据 
 */
-static inline struct tw_node_ctx *tw_add(struct tw_ctx *pctx, const u_long ultimeout, const int32_t irepeat,
-    void(*tw_cb)(struct tw_node_ctx *, void *), void *pdata)
+static inline void tw_add(struct tw_ctx *pctx, const uint32_t uitimeout,
+    void(*tw_cb)(struct ud_ctx *), struct ud_ctx *pud)
 {
-    ASSERTAB(-1 == irepeat || irepeat > 0, "param repeat error.");
+    if (0 == uitimeout)
+    {
+        tw_cb(pud);
+        return;
+    }
     struct tw_node_ctx *pnode = (struct tw_node_ctx *)MALLOC(sizeof(struct tw_node_ctx));
-    ASSERTAB(NULL != pnode, ERRSTR_MEMORY);
-    pnode->data = pdata;
-    pnode->timeout = ultimeout;
-    pnode->repeat = irepeat;
-    pnode->removed = 0;
+    if (NULL == pnode)
+    {
+        PRINTF("%s", ERRSTR_MEMORY);
+        return;
+    }
+    if (NULL != pud)
+    {
+        pnode->ud = *pud;
+    }
+    else
+    {
+        pnode->ud.id = 0;
+        pnode->ud.handle = 0;
+    }
+    pnode->timeout = uitimeout;
     pnode->tw_cb = tw_cb;
-    pnode->next = NULL;
-    
+    pnode->next = NULL;    
     mutex_lock(&pctx->lockreq);
     _insert(&pctx->reqadd, pnode);
     mutex_unlock(&pctx->lockreq);
-
-    return pnode;
-};
-/*
-* \brief               设置循环次数
-* \param  irepeat      循环次数
-*/
-static inline void tw_repeat(struct tw_node_ctx *pnode, const int32_t irepeat)
-{
-    pnode->repeat = irepeat + 1;
-};
-/*
-* \brief               删除
-*/
-static inline void tw_remove(struct tw_node_ctx *pnode)
-{
-    pnode->removed = 1;
-};
-/*
-* \brief               设置用户数据
-*/
-static inline void tw_udata(struct tw_node_ctx *pnode, void *pdata)
-{
-    pnode->data = pdata;
-};
-/*
-* \brief               超时
-*/
-static inline u_long tw_timeout_get(struct tw_node_ctx *pnode)
-{
-    return pnode->timeout;
-};
-static inline void tw_timeout_set(struct tw_node_ctx *pnode, const u_long ultimeout)
-{
-    pnode->timeout = ultimeout;
 };
 static inline struct tw_slot_ctx *_getslot(struct tw_ctx *pctx, struct tw_node_ctx *pnode)
 {
     struct tw_slot_ctx *pslot;
-    u_long ulidx = pnode->expires - pctx->jiffies;
-    if ((long)ulidx < 0)
+    uint32_t ulidx = pnode->expires - pctx->jiffies;
+    if ((int32_t)ulidx < 0)
     {
         pslot = &pctx->tv1[(pctx->jiffies & TVR_MASK)];
     }
@@ -189,9 +164,9 @@ static inline void _clear(struct tw_slot_ctx *pslot)
 {
     pslot->head = pslot->tail = NULL;
 };
-static inline u_long _cascade(struct tw_ctx *pctx, struct tw_slot_ctx *pslot, const u_long ulindex)
+static inline uint32_t _cascade(struct tw_ctx *pctx, struct tw_slot_ctx *pslot, const uint32_t uindex)
 {
-    struct tw_node_ctx *pnext, *pnode = pslot[ulindex].head;
+    struct tw_node_ctx *pnext, *pnode = pslot[uindex].head;
     while (NULL != pnode)
     {
         pnext = pnode->next;
@@ -199,14 +174,14 @@ static inline u_long _cascade(struct tw_ctx *pctx, struct tw_slot_ctx *pslot, co
         _insert(_getslot(pctx, pnode), pnode);
         pnode = pnext;
     }
-    _clear(&pslot[ulindex]);
+    _clear(&pslot[uindex]);
 
-    return ulindex;
+    return uindex;
 };
 static inline void _run(struct tw_ctx *pctx)
 {
     //调整
-    u_long ulidx = pctx->jiffies & TVR_MASK;
+    uint32_t ulidx = pctx->jiffies & TVR_MASK;
     if (!ulidx
         && (!_cascade(pctx, pctx->tv2, INDEX(0)))
         && (!_cascade(pctx, pctx->tv3, INDEX(1)))
@@ -222,33 +197,8 @@ static inline void _run(struct tw_ctx *pctx)
     while (NULL != pnode)
     {
         pnext = pnode->next;
-        pnode->next = NULL;
-        if (0 != pnode->removed)
-        {
-            FREE(pnode);
-            pnode = pnext;
-            continue;
-        }
-
-        pnode->tw_cb(pnode, pnode->data);
-        if (0 != pnode->removed)
-        {
-            FREE(pnode);
-            pnode = pnext;
-            continue;
-        }
-        if (pnode->repeat > 0)
-        {
-            pnode->repeat--;
-        }
-        if (0 == pnode->repeat)
-        {
-            FREE(pnode);
-            pnode = pnext;
-            continue;
-        }
-        pnode->expires = pctx->jiffies + pnode->timeout;
-        _insert(_getslot(pctx, pnode), pnode);
+        pnode->tw_cb(&pnode->ud);
+        FREE(pnode);
         pnode = pnext;
     }
     _clear(&pctx->tv1[ulidx]);
@@ -256,7 +206,7 @@ static inline void _run(struct tw_ctx *pctx)
 /*
 * \brief          执行时间轮
 */
-static inline void tw_run(struct tw_ctx *pctx, const u_long ulcurtick)
+static inline void tw_run(struct tw_ctx *pctx, const uint32_t uicurtick)
 {
     struct tw_node_ctx *pnext, *pnode;
     mutex_lock(&pctx->lockreq);
@@ -265,14 +215,14 @@ static inline void tw_run(struct tw_ctx *pctx, const u_long ulcurtick)
     {
         pnext = pnode->next;
         pnode->next = NULL;
-        pnode->expires = ulcurtick + pnode->timeout;
+        pnode->expires = uicurtick + pnode->timeout;
         _insert(_getslot(pctx, pnode), pnode);
         pnode = pnext;
     }
     _clear(&pctx->reqadd);
     mutex_unlock(&pctx->lockreq);
 
-    while (pctx->jiffies <= ulcurtick)
+    while (pctx->jiffies <= uicurtick)
     {
         _run(pctx);
     }

@@ -306,7 +306,7 @@ static inline void _on_send_cb(struct watcher_ctx *pwatcher, struct sock_ctx *ps
         }
         mutex_unlock(&polctx->lock_close);
     }
-    //防止_post_send时无数据，并且ref_w还未执行-1，此时执行_tcp_trysend并不会触发发送
+    //防止_post_send时无数据，并且ref_w还未执行-1，此时执行_tcp_trysend不会触发发送
     mutex_lock(&polctx->lock_send);
     (void)_post_send(polctx);
     ATOMIC_ADD(&polctx->ref_w, -1);
@@ -461,7 +461,7 @@ struct sock_ctx *netev_add_sock(struct netev_ctx *pctx, SOCKET sock, int32_t ity
     pol->family = ifamily;
     pol->overlap_r.sock = sock;
     pol->overlap_w.sock = sock;
-    uint32_t uid = (NULL != pctx->id_creater ? pctx->id_creater(pctx->id_data) : 0);
+    uint32_t uid = pctx->id_creater(pctx->id_data);
     pol->overlap_r.id = uid;
     pol->overlap_w.id = uid;
     pol->netev = pctx;
@@ -482,22 +482,22 @@ static inline void _listener_free(void *pdata)
     SAFE_CLOSE_SOCK(plsn->sock);
     FREE(plsn);
 }
-static inline void _listener_delay_free(struct tw_node_ctx *ptw, void *pdata)
+static inline void _listener_delay_free(struct ud_ctx *pud)
 {
-    struct listener_ctx *plsn = pdata;
-    plsn->freecnt++;
+    struct listener_ctx *plsn = (struct listener_ctx *)pud->handle;
     atomic_t iacpcnt = ATOMIC_GET(&plsn->acpcnt);
     if (0 == iacpcnt)
     {
         _listener_free(plsn);
-        tw_remove(ptw);
         return;
     }
+    plsn->freecnt++;
     if (plsn->freecnt >= MAX_DELAYFREE_CNT)
     {
         LOG_WARN("free listener %d use long time. acpcnt %d", (int32_t)plsn->sock, (int32_t)iacpcnt);
         plsn->freecnt = 0;
     }
+    tw_add(plsn->netev->tw, DELAYFREE_TIME, _listener_delay_free, pud);
 }
 void listener_free(struct listener_ctx *plsn)
 {
@@ -509,7 +509,9 @@ void listener_free(struct listener_ctx *plsn)
     }
     else
     {
-        tw_add(plsn->netev->tw, DELAYFREE_TIME, -1, _listener_delay_free, plsn);
+        struct ud_ctx ud;
+        ud.handle = (uintptr_t)plsn;
+        tw_add(plsn->netev->tw, DELAYFREE_TIME, _listener_delay_free, &ud);
     }
 }
 static inline int32_t _acceptex(struct listener_ctx *plsn)
@@ -599,31 +601,25 @@ static inline void _sock_free(void *pdata)
     mutex_free(&pol->lock_send);
     FREE(pol);
 }
-static inline void _sock_delay_free(struct tw_node_ctx *ptw, void *pdata)
+static inline void _sock_delay_free(struct ud_ctx *pud)
 {
-    struct overlap_ctx *pol = pdata;
-    pol->freecnt++;
+    struct overlap_ctx *pol = (struct overlap_ctx *)pud->handle;
     atomic_t iref_r = ATOMIC_GET(&pol->ref_r);
     atomic_t iref_w = ATOMIC_GET(&pol->ref_w);
     if (0 == iref_r 
         && 0 == iref_w)
     {
         _sock_free(pol);
-        tw_remove(ptw);
         return;
     }
+    pol->freecnt++;
     if (pol->freecnt >= MAX_DELAYFREE_CNT)
     {
         LOG_WARN("free socket use long time id %d type %d . ref_r %d, ref_w %d",
             pol->overlap_r.id, pol->socktype, (int32_t)iref_r, (int32_t)iref_w);
-        if (0 != iref_r)
-        {
-            pol->freecnt = 0;
-            return;
-        }
-        _sock_free(pol);
-        tw_remove(ptw);
+        pol->freecnt = 0;
     }
+    tw_add(pol->netev->tw, DELAYFREE_TIME, _sock_delay_free, pud);
 }
 void sock_free(struct sock_ctx *psock)
 {
@@ -638,7 +634,9 @@ void sock_free(struct sock_ctx *psock)
     }
     else
     {
-        tw_add(pol->netev->tw, DELAYFREE_TIME, -1, _sock_delay_free, pol);
+        struct ud_ctx ud;
+        ud.handle = (uintptr_t)pol;
+        tw_add(pol->netev->tw, DELAYFREE_TIME, _sock_delay_free, &ud);
     }
 }
 static inline int32_t _connectex(struct watcher_ctx *pwatcher, struct overlap_ctx *pol, union netaddr_ctx *paddr)

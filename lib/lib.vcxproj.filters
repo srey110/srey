@@ -68,6 +68,12 @@
     <ClInclude Include="worker.h">
       <Filter>service</Filter>
     </ClInclude>
+    <ClInclude Include="map.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="structs.h">
+      <Filter>utils</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="md5\md5.c">
@@ -108,6 +114,9 @@
     </ClCompile>
     <ClCompile Include="worker.c">
       <Filter>service</Filter>
+    </ClCompile>
+    <ClCompile Include="map.c">
+      <Filter>utils</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>

@@ -52,7 +52,7 @@ void _ResetPrivilege(HANDLE phandle, TOKEN_PRIVILEGES *pprivold)
 {
     (void)AdjustTokenPrivileges(phandle, FALSE, pprivold, 0, NULL, NULL);
 }
-LONG _on_exception(EXCEPTION_POINTERS *pexception)
+LONG __stdcall _on_exception(struct _EXCEPTION_POINTERS *pexception)
 {
     char acpath[PATH_LENS];
     if (ERR_OK != getprocpath(acpath))
