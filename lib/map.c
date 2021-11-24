@@ -1,5 +1,5 @@
 #include "map.h"
-//modify from https://github.com/tidwall/hashmap.c.git
+
 struct bucket_ctx 
 {
     uint64_t hash : 48;
@@ -75,7 +75,7 @@ void map_free(struct map_ctx *pmap)
     FREE(pmap->buckets);
     FREE(pmap);
 }
-static inline void _resize(struct map_ctx *pmap, size_t uinewcap) 
+static inline void _map_expand(struct map_ctx *pmap, size_t uinewcap) 
 {
     size_t j;
     struct bucket_ctx *pentry, *pbucket;
@@ -121,7 +121,7 @@ void _map_set(struct map_ctx *pmap, void *pitem)
 {
     if (pmap->count == pmap->growat)
     {
-        _resize(pmap, pmap->cap * 2);
+        _map_expand(pmap, pmap->cap * 2);
     }
     struct bucket_ctx *pbucket, *pentry = pmap->edata;
     pentry->hash = _get_hash(pmap, pitem);

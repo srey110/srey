@@ -21,12 +21,12 @@ struct thread_ctx
 * \brief          获取当前线程Id
 * \return         线程Id
 */
-static inline uint32_t threadid()
+static inline uint64_t threadid()
 {
 #if defined(OS_WIN)
-    return (uint32_t)GetCurrentThreadId();
+    return (uint64_t)GetCurrentThreadId();
 #else
-    return (uint32_t)pthread_self();
+    return (uint64_t)pthread_self();
 #endif
 };
 #if defined(OS_WIN)

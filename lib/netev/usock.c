@@ -2,10 +2,6 @@
 
 #ifndef NETEV_IOCP
 
-#define _FLAGS_LSN   0x01
-#define _FLAGS_CONN  0x02
-#define _FLAGS_NORM  0x04
-//#define _FLAGS_CLOSE 0x08  netev.hÖÐ
 struct lsn_ctx
 {
     struct sock_ctx sock;
@@ -28,8 +24,9 @@ struct usock_ctx
     int32_t freecnt;
     int32_t family;
     int32_t socktype;//SOCK_STREAM  SOCK_DGRAM
-    int32_t sending;
+    volatile atomic_t sending;
     volatile atomic_t ref_r;
+    volatile atomic_t ref_cmd;
     connect_cb conn_cb;
     read_cb r_cb;
     write_cb w_cb;
@@ -38,7 +35,6 @@ struct usock_ctx
     struct watcher_ctx *watcher;
     struct buffer_ctx buf_r;
     struct buffer_ctx buf_w;
-    mutex_ctx lock_send;
     IOV_TYPE wsabuf_r[MAX_RECV_IOV_COUNT];
     IOV_TYPE wsabuf_w[MAX_SEND_IOV_COUNT];
 };
@@ -63,14 +59,14 @@ void _uev_sock_close(struct sock_ctx *psock)
         struct usock_ctx *pusock = _get_usock(psock);
         shutdown(psock->sock, SHUT_WR);
         pusock->conn_cb(psock, ERR_FAILED, pusock->udata);
-        pusock->ref_r = 0;
+        ATOMIC_ADD(&pusock->ref_r, -1);
     }
     else if (psock->flags & _FLAGS_NORM)
     {
         struct usock_ctx *pusock = _get_usock(psock);
         shutdown(psock->sock, SHUT_WR);
         pusock->c_cb(psock, pusock->udata);
-        pusock->ref_r = 0;
+        ATOMIC_ADD(&pusock->ref_r, -1);
     }
 }
 static inline void _listener_free(struct listener_ctx *plsn)
@@ -131,13 +127,15 @@ static inline void _sock_free(struct usock_ctx *pusock)
 {
     buffer_free(&pusock->buf_r);
     buffer_free(&pusock->buf_w);
-    mutex_free(&pusock->lock_send);
     FREE(pusock);
 }
 static inline void _sock_delay_free(struct ud_ctx *pud)
 {
     struct usock_ctx *pusock = (struct usock_ctx *)pud->handle;
-    if (0 == pusock->ref_r)
+    atomic_t iref_r = ATOMIC_GET(&pusock->ref_r);
+    atomic_t iref_cmd = ATOMIC_GET(&pusock->ref_cmd);
+    if (0 == iref_r
+        && 0 == iref_cmd)
     {
         _sock_free(pusock);
         return;
@@ -145,8 +143,8 @@ static inline void _sock_delay_free(struct ud_ctx *pud)
     pusock->freecnt++;
     if (pusock->freecnt >= MAX_DELAYFREE_CNT)
     {
-        LOG_WARN("free socket use long time id %d type %d . ref_r %d",
-            pusock->sock.id, pusock->socktype, pusock->ref_r);
+        LOG_WARN("free socket use long time id %d type %d . ref_r %d ref_cmd %d",
+            pusock->sock.id, pusock->socktype, iref_r, iref_cmd);
         pusock->freecnt = 0;
     }
     tw_add(pusock->watcher->netev->tw, DELAYFREE_TIME, _sock_delay_free, pud);
@@ -155,7 +153,8 @@ void sock_free(struct sock_ctx *psock)
 {
     struct usock_ctx *pusock = _get_usock(psock); 
     SAFE_CLOSE_SOCK(pusock->sock.sock);
-    if (0 == pusock->ref_r)
+    if (0 == ATOMIC_GET(&pusock->ref_r)
+        && 0 == ATOMIC_GET(&pusock->ref_cmd))
     {
         _sock_free(pusock);
     }
@@ -189,7 +188,7 @@ static inline void _evport_readd(struct watcher_ctx *pwatcher, struct sock_ctx *
     }
 #endif
 }
-static inline void _on_accept_cb(struct watcher_ctx *pwatcher, struct sock_ctx *psock, int32_t iev, int32_t *pstop)
+static inline void _on_accept_cb(struct watcher_ctx *pwatcher, struct sock_ctx *psock, uint32_t uiev, int32_t *pstop)
 {
     struct lsn_ctx *plsn = _get_lsn(psock);
     SOCKET fd = accept(plsn->sock.sock, NULL, NULL);
@@ -259,13 +258,11 @@ static inline int32_t _on_recv_cb(struct watcher_ctx *pwatcher, struct usock_ctx
 }
 static inline void _check_sending(struct watcher_ctx *pwatcher, struct usock_ctx *pusock)
 {
-    mutex_lock(&pusock->lock_send);
-    if (0 == buffer_size(&pusock->buf_w))
+    if (0 == buffer_size(&pusock->buf_w)
+        && ATOMIC_CAS(&pusock->sending, 1, 0))
     {
         _uev_del(pwatcher, &pusock->sock, EV_WRITE);
-        pusock->sending = 0;
     }
-    mutex_unlock(&pusock->lock_send);
 }
 static inline int32_t _on_send_cb(struct watcher_ctx *pwatcher, struct usock_ctx *pusock)
 {
@@ -367,11 +364,15 @@ static inline int32_t _on_sendto_cb(struct watcher_ctx *pwatcher, struct usock_c
 
     return ERR_OK;
 }
-static inline void _on_rw_cb(struct watcher_ctx *pwatcher, struct sock_ctx *psock, int32_t iev, int32_t *pstop)
+static inline void _on_rw_cb(struct watcher_ctx *pwatcher, struct sock_ctx *psock, uint32_t uiev, int32_t *pstop)
 {
+    if (psock->flags & _FLAGS_CLOSE)
+    {
+        return;
+    }
     int32_t irtn;
     struct usock_ctx *pusock = _get_usock(psock);
-    if (iev & EV_READ)
+    if (uiev & EV_READ)
     {
         if (SOCK_STREAM == pusock->socktype)
         {
@@ -387,7 +388,7 @@ static inline void _on_rw_cb(struct watcher_ctx *pwatcher, struct sock_ctx *psoc
             return;
         }
     }
-    if (iev & EV_WRITE)
+    if (uiev & EV_WRITE)
     {
         if (SOCK_STREAM == pusock->socktype)
         {
@@ -406,16 +407,45 @@ static inline void _on_rw_cb(struct watcher_ctx *pwatcher, struct sock_ctx *psoc
 
     _evport_readd(pwatcher, psock);
 }
+int32_t _uev_add_ref_cmd(struct sock_ctx *psock)
+{
+    int32_t irtn = ERR_OK;
+    if (NULL != psock
+        && !(psock->flags & _FLAGS_LSN))
+    {
+        struct usock_ctx *pusock = _get_usock(psock);
+        if (!(psock->flags & _FLAGS_CLOSE))
+        {
+            ATOMIC_ADD(&pusock->ref_cmd, 1);
+        }
+        else
+        {
+            irtn = ERR_FAILED;
+        }
+    }
+    return irtn;
+}
+void _uev_sub_ref_cmd(struct sock_ctx *psock)
+{
+    if (NULL != psock
+        && !(psock->flags & _FLAGS_LSN))
+    {
+        struct usock_ctx *pusock = _get_usock(psock);
+        ATOMIC_ADD(&pusock->ref_cmd, -1);
+    }
+}
+void _uev_sub_sending(struct sock_ctx *psock)
+{
+    struct usock_ctx *pusock = _get_usock(psock);
+    ATOMIC_ADD(&pusock->sending, -1);
+}
 static inline int32_t _post_send(struct usock_ctx *pusock)
 {
-    mutex_lock(&pusock->lock_send);
-    if (0 == pusock->sending)
+    if (0 != buffer_size(&pusock->buf_w)
+        && ATOMIC_CAS(&pusock->sending, 0, 2))
     {
-        pusock->sending = 1;
-        _netev_add(pusock->watcher, &pusock->sock, EV_WRITE);
+        _uev_cmd_enable_w(pusock->watcher, &pusock->sock);
     }
-    mutex_unlock(&pusock->lock_send);
-
     return ERR_OK;
 }
 int32_t sock_send(struct sock_ctx *psock, void *pdata, const size_t uilens)
@@ -448,6 +478,7 @@ int32_t sock_sendto(struct sock_ctx *psock, const char *phost, uint16_t uport,
     {
         return ERR_FAILED;
     }
+
     struct usock_ctx *pusock = _get_usock(psock);
     ASSERTAB(SOCK_DGRAM == pusock->socktype, "only support tcp.");
     struct udp_msg_ctx msg;
@@ -458,7 +489,6 @@ int32_t sock_sendto(struct sock_ctx *psock, const char *phost, uint16_t uport,
     }
     msg.size = uilens;
     buffer_piece_append(&pusock->buf_w, &msg, sizeof(struct udp_msg_ctx), pdata, uilens);
-
     return _post_send(pusock);
 }
 int32_t netev_enable_rw(struct netev_ctx *pctx, struct sock_ctx *psock,
@@ -494,7 +524,7 @@ static inline int32_t _sock_err(SOCKET sock)
     }
     return ierr;
 }
-static inline void _on_connect_cb(struct watcher_ctx *pwatcher, struct sock_ctx *psock, int32_t iev, int32_t *pstop)
+static inline void _on_connect_cb(struct watcher_ctx *pwatcher, struct sock_ctx *psock, uint32_t uiev, int32_t *pstop)
 {
     if (NULL == _conn_timeout_remove(pwatcher, psock->id))
     {
@@ -516,7 +546,7 @@ static inline void _on_connect_cb(struct watcher_ctx *pwatcher, struct sock_ctx 
         pusock->sock.events = 0;
 #endif
         pusock->conn_cb(&pusock->sock, irtn, pusock->udata);
-        pusock->ref_r = 0;
+        ATOMIC_ADD(&pusock->ref_r, -1);
     }
 }
 struct sock_ctx *netev_add_sock(struct netev_ctx *pctx, SOCKET sock, int32_t itype, int32_t ifamily)
@@ -544,7 +574,6 @@ struct sock_ctx *netev_add_sock(struct netev_ctx *pctx, SOCKET sock, int32_t ity
     pusock->watcher = _netev_get_watcher(pctx, sock);
     buffer_init(&pusock->buf_r);
     buffer_init(&pusock->buf_w);
-    mutex_init(&pusock->lock_send);
 
     return &pusock->sock;
 }

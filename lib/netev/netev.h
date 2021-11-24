@@ -17,7 +17,7 @@
     #define NETEV_IOCP
 #elif defined(OS_LINUX)
     #define NETEV_EPOLL
-#elif defined(OS_BSD)
+#elif defined(OS_BSD) || defined(OS_DARWIN)
     #define NETEV_KQUEUE
 #elif defined(OS_SUN)
     #define NETEV_EVPORT
@@ -31,6 +31,9 @@
 #define DELAYFREE_TIME     10
 #define MAX_DELAYFREE_CNT  20
 #ifndef NETEV_IOCP
+    #define _FLAGS_LSN   0x01
+    #define _FLAGS_CONN  0x02
+    #define _FLAGS_NORM  0x04
     #define _FLAGS_CLOSE 0x08
     #if defined(NETEV_EPOLL)
         typedef struct epoll_event events_t;
@@ -72,7 +75,7 @@ struct netev_ctx
 {
     int32_t thcnt;
     struct tw_ctx *tw;
-    uint32_t(*id_creater)(void *);
+    sid_t(*id_creater)(void *);
     void *id_data;
     struct watcher_ctx *watcher;
 };
@@ -83,10 +86,10 @@ struct sock_ctx
 #else
     int32_t flags;//±ê¼Ç
 #endif
-    int32_t events;
-    uint32_t id;
+    uint32_t events;
     SOCKET sock;
-    void(*ev_cb)(struct watcher_ctx *, struct sock_ctx *, int32_t, int32_t *);
+    sid_t id;
+    void(*ev_cb)(struct watcher_ctx *, struct sock_ctx *, uint32_t, int32_t *);
 };
 typedef void(*accept_cb)(struct sock_ctx *, void *);
 typedef void(*connect_cb)(struct sock_ctx *, int32_t, void *);
@@ -94,7 +97,7 @@ typedef void(*read_cb)(struct sock_ctx *, struct buffer_ctx *, size_t, const cha
 typedef void(*write_cb)(struct sock_ctx *, size_t, void *);
 typedef void(*close_cb)(struct sock_ctx *, void *);
 
-struct netev_ctx *netev_new(struct tw_ctx *ptw, const uint32_t uthcnt, uint32_t (*id_creater)(void *), void *pid);
+struct netev_ctx *netev_new(struct tw_ctx *ptw, const uint32_t uthcnt, sid_t(*id_creater)(void *), void *pid);
 void netev_free(struct netev_ctx *pctx);
 void netev_loop(struct netev_ctx *pctx); 
 
@@ -106,7 +109,7 @@ struct sock_ctx *netev_connecter(struct netev_ctx *pctx, uint32_t utimeout,
 int32_t netev_enable_rw(struct netev_ctx *pctx, struct sock_ctx *psock,
     read_cb r_cb, write_cb w_cb, close_cb c_cb, void *pdata);
 
-uint32_t sock_id(struct sock_ctx *psock);
+sid_t sock_id(struct sock_ctx *psock);
 SOCKET sock_handle(struct sock_ctx *psock);
 int32_t sock_type(struct sock_ctx *psock);
 struct buffer_ctx *sock_buffer_r(struct sock_ctx *psock);
@@ -132,17 +135,21 @@ SOCKET sock_udp_bind(const char *phost, const uint16_t usport);
 
 int32_t _netev_threadcnt(const uint32_t uthcnt);
 struct watcher_ctx *_netev_get_watcher(struct netev_ctx *pctx, SOCKET fd);
-void _netev_add(struct watcher_ctx *pwatcher, struct sock_ctx *psock, int32_t iev);
+void _netev_add(struct watcher_ctx *pwatcher, struct sock_ctx *psock, uint32_t uiev);
 #ifndef NETEV_IOCP
-int32_t _uev_add(struct watcher_ctx *pwatcher, struct sock_ctx *psock, int32_t iev);
-void _uev_del(struct watcher_ctx *pwatcher, struct sock_ctx *psock, int32_t iev);
 void _uev_cmd_close(struct watcher_ctx *pwatcher, struct sock_ctx *psock);
 void _uev_cmd_conn(struct watcher_ctx *pwatcher, struct sock_ctx *psock);
-void _uev_cmd_timeout(struct watcher_ctx *pwatcher, uint32_t uid);
+void _uev_cmd_timeout(struct watcher_ctx *pwatcher, sid_t uid);
+void _uev_cmd_enable_w(struct watcher_ctx *pwatcher, struct sock_ctx *psock);
+int32_t _uev_add(struct watcher_ctx *pwatcher, struct sock_ctx *psock, uint32_t uiev);
+void _uev_del(struct watcher_ctx *pwatcher, struct sock_ctx *psock, uint32_t uiev);
 void _add_close_qu(struct watcher_ctx *pwatcher, struct sock_ctx *psock);
 void _uev_sock_close(struct sock_ctx *psock);
+int32_t _uev_add_ref_cmd(struct sock_ctx *psock);
+void _uev_sub_ref_cmd(struct sock_ctx *psock);
+void _uev_sub_sending(struct sock_ctx *psock);
 void _conn_timeout_add(struct watcher_ctx *pwatcher, struct sock_ctx *psock);
-struct sock_ctx * _conn_timeout_remove(struct watcher_ctx *pwatcher, uint32_t uid);
+struct sock_ctx * _conn_timeout_remove(struct watcher_ctx *pwatcher, sid_t uid);
 #endif
 static inline size_t _udp_data_lens(void *pdata)
 {

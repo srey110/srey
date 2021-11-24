@@ -2,6 +2,7 @@
 #define NETADDR_H_
 
 #include "macro.h"
+
 union netaddr_ctx
 {
     struct sockaddr addr;
@@ -10,7 +11,7 @@ union netaddr_ctx
 };
 static inline void netaddr_empty_addr(union netaddr_ctx *pctx, const int32_t ifamily)
 {
-    ZERO(&pctx->ipv6, sizeof(pctx->ipv6));
+    ZERO(pctx, sizeof(union netaddr_ctx));
     pctx->addr.sa_family = ifamily;
 };
 /*
@@ -20,13 +21,6 @@ static inline void netaddr_empty_addr(union netaddr_ctx *pctx, const int32_t ifa
 * \return         ERR_OK 成功 gai_strerror获取错误信息
 */
 int32_t netaddr_sethost(union netaddr_ctx *pctx, const char *phost, const uint16_t usport);
-/*
-* \brief          设置地址
-* \param phost    ip
-* \param usport   port
-* \return         ERR_OK 成功
-*/
-void netaddr_setaddr(union netaddr_ctx *pctx, const struct sockaddr *paddr);
 /*
 * \brief          获取远端地址信息
 * \param fd       SOCKET

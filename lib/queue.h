@@ -9,7 +9,6 @@ struct queue_ctx
     int32_t next;
     int32_t capacity;
     int32_t initcap;
-    volatile atomic_t flags;
     struct message_ctx *msg;
 };
 /*
@@ -20,7 +19,6 @@ static inline void queue_init(struct queue_ctx *pctx, const int32_t icapacity)
     ASSERTAB((icapacity > 0 && icapacity <= INT_MAX), "capacity too large");
     pctx->size = 0;
     pctx->next = 0;
-    pctx->flags = 0;
     pctx->capacity = ROUND_UP(icapacity, 2);
     pctx->initcap = pctx->capacity;
     pctx->msg = (struct message_ctx *)MALLOC(sizeof(struct message_ctx) * pctx->capacity);
@@ -50,7 +48,7 @@ static inline void queue_expand(struct queue_ctx *pctx)
 
     for (int32_t i = 0; i < pctx->capacity; i++)
     {
-        pnew[i] = pctx->msg[(pctx->next + i) % pctx->capacity];
+        memcpy(&pnew[i], &pctx->msg[(pctx->next + i) % pctx->capacity], sizeof(struct message_ctx));
     }
     FREE(pctx->msg);
     pctx->next = 0;
@@ -74,7 +72,7 @@ static inline int32_t queue_push(struct queue_ctx *pctx, struct message_ctx *pva
     {
         ipos -= pctx->capacity;
     }
-    pctx->msg[ipos] = *pval;
+    memcpy(&pctx->msg[ipos], pval, sizeof(struct message_ctx));
     pctx->size++;
 
     return ERR_OK;
@@ -91,7 +89,7 @@ static inline int32_t queue_pop(struct queue_ctx *pctx, struct message_ctx *pval
         return ERR_FAILED;
     }
     
-    *pval = pctx->msg[pctx->next];
+    memcpy(pval, &pctx->msg[pctx->next], sizeof(struct message_ctx));
     pctx->next++;
     pctx->size--;
     if (pctx->next >= pctx->capacity)

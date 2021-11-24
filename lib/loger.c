@@ -75,7 +75,7 @@ static void _worker_init(struct logworker_ctx *pctx)
     //创建文件夹
     char acpath[PATH_LENS];
     ASSERTAB(ERR_OK == getprocpath(acpath), "getpath failed.");
-    size_t ilens = strlen(acpath) + strlen(PATH_SEPARATORSTR) + strlen(LOG_FOLDER) + 1;
+    size_t ilens = strlen(acpath) + strlen(PATH_SEPARATORSTR) + strlen(LOG_FOLDER) + 2;
     pctx->path = CALLOC(ilens, sizeof(char));
     ASSERTAB(NULL != pctx->path, ERRSTR_MEMORY);
     SNPRINTF(pctx->path, ilens - 1, "%s%s%s", acpath, PATH_SEPARATORSTR, LOG_FOLDER);
@@ -154,7 +154,7 @@ static inline void _worker_writelog(struct logworker_ctx *pctx, const char *ptim
 {
     const char *pn = "\n";
     (void)fwrite(ptime, 1, strlen(ptime), pctx->file);
-    (void)fwrite(pmsg->pdata, 1, strlen((const char *)pmsg->pdata), pctx->file);
+    (void)fwrite(pmsg->data, 1, strlen((const char *)pmsg->data), pctx->file);
     (void)fwrite(pn, 1, strlen(pn), pctx->file);
     (void)fflush(pctx->file);
 }
@@ -169,7 +169,7 @@ static inline void _worker_printlog(struct logworker_ctx *pctx, const char *ptim
     {
         return;
     }
-    switch (pmsg->idata)
+    switch (pmsg->flags)
     {
     case LOGLV_FATAL:
         SetConsoleTextAttribute(pctx->hout, FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | BACKGROUND_RED);
@@ -189,25 +189,25 @@ static inline void _worker_printlog(struct logworker_ctx *pctx, const char *ptim
     default:
         break;
     }
-    printf("%s%s\n", ptime, (const char *)pmsg->pdata);
+    printf("%s%s\n", ptime, (const char *)pmsg->data);
     SetConsoleTextAttribute(pctx->hout, pctx->stcsbi.wAttributes);
 #else
-    switch (pmsg->idata)
+    switch (pmsg->flags)
     {
     case LOGLV_FATAL:
-        printf("%s%s%s%s\n", CLR_RED_WHT, ptime, (const char *)pmsg->pdata, CLR_CLR);
+        printf("%s%s%s%s\n", CLR_RED_WHT, ptime, (const char *)pmsg->data, CLR_CLR);
         break;
     case LOGLV_ERROR:
-        printf("%s%s%s%s\n", CLR_RED, ptime, (const char *)pmsg->pdata, CLR_CLR);
+        printf("%s%s%s%s\n", CLR_RED, ptime, (const char *)pmsg->data, CLR_CLR);
         break;
     case LOGLV_WARN:
-        printf("%s%s%s%s\n", CLR_YELLOW, ptime, (const char *)pmsg->pdata, CLR_CLR);
+        printf("%s%s%s%s\n", CLR_YELLOW, ptime, (const char *)pmsg->data, CLR_CLR);
         break;
     case LOGLV_INFO:
-        printf("%s%s%s%s\n", CLR_GREEN, ptime, (const char *)pmsg->pdata, CLR_CLR);
+        printf("%s%s%s%s\n", CLR_GREEN, ptime, (const char *)pmsg->data, CLR_CLR);
         break;
     case LOGLV_DEBUG:
-        printf("%s%s%s%s\n", CLR_WHITE, ptime, (const char *)pmsg->pdata, CLR_CLR);
+        printf("%s%s%s%s\n", CLR_WHITE, ptime, (const char *)pmsg->data, CLR_CLR);
         break;
     }
 #endif
@@ -230,11 +230,11 @@ static void _loger(void *pparam)
         _worker_printlog(&stworker, atime, &msg);
         if (ERR_OK != _worker_getfile(&stworker))
         {
-            FREE(msg.pdata);
+            FREE(msg.data);
             continue;
         }
         _worker_writelog(&stworker, atime, &msg);
-        FREE(msg.pdata);
+        FREE(msg.data);
     }
 
     _worker_free(&stworker);
@@ -273,13 +273,13 @@ void loger_log(struct loger_ctx *pctx, const LOG_LEVEL emlv, const char *pformat
     }
     
     struct message_ctx msg;
-    msg.idata = emlv;
+    msg.flags = emlv;
     va_list va;
     va_start(va, pformat);
-    msg.pdata = formatargs(pformat, va);
+    msg.data = formatargs(pformat, va);
     va_end(va);
     if (ERR_OK != chan_send(&pctx->chan, &msg))
     {
-        FREE(msg.pdata);
+        FREE(msg.data);
     }
 }

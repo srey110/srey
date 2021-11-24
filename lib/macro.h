@@ -42,8 +42,8 @@ do\
     #else
         #define PATH_LENS 256
     #endif
-    #define SIGNAL_EXIT    SIGRTMIN + 10
 #endif
+#define NAME_LENS 16
 
 #define CONCAT2(a, b) a b
 #define CONCAT3(a, b, c) a b c
@@ -175,25 +175,32 @@ do\
 
 #if defined(OS_WIN)
     typedef uint32_t atomic_t;
+    typedef uint64_t atomic64_t;
     //LONG InterlockedExchangeAdd(LONG volatile *Addend,LONG Value)  返回旧值
-    #define ATOMIC_ADD(ptr, val)   InterlockedExchangeAdd(ptr, val)
+    #define ATOMIC_ADD(ptr, val) InterlockedExchangeAdd(ptr, val)
     //LONG InterlockedExchange(LONG volatile *Target,LONG Value); 返回旧值
-    #define ATOMIC_SET(ptr, val)   InterlockedExchange(ptr, val)
+    #define ATOMIC_SET(ptr, val) InterlockedExchange(ptr, val)
     //比较*ptr与oldval的值，如果两者相等，则将newval更新到*ptr并返回操作之前*ptr的值 成功 返回值等于oldval
     //LONG InterlockedCompareExchange(LONG volatile *Destination, LONG ExChange, LONG Comperand);
-    #define ATOMIC_CAS(ptr, oldval, newval)   (InterlockedCompareExchange(ptr, newval, oldval) == oldval)
+    #define ATOMIC_CAS(ptr, oldval, newval) (InterlockedCompareExchange(ptr, newval, oldval) == oldval)
+    #define ATOMIC64_ADD(ptr, val) InterlockedExchangeAdd64(ptr, val)
+    #define ATOMIC64_SET(ptr, val) InterlockedExchange64(ptr, val)
+    #define ATOMIC64_CAS(ptr, oldval, newval) (InterlockedCompareExchange64(ptr, newval, oldval) == oldval)
 #elif defined(OS_SUN)
     typedef uint32_t atomic_t;
+    typedef uint64_t atomic64_t;
     //uint32_t atomic_add_32_nv(volatile uint32_t *target, int32_t delta); return the new value of target.
-    #define ATOMIC_ADD(ptr, val)   atomic_add_32_nv(ptr, val)
+    #define ATOMIC_ADD(ptr, val) atomic_add_32_nv(ptr, val)
     //uint32_t atomic_swap_32(volatile uint32_t *target, uint32_t newval);  return the old of *target.
-    #define ATOMIC_SET(ptr, val)   atomic_swap_32(ptr, val)
+    #define ATOMIC_SET(ptr, val) atomic_swap_32(ptr, val)
     //uint32_t atomic_cas_32(volatile uint32_t *target, uint32_t cmp, uint32_t newval);
-    #define ATOMIC_CAS(ptr, oldval, newval)   (atomic_cas_32(ptr, oldval, newval) == oldval)
+    #define ATOMIC_CAS(ptr, oldval, newval) (atomic_cas_32(ptr, oldval, newval) == oldval)
+    #define ATOMIC64_ADD(ptr, val) atomic_add_64_nv(ptr, val)
+    #define ATOMIC64_SET(ptr, val) atomic_swap_64(ptr, val)
+    #define ATOMIC64_CAS(ptr, oldval, newval) (atomic_cas_64(ptr, oldval, newval) == oldval)
 #else
     typedef uint32_t atomic_t;
-    //type __sync_fetch_and_add (type *ptr, type value, ...)//返回旧值
-    #define ATOMIC_ADD(ptr, val)   __sync_fetch_and_add(ptr, val)
+    typedef uint64_t atomic64_t;
     static inline atomic_t _fetchandset(volatile atomic_t *ptr, atomic_t value)
     {
         atomic_t oldvar;
@@ -203,11 +210,27 @@ do\
         } while (!__sync_bool_compare_and_swap(ptr, oldvar, value));
         return oldvar;
     };
-    #define ATOMIC_SET(ptr, val)   _fetchandset(ptr, val)  //返回旧值
+    static inline atomic64_t _fetchandset64(volatile atomic64_t *ptr, atomic64_t value)
+    {
+        atomic64_t oldvar;
+        do
+        {
+            oldvar = *ptr;
+        } while (!__sync_bool_compare_and_swap(ptr, oldvar, value));
+        return oldvar;
+    };
+    //type __sync_fetch_and_add (type *ptr, type value, ...)//返回旧值
+    #define ATOMIC_ADD(ptr, val) __sync_fetch_and_add(ptr, val)
+    #define ATOMIC_SET(ptr, val) _fetchandset(ptr, val)
     //bool __sync_bool_compare_and_swap (type *ptr, type oldval type newval); 
-    #define ATOMIC_CAS(ptr, oldval, newval)  __sync_bool_compare_and_swap(ptr, oldval, newval)
+    #define ATOMIC_CAS(ptr, oldval, newval) __sync_bool_compare_and_swap(ptr, oldval, newval)
+    #define ATOMIC64_ADD(ptr, val) __sync_fetch_and_add(ptr, val)
+    #define ATOMIC64_SET(ptr, val) _fetchandset64(ptr, val) 
+    #define ATOMIC64_CAS(ptr, oldval, newval) __sync_bool_compare_and_swap(ptr, oldval, newval)
 #endif
 #define ATOMIC_GET(ptr) ATOMIC_ADD(ptr, 0)
+#define ATOMIC64_GET(ptr) ATOMIC64_ADD(ptr, 0)
+typedef uint64_t sid_t;
 
 #define SAFE_CLOSE_SOCK(fd)\
 do\

@@ -22,7 +22,7 @@ static inline int32_t _checkipv4(const char *phost)
 }
 int32_t netaddr_sethost(union netaddr_ctx *pctx, const char *phost, const uint16_t usport)
 {
-    ZERO(&pctx->ipv6, sizeof(pctx->ipv6));
+    ZERO(pctx, sizeof(union netaddr_ctx));
     if (ERR_OK == _checkipv4(phost))
     {
         pctx->addr.sa_family = AF_INET;
@@ -43,19 +43,8 @@ int32_t netaddr_sethost(union netaddr_ctx *pctx, const char *phost, const uint16
         }
         pctx->ipv6.sin6_port = htons(usport);
     }
+
     return ERR_OK;
-}
-void netaddr_setaddr(union netaddr_ctx *pctx, const struct sockaddr *paddr)
-{
-    ZERO(&pctx->ipv6, sizeof(pctx->ipv6));
-    if (AF_INET == paddr->sa_family)
-    {
-        memcpy(&pctx->ipv4, paddr, sizeof(pctx->ipv4));
-    }
-    else
-    {
-        memcpy(&pctx->ipv6, paddr, sizeof(pctx->ipv6));
-    }
 }
 int32_t netaddr_remoteaddr(union netaddr_ctx *pctx, SOCKET fd, const int32_t ifamily)
 {
@@ -63,6 +52,9 @@ int32_t netaddr_remoteaddr(union netaddr_ctx *pctx, SOCKET fd, const int32_t ifa
     {
         return ERR_FAILED;
     }
+
+    ZERO(pctx, sizeof(union netaddr_ctx));
+    pctx->addr.sa_family = ifamily;
     if (AF_INET == ifamily)
     {
         struct sockaddr_in addr = { 0 };
@@ -71,7 +63,7 @@ int32_t netaddr_remoteaddr(union netaddr_ctx *pctx, SOCKET fd, const int32_t ifa
         {
             return ERRNO;
         }
-        netaddr_setaddr(pctx, (struct sockaddr *)&addr);
+        memcpy(&pctx->ipv4, &addr, sizeof(pctx->ipv4));
     }
     else
     {
@@ -81,7 +73,7 @@ int32_t netaddr_remoteaddr(union netaddr_ctx *pctx, SOCKET fd, const int32_t ifa
         {
             return ERRNO;
         }
-        netaddr_setaddr(pctx, (struct sockaddr *)&addr);
+        memcpy(&pctx->ipv6, &addr, sizeof(pctx->ipv6));
     }
     
     return ERR_OK;
@@ -92,6 +84,9 @@ int32_t netaddr_localaddr(union netaddr_ctx *pctx, SOCKET fd, const int32_t ifam
     {
         return ERR_FAILED;
     }
+
+    ZERO(pctx, sizeof(union netaddr_ctx));
+    pctx->addr.sa_family = ifamily;
     if (AF_INET == ifamily)
     {
         struct sockaddr_in addr = { 0 };
@@ -100,7 +95,7 @@ int32_t netaddr_localaddr(union netaddr_ctx *pctx, SOCKET fd, const int32_t ifam
         {
             return ERRNO;
         }
-        netaddr_setaddr(pctx, (struct sockaddr *)&addr); 
+        memcpy(&pctx->ipv4, &addr, sizeof(pctx->ipv4));
     }
     else
     {
@@ -110,7 +105,7 @@ int32_t netaddr_localaddr(union netaddr_ctx *pctx, SOCKET fd, const int32_t ifam
         {
             return ERRNO;
         }
-        netaddr_setaddr(pctx, (struct sockaddr *)&addr);
+        memcpy(&pctx->ipv6, &addr, sizeof(pctx->ipv6));
     }
 
     return ERR_OK;

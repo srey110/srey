@@ -35,17 +35,11 @@
     <ClInclude Include="timer.h">
       <Filter>utils</Filter>
     </ClInclude>
-    <ClInclude Include="snowflake.h">
-      <Filter>utils</Filter>
-    </ClInclude>
     <ClInclude Include="utils.h">
       <Filter>utils</Filter>
     </ClInclude>
     <ClInclude Include="loger.h">
       <Filter>utils</Filter>
-    </ClInclude>
-    <ClInclude Include="evtype.h">
-      <Filter>event</Filter>
     </ClInclude>
     <ClInclude Include="netaddr.h">
       <Filter>utils</Filter>
@@ -56,16 +50,10 @@
     <ClInclude Include="tw.h">
       <Filter>utils</Filter>
     </ClInclude>
-    <ClInclude Include="netev\netev.h">
-      <Filter>event\netev</Filter>
-    </ClInclude>
     <ClInclude Include="buffer.h">
       <Filter>utils</Filter>
     </ClInclude>
     <ClInclude Include="srey.h">
-      <Filter>service</Filter>
-    </ClInclude>
-    <ClInclude Include="worker.h">
       <Filter>service</Filter>
     </ClInclude>
     <ClInclude Include="map.h">
@@ -74,6 +62,10 @@
     <ClInclude Include="structs.h">
       <Filter>utils</Filter>
     </ClInclude>
+    <ClInclude Include="netev\netev.h">
+      <Filter>netev</Filter>
+    </ClInclude>
+    <ClInclude Include="evtype.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="md5\md5.c">
@@ -81,9 +73,6 @@
     </ClCompile>
     <ClCompile Include="sha1\sha1.c">
       <Filter>3rd\sha1</Filter>
-    </ClCompile>
-    <ClCompile Include="snowflake.c">
-      <Filter>utils</Filter>
     </ClCompile>
     <ClCompile Include="utils.c">
       <Filter>utils</Filter>
@@ -97,26 +86,23 @@
     <ClCompile Include="netutils.c">
       <Filter>utils</Filter>
     </ClCompile>
-    <ClCompile Include="netev\netev.c">
-      <Filter>event\netev</Filter>
-    </ClCompile>
-    <ClCompile Include="netev\overlap.c">
-      <Filter>event\netev</Filter>
-    </ClCompile>
-    <ClCompile Include="netev\usock.c">
-      <Filter>event\netev</Filter>
-    </ClCompile>
     <ClCompile Include="buffer.c">
       <Filter>utils</Filter>
     </ClCompile>
     <ClCompile Include="srey.c">
       <Filter>service</Filter>
     </ClCompile>
-    <ClCompile Include="worker.c">
-      <Filter>service</Filter>
-    </ClCompile>
     <ClCompile Include="map.c">
       <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="netev\netev.c">
+      <Filter>netev</Filter>
+    </ClCompile>
+    <ClCompile Include="netev\overlap.c">
+      <Filter>netev</Filter>
+    </ClCompile>
+    <ClCompile Include="netev\usock.c">
+      <Filter>netev</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -135,14 +121,11 @@
     <Filter Include="utils">
       <UniqueIdentifier>{27f9d699-1248-4959-b1d9-b0ceeff862a6}</UniqueIdentifier>
     </Filter>
-    <Filter Include="event">
-      <UniqueIdentifier>{bcc74df3-4dc9-456c-b9ce-be3bd9b20b95}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="event\netev">
-      <UniqueIdentifier>{6f43b84f-1490-491a-93d1-c4d6cb223b24}</UniqueIdentifier>
-    </Filter>
     <Filter Include="service">
       <UniqueIdentifier>{70f5fcad-95b6-4089-8ec5-a34b12a92699}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="netev">
+      <UniqueIdentifier>{b5693aa0-d95b-4ae2-a76b-d492fab49223}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
 </Project>

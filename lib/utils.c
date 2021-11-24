@@ -145,7 +145,12 @@ void unlimit()
     {
         PRINTF("setrlimit(RLIMIT_CORE) failed.%s", ERRORSTR(ERRNO));
     }
-    stnew.rlim_cur = stnew.rlim_max = 65536;
+#ifdef OS_DARWIN
+    rlim_t rlmax = OPEN_MAX;
+#else
+    rlim_t rlmax = 65535;
+#endif
+    stnew.rlim_cur = stnew.rlim_max = rlmax;
     if (ERR_OK != setrlimit(RLIMIT_NOFILE, &stnew))
     {
         PRINTF("setrlimit(RLIMIT_NOFILE) failed.%s", ERRORSTR(ERRNO));
@@ -192,7 +197,6 @@ void sighandle(void(*exit_cb)(int32_t))
     signal(SIGTERM, g_sig_cb);//终止一个进程
     signal(SIGKILL, g_sig_cb);//立即结束程序
     signal(SIGABRT, g_sig_cb);//中止一个程序
-    signal(SIGNAL_EXIT, g_sig_cb);
 #endif
 }
 int32_t bigendian()
@@ -273,28 +277,27 @@ void _dirnam(const char *path, char acpath[PATH_LENS])
 }
 int32_t getprocpath(char acpath[PATH_LENS])
 {
-    char actmp[PATH_LENS] = {0};
-    size_t ilens = sizeof(actmp);
+    size_t ilens = PATH_LENS;
 #if defined(OS_WIN)
-    if (0 == GetModuleFileName(NULL, actmp, (DWORD)ilens - 1))
+    if (0 == GetModuleFileName(NULL, acpath, (DWORD)ilens - 1))
     {
         PRINTF("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
 #elif defined(OS_LINUX)
-    if (0 > readlink("/proc/self/exe", actmp, ilens - 1))
+    if (0 > readlink("/proc/self/exe", acpath, ilens - 1))
     {
         PRINTF("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
 #elif defined(OS_NBSD)
-    if (0 > readlink("/proc/curproc/exe", actmp, ilens - 1))
+    if (0 > readlink("/proc/curproc/exe", acpath, ilens - 1))
     {
         PRINTF("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
 #elif defined(OS_DFBSD)
-    if (0 > readlink("/proc/curproc/file", actmp, ilens - 1))
+    if (0 > readlink("/proc/curproc/file", acpath, ilens - 1))
     {
         PRINTF("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
@@ -302,13 +305,14 @@ int32_t getprocpath(char acpath[PATH_LENS])
 #elif defined(OS_SUN)  
     char acin[64] = { 0 };
     SNPRINTF(acin, sizeof(acin) - 1, "/proc/%d/path/a.out", (uint32_t)getpid());
-    if (0 > readlink(acin, actmp, ilens - 1))
+    if (0 > readlink(acin, acpath, ilens - 1))
     {
         PRINTF("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
-#elif defined(OS_MAC)
-    if (0 != _NSGetExecutablePath(actmp, &ilens))
+#elif defined(OS_DARWIN)
+    uint32_t umaclens = ilens;
+    if (0 != _NSGetExecutablePath(acpath, &umaclens))
     {
         PRINTF("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
@@ -316,7 +320,7 @@ int32_t getprocpath(char acpath[PATH_LENS])
 #elif defined(OS_FBSD)
     int32_t ainame[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME };
     ainame[3] = getpid();
-    if (0 != sysctl(ainame, 4, actmp, &ilens, NULL, 0))
+    if (0 != sysctl(ainame, 4, acpath, &ilens, NULL, 0))
     {
         PRINTF("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
@@ -325,8 +329,16 @@ int32_t getprocpath(char acpath[PATH_LENS])
     PRINTF("%s", "not support.");
     return ERR_FAILED;
 #endif
-
-    _dirnam(actmp, acpath);
+    char* pcur = strrchr(acpath, PATH_SEPARATOR);
+    *pcur = 0;
+#if defined(OS_DARWIN)
+    ilens = strlen(acpath);
+    if (acpath[ilens - 1] == '.'
+        && acpath[ilens - 2] == PATH_SEPARATOR)
+    {
+        acpath[ilens - 2] = 0;
+    }
+#endif
     return ERR_OK;
 }
 const uint16_t crc16_tab[256] = {
@@ -604,16 +616,16 @@ char *xordecode(const char ackey[4], const size_t uiround, char *pbuf, const siz
     }
     return pbuf;
 }
-size_t hash(const char *pfirst, size_t uilen)
+uint64_t hash(const char *pfirst, size_t uilen)
 {
-    size_t uirtn = 0;
+    uint64_t uirtn = 0;
     for (; uilen > 0; --uilen)
     {
         uirtn = (uirtn * 131) + *pfirst++;
     }
     return uirtn;
 }
-size_t fnv1a_hash(const char *pfirst, size_t uilen)
+uint64_t fnv1a_hash(const char *pfirst, size_t uilen)
 {
 #if defined(ARCH_X64)
     #define OFFSET_BASIS 14695981039346656037ULL
@@ -622,10 +634,10 @@ size_t fnv1a_hash(const char *pfirst, size_t uilen)
     #define OFFSET_BASIS 2166136261UL
     #define PRIME 16777619UL
 #endif
-    size_t ulrtn = OFFSET_BASIS;
+    uint64_t ulrtn = OFFSET_BASIS;
     for (; uilen > 0; --uilen)
     {
-        ulrtn ^= (size_t)*pfirst++;
+        ulrtn ^= (uint64_t)*pfirst++;
         ulrtn *= PRIME;
     }
     return ulrtn;

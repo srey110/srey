@@ -37,7 +37,6 @@
     <ClInclude Include="queue.h" />
     <ClInclude Include="rwlock.h" />
     <ClInclude Include="sha1\sha1.h" />
-    <ClInclude Include="snowflake.h" />
     <ClInclude Include="spinlock.h" />
     <ClInclude Include="srey.h" />
     <ClInclude Include="structs.h" />
@@ -45,7 +44,6 @@
     <ClInclude Include="timer.h" />
     <ClInclude Include="tw.h" />
     <ClInclude Include="utils.h" />
-    <ClInclude Include="worker.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="buffer.c" />
@@ -58,10 +56,8 @@
     <ClCompile Include="netev\usock.c" />
     <ClCompile Include="netutils.c" />
     <ClCompile Include="sha1\sha1.c" />
-    <ClCompile Include="snowflake.c" />
     <ClCompile Include="srey.c" />
     <ClCompile Include="utils.c" />
-    <ClCompile Include="worker.c" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{A78F0E3F-B401-44E1-B467-95D886F6F32F}</ProjectGuid>

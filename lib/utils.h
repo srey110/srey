@@ -175,8 +175,8 @@ char *xordecode(const char ackey[4], const size_t uiround, char *pbuf, const siz
 * \brief          hash
 * \return         hash
 */
-size_t hash(const char *pfirst, size_t uilen);
-size_t fnv1a_hash(const char *pfirst, size_t uilen);
+uint64_t hash(const char *pfirst, size_t uilen);
+uint64_t fnv1a_hash(const char *pfirst, size_t uilen);
 /*
 * \brief          ×Ö·û´®×ª´óÐ´
 * \param pval     ´ý×ª»»µÄ×Ö·û´®

@@ -5,15 +5,18 @@
 
 struct ud_ctx
 {
-    uint32_t id;
+    uint32_t session;
+    sid_t id;
     uintptr_t handle;
 };
 struct message_ctx
 {
     uint32_t flags;
-    int32_t idata;
-    void *pdata;
-    size_t uldata;
+    uint32_t session;
+    uint32_t size;
+    sid_t id;
+    sid_t tgid;
+    void *data;
 };
 
 #endif//STRUCTS_H_

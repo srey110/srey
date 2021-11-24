@@ -49,7 +49,6 @@ struct overlap_ctx
     struct buffer_ctx buf_r;
     struct buffer_ctx buf_w;
     mutex_ctx lock_close;//CLOSE后不再触发write_cb
-    mutex_ctx lock_send;
     IOV_TYPE wsabuf_r[MAX_RECV_IOV_COUNT];
     IOV_TYPE wsabuf_w[MAX_SEND_IOV_COUNT];
 };
@@ -84,7 +83,7 @@ static inline int32_t _post_accept(struct overlap_acpt_ctx *pacpol)
 
     return ERR_OK;
 }
-static inline void _on_accept_cb(struct watcher_ctx *pwatcher, struct sock_ctx *psock, int32_t iev, int32_t *pstop)
+static inline void _on_accept_cb(struct watcher_ctx *pwatcher, struct sock_ctx *psock, uint32_t uiev, int32_t *pstop)
 {
     struct overlap_acpt_ctx *pacpol = UPCAST(psock, struct overlap_acpt_ctx, sock);
     SOCKET sock = pacpol->sock.sock;
@@ -175,7 +174,7 @@ static inline int32_t _commit_buf_r(struct watcher_ctx *pwatcher, struct overlap
     buffer_write_iov_commit(&polctx->buf_r, (size_t)pwatcher->bytes, polctx->wsabuf_r, polctx->iovcnt_r);
     return ERR_OK;
 }
-static inline void _on_recv_cb(struct watcher_ctx *pwatcher, struct sock_ctx *psock, int32_t iev, int32_t *pstop)
+static inline void _on_recv_cb(struct watcher_ctx *pwatcher, struct sock_ctx *psock, uint32_t uiev, int32_t *pstop)
 {
     struct overlap_ctx *polctx = _get_overlap(psock);
     if (ERR_OK != _commit_buf_r(pwatcher, polctx))
@@ -223,7 +222,7 @@ static inline int32_t _post_recv_from(struct overlap_ctx *polctx)
 
     return ERR_OK;
 }
-static inline void _on_recvfrom_cb(struct watcher_ctx *pwatcher, struct sock_ctx *psock, int32_t iev, int32_t *pstop)
+static inline void _on_recvfrom_cb(struct watcher_ctx *pwatcher, struct sock_ctx *psock, uint32_t uiev, int32_t *pstop)
 {
     struct overlap_ctx *polctx = _get_overlap(psock);
     if (ERR_OK != _commit_buf_r(pwatcher, polctx))
@@ -241,7 +240,7 @@ static inline void _on_recvfrom_cb(struct watcher_ctx *pwatcher, struct sock_ctx
     }
     ATOMIC_ADD(&polctx->ref_r, -1);
 }
-static inline void _on_connect_cb(struct watcher_ctx *pwatcher, struct sock_ctx *psock, int32_t iev, int32_t *pstop)
+static inline void _on_connect_cb(struct watcher_ctx *pwatcher, struct sock_ctx *psock, uint32_t uiev, int32_t *pstop)
 {
     struct overlap_ctx *pol = _get_overlap(psock); 
     pol->overlap_r.ev_cb = _on_recv_cb;
@@ -285,7 +284,7 @@ static inline int32_t _post_send(struct overlap_ctx *polctx)
 
     return ERR_OK;
 }
-static inline void _on_send_cb(struct watcher_ctx *pwatcher, struct sock_ctx *psock, int32_t iev, int32_t *pstop)
+static inline void _on_send_cb(struct watcher_ctx *pwatcher, struct sock_ctx *psock, uint32_t uiev, int32_t *pstop)
 {
     struct overlap_ctx *polctx = UPCAST(psock, struct overlap_ctx, overlap_w);
     if (0 == pwatcher->bytes
@@ -306,11 +305,8 @@ static inline void _on_send_cb(struct watcher_ctx *pwatcher, struct sock_ctx *ps
         }
         mutex_unlock(&polctx->lock_close);
     }
-    //防止_post_send时无数据，并且ref_w还未执行-1，此时执行_tcp_trysend不会触发发送
-    mutex_lock(&polctx->lock_send);
     (void)_post_send(polctx);
     ATOMIC_ADD(&polctx->ref_w, -1);
-    mutex_unlock(&polctx->lock_send);
 }
 static inline int32_t _post_sendto(struct overlap_ctx *polctx)
 {
@@ -352,7 +348,7 @@ static inline int32_t _post_sendto(struct overlap_ctx *polctx)
 
     return ERR_OK;
 }
-static inline void _on_sendto_cb(struct watcher_ctx *pwatcher, struct sock_ctx *psock, int32_t iev, int32_t *pstop)
+static inline void _on_sendto_cb(struct watcher_ctx *pwatcher, struct sock_ctx *psock, uint32_t uiev, int32_t *pstop)
 {
     struct overlap_ctx *polctx = UPCAST(psock, struct overlap_ctx, overlap_w);
     if (0 == pwatcher->bytes
@@ -374,10 +370,8 @@ static inline void _on_sendto_cb(struct watcher_ctx *pwatcher, struct sock_ctx *
         }
         mutex_unlock(&polctx->lock_close);
     }
-    mutex_lock(&polctx->lock_send);
     (void)_post_sendto(polctx);
     ATOMIC_ADD(&polctx->ref_w, -1);
-    mutex_unlock(&polctx->lock_send);
 }
 static inline int32_t _trybind(SOCKET sock, const int32_t ifamily)
 {
@@ -461,14 +455,13 @@ struct sock_ctx *netev_add_sock(struct netev_ctx *pctx, SOCKET sock, int32_t ity
     pol->family = ifamily;
     pol->overlap_r.sock = sock;
     pol->overlap_w.sock = sock;
-    uint32_t uid = pctx->id_creater(pctx->id_data);
+    sid_t uid = pctx->id_creater(pctx->id_data);
     pol->overlap_r.id = uid;
     pol->overlap_w.id = uid;
     pol->netev = pctx;
     buffer_init(&pol->buf_r);
     buffer_init(&pol->buf_w);
     mutex_init(&pol->lock_close);
-    mutex_init(&pol->lock_send);
 
     return &pol->overlap_r;
 }
@@ -598,7 +591,6 @@ static inline void _sock_free(void *pdata)
     buffer_free(&pol->buf_r);
     buffer_free(&pol->buf_w);
     mutex_free(&pol->lock_close);
-    mutex_free(&pol->lock_send);
     FREE(pol);
 }
 static inline void _sock_delay_free(struct ud_ctx *pud)
@@ -741,7 +733,7 @@ int32_t netev_enable_rw(struct netev_ctx *pctx, struct sock_ctx *psock,
     return ERR_OK;
 }
 static inline void _on_disconnectex(struct watcher_ctx *pwatcher, 
-    struct sock_ctx *psock, int32_t iev, int32_t *pstop)
+    struct sock_ctx *psock, uint32_t uiev, int32_t *pstop)
 {
     FREE(psock);
 }
@@ -791,15 +783,12 @@ void sock_close(struct sock_ctx *psock)
 static inline int32_t _tcp_trysend(struct overlap_ctx *polctx)
 {
     int32_t irtn = ERR_OK;
-
-    mutex_lock(&polctx->lock_send);
-    if (ATOMIC_CAS(&polctx->ref_w, 0, 1))
+    if (0 != buffer_size(&polctx->buf_w)
+        && ATOMIC_CAS(&polctx->ref_w, 0, 1))
     {
         irtn = _post_send(polctx);
         ATOMIC_ADD(&polctx->ref_w, -1);
-    } 
-    mutex_unlock(&polctx->lock_send);
-
+    }
     return irtn;
 }
 int32_t sock_send(struct sock_ctx *psock, void *pdata, const size_t uilens)
@@ -854,15 +843,13 @@ int32_t sock_sendto(struct sock_ctx *psock, const char *phost, uint16_t uport,
     }
     msg.size = uilens;
     buffer_piece_append(&polctx->buf_w, &msg, sizeof(struct udp_msg_ctx), pdata, uilens);
-
     int32_t irtn = ERR_OK;
-    mutex_lock(&polctx->lock_send);
-    if (ATOMIC_CAS(&polctx->ref_w, 0, 1))
+    if (0 != buffer_size(&polctx->buf_w)
+        && ATOMIC_CAS(&polctx->ref_w, 0, 1))
     {
         irtn = _post_sendto(polctx);
         ATOMIC_ADD(&polctx->ref_w, -1);
     }
-    mutex_unlock(&polctx->lock_send);
 
     return irtn;
 }

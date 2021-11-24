@@ -11,6 +11,7 @@
     #define _CMD_CLOSE        0x04
     #define _CMD_CONN         0x05
     #define _CMD_CONN_TIMEOUT 0x06
+    #define _CMD_ADD_W        0x07
 #endif
 int32_t _netev_threadcnt(const uint32_t uthcnt)
 {
@@ -28,7 +29,7 @@ struct watcher_ctx *_netev_get_watcher(struct netev_ctx *pctx, SOCKET fd)
     return &pctx->watcher[fnv1a_hash((const char *)&fd, sizeof(fd)) % pctx->thcnt];
 #endif
 }
-static inline struct netev_ctx *_new_pub_ev(struct tw_ctx *ptw, const uint32_t uthcnt, uint32_t(*id_creater)(void *), void *pid)
+static inline struct netev_ctx *_new_pub_ev(struct tw_ctx *ptw, const uint32_t uthcnt, sid_t(*id_creater)(void *), void *pid)
 {
     struct netev_ctx *pev = MALLOC(sizeof(struct netev_ctx));
     ASSERTAB(NULL != pev, ERRSTR_MEMORY);
@@ -144,31 +145,39 @@ static inline void _uev_resize_events(struct watcher_ctx *pwatcher)
     }
 };
 static char trigger[1] = { '1' };
-static inline void _uev_cmd(struct watcher_ctx *pwatcher, int32_t icmd, int32_t ievents, void *pdata, size_t uldata)
+static inline void _uev_cmd(struct watcher_ctx *pwatcher, uint32_t uicmd, uint32_t uiev, struct sock_ctx *psock, sid_t uid)
 {
+    if (ERR_OK != _uev_add_ref_cmd(psock))
+    {
+        return;
+    }
     struct message_ctx msg;
-    msg.flags = icmd;
-    msg.idata = ievents;
-    msg.pdata = pdata;
-    msg.uldata = uldata;
+    msg.flags = uicmd;
+    msg.session = uiev;
+    msg.data = psock;
+    msg.id = uid;
     mutex_lock(&pwatcher->lock_qucmd);
     queue_expand(&pwatcher->qu_cmd);
     (void)queue_push(&pwatcher->qu_cmd, &msg);
     (void)send(pwatcher->socks[1], trigger, (int32_t)sizeof(trigger), 0);
     mutex_unlock(&pwatcher->lock_qucmd);
 }
-int32_t _uev_add(struct watcher_ctx *pwatcher, struct sock_ctx *psock, int32_t iev)
+int32_t _uev_add(struct watcher_ctx *pwatcher, struct sock_ctx *psock, uint32_t uiev)
 {
+    if (psock->flags & _FLAGS_CLOSE)
+    {
+        return ERR_FAILED;
+    }
 #if defined(NETEV_EPOLL)
     struct epoll_event epev;
     ZERO(&epev, sizeof(epev));
     epev.data.ptr = psock;
-    iev |= psock->events;
-    if (iev & EV_READ)
+    uiev |= psock->events;
+    if (uiev & EV_READ)
     {
         epev.events |= EPOLLIN;
     }
-    if (iev & EV_WRITE)
+    if (uiev & EV_WRITE)
     {
         epev.events |= EPOLLOUT;
     }
@@ -177,9 +186,9 @@ int32_t _uev_add(struct watcher_ctx *pwatcher, struct sock_ctx *psock, int32_t i
     {
         return ERR_FAILED;
     }
-    psock->events = iev;
+    psock->events = uiev;
 #elif defined(NETEV_KQUEUE)
-    if ((iev & EV_READ)
+    if ((uiev & EV_READ)
         && !(psock->events & EV_READ))
     {
         psock->events |= EV_READ;
@@ -191,7 +200,7 @@ int32_t _uev_add(struct watcher_ctx *pwatcher, struct sock_ctx *psock, int32_t i
             return ERR_FAILED;
         }
     }
-    if ((iev & EV_WRITE)
+    if ((uiev & EV_WRITE)
         && !(psock->events & EV_WRITE))
     {
         psock->events |= EV_WRITE;
@@ -204,26 +213,27 @@ int32_t _uev_add(struct watcher_ctx *pwatcher, struct sock_ctx *psock, int32_t i
         }
     }
 #elif defined(NETEV_EVPORT)
-    psock->events |= iev;
-    iev = 0;
+    psock->events |= uiev;
+    uiev = 0;
     if (psock->events & EV_READ)
     {
-        iev |= POLLIN;
+        uiev |= POLLIN;
     }
     if (psock->events & EV_WRITE)
     {
-        iev |= POLLOUT;
+        uiev |= POLLOUT;
     }
-    if (ERR_FAILED == port_associate(pwatcher->evfd, PORT_SOURCE_FD, psock->sock, iev, psock))
+    if (ERR_FAILED == port_associate(pwatcher->evfd, PORT_SOURCE_FD, psock->sock, uiev, psock))
     {
         return ERR_FAILED;
     }
 #endif
     return ERR_OK;
 }
-void _uev_del(struct watcher_ctx *pwatcher, struct sock_ctx *psock, int32_t iev)
+void _uev_del(struct watcher_ctx *pwatcher, struct sock_ctx *psock, uint32_t uiev)
 {
-    if (0 == iev)
+    if (0 == uiev
+        || (psock->flags & _FLAGS_CLOSE))
     {
         return;
     }
@@ -231,7 +241,7 @@ void _uev_del(struct watcher_ctx *pwatcher, struct sock_ctx *psock, int32_t iev)
     struct epoll_event epev;
     ZERO(&epev, sizeof(epev));
     epev.data.ptr = psock;
-    psock->events = psock->events & ~iev;
+    psock->events = psock->events & ~uiev;
     if (0 == psock->events)
     {
         (void)epoll_ctl(pwatcher->evfd, EPOLL_CTL_DEL, psock->sock, &epev);
@@ -249,7 +259,7 @@ void _uev_del(struct watcher_ctx *pwatcher, struct sock_ctx *psock, int32_t iev)
         (void)epoll_ctl(pwatcher->evfd, EPOLL_CTL_MOD, psock->sock, &epev);
     }
 #elif defined(NETEV_KQUEUE)
-    if ((iev & EV_READ)
+    if ((uiev & EV_READ)
         && (psock->events & EV_READ))
     {
         psock->events = psock->events & ~EV_READ;
@@ -257,7 +267,7 @@ void _uev_del(struct watcher_ctx *pwatcher, struct sock_ctx *psock, int32_t iev)
         EV_SET(&kev, psock->sock, EVFILT_READ, EV_DELETE, 0, 0, psock);
         (void)kevent(pwatcher->evfd, &kev, 1, NULL, 0, NULL);
     }
-    if ((iev & EV_WRITE)
+    if ((uiev & EV_WRITE)
         && (psock->events & EV_WRITE))
     {
         psock->events = psock->events & ~EV_WRITE;
@@ -266,23 +276,23 @@ void _uev_del(struct watcher_ctx *pwatcher, struct sock_ctx *psock, int32_t iev)
         (void)kevent(pwatcher->evfd, &kev, 1, NULL, 0, NULL);
     }
 #elif defined(NETEV_EVPORT)
-    psock->events = psock->events & ~iev;
+    psock->events = psock->events & ~uiev;
     if (0 == psock->events)
     {
         (void)port_dissociate(pwatcher->evfd, PORT_SOURCE_FD, psock->sock);
     }
     else
     {
-        iev = 0;
+        uiev = 0;
         if (psock->events & EV_READ)
         {
-            iev |= POLLIN;
+            uiev |= POLLIN;
         }
         if (psock->events & EV_WRITE)
         {
-            iev |= POLLOUT;
+            uiev |= POLLOUT;
         }
-        (void)port_associate(pwatcher->evfd, PORT_SOURCE_FD, psock->sock, iev, psock);
+        (void)port_associate(pwatcher->evfd, PORT_SOURCE_FD, psock->sock, uiev, psock);
     }
 #endif
 }
@@ -290,11 +300,15 @@ void _uev_cmd_close(struct watcher_ctx *pwatcher, struct sock_ctx *psock)
 {
     _uev_cmd(pwatcher, _CMD_CLOSE, 0, psock, 0);
 }
+void _uev_cmd_enable_w(struct watcher_ctx *pwatcher, struct sock_ctx *psock)
+{
+    _uev_cmd(pwatcher, _CMD_ADD_W, EV_WRITE, psock, 0);
+}
 void _uev_cmd_conn(struct watcher_ctx *pwatcher, struct sock_ctx *psock)
 {
     _uev_cmd(pwatcher, _CMD_CONN, EV_WRITE, psock, 0);
 }
-void _uev_cmd_timeout(struct watcher_ctx *pwatcher, uint32_t uid)
+void _uev_cmd_timeout(struct watcher_ctx *pwatcher, sid_t uid)
 {
     _uev_cmd(pwatcher, _CMD_CONN_TIMEOUT, 0, NULL, uid);
 }
@@ -304,10 +318,9 @@ void _add_close_qu(struct watcher_ctx *pwatcher, struct sock_ctx *psock)
     {
         return;
     }
-
     psock->flags |= _FLAGS_CLOSE;
     struct message_ctx msg;
-    msg.pdata = psock;
+    msg.data = psock;
     _uev_del(pwatcher, psock, EV_READ | EV_WRITE);    
     queue_expand(&pwatcher->qu_close);
     (void)queue_push(&pwatcher->qu_close, &msg);
@@ -319,7 +332,7 @@ void _conn_timeout_add(struct watcher_ctx *pwatcher, struct sock_ctx *psock)
     ud.handle = (uintptr_t)psock;
     _map_set(pwatcher->map, &ud);
 }
-struct sock_ctx * _conn_timeout_remove(struct watcher_ctx *pwatcher, uint32_t uid)
+struct sock_ctx * _conn_timeout_remove(struct watcher_ctx *pwatcher, sid_t uid)
 {
     struct ud_ctx key;
     key.id = uid;
@@ -327,10 +340,11 @@ struct sock_ctx * _conn_timeout_remove(struct watcher_ctx *pwatcher, uint32_t ui
     int32_t irtn = _map_remove(pwatcher->map, &key, &val);
     return ERR_OK == irtn ? (struct sock_ctx *)val.handle : NULL;
 }
-static inline void _cmd_cb(struct watcher_ctx *pwatcher, struct sock_ctx *psock, int32_t iev, int32_t *pstop)
+static inline void _cmd_cb(struct watcher_ctx *pwatcher, struct sock_ctx *psock, uint32_t uiev, int32_t *pstop)
 {
     (void)read(psock->sock, pwatcher->trigger, sizeof(pwatcher->trigger));
     int32_t irtn;
+    struct sock_ctx *pusock;
     struct message_ctx msg;
     while (1)
     {
@@ -341,44 +355,55 @@ static inline void _cmd_cb(struct watcher_ctx *pwatcher, struct sock_ctx *psock,
         {
             break;
         }
+        pusock = msg.data;
         switch (msg.flags)
         {
         case _CMD_STOP:
             *pstop = 1;
-            break;
+            return;
         case _CMD_ADD:
-            if (ERR_OK != _uev_add(pwatcher, msg.pdata, msg.idata))
+            irtn = _uev_add(pwatcher, pusock, msg.session);
+            if (ERR_OK != irtn)
             {
-                _add_close_qu(pwatcher, msg.pdata);
+                _add_close_qu(pwatcher, pusock);
             }
             break;
         case _CMD_DEL:
-            _uev_del(pwatcher, msg.pdata, msg.idata);
+            _uev_del(pwatcher, pusock, msg.session);
             break;
         case _CMD_CLOSE://Ö÷¶¯¹Ø±Õ
-            _add_close_qu(pwatcher, msg.pdata);
+            _add_close_qu(pwatcher, pusock);
             break;
         case _CMD_CONN:
-            if (ERR_OK != _uev_add(pwatcher, msg.pdata, msg.idata))
+            irtn = _uev_add(pwatcher, pusock, msg.session);
+            if (ERR_OK != irtn)
             {
-                _add_close_qu(pwatcher, msg.pdata);
+                _add_close_qu(pwatcher, pusock);
             }
             else
             {
-                _conn_timeout_add(pwatcher, msg.pdata);
+                _conn_timeout_add(pwatcher, pusock);
             }
             break;
         case _CMD_CONN_TIMEOUT:
+            pusock = _conn_timeout_remove(pwatcher, msg.id);
+            if (NULL != pusock)
             {
-                struct sock_ctx *psock = _conn_timeout_remove(pwatcher, (uint32_t)msg.uldata);
-                if (NULL != psock)
-                {
-                    LOG_WARN("sock %d connect timeout.", (uint32_t)msg.uldata);
-                    _add_close_qu(pwatcher, psock);
-                }
+                LOG_WARN("sock %d connect timeout.", msg.id);
+                _add_close_qu(pwatcher, pusock);
+            }
+            pusock = NULL;
+            break;
+        case _CMD_ADD_W:
+            irtn = _uev_add(pwatcher, pusock, msg.session);
+            _uev_sub_sending(pusock);
+            if (ERR_OK != irtn)
+            {
+                _add_close_qu(pwatcher, pusock);
             }
             break;
         }
+        _uev_sub_ref_cmd(pusock);
     }
 #ifdef NETEV_EVPORT
     if (0 == *pstop)
@@ -388,7 +413,7 @@ static inline void _cmd_cb(struct watcher_ctx *pwatcher, struct sock_ctx *psock,
 #endif
 }
 #endif
-struct netev_ctx *netev_new(struct tw_ctx *ptw, const uint32_t uthcnt, uint32_t(*id_creater)(void *), void *pid)
+struct netev_ctx *netev_new(struct tw_ctx *ptw, const uint32_t uthcnt, sid_t(*id_creater)(void *), void *pid)
 {
     struct netev_ctx *pev = _new_pub_ev(ptw, uthcnt, id_creater, pid);
 #ifdef NETEV_IOCP
@@ -450,58 +475,58 @@ void netev_free(struct netev_ctx *pctx)
     (void)WSACleanup();
 #endif
 }
-void _netev_add(struct watcher_ctx *pwatcher, struct sock_ctx *psock, int32_t iev)
+void _netev_add(struct watcher_ctx *pwatcher, struct sock_ctx *psock, uint32_t uiev)
 {
 #if defined(NETEV_IOCP)
     if (0 == psock->events
-        && 0 != iev)
+        && 0 != uiev)
     {
         if (NULL == CreateIoCompletionPort((HANDLE)psock->sock, pwatcher->iocp, 0, pwatcher->netev->thcnt))
         {
             LOG_ERROR("%s", ERRORSTR(ERRNO));
         }
     }
-    psock->events |= iev;
+    psock->events |= uiev;
 #else
-    _uev_cmd(pwatcher, _CMD_ADD, iev, psock, 0);
+    _uev_cmd(pwatcher, _CMD_ADD, uiev, psock, 0);
 #endif
 }
 #ifndef NETEV_IOCP
 static inline int32_t _trans_ev(events_t *pev, struct sock_ctx **psock)
 {
-    int32_t iev = 0;
+    uint32_t uiev = 0;
 #if defined(NETEV_EPOLL)
     if (pev->events & (EPOLLIN | EPOLLHUP | EPOLLERR))
     {
-        iev |= EV_READ;
+        uiev |= EV_READ;
     }
     if (pev->events & (EPOLLOUT | EPOLLHUP | EPOLLERR))
     {
-        iev |= EV_WRITE;
+        uiev |= EV_WRITE;
     }
     *psock = pev->data.ptr;
 #elif defined(NETEV_KQUEUE)
     if (EVFILT_READ == pev->filter)
     {
-        iev |= EV_READ;
+        uiev |= EV_READ;
     }
     if (EVFILT_WRITE == pev->filter)
     {
-        iev |= EV_WRITE;
+        uiev |= EV_WRITE;
     }
     *psock = pev->udata;
 #elif defined(NETEV_EVPORT)
     if (pev->portev_events & POLLIN)
     {
-        iev |= EV_READ;
+        uiev |= EV_READ;
     }
     if (pev->portev_events & POLLOUT)
     {
-        iev |= EV_WRITE;
+        uiev |= EV_WRITE;
     }
     *psock = pev->portev_user;
 #endif
-    return iev;
+    return uiev;
 }
 #endif
 static inline void _netev_wait(struct watcher_ctx *pwatcher, int32_t *pstop)
@@ -542,17 +567,17 @@ static inline void _netev_wait(struct watcher_ctx *pwatcher, int32_t *pstop)
     (void)port_getn(pwatcher->evfd, pwatcher->events, pwatcher->event_cnt, &uicnt, NULL);
     icnt = (int32_t)uicnt;
 #endif
-    int32_t iev;
+    uint32_t uiev;
     struct sock_ctx *psock;
     for (int32_t i = 0; i < icnt; i++)
     {
-        iev = _trans_ev(&pwatcher->events[i], &psock);
-        psock->ev_cb(pwatcher, psock, iev, pstop);
+        uiev = _trans_ev(&pwatcher->events[i], &psock);
+        psock->ev_cb(pwatcher, psock, uiev, pstop);
     }
     struct message_ctx msg;
     while (ERR_OK == queue_pop(&pwatcher->qu_close, &msg))
     {
-        _uev_sock_close(msg.pdata);
+        _uev_sock_close(msg.data);
     }
     if (0 == *pstop
         && icnt >= pwatcher->event_cnt)
@@ -585,7 +610,7 @@ void netev_loop(struct netev_ctx *pctx)
         thread_waitstart(&pctx->watcher[i].thev);
     }
 }
-uint32_t sock_id(struct sock_ctx *psock)
+sid_t sock_id(struct sock_ctx *psock)
 {
     return psock->id;
 }

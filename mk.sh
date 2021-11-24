@@ -17,9 +17,13 @@ MAINDIR="srey"
 #main函数所在文件
 MAINFILE="srey_main.c"
 #附加包含库
-INCLUDELIB="-lrt -lpthread"
+INCLUDELIB="-lpthread"
 #系统
 OSNAME=`uname`
+if [ "$OSNAME" != "Darwin" ]
+then
+    INCLUDELIB=$INCLUDELIB" -lrt"
+fi
 if [ "$OSNAME" = "SunOS" ]
 then
 	PATH=$PATH:/usr/sfw/bin:/usr/ccs/bin
@@ -30,10 +34,9 @@ fi
 X64=""
 OS_Version=`uname -m`
 echo $OSNAME $OS_Version
-if [ "$OS_Version" = "x86_64" ]
+if [ "$OS_Version" = "x86_64" ] || [ "$OS_Version" = "amd64" ]
 then
 	X64="x64"
-	echo "x86_64"
 fi
 #结果存放路径
 RSTPATH="bin/x86"
@@ -46,7 +49,6 @@ fi
 LIBNAME="srey"
 #不参与编译的文件,MAINFILE+其他
 EXCEPTL=$MAINFILE" "$TESTFILE
-
 MAKEFILEPATH=`pwd`
 LIBPATH="-L$MAKEFILEPATH/$RSTPATH"
 CC="gcc -std=gnu99"
@@ -54,10 +56,11 @@ GCC="g++"
 ARCH="ar -rv"
 INCLUDEPATH=""
 OBJFILE=""
+#-fsanitize=address
 CFLAGS="-O3 -g -Wall"
-if [ "$OSNAME" = "FreeBSD" ]
+if [ "$X64" = "x64" ]
 then
-	CFLAGS=$CFLAGS" -Wno-uninitialized"
+    CFLAGS=$CFLAGS" -m64"
 fi
 if [ $# -eq 1 ]
 then
@@ -67,7 +70,20 @@ then
     fi
 fi
 LIBDIR=$Dir
+Clean()
+{
+    rm -rf *.o
+    for EachSub in $LIBDIR
+    do
+	    rm -rf $MAKEFILEPATH/$EachSub/*.o
+    done
 
+    cd $RSTPATH    
+    rm -rf lib$LIBNAME.a
+    rm -rf $PROGRAMNAME
+    cd $MAKEFILEPATH
+}
+Clean
 GetIncludePath()
 {
     for EachSub in $LIBDIR
@@ -159,24 +175,6 @@ Make()
     mv lib$LIBNAME.a $RSTPATH
 }
 
-Clean()
-{
-    rm -rf *.o
-    for EachSub in $LIBDIR
-    do
-	    rm -rf $MAKEFILEPATH/$EachSub/*.o
-    done
-
-    cd $RSTPATH    
-    echo "start rm lib$LIBNAME.a"
-    rm -rf lib$LIBNAME.a
-
-    echo "start rm $PROGRAMNAME"
-    rm -rf $PROGRAMNAME
-
-    cd $MAKEFILEPATH
-}
-
 while [ 1 = 1 ]
 do
     if [ $# -eq 1 ]
@@ -207,7 +205,6 @@ Make
 mkmaindir=$MAKEFILEPATH/$MAINDIR
 mkmaincpp=$MAINFILE
 proname=$PROGRAMNAME
-
 
 cd $mkmaindir
 

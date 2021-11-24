@@ -13,7 +13,6 @@
 #include "evtype.h"
 #include "loger.h"
 #include "queue.h"
-#include "snowflake.h"
 #include "timer.h"
 #include "tw.h"
 #include "utils.h"
