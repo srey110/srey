@@ -11,7 +11,6 @@
     #define _CMD_CLOSE        0x04
     #define _CMD_CONN         0x05
     #define _CMD_CONN_TIMEOUT 0x06
-    #define _CMD_ADD_W        0x07
 #endif
 int32_t _netev_threadcnt(const uint32_t uthcnt)
 {
@@ -300,10 +299,6 @@ void _uev_cmd_close(struct watcher_ctx *pwatcher, struct sock_ctx *psock)
 {
     _uev_cmd(pwatcher, _CMD_CLOSE, 0, psock, 0);
 }
-void _uev_cmd_enable_w(struct watcher_ctx *pwatcher, struct sock_ctx *psock)
-{
-    _uev_cmd(pwatcher, _CMD_ADD_W, EV_WRITE, psock, 0);
-}
 void _uev_cmd_conn(struct watcher_ctx *pwatcher, struct sock_ctx *psock)
 {
     _uev_cmd(pwatcher, _CMD_CONN, EV_WRITE, psock, 0);
@@ -393,14 +388,6 @@ static inline void _cmd_cb(struct watcher_ctx *pwatcher, struct sock_ctx *psock,
                 _add_close_qu(pwatcher, pusock);
             }
             pusock = NULL;
-            break;
-        case _CMD_ADD_W:
-            irtn = _uev_add(pwatcher, pusock, msg.session);
-            _uev_sub_sending(pusock);
-            if (ERR_OK != irtn)
-            {
-                _add_close_qu(pwatcher, pusock);
-            }
             break;
         }
         _uev_sub_ref_cmd(pusock);

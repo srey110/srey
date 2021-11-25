@@ -442,9 +442,9 @@ void _uev_sub_sending(struct sock_ctx *psock)
 static inline int32_t _post_send(struct usock_ctx *pusock)
 {
     if (0 != buffer_size(&pusock->buf_w)
-        && ATOMIC_CAS(&pusock->sending, 0, 2))
+        && ATOMIC_CAS(&pusock->sending, 0, 1))
     {
-        _uev_cmd_enable_w(pusock->watcher, &pusock->sock);
+        _netev_add(pusock->watcher, &pusock->sock, EV_WRITE);
     }
     return ERR_OK;
 }

@@ -140,7 +140,6 @@ void _netev_add(struct watcher_ctx *pwatcher, struct sock_ctx *psock, uint32_t u
 void _uev_cmd_close(struct watcher_ctx *pwatcher, struct sock_ctx *psock);
 void _uev_cmd_conn(struct watcher_ctx *pwatcher, struct sock_ctx *psock);
 void _uev_cmd_timeout(struct watcher_ctx *pwatcher, sid_t uid);
-void _uev_cmd_enable_w(struct watcher_ctx *pwatcher, struct sock_ctx *psock);
 int32_t _uev_add(struct watcher_ctx *pwatcher, struct sock_ctx *psock, uint32_t uiev);
 void _uev_del(struct watcher_ctx *pwatcher, struct sock_ctx *psock, uint32_t uiev);
 void _add_close_qu(struct watcher_ctx *pwatcher, struct sock_ctx *psock);
