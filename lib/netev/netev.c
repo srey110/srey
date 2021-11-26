@@ -339,9 +339,9 @@ struct sock_ctx * _conn_timeout_remove(struct watcher_ctx *pwatcher, sid_t uid)
 }
 static inline void _cmd_cb(struct watcher_ctx *pwatcher, struct sock_ctx *psock, uint32_t uiev, int32_t *pstop)
 {
-    ssize_t iread = read(psock->sock, pwatcher->trigger, sizeof(pwatcher->trigger));
-    struct sock_ctx *pusock;
     struct message_ctx msg;
+    struct sock_ctx *pusock;
+    ssize_t iread = read(psock->sock, pwatcher->trigger, sizeof(pwatcher->trigger));
     for (ssize_t i = 0; i < iread; i++)
     {
         mutex_lock(&pwatcher->lock_qucmd);
