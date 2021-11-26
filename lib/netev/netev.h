@@ -55,13 +55,13 @@ struct watcher_ctx
 #else
     int32_t evfd;
     int32_t event_cnt;
-    SOCKET socks[2];
+    int32_t pipes[2];
     events_t *events;
     struct map_ctx *map;
     mutex_ctx lock_qucmd;
     struct queue_ctx qu_cmd;
     struct queue_ctx qu_close;
-    char trigger[ONEK];
+    char trigger[32];
 #endif
     struct netev_ctx *netev;
     struct thread_ctx thev;

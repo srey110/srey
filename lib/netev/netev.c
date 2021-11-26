@@ -115,7 +115,7 @@ static inline void _uev_init_watcher(struct watcher_ctx *pwatcher)
     pwatcher->event_cnt = _ININT_EVENT;
     pwatcher->events = MALLOC(sizeof(events_t) * pwatcher->event_cnt);
     ASSERTAB(NULL != pwatcher->events, ERRSTR_MEMORY);
-    ASSERTAB(ERR_OK == sockpair(pwatcher->socks), "init socket pair failed.");
+    ASSERTAB(ERR_OK == pipe(pwatcher->pipes), ERRORSTR(ERRNO));
     pwatcher->map = map_new(sizeof(struct ud_ctx), _hash_conn_timeout, _compare_conn_timeout, NULL);
     mutex_init(&pwatcher->lock_qucmd);
     thread_init(&pwatcher->thev);
@@ -124,8 +124,8 @@ static inline void _uev_init_watcher(struct watcher_ctx *pwatcher)
 }
 static inline void _uev_free_watcher(struct watcher_ctx *pwatcher)
 {
-    SOCK_CLOSE(pwatcher->socks[0]);
-    SOCK_CLOSE(pwatcher->socks[1]);
+    close(pwatcher->pipes[0]);
+    close(pwatcher->pipes[1]);
     map_free(pwatcher->map);
     mutex_free(&pwatcher->lock_qucmd);
     (void)close(pwatcher->evfd);
@@ -143,13 +143,13 @@ static inline void _uev_resize_events(struct watcher_ctx *pwatcher)
         pwatcher->event_cnt *= 2;
     }
 };
-static char trigger[1] = { '1' };
 static inline void _uev_cmd(struct watcher_ctx *pwatcher, uint32_t uicmd, uint32_t uiev, struct sock_ctx *psock, sid_t uid)
 {
     if (ERR_OK != _uev_add_ref_cmd(psock))
     {
         return;
     }
+
     struct message_ctx msg;
     msg.flags = uicmd;
     msg.session = uiev;
@@ -158,8 +158,10 @@ static inline void _uev_cmd(struct watcher_ctx *pwatcher, uint32_t uicmd, uint32
     mutex_lock(&pwatcher->lock_qucmd);
     queue_expand(&pwatcher->qu_cmd);
     (void)queue_push(&pwatcher->qu_cmd, &msg);
-    (void)send(pwatcher->socks[1], trigger, (int32_t)sizeof(trigger), 0);
     mutex_unlock(&pwatcher->lock_qucmd);
+
+    static char trigger[1] = { 's' };
+    ASSERTAB(sizeof(trigger) == write(pwatcher->pipes[1], trigger, sizeof(trigger)), "cmd pipe write error.");
 }
 int32_t _uev_add(struct watcher_ctx *pwatcher, struct sock_ctx *psock, uint32_t uiev)
 {
@@ -337,19 +339,19 @@ struct sock_ctx * _conn_timeout_remove(struct watcher_ctx *pwatcher, sid_t uid)
 }
 static inline void _cmd_cb(struct watcher_ctx *pwatcher, struct sock_ctx *psock, uint32_t uiev, int32_t *pstop)
 {
-    (void)read(psock->sock, pwatcher->trigger, sizeof(pwatcher->trigger));
-    int32_t irtn;
+    ssize_t iread = read(psock->sock, pwatcher->trigger, sizeof(pwatcher->trigger));
     struct sock_ctx *pusock;
     struct message_ctx msg;
-    while (1)
+    for (ssize_t i = 0; i < iread; i++)
     {
         mutex_lock(&pwatcher->lock_qucmd);
-        irtn = queue_pop(&pwatcher->qu_cmd, &msg);
-        mutex_unlock(&pwatcher->lock_qucmd);
-        if (ERR_OK != irtn)
+        if (ERR_OK != queue_pop(&pwatcher->qu_cmd, &msg))
         {
+            mutex_unlock(&pwatcher->lock_qucmd);
             break;
         }
+        mutex_unlock(&pwatcher->lock_qucmd);
+
         pusock = msg.data;
         switch (msg.flags)
         {
@@ -357,8 +359,7 @@ static inline void _cmd_cb(struct watcher_ctx *pwatcher, struct sock_ctx *psock,
             *pstop = 1;
             return;
         case _CMD_ADD:
-            irtn = _uev_add(pwatcher, pusock, msg.session);
-            if (ERR_OK != irtn)
+            if (ERR_OK != _uev_add(pwatcher, pusock, msg.session))
             {
                 _add_close_qu(pwatcher, pusock);
             }
@@ -370,8 +371,7 @@ static inline void _cmd_cb(struct watcher_ctx *pwatcher, struct sock_ctx *psock,
             _add_close_qu(pwatcher, pusock);
             break;
         case _CMD_CONN:
-            irtn = _uev_add(pwatcher, pusock, msg.session);
-            if (ERR_OK != irtn)
+            if (ERR_OK != _uev_add(pwatcher, pusock, msg.session))
             {
                 _add_close_qu(pwatcher, pusock);
             }
@@ -579,7 +579,7 @@ static void _loop(void *param)
     struct watcher_ctx *pwatcher = param;
 #ifndef NETEV_IOCP
     struct sock_ctx sock;
-    sock.sock = pwatcher->socks[0];
+    sock.sock = pwatcher->pipes[0];
     sock.ev_cb = _cmd_cb;
     sock.events = sock.id = 0;
     ASSERTAB(ERR_OK == _uev_add(pwatcher, &sock, EV_READ), "_uev_add failed.");

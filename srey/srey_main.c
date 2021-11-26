@@ -56,10 +56,10 @@ void u_read_cb(struct sock_ctx *pscok, struct buffer_ctx *pbuf, size_t uilens, c
         if (itype == SOCK_STREAM)
         {
             sock_send(pscok, acpack, isendsize);
-            /*if (rand() % pscok->sock == 0)
+            if (rand() % pscok->sock == 0)
             {
                 sock_close(pscok);
-            }*/
+            }
         }
         else
         {

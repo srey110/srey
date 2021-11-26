@@ -150,10 +150,10 @@ do\
     #else
         #define IS_EAGAIN(e) (EAGAIN == (e) || EWOULDBLOCK == (e))
     #endif
-    #define ERR_RW_RETRIABLE(e)	((e) == ERR_OK ||(e) == EINTR || IS_EAGAIN(e))
-    #define ERR_CONNECT_RETRIABLE(e) ((e) == ERR_OK ||(e) == EINTR || (e) == EINPROGRESS)
-    #define ERR_ACCEPT_RETRIABLE(e)	((e) == ERR_OK || (e) == EINTR || IS_EAGAIN(e) || (e) == ECONNABORTED)
-    #define ERR_CONNECT_REFUSED(e) ((e) == ERR_OK || (e) == ECONNREFUSED)
+    #define ERR_RW_RETRIABLE(e)	((e) == EINTR || IS_EAGAIN(e))
+    #define ERR_CONNECT_RETRIABLE(e) ((e) == EINTR || (e) == EINPROGRESS)
+    #define ERR_ACCEPT_RETRIABLE(e)	((e) == EINTR || IS_EAGAIN(e) || (e) == ECONNABORTED)
+    #define ERR_CONNECT_REFUSED(e) ((e) == ECONNREFUSED)
     #define STRCMP strcasecmp
     #define STRNCMP strncasecmp
     #define STRTOK strtok_r

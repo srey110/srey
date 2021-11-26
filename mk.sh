@@ -56,7 +56,6 @@ GCC="g++"
 ARCH="ar -rv"
 INCLUDEPATH=""
 OBJFILE=""
-#-fsanitize=address
 CFLAGS="-O3 -g -Wall"
 if [ "$X64" = "x64" ]
 then
