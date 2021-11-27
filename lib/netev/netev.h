@@ -61,7 +61,6 @@ struct watcher_ctx
     mutex_ctx lock_qucmd;
     struct queue_ctx qu_cmd;
     struct queue_ctx qu_close;
-    char trigger[32];
 #endif
     struct netev_ctx *netev;
     struct thread_ctx thev;

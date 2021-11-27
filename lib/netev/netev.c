@@ -160,7 +160,7 @@ static inline void _uev_cmd(struct watcher_ctx *pwatcher, uint32_t uicmd, uint32
     (void)queue_push(&pwatcher->qu_cmd, &msg);
     mutex_unlock(&pwatcher->lock_qucmd);
 
-    static char trigger[1] = { 's' };
+    char trigger[1] = { 's' };
     ASSERTAB(sizeof(trigger) == write(pwatcher->pipes[1], trigger, sizeof(trigger)), "cmd pipe write error.");
 }
 int32_t _uev_add(struct watcher_ctx *pwatcher, struct sock_ctx *psock, uint32_t uiev)
@@ -339,9 +339,10 @@ struct sock_ctx * _conn_timeout_remove(struct watcher_ctx *pwatcher, sid_t uid)
 }
 static inline void _cmd_cb(struct watcher_ctx *pwatcher, struct sock_ctx *psock, uint32_t uiev, int32_t *pstop)
 {
+    char trigger[32];
     struct message_ctx msg;
     struct sock_ctx *pusock;
-    ssize_t iread = read(psock->sock, pwatcher->trigger, sizeof(pwatcher->trigger));
+    ssize_t iread = read(psock->sock, trigger, sizeof(trigger));
     for (ssize_t i = 0; i < iread; i++)
     {
         mutex_lock(&pwatcher->lock_qucmd);

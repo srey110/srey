@@ -3,7 +3,7 @@
 #ifdef NETEV_IOCP
 #define _FLAGS_READY 0x01
 #define _FLAGS_LOOP  0x02
-#define MAX_ACCEPT_SOCKEX SOCKK_BACKLOG
+#define MAX_ACCEPTEX_CNT SOCKK_BACKLOG
 struct overlap_acpt_ctx
 {
     struct sock_ctx sock;
@@ -20,7 +20,7 @@ struct listener_ctx
     accept_cb acp_cb;
     void *udata;
     struct netev_ctx *netev;
-    struct overlap_acpt_ctx overlap_acpt[MAX_ACCEPT_SOCKEX];
+    struct overlap_acpt_ctx overlap_acpt[MAX_ACCEPTEX_CNT];
 };
 struct overlap_ctx
 {
@@ -468,7 +468,7 @@ struct sock_ctx *netev_add_sock(struct netev_ctx *pctx, SOCKET sock, int32_t ity
 static inline void _listener_free(void *pdata)
 {
     struct listener_ctx *plsn = pdata;
-    for (int32_t i = 0; i < MAX_ACCEPT_SOCKEX; i++)
+    for (int32_t i = 0; i < MAX_ACCEPTEX_CNT; i++)
     {
         SAFE_CLOSE_SOCK(plsn->overlap_acpt[i].sock.sock);
     }
@@ -518,7 +518,7 @@ static inline int32_t _acceptex(struct listener_ctx *plsn)
         return ERR_FAILED;
     }
     struct overlap_acpt_ctx *pacpol;
-    for (int32_t i = 0; i < MAX_ACCEPT_SOCKEX; i++)
+    for (int32_t i = 0; i < MAX_ACCEPTEX_CNT; i++)
     {
         pacpol = &plsn->overlap_acpt[i];
         pacpol->sock.sock = INVALID_SOCK;
@@ -526,7 +526,7 @@ static inline int32_t _acceptex(struct listener_ctx *plsn)
         pacpol->listener = plsn;
     }
     int32_t irtn;
-    for (int32_t i = 0; i < MAX_ACCEPT_SOCKEX; i++)
+    for (int32_t i = 0; i < MAX_ACCEPTEX_CNT; i++)
     {
         pacpol = &plsn->overlap_acpt[i];
         irtn = _post_accept(pacpol);
@@ -744,16 +744,10 @@ void sock_close(struct sock_ctx *psock)
     {
         return;
     }
-    if (!(pol->flags & _FLAGS_LOOP))
-    {
-        SAFE_CLOSE_SOCK(pol->overlap_r.sock);
-        return;
-    }
     if (SOCK_DGRAM == pol->socktype)
     {
         if (!CancelIoEx((HANDLE)pol->overlap_r.sock, NULL))
         {
-            //防止free的时候关掉其他socket
             SAFE_CLOSE_SOCK(pol->overlap_r.sock);
         }
         return;
@@ -768,7 +762,6 @@ void sock_close(struct sock_ctx *psock)
     ZERO(&pdisconol->overlapped, sizeof(pdisconol->overlapped));
     pdisconol->sock = pol->overlap_r.sock;
     pdisconol->ev_cb = _on_disconnectex;
-    //对端会收到0字节
     if (!pol->netev->watcher[0].disconnectex(pol->overlap_r.sock, &pdisconol->overlapped, 0, 0))
     {
         int32_t irtn = ERRNO;

@@ -171,11 +171,6 @@ void sock_close(struct sock_ctx *psock)
     {
         return;
     }
-    if (0 == psock->events)
-    {
-        SAFE_CLOSE_SOCK(psock->sock);
-        return;
-    }
     struct usock_ctx *pusock = _get_usock(psock);
     _uev_cmd_close(pusock->watcher, psock);
 }
