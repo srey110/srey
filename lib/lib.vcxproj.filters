@@ -65,7 +65,6 @@
     <ClInclude Include="netev\netev.h">
       <Filter>netev</Filter>
     </ClInclude>
-    <ClInclude Include="evtype.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="md5\md5.c">

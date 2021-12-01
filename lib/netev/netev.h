@@ -6,7 +6,6 @@
 #include "utils.h"
 #include "netutils.h"
 #include "thread.h"
-#include "evtype.h"
 #include "netaddr.h"
 #include "buffer.h"
 #include "queue.h"
@@ -29,8 +28,15 @@
 #define MAX_RECV_IOV_COUNT      4
 #define MAX_SEND_IOV_SIZE       4096
 #define MAX_SEND_IOV_COUNT      16
-#define DELAYFREE_TIME     10
-#define MAX_DELAYFREE_CNT  20
+#define DELAYFREE_TIME          10
+#define MAX_DELAYFREE_CNT       20
+
+#define EV_READ    0x01
+#define EV_WRITE   0x02
+#define EV_CLOSE   0x04
+#define EV_ACCEPT  0x08
+#define EV_CONNECT 0x10
+
 #ifndef NETEV_IOCP
     #define _FLAGS_LSN   0x01
     #define _FLAGS_CONN  0x02

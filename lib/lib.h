@@ -10,7 +10,6 @@
 #include "thread.h"
 
 #include "chan.h"
-#include "evtype.h"
 #include "loger.h"
 #include "queue.h"
 #include "timer.h"

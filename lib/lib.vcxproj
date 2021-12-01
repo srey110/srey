@@ -23,7 +23,6 @@
     <ClInclude Include="chan.h" />
     <ClInclude Include="cond.h" />
     <ClInclude Include="errcode.h" />
-    <ClInclude Include="evtype.h" />
     <ClInclude Include="lib.h" />
     <ClInclude Include="loger.h" />
     <ClInclude Include="macro.h" />
