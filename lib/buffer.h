@@ -20,11 +20,11 @@
 #endif
 struct buffer_ctx
 {
+    int32_t freeze_read;
+    int32_t freeze_write;
     struct bufnode_ctx *head;
     struct bufnode_ctx *tail;
     struct bufnode_ctx **tail_with_data;
-    int32_t freeze_read;
-    int32_t freeze_write;
     size_t total_len;//数据总长度
     mutex_ctx mutex;
 };

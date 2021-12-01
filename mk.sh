@@ -56,7 +56,7 @@ GCC="g++"
 ARCH="ar -rv"
 INCLUDEPATH=""
 OBJFILE=""
-CFLAGS="-O3 -g -Wall"
+CFLAGS="-O3 -Wall"
 if [ "$X64" = "x64" ]
 then
     CFLAGS=$CFLAGS" -m64"

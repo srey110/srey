@@ -110,12 +110,11 @@ static inline void tw_add(struct tw_ctx *pctx, const uint32_t uitimeout,
     }
     if (NULL != pud)
     {
-        pnode->ud = *pud;
+        memcpy(&pnode->ud, pud, sizeof(struct ud_ctx));
     }
     else
     {
-        pnode->ud.id = 0;
-        pnode->ud.handle = 0;
+        ZERO(&pnode->ud, sizeof(struct ud_ctx));
     }
     pnode->timeout = uitimeout;
     pnode->tw_cb = tw_cb;

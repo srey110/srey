@@ -17,6 +17,7 @@ struct map_ctx *map_new(size_t uielsize, uint64_t(*hash)(void *),
 * \brief              释放
 */
 void map_free(struct map_ctx *pmap);
+struct rwlock_ctx *map_rwlock(struct map_ctx *pmap);
 /*
 * \brief              节点数
 * \return             节点数

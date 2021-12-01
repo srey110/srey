@@ -43,7 +43,7 @@ do\
         #define PATH_LENS 256
     #endif
 #endif
-#define NAME_LENS 16
+#define NAME_LENS 32
 
 #define CONCAT2(a, b) a b
 #define CONCAT3(a, b, c) a b c
@@ -76,7 +76,7 @@ do\
 
 #define ONEK 1024
 #define TIME_LENS 64
-#define IP_LENS   65
+#define IP_LENS   64
 #define PORT_LENS 8
 #define SOCKKPA_DELAY 60
 #define SOCKKPA_INTVL 1

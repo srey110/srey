@@ -75,6 +75,10 @@ void map_free(struct map_ctx *pmap)
     FREE(pmap->buckets);
     FREE(pmap);
 }
+struct rwlock_ctx *map_rwlock(struct map_ctx *pmap)
+{
+    return &pmap->rwlock;
+}
 static inline void _map_expand(struct map_ctx *pmap, size_t uinewcap) 
 {
     size_t j;
@@ -175,7 +179,10 @@ int32_t _map_get(struct map_ctx *pmap, void *pkey, void *pitem)
         if (pbucket->hash == ulhash
             && ERR_OK == pmap->compare(pkey, _bucket_item(pbucket), pmap->udata))
         {
-            memcpy(pitem, _bucket_item(pbucket), pmap->elsize);
+            if (NULL != pitem)
+            {
+                memcpy(pitem, _bucket_item(pbucket), pmap->elsize);
+            }
             return ERR_OK;
         }
         i = (i + 1) & pmap->mask;

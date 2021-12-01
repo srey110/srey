@@ -2,12 +2,12 @@
 
 struct bufnode_ctx
 {
-    struct bufnode_ctx *next;
     int32_t used;
+    struct bufnode_ctx *next;
+    char *buffer;
     size_t buffer_len;
     size_t misalign;
     size_t off;
-    char *buffer;
 };
 #define MAX_COPY_IN_EXPAND 4096
 #define MAX_REALIGN_IN_EXPAND 2048
@@ -511,31 +511,13 @@ int32_t _buffer_drain(struct buffer_ctx *pctx, size_t uilen)
     {
         return 0;
     }
-
-    if (uilen >= uioldlen
-        && NULL != pctx->tail
-        && 0 == pctx->tail->used)
-    {
-        uilen = uioldlen;
-        for (pnode = pctx->head; NULL != pnode; pnode = pnext)
-        {
-            pnext = pnode->next;
-            FREE(pnode);
-        }
-
-        pctx->head = pctx->tail = NULL;
-        pctx->tail_with_data = &(pctx)->head;
-        pctx->total_len = 0;
-        return (int32_t)uilen;
-    }
-    
     if (uilen > uioldlen)
     {
         uilen = uioldlen;
     }
     pctx->total_len -= uilen;
     uiremain = uilen;
-    for (pnode = pctx->head; uiremain >= pnode->off; pnode = pnext)
+    for (pnode = pctx->head; NULL != pnode && uiremain >= pnode->off; pnode = pnext)
     {
         pnext = pnode->next;
         uiremain -= pnode->off;
@@ -547,7 +529,6 @@ int32_t _buffer_drain(struct buffer_ctx *pctx, size_t uilen)
         {
             pctx->tail_with_data = &pctx->head;
         }
-
         if (0 == pnode->used)
         {
             FREE(pnode);
@@ -567,6 +548,11 @@ int32_t _buffer_drain(struct buffer_ctx *pctx, size_t uilen)
         ASSERTAB(uiremain <= pnode->off, "logic error.");
         pnode->misalign += uiremain;
         pnode->off -= uiremain;
+    }
+    else
+    {
+        pctx->head = pctx->tail = NULL;
+        pctx->tail_with_data = &(pctx)->head;
     }
 
     return (int32_t)uilen;
@@ -596,14 +582,14 @@ int32_t buffer_remove(struct buffer_ctx *pctx, void *pout, size_t uilen)
         return ERR_FAILED;
     }
 
-    int32_t irn = _buffer_copyout(pctx, pout, uilen);
-    if (irn > 0)
+    int32_t irtn = _buffer_copyout(pctx, pout, uilen);
+    if (irtn > 0)
     {
-        ASSERTAB(irn == _buffer_drain(pctx, irn), "drain lens not equ copy lens.");
+        ASSERTAB(irtn == _buffer_drain(pctx, irtn), "drain lens not equ copy lens.");
     }
     buffer_unlock(pctx);
 
-    return irn;
+    return irtn;
 }
 static int32_t _search_memcmp(struct bufnode_ctx *pnode, size_t uioff, char *pwhat, size_t uiwlens)
 {

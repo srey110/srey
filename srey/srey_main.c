@@ -7,206 +7,275 @@
 #pragma comment(lib, "vld.lib")
 #endif
 int32_t istop = 0;
-struct netev_ctx *pnetev;
-volatile atomic_t ullinkNum = 0;
-volatile atomic_t ultcprecvnum = 0;
-volatile atomic_t ultcpsendnum = 0;
-volatile atomic_t uludprecvnum = 0;
-volatile atomic_t uludpsendnum = 0;
-struct srey_ctx *pevent;
-void u_read_cb(struct sock_ctx *pscok, struct buffer_ctx *pbuf, size_t uilens, const char *pip, uint16_t uport, void *pdata)
-{
-    int32_t itype = sock_type(pscok);
-    if (SOCK_STREAM == itype)
-    {
-        ATOMIC_ADD(&ultcprecvnum, 1);
-    }
-    else
-    {
-        ATOMIC_ADD(&uludprecvnum, 1);
-    }
-    int32_t iremoved;
-    size_t isendsize;
-    char acpack[4096];
-    size_t uold = uilens;
-    while (uilens > 0)
-    {
-        if (uilens >= sizeof(acpack))
-        {
-            iremoved = buffer_remove(pbuf, acpack, sizeof(acpack));
-            if (sizeof(acpack) != iremoved)
-            {
-                PRINTF("%d  %d %d  %d", iremoved, (int32_t)uilens, sock_type(pscok), (int32_t)uold);
-                ASSERTAB(0, "remove buffer lens error.");
-            }            
-            isendsize = sizeof(acpack);
-            uilens -= sizeof(acpack);
-        }
-        else
-        {
-            iremoved = buffer_remove(pbuf, acpack, sizeof(acpack));
-            if (uilens != iremoved)
-            {
-                PRINTF("%d  %d", iremoved, (int32_t)uilens);
-                ASSERTAB(0, "remove buffer lens error.");
-            }
-            isendsize = uilens;
-            uilens = 0;
-        }
-        if (itype == SOCK_STREAM)
-        {
-            sock_send(pscok, acpack, isendsize);
-            if (rand() % pscok->sock == 0)
-            {
-                sock_close(pscok);
-            }
-        }
-        else
-        {
-            sock_sendto(pscok, pip, uport, acpack, isendsize);
-        }
-    }
-}
-void u_write_cb(struct sock_ctx *pscok, size_t uilens, void *pdata)
-{
-    if (SOCK_STREAM == sock_type(pscok))
-    {
-        ATOMIC_ADD(&ultcpsendnum, 1);
-    }
-    else
-    {
-        ATOMIC_ADD(&uludpsendnum, 1);
-    }
-}
-void u_close_cb(struct sock_ctx *pscok, void *pdata)
-{
-    sock_free(pscok);
-    ATOMIC_ADD(&ullinkNum, -1);
-}
-void u_accept_cb(struct sock_ctx *pscok, void *pdata)
-{
-    ASSERTAB(ERR_OK == netev_enable_rw(pnetev, pscok, u_read_cb, u_write_cb, u_close_cb, pdata), "u_accept_cb");
-    ATOMIC_ADD(&ullinkNum, 1);
-}
-void u_connect_cb(struct sock_ctx *pscok, int32_t ierr, void *pdata)
-{
-    if (ERR_OK != ierr)
-    {
-        sock_free(pscok);
-        PRINTF("u_connect_cb %d", ierr);
-        return;
-    }
-    ASSERTAB(ERR_OK == netev_enable_rw(pnetev, pscok, u_read_cb, u_write_cb, u_close_cb, pdata), "u_connect_cb");
-    ATOMIC_ADD(&ullinkNum, 1);
-}
-void print_info_cb(struct ud_ctx *pud)
-{
-    PRINTF("link %d tcp recv %d send %d  udp recv %d send %d", 
-        (uint32_t)ATOMIC_GET(&ullinkNum), 
-        (uint32_t)ATOMIC_GET(&ultcprecvnum), (uint32_t)ATOMIC_GET(&ultcpsendnum),
-        (uint32_t)ATOMIC_GET(&uludprecvnum), (uint32_t)ATOMIC_GET(&uludpsendnum));
-    srey_wakeup(pevent);
-    tw_add(srey_tw(pevent), 2000, print_info_cb, NULL);
-}
+volatile atomic_t uilinkcnt = 0;
+volatile atomic_t uitcprecv = 0;
+volatile atomic_t uitcpsend = 0;
+volatile atomic_t uiudprecv = 0;
+volatile atomic_t uiudpsend = 0;
+volatile atomic_t uiregcnt = 0;
+struct srey_ctx *psrey;
 //int32_t ifamily = AF_INET6;
 //const char *bindip = "::";
 //const char *linkip = "::1";
 int32_t ifamily = AF_INET;
 const char *bindip = "0.0.0.0";
 const char *linkip = "127.0.0.1";
-void udp_close(struct ud_ctx *pud)
-{
-    if (0 != istop)
-    {
-        return;
-    }
-    struct sock_ctx *pudp = (struct sock_ctx *)pud->handle;
-    if (NULL != pudp)
-    {
-        sock_close(pudp);
-    }
-
-    SOCKET udp = sock_udp_bind(bindip, 15001);
-    if (INVALID_SOCK != udp)
-    {
-        struct sock_ctx *pnewudp = netev_add_sock(pnetev, udp, SOCK_DGRAM, ifamily);
-        ASSERTAB(ERR_OK == netev_enable_rw(pnetev, pnewudp, u_read_cb, u_write_cb, u_close_cb, NULL), "netev_enable_rw udp");
-        pud->handle = (uintptr_t)pnewudp;
-        tw_add(srey_tw(pevent), 5000, udp_close, pud);
-        ATOMIC_ADD(&ullinkNum, 1);
-    }
-    else
-    {
-        tw_add(srey_tw(pevent), 5000, udp_close, NULL);
-    }
-}
 void sig_exit(int32_t isig)
 {
     istop = 1;
 }
-
-struct map_test
+struct listener_ctx *plsn;
+int32_t lsn_init(struct task_ctx *ptask, void *pinst, void *pudata)
 {
-    int32_t id;
-};
-uint64_t _hash(void *item)
-{
-    struct map_test *pit = item;
-    return fnv1a_hash((const char *)&pit->id, sizeof(pit->id));
-}
-int32_t _compare(void *a, void *b, void *udata)
-{
-    struct map_test *pa = a;
-    struct map_test *pb = b;
-    return pa->id == pb->id ? ERR_OK : ERR_FAILED;
-}
-int32_t _iter(void *item, void *udata)
-{
-    //struct map_test *pa = item;
-    //PRINTF("%d", pa->id);
+    plsn = srey_listener(psrey, task_id(ptask), bindip, 15000);
+    if (NULL == plsn)
+    {
+        return ERR_FAILED;
+    }
     return ERR_OK;
 }
+void lsn_release(struct task_ctx *ptask, void *pinst, void *pudata)
+{
+    listener_free(plsn);
+}
+void lsn_cb(struct task_ctx *ptask, uint32_t itype, sid_t srcid, uint32_t uisess, void *pmsg, uint32_t uisize, void *pudata)
+{
+    if (itype == MSG_TYPE_BROADCAST)
+    {
+        //PRINTF("MSG_TYPE_BROADCAST %s", ptask->inst.name);
+        return;
+    }
+    struct sock_ctx *psock = pmsg;
+    char acname[NAME_LENS] = { 0 };
+    SNPRINTF(acname, sizeof(acname), "tcp gate%d", rand() % 4);
+    sid_t gateid = srey_queryid(psrey, acname);
+    ASSERTAB(0 != gateid, "lsn_cb 11111111111111111");
+    srey_enable(psrey, gateid, psock, 1);
+    //ATOMIC_ADD(&uilinkcnt, 1);
+}
+void tcp_gate_cb(struct task_ctx *ptask, uint32_t itype, sid_t srcid, uint32_t uisess, void *pmsg, uint32_t uisize, void *pudata)
+{
+    struct buffer_ctx *pbuf;
+    int32_t iremoved, isendsize;
+    char acpack[4096];
+    struct sock_ctx *psock = pmsg;
+    switch (itype)
+    {
+    case MSG_TYPE_RECV:
+        ATOMIC_ADD(&uitcprecv, 1);
+        pbuf = sock_buffer_r(psock);
+        while (uisize > 0)
+        {
+            if (uisize >= sizeof(acpack))
+            {
+                iremoved = buffer_remove(pbuf, acpack, sizeof(acpack));
+                ASSERTAB(sizeof(acpack) == iremoved, "tcp_gate_cb  1111111111111111111111");
+                isendsize = sizeof(acpack);
+                uisize -= sizeof(acpack);
+            }
+            else
+            {
+                iremoved = buffer_remove(pbuf, acpack, uisize);
+                ASSERTAB(iremoved == uisize, "tcp_gate_cb  2222222222222222222222");
+                isendsize = uisize;
+                uisize = 0;
+            }
+            sock_send(psock, acpack, isendsize);
+            if (rand() % psock->sock == 0)
+            {
+                sid_t idchange = srey_queryid(psrey, "reg_unreg");
+                if (0 != idchange)
+                {
+                    sock_change_uid(psock, idchange);
+                    //ATOMIC_ADD(&uilinkcnt, -1);
+                }
+            }
+        }
+        break;
+    case MSG_TYPE_SEND:
+        ATOMIC_ADD(&uitcpsend, 1);
+        break;
+    case MSG_TYPE_CLOSE:
+        //ATOMIC_ADD(&uilinkcnt, -1);
+        break;
+    case MSG_TYPE_CALL:
+        //PRINTF("MSG_TYPE_CALL %s", srey_task_name(ptask));
+        break;
+    case MSG_TYPE_REQUEST:
+        srey_response(psrey, srcid, uisess, NULL, 0);
+        break;
+    case MSG_TYPE_BROADCAST:
+        //PRINTF("MSG_TYPE_BROADCAST %s", srey_task_name(ptask));
+        break;
+    }
+}
+struct sock_ctx *pudpsock;
+int32_t udp_init(struct task_ctx *ptask, void *pinst, void *pudata)
+{
+    SOCKET sock = sock_udp_bind(bindip, 15001);
+    pudpsock = srey_addsock(psrey, sock, SOCK_DGRAM, ifamily);
+    srey_enable(psrey, task_id(ptask), pudpsock, 1);
+    srey_timeout(psrey, task_id(ptask), task_new_session(ptask), 2000);
+    return ERR_OK;
+}
+void udp_release(struct task_ctx *ptask, void *pinst, void *pudata)
+{
+    sock_close(pudpsock);
+}
+void udp_gate_cb(struct task_ctx *ptask, uint32_t itype, sid_t srcid, uint32_t uisess, void *pmsg, uint32_t uisize, void *pudata)
+{
+    int32_t iremoved, iold;
+    struct buffer_ctx *pbuf;
+    char acpack[4096];
+    struct udp_recv_msg *pudpmsg;
+    switch (itype)
+    {
+    case MSG_TYPE_RECVFROM:
+        ATOMIC_ADD(&uiudprecv, 1);
+        pudpmsg = pmsg;
+        pbuf = sock_buffer_r(pudpmsg->sock);
+        iold = (int32_t)buffer_size(pbuf);
+        iremoved = buffer_remove(pbuf, acpack, uisize);
+        if (iremoved != uisize)
+        {
+            PRINTF("%d  %d  %d", iold, iremoved, uisize);
+            ASSERTAB(0, "udp_gate_cb 111111111111111111111111111");
+        }
+        sock_sendto(pudpmsg->sock, pudpmsg->ip, pudpmsg->port, acpack, uisize);
+        break;
+    case MSG_TYPE_SEND:
+        ATOMIC_ADD(&uiudpsend, 1);
+        break;
+    case MSG_TYPE_CLOSE:
+        break;
+    case MSG_TYPE_TIMEOUT:
+        PRINTF("tcp recv %d send %d  udp recv %d send %d  linkcnt: %d  reg_unreg %d", 
+            ATOMIC_GET(&uitcprecv), ATOMIC_GET(&uitcpsend), ATOMIC_GET(&uiudprecv), ATOMIC_GET(&uiudpsend), ATOMIC_GET(&uilinkcnt),
+            ATOMIC_GET(&uiregcnt));
+        char acname[NAME_LENS] = { 0 };
+        SNPRINTF(acname, sizeof(acname), "tcp gate%d", rand() % 4);
+        sid_t gateid = srey_queryid(psrey, acname);
+        if (rand() % 2 == 0)
+        {
+            srey_call(psrey, gateid, NULL, 0);
+        }
+        else
+        {
+            srey_request(psrey, gateid, task_id(ptask), task_new_session(ptask), NULL, 0);
+        }
+        srey_broadcast(psrey, NULL, 0);
+        srey_timeout(psrey, task_id(ptask), task_new_session(ptask), 2000);
+        break;
+    case MSG_TYPE_RESPONSE:
+        //PRINTF("MSG_TYPE_RESPONSE %s %d", srey_task_name(ptask), uisess);
+        break;
+    case MSG_TYPE_BROADCAST:
+        //PRINTF("MSG_TYPE_BROADCAST %s", srey_task_name(ptask));
+        break;
+    }
+}
+struct sock_ctx *pconnsock;
+int32_t conn_init(struct task_ctx *ptask, void *pinst, void *pudata)
+{
+    pconnsock = srey_connecter(psrey, task_id(ptask), task_new_session(ptask), 3000, linkip, 15000);
+    srey_connecter(psrey, task_id(ptask), task_new_session(ptask), 3000, "192.168.92.150", 15003);
+    return ERR_OK;
+}
+void conn_release(struct task_ctx *ptask, void *pinst, void *pudata)
+{
+    sock_close(pconnsock);
+}
+void conn_cb(struct task_ctx *ptask, uint32_t itype, sid_t srcid, uint32_t uisess, void *pmsg, uint32_t uisize, void *pudata)
+{
+    switch (itype)
+    {
+    case MSG_TYPE_BROADCAST:
+        //PRINTF("MSG_TYPE_BROADCAST %s", srey_task_name(ptask));
+        break;
+    case MSG_TYPE_CONNECT:
+        if (ERR_OK == uisize)
+        {
+            char acname[NAME_LENS] = { 0 };
+            SNPRINTF(acname, sizeof(acname), "tcp gate%d", rand() % 4);
+            sid_t gateid = srey_queryid(psrey, acname);
+            ASSERTAB(0 != gateid, "conn_cb 11111111111111111");
+            srey_enable(psrey, gateid, pmsg, 1);
+            ATOMIC_ADD(&uilinkcnt, 1);
+        }
+        else
+        {
+            struct sock_ctx *psock = pmsg;
+            PRINTF("sock id %"PRIu64" session %d connect error.", psock->id, uisess);
+        }
+        break;
+    }
+}
+void reg_unreg_modle_init(struct module_ctx *pmd);
+int32_t reg_unreg_init(struct task_ctx *ptask, void *pinst, void *pudata)
+{
+    srey_timeout(psrey, task_id(ptask), task_new_session(ptask), 100);
+    return ERR_OK;
+}
+void reg_unreg_cb(struct task_ctx *ptask, uint32_t itype, sid_t srcid, uint32_t uisess, void *pmsg, uint32_t uisize, void *pudata)
+{
+    struct buffer_ctx *pbuf;
+    int32_t iremoved, isendsize;
+    char acpack[4096];
+    struct sock_ctx *psock = pmsg;
+    switch (itype)
+    {
+    case MSG_TYPE_RECV:
+        pbuf = sock_buffer_r(psock);
+        while (uisize > 0)
+        {
+            if (uisize >= sizeof(acpack))
+            {
+                iremoved = buffer_remove(pbuf, acpack, sizeof(acpack));
+                ASSERTAB(sizeof(acpack) == iremoved, "reg_unreg_cb  1111111111111111111111");
+                isendsize = sizeof(acpack);
+                uisize -= sizeof(acpack);
+            }
+            else
+            {
+                iremoved = buffer_remove(pbuf, acpack, uisize);
+                ASSERTAB(iremoved == uisize, "reg_unreg_cb  2222222222222222222222");
+                isendsize = uisize;
+                uisize = 0;
+            }
+            sock_send(psock, acpack, isendsize);
+        }
+        break;
+    case MSG_TYPE_SEND:
+        break;
+    case MSG_TYPE_CLOSE:
+        break;
+    case MSG_TYPE_BROADCAST:
+        //PRINTF("MSG_TYPE_BROADCAST %s", srey_task_name(ptask));
+        break;
+    case MSG_TYPE_TIMEOUT:
+        {
+            srey_unregister(psrey, task_id(ptask));
+
+            struct module_ctx md;
+            reg_unreg_modle_init(&md);            
+            srey_register(psrey, &md, NULL);
+            ATOMIC_ADD(&uiregcnt, 1);
+        }
+        break;
+    }
+}
+void reg_unreg_modle_init(struct module_ctx *pmd)
+{
+    pmd->create = NULL;
+    pmd->init = reg_unreg_init;
+    pmd->maxcnt = 2;
+    pmd->release = NULL;
+    pmd->run = reg_unreg_cb;
+    ZERO(pmd->name, sizeof(pmd->name));
+    SNPRINTF(pmd->name, sizeof(pmd->name), "%s", "reg_unreg");
+};
 int main(int argc, char *argv[])
 {
-    /*int32_t i, iloop = 10000000;
-    struct map_test map;
-    struct timer_ctx timer;
-    timer_init(&timer);
-    struct map_ctx *pmap = map_new(sizeof(struct map_test), _hash, _compare, NULL);
-    timer_start(&timer);
-    for (i = 1; i < iloop; i++)
-    {
-        map.id = i;
-        _map_set(pmap, &map);
-    }
-    int32_t irtn;
-    struct map_test maprtn;
-    for (i = 1; i < iloop; i++)
-    {
-        map.id = i;
-        irtn = _map_get(pmap, &map, &maprtn);
-        if (ERR_OK != irtn
-            || maprtn.id != i)
-        {
-            PRINTF("%s", "11111111111111111111111");
-        }
-    }
-
-    map_iter(pmap, _iter, NULL);
-    for (i = 1; i < iloop + 1; i++)
-    {
-        map.id = i;
-        irtn = _map_remove(pmap, &map, &maprtn);
-        if (ERR_OK != irtn
-            || maprtn.id != i)
-        {
-            PRINTF("%s", "222222222222222222");
-        }
-    }
-    PRINTF("3333333333333  %lld", timer_elapsed(&timer)/ (1000 * 1000));*/
-    PRINTF("%d  %d", (int32_t)sizeof(size_t), (int32_t)sizeof(int64_t));
-    volatile atomic64_t iii = 0;
-    ATOMIC64_ADD(&iii, 1);
     sighandle(sig_exit);
     unlimit();
     LOGINIT();
@@ -217,30 +286,55 @@ int main(int argc, char *argv[])
     LOG_ERROR("%s", "LOG_ERROR");
     LOG_FATAL("%s", "LOG_FATAL");
 
-    pevent = srey_new();
-    srey_loop(pevent);
-    pnetev = srey_netev(pevent);
-    struct listener_ctx *plsn = netev_listener(pnetev, bindip, 15000, u_accept_cb, NULL);
-    MSLEEP(100);
-    struct sock_ctx *pconnsock = netev_connecter(pnetev, 3000, "192.168.92.135", 15000, u_connect_cb, NULL);
-    struct sock_ctx *pconnsock2 = netev_connecter(pnetev, 3000, linkip, 15000, u_connect_cb, NULL);
+    struct module_ctx mdlsn;
+    mdlsn.create = NULL;
+    mdlsn.init = lsn_init;
+    mdlsn.maxcnt = 4;
+    const char *plsnname = "listener";
+    size_t ilens = strlen(plsnname);
+    memcpy(mdlsn.name, plsnname, ilens);
+    mdlsn.name[ilens] = '\0';
+    mdlsn.release = lsn_release;
+    mdlsn.run = lsn_cb;
 
-    SOCKET udp = sock_udp_bind(bindip, 15001);
-    struct sock_ctx *pudp = netev_add_sock(pnetev, udp, SOCK_DGRAM, ifamily);
-    ASSERTAB(ERR_OK == netev_enable_rw(pnetev, pudp, u_read_cb, u_write_cb, u_close_cb, NULL), "netev_enable_rw udp");
-    ATOMIC_ADD(&ullinkNum, 1);
-    struct ud_ctx ud;
-    ud.handle = (uintptr_t)pudp;
-    //tw_add(srey_tw(pevent), 5000, udp_close, &ud);
-    tw_add(srey_tw(pevent), 2000, print_info_cb, NULL);
+    psrey = srey_new(0, NULL);
+    srey_loop(psrey);
+    srey_register(psrey, &mdlsn, NULL);
+    struct module_ctx mdgate;
+    mdgate.create = NULL;
+    mdgate.init = NULL;
+    mdgate.maxcnt = 4;
+    mdgate.release = NULL;
+    mdgate.run = tcp_gate_cb;
+    for (int32_t i = 0; i < 4; i++)
+    {
+        ZERO(mdgate.name, sizeof(mdgate.name));
+        SNPRINTF(mdgate.name, sizeof(mdgate.name) - 1, "tcp gate%d", i);
+        srey_register(psrey, &mdgate, NULL);
+    }
+
+    mdgate.init = udp_init;
+    mdgate.release = udp_release;
+    mdgate.run = udp_gate_cb;
+    ZERO(mdgate.name, sizeof(mdgate.name));
+    SNPRINTF(mdgate.name, sizeof(mdgate.name), "%s", "udp gate");
+    srey_register(psrey, &mdgate, NULL);
+
+    mdgate.init = conn_init;
+    mdgate.release = NULL;
+    mdgate.run = conn_cb;
+    ZERO(mdgate.name, sizeof(mdgate.name));
+    SNPRINTF(mdgate.name, sizeof(mdgate.name), "%s", "connecter");
+    srey_register(psrey, &mdgate, NULL);
+
+    struct module_ctx md;
+    reg_unreg_modle_init(&md);
+    srey_register(psrey, &md, NULL);
     while (0 == istop)
     {
         MSLEEP(10);
     }
-    sock_close(pconnsock2);
-    listener_free(plsn);
-    MSLEEP(1000);
-    srey_free(pevent);
+    srey_free(psrey);
     LOGFREE();
     return 0;
 }

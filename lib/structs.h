@@ -15,7 +15,6 @@ struct message_ctx
     uint32_t session;
     uint32_t size;
     sid_t id;
-    sid_t tgid;
     void *data;
 };
 

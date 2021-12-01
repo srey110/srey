@@ -331,11 +331,10 @@ void _conn_timeout_add(struct watcher_ctx *pwatcher, struct sock_ctx *psock)
 }
 struct sock_ctx * _conn_timeout_remove(struct watcher_ctx *pwatcher, sid_t uid)
 {
-    struct ud_ctx key;
-    key.id = uid;
-    struct ud_ctx val;
-    int32_t irtn = _map_remove(pwatcher->map, &key, &val);
-    return ERR_OK == irtn ? (struct sock_ctx *)val.handle : NULL;
+    struct ud_ctx item;
+    item.id = uid;
+    int32_t irtn = _map_remove(pwatcher->map, &item, &item);
+    return ERR_OK == irtn ? (struct sock_ctx *)item.handle : NULL;
 }
 static inline void _cmd_cb(struct watcher_ctx *pwatcher, struct sock_ctx *psock, uint32_t uiev, int32_t *pstop)
 {

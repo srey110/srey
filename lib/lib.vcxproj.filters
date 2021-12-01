@@ -121,11 +121,11 @@
     <Filter Include="utils">
       <UniqueIdentifier>{27f9d699-1248-4959-b1d9-b0ceeff862a6}</UniqueIdentifier>
     </Filter>
-    <Filter Include="service">
-      <UniqueIdentifier>{70f5fcad-95b6-4089-8ec5-a34b12a92699}</UniqueIdentifier>
-    </Filter>
     <Filter Include="netev">
       <UniqueIdentifier>{b5693aa0-d95b-4ae2-a76b-d492fab49223}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="service">
+      <UniqueIdentifier>{70f5fcad-95b6-4089-8ec5-a34b12a92699}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
 </Project>

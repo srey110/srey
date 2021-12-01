@@ -12,6 +12,7 @@
 #include "queue.h"
 #include "map.h"
 #include "tw.h"
+#include "structs.h"
 
 #if defined(OS_WIN)
     #define NETEV_IOCP
@@ -90,27 +91,27 @@ struct sock_ctx
     sid_t id;
     void(*ev_cb)(struct watcher_ctx *, struct sock_ctx *, uint32_t, int32_t *);
 };
-typedef void(*accept_cb)(struct sock_ctx *, void *);
-typedef void(*connect_cb)(struct sock_ctx *, int32_t, void *);
-typedef void(*read_cb)(struct sock_ctx *, struct buffer_ctx *, size_t, const char*, uint16_t, void *);
-typedef void(*write_cb)(struct sock_ctx *, size_t, void *);
-typedef void(*close_cb)(struct sock_ctx *, void *);
+typedef void(*accept_cb)(struct sock_ctx *, struct ud_ctx *);
+typedef void(*connect_cb)(struct sock_ctx *, int32_t, struct ud_ctx *);
+typedef void(*recv_cb)(struct sock_ctx *, size_t, union netaddr_ctx *, struct ud_ctx *);
+typedef void(*send_cb)(struct sock_ctx *, size_t, struct ud_ctx *);
+typedef void(*close_cb)(struct sock_ctx *, struct ud_ctx *);
 
 struct netev_ctx *netev_new(struct tw_ctx *ptw, const uint32_t uthcnt, sid_t(*id_creater)(void *), void *pid);
 void netev_free(struct netev_ctx *pctx);
-void netev_loop(struct netev_ctx *pctx); 
-
+void netev_loop(struct netev_ctx *pctx);
 struct listener_ctx *netev_listener(struct netev_ctx *pctx,
-    const char *phost, const uint16_t usport, accept_cb acp_cb, void *pdata);
+    const char *phost, const uint16_t usport, accept_cb acp_cb, struct ud_ctx *pud);
 struct sock_ctx *netev_add_sock(struct netev_ctx *pctx, SOCKET sock, int32_t itype, int32_t ifamily);
 struct sock_ctx *netev_connecter(struct netev_ctx *pctx, uint32_t utimeout,
-    const char *phost, const uint16_t usport, connect_cb conn_cb, void *pdata);
+    const char *phost, const uint16_t usport, connect_cb conn_cb, struct ud_ctx *pud);
 int32_t netev_enable_rw(struct netev_ctx *pctx, struct sock_ctx *psock,
-    read_cb r_cb, write_cb w_cb, close_cb c_cb, void *pdata);
+    recv_cb r_cb, send_cb w_cb, close_cb c_cb, struct ud_ctx *pud);
 
 sid_t sock_id(struct sock_ctx *psock);
 SOCKET sock_handle(struct sock_ctx *psock);
 int32_t sock_type(struct sock_ctx *psock);
+void sock_change_uid(struct sock_ctx *psock, sid_t uid);
 struct buffer_ctx *sock_buffer_r(struct sock_ctx *psock);
 struct buffer_ctx *sock_buffer_w(struct sock_ctx *psock);
 int32_t sock_send(struct sock_ctx *psock, void *pdata, const size_t uilens);
@@ -120,6 +121,7 @@ int32_t sock_sendto(struct sock_ctx *psock, const char *phost, uint16_t uport,
 void sock_close(struct sock_ctx *psock);
 void sock_free(struct sock_ctx *psock);
 void listener_free(struct listener_ctx *plsn);
+
 //AF_INET  AF_INET6    SOCK_STREAM  SOCK_DGRAM
 static inline SOCKET sock_create(int32_t ifamily, int32_t itype)
 {

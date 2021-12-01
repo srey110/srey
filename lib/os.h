@@ -66,6 +66,7 @@
 #include <limits.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <inttypes.h>
 #if defined(OS_WIN)
     #include <winsock2.h>
     #include <ws2ipdef.h>
