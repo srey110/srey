@@ -40,11 +40,6 @@ void lsn_release(struct task_ctx *ptask, void *pinst, void *pudata)
 }
 void lsn_cb(struct task_ctx *ptask, uint32_t itype, sid_t srcid, uint32_t uisess, void *pmsg, uint32_t uisize, void *pudata)
 {
-    if (itype == MSG_TYPE_BROADCAST)
-    {
-        //PRINTF("MSG_TYPE_BROADCAST %s", ptask->inst.name);
-        return;
-    }
     struct sock_ctx *psock = pmsg;
     char acname[NAME_LENS] = { 0 };
     SNPRINTF(acname, sizeof(acname), "tcp gate%d", rand() % 4);
@@ -98,14 +93,15 @@ void tcp_gate_cb(struct task_ctx *ptask, uint32_t itype, sid_t srcid, uint32_t u
     case MSG_TYPE_CLOSE:
         //ATOMIC_ADD(&uilinkcnt, -1);
         break;
-    case MSG_TYPE_CALL:
-        //PRINTF("MSG_TYPE_CALL %s", srey_task_name(ptask));
-        break;
     case MSG_TYPE_REQUEST:
-        srey_response(psrey, srcid, uisess, NULL, 0);
-        break;
-    case MSG_TYPE_BROADCAST:
-        //PRINTF("MSG_TYPE_BROADCAST %s", srey_task_name(ptask));
+        if (0 != srcid)
+        {
+            srey_response(psrey, srcid, uisess, NULL, 0);
+        }
+        else
+        {
+            //PRINTF("MSG_TYPE_REQUEST call %s", task_name(ptask));
+        }
         break;
     }
 }
@@ -157,20 +153,18 @@ void udp_gate_cb(struct task_ctx *ptask, uint32_t itype, sid_t srcid, uint32_t u
         sid_t gateid = srey_queryid(psrey, acname);
         if (rand() % 2 == 0)
         {
-            srey_call(psrey, gateid, NULL, 0);
+            srey_callnam(psrey, acname, NULL, 0);
+            srey_callid(psrey, gateid, NULL, 0);
         }
         else
         {
-            srey_request(psrey, gateid, task_id(ptask), task_new_session(ptask), NULL, 0);
+            srey_reqnam(psrey, acname, task_id(ptask), task_new_session(ptask), NULL, 0);
+            srey_reqid(psrey, gateid, task_id(ptask), task_new_session(ptask), NULL, 0);
         }
-        srey_broadcast(psrey, NULL, 0);
         srey_timeout(psrey, task_id(ptask), task_new_session(ptask), 2000);
         break;
     case MSG_TYPE_RESPONSE:
-        //PRINTF("MSG_TYPE_RESPONSE %s %d", srey_task_name(ptask), uisess);
-        break;
-    case MSG_TYPE_BROADCAST:
-        //PRINTF("MSG_TYPE_BROADCAST %s", srey_task_name(ptask));
+        //PRINTF("MSG_TYPE_RESPONSE %s %d", task_name(ptask), uisess);
         break;
     }
 }
@@ -189,9 +183,6 @@ void conn_cb(struct task_ctx *ptask, uint32_t itype, sid_t srcid, uint32_t uises
 {
     switch (itype)
     {
-    case MSG_TYPE_BROADCAST:
-        //PRINTF("MSG_TYPE_BROADCAST %s", srey_task_name(ptask));
-        break;
     case MSG_TYPE_CONNECT:
         if (ERR_OK == uisize)
         {
@@ -248,9 +239,6 @@ void reg_unreg_cb(struct task_ctx *ptask, uint32_t itype, sid_t srcid, uint32_t 
     case MSG_TYPE_SEND:
         break;
     case MSG_TYPE_CLOSE:
-        break;
-    case MSG_TYPE_BROADCAST:
-        //PRINTF("MSG_TYPE_BROADCAST %s", srey_task_name(ptask));
         break;
     case MSG_TYPE_TIMEOUT:
         {

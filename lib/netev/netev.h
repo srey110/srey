@@ -113,7 +113,7 @@ struct sock_ctx *netev_connecter(struct netev_ctx *pctx, uint32_t utimeout,
     const char *phost, const uint16_t usport, connect_cb conn_cb, struct ud_ctx *pud);
 int32_t netev_enable_rw(struct netev_ctx *pctx, struct sock_ctx *psock,
     recv_cb r_cb, send_cb w_cb, close_cb c_cb, struct ud_ctx *pud);
-
+//socket Ïà¹Øº¯Êý
 sid_t sock_id(struct sock_ctx *psock);
 SOCKET sock_handle(struct sock_ctx *psock);
 int32_t sock_type(struct sock_ctx *psock);

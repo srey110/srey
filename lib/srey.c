@@ -50,13 +50,6 @@ struct map_task_id
     struct task_ctx *task;
     sid_t id;
 };
-struct msg_broadcast
-{
-    uint32_t size;
-    volatile atomic_t ref;
-    struct srey_ctx *srey;
-    void *msg;
-};
 #define FILL_NAME(psrc, pname) \
     size_t inamlens = strlen(pname); \
     ASSERTAB(inamlens < NAME_LENS, "name lens error."); \
@@ -100,6 +93,7 @@ struct srey_ctx *srey_new(uint32_t uiworker, module_msg_release msgfree)
     pctx->map_name = map_new(sizeof(struct map_task_name), _hash_name, _compare_name, NULL);
     queue_init(&pctx->qu, ONEK);
     mutex_init(&pctx->mu_qu);
+
     pctx->workercnt = (0 == uiworker ? procscnt() * 2 : uiworker);
     pctx->thr_worker = MALLOC(sizeof(struct thread_ctx) * pctx->workercnt);
     ASSERTAB(NULL != pctx->thr_worker, ERRSTR_MEMORY);
@@ -194,24 +188,9 @@ static inline void _msg_clean(struct srey_ctx *pctx, struct message_ctx *pmsg)
 {
     switch (pmsg->flags)
     {
-    case MSG_TYPE_CALL:
     case MSG_TYPE_REQUEST:
     case MSG_TYPE_RESPONSE:
         _task_msg_free(pctx, pmsg->data);
-        break;
-    case MSG_TYPE_BROADCAST:
-        {
-            struct msg_broadcast *pbc = pmsg->data;
-            if (ATOMIC_CAS(&pbc->ref, 1, 0))
-            {
-                _task_msg_free(pctx, pbc->msg);
-                FREE(pbc);
-            }
-            else
-            {
-                ATOMIC_ADD(&pbc->ref, -1);
-            }
-        }
         break;
     case MSG_TYPE_CONNECT:
         if (ERR_OK != pmsg->size)
@@ -271,35 +250,29 @@ static inline void _msg_dispatch(struct srey_ctx *pctx, struct timer_ctx *ptimer
         {
             break;
         }
-        switch (msg.flags)
+
+        if (MSG_TYPE_UNREG == msg.flags)
         {
-        case MSG_TYPE_UNREG:
+            if (0 == ATOMIC_GET(&ptask->ref))
             {
-                if (0 == ATOMIC_GET(&ptask->ref))
-                {
-                    _task_free(ptask);
-                }
-                else
-                {
-                    struct ud_ctx ud;
-                    ud.handle = (uintptr_t)ptask;
-                    tw_add(&ptask->srey->tw, DELAYFREE_TIME, _task_delay_free, &ud);
-                }
+                _task_free(ptask);
+            }
+            else
+            {
+                struct ud_ctx ud;
+                ud.handle = (uintptr_t)ptask;
+                tw_add(&ptask->srey->tw, DELAYFREE_TIME, _task_delay_free, &ud);
             }
             return;
-        default:
-            timer_start(ptimer);
-            ptask->module.run(ptask, msg.flags, msg.id, msg.session,
-                (MSG_TYPE_BROADCAST == msg.flags ? ((struct msg_broadcast *)msg.data)->msg : msg.data),
-                (MSG_TYPE_BROADCAST == msg.flags ? ((struct msg_broadcast *)msg.data)->size : msg.size),
-                ptask->udata);
-            if (timer_elapsed(ptimer) / (1000 * 1000) >= RUNTIME_WARING)
-            {
-                LOG_WARN("task %s type %d,run long time.", ptask->module.name, msg.flags);
-            }
-            _msg_clean(pctx, &msg);
-            break;
         }
+        
+        timer_start(ptimer);
+        ptask->module.run(ptask, msg.flags, msg.id, msg.session, msg.data, msg.size, ptask->udata);
+        if (timer_elapsed(ptimer) / (1000 * 1000) >= RUNTIME_WARING)
+        {
+            LOG_WARN("task %s type %d,run long time.", ptask->module.name, msg.flags);
+        }
+        _msg_clean(pctx, &msg);
     }
     _push_global(pctx, ptask);
 }
@@ -529,7 +502,7 @@ const char *task_name(struct task_ctx *ptask)
 {
     return ptask->module.name;
 }
-static inline int32_t _srey_task_msg_trypush(struct srey_ctx *pctx, sid_t toid,
+static inline int32_t _srey_task_id_trypush(struct srey_ctx *pctx, sid_t toid,
     sid_t srcid, uint32_t uisess, uint32_t uitype, void *pmsg, uint32_t uisz)
 {
     int32_t irtn = ERR_FAILED;
@@ -551,19 +524,60 @@ static inline int32_t _srey_task_msg_trypush(struct srey_ctx *pctx, sid_t toid,
     }
     return irtn;
 }
-int32_t srey_call(struct srey_ctx *pctx, sid_t toid, void *pmsg, uint32_t uisz)
+static inline int32_t _srey_task_name_trypush(struct srey_ctx *pctx, const char *pname,
+    sid_t srcid, uint32_t uisess, uint32_t uitype, void *pmsg, uint32_t uisz)
 {
-    int32_t irtn = _srey_task_msg_trypush(pctx, toid, 0, 0, MSG_TYPE_CALL, pmsg, uisz);
+    int32_t irtn = ERR_FAILED;
+    struct task_ctx *ptask = NULL;
+    struct map_task_name mapname;
+    FILL_NAME(mapname.name, pname);
+    struct rwlock_ctx *plock = _map_rwlock(pctx);
+    rwlock_rdlock(plock);
+    if (ERR_OK == _map_get(pctx->map_name, &mapname, &mapname))
+    {
+        ptask = mapname.task;
+        ATOMIC_ADD(&ptask->ref, 1);
+    }
+    rwlock_unlock(plock);
+    if (NULL != ptask)
+    {
+        irtn = _srey_task_msg_push(pctx, ptask, srcid, uisess, uitype, pmsg, uisz);
+        ATOMIC_ADD(&ptask->ref, -1);
+    }
+    return irtn;
+}
+int32_t srey_callid(struct srey_ctx *pctx, sid_t toid, void *pmsg, uint32_t uisz)
+{
+    int32_t irtn = _srey_task_id_trypush(pctx, toid, 0, 0, MSG_TYPE_REQUEST, pmsg, uisz);
     if (ERR_OK != irtn)
     {
         _task_msg_free(pctx, pmsg);
     }
     return irtn;
 }
-int32_t srey_request(struct srey_ctx *pctx, sid_t toid, 
+int32_t srey_callnam(struct srey_ctx *pctx, const char *pname, void *pmsg, uint32_t uisz)
+{
+    int32_t irtn = _srey_task_name_trypush(pctx, pname, 0, 0, MSG_TYPE_REQUEST, pmsg, uisz);
+    if (ERR_OK != irtn)
+    {
+        _task_msg_free(pctx, pmsg);
+    }
+    return irtn;
+}
+int32_t srey_reqid(struct srey_ctx *pctx, sid_t toid, 
     sid_t srcid, uint32_t uisess, void *pmsg, uint32_t uisz)
 {
-    int32_t irtn = _srey_task_msg_trypush(pctx, toid, srcid, uisess, MSG_TYPE_REQUEST, pmsg, uisz);
+    int32_t irtn = _srey_task_id_trypush(pctx, toid, srcid, uisess, MSG_TYPE_REQUEST, pmsg, uisz);
+    if (ERR_OK != irtn)
+    {
+        _task_msg_free(pctx, pmsg);
+    }
+    return irtn;
+}
+int32_t srey_reqnam(struct srey_ctx *pctx, const char *pname,
+    sid_t srcid, uint32_t uisess, void *pmsg, uint32_t uisz)
+{
+    int32_t irtn = _srey_task_name_trypush(pctx, pname, srcid, uisess, MSG_TYPE_REQUEST, pmsg, uisz);
     if (ERR_OK != irtn)
     {
         _task_msg_free(pctx, pmsg);
@@ -572,50 +586,19 @@ int32_t srey_request(struct srey_ctx *pctx, sid_t toid,
 }
 int32_t srey_response(struct srey_ctx *pctx, sid_t toid, uint32_t uisess, void *pmsg, uint32_t uisz)
 {
-    int32_t irtn = _srey_task_msg_trypush(pctx, toid, 0, uisess, MSG_TYPE_RESPONSE, pmsg, uisz);
+    int32_t irtn = _srey_task_id_trypush(pctx, toid, 0, uisess, MSG_TYPE_RESPONSE, pmsg, uisz);
     if (ERR_OK != irtn)
     {
         _task_msg_free(pctx, pmsg);
     }
     return irtn;
 }
-void srey_broadcast(struct srey_ctx *pctx, void *pmsg, uint32_t uisz)
-{
-    struct msg_broadcast *pbc = MALLOC(sizeof(struct msg_broadcast));
-    if (NULL == pbc)
-    {
-        LOG_ERROR("%s", ERRSTR_MEMORY);
-        return;
-    }
-    pbc->msg = pmsg;
-    pbc->size = uisz;
-    pbc->srey = pctx;
-    struct queue_ctx quid;
-    queue_init(&quid, 128);
-    srey_allid(pctx, &quid);
-    int32_t icnt = queue_size(&quid);
-    pbc->ref = (atomic_t)icnt;
-    struct message_ctx msgid;
-    while (ERR_OK == queue_pop(&quid, &msgid))
-    {
-        if (ERR_OK != _srey_task_msg_trypush(pbc->srey, msgid.id, 0, 0, MSG_TYPE_BROADCAST, pbc, 0))
-        {
-            ATOMIC_ADD(&pbc->ref, -1);
-        }
-    }
-    queue_free(&quid);
-    if (0 == icnt)
-    {
-        _task_msg_free(pctx, pbc->msg);
-        FREE(pbc);
-    }
-}
 static inline void _srey_timeout(struct ud_ctx *pud)
 {
-    (void)_srey_task_msg_trypush((struct srey_ctx *)pud->handle, pud->id, 
+    (void)_srey_task_id_trypush((struct srey_ctx *)pud->handle, pud->id, 
         0, pud->session, MSG_TYPE_TIMEOUT, NULL, 0);
 }
-void srey_timeout(struct srey_ctx *pctx, sid_t ownerid, uint32_t uisess, const uint32_t uitimeout)
+void srey_timeout(struct srey_ctx *pctx, sid_t ownerid, uint32_t uisess, uint32_t uitimeout)
 {
     struct ud_ctx ud;
     ud.handle = (uintptr_t)pctx;
@@ -625,13 +608,13 @@ void srey_timeout(struct srey_ctx *pctx, sid_t ownerid, uint32_t uisess, const u
 }
 static inline void _srey_sock_accept(struct sock_ctx *psock, struct ud_ctx *pud)
 {
-    if (ERR_OK != _srey_task_msg_trypush((struct srey_ctx *)pud->handle, pud->id, 
+    if (ERR_OK != _srey_task_id_trypush((struct srey_ctx *)pud->handle, pud->id, 
         0, 0, MSG_TYPE_ACCEPT, psock, 0))
     {
         sock_free(psock);
     }
 }
-struct listener_ctx *srey_listener(struct srey_ctx *pctx, sid_t ownerid, const char *phost, const uint16_t usport)
+struct listener_ctx *srey_listener(struct srey_ctx *pctx, sid_t ownerid, const char *phost, uint16_t usport)
 {
     struct ud_ctx ud;
     ud.id = ownerid;
@@ -640,14 +623,14 @@ struct listener_ctx *srey_listener(struct srey_ctx *pctx, sid_t ownerid, const c
 }
 static inline void _srey_sock_connect(struct sock_ctx *psock, int32_t ierr, struct ud_ctx *pud)
 {
-    if (ERR_OK != _srey_task_msg_trypush((struct srey_ctx *)pud->handle, pud->id, 
+    if (ERR_OK != _srey_task_id_trypush((struct srey_ctx *)pud->handle, pud->id, 
         0, pud->session, MSG_TYPE_CONNECT, psock, (ERR_OK == ierr ? ERR_OK : 1)))
     {
         sock_free(psock);
     }
 }
 struct sock_ctx *srey_connecter(struct srey_ctx *pctx, sid_t ownerid, uint32_t uisess,
-    uint32_t utimeout, const char *phost, const uint16_t usport)
+    uint32_t utimeout, const char *phost, uint16_t usport)
 {
     struct ud_ctx ud;
     ud.id = ownerid;
@@ -663,7 +646,7 @@ static inline void _srey_sock_recv(struct sock_ctx *psock, size_t uisize, union 
 {
     if (SOCK_STREAM == sock_type(psock))
     {
-        if (ERR_OK != _srey_task_msg_trypush((struct srey_ctx *)pud->handle, pud->id,
+        if (ERR_OK != _srey_task_id_trypush((struct srey_ctx *)pud->handle, pud->id,
             0, 0, MSG_TYPE_RECV, psock, (uint32_t)uisize))
         {
             sock_close(psock);
@@ -681,7 +664,7 @@ static inline void _srey_sock_recv(struct sock_ctx *psock, size_t uisize, union 
         pmsg->sock = psock;
         pmsg->port = netaddr_port(paddr);
         netaddr_ip(paddr, pmsg->ip);
-        if (ERR_OK != _srey_task_msg_trypush((struct srey_ctx *)pud->handle, pud->id, 
+        if (ERR_OK != _srey_task_id_trypush((struct srey_ctx *)pud->handle, pud->id, 
             0, 0, MSG_TYPE_RECVFROM, pmsg, (uint32_t)uisize))
         {
             FREE(pmsg);
@@ -691,7 +674,7 @@ static inline void _srey_sock_recv(struct sock_ctx *psock, size_t uisize, union 
 }
 static inline void _srey_sock_send(struct sock_ctx *psock, size_t uisize, struct ud_ctx *pud)
 {
-    if (ERR_OK != _srey_task_msg_trypush((struct srey_ctx *)pud->handle, pud->id, 
+    if (ERR_OK != _srey_task_id_trypush((struct srey_ctx *)pud->handle, pud->id, 
         0, 0, MSG_TYPE_SEND, psock, (uint32_t)uisize))
     {
         sock_close(psock);
@@ -699,7 +682,7 @@ static inline void _srey_sock_send(struct sock_ctx *psock, size_t uisize, struct
 }
 static inline void _srey_sock_close(struct sock_ctx *psock, struct ud_ctx *pud)
 {
-    if (ERR_OK != _srey_task_msg_trypush((struct srey_ctx *)pud->handle, pud->id,
+    if (ERR_OK != _srey_task_id_trypush((struct srey_ctx *)pud->handle, pud->id,
         0, 0, MSG_TYPE_CLOSE, psock, 0))
     {
         sock_free(psock);
