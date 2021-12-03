@@ -47,6 +47,11 @@ int32_t map_get(struct map_ctx *pmap, void *pkey, void *pitem);
 int32_t _map_remove(struct map_ctx *pmap, void *pkey, void *pitem);
 int32_t map_remove(struct map_ctx *pmap, void *pkey, void *pitem);
 /*
+* \brief              清除全部数据
+*/
+void _map_clear(struct map_ctx *pmap);
+void map_clear(struct map_ctx *pmap);
+/*
 * \brief              遍历
 * \param iter         遍历执行的函数，函数返回非ERR_OK 停止执行
 * \param pudata       用户数据

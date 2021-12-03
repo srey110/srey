@@ -16,6 +16,7 @@ struct listener_ctx
     accept_cb acp_cb;
     struct netev_ctx *netev;
     struct lsn_ctx *lsn;
+    void(*free_ud)(struct ud_ctx *pud);
     struct ud_ctx ud;
 };
 struct usock_ctx
@@ -32,6 +33,7 @@ struct usock_ctx
     send_cb w_cb;
     close_cb c_cb;
     struct watcher_ctx *watcher;
+    void(*free_ud)(struct ud_ctx *pud);
     struct ud_ctx ud;
     struct buffer_ctx buf_r;
     struct buffer_ctx buf_w;
@@ -73,6 +75,10 @@ void _uev_sock_close(struct sock_ctx *psock)
 }
 static inline void _listener_free(struct listener_ctx *plsn)
 {
+    if (NULL != plsn->free_ud)
+    {
+        plsn->free_ud(&plsn->ud);
+    }
     for (int32_t i = 0; i < plsn->lsncnt; i++)
     {
         SAFE_CLOSE_SOCK(plsn->lsn[i].sock.sock);
@@ -97,8 +103,9 @@ static inline void _listener_delay_free(struct ud_ctx *pud)
     }
     tw_add(plsn->netev->tw, DELAYFREE_TIME, _listener_delay_free, pud);
 }
-void listener_free(struct listener_ctx *plsn)
+void listener_free(struct listener_ctx *plsn, void(*free_ud)(struct ud_ctx *))
 {
+    plsn->free_ud = free_ud;
     //·¢Æð¹Ø±Õ
     if (1 == plsn->lsncnt)
     {
@@ -127,6 +134,10 @@ void listener_free(struct listener_ctx *plsn)
 }
 static inline void _sock_free(struct usock_ctx *pusock)
 {
+    if (NULL != pusock->free_ud)
+    {
+        pusock->free_ud(&pusock->ud);
+    }
     buffer_free(&pusock->buf_r);
     buffer_free(&pusock->buf_w);
     FREE(pusock);
@@ -151,9 +162,10 @@ static inline void _sock_delay_free(struct ud_ctx *pud)
     }
     tw_add(pusock->watcher->netev->tw, DELAYFREE_TIME, _sock_delay_free, pud);
 }
-void sock_free(struct sock_ctx *psock)
+void sock_free(struct sock_ctx *psock, void(*free_ud)(struct ud_ctx *))
 {
     struct usock_ctx *pusock = _get_usock(psock); 
+    pusock->free_ud = free_ud;
     SAFE_CLOSE_SOCK(pusock->sock.sock);
     if (0 == ATOMIC_GET(&pusock->ref_r)
         && 0 == ATOMIC_GET(&pusock->ref_cmd))
@@ -687,7 +699,7 @@ struct sock_ctx *netev_connecter(struct netev_ctx *pctx, uint32_t utimeout,
     if (!ERR_CONNECT_RETRIABLE(irtn))
     {
         LOG_ERROR("%s", ERRORSTR(irtn));
-        sock_free(&pusock->sock);
+        sock_free(&pusock->sock, NULL);
         return NULL;
     }
     pusock->ref_r = 1;
@@ -702,11 +714,6 @@ struct sock_ctx *netev_connecter(struct netev_ctx *pctx, uint32_t utimeout,
 int32_t sock_type(struct sock_ctx *psock)
 {
     return _get_usock(psock)->socktype;
-}
-void sock_change_uid(struct sock_ctx *psock, sid_t uid)
-{
-    struct usock_ctx *pusock = _get_usock(psock);
-    ATOMIC64_SET(&pusock->ud.id, uid);
 }
 struct buffer_ctx *sock_buffer_r(struct sock_ctx *psock)
 {

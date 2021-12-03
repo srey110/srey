@@ -81,7 +81,7 @@ struct netev_ctx
 {
     int32_t thcnt;
     struct tw_ctx *tw;
-    sid_t(*id_creater)(void *);
+    uint64_t(*id_creater)(void *);
     void *id_data;
     struct watcher_ctx *watcher;
 };
@@ -94,7 +94,7 @@ struct sock_ctx
 #endif
     uint32_t events;
     SOCKET sock;
-    sid_t id;
+    uint64_t id;
     void(*ev_cb)(struct watcher_ctx *, struct sock_ctx *, uint32_t, int32_t *);
 };
 typedef void(*accept_cb)(struct sock_ctx *, struct ud_ctx *);
@@ -103,7 +103,7 @@ typedef void(*recv_cb)(struct sock_ctx *, size_t, union netaddr_ctx *, struct ud
 typedef void(*send_cb)(struct sock_ctx *, size_t, struct ud_ctx *);
 typedef void(*close_cb)(struct sock_ctx *, struct ud_ctx *);
 
-struct netev_ctx *netev_new(struct tw_ctx *ptw, const uint32_t uthcnt, sid_t(*id_creater)(void *), void *pid);
+struct netev_ctx *netev_new(struct tw_ctx *ptw, const uint32_t uthcnt, uint64_t(*id_creater)(void *), void *pid);
 void netev_free(struct netev_ctx *pctx);
 void netev_loop(struct netev_ctx *pctx);
 struct listener_ctx *netev_listener(struct netev_ctx *pctx,
@@ -114,10 +114,9 @@ struct sock_ctx *netev_connecter(struct netev_ctx *pctx, uint32_t utimeout,
 int32_t netev_enable_rw(struct netev_ctx *pctx, struct sock_ctx *psock,
     recv_cb r_cb, send_cb w_cb, close_cb c_cb, struct ud_ctx *pud);
 //socket Ïà¹Øº¯Êý
-sid_t sock_id(struct sock_ctx *psock);
+uint64_t sock_id(struct sock_ctx *psock);
 SOCKET sock_handle(struct sock_ctx *psock);
 int32_t sock_type(struct sock_ctx *psock);
-void sock_change_uid(struct sock_ctx *psock, sid_t uid);
 struct buffer_ctx *sock_buffer_r(struct sock_ctx *psock);
 struct buffer_ctx *sock_buffer_w(struct sock_ctx *psock);
 int32_t sock_send(struct sock_ctx *psock, void *pdata, const size_t uilens);
@@ -125,8 +124,8 @@ int32_t sock_send_buffer(struct sock_ctx *psock);
 int32_t sock_sendto(struct sock_ctx *psock, const char *phost, uint16_t uport, 
     void *pdata, const size_t uilens);
 void sock_close(struct sock_ctx *psock);
-void sock_free(struct sock_ctx *psock);
-void listener_free(struct listener_ctx *plsn);
+void sock_free(struct sock_ctx *psock, void(*free_ud)(struct ud_ctx *));
+void listener_free(struct listener_ctx *plsn, void(*free_ud)(struct ud_ctx *));
 
 //AF_INET  AF_INET6    SOCK_STREAM  SOCK_DGRAM
 static inline SOCKET sock_create(int32_t ifamily, int32_t itype)
@@ -146,7 +145,7 @@ void _netev_add(struct watcher_ctx *pwatcher, struct sock_ctx *psock, uint32_t u
 #ifndef NETEV_IOCP
 void _uev_cmd_close(struct watcher_ctx *pwatcher, struct sock_ctx *psock);
 void _uev_cmd_conn(struct watcher_ctx *pwatcher, struct sock_ctx *psock);
-void _uev_cmd_timeout(struct watcher_ctx *pwatcher, sid_t uid);
+void _uev_cmd_timeout(struct watcher_ctx *pwatcher, uint64_t uid);
 int32_t _uev_add(struct watcher_ctx *pwatcher, struct sock_ctx *psock, uint32_t uiev);
 void _uev_del(struct watcher_ctx *pwatcher, struct sock_ctx *psock, uint32_t uiev);
 void _add_close_qu(struct watcher_ctx *pwatcher, struct sock_ctx *psock);
@@ -155,7 +154,7 @@ int32_t _uev_add_ref_cmd(struct sock_ctx *psock);
 void _uev_sub_ref_cmd(struct sock_ctx *psock);
 void _uev_sub_sending(struct sock_ctx *psock);
 void _conn_timeout_add(struct watcher_ctx *pwatcher, struct sock_ctx *psock);
-struct sock_ctx * _conn_timeout_remove(struct watcher_ctx *pwatcher, sid_t uid);
+struct sock_ctx * _conn_timeout_remove(struct watcher_ctx *pwatcher, uint64_t uid);
 #endif
 static inline size_t _udp_data_lens(void *pdata)
 {

@@ -69,7 +69,7 @@ static inline void timer_start(struct timer_ctx *pctx)
 };
 /*
 * \brief          结束计时
-* \return         用时 微秒
+* \return         用时 纳秒
 */
 static inline uint64_t timer_elapsed(struct timer_ctx *pctx)
 {

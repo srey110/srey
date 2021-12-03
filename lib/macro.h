@@ -186,6 +186,7 @@ do\
     #define ATOMIC64_ADD(ptr, val) InterlockedExchangeAdd64(ptr, val)
     #define ATOMIC64_SET(ptr, val) InterlockedExchange64(ptr, val)
     #define ATOMIC64_CAS(ptr, oldval, newval) (InterlockedCompareExchange64(ptr, newval, oldval) == oldval)
+    #define ATOMICPTR_CAS(ptr, oldval, newval) (InterlockedCompareExchangePointer(ptr, newval, oldval) == oldval)
 #elif defined(OS_SUN)
     typedef uint32_t atomic_t;
     typedef uint64_t atomic64_t;
@@ -198,6 +199,7 @@ do\
     #define ATOMIC64_ADD(ptr, val) atomic_add_64_nv(ptr, val)
     #define ATOMIC64_SET(ptr, val) atomic_swap_64(ptr, val)
     #define ATOMIC64_CAS(ptr, oldval, newval) (atomic_cas_64(ptr, oldval, newval) == oldval)
+    #define ATOMICPTR_CAS(ptr, oldval, newval) (atomic_cas_ptr(ptr, oldval, newval) == oldval)
 #else
     typedef uint32_t atomic_t;
     typedef uint64_t atomic64_t;
@@ -227,10 +229,10 @@ do\
     #define ATOMIC64_ADD(ptr, val) __sync_fetch_and_add(ptr, val)
     #define ATOMIC64_SET(ptr, val) _fetchandset64(ptr, val) 
     #define ATOMIC64_CAS(ptr, oldval, newval) __sync_bool_compare_and_swap(ptr, oldval, newval)
+    #define ATOMICPTR_CAS(ptr, oldval, newval) __sync_bool_compare_and_swap(ptr, oldval, newval)
 #endif
 #define ATOMIC_GET(ptr) ATOMIC_ADD(ptr, 0)
 #define ATOMIC64_GET(ptr) ATOMIC64_ADD(ptr, 0)
-typedef uint64_t sid_t;
 
 #define SAFE_CLOSE_SOCK(fd)\
 do\

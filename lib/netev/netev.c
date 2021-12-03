@@ -28,7 +28,7 @@ struct watcher_ctx *_netev_get_watcher(struct netev_ctx *pctx, SOCKET fd)
     return &pctx->watcher[fnv1a_hash((const char *)&fd, sizeof(fd)) % pctx->thcnt];
 #endif
 }
-static inline struct netev_ctx *_new_pub_ev(struct tw_ctx *ptw, const uint32_t uthcnt, sid_t(*id_creater)(void *), void *pid)
+static inline struct netev_ctx *_new_pub_ev(struct tw_ctx *ptw, const uint32_t uthcnt, uint64_t(*id_creater)(void *), void *pid)
 {
     struct netev_ctx *pev = MALLOC(sizeof(struct netev_ctx));
     ASSERTAB(NULL != pev, ERRSTR_MEMORY);
@@ -143,7 +143,7 @@ static inline void _uev_resize_events(struct watcher_ctx *pwatcher)
         pwatcher->event_cnt *= 2;
     }
 };
-static inline void _uev_cmd(struct watcher_ctx *pwatcher, uint32_t uicmd, uint32_t uiev, struct sock_ctx *psock, sid_t uid)
+static inline void _uev_cmd(struct watcher_ctx *pwatcher, uint32_t uicmd, uint32_t uiev, struct sock_ctx *psock, uint64_t uid)
 {
     if (ERR_OK != _uev_add_ref_cmd(psock))
     {
@@ -305,7 +305,7 @@ void _uev_cmd_conn(struct watcher_ctx *pwatcher, struct sock_ctx *psock)
 {
     _uev_cmd(pwatcher, _CMD_CONN, EV_WRITE, psock, 0);
 }
-void _uev_cmd_timeout(struct watcher_ctx *pwatcher, sid_t uid)
+void _uev_cmd_timeout(struct watcher_ctx *pwatcher, uint64_t uid)
 {
     _uev_cmd(pwatcher, _CMD_CONN_TIMEOUT, 0, NULL, uid);
 }
@@ -329,7 +329,7 @@ void _conn_timeout_add(struct watcher_ctx *pwatcher, struct sock_ctx *psock)
     ud.handle = (uintptr_t)psock;
     _map_set(pwatcher->map, &ud);
 }
-struct sock_ctx * _conn_timeout_remove(struct watcher_ctx *pwatcher, sid_t uid)
+struct sock_ctx * _conn_timeout_remove(struct watcher_ctx *pwatcher, uint64_t uid)
 {
     struct ud_ctx item;
     item.id = uid;
@@ -400,7 +400,7 @@ static inline void _cmd_cb(struct watcher_ctx *pwatcher, struct sock_ctx *psock,
 #endif
 }
 #endif
-struct netev_ctx *netev_new(struct tw_ctx *ptw, const uint32_t uthcnt, sid_t(*id_creater)(void *), void *pid)
+struct netev_ctx *netev_new(struct tw_ctx *ptw, const uint32_t uthcnt, uint64_t(*id_creater)(void *), void *pid)
 {
     struct netev_ctx *pev = _new_pub_ev(ptw, uthcnt, id_creater, pid);
 #ifdef NETEV_IOCP
@@ -597,7 +597,7 @@ void netev_loop(struct netev_ctx *pctx)
         thread_waitstart(&pctx->watcher[i].thev);
     }
 }
-sid_t sock_id(struct sock_ctx *psock)
+uint64_t sock_id(struct sock_ctx *psock)
 {
     return psock->id;
 }

@@ -241,6 +241,17 @@ int32_t map_remove(struct map_ctx *pmap, void *pkey, void *pitem)
     rwlock_unlock(&pmap->rwlock);
     return irtn;
 }
+void _map_clear(struct map_ctx *pmap)
+{
+    pmap->count = 0;
+    ZERO(pmap->buckets, pmap->bucketsz * pmap->cap);
+}
+void map_clear(struct map_ctx *pmap)
+{
+    rwlock_wrlock(&pmap->rwlock);
+    _map_clear(pmap);
+    rwlock_unlock(&pmap->rwlock);
+}
 size_t _map_size(struct map_ctx *pmap)
 {
     return pmap->count;

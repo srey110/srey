@@ -19,6 +19,7 @@ struct listener_ctx
     SOCKET  sock;
     accept_cb acp_cb;
     struct netev_ctx *netev;
+    void(*free_ud)(struct ud_ctx *pud);
     struct ud_ctx ud;
     struct overlap_acpt_ctx overlap_acpt[MAX_ACCEPTEX_CNT];
 };
@@ -45,6 +46,7 @@ struct overlap_ctx
     close_cb c_cb;
     struct netev_ctx *netev;
     union netaddr_ctx *prmtaddr;//UDP
+    void(*free_ud)(struct ud_ctx *pud);
     struct ud_ctx ud;
     struct buffer_ctx buf_r;
     struct buffer_ctx buf_w;
@@ -451,7 +453,7 @@ struct sock_ctx *netev_add_sock(struct netev_ctx *pctx, SOCKET sock, int32_t ity
     pol->family = ifamily;
     pol->overlap_r.sock = sock;
     pol->overlap_w.sock = sock;
-    sid_t uid = pctx->id_creater(pctx->id_data);
+    uint64_t uid = pctx->id_creater(pctx->id_data);
     pol->overlap_r.id = uid;
     pol->overlap_w.id = uid;
     pol->netev = pctx;
@@ -463,6 +465,10 @@ struct sock_ctx *netev_add_sock(struct netev_ctx *pctx, SOCKET sock, int32_t ity
 }
 static inline void _listener_free(struct listener_ctx *plsn)
 {
+    if (NULL != plsn->free_ud)
+    {
+        plsn->free_ud(&plsn->ud);
+    }
     for (int32_t i = 0; i < MAX_ACCEPTEX_CNT; i++)
     {
         SAFE_CLOSE_SOCK(plsn->overlap_acpt[i].sock.sock);
@@ -487,8 +493,9 @@ static inline void _listener_delay_free(struct ud_ctx *pud)
     }
     tw_add(plsn->netev->tw, DELAYFREE_TIME, _listener_delay_free, pud);
 }
-void listener_free(struct listener_ctx *plsn)
+void listener_free(struct listener_ctx *plsn, void(*free_ud)(struct ud_ctx *))
 {
+    plsn->free_ud = free_ud;
     SAFE_CLOSE_SOCK(plsn->sock);
     atomic_t iacpcnt = ATOMIC_GET(&plsn->acpcnt);
     if (0 == iacpcnt)
@@ -560,6 +567,7 @@ struct listener_ctx *netev_listener(struct netev_ctx *pctx,
         SOCK_CLOSE(sock);
         return NULL;
     }
+    ZERO(plsn, sizeof(struct listener_ctx));
     plsn->family = (uint32_t)netaddr_family(&addr);
     plsn->sock = sock;
     plsn->acp_cb = acp_cb;
@@ -567,24 +575,23 @@ struct listener_ctx *netev_listener(struct netev_ctx *pctx,
     {
         memcpy(&plsn->ud, pud, sizeof(struct ud_ctx));
     }
-    else
-    {
-        ZERO(&plsn->ud, sizeof(struct ud_ctx));
-    }
     plsn->netev = pctx;
     plsn->freecnt = 0;
     plsn->acpcnt = 0;
     if (ERR_OK != _acceptex(plsn))
     {
-        listener_free(plsn);
+        listener_free(plsn, NULL);
         return NULL;
     }
 
     return plsn;
 }
-static inline void _sock_free(void *pdata)
+static inline void _sock_free(struct overlap_ctx *pol)
 {
-    struct overlap_ctx *pol = pdata;
+    if (NULL != pol->free_ud)
+    {
+        pol->free_ud(&pol->ud);
+    }
     SAFE_CLOSE_SOCK(pol->overlap_r.sock);
     if (SOCK_DGRAM == pol->socktype)
     {
@@ -615,9 +622,10 @@ static inline void _sock_delay_free(struct ud_ctx *pud)
     }
     tw_add(pol->netev->tw, DELAYFREE_TIME, _sock_delay_free, pud);
 }
-void sock_free(struct sock_ctx *psock)
+void sock_free(struct sock_ctx *psock, void(*free_ud)(struct ud_ctx *))
 {
     struct overlap_ctx *pol = _get_overlap(psock);
+    pol->free_ud = free_ud;
     atomic_t iref_r = ATOMIC_GET(&pol->ref_r);
     atomic_t iref_w = ATOMIC_GET(&pol->ref_w);
     SAFE_CLOSE_SOCK(pol->overlap_r.sock);
@@ -696,7 +704,7 @@ struct sock_ctx *netev_connecter(struct netev_ctx *pctx, uint32_t utimeout,
     socknbio(sock);
     if (ERR_OK != _connectex(pwatcher, pol, &addr))
     {
-        sock_free(&pol->overlap_r);
+        sock_free(&pol->overlap_r, NULL);
         return NULL;
     }
 
@@ -816,11 +824,6 @@ int32_t sock_send_buffer(struct sock_ctx *psock)
 int32_t sock_type(struct sock_ctx *psock)
 {
     return _get_overlap(psock)->socktype;
-}
-void sock_change_uid(struct sock_ctx *psock, sid_t uid)
-{
-    struct overlap_ctx *polctx = _get_overlap(psock);
-    ATOMIC64_SET(&polctx->ud.id, uid);
 }
 struct buffer_ctx *sock_buffer_r(struct sock_ctx *psock)
 {
