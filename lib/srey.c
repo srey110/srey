@@ -4,12 +4,14 @@
 #define MAX_RUNCNT      10
 #define RUNTIME_WARING  50
 #define ID_STARTAT      1000
+#define TASK_DELAYFREE_TIME          10
+#define TASK_MAX_DELAYFREE_CNT       100
 struct task_ctx
 {
     uint32_t freecnt;
-    uint32_t unreg;
     uint32_t session;
     uint32_t global;
+    volatile atomic_t stop;
     volatile atomic_t ref;
     void *handle;
     void *udata;
@@ -25,6 +27,8 @@ struct srey_ctx
     uint32_t accuracy;//计时器精度
     uint32_t workercnt;
     uint32_t waiting;
+    uint32_t free_timeout;
+    volatile int32_t bgstop;
     volatile int32_t stop;//停止标志
     volatile atomic_t freecnt;
     struct netev_ctx *netev;//网络
@@ -85,12 +89,17 @@ static inline struct rwlock_ctx *_map_rwlock(struct srey_ctx *pctx)
 {
     return map_rwlock(pctx->map_name);
 }
-struct srey_ctx *srey_new(uint32_t uiworker, module_msg_release msgfree)
+static inline void _srey_grab(struct task_ctx *ptask)
+{
+    ATOMIC_ADD(&ptask->ref, 1);
+}
+struct srey_ctx *srey_new(uint32_t uiworker, module_msg_release msgfree, uint32_t uifreetimeout)
 {
     struct srey_ctx *pctx = MALLOC(sizeof(struct srey_ctx));
     ASSERTAB(NULL != pctx, ERRSTR_MEMORY);
     srand((uint32_t)time(NULL));
-    pctx->stop = pctx->freecnt = pctx->waiting = 0;
+    pctx->bgstop = pctx->stop = pctx->freecnt = pctx->waiting = 0;
+    pctx->free_timeout = uifreetimeout;
     pctx->ids = ID_STARTAT;
     pctx->accuracy = 1000 * 1000;
     pctx->md_msg_free = msgfree;
@@ -114,7 +123,7 @@ struct srey_ctx *srey_new(uint32_t uiworker, module_msg_release msgfree)
 
     return pctx;
 }
-static inline int32_t _srey_task_msg_push(struct task_ctx *ptotask, uint64_t srcid, uint32_t uisess, uint32_t uitype, void *pmsg, uint32_t uisz)
+static inline void _srey_task_push(struct task_ctx *ptotask, uint64_t srcid, uint32_t uisess, uint32_t uitype, void *pmsg, uint32_t uisz)
 {
     struct message_ctx msg;
     msg.flags = uitype;
@@ -124,15 +133,6 @@ static inline int32_t _srey_task_msg_push(struct task_ctx *ptotask, uint64_t src
     msg.data = pmsg;
     int32_t iadd = 0;
     mutex_lock(&ptotask->mu_qu);
-    if (0 != ptotask->unreg)
-    {
-        mutex_unlock(&ptotask->mu_qu);
-        return ERR_FAILED;
-    }
-    if (MSG_TYPE_UNREG == uitype)
-    {
-        ptotask->unreg = 1;
-    }
     queue_expand(&ptotask->qu);
     queue_push(&ptotask->qu, &msg);
     if (0 == ptotask->global)
@@ -155,27 +155,27 @@ static inline int32_t _srey_task_msg_push(struct task_ctx *ptotask, uint64_t src
             cond_signal(&pctx->cond_worker);
         }
     }
-
-    return ERR_OK;
 }
-static inline int32_t _iter_unregister(void *pitem, void *pudata)
+static inline int32_t _iter_stop(void *pitem, void *pudata)
 {
-    ASSERTAB(ERR_OK == _srey_task_msg_push(((struct map_task_id *)pitem)->task, 0, 0, MSG_TYPE_UNREG, NULL, 0),
-        "logic error.");
+    struct task_ctx *ptask = ((struct map_task_id *)pitem)->task;
+    if (ATOMIC_CAS(&ptask->stop, 0, 1))
+    {
+        _srey_task_push(ptask, 0, 0, MSG_TYPE_STOP, NULL, 0);
+    }    
     return ERR_OK;
 }
 void srey_free(struct srey_ctx *pctx)
 {
+    pctx->bgstop = 1;
     struct rwlock_ctx *plock = _map_rwlock(pctx);
-    rwlock_wrlock(plock);
+    rwlock_rdlock(plock);
     ATOMIC_SET(&pctx->freecnt, (atomic_t)_map_size(pctx->map_id));
-    _map_iter(pctx->map_id, _iter_unregister, NULL);
-    _map_clear(pctx->map_id);
-    _map_clear(pctx->map_name);
+    _map_iter(pctx->map_id, _iter_stop, NULL);
     rwlock_unlock(plock);
     uint32_t uitimeout = 0;
     while (ATOMIC_GET(&pctx->freecnt) > 0
-        && uitimeout <= 5000)
+        && uitimeout < pctx->free_timeout)
     {
         MSLEEP(10);
         uitimeout += 10;
@@ -212,7 +212,6 @@ static inline void _push_global(struct srey_ctx *pctx, struct task_ctx *ptask)
         iadd = 1;
     }
     mutex_unlock(&ptask->mu_qu);
-
     if (0 != iadd)
     {
         struct message_ctx gmsg;
@@ -239,7 +238,7 @@ static inline void _srey_release(struct ud_ctx *pud)
         srey_release(ptask);
     }
 }
-static inline void _msg_clean(struct srey_ctx *pctx, struct task_ctx *ptask, struct message_ctx *pmsg)
+static inline void _srey_clean(struct srey_ctx *pctx, struct task_ctx *ptask, struct message_ctx *pmsg)
 {
     switch (pmsg->flags)
     {
@@ -265,9 +264,48 @@ static inline void _msg_clean(struct srey_ctx *pctx, struct task_ctx *ptask, str
         break;
     }
 }
+void _task_delay_free(struct ud_ctx *pud)
+{
+    struct task_ctx *ptask = (struct task_ctx *)pud->handle;
+    mutex_lock(&ptask->mu_qu);
+    int32_t icnt = queue_size(&ptask->qu);
+    mutex_unlock(&ptask->mu_qu);
+    if ((int32_t)ATOMIC_GET(&ptask->ref) <= 0
+        && 0 == icnt)
+    {
+        if (0 != ptask->srey->bgstop)
+        {
+            struct map_task_id mapid;
+            mapid.id = ptask->id;
+            struct rwlock_ctx *plock = _map_rwlock(ptask->srey);
+            rwlock_wrlock(plock);
+            if (ERR_OK == _map_remove(ptask->srey->map_id, &mapid, NULL))
+            {
+                struct map_task_name mapname;
+                FILL_NAME(mapname.name, ptask->module.name);
+                ASSERTAB(ERR_OK == _map_remove(ptask->srey->map_name, &mapname, NULL), "logic error.");
+            }
+            rwlock_unlock(plock);
+        }
+        _srey_task_push(ptask, 0, 0, MSG_TYPE_FREE, NULL, 0);
+        return;
+    }
+    ptask->freecnt++;
+    if (ptask->freecnt >= TASK_MAX_DELAYFREE_CNT)
+    {
+        LOG_WARN("free task %s use long time. ref %d queue size %d.",
+            ptask->module.name, ATOMIC_GET(&ptask->ref), icnt);
+        ptask->freecnt = 0;
+    }
+    tw_add(&ptask->srey->tw, TASK_DELAYFREE_TIME, _task_delay_free, pud);
+}
 static inline void _task_free(struct task_ctx *ptask)
 {
     struct srey_ctx *psrey = ptask->srey;
+    if (NULL != ptask->module.md_free)
+    {
+        ptask->module.md_free(ptask, ptask->handle, ptask->udata);
+    }
     queue_free(&ptask->qu);
     mutex_free(&ptask->mu_qu);
     FREE(ptask);
@@ -275,22 +313,6 @@ static inline void _task_free(struct task_ctx *ptask)
     {
         ATOMIC_ADD(&psrey->freecnt, -1);
     }
-}
-void _task_delay_free(struct ud_ctx *pud)
-{
-    struct task_ctx *ptask = (struct task_ctx *)pud->handle;
-    if (0 == ATOMIC_GET(&ptask->ref))
-    {
-        _task_free(ptask);
-        return;
-    }
-    ptask->freecnt++;
-    if (ptask->freecnt >= MAX_DELAYFREE_CNT)
-    {
-        LOG_WARN("free task %s use long time. ref %d.", ptask->module.name, ATOMIC_GET(&ptask->ref));
-        ptask->freecnt = 0;
-    }
-    tw_add(&ptask->srey->tw, DELAYFREE_TIME, _task_delay_free, pud);
 }
 static inline void _msg_dispatch(struct srey_ctx *pctx, struct timer_ctx *ptimer, struct task_ctx *ptask)
 {
@@ -307,35 +329,33 @@ static inline void _msg_dispatch(struct srey_ctx *pctx, struct timer_ctx *ptimer
             break;
         }
 
-        if (MSG_TYPE_UNREG == msg.flags)
+        switch (msg.flags)
         {
-            if (NULL != ptask->module.release)
+        case MSG_TYPE_STOP:
+            if (NULL != ptask->module.md_stop)
             {
-                ptask->module.release(ptask, ptask->handle, ptask->udata);
+                ptask->module.md_stop(ptask, ptask->handle, ptask->udata);
             }
-            srey_release(ptask);
-            if (0 == ATOMIC_GET(&ptask->ref))
-            {
-                _task_free(ptask);
-            }
-            else
-            {
-                struct ud_ctx ud;
-                ud.handle = (uintptr_t)ptask;
-                tw_add(&ptask->srey->tw, DELAYFREE_TIME, _task_delay_free, &ud);
-            }
+            struct ud_ctx ud;
+            ud.handle = (uintptr_t)ptask;
+            tw_add(&ptask->srey->tw, TASK_DELAYFREE_TIME, _task_delay_free, &ud);         
+            ATOMIC_ADD(&ptask->ref, -1);
+            break;
+        case MSG_TYPE_FREE:
+            _task_free(ptask);
             return;
+        default:
+            timer_start(ptimer);
+            ptask->module.md_run(ptask, msg.flags, msg.id, msg.session, msg.data, msg.size, ptask->udata);
+            ulcost = timer_elapsed(ptimer) / (1000 * 1000);
+            ptask->cpu_cost += ulcost;
+            if (ulcost >= RUNTIME_WARING)
+            {
+                LOG_WARN("task %s type %d,run long time.", ptask->module.name, msg.flags);
+            }
+            _srey_clean(pctx, ptask, &msg);
+            break;
         }
-        
-        timer_start(ptimer);
-        ptask->module.run(ptask, msg.flags, msg.id, msg.session, msg.data, msg.size, ptask->udata);
-        ulcost = timer_elapsed(ptimer) / (1000 * 1000);
-        ptask->cpu_cost += ulcost;
-        if (ulcost >= RUNTIME_WARING)
-        {
-            LOG_WARN("task %s type %d,run long time.", ptask->module.name, msg.flags);
-        }
-        _msg_clean(pctx, ptask, &msg);
     }
     _push_global(pctx, ptask);
 }
@@ -388,9 +408,9 @@ void srey_loop(struct srey_ctx *pctx)
     thread_waitstart(&pctx->thr_tw);
     netev_loop(pctx->netev);
 }
-struct task_ctx *srey_register(struct srey_ctx *pctx, struct module_ctx *pmodule, void *pudata)
+struct task_ctx *srey_newtask(struct srey_ctx *pctx, struct module_ctx *pmodule, void *pudata)
 {
-    ASSERTAB(NULL != pmodule->run, ERRSTR_NULLP);
+    ASSERTAB(NULL != pmodule->md_run, ERRSTR_NULLP);
     struct map_task_name mapname;
     FILL_NAME(mapname.name, pmodule->name);
     struct rwlock_ctx *plock = _map_rwlock(pctx);
@@ -402,15 +422,15 @@ struct task_ctx *srey_register(struct srey_ctx *pctx, struct module_ctx *pmodule
         LOG_ERROR("task %s already registered.", pmodule->name);
         return NULL;
     }
+
     struct task_ctx *ptask = MALLOC(sizeof(struct task_ctx));
     if (NULL == ptask)
     {
         LOG_ERROR("%s", ERRSTR_MEMORY);
         return NULL;
     }
-
     ZERO(ptask, sizeof(struct task_ctx));
-    ATOMIC_SET(&ptask->ref, 1);
+    ptask->ref = 1;
     ptask->srey = pctx;
     uint64_t id = _srey_id(pctx);
     ptask->id = id;
@@ -420,12 +440,10 @@ struct task_ctx *srey_register(struct srey_ctx *pctx, struct module_ctx *pmodule
     mutex_init(&ptask->mu_qu);
     pmodule->maxcnt = pmodule->maxcnt > MAX_RUNCNT ? MAX_RUNCNT : pmodule->maxcnt;
     memcpy(&ptask->module, pmodule, sizeof(struct module_ctx));
-    ptask->handle = NULL;
-    if (NULL != ptask->module.create)
+    if (NULL != ptask->module.md_new)
     {
-        ptask->handle = ptask->module.create(ptask, pudata);
+        ptask->handle = ptask->module.md_new(ptask, pudata);
     }
-
     mapname.task = ptask;
     struct map_task_id mapid;
     mapid.id = id;
@@ -434,43 +452,19 @@ struct task_ctx *srey_register(struct srey_ctx *pctx, struct module_ctx *pmodule
     _map_set(pctx->map_name, &mapname);
     _map_set(pctx->map_id, &mapid);
     rwlock_unlock(plock);
-    if (NULL != ptask->module.init)
+    if (NULL != ptask->module.md_init)
     {
-        irtn = ptask->module.init(ptask, ptask->handle, pudata);
-        if (ERR_OK != irtn)
+        if (ERR_OK != ptask->module.md_init(ptask, ptask->handle, pudata))
         {
-            srey_unregister(ptask);
-            LOG_ERROR("init task %s failed. return code %d.", pmodule->name, irtn);
+            srey_release(ptask);
+            LOG_ERROR("init task %s failed.", pmodule->name);
             return NULL;
         }
     }
 
     return ptask;
 }
-void srey_unregister(struct task_ctx *ptask)
-{
-    struct srey_ctx *pctx = ptask->srey;
-    struct map_task_id mapid;
-    mapid.id = ptask->id;
-    struct rwlock_ctx *plock = _map_rwlock(pctx);
-    rwlock_wrlock(plock);
-    if (ERR_OK == _map_remove(pctx->map_id, &mapid, &mapid))
-    {
-        struct map_task_name mapname;
-        FILL_NAME(mapname.name, ptask->module.name);
-        ASSERTAB(ERR_OK == _map_remove(pctx->map_name, &mapname, NULL), "logic error.");
-    }
-    rwlock_unlock(plock);
-    if (ERR_OK != _srey_task_msg_push(ptask, 0, 0, MSG_TYPE_UNREG, NULL, 0))
-    {
-        ASSERTAB("task %s already unregister.", ptask->module.name);
-    }
-}
-static inline void _srey_grab(struct task_ctx *ptask)
-{
-    ATOMIC_ADD(&ptask->ref, 1);
-}
-struct task_ctx *srey_query(struct srey_ctx *pctx, const char *pname)
+struct task_ctx *srey_grabnam(struct srey_ctx *pctx, const char *pname)
 {
     struct task_ctx *ptask = NULL;
     struct map_task_name mapname;
@@ -486,7 +480,7 @@ struct task_ctx *srey_query(struct srey_ctx *pctx, const char *pname)
 
     return ptask;
 }
-struct task_ctx *srey_queryid(struct srey_ctx *pctx, uint64_t id)
+struct task_ctx *srey_grabid(struct srey_ctx *pctx, uint64_t id)
 {
     struct task_ctx *ptask = NULL;
     struct map_task_id mapid;
@@ -504,45 +498,52 @@ struct task_ctx *srey_queryid(struct srey_ctx *pctx, uint64_t id)
 }
 void srey_release(struct task_ctx *ptask)
 {
+    if (1 == ATOMIC_GET(&ptask->ref)
+        && ATOMIC_CAS(&ptask->stop, 0, 1))
+    {
+        struct srey_ctx *pctx = ptask->srey;
+        struct map_task_id mapid;
+        mapid.id = ptask->id;
+        struct rwlock_ctx *plock = _map_rwlock(pctx);
+        rwlock_wrlock(plock);
+        if (ERR_OK == _map_remove(pctx->map_id, &mapid, &mapid))
+        {
+            struct map_task_name mapname;
+            FILL_NAME(mapname.name, ptask->module.name);
+            ASSERTAB(ERR_OK == _map_remove(pctx->map_name, &mapname, NULL), "logic error.");
+        }
+        rwlock_unlock(plock);
+        _srey_task_push(ptask, 0, 0, MSG_TYPE_STOP, NULL, 0);
+        return;
+    }
+
     ATOMIC_ADD(&ptask->ref, -1);
 }
-int32_t srey_call(struct task_ctx *ptask, void *pmsg, uint32_t uisz)
+void srey_call(struct task_ctx *ptask, void *pmsg, uint32_t uisz)
 {
-    int32_t irtn = _srey_task_msg_push(ptask, 0, 0, MSG_TYPE_REQUEST, pmsg, uisz);
-    if (ERR_OK != irtn)
-    {
-        _task_msg_free(ptask->srey, pmsg);
-    }
-    return irtn;
+    _srey_task_push(ptask, 0, 0, MSG_TYPE_REQUEST, pmsg, uisz);
 }
-int32_t srey_request(struct task_ctx *ptask, uint64_t srcid, uint32_t uisess, void *pmsg, uint32_t uisz)
+void srey_request(struct task_ctx *ptask, uint64_t srcid, uint32_t uisess, void *pmsg, uint32_t uisz)
 {
-    int32_t irtn = _srey_task_msg_push(ptask, srcid, uisess, MSG_TYPE_REQUEST, pmsg, uisz);
-    if (ERR_OK != irtn)
-    {
-        _task_msg_free(ptask->srey, pmsg);
-    }
-    return irtn;
+    _srey_task_push(ptask, srcid, uisess, MSG_TYPE_REQUEST, pmsg, uisz);
 }
-int32_t srey_response(struct task_ctx *ptask, uint32_t uisess, void *pmsg, uint32_t uisz)
+void srey_response(struct task_ctx *ptask, uint32_t uisess, void *pmsg, uint32_t uisz)
 {
-    int32_t irtn = _srey_task_msg_push(ptask, 0, uisess, MSG_TYPE_RESPONSE, pmsg, uisz);
-    if (ERR_OK != irtn)
-    {
-        _task_msg_free(ptask->srey, pmsg);
-    }
-    return irtn;
+    _srey_task_push(ptask, 0, uisess, MSG_TYPE_RESPONSE, pmsg, uisz);
 }
 static inline void _srey_timeout(struct ud_ctx *pud)
 {
-    struct task_ctx *ptask = srey_queryid((struct srey_ctx *)pud->handle, pud->id);
-    if (NULL != ptask)
+    struct srey_ctx *pctx = (struct srey_ctx *)pud->handle;
+    struct map_task_id mapid;
+    mapid.id = pud->id;
+    struct rwlock_ctx *plock = _map_rwlock(pctx);
+    rwlock_rdlock(plock);
+    if (ERR_OK == _map_get(pctx->map_id, &mapid, &mapid))
     {
-        if (ERR_OK != _srey_task_msg_push(ptask, 0, pud->session, MSG_TYPE_TIMEOUT, NULL, 0))
-        {
-            srey_release(ptask);
-        }
+        _srey_grab(mapid.task);
+        _srey_task_push(mapid.task, 0, pud->session, MSG_TYPE_TIMEOUT, NULL, 0);
     }
+    rwlock_unlock(plock);
 }
 void srey_timeout(struct task_ctx *ptask, uint32_t uisess, uint32_t uitimeout)
 {
@@ -554,10 +555,7 @@ void srey_timeout(struct task_ctx *ptask, uint32_t uisess, uint32_t uitimeout)
 }
 static inline void _srey_sock_accept(struct sock_ctx *psock, struct ud_ctx *pud)
 {
-    if (ERR_OK != _srey_task_msg_push((struct task_ctx *)pud->handle, 0, 0, MSG_TYPE_ACCEPT, psock, 0))
-    {
-        sock_free(psock, NULL);
-    }
+    _srey_task_push((struct task_ctx *)pud->handle, 0, 0, MSG_TYPE_ACCEPT, psock, 0);
 }
 struct listener_ctx *srey_listener(struct task_ctx *ptask, const char *phost, uint16_t usport)
 {
@@ -576,11 +574,7 @@ void srey_freelsn(struct listener_ctx *plsn)
 }
 static inline void _srey_sock_connect(struct sock_ctx *psock, int32_t ierr, struct ud_ctx *pud)
 {
-    if (ERR_OK != _srey_task_msg_push((struct task_ctx *)pud->handle, 
-        0, pud->session, MSG_TYPE_CONNECT, psock, (ERR_OK == ierr ? ERR_OK : 1)))
-    {
-        sock_free(psock, _srey_release);
-    }
+    _srey_task_push((struct task_ctx *)pud->handle, 0, pud->session, MSG_TYPE_CONNECT, psock, (uint32_t)ierr);
 }
 struct sock_ctx *srey_connecter(struct task_ctx *ptask, uint32_t uisess, uint32_t utimeout, const char *phost, uint16_t usport)
 {
@@ -602,10 +596,7 @@ static inline void _srey_sock_recv(struct sock_ctx *psock, size_t uisize, union 
 {
     if (SOCK_STREAM == sock_type(psock))
     {
-        if (ERR_OK != _srey_task_msg_push((struct task_ctx *)pud->handle, 0, 0, MSG_TYPE_RECV, psock, (uint32_t)uisize))
-        {
-            sock_close(psock);
-        }
+        _srey_task_push((struct task_ctx *)pud->handle, 0, 0, MSG_TYPE_RECV, psock, (uint32_t)uisize);
     }
     else
     {
@@ -619,26 +610,16 @@ static inline void _srey_sock_recv(struct sock_ctx *psock, size_t uisize, union 
         pmsg->sock = psock;
         pmsg->port = netaddr_port(paddr);
         netaddr_ip(paddr, pmsg->ip);
-        if (ERR_OK != _srey_task_msg_push((struct task_ctx *)pud->handle, 0, 0, MSG_TYPE_RECVFROM, pmsg, (uint32_t)uisize))
-        {
-            FREE(pmsg);
-            sock_close(psock);
-        }
+        _srey_task_push((struct task_ctx *)pud->handle, 0, 0, MSG_TYPE_RECVFROM, pmsg, (uint32_t)uisize);
     }
 }
 static inline void _srey_sock_send(struct sock_ctx *psock, size_t uisize, struct ud_ctx *pud)
 {
-    if (ERR_OK != _srey_task_msg_push((struct task_ctx *)pud->handle, 0, 0, MSG_TYPE_SEND, psock, (uint32_t)uisize))
-    {
-        sock_close(psock);
-    }
+    _srey_task_push((struct task_ctx *)pud->handle, 0, 0, MSG_TYPE_SEND, psock, (uint32_t)uisize);
 }
 static inline void _srey_sock_close(struct sock_ctx *psock, struct ud_ctx *pud)
 {
-    if (ERR_OK != _srey_task_msg_push((struct task_ctx *)pud->handle, 0, 0, MSG_TYPE_CLOSE, psock, 0))
-    {
-        sock_free(psock, _srey_release);
-    }
+    _srey_task_push((struct task_ctx *)pud->handle, 0, 0, MSG_TYPE_CLOSE, psock, 0);
 }
 int32_t srey_enable(struct task_ctx *ptask, struct sock_ctx *psock, int32_t iwrite)
 {

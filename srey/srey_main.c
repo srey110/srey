@@ -43,7 +43,7 @@ void lsn_cb(struct task_ctx *ptask, uint32_t itype, uint64_t srcid, uint32_t uis
     struct sock_ctx *psock = pmsg;
     char acname[NAME_LENS] = { 0 };
     SNPRINTF(acname, sizeof(acname), "tcp gate%d", rand() % 4);
-    struct task_ctx *pbind = srey_query(psrey, acname);
+    struct task_ctx *pbind = srey_grabnam(psrey, acname);
     if (NULL == pbind)
     {
         sock_close(psock);
@@ -96,7 +96,7 @@ void tcp_gate_cb(struct task_ctx *ptask, uint32_t itype, uint64_t srcid, uint32_
     case MSG_TYPE_REQUEST:
         if (0 != srcid)
         {
-            struct task_ctx *pto = srey_queryid(psrey, srcid);
+            struct task_ctx *pto = srey_grabid(psrey, srcid);
             if (NULL != pto)
             {
                 srey_response(pto, uisess, NULL, 0);
@@ -155,7 +155,7 @@ void udp_gate_cb(struct task_ctx *ptask, uint32_t itype, uint64_t srcid, uint32_
             ATOMIC_GET(&uiregcnt));
         char acname[NAME_LENS] = { 0 };
         SNPRINTF(acname, sizeof(acname), "tcp gate%d", rand() % 4);
-        struct task_ctx *pto  = srey_query(psrey, acname);
+        struct task_ctx *pto  = srey_grabnam(psrey, acname);
         if (NULL != pto)
         {
             if (rand() % 2 == 0)
@@ -197,7 +197,7 @@ void conn_cb(struct task_ctx *ptask, uint32_t itype, uint64_t srcid, uint32_t ui
         {
             char acname[NAME_LENS] = { 0 };
             SNPRINTF(acname, sizeof(acname), "tcp gate%d", rand() % 4);
-            struct task_ctx *pbind = srey_query(psrey, acname);
+            struct task_ctx *pbind = srey_grabnam(psrey, acname);
             if (NULL == pbind)
             {
                 sock_close(psock);
@@ -216,6 +216,7 @@ void conn_cb(struct task_ctx *ptask, uint32_t itype, uint64_t srcid, uint32_t ui
         break;
     }
 }
+int32_t iunreg = 0;
 void reg_unreg_modle_init(struct module_ctx *pmd);
 int32_t reg_unreg_init(struct task_ctx *ptask, void *pinst, void *pudata)
 {
@@ -227,21 +228,20 @@ void reg_unreg_cb(struct task_ctx *ptask, uint32_t itype, uint64_t srcid, uint32
     switch (itype)
     {
     case MSG_TYPE_TIMEOUT:
-        srey_unregister(ptask);
-        struct module_ctx md;
-        reg_unreg_modle_init(&md);
-        srey_register(psrey, &md, NULL);
+        srey_release(ptask);
         ATOMIC_ADD(&uiregcnt, 1);
+        iunreg = 1;
         break;
     }
 }
 void reg_unreg_modle_init(struct module_ctx *pmd)
 {
-    pmd->create = NULL;
-    pmd->init = reg_unreg_init;
+    pmd->md_new = NULL;
+    pmd->md_init = reg_unreg_init;
     pmd->maxcnt = 2;
-    pmd->release = NULL;
-    pmd->run = reg_unreg_cb;
+    pmd->md_free = NULL;
+    pmd->md_run = reg_unreg_cb;
+    pmd->md_stop = NULL;
     ZERO(pmd->name, sizeof(pmd->name));
     SNPRINTF(pmd->name, sizeof(pmd->name), "%s", "reg_unreg");
 };
@@ -258,52 +258,58 @@ int main(int argc, char *argv[])
     LOG_FATAL("%s", "LOG_FATAL");
 
     struct module_ctx mdlsn;
-    mdlsn.create = NULL;
-    mdlsn.init = lsn_init;
+    mdlsn.md_new = NULL;
+    mdlsn.md_init = lsn_init;
     mdlsn.maxcnt = 4;
     const char *plsnname = "listener";
     size_t ilens = strlen(plsnname);
     memcpy(mdlsn.name, plsnname, ilens);
     mdlsn.name[ilens] = '\0';
-    mdlsn.release = lsn_release;
-    mdlsn.run = lsn_cb;
-    psrey = srey_new(0, NULL);
+    mdlsn.md_stop = lsn_release;
+    mdlsn.md_run = lsn_cb;
+    mdlsn.md_free = NULL;
+    psrey = srey_new(0, NULL, 5000);
     srey_loop(psrey);
-    srey_register(psrey, &mdlsn, NULL);
+    srey_newtask(psrey, &mdlsn, NULL);
 
     struct module_ctx mdgate;
-    mdgate.create = NULL;
-    mdgate.init = NULL;
+    mdgate.md_new = NULL;
+    mdgate.md_init = NULL;
     mdgate.maxcnt = 4;
-    mdgate.release = NULL;
-    mdgate.run = tcp_gate_cb;
+    mdgate.md_free = NULL;
+    mdgate.md_stop = NULL;
+    mdgate.md_run = tcp_gate_cb;
     for (int32_t i = 0; i < 4; i++)
     {
         ZERO(mdgate.name, sizeof(mdgate.name));
         SNPRINTF(mdgate.name, sizeof(mdgate.name) - 1, "tcp gate%d", i);
-        srey_register(psrey, &mdgate, NULL);
+        srey_newtask(psrey, &mdgate, NULL);
     }
 
-    mdgate.init = udp_init;
-    mdgate.release = udp_release;
-    mdgate.run = udp_gate_cb;
+    mdgate.md_init = udp_init;
+    mdgate.md_stop = udp_release;
+    mdgate.md_run = udp_gate_cb;
     ZERO(mdgate.name, sizeof(mdgate.name));
     SNPRINTF(mdgate.name, sizeof(mdgate.name), "%s", "udp gate");
-    srey_register(psrey, &mdgate, NULL);
+    srey_newtask(psrey, &mdgate, NULL);
 
-    mdgate.init = conn_init;
-    mdgate.release = conn_release;
-    mdgate.run = conn_cb;
-    ZERO(mdgate.name, sizeof(mdgate.name));
+    mdgate.md_init = conn_init;
+    mdgate.md_stop = conn_release;
+    mdgate.md_run = conn_cb;
     SNPRINTF(mdgate.name, sizeof(mdgate.name), "%s", "connecter");
-    srey_register(psrey, &mdgate, NULL);
+    srey_newtask(psrey, &mdgate, NULL);
 
     struct module_ctx md;
     reg_unreg_modle_init(&md);
-    srey_register(psrey, &md, NULL);
+    srey_newtask(psrey, &md, NULL);
     while (0 == istop)
     {
-        MSLEEP(10);
+        if (1 == iunreg)
+        {
+            iunreg = 0;
+            srey_newtask(psrey, &md, NULL);
+        }
+        MSLEEP(100);
     }
     srey_free(psrey);
     LOGFREE();
