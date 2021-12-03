@@ -12,7 +12,6 @@ volatile atomic_t uitcprecv = 0;
 volatile atomic_t uitcpsend = 0;
 volatile atomic_t uiudprecv = 0;
 volatile atomic_t uiudpsend = 0;
-volatile atomic_t uiregcnt = 0;
 struct srey_ctx *psrey;
 //int32_t ifamily = AF_INET6;
 //const char *bindip = "::";
@@ -150,9 +149,8 @@ void udp_gate_cb(struct task_ctx *ptask, uint32_t itype, uint64_t srcid, uint32_
     case MSG_TYPE_CLOSE:
         break;
     case MSG_TYPE_TIMEOUT:
-        PRINTF("tcp recv %d send %d  udp recv %d send %d  linkcnt: %d  reg_unreg %d", 
-            ATOMIC_GET(&uitcprecv), ATOMIC_GET(&uitcpsend), ATOMIC_GET(&uiudprecv), ATOMIC_GET(&uiudpsend), ATOMIC_GET(&uilinkcnt),
-            ATOMIC_GET(&uiregcnt));
+        PRINTF("tcp recv %d send %d  udp recv %d send %d  linkcnt: %d", 
+            ATOMIC_GET(&uitcprecv), ATOMIC_GET(&uitcpsend), ATOMIC_GET(&uiudprecv), ATOMIC_GET(&uiudpsend), ATOMIC_GET(&uilinkcnt));
         char acname[NAME_LENS] = { 0 };
         SNPRINTF(acname, sizeof(acname), "tcp gate%d", rand() % 4);
         struct task_ctx *pto  = srey_grabnam(psrey, acname);
@@ -216,35 +214,6 @@ void conn_cb(struct task_ctx *ptask, uint32_t itype, uint64_t srcid, uint32_t ui
         break;
     }
 }
-int32_t iunreg = 0;
-void reg_unreg_modle_init(struct module_ctx *pmd);
-int32_t reg_unreg_init(struct task_ctx *ptask, void *pinst, void *pudata)
-{
-    srey_timeout(ptask, task_new_session(ptask), 100);
-    return ERR_OK;
-}
-void reg_unreg_cb(struct task_ctx *ptask, uint32_t itype, uint64_t srcid, uint32_t uisess, void *pmsg, uint32_t uisize, void *pudata)
-{
-    switch (itype)
-    {
-    case MSG_TYPE_TIMEOUT:
-        srey_release(ptask);
-        ATOMIC_ADD(&uiregcnt, 1);
-        iunreg = 1;
-        break;
-    }
-}
-void reg_unreg_modle_init(struct module_ctx *pmd)
-{
-    pmd->md_new = NULL;
-    pmd->md_init = reg_unreg_init;
-    pmd->maxcnt = 2;
-    pmd->md_free = NULL;
-    pmd->md_run = reg_unreg_cb;
-    pmd->md_stop = NULL;
-    ZERO(pmd->name, sizeof(pmd->name));
-    SNPRINTF(pmd->name, sizeof(pmd->name), "%s", "reg_unreg");
-};
 int main(int argc, char *argv[])
 {
     sighandle(sig_exit);
@@ -299,16 +268,8 @@ int main(int argc, char *argv[])
     SNPRINTF(mdgate.name, sizeof(mdgate.name), "%s", "connecter");
     srey_newtask(psrey, &mdgate, NULL);
 
-    struct module_ctx md;
-    reg_unreg_modle_init(&md);
-    srey_newtask(psrey, &md, NULL);
     while (0 == istop)
     {
-        if (1 == iunreg)
-        {
-            iunreg = 0;
-            srey_newtask(psrey, &md, NULL);
-        }
         MSLEEP(100);
     }
     srey_free(psrey);
