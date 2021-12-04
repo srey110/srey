@@ -4,8 +4,8 @@
 #define MAX_RUNCNT      10
 #define RUNTIME_WARING  50
 #define ID_STARTAT      1000
-#define TASK_DELAYFREE_TIME          10
-#define TASK_MAX_DELAYFREE_CNT       100
+#define TASK_DELAYFREE_TIME          50
+#define TASK_MAX_DELAYFREE_CNT       20
 struct task_ctx
 {
     uint32_t freecnt;
@@ -162,7 +162,7 @@ static inline int32_t _iter_stop(void *pitem, void *pudata)
     if (ATOMIC_CAS(&ptask->stop, 0, 1))
     {
         _srey_task_push(ptask, 0, 0, MSG_TYPE_STOP, NULL, 0);
-    }    
+    }
     return ERR_OK;
 }
 void srey_free(struct srey_ctx *pctx)
