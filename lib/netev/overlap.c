@@ -168,6 +168,10 @@ static inline int32_t _commit_buf_r(struct watcher_ctx *pwatcher, struct overlap
     if (0 == pwatcher->bytes
         || ERR_OK != pwatcher->err)
     {
+        if (ERROR_MORE_DATA == pwatcher->err)
+        {
+            LOG_ERROR("sock type %d. %s", polctx->socktype, ERRORSTR(pwatcher->err));
+        }
         buffer_write_iov_commit(&polctx->buf_r, 0, polctx->wsabuf_r, polctx->iovcnt_r);
         _on_close(polctx);
         ATOMIC_ADD(&polctx->ref_r, -1);

@@ -120,7 +120,10 @@ int32_t udp_init(struct task_ctx *ptask, void *pinst, void *pudata)
 }
 void udp_release(struct task_ctx *ptask, void *pinst, void *pudata)
 {
-    sock_close(pudpsock);
+    if (NULL != pudpsock)
+    {
+        sock_close(pudpsock);
+    }
 }
 void udp_gate_cb(struct task_ctx *ptask, uint32_t itype, uint64_t srcid, uint32_t uisess, void *pmsg, uint32_t uisize, void *pudata)
 {
@@ -147,6 +150,7 @@ void udp_gate_cb(struct task_ctx *ptask, uint32_t itype, uint64_t srcid, uint32_
         ATOMIC_ADD(&uiudpsend, 1);
         break;
     case MSG_TYPE_CLOSE:
+        pudpsock = NULL;
         break;
     case MSG_TYPE_TIMEOUT:
         PRINTF("tcp recv %d send %d  udp recv %d send %d  linkcnt: %d", 

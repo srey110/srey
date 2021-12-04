@@ -319,7 +319,8 @@ static inline int32_t _on_recvfrom_cb(struct watcher_ctx *pwatcher, struct usock
     }
     if (icnt > MAX_RECVFROM_IOV_SIZE)
     {
-        icnt = MAX_RECVFROM_IOV_SIZE;
+        LOG_ERROR("sock type %d. More data is available.", pusock->socktype);
+        return ERR_FAILED;
     }
 
     struct msghdr msg;
