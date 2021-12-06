@@ -10,7 +10,7 @@ void unlimit();
 /*
 * \brief          信号处理
 */
-void sighandle(void(*exit_cb)(int32_t));
+void sighandle(void(*sig_cb)(int32_t, void *), void *pud);
 /*
 * \brief          判断系统是否为大端
 * \param ulval    需要转换的值

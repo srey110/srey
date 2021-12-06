@@ -39,12 +39,7 @@ then
 	X64="x64"
 fi
 #结果存放路径
-RSTPATH="bin/x86"
-if [ "$X64" = "x64" ]
-then
-    RSTPATH="bin/x64"
-fi
-
+RSTPATH="bin"
 #中间库文件名
 LIBNAME="srey"
 #不参与编译的文件,MAINFILE+其他

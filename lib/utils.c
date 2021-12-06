@@ -157,46 +157,45 @@ void unlimit()
     }
 #endif
 }
-static void(*g_sig_cb)(int32_t);
+static void *g_ud;
+static void(*g_sig_cb)(int32_t, void *);
 #ifdef OS_WIN
-BOOL WINAPI _consolehandler(DWORD msgType)
+BOOL WINAPI _consolehandler(DWORD dsig)
 {
-    BOOL brtn = FALSE;
-    switch (msgType)
+    switch (dsig)
     {
     case CTRL_C_EVENT:
     case CTRL_CLOSE_EVENT:
     case CTRL_BREAK_EVENT:
     case CTRL_LOGOFF_EVENT:
     case CTRL_SHUTDOWN_EVENT:
-        brtn = TRUE;
-        break;
-
-    default:
-        brtn = FALSE;
+        g_sig_cb((int32_t)dsig, g_ud);
         break;
     }
-    if (brtn)
-    {
-        g_sig_cb((int32_t)msgType);
-    }
-
-    return brtn;
+    return TRUE;
+}
+#else
+static inline void usig_cb(int32_t isig)
+{
+    g_sig_cb(isig, g_ud);
 }
 #endif
-void sighandle(void(*exit_cb)(int32_t))
+void sighandle(void(*sig_cb)(int32_t, void *), void *pud)
 {
-    g_sig_cb = exit_cb;
+    g_ud = pud;
+    g_sig_cb = sig_cb;
 #ifdef OS_WIN
     (void)SetConsoleCtrlHandler((PHANDLER_ROUTINE)_consolehandler, TRUE);
 #else
     signal(SIGPIPE, SIG_IGN);//若某一端关闭连接，而另一端仍然向它写数据，第一次写数据后会收到RST响应，此后再写数据，内核将向进程发出SIGPIPE信号
-    signal(SIGINT, g_sig_cb);//终止进程
-    signal(SIGHUP, g_sig_cb);//终止进程
-    signal(SIGTSTP, g_sig_cb);//ctrl+Z
-    signal(SIGTERM, g_sig_cb);//终止一个进程
-    signal(SIGKILL, g_sig_cb);//立即结束程序
-    signal(SIGABRT, g_sig_cb);//中止一个程序
+    signal(SIGINT, usig_cb);//终止进程
+    signal(SIGHUP, usig_cb);//终止进程
+    signal(SIGTSTP, usig_cb);//ctrl+Z
+    signal(SIGTERM, usig_cb);//终止一个进程
+    signal(SIGKILL, usig_cb);//立即结束程序
+    signal(SIGABRT, usig_cb);//中止一个程序
+    signal(SIGUSR1, usig_cb);
+    signal(SIGUSR2, usig_cb);
 #endif
 }
 int32_t bigendian()
