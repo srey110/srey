@@ -3,24 +3,25 @@
 
 #include "netev/netev.h"
 
-#define MSG_TYPE_STOP        0x01  
-#define MSG_TYPE_FREE        0x02
-#define MSG_TYPE_TIMEOUT     0x03    //超时    itype   uisess
-#define MSG_TYPE_ACCEPT      0x04    //itype   pmsg(struct sock_ctx *)
-#define MSG_TYPE_CONNECT     0x05    //itype   uisess  pmsg(struct sock_ctx *) uisize(error)
-#define MSG_TYPE_RECV        0x06    //itype   pmsg(struct sock_ctx *)  uisize
-#define MSG_TYPE_RECVFROM    0x07    //itype   pmsg(struct udp_recv_msg *) uisize
-#define MSG_TYPE_SEND        0x08    //itype   pmsg(struct sock_ctx *)  uisize
-#define MSG_TYPE_CLOSE       0x09    //itype   pmsg(struct sock_ctx *)
-#define MSG_TYPE_REQUEST     0x0A    //itype   srcid uisess  pmsg uisize
-#define MSG_TYPE_RESPONSE    0x0B    //itype   uisess  pmsg uisize
+#define MSG_TYPE_INIT        0x01
+#define MSG_TYPE_STOP        0x02  
+#define MSG_TYPE_FREE        0x03
+#define MSG_TYPE_TIMEOUT     0x04    //超时    itype   uisess
+#define MSG_TYPE_ACCEPT      0x05    //itype   pmsg(struct sock_ctx *)
+#define MSG_TYPE_CONNECT     0x06    //itype   uisess  pmsg(struct sock_ctx *) uisize(error)
+#define MSG_TYPE_RECV        0x07    //itype   pmsg(struct sock_ctx *)  uisize
+#define MSG_TYPE_RECVFROM    0x08    //itype   pmsg(struct udp_recv_msg *) uisize
+#define MSG_TYPE_SEND        0x09    //itype   pmsg(struct sock_ctx *)  uisize
+#define MSG_TYPE_CLOSE       0x0A    //itype   pmsg(struct sock_ctx *)
+#define MSG_TYPE_REQUEST     0x0B    //itype   srcid uisess  pmsg uisize
+#define MSG_TYPE_RESPONSE    0x0C    //itype   uisess  pmsg uisize
 
 struct task_ctx;
 typedef void *(*module_new)(struct task_ctx *ptask, void *pud);
-typedef int32_t(*module_init)(struct task_ctx *ptask, void *pmd, void *pud);
+typedef int32_t(*module_init)(struct task_ctx *ptask, void *pud);
 typedef void(*module_run)(struct task_ctx *ptask, uint32_t itype, uint64_t srcid, uint32_t uisess, void *pmsg, uint32_t uisize, void *pud);
-typedef void(*module_stop)(struct task_ctx *ptask, void *pmd, void *pud);
-typedef void(*module_free)(struct task_ctx *ptask, void *pmd, void *pud);
+typedef void(*module_stop)(struct task_ctx *ptask, void *pud);
+typedef void(*module_free)(struct task_ctx *ptask, void *pud);
 typedef void(*module_msg_release)(void *pmsg);//任务间消息释放
 struct module_ctx
 {
@@ -132,14 +133,14 @@ void srey_freelsn(struct listener_ctx *plsn);
 struct sock_ctx *srey_connecter(struct task_ctx *ptask, uint32_t uisess, uint32_t utimeout, const char *phost, uint16_t usport);
 /*
 * \brief           新建struct sock_ctx
-* \param ptask     任务
+* \param ptask     struct srey_ctx
 * \param sock      socket
 * \param itype     SOCK_STREAM  SOCK_DGRAM
 * \param ifamily   AF_INET  AF_INET6
 * \return          NULL 失败
 * \return          struct sock_ctx
 */
-struct sock_ctx *srey_newsock(struct task_ctx *ptask, SOCKET sock, int32_t itype, int32_t ifamily);
+struct sock_ctx *srey_newsock(struct srey_ctx *ptask, SOCKET sock, int32_t itype, int32_t ifamily);
 /*
 * \brief           开始读写
 * \param ptask     任务
@@ -169,5 +170,8 @@ const char *task_name(struct task_ctx *ptask);
 * \return          毫秒
 */
 uint64_t task_cpucost(struct task_ctx *ptask);
+void *task_handle(struct task_ctx *ptask);
+
+extern struct srey_ctx *g_srey;
 
 #endif//SREY_H_

@@ -11,13 +11,13 @@ UsAge="UsAge:\"./mk.sh\" or \"./mk.sh pg\" or \"./mk.sh clean\""
 #生成程序的名称
 PROGRAMNAME="srey"
 #文件夹
-Dir="lib lib/netev lib/md5 lib/sha1"
+Dir="lib lib/netev lib/md5 lib/sha1 lib/lua lib/luacjson"
 #main函数所在文件夹
 MAINDIR="srey"
 #main函数所在文件
 MAINFILE="srey_main.c"
 #附加包含库
-INCLUDELIB="-lpthread"
+INCLUDELIB="-lpthread -lm"
 #系统
 OSNAME=`uname`
 if [ "$OSNAME" != "Darwin" ]

@@ -5,14 +5,8 @@
 #ifdef OS_WIN
 #pragma warning(disable:4091)
 #include <DbgHelp.h>
+#pragma comment(lib, "Dbghelp.lib" )
 static volatile atomic_t g_exindex = 0;
-typedef BOOL(WINAPI *WRITEMINIDUMP)(HANDLE,
-    DWORD,
-    HANDLE,
-    MINIDUMP_TYPE,
-    CONST PMINIDUMP_EXCEPTION_INFORMATION,
-    CONST PMINIDUMP_USER_STREAM_INFORMATION,
-    CONST PMINIDUMP_CALLBACK_INFORMATION);
 BOOL _GetImpersonationToken(HANDLE *phandle)
 {
     if (!OpenThreadToken(GetCurrentThread(),
@@ -63,30 +57,10 @@ LONG __stdcall _on_exception(struct _EXCEPTION_POINTERS *pexception)
     char acdmp[PATH_LENS] = {0};
     SNPRINTF(acdmp, sizeof(acdmp) - 1, "%s%s%lld_%d.dmp",
         acpath, PATH_SEPARATORSTR, nowsec(), (int32_t)ATOMIC_ADD(&g_exindex, 1));
-
     HANDLE ptoken = NULL;
     if (!_GetImpersonationToken(&ptoken))
     {
         PRINTF("%s", "GetImpersonationToken faild.");
-        return EXCEPTION_CONTINUE_SEARCH;
-    }
-    HMODULE pdbghelp = LoadLibrary("dbghelp.dll");
-    if (NULL == pdbghelp)
-    {
-        char acdbghelp[PATH_LENS] = { 0 };
-        SNPRINTF(acdbghelp, sizeof(acdbghelp) - 1, "%s%s%s",
-            acpath, PATH_SEPARATORSTR, "dbghelp.dll");
-        pdbghelp = LoadLibrary(acdbghelp);
-        if (NULL == pdbghelp)
-        {
-            PRINTF("%s", "LoadLibrary(dbghelp.dll) faild.");
-            return EXCEPTION_CONTINUE_SEARCH;
-        }
-    }
-    WRITEMINIDUMP pwritedmp = (WRITEMINIDUMP)GetProcAddress(pdbghelp, "MiniDumpWriteDump");
-    if (NULL == pwritedmp)
-    {
-        PRINTF("%s", "GetProcAddress(, MiniDumpWriteDump) faild.");
         return EXCEPTION_CONTINUE_SEARCH;
     }
     HANDLE pdmpfile = CreateFile(acdmp,
@@ -109,7 +83,7 @@ LONG __stdcall _on_exception(struct _EXCEPTION_POINTERS *pexception)
     exinfo.ExceptionPointers = pexception;
     exinfo.ClientPointers = FALSE;
     BOOL bprienabled = _EnablePrivilege(SE_DEBUG_NAME, ptoken, &tprivold);
-    BOOL bok = pwritedmp(GetCurrentProcess(),
+    BOOL bok = MiniDumpWriteDump(GetCurrentProcess(),
         GetCurrentProcessId(),
         pdmpfile,
         MiniDumpNormal,

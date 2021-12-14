@@ -18,6 +18,6 @@
 #include "map.h"
 #include "netaddr.h"
 #include "netutils.h"
-#include "srey.h"
+#include "luatask.h"
 
 #endif//LIB_H_

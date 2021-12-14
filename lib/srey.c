@@ -45,6 +45,7 @@ struct srey_ctx
     struct queue_ctx qu;
     mutex_ctx mu_qu;
 };
+struct srey_ctx *g_srey = NULL;
 struct map_task_name
 {
     struct task_ctx *task;
@@ -304,7 +305,7 @@ static inline void _task_free(struct task_ctx *ptask)
     struct srey_ctx *psrey = ptask->srey;
     if (NULL != ptask->module.md_free)
     {
-        ptask->module.md_free(ptask, ptask->handle, ptask->udata);
+        ptask->module.md_free(ptask, ptask->udata);
     }
     queue_free(&ptask->qu);
     mutex_free(&ptask->mu_qu);
@@ -331,10 +332,30 @@ static inline void _msg_dispatch(struct srey_ctx *pctx, struct timer_ctx *ptimer
 
         switch (msg.flags)
         {
+        case MSG_TYPE_INIT:
+            if (NULL != ptask->module.md_new)
+            {
+                ptask->handle = ptask->module.md_new(ptask, ptask->udata);
+                if (NULL == ptask->handle)
+                {
+                    LOG_ERROR("module %s new error", ptask->module.name);
+                    srey_release(ptask);
+                    break;
+                }
+            }
+            if (NULL != ptask->module.md_init)
+            {
+                if (ERR_OK != ptask->module.md_init(ptask, ptask->udata))
+                {
+                    LOG_ERROR("init task %s failed.", ptask->module.name);
+                    srey_release(ptask);
+                }
+            }
+            break;
         case MSG_TYPE_STOP:
             if (NULL != ptask->module.md_stop)
             {
-                ptask->module.md_stop(ptask, ptask->handle, ptask->udata);
+                ptask->module.md_stop(ptask, ptask->udata);
             }
             struct ud_ctx ud;
             ud.handle = (uintptr_t)ptask;
@@ -440,10 +461,6 @@ struct task_ctx *srey_newtask(struct srey_ctx *pctx, struct module_ctx *pmodule,
     mutex_init(&ptask->mu_qu);
     pmodule->maxcnt = pmodule->maxcnt > MAX_RUNCNT ? MAX_RUNCNT : pmodule->maxcnt;
     memcpy(&ptask->module, pmodule, sizeof(struct module_ctx));
-    if (NULL != ptask->module.md_new)
-    {
-        ptask->handle = ptask->module.md_new(ptask, pudata);
-    }
     mapname.task = ptask;
     struct map_task_id mapid;
     mapid.id = id;
@@ -452,15 +469,7 @@ struct task_ctx *srey_newtask(struct srey_ctx *pctx, struct module_ctx *pmodule,
     _map_set(pctx->map_name, &mapname);
     _map_set(pctx->map_id, &mapid);
     rwlock_unlock(plock);
-    if (NULL != ptask->module.md_init)
-    {
-        if (ERR_OK != ptask->module.md_init(ptask, ptask->handle, pudata))
-        {
-            srey_release(ptask);
-            LOG_ERROR("init task %s failed.", pmodule->name);
-            return NULL;
-        }
-    }
+    _srey_task_push(ptask, 0, 0, MSG_TYPE_INIT, NULL, 0);
 
     return ptask;
 }
@@ -536,14 +545,18 @@ static inline void _srey_timeout(struct ud_ctx *pud)
     struct srey_ctx *pctx = (struct srey_ctx *)pud->handle;
     struct map_task_id mapid;
     mapid.id = pud->id;
+    mapid.task = NULL;
     struct rwlock_ctx *plock = _map_rwlock(pctx);
     rwlock_rdlock(plock);
     if (ERR_OK == _map_get(pctx->map_id, &mapid, &mapid))
     {
         _srey_grab(mapid.task);
-        _srey_task_push(mapid.task, 0, pud->session, MSG_TYPE_TIMEOUT, NULL, 0);
     }
     rwlock_unlock(plock);
+    if (NULL != mapid.task)
+    {
+        _srey_task_push(mapid.task, 0, pud->session, MSG_TYPE_TIMEOUT, NULL, 0);
+    }
 }
 void srey_timeout(struct task_ctx *ptask, uint32_t uisess, uint32_t uitimeout)
 {
@@ -588,9 +601,9 @@ struct sock_ctx *srey_connecter(struct task_ctx *ptask, uint32_t uisess, uint32_
     }
     return psock;
 }
-struct sock_ctx *srey_newsock(struct task_ctx *ptask, SOCKET sock, int32_t itype, int32_t ifamily)
+struct sock_ctx *srey_newsock(struct srey_ctx *pctx, SOCKET sock, int32_t itype, int32_t ifamily)
 {
-    return netev_add_sock(ptask->srey->netev, sock, itype, ifamily);
+    return netev_add_sock(pctx->netev, sock, itype, ifamily);
 }
 static inline void _srey_sock_recv(struct sock_ctx *psock, size_t uisize, union netaddr_ctx *paddr, struct ud_ctx *pud)
 {
@@ -656,4 +669,8 @@ const char *task_name(struct task_ctx *ptask)
 uint64_t task_cpucost(struct task_ctx *ptask)
 {
     return ptask->cpu_cost;
+}
+void *task_handle(struct task_ctx *ptask)
+{
+    return ptask->handle;
 }
