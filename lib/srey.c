@@ -340,15 +340,11 @@ static inline void _msg_dispatch(struct srey_ctx *pctx, struct timer_ctx *ptimer
         switch (msg.flags)
         {
         case MSG_TYPE_INIT:
-            if (NULL != ptask->module.md_init)
+            if (NULL != ptask->module.md_init
+                && ERR_OK != ptask->module.md_init(ptask, ptask->handle, ptask->udata))
             {
-                irtn = ptask->module.md_init(ptask, ptask->handle, ptask->udata);
-                ptask->module.md_run(ptask, ptask->handle, MSG_TYPE_INIT, 0, 0, NULL, irtn, ptask->udata);
-                if (ERR_OK != irtn)
-                {
-                    LOG_ERROR("init task %s failed.", ptask->module.name);
-                    srey_release(ptask);
-                }
+                LOG_ERROR("init task %s failed.", ptask->module.name);
+                srey_release(ptask);
             }
             break;
         case MSG_TYPE_FREE:

@@ -3,8 +3,8 @@
 
 #include "netev/netev.h"
 
-#define MSG_TYPE_FREE        0x01
-#define MSG_TYPE_INIT        0x02    //itype   uisize(error)
+#define MSG_TYPE_INIT        0x01    //itype   uisize(error)
+#define MSG_TYPE_FREE        0x02
 #define MSG_TYPE_STOP        0x03    //itype
 #define MSG_TYPE_TIMEOUT     0x04    //itype   uisess
 #define MSG_TYPE_ACCEPT      0x05    //itype   pmsg(struct sock_ctx *)
