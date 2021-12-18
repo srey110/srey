@@ -54,7 +54,7 @@ extern struct loger_ctx g_logerctx;
 #define SETLOGPRT(bprt) loger_setprint(&g_logerctx, bprt)
 #define LOG(lv,format, ...)\
     (loger_log(&g_logerctx, lv, CONCAT2("[%s][%s %s %d]", format), \
-     _getlvstr(lv), __FILENAME__, __FUNCTION__, __LINE__, ##__VA_ARGS__))
+     _getlvstr(lv), __FILENAME__(__FILE__), __FUNCTION__, __LINE__, ##__VA_ARGS__))
 #undef LOG_FATAL
 #define LOG_FATAL(format, ...) LOG(LOGLV_FATAL, format, ##__VA_ARGS__)
 #undef LOG_ERROR

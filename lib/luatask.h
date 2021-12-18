@@ -4,7 +4,7 @@
 #include "srey.h"
 #include "lua.h"
 
-void lua_initpath();
-lua_State *lua_newfile(const char *pfile);
+void initpath();
+int32_t lua_startup();
 
 #endif//LUATASK_H_

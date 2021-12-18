@@ -829,6 +829,14 @@ int32_t sock_type(struct sock_ctx *psock)
 {
     return _get_overlap(psock)->socktype;
 }
+struct ud_ctx *listener_ud(struct listener_ctx *plsn)
+{
+    return &plsn->ud;
+}
+struct ud_ctx *sock_ud(struct sock_ctx *psock)
+{
+    return &_get_overlap(psock)->ud;
+}
 struct buffer_ctx *sock_buffer_r(struct sock_ctx *psock)
 {
     struct overlap_ctx *polctx = _get_overlap(psock);

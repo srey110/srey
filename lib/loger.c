@@ -79,8 +79,6 @@ static void _worker_init(struct logworker_ctx *pctx)
     pctx->path = CALLOC(ilens, sizeof(char));
     ASSERTAB(NULL != pctx->path, ERRSTR_MEMORY);
     SNPRINTF(pctx->path, ilens - 1, "%s%s%s", acpath, PATH_SEPARATORSTR, LOG_FOLDER);
-    PRINTF("log path: %s.", pctx->path);
-
     if (ERR_OK != ACCESS(pctx->path, 0))
     {
         if (ERR_OK != MKDIR(pctx->path))

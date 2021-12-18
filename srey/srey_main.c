@@ -8,16 +8,6 @@
 mutex_ctx g_muexit;
 cond_ctx g_condexit;
 
-int32_t startup()
-{
-    lua_State *plua = lua_newfile("startup.lua");
-    if (NULL == plua)
-    {
-        return ERR_FAILED;
-    }
-    lua_close(plua);
-    return ERR_OK;
-}
 void sig_cb(int32_t isig, void *pud)
 {
     LOG_INFO("catch signal %d.", isig);
@@ -28,7 +18,7 @@ void sig_cb(int32_t isig, void *pud)
 }
 int main(int argc, char *argv[])
 {
-    lua_initpath();
+    initpath();
     unlimit();
     mutex_init(&g_muexit);
     cond_init(&g_condexit);
@@ -37,7 +27,7 @@ int main(int argc, char *argv[])
     g_srey = srey_new(0, FREE, 5000);
     sighandle(sig_cb, g_srey);
     srey_loop(g_srey);
-    if (ERR_OK != startup())
+    if (ERR_OK != lua_startup())
     {
         srey_free(g_srey);
         LOGFREE();

@@ -5,22 +5,18 @@
 #include "lauxlib.h"
 #include "loger.h"
 
-#define LUA_FOLDER "lua"
 #ifdef OS_WIN
 #define DLL_EXNAME "dll"
 #else
 #define DLL_EXNAME "so"
 #endif
-#define LFUNC_INIT "init"
-#define LFUNC_RUN  "run"
-#define LFUNC_STOP "stop"
 
 static char g_luapath[PATH_LENS] = {0};
-void lua_initpath()
+void initpath()
 {
     ASSERTAB(ERR_OK == getprocpath(g_luapath), "getprocpath failed.");
     SNPRINTF(g_luapath, sizeof(g_luapath) - 1, "%s%s%s%s", 
-        g_luapath, PATH_SEPARATORSTR, LUA_FOLDER, PATH_SEPARATORSTR);
+        g_luapath, PATH_SEPARATORSTR, "lua", PATH_SEPARATORSTR);
 }
 static inline void _lua_setpath(lua_State *plua, const char *pname, const char *pexname)
 {
@@ -30,7 +26,7 @@ static inline void _lua_setpath(lua_State *plua, const char *pname, const char *
     lua_setfield(plua, -3, pname);
     lua_pop(plua, 2);
 }
-lua_State *lua_newfile(const char *pfile)
+static inline lua_State *_lua_init(void *ptask)
 {
     lua_State *plua = luaL_newstate();
     if (NULL == plua)
@@ -38,86 +34,90 @@ lua_State *lua_newfile(const char *pfile)
         LOG_ERROR("%s", "luaL_newstate failed.");
         return NULL;
     }
+
     luaL_openlibs(plua);
     _lua_setpath(plua, "cpath", DLL_EXNAME);
     _lua_setpath(plua, "path", "lua");
-    char acstartup[PATH_LENS] = { 0 };
-    SNPRINTF(acstartup, sizeof(acstartup) - 1, "%s%s", g_luapath, pfile);
-    if (LUA_OK != luaL_dofile(plua, acstartup))
+    if (NULL != ptask)
     {
-        LOG_ERROR("%s", lua_tostring(plua, -1));
-        lua_close(plua);
-        return NULL;
+        lua_pushlightuserdata(plua, ptask);
+        lua_setglobal(plua, "_task");
     }
     return plua;
 }
-static inline void *lmodule_new(struct task_ctx *ptask, void *pud)
+static inline int32_t _lua_dofile(lua_State *plua, const char *pfile)
 {
-    return lua_newfile(pud);
-}
-static inline int32_t lmodule_init(struct task_ctx *ptask, void *pud)
-{
-    lua_State *plua = task_handle(ptask);
-    lua_getglobal(plua, LFUNC_INIT);
-    if (LUA_TFUNCTION == lua_type(plua, 1))
+    char acfile[PATH_LENS] = { 0 };
+    SNPRINTF(acfile, sizeof(acfile) - 1, "%s%s", g_luapath, pfile);
+    if (LUA_OK != luaL_dofile(plua, acfile))
     {
-        lua_pushlightuserdata(plua, ptask);
-        if (LUA_OK != lua_pcall(plua, 1, 0, 0))
-        {
-            LOG_ERROR("%s", lua_tostring(plua, 1));
-            return ERR_FAILED;
-        }
+        LOG_ERROR("%s", lua_tostring(plua, -1));
+        return ERR_FAILED;
     }
     return ERR_OK;
 }
-static inline void lmodule_run(struct task_ctx *ptask, uint32_t itype, uint64_t srcid, uint32_t uisess, void *pmsg, uint32_t uisize, void *pud)
+int32_t lua_startup()
 {
-    lua_State *plua = task_handle(ptask);
-    lua_getglobal(plua, LFUNC_RUN);
+    lua_State *plua = _lua_init(NULL);
+    if (NULL == plua)
+    {
+        return ERR_FAILED;
+    }
+    int32_t irtn = _lua_dofile(plua, "startup.lua");
+    lua_close(plua);
+    return irtn;
+}
+static inline void *_lmodule_new(struct task_ctx *ptask, void *pud)
+{
+    return _lua_init(ptask);
+}
+static inline int32_t _lmodule_init(struct task_ctx *ptask, void *handle, void *pud)
+{
+    return _lua_dofile(handle, pud);
+}
+static inline void _lmodule_run(struct task_ctx *ptask, void *handle, uint32_t itype, 
+    uint64_t srcid, uint32_t uisess, void *pmsg, uint32_t uisize, void *pud)
+{
+    lua_State *plua = (lua_State *)handle;
+    lua_getglobal(plua, "_dispatch_message");
     ASSERTAB(LUA_TFUNCTION == lua_type(plua, 1), "not have run func.");
-    lua_pushlightuserdata(plua, ptask);
     lua_pushinteger(plua, itype);
     lua_pushinteger(plua, srcid);
     lua_pushinteger(plua, uisess);
-    switch (itype)
-    {
-    case MSG_TYPE_REQUEST:
-    case MSG_TYPE_RESPONSE:
-        lua_pushlstring(plua, pmsg, uisize);
-        break;
-    default:
-        lua_pushlightuserdata(plua, pmsg);
-        break;
-    }
+    lua_pushlightuserdata(plua, pmsg);
     lua_pushinteger(plua, uisize);
-    if (LUA_OK != lua_pcall(plua, 6, 0, 0))
+    if (LUA_OK != lua_pcall(plua, 5, 0, 0))
     {
         LOG_ERROR("%s", lua_tostring(plua, 1));
     }
 }
-static inline void lmodule_stop(struct task_ctx *ptask, void *pud)
+static inline void _lmodule_free(struct task_ctx *ptask, void *handle, void *pud)
 {
-    lua_State *plua = task_handle(ptask);
-    lua_getglobal(plua, LFUNC_STOP);
-    if (LUA_TFUNCTION == lua_type(plua, 1))
-    {
-        lua_pushlightuserdata(plua, ptask);
-        if (LUA_OK != lua_pcall(plua, 1, 0, 0))
-        {
-            LOG_ERROR("%s", lua_tostring(plua, 1));
-        }
-    }
-}
-static inline void lmodule_free(struct task_ctx *ptask, void *pud)
-{
-    lua_State *plua = task_handle(ptask);
+    lua_State *plua = (lua_State *)handle;
     if (NULL != plua)
     {
         lua_close(plua);
     }
     SAFE_FREE(pud);
 }
-static int32_t lua_newtask(lua_State *plua)
+static int32_t _lua_log(lua_State *plua)
+{
+    if (LUA_TNUMBER != lua_type(plua, 1)
+        ||LUA_TSTRING != lua_type(plua, 2)
+        || LUA_TNUMBER != lua_type(plua, 3)
+        || LUA_TSTRING != lua_type(plua, 4))
+    {
+        LOG_ERROR("%s", "param type error.");
+        return 0;
+    }
+    LOG_LEVEL emlv = (LOG_LEVEL)lua_tointeger(plua, 1);
+    const char *pfile = lua_tostring(plua, 2);
+    int32_t iline = (int32_t)lua_tointeger(plua, 3);
+    const char *plog = lua_tostring(plua, 4);
+    loger_log(&g_logerctx, emlv, "[%s][%s %d]%s", _getlvstr(emlv), __FILENAME__(pfile), iline, plog);
+    return 0;
+}
+static int32_t _lua_newtask(lua_State *plua)
 {
     if (LUA_TSTRING != lua_type(plua, 1)
         || LUA_TSTRING != lua_type(plua, 2)
@@ -140,11 +140,10 @@ static int32_t lua_newtask(lua_State *plua)
     icnt = (icnt <= 0 ? 1 : icnt);
     struct module_ctx md;
     md.maxcnt = icnt;
-    md.md_free = lmodule_free;
-    md.md_init = lmodule_init;
-    md.md_new = lmodule_new;
-    md.md_run = lmodule_run;
-    md.md_stop = lmodule_stop;
+    md.md_free = _lmodule_free;
+    md.md_init = _lmodule_init;
+    md.md_new = _lmodule_new;
+    md.md_run = _lmodule_run;
     memcpy(md.name, pname, ilens);
     md.name[ilens] = '\0';
     ilens = strlen(pfile);
@@ -169,7 +168,7 @@ static int32_t lua_newtask(lua_State *plua)
     }
     return 1;
 }
-static int32_t lua_grab(lua_State *plua)
+static int32_t _lua_grab(lua_State *plua)
 {
     struct task_ctx *ptask = NULL;
     int32_t itype = lua_type(plua, 1);
@@ -190,17 +189,21 @@ static int32_t lua_grab(lua_State *plua)
     NULL == ptask ? lua_pushnil(plua) : lua_pushlightuserdata(plua, ptask);
     return 1;
 }
-static int32_t lua_release(lua_State *plua)
+static int32_t _lua_release(lua_State *plua)
 {
     if (LUA_TLIGHTUSERDATA != lua_type(plua, 1))
     {
         LOG_ERROR("%s", "param type error.");
         return 0;
     }
-    srey_release(lua_touserdata(plua, 1));
+    struct task_ctx *ptask = lua_touserdata(plua, 1);
+    if (NULL != ptask)
+    {
+        srey_release(ptask);
+    }
     return 0;
 }
-static int32_t lua_task_call(lua_State *plua)
+static int32_t _lua_task_call(lua_State *plua)
 {
     if (LUA_TLIGHTUSERDATA != lua_type(plua, 1)
         || LUA_TSTRING != lua_type(plua, 2))
@@ -221,7 +224,7 @@ static int32_t lua_task_call(lua_State *plua)
     srey_call(ptask, pcall, (uint32_t)ilens);
     return 0;
 }
-static int32_t lua_task_request(lua_State *plua)
+static int32_t _lua_task_request(lua_State *plua)
 {
     if (LUA_TLIGHTUSERDATA != lua_type(plua, 1)
         || LUA_TNUMBER != lua_type(plua, 2)
@@ -246,7 +249,7 @@ static int32_t lua_task_request(lua_State *plua)
     srey_request(ptask, srcid, uisess, pcall, (uint32_t)ilens);
     return 0;
 }
-static int32_t lua_task_response(lua_State *plua)
+static int32_t _lua_task_response(lua_State *plua)
 {
     if (LUA_TLIGHTUSERDATA != lua_type(plua, 1)
         || LUA_TNUMBER != lua_type(plua, 2)
@@ -269,7 +272,7 @@ static int32_t lua_task_response(lua_State *plua)
     srey_response(ptask, uisess, pcall, (uint32_t)ilens);
     return 0;
 }
-static int32_t lua_task_id(lua_State *plua)
+static int32_t _lua_task_id(lua_State *plua)
 {
     if (LUA_TLIGHTUSERDATA != lua_type(plua, 1))
     {
@@ -280,7 +283,7 @@ static int32_t lua_task_id(lua_State *plua)
     lua_pushinteger(plua, task_id(lua_touserdata(plua, 1)));
     return 1;
 }
-static int32_t lua_task_name(lua_State *plua)
+static int32_t _lua_task_name(lua_State *plua)
 {
     if (LUA_TLIGHTUSERDATA != lua_type(plua, 1))
     {
@@ -291,7 +294,7 @@ static int32_t lua_task_name(lua_State *plua)
     lua_pushstring(plua, task_name(lua_touserdata(plua, 1)));
     return 1;
 }
-static int32_t lua_task_newsession(lua_State *plua)
+static int32_t _lua_task_newsession(lua_State *plua)
 {
     if (LUA_TLIGHTUSERDATA != lua_type(plua, 1))
     {
@@ -302,7 +305,7 @@ static int32_t lua_task_newsession(lua_State *plua)
     lua_pushinteger(plua, task_new_session(lua_touserdata(plua, 1)));
     return 1;
 }
-static int32_t lua_timeout(lua_State *plua)
+static int32_t _lua_timeout(lua_State *plua)
 {
     if (LUA_TLIGHTUSERDATA != lua_type(plua, 1)
         || LUA_TNUMBER != lua_type(plua, 2)
@@ -317,24 +320,37 @@ static int32_t lua_timeout(lua_State *plua)
     srey_timeout(ptask, uisess, uitime);
     return 0;
 }
-static int32_t lua_listener(lua_State *plua)
+static int32_t _lua_listener(lua_State *plua)
 {
     if (LUA_TLIGHTUSERDATA != lua_type(plua, 1)
-        || LUA_TSTRING != lua_type(plua, 2)
-        || LUA_TNUMBER != lua_type(plua, 3))
+        || LUA_TNUMBER != lua_type(plua, 2)
+        || LUA_TSTRING != lua_type(plua, 3)
+        || LUA_TNUMBER != lua_type(plua, 4))
     {
         LOG_ERROR("%s", "param type error.");
         lua_pushnil(plua);
         return 1;
     }
     struct task_ctx *ptask = lua_touserdata(plua, 1);
-    const char *phost = lua_tostring(plua, 2);
-    uint16_t usport = (uint16_t)lua_tointeger(plua, 3);
-    struct listener_ctx *plsn = srey_listener(ptask, phost, usport);
+    uint32_t uisess = (uint32_t)lua_tointeger(plua, 2);
+    const char *phost = lua_tostring(plua, 3);
+    uint16_t usport = (uint16_t)lua_tointeger(plua, 4);
+    struct listener_ctx *plsn = srey_listener(ptask, uisess, phost, usport);
     NULL == plsn ? lua_pushnil(plua) : lua_pushlightuserdata(plua, plsn);
     return 1;
 }
-static int32_t lua_freelsn(lua_State *plua)
+static int32_t _lua_listener_sess(lua_State *plua)
+{
+    if (LUA_TLIGHTUSERDATA != lua_type(plua, 1))
+    {
+        LOG_ERROR("%s", "param type error.");
+        lua_pushnil(plua);
+        return 1;
+    }
+    lua_pushinteger(plua, listener_ud(lua_touserdata(plua, 1))->session);
+    return 1;
+}
+static int32_t _lua_freelsn(lua_State *plua)
 {
     if (LUA_TLIGHTUSERDATA != lua_type(plua, 1))
     {
@@ -344,7 +360,7 @@ static int32_t lua_freelsn(lua_State *plua)
     srey_freelsn(lua_touserdata(plua, 1));
     return 0;
 }
-static int32_t lua_connecter(lua_State *plua)
+static int32_t _lua_connecter(lua_State *plua)
 {
     if (LUA_TLIGHTUSERDATA != lua_type(plua, 1)
         || LUA_TNUMBER != lua_type(plua, 2)
@@ -365,7 +381,7 @@ static int32_t lua_connecter(lua_State *plua)
     NULL == psock ? lua_pushnil(plua) : lua_pushlightuserdata(plua, psock);
     return 1;
 }
-static int32_t lua_newsock(lua_State *plua)
+static int32_t _lua_newsock(lua_State *plua)
 {
     if (LUA_TNUMBER != lua_type(plua, 1)
         || LUA_TNUMBER != lua_type(plua, 2)
@@ -382,11 +398,12 @@ static int32_t lua_newsock(lua_State *plua)
     NULL == psock ? lua_pushnil(plua) : lua_pushlightuserdata(plua, psock);
     return 1;
 }
-static int32_t lua_enable(lua_State *plua)
+static int32_t _lua_enable(lua_State *plua)
 {
     if (LUA_TLIGHTUSERDATA != lua_type(plua, 1)
         || LUA_TLIGHTUSERDATA != lua_type(plua, 2)
-        || LUA_TBOOLEAN != lua_type(plua, 3))
+        || LUA_TNUMBER != lua_type(plua, 3)
+        || LUA_TNUMBER != lua_type(plua, 4))
     {
         LOG_ERROR("%s", "param type error.");
         lua_pushboolean(plua, 0);
@@ -394,12 +411,13 @@ static int32_t lua_enable(lua_State *plua)
     }
     struct task_ctx *ptask = lua_touserdata(plua, 1);
     struct sock_ctx *psock = lua_touserdata(plua, 2);
-    int32_t iwrite = (int32_t)lua_tointeger(plua, 3);
-    int32_t irtn = srey_enable(ptask, psock, iwrite);
+    uint32_t uisess = (uint32_t)lua_tointeger(plua, 3);
+    int32_t iwrite = (int32_t)lua_tointeger(plua, 4);
+    int32_t irtn = srey_enable(ptask, psock, uisess, iwrite);
     ERR_OK == irtn ? lua_pushboolean(plua, 1) : lua_pushboolean(plua, 0);
     return 1;
 }
-static int32_t lua_sock_id(lua_State *plua)
+static int32_t _lua_sock_id(lua_State *plua)
 {
     if (LUA_TLIGHTUSERDATA != lua_type(plua, 1))
     {
@@ -410,7 +428,7 @@ static int32_t lua_sock_id(lua_State *plua)
     lua_pushinteger(plua, sock_id(lua_touserdata(plua, 1)));
     return 1;
 }
-static int32_t lua_sock_handle(lua_State *plua)
+static int32_t _lua_sock_handle(lua_State *plua)
 {
     if (LUA_TLIGHTUSERDATA != lua_type(plua, 1))
     {
@@ -421,7 +439,7 @@ static int32_t lua_sock_handle(lua_State *plua)
     lua_pushinteger(plua, sock_handle(lua_touserdata(plua, 1)));
     return 1;
 }
-static int32_t lua_sock_type(lua_State *plua)
+static int32_t _lua_sock_type(lua_State *plua)
 {
     if (LUA_TLIGHTUSERDATA != lua_type(plua, 1))
     {
@@ -432,7 +450,18 @@ static int32_t lua_sock_type(lua_State *plua)
     lua_pushinteger(plua, sock_type(lua_touserdata(plua, 1)));
     return 1;
 }
-static int32_t lua_sock_send(lua_State *plua)
+static int32_t _lua_sock_sess(lua_State *plua)
+{
+    if (LUA_TLIGHTUSERDATA != lua_type(plua, 1))
+    {
+        LOG_ERROR("%s", "param type error.");
+        lua_pushnil(plua);
+        return 1;
+    }
+    lua_pushinteger(plua, sock_ud(lua_touserdata(plua, 1))->session);
+    return 1;
+}
+static int32_t _lua_sock_send(lua_State *plua)
 {
     if (LUA_TLIGHTUSERDATA != lua_type(plua, 1))
     {
@@ -473,7 +502,7 @@ static int32_t lua_sock_send(lua_State *plua)
     ERR_OK == irtn ? lua_pushboolean(plua, 1) : lua_pushboolean(plua, 0);
     return 1;
 }
-static int32_t lua_sock_close(lua_State *plua)
+static int32_t _lua_sock_close(lua_State *plua)
 {
     if (LUA_TLIGHTUSERDATA != lua_type(plua, 1))
     {
@@ -483,7 +512,7 @@ static int32_t lua_sock_close(lua_State *plua)
     sock_close(lua_touserdata(plua, 1));
     return 0;
 }
-static int32_t lua_udp_msg(lua_State *plua)
+static int32_t _lua_udp_msg(lua_State *plua)
 {
     if (LUA_TLIGHTUSERDATA != lua_type(plua, 1))
     {
@@ -497,7 +526,7 @@ static int32_t lua_udp_msg(lua_State *plua)
     lua_pushlightuserdata(plua, pudp->sock);
     return 3;
 }
-static int32_t lua_buf_size(lua_State *plua)
+static int32_t _lua_buf_size(lua_State *plua)
 {
     if (LUA_TLIGHTUSERDATA != lua_type(plua, 1))
     {
@@ -509,7 +538,7 @@ static int32_t lua_buf_size(lua_State *plua)
     lua_pushinteger(plua, buffer_size(sock_buffer_r(psock)));
     return 1;
 }
-static int32_t lua_buf_copy(lua_State *plua)
+static int32_t _lua_buf_copy(lua_State *plua)
 {
     if (LUA_TLIGHTUSERDATA != lua_type(plua, 1)
         || LUA_TNUMBER != lua_type(plua, 2))
@@ -540,7 +569,7 @@ static int32_t lua_buf_copy(lua_State *plua)
     luaC_checkGC(plua);
     return 1;
 }
-static int32_t lua_buf_drain(lua_State *plua)
+static int32_t _lua_buf_drain(lua_State *plua)
 {
     if (LUA_TLIGHTUSERDATA != lua_type(plua, 1)
         || LUA_TNUMBER != lua_type(plua, 2))
@@ -555,7 +584,7 @@ static int32_t lua_buf_drain(lua_State *plua)
     lua_pushinteger(plua, irtn);
     return 1;
 }
-static int32_t lua_buf_remove(lua_State *plua)
+static int32_t _lua_buf_remove(lua_State *plua)
 {
     if (LUA_TLIGHTUSERDATA != lua_type(plua, 1)
         || LUA_TNUMBER != lua_type(plua, 2))
@@ -586,7 +615,7 @@ static int32_t lua_buf_remove(lua_State *plua)
     luaC_checkGC(plua);
     return 1;
 }
-static int32_t lua_buf_search(lua_State *plua)
+static int32_t _lua_buf_search(lua_State *plua)
 {
     if (LUA_TLIGHTUSERDATA != lua_type(plua, 1)
         || LUA_TNUMBER != lua_type(plua, 2)
@@ -604,38 +633,41 @@ static int32_t lua_buf_search(lua_State *plua)
     lua_pushinteger(plua, irtn);
     return 1;
 }
-LUAMOD_API int luaopen_srey(lua_State *L)
+LUAMOD_API int luaopen_srey(lua_State *plua)
 {
     luaL_Reg reg[] =
     {
-        { "newtask", lua_newtask },//newtask("xxx.lua", "taskname", max run count) return  nil/task
-        { "grab", lua_grab },//grab(id/taskname) return  nil/task
-        { "release", lua_release },//release(task)
-        { "call", lua_task_call },//call(task, msg)
-        { "request", lua_task_request },//request(task, srcid, session, msg)
-        { "response", lua_task_response },//response(task, session, msg)
-        { "taskid", lua_task_id },//taskid(task) nil/id
-        { "taskname", lua_task_name },//taskname(task) nil/name
-        { "newsession", lua_task_newsession },//newsession(task) nil/session
-        { "timeout", lua_timeout },//timeout(task, session, timeout)
-        { "listener", lua_listener },//listener(task, ip , port) return  nil/listener
-        { "freelsn", lua_freelsn },//freelsn(listener)
-        { "connecter", lua_connecter },//connecter(task, session, timeout, ip , port)  nil/sock
-        { "addsock", lua_newsock },//addsock(fd, type, family)  nil/sock
-        { "enablerw", lua_enable },//enablerw(task, sock, bwrite) bool
-        { "sockid", lua_sock_id },//sockid(sock) nil/id
-        { "sock", lua_sock_handle },//sock(sock) nil/fd
-        { "socktype", lua_sock_type },//socktype(sock) nil/type
-        { "socksend", lua_sock_send },//tcp:socksend(sock, msg) udp:socksend(sock, msg, ip , port) bool 
-        { "sockclose", lua_sock_close },//sockclose(sock)
-        { "udpmsg", lua_udp_msg },//udpmsg(msg)  ip port sock
-        { "bufsize", lua_buf_size },//bufsize(sock)
-        { "bufcopy", lua_buf_copy },//bufcopy(sock, lens)  nil/lstring
-        { "bufdrain", lua_buf_drain },//bufdrain(sock, lens)  -1/lens
-        { "bufremove", lua_buf_remove },//bufremove(sock, lens) nil/lstring
-        { "bufsearch", lua_buf_search },//bufsearch(sock, start, what)  -1/pos
+        { "log", _lua_log },
+        { "newtask", _lua_newtask },//newtask("xxx.lua", "taskname", max run count) return  nil/task
+        { "grab", _lua_grab },//grab(id/taskname) return  nil/task
+        { "release", _lua_release },//release(task)
+        { "call", _lua_task_call },//call(task, msg)
+        { "request", _lua_task_request },//request(task, srcid, session, msg)
+        { "response", _lua_task_response },//response(task, session, msg)
+        { "taskid", _lua_task_id },//taskid(task) nil/id
+        { "taskname", _lua_task_name },//taskname(task) nil/name
+        { "newsession", _lua_task_newsession },//newsession(task) nil/session
+        { "timeout", _lua_timeout },//timeout(task, session, timeout)
+        { "listener", _lua_listener },//listener(task, session, ip , port) return  nil/listener
+        { "listenersess", _lua_listener_sess },
+        { "freelsn", _lua_freelsn },//freelsn(listener)
+        { "connecter", _lua_connecter },//connecter(task, session, timeout, ip , port)  nil/sock
+        { "addsock", _lua_newsock },//addsock(fd, type, family)  nil/sock
+        { "enablerw", _lua_enable },//enablerw(task, sock, session, bwrite) bool
+        { "sockid", _lua_sock_id },//sockid(sock) nil/id
+        { "socksess", _lua_sock_sess },
+        { "sock", _lua_sock_handle },//sock(sock) nil/fd
+        { "socktype", _lua_sock_type },//socktype(sock) nil/type
+        { "socksend", _lua_sock_send },//tcp:socksend(sock, msg) udp:socksend(sock, msg, ip , port) bool 
+        { "sockclose", _lua_sock_close },//sockclose(sock)
+        { "udpmsg", _lua_udp_msg },//udpmsg(msg)  ip port sock
+        { "bufsize", _lua_buf_size },//bufsize(sock)
+        { "bufcopy", _lua_buf_copy },//bufcopy(sock, lens)  nil/lstring
+        { "bufdrain", _lua_buf_drain },//bufdrain(sock, lens)  -1/lens
+        { "bufremove", _lua_buf_remove },//bufremove(sock, lens) nil/lstring
+        { "bufsearch", _lua_buf_search },//bufsearch(sock, start, what)  -1/pos
         { NULL, NULL },
     };
-    luaL_newlib(L, reg);
+    luaL_newlib(plua, reg);
     return 1;
 }

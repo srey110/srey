@@ -126,6 +126,8 @@ int32_t sock_sendto(struct sock_ctx *psock, const char *phost, uint16_t uport,
 void sock_close(struct sock_ctx *psock);
 void sock_free(struct sock_ctx *psock, void(*free_ud)(struct ud_ctx *));
 void listener_free(struct listener_ctx *plsn, void(*free_ud)(struct ud_ctx *));
+struct ud_ctx *listener_ud(struct listener_ctx *plsn);
+struct ud_ctx *sock_ud(struct sock_ctx *psock);
 
 //AF_INET  AF_INET6    SOCK_STREAM  SOCK_DGRAM
 static inline SOCKET sock_create(int32_t ifamily, int32_t itype)

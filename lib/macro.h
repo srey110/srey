@@ -47,8 +47,8 @@ do\
 
 #define CONCAT2(a, b) a b
 #define CONCAT3(a, b, c) a b c
-#define __FILENAME__ (strrchr(__FILE__, PATH_SEPARATOR) ? strrchr(__FILE__, PATH_SEPARATOR) + 1 : __FILE__)
-#define PRINTF(fmt, ...) printf(CONCAT3("[%s %s %d] ", fmt, "\n"),  __FILENAME__, __FUNCTION__, __LINE__, ##__VA_ARGS__)
+#define __FILENAME__(file) (strrchr(file, PATH_SEPARATOR) ? strrchr(file, PATH_SEPARATOR) + 1 : file)
+#define PRINTF(fmt, ...) printf(CONCAT3("[%s %s %d] ", fmt, "\n"),  __FILENAME__(__FILE__), __FUNCTION__, __LINE__, ##__VA_ARGS__)
 
 #ifndef offsetof
 #define offsetof(type, field) ((size_t)(&((type *)0)->field))

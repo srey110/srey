@@ -3,10 +3,10 @@
 
 #include "netev/netev.h"
 
-#define MSG_TYPE_INIT        0x01
-#define MSG_TYPE_STOP        0x02  
-#define MSG_TYPE_FREE        0x03
-#define MSG_TYPE_TIMEOUT     0x04    //超时    itype   uisess
+#define MSG_TYPE_FREE        0x01
+#define MSG_TYPE_INIT        0x02    //itype   uisize(error)
+#define MSG_TYPE_STOP        0x03    //itype
+#define MSG_TYPE_TIMEOUT     0x04    //itype   uisess
 #define MSG_TYPE_ACCEPT      0x05    //itype   pmsg(struct sock_ctx *)
 #define MSG_TYPE_CONNECT     0x06    //itype   uisess  pmsg(struct sock_ctx *) uisize(error)
 #define MSG_TYPE_RECV        0x07    //itype   pmsg(struct sock_ctx *)  uisize
@@ -18,10 +18,10 @@
 
 struct task_ctx;
 typedef void *(*module_new)(struct task_ctx *ptask, void *pud);
-typedef int32_t(*module_init)(struct task_ctx *ptask, void *pud);
-typedef void(*module_run)(struct task_ctx *ptask, uint32_t itype, uint64_t srcid, uint32_t uisess, void *pmsg, uint32_t uisize, void *pud);
-typedef void(*module_stop)(struct task_ctx *ptask, void *pud);
-typedef void(*module_free)(struct task_ctx *ptask, void *pud);
+typedef int32_t(*module_init)(struct task_ctx *ptask, void *handle,void *pud);
+typedef void(*module_run)(struct task_ctx *ptask, void *handle, uint32_t itype, 
+    uint64_t srcid, uint32_t uisess, void *pmsg, uint32_t uisize, void *pud);
+typedef void(*module_free)(struct task_ctx *ptask, void *handle, void *pud);
 typedef void(*module_msg_release)(void *pmsg);//任务间消息释放
 struct module_ctx
 {
@@ -29,7 +29,6 @@ struct module_ctx
     module_new md_new;//创建对象
     module_init md_init;//初始化
     module_run md_run;//消息处理
-    module_stop md_stop;//停止
     module_free md_free;//释放对象
     char name[NAME_LENS];//任务名
 };
@@ -109,12 +108,13 @@ void srey_timeout(struct task_ctx *ptask, uint32_t uisess, uint32_t uitimeout);
 /*
 * \brief           监听
 * \param ptask     任务
+* \param uisess    标识
 * \param phost     ip
 * \param usport    port
 * \return          NULL 失败
 * \return          struct listener_ctx
 */
-struct listener_ctx *srey_listener(struct task_ctx *ptask, const char *phost, uint16_t usport);
+struct listener_ctx *srey_listener(struct task_ctx *ptask, uint32_t uisess, const char *phost, uint16_t usport);
 /*
 * \brief           监听释放
 * \param plsn      struct listener_ctx
@@ -145,11 +145,12 @@ struct sock_ctx *srey_newsock(struct srey_ctx *ptask, SOCKET sock, int32_t itype
 * \brief           开始读写
 * \param ptask     任务
 * \param psock     struct sock_ctx
+* \param uisess    标识
 * \param iwrite    是否需要写事件, 0否
 * \return          ERR_OK 成功
 * \return          其他 失败
 */
-int32_t srey_enable(struct task_ctx *ptask, struct sock_ctx *psock, int32_t iwrite);
+int32_t srey_enable(struct task_ctx *ptask, struct sock_ctx *psock, uint32_t uisess, int32_t iwrite);
 /*
 * \brief           获取一session
 * \return          session
@@ -170,7 +171,6 @@ const char *task_name(struct task_ctx *ptask);
 * \return          毫秒
 */
 uint64_t task_cpucost(struct task_ctx *ptask);
-void *task_handle(struct task_ctx *ptask);
 
 extern struct srey_ctx *g_srey;
 
