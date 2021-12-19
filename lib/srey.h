@@ -3,18 +3,19 @@
 
 #include "netev/netev.h"
 
-#define MSG_TYPE_INIT        0x01    //itype   uisize(error)
+#define MSG_TYPE_INIT        0x01    
 #define MSG_TYPE_FREE        0x02
-#define MSG_TYPE_STOP        0x03    //itype
-#define MSG_TYPE_TIMEOUT     0x04    //itype   uisess
-#define MSG_TYPE_ACCEPT      0x05    //itype   pmsg(struct sock_ctx *)
-#define MSG_TYPE_CONNECT     0x06    //itype   uisess  pmsg(struct sock_ctx *) uisize(error)
-#define MSG_TYPE_RECV        0x07    //itype   pmsg(struct sock_ctx *)  uisize
-#define MSG_TYPE_RECVFROM    0x08    //itype   pmsg(struct udp_recv_msg *) uisize
-#define MSG_TYPE_SEND        0x09    //itype   pmsg(struct sock_ctx *)  uisize
-#define MSG_TYPE_CLOSE       0x0A    //itype   pmsg(struct sock_ctx *)
-#define MSG_TYPE_REQUEST     0x0B    //itype   srcid uisess  pmsg uisize
-#define MSG_TYPE_RESPONSE    0x0C    //itype   uisess  pmsg uisize
+#define MSG_TYPE_START       0x03
+#define MSG_TYPE_STOP        0x04    //itype
+#define MSG_TYPE_TIMEOUT     0x05    //itype   uisess
+#define MSG_TYPE_ACCEPT      0x06    //itype   pmsg(struct sock_ctx *)
+#define MSG_TYPE_CONNECT     0x07    //itype   uisess  pmsg(struct sock_ctx *) uisize(error)
+#define MSG_TYPE_RECV        0x08    //itype   pmsg(struct sock_ctx *)  uisize
+#define MSG_TYPE_RECVFROM    0x09    //itype   pmsg(struct udp_recv_msg *) uisize
+#define MSG_TYPE_SEND        0x0A    //itype   pmsg(struct sock_ctx *)  uisize
+#define MSG_TYPE_CLOSE       0x0B    //itype   pmsg(struct sock_ctx *)
+#define MSG_TYPE_REQUEST     0x0C    //itype   srcid uisess  pmsg uisize
+#define MSG_TYPE_RESPONSE    0x0D    //itype   uisess  pmsg uisize
 
 struct task_ctx;
 typedef void *(*module_new)(struct task_ctx *ptask, void *pud);

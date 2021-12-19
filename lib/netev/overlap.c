@@ -705,7 +705,6 @@ struct sock_ctx *netev_connecter(struct netev_ctx *pctx, uint32_t utimeout,
         memcpy(&pol->ud, pud, sizeof(struct ud_ctx));
     }
     pol->flags |= _FLAGS_READY;
-    socknbio(sock);
     if (ERR_OK != _connectex(pwatcher, pol, &addr))
     {
         sock_free(&pol->overlap_r, NULL);

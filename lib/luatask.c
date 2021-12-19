@@ -14,9 +14,10 @@
 static char g_luapath[PATH_LENS] = {0};
 void initpath()
 {
-    ASSERTAB(ERR_OK == getprocpath(g_luapath), "getprocpath failed.");
+    char acpath[PATH_LENS];
+    ASSERTAB(ERR_OK == getprocpath(acpath), "getprocpath failed.");
     SNPRINTF(g_luapath, sizeof(g_luapath) - 1, "%s%s%s%s", 
-        g_luapath, PATH_SEPARATORSTR, "lua", PATH_SEPARATORSTR);
+        acpath, PATH_SEPARATORSTR, "lua", PATH_SEPARATORSTR);
 }
 static inline void _lua_setpath(lua_State *plua, const char *pname, const char *pexname)
 {
@@ -214,13 +215,14 @@ static int32_t _lua_task_call(lua_State *plua)
     struct task_ctx *ptask = lua_touserdata(plua, 1);
     size_t ilens;
     const char *pmsg = lua_tolstring(plua, 2, &ilens);
-    char *pcall = MALLOC(ilens);
+    char *pcall = MALLOC(ilens + 1);
     if (NULL == pcall)
     {
         LOG_ERROR("%s", ERRSTR_MEMORY);
         return 0;
     }
     memcpy(pcall, pmsg, ilens);
+    pcall[ilens] = '\0';
     srey_call(ptask, pcall, (uint32_t)ilens);
     return 0;
 }
@@ -239,13 +241,14 @@ static int32_t _lua_task_request(lua_State *plua)
     uint32_t uisess = (uint32_t)lua_tointeger(plua, 3);
     size_t ilens;
     const char *pmsg = lua_tolstring(plua, 4, &ilens);
-    char *pcall = MALLOC(ilens);
+    char *pcall = MALLOC(ilens + 1);
     if (NULL == pcall)
     {
         LOG_ERROR("%s", ERRSTR_MEMORY);
         return 0;
     }
     memcpy(pcall, pmsg, ilens);
+    pcall[ilens] = '\0';
     srey_request(ptask, srcid, uisess, pcall, (uint32_t)ilens);
     return 0;
 }
@@ -262,13 +265,14 @@ static int32_t _lua_task_response(lua_State *plua)
     uint32_t uisess = (uint32_t)lua_tointeger(plua, 2);
     size_t ilens;
     const char *pmsg = lua_tolstring(plua, 3, &ilens);
-    char *pcall = MALLOC(ilens);
+    char *pcall = MALLOC(ilens + 1);
     if (NULL == pcall)
     {
         LOG_ERROR("%s", ERRSTR_MEMORY);
         return 0;
     }
     memcpy(pcall, pmsg, ilens);
+    pcall[ilens] = '\0';
     srey_response(ptask, uisess, pcall, (uint32_t)ilens);
     return 0;
 }
@@ -556,7 +560,7 @@ static int32_t _lua_buf_copy(lua_State *plua)
         lua_pushnil(plua);
         return 1;
     }
-    TString *ts = luaS_createlngstrobj(plua, ilens);
+    TString *ts = luaS_createlngstrobj(plua, ilens + 1);
     int32_t irtn = buffer_copyout(pbuf, getstr(ts), ilens);
     if (irtn <= 0)
     {
@@ -564,6 +568,7 @@ static int32_t _lua_buf_copy(lua_State *plua)
         return 1;
     }
     ts->u.lnglen = (size_t)irtn;
+    getstr(ts)[irtn] = '\0';
     setsvalue2s(plua, plua->top, ts);
     api_incr_top(plua);
     luaC_checkGC(plua);
@@ -602,7 +607,7 @@ static int32_t _lua_buf_remove(lua_State *plua)
         lua_pushnil(plua);
         return 1;
     }
-    TString *ts = luaS_createlngstrobj(plua, ilens);
+    TString *ts = luaS_createlngstrobj(plua, ilens + 1);
     int32_t irtn = buffer_remove(pbuf, getstr(ts), ilens);
     if (irtn <= 0)
     {
@@ -610,6 +615,7 @@ static int32_t _lua_buf_remove(lua_State *plua)
         return 1;
     }
     ts->u.lnglen = (size_t)irtn;
+    getstr(ts)[irtn] = '\0';
     setsvalue2s(plua, plua->top, ts);
     api_incr_top(plua);
     luaC_checkGC(plua);
