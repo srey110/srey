@@ -4,6 +4,7 @@
 #include "lualib.h"
 #include "lauxlib.h"
 #include "loger.h"
+#include "utils.h"
 
 #ifdef OS_WIN
 #define DLL_EXNAME "dll"
@@ -81,7 +82,7 @@ static inline void _lmodule_run(struct task_ctx *ptask, void *handle, uint32_t i
 {
     lua_State *plua = (lua_State *)handle;
     lua_getglobal(plua, "_dispatch_message");
-    ASSERTAB(LUA_TFUNCTION == lua_type(plua, 1), "not have run func.");
+    ASSERTAB(LUA_TFUNCTION == lua_type(plua, 1), "not have _dispatch_message.");
     lua_pushinteger(plua, itype);
     lua_pushinteger(plua, srcid);
     lua_pushinteger(plua, uisess);
@@ -103,14 +104,6 @@ static inline void _lmodule_free(struct task_ctx *ptask, void *handle, void *pud
 }
 static int32_t _lua_log(lua_State *plua)
 {
-    if (LUA_TNUMBER != lua_type(plua, 1)
-        ||LUA_TSTRING != lua_type(plua, 2)
-        || LUA_TNUMBER != lua_type(plua, 3)
-        || LUA_TSTRING != lua_type(plua, 4))
-    {
-        LOG_ERROR("%s", "param type error.");
-        return 0;
-    }
     LOG_LEVEL emlv = (LOG_LEVEL)lua_tointeger(plua, 1);
     const char *pfile = lua_tostring(plua, 2);
     int32_t iline = (int32_t)lua_tointeger(plua, 3);
@@ -120,14 +113,6 @@ static int32_t _lua_log(lua_State *plua)
 }
 static int32_t _lua_newtask(lua_State *plua)
 {
-    if (LUA_TSTRING != lua_type(plua, 1)
-        || LUA_TSTRING != lua_type(plua, 2)
-        || LUA_TNUMBER != lua_type(plua, 3))
-    {
-        LOG_ERROR("%s", "param type error.");
-        lua_pushnil(plua);
-        return 1;
-    }
     const char *pfile = lua_tostring(plua, 1);
     const char *pname = lua_tostring(plua, 2);
     size_t ilens = strlen(pname);
@@ -149,12 +134,7 @@ static int32_t _lua_newtask(lua_State *plua)
     md.name[ilens] = '\0';
     ilens = strlen(pfile);
     char *pud = MALLOC(ilens + 1);
-    if (NULL == pud)
-    {
-        LOG_ERROR("%s", ERRSTR_MEMORY);
-        lua_pushnil(plua);
-        return 1;
-    }
+    ASSERTAB(NULL != pud, ERRSTR_MEMORY);
     memcpy(pud, pfile, ilens);
     pud[ilens] = '\0';
     struct task_ctx *ptask = srey_newtask(g_srey, &md, pud);
@@ -177,50 +157,25 @@ static int32_t _lua_grab(lua_State *plua)
     {
         ptask = srey_grabid(g_srey, lua_tointeger(plua, 1));
     }
-    else if (LUA_TSTRING == itype)
-    {
-        ptask = srey_grabnam(g_srey, lua_tostring(plua, 1));
-    }
     else
     {
-        LOG_ERROR("%s", "param type error.");
-        lua_pushnil(plua);
-        return 1;
+        ptask = srey_grabnam(g_srey, lua_tostring(plua, 1));
     }
     NULL == ptask ? lua_pushnil(plua) : lua_pushlightuserdata(plua, ptask);
     return 1;
 }
 static int32_t _lua_release(lua_State *plua)
 {
-    if (LUA_TLIGHTUSERDATA != lua_type(plua, 1))
-    {
-        LOG_ERROR("%s", "param type error.");
-        return 0;
-    }
-    struct task_ctx *ptask = lua_touserdata(plua, 1);
-    if (NULL != ptask)
-    {
-        srey_release(ptask);
-    }
+    srey_release(lua_touserdata(plua, 1));
     return 0;
 }
 static int32_t _lua_task_call(lua_State *plua)
 {
-    if (LUA_TLIGHTUSERDATA != lua_type(plua, 1)
-        || LUA_TSTRING != lua_type(plua, 2))
-    {
-        LOG_ERROR("%s", "param type error.");
-        return 0;
-    }
     struct task_ctx *ptask = lua_touserdata(plua, 1);
     size_t ilens;
     const char *pmsg = lua_tolstring(plua, 2, &ilens);
     char *pcall = MALLOC(ilens + 1);
-    if (NULL == pcall)
-    {
-        LOG_ERROR("%s", ERRSTR_MEMORY);
-        return 0;
-    }
+    ASSERTAB(NULL != pcall, ERRSTR_MEMORY);
     memcpy(pcall, pmsg, ilens);
     pcall[ilens] = '\0';
     srey_call(ptask, pcall, (uint32_t)ilens);
@@ -228,25 +183,13 @@ static int32_t _lua_task_call(lua_State *plua)
 }
 static int32_t _lua_task_request(lua_State *plua)
 {
-    if (LUA_TLIGHTUSERDATA != lua_type(plua, 1)
-        || LUA_TNUMBER != lua_type(plua, 2)
-        || LUA_TNUMBER != lua_type(plua, 3)
-        || LUA_TSTRING != lua_type(plua, 4))
-    {
-        LOG_ERROR("%s", "param type error.");
-        return 0;
-    }
     struct task_ctx *ptask = lua_touserdata(plua, 1);
     uint64_t srcid = (uint64_t)lua_tointeger(plua, 2);
     uint32_t uisess = (uint32_t)lua_tointeger(plua, 3);
     size_t ilens;
     const char *pmsg = lua_tolstring(plua, 4, &ilens);
     char *pcall = MALLOC(ilens + 1);
-    if (NULL == pcall)
-    {
-        LOG_ERROR("%s", ERRSTR_MEMORY);
-        return 0;
-    }
+    ASSERTAB(NULL != pcall, ERRSTR_MEMORY);
     memcpy(pcall, pmsg, ilens);
     pcall[ilens] = '\0';
     srey_request(ptask, srcid, uisess, pcall, (uint32_t)ilens);
@@ -254,23 +197,12 @@ static int32_t _lua_task_request(lua_State *plua)
 }
 static int32_t _lua_task_response(lua_State *plua)
 {
-    if (LUA_TLIGHTUSERDATA != lua_type(plua, 1)
-        || LUA_TNUMBER != lua_type(plua, 2)
-        || LUA_TSTRING != lua_type(plua, 3))
-    {
-        LOG_ERROR("%s", "param type error.");
-        return 0;
-    }
     struct task_ctx *ptask = lua_touserdata(plua, 1);
     uint32_t uisess = (uint32_t)lua_tointeger(plua, 2);
     size_t ilens;
     const char *pmsg = lua_tolstring(plua, 3, &ilens);
     char *pcall = MALLOC(ilens + 1);
-    if (NULL == pcall)
-    {
-        LOG_ERROR("%s", ERRSTR_MEMORY);
-        return 0;
-    }
+    ASSERTAB(NULL != pcall, ERRSTR_MEMORY);
     memcpy(pcall, pmsg, ilens);
     pcall[ilens] = '\0';
     srey_response(ptask, uisess, pcall, (uint32_t)ilens);
@@ -278,46 +210,21 @@ static int32_t _lua_task_response(lua_State *plua)
 }
 static int32_t _lua_task_id(lua_State *plua)
 {
-    if (LUA_TLIGHTUSERDATA != lua_type(plua, 1))
-    {
-        LOG_ERROR("%s", "param type error.");
-        lua_pushnil(plua);
-        return 1;
-    }
     lua_pushinteger(plua, task_id(lua_touserdata(plua, 1)));
     return 1;
 }
 static int32_t _lua_task_name(lua_State *plua)
 {
-    if (LUA_TLIGHTUSERDATA != lua_type(plua, 1))
-    {
-        LOG_ERROR("%s", "param type error.");
-        lua_pushnil(plua);
-        return 0;
-    }
     lua_pushstring(plua, task_name(lua_touserdata(plua, 1)));
     return 1;
 }
 static int32_t _lua_task_newsession(lua_State *plua)
 {
-    if (LUA_TLIGHTUSERDATA != lua_type(plua, 1))
-    {
-        LOG_ERROR("%s", "param type error.");
-        lua_pushnil(plua);
-        return 0;
-    }
     lua_pushinteger(plua, task_new_session(lua_touserdata(plua, 1)));
     return 1;
 }
 static int32_t _lua_timeout(lua_State *plua)
 {
-    if (LUA_TLIGHTUSERDATA != lua_type(plua, 1)
-        || LUA_TNUMBER != lua_type(plua, 2)
-        || LUA_TNUMBER != lua_type(plua, 3))
-    {
-        LOG_ERROR("%s", "param type error.");
-        return 0;
-    }
     struct task_ctx *ptask = lua_touserdata(plua, 1);
     uint32_t uisess = (uint32_t)lua_tointeger(plua, 2);
     uint32_t uitime = (uint32_t)lua_tointeger(plua, 3);
@@ -326,15 +233,6 @@ static int32_t _lua_timeout(lua_State *plua)
 }
 static int32_t _lua_listener(lua_State *plua)
 {
-    if (LUA_TLIGHTUSERDATA != lua_type(plua, 1)
-        || LUA_TNUMBER != lua_type(plua, 2)
-        || LUA_TSTRING != lua_type(plua, 3)
-        || LUA_TNUMBER != lua_type(plua, 4))
-    {
-        LOG_ERROR("%s", "param type error.");
-        lua_pushnil(plua);
-        return 1;
-    }
     struct task_ctx *ptask = lua_touserdata(plua, 1);
     uint32_t uisess = (uint32_t)lua_tointeger(plua, 2);
     const char *phost = lua_tostring(plua, 3);
@@ -345,37 +243,16 @@ static int32_t _lua_listener(lua_State *plua)
 }
 static int32_t _lua_listener_sess(lua_State *plua)
 {
-    if (LUA_TLIGHTUSERDATA != lua_type(plua, 1))
-    {
-        LOG_ERROR("%s", "param type error.");
-        lua_pushnil(plua);
-        return 1;
-    }
     lua_pushinteger(plua, listener_ud(lua_touserdata(plua, 1))->session);
     return 1;
 }
 static int32_t _lua_freelsn(lua_State *plua)
 {
-    if (LUA_TLIGHTUSERDATA != lua_type(plua, 1))
-    {
-        LOG_ERROR("%s", "param type error.");
-        return 0;
-    }
     srey_freelsn(lua_touserdata(plua, 1));
     return 0;
 }
 static int32_t _lua_connecter(lua_State *plua)
 {
-    if (LUA_TLIGHTUSERDATA != lua_type(plua, 1)
-        || LUA_TNUMBER != lua_type(plua, 2)
-        || LUA_TNUMBER != lua_type(plua, 3)
-        || LUA_TSTRING != lua_type(plua, 4)
-        || LUA_TNUMBER != lua_type(plua, 5))
-    {
-        LOG_ERROR("%s", "param type error.");
-        lua_pushnil(plua);
-        return 1;
-    }
     struct task_ctx *ptask = lua_touserdata(plua, 1);
     uint32_t uisess = (uint32_t)lua_tointeger(plua, 2);
     uint32_t utimeout = (uint32_t)lua_tointeger(plua, 3);
@@ -387,14 +264,6 @@ static int32_t _lua_connecter(lua_State *plua)
 }
 static int32_t _lua_newsock(lua_State *plua)
 {
-    if (LUA_TNUMBER != lua_type(plua, 1)
-        || LUA_TNUMBER != lua_type(plua, 2)
-        || LUA_TNUMBER != lua_type(plua, 3))
-    {
-        LOG_ERROR("%s", "param type error.");
-        lua_pushnil(plua);
-        return 1;
-    }
     SOCKET sock = (SOCKET)lua_tointeger(plua, 1);
     int32_t itype = (int32_t)lua_tointeger(plua, 2);
     int32_t ifamily = (int32_t)lua_tointeger(plua, 3);
@@ -404,15 +273,6 @@ static int32_t _lua_newsock(lua_State *plua)
 }
 static int32_t _lua_enable(lua_State *plua)
 {
-    if (LUA_TLIGHTUSERDATA != lua_type(plua, 1)
-        || LUA_TLIGHTUSERDATA != lua_type(plua, 2)
-        || LUA_TNUMBER != lua_type(plua, 3)
-        || LUA_TNUMBER != lua_type(plua, 4))
-    {
-        LOG_ERROR("%s", "param type error.");
-        lua_pushboolean(plua, 0);
-        return 1;
-    }
     struct task_ctx *ptask = lua_touserdata(plua, 1);
     struct sock_ctx *psock = lua_touserdata(plua, 2);
     uint32_t uisess = (uint32_t)lua_tointeger(plua, 3);
@@ -423,82 +283,36 @@ static int32_t _lua_enable(lua_State *plua)
 }
 static int32_t _lua_sock_id(lua_State *plua)
 {
-    if (LUA_TLIGHTUSERDATA != lua_type(plua, 1))
-    {
-        LOG_ERROR("%s", "param type error.");
-        lua_pushnil(plua);
-        return 1;
-    }
     lua_pushinteger(plua, sock_id(lua_touserdata(plua, 1)));
     return 1;
 }
 static int32_t _lua_sock_handle(lua_State *plua)
 {
-    if (LUA_TLIGHTUSERDATA != lua_type(plua, 1))
-    {
-        LOG_ERROR("%s", "param type error.");
-        lua_pushnil(plua);
-        return 1;
-    }
     lua_pushinteger(plua, sock_handle(lua_touserdata(plua, 1)));
     return 1;
 }
 static int32_t _lua_sock_type(lua_State *plua)
 {
-    if (LUA_TLIGHTUSERDATA != lua_type(plua, 1))
-    {
-        LOG_ERROR("%s", "param type error.");
-        lua_pushnil(plua);
-        return 1;
-    }
     lua_pushinteger(plua, sock_type(lua_touserdata(plua, 1)));
     return 1;
 }
 static int32_t _lua_sock_sess(lua_State *plua)
 {
-    if (LUA_TLIGHTUSERDATA != lua_type(plua, 1))
-    {
-        LOG_ERROR("%s", "param type error.");
-        lua_pushnil(plua);
-        return 1;
-    }
     lua_pushinteger(plua, sock_ud(lua_touserdata(plua, 1))->session);
     return 1;
 }
 static int32_t _lua_sock_send(lua_State *plua)
 {
-    if (LUA_TLIGHTUSERDATA != lua_type(plua, 1))
-    {
-        LOG_ERROR("%s", "param type error.");
-        lua_pushboolean(plua, 0);
-        return 1;
-    }
     int32_t irtn;
+    size_t ilens;
     struct sock_ctx *psock = lua_touserdata(plua, 1);
+    const char *pmsg = lua_tolstring(plua, 2, &ilens);
     if (SOCK_STREAM == sock_type(psock))
     {
-        if (LUA_TSTRING != lua_type(plua, 2))
-        {
-            LOG_ERROR("%s", "param type error.");
-            lua_pushboolean(plua, 0);
-            return 1;
-        }
-        size_t ilens;
-        const char *pmsg = lua_tolstring(plua, 2, &ilens);
         irtn = sock_send(psock, (void *)pmsg, ilens);
     }
     else
     {
-        if (LUA_TSTRING != lua_type(plua, 2)
-            || LUA_TSTRING != lua_type(plua, 3)
-            || LUA_TNUMBER != lua_type(plua, 4))
-        {
-            LOG_ERROR("%s", "param type error.");
-            lua_pushboolean(plua, 0);
-            return 1;
-        }
-        size_t ilens;
-        const char *pmsg = lua_tolstring(plua, 2, &ilens);
         const char *phost = lua_tostring(plua, 3);
         uint16_t usport = (uint16_t)lua_tointeger(plua, 4);
         irtn = sock_sendto(psock, phost, usport, (void *)pmsg, ilens);
@@ -508,22 +322,11 @@ static int32_t _lua_sock_send(lua_State *plua)
 }
 static int32_t _lua_sock_close(lua_State *plua)
 {
-    if (LUA_TLIGHTUSERDATA != lua_type(plua, 1))
-    {
-        LOG_ERROR("%s", "param type error.");
-        return 0;
-    }
     sock_close(lua_touserdata(plua, 1));
     return 0;
 }
 static int32_t _lua_udp_msg(lua_State *plua)
 {
-    if (LUA_TLIGHTUSERDATA != lua_type(plua, 1))
-    {
-        LOG_ERROR("%s", "param type error.");
-        lua_pushnil(plua);
-        return 1;
-    }
     struct udp_recv_msg *pudp = lua_touserdata(plua, 1);
     lua_pushstring(plua, pudp->ip);
     lua_pushinteger(plua, pudp->port);
@@ -532,57 +335,49 @@ static int32_t _lua_udp_msg(lua_State *plua)
 }
 static int32_t _lua_buf_size(lua_State *plua)
 {
-    if (LUA_TLIGHTUSERDATA != lua_type(plua, 1))
-    {
-        LOG_ERROR("%s", "param type error.");
-        lua_pushinteger(plua, 0);
-        return 1;
-    }
     struct sock_ctx *psock = lua_touserdata(plua, 1);
     lua_pushinteger(plua, buffer_size(sock_buffer_r(psock)));
     return 1;
 }
+static inline void _lua_push_buffer(lua_State *plua, 
+    struct buffer_ctx *pbuf, size_t uilens, int32_t idel)
+{
+    buffer_lock(pbuf);
+    if (uilens > pbuf->total_len)
+    {
+        uilens = pbuf->total_len;
+    }
+    if (0 == uilens
+        || 0 != pbuf->freeze_read)
+    {
+        lua_pushnil(plua);
+        buffer_unlock(pbuf);
+        return;
+    }
+
+    TString *pts = luaS_createlngstrobj(plua, uilens);
+    int32_t irtn = _buffer_copyout(pbuf, getstr(pts), uilens);
+    ASSERTAB(irtn == uilens, "copyout lens not equ request lens.");
+    if (0 != idel)
+    {
+        ASSERTAB(uilens == _buffer_drain(pbuf, uilens), "drain lens not equ request lens.");
+    }
+    buffer_unlock(pbuf);
+
+    setsvalue2s(plua, plua->top, pts);
+    api_incr_top(plua);
+    luaC_checkGC(plua);
+}
 static int32_t _lua_buf_copy(lua_State *plua)
 {
-    if (LUA_TLIGHTUSERDATA != lua_type(plua, 1)
-        || LUA_TNUMBER != lua_type(plua, 2))
-    {
-        LOG_ERROR("%s", "param type error.");
-        lua_pushnil(plua);
-        return 1;
-    }
     struct sock_ctx *psock = lua_touserdata(plua, 1);
     size_t ilens = (size_t)lua_tointeger(plua, 2);
     struct buffer_ctx *pbuf = sock_buffer_r(psock);
-    if (0 == ilens
-        || 0 == buffer_size(pbuf))
-    {
-        lua_pushnil(plua);
-        return 1;
-    }
-    TString *ts = luaS_createlngstrobj(plua, ilens + 1);
-    int32_t irtn = buffer_copyout(pbuf, getstr(ts), ilens);
-    if (irtn <= 0)
-    {
-        lua_pushnil(plua);
-        return 1;
-    }
-    ts->u.lnglen = (size_t)irtn;
-    getstr(ts)[irtn] = '\0';
-    setsvalue2s(plua, plua->top, ts);
-    api_incr_top(plua);
-    luaC_checkGC(plua);
+    _lua_push_buffer(plua, pbuf, ilens, 0);
     return 1;
 }
 static int32_t _lua_buf_drain(lua_State *plua)
 {
-    if (LUA_TLIGHTUSERDATA != lua_type(plua, 1)
-        || LUA_TNUMBER != lua_type(plua, 2))
-    {
-        LOG_ERROR("%s", "param type error.");
-        lua_pushinteger(plua, 0);
-        return 1;
-    }
     struct sock_ctx *psock = lua_touserdata(plua, 1);
     size_t ilens = (size_t)lua_tointeger(plua, 2);
     int32_t irtn = buffer_drain(sock_buffer_r(psock), ilens);
@@ -591,52 +386,25 @@ static int32_t _lua_buf_drain(lua_State *plua)
 }
 static int32_t _lua_buf_remove(lua_State *plua)
 {
-    if (LUA_TLIGHTUSERDATA != lua_type(plua, 1)
-        || LUA_TNUMBER != lua_type(plua, 2))
-    {
-        LOG_ERROR("%s", "param type error.");
-        lua_pushnil(plua);
-        return 1;
-    }
     struct sock_ctx *psock = lua_touserdata(plua, 1);
     size_t ilens = (size_t)lua_tointeger(plua, 2);
     struct buffer_ctx *pbuf = sock_buffer_r(psock);
-    if (0 == ilens
-        || 0 == buffer_size(pbuf))
-    {
-        lua_pushnil(plua);
-        return 1;
-    }
-    TString *ts = luaS_createlngstrobj(plua, ilens + 1);
-    int32_t irtn = buffer_remove(pbuf, getstr(ts), ilens);
-    if (irtn <= 0)
-    {
-        lua_pushnil(plua);
-        return 1;
-    }
-    ts->u.lnglen = (size_t)irtn;
-    getstr(ts)[irtn] = '\0';
-    setsvalue2s(plua, plua->top, ts);
-    api_incr_top(plua);
-    luaC_checkGC(plua);
+    _lua_push_buffer(plua, pbuf, ilens, 1);
     return 1;
 }
 static int32_t _lua_buf_search(lua_State *plua)
 {
-    if (LUA_TLIGHTUSERDATA != lua_type(plua, 1)
-        || LUA_TNUMBER != lua_type(plua, 2)
-        || LUA_TSTRING != lua_type(plua, 3))
-    {
-        LOG_ERROR("%s", "param type error.");
-        lua_pushinteger(plua, -1);
-        return 1;
-    }
     struct sock_ctx *psock = lua_touserdata(plua, 1);
     size_t uistart = (size_t)lua_tointeger(plua, 2);
     size_t ilens;
     const char *pwhat = lua_tolstring(plua, 3, &ilens);
     int32_t irtn = buffer_search(sock_buffer_r(psock), uistart, (void *)pwhat, ilens);
     lua_pushinteger(plua, irtn);
+    return 1;
+}
+static int32_t _lua_millisecond(lua_State *plua)
+{
+    lua_pushinteger(plua, nowmsec());
     return 1;
 }
 LUAMOD_API int luaopen_srey(lua_State *plua)
@@ -672,6 +440,8 @@ LUAMOD_API int luaopen_srey(lua_State *plua)
         { "bufdrain", _lua_buf_drain },//bufdrain(sock, lens)  -1/lens
         { "bufremove", _lua_buf_remove },//bufremove(sock, lens) nil/lstring
         { "bufsearch", _lua_buf_search },//bufsearch(sock, start, what)  -1/pos
+
+        { "millisecond", _lua_millisecond },
         { NULL, NULL },
     };
     luaL_newlib(plua, reg);

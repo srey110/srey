@@ -90,6 +90,9 @@ end
 function srey.taskid(task)
     return core.taskid(nil == task and _task or task)
 end
+function srey.ms()
+    return core.millisecond()
+end
 --socket
 function srey.addsock(fd, socktype, family)
     return core.addsock(fd, socktype, family)
