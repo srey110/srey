@@ -47,6 +47,9 @@ LUAMOD_API int (luaopen_package) (lua_State *L);
 #define LUA_CJSONLIBNAME "cjson"
 LUAMOD_API int (luaopen_cjson)(lua_State *L);
 
+#define LUA_CMSGPACKNAME "cmsgpack"
+LUAMOD_API int (luaopen_cmsgpack_safe)(lua_State *L);
+
 #define LUA_SREYLIBNAME "srey.core"
 LUAMOD_API int (luaopen_srey)(lua_State *L);
 

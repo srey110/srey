@@ -21,7 +21,7 @@ struct task_ctx;
 typedef void *(*module_new)(struct task_ctx *ptask, void *pud);
 typedef int32_t(*module_init)(struct task_ctx *ptask, void *handle,void *pud);
 typedef void(*module_run)(struct task_ctx *ptask, void *handle, uint32_t itype, 
-    uint64_t srcid, uint32_t uisess, void *pmsg, uint32_t uisize, void *pud);
+    uint64_t srcid, uint64_t uisess, void *pmsg, uint32_t uisize, void *pud);
 typedef void(*module_free)(struct task_ctx *ptask, void *handle, void *pud);
 typedef void(*module_msg_release)(void *pmsg);//任务间消息释放
 struct module_ctx
@@ -90,7 +90,7 @@ void srey_call(struct task_ctx *ptask, void *pmsg, uint32_t uisz);
 * \param pmsg      消息
 * \param uisz      消息长度
 */
-void srey_request(struct task_ctx *ptask, uint64_t srcid, uint32_t uisess, void *pmsg, uint32_t uisz);
+void srey_request(struct task_ctx *ptask, uint64_t srcid, uint64_t uisess, void *pmsg, uint32_t uisz);
 /*
 * \brief           返回srey_request发起的请求
 * \param ptask     任务
@@ -98,14 +98,14 @@ void srey_request(struct task_ctx *ptask, uint64_t srcid, uint32_t uisess, void 
 * \param pmsg      消息
 * \param uisz      消息长度
 */
-void srey_response(struct task_ctx *ptask, uint32_t uisess, void *pmsg, uint32_t uisz);
+void srey_response(struct task_ctx *ptask, uint64_t uisess, void *pmsg, uint32_t uisz);
 /*
 * \brief           超时
 * \param ptask     任务
 * \param uisess    标识
 * \param uitimeout 超时时间(毫秒)
 */
-void srey_timeout(struct task_ctx *ptask, uint32_t uisess, uint32_t uitimeout);
+void srey_timeout(struct task_ctx *ptask, uint64_t uisess, uint32_t uitimeout);
 /*
 * \brief           监听
 * \param ptask     任务
@@ -115,7 +115,7 @@ void srey_timeout(struct task_ctx *ptask, uint32_t uisess, uint32_t uitimeout);
 * \return          NULL 失败
 * \return          struct listener_ctx
 */
-struct listener_ctx *srey_listener(struct task_ctx *ptask, uint32_t uisess, const char *phost, uint16_t usport);
+struct listener_ctx *srey_listener(struct task_ctx *ptask, uint64_t uisess, const char *phost, uint16_t usport);
 /*
 * \brief           监听释放
 * \param plsn      struct listener_ctx
@@ -131,7 +131,7 @@ void srey_freelsn(struct listener_ctx *plsn);
 * \return          NULL 失败
 * \return          struct sock_ctx
 */
-struct sock_ctx *srey_connecter(struct task_ctx *ptask, uint32_t uisess, uint32_t utimeout, const char *phost, uint16_t usport);
+struct sock_ctx *srey_connecter(struct task_ctx *ptask, uint64_t uisess, uint32_t utimeout, const char *phost, uint16_t usport);
 /*
 * \brief           新建struct sock_ctx
 * \param ptask     struct srey_ctx
@@ -151,12 +151,7 @@ struct sock_ctx *srey_newsock(struct srey_ctx *ptask, SOCKET sock, int32_t itype
 * \return          ERR_OK 成功
 * \return          其他 失败
 */
-int32_t srey_enable(struct task_ctx *ptask, struct sock_ctx *psock, uint32_t uisess, int32_t iwrite);
-/*
-* \brief           获取一session
-* \return          session
-*/
-uint32_t task_new_session(struct task_ctx *ptask);
+int32_t srey_enable(struct task_ctx *ptask, struct sock_ctx *psock, uint64_t uisess, int32_t iwrite);
 /*
 * \brief           任务ID
 * \return          ID

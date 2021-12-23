@@ -359,19 +359,19 @@ static inline void _cmd_cb(struct watcher_ctx *pwatcher, struct sock_ctx *psock,
             *pstop = 1;
             return;
         case _CMD_ADD:
-            if (ERR_OK != _uev_add(pwatcher, pusock, msg.session))
+            if (ERR_OK != _uev_add(pwatcher, pusock, (uint32_t)msg.session))
             {
                 _add_close_qu(pwatcher, pusock);
             }
             break;
         case _CMD_DEL:
-            _uev_del(pwatcher, pusock, msg.session);
+            _uev_del(pwatcher, pusock, (uint32_t)msg.session);
             break;
         case _CMD_CLOSE://Ö÷¶¯¹Ø±Õ
             _add_close_qu(pwatcher, pusock);
             break;
         case _CMD_CONN:
-            if (ERR_OK != _uev_add(pwatcher, pusock, msg.session))
+            if (ERR_OK != _uev_add(pwatcher, pusock, (uint32_t)msg.session))
             {
                 _add_close_qu(pwatcher, pusock);
             }

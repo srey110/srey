@@ -310,6 +310,9 @@
     <ClCompile Include="luacjson\strbuf.c">
       <Filter>3rd\luacjson</Filter>
     </ClCompile>
+    <ClCompile Include="msgpack\lua_cmsgpack.c">
+      <Filter>3rd\msgpack</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <Filter Include="thread">
@@ -338,6 +341,9 @@
     </Filter>
     <Filter Include="3rd\luacjson">
       <UniqueIdentifier>{20b34692-d067-4c72-9aba-59631b825b72}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="3rd\msgpack">
+      <UniqueIdentifier>{53cd7230-5d01-4fb6-9a4c-6cace7517f37}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
 </Project>

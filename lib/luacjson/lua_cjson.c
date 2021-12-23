@@ -1262,20 +1262,14 @@ static int json_decode(lua_State *l)
     json_parse_t json;
     json_token_t token;
     size_t json_len;
-
-    int itype = lua_type(l, 1);
-    if (LUA_TSTRING == itype)
+    if (LUA_TSTRING == lua_type(l, 1))
     {
-        json.data = luaL_checklstring(l, 1, &json_len);
-    }
-    else if(LUA_TLIGHTUSERDATA == itype)
-    {
-        json.data = lua_touserdata(l, 1);
-        json_len = (size_t)luaL_checkinteger(l, 2);
+        json.data = lua_tolstring(l, 1, &json_len);
     }
     else
     {
-        luaL_error(l, "JSON parser param error.");
+        json.data = lua_touserdata(l, 1);
+        json_len = (size_t)luaL_checkinteger(l, 2);
     }
     json.cfg = json_fetch_config(l);    
     json.current_depth = 0;

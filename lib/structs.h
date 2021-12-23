@@ -4,17 +4,17 @@
 #include "macro.h"
 
 struct ud_ctx
-{
-    uint32_t session;
+{    
     uintptr_t handle;
     uint64_t id;
+    uint64_t session;
 };
 struct message_ctx
 {
-    uint32_t flags;
-    uint32_t session;
+    uint32_t flags;    
     uint32_t size;
     uint64_t id;
+    uint64_t session;
     void *data;
 };
 

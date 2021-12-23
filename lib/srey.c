@@ -9,7 +9,6 @@
 struct task_ctx
 {
     uint32_t freecnt;
-    uint32_t session;
     uint32_t global;
     volatile atomic_t stop;
     volatile atomic_t ref;
@@ -124,7 +123,7 @@ struct srey_ctx *srey_new(uint32_t uiworker, module_msg_release msgfree, uint32_
 
     return pctx;
 }
-static inline void _srey_task_push(struct task_ctx *ptotask, uint64_t srcid, uint32_t uisess, uint32_t uitype, void *pmsg, uint32_t uisz)
+static inline void _srey_task_push(struct task_ctx *ptotask, uint64_t srcid, uint64_t uisess, uint32_t uitype, void *pmsg, uint32_t uisz)
 {
     struct message_ctx msg;
     msg.flags = uitype;
@@ -446,7 +445,6 @@ struct task_ctx *srey_newtask(struct srey_ctx *pctx, struct module_ctx *pmodule,
     ptask->srey = pctx;
     uint64_t id = _srey_id(pctx);
     ptask->id = id;
-    ptask->session = 1;
     ptask->udata = pudata;
     queue_init(&ptask->qu, ONEK);
     mutex_init(&ptask->mu_qu);
@@ -533,11 +531,11 @@ void srey_call(struct task_ctx *ptask, void *pmsg, uint32_t uisz)
 {
     _srey_task_push(ptask, 0, 0, MSG_TYPE_REQUEST, pmsg, uisz);
 }
-void srey_request(struct task_ctx *ptask, uint64_t srcid, uint32_t uisess, void *pmsg, uint32_t uisz)
+void srey_request(struct task_ctx *ptask, uint64_t srcid, uint64_t uisess, void *pmsg, uint32_t uisz)
 {
     _srey_task_push(ptask, srcid, uisess, MSG_TYPE_REQUEST, pmsg, uisz);
 }
-void srey_response(struct task_ctx *ptask, uint32_t uisess, void *pmsg, uint32_t uisz)
+void srey_response(struct task_ctx *ptask, uint64_t uisess, void *pmsg, uint32_t uisz)
 {
     _srey_task_push(ptask, 0, uisess, MSG_TYPE_RESPONSE, pmsg, uisz);
 }
@@ -559,7 +557,7 @@ static inline void _srey_timeout(struct ud_ctx *pud)
         _srey_task_push(mapid.task, 0, pud->session, MSG_TYPE_TIMEOUT, NULL, 0);
     }
 }
-void srey_timeout(struct task_ctx *ptask, uint32_t uisess, uint32_t uitimeout)
+void srey_timeout(struct task_ctx *ptask, uint64_t uisess, uint32_t uitimeout)
 {
     struct ud_ctx ud;
     ud.handle = (uintptr_t)ptask->srey;
@@ -571,7 +569,7 @@ static inline void _srey_sock_accept(struct sock_ctx *psock, struct ud_ctx *pud)
 {
     _srey_task_push((struct task_ctx *)pud->handle, 0, pud->session, MSG_TYPE_ACCEPT, psock, 0);
 }
-struct listener_ctx *srey_listener(struct task_ctx *ptask, uint32_t uisess, const char *phost, uint16_t usport)
+struct listener_ctx *srey_listener(struct task_ctx *ptask, uint64_t uisess, const char *phost, uint16_t usport)
 {
     struct ud_ctx ud;
     ud.session = uisess;
@@ -591,7 +589,7 @@ static inline void _srey_sock_connect(struct sock_ctx *psock, int32_t ierr, stru
 {
     _srey_task_push((struct task_ctx *)pud->handle, 0, pud->session, MSG_TYPE_CONNECT, psock, (uint32_t)ierr);
 }
-struct sock_ctx *srey_connecter(struct task_ctx *ptask, uint32_t uisess, uint32_t utimeout, const char *phost, uint16_t usport)
+struct sock_ctx *srey_connecter(struct task_ctx *ptask, uint64_t uisess, uint32_t utimeout, const char *phost, uint16_t usport)
 {
     struct ud_ctx ud;
     ud.session = uisess;
@@ -636,7 +634,7 @@ static inline void _srey_sock_close(struct sock_ctx *psock, struct ud_ctx *pud)
 {
     _srey_task_push((struct task_ctx *)pud->handle, 0, pud->session, MSG_TYPE_CLOSE, psock, 0);
 }
-int32_t srey_enable(struct task_ctx *ptask, struct sock_ctx *psock, uint32_t uisess, int32_t iwrite)
+int32_t srey_enable(struct task_ctx *ptask, struct sock_ctx *psock, uint64_t uisess, int32_t iwrite)
 {
     struct ud_ctx ud;
     ud.session = uisess;
@@ -652,14 +650,6 @@ int32_t srey_enable(struct task_ctx *ptask, struct sock_ctx *psock, uint32_t uis
         _srey_grab(ptask);
     }
     return irtn;
-}
-uint32_t task_new_session(struct task_ctx *ptask)
-{
-    if (UINT_MAX == ptask->session)
-    {
-        ptask->session = 1;
-    }
-    return ptask->session++;
 }
 uint64_t task_id(struct task_ctx *ptask)
 {

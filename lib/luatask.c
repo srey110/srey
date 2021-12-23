@@ -78,7 +78,7 @@ static inline int32_t _lmodule_init(struct task_ctx *ptask, void *handle, void *
     return _lua_dofile(handle, pud);
 }
 static inline void _lmodule_run(struct task_ctx *ptask, void *handle, uint32_t itype, 
-    uint64_t srcid, uint32_t uisess, void *pmsg, uint32_t uisize, void *pud)
+    uint64_t srcid, uint64_t uisess, void *pmsg, uint32_t uisize, void *pud)
 {
     lua_State *plua = (lua_State *)handle;
     lua_getglobal(plua, "_dispatch_message");
@@ -152,8 +152,7 @@ static int32_t _lua_newtask(lua_State *plua)
 static int32_t _lua_grab(lua_State *plua)
 {
     struct task_ctx *ptask = NULL;
-    int32_t itype = lua_type(plua, 1);
-    if (LUA_TNUMBER == itype)
+    if (LUA_TNUMBER == lua_type(plua, 1))
     {
         ptask = srey_grabid(g_srey, lua_tointeger(plua, 1));
     }
@@ -185,7 +184,7 @@ static int32_t _lua_task_request(lua_State *plua)
 {
     struct task_ctx *ptask = lua_touserdata(plua, 1);
     uint64_t srcid = (uint64_t)lua_tointeger(plua, 2);
-    uint32_t uisess = (uint32_t)lua_tointeger(plua, 3);
+    uint64_t uisess = (uint64_t)lua_tointeger(plua, 3);
     size_t ilens;
     const char *pmsg = lua_tolstring(plua, 4, &ilens);
     char *pcall = MALLOC(ilens + 1);
@@ -198,7 +197,7 @@ static int32_t _lua_task_request(lua_State *plua)
 static int32_t _lua_task_response(lua_State *plua)
 {
     struct task_ctx *ptask = lua_touserdata(plua, 1);
-    uint32_t uisess = (uint32_t)lua_tointeger(plua, 2);
+    uint64_t uisess = (uint64_t)lua_tointeger(plua, 2);
     size_t ilens;
     const char *pmsg = lua_tolstring(plua, 3, &ilens);
     char *pcall = MALLOC(ilens + 1);
@@ -218,15 +217,10 @@ static int32_t _lua_task_name(lua_State *plua)
     lua_pushstring(plua, task_name(lua_touserdata(plua, 1)));
     return 1;
 }
-static int32_t _lua_task_newsession(lua_State *plua)
-{
-    lua_pushinteger(plua, task_new_session(lua_touserdata(plua, 1)));
-    return 1;
-}
 static int32_t _lua_timeout(lua_State *plua)
 {
     struct task_ctx *ptask = lua_touserdata(plua, 1);
-    uint32_t uisess = (uint32_t)lua_tointeger(plua, 2);
+    uint64_t uisess = (uint64_t)lua_tointeger(plua, 2);
     uint32_t uitime = (uint32_t)lua_tointeger(plua, 3);
     srey_timeout(ptask, uisess, uitime);
     return 0;
@@ -234,7 +228,7 @@ static int32_t _lua_timeout(lua_State *plua)
 static int32_t _lua_listener(lua_State *plua)
 {
     struct task_ctx *ptask = lua_touserdata(plua, 1);
-    uint32_t uisess = (uint32_t)lua_tointeger(plua, 2);
+    uint64_t uisess = (uint64_t)lua_tointeger(plua, 2);
     const char *phost = lua_tostring(plua, 3);
     uint16_t usport = (uint16_t)lua_tointeger(plua, 4);
     struct listener_ctx *plsn = srey_listener(ptask, uisess, phost, usport);
@@ -254,7 +248,7 @@ static int32_t _lua_freelsn(lua_State *plua)
 static int32_t _lua_connecter(lua_State *plua)
 {
     struct task_ctx *ptask = lua_touserdata(plua, 1);
-    uint32_t uisess = (uint32_t)lua_tointeger(plua, 2);
+    uint64_t uisess = (uint64_t)lua_tointeger(plua, 2);
     uint32_t utimeout = (uint32_t)lua_tointeger(plua, 3);
     const char *phost = lua_tostring(plua, 4);
     uint16_t usport = (uint16_t)lua_tointeger(plua, 5);
@@ -275,7 +269,7 @@ static int32_t _lua_enable(lua_State *plua)
 {
     struct task_ctx *ptask = lua_touserdata(plua, 1);
     struct sock_ctx *psock = lua_touserdata(plua, 2);
-    uint32_t uisess = (uint32_t)lua_tointeger(plua, 3);
+    uint64_t uisess = (uint64_t)lua_tointeger(plua, 3);
     int32_t iwrite = (int32_t)lua_tointeger(plua, 4);
     int32_t irtn = srey_enable(ptask, psock, uisess, iwrite);
     ERR_OK == irtn ? lua_pushboolean(plua, 1) : lua_pushboolean(plua, 0);
@@ -420,7 +414,6 @@ LUAMOD_API int luaopen_srey(lua_State *plua)
         { "response", _lua_task_response },//response(task, session, msg)
         { "taskid", _lua_task_id },//taskid(task) nil/id
         { "taskname", _lua_task_name },//taskname(task) nil/name
-        { "newsession", _lua_task_newsession },//newsession(task) nil/session
         { "timeout", _lua_timeout },//timeout(task, session, timeout)
         { "listener", _lua_listener },//listener(task, session, ip , port) return  nil/listener
         { "listenersess", _lua_listener_sess },

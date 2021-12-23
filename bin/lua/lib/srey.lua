@@ -1,11 +1,14 @@
 local core = require("srey.core")
 local utile = require("lib.utile")
 local json = require("cjson")
+--local msgpack = require("cmsgpack")
 local assert = assert
 local type = type
 local table = table
 local debug = debug
 local _task = _task
+local encode = json.encode--msgpack.pack
+local decode = json.decode--msgpack.unpack
 
 local MSGTYPE = {
     START = 3,
@@ -135,18 +138,13 @@ end
 local _stop = nil
 local _start = nil
 local _cur_coro = nil
+local _sess = 0
 local rpc = {}
 local sess_func = {}
 local sess_coro = {}
 local function session()
-    while true
-    do
-        local sess = core.newsession(_task)
-        if nil == sess_func[sess] 
-            and nil == sess_coro[sess] then
-            return sess
-        end
-    end
+    _sess = _sess + 1
+    return _sess
 end
 function srey.start(func)
     _start = func
@@ -211,17 +209,17 @@ function srey.regrpc(name, func)
 end
 function srey.call(task, name, ...)
     local info = {f = name, p = {...}}
-    core.call(task, json.encode(info))
+    core.call(task, encode(info))
 end
 function srey.request(task, name, ...)
     local sess = session()
     sess_coro[sess] = _cur_coro
     local info = {f = name, p = {...}}
-    core.request(task, _taskid, sess, json.encode(info))
+    core.request(task, _taskid, sess, encode(info))
     return coroutine.yield()
 end
 local function _call_rpc(srcid, sess, msg, size)
-    local info = json.decode(msg, size)
+    local info = decode(msg, size)
     local func = rpc[info.f]
     local resp = {}
     resp.ok = false
@@ -234,7 +232,7 @@ local function _call_rpc(srcid, sess, msg, size)
     if 0 ~= srcid and 0 ~= sess then
         local task = srey.grab(srcid)
         if nil ~= task then
-            core.response(task, sess, json.encode(resp))
+            core.response(task, sess, encode(resp))
             srey.release(task)
         end
     end
@@ -315,7 +313,7 @@ function _dispatch_message(msgtype, srcid, sess, msg, size)
         _cur_coro = co
         coroutine.resume(co, srcid, sess, msg, size)
     elseif MSGTYPE.RESPONSE == msgtype then
-        local info = json.decode(msg, size)
+        local info = decode(msg, size)
         local co = sess_coro[sess]
         sess_coro[sess] = nil
         _cur_coro = co
