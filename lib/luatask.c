@@ -12,6 +12,11 @@
 #define DLL_EXNAME "so"
 #endif
 
+struct lua_task_ctx
+{
+    int32_t disp_ref;
+    char *file;
+};
 static char g_luapath[PATH_LENS] = {0};
 void initpath()
 {
@@ -75,14 +80,31 @@ static inline void *_lmodule_new(struct task_ctx *ptask, void *pud)
 }
 static inline int32_t _lmodule_init(struct task_ctx *ptask, void *handle, void *pud)
 {
-    return _lua_dofile(handle, pud);
+    struct lua_task_ctx *plctx = pud;
+    lua_State *plua = handle;
+    if (ERR_OK == _lua_dofile(plua, plctx->file))
+    {
+        lua_getglobal(plua, "_dispatch_message");
+        if (LUA_TFUNCTION != lua_type(plua, 1))
+        {
+            LOG_ERROR("%s", "not have function _dispatch_message.");
+            return ERR_FAILED;
+        }
+        plctx->disp_ref = luaL_ref(plua, LUA_REGISTRYINDEX);
+        return ERR_OK;
+    }
+    return ERR_FAILED;
 }
 static inline void _lmodule_run(struct task_ctx *ptask, void *handle, uint32_t itype, 
     uint64_t srcid, uint64_t uisess, void *pmsg, uint32_t uisize, void *pud)
 {
+    struct lua_task_ctx *plctx = pud;
     lua_State *plua = (lua_State *)handle;
-    lua_getglobal(plua, "_dispatch_message");
-    ASSERTAB(LUA_TFUNCTION == lua_type(plua, 1), "not have _dispatch_message.");
+    if (0 == plctx->disp_ref)
+    {
+        return;
+    }    
+    lua_rawgeti(plua, LUA_REGISTRYINDEX, plctx->disp_ref);
     lua_pushinteger(plua, itype);
     lua_pushinteger(plua, srcid);
     lua_pushinteger(plua, uisess);
@@ -95,12 +117,14 @@ static inline void _lmodule_run(struct task_ctx *ptask, void *handle, uint32_t i
 }
 static inline void _lmodule_free(struct task_ctx *ptask, void *handle, void *pud)
 {
+    struct lua_task_ctx *plctx = pud;
     lua_State *plua = (lua_State *)handle;
-    if (NULL != plua)
+    if (0 != plctx->disp_ref)
     {
-        lua_close(plua);
+        luaL_unref(plua, LUA_REGISTRYINDEX, plctx->disp_ref);
     }
-    SAFE_FREE(pud);
+    lua_close(plua);
+    SAFE_FREE(plctx);
 }
 static int32_t _lua_log(lua_State *plua)
 {
@@ -133,15 +157,22 @@ static int32_t _lua_newtask(lua_State *plua)
     memcpy(md.name, pname, ilens);
     md.name[ilens] = '\0';
     ilens = strlen(pfile);
-    char *pud = MALLOC(ilens + 1);
-    ASSERTAB(NULL != pud, ERRSTR_MEMORY);
-    memcpy(pud, pfile, ilens);
-    pud[ilens] = '\0';
-    struct task_ctx *ptask = srey_newtask(g_srey, &md, pud);
+    struct lua_task_ctx *plctx = MALLOC(sizeof(struct lua_task_ctx) + ilens + 1);
+    if (NULL == plctx)
+    {
+        LOG_ERROR("%s", ERRSTR_MEMORY);
+        lua_pushnil(plua);
+        return 1;
+    }
+    plctx->disp_ref = 0;
+    plctx->file = ((char *)plctx) + sizeof(struct lua_task_ctx);
+    memcpy(plctx->file, pfile, ilens);
+    plctx->file[ilens] = '\0';
+    struct task_ctx *ptask = srey_newtask(g_srey, &md, plctx);
     if (NULL == ptask)
     {
         lua_pushnil(plua);
-        FREE(pud);
+        FREE(plctx);
     }
     else
     {
