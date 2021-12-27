@@ -103,7 +103,7 @@ static inline void _lmodule_run(struct task_ctx *ptask, void *handle, uint32_t i
     if (0 == plctx->disp_ref)
     {
         return;
-    }    
+    }
     lua_rawgeti(plua, LUA_REGISTRYINDEX, plctx->disp_ref);
     lua_pushinteger(plua, itype);
     lua_pushinteger(plua, srcid);
