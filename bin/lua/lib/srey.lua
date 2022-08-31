@@ -1,14 +1,15 @@
 local core = require("srey.core")
 local utile = require("lib.utile")
 local json = require("cjson")
---local msgpack = require("cmsgpack")
+local msgpack = require("cmsgpack")
 local assert = assert
 local type = type
 local table = table
 local debug = debug
 local _task = _task
-local encode = json.encode--msgpack.pack
-local decode = json.decode--msgpack.unpack
+local usejson = true
+local encode = usejson and json.encode or msgpack.pack
+local decode = usejson and json.decode or msgpack.unpack
 
 local MSGTYPE = {
     START = 3,
@@ -78,55 +79,168 @@ end
 function srey.self()
     return _task
 end
---任务注册 nil/task
+--[[
+描述:任务注册
+参数：
+    file lua文件名
+	name 任务名
+	maxcnt 每次最多执行任务数
+返回:
+    nil 失败
+	任务对象
+--]]
 function srey.newtask(file, name, maxcnt)
     return core.newtask(file, name, maxcnt)
 end
---任务获取 nil/task
+--[[
+描述:任务获取
+参数：
+    idname 任务id或任务名
+返回:
+    nil 失败
+	任务对象
+--]]
 function srey.grab(idname)
     return core.grab(idname)
 end
---任务释放 newtask/grab
+--[[
+描述:释放newtask grab 返回的任务对象
+参数：
+    task 任务对象
+返回:
+--]]
 function srey.release(task)
     core.release(nil == task and _task or task)
 end
+--[[
+描述:任务id
+参数：
+    task 任务对象
+返回:
+    任务id
+--]]
 function srey.taskid(task)
     return core.taskid(nil == task and _task or task)
 end
+--[[
+描述:获取当前时间戳  毫秒
+参数：
+返回:
+    时间戳
+--]]
 function srey.ms()
     return core.millisecond()
 end
---socket
+--[[
+描述:将已有socket句柄加到事件循环
+参数：
+    fd socket句柄
+	socktype 字符串tcp udp
+	family 字符串ipv4 ipv6
+返回:
+    nil 失败
+	sock 对象
+--]]
 function srey.addsock(fd, socktype, family)
     return core.addsock(fd, socktype, family)
 end
+--[[
+描述:关闭sock对象
+参数：
+    sock sock对象
+返回:
+--]]
 function srey.sockclose(sock)
     core.sockclose(sock)
 end
+--[[
+描述:sock id
+参数：
+    sock sock对象
+返回:
+    sock id
+--]]
 function srey.sockid(sock)
     return core.sockid(sock)
 end
+--[[
+描述:sock 类型
+参数：
+    sock sock对象
+返回:
+    tcp  udp
+--]]
 function srey.socktype(sock)
     return core.socktype(sock)
 end
+--[[
+描述:发送消息
+参数：
+    sock sock对象
+	msg 消息
+	ip ip (udp)
+	port 端口 (udp) 
+返回:
+    bool
+--]]
 function srey.socksend(sock, msg, ip, port)
     if nil == ip then
         return core.socksend(sock, msg)
     end
     return core.socksend(sock, msg, ip, port)
 end
+--[[
+描述:缓存中数据总长度
+参数：
+    sock sock对象
+返回:
+    长度
+--]]
 function srey.bufsize(sock)
     return core.bufsize(sock)
 end
+--[[
+描述:拷贝数据
+参数：
+    sock sock对象
+	lens 需要拷贝的长度
+返回:
+    nil/lstring
+--]]
 function srey.bufcopy(sock, lens)
     return core.bufcopy(sock, lens)
 end
+--[[
+描述:删除数据
+参数：
+    sock sock对象
+	lens 需要删除的长度
+返回:
+    实际删除的长度
+--]]
 function srey.bufdrain(sock, lens)
     return core.bufdrain(sock, lens)
 end 
+--[[
+描述:删除并拷贝数据
+参数：
+    sock sock对象
+	lens 长度
+返回:
+    nil/lstring
+--]]
 function srey.bufremove(sock, lens)
     return core.bufremove(sock, lens)
 end
+--[[
+描述:在缓存中查找
+参数：
+    sock sock对象
+	start 开始位置
+	what 查找的对象
+返回:
+    -1/pos
+--]]
 function srey.bufsearch(sock, start, what)
     return core.bufsearch(sock, start, what)
 end
@@ -146,26 +260,59 @@ local function session()
     _sess = _sess + 1
     return _sess
 end
+--[[
+描述:注册任务初始化函数
+参数：
+    func 初始化函数(func())
+返回:
+--]]
 function srey.start(func)
     _start = func
 end
+--[[
+描述:注册任务退出函数
+参数：
+    func 退出函数(func())
+返回:
+--]]
 function srey.stop(func)
     _stop = func
 end
---超时func()
+--[[
+描述:注册定时任务
+参数：
+    func 回调函数(func())
+返回:
+--]]
 function srey.timeout(ms, func)
+    assert(nil ~= func)
     local sess = session()
     sess_func[sess] = func
     core.timeout(_task, sess, ms)
 end
+--[[
+描述:休眠
+参数：
+    ms 毫秒
+返回:
+--]]
 function srey.sleep(ms)
     local sess = session()
     sess_coro[sess] = _cur_coro
     core.timeout(_task, sess, ms)
     coroutine.yield()
 end
---网络func(sock)  nil/listener
+--[[
+描述:监听
+参数：
+    ip ip
+	port 端口
+	func accept回调函数(func(sock))
+返回:
+    nil/listener
+--]]
 function srey.listen(ip, port, func)
+    assert(nil ~= func)
     local sess = session()
     sess_func[sess] = func
     local lsn = core.listener(_task, sess, ip, port)
@@ -174,11 +321,27 @@ function srey.listen(ip, port, func)
     end
     return lsn
 end
+--[[
+描述:释放监听
+参数：
+    lsn listener
+返回:
+--]]
 function srey.freelsn(lsn)
     local sess = core.listenersess(lsn)
     sess_func[sess] = nil
     core.freelsn(lsn)
 end
+--[[
+描述:链接
+参数：
+    ip ip
+	port 端口
+	ms 超时时间 毫秒
+返回:
+	nil
+	sock对象
+--]]
 function srey.connect(ip, port, ms)
     local sess = session()
     sess_coro[sess] = _cur_coro
@@ -193,8 +356,18 @@ function srey.connect(ip, port, ms)
     end
     return sock
 end
---func_recv(sock, size, [ip, port]) func_send(sock, size) func_close(sock)
+--[[
+描述:开始读写
+参数：
+    sock sock对象
+	func_recv 收到消息回调(func(sock, size))
+	func_send 发送消息回调(func(sock, size))
+	func_close 链接关闭回调(func(sock))
+返回:
+	bool
+--]]
 function srey.enablerw(sock, func_recv, func_send, func_close)
+    assert(nil ~= func_recv)
     local sess = session()
     sess_func[sess] = {r = func_recv, c = func_close, s = func_send}
     local bok = core.enablerw(_task, sock, sess, nil == func_send and 0 or 1)
@@ -203,14 +376,38 @@ function srey.enablerw(sock, func_recv, func_send, func_close)
     end
     return bok
 end
---rpc
+--[[
+描述:rpc注册
+参数：
+    name 名称
+	func 函数
+返回:
+--]]
 function srey.regrpc(name, func)
+    assert(nil ~= func)
     rpc[name] = func
 end
+--[[
+描述:rpc调用，不等待返回
+参数：
+    task 任务对象
+	name 名称
+	... 调用参数
+返回:
+--]]
 function srey.call(task, name, ...)
     local info = {f = name, p = {...}}
     core.call(task, encode(info))
 end
+--[[
+描述:rpc调用，等待有返回
+参数：
+    task 任务对象
+	name 名称
+	... 调用参数
+返回:
+    bool   被调函数返回值
+--]]
 function srey.request(task, name, ...)
     local sess = session()
     sess_coro[sess] = _cur_coro

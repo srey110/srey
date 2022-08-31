@@ -11,7 +11,7 @@ local function onstart()
     srey.sleep(1000)
     conn = srey.connect("127.0.0.1", 15000, 3000)
     if nil ~= conn then
-        print("test1 srey.connect:" .. srey.sockid(conn))
+        print("test1 srey.connect id:" .. srey.sockid(conn))
         assert(srey.enablerw(conn, sock_recv, sock_send, sock_close))
     end
 end

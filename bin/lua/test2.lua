@@ -21,6 +21,7 @@ local function sock_close(sock)
     linkcnt = linkcnt - 1
 end
 local function acp_cb(sock)
+	print("acp_cb id:" .. srey.sockid(sock).." type:" .. srey.socktype(sock))
     srey.enablerw(sock, sock_recv, sock_send, sock_close)
     linkcnt = linkcnt + 1
 end

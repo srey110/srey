@@ -290,8 +290,8 @@ static int32_t _lua_connecter(lua_State *plua)
 static int32_t _lua_newsock(lua_State *plua)
 {
     SOCKET sock = (SOCKET)lua_tointeger(plua, 1);
-    int32_t itype = (int32_t)lua_tointeger(plua, 2);
-    int32_t ifamily = (int32_t)lua_tointeger(plua, 3);
+    int32_t itype = (0 == STRCMP(lua_tostring(plua, 2), "tcp") ? SOCK_STREAM : SOCK_DGRAM);
+    int32_t ifamily = (0 == STRCMP(lua_tostring(plua, 3), "ipv4") ? AF_INET : AF_INET6);
     struct sock_ctx *psock = srey_newsock(g_srey, sock, itype, ifamily);
     NULL == psock ? lua_pushnil(plua) : lua_pushlightuserdata(plua, psock);
     return 1;
@@ -318,7 +318,7 @@ static int32_t _lua_sock_handle(lua_State *plua)
 }
 static int32_t _lua_sock_type(lua_State *plua)
 {
-    lua_pushinteger(plua, sock_type(lua_touserdata(plua, 1)));
+    SOCK_STREAM == sock_type(lua_touserdata(plua, 1)) ? lua_pushstring(plua, "tcp") : lua_pushstring(plua, "udp");
     return 1;
 }
 static int32_t _lua_sock_sess(lua_State *plua)
@@ -455,7 +455,7 @@ LUAMOD_API int luaopen_srey(lua_State *plua)
         { "sockid", _lua_sock_id },//sockid(sock) nil/id
         { "socksess", _lua_sock_sess },
         { "sock", _lua_sock_handle },//sock(sock) nil/fd
-        { "socktype", _lua_sock_type },//socktype(sock) nil/type
+        { "socktype", _lua_sock_type },//socktype(sock) tcp/udp
         { "socksend", _lua_sock_send },//tcp:socksend(sock, msg) udp:socksend(sock, msg, ip , port) bool 
         { "sockclose", _lua_sock_close },//sockclose(sock)
         { "udpmsg", _lua_udp_msg },//udpmsg(msg)  ip port sock
