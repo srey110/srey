@@ -406,7 +406,7 @@ static void _tw_loop(void *pparam)
     while (0 == pctx->stop)
     {
         tw_run(&pctx->tw, _cur_tick(pctx));
-        USLEEP(1);
+        MSLEEP(0);
     }
 }
 void srey_loop(struct srey_ctx *pctx)
