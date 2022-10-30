@@ -18,7 +18,6 @@ struct tw_node_ctx
 {
     struct tw_node_ctx *next;
     void(*tw_cb)(struct ud_ctx *);//回调函数
-    uint32_t timeout;//超时时间
     uint32_t expires;
     struct ud_ctx ud;//用户数据
 };

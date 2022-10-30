@@ -86,6 +86,16 @@ do\
 #define NANOSEC 1000000000//дицК
 
 #if defined(OS_WIN)
+    #define NETEV_IOCP
+#elif defined(OS_LINUX)
+    #define NETEV_EPOLL
+#elif defined(OS_BSD) || defined(OS_DARWIN)
+    #define NETEV_KQUEUE
+#elif defined(OS_SUN)
+    #define NETEV_EVPORT
+#endif
+
+#if defined(OS_WIN)
     #define IS_EAGAIN(e) (WSAEWOULDBLOCK == (e) || EAGAIN == (e))
     #define STRCMP _stricmp
     #define STRNCMP _strnicmp

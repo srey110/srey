@@ -1,5 +1,5 @@
 #include "tw.h"
-
+const uint32_t accuracy = 1000 * 1000;
 void _free_slot(struct tw_slot_ctx *pslot, const size_t uilens)
 {
     struct tw_node_ctx *pnode, *pdel;
@@ -58,7 +58,7 @@ void tw_add(struct tw_ctx *pctx, const uint32_t uitimeout,
     {
         ZERO(&pnode->ud, sizeof(struct ud_ctx));
     }
-    pnode->timeout = uitimeout;
+    pnode->expires = (uint32_t)(timer_nanosec(&pctx->timer) / accuracy) + uitimeout;
     pnode->tw_cb = tw_cb;
     pnode->next = NULL;
     mutex_lock(&pctx->lockreq);
@@ -147,26 +147,24 @@ void _run(struct tw_ctx *pctx)
 void _loop(void *pparam)
 {
     uint32_t curtick = 0;
-    const uint32_t accuracy = 1000 * 1000;
     struct tw_node_ctx *pnext, *pnode;
     struct tw_ctx *pctx = (struct tw_ctx *)pparam;
     pctx->jiffies = (uint32_t)(timer_nanosec(&pctx->timer) / accuracy);
     while (0 == pctx->exit)
     {
-        curtick = (uint32_t)(timer_nanosec(&pctx->timer) / accuracy);
         mutex_lock(&pctx->lockreq);
         pnode = pctx->reqadd.head;
         while (NULL != pnode)
         {
             pnext = pnode->next;
             pnode->next = NULL;
-            pnode->expires = curtick + pnode->timeout;
             _insert(_getslot(pctx, pnode), pnode);
             pnode = pnext;
         }
         _clear(&pctx->reqadd);
         mutex_unlock(&pctx->lockreq);
 
+        curtick = (uint32_t)(timer_nanosec(&pctx->timer) / accuracy);
         while (pctx->jiffies <= curtick)
         {
             _run(pctx);

@@ -25,7 +25,7 @@ void tw_cb(struct ud_ctx *pctx)
     int i = nowmsec() - ulstart;
     PRINTF("%d", i);
     ulstart = nowmsec();
-    tw_add(&tw, 1000, tw_cb, NULL);
+    tw_add(&tw, 500, tw_cb, NULL);
 }
 
 int main(int argc, char *argv[])
@@ -54,7 +54,7 @@ int main(int argc, char *argv[])
     LOG_FATAL("%s", "5555555555555555555");
     tw_init(&tw);
     ulstart = nowmsec();
-    tw_add(&tw, 1000, tw_cb, NULL);
+    tw_add(&tw, 500, tw_cb, NULL);
 
 #ifndef OS_WIN
 #ifdef OS_DARWIN

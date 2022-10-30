@@ -59,6 +59,9 @@
     <ClInclude Include="structs.h">
       <Filter>utils</Filter>
     </ClInclude>
+    <ClInclude Include="netev\netev.h">
+      <Filter>netev</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="md5\md5.c">
@@ -111,6 +114,9 @@
     </ClCompile>
     <ClCompile Include="cond.c">
       <Filter>thread</Filter>
+    </ClCompile>
+    <ClCompile Include="netev\netev.c">
+      <Filter>netev</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>

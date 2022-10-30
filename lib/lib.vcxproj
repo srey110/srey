@@ -30,6 +30,7 @@
     <ClInclude Include="md5\md5.h" />
     <ClInclude Include="mutex.h" />
     <ClInclude Include="netaddr.h" />
+    <ClInclude Include="netev\netev.h" />
     <ClInclude Include="netutils.h" />
     <ClInclude Include="os.h" />
     <ClInclude Include="queue.h" />
@@ -51,6 +52,7 @@
     <ClCompile Include="md5\md5.c" />
     <ClCompile Include="mutex.c" />
     <ClCompile Include="netaddr.c" />
+    <ClCompile Include="netev\netev.c" />
     <ClCompile Include="netutils.c" />
     <ClCompile Include="queue.c" />
     <ClCompile Include="rwlock.c" />
