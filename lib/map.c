@@ -17,7 +17,6 @@ struct map_ctx
     size_t count;
     size_t mask;
     size_t growat;
-    struct rwlock_ctx rwlock;
     void *buckets;
     void *spare;
     void *edata;
@@ -39,7 +38,7 @@ static inline struct map_ctx *_map_new(size_t uielsize, size_t uicap, uint64_t(*
 {
     uicap = ROUND_UP(uicap, ONEK);
     size_t uibucketsz = sizeof(struct bucket_ctx) + uielsize;
-    while (uibucketsz & (sizeof(uintptr_t) - 1)) 
+    while (uibucketsz & (sizeof(uintptr_t) - 1))
     {
         uibucketsz++;
     }
@@ -65,19 +64,12 @@ static inline struct map_ctx *_map_new(size_t uielsize, size_t uicap, uint64_t(*
 struct map_ctx *map_new(size_t uielsize, uint64_t(*hash)(void *),
     int32_t(*compare)(void *a, void *b, void *pudata), void *pudata)
 {
-    struct map_ctx *pmap = _map_new(uielsize, ONEK, hash, compare, pudata);
-    rwlock_init(&pmap->rwlock);
-    return pmap;
+    return _map_new(uielsize, ONEK, hash, compare, pudata);
 }
 void map_free(struct map_ctx *pmap)
 {
-    rwlock_free(&pmap->rwlock);
     FREE(pmap->buckets);
     FREE(pmap);
-}
-struct rwlock_ctx *map_rwlock(struct map_ctx *pmap)
-{
-    return &pmap->rwlock;
 }
 static inline void _map_expand(struct map_ctx *pmap, size_t uinewcap) 
 {
@@ -121,7 +113,7 @@ static inline void _map_expand(struct map_ctx *pmap, size_t uinewcap)
     pmap->growat = pnew->growat;
     FREE(pnew);
 }
-void _map_set(struct map_ctx *pmap, void *pitem)
+void map_set(struct map_ctx *pmap, void *pitem)
 {
     if (pmap->count == pmap->growat)
     {
@@ -158,13 +150,7 @@ void _map_set(struct map_ctx *pmap, void *pitem)
         pentry->dib += 1;
     }
 }
-void map_set(struct map_ctx *pmap, void *pitem) 
-{
-    rwlock_wrlock(&pmap->rwlock);
-    _map_set(pmap, pitem);
-    rwlock_unlock(&pmap->rwlock);
-}
-int32_t _map_get(struct map_ctx *pmap, void *pkey, void *pitem)
+int32_t map_get(struct map_ctx *pmap, void *pkey, void *pitem)
 {
     struct bucket_ctx *pbucket;
     uint64_t ulhash = _get_hash(pmap, pkey);
@@ -188,14 +174,7 @@ int32_t _map_get(struct map_ctx *pmap, void *pkey, void *pitem)
         i = (i + 1) & pmap->mask;
     }
 }
-int32_t map_get(struct map_ctx *pmap, void *pkey, void *pitem)
-{
-    rwlock_rdlock(&pmap->rwlock);
-    int32_t irtn = _map_get(pmap, pkey, pitem);
-    rwlock_unlock(&pmap->rwlock);
-    return irtn;
-}
-int32_t _map_remove(struct map_ctx *pmap, void *pkey, void *pitem)
+int32_t map_remove(struct map_ctx *pmap, void *pkey, void *pitem)
 {
     struct bucket_ctx *pbucket, *prev;
     uint64_t ulhash = _get_hash(pmap, pkey);
@@ -234,36 +213,16 @@ int32_t _map_remove(struct map_ctx *pmap, void *pkey, void *pitem)
         i = (i + 1) & pmap->mask;
     }
 }
-int32_t map_remove(struct map_ctx *pmap, void *pkey, void *pitem)
-{
-    rwlock_wrlock(&pmap->rwlock);
-    int32_t irtn = _map_remove(pmap, pkey, pitem);
-    rwlock_unlock(&pmap->rwlock);
-    return irtn;
-}
-void _map_clear(struct map_ctx *pmap)
+void map_clear(struct map_ctx *pmap)
 {
     pmap->count = 0;
     ZERO(pmap->buckets, pmap->bucketsz * pmap->cap);
 }
-void map_clear(struct map_ctx *pmap)
-{
-    rwlock_wrlock(&pmap->rwlock);
-    _map_clear(pmap);
-    rwlock_unlock(&pmap->rwlock);
-}
-size_t _map_size(struct map_ctx *pmap)
+size_t map_size(struct map_ctx *pmap)
 {
     return pmap->count;
 }
-size_t map_size(struct map_ctx *pmap)
-{
-    rwlock_rdlock(&pmap->rwlock);
-    size_t uicnt = pmap->count;
-    rwlock_unlock(&pmap->rwlock);
-    return uicnt;
-}
-void _map_iter(struct map_ctx *pmap, int32_t(*iter)(void *pitem, void *pudata), void *pudata)
+void map_iter(struct map_ctx *pmap, int32_t(*iter)(void *pitem, void *pudata), void *pudata)
 {
     struct bucket_ctx *pbucket;
     for (size_t i = 0; i < pmap->nbuckets; i++)
@@ -278,10 +237,4 @@ void _map_iter(struct map_ctx *pmap, int32_t(*iter)(void *pitem, void *pudata), 
             return;
         }
     }
-}
-void map_iter(struct map_ctx *pmap, int32_t(*iter)(void *pitem, void *pudata), void *pudata)
-{
-    rwlock_rdlock(&pmap->rwlock);
-    _map_iter(pmap, iter, pudata);
-    rwlock_unlock(&pmap->rwlock);
 }

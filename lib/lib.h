@@ -1,8 +1,6 @@
 #ifndef LIB_H_
 #define LIB_H_
 
-#include "macro.h"
-
 #include "cond.h"
 #include "mutex.h"
 #include "rwlock.h"
@@ -18,6 +16,5 @@
 #include "map.h"
 #include "netaddr.h"
 #include "netutils.h"
-#include "luatask.h"
 
 #endif//LIB_H_

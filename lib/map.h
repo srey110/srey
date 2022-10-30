@@ -1,7 +1,7 @@
 #ifndef MAP_H_
 #define MAP_H_
 
-#include "rwlock.h"
+#include "macro.h"
 
 /*
 * \brief              新建
@@ -17,18 +17,15 @@ struct map_ctx *map_new(size_t uielsize, uint64_t(*hash)(void *),
 * \brief              释放
 */
 void map_free(struct map_ctx *pmap);
-struct rwlock_ctx *map_rwlock(struct map_ctx *pmap);
 /*
 * \brief              节点数
 * \return             节点数
 */
-size_t _map_size(struct map_ctx *pmap);
 size_t map_size(struct map_ctx *pmap);
 /*
 * \brief              设置
 * \param pitem        节点
 */
-void _map_set(struct map_ctx *pmap, void *pitem);
 void map_set(struct map_ctx *pmap, void *pitem);
 /*
 * \brief              获取
@@ -36,7 +33,6 @@ void map_set(struct map_ctx *pmap, void *pitem);
 * \param pitem        节点
 * \return             ERR_OK 有数据， 其他无
 */
-int32_t _map_get(struct map_ctx *pmap, void *pkey, void *pitem);
 int32_t map_get(struct map_ctx *pmap, void *pkey, void *pitem);
 /*
 * \brief              删除
@@ -44,19 +40,16 @@ int32_t map_get(struct map_ctx *pmap, void *pkey, void *pitem);
 * \param pitem        节点 NULL 不返回被删除的节点
 * \return             ERR_OK 有数据， 其他无
 */
-int32_t _map_remove(struct map_ctx *pmap, void *pkey, void *pitem);
 int32_t map_remove(struct map_ctx *pmap, void *pkey, void *pitem);
 /*
 * \brief              清除全部数据
 */
-void _map_clear(struct map_ctx *pmap);
 void map_clear(struct map_ctx *pmap);
 /*
 * \brief              遍历
 * \param iter         遍历执行的函数，函数返回非ERR_OK 停止执行
 * \param pudata       用户数据
 */
-void _map_iter(struct map_ctx *pmap, int32_t(*iter)(void *pitem, void *pudata), void *pudata);
 void map_iter(struct map_ctx *pmap, int32_t(*iter)(void *pitem, void *pudata), void *pudata);
 
 #endif//MAP_H_

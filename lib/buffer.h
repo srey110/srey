@@ -1,7 +1,7 @@
 #ifndef BUFFER_H_
 #define BUFFER_H_
 
-#include "mutex.h"
+#include "macro.h"
 
 #if defined(OS_WIN)
 #define IOV_TYPE WSABUF
@@ -26,7 +26,6 @@ struct buffer_ctx
     struct bufnode_ctx *tail;
     struct bufnode_ctx **tail_with_data;
     size_t total_len;//数据总长度
-    mutex_ctx mutex;
 };
 /*
 * \brief          初始化
@@ -37,14 +36,6 @@ void buffer_init(struct buffer_ctx *pctx);
 */
 void buffer_free(struct buffer_ctx *pctx);
 //锁
-static inline void buffer_lock(struct buffer_ctx *pctx)
-{
-    mutex_lock(&pctx->mutex);
-};
-static inline void buffer_unlock(struct buffer_ctx *pctx)
-{
-    mutex_unlock(&pctx->mutex);
-};
 /*
 * \brief          添加数据
 * \param pdata    数据
@@ -52,14 +43,7 @@ static inline void buffer_unlock(struct buffer_ctx *pctx)
 * \return         ERR_OK 成功
 * \return         ERR_FAILED 失败
 */
-int32_t _buffer_append(struct buffer_ctx *pctx, void *pdata, const size_t uilen);
-static inline int32_t buffer_append(struct buffer_ctx *pctx, void *pdata, const size_t uilen)
-{
-    buffer_lock(pctx);
-    int32_t irtn = _buffer_append(pctx, pdata, uilen);
-    buffer_unlock(pctx);
-    return irtn;
-};
+int32_t buffer_append(struct buffer_ctx *pctx, void *pdata, const size_t uilen);
 /*
 * \brief          添加数据
 * \param pfmt     格式
@@ -75,15 +59,13 @@ int32_t buffer_appendv(struct buffer_ctx *pctx, const char *pfmt, ...);
 * \return         ERR_FAILED 失败
 * \return         实际拷贝数
 */
-int32_t _buffer_copyout(struct buffer_ctx *pctx, void *pout, size_t uilens);
-int32_t buffer_copyout(struct buffer_ctx *pctx, void *pout, size_t uilen);
+int32_t buffer_copyout(struct buffer_ctx *pctx, void *pout, size_t uilens);
 /*
 * \brief          删除数据
 * \param uilen    删除多少
 * \return         ERR_FAILED 失败
 * \return         实际删除数
 */
-int32_t _buffer_drain(struct buffer_ctx *pctx, size_t uilen);
 int32_t buffer_drain(struct buffer_ctx *pctx, size_t uilen);
 /*
 * \brief          拷贝并删除数据
@@ -106,19 +88,13 @@ int32_t buffer_search(struct buffer_ctx *pctx, const size_t uistart, void *pwhat
 * \brief          数据长度
 * \return         数据长度
 */
-static inline size_t buffer_size(struct buffer_ctx *pctx)
-{
-    buffer_lock(pctx);
-    size_t uisize = pctx->total_len;
-    buffer_unlock(pctx);
-    return uisize;
-}
+size_t buffer_size(struct buffer_ctx *pctx);
 /*
 * \brief          扩展一个节点，连续内存
 * \param uilen    扩展多少
 * \return         扩展了的节点
 */
-struct bufnode_ctx *_buffer_expand_single(struct buffer_ctx *pctx, const size_t uilens);
+struct bufnode_ctx *buffer_expand_single(struct buffer_ctx *pctx, const size_t uilens);
 /*
 * \brief          扩展节点，非连续内存,填充数据到 piov后使用_buffer_commit_iov提交本次操作
 * \param uilen    扩展多少
@@ -126,7 +102,7 @@ struct bufnode_ctx *_buffer_expand_single(struct buffer_ctx *pctx, const size_t 
 * \param uicnt    最多使用多少个节点
 * \return         实际扩展的节点数，小于等于uicnt
 */
-uint32_t _buffer_expand_iov(struct buffer_ctx *pctx, const size_t uilens,
+uint32_t buffer_expand_iov(struct buffer_ctx *pctx, const size_t uilens,
     IOV_TYPE *piov, const uint32_t uicnt);
 /*
 * \brief          提交填充了数据的iov，该iov由_buffer_expand_iov扩展。
@@ -135,7 +111,7 @@ uint32_t _buffer_expand_iov(struct buffer_ctx *pctx, const size_t uilens,
 * \param uicnt    piov个数
 * \return         添加了多少数据
 */
-size_t _buffer_commit_iov(struct buffer_ctx *pctx, size_t uilens ,IOV_TYPE *piov, const uint32_t uicnt);
+size_t buffer_commit_iov(struct buffer_ctx *pctx, size_t uilens ,IOV_TYPE *piov, const uint32_t uicnt);
 /*
 * \brief             返回buffer中的数据并装填进piov
 * \param uiatmost    需要装填的数据长度
@@ -143,119 +119,15 @@ size_t _buffer_commit_iov(struct buffer_ctx *pctx, size_t uilens ,IOV_TYPE *piov
 * \param uicnt       iov数组长度
 * \return            有数据的piov个数
 */
-uint32_t _buffer_get_iov(struct buffer_ctx *pctx, size_t uiatmost,
+uint32_t buffer_get_iov(struct buffer_ctx *pctx, size_t uiatmost,
     IOV_TYPE *piov, const uint32_t uicnt);
 
-static inline uint32_t buffer_write_iov_application(struct buffer_ctx *pbuf, const size_t uisize,
-    IOV_TYPE *piov, const uint32_t uiovcnt)
-{
-    buffer_lock(pbuf);
-    ASSERTAB(0 == pbuf->freeze_write, "buffer tail already freezed.");
-    pbuf->freeze_write = 1;
-    uint32_t uicoun = _buffer_expand_iov(pbuf, uisize, piov, uiovcnt);
-    buffer_unlock(pbuf);
-    return uicoun;
-};
-static inline void buffer_write_iov_commit(struct buffer_ctx *pbuf, size_t ilens,
-    IOV_TYPE *piov, const uint32_t uiovcnt)
-{
-    buffer_lock(pbuf);
-    ASSERTAB(0 != pbuf->freeze_write, "buffer tail already unfreezed.");
-    _buffer_commit_iov(pbuf, ilens, piov, uiovcnt);
-    pbuf->freeze_write = 0;
-    buffer_unlock(pbuf);
-};
-static inline uint32_t buffer_read_iov_application(struct buffer_ctx *pbuf, size_t uisize,
-    IOV_TYPE *piov, const uint32_t uiovcnt)
-{
-    buffer_lock(pbuf);
-    ASSERTAB(0 == pbuf->freeze_read, "buffer head already freezed.");
-    uint32_t uicnt = _buffer_get_iov(pbuf, uisize, piov, uiovcnt);
-    if (uicnt > 0)
-    {
-        pbuf->freeze_read = 1;
-    }
-    buffer_unlock(pbuf);
-    return uicnt;
-};
-static inline void buffer_read_iov_commit(struct buffer_ctx *pbuf, size_t uisize)
-{
-    buffer_lock(pbuf);
-    ASSERTAB(1 == pbuf->freeze_read, "buffer head already unfreezed.");
-    if (uisize > 0)
-    {
-        _buffer_drain(pbuf, uisize);
-    }
-    pbuf->freeze_read = 0;
-    buffer_unlock(pbuf);
-};
-static inline size_t _buffer_iov_size(IOV_TYPE *piov, const uint32_t uiovcnt)
-{
-    size_t isize = 0;
-    for (uint32_t i = 0; i < uiovcnt; i++)
-    {
-        isize += (size_t)piov[i].IOV_LEN_FIELD;
-    }
-    return isize;
-};
-static inline void buffer_piece_append(struct buffer_ctx *pbuf, void *pdata1, size_t uilens1, void *pdata2, size_t uilens2)
-{
-    IOV_TYPE piov[2];
-    size_t uitotal = uilens1 + uilens2;
-    buffer_lock(pbuf);
-    ASSERTAB(0 == pbuf->freeze_write, "buffer tail already freezed.");
-    uint32_t uinum = _buffer_expand_iov(pbuf, uitotal, piov, 2);
-    if (uilens1 > piov[0].IOV_LEN_FIELD)
-    {
-        char *pdata = (char*)pdata1;
-        memcpy(piov[0].IOV_PTR_FIELD, pdata, piov[0].IOV_LEN_FIELD);
-        size_t uiremain = uilens1 - piov[0].IOV_LEN_FIELD;
-        memcpy(piov[1].IOV_PTR_FIELD, pdata + piov[0].IOV_LEN_FIELD, uiremain);
-        memcpy(piov[1].IOV_PTR_FIELD + uiremain, pdata2, uilens2);
-    }
-    else if(uilens1 == piov[0].IOV_LEN_FIELD)
-    {
-        memcpy(piov[0].IOV_PTR_FIELD, pdata1, uilens1);
-        memcpy(piov[1].IOV_PTR_FIELD, pdata2, uilens2);
-    }
-    else//<
-    {
-        memcpy(piov[0].IOV_PTR_FIELD, pdata1, uilens1);        
-        size_t uiremain = piov[0].IOV_LEN_FIELD - uilens1;
-        if (uiremain >= uilens2)
-        {
-            memcpy(piov[0].IOV_PTR_FIELD + uilens1, pdata2, uilens2);
-        }
-        else
-        {
-            char *pdata = (char*)pdata2;
-            memcpy(piov[0].IOV_PTR_FIELD + uilens1, pdata, uiremain);
-            memcpy(piov[1].IOV_PTR_FIELD, pdata + uiremain, uilens2 - uiremain);
-        }
-    }
-    ASSERTAB(uitotal == _buffer_commit_iov(pbuf, uitotal, piov, uinum), "commit lens not equ buffer lens.");
-    buffer_unlock(pbuf);
-};
-static inline uint32_t buffer_piece_read_application(struct buffer_ctx *pbuf, void *pdata1, size_t uilens1,
-    IOV_TYPE *piov, const uint32_t uiovmax, size_t(*piece_data_lens)(void *))
-{
-    uint32_t uiovcnt = 0;
-    buffer_lock(pbuf);
-    ASSERTAB(0 == pbuf->freeze_read, "buffer head already freezed.");
-    if (pbuf->total_len > 0)
-    {
-        ASSERTAB(pbuf->total_len >= uilens1, "lens error.");
-        _buffer_copyout(pbuf, pdata1, uilens1);
-        _buffer_drain(pbuf, uilens1);
-        size_t uisize = piece_data_lens(pdata1);
-        if (uisize > 0)
-        {
-            uiovcnt = _buffer_get_iov(pbuf, uisize, piov, uiovmax);
-            pbuf->freeze_read = 1;
-        }
-    }    
-    buffer_unlock(pbuf);
-    return uiovcnt;
-};
+uint32_t buffer_write_iov_application(struct buffer_ctx *pbuf, const size_t uisize,
+    IOV_TYPE *piov, const uint32_t uiovcnt);
+void buffer_write_iov_commit(struct buffer_ctx *pbuf, size_t ilens,
+    IOV_TYPE *piov, const uint32_t uiovcnt);
+uint32_t buffer_read_iov_application(struct buffer_ctx *pbuf, size_t uisize,
+    IOV_TYPE *piov, const uint32_t uiovcnt);
+void buffer_read_iov_commit(struct buffer_ctx *pbuf, size_t uisize);
 
 #endif//BUFFER_H_

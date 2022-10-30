@@ -7,6 +7,20 @@
 #include <DbgHelp.h>
 #pragma comment(lib, "Dbghelp.lib" )
 static volatile atomic_t g_exindex = 0;
+static volatile atomic64_t g_ids = 0;
+
+uint64_t createid()
+{
+    return ATOMIC64_ADD(&g_ids, 1);
+}
+uint64_t threadid()
+{
+#if defined(OS_WIN)
+    return (uint64_t)GetCurrentThreadId();
+#else
+    return (uint64_t)pthread_self();
+#endif
+}
 BOOL _GetImpersonationToken(HANDLE *phandle)
 {
     if (!OpenThreadToken(GetCurrentThread(),
@@ -314,6 +328,56 @@ int32_t getprocpath(char acpath[PATH_LENS])
 #endif
     return ERR_OK;
 }
+void timeofday(struct timeval *ptv)
+{
+#if defined(OS_WIN)
+#define U64_LITERAL(n) n##ui64
+#define EPOCH_BIAS U64_LITERAL(116444736000000000)
+#define UNITS_PER_SEC U64_LITERAL(10000000)
+#define USEC_PER_SEC U64_LITERAL(1000000)
+#define UNITS_PER_USEC U64_LITERAL(10)
+    union
+    {
+        FILETIME ft_ft;
+        uint64_t ft_64;
+    } ft;
+
+    GetSystemTimeAsFileTime(&ft.ft_ft);
+    ft.ft_64 -= EPOCH_BIAS;
+    ptv->tv_sec = (long)(ft.ft_64 / UNITS_PER_SEC);
+    ptv->tv_usec = (long)((ft.ft_64 / UNITS_PER_USEC) % USEC_PER_SEC);
+#else
+    (void)gettimeofday(ptv, NULL);
+#endif
+}
+uint64_t nowmsec()
+{
+    struct timeval tv;
+    timeofday(&tv);
+    return (uint64_t)tv.tv_usec / 1000 + (uint64_t)tv.tv_sec * 1000;
+}
+uint64_t nowsec()
+{
+    struct timeval tv;
+    timeofday(&tv);
+    return (uint64_t)tv.tv_sec;
+}
+void nowtime(const char *pformat, char atime[TIME_LENS])
+{
+    struct timeval tv;
+    timeofday(&tv);
+    time_t t = tv.tv_sec;
+    strftime(atime, TIME_LENS - 1, pformat, localtime(&t));
+}
+void nowmtime(const char *pformat, char atime[TIME_LENS])
+{
+    struct timeval tv;
+    timeofday(&tv);
+    time_t t = tv.tv_sec;
+    strftime(atime, TIME_LENS - 1, pformat, localtime(&t));
+    size_t uilen = strlen(atime);
+    SNPRINTF(atime + uilen, TIME_LENS - uilen - 1, " %03d", (int32_t)(tv.tv_usec / 1000));
+}
 const uint16_t crc16_tab[256] = {
     0x0000, 0xC0C1, 0xC181, 0x0140, 0xC301, 0x03C0, 0x0280, 0xC241,
     0xC601, 0x06C0, 0x0780, 0xC741, 0x0500, 0xC5C1, 0xC481, 0x0440,
@@ -588,6 +652,91 @@ char *xordecode(const char ackey[4], const size_t uiround, char *pbuf, const siz
         pbuf[0] = ((pbuf[0] ^ ackey[3]) ^ ackey[2]) - ackey[1];
     }
     return pbuf;
+}
+static unsigned char hexchars[] = "0123456789ABCDEF";
+char *urlencode(const char *s, const size_t len, size_t *new_length)
+{
+    register unsigned char c;
+    unsigned char *to, *start;
+    unsigned char const *from, *end;
+    from = (unsigned char *)s;
+    end = (unsigned char *)s + len;
+    start = to = (unsigned char *)calloc(1, 3 * len + 1);
+    while (from < end)
+    {
+        c = *from++;
+        if (c == ' ')
+        {
+            *to++ = '+';
+        }
+        else if ((c < '0' && c != '-' && c != '.') ||
+            (c < 'A' && c > '9') ||
+            (c > 'Z' && c < 'a' && c != '_') ||
+            (c > 'z'))
+        {
+            to[0] = '%';
+            to[1] = hexchars[c >> 4];
+            to[2] = hexchars[c & 15];
+            to += 3;
+        }
+        else
+        {
+            *to++ = c;
+        }
+    }
+    *to = 0;
+    if (new_length)
+    {
+        *new_length = (int32_t)(to - start);
+    }
+    return (char *)start;
+}
+int32_t _htoi(char *s)
+{
+    int32_t c, value;
+    c = ((unsigned char *)s)[0];
+    if (isupper(c))
+    {
+        c = tolower(c);
+    }        
+    value = (c >= '0' && c <= '9' ? c - '0' : c - 'a' + 10) * 16;
+    c = ((unsigned char *)s)[1];
+    if (isupper(c))
+    {
+        c = tolower(c);
+    }
+    value += c >= '0' && c <= '9' ? c - '0' : c - 'a' + 10;
+
+    return (value);
+}
+int32_t urldecode(char *str, size_t len)
+{
+    char *dest = str;
+    char *data = str;
+    while (len--)
+    {
+        if (*data == '+')
+        {
+            *dest = ' ';
+        }
+        else if (*data == '%' 
+            && len >= 2 
+            && isxdigit((int) *(data + 1)) 
+            && isxdigit((int) *(data + 2)))
+        {
+            *dest = (char)_htoi(data + 1);
+            data += 2;
+            len -= 2;
+        }
+        else
+        {
+            *dest = *data;
+        }
+        data++;
+        dest++;
+    }
+    *dest = '\0';
+    return (int32_t)(dest - str);
 }
 uint64_t hash(const char *pfirst, size_t uilen)
 {

@@ -2,7 +2,15 @@
 #define UTILS_H_
 
 #include "macro.h"
-
+/*
+* \brief          获取一ID
+*/
+uint64_t createid();
+/*
+* \brief          获取当前线程Id
+* \return         线程Id
+*/
+uint64_t threadid();
 /*
 * \brief          开启coredump socket链接数限制
 */
@@ -51,76 +59,29 @@ int32_t getprocpath(char acpath[PATH_LENS]);
 * \brief          获取时间
 * \param ptv      timeval
 */
-static inline void timeofday(struct timeval *ptv)
-{
-#if defined(OS_WIN)
-    #define U64_LITERAL(n) n##ui64
-    #define EPOCH_BIAS U64_LITERAL(116444736000000000)
-    #define UNITS_PER_SEC U64_LITERAL(10000000)
-    #define USEC_PER_SEC U64_LITERAL(1000000)
-    #define UNITS_PER_USEC U64_LITERAL(10)
-    union
-    {
-        FILETIME ft_ft;
-        uint64_t ft_64;
-    } ft;
-
-    GetSystemTimeAsFileTime(&ft.ft_ft);
-    ft.ft_64 -= EPOCH_BIAS;
-    ptv->tv_sec = (long)(ft.ft_64 / UNITS_PER_SEC);
-    ptv->tv_usec = (long)((ft.ft_64 / UNITS_PER_USEC) % USEC_PER_SEC);
-#else
-    (void)gettimeofday(ptv, NULL);
-#endif
-};
+void timeofday(struct timeval *ptv);
 /*
 * \brief          获取当前时间戳  毫秒
 * \return         时间  毫秒
 */
-static inline uint64_t nowmsec()
-{
-    struct timeval tv;
-    timeofday(&tv);
-    return (uint64_t)tv.tv_usec / 1000 + (uint64_t)tv.tv_sec * 1000;
-};
+uint64_t nowmsec();
 /*
 * \brief          获取当前时间戳  秒
 * \return         时间  秒
 */
-static inline uint64_t nowsec()
-{
-    struct timeval tv;
-    timeofday(&tv);
-    return (uint64_t)tv.tv_sec;
-};
+uint64_t nowsec();
 /*
 * \brief          格式化输出当前时间戳 秒
 * \param pformat  格式   %Y-%m-%d %H:%M:%S 
 * \param atime    格式后的时间字符串  秒       
 */ 
-static inline void nowtime(const char *pformat, char atime[TIME_LENS])
-{
-    struct timeval tv;
-    timeofday(&tv);
-    time_t t = tv.tv_sec;
-    ZERO(atime, TIME_LENS);
-    strftime(atime, TIME_LENS - 1, pformat, localtime(&t));
-};
+void nowtime(const char *pformat, char atime[TIME_LENS]);
 /*
 * \brief          格式化输出当前时间戳 毫秒
 * \param pformat  格式   %Y-%m-%d %H:%M:%S
 * \param atime    格式后的时间字符串 毫秒
 */
-static inline void nowmtime(const char *pformat, char atime[TIME_LENS])
-{
-    struct timeval tv;
-    timeofday(&tv);
-    time_t t = tv.tv_sec;
-    ZERO(atime, TIME_LENS);
-    strftime(atime, TIME_LENS - 1, pformat, localtime(&t));
-    size_t uilen = strlen(atime);
-    SNPRINTF(atime + uilen, TIME_LENS - uilen - 1, " %03d", (int32_t)(tv.tv_usec / 1000));
-};
+void nowmtime(const char *pformat, char atime[TIME_LENS]);
 /*
 * \brief          计算crc16
 * \param pval     待计算
@@ -169,8 +130,12 @@ int32_t b64encode(const char *pval, const size_t ilens, char *pout);
 * \return         解码长度
 */
 int32_t b64decode(const char *pval, const size_t ilens, char *pout);
+
 char *xorencode(const char ackey[4], const size_t uiround, char *pbuf, const size_t uilens);
 char *xordecode(const char ackey[4], const size_t uiround, char *pbuf, const size_t uilens);
+
+char *urlencode(const char *s, const size_t len, size_t *new_length);
+int32_t urldecode(char *str, size_t len);
 /*
 * \brief          hash
 * \return         hash

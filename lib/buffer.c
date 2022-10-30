@@ -117,7 +117,7 @@ static inline struct bufnode_ctx *_node_insert_new(struct buffer_ctx *pctx, cons
     return pnode;
 }
 //扩展空间，保证连续内存
-struct bufnode_ctx *_buffer_expand_single(struct buffer_ctx *pctx, const size_t uilens)
+struct bufnode_ctx *buffer_expand_single(struct buffer_ctx *pctx, const size_t uilens)
 {
     struct bufnode_ctx *pnode, **plast;
     plast = pctx->tail_with_data;
@@ -178,7 +178,7 @@ struct bufnode_ctx *_buffer_expand_single(struct buffer_ctx *pctx, const size_t 
     FREE(pnode);
     return ptmp;
 }
-uint32_t _buffer_expand_iov(struct buffer_ctx *pctx, const size_t uilens, 
+uint32_t buffer_expand_iov(struct buffer_ctx *pctx, const size_t uilens, 
     IOV_TYPE *piov, const uint32_t uicnt)
 {
     struct bufnode_ctx *ptmp, *pnext, *pnode = pctx->tail;
@@ -296,7 +296,7 @@ static void _last_with_data(struct buffer_ctx *pctx)
         }
     }
 }
-size_t _buffer_commit_iov(struct buffer_ctx *pctx, size_t uilens, IOV_TYPE *piov, const uint32_t uicnt)
+size_t buffer_commit_iov(struct buffer_ctx *pctx, size_t uilens, IOV_TYPE *piov, const uint32_t uicnt)
 {
     if (0 == uicnt)
     {
@@ -382,14 +382,12 @@ void buffer_init(struct buffer_ctx *pctx)
 {
     ZERO(pctx, sizeof(struct buffer_ctx));
     pctx->tail_with_data = &pctx->head;
-    mutex_init(&pctx->mutex);
 }
 void buffer_free(struct buffer_ctx *pctx)
 {
     _free_all_node(pctx->head);
-    mutex_free(&pctx->mutex);
 }
-int32_t _buffer_append(struct buffer_ctx *pctx, void *pdata, const size_t uilen)
+int32_t buffer_append(struct buffer_ctx *pctx, void *pdata, const size_t uilen)
 {
     char *ptmp = (char*)pdata;
     if (0 != pctx->freeze_write)
@@ -401,7 +399,7 @@ int32_t _buffer_append(struct buffer_ctx *pctx, void *pdata, const size_t uilen)
     IOV_TYPE piov[2];
     size_t uiremain = uilen;
     size_t i, uioff = 0;
-    uint32_t uinum = _buffer_expand_iov(pctx, uilen, piov, 2);
+    uint32_t uinum = buffer_expand_iov(pctx, uilen, piov, 2);
     for (i = 0; i < uinum && uiremain > 0; i++)
     {
         if ((IOV_LEN_TYPE)uiremain >= piov[i].IOV_LEN_FIELD)
@@ -417,16 +415,14 @@ int32_t _buffer_append(struct buffer_ctx *pctx, void *pdata, const size_t uilen)
             uiremain = 0;
         }
     }
-    ASSERTAB(uilen == _buffer_commit_iov(pctx, uilen, piov, uinum), "commit lens not equ buffer lens.");
+    ASSERTAB(uilen == buffer_commit_iov(pctx, uilen, piov, uinum), "commit lens not equ buffer lens.");
 
     return ERR_OK;
 }
 int32_t buffer_appendv(struct buffer_ctx *pctx, const char *pfmt, ...)
 {
-    buffer_lock(pctx);
     if (0 != pctx->freeze_write)
     {
-        buffer_unlock(pctx);
         PRINTF("%s", "tail locked.");
         return ERR_FAILED;
     }
@@ -434,7 +430,7 @@ int32_t buffer_appendv(struct buffer_ctx *pctx, const char *pfmt, ...)
     va_list va;
     int32_t irtn, isize;
 
-    struct bufnode_ctx *pnode = _buffer_expand_single(pctx, FIRST_FORMAT_IN_EXPAND);
+    struct bufnode_ctx *pnode = buffer_expand_single(pctx, FIRST_FORMAT_IN_EXPAND);
     pnode->used = 1;
     va_start(va, pfmt);
     while (1)
@@ -451,15 +447,19 @@ int32_t buffer_appendv(struct buffer_ctx *pctx, const char *pfmt, ...)
         }
 
         pnode->used = 0;
-        pnode = _buffer_expand_single(pctx, irtn + 1);
+        pnode = buffer_expand_single(pctx, irtn + 1);
         pnode->used = 1;
     }
     va_end(va);
-    buffer_unlock(pctx);
     return ERR_OK;
 }
-int32_t _buffer_copyout(struct buffer_ctx *pctx, void *pout, size_t uilens)
+int32_t buffer_copyout(struct buffer_ctx *pctx, void *pout, size_t uilens)
 {
+    if (0 != pctx->freeze_read)
+    {
+        PRINTF("%s", "head locked.");
+        return ERR_FAILED;
+    }
     struct bufnode_ctx *pnode = pctx->head;
     char *pdata = pout;
     if (uilens > pctx->total_len)
@@ -487,23 +487,13 @@ int32_t _buffer_copyout(struct buffer_ctx *pctx, void *pout, size_t uilens)
 
     return (int32_t)uinread;
 }
-int32_t buffer_copyout(struct buffer_ctx *pctx, void *pout, size_t uilens)
+int32_t buffer_drain(struct buffer_ctx *pctx, size_t uilen)
 {
-    buffer_lock(pctx);
     if (0 != pctx->freeze_read)
     {
-        buffer_unlock(pctx);
         PRINTF("%s", "head locked.");
         return ERR_FAILED;
     }
-    
-    int32_t irtn = _buffer_copyout(pctx, pout, uilens);
-    buffer_unlock(pctx);
-
-    return irtn;
-}
-int32_t _buffer_drain(struct buffer_ctx *pctx, size_t uilen)
-{
     struct bufnode_ctx *pnode, *pnext;
     size_t uiremain, uioldlen;
     uioldlen = pctx->total_len;
@@ -557,38 +547,13 @@ int32_t _buffer_drain(struct buffer_ctx *pctx, size_t uilen)
 
     return (int32_t)uilen;
 }
-int32_t buffer_drain(struct buffer_ctx *pctx, size_t uilen)
-{
-    buffer_lock(pctx);
-    if (0 != pctx->freeze_read)
-    {
-        buffer_unlock(pctx);
-        PRINTF("%s", "head locked.");
-        return ERR_FAILED;
-    }
-
-    int32_t irtn = _buffer_drain(pctx, uilen);
-    buffer_unlock(pctx);
-
-    return irtn;
-}
 int32_t buffer_remove(struct buffer_ctx *pctx, void *pout, size_t uilen)
 {
-    buffer_lock(pctx);
-    if (0 != pctx->freeze_read)
-    {
-        buffer_unlock(pctx);
-        PRINTF("%s", "head locked.");
-        return ERR_FAILED;
-    }
-
-    int32_t irtn = _buffer_copyout(pctx, pout, uilen);
+    int32_t irtn = buffer_copyout(pctx, pout, uilen);
     if (irtn > 0)
     {
-        ASSERTAB(irtn == _buffer_drain(pctx, irtn), "drain lens not equ copy lens.");
+        ASSERTAB(irtn == buffer_drain(pctx, irtn), "drain lens not equ copy lens.");
     }
-    buffer_unlock(pctx);
-
     return irtn;
 }
 static int32_t _search_memcmp(struct bufnode_ctx *pnode, size_t uioff, char *pwhat, size_t uiwlens)
@@ -628,8 +593,13 @@ static struct bufnode_ctx *_search_start(struct bufnode_ctx *pnode, size_t uista
 
     return NULL;
 }
-static int32_t _search(struct buffer_ctx *pctx, const size_t uistart, char *pwhat, size_t uiwlens)
+static int32_t buffer_search(struct buffer_ctx *pctx, const size_t uistart, char *pwhat, size_t uiwlens)
 {
+    if (0 != pctx->freeze_read)
+    {
+        PRINTF("%s", "head locked.");
+        return ERR_FAILED;
+    }
     if (uistart >= pctx->total_len
         || uiwlens > pctx->total_len)
     {
@@ -680,22 +650,11 @@ static int32_t _search(struct buffer_ctx *pctx, const size_t uistart, char *pwha
 
     return ERR_FAILED;
 }
-int32_t buffer_search(struct buffer_ctx *pctx, const size_t uistart, void *pwhat, size_t uiwlens)
+size_t buffer_size(struct buffer_ctx *pctx)
 {
-    buffer_lock(pctx);
-    if (0 != pctx->freeze_read)
-    {
-        buffer_unlock(pctx);
-        PRINTF("%s", "head locked.");
-        return ERR_FAILED;
-    }
-
-    int32_t irtn = _search(pctx, uistart, (char *)pwhat, uiwlens);
-    buffer_unlock(pctx);
-
-    return irtn;
+    return pctx->total_len;
 }
-uint32_t _buffer_get_iov(struct buffer_ctx *pctx, size_t uiatmost,
+uint32_t buffer_get_iov(struct buffer_ctx *pctx, size_t uiatmost,
     IOV_TYPE *piov, const uint32_t uicnt)
 {
     if (uiatmost > pctx->total_len)
@@ -730,4 +689,39 @@ uint32_t _buffer_get_iov(struct buffer_ctx *pctx, size_t uiatmost,
     }
 
     return index;
+}
+uint32_t buffer_write_iov_application(struct buffer_ctx *pbuf, const size_t uisize,
+    IOV_TYPE *piov, const uint32_t uiovcnt)
+{
+    ASSERTAB(0 == pbuf->freeze_write, "buffer tail already freezed.");
+    pbuf->freeze_write = 1;
+    uint32_t uicoun = buffer_expand_iov(pbuf, uisize, piov, uiovcnt);
+    return uicoun;
+}
+void buffer_write_iov_commit(struct buffer_ctx *pbuf, size_t ilens,
+    IOV_TYPE *piov, const uint32_t uiovcnt)
+{
+    ASSERTAB(0 != pbuf->freeze_write, "buffer tail already unfreezed.");
+    buffer_commit_iov(pbuf, ilens, piov, uiovcnt);
+    pbuf->freeze_write = 0;
+}
+uint32_t buffer_read_iov_application(struct buffer_ctx *pbuf, size_t uisize,
+    IOV_TYPE *piov, const uint32_t uiovcnt)
+{
+    ASSERTAB(0 == pbuf->freeze_read, "buffer head already freezed.");
+    uint32_t uicnt = buffer_get_iov(pbuf, uisize, piov, uiovcnt);
+    if (uicnt > 0)
+    {
+        pbuf->freeze_read = 1;
+    }
+    return uicnt;
+}
+void buffer_read_iov_commit(struct buffer_ctx *pbuf, size_t uisize)
+{
+    ASSERTAB(1 == pbuf->freeze_read, "buffer head already unfreezed.");
+    if (uisize > 0)
+    {
+        buffer_drain(pbuf, uisize);
+    }
+    pbuf->freeze_read = 0;
 }
