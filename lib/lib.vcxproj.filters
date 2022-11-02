@@ -1,0 +1,145 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="base">
+      <UniqueIdentifier>{361ca8e0-bf69-4d1a-97ca-eccfd9c162ff}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="utils">
+      <UniqueIdentifier>{8915a949-0c9d-4ddc-8950-8c0342a0f5e0}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="utils\md5">
+      <UniqueIdentifier>{9c8059d5-b299-4f96-8c87-766cb728aa7b}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="utils\sha1">
+      <UniqueIdentifier>{8d0f8248-4127-4be8-93c0-282ff58b790f}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="thread">
+      <UniqueIdentifier>{fdd12c60-2ba2-4b60-b4c8-135cb0f4f80d}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="errcode.h">
+      <Filter>base</Filter>
+    </ClInclude>
+    <ClInclude Include="os.h">
+      <Filter>base</Filter>
+    </ClInclude>
+    <ClInclude Include="memory.h">
+      <Filter>base</Filter>
+    </ClInclude>
+    <ClInclude Include="macro_unix.h">
+      <Filter>base</Filter>
+    </ClInclude>
+    <ClInclude Include="macro_win.h">
+      <Filter>base</Filter>
+    </ClInclude>
+    <ClInclude Include="macro.h">
+      <Filter>base</Filter>
+    </ClInclude>
+    <ClInclude Include="array.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="queue.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="lib.h" />
+    <ClInclude Include="utils.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="md5\md5.h">
+      <Filter>utils\md5</Filter>
+    </ClInclude>
+    <ClInclude Include="sha1\sha1.h">
+      <Filter>utils\sha1</Filter>
+    </ClInclude>
+    <ClInclude Include="tw.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="cond.h">
+      <Filter>thread</Filter>
+    </ClInclude>
+    <ClInclude Include="mutex.h">
+      <Filter>thread</Filter>
+    </ClInclude>
+    <ClInclude Include="rwlock.h">
+      <Filter>thread</Filter>
+    </ClInclude>
+    <ClInclude Include="spinlock.h">
+      <Filter>thread</Filter>
+    </ClInclude>
+    <ClInclude Include="thread.h">
+      <Filter>thread</Filter>
+    </ClInclude>
+    <ClInclude Include="timer.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="structs.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="netaddr.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="netutils.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="chan.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="loger.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="buffer.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="memory.c">
+      <Filter>base</Filter>
+    </ClCompile>
+    <ClCompile Include="utils.c">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="md5\md5.c">
+      <Filter>utils\md5</Filter>
+    </ClCompile>
+    <ClCompile Include="sha1\sha1.c">
+      <Filter>utils\sha1</Filter>
+    </ClCompile>
+    <ClCompile Include="tw.c">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="cond.c">
+      <Filter>thread</Filter>
+    </ClCompile>
+    <ClCompile Include="mutex.c">
+      <Filter>thread</Filter>
+    </ClCompile>
+    <ClCompile Include="rwlock.c">
+      <Filter>thread</Filter>
+    </ClCompile>
+    <ClCompile Include="spinlock.c">
+      <Filter>thread</Filter>
+    </ClCompile>
+    <ClCompile Include="thread.c">
+      <Filter>thread</Filter>
+    </ClCompile>
+    <ClCompile Include="timer.c">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="netaddr.c">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="netutils.c">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="chan.c">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="loger.c">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="buffer.c">
+      <Filter>utils</Filter>
+    </ClCompile>
+  </ItemGroup>
+</Project>
