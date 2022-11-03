@@ -1,128 +1,123 @@
 #include "netaddr.h"
 
-static int32_t _checkipv4(const char *phost)
+int32_t is_ipv4(const char *host)
 {
-    for (int32_t i = 0; i < (int32_t)strlen(phost); i++)
-    {
-        if (phost[i] == '.')
-        {
-            return ERR_OK;
-        }
-        if (phost[i] == ':')
-        {
-            return ERR_FAILED;
-        }
-        if (phost[i] < '0' || phost[i] > '9')
-        {
-            return ERR_FAILED;
-        }
-    }
-    return ERR_FAILED;
+    struct sockaddr_in sin;
+    return inet_pton(AF_INET, host, &sin) == 1 ? ERR_OK : ERR_FAILED;
 }
-void netaddr_empty_addr(union netaddr_ctx *pctx, const int32_t ifamily)
+int32_t is_ipv6(const char *host)
 {
-    ZERO(pctx, sizeof(union netaddr_ctx));
-    pctx->addr.sa_family = ifamily;
+    struct sockaddr_in6 sin6;
+    return inet_pton(AF_INET6, host, &sin6) == 1 ? ERR_OK : ERR_FAILED;
 }
-int32_t netaddr_sethost(union netaddr_ctx *pctx, const char *phost, const uint16_t usport)
+int32_t is_ipaddr(const char* host)
 {
-    ZERO(pctx, sizeof(union netaddr_ctx));
-    if (ERR_OK == _checkipv4(phost))
+    return (ERR_OK == is_ipv4(host) || ERR_OK == is_ipv6(host)) ? ERR_OK : ERR_FAILED;
+}
+void netaddr_empty_addr(netaddr_ctx *ctx, const int32_t family)
+{
+    ZERO(ctx, sizeof(netaddr_ctx));
+    ctx->addr.sa_family = family;
+}
+int32_t netaddr_sethost(netaddr_ctx *ctx, const char *host, const uint16_t port)
+{
+    ZERO(ctx, sizeof(netaddr_ctx));
+    if (ERR_OK == is_ipv4(host))
     {
-        pctx->addr.sa_family = AF_INET;
-        int32_t irtn = inet_pton(AF_INET, phost, &pctx->ipv4.sin_addr.s_addr);
-        if (irtn < ERR_OK)
+        ctx->addr.sa_family = AF_INET;
+        int32_t rtn = inet_pton(AF_INET, host, &ctx->ipv4.sin_addr.s_addr);
+        if (rtn < ERR_OK)
         {
-            return irtn;
+            return rtn;
         }
-        pctx->ipv4.sin_port = htons(usport);
+        ctx->ipv4.sin_port = htons(port);
     }
     else
     {
-        pctx->addr.sa_family = AF_INET6;
-        int32_t irtn = inet_pton(AF_INET6, phost, &pctx->ipv6.sin6_addr.s6_addr);
-        if (irtn < ERR_OK)
+        ctx->addr.sa_family = AF_INET6;
+        int32_t rtn = inet_pton(AF_INET6, host, &ctx->ipv6.sin6_addr.s6_addr);
+        if (rtn < ERR_OK)
         {
-            return irtn;
+            return rtn;
         }
-        pctx->ipv6.sin6_port = htons(usport);
+        ctx->ipv6.sin6_port = htons(port);
     }
     return ERR_OK;
 }
-int32_t netaddr_remoteaddr(union netaddr_ctx *pctx, SOCKET fd, const int32_t ifamily)
+int32_t netaddr_remoteaddr(netaddr_ctx *ctx, SOCKET fd, const int32_t family)
 {
     if (INVALID_SOCK == fd)
     {
         return ERR_FAILED;
     }
-    ZERO(pctx, sizeof(union netaddr_ctx));
-    pctx->addr.sa_family = ifamily;
-    if (AF_INET == ifamily)
+    ZERO(ctx, sizeof(netaddr_ctx));
+    ctx->addr.sa_family = family;
+    if (AF_INET == family)
     {
         struct sockaddr_in addr = { 0 };
-        socklen_t iaddrlens = (socklen_t)sizeof(struct sockaddr_in);
-        if (ERR_OK != getpeername(fd, (struct sockaddr *)&addr, &iaddrlens))
+        socklen_t addrlen = (socklen_t)sizeof(struct sockaddr_in);
+        if (ERR_OK != getpeername(fd, (struct sockaddr *)&addr, &addrlen))
         {
             return ERRNO;
         }
-        memcpy(&pctx->ipv4, &addr, sizeof(pctx->ipv4));
+        memcpy(&ctx->ipv4, &addr, sizeof(ctx->ipv4));
     }
     else
     {
         struct sockaddr_in6 addr = { 0 };
-        socklen_t iaddrlens = (socklen_t)sizeof(struct sockaddr_in6);
-        if (ERR_OK != getpeername(fd, (struct sockaddr *)&addr, &iaddrlens))
+        socklen_t addrlen = (socklen_t)sizeof(struct sockaddr_in6);
+        if (ERR_OK != getpeername(fd, (struct sockaddr *)&addr, &addrlen))
         {
             return ERRNO;
         }
-        memcpy(&pctx->ipv6, &addr, sizeof(pctx->ipv6));
+        memcpy(&ctx->ipv6, &addr, sizeof(ctx->ipv6));
     }
     return ERR_OK;
 }
-int32_t netaddr_localaddr(union netaddr_ctx *pctx, SOCKET fd, const int32_t ifamily)
+int32_t netaddr_localaddr(netaddr_ctx *ctx, SOCKET fd, const int32_t family)
 {
     if (INVALID_SOCK == fd)
     {
         return ERR_FAILED;
     }
-    ZERO(pctx, sizeof(union netaddr_ctx));
-    pctx->addr.sa_family = ifamily;
-    if (AF_INET == ifamily)
+    ZERO(ctx, sizeof(netaddr_ctx));
+    ctx->addr.sa_family = family;
+    if (AF_INET == family)
     {
         struct sockaddr_in addr = { 0 };
-        socklen_t iaddrlens = (socklen_t)sizeof(struct sockaddr_in);
-        if (ERR_OK != getsockname(fd, (struct sockaddr *)&addr, &iaddrlens))
+        socklen_t addrlen = (socklen_t)sizeof(struct sockaddr_in);
+        if (ERR_OK != getsockname(fd, (struct sockaddr *)&addr, &addrlen))
         {
             return ERRNO;
         }
-        memcpy(&pctx->ipv4, &addr, sizeof(pctx->ipv4));
+        memcpy(&ctx->ipv4, &addr, sizeof(ctx->ipv4));
     }
     else
     {
         struct sockaddr_in6 addr = { 0 };
-        socklen_t iaddrlens = (socklen_t)sizeof(struct sockaddr_in6);
-        if (ERR_OK != getsockname(fd, (struct sockaddr *)&addr, &iaddrlens))
+        socklen_t addrlen = (socklen_t)sizeof(struct sockaddr_in6);
+        if (ERR_OK != getsockname(fd, (struct sockaddr *)&addr, &addrlen))
         {
             return ERRNO;
         }
-        memcpy(&pctx->ipv6, &addr, sizeof(pctx->ipv6));
+        memcpy(&ctx->ipv6, &addr, sizeof(ctx->ipv6));
     }
     return ERR_OK;
 }
-struct sockaddr *netaddr_addr(union netaddr_ctx *pctx)
+struct sockaddr *netaddr_addr(netaddr_ctx *ctx)
 {
-    return &pctx->addr;
+    return &ctx->addr;
 }
-socklen_t netaddr_size(union netaddr_ctx *pctx)
+socklen_t netaddr_size(netaddr_ctx *ctx)
 {
-    return AF_INET == pctx->addr.sa_family ? (socklen_t)sizeof(pctx->ipv4) : (socklen_t)sizeof(pctx->ipv6);
+    return AF_INET == ctx->addr.sa_family ? (socklen_t)sizeof(ctx->ipv4) : (socklen_t)sizeof(ctx->ipv6);
 }
-int32_t netaddr_ip(union netaddr_ctx *pctx, char acip[IP_LENS])
+int32_t netaddr_ip(netaddr_ctx *ctx, char ip[IP_LENS])
 {
-    ZERO(acip, IP_LENS);
-    if (AF_INET == pctx->addr.sa_family)
+    ZERO(ip, IP_LENS);
+    if (AF_INET == ctx->addr.sa_family)
     {
-        if (NULL == inet_ntop(AF_INET, &pctx->ipv4.sin_addr, acip, IP_LENS))
+        if (NULL == inet_ntop(AF_INET, &ctx->ipv4.sin_addr, ip, IP_LENS))
         {
             PRINT("inet_ntop failed, %s", ERRORSTR(ERRNO));
             return ERR_FAILED;
@@ -130,7 +125,7 @@ int32_t netaddr_ip(union netaddr_ctx *pctx, char acip[IP_LENS])
     }
     else
     {
-        if (NULL == inet_ntop(AF_INET6, &pctx->ipv6.sin6_addr, acip, IP_LENS))
+        if (NULL == inet_ntop(AF_INET6, &ctx->ipv6.sin6_addr, ip, IP_LENS))
         {
             PRINT("inet_ntop failed, %s", ERRORSTR(ERRNO));
             return ERR_FAILED;
@@ -138,11 +133,11 @@ int32_t netaddr_ip(union netaddr_ctx *pctx, char acip[IP_LENS])
     }
     return ERR_OK;
 }
-uint16_t netaddr_port(union netaddr_ctx *pctx)
+uint16_t netaddr_port(netaddr_ctx *ctx)
 {
-    return AF_INET == pctx->addr.sa_family ? ntohs(pctx->ipv4.sin_port) : ntohs(pctx->ipv6.sin6_port);
+    return AF_INET == ctx->addr.sa_family ? ntohs(ctx->ipv4.sin_port) : ntohs(ctx->ipv6.sin6_port);
 }
-int32_t netaddr_family(union netaddr_ctx *pctx)
+int32_t netaddr_family(netaddr_ctx *ctx)
 {
-    return pctx->addr.sa_family;
+    return ctx->addr.sa_family;
 }

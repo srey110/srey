@@ -257,50 +257,50 @@ int64_t filesize(const char *file)
 }
 int32_t procpath(char path[PATH_LENS])
 {
-    size_t lens = PATH_LENS;
+    size_t len = PATH_LENS;
 #if defined(OS_WIN)
-    if (0 == GetModuleFileName(NULL, path, (DWORD)lens - 1))
+    if (0 == GetModuleFileName(NULL, path, (DWORD)len - 1))
     {
         PRINT("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
 #elif defined(OS_LINUX)
-    if (0 > readlink("/proc/self/exe", path, lens - 1))
+    if (0 > readlink("/proc/self/exe", path, len - 1))
     {
         PRINT("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
 #elif defined(OS_NBSD)
-    if (0 > readlink("/proc/curproc/exe", path, lens - 1))
+    if (0 > readlink("/proc/curproc/exe", path, len - 1))
     {
         PRINT("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
 #elif defined(OS_DFBSD)
-    if (0 > readlink("/proc/curproc/file", path, lens - 1))
+    if (0 > readlink("/proc/curproc/file", path, len - 1))
     {
         PRINT("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
 #elif defined(OS_SUN)  
-    char acin[64] = { 0 };
-    SNPRINTF(acin, sizeof(acin) - 1, "/proc/%d/path/a.out", (uint32_t)getpid());
-    if (0 > readlink(acin, path, lens - 1))
+    char in[64] = { 0 };
+    SNPRINTF(in, sizeof(in) - 1, "/proc/%d/path/a.out", (uint32_t)getpid());
+    if (0 > readlink(in, path, len - 1))
     {
         PRINT("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
 #elif defined(OS_DARWIN)
-    uint32_t umaclens = lens;
+    uint32_t umaclens = len;
     if (0 != _NSGetExecutablePath(path, &umaclens))
     {
         PRINT("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
 #elif defined(OS_FBSD)
-    int32_t ainame[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME };
-    ainame[3] = getpid();
-    if (0 != sysctl(ainame, 4, path, &lens, NULL, 0))
+    int32_t name[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME };
+    name[3] = getpid();
+    if (0 != sysctl(name, 4, path, &len, NULL, 0))
     {
         PRINT("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
@@ -309,14 +309,14 @@ int32_t procpath(char path[PATH_LENS])
     PRINT("%s", "not support.");
     return ERR_FAILED;
 #endif
-    char* pcur = strrchr(path, PATH_SEPARATOR);
-    *pcur = 0;
+    char* cur = strrchr(path, PATH_SEPARATOR);
+    *cur = 0;
 #if defined(OS_DARWIN)
-    lens = strlen(path);
-    if ('.' == path[lens - 1]
-        && PATH_SEPARATOR == path[lens - 2])
+    len = strlen(path);
+    if ('.' == path[len - 1]
+        && PATH_SEPARATOR == path[len - 2])
     {
-        path[lens - 2] = 0;
+        path[len - 2] = 0;
     }
 #endif
     return ERR_OK;
@@ -404,13 +404,13 @@ static uint16_t crc16_tab[256] = {
     0x4400, 0x84C1, 0x8581, 0x4540, 0x8701, 0x47C0, 0x4680, 0x8641,
     0x8201, 0x42C0, 0x4380, 0x8341, 0x4100, 0x81C1, 0x8081, 0x4040
 };
-uint16_t crc16(const char *pval, const size_t ilen)
+uint16_t crc16(const char *buf, const size_t len)
 {
     uint16_t uscrc = 0;
-    const uint8_t *ptmp = (const uint8_t *)pval;
-    for (size_t i = 0; i < ilen; ++i)
+    const uint8_t *tmp = (const uint8_t *)buf;
+    for (size_t i = 0; i < len; ++i)
     {
-        uscrc = (uscrc >> 8) ^ crc16_tab[(uscrc ^ *ptmp++) & 0xFF];
+        uscrc = (uscrc >> 8) ^ crc16_tab[(uscrc ^ *tmp++) & 0xFF];
     }
     return uscrc;
 }
@@ -480,31 +480,31 @@ static uint32_t crc32_tab[256] = {
     0xb3667a2e, 0xc4614ab8, 0x5d681b02, 0x2a6f2b94,
     0xb40bbe37, 0xc30c8ea1, 0x5a05df1b, 0x2d02ef8d
 };
-uint32_t crc32(const char *pval, const size_t ilen)
+uint32_t crc32(const char *buf, const size_t len)
 {
     uint32_t uicrc = ~0U;
-    const uint8_t *ptmp = (const uint8_t *)pval;
-    for (size_t i = 0; i < ilen; ++i)
+    const uint8_t *tmp = (const uint8_t *)buf;
+    for (size_t i = 0; i < len; ++i)
     {
-        uicrc = crc32_tab[(uicrc ^ *ptmp++) & 0xFF] ^ (uicrc >> 8);
+        uicrc = crc32_tab[(uicrc ^ *tmp++) & 0xFF] ^ (uicrc >> 8);
     }
     return uicrc ^ ~0U;
 }
-void md5(const char *pval, const size_t ilens, char md5str[33])
+void md5(const char *buf, const size_t len, char md5str[33])
 {
     md5_byte_t digest[16];
     md5_state_t stmd5;
     md5_init(&stmd5);
-    md5_append(&stmd5, (md5_byte_t*)pval, (int)ilens);
+    md5_append(&stmd5, (md5_byte_t*)buf, (int)len);
     md5_finish(&stmd5, digest);
     md5_tostring(digest, md5str);
 }
-void sha1(const char *pval, const size_t ilens, char md5str[20])
+void sha1(const char *buf, const size_t len, char sha1str[20])
 {
     SHA1_CTX ctx;
     SHA1Init(&ctx);
-    SHA1Update(&ctx, (const uint8_t *)pval, (uint32_t)ilens);
-    SHA1Final((uint8_t *)md5str, &ctx);
+    SHA1Update(&ctx, (const uint8_t *)buf, (uint32_t)len);
+    SHA1Final((uint8_t *)sha1str, &ctx);
 }
 /* BASE 64 encode table */
 static char base64en[] =
@@ -535,120 +535,134 @@ static char base64de[] =
     36,  37,  38,  39,  40,  41,  42,  43,
     44,  45,  46,  47,  48,  49,  50,  51,
 };
-int32_t b64encode(const char *pval, const size_t ilens, char *pout)
+#define B64_ENSIZE(s)   (((s) + 2) / 3 * 4)
+char *b64encode(const char *buf, const size_t len, size_t *new_len)
 {
     int32_t s;
     uint32_t i, j;
-    for (i = j = 0; i < ilens; i++)
+    char *out;
+    size_t enlen = B64_ENSIZE(len) + 1;
+    MALLOC(out, enlen);
+    ZERO(out, enlen);
+    for (i = j = 0; i < len; i++)
     {
         s = i % 3;
         switch (s)
         {
         case 0:
-            pout[j++] = base64en[(pval[i] >> 2) & 0x3F];
+            out[j++] = base64en[(buf[i] >> 2) & 0x3F];
             continue;
         case 1:
-            pout[j++] = base64en[((pval[i - 1] & 0x3) << 4) + ((pval[i] >> 4) & 0xF)];
+            out[j++] = base64en[((buf[i - 1] & 0x3) << 4) + ((buf[i] >> 4) & 0xF)];
             continue;
         case 2:
-            pout[j++] = base64en[((pval[i - 1] & 0xF) << 2) + ((pval[i] >> 6) & 0x3)];
-            pout[j++] = base64en[pval[i] & 0x3F];
+            out[j++] = base64en[((buf[i - 1] & 0xF) << 2) + ((buf[i] >> 6) & 0x3)];
+            out[j++] = base64en[buf[i] & 0x3F];
         }
     }
-
     /* move back */
     i -= 1;
     /* check the last and add padding */
     switch (i % 3)
     {
     case 0:
-        pout[j++] = base64en[(pval[i] & 0x3) << 4];
-        pout[j++] = BASE64_PAD;
-        pout[j++] = BASE64_PAD;
+        out[j++] = base64en[(buf[i] & 0x3) << 4];
+        out[j++] = BASE64_PAD;
+        out[j++] = BASE64_PAD;
         break;
     case 1:
-        pout[j++] = base64en[(pval[i] & 0xF) << 2];
-        pout[j++] = BASE64_PAD;
+        out[j++] = base64en[(buf[i] & 0xF) << 2];
+        out[j++] = BASE64_PAD;
         break;
     }
-    return j;
+    *new_len = j;
+    return out;
 }
-int32_t b64decode(const char *pval, const size_t ilens, char *pout)
+#define B64_DESIZE(s)   (((s)) / 4 * 3)
+char *b64decode(const char *buf, const size_t len, size_t *new_len)
 {
     int32_t c, s;
     uint32_t i, j;
-    for (i = j = 0; i < ilens; i++)
+    char *out;
+    size_t delen = B64_DESIZE(len) + 1;
+    MALLOC(out, delen);
+    ZERO(out, delen);
+    for (i = j = 0; i < len; i++)
     {
         s = i % 4;
-        if (pval[i] == '=')
+        if (buf[i] == '=')
         {
-            return (int32_t)j;
+            *new_len = j;
+            return out;
         }
-        if (pval[i] < BASE64DE_FIRST
-            || pval[i] > BASE64DE_LAST
-            || (c = base64de[pval[i] - BASE64DE_FIRST]) == -1)
+        if (buf[i] < BASE64DE_FIRST
+            || buf[i] > BASE64DE_LAST
+            || (c = base64de[buf[i] - BASE64DE_FIRST]) == -1)
         {
-            return ERR_FAILED;
+            FREE(out);
+            return NULL;
         }
 
         switch (s)
         {
         case 0:
-            pout[j] = ((uint32_t)c << 2) & 0xFF;
+            out[j] = ((uint32_t)c << 2) & 0xFF;
             continue;
         case 1:
-            pout[j++] += ((uint32_t)c >> 4) & 0x3;
-            if (i < (ilens - 3) || pval[ilens - 2] != '=')
+            out[j++] += ((uint32_t)c >> 4) & 0x3;
+            if (i < (len - 3) || buf[len - 2] != '=')
             {
-                pout[j] = ((uint32_t)c & 0xF) << 4;
+                out[j] = ((uint32_t)c & 0xF) << 4;
             }
             continue;
         case 2:
-            pout[j++] += ((uint32_t)c >> 2) & 0xF;
-            if (i < (ilens - 2) || pval[ilens - 1] != '=')
+            out[j++] += ((uint32_t)c >> 2) & 0xF;
+            if (i < (len - 2) || buf[len - 1] != '=')
             {
-                pout[j] = ((uint32_t)c & 0x3) << 6;
+                out[j] = ((uint32_t)c & 0x3) << 6;
             }
             continue;
         case 3:
-            pout[j++] += (uint8_t)c;
+            out[j++] += (uint8_t)c;
         }
     }
-    return (int32_t)j;
+    *new_len = j;
+    return out;
 }
-char *xorencode(const char ackey[4], const size_t uiround, char *pbuf, const size_t uilens)
+char *xorencode(const char key[4], const size_t round, char *buf, const size_t len)
 {
-    for (size_t i = 0; i < uiround; i++)
+    for (size_t i = 0; i < round; i++)
     {
-        pbuf[0] = ((pbuf[0] + ackey[1]) ^ ackey[2]) ^ ackey[3];
-        for (size_t j = 1; j < uilens; j++)
+        buf[0] = ((buf[0] + key[1]) ^ key[2]) ^ key[3];
+        for (size_t j = 1; j < len; j++)
         {
-            pbuf[j] = (pbuf[j - 1] + pbuf[j]) ^ ackey[0];
+            buf[j] = (buf[j - 1] + buf[j]) ^ key[0];
         }
     }
-    return pbuf;
+    return buf;
 }
-char *xordecode(const char ackey[4], const size_t uiround, char *pbuf, const size_t uilens)
+char *xordecode(const char key[4], const size_t round, char *buf, const size_t len)
 {
-    for (size_t i = 0; i < uiround; i++)
+    for (size_t i = 0; i < round; i++)
     {
-        for (size_t j = uilens - 1; j > 0; j--)
+        for (size_t j = len - 1; j > 0; j--)
         {
-            pbuf[j] = (pbuf[j] ^ ackey[0]) - pbuf[j - 1];
+            buf[j] = (buf[j] ^ key[0]) - buf[j - 1];
         }
-        pbuf[0] = ((pbuf[0] ^ ackey[3]) ^ ackey[2]) - ackey[1];
+        buf[0] = ((buf[0] ^ key[3]) ^ key[2]) - key[1];
     }
-    return pbuf;
+    return buf;
 }
 static unsigned char hexchars[] = "0123456789ABCDEF";
-char *urlencode(const char *s, const size_t len, size_t *new_length)
+char *urlencode(const char *str, const size_t len, size_t *new_len)
 {
     register unsigned char c;
     unsigned char *to, *start;
     unsigned char const *from, *end;
-    from = (unsigned char *)s;
-    end = (unsigned char *)s + len;
-    start = to = (unsigned char *)calloc(1, 3 * len + 1);
+    from = (unsigned char *)str;
+    end = (unsigned char *)str + len;
+    CALLOC(start, (size_t)1, (size_t)(3 * len + 1));
+    to = start;
     while (from < end)
     {
         c = *from++;
@@ -672,9 +686,9 @@ char *urlencode(const char *s, const size_t len, size_t *new_length)
         }
     }
     *to = 0;
-    if (new_length)
+    if (new_len)
     {
-        *new_length = (int32_t)(to - start);
+        *new_len = (int32_t)(to - start);
     }
     return (char *)start;
 }
@@ -724,16 +738,16 @@ int32_t urldecode(char *str, size_t len)
     *dest = '\0';
     return (int32_t)(dest - str);
 }
-uint64_t hash(const char *pfirst, size_t uilen)
+uint64_t hash(const char *buf, size_t len)
 {
-    uint64_t uirtn = 0;
-    for (; uilen > 0; --uilen)
+    uint64_t rtn = 0;
+    for (; len > 0; --len)
     {
-        uirtn = (uirtn * 131) + *pfirst++;
+        rtn = (rtn * 131) + *buf++;
     }
-    return uirtn;
+    return rtn;
 }
-uint64_t fnv1a_hash(const char *pfirst, size_t uilen)
+uint64_t fnv1a_hash(const char *buf, size_t len)
 {
 #if defined(ARCH_X64)
 #define OFFSET_BASIS 14695981039346656037ULL
@@ -742,13 +756,13 @@ uint64_t fnv1a_hash(const char *pfirst, size_t uilen)
 #define OFFSET_BASIS 2166136261UL
 #define PRIME 16777619UL
 #endif
-    uint64_t ulrtn = OFFSET_BASIS;
-    for (; uilen > 0; --uilen)
+    uint64_t rtn = OFFSET_BASIS;
+    for (; len > 0; --len)
     {
-        ulrtn ^= (uint64_t)*pfirst++;
-        ulrtn *= PRIME;
+        rtn ^= (uint64_t)*buf++;
+        rtn *= PRIME;
     }
-    return ulrtn;
+    return rtn;
 }
 char *strupper(char *str)
 {
@@ -846,7 +860,15 @@ char *tohex(const char *buf, size_t len, char *out)
     size_t offset = 0;
     for (size_t i = 0; i < len; i++)
     {
-        SNPRINTF(out + offset, 3, "%02X ", (uint8_t)buf[i]);
+        if (i == len - 1)
+        {
+            SNPRINTF(out + offset, 3, "%02X", (uint8_t)buf[i]);
+        }
+        else
+        {
+            SNPRINTF(out + offset, 3, "%02X ", (uint8_t)buf[i]);
+        }
+        
         offset += 3;
     }
     return out;

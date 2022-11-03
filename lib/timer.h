@@ -3,7 +3,7 @@
 
 #include "macro.h"
 
-struct timer_ctx
+typedef struct timer_ctx
 {
 #if defined(OS_WIN)
     double interval;
@@ -13,24 +13,24 @@ struct timer_ctx
 #else
 #endif
     uint64_t starttick;
-};
+}timer_ctx;
 
 /*
 * \brief          初始化
 */
-void timer_init(struct timer_ctx *pctx);
+void timer_init(timer_ctx *ctx);
 /*
 * \brief          当前时间
 */
-uint64_t timer_cur(struct timer_ctx *pctx);
+uint64_t timer_cur(timer_ctx *ctx);
 /*
 * \brief          开始计时
 */
-void timer_start(struct timer_ctx *pctx);
+void timer_start(timer_ctx *ctx);
 /*
 * \brief          结束计时
 * \return         用时 纳秒
 */
-uint64_t timer_elapsed(struct timer_ctx *pctx);
+uint64_t timer_elapsed(timer_ctx *ctx);
 
 #endif//TIMER_H_

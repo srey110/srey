@@ -21,7 +21,7 @@
 #define __FILENAME__(file) (strrchr(file, PATH_SEPARATOR) ? strrchr(file, PATH_SEPARATOR) + 1 : file)
 #define PRINT(fmt, ...) printf(CONCAT3("[%s %s %d] ", fmt, "\n"),  __FILENAME__(__FILE__), __FUNCTION__, __LINE__, ##__VA_ARGS__)
 #ifdef PRINT_DEBUG
-#define MEMCHECK()  atexit(memcheck)
+#define MEMCHECK()  atexit(_memcheck)
 #define PRINTD(fmt, ...) PRINT(fmt, ##__VA_ARGS__)
 #else
 #define MEMCHECK()
@@ -50,21 +50,21 @@
 do\
 {\
     *(void**)&(ptr) = _malloc(size);\
-    PRINTD("malloc(%p, size=%d)", ptr, size);\
+    PRINTD("malloc(%p, size=%zd)", ptr, size);\
 }while (0)
 
 #define CALLOC(ptr, count, size)\
 do\
 {\
     *(void**)&(ptr) = _calloc(count, size);\
-    PRINTD("calloc(%p, count=%d, size=%d)", ptr, count, size);\
+    PRINTD("calloc(%p, count=%zd, size=%zd)", ptr, count, size);\
 }while (0)
 
 #define REALLOC(ptr, oldptr, size)\
 do\
 {\
     *(void**)&(ptr) = _realloc(oldptr, size);\
-    PRINTD("realloc(%p, old=%p, size=%d)", ptr, oldptr, size);\
+    PRINTD("realloc(%p, old=%p, size=%zd)", ptr, oldptr, size);\
 }while (0)
 
 #define FREE(ptr)\

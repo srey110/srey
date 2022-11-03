@@ -1,130 +1,126 @@
 #include "chan.h"
 
-void chan_init(struct chan_ctx *pctx, const int32_t icapacity)
+void chan_init(chan_ctx *ctx, const size_t maxsize)
 {
-    ASSERTAB(icapacity > 0, "capacity must big than 0.");
-    pctx->closed = 0;
-    pctx->rwaiting = 0;
-    pctx->wwaiting = 0;
-    qu_chanmsg_init(&pctx->queue, icapacity);
-    mutex_init(&pctx->mmutex);
-    cond_init(&pctx->rcond);
-    cond_init(&pctx->wcond);
+    ctx->closed = ctx->rwaiting = ctx->wwaiting = 0;
+    qu_voidp_init(&ctx->queue, maxsize);
+    mutex_init(&ctx->mmutex);
+    cond_init(&ctx->rcond);
+    cond_init(&ctx->wcond);
 }
-void chan_free(struct chan_ctx *pctx)
+void chan_free(chan_ctx *ctx)
 {
-    mutex_free(&pctx->mmutex);
-    cond_free(&pctx->rcond);
-    cond_free(&pctx->wcond);
-    qu_chanmsg_free(&pctx->queue);
+    mutex_free(&ctx->mmutex);
+    cond_free(&ctx->rcond);
+    cond_free(&ctx->wcond);
+    qu_voidp_free(&ctx->queue);
 }
-void chan_close(struct chan_ctx *pctx)
+void chan_close(chan_ctx *ctx)
 {
-    mutex_lock(&pctx->mmutex);
-    if (0 == pctx->closed)
+    mutex_lock(&ctx->mmutex);
+    if (0 == ctx->closed)
     {
-        pctx->closed = 1;
-        cond_broadcast(&pctx->rcond);
-        cond_broadcast(&pctx->wcond);
+        ctx->closed = 1;
+        cond_broadcast(&ctx->rcond);
+        cond_broadcast(&ctx->wcond);
     }
-    mutex_unlock(&pctx->mmutex);
+    mutex_unlock(&ctx->mmutex);
 }
-static int32_t _chan_send(struct chan_ctx *pctx, struct message_ctx *pdata)
+static int32_t _chan_send(chan_ctx *ctx, void *data)
 {
-    while (0 == pctx->closed
-        && qu_chanmsg_size(&pctx->queue) == qu_chanmsg_maxsize(&pctx->queue))
+    while (0 == ctx->closed
+        && qu_voidp_size(&ctx->queue) == qu_voidp_maxsize(&ctx->queue))
     {
         //队列满 阻塞直到有数据被移除.
-        pctx->wwaiting++;
-        cond_wait(&pctx->wcond, &pctx->mmutex);
-        pctx->wwaiting--;
+        ctx->wwaiting++;
+        cond_wait(&ctx->wcond, &ctx->mmutex);
+        ctx->wwaiting--;
     }
-    if (0 != pctx->closed)
+    if (0 != ctx->closed)
     {
         return ERR_FAILED;
     }
-    qu_chanmsg_push(&pctx->queue, pdata);
-    if (pctx->rwaiting > 0)
+    qu_voidp_push(&ctx->queue, &data);
+    if (ctx->rwaiting > 0)
     {
         //通知可读.
-        cond_signal(&pctx->rcond);
+        cond_signal(&ctx->rcond);
     }
     return ERR_OK;
 }
-static int32_t _chan_recv(struct chan_ctx *pctx, struct message_ctx *pdata)
+static int32_t _chan_recv(chan_ctx *ctx, void **data)
 {
-    while (qu_chanmsg_empty(&pctx->queue))
+    while (qu_voidp_empty(&ctx->queue))
     {
-        if (0 != pctx->closed)
+        if (0 != ctx->closed)
         {
             return ERR_FAILED;
         }
         //阻塞直到有数据.
-        pctx->rwaiting++;
-        cond_wait(&pctx->rcond, &pctx->mmutex);
-        pctx->rwaiting--;
+        ctx->rwaiting++;
+        cond_wait(&ctx->rcond, &ctx->mmutex);
+        ctx->rwaiting--;
     }
-    *pdata = *qu_chanmsg_pop(&pctx->queue);
-    if (pctx->wwaiting > 0)
+    *data = *qu_voidp_pop(&ctx->queue);
+    if (ctx->wwaiting > 0)
     {
         //通知可写.
-        cond_signal(&pctx->wcond);
+        cond_signal(&ctx->wcond);
     }
-
     return ERR_OK;
 }
-int32_t chan_send(struct chan_ctx *pctx, struct message_ctx *pdata)
+int32_t chan_send(chan_ctx *ctx, void *data)
 {
-    int32_t irtn = ERR_FAILED;
-    mutex_lock(&pctx->mmutex);
-    if (0 == pctx->closed)
+    int32_t rtn = ERR_FAILED;
+    mutex_lock(&ctx->mmutex);
+    if (0 == ctx->closed)
     {
-        irtn = _chan_send(pctx, pdata);
+        rtn = _chan_send(ctx, data);
     }
-    mutex_unlock(&pctx->mmutex);
-    return irtn;
+    mutex_unlock(&ctx->mmutex);
+    return rtn;
 }
-int32_t chan_trysend(struct chan_ctx *pctx, struct message_ctx *pdata)
+int32_t chan_trysend(chan_ctx *ctx, void *data)
 {
-    int32_t irtn = ERR_FAILED;
-    mutex_lock(&pctx->mmutex);
-    if (0 == pctx->closed
-        && qu_chanmsg_size(&pctx->queue) < qu_chanmsg_maxsize(&pctx->queue))
+    int32_t rtn = ERR_FAILED;
+    mutex_lock(&ctx->mmutex);
+    if (0 == ctx->closed
+        && qu_voidp_size(&ctx->queue) < qu_voidp_maxsize(&ctx->queue))
     {
-        irtn = _chan_send(pctx, pdata);
+        rtn = _chan_send(ctx, data);
     }
-    mutex_unlock(&pctx->mmutex);
-    return irtn;
+    mutex_unlock(&ctx->mmutex);
+    return rtn;
 }
-int32_t chan_recv(struct chan_ctx *pctx, struct message_ctx *pdata)
+int32_t chan_recv(chan_ctx *ctx, void **data)
 {
-    mutex_lock(&pctx->mmutex);
-    int32_t irtn = _chan_recv(pctx, pdata);
-    mutex_unlock(&pctx->mmutex);
-    return irtn;
+    mutex_lock(&ctx->mmutex);
+    int32_t rtn = _chan_recv(ctx, data);
+    mutex_unlock(&ctx->mmutex);
+    return rtn;
 }
-int32_t chan_tryrecv(struct chan_ctx *pctx, struct message_ctx *pdata)
+int32_t chan_tryrecv(chan_ctx *ctx, void **data)
 {
-    int32_t irtn = ERR_FAILED;
-    mutex_lock(&pctx->mmutex);
-    if (qu_chanmsg_size(&pctx->queue) > 0)
+    int32_t rtn = ERR_FAILED;
+    mutex_lock(&ctx->mmutex);
+    if (qu_voidp_size(&ctx->queue) > 0)
     {
-        irtn = _chan_recv(pctx, pdata);
+        rtn = _chan_recv(ctx, data);
     }
-    mutex_unlock(&pctx->mmutex);
-    return irtn;
+    mutex_unlock(&ctx->mmutex);
+    return rtn;
 }
-int32_t chan_size(struct chan_ctx *pctx)
+size_t chan_size(chan_ctx *pctx)
 {
     mutex_lock(&pctx->mmutex);
-    int32_t isize = qu_chanmsg_size(&pctx->queue);
+    size_t size = qu_voidp_size(&pctx->queue);
     mutex_unlock(&pctx->mmutex);
-    return isize;
+    return size;
 }
-int32_t chan_closed(struct chan_ctx *pctx)
+int32_t chan_closed(chan_ctx *pctx)
 {
     mutex_lock(&pctx->mmutex);
-    int32_t iclosed = pctx->closed;
+    int32_t closed = pctx->closed;
     mutex_unlock(&pctx->mmutex);
-    return iclosed;
+    return closed;
 }

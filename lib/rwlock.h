@@ -3,7 +3,7 @@
 
 #include "macro.h"
 
-struct rwlock_ctx
+typedef struct rwlock_ctx
 {
 #if defined(OS_WIN)
     uint32_t wlock;
@@ -11,38 +11,78 @@ struct rwlock_ctx
 #else
     pthread_rwlock_t rwlock;
 #endif
-};
-/*
-* \brief          初始化
-*/
-void rwlock_init(struct rwlock_ctx *pctx);
-/*
-* \brief          释放
-*/
-void rwlock_free(struct rwlock_ctx *pctx);
+}rwlock_ctx;
 
-/*
-* \brief          读锁定
-*/
-void rwlock_rdlock(struct rwlock_ctx *pctx);
-/*
-* \brief          非阻塞读锁定
-* \return         ERR_OK 成功
-*/
-int32_t rwlock_tryrdlock(struct rwlock_ctx *pctx);
-/*
-* \brief          写锁定
-* \return         true 成功
-*/
-void rwlock_wrlock(struct rwlock_ctx *pctx);
-/*
-* \brief          非阻塞写锁定
-* \return         ERR_OK 成功
-*/
-int32_t rwlock_trywrlock(struct rwlock_ctx *pctx);
-/*
-* \brief          解锁
-*/
-void rwlock_unlock(struct rwlock_ctx *pctx);
+static inline void rwlock_init(rwlock_ctx *ctx)
+{
+#if defined(OS_WIN)
+    InitializeSRWLock(&ctx->rwlock);
+    ctx->wlock = 0;
+#else
+    ASSERTAB((ERR_OK == pthread_rwlock_init(&ctx->rwlock, NULL)),
+        ERRORSTR(ERRNO));
+#endif
+};
+static inline void rwlock_free(rwlock_ctx *ctx)
+{
+#if defined(OS_WIN)
+#else
+    (void)pthread_rwlock_destroy(&ctx->rwlock);
+#endif
+};
+static inline void rwlock_rdlock(rwlock_ctx *ctx)
+{
+#if defined(OS_WIN)
+    AcquireSRWLockShared(&ctx->rwlock);
+#else
+    ASSERTAB(ERR_OK == pthread_rwlock_rdlock(&ctx->rwlock), ERRORSTR(ERRNO));
+#endif
+};
+static inline int32_t rwlock_tryrdlock(rwlock_ctx *ctx)
+{
+#if defined(OS_WIN)
+    return 0 != TryAcquireSRWLockShared(&ctx->rwlock) ? ERR_OK : ERR_FAILED;
+#else
+    return pthread_rwlock_tryrdlock(&ctx->rwlock);
+#endif
+};
+static inline void rwlock_wrlock(rwlock_ctx *ctx)
+{
+#if defined(OS_WIN)
+    AcquireSRWLockExclusive(&ctx->rwlock);
+    ctx->wlock = 1;
+#else
+    ASSERTAB(ERR_OK == pthread_rwlock_wrlock(&ctx->rwlock), ERRORSTR(ERRNO));
+#endif
+};
+static inline int32_t rwlock_trywrlock(rwlock_ctx *ctx)
+{
+#if defined(OS_WIN)
+    if (0 != TryAcquireSRWLockExclusive(&ctx->rwlock))
+    {
+        ctx->wlock = 1;
+        return ERR_OK;
+    }
+    return ERR_FAILED;
+#else
+    return pthread_rwlock_trywrlock(&ctx->rwlock);
+#endif
+};
+static inline void rwlock_unlock(rwlock_ctx *ctx)
+{
+#if defined(OS_WIN)
+    if (0 != ctx->wlock)
+    {
+        ctx->wlock = 0;
+        ReleaseSRWLockExclusive(&ctx->rwlock);
+    }
+    else
+    {
+        ReleaseSRWLockShared(&ctx->rwlock);
+    }
+#else
+    ASSERTAB(ERR_OK == pthread_rwlock_unlock(&ctx->rwlock), ERRORSTR(ERRNO));
+#endif
+};
 
 #endif//RWLOCK_H_

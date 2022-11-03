@@ -3,68 +3,29 @@
 
 #include "macro.h"
 
-/*
-* \brief          获取socket可读长度
-* \param fd       socket句柄
-* \return         ERR_FAILED 失败
-* \return         长度
-*/
-int32_t socknread(SOCKET fd);
-/*
-* \brief          获取sa_family
-* \param fd       SOCKET
-* \return         ERR_FAILED 失败
-* \return         SOCK_STREAM  SOCK_DGRAM
-*/
-int32_t socktype(SOCKET fd);
-/*
-* \brief          获取sin_family
-* \param fd       SOCKET
-* \return         ERR_FAILED 失败
-*/
-int32_t sockaddrfamily(SOCKET fd);
-/*
-* \brief          设置socket TCP_NODELAY
-* \param fd       SOCKET
-*/
-void socknodelay(SOCKET fd);
-/*
-* \brief          设置socket 非阻塞
-* \param fd       SOCKET
-*/
-void socknbio(SOCKET fd);
-/*
-* \brief          设置地址重用
-* \param fd       SOCKET
-*/
-void sockraddr(SOCKET fd);
-/*
-* \brief          是否支持端口重用
-* \return         ERR_OK支持
-*/
-int32_t checkrport();
-/*
-* \brief          设置端口重用
-* \param fd       监听的SOCKET
-*/
-void sockrport(SOCKET lsfd);
-/*
-* \brief            设置socket SO_KEEPALIVE
-* \param fd         SOCKET
-* \param idelay     多长时间没有报文开始发送keepalive 秒   小于等于0不设置时间间隔，使用系统默认的
-* \param iintvl     发送keepalive心跳时间间隔 秒
-*/
-void sockkpa(SOCKET fd, const int32_t idelay, const int32_t iintvl);
-/*
-* \brief          设置SO_LINGER
-* \param fd       SOCKET
-*/
-void closereset(SOCKET fd);
-/*
-* \brief          一组相互链接的socket
-* \param sock     SOCKET
-* \return         ERR_OK 成功
-*/
-int32_t sockpair(SOCKET sock[2]);
+void sock_init();
+void sock_clean();
+//获取socket可读长度
+int32_t sock_nread(SOCKET fd);
+//获取SO_TYPE(SOCK_STREAM  SOCK_DGRAM)
+int32_t sock_type(SOCKET fd);
+//获取sin_family(AF_INET AF_INET6)
+int32_t sock_family(SOCKET fd);
+//设置TCP_NODELAY
+void sock_nodelay(SOCKET fd);
+//非阻塞
+void sock_nbio(SOCKET fd);
+//地址重用 SO_REUSEADDR
+void sock_raddr(SOCKET fd);
+//是否支持端口重用
+int32_t sock_checkrport();
+//端口重用
+void sock_rport(SOCKET fd);
+//SO_KEEPALIVE
+void sock_kpa(SOCKET fd, const int32_t delay, const int32_t intvl);
+//设置SO_LINGER 避免了TIME_WAIT状态
+void sock_linger(SOCKET fd);
+//一组相互链接的socket
+int32_t sock_pair(SOCKET sock[2]);
 
 #endif

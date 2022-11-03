@@ -16,6 +16,9 @@
     <Filter Include="thread">
       <UniqueIdentifier>{fdd12c60-2ba2-4b60-b4c8-135cb0f4f80d}</UniqueIdentifier>
     </Filter>
+    <Filter Include="utils\map">
+      <UniqueIdentifier>{f48dd8e8-89dd-43e8-8803-6ae5cb8869d3}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="errcode.h">
@@ -52,9 +55,6 @@
     <ClInclude Include="sha1\sha1.h">
       <Filter>utils\sha1</Filter>
     </ClInclude>
-    <ClInclude Include="tw.h">
-      <Filter>utils</Filter>
-    </ClInclude>
     <ClInclude Include="cond.h">
       <Filter>thread</Filter>
     </ClInclude>
@@ -73,9 +73,6 @@
     <ClInclude Include="timer.h">
       <Filter>utils</Filter>
     </ClInclude>
-    <ClInclude Include="structs.h">
-      <Filter>utils</Filter>
-    </ClInclude>
     <ClInclude Include="netaddr.h">
       <Filter>utils</Filter>
     </ClInclude>
@@ -91,6 +88,12 @@
     <ClInclude Include="buffer.h">
       <Filter>utils</Filter>
     </ClInclude>
+    <ClInclude Include="tw.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="hashmap.h">
+      <Filter>utils\map</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="memory.c">
@@ -104,21 +107,6 @@
     </ClCompile>
     <ClCompile Include="sha1\sha1.c">
       <Filter>utils\sha1</Filter>
-    </ClCompile>
-    <ClCompile Include="tw.c">
-      <Filter>utils</Filter>
-    </ClCompile>
-    <ClCompile Include="cond.c">
-      <Filter>thread</Filter>
-    </ClCompile>
-    <ClCompile Include="mutex.c">
-      <Filter>thread</Filter>
-    </ClCompile>
-    <ClCompile Include="rwlock.c">
-      <Filter>thread</Filter>
-    </ClCompile>
-    <ClCompile Include="spinlock.c">
-      <Filter>thread</Filter>
     </ClCompile>
     <ClCompile Include="thread.c">
       <Filter>thread</Filter>
@@ -140,6 +128,12 @@
     </ClCompile>
     <ClCompile Include="buffer.c">
       <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="tw.c">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="hashmap.c">
+      <Filter>utils\map</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

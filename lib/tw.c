@@ -1,13 +1,13 @@
 #include "tw.h"
 
-const uint32_t accuracy = 1000 * 1000;
+static const uint32_t accuracy = 1000 * 1000;
 
-static void _free_slot(struct tw_slot_ctx *pslot, const size_t uilens)
+static void _free_slot(tw_slot_ctx *slot, const size_t len)
 {
-    struct tw_node_ctx *pnode, *pdel;
-    for (size_t i = 0; i < uilens; i++)
+    tw_node_ctx *pnode, *pdel;
+    for (size_t i = 0; i < len; i++)
     {
-        pnode = pslot[i].head;
+        pnode = slot[i].head;
         while (NULL != pnode)
         {
             pdel = pnode;
@@ -16,169 +16,161 @@ static void _free_slot(struct tw_slot_ctx *pslot, const size_t uilens)
         }
     }
 }
-void tw_free(struct tw_ctx *pctx)
+void tw_free(tw_ctx *ctx)
 {
-    pctx->exit = 1;
-    thread_join(&pctx->thread);
-    _free_slot(pctx->tv1, TVR_SIZE);
-    _free_slot(pctx->tv2, TVN_SIZE);
-    _free_slot(pctx->tv3, TVN_SIZE);
-    _free_slot(pctx->tv4, TVN_SIZE);
-    _free_slot(pctx->tv5, TVN_SIZE);
-    _free_slot(&pctx->reqadd, 1);
-    mutex_free(&pctx->lockreq);
+    ctx->exit = 1;
+    thread_join(&ctx->thread);
+    _free_slot(ctx->tv1, TVR_SIZE);
+    _free_slot(ctx->tv2, TVN_SIZE);
+    _free_slot(ctx->tv3, TVN_SIZE);
+    _free_slot(ctx->tv4, TVN_SIZE);
+    _free_slot(ctx->tv5, TVN_SIZE);
+    _free_slot(&ctx->reqadd, 1);
+    mutex_free(&ctx->lockreq);
 }
-static void _insert(struct tw_slot_ctx *pslot, struct tw_node_ctx *pnode)
+static void _insert(tw_slot_ctx *slot, tw_node_ctx *node)
 {
-    if (NULL == pslot->head)
+    if (NULL == slot->head)
     {
-        pslot->head = pslot->tail = pnode;
+        slot->head = slot->tail = node;
         return;
     }
-    pslot->tail->next = pnode;
-    pslot->tail = pnode;
+    slot->tail->next = node;
+    slot->tail = node;
 }
-void tw_add(struct tw_ctx *pctx, const uint32_t uitimeout,
-    void(*tw_cb)(struct ud_ctx *), struct ud_ctx *pud)
+void tw_add(tw_ctx *ctx, const uint32_t timeout, void(*tw_cb)(void *), void *ud)
 {
-    if (0 == uitimeout)
+    if (0 == timeout)
     {
-        tw_cb(pud);
+        tw_cb(ud);
         return;
     }
-    struct tw_node_ctx *pnode;
-    MALLOC(pnode, sizeof(struct tw_node_ctx));
-    if (NULL != pud)
+    tw_node_ctx *node;
+    MALLOC(node, sizeof(tw_node_ctx));
+    node->ud = ud;
+    node->expires = (uint32_t)(timer_cur(&ctx->timer) / accuracy) + timeout;
+    node->tw_cb = tw_cb;
+    node->next = NULL;
+    mutex_lock(&ctx->lockreq);
+    _insert(&ctx->reqadd, node);
+    mutex_unlock(&ctx->lockreq);
+}
+static tw_slot_ctx *_getslot(tw_ctx *ctx, tw_node_ctx *node)
+{
+    tw_slot_ctx *slot;
+    uint32_t idx = node->expires - ctx->jiffies;
+    if ((int32_t)idx < 0)
     {
-        memcpy(&pnode->ud, pud, sizeof(struct ud_ctx));
+        slot = &ctx->tv1[(ctx->jiffies & TVR_MASK)];
+    }
+    else if (idx < TVR_SIZE)
+    {
+        slot = &ctx->tv1[(node->expires & TVR_MASK)];
+    }
+    else if (idx < 1 << (TVR_BITS + TVN_BITS))
+    {
+        slot = &ctx->tv2[((node->expires >> TVR_BITS) & TVN_MASK)];
+    }
+    else if (idx < 1 << (TVR_BITS + 2 * TVN_BITS))
+    {
+        slot = &ctx->tv3[((node->expires >> (TVR_BITS + TVN_BITS)) & TVN_MASK)];
+    }
+    else if (idx < 1 << (TVR_BITS + 3 * TVN_BITS))
+    {
+        slot = &ctx->tv4[((node->expires >> (TVR_BITS + 2 * TVN_BITS)) & TVN_MASK)];
     }
     else
     {
-        ZERO(&pnode->ud, sizeof(struct ud_ctx));
-    }
-    pnode->expires = (uint32_t)(timer_cur(&pctx->timer) / accuracy) + uitimeout;
-    pnode->tw_cb = tw_cb;
-    pnode->next = NULL;
-    mutex_lock(&pctx->lockreq);
-    _insert(&pctx->reqadd, pnode);
-    mutex_unlock(&pctx->lockreq);
-}
-static struct tw_slot_ctx *_getslot(struct tw_ctx *pctx, struct tw_node_ctx *pnode)
-{
-    struct tw_slot_ctx *pslot;
-    uint32_t ulidx = pnode->expires - pctx->jiffies;
-    if ((int32_t)ulidx < 0)
-    {
-        pslot = &pctx->tv1[(pctx->jiffies & TVR_MASK)];
-    }
-    else if (ulidx < TVR_SIZE)
-    {
-        pslot = &pctx->tv1[(pnode->expires & TVR_MASK)];
-    }
-    else if (ulidx < 1 << (TVR_BITS + TVN_BITS))
-    {
-        pslot = &pctx->tv2[((pnode->expires >> TVR_BITS) & TVN_MASK)];
-    }
-    else if (ulidx < 1 << (TVR_BITS + 2 * TVN_BITS))
-    {
-        pslot = &pctx->tv3[((pnode->expires >> (TVR_BITS + TVN_BITS)) & TVN_MASK)];
-    }
-    else if (ulidx < 1 << (TVR_BITS + 3 * TVN_BITS))
-    {
-        pslot = &pctx->tv4[((pnode->expires >> (TVR_BITS + 2 * TVN_BITS)) & TVN_MASK)];
-    }
-    else
-    {
-        if (ulidx > 0xffffffffUL)
+        if (idx > 0xffffffffUL)
         {
-            ulidx = 0xffffffffUL;
-            pnode->expires = ulidx + pctx->jiffies;
+            idx = 0xffffffffUL;
+            node->expires = idx + ctx->jiffies;
         }
-        pslot = &pctx->tv5[((pnode->expires >> (TVR_BITS + 3 * TVN_BITS)) & TVN_MASK)];
+        slot = &ctx->tv5[((node->expires >> (TVR_BITS + 3 * TVN_BITS)) & TVN_MASK)];
     }
-    return pslot;
+    return slot;
 }
-static void _clear(struct tw_slot_ctx *pslot)
+static void _clear(tw_slot_ctx *slot)
 {
-    pslot->head = pslot->tail = NULL;
+    slot->head = slot->tail = NULL;
 }
-static uint32_t _cascade(struct tw_ctx *pctx, struct tw_slot_ctx *pslot, const uint32_t uindex)
+static uint32_t _cascade(tw_ctx *ctx, tw_slot_ctx *slot, const uint32_t index)
 {
-    struct tw_node_ctx *pnext, *pnode = pslot[uindex].head;
+    tw_node_ctx *pnext, *pnode = slot[index].head;
     while (NULL != pnode)
     {
         pnext = pnode->next;
         pnode->next = NULL;
-        _insert(_getslot(pctx, pnode), pnode);
+        _insert(_getslot(ctx, pnode), pnode);
         pnode = pnext;
     }
-    _clear(&pslot[uindex]);
-    return uindex;
+    _clear(&slot[index]);
+    return index;
 }
-static void _run(struct tw_ctx *pctx)
+static void _run(tw_ctx *ctx)
 {
     //µ÷Õû
-    uint32_t ulidx = pctx->jiffies & TVR_MASK;
+    uint32_t ulidx = ctx->jiffies & TVR_MASK;
     if (!ulidx
-        && (!_cascade(pctx, pctx->tv2, INDEX(0)))
-        && (!_cascade(pctx, pctx->tv3, INDEX(1)))
-        && (!_cascade(pctx, pctx->tv4, INDEX(2))))
+        && (!_cascade(ctx, ctx->tv2, INDEX(0)))
+        && (!_cascade(ctx, ctx->tv3, INDEX(1)))
+        && (!_cascade(ctx, ctx->tv4, INDEX(2))))
     {
-        _cascade(pctx, pctx->tv5, INDEX(3));
+        _cascade(ctx, ctx->tv5, INDEX(3));
     }
-    ++pctx->jiffies;
+    ++ctx->jiffies;
     //Ö´ÐÐ
-    struct tw_node_ctx *pnext, *pnode = pctx->tv1[ulidx].head;
+    tw_node_ctx *pnext, *pnode = ctx->tv1[ulidx].head;
     while (NULL != pnode)
     {
         pnext = pnode->next;
-        pnode->tw_cb(&pnode->ud);
+        pnode->tw_cb(pnode->ud);
         FREE(pnode);
         pnode = pnext;
     }
-    _clear(&pctx->tv1[ulidx]);
+    _clear(&ctx->tv1[ulidx]);
 }
-static void _loop(void *pparam)
+static void _loop(void *arg)
 {
     uint32_t curtick = 0;
-    struct tw_node_ctx *pnext, *pnode;
-    struct tw_ctx *pctx = (struct tw_ctx *)pparam;
-    pctx->jiffies = (uint32_t)(timer_cur(&pctx->timer) / accuracy);
-    while (0 == pctx->exit)
+    tw_node_ctx *next, *node;
+    tw_ctx *ctx = (tw_ctx *)arg;
+    ctx->jiffies = (uint32_t)(timer_cur(&ctx->timer) / accuracy);
+    while (0 == ctx->exit)
     {
-        mutex_lock(&pctx->lockreq);
-        pnode = pctx->reqadd.head;
-        while (NULL != pnode)
+        mutex_lock(&ctx->lockreq);
+        node = ctx->reqadd.head;
+        while (NULL != node)
         {
-            pnext = pnode->next;
-            pnode->next = NULL;
-            _insert(_getslot(pctx, pnode), pnode);
-            pnode = pnext;
+            next = node->next;
+            node->next = NULL;
+            _insert(_getslot(ctx, node), node);
+            node = next;
         }
-        _clear(&pctx->reqadd);
-        mutex_unlock(&pctx->lockreq);
+        _clear(&ctx->reqadd);
+        mutex_unlock(&ctx->lockreq);
 
-        curtick = (uint32_t)(timer_cur(&pctx->timer) / accuracy);
-        while (pctx->jiffies <= curtick)
+        curtick = (uint32_t)(timer_cur(&ctx->timer) / accuracy);
+        while (ctx->jiffies <= curtick)
         {
-            _run(pctx);
+            _run(ctx);
         }
         USLEEP(10);
     }
 }
-void tw_init(struct tw_ctx *pctx)
+void tw_init(tw_ctx *ctx)
 {
-    pctx->exit = 0;
-    pctx->jiffies = 0;
-    mutex_init(&pctx->lockreq);
-    thread_init(&pctx->thread);
-    timer_init(&pctx->timer);
-    pctx->reqadd.head = pctx->reqadd.tail = NULL;
-    ZERO(pctx->tv1, sizeof(pctx->tv1));
-    ZERO(pctx->tv2, sizeof(pctx->tv2));
-    ZERO(pctx->tv3, sizeof(pctx->tv3));
-    ZERO(pctx->tv4, sizeof(pctx->tv4));
-    ZERO(pctx->tv5, sizeof(pctx->tv5));
+    ctx->exit = 0;
+    ctx->jiffies = 0;
+    mutex_init(&ctx->lockreq);
+    thread_init(&ctx->thread);
+    timer_init(&ctx->timer);
+    ctx->reqadd.head = ctx->reqadd.tail = NULL;
+    ZERO(ctx->tv1, sizeof(ctx->tv1));
+    ZERO(ctx->tv2, sizeof(ctx->tv2));
+    ZERO(ctx->tv3, sizeof(ctx->tv3));
+    ZERO(ctx->tv4, sizeof(ctx->tv4));
+    ZERO(ctx->tv5, sizeof(ctx->tv5));
 
-    thread_creat(&pctx->thread, _loop, pctx);
+    thread_creat(&ctx->thread, _loop, ctx);
 }

@@ -11,6 +11,8 @@
 #include "queue.h"
 #include "timer.h"
 #include "tw.h"
+#include "buffer.h"
+#include "hashmap.h"
 #include "utils.h"
 
 #include "cond.h"

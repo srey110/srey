@@ -8,10 +8,10 @@ void test_memory(CuTest* tc)
     FREE(pTest);
 
     char *pBuf;
-    CALLOC(pBuf, 5, sizeof(int));
+    CALLOC(pBuf, (size_t)5, sizeof(int));
 
     char *pNew;
-    REALLOC(pNew, pBuf, 40);    
+    REALLOC(pNew, pBuf, (size_t)40);    
     FREE(pNew);
 }
 CuSuite* test_base(void)

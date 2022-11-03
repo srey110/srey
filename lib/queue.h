@@ -68,4 +68,6 @@ static inline type *qtype##_pop(qtype *p) {\
     return elem;\
 };\
 
+QUEUE_DECL(void *, qu_voidp);
+
 #endif//QUEUE_H_

@@ -3,41 +3,64 @@
 
 #define MSEC    1000
 
-int32_t socknread(SOCKET fd)
+#ifdef OS_WIN
+static volatile atomic_t _init_sock = 0;
+#endif
+void sock_init()
 {
-#if defined(OS_WIN)
-    u_long ulread = 0;
-    if (ioctlsocket(fd, FIONREAD, &ulread) < ERR_OK)
+#ifdef OS_WIN
+    if (ATOMIC_CAS(&_init_sock, 0, 1))
     {
-        return ERR_FAILED;
+        WSADATA wsdata;
+        WORD ver = MAKEWORD(2, 2);
+        ASSERTAB(ERR_OK == WSAStartup(ver, &wsdata), ERRORSTR(ERRNO));
     }
-    return (int32_t)ulread;
-#else
-    int32_t iread = 0;
-    if (ioctl(fd, FIONREAD, &iread) < ERR_OK)
-    {
-        return ERR_FAILED;
-    }
-    return iread;
 #endif
 }
-int32_t socktype(SOCKET fd)
+void sock_clean()
 {
-    int32_t itype = 0;
-    int32_t ilen = (int32_t)sizeof(itype);
-    if (getsockopt(fd, SOL_SOCKET, SO_TYPE, (char *)&itype, (socklen_t*)&ilen) < ERR_OK)
+#ifdef OS_WIN
+    if (ATOMIC_CAS(&_init_sock, 1, 0))
+    {
+        (void)WSACleanup();
+    }
+#endif
+}
+int32_t sock_nread(SOCKET fd)
+{
+#if defined(OS_WIN)
+    u_long nread = 0;
+    if (ioctlsocket(fd, FIONREAD, &nread) < ERR_OK)
+    {
+        return ERR_FAILED;
+    }
+    return (int32_t)nread;
+#else
+    int32_t nread = 0;
+    if (ioctl(fd, FIONREAD, &nread) < ERR_OK)
+    {
+        return ERR_FAILED;
+    }
+    return nread;
+#endif
+}
+int32_t sock_type(SOCKET fd)
+{
+    int32_t stype = 0;
+    int32_t len = (int32_t)sizeof(stype);
+    if (getsockopt(fd, SOL_SOCKET, SO_TYPE, (char *)&stype, (socklen_t*)&len) < ERR_OK)
     {
         PRINT("getsockopt(%d, ...) failed. %s", (int32_t)fd, ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
-    return itype;
+    return stype;
 }
-int32_t sockaddrfamily(SOCKET fd)
+int32_t sock_family(SOCKET fd)
 {
 #if defined(OS_WIN)
     WSAPROTOCOL_INFO info;
-    int32_t ilens = (int32_t)sizeof(info);
-    if (getsockopt(fd, SOL_SOCKET, SO_PROTOCOL_INFO, (char *)&info, &ilens) < ERR_OK)
+    int32_t lens = (int32_t)sizeof(info);
+    if (getsockopt(fd, SOL_SOCKET, SO_PROTOCOL_INFO, (char *)&info, &lens) < ERR_OK)
     {
         PRINT("getsockopt(%d, SOL_SOCKET, SO_PROTOCOL_INFO, ...) failed. %s", (int32_t)fd, ERRORSTR(ERRNO));
         return ERR_FAILED;
@@ -45,62 +68,62 @@ int32_t sockaddrfamily(SOCKET fd)
     return info.iAddressFamily;
 #else
 #ifdef SO_DOMAIN
-    int32_t ifamily = 0;
-    int32_t ilens = (int32_t)sizeof(ifamily);
-    if (getsockopt(fd, SOL_SOCKET, SO_DOMAIN, &ifamily, (socklen_t*)&ilens) < 0)
+    int32_t family = 0;
+    int32_t lens = (int32_t)sizeof(family);
+    if (getsockopt(fd, SOL_SOCKET, SO_DOMAIN, &family, (socklen_t*)&lens) < 0)
     {
         PRINT("getsockopt(%d, SOL_SOCKET, SO_DOMAIN, ...) failed. %s", (int32_t)fd, ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
-    return ifamily;
+    return family;
 #endif
     return AF_INET;
 #endif
 }
-void socknodelay(SOCKET fd)
+void sock_nodelay(SOCKET fd)
 {
-    int32_t iflag = 1;
-    if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (char *)&iflag, (int32_t)sizeof(iflag)) < ERR_OK)
+    int32_t flag = 1;
+    if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (char *)&flag, (int32_t)sizeof(flag)) < ERR_OK)
     {
         PRINT("setsockopt(%d, IPPROTO_TCP, TCP_NODELAY, %d, %d) failed. %s",
-            (int32_t)fd, iflag, (int32_t)sizeof(iflag), ERRORSTR(ERRNO));
+            (int32_t)fd, flag, (int32_t)sizeof(flag), ERRORSTR(ERRNO));
     }
 }
-void socknbio(SOCKET fd)
+void sock_nbio(SOCKET fd)
 {
 #if defined(OS_WIN)
-    u_long ulflag = 1;
-    if (ioctlsocket(fd, FIONBIO, &ulflag) < ERR_OK)
+    u_long flag = 1;
+    if (ioctlsocket(fd, FIONBIO, &flag) < ERR_OK)
     {
         PRINT("ioctlsocket(%d, FIONBIO, 1) failed. %s", (int32_t)fd, ERRORSTR(ERRNO));
     }
 #else
-    int32_t iflag = fcntl(fd, F_GETFL, NULL);
-    if (ERR_FAILED == iflag)
+    int32_t flag = fcntl(fd, F_GETFL, NULL);
+    if (ERR_FAILED == flag)
     {
         PRINT("fcntl(%d, F_GETFL, NULL) failed.", fd);
         return;
     }
-    if (!(iflag & O_NONBLOCK))
+    if (!(flag & O_NONBLOCK))
     {
-        if (ERR_FAILED == fcntl(fd, F_SETFL, iflag | O_NONBLOCK))
+        if (ERR_FAILED == fcntl(fd, F_SETFL, flag | O_NONBLOCK))
         {
-            PRINT("fcntl(%d, F_SETFL, %d) failed", fd, iflag | O_NONBLOCK);
+            PRINT("fcntl(%d, F_SETFL, %d) failed", fd, flag | O_NONBLOCK);
             return;
         }
     }
 #endif
 }
-void sockraddr(SOCKET fd)
+void sock_raddr(SOCKET fd)
 {
-    int32_t iflag = 1;
-    if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (char *)&iflag, (int32_t)sizeof(iflag)) < ERR_OK)
+    int32_t flag = 1;
+    if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (char *)&flag, (int32_t)sizeof(flag)) < ERR_OK)
     {
         PRINT("setsockopt(%d, SOL_SOCKET, SO_REUSEADDR, %d, %d) failed. %s",
-            (int32_t)fd, iflag, (int32_t)sizeof(iflag), ERRORSTR(ERRNO));
+            (int32_t)fd, flag, (int32_t)sizeof(flag), ERRORSTR(ERRNO));
     }
 }
-int32_t checkrport()
+int32_t sock_checkrport()
 {
 #ifdef SO_REUSEPORT
     return ERR_OK;
@@ -108,83 +131,79 @@ int32_t checkrport()
     return ERR_FAILED;
 #endif
 }
-void sockrport(SOCKET lsfd)
+void sock_rport(SOCKET fd)
 {
 #ifdef SO_REUSEPORT
-    int32_t iflag = 1;
-   if (setsockopt(lsfd, SOL_SOCKET, SO_REUSEPORT, (char *)&iflag, (int32_t)sizeof(iflag)) < ERR_OK)
+    int32_t flag = 1;
+   if (setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, (char *)&flag, (int32_t)sizeof(flag)) < ERR_OK)
    {
        PRINT("setsockopt(%d, SOL_SOCKET, SO_REUSEPORT, %d, %d) failed. %s",
-           lsfd, iflag, (int32_t)sizeof(iflag), ERRORSTR(ERRNO));
+           fd, flag, (int32_t)sizeof(flag), ERRORSTR(ERRNO));
    }
 #endif 
 }
-void sockkpa(SOCKET fd, const int32_t idelay, const int32_t iintvl)
+void sock_kpa(SOCKET fd, const int32_t delay, const int32_t intvl)
 {
-    int32_t iflag = 1;
-    if (setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, (char *)&iflag, (int32_t)sizeof(iflag)) < ERR_OK)
+    int32_t flag = 1;
+    if (setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, (char *)&flag, (int32_t)sizeof(flag)) < ERR_OK)
     {
         PRINT("setsockopt(%d, SOL_SOCKET, SO_KEEPALIVE, %d, %d) failed. %s", 
-            (int32_t)fd, iflag, (int32_t)sizeof(iflag), ERRORSTR(ERRNO));
+            (int32_t)fd, flag, (int32_t)sizeof(flag), ERRORSTR(ERRNO));
         return;
     }
-    if (0 >= idelay)
+    if (0 >= delay)
     {
         return;
     }
-
 #if defined(OS_WIN)
-    struct tcp_keepalive stkpa;
-    struct tcp_keepalive stout;
-    DWORD ulret = 0;
-    stkpa.keepalivetime = idelay * MSEC;
-    stkpa.keepaliveinterval = iintvl * MSEC;
-    if (WSAIoctl(fd, SIO_KEEPALIVE_VALS, (LPVOID)&stkpa, sizeof(struct tcp_keepalive),
-        (LPVOID)&stout, sizeof(struct tcp_keepalive), &ulret, NULL, NULL) < ERR_OK)
+    struct tcp_keepalive kpa;
+    struct tcp_keepalive out;
+    DWORD ret = 0;
+    kpa.keepalivetime = delay * MSEC;
+    kpa.keepaliveinterval = intvl * MSEC;
+    if (WSAIoctl(fd, SIO_KEEPALIVE_VALS, (LPVOID)&kpa, sizeof(struct tcp_keepalive),
+        (LPVOID)&out, sizeof(struct tcp_keepalive), &ret, NULL, NULL) < ERR_OK)
     {
         PRINT("WSAIoctl(%d, SIO_KEEPALIVE_VALS...) failed. %s", (int32_t)fd, ERRORSTR(ERRNO));
     }
 #else
-
 #ifdef TCP_KEEPIDLE
-    int32_t icnt = 5;
+    int32_t cnt = 3;
     //多久后发送keepalive 秒
-    if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, (char *)&idelay, (int32_t)sizeof(idelay)) < ERR_OK)
+    if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, (char *)&delay, (int32_t)sizeof(delay)) < ERR_OK)
     {
         PRINT("setsockopt(%d, IPPROTO_TCP, TCP_KEEPIDLE, %d, %d) failed. %s",
-            fd, idelay, (int32_t)sizeof(idelay), ERRORSTR(ERRNO));
+            fd, delay, (int32_t)sizeof(delay), ERRORSTR(ERRNO));
         return;
     }
     //时间间隔
-    if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, (char *)&iintvl, (int32_t)sizeof(iintvl)) < ERR_OK)
+    if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, (char *)&intvl, (int32_t)sizeof(intvl)) < ERR_OK)
     {
         PRINT("setsockopt(%d, IPPROTO_TCP, TCP_KEEPINTVL, %d, %d) failed. %s",
-            fd, iintvl, (int32_t)sizeof(iintvl), ERRORSTR(ERRNO));
+            fd, intvl, (int32_t)sizeof(intvl), ERRORSTR(ERRNO));
         return;
     }
     //重试次数
-    if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, (char *)&icnt, (int32_t)sizeof(icnt)) < ERR_OK)
+    if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, (char *)&cnt, (int32_t)sizeof(cnt)) < ERR_OK)
     {
         PRINT("setsockopt(%d, IPPROTO_TCP, TCP_KEEPCNT, %d, %d) failed. %s",
-            fd, icnt, (int32_t)sizeof(icnt), ERRORSTR(ERRNO));
+            fd, cnt, (int32_t)sizeof(cnt), ERRORSTR(ERRNO));
     }
     return;
 #endif
-
 #if defined(TCP_KEEPALIVE) && !defined(OS_SUN)
-    if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPALIVE, (char *)&idelay, (int32_t)sizeof(idelay)) < ERR_OK)
+    if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPALIVE, (char *)&delay, (int32_t)sizeof(delay)) < ERR_OK)
     {
         PRINT("setsockopt(%d, IPPROTO_TCP, TCP_KEEPALIVE, %d, %d) failed. %s",
-            fd, idelay, (int32_t)sizeof(idelay), ERRORSTR(ERRNO));
+            fd, delay, (int32_t)sizeof(delay), ERRORSTR(ERRNO));
     }
 #endif
-
 #endif
 }
-void closereset(SOCKET fd)
+void sock_linger(SOCKET fd)
 {
-    struct linger stlg = { 1, 0 };
-    if (setsockopt(fd, SOL_SOCKET, SO_LINGER, (char *)&stlg, (int32_t)sizeof(stlg)) < ERR_OK)
+    struct linger lg = { 1, 0 };
+    if (setsockopt(fd, SOL_SOCKET, SO_LINGER, (char *)&lg, (int32_t)sizeof(lg)) < ERR_OK)
     {
         PRINT("setsockopt(%d, SOL_SOCKET, SO_LINGER, 1 0) failed. %s",
             (int32_t)fd, ERRORSTR(ERRNO));
@@ -192,7 +211,7 @@ void closereset(SOCKET fd)
 }
 static SOCKET _sock_listen()
 {
-    union netaddr_ctx addr;
+    netaddr_ctx addr;
     if (ERR_OK != netaddr_sethost(&addr, "127.0.0.1", 0))
     {
         PRINT("%s", ERRORSTR(ERRNO));
@@ -207,13 +226,13 @@ static SOCKET _sock_listen()
     if (ERR_OK != bind(fd, netaddr_addr(&addr), netaddr_size(&addr)))
     {
         PRINT("bind(%d, ...) failed. %s", (int32_t)fd, ERRORSTR(ERRNO));
-        SOCK_CLOSE(fd);
+        CLOSE_SOCK(fd);
         return INVALID_SOCK;
     }
     if (ERR_OK != listen(fd, 1))
     {
         PRINT("listen(%d, 1) failed. %s", (int32_t)fd, ERRORSTR(ERRNO));
-        SOCK_CLOSE(fd);
+        CLOSE_SOCK(fd);
         return INVALID_SOCK;
     }
     return fd;
@@ -229,46 +248,46 @@ static SOCKET _sockcnt(union netaddr_ctx *paddr)
     if (ERR_OK != connect(fd, netaddr_addr(paddr), netaddr_size(paddr)))
     {
         PRINT("connect(%d, ...) failed. %s", (int32_t)fd, ERRORSTR(ERRNO));
-        SOCK_CLOSE(fd);
+        CLOSE_SOCK(fd);
         return INVALID_SOCK;
     }
     return fd;
 }
-int32_t sockpair(SOCKET acSock[2])
+int32_t sock_pair(SOCKET acSock[2])
 {
     SOCKET fdlsn = _sock_listen();
     if (INVALID_SOCK == fdlsn)
     {
         return ERR_FAILED;
     }
-    union netaddr_ctx addr;
+    netaddr_ctx addr;
     if (ERR_OK != netaddr_localaddr(&addr, fdlsn, AF_INET))
     {
-        SOCK_CLOSE(fdlsn);
+        CLOSE_SOCK(fdlsn);
         PRINT("%s", "netaddr_localaddr failed.");
         return ERR_FAILED;
     }
     SOCKET fdcn = _sockcnt(&addr);
     if (INVALID_SOCK == fdcn)
     {
-        SOCK_CLOSE(fdlsn);
+        CLOSE_SOCK(fdlsn);
         return ERR_FAILED;
     }
     struct sockaddr_in listen_addr;
-    socklen_t iaddrlens = (socklen_t)sizeof(listen_addr);
-    SOCKET fdacp = accept(fdlsn, (struct sockaddr *) &listen_addr, &iaddrlens);
+    socklen_t addrlen = (socklen_t)sizeof(listen_addr);
+    SOCKET fdacp = accept(fdlsn, (struct sockaddr *) &listen_addr, &addrlen);
     if (INVALID_SOCK == fdacp)
     {
         PRINT("accept(%d, ...) failed. %s", (int32_t)fdlsn, ERRORSTR(ERRNO));
-        SOCK_CLOSE(fdlsn);
-        SOCK_CLOSE(fdcn);
+        CLOSE_SOCK(fdlsn);
+        CLOSE_SOCK(fdcn);
         return ERR_FAILED;
     }
-    SOCK_CLOSE(fdlsn);
+    CLOSE_SOCK(fdlsn);
     if (ERR_OK != netaddr_localaddr(&addr, fdcn, AF_INET))
     {
-        SOCK_CLOSE(fdacp);
-        SOCK_CLOSE(fdcn);
+        CLOSE_SOCK(fdacp);
+        CLOSE_SOCK(fdcn);
         return ERR_FAILED;
     }
     struct sockaddr_in *connect_addr = (struct sockaddr_in*)netaddr_addr(&addr);
@@ -276,16 +295,15 @@ int32_t sockpair(SOCKET acSock[2])
         || listen_addr.sin_addr.s_addr != connect_addr->sin_addr.s_addr
         || listen_addr.sin_port != connect_addr->sin_port)
     {
-        SOCK_CLOSE(fdacp);
-        SOCK_CLOSE(fdcn);
+        CLOSE_SOCK(fdacp);
+        CLOSE_SOCK(fdcn);
         return ERR_FAILED;
     }
 
-    socknodelay(fdacp);
-    socknodelay(fdcn);
-    socknbio(fdacp);
-    socknbio(fdcn);
-
+    sock_nodelay(fdacp);
+    sock_nodelay(fdcn);
+    sock_nbio(fdacp);
+    sock_nbio(fdcn);
     acSock[0] = fdacp;
     acSock[1] = fdcn;
     return ERR_OK;

@@ -24,6 +24,7 @@
     <ClInclude Include="chan.h" />
     <ClInclude Include="cond.h" />
     <ClInclude Include="errcode.h" />
+    <ClInclude Include="hashmap.h" />
     <ClInclude Include="lib.h" />
     <ClInclude Include="loger.h" />
     <ClInclude Include="macro.h" />
@@ -39,7 +40,6 @@
     <ClInclude Include="rwlock.h" />
     <ClInclude Include="sha1\sha1.h" />
     <ClInclude Include="spinlock.h" />
-    <ClInclude Include="structs.h" />
     <ClInclude Include="thread.h" />
     <ClInclude Include="timer.h" />
     <ClInclude Include="tw.h" />
@@ -48,16 +48,13 @@
   <ItemGroup>
     <ClCompile Include="buffer.c" />
     <ClCompile Include="chan.c" />
-    <ClCompile Include="cond.c" />
+    <ClCompile Include="hashmap.c" />
     <ClCompile Include="loger.c" />
     <ClCompile Include="md5\md5.c" />
     <ClCompile Include="memory.c" />
-    <ClCompile Include="mutex.c" />
     <ClCompile Include="netaddr.c" />
     <ClCompile Include="netutils.c" />
-    <ClCompile Include="rwlock.c" />
     <ClCompile Include="sha1\sha1.c" />
-    <ClCompile Include="spinlock.c" />
     <ClCompile Include="thread.c" />
     <ClCompile Include="timer.c" />
     <ClCompile Include="tw.c" />

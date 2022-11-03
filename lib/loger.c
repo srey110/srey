@@ -1,6 +1,7 @@
 #include "loger.h"
 #include "utils.h"
-#include "structs.h"
+
+loger_ctx g_logerctx;
 
 #ifndef OS_WIN
 #define CLR_CLR         "\033[0m"       /* 恢复颜色 */
@@ -23,7 +24,9 @@
 #define CLR_WHT_BLK     "\033[47;30m"   /* 白底黑字 */
 #endif
 
-struct logworker_ctx
+#define LOG_FOLDER  "logs"
+
+typedef struct logworker_ctx
 {
     FILE *file;
 #if defined(OS_WIN)
@@ -33,10 +36,15 @@ struct logworker_ctx
     char date[TIME_LENS];
     char lognam[PATH_LENS];
     char *path;
-    struct loger_ctx *ploger;
-};
-struct loger_ctx g_logerctx;
-#define LOG_FOLDER  "logs"
+    loger_ctx *ploger;
+}logworker_ctx;
+typedef struct loginfo_ctx
+{
+    LOG_LEVEL lv;
+    char *data;
+    char time[TIME_LENS];
+}loginfo_ctx;
+
 const char *_getlvstr(const LOG_LEVEL emlv)
 {
     switch (emlv)
@@ -54,230 +62,225 @@ const char *_getlvstr(const LOG_LEVEL emlv)
     default:
         break;
     }
-
     return "UNKNOWN";
 }
-static void _log_time(char atime[TIME_LENS])
+static void _worker_init(logworker_ctx *ctx)
 {
-    struct timeval tv;
-    timeofday(&tv);
-    time_t t = tv.tv_sec;
-    ZERO(atime, TIME_LENS);
-    strftime(atime, TIME_LENS - 1, "[%H:%M:%S", localtime(&t));
-    size_t uilen = strlen(atime);
-    SNPRINTF(atime + uilen, TIME_LENS - uilen - 1, " %03d]", (int32_t)(tv.tv_usec / 1000));
-}
-static void _worker_init(struct logworker_ctx *pctx)
-{
-    pctx->path = NULL;
-    pctx->file = NULL;
-    ZERO(pctx->lognam, sizeof(pctx->lognam));
-
+    ctx->path = NULL;
+    ctx->file = NULL;
+    ZERO(ctx->lognam, sizeof(ctx->lognam));
     //创建文件夹
-    char acpath[PATH_LENS];
-    ASSERTAB(ERR_OK == procpath(acpath), "getpath failed.");
-    size_t ilens = strlen(acpath) + strlen(PATH_SEPARATORSTR) + strlen(LOG_FOLDER) + 2;
-    CALLOC(pctx->path, ilens, sizeof(char));
-    SNPRINTF(pctx->path, ilens - 1, "%s%s%s", acpath, PATH_SEPARATORSTR, LOG_FOLDER);
-    if (ERR_OK != ACCESS(pctx->path, 0))
+    char path[PATH_LENS] = {0};
+    ASSERTAB(ERR_OK == procpath(path), "getpath failed.");
+    size_t ilens = strlen(path) + strlen(PATH_SEPARATORSTR) + strlen(LOG_FOLDER) + 2;
+    CALLOC(ctx->path, ilens, sizeof(char));
+    SNPRINTF(ctx->path, ilens - 1, "%s%s%s", path, PATH_SEPARATORSTR, LOG_FOLDER);
+    if (ERR_OK != ACCESS(ctx->path, 0))
     {
-        if (ERR_OK != MKDIR(pctx->path))
+        if (ERR_OK != MKDIR(ctx->path))
         {
-            PRINT("mkdir(%s) failed.", pctx->path);
-            FREE(pctx->path);
+            PRINT("mkdir(%s) failed.", ctx->path);
+            FREE(ctx->path);
         }
     }
 #if defined(OS_WIN)
     //获取标准输出
-    pctx->hout = GetStdHandle(STD_OUTPUT_HANDLE);
-    if (INVALID_HANDLE_VALUE == pctx->hout
-        || NULL == pctx->hout)
+    ctx->hout = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (INVALID_HANDLE_VALUE == ctx->hout
+        || NULL == ctx->hout)
     {
-        pctx->hout = NULL;
+        ctx->hout = NULL;
         PRINT("%s", "GetStdHandle(STD_OUTPUT_HANDLE) error.");
         return;
     }
-    if (!GetConsoleScreenBufferInfo(pctx->hout, &pctx->stcsbi))
+    if (!GetConsoleScreenBufferInfo(ctx->hout, &ctx->stcsbi))
     {
         PRINT("%s", "GetConsoleScreenBufferInfo error.");
         return;
     }
 #endif  
 }
-static void _worker_free(struct logworker_ctx *pctx)
+static void _worker_free(logworker_ctx *ctx)
 {
-    if (NULL != pctx->file)
+    if (NULL != ctx->file)
     {
-        fclose(pctx->file);
-        pctx->file = NULL;
+        fclose(ctx->file);
+        ctx->file = NULL;
     }
-    FREE(pctx->path);
+    FREE(ctx->path);
 }
-static int32_t _worker_getfile(struct logworker_ctx *pctx)
+static int32_t _worker_getfile(logworker_ctx *ctx)
 {
-    if (NULL == pctx->path)
+    if (NULL == ctx->path)
     {
         return ERR_FAILED;
     }
     //判断日期是否更改，更改则更换log文件名
-    nowtime("%Y%m%d", pctx->date);
-    if (0 != strcmp(pctx->date, pctx->lognam))
+    nowtime("%Y%m%d", ctx->date);
+    if (0 != strcmp(ctx->date, ctx->lognam))
     {
-        if (NULL != pctx->file)
+        if (NULL != ctx->file)
         {
-            fclose(pctx->file);
-            pctx->file = NULL;
+            fclose(ctx->file);
+            ctx->file = NULL;
         }
-
-        size_t ilens = strlen(pctx->date);
-        memcpy(pctx->lognam, pctx->date, ilens);
-        pctx->lognam[ilens] = '\0';
+        size_t lens = strlen(ctx->date);
+        memcpy(ctx->lognam, ctx->date, lens);
+        ctx->lognam[lens] = '\0';
     }
     //打开文件
-    if (NULL == pctx->file)
+    if (NULL == ctx->file)
     {
-        char actmp[PATH_LENS] = { 0 };
-        SNPRINTF(actmp, sizeof(actmp) - 1, "%s%s%s%s", pctx->path, PATH_SEPARATORSTR, pctx->lognam, ".log");
-        pctx->file = fopen(actmp, "a");
-        if (NULL == pctx->file)
+        char fpath[PATH_LENS] = { 0 };
+        SNPRINTF(fpath, sizeof(fpath) - 1, "%s%s%s%s", ctx->path, PATH_SEPARATORSTR, ctx->lognam, ".log");
+        ctx->file = fopen(fpath, "a");
+        if (NULL == ctx->file)
         {
-            PRINT("fopen(%s, a) error.", actmp);
+            PRINT("fopen(%s, a) error.", fpath);
             return ERR_FAILED;
         }
     }
-
     return ERR_OK;
 }
-static void _worker_writelog(struct logworker_ctx *pctx, const char *ptime, struct message_ctx *pmsg)
+static void _worker_writelog(logworker_ctx *ctx, loginfo_ctx *info)
 {
-    const char *pn = "\n";
-    (void)fwrite(ptime, 1, strlen(ptime), pctx->file);
-    (void)fwrite(pmsg->data, 1, strlen((const char *)pmsg->data), pctx->file);
-    (void)fwrite(pn, 1, strlen(pn), pctx->file);
-    (void)fflush(pctx->file);
+    static const char *pn = "\n";
+    (void)fwrite(info->time, 1, strlen(info->time), ctx->file);
+    (void)fwrite(info->data, 1, strlen((const char *)info->data), ctx->file);
+    (void)fwrite(pn, 1, strlen(pn), ctx->file);
 }
-static void _worker_printlog(struct logworker_ctx *pctx, const char *ptime, struct message_ctx *pmsg)
+static void _worker_printlog(logworker_ctx *ctx, loginfo_ctx *info)
 {
-    if (0 == pctx->ploger->print)
+    if (0 == ctx->ploger->prt)
     {
         return;
     }
 #if defined(OS_WIN)
-    if (NULL == pctx->hout)
+    if (NULL == ctx->hout)
     {
         return;
     }
-    switch (pmsg->flags)
+    switch (info->lv)
     {
     case LOGLV_FATAL:
-        SetConsoleTextAttribute(pctx->hout, FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | BACKGROUND_RED);
+        SetConsoleTextAttribute(ctx->hout, FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | BACKGROUND_RED);
         break;
     case LOGLV_ERROR:
-        SetConsoleTextAttribute(pctx->hout, FOREGROUND_RED);
+        SetConsoleTextAttribute(ctx->hout, FOREGROUND_RED);
         break;
     case LOGLV_WARN:
-        SetConsoleTextAttribute(pctx->hout, FOREGROUND_RED | FOREGROUND_GREEN);
+        SetConsoleTextAttribute(ctx->hout, FOREGROUND_RED | FOREGROUND_GREEN);
         break;
     case LOGLV_INFO:
-        SetConsoleTextAttribute(pctx->hout, FOREGROUND_GREEN);
+        SetConsoleTextAttribute(ctx->hout, FOREGROUND_GREEN);
         break;
     case LOGLV_DEBUG:
-        SetConsoleTextAttribute(pctx->hout, FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
+        SetConsoleTextAttribute(ctx->hout, FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
         break;
     default:
         break;
     }
-    printf("%s%s\n", ptime, (const char *)pmsg->data);
-    SetConsoleTextAttribute(pctx->hout, pctx->stcsbi.wAttributes);
+    printf("%s%s\n", info->time, (const char *)info->data);
+    SetConsoleTextAttribute(ctx->hout, ctx->stcsbi.wAttributes);
 #else
-    switch (pmsg->flags)
+    switch (info->lv)
     {
     case LOGLV_FATAL:
-        printf("%s%s%s%s\n", CLR_RED_WHT, ptime, (const char *)pmsg->data, CLR_CLR);
+        printf("%s%s%s%s\n", CLR_RED_WHT, info->time, (const char *)info->data, CLR_CLR);
         break;
     case LOGLV_ERROR:
-        printf("%s%s%s%s\n", CLR_RED, ptime, (const char *)pmsg->data, CLR_CLR);
+        printf("%s%s%s%s\n", CLR_RED, info->time, (const char *)info->data, CLR_CLR);
         break;
     case LOGLV_WARN:
-        printf("%s%s%s%s\n", CLR_YELLOW, ptime, (const char *)pmsg->data, CLR_CLR);
+        printf("%s%s%s%s\n", CLR_YELLOW, info->time, (const char *)info->data, CLR_CLR);
         break;
     case LOGLV_INFO:
-        printf("%s%s%s%s\n", CLR_GREEN, ptime, (const char *)pmsg->data, CLR_CLR);
+        printf("%s%s%s%s\n", CLR_GREEN, info->time, (const char *)info->data, CLR_CLR);
         break;
     case LOGLV_DEBUG:
-        printf("%s%s%s%s\n", CLR_WHITE, ptime, (const char *)pmsg->data, CLR_CLR);
+        printf("%s%s%s%s\n", CLR_WHITE, info->time, (const char *)info->data, CLR_CLR);
         break;
     }
 #endif
 }
-static void _loger(void *pparam)
+static void _loger(void *arg)
 {
-    struct logworker_ctx stworker;
-    stworker.ploger = (struct loger_ctx *)pparam;
+    logworker_ctx stworker;
+    stworker.ploger = (loger_ctx *)arg;
     _worker_init(&stworker);
-    char atime[TIME_LENS];
-    struct message_ctx msg;
+    loginfo_ctx *info;
     while (0 == stworker.ploger->stop)
     {
-        if (ERR_OK != chan_recv(&stworker.ploger->chan, &msg))
+        if (ERR_OK != chan_recv(&stworker.ploger->chan, &info))
         {
             continue;
         }
-
-        _log_time(atime);
-        _worker_printlog(&stworker, atime, &msg);
+        _worker_printlog(&stworker, info);
         if (ERR_OK != _worker_getfile(&stworker))
         {
-            FREE(msg.data);
+            FREE(info->data);
+            FREE(info);
             continue;
         }
-        _worker_writelog(&stworker, atime, &msg);
-        FREE(msg.data);
+        _worker_writelog(&stworker, info);
+        FREE(info->data);
+        FREE(info);
     }
-
     _worker_free(&stworker);
 }
 
-void loger_init(struct loger_ctx *pctx)
+void loger_init(loger_ctx *ctx)
 {
-    pctx->stop = 0;
-    pctx->lv = LOGLV_DEBUG;
-    pctx->print = 1;
-    chan_init(&pctx->chan, ONEK * 4);
-    thread_init(&pctx->thloger);
-    thread_creat(&pctx->thloger, _loger, pctx);
+    ctx->stop = 0;
+    ctx->lv = LOGLV_DEBUG;
+    ctx->prt = 1;
+    chan_init(&ctx->chan, ONEK * 4);
+    thread_init(&ctx->thread);
+    thread_creat(&ctx->thread, _loger, ctx);
 }
-void loger_free(struct loger_ctx *pctx)
+void loger_free(loger_ctx *ctx)
 {
-    while (chan_size(&pctx->chan) > 0);
-    pctx->stop = 1;
-    chan_close(&pctx->chan);
-    thread_join(&pctx->thloger);
-    chan_free(&pctx->chan);
+    chan_close(&ctx->chan);
+    while (chan_size(&ctx->chan) > 0);
+    ctx->stop = 1;
+    thread_join(&ctx->thread);
+    chan_free(&ctx->chan);
 }
-void loger_setlv(struct loger_ctx *pctx, const LOG_LEVEL emlv)
+void loger_setlv(loger_ctx *ctx, const LOG_LEVEL lv)
 {
-    pctx->lv = emlv;
+    ctx->lv = lv;
 }
-void loger_setprint(struct loger_ctx *pctx, const int32_t iprint)
+void loger_setprint(loger_ctx *ctx, const int32_t prt)
 {
-    pctx->print = iprint;
+    ctx->prt = prt;
 }
-void loger_log(struct loger_ctx *pctx, const LOG_LEVEL emlv, const char *pformat, ...)
+static void _log_time(char time[TIME_LENS])
 {
-    if (emlv > pctx->lv)
+    struct timeval tv;
+    timeofday(&tv);
+    time_t t = tv.tv_sec;
+    strftime(time, TIME_LENS - 1, "[%H:%M:%S", localtime(&t));
+    size_t len = strlen(time);
+    SNPRINTF(time + len, TIME_LENS - len - 1, " %03d]", (int32_t)(tv.tv_usec / 1000));
+}
+void loger_log(loger_ctx *ctx, const LOG_LEVEL lv, const char *fmt, ...)
+{
+    if (lv > ctx->lv)
     {
         return;
     }
-    
-    struct message_ctx msg;
-    msg.flags = emlv;
+    loginfo_ctx *info;
+    MALLOC(info, sizeof(loginfo_ctx));
+    info->lv = lv;
+    ZERO(info->time, sizeof(info->time));
+    _log_time(info->time);
     va_list va;
-    va_start(va, pformat);
-    msg.data = formatargs(pformat, va);
+    va_start(va, fmt);
+    info->data = formatargs(fmt, va);
     va_end(va);
-    if (ERR_OK != chan_send(&pctx->chan, &msg))
+    if (ERR_OK != chan_send(&ctx->chan, info))
     {
-        FREE(msg.data);
+        FREE(info->data);
+        FREE(info);
     }
 }

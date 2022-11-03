@@ -11,7 +11,7 @@ static uint64_t _nalloc()
     return n_alloc;
 #else
     return 0;
-#endif    
+#endif
 }
 static uint64_t _nfree()
 {
@@ -68,7 +68,7 @@ void _free(void* ptr)
 #endif
     free(ptr);
 }
-void memcheck(void)
+void _memcheck(void)
 {
 #ifdef PRINT_DEBUG
     printf("Memory check => alloc:%"PRIu64" free:%"PRIu64"\n", _nalloc(), _nfree());
