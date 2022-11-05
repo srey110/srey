@@ -9,7 +9,6 @@
 #define PORT_LENS 8
 #define SOCKKPA_DELAY 60
 #define SOCKKPA_INTVL 1
-#define SOCKK_BACKLOG 128
 #define INVALID_FD    -1
 
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))
@@ -92,7 +91,7 @@ do\
 #define CLOSE_SOCK(fd)\
 do\
 {\
-    if (INVALID_SOCK != (fd))\
+    if (INVALID_SOCK != (fd) && 0 != (fd))\
     {\
         SOCK_CLOSE(fd);\
         (fd) = INVALID_SOCK;\

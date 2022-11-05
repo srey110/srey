@@ -7,16 +7,17 @@
 #pragma comment(lib, "lib.lib")
 #endif
 
+ev_ctx ev;
 mutex_ctx muexit;
 cond_ctx condexit;
 static uint32_t count = 0;
 
-void on_sigcb(int32_t sig, void *arg)
+static void on_sigcb(int32_t sig, void *arg)
 {
     PRINT("catch sign: %d", sig);
     cond_signal(&condexit);
 }
-void timeout(void *arg)
+static void timeout(void *arg)
 {
     count++;
     tw_ctx *tw = arg;
@@ -26,6 +27,26 @@ void timeout(void *arg)
     {
         tw_add(tw, 1000, timeout, tw);
     }
+}
+void test_close_cb(SOCKET sock, void *ud)
+{
+
+}
+void test_recv_cb(SOCKET sock, buffer_ctx *buf, void *ud)
+{
+
+}
+void test_send_cb(SOCKET sock, void *data, size_t len, void *ud, int32_t rest)
+{
+
+}
+static void acpt_cb(SOCKET sock, void *ud)
+{
+    uint32_t *cnt = ud;
+    PRINT("acpt_cb: %d", *cnt);
+    const char *str = "this is test.";
+    ev_loop(&ev, sock, test_recv_cb, test_close_cb, test_send_cb, ud);
+    ev_send(&ev, sock, (void *)str, strlen(str), 1, NULL);
 }
 int main(int argc, char *argv[])
 {
@@ -51,10 +72,9 @@ int main(int argc, char *argv[])
     CuSuiteSummary(psuite, poutput);
     CuSuiteDetails(psuite, poutput);
     printf("%s\n", poutput->buffer);
-
-    ev_ctx ev;
+    
     ev_init(&ev, 2);
-
+    ev_listener(&ev, "0.0.0.0", 15000, acpt_cb, &count);
     mutex_lock(&muexit);
     cond_wait(&condexit, &muexit);
     mutex_unlock(&muexit);

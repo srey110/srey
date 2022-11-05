@@ -100,6 +100,12 @@
     <ClInclude Include="event\event.h">
       <Filter>event</Filter>
     </ClInclude>
+    <ClInclude Include="event\uev.h">
+      <Filter>event</Filter>
+    </ClInclude>
+    <ClInclude Include="event\iocp.h">
+      <Filter>event</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="memory.c">

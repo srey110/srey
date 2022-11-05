@@ -1,21 +1,19 @@
-#include "event/event.h"
+#include "event/uev.h"
 
 #ifndef EV_IOCP
 
 #define ININT_EVENT_CNT  512
-#define CMD_STOP         0x01
-#define CMD_ADD          0x02
-#define CMD_CLOSE        0x03
-#define CMD_CONN         0x04
-#define CMD_CONN_TIMEOUT 0x05
 
 #define FLAGS_LSN   0x01
 #define FLAGS_CONN  0x02
 #define FLAGS_NORM  0x04
 #define FLAGS_CLOSE 0x08
 
-#define EV_READ    0x01
-#define EV_WRITE   0x02
+#define CMD_STOP         0x01
+#define CMD_ADD          0x02
+#define CMD_CLOSE        0x03
+#define CMD_CONN         0x04
+#define CMD_CONN_TIMEOUT 0x05
 
 static void _cloexec(int32_t evfd)
 {
@@ -49,13 +47,18 @@ static int32_t _init_ev()
     _cloexec(evfd);
     return evfd;
 }
+watcher_ctx * _uev_watcher(ev_ctx *ctx, SOCKET fd)
+{
+    return (1 == ctx->nthreads) ? &ctx->watcher[0] :
+        &ctx->watcher[hash((const char *)&fd, sizeof(fd)) % ctx->nthreads];
+}
 static void _resize_events(watcher_ctx *watcher)
 {
     FREE(watcher->events);
     watcher->nevent *= 2;
     MALLOC(watcher->events, sizeof(events_t) * watcher->nevent);
 }
-static void _cmd(watcher_ctx *watcher, int32_t cmd, sock_ctx *sock)
+void _uev_cmd(watcher_ctx *watcher, int32_t cmd, sock_ctx *sock)
 {
     static char trigger[1] = { '1' };
     cmd_ctx stcmd;
@@ -66,7 +69,7 @@ static void _cmd(watcher_ctx *watcher, int32_t cmd, sock_ctx *sock)
     ASSERTAB(sizeof(trigger) == write(watcher->pipes[1], trigger, sizeof(trigger)), "pipe write error.");
     mutex_unlock(&watcher->qucmdlck);
 }
-static int32_t _add_event(watcher_ctx *watcher, sock_ctx *sock, uint32_t ev)
+int32_t _add_event(watcher_ctx *watcher, sock_ctx *sock, uint32_t ev)
 {
     if (sock->flags & FLAGS_CLOSE)
     {
@@ -134,7 +137,7 @@ static int32_t _add_event(watcher_ctx *watcher, sock_ctx *sock, uint32_t ev)
 #endif
     return ERR_OK;
 }
-static void _del_event(watcher_ctx *watcher, sock_ctx *sock, uint32_t ev)
+void _del_event(watcher_ctx *watcher, sock_ctx *sock, uint32_t ev)
 {
     if (0 == ev
         || (sock->flags & FLAGS_CLOSE))
@@ -274,11 +277,11 @@ static void _wait_event(watcher_ctx *watcher, int32_t *stop)
         ev = _trans_event(&watcher->events[i], &sock);
         sock->ev_cb(watcher, sock, ev, stop);
     }
-    sock_ctx **closed;
-    while (NULL != (closed = qu_close_pop(&watcher->quclose)))
+    /*sock_ctx **closed;
+    while (NULL != (closed = qu_closed_pop(&watcher->quclose)))
     {
         _sock_close(*closed);
-    }
+    }*/
     if (0 == *stop
         && cnt >= watcher->nevent)
     {
@@ -349,14 +352,14 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads)
         ASSERTAB(ERR_OK == pipe(watcher->pipes), ERRORSTR(ERRNO));
         mutex_init(&watcher->qucmdlck);
         qu_cmd_init(&watcher->qucmd, ONEK);
-        qu_close_init(&watcher->quclose, ONEK);
+        qu_closed_init(&watcher->quclose, ONEK);
         thread_init(&watcher->thread);
         thread_creat(&watcher->thread, _loop, watcher);
     }
 }
 static void _free_watcher(watcher_ctx *watcher)
 {
-    qu_close_free(&watcher->quclose);
+    qu_closed_free(&watcher->quclose);
     qu_cmd_free(&watcher->qucmd);
     mutex_free(&watcher->qucmdlck);
     close(watcher->pipes[0]);
@@ -369,7 +372,7 @@ void ev_free(ev_ctx *ctx)
     uint32_t i;
     for (i = 0; i < ctx->nthreads; i++)
     {
-        _cmd(&ctx->watcher[i], CMD_STOP, NULL);
+        _uev_cmd(&ctx->watcher[i], CMD_STOP, NULL);
     }
     for (i = 0; i < ctx->nthreads; i++)
     {
