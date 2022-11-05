@@ -180,12 +180,12 @@ uint64_t createid()
 {
     return ATOMIC64_ADD(&_ids, 1);
 }
-uint32_t threadid()
+uint64_t threadid()
 {
 #if defined(OS_WIN)
-    return (uint32_t)GetCurrentThreadId();
+    return (uint64_t)GetCurrentThreadId();
 #else
-    return (uint32_t)pthread_self();
+    return (uint64_t)pthread_self();
 #endif
 }
 int32_t bigendian()
@@ -855,20 +855,19 @@ char *randstr(char *buf, size_t len)
     buf[i] = '\0';
     return buf;
 }
-char *tohex(const char *buf, size_t len, char *out)
+char *tohex(const char *buf, size_t len, char *out, size_t outlen)
 {
     size_t offset = 0;
     for (size_t i = 0; i < len; i++)
     {
         if (i == len - 1)
         {
-            SNPRINTF(out + offset, 3, "%02X", (uint8_t)buf[i]);
+            SNPRINTF(out + offset, outlen - offset - 1, "%02X", (uint8_t)buf[i]);
         }
         else
         {
-            SNPRINTF(out + offset, 3, "%02X ", (uint8_t)buf[i]);
-        }
-        
+            SNPRINTF(out + offset, outlen - offset - 1, "%02X ", (uint8_t)buf[i]);
+        }        
         offset += 3;
     }
     return out;
@@ -876,7 +875,7 @@ char *tohex(const char *buf, size_t len, char *out)
 char *formatargs(const char *fmt, va_list args)
 {
     int32_t num;
-    size_t size = 128;
+    size_t size = 512;
     char *pbuff;
     MALLOC(pbuff, size);    
     while (1)

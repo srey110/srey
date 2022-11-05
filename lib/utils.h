@@ -6,7 +6,7 @@
 //获取一ID
 uint64_t createid();
 //当前线程Id
-uint32_t threadid();
+uint64_t threadid();
 //启coredump socket链接数限制
 void unlimit();
 //信号处理
@@ -63,7 +63,7 @@ int32_t randrange(int32_t min, int32_t max);
 //随机字符串
 char *randstr(char *buf, size_t len);
 //转16进制字符串 长度为 ilens * 3 + 1
-char *tohex(const char *buf, size_t len, char *out);
+char *tohex(const char *buf, size_t len, char *out, size_t outlen);
 //变参 返回值需要free
 char *formatargs(const char *fmt, va_list args);
 char *formatv(const char *fmt, ...);

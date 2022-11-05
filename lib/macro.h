@@ -10,6 +10,7 @@
 #define SOCKKPA_DELAY 60
 #define SOCKKPA_INTVL 1
 #define SOCKK_BACKLOG 128
+#define INVALID_FD    -1
 
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))

@@ -683,7 +683,7 @@ static int32_t _buffer_search(buffer_ctx *ctx, const size_t start, char *what, s
 
     return ERR_FAILED;
 }
-int32_t buffer_search(buffer_ctx *ctx, const size_t start, char *what, size_t wlen)
+int32_t buffer_search(buffer_ctx *ctx, const size_t start, void *what, size_t wlen)
 {
     _buffer_lock(ctx);
     int32_t rtn = _buffer_search(ctx, start, what, wlen);

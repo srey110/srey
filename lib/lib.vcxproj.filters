@@ -19,6 +19,9 @@
     <Filter Include="utils\map">
       <UniqueIdentifier>{f48dd8e8-89dd-43e8-8803-6ae5cb8869d3}</UniqueIdentifier>
     </Filter>
+    <Filter Include="event">
+      <UniqueIdentifier>{204f42db-8e63-4b3c-90da-dbcb5d3750cf}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="errcode.h">
@@ -94,6 +97,9 @@
     <ClInclude Include="hashmap.h">
       <Filter>utils\map</Filter>
     </ClInclude>
+    <ClInclude Include="event\event.h">
+      <Filter>event</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="memory.c">
@@ -134,6 +140,18 @@
     </ClCompile>
     <ClCompile Include="hashmap.c">
       <Filter>utils\map</Filter>
+    </ClCompile>
+    <ClCompile Include="event\event.c">
+      <Filter>event</Filter>
+    </ClCompile>
+    <ClCompile Include="event\uev.c">
+      <Filter>event</Filter>
+    </ClCompile>
+    <ClCompile Include="event\iocp.c">
+      <Filter>event</Filter>
+    </ClCompile>
+    <ClCompile Include="event\overlap.c">
+      <Filter>event</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

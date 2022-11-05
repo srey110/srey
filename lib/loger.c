@@ -211,7 +211,7 @@ static void _loger(void *arg)
     loginfo_ctx *info;
     while (0 == stworker.ploger->stop)
     {
-        if (ERR_OK != chan_recv(&stworker.ploger->chan, &info))
+        if (ERR_OK != chan_recv(&stworker.ploger->chan, (void **)&info))
         {
             continue;
         }

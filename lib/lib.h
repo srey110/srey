@@ -21,4 +21,6 @@
 #include "spinlock.h"
 #include "thread.h"
 
+#include "event/event.h"
+
 #endif //LIB_H_

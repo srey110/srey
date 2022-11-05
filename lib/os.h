@@ -41,6 +41,7 @@
 #elif defined(OS_SUN)
     #define EV_EVPORT
 #endif
+//#undef EV_IOCP
 
 /*check version x64 x86*/
 #if defined(OS_WIN)
@@ -75,6 +76,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <limits.h>
+#include <ctype.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <inttypes.h>
