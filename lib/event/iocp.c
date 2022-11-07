@@ -4,11 +4,14 @@
 #ifdef EV_IOCP
 
 #define NOTIFI_EXIT_KEY  ((ULONG_PTR)-1)
+exfuncs_ctx _exfuncs;
+static volatile atomic_t _init_once = 0;
 
 typedef struct sock_sendcb
 {
     SOCKET sock;
     send_cb cb;
+    void *ud;
 }sock_sendcb;
 
 static uint64_t _mapcb_hash(const void *item, uint64_t seed0, uint64_t seed1)
@@ -49,7 +52,6 @@ static void _wait_event(ev_ctx *ctx, int32_t *stop)
     if (NOTIFI_EXIT_KEY == key)
     {
         *stop = 1;
-        PRINTD("%s", "stop event loop.");
         return;
     }
     if (NULL == overlap)
@@ -64,7 +66,7 @@ static void _wait_event(ev_ctx *ctx, int32_t *stop)
     sock_ctx *sock = UPCAST(overlap, sock_ctx, overlapped);
     sock->ev_cb(ctx, err, bytes, sock);
 }
-static void _loop_event(void *arg)
+static void _loop_iocp(void *arg)
 {
     int32_t stop = 0;
     ev_ctx *ctx = (ev_ctx *)arg;
@@ -73,7 +75,7 @@ static void _loop_event(void *arg)
         _wait_event(ctx, &stop);
     }
 }
-static void _iocp_cmd(watcher_ctx *watcher, cmd_ctx *cmd)
+static void _send_cmd(watcher_ctx *watcher, cmd_ctx *cmd)
 {
     mutex_lock(&watcher->sender.mutex);
     qu_cmd_push(&watcher->sender.qucmd, cmd);
@@ -83,12 +85,12 @@ static void _iocp_cmd(watcher_ctx *watcher, cmd_ctx *cmd)
     }
     mutex_unlock(&watcher->sender.mutex);
 }
-static watcher_ctx *_iocp_watcher(ev_ctx *ctx, SOCKET fd)
+static inline watcher_ctx *_get_watcher(ev_ctx *ctx, SOCKET fd)
 {
     return (1 == ctx->nthreads) ? &(ctx->watcher[0]) :
         (&ctx->watcher[hash((const char *)&fd, sizeof(fd)) % ctx->nthreads]);
 }
-void _sender_add(ev_ctx *ctx, SOCKET sock, send_cb cb)
+void _cmd_add(ev_ctx *ctx, SOCKET sock, send_cb cb, void *ud)
 {
     if (INVALID_SOCK == sock)
     {
@@ -98,16 +100,21 @@ void _sender_add(ev_ctx *ctx, SOCKET sock, send_cb cb)
     cmd.cmd = CMD_ADD;
     cmd.sock = sock;
     cmd.data = cb;
-    _iocp_cmd(_iocp_watcher(ctx, sock), &cmd);
+    cmd.ud = ud;
+    _send_cmd(_get_watcher(ctx, sock), &cmd);
 }
 static void _on_cmd_add(struct hashmap *mapcb, cmd_ctx *cmd)
 {
     sock_sendcb cb;
     cb.sock = cmd->sock;
     cb.cb = cmd->data;
-    hashmap_set(mapcb, &cb);
+    cb.ud = cmd->ud;
+    if (NULL != hashmap_set(mapcb, &cb))
+    {
+        LOG_WARN("%s", "socket add repeatedly.");
+    }
 }
-void _sender_remove(ev_ctx *ctx, SOCKET sock)
+void _cmd_remove(ev_ctx *ctx, SOCKET sock)
 {
     if (INVALID_SOCK == sock)
     {
@@ -116,15 +123,40 @@ void _sender_remove(ev_ctx *ctx, SOCKET sock)
     cmd_ctx cmd;
     cmd.cmd = CMD_REMOVE;
     cmd.sock = sock;
-    _iocp_cmd(_iocp_watcher(ctx, sock), &cmd);
+    _send_cmd(_get_watcher(ctx, sock), &cmd);
 }
 static void _on_cmd_remove(struct hashmap *mapcb, cmd_ctx *cmd)
 {
     sock_sendcb key;
     key.sock = cmd->sock;
     hashmap_delete(mapcb, &key);
+    CLOSE_SOCK(cmd->sock);
 }
-void ev_send(ev_ctx *ctx, SOCKET sock, void *data, size_t len, char copy, void *ud)
+void ev_close(ev_ctx *ctx, SOCKET sock)
+{
+    if (INVALID_SOCK == sock)
+    {
+        return;
+    }
+    cmd_ctx cmd;
+    cmd.cmd = CMD_CLOSE;
+    cmd.sock = sock;
+    _send_cmd(_get_watcher(ctx, sock), &cmd);
+}
+static void _on_cmd_close(watcher_ctx *watcher, struct hashmap *mapcb, cmd_ctx *cmd)
+{
+    sock_sendcb key;
+    key.sock = cmd->sock;
+    if (NULL != hashmap_delete(mapcb, &key))
+    {
+        _post_disconn(watcher->sender.ev, cmd->sock);
+    }
+    else
+    {
+        CLOSE_SOCK(cmd->sock);
+    }
+}
+void ev_send(ev_ctx *ctx, SOCKET sock, void *data, size_t len, char copy)
 {
     if (INVALID_SOCK == sock)
     {
@@ -143,8 +175,7 @@ void ev_send(ev_ctx *ctx, SOCKET sock, void *data, size_t len, char copy, void *
     {
         cmd.data = data;
     }
-    cmd.ud = ud;
-    _iocp_cmd(_iocp_watcher(ctx, sock), &cmd);
+    _send_cmd(_get_watcher(ctx, sock), &cmd);
 }
 static void _on_cmd_send(watcher_ctx *watcher, struct hashmap *mapcb, cmd_ctx *cmd)
 {
@@ -156,30 +187,30 @@ static void _on_cmd_send(watcher_ctx *watcher, struct hashmap *mapcb, cmd_ctx *c
         FREE(cmd->data);
         return;
     }
-    if (ERR_OK != _iocp_send(watcher->sender.ev, cb->sock, cb->cb, cmd->data, cmd->len, cmd->ud))
+    if (ERR_OK != _post_send(watcher->sender.ev, cb->sock, cb->cb, cmd->data, cmd->len, cb->ud))
     {
         if (NULL != cb->cb)
         {
-            cb->cb(cb->sock, cmd->data, cmd->len, cmd->ud, ERR_FAILED);
+            cb->cb(watcher->sender.ev, cb->sock, cmd->data, cmd->len, cmd->ud, ERR_FAILED);
         }
         FREE(cmd->data);
     }
 }
-static void _onsender_cmd(watcher_ctx *watcher, struct hashmap *mapcb, cmd_ctx *cmd)
+static void _on_cmd(watcher_ctx *watcher, struct hashmap *mapcb, cmd_ctx *cmd)
 {
     switch (cmd->cmd)
     {
     case CMD_ADD:
-        PRINTD("%s", "CMD_ADD");
         _on_cmd_add(mapcb, cmd);
         break;
     case CMD_REMOVE:
-        PRINTD("%s", "CMD_REMOVE");
         _on_cmd_remove(mapcb, cmd);
         break;
     case CMD_SEND:
-        PRINTD("%s", "CMD_SEND");
         _on_cmd_send(watcher, mapcb, cmd);
+        break;
+    case CMD_CLOSE:
+        _on_cmd_close(watcher, mapcb, cmd);
         break;
     default:
         break;
@@ -212,10 +243,9 @@ static void _loop_sender(void *arg)
         {
         case CMD_STOP:
             stop = 1;
-            PRINTD("%s", "stop sender loop.");
             break;
         default:
-            _onsender_cmd(watcher, mapcb, &cmd);
+            _on_cmd(watcher, mapcb, &cmd);
             break;
         }
     }
@@ -233,17 +263,20 @@ static void _start_sender(ev_ctx *ctx, watcher_ctx *watcher)
     thread_creat(&sender->thsend, _loop_sender, watcher);
     thread_wait(&sender->thsend);
 }
-static void _init_exfunc(ev_ctx *ctx)
+static void _init_exfuncs(ev_ctx *ctx)
 {
-    SOCKET sock = WSASocket(AF_INET, SOCK_STREAM, 0, NULL, 0, 0);
-    ASSERTAB(INVALID_SOCK != sock, ERRORSTR(ERRNO));
-    GUID accept_uid = WSAID_ACCEPTEX;
-    GUID connect_uid = WSAID_CONNECTEX;
-    GUID disconnect_uid = WSAID_DISCONNECTEX;
-    ctx->acceptex = _exfunc(sock, &accept_uid);
-    ctx->connectex = _exfunc(sock, &connect_uid);
-    ctx->disconnectex = _exfunc(sock, &disconnect_uid);
-    CLOSE_SOCK(sock);
+    if (ATOMIC_CAS(&_init_once, 0, 1))
+    {
+        SOCKET sock = WSASocket(AF_INET, SOCK_STREAM, 0, NULL, 0, 0);
+        ASSERTAB(INVALID_SOCK != sock, ERRORSTR(ERRNO));
+        GUID accept_uid = WSAID_ACCEPTEX;
+        GUID connect_uid = WSAID_CONNECTEX;
+        GUID disconnect_uid = WSAID_DISCONNECTEX;
+        _exfuncs.acceptex = _exfunc(sock, &accept_uid);
+        _exfuncs.connectex = _exfunc(sock, &connect_uid);
+        _exfuncs.disconnectex = _exfunc(sock, &disconnect_uid);
+        CLOSE_SOCK(sock);
+    }
 }
 void ev_init(ev_ctx *ctx, uint32_t nthreads)
 {
@@ -252,14 +285,15 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads)
     ctx->iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, ctx->nthreads);
     ASSERTAB(NULL != ctx->iocp, ERRORSTR(ERRNO));
     ctx->nthreads *= 2;
+    mutex_init(&ctx->mulsn);
     qu_lsn_init(&ctx->qulsn, 8);
     MALLOC(ctx->watcher, sizeof(watcher_ctx) * ctx->nthreads);
-    _init_exfunc(ctx);
+    _init_exfuncs(ctx);
     for (uint32_t i = 0; i < ctx->nthreads; i++)
     {
         watcher_ctx *watcher = &ctx->watcher[i];
         thread_init(&watcher->thread);
-        thread_creat(&watcher->thread, _loop_event, ctx);
+        thread_creat(&watcher->thread, _loop_iocp, ctx);
         thread_wait(&watcher->thread);
         _start_sender(ctx, watcher);
     }
@@ -281,7 +315,7 @@ void ev_free(ev_ctx *ctx)
         {
             LOG_ERROR("%s", ERRORSTR(ERRNO));
         }
-        _iocp_cmd(&ctx->watcher[i], &stop);
+        _send_cmd(&ctx->watcher[i], &stop);
     }
     for (i = 0; i < ctx->nthreads; i++)
     {
@@ -295,9 +329,10 @@ void ev_free(ev_ctx *ctx)
     struct listener_ctx **lsn;
     while (NULL != (lsn = qu_lsn_pop(&ctx->qulsn)))
     {
-        _iocp_freelsn(*lsn);
+        _freelsn(*lsn);
     }
     qu_lsn_free(&ctx->qulsn);
+    mutex_free(&ctx->mulsn);
     sock_clean();
 }
 

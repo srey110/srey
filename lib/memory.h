@@ -5,7 +5,7 @@
 #include "macro_unix.h"
 #include "errcode.h"
 
-#define PRINT_DEBUG
+#define MEMORY_CHECK
 
 void *_malloc(size_t size);
 void *_calloc(size_t count, size_t size);

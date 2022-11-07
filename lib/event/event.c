@@ -1,6 +1,6 @@
 #include "event/event.h"
 
-SOCKET ev_sock(int32_t family)
+SOCKET _ev_sock(int32_t family)
 {
 #ifdef OS_WIN
     return WSASocket(family, SOCK_STREAM, IPPROTO_TCP, NULL, 0, WSA_FLAG_OVERLAPPED);
@@ -12,9 +12,9 @@ SOCKET ev_sock(int32_t family)
     #endif
 #endif
 }
-SOCKET ev_listen(netaddr_ctx *addr)
+SOCKET _ev_listen(netaddr_ctx *addr)
 {
-    SOCKET sock = ev_sock(netaddr_family(addr));
+    SOCKET sock = _ev_sock(netaddr_family(addr));
     if (INVALID_SOCK == sock)
     {
         LOG_ERROR("%s", ERRORSTR(ERRNO));

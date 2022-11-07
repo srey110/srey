@@ -10,6 +10,7 @@
 #define SOCKKPA_DELAY 60
 #define SOCKKPA_INTVL 1
 #define INVALID_FD    -1
+//#define PRINT_DEBUG
 
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))
@@ -20,12 +21,17 @@
 #define CONCAT3(a, b, c) a b c
 #define __FILENAME__(file) (strrchr(file, PATH_SEPARATOR) ? strrchr(file, PATH_SEPARATOR) + 1 : file)
 #define PRINT(fmt, ...) printf(CONCAT3("[%s %s %d] ", fmt, "\n"),  __FILENAME__(__FILE__), __FUNCTION__, __LINE__, ##__VA_ARGS__)
+
 #ifdef PRINT_DEBUG
-#define MEMCHECK()  atexit(_memcheck)
 #define PRINTD(fmt, ...) PRINT(fmt, ##__VA_ARGS__)
 #else
-#define MEMCHECK()
 #define PRINTD(fmt, ...)
+#endif
+
+#ifdef MEMORY_CHECK
+#define MEMCHECK()  atexit(_memcheck)
+#else
+#define MEMCHECK()
 #endif
 
 #ifndef offsetof

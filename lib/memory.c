@@ -1,13 +1,13 @@
 #include "memory.h"
 
-#ifdef PRINT_DEBUG
+#ifdef MEMORY_CHECK
 static atomic64_t n_alloc = 0;
 static atomic64_t n_free = 0;
 #endif
 
 static uint64_t _nalloc()
 {
-#ifdef PRINT_DEBUG
+#ifdef MEMORY_CHECK
     return n_alloc;
 #else
     return 0;
@@ -15,7 +15,7 @@ static uint64_t _nalloc()
 }
 static uint64_t _nfree()
 {
-#ifdef PRINT_DEBUG
+#ifdef MEMORY_CHECK
     return n_free;
 #else
     return 0;
@@ -23,7 +23,7 @@ static uint64_t _nfree()
 }
 void *_malloc(size_t size)
 {
-#ifdef PRINT_DEBUG
+#ifdef MEMORY_CHECK
     ATOMIC64_ADD(&n_alloc, 1);
 #endif
     void *ptr = malloc(size);
@@ -36,7 +36,7 @@ void *_malloc(size_t size)
 }
 void *_calloc(size_t count, size_t size)
 {
-#ifdef PRINT_DEBUG
+#ifdef MEMORY_CHECK
     ATOMIC64_ADD(&n_alloc, 1);
 #endif
     void *ptr = calloc(count, size);
@@ -49,7 +49,7 @@ void *_calloc(size_t count, size_t size)
 }
 void *_realloc(void* oldptr, size_t size)
 {
-#ifdef PRINT_DEBUG
+#ifdef MEMORY_CHECK
     ATOMIC64_ADD(&n_alloc, 1);
     ATOMIC64_ADD(&n_free, 1);
 #endif
@@ -63,14 +63,14 @@ void *_realloc(void* oldptr, size_t size)
 }
 void _free(void* ptr)
 {
-#ifdef PRINT_DEBUG
+#ifdef MEMORY_CHECK
     ATOMIC64_ADD(&n_free, 1);
 #endif
     free(ptr);
 }
 void _memcheck(void)
 {
-#ifdef PRINT_DEBUG
+#ifdef MEMORY_CHECK
     printf("Memory check => alloc:%"PRIu64" free:%"PRIu64"\n", _nalloc(), _nfree());
 #endif
 }

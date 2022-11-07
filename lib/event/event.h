@@ -1,13 +1,16 @@
 #ifndef EVENT_H_
 #define EVENT_H_
 
-#include "thread.h"
 #include "buffer.h"
 #include "netaddr.h"
 #include "netutils.h"
 #include "loger.h"
 #include "utils.h"
 #include "queue.h"
+
+#define MAX_RECV_IOV_SIZE       ONEK  * 2
+#define MAX_RECV_IOV_COUNT      4
+#define MAX_ACCEPTEX_CNT        128
 
 typedef struct cmd_ctx
 {
@@ -24,29 +27,29 @@ typedef struct ev_ctx
     uint32_t nthreads;
 #ifdef EV_IOCP
     HANDLE iocp;
-    BOOL(WINAPI *acceptex)(SOCKET, SOCKET, PVOID, DWORD, DWORD, DWORD, LPDWORD, LPOVERLAPPED);
-    BOOL(WINAPI *connectex)(SOCKET, const struct sockaddr *, int, PVOID, DWORD, LPDWORD, LPOVERLAPPED);
-    BOOL(WINAPI *disconnectex)(SOCKET, LPOVERLAPPED, DWORD, DWORD);
 #endif
+    mutex_ctx mulsn;
     qu_lsn qulsn;
     struct watcher_ctx *watcher;
 }ev_ctx;
 
-//data 发送的数据  len 数据长度  ERR_FAILED失败
-typedef void(*accept_cb)(SOCKET sock, void *ud);
-typedef void(*close_cb)(SOCKET sock, void *ud);
-typedef void(*recv_cb)(SOCKET sock, buffer_ctx *buf, void *ud);
-typedef void(*send_cb)(SOCKET sock, void *data, size_t len, void *ud, int32_t rest);
+typedef void(*accept_cb)(ev_ctx *ctx, SOCKET sock, void *ud);
+typedef void(*close_cb)(ev_ctx *ctx, SOCKET sock, void *ud);
+typedef void(*recv_cb)(ev_ctx *ctx, SOCKET sock, buffer_ctx *buf, void *ud);
+typedef void(*connect_cb)(ev_ctx *ctx, int32_t err, SOCKET sock, void *ud);
+typedef void(*send_cb)(ev_ctx *ctx, SOCKET sock, void *data, size_t len, void *ud, int32_t err);
 
 void ev_init(ev_ctx *ctx, uint32_t nthreads);
 void ev_free(ev_ctx *ctx);
-int32_t ev_loop(ev_ctx *ctx, SOCKET sock, recv_cb r_cb, close_cb c_cb, send_cb s_cb, void *ud);
-int32_t ev_listener(ev_ctx *ctx, const char *host, const uint16_t port, accept_cb cb, void *ud);
 
-void ev_send(ev_ctx *ctx, SOCKET sock, void *data, size_t len, char copy, void *ud);
+int32_t ev_listener(ev_ctx *ctx, const char *host, const uint16_t port, accept_cb cb, void *ud);
+int32_t ev_connecter(ev_ctx *ctx, const char *host, const uint16_t port, connect_cb conn_cb, void *ud);
+int32_t ev_loop(ev_ctx *ctx, SOCKET sock, recv_cb r_cb, close_cb c_cb, send_cb s_cb, void *ud);
+
+void ev_send(ev_ctx *ctx, SOCKET sock, void *data, size_t len, char copy);
 void ev_close(ev_ctx *ctx, SOCKET sock);
 
-SOCKET ev_sock(int32_t family);
-SOCKET ev_listen(netaddr_ctx *addr);
+SOCKET _ev_sock(int32_t family);
+SOCKET _ev_listen(netaddr_ctx *addr);
 
 #endif //EVENT_H_
