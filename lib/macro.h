@@ -12,6 +12,8 @@
 #define INVALID_FD    -1
 //#define PRINT_DEBUG
 
+#define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
+
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))
 //s向上 取n(n 为2的倍数)的整数倍

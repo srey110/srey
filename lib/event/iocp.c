@@ -3,7 +3,13 @@
 
 #ifdef EV_IOCP
 
-#define NOTIFI_EXIT_KEY  ((ULONG_PTR)-1)
+#if (_WIN32_WINNT >= 0x0600)
+#define IOCP_NEVENT
+#define CNT_NEVENT                256
+#endif
+#define IOCP_WAIT_TIMEOUT         100
+#define IOCP_WAIT_MAXTIMEOUT      1000
+
 exfuncs_ctx _exfuncs;
 static volatile atomic_t _init_once = 0;
 
@@ -39,42 +45,6 @@ static void *_exfunc(SOCKET fd, GUID  *guid)
     ASSERTAB(rtn != SOCKET_ERROR, ERRORSTR(ERRNO));
     return func;
 }
-static inline void _wait_event(ev_ctx *ctx, int32_t *stop)
-{
-    DWORD bytes;
-    ULONG_PTR key;
-    OVERLAPPED *overlap;
-    BOOL rtn = GetQueuedCompletionStatus(ctx->iocp,
-        &bytes,
-        &key,
-        &overlap,
-        INFINITE);
-    if (NOTIFI_EXIT_KEY == key)
-    {
-        *stop = 1;
-        return;
-    }
-    if (NULL == overlap)
-    {
-        return;
-    }
-    int32_t err = ERR_OK;
-    if (!rtn)
-    {
-        err = ERRNO;
-    }
-    sock_ctx *sock = UPCAST(overlap, sock_ctx, overlapped);
-    sock->ev_cb(ctx, err, bytes, sock);
-}
-static void _loop_iocp(void *arg)
-{
-    int32_t stop = 0;
-    ev_ctx *ctx = (ev_ctx *)arg;
-    while (0 == stop)
-    {
-        _wait_event(ctx, &stop);
-    }
-}
 watcher_ctx *_get_watcher(ev_ctx *ctx, SOCKET fd)
 {
     return (1 == ctx->nthreads) ? &(ctx->watcher[0]) :
@@ -90,7 +60,6 @@ void _send_cmd(watcher_ctx *watcher, cmd_ctx *cmd)
     }
     mutex_unlock(&watcher->sender.mutex);
 }
-
 void _cmd_add(ev_ctx *ctx, SOCKET sock, send_cb cb, void *ud)
 {
     if (INVALID_SOCK == sock)
@@ -135,7 +104,8 @@ static inline void _on_cmd_remove(struct hashmap *mapcb, cmd_ctx *cmd)
 }
 void ev_close(ev_ctx *ctx, SOCKET sock)
 {
-    if (INVALID_SOCK == sock)
+    if (INVALID_SOCK == sock
+        || 0 != ctx->stop)
     {
         return;
     }
@@ -171,7 +141,7 @@ static inline void _on_cmd_send(watcher_ctx *watcher, struct hashmap *mapcb, cmd
     {
         if (NULL != cb->cb)
         {
-            cb->cb(watcher->sender.ev, cb->sock, 0, cmd->ud, ERR_FAILED);
+            cb->cb(watcher->sender.ev, cb->sock, 0, cmd->ud);
         }
         FREE(cmd->data);
     }
@@ -210,19 +180,17 @@ static inline void _wait_cmd(sender_ctx *sender, cmd_ctx *cmd)
 }
 static void _loop_sender(void *arg)
 {
-    char stop = 0;
     cmd_ctx cmd;
     watcher_ctx *watcher = (watcher_ctx *)arg;
     struct hashmap *mapcb = hashmap_new_with_allocator(_malloc, _realloc, _free, 
         sizeof(sock_sendcb), ONEK * 4, 0, 0, 
         _mapcb_hash, _mapcb_compare, NULL, NULL);
-    while (0 == stop)
+    while (0 == watcher->sender.ev->stop)
     {
         _wait_cmd(&watcher->sender, &cmd);
         switch (cmd.cmd)
         {
         case CMD_STOP:
-            stop = 1;
             break;
         default:
             _on_cmd(watcher, mapcb, &cmd);
@@ -258,9 +226,99 @@ static void _init_exfuncs(ev_ctx *ctx)
         CLOSE_SOCK(sock);
     }
 }
+static inline void _add_timeout(int32_t *timeout)
+{
+    if (*timeout >= IOCP_WAIT_MAXTIMEOUT)
+    {
+        return;
+    }
+    *timeout += IOCP_WAIT_TIMEOUT;
+    if (*timeout > IOCP_WAIT_MAXTIMEOUT)
+    {
+        *timeout = IOCP_WAIT_MAXTIMEOUT;
+    }
+}
+#ifdef IOCP_NEVENT
+static inline void _loop_event(void *arg)
+{
+    ev_ctx *ctx = (ev_ctx *)arg;
+    BOOL rtn;
+    int32_t err;
+    ULONG i;
+    ULONG count;    
+    sock_ctx *sock;
+    LPOVERLAPPED overlap;
+    DWORD timeout = IOCP_WAIT_TIMEOUT;
+    OVERLAPPED_ENTRY overlappeds[CNT_NEVENT];
+    while (0 == ctx->stop)
+    {
+        rtn = GetQueuedCompletionStatusEx(ctx->iocp,
+            overlappeds,
+            CNT_NEVENT,
+            &count,
+            timeout,
+            FALSE);
+        if (rtn)
+        {
+            for (i = 0; i < count; i++)
+            {
+                overlap = overlappeds[i].lpOverlapped;
+                if (NULL == overlap)
+                {
+                    continue;
+                }
+                sock = UPCAST(overlap, sock_ctx, overlapped);
+                sock->ev_cb(ctx, overlappeds[i].dwNumberOfBytesTransferred, sock);
+            }
+            timeout = IOCP_WAIT_TIMEOUT;
+        }
+        else if (WAIT_TIMEOUT != (err = ERRNO))
+        {
+            LOG_ERROR("%s", ERRORSTR(err));
+        }
+        else if (timeout > 0)
+        {
+            _add_timeout(&timeout);
+        }
+    }
+}
+#else
+static inline void _loop_event(void *arg)
+{
+    ev_ctx *ctx = (ev_ctx *)arg;
+    DWORD bytes;
+    int32_t err;
+    ULONG_PTR key;
+    OVERLAPPED *overlap;
+    DWORD timeout = IOCP_WAIT_TIMEOUT;
+    while (0 == ctx->stop)
+    {
+        GetQueuedCompletionStatus(ctx->iocp,
+            &bytes,
+            &key,
+            &overlap,
+            timeout);
+        if (NULL != overlap)
+        {
+            sock_ctx *sock = UPCAST(overlap, sock_ctx, overlapped);
+            sock->ev_cb(ctx, bytes, sock);
+            timeout = IOCP_WAIT_TIMEOUT;
+        }
+        else if (WAIT_TIMEOUT != (err = ERRNO))
+        {
+            LOG_ERROR("%s", ERRORSTR(err));
+        }
+        else if(timeout > 0)
+        {
+            _add_timeout(&timeout);
+        }
+    }
+}
+#endif
 void ev_init(ev_ctx *ctx, uint32_t nthreads)
 {
     sock_init();
+    ctx->stop = 0;
     ctx->nthreads = (0 == nthreads ? 1 : nthreads);
     ctx->iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, ctx->nthreads);
     ASSERTAB(NULL != ctx->iocp, ERRORSTR(ERRNO));
@@ -273,7 +331,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads)
     {
         watcher_ctx *watcher = &ctx->watcher[i];
         thread_init(&watcher->thread);
-        thread_creat(&watcher->thread, _loop_iocp, ctx);
+        thread_creat(&watcher->thread, _loop_event, ctx);
         thread_wait(&watcher->thread);
         _start_sender(ctx, watcher);
     }
@@ -289,9 +347,10 @@ void ev_free(ev_ctx *ctx)
     uint32_t i;
     cmd_ctx stop;
     stop.cmd = CMD_STOP;
+    ctx->stop = 1;
     for (i = 0; i < ctx->nthreads; i++)
     {
-        if (!PostQueuedCompletionStatus(ctx->iocp, 0, NOTIFI_EXIT_KEY, NULL))
+        if (!PostQueuedCompletionStatus(ctx->iocp, 0, ((ULONG_PTR)-1), NULL))
         {
             LOG_ERROR("%s", ERRORSTR(ERRNO));
         }
@@ -303,7 +362,7 @@ void ev_free(ev_ctx *ctx)
         thread_join(&ctx->watcher[i].thread);        
         thread_join(&sender->thsend);
         _free_sender(sender);
-    }    
+    }
     FREE(ctx->watcher);
     struct listener_ctx **lsn;
     while (NULL != (lsn = qu_lsn_pop(&ctx->qulsn)))

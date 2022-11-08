@@ -32,11 +32,11 @@ static void test_connclose_cb(ev_ctx *ctx, SOCKET sock, void *ud)
 static void test_recv_cb(ev_ctx *ctx, SOCKET sock, buffer_ctx *buf, void *ud)
 {
     //PRINT("test_recv_cb: sock %d ", (int32_t)sock);
-    if (randrange(0, 100) <= 1)
+    /*if (randrange(0, 100) <= 1)
     {
         ev_close(ctx, sock);
         return;
-    }
+    }*/
     size_t len = buffer_size(buf);
     char *pk;
     MALLOC(pk, len);
@@ -44,7 +44,7 @@ static void test_recv_cb(ev_ctx *ctx, SOCKET sock, buffer_ctx *buf, void *ud)
     ev_send(ctx, sock, pk, len);
     FREE(pk);
 }
-static void test_send_cb(ev_ctx *ctx, SOCKET sock, size_t len, void *ud, int32_t result)
+static void test_send_cb(ev_ctx *ctx, SOCKET sock, size_t len, void *ud)
 {
     //PRINT("test_send_cb: sock %d  len %d err %d", (int32_t)sock, (int32_t)len, result);
 }
@@ -65,12 +65,17 @@ static void test_conn_recv_cb(ev_ctx *ctx, SOCKET sock, buffer_ctx *buf, void *u
     ASSERTAB(tmp == index, "index error.");
     buffer_drain(buf, pklen);
 }
-static void test_conn_cb(ev_ctx *ctx, int32_t err, SOCKET sock, void *ud)
+static void test_conn_cb(ev_ctx *ctx, SOCKET sock, void *ud)
 {
-    if (ERR_OK == err)
+    if (INVALID_SOCK != sock)
     {
+        PRINT("%s", "connect ok.");
         connsock = sock;
         ev_loop(ctx, sock, test_conn_recv_cb, test_connclose_cb, test_send_cb, ud);
+    }
+    else
+    {
+        PRINT("%s", "connect error.");
     }
 }
 static void test_acpt_cb(ev_ctx *ctx, SOCKET sock, void *ud)

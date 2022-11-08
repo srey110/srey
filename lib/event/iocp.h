@@ -11,7 +11,7 @@
 #define CMD_SEND         0x04
 #define CMD_CLOSE        0x05
 
-typedef void(*event_cb)(ev_ctx *ctx, int32_t err, DWORD bytes, struct sock_ctx *sock);
+typedef void(*event_cb)(ev_ctx *ctx, DWORD bytes, struct sock_ctx *sock);
 typedef struct sock_ctx
 {
     OVERLAPPED overlapped;

@@ -24,6 +24,7 @@ QUEUE_DECL(cmd_ctx, qu_cmd);
 QUEUE_DECL(struct listener_ctx *, qu_lsn);
 typedef struct ev_ctx
 {
+    volatile int32_t stop;
     uint32_t nthreads;
 #ifdef EV_IOCP
     HANDLE iocp;
@@ -36,8 +37,8 @@ typedef struct ev_ctx
 typedef void(*accept_cb)(ev_ctx *ctx, SOCKET sock, void *ud);
 typedef void(*close_cb)(ev_ctx *ctx, SOCKET sock, void *ud);
 typedef void(*recv_cb)(ev_ctx *ctx, SOCKET sock, buffer_ctx *buf, void *ud);
-typedef void(*connect_cb)(ev_ctx *ctx, int32_t err, SOCKET sock, void *ud);
-typedef void(*send_cb)(ev_ctx *ctx, SOCKET sock, size_t len, void *ud, int32_t err);
+typedef void(*connect_cb)(ev_ctx *ctx, SOCKET sock, void *ud);//sock INVALID_SOCK Ê§°Ü
+typedef void(*send_cb)(ev_ctx *ctx, SOCKET sock, size_t len, void *ud);
 
 void ev_init(ev_ctx *ctx, uint32_t nthreads);
 void ev_free(ev_ctx *ctx);

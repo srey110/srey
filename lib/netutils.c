@@ -44,11 +44,22 @@ int32_t sock_nread(SOCKET fd)
     return nread;
 #endif
 }
+int32_t sock_error(SOCKET fd)
+{
+    int32_t err;
+    int32_t len = (int32_t)sizeof(err);
+    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, (char *)&err, &len) < ERR_OK)
+    {
+        PRINT("getsockopt(%d, ...) failed. %s", (int32_t)fd, ERRORSTR(ERRNO));
+        return ERR_FAILED;
+    }
+    return err;
+}
 int32_t sock_type(SOCKET fd)
 {
     int32_t stype = 0;
     int32_t len = (int32_t)sizeof(stype);
-    if (getsockopt(fd, SOL_SOCKET, SO_TYPE, (char *)&stype, (socklen_t*)&len) < ERR_OK)
+    if (getsockopt(fd, SOL_SOCKET, SO_TYPE, (char *)&stype, &len) < ERR_OK)
     {
         PRINT("getsockopt(%d, ...) failed. %s", (int32_t)fd, ERRORSTR(ERRNO));
         return ERR_FAILED;
@@ -70,7 +81,7 @@ int32_t sock_family(SOCKET fd)
 #ifdef SO_DOMAIN
     int32_t family = 0;
     int32_t lens = (int32_t)sizeof(family);
-    if (getsockopt(fd, SOL_SOCKET, SO_DOMAIN, &family, (socklen_t*)&lens) < 0)
+    if (getsockopt(fd, SOL_SOCKET, SO_DOMAIN, &family, &lens) < 0)
     {
         PRINT("getsockopt(%d, SOL_SOCKET, SO_DOMAIN, ...) failed. %s", (int32_t)fd, ERRORSTR(ERRNO));
         return ERR_FAILED;
@@ -274,7 +285,7 @@ int32_t sock_pair(SOCKET acSock[2])
         return ERR_FAILED;
     }
     struct sockaddr_in listen_addr;
-    socklen_t addrlen = (socklen_t)sizeof(listen_addr);
+    int32_t addrlen = (int32_t)sizeof(listen_addr);
     SOCKET fdacp = accept(fdlsn, (struct sockaddr *) &listen_addr, &addrlen);
     if (INVALID_SOCK == fdacp)
     {
