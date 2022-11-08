@@ -11,12 +11,15 @@
 #define CMD_SEND         0x04
 #define CMD_CLOSE        0x05
 
+typedef void(*event_cb)(ev_ctx *ctx, int32_t err, DWORD bytes, struct sock_ctx *sock);
 typedef struct sock_ctx
 {
     OVERLAPPED overlapped;
-    int32_t flags;//±ê¼Ç    
     SOCKET sock;
-    void(*ev_cb)(ev_ctx *ctx, int32_t err, DWORD bytes, struct sock_ctx *sock);
+    HANDLE wait_handle;
+    HANDLE ev_handle;
+    ev_ctx *ev;
+    event_cb ev_cb;
 }sock_ctx;
 typedef struct sender_ctx
 {
@@ -41,6 +44,8 @@ typedef struct exfuncs_ctx
 extern exfuncs_ctx _exfuncs;
 
 void _freelsn(struct listener_ctx *lsn);
+watcher_ctx *_get_watcher(ev_ctx *ctx, SOCKET fd);
+void _send_cmd(watcher_ctx *watcher, cmd_ctx *cmd);
 void _cmd_add(ev_ctx *ctx, SOCKET sock, send_cb cb, void *ud);
 void _cmd_remove(ev_ctx *ctx, SOCKET sock);
 int32_t _post_send(ev_ctx *ctx, SOCKET sock, send_cb cb, void *data, size_t len, void *ud);

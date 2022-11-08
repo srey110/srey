@@ -202,7 +202,7 @@ void sock_kpa(SOCKET fd, const int32_t delay, const int32_t intvl)
 }
 void sock_linger(SOCKET fd)
 {
-    struct linger lg = { 1, 0 };
+    struct linger lg = { 1, 2 };
     if (setsockopt(fd, SOL_SOCKET, SO_LINGER, (char *)&lg, (int32_t)sizeof(lg)) < ERR_OK)
     {
         PRINT("setsockopt(%d, SOL_SOCKET, SO_LINGER, 1 0) failed. %s",

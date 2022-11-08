@@ -20,9 +20,9 @@ SOCKET _ev_listen(netaddr_ctx *addr)
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         return INVALID_SOCK;
     }
-    sock_nbio(sock);
     sock_raddr(sock);
     sock_rport(sock);
+    sock_nbio(sock);
     if (ERR_OK != bind(sock, netaddr_addr(addr), netaddr_size(addr)))
     {
         LOG_ERROR("%s", ERRORSTR(ERRNO));

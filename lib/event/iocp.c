@@ -14,12 +14,12 @@ typedef struct sock_sendcb
     void *ud;
 }sock_sendcb;
 
-static uint64_t _mapcb_hash(const void *item, uint64_t seed0, uint64_t seed1)
+static inline uint64_t _mapcb_hash(const void *item, uint64_t seed0, uint64_t seed1)
 {
     SOCKET sock = ((const sock_sendcb *)item)->sock;
     return hash((const char *)&sock, sizeof(sock));
 }
-static int _mapcb_compare(const void *a, const void *b, void *udata)
+static inline int _mapcb_compare(const void *a, const void *b, void *udata)
 {
     return (int)(((const sock_sendcb *)a)->sock - ((const sock_sendcb *)b)->sock);
 }
@@ -39,7 +39,7 @@ static void *_exfunc(SOCKET fd, GUID  *guid)
     ASSERTAB(rtn != SOCKET_ERROR, ERRORSTR(ERRNO));
     return func;
 }
-static void _wait_event(ev_ctx *ctx, int32_t *stop)
+static inline void _wait_event(ev_ctx *ctx, int32_t *stop)
 {
     DWORD bytes;
     ULONG_PTR key;
@@ -75,7 +75,12 @@ static void _loop_iocp(void *arg)
         _wait_event(ctx, &stop);
     }
 }
-static void _send_cmd(watcher_ctx *watcher, cmd_ctx *cmd)
+watcher_ctx *_get_watcher(ev_ctx *ctx, SOCKET fd)
+{
+    return (1 == ctx->nthreads) ? &(ctx->watcher[0]) :
+        (&ctx->watcher[hash((const char *)&fd, sizeof(fd)) % ctx->nthreads]);
+}
+void _send_cmd(watcher_ctx *watcher, cmd_ctx *cmd)
 {
     mutex_lock(&watcher->sender.mutex);
     qu_cmd_push(&watcher->sender.qucmd, cmd);
@@ -85,11 +90,7 @@ static void _send_cmd(watcher_ctx *watcher, cmd_ctx *cmd)
     }
     mutex_unlock(&watcher->sender.mutex);
 }
-static inline watcher_ctx *_get_watcher(ev_ctx *ctx, SOCKET fd)
-{
-    return (1 == ctx->nthreads) ? &(ctx->watcher[0]) :
-        (&ctx->watcher[hash((const char *)&fd, sizeof(fd)) % ctx->nthreads]);
-}
+
 void _cmd_add(ev_ctx *ctx, SOCKET sock, send_cb cb, void *ud)
 {
     if (INVALID_SOCK == sock)
@@ -103,7 +104,7 @@ void _cmd_add(ev_ctx *ctx, SOCKET sock, send_cb cb, void *ud)
     cmd.ud = ud;
     _send_cmd(_get_watcher(ctx, sock), &cmd);
 }
-static void _on_cmd_add(struct hashmap *mapcb, cmd_ctx *cmd)
+static inline void _on_cmd_add(struct hashmap *mapcb, cmd_ctx *cmd)
 {
     sock_sendcb cb;
     cb.sock = cmd->sock;
@@ -125,7 +126,7 @@ void _cmd_remove(ev_ctx *ctx, SOCKET sock)
     cmd.sock = sock;
     _send_cmd(_get_watcher(ctx, sock), &cmd);
 }
-static void _on_cmd_remove(struct hashmap *mapcb, cmd_ctx *cmd)
+static inline void _on_cmd_remove(struct hashmap *mapcb, cmd_ctx *cmd)
 {
     sock_sendcb key;
     key.sock = cmd->sock;
@@ -143,7 +144,7 @@ void ev_close(ev_ctx *ctx, SOCKET sock)
     cmd.sock = sock;
     _send_cmd(_get_watcher(ctx, sock), &cmd);
 }
-static void _on_cmd_close(watcher_ctx *watcher, struct hashmap *mapcb, cmd_ctx *cmd)
+static inline void _on_cmd_close(watcher_ctx *watcher, struct hashmap *mapcb, cmd_ctx *cmd)
 {
     sock_sendcb key;
     key.sock = cmd->sock;
@@ -156,28 +157,7 @@ static void _on_cmd_close(watcher_ctx *watcher, struct hashmap *mapcb, cmd_ctx *
         CLOSE_SOCK(cmd->sock);
     }
 }
-void ev_send(ev_ctx *ctx, SOCKET sock, void *data, size_t len, char copy)
-{
-    if (INVALID_SOCK == sock)
-    {
-        return;
-    }
-    cmd_ctx cmd;
-    cmd.cmd = CMD_SEND;
-    cmd.sock = sock;
-    cmd.len = len;
-    if (copy)
-    {
-        MALLOC(cmd.data, len);
-        memcpy(cmd.data, data, len);
-    }
-    else
-    {
-        cmd.data = data;
-    }
-    _send_cmd(_get_watcher(ctx, sock), &cmd);
-}
-static void _on_cmd_send(watcher_ctx *watcher, struct hashmap *mapcb, cmd_ctx *cmd)
+static inline void _on_cmd_send(watcher_ctx *watcher, struct hashmap *mapcb, cmd_ctx *cmd)
 {
     sock_sendcb key;
     key.sock = cmd->sock;
@@ -191,12 +171,12 @@ static void _on_cmd_send(watcher_ctx *watcher, struct hashmap *mapcb, cmd_ctx *c
     {
         if (NULL != cb->cb)
         {
-            cb->cb(watcher->sender.ev, cb->sock, cmd->data, cmd->len, cmd->ud, ERR_FAILED);
+            cb->cb(watcher->sender.ev, cb->sock, 0, cmd->ud, ERR_FAILED);
         }
         FREE(cmd->data);
     }
 }
-static void _on_cmd(watcher_ctx *watcher, struct hashmap *mapcb, cmd_ctx *cmd)
+static inline void _on_cmd(watcher_ctx *watcher, struct hashmap *mapcb, cmd_ctx *cmd)
 {
     switch (cmd->cmd)
     {
@@ -216,7 +196,7 @@ static void _on_cmd(watcher_ctx *watcher, struct hashmap *mapcb, cmd_ctx *cmd)
         break;
     }
 }
-static void _wait_cmd(sender_ctx *sender, cmd_ctx *cmd)
+static inline void _wait_cmd(sender_ctx *sender, cmd_ctx *cmd)
 {
     mutex_lock(&sender->mutex);
     while(0 == qu_cmd_size(&sender->qucmd))
@@ -323,8 +303,7 @@ void ev_free(ev_ctx *ctx)
         thread_join(&ctx->watcher[i].thread);        
         thread_join(&sender->thsend);
         _free_sender(sender);
-    }
-    (void)CloseHandle(ctx->iocp);
+    }    
     FREE(ctx->watcher);
     struct listener_ctx **lsn;
     while (NULL != (lsn = qu_lsn_pop(&ctx->qulsn)))
@@ -333,6 +312,7 @@ void ev_free(ev_ctx *ctx)
     }
     qu_lsn_free(&ctx->qulsn);
     mutex_free(&ctx->mulsn);
+    (void)CloseHandle(ctx->iocp);
     sock_clean();
 }
 
