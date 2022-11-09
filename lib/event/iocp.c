@@ -3,9 +3,6 @@
 
 #ifdef EV_IOCP
 
-#if (_WIN32_WINNT >= 0x0600)
-#define IOCP_NEVENT
-#endif
 #define IOCP_WAIT_TIMEOUT         100
 #define IOCP_WAIT_MAXTIMEOUT      1000
 
@@ -225,7 +222,7 @@ static void _init_exfuncs(ev_ctx *ctx)
         CLOSE_SOCK(sock);
     }
 }
-#ifdef IOCP_NEVENT
+#if (_WIN32_WINNT >= 0x0600)
 static inline LPOVERLAPPED_ENTRY _resize_events(LPOVERLAPPED_ENTRY old, ULONG cnt)
 {
     FREE(old);
@@ -277,6 +274,7 @@ static void _loop_event(void *arg)
             LOG_ERROR("%s", ERRORSTR(err));
         }
     }
+    FREE(overlappeds);
 }
 #else
 static void _loop_event(void *arg)
