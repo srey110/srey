@@ -2,11 +2,13 @@
 
 #ifdef EV_IOCP
 
+#define MAX_ACCEPTEX_CNT    256
 #define NOTIFY_MODE_SEND    1
 #define NOTIFY_MODE_RECV    1
 #define NOTIFY_MODE_DISCONN 1
 #define NOTIFY_MODE_CONN    1
 #define NOTIFY_MODE_LISTEN  0
+static char zero_iov[] = "";
 
 typedef struct overlap_acpt_ctx
 {
@@ -36,19 +38,18 @@ typedef struct overlap_send_ctx
     DWORD bytes;
     void *ud;
     send_cb s_cb;
-    WSABUF wsabuf;
+    IOV_TYPE wsabuf;
 }overlap_send_ctx;
 typedef struct overlap_recv_ctx
 {
     sock_ctx overlap;
-    int32_t niov;
     DWORD bytes;
     DWORD flag;
     recv_cb r_cb;
     close_cb c_cb;
     void *ud;
     buffer_ctx buf;
-    IOV_TYPE wsabuf[MAX_RECV_IOV_COUNT];
+    IOV_TYPE wsabuf;
 }overlap_recv_ctx;
 
 static inline int32_t _join_iocp(ev_ctx *ctx, SOCKET sock)
@@ -90,8 +91,8 @@ static inline void _init_overlap(sock_ctx *sock, int32_t notifymode)
     ZERO(&sock->overlapped, sizeof(sock->overlapped));
     if (notifymode)
     {
-        sock->overlapped.hEvent = (HANDLE)((ULONG_PTR)sock->ev_handle | 1);
-    }    
+        sock->overlapped.hEvent = sock->ev_handle;
+    }
 }
 static void CALLBACK _post_completion(void* arg, BOOLEAN timeout)
 {
@@ -119,7 +120,7 @@ static inline int32_t _register_event(sock_ctx *sock)
     }
     return ERR_OK;
 }
-static inline void _unregister_waitevent(sock_ctx *sock)
+static inline void _unregister_event(sock_ctx *sock)
 {
     if (INVALID_HANDLE_VALUE != sock->wait_handle)
     {
@@ -129,10 +130,6 @@ static inline void _unregister_waitevent(sock_ctx *sock)
         }
         sock->wait_handle = INVALID_HANDLE_VALUE;
     }
-}
-static inline void _unregister_event(sock_ctx *sock)
-{
-    _unregister_waitevent(sock);
     if (NULL != sock->ev_handle)
     {
         if (!CloseHandle(sock->ev_handle))
@@ -148,61 +145,6 @@ static inline void _set_sockop(SOCKET sock)
     sock_nodelay(sock);
     sock_kpa(sock, SOCKKPA_DELAY, SOCKKPA_INTVL);
     sock_nbio(sock);
-}
-//send
-static void _on_send_cb(ev_ctx *ctx, DWORD bytes, sock_ctx *sock)
-{
-    overlap_send_ctx *ol = UPCAST(sock, overlap_send_ctx, overlap);
-    if (NULL != ol->s_cb)
-    {
-        ol->s_cb(ctx, ol->overlap.sock, (size_t)bytes, ol->ud);
-    }
-    _unregister_event(&ol->overlap);
-    FREE(ol);
-}
-int32_t _post_send(ev_ctx *ctx, SOCKET sock, send_cb cb, void *data, size_t len, void *ud)
-{
-    overlap_send_ctx *ol = (overlap_send_ctx *)data;
-    if (ERR_OK != _init_sockctx(&ol->overlap, sock, ctx, _on_send_cb, NOTIFY_MODE_SEND))
-    {
-        return ERR_FAILED;
-    }
-    ol->ud = ud;
-    ol->s_cb = cb;
-    ol->bytes = 0;
-    ol->wsabuf.buf = (char *)data + sizeof(overlap_send_ctx);
-    ol->wsabuf.len = (ULONG)len;
-    _init_overlap(&ol->overlap, NOTIFY_MODE_SEND);
-    if (ERR_OK != WSASend(sock, &ol->wsabuf, 1, &ol->bytes, 0, &ol->overlap.overlapped, NULL))
-    {
-        if (ERROR_IO_PENDING != ERRNO)
-        {
-            _unregister_event(&ol->overlap);
-            return ERR_FAILED;
-        }
-    }
-    if (ERR_OK != _register_event(&ol->overlap))
-    {
-        _unregister_event(&ol->overlap);
-        return ERR_FAILED;
-    }
-    return ERR_OK;
-}
-void ev_send(ev_ctx *ctx, SOCKET sock, void *data, size_t len)
-{
-    if (INVALID_SOCK == sock
-        || NULL == data
-        || 0 != ctx->stop)
-    {
-        return;
-    }
-    cmd_ctx cmd;
-    cmd.cmd = CMD_SEND;
-    cmd.sock = sock;
-    cmd.len = len;
-    MALLOC(cmd.data, (sizeof(overlap_send_ctx) + len));
-    memcpy(((char*)cmd.data + sizeof(overlap_send_ctx)), data, len);
-    _send_cmd(_get_watcher(ctx, sock), &cmd);
 }
 //listen
 static inline int32_t _post_accept(ev_ctx *ctx, overlap_acpt_ctx *acpol)
@@ -334,6 +276,61 @@ void _freelsn(listener_ctx *lsn)
     CLOSE_SOCK(lsn->sock);
     FREE(lsn);
 }
+//send
+static void _on_send_cb(ev_ctx *ctx, DWORD bytes, sock_ctx *sock)
+{
+    overlap_send_ctx *ol = UPCAST(sock, overlap_send_ctx, overlap);
+    if (NULL != ol->s_cb)
+    {
+        ol->s_cb(ctx, ol->overlap.sock, (size_t)bytes, ol->ud);
+    }
+    _unregister_event(&ol->overlap);
+    FREE(ol);
+}
+int32_t _post_send(ev_ctx *ctx, SOCKET sock, send_cb cb, void *data, size_t len, void *ud)
+{
+    overlap_send_ctx *ol = (overlap_send_ctx *)data;
+    if (ERR_OK != _init_sockctx(&ol->overlap, sock, ctx, _on_send_cb, NOTIFY_MODE_SEND))
+    {
+        return ERR_FAILED;
+    }
+    ol->ud = ud;
+    ol->s_cb = cb;
+    ol->bytes = 0;
+    ol->wsabuf.IOV_PTR_FIELD = (char *)data + sizeof(overlap_send_ctx);
+    ol->wsabuf.IOV_LEN_FIELD = (ULONG)len;
+    _init_overlap(&ol->overlap, NOTIFY_MODE_SEND);
+    if (ERR_OK != WSASend(sock, &ol->wsabuf, 1, &ol->bytes, 0, &ol->overlap.overlapped, NULL))
+    {
+        if (ERROR_IO_PENDING != ERRNO)
+        {
+            _unregister_event(&ol->overlap);
+            return ERR_FAILED;
+        }
+    }
+    if (ERR_OK != _register_event(&ol->overlap))
+    {
+        _unregister_event(&ol->overlap);
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+void ev_send(ev_ctx *ctx, SOCKET sock, void *data, size_t len)
+{
+    if (INVALID_SOCK == sock
+        || NULL == data
+        || 0 != ctx->stop)
+    {
+        return;
+    }
+    cmd_ctx cmd;
+    cmd.cmd = CMD_SEND;
+    cmd.sock = sock;
+    cmd.len = len;
+    MALLOC(cmd.data, (sizeof(overlap_send_ctx) + len));
+    memcpy(((char*)cmd.data + sizeof(overlap_send_ctx)), data, len);
+    _send_cmd(_get_watcher(ctx, sock), &cmd);
+}
 //recv
 static inline void _free_recvol(overlap_recv_ctx *ol)
 {
@@ -353,12 +350,10 @@ static inline void _on_close(ev_ctx *ctx, overlap_recv_ctx *ol)
 static inline int32_t _post_recv(overlap_recv_ctx *ol)
 {
     ol->flag = ol->bytes = 0;
-    ol->niov = buffer_write_iov_application(&ol->buf, MAX_RECV_IOV_SIZE, ol->wsabuf, MAX_RECV_IOV_COUNT);
-    _unregister_waitevent(&ol->overlap);
     _init_overlap(&ol->overlap, NOTIFY_MODE_RECV);
     if (ERR_OK != WSARecv(ol->overlap.sock,
-                          ol->wsabuf,
-                          (DWORD)ol->niov,
+                          &ol->wsabuf,
+                          1,
                           &ol->bytes,
                           &ol->flag,
                           &ol->overlap.overlapped,
@@ -374,17 +369,16 @@ static inline int32_t _post_recv(overlap_recv_ctx *ol)
 static void _on_recv_cb(ev_ctx *ctx, DWORD bytes, sock_ctx *sock)
 {
     overlap_recv_ctx *ol = UPCAST(sock, overlap_recv_ctx, overlap);
-    int32_t rtn = ERR_FAILED;
-    if (0 != bytes)
+    /*int32_t rtn = buffer_from_sock(&ol->buf, ol->overlap.sock, MAX_RECV_IOV_SIZE);
+    if (ERR_FAILED != rtn)
     {
-        buffer_write_iov_commit(&ol->buf, (size_t)bytes, ol->wsabuf, ol->niov);
-        ol->r_cb(ctx, ol->overlap.sock, &ol->buf, ol->ud);
+        ol->r_cb(ctx, ol->overlap.sock, &ol->buf, rtn, ol->ud);
         rtn = _post_recv(ol);
     }
     if (ERR_OK != rtn)
     {
         _on_close(ctx, ol);
-    }
+    }*/
 }
 int32_t ev_loop(ev_ctx *ctx, SOCKET sock, recv_cb r_cb, close_cb c_cb, send_cb s_cb, void *ud)
 {
@@ -403,6 +397,8 @@ int32_t ev_loop(ev_ctx *ctx, SOCKET sock, recv_cb r_cb, close_cb c_cb, send_cb s
     ol->r_cb = r_cb;
     ol->c_cb = c_cb;
     ol->ud = ud;
+    ol->wsabuf.IOV_PTR_FIELD = NULL;
+    ol->wsabuf.IOV_LEN_FIELD = 0;
     buffer_init(&ol->buf);
     _cmd_add(ctx, sock, s_cb, ud);
     if (ERR_OK != _post_recv(ol))

@@ -9,6 +9,7 @@ typedef struct bufnode_ctx
     size_t misalign;
     size_t off;
 }bufnode_ctx;
+#define MAX_EXPAND_NIOV    4
 #define MAX_COPY_IN_EXPAND 4096
 #define MAX_REALIGN_IN_EXPAND 2048
 #define FIRST_FORMAT_IN_EXPAND 64
@@ -20,6 +21,14 @@ typedef struct bufnode_ctx
     ch->used = 1;\
     index++
 
+static inline void _buffer_lock(buffer_ctx *ctx)
+{
+    mutex_lock(&ctx->mutex);
+}
+static inline void _buffer_unlock(buffer_ctx *ctx)
+{
+    mutex_unlock(&ctx->mutex);
+}
 //新建一节点
 static bufnode_ctx *_node_new(const size_t size)
 {
@@ -88,20 +97,20 @@ static bufnode_ctx **_free_trailing_empty_node(buffer_ctx *ctx)
 //插入,会清理空节点
 static void _node_insert(buffer_ctx *ctx, bufnode_ctx *node)
 {
-     if (NULL == *ctx->tail_with_data)
-     {
+    if (NULL == *ctx->tail_with_data)
+    {
         ASSERTAB(ctx->tail_with_data == &ctx->head, "tail_with_data not equ head.");
         ASSERTAB(ctx->head == NULL, "head not NULL.");
         ctx->head = ctx->tail = node;
     }
-    else 
+    else
     {
         bufnode_ctx **last = _free_trailing_empty_node(ctx);
         *last = node;
         if (0 != node->off)
         {
             ctx->tail_with_data = last;
-        }            
+        }
         ctx->tail = node;
     }
     ctx->total_len += node->off;
@@ -113,7 +122,23 @@ static bufnode_ctx *_node_insert_new(buffer_ctx *ctx, const size_t len)
     _node_insert(ctx, pnode);
     return pnode;
 }
-//扩展空间，保证连续内存
+static void _last_with_data(buffer_ctx *ctx)
+{
+    bufnode_ctx **node = ctx->tail_with_data;
+    if (NULL == *node)
+    {
+        return;
+    }
+    while (NULL != (*node)->next)
+    {
+        node = &(*node)->next;
+        if (0 != (*node)->off)
+        {
+            ctx->tail_with_data = node;
+        }
+    }
+}
+//扩展空间，保证连续内存 used 外部设定
 static bufnode_ctx *_buffer_expand_single(buffer_ctx *ctx, const size_t len)
 {
     bufnode_ctx *node, **last;
@@ -174,11 +199,11 @@ static bufnode_ctx *_buffer_expand_single(buffer_ctx *ctx, const size_t len)
     FREE(node);
     return tmp;
 }
-static uint32_t _buffer_expand_iov(buffer_ctx *ctx, const size_t len, IOV_TYPE *iov, const uint32_t cnt)
+static uint32_t _buffer_expand(buffer_ctx *ctx, const size_t len, IOV_TYPE *iov, const uint32_t cnt)
 {
     bufnode_ctx *tmp, *next, *node = ctx->tail;
     size_t avail, remain, used, space;
-    uint32_t index = 0;    
+    uint32_t index = 0;
     ASSERTAB(cnt >= 2, "param error.");
     if (NULL == node)
     {
@@ -274,38 +299,8 @@ static uint32_t _buffer_expand_iov(buffer_ctx *ctx, const size_t len, IOV_TYPE *
 
     return index;
 }
-static inline void _buffer_lock(buffer_ctx *ctx)
-{
-    mutex_lock(&ctx->mutex);
-}
-static inline void _buffer_unlock(buffer_ctx *ctx)
-{
-    mutex_unlock(&ctx->mutex);
-}
-uint32_t buffer_expand_iov(buffer_ctx *ctx, const size_t lens, IOV_TYPE *iov, const uint32_t cnt)
-{
-    _buffer_lock(ctx);
-    uint32_t rtn = _buffer_expand_iov(ctx, lens, iov, cnt);
-    _buffer_unlock(ctx);
-    return rtn;
-}
-static void _last_with_data(buffer_ctx *ctx)
-{
-    bufnode_ctx **node = ctx->tail_with_data;
-    if (NULL == *node)
-    {
-        return;
-    }
-    while (NULL != (*node)->next)
-    {
-        node = &(*node)->next;
-        if (0 != (*node)->off)
-        {
-            ctx->tail_with_data = node;
-        }
-    }
-}
-static size_t _buffer_commit_iov(buffer_ctx *ctx, size_t len, IOV_TYPE *iov, const uint32_t cnt)
+//cnt _buffer_expand_iov 返回数量
+static size_t _buffer_commit_expand(buffer_ctx *ctx, size_t len, IOV_TYPE *iov, const uint32_t cnt)
 {
     if (0 == cnt)
     {
@@ -313,7 +308,7 @@ static size_t _buffer_commit_iov(buffer_ctx *ctx, size_t len, IOV_TYPE *iov, con
     }
     //只有一个
     if (1 == cnt
-        && NULL != ctx->tail 
+        && NULL != ctx->tail
         && iov[0].IOV_PTR_FIELD == (void *)NODE_SPACE_PTR(ctx->tail))
     {
         ASSERTAB(len <= (size_t)NODE_SPACE_LEN(ctx->tail), "logic error.");
@@ -337,7 +332,7 @@ static size_t _buffer_commit_iov(buffer_ctx *ctx, size_t len, IOV_TYPE *iov, con
     if (0 == NODE_SPACE_LEN(*first))
     {
         first = &(*first)->next;
-    }    
+    }
     //检查
     node = *first;
     for (i = 0; i < cnt; ++i)
@@ -354,7 +349,7 @@ static size_t _buffer_commit_iov(buffer_ctx *ctx, size_t len, IOV_TYPE *iov, con
     }
     //填充
     size_t added = 0;
-    fill = first;    
+    fill = first;
     for (i = 0; i < cnt; ++i)
     {
         (*fill)->used = 0;
@@ -383,13 +378,6 @@ static size_t _buffer_commit_iov(buffer_ctx *ctx, size_t len, IOV_TYPE *iov, con
     ctx->total_len += added;
     return added;
 }
-size_t buffer_commit_iov(buffer_ctx *ctx, size_t len, IOV_TYPE *iov, const uint32_t cnt)
-{
-    _buffer_lock(ctx);
-    size_t rtn = _buffer_commit_iov(ctx, len, iov, cnt);
-    _buffer_unlock(ctx);
-    return rtn;
-}
 void buffer_init(buffer_ctx *ctx)
 {
     ZERO(ctx, sizeof(buffer_ctx));
@@ -401,19 +389,20 @@ void buffer_free(buffer_ctx *ctx)
     _free_all_node(ctx->head);
     mutex_free(&ctx->mutex);
 }
+size_t buffer_size(buffer_ctx *ctx)
+{
+    _buffer_lock(ctx);
+    size_t rtn = ctx->total_len;
+    _buffer_unlock(ctx);
+    return rtn;
+}
 static int32_t _buffer_append(buffer_ctx *ctx, void *data, const size_t len)
 {
     char *tmp = (char*)data;
-    if (0 != ctx->freeze_write)
-    {
-        PRINT("%s", "tail locked.");
-        return ERR_FAILED;
-    }
-
-    IOV_TYPE iov[2];
+    IOV_TYPE iov[MAX_EXPAND_NIOV];
     size_t remain = len;
     size_t i, off = 0;
-    uint32_t num = _buffer_expand_iov(ctx, len, iov, 2);
+    uint32_t num = _buffer_expand(ctx, len, iov, MAX_EXPAND_NIOV);
     for (i = 0; i < num && remain > 0; i++)
     {
         if ((IOV_LEN_TYPE)remain >= iov[i].IOV_LEN_FIELD)
@@ -429,12 +418,13 @@ static int32_t _buffer_append(buffer_ctx *ctx, void *data, const size_t len)
             remain = 0;
         }
     }
-    ASSERTAB(len == _buffer_commit_iov(ctx, len, iov, num), "commit lens not equ buffer lens.");
+    ASSERTAB(len == _buffer_commit_expand(ctx, len, iov, num), "commit lens not equ buffer lens.");
     return ERR_OK;
 }
 int32_t buffer_append(buffer_ctx *ctx, void *data, const size_t len)
 {
     _buffer_lock(ctx);
+    ASSERTAB(0 == ctx->freeze_write, "write freezed");
     int32_t rtn = _buffer_append(ctx, data, len);
     _buffer_unlock(ctx);
     return rtn;
@@ -442,13 +432,7 @@ int32_t buffer_append(buffer_ctx *ctx, void *data, const size_t len)
 int32_t buffer_appendv(buffer_ctx *ctx, const char *fmt, ...)
 {
     _buffer_lock(ctx);
-    if (0 != ctx->freeze_write)
-    {
-        _buffer_unlock(ctx);
-        PRINT("%s", "tail locked.");
-        return ERR_FAILED;
-    }
-
+    ASSERTAB(0 == ctx->freeze_write, "write freezed");
     va_list va;
     int32_t rtn, size;
     bufnode_ctx *node = _buffer_expand_single(ctx, FIRST_FORMAT_IN_EXPAND);
@@ -477,11 +461,6 @@ int32_t buffer_appendv(buffer_ctx *ctx, const char *fmt, ...)
 }
 static int32_t _buffer_copyout(buffer_ctx *ctx, void *out, size_t len)
 {
-    if (0 != ctx->freeze_read)
-    {
-        PRINT("%s", "head locked.");
-        return ERR_FAILED;
-    }
     bufnode_ctx *node = ctx->head;
     char *data = out;
     if (len > ctx->total_len)
@@ -511,17 +490,13 @@ static int32_t _buffer_copyout(buffer_ctx *ctx, void *out, size_t len)
 int32_t buffer_copyout(buffer_ctx *ctx, void *out, size_t len)
 {
     _buffer_lock(ctx);
+    ASSERTAB(0 == ctx->freeze_read, "read freezed");
     int32_t rtn = _buffer_copyout(ctx, out, len);
     _buffer_unlock(ctx);
     return rtn;
 }
 static int32_t _buffer_drain(buffer_ctx *ctx, size_t len)
 {
-    if (0 != ctx->freeze_read)
-    {
-        PRINT("%s", "head locked.");
-        return ERR_FAILED;
-    }
     bufnode_ctx *node, *next;
     size_t remain, oldlen;
     oldlen = ctx->total_len;
@@ -577,6 +552,7 @@ static int32_t _buffer_drain(buffer_ctx *ctx, size_t len)
 int32_t buffer_drain(buffer_ctx *ctx, size_t len)
 {
     _buffer_lock(ctx);
+    ASSERTAB(0 == ctx->freeze_read, "read freezed");
     int32_t rtn = _buffer_drain(ctx, len);
     _buffer_unlock(ctx);
     return rtn;
@@ -584,6 +560,7 @@ int32_t buffer_drain(buffer_ctx *ctx, size_t len)
 int32_t buffer_remove(buffer_ctx *ctx, void *out, size_t len)
 {
     _buffer_lock(ctx);
+    ASSERTAB(0 == ctx->freeze_read, "read freezed");
     int32_t rtn = _buffer_copyout(ctx, out, len);
     if (rtn > 0)
     {
@@ -628,11 +605,6 @@ static bufnode_ctx *_search_start(bufnode_ctx *node, size_t start, size_t *total
 }
 static int32_t _buffer_search(buffer_ctx *ctx, const size_t start, char *what, size_t wlen)
 {
-    if (0 != ctx->freeze_read)
-    {
-        PRINT("%s", "head locked.");
-        return ERR_FAILED;
-    }
     if (start >= ctx->total_len
         || wlen > ctx->total_len)
     {
@@ -686,18 +658,29 @@ static int32_t _buffer_search(buffer_ctx *ctx, const size_t start, char *what, s
 int32_t buffer_search(buffer_ctx *ctx, const size_t start, void *what, size_t wlen)
 {
     _buffer_lock(ctx);
+    ASSERTAB(0 == ctx->freeze_read, "read freezed");
     int32_t rtn = _buffer_search(ctx, start, what, wlen);
     _buffer_unlock(ctx);
     return rtn;
 }
-size_t buffer_size(buffer_ctx *ctx)
+uint32_t buffer_expand(buffer_ctx *ctx, const size_t lens, IOV_TYPE *iov, const uint32_t cnt)
 {
     _buffer_lock(ctx);
-    size_t rtn = ctx->total_len;
+    ASSERTAB(0 == ctx->freeze_write, "write freezed");
+    ctx->freeze_write = 1;
+    uint32_t rtn = _buffer_expand(ctx, lens, iov, cnt);
     _buffer_unlock(ctx);
     return rtn;
 }
-static uint32_t _buffer_get_iov(buffer_ctx *ctx, size_t atmost, IOV_TYPE *iov, const uint32_t cnt)
+void buffer_commit_expand(buffer_ctx *ctx, size_t len, IOV_TYPE *iov, const uint32_t cnt)
+{
+    _buffer_lock(ctx);
+    ASSERTAB(1 == ctx->freeze_write, "write unfreezed");    
+    ASSERTAB(len == _buffer_commit_expand(ctx, len, iov, cnt), "commit error.");
+    ctx->freeze_write = 0;
+    _buffer_unlock(ctx);
+}
+static uint32_t _buffer_get(buffer_ctx *ctx, size_t atmost, IOV_TYPE *iov, const uint32_t cnt)
 {
     if (atmost > ctx->total_len)
     {
@@ -712,7 +695,7 @@ static uint32_t _buffer_get_iov(buffer_ctx *ctx, size_t atmost, IOV_TYPE *iov, c
     bufnode_ctx *node = ctx->head;
     while (NULL != node
         && index < cnt
-        && atmost > 0) 
+        && atmost > 0)
     {
         iov[index].IOV_PTR_FIELD = (void *)(node->buffer + node->misalign);
         if (atmost >= node->off)
@@ -732,50 +715,47 @@ static uint32_t _buffer_get_iov(buffer_ctx *ctx, size_t atmost, IOV_TYPE *iov, c
 
     return index;
 }
-uint32_t buffer_get_iov(buffer_ctx *ctx, size_t atmost, IOV_TYPE *iov, const uint32_t cnt)
+uint32_t buffer_get(buffer_ctx *ctx, size_t atmost, IOV_TYPE *iov, const uint32_t cnt)
 {
     _buffer_lock(ctx);
-    int32_t rtn = _buffer_get_iov(ctx, atmost, iov, cnt);
+    ASSERTAB(0 == ctx->freeze_read, "read freezed");
+    ctx->freeze_read = 1;
+    int32_t rtn = _buffer_get(ctx, atmost, iov, cnt);
     _buffer_unlock(ctx);
     return rtn;
 }
-uint32_t buffer_write_iov_application(buffer_ctx *ctx, const size_t size, IOV_TYPE *iov, const uint32_t iovcnt)
+void buffer_commit_get(buffer_ctx *ctx, size_t len)
 {
     _buffer_lock(ctx);
-    ASSERTAB(0 == ctx->freeze_write, "buffer tail already freezed.");
-    ctx->freeze_write = 1;
-    uint32_t uicoun = _buffer_expand_iov(ctx, size, iov, iovcnt);
-    _buffer_unlock(ctx);
-    return uicoun;
-}
-void buffer_write_iov_commit(buffer_ctx *ctx, size_t len,  IOV_TYPE *iov, const uint32_t iovcnt)
-{
-    _buffer_lock(ctx);
-    ASSERTAB(0 != ctx->freeze_write, "buffer tail already unfreezed.");
-    _buffer_commit_iov(ctx, len, iov, iovcnt);
-    ctx->freeze_write = 0;
-    _buffer_unlock(ctx);
-}
-uint32_t buffer_read_iov_application(buffer_ctx *ctx, size_t size, IOV_TYPE *iov, const uint32_t iovcnt)
-{
-    _buffer_lock(ctx);
-    ASSERTAB(0 == ctx->freeze_read, "buffer head already freezed.");
-    uint32_t uicnt = _buffer_get_iov(ctx, size, iov, iovcnt);
-    if (uicnt > 0)
+    ASSERTAB(1 == ctx->freeze_read, "read unfreezed.");
+    if (len > 0)
     {
-        ctx->freeze_read = 1;
-    }
-    _buffer_unlock(ctx);
-    return uicnt;
-}
-void buffer_read_iov_commit(buffer_ctx *ctx, size_t size)
-{
-    _buffer_lock(ctx);
-    ASSERTAB(1 == ctx->freeze_read, "buffer head already unfreezed.");
-    if (size > 0)
-    {
-        _buffer_drain(ctx, size);
+        _buffer_drain(ctx, len);
     }
     ctx->freeze_read = 0;
     _buffer_unlock(ctx);
+}
+int32_t buffer_from_sock(buffer_ctx *ctx, SOCKET fd, size_t maxlen, size_t *nread,
+    int32_t(*read_fd)(SOCKET fd, void *buf, size_t len, void *arg), void *arg)
+{
+    ASSERTAB(NULL != read_fd, ERRSTR_NULLP);
+    *nread = 0;
+    IOV_TYPE iov[MAX_EXPAND_NIOV];
+    int32_t rtn = ERR_OK;
+    uint32_t cnt = buffer_expand(ctx, maxlen, iov, MAX_EXPAND_NIOV);
+    for (uint32_t i = 0; i < cnt; i++)
+    {
+        rtn = read_fd(fd, iov[i].IOV_PTR_FIELD, iov[i].IOV_LEN_FIELD, arg);
+        if (ERR_FAILED == rtn)
+        {
+            break;
+        }
+        *nread += rtn;
+        if (rtn < iov[i].IOV_LEN_FIELD)
+        {
+            break;
+        }        
+    }
+    buffer_commit_expand(ctx, *nread, iov, cnt);
+    return rtn;
 }

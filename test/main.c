@@ -29,7 +29,7 @@ static void test_connclose_cb(ev_ctx *ctx, SOCKET sock, void *ud)
     //PRINT("test_connclose_cb: sock %d ", (int32_t)sock);
     connsock = INVALID_SOCK;
 }
-static void test_recv_cb(ev_ctx *ctx, SOCKET sock, buffer_ctx *buf, void *ud)
+static void test_recv_cb(ev_ctx *ctx, SOCKET sock, buffer_ctx *buf, size_t lens, void *ud)
 {
     //PRINT("test_recv_cb: sock %d ", (int32_t)sock);
     /*if (randrange(0, 100) <= 1)
@@ -48,7 +48,7 @@ static void test_send_cb(ev_ctx *ctx, SOCKET sock, size_t len, void *ud)
 {
     //PRINT("test_send_cb: sock %d  len %d err %d", (int32_t)sock, (int32_t)len, result);
 }
-static void test_conn_recv_cb(ev_ctx *ctx, SOCKET sock, buffer_ctx *buf, void *ud)
+static void test_conn_recv_cb(ev_ctx *ctx, SOCKET sock, buffer_ctx *buf, size_t lens, void *ud)
 {
     if (buffer_size(buf) <= 2 + sizeof(index))
     {
@@ -108,7 +108,7 @@ static void timeout(void *arg)
     }
     else
     {
-        ev_connecter(arg, "127.0.0.1", 15000, test_conn_cb, NULL);
+        //ev_connecter(arg, "127.0.0.1", 15000, test_conn_cb, NULL);
     }
     timer_start(&tw.timer);
     tw_add(&tw, 3000, timeout, arg);
