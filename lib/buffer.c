@@ -751,7 +751,7 @@ int32_t buffer_from_sock(buffer_ctx *ctx, SOCKET fd, size_t maxlen, size_t *nrea
             break;
         }
         *nread += rtn;
-        if (rtn < iov[i].IOV_LEN_FIELD)
+        if (rtn < (int32_t)iov[i].IOV_LEN_FIELD)
         {
             break;
         }        

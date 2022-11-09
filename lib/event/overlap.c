@@ -8,7 +8,6 @@
 #define NOTIFY_MODE_DISCONN 1
 #define NOTIFY_MODE_CONN    1
 #define NOTIFY_MODE_LISTEN  0
-static char zero_iov[] = "";
 
 typedef struct overlap_acpt_ctx
 {
@@ -91,7 +90,7 @@ static inline void _init_overlap(sock_ctx *sock, int32_t notifymode)
     ZERO(&sock->overlapped, sizeof(sock->overlapped));
     if (notifymode)
     {
-        sock->overlapped.hEvent = sock->ev_handle;
+        sock->overlapped.hEvent = (HANDLE)((ULONG_PTR)sock->ev_handle | 1);//没有  (| 1) 会多次触发
     }
 }
 static void CALLBACK _post_completion(void* arg, BOOLEAN timeout)
