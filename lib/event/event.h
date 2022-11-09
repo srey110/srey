@@ -11,6 +11,7 @@
 #define MAX_RECV_IOV_SIZE       ONEK  * 4
 #define MAX_RECV_IOV_COUNT      4
 #define MAX_ACCEPTEX_CNT        256
+#define INIT_EVENTS_CNT         512
 
 typedef struct cmd_ctx
 {

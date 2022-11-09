@@ -175,7 +175,7 @@ int32_t _post_send(ev_ctx *ctx, SOCKET sock, send_cb cb, void *data, size_t len,
     _init_overlap(&ol->overlap, NOTIFY_MODE_SEND);
     if (ERR_OK != WSASend(sock, &ol->wsabuf, 1, &ol->bytes, 0, &ol->overlap.overlapped, NULL))
     {
-        if (WSA_IO_PENDING != ERRNO)
+        if (ERROR_IO_PENDING != ERRNO)
         {
             _unregister_event(&ol->overlap);
             return ERR_FAILED;
@@ -364,7 +364,7 @@ static inline int32_t _post_recv(overlap_recv_ctx *ol)
                           &ol->overlap.overlapped,
                           NULL))
     {
-        if (WSA_IO_PENDING != ERRNO)
+        if (ERROR_IO_PENDING != ERRNO)
         {
             return ERR_FAILED;
         }

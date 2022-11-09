@@ -19,7 +19,7 @@ typedef struct loger_ctx
     int32_t prt;
     volatile int32_t stop;
     chan_ctx chan;
-    thread_ctx thread;    
+    thread_ctx thloger;    
 }loger_ctx;
 
 void loger_init(loger_ctx *ctx);

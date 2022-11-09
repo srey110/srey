@@ -34,7 +34,7 @@ typedef struct watcher_ctx
     qu_close quclose;
 #endif
     struct ev_ctx *ev;
-    thread_ctx thread;
+    thread_ctx thevent;
 }watcher_ctx;
 
 typedef struct sock_ctx

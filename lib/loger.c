@@ -235,15 +235,15 @@ void loger_init(loger_ctx *ctx)
     ctx->lv = LOGLV_DEBUG;
     ctx->prt = 1;
     chan_init(&ctx->chan, ONEK * 4);
-    thread_init(&ctx->thread);
-    thread_creat(&ctx->thread, _loger, ctx);
+    thread_init(&ctx->thloger);
+    thread_creat(&ctx->thloger, _loger, ctx);
 }
 void loger_free(loger_ctx *ctx)
 {
     chan_close(&ctx->chan);
     while (chan_size(&ctx->chan) > 0);
     ctx->stop = 1;
-    thread_join(&ctx->thread);
+    thread_join(&ctx->thloger);
     chan_free(&ctx->chan);
 }
 void loger_setlv(loger_ctx *ctx, const LOG_LEVEL lv)

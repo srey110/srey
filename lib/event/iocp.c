@@ -5,7 +5,6 @@
 
 #if (_WIN32_WINNT >= 0x0600)
 #define IOCP_NEVENT
-#define CNT_NEVENT                256
 #endif
 #define IOCP_WAIT_TIMEOUT         100
 #define IOCP_WAIT_MAXTIMEOUT      1000
@@ -226,37 +225,33 @@ static void _init_exfuncs(ev_ctx *ctx)
         CLOSE_SOCK(sock);
     }
 }
-static inline void _add_timeout(int32_t *timeout)
-{
-    if (*timeout >= IOCP_WAIT_MAXTIMEOUT)
-    {
-        return;
-    }
-    *timeout += IOCP_WAIT_TIMEOUT;
-    if (*timeout > IOCP_WAIT_MAXTIMEOUT)
-    {
-        *timeout = IOCP_WAIT_MAXTIMEOUT;
-    }
-}
 #ifdef IOCP_NEVENT
-static inline void _loop_event(void *arg)
+static inline LPOVERLAPPED_ENTRY _resize_events(LPOVERLAPPED_ENTRY old, ULONG cnt)
+{
+    FREE(old);
+    LPOVERLAPPED_ENTRY ol;
+    MALLOC(ol, sizeof(OVERLAPPED_ENTRY) * cnt);
+    return ol;
+}
+static void _loop_event(void *arg)
 {
     ev_ctx *ctx = (ev_ctx *)arg;
     BOOL rtn;
     int32_t err;
     ULONG i;
-    ULONG count;    
+    ULONG count;
+    ULONG nevent = INIT_EVENTS_CNT;
     sock_ctx *sock;
     LPOVERLAPPED overlap;
-    DWORD timeout = IOCP_WAIT_TIMEOUT;
-    OVERLAPPED_ENTRY overlappeds[CNT_NEVENT];
+    LPOVERLAPPED_ENTRY overlappeds = NULL;
+    overlappeds = _resize_events(overlappeds, nevent);
     while (0 == ctx->stop)
     {
         rtn = GetQueuedCompletionStatusEx(ctx->iocp,
             overlappeds,
-            CNT_NEVENT,
+            nevent,
             &count,
-            timeout,
+            IOCP_WAIT_TIMEOUT,
             FALSE);
         if (rtn)
         {
@@ -270,47 +265,42 @@ static inline void _loop_event(void *arg)
                 sock = UPCAST(overlap, sock_ctx, overlapped);
                 sock->ev_cb(ctx, overlappeds[i].dwNumberOfBytesTransferred, sock);
             }
-            timeout = IOCP_WAIT_TIMEOUT;
+            if (count == nevent
+                && 0 == ctx->stop)
+            {
+                nevent *= 2;
+                overlappeds = _resize_events(overlappeds, nevent);
+            }
         }
         else if (WAIT_TIMEOUT != (err = ERRNO))
         {
             LOG_ERROR("%s", ERRORSTR(err));
         }
-        else if (timeout > 0)
-        {
-            _add_timeout(&timeout);
-        }
     }
 }
 #else
-static inline void _loop_event(void *arg)
+static void _loop_event(void *arg)
 {
     ev_ctx *ctx = (ev_ctx *)arg;
     DWORD bytes;
     int32_t err;
     ULONG_PTR key;
     OVERLAPPED *overlap;
-    DWORD timeout = IOCP_WAIT_TIMEOUT;
     while (0 == ctx->stop)
     {
         GetQueuedCompletionStatus(ctx->iocp,
             &bytes,
             &key,
             &overlap,
-            timeout);
+            IOCP_WAIT_TIMEOUT);
         if (NULL != overlap)
         {
             sock_ctx *sock = UPCAST(overlap, sock_ctx, overlapped);
             sock->ev_cb(ctx, bytes, sock);
-            timeout = IOCP_WAIT_TIMEOUT;
         }
         else if (WAIT_TIMEOUT != (err = ERRNO))
         {
             LOG_ERROR("%s", ERRORSTR(err));
-        }
-        else if(timeout > 0)
-        {
-            _add_timeout(&timeout);
         }
     }
 }
@@ -330,9 +320,9 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads)
     for (uint32_t i = 0; i < ctx->nthreads; i++)
     {
         watcher_ctx *watcher = &ctx->watcher[i];
-        thread_init(&watcher->thread);
-        thread_creat(&watcher->thread, _loop_event, ctx);
-        thread_wait(&watcher->thread);
+        thread_init(&watcher->thevent);
+        thread_creat(&watcher->thevent, _loop_event, ctx);
+        thread_wait(&watcher->thevent);
         _start_sender(ctx, watcher);
     }
 }
@@ -356,11 +346,16 @@ void ev_free(ev_ctx *ctx)
         }
         _send_cmd(&ctx->watcher[i], &stop);
     }
+    sender_ctx *sender;
     for (i = 0; i < ctx->nthreads; i++)
     {
-        sender_ctx *sender = &ctx->watcher[i].sender;
-        thread_join(&ctx->watcher[i].thread);        
+        sender = &ctx->watcher[i].sender;
+        thread_join(&ctx->watcher[i].thevent);
         thread_join(&sender->thsend);
+    }
+    for (i = 0; i < ctx->nthreads; i++)
+    {
+        sender = &ctx->watcher[i].sender;
         _free_sender(sender);
     }
     FREE(ctx->watcher);

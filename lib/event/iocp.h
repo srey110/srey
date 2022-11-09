@@ -32,7 +32,7 @@ typedef struct sender_ctx
 }sender_ctx;
 typedef struct watcher_ctx
 {
-    thread_ctx thread;
+    thread_ctx thevent;
     sender_ctx sender;
 }watcher_ctx;
 typedef struct exfuncs_ctx
