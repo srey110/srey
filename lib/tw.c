@@ -19,7 +19,7 @@ static void _free_slot(tw_slot_ctx *slot, const size_t len)
 void tw_free(tw_ctx *ctx)
 {
     ctx->exit = 1;
-    thread_join(&ctx->thtw);
+    thread_join(ctx->thtw);
     _free_slot(ctx->tv1, TVR_SIZE);
     _free_slot(ctx->tv2, TVN_SIZE);
     _free_slot(ctx->tv3, TVN_SIZE);
@@ -163,7 +163,6 @@ void tw_init(tw_ctx *ctx)
     ctx->exit = 0;
     ctx->jiffies = 0;
     mutex_init(&ctx->lockreq);
-    thread_init(&ctx->thtw);
     timer_init(&ctx->timer);
     ctx->reqadd.head = ctx->reqadd.tail = NULL;
     ZERO(ctx->tv1, sizeof(ctx->tv1));
@@ -171,6 +170,5 @@ void tw_init(tw_ctx *ctx)
     ZERO(ctx->tv3, sizeof(ctx->tv3));
     ZERO(ctx->tv4, sizeof(ctx->tv4));
     ZERO(ctx->tv5, sizeof(ctx->tv5));
-
-    thread_creat(&ctx->thtw, _loop, ctx);
+    ctx->thtw = thread_creat(_loop, ctx);
 }

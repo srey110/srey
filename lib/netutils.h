@@ -9,6 +9,7 @@ void sock_clean();
 int32_t sock_nread(SOCKET fd);
 //错误状态
 int32_t sock_error(SOCKET fd);
+int32_t sock_checkconn(SOCKET fd);
 //获取SO_TYPE(SOCK_STREAM  SOCK_DGRAM)
 int32_t sock_type(SOCKET fd);
 //获取sin_family(AF_INET AF_INET6)

@@ -353,7 +353,6 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads)
         mutex_init(&watcher->qucmdlck);
         qu_cmd_init(&watcher->qucmd, ONEK);
         qu_closed_init(&watcher->quclose, ONEK);
-        thread_init(&watcher->thread);
         thread_creat(&watcher->thread, _loop, watcher);
     }
 }

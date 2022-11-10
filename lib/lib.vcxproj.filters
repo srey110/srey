@@ -106,6 +106,12 @@
     <ClInclude Include="event\iocp.h">
       <Filter>event</Filter>
     </ClInclude>
+    <ClInclude Include="event\evworker.h">
+      <Filter>event</Filter>
+    </ClInclude>
+    <ClInclude Include="event\evpub.h">
+      <Filter>event</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="memory.c">
@@ -157,6 +163,9 @@
       <Filter>event</Filter>
     </ClCompile>
     <ClCompile Include="event\overlap.c">
+      <Filter>event</Filter>
+    </ClCompile>
+    <ClCompile Include="event\evworker.c">
       <Filter>event</Filter>
     </ClCompile>
   </ItemGroup>

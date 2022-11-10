@@ -58,7 +58,7 @@ char *strupper(char *str);
 char *strlower(char *str);
 //反转
 char* strreverse(char* str);
-//随机
+//随机[min, max)
 int32_t randrange(int32_t min, int32_t max);
 //随机字符串
 char *randstr(char *buf, size_t len);

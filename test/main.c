@@ -19,36 +19,36 @@ static void on_sigcb(int32_t sig, void *arg)
     PRINT("catch sign: %d", sig);
     cond_signal(&condexit);
 }
-static void test_close_cb(ev_ctx *ctx, SOCKET sock, void *ud)
+static void test_close_cb(ev_ctx *ctx, SOCKET sock, ud_cxt *ud)
 {
     //PRINT("test_close_cb: sock %d ", (int32_t)sock);
     ATOMIC_ADD(&count, -1);
 }
-static void test_connclose_cb(ev_ctx *ctx, SOCKET sock, void *ud)
+static void test_connclose_cb(ev_ctx *ctx, SOCKET sock, ud_cxt *ud)
 {
-    //PRINT("test_connclose_cb: sock %d ", (int32_t)sock);
+    PRINT("test_connclose_cb: sock %d ", (int32_t)sock);
     connsock = INVALID_SOCK;
 }
-static void test_recv_cb(ev_ctx *ctx, SOCKET sock, buffer_ctx *buf, size_t lens, void *ud)
+static void test_recv_cb(ev_ctx *ctx, SOCKET sock, buffer_ctx *buf, size_t lens, ud_cxt *ud)
 {
     //PRINT("test_recv_cb: sock %d ", (int32_t)sock);
-    /*if (randrange(0, 100) <= 1)
-    {
-        ev_close(ctx, sock);
-        return;
-    }*/
+    //if (randrange(0, 100) <= 1)
+    //{
+    //    ev_close(ctx, sock);
+    //    //PRINT("close socket: sock %d ", (int32_t)sock);
+    //    return;
+    //}
     size_t len = buffer_size(buf);
     char *pk;
     MALLOC(pk, len);
     buffer_remove(buf, pk, len);
-    ev_send(ctx, sock, pk, len);
-    FREE(pk);
+    ev_send(ctx, sock, pk, len, 0);
 }
-static void test_send_cb(ev_ctx *ctx, SOCKET sock, size_t len, void *ud)
+static void test_send_cb(ev_ctx *ctx, SOCKET sock, size_t len, ud_cxt *ud)
 {
     //PRINT("test_send_cb: sock %d  len %d err %d", (int32_t)sock, (int32_t)len, result);
 }
-static void test_conn_recv_cb(ev_ctx *ctx, SOCKET sock, buffer_ctx *buf, size_t lens, void *ud)
+static void test_conn_recv_cb(ev_ctx *ctx, SOCKET sock, buffer_ctx *buf, size_t lens, ud_cxt *ud)
 {
     if (buffer_size(buf) <= 2 + sizeof(index))
     {
@@ -65,7 +65,7 @@ static void test_conn_recv_cb(ev_ctx *ctx, SOCKET sock, buffer_ctx *buf, size_t 
     ASSERTAB(tmp == index, "index error.");
     buffer_drain(buf, pklen);
 }
-static void test_conn_cb(ev_ctx *ctx, SOCKET sock, void *ud)
+static void test_conn_cb(ev_ctx *ctx, SOCKET sock, ud_cxt *ud)
 {
     if (INVALID_SOCK != sock)
     {
@@ -78,7 +78,7 @@ static void test_conn_cb(ev_ctx *ctx, SOCKET sock, void *ud)
         PRINT("%s", "connect error.");
     }
 }
-static void test_acpt_cb(ev_ctx *ctx, SOCKET sock, void *ud)
+static void test_acpt_cb(ev_ctx *ctx, SOCKET sock, ud_cxt *ud)
 {
     //PRINT("test_acpt_cb : sock %d ", (int32_t)sock);
     ev_loop(ctx, sock, test_recv_cb, test_close_cb, test_send_cb, ud);
@@ -90,9 +90,11 @@ static void timeout(void *arg)
     PRINT("timeout:%d ms link cnt %d", elapsed, ATOMIC_GET(&count));
     if (INVALID_SOCK != connsock)
     {
-        //ev_close(arg, connsock);
+        /*ev_close(arg, connsock);
+        connsock = INVALID_SOCK;*/
         char str[100];
-        int32_t len = randrange(1, sizeof(str) - 1);
+        int32_t len = randrange(1, sizeof(str));
+        ASSERTAB(sizeof(str) > len, "randrange error.");
         randstr(str, len);
         u_short total = (u_short)(2 + sizeof(index) + len);
         char *buf;
@@ -103,20 +105,27 @@ static void timeout(void *arg)
         int32_t tmp = ntohl(index);
         memcpy(buf + sizeof(total), &tmp, sizeof(tmp));
         memcpy(buf + sizeof(total) + sizeof(index), str, len);
-        ev_send(arg, connsock, buf, 2 + sizeof(index) + len);
-        FREE(buf);
+        ev_send(arg, connsock, buf, 2 + sizeof(index) + len, 0);
     }
     else
     {
-        //ev_connecter(arg, "127.0.0.1", 15000, test_conn_cb, NULL);
+        ev_connecter(arg, "127.0.0.1", 15000, test_conn_cb, NULL);
     }
     timer_start(&tw.timer);
     tw_add(&tw, 3000, timeout, arg);
 }
+void testtt(void *arg)
+{
+    MSLEEP(1000);
+}
 int main(int argc, char *argv[])
 {
+    pthread_t aaa = thread_creat(testtt, NULL);
+    thread_join(aaa);
+
     MEMCHECK();
     unlimit();
+    srand((unsigned int)time(NULL));
     mutex_init(&muexit);
     cond_init(&condexit);
     sighandle(on_sigcb, NULL);    
@@ -134,7 +143,7 @@ int main(int argc, char *argv[])
     tw_init(&tw);   
     ev_ctx ev;
     ev_init(&ev, 2);
-    ev_listener(&ev, "0.0.0.0", 15000, test_acpt_cb, NULL);    
+    ev_listener(&ev, "0.0.0.0", 15000, test_acpt_cb, NULL, NULL);    
 
     timer_start(&tw.timer);
     tw_add(&tw, 3000, timeout, &ev);
@@ -145,7 +154,7 @@ int main(int argc, char *argv[])
     if (INVALID_SOCK != connsock)
     {
         ev_close(&ev, connsock);
-        MSLEEP(100);
+        MSLEEP(500);
     }
     PRINT("link cnt %d", ATOMIC_GET(&count));
     ev_free(&ev);

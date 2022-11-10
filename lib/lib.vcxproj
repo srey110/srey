@@ -25,6 +25,8 @@
     <ClInclude Include="cond.h" />
     <ClInclude Include="errcode.h" />
     <ClInclude Include="event\event.h" />
+    <ClInclude Include="event\evpub.h" />
+    <ClInclude Include="event\evworker.h" />
     <ClInclude Include="event\iocp.h" />
     <ClInclude Include="event\uev.h" />
     <ClInclude Include="hashmap.h" />
@@ -52,6 +54,7 @@
     <ClCompile Include="buffer.c" />
     <ClCompile Include="chan.c" />
     <ClCompile Include="event\event.c" />
+    <ClCompile Include="event\evworker.c" />
     <ClCompile Include="event\iocp.c" />
     <ClCompile Include="event\overlap.c" />
     <ClCompile Include="event\uev.c" />

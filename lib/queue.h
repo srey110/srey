@@ -67,6 +67,10 @@ static inline type *qtype##_pop(qtype *p) {\
     }\
     return elem;\
 };\
+static inline type *qtype##_peek(qtype *p) {\
+    if (0 == p->size) return NULL;\
+    return p->ptr + p->offset;\
+};\
 
 QUEUE_DECL(void *, qu_voidp);
 

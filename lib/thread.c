@@ -1,8 +1,10 @@
 #include "thread.h"
 
-#define THREAD_WAITRUN  0
-#define THREAD_RUNING   1
-#define THREAD_STOP     2
+typedef struct th_ctx
+{
+    void *udata;
+    void(*th_cb)(void*);
+}th_ctx;
 
 #if defined(OS_WIN)
 static uint32_t __stdcall _funccb(void *arg)
@@ -10,51 +12,36 @@ static uint32_t __stdcall _funccb(void *arg)
 static void *_funccb(void *arg)
 #endif
 {
-    thread_ctx *ctx = (thread_ctx *)arg;
-    ctx->state = THREAD_RUNING;
-    ctx->th_cb(ctx->udata);
-    ctx->state = THREAD_STOP;
+    th_ctx *th = (th_ctx *)arg;
+    th->th_cb(th->udata);
+    FREE(th);
 #if defined(OS_WIN)
     return ERR_OK;
 #else
     return NULL;
 #endif
 }
-void thread_init(thread_ctx *ctx)
+pthread_t thread_creat(void(*cb)(void*), void *udata)
 {
-    ctx->state = THREAD_STOP;
-}
-void thread_creat(thread_ctx *ctx, void(*cb)(void*), void *udata)
-{
-    if (THREAD_STOP != ctx->state)
-    {
-        PRINT("%s", "thread not stop.");
-        return;
-    }
-    ctx->state = THREAD_WAITRUN;
-    ctx->th_cb = cb;
-    ctx->udata = udata;
+    th_ctx *th;
+    MALLOC(th, sizeof(th_ctx));
+    th->th_cb = cb;
+    th->udata = udata;
+    pthread_t pthread;
 #if defined(OS_WIN)
-    ctx->pthread = (HANDLE)_beginthreadex(NULL, 0, _funccb, (void*)ctx, 0, NULL);
-    ASSERTAB(NULL != ctx->pthread, ERRORSTR(ERRNO));
+    pthread = (HANDLE)_beginthreadex(NULL, 0, _funccb, (void*)th, 0, NULL);
+    ASSERTAB(NULL != pthread, ERRORSTR(ERRNO));
 #else
-    ASSERTAB((ERR_OK == pthread_create(&ctx->pthread, NULL, _funccb, (void*)ctx)),
+    ASSERTAB((ERR_OK == pthread_create(&pthread, NULL, _funccb, (void*)th)),
         ERRORSTR(ERRNO));
 #endif
+    return pthread;
 }
-void thread_wait(thread_ctx *ctx)
+void thread_join(pthread_t th)
 {
-    while (THREAD_WAITRUN == ctx->state);
-}
-void thread_join(thread_ctx *ctx)
-{
-    if (THREAD_STOP == ctx->state)
-    {
-        return;
-    }
 #if defined(OS_WIN)
-    ASSERTAB(WAIT_OBJECT_0 == WaitForSingleObject(ctx->pthread, INFINITE), ERRORSTR(ERRNO));
+    ASSERTAB(WAIT_OBJECT_0 == WaitForSingleObject(th, INFINITE), ERRORSTR(ERRNO));
 #else
-    ASSERTAB(ERR_OK == pthread_join(ctx->pthread, NULL), ERRORSTR(ERRNO));
+    ASSERTAB(ERR_OK == pthread_join(th, NULL), ERRORSTR(ERRNO));
 #endif
 }

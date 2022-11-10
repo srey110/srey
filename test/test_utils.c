@@ -81,6 +81,7 @@ void test_queue(CuTest* tc)
     {
         que_push(&qu, &i);
     }// 1 2 3 4
+    CuAssertTrue(tc, 1 == *que_peek(&qu));
     CuAssertTrue(tc, 4 == que_size(&qu));
     CuAssertTrue(tc, 4 == que_maxsize(&qu));
 

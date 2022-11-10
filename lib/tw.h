@@ -30,7 +30,7 @@ typedef struct tw_ctx
     volatile int32_t exit;
     uint32_t jiffies;
     mutex_ctx lockreq;
-    thread_ctx thtw;
+    pthread_t thtw;
     timer_ctx timer;
     tw_slot_ctx reqadd;
     tw_slot_ctx tv1[TVR_SIZE];

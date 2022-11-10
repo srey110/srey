@@ -55,6 +55,20 @@ int32_t sock_error(SOCKET fd)
     }
     return err;
 }
+int32_t sock_checkconn(SOCKET fd)
+{
+#ifdef OS_WIN
+    int32_t time;
+    int32_t len = (int32_t)sizeof(time);
+    if (getsockopt(fd, SOL_SOCKET, SO_CONNECT_TIME, (char *)&time, &len) < ERR_OK)
+    {
+        PRINT("getsockopt(%d, ...) failed. %s", (int32_t)fd, ERRORSTR(ERRNO));
+        return ERR_FAILED;
+    }
+    return -1 == time ? ERR_FAILED : ERR_OK;
+#else
+#endif    
+}
 int32_t sock_type(SOCKET fd)
 {
     int32_t stype = 0;

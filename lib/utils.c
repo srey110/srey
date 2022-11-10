@@ -829,16 +829,7 @@ char* strreverse(char* str)
 int32_t randrange(int32_t min, int32_t max)
 {
     ASSERTAB(max > min, "rand range max must big than min.");
-    static time_t seed = 0;    
-    if (0 == seed) 
-    {
-        seed = time(NULL);
-        srand((unsigned int)seed);
-        rand();
-    }
-    int32_t _rand = rand();
-    _rand = min + (int32_t)((double)((double)(max)-(min)+1.0) * ((_rand) / ((RAND_MAX)+1.0)));
-    return _rand;
+    return (rand() % (max - min)) + min;
 }
 char *randstr(char *buf, size_t len)
 {
@@ -849,8 +840,9 @@ char *randstr(char *buf, size_t len)
         'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
     };
     size_t i = 0;
-    for (; i < len; i++) {
-        buf[i] = characters[randrange(0, sizeof(characters) - 1)];
+    for (; i < len; i++) 
+    {
+        buf[i] = characters[randrange(0, sizeof(characters))];
     }
     buf[i] = '\0';
     return buf;

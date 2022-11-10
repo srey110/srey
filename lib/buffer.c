@@ -742,16 +742,22 @@ int32_t buffer_from_sock(buffer_ctx *ctx, SOCKET fd, size_t maxlen, size_t *nrea
     *nread = 0;
     IOV_TYPE iov[MAX_EXPAND_NIOV];
     int32_t rtn = ERR_OK;
+    int32_t rtnread;
     uint32_t cnt = buffer_expand(ctx, maxlen, iov, MAX_EXPAND_NIOV);
     for (uint32_t i = 0; i < cnt; i++)
     {
-        rtn = read_fd(fd, iov[i].IOV_PTR_FIELD, iov[i].IOV_LEN_FIELD, arg);
-        if (ERR_FAILED == rtn)
+        rtnread = read_fd(fd, iov[i].IOV_PTR_FIELD, iov[i].IOV_LEN_FIELD, arg);
+        if (ERR_FAILED == rtnread)
+        {
+            rtn = ERR_FAILED;
+            break;
+        }
+        if (ERR_OK == rtnread)
         {
             break;
         }
-        *nread += rtn;
-        if (rtn < (int32_t)iov[i].IOV_LEN_FIELD)
+        *nread += rtnread;
+        if (rtnread < (int32_t)iov[i].IOV_LEN_FIELD)
         {
             break;
         }        
