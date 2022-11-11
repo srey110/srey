@@ -7,7 +7,7 @@
 #include "queue.h"
 #include "event/evpub.h"
 
-struct eworker_ctx *eworker_init(struct ev_ctx *ev, uint32_t nthread);
+struct eworker_ctx *eworker_init(struct ev_ctx *ev, uint32_t nthread, uint32_t nqus);
 void eworker_free(struct eworker_ctx *ctx);
 
 void ewcmd_accept(struct eworker_ctx *ctx, SOCKET fd, accept_cb cb, ud_cxt *ud);

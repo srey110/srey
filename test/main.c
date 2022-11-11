@@ -32,12 +32,12 @@ static void test_connclose_cb(ev_ctx *ctx, SOCKET sock, ud_cxt *ud)
 static void test_recv_cb(ev_ctx *ctx, SOCKET sock, buffer_ctx *buf, size_t lens, ud_cxt *ud)
 {
     //PRINT("test_recv_cb: sock %d ", (int32_t)sock);
-    //if (randrange(0, 100) <= 1)
-    //{
-    //    ev_close(ctx, sock);
-    //    //PRINT("close socket: sock %d ", (int32_t)sock);
-    //    return;
-    //}
+    if (randrange(0, 100) <= 1)
+    {
+        ev_close(ctx, sock);
+        //PRINT("close socket: sock %d ", (int32_t)sock);
+        return;
+    }
     size_t len = buffer_size(buf);
     char *pk;
     MALLOC(pk, len);

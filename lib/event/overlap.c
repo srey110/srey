@@ -48,13 +48,6 @@ static inline int32_t _join_iocp(ev_ctx *ctx, SOCKET sock)
     }
     return ERR_OK;
 }
-static inline void _set_sockop(SOCKET sock)
-{
-    sock_linger(sock);
-    sock_nodelay(sock);
-    sock_kpa(sock, SOCKKPA_DELAY, SOCKKPA_INTVL);
-    sock_nbio(sock);
-}
 //listen
 static inline int32_t _post_accept(overlap_acpt_ctx *acpol)
 {
@@ -98,7 +91,6 @@ static void _on_accept_cb(watcher_ctx *watcher, DWORD bytes, sock_ctx *sock)
         CLOSE_SOCK(fd);
         return;
     }
-    _set_sockop(fd);
     if (ERR_OK != _join_iocp(watcher->ev, fd))
     {
         CLOSE_SOCK(fd);
@@ -244,7 +236,7 @@ int32_t ev_connecter(ev_ctx *ctx, const char *host, const uint16_t port, connect
         return ERR_FAILED;
     }
     sock_raddr(sock);
-    _set_sockop(sock);
+    _set_sockops(sock);
     if (ERR_OK != _trybind(sock, netaddr_family(&addr)))
     {
         CLOSE_SOCK(sock);

@@ -5,6 +5,7 @@
 #define ERR_FAILED  -1
 #define ERR_TIMEOUT -2
 
-#define ERRSTR_NULLP   "null pointer."
+#define ERRSTR_NULLP      "null pointer."
+#define ERRSTR_INVPARAM   "invalid parameter."
 
 #endif//ERRCODE_H_

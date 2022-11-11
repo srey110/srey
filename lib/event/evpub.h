@@ -4,6 +4,7 @@
 #include "queue.h"
 #include "array.h"
 #include "mutex.h"
+#include "netutils.h"
 
 #define INIT_EVENTS_CNT         512
 #define MAX_RECV_SIZE           ONEK  * 4
@@ -45,5 +46,13 @@ typedef void(*recv_cb)(struct ev_ctx *ctx, SOCKET sock, struct buffer_ctx *buf, 
 typedef void(*connect_cb)(struct ev_ctx *ctx, SOCKET sock, ud_cxt *ud);//sock INVALID_SOCK Ê§°Ü
 typedef void(*send_cb)(struct ev_ctx *ctx, SOCKET sock, size_t len, ud_cxt *ud);
 typedef void(*free_ud)(ud_cxt *ud);
+
+static inline void _set_sockops(SOCKET sock)
+{
+    sock_linger(sock);
+    sock_nodelay(sock);
+    sock_kpa(sock, SOCKKPA_DELAY, SOCKKPA_INTVL);
+    sock_nbio(sock);
+}
 
 #endif//EVENT_PUB_H_

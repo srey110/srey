@@ -15,7 +15,6 @@ typedef struct sock_ctx
 }sock_ctx;
 typedef struct watcher_ctx
 {
-    int32_t index;
     HANDLE iocp;
     ev_ctx *ev;
     pthread_t thevent;

@@ -39,7 +39,7 @@ static void _init_exfuncs(ev_ctx *ctx)
         CLOSE_SOCK(sock);
     }
 }
-#if (_WIN32_WINNT < 0x0600)
+#if (_WIN32_WINNT >= 0x0600)
 static inline LPOVERLAPPED_ENTRY _resize_events(LPOVERLAPPED_ENTRY old, ULONG cnt)
 {
     FREE(old);
@@ -131,12 +131,11 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads)
     ctx->nthreads *= 2;
     mutex_init(&ctx->mulsn);
     qu_lsn_init(&ctx->qulsn, 8);
-    ctx->worker = eworker_init(ctx, ctx->nthreads);//与iocp线程数相同
+    ctx->worker = eworker_init(ctx, ctx->nthreads, ctx->nthreads * 2);
     MALLOC(ctx->watcher, sizeof(watcher_ctx) * ctx->nthreads);
     for (uint32_t i = 0; i < ctx->nthreads; i++)
     {
         watcher_ctx *watcher = &ctx->watcher[i];
-        watcher->index = i;
         watcher->iocp = iocp;
         watcher->ev = ctx;
         watcher->thevent = thread_creat(_loop_event, watcher);
@@ -156,7 +155,7 @@ void ev_free(ev_ctx *ctx)
     for (i = 0; i < ctx->nthreads; i++)
     {
         thread_join(ctx->watcher[i].thevent);
-    }    
+    }
     eworker_free(ctx->worker);
     HANDLE iocp = ctx->watcher[0].iocp;
     FREE(ctx->watcher);
