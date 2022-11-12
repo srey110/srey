@@ -14,13 +14,15 @@ void ewcmd_accept(struct eworker_ctx *ctx, SOCKET fd, accept_cb cb, ud_cxt *ud);
 void ewcmd_connect(struct eworker_ctx *ctx, SOCKET fd, connect_cb cb, ud_cxt *ud);
 void ewcmd_canread(struct eworker_ctx *ctx, SOCKET fd);
 void ewcmd_canwrite(struct eworker_ctx *ctx, SOCKET fd);
+void ewcmd_error(struct eworker_ctx *ctx, SOCKET fd);
 
 struct sock_ctx * _new_sockctx(struct ev_ctx *ctx, SOCKET sock);
 void _free_sockctx(struct sock_ctx *sock);
 void _invalid_sockctx(struct sock_ctx *sock);
 struct buffer_ctx *_get_buffer_r(struct sock_ctx *sock);
 
-int32_t _post_recv(struct sock_ctx *sock);
-int32_t _post_send(struct sock_ctx *sock);
+int32_t _post_recv(ev_ctx *ev, struct sock_ctx *sock);
+int32_t _post_send(ev_ctx *ev, struct sock_ctx *sock);
+void _post_reset(ev_ctx *ev, struct sock_ctx *sock);
 
 #endif//EVWORKER_H_

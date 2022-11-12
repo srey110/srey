@@ -55,7 +55,7 @@ int32_t netaddr_remoteaddr(netaddr_ctx *ctx, SOCKET fd, const int32_t family)
     if (AF_INET == family)
     {
         struct sockaddr_in addr = { 0 };
-        int32_t addrlen = (int32_t)sizeof(struct sockaddr_in);
+        socklen_t addrlen = (socklen_t)sizeof(struct sockaddr_in);
         if (ERR_OK != getpeername(fd, (struct sockaddr *)&addr, &addrlen))
         {
             return ERRNO;
@@ -65,7 +65,7 @@ int32_t netaddr_remoteaddr(netaddr_ctx *ctx, SOCKET fd, const int32_t family)
     else
     {
         struct sockaddr_in6 addr = { 0 };
-        int32_t addrlen = (int32_t)sizeof(struct sockaddr_in6);
+        socklen_t addrlen = (socklen_t)sizeof(struct sockaddr_in6);
         if (ERR_OK != getpeername(fd, (struct sockaddr *)&addr, &addrlen))
         {
             return ERRNO;
@@ -85,7 +85,7 @@ int32_t netaddr_localaddr(netaddr_ctx *ctx, SOCKET fd, const int32_t family)
     if (AF_INET == family)
     {
         struct sockaddr_in addr = { 0 };
-        int32_t addrlen = (int32_t)sizeof(struct sockaddr_in);
+        socklen_t addrlen = (socklen_t)sizeof(struct sockaddr_in);
         if (ERR_OK != getsockname(fd, (struct sockaddr *)&addr, &addrlen))
         {
             return ERRNO;
@@ -95,7 +95,7 @@ int32_t netaddr_localaddr(netaddr_ctx *ctx, SOCKET fd, const int32_t family)
     else
     {
         struct sockaddr_in6 addr = { 0 };
-        int32_t addrlen = (int32_t)sizeof(struct sockaddr_in6);
+        socklen_t addrlen = (socklen_t)sizeof(struct sockaddr_in6);
         if (ERR_OK != getsockname(fd, (struct sockaddr *)&addr, &addrlen))
         {
             return ERRNO;
@@ -108,7 +108,7 @@ struct sockaddr *netaddr_addr(netaddr_ctx *ctx)
 {
     return &ctx->addr;
 }
-int32_t netaddr_size(netaddr_ctx *ctx)
+socklen_t netaddr_size(netaddr_ctx *ctx)
 {
     return AF_INET == ctx->addr.sa_family ? (int32_t)sizeof(ctx->ipv4) : (int32_t)sizeof(ctx->ipv6);
 }

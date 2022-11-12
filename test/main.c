@@ -10,7 +10,7 @@
 tw_ctx tw;
 mutex_ctx muexit;
 cond_ctx condexit;
-int32_t index = 0;
+int32_t pk_index = 0;
 SOCKET connsock = INVALID_SOCK;
 static volatile atomic_t count = 0;
 
@@ -26,7 +26,7 @@ static void test_close_cb(ev_ctx *ctx, SOCKET sock, ud_cxt *ud)
 }
 static void test_connclose_cb(ev_ctx *ctx, SOCKET sock, ud_cxt *ud)
 {
-    PRINT("test_connclose_cb: sock %d ", (int32_t)sock);
+    //PRINT("test_connclose_cb: sock %d ", (int32_t)sock);
     connsock = INVALID_SOCK;
 }
 static void test_recv_cb(ev_ctx *ctx, SOCKET sock, buffer_ctx *buf, size_t lens, ud_cxt *ud)
@@ -46,24 +46,25 @@ static void test_recv_cb(ev_ctx *ctx, SOCKET sock, buffer_ctx *buf, size_t lens,
 }
 static void test_send_cb(ev_ctx *ctx, SOCKET sock, size_t len, ud_cxt *ud)
 {
-    //PRINT("test_send_cb: sock %d  len %d err %d", (int32_t)sock, (int32_t)len, result);
+    //PRINT("test_send_cb: sock %d  len %d ", (int32_t)sock, (int32_t)len);
 }
 static void test_conn_recv_cb(ev_ctx *ctx, SOCKET sock, buffer_ctx *buf, size_t lens, ud_cxt *ud)
 {
-    if (buffer_size(buf) <= 2 + sizeof(index))
+    //PRINT("test_conn_recv_cb: sock %d", (int32_t)sock);
+    /*if (buffer_size(buf) <= 2 + sizeof(pk_index))
     {
         return;
     }
-    char len[2 + sizeof(index)];
+    char len[2 + sizeof(pk_index)];
     buffer_copyout(buf, len, sizeof(len));
     u_short pklen = ntohs(*(u_short*)len);
     if (buffer_size(buf) < pklen)
     {
         return;
     }
-    int32_t tmp = ntohl(*(u_long*)(len + 2));
-    ASSERTAB(tmp == index, "index error.");
-    buffer_drain(buf, pklen);
+    int32_t tmp = ntohl(*(u_long*)(len + 2));*/
+    //ASSERTAB(tmp == pk_index, "index error.");
+    buffer_drain(buf, buffer_size(buf));
 }
 static void test_conn_cb(ev_ctx *ctx, SOCKET sock, ud_cxt *ud)
 {
@@ -96,20 +97,20 @@ static void timeout(void *arg)
         int32_t len = randrange(1, sizeof(str));
         ASSERTAB(sizeof(str) > len, "randrange error.");
         randstr(str, len);
-        u_short total = (u_short)(2 + sizeof(index) + len);
+        u_short total = (u_short)(2 + sizeof(pk_index) + len);
         char *buf;
         MALLOC(buf, total);
-        index++;
+        pk_index++;
         total = ntohs(total);
         memcpy(buf, &total, sizeof(total));
-        int32_t tmp = ntohl(index);
+        int32_t tmp = ntohl(pk_index);
         memcpy(buf + sizeof(total), &tmp, sizeof(tmp));
-        memcpy(buf + sizeof(total) + sizeof(index), str, len);
-        ev_send(arg, connsock, buf, 2 + sizeof(index) + len, 0);
+        memcpy(buf + sizeof(total) + sizeof(pk_index), str, len);
+        ev_send(arg, connsock, buf, 2 + sizeof(pk_index) + len, 0);
     }
     else
     {
-        ev_connecter(arg, "127.0.0.1", 15000, test_conn_cb, NULL);
+        ev_connecter(arg, "192.168.43.159", 15000, test_conn_cb, NULL);
     }
     timer_start(&tw.timer);
     tw_add(&tw, 3000, timeout, arg);

@@ -18,7 +18,7 @@ int32_t netaddr_sethost(netaddr_ctx *ctx, const char *host, const uint16_t port)
 int32_t netaddr_remoteaddr(netaddr_ctx *ctx, SOCKET fd, const int32_t family);
 int32_t netaddr_localaddr(netaddr_ctx *ctx, SOCKET fd, const int32_t family);
 struct sockaddr *netaddr_addr(netaddr_ctx *ctx);
-int32_t netaddr_size(netaddr_ctx *ctx);
+socklen_t netaddr_size(netaddr_ctx *ctx);
 int32_t netaddr_ip(netaddr_ctx *ctx, char ip[IP_LENS]);
 uint16_t netaddr_port(netaddr_ctx *ctx);
 int32_t netaddr_family(netaddr_ctx *ctx);

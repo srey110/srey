@@ -4,6 +4,8 @@
 #include "queue.h"
 #include "array.h"
 #include "mutex.h"
+#include "utils.h"
+#include "buffer.h"
 #include "netutils.h"
 
 #define INIT_EVENTS_CNT         512
@@ -39,6 +41,7 @@ do {\
         ZERO(&(dst), sizeof(ud_cxt));\
     }\
 } while (0)
+#define FD_HASH(fd) hash((const char *)&(fd), sizeof(fd))
 
 typedef void(*accept_cb)(struct ev_ctx *ctx, SOCKET sock, ud_cxt *ud);
 typedef void(*close_cb)(struct ev_ctx *ctx, SOCKET sock, ud_cxt *ud);

@@ -7,20 +7,21 @@
 
 #define MAX_CNT_POP      16
 #define INIT_SENDBUF_LEN 64
-typedef enum CMDS
+typedef enum WORKER_CMDS
 {
-    REQ_STOPLOOP = 0x00,
-    REQ_UPDATEUD,
-    REQ_DISCONN,
-    REQ_ADDFD,
-    REQ_SEND,
-    EV_ACCEPT,
-    EV_CONNECT,
-    EV_READ,
-    EV_WRITE,
+    WCMD_STOPLOOP = 0x00,
+    WCMD_UPDATEUD,
+    WCMD_DISCONN,
+    WCMD_ADDFD,
+    WCMD_SEND,
+    WCMD_ACCEPT,
+    WCMD_CONNECT,
+    WCMD_READ,
+    WCMD_WRITE,
+    WCMD_ERROR,
 
-    CMD_CNT,
-}CMDS;
+    WCMD_TOTAL,
+}WORKER_CMDS;
 typedef struct sock_cb
 {
     recv_cb r_cb;
@@ -54,7 +55,7 @@ typedef struct runner_ctx
     volatile int32_t wait;
     uint32_t nqus;
     qus_ctx *qus;
-    struct ev_ctx *ev;
+    ev_ctx *ev;
     pthread_t thrunner;
     cond_ctx cond;
     mutex_ctx condlck;
@@ -64,7 +65,6 @@ typedef struct eworker_ctx
     uint32_t nthread;
     struct runner_ctx *runner;
 }eworker_ctx;
-#define FD_HASH(fd) hash((const char *)&(fd), sizeof(fd))
 #define QUS_PUSH(ew, cmd)\
 do {\
     uint64_t hs = FD_HASH(cmd.fd);\
@@ -158,7 +158,7 @@ void ev_loop(ev_ctx *ctx, SOCKET sock, recv_cb r_cb, close_cb c_cb, send_cb s_cb
 {
     ASSERTAB(NULL != r_cb && INVALID_SOCK != sock, ERRSTR_INVPARAM);
     cmd_ctx cmd;
-    cmd.cmd = REQ_ADDFD;
+    cmd.cmd = WCMD_ADDFD;
     cmd.fd = sock;
     COPY_UD(cmd.ud, ud);
     sock_cb *cbs;
@@ -195,7 +195,8 @@ static void _on_req_addfd(runner_ctx *runner, struct hashmap *map, cmd_ctx *cmd,
         _free_bufs(&old->qubuf);
         LOG_WARN("%s", "socket repeat.");
     }
-    if (ERR_OK != _post_recv(param.sock))
+    _post_reset(runner->ev, param.sock);
+    if (ERR_OK != _post_recv(runner->ev, param.sock))
     {
         _on_close(runner, map, &param);
     }
@@ -204,7 +205,7 @@ void ev_send(ev_ctx *ctx, SOCKET sock, void *data, size_t len, int32_t copy)
 {
     ASSERTAB(INVALID_SOCK != sock, ERRSTR_INVPARAM);
     cmd_ctx cmd;
-    cmd.cmd = REQ_SEND;
+    cmd.cmd = WCMD_SEND;
     cmd.fd = sock;
     cmd.len = len;
     if (copy)
@@ -234,14 +235,14 @@ static void _on_req_send(runner_ctx *runner, struct hashmap *map, cmd_ctx *cmd, 
     qu_bufs_push(&param->qubuf, &buf);
     if (0 == size)
     {
-        (void)_post_send(param->sock);
+        (void)_post_send(runner->ev, param->sock);
     }
 }
 void ev_close(struct ev_ctx *ctx, SOCKET sock)
 {
     ASSERTAB(INVALID_SOCK != sock, ERRSTR_INVPARAM);
     cmd_ctx cmd;
-    cmd.cmd = REQ_DISCONN;
+    cmd.cmd = WCMD_DISCONN;
     cmd.fd = sock;
     QUS_PUSH(ctx->worker, cmd);
 }
@@ -258,7 +259,7 @@ void ev_updateud(ev_ctx *ctx, SOCKET sock, free_ud f_cb, ud_cxt *ud)
 {
     ASSERTAB(INVALID_SOCK != sock, ERRSTR_INVPARAM);
     cmd_ctx cmd;
-    cmd.cmd = REQ_UPDATEUD;
+    cmd.cmd = WCMD_UPDATEUD;
     cmd.fd = sock;
     cmd.data = f_cb;
     COPY_UD(cmd.ud, ud);
@@ -280,7 +281,7 @@ static void _on_req_updateud(runner_ctx *runner, struct hashmap *map, cmd_ctx *c
 void ewcmd_accept(eworker_ctx *ctx, SOCKET fd, accept_cb cb, ud_cxt *ud)
 {
     cmd_ctx cmd;
-    cmd.cmd = EV_ACCEPT;
+    cmd.cmd = WCMD_ACCEPT;
     cmd.fd = fd;
     cmd.data = cb;
     COPY_UD(cmd.ud, ud);
@@ -294,7 +295,7 @@ static void _on_ev_accept(runner_ctx *runner, struct hashmap *map, cmd_ctx *cmd,
 void ewcmd_connect(eworker_ctx *ctx, SOCKET fd, connect_cb cb, ud_cxt *ud)
 {
     cmd_ctx cmd;
-    cmd.cmd = EV_CONNECT;
+    cmd.cmd = WCMD_CONNECT;
     cmd.fd = fd;
     cmd.data = cb;
     COPY_UD(cmd.ud, ud);
@@ -315,7 +316,7 @@ static void _on_ev_connect(runner_ctx *runner, struct hashmap *map, cmd_ctx *cmd
 void ewcmd_canread(eworker_ctx *ctx, SOCKET fd)
 {
     cmd_ctx cmd;
-    cmd.cmd = EV_READ;
+    cmd.cmd = WCMD_READ;
     cmd.fd = fd;
     QUS_PUSH(ctx, cmd);
 }
@@ -353,7 +354,7 @@ static void _on_ev_canread(runner_ctx *runner, struct hashmap *map, cmd_ctx *cmd
     }
     if (ERR_OK == rtn)
     {
-        rtn = _post_recv(param->sock);
+        rtn = _post_recv(runner->ev, param->sock);
     }
     if (ERR_OK != rtn)
     {
@@ -363,7 +364,7 @@ static void _on_ev_canread(runner_ctx *runner, struct hashmap *map, cmd_ctx *cmd
 void ewcmd_canwrite(eworker_ctx *ctx, SOCKET fd)
 {
     cmd_ctx cmd;
-    cmd.cmd = EV_WRITE;
+    cmd.cmd = WCMD_WRITE;
     cmd.fd = fd;
     QUS_PUSH(ctx, cmd);
 }
@@ -406,8 +407,25 @@ static void _on_ev_canwrite(runner_ctx *runner, struct hashmap *map, cmd_ctx *cm
     if (ERR_OK == err
         && qu_bufs_size(&param->qubuf) > 0)
     {
-        (void)_post_send(param->sock);
+        (void)_post_send(runner->ev, param->sock);
     }
+}
+void ewcmd_error(struct eworker_ctx *ctx, SOCKET fd)
+{
+    cmd_ctx cmd;
+    cmd.cmd = WCMD_ERROR;
+    cmd.fd = fd;
+    QUS_PUSH(ctx, cmd);
+}
+static void _on_ev_error(runner_ctx *runner, struct hashmap *map, cmd_ctx *cmd, int32_t *stop)
+{
+    sock_evparam *param = _map_get(map, cmd->fd);
+    if (NULL == param)
+    {
+        CLOSE_SOCK(cmd->fd);
+        return;
+    }
+    _on_close(runner, map, param);
 }
 static void _loop_runner(void *arg)
 {
@@ -418,16 +436,19 @@ static void _loop_runner(void *arg)
     MALLOC(cmds, sizeof(cmd_ctx) * maxcnt);    
     struct hashmap *map = hashmap_new_with_allocator(_malloc, _realloc, _free,
         sizeof(sock_evparam), ONEK * 4, 0, 0, _map_hash, _map_compare, _free_mapitem, NULL);
-    void(*_on_cmd[CMD_CNT])(runner_ctx *, struct hashmap *, cmd_ctx *, int32_t *);
-    _on_cmd[REQ_STOPLOOP] = _on_req_stoploop;
-    _on_cmd[REQ_UPDATEUD] = _on_req_updateud;
-    _on_cmd[REQ_DISCONN] = _on_req_disconn;
-    _on_cmd[REQ_ADDFD] = _on_req_addfd;
-    _on_cmd[REQ_SEND] = _on_req_send;
-    _on_cmd[EV_ACCEPT] = _on_ev_accept;
-    _on_cmd[EV_CONNECT] = _on_ev_connect;
-    _on_cmd[EV_READ] = _on_ev_canread;
-    _on_cmd[EV_WRITE] = _on_ev_canwrite;
+
+    void(*_on_cmd[WCMD_TOTAL])(runner_ctx *, struct hashmap *, cmd_ctx *, int32_t *);
+    _on_cmd[WCMD_STOPLOOP] = _on_req_stoploop;
+    _on_cmd[WCMD_UPDATEUD] = _on_req_updateud;
+    _on_cmd[WCMD_DISCONN] = _on_req_disconn;
+    _on_cmd[WCMD_ADDFD] = _on_req_addfd;
+    _on_cmd[WCMD_SEND] = _on_req_send;
+    _on_cmd[WCMD_ACCEPT] = _on_ev_accept;
+    _on_cmd[WCMD_CONNECT] = _on_ev_connect;
+    _on_cmd[WCMD_READ] = _on_ev_canread;
+    _on_cmd[WCMD_WRITE] = _on_ev_canwrite;
+    _on_cmd[WCMD_ERROR] = _on_ev_error;
+
     while (!stop)
     {
         mutex_lock(&runner->condlck);
@@ -489,7 +510,7 @@ void eworker_free(eworker_ctx *ctx)
     uint32_t i;
     runner_ctx *runner;
     cmd_ctx cmd;
-    cmd.cmd = REQ_STOPLOOP;
+    cmd.cmd = WCMD_STOPLOOP;
     for (i = 0; i < ctx->nthread; i++)
     {
         runner = &ctx->runner[i];

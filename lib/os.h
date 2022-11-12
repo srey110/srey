@@ -41,7 +41,7 @@
 #elif defined(OS_SUN)
     #define EV_EVPORT
 #endif
-//#undef EV_IOCP
+#undef EV_IOCP
 
 /*check version x64 x86*/
 #if defined(OS_WIN)

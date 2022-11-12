@@ -58,6 +58,7 @@
     <ClCompile Include="event\iocp.c" />
     <ClCompile Include="event\overlap.c" />
     <ClCompile Include="event\uev.c" />
+    <ClCompile Include="event\usock.c" />
     <ClCompile Include="hashmap.c" />
     <ClCompile Include="loger.c" />
     <ClCompile Include="md5\md5.c" />

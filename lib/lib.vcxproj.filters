@@ -168,5 +168,8 @@
     <ClCompile Include="event\evworker.c">
       <Filter>event</Filter>
     </ClCompile>
+    <ClCompile Include="event\usock.c">
+      <Filter>event</Filter>
+    </ClCompile>
   </ItemGroup>
 </Project>

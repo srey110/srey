@@ -267,7 +267,7 @@ static void _on_send_cb(watcher_ctx *watcher, DWORD bytes, sock_ctx *sock)
 {
     ewcmd_canwrite(watcher->ev->worker, sock->sock);
 }
-int32_t _post_send(sock_ctx *sock)
+int32_t _post_send(ev_ctx *ev, sock_ctx *sock)
 {
     overlap_tcp_ctx *ol = UPCAST(sock, overlap_tcp_ctx, ol_r);
     ol->bytes_s = 0;
@@ -281,7 +281,7 @@ int32_t _post_send(sock_ctx *sock)
     }
     return ERR_OK;
 }
-int32_t _post_recv(sock_ctx *sock)
+int32_t _post_recv(ev_ctx *ev, sock_ctx *sock)
 {
     overlap_tcp_ctx *ol = UPCAST(sock, overlap_tcp_ctx, ol_r);
     ol->flag = ol->bytes_r = 0;
@@ -305,6 +305,8 @@ static void _on_recv_cb(watcher_ctx *watcher, DWORD bytes, sock_ctx *sock)
 {
     ewcmd_canread(watcher->ev->worker, sock->sock);
 }
+void _post_reset(ev_ctx *ev, sock_ctx *sock)
+{ }
 struct sock_ctx *_new_sockctx(ev_ctx *ctx, SOCKET sock)
 {
     overlap_tcp_ctx *ol;
