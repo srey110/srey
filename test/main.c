@@ -88,7 +88,7 @@ static void test_acpt_cb(ev_ctx *ctx, SOCKET sock, ud_cxt *ud)
 static void timeout(void *arg)
 {
     int32_t elapsed = (int32_t)(timer_elapsed(&tw.timer) / (1000 * 1000));
-    PRINT("timeout:%d ms link cnt %d", elapsed, ATOMIC_GET(&count));
+    //PRINT("timeout:%d ms link cnt %d", elapsed, ATOMIC_GET(&count));
     if (INVALID_SOCK != connsock)
     {
         /*ev_close(arg, connsock);
@@ -110,7 +110,7 @@ static void timeout(void *arg)
     }
     else
     {
-        ev_connecter(arg, "192.168.43.159", 15000, test_conn_cb, NULL);
+        //ev_connecter(arg, "192.168.43.159", 15000, test_conn_cb, NULL);
     }
     timer_start(&tw.timer);
     tw_add(&tw, 3000, timeout, arg);

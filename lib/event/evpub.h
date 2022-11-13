@@ -50,12 +50,16 @@ typedef void(*connect_cb)(struct ev_ctx *ctx, SOCKET sock, ud_cxt *ud);//sock IN
 typedef void(*send_cb)(struct ev_ctx *ctx, SOCKET sock, size_t len, ud_cxt *ud);
 typedef void(*free_ud)(ud_cxt *ud);
 
-static inline void _set_sockops(SOCKET sock)
+static inline int32_t _set_sockops(SOCKET sock)
 {
-    sock_linger(sock);
-    sock_nodelay(sock);
-    sock_kpa(sock, SOCKKPA_DELAY, SOCKKPA_INTVL);
-    sock_nbio(sock);
+    if (ERR_OK != sock_linger(sock)
+        || ERR_OK != sock_nodelay(sock)
+        || ERR_OK != sock_kpa(sock, SOCKKPA_DELAY, SOCKKPA_INTVL)
+        || ERR_OK != sock_nbio(sock))
+    {
+        return ERR_FAILED;
+    }
+    return ERR_OK;
 }
 
 #endif//EVENT_PUB_H_

@@ -193,7 +193,7 @@ static void _on_req_addfd(runner_ctx *runner, struct hashmap *map, cmd_ctx *cmd,
         _invalid_sockctx(old->sock);
         _free_sockctx(old->sock);
         _free_bufs(&old->qubuf);
-        LOG_WARN("%s", "socket repeat.");
+        LOG_WARN("socket %d repeat.", (int32_t)cmd->fd);
     }
     _post_reset(runner->ev, param.sock);
     if (ERR_OK != _post_recv(runner->ev, param.sock))
@@ -289,7 +289,11 @@ void ewcmd_accept(eworker_ctx *ctx, SOCKET fd, accept_cb cb, ud_cxt *ud)
 }
 static void _on_ev_accept(runner_ctx *runner, struct hashmap *map, cmd_ctx *cmd, int32_t *stop)
 {
-    _set_sockops(cmd->fd);
+    if (ERR_OK != _set_sockops(cmd->fd))
+    {
+        CLOSE_SOCK(cmd->fd);
+        return;
+    }
     ((accept_cb)cmd->data)(runner->ev, cmd->fd, &cmd->ud);
 }
 void ewcmd_connect(eworker_ctx *ctx, SOCKET fd, connect_cb cb, ud_cxt *ud)

@@ -15,19 +15,19 @@ int32_t sock_type(SOCKET fd);
 //获取sin_family(AF_INET AF_INET6)
 int32_t sock_family(SOCKET fd);
 //设置TCP_NODELAY
-void sock_nodelay(SOCKET fd);
+int32_t sock_nodelay(SOCKET fd);
 //非阻塞
-void sock_nbio(SOCKET fd);
+int32_t sock_nbio(SOCKET fd);
 //地址重用 SO_REUSEADDR
-void sock_raddr(SOCKET fd);
+int32_t sock_raddr(SOCKET fd);
 //是否支持端口重用
 int32_t sock_checkrport();
 //端口重用
-void sock_rport(SOCKET fd);
+int32_t sock_rport(SOCKET fd);
 //SO_KEEPALIVE
-void sock_kpa(SOCKET fd, const int32_t delay, const int32_t intvl);
+int32_t sock_kpa(SOCKET fd, const int32_t delay, const int32_t intvl);
 //设置SO_LINGER 避免了TIME_WAIT状态
-void sock_linger(SOCKET fd);
+int32_t sock_linger(SOCKET fd);
 //一组相互链接的socket
 int32_t sock_pair(SOCKET sock[2]);
 
