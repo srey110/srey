@@ -11,6 +11,7 @@
 #define INIT_EVENTS_CNT         512
 #define MAX_RECV_SIZE           ONEK  * 4
 #define MAX_SEND_SIZE           ONEK  * 4
+#define INIT_SENDBUF_LEN        32
 
 typedef struct bufs_ctx
 {
@@ -50,6 +51,15 @@ typedef void(*connect_cb)(struct ev_ctx *ctx, SOCKET sock, ud_cxt *ud);//sock IN
 typedef void(*send_cb)(struct ev_ctx *ctx, SOCKET sock, size_t len, ud_cxt *ud);
 typedef void(*free_ud)(ud_cxt *ud);
 
+static inline void _qubufs_clear(qu_bufs *bufs)
+{
+    bufs_ctx *buf;
+    while (NULL != (buf = qu_bufs_pop(bufs)))
+    {
+        FREE(buf->data);
+    }
+    qu_bufs_clear(bufs);
+}
 static inline int32_t _set_sockops(SOCKET sock)
 {
     if (ERR_OK != sock_linger(sock)

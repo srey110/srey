@@ -6,12 +6,9 @@
 
 #ifndef EV_IOCP
 
-#define EVENT_READ          0x01
-#define EVENT_WRITE         0x02
 typedef enum UEV_CMDS
 {
-    UEVCMD_RESET = 0x00,
-    UEVCMD_STOP,
+    UEVCMD_STOP = 0x00,
     UEVCMD_RECV,
     UEVCMD_SEND,
     UEVCMD_LSN,
@@ -19,41 +16,12 @@ typedef enum UEV_CMDS
 
     UEVCMD_TOTAL,
 }UEV_CMDS;
-typedef struct mapev_ctx
-{
-    SOCKET fd;
-    int32_t events;
-}mapev_ctx;
 #define PIPCMD_SEND(ev, cmd)\
 do {\
-    uint64_t hs = FD_HASH(cmd.fd);\
+    uint64_t hs = FD_HASH(cmd.sock->sock);\
     watcher_ctx *watcher = (1 == (ev)->nthreads) ? (ev)->watcher : (&(ev)->watcher[hs % (ev)->nthreads]);\
     _pipcmd_send(watcher, &cmd);\
 } while (0)
-static inline uint64_t _map_hash(const void *item, uint64_t seed0, uint64_t seed1)
-{
-    SOCKET sock = ((const mapev_ctx *)item)->fd;
-    return hash((const char *)&sock, sizeof(sock));
-}
-static inline int _map_compare(const void *a, const void *b, void *udata)
-{
-    return (int)(((const mapev_ctx *)a)->fd - ((const mapev_ctx *)b)->fd);
-}
-static inline mapev_ctx *_map_get(watcher_ctx *watcher, SOCKET fd)
-{
-    mapev_ctx key;
-    key.fd = fd;
-    mapev_ctx *mapev = hashmap_get(watcher->mapev, &key);
-    if (NULL != mapev)
-    {
-        return mapev;
-    }
-    mapev_ctx evval;
-    evval.fd = fd;
-    evval.events = 0;
-    hashmap_set(watcher->mapev, &evval);
-    return hashmap_get(watcher->mapev, &key);
-}
 #if defined(EV_KQUEUE)
 static inline void _check_resize(watcher_ctx *watcher)
 {
@@ -78,55 +46,41 @@ static inline void _cmd_cb_stop(watcher_ctx *watcher, pipcmd_ctx *cmd, int32_t *
 {
     *stop = 1;
 }
-void _post_reset(ev_ctx *ev, sock_ctx *sock)
-{
-    pipcmd_ctx cmd;
-    cmd.cmd = UEVCMD_RESET;
-    cmd.fd = sock->sock;
-    PIPCMD_SEND(ev, cmd);
-}
-static inline void _cmd_cb_reset(watcher_ctx *watcher, pipcmd_ctx *cmd, int32_t *stop)
-{
-    mapev_ctx *mapev = _map_get(watcher, cmd->fd);
-    mapev->events = 0;
-}
 int32_t _post_recv(ev_ctx *ev, struct sock_ctx *sock)
 {
     pipcmd_ctx cmd;
     cmd.cmd = UEVCMD_RECV;
-    cmd.fd = sock->sock;
+    cmd.sock = sock;
     PIPCMD_SEND(ev, cmd);
     return ERR_OK;
 }
 static inline void _cmd_cb_recv(watcher_ctx *watcher, pipcmd_ctx *cmd, int32_t *stop)
 {
-    mapev_ctx *mapev = _map_get(watcher, cmd->fd);
-    if (ERR_OK != _add_event(watcher, cmd->fd, &mapev->events, EVENT_READ, NULL))
+    if (ERR_OK != _add_event(watcher, cmd->sock->sock, &cmd->sock->events, EVENT_READ, cmd->sock))
     {
-        ewcmd_error(watcher->ev->worker, cmd->fd);
+        ewcmd_error(watcher->ev->worker, cmd->sock->sock);
     }
 }
 int32_t _post_send(ev_ctx *ev, sock_ctx *sock)
 {
     pipcmd_ctx cmd;
     cmd.cmd = UEVCMD_SEND;
-    cmd.fd = sock->sock;
+    cmd.sock = sock;
     PIPCMD_SEND(ev, cmd);
     return ERR_OK;
 }
 static inline void _cmd_cb_send(watcher_ctx *watcher, pipcmd_ctx *cmd, int32_t *stop)
 {
-    mapev_ctx *mapev = _map_get(watcher, cmd->fd);
-    if (ERR_OK != _add_event(watcher, cmd->fd, &mapev->events, EVENT_WRITE, NULL))
+    if (INVALID_SOCK == cmd->sock->sock)
     {
-        ewcmd_error(watcher->ev->worker, cmd->fd);
+        return;
     }
+    _add_event(watcher, cmd->sock->sock, &cmd->sock->events, EVENT_WRITE, cmd->sock);
 }
 void _post_listen(watcher_ctx *watcher, sock_ctx *sock)
 {
     pipcmd_ctx cmd;
     cmd.cmd = UEVCMD_LSN;
-    cmd.fd = sock->sock;
     cmd.sock = sock;
     _pipcmd_send(watcher, &cmd);
 }
@@ -134,13 +88,12 @@ void _post_listen_rand(ev_ctx *ev, sock_ctx *sock)
 {
     pipcmd_ctx cmd;
     cmd.cmd = UEVCMD_LSN;
-    cmd.fd = sock->sock;
     cmd.sock = sock;
     PIPCMD_SEND(ev, cmd);
 }
 static inline void _cmd_cb_lsn(watcher_ctx *watcher, pipcmd_ctx *cmd, int32_t *stop)
 {
-    if (ERR_OK != _add_event(watcher, cmd->fd, &cmd->sock->events, EVENT_READ, cmd->sock))
+    if (ERR_OK != _add_event(watcher, cmd->sock->sock, &cmd->sock->events, EVENT_READ, cmd->sock))
     {
         LOG_ERROR("%s", "add listen socket in loop error.");
     }
@@ -149,19 +102,18 @@ void _post_connect(ev_ctx *ev, sock_ctx *sock)
 {
     pipcmd_ctx cmd;
     cmd.cmd = UEVCMD_CONN;
-    cmd.fd = sock->sock;
     cmd.sock = sock;
     PIPCMD_SEND(ev, cmd);
 }
 static inline void _cmd_cb_conn(watcher_ctx *watcher, pipcmd_ctx *cmd, int32_t *stop)
 {
-    if (ERR_OK == _add_event(watcher, cmd->fd, &cmd->sock->events, EVENT_WRITE, cmd->sock))
+    if (ERR_OK == _add_event(watcher, cmd->sock->sock, &cmd->sock->events, EVENT_WRITE, cmd->sock))
     {
         return;
     }
     ud_cxt *ud;
     connect_cb cb = _get_connect_ud(cmd->sock, &ud);
-    ewcmd_connect(watcher->ev->worker, cmd->fd, cb, ud);
+    ewcmd_connect(watcher->ev->worker, cmd->sock->sock, cb, ud);
     FREE(cmd->sock);
 }
 int32_t _add_event(watcher_ctx *watcher, SOCKET fd, int32_t *events, int32_t ev, void *arg)
@@ -169,7 +121,6 @@ int32_t _add_event(watcher_ctx *watcher, SOCKET fd, int32_t *events, int32_t ev,
 #if defined(EV_EPOLL)
     events_t epev;
     ZERO(&epev, sizeof(epev));
-    epev.data.fd = fd;
     epev.data.ptr = arg;
     ev |= (*events);
     if (ev & EVENT_READ)
@@ -229,7 +180,6 @@ void _del_event(watcher_ctx *watcher, SOCKET fd, int32_t *events, int32_t ev, vo
 #if defined(EV_EPOLL)
     events_t epev;
     ZERO(&epev, sizeof(epev));
-    epev.data.fd = fd;
     epev.data.ptr = arg;
     *events = (*events) & ~ev;
     if (0 == (*events))
@@ -288,7 +238,7 @@ void _del_event(watcher_ctx *watcher, SOCKET fd, int32_t *events, int32_t ev, vo
     }
 #endif
 }
-static inline int32_t _parse_event(events_t *ev, SOCKET *fd, void **arg)
+static inline int32_t _parse_event(events_t *ev, void **arg)
 {
     int32_t rtn = 0;
 #if defined(EV_EPOLL)
@@ -300,7 +250,6 @@ static inline int32_t _parse_event(events_t *ev, SOCKET *fd, void **arg)
     {
         rtn |= EVENT_WRITE;
     }
-    *fd = (SOCKET)(ev->data.fd);
     *arg = ev->data.ptr;
 #elif defined(EV_KQUEUE)
     if (EVFILT_READ == ev->filter)
@@ -311,7 +260,6 @@ static inline int32_t _parse_event(events_t *ev, SOCKET *fd, void **arg)
     {
         rtn |= EVENT_WRITE;
     }
-    *fd = (SOCKET)(ev->ident);
     *arg = ev->udata;
 #elif defined(EV_EVPORT)
     if (ev->portev_events & POLLIN)
@@ -322,23 +270,9 @@ static inline int32_t _parse_event(events_t *ev, SOCKET *fd, void **arg)
     {
         rtn |= EVENT_WRITE;
     }
-    *fd = (SOCKET)(ev->portev_object);
     *arg = ev->portev_user;
 #endif
     return rtn;
-}
-static inline void _fd_event(watcher_ctx *watcher, SOCKET fd, int32_t ev)
-{
-    mapev_ctx *mapev = _map_get(watcher, fd);
-    _del_event(watcher, fd, &mapev->events, ev, NULL);
-    if (ev & EVENT_READ)
-    {
-        ewcmd_canread(watcher->ev->worker, fd);
-    }
-    if (ev & EVENT_WRITE)
-    {
-        ewcmd_canwrite(watcher->ev->worker, fd);
-    }
 }
 static void _loop_event(void *arg)
 {
@@ -347,9 +281,9 @@ static void _loop_event(void *arg)
     _sockctx_cb[FLAG_LSN] = _on_accept_cb;
     _sockctx_cb[FLAG_CONN] = _on_connect_cb;
     _sockctx_cb[FLAG_CMD] = _on_cmd_cb;
+    _sockctx_cb[FLAG_RW] = _on_cmd_rw;
 
     void(*_cmd_cb[UEVCMD_TOTAL])(watcher_ctx *, pipcmd_ctx *, int32_t *);
-    _cmd_cb[UEVCMD_RESET] = _cmd_cb_reset;
     _cmd_cb[UEVCMD_STOP] = _cmd_cb_stop;
     _cmd_cb[UEVCMD_RECV] = _cmd_cb_recv;
     _cmd_cb[UEVCMD_SEND] = _cmd_cb_send;
@@ -365,7 +299,6 @@ static void _loop_event(void *arg)
 #if defined(EV_EVPORT)
     uint32_t nget;
 #endif
-    SOCKET fd;
     pipcmd_ctx cmd;
     sock_ctx *sock;
     int32_t i, cnt, ev, stop = 0;
@@ -383,18 +316,10 @@ static void _loop_event(void *arg)
 #endif
         for (i = 0; i < cnt; i++)
         {
-            ev = _parse_event(&watcher->events[i], &fd, (void **)&sock);
-            ASSERTAB(0 != fd, "111111111111111111111");
-            if (NULL != sock)
-            {
-                _sockctx_cb[sock->flag](watcher, sock, ev);
-            }
-            else
-            {
-                _fd_event(watcher, fd, ev);
-            }
+            ev = _parse_event(&watcher->events[i], (void **)&sock);
+            ASSERTAB(NULL != sock, ERRSTR_NULLP);
+            _sockctx_cb[sock->flag](watcher, sock, ev);
         }
-
         for (i = 0; i < watcher->ncmd; i++)
         {
             mutex_lock(&watcher->pipcmdlck);
@@ -403,7 +328,6 @@ static void _loop_event(void *arg)
             _cmd_cb[cmd.cmd](watcher, &cmd, &stop);
         }
         watcher->ncmd = 0;
-
         if (0 == stop
             && cnt == watcher->nevent)
         {
@@ -413,36 +337,17 @@ static void _loop_event(void *arg)
         }
     }
 }
-static void _cloexec(int32_t evfd)
-{
-#ifdef EV_EPOLL
-    int32_t flag = fcntl(evfd, F_GETFD);
-    if (ERR_FAILED == flag)
-    {
-        LOG_WARN("fcntl(%d, F_GETFD) failed.", evfd);
-        return;
-    }
-    if (!(flag & FD_CLOEXEC))
-    {
-        if (ERR_FAILED == fcntl(evfd, F_SETFD, flag | FD_CLOEXEC))
-        {
-            LOG_WARN("fcntl(%d, F_SETFD, FD_CLOEXEC) failed.", evfd);
-        }
-    }
-#endif
-}
 static int32_t _init_evfd()
 {
     int32_t evfd = INVALID_FD;
 #if defined(EV_EPOLL)
-    evfd = epoll_create(ONEK);
+    evfd = epoll_create1(EPOLL_CLOEXEC);
 #elif defined(EV_KQUEUE)
     evfd = kqueue();
 #elif defined(EV_EVPORT)
     evfd = port_create();
 #endif
     ASSERTAB(INVALID_FD != evfd, ERRORSTR(ERRNO));
-    _cloexec(evfd);
     return evfd;
 }
 void ev_init(ev_ctx *ctx, uint32_t nthreads)
@@ -470,8 +375,6 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads)
         ASSERTAB(ERR_OK == pipe(watcher->pipes), ERRORSTR(ERRNO));        
         pip_cmd_init(&watcher->pipcmd, ONEK * 4);
         mutex_init(&watcher->pipcmdlck);
-        watcher->mapev = hashmap_new_with_allocator(_malloc, _realloc, _free,
-            sizeof(mapev_ctx), ONEK * 4, 0, 0, _map_hash, _map_compare, NULL, NULL);
         watcher->thevent = thread_creat(_loop_event, watcher);
     }
 }
@@ -503,7 +406,6 @@ void ev_free(ev_ctx *ctx)
         FREE(watcher->changelist);
 #endif
         FREE(watcher->events);
-        hashmap_free(watcher->mapev);
     }
     FREE(ctx->watcher);
     struct listener_ctx **lsn;

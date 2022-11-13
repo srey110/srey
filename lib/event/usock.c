@@ -29,6 +29,7 @@ typedef struct tcp_ctx
 {
     sock_ctx sock;
     buffer_ctx buf;
+    qu_bufs qubuf;
 }tcp_ctx;
 
 static void _close_lsnsock(listener_ctx *lsn, int32_t cnt)
@@ -108,7 +109,7 @@ void _freelsn(listener_ctx *lsn)
 }
 void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev)
 {
-    _del_event(watcher, skctx->sock, &skctx->events, ev, NULL);
+    _del_event(watcher, skctx->sock, &skctx->events, ev, skctx);
     ASSERTAB(0 == skctx->events, "logic error.");
     conn_ctx *conn = UPCAST(skctx, conn_ctx, sock);
     ewcmd_connect(watcher->ev->worker, skctx->sock, conn->conn_cb, &conn->ud);
@@ -163,6 +164,18 @@ void _on_cmd_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev)
     _add_event(watcher, skctx->sock, &skctx->events, ev, skctx);
 #endif
 }
+void _on_cmd_rw(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev)
+{
+    _del_event(watcher, skctx->sock, &skctx->events, ev, skctx);
+    if (ev & EVENT_READ)
+    {
+        ewcmd_canread(watcher->ev->worker, skctx->sock);
+    }
+    if (ev & EVENT_WRITE)
+    {
+        ewcmd_canwrite(watcher->ev->worker, skctx->sock);
+    }
+}
 connect_cb _get_connect_ud(sock_ctx *skctx, ud_cxt **ud)
 {
     conn_ctx *conn = UPCAST(skctx, conn_ctx, sock);
@@ -173,28 +186,43 @@ sock_ctx *_new_sockctx(ev_ctx *ctx, SOCKET sock)
 {
     tcp_ctx *tcp;
     MALLOC(tcp, sizeof(tcp_ctx));
-    tcp->sock.events = tcp->sock.flag = 0;
+    tcp->sock.events = 0;
+    tcp->sock.flag = FLAG_RW;
     tcp->sock.sock = sock;
     buffer_init(&tcp->buf);
+    qu_bufs_init(&tcp->qubuf, INIT_SENDBUF_LEN);
     return &tcp->sock;
+}
+void _reset_sockctx(struct sock_ctx *skctx, SOCKET sock)
+{
+    tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
+    tcp->sock.events = 0;
+    tcp->sock.sock = sock;
+    buffer_drain(&tcp->buf, buffer_size(&tcp->buf));
+    _qubufs_clear(&tcp->qubuf);
+}
+void _close_sockctx(struct sock_ctx *skctx)
+{
+    SOCK_CLOSE(skctx->sock);
 }
 void _free_sockctx(sock_ctx *skctx)
 {
     tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
-    (void)shutdown(tcp->sock.sock, SHUT_RD);
     CLOSE_SOCK(tcp->sock.sock);
-    buffer_free(&tcp->buf);
+    buffer_free(&tcp->buf);    
+    _qubufs_clear(&tcp->qubuf);
+    qu_bufs_free(&tcp->qubuf);
     FREE(tcp);
 }
-void _invalid_sockctx(sock_ctx *skctx)
-{
-    tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
-    tcp->sock.sock = INVALID_SOCK;
-}
-buffer_ctx *_get_buffer_r(sock_ctx *skctx)
+buffer_ctx *_get_recv_buf(sock_ctx *skctx)
 {
     tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
     return &tcp->buf;
+}
+qu_bufs *_get_send_buf(struct sock_ctx *skctx)
+{
+    tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
+    return &tcp->qubuf;
 }
 
 #endif

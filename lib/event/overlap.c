@@ -37,6 +37,7 @@ typedef struct overlap_tcp_ctx
     DWORD flag;
     buffer_ctx buf_r;
     IOV_TYPE wsabuf;
+    qu_bufs qubuf;
 }overlap_tcp_ctx;
 
 static inline int32_t _join_iocp(ev_ctx *ctx, SOCKET sock)
@@ -305,8 +306,6 @@ static void _on_recv_cb(watcher_ctx *watcher, DWORD bytes, sock_ctx *sock)
 {
     ewcmd_canread(watcher->ev->worker, sock->sock);
 }
-void _post_reset(ev_ctx *ev, sock_ctx *sock)
-{ }
 struct sock_ctx *_new_sockctx(ev_ctx *ctx, SOCKET sock)
 {
     overlap_tcp_ctx *ol;
@@ -320,26 +319,39 @@ struct sock_ctx *_new_sockctx(ev_ctx *ctx, SOCKET sock)
     ol->wsabuf.IOV_PTR_FIELD = NULL;
     ol->wsabuf.IOV_LEN_FIELD = 0;
     buffer_init(&ol->buf_r);
+    qu_bufs_init(&ol->qubuf, INIT_SENDBUF_LEN);
     return &ol->ol_r;
 }
-void _free_sockctx(sock_ctx *sock)
+void _reset_sockctx(sock_ctx *skctx, SOCKET sock)
 {
-    overlap_tcp_ctx *ol = UPCAST(sock, overlap_tcp_ctx, ol_r);
-    (void)shutdown(ol->ol_r.sock, SHUT_RD);
+    overlap_tcp_ctx *ol = UPCAST(skctx, overlap_tcp_ctx, ol_r);
+    ol->ol_r.sock = sock;
+    ol->ol_s.sock = sock;
+    buffer_drain(&ol->buf_r, buffer_size(&ol->buf_r));
+    _qubufs_clear(&ol->qubuf);
+}
+void _close_sockctx(struct sock_ctx *skctx)
+{
+    SOCK_CLOSE(skctx->sock);
+}
+void _free_sockctx(sock_ctx *skctx)
+{
+    overlap_tcp_ctx *ol = UPCAST(skctx, overlap_tcp_ctx, ol_r);
     CLOSE_SOCK(ol->ol_r.sock);
     buffer_free(&ol->buf_r);
+    _qubufs_clear(&ol->qubuf);
+    qu_bufs_free(&ol->qubuf);
     FREE(ol);
 }
-void _invalid_sockctx(sock_ctx *sock)
+buffer_ctx *_get_recv_buf(sock_ctx *skctx)
 {
-    overlap_tcp_ctx *ol = UPCAST(sock, overlap_tcp_ctx, ol_r);
-    ol->ol_r.sock = INVALID_SOCK;
-    ol->ol_s.sock = INVALID_SOCK;
-}
-buffer_ctx *_get_buffer_r(sock_ctx *sock)
-{
-    overlap_tcp_ctx *ol = UPCAST(sock, overlap_tcp_ctx, ol_r);
+    overlap_tcp_ctx *ol = UPCAST(skctx, overlap_tcp_ctx, ol_r);
     return &ol->buf_r;
+}
+qu_bufs *_get_send_buf(struct sock_ctx *skctx)
+{
+    overlap_tcp_ctx *ol = UPCAST(skctx, overlap_tcp_ctx, ol_r);
+    return &ol->qubuf;
 }
 
 #endif//EV_IOCP

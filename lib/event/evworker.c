@@ -6,7 +6,6 @@
 #include "buffer.h"
 
 #define MAX_CNT_POP      16
-#define INIT_SENDBUF_LEN 64
 typedef enum WORKER_CMDS
 {
     WCMD_STOPLOOP = 0x00,
@@ -34,7 +33,6 @@ typedef struct sock_evparam
     sock_cb cb;
     struct sock_ctx *sock;
     ud_cxt ud;
-    qu_bufs qubuf;
 }sock_evparam;
 typedef struct cmd_ctx
 {
@@ -50,6 +48,7 @@ typedef struct qus_ctx
     qu_cmd qu;
     mutex_ctx lck;
 }qus_ctx;
+QUEUE_DECL(struct sock_ctx *, qu_pool);
 typedef struct runner_ctx
 {
     volatile int32_t wait;
@@ -59,6 +58,7 @@ typedef struct runner_ctx
     pthread_t thrunner;
     cond_ctx cond;
     mutex_ctx condlck;
+    qu_pool pool;
 }runner_ctx;
 typedef struct eworker_ctx
 {
@@ -86,12 +86,6 @@ static inline sock_evparam *_map_get(struct hashmap *map, SOCKET fd)
     sock_evparam key;
     key.fd = fd;
     return hashmap_get(map, &key);
-}
-static inline sock_evparam *_map_del(struct hashmap *map, SOCKET fd)
-{
-    sock_evparam key;
-    key.fd = fd;
-    return hashmap_delete(map, &key);
 }
 static inline void _qus_push(runner_ctx *runner, uint32_t index, cmd_ctx *cmd)
 {
@@ -125,31 +119,6 @@ static inline int32_t _qus_pop(runner_ctx *runner, cmd_ctx *cmds)
     }
     return index;
 }
-static inline void _free_bufs(qu_bufs *bufs)
-{
-    bufs_ctx *buf;
-    while (NULL != (buf = qu_bufs_pop(bufs)))
-    {
-        FREE(buf->data);
-    }
-    qu_bufs_free(bufs);
-}
-static inline void _on_close(runner_ctx *runner, struct hashmap *map, sock_evparam *param)
-{
-    if (NULL != param->cb.c_cb)
-    {
-        param->cb.c_cb(runner->ev, param->fd, &param->ud);
-    }
-    _free_sockctx(param->sock);
-    _free_bufs(&param->qubuf);
-    _map_del(map, param->fd);
-}
-static inline void _free_mapitem(void *item)
-{
-    sock_evparam *param = (sock_evparam *)item;
-    _free_sockctx(param->sock);
-    _free_bufs(&param->qubuf);
-}
 static void _on_req_stoploop(runner_ctx *runner, struct hashmap *map, cmd_ctx *cmd, int32_t *stop)
 {
     *stop = 1;
@@ -169,6 +138,19 @@ void ev_loop(ev_ctx *ctx, SOCKET sock, recv_cb r_cb, close_cb c_cb, send_cb s_cb
     cmd.data = cbs;
     QUS_PUSH(ctx->worker, cmd);
 }
+static inline void _on_close(runner_ctx *runner, struct hashmap *map, sock_evparam *param)
+{
+    struct sock_ctx *sock = param->sock;
+    sock_evparam key;
+    key.fd = param->fd;
+    if (NULL != param->cb.c_cb)
+    {
+        param->cb.c_cb(runner->ev, param->fd, &param->ud);
+    }
+    _close_sockctx(sock);
+    hashmap_delete(map, &key);
+    qu_pool_push(&runner->pool, &sock);
+}
 static void _on_req_addfd(runner_ctx *runner, struct hashmap *map, cmd_ctx *cmd, int32_t *stop)
 {
     sock_evparam param;
@@ -176,26 +158,16 @@ static void _on_req_addfd(runner_ctx *runner, struct hashmap *map, cmd_ctx *cmd,
     FREE(cmd->data);
     param.fd = cmd->fd;
     param.ud = cmd->ud;
-    param.sock = _new_sockctx(runner->ev, cmd->fd);
-    if (NULL == param.sock)
+    if (qu_pool_size(&runner->pool) > 0)
     {
-        if (NULL != param.cb.c_cb)
-        {
-            param.cb.c_cb(runner->ev, param.fd, &param.ud);
-            CLOSE_SOCK(param.fd);
-        }
-        return;
+        param.sock = *qu_pool_pop(&runner->pool);
+        _reset_sockctx(param.sock, cmd->fd);
     }
-    qu_bufs_init(&param.qubuf, INIT_SENDBUF_LEN);
-    sock_evparam *old = hashmap_set(map, &param);
-    if (NULL != old)
+    else
     {
-        _invalid_sockctx(old->sock);
-        _free_sockctx(old->sock);
-        _free_bufs(&old->qubuf);
-        LOG_WARN("socket %d repeat.", (int32_t)cmd->fd);
+        param.sock = _new_sockctx(runner->ev, cmd->fd);
     }
-    _post_reset(runner->ev, param.sock);
+    ASSERTAB(NULL == hashmap_set(map, &param), "addfd repeat"); 
     if (ERR_OK != _post_recv(runner->ev, param.sock))
     {
         _on_close(runner, map, &param);
@@ -231,8 +203,9 @@ static void _on_req_send(runner_ctx *runner, struct hashmap *map, cmd_ctx *cmd, 
     buf.data = cmd->data;
     buf.len = cmd->len;
     buf.offset = 0;
-    size_t size = qu_bufs_size(&param->qubuf);
-    qu_bufs_push(&param->qubuf, &buf);
+    qu_bufs *sendbufs = _get_send_buf(param->sock);
+    size_t size = qu_bufs_size(sendbufs);
+    qu_bufs_push(sendbufs, &buf);
     if (0 == size)
     {
         (void)_post_send(runner->ev, param->sock);
@@ -348,7 +321,7 @@ static void _on_ev_canread(runner_ctx *runner, struct hashmap *map, cmd_ctx *cmd
     {
         return;
     }
-    buffer_ctx *buf = _get_buffer_r(param->sock);
+    buffer_ctx *buf = _get_recv_buf(param->sock);
     size_t nread;
     //读数据前断线检测。。。
     int32_t rtn = buffer_from_sock(buf, param->fd, MAX_RECV_SIZE, &nread, _sock_read, NULL);
@@ -383,8 +356,9 @@ static void _on_ev_canwrite(runner_ctx *runner, struct hashmap *map, cmd_ctx *cm
     int32_t nsend;
     size_t total = 0;
     bufs_ctx *buf;
+    qu_bufs *sendbufs = _get_send_buf(param->sock);
     while (total < MAX_SEND_SIZE
-        && NULL != (buf = qu_bufs_peek(&param->qubuf)))
+        && NULL != (buf = qu_bufs_peek(sendbufs)))
     {
         nsend = send(param->fd, (char*)buf->data + buf->offset, (int32_t)(buf->len - buf->offset), 0);
         if (0 == nsend)
@@ -405,11 +379,11 @@ static void _on_ev_canwrite(runner_ctx *runner, struct hashmap *map, cmd_ctx *cm
         if (buf->offset == buf->len)
         {
             FREE(buf->data);
-            qu_bufs_pop(&param->qubuf);
+            qu_bufs_pop(sendbufs);
         }
     }
     if (ERR_OK == err
-        && qu_bufs_size(&param->qubuf) > 0)
+        && qu_bufs_size(sendbufs) > 0)
     {
         (void)_post_send(runner->ev, param->sock);
     }
@@ -430,6 +404,11 @@ static void _on_ev_error(runner_ctx *runner, struct hashmap *map, cmd_ctx *cmd, 
         return;
     }
     _on_close(runner, map, param);
+}
+static inline void _free_mapitem(void *item)
+{
+    sock_evparam *param = (sock_evparam *)item;
+    _free_sockctx(param->sock);
 }
 static void _loop_runner(void *arg)
 {
@@ -452,7 +431,6 @@ static void _loop_runner(void *arg)
     _on_cmd[WCMD_READ] = _on_ev_canread;
     _on_cmd[WCMD_WRITE] = _on_ev_canwrite;
     _on_cmd[WCMD_ERROR] = _on_ev_error;
-
     while (!stop)
     {
         mutex_lock(&runner->condlck);
@@ -496,6 +474,7 @@ eworker_ctx *eworker_init(struct ev_ctx *ev, uint32_t nthread, uint32_t nqus)
         _init_qus(runner);
         cond_init(&runner->cond);
         mutex_init(&runner->condlck);
+        qu_pool_init(&runner->pool, ONEK * 4);
         runner->thrunner = thread_creat(_loop_runner, runner);
     }
     return ctx;
@@ -525,12 +504,18 @@ void eworker_free(eworker_ctx *ctx)
         runner = &ctx->runner[i];
         thread_join(runner->thrunner);
     }
+    struct sock_ctx **sock;
     for (i = 0; i < ctx->nthread; i++)
     {
         runner = &ctx->runner[i];
         mutex_free(&runner->condlck);
         cond_free(&runner->cond);
         _free_qus(runner);
+        while (NULL != (sock = qu_pool_pop(&runner->pool)))
+        {
+            _free_sockctx(*sock);
+        }
+        qu_pool_free(&runner->pool);
     }
     FREE(ctx->runner);
     FREE(ctx);
