@@ -735,24 +735,23 @@ void buffer_commit_get(buffer_ctx *ctx, size_t len)
     ctx->freeze_read = 0;
     _buffer_unlock(ctx);
 }
-int32_t buffer_from_sock(buffer_ctx *ctx, SOCKET fd, size_t maxlen, size_t *nread,
+static int32_t _buffer_from_sock(buffer_ctx *ctx, SOCKET fd, size_t nmax, size_t *nread,
     int32_t(*read_fd)(SOCKET fd, void *buf, size_t len, void *arg), void *arg)
 {
-    ASSERTAB(NULL != read_fd, ERRSTR_NULLP);
     *nread = 0;
-    IOV_TYPE iov[MAX_EXPAND_NIOV];
     int32_t rtn = ERR_OK;
+    IOV_TYPE iov[MAX_EXPAND_NIOV];
     int32_t rtnread;
-    uint32_t cnt = buffer_expand(ctx, maxlen, iov, MAX_EXPAND_NIOV);
+    uint32_t cnt = buffer_expand(ctx, nmax, iov, MAX_EXPAND_NIOV);
     for (uint32_t i = 0; i < cnt; i++)
     {
         rtnread = read_fd(fd, iov[i].IOV_PTR_FIELD, iov[i].IOV_LEN_FIELD, arg);
-        if (ERR_FAILED == rtnread)
+        if (ERR_FAILED == rtnread)//´íÎó
         {
             rtn = ERR_FAILED;
             break;
         }
-        if (ERR_OK == rtnread)
+        if (ERR_OK == rtnread)//ÎÞÊý¾Ý
         {
             break;
         }
@@ -760,8 +759,31 @@ int32_t buffer_from_sock(buffer_ctx *ctx, SOCKET fd, size_t maxlen, size_t *nrea
         if (rtnread < (int32_t)iov[i].IOV_LEN_FIELD)
         {
             break;
-        }        
+        }
     }
     buffer_commit_expand(ctx, *nread, iov, cnt);
+    return rtn;
+}
+int32_t buffer_from_sock(buffer_ctx *ctx, SOCKET fd, size_t *nread,
+    int32_t(*read_fd)(SOCKET fd, void *buf, size_t len, void *arg), void *arg)
+{
+    ASSERTAB(NULL != read_fd, ERRSTR_NULLP);
+    *nread = 0;
+    int32_t rtn;
+    size_t nowread;
+    size_t nmax = ONEK * 4;
+    while (1)
+    {
+        rtn = _buffer_from_sock(ctx, fd, nmax, &nowread, read_fd, arg);
+        *nread += nowread;
+        if (ERR_OK != rtn)
+        {
+            break;
+        }
+        if (nowread < nmax)
+        {
+            break;
+        }
+    }
     return rtn;
 }

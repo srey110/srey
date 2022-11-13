@@ -3,8 +3,6 @@
 
 #ifndef EV_IOCP
 
-#define MAX_CMD_CNT   512
-
 typedef struct lsnsock_ctx
 {
     sock_ctx sock;
@@ -41,10 +39,10 @@ static void _close_lsnsock(listener_ctx *lsn, int32_t cnt)
 }
 void _on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev)
 {
-    SOCKET fd = accept(skctx->sock, NULL, NULL);
-    if (INVALID_SOCK != fd)
+    SOCKET fd;
+    lsnsock_ctx *acpt = UPCAST(skctx, lsnsock_ctx, sock);
+    while (INVALID_SOCK != (fd = accept(skctx->sock, NULL, NULL)))
     {
-        lsnsock_ctx *acpt = UPCAST(skctx, lsnsock_ctx, sock);
         ewcmd_accept(watcher->ev->worker, fd, acpt->lsn->acp_cb, &acpt->lsn->ud);
     }
 #ifdef EV_EVPORT
@@ -158,8 +156,10 @@ int32_t ev_connecter(ev_ctx *ctx, const char *host, const uint16_t port,
 }
 void _on_cmd_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev)
 {
-    char buf[MAX_CMD_CNT];
-    watcher->ncmd = read(skctx->sock, buf, sizeof(buf));
+    char buf[ONEK];
+    int32_t nread;
+    while (sizeof(buf) == (nread = read(skctx->sock, buf, sizeof(buf))))
+    { }
 #ifdef EV_EVPORT
     _add_event(watcher, skctx->sock, &skctx->events, ev, skctx);
 #endif

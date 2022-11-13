@@ -9,8 +9,6 @@
 #include "netutils.h"
 
 #define INIT_EVENTS_CNT         512
-#define MAX_RECV_SIZE           ONEK  * 4
-#define MAX_SEND_SIZE           ONEK  * 4
 #define INIT_SENDBUF_LEN        32
 
 typedef struct bufs_ctx

@@ -44,7 +44,6 @@ typedef struct watcher_ctx
 {
     int32_t evfd;
     int32_t pipes[2];
-    int32_t ncmd;
 #if defined(EV_KQUEUE)
     int32_t nsize;//当前 changelist 数量
     int32_t nchange;//实际数量

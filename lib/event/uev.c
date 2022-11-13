@@ -274,6 +274,20 @@ static inline int32_t _parse_event(events_t *ev, void **arg)
 #endif
     return rtn;
 }
+static inline int32_t _pipecmd_pop(watcher_ctx *watcher, pipcmd_ctx *cmd)
+{
+    pipcmd_ctx *tmp;
+    int32_t rtn = ERR_FAILED;    
+    mutex_lock(&watcher->pipcmdlck);
+    tmp = pip_cmd_pop(&watcher->pipcmd);
+    if (NULL != tmp)
+    {
+        *cmd = *tmp;
+        rtn = ERR_OK;
+    }
+    mutex_unlock(&watcher->pipcmdlck);
+    return rtn;
+}
 static void _loop_event(void *arg)
 {
     watcher_ctx *watcher = (watcher_ctx *)arg;
@@ -320,14 +334,10 @@ static void _loop_event(void *arg)
             ASSERTAB(NULL != sock, ERRSTR_NULLP);
             _sockctx_cb[sock->flag](watcher, sock, ev);
         }
-        for (i = 0; i < watcher->ncmd; i++)
+        while (ERR_OK == _pipecmd_pop(watcher, &cmd))
         {
-            mutex_lock(&watcher->pipcmdlck);
-            cmd = *pip_cmd_pop(&watcher->pipcmd);
-            mutex_unlock(&watcher->pipcmdlck);
             _cmd_cb[cmd.cmd](watcher, &cmd, &stop);
         }
-        watcher->ncmd = 0;
         if (0 == stop
             && cnt == watcher->nevent)
         {
@@ -361,8 +371,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads)
     watcher_ctx *watcher;
     for (uint32_t i = 0; i < ctx->nthreads; i++)
     {
-        watcher = &ctx->watcher[i];  
-        watcher->ncmd = 0;
+        watcher = &ctx->watcher[i];
         watcher->ev = ctx;
 #if defined(EV_KQUEUE)
         watcher->nsize = INIT_EVENTS_CNT;

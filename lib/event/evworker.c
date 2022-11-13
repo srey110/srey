@@ -5,7 +5,7 @@
 #include "loger.h"
 #include "buffer.h"
 
-#define MAX_CNT_POP      16
+#define MAX_CNT_POP      5
 typedef enum WORKER_CMDS
 {
     WCMD_STOPLOOP = 0x00,
@@ -39,8 +39,9 @@ typedef struct cmd_ctx
     int32_t cmd;
     SOCKET fd;
     void *data;
-    ud_cxt ud;
     size_t len;
+    ud_cxt ud;
+    sock_cb cbs;
 }cmd_ctx;
 QUEUE_DECL(cmd_ctx, qu_cmd);
 typedef struct qus_ctx
@@ -130,12 +131,9 @@ void ev_loop(ev_ctx *ctx, SOCKET sock, recv_cb r_cb, close_cb c_cb, send_cb s_cb
     cmd.cmd = WCMD_ADDFD;
     cmd.fd = sock;
     COPY_UD(cmd.ud, ud);
-    sock_cb *cbs;
-    MALLOC(cbs, sizeof(sock_cb));
-    cbs->r_cb = r_cb;
-    cbs->c_cb = c_cb;
-    cbs->s_cb = s_cb;
-    cmd.data = cbs;
+    cmd.cbs.r_cb = r_cb;
+    cmd.cbs.c_cb = c_cb;
+    cmd.cbs.s_cb = s_cb;
     QUS_PUSH(ctx->worker, cmd);
 }
 static inline void _on_close(runner_ctx *runner, struct hashmap *map, sock_evparam *param)
@@ -154,8 +152,7 @@ static inline void _on_close(runner_ctx *runner, struct hashmap *map, sock_evpar
 static void _on_req_addfd(runner_ctx *runner, struct hashmap *map, cmd_ctx *cmd, int32_t *stop)
 {
     sock_evparam param;
-    param.cb = *(sock_cb *)cmd->data;
-    FREE(cmd->data);
+    param.cb = cmd->cbs;
     param.fd = cmd->fd;
     param.ud = cmd->ud;
     if (qu_pool_size(&runner->pool) > 0)
@@ -324,7 +321,7 @@ static void _on_ev_canread(runner_ctx *runner, struct hashmap *map, cmd_ctx *cmd
     buffer_ctx *buf = _get_recv_buf(param->sock);
     size_t nread;
     //读数据前断线检测。。。
-    int32_t rtn = buffer_from_sock(buf, param->fd, MAX_RECV_SIZE, &nread, _sock_read, NULL);
+    int32_t rtn = buffer_from_sock(buf, param->fd, &nread, _sock_read, NULL);
     if (0 != nread)
     {
         param->cb.r_cb(runner->ev, param->fd, buf, nread, &param->ud);
@@ -353,14 +350,13 @@ static void _on_ev_canwrite(runner_ctx *runner, struct hashmap *map, cmd_ctx *cm
         return;
     }
     int32_t err = ERR_OK;
-    int32_t nsend;
-    size_t total = 0;
+    int32_t nsend, size;
     bufs_ctx *buf;
     qu_bufs *sendbufs = _get_send_buf(param->sock);
-    while (total < MAX_SEND_SIZE
-        && NULL != (buf = qu_bufs_peek(sendbufs)))
+    while (NULL != (buf = qu_bufs_peek(sendbufs)))
     {
-        nsend = send(param->fd, (char*)buf->data + buf->offset, (int32_t)(buf->len - buf->offset), 0);
+        size = (int32_t)(buf->len - buf->offset);
+        nsend = send(param->fd, (char*)buf->data + buf->offset, size, 0);
         if (0 == nsend)
         {
             err = ERR_FAILED;
@@ -374,13 +370,13 @@ static void _on_ev_canwrite(runner_ctx *runner, struct hashmap *map, cmd_ctx *cm
             }
             break;
         }
-        total += nsend;
-        buf->offset += nsend;
-        if (buf->offset == buf->len)
+        if (nsend < size)
         {
-            FREE(buf->data);
-            qu_bufs_pop(sendbufs);
+            buf->offset += nsend;
+            break;
         }
+        FREE(buf->data);
+        qu_bufs_pop(sendbufs);
     }
     if (ERR_OK == err
         && qu_bufs_size(sendbufs) > 0)
@@ -441,10 +437,13 @@ static void _loop_runner(void *arg)
             runner->wait--;
         }
         mutex_unlock(&runner->condlck);
-        for (i = 0; i < cnt; i++)
+        do
         {
-            _on_cmd[cmds[i].cmd](runner, map, &cmds[i], &stop);
-        }
+            for (i = 0; i < cnt; i++)
+            {
+                _on_cmd[cmds[i].cmd](runner, map, &cmds[i], &stop);
+            }
+        } while (0 != (cnt = _qus_pop(runner, cmds)));
     }
     FREE(cmds);
     hashmap_free(map);
