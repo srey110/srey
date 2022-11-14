@@ -119,7 +119,6 @@ int32_t netaddr_ip(netaddr_ctx *ctx, char ip[IP_LENS])
     {
         if (NULL == inet_ntop(AF_INET, &ctx->ipv4.sin_addr, ip, IP_LENS))
         {
-            PRINT("inet_ntop failed, %s", ERRORSTR(ERRNO));
             return ERR_FAILED;
         }
     }
@@ -127,7 +126,6 @@ int32_t netaddr_ip(netaddr_ctx *ctx, char ip[IP_LENS])
     {
         if (NULL == inet_ntop(AF_INET6, &ctx->ipv6.sin6_addr, ip, IP_LENS))
         {
-            PRINT("inet_ntop failed, %s", ERRORSTR(ERRNO));
             return ERR_FAILED;
         }
     }

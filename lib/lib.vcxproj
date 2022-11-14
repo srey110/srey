@@ -24,6 +24,11 @@
     <ClInclude Include="chan.h" />
     <ClInclude Include="cond.h" />
     <ClInclude Include="errcode.h" />
+    <ClInclude Include="event\event.h" />
+    <ClInclude Include="event\evpub.h" />
+    <ClInclude Include="event\iocp.h" />
+    <ClInclude Include="event\uev.h" />
+    <ClInclude Include="event\worker.h" />
     <ClInclude Include="hashmap.h" />
     <ClInclude Include="lib.h" />
     <ClInclude Include="loger.h" />
@@ -48,6 +53,13 @@
   <ItemGroup>
     <ClCompile Include="buffer.c" />
     <ClCompile Include="chan.c" />
+    <ClCompile Include="event\event.c" />
+    <ClCompile Include="event\iocp.c" />
+    <ClCompile Include="event\overlap.c" />
+    <ClCompile Include="event\ucmds.c" />
+    <ClCompile Include="event\uev.c" />
+    <ClCompile Include="event\usock.c" />
+    <ClCompile Include="event\worker.c" />
     <ClCompile Include="hashmap.c" />
     <ClCompile Include="loger.c" />
     <ClCompile Include="md5\md5.c" />

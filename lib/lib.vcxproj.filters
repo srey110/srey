@@ -22,6 +22,12 @@
     <Filter Include="event">
       <UniqueIdentifier>{592350de-6276-4356-a720-a8d95c38cf56}</UniqueIdentifier>
     </Filter>
+    <Filter Include="event\win">
+      <UniqueIdentifier>{50004071-3dc4-4bc2-a125-87a1c7a65d71}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="event\unix">
+      <UniqueIdentifier>{942da95e-2cdb-4ff7-ab71-5d496e592712}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="errcode.h">
@@ -97,6 +103,21 @@
     <ClInclude Include="hashmap.h">
       <Filter>utils\map</Filter>
     </ClInclude>
+    <ClInclude Include="event\event.h">
+      <Filter>event</Filter>
+    </ClInclude>
+    <ClInclude Include="event\iocp.h">
+      <Filter>event\win</Filter>
+    </ClInclude>
+    <ClInclude Include="event\evpub.h">
+      <Filter>event</Filter>
+    </ClInclude>
+    <ClInclude Include="event\worker.h">
+      <Filter>event\win</Filter>
+    </ClInclude>
+    <ClInclude Include="event\uev.h">
+      <Filter>event\unix</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="memory.c">
@@ -137,6 +158,27 @@
     </ClCompile>
     <ClCompile Include="hashmap.c">
       <Filter>utils\map</Filter>
+    </ClCompile>
+    <ClCompile Include="event\event.c">
+      <Filter>event</Filter>
+    </ClCompile>
+    <ClCompile Include="event\iocp.c">
+      <Filter>event\win</Filter>
+    </ClCompile>
+    <ClCompile Include="event\worker.c">
+      <Filter>event\win</Filter>
+    </ClCompile>
+    <ClCompile Include="event\overlap.c">
+      <Filter>event\win</Filter>
+    </ClCompile>
+    <ClCompile Include="event\uev.c">
+      <Filter>event\unix</Filter>
+    </ClCompile>
+    <ClCompile Include="event\usock.c">
+      <Filter>event\unix</Filter>
+    </ClCompile>
+    <ClCompile Include="event\ucmds.c">
+      <Filter>event\unix</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

@@ -51,7 +51,7 @@ static void test_send_cb(ev_ctx *ctx, SOCKET sock, size_t len, ud_cxt *ud)
 static void test_conn_recv_cb(ev_ctx *ctx, SOCKET sock, buffer_ctx *buf, size_t lens, ud_cxt *ud)
 {
     //PRINT("test_conn_recv_cb: sock %d", (int32_t)sock);
-    /*if (buffer_size(buf) <= 2 + sizeof(pk_index))
+    if (buffer_size(buf) <= 2 + sizeof(pk_index))
     {
         return;
     }
@@ -62,28 +62,31 @@ static void test_conn_recv_cb(ev_ctx *ctx, SOCKET sock, buffer_ctx *buf, size_t 
     {
         return;
     }
-    int32_t tmp = ntohl(*(u_long*)(len + 2));*/
-    //ASSERTAB(tmp == pk_index, "index error.");
+    int32_t tmp = (int32_t)(ntohl(*(u_long*)(len + 2)));
+    if (tmp != pk_index)
+    {
+        PRINT("index error.recv: %d  cur %d", tmp, pk_index);
+    }
     buffer_drain(buf, buffer_size(buf));
 }
-static void test_conn_cb(ev_ctx *ctx, SOCKET sock, ud_cxt *ud)
+static int32_t test_conn_cb(ev_ctx *ctx, SOCKET sock, ud_cxt *ud)
 {
     if (INVALID_SOCK != sock)
     {
         PRINT("%s", "connect ok.");
         connsock = sock;
-        ev_loop(ctx, sock, test_conn_recv_cb, test_connclose_cb, test_send_cb, ud);
     }
     else
     {
         PRINT("%s", "connect error.");
     }
+    return ERR_OK;
 }
-static void test_acpt_cb(ev_ctx *ctx, SOCKET sock, ud_cxt *ud)
+static int32_t test_acpt_cb(ev_ctx *ctx, SOCKET sock, ud_cxt *ud)
 {
     //PRINT("test_acpt_cb : sock %d ", (int32_t)sock);
-    ev_loop(ctx, sock, test_recv_cb, test_close_cb, test_send_cb, ud);
     ATOMIC_ADD(&count, 1);
+    return ERR_OK;
 }
 static void timeout(void *arg)
 {
@@ -93,6 +96,7 @@ static void timeout(void *arg)
     {
         /*ev_close(arg, connsock);
         connsock = INVALID_SOCK;*/
+        ev_update(arg, connsock, NULL, NULL);
         char str[100];
         int32_t len = randrange(1, sizeof(str));
         ASSERTAB(sizeof(str) > len, "randrange error.");
@@ -101,6 +105,7 @@ static void timeout(void *arg)
         char *buf;
         MALLOC(buf, total);
         pk_index++;
+        //PRINT("send pack index: %d", pk_index);
         total = ntohs(total);
         memcpy(buf, &total, sizeof(total));
         int32_t tmp = ntohl(pk_index);
@@ -110,7 +115,12 @@ static void timeout(void *arg)
     }
     else
     {
-        //ev_connecter(arg, "192.168.43.159", 15000, test_conn_cb, NULL);
+        conn_cb_ctx cbs;
+        cbs.conn_cb = test_conn_cb;
+        cbs.rw_cb.c_cb = test_connclose_cb;
+        cbs.rw_cb.r_cb = test_conn_recv_cb;
+        cbs.rw_cb.s_cb = test_send_cb;
+        ev_connect(arg, "127.0.0.1", 15000, &cbs, NULL);
     }
     timer_start(&tw.timer);
     tw_add(&tw, 3000, timeout, arg);
@@ -144,7 +154,12 @@ int main(int argc, char *argv[])
     tw_init(&tw);   
     ev_ctx ev;
     ev_init(&ev, 2);
-    ev_listener(&ev, "0.0.0.0", 15000, test_acpt_cb, NULL, NULL);    
+    lsn_cb_ctx cbs;
+    cbs.acp_cb = test_acpt_cb;
+    cbs.rw_cb.c_cb = test_close_cb;
+    cbs.rw_cb.r_cb = test_recv_cb;
+    cbs.rw_cb.s_cb = test_send_cb;
+    ev_listen(&ev, "0.0.0.0", 15000, &cbs, NULL, NULL);
 
     timer_start(&tw.timer);
     tw_add(&tw, 3000, timeout, &ev);
