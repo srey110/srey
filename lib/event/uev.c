@@ -53,7 +53,7 @@ static inline void _cmd_loop(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev, 
         }
     } while (nread == sizeof(cmds));
 #ifdef EV_EVPORT
-    _add_event(watcher, skctx->fd, &skctx->events, ev, skctx);
+    ASSERTAB(ERR_OK == _add_event(watcher, skctx->fd, &skctx->events, ev, skctx), "add pipe in loop error.");
 #endif
 }
 static void _init_cmd_cb(pip_skctx *skctx)

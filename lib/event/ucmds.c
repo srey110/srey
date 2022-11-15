@@ -142,8 +142,7 @@ void _on_cmd_send(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop)
     buf.data = cmd->data;
     buf.len = cmd->len;
     buf.offset = 0;
-    qu_bufs *sendbufs = _get_send_buf(el->sock);
-    qu_bufs_push(sendbufs, &buf);
+    qu_bufs_push(_get_send_buf(el->sock), &buf);
     if (!(el->sock->events & EVENT_WRITE))
     {
         _add_event(watcher, cmd->fd, &el->sock->events, EVENT_WRITE, el->sock);

@@ -160,7 +160,6 @@ static inline void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t
         return;
     }
     _del_event(watcher, conn->sock.fd, &conn->sock.events, ev, NULL);
-    ASSERTAB(0 == conn->sock.events, "logic error.");
     if (ERR_OK != conn->conn_cb.conn_cb(watcher->ev, conn->sock.fd, &conn->ud))
     {
         CLOSE_SOCK(conn->sock.fd);
@@ -171,14 +170,13 @@ static inline void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t
     if (ERR_OK != _add_event(watcher, rwck->fd, &rwck->events, EVENT_READ, rwck))
     {
         _on_close(watcher, rwck, 0);
+        FREE(conn);
+        return;
     }
-    else
-    {
-        map_element el;
-        el.fd = rwck->fd;
-        el.sock = rwck;
-        ASSERTAB(NULL == hashmap_set(watcher->element, &el), "socket repeat.");
-    }
+    map_element el;
+    el.fd = rwck->fd;
+    el.sock = rwck;
+    ASSERTAB(NULL == hashmap_set(watcher->element, &el), "socket repeat.");
     FREE(conn);
 }
 int32_t ev_connect(ev_ctx *ctx, const char *host, const uint16_t port,

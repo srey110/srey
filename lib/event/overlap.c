@@ -107,7 +107,13 @@ int32_t _post_send(sock_ctx *skctx)
     overlap_tcp_ctx *ol = UPCAST(skctx, overlap_tcp_ctx, ol_r);
     ol->bytes_s = 0;
     ZERO(&ol->ol_s.overlapped, sizeof(ol->ol_s.overlapped));
-    if (ERR_OK != WSASend(ol->ol_s.fd, &ol->wsabuf, 1, &ol->bytes_s, 0, &ol->ol_s.overlapped, NULL))
+    if (ERR_OK != WSASend(ol->ol_s.fd,
+        &ol->wsabuf,
+        1,
+        &ol->bytes_s,
+        0,
+        &ol->ol_s.overlapped,
+        NULL))
     {
         if (ERROR_IO_PENDING != ERRNO)
         {
@@ -179,21 +185,20 @@ static inline void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx)
     overlap_conn_ctx *ol = UPCAST(skctx, overlap_conn_ctx, overlap);
     if (ERR_OK != sock_checkconn(ol->overlap.fd))
     {
-        CLOSE_SOCK(ol->overlap.fd);
         ol->conn_cb.conn_cb(watcher->ev, INVALID_SOCK, &ol->ud);
+        CLOSE_SOCK(ol->overlap.fd);
+        FREE(ol);
+        return;
+    }
+    sock_ctx *rwctx = _new_sockctx(ol->overlap.fd);
+    worker_add(watcher->ev->worker, ol->overlap.fd, rwctx, &ol->conn_cb.rw_cb, &ol->ud);
+    if (ERR_OK != ol->conn_cb.conn_cb(watcher->ev, ol->overlap.fd, &ol->ud))
+    {
+        worker_remove(watcher->ev->worker, ol->overlap.fd);
     }
     else
     {
-        sock_ctx *rwctx = _new_sockctx(ol->overlap.fd);
-        worker_add(watcher->ev->worker, ol->overlap.fd, rwctx, &ol->conn_cb.rw_cb, &ol->ud);
-        if (ERR_OK != ol->conn_cb.conn_cb(watcher->ev, ol->overlap.fd, &ol->ud))
-        {
-            worker_remove(watcher->ev->worker, ol->overlap.fd);
-        }
-        else
-        {
-            _post_recv(rwctx);
-        }
+        _post_recv(rwctx);
     }
     FREE(ol);
 }
@@ -270,10 +275,10 @@ static inline int32_t _post_accept(overlap_acpt_ctx *ol)
 static inline void _on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx)
 {
     overlap_acpt_ctx *acpol = UPCAST(skctx, overlap_acpt_ctx, overlap);
+    SOCKET lsnfd = acpol->lsn->fd;
     SOCKET fd = acpol->overlap.fd;
     if (ERR_OK != _post_accept(acpol)
-        || ERR_OK != setsockopt(fd, SOL_SOCKET, SO_UPDATE_ACCEPT_CONTEXT, 
-                               (char *)&acpol->lsn->fd, sizeof(&acpol->lsn->fd))
+        || ERR_OK != setsockopt(fd, SOL_SOCKET, SO_UPDATE_ACCEPT_CONTEXT, (char *)&lsnfd, (int32_t)sizeof(lsnfd))
         || ERR_OK != _set_sockops(fd)
         || ERR_OK != _join_iocp(watcher->ev, fd))
     {
@@ -285,11 +290,9 @@ static inline void _on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx)
     if (ERR_OK != acpol->lsn->lsn_cb.acp_cb(watcher->ev, fd, &acpol->lsn->ud))
     {
         worker_remove(watcher->ev->worker, fd);
+        return;
     }
-    else
-    {
-        _post_recv(rwctx);
-    }
+    _post_recv(rwctx);
 }
 static inline void _free_acceptex(listener_ctx *lsn, int32_t cnt)
 {
