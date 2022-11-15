@@ -1,14 +1,16 @@
 #include "event/worker.h"
 #include "event/event.h"
+#include "event/skpool.h"
 #include "thread.h"
 #include "hashmap.h"
 #include "buffer.h"
 #include "cond.h"
 #include "sarray.h"
 #include "timer.h"
+#include "loger.h"
 
 #ifdef EV_IOCP
-
+#define DELAY_MAXCNT 20
 typedef enum WORKER_CMDS
 {
     CMD_STOP = 0x00,
@@ -33,8 +35,12 @@ typedef struct cmd_ctx
     size_t len;
 }cmd_ctx;
 QUEUE_DECL(cmd_ctx, qu_cmd);
-
-ARRAY_DECL(struct sock_ctx *, arr_delay);
+typedef struct delay_ctx
+{
+    int32_t cnt;
+    struct sock_ctx *sock;
+}delay_ctx;
+ARRAY_DECL(delay_ctx, arr_delay);
 //╤сап
 typedef struct qus_ctx
 {
@@ -52,6 +58,7 @@ typedef struct runner_ctx
     cond_ctx cond;
     mutex_ctx condlck;
     arr_delay arrdelay;
+    skpool_ctx pool;
     void(*cmd_callback[CMD_TOTAL])(struct runner_ctx *, cmd_ctx *, int32_t *);
 }runner_ctx;
 typedef struct worker_ctx
@@ -102,6 +109,12 @@ static inline size_t _qus_size(runner_ctx *runner)
     }
     return size;
 }
+struct sock_ctx *worker_newsk(struct worker_ctx *worker, SOCKET fd, struct cbs_ctx *cbs, struct ud_cxt *ud)
+{
+    uint64_t hs = FD_HASH(fd);
+    runner_ctx *runner = RUNNER(worker, hs);
+    return pool_pop(&runner->pool, fd, cbs, ud);
+}
 static void _on_cmd_stop(runner_ctx *runner, cmd_ctx *cmd, int32_t *stop)
 {
     *stop = 1;
@@ -137,11 +150,14 @@ static void _on_cmd_remove(runner_ctx *runner, cmd_ctx *cmd, int32_t *stop)
     }
     if (0 == _check_canfree(el->sock))
     {
-        _free_sockctx(el->sock);
+        pool_push(&runner->pool, el->sock);
     }
     else
     {
-        arr_delay_push_back(&runner->arrdelay, &el->sock);
+        delay_ctx delay;
+        delay.cnt = 0;
+        delay.sock = el->sock;
+        arr_delay_push_back(&runner->arrdelay, &delay);
     }
     hashmap_delete(runner->element, el);
 }
@@ -238,22 +254,33 @@ static inline void _loop_cmd(runner_ctx *runner, int32_t *stop)
         }
     } while (have);
 }
-static inline void _check_delayfree(timer_ctx *timer, arr_delay *arr)
+static inline void _check_delayfree(runner_ctx *runner, timer_ctx *timer, arr_delay *arr)
 {
     static const uint64_t accuracy = 1000 * 1000;
     if (timer_elapsed(timer) / accuracy < 100)
     {
         return;
     }
-    struct sock_ctx **skctx;
+
+    delay_ctx *delay;
     int32_t size = (int32_t)arr_delay_size(arr);
     for (int32_t i = size - 1; i >= 0; i--)
     {
-        skctx = arr_delay_at(arr, i);
-        if (0 == _check_canfree(*skctx))
+        delay = arr_delay_at(arr, i);
+        if (0 == _check_canfree(delay->sock))
         {
-            _free_sockctx(*skctx);
+            pool_push(&runner->pool, delay->sock);
             arr_delay_del_nomove(arr, i);
+        }
+        else
+        {
+            delay->cnt++;
+            if (delay->cnt > DELAY_MAXCNT)
+            {
+                pool_push(&runner->pool, delay->sock);
+                arr_delay_del_nomove(arr, i);
+                LOG_WARN("%s", "wait socket free timeout.");
+            }
         }
     }
     timer_start(timer);
@@ -271,13 +298,13 @@ static void _loop_runner(void *arg)
     {
         _trywait_cond(runner);
         _loop_cmd(runner, &stop);
-        _check_delayfree(&timer, &runner->arrdelay);
+        _check_delayfree(runner, &timer, &runner->arrdelay);
     }
 }
 static inline void _free_mapitem(void *item)
 {
     map_element *el = (map_element *)item;
-    _free_sockctx(el->sock);
+    _free_sk(el->sock);
 }
 static void _init_qus(runner_ctx *runner)
 {
@@ -307,7 +334,8 @@ worker_ctx *worker_init(ev_ctx *ev, uint32_t nthread, uint32_t nqus)
         _init_qus(runner);
         cond_init(&runner->cond);
         mutex_init(&runner->condlck);
-        arr_delay_init(&runner->arrdelay, ONEK);
+        arr_delay_init(&runner->arrdelay, 128);
+        pool_init(&runner->pool, ONEK);
         runner->thrunner = thread_creat(_loop_runner, runner);
     }
     return worker;
@@ -321,14 +349,14 @@ static void _free_qus(runner_ctx *runner)
     }
     FREE(runner->qus);
 }
-static void _arr_delay_freeel(arr_delay *arr)
+static void _free_arr_delay(arr_delay *arr)
 {
-    struct sock_ctx **skctx;
+    delay_ctx *delay;
     size_t size = arr_delay_size(arr);
     for (size_t i = 0; i < size; i++)
     {
-        skctx = arr_delay_at(arr, i);
-        _free_sockctx(*skctx);
+        delay = arr_delay_at(arr, i);
+        _free_sk(delay->sock);
     }
     arr_delay_free(arr);
 }
@@ -355,7 +383,8 @@ void worker_free(worker_ctx *worker)
         cond_free(&runner->cond);
         _free_qus(runner);
         hashmap_free(runner->element);
-        _arr_delay_freeel(&runner->arrdelay);
+        _free_arr_delay(&runner->arrdelay);
+        pool_free(&runner->pool);
     }
     FREE(worker->runner);
     FREE(worker);

@@ -118,6 +118,9 @@
     <ClInclude Include="sarray.h">
       <Filter>utils</Filter>
     </ClInclude>
+    <ClInclude Include="event\skpool.h">
+      <Filter>event</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="memory.c">

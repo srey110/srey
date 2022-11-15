@@ -1,6 +1,7 @@
 #include "event/event.h"
 #include "event/iocp.h"
 #include "event/worker.h"
+#include "event/skpool.h"
 #include "buffer.h"
 #include "loger.h"
 #include "netutils.h"
@@ -48,12 +49,29 @@ typedef struct overlap_tcp_ctx
     ud_cxt ud;
 }overlap_tcp_ctx;
 
-int32_t _check_canfree(struct sock_ctx *skctx)
+void _on_recv_cb(watcher_ctx *watcher, sock_ctx *skctx);
+void _on_send_cb(watcher_ctx *watcher, sock_ctx *skctx);
+
+sock_ctx *_new_sk(SOCKET fd, cbs_ctx *cbs, ud_cxt *ud)
 {
-    overlap_tcp_ctx *ol = UPCAST(skctx, overlap_tcp_ctx, ol_r);
-    return ol->sending;
+    overlap_tcp_ctx *ol;
+    MALLOC(ol, sizeof(overlap_tcp_ctx));
+    ol->ol_r.fd = fd;
+    ol->ol_r.ev_cb = _on_recv_cb;
+    ol->ol_s.fd = fd;
+    ol->ol_s.ev_cb = _on_send_cb;
+    ol->sending = 0;
+    ol->erro = 0;
+    ol->wsabuf.IOV_PTR_FIELD = NULL;
+    ol->wsabuf.IOV_LEN_FIELD = 0;
+    ol->cbs = *cbs;
+    ol->ud = *ud;
+    buffer_init(&ol->buf_r);
+    qu_bufs_init(&ol->qubuf, INIT_SENDBUF_LEN);
+    mutex_init(&ol->lck);
+    return &ol->ol_r;
 }
-void _free_sockctx(sock_ctx *skctx)
+void _free_sk(sock_ctx *skctx)
 {
     overlap_tcp_ctx *ol = UPCAST(skctx, overlap_tcp_ctx, ol_r);
     CLOSE_SOCK(ol->ol_r.fd);
@@ -62,6 +80,29 @@ void _free_sockctx(sock_ctx *skctx)
     qu_bufs_free(&ol->qubuf);
     mutex_free(&ol->lck);
     FREE(ol);
+}
+void _clear_sk(sock_ctx *skctx)
+{
+    overlap_tcp_ctx *ol = UPCAST(skctx, overlap_tcp_ctx, ol_r);
+    CLOSE_SOCK(ol->ol_r.fd);
+    ol->ol_s.fd = INVALID_SOCK;
+    ol->sending = 0;
+    ol->erro = 0;
+    _qu_bufs_clear(&ol->qubuf);
+    buffer_drain(&ol->buf_r, buffer_size(&ol->buf_r));
+}
+void _reset_sk(sock_ctx *skctx, SOCKET fd, cbs_ctx *cbs, ud_cxt *ud)
+{
+    overlap_tcp_ctx *ol = UPCAST(skctx, overlap_tcp_ctx, ol_r);
+    ol->ol_r.fd = fd;
+    ol->ol_s.fd = fd;
+    ol->cbs = *cbs;
+    ol->ud = *ud;
+}
+int32_t _check_canfree(sock_ctx *skctx)
+{
+    overlap_tcp_ctx *ol = UPCAST(skctx, overlap_tcp_ctx, ol_r);
+    return ol->sending;
 }
 static inline int32_t _join_iocp(ev_ctx *ev, SOCKET fd)
 {
@@ -93,7 +134,7 @@ static inline int32_t _post_recv(sock_ctx *skctx)
     }
     return ERR_OK;
 }
-static inline void _on_recv_cb(watcher_ctx *watcher, sock_ctx *skctx)
+void _on_recv_cb(watcher_ctx *watcher, sock_ctx *skctx)
 {
     overlap_tcp_ctx *ol = UPCAST(skctx, overlap_tcp_ctx, ol_r);
     size_t nread;
@@ -141,7 +182,7 @@ static inline int32_t _post_send(overlap_tcp_ctx *ol)
     }
     return ERR_OK;
 }
-static inline void _on_send_cb(watcher_ctx *watcher, sock_ctx *skctx)
+void _on_send_cb(watcher_ctx *watcher, sock_ctx *skctx)
 {
     overlap_tcp_ctx *ol = UPCAST(skctx, overlap_tcp_ctx, ol_s);
     if (0 != ol->erro)
@@ -205,25 +246,6 @@ void _qu_bufs_addpost(sock_ctx *skctx, bufs_ctx *buf)
     }
     mutex_unlock(&ol->lck);
 }
-static inline sock_ctx *_new_sockctx(SOCKET fd, cbs_ctx *cbs, ud_cxt *ud)
-{
-    overlap_tcp_ctx *ol;
-    MALLOC(ol, sizeof(overlap_tcp_ctx));
-    ol->ol_r.fd = fd;
-    ol->ol_r.ev_cb = _on_recv_cb;
-    ol->ol_s.fd = fd;
-    ol->ol_s.ev_cb = _on_send_cb;
-    ol->sending = 0;
-    ol->erro = 0;
-    ol->wsabuf.IOV_PTR_FIELD = NULL;
-    ol->wsabuf.IOV_LEN_FIELD = 0;
-    ol->cbs = *cbs;
-    ol->ud = *ud;
-    buffer_init(&ol->buf_r);
-    qu_bufs_init(&ol->qubuf, INIT_SENDBUF_LEN);
-    mutex_init(&ol->lck);
-    return &ol->ol_r;
-}
 //connect
 static inline int32_t _trybind(SOCKET fd, int32_t family)
 {
@@ -278,7 +300,7 @@ static inline void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx)
         FREE(ol);
         return;
     }
-    sock_ctx *rwctx = _new_sockctx(ol->overlap.fd, &ol->cbs, &ol->ud);
+    sock_ctx *rwctx = worker_newsk(watcher->ev->worker, ol->overlap.fd, &ol->cbs, &ol->ud);
     worker_add(watcher->ev->worker, ol->overlap.fd, rwctx);
     if (ERR_OK != ol->cbs.conn_cb(watcher->ev, ol->overlap.fd, &ol->ud))
     {
@@ -379,7 +401,7 @@ static inline void _on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx)
         CLOSE_SOCK(fd);
         return;
     }
-    sock_ctx *rwctx = _new_sockctx(fd, &acpol->lsn->cbs, &acpol->lsn->ud);
+    sock_ctx *rwctx = worker_newsk(watcher->ev->worker, fd, &acpol->lsn->cbs, &acpol->lsn->ud);
     worker_add(watcher->ev->worker, fd, rwctx);
     if (ERR_OK != acpol->lsn->cbs.acp_cb(watcher->ev, fd, &acpol->lsn->ud))
     {

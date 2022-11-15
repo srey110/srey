@@ -37,6 +37,45 @@ typedef struct skrw_ctx
     ud_cxt ud;
 }skrw_ctx;
 
+void _on_rw_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev, int32_t *stop);
+
+sock_ctx *_new_sk(SOCKET fd, cbs_ctx *cbs, ud_cxt *ud)
+{
+    skrw_ctx *rw;
+    MALLOC(rw, sizeof(skrw_ctx));
+    rw->sock.ev_cb = _on_rw_cb;
+    rw->sock.fd = fd;
+    rw->sock.events = 0;
+    rw->ud = *ud;
+    rw->cbs = *cbs;
+    buffer_init(&rw->buf);
+    qu_bufs_init(&rw->qubuf, INIT_SENDBUF_LEN);
+    return &rw->sock;
+}
+void _free_sk(sock_ctx *skctx)
+{
+    skrw_ctx *skrw = UPCAST(skctx, skrw_ctx, sock);
+    CLOSE_SOCK(skrw->sock.fd);
+    buffer_free(&skrw->buf);
+    _qu_bufs_clear(&skrw->qubuf);
+    qu_bufs_free(&skrw->qubuf);
+    FREE(skrw);
+}
+void _clear_sk(sock_ctx *skctx)
+{
+    skrw_ctx *skrw = UPCAST(skctx, skrw_ctx, sock);
+    CLOSE_SOCK(skrw->sock.fd);
+    skrw->sock.events = 0;
+    _qu_bufs_clear(&skrw->qubuf);
+    buffer_drain(&skrw->buf, buffer_size(&skrw->buf));
+}
+void _reset_sk(sock_ctx *skctx, SOCKET fd, cbs_ctx *cbs, ud_cxt *ud)
+{
+    skrw_ctx *skrw = UPCAST(skctx, skrw_ctx, sock);
+    skrw->sock.fd = fd;
+    skrw->cbs = *cbs;
+    skrw->ud = *ud;
+}
 qu_bufs *_get_send_buf(sock_ctx *skctx)
 {
     skrw_ctx *skrw = UPCAST(skctx, skrw_ctx, sock);
@@ -47,15 +86,6 @@ connect_cb _get_conn_cb(sock_ctx *skctx, ud_cxt *ud)
     conn_ctx *conn = UPCAST(skctx, conn_ctx, sock);
     *ud = conn->ud;
     return conn->cbs.conn_cb;
-}
-void _free_sockctx(sock_ctx *skctx)
-{
-    skrw_ctx *skrw = UPCAST(skctx, skrw_ctx, sock);
-    CLOSE_SOCK(skrw->sock.fd);
-    buffer_free(&skrw->buf);
-    _qu_bufs_clear(&skrw->qubuf);
-    qu_bufs_free(&skrw->qubuf);
-    FREE(skrw);
 }
 void _on_close(watcher_ctx *watcher, sock_ctx *skctx, int32_t remove)
 {
@@ -70,7 +100,7 @@ void _on_close(watcher_ctx *watcher, sock_ctx *skctx, int32_t remove)
         key.fd = skrw->sock.fd;
         hashmap_delete(watcher->element, &key);
     }
-    _free_sockctx(skctx);
+    pool_push(&watcher->pool, skctx);
 }
 static inline int32_t _on_r_cb(watcher_ctx *watcher, skrw_ctx *skrw)
 {
@@ -115,7 +145,7 @@ static inline void _on_w_cb(watcher_ctx *watcher, skrw_ctx *skrw)
     _add_event(watcher, skrw->sock.fd, &skrw->sock.events, EVENT_WRITE, &skrw->sock);
 #endif
 }
-static inline void _on_rw_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev, int32_t *stop)
+void _on_rw_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev, int32_t *stop)
 {
     skrw_ctx *skrw = UPCAST(skctx, skrw_ctx, sock);
     if (ev & EVENT_READ)
@@ -129,19 +159,6 @@ static inline void _on_rw_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev, 
     {
         _on_w_cb(watcher, skrw);
     }
-}
-static inline sock_ctx *_new_sockctx(SOCKET fd, cbs_ctx *cbs, ud_cxt *ud)
-{
-    skrw_ctx *rw;
-    MALLOC(rw, sizeof(skrw_ctx));
-    rw->sock.ev_cb = _on_rw_cb;
-    rw->sock.fd = fd;
-    rw->sock.events = 0;
-    rw->ud = *ud;
-    rw->cbs = *cbs;
-    buffer_init(&rw->buf);
-    qu_bufs_init(&rw->qubuf, INIT_SENDBUF_LEN);
-    return &rw->sock;
 }
 static inline void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev, int32_t *stop)
 {
@@ -160,7 +177,7 @@ static inline void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t
         FREE(conn);
         return;
     }
-    sock_ctx *rwck = _new_sockctx(conn->sock.fd, &conn->cbs, &conn->ud);
+    sock_ctx *rwck = pool_pop(&watcher->pool, conn->sock.fd, &conn->cbs, &conn->ud);
     if (ERR_OK != _add_event(watcher, rwck->fd, &rwck->events, EVENT_READ, rwck))
     {
         _on_close(watcher, rwck, 0);
@@ -221,6 +238,8 @@ static inline void _on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t 
     }
 #endif
     SOCKET fd;
+    uint64_t hs;
+    watcher_ctx *to;
     while (INVALID_SOCK != (fd = accept(acpt->sock.fd, NULL, NULL)))
     {
         if (ERR_OK != _set_sockops(fd)
@@ -229,7 +248,9 @@ static inline void _on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t 
             CLOSE_SOCK(fd);
             continue;
         }
-        sock_ctx *rwck = _new_sockctx(fd, &acpt->lsn->cbs, &acpt->lsn->ud);
+        hs = FD_HASH(fd);
+        to = WATCHER(watcher->ev, hs);        
+        sock_ctx *rwck = pool_pop(&to->pool, fd, &acpt->lsn->cbs, &acpt->lsn->ud);
         _cmd_add(watcher->ev, rwck->fd, rwck);
     }
 #ifndef SO_REUSEPORT

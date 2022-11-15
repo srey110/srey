@@ -297,7 +297,7 @@ static void _loop_event(void *arg)
 }
 static inline void _free_mapitem(void *item)
 {
-    _free_sockctx(((map_element *)item)->sock);
+    _free_sk(((map_element *)item)->sock);
 }
 static inline int32_t _init_evfd()
 {
@@ -346,6 +346,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads)
         watcher->pipes = _new_pips(watcher->npipes);
         watcher->element = hashmap_new_with_allocator(_malloc, _realloc, _free,
             sizeof(map_element), ONEK * 4, 0, 0, _map_hash, _map_compare, _free_mapitem, NULL);
+        pool_init(&watcher->pool, ONEK);
         watcher->thevent = thread_creat(_loop_event, watcher);
     }
 }
@@ -383,6 +384,7 @@ void ev_free(ev_ctx *ctx)
 #endif
         FREE(watcher->events);
         hashmap_free(watcher->element);
+        pool_free(&watcher->pool);
     }
     FREE(ctx->watcher);
     struct listener_ctx **lsn;

@@ -32,12 +32,12 @@ static void test_connclose_cb(ev_ctx *ctx, SOCKET sock, ud_cxt *ud)
 static void test_recv_cb(ev_ctx *ctx, SOCKET sock, buffer_ctx *buf, size_t lens, ud_cxt *ud)
 {
     //PRINT("test_recv_cb: sock %d ", (int32_t)sock);
-    //if (randrange(0, 100) <= 1)
-    //{
-    //    ev_close(ctx, sock);
-    //    //PRINT("close socket: sock %d ", (int32_t)sock);
-    //    return;
-    //}
+    if (randrange(0, 100) <= 1)
+    {
+        ev_close(ctx, sock);
+        //PRINT("close socket: sock %d ", (int32_t)sock);
+        return;
+    }
     size_t len = buffer_size(buf);
     char *pk;
     MALLOC(pk, len);
@@ -122,7 +122,7 @@ static void timeout(void *arg)
         ev_connect(arg, "127.0.0.1", 15000, &cbs, NULL);
     }
     timer_start(&tw.timer);
-    tw_add(&tw, 3000, timeout, arg);
+    tw_add(&tw, 5000, timeout, arg);
 }
 void testtt(void *arg)
 {
@@ -161,7 +161,7 @@ int main(int argc, char *argv[])
     ev_listen(&ev, "0.0.0.0", 15000, &cbs, NULL);
 
     timer_start(&tw.timer);
-    tw_add(&tw, 3000, timeout, &ev);
+    tw_add(&tw, 5000, timeout, &ev);
 
     mutex_lock(&muexit);
     cond_wait(&condexit, &muexit);

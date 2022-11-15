@@ -2,6 +2,7 @@
 #define UEV_H_
 
 #include "event/event.h"
+#include "event/skpool.h"
 #include "thread.h"
 #include "mutex.h"
 
@@ -59,6 +60,7 @@ typedef struct watcher_ctx
     ev_ctx *ev;
     struct hashmap *element;
     pthread_t thevent;
+    skpool_ctx pool;
 }watcher_ctx;
 
 typedef void(*event_cb)(watcher_ctx *watcher, struct sock_ctx *skctx, int32_t ev, int32_t *stop);
@@ -68,6 +70,8 @@ typedef struct sock_ctx
     int32_t events;
     event_cb ev_cb;
 }sock_ctx;
+
+#define WATCHER(ev, hs) ((1 == (ev)->nthreads) ? (ev)->watcher : (&(ev)->watcher[hs % (ev)->nthreads]))
 
 int32_t _add_event(watcher_ctx *watcher, SOCKET fd, int32_t *events, int32_t ev, void *arg);
 void _del_event(watcher_ctx *watcher, SOCKET fd, int32_t *events, int32_t ev, void *arg);
@@ -87,7 +91,6 @@ void _on_cmd_add(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop);
 qu_bufs *_get_send_buf(sock_ctx *skctx);
 connect_cb _get_conn_cb(sock_ctx *skctx, ud_cxt *ud);
 void _on_close(watcher_ctx *watcher, sock_ctx *skctx, int32_t remove);
-void _free_sockctx(sock_ctx *skctx);
 
 #endif//EV_IOCP
 #endif//UEV_H_

@@ -7,7 +7,7 @@
 #define CMD_SEND(ev, cmd)\
 do {\
     uint64_t hs = FD_HASH(cmd.fd);\
-    watcher_ctx *watcher = (1 == (ev)->nthreads) ? (ev)->watcher : (&(ev)->watcher[hs % (ev)->nthreads]);\
+    watcher_ctx *watcher = WATCHER(ev, hs);\
     _cmd_send(watcher, hs % watcher->npipes, &cmd);\
 } while (0)
 

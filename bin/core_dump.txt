@@ -1,0 +1,18 @@
+windows
+procdump64.exe -ma 12340
+gflags.exe /p /enable srey.exe /full
+gflags.exe /p /disable srey.exe
+
+性能分析工具
+gprof
+
+freebsd  
+lldb ./srey --core srey.core
+bt       bt all
+
+solaris
+pstack core.srey.1707
+
+Mac
+gcc 选项  -fsanitize=address  内存错误检查
+lldb -c /core/core.xxx

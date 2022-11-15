@@ -26,6 +26,7 @@
     <ClInclude Include="event\event.h" />
     <ClInclude Include="event\evpub.h" />
     <ClInclude Include="event\iocp.h" />
+    <ClInclude Include="event\skpool.h" />
     <ClInclude Include="event\uev.h" />
     <ClInclude Include="event\worker.h" />
     <ClInclude Include="hashmap.h" />
