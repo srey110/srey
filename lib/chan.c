@@ -3,7 +3,7 @@
 void chan_init(chan_ctx *ctx, const size_t maxsize)
 {
     ctx->closed = ctx->rwaiting = ctx->wwaiting = 0;
-    qu_voidp_init(&ctx->queue, maxsize);
+    qu_void_init(&ctx->queue, maxsize);
     mutex_init(&ctx->mmutex);
     cond_init(&ctx->rcond);
     cond_init(&ctx->wcond);
@@ -13,7 +13,7 @@ void chan_free(chan_ctx *ctx)
     mutex_free(&ctx->mmutex);
     cond_free(&ctx->rcond);
     cond_free(&ctx->wcond);
-    qu_voidp_free(&ctx->queue);
+    qu_void_free(&ctx->queue);
 }
 void chan_close(chan_ctx *ctx)
 {
@@ -29,7 +29,7 @@ void chan_close(chan_ctx *ctx)
 static int32_t _chan_send(chan_ctx *ctx, void *data)
 {
     while (0 == ctx->closed
-        && qu_voidp_size(&ctx->queue) == qu_voidp_maxsize(&ctx->queue))
+        && qu_void_size(&ctx->queue) == qu_void_maxsize(&ctx->queue))
     {
         //队列满 阻塞直到有数据被移除.
         ctx->wwaiting++;
@@ -40,7 +40,7 @@ static int32_t _chan_send(chan_ctx *ctx, void *data)
     {
         return ERR_FAILED;
     }
-    qu_voidp_push(&ctx->queue, &data);
+    qu_void_push(&ctx->queue, &data);
     if (ctx->rwaiting > 0)
     {
         //通知可读.
@@ -50,7 +50,7 @@ static int32_t _chan_send(chan_ctx *ctx, void *data)
 }
 static int32_t _chan_recv(chan_ctx *ctx, void **data)
 {
-    while (qu_voidp_empty(&ctx->queue))
+    while (qu_void_empty(&ctx->queue))
     {
         if (0 != ctx->closed)
         {
@@ -61,7 +61,7 @@ static int32_t _chan_recv(chan_ctx *ctx, void **data)
         cond_wait(&ctx->rcond, &ctx->mmutex);
         ctx->rwaiting--;
     }
-    *data = *qu_voidp_pop(&ctx->queue);
+    *data = *qu_void_pop(&ctx->queue);
     if (ctx->wwaiting > 0)
     {
         //通知可写.
@@ -85,7 +85,7 @@ int32_t chan_trysend(chan_ctx *ctx, void *data)
     int32_t rtn = ERR_FAILED;
     mutex_lock(&ctx->mmutex);
     if (0 == ctx->closed
-        && qu_voidp_size(&ctx->queue) < qu_voidp_maxsize(&ctx->queue))
+        && qu_void_size(&ctx->queue) < qu_void_maxsize(&ctx->queue))
     {
         rtn = _chan_send(ctx, data);
     }
@@ -103,7 +103,7 @@ int32_t chan_tryrecv(chan_ctx *ctx, void **data)
 {
     int32_t rtn = ERR_FAILED;
     mutex_lock(&ctx->mmutex);
-    if (qu_voidp_size(&ctx->queue) > 0)
+    if (qu_void_size(&ctx->queue) > 0)
     {
         rtn = _chan_recv(ctx, data);
     }
@@ -113,7 +113,7 @@ int32_t chan_tryrecv(chan_ctx *ctx, void **data)
 size_t chan_size(chan_ctx *pctx)
 {
     mutex_lock(&pctx->mmutex);
-    size_t size = qu_voidp_size(&pctx->queue);
+    size_t size = qu_void_size(&pctx->queue);
     mutex_unlock(&pctx->mmutex);
     return size;
 }

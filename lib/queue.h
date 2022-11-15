@@ -72,6 +72,6 @@ static inline type *qtype##_peek(qtype *p) {\
     return p->ptr + p->offset;\
 };\
 
-QUEUE_DECL(void *, qu_voidp);
+QUEUE_DECL(void *, qu_void);
 
 #endif//QUEUE_H_

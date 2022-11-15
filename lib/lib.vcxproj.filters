@@ -48,9 +48,6 @@
     <ClInclude Include="macro.h">
       <Filter>base</Filter>
     </ClInclude>
-    <ClInclude Include="array.h">
-      <Filter>utils</Filter>
-    </ClInclude>
     <ClInclude Include="queue.h">
       <Filter>utils</Filter>
     </ClInclude>
@@ -117,6 +114,9 @@
     </ClInclude>
     <ClInclude Include="event\uev.h">
       <Filter>event\unix</Filter>
+    </ClInclude>
+    <ClInclude Include="sarray.h">
+      <Filter>utils</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>

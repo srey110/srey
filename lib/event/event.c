@@ -72,16 +72,48 @@ int32_t _sock_read(SOCKET fd, void *buf, size_t len, void *arg)
     }
     return rtn;
 }
-int32_t _sock_send(SOCKET fd, qu_bufs *sendbufs, size_t *nsend, void *arg)
+static inline int32_t _bufs_peek(qu_bufs *sendbufs, mutex_ctx *lck, bufs_ctx *buf)
+{
+    bufs_ctx *tmp;
+    int32_t rtn = ERR_FAILED;
+    if (NULL != lck)
+    {
+        mutex_lock(lck);
+    }
+    tmp = qu_bufs_peek(sendbufs);
+    if (NULL != tmp)
+    {
+        *buf = *tmp;
+        rtn = ERR_OK;
+    }
+    if (NULL != lck)
+    {
+        mutex_unlock(lck);
+    }
+    return rtn;
+}
+static inline void _bufs_pop(qu_bufs *sendbufs, mutex_ctx *lck)
+{
+    if (NULL != lck)
+    {
+        mutex_lock(lck);
+    }
+    qu_bufs_pop(sendbufs);
+    if (NULL != lck)
+    {
+        mutex_unlock(lck);
+    }
+}
+int32_t _sock_send(SOCKET fd, qu_bufs *sendbufs, mutex_ctx *lck, size_t *nsend, void *arg)
 {
     *nsend = 0;
     int32_t err = ERR_OK;
     int32_t rtn, size;
-    bufs_ctx *buf;
-    while (NULL != (buf = qu_bufs_peek(sendbufs)))
+    bufs_ctx buf;
+    while (ERR_OK == _bufs_peek(sendbufs, lck, &buf))
     {
-        size = (int32_t)(buf->len - buf->offset);
-        rtn = send(fd, (char*)buf->data + buf->offset, size, 0);
+        size = (int32_t)(buf.len - buf.offset);
+        rtn = send(fd, (char*)buf.data + buf.offset, size, 0);
         if (0 == rtn)
         {
             err = ERR_FAILED;
@@ -98,11 +130,11 @@ int32_t _sock_send(SOCKET fd, qu_bufs *sendbufs, size_t *nsend, void *arg)
         (*nsend) += rtn;
         if (rtn < size)
         {
-            buf->offset += rtn;
+            buf.offset += rtn;
             break;
         }
-        FREE(buf->data);
-        qu_bufs_pop(sendbufs);
+        FREE(buf.data);
+        _bufs_pop(sendbufs, lck);
     }
     return err;
 }

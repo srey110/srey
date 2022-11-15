@@ -20,11 +20,9 @@ typedef enum EVENTS
     EVENT_READ = 0x01,
     EVENT_WRITE = 0x02,
 }EVENTS;
-
 typedef enum UEV_CMDS
 {
     CMD_STOP = 0x00,
-    CMD_UPDATE,
     CMD_DISCONN,
     CMD_LSN,
     CMD_CONN,
@@ -80,7 +78,6 @@ void _cmd_listen(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx);
 void _cmd_add(ev_ctx *ctx, SOCKET fd, sock_ctx *skctx);
 
 void _on_cmd_stop(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop);
-void _on_cmd_update(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop);
 void _on_cmd_disconn(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop);
 void _on_cmd_lsn(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop);
 void _on_cmd_conn(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop);
@@ -89,7 +86,6 @@ void _on_cmd_add(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop);
 
 qu_bufs *_get_send_buf(sock_ctx *skctx);
 connect_cb _get_conn_cb(sock_ctx *skctx, ud_cxt *ud);
-void _update_ud(sock_ctx *skctx, ud_cxt *ud);
 void _on_close(watcher_ctx *watcher, sock_ctx *skctx, int32_t remove);
 void _free_sockctx(sock_ctx *skctx);
 

@@ -15,9 +15,8 @@ typedef struct listener_ctx
 {
     int32_t family;
     int32_t nlsn;
-    freeud_cb fud_cb;
     lsnsock_ctx *lsnsock;
-    lsn_cb_ctx lsn_cb;    
+    cbs_ctx cbs;
     ud_cxt ud;
 #ifndef SO_REUSEPORT
     mutex_ctx lsnlck;
@@ -26,7 +25,7 @@ typedef struct listener_ctx
 typedef struct conn_ctx
 {
     sock_ctx sock;
-    conn_cb_ctx conn_cb;
+    cbs_ctx cbs;
     ud_cxt ud;
 }conn_ctx;
 typedef struct skrw_ctx
@@ -34,7 +33,7 @@ typedef struct skrw_ctx
     sock_ctx sock;
     buffer_ctx buf;
     qu_bufs qubuf;
-    rw_cb_ctx rw_cb;
+    cbs_ctx cbs;
     ud_cxt ud;
 }skrw_ctx;
 
@@ -47,12 +46,7 @@ connect_cb _get_conn_cb(sock_ctx *skctx, ud_cxt *ud)
 {
     conn_ctx *conn = UPCAST(skctx, conn_ctx, sock);
     *ud = conn->ud;
-    return conn->conn_cb.conn_cb;
-}
-void _update_ud(sock_ctx *skctx, ud_cxt *ud)
-{
-    skrw_ctx *skrw = UPCAST(skctx, skrw_ctx, sock);
-    skrw->ud = *ud;
+    return conn->cbs.conn_cb;
 }
 void _free_sockctx(sock_ctx *skctx)
 {
@@ -66,9 +60,9 @@ void _free_sockctx(sock_ctx *skctx)
 void _on_close(watcher_ctx *watcher, sock_ctx *skctx, int32_t remove)
 {
     skrw_ctx *skrw = UPCAST(skctx, skrw_ctx, sock);
-    if (NULL != skrw->rw_cb.c_cb)
+    if (NULL != skrw->cbs.c_cb)
     {
-        skrw->rw_cb.c_cb(watcher->ev, skrw->sock.fd, &skrw->ud);
+        skrw->cbs.c_cb(watcher->ev, skrw->sock.fd, &skrw->ud);
     }
     if (remove)
     {
@@ -85,7 +79,7 @@ static inline int32_t _on_r_cb(watcher_ctx *watcher, skrw_ctx *skrw)
     int32_t rtn = buffer_from_sock(&skrw->buf, skrw->sock.fd, &nread, _sock_read, NULL);
     if (0 != nread)
     {
-        skrw->rw_cb.r_cb(watcher->ev, skrw->sock.fd, &skrw->buf, nread, &skrw->ud);
+        skrw->cbs.r_cb(watcher->ev, skrw->sock.fd, &skrw->buf, nread, &skrw->ud);
     }
 #ifdef EV_EVPORT
     if (ERR_OK == rtn)
@@ -102,11 +96,11 @@ static inline int32_t _on_r_cb(watcher_ctx *watcher, skrw_ctx *skrw)
 static inline void _on_w_cb(watcher_ctx *watcher, skrw_ctx *skrw)
 {
     size_t nsend;
-    int32_t rtn = _sock_send(skrw->sock.fd, &skrw->qubuf, &nsend, NULL);
-    if (NULL != skrw->rw_cb.s_cb
+    int32_t rtn = _sock_send(skrw->sock.fd, &skrw->qubuf, NULL, &nsend, NULL);
+    if (NULL != skrw->cbs.s_cb
         && 0 != nsend)
     {
-        skrw->rw_cb.s_cb(watcher->ev, skrw->sock.fd, nsend, &skrw->ud);
+        skrw->cbs.s_cb(watcher->ev, skrw->sock.fd, nsend, &skrw->ud);
     }
     if (ERR_OK != rtn)
     {
@@ -136,7 +130,7 @@ static inline void _on_rw_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev, 
         _on_w_cb(watcher, skrw);
     }
 }
-static inline sock_ctx *_new_sockctx(SOCKET fd, rw_cb_ctx *cbs, ud_cxt *ud)
+static inline sock_ctx *_new_sockctx(SOCKET fd, cbs_ctx *cbs, ud_cxt *ud)
 {
     skrw_ctx *rw;
     MALLOC(rw, sizeof(skrw_ctx));
@@ -144,7 +138,7 @@ static inline sock_ctx *_new_sockctx(SOCKET fd, rw_cb_ctx *cbs, ud_cxt *ud)
     rw->sock.fd = fd;
     rw->sock.events = 0;
     rw->ud = *ud;
-    rw->rw_cb = *cbs;
+    rw->cbs = *cbs;
     buffer_init(&rw->buf);
     qu_bufs_init(&rw->qubuf, INIT_SENDBUF_LEN);
     return &rw->sock;
@@ -154,19 +148,19 @@ static inline void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t
     conn_ctx *conn = UPCAST(skctx, conn_ctx, sock);
     if (ERR_OK != sock_checkconn(conn->sock.fd))
     {
-        conn->conn_cb.conn_cb(watcher->ev, INVALID_SOCK, &conn->ud);
+        conn->cbs.conn_cb(watcher->ev, INVALID_SOCK, &conn->ud);
         CLOSE_SOCK(conn->sock.fd);
         FREE(conn);
         return;
     }
     _del_event(watcher, conn->sock.fd, &conn->sock.events, ev, NULL);
-    if (ERR_OK != conn->conn_cb.conn_cb(watcher->ev, conn->sock.fd, &conn->ud))
+    if (ERR_OK != conn->cbs.conn_cb(watcher->ev, conn->sock.fd, &conn->ud))
     {
         CLOSE_SOCK(conn->sock.fd);
         FREE(conn);
         return;
     }
-    sock_ctx *rwck = _new_sockctx(conn->sock.fd, &conn->conn_cb.rw_cb, &conn->ud);
+    sock_ctx *rwck = _new_sockctx(conn->sock.fd, &conn->cbs, &conn->ud);
     if (ERR_OK != _add_event(watcher, rwck->fd, &rwck->events, EVENT_READ, rwck))
     {
         _on_close(watcher, rwck, 0);
@@ -179,10 +173,9 @@ static inline void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t
     ASSERTAB(NULL == hashmap_set(watcher->element, &el), "socket repeat.");
     FREE(conn);
 }
-int32_t ev_connect(ev_ctx *ctx, const char *host, const uint16_t port,
-    conn_cb_ctx *cbs, ud_cxt *ud)
+int32_t ev_connect(ev_ctx *ctx, const char *host, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud)
 {
-    ASSERTAB(NULL != cbs && NULL != cbs->rw_cb.r_cb, ERRSTR_NULLP);
+    ASSERTAB(NULL != cbs && NULL != cbs->conn_cb && NULL != cbs->r_cb, ERRSTR_NULLP);
     netaddr_ctx addr;
     if (ERR_OK != netaddr_sethost(&addr, host, port))
     {
@@ -213,7 +206,7 @@ int32_t ev_connect(ev_ctx *ctx, const char *host, const uint16_t port,
     conn->sock.ev_cb = _on_connect_cb;
     conn->sock.events = 0;
     conn->sock.fd = fd;
-    conn->conn_cb = *cbs;
+    conn->cbs = *cbs;
     COPY_UD(conn->ud, ud);
     _cmd_connect(ctx, fd, &conn->sock);
     return ERR_OK;
@@ -231,12 +224,12 @@ static inline void _on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t 
     while (INVALID_SOCK != (fd = accept(acpt->sock.fd, NULL, NULL)))
     {
         if (ERR_OK != _set_sockops(fd)
-            || ERR_OK != acpt->lsn->lsn_cb.acp_cb(watcher->ev, fd, &acpt->lsn->ud))
+            || ERR_OK != acpt->lsn->cbs.acp_cb(watcher->ev, fd, &acpt->lsn->ud))
         {
             CLOSE_SOCK(fd);
             continue;
         }
-        sock_ctx *rwck = _new_sockctx(fd, &acpt->lsn->lsn_cb.rw_cb, &acpt->lsn->ud);
+        sock_ctx *rwck = _new_sockctx(fd, &acpt->lsn->cbs, &acpt->lsn->ud);
         _cmd_add(watcher->ev, rwck->fd, rwck);
     }
 #ifndef SO_REUSEPORT
@@ -257,10 +250,9 @@ static void _close_lsnsock(listener_ctx *lsn, int32_t cnt)
     }
 #endif
 }
-int32_t ev_listen(ev_ctx *ctx, const char *host, const uint16_t port,
-    lsn_cb_ctx *cbs, freeud_cb fud_cb, ud_cxt *ud)
+int32_t ev_listen(ev_ctx *ctx, const char *host, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud)
 {
-    ASSERTAB(NULL != cbs && NULL != cbs->rw_cb.r_cb, ERRSTR_NULLP);
+    ASSERTAB(NULL != cbs && NULL != cbs->acp_cb && NULL != cbs->r_cb, ERRSTR_NULLP);
     netaddr_ctx addr;
     if (ERR_OK != netaddr_sethost(&addr, host, port))
     {
@@ -278,8 +270,7 @@ int32_t ev_listen(ev_ctx *ctx, const char *host, const uint16_t port,
     MALLOC(lsn, sizeof(listener_ctx));
     lsn->family = netaddr_family(&addr);
     lsn->nlsn = ctx->nthreads;
-    lsn->fud_cb = fud_cb;
-    lsn->lsn_cb = *cbs;
+    lsn->cbs = *cbs;
     COPY_UD(lsn->ud, ud);
 #ifndef SO_REUSEPORT
     mutex_init(&lsn->lsnlck);

@@ -19,7 +19,6 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="array.h" />
     <ClInclude Include="buffer.h" />
     <ClInclude Include="chan.h" />
     <ClInclude Include="cond.h" />
@@ -43,6 +42,7 @@
     <ClInclude Include="os.h" />
     <ClInclude Include="queue.h" />
     <ClInclude Include="rwlock.h" />
+    <ClInclude Include="sarray.h" />
     <ClInclude Include="sha1\sha1.h" />
     <ClInclude Include="spinlock.h" />
     <ClInclude Include="thread.h" />

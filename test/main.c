@@ -32,12 +32,12 @@ static void test_connclose_cb(ev_ctx *ctx, SOCKET sock, ud_cxt *ud)
 static void test_recv_cb(ev_ctx *ctx, SOCKET sock, buffer_ctx *buf, size_t lens, ud_cxt *ud)
 {
     //PRINT("test_recv_cb: sock %d ", (int32_t)sock);
-    if (randrange(0, 100) <= 1)
-    {
-        ev_close(ctx, sock);
-        //PRINT("close socket: sock %d ", (int32_t)sock);
-        return;
-    }
+    //if (randrange(0, 100) <= 1)
+    //{
+    //    ev_close(ctx, sock);
+    //    //PRINT("close socket: sock %d ", (int32_t)sock);
+    //    return;
+    //}
     size_t len = buffer_size(buf);
     char *pk;
     MALLOC(pk, len);
@@ -73,12 +73,12 @@ static int32_t test_conn_cb(ev_ctx *ctx, SOCKET sock, ud_cxt *ud)
 {
     if (INVALID_SOCK != sock)
     {
-        PRINT("%s", "connect ok.");
+        //PRINT("%s", "connect ok.");
         connsock = sock;
     }
     else
     {
-        PRINT("%s", "connect error.");
+        //PRINT("%s", "connect error.");
     }
     return ERR_OK;
 }
@@ -96,7 +96,6 @@ static void timeout(void *arg)
     {
         /*ev_close(arg, connsock);
         connsock = INVALID_SOCK;*/
-        ev_update(arg, connsock, NULL, NULL);
         char str[100];
         int32_t len = randrange(1, sizeof(str));
         ASSERTAB(sizeof(str) > len, "randrange error.");
@@ -115,11 +114,11 @@ static void timeout(void *arg)
     }
     else
     {
-        conn_cb_ctx cbs;
+        cbs_ctx cbs;
         cbs.conn_cb = test_conn_cb;
-        cbs.rw_cb.c_cb = test_connclose_cb;
-        cbs.rw_cb.r_cb = test_conn_recv_cb;
-        cbs.rw_cb.s_cb = test_send_cb;
+        cbs.c_cb = test_connclose_cb;
+        cbs.r_cb = test_conn_recv_cb;
+        cbs.s_cb = test_send_cb;
         ev_connect(arg, "127.0.0.1", 15000, &cbs, NULL);
     }
     timer_start(&tw.timer);
@@ -154,12 +153,12 @@ int main(int argc, char *argv[])
     tw_init(&tw);   
     ev_ctx ev;
     ev_init(&ev, 2);
-    lsn_cb_ctx cbs;
+    cbs_ctx cbs;
     cbs.acp_cb = test_acpt_cb;
-    cbs.rw_cb.c_cb = test_close_cb;
-    cbs.rw_cb.r_cb = test_recv_cb;
-    cbs.rw_cb.s_cb = test_send_cb;
-    ev_listen(&ev, "0.0.0.0", 15000, &cbs, NULL, NULL);
+    cbs.c_cb = test_close_cb;
+    cbs.r_cb = test_recv_cb;
+    cbs.s_cb = test_send_cb;
+    ev_listen(&ev, "0.0.0.0", 15000, &cbs, NULL);
 
     timer_start(&tw.timer);
     tw_add(&tw, 3000, timeout, &ev);

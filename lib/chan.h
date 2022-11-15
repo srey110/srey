@@ -13,7 +13,7 @@ typedef struct chan_ctx
     mutex_ctx mmutex;//¶ÁÐ´ÐÅºÅËø
     cond_ctx rcond;
     cond_ctx wcond;
-    qu_voidp queue;
+    qu_void queue;
 }chan_ctx;
 
 void chan_init(chan_ctx *ctx, const size_t maxsize);

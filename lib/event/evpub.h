@@ -41,23 +41,14 @@ typedef int32_t(*connect_cb)(ev_ctx *ev, SOCKET fd, ud_cxt *ud);//sock INVALID_S
 typedef void(*recv_cb)(ev_ctx *ev, SOCKET fd, buffer_ctx *buf, size_t size, ud_cxt *ud);
 typedef void(*send_cb)(ev_ctx *ev, SOCKET fd, size_t size, ud_cxt *ud);
 typedef void(*close_cb)(ev_ctx *ev, SOCKET fd, ud_cxt *ud);
-typedef void(*freeud_cb)(ud_cxt *ud);
-typedef struct rw_cb_ctx
+typedef struct cbs_ctx
 {
+    accept_cb acp_cb;
+    connect_cb conn_cb;
     recv_cb r_cb;
     close_cb c_cb;
     send_cb s_cb;
-}rw_cb_ctx;
-typedef struct lsn_cb_ctx
-{
-    accept_cb acp_cb;
-    rw_cb_ctx rw_cb;
-}lsn_cb_ctx;
-typedef struct conn_cb_ctx
-{
-    connect_cb conn_cb;
-    rw_cb_ctx rw_cb;
-}conn_cb_ctx;
+}cbs_ctx;
 
 #define FD_HASH(fd) hash((const char *)&(fd), sizeof(fd))
 #define COPY_UD(dst, src)\

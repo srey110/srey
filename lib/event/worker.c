@@ -4,19 +4,18 @@
 #include "hashmap.h"
 #include "buffer.h"
 #include "cond.h"
+#include "sarray.h"
+#include "timer.h"
 
 #ifdef EV_IOCP
 
 typedef enum WORKER_CMDS
 {
     CMD_STOP = 0x00,
-    CMD_UPDATE,
     CMD_DISCONN,
     CMD_ADD,
     CMD_REMOVE,
     CMD_SEND,
-    CMD_CANREAD,
-    CMD_CANWRITE,
 
     CMD_TOTAL,
 }WORKER_CMDS;
@@ -24,8 +23,6 @@ typedef struct map_element
 {
     SOCKET fd;
     struct sock_ctx *sock;
-    rw_cb_ctx rw_cb;
-    ud_cxt ud;
 }map_element;
 //命令
 typedef struct cmd_ctx
@@ -34,10 +31,10 @@ typedef struct cmd_ctx
     SOCKET fd;
     void *data;
     size_t len;
-    ud_cxt ud;
-    rw_cb_ctx rw_cb;
 }cmd_ctx;
 QUEUE_DECL(cmd_ctx, qu_cmd);
+
+ARRAY_DECL(struct sock_ctx *, arr_delay);
 //队列
 typedef struct qus_ctx
 {
@@ -54,6 +51,8 @@ typedef struct runner_ctx
     pthread_t thrunner;
     cond_ctx cond;
     mutex_ctx condlck;
+    arr_delay arrdelay;
+    void(*cmd_callback[CMD_TOTAL])(struct runner_ctx *, cmd_ctx *, int32_t *);
 }runner_ctx;
 typedef struct worker_ctx
 {
@@ -61,10 +60,11 @@ typedef struct worker_ctx
     ev_ctx *ev;
     runner_ctx *runner;
 }worker_ctx;
+#define RUNNER(worker, hs) ((1 == (worker)->nthread) ? (worker)->runner : (&(worker)->runner[hs % (worker)->nthread]))
 #define QUS_PUSH(worker, cmd)\
 do {\
     uint64_t hs = FD_HASH(cmd.fd);\
-    runner_ctx *runner = (1 == (worker)->nthread) ? (worker)->runner : (&(worker)->runner[hs % (worker)->nthread]);\
+    runner_ctx *runner = RUNNER(worker, hs);\
     _qus_push(runner, hs % runner->nqus, &cmd);\
 } while (0)
 
@@ -106,14 +106,12 @@ static void _on_cmd_stop(runner_ctx *runner, cmd_ctx *cmd, int32_t *stop)
 {
     *stop = 1;
 }
-void worker_add(struct worker_ctx *worker, SOCKET fd, struct sock_ctx *skctx, rw_cb_ctx *cbs, ud_cxt *ud)
+void worker_add(struct worker_ctx *worker, SOCKET fd, struct sock_ctx *skctx)
 {
     cmd_ctx cmd;
     cmd.cmd = CMD_ADD;
     cmd.fd = fd;
     cmd.data = skctx;
-    cmd.rw_cb = *cbs;
-    COPY_UD(cmd.ud, ud);
     QUS_PUSH(worker, cmd);
 }
 static void _on_cmd_add(runner_ctx *runner, cmd_ctx *cmd, int32_t *stop)
@@ -121,8 +119,6 @@ static void _on_cmd_add(runner_ctx *runner, cmd_ctx *cmd, int32_t *stop)
     map_element el;
     el.fd = cmd->fd;
     el.sock = cmd->data;
-    el.rw_cb = cmd->rw_cb;
-    el.ud = cmd->ud;
     ASSERTAB(NULL == hashmap_set(runner->element, &el), "socket repeat.");
 }
 void worker_remove(struct worker_ctx *worker, SOCKET fd)
@@ -139,7 +135,14 @@ static void _on_cmd_remove(runner_ctx *runner, cmd_ctx *cmd, int32_t *stop)
     {
         return;
     }
-    _free_sockctx(el->sock);
+    if (0 == _check_canfree(el->sock))
+    {
+        _free_sockctx(el->sock);
+    }
+    else
+    {
+        arr_delay_push_back(&runner->arrdelay, &el->sock);
+    }
     hashmap_delete(runner->element, el);
 }
 void ev_send(ev_ctx *ctx, SOCKET fd, void *data, size_t len, int32_t copy)
@@ -172,13 +175,7 @@ static void _on_cmd_send(runner_ctx *runner, cmd_ctx *cmd, int32_t *stop)
     buf.data = cmd->data;
     buf.len = cmd->len;
     buf.offset = 0;
-    qu_bufs *sendbufs = _get_send_buf(el->sock);
-    size_t size = qu_bufs_size(sendbufs);
-    qu_bufs_push(sendbufs, &buf);
-    if (0 == size)
-    {
-        (void)_post_send(el->sock);
-    }
+    _qu_bufs_addpost(el->sock, &buf);
 }
 void ev_close(struct ev_ctx *ctx, SOCKET fd)
 {
@@ -197,144 +194,84 @@ static void _on_cmd_disconn(runner_ctx *runner, cmd_ctx *cmd, int32_t *stop)
         CLOSE_SOCK(cmd->fd);
     }
 }
-void ev_update(ev_ctx *ctx, SOCKET fd,  freeud_cb fud_cb, ud_cxt *ud)
+static inline void _init_callback(runner_ctx *runner)
 {
-    ASSERTAB(INVALID_SOCK != fd, ERRSTR_INVPARAM);
-    cmd_ctx cmd;
-    cmd.cmd = CMD_UPDATE;
-    cmd.fd = fd;
-    cmd.data = fud_cb;
-    COPY_UD(cmd.ud, ud);
-    QUS_PUSH(ctx->worker, cmd);
+    runner->cmd_callback[CMD_STOP] = _on_cmd_stop;
+    runner->cmd_callback[CMD_DISCONN] = _on_cmd_disconn;
+    runner->cmd_callback[CMD_ADD] = _on_cmd_add;
+    runner->cmd_callback[CMD_REMOVE] = _on_cmd_remove;
+    runner->cmd_callback[CMD_SEND] = _on_cmd_send;
 }
-static void _on_cmd_update(runner_ctx *runner, cmd_ctx *cmd, int32_t *stop)
+static inline void _trywait_cond(runner_ctx *runner)
 {
-    map_element *el = _map_get(runner->element, cmd->fd);
-    if (NULL == el)
+    mutex_lock(&runner->condlck);
+    while (0 == _qus_size(runner))
     {
-        if (NULL != cmd->data)
+        runner->wait++;
+        cond_timedwait(&runner->cond, &runner->condlck, 20);
+        runner->wait--;
+    }
+    mutex_unlock(&runner->condlck);
+}
+static inline void _loop_cmd(runner_ctx *runner, int32_t *stop)
+{
+    uint32_t i;
+    int32_t have;
+    cmd_ctx cmd, *tmp;
+    do
+    {
+        have = 0;
+        for (i = 0; i < runner->nqus; i++)
         {
-            ((freeud_cb)cmd->data)(&cmd->ud);
+            mutex_lock(&runner->qus[i].lck);
+            tmp = qu_cmd_pop(&runner->qus[i].qu);
+            if (NULL != tmp)
+            {
+                cmd = *tmp;
+                have = 1;
+            }
+            mutex_unlock(&runner->qus[i].lck);
+            if (NULL != tmp)
+            {
+                runner->cmd_callback[cmd.cmd](runner, &cmd, stop);
+            }
         }
-        return;
-    }
-    el->ud = cmd->ud;
+    } while (have);
 }
-static inline void _on_close(runner_ctx *runner, map_element *el)
+static inline void _check_delayfree(timer_ctx *timer, arr_delay *arr)
 {
-    if (NULL != el->rw_cb.c_cb)
-    {
-        el->rw_cb.c_cb(runner->worker->ev, el->fd, &el->ud);
-    }
-    _free_sockctx(el->sock);
-    hashmap_delete(runner->element, el);
-}
-void worker_canread(worker_ctx *worker, SOCKET fd)
-{
-    cmd_ctx cmd;
-    cmd.cmd = CMD_CANREAD;
-    cmd.fd = fd;
-    QUS_PUSH(worker, cmd);
-}
-static void _on_cmd_canread(runner_ctx *runner, cmd_ctx *cmd, int32_t *stop)
-{
-    map_element *el = _map_get(runner->element, cmd->fd);
-    if (NULL == el)
+    static const uint64_t accuracy = 1000 * 1000;
+    if (timer_elapsed(timer) / accuracy < 100)
     {
         return;
     }
-    buffer_ctx *buf = _get_recv_buf(el->sock);
-    size_t nread;
-    //读数据前断线检测。。。
-    int32_t rtn = buffer_from_sock(buf, el->fd, &nread, _sock_read, NULL);
-    if (0 != nread)
+    struct sock_ctx **skctx;
+    int32_t size = (int32_t)arr_delay_size(arr);
+    for (int32_t i = size - 1; i >= 0; i--)
     {
-        el->rw_cb.r_cb(runner->worker->ev, el->fd, buf, nread, &el->ud);
+        skctx = arr_delay_at(arr, i);
+        if (0 == _check_canfree(*skctx))
+        {
+            _free_sockctx(*skctx);
+            arr_delay_del_nomove(arr, i);
+        }
     }
-    if (ERR_OK == rtn)
-    {
-        rtn = _post_recv(el->sock);
-    }
-    if (ERR_OK != rtn)
-    {
-        _on_close(runner, el);
-    }
-}
-void worker_canwrite(worker_ctx *worker, SOCKET fd)
-{
-    cmd_ctx cmd;
-    cmd.cmd = CMD_CANWRITE;
-    cmd.fd = fd;
-    QUS_PUSH(worker, cmd);
-}
-static void _on_cmd_canwrite(runner_ctx *runner, cmd_ctx *cmd, int32_t *stop)
-{
-    map_element *el = _map_get(runner->element, cmd->fd);
-    if (NULL == el)
-    {
-        return;
-    }
-    size_t nsend;
-    qu_bufs *sendbufs = _get_send_buf(el->sock);
-    int32_t rtn = _sock_send(el->fd, sendbufs, &nsend, NULL);
-    if (NULL != el->rw_cb.s_cb
-        && 0 != nsend)
-    {
-        el->rw_cb.s_cb(runner->worker->ev, el->fd, nsend, &el->ud);
-    }
-    if (ERR_OK == rtn
-        && qu_bufs_size(sendbufs) > 0)
-    {
-        (void)_post_send(el->sock);
-    }
+    timer_start(timer);
 }
 static void _loop_runner(void *arg)
 {
     runner_ctx *runner = (runner_ctx *)arg;
-    cmd_ctx cmd, *tmp;
-    uint32_t i;
-    int32_t more, stop = 0;
+    _init_callback(runner);
 
-    void(*_on_cmd[CMD_TOTAL])(runner_ctx *, cmd_ctx *, int32_t *);
-    _on_cmd[CMD_STOP] = _on_cmd_stop;
-    _on_cmd[CMD_UPDATE] = _on_cmd_update;
-    _on_cmd[CMD_DISCONN] = _on_cmd_disconn;
-    _on_cmd[CMD_ADD] = _on_cmd_add;
-    _on_cmd[CMD_REMOVE] = _on_cmd_remove;
-    _on_cmd[CMD_SEND] = _on_cmd_send;
-    _on_cmd[CMD_CANREAD] = _on_cmd_canread;
-    _on_cmd[CMD_CANWRITE] = _on_cmd_canwrite;
-
+    int32_t stop = 0;
+    timer_ctx timer;
+    timer_init(&timer);
+    timer_start(&timer);
     while (!stop)
     {
-        mutex_lock(&runner->condlck);
-        while (0 == _qus_size(runner))
-        {
-            runner->wait++;
-            cond_timedwait(&runner->cond, &runner->condlck, 20);
-            runner->wait--;
-        }
-        mutex_unlock(&runner->condlck);
-        more = 1;
-        do
-        {
-            more = 0;
-            for (i = 0; i < runner->nqus; i++)
-            {
-                mutex_lock(&runner->qus[i].lck);
-                tmp = qu_cmd_pop(&runner->qus[i].qu);
-                if (NULL != tmp)
-                {
-                    cmd = *tmp;
-                    more = 1;
-                }
-                mutex_unlock(&runner->qus[i].lck);
-                if (NULL != tmp)
-                {
-                    _on_cmd[cmd.cmd](runner, &cmd, &stop);
-                }
-            }
-        } while (more);
+        _trywait_cond(runner);
+        _loop_cmd(runner, &stop);
+        _check_delayfree(&timer, &runner->arrdelay);
     }
 }
 static inline void _free_mapitem(void *item)
@@ -370,6 +307,7 @@ worker_ctx *worker_init(ev_ctx *ev, uint32_t nthread, uint32_t nqus)
         _init_qus(runner);
         cond_init(&runner->cond);
         mutex_init(&runner->condlck);
+        arr_delay_init(&runner->arrdelay, ONEK);
         runner->thrunner = thread_creat(_loop_runner, runner);
     }
     return worker;
@@ -382,6 +320,17 @@ static void _free_qus(runner_ctx *runner)
         mutex_free(&runner->qus[i].lck);
     }
     FREE(runner->qus);
+}
+static void _arr_delay_freeel(arr_delay *arr)
+{
+    struct sock_ctx **skctx;
+    size_t size = arr_delay_size(arr);
+    for (size_t i = 0; i < size; i++)
+    {
+        skctx = arr_delay_at(arr, i);
+        _free_sockctx(*skctx);
+    }
+    arr_delay_free(arr);
 }
 void worker_free(worker_ctx *worker)
 {
@@ -406,6 +355,7 @@ void worker_free(worker_ctx *worker)
         cond_free(&runner->cond);
         _free_qus(runner);
         hashmap_free(runner->element);
+        _arr_delay_freeel(&runner->arrdelay);
     }
     FREE(worker->runner);
     FREE(worker);

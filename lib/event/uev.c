@@ -59,7 +59,6 @@ static inline void _cmd_loop(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev, 
 static void _init_cmd_cb(pip_skctx *skctx)
 {
     skctx->cmd_cb[CMD_STOP] = _on_cmd_stop;
-    skctx->cmd_cb[CMD_UPDATE] = _on_cmd_update;
     skctx->cmd_cb[CMD_DISCONN] = _on_cmd_disconn;
     skctx->cmd_cb[CMD_LSN] = _on_cmd_lsn;
     skctx->cmd_cb[CMD_CONN] = _on_cmd_conn;

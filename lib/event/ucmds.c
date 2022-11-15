@@ -11,12 +11,6 @@ do {\
     _cmd_send(watcher, hs % watcher->npipes, &cmd);\
 } while (0)
 
-typedef struct cmd_update_ctx
-{
-    freeud_cb fud_cb;
-    ud_cxt ud;
-}cmd_update_ctx;
-
 static inline map_element *_map_get(struct hashmap *map, SOCKET fd)
 {
     map_element key;
@@ -26,36 +20,6 @@ static inline map_element *_map_get(struct hashmap *map, SOCKET fd)
 void _on_cmd_stop(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop)
 {
     *stop = 1;
-}
-void ev_update(ev_ctx *ctx, SOCKET fd, freeud_cb fud_cb, ud_cxt *ud)
-{
-    ASSERTAB(INVALID_SOCK != fd, ERRSTR_INVPARAM);
-    cmd_update_ctx *update;
-    MALLOC(update, sizeof(cmd_update_ctx));
-    update->fud_cb = fud_cb;
-    COPY_UD(update->ud, ud);
-    cmd_ctx cmd;
-    cmd.cmd = CMD_UPDATE;
-    cmd.fd = fd;
-    cmd.data = update;
-    CMD_SEND(ctx, cmd);
-}
-void _on_cmd_update(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop)
-{
-    cmd_update_ctx *update = (cmd_update_ctx *)cmd->data;
-    map_element *el = _map_get(watcher->element, cmd->fd);
-    if (NULL == el)
-    {
-        if (NULL != update->fud_cb)
-        {
-            update->fud_cb(&update->ud);
-        }
-    }
-    else
-    {
-        _update_ud(el->sock, &update->ud);
-    }
-    FREE(update);
 }
 void ev_close(ev_ctx *ctx, SOCKET fd)
 {

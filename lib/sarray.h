@@ -1,5 +1,5 @@
-#ifndef ARRAY_H_
-#define ARRAY_H_
+#ifndef SARRAY_H_
+#define SARRAY_H_
 
 #include "macro.h"
 
@@ -10,7 +10,7 @@ struct atype {      \
     type   *ptr;    \
     size_t  size;   \
     size_t  maxsize;\
-};                  \
+};\
 typedef struct atype atype;\
 static inline void atype##_init(atype *p, size_t maxsize) {\
     p->size = 0;\
@@ -114,4 +114,6 @@ static inline void atype##_swap(atype *p, size_t pos1, size_t pos2) {\
     p->ptr[pos2] = tmp;\
 };\
 
-#endif//ARRAY_H_
+ARRAY_DECL(void *, arr_void);
+
+#endif//SARRAY_H_

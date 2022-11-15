@@ -3,7 +3,7 @@
 
 #include "macro.h"
 
-#include "array.h"
+#include "sarray.h"
 #include "chan.h"
 #include "loger.h"
 #include "netaddr.h"
