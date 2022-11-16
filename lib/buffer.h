@@ -47,6 +47,6 @@ uint32_t buffer_get(buffer_ctx *ctx, size_t atmost, IOV_TYPE *iov, const uint32_
 void buffer_commit_get(buffer_ctx *ctx, size_t size);
 
 int32_t buffer_from_sock(buffer_ctx *ctx, SOCKET fd, size_t *nread,
-    int32_t(*read_fd)(SOCKET fd, void *buf, size_t len, void *arg), void *arg);
+    int32_t(*_readv)(SOCKET, IOV_TYPE *, uint32_t, void *), void *arg);
 
 #endif//BUFFER_H_

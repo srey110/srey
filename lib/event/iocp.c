@@ -73,8 +73,9 @@ static void _loop_event(void *arg)
                 sock = UPCAST(overlap, sock_ctx, overlapped);
                 sock->ev_cb(watcher, sock);
             }
-            if (count == nevent
-                && 0 == watcher->ev->stop)
+            if (0 == watcher->ev->stop
+                && count == nevent
+                && nevent < MAX_EVENTS_CNT)
             {
                 FREE(overlappeds);
                 nevent *= 2;

@@ -10,7 +10,8 @@
 #include "loger.h"
 
 #ifdef EV_IOCP
-#define DELAY_MAXCNT 20
+
+#define DELAY_TIMEOUT     1000
 typedef enum WORKER_CMDS
 {
     CMD_STOP = 0x00,
@@ -37,7 +38,7 @@ typedef struct cmd_ctx
 QUEUE_DECL(cmd_ctx, qu_cmd);
 typedef struct delay_ctx
 {
-    int32_t cnt;
+    int32_t timeout;
     struct sock_ctx *sock;
 }delay_ctx;
 ARRAY_DECL(delay_ctx, arr_delay);
@@ -59,13 +60,13 @@ typedef struct runner_ctx
     mutex_ctx condlck;
     arr_delay arrdelay;
     skpool_ctx pool;
-    void(*cmd_callback[CMD_TOTAL])(struct runner_ctx *, cmd_ctx *, int32_t *);
 }runner_ctx;
 typedef struct worker_ctx
 {
     uint32_t nthread;
     ev_ctx *ev;
     runner_ctx *runner;
+    void(*cmd_callback[CMD_TOTAL])(struct runner_ctx *, cmd_ctx *, int32_t *);
 }worker_ctx;
 #define RUNNER(worker, hs) ((1 == (worker)->nthread) ? (worker)->runner : (&(worker)->runner[hs % (worker)->nthread]))
 #define QUS_PUSH(worker, cmd)\
@@ -109,7 +110,7 @@ static inline size_t _qus_size(runner_ctx *runner)
     }
     return size;
 }
-struct sock_ctx *worker_newsk(struct worker_ctx *worker, SOCKET fd, struct cbs_ctx *cbs, struct ud_cxt *ud)
+struct sock_ctx *worker_newsk(worker_ctx *worker, SOCKET fd, cbs_ctx *cbs, ud_cxt *ud)
 {
     uint64_t hs = FD_HASH(fd);
     runner_ctx *runner = RUNNER(worker, hs);
@@ -119,7 +120,7 @@ static void _on_cmd_stop(runner_ctx *runner, cmd_ctx *cmd, int32_t *stop)
 {
     *stop = 1;
 }
-void worker_add(struct worker_ctx *worker, SOCKET fd, struct sock_ctx *skctx)
+void worker_add(worker_ctx *worker, SOCKET fd, struct sock_ctx *skctx)
 {
     cmd_ctx cmd;
     cmd.cmd = CMD_ADD;
@@ -134,7 +135,7 @@ static void _on_cmd_add(runner_ctx *runner, cmd_ctx *cmd, int32_t *stop)
     el.sock = cmd->data;
     ASSERTAB(NULL == hashmap_set(runner->element, &el), "socket repeat.");
 }
-void worker_remove(struct worker_ctx *worker, SOCKET fd)
+void worker_remove(worker_ctx *worker, SOCKET fd)
 {
     cmd_ctx cmd;
     cmd.cmd = CMD_REMOVE;
@@ -155,7 +156,7 @@ static void _on_cmd_remove(runner_ctx *runner, cmd_ctx *cmd, int32_t *stop)
     else
     {
         delay_ctx delay;
-        delay.cnt = 0;
+        delay.timeout = 0;
         delay.sock = el->sock;
         arr_delay_push_back(&runner->arrdelay, &delay);
     }
@@ -191,7 +192,7 @@ static void _on_cmd_send(runner_ctx *runner, cmd_ctx *cmd, int32_t *stop)
     buf.data = cmd->data;
     buf.len = cmd->len;
     buf.offset = 0;
-    _qu_bufs_addpost(el->sock, &buf);
+    _add_bufs_trypost(el->sock, &buf);
 }
 void ev_close(struct ev_ctx *ctx, SOCKET fd)
 {
@@ -210,13 +211,13 @@ static void _on_cmd_disconn(runner_ctx *runner, cmd_ctx *cmd, int32_t *stop)
         CLOSE_SOCK(cmd->fd);
     }
 }
-static inline void _init_callback(runner_ctx *runner)
+static void _init_callback(worker_ctx *worker)
 {
-    runner->cmd_callback[CMD_STOP] = _on_cmd_stop;
-    runner->cmd_callback[CMD_DISCONN] = _on_cmd_disconn;
-    runner->cmd_callback[CMD_ADD] = _on_cmd_add;
-    runner->cmd_callback[CMD_REMOVE] = _on_cmd_remove;
-    runner->cmd_callback[CMD_SEND] = _on_cmd_send;
+    worker->cmd_callback[CMD_STOP] = _on_cmd_stop;
+    worker->cmd_callback[CMD_DISCONN] = _on_cmd_disconn;
+    worker->cmd_callback[CMD_ADD] = _on_cmd_add;
+    worker->cmd_callback[CMD_REMOVE] = _on_cmd_remove;
+    worker->cmd_callback[CMD_SEND] = _on_cmd_send;
 }
 static inline void _trywait_cond(runner_ctx *runner)
 {
@@ -249,19 +250,19 @@ static inline void _loop_cmd(runner_ctx *runner, int32_t *stop)
             mutex_unlock(&runner->qus[i].lck);
             if (NULL != tmp)
             {
-                runner->cmd_callback[cmd.cmd](runner, &cmd, stop);
+                runner->worker->cmd_callback[cmd.cmd](runner, &cmd, stop);
             }
         }
     } while (have);
 }
 static inline void _check_delayfree(runner_ctx *runner, timer_ctx *timer, arr_delay *arr)
 {
-    static const uint64_t accuracy = 1000 * 1000;
-    if (timer_elapsed(timer) / accuracy < 100)
+    int32_t elapsed = (int32_t)(timer_elapsed(timer) / TM_ACCURACY);
+    if (elapsed < 100)
     {
         return;
     }
-
+    timer_start(timer);
     delay_ctx *delay;
     int32_t size = (int32_t)arr_delay_size(arr);
     for (int32_t i = size - 1; i >= 0; i--)
@@ -274,8 +275,8 @@ static inline void _check_delayfree(runner_ctx *runner, timer_ctx *timer, arr_de
         }
         else
         {
-            delay->cnt++;
-            if (delay->cnt > DELAY_MAXCNT)
+            delay->timeout += elapsed;
+            if (delay->timeout >= DELAY_TIMEOUT)
             {
                 pool_push(&runner->pool, delay->sock);
                 arr_delay_del_nomove(arr, i);
@@ -283,22 +284,33 @@ static inline void _check_delayfree(runner_ctx *runner, timer_ctx *timer, arr_de
             }
         }
     }
+}
+static inline void _pool_shrink(runner_ctx *runner, timer_ctx *timer)
+{
+    uint64_t elapsed = timer_elapsed(timer) / TM_ACCURACY;
+    if (elapsed < SHRINK_TIME)
+    {
+        return;
+    }
     timer_start(timer);
+    pool_shrink(&runner->pool, hashmap_count(runner->element) / 2);
 }
 static void _loop_runner(void *arg)
 {
     runner_ctx *runner = (runner_ctx *)arg;
-    _init_callback(runner);
-
     int32_t stop = 0;
-    timer_ctx timer;
-    timer_init(&timer);
-    timer_start(&timer);
+    timer_ctx tmdelay;
+    timer_ctx tmshrink;
+    timer_init(&tmdelay);
+    timer_init(&tmshrink);
+    timer_start(&tmdelay);
+    timer_start(&tmshrink);
     while (!stop)
     {
         _trywait_cond(runner);
         _loop_cmd(runner, &stop);
-        _check_delayfree(runner, &timer, &runner->arrdelay);
+        _check_delayfree(runner, &tmdelay, &runner->arrdelay);
+        _pool_shrink(runner, &tmshrink);
     }
 }
 static inline void _free_mapitem(void *item)
@@ -321,6 +333,7 @@ worker_ctx *worker_init(ev_ctx *ev, uint32_t nthread, uint32_t nqus)
     MALLOC(worker, sizeof(worker_ctx));
     worker->nthread = nthread;
     worker->ev = ev;
+    _init_callback(worker);
     MALLOC(worker->runner, sizeof(runner_ctx) * worker->nthread);
     runner_ctx *runner;
     for (uint32_t i = 0; i < worker->nthread; i++)

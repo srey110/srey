@@ -1,21 +1,21 @@
 #include "event/uev.h"
 #include "hashmap.h"
+#include "netutils.h"
+#include "timer.h"
 
 #ifndef EV_IOCP
-#ifdef EV_EPOLL
-#define TRIGGER_ET
-#endif
-#define CMD_MAX_NREAD 128
 
-typedef struct pip_skctx
-{
-    sock_ctx sock;
-    void(*cmd_cb[CMD_TOTAL])(struct watcher_ctx *watcher, struct cmd_ctx *cmd, int32_t *stop);
-}pip_skctx;
+#ifdef EV_EPOLL
+    #define TRIGGER_ET                1
+#endif
+#define CMD_MAX_NREAD                 64
+static volatile atomic_t _init_once = 0;
+static void(*cmd_cbs[CMD_TOTAL])(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop);
+
 typedef struct pip_ctx
 {
     int32_t pipes[2];
-    pip_skctx skpip;
+    sock_ctx skpip;
 }pip_ctx;
 
 static inline uint64_t _map_hash(const void *item, uint64_t seed0, uint64_t seed1)
@@ -31,51 +31,41 @@ void _cmd_send(watcher_ctx *watcher, uint32_t index, cmd_ctx *cmd)
 {
     ASSERTAB(sizeof(cmd_ctx) == write(watcher->pipes[index].pipes[1], cmd, sizeof(cmd_ctx)), "pipe write error.");
 }
-static inline void _cmd_loop(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev, int32_t *stop)
+static void _cmd_loop(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev, int32_t *stop)
 {
-    pip_skctx *skpipe = UPCAST(skctx, pip_skctx, sock);
     int32_t i, cnt, nread;
     cmd_ctx cmds[CMD_MAX_NREAD];
-    do 
+    while ((nread = read(skctx->fd, cmds, sizeof(cmds))) > 0)
     {
-        nread = read(skctx->fd, cmds, sizeof(cmds));
-        ASSERTAB(0 != nread, "pipe maybe closed.");
-        if (nread < 0)
-        {
-            ASSERTAB(IS_EAGAIN(ERRNO), "pipe maybe closed.");
-            break;
-        }
-        ASSERTAB(0 == (nread % sizeof(cmd_ctx)), "data error.");
         cnt = nread / sizeof(cmd_ctx);
         for (i = 0; i < cnt; i++)
         {
-            skpipe->cmd_cb[cmds[i].cmd](watcher, &cmds[i], stop);
+            cmd_cbs[cmds[i].cmd](watcher, &cmds[i], stop);
         }
-    } while (nread == sizeof(cmds));
+    }
 #ifdef EV_EVPORT
     ASSERTAB(ERR_OK == _add_event(watcher, skctx->fd, &skctx->events, ev, skctx), "add pipe in loop error.");
 #endif
 }
-static void _init_cmd_cb(pip_skctx *skctx)
+static void _init_callback()
 {
-    skctx->cmd_cb[CMD_STOP] = _on_cmd_stop;
-    skctx->cmd_cb[CMD_DISCONN] = _on_cmd_disconn;
-    skctx->cmd_cb[CMD_LSN] = _on_cmd_lsn;
-    skctx->cmd_cb[CMD_CONN] = _on_cmd_conn;
-    skctx->cmd_cb[CMD_ADD] = _on_cmd_add;
-    skctx->cmd_cb[CMD_SEND] = _on_cmd_send;
+    cmd_cbs[CMD_STOP] = _on_cmd_stop;
+    cmd_cbs[CMD_DISCONN] = _on_cmd_disconn;
+    cmd_cbs[CMD_LSN] = _on_cmd_lsn;
+    cmd_cbs[CMD_CONN] = _on_cmd_conn;
+    cmd_cbs[CMD_ADD] = _on_cmd_add;
+    cmd_cbs[CMD_SEND] = _on_cmd_send;
 }
-static void _loop_cmd(watcher_ctx *watcher)
+static void _init_cmd(watcher_ctx *watcher)
 {
-    pip_skctx *skctx;
+    sock_ctx *skctx;
     for (uint32_t i = 0; i < watcher->npipes; i++)
     {
         skctx = &watcher->pipes[i].skpip;
-        skctx->sock.fd = watcher->pipes[i].pipes[0];
-        skctx->sock.events = 0;
-        skctx->sock.ev_cb = _cmd_loop;
-        _init_cmd_cb(skctx);
-        ASSERTAB(ERR_OK == _add_event(watcher, skctx->sock.fd, &skctx->sock.events, EVENT_READ, &skctx->sock), "add pipe in loop error");
+        skctx->fd = watcher->pipes[i].pipes[0];
+        skctx->events = 0;
+        skctx->ev_cb = _cmd_loop;
+        ASSERTAB(ERR_OK == _add_event(watcher, skctx->fd, &skctx->events, EVENT_READ, skctx), "add pipe in loop error");
     }
 }
 #if defined(EV_KQUEUE)
@@ -105,7 +95,7 @@ int32_t _add_event(watcher_ctx *watcher, SOCKET fd, int32_t *events, int32_t ev,
     {
         epev.events |= EPOLLOUT;
     }
-#ifdef TRIGGER_ET
+#if TRIGGER_ET
     epev.events |= EPOLLET;
 #endif
     if (ERR_FAILED == epoll_ctl(watcher->evfd,
@@ -159,7 +149,7 @@ void _del_event(watcher_ctx *watcher, SOCKET fd, int32_t *events, int32_t ev, vo
     ZERO(&epev, sizeof(epev));
     epev.data.ptr = arg;
     *events = (*events) & ~ev;
-#ifdef TRIGGER_ET
+#if TRIGGER_ET
     *events = (*events) & ~EPOLLET;
 #endif
     if (0 == (*events))
@@ -176,7 +166,7 @@ void _del_event(watcher_ctx *watcher, SOCKET fd, int32_t *events, int32_t ev, vo
         {
             epev.events |= EPOLLOUT;
         }
-#ifdef TRIGGER_ET
+#if TRIGGER_ET
         epev.events |= EPOLLET;
 #endif
         (void)epoll_ctl(watcher->evfd, EPOLL_CTL_MOD, fd, &epev);
@@ -257,15 +247,28 @@ static inline int32_t _parse_event(events_t *ev, void **arg)
 #endif
     return rtn;
 }
+static inline void _pool_shrink(watcher_ctx *watcher, timer_ctx *timer)
+{
+    uint64_t elapsed = timer_elapsed(timer) / TM_ACCURACY;
+    if (elapsed < SHRINK_TIME)
+    {
+        return;
+    }
+    timer_start(timer);
+    pool_shrink(&watcher->pool, hashmap_count(watcher->element) / 2);
+}
 static void _loop_event(void *arg)
 {
     watcher_ctx *watcher = (watcher_ctx *)arg;
-    _loop_cmd(watcher);
+    _init_cmd(watcher);
 #if defined(EV_EVPORT)
     uint32_t nget;
 #endif
-    sock_ctx *skctx;
+    sock_ctx *skctx;    
     int32_t i, cnt, ev, stop = 0;
+    timer_ctx tmshrink;
+    timer_init(&tmshrink);
+    timer_start(&tmshrink);
     while (0 == stop)
     {
 #if defined(EV_EPOLL)
@@ -286,8 +289,10 @@ static void _loop_event(void *arg)
                 skctx->ev_cb(watcher, skctx, ev, &stop);
             }
         }
+        _pool_shrink(watcher, &tmshrink);
         if (0 == stop
-            && cnt == watcher->nevent)
+            && cnt == watcher->nevent
+            && watcher->nevent < MAX_EVENTS_CNT)
         {
             FREE(watcher->events);
             watcher->nevent *= 2;
@@ -319,6 +324,7 @@ static struct pip_ctx *_new_pips(uint32_t npipes)
     for (uint32_t i = 0; i < npipes; i++)
     {
         ASSERTAB(ERR_OK == pipe(pips[i].pipes), ERRORSTR(ERRNO));
+        ASSERTAB(ERR_OK == sock_nbio(pips[i].pipes[0]), "set pipe O_NONBLOCK error.");
     }
     return pips;
 }
@@ -328,11 +334,16 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads)
     ctx->nthreads = (0 == nthreads ? 1 : nthreads);
     mutex_init(&ctx->qulsnlck);
     qu_lsn_init(&ctx->qulsn, 8);
+    if (ATOMIC_CAS(&_init_once, 0, 1))
+    {
+        _init_callback();
+    }    
     MALLOC(ctx->watcher, sizeof(watcher_ctx) * ctx->nthreads);
     watcher_ctx *watcher;
     for (uint32_t i = 0; i < ctx->nthreads; i++)
     {
         watcher = &ctx->watcher[i];
+        watcher->index = i;
         watcher->ev = ctx;
 #if defined(EV_KQUEUE)
         watcher->nsize = INIT_EVENTS_CNT;
@@ -342,7 +353,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads)
         watcher->nevent = INIT_EVENTS_CNT;
         MALLOC(watcher->events, sizeof(events_t) * watcher->nevent);
         watcher->evfd = _init_evfd();
-        watcher->npipes = ctx->nthreads;
+        watcher->npipes = ctx->nthreads * 2;
         watcher->pipes = _new_pips(watcher->npipes);
         watcher->element = hashmap_new_with_allocator(_malloc, _realloc, _free,
             sizeof(map_element), ONEK * 4, 0, 0, _map_hash, _map_compare, _free_mapitem, NULL);

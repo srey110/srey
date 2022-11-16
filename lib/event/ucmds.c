@@ -20,6 +20,7 @@ static inline map_element *_map_get(struct hashmap *map, SOCKET fd)
 void _on_cmd_stop(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop)
 {
     *stop = 1;
+    PRINT("%s", "ready stop.");
 }
 void ev_close(ev_ctx *ctx, SOCKET fd)
 {
@@ -106,25 +107,30 @@ void _on_cmd_send(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop)
     buf.data = cmd->data;
     buf.len = cmd->len;
     buf.offset = 0;
-    qu_bufs_push(_get_send_buf(el->sock), &buf);
+    qu_bufs_push(_get_send_bufs(el->sock), &buf);
     if (!(el->sock->events & EVENT_WRITE))
     {
         _add_event(watcher, cmd->fd, &el->sock->events, EVENT_WRITE, el->sock);
     }
 }
-void _cmd_add(ev_ctx *ctx, SOCKET fd, sock_ctx *skctx)
+void _cmd_add(watcher_ctx *watcher, SOCKET fd, uint64_t hs, cbs_ctx *cbs, ud_cxt *ud)
 {
     ASSERTAB(INVALID_SOCK != fd, ERRSTR_INVPARAM);
     cmd_ctx cmd;
     cmd.cmd = CMD_ADD;
     cmd.fd = fd;
-    cmd.data = skctx;
-    CMD_SEND(ctx, cmd);
+    cmd.data = cbs;
+    cmd.len = (size_t)ud;
+    _cmd_send(watcher, hs % watcher->npipes, &cmd);
 }
 void _on_cmd_add(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop)
 {
-    sock_ctx *skctx = (sock_ctx *)cmd->data;
-    if (ERR_OK != _add_event(watcher, cmd->fd, &skctx->events, EVENT_READ, skctx))
+    _add_inloop(watcher, cmd->fd, (cbs_ctx *)cmd->data, (ud_cxt *)cmd->len);
+}
+void _add_inloop(watcher_ctx *watcher, SOCKET fd, cbs_ctx *cbs, ud_cxt *ud)
+{
+    sock_ctx *skctx = pool_pop(&watcher->pool, fd, cbs, ud);
+    if (ERR_OK != _add_event(watcher, fd, &skctx->events, EVENT_READ, skctx))
     {
         _on_close(watcher, skctx, 0);
         return;

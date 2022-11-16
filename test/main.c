@@ -32,7 +32,7 @@ static void test_connclose_cb(ev_ctx *ctx, SOCKET sock, ud_cxt *ud)
 static void test_recv_cb(ev_ctx *ctx, SOCKET sock, buffer_ctx *buf, size_t lens, ud_cxt *ud)
 {
     //PRINT("test_recv_cb: sock %d ", (int32_t)sock);
-    if (randrange(0, 100) <= 1)
+    if (randrange(0, 100) < 1)
     {
         ev_close(ctx, sock);
         //PRINT("close socket: sock %d ", (int32_t)sock);
@@ -115,6 +115,7 @@ static void timeout(void *arg)
     else
     {
         cbs_ctx cbs;
+        ZERO(&cbs, sizeof(cbs));
         cbs.conn_cb = test_conn_cb;
         cbs.c_cb = test_connclose_cb;
         cbs.r_cb = test_conn_recv_cb;
@@ -154,6 +155,7 @@ int main(int argc, char *argv[])
     ev_ctx ev;
     ev_init(&ev, 2);
     cbs_ctx cbs;
+    ZERO(&cbs, sizeof(cbs));
     cbs.acp_cb = test_acpt_cb;
     cbs.c_cb = test_close_cb;
     cbs.r_cb = test_recv_cb;

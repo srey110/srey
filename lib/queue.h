@@ -71,6 +71,15 @@ static inline type *qtype##_peek(qtype *p) {\
     if (0 == p->size) return NULL;\
     return p->ptr + p->offset;\
 };\
+static inline type *qtype##_at(qtype *p, size_t pos) {\
+    if (0 == p->size || pos >= p->size) return NULL;\
+    size_t curpos = p->offset + pos;\
+    if (curpos >= p->maxsize) {\
+        return p->ptr + (curpos - p->maxsize);\
+    } else {\
+        return p->ptr + (p->offset + pos);\
+    }\
+};\
 
 QUEUE_DECL(void *, qu_void);
 

@@ -19,10 +19,11 @@
 #define INVALID_SOCK -1
 
 #if EAGAIN == EWOULDBLOCK
-    #define IS_EAGAIN(e) (EINTR == (e) ||EAGAIN == (e))
+    #define IS_EAGAIN(e) (EAGAIN == (e))
 #else
-    #define IS_EAGAIN(e) (EINTR == (e) || EAGAIN == (e) || EWOULDBLOCK == (e))
+    #define IS_EAGAIN(e) (EAGAIN == (e) || EWOULDBLOCK == (e))
 #endif
+#define ERR_RW_RETRIABLE(e)	((e) == EINTR || IS_EAGAIN(e))
 #define ERR_CONNECT_RETRIABLE(e) ((e) == EINTR || (e) == EINPROGRESS)
 #define STRCMP strcasecmp
 #define STRNCMP strncasecmp

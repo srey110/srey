@@ -2,6 +2,7 @@
 #define EVENT_H_
 
 #include "event/evpub.h"
+#include "rwlock.h"
 #include "netaddr.h"
 
 //接口
@@ -17,11 +18,11 @@ void ev_close(ev_ctx *ctx, SOCKET fd);
 void _freelsn(struct listener_ctx *lsn);
 
 //公共函数
-void _qu_bufs_clear(qu_bufs *bufs);
+void _bufs_clear(qu_bufs *bufs);
 int32_t _set_sockops(SOCKET fd);
 SOCKET _create_sock(int32_t family);
 SOCKET _listen(netaddr_ctx *addr);
-int32_t _sock_read(SOCKET fd, void *buf, size_t len, void *arg);
-int32_t _sock_send(SOCKET fd, qu_bufs *sendbufs, mutex_ctx *lck, size_t *nsend, void *arg);
+int32_t _sock_read(SOCKET fd, IOV_TYPE *iov, uint32_t niov, void *arg);
+int32_t _sock_send(SOCKET fd, qu_bufs *buf_s, rwlock_ctx *rwlck, size_t *nsend, void *arg);
 
 #endif//EVENT_H_

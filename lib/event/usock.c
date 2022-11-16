@@ -31,8 +31,8 @@ typedef struct conn_ctx
 typedef struct skrw_ctx
 {
     sock_ctx sock;
-    buffer_ctx buf;
-    qu_bufs qubuf;
+    buffer_ctx buf_r;
+    qu_bufs buf_s;
     cbs_ctx cbs;
     ud_cxt ud;
 }skrw_ctx;
@@ -48,17 +48,17 @@ sock_ctx *_new_sk(SOCKET fd, cbs_ctx *cbs, ud_cxt *ud)
     rw->sock.events = 0;
     rw->ud = *ud;
     rw->cbs = *cbs;
-    buffer_init(&rw->buf);
-    qu_bufs_init(&rw->qubuf, INIT_SENDBUF_LEN);
+    buffer_init(&rw->buf_r);
+    qu_bufs_init(&rw->buf_s, INIT_SENDBUF_LEN);
     return &rw->sock;
 }
 void _free_sk(sock_ctx *skctx)
 {
     skrw_ctx *skrw = UPCAST(skctx, skrw_ctx, sock);
     CLOSE_SOCK(skrw->sock.fd);
-    buffer_free(&skrw->buf);
-    _qu_bufs_clear(&skrw->qubuf);
-    qu_bufs_free(&skrw->qubuf);
+    buffer_free(&skrw->buf_r);
+    _bufs_clear(&skrw->buf_s);
+    qu_bufs_free(&skrw->buf_s);
     FREE(skrw);
 }
 void _clear_sk(sock_ctx *skctx)
@@ -66,8 +66,8 @@ void _clear_sk(sock_ctx *skctx)
     skrw_ctx *skrw = UPCAST(skctx, skrw_ctx, sock);
     CLOSE_SOCK(skrw->sock.fd);
     skrw->sock.events = 0;
-    _qu_bufs_clear(&skrw->qubuf);
-    buffer_drain(&skrw->buf, buffer_size(&skrw->buf));
+    _bufs_clear(&skrw->buf_s);
+    buffer_drain(&skrw->buf_r, buffer_size(&skrw->buf_r));
 }
 void _reset_sk(sock_ctx *skctx, SOCKET fd, cbs_ctx *cbs, ud_cxt *ud)
 {
@@ -76,10 +76,10 @@ void _reset_sk(sock_ctx *skctx, SOCKET fd, cbs_ctx *cbs, ud_cxt *ud)
     skrw->cbs = *cbs;
     skrw->ud = *ud;
 }
-qu_bufs *_get_send_buf(sock_ctx *skctx)
+qu_bufs *_get_send_bufs(sock_ctx *skctx)
 {
     skrw_ctx *skrw = UPCAST(skctx, skrw_ctx, sock);
-    return &skrw->qubuf;
+    return &skrw->buf_s;
 }
 connect_cb _get_conn_cb(sock_ctx *skctx, ud_cxt *ud)
 {
@@ -105,11 +105,10 @@ void _on_close(watcher_ctx *watcher, sock_ctx *skctx, int32_t remove)
 static inline int32_t _on_r_cb(watcher_ctx *watcher, skrw_ctx *skrw)
 {
     size_t nread;
-    //读数据前断线检测。。。
-    int32_t rtn = buffer_from_sock(&skrw->buf, skrw->sock.fd, &nread, _sock_read, NULL);
+    int32_t rtn = buffer_from_sock(&skrw->buf_r, skrw->sock.fd, &nread, _sock_read, NULL);
     if (0 != nread)
     {
-        skrw->cbs.r_cb(watcher->ev, skrw->sock.fd, &skrw->buf, nread, &skrw->ud);
+        skrw->cbs.r_cb(watcher->ev, skrw->sock.fd, &skrw->buf_r, nread, &skrw->ud);
     }
 #ifdef EV_EVPORT
     if (ERR_OK == rtn)
@@ -126,7 +125,7 @@ static inline int32_t _on_r_cb(watcher_ctx *watcher, skrw_ctx *skrw)
 static inline void _on_w_cb(watcher_ctx *watcher, skrw_ctx *skrw)
 {
     size_t nsend;
-    int32_t rtn = _sock_send(skrw->sock.fd, &skrw->qubuf, NULL, &nsend, NULL);
+    int32_t rtn = _sock_send(skrw->sock.fd, &skrw->buf_s, NULL, &nsend, NULL);
     if (NULL != skrw->cbs.s_cb
         && 0 != nsend)
     {
@@ -135,8 +134,8 @@ static inline void _on_w_cb(watcher_ctx *watcher, skrw_ctx *skrw)
     if (ERR_OK != rtn)
     {
         return;
-    }
-    if (0 == qu_bufs_size(&skrw->qubuf))
+    }    
+    if (0 == qu_bufs_size(&skrw->buf_s))
     {
         _del_event(watcher, skrw->sock.fd, &skrw->sock.events, EVENT_WRITE, &skrw->sock);
         return;
@@ -248,10 +247,23 @@ static inline void _on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t 
             CLOSE_SOCK(fd);
             continue;
         }
-        hs = FD_HASH(fd);
-        to = WATCHER(watcher->ev, hs);        
-        sock_ctx *rwck = pool_pop(&to->pool, fd, &acpt->lsn->cbs, &acpt->lsn->ud);
-        _cmd_add(watcher->ev, rwck->fd, rwck);
+        if (1 == watcher->ev->nthreads)
+        {
+            _add_inloop(watcher, fd, &acpt->lsn->cbs, &acpt->lsn->ud);
+        }
+        else
+        {
+            hs = FD_HASH(fd);
+            to = WATCHER(watcher->ev, hs);
+            if (to->index == watcher->index)
+            {
+                _add_inloop(watcher, fd, &acpt->lsn->cbs, &acpt->lsn->ud);
+            }
+            else
+            {                
+                _cmd_add(to, fd, hs, &acpt->lsn->cbs, &acpt->lsn->ud);
+            }
+        }
     }
 #ifndef SO_REUSEPORT
     mutex_unlock(&acpt->lsn->lsnlck);

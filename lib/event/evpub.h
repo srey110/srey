@@ -6,8 +6,11 @@
 #include "mutex.h"
 #include "buffer.h"
 
-#define INIT_EVENTS_CNT         512
+#define INIT_EVENTS_CNT         128
+#define MAX_EVENTS_CNT          1024
 #define INIT_SENDBUF_LEN        32
+#define SHRINK_TIME             (30 * 1000)
+#define TM_ACCURACY             (1000 * 1000)
 
 //用户数据
 typedef struct ud_cxt
