@@ -20,7 +20,6 @@ static inline map_element *_map_get(struct hashmap *map, SOCKET fd)
 void _on_cmd_stop(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop)
 {
     *stop = 1;
-    PRINT("%s", "ready stop.");
 }
 void ev_close(ev_ctx *ctx, SOCKET fd)
 {

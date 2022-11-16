@@ -184,7 +184,7 @@ static inline void _bufs_size_del(qu_bufs *buf_s, rwlock_ctx *rwlck, size_t len)
         _bufs_unlock(rwlck);
     }
 }
-static inline int32_t _sock_send_normaliov(SOCKET fd, IOV_TYPE *iov, uint32_t niov)
+static inline int32_t _sock_send_iov(SOCKET fd, IOV_TYPE *iov, uint32_t niov)
 {
 #ifdef EV_IOCP
     DWORD bytes;
@@ -223,7 +223,7 @@ static inline int32_t _sock_send_normal(SOCKET fd, qu_bufs *buf_s, rwlock_ctx *r
     while (0 != (bufsize = _bufs_size(buf_s, rwlck)))
     {
         niov = _bufs_fill_iov(buf_s, rwlck, bufsize, iov);
-        rtn = _sock_send_normaliov(fd, iov, niov);
+        rtn = _sock_send_iov(fd, iov, niov);
         if (rtn > 0)
         {
             *nsend += rtn;

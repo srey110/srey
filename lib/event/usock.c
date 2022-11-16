@@ -134,7 +134,7 @@ static inline void _on_w_cb(watcher_ctx *watcher, skrw_ctx *skrw)
     if (ERR_OK != rtn)
     {
         return;
-    }    
+    }
     if (0 == qu_bufs_size(&skrw->buf_s))
     {
         _del_event(watcher, skrw->sock.fd, &skrw->sock.events, EVENT_WRITE, &skrw->sock);
