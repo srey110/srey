@@ -268,13 +268,13 @@ static inline int32_t _trybind(SOCKET fd, int32_t family)
     }
     return ERR_OK;
 }
-static inline int32_t _post_connect(overlap_conn_ctx *ol, netaddr_ctx *paddr)
+static inline int32_t _post_connect(overlap_conn_ctx *ol, netaddr_ctx *addr)
 {
     ol->bytes = 0;
     ZERO(&ol->overlap.overlapped, sizeof(ol->overlap.overlapped));
     if (!_exfuncs.connectex(ol->overlap.fd,
-        netaddr_addr(paddr),
-        netaddr_size(paddr),
+        netaddr_addr(addr),
+        netaddr_size(addr),
         NULL,
         0,
         &ol->bytes,
