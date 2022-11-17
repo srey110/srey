@@ -7,8 +7,8 @@
 #define CMD_SEND(ev, cmd)\
 do {\
     uint64_t hs = FD_HASH(cmd.fd);\
-    watcher_ctx *watcher = WATCHER(ev, hs);\
-    _cmd_send(watcher, hs % watcher->npipes, &cmd);\
+    watcher_ctx *watcher = GET_PTR((ev)->watcher, (ev)->nthreads, hs);\
+    _cmd_send(watcher, GET_POS(hs, watcher->npipes), &cmd);\
 } while (0)
 
 static inline map_element *_map_get(struct hashmap *map, SOCKET fd)
@@ -45,7 +45,7 @@ void _cmd_listen(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx)
     cmd.cmd = CMD_LSN;
     cmd.fd = fd;
     cmd.data = skctx;
-    _cmd_send(watcher, (FD_HASH(cmd.fd)) % watcher->npipes, &cmd);
+    _cmd_send(watcher, GET_POS(FD_HASH(cmd.fd), watcher->npipes), &cmd);
 }
 void _on_cmd_lsn(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop)
 {
@@ -120,7 +120,7 @@ void _cmd_add(watcher_ctx *watcher, SOCKET fd, uint64_t hs, cbs_ctx *cbs, ud_cxt
     cmd.fd = fd;
     cmd.data = cbs;
     cmd.len = (size_t)ud;
-    _cmd_send(watcher, hs % watcher->npipes, &cmd);
+    _cmd_send(watcher, GET_POS(hs, watcher->npipes), &cmd);
 }
 void _on_cmd_add(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop)
 {

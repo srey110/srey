@@ -68,12 +68,11 @@ typedef struct worker_ctx
     runner_ctx *runner;
     void(*cmd_callback[CMD_TOTAL])(struct runner_ctx *, cmd_ctx *, int32_t *);
 }worker_ctx;
-#define RUNNER(worker, hs) ((1 == (worker)->nthread) ? (worker)->runner : (&(worker)->runner[hs % (worker)->nthread]))
 #define QUS_PUSH(worker, cmd)\
 do {\
     uint64_t hs = FD_HASH(cmd.fd);\
-    runner_ctx *runner = RUNNER(worker, hs);\
-    _qus_push(runner, hs % runner->nqus, &cmd);\
+    runner_ctx *runner = GET_PTR((worker)->runner, (worker)->nthread, hs);\
+    _qus_push(runner, GET_POS(hs, runner->nqus), &cmd);\
 } while (0)
 
 static inline uint64_t _map_hash(const void *item, uint64_t seed0, uint64_t seed1)
@@ -113,7 +112,7 @@ static inline size_t _qus_size(runner_ctx *runner)
 struct sock_ctx *worker_newsk(worker_ctx *worker, SOCKET fd, cbs_ctx *cbs, ud_cxt *ud)
 {
     uint64_t hs = FD_HASH(fd);
-    runner_ctx *runner = RUNNER(worker, hs);
+    runner_ctx *runner = GET_PTR(worker->runner, worker->nthread, hs);
     return pool_pop(&runner->pool, fd, cbs, ud);
 }
 static void _on_cmd_stop(runner_ctx *runner, cmd_ctx *cmd, int32_t *stop)
@@ -257,7 +256,7 @@ static inline void _loop_cmd(runner_ctx *runner, int32_t *stop)
 }
 static inline void _check_delayfree(runner_ctx *runner, timer_ctx *timer, arr_delay *arr)
 {
-    int32_t elapsed = (int32_t)(timer_elapsed(timer) / TM_ACCURACY);
+    int32_t elapsed = (int32_t)timer_elapsed_ms(timer);
     if (elapsed < 100)
     {
         return;
@@ -287,7 +286,7 @@ static inline void _check_delayfree(runner_ctx *runner, timer_ctx *timer, arr_de
 }
 static inline void _pool_shrink(runner_ctx *runner, timer_ctx *timer)
 {
-    uint64_t elapsed = timer_elapsed(timer) / TM_ACCURACY;
+    uint64_t elapsed = timer_elapsed_ms(timer);
     if (elapsed < SHRINK_TIME)
     {
         return;

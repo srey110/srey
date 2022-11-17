@@ -22,6 +22,7 @@
     <ClInclude Include="buffer.h" />
     <ClInclude Include="chan.h" />
     <ClInclude Include="cond.h" />
+    <ClInclude Include="config.h" />
     <ClInclude Include="errcode.h" />
     <ClInclude Include="event\event.h" />
     <ClInclude Include="event\evpub.h" />

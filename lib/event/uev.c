@@ -5,13 +5,9 @@
 
 #ifndef EV_IOCP
 
-#ifdef EV_EPOLL
-    #define TRIGGER_ET                1
-#endif
 #define CMD_MAX_NREAD                 64
 static volatile atomic_t _init_once = 0;
 static void(*cmd_cbs[CMD_TOTAL])(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop);
-
 typedef struct pip_ctx
 {
     int32_t pipes[2];
@@ -249,7 +245,7 @@ static inline int32_t _parse_event(events_t *ev, void **arg)
 }
 static inline void _pool_shrink(watcher_ctx *watcher, timer_ctx *timer)
 {
-    uint64_t elapsed = timer_elapsed(timer) / TM_ACCURACY;
+    uint64_t elapsed = timer_elapsed_ms(timer);
     if (elapsed < SHRINK_TIME)
     {
         return;

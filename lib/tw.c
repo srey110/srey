@@ -1,7 +1,5 @@
 #include "tw.h"
 
-static const uint32_t accuracy = 1000 * 1000;
-
 static void _free_slot(tw_slot_ctx *slot, const size_t len)
 {
     tw_node_ctx *pnode, *pdel;
@@ -48,7 +46,7 @@ void tw_add(tw_ctx *ctx, const uint32_t timeout, void(*tw_cb)(void *), void *ud)
     tw_node_ctx *node;
     MALLOC(node, sizeof(tw_node_ctx));
     node->ud = ud;
-    node->expires = (uint32_t)(timer_cur(&ctx->timer) / accuracy) + timeout;
+    node->expires = (uint32_t)(timer_cur(&ctx->timer) / TIMER_ACCURACY) + timeout;
     node->tw_cb = tw_cb;
     node->next = NULL;
     mutex_lock(&ctx->lockreq);
@@ -135,7 +133,7 @@ static void _loop(void *arg)
     uint32_t curtick = 0;
     tw_node_ctx *next, *node;
     tw_ctx *ctx = (tw_ctx *)arg;
-    ctx->jiffies = (uint32_t)(timer_cur(&ctx->timer) / accuracy);
+    ctx->jiffies = (uint32_t)(timer_cur(&ctx->timer) / TIMER_ACCURACY);
     while (0 == ctx->exit)
     {
         mutex_lock(&ctx->lockreq);
@@ -150,7 +148,7 @@ static void _loop(void *arg)
         _clear(&ctx->reqadd);
         mutex_unlock(&ctx->lockreq);
 
-        curtick = (uint32_t)(timer_cur(&ctx->timer) / accuracy);
+        curtick = (uint32_t)(timer_cur(&ctx->timer) / TIMER_ACCURACY);
         while (ctx->jiffies <= curtick)
         {
             _run(ctx);

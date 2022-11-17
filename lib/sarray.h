@@ -3,7 +3,7 @@
 
 #include "macro.h"
 
-#define ARRAY_INIT_SIZE 16
+#define ARRAY_INIT_SIZE      16
 
 #define ARRAY_DECL(type, atype) \
 struct atype {      \

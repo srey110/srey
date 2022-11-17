@@ -63,8 +63,6 @@ typedef struct watcher_ctx
     skpool_ctx pool;
 }watcher_ctx;
 
-#define WATCHER(ev, hs) ((1 == (ev)->nthreads) ? (ev)->watcher : (&(ev)->watcher[hs % (ev)->nthreads]))
-
 typedef void(*event_cb)(watcher_ctx *watcher, struct sock_ctx *skctx, int32_t ev, int32_t *stop);
 typedef struct sock_ctx
 {

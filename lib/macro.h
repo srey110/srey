@@ -1,16 +1,20 @@
 #ifndef MACRO_H_
 #define MACRO_H_
 
+#include "config.h"
+#include "errcode.h"
+#include "macro_unix.h"
+#include "macro_win.h"
 #include "memory.h"
 
-#define ONEK 1024
-#define TIME_LENS 64
-#define IP_LENS   64
-#define PORT_LENS 8
-#define SOCKKPA_DELAY 15
-#define SOCKKPA_INTVL 1
-#define INVALID_FD    -1
-//#define PRINT_DEBUG
+#define ONEK                 1024
+#define TIME_LENS            64
+#define IP_LENS              64
+#define PORT_LENS            8
+#define SOCKKPA_DELAY        10
+#define SOCKKPA_INTVL        1
+#define INVALID_FD           -1
+#define TIMER_ACCURACY       (1000 * 1000)
 
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 
@@ -24,13 +28,13 @@
 #define __FILENAME__(file) (strrchr(file, PATH_SEPARATOR) ? strrchr(file, PATH_SEPARATOR) + 1 : file)
 #define PRINT(fmt, ...) printf(CONCAT3("[%s %s %d] ", fmt, "\n"),  __FILENAME__(__FILE__), __FUNCTION__, __LINE__, ##__VA_ARGS__)
 
-#ifdef PRINT_DEBUG
+#if PRINT_DEBUG
 #define PRINTD(fmt, ...) PRINT(fmt, ##__VA_ARGS__)
 #else
 #define PRINTD(fmt, ...)
 #endif
 
-#ifdef MEMORY_CHECK
+#if MEMORY_CHECK
 #define MEMCHECK()  atexit(_memcheck)
 #else
 #define MEMCHECK()
@@ -40,10 +44,6 @@
 #define offsetof(type, field) ((size_t)(&((type *)0)->field))
 #endif
 #define UPCAST(ptr, type, field) ((type *)(((char*)(ptr)) - offsetof(type, field)))
-
-//typeid(name).name() 变量类型
-//变量名称字符串
-#define VARNAME(name) #name
 
 //动态变量名
 #define __ANONYMOUS(type, name, line)  type  name##line
@@ -58,21 +58,21 @@
 do\
 {\
     *(void**)&(ptr) = _malloc(size);\
-    PRINTD("malloc(%p, size=%zd)", ptr, size);\
+    PRINTD("malloc(%p, size=%zu)", ptr, size);\
 }while (0)
 
 #define CALLOC(ptr, count, size)\
 do\
 {\
     *(void**)&(ptr) = _calloc(count, size);\
-    PRINTD("calloc(%p, count=%zd, size=%zd)", ptr, count, size);\
+    PRINTD("calloc(%p, count=%zu, size=%zu)", ptr, count, size);\
 }while (0)
 
 #define REALLOC(ptr, oldptr, size)\
 do\
 {\
     *(void**)&(ptr) = _realloc(oldptr, size);\
-    PRINTD("realloc(%p, old=%p, size=%zd)", ptr, oldptr, size);\
+    PRINTD("realloc(%p, old=%p, size=%zu)", ptr, oldptr, size);\
 }while (0)
 
 #define FREE(ptr)\

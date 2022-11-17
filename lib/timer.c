@@ -50,3 +50,7 @@ uint64_t timer_elapsed(timer_ctx *ctx)
 {
     return timer_cur(ctx) - ctx->starttick;
 }
+uint64_t timer_elapsed_ms(timer_ctx *ctx)
+{
+    return (timer_cur(ctx) - ctx->starttick) / TIMER_ACCURACY;
+}

@@ -1,11 +1,7 @@
 #ifndef MEMORY_H_
 #define MEMORY_H_
 
-#include "macro_win.h"
-#include "macro_unix.h"
-#include "errcode.h"
-
-#define MEMORY_CHECK
+#include "os.h"
 
 void *_malloc(size_t size);
 void *_calloc(size_t count, size_t size);

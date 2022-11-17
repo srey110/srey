@@ -6,12 +6,6 @@
 #include "mutex.h"
 #include "buffer.h"
 
-#define INIT_EVENTS_CNT         128
-#define MAX_EVENTS_CNT          1024
-#define INIT_SENDBUF_LEN        32
-#define SHRINK_TIME             (30 * 1000)
-#define TM_ACCURACY             (1000 * 1000)
-
 //用户数据
 typedef struct ud_cxt
 {
@@ -54,6 +48,8 @@ typedef struct cbs_ctx
 }cbs_ctx;
 
 #define FD_HASH(fd) hash((const char *)&(fd), sizeof(fd))
+#define GET_PTR(p, n, hs) ((1 == (n)) ? (p) : &((p)[(hs) % (n)]))
+#define GET_POS(hs, n) ((hs) % (n))
 #define COPY_UD(dst, src)\
 do {\
     if (NULL != (src)){\

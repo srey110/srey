@@ -1,5 +1,6 @@
 #include "buffer.h"
 #include "netutils.h"
+#include "loger.h"
 
 typedef struct bufnode_ctx
 {
@@ -10,7 +11,6 @@ typedef struct bufnode_ctx
     size_t misalign;
     size_t off;
 }bufnode_ctx;
-#define MAX_RECV_SIZE            (ONEK * 4)
 #define MAX_EXPAND_NIOV          4
 #define MAX_COPY_IN_EXPAND       4096
 #define MAX_REALIGN_IN_EXPAND    2048
@@ -740,21 +740,47 @@ void buffer_commit_get(buffer_ctx *ctx, size_t len)
 int32_t buffer_from_sock(buffer_ctx *ctx, SOCKET fd, size_t *nread,
     int32_t(*_readv)(SOCKET, IOV_TYPE *, uint32_t, void *), void *arg)
 {
-    *nread = 0;
-    IOV_TYPE iov[MAX_EXPAND_NIOV];    
+    (*nread) = 0;
     int32_t nmax = sock_nread(fd);
-    if (nmax <= 0
-        || nmax > MAX_RECV_SIZE)
+    if (ERR_FAILED == nmax
+        || nmax >= MAX_PACK_SIZE)
+    {
+        return ERR_FAILED;
+    }
+    if (nmax <= 0)
     {
         nmax = MAX_RECV_SIZE;
     }
-    uint32_t niov = buffer_expand(ctx, nmax, iov, MAX_EXPAND_NIOV);
-    int32_t rtn = _readv(fd, iov, niov, arg);
-    if (rtn > 0)
+    int32_t rtn;
+    size_t remain, len = 0;
+    uint32_t niov;
+    IOV_TYPE iov[MAX_EXPAND_NIOV];
+    for (; (*nread) < nmax; )
     {
-        *nread = rtn;
+        remain = nmax - (*nread);
+        if (remain > MAX_RECV_SIZE)
+        {
+            len = MAX_RECV_SIZE;
+        }
+        else
+        {
+            len = remain;
+        }
+        niov = buffer_expand(ctx, len, iov, MAX_EXPAND_NIOV);
+        rtn = _readv(fd, iov, niov, arg);
+        if (rtn <= 0)
+        {
+            buffer_commit_expand(ctx, 0, iov, niov);
+            break;
+        }
+        (*nread) += (size_t)rtn;
+        buffer_commit_expand(ctx, (size_t)rtn, iov, niov);
+        if (rtn < len)
+        {
+            rtn = ERR_OK;
+            break;
+        }
         rtn = ERR_OK;
     }
-    buffer_commit_expand(ctx, *nread, iov, niov);
     return rtn;
 }

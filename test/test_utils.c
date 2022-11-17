@@ -249,7 +249,7 @@ void test_timer(CuTest* tc)
     timer_init(&timer);
     timer_start(&timer);
     MSLEEP(100);
-    PRINT("timer_elapsed: %"PRIu64"", timer_elapsed(&timer) / (1000 * 1000));
+    PRINT("timer_elapsed_ms: %"PRIu64"", timer_elapsed_ms(&timer));
 }
 void test_netutils(CuTest* tc)
 {

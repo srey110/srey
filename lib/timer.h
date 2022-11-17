@@ -15,22 +15,11 @@ typedef struct timer_ctx
     uint64_t starttick;
 }timer_ctx;
 
-/*
-* \brief          初始化
-*/
+
 void timer_init(timer_ctx *ctx);
-/*
-* \brief          当前时间
-*/
 uint64_t timer_cur(timer_ctx *ctx);
-/*
-* \brief          开始计时
-*/
 void timer_start(timer_ctx *ctx);
-/*
-* \brief          结束计时
-* \return         用时 纳秒
-*/
 uint64_t timer_elapsed(timer_ctx *ctx);
+uint64_t timer_elapsed_ms(timer_ctx *ctx);
 
 #endif//TIMER_H_

@@ -32,17 +32,20 @@ static void test_connclose_cb(ev_ctx *ctx, SOCKET sock, ud_cxt *ud)
 static void test_recv_cb(ev_ctx *ctx, SOCKET sock, buffer_ctx *buf, size_t lens, ud_cxt *ud)
 {
     //PRINT("test_recv_cb: sock %d ", (int32_t)sock);
-    if (randrange(0, 100) < 1)
-    {
-        ev_close(ctx, sock);
-        //PRINT("close socket: sock %d ", (int32_t)sock);
-        return;
-    }
+    //if (sock % randrange(1, 100) == 0)
+    //{
+    //    ev_close(ctx, sock);
+    //    //PRINT("close socket: sock %d ", (int32_t)sock);
+    //    return;
+    //}
     size_t len = buffer_size(buf);
+    
     char *pk;
     MALLOC(pk, len);
     buffer_remove(buf, pk, len);
     ev_send(ctx, sock, pk, len, 0);
+
+    //buffer_drain(buf,len);
 }
 static void test_send_cb(ev_ctx *ctx, SOCKET sock, size_t len, ud_cxt *ud)
 {
@@ -90,7 +93,7 @@ static int32_t test_acpt_cb(ev_ctx *ctx, SOCKET sock, ud_cxt *ud)
 }
 static void timeout(void *arg)
 {
-    int32_t elapsed = (int32_t)(timer_elapsed(&tw.timer) / (1000 * 1000));
+    int32_t elapsed = (int32_t)timer_elapsed_ms(&tw.timer);
     PRINT("timeout:%d ms link cnt %d", elapsed, ATOMIC_GET(&count));
     if (INVALID_SOCK != connsock)
     {

@@ -254,7 +254,7 @@ static inline void _on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t 
         else
         {
             hs = FD_HASH(fd);
-            to = WATCHER(watcher->ev, hs);
+            to = GET_PTR(watcher->ev->watcher, watcher->ev->nthreads, hs);
             if (to->index == watcher->index)
             {
                 _add_inloop(watcher, fd, &acpt->lsn->cbs, &acpt->lsn->ud);

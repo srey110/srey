@@ -3,7 +3,7 @@
 
 #include "macro.h"
 
-#define QUEUE_INIT_SIZE 16
+#define QUEUE_INIT_SIZE      16
 
 #define QUEUE_DECL(type, qtype) \
 struct qtype { \

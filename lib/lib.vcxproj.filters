@@ -121,6 +121,9 @@
     <ClInclude Include="event\skpool.h">
       <Filter>event</Filter>
     </ClInclude>
+    <ClInclude Include="config.h">
+      <Filter>base</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="memory.c">

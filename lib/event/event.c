@@ -2,9 +2,6 @@
 #include "netutils.h"
 #include "loger.h"
 
-#define MAX_SEND_SIZE            (ONEK * 4)
-#define MAX_SEND_NIOV            16
-
 void _bufs_clear(qu_bufs *bufs)
 {
     bufs_ctx *buf;
