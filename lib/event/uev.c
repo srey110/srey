@@ -2,6 +2,7 @@
 #include "hashmap.h"
 #include "netutils.h"
 #include "timer.h"
+#include "utils.h"
 
 #ifndef EV_IOCP
 
@@ -260,6 +261,12 @@ static void _loop_event(void *arg)
 #if defined(EV_EVPORT)
     uint32_t nget;
 #endif
+#ifdef EV_EPOLL
+    int32_t timeout = EVENT_WAIT_TIMEOUT;
+#else
+    struct timespec timeout;
+    fill_timespec(&timeout, EVENT_WAIT_TIMEOUT);
+#endif
     sock_ctx *skctx;    
     int32_t i, cnt, ev, stop = 0;
     timer_ctx tmshrink;
@@ -268,13 +275,13 @@ static void _loop_event(void *arg)
     while (0 == stop)
     {
 #if defined(EV_EPOLL)
-        cnt = epoll_wait(watcher->evfd, watcher->events, watcher->nevent, -1);
+        cnt = epoll_wait(watcher->evfd, watcher->events, watcher->nevent, timeout);
 #elif defined(EV_KQUEUE)
-        cnt = kevent(watcher->evfd, watcher->changelist, watcher->nchange, watcher->events, watcher->nevent, NULL);
+        cnt = kevent(watcher->evfd, watcher->changelist, watcher->nchange, watcher->events, watcher->nevent, &timeout);
         watcher->nchange = 0;
 #elif defined(EV_EVPORT)
         nget = 1;
-        (void)port_getn(watcher->evfd, watcher->events, watcher->nevent, &nget, NULL);
+        (void)port_getn(watcher->evfd, watcher->events, watcher->nevent, &nget, &timeout);
         cnt = (int32_t)nget;
 #endif
         for (i = 0; i < cnt; i++)

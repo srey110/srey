@@ -86,7 +86,7 @@ void test_queue(CuTest* tc)
     que_push(&quseed, &test);
     ptest = que_at(&quseed, que_size(&quseed));
     CuAssertTrue(tc, NULL == ptest);
-    for (int i = 0; i < que_size(&quseed); i++)
+    for (int i = 0; i < (int)que_size(&quseed); i++)
     {
         ptest = que_at(&quseed, i);
         CuAssertTrue(tc, *ptest == i + 2);

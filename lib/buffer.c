@@ -755,7 +755,7 @@ int32_t buffer_from_sock(buffer_ctx *ctx, SOCKET fd, size_t *nread,
     size_t remain, len = 0;
     uint32_t niov;
     IOV_TYPE iov[MAX_EXPAND_NIOV];
-    for (; (*nread) < nmax; )
+    for (; (int32_t)(*nread) < nmax; )
     {
         remain = nmax - (*nread);
         if (remain > MAX_RECV_SIZE)
@@ -775,7 +775,7 @@ int32_t buffer_from_sock(buffer_ctx *ctx, SOCKET fd, size_t *nread,
         }
         (*nread) += (size_t)rtn;
         buffer_commit_expand(ctx, (size_t)rtn, iov, niov);
-        if (rtn < len)
+        if (rtn < (int32_t)len)
         {
             rtn = ERR_OK;
             break;

@@ -133,7 +133,7 @@ void testtt(void *arg)
     MSLEEP(1000);
 }
 int main(int argc, char *argv[])
-{
+{   
     pthread_t aaa = thread_creat(testtt, NULL);
     thread_join(aaa);
 

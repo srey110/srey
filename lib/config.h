@@ -6,6 +6,7 @@
 #define MEMORY_CHECK         1
 #define PRINT_DEBUG          0
 
+#define EVENT_WAIT_TIMEOUT  100
 #define INIT_EVENTS_CNT     128
 #define MAX_EVENTS_CNT      1024
 #define MAX_RECV_SIZE       4096

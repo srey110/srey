@@ -370,6 +370,19 @@ void nowmtime(const char *fmt, char time[TIME_LENS])
     size_t uilen = strlen(time);
     SNPRINTF(time + uilen, TIME_LENS - uilen - 1, " %03d", (int32_t)(tv.tv_usec / 1000));
 }
+void fill_timespec(struct timespec* timeout, uint32_t ms)
+{
+    if (ms >= 1000)
+    {
+        timeout->tv_sec = ms / 1000;
+        timeout->tv_nsec = (ms - timeout->tv_sec * 1000) * (1000 * 1000);
+    }
+    else
+    {
+        timeout->tv_sec = 0;
+        timeout->tv_nsec = ms * (1000 * 1000);
+    }
+}
 static uint16_t crc16_tab[256] = {
     0x0000, 0xC0C1, 0xC181, 0x0140, 0xC301, 0x03C0, 0x0280, 0xC241,
     0xC601, 0x06C0, 0x0780, 0xC741, 0x0500, 0xC5C1, 0xC481, 0x0440,

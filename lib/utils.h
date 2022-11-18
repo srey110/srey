@@ -35,6 +35,7 @@ uint64_t nowsec();
 void nowtime(const char *fmt, char time[TIME_LENS]);
 //格式化输出当前时间戳 毫秒  %Y-%m-%d %H:%M:%S 
 void nowmtime(const char *fmt, char time[TIME_LENS]);
+void fill_timespec(struct timespec* timeout, uint32_t ms);
 //crc 16 IBM
 uint16_t crc16(const char *buf, const size_t len);
 uint32_t crc32(const char *buf, const size_t len);

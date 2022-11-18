@@ -5,7 +5,6 @@
 
 #ifdef EV_IOCP
 
-#define IOCP_WAIT_TIMEOUT         100
 exfuncs_ctx _exfuncs;
 static volatile atomic_t _init_once = 0;
 
@@ -59,7 +58,7 @@ static void _loop_event(void *arg)
             overlappeds,
             nevent,
             &count,
-            IOCP_WAIT_TIMEOUT,
+            EVENT_WAIT_TIMEOUT,
             FALSE);
         if (rtn)
         {
@@ -104,7 +103,7 @@ static void _loop_event(void *arg)
             &bytes,
             &key,
             &overlap,
-            IOCP_WAIT_TIMEOUT);
+            EVENT_WAIT_TIMEOUT);
         if (NULL != overlap)
         {
             sock = UPCAST(overlap, sock_ctx, overlapped);
