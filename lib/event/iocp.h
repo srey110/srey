@@ -11,6 +11,7 @@ typedef void(*event_cb)(struct watcher_ctx *watcher, struct sock_ctx *skctx);
 typedef struct sock_ctx
 {
     OVERLAPPED overlapped;
+    int32_t type;
     SOCKET fd;
     event_cb ev_cb;
 }sock_ctx;

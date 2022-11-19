@@ -175,7 +175,7 @@ void test_system(CuTest* tc)
 
     struct timeval tv;
     timeofday(&tv);
-    PRINT("timeofday tv_sec: %ld tv_usec: %ld", tv.tv_sec, tv.tv_usec);
+    PRINT("timeofday tv_sec: %d tv_usec: %d", tv.tv_sec, tv.tv_usec);
     PRINT("nowsec: %"PRIu64"", nowsec());
     PRINT("nowms: %"PRIu64"", nowms());
     char time[TIME_LENS] = { 0 };

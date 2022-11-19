@@ -11,12 +11,11 @@ UsAge="UsAge:\"./mk.sh\" or \"./mk.sh pg\" or \"./mk.sh clean\""
 #生成程序的名称
 PROGRAMNAME="srey"
 #文件夹
-Dir="lib lib/netev lib/md5 lib/sha1"
-Dir=$Dir" lib/lua lib/luacjson lib/msgpack"
+Dir="lib lib/event lib/md5 lib/sha1 test"
 #main函数所在文件夹
-MAINDIR="srey"
+MAINDIR="test"
 #main函数所在文件
-MAINFILE="srey_main.c"
+MAINFILE="main.c"
 #附加包含库
 INCLUDELIB="-lpthread -lm"
 #系统
@@ -47,12 +46,12 @@ LIBNAME="srey"
 EXCEPTL=$MAINFILE" "$TESTFILE
 MAKEFILEPATH=`pwd`
 LIBPATH="-L$MAKEFILEPATH/$RSTPATH"
-CC="gcc -std=gnu99"
-GCC="g++"
+CC="gcc -std=gnu99 -g"
+GCC="g++ -g"
 ARCH="ar -rv"
 INCLUDEPATH=""
 OBJFILE=""
-CFLAGS="-O3 -Wall"
+CFLAGS="-O3"
 if [ "$X64" = "x64" ]
 then
     CFLAGS=$CFLAGS" -m64"

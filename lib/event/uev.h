@@ -67,6 +67,7 @@ typedef void(*event_cb)(watcher_ctx *watcher, struct sock_ctx *skctx, int32_t ev
 typedef struct sock_ctx
 {
     SOCKET fd;
+    int32_t type;
     int32_t events;
     event_cb ev_cb;
 }sock_ctx;

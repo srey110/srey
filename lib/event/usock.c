@@ -44,6 +44,7 @@ sock_ctx *_new_sk(SOCKET fd, cbs_ctx *cbs, ud_cxt *ud)
     skrw_ctx *rw;
     MALLOC(rw, sizeof(skrw_ctx));
     rw->sock.ev_cb = _on_rw_cb;
+    rw->sock.type = SOCK_STREAM;
     rw->sock.fd = fd;
     rw->sock.events = 0;
     rw->ud = *ud;

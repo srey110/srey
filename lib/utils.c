@@ -375,7 +375,7 @@ void fill_timespec(struct timespec* timeout, uint32_t ms)
     if (ms >= 1000)
     {
         timeout->tv_sec = ms / 1000;
-        timeout->tv_nsec = (ms - timeout->tv_sec * 1000) * (1000 * 1000);
+        timeout->tv_nsec = (long)(ms - timeout->tv_sec * 1000) * (1000 * 1000);
     }
     else
     {

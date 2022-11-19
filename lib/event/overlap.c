@@ -57,8 +57,10 @@ sock_ctx *_new_sk(SOCKET fd, cbs_ctx *cbs, ud_cxt *ud)
 {
     overlap_tcp_ctx *ol;
     MALLOC(ol, sizeof(overlap_tcp_ctx));
+    ol->ol_r.type = SOCK_STREAM;
     ol->ol_r.fd = fd;
     ol->ol_r.ev_cb = _on_recv_cb;
+    ol->ol_s.type = SOCK_STREAM;
     ol->ol_s.fd = fd;
     ol->ol_s.ev_cb = _on_send_cb;
     ol->sending = 0;
