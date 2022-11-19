@@ -5,6 +5,7 @@
 #include "queue.h"
 #include "mutex.h"
 #include "buffer.h"
+#include "netaddr.h"
 
 //用户数据
 typedef struct ud_cxt

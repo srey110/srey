@@ -320,32 +320,32 @@ static inline void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx)
     }
     FREE(ol);
 }
-int32_t ev_connect(ev_ctx *ctx, const char *host, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud)
+SOCKET ev_connect(ev_ctx *ctx, const char *host, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud)
 {
     ASSERTAB(NULL != cbs && NULL != cbs->conn_cb && NULL != cbs->r_cb, ERRSTR_NULLP);
     netaddr_ctx addr;
     if (ERR_OK != netaddr_sethost(&addr, host, port))
     {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
-        return ERR_FAILED;
+        return INVALID_SOCK;
     }
-    SOCKET sock = _create_sock(netaddr_family(&addr));
+    SOCKET sock = _create_sock(SOCK_STREAM, netaddr_family(&addr));
     if (INVALID_SOCK == sock)
     {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
-        return ERR_FAILED;
+        return INVALID_SOCK;
     }
     sock_raddr(sock);
     _set_sockops(sock);
     if (ERR_OK != _trybind(sock, netaddr_family(&addr)))
     {
         CLOSE_SOCK(sock);
-        return ERR_FAILED;
+        return INVALID_SOCK;
     }
     if (ERR_OK != _join_iocp(ctx, sock))
     {
         CLOSE_SOCK(sock);
-        return ERR_FAILED;
+        return INVALID_SOCK;
     }
     overlap_conn_ctx *ol;
     MALLOC(ol, sizeof(overlap_conn_ctx));
@@ -357,14 +357,14 @@ int32_t ev_connect(ev_ctx *ctx, const char *host, const uint16_t port, cbs_ctx *
     {
         CLOSE_SOCK(sock);
         FREE(ol);
-        return ERR_FAILED;
+        return INVALID_SOCK;
     }
-    return ERR_OK;
+    return sock;
 }
 //listen
 static inline int32_t _post_accept(overlap_acpt_ctx *ol)
 {
-    SOCKET fd = _create_sock(ol->lsn->family);
+    SOCKET fd = _create_sock(SOCK_STREAM, ol->lsn->family);
     if (INVALID_SOCK == fd)
     {
         LOG_ERROR("%s", ERRORSTR(ERRNO));

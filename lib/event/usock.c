@@ -190,20 +190,20 @@ static inline void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t
     ASSERTAB(NULL == hashmap_set(watcher->element, &el), "socket repeat.");
     FREE(conn);
 }
-int32_t ev_connect(ev_ctx *ctx, const char *host, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud)
+SOCKET ev_connect(ev_ctx *ctx, const char *host, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud)
 {
     ASSERTAB(NULL != cbs && NULL != cbs->conn_cb && NULL != cbs->r_cb, ERRSTR_NULLP);
     netaddr_ctx addr;
     if (ERR_OK != netaddr_sethost(&addr, host, port))
     {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
-        return ERR_FAILED;
+        return INVALID_SOCK;
     }
-    SOCKET fd = _create_sock(netaddr_family(&addr));
+    SOCKET fd = _create_sock(SOCK_STREAM, netaddr_family(&addr));
     if (INVALID_SOCK == fd)
     {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
-        return ERR_FAILED;
+        return INVALID_SOCK;
     }
     sock_raddr(fd);
     _set_sockops(fd);
@@ -215,7 +215,7 @@ int32_t ev_connect(ev_ctx *ctx, const char *host, const uint16_t port, cbs_ctx *
         {
             CLOSE_SOCK(fd);
             LOG_ERROR("%s", ERRORSTR(rtn));
-            return ERR_FAILED;
+            return INVALID_SOCK;
         }
     }
     conn_ctx *conn;
@@ -226,7 +226,7 @@ int32_t ev_connect(ev_ctx *ctx, const char *host, const uint16_t port, cbs_ctx *
     conn->cbs = *cbs;
     COPY_UD(conn->ud, ud);
     _cmd_connect(ctx, fd, &conn->sock);
-    return ERR_OK;
+    return fd;
 }
 static inline void _on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev, int32_t *stop)
 {

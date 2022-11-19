@@ -21,17 +21,17 @@ int32_t _set_sockops(SOCKET fd)
     }
     return ERR_OK;
 }
-SOCKET _create_sock(int32_t family)
+SOCKET _create_sock(int32_t type, int32_t family)
 {
-#ifdef OS_WIN
-    return WSASocket(family, SOCK_STREAM, IPPROTO_TCP, NULL, 0, WSA_FLAG_OVERLAPPED);
+#ifdef EV_IOCP
+    return WSASocket(family, type, SOCK_STREAM == type ? IPPROTO_TCP : IPPROTO_UDP, NULL, 0, WSA_FLAG_OVERLAPPED);
 #else
-    return socket(family, SOCK_STREAM, 0);
+    return socket(family, type, 0);
 #endif
 }
 SOCKET _listen(netaddr_ctx *addr)
 {
-    SOCKET fd = _create_sock(netaddr_family(addr));
+    SOCKET fd = _create_sock(SOCK_STREAM, netaddr_family(addr));
     if (INVALID_SOCK == fd)
     {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
