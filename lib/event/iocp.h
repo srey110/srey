@@ -7,7 +7,7 @@
 
 #ifdef EV_IOCP
 
-typedef void(*event_cb)(struct watcher_ctx *watcher, struct sock_ctx *skctx);
+typedef void(*event_cb)(struct watcher_ctx *watcher, struct sock_ctx *skctx, DWORD bytes);
 typedef struct sock_ctx
 {
     OVERLAPPED overlapped;

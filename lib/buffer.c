@@ -11,7 +11,6 @@ typedef struct bufnode_ctx
     size_t misalign;
     size_t off;
 }bufnode_ctx;
-#define MAX_EXPAND_NIOV          4
 #define MAX_COPY_IN_EXPAND       4096
 #define MAX_REALIGN_IN_EXPAND    2048
 #define FIRST_FORMAT_IN_EXPAND   64

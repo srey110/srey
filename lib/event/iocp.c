@@ -70,7 +70,7 @@ static void _loop_event(void *arg)
                     continue;
                 }
                 sock = UPCAST(overlap, sock_ctx, overlapped);
-                sock->ev_cb(watcher, sock);
+                sock->ev_cb(watcher, sock, overlappeds[i].dwNumberOfBytesTransferred);
             }
             if (0 == watcher->ev->stop
                 && count == nevent
@@ -107,7 +107,7 @@ static void _loop_event(void *arg)
         if (NULL != overlap)
         {
             sock = UPCAST(overlap, sock_ctx, overlapped);
-            sock->ev_cb(watcher, sock);
+            sock->ev_cb(watcher, sock, bytes);
         }
         else if (WAIT_TIMEOUT != (err = ERRNO))
         {

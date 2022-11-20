@@ -32,20 +32,18 @@ static void test_connclose_cb(ev_ctx *ctx, SOCKET sock, ud_cxt *ud)
 static void test_recv_cb(ev_ctx *ctx, SOCKET sock, buffer_ctx *buf, size_t lens, ud_cxt *ud)
 {
     //PRINT("test_recv_cb: sock %d ", (int32_t)sock);
-    //if (sock % randrange(1, 100) == 0)
-    //{
-    //    ev_close(ctx, sock);
-    //    //PRINT("close socket: sock %d ", (int32_t)sock);
-    //    return;
-    //}
+    if (randrange(1, 100) == 0)
+    {
+        ev_close(ctx, sock);
+        //PRINT("close socket: sock %d ", (int32_t)sock);
+        return;
+    }
     size_t len = buffer_size(buf);
     
     char *pk;
     MALLOC(pk, len);
     buffer_remove(buf, pk, len);
     ev_send(ctx, sock, pk, len, 0);
-
-    //buffer_drain(buf,len);
 }
 static void test_send_cb(ev_ctx *ctx, SOCKET sock, size_t len, ud_cxt *ud)
 {
@@ -91,29 +89,45 @@ static int32_t test_acpt_cb(ev_ctx *ctx, SOCKET sock, ud_cxt *ud)
     ATOMIC_ADD(&count, 1);
     return ERR_OK;
 }
+static void test_recvfrom_cb(ev_ctx *ev, SOCKET fd, buffer_ctx *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud)
+{
+    //PRINT("test_recvfrom_cb :  %zu ", size);
+    size_t len = buffer_size(buf);
+    char host[IP_LENS] = { 0 };
+    netaddr_ip(addr, host);
+    uint16_t port = netaddr_port(addr);
+    char *pk;
+    MALLOC(pk, len);
+    buffer_remove(buf, pk, len);
+    ev_sendto(ev, fd, host, port, pk, len);
+    FREE(pk);
+}
 static void timeout(void *arg)
 {
     int32_t elapsed = (int32_t)timer_elapsed_ms(&tw.timer);
     PRINT("timeout:%d ms link cnt %d", elapsed, ATOMIC_GET(&count));
     if (INVALID_SOCK != connsock)
     {
-        /*ev_close(arg, connsock);
-        connsock = INVALID_SOCK;*/
-        char str[100];
-        int32_t len = randrange(1, sizeof(str));
-        ASSERTAB(sizeof(str) > len, "randrange error.");
-        randstr(str, len);
-        u_short total = (u_short)(2 + sizeof(pk_index) + len);
-        char *buf;
-        MALLOC(buf, total);
-        pk_index++;
-        //PRINT("send pack index: %d", pk_index);
-        total = ntohs(total);
-        memcpy(buf, &total, sizeof(total));
-        int32_t tmp = ntohl(pk_index);
-        memcpy(buf + sizeof(total), &tmp, sizeof(tmp));
-        memcpy(buf + sizeof(total) + sizeof(pk_index), str, len);
-        ev_send(arg, connsock, buf, 2 + sizeof(pk_index) + len, 0);
+        ev_close(arg, connsock);
+        connsock = INVALID_SOCK;
+        //char str[100];
+        //int32_t len = randrange(1, sizeof(str));
+        //ASSERTAB(sizeof(str) > len, "randrange error.");
+        //randstr(str, len);
+        //u_short total = (u_short)(2 + sizeof(pk_index) + len);
+        //char *buf;
+        //MALLOC(buf, total);
+        //pk_index++;
+        ////PRINT("send pack index: %d", pk_index);
+        //total = ntohs(total);
+        //memcpy(buf, &total, sizeof(total));
+        //int32_t tmp = ntohl(pk_index);
+        //memcpy(buf + sizeof(total), &tmp, sizeof(tmp));
+        //memcpy(buf + sizeof(total) + sizeof(pk_index), str, len);
+        //ev_send(arg, connsock, buf, 2 + sizeof(pk_index) + len, 0);
+
+        /*ev_sendto(arg, connsock, "127.0.0.1", 15002, buf, 2 + sizeof(pk_index) + len, 0);
+        FREE(buf);*/
     }
     else
     {
@@ -123,10 +137,11 @@ static void timeout(void *arg)
         cbs.c_cb = test_connclose_cb;
         cbs.r_cb = test_conn_recv_cb;
         cbs.s_cb = test_send_cb;
-        ev_connect(arg, "127.0.0.1", 15000, &cbs, NULL);
+        //ev_connect(arg, "127.0.0.1", 15000, &cbs, NULL);
+        connsock = ev_udp(arg, "0.0.0.0", 15001, test_recvfrom_cb, NULL);
     }
     timer_start(&tw.timer);
-    tw_add(&tw, 5000, timeout, arg);
+    tw_add(&tw, 10000, timeout, arg);
 }
 void testtt(void *arg)
 {
@@ -163,10 +178,10 @@ int main(int argc, char *argv[])
     cbs.c_cb = test_close_cb;
     cbs.r_cb = test_recv_cb;
     cbs.s_cb = test_send_cb;
-    ev_listen(&ev, "0.0.0.0", 15000, &cbs, NULL);
-
+    ev_listen(&ev, "0.0.0.0", 15000, &cbs, NULL);    
+    
     timer_start(&tw.timer);
-    tw_add(&tw, 5000, timeout, &ev);
+    tw_add(&tw, 1000, timeout, &ev);
 
     mutex_lock(&muexit);
     cond_wait(&condexit, &muexit);

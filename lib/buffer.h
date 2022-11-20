@@ -18,6 +18,7 @@
 #define IOV_LEN_FIELD iov_len
 #define IOV_LEN_TYPE size_t
 #endif
+#define MAX_EXPAND_NIOV          4
 typedef struct buffer_ctx
 {
     int32_t freeze_read;

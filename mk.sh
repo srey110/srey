@@ -26,8 +26,6 @@ then
 fi
 if [ "$OSNAME" = "SunOS" ]
 then
-	PATH=$PATH:/usr/sfw/bin:/usr/ccs/bin
-	export PATH
 	INCLUDELIB=$INCLUDELIB" -lsocket -lnsl"
 fi
 #Î»Êý

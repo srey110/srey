@@ -10,6 +10,7 @@
 #define INIT_EVENTS_CNT     128
 #define MAX_EVENTS_CNT      1024
 #define MAX_RECV_SIZE       4096
+#define MAX_RECVFROM_SIZE   4096
 #define MAX_SEND_SIZE       4096
 #define MAX_SEND_NIOV       16
 #define MAX_PACK_SIZE       65535

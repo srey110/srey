@@ -19,6 +19,7 @@ typedef enum WORKER_CMDS
     CMD_ADD,
     CMD_REMOVE,
     CMD_SEND,
+    CMD_SENDTO,
 
     CMD_TOTAL,
 }WORKER_CMDS;
@@ -150,7 +151,14 @@ static void _on_cmd_remove(runner_ctx *runner, cmd_ctx *cmd, int32_t *stop)
     }
     if (0 == _check_canfree(el->sock))
     {
-        pool_push(&runner->pool, el->sock);
+        if (SOCK_STREAM == _sock_type(el->sock))
+        {
+            pool_push(&runner->pool, el->sock);
+        }
+        else
+        {
+            _free_udp(el->sock);
+        }
     }
     else
     {
@@ -158,8 +166,10 @@ static void _on_cmd_remove(runner_ctx *runner, cmd_ctx *cmd, int32_t *stop)
         delay.timeout = 0;
         delay.sock = el->sock;
         arr_delay_push_back(&runner->arrdelay, &delay);
-    }
-    hashmap_delete(runner->element, el);
+    }  
+    map_element key;
+    key.fd = cmd->fd;
+    hashmap_delete(runner->element, &key);
 }
 void ev_send(ev_ctx *ctx, SOCKET fd, void *data, size_t len, int32_t copy)
 {
@@ -193,6 +203,38 @@ static void _on_cmd_send(runner_ctx *runner, cmd_ctx *cmd, int32_t *stop)
     buf.offset = 0;
     _add_bufs_trypost(el->sock, &buf);
 }
+void ev_sendto(ev_ctx *ctx, SOCKET fd, const char *host, const uint16_t port, void *data, size_t len)
+{
+    ASSERTAB(INVALID_SOCK != fd, ERRSTR_INVPARAM);
+    cmd_ctx cmd;
+    cmd.cmd = CMD_SENDTO;
+    cmd.fd = fd;
+    cmd.len = len;
+    MALLOC(cmd.data, sizeof(netaddr_ctx) + len);
+    netaddr_ctx *addr = (netaddr_ctx *)cmd.data;
+    if (ERR_OK != netaddr_sethost(addr, host, port))
+    {
+        FREE(cmd.data);
+        LOG_WARN("%s", ERRORSTR(ERRNO));
+        return;
+    }
+    memcpy((char *)cmd.data + sizeof(netaddr_ctx), data, len);
+    QUS_PUSH(ctx->worker, cmd);
+}
+static void _on_cmd_sendto(runner_ctx *runner, cmd_ctx *cmd, int32_t *stop)
+{
+    map_element *el = _map_get(runner->element, cmd->fd);
+    if (NULL == el)
+    {
+        FREE(cmd->data);
+        return;
+    }
+    bufs_ctx buf;
+    buf.data = cmd->data;
+    buf.len = cmd->len;
+    buf.offset = 0;
+    _add_bufs_trysendto(el->sock, &buf);
+}
 void ev_close(struct ev_ctx *ctx, SOCKET fd)
 {
     ASSERTAB(INVALID_SOCK != fd, ERRSTR_INVPARAM);
@@ -204,11 +246,17 @@ void ev_close(struct ev_ctx *ctx, SOCKET fd)
 static void _on_cmd_disconn(runner_ctx *runner, cmd_ctx *cmd, int32_t *stop)
 {
     map_element *el = _map_get(runner->element, cmd->fd);
-    shutdown(cmd->fd, SHUT_RD);
     if (NULL == el)
     {
         CLOSE_SOCK(cmd->fd);
+        return;
     }
+    if (SOCK_STREAM == _sock_type(el->sock))
+    {
+        shutdown(cmd->fd, SHUT_RD);
+        return;
+    }
+    CLOSE_SOCK(cmd->fd);
 }
 static void _init_callback(worker_ctx *worker)
 {
@@ -217,6 +265,7 @@ static void _init_callback(worker_ctx *worker)
     worker->cmd_callback[CMD_ADD] = _on_cmd_add;
     worker->cmd_callback[CMD_REMOVE] = _on_cmd_remove;
     worker->cmd_callback[CMD_SEND] = _on_cmd_send;
+    worker->cmd_callback[CMD_SENDTO] = _on_cmd_sendto;
 }
 static inline void _trywait_cond(runner_ctx *runner)
 {
@@ -269,7 +318,14 @@ static inline void _check_delayfree(runner_ctx *runner, timer_ctx *timer, arr_de
         delay = arr_delay_at(arr, i);
         if (0 == _check_canfree(delay->sock))
         {
-            pool_push(&runner->pool, delay->sock);
+            if (SOCK_STREAM == _sock_type(delay->sock))
+            {
+                pool_push(&runner->pool, delay->sock);
+            }
+            else
+            {
+                _free_udp(delay->sock);
+            }
             arr_delay_del_nomove(arr, i);
         }
         else
@@ -277,9 +333,17 @@ static inline void _check_delayfree(runner_ctx *runner, timer_ctx *timer, arr_de
             delay->timeout += elapsed;
             if (delay->timeout >= DELAY_TIMEOUT)
             {
-                pool_push(&runner->pool, delay->sock);
+                int32_t type = _sock_type(delay->sock);
+                if (SOCK_STREAM == type)
+                {
+                    pool_push(&runner->pool, delay->sock);
+                }
+                else
+                {
+                    _free_udp(delay->sock);
+                }
                 arr_delay_del_nomove(arr, i);
-                LOG_WARN("%s", "wait socket free timeout.");
+                LOG_WARN("wait socket free timeout,type: %d", type);
             }
         }
     }
@@ -315,7 +379,14 @@ static void _loop_runner(void *arg)
 static inline void _free_mapitem(void *item)
 {
     map_element *el = (map_element *)item;
-    _free_sk(el->sock);
+    if (SOCK_STREAM == _sock_type(el->sock))
+    {
+        _free_sk(el->sock);
+    }
+    else
+    {
+        _free_udp(el->sock);
+    }
 }
 static void _init_qus(runner_ctx *runner)
 {
@@ -368,7 +439,14 @@ static void _free_arr_delay(arr_delay *arr)
     for (size_t i = 0; i < size; i++)
     {
         delay = arr_delay_at(arr, i);
-        _free_sk(delay->sock);
+        if (SOCK_STREAM == _sock_type(delay->sock))
+        {
+            _free_sk(delay->sock);
+        }
+        else
+        {
+            _free_udp(delay->sock);
+        }
     }
     arr_delay_free(arr);
 }

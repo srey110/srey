@@ -54,6 +54,42 @@ SOCKET _listen(netaddr_ctx *addr)
     }
     return fd;
 }
+SOCKET _udp(netaddr_ctx *addr)
+{
+    SOCKET fd = _create_sock(SOCK_DGRAM, netaddr_family(addr));
+    if (INVALID_SOCK == fd)
+    {
+        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        return INVALID_SOCK;
+    }
+#ifdef EV_IOCP
+    DWORD bytes = 0;
+    BOOL behavior = FALSE;
+    if (WSAIoctl(fd, 
+        SIO_UDP_CONNRESET,
+        &behavior, 
+        sizeof(behavior),
+        NULL,
+        0, 
+        &bytes,
+        NULL, 
+        NULL) < ERR_OK)
+    {
+        CLOSE_SOCK(fd);
+        LOG_WARN("WSAIoctl(%d, SIO_UDP_CONNRESET...) failed. %s", (int32_t)fd, ERRORSTR(ERRNO));
+        return INVALID_SOCK;
+    }
+#endif
+    sock_raddr(fd);
+    sock_nbio(fd);
+    if (ERR_OK != bind(fd, netaddr_addr(addr), netaddr_size(addr)))
+    {
+        CLOSE_SOCK(fd);
+        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        return INVALID_SOCK;
+    }
+    return fd;
+}
 static inline int32_t _sock_read_ssl(SOCKET fd, IOV_TYPE *iov, uint32_t niov, void *arg)
 {
     return ERR_OK;

@@ -37,6 +37,7 @@ typedef struct ev_ctx
 typedef int32_t(*accept_cb)(ev_ctx *ev, SOCKET fd, ud_cxt *ud);
 typedef int32_t(*connect_cb)(ev_ctx *ev, SOCKET fd, ud_cxt *ud);//sock INVALID_SOCK Ê§°Ü
 typedef void(*recv_cb)(ev_ctx *ev, SOCKET fd, buffer_ctx *buf, size_t size, ud_cxt *ud);
+typedef void(*recvfrom_cb)(ev_ctx *ev, SOCKET fd, buffer_ctx *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud);
 typedef void(*send_cb)(ev_ctx *ev, SOCKET fd, size_t size, ud_cxt *ud);
 typedef void(*close_cb)(ev_ctx *ev, SOCKET fd, ud_cxt *ud);
 typedef struct cbs_ctx
