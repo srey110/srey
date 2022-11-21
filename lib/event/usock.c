@@ -36,22 +36,35 @@ typedef struct skrw_ctx
     cbs_ctx cbs;
     ud_cxt ud;
 }skrw_ctx;
+typedef struct udp_ctx
+{
+    sock_ctx sock;
+    recvfrom_cb rf_cb;
+    buffer_ctx buf_r;
+    qu_bufs buf_s;
+    netaddr_ctx addr;
+    ud_cxt ud;
+}udp_ctx;
 
 void _on_rw_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev, int32_t *stop);
 
+int32_t _sock_type(sock_ctx *skctx)
+{
+    return skctx->type;
+}
 sock_ctx *_new_sk(SOCKET fd, cbs_ctx *cbs, ud_cxt *ud)
 {
-    skrw_ctx *rw;
-    MALLOC(rw, sizeof(skrw_ctx));
-    rw->sock.ev_cb = _on_rw_cb;
-    rw->sock.type = SOCK_STREAM;
-    rw->sock.fd = fd;
-    rw->sock.events = 0;
-    rw->ud = *ud;
-    rw->cbs = *cbs;
-    buffer_init(&rw->buf_r);
-    qu_bufs_init(&rw->buf_s, INIT_SENDBUF_LEN);
-    return &rw->sock;
+    skrw_ctx *skrw;
+    MALLOC(skrw, sizeof(skrw_ctx));
+    skrw->sock.ev_cb = _on_rw_cb;
+    skrw->sock.type = SOCK_STREAM;
+    skrw->sock.fd = fd;
+    skrw->sock.events = 0;
+    skrw->ud = *ud;
+    skrw->cbs = *cbs;
+    buffer_init(&skrw->buf_r);
+    qu_bufs_init(&skrw->buf_s, INIT_SENDBUF_LEN);
+    return &skrw->sock;
 }
 void _free_sk(sock_ctx *skctx)
 {
@@ -79,8 +92,11 @@ void _reset_sk(sock_ctx *skctx, SOCKET fd, cbs_ctx *cbs, ud_cxt *ud)
 }
 qu_bufs *_get_send_bufs(sock_ctx *skctx)
 {
-    skrw_ctx *skrw = UPCAST(skctx, skrw_ctx, sock);
-    return &skrw->buf_s;
+    if (SOCK_STREAM == skctx->type)
+    {
+        return &UPCAST(skctx, skrw_ctx, sock)->buf_s;
+    }
+    return &UPCAST(skctx, udp_ctx, sock)->buf_s;
 }
 connect_cb _get_conn_cb(sock_ctx *skctx, ud_cxt *ud)
 {
@@ -88,6 +104,7 @@ connect_cb _get_conn_cb(sock_ctx *skctx, ud_cxt *ud)
     *ud = conn->ud;
     return conn->cbs.conn_cb;
 }
+//rw
 void _on_close(watcher_ctx *watcher, sock_ctx *skctx, int32_t remove)
 {
     skrw_ctx *skrw = UPCAST(skctx, skrw_ctx, sock);
@@ -126,15 +143,11 @@ static inline int32_t _on_r_cb(watcher_ctx *watcher, skrw_ctx *skrw)
 static inline void _on_w_cb(watcher_ctx *watcher, skrw_ctx *skrw)
 {
     size_t nsend;
-    int32_t rtn = _sock_send(skrw->sock.fd, &skrw->buf_s, NULL, &nsend, NULL);
+    _sock_send(skrw->sock.fd, &skrw->buf_s, NULL, &nsend, NULL);
     if (NULL != skrw->cbs.s_cb
         && 0 != nsend)
     {
         skrw->cbs.s_cb(watcher->ev, skrw->sock.fd, nsend, &skrw->ud);
-    }
-    if (ERR_OK != rtn)
-    {
-        return;
     }
     if (0 == qu_bufs_size(&skrw->buf_s))
     {
@@ -160,6 +173,7 @@ void _on_rw_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev, int32_t *stop)
         _on_w_cb(watcher, skrw);
     }
 }
+//connect
 static inline void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev, int32_t *stop)
 {
     conn_ctx *conn = UPCAST(skctx, conn_ctx, sock);
@@ -177,17 +191,7 @@ static inline void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t
         FREE(conn);
         return;
     }
-    sock_ctx *rwck = pool_pop(&watcher->pool, conn->sock.fd, &conn->cbs, &conn->ud);
-    if (ERR_OK != _add_event(watcher, rwck->fd, &rwck->events, EVENT_READ, rwck))
-    {
-        _on_close(watcher, rwck, 0);
-        FREE(conn);
-        return;
-    }
-    map_element el;
-    el.fd = rwck->fd;
-    el.sock = rwck;
-    ASSERTAB(NULL == hashmap_set(watcher->element, &el), "socket repeat.");
+    _add_inloop(watcher, conn->sock.fd, &conn->cbs, &conn->ud);
     FREE(conn);
 }
 SOCKET ev_connect(ev_ctx *ctx, const char *host, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud)
@@ -228,6 +232,7 @@ SOCKET ev_connect(ev_ctx *ctx, const char *host, const uint16_t port, cbs_ctx *c
     _cmd_connect(ctx, fd, &conn->sock);
     return fd;
 }
+//listen
 static inline void _on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev, int32_t *stop)
 {
     lsnsock_ctx *acpt = UPCAST(skctx, lsnsock_ctx, sock);
@@ -261,7 +266,7 @@ static inline void _on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t 
                 _add_inloop(watcher, fd, &acpt->lsn->cbs, &acpt->lsn->ud);
             }
             else
-            {                
+            {
                 _cmd_add(to, fd, hs, &acpt->lsn->cbs, &acpt->lsn->ud);
             }
         }
@@ -348,6 +353,150 @@ void _freelsn(listener_ctx *lsn)
 #endif
     FREE(lsn->lsnsock);
     FREE(lsn);
+}
+//UDP
+void _udp_close(watcher_ctx *watcher, sock_ctx *skctx)
+{
+    map_element key;
+    key.fd = skctx->fd;
+    if (NULL != hashmap_delete(watcher->element, &key))
+    {
+        qu_sock_push(&watcher->qu_udpfree, &skctx);
+    }
+}
+static inline void _init_msghdr(struct msghdr *msg, netaddr_ctx *addr, IOV_TYPE *iov, uint32_t niov)
+{
+    ZERO(msg, sizeof(struct msghdr));
+    msg->msg_name = netaddr_addr(addr);
+    msg->msg_namelen = netaddr_size(addr);
+    msg->msg_iov = iov;
+    msg->msg_iovlen = niov;
+}
+static inline int32_t _on_udp_rcb(watcher_ctx *watcher, udp_ctx *udp)
+{
+    struct msghdr msg;
+    IOV_TYPE iov[MAX_EXPAND_NIOV];
+    uint32_t niov = buffer_expand(&udp->buf_r, MAX_RECVFROM_SIZE, iov, MAX_EXPAND_NIOV);
+    _init_msghdr(&msg, &udp->addr, iov, niov);
+    int32_t rtn = (int32_t)recvmsg(udp->sock.fd, &msg, 0);
+    if (rtn > 0)
+    {
+        buffer_commit_expand(&udp->buf_r, (size_t)rtn, iov, niov);
+        udp->rf_cb(watcher->ev, udp->sock.fd, &udp->buf_r, (size_t)rtn, &udp->addr, &udp->ud);
+        rtn = ERR_OK;
+    }
+    else
+    {
+        if (0 == rtn)
+        {
+            rtn = ERR_FAILED;
+        }
+        else//< 0
+        {
+            if (ERR_RW_RETRIABLE(ERRNO))
+            {
+                rtn = ERR_OK;
+                buffer_commit_expand(&udp->buf_r, 0, iov, niov);
+            }
+        }
+    }
+#ifdef EV_EVPORT
+    if (ERR_OK == rtn)
+    {
+        rtn = _add_event(watcher, udp->sock.fd, &udp->sock.events, EVENT_READ, &udp->sock);
+    }
+#endif
+    if (ERR_OK != rtn)
+    {
+        _udp_close(watcher, &udp->sock);
+    }
+    return rtn;
+}
+static inline void _on_udp_wcb(watcher_ctx *watcher, udp_ctx *udp)
+{
+    int32_t rtn;
+    bufs_ctx *buf;
+    netaddr_ctx *addr;
+    IOV_TYPE iov;
+    struct msghdr msg;
+    while (NULL != (buf = qu_bufs_pop(&udp->buf_s)))
+    {
+        addr = (netaddr_ctx *)buf->data;
+        iov.IOV_PTR_FIELD = (char *)buf->data + sizeof(netaddr_ctx);
+        iov.IOV_LEN_FIELD = (IOV_LEN_TYPE)buf->len;
+        _init_msghdr(&msg, addr, &iov, 1);
+        rtn = sendmsg(udp->sock.fd, &msg, 0);
+        FREE(buf->data);
+        if (rtn <= 0)
+        {
+            break;
+        }
+    }
+    if (0 == qu_bufs_size(&udp->buf_s))
+    {
+        _del_event(watcher, udp->sock.fd, &udp->sock.events, EVENT_WRITE, &udp->sock);
+        return;
+    }
+#ifdef EV_EVPORT
+    _add_event(watcher, udp->sock.fd, &udp->sock.events, EVENT_WRITE, &udp->sock);
+#endif
+}
+static void _on_udp_rw(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev, int32_t *stop)
+{
+    udp_ctx *udp = UPCAST(skctx, udp_ctx, sock);
+    if (ev & EVENT_READ)
+    {
+        if (ERR_OK != _on_udp_rcb(watcher, udp))
+        {
+            return;
+        }
+    }
+    if (ev & EVENT_WRITE)
+    {
+        _on_udp_wcb(watcher, udp);
+    }
+}
+static inline sock_ctx *_new_udp(SOCKET fd, int32_t family, recvfrom_cb rf_cb, ud_cxt *ud)
+{
+    udp_ctx *udp;
+    MALLOC(udp, sizeof(udp_ctx));
+    udp->sock.ev_cb = _on_udp_rw;
+    udp->sock.type = SOCK_DGRAM;
+    udp->sock.fd = fd;
+    udp->sock.events = 0;
+    udp->rf_cb = rf_cb;
+    COPY_UD(udp->ud, ud);
+    netaddr_empty_addr(&udp->addr, family);
+    buffer_init(&udp->buf_r);
+    qu_bufs_init(&udp->buf_s, INIT_SENDBUF_LEN);
+    return &udp->sock;
+}
+void _free_udp(sock_ctx *skctx)
+{
+    udp_ctx *udp = UPCAST(skctx, udp_ctx, sock);
+    CLOSE_SOCK(udp->sock.fd);
+    buffer_free(&udp->buf_r);
+    _bufs_clear(&udp->buf_s);
+    qu_bufs_free(&udp->buf_s);
+    FREE(udp);
+}
+SOCKET ev_udp(ev_ctx *ctx, const char *host, const uint16_t port, recvfrom_cb rf_cb, ud_cxt *ud)
+{
+    ASSERTAB(NULL != rf_cb, ERRSTR_NULLP);
+    netaddr_ctx addr;
+    if (ERR_OK != netaddr_sethost(&addr, host, port))
+    {
+        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        return INVALID_SOCK;
+    }
+    SOCKET fd = _udp(&addr);
+    if (INVALID_SOCK == fd)
+    {
+        return INVALID_SOCK;
+    }
+    sock_ctx *skctx = _new_udp(fd, netaddr_family(&addr), rf_cb, ud);
+    _cmd_add_udp(ctx, fd, skctx);
+    return fd;
 }
 
 #endif//EV_IOCP

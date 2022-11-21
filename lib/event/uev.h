@@ -28,6 +28,7 @@ typedef enum UEV_CMDS
     CMD_LSN,
     CMD_CONN,
     CMD_ADD,
+    CMD_ADDUDP,
     CMD_SEND,
 
     CMD_TOTAL,
@@ -61,6 +62,7 @@ typedef struct watcher_ctx
     struct hashmap *element;
     pthread_t thevent;
     skpool_ctx pool;
+    qu_sock qu_udpfree;
 }watcher_ctx;
 
 typedef void(*event_cb)(watcher_ctx *watcher, struct sock_ctx *skctx, int32_t ev, int32_t *stop);
@@ -79,6 +81,7 @@ void _cmd_send(watcher_ctx *watcher, uint32_t index, cmd_ctx *cmd);
 void _cmd_connect(ev_ctx *ctx, SOCKET fd, sock_ctx *skctx);
 void _cmd_listen(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx);
 void _cmd_add(watcher_ctx *watcher, SOCKET fd, uint64_t hs, cbs_ctx *cbs, ud_cxt *ud);
+void _cmd_add_udp(ev_ctx *ctx, SOCKET fd, sock_ctx *skctx);
 
 void _on_cmd_stop(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop);
 void _on_cmd_disconn(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop);
@@ -87,10 +90,14 @@ void _on_cmd_conn(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop);
 void _on_cmd_send(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop);
 void _on_cmd_add(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop);
 void _add_inloop(watcher_ctx *watcher, SOCKET fd, cbs_ctx *cbs, ud_cxt *ud);
+void _on_cmd_add_udp(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop);
 
 qu_bufs *_get_send_bufs(sock_ctx *skctx);
 connect_cb _get_conn_cb(sock_ctx *skctx, ud_cxt *ud);
 void _on_close(watcher_ctx *watcher, sock_ctx *skctx, int32_t remove);
+int32_t _sock_type(sock_ctx *skctx);
+void _free_udp(sock_ctx *skctx);
+void _udp_close(watcher_ctx *watcher, sock_ctx *skctx);
 
 #endif//EV_IOCP
 #endif//UEV_H_

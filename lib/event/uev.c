@@ -51,6 +51,7 @@ static void _init_callback()
     cmd_cbs[CMD_LSN] = _on_cmd_lsn;
     cmd_cbs[CMD_CONN] = _on_cmd_conn;
     cmd_cbs[CMD_ADD] = _on_cmd_add;
+    cmd_cbs[CMD_ADDUDP] = _on_cmd_add_udp;
     cmd_cbs[CMD_SEND] = _on_cmd_send;
 }
 static void _init_cmd(watcher_ctx *watcher)
@@ -267,7 +268,8 @@ static void _loop_event(void *arg)
     struct timespec timeout;
     fill_timespec(&timeout, EVENT_WAIT_TIMEOUT);
 #endif
-    sock_ctx *skctx;    
+    sock_ctx *skctx;
+    sock_ctx **udp;
     int32_t i, cnt, ev, stop = 0;
     timer_ctx tmshrink;
     timer_init(&tmshrink);
@@ -292,6 +294,10 @@ static void _loop_event(void *arg)
                 skctx->ev_cb(watcher, skctx, ev, &stop);
             }
         }
+        while (NULL != (udp = qu_sock_pop(&watcher->qu_udpfree)))
+        {
+            _free_udp(*udp);
+        }
         _pool_shrink(watcher, &tmshrink);
         if (0 == stop
             && cnt == watcher->nevent
@@ -305,7 +311,15 @@ static void _loop_event(void *arg)
 }
 static inline void _free_mapitem(void *item)
 {
-    _free_sk(((map_element *)item)->sock);
+    map_element *el = (map_element *)item;
+    if (SOCK_STREAM == _sock_type(el->sock))
+    {
+        _free_sk(el->sock);
+    }
+    else
+    {
+        _free_udp(el->sock);
+    }
 }
 static inline int32_t _init_evfd()
 {
@@ -361,6 +375,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads)
         watcher->element = hashmap_new_with_allocator(_malloc, _realloc, _free,
             sizeof(map_element), ONEK * 4, 0, 0, _map_hash, _map_compare, _free_mapitem, NULL);
         pool_init(&watcher->pool, ONEK);
+        qu_sock_init(&watcher->qu_udpfree, ONEK);
         watcher->thevent = thread_creat(_loop_event, watcher);
     }
 }
@@ -399,6 +414,7 @@ void ev_free(ev_ctx *ctx)
         FREE(watcher->events);
         hashmap_free(watcher->element);
         pool_free(&watcher->pool);
+        qu_sock_free(&watcher->qu_udpfree);
     }
     FREE(ctx->watcher);
     struct listener_ctx **lsn;

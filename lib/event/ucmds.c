@@ -32,15 +32,22 @@ void ev_close(ev_ctx *ctx, SOCKET fd)
 void _on_cmd_disconn(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop)
 {
     map_element *el = _map_get(watcher->element, cmd->fd);
-    shutdown(cmd->fd, SHUT_RD);
     if (NULL == el)
     {
         CLOSE_SOCK(cmd->fd);
+        return;
+    }
+    if (SOCK_STREAM == _sock_type(el->sock))
+    {
+        shutdown(cmd->fd, SHUT_RD);
+    }
+    else
+    {
+        _udp_close(watcher, el->sock);
     }
 }
 void _cmd_listen(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx)
 {
-    ASSERTAB(INVALID_SOCK != fd, ERRSTR_INVPARAM);
     cmd_ctx cmd;
     cmd.cmd = CMD_LSN;
     cmd.fd = fd;
@@ -57,7 +64,6 @@ void _on_cmd_lsn(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop)
 }
 void _cmd_connect(ev_ctx *ctx, SOCKET fd, sock_ctx *skctx)
 {
-    ASSERTAB(INVALID_SOCK != fd, ERRSTR_INVPARAM);
     cmd_ctx cmd;
     cmd.cmd = CMD_CONN;
     cmd.fd = fd;
@@ -94,6 +100,24 @@ void ev_send(ev_ctx *ctx, SOCKET fd, void *data, size_t len, int32_t copy)
     }
     CMD_SEND(ctx, cmd);
 }
+void ev_sendto(ev_ctx *ctx, SOCKET fd, const char *host, const uint16_t port, void *data, size_t len)
+{
+    ASSERTAB(INVALID_SOCK != fd, ERRSTR_INVPARAM);
+    cmd_ctx cmd;
+    cmd.cmd = CMD_SEND;
+    cmd.fd = fd;
+    cmd.len = len;
+    MALLOC(cmd.data, sizeof(netaddr_ctx) + len);
+    netaddr_ctx *addr = (netaddr_ctx *)cmd.data;
+    if (ERR_OK != netaddr_sethost(addr, host, port))
+    {
+        FREE(cmd.data);
+        LOG_WARN("%s", ERRORSTR(ERRNO));
+        return;
+    }
+    memcpy((char *)cmd.data + sizeof(netaddr_ctx), data, len);
+    CMD_SEND(ctx, cmd);
+}
 void _on_cmd_send(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop)
 {
     map_element *el = _map_get(watcher->element, cmd->fd);
@@ -114,7 +138,6 @@ void _on_cmd_send(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop)
 }
 void _cmd_add(watcher_ctx *watcher, SOCKET fd, uint64_t hs, cbs_ctx *cbs, ud_cxt *ud)
 {
-    ASSERTAB(INVALID_SOCK != fd, ERRSTR_INVPARAM);
     cmd_ctx cmd;
     cmd.cmd = CMD_ADD;
     cmd.fd = fd;
@@ -135,7 +158,28 @@ void _add_inloop(watcher_ctx *watcher, SOCKET fd, cbs_ctx *cbs, ud_cxt *ud)
         return;
     }
     map_element el;
-    el.fd = skctx->fd;
+    el.fd = fd;
+    el.sock = skctx;
+    ASSERTAB(NULL == hashmap_set(watcher->element, &el), "socket repeat.");
+}
+void _cmd_add_udp(ev_ctx *ctx, SOCKET fd, sock_ctx *skctx)
+{
+    cmd_ctx cmd;
+    cmd.cmd = CMD_ADDUDP;
+    cmd.fd = fd;
+    cmd.data = skctx;
+    CMD_SEND(ctx, cmd);
+}
+void _on_cmd_add_udp(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop)
+{
+    sock_ctx *skctx = (sock_ctx *)cmd->data;
+    if (ERR_OK != _add_event(watcher, cmd->fd, &skctx->events, EVENT_READ, skctx))
+    {
+        _free_udp(skctx);
+        return;
+    }
+    map_element el;
+    el.fd = cmd->fd;
     el.sock = skctx;
     ASSERTAB(NULL == hashmap_set(watcher->element, &el), "socket repeat.");
 }

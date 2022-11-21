@@ -91,15 +91,14 @@ static int32_t test_acpt_cb(ev_ctx *ctx, SOCKET sock, ud_cxt *ud)
 }
 static void test_recvfrom_cb(ev_ctx *ev, SOCKET fd, buffer_ctx *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud)
 {
-    //PRINT("test_recvfrom_cb :  %zu ", size);
-    size_t len = buffer_size(buf);
     char host[IP_LENS] = { 0 };
     netaddr_ip(addr, host);
     uint16_t port = netaddr_port(addr);
+    //PRINT("test_recvfrom_cb :  %s:%d size %zu", host, port, size);
     char *pk;
-    MALLOC(pk, len);
-    buffer_remove(buf, pk, len);
-    ev_sendto(ev, fd, host, port, pk, len);
+    MALLOC(pk, size);
+    buffer_remove(buf, pk, size);
+    ev_sendto(ev, fd, host, port, pk, size);
     FREE(pk);
 }
 static void timeout(void *arg)
@@ -108,8 +107,8 @@ static void timeout(void *arg)
     PRINT("timeout:%d ms link cnt %d", elapsed, ATOMIC_GET(&count));
     if (INVALID_SOCK != connsock)
     {
-        ev_close(arg, connsock);
-        connsock = INVALID_SOCK;
+        /*ev_close(arg, connsock);
+        connsock = INVALID_SOCK;*/
         //char str[100];
         //int32_t len = randrange(1, sizeof(str));
         //ASSERTAB(sizeof(str) > len, "randrange error.");
@@ -141,7 +140,7 @@ static void timeout(void *arg)
         connsock = ev_udp(arg, "0.0.0.0", 15001, test_recvfrom_cb, NULL);
     }
     timer_start(&tw.timer);
-    tw_add(&tw, 10000, timeout, arg);
+    tw_add(&tw, 3000, timeout, arg);
 }
 void testtt(void *arg)
 {
