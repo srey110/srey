@@ -21,6 +21,9 @@ typedef struct listener_ctx
 {
     int32_t family;
     SOCKET fd;
+#if WITH_SSL
+    struct evssl_ctx *evssl;
+#endif
     cbs_ctx cbs;
     ud_cxt ud;
     overlap_acpt_ctx overlap_acpt[MAX_ACCEPTEX_CNT];
@@ -29,6 +32,9 @@ typedef struct overlap_conn_ctx
 {
     sock_ctx overlap;
     DWORD bytes;
+#if WITH_SSL
+    struct evssl_ctx *evssl;
+#endif
     ud_cxt ud;
     cbs_ctx cbs;
 }overlap_conn_ctx;
@@ -41,6 +47,11 @@ typedef struct overlap_tcp_ctx
     DWORD bytes_r;
     DWORD bytes_s;
     DWORD flag;
+#if WITH_SSL
+    int32_t server;
+    int32_t handshake;
+    SSL *ssl;
+#endif
     IOV_TYPE wsabuf;
     buffer_ctx buf_r;
     qu_bufs buf_s;
@@ -77,6 +88,27 @@ int32_t _sock_type(struct sock_ctx *skctx)
 {
     return skctx->type;
 }
+#if WITH_SSL
+static inline void _set_ssl_sv(sock_ctx *skctx, SSL *ssl, int32_t server)
+{
+    overlap_tcp_ctx *ol = UPCAST(skctx, overlap_tcp_ctx, ol_r);
+    ol->ssl = ssl;
+    ol->server = server;
+}
+static inline void _set_handshake(sock_ctx *skctx, int32_t handshake)
+{
+    UPCAST(skctx, overlap_tcp_ctx, ol_r)->handshake = handshake;
+}
+#endif
+void _sk_shutdown(sock_ctx *skctx)
+{
+    overlap_tcp_ctx *ol = UPCAST(skctx, overlap_tcp_ctx, ol_r);
+#if WITH_SSL
+    evssl_shutdown(ol->ssl, ol->ol_r.fd);
+#else
+    shutdown(ol->ol_r.fd, SHUT_RD);
+#endif
+}
 sock_ctx *_new_sk(SOCKET fd, cbs_ctx *cbs, ud_cxt *ud)
 {
     overlap_tcp_ctx *ol;
@@ -89,6 +121,9 @@ sock_ctx *_new_sk(SOCKET fd, cbs_ctx *cbs, ud_cxt *ud)
     ol->ol_s.ev_cb = _on_send_cb;
     ol->sending = 0;
     ol->erro = 0;
+#if WITH_SSL
+    ol->ssl = NULL;
+#endif
     ol->wsabuf.IOV_PTR_FIELD = NULL;
     ol->wsabuf.IOV_LEN_FIELD = 0;
     ol->cbs = *cbs;
@@ -104,6 +139,9 @@ void _free_sk(sock_ctx *skctx)
     overlap_tcp_ctx *ol = UPCAST(skctx, overlap_tcp_ctx, ol_r);
     rwlock_wrlock(&ol->rwlck);//确保_on_send_cb完全退出
     rwlock_unlock(&ol->rwlck);
+#if WITH_SSL
+    FREE_SSL(ol->ssl);
+#endif
     CLOSE_SOCK(ol->ol_r.fd);
     buffer_free(&ol->buf_r);
     _bufs_clear(&ol->buf_s);
@@ -119,6 +157,9 @@ void _clear_sk(sock_ctx *skctx)
     ol->ol_s.fd = INVALID_SOCK;
     ol->sending = 0;
     ol->erro = 0;
+#if WITH_SSL
+    FREE_SSL(ol->ssl);
+#endif
     _bufs_clear(&ol->buf_s);
     buffer_drain(&ol->buf_r, buffer_size(&ol->buf_r));
 }
@@ -168,18 +209,84 @@ static inline int32_t _post_recv(sock_ctx *skctx)
     }
     return ERR_OK;
 }
-void _on_recv_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes)
+#if WITH_SSL
+static inline int32_t _ssl_handshake_sv(watcher_ctx *watcher, overlap_tcp_ctx *ol)
 {
-    overlap_tcp_ctx *ol = UPCAST(skctx, overlap_tcp_ctx, ol_r);
+    int32_t rtn = evssl_tryacpt(ol->ssl);
+    if (ERR_FAILED == rtn)
+    {
+        worker_remove(watcher->ev->worker, ol->ol_r.fd);
+        return ERR_FAILED;
+    }
+    if (1 == rtn)
+    {
+        if (ERR_OK != ol->cbs.acp_cb(watcher->ev, ol->ol_r.fd, &ol->ud))
+        {
+            worker_remove(watcher->ev->worker, ol->ol_r.fd);
+            return ERR_FAILED;
+        }
+        ol->handshake = 1;
+        return ERR_OK;
+    }
+    if (ERR_OK != _post_recv(&ol->ol_r))
+    {
+        worker_remove(watcher->ev->worker, ol->ol_r.fd);
+    }
+    return ERR_FAILED;
+}
+static inline int32_t _ssl_handshake_client(watcher_ctx *watcher, overlap_tcp_ctx *ol)
+{
+    int32_t rtn = evssl_tryconn(ol->ssl);
+    if (ERR_FAILED == rtn)
+    {
+        ol->cbs.conn_cb(watcher->ev, INVALID_SOCK, &ol->ud);
+        worker_remove(watcher->ev->worker, ol->ol_r.fd);
+        return ERR_FAILED;
+    }
+    if (1 == rtn)
+    {
+        if (ERR_OK != ol->cbs.conn_cb(watcher->ev, ol->ol_r.fd, &ol->ud))
+        {
+            worker_remove(watcher->ev->worker, ol->ol_r.fd);
+            return ERR_FAILED;
+        }
+        ol->handshake = 1;
+        return ERR_OK;
+    }
+    if (ERR_OK != _post_recv(&ol->ol_r))
+    {
+        ol->cbs.conn_cb(watcher->ev, INVALID_SOCK, &ol->ud);
+        worker_remove(watcher->ev->worker, ol->ol_r.fd);
+    }
+    return ERR_FAILED;
+}
+static inline int32_t _ssl_handshake(watcher_ctx *watcher, overlap_tcp_ctx *ol)
+{
+    if (ol->server)
+    {
+        return _ssl_handshake_sv(watcher, ol);
+    }
+    else
+    {
+        return _ssl_handshake_client(watcher, ol);
+    }
+}
+#endif
+static inline void _tcp_recv(watcher_ctx *watcher, overlap_tcp_ctx *ol)
+{
     size_t nread;
+#if WITH_SSL
+    int32_t rtn = buffer_from_sock(&ol->buf_r, ol->ol_r.fd, &nread, _sock_read, ol->ssl);
+#else
     int32_t rtn = buffer_from_sock(&ol->buf_r, ol->ol_r.fd, &nread, _sock_read, NULL);
+#endif
     if (0 != nread)
     {
         ol->cbs.r_cb(watcher->ev, ol->ol_r.fd, &ol->buf_r, nread, &ol->ud);
     }
     if (ERR_OK == rtn)
     {
-        rtn = _post_recv(skctx);
+        rtn = _post_recv(&ol->ol_r);
     }
     if (ERR_OK != rtn)
     {
@@ -192,6 +299,21 @@ void _on_recv_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes)
         }
         worker_remove(watcher->ev->worker, ol->ol_r.fd);
     }
+}
+void _on_recv_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes)
+{
+    overlap_tcp_ctx *ol = UPCAST(skctx, overlap_tcp_ctx, ol_r);
+#if WITH_SSL
+    if (NULL != ol->ssl
+        && !ol->handshake)
+    {
+        if (ERR_OK != _ssl_handshake(watcher, ol))
+        {
+            return;
+        }
+    }
+#endif
+    _tcp_recv(watcher, ol);
 }
 //send
 static inline int32_t _post_send(overlap_tcp_ctx *ol)
@@ -217,7 +339,11 @@ void _on_send_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes)
 {
     overlap_tcp_ctx *ol = UPCAST(skctx, overlap_tcp_ctx, ol_s);
     size_t nsend;
+#if WITH_SSL
+    int32_t rtn = _sock_send(ol->ol_s.fd, &ol->buf_s, &ol->rwlck, &nsend, ol->ssl);
+#else
     int32_t rtn = _sock_send(ol->ol_s.fd, &ol->buf_s, &ol->rwlck, &nsend, NULL);
+#endif
     if (NULL != ol->cbs.s_cb
         && 0 != nsend
         && 0 == ol->erro)
@@ -331,26 +457,67 @@ static inline void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD b
         FREE(ol);
         return;
     }
+    int32_t handshake = 1;
     sock_ctx *rwctx = worker_newsk(watcher->ev->worker, ol->overlap.fd, &ol->cbs, &ol->ud);
     worker_add(watcher->ev->worker, ol->overlap.fd, rwctx);
-    if (ERR_OK != ol->cbs.conn_cb(watcher->ev, ol->overlap.fd, &ol->ud))
+#if WITH_SSL
+    if (NULL != ol->evssl)
     {
-        worker_remove(watcher->ev->worker, ol->overlap.fd);
+        SSL *ssl = evssl_setfd(ol->evssl, ol->overlap.fd);
+        if (NULL == ssl)
+        {
+            ol->cbs.conn_cb(watcher->ev, INVALID_SOCK, &ol->ud);
+            worker_remove(watcher->ev->worker, ol->overlap.fd);
+            FREE(ol);
+            return;
+        }
+        _set_ssl_sv(rwctx, ssl, 0);
+        int32_t rtn = evssl_tryconn(ssl);
+        if (ERR_OK == rtn)
+        {
+            handshake = 0;
+            _set_handshake(rwctx, 0);
+        }
+        else if(1 == rtn)
+        {
+            _set_handshake(rwctx, 1);
+        } 
+        else//-1
+        {
+            ol->cbs.conn_cb(watcher->ev, INVALID_SOCK, &ol->ud);
+            worker_remove(watcher->ev->worker, ol->overlap.fd);
+            FREE(ol);
+            return;
+        }
     }
-    else
+#endif
+    if (handshake)
     {
-        if (ERR_OK != _post_recv(rwctx))
+        if (ERR_OK != ol->cbs.conn_cb(watcher->ev, ol->overlap.fd, &ol->ud))
+        {
+            worker_remove(watcher->ev->worker, ol->overlap.fd);
+            FREE(ol);
+            return;
+        }
+    }
+    if (ERR_OK != _post_recv(rwctx))
+    {
+        if (handshake)
         {
             if (NULL != ol->cbs.c_cb)
             {
                 ol->cbs.c_cb(watcher->ev, ol->overlap.fd, &ol->ud);
             }
-            worker_remove(watcher->ev->worker, ol->overlap.fd);
         }
+        else
+        {
+            ol->cbs.conn_cb(watcher->ev, INVALID_SOCK, &ol->ud);
+        }
+        worker_remove(watcher->ev->worker, ol->overlap.fd);
     }
     FREE(ol);
 }
-SOCKET ev_connect(ev_ctx *ctx, const char *host, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud)
+SOCKET ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *host, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud)
 {
     ASSERTAB(NULL != cbs && NULL != cbs->conn_cb && NULL != cbs->r_cb, ERRSTR_NULLP);
     netaddr_ctx addr;
@@ -359,37 +526,40 @@ SOCKET ev_connect(ev_ctx *ctx, const char *host, const uint16_t port, cbs_ctx *c
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         return INVALID_SOCK;
     }
-    SOCKET sock = _create_sock(SOCK_STREAM, netaddr_family(&addr));
-    if (INVALID_SOCK == sock)
+    SOCKET fd = _create_sock(SOCK_STREAM, netaddr_family(&addr));
+    if (INVALID_SOCK == fd)
     {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         return INVALID_SOCK;
     }
-    sock_raddr(sock);
-    _set_sockops(sock);
-    if (ERR_OK != _trybind(sock, netaddr_family(&addr)))
+    sock_raddr(fd);
+    _set_sockops(fd);
+    if (ERR_OK != _trybind(fd, netaddr_family(&addr)))
     {
-        CLOSE_SOCK(sock);
+        CLOSE_SOCK(fd);
         return INVALID_SOCK;
     }
-    if (ERR_OK != _join_iocp(ctx, sock))
+    if (ERR_OK != _join_iocp(ctx, fd))
     {
-        CLOSE_SOCK(sock);
+        CLOSE_SOCK(fd);
         return INVALID_SOCK;
     }
     overlap_conn_ctx *ol;
     MALLOC(ol, sizeof(overlap_conn_ctx));
-    ol->overlap.fd = sock;
+    ol->overlap.fd = fd;
     ol->overlap.ev_cb = _on_connect_cb;
     ol->cbs = *cbs;
     COPY_UD(ol->ud, ud);
+#if WITH_SSL
+    ol->evssl = evssl;
+#endif
     if (ERR_OK != _post_connect(ol, &addr))
     {
-        CLOSE_SOCK(sock);
+        CLOSE_SOCK(fd);
         FREE(ol);
         return INVALID_SOCK;
     }
-    return sock;
+    return fd;
 }
 //listen
 static inline int32_t _post_accept(overlap_acpt_ctx *ol)
@@ -435,16 +605,35 @@ static inline void _on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD by
         CLOSE_SOCK(fd);
         return;
     }
+    int32_t handshake = 1;
     sock_ctx *rwctx = worker_newsk(watcher->ev->worker, fd, &acpol->lsn->cbs, &acpol->lsn->ud);
     worker_add(watcher->ev->worker, fd, rwctx);
-    if (ERR_OK != acpol->lsn->cbs.acp_cb(watcher->ev, fd, &acpol->lsn->ud))
+#if WITH_SSL
+    if (NULL != acpol->lsn->evssl)
     {
-        worker_remove(watcher->ev->worker, fd);
-        return;
+        SSL *ssl = evssl_setfd(acpol->lsn->evssl, fd);
+        if (NULL == ssl)
+        {
+            worker_remove(watcher->ev->worker, fd);
+            return;
+        }
+        handshake = 0;
+        _set_handshake(rwctx, 0);
+        _set_ssl_sv(rwctx, ssl, 1);
+    }
+#endif
+    if (handshake)
+    {
+        if (ERR_OK != acpol->lsn->cbs.acp_cb(watcher->ev, fd, &acpol->lsn->ud))
+        {
+            worker_remove(watcher->ev->worker, fd);
+            return;
+        }
     }
     if (ERR_OK != _post_recv(rwctx))
     {
-        if (NULL != acpol->lsn->cbs.c_cb)
+        if (NULL != acpol->lsn->cbs.c_cb
+            && handshake)
         {
             acpol->lsn->cbs.c_cb(watcher->ev, fd, &acpol->lsn->ud);
         }
@@ -479,7 +668,7 @@ static inline int32_t _acceptex(ev_ctx *ev, listener_ctx *lsn)
     }
     return ERR_OK;
 }
-int32_t ev_listen(ev_ctx *ctx, const char *host, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud)
+int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *host, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud)
 {
     ASSERTAB(NULL != cbs && NULL != cbs->acp_cb && NULL != cbs->r_cb, ERRSTR_NULLP);
     netaddr_ctx addr;
@@ -499,6 +688,9 @@ int32_t ev_listen(ev_ctx *ctx, const char *host, const uint16_t port, cbs_ctx *c
     lsn->fd = fd;
     lsn->cbs = *cbs;
     COPY_UD(lsn->ud, ud);
+#if WITH_SSL
+    lsn->evssl = evssl;
+#endif
     if (ERR_OK != _acceptex(ctx, lsn))
     {
         CLOSE_SOCK(fd);

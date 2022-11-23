@@ -50,7 +50,7 @@ static void _init_callback()
     cmd_cbs[CMD_DISCONN] = _on_cmd_disconn;
     cmd_cbs[CMD_LSN] = _on_cmd_lsn;
     cmd_cbs[CMD_CONN] = _on_cmd_conn;
-    cmd_cbs[CMD_ADD] = _on_cmd_add;
+    cmd_cbs[CMD_ADDACP] = _on_cmd_addacp;
     cmd_cbs[CMD_ADDUDP] = _on_cmd_add_udp;
     cmd_cbs[CMD_SEND] = _on_cmd_send;
 }

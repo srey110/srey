@@ -124,6 +124,9 @@
     <ClInclude Include="config.h">
       <Filter>base</Filter>
     </ClInclude>
+    <ClInclude Include="event\evssl.h">
+      <Filter>event</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="memory.c">
@@ -185,6 +188,9 @@
     </ClCompile>
     <ClCompile Include="event\ucmds.c">
       <Filter>event\unix</Filter>
+    </ClCompile>
+    <ClCompile Include="event\evssl.c">
+      <Filter>event</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

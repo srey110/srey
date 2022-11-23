@@ -7,6 +7,7 @@
 #include "buffer.h"
 #include "netaddr.h"
 
+struct evssl_ctx;
 //用户数据
 typedef struct ud_cxt
 {

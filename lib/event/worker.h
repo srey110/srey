@@ -17,6 +17,7 @@ void _add_bufs_trypost(struct sock_ctx *skctx, bufs_ctx *buf);
 void _add_bufs_trysendto(struct sock_ctx *skctx, bufs_ctx *buf);
 void _free_udp(struct sock_ctx *skctx);
 int32_t _sock_type(struct sock_ctx *skctx);
+void _sk_shutdown(struct sock_ctx *skctx);
 
 #endif//EV_IOCP
 #endif//WORKER_H_

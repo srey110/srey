@@ -5,6 +5,15 @@
 #ifdef OS_WIN
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "lib.lib")
+#if WITH_SSL
+    #ifdef ARCH_X64
+        #pragma comment(lib, "libcrypto_x64.lib")
+        #pragma comment(lib, "libssl_x64.lib")
+    #else
+        #pragma comment(lib, "libcrypto.lib")
+        #pragma comment(lib, "libssl.lib")
+    #endif
+#endif
 #endif
 
 tw_ctx tw;
@@ -13,7 +22,9 @@ cond_ctx condexit;
 int32_t pk_index = 0;
 SOCKET connsock = INVALID_SOCK;
 static volatile atomic_t count = 0;
-
+#if WITH_SSL
+struct evssl_ctx *ssl_client;
+#endif
 static void on_sigcb(int32_t sig, void *arg)
 {
     PRINT("catch sign: %d", sig);
@@ -31,15 +42,14 @@ static void test_connclose_cb(ev_ctx *ctx, SOCKET sock, ud_cxt *ud)
 }
 static void test_recv_cb(ev_ctx *ctx, SOCKET sock, buffer_ctx *buf, size_t lens, ud_cxt *ud)
 {
-    //PRINT("test_recv_cb: sock %d ", (int32_t)sock);
-    if (randrange(1, 100) == 0)
+    PRINT("test_recv_cb: lens %d ", (int32_t)lens);
+    if (randrange(1, 100) <= 50)
     {
+        PRINT("close socket: sock %d ", (int32_t)sock);
         ev_close(ctx, sock);
-        //PRINT("close socket: sock %d ", (int32_t)sock);
         return;
     }
-    size_t len = buffer_size(buf);
-    
+    size_t len = buffer_size(buf);    
     char *pk;
     MALLOC(pk, len);
     buffer_remove(buf, pk, len);
@@ -51,7 +61,7 @@ static void test_send_cb(ev_ctx *ctx, SOCKET sock, size_t len, ud_cxt *ud)
 }
 static void test_conn_recv_cb(ev_ctx *ctx, SOCKET sock, buffer_ctx *buf, size_t lens, ud_cxt *ud)
 {
-    //PRINT("test_conn_recv_cb: sock %d", (int32_t)sock);
+    PRINT("test_conn_recv_cb: lens %d", (int32_t)lens);
     if (buffer_size(buf) <= 2 + sizeof(pk_index))
     {
         return;
@@ -74,18 +84,18 @@ static int32_t test_conn_cb(ev_ctx *ctx, SOCKET sock, ud_cxt *ud)
 {
     if (INVALID_SOCK != sock)
     {
-        //PRINT("%s", "connect ok.");
+        PRINT("%s", "connect ok.");
         connsock = sock;
     }
     else
     {
-        //PRINT("%s", "connect error.");
+        PRINT("%s", "connect error.");
     }
     return ERR_OK;
 }
 static int32_t test_acpt_cb(ev_ctx *ctx, SOCKET sock, ud_cxt *ud)
 {
-    //PRINT("test_acpt_cb : sock %d ", (int32_t)sock);
+    PRINT("test_acpt_cb : sock %d ", (int32_t)sock);
     ATOMIC_ADD(&count, 1);
     return ERR_OK;
 }
@@ -109,21 +119,21 @@ static void timeout(void *arg)
     {
         /*ev_close(arg, connsock);
         connsock = INVALID_SOCK;*/
-        //char str[100];
-        //int32_t len = randrange(1, sizeof(str));
-        //ASSERTAB(sizeof(str) > len, "randrange error.");
-        //randstr(str, len);
-        //u_short total = (u_short)(2 + sizeof(pk_index) + len);
-        //char *buf;
-        //MALLOC(buf, total);
-        //pk_index++;
-        ////PRINT("send pack index: %d", pk_index);
-        //total = ntohs(total);
-        //memcpy(buf, &total, sizeof(total));
-        //int32_t tmp = ntohl(pk_index);
-        //memcpy(buf + sizeof(total), &tmp, sizeof(tmp));
-        //memcpy(buf + sizeof(total) + sizeof(pk_index), str, len);
-        //ev_send(arg, connsock, buf, 2 + sizeof(pk_index) + len, 0);
+        char str[100];
+        int32_t len = randrange(1, sizeof(str));
+        ASSERTAB(sizeof(str) > len, "randrange error.");
+        randstr(str, len);
+        u_short total = (u_short)(2 + sizeof(pk_index) + len);
+        char *buf;
+        MALLOC(buf, total);
+        pk_index++;
+        //PRINT("send pack index: %d", pk_index);
+        total = ntohs(total);
+        memcpy(buf, &total, sizeof(total));
+        int32_t tmp = ntohl(pk_index);
+        memcpy(buf + sizeof(total), &tmp, sizeof(tmp));
+        memcpy(buf + sizeof(total) + sizeof(pk_index), str, len);
+        ev_send(arg, connsock, buf, 2 + sizeof(pk_index) + len, 0);
 
         /*ev_sendto(arg, connsock, "127.0.0.1", 15002, buf, 2 + sizeof(pk_index) + len, 0);
         FREE(buf);*/
@@ -136,12 +146,25 @@ static void timeout(void *arg)
         cbs.c_cb = test_connclose_cb;
         cbs.r_cb = test_conn_recv_cb;
         cbs.s_cb = test_send_cb;
-        //ev_connect(arg, "127.0.0.1", 15000, &cbs, NULL);
-        connsock = ev_udp(arg, "0.0.0.0", 15001, test_recvfrom_cb, NULL);
+#if WITH_SSL
+        ev_connect(arg, ssl_client, "127.0.0.1", 15001, &cbs, NULL);
+#else
+        ev_connect(arg, NULL, "127.0.0.1", 15000, &cbs, NULL);
+#endif
     }
     timer_start(&tw.timer);
     tw_add(&tw, 3000, timeout, arg);
 }
+#if WITH_SSL
+int verify_sv_cb(int preverify_ok, X509_STORE_CTX *x509_ctx)
+{
+    return 1;
+}
+int verify_clinet_cb(int preverify_ok, X509_STORE_CTX *x509_ctx)
+{
+    return 1;
+}
+#endif
 void testtt(void *arg)
 {
     MSLEEP(1000);
@@ -177,8 +200,25 @@ int main(int argc, char *argv[])
     cbs.c_cb = test_close_cb;
     cbs.r_cb = test_recv_cb;
     cbs.s_cb = test_send_cb;
-    ev_listen(&ev, "0.0.0.0", 15000, &cbs, NULL);    
-    
+    ev_listen(&ev, NULL, "0.0.0.0", 15000, &cbs, NULL);
+    ev_udp(&ev, "0.0.0.0", 15002, test_recvfrom_cb, NULL);
+
+#if WITH_SSL
+    char local[PATH_LENS] = { 0 };
+    procpath(local);
+    char ca[PATH_LENS] = { 0 };
+    char svcrt[PATH_LENS] = { 0 };
+    char svkey[PATH_LENS] = { 0 };
+    char p12[PATH_LENS] = { 0 };
+    SNPRINTF(ca, sizeof(ca) - 1, "%s%s%s%s%s", local, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, "ca.crt");
+    SNPRINTF(svcrt, sizeof(svcrt) - 1, "%s%s%s%s%s", local, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, "sever.crt");
+    SNPRINTF(svkey, sizeof(svkey) - 1, "%s%s%s%s%s", local, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, "sever.key");
+    SNPRINTF(p12, sizeof(p12) - 1, "%s%s%s%s%s", local, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, "client.p12");
+    struct evssl_ctx *ssl = evssl_new(1, ca, svcrt, svkey, SSL_FILETYPE_PEM, verify_sv_cb);
+    ssl_client = evssl_p12_new(0, p12, "srey", verify_clinet_cb);
+    ev_listen(&ev, ssl, "0.0.0.0", 15001, &cbs, NULL);
+#endif
+
     timer_start(&tw.timer);
     tw_add(&tw, 1000, timeout, &ev);
 
@@ -193,6 +233,10 @@ int main(int argc, char *argv[])
     PRINT("link cnt %d", ATOMIC_GET(&count));
     ev_free(&ev);
 
+#if WITH_SSL
+    evssl_free(ssl);
+    evssl_free(ssl_client);
+#endif
     mutex_free(&muexit);
     cond_free(&condexit);
     tw_free(&tw);

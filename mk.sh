@@ -17,7 +17,7 @@ MAINDIR="test"
 #main函数所在文件
 MAINFILE="main.c"
 #附加包含库
-INCLUDELIB="-lpthread -lm"
+INCLUDELIB="-lpthread -lm -lcrypto -lssl"
 #系统
 OSNAME=`uname`
 if [ "$OSNAME" != "Darwin" ]

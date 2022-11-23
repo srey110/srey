@@ -90,10 +90,27 @@ SOCKET _udp(netaddr_ctx *addr)
     }
     return fd;
 }
-static inline int32_t _sock_read_ssl(SOCKET fd, IOV_TYPE *iov, uint32_t niov, void *arg)
+#if WITH_SSL
+static inline int32_t _sock_read_ssl(SSL *ssl, IOV_TYPE *iov, uint32_t niov)
 {
-    return ERR_OK;
+    int32_t rtn, nread = 0;    
+    for (uint32_t i = 0; i < niov; i++)
+    {
+        rtn = evssl_read(ssl, iov[i].IOV_PTR_FIELD, (size_t)iov[i].IOV_LEN_FIELD);
+        if (rtn > 0)
+        {
+            nread += rtn;
+            if (rtn < (int32_t)iov[i].IOV_LEN_FIELD)
+            {
+                return nread;
+            }
+            continue;
+        }
+        return rtn;
+    }
+    return nread;
 }
+#endif
 static inline int32_t _sock_read_normal(SOCKET fd, IOV_TYPE *iov, uint32_t niov)
 {
 #ifdef EV_IOCP 
@@ -134,11 +151,15 @@ static inline int32_t _sock_read_normal(SOCKET fd, IOV_TYPE *iov, uint32_t niov)
 }
 int32_t _sock_read(SOCKET fd, IOV_TYPE *iov, uint32_t niov, void *arg)
 {
+#if WITH_SSL
     if (NULL == arg)
     {
         return _sock_read_normal(fd, iov, niov);
     }
-    return _sock_read_ssl(fd, iov, niov, arg);
+    return _sock_read_ssl((SSL *)arg, iov, niov);
+#else
+    return _sock_read_normal(fd, iov, niov);
+#endif
 }
 static inline void _bufs_rdlock(rwlock_ctx *rwlck)
 {
@@ -270,16 +291,58 @@ static inline int32_t _sock_send_normal(SOCKET fd, qu_bufs *buf_s, rwlock_ctx *r
     }
     return rtn;
 }
-static inline int32_t _sock_send_ssl(SOCKET fd, qu_bufs *buf_s, rwlock_ctx *rwlck, size_t *nsend, void *arg)
+#if WITH_SSL
+static inline int32_t _sock_send_ssl(SSL *ssl, qu_bufs *buf_s, rwlock_ctx *rwlck, size_t *nsend)
 {
-    return ERR_OK;
+    int32_t rtn, err = ERR_OK;    
+    bufs_ctx buf, *tmp;
+    for (;;)
+    {
+        _bufs_rdlock(rwlck);
+        tmp = qu_bufs_peek(buf_s);
+        if (NULL != tmp)
+        {
+            buf = *tmp;
+        }
+        _bufs_unlock(rwlck);
+        if (NULL == tmp)
+        {
+            break;
+        }
+        rtn = evssl_send(ssl, (char *)buf.data + buf.offset, buf.len - buf.offset);
+        if (rtn > 0)
+        {
+            (*nsend) += rtn;
+            buf.offset += rtn;
+            if (buf.offset == buf.len)
+            {
+                _bufs_wrlock(rwlck);
+                qu_bufs_pop(buf_s);
+                _bufs_unlock(rwlck);
+                FREE(buf.data);
+                continue;
+            }
+            else
+            {
+                break;
+            }
+        }
+        err = rtn;
+        break;
+    }
+    return err;
 }
+#endif
 int32_t _sock_send(SOCKET fd, qu_bufs *buf_s, rwlock_ctx *rwlck, size_t *nsend, void *arg)
 {
     *nsend = 0;
+#if WITH_SSL
     if (NULL == arg)
     {
         return _sock_send_normal(fd, buf_s, rwlck, nsend);
     }
-    return _sock_send_ssl(fd, buf_s, rwlck, nsend, arg);
+    return _sock_send_ssl((SSL *)arg, buf_s, rwlck, nsend);
+#else
+    return _sock_send_normal(fd, buf_s, rwlck, nsend);
+#endif
 }

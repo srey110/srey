@@ -15,6 +15,8 @@ typedef struct kevent events_t;
 #elif defined(EV_EVPORT)
 typedef port_event_t events_t;
 #endif
+struct conn_ctx;
+struct listener_ctx;
 
 typedef enum EVENTS
 {
@@ -27,7 +29,7 @@ typedef enum UEV_CMDS
     CMD_DISCONN,
     CMD_LSN,
     CMD_CONN,
-    CMD_ADD,
+    CMD_ADDACP,
     CMD_ADDUDP,
     CMD_SEND,
 
@@ -78,9 +80,9 @@ int32_t _add_event(watcher_ctx *watcher, SOCKET fd, int32_t *events, int32_t ev,
 void _del_event(watcher_ctx *watcher, SOCKET fd, int32_t *events, int32_t ev, void *arg);
 
 void _cmd_send(watcher_ctx *watcher, uint32_t index, cmd_ctx *cmd);
-void _cmd_connect(ev_ctx *ctx, SOCKET fd, sock_ctx *skctx);
+void _cmd_connect(ev_ctx *ctx, SOCKET fd, struct conn_ctx *conn);
 void _cmd_listen(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx);
-void _cmd_add(watcher_ctx *watcher, SOCKET fd, uint64_t hs, cbs_ctx *cbs, ud_cxt *ud);
+void _cmd_add_acpfd(watcher_ctx *watcher, uint64_t hs, SOCKET fd, struct listener_ctx *lsn);
 void _cmd_add_udp(ev_ctx *ctx, SOCKET fd, sock_ctx *skctx);
 
 void _on_cmd_stop(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop);
@@ -88,12 +90,16 @@ void _on_cmd_disconn(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop);
 void _on_cmd_lsn(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop);
 void _on_cmd_conn(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop);
 void _on_cmd_send(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop);
-void _on_cmd_add(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop);
-void _add_inloop(watcher_ctx *watcher, SOCKET fd, cbs_ctx *cbs, ud_cxt *ud);
+void _on_cmd_addacp(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop);
 void _on_cmd_add_udp(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop);
 
+void _add_lsn_inloop(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx);
+void _add_conn_inloop(watcher_ctx *watcher, SOCKET fd, struct conn_ctx *conn);
+void _add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn);
+void _add_udp_inloop(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx);
+
 qu_bufs *_get_send_bufs(sock_ctx *skctx);
-connect_cb _get_conn_cb(sock_ctx *skctx, ud_cxt *ud);
+void _sk_shutdown(sock_ctx *skctx);
 void _on_close(watcher_ctx *watcher, sock_ctx *skctx, int32_t remove);
 int32_t _sock_type(sock_ctx *skctx);
 void _free_udp(sock_ctx *skctx);

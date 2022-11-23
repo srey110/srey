@@ -253,7 +253,7 @@ static void _on_cmd_disconn(runner_ctx *runner, cmd_ctx *cmd, int32_t *stop)
     }
     if (SOCK_STREAM == _sock_type(el->sock))
     {
-        shutdown(cmd->fd, SHUT_RD);
+        _sk_shutdown(el->sock);
         return;
     }
     CLOSE_SOCK(cmd->fd);

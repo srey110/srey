@@ -5,6 +5,7 @@
 
 #define MEMORY_CHECK         1
 #define PRINT_DEBUG          0
+#define WITH_SSL             1
 
 #define EVENT_WAIT_TIMEOUT  100
 #define INIT_EVENTS_CNT     128

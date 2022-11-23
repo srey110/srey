@@ -1,0 +1,34 @@
+#ifndef EVSSL_H_
+#define EVSSL_H_
+
+#include "macro.h"
+
+#if WITH_SSL
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+
+#define SSL_ERR() ERR_reason_error_string(ERR_get_error())
+#define FREE_SSL(ssl)\
+do{\
+    if (NULL != ssl){\
+        SSL_free(ssl); \
+        ssl = NULL; \
+    }\
+}while (0)
+
+//SSL_FILETYPE_PEM SSL_FILETYPE_ASN1
+struct evssl_ctx *evssl_new(int32_t server, const char *ca, const char *cert, const char *key, int32_t type, SSL_verify_cb v_cb);
+struct evssl_ctx *evssl_p12_new(int32_t server, const char *p12, const char *pwd, SSL_verify_cb v_cb);
+void evssl_free(struct evssl_ctx *evssl);
+
+SSL *evssl_setfd(struct evssl_ctx *evssl, SOCKET fd);
+int32_t evssl_tryacpt(SSL *ssl);
+int32_t evssl_tryconn(SSL *ssl);
+
+int32_t evssl_read(SSL *ssl, char *buf, size_t len);
+int32_t evssl_send(SSL *ssl, char *buf, size_t len);
+
+void evssl_shutdown(SSL *ssl, SOCKET fd);
+
+#endif//WITH_SSL
+#endif//EVSSL_H_
