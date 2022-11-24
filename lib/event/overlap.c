@@ -22,7 +22,7 @@ typedef struct listener_ctx
     int32_t family;
     SOCKET fd;
 #if WITH_SSL
-    struct evssl_ctx *evssl;
+    evssl_ctx *evssl;
 #endif
     cbs_ctx cbs;
     ud_cxt ud;
@@ -33,7 +33,7 @@ typedef struct overlap_conn_ctx
     sock_ctx overlap;
     DWORD bytes;
 #if WITH_SSL
-    struct evssl_ctx *evssl;
+    evssl_ctx *evssl;
 #endif
     ud_cxt ud;
     cbs_ctx cbs;

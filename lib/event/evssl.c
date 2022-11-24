@@ -4,7 +4,6 @@
 #include <openssl/provider.h>
 #include <openssl/pkcs12.h>
 
-#define EMPTY(str) ((NULL == str) || (0 == strlen(str)))
 static volatile atomic_t _init_once = 0;
 struct evssl_ctx
 {
@@ -20,12 +19,12 @@ static inline void _init_ssl()
         SSL_load_error_strings();
     }
 }
-static inline struct evssl_ctx *_new_evssl(int32_t server, SSL_verify_cb v_cb)
+static inline evssl_ctx *_new_evssl(SSL_verify_cb v_cb)
 {
     _init_ssl();
-    struct evssl_ctx *evssl;
-    MALLOC(evssl, sizeof(struct evssl_ctx));
-    evssl->ssl = (server ? SSL_CTX_new(SSLv23_server_method()) : SSL_CTX_new(SSLv23_client_method()));
+    evssl_ctx *evssl;
+    MALLOC(evssl, sizeof(evssl_ctx));
+    evssl->ssl = SSL_CTX_new(SSLv23_method());
     ASSERTAB(NULL != evssl->ssl, SSL_ERR());
     SSL_CTX_set_security_level(evssl->ssl, 0);//ca md too weak
     if (NULL != v_cb)
@@ -34,36 +33,28 @@ static inline struct evssl_ctx *_new_evssl(int32_t server, SSL_verify_cb v_cb)
     }
     return evssl;
 }
-struct evssl_ctx *evssl_new(int32_t server, const char *ca, const char *cert, const char *key, int32_t type, SSL_verify_cb v_cb)
+evssl_ctx *evssl_new(const char *ca, const char *cert, const char *key, int32_t type, SSL_verify_cb v_cb)
 {
-    if (server)
-    {
-        ASSERTAB(NULL != cert && NULL != key, "no have cert and key file.");
-    }
-    struct evssl_ctx *evssl = _new_evssl(server, v_cb);
-    if (!EMPTY(ca))
+    evssl_ctx *evssl = _new_evssl(v_cb);
+    if (!EMPTYSTR(ca))
     {
         ASSERTAB(1 == SSL_CTX_load_verify_locations(evssl->ssl, ca, NULL), SSL_ERR());
     }
-    if (!EMPTY(cert))
+    if (!EMPTYSTR(cert))
     {
         ASSERTAB(1 == SSL_CTX_use_certificate_file(evssl->ssl, cert, type), SSL_ERR());
     }
-    if (!EMPTY(key))
+    if (!EMPTYSTR(key))
     {
         ASSERTAB(1 == SSL_CTX_use_PrivateKey_file(evssl->ssl, key, type), SSL_ERR());
         ASSERTAB(1 == SSL_CTX_check_private_key(evssl->ssl), SSL_ERR());
     }
     return evssl;
 }
-struct evssl_ctx *evssl_p12_new(int32_t server, const char *p12, const char *pwd, SSL_verify_cb v_cb)
+evssl_ctx *evssl_p12_new(const char *p12, const char *pwd, SSL_verify_cb v_cb)
 {
-    if (server)
-    {
-        ASSERTAB(NULL != p12, "no have p12 file.");
-    }
-    struct evssl_ctx *evssl = _new_evssl(server, v_cb);
-    if (EMPTY(p12))
+    evssl_ctx *evssl = _new_evssl(v_cb);
+    if (EMPTYSTR(p12))
     {
         return evssl;
     }
@@ -79,12 +70,12 @@ struct evssl_ctx *evssl_p12_new(int32_t server, const char *p12, const char *pwd
     ASSERTAB(1 == SSL_CTX_use_cert_and_key(evssl->ssl, cert, key, ca, 0), SSL_ERR());
     return evssl;
 }
-void evssl_free(struct evssl_ctx *evssl)
+void evssl_free(evssl_ctx *evssl)
 {
     SSL_CTX_free(evssl->ssl);
     FREE(evssl);
 }
-SSL *evssl_setfd(struct evssl_ctx *evssl, SOCKET fd)
+SSL *evssl_setfd(evssl_ctx *evssl, SOCKET fd)
 {
     SSL *ssl = SSL_new(evssl->ssl);
     if (NULL == ssl)

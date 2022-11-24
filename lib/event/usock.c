@@ -17,7 +17,7 @@ typedef struct listener_ctx
     int32_t nlsn;
     lsnsock_ctx *lsnsock;
 #if WITH_SSL
-    struct evssl_ctx *evssl;
+    evssl_ctx *evssl;
 #endif
     cbs_ctx cbs;
     ud_cxt ud;
@@ -29,7 +29,7 @@ typedef struct conn_ctx
 {
     sock_ctx sock;
 #if WITH_SSL
-    struct evssl_ctx *evssl;
+    evssl_ctx *evssl;
 #endif
     cbs_ctx cbs;
     ud_cxt ud;

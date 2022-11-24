@@ -17,6 +17,7 @@
 #define TIMER_ACCURACY       (1000 * 1000)
 
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
+#define EMPTYSTR(str) ((NULL == str) || (0 == strlen(str)))
 
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))
