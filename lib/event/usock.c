@@ -59,37 +59,13 @@ typedef struct udp_ctx
 
 void _on_rw_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev, int32_t *stop);
 
-int32_t _sock_type(sock_ctx *skctx)
-{
-    return skctx->type;
-}
-qu_bufs *_get_send_bufs(sock_ctx *skctx)
-{
-    if (SOCK_STREAM == skctx->type)
-    {
-        return &UPCAST(skctx, skrw_ctx, sock)->buf_s;
-    }
-    return &UPCAST(skctx, udp_ctx, sock)->buf_s;
-}
-#if WITH_SSL
-static inline void _set_handshake(sock_ctx *skctx, int32_t handshake)
-{
-    UPCAST(skctx, skrw_ctx, sock)->handshake = handshake;
-}
-static inline void _set_ssl_sv(sock_ctx *skctx, SSL *ssl, int32_t server)
-{
-    skrw_ctx *skrw = UPCAST(skctx, skrw_ctx, sock);
-    skrw->ssl = ssl;
-    skrw->server = server;
-}
-#endif
 void _sk_shutdown(sock_ctx *skctx)
 {
-    skrw_ctx *skrw = UPCAST(skctx, skrw_ctx, sock);
 #if WITH_SSL
+    skrw_ctx *skrw = UPCAST(skctx, skrw_ctx, sock);
     evssl_shutdown(skrw->ssl, skrw->sock.fd);
 #else
-    shutdown(skrw->sock.fd, SHUT_RD);
+    shutdown(skctx->fd, SHUT_RD);
 #endif
 }
 sock_ctx *_new_sk(SOCKET fd, cbs_ctx *cbs, ud_cxt *ud)
@@ -112,10 +88,10 @@ sock_ctx *_new_sk(SOCKET fd, cbs_ctx *cbs, ud_cxt *ud)
 void _free_sk(sock_ctx *skctx)
 {
     skrw_ctx *skrw = UPCAST(skctx, skrw_ctx, sock);
-    CLOSE_SOCK(skrw->sock.fd);
 #if WITH_SSL
     FREE_SSL(skrw->ssl);
 #endif
+    CLOSE_SOCK(skrw->sock.fd);
     buffer_free(&skrw->buf_r);
     _bufs_clear(&skrw->buf_s);
     qu_bufs_free(&skrw->buf_s);
@@ -124,11 +100,11 @@ void _free_sk(sock_ctx *skctx)
 void _clear_sk(sock_ctx *skctx)
 {
     skrw_ctx *skrw = UPCAST(skctx, skrw_ctx, sock);
-    CLOSE_SOCK(skrw->sock.fd);
     skrw->sock.events = 0;
 #if WITH_SSL
     FREE_SSL(skrw->ssl);
 #endif
+    CLOSE_SOCK(skrw->sock.fd);
     _bufs_clear(&skrw->buf_s);
     buffer_drain(&skrw->buf_r, buffer_size(&skrw->buf_r));
 }
@@ -139,6 +115,13 @@ void _reset_sk(sock_ctx *skctx, SOCKET fd, cbs_ctx *cbs, ud_cxt *ud)
     skrw->cbs = *cbs;
     skrw->ud = *ud;
 }
+static inline void _add_fd(watcher_ctx *watcher, sock_ctx *skctx)
+{
+    map_element el;
+    el.fd =skctx->fd;
+    el.sock = skctx;
+    ASSERTAB(NULL == hashmap_set(watcher->element, &el), "socket repeat.");
+}
 static inline void _remove_fd(watcher_ctx *watcher, SOCKET fd)
 {
     map_element key;
@@ -146,21 +129,8 @@ static inline void _remove_fd(watcher_ctx *watcher, SOCKET fd)
     hashmap_delete(watcher->element, &key);
 }
 //rw
-void _on_close(watcher_ctx *watcher, sock_ctx *skctx, int32_t remove)
-{
-    skrw_ctx *skrw = UPCAST(skctx, skrw_ctx, sock);
-    if (NULL != skrw->cbs.c_cb)
-    {
-        skrw->cbs.c_cb(watcher->ev, skrw->sock.fd, &skrw->ud);
-    }
-    if (remove)
-    {
-        _remove_fd(watcher, skrw->sock.fd);
-    }
-    pool_push(&watcher->pool, skctx);
-}
 #if WITH_SSL
-static inline int32_t _ssl_handshake_sv(watcher_ctx *watcher, skrw_ctx *skrw)
+static inline int32_t _ssl_handshake_acpt(watcher_ctx *watcher, skrw_ctx *skrw)
 {
     int32_t rtn = evssl_tryacpt(skrw->ssl);
     if (ERR_FAILED == rtn)
@@ -170,55 +140,77 @@ static inline int32_t _ssl_handshake_sv(watcher_ctx *watcher, skrw_ctx *skrw)
     }
     if (1 == rtn)
     {
+        _add_fd(watcher, &skrw->sock);
         if (ERR_OK != skrw->cbs.acp_cb(watcher->ev, skrw->sock.fd, &skrw->ud))
         {
+            _remove_fd(watcher, skrw->sock.fd);
             pool_push(&watcher->pool, &skrw->sock);
             return ERR_FAILED;
         }
-        skrw->handshake = 1;
-        map_element el;
-        el.fd = skrw->sock.fd;
-        el.sock = &skrw->sock;
-        ASSERTAB(NULL == hashmap_set(watcher->element, &el), "socket repeat.");
 #ifdef EV_EVPORT
-        _add_event(watcher, skrw->sock.fd, &skrw->sock.events, EVENT_READ, &skrw->sock);
+        if (ERR_OK != _add_event(watcher, skrw->sock.fd, &skrw->sock.events, EVENT_READ, &skrw->sock))
+        {
+            if (NULL != skrw->cbs.c_cb)
+            {
+                skrw->cbs.c_cb(watcher->ev, skrw->sock.fd, &skrw->ud);
+            }
+            _remove_fd(watcher, skrw->sock.fd);
+            pool_push(&watcher->pool, &skrw->sock);
+            return ERR_FAILED;
+        }
 #endif
+        skrw->handshake = 1;
         return ERR_OK;
     }
     //0
 #ifdef EV_EVPORT
-    _add_event(watcher, skrw->sock.fd, &skrw->sock.events, EVENT_READ, &skrw->sock);
+    if (ERR_OK != _add_event(watcher, skrw->sock.fd, &skrw->sock.events, EVENT_READ, &skrw->sock))
+    {
+        pool_push(&watcher->pool, &skrw->sock);
+    }
 #endif
     return ERR_FAILED;
 }
-static inline int32_t _ssl_handshake_client(watcher_ctx *watcher, skrw_ctx *skrw)
+static inline int32_t _ssl_handshake_conn(watcher_ctx *watcher, skrw_ctx *skrw)
 {
     int32_t rtn = evssl_tryconn(skrw->ssl);
     if (ERR_FAILED == rtn)
     {
+        skrw->cbs.conn_cb(watcher->ev, INVALID_SOCK, &skrw->ud);
         pool_push(&watcher->pool, &skrw->sock);
         return ERR_FAILED;
     }
     if (1 == rtn)
     {
+        _add_fd(watcher, &skrw->sock);
         if (ERR_OK != skrw->cbs.conn_cb(watcher->ev, skrw->sock.fd, &skrw->ud))
         {
+            _remove_fd(watcher, skrw->sock.fd);
             pool_push(&watcher->pool, &skrw->sock);
             return ERR_FAILED;
         }
-        skrw->handshake = 1;
-        map_element el;
-        el.fd = skrw->sock.fd;
-        el.sock = &skrw->sock;
-        ASSERTAB(NULL == hashmap_set(watcher->element, &el), "socket repeat.");
 #ifdef EV_EVPORT
-        _add_event(watcher, skrw->sock.fd, &skrw->sock.events, EVENT_READ, &skrw->sock);
+        if (ERR_OK != _add_event(watcher, skrw->sock.fd, &skrw->sock.events, EVENT_READ, &skrw->sock))
+        {
+            if (NULL != skrw->cbs.c_cb)
+            {
+                skrw->cbs.c_cb(watcher->ev, skrw->sock.fd, &skrw->ud);
+            }
+            _remove_fd(watcher, skrw->sock.fd);
+            pool_push(&watcher->pool, &skrw->sock);
+            return ERR_FAILED;
+        }
 #endif
+        skrw->handshake = 1;
         return ERR_OK;
     }
     //0
 #ifdef EV_EVPORT
-    _add_event(watcher, skrw->sock.fd, &skrw->sock.events, EVENT_READ, &skrw->sock);
+    if (ERR_OK != _add_event(watcher, skrw->sock.fd, &skrw->sock.events, EVENT_READ, &skrw->sock))
+    {
+        skrw->cbs.conn_cb(watcher->ev, INVALID_SOCK, &skrw->ud);
+        pool_push(&watcher->pool, &skrw->sock);
+    }
 #endif
     return ERR_FAILED;
 }
@@ -226,12 +218,9 @@ static inline int32_t _ssl_handshake(watcher_ctx *watcher, skrw_ctx *skrw)
 {
     if (skrw->server)
     {
-        return _ssl_handshake_sv(watcher, skrw);
+        return _ssl_handshake_acpt(watcher, skrw);
     }
-    else
-    {
-        return _ssl_handshake_client(watcher, skrw);
-    }
+    return _ssl_handshake_conn(watcher, skrw);
 }
 #endif
 static inline int32_t _tcp_recv(watcher_ctx *watcher, skrw_ctx *skrw)
@@ -254,7 +243,12 @@ static inline int32_t _tcp_recv(watcher_ctx *watcher, skrw_ctx *skrw)
 #endif
     if (ERR_OK != rtn)
     {
-        _on_close(watcher, &skrw->sock, 1);
+        if (NULL != skrw->cbs.c_cb)
+        {
+            skrw->cbs.c_cb(watcher->ev, skrw->sock.fd, &skrw->ud);
+        }
+        _remove_fd(watcher, skrw->sock.fd);
+        pool_push(&watcher->pool, &skrw->sock);
     }
     return rtn;
 }
@@ -312,6 +306,17 @@ void _on_rw_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev, int32_t *stop)
         _on_w_cb(watcher, skrw);
     }
 }
+void _add_write_inloop(watcher_ctx *watcher, sock_ctx *skctx, bufs_ctx *buf)
+{
+    qu_bufs_push((SOCK_STREAM == skctx->type) ?
+                  &UPCAST(skctx, skrw_ctx, sock)->buf_s :
+                  &UPCAST(skctx, udp_ctx, sock)->buf_s, 
+                  buf);
+    if (!(skctx->events & EVENT_WRITE))
+    {
+        _add_event(watcher, skctx->fd, &skctx->events, EVENT_WRITE, skctx);
+    }
+}
 //connect
 static inline void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev, int32_t *stop)
 {
@@ -323,30 +328,31 @@ static inline void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t
         FREE(conn);
         return;
     }
-    int32_t handshake = 1;
     _del_event(watcher, conn->sock.fd, &conn->sock.events, ev, NULL);
+    int32_t handshake = 1;
     sock_ctx *rwctx = pool_pop(&watcher->pool, conn->sock.fd, &conn->cbs, &conn->ud);
 #if WITH_SSL
     if (NULL != conn->evssl)
     {
-        SSL *ssl = evssl_setfd(conn->evssl, conn->sock.fd);
-        if (NULL == ssl)
+        skrw_ctx *connsk = UPCAST(rwctx, skrw_ctx, sock);
+        connsk->ssl = evssl_setfd(conn->evssl, conn->sock.fd);
+        if (NULL == connsk->ssl)
         {
             conn->cbs.conn_cb(watcher->ev, INVALID_SOCK, &conn->ud);
             pool_push(&watcher->pool, rwctx);
             FREE(conn);
             return;
         }
-        _set_ssl_sv(rwctx, ssl, 0);
-        int32_t rtn = evssl_tryconn(ssl);
+        connsk->server = 0;
+        int32_t rtn = evssl_tryconn(connsk->ssl);
         if (ERR_OK == rtn)
         {
             handshake = 0;
-            _set_handshake(rwctx, 0);
+            connsk->handshake = 0;
         }
         else if (1 == rtn)
         {
-            _set_handshake(rwctx, 1);
+            connsk->handshake = 1;
         }
         else//-1
         {
@@ -359,16 +365,14 @@ static inline void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t
 #endif
     if (handshake)
     {
+        _add_fd(watcher, rwctx);
         if (ERR_OK != conn->cbs.conn_cb(watcher->ev, conn->sock.fd, &conn->ud))
         {
+            _remove_fd(watcher, conn->sock.fd);
             pool_push(&watcher->pool, rwctx);
             FREE(conn);
             return;
         }
-        map_element el;
-        el.fd = conn->sock.fd;
-        el.sock = rwctx;
-        ASSERTAB(NULL == hashmap_set(watcher->element, &el), "socket repeat.");
     }
     if (ERR_OK != _add_event(watcher, conn->sock.fd, &rwctx->events, EVENT_READ, rwctx))
     {
@@ -483,28 +487,27 @@ void _add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn)
 #if WITH_SSL
     if (NULL != lsn->evssl)
     {
-        SSL *ssl = evssl_setfd(lsn->evssl, fd);
-        if (NULL == ssl)
+        skrw_ctx *acpsk = UPCAST(skctx, skrw_ctx, sock);
+        acpsk->ssl = evssl_setfd(lsn->evssl, fd);
+        if (NULL == acpsk->ssl)
         {
             pool_push(&watcher->pool, skctx);
             return;
         }
         handshake = 0;
-        _set_handshake(skctx, 0);
-        _set_ssl_sv(skctx, ssl, 1);
+        acpsk->handshake = 0;
+        acpsk->server = 1;
     }
 #endif
     if (handshake)
     {
+        _add_fd(watcher, skctx);
         if (ERR_OK != lsn->cbs.acp_cb(watcher->ev, fd, &lsn->ud))
         {
+            _remove_fd(watcher, fd);
             pool_push(&watcher->pool, skctx);
             return;
         }
-        map_element el;
-        el.fd = fd;
-        el.sock = skctx;
-        ASSERTAB(NULL == hashmap_set(watcher->element, &el), "socket repeat.");
     }
     if (ERR_OK != _add_event(watcher, fd, &skctx->events, EVENT_READ, skctx))
     {

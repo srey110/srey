@@ -312,7 +312,7 @@ static void _loop_event(void *arg)
 static inline void _free_mapitem(void *item)
 {
     map_element *el = (map_element *)item;
-    if (SOCK_STREAM == _sock_type(el->sock))
+    if (SOCK_STREAM == el->sock->type)
     {
         _free_sk(el->sock);
     }

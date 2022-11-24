@@ -42,10 +42,10 @@ static void test_connclose_cb(ev_ctx *ctx, SOCKET sock, ud_cxt *ud)
 }
 static void test_recv_cb(ev_ctx *ctx, SOCKET sock, buffer_ctx *buf, size_t lens, ud_cxt *ud)
 {
-    PRINT("test_recv_cb: lens %d ", (int32_t)lens);
-    if (randrange(1, 100) <= 50)
+    //PRINT("test_recv_cb: lens %d ", (int32_t)lens);
+    if (randrange(1, 100) <= 1)
     {
-        PRINT("close socket: sock %d ", (int32_t)sock);
+        //PRINT("close socket: sock %d ", (int32_t)sock);
         ev_close(ctx, sock);
         return;
     }
@@ -61,7 +61,7 @@ static void test_send_cb(ev_ctx *ctx, SOCKET sock, size_t len, ud_cxt *ud)
 }
 static void test_conn_recv_cb(ev_ctx *ctx, SOCKET sock, buffer_ctx *buf, size_t lens, ud_cxt *ud)
 {
-    PRINT("test_conn_recv_cb: lens %d", (int32_t)lens);
+    //PRINT("test_conn_recv_cb: lens %d", (int32_t)lens);
     if (buffer_size(buf) <= 2 + sizeof(pk_index))
     {
         return;
@@ -95,7 +95,7 @@ static int32_t test_conn_cb(ev_ctx *ctx, SOCKET sock, ud_cxt *ud)
 }
 static int32_t test_acpt_cb(ev_ctx *ctx, SOCKET sock, ud_cxt *ud)
 {
-    PRINT("test_acpt_cb : sock %d ", (int32_t)sock);
+    //PRINT("test_acpt_cb : sock %d ", (int32_t)sock);
     ATOMIC_ADD(&count, 1);
     return ERR_OK;
 }
@@ -214,8 +214,8 @@ int main(int argc, char *argv[])
     SNPRINTF(svcrt, sizeof(svcrt) - 1, "%s%s%s%s%s", local, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, "sever.crt");
     SNPRINTF(svkey, sizeof(svkey) - 1, "%s%s%s%s%s", local, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, "sever.key");
     SNPRINTF(p12, sizeof(p12) - 1, "%s%s%s%s%s", local, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, "client.p12");
-    struct evssl_ctx *ssl = evssl_new(1, ca, svcrt, svkey, SSL_FILETYPE_PEM, verify_sv_cb);
-    ssl_client = evssl_p12_new(0, p12, "srey", verify_clinet_cb);
+    struct evssl_ctx *ssl = evssl_new(ca, svcrt, svkey, SSL_FILETYPE_PEM, NULL);
+    ssl_client = evssl_p12_new(p12, "srey", NULL);
     ev_listen(&ev, ssl, "0.0.0.0", 15001, &cbs, NULL);
 #endif
 

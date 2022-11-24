@@ -96,12 +96,10 @@ void _on_cmd_add_udp(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop);
 void _add_lsn_inloop(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx);
 void _add_conn_inloop(watcher_ctx *watcher, SOCKET fd, struct conn_ctx *conn);
 void _add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn);
+void _add_write_inloop(watcher_ctx *watcher, sock_ctx *skctx, bufs_ctx *buf);
 void _add_udp_inloop(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx);
 
-qu_bufs *_get_send_bufs(sock_ctx *skctx);
 void _sk_shutdown(sock_ctx *skctx);
-void _on_close(watcher_ctx *watcher, sock_ctx *skctx, int32_t remove);
-int32_t _sock_type(sock_ctx *skctx);
 void _free_udp(sock_ctx *skctx);
 void _udp_close(watcher_ctx *watcher, sock_ctx *skctx);
 

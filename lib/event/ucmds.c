@@ -37,7 +37,7 @@ void _on_cmd_disconn(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop)
         CLOSE_SOCK(cmd->fd);
         return;
     }
-    if (SOCK_STREAM == _sock_type(el->sock))
+    if (SOCK_STREAM == el->sock->type)
     {
         _sk_shutdown(el->sock);
     }
@@ -118,11 +118,7 @@ void _on_cmd_send(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop)
     buf.data = cmd->data;
     buf.len = cmd->len;
     buf.offset = 0;
-    qu_bufs_push(_get_send_bufs(el->sock), &buf);
-    if (!(el->sock->events & EVENT_WRITE))
-    {
-        _add_event(watcher, cmd->fd, &el->sock->events, EVENT_WRITE, el->sock);
-    }
+    _add_write_inloop(watcher, el->sock, &buf);
 }
 void _cmd_add_acpfd(watcher_ctx *watcher, uint64_t hs, SOCKET fd, struct listener_ctx *lsn)
 {

@@ -66,14 +66,14 @@ SOCKET _udp(netaddr_ctx *addr)
     DWORD bytes = 0;
     BOOL behavior = FALSE;
     if (WSAIoctl(fd, 
-        SIO_UDP_CONNRESET,
-        &behavior, 
-        sizeof(behavior),
-        NULL,
-        0, 
-        &bytes,
-        NULL, 
-        NULL) < ERR_OK)
+                 SIO_UDP_CONNRESET,
+                 &behavior, 
+                 sizeof(behavior),
+                 NULL,
+                 0, 
+                 &bytes,
+                 NULL, 
+                 NULL) < ERR_OK)
     {
         CLOSE_SOCK(fd);
         LOG_WARN("WSAIoctl(%d, SIO_UDP_CONNRESET...) failed. %s", (int32_t)fd, ERRORSTR(ERRNO));
@@ -115,8 +115,13 @@ static inline int32_t _sock_read_normal(SOCKET fd, IOV_TYPE *iov, uint32_t niov)
 {
 #ifdef EV_IOCP 
     DWORD bytes, flags = 0;
-    if (SOCKET_ERROR !=
-        WSARecv(fd, iov, niov, &bytes, &flags, NULL, NULL))
+    if (SOCKET_ERROR != WSARecv(fd, 
+                                iov, 
+                                niov, 
+                                &bytes, 
+                                &flags, 
+                                NULL, 
+                                NULL))
     {
         if (bytes > 0)
         {
@@ -242,8 +247,13 @@ static inline int32_t _sock_send_iov(SOCKET fd, IOV_TYPE *iov, uint32_t niov)
 {
 #ifdef EV_IOCP
     DWORD bytes;
-    if (SOCKET_ERROR != 
-        WSASend(fd, iov, niov, &bytes, 0, NULL, NULL))
+    if (SOCKET_ERROR != WSASend(fd,
+                                iov, 
+                                niov, 
+                                &bytes,
+                                0, 
+                                NULL, 
+                                NULL))
     {
         return (int32_t)bytes;
     }

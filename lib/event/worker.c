@@ -19,7 +19,6 @@ typedef enum WORKER_CMDS
     CMD_ADD,
     CMD_REMOVE,
     CMD_SEND,
-    CMD_SENDTO,
 
     CMD_TOTAL,
 }WORKER_CMDS;
@@ -110,23 +109,29 @@ static inline size_t _qus_size(runner_ctx *runner)
     }
     return size;
 }
-struct sock_ctx *worker_newsk(worker_ctx *worker, SOCKET fd, cbs_ctx *cbs, ud_cxt *ud)
+runner_ctx *worker_get_runner(worker_ctx *worker, uint64_t hs)
 {
-    uint64_t hs = FD_HASH(fd);
-    runner_ctx *runner = GET_PTR(worker->runner, worker->nthread, hs);
+    return GET_PTR(worker->runner, worker->nthread, hs);
+}
+struct sock_ctx *runner_newsk(runner_ctx *runner, SOCKET fd, cbs_ctx *cbs, ud_cxt *ud)
+{
     return pool_pop(&runner->pool, fd, cbs, ud);
+}
+void runner_freesk(runner_ctx *runner, struct sock_ctx *skctx)
+{
+    pool_push(&runner->pool, skctx);
 }
 static void _on_cmd_stop(runner_ctx *runner, cmd_ctx *cmd, int32_t *stop)
 {
     *stop = 1;
 }
-void worker_add(worker_ctx *worker, SOCKET fd, struct sock_ctx *skctx)
+void runner_addsk(runner_ctx *runner, SOCKET fd, struct sock_ctx *skctx, uint64_t hs)
 {
     cmd_ctx cmd;
     cmd.cmd = CMD_ADD;
     cmd.fd = fd;
     cmd.data = skctx;
-    QUS_PUSH(worker, cmd);
+    _qus_push(runner, GET_POS(hs, runner->nqus), &cmd);
 }
 static void _on_cmd_add(runner_ctx *runner, cmd_ctx *cmd, int32_t *stop)
 {
@@ -135,7 +140,14 @@ static void _on_cmd_add(runner_ctx *runner, cmd_ctx *cmd, int32_t *stop)
     el.sock = cmd->data;
     ASSERTAB(NULL == hashmap_set(runner->element, &el), "socket repeat.");
 }
-void worker_remove(worker_ctx *worker, SOCKET fd)
+void runner_removesk(struct runner_ctx *runner, SOCKET fd, uint64_t hs)
+{
+    cmd_ctx cmd;
+    cmd.cmd = CMD_REMOVE;
+    cmd.fd = fd;
+    _qus_push(runner, GET_POS(hs, runner->nqus), &cmd);
+}
+void worker_removesk(struct worker_ctx *worker, SOCKET fd)
 {
     cmd_ctx cmd;
     cmd.cmd = CMD_REMOVE;
@@ -189,25 +201,11 @@ void ev_send(ev_ctx *ctx, SOCKET fd, void *data, size_t len, int32_t copy)
     }
     QUS_PUSH(ctx->worker, cmd);
 }
-static void _on_cmd_send(runner_ctx *runner, cmd_ctx *cmd, int32_t *stop)
-{
-    map_element *el = _map_get(runner->element, cmd->fd);
-    if (NULL == el)
-    {
-        FREE(cmd->data);
-        return;
-    }
-    bufs_ctx buf;
-    buf.data = cmd->data;
-    buf.len = cmd->len;
-    buf.offset = 0;
-    _add_bufs_trypost(el->sock, &buf);
-}
 void ev_sendto(ev_ctx *ctx, SOCKET fd, const char *host, const uint16_t port, void *data, size_t len)
 {
     ASSERTAB(INVALID_SOCK != fd, ERRSTR_INVPARAM);
     cmd_ctx cmd;
-    cmd.cmd = CMD_SENDTO;
+    cmd.cmd = CMD_SEND;
     cmd.fd = fd;
     cmd.len = len;
     MALLOC(cmd.data, sizeof(netaddr_ctx) + len);
@@ -221,7 +219,7 @@ void ev_sendto(ev_ctx *ctx, SOCKET fd, const char *host, const uint16_t port, vo
     memcpy((char *)cmd.data + sizeof(netaddr_ctx), data, len);
     QUS_PUSH(ctx->worker, cmd);
 }
-static void _on_cmd_sendto(runner_ctx *runner, cmd_ctx *cmd, int32_t *stop)
+static void _on_cmd_send(runner_ctx *runner, cmd_ctx *cmd, int32_t *stop)
 {
     map_element *el = _map_get(runner->element, cmd->fd);
     if (NULL == el)
@@ -233,7 +231,14 @@ static void _on_cmd_sendto(runner_ctx *runner, cmd_ctx *cmd, int32_t *stop)
     buf.data = cmd->data;
     buf.len = cmd->len;
     buf.offset = 0;
-    _add_bufs_trysendto(el->sock, &buf);
+    if (SOCK_STREAM == _sock_type(el->sock))
+    {
+        _add_bufs_trypost(el->sock, &buf);
+    }
+    else
+    {
+        _add_bufs_trysendto(el->sock, &buf);
+    }
 }
 void ev_close(struct ev_ctx *ctx, SOCKET fd)
 {
@@ -265,7 +270,6 @@ static void _init_callback(worker_ctx *worker)
     worker->cmd_callback[CMD_ADD] = _on_cmd_add;
     worker->cmd_callback[CMD_REMOVE] = _on_cmd_remove;
     worker->cmd_callback[CMD_SEND] = _on_cmd_send;
-    worker->cmd_callback[CMD_SENDTO] = _on_cmd_sendto;
 }
 static inline void _trywait_cond(runner_ctx *runner)
 {

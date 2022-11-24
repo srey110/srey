@@ -13,14 +13,14 @@ static void *_exfunc(SOCKET fd, GUID  *guid)
     void *func = NULL;
     DWORD bytes = 0;
     int32_t rtn = WSAIoctl(fd,
-        SIO_GET_EXTENSION_FUNCTION_POINTER,
-        guid,
-        sizeof(GUID),
-        &func,
-        sizeof(func),
-        &bytes,
-        NULL,
-        NULL);
+                           SIO_GET_EXTENSION_FUNCTION_POINTER,
+                           guid,
+                           sizeof(GUID),
+                           &func,
+                           sizeof(func),
+                           &bytes,
+                           NULL,
+                           NULL);
     ASSERTAB(rtn != SOCKET_ERROR, ERRORSTR(ERRNO));
     return func;
 }
@@ -55,11 +55,11 @@ static void _loop_event(void *arg)
     while (0 == watcher->ev->stop)
     {
         rtn = GetQueuedCompletionStatusEx(watcher->iocp,
-            overlappeds,
-            nevent,
-            &count,
-            EVENT_WAIT_TIMEOUT,
-            FALSE);
+                                          overlappeds,
+                                          nevent,
+                                          &count,
+                                          EVENT_WAIT_TIMEOUT,
+                                          FALSE);
         if (rtn)
         {
             for (i = 0; i < count; i++)
@@ -100,10 +100,10 @@ static void _loop_event(void *arg)
     while (0 == watcher->ev->stop)
     {
         GetQueuedCompletionStatus(watcher->iocp,
-            &bytes,
-            &key,
-            &overlap,
-            EVENT_WAIT_TIMEOUT);
+                                  &bytes,
+                                  &key,
+                                  &overlap,
+                                  EVENT_WAIT_TIMEOUT);
         if (NULL != overlap)
         {
             sock = UPCAST(overlap, sock_ctx, overlapped);
