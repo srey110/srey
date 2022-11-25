@@ -1,7 +1,6 @@
 #include "event/evssl.h"
 #include "loger.h"
 #if WITH_SSL
-#include <openssl/provider.h>
 #include <openssl/pkcs12.h>
 
 static volatile atomic_t _init_once = 0;
