@@ -1,7 +1,7 @@
 #ifndef OS_H_
 #define OS_H_
 
-/*check system*/
+/*check system https://sourceforge.net/p/predef/wiki/OperatingSystems/ */
 #if defined(_WIN32) || defined(_WIN64)
     #define OS_WIN
 #elif defined(linux) || defined(__linux) || defined(__linux__)
@@ -26,8 +26,12 @@
 #elif defined(__DragonFly__)
     #define OS_BSD
     #define OS_DFBSD
-#elif defined(sun) || defined(__sun) || defined(__sun__)
+#elif defined(sun) || defined(__sun)
     #define OS_SUN
+#elif defined(hpux) || defined(_hpux)|| defined(__hpux)
+    #define OS_HPUX
+#elif defined(_AIX)
+    #define OS_AIX
 #else
     #error "Unsupported operating system platform!"
 #endif
