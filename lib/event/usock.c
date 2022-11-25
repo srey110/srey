@@ -416,7 +416,6 @@ SOCKET ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *host, const 
         if (!ERR_CONNECT_RETRIABLE(rtn))
         {
             CLOSE_SOCK(fd);
-            LOG_ERROR("%s", ERRORSTR(rtn));
             return INVALID_SOCK;
         }
     }

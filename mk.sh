@@ -6,35 +6,51 @@
 # Date Time  :2011/06/15 
 #***********************************************
 
-UsAge="UsAge:\"./mk.sh\" or \"./mk.sh pg\" or \"./mk.sh clean\""
+UsAge="UsAge:\"./mk.sh\" or \"./mk.sh x86/x64\" \"./mk.sh clean\""
 
 #生成程序的名称
 PROGRAMNAME="srey"
 #文件夹
 Dir="lib lib/event lib/md5 lib/sha1 test"
+#SSL库
+SSLLIB="-lssl -lcrypto"
 #main函数所在文件夹
 MAINDIR="test"
 #main函数所在文件
 MAINFILE="main.c"
 #附加包含库
-INCLUDELIB="-lpthread -lm -lcrypto -lssl"
-#系统
+INCLUDELIB="-lpthread -lm"
+#系统 位数
 OSNAME=`uname`
 if [ "$OSNAME" != "Darwin" ]
 then
     INCLUDELIB=$INCLUDELIB" -lrt"
 fi
+if [ "$OSNAME" = "Linux" ]
+then
+    INCLUDELIB=$INCLUDELIB" -ldl"
+fi
 if [ "$OSNAME" = "SunOS" ]
 then
 	INCLUDELIB=$INCLUDELIB" -lsocket -lnsl"
 fi
-#位数
 X64=""
 OS_Version=`uname -m`
 echo $OSNAME $OS_Version
 if [ "$OS_Version" = "x86_64" ] || [ "$OS_Version" = "amd64" ]
 then
 	X64="x64"
+fi
+if [ $# -eq 1 ]
+then
+    if [ "$1" = "x64" ]
+    then
+        X64="x64"
+    fi
+	if [ "$1" = "x86" ]
+    then
+        X64=""
+    fi
 fi
 #结果存放路径
 RSTPATH="bin"
@@ -44,22 +60,15 @@ LIBNAME="srey"
 EXCEPTL=$MAINFILE" "$TESTFILE
 MAKEFILEPATH=`pwd`
 LIBPATH="-L$MAKEFILEPATH/$RSTPATH"
-CC="gcc -std=gnu99 -g"
-GCC="g++ -g"
+CC="gcc -std=gnu99"
+GCC="g++"
 ARCH="ar -rv"
 INCLUDEPATH=""
 OBJFILE=""
-CFLAGS="-O3"
+CFLAGS="-Wall -O2"
 if [ "$X64" = "x64" ]
 then
     CFLAGS=$CFLAGS" -m64"
-fi
-if [ $# -eq 1 ]
-then
-    if [ "$1" = "pg" ]
-    then
-        CFLAGS=$CFLAGS" -pg"
-    fi
 fi
 LIBDIR=$Dir
 Clean()
@@ -176,7 +185,11 @@ do
             Clean
             exit 0
         fi
-		if [ "$1" = "pg" ]
+		if [ "$1" = "x64" ]
+        then
+            break
+        fi
+		if [ "$1" = "x86" ]
         then
             break
         fi
@@ -201,8 +214,8 @@ proname=$PROGRAMNAME
 cd $mkmaindir
 
 echo ---------------------Make program file---------------------------
-echo "$CC $CFLAGS $mkmaincpp $LIBPATH $LIBAPP $INCLUDEPATH $INCLUDELIB -l$LIBNAME -o $proname"
-$CC $CFLAGS $mkmaincpp $LIBPATH $LIBAPP $INCLUDEPATH $INCLUDELIB -l$LIBNAME -o $proname
+echo "$CC $CFLAGS $mkmaincpp $LIBAPP $INCLUDEPATH $LIBPATH $INCLUDELIB -l$LIBNAME -o $proname"
+$CC $CFLAGS $mkmaincpp $LIBAPP $INCLUDEPATH $LIBPATH $INCLUDELIB -l$LIBNAME -o $proname $SSLLIB
 if [ "$?" != "0" ]
 then
     echo "---------------------Error---------------------"

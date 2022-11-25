@@ -6,11 +6,11 @@
 #pragma warning(disable:4091)
 #include <DbgHelp.h>
 #pragma comment(lib, "Dbghelp.lib" )
+static volatile atomic_t _exindex = 0;
 #endif
 
 static void *_ud;
 static void(*_sig_cb)(int32_t, void *);
-static volatile atomic_t _exindex = 0;
 static volatile atomic64_t _ids = 1000;
 
 #ifdef OS_WIN
