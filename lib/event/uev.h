@@ -102,6 +102,7 @@ void _add_udp_inloop(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx);
 void _sk_shutdown(sock_ctx *skctx);
 void _free_udp(sock_ctx *skctx);
 void _udp_close(watcher_ctx *watcher, sock_ctx *skctx);
+void _freelsn(struct listener_ctx *lsn);
 
 #endif//EV_IOCP
 #endif//UEV_H_

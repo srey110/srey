@@ -17,8 +17,6 @@ void ev_send(ev_ctx *ctx, SOCKET fd, void *data, size_t len, int32_t copy);
 void ev_sendto(ev_ctx *ctx, SOCKET fd, const char *host, const uint16_t port, void *data, size_t len);
 void ev_close(ev_ctx *ctx, SOCKET fd);
 
-void _freelsn(struct listener_ctx *lsn);
-
 //¹«¹²º¯Êý
 void _bufs_clear(qu_bufs *bufs);
 int32_t _set_sockops(SOCKET fd);

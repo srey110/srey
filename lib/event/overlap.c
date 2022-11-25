@@ -81,8 +81,8 @@ typedef struct overlap_udp_ctx
     ud_cxt ud;
 }overlap_udp_ctx;
 
-void _on_recv_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes);
-void _on_send_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes);
+static void _on_recv_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes);
+static void _on_send_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes);
 
 int32_t _sock_type(struct sock_ctx *skctx)
 {
@@ -302,7 +302,7 @@ static inline void _tcp_recv(watcher_ctx *watcher, overlap_tcp_ctx *ol)
         worker_removesk(watcher->ev->worker, ol->ol_r.fd);
     }
 }
-void _on_recv_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes)
+static void _on_recv_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes)
 {
     overlap_tcp_ctx *ol = UPCAST(skctx, overlap_tcp_ctx, ol_r);
 #if WITH_SSL
@@ -337,7 +337,7 @@ static inline int32_t _post_send(overlap_tcp_ctx *ol)
     }
     return ERR_OK;
 }
-void _on_send_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes)
+static void _on_send_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes)
 {
     overlap_tcp_ctx *ol = UPCAST(skctx, overlap_tcp_ctx, ol_s);
     size_t nsend;

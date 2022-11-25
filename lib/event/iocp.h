@@ -7,6 +7,7 @@
 
 #ifdef EV_IOCP
 
+struct listener_ctx;
 typedef void(*event_cb)(struct watcher_ctx *watcher, struct sock_ctx *skctx, DWORD bytes);
 typedef struct sock_ctx
 {
@@ -28,6 +29,8 @@ typedef struct exfuncs_ctx
     BOOL(WINAPI *disconnectex)(SOCKET, LPOVERLAPPED, DWORD, DWORD);
 }exfuncs_ctx;
 extern exfuncs_ctx _exfuncs;
+
+void _freelsn(struct listener_ctx *lsn);
 
 #endif//EV_IOCP
 #endif//IOCP_H_

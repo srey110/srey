@@ -57,7 +57,7 @@ typedef struct udp_ctx
     ud_cxt ud;
 }udp_ctx;
 
-void _on_rw_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev, int32_t *stop);
+static void _on_rw_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev, int32_t *stop);
 
 void _sk_shutdown(sock_ctx *skctx)
 {
@@ -291,7 +291,7 @@ static inline void _on_w_cb(watcher_ctx *watcher, skrw_ctx *skrw)
     _add_event(watcher, skrw->sock.fd, &skrw->sock.events, EVENT_WRITE, &skrw->sock);
 #endif
 }
-void _on_rw_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev, int32_t *stop)
+static void _on_rw_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev, int32_t *stop)
 {
     skrw_ctx *skrw = UPCAST(skctx, skrw_ctx, sock);
     if (ev & EVENT_READ)
