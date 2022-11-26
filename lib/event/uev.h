@@ -9,11 +9,12 @@
 #ifndef EV_IOCP
 
 #if defined(EV_EPOLL)
-typedef struct epoll_event events_t;
+    typedef struct epoll_event events_t;
 #elif defined(EV_KQUEUE)
-typedef struct kevent events_t;
+    typedef struct kevent events_t;
+    typedef struct kevent changes_t;
 #elif defined(EV_EVPORT)
-typedef port_event_t events_t;
+    typedef port_event_t events_t;
 #endif
 struct conn_ctx;
 struct listener_ctx;
@@ -51,12 +52,12 @@ typedef struct watcher_ctx
 {
     int32_t index;
     int32_t evfd; 
-    int32_t nevent;
+    int32_t nevents;
     uint32_t npipes;
 #if defined(EV_KQUEUE)
-    int32_t nsize;//当前 changelist 数量
-    int32_t nchange;//实际数量
-    events_t *changelist;
+    int32_t nsize;//changes大小
+    int32_t nchanges;//数量
+    changes_t *changes;
 #endif
     events_t *events;
     struct pip_ctx *pipes;

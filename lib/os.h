@@ -44,6 +44,10 @@
     #define EV_KQUEUE
 #elif defined(OS_SUN)
     #define EV_EVPORT
+#elif defined(OS_AIX)
+    #define EV_POLLSET
+#elif defined(OS_HPUX)
+    #define EV_DEVPOLL
 #endif
 
 /*check version x64 x86*/

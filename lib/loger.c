@@ -33,10 +33,9 @@ typedef struct logworker_ctx
     HANDLE hout;
     CONSOLE_SCREEN_BUFFER_INFO stcsbi;
 #endif
-    char date[TIME_LENS];
-    char lognam[PATH_LENS];
-    char *path;
     loger_ctx *ploger;
+    char lognam[TIME_LENS];
+    char path[PATH_LENS];
 }logworker_ctx;
 typedef struct loginfo_ctx
 {
@@ -66,21 +65,19 @@ const char *_getlvstr(const LOG_LEVEL emlv)
 }
 static void _worker_init(logworker_ctx *ctx)
 {
-    ctx->path = NULL;
     ctx->file = NULL;
+    ZERO(ctx->path, sizeof(ctx->path));
     ZERO(ctx->lognam, sizeof(ctx->lognam));
     //创建文件夹
-    char path[PATH_LENS] = {0};
-    ASSERTAB(ERR_OK == procpath(path), "getpath failed.");
-    size_t ilens = strlen(path) + strlen(PATH_SEPARATORSTR) + strlen(LOG_FOLDER) + 2;
-    CALLOC(ctx->path, ilens, sizeof(char));
-    SNPRINTF(ctx->path, ilens - 1, "%s%s%s", path, PATH_SEPARATORSTR, LOG_FOLDER);
+    ASSERTAB(ERR_OK == procpath(ctx->path), "getpath failed.");
+    size_t len = strlen(ctx->path);
+    SNPRINTF(ctx->path + len, sizeof(ctx->path) - len - 1, "%s%s", PATH_SEPARATORSTR, LOG_FOLDER);
     if (ERR_OK != ACCESS(ctx->path, 0))
     {
         if (ERR_OK != MKDIR(ctx->path))
         {
             PRINT("mkdir(%s) failed.", ctx->path);
-            FREE(ctx->path);
+            ctx->path[0] = '\0';
         }
     }
 #if defined(OS_WIN)
@@ -107,25 +104,25 @@ static void _worker_free(logworker_ctx *ctx)
         fclose(ctx->file);
         ctx->file = NULL;
     }
-    FREE(ctx->path);
 }
 static int32_t _worker_getfile(logworker_ctx *ctx)
 {
-    if (NULL == ctx->path)
+    if (0 == strlen(ctx->path))
     {
         return ERR_FAILED;
     }
     //判断日期是否更改，更改则更换log文件名
-    nowtime("%Y%m%d", ctx->date);
-    if (0 != strcmp(ctx->date, ctx->lognam))
+    char date[TIME_LENS] = {0};
+    nowtime("%Y%m%d", date);
+    if (0 != strcmp(date, ctx->lognam))
     {
         if (NULL != ctx->file)
         {
             fclose(ctx->file);
             ctx->file = NULL;
         }
-        size_t lens = strlen(ctx->date);
-        memcpy(ctx->lognam, ctx->date, lens);
+        size_t lens = strlen(date);
+        memcpy(ctx->lognam, date, lens);
         ctx->lognam[lens] = '\0';
     }
     //打开文件

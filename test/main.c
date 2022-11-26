@@ -68,12 +68,14 @@ static void test_conn_recv_cb(ev_ctx *ctx, SOCKET sock, buffer_ctx *buf, size_t 
     }
     char len[2 + sizeof(pk_index)];
     buffer_copyout(buf, len, sizeof(len));
-    u_short pklen = ntohs(*(u_short*)len);
+    u_short *plen = (u_short*)len;
+    u_short pklen = ntohs(*plen);
     if (buffer_size(buf) < pklen)
     {
         return;
     }
-    int32_t tmp = (int32_t)(ntohl(*(u_long*)(len + 2)));
+    int32_t pkindex = *(int32_t*)(len + 2);
+    int32_t tmp = (int32_t)(ntohl(pkindex));
     if (tmp != pk_index)
     {
         PRINT("index error.recv: %d  cur %d", tmp, pk_index);

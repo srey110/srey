@@ -69,12 +69,12 @@ static void _init_cmd(watcher_ctx *watcher)
 #if defined(EV_KQUEUE)
 static inline void _check_resize(watcher_ctx *watcher)
 {
-    if (watcher->nsize == watcher->nchange)
+    if (watcher->nsize == watcher->nchanges)
     {
         watcher->nsize *= 2;
-        events_t *newptr;
-        REALLOC(newptr, watcher->changelist, sizeof(events_t) * watcher->nsize);
-        watcher->changelist = newptr;
+        changes_t *newptr;
+        REALLOC(newptr, watcher->changes, sizeof(changes_t) * watcher->nsize);
+        watcher->changes = newptr;
     }
 }
 #endif
@@ -109,18 +109,18 @@ int32_t _add_event(watcher_ctx *watcher, SOCKET fd, int32_t *events, int32_t ev,
     {
         (*events) |= EVENT_READ;
         _check_resize(watcher);
-        events_t *kev = &watcher->changelist[watcher->nchange];
+        changes_t *kev = &watcher->changes[watcher->nchanges];
         EV_SET(kev, fd, EVFILT_READ, EV_ADD, 0, 0, arg);
-        watcher->nchange++;
+        watcher->nchanges++;
     }
     if ((ev & EVENT_WRITE)
         && !((*events) & EVENT_WRITE))
     {
         (*events) |= EVENT_WRITE;
         _check_resize(watcher);
-        events_t *kev = &watcher->changelist[watcher->nchange];
+        changes_t *kev = &watcher->changes[watcher->nchanges];
         EV_SET(kev, fd, EVFILT_WRITE, EV_ADD, 0, 0, arg);
-        watcher->nchange++;
+        watcher->nchanges++;
     }
 #elif defined(EV_EVPORT)
     (*events) |= ev;
@@ -175,18 +175,18 @@ void _del_event(watcher_ctx *watcher, SOCKET fd, int32_t *events, int32_t ev, vo
     {
         *events = (*events) & ~EVENT_READ;
         _check_resize(watcher);
-        events_t *kev = &watcher->changelist[watcher->nchange];
+        changes_t *kev = &watcher->changes[watcher->nchanges];
         EV_SET(kev, fd, EVFILT_READ, EV_DELETE, 0, 0, arg);
-        watcher->nchange++;
+        watcher->nchanges++;
     }
     if ((ev & EVENT_WRITE)
         && ((*events) & EVENT_WRITE))
     {
         *events = (*events) & ~EVENT_WRITE;
         _check_resize(watcher);
-        events_t *kev = &watcher->changelist[watcher->nchange];
+        changes_t *kev = &watcher->changes[watcher->nchanges];
         EV_SET(kev, fd, EVFILT_WRITE, EV_DELETE, 0, 0, arg);
-        watcher->nchange++;
+        watcher->nchanges++;
     }
 #elif defined(EV_EVPORT)
     *events = (*events) & ~ev;
@@ -277,13 +277,13 @@ static void _loop_event(void *arg)
     while (0 == stop)
     {
 #if defined(EV_EPOLL)
-        cnt = epoll_wait(watcher->evfd, watcher->events, watcher->nevent, timeout);
+        cnt = epoll_wait(watcher->evfd, watcher->events, watcher->nevents, timeout);
 #elif defined(EV_KQUEUE)
-        cnt = kevent(watcher->evfd, watcher->changelist, watcher->nchange, watcher->events, watcher->nevent, &timeout);
-        watcher->nchange = 0;
+        cnt = kevent(watcher->evfd, watcher->changes, watcher->nchanges, watcher->events, watcher->nevents, &timeout);
+        watcher->nchanges = 0;
 #elif defined(EV_EVPORT)
         nget = 1;
-        (void)port_getn(watcher->evfd, watcher->events, watcher->nevent, &nget, &timeout);
+        (void)port_getn(watcher->evfd, watcher->events, watcher->nevents, &nget, &timeout);
         cnt = (int32_t)nget;
 #endif
         for (i = 0; i < cnt; i++)
@@ -300,12 +300,12 @@ static void _loop_event(void *arg)
         }
         _pool_shrink(watcher, &tmshrink);
         if (0 == stop
-            && cnt == watcher->nevent
-            && watcher->nevent < MAX_EVENTS_CNT)
+            && cnt == watcher->nevents
+            && watcher->nevents < MAX_EVENTS_CNT)
         {
             FREE(watcher->events);
-            watcher->nevent *= 2;
-            MALLOC(watcher->events, sizeof(events_t) * watcher->nevent);
+            watcher->nevents *= 2;
+            MALLOC(watcher->events, sizeof(events_t) * watcher->nevents);
         }
     }
 }
@@ -364,11 +364,11 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads)
         watcher->ev = ctx;
 #if defined(EV_KQUEUE)
         watcher->nsize = INIT_EVENTS_CNT;
-        watcher->nchange = 0;
-        MALLOC(watcher->changelist, sizeof(events_t) * watcher->nsize);
+        watcher->nchanges = 0;
+        MALLOC(watcher->changes, sizeof(changes_t) * watcher->nsize);
 #endif
-        watcher->nevent = INIT_EVENTS_CNT;
-        MALLOC(watcher->events, sizeof(events_t) * watcher->nevent);
+        watcher->nevents = INIT_EVENTS_CNT;
+        MALLOC(watcher->events, sizeof(events_t) * watcher->nevents);
         watcher->evfd = _init_evfd();
         watcher->npipes = ctx->nthreads * 2;
         watcher->pipes = _new_pips(watcher->npipes);
@@ -409,7 +409,7 @@ void ev_free(ev_ctx *ctx)
         _free_pips(watcher);
         close(watcher->evfd);
 #if defined(EV_KQUEUE)
-        FREE(watcher->changelist);
+        FREE(watcher->changes);
 #endif
         FREE(watcher->events);
         hashmap_free(watcher->element);
