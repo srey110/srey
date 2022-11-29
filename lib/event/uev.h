@@ -15,6 +15,9 @@
     typedef struct kevent changes_t;
 #elif defined(EV_EVPORT)
     typedef port_event_t events_t;
+#elif defined(EV_POLLSET)
+    typedef struct pollfd events_t;
+#elif defined(EV_DEVPOLL)
 #endif
 struct conn_ctx;
 struct listener_ctx;
@@ -54,7 +57,7 @@ typedef struct watcher_ctx
     int32_t evfd; 
     int32_t nevents;
     uint32_t npipes;
-#if defined(EV_KQUEUE)
+#if defined(EV_KQUEUE) || defined(EV_DEVPOLL)
     int32_t nsize;//changes大小
     int32_t nchanges;//数量
     changes_t *changes;
@@ -81,7 +84,7 @@ int32_t _add_event(watcher_ctx *watcher, SOCKET fd, int32_t *events, int32_t ev,
 void _del_event(watcher_ctx *watcher, SOCKET fd, int32_t *events, int32_t ev, void *arg);
 
 void _cmd_send(watcher_ctx *watcher, uint32_t index, cmd_ctx *cmd);
-void _cmd_connect(ev_ctx *ctx, SOCKET fd, struct conn_ctx *conn);
+void _cmd_connect(ev_ctx *ctx, SOCKET fd, sock_ctx *skctx);
 void _cmd_listen(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx);
 void _cmd_add_acpfd(watcher_ctx *watcher, uint64_t hs, SOCKET fd, struct listener_ctx *lsn);
 void _cmd_add_udp(ev_ctx *ctx, SOCKET fd, sock_ctx *skctx);
@@ -95,11 +98,13 @@ void _on_cmd_addacp(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop);
 void _on_cmd_add_udp(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop);
 
 void _add_lsn_inloop(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx);
-void _add_conn_inloop(watcher_ctx *watcher, SOCKET fd, struct conn_ctx *conn);
+void _add_conn_inloop(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx);
 void _add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn);
 void _add_write_inloop(watcher_ctx *watcher, sock_ctx *skctx, bufs_ctx *buf);
 void _add_udp_inloop(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx);
 
+void _add_fd(watcher_ctx *watcher, sock_ctx *skctx);
+sock_ctx *_map_getskctx(struct hashmap *map, SOCKET fd);
 void _sk_shutdown(sock_ctx *skctx);
 void _free_udp(sock_ctx *skctx);
 void _udp_close(watcher_ctx *watcher, sock_ctx *skctx);

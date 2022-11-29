@@ -6,12 +6,12 @@
 #pragma warning(disable:4091)
 #include <DbgHelp.h>
 #pragma comment(lib, "Dbghelp.lib" )
-static volatile atomic_t _exindex = 0;
+static atomic_t _exindex = 0;
 #endif
 
 static void *_ud;
 static void(*_sig_cb)(int32_t, void *);
-static volatile atomic64_t _ids = 1000;
+static atomic64_t _ids = 1000;
 
 #ifdef OS_WIN
 static BOOL _GetImpersonationToken(HANDLE *handle)
@@ -214,8 +214,8 @@ uint32_t procscnt()
 }
 int32_t isfile(const char *file)
 {
-    struct STAT st;
-    if (ERR_OK != STAT(file, &st))
+    struct FSTAT st;
+    if (ERR_OK != FSTAT(file, &st))
     {
         return ERR_FAILED;
     }
@@ -231,8 +231,8 @@ int32_t isfile(const char *file)
 }
 int32_t isdir(const char *path)
 {
-    struct STAT st;
-    if (ERR_OK != STAT(path, &st))
+    struct FSTAT st;
+    if (ERR_OK != FSTAT(path, &st))
     {
         return ERR_FAILED;
     }
@@ -248,8 +248,8 @@ int32_t isdir(const char *path)
 }
 int64_t filesize(const char *file)
 {
-    struct STAT st;
-    if (ERR_OK != STAT(file, &st))
+    struct FSTAT st;
+    if (ERR_OK != FSTAT(file, &st))
     {
         return ERR_FAILED;
     }
@@ -301,6 +301,12 @@ int32_t procpath(char path[PATH_LENS])
     int32_t name[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME };
     name[3] = getpid();
     if (0 != sysctl(name, 4, path, &len, NULL, 0))
+    {
+        PRINT("%s", ERRORSTR(ERRNO));
+        return ERR_FAILED;
+    }
+#elif defined(OS_AIX)
+    if (NULL == getcwd(path, len))
     {
         PRINT("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;

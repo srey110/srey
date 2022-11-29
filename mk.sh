@@ -214,7 +214,7 @@ proname=$PROGRAMNAME
 cd $mkmaindir
 
 echo ---------------------Make program file---------------------------
-echo "$CC $CFLAGS $mkmaincpp $LIBAPP $INCLUDEPATH $LIBPATH $INCLUDELIB -l$LIBNAME -o $proname"
+echo "$CC $CFLAGS $mkmaincpp $LIBAPP $INCLUDEPATH $LIBPATH $INCLUDELIB -l$LIBNAME -o $proname $SSLLIB"
 $CC $CFLAGS $mkmaincpp $LIBAPP $INCLUDEPATH $LIBPATH $INCLUDELIB -l$LIBNAME -o $proname $SSLLIB
 if [ "$?" != "0" ]
 then

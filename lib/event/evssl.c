@@ -3,7 +3,7 @@
 #if WITH_SSL
 #include <openssl/pkcs12.h>
 
-static volatile atomic_t _init_once = 0;
+static atomic_t _init_once = 0;
 struct evssl_ctx
 {
     SSL_CTX *ssl;

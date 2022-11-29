@@ -4,7 +4,7 @@
 #define MSEC    1000
 
 #ifdef OS_WIN
-static volatile atomic_t _init_sock = 0;
+static atomic_t _init_sock = 0;
 #endif
 void sock_init()
 {

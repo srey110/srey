@@ -6,7 +6,7 @@
 #ifdef EV_IOCP
 
 exfuncs_ctx _exfuncs;
-static volatile atomic_t _init_once = 0;
+static atomic_t _init_once = 0;
 
 static void *_exfunc(SOCKET fd, GUID  *guid)
 {

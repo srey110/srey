@@ -32,7 +32,7 @@
 #define SWPRINTF swprintf
 #define STRNCPY strncpy
 #define ITOA itoa
-#define STAT stat
+#define FSTAT stat
 #define USLEEP(us) usleep(us)
 #define MSLEEP(ms) usleep(ms * 1000)
 #define TIMEB timeb
@@ -47,19 +47,53 @@
     typedef uint32_t atomic_t;
     typedef uint64_t atomic64_t;
     //uint32_t atomic_add_32_nv(volatile uint32_t *target, int32_t delta); return the new value of target.
-    #define ATOMIC_ADD(ptr, val) atomic_add_32_nv(ptr, val)
+    #define ATOMIC_ADD(ptr, val) atomic_add_32_nv((volatile atomic_t *)ptr, val)
     //uint32_t atomic_swap_32(volatile uint32_t *target, uint32_t newval);  return the old of *target.
-    #define ATOMIC_SET(ptr, val) atomic_swap_32(ptr, val)
+    #define ATOMIC_SET(ptr, val) atomic_swap_32((volatile atomic_t *)ptr, val)
     //uint32_t atomic_cas_32(volatile uint32_t *target, uint32_t cmp, uint32_t newval);
-    #define ATOMIC_CAS(ptr, oldval, newval) (atomic_cas_32(ptr, oldval, newval) == oldval)
-    #define ATOMIC64_ADD(ptr, val) atomic_add_64_nv(ptr, val)
-    #define ATOMIC64_SET(ptr, val) atomic_swap_64(ptr, val)
-    #define ATOMIC64_CAS(ptr, oldval, newval) (atomic_cas_64(ptr, oldval, newval) == oldval)
-    #define ATOMICPTR_CAS(ptr, oldval, newval) (atomic_cas_ptr(ptr, oldval, newval) == oldval)
+    #define ATOMIC_CAS(ptr, oldval, newval) (atomic_cas_32((volatile atomic_t *)ptr, oldval, newval) == oldval)
+    #define ATOMIC64_ADD(ptr, val) atomic_add_64_nv((volatile atomic64_t *)ptr, val)
+    #define ATOMIC64_SET(ptr, val) atomic_swap_64((volatile atomic64_t *)ptr, val)
+    #define ATOMIC64_CAS(ptr, oldval, newval) (atomic_cas_64((volatile atomic64_t *)ptr, oldval, newval) == oldval)
+#elif defined(OS_AIX)
+    typedef int32_t atomic_t;
+    typedef long atomic64_t;
+    static inline atomic_t _fetchandset(atomic_t *ptr, atomic_t value)
+    {
+        atomic_t oldvar;
+        do
+        {
+            oldvar = *ptr;
+        } while (!compare_and_swap(ptr, &oldvar, value));
+        return oldvar;
+    };
+    static inline atomic_t _fetchandset64(atomic64_t *ptr, atomic64_t value)
+    {
+        atomic64_t oldvar;
+        do
+        {
+            oldvar = *ptr;
+        } while (!compare_and_swaplp(ptr, &oldvar, value));
+        return oldvar;
+    };
+    static inline int32_t _aix_cas(atomic_t *ptr, atomic_t oldval, atomic_t newval)
+    {
+        return compare_and_swap(ptr, &oldval, newval);
+    };
+    static inline int32_t _aix_cas64(atomic64_t *ptr, atomic64_t oldval, atomic64_t newval)
+    {
+        return compare_and_swaplp(ptr, &oldval, newval);
+    };
+    #define ATOMIC_ADD(ptr, val) fetch_and_add(ptr, val)
+    #define ATOMIC_SET(ptr, val) _fetchandset(ptr, val)    
+    #define ATOMIC_CAS(ptr, oldval, newval) _aix_cas(ptr, oldval, newval)
+    #define ATOMIC64_ADD(ptr, val) fetch_and_addlp(ptr, val)
+    #define ATOMIC64_SET(ptr, val) _fetchandset64(ptr, val)
+    #define ATOMIC64_CAS(ptr, oldval, newval) _aix_cas64(ptr, oldval, newval)
 #else
     typedef uint32_t atomic_t;
     typedef uint64_t atomic64_t;
-    static inline atomic_t _fetchandset(volatile atomic_t *ptr, atomic_t value)
+    static inline atomic_t _fetchandset(atomic_t *ptr, atomic_t value)
     {
         atomic_t oldvar;
         do
@@ -68,7 +102,7 @@
         } while (!__sync_bool_compare_and_swap(ptr, oldvar, value));
         return oldvar;
     };
-    static inline atomic64_t _fetchandset64(volatile atomic64_t *ptr, atomic64_t value)
+    static inline atomic64_t _fetchandset64(atomic64_t *ptr, atomic64_t value)
     {
         atomic64_t oldvar;
         do
@@ -85,7 +119,6 @@
     #define ATOMIC64_ADD(ptr, val) __sync_fetch_and_add(ptr, val)
     #define ATOMIC64_SET(ptr, val) _fetchandset64(ptr, val) 
     #define ATOMIC64_CAS(ptr, oldval, newval) __sync_bool_compare_and_swap(ptr, oldval, newval)
-    #define ATOMICPTR_CAS(ptr, oldval, newval) __sync_bool_compare_and_swap(ptr, oldval, newval)
 #endif
 
 #endif

@@ -5,8 +5,8 @@
 #include "errcode.h"
 
 #if MEMORY_CHECK
-static volatile atomic64_t n_alloc = 0;
-static volatile atomic64_t n_free = 0;
+static atomic64_t n_alloc = 0;
+static atomic64_t n_free = 0;
 #endif
 
 static inline uint64_t _nalloc()

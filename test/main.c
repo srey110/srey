@@ -21,7 +21,7 @@ mutex_ctx muexit;
 cond_ctx condexit;
 int32_t pk_index = 0;
 SOCKET connsock = INVALID_SOCK;
-static volatile atomic_t count = 0;
+static atomic_t count = 0;
 #if WITH_SSL
 struct evssl_ctx *ssl_client;
 #endif
@@ -172,7 +172,7 @@ void testtt(void *arg)
     MSLEEP(1000);
 }
 int main(int argc, char *argv[])
-{   
+{
     pthread_t aaa = thread_creat(testtt, NULL);
     thread_join(aaa);
 

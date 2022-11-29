@@ -17,6 +17,15 @@ static inline map_element *_map_get(struct hashmap *map, SOCKET fd)
     key.fd = fd;
     return hashmap_get(map, &key);
 }
+sock_ctx *_map_getskctx(struct hashmap *map, SOCKET fd)
+{
+    map_element *el = _map_get(map, fd);
+    if (NULL == el)
+    {
+        return NULL;
+    }
+    return el->sock;
+}
 void _on_cmd_stop(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop)
 {
     *stop = 1;
@@ -58,12 +67,12 @@ void _on_cmd_lsn(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop)
 {
     _add_lsn_inloop(watcher, cmd->fd, cmd->data);
 }
-void _cmd_connect(ev_ctx *ctx, SOCKET fd, struct conn_ctx *conn)
+void _cmd_connect(ev_ctx *ctx, SOCKET fd, sock_ctx *skctx)
 {
     cmd_ctx cmd;
     cmd.cmd = CMD_CONN;
     cmd.fd = fd;
-    cmd.data = conn;
+    cmd.data = skctx;
     CMD_SEND(ctx, cmd);
 }
 void _on_cmd_conn(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop)

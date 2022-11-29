@@ -30,14 +30,14 @@
     #define OS_SUN
 #elif defined(hpux) || defined(_hpux)|| defined(__hpux)
     #define OS_HPUX
-#elif defined(_AIX)
+#elif defined(_AIX) || defined(__HOS_AIX__)
     #define OS_AIX
 #else
     #error "Unsupported operating system platform!"
 #endif
 
 #if defined(OS_WIN)
-    #define EV_IOCP
+    //#define EV_IOCP
 #elif defined(OS_LINUX)
     #define EV_EPOLL
 #elif defined(OS_BSD) || defined(OS_DARWIN)
@@ -66,9 +66,8 @@
         #define ARCH_ARM
     #elif defined(__aarch64__) || defined(__ARM64__)
         #define ARCH_ARM64
-    #else
-        #define ARCH_UNKNOWN
-        #warning "Unknown hardware architecture!"
+    #elif defined(__powerpc) || defined(__powerpc__)|| defined(__PPC)|| defined(__PPC__)
+        #define ARCH_PPC
     #endif
 #endif
 
@@ -120,7 +119,10 @@
     #include <sys/time.h>
     #include <sys/wait.h>
     #include <sys/ioctl.h>
+    #include <sys/poll.h>
+#ifndef OS_AIX
     #include <sys/syscall.h>
+#endif    
     #include <sys/resource.h>
     #include <sys/uio.h>
     #include <net/if.h>    
@@ -141,6 +143,9 @@
     #elif defined (OS_BSD)
         #include <sys/sysctl.h>
         #include <sys/event.h>
+    #elif defined (OS_AIX)
+        #include <sys/atomic_op.h>
+        #include <sys/pollset.h>
     #else
     #endif
 #endif // OS_WIN

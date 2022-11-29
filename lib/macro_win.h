@@ -17,7 +17,7 @@
 #define SWPRINTF swprintf
 #define STRNCPY strncpy_s
 #define ITOA _itoa
-#define STAT _stat
+#define FSTAT _stat
 #define USLEEP(us)\
 do\
 {\
@@ -78,7 +78,6 @@ typedef uint64_t atomic64_t;
 #define ATOMIC64_ADD(ptr, val) InterlockedExchangeAdd64(ptr, val)
 #define ATOMIC64_SET(ptr, val) InterlockedExchange64(ptr, val)
 #define ATOMIC64_CAS(ptr, oldval, newval) (InterlockedCompareExchange64(ptr, newval, oldval) == oldval)
-#define ATOMICPTR_CAS(ptr, oldval, newval) (InterlockedCompareExchangePointer(ptr, newval, oldval) == oldval)
 
 #endif
 #endif//MACRO_WIN_H_
