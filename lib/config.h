@@ -5,10 +5,10 @@
 
 #define MEMORY_CHECK         1
 #define PRINT_DEBUG          0
-#define WITH_SSL             0
+#define WITH_SSL             1
 
 #define EVENT_WAIT_TIMEOUT  100
-#define INIT_EVENTS_CNT     512
+#define INIT_EVENTS_CNT     256
 #define MAX_EVENTS_CNT      2048
 #define MAX_RECV_SIZE       4096
 #define MAX_RECVFROM_SIZE   4096
