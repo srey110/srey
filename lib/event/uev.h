@@ -17,7 +17,10 @@
     typedef port_event_t events_t;
 #elif defined(EV_POLLSET)
     typedef struct pollfd events_t;
+    typedef struct poll_ctl changes_t;
 #elif defined(EV_DEVPOLL)
+    typedef struct pollfd events_t;
+    typedef struct pollfd changes_t;
 #endif
 struct conn_ctx;
 struct listener_ctx;
@@ -57,7 +60,7 @@ typedef struct watcher_ctx
     int32_t evfd; 
     int32_t nevents;
     uint32_t npipes;
-#if defined(EV_KQUEUE) || defined(EV_DEVPOLL)
+#if defined(EV_KQUEUE) || defined(EV_POLLSET) || defined(EV_DEVPOLL)
     int32_t nsize;//changes大小
     int32_t nchanges;//数量
     changes_t *changes;

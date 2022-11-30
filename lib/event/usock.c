@@ -70,8 +70,8 @@ sock_ctx *_new_sk(SOCKET fd, cbs_ctx *cbs, ud_cxt *ud)
 #if WITH_SSL
     skrw->ssl = NULL;
 #endif
-    COPY_UD(skrw->ud, ud);
     skrw->cbs = *cbs;
+    COPY_UD(skrw->ud, ud);
     buffer_init(&skrw->buf_r);
     qu_bufs_init(&skrw->buf_s, INIT_SENDBUF_LEN);
     return &skrw->sock;
@@ -111,7 +111,37 @@ void _add_fd(watcher_ctx *watcher, sock_ctx *skctx)
     map_element el;
     el.fd =skctx->fd;
     el.sock = skctx;
-    ASSERTAB(NULL == hashmap_set(watcher->element, &el), "socket repeat.");
+    sock_ctx *old = hashmap_set(watcher->element, &el);
+    if (NULL != old)
+    {
+        if (SOCK_STREAM == old->type)
+        {
+            skrw_ctx *skrw = UPCAST(old, skrw_ctx, sock);
+            if (NULL != skrw->cbs.c_cb)
+            {
+                int32_t handshake = 1;
+#if WITH_SSL
+                if (NULL != skrw->ssl)
+                {
+                    handshake = skrw->handshake;
+                }
+#endif
+                if (handshake)
+                {
+                    skrw->cbs.c_cb(watcher->ev, skrw->sock.fd, &skrw->ud);
+                }
+            }
+            skrw->sock.fd = INVALID_SOCK;
+            pool_push(&watcher->pool, old);
+        }
+        else if (SOCK_DGRAM == old->type)
+        {
+            udp_ctx *udp = UPCAST(old, udp_ctx, sock);
+            udp->sock.fd = INVALID_SOCK;
+            _free_udp(old);
+        }
+        LOG_WARN("socket %d repeat.", (int32_t)skctx->fd);
+    }
 }
 static inline void _remove_fd(watcher_ctx *watcher, SOCKET fd)
 {
@@ -330,6 +360,7 @@ static inline void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t
 {
     skrw_ctx *connsk = UPCAST(skctx, skrw_ctx, sock);
     connsk->sock.ev_cb = _on_rw_cb;
+    _del_event(watcher, connsk->sock.fd, &connsk->sock.events, connsk->sock.events, NULL);
     if (ERR_OK != sock_checkconn(connsk->sock.fd))
     {
         connsk->cbs.conn_cb(watcher->ev, INVALID_SOCK, &connsk->ud);
@@ -337,7 +368,6 @@ static inline void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t
         pool_push(&watcher->pool, &connsk->sock);
         return;
     }
-    _del_event(watcher, connsk->sock.fd, &connsk->sock.events, connsk->sock.events, NULL);
     int32_t handshake = 1;
 #if WITH_SSL
     if (NULL != connsk->ssl)

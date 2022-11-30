@@ -8,8 +8,8 @@
 #define WITH_SSL             0
 
 #define EVENT_WAIT_TIMEOUT  100
-#define INIT_EVENTS_CNT     128
-#define MAX_EVENTS_CNT      1024
+#define INIT_EVENTS_CNT     512
+#define MAX_EVENTS_CNT      2048
 #define MAX_RECV_SIZE       4096
 #define MAX_RECVFROM_SIZE   4096
 #define MAX_SEND_SIZE       4096

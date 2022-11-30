@@ -37,7 +37,7 @@
 #endif
 
 #if defined(OS_WIN)
-    //#define EV_IOCP
+    #define EV_IOCP
 #elif defined(OS_LINUX)
     #define EV_EPOLL
 #elif defined(OS_BSD) || defined(OS_DARWIN)
@@ -146,7 +146,8 @@
     #elif defined (OS_AIX)
         #include <sys/atomic_op.h>
         #include <sys/pollset.h>
-    #else
+    #elif defined (OS_HPUX)
+        #include <sys/devpoll.h>
     #endif
 #endif // OS_WIN
 

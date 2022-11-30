@@ -315,8 +315,10 @@ int32_t procpath(char path[PATH_LENS])
     PRINT("%s", "not support.");
     return ERR_FAILED;
 #endif
+#ifndef OS_AIX
     char* cur = strrchr(path, PATH_SEPARATOR);
     *cur = 0;
+#endif
 #if defined(OS_DARWIN)
     len = strlen(path);
     if ('.' == path[len - 1]
