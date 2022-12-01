@@ -144,6 +144,7 @@
         #include <sys/sysctl.h>
         #include <sys/event.h>
     #elif defined (OS_AIX)
+        #include <procinfo.h>
         #include <sys/atomic_op.h>
         #include <sys/pollset.h>
     #elif defined (OS_HPUX)

@@ -255,9 +255,59 @@ int64_t filesize(const char *file)
     }
     return st.st_size;
 }
+#ifdef OS_AIX
+static int32_t _get_proc(pid_t pid, struct procsinfo *info)
+{
+    int32_t i, cnt;
+    pid_t index = 0;
+    struct procsinfo pinfo[16];
+    while ((cnt = getprocs(pinfo, sizeof(struct procsinfo), NULL, 0, &index, 16)) > 0)
+    {
+        for (i = 0; i < cnt; i++)
+        {
+            if (SZOMB == pinfo[i].pi_state)
+            {
+                continue;
+            }
+            //pinfo[i].pi_comm ³ÌÐòÃû
+            if (pid == pinfo[i].pi_pid)
+            {
+                memcpy(info, &pinfo[i], sizeof(struct procsinfo));
+                return ERR_OK;
+            }
+        }
+    }
+    return ERR_FAILED;
+}
+static int32_t _get_proc_fullpath(pid_t pid, char path[PATH_LENS])
+{
+    struct procsinfo pinfo;
+    if (ERR_OK != _get_proc(pid, &pinfo))
+    {
+        PRINT("%s", ERRORSTR(ERRNO));
+        return ERR_FAILED;
+    }
+    char args[ONEK];
+    //args consists of a succession of strings, each terminated with a null character (ascii `\0'). 
+    //Hence, two consecutive NULLs indicate the end of the list.
+    if (ERR_OK != getargs(&pinfo, sizeof(struct procsinfo), args, sizeof(args)))
+    {
+        PRINT("%s", ERRORSTR(ERRNO));
+        return ERR_FAILED;
+    }
+    if (NULL == realpath(args, path))
+    {
+        PRINT("%s", ERRORSTR(ERRNO));
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+#endif
 int32_t procpath(char path[PATH_LENS])
 {
+#ifndef OS_AIX
     size_t len = PATH_LENS;
+#endif
 #if defined(OS_WIN)
     if (0 == GetModuleFileName(NULL, path, (DWORD)len - 1))
     {
@@ -306,25 +356,40 @@ int32_t procpath(char path[PATH_LENS])
         return ERR_FAILED;
     }
 #elif defined(OS_AIX)
-    if (NULL == getcwd(path, len))
+    if (ERR_OK != _get_proc_fullpath(getpid(), path))
     {
-        PRINT("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
 #else
     PRINT("%s", "not support.");
     return ERR_FAILED;
 #endif
-#ifndef OS_AIX
     char* cur = strrchr(path, PATH_SEPARATOR);
     *cur = 0;
-#endif
 #if defined(OS_DARWIN)
-    len = strlen(path);
-    if ('.' == path[len - 1]
-        && PATH_SEPARATOR == path[len - 2])
+    cur = strstr(path, "./");
+    if (NULL != cur)
     {
-        path[len - 2] = 0;
+        len = strlen(cur + 2);
+        memcpy(path + (cur - path), cur + 2, len);
+        len = cur - path + len;
+        path[len] = 0;
+    }
+    else
+    {
+        len = strlen(path);
+        if ('.' == path[len - 1]
+            && PATH_SEPARATOR == path[len - 2])
+        {
+            path[len - 2] = 0;
+        }
+    }
+    if (PATH_SEPARATOR == path[0]
+        && PATH_SEPARATOR == path[1])
+    {
+        len = strlen(path);
+        memcpy(path, path + 1, len - 1);
+        path[len - 1] = 0;
     }
 #endif
     return ERR_OK;

@@ -19,8 +19,6 @@
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 #define EMPTYSTR(str) ((NULL == str) || (0 == strlen(str)))
 
-#define MAX(a, b) (((a) > (b)) ? (a) : (b))
-#define MIN(a, b) (((a) < (b)) ? (a) : (b))
 //s向上 取n(n 为2的倍数)的整数倍
 #define ROUND_UP(s, n) (((s) + (n) - 1) & (~((n) - 1)))
 
