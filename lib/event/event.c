@@ -304,7 +304,7 @@ static inline int32_t _sock_send_normal(SOCKET fd, qu_bufs *buf_s, rwlock_ctx *r
 #if WITH_SSL
 static inline int32_t _sock_send_ssl(SSL *ssl, qu_bufs *buf_s, rwlock_ctx *rwlck, size_t *nsend)
 {
-    int32_t rtn, err = ERR_OK;    
+    int32_t rtn, err = ERR_OK;
     bufs_ctx buf, *tmp;
     for (;;)
     {
