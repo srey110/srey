@@ -148,6 +148,8 @@
         #include <sys/atomic_op.h>
         #include <sys/pollset.h>
     #elif defined (OS_HPUX)
+        #include <sys/param.h>
+        #include <sys/pstat.h>
         #include <sys/devpoll.h>
     #endif
 #endif // OS_WIN

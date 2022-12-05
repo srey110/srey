@@ -38,7 +38,11 @@ uint64_t timer_cur(timer_ctx *ctx)
     return (uint64_t)(ctx->timefunc() * ctx->interval);
 #else
     struct timespec ts;
+#if defined(OS_HPUX)
+    clock_gettime(CLOCK_VIRTUAL, &ts);
+#else
     clock_gettime(CLOCK_MONOTONIC, &ts);
+#endif
     return (((uint64_t)ts.tv_sec) * NANOSEC + ts.tv_nsec);
 #endif
 }

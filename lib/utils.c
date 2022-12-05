@@ -360,6 +360,16 @@ int32_t procpath(char path[PATH_LENS])
     {
         return ERR_FAILED;
     }
+#elif defined(OS_HPUX)
+    struct pst_status pst;
+    if (-1 == pstat_getproc(&pst, sizeof(pst), 0, getpid()))
+    {
+        return ERR_FAILED;
+    }
+    if (-1 == pstat_getpathname(path, len - 1, &pst.pst_fid_text))
+    {
+        return ERR_FAILED;
+    }
 #else
     PRINT("%s", "not support.");
     return ERR_FAILED;
