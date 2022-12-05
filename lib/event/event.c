@@ -76,7 +76,7 @@ SOCKET _udp(netaddr_ctx *addr)
                  NULL) < ERR_OK)
     {
         CLOSE_SOCK(fd);
-        LOG_WARN("WSAIoctl(%d, SIO_UDP_CONNRESET...) failed. %s", (int32_t)fd, ERRORSTR(ERRNO));
+        LOG_ERROR("WSAIoctl(%d, SIO_UDP_CONNRESET...) failed. %s", (int32_t)fd, ERRORSTR(ERRNO));
         return INVALID_SOCK;
     }
 #endif

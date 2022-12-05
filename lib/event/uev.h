@@ -86,7 +86,7 @@ typedef struct sock_ctx
 int32_t _add_event(watcher_ctx *watcher, SOCKET fd, int32_t *events, int32_t ev, void *arg);
 void _del_event(watcher_ctx *watcher, SOCKET fd, int32_t *events, int32_t ev, void *arg);
 
-void _cmd_send(watcher_ctx *watcher, uint32_t index, cmd_ctx *cmd);
+void _send_cmd(watcher_ctx *watcher, uint32_t index, cmd_ctx *cmd);
 void _cmd_connect(ev_ctx *ctx, SOCKET fd, sock_ctx *skctx);
 void _cmd_listen(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx);
 void _cmd_add_acpfd(watcher_ctx *watcher, uint64_t hs, SOCKET fd, struct listener_ctx *lsn);

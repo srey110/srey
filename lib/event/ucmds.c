@@ -4,11 +4,11 @@
 
 #ifndef EV_IOCP
 
-#define CMD_SEND(ev, cmd)\
+#define _SEND_CMD(ev, cmd)\
 do {\
     uint64_t hs = FD_HASH(cmd.fd);\
     watcher_ctx *watcher = GET_PTR((ev)->watcher, (ev)->nthreads, hs);\
-    _cmd_send(watcher, GET_POS(hs, watcher->npipes), &cmd);\
+    _send_cmd(watcher, GET_POS(hs, watcher->npipes), &cmd);\
 } while (0)
 
 static inline map_element *_map_get(struct hashmap *map, SOCKET fd)
@@ -36,7 +36,7 @@ void ev_close(ev_ctx *ctx, SOCKET fd)
     cmd_ctx cmd;
     cmd.cmd = CMD_DISCONN;
     cmd.fd = fd;
-    CMD_SEND(ctx, cmd);
+    _SEND_CMD(ctx, cmd);
 }
 void _on_cmd_disconn(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop)
 {
@@ -61,7 +61,7 @@ void _cmd_listen(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx)
     cmd.cmd = CMD_LSN;
     cmd.fd = fd;
     cmd.data = skctx;
-    _cmd_send(watcher, GET_POS(FD_HASH(cmd.fd), watcher->npipes), &cmd);
+    _send_cmd(watcher, GET_POS(FD_HASH(cmd.fd), watcher->npipes), &cmd);
 }
 void _on_cmd_lsn(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop)
 {
@@ -73,7 +73,7 @@ void _cmd_connect(ev_ctx *ctx, SOCKET fd, sock_ctx *skctx)
     cmd.cmd = CMD_CONN;
     cmd.fd = fd;
     cmd.data = skctx;
-    CMD_SEND(ctx, cmd);
+    _SEND_CMD(ctx, cmd);
 }
 void _on_cmd_conn(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop)
 {
@@ -95,7 +95,7 @@ void ev_send(ev_ctx *ctx, SOCKET fd, void *data, size_t len, int32_t copy)
     {
         cmd.data = data;
     }
-    CMD_SEND(ctx, cmd);
+    _SEND_CMD(ctx, cmd);
 }
 void ev_sendto(ev_ctx *ctx, SOCKET fd, const char *host, const uint16_t port, void *data, size_t len)
 {
@@ -113,7 +113,7 @@ void ev_sendto(ev_ctx *ctx, SOCKET fd, const char *host, const uint16_t port, vo
         return;
     }
     memcpy((char *)cmd.data + sizeof(netaddr_ctx), data, len);
-    CMD_SEND(ctx, cmd);
+    _SEND_CMD(ctx, cmd);
 }
 void _on_cmd_send(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop)
 {
@@ -135,7 +135,7 @@ void _cmd_add_acpfd(watcher_ctx *watcher, uint64_t hs, SOCKET fd, struct listene
     cmd.cmd = CMD_ADDACP;
     cmd.fd = fd;
     cmd.data = lsn;
-    _cmd_send(watcher, GET_POS(hs, watcher->npipes), &cmd);
+    _send_cmd(watcher, GET_POS(hs, watcher->npipes), &cmd);
 }
 void _on_cmd_addacp(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop)
 {
@@ -147,7 +147,7 @@ void _cmd_add_udp(ev_ctx *ctx, SOCKET fd, sock_ctx *skctx)
     cmd.cmd = CMD_ADDUDP;
     cmd.fd = fd;
     cmd.data = skctx;
-    CMD_SEND(ctx, cmd);
+    _SEND_CMD(ctx, cmd);
 }
 void _on_cmd_add_udp(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop)
 {

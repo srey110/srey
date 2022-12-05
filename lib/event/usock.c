@@ -174,18 +174,6 @@ static inline int32_t _ssl_handshake_acpt(watcher_ctx *watcher, skrw_ctx *skrw)
             pool_push(&watcher->pool, &skrw->sock);
             return ERR_FAILED;
         }
-#ifdef EV_EVPORT
-        if (ERR_OK != _add_event(watcher, skrw->sock.fd, &skrw->sock.events, EVENT_READ, &skrw->sock))
-        {
-            if (NULL != skrw->cbs.c_cb)
-            {
-                skrw->cbs.c_cb(watcher->ev, skrw->sock.fd, &skrw->ud);
-            }
-            _remove_fd(watcher, skrw->sock.fd);
-            pool_push(&watcher->pool, &skrw->sock);
-            return ERR_FAILED;
-        }
-#endif
         skrw->handshake = 1;
         return ERR_OK;
     }
@@ -223,18 +211,6 @@ static inline int32_t _ssl_handshake_conn(watcher_ctx *watcher, skrw_ctx *skrw)
             pool_push(&watcher->pool, &skrw->sock);
             return ERR_FAILED;
         }
-#ifdef EV_EVPORT
-        if (ERR_OK != _add_event(watcher, skrw->sock.fd, &skrw->sock.events, EVENT_READ, &skrw->sock))
-        {
-            if (NULL != skrw->cbs.c_cb)
-            {
-                skrw->cbs.c_cb(watcher->ev, skrw->sock.fd, &skrw->ud);
-            }
-            _remove_fd(watcher, skrw->sock.fd);
-            pool_push(&watcher->pool, &skrw->sock);
-            return ERR_FAILED;
-        }
-#endif
         skrw->handshake = 1;
         return ERR_OK;
     }
@@ -300,9 +276,6 @@ static inline int32_t _on_r_cb(watcher_ctx *watcher, skrw_ctx *skrw)
         {
             return ERR_FAILED;
         }
-#ifdef EV_EVPORT
-        return ERR_OK;
-#endif
     }
 #endif
     return _tcp_recv(watcher, skrw);

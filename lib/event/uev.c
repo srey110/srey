@@ -25,7 +25,7 @@ static inline int _map_compare(const void *a, const void *b, void *ud)
 {
     return (int)(((const map_element *)a)->fd - ((const map_element *)b)->fd);
 }
-void _cmd_send(watcher_ctx *watcher, uint32_t index, cmd_ctx *cmd)
+void _send_cmd(watcher_ctx *watcher, uint32_t index, cmd_ctx *cmd)
 {
     ASSERTAB(sizeof(cmd_ctx) == write(watcher->pipes[index].pipes[1], cmd, sizeof(cmd_ctx)), "pipe write error.");
 }
@@ -519,7 +519,7 @@ static inline int32_t _init_evfd()
 #elif defined(EV_POLLSET)
     evfd = pollset_create(-1);
 #elif defined(EV_DEVPOLL)
-    evfd = open("/dev/poll", O_RDWR, 0);
+    evfd = open("/dev/poll", O_RDWR);
 #endif
     ASSERTAB(INVALID_FD != evfd, ERRORSTR(ERRNO));
     return evfd;
@@ -553,7 +553,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads)
         watcher->index = i;
         watcher->ev = ctx;
 #if defined(EV_KQUEUE)|| defined(EV_POLLSET) || defined(EV_DEVPOLL)
-        watcher->nsize = INIT_EVENTS_CNT;
+        watcher->nsize = EVENT_CHANGES_CNT;
         watcher->nchanges = 0;
         MALLOC(watcher->changes, sizeof(changes_t) * watcher->nsize);
 #endif
@@ -586,7 +586,7 @@ void ev_free(ev_ctx *ctx)
     cmd.cmd = CMD_STOP;
     for (i = 0; i < ctx->nthreads; i++)
     {
-        _cmd_send(&ctx->watcher[i], ctx->watcher[i].npipes - 1, &cmd);
+        _send_cmd(&ctx->watcher[i], ctx->watcher[i].npipes - 1, &cmd);
     }
     for (i = 0; i < ctx->nthreads; i++)
     {

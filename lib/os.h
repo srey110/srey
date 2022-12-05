@@ -44,6 +44,7 @@
     #define EV_KQUEUE
 #elif defined(OS_SUN)
     #define EV_EVPORT
+    //#define EV_DEVPOLL
 #elif defined(OS_AIX)
     #define EV_POLLSET
 #elif defined(OS_HPUX)
@@ -140,6 +141,7 @@
         #include <port.h>
         #include <atomic.h>
         #include <sys/filio.h>
+        #include <sys/devpoll.h>
     #elif defined (OS_BSD)
         #include <sys/sysctl.h>
         #include <sys/event.h>
