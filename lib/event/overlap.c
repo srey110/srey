@@ -205,6 +205,7 @@ static inline int32_t _ssl_handshake_acpt(watcher_ctx *watcher, overlap_tcp_ctx 
         ol->handshake = 1;
         return ERR_OK;
     }
+    //0
     if (ERR_OK != _post_recv(ol))
     {
         worker_removesk(watcher->ev->worker, ol->ol_r.fd);
@@ -230,6 +231,7 @@ static inline int32_t _ssl_handshake_conn(watcher_ctx *watcher, overlap_tcp_ctx 
         ol->handshake = 1;
         return ERR_OK;
     }
+    //0
     if (ERR_OK != _post_recv(ol))
     {
         ol->cbs.conn_cb(watcher->ev, INVALID_SOCK, &ol->ud);
@@ -243,10 +245,7 @@ static inline int32_t _ssl_handshake(watcher_ctx *watcher, overlap_tcp_ctx *ol)
     {
         return _ssl_handshake_acpt(watcher, ol);
     }
-    else
-    {
-        return _ssl_handshake_conn(watcher, ol);
-    }
+    return _ssl_handshake_conn(watcher, ol);
 }
 #endif
 static inline void _tcp_recv(watcher_ctx *watcher, overlap_tcp_ctx *ol)

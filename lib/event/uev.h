@@ -15,12 +15,15 @@
     typedef struct kevent changes_t;
 #elif defined(EV_EVPORT)
     typedef port_event_t events_t;
+    #define MANUAL_ADD
 #elif defined(EV_POLLSET)
     typedef struct pollfd events_t;
     typedef struct poll_ctl changes_t;
+    #define MANUAL_REMOVE
 #elif defined(EV_DEVPOLL)
     typedef struct pollfd events_t;
     typedef struct pollfd changes_t;
+    #define MANUAL_REMOVE
 #endif
 struct conn_ctx;
 struct listener_ctx;

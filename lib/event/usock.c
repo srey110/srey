@@ -156,7 +156,7 @@ static inline int32_t _ssl_handshake_acpt(watcher_ctx *watcher, skrw_ctx *skrw)
     int32_t rtn = evssl_tryacpt(skrw->ssl);
     if (ERR_FAILED == rtn)
     {
-#ifdef EV_POLLSET
+#ifdef MANUAL_REMOVE
         _del_event(watcher, skrw->sock.fd, &skrw->sock.events, skrw->sock.events, &skrw->sock);
 #endif
         _remove_fd(watcher, skrw->sock.fd);
@@ -167,7 +167,7 @@ static inline int32_t _ssl_handshake_acpt(watcher_ctx *watcher, skrw_ctx *skrw)
     {
         if (ERR_OK != skrw->cbs.acp_cb(watcher->ev, skrw->sock.fd, &skrw->ud))
         {
-#ifdef EV_POLLSET
+#ifdef MANUAL_REMOVE
             _del_event(watcher, skrw->sock.fd, &skrw->sock.events, skrw->sock.events, &skrw->sock);
 #endif
             _remove_fd(watcher, skrw->sock.fd);
@@ -178,7 +178,7 @@ static inline int32_t _ssl_handshake_acpt(watcher_ctx *watcher, skrw_ctx *skrw)
         return ERR_OK;
     }
     //0
-#ifdef EV_EVPORT
+#ifdef MANUAL_ADD
     if (ERR_OK != _add_event(watcher, skrw->sock.fd, &skrw->sock.events, EVENT_READ, &skrw->sock))
     {
         _remove_fd(watcher, skrw->sock.fd);
@@ -193,7 +193,7 @@ static inline int32_t _ssl_handshake_conn(watcher_ctx *watcher, skrw_ctx *skrw)
     if (ERR_FAILED == rtn)
     {
         skrw->cbs.conn_cb(watcher->ev, INVALID_SOCK, &skrw->ud);
-#ifdef EV_POLLSET
+#ifdef MANUAL_REMOVE
         _del_event(watcher, skrw->sock.fd, &skrw->sock.events, skrw->sock.events, &skrw->sock);
 #endif
         _remove_fd(watcher, skrw->sock.fd);
@@ -204,7 +204,7 @@ static inline int32_t _ssl_handshake_conn(watcher_ctx *watcher, skrw_ctx *skrw)
     {
         if (ERR_OK != skrw->cbs.conn_cb(watcher->ev, skrw->sock.fd, &skrw->ud))
         {
-#ifdef EV_POLLSET
+#ifdef MANUAL_REMOVE
             _del_event(watcher, skrw->sock.fd, &skrw->sock.events, skrw->sock.events, &skrw->sock);
 #endif
             _remove_fd(watcher, skrw->sock.fd);
@@ -215,7 +215,7 @@ static inline int32_t _ssl_handshake_conn(watcher_ctx *watcher, skrw_ctx *skrw)
         return ERR_OK;
     }
     //0
-#ifdef EV_EVPORT
+#ifdef MANUAL_ADD
     if (ERR_OK != _add_event(watcher, skrw->sock.fd, &skrw->sock.events, EVENT_READ, &skrw->sock))
     {
         skrw->cbs.conn_cb(watcher->ev, INVALID_SOCK, &skrw->ud);
@@ -246,7 +246,7 @@ static inline int32_t _tcp_recv(watcher_ctx *watcher, skrw_ctx *skrw)
     {
         skrw->cbs.r_cb(watcher->ev, skrw->sock.fd, &skrw->buf_r, nread, &skrw->ud);
     }
-#ifdef EV_EVPORT
+#ifdef MANUAL_ADD
     if (ERR_OK == rtn)
     {
         rtn = _add_event(watcher, skrw->sock.fd, &skrw->sock.events, EVENT_READ, &skrw->sock);
@@ -258,7 +258,7 @@ static inline int32_t _tcp_recv(watcher_ctx *watcher, skrw_ctx *skrw)
         {
             skrw->cbs.c_cb(watcher->ev, skrw->sock.fd, &skrw->ud);
         }
-#ifdef EV_POLLSET
+#ifdef MANUAL_REMOVE
         _del_event(watcher, skrw->sock.fd, &skrw->sock.events, skrw->sock.events, &skrw->sock);
 #endif
         _remove_fd(watcher, skrw->sock.fd);
@@ -298,7 +298,7 @@ static inline void _on_w_cb(watcher_ctx *watcher, skrw_ctx *skrw)
         _del_event(watcher, skrw->sock.fd, &skrw->sock.events, EVENT_WRITE, &skrw->sock);
         return;
     }
-#ifdef EV_EVPORT
+#ifdef MANUAL_ADD
     _add_event(watcher, skrw->sock.fd, &skrw->sock.events, EVENT_WRITE, &skrw->sock);
 #endif
 }
@@ -481,7 +481,7 @@ static inline void _on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t 
 #ifndef SO_REUSEPORT
     mutex_unlock(&acpt->lsn->lsnlck);
 #endif
-#ifdef EV_EVPORT
+#ifdef MANUAL_ADD
     _add_event(watcher, acpt->sock.fd, &acpt->sock.events, ev, &acpt->sock);
 #endif
 }
@@ -621,7 +621,7 @@ void _udp_close(watcher_ctx *watcher, sock_ctx *skctx)
     key.fd = skctx->fd;
     if (NULL != hashmap_delete(watcher->element, &key))
     {
-#ifdef EV_POLLSET
+#ifdef MANUAL_REMOVE
         _del_event(watcher, skctx->fd, &skctx->events, skctx->events, skctx);
 #endif
         qu_sock_push(&watcher->qu_udpfree, &skctx);
@@ -663,7 +663,7 @@ static inline int32_t _on_udp_rcb(watcher_ctx *watcher, udp_ctx *udp)
             }
         }
     }
-#ifdef EV_EVPORT
+#ifdef MANUAL_ADD
     if (ERR_OK == rtn)
     {
         rtn = _add_event(watcher, udp->sock.fd, &udp->sock.events, EVENT_READ, &udp->sock);
@@ -700,7 +700,7 @@ static inline void _on_udp_wcb(watcher_ctx *watcher, udp_ctx *udp)
         _del_event(watcher, udp->sock.fd, &udp->sock.events, EVENT_WRITE, &udp->sock);
         return;
     }
-#ifdef EV_EVPORT
+#ifdef MANUAL_ADD
     _add_event(watcher, udp->sock.fd, &udp->sock.events, EVENT_WRITE, &udp->sock);
 #endif
 }

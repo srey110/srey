@@ -32,10 +32,8 @@ static void _init_exfuncs(ev_ctx *ctx)
         ASSERTAB(INVALID_SOCK != sock, ERRORSTR(ERRNO));
         GUID accept_uid = WSAID_ACCEPTEX;
         GUID connect_uid = WSAID_CONNECTEX;
-        GUID disconnect_uid = WSAID_DISCONNECTEX;
         _exfuncs.acceptex = _exfunc(sock, &accept_uid);
         _exfuncs.connectex = _exfunc(sock, &connect_uid);
-        _exfuncs.disconnectex = _exfunc(sock, &disconnect_uid);
         CLOSE_SOCK(sock);
     }
 }
@@ -130,6 +128,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads)
     ctx->worker = worker_init(ctx, ctx->nthreads, ctx->nthreads * 2);
     MALLOC(ctx->watcher, sizeof(watcher_ctx) * ctx->nthreads);
     watcher_ctx *watcher;
+    LOG_INFO("event type: EV_IOCP");
     for (uint32_t i = 0; i < ctx->nthreads; i++)
     {
         watcher = &ctx->watcher[i];

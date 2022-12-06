@@ -133,7 +133,7 @@ int32_t evssl_read(SSL *ssl, char *buf, size_t len)
             }
             return ERR_FAILED;
         }
-    } while (nread < len);
+    } while (nread < (int32_t)len);
     return nread;
 }
 int32_t evssl_send(SSL *ssl, char *buf, size_t len)
@@ -154,7 +154,7 @@ int32_t evssl_send(SSL *ssl, char *buf, size_t len)
             }
             return ERR_FAILED;
         }
-    } while (nsend < len);
+    } while (nsend < (int32_t)len);
     return nsend;
 }
 void evssl_shutdown(SSL *ssl, SOCKET fd)

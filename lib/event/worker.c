@@ -178,7 +178,7 @@ static void _on_cmd_remove(runner_ctx *runner, cmd_ctx *cmd, int32_t *stop)
         delay.timeout = 0;
         delay.sock = el->sock;
         arr_delay_push_back(&runner->arrdelay, &delay);
-    }  
+    }
     map_element key;
     key.fd = cmd->fd;
     hashmap_delete(runner->element, &key);

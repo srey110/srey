@@ -41,7 +41,7 @@ static void _cmd_loop(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev, int32_t
             cmd_cbs[cmds[i].cmd](watcher, &cmds[i], stop);
         }
     }
-#ifdef EV_EVPORT
+#ifdef MANUAL_ADD
     ASSERTAB(ERR_OK == _add_event(watcher, skctx->fd, &skctx->events, ev, skctx), "add pipe in loop error.");
 #endif
 }
@@ -69,7 +69,7 @@ static void _init_cmd(watcher_ctx *watcher)
         ASSERTAB(ERR_OK == _add_event(watcher, skctx->fd, &skctx->events, EVENT_READ, skctx), "add pipe in loop error");
     }
 }
-#if defined(EV_KQUEUE)|| defined(EV_POLLSET) || defined(EV_DEVPOLL)
+#if defined(EV_KQUEUE) || defined(EV_POLLSET) || defined(EV_DEVPOLL)
 static inline void _commit_changes(watcher_ctx *watcher)
 {
     if (watcher->nchanges >= watcher->nsize)
@@ -333,7 +333,7 @@ static inline int32_t _parse_event(events_t *ev, SOCKET *fd, void **arg)
         {
             rtn |= EVENT_WRITE;
         }
-    }    
+    }
     *arg = ev->data.ptr;
 #elif defined(EV_KQUEUE)
     if (EVFILT_READ == ev->filter)
@@ -413,19 +413,22 @@ static void _loop_event(void *arg)
 {
     watcher_ctx *watcher = (watcher_ctx *)arg;
     _init_cmd(watcher);
-#if defined(EV_EVPORT)
-    uint32_t nget;
-#endif
-#if defined(EV_DEVPOLL)
-    struct dvpoll dvp;
-#endif
 #if defined(EV_EPOLL) || defined(EV_POLLSET) || defined(EV_DEVPOLL)
     int32_t timeout = EVENT_WAIT_TIMEOUT;
 #else
     struct timespec timeout;
     fill_timespec(&timeout, EVENT_WAIT_TIMEOUT);
 #endif
-    SOCKET fd;
+#if defined(EV_DEVPOLL)
+    struct dvpoll dvp;
+    dvp.dp_fds = watcher->events;
+    dvp.dp_nfds = watcher->nevents;
+    dvp.dp_timeout = timeout;
+#endif
+#if defined(EV_EVPORT)
+    uint32_t nget;
+#endif
+    SOCKET fd = INVALID_SOCK;
     sock_ctx *skctx;
     sock_ctx **udp;
     int32_t i, cnt, ev, stop = 0;
@@ -463,9 +466,6 @@ static void _loop_event(void *arg)
             }
             watcher->nchanges = 0;
         }
-        dvp.dp_fds = watcher->events;
-        dvp.dp_nfds = watcher->nevents;
-        dvp.dp_timeout = timeout;
         cnt = ioctl(watcher->evfd, DP_POLL, &dvp);
 #endif
         for (i = 0; i < cnt; i++)
@@ -477,6 +477,12 @@ static void _loop_event(void *arg)
             if (NULL != skctx)
             {
                 skctx->ev_cb(watcher, skctx, ev, &stop);
+            }
+            else
+            {
+                LOG_ERROR("can't find socket %d in map.", (int32_t)fd);
+                int32_t oldev = (EVENT_READ | EVENT_WRITE);
+                _del_event(watcher, fd, &oldev, EVENT_READ | EVENT_WRITE, NULL);
             }
         }
         while (NULL != (udp = qu_sock_pop(&watcher->qu_udpfree)))
@@ -491,6 +497,10 @@ static void _loop_event(void *arg)
             FREE(watcher->events);
             watcher->nevents *= 2;
             MALLOC(watcher->events, sizeof(events_t) * watcher->nevents);
+#if defined(EV_DEVPOLL)
+            dvp.dp_fds = watcher->events;
+            dvp.dp_nfds = watcher->nevents;
+#endif
         }
     }
 }
@@ -512,14 +522,19 @@ static inline int32_t _init_evfd()
     int32_t evfd = INVALID_FD;
 #if defined(EV_EPOLL)
     evfd = epoll_create1(EPOLL_CLOEXEC);
+    LOG_INFO("event type: EV_EPOLL");
 #elif defined(EV_KQUEUE)
     evfd = kqueue();
+    LOG_INFO("event type: EV_KQUEUE");
 #elif defined(EV_EVPORT)
     evfd = port_create();
+    LOG_INFO("event type: EV_EVPORT");
 #elif defined(EV_POLLSET)
     evfd = pollset_create(-1);
+    LOG_INFO("event type: EV_POLLSET");
 #elif defined(EV_DEVPOLL)
     evfd = open("/dev/poll", O_RDWR);
+    LOG_INFO("event type: EV_DEVPOLL");
 #endif
     ASSERTAB(INVALID_FD != evfd, ERRORSTR(ERRNO));
     return evfd;
@@ -552,7 +567,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads)
         watcher = &ctx->watcher[i];
         watcher->index = i;
         watcher->ev = ctx;
-#if defined(EV_KQUEUE)|| defined(EV_POLLSET) || defined(EV_DEVPOLL)
+#if defined(EV_KQUEUE) || defined(EV_POLLSET) || defined(EV_DEVPOLL)
         watcher->nsize = EVENT_CHANGES_CNT;
         watcher->nchanges = 0;
         MALLOC(watcher->changes, sizeof(changes_t) * watcher->nsize);
@@ -602,7 +617,7 @@ void ev_free(ev_ctx *ctx)
 #else
         close(watcher->evfd); 
 #endif
-#if defined(EV_KQUEUE)|| defined(EV_POLLSET) || defined(EV_DEVPOLL)
+#if defined(EV_KQUEUE) || defined(EV_POLLSET) || defined(EV_DEVPOLL)
         FREE(watcher->changes);
 #endif
         FREE(watcher->events);

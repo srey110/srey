@@ -221,8 +221,8 @@ void test_system(CuTest* tc)
     FREE(enurl);
 
     SOCKET fd = 12454;
-    PRINT("hash:%"PRIu64"", hash(&fd, sizeof(fd)));
-    PRINT("fnv1a_hash:%"PRIu64"", fnv1a_hash(&fd, sizeof(fd)));
+    PRINT("hash:%"PRIu64"", hash((const char *)&fd, sizeof(fd)));
+    PRINT("fnv1a_hash:%"PRIu64"", fnv1a_hash((const char *)&fd, sizeof(fd)));
 
     char *buf;
     MALLOC(buf, (size_t)32);

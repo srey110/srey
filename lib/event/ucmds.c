@@ -20,11 +20,7 @@ static inline map_element *_map_get(struct hashmap *map, SOCKET fd)
 sock_ctx *_map_getskctx(struct hashmap *map, SOCKET fd)
 {
     map_element *el = _map_get(map, fd);
-    if (NULL == el)
-    {
-        return NULL;
-    }
-    return el->sock;
+    return NULL == el ? NULL : el->sock;
 }
 void _on_cmd_stop(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop)
 {
