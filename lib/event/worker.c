@@ -77,8 +77,7 @@ do {\
 
 static inline uint64_t _map_hash(const void *item, uint64_t seed0, uint64_t seed1)
 {
-    SOCKET fd = ((const map_element *)item)->fd;
-    return FD_HASH(fd);
+    return FD_HASH(((const map_element *)item)->fd);
 }
 static inline int _map_compare(const void *a, const void *b, void *ud)
 {

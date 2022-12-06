@@ -18,8 +18,7 @@ typedef struct pip_ctx
 
 static inline uint64_t _map_hash(const void *item, uint64_t seed0, uint64_t seed1)
 {
-    SOCKET fd = ((const map_element *)item)->fd;
-    return FD_HASH(fd);
+    return FD_HASH(((const map_element *)item)->fd);
 }
 static inline int _map_compare(const void *a, const void *b, void *ud)
 {
@@ -69,7 +68,7 @@ static void _init_cmd(watcher_ctx *watcher)
         ASSERTAB(ERR_OK == _add_event(watcher, skctx->fd, &skctx->events, EVENT_READ, skctx), "add pipe in loop error");
     }
 }
-#if defined(EV_KQUEUE) || defined(EV_POLLSET) || defined(EV_DEVPOLL)
+#ifdef COMMIT_NCHANGES
 static inline void _commit_changes(watcher_ctx *watcher)
 {
     if (watcher->nchanges >= watcher->nsize)
@@ -419,13 +418,13 @@ static void _loop_event(void *arg)
     struct timespec timeout;
     fill_timespec(&timeout, EVENT_WAIT_TIMEOUT);
 #endif
-#if defined(EV_DEVPOLL)
+#ifdef EV_DEVPOLL
     struct dvpoll dvp;
     dvp.dp_fds = watcher->events;
     dvp.dp_nfds = watcher->nevents;
     dvp.dp_timeout = timeout;
 #endif
-#if defined(EV_EVPORT)
+#ifdef EV_EVPORT
     uint32_t nget;
 #endif
     SOCKET fd = INVALID_SOCK;
@@ -471,7 +470,7 @@ static void _loop_event(void *arg)
         for (i = 0; i < cnt; i++)
         {
             ev = _parse_event(&watcher->events[i], &fd, (void **)&skctx);
-#if defined(EV_POLLSET) || defined(EV_DEVPOLL)
+#ifdef NO_UDATA
             skctx = _map_getskctx(watcher->element, fd);
 #endif
             if (NULL != skctx)
@@ -497,7 +496,7 @@ static void _loop_event(void *arg)
             FREE(watcher->events);
             watcher->nevents *= 2;
             MALLOC(watcher->events, sizeof(events_t) * watcher->nevents);
-#if defined(EV_DEVPOLL)
+#ifdef EV_DEVPOLL
             dvp.dp_fds = watcher->events;
             dvp.dp_nfds = watcher->nevents;
 #endif
@@ -567,7 +566,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads)
         watcher = &ctx->watcher[i];
         watcher->index = i;
         watcher->ev = ctx;
-#if defined(EV_KQUEUE) || defined(EV_POLLSET) || defined(EV_DEVPOLL)
+#ifdef COMMIT_NCHANGES
         watcher->nsize = EVENT_CHANGES_CNT;
         watcher->nchanges = 0;
         MALLOC(watcher->changes, sizeof(changes_t) * watcher->nsize);
@@ -617,7 +616,7 @@ void ev_free(ev_ctx *ctx)
 #else
         close(watcher->evfd); 
 #endif
-#if defined(EV_KQUEUE) || defined(EV_POLLSET) || defined(EV_DEVPOLL)
+#ifdef COMMIT_NCHANGES
         FREE(watcher->changes);
 #endif
         FREE(watcher->events);

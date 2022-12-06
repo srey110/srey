@@ -20,7 +20,7 @@ void ev_close(ev_ctx *ctx, SOCKET fd);
 //¹«¹²º¯Êý
 void _bufs_clear(qu_bufs *bufs);
 int32_t _set_sockops(SOCKET fd);
-//SOCK_DGRAM  SOCK_STREAM
+//SOCK_DGRAM  SOCK_STREAM  AF_INET  AF_INET6
 SOCKET _create_sock(int32_t type, int32_t family);
 SOCKET _listen(netaddr_ctx *addr);
 SOCKET _udp(netaddr_ctx *addr);

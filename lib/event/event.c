@@ -93,7 +93,7 @@ SOCKET _udp(netaddr_ctx *addr)
 #if WITH_SSL
 static inline int32_t _sock_read_ssl(SSL *ssl, IOV_TYPE *iov, uint32_t niov)
 {
-    int32_t rtn, nread = 0;    
+    int32_t rtn, nread = 0;
     for (uint32_t i = 0; i < niov; i++)
     {
         rtn = evssl_read(ssl, iov[i].IOV_PTR_FIELD, (size_t)iov[i].IOV_LEN_FIELD);
