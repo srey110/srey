@@ -7,7 +7,6 @@
 
 #ifndef EV_IOCP
 
-#define CMD_MAX_NREAD                 64
 static atomic_t _init_once = 0;
 static void(*cmd_cbs[CMD_TOTAL])(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop);
 typedef struct pip_ctx
@@ -32,14 +31,19 @@ static void _cmd_loop(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev, int32_t
 {
     int32_t i, cnt, nread;
     cmd_ctx cmds[CMD_MAX_NREAD];
-    while ((nread = read(skctx->fd, cmds, sizeof(cmds))) > 0)
+    do
     {
+        nread = read(skctx->fd, cmds, sizeof(cmds));
+        if (nread <= 0)
+        {
+            break;
+        }
         cnt = nread / sizeof(cmd_ctx);
         for (i = 0; i < cnt; i++)
         {
             cmd_cbs[cmds[i].cmd](watcher, &cmds[i], stop);
         }
-    }
+    }while (nread == sizeof(cmds));
 #ifdef MANUAL_ADD
     ASSERTAB(ERR_OK == _add_event(watcher, skctx->fd, &skctx->events, ev, skctx), "add pipe in loop error.");
 #endif
@@ -551,7 +555,6 @@ static struct pip_ctx *_new_pips(uint32_t npipes)
 }
 void ev_init(ev_ctx *ctx, uint32_t nthreads)
 {
-    ctx->stop = 0;
     ctx->nthreads = (0 == nthreads ? 1 : nthreads);
     mutex_init(&ctx->qulsnlck);
     qu_lsn_init(&ctx->qulsn, 8);
@@ -595,7 +598,6 @@ static void _free_pips(watcher_ctx *watcher)
 void ev_free(ev_ctx *ctx)
 {
     uint32_t i;
-    ctx->stop = 1;
     cmd_ctx cmd;
     cmd.cmd = CMD_STOP;
     for (i = 0; i < ctx->nthreads; i++)
