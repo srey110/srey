@@ -79,7 +79,7 @@ SSL *evssl_setfd(evssl_ctx *evssl, SOCKET fd)
     SSL *ssl = SSL_new(evssl->ssl);
     if (NULL == ssl)
     {
-        LOG_WARN("%s", SSL_ERR());
+        LOG_ERROR("SSL_new failed.");
         return NULL;
     }
     if (1 != SSL_set_fd(ssl, (int32_t)fd))

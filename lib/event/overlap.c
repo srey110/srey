@@ -449,7 +449,7 @@ static inline void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD b
         else if(1 == rtn)
         {
             ol->handshake = 1;
-        } 
+        }
         else//-1
         {
             ol->cbs.conn_cb(watcher->ev, INVALID_SOCK, &ol->ud);

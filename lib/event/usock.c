@@ -140,7 +140,7 @@ void _add_fd(watcher_ctx *watcher, sock_ctx *skctx)
             udp->sock.fd = INVALID_SOCK;
             _free_udp(old);
         }
-        LOG_WARN("socket %d repeat.", (int32_t)skctx->fd);
+        LOG_ERROR("socket %d repeat.", (int32_t)skctx->fd);
     }
 }
 static inline void _remove_fd(watcher_ctx *watcher, SOCKET fd)

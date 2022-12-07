@@ -481,7 +481,7 @@ static void _loop_event(void *arg)
             {
                 LOG_ERROR("can't find socket %d in map.", (int32_t)fd);
                 int32_t oldev = (EVENT_READ | EVENT_WRITE);
-                _del_event(watcher, fd, &oldev, EVENT_READ | EVENT_WRITE, NULL);
+                _del_event(watcher, fd, &oldev, oldev, NULL);
             }
         }
         while (NULL != (udp = qu_sock_pop(&watcher->qu_udpfree)))
