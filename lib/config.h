@@ -7,6 +7,7 @@
 #define PRINT_DEBUG          0
 #define WITH_SSL             1
 
+#define CMD_MAX_NREAD       64
 #define EVENT_WAIT_TIMEOUT  100
 #define EVENT_CHANGES_CNT   128
 #define INIT_EVENTS_CNT     256
