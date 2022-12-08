@@ -14,11 +14,7 @@ void test_memory(CuTest* tc)
     REALLOC(pNew, pBuf, (size_t)40);    
     FREE(pNew);
 }
-CuSuite* test_base(void)
+void test_base(CuSuite* suite)
 {
-    CuSuite* suite = CuSuiteNew();
-
     SUITE_ADD_TEST(suite, test_memory);
-
-    return suite;
 }

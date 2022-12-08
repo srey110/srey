@@ -111,37 +111,7 @@ void _add_fd(watcher_ctx *watcher, sock_ctx *skctx)
     map_element el;
     el.fd =skctx->fd;
     el.sock = skctx;
-    sock_ctx *old = hashmap_set(watcher->element, &el);
-    if (NULL != old)
-    {
-        if (SOCK_STREAM == old->type)
-        {
-            skrw_ctx *skrw = UPCAST(old, skrw_ctx, sock);
-            if (NULL != skrw->cbs.c_cb)
-            {
-                int32_t handshake = 1;
-#if WITH_SSL
-                if (NULL != skrw->ssl)
-                {
-                    handshake = skrw->handshake;
-                }
-#endif
-                if (handshake)
-                {
-                    skrw->cbs.c_cb(watcher->ev, skrw->sock.fd, &skrw->ud);
-                }
-            }
-            skrw->sock.fd = INVALID_SOCK;
-            pool_push(&watcher->pool, old);
-        }
-        else if (SOCK_DGRAM == old->type)
-        {
-            udp_ctx *udp = UPCAST(old, udp_ctx, sock);
-            udp->sock.fd = INVALID_SOCK;
-            _free_udp(old);
-        }
-        LOG_ERROR("socket %d repeat.", (int32_t)skctx->fd);
-    }
+    ASSERTAB(NULL == hashmap_set(watcher->element, &el), "socket repeat.");
 }
 static inline void _remove_fd(watcher_ctx *watcher, SOCKET fd)
 {
@@ -153,18 +123,17 @@ static inline void _remove_fd(watcher_ctx *watcher, SOCKET fd)
 #if WITH_SSL
 static inline int32_t _ssl_handshake_acpt(watcher_ctx *watcher, skrw_ctx *skrw)
 {
-    int32_t rtn = evssl_tryacpt(skrw->ssl);
-    if (ERR_FAILED == rtn)
+    int32_t rtn = ERR_FAILED;
+    switch (evssl_tryacpt(skrw->ssl))
     {
+    case ERR_FAILED:
 #ifdef MANUAL_REMOVE
         _del_event(watcher, skrw->sock.fd, &skrw->sock.events, skrw->sock.events, &skrw->sock);
 #endif
         _remove_fd(watcher, skrw->sock.fd);
         pool_push(&watcher->pool, &skrw->sock);
-        return ERR_FAILED;
-    }
-    if (1 == rtn)
-    {
+        break;
+    case 1:
         if (ERR_OK != skrw->cbs.acp_cb(watcher->ev, skrw->sock.fd, &skrw->ud))
         {
 #ifdef MANUAL_REMOVE
@@ -172,36 +141,37 @@ static inline int32_t _ssl_handshake_acpt(watcher_ctx *watcher, skrw_ctx *skrw)
 #endif
             _remove_fd(watcher, skrw->sock.fd);
             pool_push(&watcher->pool, &skrw->sock);
-            return ERR_FAILED;
+            break;
         }
         skrw->handshake = 1;
-        return ERR_OK;
-    }
-    //0
+        rtn = ERR_OK;
+        break;
+    case ERR_OK:
 #ifdef MANUAL_ADD
-    if (ERR_OK != _add_event(watcher, skrw->sock.fd, &skrw->sock.events, EVENT_READ, &skrw->sock))
-    {
-        _remove_fd(watcher, skrw->sock.fd);
-        pool_push(&watcher->pool, &skrw->sock);
-    }
+        if (ERR_OK != _add_event(watcher, skrw->sock.fd, &skrw->sock.events, EVENT_READ, &skrw->sock))
+        {
+            _remove_fd(watcher, skrw->sock.fd);
+            pool_push(&watcher->pool, &skrw->sock);
+        }
 #endif
-    return ERR_FAILED;
+        break;
+    }
+    return rtn;
 }
 static inline int32_t _ssl_handshake_conn(watcher_ctx *watcher, skrw_ctx *skrw)
 {
-    int32_t rtn = evssl_tryconn(skrw->ssl);
-    if (ERR_FAILED == rtn)
+    int32_t rtn = ERR_FAILED;
+    switch (evssl_tryconn(skrw->ssl))
     {
+    case ERR_FAILED:
         skrw->cbs.conn_cb(watcher->ev, INVALID_SOCK, &skrw->ud);
 #ifdef MANUAL_REMOVE
         _del_event(watcher, skrw->sock.fd, &skrw->sock.events, skrw->sock.events, &skrw->sock);
 #endif
         _remove_fd(watcher, skrw->sock.fd);
         pool_push(&watcher->pool, &skrw->sock);
-        return ERR_FAILED;
-    }
-    if (1 == rtn)
-    {
+        break;
+    case 1:
         if (ERR_OK != skrw->cbs.conn_cb(watcher->ev, skrw->sock.fd, &skrw->ud))
         {
 #ifdef MANUAL_REMOVE
@@ -209,21 +179,23 @@ static inline int32_t _ssl_handshake_conn(watcher_ctx *watcher, skrw_ctx *skrw)
 #endif
             _remove_fd(watcher, skrw->sock.fd);
             pool_push(&watcher->pool, &skrw->sock);
-            return ERR_FAILED;
+            break;
         }
         skrw->handshake = 1;
-        return ERR_OK;
-    }
-    //0
+        rtn = ERR_OK;
+        break;
+    case ERR_OK:
 #ifdef MANUAL_ADD
-    if (ERR_OK != _add_event(watcher, skrw->sock.fd, &skrw->sock.events, EVENT_READ, &skrw->sock))
-    {
-        skrw->cbs.conn_cb(watcher->ev, INVALID_SOCK, &skrw->ud);
-        _remove_fd(watcher, skrw->sock.fd);
-        pool_push(&watcher->pool, &skrw->sock);
-    }
+        if (ERR_OK != _add_event(watcher, skrw->sock.fd, &skrw->sock.events, EVENT_READ, &skrw->sock))
+        {
+            skrw->cbs.conn_cb(watcher->ev, INVALID_SOCK, &skrw->ud);
+            _remove_fd(watcher, skrw->sock.fd);
+            pool_push(&watcher->pool, &skrw->sock);
+        }
 #endif
-    return ERR_FAILED;
+        break;
+    }
+    return rtn;
 }
 static inline int32_t _ssl_handshake(watcher_ctx *watcher, skrw_ctx *skrw)
 {
@@ -284,9 +256,9 @@ static inline void _on_w_cb(watcher_ctx *watcher, skrw_ctx *skrw)
 {
     size_t nsend;
 #if WITH_SSL
-    _sock_send(skrw->sock.fd, &skrw->buf_s, NULL, &nsend, skrw->ssl);
+    _sock_send(skrw->sock.fd, &skrw->buf_s, &nsend, skrw->ssl);
 #else
-    _sock_send(skrw->sock.fd, &skrw->buf_s, NULL, &nsend, NULL);
+    _sock_send(skrw->sock.fd, &skrw->buf_s, &nsend, NULL);
 #endif
     if (NULL != skrw->cbs.s_cb
         && 0 != nsend)

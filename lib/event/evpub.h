@@ -20,16 +20,11 @@ typedef struct bufs_ctx
     size_t offset;
 }bufs_ctx;
 QUEUE_DECL(bufs_ctx, qu_bufs);
-
 QUEUE_DECL(struct listener_ctx *, qu_lsn);
 typedef struct ev_ctx
 {
-    volatile int32_t stop;
     uint32_t nthreads;
     struct watcher_ctx *watcher;
-#ifdef EV_IOCP
-    struct worker_ctx *worker;
-#endif
     qu_lsn qulsn;
     mutex_ctx qulsnlck;
 }ev_ctx;
@@ -61,5 +56,15 @@ do {\
         ZERO(&(dst), sizeof(ud_cxt));\
     }\
 } while (0)
+
+//¹«¹²º¯Êý
+void _bufs_clear(qu_bufs *bufs);
+int32_t _set_sockops(SOCKET fd);
+//SOCK_DGRAM  SOCK_STREAM  AF_INET  AF_INET6
+SOCKET _create_sock(int32_t type, int32_t family);
+SOCKET _listen(netaddr_ctx *addr);
+SOCKET _udp(netaddr_ctx *addr);
+int32_t _sock_read(SOCKET fd, IOV_TYPE *iov, uint32_t niov, void *arg);
+int32_t _sock_send(SOCKET fd, qu_bufs *buf_s, size_t *nsend, void *arg);
 
 #endif//EVPUB_H_

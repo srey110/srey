@@ -45,7 +45,10 @@ static void _cmd_loop(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev, int32_t
         }
     }while (nread == sizeof(cmds));
 #ifdef MANUAL_ADD
-    ASSERTAB(ERR_OK == _add_event(watcher, skctx->fd, &skctx->events, ev, skctx), "add pipe in loop error.");
+    if (0 == *stop)
+    {
+        ASSERTAB(ERR_OK == _add_event(watcher, skctx->fd, &skctx->events, ev, skctx), "add pipe in loop error.");
+    }
 #endif
 }
 static void _init_callback()
@@ -525,19 +528,14 @@ static inline int32_t _init_evfd()
     int32_t evfd = INVALID_FD;
 #if defined(EV_EPOLL)
     evfd = epoll_create1(EPOLL_CLOEXEC);
-    LOG_INFO("event type: EV_EPOLL");
 #elif defined(EV_KQUEUE)
     evfd = kqueue();
-    LOG_INFO("event type: EV_KQUEUE");
 #elif defined(EV_EVPORT)
     evfd = port_create();
-    LOG_INFO("event type: EV_EVPORT");
 #elif defined(EV_POLLSET)
     evfd = pollset_create(-1);
-    LOG_INFO("event type: EV_POLLSET");
 #elif defined(EV_DEVPOLL)
     evfd = open("/dev/poll", O_RDWR);
-    LOG_INFO("event type: EV_DEVPOLL");
 #endif
     ASSERTAB(INVALID_FD != evfd, ERRORSTR(ERRNO));
     return evfd;
@@ -580,9 +578,9 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads)
         watcher->npipes = ctx->nthreads * 2;
         watcher->pipes = _new_pips(watcher->npipes);
         watcher->element = hashmap_new_with_allocator(_malloc, _realloc, _free,
-            sizeof(map_element), ONEK * 4, 0, 0, _map_hash, _map_compare, _free_mapitem, NULL);
+            sizeof(map_element), ONEK * 2, 0, 0, _map_hash, _map_compare, _free_mapitem, NULL);
         pool_init(&watcher->pool, ONEK);
-        qu_sock_init(&watcher->qu_udpfree, ONEK);
+        qu_sock_init(&watcher->qu_udpfree, 32);
         watcher->thevent = thread_creat(_loop_event, watcher);
     }
 }

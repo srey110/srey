@@ -186,12 +186,14 @@ int main(int argc, char *argv[])
 
     CuString *poutput = CuStringNew();
     CuSuite* psuite = CuSuiteNew();
-    CuSuiteAddSuite(psuite, test_base());
-    CuSuiteAddSuite(psuite, test_utils());
+    test_base(psuite);
+    test_utils(psuite);
     CuSuiteRun(psuite);
     CuSuiteSummary(psuite, poutput);
     CuSuiteDetails(psuite, poutput);
-    printf("%s\n", poutput->buffer);    
+    printf("%s\n", poutput->buffer);  
+    CuStringDelete(poutput);
+    CuSuiteDelete(psuite);
     
     tw_init(&tw);   
     ev_ctx ev;

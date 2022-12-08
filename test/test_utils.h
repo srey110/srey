@@ -3,6 +3,6 @@
 
 #include "CuTest.h"
 
-CuSuite* test_utils(void);
+void test_utils(CuSuite* suite);
 
 #endif//TEST_UTILS_H_

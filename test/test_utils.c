@@ -297,18 +297,14 @@ void test_log(CuTest* tc)
     LOG_ERROR("%s", "LOG_ERROR");
     LOG_FATAL("%s", "LOG_FATAL");
 }
-CuSuite* test_utils(void)
+void test_utils(CuSuite* suite)
 {
-    CuSuite* suite = CuSuiteNew();
-
     SUITE_ADD_TEST(suite, test_array);
     SUITE_ADD_TEST(suite, test_queue);
     SUITE_ADD_TEST(suite, test_system);
     SUITE_ADD_TEST(suite, test_timer);
     SUITE_ADD_TEST(suite, test_netutils);
     SUITE_ADD_TEST(suite, test_buffer);
-
     SUITE_ADD_TEST(suite, test_log);
 
-    return suite;
 }

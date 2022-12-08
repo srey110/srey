@@ -3,7 +3,7 @@
 
 #include "CuTest.h"
 
-CuSuite* test_base(void);
+void test_base(CuSuite* suite);
 
 #endif
 

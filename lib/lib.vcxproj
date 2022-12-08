@@ -30,7 +30,6 @@
     <ClInclude Include="event\iocp.h" />
     <ClInclude Include="event\skpool.h" />
     <ClInclude Include="event\uev.h" />
-    <ClInclude Include="event\worker.h" />
     <ClInclude Include="hashmap.h" />
     <ClInclude Include="lib.h" />
     <ClInclude Include="loger.h" />
@@ -63,7 +62,7 @@
     <ClCompile Include="event\ucmds.c" />
     <ClCompile Include="event\uev.c" />
     <ClCompile Include="event\usock.c" />
-    <ClCompile Include="event\worker.c" />
+    <ClCompile Include="event\wcmd.c" />
     <ClCompile Include="hashmap.c" />
     <ClCompile Include="loger.c" />
     <ClCompile Include="md5\md5.c" />

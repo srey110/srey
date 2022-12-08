@@ -28,6 +28,9 @@
     <Filter Include="event\unix">
       <UniqueIdentifier>{942da95e-2cdb-4ff7-ab71-5d496e592712}</UniqueIdentifier>
     </Filter>
+    <Filter Include="service">
+      <UniqueIdentifier>{4514f60a-300d-4622-a8d5-d93bdac30c0a}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="errcode.h">
@@ -109,9 +112,6 @@
     <ClInclude Include="event\evpub.h">
       <Filter>event</Filter>
     </ClInclude>
-    <ClInclude Include="event\worker.h">
-      <Filter>event\win</Filter>
-    </ClInclude>
     <ClInclude Include="event\uev.h">
       <Filter>event\unix</Filter>
     </ClInclude>
@@ -174,9 +174,6 @@
     <ClCompile Include="event\iocp.c">
       <Filter>event\win</Filter>
     </ClCompile>
-    <ClCompile Include="event\worker.c">
-      <Filter>event\win</Filter>
-    </ClCompile>
     <ClCompile Include="event\overlap.c">
       <Filter>event\win</Filter>
     </ClCompile>
@@ -191,6 +188,9 @@
     </ClCompile>
     <ClCompile Include="event\evssl.c">
       <Filter>event</Filter>
+    </ClCompile>
+    <ClCompile Include="event\wcmd.c">
+      <Filter>event\win</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>
