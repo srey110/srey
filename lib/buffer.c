@@ -22,14 +22,6 @@ typedef struct bufnode_ctx
     ch->used = 1;\
     index++
 
-static inline void _buffer_lock(buffer_ctx *ctx)
-{
-    mutex_lock(&ctx->mutex);
-}
-static inline void _buffer_unlock(buffer_ctx *ctx)
-{
-    mutex_unlock(&ctx->mutex);
-}
 //新建一节点
 static bufnode_ctx *_node_new(const size_t size)
 {
@@ -383,22 +375,18 @@ void buffer_init(buffer_ctx *ctx)
 {
     ZERO(ctx, sizeof(buffer_ctx));
     ctx->tail_with_data = &ctx->head;
-    mutex_init(&ctx->mutex);
 }
 void buffer_free(buffer_ctx *ctx)
 {
     _free_all_node(ctx->head);
-    mutex_free(&ctx->mutex);
 }
 size_t buffer_size(buffer_ctx *ctx)
 {
-    _buffer_lock(ctx);
-    size_t rtn = ctx->total_len;
-    _buffer_unlock(ctx);
-    return rtn;
+    return ctx->total_len;
 }
-static int32_t _buffer_append(buffer_ctx *ctx, void *data, const size_t len)
+int32_t buffer_append(buffer_ctx *ctx, void *data, const size_t len)
 {
+    ASSERTAB(0 == ctx->freeze_write, "write freezed");
     char *tmp = (char*)data;
     IOV_TYPE iov[MAX_EXPAND_NIOV];
     size_t remain = len;
@@ -422,17 +410,8 @@ static int32_t _buffer_append(buffer_ctx *ctx, void *data, const size_t len)
     ASSERTAB(len == _buffer_commit_expand(ctx, len, iov, num), "commit lens not equ buffer lens.");
     return ERR_OK;
 }
-int32_t buffer_append(buffer_ctx *ctx, void *data, const size_t len)
-{
-    _buffer_lock(ctx);
-    ASSERTAB(0 == ctx->freeze_write, "write freezed");
-    int32_t rtn = _buffer_append(ctx, data, len);
-    _buffer_unlock(ctx);
-    return rtn;
-}
 int32_t buffer_appendv(buffer_ctx *ctx, const char *fmt, ...)
 {
-    _buffer_lock(ctx);
     ASSERTAB(0 == ctx->freeze_write, "write freezed");
     va_list va;
     int32_t rtn, size;
@@ -456,12 +435,11 @@ int32_t buffer_appendv(buffer_ctx *ctx, const char *fmt, ...)
         node->used = 1;
     }
     va_end(va);
-    _buffer_unlock(ctx);
-
     return ERR_OK;
 }
-static int32_t _buffer_copyout(buffer_ctx *ctx, void *out, size_t len)
+int32_t buffer_copyout(buffer_ctx *ctx, void *out, size_t len)
 {
+    ASSERTAB(0 == ctx->freeze_read, "read freezed");
     bufnode_ctx *node = ctx->head;
     char *data = out;
     if (len > ctx->total_len)
@@ -488,16 +466,9 @@ static int32_t _buffer_copyout(buffer_ctx *ctx, void *out, size_t len)
     }
     return (int32_t)nread;
 }
-int32_t buffer_copyout(buffer_ctx *ctx, void *out, size_t len)
+int32_t buffer_drain(buffer_ctx *ctx, size_t len)
 {
-    _buffer_lock(ctx);
     ASSERTAB(0 == ctx->freeze_read, "read freezed");
-    int32_t rtn = _buffer_copyout(ctx, out, len);
-    _buffer_unlock(ctx);
-    return rtn;
-}
-static int32_t _buffer_drain(buffer_ctx *ctx, size_t len)
-{
     bufnode_ctx *node, *next;
     size_t remain, oldlen;
     oldlen = ctx->total_len;
@@ -550,24 +521,13 @@ static int32_t _buffer_drain(buffer_ctx *ctx, size_t len)
     }
     return (int32_t)len;
 }
-int32_t buffer_drain(buffer_ctx *ctx, size_t len)
-{
-    _buffer_lock(ctx);
-    ASSERTAB(0 == ctx->freeze_read, "read freezed");
-    int32_t rtn = _buffer_drain(ctx, len);
-    _buffer_unlock(ctx);
-    return rtn;
-}
 int32_t buffer_remove(buffer_ctx *ctx, void *out, size_t len)
 {
-    _buffer_lock(ctx);
-    ASSERTAB(0 == ctx->freeze_read, "read freezed");
-    int32_t rtn = _buffer_copyout(ctx, out, len);
+    int32_t rtn = buffer_copyout(ctx, out, len);
     if (rtn > 0)
     {
-        ASSERTAB(rtn == _buffer_drain(ctx, rtn), "drain lens not equ copy lens.");
+        ASSERTAB(rtn == buffer_drain(ctx, rtn), "drain lens not equ copy lens.");
     }
-    _buffer_unlock(ctx);
     return rtn;
 }
 static int32_t _search_memcmp(bufnode_ctx *node, size_t off, char *what, size_t wlen)
@@ -604,14 +564,14 @@ static bufnode_ctx *_search_start(bufnode_ctx *node, size_t start, size_t *total
     }
     return NULL;
 }
-static int32_t _buffer_search(buffer_ctx *ctx, const size_t start, char *what, size_t wlen)
+int32_t buffer_search(buffer_ctx *ctx, const size_t start, char *what, size_t wlen)
 {
+    ASSERTAB(0 == ctx->freeze_read, "read freezed");
     if (start >= ctx->total_len
         || wlen > ctx->total_len)
     {
         return ERR_FAILED;
     }
-    
     //查找开始位置所在节点
     size_t totaloff = 0;
     bufnode_ctx *node = _search_start(ctx->head, start, &totaloff);
@@ -627,7 +587,7 @@ static int32_t _buffer_search(buffer_ctx *ctx, const size_t start, char *what, s
         if (NULL != pschar)
         {
             uioff += (pschar - pstart);
-            if (ERR_OK == _search_memcmp(node, uioff, (char *)what, wlen))
+            if (ERR_OK == _search_memcmp(node, uioff, what, wlen))
             {
                 return (int32_t)(totaloff - node->off + uioff);
             }
@@ -656,33 +616,22 @@ static int32_t _buffer_search(buffer_ctx *ctx, const size_t start, char *what, s
 
     return ERR_FAILED;
 }
-int32_t buffer_search(buffer_ctx *ctx, const size_t start, void *what, size_t wlen)
-{
-    _buffer_lock(ctx);
-    ASSERTAB(0 == ctx->freeze_read, "read freezed");
-    int32_t rtn = _buffer_search(ctx, start, what, wlen);
-    _buffer_unlock(ctx);
-    return rtn;
-}
 uint32_t buffer_expand(buffer_ctx *ctx, const size_t lens, IOV_TYPE *iov, const uint32_t cnt)
 {
-    _buffer_lock(ctx);
     ASSERTAB(0 == ctx->freeze_write, "write freezed");
     ctx->freeze_write = 1;
-    uint32_t rtn = _buffer_expand(ctx, lens, iov, cnt);
-    _buffer_unlock(ctx);
-    return rtn;
+    return _buffer_expand(ctx, lens, iov, cnt);
 }
 void buffer_commit_expand(buffer_ctx *ctx, size_t len, IOV_TYPE *iov, const uint32_t cnt)
 {
-    _buffer_lock(ctx);
     ASSERTAB(1 == ctx->freeze_write, "write unfreezed");    
     ASSERTAB(len == _buffer_commit_expand(ctx, len, iov, cnt), "commit error.");
     ctx->freeze_write = 0;
-    _buffer_unlock(ctx);
 }
-static uint32_t _buffer_get(buffer_ctx *ctx, size_t atmost, IOV_TYPE *iov, const uint32_t cnt)
+static uint32_t buffer_get(buffer_ctx *ctx, size_t atmost, IOV_TYPE *iov, const uint32_t cnt)
 {
+    ASSERTAB(0 == ctx->freeze_read, "read freezed");
+    ctx->freeze_read = 1;
     if (atmost > ctx->total_len)
     {
         atmost = ctx->total_len;
@@ -716,25 +665,14 @@ static uint32_t _buffer_get(buffer_ctx *ctx, size_t atmost, IOV_TYPE *iov, const
 
     return index;
 }
-uint32_t buffer_get(buffer_ctx *ctx, size_t atmost, IOV_TYPE *iov, const uint32_t cnt)
-{
-    _buffer_lock(ctx);
-    ASSERTAB(0 == ctx->freeze_read, "read freezed");
-    ctx->freeze_read = 1;
-    int32_t rtn = _buffer_get(ctx, atmost, iov, cnt);
-    _buffer_unlock(ctx);
-    return rtn;
-}
 void buffer_commit_get(buffer_ctx *ctx, size_t len)
 {
-    _buffer_lock(ctx);
     ASSERTAB(1 == ctx->freeze_read, "read unfreezed.");
     if (len > 0)
     {
-        _buffer_drain(ctx, len);
+        buffer_drain(ctx, len);
     }
     ctx->freeze_read = 0;
-    _buffer_unlock(ctx);
 }
 int32_t buffer_from_sock(buffer_ctx *ctx, SOCKET fd, size_t *nread,
     int32_t(*_readv)(SOCKET, IOV_TYPE *, uint32_t, void *), void *arg)

@@ -1,7 +1,7 @@
 #ifndef BUFFER_H_
 #define BUFFER_H_
 
-#include "mutex.h"
+#include "macro.h"
 
 #if defined(OS_WIN)
 #define IOV_TYPE WSABUF
@@ -21,13 +21,12 @@
 #define MAX_EXPAND_NIOV          4
 typedef struct buffer_ctx
 {
-    int32_t freeze_read;
-    int32_t freeze_write;
+    volatile int32_t freeze_read;
+    volatile int32_t freeze_write;
     struct bufnode_ctx *head;
     struct bufnode_ctx *tail;
     struct bufnode_ctx **tail_with_data;
     size_t total_len;//数据总长度
-    mutex_ctx mutex;
 }buffer_ctx;
 
 void buffer_init(buffer_ctx *ctx);
@@ -39,7 +38,7 @@ int32_t buffer_appendv(buffer_ctx *ctx, const char *fmt, ...);
 int32_t buffer_copyout(buffer_ctx *ctx, void *out, size_t len);
 int32_t buffer_drain(buffer_ctx *ctx, size_t len);
 int32_t buffer_remove(buffer_ctx *ctx, void *out, size_t len);
-int32_t buffer_search(buffer_ctx *ctx, const size_t start, void *what, size_t wlen);
+int32_t buffer_search(buffer_ctx *ctx, const size_t start, char *what, size_t wlen);
 
 uint32_t buffer_expand(buffer_ctx *ctx, const size_t lens, IOV_TYPE *iov, const uint32_t cnt);
 void buffer_commit_expand(buffer_ctx *ctx, size_t len ,IOV_TYPE *iov, const uint32_t cnt);
