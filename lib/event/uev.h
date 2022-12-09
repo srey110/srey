@@ -65,6 +65,7 @@ typedef struct map_element
 typedef struct watcher_ctx
 {
     int32_t index;
+    int32_t stop;
     int32_t evfd; 
     int32_t nevents;
     uint32_t npipes;
@@ -82,7 +83,7 @@ typedef struct watcher_ctx
     qu_sock qu_udpfree;
 }watcher_ctx;
 
-typedef void(*event_cb)(watcher_ctx *watcher, struct sock_ctx *skctx, int32_t ev, int32_t *stop);
+typedef void(*event_cb)(watcher_ctx *watcher, struct sock_ctx *skctx, int32_t ev);
 typedef struct sock_ctx
 {
     SOCKET fd;
@@ -100,13 +101,13 @@ void _cmd_listen(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx);
 void _cmd_add_acpfd(watcher_ctx *watcher, uint64_t hs, SOCKET fd, struct listener_ctx *lsn);
 void _cmd_add_udp(ev_ctx *ctx, SOCKET fd, sock_ctx *skctx);
 
-void _on_cmd_stop(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop);
-void _on_cmd_disconn(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop);
-void _on_cmd_lsn(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop);
-void _on_cmd_conn(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop);
-void _on_cmd_send(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop);
-void _on_cmd_addacp(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop);
-void _on_cmd_add_udp(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop);
+void _on_cmd_stop(watcher_ctx *watcher, cmd_ctx *cmd);
+void _on_cmd_disconn(watcher_ctx *watcher, cmd_ctx *cmd);
+void _on_cmd_lsn(watcher_ctx *watcher, cmd_ctx *cmd);
+void _on_cmd_conn(watcher_ctx *watcher, cmd_ctx *cmd);
+void _on_cmd_send(watcher_ctx *watcher, cmd_ctx *cmd);
+void _on_cmd_addacp(watcher_ctx *watcher, cmd_ctx *cmd);
+void _on_cmd_add_udp(watcher_ctx *watcher, cmd_ctx *cmd);
 
 void _add_lsn_inloop(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx);
 void _add_conn_inloop(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx);

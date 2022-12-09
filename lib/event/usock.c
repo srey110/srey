@@ -48,7 +48,7 @@ typedef struct udp_ctx
     ud_cxt ud;
 }udp_ctx;
 
-static void _on_rw_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev, int32_t *stop);
+static void _on_rw_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev);
 
 void _sk_shutdown(sock_ctx *skctx)
 {
@@ -111,7 +111,38 @@ void _add_fd(watcher_ctx *watcher, sock_ctx *skctx)
     map_element el;
     el.fd =skctx->fd;
     el.sock = skctx;
-    ASSERTAB(NULL == hashmap_set(watcher->element, &el), "socket repeat.");
+    sock_ctx *old = hashmap_set(watcher->element, &el);
+    if (NULL == old)
+    {
+        return;
+    }
+    if (SOCK_STREAM == old->type)
+    {
+        skrw_ctx *skrw = UPCAST(old, skrw_ctx, sock);
+        if (NULL != skrw->cbs.c_cb)
+        {
+            int32_t handshake = 1;
+#if WITH_SSL
+            if (NULL != skrw->ssl)
+            {
+                handshake = skrw->handshake;
+            }
+#endif
+            if (handshake)
+            {
+                skrw->cbs.c_cb(watcher->ev, skrw->sock.fd, &skrw->ud);
+            }
+        }
+        skrw->sock.fd = INVALID_SOCK;
+        pool_push(&watcher->pool, old);
+    }
+    else if (SOCK_DGRAM == old->type)
+    {
+        udp_ctx *udp = UPCAST(old, udp_ctx, sock);
+        udp->sock.fd = INVALID_SOCK;
+        _free_udp(old);
+    }
+    LOG_ERROR("socket %d repeat.", (int32_t)skctx->fd);
 }
 static inline void _remove_fd(watcher_ctx *watcher, SOCKET fd)
 {
@@ -274,7 +305,7 @@ static inline void _on_w_cb(watcher_ctx *watcher, skrw_ctx *skrw)
     _add_event(watcher, skrw->sock.fd, &skrw->sock.events, EVENT_WRITE, &skrw->sock);
 #endif
 }
-static void _on_rw_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev, int32_t *stop)
+static void _on_rw_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev)
 {
     skrw_ctx *skrw = UPCAST(skctx, skrw_ctx, sock);
     if (ev & EVENT_READ)
@@ -301,7 +332,7 @@ void _add_write_inloop(watcher_ctx *watcher, sock_ctx *skctx, bufs_ctx *buf)
     }
 }
 //connect
-static inline void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev, int32_t *stop)
+static inline void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev)
 {
     skrw_ctx *connsk = UPCAST(skctx, skrw_ctx, sock);
     connsk->sock.ev_cb = _on_rw_cb;
@@ -420,7 +451,7 @@ void _add_conn_inloop(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx)
     }
 }
 //listen
-static inline void _on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev, int32_t *stop)
+static inline void _on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev)
 {
     lsnsock_ctx *acpt = UPCAST(skctx, lsnsock_ctx, sock);
 #ifndef SO_REUSEPORT
@@ -676,7 +707,7 @@ static inline void _on_udp_wcb(watcher_ctx *watcher, udp_ctx *udp)
     _add_event(watcher, udp->sock.fd, &udp->sock.events, EVENT_WRITE, &udp->sock);
 #endif
 }
-static void _on_udp_rw(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev, int32_t *stop)
+static void _on_udp_rw(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev)
 {
     udp_ctx *udp = UPCAST(skctx, udp_ctx, sock);
     if (ev & EVENT_READ)

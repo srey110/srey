@@ -22,9 +22,9 @@ sock_ctx *_map_getskctx(struct hashmap *map, SOCKET fd)
     map_element *el = _map_get(map, fd);
     return NULL == el ? NULL : el->sock;
 }
-void _on_cmd_stop(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop)
+void _on_cmd_stop(watcher_ctx *watcher, cmd_ctx *cmd)
 {
-    *stop = 1;
+    watcher->stop = 1;
 }
 void ev_close(ev_ctx *ctx, SOCKET fd)
 {
@@ -34,7 +34,7 @@ void ev_close(ev_ctx *ctx, SOCKET fd)
     cmd.fd = fd;
     _SEND_CMD(ctx, cmd);
 }
-void _on_cmd_disconn(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop)
+void _on_cmd_disconn(watcher_ctx *watcher, cmd_ctx *cmd)
 {
     map_element *el = _map_get(watcher->element, cmd->fd);
     if (NULL == el)
@@ -59,7 +59,7 @@ void _cmd_listen(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx)
     cmd.data = skctx;
     _send_cmd(watcher, GET_POS(FD_HASH(cmd.fd), watcher->npipes), &cmd);
 }
-void _on_cmd_lsn(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop)
+void _on_cmd_lsn(watcher_ctx *watcher, cmd_ctx *cmd)
 {
     _add_lsn_inloop(watcher, cmd->fd, cmd->data);
 }
@@ -71,7 +71,7 @@ void _cmd_connect(ev_ctx *ctx, SOCKET fd, sock_ctx *skctx)
     cmd.data = skctx;
     _SEND_CMD(ctx, cmd);
 }
-void _on_cmd_conn(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop)
+void _on_cmd_conn(watcher_ctx *watcher, cmd_ctx *cmd)
 {
     _add_conn_inloop(watcher, cmd->fd, cmd->data);
 }
@@ -111,7 +111,7 @@ void ev_sendto(ev_ctx *ctx, SOCKET fd, const char *host, const uint16_t port, vo
     memcpy((char *)cmd.data + sizeof(netaddr_ctx), data, len);
     _SEND_CMD(ctx, cmd);
 }
-void _on_cmd_send(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop)
+void _on_cmd_send(watcher_ctx *watcher, cmd_ctx *cmd)
 {
     map_element *el = _map_get(watcher->element, cmd->fd);
     if (NULL == el)
@@ -133,7 +133,7 @@ void _cmd_add_acpfd(watcher_ctx *watcher, uint64_t hs, SOCKET fd, struct listene
     cmd.data = lsn;
     _send_cmd(watcher, GET_POS(hs, watcher->npipes), &cmd);
 }
-void _on_cmd_addacp(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop)
+void _on_cmd_addacp(watcher_ctx *watcher, cmd_ctx *cmd)
 {
     _add_acpfd_inloop(watcher, cmd->fd, cmd->data);
 }
@@ -145,7 +145,7 @@ void _cmd_add_udp(ev_ctx *ctx, SOCKET fd, sock_ctx *skctx)
     cmd.data = skctx;
     _SEND_CMD(ctx, cmd);
 }
-void _on_cmd_add_udp(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop)
+void _on_cmd_add_udp(watcher_ctx *watcher, cmd_ctx *cmd)
 {
     _add_udp_inloop(watcher, cmd->fd, cmd->data);
 }

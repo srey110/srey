@@ -8,7 +8,7 @@
 #ifndef EV_IOCP
 
 static atomic_t _init_once = 0;
-static void(*cmd_cbs[CMD_TOTAL])(watcher_ctx *watcher, cmd_ctx *cmd, int32_t *stop);
+static void(*cmd_cbs[CMD_TOTAL])(watcher_ctx *watcher, cmd_ctx *cmd);
 typedef struct pip_ctx
 {
     int32_t pipes[2];
@@ -27,7 +27,7 @@ void _send_cmd(watcher_ctx *watcher, uint32_t index, cmd_ctx *cmd)
 {
     ASSERTAB(sizeof(cmd_ctx) == write(watcher->pipes[index].pipes[1], cmd, sizeof(cmd_ctx)), "pipe write error.");
 }
-static void _cmd_loop(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev, int32_t *stop)
+static void _cmd_loop(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev)
 {
     int32_t i, cnt, nread;
     cmd_ctx cmds[CMD_MAX_NREAD];
@@ -41,11 +41,11 @@ static void _cmd_loop(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev, int32_t
         cnt = nread / sizeof(cmd_ctx);
         for (i = 0; i < cnt; i++)
         {
-            cmd_cbs[cmds[i].cmd](watcher, &cmds[i], stop);
+            cmd_cbs[cmds[i].cmd](watcher, &cmds[i]);
         }
     }while (nread == sizeof(cmds));
 #ifdef MANUAL_ADD
-    if (0 == *stop)
+    if (0 == watcher->stop)
     {
         ASSERTAB(ERR_OK == _add_event(watcher, skctx->fd, &skctx->events, ev, skctx), "add pipe in loop error.");
     }
@@ -418,7 +418,6 @@ static inline void _pool_shrink(watcher_ctx *watcher, timer_ctx *timer)
 static void _loop_event(void *arg)
 {
     watcher_ctx *watcher = (watcher_ctx *)arg;
-    _init_cmd(watcher);
 #if defined(EV_EPOLL) || defined(EV_POLLSET) || defined(EV_DEVPOLL)
     int32_t timeout = EVENT_WAIT_TIMEOUT;
 #else
@@ -437,11 +436,11 @@ static void _loop_event(void *arg)
     SOCKET fd = INVALID_SOCK;
     sock_ctx *skctx;
     sock_ctx **udp;
-    int32_t i, cnt, ev, stop = 0;
+    int32_t i, cnt, ev;
     timer_ctx tmshrink;
     timer_init(&tmshrink);
     timer_start(&tmshrink);
-    while (0 == stop)
+    while (0 == watcher->stop)
     {
 #if defined(EV_EPOLL)
         cnt = epoll_wait(watcher->evfd, watcher->events, watcher->nevents, timeout);
@@ -482,7 +481,7 @@ static void _loop_event(void *arg)
 #endif
             if (NULL != skctx)
             {
-                skctx->ev_cb(watcher, skctx, ev, &stop);
+                skctx->ev_cb(watcher, skctx, ev);
             }
             else
             {
@@ -496,7 +495,7 @@ static void _loop_event(void *arg)
             _free_udp(*udp);
         }
         _pool_shrink(watcher, &tmshrink);
-        if (0 == stop
+        if (0 == watcher->stop
             && cnt == watcher->nevents
             && watcher->nevents < MAX_EVENTS_CNT)
         {
@@ -566,6 +565,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads)
     {
         watcher = &ctx->watcher[i];
         watcher->index = i;
+        watcher->stop = 0;
         watcher->ev = ctx;
 #ifdef COMMIT_NCHANGES
         watcher->nsize = EVENT_CHANGES_CNT;
@@ -581,6 +581,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads)
             sizeof(map_element), ONEK * 2, 0, 0, _map_hash, _map_compare, _free_mapitem, NULL);
         pool_init(&watcher->pool, ONEK);
         qu_sock_init(&watcher->qu_udpfree, 32);
+        _init_cmd(watcher);
         watcher->thevent = thread_creat(_loop_event, watcher);
     }
 }
