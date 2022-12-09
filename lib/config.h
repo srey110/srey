@@ -11,7 +11,6 @@
 #define EVENT_WAIT_TIMEOUT  100
 #define EVENT_CHANGES_CNT   128
 #define INIT_EVENTS_CNT     256
-#define MAX_EVENTS_CNT      2048
 #define MAX_RECV_SIZE       4096
 #define MAX_RECVFROM_SIZE   4096
 #define MAX_SEND_SIZE       4096

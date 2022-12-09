@@ -174,8 +174,7 @@ static void _loop_event(void *arg)
                 sock->ev_cb(watcher, sock, overlappeds[i].dwNumberOfBytesTransferred);
             }
             if (0 == watcher->stop
-                && count == nevent
-                && nevent < MAX_EVENTS_CNT)
+                && count == nevent)
             {
                 FREE(overlappeds);
                 nevent *= 2;

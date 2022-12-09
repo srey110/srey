@@ -19,9 +19,7 @@
     #define MANUAL_ADD
 #elif defined(EV_POLLSET)
     typedef struct pollfd events_t;
-    typedef struct poll_ctl changes_t;
     #define MANUAL_REMOVE
-    #define COMMIT_NCHANGES
     #define NO_UDATA
 #elif defined(EV_DEVPOLL)
     typedef struct pollfd events_t;

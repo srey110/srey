@@ -76,31 +76,20 @@ static void _init_cmd(watcher_ctx *watcher)
     }
 }
 #ifdef COMMIT_NCHANGES
-static inline void _commit_changes(watcher_ctx *watcher)
+static inline void _check_changes(watcher_ctx *watcher)
 {
     if (watcher->nchanges >= watcher->nsize)
     {
-        int32_t rtn;
 #if defined(EV_KQUEUE)
-        rtn = kevent(watcher->evfd, watcher->changes, watcher->nchanges, NULL, 0, NULL);
-        if (ERR_FAILED == rtn)
-        {
-            LOG_WARN("%s", ERRORSTR(ERRNO));
-        }
-#elif defined(EV_POLLSET)
-        rtn = pollset_ctl(watcher->evfd, watcher->changes, watcher->nchanges);
-        if (ERR_OK != rtn)
-        {
-            LOG_WARN("pollset_ctl failed, return code :%d", rtn);
-        }
+        watcher->nsize *= 2;
+        REALLOC(watcher->changes, watcher->changes, sizeof(changes_t) * watcher->nsize);
 #elif defined(EV_DEVPOLL)
-        rtn = pwrite(watcher->evfd, watcher->changes, sizeof(changes_t) * watcher->nchanges, 0);
-        if (ERR_FAILED == rtn)
+        if (ERR_FAILED == pwrite(watcher->evfd, watcher->changes, sizeof(changes_t) * watcher->nchanges, 0))
         {
             LOG_WARN("%s", ERRORSTR(ERRNO));
         }
-#endif
         watcher->nchanges = 0;
+#endif
     }
 }
 #endif
@@ -134,7 +123,7 @@ int32_t _add_event(watcher_ctx *watcher, SOCKET fd, int32_t *events, int32_t ev,
         && !((*events) & EVENT_READ))
     {
         (*events) |= EVENT_READ;
-        _commit_changes(watcher);
+        _check_changes(watcher);
         changes_t *kev = &watcher->changes[watcher->nchanges];
         EV_SET(kev, fd, EVFILT_READ, EV_ADD, 0, 0, arg);
         watcher->nchanges++;
@@ -143,7 +132,7 @@ int32_t _add_event(watcher_ctx *watcher, SOCKET fd, int32_t *events, int32_t ev,
         && !((*events) & EVENT_WRITE))
     {
         (*events) |= EVENT_WRITE;
-        _commit_changes(watcher);
+        _check_changes(watcher);
         changes_t *kev = &watcher->changes[watcher->nchanges];
         EV_SET(kev, fd, EVFILT_WRITE, EV_ADD, 0, 0, arg);
         watcher->nchanges++;
@@ -165,24 +154,26 @@ int32_t _add_event(watcher_ctx *watcher, SOCKET fd, int32_t *events, int32_t ev,
     }
 #elif defined(EV_POLLSET)
     ev |= (*events);
-    _commit_changes(watcher);
-    changes_t *ctl = &watcher->changes[watcher->nchanges];
-    ctl->fd = fd;
-    ctl->events = 0;
+    struct poll_ctl ctl;
+    ctl.fd = fd;
+    ctl.events = 0;
     if (ev & EVENT_READ)
     {
-        ctl->events |= POLLIN;
+        ctl.events |= POLLIN;
     }
     if (ev & EVENT_WRITE)
     {
-        ctl->events |= POLLOUT;
+        ctl.events |= POLLOUT;
     }
-    ctl->cmd = (0 == (*events) ? PS_ADD : PS_MOD);
-    watcher->nchanges++;
+    ctl.cmd = (0 == (*events) ? PS_ADD : PS_MOD);
+    if (0 != pollset_ctl(watcher->evfd, &ctl, 1))
+    {
+        return ERR_FAILED;
+    }
     *events = ev;
 #elif defined(EV_DEVPOLL)
     (*events) |= ev;
-    _commit_changes(watcher);
+    _check_changes(watcher);
     changes_t *pfd = &watcher->changes[watcher->nchanges];
     pfd->fd = fd;
     pfd->revents = 0;
@@ -233,7 +224,7 @@ void _del_event(watcher_ctx *watcher, SOCKET fd, int32_t *events, int32_t ev, vo
         && ((*events) & EVENT_READ))
     {
         *events = (*events) & ~EVENT_READ;
-        _commit_changes(watcher);
+        _check_changes(watcher);
         changes_t *kev = &watcher->changes[watcher->nchanges];
         EV_SET(kev, fd, EVFILT_READ, EV_DELETE, 0, 0, arg);
         watcher->nchanges++;
@@ -242,7 +233,7 @@ void _del_event(watcher_ctx *watcher, SOCKET fd, int32_t *events, int32_t ev, vo
         && ((*events) & EVENT_WRITE))
     {
         *events = (*events) & ~EVENT_WRITE;
-        _commit_changes(watcher);
+        _check_changes(watcher);
         changes_t *kev = &watcher->changes[watcher->nchanges];
         EV_SET(kev, fd, EVFILT_WRITE, EV_DELETE, 0, 0, arg);
         watcher->nchanges++;
@@ -270,33 +261,31 @@ void _del_event(watcher_ctx *watcher, SOCKET fd, int32_t *events, int32_t ev, vo
     *events = (*events) & ~ev;
     if (0 == (*events))
     {
-        _commit_changes(watcher);
-        changes_t *ctl = &watcher->changes[watcher->nchanges];
-        ctl->cmd = PS_DELETE;
-        ctl->events = 0;
-        ctl->fd = fd;
-        watcher->nchanges++;
+        struct poll_ctl ctl;
+        ctl.cmd = PS_DELETE;
+        ctl.events = 0;
+        ctl.fd = fd;
+        (void)pollset_ctl(watcher->evfd, &ctl, 1);
     }
     else
     {
-        _commit_changes(watcher);
-        changes_t *ctl = &watcher->changes[watcher->nchanges];
-        ctl->cmd = PS_MOD;
-        ctl->fd = fd;
-        ctl->events = 0;
+        struct poll_ctl ctl;
+        ctl.cmd = PS_MOD;
+        ctl.fd = fd;
+        ctl.events = 0;
         if ((*events) & EVENT_READ)
         {
-            ctl->events |= POLLIN;
+            ctl.events |= POLLIN;
         }
         if ((*events) & EVENT_WRITE)
         {
-            ctl->events |= POLLOUT;
-        }        
-        watcher->nchanges++;
+            ctl.events |= POLLOUT;
+        }
+        (void)pollset_ctl(watcher->evfd, &ctl, 1);
     }
 #elif defined(EV_DEVPOLL)
     *events = (*events) & ~ev;
-    _commit_changes(watcher);
+    _check_changes(watcher);
     changes_t *pfd = &watcher->changes[watcher->nchanges];
     pfd->fd = fd;
     pfd->events = POLLREMOVE;
@@ -304,7 +293,7 @@ void _del_event(watcher_ctx *watcher, SOCKET fd, int32_t *events, int32_t ev, vo
     watcher->nchanges++;
     if (0 != (*events))
     {
-        _commit_changes(watcher);
+        _check_changes(watcher);
         pfd = &watcher->changes[watcher->nchanges];
         pfd->fd = fd;
         pfd->events = 0;
@@ -444,24 +433,21 @@ static void _loop_event(void *arg)
     {
 #if defined(EV_EPOLL)
         cnt = epoll_wait(watcher->evfd, watcher->events, watcher->nevents, timeout);
+#elif defined(EV_POLLSET)
+        cnt = pollset_poll(watcher->evfd, watcher->events, watcher->nevents, timeout);
 #elif defined(EV_EVPORT)
         nget = 1;
         (void)port_getn(watcher->evfd, watcher->events, watcher->nevents, &nget, &timeout);
         cnt = (int32_t)nget;
 #elif defined(EV_KQUEUE)
+        if (watcher->nchanges >= watcher->nevents)
+        {
+            watcher->nevents = watcher->nchanges * 2;
+            FREE(watcher->events);
+            MALLOC(watcher->events, sizeof(events_t) * watcher->nevents);
+        }
         cnt = kevent(watcher->evfd, watcher->changes, watcher->nchanges, watcher->events, watcher->nevents, &timeout);
         watcher->nchanges = 0;
-#elif defined(EV_POLLSET)
-        if (0 != watcher->nchanges)
-        {
-            cnt = pollset_ctl(watcher->evfd, watcher->changes, watcher->nchanges);
-            if (ERR_OK != cnt)
-            {
-                LOG_WARN("pollset_ctl failed,return code %d", cnt);
-            }
-            watcher->nchanges = 0;
-        }
-        cnt = pollset_poll(watcher->evfd, watcher->events, watcher->nevents, timeout);
 #elif defined(EV_DEVPOLL)
         if (0 != watcher->nchanges)
         {
@@ -496,11 +482,10 @@ static void _loop_event(void *arg)
         }
         _pool_shrink(watcher, &tmshrink);
         if (0 == watcher->stop
-            && cnt == watcher->nevents
-            && watcher->nevents < MAX_EVENTS_CNT)
+            && cnt == watcher->nevents)
         {
-            FREE(watcher->events);
             watcher->nevents *= 2;
+            FREE(watcher->events);
             MALLOC(watcher->events, sizeof(events_t) * watcher->nevents);
 #ifdef EV_DEVPOLL
             dvp.dp_fds = watcher->events;
