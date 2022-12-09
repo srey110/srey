@@ -544,17 +544,16 @@ static inline void _on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD by
 {
     overlap_acpt_ctx *acpol = UPCAST(skctx, overlap_acpt_ctx, overlap);
     SOCKET fd = acpol->overlap.fd;
-    uint64_t hs = FD_HASH(fd);
-    watcher_ctx *to = GET_PTR(watcher->ev->watcher, watcher->ev->nthreads, hs);
     if (ERR_OK != _post_accept(acpol)
         || ERR_OK != setsockopt(fd, SOL_SOCKET, SO_UPDATE_ACCEPT_CONTEXT, 
                                 (char *)&acpol->lsn->fd, (int32_t)sizeof(acpol->lsn->fd))
-        || ERR_OK != _set_sockops(fd)
-        || ERR_OK != _join_iocp(to, fd))
+        || ERR_OK != _set_sockops(fd))
     {
         CLOSE_SOCK(fd);
         return;
     }
+    uint64_t hs = FD_HASH(fd);
+    watcher_ctx *to = GET_PTR(watcher->ev->watcher, watcher->ev->nthreads, hs);
     if (to->index == watcher->index)
     {
         _add_acpfd_inloop(to, fd, acpol->lsn);
@@ -566,6 +565,11 @@ static inline void _on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD by
 }
 void _add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn)
 {
+    if (ERR_OK != _join_iocp(watcher, fd))
+    {
+        CLOSE_SOCK(fd);
+        return;
+    }
     int32_t handshake = 1;
     sock_ctx *rwctx = pool_pop(&watcher->pool, fd, &lsn->cbs, &lsn->ud);
     overlap_tcp_ctx *olrw = UPCAST(rwctx, overlap_tcp_ctx, ol_r);

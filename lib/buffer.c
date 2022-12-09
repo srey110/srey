@@ -628,7 +628,7 @@ void buffer_commit_expand(buffer_ctx *ctx, size_t len, IOV_TYPE *iov, const uint
     ASSERTAB(len == _buffer_commit_expand(ctx, len, iov, cnt), "commit error.");
     ctx->freeze_write = 0;
 }
-static uint32_t buffer_get(buffer_ctx *ctx, size_t atmost, IOV_TYPE *iov, const uint32_t cnt)
+uint32_t buffer_get(buffer_ctx *ctx, size_t atmost, IOV_TYPE *iov, const uint32_t cnt)
 {
     ASSERTAB(0 == ctx->freeze_read, "read freezed");
     ctx->freeze_read = 1;
