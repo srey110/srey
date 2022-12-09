@@ -111,38 +111,7 @@ void _add_fd(watcher_ctx *watcher, sock_ctx *skctx)
     map_element el;
     el.fd =skctx->fd;
     el.sock = skctx;
-    sock_ctx *old = hashmap_set(watcher->element, &el);
-    if (NULL == old)
-    {
-        return;
-    }
-    if (SOCK_STREAM == old->type)
-    {
-        skrw_ctx *skrw = UPCAST(old, skrw_ctx, sock);
-        if (NULL != skrw->cbs.c_cb)
-        {
-            int32_t handshake = 1;
-#if WITH_SSL
-            if (NULL != skrw->ssl)
-            {
-                handshake = skrw->handshake;
-            }
-#endif
-            if (handshake)
-            {
-                skrw->cbs.c_cb(watcher->ev, skrw->sock.fd, &skrw->ud);
-            }
-        }
-        skrw->sock.fd = INVALID_SOCK;
-        pool_push(&watcher->pool, old);
-    }
-    else if (SOCK_DGRAM == old->type)
-    {
-        udp_ctx *udp = UPCAST(old, udp_ctx, sock);
-        udp->sock.fd = INVALID_SOCK;
-        _free_udp(old);
-    }
-    LOG_ERROR("socket %d repeat.", (int32_t)skctx->fd);
+    ASSERTAB(NULL == hashmap_set(watcher->element, &el), "socket repeat.");
 }
 static inline void _remove_fd(watcher_ctx *watcher, SOCKET fd)
 {
