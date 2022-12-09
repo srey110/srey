@@ -32,8 +32,8 @@ typedef struct overlap_tcp_ctx
 {
     sock_ctx ol_r;
     sock_ctx ol_s;
-    volatile int32_t sending;
-    volatile int32_t erro;
+    int32_t sending;
+    int32_t erro;
     DWORD bytes_r;
     DWORD bytes_s;
     DWORD flag;
@@ -54,8 +54,8 @@ typedef struct overlap_udp_ctx
     sock_ctx ol_s;
     int32_t addrlen;
     uint32_t niov;
-    volatile int32_t sending;
-    volatile int32_t erro;
+    int32_t sending;
+    int32_t erro;
     DWORD bytes_r;
     DWORD bytes_s;
     DWORD flag;
@@ -250,6 +250,15 @@ static inline int32_t _ssl_handshake(watcher_ctx *watcher, overlap_tcp_ctx *ol)
 #endif
 static inline void _tcp_recv(watcher_ctx *watcher, overlap_tcp_ctx *ol)
 {
+    if (0 != ol->erro)
+    {
+        if (NULL != ol->cbs.c_cb)
+        {
+            ol->cbs.c_cb(watcher->ev, ol->ol_r.fd, &ol->ud);
+        }
+        _remove(watcher, &ol->ol_r);
+        return;
+    }
     size_t nread;
 #if WITH_SSL
     int32_t rtn = buffer_from_sock(&ol->buf_r, ol->ol_r.fd, &nread, _sock_read, ol->ssl);
@@ -312,6 +321,11 @@ static inline int32_t _post_send(overlap_tcp_ctx *ol)
 static void _on_send_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes)
 {
     overlap_tcp_ctx *ol = UPCAST(skctx, overlap_tcp_ctx, ol_s);
+    if (0 != ol->erro)
+    {
+        ol->sending = 0;
+        return;
+    }
     size_t nsend;
 #if WITH_SSL
     int32_t rtn = _sock_send(ol->ol_s.fd, &ol->buf_s, &nsend, ol->ssl);
@@ -319,13 +333,11 @@ static void _on_send_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes)
     int32_t rtn = _sock_send(ol->ol_s.fd, &ol->buf_s, &nsend, NULL);
 #endif
     if (NULL != ol->cbs.s_cb
-        && 0 != nsend
-        && 0 == ol->erro)
+        && 0 != nsend)
     {
         ol->cbs.s_cb(watcher->ev, ol->ol_s.fd, nsend, &ol->ud);
     }
-    if (0 != ol->erro
-        || ERR_OK != rtn)
+    if (ERR_OK != rtn)
     {
         ol->erro = 1;
         ol->sending = 0;
@@ -576,7 +588,7 @@ void _add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn
 #if WITH_SSL
     if (NULL != lsn->evssl)
     {
-        olrw->ssl = evssl_setfd(lsn->evssl, fd);
+        olrw->ssl = evssl_setfd(lsn->evssl, rwctx->fd);
         if (NULL == olrw->ssl)
         {
             pool_push(&watcher->pool, rwctx);
@@ -590,7 +602,7 @@ void _add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn
     _add_fd(watcher, rwctx);
     if (handshake)
     {
-        if (ERR_OK != lsn->cbs.acp_cb(watcher->ev, fd, &lsn->ud))
+        if (ERR_OK != lsn->cbs.acp_cb(watcher->ev, rwctx->fd, &lsn->ud))
         {
             _remove_fd(watcher, rwctx->fd);
             pool_push(&watcher->pool, rwctx);
@@ -602,7 +614,7 @@ void _add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn
         if (NULL != lsn->cbs.c_cb
             && handshake)
         {
-            lsn->cbs.c_cb(watcher->ev, fd, &lsn->ud);
+            lsn->cbs.c_cb(watcher->ev, rwctx->fd, &lsn->ud);
         }
         _remove_fd(watcher, rwctx->fd);
         pool_push(&watcher->pool, rwctx);
