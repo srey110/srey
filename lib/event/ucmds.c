@@ -11,15 +11,15 @@ do {\
     _send_cmd(watcher, GET_POS(hs, watcher->npipes), &cmd);\
 } while (0)
 
-static inline map_element *_map_get(struct hashmap *map, SOCKET fd)
+static inline map_element *_map_get(watcher_ctx *watcher, SOCKET fd)
 {
     map_element key;
     key.fd = fd;
-    return hashmap_get(map, &key);
+    return hashmap_get(watcher->element, &key);
 }
-sock_ctx *_map_getskctx(struct hashmap *map, SOCKET fd)
+sock_ctx *_map_getskctx(watcher_ctx *watcher, SOCKET fd)
 {
-    map_element *el = _map_get(map, fd);
+    map_element *el = _map_get(watcher, fd);
     return NULL == el ? NULL : el->sock;
 }
 void _on_cmd_stop(watcher_ctx *watcher, cmd_ctx *cmd)
@@ -36,7 +36,7 @@ void ev_close(ev_ctx *ctx, SOCKET fd)
 }
 void _on_cmd_disconn(watcher_ctx *watcher, cmd_ctx *cmd)
 {
-    map_element *el = _map_get(watcher->element, cmd->fd);
+    map_element *el = _map_get(watcher, cmd->fd);
     if (NULL == el)
     {
         CLOSE_SOCK(cmd->fd);
@@ -113,7 +113,7 @@ void ev_sendto(ev_ctx *ctx, SOCKET fd, const char *host, const uint16_t port, vo
 }
 void _on_cmd_send(watcher_ctx *watcher, cmd_ctx *cmd)
 {
-    map_element *el = _map_get(watcher->element, cmd->fd);
+    map_element *el = _map_get(watcher, cmd->fd);
     if (NULL == el)
     {
         FREE(cmd->data);

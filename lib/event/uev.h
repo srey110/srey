@@ -114,7 +114,7 @@ void _add_write_inloop(watcher_ctx *watcher, sock_ctx *skctx, bufs_ctx *buf);
 void _add_udp_inloop(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx);
 
 void _add_fd(watcher_ctx *watcher, sock_ctx *skctx);
-sock_ctx *_map_getskctx(struct hashmap *map, SOCKET fd);
+sock_ctx *_map_getskctx(watcher_ctx *watcher, SOCKET fd);
 void _sk_shutdown(sock_ctx *skctx);
 void _free_udp(sock_ctx *skctx);
 void _udp_close(watcher_ctx *watcher, sock_ctx *skctx);

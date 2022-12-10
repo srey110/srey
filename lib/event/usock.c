@@ -454,7 +454,10 @@ static inline void _on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t 
     mutex_unlock(&acpt->lsn->lsnlck);
 #endif
 #ifdef MANUAL_ADD
-    _add_event(watcher, acpt->sock.fd, &acpt->sock.events, ev, &acpt->sock);
+    if (ERR_OK != _add_event(watcher, acpt->sock.fd, &acpt->sock.events, ev, &acpt->sock))
+    {
+        LOG_ERROR("%s", ERRORSTR(ERRNO));
+    }
 #endif
 }
 void _add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn)
@@ -573,8 +576,8 @@ void _add_lsn_inloop(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx)
     _add_fd(watcher, skctx);
     if (ERR_OK != _add_event(watcher, fd, &skctx->events, EVENT_READ, skctx))
     {
+        LOG_ERROR("%s", ERRORSTR(ERRNO));
         _remove_fd(watcher, fd);
-        LOG_WARN("%s", "add listen socket in loop error.");
     }
 }
 void _freelsn(listener_ctx *lsn)

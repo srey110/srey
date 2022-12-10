@@ -47,7 +47,7 @@ static void _cmd_loop(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev)
 #ifdef MANUAL_ADD
     if (0 == watcher->stop)
     {
-        ASSERTAB(ERR_OK == _add_event(watcher, skctx->fd, &skctx->events, ev, skctx), "add pipe in loop error.");
+        ASSERTAB(ERR_OK == _add_event(watcher, skctx->fd, &skctx->events, ev, skctx), ERRORSTR(ERRNO));
     }
 #endif
 }
@@ -72,7 +72,7 @@ static void _init_cmd(watcher_ctx *watcher)
         skctx->type = 0;
         skctx->ev_cb = _cmd_loop;
         _add_fd(watcher, skctx);
-        ASSERTAB(ERR_OK == _add_event(watcher, skctx->fd, &skctx->events, EVENT_READ, skctx), "add pipe in loop error");
+        ASSERTAB(ERR_OK == _add_event(watcher, skctx->fd, &skctx->events, EVENT_READ, skctx), ERRORSTR(ERRNO));
     }
 }
 #ifdef COMMIT_NCHANGES
@@ -463,7 +463,7 @@ static void _loop_event(void *arg)
         {
             ev = _parse_event(&watcher->events[i], &fd, (void **)&skctx);
 #ifdef NO_UDATA
-            skctx = _map_getskctx(watcher->element, fd);
+            skctx = _map_getskctx(watcher, fd);
 #endif
             if (NULL != skctx)
             {
