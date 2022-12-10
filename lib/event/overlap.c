@@ -317,24 +317,20 @@ static inline int32_t _post_send(overlap_tcp_ctx *ol)
     }
     return ERR_OK;
 }
-static inline void _on_tcp_close_s(watcher_ctx *watcher, overlap_tcp_ctx *ol)
-{
-    if (ol->status & STATUS_REMOVE)
-    {
-        _remove_fd(watcher, ol->ol_r.fd);
-        pool_push(&watcher->pool, &ol->ol_r);
-    }
-    else
-    {
-        ol->status = ol->status & ~STATUS_SENDING;
-    }
-}
 static void _on_send_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes)
 {
     overlap_tcp_ctx *ol = UPCAST(skctx, overlap_tcp_ctx, ol_s);
     if (ol->status & STATUS_ERROR)
     {
-        _on_tcp_close_s(watcher, ol);
+        if (ol->status & STATUS_REMOVE)
+        {
+            _remove_fd(watcher, ol->ol_r.fd);
+            pool_push(&watcher->pool, &ol->ol_r);
+        }
+        else
+        {
+            ol->status = ol->status & ~STATUS_SENDING;
+        }
         return;
     }
     size_t nsend;
@@ -351,7 +347,7 @@ static void _on_send_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes)
     if (ERR_OK != rtn)
     {
         ol->status |= STATUS_ERROR;
-        _on_tcp_close_s(watcher, ol);
+        ol->status = ol->status & ~STATUS_SENDING;
         return;
     }
     if (0 == qu_bufs_size(&ol->buf_s))
@@ -362,7 +358,7 @@ static void _on_send_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes)
     if (ERR_OK != _post_send(ol))
     {
         ol->status |= STATUS_ERROR;
-        _on_tcp_close_s(watcher, ol);
+        ol->status = ol->status & ~STATUS_SENDING;
     }
 }
 void _add_bufs_trypost(sock_ctx *skctx, bufs_ctx *buf)
@@ -770,18 +766,6 @@ static inline int32_t _post_sendto(overlap_udp_ctx *ol, bufs_ctx *buf)
     }
     return ERR_OK;
 }
-static inline void _on_udp_close_s(watcher_ctx *watcher, overlap_udp_ctx *ol)
-{
-    if (ol->status & STATUS_REMOVE)
-    {
-        _remove_fd(watcher, ol->ol_r.fd);
-        _free_udp(&ol->ol_r);
-    }
-    else
-    {
-        ol->status = ol->status & ~STATUS_SENDING;
-    }
-}
 static inline void _on_sendto_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes)
 {
     overlap_udp_ctx *ol = UPCAST(skctx, overlap_udp_ctx, ol_s); 
@@ -789,7 +773,15 @@ static inline void _on_sendto_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD by
     FREE(data);
     if (ol->status & STATUS_ERROR)
     {
-        _on_udp_close_s(watcher, ol);
+        if (ol->status & STATUS_REMOVE)
+        {
+            _remove_fd(watcher, ol->ol_r.fd);
+            _free_udp(&ol->ol_r);
+        }
+        else
+        {
+            ol->status = ol->status & ~STATUS_SENDING;
+        }
         return;
     }
     if (0 == qu_bufs_size(&ol->buf_s))
@@ -802,7 +794,7 @@ static inline void _on_sendto_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD by
     {
         FREE(sendbuf->data);
         ol->status |= STATUS_ERROR;
-        _on_udp_close_s(watcher, ol);
+        ol->status = ol->status & ~STATUS_SENDING;
     }
 }
 void _add_bufs_trysendto(sock_ctx *skctx, bufs_ctx *buf)
