@@ -66,11 +66,8 @@ typedef struct watcher_ctx
     ev_ctx *ev;
     overlap_cmd_ctx *cmd;
     struct hashmap *element;
-    uint64_t ntime;
-    uint64_t lastshrink;
     pthread_t thevent;
     skpool_ctx pool;
-    arr_delay delay;
 }watcher_ctx;
 typedef struct exfuncs_ctx
 {
@@ -93,7 +90,6 @@ void _on_cmd_disconn(watcher_ctx *watcher, cmd_ctx *cmd);
 
 void _add_fd(watcher_ctx *watcher, sock_ctx *skctx);
 void _remove_fd(watcher_ctx *watcher, SOCKET fd);
-int32_t _check_canfree(sock_ctx *skctx);
 void _remove(watcher_ctx *watcher, sock_ctx *skctx);
 
 int32_t _join_iocp(watcher_ctx *watcher, SOCKET fd);

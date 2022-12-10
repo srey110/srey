@@ -63,23 +63,13 @@ void _cmd_remove(watcher_ctx *watcher, SOCKET fd, uint64_t hs)
 void _remove(watcher_ctx *watcher, sock_ctx *skctx)
 {
     _remove_fd(watcher, skctx->fd);
-    if (0 == _check_canfree(skctx))
+    if (SOCK_STREAM == skctx->type)
     {
-        if (SOCK_STREAM == skctx->type)
-        {
-            pool_push(&watcher->pool, skctx);
-        }
-        else
-        {
-            _free_udp(skctx);
-        }
+        pool_push(&watcher->pool, skctx);
     }
     else
     {
-        delay_ctx delay;
-        delay.timeout = watcher->ntime + DELAY_TIMEOUT;
-        delay.sock = skctx;
-        arr_delay_push_back(&watcher->delay, &delay);
+        _free_udp(skctx);
     }
 }
 void _on_cmd_remove(watcher_ctx *watcher, cmd_ctx *cmd)

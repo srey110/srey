@@ -6,6 +6,9 @@
 
 #ifndef EV_IOCP
 
+#define STATUS_SERVER      0x01
+#define STATUS_HANDSHAAKE  0x02
+
 typedef struct lsnsock_ctx
 {
     sock_ctx sock;
@@ -29,8 +32,7 @@ typedef struct skrw_ctx
 {
     sock_ctx sock;
 #if WITH_SSL
-    int32_t server;
-    int32_t handshake;
+    int32_t status;
     SSL *ssl;
 #endif
     buffer_ctx buf_r;
@@ -68,6 +70,7 @@ sock_ctx *_new_sk(SOCKET fd, cbs_ctx *cbs, ud_cxt *ud)
     skrw->sock.fd = fd;
     skrw->sock.events = 0;
 #if WITH_SSL
+    skrw->status = 0;
     skrw->ssl = NULL;
 #endif
     skrw->cbs = *cbs;
@@ -93,6 +96,7 @@ void _clear_sk(sock_ctx *skctx)
     skrw_ctx *skrw = UPCAST(skctx, skrw_ctx, sock);
     skrw->sock.events = 0;
 #if WITH_SSL
+    skrw->status = 0;
     FREE_SSL(skrw->ssl);
 #endif
     CLOSE_SOCK(skrw->sock.fd);
@@ -143,7 +147,7 @@ static inline int32_t _ssl_handshake_acpt(watcher_ctx *watcher, skrw_ctx *skrw)
             pool_push(&watcher->pool, &skrw->sock);
             break;
         }
-        skrw->handshake = 1;
+        skrw->status |= STATUS_HANDSHAAKE;
         rtn = ERR_OK;
         break;
     case ERR_OK:
@@ -181,7 +185,7 @@ static inline int32_t _ssl_handshake_conn(watcher_ctx *watcher, skrw_ctx *skrw)
             pool_push(&watcher->pool, &skrw->sock);
             break;
         }
-        skrw->handshake = 1;
+        skrw->status |= STATUS_HANDSHAAKE;
         rtn = ERR_OK;
         break;
     case ERR_OK:
@@ -199,7 +203,7 @@ static inline int32_t _ssl_handshake_conn(watcher_ctx *watcher, skrw_ctx *skrw)
 }
 static inline int32_t _ssl_handshake(watcher_ctx *watcher, skrw_ctx *skrw)
 {
-    if (skrw->server)
+    if (skrw->status & STATUS_SERVER)
     {
         return _ssl_handshake_acpt(watcher, skrw);
     }
@@ -242,7 +246,7 @@ static inline int32_t _on_r_cb(watcher_ctx *watcher, skrw_ctx *skrw)
 {
 #if WITH_SSL
     if (NULL != skrw->ssl
-        && !skrw->handshake)
+        && !(skrw->status & STATUS_HANDSHAAKE))
     {
         if (ERR_OK != _ssl_handshake(watcher, skrw))
         {
@@ -317,16 +321,14 @@ static inline void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t
 #if WITH_SSL
     if (NULL != connsk->ssl)
     {
-        connsk->server = 0;
         int32_t rtn = evssl_tryconn(connsk->ssl);
         if (ERR_OK == rtn)
         {
             handshake = 0;
-            connsk->handshake = 0;
         }
         else if (1 == rtn)
         {
-            connsk->handshake = 1;
+            connsk->status |= STATUS_HANDSHAAKE;
         }
         else//-1
         {
@@ -475,8 +477,7 @@ void _add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn)
             return;
         }
         handshake = 0;
-        acpsk->handshake = 0;
-        acpsk->server = 1;
+        acpsk->status |= STATUS_SERVER;
     }
 #endif
     _add_fd(watcher, skctx);

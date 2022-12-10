@@ -397,8 +397,7 @@ static inline int32_t _parse_event(events_t *ev, SOCKET *fd, void **arg)
 }
 static inline void _pool_shrink(watcher_ctx *watcher, timer_ctx *timer)
 {
-    uint64_t elapsed = timer_elapsed_ms(timer);
-    if (elapsed < SHRINK_TIME)
+    if (timer_elapsed_ms(timer) < SHRINK_TIME)
     {
         return;
     }
