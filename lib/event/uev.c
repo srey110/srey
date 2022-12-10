@@ -112,8 +112,9 @@ int32_t _add_event(watcher_ctx *watcher, SOCKET fd, int32_t *events, int32_t ev,
     epev.events |= EPOLLET;
 #endif
     if (ERR_FAILED == epoll_ctl(watcher->evfd,
-        (0 == (*events) ? EPOLL_CTL_ADD : EPOLL_CTL_MOD),
-        fd, &epev))
+                               0 == (*events) ? EPOLL_CTL_ADD : EPOLL_CTL_MOD,
+                               fd,
+                               &epev))
     {
         return ERR_FAILED;
     }
