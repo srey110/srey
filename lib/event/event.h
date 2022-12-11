@@ -4,7 +4,6 @@
 #include "event/evpub.h"
 #include "event/evssl.h"
 
-//½Ó¿Ú
 void ev_init(ev_ctx *ctx, uint32_t nthreads);
 void ev_free(ev_ctx *ctx);
 
