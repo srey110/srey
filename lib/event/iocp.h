@@ -83,8 +83,6 @@ void _on_cmd_disconn(watcher_ctx *watcher, cmd_ctx *cmd);
 
 void _add_fd(watcher_ctx *watcher, sock_ctx *skctx);
 void _remove_fd(watcher_ctx *watcher, SOCKET fd);
-void _remove(watcher_ctx *watcher, sock_ctx *skctx);
-
 int32_t _join_iocp(watcher_ctx *watcher, SOCKET fd);
 void _add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn);
 int32_t _post_recv(sock_ctx *skctx, DWORD  *bytes, DWORD  *flag, IOV_TYPE *wsabuf, DWORD niov);

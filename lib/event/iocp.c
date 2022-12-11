@@ -72,25 +72,25 @@ static void _on_cmd(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes)
     cmd_ctx cmd;
     int32_t i, nread;
     char cmdbuf[CMD_MAX_NREAD];
-    overlap_cmd_ctx *ol = UPCAST(skctx, overlap_cmd_ctx, ol_r);
+    overlap_cmd_ctx *olcmd = UPCAST(skctx, overlap_cmd_ctx, ol_r);
     do 
     {
-        nread = recv(ol->ol_r.fd, cmdbuf, sizeof(cmdbuf), 0);
+        nread = recv(olcmd->ol_r.fd, cmdbuf, sizeof(cmdbuf), 0);
         if (nread <= 0)
         {
             break;
         }
         for (i = 0; i < nread; i++)
         {
-            mutex_lock(&ol->lck);
-            cmd = *qu_cmd_pop(&ol->qu);
-            mutex_unlock(&ol->lck);
+            mutex_lock(&olcmd->lck);
+            cmd = *qu_cmd_pop(&olcmd->qu);
+            mutex_unlock(&olcmd->lck);
             cmd_cbs[cmd.cmd](watcher, &cmd);
         }
     } while (nread == sizeof(cmdbuf));
     if (0 == watcher->stop)
     {
-        ASSERTAB(ERR_OK == _post_recv(&ol->ol_r, &ol->bytes, &ol->flag, &ol->wsabuf, 1), "_post_recv failed.");
+        ASSERTAB(ERR_OK == _post_recv(&olcmd->ol_r, &olcmd->bytes, &olcmd->flag, &olcmd->wsabuf, 1), "_post_recv failed.");
     }
 }
 static inline void _pool_shrink(watcher_ctx *watcher, timer_ctx *timer)
@@ -184,7 +184,7 @@ static void _loop_event(void *arg)
     }
 }
 #endif
-static inline void _free_mapitem(void *item)
+static inline void _free_element(void *item)
 {
     map_element *el = (map_element *)item;
     if (SOCK_STREAM == el->sock->type)
@@ -199,22 +199,22 @@ static inline void _free_mapitem(void *item)
 static void _init_cmd(watcher_ctx *watcher)
 {
     SOCKET pair[2];
-    overlap_cmd_ctx *ol;
+    overlap_cmd_ctx *olcmd;
     MALLOC(watcher->cmd, sizeof(overlap_cmd_ctx) * watcher->ncmd);
     for (uint32_t i = 0; i < watcher->ncmd; i++)
     {
-        ol = &watcher->cmd[i];
+        olcmd = &watcher->cmd[i];
         ASSERTAB(ERR_OK == sock_pair(pair), "create sock pair failed.");
-        ol->ol_r.ev_cb = _on_cmd;
-        ol->ol_r.fd = pair[0];
-        ol->ol_r.type = 0;
-        ol->fd = pair[1];
-        qu_cmd_init(&ol->qu, ONEK);
-        mutex_init(&ol->lck);
-        ol->wsabuf.IOV_PTR_FIELD = NULL;
-        ol->wsabuf.IOV_LEN_FIELD = 0;
-        ASSERTAB(ERR_OK == _join_iocp(watcher, ol->ol_r.fd), "_join_iocp failed.");
-        ASSERTAB(ERR_OK == _post_recv(&ol->ol_r, &ol->bytes, &ol->flag, &ol->wsabuf, 1), "_post_recv failed.");
+        olcmd->ol_r.ev_cb = _on_cmd;
+        olcmd->ol_r.fd = pair[0];
+        olcmd->ol_r.type = 0;
+        olcmd->fd = pair[1];
+        qu_cmd_init(&olcmd->qu, ONEK);
+        mutex_init(&olcmd->lck);
+        olcmd->wsabuf.IOV_PTR_FIELD = NULL;
+        olcmd->wsabuf.IOV_LEN_FIELD = 0;
+        ASSERTAB(ERR_OK == _join_iocp(watcher, olcmd->ol_r.fd), "_join_iocp failed.");
+        ASSERTAB(ERR_OK == _post_recv(&olcmd->ol_r, &olcmd->bytes, &olcmd->flag, &olcmd->wsabuf, 1), "_post_recv failed.");
     }
 }
 void ev_init(ev_ctx *ctx, uint32_t nthreads)
@@ -236,7 +236,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads)
         ASSERTAB(NULL != watcher->iocp, ERRORSTR(ERRNO));
         watcher->ev = ctx;
         watcher->element = hashmap_new_with_allocator(_malloc, _realloc, _free,
-            sizeof(map_element), ONEK * 2, 0, 0, _map_hash, _map_compare, _free_mapitem, NULL);
+            sizeof(map_element), ONEK * 2, 0, 0, _map_hash, _map_compare, _free_element, NULL);
         pool_init(&watcher->pool, ONEK);
         _init_cmd(watcher);
         watcher->thevent = thread_creat(_loop_event, watcher);
@@ -244,14 +244,14 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads)
 }
 static void _free_cmd(watcher_ctx *watcher)
 {
-    overlap_cmd_ctx *ol;
+    overlap_cmd_ctx *olcmd;
     for (uint32_t i = 0; i < watcher->ncmd; i++)
     {
-        ol = &watcher->cmd[i];
-        CLOSE_SOCK(ol->ol_r.fd);
-        CLOSE_SOCK(ol->fd);
-        qu_cmd_free(&ol->qu);
-        mutex_free(&ol->lck);
+        olcmd = &watcher->cmd[i];
+        CLOSE_SOCK(olcmd->ol_r.fd);
+        CLOSE_SOCK(olcmd->fd);
+        qu_cmd_free(&olcmd->qu);
+        mutex_free(&olcmd->lck);
     }
     FREE(watcher->cmd);
 }

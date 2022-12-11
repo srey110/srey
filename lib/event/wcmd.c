@@ -4,7 +4,6 @@
 
 #ifdef EV_IOCP
 
-#define DELAY_TIMEOUT     15
 #define _SEND_CMD(ev, cmd)\
 do {\
     uint64_t hs = FD_HASH(cmd.fd);\
@@ -19,12 +18,12 @@ static inline map_element *_map_get(watcher_ctx *watcher, SOCKET fd)
 }
 void _send_cmd(watcher_ctx *watcher, uint32_t index, cmd_ctx *cmd)
 {
-    overlap_cmd_ctx *ol = &watcher->cmd[index];
-    mutex_lock(&ol->lck);
-    qu_cmd_push(&ol->qu, cmd);
-    mutex_unlock(&ol->lck);
+    overlap_cmd_ctx *olcmd = &watcher->cmd[index];
+    mutex_lock(&olcmd->lck);
+    qu_cmd_push(&olcmd->qu, cmd);
+    mutex_unlock(&olcmd->lck);
     static char trigger[1] = { 's' };
-    ASSERTAB(1 == send(ol->fd, trigger, sizeof(trigger), 0), ERRORSTR(ERRNO));
+    ASSERTAB(1 == send(olcmd->fd, trigger, sizeof(trigger), 0), ERRORSTR(ERRNO));
 }
 void _on_cmd_stop(watcher_ctx *watcher, cmd_ctx *cmd)
 {
@@ -60,18 +59,6 @@ void _cmd_remove(watcher_ctx *watcher, SOCKET fd, uint64_t hs)
     cmd.fd = fd;
     _send_cmd(watcher, GET_POS(hs, watcher->ncmd), &cmd);
 }
-void _remove(watcher_ctx *watcher, sock_ctx *skctx)
-{
-    _remove_fd(watcher, skctx->fd);
-    if (SOCK_STREAM == skctx->type)
-    {
-        pool_push(&watcher->pool, skctx);
-    }
-    else
-    {
-        _free_udp(skctx);
-    }
-}
 void _on_cmd_remove(watcher_ctx *watcher, cmd_ctx *cmd)
 {
     map_element *el = _map_get(watcher, cmd->fd);
@@ -79,7 +66,15 @@ void _on_cmd_remove(watcher_ctx *watcher, cmd_ctx *cmd)
     {
         return;
     }
-    _remove(watcher, el->sock);
+    _remove_fd(watcher, cmd->fd);
+    if (SOCK_STREAM == el->sock->type)
+    {
+        pool_push(&watcher->pool, el->sock);
+    }
+    else
+    {
+        _free_udp(el->sock);
+    }
 }
 void ev_send(ev_ctx *ctx, SOCKET fd, void *data, size_t len, int32_t copy)
 {
