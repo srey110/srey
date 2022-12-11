@@ -135,6 +135,15 @@ void _reset_sk(sock_ctx *skctx, SOCKET fd, cbs_ctx *cbs, ud_cxt *ud)
     ol->cbs = *cbs;
     COPY_UD(ol->ud, ud);
 }
+void _set_error(sock_ctx *skctx)
+{
+    if (SOCK_STREAM == skctx->type)
+    {
+        UPCAST(skctx, overlap_tcp_ctx, ol_r)->status |= STATUS_ERROR;
+        return;
+    }
+    UPCAST(skctx, overlap_udp_ctx, ol_r)->status |= STATUS_ERROR;
+}
 void _add_fd(watcher_ctx *watcher, sock_ctx *skctx)
 {
     map_element el;
@@ -205,12 +214,12 @@ static inline int32_t _ssl_handshake_conn(watcher_ctx *watcher, overlap_tcp_ctx 
     switch (evssl_tryconn(ol->ssl))
     {
     case ERR_FAILED:
-        ol->cbs.conn_cb(watcher->ev, INVALID_SOCK, &ol->ud);
+        ol->cbs.conn_cb(watcher->ev, ol->ol_r.fd, ERR_FAILED, &ol->ud);
         _remove_fd(watcher, ol->ol_r.fd);
         pool_push(&watcher->pool, &ol->ol_r);
         break;
     case 1:
-        if (ERR_OK != ol->cbs.conn_cb(watcher->ev, ol->ol_r.fd, &ol->ud))
+        if (ERR_OK != ol->cbs.conn_cb(watcher->ev, ol->ol_r.fd, ERR_OK, &ol->ud))
         {
             _remove_fd(watcher, ol->ol_r.fd);
             pool_push(&watcher->pool, &ol->ol_r);
@@ -222,7 +231,7 @@ static inline int32_t _ssl_handshake_conn(watcher_ctx *watcher, overlap_tcp_ctx 
     case ERR_OK:
         if (ERR_OK != _post_recv(&ol->ol_r, &ol->bytes_r, &ol->flag, &ol->wsabuf, 1))
         {
-            ol->cbs.conn_cb(watcher->ev, INVALID_SOCK, &ol->ud);
+            ol->cbs.conn_cb(watcher->ev, ol->ol_r.fd, ERR_FAILED, &ol->ud);
             _remove_fd(watcher, ol->ol_r.fd);
             pool_push(&watcher->pool, &ol->ol_r);
         }
@@ -239,29 +248,8 @@ static inline int32_t _ssl_handshake(watcher_ctx *watcher, overlap_tcp_ctx *ol)
     return _ssl_handshake_conn(watcher, ol);
 }
 #endif
-static inline void _on_tcp_close_r(watcher_ctx *watcher, overlap_tcp_ctx *ol)
-{
-    if (NULL != ol->cbs.c_cb)
-    {
-        ol->cbs.c_cb(watcher->ev, ol->ol_r.fd, &ol->ud);
-    }
-    if (ol->status & STATUS_SENDING)
-    {
-        ol->status |= STATUS_REMOVE;
-    }
-    else
-    {
-        _remove_fd(watcher, ol->ol_r.fd);
-        pool_push(&watcher->pool, &ol->ol_r);
-    }
-}
 static inline void _tcp_recv(watcher_ctx *watcher, overlap_tcp_ctx *ol)
 {
-    if (ol->status & STATUS_ERROR)
-    {
-        _on_tcp_close_r(watcher, ol);
-        return;
-    }
     size_t nread;
 #if WITH_SSL
     int32_t rtn = buffer_from_sock(&ol->buf_r, ol->ol_r.fd, &nread, _sock_read, ol->ssl);
@@ -279,12 +267,60 @@ static inline void _tcp_recv(watcher_ctx *watcher, overlap_tcp_ctx *ol)
     if (ERR_OK != rtn)
     {
         ol->status |= STATUS_ERROR;
-        _on_tcp_close_r(watcher, ol);
+        if (NULL != ol->cbs.c_cb)
+        {
+            ol->cbs.c_cb(watcher->ev, ol->ol_r.fd, &ol->ud);
+        }
+        if (ol->status & STATUS_SENDING)
+        {
+            ol->status |= STATUS_REMOVE;
+        }
+        else
+        {
+            _remove_fd(watcher, ol->ol_r.fd);
+            pool_push(&watcher->pool, &ol->ol_r);
+        }
     }
 }
 static void _on_recv_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes)
 {
     overlap_tcp_ctx *ol = UPCAST(skctx, overlap_tcp_ctx, ol_r);
+    if (ol->status & STATUS_ERROR)
+    {
+        int32_t handshake = 1;
+#if WITH_SSL
+        if (NULL != ol->ssl
+            && !(ol->status & STATUS_HANDSHAAKE))
+        {
+            handshake = 0;
+        }
+#endif
+        if (handshake)
+        {
+            if (NULL != ol->cbs.c_cb)
+            {
+                ol->cbs.c_cb(watcher->ev, ol->ol_r.fd, &ol->ud);
+            }
+        }
+        else
+        {
+            if (!(ol->status & STATUS_SERVER))
+            {
+                ol->cbs.conn_cb(watcher->ev, ol->ol_r.fd, ERR_FAILED, &ol->ud);
+            }
+        }
+        if (ol->status & STATUS_SENDING)
+        {
+            ol->status |= STATUS_REMOVE;
+        }
+        else
+        {
+            _remove_fd(watcher, ol->ol_r.fd);
+            pool_push(&watcher->pool, &ol->ol_r);
+        }
+        return;
+    }
+
 #if WITH_SSL
     if (NULL != ol->ssl
         && !(ol->status & STATUS_HANDSHAAKE))
@@ -428,7 +464,7 @@ static inline void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD b
     overlap_tcp_ctx *ol = UPCAST(skctx, overlap_tcp_ctx, ol_r);
     if (ERR_OK != sock_checkconn(ol->ol_r.fd))
     {
-        ol->cbs.conn_cb(watcher->ev, INVALID_SOCK, &ol->ud);
+        ol->cbs.conn_cb(watcher->ev, ol->ol_r.fd, ERR_FAILED, &ol->ud);
         pool_push(&watcher->pool, &ol->ol_r);
         return;
     }
@@ -447,7 +483,7 @@ static inline void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD b
         }
         else//-1
         {
-            ol->cbs.conn_cb(watcher->ev, INVALID_SOCK, &ol->ud);
+            ol->cbs.conn_cb(watcher->ev, ol->ol_r.fd, ERR_FAILED, &ol->ud);
             pool_push(&watcher->pool, &ol->ol_r);
             return;
         }
@@ -456,7 +492,7 @@ static inline void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD b
     _add_fd(watcher, &ol->ol_r);
     if (handshake)
     {
-        if (ERR_OK != ol->cbs.conn_cb(watcher->ev, ol->ol_r.fd, &ol->ud))
+        if (ERR_OK != ol->cbs.conn_cb(watcher->ev, ol->ol_r.fd, ERR_OK, &ol->ud))
         {
             _remove_fd(watcher, ol->ol_r.fd);
             pool_push(&watcher->pool, &ol->ol_r);
@@ -560,8 +596,11 @@ static inline void _on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD by
     overlap_acpt_ctx *acpol = UPCAST(skctx, overlap_acpt_ctx, overlap);
     SOCKET fd = acpol->overlap.fd;
     if (ERR_OK != _post_accept(acpol)
-        || ERR_OK != setsockopt(fd, SOL_SOCKET, SO_UPDATE_ACCEPT_CONTEXT, 
-                                (char *)&acpol->lsn->fd, (int32_t)sizeof(acpol->lsn->fd))
+        || ERR_OK != setsockopt(fd, 
+                                SOL_SOCKET, 
+                                SO_UPDATE_ACCEPT_CONTEXT, 
+                                (char *)&acpol->lsn->fd, 
+                                (int32_t)sizeof(acpol->lsn->fd))
         || ERR_OK != _set_sockops(fd))
     {
         CLOSE_SOCK(fd);
@@ -578,7 +617,7 @@ static inline void _on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD by
         _cmd_add_acpfd(to, fd, acpol->lsn, hs);
     }
 }
-void _add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn)
+void _add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn)
 {
     if (ERR_OK != _join_iocp(watcher, fd))
     {
@@ -736,6 +775,11 @@ static inline void _on_recvfrom_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD 
     }
     buffer_commit_expand(&ol->buf_r, (size_t)bytes, ol->wsabuf_r, ol->niov);
     ol->rf_cb(watcher->ev, ol->ol_r.fd, &ol->buf_r, (size_t)bytes, &ol->addr, &ol->ud);
+    if (ol->status & STATUS_ERROR)
+    {
+        _on_udp_close_r(watcher, ol);
+        return;
+    }
     if (ERR_OK != _post_recv_from(ol))
     {
         ol->status |= STATUS_ERROR;

@@ -44,11 +44,12 @@ void _on_cmd_disconn(watcher_ctx *watcher, cmd_ctx *cmd)
     }
     if (SOCK_STREAM == el->sock->type)
     {
+        _set_tcp_error(el->sock);
         _sk_shutdown(el->sock);
     }
     else
     {
-        _udp_close(watcher, el->sock);
+        _set_udp_error(watcher, el->sock);
     }
 }
 void _cmd_listen(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx)

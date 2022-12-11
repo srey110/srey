@@ -4,7 +4,6 @@
 #include "event/event.h"
 #include "event/skpool.h"
 #include "thread.h"
-#include "sarray.h"
 
 #ifdef EV_IOCP
 
@@ -51,12 +50,6 @@ typedef struct overlap_cmd_ctx
     mutex_ctx lck;
     IOV_TYPE wsabuf;
 }overlap_cmd_ctx;
-typedef struct delay_ctx
-{
-    uint64_t timeout;
-    struct sock_ctx *sock;
-}delay_ctx;
-ARRAY_DECL(delay_ctx, arr_delay);
 typedef struct watcher_ctx
 {
     int32_t index;
@@ -98,6 +91,7 @@ int32_t _post_recv(sock_ctx *skctx, DWORD  *bytes, DWORD  *flag, IOV_TYPE *wsabu
 void _add_bufs_trypost(sock_ctx *skctx, bufs_ctx *buf);
 void _add_bufs_trysendto(sock_ctx *skctx, bufs_ctx *buf);
 void _sk_shutdown(sock_ctx *skctx);
+void _set_error(sock_ctx *skctx);
 void _free_udp(sock_ctx *skctx);
 void _freelsn(struct listener_ctx *lsn);
 

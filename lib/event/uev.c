@@ -424,7 +424,6 @@ static void _loop_event(void *arg)
 #endif
     SOCKET fd = INVALID_SOCK;
     sock_ctx *skctx;
-    sock_ctx **udp;
     int32_t i, cnt, ev;
     timer_ctx tmshrink;
     timer_init(&tmshrink);
@@ -475,10 +474,6 @@ static void _loop_event(void *arg)
                 int32_t oldev = (EVENT_READ | EVENT_WRITE);
                 _del_event(watcher, fd, &oldev, oldev, NULL);
             }
-        }
-        while (NULL != (udp = qu_sock_pop(&watcher->qu_udpfree)))
-        {
-            _free_udp(*udp);
         }
         _pool_shrink(watcher, &tmshrink);
         if (0 == watcher->stop
@@ -565,7 +560,6 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads)
         watcher->element = hashmap_new_with_allocator(_malloc, _realloc, _free,
             sizeof(map_element), ONEK * 2, 0, 0, _map_hash, _map_compare, _free_mapitem, NULL);
         pool_init(&watcher->pool, ONEK);
-        qu_sock_init(&watcher->qu_udpfree, 32);
         _init_cmd(watcher);
         watcher->thevent = thread_creat(_loop_event, watcher);
     }
@@ -608,7 +602,6 @@ void ev_free(ev_ctx *ctx)
         FREE(watcher->events);
         hashmap_free(watcher->element);
         pool_free(&watcher->pool);
-        qu_sock_free(&watcher->qu_udpfree);
     }
     FREE(ctx->watcher);
     struct listener_ctx **lsn;

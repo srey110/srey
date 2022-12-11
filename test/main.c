@@ -21,6 +21,7 @@ mutex_ctx muexit;
 cond_ctx condexit;
 int32_t pk_index = 0;
 SOCKET connsock = INVALID_SOCK;
+SOCKET udpsock = INVALID_SOCK;
 static atomic_t count = 0;
 #if WITH_SSL
 struct evssl_ctx *ssl_client;
@@ -82,9 +83,9 @@ static void test_conn_recv_cb(ev_ctx *ctx, SOCKET sock, buffer_ctx *buf, size_t 
     }
     buffer_drain(buf, buffer_size(buf));
 }
-static int32_t test_conn_cb(ev_ctx *ctx, SOCKET sock, ud_cxt *ud)
+static int32_t test_conn_cb(ev_ctx *ctx, SOCKET sock, int32_t err, ud_cxt *ud)
 {
-    if (INVALID_SOCK != sock)
+    if (ERR_OK == err)
     {
         PRINT("%s", "connect ok.");
         connsock = sock;
@@ -117,6 +118,15 @@ static void timeout(void *arg)
 {
     int32_t elapsed = (int32_t)timer_elapsed_ms(&tw.timer);
     PRINT("timeout:%d ms link cnt %d", elapsed, ATOMIC_GET(&count));
+    if (INVALID_SOCK != udpsock)
+    {
+        ev_close(arg, udpsock);
+        udpsock = INVALID_SOCK;
+    }
+    else
+    {
+        udpsock = ev_udp(arg, "0.0.0.0", 15002, test_recvfrom_cb, NULL);
+    }
     if (INVALID_SOCK != connsock)
     {
         /*ev_close(arg, connsock);
@@ -205,7 +215,7 @@ int main(int argc, char *argv[])
     cbs.r_cb = test_recv_cb;
     cbs.s_cb = test_send_cb;
     ev_listen(&ev, NULL, "0.0.0.0", 15000, &cbs, NULL);
-    ev_udp(&ev, "0.0.0.0", 15002, test_recvfrom_cb, NULL);
+    udpsock = ev_udp(&ev, "0.0.0.0", 15002, test_recvfrom_cb, NULL);
 
 #if WITH_SSL
     char local[PATH_LENS] = { 0 };
@@ -229,6 +239,11 @@ int main(int argc, char *argv[])
     mutex_lock(&muexit);
     cond_wait(&condexit, &muexit);
     mutex_unlock(&muexit);
+    if (INVALID_SOCK != udpsock)
+    {
+        ev_close(&ev, udpsock);
+        MSLEEP(500);
+    }
     if (INVALID_SOCK != connsock)
     {
         ev_close(&ev, connsock);

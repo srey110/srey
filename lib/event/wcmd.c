@@ -154,12 +154,15 @@ void _on_cmd_disconn(watcher_ctx *watcher, cmd_ctx *cmd)
         CLOSE_SOCK(cmd->fd);
         return;
     }
+    _set_error(el->sock);
     if (SOCK_STREAM == el->sock->type)
     {
         _sk_shutdown(el->sock);
-        return;
     }
-    CLOSE_SOCK(cmd->fd);
+    else
+    {
+        CancelIoEx((HANDLE)cmd->fd, NULL);
+    }
 }
 
 #endif// EV_IOCP

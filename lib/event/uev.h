@@ -33,7 +33,7 @@ struct listener_ctx;
 
 typedef enum EVENTS
 {
-    EVENT_READ = 0x01,
+    EVENT_READ  = 0x01,
     EVENT_WRITE = 0x02,
 }EVENTS;
 typedef enum UEV_CMDS
@@ -78,7 +78,6 @@ typedef struct watcher_ctx
     struct hashmap *element;
     pthread_t thevent;
     skpool_ctx pool;
-    qu_sock qu_udpfree;
 }watcher_ctx;
 
 typedef void(*event_cb)(watcher_ctx *watcher, struct sock_ctx *skctx, int32_t ev);
@@ -117,7 +116,8 @@ void _add_fd(watcher_ctx *watcher, sock_ctx *skctx);
 sock_ctx *_map_getskctx(watcher_ctx *watcher, SOCKET fd);
 void _sk_shutdown(sock_ctx *skctx);
 void _free_udp(sock_ctx *skctx);
-void _udp_close(watcher_ctx *watcher, sock_ctx *skctx);
+void _set_tcp_error(sock_ctx *skctx);
+void _set_udp_error(watcher_ctx *watcher, sock_ctx *skctx);
 void _freelsn(struct listener_ctx *lsn);
 
 #endif//EV_IOCP
