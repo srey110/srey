@@ -143,12 +143,9 @@ static inline int32_t _sock_read_normal(SOCKET fd, IOV_TYPE *iov, uint32_t niov)
     {
         return ERR_FAILED;
     }
-    if (nread < 0)
+    if (!ERR_RW_RETRIABLE(ERRNO))
     {
-        if (!ERR_RW_RETRIABLE(ERRNO))
-        {
-            return ERR_FAILED;
-        }
+        return ERR_FAILED;
     }
     return ERR_OK;
 #endif
@@ -234,18 +231,15 @@ static inline int32_t _sock_send_iov(SOCKET fd, IOV_TYPE *iov, uint32_t niov)
     return ERR_OK;
 #else
     int32_t nsend = (int32_t)writev(fd, iov, (int32_t)niov);
-    if (nsend >= 0)
-    {
-        return nsend;
-    }
-    if (nsend < 0)
+    if (-1 == nsend)
     {
         if (!ERR_RW_RETRIABLE(ERRNO))
         {
             return ERR_FAILED;
         }
+        return ERR_OK;
     }
-    return ERR_OK;
+    return nsend;
 #endif
 }
 static inline int32_t _sock_send_normal(SOCKET fd, qu_bufs *buf_s, size_t *nsend)
@@ -274,7 +268,7 @@ static inline int32_t _sock_send_normal(SOCKET fd, qu_bufs *buf_s, size_t *nsend
 #if WITH_SSL
 static inline int32_t _sock_send_ssl(SSL *ssl, qu_bufs *buf_s, size_t *nsend)
 {
-    int32_t rtn, err = ERR_OK;
+    int32_t rtn = ERR_OK;
     bufs_ctx *buf;
     for (;;)
     {
@@ -288,6 +282,7 @@ static inline int32_t _sock_send_ssl(SSL *ssl, qu_bufs *buf_s, size_t *nsend)
         {
             (*nsend) += rtn;
             buf->offset += rtn;
+            rtn = ERR_OK;
             if (buf->offset == buf->len)
             {
                 qu_bufs_pop(buf_s);
@@ -299,10 +294,12 @@ static inline int32_t _sock_send_ssl(SSL *ssl, qu_bufs *buf_s, size_t *nsend)
                 break;
             }
         }
-        err = rtn;
-        break;
+        else
+        {
+            break;
+        }
     }
-    return err;
+    return rtn;
 }
 #endif
 int32_t _sock_send(SOCKET fd, qu_bufs *buf_s, size_t *nsend, void *arg)
