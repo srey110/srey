@@ -19,7 +19,7 @@ typedef enum WEV_CMDS
 
     CMD_TOTAL,
 }WEV_CMDS;
-typedef void(*event_cb)(struct watcher_ctx *watcher, struct sock_ctx *skctx, DWORD bytes);
+typedef void(*event_cb)(void *arg, struct sock_ctx *skctx, DWORD bytes);
 typedef struct sock_ctx
 {
     OVERLAPPED overlapped;
@@ -62,6 +62,14 @@ typedef struct watcher_ctx
     pthread_t thevent;
     skpool_ctx pool;
 }watcher_ctx;
+typedef struct acceptex_ctx
+{
+    int32_t index;
+    int32_t stop;
+    ev_ctx *ev;
+    HANDLE iocp;
+    pthread_t thacp;
+}acceptex_ctx;
 typedef struct exfuncs_ctx
 {
     BOOL(WINAPI *acceptex)(SOCKET, SOCKET, PVOID, DWORD, DWORD, DWORD, LPDWORD, LPOVERLAPPED);

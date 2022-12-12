@@ -239,6 +239,7 @@ int main(int argc, char *argv[])
     mutex_lock(&muexit);
     cond_wait(&condexit, &muexit);
     mutex_unlock(&muexit);
+    tw_free(&tw);
     if (INVALID_SOCK != udpsock)
     {
         ev_close(&ev, udpsock);
@@ -258,7 +259,6 @@ int main(int argc, char *argv[])
 #endif
     mutex_free(&muexit);
     cond_free(&condexit);
-    tw_free(&tw);
     LOGFREE();
 
     return 0;

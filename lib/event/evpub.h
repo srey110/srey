@@ -24,6 +24,10 @@ QUEUE_DECL(struct listener_ctx *, qu_lsn);
 typedef struct ev_ctx
 {
     uint32_t nthreads;
+#ifdef EV_IOCP
+    uint32_t nacpex;
+    struct acceptex_ctx *acpex;
+#endif
     struct watcher_ctx *watcher;
     qu_lsn qulsn;
     mutex_ctx qulsnlck;

@@ -558,7 +558,8 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads)
         watcher->npipes = ctx->nthreads * 2;
         watcher->pipes = _new_pips(watcher->npipes);
         watcher->element = hashmap_new_with_allocator(_malloc, _realloc, _free,
-            sizeof(map_element), ONEK * 2, 0, 0, _map_hash, _map_compare, _free_element, NULL);
+                                                      sizeof(map_element), ONEK * 2, 0, 0, 
+                                                      _map_hash, _map_compare, _free_element, NULL);
         pool_init(&watcher->pool, ONEK);
         _init_cmd(watcher);
         watcher->thevent = thread_creat(_loop_event, watcher);

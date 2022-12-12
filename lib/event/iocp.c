@@ -152,6 +152,51 @@ static void _loop_event(void *arg)
     }
     FREE(overlappeds);
 }
+static void _loop_acpex(void *arg)
+{
+    acceptex_ctx *acpex = (acceptex_ctx *)arg;
+    int32_t err;
+    ULONG i;
+    ULONG count;
+    ULONG nevent = INIT_EVENTS_CNT;
+    sock_ctx *sock;
+    LPOVERLAPPED overlap;
+    LPOVERLAPPED_ENTRY overlappeds;
+    MALLOC(overlappeds, sizeof(OVERLAPPED_ENTRY) * nevent);
+    while (0 == acpex->stop)
+    {
+        if (GetQueuedCompletionStatusEx(acpex->iocp,
+                                        overlappeds,
+                                        nevent,
+                                        &count,
+                                        EVENT_WAIT_TIMEOUT,
+                                        FALSE))
+        {
+            for (i = 0; i < count; i++)
+            {
+                overlap = overlappeds[i].lpOverlapped;
+                if (NULL == overlap)
+                {
+                    continue;
+                }
+                sock = UPCAST(overlap, sock_ctx, overlapped);
+                sock->ev_cb(acpex, sock, overlappeds[i].dwNumberOfBytesTransferred);
+            }
+            if (0 == acpex->stop
+                && count == nevent)
+            {
+                FREE(overlappeds);
+                nevent *= 2;
+                MALLOC(overlappeds, sizeof(OVERLAPPED_ENTRY) * nevent);
+            }
+        }
+        else if (WAIT_TIMEOUT != (err = ERRNO))
+        {
+            LOG_ERROR("%s", ERRORSTR(err));
+        }
+    }
+    FREE(overlappeds);
+}
 #else
 static void _loop_event(void *arg)
 {
@@ -181,6 +226,32 @@ static void _loop_event(void *arg)
             LOG_ERROR("%s", ERRORSTR(err));
         }
         _pool_shrink(watcher, &timer);
+    }
+}
+static void _loop_acpex(void *arg)
+{
+    acceptex_ctx *acpex = (acceptex_ctx *)arg;
+    DWORD bytes;
+    int32_t err;
+    ULONG_PTR key;
+    sock_ctx *sock;
+    OVERLAPPED *overlap;
+    while (0 == acpex->stop)
+    {
+        GetQueuedCompletionStatus(acpex->iocp,
+                                  &bytes,
+                                  &key,
+                                  &overlap,
+                                  EVENT_WAIT_TIMEOUT);
+        if (NULL != overlap)
+        {
+            sock = UPCAST(overlap, sock_ctx, overlapped);
+            sock->ev_cb(acpex, sock, bytes);
+        }
+        else if (WAIT_TIMEOUT != (err = ERRNO))
+        {
+            LOG_ERROR("%s", ERRORSTR(err));
+        }
     }
 }
 #endif
@@ -220,13 +291,14 @@ static void _init_cmd(watcher_ctx *watcher)
 void ev_init(ev_ctx *ctx, uint32_t nthreads)
 {
     ctx->nthreads = (0 == nthreads ? 1 : nthreads);
+    ctx->nacpex = ctx->nthreads;
     sock_init();
     _init_funcs(ctx);
-    mutex_init(&ctx->qulsnlck);
-    qu_lsn_init(&ctx->qulsn, 8);
+
     MALLOC(ctx->watcher, sizeof(watcher_ctx) * ctx->nthreads);
     watcher_ctx *watcher;
-    for (uint32_t i = 0; i < ctx->nthreads; i++)
+    uint32_t i;
+    for (i = 0; i < ctx->nthreads; i++)
     {
         watcher = &ctx->watcher[i];
         watcher->index = i;
@@ -236,10 +308,27 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads)
         ASSERTAB(NULL != watcher->iocp, ERRORSTR(ERRNO));
         watcher->ev = ctx;
         watcher->element = hashmap_new_with_allocator(_malloc, _realloc, _free,
-            sizeof(map_element), ONEK * 2, 0, 0, _map_hash, _map_compare, _free_element, NULL);
+                                                      sizeof(map_element), ONEK * 2, 0, 0, 
+                                                      _map_hash, _map_compare, _free_element, NULL);
         pool_init(&watcher->pool, ONEK);
         _init_cmd(watcher);
         watcher->thevent = thread_creat(_loop_event, watcher);
+    }
+
+    mutex_init(&ctx->qulsnlck);
+    qu_lsn_init(&ctx->qulsn, 8);
+    HANDLE iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, ctx->nacpex);
+    ASSERTAB(NULL != iocp, ERRORSTR(ERRNO));
+    MALLOC(ctx->acpex, sizeof(acceptex_ctx) * ctx->nacpex);
+    acceptex_ctx *acpex;
+    for (i = 0; i < ctx->nacpex; i++)
+    {
+        acpex = &ctx->acpex[i];
+        acpex->index = i;
+        acpex->stop = 0;
+        acpex->ev = ctx;
+        acpex->iocp = iocp;
+        acpex->thacp = thread_creat(_loop_acpex, acpex);
     }
 }
 static void _free_cmd(watcher_ctx *watcher)
@@ -258,6 +347,25 @@ static void _free_cmd(watcher_ctx *watcher)
 void ev_free(ev_ctx *ctx)
 {
     uint32_t i;
+    for (i = 0; i < ctx->nacpex; i++)
+    {
+        ctx->acpex[i].stop = 1;
+        (void)PostQueuedCompletionStatus(ctx->acpex[i].iocp, 0, ((ULONG_PTR)-1), NULL);
+    }
+    for (i = 0; i < ctx->nacpex; i++)
+    {
+        thread_join(ctx->acpex[i].thacp);
+    }
+    struct listener_ctx **lsn;
+    while (NULL != (lsn = qu_lsn_pop(&ctx->qulsn)))
+    {
+        _freelsn(*lsn);
+    }
+    qu_lsn_free(&ctx->qulsn);
+    mutex_free(&ctx->qulsnlck);
+    (void)CloseHandle(ctx->acpex[0].iocp);
+    FREE(ctx->acpex);
+
     cmd_ctx cmd;
     cmd.cmd = CMD_STOP;
     watcher_ctx *watcher;
@@ -279,13 +387,6 @@ void ev_free(ev_ctx *ctx)
         (void)CloseHandle(watcher->iocp);
     }
     FREE(ctx->watcher);
-    struct listener_ctx **lsn;
-    while (NULL != (lsn = qu_lsn_pop(&ctx->qulsn)))
-    {
-        _freelsn(*lsn);
-    }
-    qu_lsn_free(&ctx->qulsn);
-    mutex_free(&ctx->qulsnlck);
     sock_clean();
 }
 

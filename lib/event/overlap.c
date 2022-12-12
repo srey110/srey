@@ -589,7 +589,7 @@ static inline int32_t _post_accept(overlap_acpt_ctx *olacp)
     }
     return ERR_OK;
 }
-static inline void _on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes)
+static inline void _on_accept_cb(acceptex_ctx *acpctx, sock_ctx *skctx, DWORD bytes)
 {
     overlap_acpt_ctx *olacp = UPCAST(skctx, overlap_acpt_ctx, overlap);
     SOCKET fd = olacp->overlap.fd;
@@ -605,15 +605,7 @@ static inline void _on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD by
         return;
     }
     uint64_t hs = FD_HASH(fd);
-    watcher_ctx *to = GET_PTR(watcher->ev->watcher, watcher->ev->nthreads, hs);
-    if (to->index == watcher->index)
-    {
-        _add_acpfd_inloop(to, fd, olacp->lsn);
-    }
-    else
-    {
-        _cmd_add_acpfd(to, fd, olacp->lsn, hs);
-    }
+    _cmd_add_acpfd(GET_PTR(acpctx->ev->watcher, acpctx->ev->nthreads, hs), fd, olacp->lsn, hs);
 }
 void _add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn)
 {
@@ -668,8 +660,9 @@ static inline void _free_acceptex(listener_ctx *lsn, int32_t cnt)
 }
 static inline int32_t _acceptex(ev_ctx *ev, listener_ctx *lsn)
 {
-    if (ERR_OK != _join_iocp(GET_PTR(ev->watcher, ev->nthreads, FD_HASH(lsn->fd)), lsn->fd))
+    if (NULL == CreateIoCompletionPort((HANDLE)lsn->fd, ev->acpex[0].iocp, 0, ev->nacpex))
     {
+        LOG_ERROR("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
     overlap_acpt_ctx *olacp;
