@@ -28,9 +28,9 @@
     #define COMMIT_NCHANGES
     #define NO_UDATA
 #endif
+
 struct conn_ctx;
 struct listener_ctx;
-
 typedef enum EVENTS
 {
     EVENT_READ  = 0x01,

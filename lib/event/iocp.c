@@ -47,13 +47,13 @@ static void _init_funcs(ev_ctx *ctx)
 {
     if (ATOMIC_CAS(&_init_once, 0, 1))
     {
-        SOCKET sock = WSASocket(AF_INET, SOCK_STREAM, 0, NULL, 0, 0);
-        ASSERTAB(INVALID_SOCK != sock, ERRORSTR(ERRNO));
+        SOCKET fd = WSASocket(AF_INET, SOCK_STREAM, 0, NULL, 0, 0);
+        ASSERTAB(INVALID_SOCK != fd, ERRORSTR(ERRNO));
         GUID accept_uid = WSAID_ACCEPTEX;
         GUID connect_uid = WSAID_CONNECTEX;
-        _exfuncs.acceptex = _exfunc(sock, &accept_uid);
-        _exfuncs.connectex = _exfunc(sock, &connect_uid);
-        CLOSE_SOCK(sock);
+        _exfuncs.acceptex = _exfunc(fd, &accept_uid);
+        _exfuncs.connectex = _exfunc(fd, &connect_uid);
+        CLOSE_SOCK(fd);
 
         _init_callback();
     }
