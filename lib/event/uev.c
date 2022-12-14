@@ -475,7 +475,6 @@ static void _loop_event(void *arg)
                 _del_event(watcher, fd, &oldev, oldev, NULL);
             }
         }
-        _pool_shrink(watcher, &tmshrink);
         if (0 == watcher->stop
             && cnt == watcher->nevents)
         {
@@ -487,6 +486,7 @@ static void _loop_event(void *arg)
             dvp.dp_nfds = watcher->nevents;
 #endif
         }
+        _pool_shrink(watcher, &tmshrink);
     }
 }
 static inline void _free_element(void *item)

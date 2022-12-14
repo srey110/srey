@@ -177,15 +177,8 @@ int verify_clinet_cb(int preverify_ok, X509_STORE_CTX *x509_ctx)
     return 1;
 }
 #endif
-void testtt(void *arg)
-{
-    MSLEEP(1000);
-}
 int main(int argc, char *argv[])
 {
-    pthread_t aaa = thread_creat(testtt, NULL);
-    thread_join(aaa);
-
     MEMCHECK();
     unlimit();
     srand((unsigned int)time(NULL));
