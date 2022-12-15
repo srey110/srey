@@ -2,62 +2,51 @@
 #include "netutils.h"
 #include "loger.h"
 
-void _bufs_clear(qu_bufs *bufs)
-{
+void _bufs_clear(qu_bufs *bufs) {
     bufs_ctx *buf;
-    while (NULL != (buf = qu_bufs_pop(bufs)))
-    {
+    while (NULL != (buf = qu_bufs_pop(bufs))) {
         FREE(buf->data);
     }
     qu_bufs_clear(bufs);
 }
-int32_t _set_sockops(SOCKET fd)
-{
+int32_t _set_sockops(SOCKET fd) {
     if (ERR_OK != sock_nodelay(fd)
-        || ERR_OK != sock_nbio(fd))
-    {
+        || ERR_OK != sock_nbio(fd)) {
         return ERR_FAILED;
     }
     return ERR_OK;
 }
-SOCKET _create_sock(int32_t type, int32_t family)
-{
+SOCKET _create_sock(int32_t type, int32_t family) {
 #ifdef EV_IOCP
     return WSASocket(family, type, SOCK_STREAM == type ? IPPROTO_TCP : IPPROTO_UDP, NULL, 0, WSA_FLAG_OVERLAPPED);
 #else
     return socket(family, type, 0);
 #endif
 }
-SOCKET _listen(netaddr_ctx *addr)
-{
+SOCKET _listen(netaddr_ctx *addr) {
     SOCKET fd = _create_sock(SOCK_STREAM, netaddr_family(addr));
-    if (INVALID_SOCK == fd)
-    {
+    if (INVALID_SOCK == fd) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         return INVALID_SOCK;
     }
     sock_raddr(fd);
     sock_rport(fd);
     sock_nbio(fd);
-    if (ERR_OK != bind(fd, netaddr_addr(addr), netaddr_size(addr)))
-    {
+    if (ERR_OK != bind(fd, netaddr_addr(addr), netaddr_size(addr))) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         CLOSE_SOCK(fd);
         return INVALID_SOCK;
     }
-    if (ERR_OK != listen(fd, SOMAXCONN))
-    {
+    if (ERR_OK != listen(fd, SOMAXCONN)) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         CLOSE_SOCK(fd);
         return INVALID_SOCK;
     }
     return fd;
 }
-SOCKET _udp(netaddr_ctx *addr)
-{
+SOCKET _udp(netaddr_ctx *addr) {
     SOCKET fd = _create_sock(SOCK_DGRAM, netaddr_family(addr));
-    if (INVALID_SOCK == fd)
-    {
+    if (INVALID_SOCK == fd) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         return INVALID_SOCK;
     }
@@ -72,8 +61,7 @@ SOCKET _udp(netaddr_ctx *addr)
                  0, 
                  &bytes,
                  NULL, 
-                 NULL) < ERR_OK)
-    {
+                 NULL) < ERR_OK) {
         CLOSE_SOCK(fd);
         LOG_ERROR("WSAIoctl(%d, SIO_UDP_CONNRESET...) failed. %s", (int32_t)fd, ERRORSTR(ERRNO));
         return INVALID_SOCK;
@@ -81,8 +69,7 @@ SOCKET _udp(netaddr_ctx *addr)
 #endif
     sock_raddr(fd);
     sock_nbio(fd);
-    if (ERR_OK != bind(fd, netaddr_addr(addr), netaddr_size(addr)))
-    {
+    if (ERR_OK != bind(fd, netaddr_addr(addr), netaddr_size(addr))) {
         CLOSE_SOCK(fd);
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         return INVALID_SOCK;
@@ -90,17 +77,13 @@ SOCKET _udp(netaddr_ctx *addr)
     return fd;
 }
 #if WITH_SSL
-static inline int32_t _sock_read_ssl(SSL *ssl, IOV_TYPE *iov, uint32_t niov)
-{
+static inline int32_t _sock_read_ssl(SSL *ssl, IOV_TYPE *iov, uint32_t niov) {
     int32_t rtn, nread = 0;
-    for (uint32_t i = 0; i < niov; i++)
-    {
+    for (uint32_t i = 0; i < niov; i++) {
         rtn = evssl_read(ssl, iov[i].IOV_PTR_FIELD, (size_t)iov[i].IOV_LEN_FIELD);
-        if (rtn > 0)
-        {
+        if (rtn > 0) {
             nread += rtn;
-            if (rtn < (int32_t)iov[i].IOV_LEN_FIELD)
-            {
+            if (rtn < (int32_t)iov[i].IOV_LEN_FIELD) {
                 return nread;
             }
             continue;
@@ -110,8 +93,7 @@ static inline int32_t _sock_read_ssl(SSL *ssl, IOV_TYPE *iov, uint32_t niov)
     return nread;
 }
 #endif
-static inline int32_t _sock_read_normal(SOCKET fd, IOV_TYPE *iov, uint32_t niov)
-{
+static inline int32_t _sock_read_normal(SOCKET fd, IOV_TYPE *iov, uint32_t niov) {
 #ifdef EV_IOCP 
     DWORD bytes, flags = 0;
     if (SOCKET_ERROR != WSARecv(fd, 
@@ -120,41 +102,33 @@ static inline int32_t _sock_read_normal(SOCKET fd, IOV_TYPE *iov, uint32_t niov)
                                 &bytes, 
                                 &flags, 
                                 NULL, 
-                                NULL))
-    {
-        if (bytes > 0)
-        {
+                                NULL)) {
+        if (bytes > 0) {
             return (int32_t)bytes;
         }
         return ERR_FAILED;
     }
-    if (!IS_EAGAIN(ERRNO))
-    {
+    if (!IS_EAGAIN(ERRNO)) {
         return ERR_FAILED;
     }
     return ERR_OK;
 #else
     int32_t nread = (int32_t)readv(fd, iov, niov);
-    if (nread > 0)
-    {
+    if (nread > 0) {
         return nread;
     }
-    if (0 == nread)
-    {
+    if (0 == nread) {
         return ERR_FAILED;
     }
-    if (!ERR_RW_RETRIABLE(ERRNO))
-    {
+    if (!ERR_RW_RETRIABLE(ERRNO)) {
         return ERR_FAILED;
     }
     return ERR_OK;
 #endif
 }
-int32_t _sock_read(SOCKET fd, IOV_TYPE *iov, uint32_t niov, void *arg)
-{
+int32_t _sock_read(SOCKET fd, IOV_TYPE *iov, uint32_t niov, void *arg) {
 #if WITH_SSL
-    if (NULL == arg)
-    {
+    if (NULL == arg) {
         return _sock_read_normal(fd, iov, niov);
     }
     return _sock_read_ssl((SSL *)arg, iov, niov);
@@ -162,56 +136,45 @@ int32_t _sock_read(SOCKET fd, IOV_TYPE *iov, uint32_t niov, void *arg)
     return _sock_read_normal(fd, iov, niov);
 #endif
 }
-static inline uint32_t _bufs_fill_iov(qu_bufs *buf_s, size_t bufsize, IOV_TYPE iov[MAX_SEND_NIOV])
-{
-    if (bufsize > MAX_SEND_NIOV)
-    {
+static inline uint32_t _bufs_fill_iov(qu_bufs *buf_s, size_t bufsize, IOV_TYPE iov[MAX_SEND_NIOV]) {
+    if (bufsize > MAX_SEND_NIOV) {
         bufsize = MAX_SEND_NIOV;
     }
     bufs_ctx *buf;
     size_t total = 0;
     uint32_t cnt = 0;
-    for (size_t i = 0; i < bufsize; i++)
-    {
+    for (size_t i = 0; i < bufsize; i++) {
         buf = qu_bufs_at(buf_s, i);
         iov[i].IOV_PTR_FIELD = ((char *)buf->data) + buf->offset;
         iov[i].IOV_LEN_FIELD = (IOV_LEN_TYPE)(buf->len - buf->offset);
         total += (size_t)iov[i].IOV_LEN_FIELD;
         cnt++;
-        if (total >= MAX_SEND_SIZE)
-        {
+        if (total >= MAX_SEND_SIZE) {
             break;
         }
     }
     return cnt;
 }
-static inline void _bufs_size_del(qu_bufs *buf_s, size_t len)
-{
-    if (0 == len)
-    {
+static inline void _bufs_size_del(qu_bufs *buf_s, size_t len) {
+    if (0 == len) {
         return;
     }
     size_t buflen;
     bufs_ctx *buf;
-    while (len > 0)
-    {
+    while (len > 0) {
         buf = qu_bufs_peek(buf_s);
         buflen = buf->len - buf->offset;
-        if (len >= buflen)
-        {
+        if (len >= buflen) {
             FREE(buf->data);
             len -= buflen;
             qu_bufs_pop(buf_s);
-        }
-        else
-        {
+        } else {
             buf->offset += len;
             len = 0;
         }
     }
 }
-static inline int32_t _sock_send_iov(SOCKET fd, IOV_TYPE *iov, uint32_t niov)
-{
+static inline int32_t _sock_send_iov(SOCKET fd, IOV_TYPE *iov, uint32_t niov) {
 #ifdef EV_IOCP
     DWORD bytes;
     if (SOCKET_ERROR != WSASend(fd,
@@ -220,21 +183,17 @@ static inline int32_t _sock_send_iov(SOCKET fd, IOV_TYPE *iov, uint32_t niov)
                                 &bytes,
                                 0, 
                                 NULL, 
-                                NULL))
-    {
+                                NULL)) {
         return (int32_t)bytes;
     }
-    if (!IS_EAGAIN(ERRNO))
-    {
+    if (!IS_EAGAIN(ERRNO)) {
         return ERR_FAILED;
     }
     return ERR_OK;
 #else
     int32_t nsend = (int32_t)writev(fd, iov, (int32_t)niov);
-    if (-1 == nsend)
-    {
-        if (!ERR_RW_RETRIABLE(ERRNO))
-        {
+    if (-1 == nsend) {
+        if (!ERR_RW_RETRIABLE(ERRNO)) {
             return ERR_FAILED;
         }
         return ERR_OK;
@@ -242,72 +201,56 @@ static inline int32_t _sock_send_iov(SOCKET fd, IOV_TYPE *iov, uint32_t niov)
     return nsend;
 #endif
 }
-static inline int32_t _sock_send_normal(SOCKET fd, qu_bufs *buf_s, size_t *nsend)
-{
+static inline int32_t _sock_send_normal(SOCKET fd, qu_bufs *buf_s, size_t *nsend) {
     int32_t rtn = ERR_OK;
     size_t bufsize;
     uint32_t niov;
     IOV_TYPE iov[MAX_SEND_NIOV];
-    while (0 != (bufsize = qu_bufs_size(buf_s)))
-    {
+    while (0 != (bufsize = qu_bufs_size(buf_s))) {
         niov = _bufs_fill_iov(buf_s, bufsize, iov);
         rtn = _sock_send_iov(fd, iov, niov);
-        if (rtn > 0)
-        {
+        if (rtn > 0) {
             *nsend += rtn;
             _bufs_size_del(buf_s, rtn);
             rtn = ERR_OK;
-        }
-        else
-        {
+        } else {
             break;
         }
     }
     return rtn;
 }
 #if WITH_SSL
-static inline int32_t _sock_send_ssl(SSL *ssl, qu_bufs *buf_s, size_t *nsend)
-{
+static inline int32_t _sock_send_ssl(SSL *ssl, qu_bufs *buf_s, size_t *nsend) {
     int32_t rtn = ERR_OK;
     bufs_ctx *buf;
-    for (;;)
-    {
+    for (;;) {
         buf = qu_bufs_peek(buf_s);
-        if (NULL == buf)
-        {
+        if (NULL == buf) {
             break;
         }
         rtn = evssl_send(ssl, (char *)buf->data + buf->offset, buf->len - buf->offset);
-        if (rtn > 0)
-        {
+        if (rtn > 0) {
             (*nsend) += rtn;
             buf->offset += rtn;
             rtn = ERR_OK;
-            if (buf->offset == buf->len)
-            {
+            if (buf->offset == buf->len) {
                 qu_bufs_pop(buf_s);
                 FREE(buf->data);
                 continue;
-            }
-            else
-            {
+            } else {
                 break;
             }
-        }
-        else
-        {
+        } else {
             break;
         }
     }
     return rtn;
 }
 #endif
-int32_t _sock_send(SOCKET fd, qu_bufs *buf_s, size_t *nsend, void *arg)
-{
+int32_t _sock_send(SOCKET fd, qu_bufs *buf_s, size_t *nsend, void *arg) {
     *nsend = 0;
 #if WITH_SSL
-    if (NULL == arg)
-    {
+    if (NULL == arg) {
         return _sock_send_normal(fd, buf_s, nsend);
     }
     return _sock_send_ssl((SSL *)arg, buf_s, nsend);

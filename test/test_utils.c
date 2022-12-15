@@ -3,16 +3,14 @@
 
 
 ARRAY_DECL(int, arr);
-void test_array(CuTest* tc)
-{
+void test_array(CuTest* tc) {
     arr arry;
     arr_init(&arry, 10);
     CuAssertTrue(tc, 0 == arr_size(&arry));
     CuAssertTrue(tc, 10 == arr_maxsize(&arry));
     CuAssertTrue(tc, arr_empty(&arry));
 
-    for (int i = 1; i <= 20; i++)
-    {
+    for (int i = 1; i <= 20; i++) {
         arr_push_back(&arry, &i);
     }
     CuAssertTrue(tc, 20 == arr_size(&arry));
@@ -45,8 +43,7 @@ void test_array(CuTest* tc)
     arr_del_nomove(&arry, 18);
     CuAssertTrue(tc, 20 == *arr_at(&arry, 18) && 20 == *arr_back(&arry));
     CuAssertTrue(tc, 20 == *arr_pop_back(&arry));
-    for (size_t i = 0; i < arr_size(&arry); i++)
-    {
+    for (size_t i = 0; i < arr_size(&arry); i++) {
         CuAssertTrue(tc, i + 1 == *arr_at(&arry, i));
     }
 
@@ -60,8 +57,7 @@ void test_array(CuTest* tc)
 }
 QUEUE_DECL(int, que);
 QUEUE_DECL(int *, qup);
-void test_queue(CuTest* tc)
-{
+void test_queue(CuTest* tc) {
     int test = 12;
     int *ptest = &test;
     qup qp;
@@ -73,8 +69,7 @@ void test_queue(CuTest* tc)
 
     que quseed;
     que_init(&quseed, 5);
-    for (int i = 0; i < 5; i++)
-    {
+    for (int i = 0; i < 5; i++) {
         que_push(&quseed, &i);
     }
     //0 1 2 3 4
@@ -86,8 +81,7 @@ void test_queue(CuTest* tc)
     que_push(&quseed, &test);
     ptest = que_at(&quseed, que_size(&quseed));
     CuAssertTrue(tc, NULL == ptest);
-    for (int i = 0; i < (int)que_size(&quseed); i++)
-    {
+    for (int i = 0; i < (int)que_size(&quseed); i++) {
         ptest = que_at(&quseed, i);
         CuAssertTrue(tc, *ptest == i + 2);
     }
@@ -102,16 +96,14 @@ void test_queue(CuTest* tc)
     CuAssertTrue(tc, 4 == que_maxsize(&qu));
     CuAssertTrue(tc, que_empty(&qu));
 
-    for (int i = 1; i <= 4; i++)
-    {
+    for (int i = 1; i <= 4; i++) {
         que_push(&qu, &i);
     }// 1 2 3 4
     CuAssertTrue(tc, 1 == *que_peek(&qu));
     CuAssertTrue(tc, 4 == que_size(&qu));
     CuAssertTrue(tc, 4 == que_maxsize(&qu));
 
-    for (int i = 5; i <= 7; i++)
-    {
+    for (int i = 5; i <= 7; i++) {
         que_push(&qu, &i);
     }
     //1 2 3 4 5 6 7
@@ -124,21 +116,18 @@ void test_queue(CuTest* tc)
     CuAssertTrue(tc, 8 == que_maxsize(&qu));
     //1 2 3 4 5 6 7 8
 
-    for (int i = 1; i <= 6; i++)
-    {
+    for (int i = 1; i <= 6; i++) {
         CuAssertTrue(tc, i == *que_pop(&qu));
     }
     //1 2 3 4 5 6 [7 8]
-    for (int i = 9; i <= 12; i++)
-    {
+    for (int i = 9; i <= 12; i++) {
         que_push(&qu, &i);
     }
     //9 0a 0b 0c .... 7 8
     que_resize(&qu, 6);
     //7 8 9 0a 0b 0c
     size_t size = que_size(&qu);
-    for (size_t i = 0; i < size; i++)
-    {
+    for (size_t i = 0; i < size; i++) {
         CuAssertTrue(tc, i + 7 == *que_pop(&qu));
     }
 
@@ -152,8 +141,7 @@ void test_queue(CuTest* tc)
     
     que_free(&qu);
 }
-void test_system(CuTest* tc)
-{
+void test_system(CuTest* tc) {
     PRINT("createid: %"PRIu64"", createid());
     PRINT("threadid: %"PRIu64"", threadid());
     PRINT("procscnt: %d", procscnt());
@@ -244,16 +232,14 @@ void test_system(CuTest* tc)
     CuAssertTrue(tc, 0 == strcmp(fmt, "110-come"));
     FREE(fmt);
 }
-void test_timer(CuTest* tc)
-{
+void test_timer(CuTest* tc) {
     timer_ctx timer;
     timer_init(&timer);
     timer_start(&timer);
     MSLEEP(100);
     PRINT("timer_elapsed_ms: %"PRIu64"", timer_elapsed_ms(&timer));
 }
-void test_netutils(CuTest* tc)
-{
+void test_netutils(CuTest* tc) {
     sock_init();
     SOCKET sock[2];
     CuAssertTrue(tc, ERR_OK == sock_pair(sock));
@@ -268,8 +254,7 @@ void test_netutils(CuTest* tc)
     CLOSE_SOCK(sock[1]);
     sock_clean();
 }
-void test_buffer(CuTest* tc)
-{
+void test_buffer(CuTest* tc) {
     buffer_ctx buf;
     buffer_init(&buf);
     const char *str1 = "this is test.";
@@ -289,16 +274,14 @@ void test_buffer(CuTest* tc)
 
     buffer_free(&buf);
 }
-void test_log(CuTest* tc)
-{
+void test_log(CuTest* tc) {
     LOG_DEBUG("%s", "LOG_DEBUG");
     LOG_INFO("%s", "LOG_INFO");
     LOG_WARN("%s", "LOG_WARN");
     LOG_ERROR("%s", "LOG_ERROR");
     LOG_FATAL("%s", "LOG_FATAL");
 }
-void test_utils(CuSuite* suite)
-{
+void test_utils(CuSuite* suite) {
     SUITE_ADD_TEST(suite, test_array);
     SUITE_ADD_TEST(suite, test_queue);
     SUITE_ADD_TEST(suite, test_system);

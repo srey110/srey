@@ -8,8 +8,7 @@
 #ifdef EV_IOCP
 
 struct listener_ctx;
-typedef enum WEV_CMDS
-{
+typedef enum WEV_CMDS {
     CMD_STOP = 0x00,
     CMD_DISCONN,
     CMD_ADD,
@@ -20,28 +19,24 @@ typedef enum WEV_CMDS
     CMD_TOTAL,
 }WEV_CMDS;
 typedef void(*event_cb)(void *arg, struct sock_ctx *skctx, DWORD bytes);
-typedef struct sock_ctx
-{
+typedef struct sock_ctx {
     OVERLAPPED overlapped;
     int32_t type;
     SOCKET fd;
     event_cb ev_cb;
 }sock_ctx;
-typedef struct map_element
-{
+typedef struct map_element {
     SOCKET fd;
     struct sock_ctx *sock;
 }map_element;
-typedef struct cmd_ctx
-{
+typedef struct cmd_ctx {
     int32_t cmd;
     SOCKET fd;
     void *data;
     size_t len;
 }cmd_ctx;
 QUEUE_DECL(cmd_ctx, qu_cmd);
-typedef struct overlap_cmd_ctx
-{
+typedef struct overlap_cmd_ctx {
     sock_ctx ol_r;
     DWORD bytes;
     DWORD flag;
@@ -50,8 +45,7 @@ typedef struct overlap_cmd_ctx
     mutex_ctx lck;
     IOV_TYPE wsabuf;
 }overlap_cmd_ctx;
-typedef struct watcher_ctx
-{
+typedef struct watcher_ctx {
     int32_t index;
     int32_t stop;
     uint32_t ncmd;
@@ -62,16 +56,14 @@ typedef struct watcher_ctx
     pthread_t thevent;
     skpool_ctx pool;
 }watcher_ctx;
-typedef struct acceptex_ctx
-{
+typedef struct acceptex_ctx {
     int32_t index;
     int32_t stop;
     ev_ctx *ev;
     HANDLE iocp;
     pthread_t thacp;
 }acceptex_ctx;
-typedef struct exfuncs_ctx
-{
+typedef struct exfuncs_ctx {
     BOOL(WINAPI *acceptex)(SOCKET, SOCKET, PVOID, DWORD, DWORD, DWORD, LPDWORD, LPOVERLAPPED);
     BOOL(WINAPI *connectex)(SOCKET, const struct sockaddr *, int, PVOID, DWORD, LPDWORD, LPOVERLAPPED);
 }exfuncs_ctx;

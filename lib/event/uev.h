@@ -31,13 +31,11 @@
 
 struct conn_ctx;
 struct listener_ctx;
-typedef enum EVENTS
-{
+typedef enum EVENTS {
     EVENT_READ  = 0x01,
     EVENT_WRITE = 0x02,
 }EVENTS;
-typedef enum UEV_CMDS
-{
+typedef enum UEV_CMDS {
     CMD_STOP = 0x00,
     CMD_DISCONN,
     CMD_LSN,
@@ -48,20 +46,17 @@ typedef enum UEV_CMDS
 
     CMD_TOTAL,
 }UEV_CMDS;
-typedef struct cmd_ctx
-{
+typedef struct cmd_ctx {
     int32_t cmd;
     SOCKET fd;
     void *data;
     size_t len;
 }cmd_ctx;
-typedef struct map_element
-{
+typedef struct map_element {
     SOCKET fd;
     struct sock_ctx *sock;
 }map_element;
-typedef struct watcher_ctx
-{
+typedef struct watcher_ctx {
     int32_t index;
     int32_t stop;
     int32_t evfd; 
@@ -81,8 +76,7 @@ typedef struct watcher_ctx
 }watcher_ctx;
 
 typedef void(*event_cb)(watcher_ctx *watcher, struct sock_ctx *skctx, int32_t ev);
-typedef struct sock_ctx
-{
+typedef struct sock_ctx {
     SOCKET fd;
     int32_t type;
     int32_t events;

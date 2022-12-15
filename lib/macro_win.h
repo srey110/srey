@@ -19,8 +19,7 @@
 #define ITOA _itoa
 #define FSTAT _stat
 #define USLEEP(us)\
-do\
-{\
+do {\
     LARGE_INTEGER stft;\
     stft.QuadPart = -(10 * (__int64)us);\
     HANDLE htimer = CreateWaitableTimer(NULL, TRUE, NULL);\
@@ -38,8 +37,7 @@ do\
 #define SHUT_RDWR SD_BOTH
 #define SOCK_CLOSE closesocket    
 #define ERRNO GetLastError()
-static inline const char *_fmterror(DWORD error)
-{
+static inline const char *_fmterror(DWORD error) {
     char *perror = NULL;
     if (0 == FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
         NULL,
@@ -47,13 +45,11 @@ static inline const char *_fmterror(DWORD error)
         MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US),
         (LPTSTR)&perror,
         0,
-        NULL))
-    {
+        NULL)) {
         return "FormatMessageA error.";
     }
     char *ppos = strrchr(perror, '\r');
-    if (NULL != ppos)
-    {
+    if (NULL != ppos) {
         ppos[0] = '\0';
     }
     static char errstr[512];

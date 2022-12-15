@@ -9,8 +9,7 @@ typedef CONDITION_VARIABLE cond_ctx;
 typedef pthread_cond_t cond_ctx;
 #endif
 
-static inline void cond_init(cond_ctx *ctx)
-{
+static inline void cond_init(cond_ctx *ctx) {
 #if defined(OS_WIN)
     InitializeConditionVariable(ctx);
 #else
@@ -18,15 +17,13 @@ static inline void cond_init(cond_ctx *ctx)
         ERRORSTR(ERRNO));
 #endif
 };
-static inline void cond_free(cond_ctx *ctx)
-{
+static inline void cond_free(cond_ctx *ctx) {
 #if defined(OS_WIN)
 #else
     (void)pthread_cond_destroy(ctx);
 #endif
 };
-static inline void cond_wait(cond_ctx *ctx, mutex_ctx *mu)
-{
+static inline void cond_wait(cond_ctx *ctx, mutex_ctx *mu) {
 #if defined(OS_WIN)
     ASSERTAB(SleepConditionVariableCS(ctx, mu, INFINITE),
         ERRORSTR(ERRNO));
@@ -35,11 +32,9 @@ static inline void cond_wait(cond_ctx *ctx, mutex_ctx *mu)
         ERRORSTR(ERRNO));
 #endif
 };
-static inline void cond_timedwait(cond_ctx *ctx, mutex_ctx *mu, const uint32_t ms)
-{
+static inline void cond_timedwait(cond_ctx *ctx, mutex_ctx *mu, const uint32_t ms) {
 #if defined(OS_WIN)
-    if (!SleepConditionVariableCS(ctx, mu, (DWORD)ms))
-    {
+    if (!SleepConditionVariableCS(ctx, mu, (DWORD)ms)) {
         int32_t err = ERRNO;
         ASSERTAB(ERROR_TIMEOUT == err, ERRORSTR(err));
     }
@@ -51,8 +46,7 @@ static inline void cond_timedwait(cond_ctx *ctx, mutex_ctx *mu, const uint32_t m
     struct timespec timewait;
     timewait.tv_sec = now.tv_sec + seconds;
     timewait.tv_nsec = now.tv_usec * 1000 + nanoseconds;
-    if (timewait.tv_nsec >= 1000000000)
-    {
+    if (timewait.tv_nsec >= 1000000000) {
         timewait.tv_nsec -= 1000000000;
         timewait.tv_sec++;
     }
@@ -60,16 +54,14 @@ static inline void cond_timedwait(cond_ctx *ctx, mutex_ctx *mu, const uint32_t m
     ASSERTAB((ERR_OK == rtn || ETIMEDOUT == rtn), ERRORSTR(ERRNO));
 #endif
 };
-static inline void cond_signal(cond_ctx *ctx)
-{
+static inline void cond_signal(cond_ctx *ctx) {
 #if defined(OS_WIN)
     WakeConditionVariable(ctx);
 #else
     ASSERTAB(ERR_OK == pthread_cond_signal(ctx), ERRORSTR(ERRNO));
 #endif
 };
-static inline void cond_broadcast(cond_ctx *ctx)
-{
+static inline void cond_broadcast(cond_ctx *ctx) {
 #if defined(OS_WIN)
     WakeAllConditionVariable(ctx);
 #else

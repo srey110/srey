@@ -14,50 +14,39 @@ static void(*_sig_cb)(int32_t, void *);
 static atomic64_t _ids = 1000;
 
 #ifdef OS_WIN
-static BOOL _GetImpersonationToken(HANDLE *handle)
-{
+static BOOL _GetImpersonationToken(HANDLE *handle) {
     if (!OpenThreadToken(GetCurrentThread(),
         TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES,
         TRUE,
-        handle))
-    {
-        if (ERROR_NO_TOKEN == ERRNO)
-        {
+        handle)) {
+        if (ERROR_NO_TOKEN == ERRNO) {
             if (!OpenProcessToken(GetCurrentProcess(),
                 TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES,
-                handle))
-            {
+                handle)) {
                 return FALSE;
             }
-        }
-        else
-        {
+        } else {
             return FALSE;
         }
     }
     return TRUE;
 }
-static BOOL _EnablePrivilege(LPCTSTR priv, HANDLE handle, TOKEN_PRIVILEGES *privold)
-{
+static BOOL _EnablePrivilege(LPCTSTR priv, HANDLE handle, TOKEN_PRIVILEGES *privold) {
     TOKEN_PRIVILEGES tpriv;
     tpriv.PrivilegeCount = 1;
     tpriv.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
-    if (!LookupPrivilegeValue(0, priv, &tpriv.Privileges[0].Luid))
-    {
+    if (!LookupPrivilegeValue(0, priv, &tpriv.Privileges[0].Luid)) {
         return FALSE;
     }
     DWORD dsize = sizeof(TOKEN_PRIVILEGES);
     return AdjustTokenPrivileges(handle, FALSE, &tpriv, dsize, privold, &dsize);
 }
-static void _ResetPrivilege(HANDLE handle, TOKEN_PRIVILEGES *privold)
-{
+static void _ResetPrivilege(HANDLE handle, TOKEN_PRIVILEGES *privold) {
     (void)AdjustTokenPrivileges(handle, FALSE, privold, 0, NULL, NULL);
 }
-static LONG __stdcall _MiniDump(struct _EXCEPTION_POINTERS *excep)
-{
+static LONG __stdcall _MiniDump(struct _EXCEPTION_POINTERS *excep) {
     char acpath[PATH_LENS];
-    if (ERR_OK != procpath(acpath))
-    {
+    if (ERR_OK != procpath(acpath)) {
         PRINT("%s", "getprocpath faild.");
         return EXCEPTION_CONTINUE_SEARCH;
     }
@@ -65,8 +54,7 @@ static LONG __stdcall _MiniDump(struct _EXCEPTION_POINTERS *excep)
     SNPRINTF(acdmp, sizeof(acdmp) - 1, "%s%s%lld_%d.dmp",
         acpath, PATH_SEPARATORSTR, nowsec(), (int32_t)ATOMIC_ADD(&_exindex, 1));
     HANDLE ptoken = NULL;
-    if (!_GetImpersonationToken(&ptoken))
-    {
+    if (!_GetImpersonationToken(&ptoken)) {
         PRINT("%s", "GetImpersonationToken faild.");
         return EXCEPTION_CONTINUE_SEARCH;
     }
@@ -77,8 +65,7 @@ static LONG __stdcall _MiniDump(struct _EXCEPTION_POINTERS *excep)
         CREATE_ALWAYS,
         FILE_ATTRIBUTE_NORMAL,
         NULL);
-    if (INVALID_HANDLE_VALUE == pdmpfile)
-    {
+    if (INVALID_HANDLE_VALUE == pdmpfile) {
         PRINT("CreateFile(%s,...) faild.", acdmp);
         return EXCEPTION_CONTINUE_SEARCH;
     }
@@ -97,16 +84,12 @@ static LONG __stdcall _MiniDump(struct _EXCEPTION_POINTERS *excep)
         &exinfo,
         NULL,
         NULL);
-    if (bok)
-    {
+    if (bok) {
         lrtn = EXCEPTION_EXECUTE_HANDLER;
-    }
-    else
-    {
+    } else {
         PRINT("%s", "write dmp faild.");
     }
-    if (bprienabled)
-    {
+    if (bprienabled) {
         _ResetPrivilege(ptoken, &tprivold);
     }
     CloseHandle(pdmpfile);
@@ -114,15 +97,13 @@ static LONG __stdcall _MiniDump(struct _EXCEPTION_POINTERS *excep)
     return lrtn;
 }
 #endif
-void unlimit()
-{
+void unlimit() {
 #ifdef OS_WIN
     SetUnhandledExceptionFilter(_MiniDump);
 #else
     struct rlimit stnew;
     stnew.rlim_cur = stnew.rlim_max = RLIM_INFINITY;
-    if (ERR_OK != setrlimit(RLIMIT_CORE, &stnew))
-    {
+    if (ERR_OK != setrlimit(RLIMIT_CORE, &stnew)) {
         PRINT("setrlimit(RLIMIT_CORE) failed.%s", ERRORSTR(ERRNO));
     }
 #ifdef OS_DARWIN
@@ -131,17 +112,14 @@ void unlimit()
     rlim_t rlmax = 65535;
 #endif
     stnew.rlim_cur = stnew.rlim_max = rlmax;
-    if (ERR_OK != setrlimit(RLIMIT_NOFILE, &stnew))
-    {
+    if (ERR_OK != setrlimit(RLIMIT_NOFILE, &stnew)) {
         PRINT("setrlimit(RLIMIT_NOFILE) failed.%s", ERRORSTR(ERRNO));
     }
 #endif
 }
 #ifdef OS_WIN
-static BOOL WINAPI _sighandler(DWORD dsig)
-{
-    switch (dsig)
-    {
+static BOOL WINAPI _sighandler(DWORD dsig) {
+    switch (dsig) {
     case CTRL_C_EVENT:
     case CTRL_CLOSE_EVENT:
     case CTRL_BREAK_EVENT:
@@ -153,13 +131,11 @@ static BOOL WINAPI _sighandler(DWORD dsig)
     return TRUE;
 }
 #else
-static inline void _sighandler(int32_t isig)
-{
+static inline void _sighandler(int32_t isig) {
     _sig_cb(isig, _ud);
 }
 #endif
-void sighandle(void(*cb)(int32_t, void *), void *data)
-{
+void sighandle(void(*cb)(int32_t, void *), void *data) {
     _ud = data;
     _sig_cb = cb;
 #ifdef OS_WIN
@@ -176,34 +152,28 @@ void sighandle(void(*cb)(int32_t, void *), void *data)
     signal(SIGUSR2, _sighandler);
 #endif
 }
-uint64_t createid()
-{
+uint64_t createid() {
     return ATOMIC64_ADD(&_ids, 1);
 }
-uint64_t threadid()
-{
+uint64_t threadid() {
 #if defined(OS_WIN)
     return (uint64_t)GetCurrentThreadId();
 #else
     return (uint64_t)pthread_self();
 #endif
 }
-int32_t bigendian()
-{
-    union
-    {
+int32_t bigendian() {
+    union {
         char c;
         short s;
     }u;
     u.s = 0x1122;
-    if (0x11 == u.c)
-    {
+    if (0x11 == u.c) {
         return ERR_OK;
     }
     return ERR_FAILED;
 }
-uint32_t procscnt()
-{
+uint32_t procscnt() {
 #if defined(OS_WIN)
     SYSTEM_INFO stinfo;
     GetSystemInfo(&stinfo);
@@ -212,16 +182,13 @@ uint32_t procscnt()
     return (uint32_t)sysconf(_SC_NPROCESSORS_ONLN);
 #endif
 }
-int32_t isfile(const char *file)
-{
+int32_t isfile(const char *file) {
     struct FSTAT st;
-    if (ERR_OK != FSTAT(file, &st))
-    {
+    if (ERR_OK != FSTAT(file, &st)) {
         return ERR_FAILED;
     }
 #if defined(OS_WIN)
-    if (_S_IFREG & st.st_mode)
-    {
+    if (_S_IFREG & st.st_mode) {
         return ERR_OK;
     }
     return ERR_FAILED;
@@ -229,16 +196,13 @@ int32_t isfile(const char *file)
     return S_ISREG(st.st_mode) ? ERR_OK : ERR_FAILED;
 #endif    
 }
-int32_t isdir(const char *path)
-{
+int32_t isdir(const char *path) {
     struct FSTAT st;
-    if (ERR_OK != FSTAT(path, &st))
-    {
+    if (ERR_OK != FSTAT(path, &st)) {
         return ERR_FAILED;
     }
 #if defined(OS_WIN)
-    if (_S_IFDIR & st.st_mode)
-    {
+    if (_S_IFDIR & st.st_mode) {
         return ERR_OK;
     }
     return ERR_FAILED;
@@ -246,32 +210,25 @@ int32_t isdir(const char *path)
     return S_ISDIR(st.st_mode) ? ERR_OK : ERR_FAILED;
 #endif
 }
-int64_t filesize(const char *file)
-{
+int64_t filesize(const char *file) {
     struct FSTAT st;
-    if (ERR_OK != FSTAT(file, &st))
-    {
+    if (ERR_OK != FSTAT(file, &st)) {
         return ERR_FAILED;
     }
     return st.st_size;
 }
 #ifdef OS_AIX
-static int32_t _get_proc(pid_t pid, struct procsinfo *info)
-{
+static int32_t _get_proc(pid_t pid, struct procsinfo *info) {
     int32_t i, cnt;
     pid_t index = 0;
     struct procsinfo pinfo[16];
-    while ((cnt = getprocs(pinfo, sizeof(struct procsinfo), NULL, 0, &index, 16)) > 0)
-    {
-        for (i = 0; i < cnt; i++)
-        {
-            if (SZOMB == pinfo[i].pi_state)
-            {
+    while ((cnt = getprocs(pinfo, sizeof(struct procsinfo), NULL, 0, &index, 16)) > 0) {
+        for (i = 0; i < cnt; i++) {
+            if (SZOMB == pinfo[i].pi_state) {
                 continue;
             }
             //pinfo[i].pi_comm 程序名
-            if (pid == pinfo[i].pi_pid)
-            {
+            if (pid == pinfo[i].pi_pid) {
                 memcpy(info, &pinfo[i], sizeof(struct procsinfo));
                 return ERR_OK;
             }
@@ -279,95 +236,80 @@ static int32_t _get_proc(pid_t pid, struct procsinfo *info)
     }
     return ERR_FAILED;
 }
-static int32_t _get_proc_fullpath(pid_t pid, char path[PATH_LENS])
-{
+static int32_t _get_proc_fullpath(pid_t pid, char path[PATH_LENS]) {
     struct procsinfo pinfo;
-    if (ERR_OK != _get_proc(pid, &pinfo))
-    {
+    if (ERR_OK != _get_proc(pid, &pinfo)) {
         PRINT("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
     char args[ONEK];
     //args consists of a succession of strings, each terminated with a null character (ascii `\0'). 
     //Hence, two consecutive NULLs indicate the end of the list.
-    if (ERR_OK != getargs(&pinfo, sizeof(struct procsinfo), args, sizeof(args)))
-    {
+    if (ERR_OK != getargs(&pinfo, sizeof(struct procsinfo), args, sizeof(args))) {
         PRINT("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
-    if (NULL == realpath(args, path))
-    {
+    if (NULL == realpath(args, path)) {
         PRINT("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
     return ERR_OK;
 }
 #endif
-int32_t procpath(char path[PATH_LENS])
-{
+int32_t procpath(char path[PATH_LENS]) {
 #ifndef OS_AIX
     size_t len = PATH_LENS;
 #endif
 #if defined(OS_WIN)
-    if (0 == GetModuleFileName(NULL, path, (DWORD)len - 1))
-    {
+    if (0 == GetModuleFileName(NULL, path, (DWORD)len - 1)) {
         PRINT("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
 #elif defined(OS_LINUX)
-    if (0 > readlink("/proc/self/exe", path, len - 1))
-    {
+    if (0 > readlink("/proc/self/exe", path, len - 1)) {
         PRINT("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
 #elif defined(OS_NBSD)
-    if (0 > readlink("/proc/curproc/exe", path, len - 1))
-    {
+    if (0 > readlink("/proc/curproc/exe", path, len - 1)) {
         PRINT("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
 #elif defined(OS_DFBSD)
-    if (0 > readlink("/proc/curproc/file", path, len - 1))
-    {
+    if (0 > readlink("/proc/curproc/file", path, len - 1)) {
         PRINT("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
 #elif defined(OS_SUN)  
     char in[64] = { 0 };
     SNPRINTF(in, sizeof(in) - 1, "/proc/%d/path/a.out", (uint32_t)getpid());
-    if (0 > readlink(in, path, len - 1))
-    {
+    if (0 > readlink(in, path, len - 1)) {
         PRINT("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
 #elif defined(OS_DARWIN)
     uint32_t umaclens = len;
-    if (0 != _NSGetExecutablePath(path, &umaclens))
-    {
+    if (0 != _NSGetExecutablePath(path, &umaclens)) {
         PRINT("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
 #elif defined(OS_FBSD)
     int32_t name[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME };
     name[3] = getpid();
-    if (0 != sysctl(name, 4, path, &len, NULL, 0))
-    {
+    if (0 != sysctl(name, 4, path, &len, NULL, 0)) {
         PRINT("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
 #elif defined(OS_AIX)
-    if (ERR_OK != _get_proc_fullpath(getpid(), path))
-    {
+    if (ERR_OK != _get_proc_fullpath(getpid(), path)) {
         return ERR_FAILED;
     }
 #elif defined(OS_HPUX)
     struct pst_status pst;
-    if (-1 == pstat_getproc(&pst, sizeof(pst), 0, getpid()))
-    {
+    if (-1 == pstat_getproc(&pst, sizeof(pst), 0, getpid())) {
         return ERR_FAILED;
     }
-    if (-1 == pstat_getpathname(path, len - 1, &pst.pst_fid_text))
-    {
+    if (-1 == pstat_getpathname(path, len - 1, &pst.pst_fid_text)) {
         return ERR_FAILED;
     }
 #else
@@ -378,25 +320,20 @@ int32_t procpath(char path[PATH_LENS])
     *cur = 0;
 #if defined(OS_DARWIN)
     cur = strstr(path, "./");
-    if (NULL != cur)
-    {
+    if (NULL != cur) {
         len = strlen(cur + 2);
         memcpy(path + (cur - path), cur + 2, len);
         len = cur - path + len;
         path[len] = 0;
-    }
-    else
-    {
+    } else {
         len = strlen(path);
         if ('.' == path[len - 1]
-            && PATH_SEPARATOR == path[len - 2])
-        {
+            && PATH_SEPARATOR == path[len - 2]) {
             path[len - 2] = 0;
         }
     }
     if (PATH_SEPARATOR == path[0]
-        && PATH_SEPARATOR == path[1])
-    {
+        && PATH_SEPARATOR == path[1]) {
         len = strlen(path);
         memcpy(path, path + 1, len - 1);
         path[len - 1] = 0;
@@ -404,16 +341,14 @@ int32_t procpath(char path[PATH_LENS])
 #endif
     return ERR_OK;
 }
-void timeofday(struct timeval *tv)
-{
+void timeofday(struct timeval *tv) {
 #if defined(OS_WIN)
 #define U64_LITERAL(n) n##ui64
 #define EPOCH_BIAS U64_LITERAL(116444736000000000)
 #define UNITS_PER_SEC U64_LITERAL(10000000)
 #define USEC_PER_SEC U64_LITERAL(1000000)
 #define UNITS_PER_USEC U64_LITERAL(10)
-    union
-    {
+    union {
         FILETIME ft_ft;
         uint64_t ft_64;
     } ft;
@@ -425,27 +360,23 @@ void timeofday(struct timeval *tv)
     (void)gettimeofday(tv, NULL);
 #endif
 }
-uint64_t nowms()
-{
+uint64_t nowms() {
     struct timeval tv;
     timeofday(&tv);
     return (uint64_t)tv.tv_usec / 1000 + (uint64_t)tv.tv_sec * 1000;
 }
-uint64_t nowsec()
-{
+uint64_t nowsec() {
     struct timeval tv;
     timeofday(&tv);
     return (uint64_t)tv.tv_sec;
 }
-void nowtime(const char *fmt, char time[TIME_LENS])
-{
+void nowtime(const char *fmt, char time[TIME_LENS]) {
     struct timeval tv;
     timeofday(&tv);
     time_t t = tv.tv_sec;
     strftime(time, TIME_LENS - 1, fmt, localtime(&t));
 }
-void nowmtime(const char *fmt, char time[TIME_LENS])
-{
+void nowmtime(const char *fmt, char time[TIME_LENS]) {
     struct timeval tv;
     timeofday(&tv);
     time_t t = tv.tv_sec;
@@ -453,15 +384,11 @@ void nowmtime(const char *fmt, char time[TIME_LENS])
     size_t uilen = strlen(time);
     SNPRINTF(time + uilen, TIME_LENS - uilen - 1, " %03d", (int32_t)(tv.tv_usec / 1000));
 }
-void fill_timespec(struct timespec* timeout, uint32_t ms)
-{
-    if (ms >= 1000)
-    {
+void fill_timespec(struct timespec* timeout, uint32_t ms) {
+    if (ms >= 1000) {
         timeout->tv_sec = ms / 1000;
         timeout->tv_nsec = (long)(ms - timeout->tv_sec * 1000) * (1000 * 1000);
-    }
-    else
-    {
+    } else {
         timeout->tv_sec = 0;
         timeout->tv_nsec = ms * (1000 * 1000);
     }
@@ -500,12 +427,10 @@ static uint16_t crc16_tab[256] = {
     0x4400, 0x84C1, 0x8581, 0x4540, 0x8701, 0x47C0, 0x4680, 0x8641,
     0x8201, 0x42C0, 0x4380, 0x8341, 0x4100, 0x81C1, 0x8081, 0x4040
 };
-uint16_t crc16(const char *buf, const size_t len)
-{
+uint16_t crc16(const char *buf, const size_t len) {
     uint16_t uscrc = 0;
     const uint8_t *tmp = (const uint8_t *)buf;
-    for (size_t i = 0; i < len; ++i)
-    {
+    for (size_t i = 0; i < len; ++i) {
         uscrc = (uscrc >> 8) ^ crc16_tab[(uscrc ^ *tmp++) & 0xFF];
     }
     return uscrc;
@@ -576,18 +501,15 @@ static uint32_t crc32_tab[256] = {
     0xb3667a2e, 0xc4614ab8, 0x5d681b02, 0x2a6f2b94,
     0xb40bbe37, 0xc30c8ea1, 0x5a05df1b, 0x2d02ef8d
 };
-uint32_t crc32(const char *buf, const size_t len)
-{
+uint32_t crc32(const char *buf, const size_t len) {
     uint32_t uicrc = ~0U;
     const uint8_t *tmp = (const uint8_t *)buf;
-    for (size_t i = 0; i < len; ++i)
-    {
+    for (size_t i = 0; i < len; ++i) {
         uicrc = crc32_tab[(uicrc ^ *tmp++) & 0xFF] ^ (uicrc >> 8);
     }
     return uicrc ^ ~0U;
 }
-void md5(const char *buf, const size_t len, char md5str[33])
-{
+void md5(const char *buf, const size_t len, char md5str[33]) {
     md5_byte_t digest[16];
     md5_state_t stmd5;
     md5_init(&stmd5);
@@ -595,16 +517,14 @@ void md5(const char *buf, const size_t len, char md5str[33])
     md5_finish(&stmd5, digest);
     md5_tostring(digest, md5str);
 }
-void sha1(const char *buf, const size_t len, char sha1str[20])
-{
+void sha1(const char *buf, const size_t len, char sha1str[20]) {
     SHA1_CTX ctx;
     SHA1Init(&ctx);
     SHA1Update(&ctx, (const uint8_t *)buf, (uint32_t)len);
     SHA1Final((uint8_t *)sha1str, &ctx);
 }
 /* BASE 64 encode table */
-static char base64en[] =
-{
+static char base64en[] = {
     'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H',
     'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P',
     'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X',
@@ -618,8 +538,7 @@ static char base64en[] =
 #define BASE64DE_FIRST  '+'
 #define BASE64DE_LAST   'z'
 /* ASCII order for BASE 64 decode, -1 in unused character */
-static char base64de[] =
-{
+static char base64de[] = {
     62,  -1,  -1,  -1,  63,  52,  53,  54,
     55,  56,  57,  58,  59,  60,  61,  -1,
     -1,  -1,  -1,  -1,  -1,  -1,   0,   1,
@@ -632,19 +551,16 @@ static char base64de[] =
     44,  45,  46,  47,  48,  49,  50,  51,
 };
 #define B64_ENSIZE(s)   (((s) + 2) / 3 * 4)
-char *b64encode(const char *buf, const size_t len, size_t *new_len)
-{
+char *b64encode(const char *buf, const size_t len, size_t *new_len) {
     int32_t s;
     uint32_t i, j;
     char *out;
     size_t enlen = B64_ENSIZE(len) + 1;
     MALLOC(out, enlen);
     ZERO(out, enlen);
-    for (i = j = 0; i < len; i++)
-    {
+    for (i = j = 0; i < len; i++) {
         s = i % 3;
-        switch (s)
-        {
+        switch (s) {
         case 0:
             out[j++] = base64en[(buf[i] >> 2) & 0x3F];
             continue;
@@ -659,8 +575,7 @@ char *b64encode(const char *buf, const size_t len, size_t *new_len)
     /* move back */
     i -= 1;
     /* check the last and add padding */
-    switch (i % 3)
-    {
+    switch (i % 3) {
     case 0:
         out[j++] = base64en[(buf[i] & 0x3) << 4];
         out[j++] = BASE64_PAD;
@@ -675,46 +590,38 @@ char *b64encode(const char *buf, const size_t len, size_t *new_len)
     return out;
 }
 #define B64_DESIZE(s)   (((s)) / 4 * 3)
-char *b64decode(const char *buf, const size_t len, size_t *new_len)
-{
+char *b64decode(const char *buf, const size_t len, size_t *new_len) {
     int32_t c, s;
     uint32_t i, j;
     char *out;
     size_t delen = B64_DESIZE(len) + 1;
     MALLOC(out, delen);
     ZERO(out, delen);
-    for (i = j = 0; i < len; i++)
-    {
+    for (i = j = 0; i < len; i++) {
         s = i % 4;
-        if (buf[i] == '=')
-        {
+        if (buf[i] == '=') {
             *new_len = j;
             return out;
         }
         if (buf[i] < BASE64DE_FIRST
             || buf[i] > BASE64DE_LAST
-            || (c = base64de[buf[i] - BASE64DE_FIRST]) == -1)
-        {
+            || (c = base64de[buf[i] - BASE64DE_FIRST]) == -1) {
             FREE(out);
             return NULL;
         }
-
-        switch (s)
-        {
+        switch (s) {
         case 0:
             out[j] = ((uint32_t)c << 2) & 0xFF;
             continue;
         case 1:
             out[j++] += ((uint32_t)c >> 4) & 0x3;
-            if (i < (len - 3) || buf[len - 2] != '=')
-            {
+            if (i < (len - 3) || buf[len - 2] != '=') {
                 out[j] = ((uint32_t)c & 0xF) << 4;
             }
             continue;
         case 2:
             out[j++] += ((uint32_t)c >> 2) & 0xF;
-            if (i < (len - 2) || buf[len - 1] != '=')
-            {
+            if (i < (len - 2) || buf[len - 1] != '=') {
                 out[j] = ((uint32_t)c & 0x3) << 6;
             }
             continue;
@@ -725,24 +632,18 @@ char *b64decode(const char *buf, const size_t len, size_t *new_len)
     *new_len = j;
     return out;
 }
-char *xorencode(const char key[4], const size_t round, char *buf, const size_t len)
-{
-    for (size_t i = 0; i < round; i++)
-    {
+char *xorencode(const char key[4], const size_t round, char *buf, const size_t len) {
+    for (size_t i = 0; i < round; i++) {
         buf[0] = ((buf[0] + key[1]) ^ key[2]) ^ key[3];
-        for (size_t j = 1; j < len; j++)
-        {
+        for (size_t j = 1; j < len; j++) {
             buf[j] = (buf[j - 1] + buf[j]) ^ key[0];
         }
     }
     return buf;
 }
-char *xordecode(const char key[4], const size_t round, char *buf, const size_t len)
-{
-    for (size_t i = 0; i < round; i++)
-    {
-        for (size_t j = len - 1; j > 0; j--)
-        {
+char *xordecode(const char key[4], const size_t round, char *buf, const size_t len) {
+    for (size_t i = 0; i < round; i++) {
+        for (size_t j = len - 1; j > 0; j--) {
             buf[j] = (buf[j] ^ key[0]) - buf[j - 1];
         }
         buf[0] = ((buf[0] ^ key[3]) ^ key[2]) - key[1];
@@ -750,8 +651,7 @@ char *xordecode(const char key[4], const size_t round, char *buf, const size_t l
     return buf;
 }
 static unsigned char hexchars[] = "0123456789ABCDEF";
-char *urlencode(const char *str, const size_t len, size_t *new_len)
-{
+char *urlencode(const char *str, const size_t len, size_t *new_len) {
     register unsigned char c;
     unsigned char *to, *start;
     unsigned char const *from, *end;
@@ -759,73 +659,56 @@ char *urlencode(const char *str, const size_t len, size_t *new_len)
     end = (unsigned char *)str + len;
     CALLOC(start, (size_t)1, (size_t)(3 * len + 1));
     to = start;
-    while (from < end)
-    {
+    while (from < end) {
         c = *from++;
-        if (c == ' ')
-        {
+        if (c == ' ') {
             *to++ = '+';
-        }
-        else if ((c < '0' && c != '-' && c != '.') ||
+        } else if ((c < '0' && c != '-' && c != '.') ||
             (c < 'A' && c > '9') ||
             (c > 'Z' && c < 'a' && c != '_') ||
-            (c > 'z'))
-        {
+            (c > 'z')) {
             to[0] = '%';
             to[1] = hexchars[c >> 4];
             to[2] = hexchars[c & 15];
             to += 3;
-        }
-        else
-        {
+        } else {
             *to++ = c;
         }
     }
     *to = 0;
-    if (new_len)
-    {
+    if (new_len) {
         *new_len = (int32_t)(to - start);
     }
     return (char *)start;
 }
-static int32_t _htoi(char *s)
-{
+static int32_t _htoi(char *s) {
     int32_t c, value;
     c = ((unsigned char *)s)[0];
-    if (isupper(c))
-    {
+    if (isupper(c)) {
         c = tolower(c);
     }
     value = (c >= '0' && c <= '9' ? c - '0' : c - 'a' + 10) * 16;
     c = ((unsigned char *)s)[1];
-    if (isupper(c))
-    {
+    if (isupper(c)) {
         c = tolower(c);
     }
     value += c >= '0' && c <= '9' ? c - '0' : c - 'a' + 10;
     return (value);
 }
-int32_t urldecode(char *str, size_t len)
-{
+int32_t urldecode(char *str, size_t len) {
     char *dest = str;
     char *data = str;
-    while (len--)
-    {
-        if (*data == '+')
-        {
+    while (len--) {
+        if (*data == '+') {
             *dest = ' ';
-        }
-        else if (*data == '%'
+        } else if (*data == '%'
             && len >= 2
             && isxdigit((int) *(data + 1))
-            && isxdigit((int) *(data + 2)))
-        {
+            && isxdigit((int) *(data + 2))) {
             *dest = (char)_htoi(data + 1);
             data += 2;
             len -= 2;
-        }
-        else
-        {
+        } else {
             *dest = *data;
         }
         data++;
@@ -834,17 +717,14 @@ int32_t urldecode(char *str, size_t len)
     *dest = '\0';
     return (int32_t)(dest - str);
 }
-uint64_t hash(const char *buf, size_t len)
-{
+uint64_t hash(const char *buf, size_t len) {
     uint64_t rtn = 0;
-    for (; len > 0; --len)
-    {
+    for (; len > 0; --len) {
         rtn = (rtn * 131) + *buf++;
     }
     return rtn;
 }
-uint64_t fnv1a_hash(const char *buf, size_t len)
-{
+uint64_t fnv1a_hash(const char *buf, size_t len) {
 #if defined(ARCH_X64)
 #define OFFSET_BASIS 14695981039346656037ULL
 #define PRIME 1099511628211ULL
@@ -853,67 +733,51 @@ uint64_t fnv1a_hash(const char *buf, size_t len)
 #define PRIME 16777619UL
 #endif
     uint64_t rtn = OFFSET_BASIS;
-    for (; len > 0; --len)
-    {
+    for (; len > 0; --len) {
         rtn ^= (uint64_t)*buf++;
         rtn *= PRIME;
     }
     return rtn;
 }
-char *strupper(char *str)
-{
-    if (NULL == str)
-    {
+char *strupper(char *str){
+    if (NULL == str) {
         return NULL;
     }
-
     char* p = str;
-    while (*p != '\0')
-    {
+    while (*p != '\0') {
         if (*p >= 'a'
-            && *p <= 'z')
-        {
+            && *p <= 'z') {
             *p &= ~0x20;
         }
         ++p;
     }
     return str;
 }
-char *strlower(char *str)
-{
-    if (NULL == str)
-    {
+char *strlower(char *str) {
+    if (NULL == str) {
         return NULL;
     }
-
     char *p = str;
-    while (*p != '\0')
-    {
-        if (*p >= 'A' && *p <= 'Z')
-        {
+    while (*p != '\0') {
+        if (*p >= 'A' && *p <= 'Z') {
             *p |= 0x20;
         }
         ++p;
     }
     return str;
 }
-char* strreverse(char* str)
-{
-    if (NULL == str)
-    {
+char* strreverse(char* str) {
+    if (NULL == str) {
         return NULL;
     }
-
     char* b = str;
     char* e = str;
-    while (*e) 
-    { 
+    while (*e) { 
         ++e;
     }
     --e;
     char tmp;
-    while (e > b) 
-    {
+    while (e > b) {
         tmp = *e;
         *e = *b;
         *b = tmp;
@@ -922,68 +786,54 @@ char* strreverse(char* str)
     }
     return str;
 }
-int32_t randrange(int32_t min, int32_t max)
-{
+int32_t randrange(int32_t min, int32_t max) {
     ASSERTAB(max > min, "rand range max must big than min.");
     return (rand() % (max - min)) + min;
 }
-char *randstr(char *buf, size_t len)
-{
-    static char characters[] = 
-    {
+char *randstr(char *buf, size_t len) {
+    static char characters[] = {
         'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U',
         'V', 'W', 'X', 'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p',
         'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
     };
     size_t i = 0;
-    for (; i < len; i++) 
-    {
+    for (; i < len; i++) {
         buf[i] = characters[randrange(0, sizeof(characters))];
     }
     buf[i] = '\0';
     return buf;
 }
-char *tohex(const char *buf, size_t len, char *out, size_t outlen)
-{
+char *tohex(const char *buf, size_t len, char *out, size_t outlen) {
     size_t offset = 0;
-    for (size_t i = 0; i < len; i++)
-    {
-        if (i == len - 1)
-        {
+    for (size_t i = 0; i < len; i++) {
+        if (i == len - 1) {
             SNPRINTF(out + offset, outlen - offset - 1, "%02X", (uint8_t)buf[i]);
-        }
-        else
-        {
+        } else {
             SNPRINTF(out + offset, outlen - offset - 1, "%02X ", (uint8_t)buf[i]);
         }        
         offset += 3;
     }
     return out;
 }
-char *formatargs(const char *fmt, va_list args)
-{
+char *formatargs(const char *fmt, va_list args) {
     int32_t num;
     size_t size = 512;
     char *pbuff;
     MALLOC(pbuff, size);    
-    while (1)
-    {
+    while (1) {
         ZERO(pbuff, size);
         num = vsnprintf(pbuff, size, fmt, args);
         if ((num > -1)
-            && (num < (int32_t)size))
-        {
+            && (num < (int32_t)size)) {
             return pbuff;
         }
-
         FREE(pbuff);
         //分配更大空间
         size = (num > -1) ? (num + 1) : size * 2;
         MALLOC(pbuff, size);
     }
 }
-char *formatv(const char *fmt, ...)
-{
+char *formatv(const char *fmt, ...) {
     va_list va;
     va_start(va, fmt);
     char *buf = formatargs(fmt, va);

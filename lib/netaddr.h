@@ -3,8 +3,7 @@
 
 #include "macro.h"
 
-typedef union netaddr_ctx
-{
+typedef union netaddr_ctx {
     struct sockaddr addr;
     struct sockaddr_in ipv4;
     struct sockaddr_in6 ipv6;

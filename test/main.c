@@ -26,26 +26,21 @@ static atomic_t count = 0;
 #if WITH_SSL
 struct evssl_ctx *ssl_client;
 #endif
-static void on_sigcb(int32_t sig, void *arg)
-{
+static void on_sigcb(int32_t sig, void *arg) {
     PRINT("catch sign: %d", sig);
     cond_signal(&condexit);
 }
-static void test_close_cb(ev_ctx *ctx, SOCKET sock, ud_cxt *ud)
-{
+static void test_close_cb(ev_ctx *ctx, SOCKET sock, ud_cxt *ud) {
     //PRINT("test_close_cb: sock %d ", (int32_t)sock);
     ATOMIC_ADD(&count, -1);
 }
-static void test_connclose_cb(ev_ctx *ctx, SOCKET sock, ud_cxt *ud)
-{
+static void test_connclose_cb(ev_ctx *ctx, SOCKET sock, ud_cxt *ud) {
     //PRINT("test_connclose_cb: sock %d ", (int32_t)sock);
     connsock = INVALID_SOCK;
 }
-static void test_recv_cb(ev_ctx *ctx, SOCKET sock, buffer_ctx *buf, size_t lens, ud_cxt *ud)
-{
+static void test_recv_cb(ev_ctx *ctx, SOCKET sock, buffer_ctx *buf, size_t lens, ud_cxt *ud) {
     //PRINT("test_recv_cb: lens %d ", (int32_t)lens);
-    if (randrange(1, 100) <= 1)
-    {
+    if (randrange(1, 100) <= 1) {
         //PRINT("close socket: sock %d ", (int32_t)sock);
         ev_close(ctx, sock);
         return;
@@ -56,54 +51,44 @@ static void test_recv_cb(ev_ctx *ctx, SOCKET sock, buffer_ctx *buf, size_t lens,
     buffer_remove(buf, pk, len);
     ev_send(ctx, sock, pk, len, 0);
 }
-static void test_send_cb(ev_ctx *ctx, SOCKET sock, size_t len, ud_cxt *ud)
-{
+static void test_send_cb(ev_ctx *ctx, SOCKET sock, size_t len, ud_cxt *ud) {
     //PRINT("test_send_cb: sock %d  len %d ", (int32_t)sock, (int32_t)len);
 }
-static void test_conn_recv_cb(ev_ctx *ctx, SOCKET sock, buffer_ctx *buf, size_t lens, ud_cxt *ud)
-{
+static void test_conn_recv_cb(ev_ctx *ctx, SOCKET sock, buffer_ctx *buf, size_t lens, ud_cxt *ud) {
     //PRINT("test_conn_recv_cb: lens %d", (int32_t)lens);
-    if (buffer_size(buf) <= 2 + sizeof(pk_index))
-    {
+    if (buffer_size(buf) <= 2 + sizeof(pk_index)) {
         return;
     }
     char len[2 + sizeof(pk_index)];
     buffer_copyout(buf, len, sizeof(len));
     u_short *plen = (u_short*)len;
     u_short pklen = ntohs(*plen);
-    if (buffer_size(buf) < pklen)
-    {
+    if (buffer_size(buf) < pklen) {
         return;
     }
     int32_t pkindex = *(int32_t*)(len + 2);
     int32_t tmp = (int32_t)(ntohl(pkindex));
-    if (tmp != pk_index)
-    {
+    if (tmp != pk_index) {
         PRINT("index error.recv: %d  cur %d", tmp, pk_index);
     }
     buffer_drain(buf, buffer_size(buf));
 }
-static int32_t test_conn_cb(ev_ctx *ctx, SOCKET sock, int32_t err, ud_cxt *ud)
-{
-    if (ERR_OK == err)
-    {
+static int32_t test_conn_cb(ev_ctx *ctx, SOCKET sock, int32_t err, ud_cxt *ud) {
+    if (ERR_OK == err) {
         PRINT("%s", "connect ok.");
         connsock = sock;
     }
-    else
-    {
+    else {
         PRINT("%s", "connect error.");
     }
     return ERR_OK;
 }
-static int32_t test_acpt_cb(ev_ctx *ctx, SOCKET sock, ud_cxt *ud)
-{
+static int32_t test_acpt_cb(ev_ctx *ctx, SOCKET sock, ud_cxt *ud) {
     //PRINT("test_acpt_cb : sock %d ", (int32_t)sock);
     ATOMIC_ADD(&count, 1);
     return ERR_OK;
 }
-static void test_recvfrom_cb(ev_ctx *ev, SOCKET fd, buffer_ctx *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud)
-{
+static void test_recvfrom_cb(ev_ctx *ev, SOCKET fd, buffer_ctx *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
     char host[IP_LENS] = { 0 };
     netaddr_ip(addr, host);
     uint16_t port = netaddr_port(addr);
@@ -114,21 +99,16 @@ static void test_recvfrom_cb(ev_ctx *ev, SOCKET fd, buffer_ctx *buf, size_t size
     ev_sendto(ev, fd, host, port, pk, size);
     FREE(pk);
 }
-static void timeout(void *arg)
-{
+static void timeout(void *arg) {
     int32_t elapsed = (int32_t)timer_elapsed_ms(&tw.timer);
     PRINT("timeout:%d ms link cnt %d", elapsed, ATOMIC_GET(&count));
-    if (INVALID_SOCK != udpsock)
-    {
+    if (INVALID_SOCK != udpsock) {
         ev_close(arg, udpsock);
         udpsock = INVALID_SOCK;
-    }
-    else
-    {
+    } else {
         udpsock = ev_udp(arg, "0.0.0.0", 15002, test_recvfrom_cb, NULL);
     }
-    if (INVALID_SOCK != connsock)
-    {
+    if (INVALID_SOCK != connsock) {
         /*ev_close(arg, connsock);
         connsock = INVALID_SOCK;*/
         char str[100];
@@ -149,9 +129,7 @@ static void timeout(void *arg)
 
         /*ev_sendto(arg, connsock, "127.0.0.1", 15002, buf, 2 + sizeof(pk_index) + len, 0);
         FREE(buf);*/
-    }
-    else
-    {
+    } else {
         cbs_ctx cbs;
         ZERO(&cbs, sizeof(cbs));
         cbs.conn_cb = test_conn_cb;
@@ -168,17 +146,14 @@ static void timeout(void *arg)
     tw_add(&tw, 3000, timeout, arg);
 }
 #if WITH_SSL
-int verify_sv_cb(int preverify_ok, X509_STORE_CTX *x509_ctx)
-{
+int verify_sv_cb(int preverify_ok, X509_STORE_CTX *x509_ctx) {
     return 1;
 }
-int verify_clinet_cb(int preverify_ok, X509_STORE_CTX *x509_ctx)
-{
+int verify_clinet_cb(int preverify_ok, X509_STORE_CTX *x509_ctx) {
     return 1;
 }
 #endif
-int main(int argc, char *argv[])
-{
+int main(int argc, char *argv[]) {
     MEMCHECK();
     unlimit();
     srand((unsigned int)time(NULL));
@@ -233,13 +208,11 @@ int main(int argc, char *argv[])
     cond_wait(&condexit, &muexit);
     mutex_unlock(&muexit);
     tw_free(&tw);
-    if (INVALID_SOCK != udpsock)
-    {
+    if (INVALID_SOCK != udpsock) {
         ev_close(&ev, udpsock);
         MSLEEP(500);
     }
-    if (INVALID_SOCK != connsock)
-    {
+    if (INVALID_SOCK != connsock) {
         ev_close(&ev, connsock);
         MSLEEP(500);
     }

@@ -5,8 +5,7 @@
 #include "mutex.h"
 #include "cond.h"
 
-typedef struct chan_ctx
-{
+typedef struct chan_ctx {
     int32_t closed;
     int32_t rwaiting;
     int32_t wwaiting;

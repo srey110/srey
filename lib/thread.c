@@ -1,17 +1,15 @@
 #include "thread.h"
 
-typedef struct th_ctx
-{
+typedef struct th_ctx {
     void *udata;
     void(*th_cb)(void*);
 }th_ctx;
 
 #if defined(OS_WIN)
-static uint32_t __stdcall _funccb(void *arg)
+static uint32_t __stdcall _funccb(void *arg) {
 #else
-static void *_funccb(void *arg)
+static void *_funccb(void *arg) {
 #endif
-{
     th_ctx *th = (th_ctx *)arg;
     th->th_cb(th->udata);
     FREE(th);
@@ -21,8 +19,7 @@ static void *_funccb(void *arg)
     return NULL;
 #endif
 }
-pthread_t thread_creat(void(*cb)(void*), void *udata)
-{
+pthread_t thread_creat(void(*cb)(void*), void *udata) {
     th_ctx *th;
     MALLOC(th, sizeof(th_ctx));
     th->th_cb = cb;
@@ -37,8 +34,7 @@ pthread_t thread_creat(void(*cb)(void*), void *udata)
 #endif
     return pthread;
 }
-void thread_join(pthread_t th)
-{
+void thread_join(pthread_t th) {
 #if defined(OS_WIN)
     ASSERTAB(WAIT_OBJECT_0 == WaitForSingleObject(th, INFINITE), ERRORSTR(ERRNO));
 #else

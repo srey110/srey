@@ -10,14 +10,12 @@ do {\
     watcher_ctx *watcher = GET_PTR((ev)->watcher, (ev)->nthreads, hs);\
     _send_cmd(watcher, GET_POS(hs, watcher->ncmd), &cmd);\
 } while (0)
-static inline map_element *_map_get(watcher_ctx *watcher, SOCKET fd)
-{
+static inline map_element *_map_get(watcher_ctx *watcher, SOCKET fd) {
     map_element key;
     key.fd = fd;
     return hashmap_get(watcher->element, &key);
 }
-void _send_cmd(watcher_ctx *watcher, uint32_t index, cmd_ctx *cmd)
-{
+void _send_cmd(watcher_ctx *watcher, uint32_t index, cmd_ctx *cmd) {
     overlap_cmd_ctx *olcmd = &watcher->cmd[index];
     mutex_lock(&olcmd->lck);
     qu_cmd_push(&olcmd->qu, cmd);
@@ -25,77 +23,61 @@ void _send_cmd(watcher_ctx *watcher, uint32_t index, cmd_ctx *cmd)
     static char trigger[1] = { 's' };
     ASSERTAB(1 == send(olcmd->fd, trigger, sizeof(trigger), 0), ERRORSTR(ERRNO));
 }
-void _on_cmd_stop(watcher_ctx *watcher, cmd_ctx *cmd)
-{
+void _on_cmd_stop(watcher_ctx *watcher, cmd_ctx *cmd) {
     watcher->stop = 1;
 }
-void _cmd_add(watcher_ctx *watcher, sock_ctx *skctx, uint64_t hs)
-{
+void _cmd_add(watcher_ctx *watcher, sock_ctx *skctx, uint64_t hs) {
     cmd_ctx cmd;
     cmd.cmd = CMD_ADD;
     cmd.data = skctx;
     _send_cmd(watcher, GET_POS(hs, watcher->ncmd), &cmd);
 }
-void _on_cmd_add(watcher_ctx *watcher, cmd_ctx *cmd)
-{
+void _on_cmd_add(watcher_ctx *watcher, cmd_ctx *cmd) {
     _add_fd(watcher, cmd->data);
 }
-void _cmd_add_acpfd(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn, uint64_t hs)
-{
+void _cmd_add_acpfd(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn, uint64_t hs) {
     cmd_ctx cmd;
     cmd.cmd = CMD_ADDACP;
     cmd.fd = fd;
     cmd.data = lsn;
     _send_cmd(watcher, GET_POS(hs, watcher->ncmd), &cmd);
 }
-void _on_cmd_addacp(watcher_ctx *watcher, cmd_ctx *cmd)
-{
+void _on_cmd_addacp(watcher_ctx *watcher, cmd_ctx *cmd) {
     _add_acpfd_inloop(watcher, cmd->fd, cmd->data);
 }
-void _cmd_remove(watcher_ctx *watcher, SOCKET fd, uint64_t hs)
-{
+void _cmd_remove(watcher_ctx *watcher, SOCKET fd, uint64_t hs) {
     cmd_ctx cmd;
     cmd.cmd = CMD_REMOVE;
     cmd.fd = fd;
     _send_cmd(watcher, GET_POS(hs, watcher->ncmd), &cmd);
 }
-void _on_cmd_remove(watcher_ctx *watcher, cmd_ctx *cmd)
-{
+void _on_cmd_remove(watcher_ctx *watcher, cmd_ctx *cmd) {
     map_element *el = _map_get(watcher, cmd->fd);
-    if (NULL == el)
-    {
+    if (NULL == el) {
         return;
     }
     _remove_fd(watcher, cmd->fd);
-    if (SOCK_STREAM == el->sock->type)
-    {
+    if (SOCK_STREAM == el->sock->type) {
         pool_push(&watcher->pool, el->sock);
-    }
-    else
-    {
+    } else {
         _free_udp(el->sock);
     }
 }
-void ev_send(ev_ctx *ctx, SOCKET fd, void *data, size_t len, int32_t copy)
-{
+void ev_send(ev_ctx *ctx, SOCKET fd, void *data, size_t len, int32_t copy) {
     ASSERTAB(INVALID_SOCK != fd, ERRSTR_INVPARAM);
     cmd_ctx cmd;
     cmd.cmd = CMD_SEND;
     cmd.fd = fd;
     cmd.len = len;
-    if (copy)
-    {
+    if (copy) {
         MALLOC(cmd.data, len);
         memcpy(cmd.data, data, len);
-    }
-    else
-    {
+    } else {
         cmd.data = data;
     }
     _SEND_CMD(ctx, cmd);
 }
-void ev_sendto(ev_ctx *ctx, SOCKET fd, const char *host, const uint16_t port, void *data, size_t len)
-{
+void ev_sendto(ev_ctx *ctx, SOCKET fd, const char *host, const uint16_t port, void *data, size_t len) {
     ASSERTAB(INVALID_SOCK != fd, ERRSTR_INVPARAM);
     cmd_ctx cmd;
     cmd.cmd = CMD_SEND;
@@ -103,8 +85,7 @@ void ev_sendto(ev_ctx *ctx, SOCKET fd, const char *host, const uint16_t port, vo
     cmd.len = len;
     MALLOC(cmd.data, sizeof(netaddr_ctx) + len);
     netaddr_ctx *addr = (netaddr_ctx *)cmd.data;
-    if (ERR_OK != netaddr_sethost(addr, host, port))
-    {
+    if (ERR_OK != netaddr_sethost(addr, host, port)) {
         FREE(cmd.data);
         LOG_WARN("%s", ERRORSTR(ERRNO));
         return;
@@ -112,11 +93,9 @@ void ev_sendto(ev_ctx *ctx, SOCKET fd, const char *host, const uint16_t port, vo
     memcpy((char *)cmd.data + sizeof(netaddr_ctx), data, len);
     _SEND_CMD(ctx, cmd);
 }
-void _on_cmd_send(watcher_ctx *watcher, cmd_ctx *cmd)
-{
+void _on_cmd_send(watcher_ctx *watcher, cmd_ctx *cmd) {
     map_element *el = _map_get(watcher, cmd->fd);
-    if (NULL == el)
-    {
+    if (NULL == el) {
         FREE(cmd->data);
         return;
     }
@@ -124,38 +103,29 @@ void _on_cmd_send(watcher_ctx *watcher, cmd_ctx *cmd)
     buf.data = cmd->data;
     buf.len = cmd->len;
     buf.offset = 0;
-    if (SOCK_STREAM == el->sock->type)
-    {
+    if (SOCK_STREAM == el->sock->type) {
         _add_bufs_trypost(el->sock, &buf);
-    }
-    else
-    {
+    } else {
         _add_bufs_trysendto(el->sock, &buf);
     }
 }
-void ev_close(ev_ctx *ctx, SOCKET fd)
-{
+void ev_close(ev_ctx *ctx, SOCKET fd) {
     ASSERTAB(INVALID_SOCK != fd, ERRSTR_INVPARAM);
     cmd_ctx cmd;
     cmd.cmd = CMD_DISCONN;
     cmd.fd = fd;
     _SEND_CMD(ctx, cmd);
 }
-void _on_cmd_disconn(watcher_ctx *watcher, cmd_ctx *cmd)
-{
+void _on_cmd_disconn(watcher_ctx *watcher, cmd_ctx *cmd) {
     map_element *el = _map_get(watcher, cmd->fd);
-    if (NULL == el)
-    {
+    if (NULL == el) {
         CLOSE_SOCK(cmd->fd);
         return;
     }
     _set_error(el->sock);
-    if (SOCK_STREAM == el->sock->type)
-    {
+    if (SOCK_STREAM == el->sock->type) {
         _sk_shutdown(el->sock);
-    }
-    else
-    {
+    } else {
         CancelIoEx((HANDLE)cmd->fd, NULL);
     }
 }

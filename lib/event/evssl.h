@@ -10,7 +10,7 @@
 typedef struct evssl_ctx evssl_ctx;
 #define SSL_ERR() ERR_reason_error_string(ERR_get_error())
 #define FREE_SSL(ssl)\
-do{\
+do {\
     if (NULL != ssl){\
         SSL_free(ssl); \
         ssl = NULL; \

@@ -9,8 +9,7 @@ typedef CRITICAL_SECTION mutex_ctx;
 typedef pthread_mutex_t mutex_ctx;
 #endif
 
-static inline void mutex_init(mutex_ctx *ctx)
-{
+static inline void mutex_init(mutex_ctx *ctx) {
 #if defined(OS_WIN)
     InitializeCriticalSection(ctx);
 #else
@@ -18,32 +17,28 @@ static inline void mutex_init(mutex_ctx *ctx)
         ERRORSTR(ERRNO));
 #endif
 };
-static inline void mutex_free(mutex_ctx *ctx)
-{
+static inline void mutex_free(mutex_ctx *ctx) {
 #if defined(OS_WIN)
     DeleteCriticalSection(ctx);
 #else
     (void)pthread_mutex_destroy(ctx);
 #endif
 };
-static inline void mutex_lock(mutex_ctx *ctx)
-{
+static inline void mutex_lock(mutex_ctx *ctx) {
 #if defined(OS_WIN)
     EnterCriticalSection(ctx);
 #else
     ASSERTAB(ERR_OK == pthread_mutex_lock(ctx), ERRORSTR(ERRNO));
 #endif
 };
-static inline int32_t mutex_trylock(mutex_ctx *ctx)
-{
+static inline int32_t mutex_trylock(mutex_ctx *ctx) {
 #if defined(OS_WIN)
     return TRUE == TryEnterCriticalSection(ctx) ? ERR_OK : ERR_FAILED;
 #else
     return pthread_mutex_trylock(ctx);
 #endif
 };
-static inline void mutex_unlock(mutex_ctx *ctx)
-{
+static inline void mutex_unlock(mutex_ctx *ctx) {
 #if defined(OS_WIN)
     LeaveCriticalSection(ctx);
 #else

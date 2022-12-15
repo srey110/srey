@@ -13,20 +13,17 @@
 #define TVR_MASK (TVR_SIZE - 1)
 #define INDEX(N) ((ctx->jiffies >> (TVR_BITS + (N) * TVN_BITS)) & TVN_MASK)
 
-typedef struct tw_node_ctx
-{
+typedef struct tw_node_ctx {
     struct tw_node_ctx *next;
     void(*tw_cb)(void *);//回调函数
     uint32_t expires;
     void *ud;//用户数据
 }tw_node_ctx;
-typedef struct tw_slot_ctx
-{
+typedef struct tw_slot_ctx {
     tw_node_ctx *head;
     tw_node_ctx *tail;
 }tw_slot_ctx;
-typedef struct tw_ctx
-{
+typedef struct tw_ctx {
     volatile int32_t exit;
     uint32_t jiffies;
     mutex_ctx lockreq;

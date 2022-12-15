@@ -9,20 +9,17 @@
 
 struct evssl_ctx;
 //用户数据
-typedef struct ud_cxt
-{
+typedef struct ud_cxt {
     void *data;
 }ud_cxt;
-typedef struct bufs_ctx
-{
+typedef struct bufs_ctx {
     void *data;
     size_t len;
     size_t offset;
 }bufs_ctx;
 QUEUE_DECL(bufs_ctx, qu_bufs);
 QUEUE_DECL(struct listener_ctx *, qu_lsn);
-typedef struct ev_ctx
-{
+typedef struct ev_ctx {
     uint32_t nthreads;
 #ifdef EV_IOCP
     uint32_t nacpex;
@@ -40,8 +37,7 @@ typedef void(*recv_cb)(ev_ctx *ev, SOCKET fd, buffer_ctx *buf, size_t size, ud_c
 typedef void(*recvfrom_cb)(ev_ctx *ev, SOCKET fd, buffer_ctx *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud);
 typedef void(*send_cb)(ev_ctx *ev, SOCKET fd, size_t size, ud_cxt *ud);
 typedef void(*close_cb)(ev_ctx *ev, SOCKET fd, ud_cxt *ud);
-typedef struct cbs_ctx
-{
+typedef struct cbs_ctx {
     accept_cb acp_cb;
     connect_cb conn_cb;
     recv_cb r_cb;

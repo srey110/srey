@@ -1,8 +1,7 @@
 #include "test_base.h"
 #include "lib.h"
 
-void test_memory(CuTest* tc)
-{
+void test_memory(CuTest* tc) {
     int *pTest;
     MALLOC(pTest, sizeof(int));
     FREE(pTest);
@@ -14,7 +13,6 @@ void test_memory(CuTest* tc)
     REALLOC(pNew, pBuf, (size_t)40);    
     FREE(pNew);
 }
-void test_base(CuSuite* suite)
-{
+void test_base(CuSuite* suite) {
     SUITE_ADD_TEST(suite, test_memory);
 }

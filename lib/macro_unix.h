@@ -58,30 +58,24 @@
 #elif defined(OS_AIX)
     typedef int32_t atomic_t;
     typedef long atomic64_t;
-    static inline atomic_t _fetchandset(atomic_t *ptr, atomic_t value)
-    {
+    static inline atomic_t _fetchandset(atomic_t *ptr, atomic_t value) {
         atomic_t oldvar;
-        do
-        {
+        do {
             oldvar = *ptr;
         } while (!compare_and_swap(ptr, &oldvar, value));
         return oldvar;
     };
-    static inline atomic_t _fetchandset64(atomic64_t *ptr, atomic64_t value)
-    {
+    static inline atomic_t _fetchandset64(atomic64_t *ptr, atomic64_t value) {
         atomic64_t oldvar;
-        do
-        {
+        do {
             oldvar = *ptr;
         } while (!compare_and_swaplp(ptr, &oldvar, value));
         return oldvar;
     };
-    static inline int32_t _aix_cas(atomic_t *ptr, atomic_t oldval, atomic_t newval)
-    {
+    static inline int32_t _aix_cas(atomic_t *ptr, atomic_t oldval, atomic_t newval) {
         return compare_and_swap(ptr, &oldval, newval);
     };
-    static inline int32_t _aix_cas64(atomic64_t *ptr, atomic64_t oldval, atomic64_t newval)
-    {
+    static inline int32_t _aix_cas64(atomic64_t *ptr, atomic64_t oldval, atomic64_t newval) {
         return compare_and_swaplp(ptr, &oldval, newval);
     };
     #define ATOMIC_ADD(ptr, val) fetch_and_add(ptr, val)
@@ -93,20 +87,16 @@
 #else
     typedef uint32_t atomic_t;
     typedef uint64_t atomic64_t;
-    static inline atomic_t _fetchandset(atomic_t *ptr, atomic_t value)
-    {
+    static inline atomic_t _fetchandset(atomic_t *ptr, atomic_t value) {
         atomic_t oldvar;
-        do
-        {
+        do {
             oldvar = *ptr;
         } while (!__sync_bool_compare_and_swap(ptr, oldvar, value));
         return oldvar;
     };
-    static inline atomic64_t _fetchandset64(atomic64_t *ptr, atomic64_t value)
-    {
+    static inline atomic64_t _fetchandset64(atomic64_t *ptr, atomic64_t value) {
         atomic64_t oldvar;
-        do
-        {
+        do {
             oldvar = *ptr;
         } while (!__sync_bool_compare_and_swap(ptr, oldvar, value));
         return oldvar;

@@ -5,16 +5,14 @@
 #include "thread.h"
 #include "mutex.h"
 
-typedef enum LOG_LEVEL
-{
+typedef enum LOG_LEVEL {
     LOGLV_FATAL = 0,
     LOGLV_ERROR,
     LOGLV_WARN,
     LOGLV_INFO,
     LOGLV_DEBUG,
 }LOG_LEVEL;
-typedef struct loger_ctx
-{
+typedef struct loger_ctx {
     int32_t lv;
     int32_t prt;
     volatile int32_t stop;

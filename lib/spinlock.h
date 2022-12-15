@@ -11,8 +11,7 @@ typedef os_unfair_lock spin_ctx;
 typedef pthread_spinlock_t spin_ctx;
 #endif
 
-static inline void spin_init(spin_ctx *ctx, const uint32_t spcnt)
-{
+static inline void spin_init(spin_ctx *ctx, const uint32_t spcnt) {
 #if defined(OS_WIN)
     ASSERTAB(InitializeCriticalSectionAndSpinCount(ctx, spcnt), ERRORSTR(ERRNO));
 #elif defined(OS_DARWIN)
@@ -21,8 +20,7 @@ static inline void spin_init(spin_ctx *ctx, const uint32_t spcnt)
     ASSERTAB(ERR_OK == pthread_spin_init(ctx, PTHREAD_PROCESS_PRIVATE), ERRORSTR(ERRNO));
 #endif
 };
-static inline void spin_free(spin_ctx *ctx)
-{
+static inline void spin_free(spin_ctx *ctx) {
 #if defined(OS_WIN)
     DeleteCriticalSection(ctx);
 #elif defined(OS_DARWIN)
@@ -30,8 +28,7 @@ static inline void spin_free(spin_ctx *ctx)
     (void)pthread_spin_destroy(ctx);
 #endif
 };
-static inline void spin_lock(spin_ctx *ctx)
-{
+static inline void spin_lock(spin_ctx *ctx) {
 #if defined(OS_WIN)
     EnterCriticalSection(ctx);
 #elif defined(OS_DARWIN)
@@ -40,8 +37,7 @@ static inline void spin_lock(spin_ctx *ctx)
     ASSERTAB(ERR_OK == pthread_spin_lock(ctx), ERRORSTR(ERRNO));
 #endif
 };
-static inline int32_t spin_trylock(spin_ctx *ctx)
-{
+static inline int32_t spin_trylock(spin_ctx *ctx) {
 #if defined(OS_WIN)
     return TRUE == TryEnterCriticalSection(ctx) ? ERR_OK : ERR_FAILED;
 #elif defined(OS_DARWIN)
@@ -50,8 +46,7 @@ static inline int32_t spin_trylock(spin_ctx *ctx)
     return pthread_spin_trylock(ctx);
 #endif
 };
-static inline void spin_unlock(spin_ctx *ctx)
-{
+static inline void spin_unlock(spin_ctx *ctx) {
 #if defined(OS_WIN)
     LeaveCriticalSection(ctx);
 #elif defined(OS_DARWIN)

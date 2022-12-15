@@ -54,31 +54,26 @@
 
 #define ZERO(name, len) memset(name, 0, len)
 #define MALLOC(ptr, size)\
-do\
-{\
+do {\
     *(void**)&(ptr) = _malloc(size);\
     PRINTD("malloc(%p, size=%zu)", ptr, size);\
 }while (0)
 
 #define CALLOC(ptr, count, size)\
-do\
-{\
+do {\
     *(void**)&(ptr) = _calloc(count, size);\
     PRINTD("calloc(%p, count=%zu, size=%zu)", ptr, count, size);\
 }while (0)
 
 #define REALLOC(ptr, oldptr, size)\
-do\
-{\
+do {\
     *(void**)&(ptr) = _realloc(oldptr, size);\
     PRINTD("realloc(%p, old=%p, size=%zu)", ptr, oldptr, size);\
 }while (0)
 
 #define FREE(ptr)\
-do\
-{\
-    if (NULL != ptr)\
-    {\
+do {\
+    if (NULL != ptr) {\
         _free(ptr); \
         PRINTD("free(%p)", ptr);\
         ptr = NULL; \
@@ -86,20 +81,16 @@ do\
 }while (0)
 
 #define ASSERTAB(exp, errstr)\
-do\
-{\
-    if (!(exp))\
-    {\
+do {\
+    if (!(exp)) {\
         PRINT("%s", errstr);\
         abort();\
     }\
 } while (0);
 
 #define CLOSE_SOCK(fd)\
-do\
-{\
-    if (INVALID_SOCK != (fd) && 0 != (fd))\
-    {\
+do {\
+    if (INVALID_SOCK != (fd) && 0 != (fd)) {\
         SOCK_CLOSE(fd);\
         (fd) = INVALID_SOCK;\
     }\
