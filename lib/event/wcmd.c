@@ -10,6 +10,7 @@ do {\
     watcher_ctx *watcher = GET_PTR((ev)->watcher, (ev)->nthreads, hs);\
     _send_cmd(watcher, GET_POS(hs, watcher->ncmd), &cmd);\
 } while (0)
+
 static inline map_element *_map_get(watcher_ctx *watcher, SOCKET fd) {
     map_element key;
     key.fd = fd;
