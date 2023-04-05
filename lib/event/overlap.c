@@ -451,7 +451,7 @@ SOCKET ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *host, const 
     if (ERR_OK != _join_iocp(watcher, fd)) {
         CLOSE_SOCK(fd);
         return INVALID_SOCK;
-    }    
+    }
     sock_ctx *skctx = _new_sk(fd, cbs, ud);
     skctx->ev_cb = _on_connect_cb;
     overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
