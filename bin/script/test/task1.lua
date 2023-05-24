@@ -22,22 +22,22 @@ local function onstarted()
 end
 srey.started(onstarted)
 
-local function onaccept(fd)
+local function onaccept(ptype, fd)
 	print(srey.name() .. " onaccept.... " .. fd)
 end
 srey.accept(onaccept)
 
-local function echo(fd, data, size)
+local function echo(ptype, fd, data, size)
 	srey.send(fd, data, size, PACK_TYPE.SIMPLE)
 end
 srey.recv(echo)
 
-local function onsended(fd, size)
+local function onsended(ptype, fd, size)
 	--print(fd .. " sended size:" .. size)
 end
 srey.sended(onsended)
 
-local function onsockclose(fd)
+local function onsockclose(ptype, fd)
 	print(fd .. " closed")
 end
 srey.closed(onsockclose)

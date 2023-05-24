@@ -20,6 +20,7 @@ typedef struct srey_ctx srey_ctx;
 typedef struct task_ctx task_ctx;
 typedef struct message_ctx {
     msg_type type;
+    int32_t ptype;
     int32_t error;
     SOCKET fd;
     task_ctx *src;
@@ -58,7 +59,7 @@ int32_t task_netlisten(task_ctx *task, unpack_type type, struct evssl_ctx *evssl
     const char *host, uint16_t port, int32_t sendev);
 SOCKET task_netconnect(task_ctx *task, unpack_type type, uint64_t session, struct evssl_ctx *evssl,
     const char *host, uint16_t port, int32_t sendev);
-SOCKET task_netudp(task_ctx *task, const char *host, uint16_t port);
+SOCKET task_netudp(task_ctx *task, unpack_type type, const char *host, uint16_t port);
 void task_netsend(task_ctx *task, SOCKET fd, void *data, size_t len, pack_type type);
 
 #endif //SREY_H_

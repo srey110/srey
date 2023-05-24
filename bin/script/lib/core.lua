@@ -100,7 +100,7 @@ end
 --[[
 描述:监听
 参数：
-	proto UNPACK_TYPE
+	ptype UNPACK_TYPE
 	ip    监听ip
 	port  端口
 	ssl   evssl_ctx nil 不启用ssl
@@ -108,19 +108,20 @@ end
 返回:
 	bool
 --]]
-function core.listen(proto, ip, port, ssl, sendev)
-	return srey.listen(curtask, proto, ssl, ip, port, nil == sendev and 0 or sendev)
+function core.listen(ptype, ip, port, ssl, sendev)
+	return srey.listen(curtask, ptype, ssl, ip, port, nil == sendev and 0 or sendev)
 end
 --[[
 描述:udp
 参数：
+	ptype UNPACK_TYPE
 	ip    ip
 	port  端口
 返回:
-	bool
+	fd  INVALID_SOCK 失败
 --]]
-function core.udp(ip, port)
-	return srey.udp(curtask, ip, port)
+function core.udp(ptype, ip, port)
+	return srey.udp(curtask, ptype, ip, port)
 end
 --[[
 描述:tcp发送

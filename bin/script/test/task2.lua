@@ -7,7 +7,7 @@ local function onstarted()
 end
 srey.started(onstarted)
 
-local function echo(fd, data, size)
+local function echo(ptype, fd, data, size)
 	srey.send(fd, data, size, PACK_TYPE.SIMPLE)
 end
 srey.recv(echo)

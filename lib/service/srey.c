@@ -218,6 +218,7 @@ void task_timeout(task_ctx *task, uint64_t session, uint32_t timeout) {
 static inline int32_t _task_net_accept(ev_ctx *ev, SOCKET fd, ud_cxt *ud) {
     message_ctx msg;
     msg.type = MSG_TYPE_ACCEPT;
+    msg.ptype = ud->type;
     msg.session = ud->session;
     msg.fd = fd;
     _push_message(ud->data, &msg);
@@ -228,6 +229,7 @@ static inline void _task_net_recv(ev_ctx *ev, SOCKET fd, buffer_ctx *buf, size_t
     void *data;
     message_ctx msg;
     msg.type = MSG_TYPE_RECV;
+    msg.ptype = ud->type;
     msg.session = ud->session;
     msg.fd = fd;
     while (NULL != (data = protos_unpack(ud->type, buf, &lens, ud))) {
@@ -239,6 +241,7 @@ static inline void _task_net_recv(ev_ctx *ev, SOCKET fd, buffer_ctx *buf, size_t
 static inline void _task_net_send(ev_ctx *ev, SOCKET fd, size_t size, ud_cxt *ud) {
     message_ctx msg;
     msg.type = MSG_TYPE_SEND;
+    msg.ptype = ud->type;
     msg.session = ud->session;
     msg.fd = fd;
     msg.size = size;
@@ -247,6 +250,7 @@ static inline void _task_net_send(ev_ctx *ev, SOCKET fd, size_t size, ud_cxt *ud
 static inline void _task_net_close(ev_ctx *ev, SOCKET fd, ud_cxt *ud) {
     message_ctx msg;
     msg.type = MSG_TYPE_CLOSE;
+    msg.ptype = ud->type;
     msg.session = ud->session;
     msg.fd = fd;
     _push_message(ud->data, &msg);
@@ -272,6 +276,7 @@ int32_t task_netlisten(task_ctx *task, unpack_type type, struct evssl_ctx *evssl
 static inline int32_t _task_net_connect(ev_ctx *ev, SOCKET fd, int32_t err, ud_cxt *ud) {
     message_ctx msg;
     msg.type = MSG_TYPE_CONNECT;
+    msg.ptype = ud->type;
     msg.session = ud->session;
     msg.fd = fd;
     msg.error = err;
@@ -298,6 +303,7 @@ SOCKET task_netconnect(task_ctx *task, unpack_type type, uint64_t session, struc
 static inline void _task_net_recvfrom(ev_ctx *ev, SOCKET fd, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
     message_ctx msg;
     msg.type = MSG_TYPE_RECVFROM;
+    msg.ptype = ud->type;
     msg.session = ud->session;
     msg.fd = fd;
     MALLOC(msg.data, size);
@@ -306,9 +312,10 @@ static inline void _task_net_recvfrom(ev_ctx *ev, SOCKET fd, char *buf, size_t s
     memcpy(&msg.addr, addr, sizeof(netaddr_ctx));
     _push_message(ud->data, &msg);
 }
-SOCKET task_netudp(task_ctx *task, const char *host, uint16_t port) {
+SOCKET task_netudp(task_ctx *task, unpack_type type, const char *host, uint16_t port) {
     ud_cxt ud;
     ud.status = 0;
+    ud.type = type;
     ud.data = task;
     ud.session = task_session(task);
     return ev_udp(&task->srey->netev, host, port, _task_net_recvfrom, &ud);

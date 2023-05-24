@@ -21,4 +21,5 @@ PACK_TYPE = {
 }
 
 ERR_OK = 0
+INVALID_SOCK = -1
 

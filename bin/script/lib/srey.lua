@@ -29,7 +29,7 @@ end
 --[[
 描述:accept
 参数：
-    func 回调函数 func(fd)
+    func 回调函数 func(ptype, fd)
 返回:
 --]]
 function core.accept(func)
@@ -38,7 +38,7 @@ end
 --[[
 描述:recv
 参数：
-    func 回调函数 func(fd, data, size)
+    func 回调函数 func(ptype, fd, data, size)
 返回:
 --]]
 function core.recv(func)
@@ -47,7 +47,7 @@ end
 --[[
 描述:recvfrom
 参数：
-    func 回调函数 func(fd, data, size, ip, port)
+    func 回调函数 func(ptype, fd, data, size, ip, port)
 返回:
 --]]
 function core.recvfrom(func)
@@ -56,7 +56,7 @@ end
 --[[
 描述:sended
 参数：
-    func 回调函数 func(fd, size)
+    func 回调函数 func(ptype, fd, size)
 返回:
 --]]
 function core.sended(func)
@@ -65,7 +65,7 @@ end
 --[[
 描述:socket close
 参数：
-    func 回调函数 func(fd)
+    func 回调函数 func(ptype, fd)
 返回:
 --]]
 function core.closed(func)
@@ -75,7 +75,7 @@ end
 --[[
 描述:connect
 参数：
-    proto UNPACK_TYPE
+    ptype UNPACK_TYPE
 	ip    ip
 	port  端口
 	ssl   evssl_ctx nil 不启用ssl
@@ -83,11 +83,11 @@ end
 返回:
 	fd  nil失败
 --]]
-function core.connect(proto, ip, port, ssl, sendev)
+function core.connect(ptype, ip, port, ssl, sendev)
 	local sess = core.session()
 	sess_coro[sess] = cur_coro
-	if srey.connect(core.self(), proto, sess, ssl, ip, port, nil == sendev and 0 or sendev) then
-		local fd, err = coroutine.yield()
+	if INVALID_SOCK ~= srey.connect(core.self(), ptype, sess, ssl, ip, port, nil == sendev and 0 or sendev) then
+		local ptype, fd, err = coroutine.yield()
 		if ERR_OK ~= err then
 			return nil
 		else
@@ -154,7 +154,7 @@ local MSG_TYPE = {
 	RECVFROM = 9,
 	USER = 10
 }
-function _dispatch_message(msgtype, err, fd, src, data, size, sess, addr)
+function _dispatch_message(msgtype, ptype, err, fd, src, data, size, sess, addr)
 	if MSG_TYPE.STARTED == msgtype then
 		local func = static_funcs.STARTED
 		if nil ~= func then
@@ -186,33 +186,33 @@ function _dispatch_message(msgtype, err, fd, src, data, size, sess, addr)
 		if nil ~= func then
             local co = co_create(func)
             cur_coro = co
-            coroutine.resume(co, fd)
+            coroutine.resume(co, ptype, fd)
         end
 	elseif MSG_TYPE.CONNECT == msgtype then
 		local co = sess_coro[sess]
 		sess_coro[sess] = nil
         cur_coro = co
-        coroutine.resume(co, fd, err)
+        coroutine.resume(co, ptype, fd, err)
     elseif MSG_TYPE.RECV == msgtype then
 		local func = static_funcs.RECV
 		if nil ~= func then
 			local co = co_create(func)
             cur_coro = co
-            coroutine.resume(co, fd, data, size)
+            coroutine.resume(co, ptype, fd, data, size)
 		end
 	elseif MSG_TYPE.SEND == msgtype then
 		local func = static_funcs.SEND
 		if nil ~= func then
 			local co = co_create(func)
             cur_coro = co
-            coroutine.resume(co, fd, size)
+            coroutine.resume(co, ptype, fd, size)
 		end
 	elseif MSG_TYPE.CLOSE == msgtype then
 		local func = static_funcs.CLOSE
 		if nil ~= func then
 			local co = co_create(func)
             cur_coro = co
-            coroutine.resume(co, fd)
+            coroutine.resume(co, ptype, fd)
 		end
 	elseif MSG_TYPE.RECVFROM == msgtype then
 		local func = static_funcs.RECVFROM
@@ -220,7 +220,7 @@ function _dispatch_message(msgtype, err, fd, src, data, size, sess, addr)
 			local co = co_create(func)
             cur_coro = co
 			local ip,port = core.ipport(addr)
-            coroutine.resume(co, fd, data, size, ip, port)
+            coroutine.resume(co, ptype, fd, data, size, ip, port)
 		end
 	elseif MSG_TYPE.USER == msgtype then	
     end	

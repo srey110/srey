@@ -95,6 +95,7 @@ static inline void _ltask_run(task_ctx *task, message_ctx *msg) {
     }
     lua_rawgeti(ltask->lua, LUA_REGISTRYINDEX, ltask->ref);
     lua_pushinteger(ltask->lua, msg->type);
+    lua_pushinteger(ltask->lua, msg->ptype);
     lua_pushinteger(ltask->lua, msg->error);
     lua_pushinteger(ltask->lua, msg->fd);
     lua_pushlightuserdata(ltask->lua, msg->src);
@@ -102,7 +103,7 @@ static inline void _ltask_run(task_ctx *task, message_ctx *msg) {
     lua_pushinteger(ltask->lua, msg->size);
     lua_pushinteger(ltask->lua, msg->session);
     lua_pushlightuserdata(ltask->lua, &msg->addr);
-    if (LUA_OK != lua_pcall(ltask->lua, 8, 0, 0)) {
+    if (LUA_OK != lua_pcall(ltask->lua, 9, 0, 0)) {
         LOG_ERROR("%s", lua_tostring(ltask->lua, 1));
     }
 }
@@ -230,21 +231,24 @@ static int32_t _ltask_connect(lua_State *lua) {
     const char *host = lua_tostring(lua, 5);
     uint16_t port = (uint16_t)lua_tointeger(lua, 6);
     int32_t sendev = (int32_t)lua_tointeger(lua, 7);
-    if (INVALID_SOCK != task_netconnect(task, ptype, session, evssl, host, port, sendev)) {
-        lua_pushboolean(lua, 1);
+    SOCKET fd = task_netconnect(task, ptype, session, evssl, host, port, sendev);
+    if (INVALID_SOCK != fd) {
+        lua_pushinteger(lua, fd);
     } else {
-        lua_pushboolean(lua, 0);
+        lua_pushinteger(lua, -1);
     }
     return 1;
 }
 static int32_t _ltask_udp(lua_State *lua) {
     task_ctx *task = lua_touserdata(lua, 1);
-    const char *host = lua_tostring(lua, 2);
-    uint16_t port = (uint16_t)lua_tointeger(lua, 3);
-    if (INVALID_SOCK != task_netudp(task, host, port)) {
-        lua_pushboolean(lua, 1);
+    int32_t ptype = (int32_t)lua_tointeger(lua, 2);
+    const char *host = lua_tostring(lua, 3);
+    uint16_t port = (uint16_t)lua_tointeger(lua, 4);
+    SOCKET fd = task_netudp(task, ptype, host, port);
+    if (INVALID_SOCK != fd) {
+        lua_pushinteger(lua, fd);
     } else {
-        lua_pushboolean(lua, 0);
+        lua_pushinteger(lua, -1);
     }
     return 1;
 }
