@@ -97,6 +97,7 @@ task_ctx *srey_tasknew(srey_ctx *ctx, int32_t name, uint32_t maxcnt,
     task_ctx *task;
     MALLOC(task, sizeof(task_ctx));
     ZERO(task, sizeof(task_ctx));
+    task->session = 1;
     task->name = name;
     task->maxcnt = maxcnt;
     task->_run = _run;
@@ -110,6 +111,9 @@ task_ctx *srey_tasknew(srey_ctx *ctx, int32_t name, uint32_t maxcnt,
     rwlock_wrlock(&ctx->lckmaptask);
     ASSERTAB(NULL == hashmap_set(ctx->maptask, &task), formatv("task %d repeat.", name));
     rwlock_unlock(&ctx->lckmaptask);
+    message_ctx msg;
+    msg.type = MSG_TYPE_STARTED;
+    _push_message(task, &msg);
     return task;
 }
 static void _free_task(void *item) {

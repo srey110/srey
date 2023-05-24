@@ -20,3 +20,5 @@ PACK_TYPE = {
 	SIMPLE = 1,
 }
 
+ERR_OK = 0
+

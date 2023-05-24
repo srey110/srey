@@ -5,7 +5,8 @@
 #include "proto/protos.h"
 
 typedef enum msg_type {
-    MSG_TYPE_CLOSING = 0x01,
+    MSG_TYPE_STARTED = 0x01,
+    MSG_TYPE_CLOSING,
     MSG_TYPE_TIMEOUT,
     MSG_TYPE_ACCEPT,
     MSG_TYPE_CONNECT,
