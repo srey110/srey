@@ -4,6 +4,7 @@
 #include "mutex.h"
 #include "thread.h"
 #include "timer.h"
+#include "structs.h"
 
 #define TVN_BITS (6)
 #define TVR_BITS (8)
@@ -15,9 +16,9 @@
 
 typedef struct tw_node_ctx {
     struct tw_node_ctx *next;
-    void(*tw_cb)(void *);//回调函数
+    void(*tw_cb)(ud_cxt *);//回调函数
     uint32_t expires;
-    void *ud;//用户数据
+    ud_cxt ud;//用户数据
 }tw_node_ctx;
 typedef struct tw_slot_ctx {
     tw_node_ctx *head;
@@ -39,6 +40,6 @@ typedef struct tw_ctx {
 
 void tw_init(tw_ctx *ctx);
 void tw_free(tw_ctx *ctx);
-void tw_add(tw_ctx *ctx, const uint32_t timeout, void(*tw_cb)(void *), void *ud);
+void tw_add(tw_ctx *ctx, const uint32_t timeout, void(*tw_cb)(ud_cxt *), ud_cxt *ud);
 
 #endif//TW_H_

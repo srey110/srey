@@ -5,6 +5,7 @@
 
 #ifndef OS_WIN
 
+#define DLL_EXNAME "so"
 #define PATH_SEPARATOR '/'
 #define PATH_SEPARATORSTR "/"
 #if defined(PATH_MAX)

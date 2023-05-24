@@ -15,10 +15,10 @@ typedef struct pip_ctx {
 }pip_ctx;
 
 static inline uint64_t _map_hash(const void *item, uint64_t seed0, uint64_t seed1) {
-    return FD_HASH(((const map_element *)item)->fd);
+    return FD_HASH((*(const sock_ctx **)item)->fd);
 }
 static inline int _map_compare(const void *a, const void *b, void *ud) {
-    return (int)(((const map_element *)a)->fd - ((const map_element *)b)->fd);
+    return (int)((*(const sock_ctx **)a)->fd - (*(const sock_ctx **)b)->fd);
 }
 void _send_cmd(watcher_ctx *watcher, uint32_t index, cmd_ctx *cmd) {
     ASSERTAB(sizeof(cmd_ctx) == write(watcher->pipes[index].pipes[1], cmd, sizeof(cmd_ctx)), "pipe write error.");
@@ -405,13 +405,13 @@ static void _loop_event(void *arg) {
     }
 }
 static inline void _free_element(void *item) {
-    map_element *el = (map_element *)item;
-    if (SOCK_STREAM == el->sock->type) {
-        _free_sk(el->sock);
+    sock_ctx *sock = *((sock_ctx **)item);
+    if (SOCK_STREAM == sock->type) {
+        _free_sk(sock);
         return;
     }
-    if(SOCK_DGRAM == el->sock->type) {
-        _free_udp(el->sock);
+    if(SOCK_DGRAM == sock->type) {
+        _free_udp(sock);
     }
 }
 static inline int32_t _init_evfd() {
@@ -464,7 +464,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads) {
         watcher->npipes = ctx->nthreads * 2;
         watcher->pipes = _new_pips(watcher->npipes);
         watcher->element = hashmap_new_with_allocator(_malloc, _realloc, _free,
-                                                      sizeof(map_element), ONEK * 2, 0, 0, 
+                                                      sizeof(sock_ctx *), ONEK * 2, 0, 0, 
                                                       _map_hash, _map_compare, _free_element, NULL);
         pool_init(&watcher->pool, ONEK);
         _init_cmd(watcher);

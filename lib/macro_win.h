@@ -5,6 +5,7 @@
 
 #ifdef OS_WIN
 
+#define DLL_EXNAME "dll"
 #define PATH_SEPARATOR '\\'
 #define PATH_SEPARATORSTR "\\"
 #define PATH_LENS MAX_PATH

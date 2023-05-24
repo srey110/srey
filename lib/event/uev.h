@@ -52,10 +52,6 @@ typedef struct cmd_ctx {
     void *data;
     size_t len;
 }cmd_ctx;
-typedef struct map_element {
-    SOCKET fd;
-    struct sock_ctx *sock;
-}map_element;
 typedef struct watcher_ctx {
     int32_t index;
     int32_t stop;

@@ -49,9 +49,9 @@ const char *_getlvstr(const LOG_LEVEL emlv) {
     case LOGLV_ERROR:
         return "ERROR";
     case LOGLV_WARN:
-        return " WARN";
+        return "WARN";
     case LOGLV_INFO:
-        return " INFO";
+        return "INFO";
     case LOGLV_DEBUG:
         return "DEBUG";
     default:

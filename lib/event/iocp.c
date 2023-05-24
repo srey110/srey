@@ -11,10 +11,10 @@ static atomic_t _init_once = 0;
 static void(*cmd_cbs[CMD_TOTAL])(watcher_ctx *watcher, cmd_ctx *cmd);
 
 static inline uint64_t _map_hash(const void *item, uint64_t seed0, uint64_t seed1) {
-    return FD_HASH(((const map_element *)item)->fd);
+    return FD_HASH((*(const sock_ctx **)item)->fd);
 }
 static inline int _map_compare(const void *a, const void *b, void *ud) {
-    return (int)(((const map_element *)a)->fd - ((const map_element *)b)->fd);
+    return (int)((*(const sock_ctx **)a)->fd - (*(const sock_ctx **)b)->fd);
 }
 static void *_exfunc(SOCKET fd, GUID  *guid) {
     void *func = NULL;
@@ -215,11 +215,11 @@ static void _loop_acpex(void *arg) {
 }
 #endif
 static inline void _free_element(void *item) {
-    map_element *el = (map_element *)item;
-    if (SOCK_STREAM == el->sock->type) {
-        _free_sk(el->sock);
+    sock_ctx *sock = *((sock_ctx **)item);
+    if (SOCK_STREAM == sock->type) {
+        _free_sk(sock);
     } else {
-        _free_udp(el->sock);
+        _free_udp(sock);
     }
 }
 static void _init_cmd(watcher_ctx *watcher) {
@@ -259,7 +259,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads) {
         ASSERTAB(NULL != watcher->iocp, ERRORSTR(ERRNO));
         watcher->ev = ctx;
         watcher->element = hashmap_new_with_allocator(_malloc, _realloc, _free,
-                                                      sizeof(map_element), ONEK * 2, 0, 0, 
+                                                      sizeof(sock_ctx *), ONEK * 2, 0, 0, 
                                                       _map_hash, _map_compare, _free_element, NULL);
         pool_init(&watcher->pool, ONEK);
         _init_cmd(watcher);

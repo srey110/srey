@@ -22,5 +22,6 @@
 #include "thread.h"
 
 #include "event/event.h"
+#include "service/srey.h"
 
 #endif //LIB_H_

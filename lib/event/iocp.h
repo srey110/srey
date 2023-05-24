@@ -25,10 +25,6 @@ typedef struct sock_ctx {
     SOCKET fd;
     event_cb ev_cb;
 }sock_ctx;
-typedef struct map_element {
-    SOCKET fd;
-    struct sock_ctx *sock;
-}map_element;
 typedef struct cmd_ctx {
     int32_t cmd;
     SOCKET fd;

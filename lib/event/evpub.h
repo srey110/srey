@@ -6,12 +6,9 @@
 #include "mutex.h"
 #include "buffer.h"
 #include "netaddr.h"
+#include "structs.h"
 
 struct evssl_ctx;
-//用户数据
-typedef struct ud_cxt {
-    void *data;
-}ud_cxt;
 typedef struct bufs_ctx {
     void *data;
     size_t len;
@@ -34,7 +31,7 @@ typedef struct ev_ctx {
 typedef int32_t(*accept_cb)(ev_ctx *ev, SOCKET fd, ud_cxt *ud);
 typedef int32_t(*connect_cb)(ev_ctx *ev, SOCKET fd, int32_t err, ud_cxt *ud);
 typedef void(*recv_cb)(ev_ctx *ev, SOCKET fd, buffer_ctx *buf, size_t size, ud_cxt *ud);
-typedef void(*recvfrom_cb)(ev_ctx *ev, SOCKET fd, buffer_ctx *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud);
+typedef void(*recvfrom_cb)(ev_ctx *ev, SOCKET fd, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud);
 typedef void(*send_cb)(ev_ctx *ev, SOCKET fd, size_t size, ud_cxt *ud);
 typedef void(*close_cb)(ev_ctx *ev, SOCKET fd, ud_cxt *ud);
 typedef struct cbs_ctx {
@@ -48,14 +45,6 @@ typedef struct cbs_ctx {
 #define FD_HASH(fd) hash((const char *)&(fd), sizeof(fd))
 #define GET_PTR(p, n, hs) ((1 == (n)) ? (p) : &((p)[(hs) % (n)]))
 #define GET_POS(hs, n) ((hs) % (n))
-#define COPY_UD(dst, src)\
-do {\
-    if (NULL != (src)){\
-        (dst) = *(src);\
-    }else{\
-        ZERO(&(dst), sizeof(ud_cxt));\
-    }\
-} while (0)
 
 //公共函数
 void _bufs_clear(qu_bufs *bufs);

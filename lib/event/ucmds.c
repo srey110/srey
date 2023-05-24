@@ -11,14 +11,16 @@ do {\
     _send_cmd(watcher, GET_POS(hs, watcher->npipes), &cmd);\
 } while (0)
 
-static inline map_element *_map_get(watcher_ctx *watcher, SOCKET fd) {
-    map_element key;
+static inline sock_ctx *_map_get(watcher_ctx *watcher, SOCKET fd) {
+    sock_ctx key;
     key.fd = fd;
-    return hashmap_get(watcher->element, &key);
+    sock_ctx *pkey = &key;
+    void **tmp = hashmap_get(watcher->element, &pkey);
+    return NULL == tmp ? NULL : *tmp;
 }
 sock_ctx *_map_getskctx(watcher_ctx *watcher, SOCKET fd) {
-    map_element *el = _map_get(watcher, fd);
-    return NULL == el ? NULL : el->sock;
+    sock_ctx *el = _map_get(watcher, fd);
+    return el;
 }
 void _on_cmd_stop(watcher_ctx *watcher, cmd_ctx *cmd) {
     watcher->stop = 1;
@@ -31,16 +33,16 @@ void ev_close(ev_ctx *ctx, SOCKET fd) {
     _SEND_CMD(ctx, cmd);
 }
 void _on_cmd_disconn(watcher_ctx *watcher, cmd_ctx *cmd) {
-    map_element *el = _map_get(watcher, cmd->fd);
+    sock_ctx *el = _map_get(watcher, cmd->fd);
     if (NULL == el) {
         CLOSE_SOCK(cmd->fd);
         return;
     }
-    if (SOCK_STREAM == el->sock->type) {
-        _set_tcp_error(el->sock);
-        _sk_shutdown(el->sock);
+    if (SOCK_STREAM == el->type) {
+        _set_tcp_error(el);
+        _sk_shutdown(el);
     } else {
-        _set_udp_error(watcher, el->sock);
+        _set_udp_error(watcher, el);
     }
 }
 void _cmd_listen(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx) {
@@ -94,7 +96,7 @@ void ev_sendto(ev_ctx *ctx, SOCKET fd, const char *host, const uint16_t port, vo
     _SEND_CMD(ctx, cmd);
 }
 void _on_cmd_send(watcher_ctx *watcher, cmd_ctx *cmd) {
-    map_element *el = _map_get(watcher, cmd->fd);
+    sock_ctx *el = _map_get(watcher, cmd->fd);
     if (NULL == el) {
         FREE(cmd->data);
         return;
@@ -103,7 +105,7 @@ void _on_cmd_send(watcher_ctx *watcher, cmd_ctx *cmd) {
     buf.data = cmd->data;
     buf.len = cmd->len;
     buf.offset = 0;
-    _add_write_inloop(watcher, el->sock, &buf);
+    _add_write_inloop(watcher, el, &buf);
 }
 void _cmd_add_acpfd(watcher_ctx *watcher, uint64_t hs, SOCKET fd, struct listener_ctx *lsn) {
     cmd_ctx cmd;

@@ -42,10 +42,12 @@ typedef struct udp_ctx {
     sock_ctx sock;
     int32_t status;
     recvfrom_cb rf_cb;
-    buffer_ctx buf_r;
+    IOV_TYPE buf_r;
+    struct msghdr msg;
     qu_bufs buf_s;
     netaddr_ctx addr;
     ud_cxt ud;
+    char buf[MAX_RECVFROM_SIZE];
 }udp_ctx;
 
 static void _on_rw_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev);
@@ -107,15 +109,13 @@ void _set_tcp_error(sock_ctx *skctx) {
     UPCAST(skctx, tcp_ctx, sock)->status |= STATUS_ERROR;
 }
 void _add_fd(watcher_ctx *watcher, sock_ctx *skctx) {
-    map_element el;
-    el.fd =skctx->fd;
-    el.sock = skctx;
-    ASSERTAB(NULL == hashmap_set(watcher->element, &el), "socket repeat.");
+    ASSERTAB(NULL == hashmap_set(watcher->element, &skctx), "socket repeat.");
 }
 static inline void _remove_fd(watcher_ctx *watcher, SOCKET fd) {
-    map_element key;
+    sock_ctx key;
     key.fd = fd;
-    hashmap_delete(watcher->element, &key);
+    sock_ctx *pkey = &key;
+    hashmap_delete(watcher->element, &pkey);
 }
 //rw
 #if WITH_SSL
@@ -542,15 +542,10 @@ static inline void _init_msghdr(struct msghdr *msg, netaddr_ctx *addr, IOV_TYPE 
     msg->msg_iov = iov;
     msg->msg_iovlen = niov;
 }
-static inline int32_t _on_udp_rcb(watcher_ctx *watcher, udp_ctx *udp) {
-    struct msghdr msg;
-    IOV_TYPE iov[MAX_EXPAND_NIOV];
-    uint32_t niov = buffer_expand(&udp->buf_r, MAX_RECVFROM_SIZE, iov, MAX_EXPAND_NIOV);
-    _init_msghdr(&msg, &udp->addr, iov, niov);
-    int32_t rtn = (int32_t)recvmsg(udp->sock.fd, &msg, 0);
+static inline int32_t _on_udp_rcb(watcher_ctx *watcher, udp_ctx *udp) { 
+    int32_t rtn = (int32_t)recvmsg(udp->sock.fd, &udp->msg, 0);
     if (rtn > 0) {
-        buffer_commit_expand(&udp->buf_r, (size_t)rtn, iov, niov);
-        udp->rf_cb(watcher->ev, udp->sock.fd, &udp->buf_r, (size_t)rtn, &udp->addr, &udp->ud);
+        udp->rf_cb(watcher->ev, udp->sock.fd, udp->buf_r.IOV_PTR_FIELD, (size_t)rtn, &udp->addr, &udp->ud);
         rtn = ERR_OK;
     } else {
         if (0 == rtn) {
@@ -558,7 +553,6 @@ static inline int32_t _on_udp_rcb(watcher_ctx *watcher, udp_ctx *udp) {
         } else {
             if (ERR_RW_RETRIABLE(ERRNO)) {
                 rtn = ERR_OK;
-                buffer_commit_expand(&udp->buf_r, 0, iov, niov);
             }
         }
     }
@@ -642,16 +636,17 @@ static inline sock_ctx *_new_udp(SOCKET fd, int32_t family, recvfrom_cb rf_cb, u
     udp->sock.events = 0;
     udp->status = 0;
     udp->rf_cb = rf_cb;
+    udp->buf_r.IOV_PTR_FIELD = udp->buf;
+    udp->buf_r.IOV_LEN_FIELD = sizeof(udp->buf);
     COPY_UD(udp->ud, ud);
     netaddr_empty_addr(&udp->addr, family);
-    buffer_init(&udp->buf_r);
+    _init_msghdr(&udp->msg, &udp->addr, &udp->buf_r, 1);
     qu_bufs_init(&udp->buf_s, INIT_SENDBUF_LEN);
     return &udp->sock;
 }
 void _free_udp(sock_ctx *skctx) {
     udp_ctx *udp = UPCAST(skctx, udp_ctx, sock);
     CLOSE_SOCK(udp->sock.fd);
-    buffer_free(&udp->buf_r);
     _bufs_clear(&udp->buf_s);
     qu_bufs_free(&udp->buf_s);
     FREE(udp);

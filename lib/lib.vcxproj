@@ -42,11 +42,15 @@
     <ClInclude Include="netaddr.h" />
     <ClInclude Include="netutils.h" />
     <ClInclude Include="os.h" />
+    <ClInclude Include="proto\protos.h" />
+    <ClInclude Include="proto\simple.h" />
     <ClInclude Include="queue.h" />
     <ClInclude Include="rwlock.h" />
     <ClInclude Include="sarray.h" />
+    <ClInclude Include="service\srey.h" />
     <ClInclude Include="sha1\sha1.h" />
     <ClInclude Include="spinlock.h" />
+    <ClInclude Include="structs.h" />
     <ClInclude Include="thread.h" />
     <ClInclude Include="timer.h" />
     <ClInclude Include="tw.h" />
@@ -69,6 +73,9 @@
     <ClCompile Include="memory.c" />
     <ClCompile Include="netaddr.c" />
     <ClCompile Include="netutils.c" />
+    <ClCompile Include="proto\protos.c" />
+    <ClCompile Include="proto\simple.c" />
+    <ClCompile Include="service\srey.c" />
     <ClCompile Include="sha1\sha1.c" />
     <ClCompile Include="thread.c" />
     <ClCompile Include="timer.c" />

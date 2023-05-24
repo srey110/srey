@@ -3,6 +3,7 @@
 #include "lib.h"
 
 #ifdef OS_WIN
+#include "vld.h"
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "lib.lib")
 #if WITH_SSL
@@ -40,11 +41,11 @@ static void test_connclose_cb(ev_ctx *ctx, SOCKET sock, ud_cxt *ud) {
 }
 static void test_recv_cb(ev_ctx *ctx, SOCKET sock, buffer_ctx *buf, size_t lens, ud_cxt *ud) {
     //PRINT("test_recv_cb: lens %d ", (int32_t)lens);
-    if (randrange(1, 100) <= 1) {
-        //PRINT("close socket: sock %d ", (int32_t)sock);
-        ev_close(ctx, sock);
-        return;
-    }
+    //if (randrange(1, 100) <= 1) {
+    //    //PRINT("close socket: sock %d ", (int32_t)sock);
+    //    ev_close(ctx, sock);
+    //    return;
+    //}
     size_t len = buffer_size(buf);    
     char *pk;
     MALLOC(pk, len);
@@ -88,26 +89,21 @@ static int32_t test_acpt_cb(ev_ctx *ctx, SOCKET sock, ud_cxt *ud) {
     ATOMIC_ADD(&count, 1);
     return ERR_OK;
 }
-static void test_recvfrom_cb(ev_ctx *ev, SOCKET fd, buffer_ctx *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
+static void test_recvfrom_cb(ev_ctx *ev, SOCKET fd, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
     char host[IP_LENS] = { 0 };
     netaddr_ip(addr, host);
     uint16_t port = netaddr_port(addr);
-    //PRINT("test_recvfrom_cb :  %s:%d size %zu", host, port, size);
-    char *pk;
-    MALLOC(pk, size);
-    buffer_remove(buf, pk, size);
-    ev_sendto(ev, fd, host, port, pk, size);
-    FREE(pk);
+    ev_sendto(ev, fd, host, port, buf, size);
 }
-static void timeout(void *arg) {
+static void timeout(ud_cxt *ud) {
     int32_t elapsed = (int32_t)timer_elapsed_ms(&tw.timer);
     PRINT("timeout:%d ms link cnt %d", elapsed, ATOMIC_GET(&count));
-    if (INVALID_SOCK != udpsock) {
-        ev_close(arg, udpsock);
+    /*if (INVALID_SOCK != udpsock) {
+        ev_close(ud->data, udpsock);
         udpsock = INVALID_SOCK;
     } else {
-        udpsock = ev_udp(arg, "0.0.0.0", 15002, test_recvfrom_cb, NULL);
-    }
+        udpsock = ev_udp(ud->data, "0.0.0.0", 15002, test_recvfrom_cb, NULL);
+    }*/
     if (INVALID_SOCK != connsock) {
         /*ev_close(arg, connsock);
         connsock = INVALID_SOCK;*/
@@ -125,9 +121,9 @@ static void timeout(void *arg) {
         int32_t tmp = ntohl(pk_index);
         memcpy(buf + sizeof(total), &tmp, sizeof(tmp));
         memcpy(buf + sizeof(total) + sizeof(pk_index), str, len);
-        ev_send(arg, connsock, buf, 2 + sizeof(pk_index) + len, 0);
+        ev_send(ud->data, connsock, buf, 2 + sizeof(pk_index) + len, 0);
 
-        /*ev_sendto(arg, connsock, "127.0.0.1", 15002, buf, 2 + sizeof(pk_index) + len, 0);
+        /*ev_sendto(ud->data, connsock, "127.0.0.1", 15002, buf, 2 + sizeof(pk_index) + len, 0);
         FREE(buf);*/
     } else {
         cbs_ctx cbs;
@@ -137,13 +133,13 @@ static void timeout(void *arg) {
         cbs.r_cb = test_conn_recv_cb;
         cbs.s_cb = test_send_cb;
 #if WITH_SSL
-        ev_connect(arg, ssl_client, "127.0.0.1", 15001, &cbs, NULL);
+        ev_connect(ud->data, ssl_client, "127.0.0.1", 15001, &cbs, NULL);
 #else
-        ev_connect(arg, NULL, "127.0.0.1", 15000, &cbs, NULL);
+        ev_connect(ud->data, NULL, "127.0.0.1", 15000, &cbs, NULL);
 #endif
     }
     timer_start(&tw.timer);
-    tw_add(&tw, 3000, timeout, arg);
+    tw_add(&tw, 3000, timeout, ud);
 }
 #if WITH_SSL
 int verify_sv_cb(int preverify_ok, X509_STORE_CTX *x509_ctx) {
@@ -202,7 +198,9 @@ int main(int argc, char *argv[]) {
 #endif
 
     timer_start(&tw.timer);
-    tw_add(&tw, 1000, timeout, &ev);
+    ud_cxt ud;
+    ud.data = &ev;
+    tw_add(&tw, 1000, timeout, &ud);
 
     mutex_lock(&muexit);
     cond_wait(&condexit, &muexit);

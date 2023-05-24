@@ -51,18 +51,17 @@ typedef struct overlap_udp_ctx {
     sock_ctx ol_r;
     sock_ctx ol_s;
     int32_t addrlen;
-    uint32_t niov;
     int32_t status;
     DWORD bytes_r;
     DWORD bytes_s;
     DWORD flag;
     recvfrom_cb rf_cb;
     IOV_TYPE wsabuf_s;
-    IOV_TYPE wsabuf_r[MAX_EXPAND_NIOV];
-    buffer_ctx buf_r;
+    IOV_TYPE wsabuf_r;
     qu_bufs buf_s;
     netaddr_ctx addr;
     ud_cxt ud;
+    char buf[MAX_RECVFROM_SIZE];
 }overlap_udp_ctx;
 
 static void _on_recv_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes);
@@ -134,15 +133,13 @@ void _set_error(sock_ctx *skctx) {
     UPCAST(skctx, overlap_udp_ctx, ol_r)->status |= STATUS_ERROR;
 }
 void _add_fd(watcher_ctx *watcher, sock_ctx *skctx) {
-    map_element el;
-    el.fd = skctx->fd;
-    el.sock = skctx;
-    ASSERTAB(NULL == hashmap_set(watcher->element, &el), "socket repeat.");
+    ASSERTAB(NULL == hashmap_set(watcher->element, &skctx), "socket repeat.");
 }
 void _remove_fd(watcher_ctx *watcher, SOCKET fd) {
-    map_element key;
+    sock_ctx key;
     key.fd = fd;
-    hashmap_delete(watcher->element, &key);
+    sock_ctx *pkey = &key;
+    hashmap_delete(watcher->element, &pkey);
 }
 //recv
 int32_t _post_recv(sock_ctx *skctx, DWORD  *bytes, DWORD  *flag, IOV_TYPE *wsabuf, DWORD niov) {
@@ -611,10 +608,9 @@ void _freelsn(listener_ctx *lsn) {
 static inline int32_t _post_recv_from(overlap_udp_ctx *oludp) {
     ZERO(&oludp->ol_r.overlapped, sizeof(oludp->ol_r.overlapped));
     oludp->flag = oludp->bytes_r = 0;
-    oludp->niov = buffer_expand(&oludp->buf_r, MAX_RECVFROM_SIZE, oludp->wsabuf_r, MAX_EXPAND_NIOV);
     if (ERR_OK != WSARecvFrom(oludp->ol_r.fd,
-                              oludp->wsabuf_r,
-                              (DWORD)oludp->niov,
+                              &oludp->wsabuf_r,
+                              1,
                               &oludp->bytes_r,
                               &oludp->flag,
                               netaddr_addr(&oludp->addr),
@@ -642,8 +638,7 @@ static inline void _on_recvfrom_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD 
         _on_udp_close_r(watcher, oludp);
         return;
     }
-    buffer_commit_expand(&oludp->buf_r, (size_t)bytes, oludp->wsabuf_r, oludp->niov);
-    oludp->rf_cb(watcher->ev, oludp->ol_r.fd, &oludp->buf_r, (size_t)bytes, &oludp->addr, &oludp->ud);
+    oludp->rf_cb(watcher->ev, oludp->ol_r.fd, oludp->wsabuf_r.buf, (size_t)bytes, &oludp->addr, &oludp->ud);
     if (oludp->status & STATUS_ERROR) {//多处理一个数据包
         _on_udp_close_r(watcher, oludp);
         return;
@@ -726,14 +721,14 @@ static inline sock_ctx *_new_udp(netaddr_ctx *addr, SOCKET fd, recvfrom_cb rf_cb
     COPY_UD(oludp->ud, ud);
     netaddr_empty_addr(&oludp->addr, netaddr_family(addr));
     oludp->addrlen = netaddr_size(&oludp->addr);
-    buffer_init(&oludp->buf_r);
+    oludp->wsabuf_r.buf = oludp->buf;
+    oludp->wsabuf_r.len = sizeof(oludp->buf);
     qu_bufs_init(&oludp->buf_s, INIT_SENDBUF_LEN);
     return &oludp->ol_r;
 }
 void _free_udp(sock_ctx *skctx) {
     overlap_udp_ctx *oludp = UPCAST(skctx, overlap_udp_ctx, ol_r);
     CLOSE_SOCK(oludp->ol_r.fd);
-    buffer_free(&oludp->buf_r);
     _bufs_clear(&oludp->buf_s);
     qu_bufs_free(&oludp->buf_s);
     FREE(oludp);

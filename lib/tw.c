@@ -30,14 +30,14 @@ static void _insert(tw_slot_ctx *slot, tw_node_ctx *node) {
     slot->tail->next = node;
     slot->tail = node;
 }
-void tw_add(tw_ctx *ctx, const uint32_t timeout, void(*tw_cb)(void *), void *ud) {
+void tw_add(tw_ctx *ctx, const uint32_t timeout, void(*tw_cb)(ud_cxt *), ud_cxt *ud) {
     if (0 == timeout) {
         tw_cb(ud);
         return;
     }
     tw_node_ctx *node;
     MALLOC(node, sizeof(tw_node_ctx));
-    node->ud = ud;
+    COPY_UD(node->ud, ud);
     node->expires = (uint32_t)(timer_cur(&ctx->timer) / TIMER_ACCURACY) + timeout;
     node->tw_cb = tw_cb;
     node->next = NULL;
@@ -95,7 +95,7 @@ static void _run(tw_ctx *ctx) {
     tw_node_ctx *pnext, *pnode = ctx->tv1[ulidx].head;
     while (NULL != pnode) {
         pnext = pnode->next;
-        pnode->tw_cb(pnode->ud);
+        pnode->tw_cb(&pnode->ud);
         FREE(pnode);
         pnode = pnext;
     }
