@@ -2,6 +2,7 @@
 SHA-1 in C
 By Steve Reid <steve@edmweb.com>
 100% Public Domain
+
 Test Vectors (from FIPS PUB 180-1)
 "abc"
   A9993E36 4706816A BA3E2571 7850C26C 9CD0D89D
@@ -19,7 +20,11 @@ A million repetitions of "a"
 #include <stdio.h>
 #include <string.h>
 
+/* for uint32_t */
+#include <stdint.h>
+
 #include "sha1.h"
+
 
 #define rol(value, bits) (((value) << (bits)) | ((value) >> (32 - (bits))))
 
@@ -42,6 +47,7 @@ A million repetitions of "a"
 #define R2(v,w,x,y,z,i) z+=(w^x^y)+blk(i)+0x6ED9EBA1+rol(v,5);w=rol(w,30);
 #define R3(v,w,x,y,z,i) z+=(((w|x)&y)|(w&x))+blk(i)+0x8F1BBCDC+rol(v,5);w=rol(w,30);
 #define R4(v,w,x,y,z,i) z+=(w^x^y)+blk(i)+0xCA62C1D6+rol(v,5);w=rol(w,30);
+
 
 /* Hash a single 512-bit block. This is the core of the algorithm. */
 
@@ -171,7 +177,7 @@ void SHA1Transform(
 }
 
 
-/* HV_SHA1Init - Initialize new context */
+/* SHA1Init - Initialize new context */
 
 void SHA1Init(
     SHA1_CTX * context
@@ -262,7 +268,7 @@ void SHA1Final(
         c = 0000;
         SHA1Update(context, &c, 1);
     }
-    SHA1Update(context, finalcount, 8); /* Should cause a HV_SHA1Transform() */
+    SHA1Update(context, finalcount, 8); /* Should cause a SHA1Transform() */
     for (i = 0; i < 20; i++)
     {
         digest[i] = (unsigned char)

@@ -56,7 +56,7 @@ static inline void _push_message(task_ctx *task, message_ctx *msg) {
     if (0 == task->global) {
         task->global = 1;
         mutex_lock(&task->srey->muworker);
-        qu_void_push(&task->srey->quglobal, &task);
+        qu_void_push(&task->srey->quglobal, (void **)&task);
         if (task->srey->waiting > 0) {
             cond_signal(&task->srey->condworker);
         }
@@ -70,6 +70,8 @@ static inline void _message_clean(message_ctx *msg) {
     case MSG_TYPE_RECVFROM:
     case MSG_TYPE_USER:
         FREE(msg->data);
+        break;
+    default:
         break;
     }
 }
@@ -131,7 +133,7 @@ task_ctx *srey_taskqury(srey_ctx *ctx, int32_t name) {
     key.name = name;
     task_ctx *pkey = &key;
     rwlock_rdlock(&ctx->lckmaptask);
-    void **tmp = hashmap_get(ctx->maptask, &pkey);
+    void **tmp = (void **)hashmap_get(ctx->maptask, &pkey);
     task_ctx *task = (NULL == tmp ? NULL : *tmp);
     rwlock_unlock(&ctx->lckmaptask);
     return task;
@@ -340,7 +342,7 @@ static void _loop_worker(void *arg) {
             task->global = 0;
         } else {
             mutex_lock(&ctx->muworker);
-            qu_void_push(&ctx->quglobal, &task);
+            qu_void_push(&ctx->quglobal, (void **)&task);
             mutex_unlock(&ctx->muworker);
         }
         mutex_unlock(&task->mutask);

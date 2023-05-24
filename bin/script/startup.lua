@@ -32,21 +32,11 @@ print("task name:" .. srey.name(task))
 print("session:" .. srey.session(task))
 print("program path:" .. srey.path())
 
---[[local rtn
-local loop = 100000
-local tm1 = srey.ms()
-for i = 0, loop do
-    rtn = json.encode(ab) --string
-    rtn = json.decode(rtn)
-end
-print("json:" .. (srey.ms() - tm1))
+local rtn
+rtn = json.encode(ab) --string
+print(rtn)
+rtn = json.decode(rtn)
 
-tm1 = srey.ms()
-for i = 0, loop do
-    rtn = msgpack.pack(ab) --string
-    rtn = msgpack.unpack(rtn)
-end
-print("msgpack:" .. (srey.ms() - tm1))
+rtn = msgpack.pack(ab) --string
+rtn = msgpack.unpack(rtn)
 
-srey.newtask("test2.lua", "test2", 3)
-srey.newtask("test1.lua", "test1", 3)--]]

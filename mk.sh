@@ -11,11 +11,12 @@ UsAge="UsAge:\"./mk.sh\" or \"./mk.sh x86/x64\" \"./mk.sh clean\""
 #生成程序的名称
 PROGRAMNAME="srey"
 #文件夹
-Dir="lib lib/event lib/md5 lib/sha1 test"
+Dir="lib lib/event lib/md5 lib/proto lib/service lib/sha1"
+Dir=$Dir" srey srey/argparse srey/lua srey/luacjson srey/msgpack"
 #SSL库
 SSLLIB="-lssl -lcrypto"
 #main函数所在文件夹
-MAINDIR="test"
+MAINDIR="srey"
 #main函数所在文件
 MAINFILE="main.c"
 #附加包含库

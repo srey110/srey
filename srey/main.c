@@ -1,6 +1,8 @@
 #include "ltask.h"
+#include "argparse.h"
 
 #ifdef OS_WIN
+    #include "vld.h"
     #pragma comment(lib, "ws2_32.lib")
     #pragma comment(lib, "lib.lib")
     #if WITH_SSL
@@ -16,12 +18,29 @@
 
 mutex_ctx muexit;
 cond_ctx condexit;
-
 static void on_sigcb(int32_t sig, void *arg) {
     PRINT("catch sign: %d", sig);
     cond_signal(&condexit);
 }
 int main(int argc, char *argv[]) {
+    uint32_t nnet = 1;
+    uint32_t nworker = 2;
+    static const char *const usages[] = {
+        "[options] [args]",
+        NULL,
+    };
+    struct argparse_option options[] = {
+        OPT_HELP(),
+        OPT_GROUP("options"),
+        OPT_INTEGER('n', "int", &nnet, "set networker thread number", NULL, 0, 0),
+        OPT_INTEGER('w', "int", &nworker, "set worker thread number", NULL, 0, 0),
+        OPT_END(),
+    };
+    struct argparse argp;
+    argparse_init(&argp, options, usages, 0);
+    argparse_describe(&argp, "\nA brief description of what the program does and how it works.", "\nAdditional description of the program after the description of the arguments.");
+    argparse_parse(&argp, argc, argv);
+
     MEMCHECK();
     unlimit();
     srand((unsigned int)time(NULL));
@@ -30,7 +49,7 @@ int main(int argc, char *argv[]) {
     sighandle(on_sigcb, NULL);
     LOGINIT();
 
-    srey_ctx *srey = srey_init(2, 2);
+    srey_ctx *srey = srey_init(nnet, nworker);
     if (ERR_OK == ltask_startup(srey)) {
         mutex_lock(&muexit);
         cond_wait(&condexit, &muexit);

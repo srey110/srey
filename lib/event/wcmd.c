@@ -15,7 +15,7 @@ static inline sock_ctx *_map_get(watcher_ctx *watcher, SOCKET fd) {
     sock_ctx key;
     key.fd = fd;
     sock_ctx *pkey = &key;
-    void **tmp = hashmap_get(watcher->element, &pkey);
+    void **tmp = (void **)hashmap_get(watcher->element, &pkey);
     return NULL == tmp ? NULL : *tmp;
 }
 void _send_cmd(watcher_ctx *watcher, uint32_t index, cmd_ctx *cmd) {

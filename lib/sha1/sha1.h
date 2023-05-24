@@ -1,5 +1,5 @@
-#ifndef SHA1_H_
-#define SHA1_H_
+#ifndef SHA1_H
+#define SHA1_H
 
 /*
    SHA-1 in C
@@ -7,19 +7,18 @@
    100% Public Domain
  */
 
-/* for uint32_t */
-#include <stdint.h>
+#include "stdint.h"
 
-typedef struct {
+#if defined(__cplusplus)
+extern "C" {
+#endif
+
+typedef struct
+{
     uint32_t state[5];
     uint32_t count[2];
     unsigned char buffer[64];
 } SHA1_CTX;
-
-#if defined(__cplusplus)||defined(c_plusplus)
-extern "C"
-{
-#endif
 
 void SHA1Transform(
     uint32_t state[5],
@@ -41,8 +40,8 @@ void SHA1Final(
     SHA1_CTX * context
     );
 
-#if defined(__cplusplus)||defined(c_plusplus)
-}  /* end extern "C" */
+#if defined(__cplusplus)
+}
 #endif
 
-#endif // SHA1_H_
+#endif /* SHA1_H */

@@ -54,13 +54,18 @@
 #pragma warning(disable:4244)
 #pragma warning(disable:4267)
 #endif
-
 #ifndef CJSON_MODNAME
 #define CJSON_MODNAME   "cjson"
 #endif
 
 #ifndef CJSON_VERSION
-#define CJSON_VERSION   "2.1.0"
+#define CJSON_VERSION   "2.1devel"
+#endif
+
+#ifdef _MSC_VER
+#define CJSON_EXPORT    __declspec(dllexport)
+#else
+#define CJSON_EXPORT    extern
 #endif
 
 /* Workaround for Solaris platforms missing isinf() */
@@ -202,7 +207,7 @@ static json_config_t *json_fetch_config(lua_State *l)
 {
     json_config_t *cfg;
 
-    cfg = lua_touserdata(l, lua_upvalueindex(1));
+    cfg = (json_config_t *)lua_touserdata(l, lua_upvalueindex(1));
     if (!cfg)
         luaL_error(l, "BUG: Unable to fetch CJSON configuration");
 
@@ -369,7 +374,7 @@ static int json_destroy_config(lua_State *l)
 {
     json_config_t *cfg;
 
-    cfg = lua_touserdata(l, 1);
+    cfg = (json_config_t *)lua_touserdata(l, 1);
     if (cfg)
         strbuf_free(&cfg->encode_buf);
     cfg = NULL;
@@ -382,7 +387,7 @@ static void json_create_config(lua_State *l)
     json_config_t *cfg;
     int i;
 
-    cfg = lua_newuserdata(l, sizeof(*cfg));
+    cfg = (json_config_t *)lua_newuserdata(l, sizeof(*cfg));
 
     /* Create GC method to clean up strbuf */
     lua_newtable(l);
@@ -470,9 +475,9 @@ static void json_encode_exception(lua_State *l, json_config_t *cfg, strbuf_t *js
 static void json_append_string(lua_State *l, strbuf_t *json, int lindex)
 {
     const char *escstr;
-    int i;
     const char *str;
     size_t len;
+    size_t i;
 
     str = lua_tolstring(l, lindex, &len);
 
@@ -601,12 +606,20 @@ static void json_append_number(lua_State *l, json_config_t *cfg,
     if (cfg->encode_invalid_numbers == 0) {
         /* Prevent encoding invalid numbers */
         if (isinf(num) || isnan(num))
-            json_encode_exception(l, cfg, json, lindex, "must not be NaN or Inf");
+            json_encode_exception(l, cfg, json, lindex,
+                                  "must not be NaN or Infinity");
     } else if (cfg->encode_invalid_numbers == 1) {
-        /* Encode invalid numbers, but handle "nan" separately
-         * since some platforms may encode as "-nan". */
+        /* Encode NaN/Infinity separately to ensure Javascript compatible
+         * values are used. */
         if (isnan(num)) {
-            strbuf_append_mem(json, "nan", 3);
+            strbuf_append_mem(json, "NaN", 3);
+            return;
+        }
+        if (isinf(num)) {
+            if (num < 0)
+                strbuf_append_mem(json, "-Infinity", 9);
+            else
+                strbuf_append_mem(json, "Infinity", 8);
             return;
         }
     } else {
@@ -1262,16 +1275,11 @@ static int json_decode(lua_State *l)
     json_parse_t json;
     json_token_t token;
     size_t json_len;
-    if (LUA_TSTRING == lua_type(l, 1))
-    {
-        json.data = lua_tolstring(l, 1, &json_len);
-    }
-    else
-    {
-        json.data = lua_touserdata(l, 1);
-        json_len = (size_t)luaL_checkinteger(l, 2);
-    }
-    json.cfg = json_fetch_config(l);    
+
+    luaL_argcheck(l, lua_gettop(l) == 1, 1, "expected 1 argument");
+
+    json.cfg = json_fetch_config(l);
+    json.data = luaL_checklstring(l, 1, &json_len);
     json.current_depth = 0;
     json.ptr = json.data;
 
@@ -1413,7 +1421,7 @@ static int lua_cjson_safe_new(lua_State *l)
     return 1;
 }
 
-int luaopen_cjson(lua_State *l)
+CJSON_EXPORT int luaopen_cjson(lua_State *l)
 {
     lua_cjson_new(l);
 
@@ -1427,7 +1435,7 @@ int luaopen_cjson(lua_State *l)
     return 1;
 }
 
-int luaopen_cjson_safe(lua_State *l)
+CJSON_EXPORT int luaopen_cjson_safe(lua_State *l)
 {
     lua_cjson_safe_new(l);
 
