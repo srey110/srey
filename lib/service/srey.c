@@ -7,18 +7,22 @@
 #include "hashmap.h"
 
 QUEUE_DECL(message_ctx, qu_message);
+#if WITH_SSL
 typedef struct certs_ctx {
     struct evssl_ctx *ssl;
     char name[64];
 }certs_ctx;
 ARRAY_DECL(certs_ctx, arr_certs);
+#endif
 struct srey_ctx {
     int32_t stop;
     int32_t waiting;
     uint32_t nworker;
     pthread_t *thworker;
+#if WITH_SSL
     arr_certs arrcert;
     rwlock_ctx lckarrcert;
+#endif
     struct hashmap *maptask;
     rwlock_ctx lckmaptask;
     mutex_ctx muworker;
@@ -132,6 +136,7 @@ task_ctx *srey_taskqury(srey_ctx *ctx, int32_t name) {
     rwlock_unlock(&ctx->lckmaptask);
     return task;
 }
+#if WITH_SSL
 static inline certs_ctx *_certs_get(srey_ctx *ctx, const char *name) {
     certs_ctx *cert;
     for (size_t i = 0; i < arr_certs_size(&ctx->arrcert); i++) {
@@ -162,6 +167,7 @@ struct evssl_ctx *certs_qury(srey_ctx *ctx, const char *name) {
     rwlock_unlock(&ctx->lckarrcert);
     return NULL == cert ? NULL : cert->ssl;
 }
+#endif
 srey_ctx *task_srey(task_ctx *task) {
     return task->srey;
 }
@@ -353,8 +359,10 @@ srey_ctx *srey_init(uint32_t nnet, uint32_t nworker) {
     ctx->maptask = hashmap_new_with_allocator(_malloc, _realloc, _free,
                                               sizeof(task_ctx *), ONEK, 0, 0,
                                               _maptask_hash, _maptask_compare, _free_task, NULL);
+#if WITH_SSL
     rwlock_init(&ctx->lckarrcert);
     arr_certs_init(&ctx->arrcert, 16);
+#endif
     for (uint32_t i = 0; i < ctx->nworker; i++) {
         ctx->thworker[i] = thread_creat(_loop_worker, ctx);
     }
@@ -377,15 +385,15 @@ void srey_free(srey_ctx *ctx) {
     }
     hashmap_free(ctx->maptask);
     rwlock_free(&ctx->lckmaptask);
+#if WITH_SSL
     certs_ctx *cert;
     for (size_t i = 0; i < arr_certs_size(&ctx->arrcert); i++) {
         cert = arr_certs_at(&ctx->arrcert, i);
-#if WITH_SSL
         evssl_free(cert->ssl);
-#endif
     }
     arr_certs_free(&ctx->arrcert);
     rwlock_free(&ctx->lckarrcert);
+#endif
     mutex_free(&ctx->muworker);
     cond_free(&ctx->condworker);
     qu_void_free(&ctx->quglobal);

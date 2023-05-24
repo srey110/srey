@@ -40,8 +40,10 @@ task_ctx *srey_tasknew(srey_ctx *ctx, int32_t name, uint32_t maxcnt,
     task_new _init, task_run _run, task_free _tfree, void *arg);
 task_ctx *srey_taskqury(srey_ctx *ctx, int32_t name);
 
+#if WITH_SSL
 void certs_register(srey_ctx *ctx, const char *name, struct evssl_ctx *evssl);
 struct evssl_ctx *certs_qury(srey_ctx *ctx, const char *name);
+#endif
 
 srey_ctx *task_srey(task_ctx *task);
 ev_ctx *task_netev(task_ctx *task);
