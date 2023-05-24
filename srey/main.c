@@ -2,7 +2,6 @@
 #include "argparse.h"
 
 #ifdef OS_WIN
-    #include "vld.h"
     #pragma comment(lib, "ws2_32.lib")
     #pragma comment(lib, "lib.lib")
     #if WITH_SSL
@@ -32,8 +31,8 @@ int main(int argc, char *argv[]) {
     struct argparse_option options[] = {
         OPT_HELP(),
         OPT_GROUP("options"),
-        OPT_INTEGER('n', "int", &nnet, "set networker thread number", NULL, 0, 0),
-        OPT_INTEGER('w', "int", &nworker, "set worker thread number", NULL, 0, 0),
+        OPT_INTEGER('n', "int", &nnet, "set networker thread number, default 1", NULL, 0, 0),
+        OPT_INTEGER('w', "int", &nworker, "set worker thread number, default 2", NULL, 0, 0),
         OPT_END(),
     };
     struct argparse argp;
@@ -57,8 +56,8 @@ int main(int argc, char *argv[]) {
     }
 
     srey_free(srey);
-    LOGFREE();
     mutex_free(&muexit);
     cond_free(&condexit);
+    LOGFREE();
     return 0;
 }

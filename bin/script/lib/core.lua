@@ -1,3 +1,4 @@
+require("lib.define");
 local srey = require("srey.core")
 local _curtask = _curtask
 local _propath = _propath
@@ -12,7 +13,7 @@ end
 参数：
     file lua文件名
 	name 任务名 数字
-	maxcnt 每次最多执行任务数
+	maxcnt 每次最多执行任务数 nil 3
 返回:
 	任务对象
 --]]
@@ -61,12 +62,12 @@ end
 	ca ca文件
 	cert cert文件
 	key key文件
-	keytype  SSL_FILETYPE_PEM 1 SSL_FILETYPE_ASN1 2
+	ftype  SSL_FILETYPE
 返回:
 	evssl_ctx
 --]]
-function core.sslevnew(name, ca, cert, key, keytype)
-	return srey.sslevnew(name, ca, cert, key, nil == keytype and 1 or keytype)
+function core.sslevnew(name, ca, cert, key, ftype)
+	return srey.sslevnew(name, ca, cert, key, nil == ftype and SSL_FILETYPE.PEM or ftype)
 end
 --[[
 描述:evssl_ctx

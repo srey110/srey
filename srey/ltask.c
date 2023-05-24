@@ -109,14 +109,17 @@ static inline void _ltask_run(task_ctx *task, message_ctx *msg) {
 static int32_t _ltask_register(lua_State *lua) {
     const char *file = lua_tostring(lua, 1);
     int32_t name = (int32_t)lua_tointeger(lua, 2);
-    uint32_t maxcnt = (uint32_t)lua_tointeger(lua, 3);
+    uint32_t maxcnt = 3;
+    if (LUA_TNIL != lua_type(lua, 3)) {
+        maxcnt = (uint32_t)lua_tointeger(lua, 3);
+    }
     maxcnt = (0 == maxcnt ? 1 : maxcnt);
     ltask_ctx *ltask;
     MALLOC(ltask, sizeof(ltask_ctx));
     ZERO(ltask, sizeof(ltask_ctx));
     strcpy(ltask->file, file);
-    lua_pushlightuserdata(lua,
-        srey_tasknew(srey, name, maxcnt, _ltask_new, _ltask_run, _ltask_free, ltask));
+    lua_pushlightuserdata(lua, srey_tasknew(srey, name, maxcnt, 
+        _ltask_new, _ltask_run, _ltask_free, ltask));
     return 1;
 }
 static int32_t _ltask_qury(lua_State *lua) {

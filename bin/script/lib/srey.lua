@@ -47,7 +47,7 @@ function _dispatch_message(msgtype, err, fd, src, data, size, session, addr)
             _onclosing()
         end
     elseif MSGTYPE.RECV == msgtype then
-		core.send(fd, data, size, 1)
+		core.send(fd, data, size, PACK_TYPE.SIMPLE)
 	elseif MSGTYPE.RECVFROM == msgtype then
 		local ip,port = core.ipport(addr)
 		core.sendto(fd, ip, port, data, size)
