@@ -1,6 +1,7 @@
 local type = type
 --任务名
 TASK_NAME = {
+    HARBOR = 0,
     TAKS1 = 1,
     TAKS2 = 2,
     TAKS3 = 3
