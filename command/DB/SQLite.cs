@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using System.Data.SQLite;
 using System.Windows.Forms;
 using System.Data.Common;
+//https://system.data.sqlite.org/index.html/doc/trunk/www/downloads.wiki
 
 namespace command.DB
 {

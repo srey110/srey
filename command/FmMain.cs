@@ -34,6 +34,7 @@ namespace command
         private void FmMain_FormClosed(object sender, FormClosedEventArgs e)
         {
             m_Config.Save();
+            DBConn.m_SQLiteConn.Close();
         }
         private void bt_HarborLink_Click(object sender, EventArgs e)
         {
