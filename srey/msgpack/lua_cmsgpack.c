@@ -801,8 +801,12 @@ int mp_unpack_full(lua_State *L, int limit, int offset) {
     mp_cur c;
     int cnt; /* Number of objects unpacked */
     int decode_all = (!limit && !offset);
-
-    s = luaL_checklstring(L,1,&len); /* if no match, exits */
+    if (LUA_TSTRING == lua_type(L, 1)) {
+        s = luaL_checklstring(L, 1, &len); /* if no match, exits */
+    } else {
+        s = lua_touserdata(L, 1);
+        len = (size_t)luaL_checkinteger(L, 2);
+    }
 
     if (offset < 0 || limit < 0) /* requesting negative off or lim is invalid */
         return luaL_error(L,

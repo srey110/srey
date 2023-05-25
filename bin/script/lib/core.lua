@@ -2,9 +2,14 @@ require("lib.define");
 local srey = require("srey.core")
 local curtask = _curtask
 local propath = _propath
-
 local core = {}
---程序所在路径
+
+--[[
+描述:程序所在路径
+参数：
+返回:
+    路径
+--]]
 function core.path()
     return propath
 end
@@ -51,12 +56,18 @@ end
 function core.session(task)
     return srey.session(nil == task and curtask or task)
 end
---ip port
+--[[
+描述:返回netaddr_ctx保存的ip port 
+参数：
+    addr netaddr_ctx对象
+返回:
+    ip port
+--]]
 function core.ipport(addr)
     return srey.ipport(addr)
 end
 --[[
-描述:evssl_ctx
+描述:创建evssl_ctx
 参数：
     name 名称
     ca ca文件
@@ -70,7 +81,7 @@ function core.sslevnew(name, ca, cert, key, ftype)
     return srey.sslevnew(name, ca, cert, key, nil == ftype and SSL_FILETYPE.PEM or ftype)
 end
 --[[
-描述:evssl_ctx
+描述:创建evssl_ctx
 参数：
     name 名称
     p12 p12文件
@@ -91,9 +102,12 @@ end
 function core.sslevqury(name)
     return srey.sslevqury(name)
 end
-
---以下在任务中使用
---本任务
+--[[
+描述:本任务 task_ctx
+参数：
+返回:
+    task_ctx
+--]]
 function core.self()
     return curtask
 end

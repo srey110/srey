@@ -1,10 +1,14 @@
 local srey = require("lib.srey")
-
 local function ontimeout()
-    print(os.date("%H-%M-%S", os.time()) .. " task:".. srey.name() .. " ontimeout....")
+    local rpctask = srey.qury(TASK_NAME.TAKS2)
+    local rpcdes = srey.describe(rpctask)
+    srey.call(rpctask, "rpc_add", math.random(10) , math.random(10), math.random(10))
+    local sum = srey.request(rpctask, "rpc_add", math.random(10) , math.random(10), math.random(10))
+    print(os.date("%H-%M-%S", os.time()) .. " request rpc_add rtn:" .. tostring(sum))
     srey.timeout(3000, ontimeout)
 end
 local function onstarted()
+    math.randomseed(os.time())
     print(srey.name() .. " onstarted....")
     srey.listen("0.0.0.0", 15000, nil, 1, UNPACK_TYPE.SIMPLE)
     srey.timeout(3000, ontimeout)

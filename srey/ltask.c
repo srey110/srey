@@ -63,10 +63,10 @@ int32_t ltask_startup(srey_ctx *ctx) {
 }
 
 static int32_t _ltask_log(lua_State *lua) {
-    LOG_LEVEL lv = (LOG_LEVEL)lua_tointeger(lua, 1);
-    const char *file = lua_tostring(lua, 2);
-    int32_t line = (int32_t)lua_tointeger(lua, 3);
-    const char *log = lua_tostring(lua, 4);
+    LOG_LEVEL lv = (LOG_LEVEL)luaL_checkinteger(lua, 1);
+    const char *file = luaL_checkstring(lua, 2);
+    int32_t line = (int32_t)luaL_checkinteger(lua, 3);
+    const char *log = luaL_checkstring(lua, 4);
     loger_log(&g_logerctx, lv, "[%s][%s %d]%s", _getlvstr(lv), __FILENAME__(file), line, log);
     return 0;
 }
@@ -75,7 +75,7 @@ static inline void *_ltask_new(task_ctx *task, void *arg) {
     ltask->lua = _ltask_luainit(task);
     ASSERTAB(NULL != ltask->lua, "init lua error.");
     ASSERTAB(ERR_OK == _ltask_dofile(ltask->lua, ltask->file), "lua dofile error.");
-    lua_getglobal(ltask->lua, "_dispatch_message");
+    lua_getglobal(ltask->lua, "dispatch_message");
     ASSERTAB(LUA_TFUNCTION == lua_type(ltask->lua, 1), "not have function _dispatch_message.");
     ltask->ref = luaL_ref(ltask->lua, LUA_REGISTRYINDEX);
     return ltask;
@@ -98,8 +98,16 @@ static inline void _ltask_run(task_ctx *task, message_ctx *msg) {
     lua_pushinteger(ltask->lua, msg->ptype);
     lua_pushinteger(ltask->lua, msg->error);
     lua_pushinteger(ltask->lua, msg->fd);
-    lua_pushlightuserdata(ltask->lua, msg->src);
-    lua_pushlightuserdata(ltask->lua, msg->data);
+    if (NULL == msg->src) {
+        lua_pushnil(ltask->lua);
+    } else {
+        lua_pushlightuserdata(ltask->lua, msg->src);
+    }
+    if (NULL == msg->data) {
+        lua_pushnil(ltask->lua);
+    } else {
+        lua_pushlightuserdata(ltask->lua, msg->data);
+    }
     lua_pushinteger(ltask->lua, msg->size);
     lua_pushinteger(ltask->lua, msg->session);
     lua_pushlightuserdata(ltask->lua, &msg->addr);
@@ -108,11 +116,11 @@ static inline void _ltask_run(task_ctx *task, message_ctx *msg) {
     }
 }
 static int32_t _ltask_register(lua_State *lua) {
-    const char *file = lua_tostring(lua, 1);
-    int32_t name = (int32_t)lua_tointeger(lua, 2);
+    const char *file = luaL_checkstring(lua, 1);
+    int32_t name = (int32_t)luaL_checkinteger(lua, 2);
     uint32_t maxcnt = 3;
     if (LUA_TNIL != lua_type(lua, 3)) {
-        maxcnt = (uint32_t)lua_tointeger(lua, 3);
+        maxcnt = (uint32_t)luaL_checkinteger(lua, 3);
     }
     maxcnt = (0 == maxcnt ? 1 : maxcnt);
     ltask_ctx *ltask;
@@ -124,7 +132,7 @@ static int32_t _ltask_register(lua_State *lua) {
     return 1;
 }
 static int32_t _ltask_qury(lua_State *lua) {
-    int32_t name = (int32_t)lua_tointeger(lua, 1);
+    int32_t name = (int32_t)luaL_checkinteger(lua, 1);
     task_ctx *task = srey_taskqury(srey, name);
     NULL == task ? lua_pushnil(lua) : lua_pushlightuserdata(lua, task);
     return 1;
@@ -142,26 +150,26 @@ static int32_t _ltask_session(lua_State *lua) {
 static int32_t _ltask_user(lua_State *lua) {
     task_ctx *dst = lua_touserdata(lua, 1);
     task_ctx *src = lua_touserdata(lua, 2);
-    uint64_t session = (uint64_t)lua_tointeger(lua, 3);
+    uint64_t session = (uint64_t)luaL_checkinteger(lua, 3);
     size_t size = 0;
-    void *data = (void *)lua_tolstring(lua, 4, &size);
+    void *data = (void *)luaL_checklstring(lua, 4, &size);
     task_user(dst, src, session, data, size, 1);
     return 0;
 }
 static int32_t _ltask_timeout(lua_State *lua) {
     task_ctx *task = lua_touserdata(lua, 1);
-    uint64_t session = (uint64_t)lua_tointeger(lua, 2);
-    uint32_t time = (uint32_t)lua_tointeger(lua, 3);
+    uint64_t session = (uint64_t)luaL_checkinteger(lua, 2);
+    uint32_t time = (uint32_t)luaL_checkinteger(lua, 3);
     task_timeout(task, session, time);
     return 0;
 }
 #if WITH_SSL
 static int32_t _ltask_sslevnew(lua_State *lua) {
-    const char *name = lua_tostring(lua, 1);
-    const char *ca = lua_tostring(lua, 2);
-    const char *cert = lua_tostring(lua, 3);
-    const char *key = lua_tostring(lua, 4);
-    int32_t keytype = (int32_t)lua_tointeger(lua, 5);
+    const char *name = luaL_checkstring(lua, 1);
+    const char *ca = luaL_checkstring(lua, 2);
+    const char *cert = luaL_checkstring(lua, 3);
+    const char *key = luaL_checkstring(lua, 4);
+    int32_t keytype = (int32_t)luaL_checkinteger(lua, 5);
     char capath[PATH_LENS] = { 0 };
     char certpath[PATH_LENS] = { 0 };
     char keypath[PATH_LENS] = { 0 };
@@ -183,9 +191,9 @@ static int32_t _ltask_sslevnew(lua_State *lua) {
     return 1;
 }
 static int32_t _ltask_sslevp12new(lua_State *lua) {
-    const char *name = lua_tostring(lua, 1);
-    const char *p12 = lua_tostring(lua, 2);
-    const char *pwd = lua_tostring(lua, 3);
+    const char *name = luaL_checkstring(lua, 1);
+    const char *p12 = luaL_checkstring(lua, 2);
+    const char *pwd = luaL_checkstring(lua, 3);
     char p12path[PATH_LENS] = { 0 };
     SNPRINTF(p12path, sizeof(p12path) - 1, "%s%s%s%s%s", 
         propath, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, p12);
@@ -195,7 +203,7 @@ static int32_t _ltask_sslevp12new(lua_State *lua) {
     return 1;
 }
 static int32_t _ltask_sslevqury(lua_State *lua) {
-    const char *name = lua_tostring(lua, 1);
+    const char *name = luaL_checkstring(lua, 1);
     struct evssl_ctx *ssl = certs_qury(srey, name);
     if (NULL == ssl) {
         lua_pushnil(lua);
@@ -208,14 +216,14 @@ static int32_t _ltask_sslevqury(lua_State *lua) {
 #endif
 static int32_t _ltask_listen(lua_State *lua) {
     task_ctx *task = lua_touserdata(lua, 1);
-    int32_t ptype = (int32_t)lua_tointeger(lua, 2);
+    int32_t ptype = (int32_t)luaL_checkinteger(lua, 2);
     struct evssl_ctx *evssl = NULL;
     if (LUA_TNIL != lua_type(lua, 3)) {
         evssl = lua_touserdata(lua, 3);
     }
-    const char *host = lua_tostring(lua, 4);
-    uint16_t port = (uint16_t)lua_tointeger(lua, 5);
-    int32_t sendev = (int32_t)lua_tointeger(lua, 6);
+    const char *host = luaL_checkstring(lua, 4);
+    uint16_t port = (uint16_t)luaL_checkinteger(lua, 5);
+    int32_t sendev = (int32_t)luaL_checkinteger(lua, 6);
     if (ERR_OK == task_netlisten(task, ptype, evssl, host, port, sendev)) {
         lua_pushboolean(lua, 1);
     } else {
@@ -225,12 +233,12 @@ static int32_t _ltask_listen(lua_State *lua) {
 }
 static int32_t _ltask_connect(lua_State *lua) {
     task_ctx *task = lua_touserdata(lua, 1);
-    int32_t ptype = (int32_t)lua_tointeger(lua, 2);
-    uint64_t session = (uint64_t)lua_tointeger(lua, 3);
+    int32_t ptype = (int32_t)luaL_checkinteger(lua, 2);
+    uint64_t session = (uint64_t)luaL_checkinteger(lua, 3);
     struct evssl_ctx *evssl = lua_touserdata(lua, 4);
-    const char *host = lua_tostring(lua, 5);
-    uint16_t port = (uint16_t)lua_tointeger(lua, 6);
-    int32_t sendev = (int32_t)lua_tointeger(lua, 7);
+    const char *host = luaL_checkstring(lua, 5);
+    uint16_t port = (uint16_t)luaL_checkinteger(lua, 6);
+    int32_t sendev = (int32_t)luaL_checkinteger(lua, 7);
     SOCKET fd = task_netconnect(task, ptype, session, evssl, host, port, sendev);
     if (INVALID_SOCK != fd) {
         lua_pushinteger(lua, fd);
@@ -241,9 +249,9 @@ static int32_t _ltask_connect(lua_State *lua) {
 }
 static int32_t _ltask_udp(lua_State *lua) {
     task_ctx *task = lua_touserdata(lua, 1);
-    int32_t ptype = (int32_t)lua_tointeger(lua, 2);
-    const char *host = lua_tostring(lua, 3);
-    uint16_t port = (uint16_t)lua_tointeger(lua, 4);
+    int32_t ptype = (int32_t)luaL_checkinteger(lua, 2);
+    const char *host = luaL_checkstring(lua, 3);
+    uint16_t port = (uint16_t)luaL_checkinteger(lua, 4);
     SOCKET fd = task_netudp(task, ptype, host, port);
     if (INVALID_SOCK != fd) {
         lua_pushinteger(lua, fd);
@@ -254,38 +262,38 @@ static int32_t _ltask_udp(lua_State *lua) {
 }
 static int32_t _ltask_send(lua_State *lua) {
     task_ctx *task = lua_touserdata(lua, 1);
-    SOCKET fd = (SOCKET)lua_tointeger(lua, 2);
+    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 2);
     size_t size;
     void *data;
     if (LUA_TSTRING == lua_type(lua, 3)) {
-        data = (void *)lua_tolstring(lua, 3, &size);
+        data = (void *)luaL_checklstring(lua, 3, &size);
     } else {
         data = lua_touserdata(lua, 3);
-        size = (size_t)lua_tointeger(lua, 4);
+        size = (size_t)luaL_checkinteger(lua, 4);
     }
-    pack_type ptype = (pack_type)lua_tointeger(lua, 5);
+    pack_type ptype = (pack_type)luaL_checkinteger(lua, 5);
     task_netsend(task, fd, data, size, ptype);
     return 0;
 }
 static int32_t _ltask_sendto(lua_State *lua) {
     task_ctx *task = lua_touserdata(lua, 1);
-    SOCKET fd = (SOCKET)lua_tointeger(lua, 2);
-    const char *host = lua_tostring(lua, 3);
-    uint16_t port = (uint16_t)lua_tointeger(lua, 4);
+    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 2);
+    const char *host = luaL_checkstring(lua, 3);
+    uint16_t port = (uint16_t)luaL_checkinteger(lua, 4);
     size_t size = 0;
     void *data;
     if (LUA_TSTRING == lua_type(lua, 5)) {
-        data = (void *)lua_tolstring(lua, 5, &size);
+        data = (void *)luaL_checklstring(lua, 5, &size);
     } else {
         data = lua_touserdata(lua, 5);
-        size = (size_t)lua_tointeger(lua, 6);
+        size = (size_t)luaL_checkinteger(lua, 6);
     }
     ev_sendto(task_netev(task), fd, host, port, data, size);
     return 0;
 }
 static int32_t _ltask_close(lua_State *lua) {
     task_ctx *task = lua_touserdata(lua, 1);
-    SOCKET fd = (SOCKET)lua_tointeger(lua, 2);
+    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 2);
     ev_close(task_netev(task), fd);
     return 0;
 }

@@ -5,12 +5,17 @@ TASK_NAME = {
     TAKS2 = 2,
     TAKS3 = 3
 }
+--user消息
+USERMSG_TYPE = {
+    RPC_REQUEST = 1,
+    RPC_RESPONSE = 2,
+}
 --ssl文件类型
 SSL_FILETYPE = {
     PEM = 1,
     ASN1 = 2
 }
---解包类型
+--解包类型 标识该socket类型
 UNPACK_TYPE = {
     NONE = 0,
     SIMPLE = 1,
@@ -26,4 +31,3 @@ end
 
 ERR_OK = 0
 INVALID_SOCK = -1
-
