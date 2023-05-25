@@ -263,10 +263,7 @@ static int32_t _ltask_send(lua_State *lua) {
         data = lua_touserdata(lua, 3);
         size = (size_t)lua_tointeger(lua, 4);
     }
-    pack_type ptype = PACK_NONE;
-    if (LUA_TNIL != lua_type(lua, 5)) {
-        ptype = (pack_type)lua_tointeger(lua, 5);
-    }
+    pack_type ptype = (pack_type)lua_tointeger(lua, 5);
     task_netsend(task, fd, data, size, ptype);
     return 0;
 }

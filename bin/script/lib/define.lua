@@ -1,3 +1,4 @@
+local type = type
 --任务名
 TASK_NAME = {
 	TAKS1 = 1,
@@ -19,6 +20,9 @@ PACK_TYPE = {
 	NONE = 0,
 	SIMPLE = 1,
 }
+function checkunptype(unptype)
+	return nil == unptype and UNPACK_TYPE.NONE or unptype
+end
 
 ERR_OK = 0
 INVALID_SOCK = -1

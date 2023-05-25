@@ -18,7 +18,7 @@ end
 	任务对象
 --]]
 function core.register(file, name, maxcnt)
-    return srey.register(file, name, maxcnt)
+    return srey.register(file, name, nil == maxcnt and 3 or maxcnt)
 end
 --[[
 描述:任务查询
@@ -98,30 +98,30 @@ function core.self()
     return curtask
 end
 --[[
-描述:监听
+描述:listen
 参数：
-	ptype UNPACK_TYPE
 	ip    监听ip
 	port  端口
 	ssl   evssl_ctx nil 不启用ssl
-	sendev sended 消息
+	sendev sended 0 不触发 1 触发
+	unptype UNPACK_TYPE
 返回:
 	bool
 --]]
-function core.listen(ptype, ip, port, ssl, sendev)
-	return srey.listen(curtask, ptype, ssl, ip, port, nil == sendev and 0 or sendev)
+function core.listen(ip, port, ssl, sendev, unptype)
+	return srey.listen(curtask, checkunptype(unptype), ssl, ip, port, nil == sendev and 0 or sendev)
 end
 --[[
 描述:udp
 参数：
-	ptype UNPACK_TYPE
 	ip    ip
 	port  端口
+	unptype UNPACK_TYPE
 返回:
 	fd  INVALID_SOCK 失败
 --]]
-function core.udp(ptype, ip, port)
-	return srey.udp(curtask, ptype, ip, port)
+function core.udp(ip, port, unptype)
+	return srey.udp(curtask, checkunptype(unptype), ip, port)
 end
 --[[
 描述:tcp发送
@@ -133,7 +133,7 @@ end
 返回:
 --]]
 function core.send(fd, data, lens, ptype)
-	srey.send(curtask, fd, data, lens, ptype)
+	srey.send(curtask, fd, data, lens, nil == ptype and PACK_TYPE.NONE or ptype)
 end
 --[[
 描述:udp发送
