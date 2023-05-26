@@ -188,7 +188,6 @@ function core.connect(ip, port, ssl, sendev, unptype)
         return fd
     end
 end
-
 local function poolsize(tb)
     local cnt = 0
     for _, _ in pairs(tb) do
@@ -196,11 +195,12 @@ local function poolsize(tb)
     end
     return cnt
 end
-local function log_poolsize()
-    local msg = string.format("task:%d, sess_coro:%d, normal_timeout:%d, sleep_timeout:%d, request_timeout:%d, connect_timeout:%d, coro_pool:%d",
-                              core.name(), poolsize(sess_coro), poolsize(normal_timeout), poolsize(sleep_timeout),
-                              poolsize(request_timeout), poolsize(connect_timeout),poolsize(coro_pool))
-    log.INFO(msg)
+function core.sysinfo()
+    local tname = string.format("task:%d.", core.name())
+    local poolsize = string.format("table size: sess_coro:%d, normal_timeout:%d, sleep_timeout:%d, request_timeout:%d, connect_timeout:%d, coro_pool:%d",
+                                   poolsize(sess_coro), poolsize(normal_timeout), poolsize(sleep_timeout),
+                                   poolsize(request_timeout), poolsize(connect_timeout),poolsize(coro_pool))
+    log.INFO(string.format("%s %s", tname, poolsize))
 end
 
 --消息类型
@@ -340,7 +340,7 @@ function dispatch_message(msgtype, unptype, err, fd, src, data, size, sess, addr
             cur_coro = co
             coroutine.resume(co)
         end
-        log_poolsize()
+        core.sysinfo()
     elseif MSG_TYPE.TIMEOUT == msgtype then
         dispatch_timeout(sess)
     elseif MSG_TYPE.ACCEPT == msgtype then
