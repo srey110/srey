@@ -1,4 +1,3 @@
-require("lib.funcs")
 local srey = require("lib.srey")
 local json = require("cjson")
 local pathsep = srey.pathsep()
