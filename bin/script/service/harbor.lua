@@ -4,10 +4,10 @@ local port = 8080
 local signkey = "x3njVVstBXMAxNdxNbKINeBnS9fVyoR6"
 local ipallow = harbor_ipallow.new("harbor_ipallow.json")
 
-local function addip(ip)
-    ipallow:add(ip)
+local function addip(ip, describe)
+    ipallow:add(ip, describe)
 end
-srey.regrpc("addip", addip, "add ip in allow list.addip(ip:string)")
+srey.regrpc("addip", addip, "add ip in allow list.addip(ip:string, describe :string)")
 local function removeip(ip)
     ipallow:remove(ip)
 end
