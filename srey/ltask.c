@@ -33,6 +33,8 @@ static inline lua_State *_ltask_luainit(task_ctx *task) {
     _ltask_setpath(lua, "path", "lua");
     lua_pushstring(lua, propath);
     lua_setglobal(lua, "_propath");
+    lua_pushstring(lua, PATH_SEPARATORSTR);
+    lua_setglobal(lua, "_pathsep");
     if (NULL != task) {
         lua_pushlightuserdata(lua, task);
         lua_setglobal(lua, "_curtask");
@@ -68,6 +70,17 @@ static int32_t _ltask_log(lua_State *lua) {
     int32_t line = (int32_t)luaL_checkinteger(lua, 3);
     const char *log = luaL_checkstring(lua, 4);
     loger_log(&g_logerctx, lv, "[%s][%s %d]%s", _getlvstr(lv), __FILENAME__(file), line, log);
+    return 0;
+}
+static int32_t _ltask_setlog(lua_State *lua) {
+    if (LUA_TNIL != lua_type(lua, 1)) {
+        LOG_LEVEL lv = (LOG_LEVEL)luaL_checkinteger(lua, 1);
+        SETLOGLV(lv);
+    }
+    if (LUA_TNIL != lua_type(lua, 2)) {
+        int32_t prt = (int32_t)luaL_checkinteger(lua, 2);
+        SETLOGPRT(prt);
+    }
     return 0;
 }
 static inline void *_ltask_new(task_ctx *task, void *arg) {
@@ -309,9 +322,27 @@ static int32_t _ltask_ipport(lua_State *lua) {
     lua_pushinteger(lua, port);
     return 2;
 }
+static int32_t _ltask_remoteaddr(lua_State *lua) {
+    netaddr_ctx addr;
+    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
+    if (ERR_OK != netaddr_remoteaddr(&addr, fd, sock_family(fd))) {
+        lua_pushnil(lua);
+        return 1;
+    }
+    char ip[IP_LENS];
+    if (ERR_OK != netaddr_ip(&addr, ip)) {
+        lua_pushnil(lua);
+        return 1;
+    }
+    uint16_t port = netaddr_port(&addr);
+    lua_pushstring(lua, ip);
+    lua_pushinteger(lua, port);
+    return 2;
+}
 LUAMOD_API int luaopen_srey(lua_State *lua) {
     luaL_Reg reg[] = {
         { "log", _ltask_log },
+        { "setlog", _ltask_setlog },
         { "register", _ltask_register },
         { "qury", _ltask_qury },
         { "name", _ltask_name },
@@ -330,6 +361,7 @@ LUAMOD_API int luaopen_srey(lua_State *lua) {
         { "sendto", _ltask_sendto },
         { "close", _ltask_close },
         { "ipport", _ltask_ipport },
+        { "remoteaddr", _ltask_remoteaddr },
         { NULL, NULL },
     };
     luaL_newlib(lua, reg);
