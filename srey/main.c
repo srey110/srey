@@ -37,8 +37,9 @@ int main(int argc, char *argv[]) {
     };
     struct argparse argp;
     argparse_init(&argp, options, usages, 0);
-    argparse_describe(&argp, "\nA brief description of what the program does and how it works.", "\nAdditional description of the program after the description of the arguments.");
-    argparse_parse(&argp, argc, argv);
+    argparse_describe(&argp, "\nA brief description of what the program does and how it works.",
+        "\nAdditional description of the program after the description of the arguments.");
+    argparse_parse(&argp, argc, (const char **)argv);
 
     MEMCHECK();
     unlimit();
