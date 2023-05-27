@@ -8,9 +8,11 @@ static _pack _pack_funcs[UNPACK_CNT];
 
 void protos_init() {
     _unpack_funcs[UNPACK_NONE] = NULL;
+    _unpack_funcs[UNPACK_RPC] = simple_unpack;
     _unpack_funcs[UNPACK_SIMPLE] = simple_unpack;
 
     _pack_funcs[PACK_NONE] = NULL;
+    _pack_funcs[PACK_RPC] = simple_pack;
     _pack_funcs[PACK_SIMPLE] = simple_pack;
 }
 void *protos_unpack(unpack_type type, buffer_ctx *buf, size_t *size, ud_cxt *ud) {

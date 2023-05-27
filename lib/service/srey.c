@@ -35,6 +35,7 @@ struct task_ctx {
     int32_t name;
     int32_t global;
     uint32_t maxcnt;
+    uint32_t dmaxcnt;
     task_run _run;
     task_free _free;
     void *handle;
@@ -78,7 +79,11 @@ static inline void _message_clean(message_ctx *msg) {
 static inline void _task_run(srey_ctx *ctx, task_ctx *task) {
     message_ctx *tmp;
     message_ctx msg;
-    for (uint32_t i = 0; i < task->maxcnt; i++) {
+    mutex_lock(&task->mutask);
+    size_t size = qu_message_size(&task->qumsg);
+    mutex_unlock(&task->mutask);
+    uint32_t nloop = (size > (size_t)task->dmaxcnt ? task->dmaxcnt : task->maxcnt);
+    for (uint32_t i = 0; i < nloop; i++) {
         mutex_lock(&task->mutask);
         tmp = qu_message_pop(&task->qumsg);
         if (NULL == tmp) {
@@ -100,6 +105,7 @@ task_ctx *srey_tasknew(srey_ctx *ctx, int32_t name, uint32_t maxcnt,
     task->session = 1;
     task->name = name;
     task->maxcnt = maxcnt;
+    task->dmaxcnt = maxcnt * 2;
     task->_run = _run;
     task->_free = _tfree;
     task->srey = ctx;

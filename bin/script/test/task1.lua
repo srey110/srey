@@ -1,17 +1,36 @@
 local srey = require("lib.srey")
+local rpcfd
+local callonce = false
 local function ontimeout()
+    printd(".............................................")
     local rpctask = srey.qury(TASK_NAME.TAKS2)
-    local rpcdes = srey.describe(rpctask)
-    srey.call(rpctask, "rpc_add", math.random(10) , math.random(10), math.random(10))
-    local sum = srey.request(rpctask, "rpc_add", math.random(10) , math.random(10), math.random(10))
-    prind("request rpc_add rtn:" .. tostring(sum))
-    srey.timeout(3000, ontimeout)
+    if not callonce then
+        callonce = true
+        local rpcdes = srey.describe(rpctask)
+        printd(rpcdes)
+    end
+
+    srey.call(rpctask, "rpc_add", math.random(10) , math.random(10), "srey.call")
+    local rtn, sum, des = srey.request(rpctask, "rpc_add", math.random(10) , math.random(10), "srey.request")
+    printd("request rpc_add rtn:" .. tostring(rtn) .. " sum:" .. tostring(sum) .. " des:" .. tostring(des))
+    rtn = srey.request(rpctask, "rpc_void")
+    printd("request rpc_void rtn:" .. tostring(rtn))
+    if nil ~= rpcfd then
+        srey.netcall(rpcfd, TASK_NAME.TAKS2,
+                    "rpc_add", math.random(10) , math.random(10), "srey.netcall")
+        rtn, sum, des = srey.netreq(rpcfd, TASK_NAME.TAKS2,
+                                   "rpc_add", math.random(10) , math.random(10), "srey.netreq")
+        printd("netreq rpc_add rtn:" .. tostring(rtn) .. " sum:" .. tostring(sum) .. " des:" .. tostring(des))
+        rtn = srey.netreq(rpcfd, TASK_NAME.TAKS2, "rpc_void")
+        printd("netreq rpc_void rtn:" .. tostring(rtn))
+    end
+    srey.timeout(5000, ontimeout)
 end
 local function onstarted()
     math.randomseed(os.time())
-    prind(srey.name() .. " onstarted....")
+    printd(srey.name() .. " onstarted....")
     srey.listen("0.0.0.0", 15000, nil, 1, UNPACK_TYPE.SIMPLE)
-    srey.timeout(3000, ontimeout)
+    srey.timeout(5000, ontimeout)
 
     local harbor = srey.qury(TASK_NAME.HARBOR)
     srey.call(harbor, "addip", "192.168.100.1", "1")
@@ -21,18 +40,18 @@ local function onstarted()
     srey.call(harbor, "addip", "192.168.100.4", "4")
     srey.call(harbor, "removeip", "192.168.100.5")
     srey.call(harbor, "removeip", "192.168.100.2")
-    
-    prind(srey.name() .. " sart sleep 3s..")
+
+    printd(srey.name() .. " sart sleep 3s..")
     srey.sleep(3000)
-    prind(srey.name() .. " end sleep 3s..")
-    
-    prind(srey.name() .. " start connect....")
+    printd(srey.name() .. " end sleep 3s..")
+
+    printd(srey.name() .. " start connect....")
     local ssl = srey.sslevqury("client")
-    local fd = srey.connect("127.0.0.1", 15001, ssl, 0, UNPACK_TYPE.SIMPLE)
-    if nil ~= fd then
-        prind(srey.name() .. " end connect.... fd:" .. fd)
+    rpcfd = srey.connect("127.0.0.1", 15001, ssl, 0, UNPACK_TYPE.RPC)
+    if nil ~= rpcfd then
+        printd(srey.name() .. " end connect.... fd:" .. rpcfd)
     else
-        prind(srey.name() .. " end connect.... error")
+        printd(srey.name() .. " end connect.... error")
     end
 end
 srey.started(onstarted)
@@ -58,6 +77,6 @@ end
 srey.closed(onsockclose)
 
 local function onclosing()
-    prind(srey.name() .. " onclosing....")
+    printd(srey.name() .. " onclosing....")
 end
 srey.closing(onclosing)

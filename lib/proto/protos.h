@@ -6,11 +6,13 @@
 
 typedef enum unpack_type {
     UNPACK_NONE = 0x0,
+    UNPACK_RPC,
     UNPACK_SIMPLE,
     UNPACK_CNT,
 }unpack_type;
 typedef enum pack_type {
     PACK_NONE = 0x0,
+    PACK_RPC,
     PACK_SIMPLE,
     PACK_CNT,
 }pack_type;

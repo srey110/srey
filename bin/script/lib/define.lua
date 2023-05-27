@@ -8,17 +8,21 @@ TASK_NAME = {
 --解包类型 标识该socket类型
 UNPACK_TYPE = {
     NONE = 0,
-    SIMPLE = 1,
+    RPC = 1,
+    SIMPLE = 2,
 }
 --组包类型
 PACK_TYPE = {
     NONE = 0,
-    SIMPLE = 1,
+    RPC = 1,
+    SIMPLE = 2,
 }
---user消息
-USERMSG_TYPE = {
-    RPC_REQUEST = 1,
-    RPC_RESPONSE = 2,
+--任务间消息
+TASKMSG_TYPE = {
+    REQUEST = 1,
+    RESPONSE = 2,
+    NETREQ = 3,
+    NETRESP = 4,
 }
 --ssl文件类型
 SSLFILE_TYPE = {
@@ -34,12 +38,14 @@ LOG_LV = {
     DEBUG = 4
 }
 
-ERR_OK = 0
-ERR_FAILED = -1
-INVALID_SOCK = -1
 PRINT_DEBUG = true
-MONITOR_TIMEOUT = true
+RPC_USEJSON = true
 REQUEST_TIMEOUT = 500
+NETREQ_TIMEOUT = 1000
 CONNECT_TIMEOUT = 3000
 FMT_TIME = "%H:%M:%S"
 FMT_DATETIME = "%Y-%m-%d %H:%M:%S"
+
+ERR_OK = 0
+ERR_FAILED = -1
+INVALID_SOCK = -1

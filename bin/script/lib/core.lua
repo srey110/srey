@@ -26,12 +26,11 @@ end
 参数：
     file lua文件名 :string
     name :TASK_NAME
-    maxcnt 每次最多执行任务数 nil 3 :integer
 返回:
     task_ctx
 --]]
-function core.register(file, name, maxcnt)
-    return srey.register(file, name, nil == maxcnt and 3 or maxcnt)
+function core.register(file, name)
+    return srey.register(file, name, 5)
 end
 --[[
 描述:任务查询

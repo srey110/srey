@@ -4,7 +4,7 @@ local debug = debug
 local string = string
 local pathsep = _pathsep
 
-function prind(fmt, ...)
+function printd(fmt, ...)
     if PRINT_DEBUG then
         local info = debug.getinfo(2)
         local file = string.match(info.source, string.format("^.+%s(.+)$", pathsep))

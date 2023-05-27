@@ -149,6 +149,7 @@ typedef struct {
     strbuf_t *tmp;    /* Temporary storage for strings */
     json_config_t *cfg;
     int current_depth;
+    int lens;
 } json_parse_t;
 
 typedef struct {
@@ -1038,7 +1039,12 @@ static void json_next_token(json_parse_t *json, json_token_t *token)
 
     /* Eat whitespace. */
     while (1) {
-        ch = (unsigned char)*(json->ptr);
+        ////支持userdata
+        if (json->ptr - json->data >= json->lens) {
+            ch = '\0';
+        } else {
+            ch = (unsigned char)*(json->ptr);
+        }
         token->type = ch2token[ch];
         if (token->type != T_WHITESPACE)
             break;
@@ -1276,12 +1282,18 @@ static int json_decode(lua_State *l)
     json_token_t token;
     size_t json_len;
 
-    luaL_argcheck(l, lua_gettop(l) == 1, 1, "expected 1 argument");
-
+    //luaL_argcheck(l, lua_gettop(l) == 1, 1, "expected 1 argument");
+    //支持userdata
     json.cfg = json_fetch_config(l);
-    json.data = luaL_checklstring(l, 1, &json_len);
+    if (LUA_TSTRING == lua_type(l, 1)) {
+        json.data = luaL_checklstring(l, 1, &json_len);
+    } else {
+        json.data = lua_touserdata(l, 1);
+        json_len = luaL_checkinteger(l, 2);
+    }    
     json.current_depth = 0;
     json.ptr = json.data;
+    json.lens = (int)json_len;
 
     /* Detect Unicode other than UTF-8 (see RFC 4627, Sec 3)
      *

@@ -100,7 +100,7 @@ static int32_t _worker_getfile(logworker_ctx *ctx) {
     }
     //判断日期是否更改，更改则更换log文件名
     char date[TIME_LENS] = {0};
-    nowtime("%Y%m%d", date);
+    nowtime("%Y-%m-%d", date);
     if (0 != strcmp(date, ctx->lognam)) {
         if (NULL != ctx->file) {
             fclose(ctx->file);
