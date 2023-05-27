@@ -4,12 +4,12 @@ local function ontimeout()
     local rpcdes = srey.describe(rpctask)
     srey.call(rpctask, "rpc_add", math.random(10) , math.random(10), math.random(10))
     local sum = srey.request(rpctask, "rpc_add", math.random(10) , math.random(10), math.random(10))
-    print(os.date("%H-%M-%S", os.time()) .. " request rpc_add rtn:" .. tostring(sum))
+    prind("request rpc_add rtn:" .. tostring(sum))
     srey.timeout(3000, ontimeout)
 end
 local function onstarted()
     math.randomseed(os.time())
-    print(srey.name() .. " onstarted....")
+    prind(srey.name() .. " onstarted....")
     srey.listen("0.0.0.0", 15000, nil, 1, UNPACK_TYPE.SIMPLE)
     srey.timeout(3000, ontimeout)
 
@@ -22,23 +22,23 @@ local function onstarted()
     srey.call(harbor, "removeip", "192.168.100.5")
     srey.call(harbor, "removeip", "192.168.100.2")
     
-    print(srey.name() .. " sart sleep 3s.." .. os.date("%H-%M-%S", os.time()))
+    prind(srey.name() .. " sart sleep 3s..")
     srey.sleep(3000)
-    print(srey.name() .. " end sleep 3s.." .. os.date("%H-%M-%S", os.time()))
+    prind(srey.name() .. " end sleep 3s..")
     
-    print(srey.name() .. " start connect....")
+    prind(srey.name() .. " start connect....")
     local ssl = srey.sslevqury("client")
     local fd = srey.connect("127.0.0.1", 15001, ssl, 0, UNPACK_TYPE.SIMPLE)
     if nil ~= fd then
-        print(srey.name() .. " end connect.... fd:" .. fd)
+        prind(srey.name() .. " end connect.... fd:" .. fd)
     else
-        print(srey.name() .. " end connect.... error")
+        prind(srey.name() .. " end connect.... error")
     end
 end
 srey.started(onstarted)
 
 local function onaccept(unptype, fd)
-    print(srey.name() .. " onaccept.... " .. fd)
+    --prind(srey.name() .. " onaccept.... " .. fd)
 end
 srey.accept(onaccept)
 
@@ -48,16 +48,16 @@ end
 srey.recv(echo)
 
 local function onsended(unptype, fd, size)
-    --print(fd .. " sended size:" .. size)
+    --prind(fd .. " sended size:" .. size)
 end
 srey.sended(onsended)
 
 local function onsockclose(unptype, fd)
-    print(fd .. " closed")
+    --prind(fd .. " closed")
 end
 srey.closed(onsockclose)
 
 local function onclosing()
-    print(srey.name() .. " onclosing....")
+    prind(srey.name() .. " onclosing....")
 end
 srey.closing(onclosing)

@@ -1,8 +1,11 @@
+require("lib.funcs")
 local core = require("lib.core")
 local srey = require("srey.core")
 local log = require("lib.log")
 local json = require("cjson")
 local msgpack = require("cmsgpack")
+local coroutine = coroutine
+local table = table
 local cur_coro = nil
 local sess_coro = {}
 local static_funcs = {}
@@ -188,19 +191,12 @@ function core.connect(ip, port, ssl, sendev, unptype)
         return fd
     end
 end
-local function poolsize(tb)
-    local cnt = 0
-    for _, _ in pairs(tb) do
-        cnt = cnt + 1
-    end
-    return cnt
-end
 function core.sysinfo()
     local tname = string.format("task:%d.", core.name())
     local poolsize = string.format("table size: sess_coro:%d, normal_timeout:%d, sleep_timeout:%d, request_timeout:%d, connect_timeout:%d, coro_pool:%d",
-                                   poolsize(sess_coro), poolsize(normal_timeout), poolsize(sleep_timeout),
-                                   poolsize(request_timeout), poolsize(connect_timeout),poolsize(coro_pool))
-    log.INFO(string.format("%s %s", tname, poolsize))
+                                    tbsize(sess_coro), tbsize(normal_timeout), tbsize(sleep_timeout),
+                                    tbsize(request_timeout), tbsize(connect_timeout),tbsize(coro_pool))
+    log.INFO("%s %s", tname, poolsize)
 end
 
 --消息类型
@@ -235,56 +231,60 @@ local function co_create(func)
     end
     return co
 end
+local function resume_normal(func, ...)
+    if nil == func then
+        return
+    end
+    cur_coro = co_create(func)
+    coroutine.resume(cur_coro, ...)
+end
 --超时消息处理
 local function dispatch_timeout(sess)
-    local co
-    local func = normal_timeout[sess]
-    if nil ~= func then
+    local param = normal_timeout[sess]
+    if nil ~= param then
         normal_timeout[sess] = nil
-        co = co_create(func)
-        cur_coro = co
-        coroutine.resume(co)
+        resume_normal(param)
         return
     end
 
     if MONITOR_TIMEOUT then
-        co = request_timeout[sess]
-        if nil ~= co then
+        param = request_timeout[sess] --{co = cur_coro, info = info}
+        if nil ~= param then
             request_timeout[sess] = nil
             if nil ~= sess_coro[sess] then
                 sess_coro[sess] = nil
-                cur_coro = co.co
-                log.WARN(string.format("request timeout. session: %s param: %s",
-                                        tostring(sess), json.encode(co.info)))
-                coroutine.resume(co.co, nil)
+                cur_coro = param.co
+                log.WARN("request timeout. session: %d param: %s",
+                          sess, json.encode(param.info))
+                coroutine.resume(cur_coro, nil)
             end
             return
         end
     end
 
-    co = connect_timeout[sess]
-    if nil ~= co then
+    param = connect_timeout[sess]--{co = cur_coro, sock = sock, ip = ip, port = port}
+    if nil ~= param then
         connect_timeout[sess] = nil
         if nil ~= sess_coro[sess] then
             sess_coro[sess] = nil
-            cur_coro = co.co
-            core.close(co.sock)
-            log.WARN(string.format("connect timeout. session: %s ip: %s port: %s",
-                                    tostring(sess), co.ip, tostring(co.port)))
-            coroutine.resume(co.co, nil, co.sock, ERR_FAILED)
+            cur_coro = param.co
+            core.close(param.sock)
+            log.WARN("connect timeout. session: %d ip: %s port: %d",
+                     sess, param.ip, param.port)
+            coroutine.resume(cur_coro, nil, param.sock, ERR_FAILED)
         end
         return
     end
 
-    co = sleep_timeout[sess]
-    if nil ~= co then
+    param = sleep_timeout[sess]
+    if nil ~= param then
         sleep_timeout[sess] = nil
-        cur_coro = co
-        coroutine.resume(co)
+        cur_coro = param
+        coroutine.resume(cur_coro)
         return
     end
 end
---RPC_REQUEST处理
+--RPC_REQUEST
 local function rpc_request(src, sess, info)
     local func = rpc_func[info.func]
     local resp = {proto = USERMSG_TYPE.RPC_RESPONSE}
@@ -302,9 +302,7 @@ end
 local function dispatch_user(src, data, size, sess)
     local info = msgpack.unpack(data, size)
     if USERMSG_TYPE.RPC_REQUEST == info.proto then
-        local co = co_create(rpc_request)
-        cur_coro = co
-        coroutine.resume(co, src, sess, info)
+        resume_normal(rpc_request, src, sess, info)
     elseif USERMSG_TYPE.RPC_RESPONSE == info.proto then
         local co = sess_coro[sess]
         if nil ~= co then
@@ -314,80 +312,45 @@ local function dispatch_user(src, data, size, sess)
             end
             cur_coro = co
             if info.ok then
-                coroutine.resume(co, table.unpack(info.param))
+                coroutine.resume(cur_coro, table.unpack(info.param))
             else
-                coroutine.resume(co, nil)
+                coroutine.resume(cur_coro, nil)
             end
         else
-            log.WARN(string.format("not find response session, maybe timeout.session: %s response: %s",
-                                   tostring(sess), json.encode(info)))
+            log.WARN("not find response session, maybe timeout.session: %d response: %s",
+                      sess, json.encode(info))
         end
     end
 end
 --消息处理
 function dispatch_message(msgtype, unptype, err, fd, src, data, size, sess, addr)
     if MSG_TYPE.STARTED == msgtype then
-        local func = static_funcs.STARTED
-        if nil ~= func then
-            local co = co_create(func)
-            cur_coro = co
-            coroutine.resume(co)
-        end
+        resume_normal(static_funcs.STARTED)
     elseif MSG_TYPE.CLOSING == msgtype then
-        local func = static_funcs.CLOSING
-        if nil ~= func then
-            local co = co_create(func)
-            cur_coro = co
-            coroutine.resume(co)
-        end
+        resume_normal(static_funcs.CLOSING)
         core.sysinfo()
     elseif MSG_TYPE.TIMEOUT == msgtype then
         dispatch_timeout(sess)
     elseif MSG_TYPE.ACCEPT == msgtype then
-        local func = static_funcs.ACCEPT
-        if nil ~= func then
-            local co = co_create(func)
-            cur_coro = co
-            coroutine.resume(co, unptype, fd)
-        end
+        resume_normal(static_funcs.ACCEPT, unptype, fd)
     elseif MSG_TYPE.CONNECT == msgtype then
         local co = sess_coro[sess]
         if nil ~= co then
             sess_coro[sess] = nil
             cur_coro = co
-            coroutine.resume(co, unptype, fd, err)
+            coroutine.resume(cur_coro, unptype, fd, err)
         else
-            log.WARN(string.format("not find connect session, maybe timeout.session: %s", tostring(sess)))
+            log.WARN("not find connect session, maybe timeout.session: %d", sess)
         end
     elseif MSG_TYPE.RECV == msgtype then
-        local func = static_funcs.RECV
-        if nil ~= func then
-            local co = co_create(func)
-            cur_coro = co
-            coroutine.resume(co, unptype, fd, data, size)
-        end
+        resume_normal(static_funcs.RECV, unptype, fd, data, size)
     elseif MSG_TYPE.SEND == msgtype then
-        local func = static_funcs.SEND
-        if nil ~= func then
-            local co = co_create(func)
-            cur_coro = co
-            coroutine.resume(co, unptype, fd, size)
-        end
+        resume_normal(static_funcs.SEND, unptype, fd, size)
     elseif MSG_TYPE.CLOSE == msgtype then
-        local func = static_funcs.CLOSE
-        if nil ~= func then
-            local co = co_create(func)
-            cur_coro = co
-            coroutine.resume(co, unptype, fd)
-        end
+        resume_normal(static_funcs.CLOSE, unptype, fd)
     elseif MSG_TYPE.RECVFROM == msgtype then
-        local func = static_funcs.RECVFROM
-        if nil ~= func then
-            local co = co_create(func)
-            cur_coro = co
-            local ip, port = core.ipport(addr)
-            coroutine.resume(co, unptype, fd, data, size, ip, port)
-        end
+        local ip, port = core.ipport(addr)
+        resume_normal(static_funcs.RECVFROM, unptype, fd, data, size, ip, port)
     elseif MSG_TYPE.USER == msgtype then
         dispatch_user(src, data, size, sess)
     end

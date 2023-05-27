@@ -386,9 +386,6 @@ srey_ctx *srey_init(uint32_t nnet, uint32_t nworker) {
     return ctx;
 }
 void srey_free(srey_ctx *ctx) {
-    ev_free(&ctx->netev);
-    tw_free(&ctx->tw);
-
     ctx->stop = 1;
     mutex_lock(&ctx->muworker);
     cond_broadcast(&ctx->condworker);
@@ -396,6 +393,9 @@ void srey_free(srey_ctx *ctx) {
     for (uint32_t i = 0; i < ctx->nworker; i++) {
         thread_join(ctx->thworker[i]);
     }
+    ev_free(&ctx->netev);
+    tw_free(&ctx->tw);
+
     hashmap_free(ctx->maptask);
     rwlock_free(&ctx->lckmaptask);
 #if WITH_SSL

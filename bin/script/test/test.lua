@@ -3,7 +3,7 @@ local msgpack = require("cmsgpack")
 local srey = require("lib.srey")
 local log = require("lib.log")
 
-print("program path:" .. srey.path())
+prind("program path:%s", srey.path())
 
 log.FATAL("FATAL")
 log.ERROR("ERROR")

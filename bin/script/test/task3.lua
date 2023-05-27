@@ -1,7 +1,7 @@
 local srey = require("lib.srey")
 
 local function onstarted()
-    print(srey.name() .. " onstarted....")
+    prind(srey.name() .. " onstarted....")
     srey.udp("0.0.0.0", 15002)
 end
 srey.started(onstarted)
@@ -12,6 +12,6 @@ end
 srey.recvfrom(onrecvfrom)
 
 local function onclosing()
-    print(srey.name() .. " onclosing....")
+    prind(srey.name() .. " onclosing....")
 end
 srey.closing(onclosing)

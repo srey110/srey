@@ -41,9 +41,35 @@ static inline lua_State *_ltask_luainit(task_ctx *task) {
     }
     return lua;
 }
+static inline void _ltask_fmtfile(const char *file, char *path) {
+    ZERO(path, PATH_LENS);
+    SNPRINTF(path, PATH_LENS - 1, "%s%s.lua", luapath, file);
+}
+static inline int32_t _ltask_searchfile(const char *file, char *path) {
+    _ltask_fmtfile(file, path);
+    if (ERR_OK == isfile(path)) {
+        return ERR_OK;
+    }
+    char tmp[PATH_LENS] = { 0 };
+    strcpy(tmp, file);
+    size_t lens = strlen(tmp);
+    for (size_t i = 0; i < lens; i++) {
+        if ('.' == tmp[i]) {
+            tmp[i] = PATH_SEPARATOR;
+            _ltask_fmtfile(tmp, path);
+            if (ERR_OK == isfile(path)) {
+                return ERR_OK;
+            }
+        }
+    }
+    return ERR_FAILED;
+}
 static inline int32_t _ltask_dofile(lua_State *lua, const char *file) {
-    char path[PATH_LENS] = { 0 };
-    SNPRINTF(path, sizeof(path) - 1, "%s%s", luapath, file);
+    char path[PATH_LENS];
+    if (ERR_OK != _ltask_searchfile(file, path)) {
+        LOG_ERROR("cannot find %s:, no such file.", file);
+        return ERR_FAILED;
+    }
     if (LUA_OK != luaL_dofile(lua, path)) {
         LOG_ERROR("%s", lua_tostring(lua, -1));
         return ERR_FAILED;
@@ -59,7 +85,7 @@ int32_t ltask_startup(srey_ctx *ctx) {
     if (NULL == lua) {
         return ERR_FAILED;
     }
-    int32_t rtn = _ltask_dofile(lua, "startup.lua");
+    int32_t rtn = _ltask_dofile(lua, "startup");
     lua_close(lua);
     return rtn;
 }

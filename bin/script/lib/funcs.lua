@@ -1,3 +1,31 @@
+require("lib.define")
+local os = os
+local debug = debug
+local string = string
+local pathsep = _pathsep
+
+function prind(fmt, ...)
+    if PRINT_DEBUG then
+        local info = debug.getinfo(2)
+        local file = string.match(info.source, string.format("^.+%s(.+)$", pathsep))
+        local tag = string.format("[%s][%s %d] ",
+                                   os.date(FMT_TIME, os.time()), nil == file and "" or file, info.currentline)
+        print(string.format(tag..fmt, ...))
+    end
+end
+function tbsize(tb)
+    local cnt = 0
+    for _, _ in pairs(tb) do
+        cnt = cnt + 1
+    end
+    return cnt
+end
+function tbempty(tb)
+    for _, _ in pairs(tb) do
+        return false
+    end
+    return true
+end
 --dump
 function dump(obj, offset)
     local dumpObj

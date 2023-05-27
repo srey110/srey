@@ -5,10 +5,7 @@ function ipallow:ctor(file)
     ipallow.super.ctor(self, file)
 end
 function ipallow:empty()
-    for _, _ in pairs(self.m_content) do
-        return false
-    end
-    return true
+    return tbempty(self.m_content)
 end
 function ipallow:have(ip)
     return nil ~= self.m_content[ip]

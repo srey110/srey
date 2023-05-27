@@ -1,6 +1,8 @@
 require("lib.define")
 local srey = require("srey.core")
 local curtask = _curtask
+local propath = _propath
+local pathsep = _pathsep
 local core = {}
 
 --[[
@@ -9,7 +11,7 @@ local core = {}
     路径 :string
 --]]
 function core.path()
-    return _propath
+    return propath
 end
 --[[
 描述:路径分隔符
@@ -17,7 +19,7 @@ end
     分隔符 :string
 --]]
 function core.pathsep()
-    return _pathsep
+    return pathsep
 end
 --[[
 描述:任务注册
