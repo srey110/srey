@@ -15,7 +15,7 @@ function config:load()
     end
     local info = file:read("a")
     file:close()
-    if 0 == #info then
+    if "" == info then
         return
     end
     self.m_content = json.decode(info)
