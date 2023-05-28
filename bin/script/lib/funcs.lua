@@ -13,6 +13,29 @@ function printd(fmt, ...)
         print(string.format(tag..fmt, ...))
     end
 end
+function enum(tb, bg)
+    local tbenum = {}
+    local index = bg or 0
+    for key, val in pairs(tb) do
+        tbenum[val] = index + key - 1
+    end
+    return tbenum
+end
+function strempty(str)
+    return nil == str or '' == str
+end
+function split(str, delimiter)
+    if ('' == delimiter) then
+        return {str}
+    end
+    local pos,arr = 0, {}
+    for st,sp in function() return string.find(str, delimiter, pos, true) end do
+        table.insert(arr, string.sub(str, pos, st - 1))
+        pos = sp + 1
+    end
+    table.insert(arr, string.sub(str, pos))
+    return arr
+end
 function tbsize(tb)
     local cnt = 0
     for _, _ in pairs(tb) do
@@ -21,6 +44,9 @@ function tbsize(tb)
     return cnt
 end
 function tbempty(tb)
+    if nil == tb then
+        return true
+    end
     for _, _ in pairs(tb) do
         return false
     end

@@ -1,10 +1,39 @@
 require("lib.define")
 local srey = require("srey.core")
+local log = require("lib.log")
 local curtask = _curtask
 local propath = _propath
 local pathsep = _pathsep
 local core = {}
 
+--[[
+描述:保护模式调用函数
+参数：
+    func function(...) :function
+返回:
+    bool, 被调函数返回值
+--]]
+function core.xpcall(func, ...)
+    local function error(err)
+        log.WARN("%s.\n%s", err, debug.traceback())
+    end
+    return xpcall(func, error, ...)
+end
+--[[
+描述:执行字符串
+参数：
+    msg :string
+返回:
+    bool, 被调函数返回值
+--]]
+function core.dostring(msg)
+    local func, err = load(msg)
+    if nil == func then
+        log.WARN("%s.\n%s", err, debug.traceback())
+        return false
+    end
+    return core.xpcall(func)
+end
 --[[
 描述:程序所在路径
 返回:
@@ -136,14 +165,18 @@ end
     ip 监听ip :string
     port 端口 :integer
     ssl evssl_ctx  nil不启用ssl
-    sendev 0不触发 1触发 :integer
+    sendev 是否触发发送事件 :boolean
     unptype :UNPACK_TYPE
 返回:
     bool
 --]]
 function core.listen(ip, port, ssl, sendev, unptype)
+    local send = 0
+    if nil ~= sendev and sendev then
+        send = 1
+    end
     return srey.listen(curtask, nil == unptype and UNPACK_TYPE.NONE or unptype,
-                       ssl, ip, port, nil == sendev and 0 or sendev)
+                       ssl, ip, port, send)
 end
 --[[
 描述:udp
@@ -188,6 +221,17 @@ end
 --]]
 function core.close(fd)
     srey.close(curtask, fd)
+end
+--[[
+描述:md5
+参数：
+    data string or userdata
+    size :integer
+返回:
+    string
+--]]
+function core.md5(data, size)
+    return srey.md5(data, size)
 end
 
 return core

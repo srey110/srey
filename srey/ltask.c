@@ -302,8 +302,8 @@ static int32_t _ltask_udp(lua_State *lua) {
 static int32_t _ltask_send(lua_State *lua) {
     task_ctx *task = lua_touserdata(lua, 1);
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 2);
-    size_t size;
     void *data;
+    size_t size;
     if (LUA_TSTRING == lua_type(lua, 3)) {
         data = (void *)luaL_checklstring(lua, 3, &size);
     } else {
@@ -319,8 +319,8 @@ static int32_t _ltask_sendto(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 2);
     const char *host = luaL_checkstring(lua, 3);
     uint16_t port = (uint16_t)luaL_checkinteger(lua, 4);
-    size_t size = 0;
     void *data;
+    size_t size;
     if (LUA_TSTRING == lua_type(lua, 5)) {
         data = (void *)luaL_checklstring(lua, 5, &size);
     } else {
@@ -365,6 +365,20 @@ static int32_t _ltask_remoteaddr(lua_State *lua) {
     lua_pushinteger(lua, port);
     return 2;
 }
+static int32_t _ltask_md5(lua_State *lua) {
+    void *data;
+    size_t size;
+    if (LUA_TSTRING == lua_type(lua, 1)) {
+        data = (void *)luaL_checklstring(lua, 1, &size);
+    } else {
+        data = lua_touserdata(lua, 1);
+        size = (size_t)luaL_checkinteger(lua, 2);
+    }
+    char strmd5[33];
+    md5((const char*)data, size, strmd5);
+    lua_pushstring(lua, strmd5);
+    return 1;
+}
 LUAMOD_API int luaopen_srey(lua_State *lua) {
     luaL_Reg reg[] = {
         { "log", _ltask_log },
@@ -388,6 +402,7 @@ LUAMOD_API int luaopen_srey(lua_State *lua) {
         { "close", _ltask_close },
         { "ipport", _ltask_ipport },
         { "remoteaddr", _ltask_remoteaddr },
+        { "md5", _ltask_md5 },
         { NULL, NULL },
     };
     luaL_newlib(lua, reg);
