@@ -30,7 +30,7 @@ local decode = (RPC_USEJSON and json.decode or msgpack.unpack)
     func function() :function
 --]]
 function core.started(func)
-    assert("function" == type(func), "invalid param type.")
+    assert("function" == type(func), "invalid argument.")
     static_funcs.STARTED = func
 end
 --[[
@@ -39,7 +39,7 @@ end
     func function() :function
 --]]
 function core.closing(func)
-    assert("function" == type(func), "invalid param type.")
+    assert("function" == type(func), "invalid argument.")
     static_funcs.CLOSING = func
 end
 --[[
@@ -48,7 +48,7 @@ end
     func function(unptype :UNPACK_TYPE, fd :integer) :function
 --]]
 function core.accept(func)
-    assert("function" == type(func), "invalid param type.")
+    assert("function" == type(func), "invalid argument.")
     static_funcs.ACCEPT = func
 end
 --[[
@@ -57,7 +57,7 @@ end
     func function(unptype :UNPACK_TYPE, fd :integer, data :userdata, size :integer) :function
 --]]
 function core.recv(func)
-    assert("function" == type(func), "invalid param type.")
+    assert("function" == type(func), "invalid argument.")
     static_funcs.RECV = func
 end
 --[[
@@ -66,7 +66,7 @@ end
     func function(unptype :UNPACK_TYPE, fd :integer, data :userdata, size:integer, ip :string, port :integer) :function
 --]]
 function core.recvfrom(func)
-    assert("function" == type(func), "invalid param type.")
+    assert("function" == type(func), "invalid argument.")
     static_funcs.RECVFROM = func
 end
 --[[
@@ -75,7 +75,7 @@ end
     func function(unptype :UNPACK_TYPE, fd :integer, size :integer) :function
 --]]
 function core.sended(func)
-    assert("function" == type(func), "invalid param type.")
+    assert("function" == type(func), "invalid argument.")
     static_funcs.SEND = func
 end
 --[[
@@ -84,7 +84,7 @@ end
     func function(unptype :UNPACK_TYPE, fd :integer) :function
 --]]
 function core.closed(func)
-    assert("function" == type(func), "invalid param type.")
+    assert("function" == type(func), "invalid argument.")
     static_funcs.CLOSE = func
 end
 --[[
@@ -94,7 +94,7 @@ end
     func function() :function
 --]]
 function core.timeout(ms, func)
-    assert("function" == type(func), "invalid param type.")
+    assert("function" == type(func), "invalid argument.")
     local sess = core.session()
     normal_timeout[sess] = func
     srey.timeout(core.self(), sess, ms)
@@ -118,7 +118,7 @@ end
     describe 描述 :string
 --]]
 function core.regrpc(name, func, describe)
-    assert("function" == type(func) and nil == rpc_func[name], "invalid param type or already register.")
+    assert("function" == type(func) and nil == rpc_func[name], "invalid argument or already register.")
     rpc_func[name] = func
     rpc_describe[name] = (nil == describe and "" or describe)
 end
@@ -220,7 +220,7 @@ end
 --]]
 function core.netcall(fd, task, name, ...)
     if INVALID_SOCK == fd then
-        log.WARN("invalid socket.")
+        log.WARN("invalid argument.")
         return
     end
     local info = {
@@ -243,8 +243,8 @@ end
 --]]
 function core.netreq(fd, task, name, ...)
     if INVALID_SOCK == fd then
-        log.WARN("invalid socket.")
-        return
+        log.WARN("invalid argument.")
+        return false
     end
     local sess = core.session()
     local info = {
@@ -276,6 +276,9 @@ core.regrpc("rpc_describe", rpc_des, "show rpc function describe.rpc_des()")
     RPC函数描述 :string
 --]]
 function core.describe(task)
+    if nil == task then
+        return rpc_des()
+    end
     local rtn, des = core.request(task, "rpc_describe")
     return rtn and des or ""
 end
@@ -343,12 +346,12 @@ local function co_create(func)
     if nil == co then
         co = coroutine.create(
             function(...)
-                func(...)
+                core.xpcall(func, ...)
                 while true do
                     func = nil
                     coro_pool[#coro_pool + 1] = co
                     func = coroutine.yield()
-                    func(coroutine.yield())
+                    core.xpcall(func, coroutine.yield())
                 end
             end)
     else
@@ -411,10 +414,10 @@ local function rpc_request(src, sess, info)
     local resp = {proto = TASKMSG_TYPE.RESPONSE}
     if nil == func then
         resp.ok = false
-        log.WARN("not find rpc method. request: %s.", json.encode(info))
+        log.WARN("not find method. request: %s.", json.encode(info))
     else
-        resp.ok = true
-        resp.param = {func(table.unpack(info.param))}
+        resp.param = {core.xpcall(func, table.unpack(info.param))}
+        resp.ok = table.remove(resp.param, 1)
     end
     if nil ~= src then
         srey.user(src, nil, sess, encode(resp))
@@ -469,11 +472,8 @@ local function rpc_netreq(fd, info)
             proto = TASKMSG_TYPE.NETRESP,
             sess = info.sess
         }
-        local rtn = {core.request(task, info.func, table.unpack(info.param))}
-        resp.ok = table.remove(rtn, 1)
-        if resp.ok then
-            resp.param = rtn
-        end
+        resp.param = {core.request(task, info.func, table.unpack(info.param))}
+        resp.ok = table.remove(resp.param, 1)
         netrpc_sign(resp)
         core.send(fd, encode(resp), nil, PACK_TYPE.RPC)
     end

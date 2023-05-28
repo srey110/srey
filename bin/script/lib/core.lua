@@ -101,6 +101,10 @@ end
     nil失败
 --]]
 function core.ipport(addr)
+    if nil == addr then
+        log.WARN("invalid argument.")
+        return nil
+    end
     return srey.ipport(addr)
 end
 --[[
@@ -112,6 +116,10 @@ end
     nil失败
 --]]
 function core.remoteaddr(fd)
+    if INVALID_SOCK == fd then
+        log.WARN("invalid argument.")
+        return nil
+    end
     return srey.remoteaddr(fd)
 end
 --[[
@@ -200,6 +208,10 @@ end
     ptype :PACK_TYPE
 --]]
 function core.send(fd, data, lens, ptype)
+    if INVALID_SOCK == fd or nil == data then
+        log.WARN("invalid argument.")
+        return
+    end
     srey.send(curtask, fd, data, lens, nil == ptype and PACK_TYPE.NONE or ptype)
 end
 --[[
@@ -212,6 +224,10 @@ end
     lens data长度 :integer
 --]]
 function core.sendto(fd, ip, port, data, lens)
+    if INVALID_SOCK == fd or nil == data then
+        log.WARN("invalid argument.")
+        return
+    end
     srey.sendto(curtask, fd, ip, port, data, lens)
 end
 --[[
@@ -220,6 +236,9 @@ end
     fd socket :integer
 --]]
 function core.close(fd)
+    if INVALID_SOCK == fd then
+        return
+    end
     srey.close(curtask, fd)
 end
 --[[
@@ -231,6 +250,10 @@ end
     string
 --]]
 function core.md5(data, size)
+    if nil == data then
+        log.WARN("invalid argument.")
+        return ""
+    end
     return srey.md5(data, size)
 end
 
