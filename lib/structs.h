@@ -3,12 +3,17 @@
 
 #include "macro.h"
 
-//用户数据
+/*
+用户数据
+timeout: data(task) session
+net: type(unpack_type) data(task) session  http(status, headlens, lens)
+*/
 typedef struct ud_cxt {
-    int32_t index;
     int32_t type;
     int32_t status;
     void *data;
+    size_t lens;
+    size_t headlens;
     uint64_t session;
 }ud_cxt;
 

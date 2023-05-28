@@ -7,6 +7,7 @@
 typedef enum unpack_type {
     UNPACK_NONE = 0x0,
     UNPACK_RPC,
+    UNPACK_HTTP,
     UNPACK_SIMPLE,
     UNPACK_CNT,
 }unpack_type;
@@ -18,7 +19,7 @@ typedef enum pack_type {
 }pack_type;
 
 void protos_init();
-void *protos_unpack(unpack_type type, buffer_ctx *buf, size_t *size, ud_cxt *ud);
+void *protos_unpack(unpack_type type, buffer_ctx *buf, size_t *size, ud_cxt *ud, int32_t *closefd);
 void *protos_pack(pack_type type, void *data, size_t lens, size_t *size);
 
 #endif//PROTOS_H_

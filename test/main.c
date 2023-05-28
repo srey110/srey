@@ -61,7 +61,7 @@ static void test_conn_recv_cb(ev_ctx *ctx, SOCKET sock, buffer_ctx *buf, size_t 
         return;
     }
     char len[2 + sizeof(pk_index)];
-    buffer_copyout(buf, len, sizeof(len));
+    buffer_copyout(buf, 0, len, sizeof(len));
     u_short *plen = (u_short*)len;
     u_short pklen = ntohs(*plen);
     if (buffer_size(buf) < pklen) {

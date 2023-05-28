@@ -238,11 +238,15 @@ static inline void _task_net_recv(ev_ctx *ev, SOCKET fd, buffer_ctx *buf, size_t
     msg.ptype = ud->type;
     msg.session = ud->session;
     msg.fd = fd;
-    while (NULL != (data = protos_unpack(ud->type, buf, &lens, ud))) {
+    int32_t closefd = 0;
+    while (NULL != (data = protos_unpack(ud->type, buf, &lens, ud, &closefd))) {
         msg.data = data;
         msg.size = lens;
         _push_message(ud->data, &msg);
-    }    
+    }
+    if (closefd) {
+        ev_close(ev, fd);
+    }
 }
 static inline void _task_net_send(ev_ctx *ev, SOCKET fd, size_t size, ud_cxt *ud) {
     message_ctx msg;
@@ -264,9 +268,8 @@ static inline void _task_net_close(ev_ctx *ev, SOCKET fd, ud_cxt *ud) {
 int32_t task_netlisten(task_ctx *task, unpack_type type, struct evssl_ctx *evssl,
     const char *host, uint16_t port, int32_t sendev) {
     ud_cxt ud;
-    ud.index = 0;
+    ZERO(&ud, sizeof(ud));
     ud.type = type;
-    ud.status = 0;
     ud.data = task;
     ud.session = task_session(task);
     cbs_ctx cbs;
@@ -292,8 +295,8 @@ static inline int32_t _task_net_connect(ev_ctx *ev, SOCKET fd, int32_t err, ud_c
 SOCKET task_netconnect(task_ctx *task, unpack_type type, uint64_t session, struct evssl_ctx *evssl,
     const char *host, uint16_t port, int32_t sendev) {
     ud_cxt ud;
+    ZERO(&ud, sizeof(ud));
     ud.type = type;
-    ud.status = 0;
     ud.data = task;
     ud.session = session;
     cbs_ctx cbs;
@@ -320,7 +323,7 @@ static inline void _task_net_recvfrom(ev_ctx *ev, SOCKET fd, char *buf, size_t s
 }
 SOCKET task_netudp(task_ctx *task, unpack_type type, const char *host, uint16_t port) {
     ud_cxt ud;
-    ud.status = 0;
+    ZERO(&ud, sizeof(ud));
     ud.type = type;
     ud.data = task;
     ud.session = task_session(task);

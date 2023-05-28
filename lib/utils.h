@@ -53,6 +53,9 @@ int32_t urldecode(char *str, size_t len);
 uint64_t hash(const char *buf, size_t len);
 uint64_t fnv1a_hash(const char *buf, size_t len);
 
+#ifndef OS_WIN
+int32_t _memicmp(const char *buf1, const char *buf2, size_t lens);
+#endif
 //转大写
 char *strupper(char *str);
 //转小写

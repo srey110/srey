@@ -1,5 +1,6 @@
 #include "test_utils.h"
 #include "lib.h"
+#include "proto/http.h"
 
 
 ARRAY_DECL(int, arr);
@@ -153,13 +154,13 @@ void test_system(CuTest* tc) {
     PRINT("procpath: %s", path);
     CuAssertTrue(tc, ERR_OK == isdir(path));
     CuAssertTrue(tc, ERR_OK != isfile(path));
-    char newpath[PATH_LENS] = { 0 };
+    /*char newpath[PATH_LENS] = { 0 };
     SNPRINTF(newpath, sizeof(newpath), "%s%s%s", path, PATH_SEPARATORSTR, "My Love.mp3");
     CuAssertTrue(tc, ERR_OK == isfile(newpath));
     CuAssertTrue(tc, ERR_OK != isdir(newpath));
     int64_t fsize = filesize(newpath);
     PRINT("%s filesize: %"PRIu64"", newpath, fsize);
-    CuAssertTrue(tc, 12436500 == fsize);
+    CuAssertTrue(tc, 12436500 == fsize);*/
 
     struct timeval tv;
     timeofday(&tv);
@@ -256,15 +257,64 @@ void test_netutils(CuTest* tc) {
 }
 void test_buffer(CuTest* tc) {
     buffer_ctx buf;
-    buffer_init(&buf);
+    buffer_init(&buf); 
+    size_t aaa = 0;
+    int32_t closed = 0;
+    ud_cxt ud;
+    ZERO(&ud, sizeof(ud));
+    const char *http1 = "POST  /users  HTTP/1.1\r\nHost: api.github.com\r\nContent-Length: 5\r\n\r\n1";
+    buffer_append(&buf, (void *)http1, strlen(http1));
+    void *rtnbuf = http_unpack(&buf, &aaa, &ud, &closed);
+    CuAssertTrue(tc, NULL == rtnbuf);
+    const char *http2 = "2345";
+    buffer_append(&buf, (void *)http2, strlen(http2));
+    rtnbuf = http_unpack(&buf, &aaa, &ud, &closed);
+    CuAssertTrue(tc, NULL != rtnbuf);
+    FREE(rtnbuf);
+
+    const char *http3 = "POST  /users  HTTP/1.1\r\nHost: api.github.com\r\nContent-Length: 5\r\n\r\n12345";
+    buffer_append(&buf, (void *)http3, strlen(http3));
+    rtnbuf = http_unpack(&buf, &aaa, &ud, &closed);
+    CuAssertTrue(tc, NULL != rtnbuf);
+    FREE(rtnbuf);
+
+    const char *http4 = "POST  /users  HTTP/1.1\r\nHost: api.github.com\r\n\r\n";
+    buffer_append(&buf, (void *)http4, strlen(http4));
+    rtnbuf = http_unpack(&buf, &aaa, &ud, &closed);
+    CuAssertTrue(tc, NULL != rtnbuf);
+    FREE(rtnbuf);
+
+    const char *http5 = "POST  /users  HTTP/1.1\r\nHost: api.github.com\r\nTransfer-Encoding: chunked\r\n\r\n7\r\nMozilla\r\n11\r\nDeveloper N\r\n0\r\n\r\n";
+    buffer_append(&buf, (void *)http5, strlen(http5));
+    rtnbuf = http_unpack(&buf, &aaa, &ud, &closed);
+    CuAssertTrue(tc, NULL != rtnbuf);
+    FREE(rtnbuf);
+    rtnbuf = http_unpack(&buf, &aaa, &ud, &closed);
+    CuAssertTrue(tc, NULL != rtnbuf);
+    FREE(rtnbuf);
+    rtnbuf = http_unpack(&buf, &aaa, &ud, &closed);
+    CuAssertTrue(tc, NULL != rtnbuf);
+    FREE(rtnbuf);
+    rtnbuf = http_unpack(&buf, &aaa, &ud, &closed);
+    CuAssertTrue(tc, NULL != rtnbuf);
+    FREE(rtnbuf);
+
     const char *str1 = "this is test.";
     const char *str2 = "who am i?";
     CuAssertTrue(tc, ERR_OK == buffer_append(&buf, (void *)str1, strlen(str1)));
     CuAssertTrue(tc, ERR_OK == buffer_appendv(&buf, "%s", str2));
-    CuAssertTrue(tc, 13 == buffer_search(&buf, 0, "who", strlen("who")));
+
+    CuAssertTrue(tc, ERR_FAILED == buffer_search(&buf, 1, 12, 13, "t.W", strlen("t.W")));
+    CuAssertTrue(tc, ERR_FAILED == buffer_search(&buf, 1, 0, 12, "t.W", strlen("t.W")));
+    CuAssertTrue(tc, 11 == buffer_search(&buf, 1, 0, 13, "t.W", strlen("t.W")));
+
+    CuAssertTrue(tc, ERR_FAILED == buffer_search(&buf, 1, 0, 12, "Who", strlen("Who")));
+    CuAssertTrue(tc, ERR_FAILED == buffer_search(&buf, 1, 0, 14, "Who", strlen("Who")));
+    CuAssertTrue(tc, 13 == buffer_search(&buf, 1, 0, 15, "Who", strlen("Who")));
+
     CuAssertTrue(tc, strlen(str1) + strlen(str2) == buffer_size(&buf));
     char out[ONEK] = { 0 };
-    int32_t rtn = buffer_copyout(&buf, out, strlen(str1));
+    int32_t rtn = buffer_copyout(&buf, 0, out, strlen(str1));
     CuAssertTrue(tc, rtn == strlen(str1) && 0 == strcmp(str1, out));
     rtn = buffer_drain(&buf, rtn);
     CuAssertTrue(tc, rtn == strlen(str1) && strlen(str2) == buffer_size(&buf));

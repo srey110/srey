@@ -5,13 +5,14 @@ TASK_NAME = {
     TAKS2 = 2,
     TAKS3 = 3
 }
---解包类型 标识该socket类型
+--解包类型 标识该socket类型 与c unpack_type对应
 UNPACK_TYPE = {
     NONE = 0,
     RPC = 1,
-    SIMPLE = 2,
+    HTTP = 2,
+    SIMPLE = 3
 }
---组包类型
+--组包类型 与c pack_type对应
 PACK_TYPE = {
     NONE = 0,
     RPC = 1,

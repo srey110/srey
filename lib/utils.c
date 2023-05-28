@@ -739,6 +739,26 @@ uint64_t fnv1a_hash(const char *buf, size_t len) {
     }
     return rtn;
 }
+#ifndef OS_WIN
+int32_t _memicmp(const char *buf1, const char *buf2, size_t lens) {
+    int32_t i = 0;
+    while (tolower(*buf1) == tolower(*buf2)
+        && i < (int32_t)lens) {
+        buf1++;
+        buf2++;
+        i++;
+    }
+    if (i == (int32_t)lens) {
+        return 0;
+    } else {
+        if (*buf1 > *buf2) {
+            return 1;
+        } else {
+            return -1;
+        }
+    }
+}
+#endif
 char *strupper(char *str){
     if (NULL == str) {
         return NULL;

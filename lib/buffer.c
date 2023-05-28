@@ -1,4 +1,5 @@
 #include "buffer.h"
+#include "utils.h"
 #include "netutils.h"
 #include "loger.h"
 
@@ -24,6 +25,7 @@ typedef struct bufnode_ctx {
 //新建一节点
 static bufnode_ctx *_node_new(const size_t size) {
     size_t total = ROUND_UP(size + sizeof(bufnode_ctx), sizeof(void *) < 8 ? 512 : ONEK);
+    //size_t total = size + sizeof(bufnode_ctx);
     char *buf;
     MALLOC(buf, total);
     bufnode_ctx *node = (bufnode_ctx *)buf;
@@ -353,17 +355,49 @@ int32_t buffer_appendv(buffer_ctx *ctx, const char *fmt, ...) {
     va_end(va);
     return ERR_OK;
 }
-int32_t buffer_copyout(buffer_ctx *ctx, void *out, size_t len) {
-    ASSERTAB(0 == ctx->freeze_read, "read freezed");
-    bufnode_ctx *node = ctx->head;
-    char *data = out;
-    if (len > ctx->total_len) {
-        len = ctx->total_len;
+static bufnode_ctx *_search_start(bufnode_ctx *node, size_t start, size_t *totaloff) {
+    while (NULL != node
+        && 0 != node->off) {
+        *totaloff += node->off;
+        //到达开始位置的节点
+        if (*totaloff > start) {
+            return node;
+        }
+        node = node->next;
     }
-    if (0 == len) {
+    return NULL;
+}
+int32_t buffer_copyout(buffer_ctx *ctx, const size_t start, void *out, size_t len) {
+    ASSERTAB(0 == ctx->freeze_read, "read freezed");
+    if (start >= ctx->total_len) {
         return 0;
     }
+    size_t remain = ctx->total_len - start;
+    if (len > remain) {
+        len = remain;
+    }
+    bufnode_ctx *node;
+    char *data = out;
     size_t nread = len;
+    if (0 == start) {
+        node = ctx->head;
+    } else {
+        size_t off = 0;
+        node = _search_start(ctx->head, start, &off);
+        off = node->off - (off - start);
+        if (off > 0) {
+            remain = node->off - off;
+            if (len > remain) {
+                memcpy(data, node->buffer + node->misalign + off, remain);
+                data += remain;
+                len -= remain;
+                node = node->next;
+            } else {
+                memcpy(data, node->buffer + node->misalign + off, len);
+                return (int32_t)nread;
+            }
+        }
+    }
     while (0 != len
         && len >= node->off) {
         memcpy(data, node->buffer + node->misalign, node->off);
@@ -419,19 +453,35 @@ int32_t buffer_drain(buffer_ctx *ctx, size_t len) {
     return (int32_t)len;
 }
 int32_t buffer_remove(buffer_ctx *ctx, void *out, size_t len) {
-    int32_t rtn = buffer_copyout(ctx, out, len);
+    int32_t rtn = buffer_copyout(ctx, 0, out, len);
     if (rtn > 0) {
         ASSERTAB(rtn == buffer_drain(ctx, rtn), "drain lens not equ copy lens.");
     }
     return rtn;
 }
-static int32_t _search_memcmp(bufnode_ctx *node, size_t off, char *what, size_t wlen) {
+static inline void *memichr(const char *buf, int32_t val, size_t maxlen) {
+    val = tolower(val);
+    while (maxlen--) {
+        if (tolower(*buf) == val) {
+            return (void *)buf;
+        }
+        buf++;
+    }
+    return NULL;
+}
+static int32_t _search_memcmp(bufnode_ctx *node, const int32_t ncs, size_t off, char *what, size_t wlen) {
     size_t ncomp;
     while (wlen > 0
         && NULL != node) {
         ncomp = wlen + off > node->off ? node->off - off : wlen;
-        if (0 != memcmp(node->buffer + node->misalign + off, what, ncomp)) {
-            return ERR_FAILED;
+        if (0 == ncs) {
+            if (0 != memcmp(node->buffer + node->misalign + off, what, ncomp)) {
+                return ERR_FAILED;
+            }
+        } else {
+            if (0 != _memicmp(node->buffer + node->misalign + off, what, ncomp)) {
+                return ERR_FAILED;
+            }
         }
         what += ncomp;
         wlen -= ncomp;
@@ -440,22 +490,12 @@ static int32_t _search_memcmp(bufnode_ctx *node, size_t off, char *what, size_t 
     }
     return ERR_OK;
 }
-static bufnode_ctx *_search_start(bufnode_ctx *node, size_t start, size_t *totaloff) {
-    while (NULL != node
-        && 0 != node->off) {
-        *totaloff += node->off;
-        //到达开始位置的节点
-        if (*totaloff > start) {
-            return node;
-        }
-        node = node->next;
-    }
-    return NULL;
-}
-int32_t buffer_search(buffer_ctx *ctx, const size_t start, char *what, size_t wlen) {
+int32_t buffer_search(buffer_ctx *ctx, const int32_t ncs,
+    const size_t start, const size_t end, char *what, size_t wlen) {
     ASSERTAB(0 == ctx->freeze_read, "read freezed");
     if (start >= ctx->total_len
-        || wlen > ctx->total_len) {
+        || wlen > ctx->total_len
+        || (0 != end && (start > end || start + wlen > end))) {
         return ERR_FAILED;
     }
     //查找开始位置所在节点
@@ -466,13 +506,25 @@ int32_t buffer_search(buffer_ctx *ctx, const size_t start, char *what, size_t wl
     size_t uioff = node->off - (totaloff - start);
     while (NULL != node
         && 0 != node->off) {
+        if (0 != end
+            && totaloff - node->off + uioff + wlen > end + 1) {
+            break;
+        }
         pstart = node->buffer + node->misalign + uioff;
-        pschar = (char *)memchr(pstart, what[0], node->off - uioff);
+        if (0 == ncs) {
+            pschar = (char *)memchr(pstart, what[0], node->off - uioff);
+        } else {
+            pschar = (char *)memichr(pstart, what[0], node->off - uioff);
+        }
         if (NULL != pschar) {
             uioff += (pschar - pstart);
-            if (ERR_OK == _search_memcmp(node, uioff, what, wlen)) {
+            if (0 != end
+                && totaloff - node->off + uioff + wlen > end + 1) {
+                break;
+            }
+            if (ERR_OK == _search_memcmp(node, ncs, uioff, what, wlen)) {
                 return (int32_t)(totaloff - node->off + uioff);
-            }            
+            }
             uioff++;
             if (node->off == uioff) {
                 uioff = 0;
