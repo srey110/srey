@@ -41,7 +41,7 @@ typedef struct tcp_ctx {
 typedef struct udp_ctx {
     sock_ctx sock;
     int32_t status;
-    recvfrom_cb rf_cb;
+    cbs_ctx cbs;
     IOV_TYPE buf_r;
     struct msghdr msg;
     qu_bufs buf_s;
@@ -86,6 +86,9 @@ void _free_sk(sock_ctx *skctx) {
     buffer_free(&tcp->buf_r);
     _bufs_clear(&tcp->buf_s);
     qu_bufs_free(&tcp->buf_s);
+    if (NULL != tcp->cbs.ud_free) {
+        tcp->cbs.ud_free(&tcp->ud);
+    }
     FREE(tcp);
 }
 void _clear_sk(sock_ctx *skctx) {
@@ -98,6 +101,9 @@ void _clear_sk(sock_ctx *skctx) {
     CLOSE_SOCK(tcp->sock.fd);
     _bufs_clear(&tcp->buf_s);
     buffer_drain(&tcp->buf_r, buffer_size(&tcp->buf_r));
+    if (NULL != tcp->cbs.ud_free) {
+        tcp->cbs.ud_free(&tcp->ud);
+    }
 }
 void _reset_sk(sock_ctx *skctx, SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
     tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
@@ -545,7 +551,7 @@ static inline void _init_msghdr(struct msghdr *msg, netaddr_ctx *addr, IOV_TYPE 
 static inline int32_t _on_udp_rcb(watcher_ctx *watcher, udp_ctx *udp) { 
     int32_t rtn = (int32_t)recvmsg(udp->sock.fd, &udp->msg, 0);
     if (rtn > 0) {
-        udp->rf_cb(watcher->ev, udp->sock.fd, udp->buf_r.IOV_PTR_FIELD, (size_t)rtn, &udp->addr, &udp->ud);
+        udp->cbs.rf_cb(watcher->ev, udp->sock.fd, udp->buf_r.IOV_PTR_FIELD, (size_t)rtn, &udp->addr, &udp->ud);
         rtn = ERR_OK;
     } else {
         if (0 == rtn) {
@@ -627,7 +633,7 @@ static void _on_udp_rw(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
         _free_udp(skctx);
     }
 }
-static inline sock_ctx *_new_udp(SOCKET fd, int32_t family, recvfrom_cb rf_cb, ud_cxt *ud) {
+static inline sock_ctx *_new_udp(SOCKET fd, int32_t family, cbs_ctx *cbs, ud_cxt *ud) {
     udp_ctx *udp;
     MALLOC(udp, sizeof(udp_ctx));
     udp->sock.ev_cb = _on_udp_rw;
@@ -635,7 +641,7 @@ static inline sock_ctx *_new_udp(SOCKET fd, int32_t family, recvfrom_cb rf_cb, u
     udp->sock.fd = fd;
     udp->sock.events = 0;
     udp->status = 0;
-    udp->rf_cb = rf_cb;
+    udp->cbs = *cbs;
     udp->buf_r.IOV_PTR_FIELD = udp->buf;
     udp->buf_r.IOV_LEN_FIELD = sizeof(udp->buf);
     COPY_UD(udp->ud, ud);
@@ -649,14 +655,17 @@ void _free_udp(sock_ctx *skctx) {
     CLOSE_SOCK(udp->sock.fd);
     _bufs_clear(&udp->buf_s);
     qu_bufs_free(&udp->buf_s);
+    if (NULL != udp->cbs.ud_free) {
+        udp->cbs.ud_free(&udp->ud);
+    }
     FREE(udp);
 }
 void _set_udp_error(watcher_ctx *watcher, sock_ctx *skctx) {
     UPCAST(skctx, udp_ctx, sock)->status |= STATUS_ERROR;
     _add_event(watcher, skctx->fd, &skctx->events, EVENT_WRITE, skctx);
 }
-SOCKET ev_udp(ev_ctx *ctx, const char *host, const uint16_t port, recvfrom_cb rf_cb, ud_cxt *ud) {
-    ASSERTAB(NULL != rf_cb, ERRSTR_NULLP);
+SOCKET ev_udp(ev_ctx *ctx, const char *host, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud) {
+    ASSERTAB(NULL != cbs->rf_cb, ERRSTR_NULLP);
     netaddr_ctx addr;
     if (ERR_OK != netaddr_sethost(&addr, host, port)) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
@@ -666,7 +675,7 @@ SOCKET ev_udp(ev_ctx *ctx, const char *host, const uint16_t port, recvfrom_cb rf
     if (INVALID_SOCK == fd) {
         return INVALID_SOCK;
     }
-    sock_ctx *skctx = _new_udp(fd, netaddr_family(&addr), rf_cb, ud);
+    sock_ctx *skctx = _new_udp(fd, netaddr_family(&addr), cbs, ud);
     _cmd_add_udp(ctx, fd, skctx);
     return fd;
 }

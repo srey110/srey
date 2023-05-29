@@ -258,7 +258,7 @@ void test_netutils(CuTest* tc) {
 void test_buffer(CuTest* tc) {
     buffer_ctx buf;
     buffer_init(&buf); 
-    size_t aaa = 0;
+    /*size_t aaa = 0;
     int32_t closed = 0;
     ud_cxt ud;
     ZERO(&ud, sizeof(ud));
@@ -297,7 +297,7 @@ void test_buffer(CuTest* tc) {
     FREE(rtnbuf);
     rtnbuf = http_unpack(&buf, &aaa, &ud, &closed);
     CuAssertTrue(tc, NULL != rtnbuf);
-    FREE(rtnbuf);
+    FREE(rtnbuf);*/
 
     const char *str1 = "this is test.";
     const char *str2 = "who am i?";

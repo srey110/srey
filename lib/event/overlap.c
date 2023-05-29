@@ -55,7 +55,7 @@ typedef struct overlap_udp_ctx {
     DWORD bytes_r;
     DWORD bytes_s;
     DWORD flag;
-    recvfrom_cb rf_cb;
+    cbs_ctx cbs;
     IOV_TYPE wsabuf_s;
     IOV_TYPE wsabuf_r;
     qu_bufs buf_s;
@@ -105,6 +105,9 @@ void _free_sk(sock_ctx *skctx) {
     buffer_free(&oltcp->buf_r);
     _bufs_clear(&oltcp->buf_s);
     qu_bufs_free(&oltcp->buf_s);
+    if (NULL != oltcp->cbs.ud_free) {
+        oltcp->cbs.ud_free(&oltcp->ud);
+    }
     FREE(oltcp);
 }
 void _clear_sk(sock_ctx *skctx) {
@@ -117,6 +120,9 @@ void _clear_sk(sock_ctx *skctx) {
     oltcp->ol_s.fd = INVALID_SOCK;
     _bufs_clear(&oltcp->buf_s);
     buffer_drain(&oltcp->buf_r, buffer_size(&oltcp->buf_r));
+    if (NULL != oltcp->cbs.ud_free) {
+        oltcp->cbs.ud_free(&oltcp->ud);
+    }
 }
 void _reset_sk(sock_ctx *skctx, SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
     overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
@@ -638,7 +644,7 @@ static inline void _on_recvfrom_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD 
         _on_udp_close_r(watcher, oludp);
         return;
     }
-    oludp->rf_cb(watcher->ev, oludp->ol_r.fd, oludp->wsabuf_r.buf, (size_t)bytes, &oludp->addr, &oludp->ud);
+    oludp->cbs.rf_cb(watcher->ev, oludp->ol_r.fd, oludp->wsabuf_r.buf, (size_t)bytes, &oludp->addr, &oludp->ud);
     if (oludp->status & STATUS_ERROR) {//多处理一个数据包
         _on_udp_close_r(watcher, oludp);
         return;
@@ -707,7 +713,7 @@ void _add_bufs_trysendto(sock_ctx *skctx, bufs_ctx *buf) {
         }
     }
 }
-static inline sock_ctx *_new_udp(netaddr_ctx *addr, SOCKET fd, recvfrom_cb rf_cb, ud_cxt *ud) {
+static inline sock_ctx *_new_udp(netaddr_ctx *addr, SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
     overlap_udp_ctx *oludp;
     MALLOC(oludp, sizeof(overlap_udp_ctx));
     oludp->ol_r.type = SOCK_DGRAM;
@@ -717,7 +723,7 @@ static inline sock_ctx *_new_udp(netaddr_ctx *addr, SOCKET fd, recvfrom_cb rf_cb
     oludp->ol_s.fd = fd;
     oludp->ol_s.ev_cb = _on_sendto_cb;
     oludp->status = 0;
-    oludp->rf_cb = rf_cb;
+    oludp->cbs = *cbs;
     COPY_UD(oludp->ud, ud);
     netaddr_empty_addr(&oludp->addr, netaddr_family(addr));
     oludp->addrlen = netaddr_size(&oludp->addr);
@@ -731,10 +737,13 @@ void _free_udp(sock_ctx *skctx) {
     CLOSE_SOCK(oludp->ol_r.fd);
     _bufs_clear(&oludp->buf_s);
     qu_bufs_free(&oludp->buf_s);
+    if (NULL != oludp->cbs.ud_free) {
+        oludp->cbs.ud_free(&oludp->ud);
+    }
     FREE(oludp);
 }
-SOCKET ev_udp(ev_ctx *ctx, const char *host, const uint16_t port, recvfrom_cb rf_cb, ud_cxt *ud) {
-    ASSERTAB(NULL != rf_cb, ERRSTR_NULLP);
+SOCKET ev_udp(ev_ctx *ctx, const char *host, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud) {
+    ASSERTAB(NULL != cbs->rf_cb, ERRSTR_NULLP);
     netaddr_ctx addr;
     if (ERR_OK != netaddr_sethost(&addr, host, port)) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
@@ -750,7 +759,7 @@ SOCKET ev_udp(ev_ctx *ctx, const char *host, const uint16_t port, recvfrom_cb rf
         CLOSE_SOCK(fd);
         return INVALID_SOCK;
     }
-    sock_ctx *skctx = _new_udp(&addr, fd, rf_cb, ud);
+    sock_ctx *skctx = _new_udp(&addr, fd, cbs, ud);
     _cmd_add(watcher, skctx, hs);
     if (ERR_OK != _post_recv_from(UPCAST(skctx, overlap_udp_ctx, ol_r))) {
         _cmd_remove(watcher, fd, hs);

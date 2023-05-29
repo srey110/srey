@@ -5,15 +5,13 @@
 
 /*
 用户数据
-timeout: data(task) session
-net: type(unpack_type) data(task) session  http(status, headlens, lens)
+timeout: data(task_ctx) session
+net: upktype(unpack_type) data(task_ctx) session  http(extra)
 */
 typedef struct ud_cxt {
-    int32_t type;
-    int32_t status;
+    int32_t upktype;
     void *data;
-    size_t lens;
-    size_t headlens;
+    void *extra;
     uint64_t session;
 }ud_cxt;
 

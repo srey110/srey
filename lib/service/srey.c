@@ -66,9 +66,11 @@ static inline void _push_message(task_ctx *task, message_ctx *msg) {
     mutex_unlock(&task->mutask);
 }
 static inline void _message_clean(message_ctx *msg) {
-    switch (msg->type) {
+    switch (msg->msgtype) {
     case MSG_TYPE_RECV:
     case MSG_TYPE_RECVFROM:
+        protos_pkfree(msg->upktype, msg->data);
+        break;
     case MSG_TYPE_USER:
         FREE(msg->data);
         break;
@@ -118,14 +120,14 @@ task_ctx *srey_tasknew(srey_ctx *ctx, int32_t name, uint32_t maxcnt,
     ASSERTAB(NULL == hashmap_set(ctx->maptask, &task), formatv("task %d repeat.", name));
     rwlock_unlock(&ctx->lckmaptask);
     message_ctx msg;
-    msg.type = MSG_TYPE_STARTED;
+    msg.msgtype = MSG_TYPE_STARTED;
     _push_message(task, &msg);
     return task;
 }
 static void _free_task(void *item) {
     task_ctx *task = *(task_ctx **)item;
     message_ctx closing;
-    closing.type = MSG_TYPE_CLOSING;
+    closing.msgtype = MSG_TYPE_CLOSING;
     task->_run(task, &closing);
     if (NULL != task->_free) {
         task->_free(task);
@@ -197,7 +199,7 @@ uint64_t task_session(task_ctx *task) {
 }
 void task_user(task_ctx *dst, task_ctx *src, uint64_t session, void *data, size_t size, int32_t copy) {
     message_ctx msg;
-    msg.type = MSG_TYPE_USER;
+    msg.msgtype = MSG_TYPE_USER;
     msg.session = session;
     msg.src = src;
     if (0 != copy) {
@@ -211,7 +213,7 @@ void task_user(task_ctx *dst, task_ctx *src, uint64_t session, void *data, size_
 }
 static inline void _srey_timeout(ud_cxt *ud) {
     message_ctx msg;
-    msg.type = MSG_TYPE_TIMEOUT;
+    msg.msgtype = MSG_TYPE_TIMEOUT;
     msg.session = ud->session;
     _push_message((void *)ud->data, &msg);
 }
@@ -223,8 +225,8 @@ void task_timeout(task_ctx *task, uint64_t session, uint32_t timeout) {
 }
 static inline int32_t _task_net_accept(ev_ctx *ev, SOCKET fd, ud_cxt *ud) {
     message_ctx msg;
-    msg.type = MSG_TYPE_ACCEPT;
-    msg.ptype = ud->type;
+    msg.msgtype = MSG_TYPE_ACCEPT;
+    msg.upktype = ud->upktype;
     msg.session = ud->session;
     msg.fd = fd;
     _push_message(ud->data, &msg);
@@ -234,24 +236,24 @@ static inline void _task_net_recv(ev_ctx *ev, SOCKET fd, buffer_ctx *buf, size_t
     size_t lens;
     void *data;
     message_ctx msg;
-    msg.type = MSG_TYPE_RECV;
-    msg.ptype = ud->type;
+    msg.msgtype = MSG_TYPE_RECV;
+    msg.upktype = ud->upktype;
     msg.session = ud->session;
     msg.fd = fd;
     int32_t closefd = 0;
-    while (NULL != (data = protos_unpack(ud->type, buf, &lens, ud, &closefd))) {
+    while (NULL != (data = protos_unpack(ud->upktype, buf, &lens, ud, &closefd))) {
         msg.data = data;
         msg.size = lens;
         _push_message(ud->data, &msg);
     }
-    if (closefd) {
+    if (0 != closefd) {
         ev_close(ev, fd);
     }
 }
 static inline void _task_net_send(ev_ctx *ev, SOCKET fd, size_t size, ud_cxt *ud) {
     message_ctx msg;
-    msg.type = MSG_TYPE_SEND;
-    msg.ptype = ud->type;
+    msg.msgtype = MSG_TYPE_SEND;
+    msg.upktype = ud->upktype;
     msg.session = ud->session;
     msg.fd = fd;
     msg.size = size;
@@ -259,17 +261,17 @@ static inline void _task_net_send(ev_ctx *ev, SOCKET fd, size_t size, ud_cxt *ud
 }
 static inline void _task_net_close(ev_ctx *ev, SOCKET fd, ud_cxt *ud) {
     message_ctx msg;
-    msg.type = MSG_TYPE_CLOSE;
-    msg.ptype = ud->type;
+    msg.msgtype = MSG_TYPE_CLOSE;
+    msg.upktype = ud->upktype;
     msg.session = ud->session;
     msg.fd = fd;
     _push_message(ud->data, &msg);
 }
-int32_t task_netlisten(task_ctx *task, unpack_type type, struct evssl_ctx *evssl,
+int32_t task_netlisten(task_ctx *task, unpack_type upktype, struct evssl_ctx *evssl,
     const char *host, uint16_t port, int32_t sendev) {
     ud_cxt ud;
     ZERO(&ud, sizeof(ud));
-    ud.type = type;
+    ud.upktype = upktype;
     ud.data = task;
     ud.session = task_session(task);
     cbs_ctx cbs;
@@ -280,23 +282,24 @@ int32_t task_netlisten(task_ctx *task, unpack_type type, struct evssl_ctx *evssl
     if (0 != sendev) {
         cbs.s_cb = _task_net_send;
     }
+    cbs.ud_free = protos_exfree;
     return ev_listen(&task->srey->netev, evssl, host, port, &cbs, &ud);
 }
 static inline int32_t _task_net_connect(ev_ctx *ev, SOCKET fd, int32_t err, ud_cxt *ud) {
     message_ctx msg;
-    msg.type = MSG_TYPE_CONNECT;
-    msg.ptype = ud->type;
+    msg.msgtype = MSG_TYPE_CONNECT;
+    msg.upktype = ud->upktype;
     msg.session = ud->session;
     msg.fd = fd;
     msg.error = err;
     _push_message(ud->data, &msg);
     return ERR_OK;
 }
-SOCKET task_netconnect(task_ctx *task, unpack_type type, uint64_t session, struct evssl_ctx *evssl,
+SOCKET task_netconnect(task_ctx *task, unpack_type upktype, uint64_t session, struct evssl_ctx *evssl,
     const char *host, uint16_t port, int32_t sendev) {
     ud_cxt ud;
     ZERO(&ud, sizeof(ud));
-    ud.type = type;
+    ud.upktype = upktype;
     ud.data = task;
     ud.session = session;
     cbs_ctx cbs;
@@ -307,12 +310,13 @@ SOCKET task_netconnect(task_ctx *task, unpack_type type, uint64_t session, struc
     if (0 != sendev) {
         cbs.s_cb = _task_net_send;
     }
+    cbs.ud_free = protos_exfree;
     return ev_connect(&task->srey->netev, evssl, host, port, &cbs, &ud);
 }
 static inline void _task_net_recvfrom(ev_ctx *ev, SOCKET fd, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
     message_ctx msg;
-    msg.type = MSG_TYPE_RECVFROM;
-    msg.ptype = ud->type;
+    msg.msgtype = MSG_TYPE_RECVFROM;
+    msg.upktype = ud->upktype;
     msg.session = ud->session;
     msg.fd = fd;
     MALLOC(msg.data, size);
@@ -321,17 +325,21 @@ static inline void _task_net_recvfrom(ev_ctx *ev, SOCKET fd, char *buf, size_t s
     memcpy(&msg.addr, addr, sizeof(netaddr_ctx));
     _push_message(ud->data, &msg);
 }
-SOCKET task_netudp(task_ctx *task, unpack_type type, const char *host, uint16_t port) {
+SOCKET task_netudp(task_ctx *task, unpack_type upktype, const char *host, uint16_t port) {
     ud_cxt ud;
     ZERO(&ud, sizeof(ud));
-    ud.type = type;
+    ud.upktype = upktype;
     ud.data = task;
     ud.session = task_session(task);
-    return ev_udp(&task->srey->netev, host, port, _task_net_recvfrom, &ud);
+    cbs_ctx cbs;
+    ZERO(&cbs, sizeof(cbs));
+    cbs.rf_cb = _task_net_recvfrom;
+    cbs.ud_free = protos_exfree;
+    return ev_udp(&task->srey->netev, host, port, &cbs, &ud);
 }
-void task_netsend(task_ctx *task, SOCKET fd, void *data, size_t len, pack_type type) {
+void task_netsend(task_ctx *task, SOCKET fd, void *data, size_t len, pack_type pktype) {
     size_t size;
-    void *pack = protos_pack(type, data, len, &size);
+    void *pack = protos_pack(pktype, data, len, &size);
     ev_send(task_netev(task), fd, pack, size, 0);
 }
 static void _loop_worker(void *arg) {
@@ -390,7 +398,6 @@ srey_ctx *srey_init(uint32_t nnet, uint32_t nworker) {
     }
 
     tw_init(&ctx->tw);
-    protos_init();
     ev_init(&ctx->netev, nnet);
     return ctx;
 }

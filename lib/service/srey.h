@@ -19,8 +19,8 @@ typedef enum msg_type {
 typedef struct srey_ctx srey_ctx;
 typedef struct task_ctx task_ctx;
 typedef struct message_ctx {
-    msg_type type;
-    int32_t ptype;
+    msg_type msgtype;//msg_type
+    int32_t upktype;//unpack_type
     int32_t error;
     SOCKET fd;
     task_ctx *src;
@@ -55,11 +55,11 @@ uint64_t task_session(task_ctx *task);
 
 void task_user(task_ctx *dst, task_ctx *src, uint64_t session, void *data, size_t size, int32_t copy);
 void task_timeout(task_ctx *task, uint64_t session, uint32_t timeout);
-int32_t task_netlisten(task_ctx *task, unpack_type type, struct evssl_ctx *evssl,
+int32_t task_netlisten(task_ctx *task, unpack_type upktype, struct evssl_ctx *evssl,
     const char *host, uint16_t port, int32_t sendev);
-SOCKET task_netconnect(task_ctx *task, unpack_type type, uint64_t session, struct evssl_ctx *evssl,
+SOCKET task_netconnect(task_ctx *task, unpack_type upktype, uint64_t session, struct evssl_ctx *evssl,
     const char *host, uint16_t port, int32_t sendev);
-SOCKET task_netudp(task_ctx *task, unpack_type type, const char *host, uint16_t port);
-void task_netsend(task_ctx *task, SOCKET fd, void *data, size_t len, pack_type type);
+SOCKET task_netudp(task_ctx *task, unpack_type upktype, const char *host, uint16_t port);
+void task_netsend(task_ctx *task, SOCKET fd, void *data, size_t len, pack_type pktype);
 
 #endif //SREY_H_

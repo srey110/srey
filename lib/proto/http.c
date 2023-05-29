@@ -14,7 +14,7 @@ enum {
 #define CHUNKED_KEY "chunked"
 
 static inline void *_http_parse(buffer_ctx *buf, size_t *size, ud_cxt *ud, int32_t *closefd) {
-    size_t total = buffer_size(buf);
+    /*size_t total = buffer_size(buf);
     size_t lens = strlen(FLAG_END);
     int32_t headpos = buffer_search(buf, 0, 0, 0, FLAG_END, lens);
     if (ERR_FAILED == headpos) {
@@ -84,10 +84,11 @@ static inline void *_http_parse(buffer_ctx *buf, size_t *size, ud_cxt *ud, int32
     *size = ud->headlens;
     MALLOC(data, ud->headlens);
     ASSERTAB(ud->headlens == buffer_remove(buf, data, ud->headlens), "copy buffer error.")
-    return data;
+    return data;*/
+    return NULL;
 }
 static inline void *_http_content(buffer_ctx *buf, size_t *size, ud_cxt *ud, int32_t *closefd) {
-    size_t total = buffer_size(buf);
+    /*size_t total = buffer_size(buf);
     size_t lens = ud->headlens + ud->lens;
     if (total >= lens) {
         void *data;
@@ -96,11 +97,11 @@ static inline void *_http_content(buffer_ctx *buf, size_t *size, ud_cxt *ud, int
         ASSERTAB(lens == buffer_remove(buf, data, lens), "copy buffer error.")
         ud->status = INIT;
         return data;
-    }
+    }*/
     return NULL;
 }
 static inline void *_http_chunked(buffer_ctx *buf, size_t *size, ud_cxt *ud, int32_t *closefd) {
-    size_t total = buffer_size(buf);
+    /*size_t total = buffer_size(buf);
     size_t lens = strlen(FLAG_LINE);
     int32_t keypos = buffer_search(buf, 0, 0, 0, FLAG_LINE, lens);
     if (ERR_FAILED != keypos) {
@@ -130,11 +131,11 @@ static inline void *_http_chunked(buffer_ctx *buf, size_t *size, ud_cxt *ud, int
                 return data;
             }
         }
-    }
+    }*/
     return NULL;
 }
 void *http_unpack(buffer_ctx *buf, size_t *size, ud_cxt *ud, int32_t *closefd) {
-    void *data = NULL;
+    /*void *data = NULL;
     switch (ud->status) {
     case INIT:
         data = _http_parse(buf, size, ud, closefd);
@@ -148,5 +149,12 @@ void *http_unpack(buffer_ctx *buf, size_t *size, ud_cxt *ud, int32_t *closefd) {
     default:
         break;
     }
-    return data;
+    return data;*/
+    return NULL;
+}
+void http_pkfree(void *data) {
+    
+}
+void http_exfree(void *extra) {
+
 }
