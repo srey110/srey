@@ -8,7 +8,7 @@
 #include <openssl/err.h>
 
 typedef struct evssl_ctx evssl_ctx;
-#define SSL_ERR() ERR_reason_error_string(ERR_get_error())
+#define SSL_ERR() ERR_error_string(ERR_get_error(), NULL)
 #define FREE_SSL(ssl)\
 do {\
     if (NULL != ssl){\

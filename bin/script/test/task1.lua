@@ -16,13 +16,13 @@ local function ontimeout()
     rtn = srey.request(rpctask, "rpc_void")
     printd("request rpc_void rtn:" .. tostring(rtn))
     if INVALID_SOCK ~= rpcfd then
-        --[[srey.netcall(rpcfd, TASK_NAME.TAKS2,
+        srey.netcall(rpcfd, TASK_NAME.TAKS2,
                     "rpc_add", math.random(10) , math.random(10), "srey.netcall")--]]
         rtn, sum, des = srey.netreq(rpcfd, TASK_NAME.TAKS2,
                                    "rpc_add", math.random(10) , math.random(10), "srey.netreq")
         printd("netreq rpc_add rtn:" .. tostring(rtn) .. " sum:" .. tostring(sum) .. " des:" .. tostring(des))
-        --[[rtn = srey.netreq(rpcfd, TASK_NAME.TAKS2, "rpc_void")
-        printd("netreq rpc_void rtn:" .. tostring(rtn))--]]
+        rtn = srey.netreq(rpcfd, TASK_NAME.TAKS2, "rpc_void")
+        printd("netreq rpc_void rtn:" .. tostring(rtn))
     end
     srey.timeout(5000, ontimeout)
 end
@@ -68,7 +68,7 @@ srey.sended(onsended)
 
 local function onsockclose(unptype, fd)
     if unptype == UNPACK_TYPE.RPC and rpcfd == fd then
-        printd(srey.name() .. " rpc connect closed")
+        printd(srey.name() .. "................. error rpc connect closed")
         rpcfd = INVALID_SOCK
     end
 end

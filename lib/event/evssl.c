@@ -13,6 +13,7 @@ static inline void _init_ssl() {
         SSL_library_init();
         OpenSSL_add_all_algorithms();
         SSL_load_error_strings();
+        ERR_load_crypto_strings();
     }
 }
 static inline evssl_ctx *_new_evssl(SSL_verify_cb v_cb) {
@@ -21,6 +22,8 @@ static inline evssl_ctx *_new_evssl(SSL_verify_cb v_cb) {
     MALLOC(evssl, sizeof(evssl_ctx));
     evssl->ssl = SSL_CTX_new(SSLv23_method());
     ASSERTAB(NULL != evssl->ssl, SSL_ERR());
+    //fix error:0A000126:SSL routines::unexpected eof while reading https://github.com/openssl/openssl/issues/18866
+    SSL_CTX_set_options(evssl->ssl, SSL_OP_IGNORE_UNEXPECTED_EOF);
     SSL_CTX_set_security_level(evssl->ssl, 0);//ca md too weak
     if (NULL != v_cb) {
         SSL_CTX_set_verify(evssl->ssl, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, v_cb);
