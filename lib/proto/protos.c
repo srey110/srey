@@ -12,10 +12,10 @@ void protos_pkfree(unpack_type type, void *data) {
         break;
     }
 }
-void protos_exfree(ud_cxt *ud) {
+void protos_udfree(ud_cxt *ud) {
     switch (ud->upktype) {
     case UNPACK_HTTP:
-        http_exfree(ud->extra);
+        http_udfree(ud);
         break;
     default:
         FREE(ud->extra);

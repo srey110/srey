@@ -556,8 +556,7 @@ char *b64encode(const char *buf, const size_t len, size_t *new_len) {
     uint32_t i, j;
     char *out;
     size_t enlen = B64_ENSIZE(len) + 1;
-    MALLOC(out, enlen);
-    ZERO(out, enlen);
+    CALLOC(out, 1, enlen);
     for (i = j = 0; i < len; i++) {
         s = i % 3;
         switch (s) {
@@ -595,8 +594,7 @@ char *b64decode(const char *buf, const size_t len, size_t *new_len) {
     uint32_t i, j;
     char *out;
     size_t delen = B64_DESIZE(len) + 1;
-    MALLOC(out, delen);
-    ZERO(out, delen);
+    CALLOC(out, 1, delen);
     for (i = j = 0; i < len; i++) {
         s = i % 4;
         if (buf[i] == '=') {
@@ -839,9 +837,8 @@ char *formatargs(const char *fmt, va_list args) {
     int32_t num;
     size_t size = 512;
     char *pbuff;
-    MALLOC(pbuff, size);    
+    CALLOC(pbuff, 1, size);    
     while (1) {
-        ZERO(pbuff, size);
         num = vsnprintf(pbuff, size, fmt, args);
         if ((num > -1)
             && (num < (int32_t)size)) {
@@ -850,7 +847,7 @@ char *formatargs(const char *fmt, va_list args) {
         FREE(pbuff);
         //分配更大空间
         size = (num > -1) ? (num + 1) : size * 2;
-        MALLOC(pbuff, size);
+        CALLOC(pbuff, 1, size);
     }
 }
 char *formatv(const char *fmt, ...) {

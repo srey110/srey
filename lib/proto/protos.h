@@ -17,7 +17,7 @@ typedef enum pack_type {
 }pack_type;
 
 void protos_pkfree(unpack_type type, void *data);
-void protos_exfree(ud_cxt *ud);
+void protos_udfree(ud_cxt *ud);
 void *protos_unpack(unpack_type type, buffer_ctx *buf, size_t *size, ud_cxt *ud, int32_t *closefd);
 void *protos_pack(pack_type type, void *data, size_t lens, size_t *size);
 

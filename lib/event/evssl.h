@@ -18,8 +18,8 @@ do {\
 }while (0)
 
 //SSL_FILETYPE_PEM SSL_FILETYPE_ASN1
-evssl_ctx *evssl_new(const char *ca, const char *cert, const char *key, int32_t type, SSL_verify_cb v_cb);
-evssl_ctx *evssl_p12_new(const char *p12, const char *pwd, SSL_verify_cb v_cb);
+evssl_ctx *evssl_new(const char *ca, const char *cert, const char *key, int32_t type, int32_t verify);
+evssl_ctx *evssl_p12_new(const char *p12, const char *pwd, int32_t verify);
 void evssl_free(evssl_ctx *evssl);
 
 SSL *evssl_setfd(evssl_ctx *evssl, SOCKET fd);

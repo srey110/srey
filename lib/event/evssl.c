@@ -16,7 +16,7 @@ static inline void _init_ssl() {
         ERR_load_crypto_strings();
     }
 }
-static inline evssl_ctx *_new_evssl(SSL_verify_cb v_cb) {
+static inline evssl_ctx *_new_evssl(int32_t verify) {
     _init_ssl();
     evssl_ctx *evssl;
     MALLOC(evssl, sizeof(evssl_ctx));
@@ -25,13 +25,12 @@ static inline evssl_ctx *_new_evssl(SSL_verify_cb v_cb) {
     //fix error:0A000126:SSL routines::unexpected eof while reading https://github.com/openssl/openssl/issues/18866
     SSL_CTX_set_options(evssl->ssl, SSL_OP_IGNORE_UNEXPECTED_EOF);
     SSL_CTX_set_security_level(evssl->ssl, 0);//ca md too weak
-    if (NULL != v_cb) {
-        SSL_CTX_set_verify(evssl->ssl, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, v_cb);
-    }
+    SSL_CTX_set_verify(evssl->ssl, verify, NULL);
+    SSL_CTX_set_mode(evssl->ssl, SSL_MODE_AUTO_RETRY);
     return evssl;
 }
-evssl_ctx *evssl_new(const char *ca, const char *cert, const char *key, int32_t type, SSL_verify_cb v_cb) {
-    evssl_ctx *evssl = _new_evssl(v_cb);
+evssl_ctx *evssl_new(const char *ca, const char *cert, const char *key, int32_t type, int32_t verify) {
+    evssl_ctx *evssl = _new_evssl(verify);
     if (!EMPTYSTR(ca)) {
         ASSERTAB(1 == SSL_CTX_load_verify_locations(evssl->ssl, ca, NULL), SSL_ERR());
     }
@@ -44,8 +43,8 @@ evssl_ctx *evssl_new(const char *ca, const char *cert, const char *key, int32_t 
     }
     return evssl;
 }
-evssl_ctx *evssl_p12_new(const char *p12, const char *pwd, SSL_verify_cb v_cb) {
-    evssl_ctx *evssl = _new_evssl(v_cb);
+evssl_ctx *evssl_p12_new(const char *p12, const char *pwd, int32_t verify) {
+    evssl_ctx *evssl = _new_evssl(verify);
     if (EMPTYSTR(p12)) {
         return evssl;
     }

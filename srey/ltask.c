@@ -163,8 +163,7 @@ static int32_t _ltask_register(lua_State *lua) {
     }
     maxcnt = (0 == maxcnt ? 1 : maxcnt);
     ltask_ctx *ltask;
-    MALLOC(ltask, sizeof(ltask_ctx));
-    ZERO(ltask, sizeof(ltask_ctx));
+    CALLOC(ltask, 1, sizeof(ltask_ctx));
     strcpy(ltask->file, file);
     lua_pushlightuserdata(lua, srey_tasknew(srey, name, maxcnt, 
         _ltask_new, _ltask_run, _ltask_free, ltask));
@@ -209,6 +208,7 @@ static int32_t _ltask_sslevnew(lua_State *lua) {
     const char *cert = luaL_checkstring(lua, 3);
     const char *key = luaL_checkstring(lua, 4);
     int32_t keytype = (int32_t)luaL_checkinteger(lua, 5);
+    int32_t verify = (int32_t)luaL_checkinteger(lua, 6);
     char capath[PATH_LENS] = { 0 };
     char certpath[PATH_LENS] = { 0 };
     char keypath[PATH_LENS] = { 0 };
@@ -224,7 +224,7 @@ static int32_t _ltask_sslevnew(lua_State *lua) {
         SNPRINTF(keypath, sizeof(keypath) - 1, "%s%s%s%s%s", 
             propath, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, key);
     }
-    evssl_ctx *ssl = evssl_new(capath, certpath, keypath, keytype, NULL);
+    evssl_ctx *ssl = evssl_new(capath, certpath, keypath, keytype, verify);
     certs_register(srey, name, ssl);
     lua_pushlightuserdata(lua, ssl);
     return 1;
@@ -233,10 +233,13 @@ static int32_t _ltask_sslevp12new(lua_State *lua) {
     const char *name = luaL_checkstring(lua, 1);
     const char *p12 = luaL_checkstring(lua, 2);
     const char *pwd = luaL_checkstring(lua, 3);
+    int32_t verify = (int32_t)luaL_checkinteger(lua, 4);
     char p12path[PATH_LENS] = { 0 };
-    SNPRINTF(p12path, sizeof(p12path) - 1, "%s%s%s%s%s", 
-        propath, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, p12);
-    evssl_ctx *ssl = evssl_p12_new(p12path, pwd, NULL);
+    if (0 != strlen(p12)) {
+        SNPRINTF(p12path, sizeof(p12path) - 1, "%s%s%s%s%s",
+            propath, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, p12);
+    }
+    evssl_ctx *ssl = evssl_p12_new(p12path, pwd, verify);
     certs_register(srey, name, ssl);
     lua_pushlightuserdata(lua, ssl);
     return 1;

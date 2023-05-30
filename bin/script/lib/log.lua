@@ -3,6 +3,14 @@ local debug = debug
 local string = string
 local log = {}
 
+--日志级别
+local LOG_LV = {
+    FATAL = 0x00,
+    ERROR = 0x01,
+    WARN = 0x02,
+    INFO = 0x03,
+    DEBUG = 0x04
+}
 local function _log(loglv, fmt, ...)
     local info = debug.getinfo(3)
     if nil == info then

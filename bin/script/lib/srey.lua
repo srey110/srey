@@ -21,6 +21,12 @@ local connect_timeout = {}
 local coro_pool = setmetatable({}, { __mode = "kv" })
 local encode = (RPC_USEJSON and json.encode or msgpack.pack)
 local decode = (RPC_USEJSON and json.decode or msgpack.unpack)
+local TASKMSG_TYPE = {
+    REQUEST = 0x01,
+    RESPONSE = 0x02,
+    NETREQ = 0x03,
+    NETRESP = 0x04,
+}
 
 --[[
 描述:任务初始化完成后

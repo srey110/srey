@@ -1,42 +1,36 @@
 --任务名
 TASK_NAME = {
-    HARBOR = 0,
-    TAKS1 = 1,
-    TAKS2 = 2,
-    TAKS3 = 3
+    HARBOR = 0x00,
+    TAKS1 = 0x01,
+    TAKS2 = 0x02,
+    TAKS3 = 0x03
 }
 --解包类型 标识该socket类型 与c unpack_type对应
 UNPACK_TYPE = {
-    NONE = 0,
-    RPC = 1,
-    HTTP = 2,
-    SIMPLE = 3
+    NONE = 0x00,
+    RPC = 0x01,
+    HTTP = 0x02,
+    SIMPLE = 0x03
 }
 --组包类型 与c pack_type对应
 PACK_TYPE = {
-    NONE = 0,
-    RPC = 1,
-    SIMPLE = 2,
-}
---任务间消息
-TASKMSG_TYPE = {
-    REQUEST = 1,
-    RESPONSE = 2,
-    NETREQ = 3,
-    NETRESP = 4,
+    NONE = 0x00,
+    RPC = 0x01,
+    SIMPLE = 0x02,
 }
 --ssl文件类型
 SSLFILE_TYPE = {
-    PEM = 1,
-    ASN1 = 2
+    PEM = 0x01,
+    ASN1 = 0x02
 }
---日志级别
-LOG_LV = {
-    FATAL = 0,
-    ERROR = 1,
-    WARN = 2,
-    INFO = 3,
-    DEBUG = 4
+--证书验证
+--NONE 不验证
+--PEER 验证
+--FAIL_IF_NO_PEER_CERT只能用于服务端
+SSLVERIFY_TYPE = {
+    NONE = 0x00,
+    PEER = 0x01,
+    FAIL_IF_NO_PEER_CERT = 0x03,
 }
 
 PRINT_DEBUG = true

@@ -130,11 +130,14 @@ end
     cert cert文件 :string
     key key文件 :string
     ftype SSL_FILETYPE
+    verify SSLVERIFY_TYPE
 返回:
     evssl_ctx
 --]]
-function core.sslevnew(name, ca, cert, key, ftype)
-    return srey.sslevnew(name, ca, cert, key, nil == ftype and SSLFILE_TYPE.PEM or ftype)
+function core.sslevnew(name, ca, cert, key, ftype, verify)
+    return srey.sslevnew(name, ca, cert, key,
+                         nil == ftype and SSLFILE_TYPE.PEM or ftype,
+                         nil == verify and SSLVERIFY_TYPE.NONE or verify)
 end
 --[[
 描述:创建evssl_ctx
@@ -145,8 +148,8 @@ end
 返回:
     evssl_ctx
 --]]
-function core.sslevp12new(name, p12, pwd)
-    return srey.sslevp12new(name, p12, pwd)
+function core.sslevp12new(name, p12, pwd, verify)
+    return srey.sslevp12new(name, p12, pwd, nil == verify and SSLVERIFY_TYPE.NONE or verify)
 end
 --[[
 描述:evssl_ctx 查询

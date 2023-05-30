@@ -102,8 +102,7 @@ task_ctx *srey_tasknew(srey_ctx *ctx, int32_t name, uint32_t maxcnt,
     task_new _init, task_run _run, task_free _tfree, void *arg) {
     ASSERTAB(NULL != _run, ERRSTR_INVPARAM);
     task_ctx *task;
-    MALLOC(task, sizeof(task_ctx));
-    ZERO(task, sizeof(task_ctx));
+    CALLOC(task, 1, sizeof(task_ctx));
     task->session = 1;
     task->name = name;
     task->maxcnt = maxcnt;
@@ -233,13 +232,14 @@ static inline int32_t _task_net_accept(ev_ctx *ev, SOCKET fd, ud_cxt *ud) {
     return ERR_OK;
 }
 static inline void _task_net_recv(ev_ctx *ev, SOCKET fd, buffer_ctx *buf, size_t size, ud_cxt *ud) {
-    size_t lens;
-    void *data;
+    
     message_ctx msg;
     msg.msgtype = MSG_TYPE_RECV;
     msg.upktype = ud->upktype;
     msg.session = ud->session;
     msg.fd = fd;
+    void *data;
+    size_t lens = 0;
     int32_t closefd = 0;
     while (NULL != (data = protos_unpack(ud->upktype, buf, &lens, ud, &closefd))) {
         msg.data = data;
@@ -282,7 +282,7 @@ int32_t task_netlisten(task_ctx *task, unpack_type upktype, struct evssl_ctx *ev
     if (0 != sendev) {
         cbs.s_cb = _task_net_send;
     }
-    cbs.ud_free = protos_exfree;
+    cbs.ud_free = protos_udfree;
     return ev_listen(&task->srey->netev, evssl, host, port, &cbs, &ud);
 }
 static inline int32_t _task_net_connect(ev_ctx *ev, SOCKET fd, int32_t err, ud_cxt *ud) {
@@ -310,7 +310,7 @@ SOCKET task_netconnect(task_ctx *task, unpack_type upktype, uint64_t session, st
     if (0 != sendev) {
         cbs.s_cb = _task_net_send;
     }
-    cbs.ud_free = protos_exfree;
+    cbs.ud_free = protos_udfree;
     return ev_connect(&task->srey->netev, evssl, host, port, &cbs, &ud);
 }
 static inline void _task_net_recvfrom(ev_ctx *ev, SOCKET fd, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
@@ -334,7 +334,7 @@ SOCKET task_netudp(task_ctx *task, unpack_type upktype, const char *host, uint16
     cbs_ctx cbs;
     ZERO(&cbs, sizeof(cbs));
     cbs.rf_cb = _task_net_recvfrom;
-    cbs.ud_free = protos_exfree;
+    cbs.ud_free = protos_udfree;
     return ev_udp(&task->srey->netev, host, port, &cbs, &ud);
 }
 void task_netsend(task_ctx *task, SOCKET fd, void *data, size_t len, pack_type pktype) {
@@ -378,8 +378,7 @@ static void _loop_worker(void *arg) {
 }
 srey_ctx *srey_init(uint32_t nnet, uint32_t nworker) {
     srey_ctx *ctx;
-    MALLOC(ctx, sizeof(srey_ctx));
-    ZERO(ctx, sizeof(srey_ctx));
+    CALLOC(ctx, 1, sizeof(srey_ctx));
     ctx->nworker = nworker;
     MALLOC(ctx->thworker, sizeof(pthread_t) * ctx->nworker);
     mutex_init(&ctx->muworker);
