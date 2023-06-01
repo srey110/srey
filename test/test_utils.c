@@ -262,7 +262,7 @@ void test_buffer(CuTest* tc) {
     ud_cxt ud;
     ZERO(&ud, sizeof(ud));
     ud.upktype = UNPACK_HTTP;
-    const char *http1 = "POST  /users  HTTP/1.1\r\n  Host:   api.github.com\r\nContent-Length: 5\r\n\r\n1";
+    const char *http1 = "POST  /users  HTTP/1.1\r\n  Host:   api.github.com\r\nContent-Length: 5\r\na: \r\n\r\n1";
     buffer_append(&buf, (void *)http1, strlen(http1));
     void *rtnbuf = http_unpack(&buf, &aaa, &ud, &closed);
     CuAssertTrue(tc, NULL == rtnbuf);

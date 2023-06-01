@@ -20,7 +20,7 @@ local function harbor_started()
         ssl = srey.sslevqury(name)
         assert(nil ~= ssl, string.format("qury ssl by name %s failed.", name))
     end
-    srey.listen(config:lsnip(), config:port(), ssl, false, UNPACK_TYPE.RPC)
+    srey.listen(config:lsnip(), config:port(), UNPACK_TYPE.RPC, ssl)
     log.INFO("harbor listen at %s:%d.", config:lsnip(), config:port())
 end
 srey.started(harbor_started)
@@ -44,4 +44,4 @@ local function harbor_accept(_, fd)
     log.WARN("block %s link.", ip)
     srey.close(fd)
 end
-srey.accept(harbor_accept)
+srey.accepted(harbor_accept)

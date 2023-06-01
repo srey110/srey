@@ -51,6 +51,7 @@ int main(int argc, char *argv[]) {
 
     srey_ctx *srey = srey_init(nnet, nworker);
     if (ERR_OK == ltask_startup(srey)) {
+        srey_startup(srey);
         mutex_lock(&muexit);
         cond_wait(&condexit, &muexit);
         mutex_unlock(&muexit);

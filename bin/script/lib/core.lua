@@ -80,7 +80,7 @@ end
     TASK_NAME
 --]]
 function core.name(task)
-    return srey.name(nil == task and curtask or task)
+    return srey.name(task or curtask)
 end
 --[[
 描述:获取session
@@ -90,7 +90,7 @@ end
     integer
 --]]
 function core.session(task)
-    return srey.session(nil == task and curtask or task)
+    return srey.session(task or curtask)
 end
 --[[
 描述:返回netaddr_ctx保存的ip port 
@@ -101,10 +101,6 @@ end
     nil失败
 --]]
 function core.ipport(addr)
-    if nil == addr then
-        log.WARN("invalid argument.")
-        return nil
-    end
     return srey.ipport(addr)
 end
 --[[
@@ -116,10 +112,6 @@ end
     nil失败
 --]]
 function core.remoteaddr(fd)
-    if INVALID_SOCK == fd then
-        log.WARN("invalid argument.")
-        return nil
-    end
     return srey.remoteaddr(fd)
 end
 --[[
@@ -136,8 +128,8 @@ end
 --]]
 function core.sslevnew(name, ca, cert, key, ftype, verify)
     return srey.sslevnew(name, ca, cert, key,
-                         nil == ftype and SSLFILE_TYPE.PEM or ftype,
-                         nil == verify and SSLVERIFY_TYPE.NONE or verify)
+                         ftype or SSLFILE_TYPE.PEM,
+                         verify or SSLVERIFY_TYPE.NONE)
 end
 --[[
 描述:创建evssl_ctx
@@ -149,7 +141,7 @@ end
     evssl_ctx
 --]]
 function core.sslevp12new(name, p12, pwd, verify)
-    return srey.sslevp12new(name, p12, pwd, nil == verify and SSLVERIFY_TYPE.NONE or verify)
+    return srey.sslevp12new(name, p12, pwd, verify or SSLVERIFY_TYPE.NONE)
 end
 --[[
 描述:evssl_ctx 查询
@@ -175,19 +167,14 @@ end
 参数：
     ip 监听ip :string
     port 端口 :integer
+    unptype :UNPACK_TYPE
     ssl evssl_ctx  nil不启用ssl
     sendev 是否触发发送事件 :boolean
-    unptype :UNPACK_TYPE
 返回:
     bool
 --]]
-function core.listen(ip, port, ssl, sendev, unptype)
-    local send = 0
-    if nil ~= sendev and sendev then
-        send = 1
-    end
-    return srey.listen(curtask, nil == unptype and UNPACK_TYPE.NONE or unptype,
-                       ssl, ip, port, send)
+function core.listen(ip, port, unptype, ssl, sendev)
+    return srey.listen(curtask, unptype or UNPACK_TYPE.NONE, ssl, ip, port, sendev and 1 or 0)
 end
 --[[
 描述:udp
@@ -200,7 +187,7 @@ end
     INVALID_SOCK失败
 --]]
 function core.udp(ip, port, unptype)
-    return srey.udp(curtask, nil == unptype and UNPACK_TYPE.NONE or unptype, ip, port)
+    return srey.udp(curtask, unptype or UNPACK_TYPE.NONE, ip, port)
 end
 --[[
 描述:tcp发送
@@ -215,7 +202,7 @@ function core.send(fd, data, lens, ptype)
         log.WARN("invalid argument.")
         return
     end
-    srey.send(curtask, fd, data, lens, nil == ptype and PACK_TYPE.NONE or ptype)
+    srey.send(curtask, fd, data, lens, ptype or PACK_TYPE.NONE)
 end
 --[[
 描述:udp发送
@@ -255,9 +242,28 @@ end
 function core.md5(data, size)
     if nil == data then
         log.WARN("invalid argument.")
-        return ""
+        return nil
     end
     return srey.md5(data, size)
+end
+--[[
+描述:userdata 转 lstring
+参数：
+    data :userdata
+    size :integer
+返回:
+    string
+    nil失败
+--]]
+function core.utostr(data, size)
+    if nil == data then
+        log.WARN("invalid argument.")
+        return nil
+    end
+    if 0 == size then
+        return ""
+    end
+    return srey.utostr(data, size)
 end
 
 return core

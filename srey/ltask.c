@@ -1,5 +1,5 @@
 #include "ltask.h"
-
+#include "proto/http.h"
 #include "lua/lua.h"
 #include "lua/lapi.h"
 #include "lua/lstring.h"
@@ -89,7 +89,6 @@ int32_t ltask_startup(srey_ctx *ctx) {
     lua_close(lua);
     return rtn;
 }
-
 static int32_t _ltask_log(lua_State *lua) {
     LOG_LEVEL lv = (LOG_LEVEL)luaL_checkinteger(lua, 1);
     const char *file = luaL_checkstring(lua, 2);
@@ -157,11 +156,7 @@ static inline void _ltask_run(task_ctx *task, message_ctx *msg) {
 static int32_t _ltask_register(lua_State *lua) {
     const char *file = luaL_checkstring(lua, 1);
     int32_t name = (int32_t)luaL_checkinteger(lua, 2);
-    uint32_t maxcnt = 3;
-    if (LUA_TNIL != lua_type(lua, 3)) {
-        maxcnt = (uint32_t)luaL_checkinteger(lua, 3);
-    }
-    maxcnt = (0 == maxcnt ? 1 : maxcnt);
+    uint32_t maxcnt = (uint32_t)luaL_checkinteger(lua, 3);
     ltask_ctx *ltask;
     CALLOC(ltask, 1, sizeof(ltask_ctx));
     strcpy(ltask->file, file);
@@ -341,6 +336,11 @@ static int32_t _ltask_close(lua_State *lua) {
 }
 static int32_t _ltask_ipport(lua_State *lua) {
     netaddr_ctx *addr = lua_touserdata(lua, 1);
+    if (NULL == addr) {
+        lua_pushnil(lua);
+        LOG_WARN("%s", ERRSTR_INVPARAM);
+        return 1;
+    }
     char ip[IP_LENS];
     if (ERR_OK != netaddr_ip(addr, ip)) {
         lua_pushnil(lua);
@@ -354,6 +354,11 @@ static int32_t _ltask_ipport(lua_State *lua) {
 static int32_t _ltask_remoteaddr(lua_State *lua) {
     netaddr_ctx addr;
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
+    if (-1 == fd) {
+        lua_pushnil(lua);
+        LOG_WARN("%s", ERRSTR_INVPARAM);
+        return 1;
+    }
     if (ERR_OK != netaddr_remoteaddr(&addr, fd, sock_family(fd))) {
         lua_pushnil(lua);
         return 1;
@@ -382,30 +387,111 @@ static int32_t _ltask_md5(lua_State *lua) {
     lua_pushstring(lua, strmd5);
     return 1;
 }
+static int32_t _ltask_udtostr(lua_State *lua) {
+    void *data = lua_touserdata(lua, 1);
+    size_t size = (size_t)luaL_checkinteger(lua, 2);
+    lua_pushlstring(lua, data, size);
+    return 1;
+}
+static int32_t _ltask_http_method(lua_State *lua) {
+    void *pack = lua_touserdata(lua, 1);
+    size_t lens = 0;
+    const char *value = http_method(pack, &lens);
+    if (NULL == value) {
+        lua_pushnil(lua);
+    } else {
+        lua_pushlstring(lua, value, lens);
+    }
+    return 1;
+}
+static int32_t _ltask_http_chunked(lua_State *lua) {
+    void *pack = lua_touserdata(lua, 1);
+    lua_pushinteger(lua, http_chunked(pack));
+    return 1;
+}
+static int32_t _ltask_http_data(lua_State *lua) {
+    void *pack = lua_touserdata(lua, 1);
+    size_t lens = 0;
+    char *value = http_data(pack, &lens);
+    if (NULL == value) {
+        lua_pushnil(lua);
+        return 1;
+    }
+    lua_pushlightuserdata(lua, value);
+    lua_pushinteger(lua, lens);
+    return 2;
+}
+static int32_t _ltask_http_copydata(lua_State *lua) {
+    void *pack = lua_touserdata(lua, 1);
+    size_t lens = 0;
+    char *value = http_data(pack, &lens);
+    if (NULL == value) {
+        lua_pushnil(lua);
+        return 1;
+    }
+    lua_pushlstring(lua, value, lens);
+    return 1;
+}
+static int32_t _ltask_http_header(lua_State *lua) {
+    void *pack = lua_touserdata(lua, 1);
+    const char *key = luaL_checkstring(lua, 2);
+    size_t lens = 0;
+    const char *value = http_header(pack, key, &lens);
+    if (NULL == value) {
+        lua_pushnil(lua);
+    } else {
+        lua_pushlstring(lua, value, lens);
+    }
+    return 1;
+}
+static int32_t _ltask_http_headers(lua_State *lua) {
+    void *pack = lua_touserdata(lua, 1);
+    size_t size = http_nheader(pack);
+    http_header_ctx *header;
+    lua_createtable(lua, 0, (int32_t)size);
+    for (size_t i = 0; i < size; i++) {
+        header = http_header_at(pack, i);
+        lua_pushlstring(lua, header->key, header->klen);
+        lua_pushlstring(lua, header->value, header->vlen);
+        lua_settable(lua, -3);
+    }
+    return 1;
+}
 LUAMOD_API int luaopen_srey(lua_State *lua) {
     luaL_Reg reg[] = {
         { "log", _ltask_log },
         { "setlog", _ltask_setlog },
+
         { "register", _ltask_register },
         { "qury", _ltask_qury },
         { "name", _ltask_name },
         { "session", _ltask_session },
-        { "user", _ltask_user },
-        { "timeout", _ltask_timeout },
 #if WITH_SSL
         { "sslevnew", _ltask_sslevnew },
         { "sslevp12new", _ltask_sslevp12new },
         { "sslevqury", _ltask_sslevqury },
 #endif
+        { "user", _ltask_user },
+        { "timeout", _ltask_timeout },
         { "listen", _ltask_listen },
         { "connect", _ltask_connect },
         { "udp", _ltask_udp },
+
         { "send", _ltask_send },
         { "sendto", _ltask_sendto },
         { "close", _ltask_close },
+
         { "ipport", _ltask_ipport },
         { "remoteaddr", _ltask_remoteaddr },
         { "md5", _ltask_md5 },
+        { "utostr", _ltask_udtostr },
+
+        { "http_method", _ltask_http_method },        
+        { "http_chunked", _ltask_http_chunked },
+        { "http_data", _ltask_http_data },
+        { "http_copydata", _ltask_http_copydata },
+        { "http_header", _ltask_http_header },
+        { "http_headers", _ltask_http_headers },
         { NULL, NULL },
     };
     luaL_newlib(lua, reg);

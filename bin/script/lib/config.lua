@@ -8,6 +8,9 @@ function config:ctor(file)
     self.m_file = string.format("%s%s", config_path, file)
     self.m_content = {}
 end
+function config:content()
+    return self.m_content
+end
 function config:load()
     local file = io.open(self.m_file , "r")
     if nil == file then

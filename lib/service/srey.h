@@ -36,6 +36,7 @@ typedef void(*task_run)(task_ctx *task, message_ctx *msg);
 typedef void(*task_free)(task_ctx *task);
 
 srey_ctx *srey_init(uint32_t nnet, uint32_t nworker);
+void srey_startup(srey_ctx *ctx);
 void srey_free(srey_ctx *ctx);
 
 task_ctx *srey_tasknew(srey_ctx *ctx, int32_t name, uint32_t maxcnt, 

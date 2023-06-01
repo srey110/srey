@@ -17,6 +17,7 @@ ARRAY_DECL(certs_ctx, arr_certs);
 struct srey_ctx {
     int32_t stop;
     int32_t waiting;
+    int32_t startup;
     uint32_t nworker;
     pthread_t *thworker;
 #if WITH_SSL
@@ -34,6 +35,7 @@ struct srey_ctx {
 struct task_ctx {
     int32_t name;
     int32_t global;
+    atomic_t startup;
     uint32_t maxcnt;
     uint32_t dmaxcnt;
     task_run _run;
@@ -115,12 +117,18 @@ task_ctx *srey_tasknew(srey_ctx *ctx, int32_t name, uint32_t maxcnt,
     if (NULL != _init) {
         task->handle = _init(task, arg);
     }
+    int32_t started = 0;
     rwlock_wrlock(&ctx->lckmaptask);
     ASSERTAB(NULL == hashmap_set(ctx->maptask, &task), formatv("task %d repeat.", name));
+    started = ctx->startup;
     rwlock_unlock(&ctx->lckmaptask);
-    message_ctx msg;
-    msg.msgtype = MSG_TYPE_STARTED;
-    _push_message(task, &msg);
+    if (0 != started) {
+        if (ATOMIC_CAS(&task->startup, 0, 1)) {
+            message_ctx msg;
+            msg.msgtype = MSG_TYPE_STARTED;
+            _push_message(task, &msg);
+        }
+    }
     return task;
 }
 static void _free_task(void *item) {
@@ -232,7 +240,6 @@ static inline int32_t _task_net_accept(ev_ctx *ev, SOCKET fd, ud_cxt *ud) {
     return ERR_OK;
 }
 static inline void _task_net_recv(ev_ctx *ev, SOCKET fd, buffer_ctx *buf, size_t size, ud_cxt *ud) {
-    
     message_ctx msg;
     msg.msgtype = MSG_TYPE_RECV;
     msg.upktype = ud->upktype;
@@ -399,6 +406,23 @@ srey_ctx *srey_init(uint32_t nnet, uint32_t nworker) {
     tw_init(&ctx->tw);
     ev_init(&ctx->netev, nnet);
     return ctx;
+}
+static inline bool _map_scan(const void *item, void *udata) {
+    task_ctx *task = *(task_ctx **)item;
+    if (!ATOMIC_CAS(&task->startup, 0, 1)){
+        return true;
+    }
+    message_ctx *msg = udata;
+    _push_message(task, msg);
+    return true;
+}
+void srey_startup(srey_ctx *ctx) {
+    message_ctx msg;
+    msg.msgtype = MSG_TYPE_STARTED;
+    rwlock_rdlock(&ctx->lckmaptask);
+    ctx->startup = 1;
+    hashmap_scan(ctx->maptask, _map_scan, &msg);
+    rwlock_unlock(&ctx->lckmaptask);
 }
 void srey_free(srey_ctx *ctx) {
     ctx->stop = 1;

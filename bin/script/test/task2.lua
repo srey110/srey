@@ -3,14 +3,14 @@ local srey = require("lib.srey")
 local function onstarted()
     printd(srey.name() .. " onstarted....")
     local ssl = srey.sslevqury("server")
-    srey.listen("0.0.0.0", 15001, ssl)
+    srey.listen("0.0.0.0", 15001, UNPACK_TYPE.NONE, ssl)
 end
 srey.started(onstarted)
 
 local function echo(unptype, fd, data, size)
     srey.send(fd, data, size)
 end
-srey.recv(echo)
+srey.recved(echo)
 
 local function rpc_add(a, b, des)
     local rtn = a + b

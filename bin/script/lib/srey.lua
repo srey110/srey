@@ -10,17 +10,23 @@ local table = table
 local string = string
 local strempty = strempty
 local cur_coro = nil
-local sess_coro = {}
-local static_funcs = {}
-local rpc_func = {}
-local rpc_describe = {}
-local normal_timeout = {}
-local sleep_timeout = {}
-local request_timeout = {}
-local connect_timeout = {}
+local static_funcs = {}--回调
+local rpc_func = {}--rpc 函数
+local rpc_describe = {}--rpc描述
+local sess_coro = {} --core.sleep core.request core.netreq core.connect  sess_coro[sess] = cur_coro 
+local synsock_coro = {} --core.synsend synsock_coro[fd] = {co = cur_coro, sess = sess}
+local synssock_timeout = {} --core.synsend synssock_timeout[sess] = fd
+local normal_timeout = {}--core.timeout normal_timeout[sess] = func
+local request_timeout = {}--core.request core.netreq request_timeout[sess] = info
+local request_sock = {}--core.netreq {fd = {sess...}}
+local connect_timeout = {}--core.connect connect_timeout[sess] = {sock = sock, ip = ip, port = port}
 local coro_pool = setmetatable({}, { __mode = "kv" })
 local encode = (RPC_USEJSON and json.encode or msgpack.pack)
 local decode = (RPC_USEJSON and json.decode or msgpack.unpack)
+local monitor_tb = {sess_coro = sess_coro, synsock_coro = synsock_coro, synssock_timeout = synssock_timeout,
+                    normal_timeout = normal_timeout, request_timeout = request_timeout,
+                    request_sock = request_sock, connect_timeout = connect_timeout,
+                    coro_pool = coro_pool}
 local TASKMSG_TYPE = {
     REQUEST = 0x01,
     RESPONSE = 0x02,
@@ -34,7 +40,6 @@ local TASKMSG_TYPE = {
     func function() :function
 --]]
 function core.started(func)
-    assert("function" == type(func), "invalid argument.")
     static_funcs.STARTED = func
 end
 --[[
@@ -43,7 +48,6 @@ end
     func function() :function
 --]]
 function core.closing(func)
-    assert("function" == type(func), "invalid argument.")
     static_funcs.CLOSING = func
 end
 --[[
@@ -51,8 +55,7 @@ end
 参数：
     func function(unptype :UNPACK_TYPE, fd :integer) :function
 --]]
-function core.accept(func)
-    assert("function" == type(func), "invalid argument.")
+function core.accepted(func)
     static_funcs.ACCEPT = func
 end
 --[[
@@ -60,8 +63,7 @@ end
 参数：
     func function(unptype :UNPACK_TYPE, fd :integer, data :userdata, size :integer) :function
 --]]
-function core.recv(func)
-    assert("function" == type(func), "invalid argument.")
+function core.recved(func)
     static_funcs.RECV = func
 end
 --[[
@@ -69,8 +71,7 @@ end
 参数：
     func function(unptype :UNPACK_TYPE, fd :integer, data :userdata, size:integer, ip :string, port :integer) :function
 --]]
-function core.recvfrom(func)
-    assert("function" == type(func), "invalid argument.")
+function core.recvfromed(func)
     static_funcs.RECVFROM = func
 end
 --[[
@@ -79,7 +80,6 @@ end
     func function(unptype :UNPACK_TYPE, fd :integer, size :integer) :function
 --]]
 function core.sended(func)
-    assert("function" == type(func), "invalid argument.")
     static_funcs.SEND = func
 end
 --[[
@@ -88,8 +88,37 @@ end
     func function(unptype :UNPACK_TYPE, fd :integer) :function
 --]]
 function core.closed(func)
-    assert("function" == type(func), "invalid argument.")
     static_funcs.CLOSE = func
+end
+--[[
+描述:socket 应答模式 发送后等待数据返回
+参数：
+    fd socket :integer
+    data lstring或userdata
+    lens data长度 :integer
+    ptype :PACK_TYPE
+    ckfunc func(data, lens) :function
+返回:
+    bool; data , lens :integer
+--]]
+function core.synsend(fd, data, lens, ptype, func)
+    if INVALID_SOCK == fd or nil == data then
+        log.WARN("invalid argument.")
+        return false
+    end
+    if nil ~= synsock_coro[fd] then
+        log.WARN("sock %d waiting response already.", fd)
+        return false
+    end
+    local sess = core.session()
+    synsock_coro[fd] = {
+        co = cur_coro,
+        sess = sess,
+        func = func}
+    synssock_timeout[sess] = fd
+    srey.timeout(core.self(), sess, NETRD_TIMEOUT)
+    core.send(fd, data, lens, ptype)
+    return coroutine.yield()
 end
 --[[
 描述:定时
@@ -98,7 +127,6 @@ end
     func function() :function
 --]]
 function core.timeout(ms, func)
-    assert("function" == type(func), "invalid argument.")
     local sess = core.session()
     normal_timeout[sess] = func
     srey.timeout(core.self(), sess, ms)
@@ -110,7 +138,7 @@ end
 --]]
 function core.sleep(ms)
     local sess = core.session()
-    sleep_timeout[sess] = cur_coro
+    sess_coro[sess] = cur_coro
     srey.timeout(core.self(), sess, ms)
     coroutine.yield()
 end
@@ -122,7 +150,10 @@ end
     describe 描述 :string
 --]]
 function core.regrpc(name, func, describe)
-    assert("function" == type(func) and nil == rpc_func[name], "invalid argument or already register.")
+    if rpc_func[name] then
+        log.WARN ("%s already register.", tostring(name))
+        return
+    end
     rpc_func[name] = func
     rpc_describe[name] = (nil == describe and "" or describe)
 end
@@ -156,10 +187,8 @@ function core.request(task, name, ...)
         param = {...}}
     local sess = core.session()
     sess_coro[sess] = cur_coro
-    request_timeout[sess] = {
-        co = cur_coro,
-        info = info}
-    srey.timeout(core.self(), sess, REQUEST_TIMEOUT)
+    request_timeout[sess] = info
+    srey.timeout(core.self(), sess, RPCREQ_TIMEOUT)
     srey.user(task, core.self(), sess, encode(info))
     return coroutine.yield()
 end
@@ -171,13 +200,13 @@ local function netrpc_paramstr(info)
     return json.encode(info.param)
 end
 local function netreq_signstr(info)
-    return string.format("%d%d%s%d%s%s",
-                         info.proto, info.dst, info.func,
+    return string.format("%d%d%d%s%d%s%s",
+                         info.proto, info.sock, info.dst, info.func,
                          info.timestamp, netrpc_paramstr(info), NETRPC_SIGNKEY)
 end
 local function netresp_signstr(info)
-    return string.format("%d%d%s%d%s%s",
-                          info.proto, info.sess,
+    return string.format("%d%d%dd%s%d%s%s",
+                          info.proto, info.sock, info.sess,
                           tostring(info.ok), info.timestamp, netrpc_paramstr(info), NETRPC_SIGNKEY)
 end
 local function netrpc_sign(info)
@@ -191,7 +220,7 @@ local function netrpc_sign(info)
     else
         signstr = netresp_signstr(info)
     end
-    info.sign = srey.md5(signstr)
+    info.sign = core.md5(signstr)
 end
 local function netrpc_signcheck(info)
     if strempty(NETRPC_SIGNKEY) then
@@ -203,7 +232,7 @@ local function netrpc_signcheck(info)
     else
         signstr = netresp_signstr(info)
     end
-    if string.lower(info.sign) ~= srey.md5(signstr) then
+    if string.lower(info.sign) ~= core.md5(signstr) then
         return false
     end
     if NETRPC_TIMEDIFF and NETRPC_TIMEDIFF > 0 then
@@ -229,11 +258,48 @@ function core.netcall(fd, task, name, ...)
     end
     local info = {
         proto = TASKMSG_TYPE.NETREQ,
+        sock = fd,
         dst = task,
         func = name,
         param = {...}}
     netrpc_sign(info)
     core.send(fd, encode(info), nil, PACK_TYPE.RPC)
+end
+local function request_sock_add(fd, sess)
+    local info = request_sock[fd]
+    if nil == info then
+        info = {}
+        request_sock[fd] = info
+    end
+    table.insert(info, sess)
+end
+local function request_sock_remove(fd, sess)
+    local info = request_sock[fd]
+    if nil == info then
+        return
+    end
+    for index, value in ipairs(info) do
+        if sess == value then
+            table.remove(info, index)
+            break
+        end
+    end
+end
+local function request_sock_closed(fd)
+    local info = request_sock[fd]
+    if nil == info then
+        return
+    end
+    for _, value in ipairs(info) do
+        local co = sess_coro[value]
+        sess_coro[value] = nil
+        request_timeout[value] = nil
+        if nil ~= co then
+            cur_coro = co
+            coroutine.resume(cur_coro, false)
+        end
+    end
+    request_sock[fd] = nil
 end
 --[[
 描述:网络RPC调用，等待返回
@@ -253,6 +319,7 @@ function core.netreq(fd, task, name, ...)
     local sess = core.session()
     local info = {
         proto = TASKMSG_TYPE.NETREQ,
+        sock = fd,
         sess = sess,
         dst = task,
         src = core.name(),
@@ -260,10 +327,9 @@ function core.netreq(fd, task, name, ...)
         param = {...}}
     netrpc_sign(info)
     sess_coro[sess] = cur_coro
-    request_timeout[sess] = {
-        co = cur_coro,
-        info = info}
-    srey.timeout(core.self(), sess, NETREQ_TIMEOUT)
+    request_timeout[sess] = info
+    request_sock_add(fd, sess)
+    srey.timeout(core.self(), sess, NETRD_TIMEOUT)
     core.send(fd, encode(info), nil, PACK_TYPE.RPC)
     return coroutine.yield()
 end
@@ -291,27 +357,25 @@ end
 参数：
     ip ip :string
     port 端口 :integer
+    unptype :UNPACK_TYPE
     ssl nil不启用ssl :evssl_ctx
     sendev 是否触发发送事件 :boolean
-    unptype :UNPACK_TYPE
 返回:
     socket :integer 
     INVALID_SOCK失败
 --]]
-function core.connect(ip, port, ssl, sendev, unptype)
+function core.connect(ip, port, unptype, ssl, sendev)
     local send = 0
     if nil ~= sendev and sendev then
         send = 1
     end
     local sess = core.session()
-    local sock = srey.connect(core.self(), nil == unptype and UNPACK_TYPE.NONE or unptype,
-                              sess, ssl, ip, port, send)
+    local sock = srey.connect(core.self(), unptype or UNPACK_TYPE.NONE, sess, ssl, ip, port, send)
     if INVALID_SOCK == sock then
         return INVALID_SOCK
     end
     sess_coro[sess] = cur_coro
     connect_timeout[sess] = {
-        co = cur_coro,
         sock = sock,
         ip = ip,
         port = port}
@@ -324,11 +388,12 @@ function core.connect(ip, port, ssl, sendev, unptype)
     end
 end
 function core.sysinfo()
-    local tm = string.format("task:%d, memory:%.2f(kb)", core.name(), collectgarbage("count"))
-    local poolsize = string.format("table size: sess_coro:%d, normal_timeout:%d, sleep_timeout:%d, request_timeout:%d, connect_timeout:%d, coro_pool:%d",
-                                    tbsize(sess_coro), tbsize(normal_timeout), tbsize(sleep_timeout),
-                                    tbsize(request_timeout), tbsize(connect_timeout),tbsize(coro_pool))
-    log.INFO("%s %s", tm, poolsize)
+    local tm = string.format("task:%d, memory:%.2f(kb) ", core.name(), collectgarbage("count"))
+    local sizes = {}
+    for key, value in pairs(monitor_tb) do
+        table.insert(sizes, string.format("%s: %d, ", key, tbsize(value)))
+    end
+    log.INFO("%s %s", tm, table.concat(sizes))
 end
 
 --消息类型
@@ -372,41 +437,61 @@ local function resume_normal(func, ...)
 end
 --超时消息处理
 local function dispatch_timeout(sess)
-    local param = normal_timeout[sess]
+    --core.timeout(ms, func)
+    local param = normal_timeout[sess] --func
     if nil ~= param then
         normal_timeout[sess] = nil
         resume_normal(param)
         return
     end
-
-    param = request_timeout[sess] --{co = cur_coro, info = info}
+    --core.request(task, name, ...) core.netreq(fd, task, name, ...)
+    param = request_timeout[sess] --info
     if nil ~= param then
         request_timeout[sess] = nil
-        if nil ~= sess_coro[sess] then
+        local co = sess_coro[sess]
+        if nil ~= co then
+            local sock = param.sock
+            if nil ~= sock then
+                request_sock_remove(sock, sess)
+            end
             sess_coro[sess] = nil
-            cur_coro = param.co
-            log.WARN("request timeout. session: %d param: %s.", sess, json.encode(param.info))
+            cur_coro = co
+            log.WARN("request timeout. session: %d param: %s.", sess, json.encode(param))
             coroutine.resume(cur_coro, false)
         end
         return
     end
-
-    param = connect_timeout[sess]--{co = cur_coro, sock = sock, ip = ip, port = port}
+    --core.connect(ip, port, unptype, ssl, sendev)
+    param = connect_timeout[sess]--{sock = sock, ip = ip, port = port}
     if nil ~= param then
         connect_timeout[sess] = nil
-        if nil ~= sess_coro[sess] then
+        local co = sess_coro[sess]
+        if nil ~= co then
             sess_coro[sess] = nil
-            cur_coro = param.co
+            cur_coro = co
             core.close(param.sock)
             log.WARN("connect timeout. session: %d ip: %s port: %d.", sess, param.ip, param.port)
             coroutine.resume(cur_coro, nil, param.sock, ERR_FAILED)
         end
         return
     end
-
-    param = sleep_timeout[sess]
+    --core.synsend(fd, data, lens, ptype)
+    param = synssock_timeout[sess] -- fd
     if nil ~= param then
-        sleep_timeout[sess] = nil
+        synssock_timeout[sess] = nil
+        local info = synsock_coro[param] --{co = cur_coro, sess = sess, func = func}
+        if nil ~= info then
+            synsock_coro[param] = nil
+            cur_coro = info.co
+            log.WARN("synsend timeout. socket: %d.", param)
+            coroutine.resume(cur_coro, false)
+        end
+        return
+    end
+    --core.sleep(ms) --co
+    param = sess_coro[sess]
+    if nil ~= param then
+        sess_coro[sess] = nil
         cur_coro = param
         coroutine.resume(cur_coro)
         return
@@ -461,6 +546,7 @@ local function rpc_netreq(fd, info)
         if nil ~= info.src then
             local resp = {
                 proto = TASKMSG_TYPE.NETRESP,
+                sock = info.sock,
                 sess = info.sess,
                 ok = false
             }
@@ -474,6 +560,7 @@ local function rpc_netreq(fd, info)
     else
         local resp = {
             proto = TASKMSG_TYPE.NETRESP,
+            sock = info.sock,
             sess = info.sess
         }
         resp.param = {core.request(task, info.func, table.unpack(info.param))}
@@ -496,6 +583,7 @@ local function dispatch_netrpc(fd, data, size)
         if nil ~= co then
             sess_coro[info.sess] = nil
             request_timeout[info.sess] = nil
+            request_sock_remove(info.sock, info.sess)
             cur_coro = co
             if info.ok then
                 coroutine.resume(cur_coro, info.ok, table.unpack(info.param))
@@ -504,6 +592,106 @@ local function dispatch_netrpc(fd, data, size)
             end
         else
             log.WARN("netrpc not find response session, maybe timeout. response: %s.", json.encode(info))
+        end
+    end
+end
+--http
+local function http_version(ver)
+    local pos = string.find(ver, "/")
+    if nil == pos then
+        return ver
+    end
+    return string.sub(ver, pos + 1, #ver)
+end
+local function http_status(data)
+    local method = srey.http_method(data)
+    if nil == method then
+        return nil
+    end
+    local tmp = split(method, " ")
+    local rtn = {}
+    if nil == string.find(string.lower(tmp[1]), "http") then
+        rtn.method = tmp[1]
+        rtn.url = tmp[2]
+        rtn.ver = http_version(tmp[3])
+    else
+        rtn.ver = http_version(tmp[1])
+        rtn.code = tmp[2]
+        rtn.reason = tmp[3]
+    end
+    return rtn
+end
+function core.http_chunked(data)
+    return srey.http_chunked(data)
+end
+function core.http_head(data)
+    local head = {}
+    head.status = http_status(data)
+    head.head = srey.http_headers(data)
+    return head
+end
+function core.http_data(data)
+    return srey.http_data(data)
+end
+local function synsock_resume(fd, coinfo, result, ...)
+    synsock_coro[fd] = nil
+    synssock_timeout[coinfo.sess] = nil
+    cur_coro = coinfo.co
+    coroutine.resume(cur_coro, result, ...)
+end
+local function dispatch_revc_http(fd, coinfo, data)
+    local chunked = core.http_chunked(data)
+    if 1 == chunked then
+        synssock_timeout[coinfo.sess] = nil
+        local hinfo = core.http_head(data)
+        coinfo.chunked = hinfo
+        if nil == coinfo.func then
+            coinfo.chunked.data = {}
+        end
+    elseif 2 == chunked then
+        local over = false
+        if nil ~= coinfo.func then
+            local msg, lens = core.http_data(data)
+            if nil == msg then
+                over = true
+                core.xpcall(coinfo.func, msg, 0)
+            else
+                core.xpcall(coinfo.func, msg, lens)
+            end
+        else
+            local msg = srey.http_copydata(data)
+            if nil == msg then
+                over = true
+                table.insert(coinfo.chunked.data, {"", 0})
+            else
+                table.insert(coinfo.chunked.data, {msg, #msg})
+            end
+        end
+        if over then
+            synsock_resume(fd, coinfo, true, coinfo.chunked)
+        end
+    else
+        local hinfo = core.http_head(data)
+        local msg, lens = core.http_data(data)
+        if nil ~= msg then
+            hinfo.data = {{msg, lens}}
+        end
+        synsock_resume(fd, coinfo, true, hinfo)
+    end
+end
+local function dispatch_revc(fd, unptype, data, size)
+    local coinfo = synsock_coro[fd]
+    if nil ~= coinfo then
+        if UNPACK_TYPE.HTTP == unptype then
+            dispatch_revc_http(fd, coinfo, data)
+        else
+            synsock_resume(fd, coinfo, true, data, size)
+        end
+    else
+        if UNPACK_TYPE.RPC == unptype then
+            dispatch_netrpc(fd, data, size)
+        else
+            resume_normal(static_funcs.RECV, unptype, fd, data, size)
         end
     end
 end
@@ -522,20 +710,24 @@ function dispatch_message(msgtype, unptype, err, fd, src, data, size, sess, addr
         local co = sess_coro[sess]
         if nil ~= co then
             sess_coro[sess] = nil
+            connect_timeout[sess] = nil
             cur_coro = co
             coroutine.resume(cur_coro, unptype, fd, err)
         else
             log.WARN("not find connect session, maybe timeout.session: %d.", sess)
         end
     elseif MSG_TYPE.RECV == msgtype then
-        if UNPACK_TYPE.RPC == unptype then
-            dispatch_netrpc(fd, data, size)
-        else
-            resume_normal(static_funcs.RECV, unptype, fd, data, size)
-        end
+        dispatch_revc(fd, unptype, data, size)
     elseif MSG_TYPE.SEND == msgtype then
         resume_normal(static_funcs.SEND, unptype, fd, size)
     elseif MSG_TYPE.CLOSE == msgtype then
+        local info = synsock_coro[fd]
+        if nil ~= info then
+            synsock_resume(fd, info, false)
+        end
+        if UNPACK_TYPE.RPC == unptype then
+            request_sock_closed(fd)
+        end
         resume_normal(static_funcs.CLOSE, unptype, fd)
     elseif MSG_TYPE.RECVFROM == msgtype then
         local ip, port = core.ipport(addr)

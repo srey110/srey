@@ -9,7 +9,7 @@ function printd(fmt, ...)
         local info = debug.getinfo(2)
         local file = string.match(info.source, string.format("^.+%s(.+)$", pathsep))
         local tag = string.format("[%s][%s %d] ",
-                                   os.date(FMT_TIME, os.time()), nil == file and "" or file, info.currentline)
+                                   os.date(FMT_TIME, os.time()), file or "", info.currentline)
         print(string.format(tag..fmt, ...))
     end
 end
