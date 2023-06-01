@@ -19,10 +19,6 @@ typedef struct http_pack_ctx {
     size_t lens;
     arr_header header;
 }http_pack_ctx;
-typedef struct http_parser_ctx{
-    parse_status status;
-    http_pack_ctx *pack;
-}http_parser_ctx;
 
 #define MAX_HEADLENS ONEK * 4
 #define MAX_DATALENS ONEK * 64
@@ -31,25 +27,24 @@ typedef struct http_parser_ctx{
 #define FLAG_CONTENT "content-length"
 #define FLAG_CHUNKED "transfer-encoding"
 #define CHUNKED_KEY "chunked"
-#define RTN_PACK() http_pack_ctx *_pack = parser->pack; parser->pack = NULL
 
-static inline char *_skip_empty(http_parser_ctx *parser, char *head) {
+static inline char *_skip_empty(http_pack_ctx *pack, char *head) {
     while (' ' == *head
-        && (size_t)(head - parser->pack->hdata) < parser->pack->hlens) {
+        && (size_t)(head - pack->hdata) < pack->hlens) {
         head++;
     }
     return head;
 }
-static inline void _check_fileld(http_parser_ctx *parser, http_header_ctx *field) {
+static inline void _check_fileld(http_pack_ctx *pack, http_header_ctx *field, ud_cxt *ud) {
     size_t lens;
     switch (tolower(*(field->key))) {
     case 'c':
         lens = strlen(FLAG_CONTENT);
         if (field->klen >= lens
             && 0 == _memicmp(field->key, FLAG_CONTENT, lens)) {
-            if (CHUNKED != parser->status) {
-                parser->status = CONTENT;
-                parser->pack->lens = atoi(field->value);
+            if (CHUNKED != ud->status) {
+                ud->status = CONTENT;
+                pack->lens = atoi(field->value);
             }
         }
         break;
@@ -60,9 +55,9 @@ static inline void _check_fileld(http_parser_ctx *parser, http_header_ctx *field
             lens = strlen(CHUNKED_KEY);
             if (field->vlen >= lens
                 && 0 == _memicmp(field->value, CHUNKED_KEY, lens)) {
-                parser->status = CHUNKED;
-                parser->pack->lens = 0;
-                parser->pack->chunked = 1;
+                ud->status = CHUNKED;
+                pack->lens = 0;
+                pack->chunked = 1;
             }
         }
         break;
@@ -70,29 +65,29 @@ static inline void _check_fileld(http_parser_ctx *parser, http_header_ctx *field
         break;
     }
 }
-static inline int32_t _http_parse_head(http_parser_ctx *parser) {
+static inline int32_t _http_parse_head(http_pack_ctx *pack, ud_cxt *ud) {
     //至少有一个\r\n\r\n
-    char *head = parser->pack->hdata;
+    char *head = pack->hdata;
     size_t flens = strlen(FLAG_CRLF);
-    head = _skip_empty(parser, head);
+    head = _skip_empty(pack, head);
     char *pos = strstr(head, FLAG_CRLF);
-    parser->pack->first = head;
-    parser->pack->flens = pos - head;
-    if (parser->pack->flens < 6) {
+    pack->first = head;
+    pack->flens = pos - head;
+    if (pack->flens < 6) {
         return ERR_FAILED;
     }
 
     head = pos + flens;
     size_t least = 2 * flens + 1;//\r\n\r\n + :
     http_header_ctx field;
-    while ((size_t)(head + least - parser->pack->hdata) <= parser->pack->hlens) {
-        head = _skip_empty(parser, head);
-        if ((size_t)(head + least - parser->pack->hdata) > parser->pack->hlens) {
+    while ((size_t)(head + least - pack->hdata) <= pack->hlens) {
+        head = _skip_empty(pack, head);
+        if ((size_t)(head + least - pack->hdata) > pack->hlens) {
             break;
         }
         pos = strstr(head, ":");
         if (NULL == pos
-            || (size_t)(pos + least - parser->pack->hdata) > parser->pack->hlens) {
+            || (size_t)(pos + least - pack->hdata) > pack->hlens) {
             return ERR_FAILED;
         }
         field.key = head;
@@ -102,36 +97,33 @@ static inline int32_t _http_parse_head(http_parser_ctx *parser) {
         }
 
         head = pos + 1;
-        head = _skip_empty(parser, head);
-        if ((size_t)(head + least - 1 - parser->pack->hdata) > parser->pack->hlens) {
+        head = _skip_empty(pack, head);
+        if ((size_t)(head + least - 1 - pack->hdata) > pack->hlens) {
             return ERR_FAILED;
         }
         pos = strstr(head, FLAG_CRLF);
         if (NULL == pos
-            || (size_t)(pos + least - 1 - parser->pack->hdata) > parser->pack->hlens) {
+            || (size_t)(pos + least - 1 - pack->hdata) > pack->hlens) {
             return ERR_FAILED;
         }
         field.value = head;
         field.vlen = pos - head;
         head = pos + flens;
-        _check_fileld(parser, &field);
-        arr_header_push_back(&parser->pack->header, &field);
+        if (CHUNKED != ud->status) {
+            _check_fileld(pack, &field, ud);
+        }
+        arr_header_push_back(&pack->header, &field);
     }
     return ERR_OK;
 }
 static inline void *_http_content(buffer_ctx *buf, ud_cxt *ud, int32_t *closefd) {
-    http_parser_ctx *parser = ud->extra;
-    if (parser->pack->lens > MAX_DATALENS) {
-        *closefd = 1;
-        LOG_WARN("http data too long, %"PRIu64, parser->pack->lens);
-        return NULL;
-    }
-    if (buffer_size(buf) >= parser->pack->lens) {
-        MALLOC(parser->pack->data, parser->pack->lens);
-        ASSERTAB(parser->pack->lens == buffer_remove(buf, parser->pack->data, parser->pack->lens), "copye buffer failed.");
-        parser->status = INIT;
-        RTN_PACK();
-        return _pack;
+    http_pack_ctx *pack = ud->extra;
+    if (buffer_size(buf) >= pack->lens) {
+        MALLOC(pack->data, pack->lens);
+        ASSERTAB(pack->lens == buffer_remove(buf, pack->data, pack->lens), "copye buffer failed.");
+        ud->status = INIT;
+        ud->extra = NULL;
+        return pack;
     } else {
         return NULL;
     }
@@ -167,24 +159,23 @@ static inline void *_http_header(buffer_ctx *buf, ud_cxt *ud, int32_t *closefd) 
     if (0 == hlens) {
         return NULL;
     }
-    http_parser_ctx *parser;
-    if (NULL == ud->extra) {
-        CALLOC(parser, 1, sizeof(http_parser_ctx));
-        ud->extra = parser;
-    } else {
-        parser = ud->extra;
-    }
-    parser->pack = _http_headpack(hlens);
-    ASSERTAB(hlens == buffer_remove(buf, parser->pack->hdata, hlens), "copye buffer failed.");
-    if (ERR_OK != _http_parse_head(parser)) {
+    http_pack_ctx *pack = _http_headpack(hlens);
+    ud->extra = pack;
+    ASSERTAB(hlens == buffer_remove(buf, pack->hdata, hlens), "copye buffer failed.");
+    if (ERR_OK != _http_parse_head(pack, ud)) {
         *closefd = 1;
         return NULL;
     }
-    if (CONTENT == parser->status) {
+    if (CONTENT == ud->status) {
+        if (pack->lens > MAX_DATALENS) {
+            *closefd = 1;
+            LOG_WARN("http data too long, %"PRIu64, pack->lens);
+            return NULL;
+        }
         return _http_content(buf, ud, closefd);
     } else {
-        RTN_PACK();
-        return _pack;
+        ud->extra = NULL;
+        return pack;
     }
 }
 static inline http_pack_ctx *_http_chunkedpack(size_t lens) {
@@ -201,8 +192,8 @@ static inline http_pack_ctx *_http_chunkedpack(size_t lens) {
 static inline void *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_t *closefd) {
     size_t drain;
     size_t flens = strlen(FLAG_CRLF);
-    http_parser_ctx *parser = ud->extra;
-    if (NULL == parser->pack) {
+    http_pack_ctx *pack = ud->extra;
+    if (NULL == pack) {
         int32_t pos = buffer_search(buf, 0, 0, 0, FLAG_CRLF, flens);
         if (ERR_FAILED == pos) {
             return NULL;
@@ -222,21 +213,21 @@ static inline void *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_t *closefd)
         }
         drain = pos + flens;
         ASSERTAB(drain == buffer_drain(buf, drain), "drain buffer failed.");
-        parser->pack = _http_chunkedpack(dlens);
+        pack = _http_chunkedpack(dlens);
+        ud->extra = pack;
     }
-    drain = parser->pack->lens + flens;
+    drain = pack->lens + flens;
     if (buffer_size(buf) < drain) {
         return NULL;
     }
-    if (parser->pack->lens > 0) {
-        ASSERTAB(parser->pack->lens == 
-            buffer_copyout(buf, 0, parser->pack->data, parser->pack->lens), "copye buffer failed.");
+    if (pack->lens > 0) {
+        ASSERTAB(pack->lens == buffer_copyout(buf, 0, pack->data, pack->lens), "copye buffer failed.");
     } else {
-        parser->status = INIT;
+        ud->status = INIT;
     }
     ASSERTAB(drain == buffer_drain(buf, drain), "drain buffer failed.");
-    RTN_PACK();
-    return _pack;
+    ud->extra = NULL;
+    return pack;
 }
 void http_pkfree(void *data) {
     if (NULL == data) {
@@ -250,21 +241,11 @@ void http_pkfree(void *data) {
     FREE(pack);
 }
 void http_udfree(ud_cxt *ud) {
-    if (NULL == ud->extra) {
-        return;
-    }
-    http_pkfree(((http_parser_ctx *)ud->extra)->pack);
-    FREE(ud->extra);
+    http_pkfree(ud->extra);
 }
 void *http_unpack(buffer_ctx *buf, size_t *size, ud_cxt *ud, int32_t *closefd) {
-    parse_status status;
-    if (NULL == ud->extra) {
-        status = INIT;
-    } else {
-        status = ((http_parser_ctx *)ud->extra)->status;
-    }
     void *data;
-    switch (status) {
+    switch (ud->status) {
     case INIT:
         data = _http_header(buf, ud, closefd);
         break;

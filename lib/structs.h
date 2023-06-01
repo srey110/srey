@@ -10,6 +10,7 @@ net: upktype(unpack_type) data(task_ctx) session nretry  http(extra)
 */
 typedef struct ud_cxt {
     int32_t upktype;
+    int32_t status;
     int32_t nretry;
     void *data;
     void *extra;
