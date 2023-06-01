@@ -1,10 +1,11 @@
 #include "ltask.h"
-#include "proto/http.h"
 #include "lua/lua.h"
 #include "lua/lapi.h"
 #include "lua/lstring.h"
 #include "lua/lualib.h"
 #include "lua/lauxlib.h"
+#include "proto/http.h"
+#include "proto/simple.h"
 
 typedef struct ltask_ctx{
     int32_t ref;
@@ -457,6 +458,18 @@ static int32_t _ltask_http_headers(lua_State *lua) {
     }
     return 1;
 }
+static int32_t _ltask_simple_data(lua_State *lua) {
+    void *data = lua_touserdata(lua, 1);
+    size_t size;
+    void *pack = simple_data(data, &size);
+    if (0 == size) {
+        lua_pushnil(lua);
+        return 1;
+    }
+    lua_pushlightuserdata(lua, pack);
+    lua_pushinteger(lua, size);
+    return 2;
+}
 LUAMOD_API int luaopen_srey(lua_State *lua) {
     luaL_Reg reg[] = {
         { "log", _ltask_log },
@@ -492,6 +505,9 @@ LUAMOD_API int luaopen_srey(lua_State *lua) {
         { "http_copydata", _ltask_http_copydata },
         { "http_header", _ltask_http_header },
         { "http_headers", _ltask_http_headers },
+
+        { "simple_data", _ltask_simple_data },
+
         { NULL, NULL },
     };
     luaL_newlib(lua, reg);

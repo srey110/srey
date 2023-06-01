@@ -387,6 +387,9 @@ function core.connect(ip, port, unptype, ssl, sendev)
         return fd
     end
 end
+function core.simple_data(data)
+    return srey.simple_data(data)
+end
 function core.sysinfo()
     local tm = string.format("task:%d, memory:%.2f(kb) ", core.name(), collectgarbage("count"))
     local sizes = {}
@@ -570,6 +573,7 @@ local function rpc_netreq(fd, info)
     end
 end
 local function dispatch_netrpc(fd, data, size)
+    data, size = core.simple_data(data)
     local info = decode(data, size)
     if TASKMSG_TYPE.NETREQ == info.proto then
         resume_normal(rpc_netreq, fd, info)

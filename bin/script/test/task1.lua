@@ -123,6 +123,7 @@ end
 srey.accepted(onaccept)
 
 local function echo(unptype, fd, data, size)
+    data, size = srey.simple_data(data)
     srey.send(fd, data, size, PACK_TYPE.SIMPLE)
 end
 srey.recved(echo)

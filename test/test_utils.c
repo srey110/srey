@@ -1,6 +1,7 @@
 #include "test_utils.h"
 #include "lib.h"
 #include "proto/http.h"
+#include "proto/simple.h"
 
 
 ARRAY_DECL(int, arr);
@@ -257,49 +258,6 @@ void test_netutils(CuTest* tc) {
 void test_buffer(CuTest* tc) {
     buffer_ctx buf;
     buffer_init(&buf); 
-    size_t aaa = 0;
-    int32_t closed = 0;
-    ud_cxt ud;
-    ZERO(&ud, sizeof(ud));
-    ud.upktype = UNPACK_HTTP;
-    const char *http1 = "POST  /users  HTTP/1.1\r\n  Host:   api.github.com\r\nContent-Length: 5\r\na: \r\n\r\n1";
-    buffer_append(&buf, (void *)http1, strlen(http1));
-    void *rtnbuf = http_unpack(&buf, &aaa, &ud, &closed);
-    CuAssertTrue(tc, NULL == rtnbuf);
-    const char *http2 = "2345";
-    buffer_append(&buf, (void *)http2, strlen(http2));
-    rtnbuf = http_unpack(&buf, &aaa, &ud, &closed);
-    CuAssertTrue(tc, NULL != rtnbuf);
-    protos_pkfree(UNPACK_HTTP, rtnbuf);
-
-    const char *http3 = "POST  /users  HTTP/1.1\r\nHost: api.github.com\r\nContent-Length: 5\r\n\r\n12345";
-    buffer_append(&buf, (void *)http3, strlen(http3));
-    rtnbuf = http_unpack(&buf, &aaa, &ud, &closed);
-    CuAssertTrue(tc, NULL != rtnbuf);
-    protos_pkfree(UNPACK_HTTP, rtnbuf);
-
-    const char *http4 = "POST  /users  HTTP/1.1\r\nHost: api.github.com\r\n\r\n";
-    buffer_append(&buf, (void *)http4, strlen(http4));
-    rtnbuf = http_unpack(&buf, &aaa, &ud, &closed);
-    CuAssertTrue(tc, NULL != rtnbuf);
-    protos_pkfree(UNPACK_HTTP, rtnbuf);
-
-    const char *http5 = "POST  /users  HTTP/1.1\r\nHost: api.github.com\r\nTransfer-Encoding: chunked\r\n\r\n7\r\nMozilla\r\n11\r\nDeveloper N\r\n0\r\n\r\n";
-    buffer_append(&buf, (void *)http5, strlen(http5));
-    rtnbuf = http_unpack(&buf, &aaa, &ud, &closed);
-    CuAssertTrue(tc, NULL != rtnbuf);
-    protos_pkfree(UNPACK_HTTP, rtnbuf);
-    rtnbuf = http_unpack(&buf, &aaa, &ud, &closed);
-    CuAssertTrue(tc, NULL != rtnbuf);
-    protos_pkfree(UNPACK_HTTP, rtnbuf);
-    rtnbuf = http_unpack(&buf, &aaa, &ud, &closed);
-    CuAssertTrue(tc, NULL != rtnbuf);
-    protos_pkfree(UNPACK_HTTP, rtnbuf);
-    rtnbuf = http_unpack(&buf, &aaa, &ud, &closed);
-    CuAssertTrue(tc, NULL != rtnbuf);
-    protos_pkfree(UNPACK_HTTP, rtnbuf);
-    protos_udfree(&ud);
-
     const char *str1 = "this is test.";
     const char *str2 = "who am i?";
     CuAssertTrue(tc, ERR_OK == buffer_append(&buf, (void *)str1, strlen(str1)));
@@ -332,6 +290,92 @@ void test_log(CuTest* tc) {
     LOG_ERROR("%s", "LOG_ERROR");
     LOG_FATAL("%s", "LOG_FATAL");
 }
+void test_http(CuTest* tc) {
+    buffer_ctx buf;
+    buffer_init(&buf);
+    size_t size = 0;
+    int32_t closed = 0;
+    ud_cxt ud;
+    ZERO(&ud, sizeof(ud));
+    ud.upktype = UNPACK_HTTP;
+    const char *http1 = "POST  /users  HTTP/1.1\r\n  Host:   api.github.com\r\nContent-Length: 5\r\na: \r\n\r\n1";
+    buffer_append(&buf, (void *)http1, strlen(http1));
+    void *rtnbuf = http_unpack(&buf, &size, &ud, &closed);
+    CuAssertTrue(tc, NULL == rtnbuf);
+    const char *http2 = "2345";
+    buffer_append(&buf, (void *)http2, strlen(http2));
+    rtnbuf = http_unpack(&buf, &size, &ud, &closed);
+    CuAssertTrue(tc, NULL != rtnbuf);
+    protos_pkfree(UNPACK_HTTP, rtnbuf);
+
+    const char *http3 = "POST  /users  HTTP/1.1\r\nHost: api.github.com\r\nContent-Length: 5\r\n\r\n12345";
+    buffer_append(&buf, (void *)http3, strlen(http3));
+    rtnbuf = http_unpack(&buf, &size, &ud, &closed);
+    CuAssertTrue(tc, NULL != rtnbuf);
+    protos_pkfree(UNPACK_HTTP, rtnbuf);
+
+    const char *http4 = "POST  /users  HTTP/1.1\r\nHost: api.github.com\r\n\r\n";
+    buffer_append(&buf, (void *)http4, strlen(http4));
+    rtnbuf = http_unpack(&buf, &size, &ud, &closed);
+    CuAssertTrue(tc, NULL != rtnbuf);
+    protos_pkfree(UNPACK_HTTP, rtnbuf);
+
+    const char *http5 = "POST  /users  HTTP/1.1\r\nHost: api.github.com\r\nTransfer-Encoding: chunked\r\n\r\n7\r\nMozilla\r\n11\r\nDeveloper N\r\n0\r\n\r\n";
+    buffer_append(&buf, (void *)http5, strlen(http5));
+    rtnbuf = http_unpack(&buf, &size, &ud, &closed);
+    CuAssertTrue(tc, NULL != rtnbuf);
+    protos_pkfree(UNPACK_HTTP, rtnbuf);
+    rtnbuf = http_unpack(&buf, &size, &ud, &closed);
+    CuAssertTrue(tc, NULL != rtnbuf);
+    protos_pkfree(UNPACK_HTTP, rtnbuf);
+    rtnbuf = http_unpack(&buf, &size, &ud, &closed);
+    CuAssertTrue(tc, NULL != rtnbuf);
+    protos_pkfree(UNPACK_HTTP, rtnbuf);
+    rtnbuf = http_unpack(&buf, &size, &ud, &closed);
+    CuAssertTrue(tc, NULL != rtnbuf);
+    protos_pkfree(UNPACK_HTTP, rtnbuf);
+    protos_udfree(&ud);
+
+    buffer_free(&buf);
+}
+void test_simple(CuTest* tc) {
+    buffer_ctx buf;
+    buffer_init(&buf);
+    
+    int32_t closed = 0;
+    ud_cxt ud;
+    ZERO(&ud, sizeof(ud));
+    ud.upktype = UNPACK_SIMPLE;
+
+    const char *str1 = "this is test.";
+    size_t packsize = 0;
+    void *pack = simple_pack((void *)str1, strlen(str1), &packsize);
+    buffer_append(&buf, pack, packsize);
+    size_t size = 0;
+    void * unpack = simple_unpack(&buf, &size, &ud, &closed);
+    CuAssertTrue(tc, size == packsize &&
+        0 == memcmp((char*)pack + simple_hsize(), (char*)unpack + simple_hsize(), packsize));
+    protos_pkfree(UNPACK_SIMPLE, unpack);
+
+    buffer_append(&buf, pack, packsize - 5);
+    unpack = simple_unpack(&buf, &size, &ud, &closed);
+    CuAssertTrue(tc, NULL == unpack);
+    buffer_append(&buf, (char*)pack + (packsize - 5), 5);
+    unpack = simple_unpack(&buf, &size, &ud, &closed);
+    CuAssertTrue(tc, size == packsize && 
+        0 == memcmp((char*)pack + simple_hsize(), (char*)unpack + simple_hsize(), packsize));
+    protos_pkfree(UNPACK_SIMPLE, unpack);
+    FREE(pack);
+
+    pack = simple_pack(NULL, 0, &packsize);
+    buffer_append(&buf, pack, packsize);
+    unpack = simple_unpack(&buf, &size, &ud, &closed);
+    CuAssertTrue(tc, size == packsize);
+    protos_pkfree(UNPACK_SIMPLE, unpack);
+    
+    FREE(pack);
+    buffer_free(&buf);
+}
 void test_utils(CuSuite* suite) {
     SUITE_ADD_TEST(suite, test_array);
     SUITE_ADD_TEST(suite, test_queue);
@@ -340,5 +384,6 @@ void test_utils(CuSuite* suite) {
     SUITE_ADD_TEST(suite, test_netutils);
     SUITE_ADD_TEST(suite, test_buffer);
     SUITE_ADD_TEST(suite, test_log);
-
+    SUITE_ADD_TEST(suite, test_http);
+    SUITE_ADD_TEST(suite, test_simple);
 }

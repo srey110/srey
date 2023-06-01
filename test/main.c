@@ -25,5 +25,6 @@ int main(int argc, char *argv[]) {
     CuStringDelete(poutput);
     CuSuiteDelete(psuite);
     LOGFREE();
+    system("pause");
     return 0;
 }
