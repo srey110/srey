@@ -1,4 +1,5 @@
 #include "http.h"
+#include "utils.h"
 #include "sarray.h"
 #include "loger.h"
 
@@ -189,7 +190,7 @@ static inline void *_http_header(buffer_ctx *buf, ud_cxt *ud, int32_t *closefd) 
 static inline http_pack_ctx *_http_chunkedpack(size_t lens) {
     char *pack;
     CALLOC(pack, 1, sizeof(http_pack_ctx) + lens);
-    http_pack_ctx *pctx = pack;
+    http_pack_ctx *pctx = (http_pack_ctx *)pack;
     if (lens > 0) {
         pctx->data = pack + sizeof(http_pack_ctx);
         pctx->lens = lens;
