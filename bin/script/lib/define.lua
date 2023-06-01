@@ -10,13 +10,15 @@ UNPACK_TYPE = {
     NONE = 0x00,
     RPC = 0x01,
     HTTP = 0x02,
-    SIMPLE = 0x03
+    WEBSOCK = 0x03,
+    SIMPLE = 0x04
 }
 --组包类型 与c pack_type对应
 PACK_TYPE = {
     NONE = 0x00,
     RPC = 0x01,
-    SIMPLE = 0x02,
+    WEBSOCK = 0x02,
+    SIMPLE = 0x03
 }
 --ssl文件类型
 SSLFILE_TYPE = {

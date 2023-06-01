@@ -8,11 +8,13 @@ typedef enum unpack_type {
     UNPACK_NONE = 0x0,
     UNPACK_RPC,
     UNPACK_HTTP,
+    UNPACK_WEBSOCK,
     UNPACK_SIMPLE,
 }unpack_type;
 typedef enum pack_type {
     PACK_NONE = 0x0,
     PACK_RPC,
+    PACK_WEBSOCK,
     PACK_SIMPLE,
 }pack_type;
 

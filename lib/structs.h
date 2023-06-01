@@ -6,10 +6,11 @@
 /*
 用户数据
 timeout: data(task_ctx) session
-net: upktype(unpack_type) data(task_ctx) session  http(extra)
+net: upktype(unpack_type) data(task_ctx) session nretry  http(extra)
 */
 typedef struct ud_cxt {
     int32_t upktype;
+    int32_t nretry;
     void *data;
     void *extra;
     uint64_t session;

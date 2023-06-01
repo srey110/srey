@@ -248,11 +248,15 @@ static inline void _task_net_recv(ev_ctx *ev, SOCKET fd, buffer_ctx *buf, size_t
     void *data;
     size_t lens = 0;
     int32_t closefd = 0;
-    while (NULL != (data = protos_unpack(ud->upktype, buf, &lens, ud, &closefd))) {
-        msg.data = data;
-        msg.size = lens;
-        _push_message(ud->data, &msg);
-    }
+    do {
+        data = protos_unpack(ud->upktype, buf, &lens, ud, &closefd);
+        if (NULL != data) {
+            msg.data = data;
+            msg.size = lens;
+            _push_message(ud->data, &msg);
+        }
+    } while (NULL != data && 0 != buffer_size(buf));
+
     if (0 != closefd) {
         ev_close(ev, fd);
     }

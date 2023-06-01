@@ -39,7 +39,7 @@ int32_t buffer_drain(buffer_ctx *ctx, size_t len);
 int32_t buffer_remove(buffer_ctx *ctx, void *out, size_t len);
 //ncs 1 不区分大小写
 int32_t buffer_search(buffer_ctx *ctx, const int32_t ncs,
-    const size_t start, const size_t end, char *what, size_t wlen);
+    const size_t start, size_t end, char *what, size_t wlen);
 
 uint32_t buffer_expand(buffer_ctx *ctx, const size_t lens, IOV_TYPE *iov, const uint32_t cnt);
 void buffer_commit_expand(buffer_ctx *ctx, size_t len ,IOV_TYPE *iov, const uint32_t cnt);

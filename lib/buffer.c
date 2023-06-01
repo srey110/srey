@@ -491,13 +491,19 @@ static int32_t _search_memcmp(bufnode_ctx *node, const int32_t ncs, size_t off, 
     return ERR_OK;
 }
 int32_t buffer_search(buffer_ctx *ctx, const int32_t ncs,
-    const size_t start, const size_t end, char *what, size_t wlen) {
+    const size_t start, size_t end, char *what, size_t wlen) {
     ASSERTAB(0 == ctx->freeze_read, "read freezed");
-    if (start >= ctx->total_len
-        || wlen > ctx->total_len
-        || (0 != end && (start > end || start + wlen > end))) {
+    if (0 == ctx->total_len) {
         return ERR_FAILED;
     }
+    if (0 == end || end >= ctx->total_len) {
+        end = ctx->total_len;
+    } else {
+        end++;
+    }
+    if (start + wlen > end) {
+        return ERR_FAILED;
+    }    
     //查找开始位置所在节点
     size_t totaloff = 0;
     bufnode_ctx *node = _search_start(ctx->head, start, &totaloff);
@@ -506,8 +512,7 @@ int32_t buffer_search(buffer_ctx *ctx, const int32_t ncs,
     size_t uioff = node->off - (totaloff - start);
     while (NULL != node
         && 0 != node->off) {
-        if (0 != end
-            && totaloff - node->off + uioff + wlen > end + 1) {
+        if (totaloff - node->off + uioff + wlen > end) {
             break;
         }
         pstart = node->buffer + node->misalign + uioff;
@@ -518,8 +523,7 @@ int32_t buffer_search(buffer_ctx *ctx, const int32_t ncs,
         }
         if (NULL != pschar) {
             uioff += (pschar - pstart);
-            if (0 != end
-                && totaloff - node->off + uioff + wlen > end + 1) {
+            if (totaloff - node->off + uioff + wlen > end) {
                 break;
             }
             if (ERR_OK == _search_memcmp(node, ncs, uioff, what, wlen)) {

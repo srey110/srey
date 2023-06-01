@@ -145,6 +145,9 @@
     <ClInclude Include="proto\http.h">
       <Filter>proto</Filter>
     </ClInclude>
+    <ClInclude Include="proto\websock.h">
+      <Filter>proto</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="memory.c">
@@ -220,6 +223,9 @@
       <Filter>proto</Filter>
     </ClCompile>
     <ClCompile Include="proto\http.c">
+      <Filter>proto</Filter>
+    </ClCompile>
+    <ClCompile Include="proto\websock.c">
       <Filter>proto</Filter>
     </ClCompile>
   </ItemGroup>
