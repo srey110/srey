@@ -592,8 +592,8 @@ void buffer_commit_get(buffer_ctx *ctx, size_t len) {
     ctx->freeze_read = 0;
 }
 int32_t buffer_from_sock(buffer_ctx *ctx, SOCKET fd, size_t *nread,
-    int32_t(*_readv)(SOCKET, IOV_TYPE *, uint32_t, void *), void *arg) {
-    (*nread) = 0;
+    int32_t(*_readv)(SOCKET, IOV_TYPE *, uint32_t, void *, size_t *), void *arg) {
+    *nread = 0;
     int32_t nmax = sock_nread(fd);
     if (ERR_FAILED == nmax
         || nmax >= MAX_PACK_SIZE) {
@@ -602,30 +602,26 @@ int32_t buffer_from_sock(buffer_ctx *ctx, SOCKET fd, size_t *nread,
     if (nmax <= 0) {
         nmax = MAX_RECV_SIZE;
     }
-    int32_t rtn;
-    size_t remain, len = 0;
+    int32_t rtn = ERR_OK;
+    size_t readed, lens = 0;
     uint32_t niov;
     IOV_TYPE iov[MAX_EXPAND_NIOV];
     for (; (int32_t)(*nread) < nmax; ) {
-        remain = nmax - (*nread);
-        if (remain > MAX_RECV_SIZE) {
-            len = MAX_RECV_SIZE;
+        lens = nmax - *nread;
+        if (lens > MAX_RECV_SIZE) {
+            lens = MAX_RECV_SIZE;
+        }
+        niov = buffer_expand(ctx, lens, iov, MAX_EXPAND_NIOV);
+        rtn = _readv(fd, iov, niov, arg, &readed);
+        buffer_commit_expand(ctx, readed, iov, niov);
+        *nread += readed;
+        if (ERR_FAILED == rtn) {
+            break;
         } else {
-            len = remain;
+            if (readed < lens) {
+                break;
+            }
         }
-        niov = buffer_expand(ctx, len, iov, MAX_EXPAND_NIOV);
-        rtn = _readv(fd, iov, niov, arg);
-        if (rtn <= 0) {
-            buffer_commit_expand(ctx, 0, iov, niov);
-            break;
-        }
-        (*nread) += (size_t)rtn;
-        buffer_commit_expand(ctx, (size_t)rtn, iov, niov);
-        if (rtn < (int32_t)len) {
-            rtn = ERR_OK;
-            break;
-        }
-        rtn = ERR_OK;
     }
     return rtn;
 }

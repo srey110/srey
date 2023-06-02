@@ -3,7 +3,6 @@
 
 typedef uint32_t lens_t;
 #define  ntoh  ntohl
-#define MAX_DATALENS ONEK * 64
 
 typedef struct simple_head_ctx {
     lens_t lens;//ÄÚÈÝ³¤¶È
@@ -34,7 +33,7 @@ void *simple_unpack(buffer_ctx *buf, size_t *size, ud_cxt *ud, int32_t *closefd)
         lens_t lens;
         ASSERTAB(sizeof(lens) == buffer_copyout(buf, off, &lens, sizeof(lens)), "copy buffer error.");
         lens = (lens_t)ntoh(lens);
-        if (lens > MAX_DATALENS) {
+        if (lens >= MAX_PACK_SIZE) {
             *closefd = 1;
             LOG_WARN("data too long, %"PRIu64, lens);
             return NULL;

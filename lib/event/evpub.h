@@ -56,7 +56,7 @@ int32_t _set_sockops(SOCKET fd);
 SOCKET _create_sock(int32_t type, int32_t family);
 SOCKET _listen(netaddr_ctx *addr);
 SOCKET _udp(netaddr_ctx *addr);
-int32_t _sock_read(SOCKET fd, IOV_TYPE *iov, uint32_t niov, void *arg);
+int32_t _sock_read(SOCKET fd, IOV_TYPE *iov, uint32_t niov, void *arg, size_t *readed);
 int32_t _sock_send(SOCKET fd, qu_bufs *buf_s, size_t *nsend, void *arg);
 
 #endif//EVPUB_H_

@@ -64,16 +64,10 @@ local function httptest()
     end
     srey.close(fd)
 end
-local function ontimeout()
-    printd(".............................................")
+local function testrpc()
     local rpctask = srey.qury(TASK_NAME.TAKS2)
-    if not callonce then
-        callonce = true
-        local rpcdes = srey.describe(rpctask)
-        httptest()
-        --printd(rpcdes)
-    end
-
+    local rpcdes = srey.describe(rpctask)
+    --printd(rpcdes)
     srey.call(rpctask, "rpc_add", math.random(10) , math.random(10), "srey.call")
     local rtn, sum, des = srey.request(rpctask, "rpc_add", math.random(10) , math.random(10), "srey.request")
     printd("request rpc_add rtn:" .. tostring(rtn) .. " sum:" .. tostring(sum) .. " des:" .. tostring(des))
@@ -88,7 +82,14 @@ local function ontimeout()
         rtn = srey.netreq(rpcfd, TASK_NAME.TAKS2, "rpc_void")
         printd("netreq rpc_void rtn:" .. tostring(rtn))
     end
-    --httptest()
+end
+local function ontimeout()
+    printd(".............................................")
+    if not callonce then
+        callonce = true
+    end
+    httptest()
+    testrpc()
     srey.timeout(5000, ontimeout)
 end
 local function onstarted()

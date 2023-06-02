@@ -26,8 +26,8 @@ SSL *evssl_setfd(evssl_ctx *evssl, SOCKET fd);
 int32_t evssl_tryacpt(SSL *ssl);
 int32_t evssl_tryconn(SSL *ssl);
 
-int32_t evssl_read(SSL *ssl, char *buf, size_t len);
-int32_t evssl_send(SSL *ssl, char *buf, size_t len);
+int32_t evssl_read(SSL *ssl, char *buf, size_t len, size_t *readed);
+int32_t evssl_send(SSL *ssl, char *buf, size_t len, size_t *sended);
 
 void evssl_shutdown(SSL *ssl, SOCKET fd);
 

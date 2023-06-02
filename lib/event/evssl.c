@@ -96,35 +96,42 @@ int32_t evssl_tryconn(SSL *ssl) {
     }
     return ERR_FAILED;
 }
-int32_t evssl_read(SSL *ssl, char *buf, size_t len) {
-    int32_t rtn, nread = 0;
+int32_t evssl_read(SSL *ssl, char *buf, size_t len, size_t *readed) {
+    *readed = 0;
+    int32_t rtn;
     do {
-        rtn = SSL_read(ssl, buf + nread, (int32_t)(len - nread));
+        rtn = SSL_read(ssl, buf + *readed, (int32_t)(len - *readed));
         if (rtn > 0) {
-            nread += rtn;
+            *readed += rtn;
         } else {
-            if (SSL_ERROR_WANT_READ == SSL_get_error(ssl, rtn)) {
+            if (0 == rtn) {
+                return ERR_FAILED;
+            }
+            int32_t sslerr = SSL_get_error(ssl, rtn);
+            if (SSL_ERROR_WANT_READ == sslerr) {
                 break;
             }
+            //LOG_WARN("ssl error, read: %d, sslerrno: %d, errstr: %s", rtn, sslerr, ERR_error_string(sslerr, NULL));
             return ERR_FAILED;
         }
-    } while (nread < (int32_t)len);
-    return nread;
+    } while (*readed < len);
+    return ERR_OK;
 }
-int32_t evssl_send(SSL *ssl, char *buf, size_t len) {
-    int32_t rtn, nsend = 0;
+int32_t evssl_send(SSL *ssl, char *buf, size_t len, size_t *sended) {
+    *sended = 0;
+    int32_t rtn;
     do {
-        rtn = SSL_write(ssl, buf + nsend, (int32_t)(len - nsend));
+        rtn = SSL_write(ssl, buf + *sended, (int32_t)(len - *sended));
         if (rtn > 0) {
-            nsend += rtn;
+            *sended += rtn;
         } else {
             if (SSL_ERROR_WANT_WRITE == SSL_get_error(ssl, rtn)) {
                 break;
             }
             return ERR_FAILED;
         }
-    } while (nsend < (int32_t)len);
-    return nsend;
+    } while (*sended < len);
+    return ERR_OK;
 }
 void evssl_shutdown(SSL *ssl, SOCKET fd) {
     if (NULL != ssl) {

@@ -15,7 +15,7 @@
 #define MAX_RECVFROM_SIZE   4096
 #define MAX_SEND_SIZE       4096
 #define MAX_SEND_NIOV       16
-#define MAX_PACK_SIZE       65535
+#define MAX_PACK_SIZE       ONEK * 64
 #define INIT_SENDBUF_LEN    32
 #define SHRINK_TIME         (30 * 1000)
 

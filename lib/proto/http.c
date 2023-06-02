@@ -21,7 +21,6 @@ typedef struct http_pack_ctx {
 }http_pack_ctx;
 
 #define MAX_HEADLENS ONEK * 4
-#define MAX_DATALENS ONEK * 64
 #define FLAG_CRLF "\r\n"
 #define FLAG_HEND "\r\n\r\n"
 #define FLAG_CONTENT "content-length"
@@ -167,7 +166,7 @@ static inline void *_http_header(buffer_ctx *buf, ud_cxt *ud, int32_t *closefd) 
         return NULL;
     }
     if (CONTENT == ud->status) {
-        if (pack->lens > MAX_DATALENS) {
+        if (pack->lens >= MAX_PACK_SIZE) {
             *closefd = 1;
             LOG_WARN("http data too long, %"PRIu64, pack->lens);
             return NULL;
@@ -206,7 +205,7 @@ static inline void *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_t *closefd)
         }
         ASSERTAB(pos == buffer_copyout(buf, 0, lensbuf, pos), "copye buffer failed.");
         size_t dlens = atoi(lensbuf);
-        if (dlens > MAX_DATALENS) {
+        if (dlens >= MAX_PACK_SIZE) {
             *closefd = 1;
             LOG_WARN("data too long, %"PRIu64, dlens);
             return NULL;
