@@ -20,7 +20,7 @@ local function  onchunked(data, lens)
 end
 local function httptest()
     local ssl = srey.sslevqury("client")
-    local fd = srey.connect("127.0.0.1", 15003, UNPACK_TYPE.HTTP, ssl, false)
+    local fd = srey.connect("127.0.0.1", 15003, PACK_TYPE.HTTP, ssl, false)
     if INVALID_SOCK == fd then
         return
     end
@@ -96,7 +96,7 @@ local function onstarted()
     math.randomseed(os.time())
     printd(srey.name() .. " onstarted....")
     srey.register("test.task3", TASK_NAME.TAKS3)
-    srey.listen("0.0.0.0", 15000, UNPACK_TYPE.SIMPLE, nil, true)
+    srey.listen("0.0.0.0", 15000, PACK_TYPE.SIMPLE, nil, true)
     srey.timeout(2000, ontimeout)
 
     local harbor = srey.qury(TASK_NAME.HARBOR)
@@ -109,7 +109,7 @@ local function onstarted()
     srey.call(harbor, "removeip", "192.168.100.2")
     printd(srey.name() .. " start connect....")
     local ssl = srey.sslevqury("client")
-    rpcfd = srey.connect("127.0.0.1", 8080, UNPACK_TYPE.RPC, ssl, false)
+    rpcfd = srey.connect("127.0.0.1", 8080, PACK_TYPE.RPC, ssl, false)
     if INVALID_SOCK ~= rpcfd then
         printd(srey.name() .. " end connect.... fd:" .. rpcfd)
     else
@@ -134,7 +134,7 @@ end
 srey.sended(onsended)
 
 local function onsockclose(unptype, fd)
-    if unptype == UNPACK_TYPE.RPC and rpcfd == fd then
+    if unptype == PACK_TYPE.RPC and rpcfd == fd then
         printd(srey.name() .. "................. error rpc connect closed")
         rpcfd = INVALID_SOCK
     end

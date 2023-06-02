@@ -168,27 +168,27 @@ end
 参数：
     ip 监听ip :string
     port 端口 :integer
-    unptype :UNPACK_TYPE
+    unptype :PACK_TYPE
     ssl evssl_ctx  nil不启用ssl
     sendev 是否触发发送事件 :boolean
 返回:
     bool
 --]]
 function core.listen(ip, port, unptype, ssl, sendev)
-    return srey.listen(curtask, unptype or UNPACK_TYPE.NONE, ssl, ip, port, sendev and 1 or 0)
+    return srey.listen(curtask, unptype or PACK_TYPE.NONE, ssl, ip, port, sendev and 1 or 0)
 end
 --[[
 描述:udp
 参数：
     ip ip :string
     port 端口 :integer
-    unptype :UNPACK_TYPE
+    unptype :PACK_TYPE
 返回:
     socket :integer
     INVALID_SOCK失败
 --]]
 function core.udp(ip, port, unptype)
-    return srey.udp(curtask, unptype or UNPACK_TYPE.NONE, ip, port)
+    return srey.udp(curtask, unptype or PACK_TYPE.NONE, ip, port)
 end
 --[[
 描述:tcp发送

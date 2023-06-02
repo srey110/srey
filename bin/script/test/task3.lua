@@ -5,7 +5,7 @@ local function onstarted()
     printd(srey.name() .. " onstarted....")
     srey.udp("0.0.0.0", 15002)
     local ssl = srey.sslevqury("server")
-    srey.listen("0.0.0.0", 15003, UNPACK_TYPE.HTTP, ssl)
+    srey.listen("0.0.0.0", 15003, PACK_TYPE.HTTP, ssl)
 end
 srey.started(onstarted)
 
@@ -31,7 +31,7 @@ local function http_rtn(fd, chunked)
     end
 end
 local function onrecv(unptype, fd, data, size)
-    if UNPACK_TYPE.HTTP == unptype then
+    if PACK_TYPE.HTTP == unptype then
         local chunked = srey.http_chunked(data)
         if 1 == chunked then
             local hinfo = srey.http_head(data)

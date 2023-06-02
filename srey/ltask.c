@@ -134,7 +134,7 @@ static inline void _ltask_run(task_ctx *task, message_ctx *msg) {
     }
     lua_rawgeti(ltask->lua, LUA_REGISTRYINDEX, ltask->ref);
     lua_pushinteger(ltask->lua, msg->msgtype);
-    lua_pushinteger(ltask->lua, msg->upktype);
+    lua_pushinteger(ltask->lua, msg->pktype);
     lua_pushinteger(ltask->lua, msg->error);
     lua_pushinteger(ltask->lua, msg->fd);
     if (NULL == msg->src) {

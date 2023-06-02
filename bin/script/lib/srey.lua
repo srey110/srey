@@ -53,7 +53,7 @@ end
 --[[
 描述:socket accept
 参数：
-    func function(unptype :UNPACK_TYPE, fd :integer) :function
+    func function(unptype :PACK_TYPE, fd :integer) :function
 --]]
 function core.accepted(func)
     static_funcs.ACCEPT = func
@@ -61,7 +61,7 @@ end
 --[[
 描述:socket recv
 参数：
-    func function(unptype :UNPACK_TYPE, fd :integer, data :userdata, size :integer) :function
+    func function(unptype :PACK_TYPE, fd :integer, data :userdata, size :integer) :function
 --]]
 function core.recved(func)
     static_funcs.RECV = func
@@ -69,7 +69,7 @@ end
 --[[
 描述:udp recvfrom
 参数：
-    func function(unptype :UNPACK_TYPE, fd :integer, data :userdata, size:integer, ip :string, port :integer) :function
+    func function(unptype :PACK_TYPE, fd :integer, data :userdata, size:integer, ip :string, port :integer) :function
 --]]
 function core.recvfromed(func)
     static_funcs.RECVFROM = func
@@ -77,7 +77,7 @@ end
 --[[
 描述:socket sended
 参数：
-    func function(unptype :UNPACK_TYPE, fd :integer, size :integer) :function
+    func function(unptype :PACK_TYPE, fd :integer, size :integer) :function
 --]]
 function core.sended(func)
     static_funcs.SEND = func
@@ -85,7 +85,7 @@ end
 --[[
 描述:socket close
 参数：
-    func function(unptype :UNPACK_TYPE, fd :integer) :function
+    func function(unptype :PACK_TYPE, fd :integer) :function
 --]]
 function core.closed(func)
     static_funcs.CLOSE = func
@@ -357,7 +357,7 @@ end
 参数：
     ip ip :string
     port 端口 :integer
-    unptype :UNPACK_TYPE
+    unptype :PACK_TYPE
     ssl nil不启用ssl :evssl_ctx
     sendev 是否触发发送事件 :boolean
 返回:
@@ -370,7 +370,7 @@ function core.connect(ip, port, unptype, ssl, sendev)
         send = 1
     end
     local sess = core.session()
-    local sock = srey.connect(core.self(), unptype or UNPACK_TYPE.NONE, sess, ssl, ip, port, send)
+    local sock = srey.connect(core.self(), unptype or PACK_TYPE.NONE, sess, ssl, ip, port, send)
     if INVALID_SOCK == sock then
         return INVALID_SOCK
     end
@@ -686,13 +686,13 @@ end
 local function dispatch_revc(fd, unptype, data, size)
     local coinfo = synsock_coro[fd]
     if nil ~= coinfo then
-        if UNPACK_TYPE.HTTP == unptype then
+        if PACK_TYPE.HTTP == unptype then
             dispatch_revc_http(fd, coinfo, data)
         else
             synsock_resume(fd, coinfo, true, data, size)
         end
     else
-        if UNPACK_TYPE.RPC == unptype then
+        if PACK_TYPE.RPC == unptype then
             dispatch_netrpc(fd, data, size)
         else
             resume_normal(static_funcs.RECV, unptype, fd, data, size)
@@ -729,7 +729,7 @@ function dispatch_message(msgtype, unptype, err, fd, src, data, size, sess, addr
         if nil ~= info then
             synsock_resume(fd, info, false)
         end
-        if UNPACK_TYPE.RPC == unptype then
+        if PACK_TYPE.RPC == unptype then
             request_sock_closed(fd)
         end
         resume_normal(static_funcs.CLOSE, unptype, fd)

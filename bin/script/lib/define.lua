@@ -5,20 +5,13 @@ TASK_NAME = {
     TAKS2 = 0x02,
     TAKS3 = 0x03
 }
---解包类型 标识该socket类型 与c unpack_type对应
-UNPACK_TYPE = {
+--包类型 标识该socket类型 与c pack_type对应
+PACK_TYPE = {
     NONE = 0x00,
     RPC = 0x01,
     HTTP = 0x02,
     WEBSOCK = 0x03,
     SIMPLE = 0x04
-}
---组包类型 与c pack_type对应
-PACK_TYPE = {
-    NONE = 0x00,
-    RPC = 0x01,
-    WEBSOCK = 0x02,
-    SIMPLE = 0x03
 }
 --ssl文件类型
 SSLFILE_TYPE = {

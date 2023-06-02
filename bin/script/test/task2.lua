@@ -3,7 +3,7 @@ local srey = require("lib.srey")
 local function onstarted()
     printd(srey.name() .. " onstarted....")
     local ssl = srey.sslevqury("server")
-    srey.listen("0.0.0.0", 15001, UNPACK_TYPE.NONE, ssl)
+    srey.listen("0.0.0.0", 15001, PACK_TYPE.NONE, ssl)
 end
 srey.started(onstarted)
 

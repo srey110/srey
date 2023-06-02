@@ -3,9 +3,9 @@
 #include "proto/http.h"
 #include "proto/websock.h"
 
-void protos_pkfree(unpack_type type, void *data) {
+void protos_pkfree(pack_type type, void *data) {
     switch (type) {
-    case UNPACK_HTTP:
+    case PACK_HTTP:
         http_pkfree(data);
         break;
     default:
@@ -14,8 +14,8 @@ void protos_pkfree(unpack_type type, void *data) {
     }
 }
 void protos_udfree(ud_cxt *ud) {
-    switch (ud->upktype) {
-    case UNPACK_HTTP:
+    switch (ud->pktype) {
+    case PACK_HTTP:
         http_udfree(ud);
         break;
     default:
@@ -46,18 +46,18 @@ static inline void _check_retry(void *unpack, ud_cxt *ud, int32_t *closefd) {
         ud->nretry = 0;
     }
 }
-void *protos_unpack(unpack_type type, buffer_ctx *buf, size_t *size, ud_cxt *ud, int32_t *closefd) {
+void *protos_unpack(buffer_ctx *buf, size_t *size, ud_cxt *ud, int32_t *closefd) {
     void *unpack;
     *size = 0;
-    switch (type) {
-    case UNPACK_RPC:
-    case UNPACK_SIMPLE:
+    switch (ud->pktype) {
+    case PACK_RPC:
+    case PACK_SIMPLE:
         unpack = simple_unpack(buf, size, ud, closefd);
         break;
-    case UNPACK_HTTP:
+    case PACK_HTTP:
         unpack = http_unpack(buf, size, ud, closefd);
         break;
-    case UNPACK_WEBSOCK:
+    case PACK_WEBSOCK:
         unpack = websock_unpack(buf, size, ud, closefd);
         break;
     default:
@@ -89,4 +89,15 @@ void *protos_pack(pack_type type, void *data, size_t lens, size_t *size) {
         break;
     }
     return pack;
+}
+int32_t protos_handshake(ev_ctx *ev, SOCKET fd, ud_cxt *ud) {
+    int32_t rtn = ERR_OK;
+    switch (ud->pktype) {
+    case PACK_WEBSOCK:
+        rtn = websock_handshake(ev, fd, ud);
+        break;
+    default:
+        break;
+    }
+    return rtn;
 }

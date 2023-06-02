@@ -297,7 +297,7 @@ void test_http(CuTest* tc) {
     int32_t closed = 0;
     ud_cxt ud;
     ZERO(&ud, sizeof(ud));
-    ud.upktype = UNPACK_HTTP;
+    ud.pktype = PACK_HTTP;
     const char *http1 = "POST  /users  HTTP/1.1\r\n  Host:   api.github.com\r\nContent-Length: 5\r\na: \r\n\r\n1";
     buffer_append(&buf, (void *)http1, strlen(http1));
     void *rtnbuf = http_unpack(&buf, &size, &ud, &closed);
@@ -306,34 +306,34 @@ void test_http(CuTest* tc) {
     buffer_append(&buf, (void *)http2, strlen(http2));
     rtnbuf = http_unpack(&buf, &size, &ud, &closed);
     CuAssertTrue(tc, NULL != rtnbuf);
-    protos_pkfree(UNPACK_HTTP, rtnbuf);
+    protos_pkfree(PACK_HTTP, rtnbuf);
 
     const char *http3 = "POST  /users  HTTP/1.1\r\nHost: api.github.com\r\nContent-Length: 5\r\n\r\n12345";
     buffer_append(&buf, (void *)http3, strlen(http3));
     rtnbuf = http_unpack(&buf, &size, &ud, &closed);
     CuAssertTrue(tc, NULL != rtnbuf);
-    protos_pkfree(UNPACK_HTTP, rtnbuf);
+    protos_pkfree(PACK_HTTP, rtnbuf);
 
     const char *http4 = "POST  /users  HTTP/1.1\r\nHost: api.github.com\r\n\r\n";
     buffer_append(&buf, (void *)http4, strlen(http4));
     rtnbuf = http_unpack(&buf, &size, &ud, &closed);
     CuAssertTrue(tc, NULL != rtnbuf);
-    protos_pkfree(UNPACK_HTTP, rtnbuf);
+    protos_pkfree(PACK_HTTP, rtnbuf);
 
     const char *http5 = "POST  /users  HTTP/1.1\r\nHost: api.github.com\r\nTransfer-Encoding: chunked\r\n\r\n7\r\nMozilla\r\n11\r\nDeveloper N\r\n0\r\n\r\n";
     buffer_append(&buf, (void *)http5, strlen(http5));
     rtnbuf = http_unpack(&buf, &size, &ud, &closed);
     CuAssertTrue(tc, NULL != rtnbuf);
-    protos_pkfree(UNPACK_HTTP, rtnbuf);
+    protos_pkfree(PACK_HTTP, rtnbuf);
     rtnbuf = http_unpack(&buf, &size, &ud, &closed);
     CuAssertTrue(tc, NULL != rtnbuf);
-    protos_pkfree(UNPACK_HTTP, rtnbuf);
+    protos_pkfree(PACK_HTTP, rtnbuf);
     rtnbuf = http_unpack(&buf, &size, &ud, &closed);
     CuAssertTrue(tc, NULL != rtnbuf);
-    protos_pkfree(UNPACK_HTTP, rtnbuf);
+    protos_pkfree(PACK_HTTP, rtnbuf);
     rtnbuf = http_unpack(&buf, &size, &ud, &closed);
     CuAssertTrue(tc, NULL != rtnbuf);
-    protos_pkfree(UNPACK_HTTP, rtnbuf);
+    protos_pkfree(PACK_HTTP, rtnbuf);
     protos_udfree(&ud);
 
     buffer_free(&buf);
@@ -345,7 +345,7 @@ void test_simple(CuTest* tc) {
     int32_t closed = 0;
     ud_cxt ud;
     ZERO(&ud, sizeof(ud));
-    ud.upktype = UNPACK_SIMPLE;
+    ud.pktype = PACK_SIMPLE;
 
     const char *str1 = "this is test.";
     size_t packsize = 0;
@@ -355,7 +355,7 @@ void test_simple(CuTest* tc) {
     void * unpack = simple_unpack(&buf, &size, &ud, &closed);
     CuAssertTrue(tc, size == packsize &&
         0 == memcmp((char*)pack + simple_hsize(), (char*)unpack + simple_hsize(), packsize));
-    protos_pkfree(UNPACK_SIMPLE, unpack);
+    protos_pkfree(PACK_SIMPLE, unpack);
 
     buffer_append(&buf, pack, packsize - 5);
     unpack = simple_unpack(&buf, &size, &ud, &closed);
@@ -364,14 +364,14 @@ void test_simple(CuTest* tc) {
     unpack = simple_unpack(&buf, &size, &ud, &closed);
     CuAssertTrue(tc, size == packsize && 
         0 == memcmp((char*)pack + simple_hsize(), (char*)unpack + simple_hsize(), packsize));
-    protos_pkfree(UNPACK_SIMPLE, unpack);
+    protos_pkfree(PACK_SIMPLE, unpack);
     FREE(pack);
 
     pack = simple_pack(NULL, 0, &packsize);
     buffer_append(&buf, pack, packsize);
     unpack = simple_unpack(&buf, &size, &ud, &closed);
     CuAssertTrue(tc, size == packsize);
-    protos_pkfree(UNPACK_SIMPLE, unpack);
+    protos_pkfree(PACK_SIMPLE, unpack);
     
     FREE(pack);
     buffer_free(&buf);
