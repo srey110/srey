@@ -29,20 +29,21 @@ void *simple_unpack(buffer_ctx *buf, size_t *size, ud_cxt *ud, int32_t *closefd)
         if (buffer_size(buf) < sizeof(simple_head_ctx)) {
             return NULL;
         }
-        size_t off = offsetof(simple_head_ctx, lens);
-        lens_t lens;
-        ASSERTAB(sizeof(lens) == buffer_copyout(buf, off, &lens, sizeof(lens)), "copy buffer error.");
-        lens = (lens_t)ntoh(lens);
-        if (lens >= MAX_PACK_SIZE) {
+        lens_t dlens;
+        ASSERTAB(sizeof(dlens) == 
+            buffer_copyout(buf, offsetof(simple_head_ctx, lens), &dlens, sizeof(dlens)), 
+            "copy buffer error.");
+        dlens = (lens_t)ntoh(dlens);
+        if (dlens >= MAX_PACK_SIZE) {
             *closefd = 1;
-            LOG_WARN("data too long, %"PRIu64, lens);
+            LOG_WARN("data too long, %"PRIu64, dlens);
             return NULL;
         }
         void *data;
-        MALLOC(data, sizeof(simple_head_ctx) + lens);
+        MALLOC(data, sizeof(simple_head_ctx) + dlens);
         ASSERTAB(sizeof(simple_head_ctx) == buffer_remove(buf, data, sizeof(simple_head_ctx)), "copy buffer error.");
-        _simple_ntoh(data, lens);
-        if (0 == lens) {
+        _simple_ntoh(data, dlens);
+        if (0 == dlens) {
             *size = sizeof(simple_head_ctx);
             return data;
         } else {
