@@ -137,6 +137,7 @@ end
     name 名称 :string
     p12 p12文件 :string
     pwd 密码 :string
+    verify SSLVERIFY_TYPE
 返回:
     evssl_ctx
 --]]
