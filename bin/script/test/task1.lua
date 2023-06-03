@@ -1,6 +1,7 @@
 local srey = require("lib.srey")
 local http = require("lib.http")
 local rpcfd = INVALID_SOCK
+local websock = INVALID_SOCK
 local callonce = false
 
 local function chuncedmesg(cnt)
@@ -115,11 +116,17 @@ local function onstarted()
     else
         printd(srey.name() .. " end connect.... error")
     end
+    websock = srey.connect("127.0.0.1", 15004, PACK_TYPE.WEBSOCK)
+    if INVALID_SOCK ~= websock  then
+        printd(srey.name() .. " websock end connect.... fd:" .. websock)
+    else
+        printd(srey.name() .. " websock end connect.... error")
+    end
 end
 srey.started(onstarted)
 
 local function onaccept(unptype, fd)
-    --prind(srey.name() .. " onaccept.... " .. fd)
+    printd(srey.name() .. " onaccept.... " .. fd)
 end
 srey.accepted(onaccept)
 

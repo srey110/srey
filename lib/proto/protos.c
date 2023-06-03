@@ -46,7 +46,7 @@ static inline void _check_retry(void *unpack, ud_cxt *ud, int32_t *closefd) {
         ud->nretry = 0;
     }
 }
-void *protos_unpack(buffer_ctx *buf, size_t *size, ud_cxt *ud, int32_t *closefd) {
+void *protos_unpack(ev_ctx *ev, SOCKET fd, buffer_ctx *buf, size_t *size, ud_cxt *ud, int32_t *closefd) {
     void *unpack;
     *size = 0;
     switch (ud->pktype) {
@@ -58,7 +58,7 @@ void *protos_unpack(buffer_ctx *buf, size_t *size, ud_cxt *ud, int32_t *closefd)
         unpack = http_unpack(buf, size, ud, closefd);
         break;
     case PACK_WEBSOCK:
-        unpack = websock_unpack(buf, size, ud, closefd);
+        unpack = websock_unpack(ev, fd, buf, size, ud, closefd);
         break;
     default:
         unpack = _unpack_default(buf, size, ud);
@@ -90,14 +90,18 @@ void *protos_pack(pack_type type, void *data, size_t lens, size_t *size) {
     }
     return pack;
 }
-int32_t protos_handshake(ev_ctx *ev, SOCKET fd, ud_cxt *ud) {
+int32_t protos_handshake(ev_ctx *ev, SOCKET fd, ud_cxt *ud, void *hscb) {
     int32_t rtn = ERR_OK;
     switch (ud->pktype) {
     case PACK_WEBSOCK:
-        rtn = websock_handshake(ev, fd, ud);
+        ud->hscb = hscb;
+        if (0 == ud->svside) {
+            rtn = websock_client_reqhs(ev, fd, ud);
+        }
         break;
     default:
         break;
     }
     return rtn;
 }
+

@@ -6,8 +6,22 @@ local function onstarted()
     srey.udp("0.0.0.0", 15002)
     local ssl = srey.sslevqury("server")
     srey.listen("0.0.0.0", 15003, PACK_TYPE.HTTP, ssl)
+    srey.listen("0.0.0.0", 15004, PACK_TYPE.WEBSOCK)
 end
 srey.started(onstarted)
+
+local function onaccept(unptype, fd)
+    if PACK_TYPE.WEBSOCK == unptype then
+        printd(srey.name() .. " websock onaccept.... " .. fd)
+    end
+end
+srey.accepted(onaccept)
+local function onclosed(unptype, fd)
+    if PACK_TYPE.WEBSOCK == unptype then
+        printd(srey.name() .. " websock closed.... " .. fd)
+    end
+end
+srey.closed(onclosed)
 
 local function onrecvfrom(unptype, fd, data, size, ip, port)
     srey.sendto(fd, ip, port, data, size)

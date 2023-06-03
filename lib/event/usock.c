@@ -433,9 +433,9 @@ static inline void _on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t 
 void _add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) {
     int32_t handshake = 1;
     sock_ctx *skctx = pool_pop(&watcher->pool, fd, &lsn->cbs, &lsn->ud);
+    tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
 #if WITH_SSL
     if (NULL != lsn->evssl) {
-        tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
         tcp->ssl = evssl_setfd(lsn->evssl, fd);
         if (NULL == tcp->ssl) {
             pool_push(&watcher->pool, skctx);
@@ -447,7 +447,7 @@ void _add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) {
 #endif
     _add_fd(watcher, skctx);
     if (handshake) {
-        if (ERR_OK != lsn->cbs.acp_cb(watcher->ev, fd, &lsn->ud)) {
+        if (ERR_OK != lsn->cbs.acp_cb(watcher->ev, fd, &tcp->ud)) {
             _remove_fd(watcher, fd);
             pool_push(&watcher->pool, skctx);
             return;

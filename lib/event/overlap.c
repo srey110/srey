@@ -537,7 +537,7 @@ void _add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) {
 #endif
     _add_fd(watcher, skctx);
     if (handshake) {
-        if (ERR_OK != lsn->cbs.acp_cb(watcher->ev, skctx->fd, &lsn->ud)) {
+        if (ERR_OK != lsn->cbs.acp_cb(watcher->ev, skctx->fd, &oltcp->ud)) {
             _remove_fd(watcher, skctx->fd);
             pool_push(&watcher->pool, skctx);
             return;

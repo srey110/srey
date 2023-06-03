@@ -43,7 +43,6 @@ int main(int argc, char *argv[]) {
 
     MEMCHECK();
     unlimit();
-    srand((unsigned int)time(NULL));
     mutex_init(&muexit);
     cond_init(&condexit);
     sighandle(on_sigcb, NULL);

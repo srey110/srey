@@ -3,13 +3,19 @@
 
 typedef uint32_t lens_t;
 #define  ntoh  ntohl
+#define  hton  htonl
 
+//simple_head_ctx + 内容
 typedef struct simple_head_ctx {
     lens_t lens;//内容长度
     char data[0];
 }simple_head_ctx;
 
 static inline void _simple_ntoh(simple_head_ctx *pack, lens_t lens) {
+    pack->lens = lens;
+    //其他变量赋值
+}
+static inline void _simple_hton(simple_head_ctx *pack, lens_t lens) {
     pack->lens = lens;
     //其他变量赋值
 }
@@ -23,7 +29,6 @@ void *_simple_data(buffer_ctx *buf, size_t *size, ud_cxt *ud) {
     ud->extra = NULL;
     return pack;
 }
-//simple_head_ctx + 内容
 void *simple_unpack(buffer_ctx *buf, size_t *size, ud_cxt *ud, int32_t *closefd) {
     if (NULL == ud->extra) {
         if (buffer_size(buf) < sizeof(simple_head_ctx)) {
@@ -58,7 +63,7 @@ void *simple_pack(void *data, size_t lens, size_t *size) {
     void *pack;
     *size = sizeof(simple_head_ctx) + lens;
     MALLOC(pack, *size);
-    _simple_ntoh(pack, (lens_t)ntoh((lens_t)lens));
+    _simple_hton(pack, (lens_t)hton((lens_t)lens));
     if (lens > 0) {
         memcpy(((simple_head_ctx *)pack)->data, data, lens);
     }

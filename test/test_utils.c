@@ -147,7 +147,12 @@ void test_system(CuTest* tc) {
     PRINT("createid: %"PRIu64"", createid());
     PRINT("threadid: %"PRIu64"", threadid());
     PRINT("procscnt: %d", procscnt());
-    PRINT("bigendian: %d", bigendian());
+    if (ERR_OK == bigendian()) {
+        PRINT("big endian");
+    }  else  {
+        PRINT("little ndian");
+    }
+    
     PRINT("procscnt: %d", procscnt());
 
     char path[PATH_LENS] = {0};

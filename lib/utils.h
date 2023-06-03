@@ -11,8 +11,6 @@ uint64_t threadid();
 void unlimit();
 //信号处理
 void sighandle(void(*cb)(int32_t, void *), void *data);
-//是否为大端
-int32_t bigendian();
 //cpu核心数
 uint32_t procscnt();
 

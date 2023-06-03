@@ -230,13 +230,21 @@ void task_timeout(task_ctx *task, uint64_t session, uint32_t timeout) {
     ud.session = session;
     tw_add(&task->srey->tw, timeout, _srey_timeout, &ud);
 }
-static inline int32_t _task_net_accept(ev_ctx *ev, SOCKET fd, ud_cxt *ud) {
+static inline void _push_acptmsg(SOCKET fd, ud_cxt *ud) {
     message_ctx msg;
     msg.msgtype = MSG_TYPE_ACCEPT;
     msg.pktype = ud->pktype;
     msg.session = ud->session;
     msg.fd = fd;
     _push_message(ud->data, &msg);
+}
+static inline int32_t _task_net_accept(ev_ctx *ev, SOCKET fd, ud_cxt *ud) {
+    if (ERR_OK != protos_handshake(ev, fd, ud, _push_acptmsg)) {
+        return ERR_FAILED;
+    }
+    if (NULL == ud->hscb){
+        _push_acptmsg(fd, ud);
+    }
     return ERR_OK;
 }
 static inline void _task_net_recv(ev_ctx *ev, SOCKET fd, buffer_ctx *buf, size_t size, ud_cxt *ud) {
@@ -249,14 +257,13 @@ static inline void _task_net_recv(ev_ctx *ev, SOCKET fd, buffer_ctx *buf, size_t
     size_t lens = 0;
     int32_t closefd = 0;
     do {
-        data = protos_unpack(buf, &lens, ud, &closefd);
+        data = protos_unpack(ev, fd, buf, &lens, ud, &closefd);
         if (NULL != data) {
             msg.data = data;
             msg.size = lens;
             _push_message(ud->data, &msg);
         }
     } while (NULL != data && 0 != buffer_size(buf));
-
     if (0 != closefd) {
         ev_close(ev, fd);
     }
@@ -270,7 +277,23 @@ static inline void _task_net_send(ev_ctx *ev, SOCKET fd, size_t size, ud_cxt *ud
     msg.size = size;
     _push_message(ud->data, &msg);
 }
+static inline void _push_connmsg(SOCKET fd, int32_t err, ud_cxt *ud) {
+    message_ctx msg;
+    msg.msgtype = MSG_TYPE_CONNECT;
+    msg.pktype = ud->pktype;
+    msg.session = ud->session;
+    msg.fd = fd;
+    msg.error = err;
+    _push_message(ud->data, &msg);
+}
 static inline void _task_net_close(ev_ctx *ev, SOCKET fd, ud_cxt *ud) {
+    if (NULL != ud->hscb
+        && 0 == ud->status) {
+        if (0 == ud->svside) {
+            _push_connmsg(fd, ERR_FAILED, ud);
+        }
+        return;
+    }
     message_ctx msg;
     msg.msgtype = MSG_TYPE_CLOSE;
     msg.pktype = ud->pktype;
@@ -283,6 +306,7 @@ int32_t task_netlisten(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl
     ud_cxt ud;
     ZERO(&ud, sizeof(ud));
     ud.pktype = pktype;
+    ud.svside = 1;
     ud.data = task;
     ud.session = task_session(task);
     cbs_ctx cbs;
@@ -297,15 +321,16 @@ int32_t task_netlisten(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl
     return ev_listen(&task->srey->netev, evssl, host, port, &cbs, &ud);
 }
 static inline int32_t _task_net_connect(ev_ctx *ev, SOCKET fd, int32_t err, ud_cxt *ud) {
-    message_ctx msg;
-    msg.msgtype = MSG_TYPE_CONNECT;
-    msg.pktype = ud->pktype;
-    msg.session = ud->session;
-    msg.fd = fd;
-    msg.error = err;
-    _push_message(ud->data, &msg);
-    if (ERR_OK != protos_handshake(ev, fd, ud)) {
-        ev_close(ev, fd);
+    if (ERR_OK != err) {
+        _push_connmsg(fd, err, ud);
+        return ERR_OK;
+    }
+    if (ERR_OK != protos_handshake(ev, fd, ud, _push_connmsg)) {
+        _push_connmsg(fd, ERR_FAILED, ud);
+        return ERR_FAILED;
+    }
+    if (NULL == ud->hscb) {
+        _push_connmsg(fd, err, ud);
     }
     return ERR_OK;
 }

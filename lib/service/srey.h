@@ -14,7 +14,7 @@ typedef enum msg_type {
     MSG_TYPE_SEND,
     MSG_TYPE_CLOSE,
     MSG_TYPE_RECVFROM,
-    MSG_TYPE_USER,
+    MSG_TYPE_USER
 }msg_type;
 typedef struct srey_ctx srey_ctx;
 typedef struct task_ctx task_ctx;

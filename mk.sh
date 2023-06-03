@@ -6,17 +6,39 @@
 # Date Time  :2011/06/15 
 #***********************************************
 
-UsAge="UsAge:\"./mk.sh\" or \"./mk.sh x86/x64\" \"./mk.sh clean\""
+UsAge="UsAge:\"./mk.sh\" or \"./mk.sh x86/x64\" or \"./mk.sh clean\" or \"./mk.sh test\""
+
+istest=0
+if [ $# -eq 1 ]
+then
+    if [ "$1" = "test" ]
+    then
+        istest=1
+    fi
+fi
 
 #生成程序的名称
 PROGRAMNAME="srey"
+if [ $istest -eq 1 ]
+then
+    PROGRAMNAME="test"
+fi 
 #文件夹
 Dir="lib lib/event lib/md5 lib/proto lib/service lib/sha1"
-Dir=$Dir" srey srey/argparse srey/lua srey/luacjson srey/msgpack"
+if [ $istest -eq 1 ]
+then
+    Dir=$Dir" test"
+else
+    Dir=$Dir" srey srey/argparse srey/lua srey/luacjson srey/msgpack"
+fi
 #SSL库
 SSLLIB="-lssl -lcrypto"
 #main函数所在文件夹
 MAINDIR="srey"
+if [ $istest -eq 1 ]
+then
+    MAINDIR="test"
+fi 
 #main函数所在文件
 MAINFILE="main.c"
 #附加包含库
@@ -191,6 +213,10 @@ do
             break
         fi
 		if [ "$1" = "x86" ]
+        then
+            break
+        fi
+        if [ "$1" = "test" ]
         then
             break
         fi

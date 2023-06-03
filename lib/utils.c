@@ -162,17 +162,6 @@ uint64_t threadid() {
     return (uint64_t)pthread_self();
 #endif
 }
-int32_t bigendian() {
-    union {
-        char c;
-        short s;
-    }u;
-    u.s = 0x1122;
-    if (0x11 == u.c) {
-        return ERR_OK;
-    }
-    return ERR_FAILED;
-}
 uint32_t procscnt() {
 #if defined(OS_WIN)
     SYSTEM_INFO stinfo;
@@ -815,6 +804,7 @@ char *randstr(char *buf, size_t len) {
         'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
     };
     size_t i = 0;
+    srand((unsigned int)time(NULL));
     for (; i < len; i++) {
         buf[i] = characters[randrange(0, sizeof(characters))];
     }
@@ -835,7 +825,7 @@ char *tohex(const char *buf, size_t len, char *out, size_t outlen) {
 }
 char *formatargs(const char *fmt, va_list args) {
     int32_t num;
-    size_t size = 512;
+    size_t size = 256;
     char *pbuff;
     CALLOC(pbuff, 1, size);    
     while (1) {

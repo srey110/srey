@@ -22,6 +22,31 @@ void sock_clean() {
     }
 #endif
 }
+int32_t bigendian() {
+    union {
+        int i;
+        char c;
+    }un;
+    un.i = 1;
+    if (1 == un.c) {
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+#if !defined(OS_WIN) && !defined(OS_DARWIN) && !defined(OS_AIX)
+uint64_t ntohll(uint64_t val) {
+    if (ERR_OK == bigendian()) {
+        return val;
+    }
+    return (((uint64_t)htonl(val)) << 32) + htonl(val >> 32);
+}
+uint64_t htonll(uint64_t val) {
+    if (ERR_OK == bigendian()) {
+        return val;
+    }
+    return (((uint64_t)ntohl(val)) << 32) + ntohl(val >> 32);
+}
+#endif
 int32_t sock_nread(SOCKET fd) {
 #if defined(OS_WIN)
     u_long nread = 0;

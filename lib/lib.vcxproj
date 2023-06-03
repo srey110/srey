@@ -43,6 +43,7 @@
     <ClInclude Include="netutils.h" />
     <ClInclude Include="os.h" />
     <ClInclude Include="proto\http.h" />
+    <ClInclude Include="proto\protocb.h" />
     <ClInclude Include="proto\protos.h" />
     <ClInclude Include="proto\simple.h" />
     <ClInclude Include="proto\websock.h" />
