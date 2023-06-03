@@ -1,5 +1,6 @@
 local srey = require("lib.srey")
 local http = require("lib.http")
+local math = math
 local rpcfd = INVALID_SOCK
 local websock = INVALID_SOCK
 local callonce = false
@@ -96,10 +97,8 @@ end
 local function onstarted()
     math.randomseed(os.time())
     printd(srey.name() .. " onstarted....")
-    srey.register("test.task3", TASK_NAME.TAKS3)
     srey.listen("0.0.0.0", 15000, PACK_TYPE.SIMPLE, nil, true)
-    srey.timeout(2000, ontimeout)
-
+    srey.timeout(2000, ontimeout)    
     local harbor = srey.qury(TASK_NAME.HARBOR)
     srey.call(harbor, "addip", "192.168.100.1", "1")
     srey.call(harbor, "addip", "192.168.100.2", "2")
@@ -126,13 +125,19 @@ end
 srey.started(onstarted)
 
 local function onaccept(unptype, fd)
-    printd(srey.name() .. " onaccept.... " .. fd)
+    --printd(srey.name() .. " onaccept.... " .. fd)
 end
 srey.accepted(onaccept)
 
 local function echo(unptype, fd, data, size)
-    data, size = srey.simple_data(data)
-    srey.send(fd, data, size, PACK_TYPE.SIMPLE)
+    if PACK_TYPE.SIMPLE == unptype then
+        if math.random(1, 100) <= 1 then
+            srey.close(fd)
+            return
+        end
+        data, size = srey.simple_data(data)
+        srey.send(fd, data, size, unptype)
+    end
 end
 srey.recved(echo)
 

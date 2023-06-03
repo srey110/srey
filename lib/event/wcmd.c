@@ -128,9 +128,8 @@ void _on_cmd_disconn(watcher_ctx *watcher, cmd_ctx *cmd) {
     _set_error(el);
     if (SOCK_STREAM == el->type) {
         _sk_shutdown(el);
-    } else {
-        CancelIoEx((HANDLE)cmd->fd, NULL);
     }
+    CancelIoEx((HANDLE)cmd->fd, NULL);
 }
 
 #endif// EV_IOCP

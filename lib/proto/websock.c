@@ -127,7 +127,7 @@ static inline void _websock_handshake_client(SOCKET fd, void *pack, ud_cxt *ud, 
     memcpy(key, ud->extra, rlens);
     memcpy(key + rlens, SIGNKEY, klens);
     FREE(ud->extra);
-    uint8_t sha1str[20];
+    char sha1str[20];
     sha1(key, lens, sha1str);
     FREE(key);
     key = b64encode(sha1str, sizeof(sha1str), &lens);
@@ -215,11 +215,11 @@ static inline void _websock_handshake_server(ev_ctx *ev, SOCKET fd, void *pack, 
     MALLOC(key, lens);
     memcpy(key, signstr->value, signstr->vlen);
     memcpy(key + signstr->vlen, SIGNKEY, klens);
-    uint8_t sha1str[20];
+    char sha1str[20];
     sha1(key, lens, sha1str);
     FREE(key);
     key = b64encode(sha1str, sizeof(sha1str), &lens);
-    static const char *fmt  = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n";
+    static const char *fmt = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n";
     char *rsp = formatv(fmt, key);
     FREE(key);
     ud->status = START;
@@ -254,7 +254,7 @@ void *websock_unpack(ev_ctx *ev, SOCKET fd, buffer_ctx *buf, size_t *size, ud_cx
     default:
         break;
     }
-    return NULL;
+    return data;
 }
 void *websock_pack(void *data, size_t lens, size_t *size) {
     return NULL;

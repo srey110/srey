@@ -306,7 +306,7 @@ void _add_write_inloop(watcher_ctx *watcher, sock_ctx *skctx, bufs_ctx *buf) {
 static inline void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
     tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
     tcp->sock.ev_cb = _on_rw_cb;
-    _del_event(watcher, tcp->sock.fd, &tcp->sock.events, tcp->sock.events, NULL);
+    _del_event(watcher, tcp->sock.fd, &tcp->sock.events, tcp->sock.events, skctx);
     if (ERR_OK != sock_checkconn(tcp->sock.fd)) {
         tcp->cbs.conn_cb(watcher->ev, tcp->sock.fd, ERR_FAILED, &tcp->ud);
         _remove_fd(watcher, tcp->sock.fd);

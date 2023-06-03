@@ -280,6 +280,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads) {
         acpex->iocp = iocp;
         acpex->thacp = thread_creat(_loop_acpex, acpex);
     }
+    LOG_INFO("event: IOCP");
 }
 static void _free_cmd(watcher_ctx *watcher) {
     overlap_cmd_ctx *olcmd;

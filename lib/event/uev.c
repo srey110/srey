@@ -470,6 +470,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads) {
         _init_cmd(watcher);
         watcher->thevent = thread_creat(_loop_event, watcher);
     }
+    LOG_INFO("event: %s", EV_STR);
 }
 static void _free_pips(watcher_ctx *watcher) {
     for (uint32_t i = 0; i < watcher->npipes; i++) {
