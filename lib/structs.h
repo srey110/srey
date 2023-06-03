@@ -9,10 +9,10 @@ timeout: data(task_ctx) session
 net: pktype(pack_type) data(task_ctx) session nretry  http(extra)
 */
 typedef struct ud_cxt {
-    int8_t pktype;
-    int8_t status;
-    int8_t nretry;
-    int8_t svside;
+    uint8_t pktype;
+    uint8_t status;
+    uint8_t nretry;
+    uint8_t svside;
     void *data;
     void *extra;
     void *hscb;

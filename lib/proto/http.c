@@ -115,7 +115,7 @@ static inline void *_http_content(buffer_ctx *buf, ud_cxt *ud, int32_t *closefd)
     http_pack_ctx *pack = ud->extra;
     if (buffer_size(buf) >= pack->lens) {
         MALLOC(pack->data, pack->lens);
-        ASSERTAB(pack->lens == buffer_remove(buf, pack->data, pack->lens), "copye buffer failed.");
+        ASSERTAB(pack->lens == buffer_remove(buf, pack->data, pack->lens), "copy buffer failed.");
         ud->status = INIT;
         ud->extra = NULL;
         return pack;
@@ -156,7 +156,7 @@ void *_http_parsehead(buffer_ctx *buf, int32_t *status, int32_t *closefd) {
     }
     *status = 0;
     http_pack_ctx *pack = _http_headpack(hlens);
-    ASSERTAB(hlens == buffer_remove(buf, pack->hdata, hlens), "copye buffer failed.");
+    ASSERTAB(hlens == buffer_remove(buf, pack->hdata, hlens), "copy buffer failed.");
     if (ERR_OK != _http_parse_head(pack, status)) {
         *closefd = 1;
         LOG_NOEOFSTR(LOGLV_WARN, "http parse head failed.\n%s", pack->hdata, pack->hlens);
@@ -213,7 +213,7 @@ static inline void *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_t *closefd)
             LOG_WARN("data lens too long. string lens: %d", pos);
             return NULL;
         }
-        ASSERTAB(pos == buffer_copyout(buf, 0, lensbuf, pos), "copye buffer failed.");
+        ASSERTAB(pos == buffer_copyout(buf, 0, lensbuf, pos), "copy buffer failed.");
         size_t dlens = atoi(lensbuf);
         if (dlens >= MAX_PACK_SIZE) {
             *closefd = 1;
@@ -230,7 +230,7 @@ static inline void *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_t *closefd)
         return NULL;
     }
     if (pack->lens > 0) {
-        ASSERTAB(pack->lens == buffer_copyout(buf, 0, pack->data, pack->lens), "copye buffer failed.");
+        ASSERTAB(pack->lens == buffer_copyout(buf, 0, pack->data, pack->lens), "copy buffer failed.");
     } else {
         ud->status = INIT;
     }
@@ -304,7 +304,6 @@ int32_t http_chunked(void *data) {
     return ((http_pack_ctx *)data)->chunked;
 }
 void *http_data(void *data, size_t *lens) {
-    http_pack_ctx *pack = data;
-    *lens = pack->lens;
-    return pack->data;
+    *lens = ((http_pack_ctx *)data)->lens;
+    return ((http_pack_ctx *)data)->data;
 }

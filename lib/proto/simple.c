@@ -73,7 +73,6 @@ size_t simple_hsize() {
     return sizeof(simple_head_ctx);
 }
 void *simple_data(void *data, size_t *lens) {
-    simple_head_ctx *pack = data;
-    *lens = pack->lens;
-    return pack->data;
+    *lens = ((simple_head_ctx *)data)->lens;
+    return ((simple_head_ctx *)data)->data;
 }

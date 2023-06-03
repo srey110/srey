@@ -81,9 +81,6 @@ void *protos_pack(pack_type type, void *data, size_t lens, size_t *size) {
     case PACK_SIMPLE:
         pack = simple_pack(data, lens, size);
         break;
-    case PACK_WEBSOCK:
-        pack = websock_pack(data, lens, size);
-        break;
     default:
         pack = _pack_default(data, lens, size);
         break;

@@ -702,6 +702,7 @@ end
 --消息处理
 function dispatch_message(msgtype, unptype, err, fd, src, data, size, sess, addr)
     if MSG_TYPE.STARTED == msgtype then
+        collectgarbage("generational")
         resume_normal(static_funcs.STARTED)
     elseif MSG_TYPE.CLOSING == msgtype then
         resume_normal(static_funcs.CLOSING)

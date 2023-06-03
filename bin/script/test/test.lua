@@ -30,6 +30,20 @@ local ab = {
         }
     }
 }
+--To-be-closed
+local tbcmt = {
+    __close = function()
+        printd(" close to-be-closed var")
+    end
+}
+local function create_tbcv()
+    local tbcv = {}
+    setmetatable(tbcv, tbcmt)
+    return tbcv
+end
+do
+    local tbcv <close> = create_tbcv()
+end
 
 local rtn = json.encode(ab)
 rtn = json.decode(rtn)
