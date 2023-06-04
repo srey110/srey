@@ -189,6 +189,9 @@ struct evssl_ctx *certs_qury(srey_ctx *ctx, const char *name) {
     return NULL == cert ? NULL : cert->ssl;
 }
 #endif
+ev_ctx *srey_netev(srey_ctx *ctx) {
+    return &ctx->netev;
+}
 srey_ctx *task_srey(task_ctx *task) {
     return task->srey;
 }
@@ -376,10 +379,10 @@ SOCKET task_netudp(task_ctx *task, pack_type pktype, const char *host, uint16_t 
     cbs.ud_free = protos_udfree;
     return ev_udp(&task->srey->netev, host, port, &cbs, &ud);
 }
-void task_netsend(task_ctx *task, SOCKET fd, void *data, size_t len, pack_type pktype) {
+void task_netsend(ev_ctx *ev, SOCKET fd, void *data, size_t len, pack_type pktype) {
     size_t size;
     void *pack = protos_pack(pktype, data, len, &size);
-    ev_send(task_netev(task), fd, pack, size, 0);
+    ev_send(ev, fd, pack, size, 0);
 }
 static void _loop_worker(void *arg) {
     void **tmp;

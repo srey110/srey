@@ -203,7 +203,7 @@ function core.send(fd, data, lens, ptype)
         log.WARN("invalid argument.")
         return
     end
-    srey.send(curtask, fd, data, lens, ptype or PACK_TYPE.NONE)
+    srey.send(fd, data, lens, ptype or PACK_TYPE.NONE)
 end
 --[[
 描述:udp发送
@@ -219,7 +219,7 @@ function core.sendto(fd, ip, port, data, lens)
         log.WARN("invalid argument.")
         return
     end
-    srey.sendto(curtask, fd, ip, port, data, lens)
+    srey.sendto(fd, ip, port, data, lens)
 end
 --[[
 描述:关闭链接
@@ -230,7 +230,35 @@ function core.close(fd)
     if INVALID_SOCK == fd then
         return
     end
-    srey.close(curtask, fd)
+    srey.close(fd)
+end
+--[[
+描述:设置协议解析类型
+参数：
+    fd socket :integer
+    pktype :PACK_TYPE
+--]]
+function core.setpktype(fd, pktype)
+    if INVALID_SOCK == fd or nil == pktype then
+        log.WARN("invalid argument.")
+        return
+    end
+    srey.setpktype(fd, pktype)
+end
+--[[
+描述:将sock消息重定向到其他任务
+参数：
+    fd socket :integer
+    name :TASK_NAME
+返回:
+    boolean
+--]]
+function core.bindtask(fd, name)
+    if INVALID_SOCK == fd or nil == name then
+        log.WARN("invalid argument.")
+        return
+    end
+    return srey.bindtask(fd, name)
 end
 --[[
 描述:md5

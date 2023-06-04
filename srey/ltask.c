@@ -13,6 +13,7 @@ typedef struct ltask_ctx{
     char file[PATH_LENS];
 }ltask_ctx;
 static srey_ctx *srey;
+static ev_ctx *netev;
 static char propath[PATH_LENS] = { 0 };
 static char luapath[PATH_LENS] = { 0 };
 
@@ -79,6 +80,7 @@ static inline int32_t _ltask_dofile(lua_State *lua, const char *file) {
 }
 int32_t ltask_startup(srey_ctx *ctx) {
     srey = ctx;
+    netev = srey_netev(srey);
     ASSERTAB(ERR_OK == procpath(propath), "procpath failed.");
     SNPRINTF(luapath, sizeof(luapath) - 1, "%s%s%s%s",
         propath, PATH_SEPARATORSTR, "script", PATH_SEPARATORSTR);
@@ -299,41 +301,57 @@ static int32_t _ltask_udp(lua_State *lua) {
     return 1;
 }
 static int32_t _ltask_send(lua_State *lua) {
-    task_ctx *task = lua_touserdata(lua, 1);
-    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 2);
+    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     void *data;
     size_t size;
-    if (LUA_TSTRING == lua_type(lua, 3)) {
-        data = (void *)luaL_checklstring(lua, 3, &size);
+    if (LUA_TSTRING == lua_type(lua, 2)) {
+        data = (void *)luaL_checklstring(lua, 2, &size);
     } else {
-        data = lua_touserdata(lua, 3);
-        size = (size_t)luaL_checkinteger(lua, 4);
+        data = lua_touserdata(lua, 2);
+        size = (size_t)luaL_checkinteger(lua, 3);
     }
-    pack_type ptype = (pack_type)luaL_checkinteger(lua, 5);
-    task_netsend(task, fd, data, size, ptype);
+    pack_type ptype = (pack_type)luaL_checkinteger(lua, 4);
+    task_netsend(netev, fd, data, size, ptype);
     return 0;
 }
 static int32_t _ltask_sendto(lua_State *lua) {
-    task_ctx *task = lua_touserdata(lua, 1);
-    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 2);
-    const char *host = luaL_checkstring(lua, 3);
-    uint16_t port = (uint16_t)luaL_checkinteger(lua, 4);
+    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
+    const char *host = luaL_checkstring(lua, 2);
+    uint16_t port = (uint16_t)luaL_checkinteger(lua, 3);
     void *data;
     size_t size;
-    if (LUA_TSTRING == lua_type(lua, 5)) {
-        data = (void *)luaL_checklstring(lua, 5, &size);
+    if (LUA_TSTRING == lua_type(lua, 4)) {
+        data = (void *)luaL_checklstring(lua, 4, &size);
     } else {
-        data = lua_touserdata(lua, 5);
-        size = (size_t)luaL_checkinteger(lua, 6);
+        data = lua_touserdata(lua, 4);
+        size = (size_t)luaL_checkinteger(lua, 5);
     }
-    ev_sendto(task_netev(task), fd, host, port, data, size);
+    ev_sendto(netev, fd, host, port, data, size);
     return 0;
 }
 static int32_t _ltask_close(lua_State *lua) {
-    task_ctx *task = lua_touserdata(lua, 1);
-    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 2);
-    ev_close(task_netev(task), fd);
+    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
+    ev_close(netev, fd);
     return 0;
+}
+static int32_t _ltask_setud_pktype(lua_State *lua) {
+    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
+    pack_type pktype = (pack_type)luaL_checkinteger(lua, 2);
+    ev_setud_pktype(netev, fd, pktype);
+    return 0;
+}
+static int32_t _ltask_setud_data(lua_State *lua) {
+    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
+    int32_t name = (int32_t)luaL_checkinteger(lua, 2);
+    task_ctx *task = srey_taskqury(srey, name);
+    if (NULL == task) {
+        LOG_WARN("can't find task: %d.", name);
+        lua_pushboolean(lua, 0);
+    } else {
+        ev_setud_data(netev, fd, task);
+        lua_pushboolean(lua, 1);
+    }
+    return 1;
 }
 static int32_t _ltask_ipport(lua_State *lua) {
     netaddr_ctx *addr = lua_touserdata(lua, 1);
@@ -493,6 +511,8 @@ LUAMOD_API int luaopen_srey(lua_State *lua) {
         { "send", _ltask_send },
         { "sendto", _ltask_sendto },
         { "close", _ltask_close },
+        { "setpktype", _ltask_setud_pktype },
+        { "bindtask", _ltask_setud_data },
 
         { "ipport", _ltask_ipport },
         { "remoteaddr", _ltask_remoteaddr },

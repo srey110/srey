@@ -38,6 +38,8 @@ static void _init_callback() {
     cmd_cbs[CMD_ADDACP] = _on_cmd_addacp;
     cmd_cbs[CMD_REMOVE] = _on_cmd_remove;
     cmd_cbs[CMD_SEND] = _on_cmd_send;
+    cmd_cbs[CMD_SETUD_PKTYPE] = _on_cmd_setud_pktype;
+    cmd_cbs[CMD_SETUD_DATA] = _on_cmd_setud_data;
 }
 static void _init_funcs(ev_ctx *ctx) {
     if (ATOMIC_CAS(&_init_once, 0, 1)) {

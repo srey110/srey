@@ -50,6 +50,8 @@ static void _init_callback() {
     cmd_cbs[CMD_ADDACP] = _on_cmd_addacp;
     cmd_cbs[CMD_ADDUDP] = _on_cmd_add_udp;
     cmd_cbs[CMD_SEND] = _on_cmd_send;
+    cmd_cbs[CMD_SETUD_PKTYPE] = _on_cmd_setud_pktype;
+    cmd_cbs[CMD_SETUD_DATA] = _on_cmd_setud_data;
 }
 static void _init_cmd(watcher_ctx *watcher) {
     sock_ctx *skctx;

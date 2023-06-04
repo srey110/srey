@@ -134,9 +134,23 @@ void _reset_sk(sock_ctx *skctx, SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
 void _set_error(sock_ctx *skctx) {
     if (SOCK_STREAM == skctx->type) {
         UPCAST(skctx, overlap_tcp_ctx, ol_r)->status |= STATUS_ERROR;
-        return;
+    } else {
+        UPCAST(skctx, overlap_udp_ctx, ol_r)->status |= STATUS_ERROR;
     }
-    UPCAST(skctx, overlap_udp_ctx, ol_r)->status |= STATUS_ERROR;
+}
+void _setud_pktype(sock_ctx *skctx, uint8_t pktype) {
+    if (SOCK_STREAM == skctx->type) {
+        UPCAST(skctx, overlap_tcp_ctx, ol_r)->ud.pktype = pktype;
+    } else {
+        UPCAST(skctx, overlap_udp_ctx, ol_r)->ud.pktype = pktype;
+    }
+}
+void _setud_data(sock_ctx *skctx, void *data) {
+    if (SOCK_STREAM == skctx->type) {
+        UPCAST(skctx, overlap_tcp_ctx, ol_r)->ud.data = data;
+    } else {
+        UPCAST(skctx, overlap_udp_ctx, ol_r)->ud.data = data;
+    }
 }
 void _add_fd(watcher_ctx *watcher, sock_ctx *skctx) {
     ASSERTAB(NULL == hashmap_set(watcher->element, &skctx), "socket repeat.");

@@ -127,5 +127,35 @@ void _cmd_add_udp(ev_ctx *ctx, SOCKET fd, sock_ctx *skctx) {
 void _on_cmd_add_udp(watcher_ctx *watcher, cmd_ctx *cmd) {
     _add_udp_inloop(watcher, cmd->fd, cmd->data);
 }
+void ev_setud_pktype(ev_ctx *ctx, SOCKET fd, uint8_t pktype) {
+    ASSERTAB(INVALID_SOCK != fd, ERRSTR_INVPARAM);
+    cmd_ctx cmd;
+    cmd.cmd = CMD_SETUD_PKTYPE;
+    cmd.fd = fd;
+    cmd.len = pktype;
+    _SEND_CMD(ctx, cmd);
+}
+void _on_cmd_setud_pktype(watcher_ctx *watcher, cmd_ctx *cmd) {
+    sock_ctx *el = _map_get(watcher, cmd->fd);
+    if (NULL == el) {
+        return;
+    }
+    _setud_pktype(el, (uint8_t)cmd->len);
+}
+void ev_setud_data(ev_ctx *ctx, SOCKET fd, void *data) {
+    ASSERTAB(INVALID_SOCK != fd, ERRSTR_INVPARAM);
+    cmd_ctx cmd;
+    cmd.cmd = CMD_SETUD_DATA;
+    cmd.fd = fd;
+    cmd.data = data;
+    _SEND_CMD(ctx, cmd);
+}
+void _on_cmd_setud_data(watcher_ctx *watcher, cmd_ctx *cmd) {
+    sock_ctx *el = _map_get(watcher, cmd->fd);
+    if (NULL == el) {
+        return;
+    }
+    _setud_data(el, cmd->data);
+}
 
 #endif

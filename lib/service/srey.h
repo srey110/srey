@@ -42,6 +42,7 @@ void srey_free(srey_ctx *ctx);
 task_ctx *srey_tasknew(srey_ctx *ctx, int32_t name, uint32_t maxcnt, 
     task_new _init, task_run _run, task_free _tfree, void *arg);
 task_ctx *srey_taskqury(srey_ctx *ctx, int32_t name);
+ev_ctx *srey_netev(srey_ctx *ctx);
 
 #if WITH_SSL
 void certs_register(srey_ctx *ctx, const char *name, struct evssl_ctx *evssl);
@@ -61,6 +62,6 @@ int32_t task_netlisten(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl
 SOCKET task_netconnect(task_ctx *task, pack_type pktype, uint64_t session, struct evssl_ctx *evssl,
     const char *host, uint16_t port, int32_t sendev);
 SOCKET task_netudp(task_ctx *task, pack_type pktype, const char *host, uint16_t port);
-void task_netsend(task_ctx *task, SOCKET fd, void *data, size_t len, pack_type pktype);
+void task_netsend(ev_ctx *ev, SOCKET fd, void *data, size_t len, pack_type pktype);
 
 #endif //SREY_H_

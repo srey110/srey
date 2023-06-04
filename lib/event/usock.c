@@ -114,6 +114,24 @@ void _reset_sk(sock_ctx *skctx, SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
 void _set_tcp_error(sock_ctx *skctx) {
     UPCAST(skctx, tcp_ctx, sock)->status |= STATUS_ERROR;
 }
+void _set_udp_error(watcher_ctx *watcher, sock_ctx *skctx) {
+    UPCAST(skctx, udp_ctx, sock)->status |= STATUS_ERROR;
+    _add_event(watcher, skctx->fd, &skctx->events, EVENT_WRITE, skctx);
+}
+void _setud_pktype(sock_ctx *skctx, uint8_t pktype) {
+    if (SOCK_STREAM == skctx->type) {
+        UPCAST(skctx, tcp_ctx, sock)->ud.pktype = pktype;
+    } else {
+        UPCAST(skctx, udp_ctx, sock)->ud.pktype = pktype;
+    }
+}
+void _setud_data(sock_ctx *skctx, void *data) {
+    if (SOCK_STREAM == skctx->type) {
+        UPCAST(skctx, tcp_ctx, sock)->ud.data = data;
+    } else {
+        UPCAST(skctx, udp_ctx, sock)->ud.data = data;
+    }
+}
 void _add_fd(watcher_ctx *watcher, sock_ctx *skctx) {
     ASSERTAB(NULL == hashmap_set(watcher->element, &skctx), "socket repeat.");
 }
@@ -659,10 +677,6 @@ void _free_udp(sock_ctx *skctx) {
         udp->cbs.ud_free(&udp->ud);
     }
     FREE(udp);
-}
-void _set_udp_error(watcher_ctx *watcher, sock_ctx *skctx) {
-    UPCAST(skctx, udp_ctx, sock)->status |= STATUS_ERROR;
-    _add_event(watcher, skctx->fd, &skctx->events, EVENT_WRITE, skctx);
 }
 SOCKET ev_udp(ev_ctx *ctx, const char *host, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud) {
     ASSERTAB(NULL != cbs->rf_cb, ERRSTR_NULLP);
