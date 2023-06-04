@@ -39,10 +39,10 @@ local function onrecv(unptype, fd, data, size)
         elseif 2 == chunked  then
             local msg, lens = srey.http_data(data)
             if nil == msg then
-                printd("chunked %d: end", fd)
+                --printd("chunked %d: end", fd)
                 http_rtn(fd, true)
             else
-                printd("chunked %d lens: %d", fd, lens)
+                --printd("chunked %d lens: %d", fd, lens)
             end
         else
             local hinfo = srey.http_head(data)

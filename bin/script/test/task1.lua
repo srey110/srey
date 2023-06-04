@@ -15,9 +15,9 @@ end
 local function  onchunked(data, lens)
     if data then
         local dinfo = srey.utostr(data, lens)
-        printd("hunked: %s", dinfo)
+        --printd("hunked: %s", dinfo)
     else
-        printd("hunked: end")
+        --printd("hunked: end")
     end
 end
 local function httptest()
@@ -72,17 +72,17 @@ local function testrpc()
     --printd(rpcdes)
     srey.call(rpctask, "rpc_add", math.random(10) , math.random(10), "srey.call")
     local rtn, sum, des = srey.request(rpctask, "rpc_add", math.random(10) , math.random(10), "srey.request")
-    printd("request rpc_add rtn:" .. tostring(rtn) .. " sum:" .. tostring(sum) .. " des:" .. tostring(des))
+    --printd("request rpc_add rtn:" .. tostring(rtn) .. " sum:" .. tostring(sum) .. " des:" .. tostring(des))
     rtn = srey.request(rpctask, "rpc_void")
-    printd("request rpc_void rtn:" .. tostring(rtn))
+    --printd("request rpc_void rtn:" .. tostring(rtn))
     if INVALID_SOCK ~= rpcfd then
         srey.netcall(rpcfd, TASK_NAME.TASK2,
                     "rpc_add", math.random(10) , math.random(10), "srey.netcall")--]]
         rtn, sum, des = srey.netreq(rpcfd, TASK_NAME.TASK2,
                                    "rpc_add", math.random(10) , math.random(10), "srey.netreq")
-        printd("netreq rpc_add rtn:" .. tostring(rtn) .. " sum:" .. tostring(sum) .. " des:" .. tostring(des))
+        --printd("netreq rpc_add rtn:" .. tostring(rtn) .. " sum:" .. tostring(sum) .. " des:" .. tostring(des))
         rtn = srey.netreq(rpcfd, TASK_NAME.TASK2, "rpc_void")
-        printd("netreq rpc_void rtn:" .. tostring(rtn))
+        --printd("netreq rpc_void rtn:" .. tostring(rtn))
     end
 end
 local function continuationcb(cnt)
@@ -116,8 +116,8 @@ local function ontimeout()
     if not callonce then
         callonce = true
     end
-    --httptest()
-    --testrpc()
+    httptest()
+    testrpc()
     testwebsock()
     srey.timeout(5000, ontimeout)
 end
