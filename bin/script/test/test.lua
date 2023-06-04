@@ -45,6 +45,9 @@ do
     local tbcv <close> = create_tbcv()
 end
 
+printd("randstr %s", randstr(5))
+printd("randstr %s", randstr(10))
+
 local rtn = json.encode(ab)
 rtn = json.decode(rtn)
 

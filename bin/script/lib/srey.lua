@@ -612,7 +612,12 @@ local function http_status(data)
     if nil == method then
         return nil
     end
-    local tmp = split(method, " ")
+    local tmp = {}
+    local pos1 = string.find(method, " ")
+    table.insert(tmp, string.sub(method, 1, pos1 - 1))
+    local pos2 = string.find(method, " ", pos1 + 1)
+    table.insert(tmp, string.sub(method, pos1 + 1, pos2 - 1))
+    table.insert(tmp, string.sub(method, pos2 + 1))
     local rtn = {}
     if nil == string.find(string.lower(tmp[1]), "http") then
         rtn.method = tmp[1]
@@ -703,6 +708,7 @@ end
 function dispatch_message(msgtype, unptype, err, fd, src, data, size, sess, addr)
     if MSG_TYPE.STARTED == msgtype then
         collectgarbage("generational")
+        math.randomseed(os.time())
         resume_normal(static_funcs.STARTED)
     elseif MSG_TYPE.CLOSING == msgtype then
         resume_normal(static_funcs.CLOSING)

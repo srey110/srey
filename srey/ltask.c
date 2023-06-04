@@ -6,6 +6,7 @@
 #include "lua/lauxlib.h"
 #include "proto/http.h"
 #include "proto/simple.h"
+#include "proto/websock.h"
 
 typedef struct ltask_ctx{
     int32_t ref;
@@ -342,15 +343,8 @@ static int32_t _ltask_setud_pktype(lua_State *lua) {
 }
 static int32_t _ltask_setud_data(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
-    int32_t name = (int32_t)luaL_checkinteger(lua, 2);
-    task_ctx *task = srey_taskqury(srey, name);
-    if (NULL == task) {
-        LOG_WARN("can't find task: %d.", name);
-        lua_pushboolean(lua, 0);
-    } else {
-        ev_setud_data(netev, fd, task);
-        lua_pushboolean(lua, 1);
-    }
+    void *task = lua_touserdata(lua, 2);
+    ev_setud_data(netev, fd, task);
     return 1;
 }
 static int32_t _ltask_ipport(lua_State *lua) {
@@ -392,6 +386,12 @@ static int32_t _ltask_remoteaddr(lua_State *lua) {
     lua_pushinteger(lua, port);
     return 2;
 }
+static int32_t _ltask_udtostr(lua_State *lua) {
+    void *data = lua_touserdata(lua, 1);
+    size_t size = (size_t)luaL_checkinteger(lua, 2);
+    lua_pushlstring(lua, data, size);
+    return 1;
+}
 static int32_t _ltask_md5(lua_State *lua) {
     void *data;
     size_t size;
@@ -406,10 +406,50 @@ static int32_t _ltask_md5(lua_State *lua) {
     lua_pushstring(lua, strmd5);
     return 1;
 }
-static int32_t _ltask_udtostr(lua_State *lua) {
-    void *data = lua_touserdata(lua, 1);
-    size_t size = (size_t)luaL_checkinteger(lua, 2);
-    lua_pushlstring(lua, data, size);
+static int32_t _ltask_sha1_b64encode(lua_State *lua) {
+    void *data;
+    size_t size;
+    if (LUA_TSTRING == lua_type(lua, 1)) {
+        data = (void *)luaL_checklstring(lua, 1, &size);
+    } else {
+        data = lua_touserdata(lua, 1);
+        size = (size_t)luaL_checkinteger(lua, 2);
+    }
+    char sha1str[20];
+    sha1(data, size, sha1str);
+    char *b64 = b64encode(sha1str, sizeof(sha1str), &size);
+    lua_pushlstring(lua, b64, size);
+    FREE(b64);
+    return 1;
+}
+static int32_t _ltask_b64encode(lua_State *lua) {
+    void *data;
+    size_t size;
+    if (LUA_TSTRING == lua_type(lua, 1)) {
+        data = (void *)luaL_checklstring(lua, 1, &size);
+    } else {
+        data = lua_touserdata(lua, 1);
+        size = (size_t)luaL_checkinteger(lua, 2);
+    }
+    size_t blens;
+    char *b64 = b64encode(data, size, &blens);
+    lua_pushlstring(lua, b64, blens);
+    FREE(b64);
+    return 1;
+}
+static int32_t _ltask_b64decode(lua_State *lua) {
+    void *data;
+    size_t size;
+    if (LUA_TSTRING == lua_type(lua, 1)) {
+        data = (void *)luaL_checklstring(lua, 1, &size);
+    } else {
+        data = lua_touserdata(lua, 1);
+        size = (size_t)luaL_checkinteger(lua, 2);
+    }
+    size_t blens;
+    char *b64 = b64decode(data, size, &blens);
+    lua_pushlstring(lua, b64, blens);
+    FREE(b64);
     return 1;
 }
 static int32_t _ltask_http_method(lua_State *lua) {
@@ -488,6 +528,102 @@ static int32_t _ltask_simple_data(lua_State *lua) {
     lua_pushinteger(lua, size);
     return 2;
 }
+static int32_t _ltask_websock_pack(lua_State *lua) {
+    void *pack = lua_touserdata(lua, 1);
+    int32_t fin = websock_pack_fin(pack);
+    int32_t proto = websock_pack_proto(pack);
+    size_t lens;
+    void *data = websock_pack_data(pack, &lens);
+    lua_createtable(lua, 0, 3);
+    lua_pushstring(lua, "fin");
+    lua_pushinteger(lua, fin);
+    lua_settable(lua, -3);
+    lua_pushstring(lua, "proto");
+    lua_pushinteger(lua, proto);
+    lua_settable(lua, -3);
+    if (0 != lens) {
+        lua_pushstring(lua, "data");
+        lua_pushlightuserdata(lua, data);
+        lua_settable(lua, -3);
+        lua_pushstring(lua, "size");
+        lua_pushinteger(lua, lens);
+        lua_settable(lua, -3);
+    }
+    return 1;
+}
+static int32_t _ltask_websock_ping(lua_State *lua) {
+    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
+    websock_ping(netev, fd);
+    return 0;
+}
+static int32_t _ltask_websock_pong(lua_State *lua) {
+    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
+    websock_pong(netev, fd);
+    return 0;
+}
+static int32_t _ltask_websock_close(lua_State *lua) {
+    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
+    websock_close(netev, fd);
+    return 0;
+}
+static int32_t _ltask_websock_text(lua_State *lua) {
+    void *data;
+    size_t dlens;
+    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
+    if (LUA_TSTRING == lua_type(lua, 2)) {
+        data = (void *)luaL_checklstring(lua, 2, &dlens);
+    } else {
+        data = lua_touserdata(lua, 2);
+        dlens = (size_t)luaL_checkinteger(lua, 3);
+    }
+    if (LUA_TSTRING == lua_type(lua, 4)) {
+        size_t klens;
+        const char *key = luaL_checklstring(lua, 4, &klens);
+        websock_text(netev, fd, (char *)key, data, dlens);
+    } else {
+        websock_text(netev, fd, NULL, data, dlens);
+    }
+    return 0;
+}
+static int32_t _ltask_websock_binary(lua_State *lua) {
+    void *data;
+    size_t dlens;
+    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
+    if (LUA_TSTRING == lua_type(lua, 2)) {
+        data = (void *)luaL_checklstring(lua, 2, &dlens);
+    } else {
+        data = lua_touserdata(lua, 2);
+        dlens = (size_t)luaL_checkinteger(lua, 3);
+    }
+    if (LUA_TSTRING == lua_type(lua, 4)) {
+        size_t klens;
+        const char *key = luaL_checklstring(lua, 4, &klens);
+        websock_binary(netev, fd, (char *)key, data, dlens);
+    } else {
+        websock_binary(netev, fd, NULL, data, dlens);
+    }
+    return 0;
+}
+static int32_t _ltask_websock_continuation(lua_State *lua) {
+    void *data;
+    size_t dlens;
+    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
+    int32_t fin = (int32_t)luaL_checkinteger(lua, 2);
+    if (LUA_TSTRING == lua_type(lua, 3)) {
+        data = (void *)luaL_checklstring(lua, 3, &dlens);
+    } else {
+        data = lua_touserdata(lua, 3);
+        dlens = (size_t)luaL_checkinteger(lua, 4);
+    }
+    if (LUA_TSTRING == lua_type(lua, 5)) {
+        size_t klens;
+        const char *key = luaL_checklstring(lua, 5, &klens);
+        websock_continuation(netev, fd, fin, (char *)key, data, dlens);
+    } else {
+        websock_continuation(netev, fd, fin, NULL, data, dlens);
+    }
+    return 0;
+}
 LUAMOD_API int luaopen_srey(lua_State *lua) {
     luaL_Reg reg[] = {
         { "log", _ltask_log },
@@ -516,8 +652,12 @@ LUAMOD_API int luaopen_srey(lua_State *lua) {
 
         { "ipport", _ltask_ipport },
         { "remoteaddr", _ltask_remoteaddr },
-        { "md5", _ltask_md5 },
         { "utostr", _ltask_udtostr },
+
+        { "md5", _ltask_md5 },
+        { "sha1_b64encode", _ltask_sha1_b64encode },
+        { "b64encode", _ltask_b64encode },
+        { "b64decode", _ltask_b64decode },
 
         { "http_method", _ltask_http_method },        
         { "http_chunked", _ltask_http_chunked },
@@ -527,6 +667,14 @@ LUAMOD_API int luaopen_srey(lua_State *lua) {
         { "http_headers", _ltask_http_headers },
 
         { "simple_data", _ltask_simple_data },
+
+        { "websock_pack", _ltask_websock_pack },
+        { "websock_ping", _ltask_websock_ping },
+        { "websock_pong", _ltask_websock_pong },
+        { "websock_close", _ltask_websock_close },
+        { "websock_text", _ltask_websock_text },
+        { "websock_binary", _ltask_websock_binary },
+        { "websock_continuation", _ltask_websock_continuation },
 
         { NULL, NULL },
     };

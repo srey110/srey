@@ -596,7 +596,7 @@ int32_t buffer_from_sock(buffer_ctx *ctx, SOCKET fd, size_t *nread,
     *nread = 0;
     int32_t nmax = sock_nread(fd);
     if (ERR_FAILED == nmax
-        || nmax >= MAX_PACK_SIZE) {
+        || PACK_TOO_LONG(nmax)) {
         return ERR_FAILED;
     }
     if (nmax <= 0) {

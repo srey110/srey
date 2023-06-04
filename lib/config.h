@@ -23,4 +23,6 @@
 #define TRIGGER_ET          1
 #endif
 
+#define PACK_TOO_LONG(size) (0 != MAX_PACK_SIZE && size >= MAX_PACK_SIZE)
+
 #endif//CONFIG_H_

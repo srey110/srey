@@ -1,27 +1,14 @@
 local srey = require("lib.srey")
 local http = require("lib.http")
+local websock = require("lib.websock")
 
 local function onstarted()
     printd(srey.name() .. " onstarted....")
     srey.udp("0.0.0.0", 15002)
     local ssl = srey.sslevqury("server")
-    srey.listen("0.0.0.0", 15003, PACK_TYPE.HTTP, ssl)
-    srey.listen("0.0.0.0", 15004, PACK_TYPE.WEBSOCK)
+    srey.listen("0.0.0.0", 15003, PACK_TYPE.HTTP)
 end
 srey.started(onstarted)
-
-local function onaccept(unptype, fd)
-    if PACK_TYPE.WEBSOCK == unptype then
-        printd(srey.name() .. " websock onaccept.... " .. fd)
-    end
-end
-srey.accepted(onaccept)
-local function onclosed(unptype, fd)
-    if PACK_TYPE.WEBSOCK == unptype then
-        printd(srey.name() .. " websock closed.... " .. fd)
-    end
-end
-srey.closed(onclosed)
 
 local function onrecvfrom(unptype, fd, data, size, ip, port)
     srey.sendto(fd, ip, port, data, size)
@@ -49,7 +36,6 @@ local function onrecv(unptype, fd, data, size)
         local chunked = srey.http_chunked(data)
         if 1 == chunked then
             local hinfo = srey.http_head(data)
-            --printd(dump(hinfo))
         elseif 2 == chunked  then
             local msg, lens = srey.http_data(data)
             if nil == msg then
@@ -60,11 +46,19 @@ local function onrecv(unptype, fd, data, size)
             end
         else
             local hinfo = srey.http_head(data)
-            local msg, lens = srey.http_data(data)
-            if nil ~= msg then
-                --printd("message lens: %d", lens)
+            local sign = websock.upgrade(hinfo)
+            if sign then
+                local task4 = srey.qury(TASK_NAME.TASK4)
+                srey.bindtask(fd, task4)
+                websock.allowed(fd, sign)
+                srey.call(task4, "handshaked", fd)
+            else
+                local msg, lens = srey.http_data(data)
+                if nil ~= msg then
+                    --printd("message lens: %d", lens)
+                end
+                http_rtn(fd, false)
             end
-            http_rtn(fd, false)
         end
     end
 end

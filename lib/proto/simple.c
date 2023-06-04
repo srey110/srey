@@ -39,7 +39,7 @@ void *simple_unpack(buffer_ctx *buf, size_t *size, ud_cxt *ud, int32_t *closefd)
             buffer_copyout(buf, offsetof(simple_head_ctx, lens), &dlens, sizeof(dlens)), 
             "copy buffer error.");
         dlens = (lens_t)ntoh(dlens);
-        if (dlens >= MAX_PACK_SIZE) {
+        if (PACK_TOO_LONG(dlens)) {
             *closefd = 1;
             LOG_WARN("data too long, %"PRIu64, dlens);
             return NULL;

@@ -1,9 +1,10 @@
 --任务名
 TASK_NAME = {
     HARBOR = 0x00,
-    TAKS1 = 0x01,
-    TAKS2 = 0x02,
-    TAKS3 = 0x03
+    TASK1 = 0x01,
+    TASK2 = 0x02,
+    TASK3 = 0x03,
+    TASK4 = 0x04
 }
 --包类型 标识该socket类型 与c pack_type对应
 PACK_TYPE = {

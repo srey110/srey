@@ -172,7 +172,7 @@ static inline void *_http_header(buffer_ctx *buf, ud_cxt *ud, int32_t *closefd) 
         return NULL;
     }
     if (CONTENT == status) {
-        if (pack->lens >= MAX_PACK_SIZE) {
+        if (PACK_TOO_LONG(pack->lens)) {
             *closefd = 1;
             http_pkfree(pack);
             LOG_WARN("http data too long, %"PRIu64, pack->lens);
@@ -215,7 +215,7 @@ static inline void *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_t *closefd)
         }
         ASSERTAB(pos == buffer_copyout(buf, 0, lensbuf, pos), "copy buffer failed.");
         size_t dlens = atoi(lensbuf);
-        if (dlens >= MAX_PACK_SIZE) {
+        if (PACK_TOO_LONG(dlens)) {
             *closefd = 1;
             LOG_WARN("data too long, lens:%"PRIu64, dlens);
             return NULL;

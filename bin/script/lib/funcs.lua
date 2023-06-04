@@ -1,5 +1,7 @@
 require("lib.define")
 local os = os
+local math = math
+local table = table
 local debug = debug
 local string = string
 local pathsep = _pathsep
@@ -51,6 +53,16 @@ function tbempty(tb)
         return false
     end
     return true
+end
+function randstr(cnt)
+    local char = {"0","1","2","3","4","5","6","7","8","9",
+                  "a","b","c","d","e","f","g","h","i","j","k","l","m","n","o","p","q","r","s","t","u","v","w","x","y","z",
+                  "A","B","C","D","E","F","G","H","I","J","K","L","M","N","O","P","Q","R","S","T","U","V","W","X","Y","Z"}
+    local rtn = {}
+    for i =1, cnt do
+        table.insert(rtn, char[math.random(#char)])
+    end
+    return table.concat(rtn)
 end
 --dump
 function dump(obj, offset)

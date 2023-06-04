@@ -249,31 +249,16 @@ end
 描述:将sock消息重定向到其他任务
 参数：
     fd socket :integer
-    name :TASK_NAME
+    task :task_ctx
 返回:
     boolean
 --]]
-function core.bindtask(fd, name)
-    if INVALID_SOCK == fd or nil == name then
+function core.bindtask(fd, task)
+    if INVALID_SOCK == fd or nil == task then
         log.WARN("invalid argument.")
         return
     end
-    return srey.bindtask(fd, name)
-end
---[[
-描述:md5
-参数：
-    data string or userdata
-    size :integer
-返回:
-    string
---]]
-function core.md5(data, size)
-    if nil == data then
-        log.WARN("invalid argument.")
-        return nil
-    end
-    return srey.md5(data, size)
+    return srey.bindtask(fd, task)
 end
 --[[
 描述:userdata 转 lstring
@@ -293,6 +278,66 @@ function core.utostr(data, size)
         return ""
     end
     return srey.utostr(data, size)
+end
+--[[
+描述:md5
+参数：
+    data string or userdata
+    size :integer
+返回:
+    string
+--]]
+function core.md5(data, size)
+    if nil == data then
+        log.WARN("invalid argument.")
+        return nil
+    end
+    return srey.md5(data, size)
+end
+--[[
+描述:sha1 然后 base64编码
+参数：
+    data :string or userdata
+    size :integer
+返回:
+    string
+--]]
+function core.sha1_b64encode(data, size)
+    if nil == data then
+        log.WARN("invalid argument.")
+        return nil
+    end
+    return srey.sha1_b64encode(data, size)
+end
+--[[
+描述:base64编码
+参数：
+    data :string or userdata
+    size :integer
+返回:
+    string
+--]]
+function core.b64encode(data, size)
+    if nil == data then
+        log.WARN("invalid argument.")
+        return nil
+    end
+    return srey.b64encode(data, size)
+end
+--[[
+描述:base64解码
+参数：
+    data :string or userdata
+    size :integer
+返回:
+    string
+--]]
+function core.b64decode(data, size)
+    if nil == data then
+        log.WARN("invalid argument.")
+        return nil
+    end
+    return srey.b64decode(data, size)
 end
 
 return core
