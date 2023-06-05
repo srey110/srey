@@ -77,10 +77,8 @@ local function testrpc()
     --printd("request rpc_void rtn:" .. tostring(rtn))
     if INVALID_SOCK ~= rpcfd then
         printd("rpcfd: %s", tostring(rpcfd))
-        srey.netcall(rpcfd, TASK_NAME.TASK2,
-                    "rpc_add", math.random(10) , math.random(10), "srey.netcall")--]]
-        rtn, sum, des = srey.netreq(rpcfd, TASK_NAME.TASK2,
-                                   "rpc_add", math.random(10) , math.random(10), "srey.netreq")
+        srey.netcall(rpcfd, TASK_NAME.TASK2, "rpc_add", math.random(10) , math.random(10), "srey.netcall")
+        rtn, sum, des = srey.netreq(rpcfd, TASK_NAME.TASK2, "rpc_add", math.random(10) , math.random(10), "srey.netreq")
         --printd("netreq rpc_add rtn:" .. tostring(rtn) .. " sum:" .. tostring(sum) .. " des:" .. tostring(des))
         rtn = srey.netreq(rpcfd, TASK_NAME.TASK2, "rpc_void")
         --printd("netreq rpc_void rtn:" .. tostring(rtn))
@@ -128,7 +126,7 @@ local function ontimeout()
     testrpc()
     testwebsock(true)
     testwebsock(false)
-    srey.timeout(5000, ontimeout)
+    srey.timeout(3000, ontimeout)
 end
 local function onstarted()
     printd(srey.name() .. " onstarted....")
@@ -171,7 +169,7 @@ local function echo(pktype, fd, data, size)
         if WEBSOCK_PROTO.PING == frame.proto then
             --printd("PING")
         elseif WEBSOCK_PROTO.CLOSE == frame.proto then
-            printd("CLOSE")
+            --printd("CLOSE")
         elseif WEBSOCK_PROTO.TEXT == frame.proto  then
             --printd("TEXT size: %d", frame.size)
         elseif WEBSOCK_PROTO.BINARY == frame.proto  then

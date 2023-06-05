@@ -9,14 +9,14 @@ srey.started(onstarted)
 
 local function onaccept(pktype, fd)
     if pktype == PACK_TYPE.WEBSOCK then
-        printd("websocket accpeted")
+        --printd("websocket accpeted")
         websock.text(fd, "welcome! this is websocket.")
     end
 end
 srey.accepted(onaccept)
 local function onsockclose(pktype, fd)
     if pktype == PACK_TYPE.WEBSOCK then
-        printd("websocket closed")
+        --printd("websocket closed")
     end
 end
 srey.closed(onsockclose)
@@ -32,7 +32,7 @@ local function onrecv(pktype, fd, data, size)
         --printd("PING")
     elseif WEBSOCK_PROTO.CLOSE == frame.proto then
         srey.close(fd)
-        printd("CLOSE")
+        --printd("CLOSE")
     elseif WEBSOCK_PROTO.TEXT == frame.proto  then
         --local msg = srey.utostr(frame.data, frame.size)
         --printd("TEXT size: %d", frame.size)

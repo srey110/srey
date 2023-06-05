@@ -600,13 +600,6 @@ local function dispatch_netrpc(fd, data, size)
     end
 end
 --http
-local function http_version(ver)
-    local pos = string.find(ver, "/")
-    if nil == pos then
-        return ver
-    end
-    return string.sub(ver, pos + 1, #ver)
-end
 function core.http_chunked(data)
     return srey.http_chunked(data)
 end
