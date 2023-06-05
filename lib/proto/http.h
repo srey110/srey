@@ -5,10 +5,8 @@
 #include "buffer.h"
 
 typedef struct http_header_ctx {
-    char *key;
-    char *value;
-    size_t klen;
-    size_t vlen;
+    buf_ctx key;
+    buf_ctx value;
 }http_header_ctx;
 
 void *http_unpack(buffer_ctx *buf, size_t *size, ud_cxt *ud, int32_t *closefd);
@@ -17,7 +15,7 @@ void http_udfree(ud_cxt *ud);
 void *_http_parsehead(buffer_ctx *buf, int32_t *status, int32_t *closefd);
 int32_t _http_check_keyval(http_header_ctx *head, const char *key, const char *val);
 
-char *http_status(void *data, size_t *lens, int32_t index);
+buf_ctx *http_status(void *data);
 size_t http_nheader(void *data);
 http_header_ctx *http_header_at(void *data, size_t pos);
 char *http_header(void *data, const char *header, size_t *lens);

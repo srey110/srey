@@ -18,7 +18,7 @@ local ab = {
             id = 10000,
             phone = {
                 { number = "123456789" , type = 1 },
-                { number = "87654321" , type = 2 },
+                { number = "7654321" , type = 2 },
             }
         },
         {

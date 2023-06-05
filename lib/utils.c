@@ -803,7 +803,7 @@ void *skipempty(const void *ptr, size_t plens) {
     }
     return cur;
 }
-void split(int32_t ncs, const void *ptr, size_t plens, const void *what, size_t wlen, uint32_t cnt) {
+void split(int32_t ncs, const void *ptr, size_t plens, const void *what, size_t wlen, uint32_t cnt, arr_buf *arr) {
     
 }
 char *strupper(char *str){

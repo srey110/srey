@@ -39,15 +39,15 @@ local function httptest()
         cnt = 0;
     }
     local hinfo
-    hinfo = http.get(fd, "/get_test", headers)
+    hinfo = http.get(fd, "/get_test?a=中文测试1", headers)
     if not hinfo then
         printd("http error.")
     end
-    hinfo = http.post(fd, "/post_nomsg", headers)
+    hinfo = http.post(fd, "/post_nomsg?a=中文测试2", headers)
     if not hinfo then
         printd("http error.")
     end
-    hinfo = http.post(fd, "/post_string", headers, "this is string message")
+    hinfo = http.post(fd, "/post_string", headers, nil, "this is string message")
     if not hinfo then
         printd("http error.")
     end
@@ -153,20 +153,20 @@ local function onstarted()
 end
 srey.started(onstarted)
 
-local function onaccept(unptype, fd)
+local function onaccept(pktype, fd)
     --printd(srey.name() .. " onaccept.... " .. fd)
 end
 srey.accepted(onaccept)
 
-local function echo(unptype, fd, data, size)
-    if PACK_TYPE.SIMPLE == unptype then
+local function echo(pktype, fd, data, size)
+    if PACK_TYPE.SIMPLE == pktype then
         if math.random(1, 100) <= 1 then
             srey.close(fd)
             return
         end
         data, size = srey.simple_data(data)
-        srey.send(fd, data, size, unptype)
-    elseif PACK_TYPE.WEBSOCK == unptype then
+        srey.send(fd, data, size, pktype)
+    elseif PACK_TYPE.WEBSOCK == pktype then
         local frame = websock.frame(data)
         if WEBSOCK_PROTO.PING == frame.proto then
             --printd("PING")
@@ -183,16 +183,16 @@ local function echo(unptype, fd, data, size)
 end
 srey.recved(echo)
 
-local function onsended(unptype, fd, size)
+local function onsended(pktype, fd, size)
 end
 srey.sended(onsended)
 
-local function onsockclose(unptype, fd)
-    if unptype == PACK_TYPE.RPC and rpcfd == fd then
+local function onsockclose(pktype, fd)
+    if pktype == PACK_TYPE.RPC and rpcfd == fd then
         printd("rpc connect closed")
         rpcfd = INVALID_SOCK
     end
-    if unptype == PACK_TYPE.WEBSOCK then
+    if pktype == PACK_TYPE.WEBSOCK then
         --printd("websocket connect closed")
     end
 end

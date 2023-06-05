@@ -3,8 +3,8 @@
 
 #include "os.h"
 
-typedef void *(*chr_func)(const char *, int32_t, size_t);
-typedef int32_t(*cmp_func)(const char *, const char *, size_t);
+typedef void *(*chr_func)(const void *, int32_t, size_t);
+typedef int32_t(*cmp_func)(const void *, const void *, size_t);
 
 void *_malloc(size_t size);
 void *_calloc(size_t count, size_t size);

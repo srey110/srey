@@ -11,16 +11,9 @@ typedef enum parse_status{
 ARRAY_DECL(http_header_ctx, arr_header);
 typedef struct http_pack_ctx {
     int32_t chunked;
-    char *status1;
-    char *status2;
-    char *status3;
-    char *hdata;
-    char *data;
-    size_t slens1;
-    size_t slens2;
-    size_t slens3;
-    size_t hlens;
-    size_t lens;
+    buf_ctx head;
+    buf_ctx data;
+    buf_ctx status[3];
     arr_header header;
 }http_pack_ctx;
 
@@ -30,33 +23,34 @@ typedef struct http_pack_ctx {
 #define FLAG_CONTENT "content-length"
 #define FLAG_CHUNKED "transfer-encoding"
 #define CHUNKED_KEY "chunked"
+#define HEAD_REMAIN (pack->head.lens - (head - (char *)pack->head.data))
 
 int32_t _http_check_keyval(http_header_ctx *head, const char *key, const char *val) {
     size_t lens = strlen(key);
-    if (head->klen < lens
-        || 0 != _memicmp(head->key, key, lens)) {
+    if (head->key.lens < lens
+        || 0 != _memicmp(head->key.data, key, lens)) {
         return ERR_FAILED;
     }
     if (NULL == val) {
         return ERR_OK;
     }
-    if (NULL != memstr(1, head->value, head->vlen, val, strlen(val))) {
+    if (NULL != memstr(1, head->value.data, head->value.lens, val, strlen(val))) {
         return ERR_OK;
     }
     return ERR_FAILED;
 }
 static inline void _check_fileld(http_pack_ctx *pack, http_header_ctx *field, int32_t *status) {
-    switch (tolower(*(field->key))) {
+    switch (tolower(*((char *)field->key.data))) {
     case 'c':
         if (ERR_OK == _http_check_keyval(field, FLAG_CONTENT, NULL)) {
             *status = CONTENT;
-            pack->lens = atoi(field->value);
+            pack->data.lens = atoi(field->value.data);
         }
         break;
     case 't':
         if (ERR_OK == _http_check_keyval(field, FLAG_CHUNKED, CHUNKED_KEY)){
             *status = CHUNKED;
-            pack->lens = 0;
+            pack->data.lens = 0;
             pack->chunked = 1;
         }
         break;
@@ -64,49 +58,77 @@ static inline void _check_fileld(http_pack_ctx *pack, http_header_ctx *field, in
         break;
     }
 }
+static inline char *_http_parse_status(http_pack_ctx *pack, size_t flens) {
+    char *head = pack->head.data;
+    head = skipempty(head, pack->head.lens);
+    if (NULL == head) {
+        return NULL;
+    }
+    char *pos = memstr(0, head, HEAD_REMAIN, " ", 1);
+    if (NULL == pos) {
+        return NULL;
+    }
+    pack->status[0].data = head;
+    pack->status[0].lens = pos - head;
+    if (0 == pack->status[0].lens) {
+        return NULL;
+    }
+    head = pos + 1;
+    pos = memstr(0, head, HEAD_REMAIN, " ", 1);
+    if (NULL == pos) {
+        return NULL;
+    }
+    pack->status[1].data = head;
+    pack->status[1].lens = pos - head;
+    if (0 == pack->status[1].lens) {
+        return NULL;
+    }
+    head = pos + 1;
+    if (0 != _memicmp(pack->status[0].data, "http", strlen("http"))) {
+        pack->status[1].lens = urldecode(pack->status[1].data, pack->status[1].lens);
+    }
+    pos = memstr(0, head, HEAD_REMAIN, FLAG_CRLF, flens);
+    if (NULL == pos) {
+        return NULL;
+    }
+    pack->status[2].data = head;
+    pack->status[2].lens = pos - head;
+    return pos + flens;
+}
 static inline int32_t _http_parse_head(http_pack_ctx *pack, int32_t *status) {
-    //至少有一个\r\n\r\n
-    char *head = pack->hdata;
     size_t flens = strlen(FLAG_CRLF);
-    head = skipempty(head, pack->hlens);
+    char *head = _http_parse_status(pack, flens);
     if (NULL == head) {
         return ERR_FAILED;
     }
-    char *pos = memstr(0, head, pack->hlens - (head - pack->hdata), FLAG_CRLF, flens);
-    if (NULL == pos) {
-        return ERR_FAILED;
-    }
-    pack->first = head;
-    pack->flens = pos - head;
-
-    head = pos + flens;
+    char *pos;
     size_t least = 2 * flens + 1;//\r\n\r\n + :
     http_header_ctx field;
-    while ((size_t)(head + least - pack->hdata) <= pack->hlens) {
-        head = skipempty(head, pack->hlens - (head - pack->hdata));
+    while ((size_t)(head + least - (char *)pack->head.data) <= pack->head.lens) {
+        head = skipempty(head, HEAD_REMAIN);
         if (NULL == head) {
             return ERR_FAILED;
         }
-        pos = memstr(0, head, pack->hlens - (head - pack->hdata), ":", 1);
+        pos = memstr(0, head, HEAD_REMAIN, ":", 1);
         if (NULL == pos) {
             return ERR_FAILED;
         }
-        field.key = head;
-        field.klen = pos - head;
-        if (0 == field.klen) {
+        field.key.data = head;
+        field.key.lens = pos - head;
+        if (0 == field.key.lens) {
             return ERR_FAILED;
         }
         head = pos + 1;
-        head = skipempty(head, pack->hlens - (head - pack->hdata));
+        head = skipempty(head, HEAD_REMAIN);
         if (NULL == head) {
             return ERR_FAILED;
         }
-        pos = memstr(0, head, pack->hlens - (head - pack->hdata), FLAG_CRLF, flens);
+        pos = memstr(0, head, HEAD_REMAIN, FLAG_CRLF, flens);
         if (NULL == pos) {
             return ERR_FAILED;
         }
-        field.value = head;
-        field.vlen = pos - head;
+        field.value.data = head;
+        field.value.lens = pos - head;
         head = pos + flens;
         if (CHUNKED != *status) {
             _check_fileld(pack, &field, status);
@@ -117,9 +139,9 @@ static inline int32_t _http_parse_head(http_pack_ctx *pack, int32_t *status) {
 }
 static inline void *_http_content(buffer_ctx *buf, ud_cxt *ud, int32_t *closefd) {
     http_pack_ctx *pack = ud->extra;
-    if (buffer_size(buf) >= pack->lens) {
-        MALLOC(pack->data, pack->lens);
-        ASSERTAB(pack->lens == buffer_remove(buf, pack->data, pack->lens), "copy buffer failed.");
+    if (buffer_size(buf) >= pack->data.lens) {
+        MALLOC(pack->data.data, pack->data.lens);
+        ASSERTAB(pack->data.lens == buffer_remove(buf, pack->data.data, pack->data.lens), "copy buffer failed.");
         ud->status = INIT;
         ud->extra = NULL;
         return pack;
@@ -148,8 +170,8 @@ static inline size_t _http_headlens(buffer_ctx *buf, int32_t *closefd) {
 static inline http_pack_ctx *_http_headpack(size_t lens) {
     char *pack;
     CALLOC(pack, 1, sizeof(http_pack_ctx) + lens);
-    ((http_pack_ctx *)pack)->hdata = pack + sizeof(http_pack_ctx);
-    ((http_pack_ctx *)pack)->hlens = lens;
+    ((http_pack_ctx *)pack)->head.data = pack + sizeof(http_pack_ctx);
+    ((http_pack_ctx *)pack)->head.lens = lens;
     arr_header_init(&((http_pack_ctx *)pack)->header, ARRAY_INIT_SIZE);
     return (http_pack_ctx *)pack;
 }
@@ -160,10 +182,10 @@ void *_http_parsehead(buffer_ctx *buf, int32_t *status, int32_t *closefd) {
     }
     *status = 0;
     http_pack_ctx *pack = _http_headpack(hlens);
-    ASSERTAB(hlens == buffer_remove(buf, pack->hdata, hlens), "copy buffer failed.");
+    ASSERTAB(hlens == buffer_remove(buf, pack->head.data, hlens), "copy buffer failed.");
     if (ERR_OK != _http_parse_head(pack, status)) {
         *closefd = 1;
-        LOG_NOEOFSTR(LOGLV_WARN, "http parse head failed.\n%s", pack->hdata, pack->hlens);
+        LOG_NOEOFSTR(LOGLV_WARN, "http parse head failed.\n%s", pack->head.data, pack->head.lens);
         http_pkfree(pack);
         return NULL;
     }
@@ -176,10 +198,10 @@ static inline void *_http_header(buffer_ctx *buf, ud_cxt *ud, int32_t *closefd) 
         return NULL;
     }
     if (CONTENT == status) {
-        if (PACK_TOO_LONG(pack->lens)) {
+        if (PACK_TOO_LONG(pack->data.lens)) {
             *closefd = 1;
             http_pkfree(pack);
-            LOG_WARN("http data too long, %"PRIu64, pack->lens);
+            LOG_WARN("http data too long, %"PRIu64, pack->data.lens);
             return NULL;
         } else {
             ud->extra = pack;
@@ -196,8 +218,8 @@ static inline http_pack_ctx *_http_chunkedpack(size_t lens) {
     CALLOC(pack, 1, sizeof(http_pack_ctx) + lens);
     http_pack_ctx *pctx = (http_pack_ctx *)pack;
     if (lens > 0) {
-        pctx->data = pack + sizeof(http_pack_ctx);
-        pctx->lens = lens;
+        pctx->data.data = pack + sizeof(http_pack_ctx);
+        pctx->data.lens = lens;
     }
     pctx->chunked = 2;
     return pctx;
@@ -229,12 +251,12 @@ static inline void *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_t *closefd)
         pack = _http_chunkedpack(dlens);
         ud->extra = pack;
     }
-    drain = pack->lens + flens;
+    drain = pack->data.lens + flens;
     if (buffer_size(buf) < drain) {
         return NULL;
     }
-    if (pack->lens > 0) {
-        ASSERTAB(pack->lens == buffer_copyout(buf, 0, pack->data, pack->lens), "copy buffer failed.");
+    if (pack->data.lens > 0) {
+        ASSERTAB(pack->data.lens == buffer_copyout(buf, 0, pack->data.data, pack->data.lens), "copy buffer failed.");
     } else {
         ud->status = INIT;
     }
@@ -247,8 +269,8 @@ void http_pkfree(void *data) {
         return;
     }
     http_pack_ctx *pack = data;
-    if (NULL != pack->hdata) {
-        FREE(pack->data);
+    if (NULL != pack->head.data) {
+        FREE(pack->data.data);
         arr_header_free(&pack->header);
     }
     FREE(pack);
@@ -275,27 +297,8 @@ void *http_unpack(buffer_ctx *buf, size_t *size, ud_cxt *ud, int32_t *closefd) {
     }
     return data;
 }
-char *http_status(void *data, size_t *lens, int32_t index) {
-    *lens = 0;
-    char *status = NULL;
-    http_pack_ctx *pack = data;
-    switch (index) {
-    case 1:
-        status = pack->status1;
-        *lens = pack->slens1;
-        break;
-    case 2:
-        status = pack->status2;
-        *lens = pack->slens2;
-        break;
-    case 3:
-        status = pack->status3;
-        *lens = pack->slens3;
-        break;
-    default:
-        break;
-    }
-    return status;
+buf_ctx *http_status(void *data) {
+    return ((http_pack_ctx *)data)->status;
 }
 size_t http_nheader(void *data) {
     return arr_header_size(&((http_pack_ctx *)data)->header);
@@ -305,15 +308,17 @@ http_header_ctx *http_header_at(void *data, size_t pos) {
 }
 char *http_header(void *data, const char *header, size_t *lens) {
     http_pack_ctx *pack = data;
-    if (NULL == pack->hdata) {
+    if (NULL == pack->head.data) {
         return NULL;
     }
     http_header_ctx *filed;
+    size_t klens = strlen(header);
     for (size_t i = 0; i < arr_header_size(&pack->header); i++) {
         filed = arr_header_at(&pack->header, i);
-        if (0 == _memicmp(filed->key, header, strlen(header))) {
-            *lens = filed->vlen;
-            return filed->value;
+        if (filed->key.lens >= klens
+            && 0 == _memicmp(filed->key.data, header, klens)) {
+            *lens = filed->value.lens;
+            return filed->value.data;
         }
     }
     return NULL;
@@ -322,6 +327,6 @@ int32_t http_chunked(void *data) {
     return ((http_pack_ctx *)data)->chunked;
 }
 void *http_data(void *data, size_t *lens) {
-    *lens = ((http_pack_ctx *)data)->lens;
-    return ((http_pack_ctx *)data)->data;
+    *lens = ((http_pack_ctx *)data)->data.lens;
+    return ((http_pack_ctx *)data)->data.data;
 }

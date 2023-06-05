@@ -34,7 +34,7 @@ typedef struct tcp_ctx {
     SSL *ssl;
 #endif
     buffer_ctx buf_r;
-    qu_bufs buf_s;
+    qu_off_buf buf_s;
     cbs_ctx cbs;
     ud_cxt ud;
 }tcp_ctx;
@@ -44,7 +44,7 @@ typedef struct udp_ctx {
     cbs_ctx cbs;
     IOV_TYPE buf_r;
     struct msghdr msg;
-    qu_bufs buf_s;
+    qu_off_buf buf_s;
     netaddr_ctx addr;
     ud_cxt ud;
     char buf[MAX_RECVFROM_SIZE];
@@ -74,7 +74,7 @@ sock_ctx *_new_sk(SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
     tcp->cbs = *cbs;
     COPY_UD(tcp->ud, ud);
     buffer_init(&tcp->buf_r);
-    qu_bufs_init(&tcp->buf_s, INIT_SENDBUF_LEN);
+    qu_off_buf_init(&tcp->buf_s, INIT_SENDBUF_LEN);
     return &tcp->sock;
 }
 void _free_sk(sock_ctx *skctx) {
@@ -85,7 +85,7 @@ void _free_sk(sock_ctx *skctx) {
     CLOSE_SOCK(tcp->sock.fd);
     buffer_free(&tcp->buf_r);
     _bufs_clear(&tcp->buf_s);
-    qu_bufs_free(&tcp->buf_s);
+    qu_off_buf_free(&tcp->buf_s);
     if (NULL != tcp->cbs.ud_free) {
         tcp->cbs.ud_free(&tcp->ud);
     }
@@ -249,7 +249,7 @@ static inline int32_t _on_w_cb(watcher_ctx *watcher, tcp_ctx *tcp) {
     if (ERR_OK != rtn) {
         return rtn;
     }
-    if (0 == qu_bufs_size(&tcp->buf_s)) {
+    if (0 == qu_off_buf_size(&tcp->buf_s)) {
         _del_event(watcher, tcp->sock.fd, &tcp->sock.events, EVENT_WRITE, &tcp->sock);
         return ERR_OK;
     }
@@ -311,11 +311,11 @@ static void _on_rw_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
         pool_push(&watcher->pool, &tcp->sock);
     }
 }
-void _add_write_inloop(watcher_ctx *watcher, sock_ctx *skctx, bufs_ctx *buf) {
-    qu_bufs_push((SOCK_STREAM == skctx->type) ?
-                  &UPCAST(skctx, tcp_ctx, sock)->buf_s :
-                  &UPCAST(skctx, udp_ctx, sock)->buf_s, 
-                  buf);
+void _add_write_inloop(watcher_ctx *watcher, sock_ctx *skctx, off_buf_ctx *buf) {
+    qu_off_buf_push((SOCK_STREAM == skctx->type) ?
+                     &UPCAST(skctx, tcp_ctx, sock)->buf_s :
+                     &UPCAST(skctx, udp_ctx, sock)->buf_s, 
+                     buf);
     if (!(skctx->events & EVENT_WRITE)) {
         _add_event(watcher, skctx->fd, &skctx->events, EVENT_WRITE, skctx);
     }
@@ -589,11 +589,11 @@ static inline int32_t _on_udp_rcb(watcher_ctx *watcher, udp_ctx *udp) {
 }
 static inline int32_t _on_udp_wcb(watcher_ctx *watcher, udp_ctx *udp) {
     IOV_TYPE iov;
-    bufs_ctx *buf;
+    off_buf_ctx *buf;
     netaddr_ctx *addr;
     struct msghdr msg;
     int32_t rtn = ERR_OK;
-    while (NULL != (buf = qu_bufs_pop(&udp->buf_s))) {
+    while (NULL != (buf = qu_off_buf_pop(&udp->buf_s))) {
         addr = (netaddr_ctx *)buf->data;
         iov.IOV_PTR_FIELD = (char *)buf->data + sizeof(netaddr_ctx);
         iov.IOV_LEN_FIELD = (IOV_LEN_TYPE)buf->len;
@@ -616,7 +616,7 @@ static inline int32_t _on_udp_wcb(watcher_ctx *watcher, udp_ctx *udp) {
     if (ERR_OK != rtn) {
         return rtn;
     }
-    if (0 == qu_bufs_size(&udp->buf_s)) {
+    if (0 == qu_off_buf_size(&udp->buf_s)) {
         _del_event(watcher, udp->sock.fd, &udp->sock.events, EVENT_WRITE, &udp->sock);
         return ERR_OK;
     }
@@ -665,14 +665,14 @@ static inline sock_ctx *_new_udp(SOCKET fd, int32_t family, cbs_ctx *cbs, ud_cxt
     COPY_UD(udp->ud, ud);
     netaddr_empty_addr(&udp->addr, family);
     _init_msghdr(&udp->msg, &udp->addr, &udp->buf_r, 1);
-    qu_bufs_init(&udp->buf_s, INIT_SENDBUF_LEN);
+    qu_off_buf_init(&udp->buf_s, INIT_SENDBUF_LEN);
     return &udp->sock;
 }
 void _free_udp(sock_ctx *skctx) {
     udp_ctx *udp = UPCAST(skctx, udp_ctx, sock);
     CLOSE_SOCK(udp->sock.fd);
     _bufs_clear(&udp->buf_s);
-    qu_bufs_free(&udp->buf_s);
+    qu_off_buf_free(&udp->buf_s);
     if (NULL != udp->cbs.ud_free) {
         udp->cbs.ud_free(&udp->ud);
     }

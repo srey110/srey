@@ -53,7 +53,7 @@ end
 --[[
 描述:socket accept
 参数：
-    func function(unptype :PACK_TYPE, fd :integer) :function
+    func function(pktype :PACK_TYPE, fd :integer) :function
 --]]
 function core.accepted(func)
     static_funcs.ACCEPT = func
@@ -61,7 +61,7 @@ end
 --[[
 描述:socket recv
 参数：
-    func function(unptype :PACK_TYPE, fd :integer, data :userdata, size :integer) :function
+    func function(pktype :PACK_TYPE, fd :integer, data :userdata, size :integer) :function
 --]]
 function core.recved(func)
     static_funcs.RECV = func
@@ -69,7 +69,7 @@ end
 --[[
 描述:udp recvfrom
 参数：
-    func function(unptype :PACK_TYPE, fd :integer, data :userdata, size:integer, ip :string, port :integer) :function
+    func function(pktype :PACK_TYPE, fd :integer, data :userdata, size:integer, ip :string, port :integer) :function
 --]]
 function core.recvfromed(func)
     static_funcs.RECVFROM = func
@@ -77,7 +77,7 @@ end
 --[[
 描述:socket sended
 参数：
-    func function(unptype :PACK_TYPE, fd :integer, size :integer) :function
+    func function(pktype :PACK_TYPE, fd :integer, size :integer) :function
 --]]
 function core.sended(func)
     static_funcs.SEND = func
@@ -85,7 +85,7 @@ end
 --[[
 描述:socket close
 参数：
-    func function(unptype :PACK_TYPE, fd :integer) :function
+    func function(pktype :PACK_TYPE, fd :integer) :function
 --]]
 function core.closed(func)
     static_funcs.CLOSE = func
@@ -357,20 +357,20 @@ end
 参数：
     ip ip :string
     port 端口 :integer
-    unptype :PACK_TYPE
+    pktype :PACK_TYPE
     ssl nil不启用ssl :evssl_ctx
     sendev 是否触发发送事件 :boolean
 返回:
     socket :integer 
     INVALID_SOCK失败
 --]]
-function core.connect(ip, port, unptype, ssl, sendev)
+function core.connect(ip, port, pktype, ssl, sendev)
     local send = 0
     if nil ~= sendev and sendev then
         send = 1
     end
     local sess = core.session()
-    local sock = srey.connect(core.self(), unptype or PACK_TYPE.NONE, sess, ssl, ip, port, send)
+    local sock = srey.connect(core.self(), pktype or PACK_TYPE.NONE, sess, ssl, ip, port, send)
     if INVALID_SOCK == sock then
         return INVALID_SOCK
     end
@@ -464,7 +464,7 @@ local function dispatch_timeout(sess)
         end
         return
     end
-    --core.connect(ip, port, unptype, ssl, sendev)
+    --core.connect(ip, port, pktype, ssl, sendev)
     param = connect_timeout[sess]--{sock = sock, ip = ip, port = port}
     if nil ~= param then
         connect_timeout[sess] = nil
@@ -607,40 +607,17 @@ local function http_version(ver)
     end
     return string.sub(ver, pos + 1, #ver)
 end
-local function http_status(data)
-    local method = srey.http_method(data)
-    if nil == method then
-        return nil
-    end
-    local tmp = {}
-    local pos1 = string.find(method, " ")
-    table.insert(tmp, string.sub(method, 1, pos1 - 1))
-    local pos2 = string.find(method, " ", pos1 + 1)
-    table.insert(tmp, string.sub(method, pos1 + 1, pos2 - 1))
-    table.insert(tmp, string.sub(method, pos2 + 1))
-    local rtn = {}
-    if nil == string.find(string.lower(tmp[1]), "http") then
-        rtn.method = tmp[1]
-        rtn.url = tmp[2]
-        rtn.ver = http_version(tmp[3])
-    else
-        rtn.ver = http_version(tmp[1])
-        rtn.code = tmp[2]
-        rtn.reason = tmp[3]
-    end
-    return rtn
-end
 function core.http_chunked(data)
     return srey.http_chunked(data)
 end
 function core.http_head(data)
-    local head = {}
-    head.status = http_status(data)
-    head.head = srey.http_headers(data)
-    return head
+    return srey.http_headers(data)
 end
 function core.http_data(data)
     return srey.http_data(data)
+end
+function core.http_copydata(data)
+    return srey.http_copydata(data)
 end
 local function synsock_resume(fd, coinfo, result, ...)
     synsock_coro[fd] = nil
@@ -668,7 +645,7 @@ local function dispatch_revc_http(fd, coinfo, data)
                 core.xpcall(coinfo.func, msg, lens)
             end
         else
-            local msg = srey.http_copydata(data)
+            local msg = core.http_copydata(data)
             if nil == msg then
                 over = true
                 table.insert(coinfo.chunked.data, {"", 0})
@@ -688,63 +665,63 @@ local function dispatch_revc_http(fd, coinfo, data)
         synsock_resume(fd, coinfo, true, hinfo)
     end
 end
-local function dispatch_revc(fd, unptype, data, size)
+local function dispatch_revc(fd, pktype, data, size)
     local coinfo = synsock_coro[fd]
     if nil ~= coinfo then
-        if PACK_TYPE.HTTP == unptype then
+        if PACK_TYPE.HTTP == pktype then
             dispatch_revc_http(fd, coinfo, data)
         else
             synsock_resume(fd, coinfo, true, data, size)
         end
     else
-        if PACK_TYPE.RPC == unptype then
+        if PACK_TYPE.RPC == pktype then
             dispatch_netrpc(fd, data, size)
         else
-            resume_normal(static_funcs.RECV, unptype, fd, data, size)
+            resume_normal(static_funcs.RECV, pktype, fd, data, size)
         end
     end
 end
 --消息处理
-function dispatch_message(msgtype, unptype, err, fd, src, data, size, sess, addr)
-    if MSG_TYPE.STARTED == msgtype then
+function dispatch_message(msg)
+    if MSG_TYPE.STARTED == msg.msgtype then
         collectgarbage("generational")
         math.randomseed(os.time())
         resume_normal(static_funcs.STARTED)
-    elseif MSG_TYPE.CLOSING == msgtype then
+    elseif MSG_TYPE.CLOSING == msg.msgtype then
         resume_normal(static_funcs.CLOSING)
         core.sysinfo()
-    elseif MSG_TYPE.TIMEOUT == msgtype then
-        dispatch_timeout(sess)
-    elseif MSG_TYPE.ACCEPT == msgtype then
-        resume_normal(static_funcs.ACCEPT, unptype, fd)
-    elseif MSG_TYPE.CONNECT == msgtype then
-        local co = sess_coro[sess]
+    elseif MSG_TYPE.TIMEOUT == msg.msgtype then
+        dispatch_timeout(msg.sess)
+    elseif MSG_TYPE.ACCEPT == msg.msgtype then
+        resume_normal(static_funcs.ACCEPT, msg.pktype, msg.fd)
+    elseif MSG_TYPE.CONNECT == msg.msgtype then
+        local co = sess_coro[msg.sess]
         if nil ~= co then
-            sess_coro[sess] = nil
-            connect_timeout[sess] = nil
+            sess_coro[msg.sess] = nil
+            connect_timeout[msg.sess] = nil
             cur_coro = co
-            coroutine.resume(cur_coro, unptype, fd, err)
+            coroutine.resume(cur_coro, msg.pktype, msg.fd, msg.err)
         else
-            log.WARN("not find connect session, maybe timeout.session: %d.", sess)
+            log.WARN("not find connect session, maybe timeout.session: %d.", msg.sess)
         end
-    elseif MSG_TYPE.RECV == msgtype then
-        dispatch_revc(fd, unptype, data, size)
-    elseif MSG_TYPE.SEND == msgtype then
-        resume_normal(static_funcs.SEND, unptype, fd, size)
-    elseif MSG_TYPE.CLOSE == msgtype then
-        local info = synsock_coro[fd]
+    elseif MSG_TYPE.RECV == msg.msgtype then
+        dispatch_revc(msg.fd, msg.pktype, msg.data, msg.size)
+    elseif MSG_TYPE.SEND == msg.msgtype then
+        resume_normal(static_funcs.SEND, msg.pktype, msg.fd, msg.size)
+    elseif MSG_TYPE.CLOSE == msg.msgtype then
+        local info = synsock_coro[msg.fd]
         if nil ~= info then
-            synsock_resume(fd, info, false)
+            synsock_resume(msg.fd, info, false)
         end
-        if PACK_TYPE.RPC == unptype then
-            request_sock_closed(fd)
+        if PACK_TYPE.RPC == msg.pktype then
+            request_sock_closed(msg.fd)
         end
-        resume_normal(static_funcs.CLOSE, unptype, fd)
-    elseif MSG_TYPE.RECVFROM == msgtype then
-        local ip, port = core.ipport(addr)
-        resume_normal(static_funcs.RECVFROM, unptype, fd, data, size, ip, port)
-    elseif MSG_TYPE.USER == msgtype then
-        dispatch_user(src, data, size, sess)
+        resume_normal(static_funcs.CLOSE, msg.pktype, msg.fd)
+    elseif MSG_TYPE.RECVFROM == msg.msgtype then
+        local ip, port = core.ipport(msg.addr)
+        resume_normal(static_funcs.RECVFROM, msg.pktype, msg.fd, msg.data, msg.size, ip, port)
+    elseif MSG_TYPE.USER == msg.msgtype then
+        dispatch_user(msg.src, msg.data, msg.size, msg.sess)
     end
 end
 

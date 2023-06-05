@@ -9,12 +9,7 @@
 #include "structs.h"
 
 struct evssl_ctx;
-typedef struct bufs_ctx {
-    void *data;
-    size_t len;
-    size_t offset;
-}bufs_ctx;
-QUEUE_DECL(bufs_ctx, qu_bufs);
+QUEUE_DECL(off_buf_ctx, qu_off_buf);
 QUEUE_DECL(struct listener_ctx *, qu_lsn);
 typedef struct ev_ctx {
     uint32_t nthreads;
@@ -50,14 +45,14 @@ typedef struct cbs_ctx {
 #define GET_POS(hs, n) ((hs) % (n))
 
 //¹«¹²º¯Êý
-void _bufs_clear(qu_bufs *bufs);
+void _bufs_clear(qu_off_buf *bufs);
 int32_t _set_sockops(SOCKET fd);
 //SOCK_DGRAM  SOCK_STREAM  AF_INET  AF_INET6
 SOCKET _create_sock(int32_t type, int32_t family);
 SOCKET _listen(netaddr_ctx *addr);
 SOCKET _udp(netaddr_ctx *addr);
 int32_t _sock_read(SOCKET fd, IOV_TYPE *iov, uint32_t niov, void *arg, size_t *readed);
-int32_t _sock_send(SOCKET fd, qu_bufs *buf_s, size_t *nsend, void *arg);
+int32_t _sock_send(SOCKET fd, qu_off_buf *buf_s, size_t *nsend, void *arg);
 void _set_ud_typstat_cmd(char *typsta, int8_t pktype, int8_t status);
 void _set_ud_typstat(char *typsta, ud_cxt *ud);
 

@@ -37,19 +37,15 @@ typedef struct websock_pack_ctx {
 }websock_pack_ctx;
 
 static inline int32_t _websock_handshake_clientckstatus(void *pack) {
-    size_t slens;
     size_t klens = strlen(RSP_CODE);
-    char *status = http_status(pack, &slens, 2);
-    if (NULL == status
-        || slens < klens
-        || 0 != memcmp(status, RSP_CODE, klens)) {
+    buf_ctx *status = http_status(pack);
+    if (status[1].lens < klens
+        || 0 != memcmp(status[1].data, RSP_CODE, klens)) {
         return ERR_FAILED;
     }
     klens = strlen(RSP_REASON);
-    status = http_status(pack, &slens, 3);
-    if (NULL == status
-        || slens < klens
-        || 0 != _memicmp(status, RSP_REASON, klens)) {
+    if (status[2].lens < klens
+        || 0 != _memicmp(status[2].data, RSP_REASON, klens)) {
         return ERR_FAILED;
     }
     return ERR_OK;
@@ -64,7 +60,7 @@ static inline http_header_ctx *_websock_handshake_clientcheck(void *pack) {
     size_t cnt = http_nheader(pack);
     for (size_t i = 0; i < cnt; i++) {
         head = http_header_at(pack, i);
-        switch (tolower(*head->key)) {
+        switch (tolower(*((char*)head->key.data))) {
         case 'c':
             if (0 == conn
                 && ERR_OK == _http_check_keyval(head, "connection", "upgrade")) {
@@ -118,8 +114,8 @@ static inline void _websock_handshake_client(SOCKET fd, void *pack, ud_cxt *ud, 
     sha1(key, lens, sha1str);
     FREE(key);
     key = b64encode(sha1str, sizeof(sha1str), &lens);
-    if (lens != signstr->vlen
-        || 0 != memcmp(key, signstr->value, signstr->vlen)) {
+    if (lens != signstr->value.lens
+        || 0 != memcmp(key, signstr->value.data, signstr->value.lens)) {
         FREE(key);
         *closefd = 1;
         LOG_WARN("handshake failed, sign check error.");
@@ -130,12 +126,10 @@ static inline void _websock_handshake_client(SOCKET fd, void *pack, ud_cxt *ud, 
     ((push_connmsg)ud->hscb)(fd, ERR_OK, ud);
 }
 static inline http_header_ctx *_websock_handshake_svcheck(void *pack) {
-    size_t flens;
     size_t glens = strlen(REQ_METHOD);
-    const char *fdata = http_status(pack, &flens, 1);
-    if (NULL == fdata
-        || glens > flens
-        || 0 != _memicmp(fdata, REQ_METHOD, glens)) {
+    buf_ctx *status = http_status(pack);
+    if (glens > status[0].lens
+        || 0 != _memicmp(status[0].data, REQ_METHOD, glens)) {
         return NULL;
     }
     http_header_ctx *head;
@@ -144,7 +138,7 @@ static inline http_header_ctx *_websock_handshake_svcheck(void *pack) {
     size_t cnt = http_nheader(pack);
     for (size_t i = 0; i < cnt; i++) {
         head = http_header_at(pack, i);
-        switch (tolower(*head->key)) {
+        switch (tolower(*((char *)head->key.data))) {
         case 'c':
             if (0 == conn
                 && ERR_OK == _http_check_keyval(head, "connection", "upgrade")) {
@@ -196,10 +190,10 @@ static inline void _websock_handshake_server(ev_ctx *ev, SOCKET fd, void *pack, 
     }
     char *key;
     size_t klens = strlen(SIGNKEY);
-    size_t lens = klens + signstr->vlen;
+    size_t lens = klens + signstr->value.lens;
     MALLOC(key, lens);
-    memcpy(key, signstr->value, signstr->vlen);
-    memcpy(key + signstr->vlen, SIGNKEY, klens);
+    memcpy(key, signstr->value.data, signstr->value.lens);
+    memcpy(key + signstr->value.lens, SIGNKEY, klens);
     char sha1str[20];
     sha1(key, lens, sha1str);
     FREE(key);

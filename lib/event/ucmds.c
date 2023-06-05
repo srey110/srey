@@ -101,7 +101,7 @@ void _on_cmd_send(watcher_ctx *watcher, cmd_ctx *cmd) {
         FREE(cmd->data);
         return;
     }
-    bufs_ctx buf;
+    off_buf_ctx buf;
     buf.data = cmd->data;
     buf.len = cmd->len;
     buf.offset = 0;

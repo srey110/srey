@@ -43,7 +43,7 @@ typedef struct overlap_tcp_ctx {
 #endif
     IOV_TYPE wsabuf;
     buffer_ctx buf_r;
-    qu_bufs buf_s;
+    qu_off_buf buf_s;
     cbs_ctx cbs;
     ud_cxt ud;
 }overlap_tcp_ctx;
@@ -58,7 +58,7 @@ typedef struct overlap_udp_ctx {
     cbs_ctx cbs;
     IOV_TYPE wsabuf_s;
     IOV_TYPE wsabuf_r;
-    qu_bufs buf_s;
+    qu_off_buf buf_s;
     netaddr_ctx addr;
     ud_cxt ud;
     char buf[MAX_RECVFROM_SIZE];
@@ -93,7 +93,7 @@ sock_ctx *_new_sk(SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
     oltcp->cbs = *cbs;
     COPY_UD(oltcp->ud, ud);
     buffer_init(&oltcp->buf_r);
-    qu_bufs_init(&oltcp->buf_s, INIT_SENDBUF_LEN);
+    qu_off_buf_init(&oltcp->buf_s, INIT_SENDBUF_LEN);
     return &oltcp->ol_r;
 }
 void _free_sk(sock_ctx *skctx) {
@@ -104,7 +104,7 @@ void _free_sk(sock_ctx *skctx) {
     CLOSE_SOCK(oltcp->ol_r.fd);
     buffer_free(&oltcp->buf_r);
     _bufs_clear(&oltcp->buf_s);
-    qu_bufs_free(&oltcp->buf_s);
+    qu_off_buf_free(&oltcp->buf_s);
     if (NULL != oltcp->cbs.ud_free) {
         oltcp->cbs.ud_free(&oltcp->ud);
     }
@@ -345,7 +345,7 @@ static void _on_send_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
         oltcp->status = oltcp->status & ~STATUS_SENDING;
         return;
     }
-    if (0 == qu_bufs_size(&oltcp->buf_s)) {
+    if (0 == qu_off_buf_size(&oltcp->buf_s)) {
         oltcp->status = oltcp->status & ~STATUS_SENDING;
         return;
     }
@@ -354,9 +354,9 @@ static void _on_send_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
         oltcp->status = oltcp->status & ~STATUS_SENDING;
     }
 }
-void _add_bufs_trypost(sock_ctx *skctx, bufs_ctx *buf) {
+void _add_bufs_trypost(sock_ctx *skctx, off_buf_ctx *buf) {
     overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
-    qu_bufs_push(&oltcp->buf_s, buf);
+    qu_off_buf_push(&oltcp->buf_s, buf);
     if (!(oltcp->status & STATUS_SENDING)
         && !(oltcp->status & STATUS_ERROR)) {
         oltcp->status |= STATUS_SENDING;
@@ -668,7 +668,7 @@ static inline void _on_recvfrom_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD 
         _on_udp_close_r(watcher, oludp);
     }
 }
-static inline int32_t _post_sendto(overlap_udp_ctx *oludp, bufs_ctx *buf) {
+static inline int32_t _post_sendto(overlap_udp_ctx *oludp, off_buf_ctx *buf) {
     ZERO(&oludp->ol_s.overlapped, sizeof(oludp->ol_s.overlapped));
     oludp->bytes_s = 0;
     netaddr_ctx *addr = (netaddr_ctx *)buf->data;
@@ -702,24 +702,24 @@ static inline void _on_sendto_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD by
         }
         return;
     }
-    if (0 == qu_bufs_size(&oludp->buf_s)) {
+    if (0 == qu_off_buf_size(&oludp->buf_s)) {
         oludp->status = oludp->status & ~STATUS_SENDING;
         return;
     }
-    bufs_ctx *sendbuf = qu_bufs_pop(&oludp->buf_s);
+    off_buf_ctx *sendbuf = qu_off_buf_pop(&oludp->buf_s);
     if (ERR_OK != _post_sendto(oludp, sendbuf)) {
         FREE(sendbuf->data);
         oludp->status |= STATUS_ERROR;
         oludp->status = oludp->status & ~STATUS_SENDING;
     }
 }
-void _add_bufs_trysendto(sock_ctx *skctx, bufs_ctx *buf) {
+void _add_bufs_trysendto(sock_ctx *skctx, off_buf_ctx *buf) {
     overlap_udp_ctx *oludp = UPCAST(skctx, overlap_udp_ctx, ol_r);
-    qu_bufs_push(&oludp->buf_s, buf);
+    qu_off_buf_push(&oludp->buf_s, buf);
     if (!(oludp->status & STATUS_SENDING)
         && !(oludp->status & STATUS_ERROR)) {
         oludp->status |= STATUS_SENDING;
-        bufs_ctx *sendbuf = qu_bufs_pop(&oludp->buf_s);
+        off_buf_ctx *sendbuf = qu_off_buf_pop(&oludp->buf_s);
         if (ERR_OK != _post_sendto(oludp, sendbuf)) {
             FREE(sendbuf->data);
             oludp->status |= STATUS_ERROR;
@@ -743,14 +743,14 @@ static inline sock_ctx *_new_udp(netaddr_ctx *addr, SOCKET fd, cbs_ctx *cbs, ud_
     oludp->addrlen = netaddr_size(&oludp->addr);
     oludp->wsabuf_r.buf = oludp->buf;
     oludp->wsabuf_r.len = sizeof(oludp->buf);
-    qu_bufs_init(&oludp->buf_s, INIT_SENDBUF_LEN);
+    qu_off_buf_init(&oludp->buf_s, INIT_SENDBUF_LEN);
     return &oludp->ol_r;
 }
 void _free_udp(sock_ctx *skctx) {
     overlap_udp_ctx *oludp = UPCAST(skctx, overlap_udp_ctx, ol_r);
     CLOSE_SOCK(oludp->ol_r.fd);
     _bufs_clear(&oludp->buf_s);
-    qu_bufs_free(&oludp->buf_s);
+    qu_off_buf_free(&oludp->buf_s);
     if (NULL != oludp->cbs.ud_free) {
         oludp->cbs.ud_free(&oludp->ud);
     }

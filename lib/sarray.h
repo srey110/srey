@@ -1,7 +1,7 @@
 #ifndef SARRAY_H_
 #define SARRAY_H_
 
-#include "macro.h"
+#include "structs.h"
 
 #define ARRAY_INIT_SIZE      16
 
@@ -115,10 +115,6 @@ static inline void atype##_swap(atype *p, size_t pos1, size_t pos2) {\
 };\
 
 ARRAY_DECL(void *, arr_void);
-typedef struct buf_ctx {
-    void *data;
-    size_t len;
-}buf_ctx;
 ARRAY_DECL(buf_ctx, arr_buf);
 
 #endif//SARRAY_H_

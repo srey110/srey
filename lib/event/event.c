@@ -2,12 +2,12 @@
 #include "netutils.h"
 #include "loger.h"
 
-void _bufs_clear(qu_bufs *bufs) {
-    bufs_ctx *buf;
-    while (NULL != (buf = qu_bufs_pop(bufs))) {
+void _bufs_clear(qu_off_buf *bufs) {
+    off_buf_ctx *buf;
+    while (NULL != (buf = qu_off_buf_pop(bufs))) {
         FREE(buf->data);
     }
-    qu_bufs_clear(bufs);
+    qu_off_buf_clear(bufs);
 }
 int32_t _set_sockops(SOCKET fd) {
     if (ERR_OK != sock_nodelay(fd)
@@ -140,15 +140,15 @@ int32_t _sock_read(SOCKET fd, IOV_TYPE *iov, uint32_t niov, void *arg, size_t *r
     return _sock_read_normal(fd, iov, niov, readed);
 #endif
 }
-static inline uint32_t _bufs_fill_iov(qu_bufs *buf_s, size_t bufsize, IOV_TYPE iov[MAX_SEND_NIOV]) {
+static inline uint32_t _bufs_fill_iov(qu_off_buf *buf_s, size_t bufsize, IOV_TYPE iov[MAX_SEND_NIOV]) {
     if (bufsize > MAX_SEND_NIOV) {
         bufsize = MAX_SEND_NIOV;
     }
-    bufs_ctx *buf;
+    off_buf_ctx *buf;
     size_t total = 0;
     uint32_t cnt = 0;
     for (size_t i = 0; i < bufsize; i++) {
-        buf = qu_bufs_at(buf_s, i);
+        buf = qu_off_buf_at(buf_s, i);
         iov[i].IOV_PTR_FIELD = ((char *)buf->data) + buf->offset;
         iov[i].IOV_LEN_FIELD = (IOV_LEN_TYPE)(buf->len - buf->offset);
         total += (size_t)iov[i].IOV_LEN_FIELD;
@@ -159,19 +159,19 @@ static inline uint32_t _bufs_fill_iov(qu_bufs *buf_s, size_t bufsize, IOV_TYPE i
     }
     return cnt;
 }
-static inline void _bufs_size_del(qu_bufs *buf_s, size_t len) {
+static inline void _bufs_size_del(qu_off_buf *buf_s, size_t len) {
     if (0 == len) {
         return;
     }
     size_t buflen;
-    bufs_ctx *buf;
+    off_buf_ctx *buf;
     while (len > 0) {
-        buf = qu_bufs_peek(buf_s);
+        buf = qu_off_buf_peek(buf_s);
         buflen = buf->len - buf->offset;
         if (len >= buflen) {
             FREE(buf->data);
             len -= buflen;
-            qu_bufs_pop(buf_s);
+            qu_off_buf_pop(buf_s);
         } else {
             buf->offset += len;
             len = 0;
@@ -208,12 +208,12 @@ static inline int32_t _sock_send_iov(SOCKET fd, IOV_TYPE *iov, uint32_t niov, si
     return ERR_OK;
 #endif
 }
-static inline int32_t _sock_send_normal(SOCKET fd, qu_bufs *buf_s, size_t *nsend) {
+static inline int32_t _sock_send_normal(SOCKET fd, qu_off_buf *buf_s, size_t *nsend) {
     int32_t rtn = ERR_OK;
     size_t size;
     uint32_t niov;
     IOV_TYPE iov[MAX_SEND_NIOV];
-    while (0 != (size = qu_bufs_size(buf_s))) {
+    while (0 != (size = qu_off_buf_size(buf_s))) {
         niov = _bufs_fill_iov(buf_s, size, iov);
         rtn = _sock_send_iov(fd, iov, niov, &size);
         if (ERR_OK == rtn) {
@@ -226,12 +226,12 @@ static inline int32_t _sock_send_normal(SOCKET fd, qu_bufs *buf_s, size_t *nsend
     return rtn;
 }
 #if WITH_SSL
-static inline int32_t _sock_send_ssl(SSL *ssl, qu_bufs *buf_s, size_t *nsend) {
+static inline int32_t _sock_send_ssl(SSL *ssl, qu_off_buf *buf_s, size_t *nsend) {
     int32_t rtn = ERR_OK;
     size_t sended;
-    bufs_ctx *buf;
+    off_buf_ctx *buf;
     for (;;) {
-        buf = qu_bufs_peek(buf_s);
+        buf = qu_off_buf_peek(buf_s);
         if (NULL == buf) {
             break;
         }
@@ -240,7 +240,7 @@ static inline int32_t _sock_send_ssl(SSL *ssl, qu_bufs *buf_s, size_t *nsend) {
             (*nsend) += sended;
             buf->offset += sended;
             if (buf->offset == buf->len) {
-                qu_bufs_pop(buf_s);
+                qu_off_buf_pop(buf_s);
                 FREE(buf->data);
                 continue;
             } else {
@@ -253,7 +253,7 @@ static inline int32_t _sock_send_ssl(SSL *ssl, qu_bufs *buf_s, size_t *nsend) {
     return rtn;
 }
 #endif
-int32_t _sock_send(SOCKET fd, qu_bufs *buf_s, size_t *nsend, void *arg) {
+int32_t _sock_send(SOCKET fd, qu_off_buf *buf_s, size_t *nsend, void *arg) {
     *nsend = 0;
 #if WITH_SSL
     if (NULL == arg) {

@@ -136,24 +136,39 @@ static inline void _ltask_run(task_ctx *task, message_ctx *msg) {
         return;
     }
     lua_rawgeti(ltask->lua, LUA_REGISTRYINDEX, ltask->ref);
+    lua_createtable(ltask->lua, 0, 9);
+    lua_pushstring(ltask->lua, "msgtype");
     lua_pushinteger(ltask->lua, msg->msgtype);
+    lua_settable(ltask->lua, -3);
+    lua_pushstring(ltask->lua, "pktype");
     lua_pushinteger(ltask->lua, msg->pktype);
+    lua_settable(ltask->lua, -3);
+    lua_pushstring(ltask->lua, "err");
     lua_pushinteger(ltask->lua, msg->error);
+    lua_settable(ltask->lua, -3);
+    lua_pushstring(ltask->lua, "fd");
     lua_pushinteger(ltask->lua, msg->fd);
-    if (NULL == msg->src) {
-        lua_pushnil(ltask->lua);
-    } else {
+    lua_settable(ltask->lua, -3);
+    if (NULL != msg->src) {
+        lua_pushstring(ltask->lua, "src");
         lua_pushlightuserdata(ltask->lua, msg->src);
+        lua_settable(ltask->lua, -3);
     }
-    if (NULL == msg->data) {
-        lua_pushnil(ltask->lua);
-    } else {
+    if (NULL != msg->data) {
+        lua_pushstring(ltask->lua, "data");
         lua_pushlightuserdata(ltask->lua, msg->data);
+        lua_settable(ltask->lua, -3);
     }
+    lua_pushstring(ltask->lua, "size");
     lua_pushinteger(ltask->lua, msg->size);
+    lua_settable(ltask->lua, -3);
+    lua_pushstring(ltask->lua, "sess");
     lua_pushinteger(ltask->lua, msg->session);
+    lua_settable(ltask->lua, -3);
+    lua_pushstring(ltask->lua, "addr");
     lua_pushlightuserdata(ltask->lua, &msg->addr);
-    if (LUA_OK != lua_pcall(ltask->lua, 9, 0, 0)) {
+    lua_settable(ltask->lua, -3);
+    if (LUA_OK != lua_pcall(ltask->lua, 1, 0, 0)) {
         LOG_ERROR("%s", lua_tostring(ltask->lua, 1));
     }
 }
@@ -459,15 +474,14 @@ static int32_t _ltask_b64decode(lua_State *lua) {
     FREE(b64);
     return 1;
 }
-static int32_t _ltask_http_method(lua_State *lua) {
-    void *pack = lua_touserdata(lua, 1);
-    size_t lens = 0;
-    const char *value = http_method(pack, &lens);
-    if (NULL == value) {
-        lua_pushnil(lua);
-    } else {
-        lua_pushlstring(lua, value, lens);
-    }
+static int32_t _ltask_urlencode(lua_State *lua) {
+    char *data;
+    size_t size;
+    size_t lens;
+    data = (char *)luaL_checklstring(lua, 1, &size);
+    char *encode = urlencode(data, size, &lens);
+    lua_pushlstring(lua, encode, lens);
+    FREE(encode);
     return 1;
 }
 static int32_t _ltask_http_chunked(lua_State *lua) {
@@ -498,29 +512,35 @@ static int32_t _ltask_http_copydata(lua_State *lua) {
     lua_pushlstring(lua, value, lens);
     return 1;
 }
-static int32_t _ltask_http_header(lua_State *lua) {
-    void *pack = lua_touserdata(lua, 1);
-    const char *key = luaL_checkstring(lua, 2);
-    size_t lens = 0;
-    const char *value = http_header(pack, key, &lens);
-    if (NULL == value) {
-        lua_pushnil(lua);
-    } else {
-        lua_pushlstring(lua, value, lens);
-    }
-    return 1;
-}
 static int32_t _ltask_http_headers(lua_State *lua) {
     void *pack = lua_touserdata(lua, 1);
-    size_t size = http_nheader(pack);
-    http_header_ctx *header;
-    lua_createtable(lua, 0, (int32_t)size);
-    for (size_t i = 0; i < size; i++) {
-        header = http_header_at(pack, i);
-        lua_pushlstring(lua, header->key, header->klen);
-        lua_pushlstring(lua, header->value, header->vlen);
+    if (2 == http_chunked(pack)) {
+        lua_pushnil(lua);
+        return 1;
+    }
+    lua_createtable(lua, 0, 2);
+    lua_pushlstring(lua, "status", strlen("status"));
+    lua_createtable(lua, 0, 3);
+    size_t i;
+    buf_ctx *buf = http_status(pack);
+    for (i = 0; i < 3; i++) {
+        lua_pushinteger(lua, i + 1);
+        lua_pushlstring(lua, buf[i].data, buf[i].lens);
         lua_settable(lua, -3);
     }
+    lua_settable(lua, -3);
+
+    lua_pushlstring(lua, "head", strlen("head"));
+    size_t size = http_nheader(pack);
+    lua_createtable(lua, 0, (int32_t)size);
+    http_header_ctx *header;
+    for (i = 0; i < size; i++) {
+        header = http_header_at(pack, i);
+        lua_pushlstring(lua, header->key.data, header->key.lens);
+        lua_pushlstring(lua, header->value.data, header->value.lens);
+        lua_settable(lua, -3);
+    }
+    lua_settable(lua, -3);
     return 1;
 }
 static int32_t _ltask_simple_data(lua_State *lua) {
@@ -665,12 +685,12 @@ LUAMOD_API int luaopen_srey(lua_State *lua) {
         { "sha1_b64encode", _ltask_sha1_b64encode },
         { "b64encode", _ltask_b64encode },
         { "b64decode", _ltask_b64decode },
+        { "urlencode", _ltask_urlencode },
 
-        { "http_method", _ltask_http_method },        
+       
         { "http_chunked", _ltask_http_chunked },
         { "http_data", _ltask_http_data },
         { "http_copydata", _ltask_http_copydata },
-        { "http_header", _ltask_http_header },
         { "http_headers", _ltask_http_headers },
 
         { "simple_data", _ltask_simple_data },

@@ -66,12 +66,12 @@ end
     nil 失败 
 --]]
 function http.get(fd, url, headers, ckfunc)
-    local fline = string.format("GET %s HTTP/1.1\r\n", url)
+    local fline = string.format("GET %s HTTP/1.1\r\n", srey.urlencode(url or "/"))
     return http_msg(false, fd, fline, headers, ckfunc)
 end
 --[[
 描述:post
-参数：
+参数:
     fd :integer
     url :string
     headers :table
@@ -80,20 +80,20 @@ end
     ...  info为function时的参数
 返回:
     table
-    nil 失败 
+    nil 错误
 --]]
 function http.post(fd, url, headers, ckfunc, info, ...)
-    local fline = string.format("POST %s HTTP/1.1\r\n", url)
+    local fline = string.format("POST %s HTTP/1.1\r\n", srey.urlencode(url or "/"))
     return http_msg(false, fd, fline, headers, ckfunc, info, ...)
 end
 --[[
 描述:response
-参数：
+参数:
     fd :integer
     code :integer
     headers :table
     info :string table function
-    ...  info为function时的参数
+    ...  info为function是的参数
 --]]
 function http.response(fd, code, headers, info, ...)
     local status = hstatus[code]
@@ -104,8 +104,8 @@ function http.response(fd, code, headers, info, ...)
     http_msg(true, fd, fline, headers, nil, info, ...)
 end
 --[[
-描述:http 升级websocket成功 返回
-参数：
+描述:http 服务器返回websocket握手信息
+参数:
     fd :integer
     sign :string
 --]]

@@ -71,10 +71,8 @@ local function websock_checkrsp(head)
     if not head or not head.head then
         return nil
     end
-    if not head.status or "101" ~= head.status.code then
-        return nil
-    end
-    if not head.status.reason or "switching protocols" ~= string.lower(head.status.reason) then
+    if not head.status or "101" ~= head.status[2]
+       or "switching protocols" ~= string.lower(head.status[3]) then
         return nil
     end
     local cnt = 0

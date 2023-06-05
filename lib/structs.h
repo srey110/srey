@@ -18,6 +18,15 @@ typedef struct ud_cxt {
     void *hscb;
     uint64_t session;
 }ud_cxt;
+typedef struct buf_ctx {
+    void *data;
+    size_t lens;
+}buf_ctx;
+typedef struct off_buf_ctx {
+    void *data;
+    size_t len;
+    size_t offset;
+}off_buf_ctx;
 
 #define COPY_UD(dst, src)\
 do {\

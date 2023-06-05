@@ -356,7 +356,7 @@ void test_http(CuTest* tc) {
     ud_cxt ud;
     ZERO(&ud, sizeof(ud));
     ud.pktype = PACK_HTTP;
-    const char *http1 = "POST  /users  HTTP/1.1\r\n  Host:   api.github.com\r\nContent-Length: 5\r\na: \r\n\r\n1";
+    const char *http1 = "POST /users HTTP/1.1\r\n  Host:   api.github.com\r\nContent-Length: 5\r\na: \r\n\r\n1";
     buffer_append(&buf, (void *)http1, strlen(http1));
     void *rtnbuf = http_unpack(&buf, &size, &ud, &closed);
     CuAssertTrue(tc, NULL == rtnbuf);
@@ -366,19 +366,19 @@ void test_http(CuTest* tc) {
     CuAssertTrue(tc, NULL != rtnbuf);
     protos_pkfree(PACK_HTTP, rtnbuf);
 
-    const char *http3 = "POST  /users  HTTP/1.1\r\nHost: api.github.com\r\nContent-Length: 5\r\n\r\n12345";
+    const char *http3 = "POST /users HTTP/1.1\r\nHost: api.github.com\r\nContent-Length: 5\r\n\r\n12345";
     buffer_append(&buf, (void *)http3, strlen(http3));
     rtnbuf = http_unpack(&buf, &size, &ud, &closed);
     CuAssertTrue(tc, NULL != rtnbuf);
     protos_pkfree(PACK_HTTP, rtnbuf);
 
-    const char *http4 = "POST  /users  HTTP/1.1\r\nHost: api.github.com\r\n\r\n";
+    const char *http4 = "POST /users HTTP/1.1\r\nHost: api.github.com\r\n\r\n";
     buffer_append(&buf, (void *)http4, strlen(http4));
     rtnbuf = http_unpack(&buf, &size, &ud, &closed);
     CuAssertTrue(tc, NULL != rtnbuf);
     protos_pkfree(PACK_HTTP, rtnbuf);
 
-    const char *http5 = "POST  /users  HTTP/1.1\r\nHost: api.github.com\r\nTransfer-Encoding: chunked\r\n\r\n7\r\nMozilla\r\n11\r\nDeveloper N\r\n0\r\n\r\n";
+    const char *http5 = "POST /users HTTP/1.1\r\nHost: api.github.com\r\nTransfer-Encoding: chunked\r\n\r\n7\r\nMozilla\r\n11\r\nDeveloper N\r\n0\r\n\r\n";
     buffer_append(&buf, (void *)http5, strlen(http5));
     rtnbuf = http_unpack(&buf, &size, &ud, &closed);
     CuAssertTrue(tc, NULL != rtnbuf);
