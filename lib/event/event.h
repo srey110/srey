@@ -15,7 +15,7 @@ void ev_send(ev_ctx *ctx, SOCKET fd, void *data, size_t len, int32_t copy);
 void ev_sendto(ev_ctx *ctx, SOCKET fd, const char *host, const uint16_t port, void *data, size_t len);
 void ev_close(ev_ctx *ctx, SOCKET fd);
 
-void ev_setud_pktype(ev_ctx *ctx, SOCKET fd, uint8_t pktype);
+void ev_setud_typstat(ev_ctx *ctx, SOCKET fd, int8_t pktype, int8_t status);
 void ev_setud_data(ev_ctx *ctx, SOCKET fd, void *data);
 
 #endif//EVENT_H_

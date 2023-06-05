@@ -264,3 +264,21 @@ int32_t _sock_send(SOCKET fd, qu_bufs *buf_s, size_t *nsend, void *arg) {
     return _sock_send_normal(fd, buf_s, nsend);
 #endif
 }
+void _set_ud_typstat_cmd(char *typsta, int8_t pktype, int8_t status) {
+    if (-1 != pktype) {
+        typsta[0] |= 1;
+        typsta[1] = pktype;
+    }
+    if (-1 != status) {
+        typsta[0] |= 2;
+        typsta[2] = status;
+    }
+}
+void _set_ud_typstat(char *typsta, ud_cxt *ud) {
+    if (typsta[0] & 1) {
+        ud->pktype = (uint8_t)typsta[1];
+    }
+    if (typsta[0] & 2) {
+        ud->status = (uint8_t)typsta[2];
+    }
+}

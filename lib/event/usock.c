@@ -118,11 +118,11 @@ void _set_udp_error(watcher_ctx *watcher, sock_ctx *skctx) {
     UPCAST(skctx, udp_ctx, sock)->status |= STATUS_ERROR;
     _add_event(watcher, skctx->fd, &skctx->events, EVENT_WRITE, skctx);
 }
-void _setud_pktype(sock_ctx *skctx, uint8_t pktype) {
+void _setud_typstat(sock_ctx *skctx, char *typsta) {
     if (SOCK_STREAM == skctx->type) {
-        UPCAST(skctx, tcp_ctx, sock)->ud.pktype = pktype;
+        _set_ud_typstat(typsta, &(UPCAST(skctx, tcp_ctx, sock)->ud));
     } else {
-        UPCAST(skctx, udp_ctx, sock)->ud.pktype = pktype;
+        _set_ud_typstat(typsta, &(UPCAST(skctx, udp_ctx, sock)->ud));
     }
 }
 void _setud_data(sock_ctx *skctx, void *data) {

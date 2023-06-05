@@ -115,5 +115,10 @@ static inline void atype##_swap(atype *p, size_t pos1, size_t pos2) {\
 };\
 
 ARRAY_DECL(void *, arr_void);
+typedef struct buf_ctx {
+    void *data;
+    size_t len;
+}buf_ctx;
+ARRAY_DECL(buf_ctx, arr_buf);
 
 #endif//SARRAY_H_

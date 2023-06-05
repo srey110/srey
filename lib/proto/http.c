@@ -10,11 +10,15 @@ typedef enum parse_status{
 }parse_status;
 ARRAY_DECL(http_header_ctx, arr_header);
 typedef struct http_pack_ctx {
-    char *first;
+    int32_t chunked;
+    char *status1;
+    char *status2;
+    char *status3;
     char *hdata;
     char *data;
-    int32_t chunked;
-    size_t flens;
+    size_t slens1;
+    size_t slens2;
+    size_t slens3;
     size_t hlens;
     size_t lens;
     arr_header header;
@@ -27,35 +31,33 @@ typedef struct http_pack_ctx {
 #define FLAG_CHUNKED "transfer-encoding"
 #define CHUNKED_KEY "chunked"
 
-static inline char *_skip_empty(http_pack_ctx *pack, char *head) {
-    while (' ' == *head
-        && (size_t)(head - pack->hdata) < pack->hlens) {
-        head++;
+int32_t _http_check_keyval(http_header_ctx *head, const char *key, const char *val) {
+    size_t lens = strlen(key);
+    if (head->klen < lens
+        || 0 != _memicmp(head->key, key, lens)) {
+        return ERR_FAILED;
     }
-    return head;
+    if (NULL == val) {
+        return ERR_OK;
+    }
+    if (NULL != memstr(1, head->value, head->vlen, val, strlen(val))) {
+        return ERR_OK;
+    }
+    return ERR_FAILED;
 }
 static inline void _check_fileld(http_pack_ctx *pack, http_header_ctx *field, int32_t *status) {
-    size_t lens;
     switch (tolower(*(field->key))) {
     case 'c':
-        lens = strlen(FLAG_CONTENT);
-        if (field->klen >= lens
-            && 0 == _memicmp(field->key, FLAG_CONTENT, lens)) {
+        if (ERR_OK == _http_check_keyval(field, FLAG_CONTENT, NULL)) {
             *status = CONTENT;
             pack->lens = atoi(field->value);
         }
         break;
-    case 't'://0 == _memicmp(field->value, CHUNKED_KEY, strlen(CHUNKED_KEY)
-        lens = strlen(FLAG_CHUNKED);
-        if (field->klen >= lens
-            && 0 == _memicmp(field->key, FLAG_CHUNKED, lens)) {
-            lens = strlen(CHUNKED_KEY);
-            if (field->vlen >= lens
-                && 0 == _memicmp(field->value, CHUNKED_KEY, lens)) {
-                *status = CHUNKED;
-                pack->lens = 0;
-                pack->chunked = 1;
-            }
+    case 't':
+        if (ERR_OK == _http_check_keyval(field, FLAG_CHUNKED, CHUNKED_KEY)){
+            *status = CHUNKED;
+            pack->lens = 0;
+            pack->chunked = 1;
         }
         break;
     default:
@@ -66,24 +68,27 @@ static inline int32_t _http_parse_head(http_pack_ctx *pack, int32_t *status) {
     //至少有一个\r\n\r\n
     char *head = pack->hdata;
     size_t flens = strlen(FLAG_CRLF);
-    head = _skip_empty(pack, head);
-    char *pos = strstr(head, FLAG_CRLF);
-    pack->first = head;
-    pack->flens = pos - head;
-    if (pack->flens < 6) {
+    head = skipempty(head, pack->hlens);
+    if (NULL == head) {
         return ERR_FAILED;
     }
+    char *pos = memstr(0, head, pack->hlens - (head - pack->hdata), FLAG_CRLF, flens);
+    if (NULL == pos) {
+        return ERR_FAILED;
+    }
+    pack->first = head;
+    pack->flens = pos - head;
+
     head = pos + flens;
     size_t least = 2 * flens + 1;//\r\n\r\n + :
     http_header_ctx field;
     while ((size_t)(head + least - pack->hdata) <= pack->hlens) {
-        head = _skip_empty(pack, head);
-        if ((size_t)(head + least - pack->hdata) > pack->hlens) {
-            break;
+        head = skipempty(head, pack->hlens - (head - pack->hdata));
+        if (NULL == head) {
+            return ERR_FAILED;
         }
-        pos = strstr(head, ":");
-        if (NULL == pos
-            || (size_t)(pos + least - pack->hdata) > pack->hlens) {
+        pos = memstr(0, head, pack->hlens - (head - pack->hdata), ":", 1);
+        if (NULL == pos) {
             return ERR_FAILED;
         }
         field.key = head;
@@ -92,13 +97,12 @@ static inline int32_t _http_parse_head(http_pack_ctx *pack, int32_t *status) {
             return ERR_FAILED;
         }
         head = pos + 1;
-        head = _skip_empty(pack, head);
-        if ((size_t)(head + least - 1 - pack->hdata) > pack->hlens) {
+        head = skipempty(head, pack->hlens - (head - pack->hdata));
+        if (NULL == head) {
             return ERR_FAILED;
         }
-        pos = strstr(head, FLAG_CRLF);
-        if (NULL == pos
-            || (size_t)(pos + least - 1 - pack->hdata) > pack->hlens) {
+        pos = memstr(0, head, pack->hlens - (head - pack->hdata), FLAG_CRLF, flens);
+        if (NULL == pos) {
             return ERR_FAILED;
         }
         field.value = head;
@@ -271,13 +275,27 @@ void *http_unpack(buffer_ctx *buf, size_t *size, ud_cxt *ud, int32_t *closefd) {
     }
     return data;
 }
-const char *http_method(void *data, size_t *lens) {
+char *http_status(void *data, size_t *lens, int32_t index) {
+    *lens = 0;
+    char *status = NULL;
     http_pack_ctx *pack = data;
-    if (NULL == pack->hdata) {
-        return NULL;
+    switch (index) {
+    case 1:
+        status = pack->status1;
+        *lens = pack->slens1;
+        break;
+    case 2:
+        status = pack->status2;
+        *lens = pack->slens2;
+        break;
+    case 3:
+        status = pack->status3;
+        *lens = pack->slens3;
+        break;
+    default:
+        break;
     }
-    *lens = pack->flens;
-    return pack->first;
+    return status;
 }
 size_t http_nheader(void *data) {
     return arr_header_size(&((http_pack_ctx *)data)->header);
@@ -285,7 +303,7 @@ size_t http_nheader(void *data) {
 http_header_ctx *http_header_at(void *data, size_t pos) {
     return arr_header_at(&((http_pack_ctx *)data)->header, pos);
 }
-const char *http_header(void *data, const char *header, size_t *lens) {
+char *http_header(void *data, const char *header, size_t *lens) {
     http_pack_ctx *pack = data;
     if (NULL == pack->hdata) {
         return NULL;

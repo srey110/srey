@@ -151,22 +151,65 @@ void test_system(CuTest* tc) {
         PRINT("big endian");
     }  else  {
         PRINT("little ndian");
-    }
-    
+    }    
     PRINT("procscnt: %d", procscnt());
-
     char path[PATH_LENS] = {0};
     CuAssertTrue(tc, ERR_OK == procpath(path));
     PRINT("procpath: %s", path);
     CuAssertTrue(tc, ERR_OK == isdir(path));
     CuAssertTrue(tc, ERR_OK != isfile(path));
-    /*char newpath[PATH_LENS] = { 0 };
-    SNPRINTF(newpath, sizeof(newpath), "%s%s%s", path, PATH_SEPARATORSTR, "My Love.mp3");
-    CuAssertTrue(tc, ERR_OK == isfile(newpath));
-    CuAssertTrue(tc, ERR_OK != isdir(newpath));
-    int64_t fsize = filesize(newpath);
-    PRINT("%s filesize: %"PRIu64"", newpath, fsize);
-    CuAssertTrue(tc, 12436500 == fsize);*/
+
+    const char * skp1 = "     ";
+    char *pos = skipempty(skp1, strlen(skp1));
+    CuAssertTrue(tc, NULL == pos);
+    const char * skp2 = "    1 ";
+    pos = skipempty(skp2, strlen(skp2));
+    CuAssertTrue(tc, skp2 + 4 == pos);
+    const char * skp3 = "1    1 ";
+    pos = skipempty(skp3, strlen(skp3));
+    CuAssertTrue(tc, skp3 == pos);
+    
+    const char *ptr1 = "this is test";
+    pos = memstr(0, ptr1, strlen(ptr1), "this", strlen("this"));
+    CuAssertTrue(tc, pos == ptr1);
+    pos = memstr(0, ptr1, strlen(ptr1), "tE", strlen("tE"));
+    CuAssertTrue(tc, pos == NULL);
+    pos = memstr(0, ptr1, strlen(ptr1), "te", strlen("te"));
+    CuAssertTrue(tc, pos == ptr1 + 8);
+    pos = memstr(0, ptr1, strlen(ptr1), "test", strlen("test"));
+    CuAssertTrue(tc, pos == ptr1 + 8);
+    pos = memstr(0, ptr1, strlen(ptr1), "test1", strlen("test1"));
+    CuAssertTrue(tc, pos == NULL);
+    pos = memstr(1, ptr1, strlen(ptr1), "thIs", strlen("thIs"));
+    CuAssertTrue(tc, pos == ptr1);
+    pos = memstr(1, ptr1, strlen(ptr1), "tE", strlen("tE"));
+    CuAssertTrue(tc, pos == ptr1 + 8);
+    pos = memstr(1, ptr1, strlen(ptr1), "teSt", strlen("teSt"));
+    CuAssertTrue(tc, pos == ptr1 + 8);
+    pos = memstr(1, ptr1, strlen(ptr1), "test1", strlen("test1"));
+    CuAssertTrue(tc, pos == NULL);
+
+    ud_cxt udd;
+    ZERO(&udd, sizeof(udd));
+    size_t setbuf = 0;
+    _set_ud_typstat_cmd((char *)&setbuf, 1, -1);
+    _set_ud_typstat((char *)&setbuf, &udd);
+    CuAssertTrue(tc, 1 == udd.pktype && 0 == udd.status);
+    ZERO(&udd, sizeof(udd));
+    setbuf = 0;
+    _set_ud_typstat_cmd((char *)&setbuf, -1, 2);
+    _set_ud_typstat((char *)&setbuf, &udd);
+    CuAssertTrue(tc, 0 == udd.pktype && 2 == udd.status);
+    ZERO(&udd, sizeof(udd));
+    setbuf = 0;
+    _set_ud_typstat_cmd((char *)&setbuf, 1, 2);
+    _set_ud_typstat((char *)&setbuf, &udd);
+    CuAssertTrue(tc, 1 == udd.pktype && 2 == udd.status);
+    ZERO(&udd, sizeof(udd));
+    setbuf = 0;
+    _set_ud_typstat_cmd((char *)&setbuf, -1, -1);
+    _set_ud_typstat((char *)&setbuf, &udd);
+    CuAssertTrue(tc, 0 == udd.pktype && 0 == udd.status);
 
     struct timeval tv;
     timeofday(&tv);
@@ -275,6 +318,16 @@ void test_buffer(CuTest* tc) {
     CuAssertTrue(tc, ERR_FAILED == buffer_search(&buf, 1, 0, 12, "Who", strlen("Who")));
     CuAssertTrue(tc, ERR_FAILED == buffer_search(&buf, 1, 0, 14, "Who", strlen("Who")));
     CuAssertTrue(tc, 13 == buffer_search(&buf, 1, 0, 15, "Who", strlen("Who")));
+
+    CuAssertTrue(tc, ERR_FAILED == buffer_search(&buf, 0, 12, 13, "t.w", strlen("t.w")));
+    CuAssertTrue(tc, ERR_FAILED == buffer_search(&buf, 0, 0, 12, "t.w", strlen("t.w")));
+    CuAssertTrue(tc, ERR_FAILED == buffer_search(&buf, 0, 0, 13, "t.W", strlen("t.W")));
+    CuAssertTrue(tc, 11 == buffer_search(&buf, 0, 0, 13, "t.w", strlen("t.w")));
+
+    CuAssertTrue(tc, ERR_FAILED == buffer_search(&buf, 0, 0, 12, "who", strlen("who")));
+    CuAssertTrue(tc, ERR_FAILED == buffer_search(&buf, 0, 0, 14, "who", strlen("who")));
+    CuAssertTrue(tc, ERR_FAILED == buffer_search(&buf, 0, 0, 15, "Who", strlen("Who")));
+    CuAssertTrue(tc, 13 == buffer_search(&buf, 0, 0, 15, "who", strlen("who")));
 
     CuAssertTrue(tc, strlen(str1) + strlen(str2) == buffer_size(&buf));
     char out[ONEK] = { 0 };

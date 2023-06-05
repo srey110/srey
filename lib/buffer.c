@@ -35,18 +35,18 @@ static bufnode_ctx *_node_new(const size_t size) {
     return node;
 }
 //通过调整是否足够
-static int32_t _should_realign(bufnode_ctx *node, const size_t len) {
+static inline int32_t _should_realign(bufnode_ctx *node, const size_t len) {
     return node->buffer_len - node->off >= len &&
         (node->off < node->buffer_len / 2) &&
         (node->off <= MAX_REALIGN_IN_EXPAND);
 }
 //调整
-static void _align(bufnode_ctx *node) {
+static inline void _align(bufnode_ctx *node) {
     memmove(node->buffer, node->buffer + node->misalign, node->off);
     node->misalign = 0;
 }
 //释放pnode及后面节点
-static void _free_all_node(bufnode_ctx *node) {
+static inline void _free_all_node(bufnode_ctx *node) {
     bufnode_ctx *pnext;
     for (; NULL != node; node = pnext) {
         pnext = node->next;
@@ -54,7 +54,7 @@ static void _free_all_node(bufnode_ctx *node) {
     }
 }
 //pnode 及后面节点是否为空
-static int32_t _node_all_empty(bufnode_ctx *node) {
+static inline int32_t _node_all_empty(bufnode_ctx *node) {
     for (; NULL != node; node = node->next) {
         if (0 != node->off) {
             return 0;
@@ -77,7 +77,7 @@ static bufnode_ctx **_free_trailing_empty_node(buffer_ctx *ctx) {
     return node;
 }
 //插入,会清理空节点
-static void _node_insert(buffer_ctx *ctx, bufnode_ctx *node) {
+static inline void _node_insert(buffer_ctx *ctx, bufnode_ctx *node) {
     if (NULL == *ctx->tail_with_data) {
         ASSERTAB(ctx->tail_with_data == &ctx->head, "tail_with_data not equ head.");
         ASSERTAB(ctx->head == NULL, "head not NULL.");
@@ -93,12 +93,12 @@ static void _node_insert(buffer_ctx *ctx, bufnode_ctx *node) {
     ctx->total_len += node->off;
 }
 //新建节点并插入
-static bufnode_ctx *_node_insert_new(buffer_ctx *ctx, const size_t len) {
+static inline bufnode_ctx *_node_insert_new(buffer_ctx *ctx, const size_t len) {
     bufnode_ctx *pnode = _node_new(len);
     _node_insert(ctx, pnode);
     return pnode;
 }
-static void _last_with_data(buffer_ctx *ctx) {
+static inline void _last_with_data(buffer_ctx *ctx) {
     bufnode_ctx **node = ctx->tail_with_data;
     if (NULL == *node) {
         return;
@@ -111,7 +111,7 @@ static void _last_with_data(buffer_ctx *ctx) {
     }
 }
 //扩展空间，保证连续内存 used 外部设定
-static bufnode_ctx *_buffer_expand_single(buffer_ctx *ctx, const size_t len) {
+static inline bufnode_ctx *_buffer_expand_single(buffer_ctx *ctx, const size_t len) {
     bufnode_ctx *node, **last;
     last = ctx->tail_with_data;
     //最后一个有数据的节点满的
@@ -158,7 +158,7 @@ static bufnode_ctx *_buffer_expand_single(buffer_ctx *ctx, const size_t len) {
     FREE(node);
     return tmp;
 }
-static uint32_t _buffer_expand(buffer_ctx *ctx, const size_t len, IOV_TYPE *iov, const uint32_t cnt) {
+static inline uint32_t _buffer_expand(buffer_ctx *ctx, const size_t len, IOV_TYPE *iov, const uint32_t cnt) {
     bufnode_ctx *tmp, *next, *node = ctx->tail;
     size_t avail, remain, used, space;
     uint32_t index = 0;
@@ -238,7 +238,7 @@ static uint32_t _buffer_expand(buffer_ctx *ctx, const size_t len, IOV_TYPE *iov,
     return index;
 }
 //cnt _buffer_expand_iov 返回数量
-static size_t _buffer_commit_expand(buffer_ctx *ctx, size_t len, IOV_TYPE *iov, const uint32_t cnt) {
+static inline size_t _buffer_commit_expand(buffer_ctx *ctx, size_t len, IOV_TYPE *iov, const uint32_t cnt) {
     if (0 == cnt) {
         return 0;
     }
@@ -355,7 +355,7 @@ int32_t buffer_appendv(buffer_ctx *ctx, const char *fmt, ...) {
     va_end(va);
     return ERR_OK;
 }
-static bufnode_ctx *_search_start(bufnode_ctx *node, size_t start, size_t *totaloff) {
+static inline bufnode_ctx *_search_start(bufnode_ctx *node, size_t start, size_t *totaloff) {
     while (NULL != node
         && 0 != node->off) {
         *totaloff += node->off;
@@ -459,29 +459,13 @@ int32_t buffer_remove(buffer_ctx *ctx, void *out, size_t len) {
     }
     return rtn;
 }
-static inline void *memichr(const char *buf, int32_t val, size_t maxlen) {
-    val = tolower(val);
-    while (maxlen--) {
-        if (tolower(*buf) == val) {
-            return (void *)buf;
-        }
-        buf++;
-    }
-    return NULL;
-}
-static int32_t _search_memcmp(bufnode_ctx *node, const int32_t ncs, size_t off, char *what, size_t wlen) {
+static inline int32_t _search_memcmp(bufnode_ctx *node, cmp_func cmp, size_t off, char *what, size_t wlen) {
     size_t ncomp;
     while (wlen > 0
         && NULL != node) {
         ncomp = wlen + off > node->off ? node->off - off : wlen;
-        if (0 == ncs) {
-            if (0 != memcmp(node->buffer + node->misalign + off, what, ncomp)) {
-                return ERR_FAILED;
-            }
-        } else {
-            if (0 != _memicmp(node->buffer + node->misalign + off, what, ncomp)) {
-                return ERR_FAILED;
-            }
+        if (0 != cmp(node->buffer + node->misalign + off, what, ncomp)) {
+            return ERR_FAILED;
         }
         what += ncomp;
         wlen -= ncomp;
@@ -503,7 +487,16 @@ int32_t buffer_search(buffer_ctx *ctx, const int32_t ncs,
     }
     if (start + wlen > end) {
         return ERR_FAILED;
-    }    
+    }
+    chr_func chr;
+    cmp_func cmp;
+    if (0 == ncs) {
+        chr = memchr;
+        cmp = memcmp;
+    } else {
+        chr = memichr;
+        cmp = _memicmp;
+    }
     //查找开始位置所在节点
     size_t totaloff = 0;
     bufnode_ctx *node = _search_start(ctx->head, start, &totaloff);
@@ -516,17 +509,13 @@ int32_t buffer_search(buffer_ctx *ctx, const int32_t ncs,
             break;
         }
         pstart = node->buffer + node->misalign + uioff;
-        if (0 == ncs) {
-            pschar = (char *)memchr(pstart, what[0], node->off - uioff);
-        } else {
-            pschar = (char *)memichr(pstart, what[0], node->off - uioff);
-        }
+        pschar = (char *)chr(pstart, what[0], node->off - uioff);
         if (NULL != pschar) {
             uioff += (pschar - pstart);
             if (totaloff - node->off + uioff + wlen > end) {
                 break;
             }
-            if (ERR_OK == _search_memcmp(node, ncs, uioff, what, wlen)) {
+            if (ERR_OK == _search_memcmp(node, cmp, uioff, what, wlen)) {
                 return (int32_t)(totaloff - node->off + uioff);
             }
             uioff++;

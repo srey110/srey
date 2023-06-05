@@ -726,9 +726,22 @@ uint64_t fnv1a_hash(const char *buf, size_t len) {
     }
     return rtn;
 }
+void *memichr(const void *ptr, int32_t val, size_t maxlen) {
+    char *buf = (char *)ptr;
+    val = tolower(val);
+    while (maxlen--) {
+        if (tolower(*buf) == val) {
+            return (void *)buf;
+        }
+        buf++;
+    }
+    return NULL;
+}
 #ifndef OS_WIN
-int32_t _memicmp(const char *buf1, const char *buf2, size_t lens) {
+int32_t _memicmp(const void *ptr1, const void *ptr2, size_t lens) {
     int32_t i = 0;
+    char *buf1 = (char *)ptr1;
+    char *buf2 = (char *)ptr2;
     while (tolower(*buf1) == tolower(*buf2)
         && i < (int32_t)lens) {
         buf1++;
@@ -746,6 +759,53 @@ int32_t _memicmp(const char *buf1, const char *buf2, size_t lens) {
     }
 }
 #endif
+void *memstr(int32_t ncs, const void *ptr, size_t plens, const void *what, size_t wlen) {
+    if (NULL == ptr
+        || NULL == what
+        || 0 == plens
+        || 0 == wlen
+        || wlen > plens) {
+        return NULL;
+    }
+    chr_func chr;
+    cmp_func cmp;
+    if (0 == ncs) {
+        chr = memchr;
+        cmp = memcmp;
+    } else {
+        chr = memichr;
+        cmp = _memicmp;
+    }
+    char *pos;
+    char *wt = (char *)what;
+    char *cur = (char *)ptr;
+    do {
+        pos = chr(cur, wt[0], plens - (size_t)(cur - (char*)ptr));
+        if (NULL == pos
+            || plens - (size_t)(pos - (char*)ptr) < wlen) {
+            return NULL;
+        }
+        if (0 == cmp(pos, what, wlen)) {
+            return (void *)pos;
+        }
+        cur = pos + 1;
+    } while (plens - (size_t)(cur - (char*)ptr) >= wlen);
+    return NULL;
+}
+void *skipempty(const void *ptr, size_t plens) {
+    char *cur = (char *)ptr;
+    while (' ' == *cur
+        && (size_t)(cur - (char *)ptr) < plens) {
+        cur++;
+    }
+    if (cur - (char *)ptr == plens) {
+        return NULL;
+    }
+    return cur;
+}
+void split(int32_t ncs, const void *ptr, size_t plens, const void *what, size_t wlen, uint32_t cnt) {
+    
+}
 char *strupper(char *str){
     if (NULL == str) {
         return NULL;

@@ -1,7 +1,7 @@
 #ifndef UTILS_H_
 #define UTILS_H_
 
-#include "macro.h"
+#include "sarray.h"
 
 //获取一ID
 uint64_t createid();
@@ -51,9 +51,16 @@ int32_t urldecode(char *str, size_t len);
 uint64_t hash(const char *buf, size_t len);
 uint64_t fnv1a_hash(const char *buf, size_t len);
 
+void *memichr(const void *ptr, int32_t val, size_t maxlen);
 #ifndef OS_WIN
-int32_t _memicmp(const char *buf1, const char *buf2, size_t lens);
+int32_t _memicmp(const void *ptr1, const void *ptr2, size_t lens);
 #endif
+//内存查找 ncs 0 区分大小写
+void *memstr(int32_t ncs, const void *ptr, size_t plens, const void *what, size_t wlen);
+//跳过空字节
+void *skipempty(const void *ptr, size_t plens);
+//拆分 ncs 0 区分大小写  cnt 0不限制  其他只拆分前cnt个
+void split(int32_t ncs, const void *ptr, size_t plens, const void *what, size_t wlen, uint32_t cnt);
 //转大写
 char *strupper(char *str);
 //转小写

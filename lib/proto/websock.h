@@ -4,6 +4,7 @@
 #include "event/event.h"
 
 void *websock_unpack(ev_ctx *ev, SOCKET fd, buffer_ctx *buf, size_t *size, ud_cxt *ud, int32_t *closefd);
+int32_t websock_client_reqhs(ev_ctx *ev, SOCKET fd, ud_cxt *ud);
 
 void websock_ping(ev_ctx *ev, SOCKET fd);
 void websock_pong(ev_ctx *ev, SOCKET fd);

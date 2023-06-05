@@ -37,7 +37,7 @@ int32_t buffer_appendv(buffer_ctx *ctx, const char *fmt, ...);
 int32_t buffer_copyout(buffer_ctx *ctx, const size_t start, void *out, size_t len);
 int32_t buffer_drain(buffer_ctx *ctx, size_t len);
 int32_t buffer_remove(buffer_ctx *ctx, void *out, size_t len);
-//ncs 1 不区分大小写
+//ncs 0 区分大小写
 int32_t buffer_search(buffer_ctx *ctx, const int32_t ncs,
     const size_t start, size_t end, char *what, size_t wlen);
 

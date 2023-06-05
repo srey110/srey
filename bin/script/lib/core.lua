@@ -233,17 +233,18 @@ function core.close(fd)
     srey.close(fd)
 end
 --[[
-描述:设置协议解析类型
+描述:设置协议解析类型,解析状态
 参数：
     fd socket :integer
-    pktype :PACK_TYPE
+    pktype nil 或 -1 不设置 :PACK_TYPE
+    status nil 或 -1 不设置 :integer
 --]]
-function core.setpktype(fd, pktype)
-    if INVALID_SOCK == fd or nil == pktype then
+function core.settypstat(fd, pktype, status)
+    if INVALID_SOCK == fd or (nil == pktype and nil == status) then
         log.WARN("invalid argument.")
         return
     end
-    srey.setpktype(fd, pktype)
+    srey.settypstat(fd, pktype, status)
 end
 --[[
 描述:将sock消息重定向到其他任务

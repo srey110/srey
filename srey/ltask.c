@@ -335,10 +335,17 @@ static int32_t _ltask_close(lua_State *lua) {
     ev_close(netev, fd);
     return 0;
 }
-static int32_t _ltask_setud_pktype(lua_State *lua) {
+static int32_t _ltask_setud_typstat(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
-    pack_type pktype = (pack_type)luaL_checkinteger(lua, 2);
-    ev_setud_pktype(netev, fd, pktype);
+    int8_t pktype = -1;
+    int8_t status = -1;
+    if (LUA_TNIL != lua_type(lua, 2)) {
+        pktype = (int8_t)luaL_checkinteger(lua, 2);
+    }
+    if (LUA_TNIL != lua_type(lua, 3)) {
+        status = (int8_t)luaL_checkinteger(lua, 3);
+    }
+    ev_setud_typstat(netev, fd, pktype, status);
     return 0;
 }
 static int32_t _ltask_setud_data(lua_State *lua) {
@@ -647,7 +654,7 @@ LUAMOD_API int luaopen_srey(lua_State *lua) {
         { "send", _ltask_send },
         { "sendto", _ltask_sendto },
         { "close", _ltask_close },
-        { "setpktype", _ltask_setud_pktype },
+        { "settypstat", _ltask_setud_typstat },
         { "bindtask", _ltask_setud_data },
 
         { "ipport", _ltask_ipport },

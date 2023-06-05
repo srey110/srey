@@ -90,12 +90,12 @@ void *protos_pack(pack_type type, void *data, size_t lens, size_t *size) {
 int32_t protos_handshake(ev_ctx *ev, SOCKET fd, ud_cxt *ud, void *hscb) {
     int32_t rtn = ERR_OK;
     switch (ud->pktype) {
-    /*case PACK_WEBSOCK:
+    case PACK_WEBSOCK:
         ud->hscb = hscb;
         if (0 == ud->svside) {
             rtn = websock_client_reqhs(ev, fd, ud);
         }
-        break;*/
+        break;
     default:
         break;
     }

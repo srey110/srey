@@ -138,11 +138,11 @@ void _set_error(sock_ctx *skctx) {
         UPCAST(skctx, overlap_udp_ctx, ol_r)->status |= STATUS_ERROR;
     }
 }
-void _setud_pktype(sock_ctx *skctx, uint8_t pktype) {
+void _setud_typstat(sock_ctx *skctx, char *typsta) {
     if (SOCK_STREAM == skctx->type) {
-        UPCAST(skctx, overlap_tcp_ctx, ol_r)->ud.pktype = pktype;
+        _set_ud_typstat(typsta, &(UPCAST(skctx, overlap_tcp_ctx, ol_r)->ud));
     } else {
-        UPCAST(skctx, overlap_udp_ctx, ol_r)->ud.pktype = pktype;
+        _set_ud_typstat(typsta, &(UPCAST(skctx, overlap_udp_ctx, ol_r)->ud));
     }
 }
 void _setud_data(sock_ctx *skctx, void *data) {

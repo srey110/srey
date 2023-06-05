@@ -58,5 +58,7 @@ SOCKET _listen(netaddr_ctx *addr);
 SOCKET _udp(netaddr_ctx *addr);
 int32_t _sock_read(SOCKET fd, IOV_TYPE *iov, uint32_t niov, void *arg, size_t *readed);
 int32_t _sock_send(SOCKET fd, qu_bufs *buf_s, size_t *nsend, void *arg);
+void _set_ud_typstat_cmd(char *typsta, int8_t pktype, int8_t status);
+void _set_ud_typstat(char *typsta, ud_cxt *ud);
 
 #endif//EVPUB_H_

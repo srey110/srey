@@ -15,8 +15,9 @@ typedef enum WEV_CMDS {
     CMD_ADDACP,
     CMD_REMOVE,
     CMD_SEND,
-    CMD_SETUD_PKTYPE,
+    CMD_SETUD_TYPSTAT,
     CMD_SETUD_DATA,
+
     CMD_TOTAL,
 }WEV_CMDS;
 typedef void(*event_cb)(void *arg, struct sock_ctx *skctx, DWORD bytes);
@@ -77,7 +78,7 @@ void _on_cmd_addacp(watcher_ctx *watcher, cmd_ctx *cmd);
 void _on_cmd_remove(watcher_ctx *watcher, cmd_ctx *cmd); 
 void _on_cmd_send(watcher_ctx *watcher, cmd_ctx *cmd);
 void _on_cmd_disconn(watcher_ctx *watcher, cmd_ctx *cmd);
-void _on_cmd_setud_pktype(watcher_ctx *watcher, cmd_ctx *cmd);
+void _on_cmd_setud_typstat(watcher_ctx *watcher, cmd_ctx *cmd);
 void _on_cmd_setud_data(watcher_ctx *watcher, cmd_ctx *cmd);
 
 void _add_fd(watcher_ctx *watcher, sock_ctx *skctx);
@@ -89,7 +90,7 @@ void _add_bufs_trypost(sock_ctx *skctx, bufs_ctx *buf);
 void _add_bufs_trysendto(sock_ctx *skctx, bufs_ctx *buf);
 void _sk_shutdown(sock_ctx *skctx);
 void _set_error(sock_ctx *skctx);
-void _setud_pktype(sock_ctx *skctx, uint8_t pktype);
+void _setud_typstat(sock_ctx *skctx, char *typsta);
 void _setud_data(sock_ctx *skctx, void *data);
 void _free_udp(sock_ctx *skctx);
 void _freelsn(struct listener_ctx *lsn);
