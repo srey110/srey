@@ -22,13 +22,16 @@ typedef struct message_ctx {
     int8_t msgtype;//msg_type
     int8_t pktype;//unpack_type
     int32_t error;
+    int32_t src;
     SOCKET fd;
-    task_ctx *src;
     void *data;
     size_t size;
     uint64_t session;
-    netaddr_ctx addr;
 }message_ctx;
+typedef struct udp_msg_ctx {
+    netaddr_ctx addr;
+    char data[0];
+}udp_msg_ctx;
 
 #define QUMSG_INITLENS        512
 typedef void *(*task_new)(task_ctx *task, void *arg);
@@ -55,7 +58,7 @@ void *task_handle(task_ctx *task);
 int32_t task_name(task_ctx *task);
 uint64_t task_session(task_ctx *task);
 
-void task_user(task_ctx *dst, task_ctx *src, uint64_t session, void *data, size_t size, int32_t copy);
+void task_user(task_ctx *dst, int32_t src, uint64_t session, void *data, size_t size, int32_t copy);
 void task_timeout(task_ctx *task, uint64_t session, uint32_t timeout);
 int32_t task_netlisten(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
     const char *host, uint16_t port, int32_t sendev);

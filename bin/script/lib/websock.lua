@@ -12,6 +12,7 @@ WEBSOCK_PROTO = {
     PING = 0x09,
     PONG = 0x0A
 }
+--包 {fin, proto, data}
 
 --[[
 描述: 服务端检查websocket参数，并返回签名字符
@@ -107,7 +108,7 @@ end
 参数：
     fd :integer
 返回:
-
+    boolean
 --]]
 function websock.handshake(fd, url, headers)
     if not headers then
@@ -133,16 +134,6 @@ function websock.handshake(fd, url, headers)
     end
     return true;
 end
---[[
-描述: 解包收到的数据
-参数：
-    pack :websock_pack_ctx
-返回:
-    tabel {fin=1, proto=1, data=, size=}
---]]
-function websock.frame(pack)
-    return core.websock_pack(pack)
- end
  --[[
  描述: ping
  参数：

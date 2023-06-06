@@ -207,7 +207,7 @@ int32_t task_name(task_ctx *task) {
 uint64_t task_session(task_ctx *task) {
     return (uint64_t)ATOMIC64_ADD(&task->session, 1);
 }
-void task_user(task_ctx *dst, task_ctx *src, uint64_t session, void *data, size_t size, int32_t copy) {
+void task_user(task_ctx *dst, int32_t src, uint64_t session, void *data, size_t size, int32_t copy) {
     message_ctx msg;
     msg.msgtype = MSG_TYPE_USER;
     msg.session = session;
@@ -361,10 +361,12 @@ static inline void _task_net_recvfrom(ev_ctx *ev, SOCKET fd, char *buf, size_t s
     msg.pktype = ud->pktype;
     msg.session = ud->session;
     msg.fd = fd;
-    MALLOC(msg.data, size);
-    memcpy(msg.data, buf, size);
+    udp_msg_ctx *umsg;
+    MALLOC(umsg, sizeof(udp_msg_ctx) + size);
+    memcpy(&umsg->addr, addr, sizeof(netaddr_ctx));
+    memcpy(umsg->data, buf, size);
+    msg.data = umsg;
     msg.size = size;
-    memcpy(&msg.addr, addr, sizeof(netaddr_ctx));
     _push_message(ud->data, &msg);
 }
 SOCKET task_netudp(task_ctx *task, pack_type pktype, const char *host, uint16_t port) {

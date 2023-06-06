@@ -10,8 +10,8 @@ local function onstarted()
 end
 srey.started(onstarted)
 
-local function onrecvfrom(pktype, fd, data, size, ip, port)
-    srey.sendto(fd, ip, port, data, size)
+local function onrecvfrom(pktype, fd, data, ip, port)
+    srey.sendto(fd, ip, port, data)
 end
 srey.recvfromed(onrecvfrom)
 local function chunckeddata(cnt)
@@ -31,33 +31,26 @@ local function http_rtn(fd, chunked)
         http.response(fd, 200, nil, "OK")
     end
 end
-local function onrecv(pktype, fd, data, size)
+local function onrecv(pktype, fd, data)
     if PACK_TYPE.HTTP == pktype then
-        local chunked = srey.http_chunked(data)
+        local chunked = data.chunked
         if 1 == chunked then
-            local hinfo = srey.http_head(data)
-            --printd(dump(hinfo))
+            --printd(dump(data.head))
         elseif 2 == chunked  then
-            local msg, lens = srey.http_data(data)
-            if nil == msg then
+            if 0 == #data.data then
                 --printd("chunked %d: end", fd)
                 http_rtn(fd, true)
             else
-                --printd("chunked %d lens: %d", fd, lens)
+                --printd("chunked %d lens: %d", fd, #data.data)
             end
         else
-            local hinfo = srey.http_head(data)
-            local sign = websock.upgrade(hinfo)
+            local sign = websock.upgrade(data)
             if sign then
                 local task4 = srey.qury(TASK_NAME.TASK4)
                 srey.bindtask(fd, task4)
                 websock.allowed(fd, sign)
                 srey.call(task4, "handshaked", fd)
             else
-                local msg = srey.http_copydata(data)
-                if nil ~= msg then
-                    --printd("message: %s", msg)
-                end
                 http_rtn(fd, false)
             end
         end

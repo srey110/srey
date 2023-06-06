@@ -25,8 +25,7 @@ local function onhandshaked(fd)
     websock.text(fd, "welcome! this is http upgrade to websocket.")
 end
 srey.regrpc("handshaked", onhandshaked)
-local function onrecv(pktype, fd, data, size)
-    local frame = websock.frame(data)
+local function onrecv(pktype, fd, frame)
     if WEBSOCK_PROTO.PING == frame.proto then
         websock.pong(fd)
         --printd("PING")

@@ -18,6 +18,29 @@ static ev_ctx *netev;
 static char propath[PATH_LENS] = { 0 };
 static char luapath[PATH_LENS] = { 0 };
 
+#define LUA_TBPUSH_NUMBER(name, val)\
+lua_pushstring(lua, name);\
+lua_pushinteger(lua, val);\
+lua_settable(lua, -3)
+#define LUA_TBPUSH_STRING(name, val)\
+lua_pushstring(lua, name);\
+lua_pushstring(lua, val);\
+lua_settable(lua, -3)
+#define LUA_TBPUSH_LSTRING(name, val, lens)\
+lua_pushstring(lua, name);\
+lua_pushlstring(lua, val, lens);\
+lua_settable(lua, -3)
+#define LUA_TBPUSH_UD(val, lens)\
+lua_pushstring(lua, "data");\
+lua_pushlightuserdata(lua, val);\
+lua_settable(lua, -3);\
+lua_pushstring(lua, "size");\
+lua_pushinteger(lua, lens);\
+lua_settable(lua, -3)
+#define LUA_TBPUSH_NETPUB() \
+LUA_TBPUSH_NUMBER("pktype", msg->pktype);\
+LUA_TBPUSH_NUMBER("fd", msg->fd)
+
 static inline void _ltask_setpath(lua_State *lua, const char *name, const char *exname) {
     lua_getglobal(lua, "package");
     lua_getfield(lua, -1, name);
@@ -130,46 +153,154 @@ static inline void _ltask_free(task_ctx *task) {
     lua_close(ltask->lua);
     FREE(ltask);
 }
+static inline void _ltask_http_pack(lua_State *lua, void *pack) {
+    lua_pushstring(lua, "data");
+    lua_createtable(lua, 0, 4);
+    int32_t chunked = http_chunked(pack);
+    LUA_TBPUSH_NUMBER("chunked", chunked);
+    size_t size;
+    char *data = (char *)http_data(pack, &size);
+    if (size > 0) {
+        LUA_TBPUSH_LSTRING("data", data, size);
+    } else {
+        if (2 == chunked) {
+            LUA_TBPUSH_STRING("data", "");
+        }
+    }
+    if (0 == chunked
+        || 1 == chunked) {
+        size_t i;
+        lua_pushstring(lua, "status");
+        lua_createtable(lua, 0, 3);
+        buf_ctx *buf = http_status(pack);
+        for (i = 0; i < 3; i++) {
+            lua_pushinteger(lua, i + 1);
+            lua_pushlstring(lua, buf[i].data, buf[i].lens);
+            lua_settable(lua, -3);
+        }
+        lua_settable(lua, -3);
+
+        size = http_nheader(pack);
+        lua_pushstring(lua, "head");
+        lua_createtable(lua, 0, (int32_t)size);
+        http_header_ctx *header;
+        for (i = 0; i < size; i++) {
+            header = http_header_at(pack, i);
+            lua_pushlstring(lua, header->key.data, header->key.lens);
+            lua_pushlstring(lua, header->value.data, header->value.lens);
+            lua_settable(lua, -3);
+        }
+        lua_settable(lua, -3);
+    }
+    lua_settable(lua, -3);
+}
+static inline void _ltask_websock_pack(lua_State *lua, void *pack) {
+    int32_t fin = websock_pack_fin(pack);
+    int32_t proto = websock_pack_proto(pack);
+    size_t lens;
+    void *data = websock_pack_data(pack, &lens);
+    lua_pushstring(lua, "data");
+    lua_createtable(lua, 0, 3);
+    LUA_TBPUSH_NUMBER("fin", fin);
+    LUA_TBPUSH_NUMBER("proto", proto);
+    if (0 != lens) {
+        LUA_TBPUSH_LSTRING("data", data, lens);
+    }
+    lua_settable(lua, -3);
+}
+static inline void _ltask_netpack_data(lua_State *lua, message_ctx *msg) {
+    void *data;
+    if (MSG_TYPE_RECV == msg->msgtype) {
+        data = msg->data;
+    } else {
+        data = ((udp_msg_ctx *)msg->data)->data;
+    }
+    switch (msg->pktype) {
+    case PACK_RPC:
+    {
+        size_t size;
+        void *pack = simple_data(data, &size);
+        LUA_TBPUSH_UD(pack, size);
+        break;
+    }
+    case PACK_SIMPLE:
+    {
+        size_t size;
+        void *pack = simple_data(data, &size);
+        LUA_TBPUSH_LSTRING("data", pack, size);
+        break;
+    }
+    case PACK_HTTP:
+        _ltask_http_pack(lua, data);
+        break;
+    case PACK_WEBSOCK:
+        _ltask_websock_pack(lua, data);
+        break;
+    case PACK_NONE:
+        LUA_TBPUSH_LSTRING("data", (const char*)data, msg->size);
+        break;
+    }
+}
+static inline void _ltask_push_msg(lua_State *lua, message_ctx *msg) {
+    switch (msg->msgtype) {
+    case MSG_TYPE_STARTED:
+        break;
+    case MSG_TYPE_CLOSING:
+        break;
+    case MSG_TYPE_TIMEOUT://sess
+        LUA_TBPUSH_NUMBER("sess", msg->session);
+        break;
+    case MSG_TYPE_CONNECT://sess error
+        LUA_TBPUSH_NUMBER("sess", msg->session);
+        LUA_TBPUSH_NUMBER("err", msg->error);
+        break;
+    case MSG_TYPE_ACCEPT://pktype fd
+        LUA_TBPUSH_NETPUB();
+        break;
+    case MSG_TYPE_SEND://pktype fd size
+        LUA_TBPUSH_NETPUB();
+        LUA_TBPUSH_NUMBER("size", msg->size);
+        break;
+    case MSG_TYPE_CLOSE://pktype fd
+        LUA_TBPUSH_NETPUB();
+        break;
+    case MSG_TYPE_RECV://pktype fd data size
+        LUA_TBPUSH_NETPUB();
+        _ltask_netpack_data(lua, msg);
+        break;
+    case MSG_TYPE_RECVFROM://pktype fd data(udp_msg_ctx) size
+    {
+        char ip[IP_LENS];
+        udp_msg_ctx *umsg = msg->data;
+        netaddr_ip(&umsg->addr, ip);
+        LUA_TBPUSH_NETPUB();
+        LUA_TBPUSH_STRING("ip", ip);
+        LUA_TBPUSH_NUMBER("port", netaddr_port(&umsg->addr));
+        //data
+        _ltask_netpack_data(lua, msg);
+        break;
+    }
+    case MSG_TYPE_USER://sess src data size
+        LUA_TBPUSH_NUMBER("sess", msg->session);
+        LUA_TBPUSH_NUMBER("src", msg->src);
+        LUA_TBPUSH_UD(msg->data, msg->size);
+        break;
+    default:
+        break;
+    }
+}
 static inline void _ltask_run(task_ctx *task, message_ctx *msg) {
     ltask_ctx *ltask = task_handle(task);
     if (0 == ltask->ref) {
         return;
     }
-    lua_rawgeti(ltask->lua, LUA_REGISTRYINDEX, ltask->ref);
-    lua_createtable(ltask->lua, 0, 9);
-    lua_pushstring(ltask->lua, "msgtype");
-    lua_pushinteger(ltask->lua, msg->msgtype);
-    lua_settable(ltask->lua, -3);
-    lua_pushstring(ltask->lua, "pktype");
-    lua_pushinteger(ltask->lua, msg->pktype);
-    lua_settable(ltask->lua, -3);
-    lua_pushstring(ltask->lua, "err");
-    lua_pushinteger(ltask->lua, msg->error);
-    lua_settable(ltask->lua, -3);
-    lua_pushstring(ltask->lua, "fd");
-    lua_pushinteger(ltask->lua, msg->fd);
-    lua_settable(ltask->lua, -3);
-    if (NULL != msg->src) {
-        lua_pushstring(ltask->lua, "src");
-        lua_pushlightuserdata(ltask->lua, msg->src);
-        lua_settable(ltask->lua, -3);
-    }
-    if (NULL != msg->data) {
-        lua_pushstring(ltask->lua, "data");
-        lua_pushlightuserdata(ltask->lua, msg->data);
-        lua_settable(ltask->lua, -3);
-    }
-    lua_pushstring(ltask->lua, "size");
-    lua_pushinteger(ltask->lua, msg->size);
-    lua_settable(ltask->lua, -3);
-    lua_pushstring(ltask->lua, "sess");
-    lua_pushinteger(ltask->lua, msg->session);
-    lua_settable(ltask->lua, -3);
-    lua_pushstring(ltask->lua, "addr");
-    lua_pushlightuserdata(ltask->lua, &msg->addr);
-    lua_settable(ltask->lua, -3);
-    if (LUA_OK != lua_pcall(ltask->lua, 1, 0, 0)) {
-        LOG_ERROR("%s", lua_tostring(ltask->lua, 1));
+    lua_State *lua = ltask->lua;
+    lua_rawgeti(lua, LUA_REGISTRYINDEX, ltask->ref);
+    lua_createtable(lua, 0, 6);
+    LUA_TBPUSH_NUMBER("msgtype", msg->msgtype);
+    _ltask_push_msg(lua, msg);
+    if (LUA_OK != lua_pcall(lua, 1, 0, 0)) {
+        LOG_ERROR("%s", lua_tostring(lua, 1));
     }
 }
 static int32_t _ltask_register(lua_State *lua) {
@@ -201,7 +332,7 @@ static int32_t _ltask_session(lua_State *lua) {
 }
 static int32_t _ltask_user(lua_State *lua) {
     task_ctx *dst = lua_touserdata(lua, 1);
-    task_ctx *src = lua_touserdata(lua, 2);
+    int32_t src = (int32_t)luaL_checkinteger(lua, 2);
     uint64_t session = (uint64_t)luaL_checkinteger(lua, 3);
     size_t size = 0;
     void *data = (void *)luaL_checklstring(lua, 4, &size);
@@ -369,23 +500,6 @@ static int32_t _ltask_setud_data(lua_State *lua) {
     ev_setud_data(netev, fd, task);
     return 1;
 }
-static int32_t _ltask_ipport(lua_State *lua) {
-    netaddr_ctx *addr = lua_touserdata(lua, 1);
-    if (NULL == addr) {
-        lua_pushnil(lua);
-        LOG_WARN("%s", ERRSTR_INVPARAM);
-        return 1;
-    }
-    char ip[IP_LENS];
-    if (ERR_OK != netaddr_ip(addr, ip)) {
-        lua_pushnil(lua);
-        return 1;
-    }
-    uint16_t port = netaddr_port(addr);
-    lua_pushstring(lua, ip);
-    lua_pushinteger(lua, port);
-    return 2;
-}
 static int32_t _ltask_remoteaddr(lua_State *lua) {
     netaddr_ctx addr;
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
@@ -482,100 +596,6 @@ static int32_t _ltask_urlencode(lua_State *lua) {
     char *encode = urlencode(data, size, &lens);
     lua_pushlstring(lua, encode, lens);
     FREE(encode);
-    return 1;
-}
-static int32_t _ltask_http_chunked(lua_State *lua) {
-    void *pack = lua_touserdata(lua, 1);
-    lua_pushinteger(lua, http_chunked(pack));
-    return 1;
-}
-static int32_t _ltask_http_data(lua_State *lua) {
-    void *pack = lua_touserdata(lua, 1);
-    size_t lens = 0;
-    char *value = http_data(pack, &lens);
-    if (NULL == value) {
-        lua_pushnil(lua);
-        return 1;
-    }
-    lua_pushlightuserdata(lua, value);
-    lua_pushinteger(lua, lens);
-    return 2;
-}
-static int32_t _ltask_http_copydata(lua_State *lua) {
-    void *pack = lua_touserdata(lua, 1);
-    size_t lens = 0;
-    char *value = http_data(pack, &lens);
-    if (NULL == value) {
-        lua_pushnil(lua);
-        return 1;
-    }
-    lua_pushlstring(lua, value, lens);
-    return 1;
-}
-static int32_t _ltask_http_headers(lua_State *lua) {
-    void *pack = lua_touserdata(lua, 1);
-    if (2 == http_chunked(pack)) {
-        lua_pushnil(lua);
-        return 1;
-    }
-    lua_createtable(lua, 0, 2);
-    lua_pushlstring(lua, "status", strlen("status"));
-    lua_createtable(lua, 0, 3);
-    size_t i;
-    buf_ctx *buf = http_status(pack);
-    for (i = 0; i < 3; i++) {
-        lua_pushinteger(lua, i + 1);
-        lua_pushlstring(lua, buf[i].data, buf[i].lens);
-        lua_settable(lua, -3);
-    }
-    lua_settable(lua, -3);
-
-    lua_pushlstring(lua, "head", strlen("head"));
-    size_t size = http_nheader(pack);
-    lua_createtable(lua, 0, (int32_t)size);
-    http_header_ctx *header;
-    for (i = 0; i < size; i++) {
-        header = http_header_at(pack, i);
-        lua_pushlstring(lua, header->key.data, header->key.lens);
-        lua_pushlstring(lua, header->value.data, header->value.lens);
-        lua_settable(lua, -3);
-    }
-    lua_settable(lua, -3);
-    return 1;
-}
-static int32_t _ltask_simple_data(lua_State *lua) {
-    void *data = lua_touserdata(lua, 1);
-    size_t size;
-    void *pack = simple_data(data, &size);
-    if (0 == size) {
-        lua_pushnil(lua);
-        return 1;
-    }
-    lua_pushlightuserdata(lua, pack);
-    lua_pushinteger(lua, size);
-    return 2;
-}
-static int32_t _ltask_websock_pack(lua_State *lua) {
-    void *pack = lua_touserdata(lua, 1);
-    int32_t fin = websock_pack_fin(pack);
-    int32_t proto = websock_pack_proto(pack);
-    size_t lens;
-    void *data = websock_pack_data(pack, &lens);
-    lua_createtable(lua, 0, 3);
-    lua_pushstring(lua, "fin");
-    lua_pushinteger(lua, fin);
-    lua_settable(lua, -3);
-    lua_pushstring(lua, "proto");
-    lua_pushinteger(lua, proto);
-    lua_settable(lua, -3);
-    if (0 != lens) {
-        lua_pushstring(lua, "data");
-        lua_pushlightuserdata(lua, data);
-        lua_settable(lua, -3);
-        lua_pushstring(lua, "size");
-        lua_pushinteger(lua, lens);
-        lua_settable(lua, -3);
-    }
     return 1;
 }
 static int32_t _ltask_websock_ping(lua_State *lua) {
@@ -677,7 +697,6 @@ LUAMOD_API int luaopen_srey(lua_State *lua) {
         { "settypstat", _ltask_setud_typstat },
         { "bindtask", _ltask_setud_data },
 
-        { "ipport", _ltask_ipport },
         { "remoteaddr", _ltask_remoteaddr },
         { "utostr", _ltask_udtostr },
 
@@ -687,15 +706,6 @@ LUAMOD_API int luaopen_srey(lua_State *lua) {
         { "b64decode", _ltask_b64decode },
         { "urlencode", _ltask_urlencode },
 
-       
-        { "http_chunked", _ltask_http_chunked },
-        { "http_data", _ltask_http_data },
-        { "http_copydata", _ltask_http_copydata },
-        { "http_headers", _ltask_http_headers },
-
-        { "simple_data", _ltask_simple_data },
-
-        { "websock_pack", _ltask_websock_pack },
         { "websock_ping", _ltask_websock_ping },
         { "websock_pong", _ltask_websock_pong },
         { "websock_close", _ltask_websock_close },

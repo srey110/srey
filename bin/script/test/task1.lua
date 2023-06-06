@@ -12,10 +12,9 @@ local function chuncedmesg(cnt)
     cnt.cnt = cnt.cnt + 1
     return "this is chuncked "..tostring(cnt.cnt)
 end
-local function  onchunked(data, lens)
-    if data then
-        local dinfo = srey.utostr(data, lens)
-        --printd("hunked: %s", dinfo)
+local function  onchunked(data)
+    if #data > 0 then
+        --printd("hunked: %s", data)
     else
         --printd("hunked: end")
     end
@@ -72,16 +71,23 @@ local function testrpc()
     --printd(rpcdes)
     srey.call(rpctask, "rpc_add", math.random(10) , math.random(10), "srey.call")
     local rtn, sum, des = srey.request(rpctask, "rpc_add", math.random(10) , math.random(10), "srey.request")
-    --printd("request rpc_add rtn:" .. tostring(rtn) .. " sum:" .. tostring(sum) .. " des:" .. tostring(des))
+    if not rtn then
+        printd("srey.request failed")
+    end
     rtn = srey.request(rpctask, "rpc_void")
-    --printd("request rpc_void rtn:" .. tostring(rtn))
+    if not rtn then
+        printd("srey.request failed")
+    end
     if INVALID_SOCK ~= rpcfd then
-        printd("rpcfd: %s", tostring(rpcfd))
         srey.netcall(rpcfd, TASK_NAME.TASK2, "rpc_add", math.random(10) , math.random(10), "srey.netcall")
         rtn, sum, des = srey.netreq(rpcfd, TASK_NAME.TASK2, "rpc_add", math.random(10) , math.random(10), "srey.netreq")
-        --printd("netreq rpc_add rtn:" .. tostring(rtn) .. " sum:" .. tostring(sum) .. " des:" .. tostring(des))
+        if not rtn then
+            printd("srey.netreq failed")
+        end
         rtn = srey.netreq(rpcfd, TASK_NAME.TASK2, "rpc_void")
-        --printd("netreq rpc_void rtn:" .. tostring(rtn))
+        if not rtn then
+            printd("srey.netreq failed")
+        end
     end
 end
 local function continuationcb(cnt)
@@ -117,8 +123,25 @@ local function testwebsock(upgrade)
     websock.continuation(websockfd, randstr(4), continuationcb, cnt)
     websock.close(websockfd)
 end
+local function testwebsock2()
+    local cnt = {
+        cnt = 0;
+    }
+    local ssl = srey.sslevqury("client")
+    local websockfd =  srey.connect("127.0.0.1", 15003, PACK_TYPE.WEBSOCK, nil)
+    if INVALID_SOCK == websockfd then
+        printd("end websock connect.... error")
+        return
+    end
+    websock.ping(websockfd)
+    websock.pong(websockfd)
+    websock.text(websockfd, randstr(math.random(10, 4096)), nil, randstr(4))
+    websock.binary(websockfd, randstr(math.random(10, 4096)), nil, randstr(4))
+    websock.continuation(websockfd, randstr(4), continuationcb, cnt)
+    websock.close(websockfd)
+end
 local function ontimeout()
-    printd(".............................................")
+    --printd(".............................................")
     if not callonce then
         callonce = true
     end
@@ -126,6 +149,7 @@ local function ontimeout()
     testrpc()
     testwebsock(true)
     testwebsock(false)
+    testwebsock2()
     srey.timeout(3000, ontimeout)
 end
 local function onstarted()
@@ -144,9 +168,9 @@ local function onstarted()
     local ssl = srey.sslevqury("client")
     rpcfd = srey.connect("127.0.0.1", 8080, PACK_TYPE.RPC, ssl, false)
     if INVALID_SOCK ~= rpcfd then
-        printd("end connect.... fd:" .. rpcfd)
+        printd("rpc end connect.... fd:" .. rpcfd)
     else
-        printd("end connect.... error")
+        printd("rpc end connect.... error")
     end
 end
 srey.started(onstarted)
@@ -156,25 +180,23 @@ local function onaccept(pktype, fd)
 end
 srey.accepted(onaccept)
 
-local function echo(pktype, fd, data, size)
+local function echo(pktype, fd, data)
     if PACK_TYPE.SIMPLE == pktype then
         if math.random(1, 100) <= 1 then
             srey.close(fd)
             return
         end
-        data, size = srey.simple_data(data)
-        srey.send(fd, data, size, pktype)
+        srey.send(fd, data, nil, pktype)
     elseif PACK_TYPE.WEBSOCK == pktype then
-        local frame = websock.frame(data)
-        if WEBSOCK_PROTO.PING == frame.proto then
+        if WEBSOCK_PROTO.PING == data.proto then
             --printd("PING")
-        elseif WEBSOCK_PROTO.CLOSE == frame.proto then
+        elseif WEBSOCK_PROTO.CLOSE == data.proto then
             --printd("CLOSE")
-        elseif WEBSOCK_PROTO.TEXT == frame.proto  then
+        elseif WEBSOCK_PROTO.TEXT == data.proto  then
             --printd("TEXT size: %d", frame.size)
-        elseif WEBSOCK_PROTO.BINARY == frame.proto  then
+        elseif WEBSOCK_PROTO.BINARY == data.proto  then
             --printd("BINARY size: %d", frame.size)
-        elseif WEBSOCK_PROTO.CONTINUE == frame.proto then
+        elseif WEBSOCK_PROTO.CONTINUE == data.proto then
             --printd("CONTINUE fin: %d size: %d", frame.fin, frame.size)
         end
     end

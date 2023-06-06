@@ -9,7 +9,7 @@ local function http_send(rsp, fd, msg, ckfunc)
     if rsp then
         srey.send(fd, table.concat(msg), nil, PACK_TYPE.HTTP)
     else
-        local ok, data, _ = srey.synsend(fd, table.concat(msg), nil, PACK_TYPE.HTTP, ckfunc)
+        local ok, data = srey.synsend(fd, table.concat(msg), nil, PACK_TYPE.HTTP, ckfunc)
         return ok and data or nil
     end
 end
@@ -62,7 +62,7 @@ end
     headers :table
     ckfunc :function
 返回:
-    table
+    {chunked, data, status{}, head{}}  chunked 0非chunk包 1chunk包头 2chunk数据
     nil 失败 
 --]]
 function http.get(fd, url, headers, ckfunc)
@@ -79,7 +79,7 @@ end
     info :string table function
     ...  info为function时的参数
 返回:
-    table
+    {chunked, data, status{}, head{}}  chunked 0非chunk包 1chunk包头 2chunk数据
     nil 错误
 --]]
 function http.post(fd, url, headers, ckfunc, info, ...)

@@ -93,17 +93,6 @@ function core.session(task)
     return srey.session(task or curtask)
 end
 --[[
-描述:返回netaddr_ctx保存的ip port 
-参数：
-    addr :netaddr_ctx
-返回:
-    ip :string, port :integer
-    nil失败
---]]
-function core.ipport(addr)
-    return srey.ipport(addr)
-end
---[[
 描述:返回socket远端 ip port 
 参数：
     fd socket :integer
