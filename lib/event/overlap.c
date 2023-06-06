@@ -41,6 +41,7 @@ typedef struct overlap_tcp_ctx {
 #if WITH_SSL
     SSL *ssl;
 #endif
+    pksize_adj_ctx pkadj;
     IOV_TYPE wsabuf;
     buffer_ctx buf_r;
     qu_off_buf buf_s;
@@ -85,6 +86,7 @@ sock_ctx *_new_sk(SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
     oltcp->ol_s.fd = fd;
     oltcp->ol_s.ev_cb = _on_send_cb;
     oltcp->status = 0;
+    _reset_pksize_adj(&oltcp->pkadj);
 #if WITH_SSL
     oltcp->ssl = NULL;
 #endif
@@ -113,6 +115,7 @@ void _free_sk(sock_ctx *skctx) {
 void _clear_sk(sock_ctx *skctx) {
     overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
     oltcp->status = 0;
+    _reset_pksize_adj(&oltcp->pkadj);
 #if WITH_SSL
     FREE_SSL(oltcp->ssl);
 #endif
@@ -242,9 +245,11 @@ static inline int32_t _ssl_handshake(watcher_ctx *watcher, overlap_tcp_ctx *oltc
 static inline void _tcp_recv(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
     size_t nread;
 #if WITH_SSL
-    int32_t rtn = buffer_from_sock(&oltcp->buf_r, oltcp->ol_r.fd, &nread, _sock_read, oltcp->ssl);
+    int32_t rtn = buffer_from_sock(&oltcp->buf_r, oltcp->ol_r.fd,
+                                   &nread, &oltcp->pkadj, _sock_read, oltcp->ssl);
 #else
-    int32_t rtn = buffer_from_sock(&oltcp->buf_r, oltcp->ol_r.fd, &nread, _sock_read, NULL);
+    int32_t rtn = buffer_from_sock(&oltcp->buf_r, oltcp->ol_r.fd,
+                                   &nread, &oltcp->pkadj, _sock_read, NULL);
 #endif
     if (0 != nread) {
         oltcp->cbs.r_cb(watcher->ev, oltcp->ol_r.fd, &oltcp->buf_r, nread, &oltcp->ud);

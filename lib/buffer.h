@@ -27,6 +27,9 @@ typedef struct buffer_ctx {
     struct bufnode_ctx **tail_with_data;
     size_t total_len;//数据总长度
 }buffer_ctx;
+typedef struct pksize_adj_ctx {
+    size_t maxpk;
+}pksize_adj_ctx;
 
 void buffer_init(buffer_ctx *ctx);
 void buffer_free(buffer_ctx *ctx);
@@ -47,7 +50,9 @@ void buffer_commit_expand(buffer_ctx *ctx, size_t len ,IOV_TYPE *iov, const uint
 uint32_t buffer_get(buffer_ctx *ctx, size_t atmost, IOV_TYPE *iov, const uint32_t cnt);
 void buffer_commit_get(buffer_ctx *ctx, size_t size);
 
-int32_t buffer_from_sock(buffer_ctx *ctx, SOCKET fd, size_t *nread,
+int32_t buffer_from_sock(buffer_ctx *ctx, SOCKET fd, size_t *nread, pksize_adj_ctx *pkadj,
     int32_t(*_readv)(SOCKET, IOV_TYPE *, uint32_t, void *, size_t *), void *arg);
+
+void _reset_pksize_adj(pksize_adj_ctx *pkadj);
 
 #endif//BUFFER_H_

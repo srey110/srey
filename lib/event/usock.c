@@ -33,6 +33,7 @@ typedef struct tcp_ctx {
 #if WITH_SSL
     SSL *ssl;
 #endif
+    pksize_adj_ctx pkadj;
     buffer_ctx buf_r;
     qu_off_buf buf_s;
     cbs_ctx cbs;
@@ -68,6 +69,7 @@ sock_ctx *_new_sk(SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
     tcp->sock.fd = fd;
     tcp->sock.events = 0;
     tcp->status = 0;
+    _reset_pksize_adj(&tcp->pkadj);
 #if WITH_SSL
     tcp->ssl = NULL;
 #endif
@@ -95,6 +97,7 @@ void _clear_sk(sock_ctx *skctx) {
     tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
     tcp->sock.events = 0;
     tcp->status = 0;
+    _reset_pksize_adj(&tcp->pkadj);
 #if WITH_SSL
     FREE_SSL(tcp->ssl);
 #endif
@@ -221,9 +224,11 @@ static inline int32_t _ssl_handshake(watcher_ctx *watcher, tcp_ctx *tcp) {
 static inline int32_t _tcp_recv(watcher_ctx *watcher, tcp_ctx *tcp) {
     size_t nread;
 #if WITH_SSL
-    int32_t rtn = buffer_from_sock(&tcp->buf_r, tcp->sock.fd, &nread, _sock_read, tcp->ssl);
+    int32_t rtn = buffer_from_sock(&tcp->buf_r, tcp->sock.fd, 
+                                   &nread, &tcp->pkadj, _sock_read, tcp->ssl);
 #else
-    int32_t rtn = buffer_from_sock(&tcp->buf_r, tcp->sock.fd, &nread, _sock_read, NULL);
+    int32_t rtn = buffer_from_sock(&tcp->buf_r, tcp->sock.fd, 
+                                   &nread, &tcp->pkadj, _sock_read, NULL);
 #endif
     if (0 != nread) {
         tcp->cbs.r_cb(watcher->ev, tcp->sock.fd, &tcp->buf_r, nread, &tcp->ud);
