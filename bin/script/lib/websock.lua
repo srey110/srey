@@ -124,12 +124,12 @@ function websock.handshake(fd, url, headers)
     local sign = websock_checkrsp(rtn)
     if not sign then
         srey.close(fd)
-        log.WARN("check param error. %s", dump(rtn))
+        log.WARN("check param error.")
         return false
     end
     if sign ~= srey.sha1_b64encode(string.format("%s258EAFA5-E914-47DA-95CA-C5AB0DC85B11", key)) then
         srey.close(fd)
-        log.WARN("check sign error. key: %s \n %s", key, dump(rtn))
+        log.WARN("check sign error.")
         return false
     end
     return true;

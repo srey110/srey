@@ -8,6 +8,7 @@ local coroutine = coroutine
 local os = os
 local table = table
 local string = string
+local strempty = strempty
 local cur_coro = nil
 local static_funcs = {}--回调
 local rpc_func = {}--rpc 函数
@@ -194,6 +195,57 @@ function core.request(task, name, ...)
     srey.user(task, core.name(core.self()), sess, encode(info))
     return coroutine.yield()
 end
+--验签
+local function netrpc_paramstr(info)
+    if nil == info.param then
+        return ""
+    end
+    return json.encode(info.param)
+end
+local function netreq_signstr(info)
+    return string.format("%d%d%d%d%s%s%s",
+                         info.proto, info.sock, info.dst, info.timestamp, info.func,
+                         netrpc_paramstr(info), NETRPC_SIGNKEY)
+end
+local function netresp_signstr(info)
+    return string.format("%d%d%d%d%s%s%s",
+                          info.proto, info.sock, info.sess, info.timestamp,
+                          tostring(info.ok), netrpc_paramstr(info), NETRPC_SIGNKEY)
+end
+local function netrpc_sign(info)
+    if strempty(NETRPC_SIGNKEY) then
+        return
+    end
+    info.timestamp = os.time()
+    local signstr
+    if TASKMSG_TYPE.NETREQ == info.proto then
+        signstr = netreq_signstr(info)
+    else
+        signstr = netresp_signstr(info)
+    end
+    info.sign = core.md5(signstr)
+end
+local function netrpc_signcheck(info)
+    if strempty(NETRPC_SIGNKEY) then
+        return true
+    end
+    local signstr
+    if TASKMSG_TYPE.NETREQ == info.proto then
+        signstr = netreq_signstr(info)
+    else
+        signstr = netresp_signstr(info)
+    end
+    if string.lower(info.sign) ~= core.md5(signstr) then
+        return false
+    end
+    if NETRPC_TIMEDIFF and NETRPC_TIMEDIFF > 0 then
+        if math.abs(os.time() - info.timestamp) > NETRPC_TIMEDIFF then
+            log.WARN("timestamp check failed.")
+            return false
+        end
+    end
+    return true
+end
 --[[
 描述:网络RPC调用，不等待返回
 参数：
@@ -214,6 +266,7 @@ function core.netcall(fd, task, name, ...)
         func = name,
         param = {...}
     }
+    netrpc_sign(info)
     core.send(fd, encode(info), nil, PACK_TYPE.RPC)
 end
 local function request_sock_add(fd, sess)
@@ -277,6 +330,7 @@ function core.netreq(fd, task, name, ...)
         func = name,
         param = {...}
     }
+    netrpc_sign(info)
     sess_coro[sess] = cur_coro
     request_timeout[sess] = info
     request_sock_add(fd, sess)
@@ -408,7 +462,7 @@ local function dispatch_timeout(sess)
             end
             sess_coro[sess] = nil
             cur_coro = co
-            log.WARN("request timeout. session: %d.", sess)
+            log.WARN("request timeout. param: %s.", json.encode(param))
             coroutine.resume(cur_coro, false)
         end
         return
@@ -455,7 +509,7 @@ local function rpc_request(sess, src, info)
     local resp = {proto = TASKMSG_TYPE.RESPONSE}
     if nil == func then
         resp.ok = false
-        log.WARN("not find method %s.", info.func)
+        log.WARN("not find method: %s.", info.func)
     else
         resp.param = {core.xpcall(func, table.unpack(info.param))}
         resp.ok = table.remove(resp.param, 1)
@@ -484,31 +538,38 @@ local function dispatch_user(msg)
     end
 end
 --远程RPC
-local function rpc_netreq(fd, info)
-    local task = core.qury(info.dst)
+local function rpc_netreq(fd, pack)
+    if not netrpc_signcheck(pack) then
+        core.close(fd)
+        log.WARN("netrpc request sign check failed.")
+        return
+    end
+    local task = core.qury(pack.dst)
     if nil == task then
-        log.WARN("netrpc request not find task: %d.", info.dst)
-        if nil ~= info.src then
+        log.WARN("netrpc request not find task: %d.", pack.dst)
+        if nil ~= pack.src then
             local resp = {
                 proto = TASKMSG_TYPE.NETRESP,
-                sock = info.sock,
-                sess = info.sess,
+                sock = pack.sock,
+                sess = pack.sess,
                 ok = false
             }
+            netrpc_sign(resp)
             core.send(fd, encode(resp), nil, PACK_TYPE.RPC)
         end
         return
     end
-    if nil == info.src then
-        core.call(task, info.func, table.unpack(info.param))
+    if nil == pack.src then
+        core.call(task, pack.func, table.unpack(pack.param))
     else
         local resp = {
             proto = TASKMSG_TYPE.NETRESP,
-            sock = info.sock,
-            sess = info.sess
+            sock = pack.sock,
+            sess = pack.sess
         }
-        resp.param = {core.request(task, info.func, table.unpack(info.param))}
+        resp.param = {core.request(task, pack.func, table.unpack(pack.param))}
         resp.ok = table.remove(resp.param, 1)
+        netrpc_sign(resp)
         core.send(fd, encode(resp), nil, PACK_TYPE.RPC)
     end
 end
@@ -516,6 +577,11 @@ local function dispatch_netrpc(fd, pack)
     if TASKMSG_TYPE.NETREQ == pack.proto then
         resume_normal(rpc_netreq, fd, pack)
     else
+        if not netrpc_signcheck(pack) then
+            core.close(fd)
+            log.WARN("netrpc response sign check failed.")
+            return
+        end
         local co = sess_coro[pack.sess]
         if nil ~= co then
             sess_coro[pack.sess] = nil
