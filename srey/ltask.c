@@ -30,13 +30,6 @@ lua_settable(lua, -3)
 lua_pushstring(lua, name);\
 lua_pushlstring(lua, val, lens);\
 lua_settable(lua, -3)
-#define LUA_TBPUSH_UD(val, lens)\
-lua_pushstring(lua, "data");\
-lua_pushlightuserdata(lua, val);\
-lua_settable(lua, -3);\
-lua_pushstring(lua, "size");\
-lua_pushinteger(lua, lens);\
-lua_settable(lua, -3)
 #define LUA_TBPUSH_NETPUB() \
 LUA_TBPUSH_NUMBER("pktype", msg->pktype);\
 LUA_TBPUSH_NUMBER("fd", msg->fd)
@@ -216,15 +209,13 @@ static inline void _ltask_netpack_data(lua_State *lua, message_ctx *msg) {
         data = ((udp_msg_ctx *)msg->data)->data;
     }
     switch (msg->pktype) {
-    case PACK_RPC:
-    {
+    case PACK_RPC: {
         size_t size;
         void *pack = simple_data(data, &size);
-        LUA_TBPUSH_UD(pack, size);
+        LUA_TBPUSH_LSTRING("data", pack, size);
         break;
     }
-    case PACK_SIMPLE:
-    {
+    case PACK_SIMPLE: {
         size_t size;
         void *pack = simple_data(data, &size);
         LUA_TBPUSH_LSTRING("data", pack, size);
@@ -268,8 +259,7 @@ static inline void _ltask_push_msg(lua_State *lua, message_ctx *msg) {
         LUA_TBPUSH_NETPUB();
         _ltask_netpack_data(lua, msg);
         break;
-    case MSG_TYPE_RECVFROM://pktype fd data(udp_msg_ctx) size
-    {
+    case MSG_TYPE_RECVFROM: {//pktype fd data(udp_msg_ctx) size
         char ip[IP_LENS];
         udp_msg_ctx *umsg = msg->data;
         netaddr_ip(&umsg->addr, ip);
@@ -283,7 +273,7 @@ static inline void _ltask_push_msg(lua_State *lua, message_ctx *msg) {
     case MSG_TYPE_USER://sess src data size
         LUA_TBPUSH_NUMBER("sess", msg->session);
         LUA_TBPUSH_NUMBER("src", msg->src);
-        LUA_TBPUSH_UD(msg->data, msg->size);
+        LUA_TBPUSH_LSTRING("data", msg->data, msg->size);
         break;
     default:
         break;
@@ -311,7 +301,7 @@ static int32_t _ltask_register(lua_State *lua) {
     CALLOC(ltask, 1, sizeof(ltask_ctx));
     strcpy(ltask->file, file);
     lua_pushlightuserdata(lua, srey_tasknew(srey, name, maxcnt, 
-        _ltask_new, _ltask_run, _ltask_free, ltask));
+                          _ltask_new, _ltask_run, _ltask_free, ltask));
     return 1;
 }
 static int32_t _ltask_qury(lua_State *lua) {
@@ -359,15 +349,15 @@ static int32_t _ltask_sslevnew(lua_State *lua) {
     char keypath[PATH_LENS] = { 0 };
     if (0 != strlen(ca)){
         SNPRINTF(capath, sizeof(capath) - 1, "%s%s%s%s%s", 
-            propath, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, ca);
+                 propath, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, ca);
     }
     if (0 != strlen(cert)) {
         SNPRINTF(certpath, sizeof(certpath) - 1, "%s%s%s%s%s", 
-            propath, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, cert);
+                 propath, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, cert);
     }
     if (0 != strlen(key)) {
         SNPRINTF(keypath, sizeof(keypath) - 1, "%s%s%s%s%s", 
-            propath, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, key);
+                 propath, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, key);
     }
     evssl_ctx *ssl = evssl_new(capath, certpath, keypath, keytype, verify);
     certs_register(srey, name, ssl);
@@ -382,7 +372,7 @@ static int32_t _ltask_sslevp12new(lua_State *lua) {
     char p12path[PATH_LENS] = { 0 };
     if (0 != strlen(p12)) {
         SNPRINTF(p12path, sizeof(p12path) - 1, "%s%s%s%s%s",
-            propath, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, p12);
+                 propath, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, p12);
     }
     evssl_ctx *ssl = evssl_p12_new(p12path, pwd, verify);
     certs_register(srey, name, ssl);

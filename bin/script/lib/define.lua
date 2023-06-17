@@ -12,7 +12,8 @@ PACK_TYPE = {
     RPC = 0x01,
     HTTP = 0x02,
     WEBSOCK = 0x03,
-    SIMPLE = 0x04
+    MQTT = 0x04,
+    SIMPLE = 0x05
 }
 --ssl文件类型
 SSLFILE_TYPE = {
@@ -38,9 +39,6 @@ CONNECT_TIMEOUT = 3000
 
 FMT_TIME = "%H:%M:%S"
 FMT_DATETIME = "%Y-%m-%d %H:%M:%S"
-
-NETRPC_TIMEDIFF = 60
-NETRPC_SIGNKEY = "x3njVVstBXMAxNdxNbKINeBnS9fVyoR6"
 
 ERR_OK = 0
 ERR_FAILED = -1

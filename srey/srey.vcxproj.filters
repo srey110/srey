@@ -114,9 +114,6 @@
       <Filter>3rd\msgpack</Filter>
     </ClCompile>
     <ClCompile Include="ltask.c" />
-    <ClCompile Include="argparse\argparse.c">
-      <Filter>3rd\argparse</Filter>
-    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <Filter Include="3rd">
@@ -130,9 +127,6 @@
     </Filter>
     <Filter Include="3rd\msgpack">
       <UniqueIdentifier>{34691955-0dcb-47f9-8546-209d440e86c8}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="3rd\argparse">
-      <UniqueIdentifier>{8e8f9805-a3e5-45a9-8c71-b77897fe650e}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
@@ -227,8 +221,5 @@
       <Filter>3rd\cjson</Filter>
     </ClInclude>
     <ClInclude Include="ltask.h" />
-    <ClInclude Include="argparse\argparse.h">
-      <Filter>3rd\argparse</Filter>
-    </ClInclude>
   </ItemGroup>
 </Project>

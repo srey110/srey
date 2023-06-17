@@ -59,8 +59,6 @@ int32_t _memicmp(const void *ptr1, const void *ptr2, size_t lens);
 void *memstr(int32_t ncs, const void *ptr, size_t plens, const void *what, size_t wlen);
 //跳过空字节
 void *skipempty(const void *ptr, size_t plens);
-//拆分 ncs 0 区分大小写  cnt 0不限制  其他只拆分前cnt个
-void split(int32_t ncs, const void *ptr, size_t plens, const void *what, size_t wlen, uint32_t cnt, arr_buf *arr);
 //转大写
 char *strupper(char *str);
 //转小写

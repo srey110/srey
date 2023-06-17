@@ -11,6 +11,7 @@ typedef struct bufnode_ctx {
     size_t misalign;
     size_t off;
 }bufnode_ctx;
+
 #define MAX_COPY_IN_EXPAND       4096
 #define MAX_REALIGN_IN_EXPAND    2048
 #define FIRST_FORMAT_IN_EXPAND   64
@@ -584,11 +585,9 @@ void _reset_pksize_adj(pksize_adj_ctx *pkadj) {
     pkadj->maxpk = DEF_RECV_SIZE;
 }
 static inline void _set_pksize_adj(pksize_adj_ctx *pkadj, size_t readed) {
-    if (readed > pkadj->maxpk) {
+    if (readed > pkadj->maxpk
+        && pkadj->maxpk < MAX_RECV_SIZE) {
         pkadj->maxpk = ROUND_UP(readed, 2);
-        if (pkadj->maxpk > MAX_RECV_SIZE) {
-            pkadj->maxpk = MAX_RECV_SIZE;
-        }
     }
 }
 int32_t buffer_from_sock(buffer_ctx *ctx, SOCKET fd, size_t *nread, pksize_adj_ctx *pkadj,

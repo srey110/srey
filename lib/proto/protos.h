@@ -8,6 +8,7 @@ typedef enum pack_type {
     PACK_RPC,
     PACK_HTTP,
     PACK_WEBSOCK,
+    PACK_MQTT,
     PACK_SIMPLE,
 }pack_type;
 

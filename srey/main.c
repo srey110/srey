@@ -1,5 +1,86 @@
 #include "ltask.h"
-#include "argparse.h"
+
+static srey_ctx *srey;
+static mutex_ctx muexit;
+static cond_ctx condexit;
+static char *_config_read() {
+    char propath[PATH_LENS] = { 0 };
+    char config[PATH_LENS] = { 0 };
+    ASSERTAB(ERR_OK == procpath(propath), "procpath failed.");
+    SNPRINTF(config, sizeof(config) - 1, "%s%s%s%s%s",
+             propath, PATH_SEPARATORSTR, "configs", PATH_SEPARATORSTR, "config.json");
+    FILE *file = fopen(config, "r");
+    if (NULL == file) {
+        return NULL;
+    }
+    fseek(file, 0, SEEK_END);
+    size_t lens = ftell(file);
+    rewind(file);
+    char *info;
+    CALLOC(info, 1, lens + 1);
+    fread(info, 1, lens, file);
+    fclose(file);
+    return info;
+}
+static void _parse_config(uint32_t *nnet, uint32_t *nworker) {
+    char *config = _config_read();
+    if (NULL == config) {
+        return;
+    }
+    cJSON *json = cJSON_Parse(config);
+    FREE(config);
+    if (NULL == json) {
+        return;
+    }
+    cJSON *val = cJSON_GetObjectItem(json, "nnet");
+    if (cJSON_IsNumber(val)) {
+        *nnet = (uint32_t)val->valueint;
+    }
+    val = cJSON_GetObjectItem(json, "nworker");
+    if (cJSON_IsNumber(val)) {
+        *nworker = (uint32_t)val->valueint;
+    }
+    cJSON_Delete(json);
+}
+static int32_t service_exit() {
+    srey_free(srey);
+    LOGFREE();
+    return ERR_OK;
+}
+static int32_t service_init() {
+    MEMCHECK();
+    unlimit();
+    LOGINIT();
+    uint32_t nnet = 1;
+    uint32_t nworker = 2;
+    _parse_config(&nnet, &nworker);
+    srey = srey_init(nnet, nworker);
+    if (ERR_OK != ltask_startup(srey)) {
+        service_exit();
+        return ERR_FAILED;
+    }
+    srey_startup(srey);
+    return ERR_OK;
+}
+static void _on_sigcb(int32_t sig, void *arg) {
+    LOG_INFO("catch sign: %d", sig);
+    cond_signal(&condexit);
+}
+static int32_t service_hug() {
+    sighandle(_on_sigcb, NULL);
+    mutex_init(&muexit);
+    cond_init(&condexit);
+    int32_t rtn = service_init();
+    if (ERR_OK == rtn) {
+        mutex_lock(&muexit);
+        cond_wait(&condexit, &muexit);
+        mutex_unlock(&muexit);
+        service_exit();
+    }
+    mutex_free(&muexit);
+    cond_free(&condexit);
+    return rtn;
+}
 
 #ifdef OS_WIN
     #pragma comment(lib, "ws2_32.lib")
@@ -13,52 +94,244 @@
             #pragma comment(lib, "libssl.lib")
         #endif
     #endif
+
+#define WINSV_STOP_TIMEOUT       10 * 1000      //windows 服务停止超时时间
+#define WINSV_START_TIMEOUT      10 * 1000      //windows 服务启动超时时间
+
+typedef WINADVAPI BOOL(WINAPI *_csd_t)(SC_HANDLE, DWORD, LPCVOID);
+typedef int32_t(*_wsv_cb)();
+static int32_t _wsv_initbasic();
+
+static _wsv_cb initcbs[] = { _wsv_initbasic, service_init, NULL };
+static _wsv_cb exitcbs[] = { service_exit, NULL };
+static char svname[PATH_LENS] = { 0 };
+static SERVICE_STATUS_HANDLE psvstatus;
+static SERVICE_STATUS svstatus;
+static HANDLE stopev = NULL;
+static const char *svdesp = "srey";
+
+static long _wsv_exception(struct _EXCEPTION_POINTERS *exp) {
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX);
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+static int32_t _wsv_initbasic() {
+    HANDLE curproc = GetCurrentProcess();
+    SetPriorityClass(curproc, HIGH_PRIORITY_CLASS);
+    SetThreadPriority(curproc, THREAD_PRIORITY_HIGHEST);
+    SetUnhandledExceptionFilter((LPTOP_LEVEL_EXCEPTION_FILTER)_wsv_exception);
+    return ERR_OK;
+}
+static void _wsv_setstatus(DWORD status) {
+    svstatus.dwCheckPoint = 0;
+    svstatus.dwCurrentState = status;
+    SetServiceStatus(psvstatus, &svstatus);
+}
+static void _wsv_pending(DWORD status, DWORD timeout) {
+    svstatus.dwCheckPoint = 0;
+    svstatus.dwWaitHint = timeout;
+    svstatus.dwCurrentState = status;
+    SetServiceStatus(psvstatus, &svstatus);
+}
+static int32_t _wsv_runfuncs(_wsv_cb *funcs) {
+    int32_t index = 0;
+    if (funcs) {
+        while (NULL != funcs[index]) {
+            svstatus.dwCheckPoint++;
+            SetServiceStatus(psvstatus, &svstatus);
+            if (ERR_OK != (funcs[index])()) {
+                return ERR_FAILED;
+            }
+            index++;
+        }
+    }
+    return ERR_OK;
+}
+DWORD WINAPI _wsv_event(DWORD req, DWORD event, LPVOID eventdata, LPVOID context) {
+    switch (req) {
+    case SERVICE_CONTROL_STOP:
+    case SERVICE_CONTROL_SHUTDOWN:
+        LOG_INFO("catch controls %d,stop service.", req);
+        _wsv_pending(SERVICE_STOP_PENDING, WINSV_STOP_TIMEOUT);
+        SetEvent(stopev);
+        _wsv_runfuncs(exitcbs);
+        CloseHandle(stopev);
+        _wsv_setstatus(SERVICE_STOPPED);
+        break;
+    default:
+        break;
+    }
+    return ERR_OK;
+}
+static void WINAPI _wsv_service(DWORD argc, LPTSTR *argv) {
+    ZERO(&svstatus, sizeof(svstatus));
+    svstatus.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
+    svstatus.dwControlsAccepted = SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN;
+    svstatus.dwCheckPoint = 0;
+    psvstatus = RegisterServiceCtrlHandlerExW((LPWSTR)svname, _wsv_event, NULL);
+    _wsv_pending(SERVICE_START_PENDING, WINSV_START_TIMEOUT);
+    stopev = CreateEvent(NULL, TRUE, FALSE, NULL);
+    if (stopev 
+        && ERR_OK == _wsv_runfuncs(initcbs)) {
+        _wsv_setstatus(SERVICE_RUNNING);
+        WaitForSingleObject(stopev, INFINITE);
+    }
+    _wsv_setstatus(SERVICE_STOPPED);
+}
+static BOOL wsv_startservice(LPCTSTR name) {
+    SERVICE_TABLE_ENTRY st[] = {
+        { (LPSTR)name, _wsv_service },
+        { NULL, NULL }
+    };
+    return StartServiceCtrlDispatcher(st);
+}
+static BOOL wsv_isinstalled(LPCTSTR name) {
+    SC_HANDLE scm = OpenSCManager(NULL, NULL, SC_MANAGER_ALL_ACCESS);
+    if (!scm) {
+        return TRUE;
+    }
+    SC_HANDLE service = OpenService(scm, name, SERVICE_QUERY_CONFIG);
+    if (!service) {
+        CloseServiceHandle(scm);
+        return FALSE;
+    }
+    CloseServiceHandle(service);
+    CloseServiceHandle(scm);
+    return TRUE;
+}
+static _csd_t _wsv_csd() {
+    HMODULE advapi32;
+    if (!(advapi32 = GetModuleHandle("ADVAPI32.DLL"))) {
+        return NULL;
+    }
+    _csd_t csd;
+    if (!(csd = (_csd_t)GetProcAddress(advapi32, "ChangeServiceConfig2A"))) {
+        return NULL;
+    }
+    return csd;
+}
+static BOOL wsv_install(LPCTSTR name) {
+    _csd_t csd = _wsv_csd();
+    if (NULL == csd) {
+        return FALSE;
+    }
+    SC_HANDLE scm = OpenSCManager(NULL, NULL, SC_MANAGER_ALL_ACCESS);
+    if (!scm) {
+        return FALSE;
+    }
+    char tmp[PATH_LENS] = { 0 };
+    char propath[PATH_LENS] = { 0 };
+    GetModuleFileName(NULL, propath, sizeof(propath));
+    SNPRINTF(tmp, sizeof(tmp) - 1, "\"%s\" \"-r\" \"%s\"", propath, name);
+    SC_HANDLE service = CreateService(scm,
+                                      name,
+                                      name,
+                                      SERVICE_ALL_ACCESS,
+                                      SERVICE_WIN32_OWN_PROCESS,// | SERVICE_INTERACTIVE_PROCESS(允许服务于桌面交互),
+                                      SERVICE_AUTO_START,
+                                      SERVICE_ERROR_NORMAL,
+                                      tmp,
+                                      NULL,
+                                      NULL,
+                                      NULL,
+                                      NULL,
+                                      NULL);
+
+    if (!service) {
+        CloseServiceHandle(scm);
+        return FALSE;
+    }
+    SERVICE_DESCRIPTION desp;
+    desp.lpDescription = (LPSTR)svdesp;
+    csd(service, SERVICE_CONFIG_DESCRIPTION, &desp);
+    CloseServiceHandle(service);
+    CloseServiceHandle(scm);
+    return TRUE;
+}
+static BOOL wsv_unInstall(LPCTSTR name) {
+    SC_HANDLE scm = OpenSCManager(NULL, NULL, SC_MANAGER_ALL_ACCESS);
+    if (!scm) {
+        return FALSE;
+    }
+    SC_HANDLE service = OpenService(scm, name, DELETE);
+    if (!service) {
+        CloseServiceHandle(scm);
+        return FALSE;
+    }
+    DeleteService(service);
+    CloseServiceHandle(service);
+    CloseServiceHandle(scm);
+    return TRUE;
+}
+static void _useage() {
+    PRINT("UseAge:-i \"name\" install service;");
+    PRINT("-u \"name\" uninstall service;");
+    PRINT("-r \"name\" run service.");
+}
 #endif
 
-mutex_ctx muexit;
-cond_ctx condexit;
-static void on_sigcb(int32_t sig, void *arg) {
-    PRINT("catch sign: %d", sig);
-    cond_signal(&condexit);
-}
 int main(int argc, char *argv[]) {
-    uint32_t nnet = 1;
-    uint32_t nworker = 2;
-    static const char *const usages[] = {
-        "[options] [args]",
-        NULL,
-    };
-    struct argparse_option options[] = {
-        OPT_HELP(),
-        OPT_GROUP("options"),
-        OPT_INTEGER('n', "int", &nnet, "set networker thread number, default 1", NULL, 0, 0),
-        OPT_INTEGER('w', "int", &nworker, "set worker thread number, default 2", NULL, 0, 0),
-        OPT_END(),
-    };
-    struct argparse argp;
-    argparse_init(&argp, options, usages, 0);
-    argparse_describe(&argp, "\nA brief description of what the program does and how it works.",
-        "\nAdditional description of the program after the description of the arguments.");
-    argparse_parse(&argp, argc, (const char **)argv);
-
-    MEMCHECK();
-    unlimit();
-    mutex_init(&muexit);
-    cond_init(&condexit);
-    sighandle(on_sigcb, NULL);
-    LOGINIT();
-
-    srey_ctx *srey = srey_init(nnet, nworker);
-    if (ERR_OK == ltask_startup(srey)) {
-        srey_startup(srey);
-        mutex_lock(&muexit);
-        cond_wait(&condexit, &muexit);
-        mutex_unlock(&muexit);
+#ifdef OS_WIN
+    if (1 == argc) {
+        return service_hug();
     }
-
-    srey_free(srey);
-    mutex_free(&muexit);
-    cond_free(&condexit);
-    LOGFREE();
-    return 0;
+    if (3 != argc) {
+        _useage();
+        return ERR_FAILED;
+    }
+    if (0 == strcmp("-i", argv[1])) {
+        if (!wsv_isinstalled(argv[2])) {
+            if (!wsv_install(argv[2])) {
+                PRINT("install service %s error!", argv[2]);
+                return ERR_FAILED;
+            } else {
+                PRINT("install service %s successfully!", argv[2]);
+                return ERR_OK;
+            }
+        } else {
+            PRINT("service %s exited!", argv[2]);
+            return ERR_FAILED;
+        }
+    } else if (0 == strcmp("-u", argv[1])) {
+        if (!wsv_isinstalled(argv[2])) {
+            PRINT("uninstall service error.service %s not exited!", argv[2]);
+            return ERR_FAILED;
+        } else {
+            if (wsv_unInstall(argv[2])) {
+                PRINT("uninstall service %s successfully!", argv[2]);
+                return ERR_OK;
+            } else {
+                PRINT("uninstall service %s failed!", argv[2]);
+                return ERR_FAILED;
+            }
+        }
+    } else if (0 == strcmp("-r", argv[1])) {
+        if (wsv_startservice(argv[2])) {
+            return ERR_OK;
+        } else {
+            return ERR_FAILED;
+        }
+    } else {
+        _useage();
+        return ERR_FAILED;
+    }
+#else
+    if (argc > 1) {
+        if (0 == strcmp ("-d", argv[1])) {
+            return service_hug();
+        }
+        PRINT("UseAge:\"./srey\" or \"./srey -d\".");
+        return ERR_FAILED;
+    }
+    pid_t pid = fork();
+    if (0 == pid) {
+        PRINT("stop service:\"kill -%d %d\".", SIGUSR1, (int32_t)getpid());
+        return service_hug();
+    } else if (pid > 0) {
+        return ERR_OK;
+    } else {
+        PRINT("fork process error!");
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+#endif
 }

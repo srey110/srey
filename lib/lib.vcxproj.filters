@@ -34,6 +34,9 @@
     <Filter Include="proto">
       <UniqueIdentifier>{6de5de1a-091e-4521-8005-38cdba96ae3e}</UniqueIdentifier>
     </Filter>
+    <Filter Include="utils\cjson">
+      <UniqueIdentifier>{e5acf1bd-7207-4eb5-add0-4f8fb028a93a}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="errcode.h">
@@ -151,6 +154,12 @@
     <ClInclude Include="proto\protocb.h">
       <Filter>proto</Filter>
     </ClInclude>
+    <ClInclude Include="proto\mqtt.h">
+      <Filter>proto</Filter>
+    </ClInclude>
+    <ClInclude Include="cjson\cJSON.h">
+      <Filter>utils\cjson</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="memory.c">
@@ -230,6 +239,12 @@
     </ClCompile>
     <ClCompile Include="proto\websock.c">
       <Filter>proto</Filter>
+    </ClCompile>
+    <ClCompile Include="proto\mqtt.c">
+      <Filter>proto</Filter>
+    </ClCompile>
+    <ClCompile Include="cjson\cJSON.c">
+      <Filter>utils\cjson</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

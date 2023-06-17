@@ -20,6 +20,7 @@
 #include "rwlock.h"
 #include "spinlock.h"
 #include "thread.h"
+#include "cjson/cJSON.h"
 
 #include "event/event.h"
 #include "service/srey.h"

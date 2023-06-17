@@ -24,7 +24,7 @@ then
     PROGRAMNAME="test"
 fi 
 #нд╪Ч╪п
-Dir="lib lib/event lib/md5 lib/proto lib/service lib/sha1"
+Dir="lib lib/cjson lib/event lib/md5 lib/proto lib/service lib/sha1"
 if [ $istest -eq 1 ]
 then
     Dir=$Dir" test"

@@ -195,57 +195,6 @@ function core.request(task, name, ...)
     srey.user(task, core.name(core.self()), sess, encode(info))
     return coroutine.yield()
 end
---验签
-local function netrpc_paramstr(info)
-    if nil == info.param then
-        return ""
-    end
-    return json.encode(info.param)
-end
-local function netreq_signstr(info)
-    return string.format("%d%d%d%d%s%s%s",
-                         info.proto, info.sock, info.dst, info.timestamp, info.func,
-                         netrpc_paramstr(info), NETRPC_SIGNKEY)
-end
-local function netresp_signstr(info)
-    return string.format("%d%d%d%d%s%s%s",
-                          info.proto, info.sock, info.sess, info.timestamp,
-                          tostring(info.ok), netrpc_paramstr(info), NETRPC_SIGNKEY)
-end
-local function netrpc_sign(info)
-    if strempty(NETRPC_SIGNKEY) then
-        return
-    end
-    info.timestamp = os.time()
-    local signstr
-    if TASKMSG_TYPE.NETREQ == info.proto then
-        signstr = netreq_signstr(info)
-    else
-        signstr = netresp_signstr(info)
-    end
-    info.sign = core.md5(signstr)
-end
-local function netrpc_signcheck(info)
-    if strempty(NETRPC_SIGNKEY) then
-        return true
-    end
-    local signstr
-    if TASKMSG_TYPE.NETREQ == info.proto then
-        signstr = netreq_signstr(info)
-    else
-        signstr = netresp_signstr(info)
-    end
-    if string.lower(info.sign) ~= core.md5(signstr) then
-        return false
-    end
-    if NETRPC_TIMEDIFF and NETRPC_TIMEDIFF > 0 then
-        if math.abs(os.time() - info.timestamp) > NETRPC_TIMEDIFF then
-            log.WARN("timestamp check failed.")
-            return false
-        end
-    end
-    return true
-end
 --[[
 描述:网络RPC调用，不等待返回
 参数：
@@ -266,7 +215,6 @@ function core.netcall(fd, task, name, ...)
         func = name,
         param = {...}
     }
-    netrpc_sign(info)
     core.send(fd, encode(info), nil, PACK_TYPE.RPC)
 end
 local function request_sock_add(fd, sess)
@@ -330,7 +278,6 @@ function core.netreq(fd, task, name, ...)
         func = name,
         param = {...}
     }
-    netrpc_sign(info)
     sess_coro[sess] = cur_coro
     request_timeout[sess] = info
     request_sock_add(fd, sess)
@@ -520,7 +467,7 @@ local function rpc_request(sess, src, info)
 end
 --自定义消息处理 msgtype sess src data size
 local function dispatch_user(msg)
-    local pack = decode(msg.data, msg.size)
+    local pack = decode(msg.data)
     if TASKMSG_TYPE.REQUEST == pack.proto then
         resume_normal(rpc_request, msg.sess, msg.src, pack)
     elseif TASKMSG_TYPE.RESPONSE == pack.proto then
@@ -539,11 +486,6 @@ local function dispatch_user(msg)
 end
 --远程RPC
 local function rpc_netreq(fd, pack)
-    if not netrpc_signcheck(pack) then
-        core.close(fd)
-        log.WARN("netrpc request sign check failed.")
-        return
-    end
     local task = core.qury(pack.dst)
     if nil == task then
         log.WARN("netrpc request not find task: %d.", pack.dst)
@@ -554,7 +496,6 @@ local function rpc_netreq(fd, pack)
                 sess = pack.sess,
                 ok = false
             }
-            netrpc_sign(resp)
             core.send(fd, encode(resp), nil, PACK_TYPE.RPC)
         end
         return
@@ -569,7 +510,6 @@ local function rpc_netreq(fd, pack)
         }
         resp.param = {core.request(task, pack.func, table.unpack(pack.param))}
         resp.ok = table.remove(resp.param, 1)
-        netrpc_sign(resp)
         core.send(fd, encode(resp), nil, PACK_TYPE.RPC)
     end
 end
@@ -577,11 +517,6 @@ local function dispatch_netrpc(fd, pack)
     if TASKMSG_TYPE.NETREQ == pack.proto then
         resume_normal(rpc_netreq, fd, pack)
     else
-        if not netrpc_signcheck(pack) then
-            core.close(fd)
-            log.WARN("netrpc response sign check failed.")
-            return
-        end
         local co = sess_coro[pack.sess]
         if nil ~= co then
             sess_coro[pack.sess] = nil
@@ -637,7 +572,7 @@ end
 local function dispatch_revc(msg)
     local pack
     if PACK_TYPE.RPC == msg.pktype then
-        pack = decode(msg.data, msg.size)
+        pack = decode(msg.data)
     else
         pack = msg.data
     end
