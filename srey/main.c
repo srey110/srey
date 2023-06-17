@@ -263,9 +263,10 @@ static BOOL wsv_unInstall(LPCTSTR name) {
     return TRUE;
 }
 static void _useage() {
-    PRINT("UseAge:-i \"name\" install service;");
-    PRINT("-u \"name\" uninstall service;");
-    PRINT("-r \"name\" run service.");
+    PRINT("UseAge:srey front-end mode;");
+    PRINT("srey -i \"service name\" install service;");
+    PRINT("srey -u \"service name\" uninstall service;");
+    PRINT("srey -r \"service name\" run service.");
 }
 #endif
 
@@ -278,31 +279,30 @@ int main(int argc, char *argv[]) {
         _useage();
         return ERR_FAILED;
     }
+    //管理员权限
     if (0 == strcmp("-i", argv[1])) {
-        if (!wsv_isinstalled(argv[2])) {
-            if (!wsv_install(argv[2])) {
-                PRINT("install service %s error!", argv[2]);
-                return ERR_FAILED;
-            } else {
-                PRINT("install service %s successfully!", argv[2]);
-                return ERR_OK;
-            }
-        } else {
+        if (wsv_isinstalled(argv[2])) {
             PRINT("service %s exited!", argv[2]);
+            return ERR_FAILED;
+        }
+        if (wsv_install(argv[2])) {
+            PRINT("install service %s successfully!", argv[2]);
+            return ERR_OK;
+        } else {
+            PRINT("install service %s error!", argv[2]);
             return ERR_FAILED;
         }
     } else if (0 == strcmp("-u", argv[1])) {
         if (!wsv_isinstalled(argv[2])) {
             PRINT("uninstall service error.service %s not exited!", argv[2]);
             return ERR_FAILED;
+        }
+        if (wsv_unInstall(argv[2])) {
+            PRINT("uninstall service %s successfully!", argv[2]);
+            return ERR_OK;
         } else {
-            if (wsv_unInstall(argv[2])) {
-                PRINT("uninstall service %s successfully!", argv[2]);
-                return ERR_OK;
-            } else {
-                PRINT("uninstall service %s failed!", argv[2]);
-                return ERR_FAILED;
-            }
+            PRINT("uninstall service %s failed!", argv[2]);
+            return ERR_FAILED;
         }
     } else if (0 == strcmp("-r", argv[1])) {
         if (wsv_startservice(argv[2])) {
