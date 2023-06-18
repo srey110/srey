@@ -12,4 +12,3 @@ srey.register("test.task4", TASK_NAME.TASK4)
 
 local task = srey.qury(TASK_NAME.TASK1)
 printd("task name:" .. srey.name(task))
-printd("session:" .. srey.session(task))

@@ -84,13 +84,11 @@ function core.name(task)
 end
 --[[
 描述:获取session
-参数：
-    task nil为本任务 :task_ctx
 返回:
     integer
 --]]
-function core.session(task)
-    return srey.session(task or curtask)
+function core.session()
+    return srey.session(curtask)
 end
 --[[
 描述:返回socket远端 ip port 
