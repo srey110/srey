@@ -5,10 +5,7 @@ local log = require("lib.log")
 local json = require("cjson")
 local msgpack = require("cmsgpack")
 local coroutine = coroutine
-local os = os
 local table = table
-local string = string
-local strempty = strempty
 local cur_coro = nil
 local static_funcs = {}--回调
 local rpc_func = {}--rpc 函数
@@ -20,19 +17,8 @@ local normal_timeout = {}--core.timeout normal_timeout[sess] = func
 local request_timeout = {}--core.request core.netreq request_timeout[sess] = info
 local request_sock = {}--core.netreq {fd = {sess...}}
 local connect_timeout = {}--core.connect connect_timeout[sess] = {sock = sock, ip = ip, port = port}
-local coro_pool = setmetatable({}, { __mode = "kv" })
 local encode = (RPC_USEJSON and json.encode or msgpack.pack)
 local decode = (RPC_USEJSON and json.decode or msgpack.unpack)
-local monitor_tb = {sess_coro = sess_coro, synsock_coro = synsock_coro, synssock_timeout = synssock_timeout,
-                    normal_timeout = normal_timeout, request_timeout = request_timeout,
-                    request_sock = request_sock, connect_timeout = connect_timeout,
-                    coro_pool = coro_pool}
-local TASKMSG_TYPE = {
-    REQUEST = 0x01,
-    RESPONSE = 0x02,
-    NETREQ = 0x03,
-    NETRESP = 0x04,
-}
 
 --[[
 描述:任务初始化完成后
@@ -158,6 +144,12 @@ function core.regrpc(name, func, describe)
     rpc_func[name] = func
     rpc_describe[name] = (nil == describe and "" or describe)
 end
+local TASKMSG_TYPE = {
+    REQUEST = 0x01,
+    RESPONSE = 0x02,
+    NETREQ = 0x03,
+    NETRESP = 0x04,
+}
 --[[
 描述:RPC调用，不等待返回
 参数：
@@ -340,15 +332,6 @@ function core.connect(ip, port, pktype, ssl, sendev)
         return sock
     end
 end
-function core.sysinfo()
-    local tm = string.format("task:%d, memory:%.2f(kb) ", core.name(), collectgarbage("count"))
-    local sizes = {}
-    for key, value in pairs(monitor_tb) do
-        table.insert(sizes, string.format("%s: %d, ", key, tbsize(value)))
-    end
-    log.INFO("%s %s", tm, table.concat(sizes))
-end
-
 --消息类型
 local MSG_TYPE = {
     STARTED = 1,
@@ -363,6 +346,7 @@ local MSG_TYPE = {
     USER = 10
 }
 --协程池
+local coro_pool = setmetatable({}, { __mode = "kv" })
 local function co_create(func)
     local co = table.remove(coro_pool)
     if nil == co then
@@ -467,7 +451,7 @@ local function rpc_request(sess, src, info)
 end
 --自定义消息处理 msgtype sess src data size
 local function dispatch_user(msg)
-    local pack = decode(msg.data)
+    local pack = decode(msg.data, msg.size)
     if TASKMSG_TYPE.REQUEST == pack.proto then
         resume_normal(rpc_request, msg.sess, msg.src, pack)
     elseif TASKMSG_TYPE.RESPONSE == pack.proto then
@@ -572,7 +556,7 @@ end
 local function dispatch_revc(msg)
     local pack
     if PACK_TYPE.RPC == msg.pktype then
-        pack = decode(msg.data)
+        pack = decode(msg.data, msg.size)
     else
         pack = msg.data
     end
@@ -610,7 +594,6 @@ function dispatch_message(msg)
         resume_normal(static_funcs.STARTED)
     elseif MSG_TYPE.CLOSING == msg.msgtype then
         resume_normal(static_funcs.CLOSING)
-        core.sysinfo()
     elseif MSG_TYPE.TIMEOUT == msg.msgtype then
         dispatch_timeout(msg.sess)
     elseif MSG_TYPE.CONNECT == msg.msgtype then--sess error

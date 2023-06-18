@@ -1039,7 +1039,7 @@ static void json_next_token(json_parse_t *json, json_token_t *token)
 
     /* Eat whitespace. */
     while (1) {
-        ////支持userdata
+        //支持userdata
         if (json->ptr - json->data >= json->lens) {
             ch = '\0';
         } else {

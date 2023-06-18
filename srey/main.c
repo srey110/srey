@@ -1,4 +1,4 @@
-#include "ltask.h"
+#include "tasks/tasks.h"
 
 static srey_ctx *srey;
 static mutex_ctx muexit;
@@ -55,10 +55,12 @@ static int32_t service_init() {
     uint32_t nworker = 2;
     _parse_config(&nnet, &nworker);
     srey = srey_init(nnet, nworker);
+#if WITH_LUA
     if (ERR_OK != ltask_startup(srey)) {
         service_exit();
         return ERR_FAILED;
     }
+#endif
     srey_startup(srey);
     return ERR_OK;
 }
@@ -104,11 +106,9 @@ static int32_t _wsv_initbasic();
 
 static _wsv_cb initcbs[] = { _wsv_initbasic, service_init, NULL };
 static _wsv_cb exitcbs[] = { service_exit, NULL };
-static char svname[PATH_LENS] = { 0 };
 static SERVICE_STATUS_HANDLE psvstatus;
 static SERVICE_STATUS svstatus;
 static HANDLE stopev = NULL;
-static const char *svdesp = "srey";
 
 static long _wsv_exception(struct _EXCEPTION_POINTERS *exp) {
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX);
@@ -167,7 +167,8 @@ static void WINAPI _wsv_service(DWORD argc, LPTSTR *argv) {
     svstatus.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
     svstatus.dwControlsAccepted = SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN;
     svstatus.dwCheckPoint = 0;
-    psvstatus = RegisterServiceCtrlHandlerExW((LPWSTR)svname, _wsv_event, NULL);
+    char name[PATH_LENS] = { 0 };
+    psvstatus = RegisterServiceCtrlHandlerExW((LPWSTR)name, _wsv_event, NULL);
     _wsv_pending(SERVICE_START_PENDING, WINSV_START_TIMEOUT);
     stopev = CreateEvent(NULL, TRUE, FALSE, NULL);
     if (stopev 
@@ -240,6 +241,7 @@ static BOOL wsv_install(LPCTSTR name) {
         CloseServiceHandle(scm);
         return FALSE;
     }
+    const char *svdesp = "srey";
     SERVICE_DESCRIPTION desp;
     desp.lpDescription = (LPSTR)svdesp;
     csd(service, SERVICE_CONFIG_DESCRIPTION, &desp);

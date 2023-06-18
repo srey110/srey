@@ -5,7 +5,6 @@
 # Make By    :
 # Date Time  :2011/06/15 
 #***********************************************
-
 UsAge="UsAge:\"./mk.sh\" or \"./mk.sh x86/x64\" or \"./mk.sh clean\" or \"./mk.sh test\""
 
 istest=0
@@ -16,20 +15,39 @@ then
         istest=1
     fi
 fi
-
 #生成程序的名称
 PROGRAMNAME="srey"
 if [ $istest -eq 1 ]
 then
     PROGRAMNAME="test"
-fi 
+fi
+OSNAME=`uname`
+withlua=0
+wk="awk"
+if [ "$OSNAME" = "SunOS" ]
+then
+	wk="nawk"
+fi
+while read line
+do
+    val=`echo $line|$wk -F ' ' '{print $2}'`
+    if [ "$val" = "WITH_LUA" ]
+    then
+        withlua=`echo $line|$wk -F ' ' '{print int($3)}'`
+    fi
+done < `pwd`/lib/config.h
+echo "WITH_LUA:"$withlua
 #文件夹
 Dir="lib lib/cjson lib/event lib/md5 lib/proto lib/service lib/sha1"
 if [ $istest -eq 1 ]
 then
     Dir=$Dir" test"
 else
-    Dir=$Dir" srey srey/argparse srey/lua srey/luacjson srey/msgpack"
+    if [ $withlua -eq 1 ]
+    then
+        Dir=$Dir" lualib lualib/lua lualib/luacjson lualib/msgpack lualib/pb"
+    fi 
+    Dir=$Dir" srey srey/tasks"
 fi
 #SSL库
 SSLLIB="-lssl -lcrypto"
@@ -44,7 +62,6 @@ MAINFILE="main.c"
 #附加包含库
 INCLUDELIB="-lpthread -lm"
 #系统 位数
-OSNAME=`uname`
 if [ "$OSNAME" != "Darwin" ]
 then
     INCLUDELIB=$INCLUDELIB" -lrt"

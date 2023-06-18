@@ -292,11 +292,11 @@ static inline websock_pack_ctx *_websock_parse_pllens(buffer_ctx *buf, size_t bl
             return NULL;
         }
         MALLOC(pack, sizeof(websock_pack_ctx) + (size_t)pllens);
-        pack->dlens = pllens;
+        pack->dlens = (size_t)pllens;
         if (0 == mask) {
-            pack->remain = pllens;
+            pack->remain = (size_t)pllens;
         } else {
-            pack->remain = sizeof(pack->key) + pllens;
+            pack->remain = sizeof(pack->key) + (size_t)pllens;
         }
         ASSERTAB(atlest == buffer_drain(buf, atlest), "drain buffer failed.");
     } else {

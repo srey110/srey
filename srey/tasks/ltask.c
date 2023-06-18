@@ -1,4 +1,5 @@
 #include "ltask.h"
+#if WITH_LUA
 #include "lua/lua.h"
 #include "lua/lapi.h"
 #include "lua/lstring.h"
@@ -7,6 +8,10 @@
 #include "proto/http.h"
 #include "proto/simple.h"
 #include "proto/websock.h"
+
+#ifdef OS_WIN
+#pragma comment(lib, "lualib.lib")
+#endif
 
 typedef struct ltask_ctx{
     int32_t ref;
@@ -29,6 +34,13 @@ lua_settable(lua, -3)
 #define LUA_TBPUSH_LSTRING(name, val, lens)\
 lua_pushstring(lua, name);\
 lua_pushlstring(lua, val, lens);\
+lua_settable(lua, -3)
+#define LUA_TBPUSH_UD(val, lens)\
+lua_pushstring(lua, "data");\
+lua_pushlightuserdata(lua, val);\
+lua_settable(lua, -3);\
+lua_pushstring(lua, "size");\
+lua_pushinteger(lua, lens);\
 lua_settable(lua, -3)
 #define LUA_TBPUSH_NETPUB() \
 LUA_TBPUSH_NUMBER("pktype", msg->pktype);\
@@ -98,6 +110,7 @@ static inline int32_t _ltask_dofile(lua_State *lua, const char *file) {
 int32_t ltask_startup(srey_ctx *ctx) {
     srey = ctx;
     netev = srey_netev(srey);
+    PRINT(LUA_RELEASE);
     ASSERTAB(ERR_OK == procpath(propath), "procpath failed.");
     SNPRINTF(luapath, sizeof(luapath) - 1, "%s%s%s%s",
         propath, PATH_SEPARATORSTR, "script", PATH_SEPARATORSTR);
@@ -212,7 +225,7 @@ static inline void _ltask_netpack_data(lua_State *lua, message_ctx *msg) {
     case PACK_RPC: {
         size_t size;
         void *pack = simple_data(data, &size);
-        LUA_TBPUSH_LSTRING("data", pack, size);
+        LUA_TBPUSH_UD(pack, size);
         break;
     }
     case PACK_SIMPLE: {
@@ -273,7 +286,7 @@ static inline void _ltask_push_msg(lua_State *lua, message_ctx *msg) {
     case MSG_TYPE_USER://sess src data size
         LUA_TBPUSH_NUMBER("sess", msg->session);
         LUA_TBPUSH_NUMBER("src", msg->src);
-        LUA_TBPUSH_LSTRING("data", msg->data, msg->size);
+        LUA_TBPUSH_UD(msg->data, msg->size);
         break;
     default:
         break;
@@ -708,3 +721,5 @@ LUAMOD_API int luaopen_srey(lua_State *lua) {
     luaL_newlib(lua, reg);
     return 1;
 }
+
+#endif
