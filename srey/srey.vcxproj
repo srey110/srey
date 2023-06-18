@@ -159,6 +159,7 @@
   <ItemGroup>
     <ClCompile Include="main.c" />
     <ClCompile Include="tasks\ltask.c" />
+    <ClCompile Include="tasks\tasks.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="tasks\ltask.h" />

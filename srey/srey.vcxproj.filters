@@ -5,6 +5,9 @@
     <ClCompile Include="tasks\ltask.c">
       <Filter>tasks</Filter>
     </ClCompile>
+    <ClCompile Include="tasks\tasks.c">
+      <Filter>tasks</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <Filter Include="tasks">
@@ -12,10 +15,10 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="tasks\ltask.h">
+    <ClInclude Include="tasks\tasks.h">
       <Filter>tasks</Filter>
     </ClInclude>
-    <ClInclude Include="tasks\tasks.h">
+    <ClInclude Include="tasks\ltask.h">
       <Filter>tasks</Filter>
     </ClInclude>
   </ItemGroup>

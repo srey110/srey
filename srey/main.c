@@ -55,12 +55,10 @@ static int32_t service_init() {
     uint32_t nworker = 2;
     _parse_config(&nnet, &nworker);
     srey = srey_init(nnet, nworker);
-#if WITH_LUA
-    if (ERR_OK != ltask_startup(srey)) {
+    if (ERR_OK != task_startup(srey)) {
         service_exit();
         return ERR_FAILED;
     }
-#endif
     srey_startup(srey);
     return ERR_OK;
 }

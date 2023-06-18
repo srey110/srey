@@ -107,13 +107,13 @@ static inline int32_t _ltask_dofile(lua_State *lua, const char *file) {
     }
     return ERR_OK;
 }
-int32_t ltask_startup(srey_ctx *ctx) {
+int32_t _ltask_startup(srey_ctx *ctx) {
     srey = ctx;
     netev = srey_netev(srey);
     PRINT(LUA_RELEASE);
     ASSERTAB(ERR_OK == procpath(propath), "procpath failed.");
     SNPRINTF(luapath, sizeof(luapath) - 1, "%s%s%s%s",
-        propath, PATH_SEPARATORSTR, "script", PATH_SEPARATORSTR);
+             propath, PATH_SEPARATORSTR, "script", PATH_SEPARATORSTR);
     lua_State *lua = _ltask_luainit(NULL);
     if (NULL == lua) {
         return ERR_FAILED;
