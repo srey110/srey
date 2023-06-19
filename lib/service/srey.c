@@ -80,7 +80,7 @@ static inline void _message_clean(message_ctx *msg) {
         break;
     }
 }
-static inline void _task_run(srey_ctx *ctx, task_ctx *task) {
+static inline void _task_run(task_ctx *task) {
     message_ctx *tmp;
     message_ctx msg;
     mutex_lock(&task->mutask);
@@ -407,7 +407,7 @@ static void _loop_worker(void *arg) {
             continue;
         }
         //执行
-        _task_run(ctx, task);
+        _task_run(task);
         //是否加回全局队列
         mutex_lock(&task->mutask);
         if (0 == qu_message_size(&task->qumsg)) {
