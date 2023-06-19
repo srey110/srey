@@ -42,7 +42,7 @@ struct task_ctx {
     task_free _free;
     void *handle;
     srey_ctx *srey;
-    atomic64_t session;
+    uint64_t session;
     mutex_ctx mutask;
     qu_message qumsg;
 };
@@ -205,7 +205,7 @@ int32_t task_name(task_ctx *task) {
     return task->name;
 }
 uint64_t task_session(task_ctx *task) {
-    return (uint64_t)ATOMIC64_ADD(&task->session, 1);
+    return task->session++;
 }
 void task_user(task_ctx *dst, int32_t src, uint64_t session, void *data, size_t size, int32_t copy) {
     message_ctx msg;
