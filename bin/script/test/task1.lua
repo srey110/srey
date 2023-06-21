@@ -129,7 +129,10 @@ local function ontimeout()
         callonce = true
     end
     testrpc()
-    
+    testwebsock(true, 15003)
+    testwebsock(true, 15004)
+    testwebsock(false, 15003)
+    testwebsock(false, 15004)
     testhttp()
     srey.timeout(3000, ontimeout)
 end
@@ -163,24 +166,20 @@ srey.accepted(onaccept)
 
 local function echo(pktype, fd, data, size)
     if PACK_TYPE.SIMPLE == pktype then
-        if math.random(1, 100) <= 1 then
-            srey.close(fd)
-            return
-        end
-        data = simple.unpack(data, 1)
-        srey.send(fd, data.data, data.size, pktype)
+        local pack = simple.unpack(data, 1)
+        srey.send(fd, pack.data, pack.size, pktype)
     elseif PACK_TYPE.WEBSOCK == pktype then
-        data = websock.unpack(data, 1)
-        if WEBSOCK_PROTO.PING == data.proto then
+        local pack = websock.unpack(data, 1)
+        if WEBSOCK_PROTO.PING == pack.proto then
             --printd("PING")
-        elseif WEBSOCK_PROTO.CLOSE == data.proto then
+        elseif WEBSOCK_PROTO.CLOSE == pack.proto then
             --printd("CLOSE")
-        elseif WEBSOCK_PROTO.TEXT == data.proto  then
-            --printd("TEXT size: %d", data.size)
-        elseif WEBSOCK_PROTO.BINARY == data.proto  then
-            --printd("BINARY size: %d", data.size)
-        elseif WEBSOCK_PROTO.CONTINUE == data.proto then
-            --printd("CONTINUE fin: %d size: %d", data.fin, data.size)
+        elseif WEBSOCK_PROTO.TEXT == pack.proto  then
+            --printd("TEXT size: %d", pack.size)
+        elseif WEBSOCK_PROTO.BINARY == pack.proto  then
+            --printd("BINARY size: %d", pack.size)
+        elseif WEBSOCK_PROTO.CONTINUE == pack.proto then
+            --printd("CONTINUE fin: %d size: %d", pack.fin, pack.size)
         end
     end
 end
