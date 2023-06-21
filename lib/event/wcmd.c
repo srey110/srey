@@ -66,10 +66,11 @@ void _on_cmd_remove(watcher_ctx *watcher, cmd_ctx *cmd) {
         _free_udp(el);
     }
 }
-void ev_send(ev_ctx *ctx, SOCKET fd, void *data, size_t len, int32_t copy) {
+void ev_send(ev_ctx *ctx, SOCKET fd, void *data, size_t len, uint8_t synflag, int32_t copy) {
     ASSERTAB(INVALID_SOCK != fd, ERRSTR_INVPARAM);
     cmd_ctx cmd;
     cmd.cmd = CMD_SEND;
+    cmd.flag = synflag;
     cmd.fd = fd;
     cmd.len = len;
     if (copy) {
@@ -80,10 +81,12 @@ void ev_send(ev_ctx *ctx, SOCKET fd, void *data, size_t len, int32_t copy) {
     }
     _SEND_CMD(ctx, cmd);
 }
-void ev_sendto(ev_ctx *ctx, SOCKET fd, const char *host, const uint16_t port, void *data, size_t len) {
+void ev_sendto(ev_ctx *ctx, SOCKET fd, const char *host, const uint16_t port,
+    void *data, size_t len, uint8_t synflag) {
     ASSERTAB(INVALID_SOCK != fd, ERRSTR_INVPARAM);
     cmd_ctx cmd;
     cmd.cmd = CMD_SEND;
+    cmd.flag = synflag;
     cmd.fd = fd;
     cmd.len = len;
     MALLOC(cmd.data, sizeof(netaddr_ctx) + len);
@@ -107,9 +110,9 @@ void _on_cmd_send(watcher_ctx *watcher, cmd_ctx *cmd) {
     buf.len = cmd->len;
     buf.offset = 0;
     if (SOCK_STREAM == el->type) {
-        _add_bufs_trypost(el, &buf);
+        _add_bufs_trypost(el, &buf, cmd->flag);
     } else {
-        _add_bufs_trysendto(el, &buf);
+        _add_bufs_trysendto(el, &buf, cmd->flag);
     }
 }
 void ev_close(ev_ctx *ctx, SOCKET fd) {

@@ -2,9 +2,10 @@
 #define WEBSOCK_H_
 
 #include "event/event.h"
+struct task_ctx;
 
 void *websock_unpack(ev_ctx *ev, SOCKET fd, buffer_ctx *buf, size_t *size, ud_cxt *ud, int32_t *closefd);
-int32_t websock_client_reqhs(ev_ctx *ev, SOCKET fd, ud_cxt *ud);
+SOCKET websock_connect(struct task_ctx *task, const char *host, uint16_t port, struct evssl_ctx *evssl);
 
 void websock_ping(ev_ctx *ev, SOCKET fd);
 void websock_pong(ev_ctx *ev, SOCKET fd);

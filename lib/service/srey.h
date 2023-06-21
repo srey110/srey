@@ -4,6 +4,12 @@
 #include "event/event.h"
 #include "proto/protos.h"
 
+typedef enum timeout_type {
+    TMO_TYPE_SLEEP = 0x01,
+    TMO_TYPE_NORMAL,
+    TMO_TYPE_CONNECT,
+    TMO_TYPE_SYNSEND
+}timeout_type;
 typedef enum msg_type {
     MSG_TYPE_STARTED = 0x01,
     MSG_TYPE_CLOSING,
@@ -14,14 +20,14 @@ typedef enum msg_type {
     MSG_TYPE_SEND,
     MSG_TYPE_CLOSE,
     MSG_TYPE_RECVFROM,
-    MSG_TYPE_USER
+    MSG_TYPE_REQUEST,
+    MSG_TYPE_RESPONSE
 }msg_type;
-typedef struct srey_ctx srey_ctx;
-typedef struct task_ctx task_ctx;
 typedef struct message_ctx {
     int8_t msgtype;//msg_type
     int8_t pktype;//unpack_type
-    int32_t error;
+    int8_t erro;
+    uint8_t synflag;
     int32_t src;
     SOCKET fd;
     void *data;
@@ -33,10 +39,15 @@ typedef struct udp_msg_ctx {
     char data[0];
 }udp_msg_ctx;
 
+#define CONNECT_TIMEOUT       3000
+#define NETRD_TIMEOUT         3000
 #define QUMSG_INITLENS        512
+typedef struct srey_ctx srey_ctx;
+typedef struct task_ctx task_ctx;
 typedef void *(*task_new)(task_ctx *task, void *arg);
 typedef void(*task_run)(task_ctx *task, message_ctx *msg);
 typedef void(*task_free)(task_ctx *task);
+extern srey_ctx *srey;
 
 srey_ctx *srey_init(uint32_t nnet, uint32_t nworker);
 void srey_startup(srey_ctx *ctx);
@@ -58,13 +69,19 @@ void *task_handle(task_ctx *task);
 int32_t task_name(task_ctx *task);
 uint64_t task_session(task_ctx *task);
 
-void task_user(task_ctx *dst, int32_t src, uint64_t session, void *data, size_t size, int32_t copy);
+void task_sleep(task_ctx *task, uint32_t timeout);
 void task_timeout(task_ctx *task, uint64_t session, uint32_t timeout);
+void task_call(task_ctx *dst, void *data, size_t size, int32_t copy);
+void *task_request(task_ctx *dst, task_ctx *src, void *data, size_t size, int32_t copy, size_t *lens);
+void task_response(task_ctx *dst, uint64_t sess, void *data, size_t size, int32_t copy);
 int32_t task_netlisten(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
     const char *host, uint16_t port, int32_t sendev);
-SOCKET task_netconnect(task_ctx *task, pack_type pktype, uint64_t session, struct evssl_ctx *evssl,
+SOCKET task_netconnect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
     const char *host, uint16_t port, int32_t sendev);
-SOCKET task_netudp(task_ctx *task, pack_type pktype, const char *host, uint16_t port);
-void task_netsend(ev_ctx *ev, SOCKET fd, void *data, size_t len, pack_type pktype);
+SOCKET task_netudp(task_ctx *task, const char *host, uint16_t port);
+
+void *task_synsendto(task_ctx *task, SOCKET fd, const char *host, const uint16_t port, void *data, size_t len, size_t *size);
+void *task_synsend(task_ctx *task, SOCKET fd, void *data, size_t len, size_t *size, pack_type pktype);
+void task_netsend(ev_ctx *ev, SOCKET fd, void *data, size_t len, uint8_t synflag, pack_type pktype);
 
 #endif //SREY_H_

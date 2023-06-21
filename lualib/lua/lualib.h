@@ -53,7 +53,10 @@ LUAMOD_API int (luaopen_cmsgpack_safe)(lua_State *L);
 #define LUA_PBPACKNAME "pb"
 LUAMOD_API int (luaopen_pb)(lua_State *L);
 
-#define LUA_SREYLIBNAME "srey.core"
+#define LUA_SREYUTILSNAME "srey.utils"
+LUAMOD_API int (luaopen_srey_utils)(lua_State *L);
+
+#define LUA_SREYNAME "srey.core"
 LUAMOD_API int (luaopen_srey)(lua_State *L);
 
 /* open all previous libraries */

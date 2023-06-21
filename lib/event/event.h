@@ -11,8 +11,9 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *host, const 
 SOCKET ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *host, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud);
 SOCKET ev_udp(ev_ctx *ctx, const char *host, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud);
 
-void ev_send(ev_ctx *ctx, SOCKET fd, void *data, size_t len, int32_t copy);
-void ev_sendto(ev_ctx *ctx, SOCKET fd, const char *host, const uint16_t port, void *data, size_t len);
+void ev_send(ev_ctx *ctx, SOCKET fd, void *data, size_t len, uint8_t synflag, int32_t copy);
+void ev_sendto(ev_ctx *ctx, SOCKET fd, const char *host, const uint16_t port, 
+    void *data, size_t len, uint8_t synflag);
 void ev_close(ev_ctx *ctx, SOCKET fd);
 
 void ev_setud_typstat(ev_ctx *ctx, SOCKET fd, int8_t pktype, int8_t status);

@@ -359,8 +359,9 @@ static void _on_send_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
         oltcp->status = oltcp->status & ~STATUS_SENDING;
     }
 }
-void _add_bufs_trypost(sock_ctx *skctx, off_buf_ctx *buf) {
+void _add_bufs_trypost(sock_ctx *skctx, off_buf_ctx *buf, uint8_t synflag) {
     overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
+    oltcp->ud.synflag = synflag;
     qu_off_buf_push(&oltcp->buf_s, buf);
     if (!(oltcp->status & STATUS_SENDING)
         && !(oltcp->status & STATUS_ERROR)) {
@@ -718,8 +719,9 @@ static inline void _on_sendto_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD by
         oludp->status = oludp->status & ~STATUS_SENDING;
     }
 }
-void _add_bufs_trysendto(sock_ctx *skctx, off_buf_ctx *buf) {
+void _add_bufs_trysendto(sock_ctx *skctx, off_buf_ctx *buf, uint8_t synflag) {
     overlap_udp_ctx *oludp = UPCAST(skctx, overlap_udp_ctx, ol_r);
+    oludp->ud.synflag = synflag;
     qu_off_buf_push(&oludp->buf_s, buf);
     if (!(oludp->status & STATUS_SENDING)
         && !(oludp->status & STATUS_ERROR)) {

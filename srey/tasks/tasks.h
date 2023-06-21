@@ -1,8 +1,8 @@
 #ifndef TASKS_H_
 #define TASKS_H_
 
-#include "ltask.h"
+#include "lib.h"
 
-int32_t task_startup(srey_ctx *ctx);
+int32_t task_startup();
 
 #endif//TASKS_H_

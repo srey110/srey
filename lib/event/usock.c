@@ -316,11 +316,16 @@ static void _on_rw_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
         pool_push(&watcher->pool, &tcp->sock);
     }
 }
-void _add_write_inloop(watcher_ctx *watcher, sock_ctx *skctx, off_buf_ctx *buf) {
-    qu_off_buf_push((SOCK_STREAM == skctx->type) ?
-                     &UPCAST(skctx, tcp_ctx, sock)->buf_s :
-                     &UPCAST(skctx, udp_ctx, sock)->buf_s, 
-                     buf);
+void _add_write_inloop(watcher_ctx *watcher, sock_ctx *skctx, off_buf_ctx *buf, uint8_t synflag) {
+    if (SOCK_STREAM == skctx->type) {
+        tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
+        tcp->ud.synflag = synflag;
+        qu_off_buf_push(&tcp->buf_s, buf);
+    } else {
+        udp_ctx *udp = UPCAST(skctx, udp_ctx, sock);
+        udp->ud.synflag = synflag;
+        qu_off_buf_push(&udp->buf_s, buf);
+    }
     if (!(skctx->events & EVENT_WRITE)) {
         _add_event(watcher, skctx->fd, &skctx->events, EVENT_WRITE, skctx);
     }

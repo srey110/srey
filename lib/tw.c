@@ -31,10 +31,6 @@ static void _insert(tw_slot_ctx *slot, tw_node_ctx *node) {
     slot->tail = node;
 }
 void tw_add(tw_ctx *ctx, const uint32_t timeout, void(*tw_cb)(ud_cxt *), ud_cxt *ud) {
-    if (0 == timeout) {
-        tw_cb(ud);
-        return;
-    }
     tw_node_ctx *node;
     MALLOC(node, sizeof(tw_node_ctx));
     COPY_UD(node->ud, ud);

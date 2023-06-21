@@ -2,24 +2,33 @@
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
     <ClCompile Include="main.c" />
-    <ClCompile Include="tasks\ltask.c">
-      <Filter>tasks</Filter>
-    </ClCompile>
     <ClCompile Include="tasks\tasks.c">
       <Filter>tasks</Filter>
+    </ClCompile>
+    <ClCompile Include="ltasks\lreg.c">
+      <Filter>ltasks</Filter>
+    </ClCompile>
+    <ClCompile Include="ltasks\ltask.c">
+      <Filter>ltasks</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <Filter Include="tasks">
       <UniqueIdentifier>{fabfe5af-2f5a-4d69-b198-b89a7facbfc6}</UniqueIdentifier>
     </Filter>
+    <Filter Include="ltasks">
+      <UniqueIdentifier>{89dccd9f-87ab-426b-8905-bfc3e48849a0}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="tasks\tasks.h">
       <Filter>tasks</Filter>
     </ClInclude>
-    <ClInclude Include="tasks\ltask.h">
-      <Filter>tasks</Filter>
+    <ClInclude Include="ltasks\ltask.h">
+      <Filter>ltasks</Filter>
+    </ClInclude>
+    <ClInclude Include="ltasks\lpushtb.h">
+      <Filter>ltasks</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

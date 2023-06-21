@@ -1,6 +1,6 @@
 #include "tasks/tasks.h"
 
-static srey_ctx *srey;
+srey_ctx *srey;
 static mutex_ctx muexit;
 static cond_ctx condexit;
 static char *_config_read() {
@@ -55,7 +55,7 @@ static int32_t service_init() {
     uint32_t nworker = 2;
     _parse_config(&nnet, &nworker);
     srey = srey_init(nnet, nworker);
-    if (ERR_OK != task_startup(srey)) {
+    if (ERR_OK != task_startup()) {
         service_exit();
         return ERR_FAILED;
     }

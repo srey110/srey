@@ -28,7 +28,8 @@ typedef struct sock_ctx {
     event_cb ev_cb;
 }sock_ctx;
 typedef struct cmd_ctx {
-    int32_t cmd;
+    uint8_t cmd;
+    uint8_t flag;
     SOCKET fd;
     void *data;
     size_t len;
@@ -86,8 +87,8 @@ void _remove_fd(watcher_ctx *watcher, SOCKET fd);
 int32_t _join_iocp(watcher_ctx *watcher, SOCKET fd);
 void _add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn);
 int32_t _post_recv(sock_ctx *skctx, DWORD  *bytes, DWORD  *flag, IOV_TYPE *wsabuf, DWORD niov);
-void _add_bufs_trypost(sock_ctx *skctx, off_buf_ctx *buf);
-void _add_bufs_trysendto(sock_ctx *skctx, off_buf_ctx *buf);
+void _add_bufs_trypost(sock_ctx *skctx, off_buf_ctx *buf, uint8_t synflag);
+void _add_bufs_trysendto(sock_ctx *skctx, off_buf_ctx *buf, uint8_t synflag);
 void _sk_shutdown(sock_ctx *skctx);
 void _set_error(sock_ctx *skctx);
 void _setud_typstat(sock_ctx *skctx, char *typsta);

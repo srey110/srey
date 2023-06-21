@@ -1,4 +1,4 @@
 {
-    "nnet": 2,
-    "nworker": 4
+    "nnet": 1,
+    "nworker": 2
 }

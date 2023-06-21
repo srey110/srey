@@ -54,7 +54,8 @@ typedef enum UEV_CMDS {
     CMD_TOTAL,
 }UEV_CMDS;
 typedef struct cmd_ctx {
-    int32_t cmd;
+    uint8_t cmd;
+    uint8_t flag;
     SOCKET fd;
     void *data;
     size_t len;
@@ -108,7 +109,7 @@ void _on_cmd_setud_data(watcher_ctx *watcher, cmd_ctx *cmd);
 void _add_lsn_inloop(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx);
 void _add_conn_inloop(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx);
 void _add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn);
-void _add_write_inloop(watcher_ctx *watcher, sock_ctx *skctx, off_buf_ctx *buf);
+void _add_write_inloop(watcher_ctx *watcher, sock_ctx *skctx, off_buf_ctx *buf, uint8_t synflag);
 void _add_udp_inloop(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx);
 
 void _add_fd(watcher_ctx *watcher, sock_ctx *skctx);

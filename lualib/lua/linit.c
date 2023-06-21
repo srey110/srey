@@ -53,7 +53,8 @@ static const luaL_Reg loadedlibs[] = {
   {LUA_CJSONLIBNAME, luaopen_cjson},
   {LUA_CMSGPACKNAME, luaopen_cmsgpack_safe},
   {LUA_PBPACKNAME, luaopen_pb},
-  {LUA_SREYLIBNAME, luaopen_srey},
+  {LUA_SREYUTILSNAME, luaopen_srey_utils},
+  {LUA_SREYNAME, luaopen_srey},
   {NULL, NULL}
 };
 

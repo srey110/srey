@@ -12,8 +12,6 @@
 #define TIME_LENS            64
 #define IP_LENS              64
 #define PORT_LENS            8
-#define SOCKKPA_DELAY        10
-#define SOCKKPA_INTVL        1
 #define INVALID_FD           -1
 #define TIMER_ACCURACY       (1000 * 1000)
 

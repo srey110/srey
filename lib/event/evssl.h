@@ -7,7 +7,6 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 
-typedef struct evssl_ctx evssl_ctx;
 #define SSLCTX_ERR() ERR_error_string(ERR_get_error(), NULL)
 #define FREE_SSL(ssl)\
 do {\
@@ -16,6 +15,7 @@ do {\
         ssl = NULL; \
     }\
 }while (0)
+typedef struct evssl_ctx evssl_ctx;
 
 //SSL_FILETYPE_PEM SSL_FILETYPE_ASN1
 evssl_ctx *evssl_new(const char *ca, const char *cert, const char *key, int32_t type, int32_t verify);

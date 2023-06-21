@@ -43,11 +43,11 @@ if [ $istest -eq 1 ]
 then
     Dir=$Dir" test"
 else
+    Dir=$Dir" srey srey/tasks"
     if [ $withlua -eq 1 ]
     then
-        Dir=$Dir" lualib lualib/lua lualib/luacjson lualib/msgpack lualib/pb"
+        Dir=$Dir" lualib lualib/lua lualib/luacjson lualib/msgpack lualib/pb srey/ltasks"
     fi 
-    Dir=$Dir" srey srey/tasks"
 fi
 #SSL¿â
 SSLLIB="-lssl -lcrypto"
@@ -109,6 +109,10 @@ CFLAGS="-Wall -O2"
 if [ "$X64" = "x64" ]
 then
     CFLAGS=$CFLAGS" -m64"
+fi
+if [ "$OSNAME" = "Darwin" ]
+then
+    CFLAGS=$CFLAGS" -Wunused-function"
 fi
 LIBDIR=$Dir
 Clean()
