@@ -16,10 +16,6 @@ typedef struct ltask_ctx {
 static char propath[PATH_LENS] = { 0 };
 static char luapath[PATH_LENS] = { 0 };
 
-#define LUA_TBPUSH_NETPUB() \
-LUA_TBPUSH_NUMBER("pktype", msg->pktype);\
-LUA_TBPUSH_NUMBER("fd", msg->fd)
-
 static inline void _ltask_setpath(lua_State *lua, const char *name, const char *exname) {
     lua_getglobal(lua, "package");
     lua_getfield(lua, -1, name);
@@ -112,52 +108,6 @@ static inline void _ltask_free(task_ctx *task) {
     lua_close(ltask->lua);
     FREE(ltask);
 }
-static inline void _ltask_push_msg(lua_State *lua, message_ctx *msg) {
-    switch (msg->msgtype) {
-    case MSG_TYPE_STARTED:
-        break;
-    case MSG_TYPE_CLOSING:
-        break;
-    case MSG_TYPE_TIMEOUT://sess
-        LUA_TBPUSH_NUMBER("sess", msg->session);
-        break;
-    case MSG_TYPE_CONNECT://pktype fd err
-        LUA_TBPUSH_NETPUB();
-        LUA_TBPUSH_NUMBER("err", msg->erro);
-        break;
-    case MSG_TYPE_ACCEPT://pktype fd
-        LUA_TBPUSH_NETPUB();
-        break;
-    case MSG_TYPE_SEND://pktype fd size
-        LUA_TBPUSH_NETPUB();
-        LUA_TBPUSH_NUMBER("size", msg->size);
-        break;
-    case MSG_TYPE_CLOSE://pktype fd
-        LUA_TBPUSH_NETPUB();
-        break;
-    case MSG_TYPE_RECV://pktype fd data size
-        LUA_TBPUSH_NETPUB();
-        LUA_TBPUSH_UD(msg->data, msg->size);
-        break;
-    case MSG_TYPE_RECVFROM: {//fd ip port data size
-        char ip[IP_LENS];
-        udp_msg_ctx *umsg = msg->data;
-        netaddr_ip(&umsg->addr, ip);
-        LUA_TBPUSH_NUMBER("fd", msg->fd);
-        LUA_TBPUSH_STRING("ip", ip);
-        LUA_TBPUSH_NUMBER("port", netaddr_port(&umsg->addr));
-        LUA_TBPUSH_UD(umsg->data, msg->size);
-        break;
-    }
-    case MSG_TYPE_REQUEST://sess src data size
-        LUA_TBPUSH_NUMBER("sess", msg->session);
-        LUA_TBPUSH_NUMBER("src", msg->src);
-        LUA_TBPUSH_UD(msg->data, msg->size);
-        break;
-    default:
-        break;
-    }
-}
 static inline void _ltask_run(task_ctx *task, message_ctx *msg) {
     ltask_ctx *ltask = task_handle(task);
     if (0 == ltask->ref) {
@@ -165,10 +115,9 @@ static inline void _ltask_run(task_ctx *task, message_ctx *msg) {
     }
     lua_State *lua = ltask->lua;
     lua_rawgeti(lua, LUA_REGISTRYINDEX, ltask->ref);
-    lua_createtable(lua, 0, 6);
-    LUA_TBPUSH_NUMBER("msgtype", msg->msgtype);
-    _ltask_push_msg(lua, msg);
-    if (LUA_OK != lua_pcall(lua, 1, 0, 0)) {
+    lua_pushinteger(lua, msg->msgtype);
+    lua_pushlightuserdata(lua, msg);
+    if (LUA_OK != lua_pcall(lua, 2, 0, 0)) {
         LOG_ERROR("%s", lua_tostring(lua, 1));
     }
 }
@@ -179,8 +128,9 @@ static int32_t _ltask_register(lua_State *lua) {
     ltask_ctx *ltask;
     CALLOC(ltask, 1, sizeof(ltask_ctx));
     strcpy(ltask->file, file);
-    lua_pushlightuserdata(lua, srey_tasknew(srey, name, maxcnt,
-        _ltask_new, _ltask_run, _ltask_free, ltask));
+    task_ctx *task = srey_tasknew(srey, name, maxcnt,
+                                  _ltask_new, _ltask_run, _ltask_free, ltask);
+    NULL == task ? lua_pushnil(lua) : lua_pushlightuserdata(lua, task);
     return 1;
 }
 LUAMOD_API int luaopen_srey(lua_State *lua) {

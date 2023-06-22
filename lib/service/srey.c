@@ -264,7 +264,24 @@ static inline void _task_run(task_ctx *task) {
         _task_onmsg(&arg);
     }
 }
-
+static inline void _task_free(task_ctx *task) {
+    if (NULL != task->_free) {
+        task->_free(task);
+    }
+    message_ctx *msg;
+    while (NULL != (msg = qu_message_pop(&task->qumsg))) {
+        _message_clean(msg);
+    }
+    qu_message_free(&task->qumsg);
+    mco_coro **co;
+    while (NULL != (co = qu_copool_pop(&task->qucopool))) {
+        mco_destroy(*co);
+    }
+    qu_copool_free(&task->qucopool);
+    _map_co_free(&task->mapco);
+    mutex_free(&task->mutask);
+    FREE(task);
+}
 task_ctx *srey_tasknew(srey_ctx *ctx, int32_t name, uint32_t maxcnt, 
     task_new _init, task_run _run, task_free _tfree, void *arg) {
     ASSERTAB(NULL != _run, ERRSTR_INVPARAM);
@@ -286,7 +303,13 @@ task_ctx *srey_tasknew(srey_ctx *ctx, int32_t name, uint32_t maxcnt,
     }
     int32_t started = 0;
     rwlock_wrlock(&ctx->lckmaptask);
-    ASSERTAB(NULL == hashmap_set(ctx->maptask, &task), formatv("task %d repeat.", name));
+    if (NULL != hashmap_get(ctx->maptask, &task)) {
+        rwlock_unlock(&ctx->lckmaptask);
+        _task_free(task);
+        LOG_ERROR("task %d repeat.", name);
+        return NULL;
+    }
+    hashmap_set(ctx->maptask, &task);
     started = ctx->startup;
     rwlock_unlock(&ctx->lckmaptask);
     if (0 != started) {
@@ -297,25 +320,6 @@ task_ctx *srey_tasknew(srey_ctx *ctx, int32_t name, uint32_t maxcnt,
         }
     }
     return task;
-}
-static void _free_task(void *item) {
-    task_ctx *task = *(task_ctx **)item;
-    if (NULL != task->_free) {
-        task->_free(task);
-    }
-    message_ctx *msg;
-    while (NULL != (msg = qu_message_pop(&task->qumsg))) {
-        _message_clean(msg);
-    }
-    qu_message_free(&task->qumsg);
-    mco_coro **co;
-    while (NULL != (co = qu_copool_pop(&task->qucopool))) {
-        mco_destroy(*co);
-    }
-    qu_copool_free(&task->qucopool);
-    _map_co_free(&task->mapco);
-    mutex_free(&task->mutask);
-    FREE(task);
 }
 task_ctx *srey_taskqury(srey_ctx *ctx, int32_t name) {
     task_ctx key;
@@ -678,6 +682,9 @@ static inline uint64_t _maptask_hash(const void *item, uint64_t seed0, uint64_t 
 static inline int _maptask_compare(const void *a, const void *b, void *ud) {
     return (*(task_ctx **)a)->name - (*(task_ctx **)b)->name;
 }
+static void _maptask_free(void *item) {
+    _task_free(*(task_ctx **)item);
+}
 srey_ctx *srey_init(uint32_t nnet, uint32_t nworker) {
     srey_ctx *ctx;
     CALLOC(ctx, 1, sizeof(srey_ctx));
@@ -690,7 +697,7 @@ srey_ctx *srey_init(uint32_t nnet, uint32_t nworker) {
     rwlock_init(&ctx->lckmaptask);
     ctx->maptask = hashmap_new_with_allocator(_malloc, _realloc, _free,
                                               sizeof(task_ctx *), ONEK, 0, 0,
-                                              _maptask_hash, _maptask_compare, _free_task, NULL);
+                                              _maptask_hash, _maptask_compare, _maptask_free, NULL);
 #if WITH_SSL
     rwlock_init(&ctx->lckarrcert);
     arr_certs_init(&ctx->arrcert, 16);

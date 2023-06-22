@@ -3,6 +3,10 @@
 #include "lua/lauxlib.h"
 #include "lpushtb.h"
 
+#define MSG_PUSH_NETPUB(msg)\
+lua_pushinteger(lua, msg->pktype);\
+lua_pushinteger(lua, msg->fd)
+
 static int32_t _lreg_setlog(lua_State *lua) {
     if (LUA_TNIL != lua_type(lua, 1)) {
         LOG_LEVEL lv = (LOG_LEVEL)luaL_checkinteger(lua, 1);
@@ -564,6 +568,77 @@ static int32_t _lreg_simple_pack(lua_State *lua) {
     }
     return 1;
 }
+static int32_t _lreg_msg_info(lua_State *lua) {
+    message_ctx *msg = lua_touserdata(lua, 1);
+    int32_t argc = 0;
+    switch (msg->msgtype) {
+    case MSG_TYPE_STARTED:
+        break;
+    case MSG_TYPE_CLOSING:
+        break;
+    case MSG_TYPE_TIMEOUT://sess
+        lua_pushinteger(lua, msg->session);
+        argc++;
+        break;
+    case MSG_TYPE_CONNECT://pktype fd err
+        MSG_PUSH_NETPUB(msg);
+        argc += 2;
+        lua_pushinteger(lua, msg->erro);
+        argc++;
+        break;
+    case MSG_TYPE_ACCEPT://pktype fd
+        MSG_PUSH_NETPUB(msg);
+        argc += 2;
+        break;
+    case MSG_TYPE_SEND://pktype fd size
+        MSG_PUSH_NETPUB(msg);
+        argc += 2;
+        lua_pushinteger(lua, msg->size);
+        argc++;
+        break;
+    case MSG_TYPE_CLOSE://pktype fd
+        MSG_PUSH_NETPUB(msg);
+        argc += 2;
+        break;
+    case MSG_TYPE_RECV://pktype fd data size
+        MSG_PUSH_NETPUB(msg);
+        argc += 2;
+        lua_pushlightuserdata(lua, msg->data);
+        argc++;
+        lua_pushinteger(lua, msg->size);
+        argc++;
+        break;
+    case MSG_TYPE_RECVFROM: {//fd ip port data size
+        char ip[IP_LENS];
+        udp_msg_ctx *umsg = msg->data;
+        netaddr_ip(&umsg->addr, ip);
+        lua_pushinteger(lua, msg->fd);
+        argc++;
+        lua_pushlightuserdata(lua, msg->data);
+        argc++;
+        lua_pushinteger(lua, msg->size);
+        argc++;
+        lua_pushstring(lua, ip);
+        argc++;
+        lua_pushinteger(lua, netaddr_port(&umsg->addr));
+        argc++;
+        break;
+    }
+    case MSG_TYPE_REQUEST://sess src data size
+        lua_pushinteger(lua, msg->session);
+        argc++;
+        lua_pushinteger(lua, msg->src);
+        argc++;
+        lua_pushlightuserdata(lua, msg->data);
+        argc++;
+        lua_pushinteger(lua, msg->size);
+        argc++;
+        break;
+    default:
+        break;
+    }
+    return argc;
+}
 LUAMOD_API int luaopen_srey_utils(lua_State *lua) {
     luaL_Reg reg[] = {
         { "log", _lreg_log },
@@ -613,6 +688,8 @@ LUAMOD_API int luaopen_srey_utils(lua_State *lua) {
         { "websock_binary", _lreg_websock_binary },
         { "websock_continuation", _lreg_websock_continuation },
         { "simple_pack", _lreg_simple_pack },
+
+        { "msg_info", _lreg_msg_info },
         { NULL, NULL },
     };
     luaL_newlib(lua, reg);

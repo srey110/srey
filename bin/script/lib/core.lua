@@ -184,6 +184,7 @@ end
     name :TASK_NAME
 返回:
     task_ctx
+    nil失败
 --]]
 function core.task_register(file, name)
     return score.task_register(file, name, 5)
