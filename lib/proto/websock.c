@@ -33,9 +33,9 @@ typedef struct websock_pack_ctx {
 #define RSP_CODE  "101"
 #define RSP_REASON  "switching protocols"
 
-static inline http_header_ctx *_websock_handshake_svcheck(void *pack) {
+static inline http_header_ctx *_websock_handshake_svcheck(struct http_pack_ctx *hpack) {
     size_t glens = strlen(REQ_METHOD);
-    buf_ctx *status = http_status(pack);
+    buf_ctx *status = http_status(hpack);
     if (glens > status[0].lens
         || 0 != _memicmp(status[0].data, REQ_METHOD, glens)) {
         return NULL;
@@ -43,9 +43,9 @@ static inline http_header_ctx *_websock_handshake_svcheck(void *pack) {
     http_header_ctx *head;
     http_header_ctx *sign = NULL;
     uint8_t conn = 0, upgrade = 0, version = 0, checked = 0;
-    size_t cnt = http_nheader(pack);
+    size_t cnt = http_nheader(hpack);
     for (size_t i = 0; i < cnt; i++) {
-        head = http_header_at(pack, i);
+        head = http_header_at(hpack, i);
         switch (tolower(*((char *)head->key.data))) {
         case 'c':
             if (0 == conn
@@ -89,8 +89,8 @@ static inline http_header_ctx *_websock_handshake_svcheck(void *pack) {
     }
     return sign;
 }
-static inline void _websock_handshake_server(ev_ctx *ev, SOCKET fd, void *pack, ud_cxt *ud, int32_t *closefd) {
-    http_header_ctx *signstr = _websock_handshake_svcheck(pack);
+static inline void _websock_handshake_server(ev_ctx *ev, SOCKET fd, struct http_pack_ctx *hpack, ud_cxt *ud, int32_t *closefd) {
+    http_header_ctx *signstr = _websock_handshake_svcheck(hpack);
     if (NULL == signstr) {
         *closefd = 1;
         return;
@@ -113,19 +113,19 @@ static inline void _websock_handshake_server(ev_ctx *ev, SOCKET fd, void *pack, 
 }
 static inline void _websock_handshake(ev_ctx *ev, SOCKET fd, buffer_ctx *buf, ud_cxt *ud, int32_t *closefd) {
     int32_t status;
-    void *pack = _http_parsehead(buf, &status, closefd);
-    if (NULL == pack) {
+    struct http_pack_ctx *hpack = _http_parsehead(buf, &status, closefd);
+    if (NULL == hpack) {
         return;
     }
     if (0 != status) {
         *closefd = 1;
-        http_pkfree(pack);
+        http_pkfree(hpack);
         return;
     }
-    _websock_handshake_server(ev, fd, pack, ud, closefd);
-    http_pkfree(pack);
+    _websock_handshake_server(ev, fd, hpack, ud, closefd);
+    http_pkfree(hpack);
 }
-static inline void *_websock_parse_data(buffer_ctx *buf, ud_cxt *ud, int32_t *closefd) {
+static inline websock_pack_ctx *_websock_parse_data(buffer_ctx *buf, ud_cxt *ud, int32_t *closefd) {
     websock_pack_ctx *pack = ud->extra;
     if (pack->remain > buffer_size(buf)) {
         return NULL;
@@ -206,7 +206,7 @@ static inline websock_pack_ctx *_websock_parse_pllens(buffer_ctx *buf, size_t bl
     }
     return pack;
 }
-static inline void *_websock_parse_head(buffer_ctx *buf, ud_cxt *ud, int32_t *closefd) {
+static inline websock_pack_ctx *_websock_parse_head(buffer_ctx *buf, ud_cxt *ud, int32_t *closefd) {
     size_t blens = buffer_size(buf);
     if (blens < HEAD_LESN) {
         return NULL;
@@ -234,22 +234,22 @@ static inline void *_websock_parse_head(buffer_ctx *buf, ud_cxt *ud, int32_t *cl
     ud->status = DATA;
     return _websock_parse_data(buf, ud, closefd);
 }
-void *websock_unpack(ev_ctx *ev, SOCKET fd, buffer_ctx *buf, size_t *size, ud_cxt *ud, int32_t *closefd) {
-    void *data = NULL;
+websock_pack_ctx *websock_unpack(ev_ctx *ev, SOCKET fd, buffer_ctx *buf, size_t *size, ud_cxt *ud, int32_t *closefd) {
+    websock_pack_ctx *pack = NULL;
     switch (ud->status) {
     case INIT:
         _websock_handshake(ev, fd, buf, ud, closefd);
         break;
     case START:
-        data = _websock_parse_head(buf, ud, closefd);
+        pack = _websock_parse_head(buf, ud, closefd);
         break;
     case DATA:
-        data = _websock_parse_data(buf, ud, closefd);
+        pack = _websock_parse_data(buf, ud, closefd);
         break;
     default:
         break;
     }
-    return data;
+    return pack;
 }
 static inline size_t _websock_create_callens(char key[4], size_t dlens) {
     size_t size = HEAD_LESN + dlens;
@@ -338,19 +338,19 @@ void websock_continuation(ev_ctx *ev, SOCKET fd, int32_t fin, char key[4], void 
     void *frame = _websock_create_pack(fin, CONTINUE, key, data, dlens, &flens);
     ev_send(ev, fd, frame, flens, 0, 0);
 }
-int32_t websock_pack_fin(void *data) {
-    return ((websock_pack_ctx *)data)->fin;
+int32_t websock_pack_fin(websock_pack_ctx *pack) {
+    return pack->fin;
 }
-int32_t websock_pack_proto(void *data) {
-    return ((websock_pack_ctx *)data)->proto;
+int32_t websock_pack_proto(websock_pack_ctx *pack) {
+    return pack->proto;
 }
-char *websock_pack_data(void *data, size_t *lens) {
-    *lens = ((websock_pack_ctx *)data)->dlens;
-    return ((websock_pack_ctx *)data)->data;
+char *websock_pack_data(websock_pack_ctx *pack, size_t *lens) {
+    *lens = pack->dlens;
+    return pack->data;
 }
-static inline int32_t _websock_handshake_clientckstatus(void *pack) {
+static inline int32_t _websock_handshake_clientckstatus(struct http_pack_ctx *hpack) {
     size_t klens = strlen(RSP_CODE);
-    buf_ctx *status = http_status(pack);
+    buf_ctx *status = http_status(hpack);
     if (status[1].lens < klens
         || 0 != memcmp(status[1].data, RSP_CODE, klens)) {
         return ERR_FAILED;
@@ -362,16 +362,16 @@ static inline int32_t _websock_handshake_clientckstatus(void *pack) {
     }
     return ERR_OK;
 }
-static inline http_header_ctx *_websock_handshake_clientcheck(void *pack) {
-    if (ERR_OK != _websock_handshake_clientckstatus(pack)) {
+static inline http_header_ctx *_websock_handshake_clientcheck(struct http_pack_ctx *hpack) {
+    if (ERR_OK != _websock_handshake_clientckstatus(hpack)) {
         return NULL;
     }
     http_header_ctx *head;
     http_header_ctx *sign = NULL;
     uint8_t conn = 0, upgrade = 0;
-    size_t cnt = http_nheader(pack);
+    size_t cnt = http_nheader(hpack);
     for (size_t i = 0; i < cnt; i++) {
-        head = http_header_at(pack, i);
+        head = http_header_at(hpack, i);
         switch (tolower(*((char*)head->key.data))) {
         case 'c':
             if (0 == conn
@@ -407,8 +407,8 @@ static inline http_header_ctx *_websock_handshake_clientcheck(void *pack) {
     }
     return sign;
 }
-static inline int32_t _websock_handshake_client(void *pack, char *b64) {
-    http_header_ctx *signstr = _websock_handshake_clientcheck(pack);
+static inline int32_t _websock_handshake_client(struct http_pack_ctx *hpack, char *b64) {
+    http_header_ctx *signstr = _websock_handshake_clientcheck(hpack);
     if (NULL == signstr) {
         return ERR_FAILED;
     }

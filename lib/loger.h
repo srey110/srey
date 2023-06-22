@@ -40,13 +40,5 @@ extern loger_ctx g_logerctx;
 #define LOG_WARN(fmt, ...)  LOG(LOGLV_WARN, fmt, ##__VA_ARGS__)
 #define LOG_INFO(fmt, ...)  LOG(LOGLV_INFO, fmt, ##__VA_ARGS__)
 #define LOG_DEBUG(fmt, ...) LOG(LOGLV_DEBUG, fmt, ##__VA_ARGS__)
-#define LOG_NOEOFSTR(lv, fmt, data, lens) \
-do {\
-    char *tmplog;\
-    CALLOC(tmplog, 1, lens + 1);\
-    memcpy(tmplog, data, lens);\
-    LOG(lv, fmt, tmplog);\
-    FREE(tmplog);\
-} while (0)
 
 #endif//LOGER_H_
