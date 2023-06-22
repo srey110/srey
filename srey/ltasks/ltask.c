@@ -76,7 +76,7 @@ static inline int32_t _ltask_dofile(lua_State *lua, const char *file) {
     }
     return ERR_OK;
 }
-int32_t _ltask_startup() {
+int32_t _ltask_startup(void) {
     PRINT(LUA_RELEASE);
     ASSERTAB(ERR_OK == procpath(propath), "procpath failed.");
     SNPRINTF(luapath, sizeof(luapath) - 1, "%s%s%s%s",

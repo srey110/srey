@@ -97,7 +97,7 @@ static LONG __stdcall _MiniDump(struct _EXCEPTION_POINTERS *excep) {
     return lrtn;
 }
 #endif
-void unlimit() {
+void unlimit(void) {
 #ifdef OS_WIN
     SetUnhandledExceptionFilter(_MiniDump);
 #else
@@ -152,17 +152,17 @@ void sighandle(void(*cb)(int32_t, void *), void *data) {
     signal(SIGUSR2, _sighandler);
 #endif
 }
-uint64_t createid() {
+uint64_t createid(void) {
     return ATOMIC64_ADD(&_ids, 1);
 }
-uint64_t threadid() {
+uint64_t threadid(void) {
 #if defined(OS_WIN)
     return (uint64_t)GetCurrentThreadId();
 #else
     return (uint64_t)pthread_self();
 #endif
 }
-uint32_t procscnt() {
+uint32_t procscnt(void) {
 #if defined(OS_WIN)
     SYSTEM_INFO stinfo;
     GetSystemInfo(&stinfo);
@@ -349,12 +349,12 @@ void timeofday(struct timeval *tv) {
     (void)gettimeofday(tv, NULL);
 #endif
 }
-uint64_t nowms() {
+uint64_t nowms(void) {
     struct timeval tv;
     timeofday(&tv);
     return (uint64_t)tv.tv_usec / 1000 + (uint64_t)tv.tv_sec * 1000;
 }
-uint64_t nowsec() {
+uint64_t nowsec(void) {
     struct timeval tv;
     timeofday(&tv);
     return (uint64_t)tv.tv_sec;

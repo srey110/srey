@@ -42,7 +42,7 @@ static void _cmd_loop(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
     }
 #endif
 }
-static void _init_callback() {
+static void _init_callback(void) {
     cmd_cbs[CMD_STOP] = _on_cmd_stop;
     cmd_cbs[CMD_DISCONN] = _on_cmd_disconn;
     cmd_cbs[CMD_LSN] = _on_cmd_lsn;
@@ -416,7 +416,7 @@ static inline void _free_element(void *item) {
         _free_udp(sock);
     }
 }
-static inline int32_t _init_evfd() {
+static inline int32_t _init_evfd(void) {
     int32_t evfd = INVALID_FD;
 #if defined(EV_EPOLL)
     evfd = epoll_create1(EPOLL_CLOEXEC);

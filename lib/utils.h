@@ -4,15 +4,15 @@
 #include "sarray.h"
 
 //获取一ID
-uint64_t createid();
+uint64_t createid(void);
 //当前线程Id
-uint64_t threadid();
+uint64_t threadid(void);
 //启coredump socket链接数限制
-void unlimit();
+void unlimit(void);
 //信号处理
 void sighandle(void(*cb)(int32_t, void *), void *data);
 //cpu核心数
-uint32_t procscnt();
+uint32_t procscnt(void);
 
 //是否为文件
 int32_t isfile(const char *file);
@@ -26,9 +26,9 @@ int32_t procpath(char path[PATH_LENS]);
 //timeofday
 void timeofday(struct timeval *tv);
 //当前时间戳  毫秒
-uint64_t nowms();
+uint64_t nowms(void);
 //当前时间戳  秒
-uint64_t nowsec();
+uint64_t nowsec(void);
 //格式化输出当前时间戳 秒   %Y-%m-%d %H:%M:%S 
 void nowtime(const char *fmt, char time[TIME_LENS]);
 //格式化输出当前时间戳 毫秒  %Y-%m-%d %H:%M:%S 

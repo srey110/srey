@@ -3,10 +3,10 @@
 
 #include "macro.h"
 
-void sock_init();
-void sock_clean();
+void sock_init(void);
+void sock_clean(void);
 //是否为大端
-int32_t bigendian();
+int32_t bigendian(void);
 #if !defined(OS_WIN) && !defined(OS_DARWIN) && !defined(OS_AIX)
 uint64_t ntohll(uint64_t val);
 uint64_t htonll(uint64_t val);
@@ -27,7 +27,7 @@ int32_t sock_nbio(SOCKET fd);
 //地址重用 SO_REUSEADDR
 int32_t sock_raddr(SOCKET fd);
 //是否支持端口重用
-int32_t sock_checkrport();
+int32_t sock_checkrport(void);
 //端口重用
 int32_t sock_rport(SOCKET fd);
 //SO_KEEPALIVE

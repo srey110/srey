@@ -4,7 +4,7 @@
 #include "lib.h"
 
 #if WITH_LUA
-int32_t _ltask_startup();
+int32_t _ltask_startup(void);
 #endif
 
 #endif//LTASK_H_

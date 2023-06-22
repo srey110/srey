@@ -3,7 +3,7 @@
 srey_ctx *srey;
 static mutex_ctx muexit;
 static cond_ctx condexit;
-static char *_config_read() {
+static char *_config_read(void) {
     char propath[PATH_LENS] = { 0 };
     char config[PATH_LENS] = { 0 };
     ASSERTAB(ERR_OK == procpath(propath), "procpath failed.");
@@ -42,12 +42,12 @@ static void _parse_config(uint32_t *nnet, uint32_t *nworker) {
     }
     cJSON_Delete(json);
 }
-static int32_t service_exit() {
+static int32_t service_exit(void) {
     srey_free(srey);
     LOGFREE();
     return ERR_OK;
 }
-static int32_t service_init() {
+static int32_t service_init(void) {
     MEMCHECK();
     unlimit();
     LOGINIT();
@@ -66,7 +66,7 @@ static void _on_sigcb(int32_t sig, void *arg) {
     LOG_INFO("catch sign: %d", sig);
     cond_signal(&condexit);
 }
-static int32_t service_hug() {
+static int32_t service_hug(void) {
     sighandle(_on_sigcb, NULL);
     mutex_init(&muexit);
     cond_init(&condexit);
@@ -99,8 +99,8 @@ static int32_t service_hug() {
 #define WINSV_START_TIMEOUT      10 * 1000      //windows 服务启动超时时间
 
 typedef WINADVAPI BOOL(WINAPI *_csd_t)(SC_HANDLE, DWORD, LPCVOID);
-typedef int32_t(*_wsv_cb)();
-static int32_t _wsv_initbasic();
+typedef int32_t(*_wsv_cb)(void);
+static int32_t _wsv_initbasic(void);
 
 static _wsv_cb initcbs[] = { _wsv_initbasic, service_init, NULL };
 static _wsv_cb exitcbs[] = { service_exit, NULL };
@@ -112,7 +112,7 @@ static long _wsv_exception(struct _EXCEPTION_POINTERS *exp) {
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX);
     return EXCEPTION_EXECUTE_HANDLER;
 }
-static int32_t _wsv_initbasic() {
+static int32_t _wsv_initbasic(void) {
     HANDLE curproc = GetCurrentProcess();
     SetPriorityClass(curproc, HIGH_PRIORITY_CLASS);
     SetThreadPriority(curproc, THREAD_PRIORITY_HIGHEST);
@@ -197,7 +197,7 @@ static BOOL wsv_isinstalled(LPCTSTR name) {
     CloseServiceHandle(scm);
     return TRUE;
 }
-static _csd_t _wsv_csd() {
+static _csd_t _wsv_csd(void) {
     HMODULE advapi32;
     if (!(advapi32 = GetModuleHandle("ADVAPI32.DLL"))) {
         return NULL;
@@ -262,7 +262,7 @@ static BOOL wsv_unInstall(LPCTSTR name) {
     CloseServiceHandle(scm);
     return TRUE;
 }
-static void _useage() {
+static void _useage(void) {
     PRINT("UseAge:srey front-end mode;");
     PRINT("srey -i \"service name\" install service;");
     PRINT("srey -u \"service name\" uninstall service;");

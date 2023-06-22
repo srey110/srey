@@ -9,14 +9,14 @@ static atomic64_t n_alloc = 0;
 static atomic64_t n_free = 0;
 #endif
 
-static inline uint64_t _nalloc() {
+static inline uint64_t _nalloc(void) {
 #if MEMORY_CHECK
     return n_alloc;
 #else
     return 0;
 #endif
 }
-static inline uint64_t _nfree() {
+static inline uint64_t _nfree(void) {
 #if MEMORY_CHECK
     return n_free;
 #else

@@ -3,6 +3,6 @@
 
 #include "lib.h"
 
-int32_t task_startup();
+int32_t task_startup(void);
 
 #endif//TASKS_H_

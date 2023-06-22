@@ -6,7 +6,7 @@
 #ifdef OS_WIN
 static atomic_t _init_sock = 0;
 #endif
-void sock_init() {
+void sock_init(void) {
 #ifdef OS_WIN
     if (ATOMIC_CAS(&_init_sock, 0, 1)) {
         WSADATA wsdata;
@@ -15,14 +15,14 @@ void sock_init() {
     }
 #endif
 }
-void sock_clean() {
+void sock_clean(void) {
 #ifdef OS_WIN
     if (ATOMIC_CAS(&_init_sock, 1, 0)) {
         (void)WSACleanup();
     }
 #endif
 }
-int32_t bigendian() {
+int32_t bigendian(void) {
     union {
         int i;
         char c;
@@ -143,7 +143,7 @@ int32_t sock_raddr(SOCKET fd) {
     }
     return ERR_OK;
 }
-int32_t sock_checkrport() {
+int32_t sock_checkrport(void) {
 #ifdef SO_REUSEPORT
     return ERR_OK;
 #else
@@ -208,7 +208,7 @@ int32_t sock_linger(SOCKET fd) {
     }
     return ERR_OK;
 }
-static SOCKET _sock_listen() {
+static SOCKET _sock_listen(void) {
     netaddr_ctx addr;
     if (ERR_OK != netaddr_sethost(&addr, "127.0.0.1", 0)) {
         return INVALID_SOCK;

@@ -31,7 +31,7 @@ static void *_exfunc(SOCKET fd, GUID  *guid) {
     ASSERTAB(rtn != SOCKET_ERROR, ERRORSTR(ERRNO));
     return func;
 }
-static void _init_callback() {
+static void _init_callback(void) {
     cmd_cbs[CMD_STOP] = _on_cmd_stop;
     cmd_cbs[CMD_DISCONN] = _on_cmd_disconn;
     cmd_cbs[CMD_ADD] = _on_cmd_add;
