@@ -114,12 +114,22 @@ void _reset_sk(sock_ctx *skctx, SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
     tcp->cbs = *cbs;
     COPY_UD(tcp->ud, ud);
 }
-void _set_tcp_error(sock_ctx *skctx) {
-    UPCAST(skctx, tcp_ctx, sock)->status |= STATUS_ERROR;
-}
-void _set_udp_error(watcher_ctx *watcher, sock_ctx *skctx) {
-    UPCAST(skctx, udp_ctx, sock)->status |= STATUS_ERROR;
-    _add_event(watcher, skctx->fd, &skctx->events, EVENT_WRITE, skctx);
+void _disconnect(watcher_ctx *watcher, sock_ctx *skctx) {
+    if (SOCK_STREAM == skctx->type) {
+        tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
+        if (tcp->status & STATUS_ERROR) {
+            return;
+        }
+        tcp->status |= STATUS_ERROR;
+        _sk_shutdown(skctx);
+    } else {
+        udp_ctx *udp = UPCAST(skctx, udp_ctx, sock);
+        if (udp->status & STATUS_ERROR) {
+            return;
+        }
+        udp->status |= STATUS_ERROR;
+        _add_event(watcher, skctx->fd, &skctx->events, EVENT_WRITE, skctx);
+    }
 }
 void _setud_typstat(sock_ctx *skctx, char *typsta) {
     if (SOCK_STREAM == skctx->type) {

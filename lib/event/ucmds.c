@@ -19,8 +19,8 @@ static inline sock_ctx *_map_get(watcher_ctx *watcher, SOCKET fd) {
     return NULL == tmp ? NULL : *tmp;
 }
 sock_ctx *_map_getskctx(watcher_ctx *watcher, SOCKET fd) {
-    sock_ctx *el = _map_get(watcher, fd);
-    return el;
+    sock_ctx *skctx = _map_get(watcher, fd);
+    return skctx;
 }
 void _on_cmd_stop(watcher_ctx *watcher, cmd_ctx *cmd) {
     watcher->stop = 1;
@@ -33,17 +33,11 @@ void ev_close(ev_ctx *ctx, SOCKET fd) {
     _SEND_CMD(ctx, cmd);
 }
 void _on_cmd_disconn(watcher_ctx *watcher, cmd_ctx *cmd) {
-    sock_ctx *el = _map_get(watcher, cmd->fd);
-    if (NULL == el) {
-        CLOSE_SOCK(cmd->fd);
+    sock_ctx *skctx = _map_get(watcher, cmd->fd);
+    if (NULL == skctx) {
         return;
     }
-    if (SOCK_STREAM == el->type) {
-        _set_tcp_error(el);
-        _sk_shutdown(el);
-    } else {
-        _set_udp_error(watcher, el);
-    }
+    _disconnect(watcher, skctx);
 }
 void _cmd_listen(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx) {
     cmd_ctx cmd;
@@ -99,8 +93,8 @@ void ev_sendto(ev_ctx *ctx, SOCKET fd, const char *host, const uint16_t port,
     _SEND_CMD(ctx, cmd);
 }
 void _on_cmd_send(watcher_ctx *watcher, cmd_ctx *cmd) {
-    sock_ctx *el = _map_get(watcher, cmd->fd);
-    if (NULL == el) {
+    sock_ctx *skctx = _map_get(watcher, cmd->fd);
+    if (NULL == skctx) {
         FREE(cmd->data);
         return;
     }
@@ -108,7 +102,7 @@ void _on_cmd_send(watcher_ctx *watcher, cmd_ctx *cmd) {
     buf.data = cmd->data;
     buf.len = cmd->len;
     buf.offset = 0;
-    _add_write_inloop(watcher, el, &buf, cmd->flag);
+    _add_write_inloop(watcher, skctx, &buf, cmd->flag);
 }
 void _cmd_add_acpfd(watcher_ctx *watcher, uint64_t hs, SOCKET fd, struct listener_ctx *lsn) {
     cmd_ctx cmd;
@@ -140,11 +134,11 @@ void ev_setud_typstat(ev_ctx *ctx, SOCKET fd, int8_t pktype, int8_t status) {
     _SEND_CMD(ctx, cmd);
 }
 void _on_cmd_setud_typstat(watcher_ctx *watcher, cmd_ctx *cmd) {
-    sock_ctx *el = _map_get(watcher, cmd->fd);
-    if (NULL == el) {
+    sock_ctx *skctx = _map_get(watcher, cmd->fd);
+    if (NULL == skctx) {
         return;
     }
-    _setud_typstat(el, (char *)&cmd->len);
+    _setud_typstat(skctx, (char *)&cmd->len);
 }
 void ev_setud_data(ev_ctx *ctx, SOCKET fd, void *data) {
     ASSERTAB(INVALID_SOCK != fd, ERRSTR_INVPARAM);
@@ -155,11 +149,11 @@ void ev_setud_data(ev_ctx *ctx, SOCKET fd, void *data) {
     _SEND_CMD(ctx, cmd);
 }
 void _on_cmd_setud_data(watcher_ctx *watcher, cmd_ctx *cmd) {
-    sock_ctx *el = _map_get(watcher, cmd->fd);
-    if (NULL == el) {
+    sock_ctx *skctx = _map_get(watcher, cmd->fd);
+    if (NULL == skctx) {
         return;
     }
-    _setud_data(el, cmd->data);
+    _setud_data(skctx, cmd->data);
 }
 
 #endif

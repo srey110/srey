@@ -134,12 +134,22 @@ void _reset_sk(sock_ctx *skctx, SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
     oltcp->cbs = *cbs;
     COPY_UD(oltcp->ud, ud);
 }
-void _set_error(sock_ctx *skctx) {
+void _disconnect(sock_ctx *skctx) {
     if (SOCK_STREAM == skctx->type) {
-        UPCAST(skctx, overlap_tcp_ctx, ol_r)->status |= STATUS_ERROR;
+        overlap_tcp_ctx *tcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
+        if (tcp->status & STATUS_ERROR) {
+            return;
+        }
+        tcp->status |= STATUS_ERROR;
+        _sk_shutdown(skctx);
     } else {
-        UPCAST(skctx, overlap_udp_ctx, ol_r)->status |= STATUS_ERROR;
+        overlap_udp_ctx *udp = UPCAST(skctx, overlap_udp_ctx, ol_r);
+        if (udp->status & STATUS_ERROR) {
+            return;
+        }
+        udp->status |= STATUS_ERROR;
     }
+    CancelIoEx((HANDLE)skctx->fd, NULL);
 }
 void _setud_typstat(sock_ctx *skctx, char *typsta) {
     if (SOCK_STREAM == skctx->type) {

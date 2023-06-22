@@ -90,7 +90,7 @@ int32_t _post_recv(sock_ctx *skctx, DWORD  *bytes, DWORD  *flag, IOV_TYPE *wsabu
 void _add_bufs_trypost(sock_ctx *skctx, off_buf_ctx *buf, uint8_t synflag);
 void _add_bufs_trysendto(sock_ctx *skctx, off_buf_ctx *buf, uint8_t synflag);
 void _sk_shutdown(sock_ctx *skctx);
-void _set_error(sock_ctx *skctx);
+void _disconnect(sock_ctx *skctx);
 void _setud_typstat(sock_ctx *skctx, char *typsta);
 void _setud_data(sock_ctx *skctx, void *data);
 void _free_udp(sock_ctx *skctx);

@@ -163,9 +163,13 @@ local function onaccept(pktype, fd)
     --printd(srey.name() .. " onaccept.... " .. fd)
 end
 srey.accepted(onaccept)
-
+local autoclose = false
 local function echo(pktype, fd, data, size)
     if PACK_TYPE.SIMPLE == pktype then
+        if autoclose and math.random(1, 100) <= 1 then
+            srey.close(fd)
+            return
+        end
         local pack, lens = simple.unpack(data)
         srey.send(fd, pack, lens, pktype)
     elseif PACK_TYPE.WEBSOCK == pktype then
