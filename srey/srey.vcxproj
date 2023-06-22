@@ -163,7 +163,6 @@
     <ClCompile Include="tasks\tasks.c" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="ltasks\lpushtb.h" />
     <ClInclude Include="ltasks\ltask.h" />
     <ClInclude Include="tasks\tasks.h" />
   </ItemGroup>

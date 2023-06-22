@@ -705,7 +705,6 @@ srey_ctx *srey_init(uint32_t nnet, uint32_t nworker) {
     for (uint32_t i = 0; i < ctx->nworker; i++) {
         ctx->thworker[i] = thread_creat(_loop_worker, ctx);
     }
-
     tw_init(&ctx->tw);
     ev_init(&ctx->netev, nnet);
     return ctx;

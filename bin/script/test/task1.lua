@@ -76,7 +76,7 @@ local function chuncedmesg(cnt)
     return "this is chuncked "..tostring(cnt.cnt)
 end
 local function onchunked(fd, data, size)
-    if size > 0 then
+    if data then
         --printd("hunked: %d", size)
     else
         --printd("hunked: end")
@@ -166,20 +166,20 @@ srey.accepted(onaccept)
 
 local function echo(pktype, fd, data, size)
     if PACK_TYPE.SIMPLE == pktype then
-        local pack = simple.unpack(data, 1)
-        srey.send(fd, pack.data, pack.size, pktype)
+        local pack, lens = simple.unpack(data)
+        srey.send(fd, pack, lens, pktype)
     elseif PACK_TYPE.WEBSOCK == pktype then
-        local pack = websock.unpack(data, 1)
-        if WEBSOCK_PROTO.PING == pack.proto then
+        local proto, fin, pack, plens = websock.unpack(data)
+        if WEBSOCK_PROTO.PING == proto then
             --printd("PING")
-        elseif WEBSOCK_PROTO.CLOSE == pack.proto then
+        elseif WEBSOCK_PROTO.CLOSE == proto then
             --printd("CLOSE")
-        elseif WEBSOCK_PROTO.TEXT == pack.proto  then
-            --printd("TEXT size: %d", pack.size)
-        elseif WEBSOCK_PROTO.BINARY == pack.proto  then
-            --printd("BINARY size: %d", pack.size)
-        elseif WEBSOCK_PROTO.CONTINUE == pack.proto then
-            --printd("CONTINUE fin: %d size: %d", pack.fin, pack.size)
+        elseif WEBSOCK_PROTO.TEXT == proto  then
+            --printd("TEXT size: %d", plens)
+        elseif WEBSOCK_PROTO.BINARY == proto  then
+            --printd("BINARY size: %d", plens)
+        elseif WEBSOCK_PROTO.CONTINUE == proto then
+            --printd("CONTINUE fin: %d size: %d", fin, plens)
         end
     end
 end

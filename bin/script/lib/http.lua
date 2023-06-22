@@ -1,36 +1,93 @@
 local sutils = require("srey.utils")
-local srey = require("lib.srey")
+local core = require("lib.core")
 local hstatus = require("lib.http_status")
 local json = require("cjson")
 local table = table
 local string = string
 local http = {}
+local chunk_func = {}
 
 --[[
-描述: 解包
+描述:chunk包状态
 参数:
-    data :userdata
-    toud 数据是否以userdata方式传递 0 否 1 是
+    pack :http_pack_ctx
+返回:
+    0非chunk包 1chunk包头 2chunk数据
+--]]
+function http.chunked(pack)
+    return sutils.http_chunked(pack)
+end
+--[[
+描述:http第一行
+参数:
+    pack :http_pack_ctx
+返回:
+    string1, string2, string3
+    nil
+--]]
+function http.status(pack)
+    return sutils.http_status(pack)
+end
+--[[
+描述:http头的值
+参数:
+    pack :http_pack_ctx
+    key :string
+返回:
+    string
+    nil
+--]]
+function http.head(pack, key)
+    return sutils.http_head(pack, key)
+end
+--[[
+描述:http头
+参数:
+    pack :http_pack_ctx
 返回:
     table
+    nil
 --]]
-function http.unpack(data, toud)
-    return sutils.http_pack(data, toud)
+function http.heads(pack)
+    return sutils.http_heads(pack)
+end
+--[[
+描述:http数据
+参数:
+    pack :http_pack_ctx
+返回:
+    data size
+    nil
+--]]
+function http.data(pack)
+    return sutils.http_data(pack)
+end
+function http.chunk_call(fd, pack)
+    local func = chunk_func[fd]
+    if not func then
+        return false
+    end
+    local data, size = http.data(pack)
+    func(fd, data, size)
+    if nil == data then
+        chunk_func[fd] = nil
+    end
+    return true
 end
 local function http_send(rsp, fd, msg, ckfunc)
     if rsp then
-        srey.send(fd, table.concat(msg), nil, PACK_TYPE.HTTP)
+        core.send(fd, table.concat(msg), nil, PACK_TYPE.HTTP)
     else
-        local data, _ = srey.synsend(fd, table.concat(msg), nil, PACK_TYPE.HTTP)
-        if not data then
+        local pack, _ = core.synsend(fd, table.concat(msg), nil, PACK_TYPE.HTTP)
+        if not pack then
             return nil
         end
-        local hpack = sutils.http_pack(data, 1)
-        if 1 == hpack.chunked then
+        local chunked = http.chunked(pack)
+        if 1 == chunked then
             assert(ckfunc, "no have http chunked function.")
-            srey.http_chunked(fd, ckfunc)
+            chunk_func[fd] = ckfunc
         end
-        return hpack
+        return pack
     end
 end
 local function http_msg(rsp, fd, fline, headers, ckfunc, info, ...)
@@ -53,7 +110,7 @@ local function http_msg(rsp, fd, fline, headers, ckfunc, info, ...)
         return http_send(rsp, fd, msg, ckfunc)
     elseif "function" == msgtype then
         table.insert(msg, "Transfer-Encoding: chunked\r\n\r\n")
-        srey.send(fd, table.concat(msg), nil, PACK_TYPE.HTTP)
+        core.send(fd, table.concat(msg), nil, PACK_TYPE.HTTP)
         local rtn
         while true do
             rtn = info(...)
@@ -62,8 +119,8 @@ local function http_msg(rsp, fd, fline, headers, ckfunc, info, ...)
                 table.insert(msg, string.format("%d\r\n", #rtn))
                 table.insert(msg, rtn)
                 table.insert(msg, "\r\n")
-                srey.send(fd, table.concat(msg))
-                srey.sleep(10)--让其他能执行
+                core.send(fd, table.concat(msg))
+                core.sleep(10)--让其他能执行
             else
                 table.insert(msg, "0\r\n\r\n")
                 return http_send(rsp, fd, msg, ckfunc)
@@ -80,13 +137,13 @@ end
     fd :integer
     url :string
     headers :table
-    ckfunc :function
+    ckfunc :function(fd, data, size)
 返回:
-    {chunked, data, status{}, head{}}  chunked 0非chunk包 1chunk包头 2chunk数据
+    http_pack_ctx
     nil 失败 
 --]]
 function http.get(fd, url, headers, ckfunc)
-    local fline = string.format("GET %s HTTP/1.1\r\n", srey.urlencode(url or "/"))
+    local fline = string.format("GET %s HTTP/1.1\r\n", core.urlencode(url or "/"))
     return http_msg(false, fd, fline, headers, ckfunc)
 end
 --[[
@@ -99,11 +156,11 @@ end
     info :string table function
     ...  info为function时的参数
 返回:
-    {chunked, data, status{}, head{}}  chunked 0非chunk包 1chunk包头 2chunk数据
-    nil 错误
+    http_pack_ctx
+    nil 失败 
 --]]
 function http.post(fd, url, headers, ckfunc, info, ...)
-    local fline = string.format("POST %s HTTP/1.1\r\n", srey.urlencode(url or "/"))
+    local fline = string.format("POST %s HTTP/1.1\r\n", core.urlencode(url or "/"))
     return http_msg(false, fd, fline, headers, ckfunc, info, ...)
 end
 --[[

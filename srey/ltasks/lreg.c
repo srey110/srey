@@ -1,7 +1,6 @@
 #include "lib.h"
 #if WITH_LUA
 #include "lua/lauxlib.h"
-#include "lpushtb.h"
 
 #define MSG_PUSH_NETPUB(msg)\
 lua_pushinteger(lua, msg->pktype);\
@@ -30,18 +29,14 @@ static int32_t _lreg_remoteaddr(lua_State *lua) {
     netaddr_ctx addr;
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     if (-1 == fd) {
-        lua_pushnil(lua);
-        LOG_WARN("%s", ERRSTR_INVPARAM);
-        return 1;
+        return 0;
     }
     if (ERR_OK != netaddr_remoteaddr(&addr, fd, sock_family(fd))) {
-        lua_pushnil(lua);
-        return 1;
+        return 0;
     }
     char ip[IP_LENS];
     if (ERR_OK != netaddr_ip(&addr, ip)) {
-        lua_pushnil(lua);
-        return 1;
+        return 0;
     }
     uint16_t port = netaddr_port(&addr);
     lua_pushstring(lua, ip);
@@ -117,7 +112,7 @@ static int32_t _lreg_b64decode(lua_State *lua) {
 static int32_t _lreg_urlencode(lua_State *lua) {
     size_t size;
     size_t lens;
-    char *data = (char *)luaL_checklstring(lua, 1, &size);
+    const char *data = luaL_checklstring(lua, 1, &size);
     char *encode = urlencode(data, size, &lens);
     lua_pushlstring(lua, encode, lens);
     FREE(encode);
@@ -131,11 +126,13 @@ static int32_t _lreg_evssl_new(lua_State *lua) {
     const char *key = luaL_checkstring(lua, 4);
     int32_t keytype = (int32_t)luaL_checkinteger(lua, 5);
     int32_t verify = (int32_t)luaL_checkinteger(lua, 6);
+    lua_pop(lua, 6);
+    lua_getglobal(lua, "_propath");
+    const char *propath = lua_tostring(lua, 1);
+    lua_pop(lua, 1);
     char capath[PATH_LENS] = { 0 };
     char certpath[PATH_LENS] = { 0 };
     char keypath[PATH_LENS] = { 0 };
-    char propath[PATH_LENS] = {0};
-    ASSERTAB(ERR_OK == procpath(propath), "procpath failed.");
     if (0 != strlen(ca)) {
         SNPRINTF(capath, sizeof(capath) - 1, "%s%s%s%s%s",
             propath, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, ca);
@@ -160,8 +157,10 @@ static int32_t _lreg_evssl_p12new(lua_State *lua) {
     int32_t verify = (int32_t)luaL_checkinteger(lua, 4);
     char p12path[PATH_LENS] = { 0 };
     if (0 != strlen(p12)) {
-        char propath[PATH_LENS] = { 0 };
-        ASSERTAB(ERR_OK == procpath(propath), "procpath failed.");
+        lua_pop(lua, 4);
+        lua_getglobal(lua, "_propath");
+        const char *propath = lua_tostring(lua, 1);
+        lua_pop(lua, 1);
         SNPRINTF(p12path, sizeof(p12path) - 1, "%s%s%s%s%s",
             propath, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, p12);
     }
@@ -174,18 +173,19 @@ static int32_t _lreg_evssl_qury(lua_State *lua) {
     const char *name = luaL_checkstring(lua, 1);
     struct evssl_ctx *ssl = certs_qury(srey, name);
     if (NULL == ssl) {
-        lua_pushnil(lua);
-        LOG_WARN("not find cert, name:%s.", name);
-    } else {
-        lua_pushlightuserdata(lua, ssl);
+        return 0;
     }
+    lua_pushlightuserdata(lua, ssl);
     return 1;
 }
 #endif
 static int32_t _lreg_task_qury(lua_State *lua) {
     int32_t name = (int32_t)luaL_checkinteger(lua, 1);
     task_ctx *task = srey_taskqury(srey, name);
-    NULL == task ? lua_pushnil(lua) : lua_pushlightuserdata(lua, task);
+    if (NULL == task) {
+        return 0;
+    }
+    lua_pushlightuserdata(lua, task);
     return 1;
 }
 static int32_t _lreg_task_name(lua_State *lua) {
@@ -225,8 +225,7 @@ static int32_t _lreg_task_request(lua_State *lua) {
     size_t lens;
     void *resp = task_request(dst, src, data, size, 1, &lens);
     if (NULL == resp) {
-        lua_pushnil(lua);
-        return 1;
+        return 0;
     }
     lua_pushlightuserdata(lua, resp);
     lua_pushinteger(lua, lens);
@@ -286,11 +285,7 @@ static int32_t _lreg_connect(lua_State *lua) {
     uint16_t port = (uint16_t)luaL_checkinteger(lua, 5);
     int32_t sendev = (int32_t)luaL_checkinteger(lua, 6);
     SOCKET fd = task_netconnect(task, ptype, evssl, host, port, sendev);
-    if (INVALID_SOCK != fd) {
-        lua_pushinteger(lua, fd);
-    } else {
-        lua_pushinteger(lua, -1);
-    }
+    INVALID_SOCK != fd ? lua_pushinteger(lua, fd) : lua_pushinteger(lua, -1);
     return 1;
 }
 static int32_t _lreg_listen(lua_State *lua) {
@@ -315,11 +310,7 @@ static int32_t _lreg_udp(lua_State *lua) {
     const char *host = luaL_checkstring(lua, 2);
     uint16_t port = (uint16_t)luaL_checkinteger(lua, 3);
     SOCKET fd = task_netudp(task, host, port);
-    if (INVALID_SOCK != fd) {
-        lua_pushinteger(lua, fd);
-    } else {
-        lua_pushinteger(lua, -1);
-    }
+    INVALID_SOCK != fd ? lua_pushinteger(lua, fd) : lua_pushinteger(lua, -1);
     return 1;
 }
 static int32_t _lreg_synsend(lua_State *lua) {
@@ -337,8 +328,7 @@ static int32_t _lreg_synsend(lua_State *lua) {
     size_t lens;
     void *resp = task_synsend(task, fd, data, size, &lens, ptype);
     if (NULL == resp) {
-        lua_pushnil(lua);
-        return 1;
+        return 0;
     }
     lua_pushlightuserdata(lua, resp);
     lua_pushinteger(lua, lens);
@@ -374,8 +364,7 @@ static int32_t _lreg_synsendto(lua_State *lua) {
     size_t lens;
     void *resp = task_synsendto(task, fd, host, port, data, size, &lens);
     if (NULL == resp) {
-        lua_pushnil(lua);
-        return 1;
+        return 0;
     }
     lua_pushlightuserdata(lua, resp);
     lua_pushinteger(lua, lens);
@@ -401,54 +390,76 @@ static int32_t _lreg_close(lua_State *lua) {
     ev_close(srey_netev(srey), fd);
     return 0;
 }
-static int32_t _lreg_http_pack(lua_State *lua) {
+static int32_t _lreg_simple_pack(lua_State *lua) {
     void *pack = lua_touserdata(lua, 1);
-    int32_t toud = (int32_t)luaL_checkinteger(lua, 2);
-    lua_createtable(lua, 0, 4);
-    int32_t chunked = http_chunked(pack);
-    LUA_TBPUSH_NUMBER("chunked", chunked);
-    size_t size;
-    char *data = (char *)http_data(pack, &size);
-    if (size > 0) {
-        if (0 == toud) {
-            LUA_TBPUSH_LSTRING("data", data, size);
-        } else {
-            LUA_TBPUSH_UD(data, size);
-        }
-    } else {
-        if (2 == chunked) {
-            if (0 == toud) {
-                LUA_TBPUSH_STRING("data", "");
-            } else {
-                LUA_TBPUSH_NUMBER("size", 0);
-            }
-        }
+    size_t lens;
+    void *data = simple_data(pack, &lens);
+    lua_pushlightuserdata(lua, data);
+    lua_pushinteger(lua, lens);
+    return 2;
+}
+static int32_t _lreg_http_chunked(lua_State *lua) {
+    void *pack = lua_touserdata(lua, 1);
+    lua_pushinteger(lua, http_chunked(pack));
+    return 1;
+}
+static int32_t _lreg_http_status(lua_State *lua) {
+    void *pack = lua_touserdata(lua, 1);
+    int32_t chunck = http_chunked(pack);
+    if (0 != chunck
+        && 1 != chunck) {
+        return 0;
     }
-    if (0 == chunked
-        || 1 == chunked) {
-        size_t i;
-        lua_pushstring(lua, "status");
-        lua_createtable(lua, 0, 3);
-        buf_ctx *buf = http_status(pack);
-        for (i = 0; i < 3; i++) {
-            lua_pushinteger(lua, i + 1);
-            lua_pushlstring(lua, buf[i].data, buf[i].lens);
-            lua_settable(lua, -3);
-        }
-        lua_settable(lua, -3);
-        size = http_nheader(pack);
-        lua_pushstring(lua, "head");
-        lua_createtable(lua, 0, (int32_t)size);
-        http_header_ctx *header;
-        for (i = 0; i < size; i++) {
-            header = http_header_at(pack, i);
-            lua_pushlstring(lua, header->key.data, header->key.lens);
-            lua_pushlstring(lua, header->value.data, header->value.lens);
-            lua_settable(lua, -3);
-        }
+    buf_ctx *buf = http_status(pack);
+    for (int32_t i = 0; i < 3; i++) {
+        lua_pushlstring(lua, buf[i].data, buf[i].lens);
+    }
+    return 3;
+}
+static int32_t _lreg_http_head(lua_State *lua) {
+    void *pack = lua_touserdata(lua, 1);
+    const char *key = luaL_checkstring(lua, 2);
+    int32_t chunck = http_chunked(pack);
+    if (0 != chunck
+        && 1 != chunck) {
+        return 0;
+    }
+    size_t vlens;
+    char *val = http_header(pack, key, &vlens);
+    if (NULL == val) {
+        return 0;
+    }
+    lua_pushlstring(lua, val, vlens);
+    return 1;
+}
+static int32_t _lreg_http_heads(lua_State *lua) {
+    void *pack = lua_touserdata(lua, 1);
+    int32_t chunck = http_chunked(pack);
+    if (0 != chunck
+        && 1 != chunck) {
+        return 0;
+    }
+    size_t nhead = http_nheader(pack);
+    lua_createtable(lua, 0, (int32_t)nhead);
+    http_header_ctx *header;
+    for (size_t i = 0; i < nhead; i++) {
+        header = http_header_at(pack, i);
+        lua_pushlstring(lua, header->key.data, header->key.lens);
+        lua_pushlstring(lua, header->value.data, header->value.lens);
         lua_settable(lua, -3);
     }
     return 1;
+}
+static int32_t _lreg_http_data(lua_State *lua) {
+    void *pack = lua_touserdata(lua, 1);
+    size_t lens;
+    void *data = http_data(pack, &lens);
+    if (0 == lens) {
+        return 0;
+    }
+    lua_pushlightuserdata(lua, data);
+    lua_pushinteger(lua, lens);
+    return 2;
 }
 static int32_t _lreg_websock_connect(lua_State *lua) {
     task_ctx *task = lua_touserdata(lua, 1);
@@ -456,31 +467,21 @@ static int32_t _lreg_websock_connect(lua_State *lua) {
     uint16_t port = (uint16_t)luaL_checkinteger(lua, 3);
     struct evssl_ctx *evssl = lua_touserdata(lua, 4);
     SOCKET fd = websock_connect(task, ip, port, evssl);
-    if (INVALID_SOCK == fd) {
-        lua_pushinteger(lua, -1);
-    } else {
-        lua_pushinteger(lua, fd);
-    }
+    INVALID_SOCK != fd ? lua_pushinteger(lua, fd) : lua_pushinteger(lua, -1);
     return 1;
 }
 static int32_t _lreg_websock_pack(lua_State *lua) {
     void *pack = lua_touserdata(lua, 1);
-    int32_t toud = (int32_t)luaL_checkinteger(lua, 2);
-    int32_t fin = websock_pack_fin(pack);
-    int32_t proto = websock_pack_proto(pack);
+    lua_pushinteger(lua, websock_pack_proto(pack));
+    lua_pushinteger(lua, websock_pack_fin(pack));
     size_t lens;
     void *data = websock_pack_data(pack, &lens);
-    lua_createtable(lua, 0, 3);
-    LUA_TBPUSH_NUMBER("fin", fin);
-    LUA_TBPUSH_NUMBER("proto", proto);
-    if (0 != lens) {
-        if (0 == toud) {
-            LUA_TBPUSH_LSTRING("data", data, lens);
-        } else {
-            LUA_TBPUSH_UD(data, lens);
-        }
+    if (lens > 0){
+        lua_pushlightuserdata(lua, data);
+        lua_pushinteger(lua, lens);
+        return 4;
     }
-    return 1;
+    return 2;
 }
 static int32_t _lreg_websock_ping(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
@@ -554,19 +555,6 @@ static int32_t _lreg_websock_continuation(lua_State *lua) {
         websock_continuation(srey_netev(srey), fd, fin, NULL, data, dlens);
     }
     return 0;
-}
-static int32_t _lreg_simple_pack(lua_State *lua) {
-    void *pack = lua_touserdata(lua, 1);
-    int32_t toud = (int32_t)luaL_checkinteger(lua, 2);
-    size_t lens;
-    void *data = simple_data(pack, &lens);
-    lua_createtable(lua, 0, 2);
-    if (0 == toud) {
-        LUA_TBPUSH_LSTRING("data", data, lens);
-    } else {
-        LUA_TBPUSH_UD(data, lens);
-    }
-    return 1;
 }
 static int32_t _lreg_msg_info(lua_State *lua) {
     message_ctx *msg = lua_touserdata(lua, 1);
@@ -678,7 +666,14 @@ LUAMOD_API int luaopen_srey_utils(lua_State *lua) {
         { "sendto", _lreg_sendto },
         { "close", _lreg_close },
 
-        { "http_pack", _lreg_http_pack },
+        { "simple_pack", _lreg_simple_pack },
+
+        { "http_chunked", _lreg_http_chunked },
+        { "http_status", _lreg_http_status },
+        { "http_head", _lreg_http_head },
+        { "http_heads", _lreg_http_heads },
+        { "http_data", _lreg_http_data },
+
         { "websock_connect", _lreg_websock_connect },
         { "websock_pack", _lreg_websock_pack },
         { "websock_ping", _lreg_websock_ping },
@@ -687,7 +682,6 @@ LUAMOD_API int luaopen_srey_utils(lua_State *lua) {
         { "websock_text", _lreg_websock_text },
         { "websock_binary", _lreg_websock_binary },
         { "websock_continuation", _lreg_websock_continuation },
-        { "simple_pack", _lreg_simple_pack },
 
         { "msg_info", _lreg_msg_info },
         { NULL, NULL },

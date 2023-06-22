@@ -3,11 +3,12 @@ local sutils = require("srey.utils")
 local core = require("lib.core")
 local json = require("cjson")
 local msgpack = require("cmsgpack")
+local simple = require("lib.simple")
+local http = require("lib.http")
 local table = table
 local rpc_func = {}--rpc 函数
 local static_funcs = {}
 local timeout = {}
-local chunked = {}
 local encode = (RPC_USEJSON and json.encode or msgpack.pack)
 local decode = (RPC_USEJSON and json.decode or msgpack.unpack)
 
@@ -89,15 +90,6 @@ function core.timeout(ms, func, ...)
         arg = {...}
     }
     sutils.timeout(core.self(), sess, ms)
-end
---[[
-描述:设置处理http chunked包函数
-参数:
-    fd :integer
-    ckfunc function(fd :integer, data :userdata, size :integer) :function
---]]
-function core.http_chunked(fd, ckfunc)
-    chunked[fd] = ckfunc
 end
 --[[
 描述:RPC函数注册
@@ -189,8 +181,7 @@ function core.netreq(fd, task, name, ...)
     if nil == resp then
         return false
     end
-    local data = sutils.simple_pack(resp, 1)
-    info = decode(data.data, data.size)
+    info = decode(simple.unpack(resp))
     if info.ok then
         return true, table.unpack(info.arg)
     end
@@ -216,8 +207,7 @@ local function call_static_funcs(func, ...)
     func(...)
 end
 local function rpc_netreq(fd, data)
-    local pack = sutils.simple_pack(data, 1)
-    local info = decode(pack.data, pack.size)
+    local info = decode(simple.unpack(data))
     local dst = core.task_qury(info.dst)
     if nil == dst then
         if nil ~= info.src then
@@ -238,13 +228,7 @@ local function rpc_netreq(fd, data)
 end
 local function dispatch_recv(pktype, fd, data, size)
     if PACK_TYPE.HTTP == pktype then
-        local func = chunked[fd]
-        if func then
-            local hpack = sutils.http_pack(data, 1)
-            if not hpack.data or 0 == hpack.size then
-                chunked[fd] = nil
-            end
-            func(fd, hpack.data, hpack.size)
+        if http.chunk_call(fd, data) then
             return
         end
     elseif PACK_TYPE.RPC == pktype then

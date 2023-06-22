@@ -27,8 +27,5 @@
     <ClInclude Include="ltasks\ltask.h">
       <Filter>ltasks</Filter>
     </ClInclude>
-    <ClInclude Include="ltasks\lpushtb.h">
-      <Filter>ltasks</Filter>
-    </ClInclude>
   </ItemGroup>
 </Project>

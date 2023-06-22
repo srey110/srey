@@ -9,26 +9,26 @@ local function onhandshaked(fd)
 end
 srey.regrpc("handshaked", onhandshaked)
 local function onrecv(pktype, fd, data, size)
-    local frame = websock.unpack(data, 1)
-    if WEBSOCK_PROTO.PING == frame.proto then
+    local proto, fin, pack, plens = websock.unpack(data)
+    if WEBSOCK_PROTO.PING == proto then
         websock.pong(fd)
         --printd("PING")
-    elseif WEBSOCK_PROTO.CLOSE == frame.proto then
+    elseif WEBSOCK_PROTO.CLOSE == proto then
         srey.close(fd)
         --printd("CLOSE")
-    elseif WEBSOCK_PROTO.TEXT == frame.proto  then
-        --local msg = srey.utostr(frame.data, frame.size)
-        --printd("TEXT size: %d", frame.size)
+    elseif WEBSOCK_PROTO.TEXT == proto  then
+        --local msg = srey.utostr(pack, plens)
+        --printd("TEXT size: %d", plens)
         local now = os.date(FMT_TIME, os.time())
         websock.text(fd, now)
-    elseif WEBSOCK_PROTO.BINARY == frame.proto  then
-        --local msg = srey.utostr(frame.data, frame.size)
-        --printd("BINARY size: %d", frame.size)
+    elseif WEBSOCK_PROTO.BINARY == proto  then
+        --local msg = srey.utostr(pack, plens)
+        --printd("BINARY size: %d", plens)
         local now = os.date(FMT_TIME, os.time())
         websock.binary(fd, now)
-    elseif WEBSOCK_PROTO.CONTINUE == frame.proto then
-        --local msg = srey.utostr(frame.data, frame.size)
-        --printd("CONTINUE fin: %d size: %d", frame.fin, frame.size)
+    elseif WEBSOCK_PROTO.CONTINUE == proto then
+        --local msg = srey.utostr(pack, plens)
+        --printd("CONTINUE fin: %d size: %d", fin, plens)
     end
 end
 srey.recved(onrecv)

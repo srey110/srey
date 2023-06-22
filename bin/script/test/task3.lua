@@ -31,21 +31,20 @@ local function http_rtn(fd, chunked)
         http.response(fd, 200, nil, "OK")
     end
 end
-local function onrecv(pktype, fd, data, size)
+local function onrecv(pktype, fd, pack, size)
     if PACK_TYPE.HTTP == pktype then
-        local hpack = http.unpack(data, 1)
-        local chunked = hpack.chunked
+        local chunked = http.chunked(pack)
+        local data, lens = http.data(pack)
         if 1 == chunked then
-            --printd(dump(hpack.head))
         elseif 2 == chunked  then
-            if 0 == hpack.size then
+            if not data then
                 --printd("chunked %d: end", fd)
                 http_rtn(fd, true)
             else
-                --printd("chunked %d lens: %d", fd, hpack.size)
+                --printd("chunked %d lens: %d", fd, lens)
             end
         else
-            local sign = websock.upgrade(hpack)
+            local sign = websock.upgrade(pack)
             if sign then
                 local task4 = srey.task_qury(TASK_NAME.TASK4)
                 srey.ud_data(fd, task4)

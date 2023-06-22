@@ -2,7 +2,6 @@
 #if WITH_LUA
 #include "lua/lualib.h"
 #include "lua/lauxlib.h"
-#include "lpushtb.h"
 
 #ifdef OS_WIN
 #pragma comment(lib, "lualib.lib")
