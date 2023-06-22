@@ -110,14 +110,9 @@ static inline mco_coro *_co_create(task_ctx *task) {
 static inline void _co_cb(mco_coro *co) {
     co_arg_ctx arg;
     ASSERTAB(MCO_SUCCESS == mco_pop(co, &arg, sizeof(arg)), "mco_pop failed!");
-    switch (arg.msg.msgtype) {
-    case MSG_TYPE_CLOSING:
-        arg.task->_run(arg.task, &arg.msg);
+    arg.task->_run(arg.task, &arg.msg);
+    if (MSG_TYPE_CLOSING == arg.msg.msgtype) {
         arg.task->closed = 1;
-        break;
-    default:
-        arg.task->_run(arg.task, &arg.msg);
-        break;
     }
     qu_copool_push(&arg.task->qucopool, &co);
     _message_clean(&arg.msg);
@@ -195,7 +190,7 @@ static inline void _task_onmsg(co_arg_ctx *arg) {
                 RESUME(arg->task, cosess.co);
             } else {
                 if (ERR_OK == arg->msg.erro) {
-                    SOCK_CLOSE(arg->msg.fd);
+                    ev_close(task_netev(arg->task), arg->msg.fd);
                 }
                 LOG_WARN("can't find connect session %"PRIu64", maybe timeout already.", arg->msg.session);
             }
