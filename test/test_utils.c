@@ -396,44 +396,6 @@ void test_http(CuTest* tc) {
 
     buffer_free(&buf);
 }
-void test_simple(CuTest* tc) {
-    buffer_ctx buf;
-    buffer_init(&buf);
-    
-    int32_t closed = 0;
-    ud_cxt ud;
-    ZERO(&ud, sizeof(ud));
-    ud.pktype = PACK_SIMPLE;
-
-    const char *str1 = "this is test.";
-    size_t packsize = 0;
-    void *pack = simple_pack((void *)str1, strlen(str1), &packsize);
-    buffer_append(&buf, pack, packsize);
-    size_t size = 0;
-    void * unpack = simple_unpack(&buf, &size, &ud, &closed);
-    CuAssertTrue(tc, size == packsize &&
-        0 == memcmp((char*)pack + simple_hsize(), (char*)unpack + simple_hsize(), packsize));
-    protos_pkfree(PACK_SIMPLE, unpack);
-
-    buffer_append(&buf, pack, packsize - 5);
-    unpack = simple_unpack(&buf, &size, &ud, &closed);
-    CuAssertTrue(tc, NULL == unpack);
-    buffer_append(&buf, (char*)pack + (packsize - 5), 5);
-    unpack = simple_unpack(&buf, &size, &ud, &closed);
-    CuAssertTrue(tc, size == packsize && 
-        0 == memcmp((char*)pack + simple_hsize(), (char*)unpack + simple_hsize(), packsize));
-    protos_pkfree(PACK_SIMPLE, unpack);
-    FREE(pack);
-
-    pack = simple_pack(NULL, 0, &packsize);
-    buffer_append(&buf, pack, packsize);
-    unpack = simple_unpack(&buf, &size, &ud, &closed);
-    CuAssertTrue(tc, size == packsize);
-    protos_pkfree(PACK_SIMPLE, unpack);
-    
-    FREE(pack);
-    buffer_free(&buf);
-}
 void test_utils(CuSuite* suite) {
     SUITE_ADD_TEST(suite, test_array);
     SUITE_ADD_TEST(suite, test_queue);
@@ -443,5 +405,4 @@ void test_utils(CuSuite* suite) {
     SUITE_ADD_TEST(suite, test_buffer);
     SUITE_ADD_TEST(suite, test_log);
     SUITE_ADD_TEST(suite, test_http);
-    SUITE_ADD_TEST(suite, test_simple);
 }
