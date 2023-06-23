@@ -606,6 +606,10 @@ static int32_t _lreg_msg_info(lua_State *lua) {
         lua_pushinteger(lua, msg->erro);
         argc++;
         break;
+    case MSG_TYPE_HANDSHAKED://pktype fd skid
+        MSG_PUSH_NETPUB(msg);
+        argc += 3;
+        break;
     case MSG_TYPE_ACCEPT://pktype fd skid
         MSG_PUSH_NETPUB(msg);
         argc += 3;

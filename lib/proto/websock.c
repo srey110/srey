@@ -1,4 +1,5 @@
 #include "proto/websock.h"
+#include "proto/protos.h"
 #include "service/srey.h"
 #include "proto/http.h"
 #include "netutils.h"
@@ -110,6 +111,7 @@ static inline void _websock_handshake_server(ev_ctx *ev, SOCKET fd, struct http_
     FREE(key);
     ud->status = START;
     ev_send(ev, fd, ud->skid, rsp, strlen(rsp), 0, 0);
+    ((push_handshaked)ud->arg)(fd, ud);
 }
 static inline void _websock_handshake(ev_ctx *ev, SOCKET fd, buffer_ctx *buf, ud_cxt *ud, int32_t *closefd) {
     int32_t status;

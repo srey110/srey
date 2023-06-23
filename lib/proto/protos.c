@@ -87,3 +87,12 @@ void *protos_pack(pack_type type, void *data, size_t lens, size_t *size) {
     }
     return pack;
 }
+void protos_handshaked(ud_cxt *ud, push_handshaked cb) {
+    switch (ud->pktype) {
+    case PACK_WEBSOCK:
+        ud->arg = cb;
+        break;
+    default:
+        break;
+    }
+}

@@ -16,6 +16,7 @@ typedef enum msg_type {
     MSG_TYPE_TIMEOUT,
     MSG_TYPE_ACCEPT,
     MSG_TYPE_CONNECT,
+    MSG_TYPE_HANDSHAKED,
     MSG_TYPE_RECV,
     MSG_TYPE_SEND,
     MSG_TYPE_CLOSE,

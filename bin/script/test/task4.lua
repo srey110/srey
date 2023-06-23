@@ -4,8 +4,12 @@ local function onstarted()
     srey.listen("0.0.0.0", 15004, PACK_TYPE.WEBSOCK)
 end
 srey.started(onstarted)
+local function handshaked(pktype, fd, skid)
+    websock.text(fd, skid, "welcome! this is websocket.")
+end
+srey.handshaked(handshaked)
 local function onhandshaked(fd, skid)
-    websock.text(fd, skid, "welcome! http upgrade to websocket.")
+    websock.text(fd, skid, "welcome! this is http upgrade to websocket.")
 end
 srey.regrpc("handshaked", onhandshaked)
 local function onrecv(pktype, fd, skid, data, size)

@@ -198,6 +198,9 @@ static inline void _task_onmsg(co_arg_ctx *arg) {
             RESUME_NORMAL(arg);
         }
         break;
+    case MSG_TYPE_HANDSHAKED:
+        RESUME_NORMAL(arg);
+        break;
     case MSG_TYPE_RECV:
         _dispatch_netrd(arg);
         break;
@@ -452,13 +455,21 @@ void task_response(task_ctx *dst, uint64_t sess, void *data, size_t size, int32_
     msg.size = size;
     _push_message(dst, &msg);
 }
+static inline void _push_handshaked(SOCKET fd, ud_cxt *ud) {
+    message_ctx msg;
+    msg.msgtype = MSG_TYPE_HANDSHAKED;
+    msg.pktype = ud->pktype;
+    msg.fd = fd;
+    msg.skid = ud->skid;
+    _push_message(ud->data, &msg);
+}
 static inline int32_t _task_net_accept(ev_ctx *ev, SOCKET fd, ud_cxt *ud) {
     message_ctx msg;
     msg.msgtype = MSG_TYPE_ACCEPT;
     msg.pktype = ud->pktype;
-    msg.session = ud->session;
     msg.fd = fd;
     msg.skid = ud->skid;
+    protos_handshaked(ud, _push_handshaked);
     _push_message(ud->data, &msg);
     return ERR_OK;
 }
@@ -466,7 +477,6 @@ static inline void _task_net_recv(ev_ctx *ev, SOCKET fd, buffer_ctx *buf, size_t
     message_ctx msg;
     msg.msgtype = MSG_TYPE_RECV;
     msg.pktype = ud->pktype;
-    msg.session = ud->session;
     msg.fd = fd;
     msg.skid = ud->skid;
     void *data;
@@ -494,7 +504,6 @@ static inline void _task_net_send(ev_ctx *ev, SOCKET fd, size_t size, ud_cxt *ud
     message_ctx msg;
     msg.msgtype = MSG_TYPE_SEND;
     msg.pktype = ud->pktype;
-    msg.session = ud->session;
     msg.fd = fd;
     msg.skid = ud->skid;
     msg.size = size;
@@ -504,7 +513,6 @@ static inline void _task_net_close(ev_ctx *ev, SOCKET fd, ud_cxt *ud) {
     message_ctx msg;
     msg.msgtype = MSG_TYPE_CLOSE;
     msg.pktype = ud->pktype;
-    msg.session = ud->session;
     msg.fd = fd;
     msg.skid = ud->skid;
     if (0 != ud->synflag) {
@@ -547,6 +555,7 @@ static inline int32_t _task_net_connect(ev_ctx *ev, SOCKET fd, int32_t err, ud_c
     } else {
         msg.synflag = 0;
     }
+    protos_handshaked(ud, _push_handshaked);
     _push_message(ud->data, &msg);
     return ERR_OK;
 }

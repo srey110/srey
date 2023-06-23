@@ -45,6 +45,14 @@ function core.connected(func)
     static_funcs.CONNECT = func
 end
 --[[
+描述:socket handshaked
+参数:
+    func function(pktype, fd, skid) :function
+--]]
+function core.handshaked(func)
+    static_funcs.HANDSHAKED = func
+end
+--[[
 描述:socket recv
 参数:
     func function(pktype, fd, skid, data, size) :function
@@ -195,11 +203,12 @@ local MSG_TYPE = {
     TIMEOUT = 3,
     ACCEPT = 4,
     CONNECT = 5,
-    RECV = 6,
-    SEND = 7,
-    CLOSE = 8,
-    RECVFROM = 9,
-    REQUEST = 10
+    HANDSHAKED = 6,
+    RECV = 7,
+    SEND = 8,
+    CLOSE = 9,
+    RECVFROM = 10,
+    REQUEST = 11
 }
 local function call_static_funcs(func, ...)
     if not func then
@@ -275,12 +284,14 @@ function dispatch_message(msgtype, msg)
         call_static_funcs(static_funcs.CONNECT, sutils.msg_info(msg))
     elseif MSG_TYPE.ACCEPT == msgtype then--function(pktype, fd, skid)
         call_static_funcs(static_funcs.ACCEPT, sutils.msg_info(msg))
+    elseif MSG_TYPE.HANDSHAKED == msgtype then--function(pktype, fd, skid)
+        call_static_funcs(static_funcs.HANDSHAKED, sutils.msg_info(msg))
+    elseif MSG_TYPE.RECV == msgtype then--pktype fd skid data size
+        dispatch_recv(sutils.msg_info(msg))
     elseif MSG_TYPE.SEND == msgtype then--function(pktype, fd, skid, size)
         call_static_funcs(static_funcs.SEND, sutils.msg_info(msg))
     elseif MSG_TYPE.CLOSE == msgtype then--function(pktype, fd, skid)
         call_static_funcs(static_funcs.CLOSE, sutils.msg_info(msg))
-    elseif MSG_TYPE.RECV == msgtype then--pktype fd skid data size
-        dispatch_recv(sutils.msg_info(msg))
     elseif MSG_TYPE.RECVFROM == msgtype then--function(fd, skid, data, size, ip, port)
         call_static_funcs(static_funcs.RECVFROM, sutils.msg_info(msg))
     elseif MSG_TYPE.REQUEST == msgtype then--sess src data size
