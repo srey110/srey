@@ -31,7 +31,7 @@ end
 --[[
 描述:socket accept
 参数:
-    func function(pktype :PACK_TYPE, fd :integer) :function
+    func function(pktype, fd, skid) :function
 --]]
 function core.accepted(func)
     static_funcs.ACCEPT = func
@@ -39,7 +39,7 @@ end
 --[[
 描述:socket connect
 参数:
-    func function(pktype :PACK_TYPE, fd :integer, erro :integer) :function
+    func function(pktype, fd, skid, erro) :function
 --]]
 function core.connected(func)
     static_funcs.CONNECT = func
@@ -47,7 +47,7 @@ end
 --[[
 描述:socket recv
 参数:
-    func function(pktype :PACK_TYPE, fd :integer, data :userdata, size :integer) :function
+    func function(pktype, fd, skid, data, size) :function
 --]]
 function core.recved(func)
     static_funcs.RECV = func
@@ -55,8 +55,7 @@ end
 --[[
 描述:udp recvfrom
 参数:
-    func function(fd :integer, data :userdata, size :integer, 
-                  ip :string, port :integer) :function
+    func function(fd, skid, data, size, ip, port) :function
 --]]
 function core.recvfromed(func)
     static_funcs.RECVFROM = func
@@ -64,7 +63,7 @@ end
 --[[
 描述:socket sended
 参数:
-    func function(pktype :PACK_TYPE, fd :integer, size :integer) :function
+    func function(pktype, fd, skid, size) :function
 --]]
 function core.sended(func)
     static_funcs.SEND = func
@@ -72,7 +71,7 @@ end
 --[[
 描述:socket close
 参数:
-    func function(pktype :PACK_TYPE, fd :integer) :function
+    func function(pktype, fd, skid) :function
 --]]
 function core.closed(func)
     static_funcs.CLOSE = func
@@ -145,29 +144,31 @@ end
 描述:远程RPC调用，不等待返回
 参数:
     fd :integer
+    skid :integer
     task :TASK_NAME
     name 名称 :string
     ... 调用参数
 --]]
-function core.netcall(fd, task, name, ...)
+function core.netcall(fd, skid, task, name, ...)
     local info = {
         dst = task,
         func = name,
         arg = {...}
     }
-    core.send(fd, encode(info), nil, PACK_TYPE.RPC)
+    core.send(fd, skid, PACK_TYPE.RPC, encode(info))
 end
 --[[
 描述:远程RPC调用，等待返回
 参数:
-    fd socket :integer
+    fd :integer
+    skid :integer
     task :TASK_NAME
     name 名称 :string
     ... 调用参数
 返回:
     bool, 被调函数返回值 
 --]]
-function core.netreq(fd, task, name, ...)
+function core.netreq(fd, skid, task, name, ...)
     if INVALID_SOCK == fd then
         return false
     end
@@ -177,7 +178,7 @@ function core.netreq(fd, task, name, ...)
         func = name,
         arg = {...}
     }
-    local resp, _ = core.synsend(fd, encode(info), nil, PACK_TYPE.RPC)
+    local resp, _ = core.synsend(fd, skid, PACK_TYPE.RPC, encode(info))
     if nil == resp then
         return false
     end
@@ -206,14 +207,14 @@ local function call_static_funcs(func, ...)
     end
     func(...)
 end
-local function rpc_netreq(fd, data)
+local function rpc_netreq(fd, skid, data)
     local info = decode(simple.unpack(data))
     local dst = core.task_qury(info.dst)
     if nil == dst then
         if nil ~= info.src then
             local resp = {}
             resp.ok = false
-            core.send(fd, encode(resp), nil, PACK_TYPE.RPC)
+            core.send(fd, skid, PACK_TYPE.RPC, encode(resp))
         end
         return
     end
@@ -223,20 +224,20 @@ local function rpc_netreq(fd, data)
         local resp = {}
         resp.arg = {core.request(dst, info.func, table.unpack(info.arg))}
         resp.ok = table.remove(resp.arg, 1)
-        core.send(fd, encode(resp), nil, PACK_TYPE.RPC)
+        core.send(fd, skid, PACK_TYPE.RPC, encode(resp))
     end
 end
-local function dispatch_recv(pktype, fd, data, size)
+local function dispatch_recv(pktype, fd, skid, data, size)
     if PACK_TYPE.HTTP == pktype then
-        if http.chunk_call(fd, data) then
+        if http.chunk_call(fd, skid, data) then
             return
         end
     elseif PACK_TYPE.RPC == pktype then
-        rpc_netreq(fd, data)
+        rpc_netreq(fd, skid, data)
         return
     end
-    --function(pktype, fd, data, size)
-    call_static_funcs(static_funcs.RECV, pktype, fd, data, size)
+    --function(pktype, fd, skid, data, size)
+    call_static_funcs(static_funcs.RECV, pktype, fd, skid, data, size)
 end
 local function dispatch_request(sess, src, data, size)
     local info = decode(data, size)
@@ -270,17 +271,17 @@ function dispatch_message(msgtype, msg)
         local info = timeout[sess]
         timeout[sess] = nil
         info.func(table.unpack(info.arg))
-    elseif MSG_TYPE.CONNECT == msgtype then--function(pktype, fd, erro)
+    elseif MSG_TYPE.CONNECT == msgtype then--function(pktype, fd, skid, erro)
         call_static_funcs(static_funcs.CONNECT, sutils.msg_info(msg))
-    elseif MSG_TYPE.ACCEPT == msgtype then--function(pktype, fd)
+    elseif MSG_TYPE.ACCEPT == msgtype then--function(pktype, fd, skid)
         call_static_funcs(static_funcs.ACCEPT, sutils.msg_info(msg))
-    elseif MSG_TYPE.SEND == msgtype then--function(pktype, fd, size)
+    elseif MSG_TYPE.SEND == msgtype then--function(pktype, fd, skid, size)
         call_static_funcs(static_funcs.SEND, sutils.msg_info(msg))
-    elseif MSG_TYPE.CLOSE == msgtype then--function(pktype, fd)
+    elseif MSG_TYPE.CLOSE == msgtype then--function(pktype, fd, skid)
         call_static_funcs(static_funcs.CLOSE, sutils.msg_info(msg))
-    elseif MSG_TYPE.RECV == msgtype then--pktype fd data size
+    elseif MSG_TYPE.RECV == msgtype then--pktype fd skid data size
         dispatch_recv(sutils.msg_info(msg))
-    elseif MSG_TYPE.RECVFROM == msgtype then--function(fd, data, size, ip, port)
+    elseif MSG_TYPE.RECVFROM == msgtype then--function(fd, skid, data, size, ip, port)
         call_static_funcs(static_funcs.RECVFROM, sutils.msg_info(msg))
     elseif MSG_TYPE.REQUEST == msgtype then--sess src data size
         dispatch_request(sutils.msg_info(msg))

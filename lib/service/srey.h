@@ -33,6 +33,7 @@ typedef struct message_ctx {
     void *data;
     size_t size;
     uint64_t session;
+    uint64_t skid;
 }message_ctx;
 typedef struct udp_msg_ctx {
     netaddr_ctx addr;
@@ -77,11 +78,14 @@ void task_response(task_ctx *dst, uint64_t sess, void *data, size_t size, int32_
 int32_t task_netlisten(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
     const char *host, uint16_t port, int32_t sendev);
 SOCKET task_netconnect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
-    const char *host, uint16_t port, int32_t sendev);
-SOCKET task_netudp(task_ctx *task, const char *host, uint16_t port);
+    const char *host, uint16_t port, int32_t sendev, uint64_t *skid);
+SOCKET task_netudp(task_ctx *task, const char *host, uint16_t port, uint64_t *skid);
 
-void *task_synsendto(task_ctx *task, SOCKET fd, const char *host, const uint16_t port, void *data, size_t len, size_t *size);
-void *task_synsend(task_ctx *task, SOCKET fd, void *data, size_t len, size_t *size, pack_type pktype);
-void task_netsend(ev_ctx *ev, SOCKET fd, void *data, size_t len, uint8_t synflag, pack_type pktype);
+void *task_synsendto(task_ctx *task, SOCKET fd, uint64_t skid,
+    const char *host, const uint16_t port, void *data, size_t len, size_t *size);
+void *task_synsend(task_ctx *task, SOCKET fd, uint64_t skid,
+    void *data, size_t len, size_t *size, pack_type pktype);
+void task_netsend(ev_ctx *ev, SOCKET fd, uint64_t skid,
+    void *data, size_t len, uint8_t synflag, pack_type pktype);
 
 #endif //SREY_H_

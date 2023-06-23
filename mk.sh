@@ -15,7 +15,7 @@ then
         istest=1
     fi
 fi
-#Éú³É³ÌĞòµÄÃû³Æ
+#ç”Ÿæˆç¨‹åºçš„åç§°
 PROGRAMNAME="srey"
 if [ $istest -eq 1 ]
 then
@@ -37,7 +37,7 @@ do
     fi
 done < `pwd`/lib/config.h
 echo "WITH_LUA:"$withlua
-#ÎÄ¼ş¼Ğ
+#æ–‡ä»¶å¤¹
 Dir="lib lib/cjson lib/event lib/md5 lib/proto lib/service lib/sha1"
 if [ $istest -eq 1 ]
 then
@@ -49,19 +49,19 @@ else
         Dir=$Dir" lualib lualib/lua lualib/luacjson lualib/msgpack lualib/pb srey/ltasks"
     fi 
 fi
-#SSL¿â
+#SSLåº“
 SSLLIB="-lssl -lcrypto"
-#mainº¯ÊıËùÔÚÎÄ¼ş¼Ğ
+#mainå‡½æ•°æ‰€åœ¨æ–‡ä»¶å¤¹
 MAINDIR="srey"
 if [ $istest -eq 1 ]
 then
     MAINDIR="test"
 fi 
-#mainº¯ÊıËùÔÚÎÄ¼ş
+#mainå‡½æ•°æ‰€åœ¨æ–‡ä»¶
 MAINFILE="main.c"
-#¸½¼Ó°üº¬¿â
+#é™„åŠ åŒ…å«åº“
 INCLUDELIB="-lpthread -lm"
-#ÏµÍ³ Î»Êı
+#ç³»ç»Ÿ ä½æ•°
 if [ "$OSNAME" != "Darwin" ]
 then
     INCLUDELIB=$INCLUDELIB" -lrt"
@@ -92,11 +92,11 @@ then
         X64=""
     fi
 fi
-#½á¹û´æ·ÅÂ·¾¶
+#ç»“æœå­˜æ”¾è·¯å¾„
 RSTPATH="bin"
-#ÖĞ¼ä¿âÎÄ¼şÃû
+#ä¸­é—´åº“æ–‡ä»¶å
 LIBNAME="srey"
-#²»²ÎÓë±àÒëµÄÎÄ¼ş,MAINFILE+ÆäËû
+#ä¸å‚ä¸ç¼–è¯‘çš„æ–‡ä»¶,MAINFILE+å…¶ä»–
 EXCEPTL=$MAINFILE" "$TESTFILE
 MAKEFILEPATH=`pwd`
 LIBPATH="-L$MAKEFILEPATH/$RSTPATH"

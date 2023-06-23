@@ -12,6 +12,7 @@ typedef struct http_header_ctx {
 struct http_pack_ctx *http_unpack(buffer_ctx *buf, size_t *size, ud_cxt *ud, int32_t *closefd);
 void http_pkfree(struct http_pack_ctx *pack);
 void http_udfree(ud_cxt *ud);
+
 struct http_pack_ctx *_http_parsehead(buffer_ctx *buf, int32_t *status, int32_t *closefd);
 int32_t _http_check_keyval(http_header_ctx *head, const char *key, const char *val);
 

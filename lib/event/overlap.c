@@ -94,6 +94,7 @@ sock_ctx *_new_sk(SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
     oltcp->wsabuf.IOV_LEN_FIELD = 0;
     oltcp->cbs = *cbs;
     COPY_UD(oltcp->ud, ud);
+    oltcp->ud.skid = _sock_id();
     buffer_init(&oltcp->buf_r);
     qu_off_buf_init(&oltcp->buf_s, INIT_SENDBUF_LEN);
     return &oltcp->ol_r;
@@ -133,6 +134,19 @@ void _reset_sk(sock_ctx *skctx, SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
     oltcp->ol_s.fd = fd;
     oltcp->cbs = *cbs;
     COPY_UD(oltcp->ud, ud);
+    oltcp->ud.skid = _sock_id();
+}
+int32_t _check_skid(sock_ctx *skctx, const uint64_t skid) {
+    if (SOCK_STREAM == skctx->type) {
+        if (skid == UPCAST(skctx, overlap_tcp_ctx, ol_r)->ud.skid) {
+            return ERR_OK;
+        }
+    } else {
+        if (skid == UPCAST(skctx, overlap_udp_ctx, ol_r)->ud.skid) {
+            return ERR_OK;
+        }
+    }
+    return ERR_FAILED;
 }
 void _disconnect(sock_ctx *skctx) {
     if (SOCK_STREAM == skctx->type) {
@@ -461,7 +475,8 @@ static inline void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD b
         pool_push(&watcher->pool, &oltcp->ol_r);
     }
 }
-SOCKET ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *host, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud) {
+SOCKET ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *host, const uint16_t port,
+    cbs_ctx *cbs, ud_cxt *ud, uint64_t *skid) {
     ASSERTAB(NULL != cbs && NULL != cbs->conn_cb && NULL != cbs->r_cb, ERRSTR_NULLP);
     netaddr_ctx addr;
     if (ERR_OK != netaddr_sethost(&addr, host, port)) {
@@ -488,6 +503,7 @@ SOCKET ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *host, const 
     sock_ctx *skctx = _new_sk(fd, cbs, ud);
     skctx->ev_cb = _on_connect_cb;
     overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
+    *skid = oltcp->ud.skid;
 #if WITH_SSL
     if (NULL != evssl) {
         oltcp->ssl = evssl_setfd(evssl, fd);
@@ -605,7 +621,8 @@ static inline int32_t _acceptex(ev_ctx *ev, listener_ctx *lsn) {
     }
     return ERR_OK;
 }
-int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *host, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud) {
+int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *host, const uint16_t port,
+    cbs_ctx *cbs, ud_cxt *ud) {
     ASSERTAB(NULL != cbs && NULL != cbs->acp_cb && NULL != cbs->r_cb, ERRSTR_NULLP);
     netaddr_ctx addr;
     if (ERR_OK != netaddr_sethost(&addr, host, port)) {
@@ -756,6 +773,7 @@ static inline sock_ctx *_new_udp(netaddr_ctx *addr, SOCKET fd, cbs_ctx *cbs, ud_
     oludp->status = 0;
     oludp->cbs = *cbs;
     COPY_UD(oludp->ud, ud);
+    oludp->ud.skid = _sock_id();
     netaddr_empty_addr(&oludp->addr, netaddr_family(addr));
     oludp->addrlen = netaddr_size(&oludp->addr);
     oludp->wsabuf_r.buf = oludp->buf;
@@ -773,7 +791,8 @@ void _free_udp(sock_ctx *skctx) {
     }
     FREE(oludp);
 }
-SOCKET ev_udp(ev_ctx *ctx, const char *host, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud) {
+SOCKET ev_udp(ev_ctx *ctx, const char *host, const uint16_t port, cbs_ctx *cbs,
+    ud_cxt *ud, uint64_t *skid) {
     ASSERTAB(NULL != cbs->rf_cb, ERRSTR_NULLP);
     netaddr_ctx addr;
     if (ERR_OK != netaddr_sethost(&addr, host, port)) {
@@ -791,8 +810,10 @@ SOCKET ev_udp(ev_ctx *ctx, const char *host, const uint16_t port, cbs_ctx *cbs, 
         return INVALID_SOCK;
     }
     sock_ctx *skctx = _new_udp(&addr, fd, cbs, ud);
+    overlap_udp_ctx *udp = UPCAST(skctx, overlap_udp_ctx, ol_r);
+    *skid = udp->ud.skid;
     _cmd_add(watcher, skctx, hs);
-    if (ERR_OK != _post_recv_from(UPCAST(skctx, overlap_udp_ctx, ol_r))) {
+    if (ERR_OK != _post_recv_from(udp)) {
         _cmd_remove(watcher, fd, hs);
         return INVALID_SOCK;
     }

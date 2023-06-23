@@ -38,20 +38,20 @@ static int32_t test_acpt_cb(ev_ctx *ctx, SOCKET sock, ud_cxt *ud) {
 static void test_recv_cb(ev_ctx *ctx, SOCKET sock, buffer_ctx *buf, size_t lens, ud_cxt *ud) {
     //PRINT("test_recv_cb: lens %d ", (int32_t)lens);
     if (randrange(1, 100) <= 1) {
-        ev_close(ctx, sock);
+        ev_close(ctx, sock, ud->skid);
         return;
     }
     size_t len = buffer_size(buf);
     char *pk;
     MALLOC(pk, len);
     buffer_remove(buf, pk, len);
-    ev_send(ctx, sock, pk, len, 0, 0);
+    ev_send(ctx, sock, ud->skid, pk, len, 0, 0);
 }
 static void test_recvfrom_cb(ev_ctx *ev, SOCKET fd, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
     char host[IP_LENS] = { 0 };
     netaddr_ip(addr, host);
     uint16_t port = netaddr_port(addr);
-    ev_sendto(ev, fd, host, port, buf, size, 0);
+    ev_sendto(ev, fd, ud->skid, host, port, buf, size, 0);
 }
 static void timeout(ud_cxt *ud) {
     int32_t elapsed = (int32_t)timer_elapsed_ms(&tw.timer);
@@ -90,7 +90,8 @@ int main(int argc, char *argv[]) {
     cbs.r_cb = test_recv_cb;
     cbs.rf_cb = test_recvfrom_cb;
     ev_listen(&ev, NULL, "0.0.0.0", 15000, &cbs, NULL);
-    ev_udp(&ev, "0.0.0.0", 15002, &cbs, NULL);
+    uint64_t skid;
+    ev_udp(&ev, "0.0.0.0", 15002, &cbs, NULL, &skid);
 #if WITH_SSL
     char local[PATH_LENS] = { 0 };
     procpath(local);

@@ -29,7 +29,7 @@ local function harbor_closing()
 end
 srey.closing(harbor_closing)
 
-local function harbor_accept(_, fd)
+local function harbor_accept(_, fd, skid)
     if config:empty() then
         return
     end
@@ -42,6 +42,6 @@ local function harbor_accept(_, fd)
         return
     end
     log.WARN("block %s link.", ip)
-    srey.close(fd)
+    srey.close(fd, skid)
 end
 srey.accepted(harbor_accept)

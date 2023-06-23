@@ -2,6 +2,8 @@
 #include "netutils.h"
 #include "loger.h"
 
+static atomic64_t sock_id = 1;
+
 void _bufs_clear(qu_off_buf *bufs) {
     off_buf_ctx *buf;
     while (NULL != (buf = qu_off_buf_pop(bufs))) {
@@ -263,6 +265,9 @@ int32_t _sock_send(SOCKET fd, qu_off_buf *buf_s, size_t *nsend, void *arg) {
 #else
     return _sock_send_normal(fd, buf_s, nsend);
 #endif
+}
+uint64_t _sock_id(void) {
+    return ATOMIC64_ADD(&sock_id, 1);
 }
 void _set_ud_typstat_cmd(char *typsta, int8_t pktype, int8_t status) {
     if (-1 != pktype) {

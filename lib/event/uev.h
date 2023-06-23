@@ -59,6 +59,7 @@ typedef struct cmd_ctx {
     SOCKET fd;
     void *data;
     size_t len;
+    uint64_t skid;
 }cmd_ctx;
 typedef struct watcher_ctx {
     int32_t index;
@@ -120,6 +121,7 @@ void _disconnect(watcher_ctx *watcher, sock_ctx *skctx);
 void _setud_typstat(sock_ctx *skctx, char *typsta);
 void _setud_data(sock_ctx *skctx, void *data);
 void _freelsn(struct listener_ctx *lsn);
+int32_t _check_skid(sock_ctx *skctx, const uint64_t skid);
 
 #endif//EV_IOCP
 #endif//UEV_H_

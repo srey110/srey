@@ -256,20 +256,22 @@ end
 描述:设置socket的pktype status, nil保持不变
 参数:
     fd :integer
+    skid :integer
     pktype :PACK_TYPE
     status :integer
 --]]
-function core.ud_typstat(fd, pktype, status)
-    sutils.setud_typstat(fd, pktype, status)
+function core.ud_typstat(fd, skid, pktype, status)
+    sutils.setud_typstat(fd, skid, pktype, status)
 end
 --[[
 描述:设置socket消息处理的任务
 参数:
     fd :integer
+    skid :integer
     task :task_ctx
 --]]
-function core.ud_data(fd, task)
-    sutils.setud_data(fd, task)
+function core.ud_data(fd, skid, task)
+    sutils.setud_data(fd, skid, task)
 end
 --[[
 描述:休眠
@@ -278,21 +280,6 @@ end
 --]]
 function core.sleep(ms)
     sutils.sleep(curtask, ms)
-end
---[[
-描述:链接
-参数:
-    ip ip :string
-    port 端口 :integer
-    pktype :PACK_TYPE
-    ssl nil不启用ssl :evssl_ctx
-    sendev 是否触发发送事件 :boolean
-返回:
-    socket :integer 
-    INVALID_SOCK失败
---]]
-function core.connect(ip, port, pktype, ssl, sendev)
-    return sutils.connect(curtask, pktype, ssl, ip, port, sendev and 1 or 0)
 end
 --[[
 描述:监听
@@ -309,12 +296,27 @@ function core.listen(ip, port, pktype, ssl, sendev)
     return sutils.listen(curtask, pktype or PACK_TYPE.NONE, ssl, ip, port, sendev and 1 or 0)
 end
 --[[
+描述:链接
+参数:
+    ip ip :string
+    port 端口 :integer
+    pktype :PACK_TYPE
+    ssl nil不启用ssl :evssl_ctx
+    sendev 是否触发发送事件 :boolean
+返回:
+    socket :integer skid :integer
+    INVALID_SOCK失败
+--]]
+function core.connect(ip, port, pktype, ssl, sendev)
+    return sutils.connect(curtask, pktype, ssl, ip, port, sendev and 1 or 0)
+end
+--[[
 描述:udp
 参数:
     ip ip :string
     port 端口 :integer
 返回:
-    socket :integer
+    socket :integer skid :integer
     INVALID_SOCK失败
 --]]
 function core.udp(ip, port)
@@ -324,39 +326,42 @@ end
 描述:tcp发送,等待数据返回
 参数:
     fd socket :integer
+    skid :integer
+    pktype :PACK_TYPE
     data lstring或userdata
     size data长度 :integer
-    pktype :PACK_TYPE
 返回:
     data size
     nil失败
 --]]
-function core.synsend(fd, data, size, pktype)
+function core.synsend(fd, skid, pktype, data, size)
     if INVALID_SOCK == fd or nil == data then
         log.WARN("invalid argument.")
         return nil
     end
-    return sutils.synsend(curtask, fd, data, size, pktype or PACK_TYPE.NONE)
+    return sutils.synsend(curtask, fd, skid, pktype or PACK_TYPE.NONE, data, size)
 end
 --[[
 描述:tcp发送
 参数:
     fd socket :integer
+    skid :integer
+    pktype :PACK_TYPE
     data lstring或userdata
     lens data长度 :integer
-    pktype :PACK_TYPE
 --]]
-function core.send(fd, data, lens, pktype)
+function core.send(fd, skid, pktype, data, lens)
     if INVALID_SOCK == fd or nil == data then
         log.WARN("invalid argument.")
         return
     end
-    sutils.send(fd, data, lens, pktype or PACK_TYPE.NONE)
+    sutils.send(fd, skid, pktype or PACK_TYPE.NONE, data, lens)
 end
 --[[
 描述:udp发送,等待数据返回
 参数:
     fd socket :integer
+    skid :integer
     ip ip :string
     port 端口 :integer
     data lstring或userdata
@@ -365,39 +370,41 @@ end
     data size
     nil失败
 --]]
-function core.synsendto(fd, ip, port, data, lens)
+function core.synsendto(fd, skid, ip, port, data, lens)
     if INVALID_SOCK == fd or nil == data then
         log.WARN("invalid argument.")
         return nil
     end
-    return sutils.synsendto(curtask, fd, ip, port, data, lens)
+    return sutils.synsendto(curtask, fd, skid, ip, port, data, lens)
 end
 --[[
 描述:udp发送
 参数:
     fd socket :integer
+    skid :integer
     ip ip :string
     port 端口 :integer
     data lstring或userdata
     lens data长度 :integer
 --]]
-function core.sendto(fd, ip, port, data, lens)
+function core.sendto(fd, skid, ip, port, data, lens)
     if INVALID_SOCK == fd or nil == data then
         log.WARN("invalid argument.")
         return
     end
-    sutils.sendto(fd, ip, port, data, lens)
+    sutils.sendto(fd, skid, ip, port, data, lens)
 end
 --[[
 描述:关闭链接
 参数:
     fd socket :integer
+    skid :integer
 --]]
-function core.close(fd)
+function core.close(fd, skid)
     if INVALID_SOCK == fd then
         return
     end
-    sutils.close(fd)
+    sutils.close(fd, skid)
 end
 
 return core

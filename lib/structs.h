@@ -16,6 +16,7 @@ typedef struct ud_cxt {
     void *data;
     void *extra;
     uint64_t session;
+    uint64_t skid;
 }ud_cxt;
 typedef struct buf_ctx {
     void *data;
