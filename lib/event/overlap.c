@@ -403,7 +403,7 @@ static inline int32_t _trybind(SOCKET fd, int32_t family) {
     if (AF_INET == family) {
         rtn = netaddr_sethost(&addr, "0.0.0.0", 0);
     } else {
-        rtn = netaddr_sethost(&addr, "::", 0);//::1(127.0.0.1)
+        rtn = netaddr_sethost(&addr, "::", 0);
     }
     if (ERR_OK != rtn) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));

@@ -6,7 +6,7 @@
 
 void ev_init(ev_ctx *ctx, uint32_t nthreads);
 void ev_free(ev_ctx *ctx);
-
+//0.0.0.0 - ::  127.0.0.1 - ::1
 int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *host, const uint16_t port,
     cbs_ctx *cbs, ud_cxt *ud);
 SOCKET ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *host, const uint16_t port,
