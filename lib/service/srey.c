@@ -529,7 +529,6 @@ int32_t task_netlisten(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl
     ZERO(&ud, sizeof(ud));
     ud.pktype = pktype;
     ud.data = task;
-    ud.session = task_session(task);
     cbs_ctx cbs;
     ZERO(&cbs, sizeof(cbs));
     cbs.acp_cb = _task_net_accept;

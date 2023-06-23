@@ -446,8 +446,8 @@ SOCKET websock_connect(struct task_ctx *task, const char *host, uint16_t port, s
     size_t blens;
     char *b64 = b64encode(rdstr, strlen(rdstr), &blens);
     char *data;
-    const char *fmt = "GET / HTTP/1.1\r\nUpgrade: websocket\r\nConnection: Upgrade,Keep-Alive\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n";
-    data = formatv(fmt, b64);
+    const char *fmt = "GET / HTTP/1.1\r\nHost: %s:%d\r\nUpgrade: websocket\r\nConnection: Upgrade,Keep-Alive\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n";
+    data = formatv(fmt, host, port, b64);
     size_t size;
     void *resp = task_synsend(task, fd, *skid, data, strlen(data), &size, PACK_HTTP);
     if (NULL == resp) {

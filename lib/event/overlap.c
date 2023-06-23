@@ -401,9 +401,9 @@ static inline int32_t _trybind(SOCKET fd, int32_t family) {
     int32_t rtn;
     netaddr_ctx addr;
     if (AF_INET == family) {
-        rtn = netaddr_sethost(&addr, "127.0.0.1", 0);
+        rtn = netaddr_sethost(&addr, "0.0.0.0", 0);
     } else {
-        rtn = netaddr_sethost(&addr, "::1", 0);
+        rtn = netaddr_sethost(&addr, "::", 0);//::1(127.0.0.1)
     }
     if (ERR_OK != rtn) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
@@ -436,7 +436,7 @@ static inline int32_t _post_connect(overlap_tcp_ctx *oltcp, netaddr_ctx *addr) {
 static inline void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
     skctx->ev_cb = _on_recv_cb;
     overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
-    if (ERR_OK != sock_checkconn(oltcp->ol_r.fd)) {
+    if (ERROR_SUCCESS != oltcp->ol_r.overlapped.Internal) {
         oltcp->cbs.conn_cb(watcher->ev, oltcp->ol_r.fd, ERR_FAILED, &oltcp->ud);
         pool_push(&watcher->pool, &oltcp->ol_r);
         return;
