@@ -56,5 +56,6 @@ int32_t _sock_send(SOCKET fd, qu_off_buf *buf_s, size_t *nsend, void *arg);
 uint64_t _sock_id(void);
 void _set_ud_typstat_cmd(char *typsta, int8_t pktype, int8_t status);
 void _set_ud_typstat(char *typsta, ud_cxt *ud);
+void _send_result(ud_cxt *ud, uint64_t sess, int32_t err);
 
 #endif//EVPUB_H_

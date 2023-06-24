@@ -17,7 +17,7 @@ typedef enum msg_type {
     MSG_TYPE_RECVFROM,
     MSG_TYPE_REQUEST,
     MSG_TYPE_RESPONSE,
-    MSG_TYPE_WAIT
+    MSG_TYPE_ENDRTN
 }msg_type;
 typedef struct message_ctx {
     int8_t msgtype;//msg_type

@@ -111,7 +111,7 @@ static inline void _websock_handshake_server(ev_ctx *ev, SOCKET fd, struct http_
     char *rsp = formatv(fmt, key);
     FREE(key);
     ud->status = START;
-    ev_send(ev, fd, ud->skid, rsp, strlen(rsp), 0, 0);
+    ev_send(ev, fd, ud->skid, rsp, strlen(rsp), 0, 0, 0);
     ((push_handshaked)ud->arg)(fd, ud);
 }
 static inline void _websock_handshake(ev_ctx *ev, SOCKET fd, buffer_ctx *buf, ud_cxt *ud, int32_t *closefd) {
@@ -315,7 +315,7 @@ static inline void *_websock_create_pack(uint8_t fin, uint8_t proto, char key[4]
 static inline void _websock_control_frame(ev_ctx *ev, SOCKET fd, uint64_t skid, uint8_t proto) {
     size_t flens;
     void *frame = _websock_create_pack(1, proto, NULL, NULL, 0, &flens);
-    ev_send(ev, fd, skid, frame, flens, 0, 0);
+    ev_send(ev, fd, skid, frame, flens, 0, 0, 0);
 }
 void websock_ping(ev_ctx *ev, SOCKET fd, uint64_t skid) {
     _websock_control_frame(ev, fd, skid, PING);
@@ -330,19 +330,19 @@ void websock_text(ev_ctx *ev, SOCKET fd, uint64_t skid,
     char key[4], const char *data, size_t dlens) {
     size_t flens;
     void *frame = _websock_create_pack(1, TEXT, key, (void *)data, dlens, &flens);
-    ev_send(ev, fd, skid, frame, flens, 0, 0);
+    ev_send(ev, fd, skid, frame, flens, 0, 0, 0);
 }
 void websock_binary(ev_ctx *ev, SOCKET fd, uint64_t skid,
     char key[4], void *data, size_t dlens) {
     size_t flens;
     void *frame = _websock_create_pack(1, BINARY, key, data, dlens, &flens);
-    ev_send(ev, fd, skid, frame, flens, 0, 0);
+    ev_send(ev, fd, skid, frame, flens, 0, 0, 0);
 }
 void websock_continuation(ev_ctx *ev, SOCKET fd, uint64_t skid,
     int32_t fin, char key[4], void *data, size_t dlens) {
     size_t flens;
     void *frame = _websock_create_pack(fin, CONTINUE, key, data, dlens, &flens);
-    ev_send(ev, fd, skid, frame, flens, 0, 0);
+    ev_send(ev, fd, skid, frame, flens, 0, 0, 0);
 }
 int32_t websock_pack_fin(websock_pack_ctx *pack) {
     return pack->fin;
@@ -440,11 +440,12 @@ static inline int32_t _websock_handshake_client(struct http_pack_ctx *hpack, cha
 SOCKET websock_connect(struct task_ctx *task, const char *host, uint16_t port, struct evssl_ctx *evssl, uint64_t *skid) {
     SOCKET fd;
     int32_t isip = is_ipaddr(host);
-    if (ERR_OK == isip) {
+    /*if (ERR_OK == isip) {
         fd = task_netconnect(task, PACK_HTTP, evssl, host, port, 0, skid);
     } else {
 
-    }
+    }*/
+    fd = task_netconnect(task, PACK_HTTP, evssl, host, port, 0, skid);
     if (INVALID_SOCK == fd) {
         return INVALID_SOCK;
     }

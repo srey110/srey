@@ -116,6 +116,13 @@ void _reset_sk(sock_ctx *skctx, SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
     COPY_UD(tcp->ud, ud);
     tcp->ud.skid = _sock_id();
 }
+ud_cxt *_get_ud(sock_ctx *skctx) {
+    if (SOCK_STREAM == skctx->type) {
+        return &UPCAST(skctx, tcp_ctx, sock)->ud;
+    } else {
+        return &UPCAST(skctx, udp_ctx, sock)->ud;
+    }
+}
 int32_t _check_skid(sock_ctx *skctx, const uint64_t skid) {
     if (SOCK_STREAM == skctx->type) {
         if (skid == UPCAST(skctx, tcp_ctx, sock)->ud.skid) {

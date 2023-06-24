@@ -15,9 +15,9 @@ SOCKET ev_udp(ev_ctx *ctx, const char *ip, const uint16_t port,
     cbs_ctx *cbs, ud_cxt *ud, uint64_t *skid);
 
 void ev_send(ev_ctx *ctx, SOCKET fd, uint64_t skid,
-    void *data, size_t len, uint8_t synflag, int32_t copy);
+    void *data, size_t len, uint8_t synflag, int32_t copy, uint64_t sess);
 int32_t ev_sendto(ev_ctx *ctx, SOCKET fd, uint64_t skid,
-    const char *ip, const uint16_t port, void *data, size_t len, uint8_t synflag);
+    const char *ip, const uint16_t port, void *data, size_t len, uint8_t synflag, uint64_t sess);
 void ev_close(ev_ctx *ctx, SOCKET fd, uint64_t skid);
 
 void ev_setud_typstat(ev_ctx *ctx, SOCKET fd, uint64_t skid, int8_t pktype, int8_t status);

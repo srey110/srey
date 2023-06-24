@@ -130,6 +130,7 @@ static inline void _dispatch_timeout(co_arg_ctx *arg) {
     }
     switch (cotmo.type) {
     case TMO_TYPE_SLEEP:
+        ASSERTAB(MCO_SUCCESS == mco_push(cotmo.co.co, &arg->msg, sizeof(arg->msg)), "mco_push failed!");
         RESUME(arg->task, cotmo.co.co);
         break;
     case TMO_TYPE_NORMAL:
@@ -158,6 +159,7 @@ static inline void _dispatch_netrd(co_arg_ctx *arg) {
         co_sock_ctx cosk;
         if (ERR_OK == _map_cosk_get(&arg->task->mapco, arg->msg.fd, &cosk)) {
             _map_cotmo_del(&arg->task->mapco, cosk.co.session);
+            arg->msg.session = cosk.co.session;
             arg->msg.erro = ERR_OK;
             ASSERTAB(MCO_SUCCESS == mco_push(cosk.co.co, &arg->msg, sizeof(arg->msg)), "mco_push failed!");
             RESUME(arg->task, cosk.co.co);
@@ -171,9 +173,6 @@ static inline void _dispatch_netrd(co_arg_ctx *arg) {
 }
 static inline void _task_onmsg(co_arg_ctx *arg) {
     if (0 != arg->task->closed) {
-        if (MSG_TYPE_TIMEOUT != arg->msg.msgtype) {
-            LOG_WARN("task %d closed,ignore message id %d.", arg->task->name, arg->msg.msgtype);
-        }
         _message_clean(&arg->msg);
         return;
     }
@@ -221,6 +220,7 @@ static inline void _task_onmsg(co_arg_ctx *arg) {
             co_sock_ctx cosk;
             if (ERR_OK == _map_cosk_get(&arg->task->mapco, arg->msg.fd, &cosk)) {
                 _map_cotmo_del(&arg->task->mapco, cosk.co.session);
+                arg->msg.session = cosk.co.session;
                 arg->msg.erro = ERR_FAILED;
                 ASSERTAB(MCO_SUCCESS == mco_push(cosk.co.co, &arg->msg, sizeof(arg->msg)), "mco_push failed!");
                 RESUME(arg->task, cosk.co.co);
@@ -236,7 +236,8 @@ static inline void _task_onmsg(co_arg_ctx *arg) {
     case MSG_TYPE_REQUEST:
         RESUME_NORMAL(arg);
         break;
-    case MSG_TYPE_RESPONSE: {
+    case MSG_TYPE_RESPONSE:
+    case MSG_TYPE_ENDRTN: {
         co_sess_ctx cosess;
         if (ERR_OK == _map_cosess_get(&arg->task->mapco, arg->msg.session, &cosess)) {
             ASSERTAB(MCO_SUCCESS == mco_push(cosess.co, &arg->msg, sizeof(arg->msg)), "mco_push failed!");
@@ -407,6 +408,11 @@ static inline void _task_timeout(task_ctx *task, uint64_t session, uint32_t time
     tw_add(&task->srey->tw, timeout, _srey_timeout, &ud);
     if (TMO_TYPE_SLEEP == type) {
         YIELD(task);
+        message_ctx msg;
+        ASSERTAB(MCO_SUCCESS == mco_pop(task->curco, &msg, sizeof(msg)), "mco_pop failed!");
+        if (session != msg.session) {
+            LOG_ERROR("session error.");
+        }
     }
 }
 void task_sleep(task_ctx *task, uint32_t timeout) {
@@ -440,6 +446,10 @@ static inline void *_task_request(task_ctx *dst, task_ctx *src, void *data, size
         YIELD(src);
         message_ctx resp;
         ASSERTAB(MCO_SUCCESS == mco_pop(src->curco, &resp, sizeof(resp)), "mco_pop failed!");
+        if (msg.session != resp.session) {
+            LOG_ERROR("session error.");
+            return NULL;
+        }
         *lens = resp.size;
         return resp.data;
     }
@@ -584,19 +594,24 @@ SOCKET task_netconnect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl
         cbs.s_cb = _task_net_send;
     }
     cbs.ud_free = protos_udfree;
+    _map_cosess_add(&task->mapco, task->curco, ud.session);
     SOCKET fd = ev_connect(&task->srey->netev, evssl, ip, port, &cbs, &ud, skid);
     if (INVALID_SOCK == fd) {
+        _map_cosess_del(&task->mapco, ud.session);
         return INVALID_SOCK;
     }
     _task_timeout(task, ud.session, CONNECT_TIMEOUT, TMO_TYPE_CONNECT, fd);
-    _map_cosess_add(&task->mapco, task->curco, ud.session);
     YIELD(task);
     message_ctx msg;
     ASSERTAB(MCO_SUCCESS == mco_pop(task->curco, &msg, sizeof(msg)), "mco_pop failed!");
+    if (ud.session != msg.session) {
+        LOG_ERROR("session error.");
+        ev_close(&task->srey->netev, fd, *skid);
+        return INVALID_SOCK;
+    }
     if (ERR_OK != msg.erro) {
         return INVALID_SOCK;
     }
-    ASSERTAB(*skid == msg.skid, "different socket id.");
     return fd;
 }
 static inline void _task_net_recvfrom(ev_ctx *ev, SOCKET fd, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
@@ -628,11 +643,37 @@ SOCKET task_netudp(task_ctx *task, const char *ip, uint16_t port, uint64_t *skid
     cbs.ud_free = protos_udfree;
     return ev_udp(&task->srey->netev, ip, port, &cbs, &ud, skid);
 }
+void _send_result(ud_cxt *ud, uint64_t sess, int32_t err) {
+    if (0 == sess) {
+        LOG_ERROR("invalid session.");
+        return;
+    }
+    message_ctx msg;
+    msg.msgtype = MSG_TYPE_ENDRTN;
+    msg.session = sess;
+    msg.erro = (int8_t)err;
+    _push_message(ud->data, &msg);
+}
 int32_t task_netsend(task_ctx *task, SOCKET fd, uint64_t skid,
     void *data, size_t len, uint8_t synflag, pack_type pktype) {
     size_t size;
+    uint64_t sess = 0;
     void *pack = protos_pack(pktype, data, len, &size);
-    ev_send(&task->srey->netev, fd, skid, pack, size, synflag, 0);
+    if (0 != synflag) {
+        sess = task_session(task);
+        _map_cosess_add(&task->mapco, task->curco, sess);
+    }
+    ev_send(&task->srey->netev, fd, skid, pack, size, synflag, 0, sess);
+    if (0 != synflag) {
+        YIELD(task);
+        message_ctx msg;
+        ASSERTAB(MCO_SUCCESS == mco_pop(task->curco, &msg, sizeof(msg)), "mco_pop failed!");
+        if (sess != msg.session) {
+            LOG_ERROR("session error.");
+            return ERR_FAILED;
+        }
+        return msg.erro;
+    }
     return ERR_OK;
 }
 void *task_synsend(task_ctx *task, SOCKET fd, uint64_t skid,
@@ -647,20 +688,40 @@ void *task_synsend(task_ctx *task, SOCKET fd, uint64_t skid,
     YIELD(task);
     message_ctx msg;
     ASSERTAB(MCO_SUCCESS == mco_pop(task->curco, &msg, sizeof(msg)), "mco_pop failed!");
+    if (sess != msg.session) {
+        LOG_ERROR("session error.");
+        return NULL;
+    }
     if (ERR_OK != msg.erro) {
         return NULL;
     }
-    if (MSG_TYPE_RECV != msg.msgtype) {
-        LOG_WARN("message type %d error.", msg.msgtype);
-        return NULL;
-    }
-    ASSERTAB(skid == msg.skid, "different socket id.");
     *size = msg.size;
     return msg.data;
 }
 int32_t task_sendto(task_ctx *task, SOCKET fd, uint64_t skid,
     const char *ip, const uint16_t port, void *data, size_t len, uint8_t synflag) {
-    return ev_sendto(&task->srey->netev, fd, skid, ip, port, data, len, synflag);
+    uint64_t sess = 0;
+    if (0 != synflag) {
+        sess = task_session(task);
+        _map_cosess_add(&task->mapco, task->curco, sess);
+    }
+    if (ERR_OK != ev_sendto(&task->srey->netev, fd, skid, ip, port, data, len, synflag, sess)) {
+        if (0 != synflag) {
+            _map_cosess_del(&task->mapco, sess);
+        }
+        return ERR_FAILED;
+    }
+    if (0 != synflag) {
+        YIELD(task);
+        message_ctx msg;
+        ASSERTAB(MCO_SUCCESS == mco_pop(task->curco, &msg, sizeof(msg)), "mco_pop failed!");
+        if (sess != msg.session) {
+            LOG_ERROR("session error.");
+            return ERR_FAILED;
+        }
+        return msg.erro;
+    }
+    return ERR_OK;
 }
 void *task_synsendto(task_ctx *task, SOCKET fd, uint64_t skid,
     const char *ip, const uint16_t port, void *data, size_t len, size_t *size) {
@@ -674,14 +735,13 @@ void *task_synsendto(task_ctx *task, SOCKET fd, uint64_t skid,
     YIELD(task);
     message_ctx msg;
     ASSERTAB(MCO_SUCCESS == mco_pop(task->curco, &msg, sizeof(msg)), "mco_pop failed!");
+    if (sess != msg.session) {
+        LOG_ERROR("session error.");
+        return NULL;
+    }
     if (ERR_OK != msg.erro) {
         return NULL;
     }
-    if (MSG_TYPE_RECVFROM != msg.msgtype) {
-        LOG_WARN("message type %d error.", msg.msgtype);
-        return NULL;
-    }
-    ASSERTAB(skid == msg.skid, "different socket id.");
     udp_msg_ctx *umsg = msg.data;
     *size = msg.size;
     return umsg->data;
