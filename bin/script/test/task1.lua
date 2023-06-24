@@ -126,7 +126,7 @@ local function testhttp()
     end
 end
 local function ontimeout()
-    --printd(".............................................")
+    printd("....................begin.........................")
     if not callonce then
         callonce = true
     end
@@ -137,6 +137,7 @@ local function ontimeout()
     testwebsock(false, 15004)
     testhttp()
     srey.timeout(3000, ontimeout)
+    printd(".....................end........................")
 end
 local function onstarted()
     printd(srey.task_name() .. " onstarted....")

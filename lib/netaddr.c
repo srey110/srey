@@ -1,32 +1,32 @@
 #include "netaddr.h"
 
-int32_t is_ipv4(const char *host) {
+int32_t is_ipv4(const char *ip) {
     struct sockaddr_in sin;
-    return inet_pton(AF_INET, host, &sin) == 1 ? ERR_OK : ERR_FAILED;
+    return inet_pton(AF_INET, ip, &sin) == 1 ? ERR_OK : ERR_FAILED;
 }
-int32_t is_ipv6(const char *host) {
+int32_t is_ipv6(const char *ip) {
     struct sockaddr_in6 sin6;
-    return inet_pton(AF_INET6, host, &sin6) == 1 ? ERR_OK : ERR_FAILED;
+    return inet_pton(AF_INET6, ip, &sin6) == 1 ? ERR_OK : ERR_FAILED;
 }
-int32_t is_ipaddr(const char* host) {
-    return (ERR_OK == is_ipv4(host) || ERR_OK == is_ipv6(host)) ? ERR_OK : ERR_FAILED;
+int32_t is_ipaddr(const char* ip) {
+    return (ERR_OK == is_ipv4(ip) || ERR_OK == is_ipv6(ip)) ? ERR_OK : ERR_FAILED;
 }
 void netaddr_empty_addr(netaddr_ctx *ctx, const int32_t family) {
     ZERO(ctx, sizeof(netaddr_ctx));
     ctx->addr.sa_family = family;
 }
-int32_t netaddr_sethost(netaddr_ctx *ctx, const char *host, const uint16_t port) {
+int32_t netaddr_sethost(netaddr_ctx *ctx, const char *ip, const uint16_t port) {
     ZERO(ctx, sizeof(netaddr_ctx));
-    if (ERR_OK == is_ipv4(host)) {
+    if (ERR_OK == is_ipv4(ip)) {
         ctx->addr.sa_family = AF_INET;
-        int32_t rtn = inet_pton(AF_INET, host, &ctx->ipv4.sin_addr.s_addr);
+        int32_t rtn = inet_pton(AF_INET, ip, &ctx->ipv4.sin_addr.s_addr);
         if (rtn < ERR_OK) {
             return rtn;
         }
         ctx->ipv4.sin_port = htons(port);
     } else {
         ctx->addr.sa_family = AF_INET6;
-        int32_t rtn = inet_pton(AF_INET6, host, &ctx->ipv6.sin6_addr.s6_addr);
+        int32_t rtn = inet_pton(AF_INET6, ip, &ctx->ipv6.sin6_addr.s6_addr);
         if (rtn < ERR_OK) {
             return rtn;
         }

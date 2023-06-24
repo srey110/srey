@@ -78,8 +78,8 @@ void ev_send(ev_ctx *ctx, SOCKET fd, uint64_t skid,
     }
     _SEND_CMD(ctx, cmd);
 }
-void ev_sendto(ev_ctx *ctx, SOCKET fd, uint64_t skid,
-    const char *host, const uint16_t port, void *data, size_t len, uint8_t synflag) {
+int32_t ev_sendto(ev_ctx *ctx, SOCKET fd, uint64_t skid,
+    const char *ip, const uint16_t port, void *data, size_t len, uint8_t synflag) {
     ASSERTAB(INVALID_SOCK != fd, ERRSTR_INVPARAM);
     cmd_ctx cmd;
     cmd.cmd = CMD_SEND;
@@ -89,13 +89,14 @@ void ev_sendto(ev_ctx *ctx, SOCKET fd, uint64_t skid,
     cmd.len = len;
     MALLOC(cmd.data, sizeof(netaddr_ctx) + len);
     netaddr_ctx *addr = (netaddr_ctx *)cmd.data;
-    if (ERR_OK != netaddr_sethost(addr, host, port)) {
+    if (ERR_OK != netaddr_sethost(addr, ip, port)) {
         FREE(cmd.data);
         LOG_WARN("%s", ERRORSTR(ERRNO));
-        return;
+        return ERR_FAILED;
     }
     memcpy((char *)cmd.data + sizeof(netaddr_ctx), data, len);
     _SEND_CMD(ctx, cmd);
+    return ERR_OK;
 }
 void _on_cmd_send(watcher_ctx *watcher, cmd_ctx *cmd) {
     sock_ctx *skctx = _map_get(watcher, cmd->fd);

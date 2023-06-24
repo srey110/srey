@@ -340,7 +340,7 @@ static void _on_rw_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
         pool_push(&watcher->pool, &tcp->sock);
     }
 }
-void _add_write_inloop(watcher_ctx *watcher, sock_ctx *skctx, off_buf_ctx *buf, uint8_t synflag) {
+int32_t _add_write_inloop(watcher_ctx *watcher, sock_ctx *skctx, off_buf_ctx *buf, uint8_t synflag) {
     if (SOCK_STREAM == skctx->type) {
         tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
         tcp->ud.synflag = synflag;
@@ -351,8 +351,9 @@ void _add_write_inloop(watcher_ctx *watcher, sock_ctx *skctx, off_buf_ctx *buf, 
         qu_off_buf_push(&udp->buf_s, buf);
     }
     if (!(skctx->events & EVENT_WRITE)) {
-        _add_event(watcher, skctx->fd, &skctx->events, EVENT_WRITE, skctx);
+        return _add_event(watcher, skctx->fd, &skctx->events, EVENT_WRITE, skctx);
     }
+    return ERR_OK;
 }
 //connect
 static inline void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
@@ -402,11 +403,11 @@ static inline void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t
         pool_push(&watcher->pool, &tcp->sock);
     }
 }
-SOCKET ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *host, const uint16_t port,
+SOCKET ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const uint16_t port,
     cbs_ctx *cbs, ud_cxt *ud, uint64_t *skid) {
     ASSERTAB(NULL != cbs && NULL != cbs->conn_cb && NULL != cbs->r_cb, ERRSTR_NULLP);
     netaddr_ctx addr;
-    if (ERR_OK != netaddr_sethost(&addr, host, port)) {
+    if (ERR_OK != netaddr_sethost(&addr, ip, port)) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         return INVALID_SOCK;
     }
@@ -525,11 +526,11 @@ static inline void _close_lsnsock(listener_ctx *lsn, int32_t cnt) {
     }
 #endif
 }
-int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *host, const uint16_t port,
+int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const uint16_t port,
     cbs_ctx *cbs, ud_cxt *ud) {
     ASSERTAB(NULL != cbs && NULL != cbs->acp_cb && NULL != cbs->r_cb, ERRSTR_NULLP);
     netaddr_ctx addr;
-    if (ERR_OK != netaddr_sethost(&addr, host, port)) {
+    if (ERR_OK != netaddr_sethost(&addr, ip, port)) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
@@ -716,11 +717,11 @@ void _free_udp(sock_ctx *skctx) {
     }
     FREE(udp);
 }
-SOCKET ev_udp(ev_ctx *ctx, const char *host, const uint16_t port,
+SOCKET ev_udp(ev_ctx *ctx, const char *ip, const uint16_t port,
     cbs_ctx *cbs, ud_cxt *ud, uint64_t *skid) {
     ASSERTAB(NULL != cbs->rf_cb, ERRSTR_NULLP);
     netaddr_ctx addr;
-    if (ERR_OK != netaddr_sethost(&addr, host, port)) {
+    if (ERR_OK != netaddr_sethost(&addr, ip, port)) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         return INVALID_SOCK;
     }

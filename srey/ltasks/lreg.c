@@ -284,11 +284,11 @@ static int32_t _lreg_connect(lua_State *lua) {
     task_ctx *task = lua_touserdata(lua, 1);
     int32_t ptype = (int32_t)luaL_checkinteger(lua, 2);
     struct evssl_ctx *evssl = lua_touserdata(lua, 3);
-    const char *host = luaL_checkstring(lua, 4);
+    const char *ip = luaL_checkstring(lua, 4);
     uint16_t port = (uint16_t)luaL_checkinteger(lua, 5);
     int32_t sendev = (int32_t)luaL_checkinteger(lua, 6);
     uint64_t skid;
-    SOCKET fd = task_netconnect(task, ptype, evssl, host, port, sendev, &skid);
+    SOCKET fd = task_netconnect(task, ptype, evssl, ip, port, sendev, &skid);
     if (INVALID_SOCK == fd) {
         lua_pushinteger(lua, -1);
         return 1;
@@ -304,10 +304,10 @@ static int32_t _lreg_listen(lua_State *lua) {
     if (LUA_TNIL != lua_type(lua, 3)) {
         evssl = lua_touserdata(lua, 3);
     }
-    const char *host = luaL_checkstring(lua, 4);
+    const char *ip = luaL_checkstring(lua, 4);
     uint16_t port = (uint16_t)luaL_checkinteger(lua, 5);
     int32_t sendev = (int32_t)luaL_checkinteger(lua, 6);
-    if (ERR_OK == task_netlisten(task, ptype, evssl, host, port, sendev)) {
+    if (ERR_OK == task_netlisten(task, ptype, evssl, ip, port, sendev)) {
         lua_pushboolean(lua, 1);
     } else {
         lua_pushboolean(lua, 0);
@@ -316,10 +316,10 @@ static int32_t _lreg_listen(lua_State *lua) {
 }
 static int32_t _lreg_udp(lua_State *lua) {
     task_ctx *task = lua_touserdata(lua, 1);
-    const char *host = luaL_checkstring(lua, 2);
+    const char *ip = luaL_checkstring(lua, 2);
     uint16_t port = (uint16_t)luaL_checkinteger(lua, 3);
     uint64_t skid;
-    SOCKET fd = task_netudp(task, host, port, &skid);
+    SOCKET fd = task_netudp(task, ip, port, &skid);
     if (INVALID_SOCK == fd) {
         lua_pushinteger(lua, -1);
         return 1;
@@ -351,25 +351,26 @@ static int32_t _lreg_synsend(lua_State *lua) {
     return 2;
 }
 static int32_t _lreg_send(lua_State *lua) {
-    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
-    uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    pack_type ptype = (pack_type)luaL_checkinteger(lua, 3);
+    task_ctx *task = lua_touserdata(lua, 1);
+    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 2);
+    uint64_t skid = (uint64_t)luaL_checkinteger(lua, 3);
+    pack_type ptype = (pack_type)luaL_checkinteger(lua, 4);
     void *data;
     size_t size;
-    if (LUA_TSTRING == lua_type(lua, 4)) {
-        data = (void *)luaL_checklstring(lua, 4, &size);
+    if (LUA_TSTRING == lua_type(lua, 5)) {
+        data = (void *)luaL_checklstring(lua, 5, &size);
     } else {
-        data = lua_touserdata(lua, 4);
-        size = (size_t)luaL_checkinteger(lua, 5);
+        data = lua_touserdata(lua, 5);
+        size = (size_t)luaL_checkinteger(lua, 6);
     }
-    task_netsend(srey_netev(srey), fd, skid, data, size, 0, ptype);
+    task_netsend(task, fd, skid, data, size, 0, ptype);
     return 0;
 }
 static int32_t _lreg_synsendto(lua_State *lua) {
     task_ctx *task = lua_touserdata(lua, 1);
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 2);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 3);
-    const char *host = luaL_checkstring(lua, 4);
+    const char *ip = luaL_checkstring(lua, 4);
     uint16_t port = (uint16_t)luaL_checkinteger(lua, 5);
     void *data;
     size_t size;
@@ -380,7 +381,7 @@ static int32_t _lreg_synsendto(lua_State *lua) {
         size = (size_t)luaL_checkinteger(lua, 7);
     }
     size_t lens;
-    void *resp = task_synsendto(task, fd, skid, host, port, data, size, &lens);
+    void *resp = task_synsendto(task, fd, skid, ip, port, data, size, &lens);
     if (NULL == resp) {
         return 0;
     }
@@ -389,9 +390,10 @@ static int32_t _lreg_synsendto(lua_State *lua) {
     return 2;
 }
 static int32_t _lreg_sendto(lua_State *lua) {
+    task_ctx *task = lua_touserdata(lua, 1);
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    const char *host = luaL_checkstring(lua, 3);
+    const char *ip = luaL_checkstring(lua, 3);
     uint16_t port = (uint16_t)luaL_checkinteger(lua, 4);
     void *data;
     size_t size;
@@ -401,8 +403,12 @@ static int32_t _lreg_sendto(lua_State *lua) {
         data = lua_touserdata(lua, 5);
         size = (size_t)luaL_checkinteger(lua, 6);
     }
-    ev_sendto(srey_netev(srey), fd, skid, host, port, data, size, 0);
-    return 0;
+    if (ERR_OK == ev_sendto(task_netev(task), fd, skid, ip, port, data, size, 0)) {
+        lua_pushboolean(lua, 1);
+    } else {
+        lua_pushboolean(lua, 0);
+    }
+    return 1;
 }
 static int32_t _lreg_close(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
@@ -483,11 +489,11 @@ static int32_t _lreg_http_data(lua_State *lua) {
 }
 static int32_t _lreg_websock_connect(lua_State *lua) {
     task_ctx *task = lua_touserdata(lua, 1);
-    const char *ip = luaL_checkstring(lua, 2);
+    const char *host = luaL_checkstring(lua, 2);
     uint16_t port = (uint16_t)luaL_checkinteger(lua, 3);
     struct evssl_ctx *evssl = lua_touserdata(lua, 4);
     uint64_t skid;
-    SOCKET fd = websock_connect(task, ip, port, evssl, &skid);
+    SOCKET fd = websock_connect(task, host, port, evssl, &skid);
     if (INVALID_SOCK == fd) {
         lua_pushinteger(lua, -1);
         return 1;

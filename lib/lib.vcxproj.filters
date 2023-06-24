@@ -163,6 +163,9 @@
     <ClInclude Include="service\maps.h">
       <Filter>service</Filter>
     </ClInclude>
+    <ClInclude Include="proto\dns.h">
+      <Filter>proto</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="memory.c">
@@ -251,6 +254,9 @@
     </ClCompile>
     <ClCompile Include="service\maps.c">
       <Filter>service</Filter>
+    </ClCompile>
+    <ClCompile Include="proto\dns.c">
+      <Filter>proto</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

@@ -383,18 +383,23 @@ static void _on_send_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
         oltcp->status = oltcp->status & ~STATUS_SENDING;
     }
 }
-void _add_bufs_trypost(sock_ctx *skctx, off_buf_ctx *buf, uint8_t synflag) {
+int32_t _add_bufs_trypost(sock_ctx *skctx, off_buf_ctx *buf, uint8_t synflag) {
     overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
     oltcp->ud.synflag = synflag;
     qu_off_buf_push(&oltcp->buf_s, buf);
-    if (!(oltcp->status & STATUS_SENDING)
-        && !(oltcp->status & STATUS_ERROR)) {
-        oltcp->status |= STATUS_SENDING;
-        if (ERR_OK != _post_send(oltcp)) {
-            oltcp->status |= STATUS_ERROR;
-            oltcp->status = oltcp->status & ~STATUS_SENDING;
-        }
+    if (oltcp->status & STATUS_SENDING) {
+        return ERR_OK;
     }
+    if (oltcp->status & STATUS_ERROR) {
+        return ERR_FAILED;
+    }
+    oltcp->status |= STATUS_SENDING;
+    if (ERR_OK != _post_send(oltcp)) {
+        oltcp->status |= STATUS_ERROR;
+        oltcp->status = oltcp->status & ~STATUS_SENDING;
+        return ERR_FAILED;
+    }
+    return ERR_OK;
 }
 //connect
 static inline int32_t _trybind(SOCKET fd, int32_t family) {
@@ -475,11 +480,11 @@ static inline void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD b
         pool_push(&watcher->pool, &oltcp->ol_r);
     }
 }
-SOCKET ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *host, const uint16_t port,
+SOCKET ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const uint16_t port,
     cbs_ctx *cbs, ud_cxt *ud, uint64_t *skid) {
     ASSERTAB(NULL != cbs && NULL != cbs->conn_cb && NULL != cbs->r_cb, ERRSTR_NULLP);
     netaddr_ctx addr;
-    if (ERR_OK != netaddr_sethost(&addr, host, port)) {
+    if (ERR_OK != netaddr_sethost(&addr, ip, port)) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         return INVALID_SOCK;
     }
@@ -621,11 +626,11 @@ static inline int32_t _acceptex(ev_ctx *ev, listener_ctx *lsn) {
     }
     return ERR_OK;
 }
-int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *host, const uint16_t port,
+int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const uint16_t port,
     cbs_ctx *cbs, ud_cxt *ud) {
     ASSERTAB(NULL != cbs && NULL != cbs->acp_cb && NULL != cbs->r_cb, ERRSTR_NULLP);
     netaddr_ctx addr;
-    if (ERR_OK != netaddr_sethost(&addr, host, port)) {
+    if (ERR_OK != netaddr_sethost(&addr, ip, port)) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
@@ -746,20 +751,25 @@ static inline void _on_sendto_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD by
         oludp->status = oludp->status & ~STATUS_SENDING;
     }
 }
-void _add_bufs_trysendto(sock_ctx *skctx, off_buf_ctx *buf, uint8_t synflag) {
+int32_t _add_bufs_trysendto(sock_ctx *skctx, off_buf_ctx *buf, uint8_t synflag) {
     overlap_udp_ctx *oludp = UPCAST(skctx, overlap_udp_ctx, ol_r);
     oludp->ud.synflag = synflag;
     qu_off_buf_push(&oludp->buf_s, buf);
-    if (!(oludp->status & STATUS_SENDING)
-        && !(oludp->status & STATUS_ERROR)) {
-        oludp->status |= STATUS_SENDING;
-        off_buf_ctx *sendbuf = qu_off_buf_pop(&oludp->buf_s);
-        if (ERR_OK != _post_sendto(oludp, sendbuf)) {
-            FREE(sendbuf->data);
-            oludp->status |= STATUS_ERROR;
-            oludp->status = oludp->status & ~STATUS_SENDING;
-        }
+    if (oludp->status & STATUS_SENDING) {
+        return ERR_OK;
     }
+    if (oludp->status & STATUS_ERROR) {
+        return ERR_FAILED;
+    }
+    oludp->status |= STATUS_SENDING;
+    off_buf_ctx *sendbuf = qu_off_buf_pop(&oludp->buf_s);
+    if (ERR_OK != _post_sendto(oludp, sendbuf)) {
+        FREE(sendbuf->data);
+        oludp->status |= STATUS_ERROR;
+        oludp->status = oludp->status & ~STATUS_SENDING;
+        return ERR_FAILED;
+    }
+    return ERR_OK;
 }
 static inline sock_ctx *_new_udp(netaddr_ctx *addr, SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
     overlap_udp_ctx *oludp;
@@ -791,11 +801,11 @@ void _free_udp(sock_ctx *skctx) {
     }
     FREE(oludp);
 }
-SOCKET ev_udp(ev_ctx *ctx, const char *host, const uint16_t port, cbs_ctx *cbs,
+SOCKET ev_udp(ev_ctx *ctx, const char *ip, const uint16_t port, cbs_ctx *cbs,
     ud_cxt *ud, uint64_t *skid) {
     ASSERTAB(NULL != cbs->rf_cb, ERRSTR_NULLP);
     netaddr_ctx addr;
-    if (ERR_OK != netaddr_sethost(&addr, host, port)) {
+    if (ERR_OK != netaddr_sethost(&addr, ip, port)) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         return INVALID_SOCK;
     }

@@ -44,6 +44,7 @@
     <ClInclude Include="netaddr.h" />
     <ClInclude Include="netutils.h" />
     <ClInclude Include="os.h" />
+    <ClInclude Include="proto\dns.h" />
     <ClInclude Include="proto\http.h" />
     <ClInclude Include="proto\mqtt.h" />
     <ClInclude Include="proto\protos.h" />
@@ -80,6 +81,7 @@
     <ClCompile Include="memory.c" />
     <ClCompile Include="netaddr.c" />
     <ClCompile Include="netutils.c" />
+    <ClCompile Include="proto\dns.c" />
     <ClCompile Include="proto\http.c" />
     <ClCompile Include="proto\mqtt.c" />
     <ClCompile Include="proto\protos.c" />

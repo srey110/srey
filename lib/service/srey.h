@@ -77,16 +77,16 @@ void task_call(task_ctx *dst, void *data, size_t size, int32_t copy);
 void *task_request(task_ctx *dst, task_ctx *src, void *data, size_t size, int32_t copy, size_t *lens);
 void task_response(task_ctx *dst, uint64_t sess, void *data, size_t size, int32_t copy);
 int32_t task_netlisten(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
-    const char *host, uint16_t port, int32_t sendev);
+    const char *ip, uint16_t port, int32_t sendev);
 SOCKET task_netconnect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
-    const char *host, uint16_t port, int32_t sendev, uint64_t *skid);
-SOCKET task_netudp(task_ctx *task, const char *host, uint16_t port, uint64_t *skid);
+    const char *ip, uint16_t port, int32_t sendev, uint64_t *skid);
+SOCKET task_netudp(task_ctx *task, const char *ip, uint16_t port, uint64_t *skid);
 
-void *task_synsendto(task_ctx *task, SOCKET fd, uint64_t skid,
-    const char *host, const uint16_t port, void *data, size_t len, size_t *size);
+void task_netsend(task_ctx *task, SOCKET fd, uint64_t skid,
+    void *data, size_t len, uint8_t synflag, pack_type pktype);
 void *task_synsend(task_ctx *task, SOCKET fd, uint64_t skid,
     void *data, size_t len, size_t *size, pack_type pktype);
-void task_netsend(ev_ctx *ev, SOCKET fd, uint64_t skid,
-    void *data, size_t len, uint8_t synflag, pack_type pktype);
+void *task_synsendto(task_ctx *task, SOCKET fd, uint64_t skid,
+    const char *ip, const uint16_t port, void *data, size_t len, size_t *size);
 
 #endif //SREY_H_

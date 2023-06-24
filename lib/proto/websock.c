@@ -3,6 +3,7 @@
 #include "service/srey.h"
 #include "proto/http.h"
 #include "netutils.h"
+#include "netaddr.h"
 
 typedef enum parse_status {
     INIT = 0,
@@ -437,7 +438,13 @@ static inline int32_t _websock_handshake_client(struct http_pack_ctx *hpack, cha
     return ERR_OK;
 }
 SOCKET websock_connect(struct task_ctx *task, const char *host, uint16_t port, struct evssl_ctx *evssl, uint64_t *skid) {
-    SOCKET fd = task_netconnect(task, PACK_HTTP, evssl, host, port, 0, skid);
+    SOCKET fd;
+    int32_t isip = is_ipaddr(host);
+    if (ERR_OK == isip) {
+        fd = task_netconnect(task, PACK_HTTP, evssl, host, port, 0, skid);
+    } else {
+
+    }
     if (INVALID_SOCK == fd) {
         return INVALID_SOCK;
     }
@@ -446,8 +453,13 @@ SOCKET websock_connect(struct task_ctx *task, const char *host, uint16_t port, s
     size_t blens;
     char *b64 = b64encode(rdstr, strlen(rdstr), &blens);
     char *data;
-    const char *fmt = "GET / HTTP/1.1\r\nHost: %s:%d\r\nUpgrade: websocket\r\nConnection: Upgrade,Keep-Alive\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n";
-    data = formatv(fmt, host, port, b64);
+    if (ERR_OK == isip) {
+        const char *fmt = "GET / HTTP/1.1\r\nHost: %s:%d\r\nUpgrade: websocket\r\nConnection: Upgrade,Keep-Alive\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n";
+        data = formatv(fmt, host, port, b64);
+    } else {
+        const char *fmt = "GET / HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade,Keep-Alive\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n";
+        data = formatv(fmt, host, b64);
+    }
     size_t size;
     void *resp = task_synsend(task, fd, *skid, data, strlen(data), &size, PACK_HTTP);
     if (NULL == resp) {

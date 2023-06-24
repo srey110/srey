@@ -323,6 +323,22 @@ function core.udp(ip, port)
     return sutils.udp(curtask, ip, port)
 end
 --[[
+描述:tcp发送
+参数:
+    fd socket :integer
+    skid :integer
+    pktype :PACK_TYPE
+    data lstring或userdata
+    lens data长度 :integer
+--]]
+function core.send(fd, skid, pktype, data, lens)
+    if INVALID_SOCK == fd or nil == data then
+        log.WARN("invalid argument.")
+        return
+    end
+    sutils.send(curtask, fd, skid, pktype or PACK_TYPE.NONE, data, lens)
+end
+--[[
 描述:tcp发送,等待数据返回
 参数:
     fd socket :integer
@@ -342,20 +358,23 @@ function core.synsend(fd, skid, pktype, data, size)
     return sutils.synsend(curtask, fd, skid, pktype or PACK_TYPE.NONE, data, size)
 end
 --[[
-描述:tcp发送
+描述:udp发送
 参数:
     fd socket :integer
     skid :integer
-    pktype :PACK_TYPE
+    ip ip :string
+    port 端口 :integer
     data lstring或userdata
     lens data长度 :integer
+返回:
+    bool
 --]]
-function core.send(fd, skid, pktype, data, lens)
+function core.sendto(fd, skid, ip, port, data, lens)
     if INVALID_SOCK == fd or nil == data then
         log.WARN("invalid argument.")
-        return
+        return false
     end
-    sutils.send(fd, skid, pktype or PACK_TYPE.NONE, data, lens)
+    return sutils.sendto(curtask, fd, skid, ip, port, data, lens)
 end
 --[[
 描述:udp发送,等待数据返回
@@ -376,23 +395,6 @@ function core.synsendto(fd, skid, ip, port, data, lens)
         return nil
     end
     return sutils.synsendto(curtask, fd, skid, ip, port, data, lens)
-end
---[[
-描述:udp发送
-参数:
-    fd socket :integer
-    skid :integer
-    ip ip :string
-    port 端口 :integer
-    data lstring或userdata
-    lens data长度 :integer
---]]
-function core.sendto(fd, skid, ip, port, data, lens)
-    if INVALID_SOCK == fd or nil == data then
-        log.WARN("invalid argument.")
-        return
-    end
-    sutils.sendto(fd, skid, ip, port, data, lens)
 end
 --[[
 描述:关闭链接
