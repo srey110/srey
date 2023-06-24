@@ -11,6 +11,7 @@ end
 srey.started(onstarted)
 
 local function onrecvfrom(fd, skid, data, size, ip, port)
+    --printd(srey.utostr(data, size))
     srey.sendto(fd, skid, ip, port, data, size)
 end
 srey.recvfromed(onrecvfrom)

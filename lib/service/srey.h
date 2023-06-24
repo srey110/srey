@@ -16,7 +16,8 @@ typedef enum msg_type {
     MSG_TYPE_CLOSE,
     MSG_TYPE_RECVFROM,
     MSG_TYPE_REQUEST,
-    MSG_TYPE_RESPONSE
+    MSG_TYPE_RESPONSE,
+    MSG_TYPE_WAIT
 }msg_type;
 typedef struct message_ctx {
     int8_t msgtype;//msg_type
@@ -76,10 +77,12 @@ SOCKET task_netconnect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl
     const char *ip, uint16_t port, int32_t sendev, uint64_t *skid);
 SOCKET task_netudp(task_ctx *task, const char *ip, uint16_t port, uint64_t *skid);
 
-void task_netsend(task_ctx *task, SOCKET fd, uint64_t skid,
+int32_t task_netsend(task_ctx *task, SOCKET fd, uint64_t skid,
     void *data, size_t len, uint8_t synflag, pack_type pktype);
 void *task_synsend(task_ctx *task, SOCKET fd, uint64_t skid,
     void *data, size_t len, size_t *size, pack_type pktype);
+int32_t task_sendto(task_ctx *task, SOCKET fd, uint64_t skid,
+    const char *ip, const uint16_t port, void *data, size_t len, uint8_t synflag);
 void *task_synsendto(task_ctx *task, SOCKET fd, uint64_t skid,
     const char *ip, const uint16_t port, void *data, size_t len, size_t *size);
 

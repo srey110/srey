@@ -625,45 +625,57 @@ SOCKET task_netudp(task_ctx *task, const char *ip, uint16_t port, uint64_t *skid
     cbs.ud_free = protos_udfree;
     return ev_udp(&task->srey->netev, ip, port, &cbs, &ud, skid);
 }
-void task_netsend(task_ctx *task, SOCKET fd, uint64_t skid,
+int32_t task_netsend(task_ctx *task, SOCKET fd, uint64_t skid,
     void *data, size_t len, uint8_t synflag, pack_type pktype) {
     size_t size;
     void *pack = protos_pack(pktype, data, len, &size);
     ev_send(&task->srey->netev, fd, skid, pack, size, synflag, 0);
+    return ERR_OK;
 }
 void *task_synsend(task_ctx *task, SOCKET fd, uint64_t skid,
     void *data, size_t len, size_t *size, pack_type pktype) {
     uint64_t sess = task_session(task);
-    _task_timeout(task, sess, NETRD_TIMEOUT, TMO_TYPE_SYNSEND, fd);
     _map_cosk_add(&task->mapco, sess, task->curco, fd);
-    task_netsend(task, fd, skid, data, len, 1, pktype);
+    if (ERR_OK != task_netsend(task, fd, skid, data, len, 1, pktype)) {
+        _map_cosk_del(&task->mapco, fd);
+        return NULL;
+    }
+    _task_timeout(task, sess, NETRD_TIMEOUT, TMO_TYPE_SYNSEND, fd);
     YIELD(task);
     message_ctx msg;
     ASSERTAB(MCO_SUCCESS == mco_pop(task->curco, &msg, sizeof(msg)), "mco_pop failed!");
-    if (ERR_OK != msg.erro) {
+    if (ERR_OK != msg.erro
+        || MSG_TYPE_RECV != msg.msgtype) {
         return NULL;
     }
     ASSERTAB(skid == msg.skid, "different socket id.");
     *size = msg.size;
     return msg.data;
 }
+int32_t task_sendto(task_ctx *task, SOCKET fd, uint64_t skid,
+    const char *ip, const uint16_t port, void *data, size_t len, uint8_t synflag) {
+    return ev_sendto(&task->srey->netev, fd, skid, ip, port, data, len, synflag);
+}
 void *task_synsendto(task_ctx *task, SOCKET fd, uint64_t skid,
     const char *ip, const uint16_t port, void *data, size_t len, size_t *size) {
-    if (ERR_OK != ev_sendto(&task->srey->netev, fd, skid, ip, port, data, len, 1)) {
+    uint64_t sess = task_session(task);
+    _map_cosk_add(&task->mapco, sess, task->curco, fd);
+    if (ERR_OK != task_sendto(task, fd, skid, ip, port, data, len, 1)) {
+        _map_cosk_del(&task->mapco, fd);
         return NULL;
     }
-    uint64_t sess = task_session(task);
     _task_timeout(task, sess, NETRD_TIMEOUT, TMO_TYPE_SYNSEND, fd);
-    _map_cosk_add(&task->mapco, sess, task->curco, fd);
     YIELD(task);
     message_ctx msg;
     ASSERTAB(MCO_SUCCESS == mco_pop(task->curco, &msg, sizeof(msg)), "mco_pop failed!");
-    if (ERR_OK != msg.erro) {
+    if (ERR_OK != msg.erro
+        || MSG_TYPE_RECVFROM != msg.msgtype) {
         return NULL;
     }
     ASSERTAB(skid == msg.skid, "different socket id.");
+    udp_msg_ctx *umsg = msg.data;
     *size = msg.size;
-    return msg.data;
+    return umsg->data;
 }
 static void _loop_worker(void *arg) {
     void **tmp;

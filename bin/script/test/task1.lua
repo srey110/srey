@@ -5,6 +5,8 @@ local websock = require("lib.websock")
 local math = math
 local rpcfd = INVALID_SOCK
 local rpcfdid = 0
+local udpfd = INVALID_SOCK
+local udpskid
 local callonce = false
 
 local function testrpc()
@@ -125,6 +127,17 @@ local function testhttp()
         printd("http error.")
     end
 end
+local function testudp()
+    if INVALID_SOCK == udpfd then
+        udpfd, udpskid = srey.udp("0.0.0.0", 0)
+    end
+    if INVALID_SOCK ~= udpfd  then
+        local resp, size = srey.synsendto(udpfd, udpskid, "127.0.0.1", 15002, "this is udp message.")
+        if not resp or "this is udp message." ~= srey.utostr(resp, size) then
+            printd("synsendto error.")
+        end
+    end
+end
 local function ontimeout()
     printd("....................begin.........................")
     if not callonce then
@@ -136,6 +149,7 @@ local function ontimeout()
     testwebsock(false, 15003)
     testwebsock(false, 15004)
     testhttp()
+    testudp()
     srey.timeout(3000, ontimeout)
     printd(".....................end........................")
 end
