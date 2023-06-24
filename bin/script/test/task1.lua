@@ -11,10 +11,14 @@ local callonce = false
 
 local function testrpc()
     local rpctask = srey.task_qury(TASK_NAME.TASK2)
-    srey.call(rpctask, "rpc_add", math.random(10) , math.random(10), "srey.call")
-    local rtn, sum, des = srey.request(rpctask, "rpc_add", math.random(10) , math.random(10), "srey.request")
+    local a = math.random(10)
+    local b = math.random(10)
+    srey.call(rpctask, "rpc_add", a , b, "srey.call")
+    a = math.random(10)
+    b = math.random(10)
+    local rtn, sum, des = srey.request(rpctask, "rpc_add", a , b, "srey.request")
     --printd("sum:"..tostring(sum).. " des:".. tostring(des))
-    if not rtn then
+    if not rtn or sum ~= a + b then
         printd("srey.request failed")
     end
     rtn = srey.request(rpctask, "rpc_void")
@@ -22,10 +26,14 @@ local function testrpc()
         printd("srey.request failed")
     end
     if INVALID_SOCK ~= rpcfd then
-        srey.netcall(rpcfd, rpcfdid, TASK_NAME.TASK2, "rpc_add", math.random(10) , math.random(10), "srey.netcall")
-        rtn, sum, des = srey.netreq(rpcfd, rpcfdid, TASK_NAME.TASK2, "rpc_add", math.random(10) , math.random(10), "srey.netreq")
+        a = math.random(10)
+        b = math.random(10)
+        srey.netcall(rpcfd, rpcfdid, TASK_NAME.TASK2, "rpc_add", a , b, "srey.netcall")
+        a = math.random(10)
+        b = math.random(10)
+        rtn, sum, des = srey.netreq(rpcfd, rpcfdid, TASK_NAME.TASK2, "rpc_add", a , b, "srey.netreq")
         --printd("sum:"..tostring(sum).. " des:".. tostring(des))
-        if not rtn then
+        if not rtn or sum ~= a + b then
             printd("srey.netreq failed")
         end
         rtn = srey.netreq(rpcfd, rpcfdid, TASK_NAME.TASK2, "rpc_void")
@@ -107,24 +115,29 @@ local function testhttp()
     }
     local hinfo
     hinfo = http.get(fd, skid, "/get_test?a=中文测试1", headers)
-    if not hinfo then
-        printd("http error.")
+    local str1, code, _ = http.status(hinfo)
+    if not hinfo or "HTTP/1.1" ~= str1 or "200" ~=  code then
+        printd("http.get error.")
     end
     hinfo = http.post(fd, skid, "/post_nomsg?a=中文测试2", headers)
-    if not hinfo then
-        printd("http error.")
+    str1, code, _ = http.status(hinfo)
+    if not hinfo or "HTTP/1.1" ~= str1 or "200" ~=  code then
+        printd("http.post error.")
     end
     hinfo = http.post(fd, skid, "/post_string", headers, nil, "this is string message")
-    if not hinfo then
-        printd("http error.")
+    str1, code, _ = http.status(hinfo)
+    if not hinfo or "HTTP/1.1" ~= str1 or "200" ~=  code then
+        printd("http.post /post_string error.")
     end
     hinfo = http.post(fd, skid, "/post_json", headers, nil, jmsg)
-    if not hinfo then
-        printd("http error.")
+    str1, code, _ = http.status(hinfo)
+    if not hinfo or "HTTP/1.1" ~= str1 or "200" ~=  code then
+        printd("http.post /post_json error.")
     end
     hinfo = http.post(fd, skid, "/get_chunked_cb", headers, onchunked, chuncedmesg, cnt)
-    if not hinfo then
-        printd("http error.")
+    str1, code, _ = http.status(hinfo)
+    if not hinfo or "HTTP/1.1" ~= str1 or "200" ~=  code then
+        printd("http.post /get_chunked_cb error.")
     end
 end
 local function testudp()
@@ -136,9 +149,12 @@ local function testudp()
         if not resp or "this is udp message." ~= srey.utostr(resp, size) then
             printd("synsendto error.")
         end
+    else
+        printd(" srey.udp error.")
     end
 end
 local function ontimeout()
+    srey.timeout(3000, ontimeout)
     printd("....................begin.........................")
     if not callonce then
         callonce = true
@@ -150,7 +166,6 @@ local function ontimeout()
     testwebsock(false, 15004)
     testhttp()
     testudp()
-    srey.timeout(3000, ontimeout)
     printd(".....................end........................")
 end
 local function onstarted()

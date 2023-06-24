@@ -171,6 +171,9 @@ static inline void _dispatch_netrd(co_arg_ctx *arg) {
 }
 static inline void _task_onmsg(co_arg_ctx *arg) {
     if (0 != arg->task->closed) {
+        if (MSG_TYPE_TIMEOUT != arg->msg.msgtype) {
+            LOG_WARN("task %d closed,ignore message id %d.", arg->task->name, arg->msg.msgtype);
+        }
         _message_clean(&arg->msg);
         return;
     }
@@ -644,8 +647,11 @@ void *task_synsend(task_ctx *task, SOCKET fd, uint64_t skid,
     YIELD(task);
     message_ctx msg;
     ASSERTAB(MCO_SUCCESS == mco_pop(task->curco, &msg, sizeof(msg)), "mco_pop failed!");
-    if (ERR_OK != msg.erro
-        || MSG_TYPE_RECV != msg.msgtype) {
+    if (ERR_OK != msg.erro) {
+        return NULL;
+    }
+    if (MSG_TYPE_RECV != msg.msgtype) {
+        LOG_WARN("message type %d error.", msg.msgtype);
         return NULL;
     }
     ASSERTAB(skid == msg.skid, "different socket id.");
@@ -668,8 +674,11 @@ void *task_synsendto(task_ctx *task, SOCKET fd, uint64_t skid,
     YIELD(task);
     message_ctx msg;
     ASSERTAB(MCO_SUCCESS == mco_pop(task->curco, &msg, sizeof(msg)), "mco_pop failed!");
-    if (ERR_OK != msg.erro
-        || MSG_TYPE_RECVFROM != msg.msgtype) {
+    if (ERR_OK != msg.erro) {
+        return NULL;
+    }
+    if (MSG_TYPE_RECVFROM != msg.msgtype) {
+        LOG_WARN("message type %d error.", msg.msgtype);
         return NULL;
     }
     ASSERTAB(skid == msg.skid, "different socket id.");
