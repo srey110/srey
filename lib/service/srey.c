@@ -9,6 +9,12 @@
 #include "loger.h"
 #include "minicoro.h"
 
+typedef enum timeout_type {
+    TMO_TYPE_SLEEP = 0x01,
+    TMO_TYPE_NORMAL,
+    TMO_TYPE_CONNECT,
+    TMO_TYPE_SYNSEND
+}timeout_type;
 QUEUE_DECL(message_ctx, qu_message);
 #if WITH_SSL
 typedef struct certs_ctx {

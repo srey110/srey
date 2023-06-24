@@ -4,12 +4,6 @@
 #include "event/event.h"
 #include "proto/protos.h"
 
-typedef enum timeout_type {
-    TMO_TYPE_SLEEP = 0x01,
-    TMO_TYPE_NORMAL,
-    TMO_TYPE_CONNECT,
-    TMO_TYPE_SYNSEND
-}timeout_type;
 typedef enum msg_type {
     MSG_TYPE_STARTED = 0x01,
     MSG_TYPE_CLOSING,
