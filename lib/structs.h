@@ -13,7 +13,6 @@ typedef struct ud_cxt {
     uint8_t synflag;//同步读,链接
     void *data;//task_ctx
     void *extra;//数据包
-    void *arg;//handshaked 回调
     uint64_t session;
     uint64_t skid;
 }ud_cxt;

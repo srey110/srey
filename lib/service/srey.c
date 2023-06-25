@@ -474,7 +474,7 @@ void task_response(task_ctx *dst, uint64_t sess, void *data, size_t size, int32_
     msg.size = size;
     _push_message(dst, &msg);
 }
-static inline void _push_handshaked(SOCKET fd, ud_cxt *ud) {
+void _push_handshaked(SOCKET fd, ud_cxt *ud) {
     message_ctx msg;
     msg.msgtype = MSG_TYPE_HANDSHAKED;
     msg.pktype = ud->pktype;
@@ -488,7 +488,6 @@ static inline int32_t _task_net_accept(ev_ctx *ev, SOCKET fd, ud_cxt *ud) {
     msg.pktype = ud->pktype;
     msg.fd = fd;
     msg.skid = ud->skid;
-    protos_handshaked(ud, _push_handshaked);
     _push_message(ud->data, &msg);
     return ERR_OK;
 }
@@ -573,7 +572,6 @@ static inline int32_t _task_net_connect(ev_ctx *ev, SOCKET fd, int32_t err, ud_c
     } else {
         msg.synflag = 0;
     }
-    protos_handshaked(ud, _push_handshaked);
     _push_message(ud->data, &msg);
     return ERR_OK;
 }

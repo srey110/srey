@@ -86,4 +86,6 @@ int32_t task_sendto(task_ctx *task, SOCKET fd, uint64_t skid,
 void *task_synsendto(task_ctx *task, SOCKET fd, uint64_t skid,
     const char *ip, const uint16_t port, void *data, size_t len, size_t *size);
 
+void _push_handshaked(SOCKET fd, ud_cxt *ud);
+
 #endif //SREY_H_
