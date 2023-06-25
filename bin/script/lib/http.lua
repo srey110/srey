@@ -68,7 +68,7 @@ function http.chunk_call(fd, skid, pack)
         return false
     end
     local data, size = http.data(pack)
-    func(fd, skid, data, size)
+    core.xpcall(func, fd, skid, data, size)
     if nil == data then
         chunk_func[skid] = nil
     end
@@ -138,7 +138,7 @@ end
     skid :integer
     url :string
     headers :table
-    ckfunc :function(fd, data, size)
+    ckfunc :function(fd, skid, data, size)
 返回:
     http_pack_ctx
     nil 失败 
@@ -154,7 +154,7 @@ end
     skid :integer
     url :string
     headers :table
-    ckfunc :function(fd, data, size)
+    ckfunc :function(fd, skid, data, size)
     info :string table function
     ...  info为function时的参数
 返回:
