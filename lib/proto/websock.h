@@ -4,16 +4,17 @@
 #include "event/event.h"
 struct task_ctx;
 
-struct websock_pack_ctx *websock_unpack(ev_ctx *ev, SOCKET fd, buffer_ctx *buf, size_t *size, ud_cxt *ud, int32_t *closefd);
+struct websock_pack_ctx *websock_unpack(ev_ctx *ev, SOCKET fd, buffer_ctx *buf, size_t *size, ud_cxt *ud,
+    int32_t *closefd, int32_t *slice);
 SOCKET websock_connect(struct task_ctx *task, const char *host, uint16_t port, struct evssl_ctx *evssl, uint64_t *skid);
 
 void websock_ping(ev_ctx *ev, SOCKET fd, uint64_t skid);
 void websock_pong(ev_ctx *ev, SOCKET fd, uint64_t skid);
 void websock_close(ev_ctx *ev, SOCKET fd, uint64_t skid);
 void websock_text(ev_ctx *ev, SOCKET fd, uint64_t skid,
-    char key[4], const char *data, size_t dlens);
+    int32_t fin, char key[4], const char *data, size_t dlens);
 void websock_binary(ev_ctx *ev, SOCKET fd, uint64_t skid,
-    char key[4], void *data, size_t dlens);
+    int32_t fin, char key[4], void *data, size_t dlens);
 void websock_continuation(ev_ctx *ev, SOCKET fd, uint64_t skid,
     int32_t fin, char key[4], void *data, size_t dlens);
 

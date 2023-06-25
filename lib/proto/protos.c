@@ -46,19 +46,21 @@ static inline void _check_retry(void *unpack, ud_cxt *ud, int32_t *closefd) {
         ud->nretry = 0;
     }
 }
-void *protos_unpack(ev_ctx *ev, SOCKET fd, buffer_ctx *buf, size_t *size, ud_cxt *ud, int32_t *closefd) {
+void *protos_unpack(ev_ctx *ev, SOCKET fd, buffer_ctx *buf,
+    size_t *size, ud_cxt *ud, int32_t *closefd, int32_t *slice) {
     void *unpack;
     *size = 0;
+    *slice = SLICE_NONE;
     switch (ud->pktype) {
     case PACK_RPC:
     case PACK_SIMPLE:
         unpack = simple_unpack(buf, size, ud, closefd);
         break;
     case PACK_HTTP:
-        unpack = http_unpack(buf, size, ud, closefd);
+        unpack = http_unpack(buf, size, ud, closefd, slice);
         break;
     case PACK_WEBSOCK:
-        unpack = websock_unpack(ev, fd, buf, size, ud, closefd);
+        unpack = websock_unpack(ev, fd, buf, size, ud, closefd, slice);
         break;
     default:
         unpack = _unpack_default(buf, size, ud);

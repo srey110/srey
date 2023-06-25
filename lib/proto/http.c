@@ -1,4 +1,5 @@
-#include "http.h"
+#include "proto/http.h"
+#include "proto/protos.h"
 #include "utils.h"
 #include "sarray.h"
 
@@ -187,7 +188,7 @@ http_pack_ctx *_http_parsehead(buffer_ctx *buf, int32_t *status, int32_t *closef
     }
     return pack;
 }
-static inline http_pack_ctx *_http_header(buffer_ctx *buf, ud_cxt *ud, int32_t *closefd) {
+static inline http_pack_ctx *_http_header(buffer_ctx *buf, ud_cxt *ud, int32_t *closefd, int32_t *slice) {
     int32_t status;
     http_pack_ctx *pack = _http_parsehead(buf, &status, closefd);
     if (NULL == pack) {
@@ -204,6 +205,9 @@ static inline http_pack_ctx *_http_header(buffer_ctx *buf, ud_cxt *ud, int32_t *
             return _http_content(buf, ud, closefd);
         }
     } else {
+        if (1 == pack->chunked) {
+            *slice = SLICE_START;
+        }
         ud->status = status;
         return pack;
     }
@@ -219,7 +223,8 @@ static inline http_pack_ctx *_http_chunkedpack(size_t lens) {
     pctx->chunked = 2;
     return pctx;
 }
-static inline http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_t *closefd) {
+static inline http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud,
+    int32_t *closefd, int32_t *slice) {
     size_t drain;
     size_t flens = strlen(FLAG_CRLF);
     http_pack_ctx *pack = ud->extra;
@@ -249,8 +254,10 @@ static inline http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_t 
         return NULL;
     }
     if (pack->data.lens > 0) {
+        *slice = SLICE;
         ASSERTAB(pack->data.lens == buffer_copyout(buf, 0, pack->data.data, pack->data.lens), "copy buffer failed.");
     } else {
+        *slice = SLICE_END;
         ud->status = INIT;
     }
     ASSERTAB(drain == buffer_drain(buf, drain), "drain buffer failed.");
@@ -270,17 +277,18 @@ void http_pkfree(http_pack_ctx *pack) {
 void http_udfree(ud_cxt *ud) {
     http_pkfree(ud->extra);
 }
-http_pack_ctx *http_unpack(buffer_ctx *buf, size_t *size, ud_cxt *ud, int32_t *closefd) {
+http_pack_ctx *http_unpack(buffer_ctx *buf, size_t *size, ud_cxt *ud,
+    int32_t *closefd, int32_t *slice) {
     http_pack_ctx *pack;
     switch (ud->status) {
     case INIT:
-        pack = _http_header(buf, ud, closefd);
+        pack = _http_header(buf, ud, closefd, slice);
         break;
     case CONTENT:
         pack = _http_content(buf, ud, closefd);
         break;
     case CHUNKED:
-        pack = _http_chunked(buf, ud, closefd);
+        pack = _http_chunked(buf, ud, closefd, slice);
         break;
     default:
         pack = NULL;

@@ -127,23 +127,36 @@ static inline void _websock_handshake(ev_ctx *ev, SOCKET fd, buffer_ctx *buf, ud
     _websock_handshake_server(ev, fd, hpack, ud, closefd);
     http_pkfree(hpack);
 }
-static inline websock_pack_ctx *_websock_parse_data(buffer_ctx *buf, ud_cxt *ud, int32_t *closefd) {
+static inline websock_pack_ctx *_websock_parse_data(buffer_ctx *buf, ud_cxt *ud, int32_t *closefd, int32_t *slice) {
     websock_pack_ctx *pack = ud->extra;
     if (pack->remain > buffer_size(buf)) {
         return NULL;
     }
-    if (0 == pack->mask) {
-        ASSERTAB(pack->dlens == buffer_copyout(buf, 0, pack->data, pack->dlens), "copy buffer failed.");
-    } else {
-        ASSERTAB(sizeof(pack->key) == buffer_copyout(buf, 0, pack->key, sizeof(pack->key)), "copy buffer failed.");
-        ASSERTAB(pack->dlens == buffer_copyout(buf, sizeof(pack->key), pack->data, pack->dlens), "copy buffer failed.");
-        for (size_t i = 0; i < pack->dlens; i++) {
-            pack->data[i] = pack->data[i] ^ pack->key[i % 4];
+    if (pack->remain > 0) {
+        if (0 == pack->mask) {
+            ASSERTAB(pack->dlens == buffer_copyout(buf, 0, pack->data, pack->dlens), "copy buffer failed.");
+        } else {
+            ASSERTAB(sizeof(pack->key) == buffer_copyout(buf, 0, pack->key, sizeof(pack->key)), "copy buffer failed.");
+            ASSERTAB(pack->dlens == buffer_copyout(buf, sizeof(pack->key), pack->data, pack->dlens), "copy buffer failed.");
+            for (size_t i = 0; i < pack->dlens; i++) {
+                pack->data[i] = pack->data[i] ^ pack->key[i % 4];
+            }
         }
+        ASSERTAB(pack->remain == buffer_drain(buf, pack->remain), "drain buffer failed.");
     }
-    ASSERTAB(pack->remain == buffer_drain(buf, pack->remain), "drain buffer failed.");
     ud->extra = NULL;
     ud->status = START;
+    //起始帧:FIN为0,opcode非0 中间帧:FIN为0,opcode为0 结束帧:FIN为1,opcode为0
+    if (0 == pack->fin 
+        && 0 != pack->proto) {
+        *slice = SLICE_START;
+    } else if (0 == pack->fin
+        && 0 == pack->proto) {
+        *slice = SLICE;
+    } else if (1 == pack->fin
+        && 0 == pack->proto) {
+        *slice = SLICE_END;
+    }
     return pack;
 }
 static inline websock_pack_ctx *_websock_parse_pllens(buffer_ctx *buf, size_t blens, 
@@ -208,7 +221,7 @@ static inline websock_pack_ctx *_websock_parse_pllens(buffer_ctx *buf, size_t bl
     }
     return pack;
 }
-static inline websock_pack_ctx *_websock_parse_head(buffer_ctx *buf, ud_cxt *ud, int32_t *closefd) {
+static inline websock_pack_ctx *_websock_parse_head(buffer_ctx *buf, ud_cxt *ud, int32_t *closefd, int32_t *slice) {
     size_t blens = buffer_size(buf);
     if (blens < HEAD_LESN) {
         return NULL;
@@ -234,19 +247,20 @@ static inline websock_pack_ctx *_websock_parse_head(buffer_ctx *buf, ud_cxt *ud,
     pack->mask = mask;
     ud->extra = pack;
     ud->status = DATA;
-    return _websock_parse_data(buf, ud, closefd);
+    return _websock_parse_data(buf, ud, closefd, slice);
 }
-websock_pack_ctx *websock_unpack(ev_ctx *ev, SOCKET fd, buffer_ctx *buf, size_t *size, ud_cxt *ud, int32_t *closefd) {
+websock_pack_ctx *websock_unpack(ev_ctx *ev, SOCKET fd, buffer_ctx *buf, size_t *size, ud_cxt *ud,
+    int32_t *closefd, int32_t *slice) {
     websock_pack_ctx *pack = NULL;
     switch (ud->status) {
     case INIT:
         _websock_handshake(ev, fd, buf, ud, closefd);
         break;
     case START:
-        pack = _websock_parse_head(buf, ud, closefd);
+        pack = _websock_parse_head(buf, ud, closefd, slice);
         break;
     case DATA:
-        pack = _websock_parse_data(buf, ud, closefd);
+        pack = _websock_parse_data(buf, ud, closefd, slice);
         break;
     default:
         break;
@@ -326,15 +340,15 @@ void websock_close(ev_ctx *ev, SOCKET fd, uint64_t skid) {
     _websock_control_frame(ev, fd, skid, CLOSE);
 }
 void websock_text(ev_ctx *ev, SOCKET fd, uint64_t skid,
-    char key[4], const char *data, size_t dlens) {
+    int32_t fin, char key[4], const char *data, size_t dlens) {
     size_t flens;
-    void *frame = _websock_create_pack(1, TEXT, key, (void *)data, dlens, &flens);
+    void *frame = _websock_create_pack(fin, TEXT, key, (void *)data, dlens, &flens);
     ev_send(ev, fd, skid, frame, flens, 0, 0, 0);
 }
 void websock_binary(ev_ctx *ev, SOCKET fd, uint64_t skid,
-    char key[4], void *data, size_t dlens) {
+    int32_t fin, char key[4], void *data, size_t dlens) {
     size_t flens;
-    void *frame = _websock_create_pack(1, BINARY, key, data, dlens, &flens);
+    void *frame = _websock_create_pack(fin, BINARY, key, data, dlens, &flens);
     ev_send(ev, fd, skid, frame, flens, 0, 0, 0);
 }
 void websock_continuation(ev_ctx *ev, SOCKET fd, uint64_t skid,

@@ -370,7 +370,8 @@ static inline bufnode_ctx *_search_start(bufnode_ctx *node, size_t start, size_t
 }
 int32_t buffer_copyout(buffer_ctx *ctx, const size_t start, void *out, size_t len) {
     ASSERTAB(0 == ctx->freeze_read, "read freezed");
-    if (start >= ctx->total_len) {
+    if (start >= ctx->total_len
+        || 0 == len) {
         return 0;
     }
     size_t remain = ctx->total_len - start;

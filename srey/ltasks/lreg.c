@@ -542,18 +542,19 @@ static int32_t _lreg_websock_text(lua_State *lua) {
     size_t dlens;
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    if (LUA_TSTRING == lua_type(lua, 3)) {
-        data = (void *)luaL_checklstring(lua, 3, &dlens);
+    int32_t fin = (int32_t)luaL_checkinteger(lua, 3);
+    if (LUA_TSTRING == lua_type(lua, 4)) {
+        data = (void *)luaL_checklstring(lua, 4, &dlens);
     } else {
-        data = lua_touserdata(lua, 3);
-        dlens = (size_t)luaL_checkinteger(lua, 4);
+        data = lua_touserdata(lua, 4);
+        dlens = (size_t)luaL_checkinteger(lua, 5);
     }
-    if (LUA_TSTRING == lua_type(lua, 5)) {
+    if (LUA_TSTRING == lua_type(lua, 6)) {
         size_t klens;
-        const char *key = luaL_checklstring(lua, 5, &klens);
-        websock_text(srey_netev(srey), fd, skid, (char *)key, data, dlens);
+        const char *key = luaL_checklstring(lua, 6, &klens);
+        websock_text(srey_netev(srey), fd, skid, fin, (char *)key, data, dlens);
     } else {
-        websock_text(srey_netev(srey), fd, skid, NULL, data, dlens);
+        websock_text(srey_netev(srey), fd, skid, fin, NULL, data, dlens);
     }
     return 0;
 }
@@ -562,18 +563,19 @@ static int32_t _lreg_websock_binary(lua_State *lua) {
     size_t dlens;
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    if (LUA_TSTRING == lua_type(lua, 3)) {
-        data = (void *)luaL_checklstring(lua, 3, &dlens);
+    int32_t fin = (int32_t)luaL_checkinteger(lua, 3);
+    if (LUA_TSTRING == lua_type(lua, 4)) {
+        data = (void *)luaL_checklstring(lua, 4, &dlens);
     } else {
-        data = lua_touserdata(lua, 3);
-        dlens = (size_t)luaL_checkinteger(lua, 4);
+        data = lua_touserdata(lua, 4);
+        dlens = (size_t)luaL_checkinteger(lua, 5);
     }
-    if (LUA_TSTRING == lua_type(lua, 5)) {
+    if (LUA_TSTRING == lua_type(lua, 6)) {
         size_t klens;
-        const char *key = luaL_checklstring(lua, 5, &klens);
-        websock_binary(srey_netev(srey), fd, skid, (char *)key, data, dlens);
+        const char *key = luaL_checklstring(lua, 6, &klens);
+        websock_binary(srey_netev(srey), fd, skid, fin, (char *)key, data, dlens);
     } else {
-        websock_binary(srey_netev(srey), fd, skid, NULL, data, dlens);
+        websock_binary(srey_netev(srey), fd, skid, fin, NULL, data, dlens);
     }
     return 0;
 }

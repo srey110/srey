@@ -353,44 +353,45 @@ void test_http(CuTest* tc) {
     buffer_init(&buf);
     size_t size = 0;
     int32_t closed = 0;
+    int32_t slice;
     ud_cxt ud;
     ZERO(&ud, sizeof(ud));
     ud.pktype = PACK_HTTP;
     const char *http1 = "POST /users HTTP/1.1\r\n  Host:   api.github.com\r\nContent-Length: 5\r\na: \r\n\r\n1";
     buffer_append(&buf, (void *)http1, strlen(http1));
-    void *rtnbuf = http_unpack(&buf, &size, &ud, &closed);
+    void *rtnbuf = http_unpack(&buf, &size, &ud, &closed, &slice);
     CuAssertTrue(tc, NULL == rtnbuf);
     const char *http2 = "2345";
     buffer_append(&buf, (void *)http2, strlen(http2));
-    rtnbuf = http_unpack(&buf, &size, &ud, &closed);
+    rtnbuf = http_unpack(&buf, &size, &ud, &closed, &slice);
     CuAssertTrue(tc, NULL != rtnbuf);
     protos_pkfree(PACK_HTTP, rtnbuf);
 
     const char *http3 = "POST /users HTTP/1.1\r\nHost: api.github.com\r\nContent-Length: 5\r\n\r\n12345";
     buffer_append(&buf, (void *)http3, strlen(http3));
-    rtnbuf = http_unpack(&buf, &size, &ud, &closed);
+    rtnbuf = http_unpack(&buf, &size, &ud, &closed, &slice);
     CuAssertTrue(tc, NULL != rtnbuf);
     protos_pkfree(PACK_HTTP, rtnbuf);
 
     const char *http4 = "POST /users HTTP/1.1\r\nHost: api.github.com\r\n\r\n";
     buffer_append(&buf, (void *)http4, strlen(http4));
-    rtnbuf = http_unpack(&buf, &size, &ud, &closed);
+    rtnbuf = http_unpack(&buf, &size, &ud, &closed, &slice);
     CuAssertTrue(tc, NULL != rtnbuf);
     protos_pkfree(PACK_HTTP, rtnbuf);
 
     const char *http5 = "POST /users HTTP/1.1\r\nHost: api.github.com\r\nTransfer-Encoding: chunked\r\n\r\n7\r\nMozilla\r\n11\r\nDeveloper N\r\n0\r\n\r\n";
     buffer_append(&buf, (void *)http5, strlen(http5));
-    rtnbuf = http_unpack(&buf, &size, &ud, &closed);
-    CuAssertTrue(tc, NULL != rtnbuf);
+    rtnbuf = http_unpack(&buf, &size, &ud, &closed, &slice);
+    CuAssertTrue(tc, NULL != rtnbuf && SLICE_START == slice);
     protos_pkfree(PACK_HTTP, rtnbuf);
-    rtnbuf = http_unpack(&buf, &size, &ud, &closed);
-    CuAssertTrue(tc, NULL != rtnbuf);
+    rtnbuf = http_unpack(&buf, &size, &ud, &closed, &slice);
+    CuAssertTrue(tc, NULL != rtnbuf && SLICE == slice);
     protos_pkfree(PACK_HTTP, rtnbuf);
-    rtnbuf = http_unpack(&buf, &size, &ud, &closed);
-    CuAssertTrue(tc, NULL != rtnbuf);
+    rtnbuf = http_unpack(&buf, &size, &ud, &closed, &slice);
+    CuAssertTrue(tc, NULL != rtnbuf && SLICE == slice);
     protos_pkfree(PACK_HTTP, rtnbuf);
-    rtnbuf = http_unpack(&buf, &size, &ud, &closed);
-    CuAssertTrue(tc, NULL != rtnbuf);
+    rtnbuf = http_unpack(&buf, &size, &ud, &closed, &slice);
+    CuAssertTrue(tc, NULL != rtnbuf && SLICE_END == slice);
     protos_pkfree(PACK_HTTP, rtnbuf);
     protos_udfree(&ud);
 

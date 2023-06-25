@@ -498,10 +498,11 @@ static inline void _task_net_recv(ev_ctx *ev, SOCKET fd, buffer_ctx *buf, size_t
     msg.fd = fd;
     msg.skid = ud->skid;
     void *data;
-    size_t lens = 0;
+    size_t lens;
     int32_t closefd = 0;
+    int32_t slice;
     do {
-        data = protos_unpack(ev, fd, buf, &lens, ud, &closefd);
+        data = protos_unpack(ev, fd, buf, &lens, ud, &closefd, &slice);
         if (NULL != data) {
             msg.data = data;
             msg.size = lens;

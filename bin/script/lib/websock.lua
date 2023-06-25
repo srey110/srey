@@ -155,35 +155,38 @@ end
  function websock.close(fd, skid)
     sutils.websock_close(fd, skid)
  end
+ --起始帧:FIN为0,opcode非0 中间帧:FIN为0,opcode为0 结束帧:FIN为1,opcode为0
  --[[
  描述: text
  参数:
      fd :integer
      skid :integer
+     fin 0 分片:integer
      data :string or userdata
      dlen :integer
      key 客服端需要 :string
  --]]
- function websock.text(fd, skid, data, dlen, key)
+ function websock.text(fd, skid, fin, data, dlen, key)
      if key and 4 > #key then
          return
      end
-     sutils.websock_text(fd, skid, data, dlen, key)
+     sutils.websock_text(fd, skid, fin, data, dlen, key)
  end
  --[[
  描述: binary
  参数:
      fd :integer
      skid :integer
+     fin 0 分片:integer
      data :string or userdata
      dlen :integer
      key 客服端需要 :string
  --]]
- function websock.binary(fd, skid, data, dlen, key)
+ function websock.binary(fd, skid, fin, data, dlen, key)
      if key and 4 > #key then
          return
      end
-     sutils.websock_binary(fd, skid, data, dlen, key)
+     sutils.websock_binary(fd, skid, fin, data, dlen, key)
  end
  --[[
  描述: continuation
