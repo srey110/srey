@@ -156,62 +156,61 @@ end
     sutils.websock_close(fd, skid)
  end
  --起始帧:FIN为0,opcode非0 中间帧:FIN为0,opcode为0 结束帧:FIN为1,opcode为0
+ local function continuation(fd, skid, key, func, ...)
+    local fin
+    local rtn
+    while true do
+        fin, rtn = func(...)
+        if fin then
+           sutils.websock_continuation(fd, skid, 1, rtn, nil, key)
+           break
+        else
+           sutils.websock_continuation(fd, skid, 0, rtn, nil, key)
+           core.sleep(10)--让其他能执行
+        end
+    end
+end
  --[[
  描述: text
  参数:
      fd :integer
      skid :integer
-     fin 0 分片:integer
      data :string or userdata
      dlen :integer
      key 客服端需要 :string
+     func nil 不分片: function  返回 boolean(true 结束)， data
  --]]
- function websock.text(fd, skid, fin, data, dlen, key)
-     if key and 4 > #key then
-         return
-     end
-     sutils.websock_text(fd, skid, fin, data, dlen, key)
+ function websock.text(fd, skid, data, dlen, key, func, ...)
+    if key and 4 > #key then
+        return
+    end
+    if not func then
+        sutils.websock_text(fd, skid, 1, data, dlen, key)
+    else
+        sutils.websock_text(fd, skid, 0, data, dlen, key)
+        continuation(fd, skid, key, func, ...)
+    end
  end
  --[[
  描述: binary
  参数:
      fd :integer
      skid :integer
-     fin 0 分片:integer
      data :string or userdata
      dlen :integer
      key 客服端需要 :string
- --]]
- function websock.binary(fd, skid, fin, data, dlen, key)
-     if key and 4 > #key then
-         return
-     end
-     sutils.websock_binary(fd, skid, fin, data, dlen, key)
- end
- --[[
- 描述: continuation
- 参数:
-     fd :integer
-     skid :integer
-     key 客服端需要 :string
      func : function  返回 boolean(true 结束)， data
  --]]
- function websock.continuation(fd, skid, key, func, ...)
-     if key and 4 > #key then
-         return
-     end
-     local fin
-     local rtn
-     while true do
-         fin, rtn = func(...)
-         if fin then
-            sutils.websock_continuation(fd, skid, 1, rtn, nil, key)
-            break
-         else
-            sutils.websock_continuation(fd, skid, 0, rtn, nil, key)
-            core.sleep(10)--让其他能执行
-         end
-     end
+ function websock.binary(fd, skid, data, dlen, key, func, ...)
+    if key and 4 > #key then
+        return
+    end
+    if not func then
+        sutils.websock_binary(fd, skid, 1, data, dlen, key)
+    else
+        sutils.websock_binary(fd, skid, 0, data, dlen, key)
+        continuation(fd, skid, key, func, ...)
+    end
  end
 
 return websock

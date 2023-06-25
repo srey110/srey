@@ -5,11 +5,11 @@ local function onstarted()
 end
 srey.started(onstarted)
 local function handshaked(pktype, fd, skid)
-    websock.text(fd, skid, 1, "welcome! this is websocket.")
+    websock.text(fd, skid, "welcome! this is websocket.")
 end
 srey.handshaked(handshaked)
 local function onhandshaked(fd, skid)
-    websock.text(fd, skid, 1, "welcome! this is http upgrade to websocket.")
+    websock.text(fd, skid, "welcome! this is http upgrade to websocket.")
 end
 srey.regrpc("handshaked", onhandshaked)
 local function continuationcb(cnt)
@@ -35,13 +35,12 @@ local function onrecv(pktype, fd, skid, data, size)
         --printd("TEXT size: %d", plens)
         local now = os.date(FMT_TIME, os.time())
         if "CONTINUE" == srey.utostr(pack, plens) then
-            websock.text(fd, skid, 0, now)
             local cnt = {
                 cnt = 0;
             }
-            websock.continuation(fd, skid, nil, continuationcb, cnt)
+            websock.text(fd, skid, now, nil, nil, continuationcb, cnt)
         else
-            websock.text(fd, skid, 1, now)
+            websock.text(fd, skid, now)
         end
     elseif WEBSOCK_PROTO.BINARY == proto  then
         if 0 == fin then
@@ -50,7 +49,7 @@ local function onrecv(pktype, fd, skid, data, size)
         --local msg = srey.utostr(pack, plens)
         --printd("BINARY size: %d", plens)
         local now = os.date(FMT_TIME, os.time())
-        websock.binary(fd, skid, 1, now)
+        websock.binary(fd, skid, now)
     elseif WEBSOCK_PROTO.CONTINUE == proto then
         if 1 == fin then
             --printd("CONTINUE end")

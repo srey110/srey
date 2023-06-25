@@ -72,13 +72,12 @@ local function testwebsock(chs, port)
     end
     websock.ping(websockfd, skid)
     websock.pong(websockfd, skid)
-    websock.text(websockfd, skid, 1, randstr(math.random(10, 4096)), nil, randstr(4))
-    websock.binary(websockfd, skid, 1, randstr(math.random(10, 4096)), nil, randstr(4))
+    websock.text(websockfd, skid, randstr(math.random(10, 4096)), nil, randstr(4))
+    websock.binary(websockfd, skid, randstr(math.random(10, 4096)), nil, randstr(4))
     local cnt = {
         cnt = 0;
     }
-    websock.text(websockfd, skid, 0, randstr(math.random(10, 100)), nil, randstr(4))
-    websock.continuation(websockfd, skid, randstr(4), continuationcb, cnt)
+    websock.text(websockfd, skid, randstr(math.random(10, 100)), nil, randstr(4), continuationcb, cnt)
     websock.close(websockfd, skid)
 end
 local function chuncedmesg(cnt)
