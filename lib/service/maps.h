@@ -25,10 +25,10 @@ typedef struct mapco_ctx {
 void _map_cosess_add(mapco_ctx *map, struct mco_coro *co, uint64_t sess);
 void _map_cosess_del(mapco_ctx *map, uint64_t sess);
 int32_t _map_cosess_get(mapco_ctx *map, uint64_t sess, co_sess_ctx *cosess);
-//co_sock_ctx MSG_TYPE_RECV MSG_TYPE_RECVFROM MSG_TYPE_CLOSE
+//co_sock_ctx MSG_TYPE_RECV MSG_TYPE_RECVFROM MSG_TYPE_CLOSE slice
 void _map_cosk_add(mapco_ctx *map, uint64_t sess, struct mco_coro *co, SOCKET fd);
 void _map_cosk_del(mapco_ctx *map, SOCKET fd);
-int32_t _map_cosk_get(mapco_ctx *map, SOCKET fd, co_sock_ctx *cofd);
+int32_t _map_cosk_get(mapco_ctx *map, SOCKET fd, co_sock_ctx *cofd, int32_t del);
 //co_tmo_ctx MSG_TYPE_TIMEOUT
 void _map_cotmo_add(mapco_ctx *map, co_tmo_ctx *cotmo);
 void _map_cotmo_del(mapco_ctx *map, uint64_t sess);

@@ -50,7 +50,7 @@ void _map_cosk_del(mapco_ctx *map, SOCKET fd) {
     key.fd = fd;
     hashmap_delete(map->cosk, &key);
 }
-int32_t _map_cosk_get(mapco_ctx *map, SOCKET fd, co_sock_ctx *cofd) {
+int32_t _map_cosk_get(mapco_ctx *map, SOCKET fd, co_sock_ctx *cofd, int32_t del) {
     co_sock_ctx key;
     key.fd = fd;
     co_sock_ctx *tmp = (co_sock_ctx *)hashmap_get(map->cosk, &key);
@@ -58,7 +58,9 @@ int32_t _map_cosk_get(mapco_ctx *map, SOCKET fd, co_sock_ctx *cofd) {
         return ERR_FAILED;
     }
     *cofd = *tmp;
-    hashmap_delete(map->cosk, &key);
+    if (0 != del) {
+        hashmap_delete(map->cosk, &key);
+    }
     return ERR_OK;
 }
 static inline uint64_t _map_cotmo_hash(const void *item, uint64_t seed0, uint64_t seed1) {

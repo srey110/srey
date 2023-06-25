@@ -15,6 +15,12 @@ typedef enum timeout_type {
     TMO_TYPE_CONNECT,
     TMO_TYPE_SYNSEND
 }timeout_type;
+typedef enum syn_type{
+    SYN_NONE = 0x00,
+    SYN_ONCE,
+    SYN_SLICE,
+    SYN_ENDSLICE
+}syn_type;
 QUEUE_DECL(message_ctx, qu_message);
 #if WITH_SSL
 typedef struct certs_ctx {
@@ -155,9 +161,9 @@ static inline void _dispatch_timeout(co_arg_ctx *arg) {
     }
 }
 static inline void _dispatch_netrd(co_arg_ctx *arg) {
-    if (1 == arg->msg.synflag) {
+    if (SYN_ONCE == arg->msg.synflag) {
         co_sock_ctx cosk;
-        if (ERR_OK == _map_cosk_get(&arg->task->mapco, arg->msg.fd, &cosk)) {
+        if (ERR_OK == _map_cosk_get(&arg->task->mapco, arg->msg.fd, &cosk, 1)) {
             _map_cotmo_del(&arg->task->mapco, cosk.co.session);
             arg->msg.session = cosk.co.session;
             arg->msg.erro = ERR_OK;
@@ -190,7 +196,7 @@ static inline void _task_onmsg(co_arg_ctx *arg) {
         RESUME_NORMAL(arg);
         break;
     case MSG_TYPE_CONNECT:
-        if (1 == arg->msg.synflag) {
+        if (SYN_ONCE == arg->msg.synflag) {
             co_sess_ctx cosess;
             if (ERR_OK == _map_cosess_get(&arg->task->mapco, arg->msg.session, &cosess)) {
                 _map_cotmo_del(&arg->task->mapco, arg->msg.session);
@@ -216,9 +222,9 @@ static inline void _task_onmsg(co_arg_ctx *arg) {
         RESUME_NORMAL(arg);
         break;
     case MSG_TYPE_CLOSE:
-        if (1 == arg->msg.synflag) {
+        if (SYN_ONCE == arg->msg.synflag) {
             co_sock_ctx cosk;
-            if (ERR_OK == _map_cosk_get(&arg->task->mapco, arg->msg.fd, &cosk)) {
+            if (ERR_OK == _map_cosk_get(&arg->task->mapco, arg->msg.fd, &cosk, 1)) {
                 _map_cotmo_del(&arg->task->mapco, cosk.co.session);
                 arg->msg.session = cosk.co.session;
                 arg->msg.erro = ERR_FAILED;
@@ -506,11 +512,11 @@ static inline void _task_net_recv(ev_ctx *ev, SOCKET fd, buffer_ctx *buf, size_t
         if (NULL != data) {
             msg.data = data;
             msg.size = lens;
-            if (0 != ud->synflag) {
-                ud->synflag = 0;
-                msg.synflag = 1;
+            if (SYN_NONE != ud->synflag) {
+                ud->synflag = SYN_NONE;
+                msg.synflag = SYN_ONCE;
             } else {
-                msg.synflag = 0;
+                msg.synflag = SYN_NONE;
             }
             _push_message(ud->data, &msg);
         }
@@ -534,11 +540,11 @@ static inline void _task_net_close(ev_ctx *ev, SOCKET fd, ud_cxt *ud) {
     msg.pktype = ud->pktype;
     msg.fd = fd;
     msg.skid = ud->skid;
-    if (0 != ud->synflag) {
-        ud->synflag = 0;
-        msg.synflag = 1;
+    if (SYN_NONE != ud->synflag) {
+        ud->synflag = SYN_NONE;
+        msg.synflag = SYN_ONCE;
     } else {
-        msg.synflag = 0;
+        msg.synflag = SYN_NONE;
     }
     _push_message(ud->data, &msg);
 }
@@ -567,11 +573,11 @@ static inline int32_t _task_net_connect(ev_ctx *ev, SOCKET fd, int32_t err, ud_c
     msg.fd = fd;
     msg.skid = ud->skid;
     msg.erro = (int8_t)err;
-    if (0 != ud->synflag) {
-        ud->synflag = 0;
-        msg.synflag = 1;
+    if (SYN_NONE != ud->synflag) {
+        ud->synflag = SYN_NONE;
+        msg.synflag = SYN_ONCE;
     } else {
-        msg.synflag = 0;
+        msg.synflag = SYN_NONE;
     }
     _push_message(ud->data, &msg);
     return ERR_OK;
@@ -580,7 +586,7 @@ SOCKET task_netconnect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl
     const char *ip, uint16_t port, int32_t sendev, uint64_t *skid) {
     ud_cxt ud;
     ZERO(&ud, sizeof(ud));
-    ud.synflag = 1;
+    ud.synflag = SYN_ONCE;
     ud.pktype = pktype;
     ud.data = task;
     ud.session = task_session(task);
@@ -624,11 +630,11 @@ static inline void _task_net_recvfrom(ev_ctx *ev, SOCKET fd, char *buf, size_t s
     memcpy(umsg->data, buf, size);
     msg.data = umsg;
     msg.size = size;
-    if (0 != ud->synflag) {
-        ud->synflag = 0;
-        msg.synflag = 1;
+    if (SYN_NONE != ud->synflag) {
+        ud->synflag = SYN_NONE;
+        msg.synflag = SYN_ONCE;
     } else {
-        msg.synflag = 0;
+        msg.synflag = SYN_NONE;
     }
     _push_message(ud->data, &msg);
 }
@@ -679,7 +685,7 @@ void *task_synsend(task_ctx *task, SOCKET fd, uint64_t skid,
     void *data, size_t len, size_t *size, pack_type pktype) {
     uint64_t sess = task_session(task);
     _map_cosk_add(&task->mapco, sess, task->curco, fd);
-    if (ERR_OK != task_netsend(task, fd, skid, data, len, 1, pktype)) {
+    if (ERR_OK != task_netsend(task, fd, skid, data, len, SYN_ONCE, pktype)) {
         _map_cosk_del(&task->mapco, fd);
         return NULL;
     }
@@ -726,7 +732,7 @@ void *task_synsendto(task_ctx *task, SOCKET fd, uint64_t skid,
     const char *ip, const uint16_t port, void *data, size_t len, size_t *size) {
     uint64_t sess = task_session(task);
     _map_cosk_add(&task->mapco, sess, task->curco, fd);
-    if (ERR_OK != task_sendto(task, fd, skid, ip, port, data, len, 1)) {
+    if (ERR_OK != task_sendto(task, fd, skid, ip, port, data, len, SYN_ONCE)) {
         _map_cosk_del(&task->mapco, fd);
         return NULL;
     }
