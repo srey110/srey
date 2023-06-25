@@ -61,26 +61,36 @@ function websock.allowed(fd, skid, sign)
     http.rsp_websock_allowed(fd, skid, sign)
 end
 local function websock_checkrsp(hpack)
-    local status1, status2, status3 = http.status(hpack)
-    if nil == status1 then
+    if not hpack.head or not hpack.status or
+       "101" ~= hpack.status[2] or "switching protocols" ~= string.lower(hpack.status[3]) then
         return nil
     end
-    if "101" ~= status2 or not status3 or "switching protocols" ~= string.lower(status3) then
+    local cnt = 0
+    local signkey
+    for key, value in pairs(hpack.head) do
+        key = string.lower(key)
+        if "connection" == key then
+            if not string.find(string.lower(value), "upgrade") then
+                return nil
+            end
+            cnt = cnt + 1
+        elseif "upgrade" == key then
+            if "websocket" ~= string.lower(value) then
+                return nil
+            end
+            cnt = cnt + 1
+        elseif "sec-websocket-accept" == key then
+            signkey = value
+            cnt = cnt + 1
+        end
+        if 3 == cnt then
+            break
+        end
+    end
+    if 3 ~= cnt then
         return nil
     end
-    local val = http.head(hpack, "connection")
-    if not val or not string.find(string.lower(val), "upgrade") then
-        return nil
-    end
-    val = http.head(hpack, "upgrade")
-    if not val or "websocket" ~= string.lower(val) then
-        return nil
-    end
-    val = http.head(hpack, "sec-websocket-accept")
-    if not val then
-        return nil
-    end
-    return val
+    return signkey
 end
 --[[
 描述: wesocket握手

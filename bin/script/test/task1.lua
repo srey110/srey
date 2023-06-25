@@ -89,10 +89,9 @@ local function chuncedmesg(cnt)
 end
 local function onchunked(fd, skid, data, size)
     if data then
-        --printd("hunked: %d", size)
+        --printd("hunked: %s", srey.utostr(data ,size))
     else
         --printd("hunked: end")
-        srey.close(fd, skid)
     end
 end
 local function testhttp()
@@ -115,30 +114,26 @@ local function testhttp()
     }
     local hinfo
     hinfo = http.get(fd, skid, "/get_test?a=中文测试1", headers)
-    local str1, code, _ = http.status(hinfo)
-    if not hinfo or "HTTP/1.1" ~= str1 or "200" ~=  code then
-        printd("http.get error.")
+    if not hinfo or "HTTP/1.1" ~= hinfo.status[1] or "200" ~=  hinfo.status[2] then
+        printd("http.get /get_test error.")
     end
     hinfo = http.post(fd, skid, "/post_nomsg?a=中文测试2", headers)
-    str1, code, _ = http.status(hinfo)
-    if not hinfo or "HTTP/1.1" ~= str1 or "200" ~=  code then
-        printd("http.post error.")
+    if not hinfo or "HTTP/1.1" ~= hinfo.status[1] or "200" ~=  hinfo.status[2] then
+        printd("http.post /post_nomsg error.")
     end
     hinfo = http.post(fd, skid, "/post_string", headers, nil, "this is string message")
-    str1, code, _ = http.status(hinfo)
-    if not hinfo or "HTTP/1.1" ~= str1 or "200" ~=  code then
+    if not hinfo or "HTTP/1.1" ~= hinfo.status[1] or "200" ~=  hinfo.status[2] then
         printd("http.post /post_string error.")
     end
     hinfo = http.post(fd, skid, "/post_json", headers, nil, jmsg)
-    str1, code, _ = http.status(hinfo)
-    if not hinfo or "HTTP/1.1" ~= str1 or "200" ~=  code then
+    if not hinfo or "HTTP/1.1" ~= hinfo.status[1] or "200" ~=  hinfo.status[2] then
         printd("http.post /post_json error.")
     end
     hinfo = http.post(fd, skid, "/get_chunked_cb", headers, onchunked, chuncedmesg, cnt)
-    str1, code, _ = http.status(hinfo)
-    if not hinfo or "HTTP/1.1" ~= str1 or "200" ~=  code then
+    if not hinfo or "HTTP/1.1" ~= hinfo.status[1] or "200" ~=  hinfo.status[2] then
         printd("http.post /get_chunked_cb error.")
     end
+    srey.close(fd, skid)
 end
 local function testudp()
     if INVALID_SOCK == udpfd then

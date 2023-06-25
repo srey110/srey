@@ -382,7 +382,7 @@ void test_http(CuTest* tc) {
     const char *http5 = "POST /users HTTP/1.1\r\nHost: api.github.com\r\nTransfer-Encoding: chunked\r\n\r\n7\r\nMozilla\r\n11\r\nDeveloper N\r\n0\r\n\r\n";
     buffer_append(&buf, (void *)http5, strlen(http5));
     rtnbuf = http_unpack(&buf, &size, &ud, &closed, &slice);
-    CuAssertTrue(tc, NULL != rtnbuf && SLICE_START == slice);
+    CuAssertTrue(tc, NULL != rtnbuf && SLICE == slice);
     protos_pkfree(PACK_HTTP, rtnbuf);
     rtnbuf = http_unpack(&buf, &size, &ud, &closed, &slice);
     CuAssertTrue(tc, NULL != rtnbuf && SLICE == slice);

@@ -15,12 +15,6 @@ typedef enum timeout_type {
     TMO_TYPE_CONNECT,
     TMO_TYPE_SYNSEND
 }timeout_type;
-typedef enum syn_type{
-    SYN_NONE = 0x00,
-    SYN_ONCE,
-    SYN_SLICE,
-    SYN_ENDSLICE
-}syn_type;
 QUEUE_DECL(message_ctx, qu_message);
 #if WITH_SSL
 typedef struct certs_ctx {
@@ -147,21 +141,39 @@ static inline void _dispatch_timeout(co_arg_ctx *arg) {
         arg->msg.erro = ERR_FAILED;
         ASSERTAB(MCO_SUCCESS == mco_push(cotmo.co.co, &arg->msg, sizeof(arg->msg)), "mco_push failed!");
         RESUME(arg->task, cotmo.co.co);
-        LOG_WARN("connect timeout. session:%"PRIu64, arg->msg.session);
+        LOG_WARN("connect timeout.session:%"PRIu64, arg->msg.session);
         break;
     case TMO_TYPE_SYNSEND:
         _map_cosk_del(&arg->task->mapco, cotmo.fd);
         arg->msg.erro = ERR_FAILED;
         ASSERTAB(MCO_SUCCESS == mco_push(cotmo.co.co, &arg->msg, sizeof(arg->msg)), "mco_push failed!");
         RESUME(arg->task, cotmo.co.co);
-        LOG_WARN("synsend(to) timeout. sock:%d", (int32_t)cotmo.fd);
+        LOG_WARN("synsend(to) timeout.sock:%d session:%"PRIu64, (int32_t)cotmo.fd, cotmo.co.session);
         break;
     default:
         break;
     }
 }
-static inline void _dispatch_netrd(co_arg_ctx *arg) {
+static inline void _dispatch_connect(co_arg_ctx *arg) {
     if (SYN_ONCE == arg->msg.synflag) {
+        co_sess_ctx cosess;
+        if (ERR_OK == _map_cosess_get(&arg->task->mapco, arg->msg.session, &cosess)) {
+            _map_cotmo_del(&arg->task->mapco, arg->msg.session);
+            ASSERTAB(MCO_SUCCESS == mco_push(cosess.co, &arg->msg, sizeof(arg->msg)), "mco_push failed!");
+            RESUME(arg->task, cosess.co);
+        } else {
+            if (ERR_OK == arg->msg.erro) {
+                ev_close(task_netev(arg->task), arg->msg.fd, arg->msg.skid);
+            }
+            LOG_WARN("can't find connect session:%"PRIu64" pack type:%d. maybe timeout already.", arg->msg.session, arg->msg.pktype);
+        }
+    } else {
+        RESUME_NORMAL(arg);
+    }
+}
+static inline void _dispatch_netrd(co_arg_ctx *arg) {
+    switch (arg->msg.synflag) {
+    case SYN_ONCE: {
         co_sock_ctx cosk;
         if (ERR_OK == _map_cosk_get(&arg->task->mapco, arg->msg.fd, &cosk, 1)) {
             _map_cotmo_del(&arg->task->mapco, cosk.co.session);
@@ -170,11 +182,91 @@ static inline void _dispatch_netrd(co_arg_ctx *arg) {
             ASSERTAB(MCO_SUCCESS == mco_push(cosk.co.co, &arg->msg, sizeof(arg->msg)), "mco_push failed!");
             RESUME(arg->task, cosk.co.co);
         } else {
-            LOG_WARN("can't find sock %d, maybe timeout already.", (int32_t)arg->msg.fd);
+            LOG_WARN("can't find sock:%d pack type:%d. maybe timeout already.", (int32_t)arg->msg.fd, arg->msg.pktype);
         }
         _message_clean(&arg->msg);
-    } else {
+        break;
+    }
+    case SYN_SLICE: {
+        co_sock_ctx cosk;
+        if (ERR_OK == _map_cosk_get(&arg->task->mapco, arg->msg.fd, &cosk, 0)) {
+            arg->msg.session = cosk.co.session;
+            arg->msg.erro = ERR_OK;
+            ASSERTAB(MCO_SUCCESS == mco_push(cosk.co.co, &arg->msg, sizeof(arg->msg)), "mco_push failed!");
+            RESUME(arg->task, cosk.co.co);
+        } else {
+            LOG_ERROR("can't find sock:%d pack type:%d.", (int32_t)arg->msg.fd, arg->msg.pktype);
+        }
+        _message_clean(&arg->msg);
+        break;
+    }
+    case SYN_ENDSLICE: {
+        co_sock_ctx cosk;
+        if (ERR_OK == _map_cosk_get(&arg->task->mapco, arg->msg.fd, &cosk, 1)) {
+            arg->msg.session = cosk.co.session;
+            arg->msg.erro = ERR_OK;
+            ASSERTAB(MCO_SUCCESS == mco_push(cosk.co.co, &arg->msg, sizeof(arg->msg)), "mco_push failed!");
+            RESUME(arg->task, cosk.co.co);
+        } else {
+            LOG_ERROR("can't find sock:%d pack type:%d.", (int32_t)arg->msg.fd, arg->msg.pktype);
+        }
+        _message_clean(&arg->msg);
+        break;
+    }
+    default:
         RESUME_NORMAL(arg);
+        break;
+    }
+}
+static inline void _dispatch_close(co_arg_ctx *arg) {
+    switch (arg->msg.synflag) {
+    case SYN_ONCE: {
+        co_sock_ctx cosk;
+        if (ERR_OK == _map_cosk_get(&arg->task->mapco, arg->msg.fd, &cosk, 1)) {
+            _map_cotmo_del(&arg->task->mapco, cosk.co.session);
+            arg->msg.session = cosk.co.session;
+            arg->msg.erro = ERR_FAILED;
+            ASSERTAB(MCO_SUCCESS == mco_push(cosk.co.co, &arg->msg, sizeof(arg->msg)), "mco_push failed!");
+            RESUME(arg->task, cosk.co.co);
+        } else {
+            LOG_ERROR("can't find sock:%d pack type:%d. maybe timeout already.", (int32_t)arg->msg.fd, arg->msg.pktype);
+        }
+        break;
+    }
+    case SYN_SLICE: {
+        co_sock_ctx cosk;
+        if (ERR_OK == _map_cosk_get(&arg->task->mapco, arg->msg.fd, &cosk, 1)) {
+            arg->msg.session = cosk.co.session;
+            arg->msg.erro = ERR_FAILED;
+            ASSERTAB(MCO_SUCCESS == mco_push(cosk.co.co, &arg->msg, sizeof(arg->msg)), "mco_push failed!");
+            RESUME(arg->task, cosk.co.co);
+        } else {
+            LOG_ERROR("can't find sock:%d pack type:%d.", (int32_t)arg->msg.fd, arg->msg.pktype);
+        }
+        break;
+    }
+    default:
+        break;
+    }
+    RESUME_NORMAL(arg);
+}
+static inline void _dispatch_response(co_arg_ctx *arg) {
+    co_sess_ctx cosess;
+    if (ERR_OK == _map_cosess_get(&arg->task->mapco, arg->msg.session, &cosess)) {
+        ASSERTAB(MCO_SUCCESS == mco_push(cosess.co, &arg->msg, sizeof(arg->msg)), "mco_push failed!");
+        RESUME(arg->task, cosess.co);
+    } else {
+        LOG_WARN("can't find session %"PRIu64, arg->msg.session);
+    }
+    _message_clean(&arg->msg);
+}
+static inline void _dispatch_senrtn(co_arg_ctx *arg) {
+    co_sess_ctx cosess;
+    if (ERR_OK == _map_cosess_get(&arg->task->mapco, arg->msg.session, &cosess)) {
+        ASSERTAB(MCO_SUCCESS == mco_push(cosess.co, &arg->msg, sizeof(arg->msg)), "mco_push failed!");
+        RESUME(arg->task, cosess.co);
+    } else {
+        LOG_WARN("can't find session %"PRIu64, arg->msg.session);
     }
 }
 static inline void _task_onmsg(co_arg_ctx *arg) {
@@ -196,21 +288,7 @@ static inline void _task_onmsg(co_arg_ctx *arg) {
         RESUME_NORMAL(arg);
         break;
     case MSG_TYPE_CONNECT:
-        if (SYN_ONCE == arg->msg.synflag) {
-            co_sess_ctx cosess;
-            if (ERR_OK == _map_cosess_get(&arg->task->mapco, arg->msg.session, &cosess)) {
-                _map_cotmo_del(&arg->task->mapco, arg->msg.session);
-                ASSERTAB(MCO_SUCCESS == mco_push(cosess.co, &arg->msg, sizeof(arg->msg)), "mco_push failed!");
-                RESUME(arg->task, cosess.co);
-            } else {
-                if (ERR_OK == arg->msg.erro) {
-                    ev_close(task_netev(arg->task), arg->msg.fd, arg->msg.skid);
-                }
-                LOG_WARN("can't find connect session %"PRIu64", maybe timeout already.", arg->msg.session);
-            }
-        } else {
-            RESUME_NORMAL(arg);
-        }
+        _dispatch_connect(arg);
         break;
     case MSG_TYPE_HANDSHAKED:
         RESUME_NORMAL(arg);
@@ -222,19 +300,7 @@ static inline void _task_onmsg(co_arg_ctx *arg) {
         RESUME_NORMAL(arg);
         break;
     case MSG_TYPE_CLOSE:
-        if (SYN_ONCE == arg->msg.synflag) {
-            co_sock_ctx cosk;
-            if (ERR_OK == _map_cosk_get(&arg->task->mapco, arg->msg.fd, &cosk, 1)) {
-                _map_cotmo_del(&arg->task->mapco, cosk.co.session);
-                arg->msg.session = cosk.co.session;
-                arg->msg.erro = ERR_FAILED;
-                ASSERTAB(MCO_SUCCESS == mco_push(cosk.co.co, &arg->msg, sizeof(arg->msg)), "mco_push failed!");
-                RESUME(arg->task, cosk.co.co);
-            } else {
-                LOG_WARN("can't find synsend sock %d, maybe timeout already.", (int32_t)arg->msg.fd);
-            }
-        }
-        RESUME_NORMAL(arg);
+        _dispatch_close(arg);
         break;
     case MSG_TYPE_RECVFROM:
         _dispatch_netrd(arg);
@@ -243,17 +309,11 @@ static inline void _task_onmsg(co_arg_ctx *arg) {
         RESUME_NORMAL(arg);
         break;
     case MSG_TYPE_RESPONSE:
-    case MSG_TYPE_ENDRTN: {
-        co_sess_ctx cosess;
-        if (ERR_OK == _map_cosess_get(&arg->task->mapco, arg->msg.session, &cosess)) {
-            ASSERTAB(MCO_SUCCESS == mco_push(cosess.co, &arg->msg, sizeof(arg->msg)), "mco_push failed!");
-            RESUME(arg->task, cosess.co);
-        } else {
-            LOG_WARN("can't find session %"PRIu64, arg->msg.session);
-        }
-        _message_clean(&arg->msg);
+        _dispatch_response(arg);
         break;
-    }
+    case MSG_TYPE_ENDRTN:
+        _dispatch_senrtn(arg);
+        break;
     default:
         break;
     }
@@ -480,6 +540,25 @@ void task_response(task_ctx *dst, uint64_t sess, void *data, size_t size, int32_
     msg.size = size;
     _push_message(dst, &msg);
 }
+uint64_t task_slice_start(task_ctx *task, SOCKET fd) {
+    uint64_t sess = task_session(task);
+    _map_cosk_add(&task->mapco, sess, task->curco, fd);
+    return sess;
+}
+void *task_slice(task_ctx *task, uint64_t sess, size_t *size) {
+    YIELD(task);
+    message_ctx msg;
+    ASSERTAB(MCO_SUCCESS == mco_pop(task->curco, &msg, sizeof(msg)), "mco_pop failed!");
+    if (sess != msg.session) {
+        LOG_ERROR("session error.");
+        return NULL;
+    }
+    if (ERR_OK != msg.erro) {
+        return NULL;
+    }
+    *size = msg.size;
+    return msg.data;
+}
 void _push_handshaked(SOCKET fd, ud_cxt *ud) {
     message_ctx msg;
     msg.msgtype = MSG_TYPE_HANDSHAKED;
@@ -497,6 +576,35 @@ static inline int32_t _task_net_accept(ev_ctx *ev, SOCKET fd, ud_cxt *ud) {
     _push_message(ud->data, &msg);
     return ERR_OK;
 }
+static inline void _set_synflag(message_ctx *msg, ud_cxt *ud, int32_t slice) {
+    switch (ud->synflag) {
+    case SYN_NONE:
+        msg->synflag = SYN_NONE;
+        break;
+    case SYN_ONCE:
+        msg->synflag = SYN_ONCE;
+        if (SLICE == slice) {
+            ud->synflag = SYN_SLICE;
+        } else {
+            ud->synflag = SYN_NONE;
+        }
+        break;
+    case SYN_SLICE:
+        if (SLICE_NONE == slice) {
+            msg->synflag = SYN_NONE;
+        } else if (SLICE_END == slice) {
+            msg->synflag = SYN_ENDSLICE;
+            ud->synflag = SYN_NONE;
+        } else {
+            msg->synflag = SYN_SLICE;
+        }
+        break;
+    default:
+        msg->synflag = SYN_NONE;
+        LOG_ERROR("synchronous flag error.pack type:%d, flag: %d", msg->pktype, ud->synflag);
+        break;
+    }
+}
 static inline void _task_net_recv(ev_ctx *ev, SOCKET fd, buffer_ctx *buf, size_t size, ud_cxt *ud) {
     message_ctx msg;
     msg.msgtype = MSG_TYPE_RECV;
@@ -512,12 +620,7 @@ static inline void _task_net_recv(ev_ctx *ev, SOCKET fd, buffer_ctx *buf, size_t
         if (NULL != data) {
             msg.data = data;
             msg.size = lens;
-            if (SYN_NONE != ud->synflag) {
-                ud->synflag = SYN_NONE;
-                msg.synflag = SYN_ONCE;
-            } else {
-                msg.synflag = SYN_NONE;
-            }
+            _set_synflag(&msg, ud, slice);
             _push_message(ud->data, &msg);
         }
     } while (NULL != data && 0 != buffer_size(buf));
@@ -540,12 +643,8 @@ static inline void _task_net_close(ev_ctx *ev, SOCKET fd, ud_cxt *ud) {
     msg.pktype = ud->pktype;
     msg.fd = fd;
     msg.skid = ud->skid;
-    if (SYN_NONE != ud->synflag) {
-        ud->synflag = SYN_NONE;
-        msg.synflag = SYN_ONCE;
-    } else {
-        msg.synflag = SYN_NONE;
-    }
+    msg.synflag = ud->synflag;
+    ud->synflag = SYN_NONE;
     _push_message(ud->data, &msg);
 }
 int32_t task_netlisten(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
@@ -573,12 +672,8 @@ static inline int32_t _task_net_connect(ev_ctx *ev, SOCKET fd, int32_t err, ud_c
     msg.fd = fd;
     msg.skid = ud->skid;
     msg.erro = (int8_t)err;
-    if (SYN_NONE != ud->synflag) {
-        ud->synflag = SYN_NONE;
-        msg.synflag = SYN_ONCE;
-    } else {
-        msg.synflag = SYN_NONE;
-    }
+    msg.synflag = ud->synflag;
+    ud->synflag = SYN_NONE;
     _push_message(ud->data, &msg);
     return ERR_OK;
 }
@@ -630,12 +725,8 @@ static inline void _task_net_recvfrom(ev_ctx *ev, SOCKET fd, char *buf, size_t s
     memcpy(umsg->data, buf, size);
     msg.data = umsg;
     msg.size = size;
-    if (SYN_NONE != ud->synflag) {
-        ud->synflag = SYN_NONE;
-        msg.synflag = SYN_ONCE;
-    } else {
-        msg.synflag = SYN_NONE;
-    }
+    msg.synflag = ud->synflag;
+    ud->synflag = SYN_NONE;
     _push_message(ud->data, &msg);
 }
 SOCKET task_netudp(task_ctx *task, const char *ip, uint16_t port, uint64_t *skid) {
@@ -661,15 +752,16 @@ void _send_result(ud_cxt *ud, uint64_t sess, int32_t err) {
 }
 int32_t task_netsend(task_ctx *task, SOCKET fd, uint64_t skid,
     void *data, size_t len, uint8_t synflag, pack_type pktype) {
+    ASSERTAB(SYN_NONE == synflag || SYN_ONCE == synflag, "synflag error.");
     size_t size;
     uint64_t sess = 0;
     void *pack = protos_pack(pktype, data, len, &size);
-    if (0 != synflag) {
+    if (SYN_ONCE == synflag) {
         sess = task_session(task);
         _map_cosess_add(&task->mapco, task->curco, sess);
     }
     ev_send(&task->srey->netev, fd, skid, pack, size, synflag, 0, sess);
-    if (0 != synflag) {
+    if (SYN_ONCE == synflag) {
         YIELD(task);
         message_ctx msg;
         ASSERTAB(MCO_SUCCESS == mco_pop(task->curco, &msg, sizeof(msg)), "mco_pop failed!");
@@ -705,18 +797,19 @@ void *task_synsend(task_ctx *task, SOCKET fd, uint64_t skid,
 }
 int32_t task_sendto(task_ctx *task, SOCKET fd, uint64_t skid,
     const char *ip, const uint16_t port, void *data, size_t len, uint8_t synflag) {
+    ASSERTAB(SYN_NONE == synflag || SYN_ONCE == synflag, "synflag error.");
     uint64_t sess = 0;
-    if (0 != synflag) {
+    if (SYN_ONCE == synflag) {
         sess = task_session(task);
         _map_cosess_add(&task->mapco, task->curco, sess);
     }
     if (ERR_OK != ev_sendto(&task->srey->netev, fd, skid, ip, port, data, len, synflag, sess)) {
-        if (0 != synflag) {
+        if (SYN_ONCE == synflag) {
             _map_cosess_del(&task->mapco, sess);
         }
         return ERR_FAILED;
     }
-    if (0 != synflag) {
+    if (SYN_ONCE == synflag) {
         YIELD(task);
         message_ctx msg;
         ASSERTAB(MCO_SUCCESS == mco_pop(task->curco, &msg, sizeof(msg)), "mco_pop failed!");

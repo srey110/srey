@@ -363,7 +363,7 @@ static int32_t _lreg_send(lua_State *lua) {
         data = lua_touserdata(lua, 5);
         size = (size_t)luaL_checkinteger(lua, 6);
     }
-    if (ERR_OK == task_netsend(task, fd, skid, data, size, 0, ptype)) {
+    if (ERR_OK == task_netsend(task, fd, skid, data, size, SYN_NONE, ptype)) {
         lua_pushboolean(lua, 1);
     } else {
         lua_pushboolean(lua, 0);
@@ -407,7 +407,7 @@ static int32_t _lreg_sendto(lua_State *lua) {
         data = lua_touserdata(lua, 6);
         size = (size_t)luaL_checkinteger(lua, 7);
     }
-    if (ERR_OK == task_sendto(task, fd, skid, ip, port, data, size, 0)) {
+    if (ERR_OK == task_sendto(task, fd, skid, ip, port, data, size, SYN_NONE)) {
         lua_pushboolean(lua, 1);
     } else {
         lua_pushboolean(lua, 0);
@@ -419,6 +419,25 @@ static int32_t _lreg_close(lua_State *lua) {
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
     ev_close(srey_netev(srey), fd, skid);
     return 0;
+}
+static int32_t _lreg_slice_start(lua_State *lua) {
+    task_ctx *task = lua_touserdata(lua, 1);
+    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 2);
+    uint64_t sess = task_slice_start(task, fd);
+    lua_pushinteger(lua, sess);
+    return 1;
+}
+static int32_t _lreg_slice(lua_State *lua) {
+    task_ctx *task = lua_touserdata(lua, 1);
+    uint64_t sess = (uint64_t)luaL_checkinteger(lua, 2);
+    size_t size;
+    void *data = task_slice(task, sess, &size);
+    if (NULL == data) {
+        return 0;
+    }
+    lua_pushlightuserdata(lua, data);
+    lua_pushinteger(lua, size);
+    return 2;
 }
 static int32_t _lreg_simple_pack(lua_State *lua) {
     void *pack = lua_touserdata(lua, 1);
@@ -679,59 +698,62 @@ static int32_t _lreg_msg_info(lua_State *lua) {
 }
 LUAMOD_API int luaopen_srey_utils(lua_State *lua) {
     luaL_Reg reg[] = {
-        { "log", _lreg_log },//(LOG_LEVEL, file, line, log)
-        { "setlog", _lreg_setlog },//(LOG_LEVEL, int32_t)
+        { "log", _lreg_log },
+        { "setlog", _lreg_setlog },
 
-        { "remoteaddr", _lreg_remoteaddr },//(SOCKET) ip, port
-        { "utostr", _lreg_udtostr },//(data, size) str
+        { "remoteaddr", _lreg_remoteaddr },
+        { "utostr", _lreg_udtostr },
 
-        { "md5", _lreg_md5 },//(data, size) str
-        { "sha1_b64encode", _lreg_sha1_b64encode },//(data, size) str
-        { "b64encode", _lreg_b64encode },//(data, size) str
-        { "b64decode", _lreg_b64decode },//(data, size) str
-        { "urlencode", _lreg_urlencode },//(data) str
+        { "md5", _lreg_md5 },
+        { "sha1_b64encode", _lreg_sha1_b64encode },
+        { "b64encode", _lreg_b64encode },
+        { "b64decode", _lreg_b64decode },
+        { "urlencode", _lreg_urlencode },
 #if WITH_SSL
-        { "evssl_new", _lreg_evssl_new },//(name, ca, cert, key, filetype, verify) evssl_ctx
-        { "evssl_p12new", _lreg_evssl_p12new },//(name, p12, pwd, verify) evssl_ctx
-        { "evssl_qury", _lreg_evssl_qury },//(name) evssl_ctx
+        { "evssl_new", _lreg_evssl_new },
+        { "evssl_p12new", _lreg_evssl_p12new },
+        { "evssl_qury", _lreg_evssl_qury },
 #endif
-        { "task_qury", _lreg_task_qury },//(name) task_ctx
-        { "task_name", _lreg_task_name },//(task) name
-        { "task_session", _lreg_task_session },//(task) session
-        { "task_call", _lreg_task_call },//(dst, data, size)
-        { "task_request", _lreg_task_request },//(dst, src, data, size) resp lens
-        { "task_response", _lreg_task_response },//(task, sess, data, size)
+        { "task_qury", _lreg_task_qury },
+        { "task_name", _lreg_task_name },
+        { "task_session", _lreg_task_session },
+        { "task_call", _lreg_task_call },
+        { "task_request", _lreg_task_request },
+        { "task_response", _lreg_task_response },
 
-        { "setud_typstat", _lreg_setud_typstat },//(fd, skid, pktype, status)
-        { "setud_data", _lreg_setud_data },//(fd, skid, data)
+        { "setud_typstat", _lreg_setud_typstat },
+        { "setud_data", _lreg_setud_data },
 
-        { "sleep", _lreg_sleep },//(task, time)
-        { "timeout", _lreg_timeout },//(task, sess, time)
-        { "connect", _lreg_connect },//(task, pktype, evssl, host, port, sendev) fd skid
-        { "listen", _lreg_listen },//(task, pktype, evssl, host, port, sendev) bool
-        { "udp", _lreg_udp },//(task, host, port) fd skid
-        { "synsend", _lreg_synsend },//(task, fd, skid, pktype, data, size) resp lens
-        { "send", _lreg_send },//(fd, skid, pktype, data, size)
-        { "synsendto", _lreg_synsendto },//(task, fd, skid, host, port, data, size) resp lens
-        { "sendto", _lreg_sendto },//(fd, skid, host, port, data, size)
-        { "close", _lreg_close },//(fd, skid)
+        { "sleep", _lreg_sleep },
+        { "timeout", _lreg_timeout },
+        { "connect", _lreg_connect },
+        { "listen", _lreg_listen },
+        { "udp", _lreg_udp },
+        { "synsend", _lreg_synsend },
+        { "send", _lreg_send },
+        { "synsendto", _lreg_synsendto },
+        { "sendto", _lreg_sendto },
+        { "close", _lreg_close },
 
-        { "simple_pack", _lreg_simple_pack },//(pack) data size
+        { "slice_start", _lreg_slice_start },
+        { "slice", _lreg_slice },
 
-        { "http_chunked", _lreg_http_chunked },//(pack) chunked
-        { "http_status", _lreg_http_status },//(pack) str str str
-        { "http_head", _lreg_http_head },//(pack, key) str
-        { "http_heads", _lreg_http_heads },//(pack) table
-        { "http_data", _lreg_http_data },//(pack) data size
+        { "simple_pack", _lreg_simple_pack },
 
-        { "websock_connect", _lreg_websock_connect },//(task, ip, port, evssl) fd skid
-        { "websock_pack", _lreg_websock_pack },//(pack) proto fin data size
-        { "websock_ping", _lreg_websock_ping },//(fd, skid)
-        { "websock_pong", _lreg_websock_pong },//(fd, skid)
-        { "websock_close", _lreg_websock_close },//(fd, skid)
-        { "websock_text", _lreg_websock_text },//(fd, skid, data, size, key)
-        { "websock_binary", _lreg_websock_binary },//(fd, skid, data, size, key)
-        { "websock_continuation", _lreg_websock_continuation },//(fd, skid, fin, data, size, key)
+        { "http_chunked", _lreg_http_chunked },
+        { "http_status", _lreg_http_status },
+        { "http_head", _lreg_http_head },
+        { "http_heads", _lreg_http_heads },
+        { "http_data", _lreg_http_data },
+
+        { "websock_connect", _lreg_websock_connect },
+        { "websock_pack", _lreg_websock_pack },
+        { "websock_ping", _lreg_websock_ping },
+        { "websock_pong", _lreg_websock_pong },
+        { "websock_close", _lreg_websock_close },
+        { "websock_text", _lreg_websock_text },
+        { "websock_binary", _lreg_websock_binary },
+        { "websock_continuation", _lreg_websock_continuation },
 
         { "msg_info", _lreg_msg_info },
         { NULL, NULL },

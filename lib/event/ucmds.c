@@ -104,7 +104,7 @@ void _on_cmd_send(watcher_ctx *watcher, cmd_ctx *cmd) {
     sock_ctx *skctx = _map_get(watcher, cmd->fd);
     if (NULL == skctx
         || ERR_OK != _check_skid(skctx, cmd->skid)) {
-        if (0 != cmd->flag) {
+        if (SYN_ONCE == cmd->flag) {
             _send_result(_get_ud(skctx), cmd->sess, ERR_FAILED);
         }
         FREE(cmd->data);
@@ -115,7 +115,7 @@ void _on_cmd_send(watcher_ctx *watcher, cmd_ctx *cmd) {
     buf.len = cmd->len;
     buf.offset = 0;
     int32_t err = _add_write_inloop(watcher, skctx, &buf, cmd->flag);
-    if (0 != cmd->flag) {
+    if (SYN_ONCE == cmd->flag) {
         _send_result(_get_ud(skctx), cmd->sess, err);
     }
 }

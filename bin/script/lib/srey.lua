@@ -237,11 +237,7 @@ local function rpc_netreq(fd, skid, data)
     end
 end
 local function dispatch_recv(pktype, fd, skid, data, size)
-    if PACK_TYPE.HTTP == pktype then
-        if http.chunk_call(fd, skid, data) then
-            return
-        end
-    elseif PACK_TYPE.RPC == pktype then
+    if PACK_TYPE.RPC == pktype then
         rpc_netreq(fd, skid, data)
         return
     end

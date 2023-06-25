@@ -8,7 +8,12 @@
 #include "netaddr.h"
 #include "structs.h"
 
-struct evssl_ctx;
+typedef enum syn_type {
+    SYN_NONE = 0x00,
+    SYN_ONCE,
+    SYN_SLICE,
+    SYN_ENDSLICE
+}syn_type;
 QUEUE_DECL(off_buf_ctx, qu_off_buf);
 QUEUE_DECL(struct listener_ctx *, qu_lsn);
 typedef struct ev_ctx {
@@ -21,6 +26,7 @@ typedef struct ev_ctx {
     qu_lsn qulsn;
     mutex_ctx qulsnlck;
 }ev_ctx;
+struct evssl_ctx;
 
 //回调函数 accept_cb connect_cb 返回失败则不加进事件循环
 typedef int32_t(*accept_cb)(ev_ctx *ev, SOCKET fd, ud_cxt *ud);

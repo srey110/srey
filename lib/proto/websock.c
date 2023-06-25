@@ -110,7 +110,7 @@ static inline void _websock_handshake_server(ev_ctx *ev, SOCKET fd, struct http_
     char *rsp = formatv(fmt, key);
     FREE(key);
     ud->status = START;
-    ev_send(ev, fd, ud->skid, rsp, strlen(rsp), 0, 0, 0);
+    ev_send(ev, fd, ud->skid, rsp, strlen(rsp), SYN_NONE, 0, 0);
     _push_handshaked(fd, ud);
 }
 static inline void _websock_handshake(ev_ctx *ev, SOCKET fd, buffer_ctx *buf, ud_cxt *ud, int32_t *closefd) {
@@ -149,7 +149,7 @@ static inline websock_pack_ctx *_websock_parse_data(buffer_ctx *buf, ud_cxt *ud,
     //起始帧:FIN为0,opcode非0 中间帧:FIN为0,opcode为0 结束帧:FIN为1,opcode为0
     if (0 == pack->fin 
         && 0 != pack->proto) {
-        *slice = SLICE_START;
+        *slice = SLICE;
     } else if (0 == pack->fin
         && 0 == pack->proto) {
         *slice = SLICE;
@@ -328,7 +328,7 @@ static inline void *_websock_create_pack(uint8_t fin, uint8_t proto, char key[4]
 static inline void _websock_control_frame(ev_ctx *ev, SOCKET fd, uint64_t skid, uint8_t proto) {
     size_t flens;
     void *frame = _websock_create_pack(1, proto, NULL, NULL, 0, &flens);
-    ev_send(ev, fd, skid, frame, flens, 0, 0, 0);
+    ev_send(ev, fd, skid, frame, flens, SYN_NONE, 0, 0);
 }
 void websock_ping(ev_ctx *ev, SOCKET fd, uint64_t skid) {
     _websock_control_frame(ev, fd, skid, PING);
@@ -343,19 +343,19 @@ void websock_text(ev_ctx *ev, SOCKET fd, uint64_t skid,
     int32_t fin, char key[4], const char *data, size_t dlens) {
     size_t flens;
     void *frame = _websock_create_pack(fin, TEXT, key, (void *)data, dlens, &flens);
-    ev_send(ev, fd, skid, frame, flens, 0, 0, 0);
+    ev_send(ev, fd, skid, frame, flens, SYN_NONE, 0, 0);
 }
 void websock_binary(ev_ctx *ev, SOCKET fd, uint64_t skid,
     int32_t fin, char key[4], void *data, size_t dlens) {
     size_t flens;
     void *frame = _websock_create_pack(fin, BINARY, key, data, dlens, &flens);
-    ev_send(ev, fd, skid, frame, flens, 0, 0, 0);
+    ev_send(ev, fd, skid, frame, flens, SYN_NONE, 0, 0);
 }
 void websock_continuation(ev_ctx *ev, SOCKET fd, uint64_t skid,
     int32_t fin, char key[4], void *data, size_t dlens) {
     size_t flens;
     void *frame = _websock_create_pack(fin, CONTINUE, key, data, dlens, &flens);
-    ev_send(ev, fd, skid, frame, flens, 0, 0, 0);
+    ev_send(ev, fd, skid, frame, flens, SYN_NONE, 0, 0);
 }
 int32_t websock_pack_fin(websock_pack_ctx *pack) {
     return pack->fin;

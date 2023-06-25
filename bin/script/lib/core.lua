@@ -408,5 +408,30 @@ function core.close(fd, skid)
     end
     sutils.close(fd, skid)
 end
+--[[
+描述:分片同步接收开始
+参数:
+    fd socket :integer
+返回:
+    session :integer
+    ERR_FAILED 失败
+--]]
+function core.slice_start(fd)
+    if INVALID_SOCK == fd then
+        return ERR_FAILED
+    end
+    return sutils.slice_start(curtask, fd)
+end
+--[[
+描述:分片同步接收
+参数:
+    sess :integer
+返回:
+    data,size
+    nil失败
+--]]
+function core.slice(sess)
+    return sutils.slice(curtask, sess)
+end
 
 return core

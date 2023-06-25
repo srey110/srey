@@ -5,7 +5,6 @@ local json = require("cjson")
 local table = table
 local string = string
 local http = {}
-local chunk_func = {}
 
 --[[
 描述:chunk包状态
@@ -62,33 +61,53 @@ end
 function http.data(pack)
     return sutils.http_data(pack)
 end
-function http.chunk_call(fd, skid, pack)
-    local func = chunk_func[skid]
-    if not func then
-        return false
-    end
+--[[
+描述:http数据
+参数:
+    pack :http_pack_ctx
+返回:
+    table {chunked, status, head, data, cksize}
+--]]
+function http.unpack(pack)
+    local tb = {}
+    tb.chunked = http.chunked(pack)
+    tb.status = {http.status(pack)}
+    tb.head = http.heads(pack)
     local data, size = http.data(pack)
-    core.xpcall(func, fd, skid, data, size)
-    if nil == data then
-        chunk_func[skid] = nil
+    if data then
+        tb.data = core.utostr(data, size)
     end
-    return true
+    return tb
 end
 local function http_send(rsp, fd, skid, msg, ckfunc)
     if rsp then
         core.send(fd, skid, PACK_TYPE.HTTP, table.concat(msg))
-    else
-        local pack, _ = core.synsend(fd, skid, PACK_TYPE.HTTP, table.concat(msg))
-        if not pack then
-            return nil
-        end
-        local chunked = http.chunked(pack)
-        if 1 == chunked then
-            assert(ckfunc, "no have http chunked function.")
-            chunk_func[skid] = ckfunc
-        end
-        return pack
+        return
     end
+    local pack, _ = core.synsend(fd, skid, PACK_TYPE.HTTP, table.concat(msg))
+    if not pack then
+        return
+    end
+    pack = http.unpack(pack)
+    if 1 == pack.chunked then
+        assert(ckfunc, "no have http chunked function.")
+        pack.cksize = 0
+        local sess = core.slice_start(fd)
+        local data, hdata, hsize
+        while true do
+            data, _ = core.slice(sess)
+            if not data then
+                return
+            end
+            hdata, hsize = http.data(data)
+            ckfunc(fd, skid, hdata, hsize)
+            if not hdata then
+                break
+            end
+            pack.cksize = pack.cksize + hsize
+        end
+    end
+    return pack
 end
 local function http_msg(rsp, fd, skid, fline, headers, ckfunc, info, ...)
     local msg = {}
@@ -140,7 +159,7 @@ end
     headers :table
     ckfunc :function(fd, skid, data, size)
 返回:
-    http_pack_ctx
+    table {chunked, status, head, data, cksize}
     nil 失败 
 --]]
 function http.get(fd, skid, url, headers, ckfunc)
@@ -158,7 +177,7 @@ end
     info :string table function
     ...  info为function时的参数
 返回:
-    http_pack_ctx
+    table {chunked, status, head, data, cksize}
     nil 失败 
 --]]
 function http.post(fd, skid, url, headers, ckfunc, info, ...)

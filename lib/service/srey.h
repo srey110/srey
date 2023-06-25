@@ -71,6 +71,8 @@ void task_timeout(task_ctx *task, uint64_t session, uint32_t timeout);
 void task_call(task_ctx *dst, void *data, size_t size, int32_t copy);
 void *task_request(task_ctx *dst, task_ctx *src, void *data, size_t size, int32_t copy, size_t *lens);
 void task_response(task_ctx *dst, uint64_t sess, void *data, size_t size, int32_t copy);
+uint64_t task_slice_start(task_ctx *task, SOCKET fd);
+void *task_slice(task_ctx *task, uint64_t sess, size_t *size);
 int32_t task_netlisten(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
     const char *ip, uint16_t port, int32_t sendev);
 SOCKET task_netconnect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
