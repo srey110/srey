@@ -5,17 +5,15 @@
 
 /*
 用户数据
-timeout: data(task_ctx) session status
-net: pktype(pack_type) data(task_ctx) session nretry  http(extra)
 */
 typedef struct ud_cxt {
-    uint8_t pktype;
-    uint8_t status;
-    uint8_t nretry;
-    uint8_t synflag;
-    void *data;
-    void *extra;
-    void *arg;
+    uint8_t pktype;//数据包类型
+    uint8_t status;//解包状态
+    uint8_t nretry;//解析一个包，重试次数
+    uint8_t synflag;//同步读,链接
+    void *data;//task_ctx
+    void *extra;//数据包
+    void *arg;//handshaked 回调
     uint64_t session;
     uint64_t skid;
 }ud_cxt;
