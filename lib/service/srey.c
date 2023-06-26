@@ -66,6 +66,10 @@ typedef struct co_arg_ctx {
     message_ctx msg;
 }co_arg_ctx;
 
+#define CONNECT_TIMEOUT       3000
+#define NETRD_TIMEOUT         3000
+#define MSG_INIT_CAP          512
+#define COPOOL_INIT_CAP       128
 #define RESUME_NORMAL(arg)\
     arg->task->curco = _co_create(arg->task);\
     ASSERTAB(MCO_SUCCESS == mco_push(arg->task->curco, arg, sizeof(co_arg_ctx)), "mco_push failed!");\
@@ -372,8 +376,8 @@ task_ctx *srey_tasknew(srey_ctx *ctx, int32_t name, uint32_t maxcnt,
     task->srey = ctx;
     mutex_init(&task->mutask);
     _map_co_init(&task->mapco);
-    qu_message_init(&task->qumsg, QUMSG_INITLENS);
-    qu_copool_init(&task->qucopool, 0);
+    qu_message_init(&task->qumsg, MSG_INIT_CAP);
+    qu_copool_init(&task->qucopool, COPOOL_INIT_CAP);
     if (NULL != _init) {
         task->handle = _init(task, arg);
     }

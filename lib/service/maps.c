@@ -4,6 +4,8 @@
 #define MINICORO_IMPL
 #include "minicoro.h"
 
+#define MAPCO_INIT_CAP 512
+
 static inline uint64_t _map_cosess_hash(const void *item, uint64_t seed0, uint64_t seed1) {
     return hash((const char *)&(((co_sess_ctx *)item)->session), sizeof(((co_sess_ctx *)item)->session));
 }
@@ -90,13 +92,13 @@ int32_t _map_cotmo_get(mapco_ctx *map, uint64_t sess, co_tmo_ctx *cotmo) {
 }
 void _map_co_init(mapco_ctx *map) {
     map->cosess = hashmap_new_with_allocator(_malloc, _realloc, _free,
-                                             sizeof(co_sess_ctx), 0, 0, 0,
+                                             sizeof(co_sess_ctx), MAPCO_INIT_CAP, 0, 0,
                                              _map_cosess_hash, _map_cosess_compare, NULL, NULL);
     map->cosk = hashmap_new_with_allocator(_malloc, _realloc, _free,
-                                           sizeof(co_sock_ctx), 0, 0, 0,
+                                           sizeof(co_sock_ctx), MAPCO_INIT_CAP, 0, 0,
                                            _map_cosk_hash, _map_cosk_compare, NULL, NULL);
     map->cotmo = hashmap_new_with_allocator(_malloc, _realloc, _free,
-                                            sizeof(co_tmo_ctx), 0, 0, 0,
+                                            sizeof(co_tmo_ctx), MAPCO_INIT_CAP, 0, 0,
                                             _map_cotmo_hash, _map_cotmo_compare, NULL, NULL);
 }
 void _map_co_free(mapco_ctx *map) {

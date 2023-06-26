@@ -36,9 +36,6 @@ typedef struct udp_msg_ctx {
     char data[0];
 }udp_msg_ctx;
 
-#define CONNECT_TIMEOUT       3000
-#define NETRD_TIMEOUT         3000
-#define QUMSG_INITLENS        128
 typedef struct srey_ctx srey_ctx;
 typedef struct task_ctx task_ctx;
 typedef void *(*task_new)(task_ctx *task, void *arg);
