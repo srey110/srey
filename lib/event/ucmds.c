@@ -25,12 +25,13 @@ sock_ctx *_map_getskctx(watcher_ctx *watcher, SOCKET fd) {
 void _on_cmd_stop(watcher_ctx *watcher, cmd_ctx *cmd) {
     watcher->stop = 1;
 }
-void ev_close(ev_ctx *ctx, SOCKET fd, uint64_t skid) {
+void ev_close(ev_ctx *ctx, SOCKET fd, uint64_t skid, uint8_t nomsg) {
     ASSERTAB(INVALID_SOCK != fd, ERRSTR_INVPARAM);
     cmd_ctx cmd;
     cmd.cmd = CMD_DISCONN;
     cmd.fd = fd;
     cmd.skid = skid;
+    cmd.flag = nomsg;
     _SEND_CMD(ctx, cmd);
 }
 void _on_cmd_disconn(watcher_ctx *watcher, cmd_ctx *cmd) {
@@ -39,7 +40,7 @@ void _on_cmd_disconn(watcher_ctx *watcher, cmd_ctx *cmd) {
         || ERR_OK != _check_skid(skctx, cmd->skid)) {
         return;
     }
-    _disconnect(watcher, skctx);
+    _disconnect(watcher, skctx, cmd->flag);
 }
 void _cmd_listen(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx) {
     cmd_ctx cmd;

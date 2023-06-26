@@ -417,7 +417,7 @@ static int32_t _lreg_sendto(lua_State *lua) {
 static int32_t _lreg_close(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    ev_close(srey_netev(srey), fd, skid);
+    ev_close(srey_netev(srey), fd, skid, 0);
     return 0;
 }
 static int32_t _lreg_slice_start(lua_State *lua) {

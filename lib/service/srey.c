@@ -163,9 +163,10 @@ static inline void _dispatch_connect(co_arg_ctx *arg) {
             RESUME(arg->task, cosess.co);
         } else {
             if (ERR_OK == arg->msg.erro) {
-                ev_close(task_netev(arg->task), arg->msg.fd, arg->msg.skid);
+                ev_close(task_netev(arg->task), arg->msg.fd, arg->msg.skid, 1);
             }
-            LOG_WARN("can't find connect session:%"PRIu64" pack type:%d. maybe timeout already.", arg->msg.session, arg->msg.pktype);
+            LOG_WARN("can't find connect session:%"PRIu64" pack type:%d. maybe timeout already.", 
+                     arg->msg.session, arg->msg.pktype);
         }
     } else {
         RESUME_NORMAL(arg);
@@ -182,7 +183,8 @@ static inline void _dispatch_netrd(co_arg_ctx *arg) {
             ASSERTAB(MCO_SUCCESS == mco_push(cosk.co.co, &arg->msg, sizeof(arg->msg)), "mco_push failed!");
             RESUME(arg->task, cosk.co.co);
         } else {
-            LOG_WARN("can't find sock:%d pack type:%d. maybe timeout already.", (int32_t)arg->msg.fd, arg->msg.pktype);
+            LOG_WARN("can't find sock:%d pack type:%d. maybe timeout already.", 
+                     (int32_t)arg->msg.fd, arg->msg.pktype);
         }
         _message_clean(&arg->msg);
         break;
@@ -625,7 +627,7 @@ static inline void _task_net_recv(ev_ctx *ev, SOCKET fd, buffer_ctx *buf, size_t
         }
     } while (NULL != data && 0 != buffer_size(buf));
     if (0 != closefd) {
-        ev_close(ev, fd, ud->skid);
+        ev_close(ev, fd, ud->skid, 0);
     }
 }
 static inline void _task_net_send(ev_ctx *ev, SOCKET fd, size_t size, ud_cxt *ud) {
@@ -706,7 +708,6 @@ SOCKET task_netconnect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl
     ASSERTAB(MCO_SUCCESS == mco_pop(task->curco, &msg, sizeof(msg)), "mco_pop failed!");
     if (ud.session != msg.session) {
         LOG_ERROR("session error.");
-        ev_close(&task->srey->netev, fd, *skid);
         return INVALID_SOCK;
     }
     if (ERR_OK != msg.erro) {

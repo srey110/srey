@@ -38,7 +38,7 @@ static int32_t test_acpt_cb(ev_ctx *ctx, SOCKET sock, ud_cxt *ud) {
 static void test_recv_cb(ev_ctx *ctx, SOCKET sock, buffer_ctx *buf, size_t lens, ud_cxt *ud) {
     //PRINT("test_recv_cb: lens %d ", (int32_t)lens);
     if (randrange(1, 100) <= 1) {
-        ev_close(ctx, sock, ud->skid);
+        ev_close(ctx, sock, ud->skid, 0);
         return;
     }
     size_t len = buffer_size(buf);

@@ -479,13 +479,13 @@ SOCKET websock_connect(struct task_ctx *task, const char *host, uint16_t port, s
     if (NULL == resp) {
         FREE(b64);
         FREE(data);
-        ev_close(task_netev(task), fd, *skid);
+        ev_close(task_netev(task), fd, *skid, 0);
         return INVALID_SOCK;
     }
     if (ERR_OK != _websock_handshake_client(resp, b64)) {
         FREE(b64);
         FREE(data);
-        ev_close(task_netev(task), fd, *skid);
+        ev_close(task_netev(task), fd, *skid, 0);
         return INVALID_SOCK;
     }
     ev_setud_typstat(task_netev(task), fd, *skid, PACK_WEBSOCK, START);

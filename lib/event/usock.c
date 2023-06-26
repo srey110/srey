@@ -135,13 +135,16 @@ int32_t _check_skid(sock_ctx *skctx, const uint64_t skid) {
     }
     return ERR_FAILED;
 }
-void _disconnect(watcher_ctx *watcher, sock_ctx *skctx) {
+void _disconnect(watcher_ctx *watcher, sock_ctx *skctx, uint8_t nomsg) {
     if (SOCK_STREAM == skctx->type) {
         tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
         if (tcp->status & STATUS_ERROR) {
             return;
         }
         tcp->status |= STATUS_ERROR;
+        if (0 != nomsg) {
+            tcp->cbs.c_cb = NULL;
+        }
         _sk_shutdown(skctx);
     } else {
         udp_ctx *udp = UPCAST(skctx, udp_ctx, sock);
