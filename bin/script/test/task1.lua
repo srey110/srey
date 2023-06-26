@@ -149,7 +149,6 @@ local function testudp()
     end
 end
 local function ontimeout()
-    srey.timeout(3000, ontimeout)
     printd("....................begin.........................")
     if not callonce then
         callonce = true
@@ -162,6 +161,7 @@ local function ontimeout()
     testhttp()
     testudp()
     printd(".....................end........................")
+    srey.timeout(3000, ontimeout)
 end
 local function onstarted()
     printd(srey.task_name() .. " onstarted....")
