@@ -262,7 +262,7 @@ static inline void _dispatch_response(co_arg_ctx *arg) {
     }
     _message_clean(&arg->msg);
 }
-static inline void _dispatch_senrtn(co_arg_ctx *arg) {
+static inline void _dispatch_sendrtn(co_arg_ctx *arg) {
     co_sess_ctx cosess;
     if (ERR_OK == _map_cosess_get(&arg->task->mapco, arg->msg.session, &cosess)) {
         ASSERTAB(MCO_SUCCESS == mco_push(cosess.co, &arg->msg, sizeof(arg->msg)), "mco_push failed!");
@@ -314,7 +314,7 @@ static inline void _task_onmsg(co_arg_ctx *arg) {
         _dispatch_response(arg);
         break;
     case MSG_TYPE_ENDRTN:
-        _dispatch_senrtn(arg);
+        _dispatch_sendrtn(arg);
         break;
     default:
         break;
