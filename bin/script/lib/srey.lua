@@ -266,7 +266,6 @@ local function dispatch_request(sess, src, data, size)
 end
 function dispatch_message(msgtype, msg)
     if MSG_TYPE.STARTED == msgtype then
-        collectgarbage("generational")
         math.randomseed(os.time())
         call_static_funcs(static_funcs.STARTED)
     elseif MSG_TYPE.CLOSING == msgtype then
