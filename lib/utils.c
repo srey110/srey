@@ -12,6 +12,8 @@ static atomic_t _exindex = 0;
 static void *_ud;
 static void(*_sig_cb)(int32_t, void *);
 static atomic64_t _ids = 1000;
+static char _path[PATH_LENS] = { 0 };
+static atomic_t _path_once = 0;
 
 #ifdef OS_WIN
 static BOOL _GetImpersonationToken(HANDLE *handle) {
@@ -45,14 +47,9 @@ static void _ResetPrivilege(HANDLE handle, TOKEN_PRIVILEGES *privold) {
     (void)AdjustTokenPrivileges(handle, FALSE, privold, 0, NULL, NULL);
 }
 static LONG __stdcall _MiniDump(struct _EXCEPTION_POINTERS *excep) {
-    char acpath[PATH_LENS];
-    if (ERR_OK != procpath(acpath)) {
-        PRINT("%s", "getprocpath faild.");
-        return EXCEPTION_CONTINUE_SEARCH;
-    }
     char acdmp[PATH_LENS] = { 0 };
     SNPRINTF(acdmp, sizeof(acdmp) - 1, "%s%s%lld_%d.dmp",
-        acpath, PATH_SEPARATORSTR, nowsec(), (int32_t)ATOMIC_ADD(&_exindex, 1));
+             procpath(), PATH_SEPARATORSTR, nowsec(), (int32_t)ATOMIC_ADD(&_exindex, 1));
     HANDLE ptoken = NULL;
     if (!_GetImpersonationToken(&ptoken)) {
         PRINT("%s", "GetImpersonationToken faild.");
@@ -245,7 +242,7 @@ static int32_t _get_proc_fullpath(pid_t pid, char path[PATH_LENS]) {
     return ERR_OK;
 }
 #endif
-int32_t procpath(char path[PATH_LENS]) {
+static inline int32_t _get_procpath(char path[PATH_LENS]) {
 #ifndef OS_AIX
     size_t len = PATH_LENS;
 #endif
@@ -329,6 +326,12 @@ int32_t procpath(char path[PATH_LENS]) {
     }
 #endif
     return ERR_OK;
+}
+const char *procpath(void) {
+    if (ATOMIC_CAS(&_path_once, 0, 1)) {
+        ASSERTAB(ERR_OK == _get_procpath(_path), "failed to obtain the path of the program.");
+    }
+    return _path;
 }
 void timeofday(struct timeval *tv) {
 #if defined(OS_WIN)

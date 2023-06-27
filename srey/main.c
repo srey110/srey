@@ -4,11 +4,9 @@ srey_ctx *srey;
 static mutex_ctx muexit;
 static cond_ctx condexit;
 static char *_config_read(void) {
-    char propath[PATH_LENS] = { 0 };
     char config[PATH_LENS] = { 0 };
-    ASSERTAB(ERR_OK == procpath(propath), "procpath failed.");
     SNPRINTF(config, sizeof(config) - 1, "%s%s%s%s%s",
-             propath, PATH_SEPARATORSTR, "configs", PATH_SEPARATORSTR, "config.json");
+             procpath(), PATH_SEPARATORSTR, "configs", PATH_SEPARATORSTR, "config.json");
     FILE *file = fopen(config, "r");
     if (NULL == file) {
         return NULL;
@@ -268,6 +266,20 @@ static void _useage(void) {
     PRINT("srey -u \"service name\" uninstall service;");
     PRINT("srey -r \"service name\" run service.");
 }
+#else
+static void _stop_sh(const char *sh) {
+    char cmd[64] = { 0 };
+    SNPRINTF(cmd, sizeof(cmd) - 1, "kill -%d %d\n", SIGUSR1, (int32_t)getpid());
+    FILE *file = fopen(sh, "w");
+    if (NULL == file) {
+        return;
+    }
+    const char *fline = "#!/bin/sh\n";
+    fwrite(fline, 1, strlen(fline), file);
+    fwrite(cmd, 1, strlen(cmd), file);
+    fclose(file);
+    chmod(sh, 755);
+}
 #endif
 
 int main(int argc, char *argv[]) {
@@ -324,8 +336,12 @@ int main(int argc, char *argv[]) {
     }
     pid_t pid = fork();
     if (0 == pid) {
-        PRINT("stop service:\"kill -%d %d\".", SIGUSR1, (int32_t)getpid());
-        return service_hug();
+        char sh[PATH_LENS] = { 0 };
+        SNPRINTF(sh, sizeof(sh) - 1, "%s%s%s", procpath(), PATH_SEPARATORSTR, "stop.sh");
+        _stop_sh(sh);
+        int32_t rtn = service_hug();
+        remove(sh);
+        return rtn;
     } else if (pid > 0) {
         return ERR_OK;
     } else {

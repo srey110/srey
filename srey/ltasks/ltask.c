@@ -12,7 +12,6 @@ typedef struct ltask_ctx {
     lua_State *lua;
     char file[PATH_LENS];
 }ltask_ctx;
-static char propath[PATH_LENS] = { 0 };
 static char luapath[PATH_LENS] = { 0 };
 
 static inline void _ltask_setpath(lua_State *lua, const char *name, const char *exname) {
@@ -31,7 +30,7 @@ static inline lua_State *_ltask_luainit(task_ctx *task) {
     luaL_openlibs(lua);
     _ltask_setpath(lua, "cpath", DLL_EXNAME);
     _ltask_setpath(lua, "path", "lua");
-    lua_pushstring(lua, propath);
+    lua_pushstring(lua, procpath());
     lua_setglobal(lua, "_propath");
     lua_pushstring(lua, PATH_SEPARATORSTR);
     lua_setglobal(lua, "_pathsep");
@@ -78,9 +77,8 @@ static inline int32_t _ltask_dofile(lua_State *lua, const char *file) {
 }
 int32_t _ltask_startup(void) {
     PRINT(LUA_RELEASE);
-    ASSERTAB(ERR_OK == procpath(propath), "procpath failed.");
     SNPRINTF(luapath, sizeof(luapath) - 1, "%s%s%s%s",
-             propath, PATH_SEPARATORSTR, "script", PATH_SEPARATORSTR);
+             procpath(), PATH_SEPARATORSTR, "script", PATH_SEPARATORSTR);
     lua_State *lua = _ltask_luainit(NULL);
     if (NULL == lua) {
         return ERR_FAILED;

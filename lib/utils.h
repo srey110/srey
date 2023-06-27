@@ -21,7 +21,7 @@ int32_t isdir(const char *path);
 //文件大小 ERR_FAILED 失败
 int64_t filesize(const char *file);
 //当前程序所在路径
-int32_t procpath(char path[PATH_LENS]);
+const char *procpath(void);
 
 //timeofday
 void timeofday(struct timeval *tv);

@@ -64,7 +64,7 @@ static void _worker_init(logworker_ctx *ctx) {
     ZERO(ctx->path, sizeof(ctx->path));
     ZERO(ctx->lognam, sizeof(ctx->lognam));
     //创建文件夹
-    ASSERTAB(ERR_OK == procpath(ctx->path), "getpath failed.");
+    strcpy(ctx->path, procpath());
     size_t len = strlen(ctx->path);
     SNPRINTF(ctx->path + len, sizeof(ctx->path) - len - 1, "%s%s", PATH_SEPARATORSTR, LOG_FOLDER);
     if (ERR_OK != ACCESS(ctx->path, 0)) {

@@ -93,8 +93,7 @@ int main(int argc, char *argv[]) {
     uint64_t skid;
     ev_udp(&ev, "0.0.0.0", 15002, &cbs, NULL, &skid);
 #if WITH_SSL
-    char local[PATH_LENS] = { 0 };
-    procpath(local);
+    const char *local = procpath();
     char ca[PATH_LENS] = { 0 };
     char svcrt[PATH_LENS] = { 0 };
     char svkey[PATH_LENS] = { 0 };

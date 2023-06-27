@@ -153,8 +153,7 @@ void test_system(CuTest* tc) {
         PRINT("little ndian");
     }    
     PRINT("procscnt: %d", procscnt());
-    char path[PATH_LENS] = {0};
-    CuAssertTrue(tc, ERR_OK == procpath(path));
+    const char *path = procpath();
     PRINT("procpath: %s", path);
     CuAssertTrue(tc, ERR_OK == isdir(path));
     CuAssertTrue(tc, ERR_OK != isfile(path));

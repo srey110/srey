@@ -23,6 +23,7 @@ then
 fi
 OSNAME=`uname`
 withlua=0
+withssl=0
 wk="awk"
 if [ "$OSNAME" = "SunOS" ]
 then
@@ -35,22 +36,36 @@ do
     then
         withlua=`echo $line|$wk -F ' ' '{print int($3)}'`
     fi
+    if [ "$val" = "WITH_SSL" ]
+    then
+        withssl=`echo $line|$wk -F ' ' '{print int($3)}'`
+    fi
 done < `pwd`/lib/config.h
 echo "WITH_LUA:"$withlua
+echo "WITH_SSL:"$withssl
 #文件夹
 Dir="lib lib/cjson lib/event lib/md5 lib/proto lib/service lib/sha1"
 if [ $istest -eq 1 ]
 then
     Dir=$Dir" test"
 else
-    Dir=$Dir" srey srey/tasks"
     if [ $withlua -eq 1 ]
     then
-        Dir=$Dir" lualib lualib/lua lualib/luacjson lualib/msgpack lualib/pb srey/ltasks"
-    fi 
+        Dir=$Dir" lualib lualib/lua lualib/luacjson lualib/msgpack lualib/pb"
+    fi
+    Dir=$Dir" srey"
+    if [ $withlua -eq 1 ]
+    then
+        Dir=$Dir" srey/ltasks"
+    fi
+    Dir=$Dir" srey/tasks"
 fi
 #SSL库
-SSLLIB="-lssl -lcrypto"
+SSLLIB=""
+if [ $withssl -eq 1 ]
+then
+    SSLLIB="-lssl -lcrypto"
+fi 
 #main函数所在文件夹
 MAINDIR="srey"
 if [ $istest -eq 1 ]
@@ -135,7 +150,7 @@ GetIncludePath()
     do
         INCLUDEPATH=$INCLUDEPATH" -I$MAKEFILEPATH/$EachSub"
     done
-    
+    INCLUDEPATH=`echo $INCLUDEPATH|$wk '{gsub(/^\s+|\s+$/, "");print}'`
     echo ---------------------Dir---------------------------
     echo $LIBDIR
 
@@ -262,8 +277,8 @@ proname=$PROGRAMNAME
 cd $mkmaindir
 
 echo ---------------------Make program file---------------------------
-echo "$CC $CFLAGS $mkmaincpp $LIBAPP $INCLUDEPATH $LIBPATH $INCLUDELIB -l$LIBNAME -o $proname $SSLLIB"
-$CC $CFLAGS $mkmaincpp $LIBAPP $INCLUDEPATH $LIBPATH $INCLUDELIB -l$LIBNAME -o $proname $SSLLIB
+echo "$CC $CFLAGS $mkmaincpp $INCLUDEPATH $LIBPATH $INCLUDELIB -l$LIBNAME -o $proname $SSLLIB"
+$CC $CFLAGS $mkmaincpp $INCLUDEPATH $LIBPATH $INCLUDELIB -l$LIBNAME -o $proname $SSLLIB
 if [ "$?" != "0" ]
 then
     echo "---------------------Error---------------------"
