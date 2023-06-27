@@ -121,9 +121,9 @@ void _on_cmd_send(watcher_ctx *watcher, cmd_ctx *cmd) {
     buf.offset = 0;
     int32_t err;
     if (SOCK_STREAM == skctx->type) {
-        err = _add_bufs_trypost(skctx, &buf, cmd->flag);
+        err = _add_bufs_trypost(skctx, &buf, cmd);
     } else {
-        err = _add_bufs_trysendto(skctx, &buf, cmd->flag);
+        err = _add_bufs_trysendto(skctx, &buf, cmd);
     }
     if (SYN_ONCE == cmd->flag) {
         _send_result(_get_ud(skctx), cmd->sess, err);
@@ -144,7 +144,7 @@ void _on_cmd_disconn(watcher_ctx *watcher, cmd_ctx *cmd) {
         || ERR_OK != _check_skid(skctx, cmd->skid)) {
         return;
     }
-    _disconnect(skctx, cmd->flag);
+    _disconnect(skctx, cmd);
 }
 void ev_setud_typstat(ev_ctx *ctx, SOCKET fd, uint64_t skid, int8_t pktype, int8_t status) {
     ASSERTAB(INVALID_SOCK != fd, ERRSTR_INVPARAM);

@@ -25,23 +25,6 @@ sock_ctx *_map_getskctx(watcher_ctx *watcher, SOCKET fd) {
 void _on_cmd_stop(watcher_ctx *watcher, cmd_ctx *cmd) {
     watcher->stop = 1;
 }
-void ev_close(ev_ctx *ctx, SOCKET fd, uint64_t skid, uint8_t nomsg) {
-    ASSERTAB(INVALID_SOCK != fd, ERRSTR_INVPARAM);
-    cmd_ctx cmd;
-    cmd.cmd = CMD_DISCONN;
-    cmd.fd = fd;
-    cmd.skid = skid;
-    cmd.flag = nomsg;
-    _SEND_CMD(ctx, cmd);
-}
-void _on_cmd_disconn(watcher_ctx *watcher, cmd_ctx *cmd) {
-    sock_ctx *skctx = _map_get(watcher, cmd->fd);
-    if (NULL == skctx
-        || ERR_OK != _check_skid(skctx, cmd->skid)) {
-        return;
-    }
-    _disconnect(watcher, skctx, cmd->flag);
-}
 void _cmd_listen(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx) {
     cmd_ctx cmd;
     cmd.cmd = CMD_LSN;
@@ -115,10 +98,27 @@ void _on_cmd_send(watcher_ctx *watcher, cmd_ctx *cmd) {
     buf.data = cmd->data;
     buf.len = cmd->len;
     buf.offset = 0;
-    int32_t err = _add_write_inloop(watcher, skctx, &buf, cmd->flag);
+    int32_t err = _add_write_inloop(watcher, skctx, &buf, cmd);
     if (SYN_ONCE == cmd->flag) {
         _send_result(_get_ud(skctx), cmd->sess, err);
     }
+}
+void ev_close(ev_ctx *ctx, SOCKET fd, uint64_t skid, uint8_t nomsg) {
+    ASSERTAB(INVALID_SOCK != fd, ERRSTR_INVPARAM);
+    cmd_ctx cmd;
+    cmd.cmd = CMD_DISCONN;
+    cmd.fd = fd;
+    cmd.skid = skid;
+    cmd.flag = nomsg;
+    _SEND_CMD(ctx, cmd);
+}
+void _on_cmd_disconn(watcher_ctx *watcher, cmd_ctx *cmd) {
+    sock_ctx *skctx = _map_get(watcher, cmd->fd);
+    if (NULL == skctx
+        || ERR_OK != _check_skid(skctx, cmd->skid)) {
+        return;
+    }
+    _disconnect(watcher, skctx, cmd);
 }
 void _cmd_add_acpfd(watcher_ctx *watcher, uint64_t hs, SOCKET fd, struct listener_ctx *lsn) {
     cmd_ctx cmd;

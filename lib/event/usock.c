@@ -135,14 +135,14 @@ int32_t _check_skid(sock_ctx *skctx, const uint64_t skid) {
     }
     return ERR_FAILED;
 }
-void _disconnect(watcher_ctx *watcher, sock_ctx *skctx, uint8_t nomsg) {
+void _disconnect(watcher_ctx *watcher, sock_ctx *skctx, cmd_ctx *cmd) {
     if (SOCK_STREAM == skctx->type) {
         tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
         if (tcp->status & STATUS_ERROR) {
             return;
         }
         tcp->status |= STATUS_ERROR;
-        if (0 != nomsg) {
+        if (0 != cmd->flag) {
             tcp->cbs.c_cb = NULL;
         }
         _sk_shutdown(skctx);
@@ -350,14 +350,14 @@ static void _on_rw_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
         pool_push(&watcher->pool, &tcp->sock);
     }
 }
-int32_t _add_write_inloop(watcher_ctx *watcher, sock_ctx *skctx, off_buf_ctx *buf, uint8_t synflag) {
+int32_t _add_write_inloop(watcher_ctx *watcher, sock_ctx *skctx, off_buf_ctx *buf, cmd_ctx *cmd) {
     if (SOCK_STREAM == skctx->type) {
         tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
-        tcp->ud.synflag = synflag;
+        tcp->ud.synflag = cmd->flag;
         qu_off_buf_push(&tcp->buf_s, buf);
     } else {
         udp_ctx *udp = UPCAST(skctx, udp_ctx, sock);
-        udp->ud.synflag = synflag;
+        udp->ud.synflag = cmd->flag;
         qu_off_buf_push(&udp->buf_s, buf);
     }
     if (!(skctx->events & EVENT_WRITE)) {

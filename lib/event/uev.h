@@ -111,14 +111,14 @@ void _on_cmd_setud_data(watcher_ctx *watcher, cmd_ctx *cmd);
 void _add_lsn_inloop(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx);
 void _add_conn_inloop(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx);
 void _add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn);
-int32_t _add_write_inloop(watcher_ctx *watcher, sock_ctx *skctx, off_buf_ctx *buf, uint8_t synflag);
+int32_t _add_write_inloop(watcher_ctx *watcher, sock_ctx *skctx, off_buf_ctx *buf, cmd_ctx *cmd);
 void _add_udp_inloop(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx);
 
 void _add_fd(watcher_ctx *watcher, sock_ctx *skctx);
 sock_ctx *_map_getskctx(watcher_ctx *watcher, SOCKET fd);
 void _sk_shutdown(sock_ctx *skctx);
 void _free_udp(sock_ctx *skctx);
-void _disconnect(watcher_ctx *watcher, sock_ctx *skctx, uint8_t nomsg);
+void _disconnect(watcher_ctx *watcher, sock_ctx *skctx, cmd_ctx *cmd);
 void _setud_typstat(sock_ctx *skctx, char *typsta);
 void _setud_data(sock_ctx *skctx, void *data);
 void _freelsn(struct listener_ctx *lsn);

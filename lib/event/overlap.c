@@ -155,14 +155,14 @@ int32_t _check_skid(sock_ctx *skctx, const uint64_t skid) {
     }
     return ERR_FAILED;
 }
-void _disconnect(sock_ctx *skctx, uint8_t nomsg) {
+void _disconnect(sock_ctx *skctx, cmd_ctx *cmd) {
     if (SOCK_STREAM == skctx->type) {
         overlap_tcp_ctx *tcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
         if (tcp->status & STATUS_ERROR) {
             return;
         }
         tcp->status |= STATUS_ERROR;
-        if (0 != nomsg) {
+        if (0 != cmd->flag) {
             tcp->cbs.c_cb = NULL;
         }
         _sk_shutdown(skctx);
@@ -393,9 +393,9 @@ static void _on_send_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
         oltcp->status = oltcp->status & ~STATUS_SENDING;
     }
 }
-int32_t _add_bufs_trypost(sock_ctx *skctx, off_buf_ctx *buf, uint8_t synflag) {
+int32_t _add_bufs_trypost(sock_ctx *skctx, off_buf_ctx *buf, cmd_ctx *cmd) {
     overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
-    oltcp->ud.synflag = synflag;
+    oltcp->ud.synflag = cmd->flag;
     qu_off_buf_push(&oltcp->buf_s, buf);
     if (oltcp->status & STATUS_SENDING) {
         return ERR_OK;
@@ -761,9 +761,9 @@ static inline void _on_sendto_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD by
         oludp->status = oludp->status & ~STATUS_SENDING;
     }
 }
-int32_t _add_bufs_trysendto(sock_ctx *skctx, off_buf_ctx *buf, uint8_t synflag) {
+int32_t _add_bufs_trysendto(sock_ctx *skctx, off_buf_ctx *buf, cmd_ctx *cmd) {
     overlap_udp_ctx *oludp = UPCAST(skctx, overlap_udp_ctx, ol_r);
-    oludp->ud.synflag = synflag;
+    oludp->ud.synflag = cmd->flag;
     qu_off_buf_push(&oludp->buf_s, buf);
     if (oludp->status & STATUS_SENDING) {
         return ERR_OK;
