@@ -87,7 +87,7 @@ local function chuncedmesg(cnt)
     cnt.cnt = cnt.cnt + 1
     return "this is chuncked "..tostring(cnt.cnt)
 end
-local function onchunked(fd, skid, data, size)
+local function onchunked(fd, skid, hinfo, data, size)
     if data then
         --printd("hunked: %s", srey.utostr(data ,size))
     else

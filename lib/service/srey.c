@@ -1,5 +1,6 @@
 #include "service/srey.h"
 #include "service/maps.h"
+#include "service/minicoro.h"
 #include "sarray.h"
 #include "hashmap.h"
 #include "tw.h"
@@ -7,7 +8,6 @@
 #include "rwlock.h"
 #include "queue.h"
 #include "loger.h"
-#include "minicoro.h"
 
 typedef enum timeout_type {
     TMO_TYPE_SLEEP = 0x01,
@@ -765,7 +765,7 @@ int32_t task_netsend(task_ctx *task, SOCKET fd, uint64_t skid,
         sess = task_session(task);
         _map_cosess_add(&task->mapco, task->curco, sess);
     }
-    ev_send(&task->srey->netev, fd, skid, pack, size, synflag, 0, sess);
+    ev_send(&task->srey->netev, fd, skid, pack, size, 0, synflag, sess);
     if (SYN_ONCE == synflag) {
         YIELD(task);
         message_ctx msg;

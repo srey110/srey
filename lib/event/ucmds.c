@@ -62,14 +62,14 @@ void _cmd_connect(ev_ctx *ctx, SOCKET fd, sock_ctx *skctx) {
 void _on_cmd_conn(watcher_ctx *watcher, cmd_ctx *cmd) {
     _add_conn_inloop(watcher, cmd->fd, cmd->data);
 }
-void ev_send(ev_ctx *ctx, SOCKET fd, uint64_t skid,
-    void *data, size_t len, uint8_t synflag, int32_t copy, uint64_t sess) {
+void ev_send(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *data, size_t len, int32_t copy,
+    uint8_t synflag, uint64_t sess) {
     ASSERTAB(INVALID_SOCK != fd, ERRSTR_INVPARAM);
     cmd_ctx cmd;
     cmd.cmd = CMD_SEND;
-    cmd.flag = synflag;
     cmd.fd = fd;
     cmd.skid = skid;
+    cmd.flag = synflag;
     cmd.sess = sess;
     cmd.len = len;
     if (copy) {
@@ -80,14 +80,14 @@ void ev_send(ev_ctx *ctx, SOCKET fd, uint64_t skid,
     }
     _SEND_CMD(ctx, cmd);
 }
-int32_t ev_sendto(ev_ctx *ctx, SOCKET fd, uint64_t skid,
-    const char *ip, const uint16_t port, void *data, size_t len, uint8_t synflag, uint64_t sess) {
+int32_t ev_sendto(ev_ctx *ctx, SOCKET fd, uint64_t skid, const char *ip, const uint16_t port, void *data, size_t len,
+    uint8_t synflag, uint64_t sess) {
     ASSERTAB(INVALID_SOCK != fd, ERRSTR_INVPARAM);
     cmd_ctx cmd;
     cmd.cmd = CMD_SEND;
-    cmd.flag = synflag;
     cmd.fd = fd;
     cmd.skid = skid;
+    cmd.flag = synflag;
     cmd.sess = sess;
     cmd.len = len;
     MALLOC(cmd.data, sizeof(netaddr_ctx) + len);

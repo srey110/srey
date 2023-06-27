@@ -1,8 +1,8 @@
 #include "service/maps.h"
+#define MINICORO_IMPL
+#include "service/minicoro.h"
 #include "utils.h"
 #include "hashmap.h"
-#define MINICORO_IMPL
-#include "minicoro.h"
 
 #define MAPCO_INIT_CAP 512
 

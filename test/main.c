@@ -45,13 +45,13 @@ static void test_recv_cb(ev_ctx *ctx, SOCKET sock, buffer_ctx *buf, size_t lens,
     char *pk;
     MALLOC(pk, len);
     buffer_remove(buf, pk, len);
-    ev_send(ctx, sock, ud->skid, pk, len, SYN_NONE, 0, 0);
+    ev_send(ctx, sock, ud->skid, pk, len, 0, SYN_NONE, 0);
 }
 static void test_recvfrom_cb(ev_ctx *ev, SOCKET fd, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
     char host[IP_LENS] = { 0 };
     netaddr_ip(addr, host);
     uint16_t port = netaddr_port(addr);
-    ev_sendto(ev, fd, ud->skid, host, port, buf, size, 0, SYN_NONE);
+    ev_sendto(ev, fd, ud->skid, host, port, buf, size, SYN_NONE, 0);
 }
 static void timeout(ud_cxt *ud) {
     int32_t elapsed = (int32_t)timer_elapsed_ms(&tw.timer);

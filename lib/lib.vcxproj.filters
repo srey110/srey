@@ -157,14 +157,14 @@
     <ClInclude Include="cjson\cJSON.h">
       <Filter>utils\cjson</Filter>
     </ClInclude>
-    <ClInclude Include="minicoro.h">
-      <Filter>utils</Filter>
-    </ClInclude>
     <ClInclude Include="service\maps.h">
       <Filter>service</Filter>
     </ClInclude>
     <ClInclude Include="proto\dns.h">
       <Filter>proto</Filter>
+    </ClInclude>
+    <ClInclude Include="service\minicoro.h">
+      <Filter>service</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>

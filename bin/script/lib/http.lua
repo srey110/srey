@@ -100,7 +100,7 @@ local function http_send(rsp, fd, skid, msg, ckfunc)
                 return
             end
             hdata, hsize = http.data(data)
-            ckfunc(fd, skid, hdata, hsize)
+            ckfunc(fd, skid, pack, hdata, hsize)
             if not hdata then
                 break
             end
@@ -157,7 +157,7 @@ end
     skid :integer
     url :string
     headers :table
-    ckfunc :function(fd, skid, data, size)
+    ckfunc :function(fd, skid, hinfo, data, size)
 返回:
     table {chunked, status, head, data, cksize}
     nil 失败 
@@ -173,7 +173,7 @@ end
     skid :integer
     url :string
     headers :table
-    ckfunc :function(fd, skid, data, size)
+    ckfunc :function(fd, skid, hinfo, data, size)
     info :string table function
     ...  info为function时的参数
 返回:
