@@ -8,7 +8,6 @@ local pb = require("pb")
 
 printd("program path:%s", _propath)
 
-log.FATAL("FATAL")
 log.ERROR("ERROR")
 log.WARN("WARN")
 log.INFO("INFO")

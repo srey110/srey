@@ -3,7 +3,6 @@
 #include "netutils.h"
 #include "timer.h"
 #include "utils.h"
-#include "loger.h"
 
 #ifndef EV_IOCP
 
@@ -21,7 +20,7 @@ static inline int _map_compare(const void *a, const void *b, void *ud) {
     return (int)((*(const sock_ctx **)a)->fd - (*(const sock_ctx **)b)->fd);
 }
 void _send_cmd(watcher_ctx *watcher, uint32_t index, cmd_ctx *cmd) {
-    ASSERTAB(sizeof(cmd_ctx) == write(watcher->pipes[index].pipes[1], cmd, sizeof(cmd_ctx)), "pipe write error.");
+    ASSERTAB(sizeof(cmd_ctx) == write(watcher->pipes[index].pipes[1], cmd, sizeof(cmd_ctx)), ERRORSTR(ERRNO));
 }
 static void _cmd_loop(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
     int32_t i, cnt, nread;
@@ -73,7 +72,7 @@ static inline void _check_changes(watcher_ctx *watcher) {
         REALLOC(watcher->changes, watcher->changes, sizeof(changes_t) * watcher->nsize);
 #elif defined(EV_DEVPOLL)
         if (ERR_FAILED == pwrite(watcher->evfd, watcher->changes, sizeof(changes_t) * watcher->nchanges, 0)) {
-            LOG_WARN("%s", ERRORSTR(ERRNO));
+            LOG_ERROR("%s", ERRORSTR(ERRNO));
         }
         watcher->nchanges = 0;
 #endif
@@ -374,7 +373,7 @@ static void _loop_event(void *arg) {
 #elif defined(EV_DEVPOLL)
         if (0 != watcher->nchanges) {
             if (ERR_FAILED == pwrite(watcher->evfd, watcher->changes, sizeof(changes_t) * watcher->nchanges, 0)) {
-                LOG_WARN("%s", ERRORSTR(ERRNO));
+                LOG_ERROR("%s", ERRORSTR(ERRNO));
             }
             watcher->nchanges = 0;
         }
@@ -437,7 +436,7 @@ static struct pip_ctx *_new_pips(uint32_t npipes) {
     MALLOC(pips, sizeof(pip_ctx) * npipes);
     for (uint32_t i = 0; i < npipes; i++) {
         ASSERTAB(ERR_OK == pipe(pips[i].pipes), ERRORSTR(ERRNO));
-        ASSERTAB(ERR_OK == sock_nbio(pips[i].pipes[0]), "set pipe O_NONBLOCK error.");
+        ASSERTAB(ERR_OK == sock_nbio(pips[i].pipes[0]), ERRORSTR(ERRNO));
     }
     return pips;
 }

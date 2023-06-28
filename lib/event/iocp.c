@@ -1,7 +1,6 @@
 #include "event/iocp.h"
 #include "hashmap.h"
 #include "netutils.h"
-#include "loger.h"
 #include "timer.h"
 
 #ifdef EV_IOCP
@@ -56,7 +55,6 @@ static void _init_funcs(ev_ctx *ctx) {
 }
 int32_t _join_iocp(watcher_ctx *watcher, SOCKET fd) {
     if (NULL == CreateIoCompletionPort((HANDLE)fd, watcher->iocp, 0, 1)) {
-        LOG_ERROR("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
     return ERR_OK;
@@ -79,7 +77,7 @@ static void _on_cmd(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
         }
     } while (nread == sizeof(cmdbuf));
     if (0 == watcher->stop) {
-        ASSERTAB(ERR_OK == _post_recv(&olcmd->ol_r, &olcmd->bytes, &olcmd->flag, &olcmd->wsabuf, 1), "_post_recv failed.");
+        ASSERTAB(ERR_OK == _post_recv(&olcmd->ol_r, &olcmd->bytes, &olcmd->flag, &olcmd->wsabuf, 1), ERRORSTR(ERRNO));
     }
 }
 static inline void _pool_shrink(watcher_ctx *watcher, timer_ctx *timer) {
@@ -230,7 +228,7 @@ static void _init_cmd(watcher_ctx *watcher) {
     MALLOC(watcher->cmd, sizeof(overlap_cmd_ctx) * watcher->ncmd);
     for (uint32_t i = 0; i < watcher->ncmd; i++) {
         olcmd = &watcher->cmd[i];
-        ASSERTAB(ERR_OK == sock_pair(pair), "create sock pair failed.");
+        ASSERTAB(ERR_OK == sock_pair(pair), ERRORSTR(ERRNO));
         olcmd->ol_r.ev_cb = _on_cmd;
         olcmd->ol_r.fd = pair[0];
         olcmd->ol_r.type = 0;
@@ -239,8 +237,8 @@ static void _init_cmd(watcher_ctx *watcher) {
         mutex_init(&olcmd->lck);
         olcmd->wsabuf.IOV_PTR_FIELD = NULL;
         olcmd->wsabuf.IOV_LEN_FIELD = 0;
-        ASSERTAB(ERR_OK == _join_iocp(watcher, olcmd->ol_r.fd), "_join_iocp failed.");
-        ASSERTAB(ERR_OK == _post_recv(&olcmd->ol_r, &olcmd->bytes, &olcmd->flag, &olcmd->wsabuf, 1), "_post_recv failed.");
+        ASSERTAB(ERR_OK == _join_iocp(watcher, olcmd->ol_r.fd), ERRORSTR(ERRNO));
+        ASSERTAB(ERR_OK == _post_recv(&olcmd->ol_r, &olcmd->bytes, &olcmd->flag, &olcmd->wsabuf, 1), ERRORSTR(ERRNO));
     }
 }
 void ev_init(ev_ctx *ctx, uint32_t nthreads) {

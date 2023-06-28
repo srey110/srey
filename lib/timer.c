@@ -10,7 +10,7 @@ void timer_init(timer_ctx *ctx) {
     ctx->interval = 1.0 / freq.QuadPart;
 #elif defined(OS_DARWIN) 
     mach_timebase_info_data_t timebase;
-    ASSERTAB(KERN_SUCCESS == mach_timebase_info(&timebase), "mach_timebase_info error.");
+    ASSERTAB(KERN_SUCCESS == mach_timebase_info(&timebase), ERRORSTR(ERRNO));
     ctx->interval = (double)timebase.numer / (double)timebase.denom;
     ctx->timefunc = (uint64_t(*)(void)) dlsym(RTLD_DEFAULT, "mach_continuous_time");
     if (NULL == ctx->timefunc) {

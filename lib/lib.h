@@ -3,9 +3,8 @@
 
 #include "macro.h"
 
+#include "log.h"
 #include "sarray.h"
-#include "chan.h"
-#include "loger.h"
 #include "netaddr.h"
 #include "netutils.h"
 #include "queue.h"

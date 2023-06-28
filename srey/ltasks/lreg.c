@@ -7,23 +7,12 @@ lua_pushinteger(lua, msg->pktype);\
 lua_pushinteger(lua, msg->fd);\
 lua_pushinteger(lua, msg->skid)
 
-static int32_t _lreg_setlog(lua_State *lua) {
-    if (LUA_TNIL != lua_type(lua, 1)) {
-        LOG_LEVEL lv = (LOG_LEVEL)luaL_checkinteger(lua, 1);
-        SETLOGLV(lv);
-    }
-    if (LUA_TNIL != lua_type(lua, 2)) {
-        int32_t prt = (int32_t)luaL_checkinteger(lua, 2);
-        SETLOGPRT(prt);
-    }
-    return 0;
-}
 static int32_t _lreg_log(lua_State *lua) {
     LOG_LEVEL lv = (LOG_LEVEL)luaL_checkinteger(lua, 1);
     const char *file = luaL_checkstring(lua, 2);
     int32_t line = (int32_t)luaL_checkinteger(lua, 3);
     const char *log = luaL_checkstring(lua, 4);
-    loger_log(&g_logerctx, lv, "[%s][%s %d]%s", _getlvstr(lv), __FILENAME__(file), line, log);
+    slog(lv, "[%s %d] %s", __FILENAME__(file), line, log);
     return 0;
 }
 static int32_t _lreg_remoteaddr(lua_State *lua) {
@@ -119,8 +108,8 @@ static int32_t _lreg_urlencode(lua_State *lua) {
     FREE(encode);
     return 1;
 }
-#if WITH_SSL
 static int32_t _lreg_evssl_new(lua_State *lua) {
+#if WITH_SSL
     const char *name = luaL_checkstring(lua, 1);
     const char *ca = luaL_checkstring(lua, 2);
     const char *cert = luaL_checkstring(lua, 3);
@@ -150,8 +139,12 @@ static int32_t _lreg_evssl_new(lua_State *lua) {
     certs_register(srey, name, ssl);
     lua_pushlightuserdata(lua, ssl);
     return 1;
+#else
+    return 0;
+#endif
 }
 static int32_t _lreg_evssl_p12new(lua_State *lua) {
+#if WITH_SSL
     const char *name = luaL_checkstring(lua, 1);
     const char *p12 = luaL_checkstring(lua, 2);
     const char *pwd = luaL_checkstring(lua, 3);
@@ -169,8 +162,12 @@ static int32_t _lreg_evssl_p12new(lua_State *lua) {
     certs_register(srey, name, ssl);
     lua_pushlightuserdata(lua, ssl);
     return 1;
+#else
+    return 0;
+#endif
 }
 static int32_t _lreg_evssl_qury(lua_State *lua) {
+#if WITH_SSL
     const char *name = luaL_checkstring(lua, 1);
     struct evssl_ctx *ssl = certs_qury(srey, name);
     if (NULL == ssl) {
@@ -178,8 +175,10 @@ static int32_t _lreg_evssl_qury(lua_State *lua) {
     }
     lua_pushlightuserdata(lua, ssl);
     return 1;
-}
+#else
+    return 0;
 #endif
+}
 static int32_t _lreg_task_qury(lua_State *lua) {
     int32_t name = (int32_t)luaL_checkinteger(lua, 1);
     task_ctx *task = srey_taskqury(srey, name);
@@ -699,7 +698,6 @@ static int32_t _lreg_msg_info(lua_State *lua) {
 LUAMOD_API int luaopen_srey_utils(lua_State *lua) {
     luaL_Reg reg[] = {
         { "log", _lreg_log },
-        { "setlog", _lreg_setlog },
 
         { "remoteaddr", _lreg_remoteaddr },
         { "utostr", _lreg_udtostr },
@@ -709,11 +707,11 @@ LUAMOD_API int luaopen_srey_utils(lua_State *lua) {
         { "b64encode", _lreg_b64encode },
         { "b64decode", _lreg_b64decode },
         { "urlencode", _lreg_urlencode },
-#if WITH_SSL
+
         { "evssl_new", _lreg_evssl_new },
         { "evssl_p12new", _lreg_evssl_p12new },
         { "evssl_qury", _lreg_evssl_qury },
-#endif
+
         { "task_qury", _lreg_task_qury },
         { "task_name", _lreg_task_name },
         { "task_session", _lreg_task_session },

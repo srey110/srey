@@ -1,6 +1,5 @@
 #include "event/uev.h"
 #include "hashmap.h"
-#include "loger.h"
 
 #ifndef EV_IOCP
 

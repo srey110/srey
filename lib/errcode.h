@@ -3,7 +3,6 @@
 
 #define ERR_OK       0
 #define ERR_FAILED  -1
-#define ERR_TIMEOUT -2
 
 #define ERRSTR_NULLP      "null pointer."
 #define ERRSTR_INVPARAM   "invalid parameter."

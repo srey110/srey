@@ -1,5 +1,4 @@
 #include "event/evssl.h"
-#include "loger.h"
 #if WITH_SSL
 #include <openssl/pkcs12.h>
 
@@ -68,7 +67,7 @@ void evssl_free(evssl_ctx *evssl) {
 SSL *evssl_setfd(evssl_ctx *evssl, SOCKET fd) {
     SSL *ssl = SSL_new(evssl->ssl);
     if (NULL == ssl) {
-        LOG_ERROR("SSL_new failed.");
+        LOG_ERROR("SSL_new error. %s", SSLCTX_ERR());
         return NULL;
     }
     if (1 != SSL_set_fd(ssl, (int32_t)fd)) {

@@ -94,12 +94,6 @@
     <ClInclude Include="netutils.h">
       <Filter>utils</Filter>
     </ClInclude>
-    <ClInclude Include="chan.h">
-      <Filter>utils</Filter>
-    </ClInclude>
-    <ClInclude Include="loger.h">
-      <Filter>utils</Filter>
-    </ClInclude>
     <ClInclude Include="buffer.h">
       <Filter>utils</Filter>
     </ClInclude>
@@ -166,6 +160,9 @@
     <ClInclude Include="service\minicoro.h">
       <Filter>service</Filter>
     </ClInclude>
+    <ClInclude Include="log.h">
+      <Filter>utils</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="memory.c">
@@ -190,12 +187,6 @@
       <Filter>utils</Filter>
     </ClCompile>
     <ClCompile Include="netutils.c">
-      <Filter>utils</Filter>
-    </ClCompile>
-    <ClCompile Include="chan.c">
-      <Filter>utils</Filter>
-    </ClCompile>
-    <ClCompile Include="loger.c">
       <Filter>utils</Filter>
     </ClCompile>
     <ClCompile Include="buffer.c">
@@ -257,6 +248,9 @@
     </ClCompile>
     <ClCompile Include="proto\dns.c">
       <Filter>proto</Filter>
+    </ClCompile>
+    <ClCompile Include="log.c">
+      <Filter>utils</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

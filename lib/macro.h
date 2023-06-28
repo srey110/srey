@@ -8,12 +8,10 @@
 #include "memory.h"
 
 #define ONEK                 1024
-#define MAX_RETRYCNT         3
 #define TIME_LENS            64
 #define IP_LENS              64
 #define PORT_LENS            8
 #define INVALID_FD           -1
-#define TIMER_ACCURACY       (1000 * 1000)
 
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 #define EMPTYSTR(str) ((NULL == str) || (0 == strlen(str)))
@@ -25,18 +23,6 @@
 #define CONCAT3(a, b, c) a b c
 #define __FILENAME__(file) (strrchr(file, PATH_SEPARATOR) ? strrchr(file, PATH_SEPARATOR) + 1 : file)
 #define PRINT(fmt, ...) printf(CONCAT3("[%s %s %d] ", fmt, "\n"),  __FILENAME__(__FILE__), __FUNCTION__, __LINE__, ##__VA_ARGS__)
-
-#if PRINT_DEBUG
-#define PRINTD(fmt, ...) PRINT(fmt, ##__VA_ARGS__)
-#else
-#define PRINTD(fmt, ...)
-#endif
-
-#if MEMORY_CHECK
-#define MEMCHECK()  atexit(_memcheck)
-#else
-#define MEMCHECK()
-#endif
 
 #ifndef offsetof
 #define offsetof(type, field) ((size_t)(&((type *)0)->field))
@@ -52,40 +38,16 @@
 #define ATOMIC64_GET(ptr) ATOMIC64_ADD(ptr, 0)
 
 #define ZERO(name, len) memset(name, 0, len)
-#define MALLOC(ptr, size)\
-do {\
-    *(void**)&(ptr) = _malloc(size);\
-    PRINTD("malloc(%p, size=%zu)", ptr, size);\
-}while (0)
-
-#define CALLOC(ptr, count, size)\
-do {\
-    *(void**)&(ptr) = _calloc(count, size);\
-    PRINTD("calloc(%p, count=%zu, size=%zu)", ptr, count, size);\
-}while (0)
-
-#define REALLOC(ptr, oldptr, size)\
-do {\
-    *(void**)&(ptr) = _realloc(oldptr, size);\
-    PRINTD("realloc(%p, old=%p, size=%zu)", ptr, oldptr, size);\
-}while (0)
-
+#define MALLOC(ptr, size) *(void**)&(ptr) = _malloc(size)
+#define CALLOC(ptr, count, size) *(void**)&(ptr) = _calloc(count, size)
+#define REALLOC(ptr, oldptr, size) *(void**)&(ptr) = _realloc(oldptr, size)
 #define FREE(ptr)\
 do {\
     if (NULL != ptr) {\
         _free(ptr); \
-        PRINTD("free(%p)", ptr);\
         ptr = NULL; \
     }\
 }while (0)
-
-#define ASSERTAB(exp, errstr)\
-do {\
-    if (!(exp)) {\
-        PRINT("%s", errstr);\
-        abort();\
-    }\
-} while (0);
 
 #define CLOSE_SOCK(fd)\
 do {\
@@ -94,5 +56,28 @@ do {\
         (fd) = INVALID_SOCK;\
     }\
 }while(0)
+
+typedef enum LOG_LEVEL {
+    LOGLV_ERROR = 0,
+    LOGLV_WARN,
+    LOGLV_INFO,
+    LOGLV_DEBUG,
+}LOG_LEVEL;
+void slog(int32_t lv, const char *fmt, ...);
+#define LOG(lv, fmt, ...) slog(lv, CONCAT2("[%s %s %d] ", fmt), __FILENAME__(__FILE__), __FUNCTION__, __LINE__, ##__VA_ARGS__)
+#define LOG_ERROR(fmt, ...) LOG(LOGLV_ERROR, fmt, ##__VA_ARGS__)
+#define LOG_WARN(fmt, ...)  LOG(LOGLV_WARN, fmt, ##__VA_ARGS__)
+#define LOG_INFO(fmt, ...)  LOG(LOGLV_INFO, fmt, ##__VA_ARGS__)
+#define LOG_DEBUG(fmt, ...) LOG(LOGLV_DEBUG, fmt, ##__VA_ARGS__)
+
+#define ASSERTAB(exp, errstr)\
+do {\
+    if (!(exp)) {\
+        if (NULL != errstr && 0 != strlen(errstr)) {\
+            LOG_ERROR("%s", errstr); \
+        }\
+        abort();\
+    }\
+} while (0);
 
 #endif//MACRO_H_

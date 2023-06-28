@@ -345,7 +345,6 @@ void test_log(CuTest* tc) {
     LOG_INFO("%s", "LOG_INFO");
     LOG_WARN("%s", "LOG_WARN");
     LOG_ERROR("%s", "LOG_ERROR");
-    LOG_FATAL("%s", "LOG_FATAL");
 }
 void test_http(CuTest* tc) {
     buffer_ctx buf;

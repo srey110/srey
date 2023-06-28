@@ -1,5 +1,4 @@
 #include "event/iocp.h"
-#include "loger.h"
 #include "hashmap.h"
 
 #ifdef EV_IOCP

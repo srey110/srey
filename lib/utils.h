@@ -1,7 +1,10 @@
 #ifndef UTILS_H_
 #define UTILS_H_
 
-#include "sarray.h"
+#include "macro.h"
+
+typedef void *(*chr_func)(const void *, int32_t, size_t);
+typedef int32_t(*cmp_func)(const void *, const void *, size_t);
 
 //ªÒ»°“ªID
 uint64_t createid(void);

@@ -18,7 +18,6 @@ local function harbor_started()
     local name = config:sslname()
     if not strempty(name) then
         ssl = srey.evssl_qury(name)
-        assert(nil ~= ssl, string.format("qury ssl by name %s failed.", name))
     end
     srey.listen(config:lsnip(), config:port(), PACK_TYPE.RPC, ssl)
     log.INFO("harbor listen at %s:%d.", config:lsnip(), config:port())

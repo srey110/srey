@@ -2,7 +2,6 @@
 #include "event/iocp.h"
 #include "event/skpool.h"
 #include "buffer.h"
-#include "loger.h"
 #include "hashmap.h"
 #include "netutils.h"
 
@@ -512,6 +511,7 @@ SOCKET ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
     uint64_t hs = FD_HASH(fd);
     watcher_ctx *watcher = GET_PTR(ctx->watcher, ctx->nthreads, hs);
     if (ERR_OK != _join_iocp(watcher, fd)) {
+        LOG_ERROR("%s", ERRORSTR(ERRNO));
         CLOSE_SOCK(fd);
         return INVALID_SOCK;
     }
@@ -579,6 +579,7 @@ static inline void _on_accept_cb(acceptex_ctx *acpctx, sock_ctx *skctx, DWORD by
 }
 void _add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) {
     if (ERR_OK != _join_iocp(watcher, fd)) {
+        LOG_ERROR("%s", ERRORSTR(ERRNO));
         CLOSE_SOCK(fd);
         return;
     }
@@ -826,6 +827,7 @@ SOCKET ev_udp(ev_ctx *ctx, const char *ip, const uint16_t port, cbs_ctx *cbs,
     uint64_t hs = FD_HASH(fd);
     watcher_ctx *watcher = GET_PTR(ctx->watcher, ctx->nthreads, hs);
     if (ERR_OK != _join_iocp(watcher, fd)) {
+        LOG_ERROR("%s", ERRORSTR(ERRNO));
         CLOSE_SOCK(fd);
         return INVALID_SOCK;
     }

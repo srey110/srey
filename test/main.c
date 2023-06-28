@@ -61,13 +61,11 @@ static void timeout(ud_cxt *ud) {
 }
 
 int main(int argc, char *argv[]) {
-    MEMCHECK();
     unlimit();
     srand((unsigned int)time(NULL)); 
     mutex_init(&muexit);
     cond_init(&condexit);
     sighandle(on_sigcb, NULL);
-    LOGINIT();    
 
     CuString *poutput = CuStringNew();
     CuSuite* psuite = CuSuiteNew();
@@ -125,6 +123,5 @@ int main(int argc, char *argv[]) {
     mutex_free(&muexit);
     cond_free(&condexit);
 
-    LOGFREE();
     return 0;
 }

@@ -39,26 +39,22 @@ do {\
 #define SOCK_CLOSE closesocket    
 #define ERRNO GetLastError()
 static inline const char *_fmterror(DWORD error) {
-    char *perror = NULL;
+    char *err = NULL;
     if (0 == FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-        NULL,
-        error,
-        MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US),
-        (LPTSTR)&perror,
-        0,
-        NULL)) {
+                            NULL,
+                            error,
+                            MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US),
+                            (LPTSTR)&err,
+                            0,
+                            NULL)) {
         return "FormatMessageA error.";
     }
-    char *ppos = strrchr(perror, '\r');
-    if (NULL != ppos) {
-        ppos[0] = '\0';
-    }
-    static char errstr[512];
-    size_t ilens = strlen(perror);
+    static char errstr[4096];
+    size_t ilens = strlen(err);
     ilens = ilens >= sizeof(errstr) ? sizeof(errstr) - 1 : ilens;
-    memcpy(errstr, perror, ilens);
+    memcpy(errstr, err, ilens);
     errstr[ilens] = '\0';
-    LocalFree(perror);
+    LocalFree(err);
     return errstr;
 };
 #define ERRORSTR(errcode) _fmterror(errcode)

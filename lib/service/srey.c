@@ -7,7 +7,6 @@
 #include "cond.h"
 #include "rwlock.h"
 #include "queue.h"
-#include "loger.h"
 
 typedef enum timeout_type {
     TMO_TYPE_SLEEP = 0x01,

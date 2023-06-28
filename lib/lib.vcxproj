@@ -20,7 +20,6 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="buffer.h" />
-    <ClInclude Include="chan.h" />
     <ClInclude Include="cjson\cJSON.h" />
     <ClInclude Include="cond.h" />
     <ClInclude Include="config.h" />
@@ -33,7 +32,7 @@
     <ClInclude Include="event\uev.h" />
     <ClInclude Include="hashmap.h" />
     <ClInclude Include="lib.h" />
-    <ClInclude Include="loger.h" />
+    <ClInclude Include="log.h" />
     <ClInclude Include="macro.h" />
     <ClInclude Include="macro_unix.h" />
     <ClInclude Include="macro_win.h" />
@@ -65,7 +64,6 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="buffer.c" />
-    <ClCompile Include="chan.c" />
     <ClCompile Include="cjson\cJSON.c" />
     <ClCompile Include="event\event.c" />
     <ClCompile Include="event\evssl.c" />
@@ -76,7 +74,7 @@
     <ClCompile Include="event\usock.c" />
     <ClCompile Include="event\wcmd.c" />
     <ClCompile Include="hashmap.c" />
-    <ClCompile Include="loger.c" />
+    <ClCompile Include="log.c" />
     <ClCompile Include="md5\md5.c" />
     <ClCompile Include="memory.c" />
     <ClCompile Include="netaddr.c" />

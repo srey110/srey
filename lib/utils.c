@@ -52,7 +52,7 @@ static LONG __stdcall _MiniDump(struct _EXCEPTION_POINTERS *excep) {
              procpath(), PATH_SEPARATORSTR, nowsec(), (int32_t)ATOMIC_ADD(&_exindex, 1));
     HANDLE ptoken = NULL;
     if (!_GetImpersonationToken(&ptoken)) {
-        PRINT("%s", "GetImpersonationToken faild.");
+        LOG_ERROR("%s", ERRORSTR(ERRNO));
         return EXCEPTION_CONTINUE_SEARCH;
     }
     HANDLE pdmpfile = CreateFile(acdmp,
@@ -63,7 +63,7 @@ static LONG __stdcall _MiniDump(struct _EXCEPTION_POINTERS *excep) {
         FILE_ATTRIBUTE_NORMAL,
         NULL);
     if (INVALID_HANDLE_VALUE == pdmpfile) {
-        PRINT("CreateFile(%s,...) faild.", acdmp);
+        LOG_ERROR("%s", ERRORSTR(ERRNO));
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
@@ -84,7 +84,7 @@ static LONG __stdcall _MiniDump(struct _EXCEPTION_POINTERS *excep) {
     if (bok) {
         lrtn = EXCEPTION_EXECUTE_HANDLER;
     } else {
-        PRINT("%s", "write dmp faild.");
+        LOG_ERROR("%s", ERRORSTR(ERRNO));
     }
     if (bprienabled) {
         _ResetPrivilege(ptoken, &tprivold);
@@ -101,7 +101,7 @@ void unlimit(void) {
     struct rlimit stnew;
     stnew.rlim_cur = stnew.rlim_max = RLIM_INFINITY;
     if (ERR_OK != setrlimit(RLIMIT_CORE, &stnew)) {
-        PRINT("setrlimit(RLIMIT_CORE) failed.%s", ERRORSTR(ERRNO));
+        LOG_ERROR("%s", ERRORSTR(ERRNO));
     }
 #ifdef OS_DARWIN
     rlim_t rlmax = OPEN_MAX;
@@ -110,7 +110,7 @@ void unlimit(void) {
 #endif
     stnew.rlim_cur = stnew.rlim_max = rlmax;
     if (ERR_OK != setrlimit(RLIMIT_NOFILE, &stnew)) {
-        PRINT("setrlimit(RLIMIT_NOFILE) failed.%s", ERRORSTR(ERRNO));
+        LOG_ERROR("%s", ERRORSTR(ERRNO));
     }
 #endif
 }
@@ -225,18 +225,18 @@ static int32_t _get_proc(pid_t pid, struct procsinfo *info) {
 static int32_t _get_proc_fullpath(pid_t pid, char path[PATH_LENS]) {
     struct procsinfo pinfo;
     if (ERR_OK != _get_proc(pid, &pinfo)) {
-        PRINT("%s", ERRORSTR(ERRNO));
+        LOG_ERROR("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
     char args[ONEK];
     //args consists of a succession of strings, each terminated with a null character (ascii `\0'). 
     //Hence, two consecutive NULLs indicate the end of the list.
     if (ERR_OK != getargs(&pinfo, sizeof(struct procsinfo), args, sizeof(args))) {
-        PRINT("%s", ERRORSTR(ERRNO));
+        LOG_ERROR("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
     if (NULL == realpath(args, path)) {
-        PRINT("%s", ERRORSTR(ERRNO));
+        LOG_ERROR("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
     return ERR_OK;
@@ -248,42 +248,35 @@ static inline int32_t _get_procpath(char path[PATH_LENS]) {
 #endif
 #if defined(OS_WIN)
     if (0 == GetModuleFileName(NULL, path, (DWORD)len - 1)) {
-        PRINT("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
 #elif defined(OS_LINUX)
     if (0 > readlink("/proc/self/exe", path, len - 1)) {
-        PRINT("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
 #elif defined(OS_NBSD)
     if (0 > readlink("/proc/curproc/exe", path, len - 1)) {
-        PRINT("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
 #elif defined(OS_DFBSD)
     if (0 > readlink("/proc/curproc/file", path, len - 1)) {
-        PRINT("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
 #elif defined(OS_SUN)  
     char in[64] = { 0 };
     SNPRINTF(in, sizeof(in) - 1, "/proc/%d/path/a.out", (uint32_t)getpid());
     if (0 > readlink(in, path, len - 1)) {
-        PRINT("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
 #elif defined(OS_DARWIN)
     uint32_t umaclens = len;
     if (0 != _NSGetExecutablePath(path, &umaclens)) {
-        PRINT("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
 #elif defined(OS_FBSD)
     int32_t name[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME };
     name[3] = getpid();
     if (0 != sysctl(name, 4, path, &len, NULL, 0)) {
-        PRINT("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
 #elif defined(OS_AIX)
@@ -299,8 +292,7 @@ static inline int32_t _get_procpath(char path[PATH_LENS]) {
         return ERR_FAILED;
     }
 #else
-    PRINT("%s", "not support.");
-    return ERR_FAILED;
+#error "not support."
 #endif
     char* cur = strrchr(path, PATH_SEPARATOR);
     *cur = 0;
@@ -329,7 +321,7 @@ static inline int32_t _get_procpath(char path[PATH_LENS]) {
 }
 const char *procpath(void) {
     if (ATOMIC_CAS(&_path_once, 0, 1)) {
-        ASSERTAB(ERR_OK == _get_procpath(_path), "failed to obtain the path of the program.");
+        ASSERTAB(ERR_OK == _get_procpath(_path), ERRORSTR(ERRNO));
     }
     return _path;
 }
@@ -901,9 +893,9 @@ char *formatargs(const char *fmt, va_list args) {
     }
 }
 char *formatv(const char *fmt, ...) {
-    va_list va;
-    va_start(va, fmt);
-    char *buf = formatargs(fmt, va);
-    va_end(va);
+    va_list args;
+    va_start(args, fmt);
+    char *buf = formatargs(fmt, args);
+    va_end(args);
     return buf;
 }

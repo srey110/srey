@@ -1,8 +1,10 @@
 #include "tasks/tasks.h"
 
-srey_ctx *srey;
+srey_ctx *srey = NULL;
+static FILE *logstream = NULL;
 static mutex_ctx muexit;
 static cond_ctx condexit;
+
 static char *_config_read(void) {
     char config[PATH_LENS] = { 0 };
     SNPRINTF(config, sizeof(config) - 1, "%s%s%s%s%s",
@@ -40,18 +42,41 @@ static void _parse_config(uint32_t *nnet, uint32_t *nworker) {
     }
     cJSON_Delete(json);
 }
+static void _open_log(void) {
+    char logfile[PATH_LENS] = { 0 };
+    SNPRINTF(logfile, sizeof(logfile) - 1, "%s%s%s%s", procpath(), PATH_SEPARATORSTR, "logs", PATH_SEPARATORSTR);
+    if (ERR_OK != ACCESS(logfile, 0)) {
+        if (ERR_OK != MKDIR(logfile)) {
+            return;
+        }
+    }
+    size_t lens = strlen(logfile);
+    char time[TIME_LENS] = { 0 };
+    nowtime("%Y-%m-%d %H-%M-%S", time);
+    SNPRINTF((char*)logfile + lens, sizeof(logfile) - lens - 1, "%s%s", time, ".log");
+    logstream = fopen(logfile, "a");
+    if (NULL != logstream) {
+        log_handle(logstream);
+    }
+}
 static int32_t service_exit(void) {
     srey_free(srey);
-    LOGFREE();
+    mutex_free(&muexit);
+    cond_free(&condexit);
+    _memcheck();
+    if (NULL != logstream) {
+        fclose(logstream);
+    }
     return ERR_OK;
 }
 static int32_t service_init(void) {
-    MEMCHECK();
+    _open_log();
     unlimit();
-    LOGINIT();
     uint32_t nnet = 1;
     uint32_t nworker = 2;
     _parse_config(&nnet, &nworker);
+    mutex_init(&muexit);
+    cond_init(&condexit);
     srey = srey_init(nnet, nworker);
     if (ERR_OK != task_startup()) {
         service_exit();
@@ -66,8 +91,6 @@ static void _on_sigcb(int32_t sig, void *arg) {
 }
 static int32_t service_hug(void) {
     sighandle(_on_sigcb, NULL);
-    mutex_init(&muexit);
-    cond_init(&condexit);
     int32_t rtn = service_init();
     if (ERR_OK == rtn) {
         mutex_lock(&muexit);
@@ -75,8 +98,6 @@ static int32_t service_hug(void) {
         mutex_unlock(&muexit);
         service_exit();
     }
-    mutex_free(&muexit);
-    cond_free(&condexit);
     return rtn;
 }
 
@@ -104,7 +125,6 @@ static _wsv_cb initcbs[] = { _wsv_initbasic, service_init, NULL };
 static _wsv_cb exitcbs[] = { service_exit, NULL };
 static SERVICE_STATUS_HANDLE psvstatus;
 static SERVICE_STATUS svstatus;
-static HANDLE stopev = NULL;
 
 static long _wsv_exception(struct _EXCEPTION_POINTERS *exp) {
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX);
@@ -146,12 +166,9 @@ DWORD WINAPI _wsv_event(DWORD req, DWORD event, LPVOID eventdata, LPVOID context
     switch (req) {
     case SERVICE_CONTROL_STOP:
     case SERVICE_CONTROL_SHUTDOWN:
-        LOG_INFO("catch controls %d,stop service.", req);
+        LOG_INFO("catch sign: %d", req);
         _wsv_pending(SERVICE_STOP_PENDING, WINSV_STOP_TIMEOUT);
-        SetEvent(stopev);
-        _wsv_runfuncs(exitcbs);
-        CloseHandle(stopev);
-        _wsv_setstatus(SERVICE_STOPPED);
+        cond_signal(&condexit);
         break;
     default:
         break;
@@ -166,11 +183,12 @@ static void WINAPI _wsv_service(DWORD argc, LPTSTR *argv) {
     char name[PATH_LENS] = { 0 };
     psvstatus = RegisterServiceCtrlHandlerExW((LPWSTR)name, _wsv_event, NULL);
     _wsv_pending(SERVICE_START_PENDING, WINSV_START_TIMEOUT);
-    stopev = CreateEvent(NULL, TRUE, FALSE, NULL);
-    if (stopev 
-        && ERR_OK == _wsv_runfuncs(initcbs)) {
+    if (ERR_OK == _wsv_runfuncs(initcbs)) {
         _wsv_setstatus(SERVICE_RUNNING);
-        WaitForSingleObject(stopev, INFINITE);
+        mutex_lock(&muexit);
+        cond_wait(&condexit, &muexit);
+        mutex_unlock(&muexit);
+        _wsv_runfuncs(exitcbs);
     }
     _wsv_setstatus(SERVICE_STOPPED);
 }
@@ -281,7 +299,6 @@ static void _stop_sh(const char *sh) {
     chmod(sh, 755);
 }
 #endif
-
 int main(int argc, char *argv[]) {
 #ifdef OS_WIN
     if (1 == argc) {

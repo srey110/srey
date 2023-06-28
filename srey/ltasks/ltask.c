@@ -76,7 +76,7 @@ static inline int32_t _ltask_dofile(lua_State *lua, const char *file) {
     return ERR_OK;
 }
 int32_t _ltask_startup(void) {
-    PRINT(LUA_RELEASE);
+    LOG_INFO(LUA_RELEASE);
     SNPRINTF(luapath, sizeof(luapath) - 1, "%s%s%s%s",
              procpath(), PATH_SEPARATORSTR, "script", PATH_SEPARATORSTR);
     lua_State *lua = _ltask_luainit(NULL);
