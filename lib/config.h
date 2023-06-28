@@ -4,7 +4,7 @@
 #include "os.h"
 
 #define MEMORY_CHECK         1
-#define WITH_SSL             0
+#define WITH_SSL             1
 #define WITH_LUA             1
 
 #define MAX_RETRYCNT        3

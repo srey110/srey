@@ -564,20 +564,20 @@ void *task_slice(task_ctx *task, uint64_t sess, size_t *size) {
     *size = msg.size;
     return msg.data;
 }
-void _push_handshaked(SOCKET fd, ud_cxt *ud) {
+void _push_handshaked(SOCKET fd, uint64_t skid, ud_cxt *ud) {
     message_ctx msg;
     msg.msgtype = MSG_TYPE_HANDSHAKED;
     msg.pktype = ud->pktype;
     msg.fd = fd;
-    msg.skid = ud->skid;
+    msg.skid = skid;
     _push_message(ud->data, &msg);
 }
-static inline int32_t _task_net_accept(ev_ctx *ev, SOCKET fd, ud_cxt *ud) {
+static inline int32_t _task_net_accept(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud) {
     message_ctx msg;
     msg.msgtype = MSG_TYPE_ACCEPT;
     msg.pktype = ud->pktype;
     msg.fd = fd;
-    msg.skid = ud->skid;
+    msg.skid = skid;
     _push_message(ud->data, &msg);
     return ERR_OK;
 }
@@ -610,18 +610,18 @@ static inline void _set_synflag(message_ctx *msg, ud_cxt *ud, int32_t slice) {
         break;
     }
 }
-static inline void _task_net_recv(ev_ctx *ev, SOCKET fd, buffer_ctx *buf, size_t size, ud_cxt *ud) {
+static inline void _task_net_recv(ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, size_t size, ud_cxt *ud) {
     message_ctx msg;
     msg.msgtype = MSG_TYPE_RECV;
     msg.pktype = ud->pktype;
     msg.fd = fd;
-    msg.skid = ud->skid;
+    msg.skid = skid;
     void *data;
     size_t lens;
     int32_t closefd = 0;
     int32_t slice;
     do {
-        data = protos_unpack(ev, fd, buf, &lens, ud, &closefd, &slice);
+        data = protos_unpack(ev, fd, skid, buf, &lens, ud, &closefd, &slice);
         if (NULL != data) {
             msg.data = data;
             msg.size = lens;
@@ -630,24 +630,24 @@ static inline void _task_net_recv(ev_ctx *ev, SOCKET fd, buffer_ctx *buf, size_t
         }
     } while (NULL != data && 0 != buffer_size(buf));
     if (0 != closefd) {
-        ev_close(ev, fd, ud->skid, 0);
+        ev_close(ev, fd, skid, 0);
     }
 }
-static inline void _task_net_send(ev_ctx *ev, SOCKET fd, size_t size, ud_cxt *ud) {
+static inline void _task_net_send(ev_ctx *ev, SOCKET fd, uint64_t skid, size_t size, ud_cxt *ud) {
     message_ctx msg;
     msg.msgtype = MSG_TYPE_SEND;
     msg.pktype = ud->pktype;
     msg.fd = fd;
-    msg.skid = ud->skid;
+    msg.skid = skid;
     msg.size = size;
     _push_message(ud->data, &msg);
 }
-static inline void _task_net_close(ev_ctx *ev, SOCKET fd, ud_cxt *ud) {
+static inline void _task_net_close(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud) {
     message_ctx msg;
     msg.msgtype = MSG_TYPE_CLOSE;
     msg.pktype = ud->pktype;
     msg.fd = fd;
-    msg.skid = ud->skid;
+    msg.skid = skid;
     msg.synflag = ud->synflag;
     ud->synflag = SYN_NONE;
     _push_message(ud->data, &msg);
@@ -669,13 +669,13 @@ int32_t task_netlisten(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl
     cbs.ud_free = protos_udfree;
     return ev_listen(&task->srey->netev, evssl, ip, port, &cbs, &ud);
 }
-static inline int32_t _task_net_connect(ev_ctx *ev, SOCKET fd, int32_t err, ud_cxt *ud) {
+static inline int32_t _task_net_connect(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t err, ud_cxt *ud) {
     message_ctx msg;
     msg.msgtype = MSG_TYPE_CONNECT;
     msg.pktype = ud->pktype;
     msg.session = ud->session;
     msg.fd = fd;
-    msg.skid = ud->skid;
+    msg.skid = skid;
     msg.erro = (int8_t)err;
     msg.synflag = ud->synflag;
     ud->synflag = SYN_NONE;
@@ -718,11 +718,11 @@ SOCKET task_netconnect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl
     }
     return fd;
 }
-static inline void _task_net_recvfrom(ev_ctx *ev, SOCKET fd, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
+static inline void _task_net_recvfrom(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
     message_ctx msg;
     msg.msgtype = MSG_TYPE_RECVFROM;
     msg.fd = fd;
-    msg.skid = ud->skid;
+    msg.skid = skid;
     udp_msg_ctx *umsg;
     MALLOC(umsg, sizeof(udp_msg_ctx) + size);
     memcpy(&umsg->addr, addr, sizeof(netaddr_ctx));
