@@ -8,11 +8,6 @@
 #ifdef EV_IOCP
 
 #define MAX_ACCEPTEX_CNT    128
-#define STATUS_SENDING      0x01
-#define STATUS_ERROR        0x02
-#define STATUS_REMOVE       0x04
-#define STATUS_SERVER       0x08
-#define STATUS_HANDSHAAKE   0x10
 
 typedef struct overlap_acpt_ctx {
     sock_ctx overlap;
@@ -86,7 +81,7 @@ sock_ctx *_new_sk(SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
     oltcp->ol_s.type = SOCK_STREAM;
     oltcp->ol_s.fd = fd;
     oltcp->ol_s.ev_cb = _on_send_cb;
-    oltcp->status = 0;
+    oltcp->status = STATUS_NONE;
     oltcp->skid = _sock_id();
     _reset_pksize_adj(&oltcp->pkadj);
 #if WITH_SSL
@@ -116,7 +111,7 @@ void _free_sk(sock_ctx *skctx) {
 }
 void _clear_sk(sock_ctx *skctx) {
     overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
-    oltcp->status = 0;
+    oltcp->status = STATUS_NONE;
     _reset_pksize_adj(&oltcp->pkadj);
 #if WITH_SSL
     FREE_SSL(oltcp->ssl);
@@ -793,7 +788,7 @@ static inline sock_ctx *_new_udp(netaddr_ctx *addr, SOCKET fd, cbs_ctx *cbs, ud_
     oludp->ol_s.type = SOCK_DGRAM;
     oludp->ol_s.fd = fd;
     oludp->ol_s.ev_cb = _on_sendto_cb;
-    oludp->status = 0;
+    oludp->status = STATUS_NONE;
     oludp->skid = _sock_id();
     oludp->cbs = *cbs;
     COPY_UD(oludp->ud, ud);

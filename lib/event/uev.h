@@ -54,8 +54,8 @@ typedef enum UEV_CMDS {
     CMD_TOTAL,
 }UEV_CMDS;
 typedef struct cmd_ctx {
-    uint8_t cmd;
-    uint8_t flag;
+    int32_t cmd;
+    int32_t flag;
     SOCKET fd;
     void *data;
     size_t len;

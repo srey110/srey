@@ -8,14 +8,24 @@
 #include "netaddr.h"
 #include "structs.h"
 
+typedef enum sock_status {
+    STATUS_NONE = 0x00,
+    STATUS_SENDING = 0x01,
+    STATUS_ERROR = 0x02,
+    STATUS_REMOVE = 0x04,
+    STATUS_SERVER = 0x08,
+    STATUS_HANDSHAAKE = 0x10,
+}sock_status;
 typedef enum syn_type {
     SYN_NONE = 0x00,
     SYN_ONCE,
     SYN_SLICE,
     SYN_ENDSLICE
 }syn_type;
+
 QUEUE_DECL(off_buf_ctx, qu_off_buf);
 QUEUE_DECL(struct listener_ctx *, qu_lsn);
+
 typedef struct ev_ctx {
     uint32_t nthreads;
 #ifdef EV_IOCP

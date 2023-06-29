@@ -5,10 +5,6 @@
 
 #ifndef EV_IOCP
 
-#define STATUS_SERVER        0x01
-#define STATUS_HANDSHAAKE    0x02
-#define STATUS_ERROR         0x04
-
 typedef struct lsnsock_ctx {
     sock_ctx sock;
     struct listener_ctx *lsn;
@@ -69,7 +65,7 @@ sock_ctx *_new_sk(SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
     tcp->sock.type = SOCK_STREAM;
     tcp->sock.fd = fd;
     tcp->sock.events = 0;
-    tcp->status = 0;
+    tcp->status = STATUS_NONE;
     tcp->skid = _sock_id();
     _reset_pksize_adj(&tcp->pkadj);
 #if WITH_SSL
@@ -98,7 +94,7 @@ void _free_sk(sock_ctx *skctx) {
 void _clear_sk(sock_ctx *skctx) {
     tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
     tcp->sock.events = 0;
-    tcp->status = 0;
+    tcp->status = STATUS_NONE;
     _reset_pksize_adj(&tcp->pkadj);
 #if WITH_SSL
     FREE_SSL(tcp->ssl);
@@ -708,7 +704,7 @@ static inline sock_ctx *_new_udp(SOCKET fd, int32_t family, cbs_ctx *cbs, ud_cxt
     udp->sock.type = SOCK_DGRAM;
     udp->sock.fd = fd;
     udp->sock.events = 0;
-    udp->status = 0;
+    udp->status = STATUS_NONE;
     udp->skid = _sock_id();
     udp->cbs = *cbs;
     udp->buf_r.IOV_PTR_FIELD = udp->buf;

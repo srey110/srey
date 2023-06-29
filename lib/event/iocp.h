@@ -28,8 +28,8 @@ typedef struct sock_ctx {
     event_cb ev_cb;
 }sock_ctx;
 typedef struct cmd_ctx {
-    uint8_t cmd;
-    uint8_t flag;
+    int32_t cmd;
+    int32_t flag;
     SOCKET fd;
     void *data;
     size_t len;

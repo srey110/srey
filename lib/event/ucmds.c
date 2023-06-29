@@ -145,8 +145,8 @@ void ev_setud_typstat(ev_ctx *ctx, SOCKET fd, uint64_t skid, int8_t pktype, int8
     cmd.cmd = CMD_SETUD_TYPSTAT;
     cmd.fd = fd;
     cmd.skid = skid;
-    cmd.len = 0;
-    _set_ud_typstat_cmd((char *)&cmd.len, pktype, status);
+    cmd.flag = 0;
+    _set_ud_typstat_cmd((char *)&cmd.flag, pktype, status);
     _SEND_CMD(ctx, cmd);
 }
 void _on_cmd_setud_typstat(watcher_ctx *watcher, cmd_ctx *cmd) {
@@ -155,7 +155,7 @@ void _on_cmd_setud_typstat(watcher_ctx *watcher, cmd_ctx *cmd) {
         || ERR_OK != _check_skid(skctx, cmd->skid)) {
         return;
     }
-    _setud_typstat(skctx, (char *)&cmd->len);
+    _setud_typstat(skctx, (char *)&cmd->flag);
 }
 void ev_setud_data(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *data) {
     ASSERTAB(INVALID_SOCK != fd, ERRSTR_INVPARAM);
