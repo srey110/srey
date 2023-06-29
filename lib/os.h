@@ -32,6 +32,7 @@
     #define OS_HPUX
 #elif defined(_AIX) || defined(__HOS_AIX__)
     #define OS_AIX
+    #define READV_FIXEDLENS//readv 有些系统没有数据会返回EINVAL(22)错误
 #else
     #error "Unsupported operating system platform!"
 #endif

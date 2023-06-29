@@ -125,10 +125,6 @@ if [ "$X64" = "x64" ]
 then
     CFLAGS=$CFLAGS" -m64"
 fi
-if [ "$OSNAME" = "Darwin" ]
-then
-    CFLAGS=$CFLAGS" -Wunused-function"
-fi
 LIBDIR=$Dir
 Clean()
 {

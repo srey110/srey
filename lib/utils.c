@@ -174,7 +174,7 @@ int32_t isfile(const char *file) {
         return ERR_FAILED;
     }
 #if defined(OS_WIN)
-    if (_S_IFREG & st.st_mode) {
+    if (BIT_CHECK(st.st_mode, _S_IFREG)) {
         return ERR_OK;
     }
     return ERR_FAILED;
@@ -188,7 +188,7 @@ int32_t isdir(const char *path) {
         return ERR_FAILED;
     }
 #if defined(OS_WIN)
-    if (_S_IFDIR & st.st_mode) {
+    if (BIT_CHECK(st.st_mode, _S_IFDIR)) {
         return ERR_OK;
     }
     return ERR_FAILED;
@@ -819,7 +819,7 @@ char *strlower(char *str) {
     char *p = str;
     while (*p != '\0') {
         if (*p >= 'A' && *p <= 'Z') {
-            *p |= 0x20;
+            BIT_SET(*p, 0x20);
         }
         ++p;
     }

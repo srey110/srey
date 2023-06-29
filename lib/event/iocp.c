@@ -283,9 +283,15 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads) {
     LOG_INFO("event: IOCP");
 }
 static void _free_cmd(watcher_ctx *watcher) {
+    cmd_ctx *cmd;
     overlap_cmd_ctx *olcmd;
     for (uint32_t i = 0; i < watcher->ncmd; i++) {
         olcmd = &watcher->cmd[i];
+        while (NULL != (cmd = qu_cmd_pop(&olcmd->qu))) {
+            if (CMD_SEND == cmd->cmd) {
+                FREE(cmd->data);
+            }
+        }
         CLOSE_SOCK(olcmd->ol_r.fd);
         CLOSE_SOCK(olcmd->fd);
         qu_cmd_free(&olcmd->qu);
@@ -302,15 +308,6 @@ void ev_free(ev_ctx *ctx) {
     for (i = 0; i < ctx->nacpex; i++) {
         thread_join(ctx->acpex[i].thacp);
     }
-    struct listener_ctx **lsn;
-    while (NULL != (lsn = qu_lsn_pop(&ctx->qulsn))) {
-        _freelsn(*lsn);
-    }
-    qu_lsn_free(&ctx->qulsn);
-    mutex_free(&ctx->qulsnlck);
-    (void)CloseHandle(ctx->acpex[0].iocp);
-    FREE(ctx->acpex);
-
     cmd_ctx cmd;
     cmd.cmd = CMD_STOP;
     watcher_ctx *watcher;
@@ -329,6 +326,14 @@ void ev_free(ev_ctx *ctx) {
         (void)CloseHandle(watcher->iocp);
     }
     FREE(ctx->watcher);
+    struct listener_ctx **lsn;
+    while (NULL != (lsn = qu_lsn_pop(&ctx->qulsn))) {
+        _freelsn(*lsn);
+    }
+    qu_lsn_free(&ctx->qulsn);
+    mutex_free(&ctx->qulsnlck);
+    (void)CloseHandle(ctx->acpex[0].iocp);
+    FREE(ctx->acpex);
     sock_clean();
 }
 

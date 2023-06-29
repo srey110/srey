@@ -34,7 +34,6 @@ typedef struct cmd_ctx {
     void *data;
     size_t len;
     uint64_t skid;
-    uint64_t sess;
 }cmd_ctx;
 QUEUE_DECL(cmd_ctx, qu_cmd);
 typedef struct overlap_cmd_ctx {
@@ -89,8 +88,8 @@ void _remove_fd(watcher_ctx *watcher, SOCKET fd);
 int32_t _join_iocp(watcher_ctx *watcher, SOCKET fd);
 void _add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn);
 int32_t _post_recv(sock_ctx *skctx, DWORD  *bytes, DWORD  *flag, IOV_TYPE *wsabuf, DWORD niov);
-int32_t _add_bufs_trypost(sock_ctx *skctx, off_buf_ctx *buf, cmd_ctx *cmd);
-int32_t _add_bufs_trysendto(sock_ctx *skctx, off_buf_ctx *buf, cmd_ctx *cmd);
+int32_t _add_bufs_trypost(sock_ctx *skctx, off_buf_ctx *buf, sock_status status);
+int32_t _add_bufs_trysendto(sock_ctx *skctx, off_buf_ctx *buf, sock_status status);
 void _sk_shutdown(sock_ctx *skctx);
 void _disconnect(sock_ctx *skctx, int32_t nomsg);
 void _setud_typstat(sock_ctx *skctx, char *typsta);

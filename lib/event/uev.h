@@ -60,7 +60,6 @@ typedef struct cmd_ctx {
     void *data;
     size_t len;
     uint64_t skid;
-    uint64_t sess;
 }cmd_ctx;
 typedef struct watcher_ctx {
     int32_t index;
@@ -111,7 +110,7 @@ void _on_cmd_setud_data(watcher_ctx *watcher, cmd_ctx *cmd);
 void _add_lsn_inloop(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx);
 void _add_conn_inloop(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx);
 void _add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn);
-int32_t _add_write_inloop(watcher_ctx *watcher, sock_ctx *skctx, off_buf_ctx *buf, cmd_ctx *cmd);
+int32_t _add_write_inloop(watcher_ctx *watcher, sock_ctx *skctx, off_buf_ctx *buf, sock_status status);
 void _add_udp_inloop(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx);
 
 void _add_fd(watcher_ctx *watcher, sock_ctx *skctx);

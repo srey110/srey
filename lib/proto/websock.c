@@ -110,7 +110,7 @@ static inline void _websock_handshake_server(ev_ctx *ev, SOCKET fd, uint64_t ski
     char *rsp = formatv(fmt, key);
     FREE(key);
     ud->status = START;
-    ev_send(ev, fd, skid, rsp, strlen(rsp), 0, SYN_NONE, 0);
+    ev_send(ev, fd, skid, rsp, strlen(rsp), 0, STATUS_NONE);
     _push_handshaked(fd, skid, ud);
 }
 static inline void _websock_handshake(ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt *ud, int32_t *closefd) {
@@ -288,22 +288,22 @@ static inline void *_websock_create_pack(uint8_t fin, uint8_t proto, char key[4]
     frame[0] = 0;
     frame[1] = 0;
     if (0 != fin) {
-        frame[0] |= 0x80;
+        BIT_SET(frame[0], 0x80);
     }
-    frame[0] |= (proto & 0xf);
+    BIT_SET(frame[0], (proto & 0xf));
     if (NULL != key) {
-        frame[1] |= 0x80;
+        BIT_SET(frame[1], 0x80);
     }
     size_t offset = HEAD_LESN;
     if (dlens <= 125) {
-        frame[1] |= dlens;
+        BIT_SET(frame[1], dlens);
     } else if (dlens <= 0xffff) {
-        frame[1] |= 126;
+        BIT_SET(frame[1], 126);
         uint16_t pllens = htons((u_short)dlens);
         memcpy(frame + offset, &pllens, sizeof(pllens));
         offset += sizeof(pllens);
     } else {
-        frame[1] |= 127;
+        BIT_SET(frame[1], 127);
         uint64_t pllens = htonll(dlens);
         memcpy(frame + offset, &pllens, sizeof(pllens));
         offset += sizeof(pllens);
@@ -328,7 +328,7 @@ static inline void *_websock_create_pack(uint8_t fin, uint8_t proto, char key[4]
 static inline void _websock_control_frame(ev_ctx *ev, SOCKET fd, uint64_t skid, uint8_t proto) {
     size_t flens;
     void *frame = _websock_create_pack(1, proto, NULL, NULL, 0, &flens);
-    ev_send(ev, fd, skid, frame, flens, 0, SYN_NONE, 0);
+    ev_send(ev, fd, skid, frame, flens, 0, STATUS_NONE);
 }
 void websock_ping(ev_ctx *ev, SOCKET fd, uint64_t skid) {
     _websock_control_frame(ev, fd, skid, PING);
@@ -343,19 +343,19 @@ void websock_text(ev_ctx *ev, SOCKET fd, uint64_t skid,
     int32_t fin, char key[4], const char *data, size_t dlens) {
     size_t flens;
     void *frame = _websock_create_pack(fin, TEXT, key, (void *)data, dlens, &flens);
-    ev_send(ev, fd, skid, frame, flens, 0, SYN_NONE, 0);
+    ev_send(ev, fd, skid, frame, flens, 0, STATUS_NONE);
 }
 void websock_binary(ev_ctx *ev, SOCKET fd, uint64_t skid,
     int32_t fin, char key[4], void *data, size_t dlens) {
     size_t flens;
     void *frame = _websock_create_pack(fin, BINARY, key, data, dlens, &flens);
-    ev_send(ev, fd, skid, frame, flens, 0, SYN_NONE, 0);
+    ev_send(ev, fd, skid, frame, flens, 0, STATUS_NONE);
 }
 void websock_continuation(ev_ctx *ev, SOCKET fd, uint64_t skid,
     int32_t fin, char key[4], void *data, size_t dlens) {
     size_t flens;
     void *frame = _websock_create_pack(fin, CONTINUE, key, data, dlens, &flens);
-    ev_send(ev, fd, skid, frame, flens, 0, SYN_NONE, 0);
+    ev_send(ev, fd, skid, frame, flens, 0, STATUS_NONE);
 }
 int32_t websock_pack_fin(websock_pack_ctx *pack) {
     return pack->fin;

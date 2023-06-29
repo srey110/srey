@@ -585,7 +585,7 @@ void _reset_pksize_adj(pksize_adj_ctx *pkadj) {
     pkadj->maxpk = DEF_RECV_SIZE;
 }
 static inline void _set_pksize_adj(pksize_adj_ctx *pkadj, size_t readed) {
-    if (readed > pkadj->maxpk
+    if (readed >= pkadj->maxpk
         && pkadj->maxpk < MAX_RECV_SIZE) {
         pkadj->maxpk = ROUND_UP(readed, 2);
     }
@@ -593,6 +593,12 @@ static inline void _set_pksize_adj(pksize_adj_ctx *pkadj, size_t readed) {
 int32_t buffer_from_sock(buffer_ctx *ctx, SOCKET fd, size_t *nread, pksize_adj_ctx *pkadj,
     int32_t(*_readv)(SOCKET, IOV_TYPE *, uint32_t, void *, size_t *), void *arg) {
     *nread = 0;
+#ifdef READV_FIXEDLENS
+    int32_t nbuf = sock_nread(fd);
+    if (ERR_FAILED == nbuf) {
+        return ERR_FAILED;
+    }
+#endif
     size_t readed;
     int32_t rtn;
     uint32_t niov;
@@ -608,6 +614,12 @@ int32_t buffer_from_sock(buffer_ctx *ctx, SOCKET fd, size_t *nread, pksize_adj_c
         if (0 == readed) {
             break;
         }
+#ifdef READV_FIXEDLENS
+        if (readed < pkadj->maxpk
+            || *nread >= nbuf) {
+            break;
+        }
+#endif
         _set_pksize_adj(pkadj, readed);
     }
     return rtn;

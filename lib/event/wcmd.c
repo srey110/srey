@@ -65,15 +65,14 @@ void _on_cmd_remove(watcher_ctx *watcher, cmd_ctx *cmd) {
         _free_udp(skctx);
     }
 }
-void ev_send(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *data, size_t len, int32_t copy,
-    uint8_t synflag, uint64_t sess) {
+void ev_send(ev_ctx *ctx, SOCKET fd, uint64_t skid,
+    void *data, size_t len, int32_t copy, sock_status status) {
     ASSERTAB(INVALID_SOCK != fd, ERRSTR_INVPARAM);
     cmd_ctx cmd;
     cmd.cmd = CMD_SEND;
     cmd.fd = fd;
     cmd.skid = skid;
-    cmd.flag = synflag;
-    cmd.sess = sess;
+    cmd.flag = status;
     cmd.len = len;
     if (copy) {
         MALLOC(cmd.data, len);
@@ -83,15 +82,14 @@ void ev_send(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *data, size_t len, int3
     }
     _SEND_CMD(ctx, cmd);
 }
-int32_t ev_sendto(ev_ctx *ctx, SOCKET fd, uint64_t skid, const char *ip, const uint16_t port, void *data, size_t len,
-    uint8_t synflag, uint64_t sess) {
+int32_t ev_sendto(ev_ctx *ctx, SOCKET fd, uint64_t skid,
+    const char *ip, const uint16_t port, void *data, size_t len, sock_status status) {
     ASSERTAB(INVALID_SOCK != fd, ERRSTR_INVPARAM);
     cmd_ctx cmd;
     cmd.cmd = CMD_SEND;
     cmd.fd = fd;
     cmd.skid = skid;
-    cmd.flag = synflag;
-    cmd.sess = sess;
+    cmd.flag = status;
     cmd.len = len;
     MALLOC(cmd.data, sizeof(netaddr_ctx) + len);
     netaddr_ctx *addr = (netaddr_ctx *)cmd.data;
@@ -108,8 +106,8 @@ void _on_cmd_send(watcher_ctx *watcher, cmd_ctx *cmd) {
     sock_ctx *skctx = _map_get(watcher, cmd->fd);
     if (NULL == skctx
         || ERR_OK != _check_skid(skctx, cmd->skid)) {
-        if (SYN_ONCE == cmd->flag) {
-            _send_result(_get_ud(skctx), cmd->sess, ERR_FAILED);
+        if (STATUS_NONE != cmd->flag) {
+            _send_result(cmd->fd, cmd->skid, (sock_status)cmd->flag, ERR_FAILED, _get_ud(skctx));
         }
         FREE(cmd->data);
         return;
@@ -120,12 +118,12 @@ void _on_cmd_send(watcher_ctx *watcher, cmd_ctx *cmd) {
     buf.offset = 0;
     int32_t err;
     if (SOCK_STREAM == skctx->type) {
-        err = _add_bufs_trypost(skctx, &buf, cmd);
+        err = _add_bufs_trypost(skctx, &buf, (sock_status)cmd->flag);
     } else {
-        err = _add_bufs_trysendto(skctx, &buf, cmd);
+        err = _add_bufs_trysendto(skctx, &buf, (sock_status)cmd->flag);
     }
-    if (SYN_ONCE == cmd->flag) {
-        _send_result(_get_ud(skctx), cmd->sess, err);
+    if (STATUS_NONE != cmd->flag) {
+        _send_result(cmd->fd, cmd->skid, (sock_status)cmd->flag, err, _get_ud(skctx));
     }
 }
 void ev_close(ev_ctx *ctx, SOCKET fd, uint64_t skid, int32_t nomsg) {

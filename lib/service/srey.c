@@ -572,7 +572,7 @@ void _push_handshaked(SOCKET fd, uint64_t skid, ud_cxt *ud) {
     msg.skid = skid;
     _push_message(ud->data, &msg);
 }
-static inline int32_t _task_net_accept(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud) {
+static inline int32_t _task_net_accept(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t *status, ud_cxt *ud) {
     message_ctx msg;
     msg.msgtype = MSG_TYPE_ACCEPT;
     msg.pktype = ud->pktype;
@@ -610,7 +610,7 @@ static inline void _set_synflag(message_ctx *msg, ud_cxt *ud, int32_t slice) {
         break;
     }
 }
-static inline void _task_net_recv(ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, size_t size, ud_cxt *ud) {
+static inline void _task_net_recv(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t *status, buffer_ctx *buf, size_t size, ud_cxt *ud) {
     message_ctx msg;
     msg.msgtype = MSG_TYPE_RECV;
     msg.pktype = ud->pktype;
@@ -633,7 +633,7 @@ static inline void _task_net_recv(ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_c
         ev_close(ev, fd, skid, 0);
     }
 }
-static inline void _task_net_send(ev_ctx *ev, SOCKET fd, uint64_t skid, size_t size, ud_cxt *ud) {
+static inline void _task_net_send(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t *status, size_t size, ud_cxt *ud) {
     message_ctx msg;
     msg.msgtype = MSG_TYPE_SEND;
     msg.pktype = ud->pktype;
@@ -642,7 +642,7 @@ static inline void _task_net_send(ev_ctx *ev, SOCKET fd, uint64_t skid, size_t s
     msg.size = size;
     _push_message(ud->data, &msg);
 }
-static inline void _task_net_close(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud) {
+static inline void _task_net_close(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t *status, ud_cxt *ud) {
     message_ctx msg;
     msg.msgtype = MSG_TYPE_CLOSE;
     msg.pktype = ud->pktype;
@@ -669,7 +669,7 @@ int32_t task_netlisten(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl
     cbs.ud_free = protos_udfree;
     return ev_listen(&task->srey->netev, evssl, ip, port, &cbs, &ud);
 }
-static inline int32_t _task_net_connect(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t err, ud_cxt *ud) {
+static inline int32_t _task_net_connect(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t *status, int32_t err, ud_cxt *ud) {
     message_ctx msg;
     msg.msgtype = MSG_TYPE_CONNECT;
     msg.pktype = ud->pktype;
@@ -700,7 +700,7 @@ SOCKET task_netconnect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl
     }
     cbs.ud_free = protos_udfree;
     _map_cosess_add(&task->mapco, task->curco, ud.session);
-    SOCKET fd = ev_connect(&task->srey->netev, evssl, ip, port, &cbs, &ud, skid);
+    SOCKET fd = ev_connect(&task->srey->netev, evssl, ip, port, &cbs, &ud, STATUS_SYN_ONCE, skid);
     if (INVALID_SOCK == fd) {
         _map_cosess_del(&task->mapco, ud.session);
         return INVALID_SOCK;
@@ -718,7 +718,7 @@ SOCKET task_netconnect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl
     }
     return fd;
 }
-static inline void _task_net_recvfrom(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
+static inline void _task_net_recvfrom(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t *status, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
     message_ctx msg;
     msg.msgtype = MSG_TYPE_RECVFROM;
     msg.fd = fd;
@@ -743,14 +743,14 @@ SOCKET task_netudp(task_ctx *task, const char *ip, uint16_t port, uint64_t *skid
     cbs.ud_free = protos_udfree;
     return ev_udp(&task->srey->netev, ip, port, &cbs, &ud, skid);
 }
-void _send_result(ud_cxt *ud, uint64_t sess, int32_t err) {
-    if (0 == sess) {
+void _send_result(SOCKET fd, uint64_t skid, sock_status status, int32_t err, ud_cxt *ud) {
+    /*if (0 == sess) {
         LOG_ERROR("invalid session.");
         return;
-    }
+    }*/
     message_ctx msg;
     msg.msgtype = MSG_TYPE_ENDRTN;
-    msg.session = sess;
+    //msg.session = sess;
     msg.erro = (int8_t)err;
     _push_message(ud->data, &msg);
 }
@@ -764,7 +764,7 @@ int32_t task_netsend(task_ctx *task, SOCKET fd, uint64_t skid,
         sess = task_session(task);
         _map_cosess_add(&task->mapco, task->curco, sess);
     }
-    ev_send(&task->srey->netev, fd, skid, pack, size, 0, synflag, sess);
+    ev_send(&task->srey->netev, fd, skid, pack, size, 0, synflag);
     if (SYN_ONCE == synflag) {
         YIELD(task);
         message_ctx msg;
@@ -807,7 +807,7 @@ int32_t task_sendto(task_ctx *task, SOCKET fd, uint64_t skid,
         sess = task_session(task);
         _map_cosess_add(&task->mapco, task->curco, sess);
     }
-    if (ERR_OK != ev_sendto(&task->srey->netev, fd, skid, ip, port, data, len, synflag, sess)) {
+    if (ERR_OK != ev_sendto(&task->srey->netev, fd, skid, ip, port, data, len, synflag)) {
         if (SYN_ONCE == synflag) {
             _map_cosess_del(&task->mapco, sess);
         }

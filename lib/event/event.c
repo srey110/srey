@@ -270,19 +270,19 @@ uint64_t _sock_id(void) {
 }
 void _set_ud_typstat_cmd(char *typsta, int8_t pktype, int8_t status) {
     if (-1 != pktype) {
-        typsta[0] |= 1;
+        BIT_SET(typsta[0], 1);
         typsta[1] = pktype;
     }
     if (-1 != status) {
-        typsta[0] |= 2;
+        BIT_SET(typsta[0], 2);
         typsta[2] = status;
     }
 }
 void _set_ud_typstat(char *typsta, ud_cxt *ud) {
-    if (typsta[0] & 1) {
+    if (BIT_CHECK(typsta[0], 1)) {
         ud->pktype = (uint8_t)typsta[1];
     }
-    if (typsta[0] & 2) {
+    if (BIT_CHECK(typsta[0], 2)) {
         ud->status = (uint8_t)typsta[2];
     }
 }
