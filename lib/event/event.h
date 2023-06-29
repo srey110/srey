@@ -18,7 +18,7 @@ void ev_send(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *data, size_t len, int3
     uint8_t synflag, uint64_t sess);
 int32_t ev_sendto(ev_ctx *ctx, SOCKET fd, uint64_t skid, const char *ip, const uint16_t port, void *data, size_t len,
     uint8_t synflag, uint64_t sess);
-void ev_close(ev_ctx *ctx, SOCKET fd, uint64_t skid, uint8_t nomsg);
+void ev_close(ev_ctx *ctx, SOCKET fd, uint64_t skid, int32_t nomsg);
 
 void ev_setud_typstat(ev_ctx *ctx, SOCKET fd, uint64_t skid, int8_t pktype, int8_t status);
 void ev_setud_data(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *data);

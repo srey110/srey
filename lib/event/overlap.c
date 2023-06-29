@@ -151,14 +151,14 @@ int32_t _check_skid(sock_ctx *skctx, const uint64_t skid) {
     }
     return ERR_FAILED;
 }
-void _disconnect(sock_ctx *skctx, cmd_ctx *cmd) {
+void _disconnect(sock_ctx *skctx, int32_t nomsg) {
     if (SOCK_STREAM == skctx->type) {
         overlap_tcp_ctx *tcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
         if (tcp->status & STATUS_ERROR) {
             return;
         }
         tcp->status |= STATUS_ERROR;
-        if (0 != cmd->flag) {
+        if (0 != nomsg) {
             tcp->cbs.c_cb = NULL;
         }
         _sk_shutdown(skctx);

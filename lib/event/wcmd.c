@@ -128,7 +128,7 @@ void _on_cmd_send(watcher_ctx *watcher, cmd_ctx *cmd) {
         _send_result(_get_ud(skctx), cmd->sess, err);
     }
 }
-void ev_close(ev_ctx *ctx, SOCKET fd, uint64_t skid, uint8_t nomsg) {
+void ev_close(ev_ctx *ctx, SOCKET fd, uint64_t skid, int32_t nomsg) {
     ASSERTAB(INVALID_SOCK != fd, ERRSTR_INVPARAM);
     cmd_ctx cmd;
     cmd.cmd = CMD_DISCONN;
@@ -143,7 +143,7 @@ void _on_cmd_disconn(watcher_ctx *watcher, cmd_ctx *cmd) {
         || ERR_OK != _check_skid(skctx, cmd->skid)) {
         return;
     }
-    _disconnect(skctx, cmd);
+    _disconnect(skctx, cmd->flag);
 }
 void ev_setud_typstat(ev_ctx *ctx, SOCKET fd, uint64_t skid, int8_t pktype, int8_t status) {
     ASSERTAB(INVALID_SOCK != fd, ERRSTR_INVPARAM);
