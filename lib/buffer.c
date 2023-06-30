@@ -581,30 +581,23 @@ void buffer_commit_get(buffer_ctx *ctx, size_t len) {
     }
     ctx->freeze_read = 0;
 }
-void _reset_pksize_adj(pksize_adj_ctx *pkadj) {
-    pkadj->maxpk = DEF_RECV_SIZE;
-}
-static inline void _set_pksize_adj(pksize_adj_ctx *pkadj, size_t readed) {
-    if (readed >= pkadj->maxpk
-        && pkadj->maxpk < MAX_RECV_SIZE) {
-        pkadj->maxpk = ROUND_UP(readed, 2);
-    }
-}
-int32_t buffer_from_sock(buffer_ctx *ctx, SOCKET fd, size_t *nread, pksize_adj_ctx *pkadj,
+int32_t buffer_from_sock(buffer_ctx *ctx, SOCKET fd, size_t *nread,
     int32_t(*_readv)(SOCKET, IOV_TYPE *, uint32_t, void *, size_t *), void *arg) {
     *nread = 0;
-#ifdef READV_FIXEDLENS
     int32_t nbuf = sock_nread(fd);
     if (ERR_FAILED == nbuf) {
         return ERR_FAILED;
     }
-#endif
+    if (0 == nbuf
+        || nbuf > MAX_RECV_SIZE) {
+        nbuf = MAX_RECV_SIZE;
+    }
     size_t readed;
     int32_t rtn;
     uint32_t niov;
     IOV_TYPE iov[MAX_EXPAND_NIOV];
     for (;;) {
-        niov = buffer_expand(ctx, pkadj->maxpk, iov, MAX_EXPAND_NIOV);
+        niov = buffer_expand(ctx, (size_t)nbuf, iov, MAX_EXPAND_NIOV);
         rtn = _readv(fd, iov, niov, arg, &readed);
         buffer_commit_expand(ctx, readed, iov, niov);
         *nread += readed;
@@ -614,13 +607,12 @@ int32_t buffer_from_sock(buffer_ctx *ctx, SOCKET fd, size_t *nread, pksize_adj_c
         if (0 == readed) {
             break;
         }
-#ifdef READV_FIXEDLENS
-        if (readed < pkadj->maxpk
-            || *nread >= nbuf) {
+#ifdef READV_EINVAL
+        if (readed < (size_t)nbuf
+            || *nread >= (size_t)nbuf) {
             break;
         }
 #endif
-        _set_pksize_adj(pkadj, readed);
     }
     return rtn;
 }
