@@ -66,7 +66,7 @@ end
 参数:
     pack :http_pack_ctx
 返回:
-    table {chunked, status, head, data, cksize}
+    table {chunked, status, head, data, cksize, fin}
 --]]
 function http.unpack(pack)
     local tb = {}
@@ -84,7 +84,7 @@ local function http_send(rsp, fd, skid, msg, ckfunc)
         core.send(fd, skid, PACK_TYPE.HTTP, table.concat(msg))
         return
     end
-    local pack, _ = core.synsend(fd, skid, PACK_TYPE.HTTP, table.concat(msg))
+    local pack, _, sess = core.synsend(fd, skid, PACK_TYPE.HTTP, table.concat(msg))
     if not pack then
         return
     end
@@ -92,19 +92,22 @@ local function http_send(rsp, fd, skid, msg, ckfunc)
     if 1 == pack.chunked then
         assert(ckfunc, "no have http chunked function.")
         pack.cksize = 0
-        local sess = core.slice_start(fd)
-        local data, hdata, hsize
+        pack.fin = false
+        local data, hdata, hsize, fin
         while true do
-            data, _ = core.slice(sess)
+            data, _, fin = core.slice(sess)
             if not data then
                 return
             end
             hdata, hsize = http.data(data)
-            ckfunc(fd, skid, pack, hdata, hsize)
-            if not hdata then
+            ckfunc(fd, skid, pack, hdata, hsize, fin)
+            if hsize then
+                pack.cksize = pack.cksize + hsize
+            end
+            if fin then
+                pack.fin = true
                 break
             end
-            pack.cksize = pack.cksize + hsize
         end
     end
     return pack
@@ -157,7 +160,7 @@ end
     skid :integer
     url :string
     headers :table
-    ckfunc :function(fd, skid, hinfo, data, size)
+    ckfunc :function(fd, skid, hinfo, data, size, fin)
 返回:
     table {chunked, status, head, data, cksize}
     nil 失败 
@@ -173,7 +176,7 @@ end
     skid :integer
     url :string
     headers :table
-    ckfunc :function(fd, skid, hinfo, data, size)
+    ckfunc :function(fd, skid, hinfo, data, size, fin)
     info :string table function
     ...  info为function时的参数
 返回:

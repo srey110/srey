@@ -7,7 +7,6 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 
-#define SSLCTX_ERR() ERR_error_string(ERR_get_error(), NULL)
 #define FREE_SSL(ssl)\
 do {\
     if (NULL != ssl){\

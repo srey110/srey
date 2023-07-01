@@ -70,7 +70,7 @@ static int32_t service_exit(void) {
     return ERR_OK;
 }
 static int32_t service_init(void) {
-    _open_log();
+    //_open_log();
     unlimit();
     uint32_t nnet = 1;
     uint32_t nworker = 2;

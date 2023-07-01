@@ -91,7 +91,7 @@ end
     func function(...) :function
 --]]
 function core.timeout(ms, func, ...)
-    local sess = core.task_session()
+    local sess = core.getid()
     timeout[sess] = {
         func = func,
         arg = {...}
@@ -186,7 +186,7 @@ function core.netreq(fd, skid, task, name, ...)
         func = name,
         arg = {...}
     }
-    local resp, _ = core.synsend(fd, skid, PACK_TYPE.RPC, encode(info))
+    local resp, _, _ = core.synsend(fd, skid, PACK_TYPE.RPC, encode(info))
     if nil == resp then
         return false
     end

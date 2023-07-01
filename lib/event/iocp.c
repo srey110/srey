@@ -37,8 +37,7 @@ static void _init_callback(void) {
     cmd_cbs[CMD_ADDACP] = _on_cmd_addacp;
     cmd_cbs[CMD_REMOVE] = _on_cmd_remove;
     cmd_cbs[CMD_SEND] = _on_cmd_send;
-    cmd_cbs[CMD_SETUD_TYPSTAT] = _on_cmd_setud_typstat;
-    cmd_cbs[CMD_SETUD_DATA] = _on_cmd_setud_data;
+    cmd_cbs[CMD_SETUD] = _on_cmd_setud;
 }
 static void _init_funcs(ev_ctx *ctx) {
     if (ATOMIC_CAS(&_init_once, 0, 1)) {
@@ -49,7 +48,6 @@ static void _init_funcs(ev_ctx *ctx) {
         _exfuncs.acceptex = _exfunc(fd, &accept_uid);
         _exfuncs.connectex = _exfunc(fd, &connect_uid);
         CLOSE_SOCK(fd);
-
         _init_callback();
     }
 }
@@ -284,12 +282,14 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads) {
 }
 static void _free_cmd(watcher_ctx *watcher) {
     cmd_ctx *cmd;
+    void *data;
     overlap_cmd_ctx *olcmd;
     for (uint32_t i = 0; i < watcher->ncmd; i++) {
         olcmd = &watcher->cmd[i];
         while (NULL != (cmd = qu_cmd_pop(&olcmd->qu))) {
             if (CMD_SEND == cmd->cmd) {
-                FREE(cmd->data);
+                data = (void *)cmd->arg;
+                FREE(data);
             }
         }
         CLOSE_SOCK(olcmd->ol_r.fd);

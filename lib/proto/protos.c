@@ -34,18 +34,6 @@ static inline void *_unpack_default(buffer_ctx *buf, size_t *size, ud_cxt *ud) {
     *size = lens;
     return unpack;
 }
-static inline void _check_retry(void *unpack, ud_cxt *ud, int32_t *closefd) {
-    if (0 != *closefd) {
-        return;
-    }
-    if (NULL == unpack) {
-        if (++ud->nretry >= MAX_RETRYCNT) {
-            *closefd = 1;
-        }
-    } else {
-        ud->nretry = 0;
-    }
-}
 void *protos_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid,
     buffer_ctx *buf, size_t *size, ud_cxt *ud, int32_t *closefd, int32_t *slice) {
     void *unpack;
@@ -66,7 +54,6 @@ void *protos_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid,
         unpack = _unpack_default(buf, size, ud);
         break;
     }
-    _check_retry(unpack, ud, closefd);
     return unpack;
 }
 static inline void *_pack_default(void *data, size_t lens, size_t *size) {

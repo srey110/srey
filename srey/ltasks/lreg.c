@@ -39,6 +39,10 @@ static int32_t _lreg_udtostr(lua_State *lua) {
     lua_pushlstring(lua, data, size);
     return 1;
 }
+static int32_t _lreg_getid(lua_State *lua) {
+    lua_pushinteger(lua, createid());
+    return 1;
+}
 static int32_t _lreg_md5(lua_State *lua) {
     void *data;
     size_t size;
@@ -193,11 +197,6 @@ static int32_t _lreg_task_name(lua_State *lua) {
     lua_pushinteger(lua, task_name(task));
     return 1;
 }
-static int32_t _lreg_task_session(lua_State *lua) {
-    task_ctx *task = lua_touserdata(lua, 1);
-    lua_pushinteger(lua, task_session(task));
-    return 1;
-}
 static int32_t _lreg_task_call(lua_State *lua) {
     task_ctx *task = lua_touserdata(lua, 1);
     void *data;
@@ -233,7 +232,7 @@ static int32_t _lreg_task_request(lua_State *lua) {
 }
 static int32_t _lreg_task_response(lua_State *lua) {
     task_ctx *task = lua_touserdata(lua, 1);
-    uint64_t sess = (uint64_t)luaL_checkinteger(lua, 2);
+    uint64_t id = (uint64_t)luaL_checkinteger(lua, 2);
     void *data;
     size_t size;
     if (LUA_TSTRING == lua_type(lua, 3)) {
@@ -242,28 +241,28 @@ static int32_t _lreg_task_response(lua_State *lua) {
         data = lua_touserdata(lua, 3);
         size = (size_t)luaL_checkinteger(lua, 4);
     }
-    task_response(task, sess, data, size, 1);
+    task_response(task, id, data, size, 1);
     return 0;
 }
-static int32_t _lreg_setud_typstat(lua_State *lua) {
+static int32_t _lreg_setud_pktype(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    int8_t pktype = -1;
-    int8_t status = -1;
-    if (LUA_TNIL != lua_type(lua, 3)) {
-        pktype = (int8_t)luaL_checkinteger(lua, 3);
-    }
-    if (LUA_TNIL != lua_type(lua, 4)) {
-        status = (int8_t)luaL_checkinteger(lua, 4);
-    }
-    ev_setud_typstat(srey_netev(srey), fd, skid, pktype, status);
+    int8_t pktype = (int8_t)luaL_checkinteger(lua, 3);
+    ev_ud_pktype(srey_netev(srey), fd, skid, pktype);
+    return 0;
+}
+static int32_t _lreg_setud_status(lua_State *lua) {
+    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
+    uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
+    int8_t status = (int8_t)luaL_checkinteger(lua, 3);
+    ev_ud_status(srey_netev(srey), fd, skid, status);
     return 0;
 }
 static int32_t _lreg_setud_data(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
     void *task = lua_touserdata(lua, 3);
-    ev_setud_data(srey_netev(srey), fd, skid, task);
+    ev_ud_data(srey_netev(srey), fd, skid, task);
     return 0;
 }
 static int32_t _lreg_sleep(lua_State *lua) {
@@ -274,9 +273,9 @@ static int32_t _lreg_sleep(lua_State *lua) {
 }
 static int32_t _lreg_timeout(lua_State *lua) {
     task_ctx *task = lua_touserdata(lua, 1);
-    uint64_t session = (uint64_t)luaL_checkinteger(lua, 2);
+    uint64_t id = (uint64_t)luaL_checkinteger(lua, 2);
     uint32_t time = (uint32_t)luaL_checkinteger(lua, 3);
-    task_timeout(task, session, time);
+    task_timeout(task, id, time);
     return 0;
 }
 static int32_t _lreg_connect(lua_State *lua) {
@@ -341,13 +340,15 @@ static int32_t _lreg_synsend(lua_State *lua) {
         size = (size_t)luaL_checkinteger(lua, 6);
     }
     size_t lens;
-    void *resp = task_synsend(task, fd, skid, data, size, &lens, ptype);
+    uint64_t sess;
+    void *resp = task_synsend(task, fd, skid, data, size, &lens, ptype, &sess);
     if (NULL == resp) {
         return 0;
     }
     lua_pushlightuserdata(lua, resp);
     lua_pushinteger(lua, lens);
-    return 2;
+    lua_pushinteger(lua, sess);
+    return 3;
 }
 static int32_t _lreg_send(lua_State *lua) {
     task_ctx *task = lua_touserdata(lua, 1);
@@ -362,12 +363,8 @@ static int32_t _lreg_send(lua_State *lua) {
         data = lua_touserdata(lua, 5);
         size = (size_t)luaL_checkinteger(lua, 6);
     }
-    if (ERR_OK == task_netsend(task, fd, skid, data, size, SYN_NONE, ptype)) {
-        lua_pushboolean(lua, 1);
-    } else {
-        lua_pushboolean(lua, 0);
-    }
-    return 1;
+    task_netsend(task, fd, skid, data, size, ptype);
+    return 0;
 }
 static int32_t _lreg_synsendto(lua_State *lua) {
     task_ctx *task = lua_touserdata(lua, 1);
@@ -393,50 +390,40 @@ static int32_t _lreg_synsendto(lua_State *lua) {
     return 2;
 }
 static int32_t _lreg_sendto(lua_State *lua) {
-    task_ctx *task = lua_touserdata(lua, 1);
-    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 2);
-    uint64_t skid = (uint64_t)luaL_checkinteger(lua, 3);
-    const char *ip = luaL_checkstring(lua, 4);
-    uint16_t port = (uint16_t)luaL_checkinteger(lua, 5);
+    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
+    uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
+    const char *ip = luaL_checkstring(lua, 3);
+    uint16_t port = (uint16_t)luaL_checkinteger(lua, 4);
     void *data;
     size_t size;
-    if (LUA_TSTRING == lua_type(lua, 6)) {
-        data = (void *)luaL_checklstring(lua, 6, &size);
+    if (LUA_TSTRING == lua_type(lua, 5)) {
+        data = (void *)luaL_checklstring(lua, 5, &size);
     } else {
-        data = lua_touserdata(lua, 6);
-        size = (size_t)luaL_checkinteger(lua, 7);
+        data = lua_touserdata(lua, 5);
+        size = (size_t)luaL_checkinteger(lua, 6);
     }
-    if (ERR_OK == task_sendto(task, fd, skid, ip, port, data, size, SYN_NONE)) {
-        lua_pushboolean(lua, 1);
-    } else {
-        lua_pushboolean(lua, 0);
-    }
-    return 1;
+    ev_sendto(srey_netev(srey), fd, skid, ip, port, data, size);
+    return 0;
 }
 static int32_t _lreg_close(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    ev_close(srey_netev(srey), fd, skid, 0);
+    ev_close(srey_netev(srey), fd, skid);
     return 0;
-}
-static int32_t _lreg_slice_start(lua_State *lua) {
-    task_ctx *task = lua_touserdata(lua, 1);
-    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 2);
-    uint64_t sess = task_slice_start(task, fd);
-    lua_pushinteger(lua, sess);
-    return 1;
 }
 static int32_t _lreg_slice(lua_State *lua) {
     task_ctx *task = lua_touserdata(lua, 1);
     uint64_t sess = (uint64_t)luaL_checkinteger(lua, 2);
     size_t size;
-    void *data = task_slice(task, sess, &size);
+    int32_t end = 0;
+    void *data = task_slice(task, sess, &size, &end);
     if (NULL == data) {
         return 0;
     }
     lua_pushlightuserdata(lua, data);
     lua_pushinteger(lua, size);
-    return 2;
+    lua_pushboolean(lua, end);
+    return 3;
 }
 static int32_t _lreg_simple_pack(lua_State *lua) {
     void *pack = lua_touserdata(lua, 1);
@@ -626,8 +613,8 @@ static int32_t _lreg_msg_info(lua_State *lua) {
         break;
     case MSG_TYPE_CLOSING:
         break;
-    case MSG_TYPE_TIMEOUT://sess
-        lua_pushinteger(lua, msg->session);
+    case MSG_TYPE_TIMEOUT://id
+        lua_pushinteger(lua, msg->sess);
         argc++;
         break;
     case MSG_TYPE_CONNECT://pktype fd skid err
@@ -681,7 +668,7 @@ static int32_t _lreg_msg_info(lua_State *lua) {
         break;
     }
     case MSG_TYPE_REQUEST://sess src data size
-        lua_pushinteger(lua, msg->session);
+        lua_pushinteger(lua, msg->sess);
         argc++;
         lua_pushinteger(lua, msg->src);
         argc++;
@@ -701,6 +688,7 @@ LUAMOD_API int luaopen_srey_utils(lua_State *lua) {
 
         { "remoteaddr", _lreg_remoteaddr },
         { "utostr", _lreg_udtostr },
+        { "getid", _lreg_getid },
 
         { "md5", _lreg_md5 },
         { "sha1_b64encode", _lreg_sha1_b64encode },
@@ -714,12 +702,12 @@ LUAMOD_API int luaopen_srey_utils(lua_State *lua) {
 
         { "task_qury", _lreg_task_qury },
         { "task_name", _lreg_task_name },
-        { "task_session", _lreg_task_session },
         { "task_call", _lreg_task_call },
         { "task_request", _lreg_task_request },
         { "task_response", _lreg_task_response },
 
-        { "setud_typstat", _lreg_setud_typstat },
+        { "setud_pktype", _lreg_setud_pktype },
+        { "setud_status", _lreg_setud_status },
         { "setud_data", _lreg_setud_data },
 
         { "sleep", _lreg_sleep },
@@ -733,7 +721,6 @@ LUAMOD_API int luaopen_srey_utils(lua_State *lua) {
         { "sendto", _lreg_sendto },
         { "close", _lreg_close },
 
-        { "slice_start", _lreg_slice_start },
         { "slice", _lreg_slice },
 
         { "simple_pack", _lreg_simple_pack },

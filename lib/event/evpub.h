@@ -15,16 +15,7 @@ typedef enum sock_status {
     STATUS_REMOVE = 0x04,
     STATUS_SERVER = 0x08,
     STATUS_HANDSHAAKE = 0x10,
-
-    STATUS_SYN_ONCE = 0x20,
-    STATUS_SYN_SLICE = 0x40,
 }sock_status;
-typedef enum syn_type {
-    SYN_NONE = 0x00,
-    SYN_ONCE,
-    SYN_SLICE,
-    SYN_ENDSLICE
-}syn_type;
 
 QUEUE_DECL(off_buf_ctx, qu_off_buf);
 QUEUE_DECL(struct listener_ctx *, qu_lsn);
@@ -42,12 +33,12 @@ typedef struct ev_ctx {
 struct evssl_ctx;
 
 //回调函数 accept_cb connect_cb 返回失败则不加进事件循环
-typedef int32_t(*accept_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t *status, ud_cxt *ud);
-typedef int32_t(*connect_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t *status, int32_t err, ud_cxt *ud);
-typedef void(*recv_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t *status, buffer_ctx *buf, size_t size, ud_cxt *ud);
-typedef void(*recvfrom_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t *status, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud);
-typedef void(*send_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t *status, size_t size, ud_cxt *ud);
-typedef void(*close_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t *status, ud_cxt *ud);
+typedef int32_t(*accept_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud);
+typedef int32_t(*connect_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t err, ud_cxt *ud);
+typedef void(*recv_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, size_t size, ud_cxt *ud);
+typedef void(*recvfrom_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud);
+typedef void(*send_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid, size_t size, ud_cxt *ud);
+typedef void(*close_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud);
 typedef void(*free_udcb)(ud_cxt *ud);
 typedef struct cbs_ctx {
     accept_cb acp_cb;
@@ -72,9 +63,7 @@ SOCKET _listen(netaddr_ctx *addr);
 SOCKET _udp(netaddr_ctx *addr);
 int32_t _sock_read(SOCKET fd, IOV_TYPE *iov, uint32_t niov, void *arg, size_t *readed);
 int32_t _sock_send(SOCKET fd, qu_off_buf *buf_s, size_t *nsend, void *arg);
-uint64_t _sock_id(void);
-void _set_ud_typstat_cmd(char *typsta, int8_t pktype, int8_t status);
-void _set_ud_typstat(char *typsta, ud_cxt *ud);
-void _send_result(SOCKET fd, uint64_t skid, sock_status status, int32_t err, ud_cxt *ud);
+void _ev_set_ud(ev_ctx *ctx, SOCKET fd, uint64_t skid, int32_t type, uint64_t val);
+void _set_ud(ud_cxt *ud, int32_t type, uint64_t val);
 
 #endif//EVPUB_H_

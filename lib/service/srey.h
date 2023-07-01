@@ -16,20 +16,19 @@ typedef enum msg_type {
     MSG_TYPE_CLOSE,
     MSG_TYPE_RECVFROM,
     MSG_TYPE_REQUEST,
-    MSG_TYPE_RESPONSE,
-    MSG_TYPE_ENDRTN
+    MSG_TYPE_RESPONSE
 }msg_type;
 typedef struct message_ctx {
     int8_t msgtype;//msg_type
     int8_t pktype;//unpack_type
     int8_t erro;
-    uint8_t synflag;
+    int8_t slice;
     int32_t src;
     SOCKET fd;
     void *data;
     size_t size;
-    uint64_t session;
     uint64_t skid;
+    uint64_t sess;
 }message_ctx;
 typedef struct udp_msg_ctx {
     netaddr_ctx addr;
@@ -61,27 +60,23 @@ srey_ctx *task_srey(task_ctx *task);
 ev_ctx *task_netev(task_ctx *task);
 void *task_handle(task_ctx *task);
 int32_t task_name(task_ctx *task);
-uint64_t task_session(task_ctx *task);
 
-void task_sleep(task_ctx *task, uint32_t timeout);
-void task_timeout(task_ctx *task, uint64_t session, uint32_t timeout);
+void task_sleep(task_ctx *task, uint32_t ms);
+void task_timeout(task_ctx *task, uint64_t sess, uint32_t ms);
 void task_call(task_ctx *dst, void *data, size_t size, int32_t copy);
 void *task_request(task_ctx *dst, task_ctx *src, void *data, size_t size, int32_t copy, size_t *lens);
 void task_response(task_ctx *dst, uint64_t sess, void *data, size_t size, int32_t copy);
-uint64_t task_slice_start(task_ctx *task, SOCKET fd);
-void *task_slice(task_ctx *task, uint64_t sess, size_t *size);
+void *task_slice(task_ctx *task, uint64_t sess, size_t *size, int32_t *end);
 int32_t task_netlisten(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
     const char *ip, uint16_t port, int32_t sendev);
 SOCKET task_netconnect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
     const char *ip, uint16_t port, int32_t sendev, uint64_t *skid);
 SOCKET task_netudp(task_ctx *task, const char *ip, uint16_t port, uint64_t *skid);
 
-int32_t task_netsend(task_ctx *task, SOCKET fd, uint64_t skid,
-    void *data, size_t len, uint8_t synflag, pack_type pktype);
+void task_netsend(task_ctx *task, SOCKET fd, uint64_t skid,
+    void *data, size_t len, pack_type pktype);
 void *task_synsend(task_ctx *task, SOCKET fd, uint64_t skid,
-    void *data, size_t len, size_t *size, pack_type pktype);
-int32_t task_sendto(task_ctx *task, SOCKET fd, uint64_t skid,
-    const char *ip, const uint16_t port, void *data, size_t len, uint8_t synflag);
+    void *data, size_t len, size_t *size, pack_type pktype, uint64_t *sess);
 void *task_synsendto(task_ctx *task, SOCKET fd, uint64_t skid,
     const char *ip, const uint16_t port, void *data, size_t len, size_t *size);
 

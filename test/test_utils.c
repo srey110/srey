@@ -186,29 +186,7 @@ void test_system(CuTest* tc) {
     pos = memstr(1, ptr1, strlen(ptr1), "teSt", strlen("teSt"));
     CuAssertTrue(tc, pos == ptr1 + 8);
     pos = memstr(1, ptr1, strlen(ptr1), "test1", strlen("test1"));
-    CuAssertTrue(tc, pos == NULL);
-
-    ud_cxt udd;
-    ZERO(&udd, sizeof(udd));
-    size_t setbuf = 0;
-    _set_ud_typstat_cmd((char *)&setbuf, 1, -1);
-    _set_ud_typstat((char *)&setbuf, &udd);
-    CuAssertTrue(tc, 1 == udd.pktype && 0 == udd.status);
-    ZERO(&udd, sizeof(udd));
-    setbuf = 0;
-    _set_ud_typstat_cmd((char *)&setbuf, -1, 2);
-    _set_ud_typstat((char *)&setbuf, &udd);
-    CuAssertTrue(tc, 0 == udd.pktype && 2 == udd.status);
-    ZERO(&udd, sizeof(udd));
-    setbuf = 0;
-    _set_ud_typstat_cmd((char *)&setbuf, 1, 2);
-    _set_ud_typstat((char *)&setbuf, &udd);
-    CuAssertTrue(tc, 1 == udd.pktype && 2 == udd.status);
-    ZERO(&udd, sizeof(udd));
-    setbuf = 0;
-    _set_ud_typstat_cmd((char *)&setbuf, -1, -1);
-    _set_ud_typstat((char *)&setbuf, &udd);
-    CuAssertTrue(tc, 0 == udd.pktype && 0 == udd.status);
+    CuAssertTrue(tc, pos == NULL);  
 
     struct timeval tv;
     timeofday(&tv);

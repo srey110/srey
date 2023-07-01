@@ -49,8 +49,7 @@ static void _init_callback(void) {
     cmd_cbs[CMD_ADDACP] = _on_cmd_addacp;
     cmd_cbs[CMD_ADDUDP] = _on_cmd_add_udp;
     cmd_cbs[CMD_SEND] = _on_cmd_send;
-    cmd_cbs[CMD_SETUD_TYPSTAT] = _on_cmd_setud_typstat;
-    cmd_cbs[CMD_SETUD_DATA] = _on_cmd_setud_data;
+    cmd_cbs[CMD_SETUD] = _on_cmd_setud;
 }
 static void _init_cmd(watcher_ctx *watcher) {
     sock_ctx *skctx;
@@ -474,6 +473,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads) {
     LOG_INFO("event: %s", EV_STR);
 }
 static void _free_pips(watcher_ctx *watcher) {
+    void *data;
     int32_t j, cnt, nread;
     cmd_ctx cmds[CMD_MAX_NREAD];
     for (uint32_t i = 0; i < watcher->npipes; i++) {
@@ -485,7 +485,8 @@ static void _free_pips(watcher_ctx *watcher) {
             cnt = nread / sizeof(cmd_ctx);
             for (j = 0; j < cnt; j++) {
                 if (CMD_SEND == cmds[j].cmd) {
-                    FREE(cmds[j].data);
+                    data = (void *)cmds[j].arg;
+                    FREE(data);
                 }
             }
         }

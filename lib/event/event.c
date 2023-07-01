@@ -1,7 +1,12 @@
 #include "event/event.h"
 #include "netutils.h"
 
-static atomic64_t sock_id = 1;
+typedef enum ud_type {
+    UD_PKTYPE = 0x00,
+    UD_STATUS,
+    UD_DATA,
+    UD_SESS
+}ud_type;
 
 void _bufs_clear(qu_off_buf *bufs) {
     off_buf_ctx *buf;
@@ -265,24 +270,33 @@ int32_t _sock_send(SOCKET fd, qu_off_buf *buf_s, size_t *nsend, void *arg) {
     return _sock_send_normal(fd, buf_s, nsend);
 #endif
 }
-uint64_t _sock_id(void) {
-    return ATOMIC64_ADD(&sock_id, 1);
+void ev_ud_pktype(ev_ctx *ctx, SOCKET fd, uint64_t skid, uint8_t pktype) {
+    _ev_set_ud(ctx, fd, skid, UD_PKTYPE, pktype);
 }
-void _set_ud_typstat_cmd(char *typsta, int8_t pktype, int8_t status) {
-    if (-1 != pktype) {
-        BIT_SET(typsta[0], 1);
-        typsta[1] = pktype;
-    }
-    if (-1 != status) {
-        BIT_SET(typsta[0], 2);
-        typsta[2] = status;
-    }
+void ev_ud_status(ev_ctx *ctx, SOCKET fd, uint64_t skid, uint8_t status) {
+    _ev_set_ud(ctx, fd, skid, UD_STATUS, status);
 }
-void _set_ud_typstat(char *typsta, ud_cxt *ud) {
-    if (BIT_CHECK(typsta[0], 1)) {
-        ud->pktype = (uint8_t)typsta[1];
-    }
-    if (BIT_CHECK(typsta[0], 2)) {
-        ud->status = (uint8_t)typsta[2];
+void ev_ud_sess(ev_ctx *ctx, SOCKET fd, uint64_t skid, uint64_t sess) {
+    _ev_set_ud(ctx, fd, skid, UD_SESS, sess);
+}
+void ev_ud_data(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *data) {
+    _ev_set_ud(ctx, fd, skid, UD_DATA, (uint64_t)data);
+}
+void _set_ud(ud_cxt *ud, int32_t type, uint64_t val) {
+    switch (type) {
+    case UD_PKTYPE:
+        ud->pktype = (uint8_t)val;
+        break;
+    case UD_STATUS:
+        ud->status = (uint8_t)val;
+        break;
+    case UD_DATA:
+        ud->data = (void *)val;
+        break;
+    case UD_SESS:
+        ud->sess = val;
+        break;
+    default:
+        break;
     }
 }

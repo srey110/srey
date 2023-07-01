@@ -26,32 +26,32 @@ static void on_sigcb(int32_t sig, void *arg) {
     PRINT("catch sign: %d", sig);
     cond_signal(&condexit);
 }
-static void test_close_cb(ev_ctx *ctx, SOCKET sock, uint64_t skid, int32_t *status, ud_cxt *ud) {
+static void test_close_cb(ev_ctx *ctx, SOCKET sock, uint64_t skid, ud_cxt *ud) {
     //PRINT("test_close_cb: sock %d ", (int32_t)sock);
     ATOMIC_ADD(&count, -1);
 }
-static int32_t test_acpt_cb(ev_ctx *ctx, SOCKET sock, uint64_t skid, int32_t *status, ud_cxt *ud) {
+static int32_t test_acpt_cb(ev_ctx *ctx, SOCKET sock, uint64_t skid, ud_cxt *ud) {
     //PRINT("test_acpt_cb : sock %d ", (int32_t)sock);
     ATOMIC_ADD(&count, 1);
     return ERR_OK;
 }
-static void test_recv_cb(ev_ctx *ctx, SOCKET sock, uint64_t skid, int32_t *status, buffer_ctx *buf, size_t lens, ud_cxt *ud) {
+static void test_recv_cb(ev_ctx *ctx, SOCKET sock, uint64_t skid, buffer_ctx *buf, size_t lens, ud_cxt *ud) {
     //PRINT("test_recv_cb: lens %d ", (int32_t)lens);
     if (randrange(1, 100) <= 1) {
-        ev_close(ctx, sock, skid, 0);
+        ev_close(ctx, sock, skid);
         return;
     }
     size_t len = buffer_size(buf);
     char *pk;
     MALLOC(pk, len);
     buffer_remove(buf, pk, len);
-    ev_send(ctx, sock, skid, pk, len, 0, STATUS_NONE);
+    ev_send(ctx, sock, skid, pk, len, 0);
 }
-static void test_recvfrom_cb(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t *status, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
+static void test_recvfrom_cb(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
     char host[IP_LENS] = { 0 };
     netaddr_ip(addr, host);
     uint16_t port = netaddr_port(addr);
-    ev_sendto(ev, fd, skid, host, port, buf, size, STATUS_NONE);
+    ev_sendto(ev, fd, skid, host, port, buf, size);
 }
 static void timeout(ud_cxt *ud) {
     int32_t elapsed = (int32_t)timer_elapsed_ms(&tw.timer);

@@ -81,7 +81,7 @@ sock_ctx *_new_sk(SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
     oltcp->ol_s.fd = fd;
     oltcp->ol_s.ev_cb = _on_send_cb;
     oltcp->status = STATUS_NONE;
-    oltcp->skid = _sock_id();
+    oltcp->skid = createid();
 #if WITH_SSL
     oltcp->ssl = NULL;
 #endif
@@ -126,7 +126,7 @@ void _reset_sk(sock_ctx *skctx, SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
     oltcp->ol_r.fd = fd;
     oltcp->ol_s.fd = fd;
     oltcp->cbs = *cbs;
-    oltcp->skid = _sock_id();
+    oltcp->skid = createid();
     COPY_UD(oltcp->ud, ud);
 }
 ud_cxt *_get_ud(sock_ctx *skctx) {
@@ -148,16 +148,13 @@ int32_t _check_skid(sock_ctx *skctx, const uint64_t skid) {
     }
     return ERR_FAILED;
 }
-void _disconnect(sock_ctx *skctx, int32_t nomsg) {
+void _disconnect(sock_ctx *skctx) {
     if (SOCK_STREAM == skctx->type) {
         overlap_tcp_ctx *tcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
         if (BIT_CHECK(tcp->status, STATUS_ERROR)) {
             return;
         }
         BIT_SET(tcp->status, STATUS_ERROR);
-        if (0 != nomsg) {
-            tcp->cbs.c_cb = NULL;
-        }
         _sk_shutdown(skctx);
     } else {
         overlap_udp_ctx *udp = UPCAST(skctx, overlap_udp_ctx, ol_r);
@@ -167,20 +164,6 @@ void _disconnect(sock_ctx *skctx, int32_t nomsg) {
         BIT_SET(udp->status, STATUS_ERROR);
     }
     CancelIoEx((HANDLE)skctx->fd, NULL);
-}
-void _setud_typstat(sock_ctx *skctx, char *typsta) {
-    if (SOCK_STREAM == skctx->type) {
-        _set_ud_typstat(typsta, &(UPCAST(skctx, overlap_tcp_ctx, ol_r)->ud));
-    } else {
-        _set_ud_typstat(typsta, &(UPCAST(skctx, overlap_udp_ctx, ol_r)->ud));
-    }
-}
-void _setud_data(sock_ctx *skctx, void *data) {
-    if (SOCK_STREAM == skctx->type) {
-        UPCAST(skctx, overlap_tcp_ctx, ol_r)->ud.data = data;
-    } else {
-        UPCAST(skctx, overlap_udp_ctx, ol_r)->ud.data = data;
-    }
 }
 void _add_fd(watcher_ctx *watcher, sock_ctx *skctx) {
     ASSERTAB(NULL == hashmap_set(watcher->element, &skctx), "socket repeat.");
@@ -192,30 +175,30 @@ void _remove_fd(watcher_ctx *watcher, SOCKET fd) {
     hashmap_delete(watcher->element, &pkey);
 }
 static inline int32_t _call_acp_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp) {
-    return oltcp->cbs.acp_cb(ev, oltcp->ol_r.fd, oltcp->skid, &oltcp->status, &oltcp->ud);
+    return oltcp->cbs.acp_cb(ev, oltcp->ol_r.fd, oltcp->skid, &oltcp->ud);
 }
 static inline int32_t _call_conn_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp, int32_t err) {
-    return oltcp->cbs.conn_cb(ev, oltcp->ol_r.fd, oltcp->skid, &oltcp->status, err, &oltcp->ud);
+    return oltcp->cbs.conn_cb(ev, oltcp->ol_r.fd, oltcp->skid, err, &oltcp->ud);
 }
 static inline void _call_recv_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp, size_t nread) {
     if (nread > 0) {
-        oltcp->cbs.r_cb(ev, oltcp->ol_r.fd, oltcp->skid, &oltcp->status, &oltcp->buf_r, nread, &oltcp->ud);
+        oltcp->cbs.r_cb(ev, oltcp->ol_r.fd, oltcp->skid, &oltcp->buf_r, nread, &oltcp->ud);
     }
 }
 static inline void _call_send_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp, size_t nsend) {
     if (NULL != oltcp->cbs.s_cb
         && nsend > 0) {
-        oltcp->cbs.s_cb(ev, oltcp->ol_s.fd, oltcp->skid, &oltcp->status, nsend, &oltcp->ud);
+        oltcp->cbs.s_cb(ev, oltcp->ol_s.fd, oltcp->skid, nsend, &oltcp->ud);
     }
 }
 static inline void _call_close_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp) {
     if (NULL != oltcp->cbs.c_cb) {
-        oltcp->cbs.c_cb(ev, oltcp->ol_r.fd, oltcp->skid, &oltcp->status, &oltcp->ud);
+        oltcp->cbs.c_cb(ev, oltcp->ol_r.fd, oltcp->skid, &oltcp->ud);
     }
 }
 static inline void _call_recvfrom_cb(ev_ctx *ev, overlap_udp_ctx *oludp, size_t nread) {
     if (nread > 0) {
-        oludp->cbs.rf_cb(ev, oludp->ol_r.fd, oludp->skid, &oludp->status, oludp->wsabuf_r.buf, nread, &oludp->addr, &oludp->ud);
+        oludp->cbs.rf_cb(ev, oludp->ol_r.fd, oludp->skid, oludp->wsabuf_r.buf, nread, &oludp->addr, &oludp->ud);
     }
 }
 //recv
@@ -402,25 +385,18 @@ static void _on_send_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
         BIT_REMOVE(oltcp->status, STATUS_SENDING);
     }
 }
-int32_t _add_bufs_trypost(sock_ctx *skctx, off_buf_ctx *buf, sock_status status) {
+void _add_bufs_trypost(sock_ctx *skctx, off_buf_ctx *buf) {
     overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
-    if (STATUS_NONE != status) {
-        BIT_SET(oltcp->status, status);
-    }
     qu_off_buf_push(&oltcp->buf_s, buf);
-    if (BIT_CHECK(oltcp->status, STATUS_SENDING)) {
-        return ERR_OK;
-    }
-    if (BIT_CHECK(oltcp->status, STATUS_ERROR)) {
-        return ERR_FAILED;
+    if (BIT_CHECK(oltcp->status, STATUS_SENDING)
+        || BIT_CHECK(oltcp->status, STATUS_ERROR)) {
+        return;
     }
     BIT_SET(oltcp->status, STATUS_SENDING);
     if (ERR_OK != _post_send(oltcp)) {
         BIT_SET(oltcp->status, STATUS_ERROR);
         BIT_REMOVE(oltcp->status, STATUS_SENDING);
-        return ERR_FAILED;
     }
-    return ERR_OK;
 }
 //connect
 static inline int32_t _trybind(SOCKET fd, int32_t family) {
@@ -501,7 +477,7 @@ static inline void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD b
     }
 }
 SOCKET ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const uint16_t port,
-    cbs_ctx *cbs, ud_cxt *ud, sock_status status, uint64_t *skid) {
+    cbs_ctx *cbs, ud_cxt *ud, uint64_t *skid) {
     ASSERTAB(NULL != cbs && NULL != cbs->conn_cb && NULL != cbs->r_cb, ERRSTR_NULLP);
     netaddr_ctx addr;
     if (ERR_OK != netaddr_sethost(&addr, ip, port)) {
@@ -529,9 +505,6 @@ SOCKET ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
     sock_ctx *skctx = _new_sk(fd, cbs, ud);
     skctx->ev_cb = _on_connect_cb;
     overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
-    if (STATUS_NONE != status) {
-        BIT_SET(oltcp->status, status);
-    }
     *skid = oltcp->skid;
 #if WITH_SSL
     if (NULL != evssl) {
@@ -775,17 +748,12 @@ static inline void _on_sendto_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD by
         BIT_REMOVE(oludp->status, STATUS_SENDING);
     }
 }
-int32_t _add_bufs_trysendto(sock_ctx *skctx, off_buf_ctx *buf, sock_status status) {
+void _add_bufs_trysendto(sock_ctx *skctx, off_buf_ctx *buf) {
     overlap_udp_ctx *oludp = UPCAST(skctx, overlap_udp_ctx, ol_r);
-    if (STATUS_NONE != status) {
-        BIT_SET(oludp->status, status);
-    }
     qu_off_buf_push(&oludp->buf_s, buf);
-    if (BIT_CHECK(oludp->status, STATUS_SENDING)) {
-        return ERR_OK;
-    }
-    if (BIT_CHECK(oludp->status, STATUS_ERROR)) {
-        return ERR_FAILED;
+    if (BIT_CHECK(oludp->status, STATUS_SENDING)
+        || BIT_CHECK(oludp->status, STATUS_ERROR)) {
+        return;
     }
     BIT_SET(oludp->status, STATUS_SENDING);
     off_buf_ctx *sendbuf = qu_off_buf_pop(&oludp->buf_s);
@@ -793,9 +761,7 @@ int32_t _add_bufs_trysendto(sock_ctx *skctx, off_buf_ctx *buf, sock_status statu
         FREE(sendbuf->data);
         BIT_SET(oludp->status, STATUS_ERROR);
         BIT_REMOVE(oludp->status, STATUS_SENDING);
-        return ERR_FAILED;
     }
-    return ERR_OK;
 }
 static inline sock_ctx *_new_udp(netaddr_ctx *addr, SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
     overlap_udp_ctx *oludp;
@@ -807,7 +773,7 @@ static inline sock_ctx *_new_udp(netaddr_ctx *addr, SOCKET fd, cbs_ctx *cbs, ud_
     oludp->ol_s.fd = fd;
     oludp->ol_s.ev_cb = _on_sendto_cb;
     oludp->status = STATUS_NONE;
-    oludp->skid = _sock_id();
+    oludp->skid = createid();
     oludp->cbs = *cbs;
     COPY_UD(oludp->ud, ud);
     netaddr_empty_addr(&oludp->addr, netaddr_family(addr));

@@ -206,7 +206,7 @@ static inline http_pack_ctx *_http_header(buffer_ctx *buf, ud_cxt *ud, int32_t *
         }
     } else {
         if (1 == pack->chunked) {
-            *slice = SLICE;
+            *slice = SLICE_START;
         }
         ud->status = status;
         return pack;

@@ -48,18 +48,16 @@ typedef enum UEV_CMDS {
     CMD_ADDACP,
     CMD_ADDUDP,
     CMD_SEND,
-    CMD_SETUD_TYPSTAT,
-    CMD_SETUD_DATA,
+    CMD_SETUD,
 
     CMD_TOTAL,
 }UEV_CMDS;
 typedef struct cmd_ctx {
     int32_t cmd;
-    int32_t flag;
     SOCKET fd;
-    void *data;
     size_t len;
     uint64_t skid;
+    uint64_t arg;
 }cmd_ctx;
 typedef struct watcher_ctx {
     int32_t index;
@@ -104,22 +102,19 @@ void _on_cmd_conn(watcher_ctx *watcher, cmd_ctx *cmd);
 void _on_cmd_send(watcher_ctx *watcher, cmd_ctx *cmd);
 void _on_cmd_addacp(watcher_ctx *watcher, cmd_ctx *cmd);
 void _on_cmd_add_udp(watcher_ctx *watcher, cmd_ctx *cmd);
-void _on_cmd_setud_typstat(watcher_ctx *watcher, cmd_ctx *cmd);
-void _on_cmd_setud_data(watcher_ctx *watcher, cmd_ctx *cmd);
+void _on_cmd_setud(watcher_ctx *watcher, cmd_ctx *cmd);
 
 void _add_lsn_inloop(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx);
 void _add_conn_inloop(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx);
 void _add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn);
-int32_t _add_write_inloop(watcher_ctx *watcher, sock_ctx *skctx, off_buf_ctx *buf, sock_status status);
+void _add_write_inloop(watcher_ctx *watcher, sock_ctx *skctx, off_buf_ctx *buf);
 void _add_udp_inloop(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx);
 
 void _add_fd(watcher_ctx *watcher, sock_ctx *skctx);
 sock_ctx *_map_getskctx(watcher_ctx *watcher, SOCKET fd);
 void _sk_shutdown(sock_ctx *skctx);
 void _free_udp(sock_ctx *skctx);
-void _disconnect(watcher_ctx *watcher, sock_ctx *skctx, int32_t nomsg);
-void _setud_typstat(sock_ctx *skctx, char *typsta);
-void _setud_data(sock_ctx *skctx, void *data);
+void _disconnect(watcher_ctx *watcher, sock_ctx *skctx);
 void _freelsn(struct listener_ctx *lsn);
 ud_cxt *_get_ud(sock_ctx *skctx);
 int32_t _check_skid(sock_ctx *skctx, const uint64_t skid);

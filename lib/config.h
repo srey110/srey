@@ -7,7 +7,6 @@
 #define WITH_SSL             1
 #define WITH_LUA             1
 
-#define MAX_RETRYCNT        3
 #define CMD_MAX_NREAD       64
 #define EVENT_WAIT_TIMEOUT  100
 #define EVENT_CHANGES_CNT   128

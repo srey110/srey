@@ -211,12 +211,12 @@ function core.task_name(task)
     return sutils.task_name(task or curtask)
 end
 --[[
-描述:获取session
-返回:
+描述:获取id
+返回:id
     integer
 --]]
-function core.task_session()
-    return sutils.task_session(curtask)
+function core.getid()
+    return sutils.getid()
 end
 --[[
 描述:任务间通信,无返回
@@ -253,15 +253,24 @@ function core.task_response(dst, sess, data, size)
     sutils.task_response(dst, sess, data, size)
 end
 --[[
-描述:设置socket的pktype status, nil保持不变
+描述:设置socket的pktype
 参数:
     fd :integer
     skid :integer
     pktype :PACK_TYPE
+--]]
+function core.ud_pktype(fd, skid, pktype)
+    sutils.setud_pktype(fd, skid, pktype)
+end
+--[[
+描述:设置socket的status
+参数:
+    fd :integer
+    skid :integer
     status :integer
 --]]
-function core.ud_typstat(fd, skid, pktype, status)
-    sutils.setud_typstat(fd, skid, pktype, status)
+function core.ud_status(fd, skid, status)
+    sutils.setud_status(fd, skid, status)
 end
 --[[
 描述:设置socket消息处理的任务
@@ -347,7 +356,7 @@ end
     data lstring或userdata
     size data长度 :integer
 返回:
-    data size
+    data size sess
     nil失败
 --]]
 function core.synsend(fd, skid, pktype, data, size)
@@ -366,15 +375,13 @@ end
     port 端口 :integer
     data lstring或userdata
     lens data长度 :integer
-返回:
-    bool
 --]]
 function core.sendto(fd, skid, ip, port, data, lens)
     if INVALID_SOCK == fd or nil == data then
         log.WARN("invalid argument.")
-        return false
+        return
     end
-    return sutils.sendto(curtask, fd, skid, ip, port, data, lens)
+    sutils.sendto(fd, skid, ip, port, data, lens)
 end
 --[[
 描述:udp发送,等待数据返回
@@ -409,25 +416,11 @@ function core.close(fd, skid)
     sutils.close(fd, skid)
 end
 --[[
-描述:分片同步接收开始
-参数:
-    fd socket :integer
-返回:
-    session :integer
-    ERR_FAILED 失败
---]]
-function core.slice_start(fd)
-    if INVALID_SOCK == fd then
-        return ERR_FAILED
-    end
-    return sutils.slice_start(curtask, fd)
-end
---[[
 描述:分片同步接收
 参数:
     sess :integer
 返回:
-    data,size
+    data,size,end
     nil失败
 --]]
 function core.slice(sess)

@@ -17,13 +17,12 @@ local function testrpc()
     a = math.random(10)
     b = math.random(10)
     local rtn, sum, des = srey.request(rpctask, "rpc_add", a , b, "srey.request")
-    --printd("sum:"..tostring(sum).. " des:".. tostring(des))
-    if not rtn or sum ~= a + b then
-        printd("srey.request failed")
+    if not rtn or sum ~= a + b or "srey.request" ~= des then
+        printd("srey.request rpc_add failed")
     end
     rtn = srey.request(rpctask, "rpc_void")
     if not rtn then
-        printd("srey.request failed")
+        printd("srey.request rpc_void failed")
     end
     if INVALID_SOCK ~= rpcfd then
         a = math.random(10)
@@ -32,13 +31,12 @@ local function testrpc()
         a = math.random(10)
         b = math.random(10)
         rtn, sum, des = srey.netreq(rpcfd, rpcfdid, TASK_NAME.TASK2, "rpc_add", a , b, "srey.netreq")
-        --printd("sum:"..tostring(sum).. " des:".. tostring(des))
-        if not rtn or sum ~= a + b then
-            printd("srey.netreq failed")
+        if not rtn or sum ~= a + b or "srey.netreq" ~= des then
+            printd("srey.netreq rpc_add failed")
         end
         rtn = srey.netreq(rpcfd, rpcfdid, TASK_NAME.TASK2, "rpc_void")
         if not rtn then
-            printd("srey.netreq failed")
+            printd("srey.netreq rpc_void failed")
         end
     end
 end
@@ -87,8 +85,8 @@ local function chuncedmesg(cnt)
     cnt.cnt = cnt.cnt + 1
     return "this is chuncked "..tostring(cnt.cnt)
 end
-local function onchunked(fd, skid, hinfo, data, size)
-    if data then
+local function onchunked(fd, skid, hinfo, data, size, fin)
+    if not fin then
         --printd("hunked: %s", srey.utostr(data ,size))
     else
         --printd("hunked: end")
@@ -130,7 +128,8 @@ local function testhttp()
         printd("http.post /post_json error.")
     end
     hinfo = http.post(fd, skid, "/get_chunked_cb", headers, onchunked, chuncedmesg, cnt)
-    if not hinfo or "HTTP/1.1" ~= hinfo.status[1] or "200" ~=  hinfo.status[2] then
+    if not hinfo or "HTTP/1.1" ~= hinfo.status[1] or "200" ~=  hinfo.status[2]
+       or not hinfo.fin or 72 ~= hinfo.cksize  then
         printd("http.post /get_chunked_cb error.")
     end
     srey.close(fd, skid)

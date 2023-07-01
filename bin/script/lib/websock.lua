@@ -57,7 +57,8 @@ end
     sign websock.upgrade 返回值 :string
 --]]
 function websock.allowed(fd, skid, sign)
-    core.ud_typstat(fd, skid, PACK_TYPE.WEBSOCK, status_start)
+    core.ud_pktype(fd, skid, PACK_TYPE.WEBSOCK)
+    core.ud_status(fd, skid, status_start)
     http.rsp_websock_allowed(fd, skid, sign)
 end
 local function websock_checkrsp(hpack)
@@ -122,7 +123,8 @@ function websock.handshake(fd, skid, url, headers)
     if sign ~= core.sha1_b64encode(string.format("%s258EAFA5-E914-47DA-95CA-C5AB0DC85B11", key)) then
         return false
     end
-    core.ud_typstat(fd, skid, PACK_TYPE.WEBSOCK, status_start)
+    core.ud_pktype(fd, skid, PACK_TYPE.WEBSOCK)
+    core.ud_status(fd, skid, status_start)
     return true
 end
 --[[

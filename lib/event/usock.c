@@ -65,7 +65,7 @@ sock_ctx *_new_sk(SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
     tcp->sock.fd = fd;
     tcp->sock.events = 0;
     tcp->status = STATUS_NONE;
-    tcp->skid = _sock_id();
+    tcp->skid = createid();
 #if WITH_SSL
     tcp->ssl = NULL;
 #endif
@@ -107,7 +107,7 @@ void _reset_sk(sock_ctx *skctx, SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
     tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
     tcp->sock.fd = fd;
     tcp->cbs = *cbs;
-    tcp->skid = _sock_id();
+    tcp->skid = createid();
     COPY_UD(tcp->ud, ud);
 }
 ud_cxt *_get_ud(sock_ctx *skctx) {
@@ -129,16 +129,13 @@ int32_t _check_skid(sock_ctx *skctx, const uint64_t skid) {
     }
     return ERR_FAILED;
 }
-void _disconnect(watcher_ctx *watcher, sock_ctx *skctx, int32_t nomsg) {
+void _disconnect(watcher_ctx *watcher, sock_ctx *skctx) {
     if (SOCK_STREAM == skctx->type) {
         tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
         if (BIT_CHECK(tcp->status, STATUS_ERROR)) {
             return;
         }
         BIT_SET(tcp->status, STATUS_ERROR);
-        if (0 != nomsg) {
-            tcp->cbs.c_cb = NULL;
-        }
         _sk_shutdown(skctx);
     } else {
         udp_ctx *udp = UPCAST(skctx, udp_ctx, sock);
@@ -147,20 +144,6 @@ void _disconnect(watcher_ctx *watcher, sock_ctx *skctx, int32_t nomsg) {
         }
         BIT_SET(udp->status, STATUS_ERROR);
         _add_event(watcher, skctx->fd, &skctx->events, EVENT_WRITE, skctx);
-    }
-}
-void _setud_typstat(sock_ctx *skctx, char *typsta) {
-    if (SOCK_STREAM == skctx->type) {
-        _set_ud_typstat(typsta, &(UPCAST(skctx, tcp_ctx, sock)->ud));
-    } else {
-        _set_ud_typstat(typsta, &(UPCAST(skctx, udp_ctx, sock)->ud));
-    }
-}
-void _setud_data(sock_ctx *skctx, void *data) {
-    if (SOCK_STREAM == skctx->type) {
-        UPCAST(skctx, tcp_ctx, sock)->ud.data = data;
-    } else {
-        UPCAST(skctx, udp_ctx, sock)->ud.data = data;
     }
 }
 void _add_fd(watcher_ctx *watcher, sock_ctx *skctx) {
@@ -173,30 +156,30 @@ static inline void _remove_fd(watcher_ctx *watcher, SOCKET fd) {
     hashmap_delete(watcher->element, &pkey);
 }
 static inline int32_t _call_acp_cb(ev_ctx *ev, tcp_ctx *tcp) {
-    return tcp->cbs.acp_cb(ev, tcp->sock.fd, tcp->skid, &tcp->status, &tcp->ud);
+    return tcp->cbs.acp_cb(ev, tcp->sock.fd, tcp->skid, &tcp->ud);
 }
 static inline int32_t _call_conn_cb(ev_ctx *ev, tcp_ctx *tcp, int32_t err) {
-    return tcp->cbs.conn_cb(ev, tcp->sock.fd, tcp->skid, &tcp->status, err, &tcp->ud);
+    return tcp->cbs.conn_cb(ev, tcp->sock.fd, tcp->skid, err, &tcp->ud);
 }
 static inline void _call_recv_cb(ev_ctx *ev, tcp_ctx *tcp, size_t nread) {
     if (nread > 0) {
-        tcp->cbs.r_cb(ev, tcp->sock.fd, tcp->skid, &tcp->status, &tcp->buf_r, nread, &tcp->ud);
+        tcp->cbs.r_cb(ev, tcp->sock.fd, tcp->skid, &tcp->buf_r, nread, &tcp->ud);
     }
 }
 static inline void _call_send_cb(ev_ctx *ev, tcp_ctx *tcp, size_t nsend) {
     if (NULL != tcp->cbs.s_cb
         && nsend > 0) {
-        tcp->cbs.s_cb(ev, tcp->sock.fd, tcp->skid, &tcp->status, nsend, &tcp->ud);
+        tcp->cbs.s_cb(ev, tcp->sock.fd, tcp->skid, nsend, &tcp->ud);
     }
 }
 static inline void _call_close_cb(ev_ctx *ev, tcp_ctx *tcp) {
     if (NULL != tcp->cbs.c_cb) {
-        tcp->cbs.c_cb(ev, tcp->sock.fd, tcp->skid, &tcp->status, &tcp->ud);
+        tcp->cbs.c_cb(ev, tcp->sock.fd, tcp->skid, &tcp->ud);
     }
 }
 static inline void _call_recvfrom_cb(ev_ctx *ev, udp_ctx *udp, size_t nread) {
     if (nread > 0) {
-        udp->cbs.rf_cb(ev, udp->sock.fd, udp->skid, &udp->status, udp->buf_r.IOV_PTR_FIELD, nread, &udp->addr, &udp->ud);
+        udp->cbs.rf_cb(ev, udp->sock.fd, udp->skid, udp->buf_r.IOV_PTR_FIELD, nread, &udp->addr, &udp->ud);
     }
 }
 //rw
@@ -363,24 +346,17 @@ static void _on_rw_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
         pool_push(&watcher->pool, &tcp->sock);
     }
 }
-int32_t _add_write_inloop(watcher_ctx *watcher, sock_ctx *skctx, off_buf_ctx *buf, sock_status status) {
+void _add_write_inloop(watcher_ctx *watcher, sock_ctx *skctx, off_buf_ctx *buf) {
     if (SOCK_STREAM == skctx->type) {
         tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
-        if (STATUS_NONE != status) {
-            BIT_SET(tcp->status, status);
-        }
         qu_off_buf_push(&tcp->buf_s, buf);
     } else {
         udp_ctx *udp = UPCAST(skctx, udp_ctx, sock);
-        if (STATUS_NONE != status) {
-            BIT_SET(udp->status, status);
-        }
         qu_off_buf_push(&udp->buf_s, buf);
     }
     if (!BIT_CHECK(skctx->events, EVENT_WRITE)) {
-        return _add_event(watcher, skctx->fd, &skctx->events, EVENT_WRITE, skctx);
+        _add_event(watcher, skctx->fd, &skctx->events, EVENT_WRITE, skctx);
     }
-    return ERR_OK;
 }
 //connect
 static inline void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
@@ -429,7 +405,7 @@ static inline void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t
     }
 }
 SOCKET ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const uint16_t port,
-    cbs_ctx *cbs, ud_cxt *ud, sock_status status, uint64_t *skid) {
+    cbs_ctx *cbs, ud_cxt *ud, uint64_t *skid) {
     ASSERTAB(NULL != cbs && NULL != cbs->conn_cb && NULL != cbs->r_cb, ERRSTR_NULLP);
     netaddr_ctx addr;
     if (ERR_OK != netaddr_sethost(&addr, ip, port)) {
@@ -455,9 +431,6 @@ SOCKET ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
     sock_ctx *skctx = _new_sk(fd, cbs, ud);
     skctx->ev_cb = _on_connect_cb;
     tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
-    if (STATUS_NONE != status) {
-        BIT_SET(tcp->status, status);
-    }
     *skid = tcp->skid;
 #if WITH_SSL
     if (NULL != evssl) {
@@ -725,7 +698,7 @@ static inline sock_ctx *_new_udp(SOCKET fd, int32_t family, cbs_ctx *cbs, ud_cxt
     udp->sock.fd = fd;
     udp->sock.events = 0;
     udp->status = STATUS_NONE;
-    udp->skid = _sock_id();
+    udp->skid = createid();
     udp->cbs = *cbs;
     udp->buf_r.IOV_PTR_FIELD = udp->buf;
     udp->buf_r.IOV_LEN_FIELD = sizeof(udp->buf);

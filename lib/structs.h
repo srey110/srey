@@ -9,11 +9,10 @@
 typedef struct ud_cxt {
     uint8_t pktype;//数据包类型
     uint8_t status;//解包状态
-    uint8_t nretry;//解析一个包，重试次数
-    uint8_t synflag;//同步读,链接
+    uint8_t slice;
     void *data;//task_ctx
     void *extra;//数据包
-    uint64_t session;
+    uint64_t sess;
 }ud_cxt;
 typedef struct buf_ctx {
     void *data;

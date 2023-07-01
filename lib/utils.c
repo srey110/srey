@@ -11,7 +11,7 @@ static atomic_t _exindex = 0;
 
 static void *_ud;
 static void(*_sig_cb)(int32_t, void *);
-static atomic64_t _ids = 1000;
+static atomic64_t _ids = 1;
 static char _path[PATH_LENS] = { 0 };
 static atomic_t _path_once = 0;
 

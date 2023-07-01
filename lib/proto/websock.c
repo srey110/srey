@@ -110,7 +110,7 @@ static inline void _websock_handshake_server(ev_ctx *ev, SOCKET fd, uint64_t ski
     char *rsp = formatv(fmt, key);
     FREE(key);
     ud->status = START;
-    ev_send(ev, fd, skid, rsp, strlen(rsp), 0, STATUS_NONE);
+    ev_send(ev, fd, skid, rsp, strlen(rsp), 0);
     _push_handshaked(fd, skid, ud);
 }
 static inline void _websock_handshake(ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt *ud, int32_t *closefd) {
@@ -149,7 +149,7 @@ static inline websock_pack_ctx *_websock_parse_data(buffer_ctx *buf, ud_cxt *ud,
     //起始帧:FIN为0,opcode非0 中间帧:FIN为0,opcode为0 结束帧:FIN为1,opcode为0
     if (0 == pack->fin 
         && 0 != pack->proto) {
-        *slice = SLICE;
+        *slice = SLICE_START;
     } else if (0 == pack->fin
         && 0 == pack->proto) {
         *slice = SLICE;
@@ -328,7 +328,7 @@ static inline void *_websock_create_pack(uint8_t fin, uint8_t proto, char key[4]
 static inline void _websock_control_frame(ev_ctx *ev, SOCKET fd, uint64_t skid, uint8_t proto) {
     size_t flens;
     void *frame = _websock_create_pack(1, proto, NULL, NULL, 0, &flens);
-    ev_send(ev, fd, skid, frame, flens, 0, STATUS_NONE);
+    ev_send(ev, fd, skid, frame, flens, 0);
 }
 void websock_ping(ev_ctx *ev, SOCKET fd, uint64_t skid) {
     _websock_control_frame(ev, fd, skid, PING);
@@ -343,19 +343,19 @@ void websock_text(ev_ctx *ev, SOCKET fd, uint64_t skid,
     int32_t fin, char key[4], const char *data, size_t dlens) {
     size_t flens;
     void *frame = _websock_create_pack(fin, TEXT, key, (void *)data, dlens, &flens);
-    ev_send(ev, fd, skid, frame, flens, 0, STATUS_NONE);
+    ev_send(ev, fd, skid, frame, flens, 0);
 }
 void websock_binary(ev_ctx *ev, SOCKET fd, uint64_t skid,
     int32_t fin, char key[4], void *data, size_t dlens) {
     size_t flens;
     void *frame = _websock_create_pack(fin, BINARY, key, data, dlens, &flens);
-    ev_send(ev, fd, skid, frame, flens, 0, STATUS_NONE);
+    ev_send(ev, fd, skid, frame, flens, 0);
 }
 void websock_continuation(ev_ctx *ev, SOCKET fd, uint64_t skid,
     int32_t fin, char key[4], void *data, size_t dlens) {
     size_t flens;
     void *frame = _websock_create_pack(fin, CONTINUE, key, data, dlens, &flens);
-    ev_send(ev, fd, skid, frame, flens, 0, STATUS_NONE);
+    ev_send(ev, fd, skid, frame, flens, 0);
 }
 int32_t websock_pack_fin(websock_pack_ctx *pack) {
     return pack->fin;
@@ -451,14 +451,7 @@ static inline int32_t _websock_handshake_client(struct http_pack_ctx *hpack, cha
     return ERR_OK;
 }
 SOCKET websock_connect(struct task_ctx *task, const char *host, uint16_t port, struct evssl_ctx *evssl, uint64_t *skid) {
-    SOCKET fd;
-    int32_t isip = is_ipaddr(host);
-    /*if (ERR_OK == isip) {
-        fd = task_netconnect(task, PACK_HTTP, evssl, host, port, 0, skid);
-    } else {
-
-    }*/
-    fd = task_netconnect(task, PACK_HTTP, evssl, host, port, 0, skid);
+    SOCKET fd = task_netconnect(task, PACK_HTTP, evssl, host, port, 0, skid);
     if (INVALID_SOCK == fd) {
         return INVALID_SOCK;
     }
@@ -466,29 +459,25 @@ SOCKET websock_connect(struct task_ctx *task, const char *host, uint16_t port, s
     randstr(rdstr, sizeof(rdstr) - 1);
     size_t blens;
     char *b64 = b64encode(rdstr, strlen(rdstr), &blens);
-    char *data;
-    if (ERR_OK == isip) {
-        const char *fmt = "GET / HTTP/1.1\r\nHost: %s:%d\r\nUpgrade: websocket\r\nConnection: Upgrade,Keep-Alive\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n";
-        data = formatv(fmt, host, port, b64);
-    } else {
-        const char *fmt = "GET / HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade,Keep-Alive\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n";
-        data = formatv(fmt, host, b64);
-    }
+    const char *fmt = "GET / HTTP/1.1\r\nHost: %s:%d\r\nUpgrade: websocket\r\nConnection: Upgrade,Keep-Alive\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n";
+    char *data = formatv(fmt, host, port, b64);
     size_t size;
-    void *resp = task_synsend(task, fd, *skid, data, strlen(data), &size, PACK_HTTP);
+    uint64_t sess;
+    void *resp = task_synsend(task, fd, *skid, data, strlen(data), &size, PACK_HTTP, &sess);
     if (NULL == resp) {
         FREE(b64);
         FREE(data);
-        ev_close(task_netev(task), fd, *skid, 0);
+        ev_close(task_netev(task), fd, *skid);
         return INVALID_SOCK;
     }
     if (ERR_OK != _websock_handshake_client(resp, b64)) {
         FREE(b64);
         FREE(data);
-        ev_close(task_netev(task), fd, *skid, 0);
+        ev_close(task_netev(task), fd, *skid);
         return INVALID_SOCK;
     }
-    ev_setud_typstat(task_netev(task), fd, *skid, PACK_WEBSOCK, START);
+    ev_ud_pktype(task_netev(task), fd, *skid, PACK_WEBSOCK);
+    ev_ud_status(task_netev(task), fd, *skid, START);
     FREE(b64);
     FREE(data);
     return fd;

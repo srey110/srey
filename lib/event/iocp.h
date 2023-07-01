@@ -15,8 +15,7 @@ typedef enum WEV_CMDS {
     CMD_ADDACP,
     CMD_REMOVE,
     CMD_SEND,
-    CMD_SETUD_TYPSTAT,
-    CMD_SETUD_DATA,
+    CMD_SETUD,
 
     CMD_TOTAL,
 }WEV_CMDS;
@@ -29,11 +28,10 @@ typedef struct sock_ctx {
 }sock_ctx;
 typedef struct cmd_ctx {
     int32_t cmd;
-    int32_t flag;
     SOCKET fd;
-    void *data;
     size_t len;
     uint64_t skid;
+    uint64_t arg;
 }cmd_ctx;
 QUEUE_DECL(cmd_ctx, qu_cmd);
 typedef struct overlap_cmd_ctx {
@@ -80,20 +78,17 @@ void _on_cmd_addacp(watcher_ctx *watcher, cmd_ctx *cmd);
 void _on_cmd_remove(watcher_ctx *watcher, cmd_ctx *cmd); 
 void _on_cmd_send(watcher_ctx *watcher, cmd_ctx *cmd);
 void _on_cmd_disconn(watcher_ctx *watcher, cmd_ctx *cmd);
-void _on_cmd_setud_typstat(watcher_ctx *watcher, cmd_ctx *cmd);
-void _on_cmd_setud_data(watcher_ctx *watcher, cmd_ctx *cmd);
+void _on_cmd_setud(watcher_ctx *watcher, cmd_ctx *cmd);
 
 void _add_fd(watcher_ctx *watcher, sock_ctx *skctx);
 void _remove_fd(watcher_ctx *watcher, SOCKET fd);
 int32_t _join_iocp(watcher_ctx *watcher, SOCKET fd);
 void _add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn);
 int32_t _post_recv(sock_ctx *skctx, DWORD  *bytes, DWORD  *flag, IOV_TYPE *wsabuf, DWORD niov);
-int32_t _add_bufs_trypost(sock_ctx *skctx, off_buf_ctx *buf, sock_status status);
-int32_t _add_bufs_trysendto(sock_ctx *skctx, off_buf_ctx *buf, sock_status status);
+void _add_bufs_trypost(sock_ctx *skctx, off_buf_ctx *buf);
+void _add_bufs_trysendto(sock_ctx *skctx, off_buf_ctx *buf);
 void _sk_shutdown(sock_ctx *skctx);
-void _disconnect(sock_ctx *skctx, int32_t nomsg);
-void _setud_typstat(sock_ctx *skctx, char *typsta);
-void _setud_data(sock_ctx *skctx, void *data);
+void _disconnect(sock_ctx *skctx);
 void _free_udp(sock_ctx *skctx);
 void _freelsn(struct listener_ctx *lsn);
 ud_cxt *_get_ud(sock_ctx *skctx);

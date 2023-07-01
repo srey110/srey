@@ -2,6 +2,12 @@ local websock = require("lib.websock")
 local srey = require("lib.srey")
 local function onstarted()
     srey.listen("0.0.0.0", 15004, PACK_TYPE.WEBSOCK)
+    local bg = os.time()
+    srey.sleep(1000)
+    local ed = os.time()
+    if ed - bg ~= 1 then
+        printd("sleep 1000 ms error")
+    end
 end
 srey.started(onstarted)
 local function handshaked(pktype, fd, skid)
