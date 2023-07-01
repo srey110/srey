@@ -47,15 +47,17 @@ void _cmd_add_acpfd(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn, u
 void _on_cmd_addacp(watcher_ctx *watcher, cmd_ctx *cmd) {
     _add_acpfd_inloop(watcher, cmd->fd, (struct listener_ctx *)cmd->arg);
 }
-void _cmd_remove(watcher_ctx *watcher, SOCKET fd, uint64_t hs) {
+void _cmd_remove(watcher_ctx *watcher, SOCKET fd, uint64_t skid, uint64_t hs) {
     cmd_ctx cmd;
     cmd.cmd = CMD_REMOVE;
     cmd.fd = fd;
+    cmd.skid = skid;
     _send_cmd(watcher, GET_POS(hs, watcher->ncmd), &cmd);
 }
 void _on_cmd_remove(watcher_ctx *watcher, cmd_ctx *cmd) {
     sock_ctx *skctx = _map_get(watcher, cmd->fd);
-    if (NULL == skctx) {
+    if (NULL == skctx
+        || ERR_OK != _check_skid(skctx, cmd->skid)) {
         return;
     }
     _remove_fd(watcher, cmd->fd);

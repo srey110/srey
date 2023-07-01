@@ -10,16 +10,12 @@ do {\
     _send_cmd(watcher, GET_POS(hs, watcher->npipes), &cmd);\
 } while (0)
 
-static inline sock_ctx *_map_get(watcher_ctx *watcher, SOCKET fd) {
+sock_ctx *_map_get(watcher_ctx *watcher, SOCKET fd) {
     sock_ctx key;
     key.fd = fd;
     sock_ctx *pkey = &key;
     void **tmp = (void **)hashmap_get(watcher->element, &pkey);
     return NULL == tmp ? NULL : *tmp;
-}
-sock_ctx *_map_getskctx(watcher_ctx *watcher, SOCKET fd) {
-    sock_ctx *skctx = _map_get(watcher, fd);
-    return skctx;
 }
 void _on_cmd_stop(watcher_ctx *watcher, cmd_ctx *cmd) {
     watcher->stop = 1;

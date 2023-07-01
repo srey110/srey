@@ -111,7 +111,7 @@ void _add_write_inloop(watcher_ctx *watcher, sock_ctx *skctx, off_buf_ctx *buf);
 void _add_udp_inloop(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx);
 
 void _add_fd(watcher_ctx *watcher, sock_ctx *skctx);
-sock_ctx *_map_getskctx(watcher_ctx *watcher, SOCKET fd);
+sock_ctx *_map_get(watcher_ctx *watcher, SOCKET fd);
 void _sk_shutdown(sock_ctx *skctx);
 void _free_udp(sock_ctx *skctx);
 void _disconnect(watcher_ctx *watcher, sock_ctx *skctx);

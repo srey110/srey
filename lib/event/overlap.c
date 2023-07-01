@@ -817,7 +817,7 @@ SOCKET ev_udp(ev_ctx *ctx, const char *ip, const uint16_t port, cbs_ctx *cbs,
     *skid = udp->skid;
     _cmd_add(watcher, skctx, hs);
     if (ERR_OK != _post_recv_from(udp)) {
-        _cmd_remove(watcher, fd, hs);
+        _cmd_remove(watcher, fd, *skid, hs);
         return INVALID_SOCK;
     }
     return fd;

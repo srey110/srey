@@ -381,7 +381,7 @@ static void _loop_event(void *arg) {
         for (i = 0; i < cnt; i++) {
             ev = _parse_event(&watcher->events[i], &fd, (void **)&skctx);
 #ifdef NO_UDATA
-            skctx = _map_getskctx(watcher, fd);
+            skctx = _map_get(watcher, fd);
 #endif
             if (NULL != skctx) {
                 skctx->ev_cb(watcher, skctx, ev);

@@ -70,7 +70,7 @@ extern exfuncs_ctx _exfuncs;
 void _send_cmd(watcher_ctx *watcher, uint32_t index, cmd_ctx *cmd);
 void _cmd_add(watcher_ctx *watcher, sock_ctx *skctx, uint64_t hs);
 void _cmd_add_acpfd(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn, uint64_t hs);
-void _cmd_remove(watcher_ctx *watcher, SOCKET fd, uint64_t hs);
+void _cmd_remove(watcher_ctx *watcher, SOCKET fd, uint64_t skid, uint64_t hs);
 
 void _on_cmd_stop(watcher_ctx *watcher, cmd_ctx *cmd);
 void _on_cmd_add(watcher_ctx *watcher, cmd_ctx *cmd);
