@@ -47,18 +47,24 @@ local function continuationcb(cnt)
     end
     return false, "this is continuation "..tostring(cnt.cnt)
 end
-local function testwebsock(chs, port)
+local function testwebsock(ipv4, chs, port)
+    local connip
+    if ipv4 then
+        connip = "127.0.0.1"
+    else
+        connip = "::1"
+    end
     local ssl = srey.evssl_qury("client")
     local websockfd
     local skid
     if chs then
-        websockfd, skid = websock.connect("127.0.0.1", port)
+        websockfd, skid = websock.connect(connip, port)
         if INVALID_SOCK == websockfd then
             printd("websock connect.... error")
             return
         end
     else
-        websockfd, skid = srey.connect("127.0.0.1", port, PACK_TYPE.HTTP)
+        websockfd, skid = srey.connect(connip, port, PACK_TYPE.HTTP)
         if INVALID_SOCK == websockfd then
             printd("websock connect.... error")
             return
@@ -153,10 +159,10 @@ local function ontimeout()
         callonce = true
     end
     testrpc()
-    testwebsock(true, 15003)
-    testwebsock(true, 15004)
-    testwebsock(false, 15003)
-    testwebsock(false, 15004)
+    testwebsock(true, true, 15003)
+    testwebsock(false, true, 15004)
+    testwebsock(true, false, 15003)
+    testwebsock(false, false, 15004)
     testhttp()
     testudp()
     printd(".....................end........................")

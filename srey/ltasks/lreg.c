@@ -140,7 +140,10 @@ static int32_t _lreg_evssl_new(lua_State *lua) {
             propath, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, key);
     }
     evssl_ctx *ssl = evssl_new(capath, certpath, keypath, keytype, verify);
-    certs_register(srey, name, ssl);
+    if (ERR_OK != certs_register(srey, name, ssl)) {
+        evssl_free(ssl);
+        return 0;
+    }
     lua_pushlightuserdata(lua, ssl);
     return 1;
 #else
@@ -163,7 +166,10 @@ static int32_t _lreg_evssl_p12new(lua_State *lua) {
             propath, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, p12);
     }
     evssl_ctx *ssl = evssl_p12_new(p12path, pwd, verify);
-    certs_register(srey, name, ssl);
+    if (ERR_OK != certs_register(srey, name, ssl)) {
+        evssl_free(ssl);
+        return 0;
+    }
     lua_pushlightuserdata(lua, ssl);
     return 1;
 #else
@@ -433,6 +439,26 @@ static int32_t _lreg_simple_pack(lua_State *lua) {
     lua_pushinteger(lua, lens);
     return 2;
 }
+static int32_t _lreg_dns_lookup(lua_State *lua) {
+    task_ctx *task = lua_touserdata(lua, 1);
+    const char *dns = luaL_checkstring(lua, 2);
+    const char *domain = luaL_checkstring(lua, 3);
+    int32_t ipv6 = (int32_t)luaL_checkinteger(lua, 4);
+    size_t cnt;
+    dns_ip *ips = dns_lookup(task, dns, domain, ipv6, &cnt);
+    if (NULL == ips) {
+        return 0;
+    }
+    lua_createtable(lua, (int32_t)cnt, 0);
+    dns_ip *ip;
+    for (size_t i = 0; i < cnt; i++) {
+        ip = &ips[i];
+        lua_pushstring(lua, ip->ip);
+        lua_rawseti(lua, -2, i + 1);
+    }
+    FREE(ips);
+    return 1;
+}
 static int32_t _lreg_http_chunked(lua_State *lua) {
     void *pack = lua_touserdata(lua, 1);
     lua_pushinteger(lua, http_chunked(pack));
@@ -446,10 +472,12 @@ static int32_t _lreg_http_status(lua_State *lua) {
         return 0;
     }
     buf_ctx *buf = http_status(pack);
+    lua_createtable(lua, 3, 0);
     for (int32_t i = 0; i < 3; i++) {
         lua_pushlstring(lua, buf[i].data, buf[i].lens);
+        lua_rawseti(lua, -2, i + 1);
     }
-    return 3;
+    return 1;
 }
 static int32_t _lreg_http_head(lua_State *lua) {
     void *pack = lua_touserdata(lua, 1);
@@ -724,6 +752,8 @@ LUAMOD_API int luaopen_srey_utils(lua_State *lua) {
         { "slice", _lreg_slice },
 
         { "simple_pack", _lreg_simple_pack },
+
+        { "dns_lookup", _lreg_dns_lookup },
 
         { "http_chunked", _lreg_http_chunked },
         { "http_status", _lreg_http_status },

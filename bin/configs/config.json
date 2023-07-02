@@ -1,4 +1,6 @@
 {
     "nnet": 1,
-    "nworker": 2
+    "nworker": 2,
+    "logfile": 0,
+    "namefmt": "%Y-%m-%d %H-%M-%S"
 }

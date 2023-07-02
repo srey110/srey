@@ -3,6 +3,10 @@
 
 #include "structs.h"
 
-struct dns_pack_ctx *dns_unpack(char *buf, size_t size);
+typedef struct dns_ip {
+    char ip[IP_LENS];
+}dns_ip;
+
+dns_ip *dns_lookup(struct task_ctx *task, const char *dns, const char *domain, int32_t ipv6, size_t *cnt);
 
 #endif//DNS_H_

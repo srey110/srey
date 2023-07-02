@@ -147,6 +147,7 @@ end
     verify SSLVERIFY_TYPE
 返回:
     evssl_ctx
+    nil失败
 --]]
 function core.evssl_new(name, ca, cert, key, ftype, verify)
     return sutils.evssl_new(name, ca, cert, key,
@@ -162,6 +163,7 @@ end
     verify SSLVERIFY_TYPE
 返回:
     evssl_ctx
+    nil失败
 --]]
 function core.evssl_p12new(name, p12, pwd, verify)
     return sutils.evssl_p12new(name, p12, pwd, verify or SSLVERIFY_TYPE.NONE)
@@ -425,6 +427,18 @@ end
 --]]
 function core.slice(sess)
     return sutils.slice(curtask, sess)
+end
+--[[
+描述:域名查询
+参数:
+    dns dns 服务器ip :string
+    domain 待查询的域名 :string
+    ipv6 :boolean
+返回:
+    table ips
+--]]
+function core.dns_lookup(dns, domain, ipv6)
+    return sutils.dns_lookup(curtask, dns, domain, ipv6 and 1 or 0)
 end
 
 return core

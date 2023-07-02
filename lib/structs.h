@@ -23,6 +23,7 @@ typedef struct off_buf_ctx {
     size_t len;
     size_t offset;
 }off_buf_ctx;
+struct task_ctx;
 
 #define COPY_UD(dst, src)\
 do {\

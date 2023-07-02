@@ -2,7 +2,6 @@
 #define WEBSOCK_H_
 
 #include "event/event.h"
-struct task_ctx;
 
 struct websock_pack_ctx *websock_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid,
     buffer_ctx *buf, size_t *size, ud_cxt *ud, int32_t *closefd, int32_t *slice);

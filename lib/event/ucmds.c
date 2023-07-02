@@ -41,7 +41,6 @@ void _on_cmd_conn(watcher_ctx *watcher, cmd_ctx *cmd) {
     _add_conn_inloop(watcher, cmd->fd, (sock_ctx *)cmd->arg);
 }
 void ev_send(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *data, size_t len, int32_t copy) {
-    ASSERTAB(INVALID_SOCK != fd, ERRSTR_INVPARAM);
     cmd_ctx cmd;
     cmd.cmd = CMD_SEND;
     cmd.fd = fd;
@@ -59,7 +58,6 @@ void ev_send(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *data, size_t len, int3
 }
 int32_t ev_sendto(ev_ctx *ctx, SOCKET fd, uint64_t skid,
     const char *ip, const uint16_t port, void *data, size_t len) {
-    ASSERTAB(INVALID_SOCK != fd, ERRSTR_INVPARAM);
     cmd_ctx cmd;
     cmd.cmd = CMD_SEND;
     cmd.fd = fd;
@@ -93,7 +91,6 @@ void _on_cmd_send(watcher_ctx *watcher, cmd_ctx *cmd) {
     _add_write_inloop(watcher, skctx, &buf);
 }
 void ev_close(ev_ctx *ctx, SOCKET fd, uint64_t skid) {
-    ASSERTAB(INVALID_SOCK != fd, ERRSTR_INVPARAM);
     cmd_ctx cmd;
     cmd.cmd = CMD_DISCONN;
     cmd.fd = fd;
@@ -129,7 +126,6 @@ void _on_cmd_add_udp(watcher_ctx *watcher, cmd_ctx *cmd) {
     _add_udp_inloop(watcher, cmd->fd, (sock_ctx *)cmd->arg);
 }
 void _ev_set_ud(ev_ctx *ctx, SOCKET fd, uint64_t skid, int32_t type, uint64_t val) {
-    ASSERTAB(INVALID_SOCK != fd, ERRSTR_INVPARAM);
     cmd_ctx cmd;
     cmd.cmd = CMD_SETUD;
     cmd.fd = fd;

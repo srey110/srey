@@ -4,13 +4,19 @@ srey_ctx *srey = NULL;
 static FILE *logstream = NULL;
 static mutex_ctx muexit;
 static cond_ctx condexit;
-
+typedef struct config_ctx {
+    int32_t logfile;
+    uint32_t nnet;
+    uint32_t nworker;
+    char fmt[64];
+}config_ctx;
 static char *_config_read(void) {
     char config[PATH_LENS] = { 0 };
     SNPRINTF(config, sizeof(config) - 1, "%s%s%s%s%s",
              procpath(), PATH_SEPARATORSTR, "configs", PATH_SEPARATORSTR, "config.json");
     FILE *file = fopen(config, "r");
     if (NULL == file) {
+        PRINT("open file failed. %s", config);
         return NULL;
     }
     fseek(file, 0, SEEK_END);
@@ -22,7 +28,7 @@ static char *_config_read(void) {
     fclose(file);
     return info;
 }
-static void _parse_config(uint32_t *nnet, uint32_t *nworker) {
+static void _parse_config(config_ctx *cnf) {
     char *config = _config_read();
     if (NULL == config) {
         return;
@@ -30,19 +36,34 @@ static void _parse_config(uint32_t *nnet, uint32_t *nworker) {
     cJSON *json = cJSON_Parse(config);
     FREE(config);
     if (NULL == json) {
+        PRINT("cJSON_Parse failed.");
         return;
     }
     cJSON *val = cJSON_GetObjectItem(json, "nnet");
     if (cJSON_IsNumber(val)) {
-        *nnet = (uint32_t)val->valueint;
+        cnf->nnet = (uint32_t)val->valueint;
     }
     val = cJSON_GetObjectItem(json, "nworker");
     if (cJSON_IsNumber(val)) {
-        *nworker = (uint32_t)val->valueint;
+        cnf->nworker = (uint32_t)val->valueint;
+    }
+    val = cJSON_GetObjectItem(json, "logfile");
+    if (cJSON_IsNumber(val)) {
+        cnf->logfile = (int32_t)val->valueint;
+    }
+    val = cJSON_GetObjectItem(json, "namefmt");
+    if (cJSON_IsString(val)) {
+        size_t flen = strlen(val->valuestring);
+        if (flen < sizeof(cnf->fmt)) {
+            memcpy(cnf->fmt, val->valuestring, flen);
+            cnf->fmt[flen] = '\0';
+        } else {
+            PRINT("log file name format too long.");
+        }
     }
     cJSON_Delete(json);
 }
-static void _open_log(void) {
+static void _open_log(const char *fmt) {
     char logfile[PATH_LENS] = { 0 };
     SNPRINTF(logfile, sizeof(logfile) - 1, "%s%s%s%s", procpath(), PATH_SEPARATORSTR, "logs", PATH_SEPARATORSTR);
     if (ERR_OK != ACCESS(logfile, 0)) {
@@ -52,7 +73,7 @@ static void _open_log(void) {
     }
     size_t lens = strlen(logfile);
     char time[TIME_LENS] = { 0 };
-    nowtime("%Y-%m-%d %H-%M-%S", time);
+    nowtime(fmt, time);
     SNPRINTF((char*)logfile + lens, sizeof(logfile) - lens - 1, "%s%s", time, ".log");
     logstream = fopen(logfile, "a");
     if (NULL != logstream) {
@@ -70,14 +91,22 @@ static int32_t service_exit(void) {
     return ERR_OK;
 }
 static int32_t service_init(void) {
-    //_open_log();
+    config_ctx config;
+    config.logfile = 1;
+    config.nnet = 1;
+    config.nworker = 2;
+    const char *fmt = "%Y-%m-%d %H-%M-%S";
+    size_t flen = strlen(fmt);
+    memcpy(config.fmt, fmt, flen);
+    config.fmt[flen] = '\0';
+    _parse_config(&config);
+    if (0 != config.logfile) {
+        _open_log(config.fmt);
+    }
     unlimit();
-    uint32_t nnet = 1;
-    uint32_t nworker = 2;
-    _parse_config(&nnet, &nworker);
     mutex_init(&muexit);
     cond_init(&condexit);
-    srey = srey_init(nnet, nworker);
+    srey = srey_init(config.nnet, config.nworker);
     if (ERR_OK != task_startup()) {
         service_exit();
         return ERR_FAILED;

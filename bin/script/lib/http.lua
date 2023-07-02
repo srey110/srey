@@ -21,8 +21,7 @@ end
 参数:
     pack :http_pack_ctx
 返回:
-    string1, string2, string3
-    nil
+    table
 --]]
 function http.status(pack)
     return sutils.http_status(pack)
@@ -71,7 +70,7 @@ end
 function http.unpack(pack)
     local tb = {}
     tb.chunked = http.chunked(pack)
-    tb.status = {http.status(pack)}
+    tb.status = http.status(pack)
     tb.head = http.heads(pack)
     local data, size = http.data(pack)
     if data then

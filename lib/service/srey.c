@@ -67,13 +67,14 @@ typedef struct co_arg_ctx {
 #define NETRD_TIMEOUT         3000
 #define MSG_INIT_CAP          512
 #define COPOOL_INIT_CAP       128
-#define RESUME_NORMAL(arg)\
+#define CO_CREATE(arg)\
     arg->task->curco = _co_create(arg->task);\
     ASSERTAB(MCO_SUCCESS == mco_push(arg->task->curco, arg, sizeof(co_arg_ctx)), "mco_push failed!");\
     ASSERTAB(MCO_SUCCESS == mco_resume(arg->task->curco), "resume coroutine failed!")
 #define YIELD(task) ASSERTAB(MCO_SUCCESS == mco_yield(task->curco), "yield coroutine failed!")
-#define RESUME(task, co) \
-    task->curco = co;\
+#define RESUME(arg, co) \
+    arg->task->curco = co;\
+    ASSERTAB(MCO_SUCCESS == mco_push(co, &arg->msg, sizeof(message_ctx)), "mco_push failed!");\
     ASSERTAB(MCO_SUCCESS == mco_resume(co), "resume coroutine failed!")
 
 static inline void _push_message(task_ctx *task, message_ctx *msg) {
@@ -131,17 +132,15 @@ static inline void _dispatch_timeout(co_arg_ctx *arg) {
     }
     switch (cotmo.type) {
     case TMO_TYPE_SLEEP:
-        ASSERTAB(MCO_SUCCESS == mco_push(cotmo.co, &arg->msg, sizeof(arg->msg)), "mco_push failed!");
-        RESUME(arg->task, cotmo.co);
+        RESUME(arg, cotmo.co);
         break;
     case TMO_TYPE_NORMAL:
-        RESUME_NORMAL(arg);
+        CO_CREATE(arg);
         break;
     case TMO_TYPE_NET: {
         co_sess_ctx cosess;
         if (ERR_OK == _map_cosess_get(&arg->task->mapco, arg->msg.sess, &cosess, 1)) {
-            ASSERTAB(MCO_SUCCESS == mco_push(cosess.co, &arg->msg, sizeof(arg->msg)), "mco_push failed!");
-            RESUME(arg->task, cosess.co);
+            RESUME(arg, cosess.co);
         }
         break;
     }
@@ -154,16 +153,14 @@ static inline void _dispatch_connect(co_arg_ctx *arg) {
         co_sess_ctx cosess;
         if (ERR_OK == _map_cosess_get(&arg->task->mapco, arg->msg.sess, &cosess, 1)) {
             _map_cotmo_del(&arg->task->mapco, arg->msg.sess);
-            ASSERTAB(MCO_SUCCESS == mco_push(cosess.co, &arg->msg, sizeof(arg->msg)), "mco_push failed!");
-            RESUME(arg->task, cosess.co);
+            RESUME(arg, cosess.co);
         } else {
             if (ERR_OK == arg->msg.erro) {
                 ev_close(task_netev(arg->task), arg->msg.fd, arg->msg.skid);
             }
-            LOG_WARN("can't find session:%"PRIu64" pack type:%d. maybe timeout already.", arg->msg.sess, arg->msg.pktype);
         }
     } else {
-        RESUME_NORMAL(arg);
+        CO_CREATE(arg);
     }
 }
 static inline void _dispatch_netrd(co_arg_ctx *arg) {
@@ -181,14 +178,11 @@ static inline void _dispatch_netrd(co_arg_ctx *arg) {
                 || SLICE_START == arg->msg.slice) {
                 _map_cotmo_del(&arg->task->mapco, arg->msg.sess);
             }
-            ASSERTAB(MCO_SUCCESS == mco_push(cosess.co, &arg->msg, sizeof(arg->msg)), "mco_push failed!");
-            RESUME(arg->task, cosess.co);
-        } else {
-            LOG_WARN("can't find session:%"PRIu64" pack type:%d. maybe timeout already.", arg->msg.sess, arg->msg.pktype);
+            RESUME(arg, cosess.co);
         }
         _message_clean(&arg->msg);
     } else {
-        RESUME_NORMAL(arg);
+        CO_CREATE(arg);
     }
 }
 static inline void _dispatch_close(co_arg_ctx *arg) {
@@ -196,53 +190,49 @@ static inline void _dispatch_close(co_arg_ctx *arg) {
         co_sess_ctx cosess;
         if (ERR_OK == _map_cosess_get(&arg->task->mapco, arg->msg.sess, &cosess, 1)) {
             _map_cotmo_del(&arg->task->mapco, arg->msg.sess);
-            ASSERTAB(MCO_SUCCESS == mco_push(cosess.co, &arg->msg, sizeof(arg->msg)), "mco_push failed!");
-            RESUME(arg->task, cosess.co);
-        } else {
-            LOG_WARN("can't find session:%"PRIu64" pack type:%d. maybe timeout already.", arg->msg.sess, arg->msg.pktype);
+            RESUME(arg, cosess.co);
         }
     }
-    RESUME_NORMAL(arg);
+    CO_CREATE(arg);
 }
 static inline void _dispatch_response(co_arg_ctx *arg) {
     co_sess_ctx cosess;
     if (ERR_OK == _map_cosess_get(&arg->task->mapco, arg->msg.sess, &cosess, 1)) {
-        ASSERTAB(MCO_SUCCESS == mco_push(cosess.co, &arg->msg, sizeof(arg->msg)), "mco_push failed!");
-        RESUME(arg->task, cosess.co);
+        RESUME(arg, cosess.co);
     } else {
-        LOG_WARN("can't find session:%"PRIu64, arg->msg.sess);
+        LOG_ERROR("task: %d, can't find session:%"PRIu64, arg->task->name, arg->msg.sess);
     }
     _message_clean(&arg->msg);
 }
-static inline void _task_onmsg(co_arg_ctx *arg) {
+static inline void _task_on_message(co_arg_ctx *arg) {
     if (0 != arg->task->closed) {
         _message_clean(&arg->msg);
         return;
     }
     switch (arg->msg.msgtype) {
     case MSG_TYPE_STARTED:
-        RESUME_NORMAL(arg);
+        CO_CREATE(arg);
         break;
     case MSG_TYPE_CLOSING:
-        RESUME_NORMAL(arg);
+        CO_CREATE(arg);
         break;
     case MSG_TYPE_TIMEOUT:
         _dispatch_timeout(arg);
         break;
     case MSG_TYPE_ACCEPT:
-        RESUME_NORMAL(arg);
+        CO_CREATE(arg);
         break;
     case MSG_TYPE_CONNECT:
         _dispatch_connect(arg);
         break;
     case MSG_TYPE_HANDSHAKED:
-        RESUME_NORMAL(arg);
+        CO_CREATE(arg);
         break;
     case MSG_TYPE_RECV:
         _dispatch_netrd(arg);
         break;
     case MSG_TYPE_SEND:
-        RESUME_NORMAL(arg);
+        CO_CREATE(arg);
         break;
     case MSG_TYPE_CLOSE:
         _dispatch_close(arg);
@@ -251,7 +241,7 @@ static inline void _task_onmsg(co_arg_ctx *arg) {
         _dispatch_netrd(arg);
         break;
     case MSG_TYPE_REQUEST:
-        RESUME_NORMAL(arg);
+        CO_CREATE(arg);
         break;
     case MSG_TYPE_RESPONSE:
         _dispatch_response(arg);
@@ -277,7 +267,7 @@ static inline void _task_run(task_ctx *task) {
         }
         arg.msg = *tmp;
         mutex_unlock(&task->mutask);
-        _task_onmsg(&arg);
+        _task_on_message(&arg);
     }
 }
 static inline void _task_free(task_ctx *task) {
@@ -300,7 +290,10 @@ static inline void _task_free(task_ctx *task) {
 }
 task_ctx *srey_tasknew(srey_ctx *ctx, int32_t name, uint32_t maxcnt, 
     task_new _init, task_run _run, task_free _tfree, void *arg) {
-    ASSERTAB(NULL != _run, ERRSTR_INVPARAM);
+    if (NULL == _run) {
+        LOG_WARN("task %d, %s", name, ERRSTR_INVPARAM);
+        return NULL;
+    }
     task_ctx *task;
     CALLOC(task, 1, sizeof(task_ctx));
     task->name = name;
@@ -315,6 +308,10 @@ task_ctx *srey_tasknew(srey_ctx *ctx, int32_t name, uint32_t maxcnt,
     qu_copool_init(&task->qucopool, COPOOL_INIT_CAP);
     if (NULL != _init) {
         task->handle = _init(task, arg);
+        if (NULL == task->handle) {
+            _task_free(task);
+            return NULL;
+        }
     }
     int32_t started = 0;
     rwlock_wrlock(&ctx->lckmaptask);
@@ -357,18 +354,23 @@ static inline certs_ctx *_certs_get(srey_ctx *ctx, const char *name) {
     }
     return NULL;
 }
-void certs_register(srey_ctx *ctx, const char *name, struct evssl_ctx *evssl) {
+int32_t certs_register(srey_ctx *ctx, const char *name, struct evssl_ctx *evssl) {
     certs_ctx cert;
     ASSERTAB(strlen(name) < sizeof(cert.name), "cert name too long.");
     ZERO(&cert, sizeof(certs_ctx));
     strcpy(cert.name, name);
     cert.ssl = evssl;
+    int32_t rtn;
     rwlock_wrlock(&ctx->lckarrcert);
     if (NULL != _certs_get(ctx, name)) {
-        ASSERTAB(0, "cert name repeat.")
+        LOG_ERROR("cert name %s repeat.", name);
+        rtn = ERR_FAILED;
+    } else {
+        arr_certs_push_back(&ctx->arrcert, &cert);
+        rtn = ERR_OK;
     }
-    arr_certs_push_back(&ctx->arrcert, &cert);
     rwlock_unlock(&ctx->lckarrcert);
+    return rtn;
 }
 struct evssl_ctx *certs_qury(srey_ctx *ctx, const char *name) {
     certs_ctx *cert;
@@ -418,7 +420,11 @@ static inline void _task_timeout(task_ctx *task, uint64_t sess, uint32_t ms, uin
         message_ctx msg;
         ASSERTAB(MCO_SUCCESS == mco_pop(task->curco, &msg, sizeof(msg)), "mco_pop failed!");
         if (sess != msg.sess) {
-            LOG_ERROR("request session: %"PRIu64", response session: %"PRIu64" not the same.", sess, msg.sess);
+            LOG_ERROR("task: %d, request session: %"PRIu64", response session: %"PRIu64" not the same.", task->name, sess, msg.sess);
+            return;
+        }
+        if (MSG_TYPE_TIMEOUT != msg.msgtype) {
+            LOG_ERROR("task: %d, message type: %d error, session: %"PRIu64, task->name, msg.msgtype, sess);
         }
     }
 }
@@ -454,7 +460,11 @@ static inline void *_task_request(task_ctx *dst, task_ctx *src, void *data, size
         message_ctx resp;
         ASSERTAB(MCO_SUCCESS == mco_pop(src->curco, &resp, sizeof(resp)), "mco_pop failed!");
         if (msg.sess != resp.sess) {
-            LOG_ERROR("request session: %"PRIu64", response session: %"PRIu64" not the same.", msg.sess, resp.sess);
+            LOG_ERROR("task: %d, request session: %"PRIu64", response session: %"PRIu64" not the same.", src->name, msg.sess, resp.sess);
+            return NULL;
+        }
+        if (MSG_TYPE_RESPONSE != resp.msgtype) {
+            LOG_ERROR("task: %d, message type: %d error, session: %"PRIu64, src->name, resp.msgtype, msg.sess);
             return NULL;
         }
         *lens = resp.size;
@@ -486,11 +496,15 @@ void *task_slice(task_ctx *task, uint64_t sess, size_t *size, int32_t *end) {
     message_ctx msg;
     ASSERTAB(MCO_SUCCESS == mco_pop(task->curco, &msg, sizeof(msg)), "mco_pop failed!");
     if (sess != msg.sess) {
-        LOG_ERROR("request session: %"PRIu64", response session: %"PRIu64" not the same.", sess, msg.sess);
+        LOG_ERROR("task: %d, request session: %"PRIu64", response session: %"PRIu64" not the same.", task->name, sess, msg.sess);
         return NULL;
     }
     if (MSG_TYPE_CLOSE == msg.msgtype) {
-        LOG_WARN("connection closed. session:%"PRIu64, sess);
+        LOG_WARN("task: %d, connection closed. session:%"PRIu64, task->name, sess);
+        return NULL;
+    }
+    if (MSG_TYPE_RECV != msg.msgtype) {
+        LOG_ERROR("task: %d, message type: %d error, session: %"PRIu64, task->name, msg.msgtype, sess);
         return NULL;
     }
     if (SLICE_END == msg.slice) {
@@ -631,11 +645,15 @@ SOCKET task_netconnect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl
     message_ctx msg;
     ASSERTAB(MCO_SUCCESS == mco_pop(task->curco, &msg, sizeof(msg)), "mco_pop failed!");
     if (*skid != msg.sess) {
-        LOG_ERROR("request session: %"PRIu64", response session: %"PRIu64" not the same.", *skid, msg.sess);
+        LOG_ERROR("task: %d, request session: %"PRIu64", response session: %"PRIu64" not the same.", task->name, *skid, msg.sess);
         return INVALID_SOCK;
     }
     if (MSG_TYPE_TIMEOUT == msg.msgtype) {
-        LOG_WARN("connect %s:%d timeout.session:%"PRIu64, ip, port, *skid);
+        LOG_WARN("task: %d, connect %s:%d timeout.session:%"PRIu64, task->name, ip, port, *skid);
+        return INVALID_SOCK;
+    }
+    if (MSG_TYPE_CONNECT != msg.msgtype) {
+        LOG_ERROR("task: %d, message type: %d error, session: %"PRIu64, task->name, msg.msgtype, *skid);
         return INVALID_SOCK;
     }
     if (ERR_OK != msg.erro) {
@@ -655,6 +673,7 @@ static inline void _task_net_recvfrom(ev_ctx *ev, SOCKET fd, uint64_t skid, char
     msg.data = umsg;
     msg.size = size;
     msg.sess = ud->sess;
+    msg.slice = SLICE_NONE;
     ud->sess = 0;
     _push_message(ud->data, &msg);
 }
@@ -685,15 +704,19 @@ void *task_synsend(task_ctx *task, SOCKET fd, uint64_t skid,
     message_ctx msg;
     ASSERTAB(MCO_SUCCESS == mco_pop(task->curco, &msg, sizeof(msg)), "mco_pop failed!");
     if (*sess != msg.sess) {
-        LOG_ERROR("request session: %"PRIu64", response session: %"PRIu64" not the same.", *sess, msg.sess);
+        LOG_ERROR("task: %d, request session: %"PRIu64", response session: %"PRIu64" not the same.", task->name, *sess, msg.sess);
         return NULL;
     }
     if (MSG_TYPE_TIMEOUT == msg.msgtype) {
-        LOG_WARN("synsend timeout.session:%"PRIu64, *sess);
+        LOG_WARN("task: %d, synsend timeout.session:%"PRIu64, task->name, *sess);
         return NULL;
     }
     if (MSG_TYPE_CLOSE == msg.msgtype) {
-        LOG_WARN("connection closed. session:%"PRIu64, *sess);
+        LOG_WARN("task: %d, connection closed. session:%"PRIu64, task->name, *sess);
+        return NULL;
+    }
+    if (MSG_TYPE_RECV != msg.msgtype) {
+        LOG_ERROR("task: %d, message type: %d error, session: %"PRIu64, task->name, msg.msgtype, *sess);
         return NULL;
     }
     *size = msg.size;
@@ -715,11 +738,15 @@ void *task_synsendto(task_ctx *task, SOCKET fd, uint64_t skid,
     message_ctx msg;
     ASSERTAB(MCO_SUCCESS == mco_pop(task->curco, &msg, sizeof(msg)), "mco_pop failed!");
     if (sess != msg.sess) {
-        LOG_ERROR("request session: %"PRIu64", response session: %"PRIu64" not the same.", sess, msg.sess);
+        LOG_ERROR("task: %d, request session: %"PRIu64", response session: %"PRIu64" not the same.", task->name, sess, msg.sess);
         return NULL;
     }
     if (MSG_TYPE_TIMEOUT == msg.msgtype) {
-        LOG_WARN("synsend timeout.session:%"PRIu64, sess);
+        LOG_WARN("task: %d, synsend timeout.session:%"PRIu64, task->name, sess);
+        return NULL;
+    }
+    if (MSG_TYPE_RECVFROM != msg.msgtype) {
+        LOG_ERROR("task: %d, message type: %d error, session: %"PRIu64, task->name, msg.msgtype, sess);
         return NULL;
     }
     udp_msg_ctx *umsg = msg.data;

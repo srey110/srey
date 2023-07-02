@@ -22,6 +22,7 @@
 #include "cjson/cJSON.h"
 
 #include "proto/simple.h"
+#include "proto/dns.h"
 #include "proto/http.h"
 #include "proto/websock.h"
 #include "proto/mqtt.h"

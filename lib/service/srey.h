@@ -52,7 +52,7 @@ task_ctx *srey_taskqury(srey_ctx *ctx, int32_t name);
 ev_ctx *srey_netev(srey_ctx *ctx);
 
 #if WITH_SSL
-void certs_register(srey_ctx *ctx, const char *name, struct evssl_ctx *evssl);
+int32_t certs_register(srey_ctx *ctx, const char *name, struct evssl_ctx *evssl);
 struct evssl_ctx *certs_qury(srey_ctx *ctx, const char *name);
 #endif
 

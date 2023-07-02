@@ -90,19 +90,33 @@ int32_t _ltask_startup(void) {
 static inline void *_ltask_new(task_ctx *task, void *arg) {
     ltask_ctx *ltask = arg;
     ltask->lua = _ltask_luainit(task);
-    ASSERTAB(NULL != ltask->lua, "init lua error.");
-    ASSERTAB(ERR_OK == _ltask_dofile(ltask->lua, ltask->file), "lua dofile error.");
+    if (NULL == ltask->lua) {
+        FREE(ltask);
+        return NULL;
+    }
+    if (ERR_OK != _ltask_dofile(ltask->lua, ltask->file)) {
+        lua_close(ltask->lua);
+        FREE(ltask);
+        return NULL;
+    }
     lua_getglobal(ltask->lua, "dispatch_message");
-    ASSERTAB(LUA_TFUNCTION == lua_type(ltask->lua, 1), "not have function _dispatch_message.");
+    if (LUA_TFUNCTION != lua_type(ltask->lua, 1)) {
+        LOG_ERROR("not have function dispatch_message.");
+        lua_close(ltask->lua);
+        FREE(ltask);
+        return NULL;
+    }
     ltask->ref = luaL_ref(ltask->lua, LUA_REGISTRYINDEX);
     return ltask;
 }
 static inline void _ltask_free(task_ctx *task) {
     ltask_ctx *ltask = task_handle(task);
-    if (0 != ltask->ref) {
-        luaL_unref(ltask->lua, LUA_REGISTRYINDEX, ltask->ref);
+    if (NULL == ltask) {
+        return;
     }
-    lua_close(ltask->lua);
+    if (NULL != ltask->lua) {
+        lua_close(ltask->lua);
+    }
     FREE(ltask);
 }
 static inline void _ltask_run(task_ctx *task, message_ctx *msg) {

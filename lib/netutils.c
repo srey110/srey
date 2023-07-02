@@ -80,7 +80,7 @@ int32_t sock_checkconn(SOCKET fd) {
     return -1 == time ? ERR_FAILED : ERR_OK;
 #else
     return sock_error(fd);
-#endif    
+#endif
 }
 int32_t sock_type(SOCKET fd) {
     int32_t stype = 0;
@@ -106,8 +106,20 @@ int32_t sock_family(SOCKET fd) {
         return ERR_FAILED;
     }
     return family;
+#else
+    struct sockaddr_storage addr;
+    socklen_t addrlen = (socklen_t)sizeof(addr);
+    if (getsockname(fd, (struct sockaddr *)&addr, &addrlen) < 0) {
+        return ERR_FAILED;
+    }
+    char host[128], service[32];
+    int32_t flags = NI_NUMERICHOST | NI_NUMERICSERV;
+    if (ERR_OK != getnameinfo((struct sockaddr *)&addr, sizeof(addr),
+        host, sizeof(host), service, sizeof(service), flags)) {
+        return ERR_FAILED;
+    }
+    return addr.ss_family;
 #endif
-    return AF_INET;
 #endif
 }
 int32_t sock_nodelay(SOCKET fd) {

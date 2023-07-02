@@ -3,7 +3,24 @@ local http = require("lib.http")
 local websock = require("lib.websock")
 
 local function onstarted()
-    printd(srey.task_name() .. " onstarted....")
+    printd(srey.task_name() .. " onstarted...dns_lookup:")
+    --8.8.8.8 114.114.114.114 208.67.222.222
+    local ips = srey.dns_lookup("8.8.8.8", "www.google.com", false)
+    if ips then
+        printd("domain ipv4 ips:" .. dump(ips))
+    end
+    ips = srey.dns_lookup("8.8.8.8", "www.google.com", true)
+    if ips then
+        printd("domain ipv6 ips:" .. dump(ips))
+    end
+    ips = srey.dns_lookup("114.114.114.114", "www.baidu.com", false)
+    if ips then
+        printd("domain ips:" .. dump(ips))
+    end
+    ips = srey.dns_lookup("208.67.222.222", "www.baidu.com", true)
+    if ips then
+        printd("domain ips:" .. dump(ips))
+    end
     srey.udp("0.0.0.0", 15002)
     local ssl = srey.evssl_qury("server")
     srey.listen("0.0.0.0", 15003, PACK_TYPE.HTTP)
