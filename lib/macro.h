@@ -77,9 +77,7 @@ void slog(int32_t lv, const char *fmt, ...);
 #define ASSERTAB(exp, errstr)\
 do {\
     if (!(exp)) {\
-        if (NULL != errstr && 0 != strlen(errstr)) {\
-            LOG_ERROR("%s", errstr); \
-        }\
+        LOG_ERROR("%s", errstr);\
         abort();\
     }\
 } while (0);

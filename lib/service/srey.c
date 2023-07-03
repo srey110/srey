@@ -84,29 +84,45 @@ typedef struct co_arg_ctx {
 #define NETRD_TIMEOUT         3000
 #define MSG_INIT_CAP          512
 #define COPOOL_INIT_CAP       128
-#define CO_CREATE(arg)\
-    arg->task->curco = _co_create(arg->task);\
-    ASSERTAB(MCO_SUCCESS == mco_push(arg->task->curco, arg, sizeof(co_arg_ctx)), "mco_push failed!");\
-    ASSERTAB(MCO_SUCCESS == mco_resume(arg->task->curco), "resume coroutine failed!")
-#define YIELD(task) ASSERTAB(MCO_SUCCESS == mco_yield(task->curco), "yield coroutine failed!")
-#define RESUME(arg, co) \
-    arg->task->curco = co;\
-    ASSERTAB(MCO_SUCCESS == mco_push(co, &arg->msg, sizeof(message_ctx)), "mco_push failed!");\
-    ASSERTAB(MCO_SUCCESS == mco_resume(co), "resume coroutine failed!")
 
-static inline void _push_message(task_ctx *task, message_ctx *msg) {
-    mutex_lock(&task->mutask);
-    qu_message_push(&task->qumsg, msg);
-    if (0 == task->global) {
-        task->global = 1;
-        mutex_lock(&task->srey->muworker);
-        qu_void_push(&task->srey->quglobal, (void **)&task);
-        if (task->srey->waiting > 0) {
-            cond_signal(&task->srey->condworker);
-        }
-        mutex_unlock(&task->srey->muworker);
+#define CO_CREATE(arg)\
+do {\
+    arg->task->curco = _co_create(arg->task);\
+    mco_result cortn = mco_push(arg->task->curco, arg, sizeof(co_arg_ctx));\
+    ASSERTAB(MCO_SUCCESS == cortn, mco_result_description(cortn));\
+    cortn = mco_resume(arg->task->curco);\
+    ASSERTAB(MCO_SUCCESS == cortn, mco_result_description(cortn));\
+} while (0)
+#define CO_YIELD(task)\
+do {\
+    mco_result cortn = mco_yield(task->curco); \
+    ASSERTAB(MCO_SUCCESS == cortn, mco_result_description(cortn));\
+} while (0)
+#define CO_RESUME(arg, co) \
+do {\
+    arg->task->curco = co; \
+    mco_result cortn = mco_push(co, &arg->msg, sizeof(message_ctx)); \
+    ASSERTAB(MCO_SUCCESS == cortn, mco_result_description(cortn)); \
+    cortn = mco_resume(co); \
+    ASSERTAB(MCO_SUCCESS == cortn, mco_result_description(cortn));\
+} while (0)
+#define CO_POP(co, msg)\
+do {\
+    mco_result cortn = mco_pop(co, &msg, sizeof(msg));\
+    ASSERTAB(MCO_SUCCESS == cortn, mco_result_description(cortn));\
+} while (0)
+
+static inline mco_coro *_co_create(task_ctx *task) {
+    mco_coro **co = qu_copool_pop(&task->qucopool);
+    if (NULL != co) {
+        mco_result cortn = mco_init(*co, &task->srey->codesc);
+        ASSERTAB(MCO_SUCCESS == cortn, mco_result_description(cortn));
+        return *co;
     }
-    mutex_unlock(&task->mutask);
+    mco_coro *conew;
+    mco_result cortn = mco_create(&conew, &task->srey->codesc);
+    ASSERTAB(MCO_SUCCESS == cortn, mco_result_description(cortn));
+    return conew;
 }
 static inline void _message_clean(message_ctx *msg) {
     switch (msg->msgtype) {
@@ -122,19 +138,9 @@ static inline void _message_clean(message_ctx *msg) {
         break;
     }
 }
-static inline mco_coro *_co_create(task_ctx *task) {
-    mco_coro **co = qu_copool_pop(&task->qucopool);
-    if (NULL != co) {
-        ASSERTAB(MCO_SUCCESS == mco_init(*co, &task->srey->codesc), "init coroutine failed!");
-        return *co;
-    }
-    mco_coro *conew;
-    ASSERTAB(MCO_SUCCESS == mco_create(&conew, &task->srey->codesc), "create coroutine failed!");
-    return conew;
-}
 static inline void _co_cb(mco_coro *co) {
     co_arg_ctx arg;
-    ASSERTAB(MCO_SUCCESS == mco_pop(co, &arg, sizeof(arg)), "mco_pop failed!");
+    CO_POP(co, arg);
     arg.task->_run(arg.task, &arg.msg);
     if (MSG_TYPE_CLOSING == arg.msg.msgtype) {
         arg.task->closed = 1;
@@ -149,7 +155,7 @@ static inline void _dispatch_timeout(co_arg_ctx *arg) {
     }
     switch (cotmo.type) {
     case TMO_TYPE_SLEEP:
-        RESUME(arg, cotmo.co);
+        CO_RESUME(arg, cotmo.co);
         break;
     case TMO_TYPE_NORMAL:
         CO_CREATE(arg);
@@ -157,7 +163,7 @@ static inline void _dispatch_timeout(co_arg_ctx *arg) {
     case TMO_TYPE_NET: {
         co_sess_ctx cosess;
         if (ERR_OK == _map_cosess_get(&arg->task->mapco, arg->msg.sess, &cosess, 1)) {
-            RESUME(arg, cosess.co);
+            CO_RESUME(arg, cosess.co);
         }
         break;
     }
@@ -170,7 +176,7 @@ static inline void _dispatch_connect(co_arg_ctx *arg) {
         co_sess_ctx cosess;
         if (ERR_OK == _map_cosess_get(&arg->task->mapco, arg->msg.sess, &cosess, 1)) {
             _map_cotmo_del(&arg->task->mapco, arg->msg.sess);
-            RESUME(arg, cosess.co);
+            CO_RESUME(arg, cosess.co);
         } else {
             if (ERR_OK == arg->msg.erro) {
                 ev_close(task_netev(arg->task), arg->msg.fd, arg->msg.skid);
@@ -195,7 +201,7 @@ static inline void _dispatch_netrd(co_arg_ctx *arg) {
                 || SLICE_START == arg->msg.slice) {
                 _map_cotmo_del(&arg->task->mapco, arg->msg.sess);
             }
-            RESUME(arg, cosess.co);
+            CO_RESUME(arg, cosess.co);
         }
         _message_clean(&arg->msg);
     } else {
@@ -207,7 +213,7 @@ static inline void _dispatch_close(co_arg_ctx *arg) {
         co_sess_ctx cosess;
         if (ERR_OK == _map_cosess_get(&arg->task->mapco, arg->msg.sess, &cosess, 1)) {
             _map_cotmo_del(&arg->task->mapco, arg->msg.sess);
-            RESUME(arg, cosess.co);
+            CO_RESUME(arg, cosess.co);
         }
     }
     CO_CREATE(arg);
@@ -215,7 +221,7 @@ static inline void _dispatch_close(co_arg_ctx *arg) {
 static inline void _dispatch_response(co_arg_ctx *arg) {
     co_sess_ctx cosess;
     if (ERR_OK == _map_cosess_get(&arg->task->mapco, arg->msg.sess, &cosess, 1)) {
-        RESUME(arg, cosess.co);
+        CO_RESUME(arg, cosess.co);
     } else {
         LOG_ERROR("task: %d, can't find session:%"PRIu64, arg->task->name, arg->msg.sess);
     }
@@ -309,6 +315,20 @@ static inline void _task_free(task_ctx *task) {
     mutex_free(&task->mutask);
     FREE(task);
 }
+static inline void _push_message(task_ctx *task, message_ctx *msg) {
+    mutex_lock(&task->mutask);
+    qu_message_push(&task->qumsg, msg);
+    if (0 == task->global) {
+        task->global = 1;
+        mutex_lock(&task->srey->muworker);
+        qu_void_push(&task->srey->quglobal, (void **)&task);
+        if (task->srey->waiting > 0) {
+            cond_signal(&task->srey->condworker);
+        }
+        mutex_unlock(&task->srey->muworker);
+    }
+    mutex_unlock(&task->mutask);
+}
 task_ctx *srey_tasknew(srey_ctx *ctx, int32_t name, uint32_t maxcnt, 
     task_new _init, task_run _run, task_free _tfree, void *arg) {
     if (NULL == _run) {
@@ -377,14 +397,17 @@ static inline certs_ctx *_certs_get(srey_ctx *ctx, const char *name) {
 }
 int32_t certs_register(srey_ctx *ctx, const char *name, struct evssl_ctx *evssl) {
     certs_ctx cert;
-    ASSERTAB(strlen(name) < sizeof(cert.name), "cert name too long.");
+    if (strlen(name) >= sizeof(cert.name)) {
+        ASSERTAB("ssl name %s too long.", name);
+        return ERR_FAILED;
+    }
     ZERO(&cert, sizeof(certs_ctx));
     strcpy(cert.name, name);
     cert.ssl = evssl;
     int32_t rtn;
     rwlock_wrlock(&ctx->lckarrcert);
     if (NULL != _certs_get(ctx, name)) {
-        LOG_ERROR("cert name %s repeat.", name);
+        LOG_ERROR("ssl name %s repeat.", name);
         rtn = ERR_FAILED;
     } else {
         arr_certs_push_back(&ctx->arrcert, &cert);
@@ -437,9 +460,9 @@ static inline void _task_timeout(task_ctx *task, uint64_t sess, uint32_t ms, uin
     _map_cotmo_add(&task->mapco, type, task->curco, sess);
     tw_add(&task->srey->tw, ms, _srey_timeout, &ud);
     if (TMO_TYPE_SLEEP == type) {
-        YIELD(task);
+        CO_YIELD(task);
         message_ctx msg;
-        ASSERTAB(MCO_SUCCESS == mco_pop(task->curco, &msg, sizeof(msg)), "mco_pop failed!");
+        CO_POP(task->curco, msg);
         if (sess != msg.sess) {
             LOG_ERROR("task: %d, request session: %"PRIu64", response session: %"PRIu64" not the same.", task->name, sess, msg.sess);
             return;
@@ -477,9 +500,9 @@ static inline void *_task_request(task_ctx *dst, task_ctx *src, void *data, size
     }
     _push_message(dst, &msg);
     if (NULL != src) {
-        YIELD(src);
+        CO_YIELD(src);
         message_ctx resp;
-        ASSERTAB(MCO_SUCCESS == mco_pop(src->curco, &resp, sizeof(resp)), "mco_pop failed!");
+        CO_POP(src->curco, resp);
         if (msg.sess != resp.sess) {
             LOG_ERROR("task: %d, request session: %"PRIu64", response session: %"PRIu64" not the same.", src->name, msg.sess, resp.sess);
             return NULL;
@@ -513,9 +536,9 @@ void task_response(task_ctx *dst, uint64_t sess, void *data, size_t size, int32_
     _push_message(dst, &msg);
 }
 void *task_slice(task_ctx *task, uint64_t sess, size_t *size, int32_t *end) {
-    YIELD(task);
+    CO_YIELD(task);
     message_ctx msg;
-    ASSERTAB(MCO_SUCCESS == mco_pop(task->curco, &msg, sizeof(msg)), "mco_pop failed!");
+    CO_POP(task->curco, msg);
     if (sess != msg.sess) {
         LOG_ERROR("task: %d, request session: %"PRIu64", response session: %"PRIu64" not the same.", task->name, sess, msg.sess);
         return NULL;
@@ -662,9 +685,9 @@ SOCKET task_netconnect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl
     }
     _map_cosess_add(&task->mapco, task->curco, *skid);
     _task_timeout(task, *skid, CONNECT_TIMEOUT, TMO_TYPE_NET);
-    YIELD(task);
+    CO_YIELD(task);
     message_ctx msg;
-    ASSERTAB(MCO_SUCCESS == mco_pop(task->curco, &msg, sizeof(msg)), "mco_pop failed!");
+    CO_POP(task->curco, msg);
     if (*skid != msg.sess) {
         LOG_ERROR("task: %d, request session: %"PRIu64", response session: %"PRIu64" not the same.", task->name, *skid, msg.sess);
         return INVALID_SOCK;
@@ -721,9 +744,9 @@ void *task_synsend(task_ctx *task, SOCKET fd, uint64_t skid,
     _task_timeout(task, *sess, NETRD_TIMEOUT, TMO_TYPE_NET);
     ev_ud_sess(&task->srey->netev, fd, skid, *sess);
     task_netsend(task, fd, skid, data, len, pktype);
-    YIELD(task);
+    CO_YIELD(task);
     message_ctx msg;
-    ASSERTAB(MCO_SUCCESS == mco_pop(task->curco, &msg, sizeof(msg)), "mco_pop failed!");
+    CO_POP(task->curco, msg);
     if (*sess != msg.sess) {
         LOG_ERROR("task: %d, request session: %"PRIu64", response session: %"PRIu64" not the same.", task->name, *sess, msg.sess);
         return NULL;
@@ -755,9 +778,9 @@ void *task_synsendto(task_ctx *task, SOCKET fd, uint64_t skid,
         _map_cotmo_del(&task->mapco, sess);
         return NULL;
     }
-    YIELD(task);
+    CO_YIELD(task);
     message_ctx msg;
-    ASSERTAB(MCO_SUCCESS == mco_pop(task->curco, &msg, sizeof(msg)), "mco_pop failed!");
+    CO_POP(task->curco, msg);
     if (sess != msg.sess) {
         LOG_ERROR("task: %d, request session: %"PRIu64", response session: %"PRIu64" not the same.", task->name, sess, msg.sess);
         return NULL;
