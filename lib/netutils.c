@@ -107,18 +107,11 @@ int32_t sock_family(SOCKET fd) {
     }
     return family;
 #else
-    struct sockaddr_storage addr;
-    socklen_t addrlen = (socklen_t)sizeof(addr);
-    if (getsockname(fd, (struct sockaddr *)&addr, &addrlen) < 0) {
+    netaddr_ctx addr;
+    if (ERR_OK != netaddr_local(&addr, fd)) {
         return ERR_FAILED;
     }
-    char host[128], service[32];
-    int32_t flags = NI_NUMERICHOST | NI_NUMERICSERV;
-    if (ERR_OK != getnameinfo((struct sockaddr *)&addr, sizeof(addr),
-        host, sizeof(host), service, sizeof(service), flags)) {
-        return ERR_FAILED;
-    }
-    return addr.ss_family;
+    return netaddr_family(&addr);
 #endif
 #endif
 }
@@ -222,7 +215,7 @@ int32_t sock_linger(SOCKET fd) {
 }
 static SOCKET _sock_listen(void) {
     netaddr_ctx addr;
-    if (ERR_OK != netaddr_sethost(&addr, "127.0.0.1", 0)) {
+    if (ERR_OK != netaddr_set(&addr, "127.0.0.1", 0)) {
         return INVALID_SOCK;
     }
     SOCKET fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -256,7 +249,7 @@ int32_t sock_pair(SOCKET acSock[2]) {
         return ERR_FAILED;
     }
     netaddr_ctx addr;
-    if (ERR_OK != netaddr_localaddr(&addr, fdlsn, AF_INET)) {
+    if (ERR_OK != netaddr_local(&addr, fdlsn)) {
         CLOSE_SOCK(fdlsn);
         return ERR_FAILED;
     }
@@ -274,7 +267,7 @@ int32_t sock_pair(SOCKET acSock[2]) {
         return ERR_FAILED;
     }
     CLOSE_SOCK(fdlsn);
-    if (ERR_OK != netaddr_localaddr(&addr, fdcn, AF_INET)) {
+    if (ERR_OK != netaddr_local(&addr, fdcn)) {
         CLOSE_SOCK(fdacp);
         CLOSE_SOCK(fdcn);
         return ERR_FAILED;

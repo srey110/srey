@@ -10,7 +10,6 @@ typedef struct lsnsock_ctx {
     struct listener_ctx *lsn;
 }lsnsock_ctx;
 typedef struct listener_ctx {
-    int32_t family;
     int32_t nlsn;
     lsnsock_ctx *lsnsock;
 #if WITH_SSL
@@ -408,7 +407,7 @@ SOCKET ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
     cbs_ctx *cbs, ud_cxt *ud, uint64_t *skid) {
     ASSERTAB(NULL != cbs && NULL != cbs->conn_cb && NULL != cbs->r_cb, ERRSTR_NULLP);
     netaddr_ctx addr;
-    if (ERR_OK != netaddr_sethost(&addr, ip, port)) {
+    if (ERR_OK != netaddr_set(&addr, ip, port)) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         return INVALID_SOCK;
     }
@@ -531,7 +530,7 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
     cbs_ctx *cbs, ud_cxt *ud) {
     ASSERTAB(NULL != cbs && NULL != cbs->acp_cb && NULL != cbs->r_cb, ERRSTR_NULLP);
     netaddr_ctx addr;
-    if (ERR_OK != netaddr_sethost(&addr, ip, port)) {
+    if (ERR_OK != netaddr_set(&addr, ip, port)) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
@@ -543,7 +542,6 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
 #endif
     listener_ctx *lsn;
     MALLOC(lsn, sizeof(listener_ctx));
-    lsn->family = netaddr_family(&addr);
     lsn->nlsn = ctx->nthreads;
     lsn->cbs = *cbs;
     COPY_UD(lsn->ud, ud);
@@ -690,7 +688,7 @@ static void _on_udp_rw(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
         _free_udp(skctx);
     }
 }
-static inline sock_ctx *_new_udp(SOCKET fd, int32_t family, cbs_ctx *cbs, ud_cxt *ud) {
+static inline sock_ctx *_new_udp(SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
     udp_ctx *udp;
     MALLOC(udp, sizeof(udp_ctx));
     udp->sock.ev_cb = _on_udp_rw;
@@ -703,7 +701,7 @@ static inline sock_ctx *_new_udp(SOCKET fd, int32_t family, cbs_ctx *cbs, ud_cxt
     udp->buf_r.IOV_PTR_FIELD = udp->buf;
     udp->buf_r.IOV_LEN_FIELD = sizeof(udp->buf);
     COPY_UD(udp->ud, ud);
-    netaddr_empty_addr(&udp->addr, family);
+    netaddr_empty(&udp->addr);
     _init_msghdr(&udp->msg, &udp->addr, &udp->buf_r, 1);
     qu_off_buf_init(&udp->buf_s, INIT_SENDBUF_LEN);
     return &udp->sock;
@@ -722,7 +720,7 @@ SOCKET ev_udp(ev_ctx *ctx, const char *ip, const uint16_t port,
     cbs_ctx *cbs, ud_cxt *ud, uint64_t *skid) {
     ASSERTAB(NULL != cbs->rf_cb, ERRSTR_NULLP);
     netaddr_ctx addr;
-    if (ERR_OK != netaddr_sethost(&addr, ip, port)) {
+    if (ERR_OK != netaddr_set(&addr, ip, port)) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         return INVALID_SOCK;
     }
@@ -730,7 +728,7 @@ SOCKET ev_udp(ev_ctx *ctx, const char *ip, const uint16_t port,
     if (INVALID_SOCK == fd) {
         return INVALID_SOCK;
     }
-    sock_ctx *skctx = _new_udp(fd, netaddr_family(&addr), cbs, ud);
+    sock_ctx *skctx = _new_udp(fd, cbs, ud);
     *skid = UPCAST(skctx, udp_ctx, sock)->skid;
     _cmd_add_udp(ctx, fd, skctx);
     return fd;

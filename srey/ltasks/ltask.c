@@ -42,7 +42,7 @@ static inline lua_State *_ltask_luainit(task_ctx *task) {
 }
 static inline void _ltask_fmtfile(const char *file, char *path) {
     ZERO(path, PATH_LENS);
-    SNPRINTF(path, PATH_LENS - 1, "%s%s.lua", luapath, file);
+    SNPRINTF(path, PATH_LENS - 1, "%s%s%s", luapath, file, ".lua");
 }
 static inline int32_t _ltask_searchfile(const char *file, char *path) {
     _ltask_fmtfile(file, path);

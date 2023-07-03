@@ -90,15 +90,18 @@ static int32_t service_exit(void) {
     }
     return ERR_OK;
 }
-static int32_t service_init(void) {
-    config_ctx config;
-    config.logfile = 1;
-    config.nnet = 1;
-    config.nworker = 2;
+static void _config_init(config_ctx *config) {
+    config->logfile = 1;
+    config->nnet = 1;
+    config->nworker = 2;
     const char *fmt = "%Y-%m-%d %H-%M-%S";
     size_t flen = strlen(fmt);
-    memcpy(config.fmt, fmt, flen);
-    config.fmt[flen] = '\0';
+    memcpy(config->fmt, fmt, flen);
+    config->fmt[flen] = '\0';
+}
+static int32_t service_init(void) {
+    config_ctx config;
+    _config_init(&config);
     _parse_config(&config);
     if (0 != config.logfile) {
         _open_log(config.fmt);

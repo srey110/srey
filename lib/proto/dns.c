@@ -25,6 +25,9 @@ typedef struct dns_question {
     uint16_t qclass;
 }dns_question;
 
+#define DNS_A    1
+#define DNS_AAAA 28
+
 static inline void _encode_domain(char *qname, const char *domain) {
     size_t lock = 0, i, blens;
     char buf[256] = { 0 };
@@ -52,9 +55,9 @@ static inline size_t _create_pack(char *buf, const char *domain, int32_t ipv6) {
     size_t qlens = strlen(qname) + 1;
     dns_question *qinfo = (dns_question*)&buf[sizeof(dns_head) + qlens];
     if (0 == ipv6) {
-        qinfo->qtype = htons(1);
+        qinfo->qtype = htons(DNS_A);
     } else {
-        qinfo->qtype = htons(28);
+        qinfo->qtype = htons(DNS_AAAA);
     }
     qinfo->qclass = htons(1);
     return sizeof(dns_head) + qlens + sizeof(dns_question);
@@ -107,11 +110,11 @@ static inline char *_dns_parse_data(char *buf, char *reader, uint16_t n, dns_ip 
         reader += 2 * sizeof(uint16_t) + sizeof(uint32_t);
         rlens = ntohs(*((uint16_t *)reader));
         reader += sizeof(uint16_t);
-        if (1 == rtype) {
+        if (DNS_A == rtype) {
             tmp = &dnsips[*index];
             (*index)++;
             inet_ntop(AF_INET, reader, tmp->ip, sizeof(tmp->ip));
-        }else if (28 == rtype) {
+        }else if (DNS_AAAA == rtype) {
             tmp = &dnsips[*index];
             (*index)++;
             inet_ntop(AF_INET6, reader, tmp->ip, sizeof(tmp->ip));

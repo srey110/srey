@@ -12,10 +12,10 @@ typedef union netaddr_ctx {
 int32_t is_ipv4(const char *ip);
 int32_t is_ipv6(const char *ip);
 int32_t is_ipaddr(const char* ip);
-void netaddr_empty_addr(netaddr_ctx *ctx, const int32_t family);
-int32_t netaddr_sethost(netaddr_ctx *ctx, const char *ip, const uint16_t port);
-int32_t netaddr_remoteaddr(netaddr_ctx *ctx, SOCKET fd, const int32_t family);
-int32_t netaddr_localaddr(netaddr_ctx *ctx, SOCKET fd, const int32_t family);
+void netaddr_empty(netaddr_ctx *ctx);
+int32_t netaddr_set(netaddr_ctx *ctx, const char *ip, const uint16_t port);
+int32_t netaddr_remote(netaddr_ctx *ctx, SOCKET fd);
+int32_t netaddr_local(netaddr_ctx *ctx, SOCKET fd);
 struct sockaddr *netaddr_addr(netaddr_ctx *ctx);
 socklen_t netaddr_size(netaddr_ctx *ctx);
 int32_t netaddr_ip(netaddr_ctx *ctx, char ip[IP_LENS]);

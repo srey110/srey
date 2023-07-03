@@ -93,7 +93,7 @@ int32_t ev_sendto(ev_ctx *ctx, SOCKET fd, uint64_t skid,
     char *buf;
     MALLOC(buf, sizeof(netaddr_ctx) + len);
     netaddr_ctx *addr = (netaddr_ctx *)buf;
-    if (ERR_OK != netaddr_sethost(addr, ip, port)) {
+    if (ERR_OK != netaddr_set(addr, ip, port)) {
         FREE(buf);
         LOG_WARN("socket id: %"PRIu64" %s", skid, ERRORSTR(ERRNO));
         return ERR_FAILED;

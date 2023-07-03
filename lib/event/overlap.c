@@ -403,9 +403,9 @@ static inline int32_t _trybind(SOCKET fd, int32_t family) {
     int32_t rtn;
     netaddr_ctx addr;
     if (AF_INET == family) {
-        rtn = netaddr_sethost(&addr, "0.0.0.0", 0);
+        rtn = netaddr_set(&addr, "0.0.0.0", 0);
     } else {
-        rtn = netaddr_sethost(&addr, "::", 0);
+        rtn = netaddr_set(&addr, "::", 0);
     }
     if (ERR_OK != rtn) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
@@ -480,7 +480,7 @@ SOCKET ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
     cbs_ctx *cbs, ud_cxt *ud, uint64_t *skid) {
     ASSERTAB(NULL != cbs && NULL != cbs->conn_cb && NULL != cbs->r_cb, ERRSTR_NULLP);
     netaddr_ctx addr;
-    if (ERR_OK != netaddr_sethost(&addr, ip, port)) {
+    if (ERR_OK != netaddr_set(&addr, ip, port)) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         return INVALID_SOCK;
     }
@@ -627,7 +627,7 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
     cbs_ctx *cbs, ud_cxt *ud) {
     ASSERTAB(NULL != cbs && NULL != cbs->acp_cb && NULL != cbs->r_cb, ERRSTR_NULLP);
     netaddr_ctx addr;
-    if (ERR_OK != netaddr_sethost(&addr, ip, port)) {
+    if (ERR_OK != netaddr_set(&addr, ip, port)) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
@@ -763,7 +763,7 @@ void _add_bufs_trysendto(sock_ctx *skctx, off_buf_ctx *buf) {
         BIT_REMOVE(oludp->status, STATUS_SENDING);
     }
 }
-static inline sock_ctx *_new_udp(netaddr_ctx *addr, SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
+static inline sock_ctx *_new_udp(SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
     overlap_udp_ctx *oludp;
     MALLOC(oludp, sizeof(overlap_udp_ctx));
     oludp->ol_r.type = SOCK_DGRAM;
@@ -776,7 +776,7 @@ static inline sock_ctx *_new_udp(netaddr_ctx *addr, SOCKET fd, cbs_ctx *cbs, ud_
     oludp->skid = createid();
     oludp->cbs = *cbs;
     COPY_UD(oludp->ud, ud);
-    netaddr_empty_addr(&oludp->addr, netaddr_family(addr));
+    netaddr_empty(&oludp->addr);
     oludp->addrlen = netaddr_size(&oludp->addr);
     oludp->wsabuf_r.buf = oludp->buf;
     oludp->wsabuf_r.len = sizeof(oludp->buf);
@@ -797,7 +797,7 @@ SOCKET ev_udp(ev_ctx *ctx, const char *ip, const uint16_t port, cbs_ctx *cbs,
     ud_cxt *ud, uint64_t *skid) {
     ASSERTAB(NULL != cbs->rf_cb, ERRSTR_NULLP);
     netaddr_ctx addr;
-    if (ERR_OK != netaddr_sethost(&addr, ip, port)) {
+    if (ERR_OK != netaddr_set(&addr, ip, port)) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         return INVALID_SOCK;
     }
@@ -812,7 +812,7 @@ SOCKET ev_udp(ev_ctx *ctx, const char *ip, const uint16_t port, cbs_ctx *cbs,
         CLOSE_SOCK(fd);
         return INVALID_SOCK;
     }
-    sock_ctx *skctx = _new_udp(&addr, fd, cbs, ud);
+    sock_ctx *skctx = _new_udp(fd, cbs, ud);
     overlap_udp_ctx *udp = UPCAST(skctx, overlap_udp_ctx, ol_r);
     *skid = udp->skid;
     _cmd_add(watcher, skctx, hs);

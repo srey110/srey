@@ -21,7 +21,7 @@ static int32_t _lreg_remoteaddr(lua_State *lua) {
     if (-1 == fd) {
         return 0;
     }
-    if (ERR_OK != netaddr_remoteaddr(&addr, fd, sock_family(fd))) {
+    if (ERR_OK != netaddr_remote(&addr, fd)) {
         return 0;
     }
     char ip[IP_LENS];
