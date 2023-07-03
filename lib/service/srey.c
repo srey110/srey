@@ -813,7 +813,8 @@ static void _loop_worker(void *arg) {
 static inline void _monitor_check(worker_monitor *monitor) {
     if (monitor->ck_ver == monitor->ver) {
         if (MSG_TYPE_NONE != monitor->msgtype) {
-            LOG_ERROR("task: %d message type: %d, maybe in an endless loop", monitor->name, monitor->msgtype);
+            LOG_ERROR("task: %d message type: %d, maybe in an endless loop. version: %d",
+                monitor->name, monitor->msgtype, monitor->ver);
         }
     } else {
         monitor->ck_ver = monitor->ver;
