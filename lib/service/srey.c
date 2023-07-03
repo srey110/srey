@@ -13,7 +13,6 @@ typedef enum timeout_type {
     TMO_TYPE_NORMAL,
     TMO_TYPE_NET
 }timeout_type;
-QUEUE_DECL(message_ctx, qu_message);
 #if WITH_SSL
 typedef struct certs_ctx {
     struct evssl_ctx *ssl;
@@ -21,12 +20,28 @@ typedef struct certs_ctx {
 }certs_ctx;
 ARRAY_DECL(certs_ctx, arr_certs);
 #endif
+typedef struct worker_monitor {
+    int32_t name;
+    int32_t msgtype;
+    atomic_t ver;
+    uint32_t ck_ver;
+}worker_monitor;
+typedef struct monitor_ctx {
+    int32_t stop;
+    worker_monitor *monitor;
+    pthread_t thmonitor;
+}monitor_ctx;
+typedef struct worker_ctx {
+    int32_t index;
+    srey_ctx *srey;
+    pthread_t thworker;
+}worker_ctx;
 struct srey_ctx {
     int32_t stop;
     int32_t waiting;
     int32_t startup;
     uint32_t nworker;
-    pthread_t *thworker;
+    worker_ctx *worker;
 #if WITH_SSL
     arr_certs arrcert;
     rwlock_ctx lckarrcert;
@@ -36,11 +51,13 @@ struct srey_ctx {
     mutex_ctx muworker;
     cond_ctx condworker;
     qu_void quglobal;
+    monitor_ctx monitor;
     tw_ctx tw;
     ev_ctx netev;
     mco_desc codesc;
 };
 QUEUE_DECL(mco_coro *, qu_copool);
+QUEUE_DECL(message_ctx, qu_message);
 struct task_ctx {
     uint8_t global;
     uint8_t maxcnt;
@@ -250,10 +267,11 @@ static inline void _task_on_message(co_arg_ctx *arg) {
         break;
     }
 }
-static inline void _task_run(task_ctx *task) {
+static inline void _task_run(task_ctx *task, worker_monitor *monitor) {
     message_ctx *tmp;
     co_arg_ctx arg;
     arg.task = task;
+    monitor->name = task->name;
     mutex_lock(&task->mutask);
     size_t size = qu_message_size(&task->qumsg);
     mutex_unlock(&task->mutask);
@@ -267,7 +285,10 @@ static inline void _task_run(task_ctx *task) {
         }
         arg.msg = *tmp;
         mutex_unlock(&task->mutask);
+        ATOMIC_ADD(&monitor->ver, 1);
+        monitor->msgtype = arg.msg.msgtype;
         _task_on_message(&arg);
+        monitor->msgtype = MSG_TYPE_NONE;
     }
 }
 static inline void _task_free(task_ctx *task) {
@@ -756,7 +777,9 @@ void *task_synsendto(task_ctx *task, SOCKET fd, uint64_t skid,
 static void _loop_worker(void *arg) {
     void **tmp;
     task_ctx *task;
-    srey_ctx *ctx = (srey_ctx *)arg;
+    worker_ctx *worker = (worker_ctx *)arg;
+    srey_ctx *ctx = worker->srey;
+    worker_monitor *monitor = &ctx->monitor.monitor[worker->index];
     while (0 == ctx->stop) {
         //从全局队列取一任务
         mutex_lock(&ctx->muworker);
@@ -774,7 +797,7 @@ static void _loop_worker(void *arg) {
             continue;
         }
         //执行
-        _task_run(task);
+        _task_run(task, monitor);
         //是否加回全局队列
         mutex_lock(&task->mutask);
         if (0 == qu_message_size(&task->qumsg)) {
@@ -785,6 +808,28 @@ static void _loop_worker(void *arg) {
             mutex_unlock(&ctx->muworker);
         }
         mutex_unlock(&task->mutask);
+    }
+}
+static inline void _monitor_check(worker_monitor *monitor) {
+    if (monitor->ck_ver == monitor->ver) {
+        if (MSG_TYPE_NONE != monitor->msgtype) {
+            LOG_ERROR("task: %d message type: %d, maybe in an endless loop", monitor->name, monitor->msgtype);
+        }
+    } else {
+        monitor->ck_ver = monitor->ver;
+    }
+}
+static void _loop_monitor(void *arg) {
+    uint32_t i;
+    srey_ctx *ctx = (srey_ctx *)arg;
+    worker_monitor *monitor = ctx->monitor.monitor;
+    while (0 == ctx->monitor.stop) {
+        for (i = 0; i < ctx->nworker; i++) {
+            _monitor_check(&monitor[i]);
+        }
+        for (i = 0; i < 10 && 0 == ctx->monitor.stop; i++) {
+            MSLEEP(500);
+        }
     }
 }
 static inline uint64_t _maptask_hash(const void *item, uint64_t seed0, uint64_t seed1) {
@@ -800,7 +845,9 @@ srey_ctx *srey_init(uint32_t nnet, uint32_t nworker) {
     srey_ctx *ctx;
     CALLOC(ctx, 1, sizeof(srey_ctx));
     ctx->nworker = nworker;
-    MALLOC(ctx->thworker, sizeof(pthread_t) * ctx->nworker);
+    MALLOC(ctx->worker, sizeof(worker_ctx) * ctx->nworker);
+    ctx->monitor.stop = 0;
+    CALLOC(ctx->monitor.monitor, 1, sizeof(worker_monitor) * ctx->nworker);
     ctx->codesc = mco_desc_init(_co_cb, 0);
     mutex_init(&ctx->muworker);
     cond_init(&ctx->condworker);
@@ -813,8 +860,11 @@ srey_ctx *srey_init(uint32_t nnet, uint32_t nworker) {
     rwlock_init(&ctx->lckarrcert);
     arr_certs_init(&ctx->arrcert, 16);
 #endif
+    ctx->monitor.thmonitor = thread_creat(_loop_monitor, ctx);
     for (uint32_t i = 0; i < ctx->nworker; i++) {
-        ctx->thworker[i] = thread_creat(_loop_worker, ctx);
+        ctx->worker[i].index = i;
+        ctx->worker[i].srey = ctx;
+        ctx->worker[i].thworker = thread_creat(_loop_worker, &ctx->worker[i]);
     }
     tw_init(&ctx->tw);
     ev_init(&ctx->netev, nnet);
@@ -872,8 +922,10 @@ void srey_free(srey_ctx *ctx) {
     cond_broadcast(&ctx->condworker);
     mutex_unlock(&ctx->muworker);
     for (uint32_t i = 0; i < ctx->nworker; i++) {
-        thread_join(ctx->thworker[i]);
+        thread_join(ctx->worker[i].thworker);
     }
+    ctx->monitor.stop = 1;
+    thread_join(ctx->monitor.thmonitor);
     ev_free(&ctx->netev);
     tw_free(&ctx->tw);
     hashmap_free(ctx->maptask);
@@ -890,6 +942,7 @@ void srey_free(srey_ctx *ctx) {
     mutex_free(&ctx->muworker);
     cond_free(&ctx->condworker);
     qu_void_free(&ctx->quglobal);
-    FREE(ctx->thworker);
+    FREE(ctx->worker);
+    FREE(ctx->monitor.monitor);
     FREE(ctx);
 }

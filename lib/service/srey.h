@@ -5,7 +5,8 @@
 #include "proto/protos.h"
 
 typedef enum msg_type {
-    MSG_TYPE_STARTED = 0x01,
+    MSG_TYPE_NONE = 0x00,
+    MSG_TYPE_STARTED,
     MSG_TYPE_CLOSING,
     MSG_TYPE_TIMEOUT,
     MSG_TYPE_ACCEPT,
@@ -40,7 +41,6 @@ typedef struct task_ctx task_ctx;
 typedef void *(*task_new)(task_ctx *task, void *arg);
 typedef void(*task_run)(task_ctx *task, message_ctx *msg);
 typedef void(*task_free)(task_ctx *task);
-extern srey_ctx *srey;
 
 srey_ctx *srey_init(uint32_t nnet, uint32_t nworker);
 void srey_startup(srey_ctx *ctx);

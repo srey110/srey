@@ -30,4 +30,6 @@
 #include "event/event.h"
 #include "service/srey.h"
 
+extern srey_ctx *srey;
+
 #endif //LIB_H_
