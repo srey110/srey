@@ -5,9 +5,8 @@
 
 #define _SEND_CMD(ev, cmd)\
 do {\
-    uint64_t hs = FD_HASH(cmd.fd);\
-    watcher_ctx *watcher = GET_PTR((ev)->watcher, (ev)->nthreads, hs);\
-    _send_cmd(watcher, GET_POS(hs, watcher->npipes), &cmd);\
+    watcher_ctx *watcher = GET_PTR((ev)->watcher, (ev)->nthreads, cmd.fd);\
+    _send_cmd(watcher, GET_POS(cmd.fd, watcher->npipes), &cmd);\
 } while (0)
 
 sock_ctx *_map_get(watcher_ctx *watcher, SOCKET fd) {
@@ -25,7 +24,7 @@ void _cmd_listen(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx) {
     cmd.cmd = CMD_LSN;
     cmd.fd = fd;
     cmd.arg = (uint64_t)skctx;
-    _send_cmd(watcher, GET_POS(FD_HASH(cmd.fd), watcher->npipes), &cmd);
+    _send_cmd(watcher, GET_POS(fd, watcher->npipes), &cmd);
 }
 void _on_cmd_lsn(watcher_ctx *watcher, cmd_ctx *cmd) {
     _add_lsn_inloop(watcher, cmd->fd, (sock_ctx *)cmd->arg);
@@ -105,12 +104,12 @@ void _on_cmd_disconn(watcher_ctx *watcher, cmd_ctx *cmd) {
     }
     _disconnect(watcher, skctx);
 }
-void _cmd_add_acpfd(watcher_ctx *watcher, uint64_t hs, SOCKET fd, struct listener_ctx *lsn) {
+void _cmd_add_acpfd(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn) {
     cmd_ctx cmd;
     cmd.cmd = CMD_ADDACP;
     cmd.fd = fd;
     cmd.arg = (uint64_t)lsn;
-    _send_cmd(watcher, GET_POS(hs, watcher->npipes), &cmd);
+    _send_cmd(watcher, GET_POS(fd, watcher->npipes), &cmd);
 }
 void _on_cmd_addacp(watcher_ctx *watcher, cmd_ctx *cmd) {
     _add_acpfd_inloop(watcher, cmd->fd, (struct listener_ctx *)cmd->arg);

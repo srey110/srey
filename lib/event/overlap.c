@@ -495,8 +495,7 @@ SOCKET ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
         CLOSE_SOCK(fd);
         return INVALID_SOCK;
     }
-    uint64_t hs = FD_HASH(fd);
-    watcher_ctx *watcher = GET_PTR(ctx->watcher, ctx->nthreads, hs);
+    watcher_ctx *watcher = GET_PTR(ctx->watcher, ctx->nthreads, fd);
     if (ERR_OK != _join_iocp(watcher, fd)) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         CLOSE_SOCK(fd);
@@ -561,8 +560,7 @@ static inline void _on_accept_cb(acceptex_ctx *acpctx, sock_ctx *skctx, DWORD by
         CLOSE_SOCK(fd);
         return;
     }
-    uint64_t hs = FD_HASH(fd);
-    _cmd_add_acpfd(GET_PTR(acpctx->ev->watcher, acpctx->ev->nthreads, hs), fd, olacp->lsn, hs);
+    _cmd_add_acpfd(GET_PTR(acpctx->ev->watcher, acpctx->ev->nthreads, fd), fd, olacp->lsn);
 }
 void _add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) {
     if (ERR_OK != _join_iocp(watcher, fd)) {
@@ -805,8 +803,7 @@ SOCKET ev_udp(ev_ctx *ctx, const char *ip, const uint16_t port, cbs_ctx *cbs,
     if (INVALID_SOCK == fd) {
         return INVALID_SOCK;
     }
-    uint64_t hs = FD_HASH(fd);
-    watcher_ctx *watcher = GET_PTR(ctx->watcher, ctx->nthreads, hs);
+    watcher_ctx *watcher = GET_PTR(ctx->watcher, ctx->nthreads, fd);
     if (ERR_OK != _join_iocp(watcher, fd)) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         CLOSE_SOCK(fd);
@@ -815,9 +812,9 @@ SOCKET ev_udp(ev_ctx *ctx, const char *ip, const uint16_t port, cbs_ctx *cbs,
     sock_ctx *skctx = _new_udp(fd, cbs, ud);
     overlap_udp_ctx *udp = UPCAST(skctx, overlap_udp_ctx, ol_r);
     *skid = udp->skid;
-    _cmd_add(watcher, skctx, hs);
+    _cmd_add(watcher, skctx, fd);
     if (ERR_OK != _post_recv_from(udp)) {
-        _cmd_remove(watcher, fd, *skid, hs);
+        _cmd_remove(watcher, fd, *skid);
         return INVALID_SOCK;
     }
     return fd;

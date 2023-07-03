@@ -50,9 +50,8 @@ typedef struct cbs_ctx {
     free_udcb ud_free;
 }cbs_ctx;
 
-#define FD_HASH(fd) hash((const char *)&(fd), sizeof(fd))
-#define GET_PTR(p, n, hs) ((1 == (n)) ? (p) : &((p)[(hs) % (n)]))
-#define GET_POS(hs, n) ((hs) % (n))
+#define GET_POS(fd, n) (fd % n)
+#define GET_PTR(p, n, fd) (1 == n ? p : &p[GET_POS(fd, n)])
 
 //¹«¹²º¯Êý
 void _bufs_clear(qu_off_buf *bufs);

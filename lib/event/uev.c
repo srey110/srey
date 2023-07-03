@@ -14,7 +14,7 @@ typedef struct pip_ctx {
 }pip_ctx;
 
 static inline uint64_t _map_hash(const void *item, uint64_t seed0, uint64_t seed1) {
-    return FD_HASH((*(const sock_ctx **)item)->fd);
+    return hash((const char *)&((*(const sock_ctx **)item)->fd), sizeof(SOCKET));
 }
 static inline int _map_compare(const void *a, const void *b, void *ud) {
     return (int)((*(const sock_ctx **)a)->fd - (*(const sock_ctx **)b)->fd);

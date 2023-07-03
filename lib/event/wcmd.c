@@ -5,9 +5,8 @@
 
 #define _SEND_CMD(ev, cmd)\
 do {\
-    uint64_t hs = FD_HASH(cmd.fd);\
-    watcher_ctx *watcher = GET_PTR((ev)->watcher, (ev)->nthreads, hs);\
-    _send_cmd(watcher, GET_POS(hs, watcher->ncmd), &cmd);\
+    watcher_ctx *watcher = GET_PTR((ev)->watcher, (ev)->nthreads, cmd.fd);\
+    _send_cmd(watcher, GET_POS(cmd.fd, watcher->ncmd), &cmd);\
 } while (0)
 
 static inline sock_ctx *_map_get(watcher_ctx *watcher, SOCKET fd) {
@@ -28,31 +27,31 @@ void _send_cmd(watcher_ctx *watcher, uint32_t index, cmd_ctx *cmd) {
 void _on_cmd_stop(watcher_ctx *watcher, cmd_ctx *cmd) {
     watcher->stop = 1;
 }
-void _cmd_add(watcher_ctx *watcher, sock_ctx *skctx, uint64_t hs) {
+void _cmd_add(watcher_ctx *watcher, sock_ctx *skctx, SOCKET fd) {
     cmd_ctx cmd;
     cmd.cmd = CMD_ADD;
     cmd.arg = (uint64_t)skctx;
-    _send_cmd(watcher, GET_POS(hs, watcher->ncmd), &cmd);
+    _send_cmd(watcher, GET_POS(fd, watcher->ncmd), &cmd);
 }
 void _on_cmd_add(watcher_ctx *watcher, cmd_ctx *cmd) {
     _add_fd(watcher, (sock_ctx *)cmd->arg);
 }
-void _cmd_add_acpfd(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn, uint64_t hs) {
+void _cmd_add_acpfd(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn) {
     cmd_ctx cmd;
     cmd.cmd = CMD_ADDACP;
     cmd.fd = fd;
     cmd.arg = (uint64_t)lsn;
-    _send_cmd(watcher, GET_POS(hs, watcher->ncmd), &cmd);
+    _send_cmd(watcher, GET_POS(fd, watcher->ncmd), &cmd);
 }
 void _on_cmd_addacp(watcher_ctx *watcher, cmd_ctx *cmd) {
     _add_acpfd_inloop(watcher, cmd->fd, (struct listener_ctx *)cmd->arg);
 }
-void _cmd_remove(watcher_ctx *watcher, SOCKET fd, uint64_t skid, uint64_t hs) {
+void _cmd_remove(watcher_ctx *watcher, SOCKET fd, uint64_t skid) {
     cmd_ctx cmd;
     cmd.cmd = CMD_REMOVE;
     cmd.fd = fd;
     cmd.skid = skid;
-    _send_cmd(watcher, GET_POS(hs, watcher->ncmd), &cmd);
+    _send_cmd(watcher, GET_POS(fd, watcher->ncmd), &cmd);
 }
 void _on_cmd_remove(watcher_ctx *watcher, cmd_ctx *cmd) {
     sock_ctx *skctx = _map_get(watcher, cmd->fd);

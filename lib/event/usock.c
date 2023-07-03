@@ -462,19 +462,17 @@ static inline void _on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t 
     }
 #endif
     SOCKET fd;
-    uint64_t hs;
     watcher_ctx *to;
     while (INVALID_SOCK != (fd = accept(acpt->sock.fd, NULL, NULL))) {
         if (ERR_OK != _set_sockops(fd)) {
             CLOSE_SOCK(fd);
             continue;
         }
-        hs = FD_HASH(fd);
-        to = GET_PTR(watcher->ev->watcher, watcher->ev->nthreads, hs);
+        to = GET_PTR(watcher->ev->watcher, watcher->ev->nthreads, fd);
         if (to->index == watcher->index) {
             _add_acpfd_inloop(to, fd, acpt->lsn);
         } else {
-            _cmd_add_acpfd(to, hs, fd, acpt->lsn);
+            _cmd_add_acpfd(to, fd, acpt->lsn);
         }
     }
 #ifndef SO_REUSEPORT

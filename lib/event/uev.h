@@ -92,7 +92,7 @@ void _del_event(watcher_ctx *watcher, SOCKET fd, int32_t *events, int32_t ev, vo
 void _send_cmd(watcher_ctx *watcher, uint32_t index, cmd_ctx *cmd);
 void _cmd_connect(ev_ctx *ctx, SOCKET fd, sock_ctx *skctx);
 void _cmd_listen(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx);
-void _cmd_add_acpfd(watcher_ctx *watcher, uint64_t hs, SOCKET fd, struct listener_ctx *lsn);
+void _cmd_add_acpfd(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn);
 void _cmd_add_udp(ev_ctx *ctx, SOCKET fd, sock_ctx *skctx);
 
 void _on_cmd_stop(watcher_ctx *watcher, cmd_ctx *cmd);
