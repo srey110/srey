@@ -139,12 +139,13 @@ void sighandle(void(*cb)(int32_t, void *), void *data) {
     (void)SetConsoleCtrlHandler((PHANDLER_ROUTINE)_sighandler, TRUE);
 #else
     signal(SIGPIPE, SIG_IGN);//若某一端关闭连接，而另一端仍然向它写数据，第一次写数据后会收到RST响应，此后再写数据，内核将向进程发出SIGPIPE信号
-    signal(SIGINT, _sighandler);//终止进程
-    signal(SIGHUP, _sighandler);//终止进程
+    signal(SIGHUP, _sighandler);//终止控制终端或进程
+    signal(SIGINT, _sighandler);//键盘产生的中断(Ctrl-C)
+    signal(SIGQUIT, _sighandler);//键盘产生的退出
+    signal(SIGABRT, _sighandler);//异常中止
     signal(SIGTSTP, _sighandler);//ctrl+Z
-    signal(SIGTERM, _sighandler);//终止一个进程
     signal(SIGKILL, _sighandler);//立即结束程序
-    signal(SIGABRT, _sighandler);//中止一个程序
+    signal(SIGTERM, _sighandler);//进程终止
     signal(SIGUSR1, _sighandler);
     signal(SIGUSR2, _sighandler);
 #endif
