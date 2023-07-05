@@ -184,12 +184,14 @@ end
 参数:
     file lua文件名 :string
     name :TASK_NAME
+    maxcnt 每次最多执行多少条消息: integer
+    maxqulens 消息队列最大长度: integer
 返回:
     task_ctx
     nil失败
 --]]
-function core.task_register(file, name)
-    return score.task_register(file, name, 5)
+function core.task_register(file, name, maxcnt, maxqulens)
+    return score.task_register(file, name, maxcnt or EVERY_EXLENS, maxqulens or MAX_QULENS)
 end
 --[[
 描述:任务查询

@@ -28,19 +28,30 @@ typedef struct worker_monitor {
 }worker_monitor;
 typedef struct monitor_ctx {
     int32_t stop;
-    worker_monitor *monitor;
+    worker_monitor *minfo;
     pthread_t thmonitor;
 }monitor_ctx;
 typedef struct worker_ctx {
     int32_t index;
+    int32_t waiting;
+    atomic_t ntask;
+    atomic_t toindex;
+    atomic_t adjusting;
     srey_ctx *srey;
-    pthread_t thworker;
+    pthread_t thread;
+    mutex_ctx mutex;
+    cond_ctx cond;
+    qu_void qutasks;
+    atomic64_t cpu_cost;
+    timer_ctx timer;
 }worker_ctx;
 struct srey_ctx {
     int32_t stop;
-    int32_t waiting;
     int32_t startup;
     uint32_t nworker;
+    uint32_t adjinterval;
+    uint32_t adjthreshold;
+    atomic_t index;
     worker_ctx *worker;
 #if WITH_SSL
     arr_certs arrcert;
@@ -48,9 +59,6 @@ struct srey_ctx {
 #endif
     struct hashmap *maptask;
     rwlock_ctx lckmaptask;
-    mutex_ctx muworker;
-    cond_ctx condworker;
-    qu_void quglobal;
     monitor_ctx monitor;
     tw_ctx tw;
     ev_ctx netev;
@@ -59,11 +67,12 @@ struct srey_ctx {
 QUEUE_DECL(mco_coro *, qu_copool);
 QUEUE_DECL(message_ctx, qu_message);
 struct task_ctx {
-    uint8_t global;
-    uint8_t maxcnt;
-    uint8_t dmaxcnt;
-    uint8_t closed;
+    int32_t global;
+    int32_t closed;
     int32_t name;
+    int32_t index;
+    uint32_t maxcnt;
+    uint32_t maxmsgqulens;
     atomic_t startup;
     task_run _run;
     task_free _free;
@@ -71,9 +80,10 @@ struct task_ctx {
     srey_ctx *srey;
     mco_coro *curco;
     mapco_ctx mapco;
-    mutex_ctx mutask;
+    mutex_ctx mutex;
     qu_message qumsg;
     qu_copool qucopool;
+    uint64_t cpu_cost;
 };
 typedef struct co_arg_ctx {
     task_ctx *task;
@@ -83,7 +93,12 @@ typedef struct co_arg_ctx {
 #define CONNECT_TIMEOUT       3000
 #define NETRD_TIMEOUT         3000
 #define MSG_INIT_CAP          512
+#define MSG_MAX_QULENS        ONEK
 #define COPOOL_INIT_CAP       128
+#define INVALID_INDEX         UINT_MAX//无效的工作线程下标
+#define CHECKVER_TIME         5000//检查死循环间隔
+#define ADJINDEX_TIME         30000//调整检测时间间隔
+#define ADJ_THRESHOLD         1000//调整的阈值
 
 #define CO_CREATE(arg)\
 do {\
@@ -111,7 +126,16 @@ do {\
     mco_result cortn = mco_pop(co, &msg, sizeof(msg));\
     ASSERTAB(MCO_SUCCESS == cortn, mco_result_description(cortn));\
 } while (0)
-
+static void _task_free(task_ctx *task);
+static inline uint64_t _maptask_hash(const void *item, uint64_t seed0, uint64_t seed1) {
+    return hash((const char *)&((*(task_ctx **)item)->name), sizeof((*(task_ctx **)item)->name));
+}
+static inline int _maptask_compare(const void *a, const void *b, void *ud) {
+    return (*(task_ctx **)a)->name - (*(task_ctx **)b)->name;
+}
+static void _maptask_free(void *item) {
+    _task_free(*(task_ctx **)item);
+}
 static inline mco_coro *_co_create(task_ctx *task) {
     mco_coro **co = qu_copool_pop(&task->qucopool);
     if (NULL != co) {
@@ -273,31 +297,377 @@ static inline void _task_on_message(co_arg_ctx *arg) {
         break;
     }
 }
-static inline void _task_run(task_ctx *task, worker_monitor *monitor) {
-    message_ctx *tmp;
-    co_arg_ctx arg;
-    arg.task = task;
-    monitor->name = task->name;
-    mutex_lock(&task->mutask);
-    size_t size = qu_message_size(&task->qumsg);
-    mutex_unlock(&task->mutask);
-    uint8_t nloop = (size > (size_t)task->dmaxcnt ? task->dmaxcnt : task->maxcnt);
-    for (uint8_t i = 0; i < nloop; i++) {
-        mutex_lock(&task->mutask);
-        tmp = qu_message_pop(&task->qumsg);
-        if (NULL == tmp) {
-            mutex_unlock(&task->mutask);
-            break;
+static inline void _push_message(task_ctx *task, message_ctx *msg) {
+    mutex_lock(&task->mutex);
+    qu_message_push(&task->qumsg, msg);
+    if (0 == task->global) {
+        task->global = 1;
+        worker_ctx *worker = &task->srey->worker[task->index];
+        mutex_lock(&worker->mutex);
+        qu_void_push(&worker->qutasks, (void **)&task);
+        if (worker->waiting > 0) {
+            cond_signal(&worker->cond);
         }
-        arg.msg = *tmp;
-        mutex_unlock(&task->mutask);
-        ATOMIC_ADD(&monitor->ver, 1);
-        monitor->msgtype = arg.msg.msgtype;
-        _task_on_message(&arg);
-        monitor->msgtype = MSG_TYPE_NONE;
+        mutex_unlock(&worker->mutex);
+    }
+    mutex_unlock(&task->mutex);
+}
+static inline int32_t _task_run(worker_ctx *worker, worker_monitor *monitor, co_arg_ctx *coarg) {
+    mutex_lock(&coarg->task->mutex);
+    message_ctx *tmp = qu_message_pop(&coarg->task->qumsg);
+    if (NULL == tmp) {
+        mutex_unlock(&coarg->task->mutex);
+        return ERR_FAILED;
+    }
+    coarg->msg = *tmp;
+    mutex_unlock(&coarg->task->mutex);
+
+    ATOMIC_ADD(&monitor->ver, 1);
+    monitor->msgtype = coarg->msg.msgtype;
+    timer_start(&worker->timer);
+    _task_on_message(coarg);
+    uint64_t elapsed = timer_elapsed(&worker->timer) / 1000;
+    ATOMIC64_ADD(&worker->cpu_cost, elapsed);
+    coarg->task->cpu_cost += elapsed;
+    monitor->msgtype = MSG_TYPE_NONE;
+    return ERR_OK;
+}
+static inline void _add_active_tasks(arr_void *arractive, task_ctx *task) {
+    size_t n = arr_void_size(arractive);
+    for (size_t i = 0; i < n; i++) {
+        if (task->name == ((task_ctx *)*arr_void_at(arractive, i))->name) {
+            return;
+        }
+    }
+    arr_void_push_back(arractive, (void **)&task);
+}
+static inline void _clear_active_tasks(arr_void *arractive) {
+    size_t n = arr_void_size(arractive);
+    for (size_t i = 0; i < n; i++) {
+        ((task_ctx *)*arr_void_at(arractive, i))->cpu_cost = 0;
     }
 }
-static inline void _task_free(task_ctx *task) {
+static inline int32_t _set_active_tasks_index(arr_void *arractive, uint32_t toindex) {
+    size_t i;
+    size_t n = arr_void_size(arractive);
+    if (n < 2) {
+        for (i = 0; i < n; i++) {
+            ((task_ctx *)*arr_void_at(arractive, i))->cpu_cost = 0;
+        }
+        return ERR_FAILED;
+    }
+    task_ctx *min_task = NULL, *max_task = NULL;
+    size_t min_pos = 0, max_pos = 0;
+    task_ctx *tmp;
+    for (i = 0; i < n; i++) {
+        tmp = *arr_void_at(arractive, i);
+        if (0 == tmp->cpu_cost) {
+            continue;
+        }
+        //LOG_INFO("task %d, cpu_cost %"PRIu64"μs", tmp->name, tmp->cpu_cost);
+        if (NULL == min_task) {
+            min_task = tmp;
+            max_task = tmp;
+            min_pos = i;
+            max_pos = i;
+            continue;
+        }
+        if (tmp->cpu_cost < min_task->cpu_cost) {
+            min_task->cpu_cost = 0;
+            min_task = tmp;
+            min_pos = i;
+            continue;
+        }
+        if (tmp->cpu_cost > max_task->cpu_cost) {
+            max_task->cpu_cost = 0;
+            max_task = tmp;
+            max_pos = i;
+            continue;
+        }
+        tmp->cpu_cost = 0;
+    }
+    if (NULL == min_task) {
+        return ERR_FAILED;
+    }
+    if (min_pos == max_pos) {
+        min_task->cpu_cost = 0;
+        return ERR_FAILED;
+    } else {
+        min_task->cpu_cost = 0;
+        max_task->cpu_cost = 0;
+    }
+    arr_void_del_nomove(arractive, min_pos);
+    LOG_INFO("adjustment task %d from thread %d to thread %d.", min_task->name, min_task->index, toindex);
+    mutex_lock(&min_task->mutex);
+    min_task->index = toindex;
+    mutex_unlock(&min_task->mutex);
+    return ERR_OK;
+}
+static void _loop_worker(void *arg) {
+    void **tmp;
+    worker_ctx *worker = (worker_ctx *)arg;
+    srey_ctx *ctx = worker->srey;
+    worker_monitor *monitor = &ctx->monitor.minfo[worker->index];
+    arr_void arractive;
+    arr_void_init(&arractive, 256);
+    uint32_t toindex;
+    co_arg_ctx coarg;
+    while (0 == ctx->stop) {
+        //从队列取一任务
+        mutex_lock(&worker->mutex);
+        tmp = qu_void_pop(&worker->qutasks);
+        if (NULL == tmp) {
+            worker->waiting++;
+            cond_wait(&worker->cond, &worker->mutex);
+            worker->waiting--;
+            mutex_unlock(&worker->mutex);
+            continue;
+        }
+        coarg.task = *tmp;
+        mutex_unlock(&worker->mutex);
+        //执行
+        monitor->name = coarg.task->name;
+        if (ATOMIC_GET(&worker->ntask) > 1) {
+            for (uint32_t i = 0; i < coarg.task->maxcnt; i++) {
+                if (ERR_OK != _task_run(worker, monitor, &coarg)) {
+                    break;
+                }
+            }
+        } else {
+            for (;;) {
+                if (ERR_OK != _task_run(worker, monitor, &coarg)) {
+                    break;
+                }
+            }
+        }
+        //调整工作线程负载
+        if (ctx->nworker > 1) {
+            _add_active_tasks(&arractive, coarg.task);
+            if (0 != ATOMIC_GET(&worker->adjusting)) {//是否需要调整
+                toindex = ATOMIC_GET(&worker->toindex);
+                if (INVALID_INDEX != toindex) {//该线程需要调整
+                    if (ERR_OK == _set_active_tasks_index(&arractive, toindex)) {
+                        ATOMIC_ADD(&ctx->worker[worker->index].ntask, -1);
+                        ATOMIC_ADD(&ctx->worker[toindex].ntask, 1);
+                    }
+                    ATOMIC_SET(&worker->toindex, INVALID_INDEX);
+                } else {
+                    _clear_active_tasks(&arractive);
+                }
+                ATOMIC64_SET(&worker->cpu_cost, 0);
+                ATOMIC_SET(&worker->adjusting, 0);
+            }
+        }
+        //加回队列
+        mutex_lock(&coarg.task->mutex);
+        if (0 == qu_message_size(&coarg.task->qumsg)) {
+            coarg.task->global = 0;
+        } else {
+            mutex_lock(&ctx->worker[coarg.task->index].mutex);
+            qu_void_push(&ctx->worker[coarg.task->index].qutasks, (void **)&coarg.task);
+            mutex_unlock(&ctx->worker[coarg.task->index].mutex);
+        }
+        mutex_unlock(&coarg.task->mutex);
+    }
+    arr_void_free(&arractive);
+}
+static inline void _monitor_check_ver(srey_ctx *ctx) {
+    worker_monitor *m;
+    for (uint32_t i = 0; i < ctx->nworker; i++) {
+        m = &ctx->monitor.minfo[i];
+        if (m->ck_ver == m->ver) {
+            if (MSG_TYPE_NONE != m->msgtype) {
+                LOG_ERROR("task: %d message type: %d, maybe in an endless loop. version: %d", m->name, m->msgtype, m->ver);
+            }
+        } else {
+            m->ck_ver = m->ver;
+        }
+    }
+}
+static inline int32_t _all_adjusting(srey_ctx *ctx) {
+    for (uint32_t i = 0; i < ctx->nworker; i++) {
+        if (0 == ATOMIC_GET(&ctx->worker[i].adjusting)) {
+            return ERR_FAILED;
+        }
+    }
+    return ERR_OK;
+}
+static inline void _set_adjusting(srey_ctx *ctx) {
+    for (uint32_t i = 0; i < ctx->nworker; i++) {
+        ATOMIC_SET(&ctx->worker[i].adjusting, 1);
+    }
+}
+static inline void _monitor_adjustment(srey_ctx *ctx) {
+    if (ctx->nworker <= 1
+        || ERR_OK == _all_adjusting(ctx)) {
+        return;
+    }
+    uint64_t cpu_cost = ATOMIC64_GET(&ctx->worker[0].cpu_cost);
+    if (0 != ATOMIC_GET(&ctx->worker[0].adjusting)) {//上次调整都还未执行,该线程空闲
+        cpu_cost = 0;
+    }
+    //LOG_INFO("thread %d cpu_cost %"PRIu64"μs task number %d", 0, cpu_cost, ATOMIC_GET(&ctx->worker[0].ntask));
+    uint64_t max_cpu_cost = cpu_cost, min_cpu_cost = cpu_cost;
+    uint32_t max_index = 0, min_index = 0;
+    for (uint32_t i = 1; i < ctx->nworker; i++) {
+        cpu_cost = ATOMIC64_GET(&ctx->worker[i].cpu_cost);
+        if (0 != ATOMIC_GET(&ctx->worker[i].adjusting)) {
+            cpu_cost = 0;
+        }
+        //LOG_INFO("thread %d cpu_cost %"PRIu64"μs task number %d", i, cpu_cost, ATOMIC_GET(&ctx->worker[i].ntask));
+        if (cpu_cost > max_cpu_cost) {
+            max_cpu_cost = cpu_cost;
+            max_index = i;
+            continue;
+        }
+        if (cpu_cost < min_cpu_cost) {
+            min_cpu_cost = cpu_cost;
+            min_index = i;
+        }
+    }
+    if (min_index == max_index
+        || (max_cpu_cost - min_cpu_cost) / 1000 < ctx->adjthreshold
+        || ATOMIC_GET(&ctx->worker[max_index].ntask) <= 1) {
+        return;
+    }
+    ATOMIC_SET(&ctx->worker[max_index].toindex, min_index);
+    _set_adjusting(ctx);
+    //LOG_INFO("ready adjustment from thread %d to thread %d.", max_index, min_index);
+}
+static void _loop_monitor(void *arg) {
+    uint64_t time = 0;
+    srey_ctx *ctx = (srey_ctx *)arg;
+    while (0 == ctx->monitor.stop) {
+        MSLEEP(100);
+        time += 100;
+        if (0 == time % CHECKVER_TIME) {
+            _monitor_check_ver(ctx);
+        }
+        if (0 == time % ADJINDEX_TIME) {
+            _monitor_adjustment(ctx);
+        }
+    }
+}
+srey_ctx *srey_init(uint32_t nnet, uint32_t nworker, uint32_t adjinterval, uint32_t adjthreshold) {
+    srey_ctx *ctx;
+    CALLOC(ctx, 1, sizeof(srey_ctx));
+    ctx->nworker = nworker;
+    ctx->adjinterval = 0 == adjinterval ? ADJINDEX_TIME : adjinterval;
+    ctx->adjthreshold = 0 == adjthreshold ? ADJ_THRESHOLD : adjthreshold;
+    CALLOC(ctx->worker, 1, sizeof(worker_ctx) * ctx->nworker);
+    ctx->monitor.stop = 0;
+    CALLOC(ctx->monitor.minfo, 1, sizeof(worker_monitor) * ctx->nworker);
+    ctx->codesc = mco_desc_init(_co_cb, 0);
+    rwlock_init(&ctx->lckmaptask);
+    ctx->maptask = hashmap_new_with_allocator(_malloc, _realloc, _free,
+                                              sizeof(task_ctx *), ONEK, 0, 0,
+                                              _maptask_hash, _maptask_compare, _maptask_free, NULL);
+#if WITH_SSL
+    rwlock_init(&ctx->lckarrcert);
+    arr_certs_init(&ctx->arrcert, 16);
+#endif
+    ctx->monitor.thmonitor = thread_creat(_loop_monitor, ctx);
+    worker_ctx *worker;
+    for (uint32_t i = 0; i < ctx->nworker; i++) {
+        worker = &ctx->worker[i];
+        worker->index = i;
+        worker->srey = ctx;
+        worker->toindex = INVALID_INDEX;
+        mutex_init(&worker->mutex);
+        cond_init(&worker->cond);
+        qu_void_init(&worker->qutasks, ONEK);
+        timer_init(&worker->timer);
+        worker->thread = thread_creat(_loop_worker, worker);
+    }
+    tw_init(&ctx->tw);
+    ev_init(&ctx->netev, nnet);
+    return ctx;
+}
+static inline bool _map_scan(const void *item, void *udata) {
+    task_ctx *task = *(task_ctx **)item;
+    if (!ATOMIC_CAS(&task->startup, 0, 1)) {
+        return true;
+    }
+    message_ctx *msg = udata;
+    _push_message(task, msg);
+    return true;
+}
+void srey_startup(srey_ctx *ctx) {
+    message_ctx msg;
+    msg.msgtype = MSG_TYPE_STARTED;
+    rwlock_rdlock(&ctx->lckmaptask);
+    ctx->startup = 1;
+    hashmap_scan(ctx->maptask, _map_scan, &msg);
+    rwlock_unlock(&ctx->lckmaptask);
+}
+static inline bool _push_closing(const void *item, void *udata) {
+    _push_message(*(task_ctx **)item, udata);
+    return true;
+}
+static inline bool _check_closing(const void *item, void *udata) {
+    if (0 == (*(task_ctx **)item)->closed) {
+        *((int32_t *)udata) = 1;
+        return false;
+    }
+    return true;
+}
+static void _task_closing(srey_ctx *ctx) {
+    message_ctx closing;
+    closing.msgtype = MSG_TYPE_CLOSING;
+    rwlock_rdlock(&ctx->lckmaptask);
+    hashmap_scan(ctx->maptask, _push_closing, &closing);
+    rwlock_unlock(&ctx->lckmaptask);
+    int32_t closed;
+    do {
+        closed = 0;
+        rwlock_rdlock(&ctx->lckmaptask);
+        hashmap_scan(ctx->maptask, _check_closing, &closed);
+        rwlock_unlock(&ctx->lckmaptask);
+        if (0 != closed) {
+            MSLEEP(50);
+        }
+    } while (0 != closed);
+}
+void srey_free(srey_ctx *ctx) {
+    uint32_t i;
+    _task_closing(ctx);
+    ctx->stop = 1;
+    worker_ctx *worker;
+    for (i = 0; i < ctx->nworker; i++) {
+        worker = &ctx->worker[i];
+        mutex_lock(&worker->mutex);
+        if (worker->waiting > 0) {
+            cond_signal(&worker->cond);
+        }
+        mutex_unlock(&worker->mutex);
+        thread_join(worker->thread);
+    }
+    ctx->monitor.stop = 1;
+    thread_join(ctx->monitor.thmonitor);
+    ev_free(&ctx->netev);
+    tw_free(&ctx->tw);
+    hashmap_free(ctx->maptask);
+    rwlock_free(&ctx->lckmaptask);
+#if WITH_SSL
+    certs_ctx *cert;
+    for (size_t i = 0; i < arr_certs_size(&ctx->arrcert); i++) {
+        cert = arr_certs_at(&ctx->arrcert, i);
+        evssl_free(cert->ssl);
+    }
+    arr_certs_free(&ctx->arrcert);
+    rwlock_free(&ctx->lckarrcert);
+#endif
+    for (i = 0; i < ctx->nworker; i++) {
+        worker = &ctx->worker[i];
+        mutex_free(&worker->mutex);
+        cond_free(&worker->cond);
+        qu_void_free(&worker->qutasks);
+    }
+    FREE(ctx->worker);
+    FREE(ctx->monitor.minfo);
+    FREE(ctx);
+}
+static void _task_free(task_ctx *task) {
     if (NULL != task->_free) {
         task->_free(task);
     }
@@ -312,24 +682,10 @@ static inline void _task_free(task_ctx *task) {
     }
     qu_copool_free(&task->qucopool);
     _map_co_free(&task->mapco);
-    mutex_free(&task->mutask);
+    mutex_free(&task->mutex);
     FREE(task);
 }
-static inline void _push_message(task_ctx *task, message_ctx *msg) {
-    mutex_lock(&task->mutask);
-    qu_message_push(&task->qumsg, msg);
-    if (0 == task->global) {
-        task->global = 1;
-        mutex_lock(&task->srey->muworker);
-        qu_void_push(&task->srey->quglobal, (void **)&task);
-        if (task->srey->waiting > 0) {
-            cond_signal(&task->srey->condworker);
-        }
-        mutex_unlock(&task->srey->muworker);
-    }
-    mutex_unlock(&task->mutask);
-}
-task_ctx *srey_tasknew(srey_ctx *ctx, int32_t name, uint32_t maxcnt, 
+task_ctx *srey_tasknew(srey_ctx *ctx, int32_t name, uint32_t maxcnt, uint32_t maxmsgqulens,
     task_new _init, task_run _run, task_free _tfree, void *arg) {
     if (NULL == _run) {
         LOG_WARN("task %d, %s", name, ERRSTR_INVPARAM);
@@ -337,13 +693,14 @@ task_ctx *srey_tasknew(srey_ctx *ctx, int32_t name, uint32_t maxcnt,
     }
     task_ctx *task;
     CALLOC(task, 1, sizeof(task_ctx));
+    task->index = (int32_t)(ATOMIC_ADD(&ctx->index, 1) % ctx->nworker);
     task->name = name;
     task->maxcnt = maxcnt;
-    task->dmaxcnt = maxcnt * 2;
+    task->maxmsgqulens = 0 == maxmsgqulens ? MSG_MAX_QULENS : maxmsgqulens;
     task->_run = _run;
     task->_free = _tfree;
     task->srey = ctx;
-    mutex_init(&task->mutask);
+    mutex_init(&task->mutex);
     _map_co_init(&task->mapco);
     qu_message_init(&task->qumsg, MSG_INIT_CAP);
     qu_copool_init(&task->qucopool, COPOOL_INIT_CAP);
@@ -362,6 +719,7 @@ task_ctx *srey_tasknew(srey_ctx *ctx, int32_t name, uint32_t maxcnt,
         LOG_ERROR("task %d repeat.", name);
         return NULL;
     }
+    ATOMIC_ADD(&ctx->worker[task->index].ntask, 1);
     hashmap_set(ctx->maptask, &task);
     started = ctx->startup;
     rwlock_unlock(&ctx->lckmaptask);
@@ -383,6 +741,21 @@ task_ctx *srey_taskqury(srey_ctx *ctx, int32_t name) {
     task_ctx *task = (NULL == tmp ? NULL : *tmp);
     rwlock_unlock(&ctx->lckmaptask);
     return task;
+}
+ev_ctx *srey_netev(srey_ctx *ctx) {
+    return &ctx->netev;
+}
+srey_ctx *task_srey(task_ctx *task) {
+    return task->srey;
+}
+ev_ctx *task_netev(task_ctx *task) {
+    return &task->srey->netev;
+}
+void *task_handle(task_ctx *task) {
+    return task->handle;
+}
+int32_t task_name(task_ctx *task) {
+    return task->name;
 }
 #if WITH_SSL
 static inline certs_ctx *_certs_get(srey_ctx *ctx, const char *name) {
@@ -424,21 +797,6 @@ struct evssl_ctx *certs_qury(srey_ctx *ctx, const char *name) {
     return NULL == cert ? NULL : cert->ssl;
 }
 #endif
-ev_ctx *srey_netev(srey_ctx *ctx) {
-    return &ctx->netev;
-}
-srey_ctx *task_srey(task_ctx *task) {
-    return task->srey;
-}
-ev_ctx *task_netev(task_ctx *task) {
-    return &task->srey->netev;
-}
-void *task_handle(task_ctx *task) {
-    return task->handle;
-}
-int32_t task_name(task_ctx *task) {
-    return task->name;
-}
 void _push_handshaked(SOCKET fd, uint64_t skid, ud_cxt *ud) {
     message_ctx msg;
     msg.msgtype = MSG_TYPE_HANDSHAKED;
@@ -796,177 +1154,4 @@ void *task_synsendto(task_ctx *task, SOCKET fd, uint64_t skid,
     udp_msg_ctx *umsg = msg.data;
     *size = msg.size;
     return umsg->data;
-}
-static void _loop_worker(void *arg) {
-    void **tmp;
-    task_ctx *task;
-    worker_ctx *worker = (worker_ctx *)arg;
-    srey_ctx *ctx = worker->srey;
-    worker_monitor *monitor = &ctx->monitor.monitor[worker->index];
-    while (0 == ctx->stop) {
-        //从全局队列取一任务
-        mutex_lock(&ctx->muworker);
-        tmp = qu_void_pop(&ctx->quglobal);
-        if (NULL == tmp) {
-            task = NULL;
-            ctx->waiting++;
-            cond_wait(&ctx->condworker, &ctx->muworker);
-            ctx->waiting--;
-        } else {
-            task = *tmp;
-        }
-        mutex_unlock(&ctx->muworker);
-        if (NULL == task) {
-            continue;
-        }
-        //执行
-        _task_run(task, monitor);
-        //是否加回全局队列
-        mutex_lock(&task->mutask);
-        if (0 == qu_message_size(&task->qumsg)) {
-            task->global = 0;
-        } else {
-            mutex_lock(&ctx->muworker);
-            qu_void_push(&ctx->quglobal, (void **)&task);
-            mutex_unlock(&ctx->muworker);
-        }
-        mutex_unlock(&task->mutask);
-    }
-}
-static inline void _monitor_check(worker_monitor *monitor) {
-    if (monitor->ck_ver == monitor->ver) {
-        if (MSG_TYPE_NONE != monitor->msgtype) {
-            LOG_ERROR("task: %d message type: %d, maybe in an endless loop. version: %d",
-                monitor->name, monitor->msgtype, monitor->ver);
-        }
-    } else {
-        monitor->ck_ver = monitor->ver;
-    }
-}
-static void _loop_monitor(void *arg) {
-    uint32_t i;
-    srey_ctx *ctx = (srey_ctx *)arg;
-    worker_monitor *monitor = ctx->monitor.monitor;
-    while (0 == ctx->monitor.stop) {
-        for (i = 0; i < ctx->nworker; i++) {
-            _monitor_check(&monitor[i]);
-        }
-        for (i = 0; i < 10 && 0 == ctx->monitor.stop; i++) {
-            MSLEEP(500);
-        }
-    }
-}
-static inline uint64_t _maptask_hash(const void *item, uint64_t seed0, uint64_t seed1) {
-    return hash((const char *)&((*(task_ctx **)item)->name), sizeof((*(task_ctx **)item)->name));
-}
-static inline int _maptask_compare(const void *a, const void *b, void *ud) {
-    return (*(task_ctx **)a)->name - (*(task_ctx **)b)->name;
-}
-static void _maptask_free(void *item) {
-    _task_free(*(task_ctx **)item);
-}
-srey_ctx *srey_init(uint32_t nnet, uint32_t nworker) {
-    srey_ctx *ctx;
-    CALLOC(ctx, 1, sizeof(srey_ctx));
-    ctx->nworker = nworker;
-    MALLOC(ctx->worker, sizeof(worker_ctx) * ctx->nworker);
-    ctx->monitor.stop = 0;
-    CALLOC(ctx->monitor.monitor, 1, sizeof(worker_monitor) * ctx->nworker);
-    ctx->codesc = mco_desc_init(_co_cb, 0);
-    mutex_init(&ctx->muworker);
-    cond_init(&ctx->condworker);
-    qu_void_init(&ctx->quglobal, ONEK);
-    rwlock_init(&ctx->lckmaptask);
-    ctx->maptask = hashmap_new_with_allocator(_malloc, _realloc, _free,
-                                              sizeof(task_ctx *), ONEK, 0, 0,
-                                              _maptask_hash, _maptask_compare, _maptask_free, NULL);
-#if WITH_SSL
-    rwlock_init(&ctx->lckarrcert);
-    arr_certs_init(&ctx->arrcert, 16);
-#endif
-    ctx->monitor.thmonitor = thread_creat(_loop_monitor, ctx);
-    for (uint32_t i = 0; i < ctx->nworker; i++) {
-        ctx->worker[i].index = i;
-        ctx->worker[i].srey = ctx;
-        ctx->worker[i].thworker = thread_creat(_loop_worker, &ctx->worker[i]);
-    }
-    tw_init(&ctx->tw);
-    ev_init(&ctx->netev, nnet);
-    return ctx;
-}
-static inline bool _map_scan(const void *item, void *udata) {
-    task_ctx *task = *(task_ctx **)item;
-    if (!ATOMIC_CAS(&task->startup, 0, 1)){
-        return true;
-    }
-    message_ctx *msg = udata;
-    _push_message(task, msg);
-    return true;
-}
-void srey_startup(srey_ctx *ctx) {
-    message_ctx msg;
-    msg.msgtype = MSG_TYPE_STARTED;
-    rwlock_rdlock(&ctx->lckmaptask);
-    ctx->startup = 1;
-    hashmap_scan(ctx->maptask, _map_scan, &msg);
-    rwlock_unlock(&ctx->lckmaptask);
-}
-static inline bool _push_closing(const void *item, void *udata) {
-    _push_message(*(task_ctx **)item, udata);
-    return true;
-}
-static inline bool _check_closing(const void *item, void *udata) {
-    if (0 == (*(task_ctx **)item)->closed) {
-        *((int32_t *)udata) = 1;
-        return false;
-    }
-    return true;
-}
-static void _task_closing(srey_ctx *ctx) {
-    message_ctx closing;
-    closing.msgtype = MSG_TYPE_CLOSING;
-    rwlock_rdlock(&ctx->lckmaptask);
-    hashmap_scan(ctx->maptask, _push_closing, &closing);
-    rwlock_unlock(&ctx->lckmaptask);
-    int32_t closed;
-    do {
-        closed = 0;
-        rwlock_rdlock(&ctx->lckmaptask);
-        hashmap_scan(ctx->maptask, _check_closing, &closed);
-        rwlock_unlock(&ctx->lckmaptask);
-        if (0 != closed) {
-            MSLEEP(50);
-        }
-    } while (0 != closed);
-}
-void srey_free(srey_ctx *ctx) {
-    _task_closing(ctx);
-    ctx->stop = 1;
-    mutex_lock(&ctx->muworker);
-    cond_broadcast(&ctx->condworker);
-    mutex_unlock(&ctx->muworker);
-    for (uint32_t i = 0; i < ctx->nworker; i++) {
-        thread_join(ctx->worker[i].thworker);
-    }
-    ctx->monitor.stop = 1;
-    thread_join(ctx->monitor.thmonitor);
-    ev_free(&ctx->netev);
-    tw_free(&ctx->tw);
-    hashmap_free(ctx->maptask);
-    rwlock_free(&ctx->lckmaptask);
-#if WITH_SSL
-    certs_ctx *cert;
-    for (size_t i = 0; i < arr_certs_size(&ctx->arrcert); i++) {
-        cert = arr_certs_at(&ctx->arrcert, i);
-        evssl_free(cert->ssl);
-    }
-    arr_certs_free(&ctx->arrcert);
-    rwlock_free(&ctx->lckarrcert);
-#endif
-    mutex_free(&ctx->muworker);
-    cond_free(&ctx->condworker);
-    qu_void_free(&ctx->quglobal);
-    FREE(ctx->worker);
-    FREE(ctx->monitor.monitor);
-    FREE(ctx);
 }

@@ -15,6 +15,8 @@ void test_array(CuTest* tc) {
     for (int i = 1; i <= 20; i++) {
         arr_push_back(&arry, &i);
     }
+    //arr_del_nomove(&arry, 0);
+    //CuAssertTrue(tc, 20 == *arr_at(&arry, 0));
     CuAssertTrue(tc, 20 == arr_size(&arry));
     CuAssertTrue(tc, 20 == arr_maxsize(&arry));
     CuAssertTrue(tc, !arr_empty(&arry));

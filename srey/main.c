@@ -8,6 +8,8 @@ typedef struct config_ctx {
     int32_t logfile;
     uint32_t nnet;
     uint32_t nworker;
+    uint32_t adjinterval;
+    uint32_t adjthreshold;
     char fmt[64];
 }config_ctx;
 static char *_config_read(void) {
@@ -61,6 +63,14 @@ static void _parse_config(config_ctx *cnf) {
             PRINT("log file name format too long.");
         }
     }
+    val = cJSON_GetObjectItem(json, "adjinterval");
+    if (cJSON_IsNumber(val)) {
+        cnf->adjinterval = (uint32_t)val->valueint;
+    }
+    val = cJSON_GetObjectItem(json, "adjthreshold");
+    if (cJSON_IsNumber(val)) {
+        cnf->adjthreshold = (uint32_t)val->valueint;
+    }
     cJSON_Delete(json);
 }
 static void _open_log(const char *fmt) {
@@ -91,6 +101,7 @@ static int32_t service_exit(void) {
     return ERR_OK;
 }
 static void _config_init(config_ctx *config) {
+    ZERO(config, sizeof(config_ctx));
     config->logfile = 1;
     config->nnet = 1;
     config->nworker = 2;
@@ -109,7 +120,7 @@ static int32_t service_init(void) {
     unlimit();
     mutex_init(&muexit);
     cond_init(&condexit);
-    srey = srey_init(config.nnet, config.nworker);
+    srey = srey_init(config.nnet, config.nworker, config.adjinterval, config.adjthreshold);
     if (ERR_OK != task_startup()) {
         service_exit();
         return ERR_FAILED;
@@ -134,6 +145,7 @@ static int32_t service_hug(void) {
 }
 
 #ifdef OS_WIN
+    //#include "vld.h"
     #pragma comment(lib, "ws2_32.lib")
     #pragma comment(lib, "lib.lib")
     #if WITH_SSL

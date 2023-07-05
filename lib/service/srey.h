@@ -42,25 +42,22 @@ typedef void *(*task_new)(task_ctx *task, void *arg);
 typedef void(*task_run)(task_ctx *task, message_ctx *msg);
 typedef void(*task_free)(task_ctx *task);
 
-srey_ctx *srey_init(uint32_t nnet, uint32_t nworker);
+srey_ctx *srey_init(uint32_t nnet, uint32_t nworker, uint32_t adjinterval, uint32_t adjthreshold);
 void srey_startup(srey_ctx *ctx);
 void srey_free(srey_ctx *ctx);
 
-task_ctx *srey_tasknew(srey_ctx *ctx, int32_t name, uint32_t maxcnt, 
+task_ctx *srey_tasknew(srey_ctx *ctx, int32_t name, uint32_t maxcnt, uint32_t maxmsgqulens,
     task_new _init, task_run _run, task_free _tfree, void *arg);
 task_ctx *srey_taskqury(srey_ctx *ctx, int32_t name);
 ev_ctx *srey_netev(srey_ctx *ctx);
-
-#if WITH_SSL
-int32_t certs_register(srey_ctx *ctx, const char *name, struct evssl_ctx *evssl);
-struct evssl_ctx *certs_qury(srey_ctx *ctx, const char *name);
-#endif
-
 srey_ctx *task_srey(task_ctx *task);
 ev_ctx *task_netev(task_ctx *task);
 void *task_handle(task_ctx *task);
 int32_t task_name(task_ctx *task);
-
+#if WITH_SSL
+int32_t certs_register(srey_ctx *ctx, const char *name, struct evssl_ctx *evssl);
+struct evssl_ctx *certs_qury(srey_ctx *ctx, const char *name);
+#endif
 void task_sleep(task_ctx *task, uint32_t ms);
 void task_timeout(task_ctx *task, uint64_t sess, uint32_t ms);
 void task_call(task_ctx *dst, void *data, size_t size, int32_t copy);
