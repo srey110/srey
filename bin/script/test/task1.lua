@@ -154,7 +154,6 @@ local function testudp()
     end
 end
 local function ontimeout()
-    printd("....................begin.........................")
     if not callonce then
         callonce = true
     end
@@ -165,7 +164,8 @@ local function ontimeout()
     testwebsock(false, false, 15004)
     testhttp()
     testudp()
-    printd(".....................end........................")
+
+    printd("....................... %.2f ........................", collectgarbage("count") / 1024)
     srey.timeout(3000, ontimeout)
 end
 local function onstarted()
@@ -184,9 +184,9 @@ local function onstarted()
     local ssl = srey.evssl_qury("client")
     rpcfd, rpcfdid = srey.connect("127.0.0.1", 8080, PACK_TYPE.RPC, ssl)
     if INVALID_SOCK ~= rpcfd then
-        printd("rpc end connect.... fd: %d id: %d", rpcfd, rpcfdid)
+        printd("rpc connect.... fd: %d id: %d", rpcfd, rpcfdid)
     else
-        printd("rpc end connect.... error")
+        printd("rpc connect.... error")
     end
 end
 srey.started(onstarted)

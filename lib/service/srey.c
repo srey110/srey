@@ -28,29 +28,29 @@ typedef struct worker_monitor {
 }worker_monitor;
 typedef struct monitor_ctx {
     int32_t stop;
+    uint32_t adjinterval;
+    uint32_t adjthreshold;
     worker_monitor *minfo;
     pthread_t thmonitor;
 }monitor_ctx;
 typedef struct worker_ctx {
     int32_t index;
     int32_t waiting;
+    int32_t adjusting;
+    uint32_t toindex;
+    atomic_t cpu_cost;
     atomic_t ntask;
-    atomic_t toindex;
-    atomic_t adjusting;
     srey_ctx *srey;
     pthread_t thread;
     mutex_ctx mutex;
     cond_ctx cond;
     qu_void qutasks;
-    atomic64_t cpu_cost;
     timer_ctx timer;
 }worker_ctx;
 struct srey_ctx {
     int32_t stop;
     int32_t startup;
     uint32_t nworker;
-    uint32_t adjinterval;
-    uint32_t adjthreshold;
     atomic_t index;
     worker_ctx *worker;
 #if WITH_SSL
@@ -73,6 +73,7 @@ struct task_ctx {
     int32_t index;
     uint32_t maxcnt;
     uint32_t maxmsgqulens;
+    uint32_t cpu_cost;
     atomic_t startup;
     task_run _run;
     task_free _free;
@@ -83,7 +84,6 @@ struct task_ctx {
     mutex_ctx mutex;
     qu_message qumsg;
     qu_copool qucopool;
-    uint64_t cpu_cost;
 };
 typedef struct co_arg_ctx {
     task_ctx *task;
@@ -97,8 +97,8 @@ typedef struct co_arg_ctx {
 #define COPOOL_INIT_CAP       128
 #define INVALID_INDEX         UINT_MAX//无效的工作线程下标
 #define CHECKVER_TIME         5000//检查死循环间隔
-#define ADJINDEX_TIME         30000//调整检测时间间隔
-#define ADJ_THRESHOLD         1000//调整的阈值
+#define ADJINDEX_TIME         5000//检测时间间隔
+#define ADJ_THRESHOLD         50//调整的阈值
 
 #define CO_CREATE(arg)\
 do {\
@@ -137,14 +137,17 @@ static void _maptask_free(void *item) {
     _task_free(*(task_ctx **)item);
 }
 static inline mco_coro *_co_create(task_ctx *task) {
+    mco_result cortn;
     mco_coro **co = qu_copool_pop(&task->qucopool);
     if (NULL != co) {
-        mco_result cortn = mco_init(*co, &task->srey->codesc);
+        cortn = mco_uninit(*co);
+        ASSERTAB(MCO_SUCCESS == cortn, mco_result_description(cortn));
+        cortn = mco_init(*co, &task->srey->codesc);
         ASSERTAB(MCO_SUCCESS == cortn, mco_result_description(cortn));
         return *co;
     }
     mco_coro *conew;
-    mco_result cortn = mco_create(&conew, &task->srey->codesc);
+    cortn = mco_create(&conew, &task->srey->codesc);
     ASSERTAB(MCO_SUCCESS == cortn, mco_result_description(cortn));
     return conew;
 }
@@ -251,7 +254,7 @@ static inline void _dispatch_response(co_arg_ctx *arg) {
     }
     _message_clean(&arg->msg);
 }
-static inline void _task_on_message(co_arg_ctx *arg) {
+static inline void _dispatch_message(co_arg_ctx *arg) {
     if (0 != arg->task->closed) {
         _message_clean(&arg->msg);
         return;
@@ -312,7 +315,7 @@ static inline void _push_message(task_ctx *task, message_ctx *msg) {
     }
     mutex_unlock(&task->mutex);
 }
-static inline int32_t _task_run(worker_ctx *worker, worker_monitor *monitor, co_arg_ctx *coarg) {
+static inline int32_t _task_dispatch_message(worker_ctx *worker, worker_monitor *monitor, co_arg_ctx *coarg) {
     mutex_lock(&coarg->task->mutex);
     message_ctx *tmp = qu_message_pop(&coarg->task->qumsg);
     if (NULL == tmp) {
@@ -325,12 +328,27 @@ static inline int32_t _task_run(worker_ctx *worker, worker_monitor *monitor, co_
     ATOMIC_ADD(&monitor->ver, 1);
     monitor->msgtype = coarg->msg.msgtype;
     timer_start(&worker->timer);
-    _task_on_message(coarg);
-    uint64_t elapsed = timer_elapsed(&worker->timer) / 1000;
-    ATOMIC64_ADD(&worker->cpu_cost, elapsed);
+    _dispatch_message(coarg);
+    uint32_t elapsed = (uint32_t)(timer_elapsed(&worker->timer) / 1000);
+    ATOMIC_ADD(&worker->cpu_cost, elapsed);
     coarg->task->cpu_cost += elapsed;
     monitor->msgtype = MSG_TYPE_NONE;
     return ERR_OK;
+}
+static inline void _task_run(worker_ctx *worker, worker_monitor *monitor, co_arg_ctx *coarg) {
+    if (worker->ntask > 1) {
+        for (uint32_t i = 0; i < coarg->task->maxcnt; i++) {
+            if (ERR_OK != _task_dispatch_message(worker, monitor, coarg)) {
+                break;
+            }
+        }
+    } else {
+        for (;;) {
+            if (ERR_OK != _task_dispatch_message(worker, monitor, coarg)) {
+                break;
+            }
+        }
+    }
 }
 static inline void _add_active_tasks(arr_void *arractive, task_ctx *task) {
     size_t n = arr_void_size(arractive);
@@ -341,13 +359,13 @@ static inline void _add_active_tasks(arr_void *arractive, task_ctx *task) {
     }
     arr_void_push_back(arractive, (void **)&task);
 }
-static inline void _clear_active_tasks(arr_void *arractive) {
+static inline void _clear_cpu_cost(arr_void *arractive) {
     size_t n = arr_void_size(arractive);
     for (size_t i = 0; i < n; i++) {
         ((task_ctx *)*arr_void_at(arractive, i))->cpu_cost = 0;
     }
 }
-static inline int32_t _set_active_tasks_index(arr_void *arractive, uint32_t toindex) {
+static inline int32_t _adjustment_taskto(arr_void *arractive, uint32_t toindex) {
     size_t i;
     size_t n = arr_void_size(arractive);
     if (n < 2) {
@@ -364,7 +382,6 @@ static inline int32_t _set_active_tasks_index(arr_void *arractive, uint32_t toin
         if (0 == tmp->cpu_cost) {
             continue;
         }
-        //LOG_INFO("task %d, cpu_cost %"PRIu64"μs", tmp->name, tmp->cpu_cost);
         if (NULL == min_task) {
             min_task = tmp;
             max_task = tmp;
@@ -397,11 +414,26 @@ static inline int32_t _set_active_tasks_index(arr_void *arractive, uint32_t toin
         max_task->cpu_cost = 0;
     }
     arr_void_del_nomove(arractive, min_pos);
-    LOG_INFO("adjustment task %d from thread %d to thread %d.", min_task->name, min_task->index, toindex);
     mutex_lock(&min_task->mutex);
     min_task->index = toindex;
     mutex_unlock(&min_task->mutex);
     return ERR_OK;
+}
+static inline void _adjustment_load(srey_ctx *ctx, worker_ctx *worker, arr_void *arractive) {
+    if (0 == worker->adjusting) {
+        return;
+    }
+    if (INVALID_INDEX != worker->toindex) {
+        if (ERR_OK == _adjustment_taskto(arractive, worker->toindex)) {
+            ATOMIC_ADD(&ctx->worker[worker->index].ntask, -1);
+            ATOMIC_ADD(&ctx->worker[worker->toindex].ntask, 1);
+        }
+        worker->toindex = INVALID_INDEX;
+    } else {
+        _clear_cpu_cost(arractive);
+    }
+    worker->adjusting = 0;
+    worker->cpu_cost = 0;
 }
 static void _loop_worker(void *arg) {
     void **tmp;
@@ -410,7 +442,6 @@ static void _loop_worker(void *arg) {
     worker_monitor *monitor = &ctx->monitor.minfo[worker->index];
     arr_void arractive;
     arr_void_init(&arractive, 256);
-    uint32_t toindex;
     co_arg_ctx coarg;
     while (0 == ctx->stop) {
         //从队列取一任务
@@ -420,43 +451,24 @@ static void _loop_worker(void *arg) {
             worker->waiting++;
             cond_wait(&worker->cond, &worker->mutex);
             worker->waiting--;
-            mutex_unlock(&worker->mutex);
+        } else {
+            coarg.task = *tmp;
+        }
+        mutex_unlock(&worker->mutex);
+        if (NULL == tmp) {
+            if (ctx->nworker > 1) {
+                //调整线程负载
+                _adjustment_load(ctx, worker, &arractive);
+            }
             continue;
         }
-        coarg.task = *tmp;
-        mutex_unlock(&worker->mutex);
         //执行
         monitor->name = coarg.task->name;
-        if (ATOMIC_GET(&worker->ntask) > 1) {
-            for (uint32_t i = 0; i < coarg.task->maxcnt; i++) {
-                if (ERR_OK != _task_run(worker, monitor, &coarg)) {
-                    break;
-                }
-            }
-        } else {
-            for (;;) {
-                if (ERR_OK != _task_run(worker, monitor, &coarg)) {
-                    break;
-                }
-            }
-        }
-        //调整工作线程负载
+        _task_run(worker, monitor, &coarg);
         if (ctx->nworker > 1) {
             _add_active_tasks(&arractive, coarg.task);
-            if (0 != ATOMIC_GET(&worker->adjusting)) {//是否需要调整
-                toindex = ATOMIC_GET(&worker->toindex);
-                if (INVALID_INDEX != toindex) {//该线程需要调整
-                    if (ERR_OK == _set_active_tasks_index(&arractive, toindex)) {
-                        ATOMIC_ADD(&ctx->worker[worker->index].ntask, -1);
-                        ATOMIC_ADD(&ctx->worker[toindex].ntask, 1);
-                    }
-                    ATOMIC_SET(&worker->toindex, INVALID_INDEX);
-                } else {
-                    _clear_active_tasks(&arractive);
-                }
-                ATOMIC64_SET(&worker->cpu_cost, 0);
-                ATOMIC_SET(&worker->adjusting, 0);
-            }
+            //调整线程负载
+            _adjustment_load(ctx, worker, &arractive);
         }
         //加回队列
         mutex_lock(&coarg.task->mutex);
@@ -484,37 +496,33 @@ static inline void _monitor_check_ver(srey_ctx *ctx) {
         }
     }
 }
-static inline int32_t _all_adjusting(srey_ctx *ctx) {
-    for (uint32_t i = 0; i < ctx->nworker; i++) {
-        if (0 == ATOMIC_GET(&ctx->worker[i].adjusting)) {
-            return ERR_FAILED;
-        }
-    }
-    return ERR_OK;
-}
 static inline void _set_adjusting(srey_ctx *ctx) {
     for (uint32_t i = 0; i < ctx->nworker; i++) {
-        ATOMIC_SET(&ctx->worker[i].adjusting, 1);
+        ctx->worker[i].adjusting = 1;
     }
 }
+static inline void _wakeup_worker(worker_ctx *worker) {
+    mutex_lock(&worker->mutex);
+    if (worker->waiting > 0) {
+        cond_signal(&worker->cond);
+    }
+    mutex_unlock(&worker->mutex);
+}
 static inline void _monitor_adjustment(srey_ctx *ctx) {
-    if (ctx->nworker <= 1
-        || ERR_OK == _all_adjusting(ctx)) {
+    if (ctx->nworker <= 1) {
         return;
     }
-    uint64_t cpu_cost = ATOMIC64_GET(&ctx->worker[0].cpu_cost);
-    if (0 != ATOMIC_GET(&ctx->worker[0].adjusting)) {//上次调整都还未执行,该线程空闲
+    uint32_t cpu_cost = ctx->worker[0].cpu_cost;
+    if (0 != ctx->worker[0].adjusting) {//上次调整都还未执行,该线程空闲
         cpu_cost = 0;
     }
-    //LOG_INFO("thread %d cpu_cost %"PRIu64"μs task number %d", 0, cpu_cost, ATOMIC_GET(&ctx->worker[0].ntask));
-    uint64_t max_cpu_cost = cpu_cost, min_cpu_cost = cpu_cost;
+    uint32_t max_cpu_cost = cpu_cost, min_cpu_cost = cpu_cost;
     uint32_t max_index = 0, min_index = 0;
     for (uint32_t i = 1; i < ctx->nworker; i++) {
-        cpu_cost = ATOMIC64_GET(&ctx->worker[i].cpu_cost);
-        if (0 != ATOMIC_GET(&ctx->worker[i].adjusting)) {
+        cpu_cost = ctx->worker[i].cpu_cost;
+        if (0 != ctx->worker[i].adjusting) {
             cpu_cost = 0;
         }
-        //LOG_INFO("thread %d cpu_cost %"PRIu64"μs task number %d", i, cpu_cost, ATOMIC_GET(&ctx->worker[i].ntask));
         if (cpu_cost > max_cpu_cost) {
             max_cpu_cost = cpu_cost;
             max_index = i;
@@ -526,13 +534,14 @@ static inline void _monitor_adjustment(srey_ctx *ctx) {
         }
     }
     if (min_index == max_index
-        || (max_cpu_cost - min_cpu_cost) / 1000 < ctx->adjthreshold
-        || ATOMIC_GET(&ctx->worker[max_index].ntask) <= 1) {
+        || (max_cpu_cost - min_cpu_cost) / 1000 < ctx->monitor.adjthreshold
+        || ctx->worker[max_index].ntask <= 1) {
+        _set_adjusting(ctx);
         return;
     }
-    ATOMIC_SET(&ctx->worker[max_index].toindex, min_index);
+    ctx->worker[max_index].toindex = min_index;
     _set_adjusting(ctx);
-    //LOG_INFO("ready adjustment from thread %d to thread %d.", max_index, min_index);
+    _wakeup_worker(&ctx->worker[max_index]);
 }
 static void _loop_monitor(void *arg) {
     uint64_t time = 0;
@@ -543,17 +552,17 @@ static void _loop_monitor(void *arg) {
         if (0 == time % CHECKVER_TIME) {
             _monitor_check_ver(ctx);
         }
-        if (0 == time % ADJINDEX_TIME) {
+        if (0 == time % ctx->monitor.adjinterval) {
             _monitor_adjustment(ctx);
         }
     }
 }
-srey_ctx *srey_init(uint32_t nnet, uint32_t nworker, uint32_t adjinterval, uint32_t adjthreshold) {
+srey_ctx *srey_init(uint16_t nnet, uint16_t nworker, uint16_t adjinterval, uint16_t adjthreshold) {
     srey_ctx *ctx;
     CALLOC(ctx, 1, sizeof(srey_ctx));
     ctx->nworker = nworker;
-    ctx->adjinterval = 0 == adjinterval ? ADJINDEX_TIME : adjinterval;
-    ctx->adjthreshold = 0 == adjthreshold ? ADJ_THRESHOLD : adjthreshold;
+    ctx->monitor.adjinterval = 0 == adjinterval ? ADJINDEX_TIME : adjinterval;
+    ctx->monitor.adjthreshold = 0 == adjthreshold ? ADJ_THRESHOLD : adjthreshold;
     CALLOC(ctx->worker, 1, sizeof(worker_ctx) * ctx->nworker);
     ctx->monitor.stop = 0;
     CALLOC(ctx->monitor.minfo, 1, sizeof(worker_monitor) * ctx->nworker);
@@ -902,7 +911,6 @@ void *task_slice(task_ctx *task, uint64_t sess, size_t *size, int32_t *end) {
         return NULL;
     }
     if (MSG_TYPE_CLOSE == msg.msgtype) {
-        LOG_WARN("task: %d, connection closed. session:%"PRIu64, task->name, sess);
         return NULL;
     }
     if (MSG_TYPE_RECV != msg.msgtype) {
@@ -1051,7 +1059,6 @@ SOCKET task_netconnect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl
         return INVALID_SOCK;
     }
     if (MSG_TYPE_TIMEOUT == msg.msgtype) {
-        LOG_WARN("task: %d, connect %s:%d timeout.session:%"PRIu64, task->name, ip, port, *skid);
         return INVALID_SOCK;
     }
     if (MSG_TYPE_CONNECT != msg.msgtype) {
@@ -1110,11 +1117,9 @@ void *task_synsend(task_ctx *task, SOCKET fd, uint64_t skid,
         return NULL;
     }
     if (MSG_TYPE_TIMEOUT == msg.msgtype) {
-        LOG_WARN("task: %d, synsend timeout.session:%"PRIu64, task->name, *sess);
         return NULL;
     }
     if (MSG_TYPE_CLOSE == msg.msgtype) {
-        LOG_WARN("task: %d, connection closed. session:%"PRIu64, task->name, *sess);
         return NULL;
     }
     if (MSG_TYPE_RECV != msg.msgtype) {
@@ -1144,7 +1149,6 @@ void *task_synsendto(task_ctx *task, SOCKET fd, uint64_t skid,
         return NULL;
     }
     if (MSG_TYPE_TIMEOUT == msg.msgtype) {
-        LOG_WARN("task: %d, synsend timeout.session:%"PRIu64, task->name, sess);
         return NULL;
     }
     if (MSG_TYPE_RECVFROM != msg.msgtype) {

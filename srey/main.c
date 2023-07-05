@@ -5,11 +5,11 @@ static FILE *logstream = NULL;
 static mutex_ctx muexit;
 static cond_ctx condexit;
 typedef struct config_ctx {
+    uint16_t adjinterval;
+    uint16_t adjthreshold;
+    uint16_t nnet;
+    uint16_t nworker;
     int32_t logfile;
-    uint32_t nnet;
-    uint32_t nworker;
-    uint32_t adjinterval;
-    uint32_t adjthreshold;
     char fmt[64];
 }config_ctx;
 static char *_config_read(void) {
@@ -43,11 +43,11 @@ static void _parse_config(config_ctx *cnf) {
     }
     cJSON *val = cJSON_GetObjectItem(json, "nnet");
     if (cJSON_IsNumber(val)) {
-        cnf->nnet = (uint32_t)val->valueint;
+        cnf->nnet = (uint16_t)val->valueint;
     }
     val = cJSON_GetObjectItem(json, "nworker");
     if (cJSON_IsNumber(val)) {
-        cnf->nworker = (uint32_t)val->valueint;
+        cnf->nworker = (uint16_t)val->valueint;
     }
     val = cJSON_GetObjectItem(json, "logfile");
     if (cJSON_IsNumber(val)) {
@@ -65,11 +65,11 @@ static void _parse_config(config_ctx *cnf) {
     }
     val = cJSON_GetObjectItem(json, "adjinterval");
     if (cJSON_IsNumber(val)) {
-        cnf->adjinterval = (uint32_t)val->valueint;
+        cnf->adjinterval = (uint16_t)val->valueint;
     }
     val = cJSON_GetObjectItem(json, "adjthreshold");
     if (cJSON_IsNumber(val)) {
-        cnf->adjthreshold = (uint32_t)val->valueint;
+        cnf->adjthreshold = (uint16_t)val->valueint;
     }
     cJSON_Delete(json);
 }

@@ -3,7 +3,7 @@
 #include "lib.h"
 
 #ifdef OS_WIN
-#include "vld.h"
+//#include "vld.h"
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "lib.lib")
 #if WITH_SSL

@@ -20,7 +20,7 @@ local function harbor_started()
         ssl = srey.evssl_qury(name)
     end
     srey.listen(config:lsnip(), config:port(), PACK_TYPE.RPC, ssl)
-    log.INFO("harbor listen at %s:%d.", config:lsnip(), config:port())
+    log.INFO("harbor listen at %s:%d, with ssl %s.", config:lsnip(), config:port(), ssl and "true" or "false")
 end
 srey.started(harbor_started)
 local function harbor_closing()
@@ -35,6 +35,7 @@ local function harbor_accept(_, fd, skid)
     local ip,_ = srey.remoteaddr(fd)
     if nil == ip then
         log.WARN("get remote ip port failed.")
+        srey.close(fd, skid)
         return
     end
     if config:have(ip) then

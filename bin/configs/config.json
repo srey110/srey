@@ -1,8 +1,8 @@
 {
     "nnet": 1,
     "nworker": 2,
+    "adjinterval": 5000,
+    "adjthreshold": 50,
     "logfile": 0,
-    "namefmt": "%Y-%m-%d %H-%M-%S",
-    "adjinterval": 30000,
-    "adjthreshold": 1000
+    "namefmt": "%Y-%m-%d %H-%M-%S"
 }
