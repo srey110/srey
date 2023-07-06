@@ -627,11 +627,11 @@ void ev_unlisten(ev_ctx *ctx, uint64_t id) {
     if (NULL == lsn) {
         return;
     }
-    lsn->remove = 1;
     if (0 == lsn->ref) {
         _freelsn(lsn);
         return;
     }
+    lsn->remove = 1;
     for (int32_t i = 0; i < lsn->nlsn; i++) {
         _cmd_unlisten(&ctx->watcher[i], lsn->lsnsock[i].sock.fd, lsn);
     }

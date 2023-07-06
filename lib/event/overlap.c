@@ -704,11 +704,11 @@ void ev_unlisten(ev_ctx *ctx, uint64_t id) {
     if (NULL == lsn) {
         return;
     }
-    lsn->remove = 1;
     if (0 == lsn->ref) {
         _freelsn(lsn);
         return;
     }
+    lsn->remove = 1;
     for (int32_t i = 0; i < MAX_ACCEPTEX_CNT; i++) {
         SOCK_CLOSE(lsn->overlap_acpt[i].overlap.fd);
     }
