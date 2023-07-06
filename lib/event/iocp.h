@@ -4,6 +4,7 @@
 #include "event/event.h"
 #include "event/skpool.h"
 #include "thread.h"
+#include "spinlock.h"
 
 #ifdef EV_IOCP
 
@@ -40,7 +41,7 @@ typedef struct overlap_cmd_ctx {
     DWORD flag;
     SOCKET fd;
     qu_cmd qu;
-    mutex_ctx lck;
+    spin_ctx spin;
     IOV_TYPE wsabuf;
 }overlap_cmd_ctx;
 typedef struct watcher_ctx {

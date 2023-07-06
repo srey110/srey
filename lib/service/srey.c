@@ -127,6 +127,7 @@ do {\
     mco_result cortn = mco_pop(co, &msg, sizeof(msg));\
     ASSERTAB(MCO_SUCCESS == cortn, mco_result_description(cortn));\
 } while (0)
+
 static void _task_free(task_ctx *task);
 static inline uint64_t _maptask_hash(const void *item, uint64_t seed0, uint64_t seed1) {
     return hash((const char *)&((*(task_ctx **)item)->name), sizeof((*(task_ctx **)item)->name));
@@ -720,7 +721,7 @@ task_ctx *srey_tasknew(srey_ctx *ctx, int32_t name, uint32_t maxcnt, uint32_t ma
     task->_run = _run;
     task->_free = _tfree;
     task->srey = ctx;
-    spin_init(&task->spin, 64);
+    spin_init(&task->spin, SPIN_CNT_TASKMSG);
     _map_co_init(&task->mapco);
     qu_message_init(&task->qumsg, MSG_INIT_CAP);
     qu_copool_init(&task->qucopool, COPOOL_INIT_CAP);

@@ -62,13 +62,15 @@ do {\
 }while(0)
 
 typedef enum LOG_LEVEL {
-    LOGLV_ERROR = 0,
+    LOGLV_FATAL = 0,
+    LOGLV_ERROR,
     LOGLV_WARN,
     LOGLV_INFO,
     LOGLV_DEBUG,
 }LOG_LEVEL;
 void slog(int32_t lv, const char *fmt, ...);
 #define LOG(lv, fmt, ...) slog(lv, CONCAT2("[%s %s %d] ", fmt), __FILENAME__(__FILE__), __FUNCTION__, __LINE__, ##__VA_ARGS__)
+#define LOG_FATAL(fmt, ...) LOG(LOGLV_FATAL, fmt, ##__VA_ARGS__)
 #define LOG_ERROR(fmt, ...) LOG(LOGLV_ERROR, fmt, ##__VA_ARGS__)
 #define LOG_WARN(fmt, ...)  LOG(LOGLV_WARN, fmt, ##__VA_ARGS__)
 #define LOG_INFO(fmt, ...)  LOG(LOGLV_INFO, fmt, ##__VA_ARGS__)
@@ -77,7 +79,7 @@ void slog(int32_t lv, const char *fmt, ...);
 #define ASSERTAB(exp, errstr)\
 do {\
     if (!(exp)) {\
-        LOG_ERROR("%s", errstr);\
+        LOG_FATAL("%s", errstr);\
         abort();\
     }\
 } while (0);

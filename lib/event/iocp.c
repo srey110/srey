@@ -68,9 +68,9 @@ static void _on_cmd(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
             break;
         }
         for (i = 0; i < nread; i++) {
-            mutex_lock(&olcmd->lck);
+            spin_lock(&olcmd->spin);
             cmd = *qu_cmd_pop(&olcmd->qu);
-            mutex_unlock(&olcmd->lck);
+            spin_unlock(&olcmd->spin);
             cmd_cbs[cmd.cmd](watcher, &cmd);
         }
     } while (nread == sizeof(cmdbuf));
@@ -232,7 +232,7 @@ static void _init_cmd(watcher_ctx *watcher) {
         olcmd->ol_r.type = 0;
         olcmd->fd = pair[1];
         qu_cmd_init(&olcmd->qu, ONEK);
-        mutex_init(&olcmd->lck);
+        spin_init(&olcmd->spin, SPIN_CNT_CMD);
         olcmd->wsabuf.IOV_PTR_FIELD = NULL;
         olcmd->wsabuf.IOV_LEN_FIELD = 0;
         ASSERTAB(ERR_OK == _join_iocp(watcher, olcmd->ol_r.fd), ERRORSTR(ERRNO));
@@ -264,8 +264,8 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads) {
         watcher->thevent = thread_creat(_loop_event, watcher);
     }
 
-    mutex_init(&ctx->qulsnlck);
-    qu_lsn_init(&ctx->qulsn, 8);
+    mutex_init(&ctx->lcklsn);
+    arr_lsn_init(&ctx->arrlsn, ARRAY_INIT_SIZE);
     HANDLE iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, ctx->nacpex);
     ASSERTAB(NULL != iocp, ERRORSTR(ERRNO));
     MALLOC(ctx->acpex, sizeof(acceptex_ctx) * ctx->nacpex);
@@ -295,7 +295,7 @@ static void _free_cmd(watcher_ctx *watcher) {
         CLOSE_SOCK(olcmd->ol_r.fd);
         CLOSE_SOCK(olcmd->fd);
         qu_cmd_free(&olcmd->qu);
-        mutex_free(&olcmd->lck);
+        spin_free(&olcmd->spin);
     }
     FREE(watcher->cmd);
 }
@@ -327,11 +327,13 @@ void ev_free(ev_ctx *ctx) {
     }
     FREE(ctx->watcher);
     struct listener_ctx **lsn;
-    while (NULL != (lsn = qu_lsn_pop(&ctx->qulsn))) {
+    size_t nlsn = arr_lsn_size(&ctx->arrlsn);
+    for (i = 0; i < (uint32_t)nlsn; i++) {
+        lsn = arr_lsn_at(&ctx->arrlsn, i);
         _freelsn(*lsn);
     }
-    qu_lsn_free(&ctx->qulsn);
-    mutex_free(&ctx->qulsnlck);
+    arr_lsn_free(&ctx->arrlsn);
+    mutex_free(&ctx->lcklsn);
     (void)CloseHandle(ctx->acpex[0].iocp);
     FREE(ctx->acpex);
     sock_clean();

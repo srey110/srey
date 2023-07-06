@@ -441,8 +441,8 @@ static struct pip_ctx *_new_pips(uint32_t npipes) {
 }
 void ev_init(ev_ctx *ctx, uint32_t nthreads) {
     ctx->nthreads = (0 == nthreads ? 1 : nthreads);
-    mutex_init(&ctx->qulsnlck);
-    qu_lsn_init(&ctx->qulsn, 8);
+    mutex_init(&ctx->lcklsn);
+    arr_lsn_init(&ctx->arrlsn, ARRAY_INIT_SIZE);
     if (ATOMIC_CAS(&_init_once, 0, 1)) {
         _init_callback();
     }
@@ -523,11 +523,13 @@ void ev_free(ev_ctx *ctx) {
     }
     FREE(ctx->watcher);
     struct listener_ctx **lsn;
-    while (NULL != (lsn = qu_lsn_pop(&ctx->qulsn))) {
+    size_t nlsn = arr_lsn_size(&ctx->arrlsn);
+    for (i = 0; i < (uint32_t)nlsn; i++) {
+        lsn = arr_lsn_at(&ctx->arrlsn, i);
         _freelsn(*lsn);
     }
-    qu_lsn_free(&ctx->qulsn);
-    mutex_free(&ctx->qulsnlck);
+    arr_lsn_free(&ctx->arrlsn);
+    mutex_free(&ctx->lcklsn);
 }
 
 #endif//EV_IOCP

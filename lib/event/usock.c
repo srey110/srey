@@ -570,9 +570,9 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
         }
 #endif
     }
-    mutex_lock(&ctx->qulsnlck);
-    qu_lsn_push(&ctx->qulsn, &lsn);
-    mutex_unlock(&ctx->qulsnlck);
+    mutex_lock(&ctx->lcklsn);
+    arr_lsn_push_back(&ctx->arrlsn, &lsn);
+    mutex_unlock(&ctx->lcklsn);
     for (i = 0; i < lsn->nlsn; i++) {
         _cmd_listen(&ctx->watcher[i], lsn->lsnsock[i].sock.fd, &lsn->lsnsock[i].sock);
     }

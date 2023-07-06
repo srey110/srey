@@ -1,8 +1,8 @@
 #ifndef TW_H_
 #define TW_H_
 
-#include "mutex.h"
 #include "thread.h"
+#include "spinlock.h"
 #include "timer.h"
 #include "structs.h"
 
@@ -27,7 +27,7 @@ typedef struct tw_slot_ctx {
 typedef struct tw_ctx {
     volatile int32_t exit;
     uint32_t jiffies;
-    mutex_ctx lockreq;
+    spin_ctx spin;
     pthread_t thtw;
     timer_ctx timer;
     tw_slot_ctx reqadd;

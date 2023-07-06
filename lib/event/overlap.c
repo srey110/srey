@@ -647,9 +647,9 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
         FREE(lsn);
         return ERR_FAILED;
     }
-    mutex_lock(&ctx->qulsnlck);
-    qu_lsn_push(&ctx->qulsn, &lsn);
-    mutex_unlock(&ctx->qulsnlck);
+    mutex_lock(&ctx->lcklsn);
+    arr_lsn_push_back(&ctx->arrlsn, &lsn);
+    mutex_unlock(&ctx->lcklsn);
     return ERR_OK;
 }
 void _freelsn(listener_ctx *lsn) {

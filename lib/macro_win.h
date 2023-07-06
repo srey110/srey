@@ -21,12 +21,12 @@
 #define FSTAT _stat
 #define USLEEP(us)\
 do {\
-    LARGE_INTEGER stft;\
-    stft.QuadPart = -(10 * (__int64)us);\
-    HANDLE htimer = CreateWaitableTimer(NULL, TRUE, NULL);\
-    SetWaitableTimer(htimer, &stft, 0, NULL, NULL, 0);\
-    (void)WaitForSingleObject(htimer, INFINITE);\
-    CloseHandle(htimer);\
+    LARGE_INTEGER ft;\
+    ft.QuadPart = -(10 * (__int64)us);\
+    HANDLE timer = CreateWaitableTimer(NULL, TRUE, NULL);\
+    SetWaitableTimer(timer, &ft, 0, NULL, NULL, 0);\
+    WaitForSingleObject(timer, INFINITE);\
+    CloseHandle(timer);\
 } while (0)
 #define MSLEEP(ms) Sleep(ms)
 #define TIMEB _timeb

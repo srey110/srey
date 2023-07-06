@@ -21,6 +21,10 @@
 #define SHRINK_TIME         30000
 #define TIMER_ACCURACY      1000000
 
+#define SPIN_CNT_TIMEWHEEL  64
+#define SPIN_CNT_TASKMSG    64
+#define SPIN_CNT_CMD        32
+
 #ifdef EV_EPOLL
 #define TRIGGER_ET          1
 #endif

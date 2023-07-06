@@ -18,9 +18,9 @@ static inline sock_ctx *_map_get(watcher_ctx *watcher, SOCKET fd) {
 }
 void _send_cmd(watcher_ctx *watcher, uint32_t index, cmd_ctx *cmd) {
     overlap_cmd_ctx *olcmd = &watcher->cmd[index];
-    mutex_lock(&olcmd->lck);
+    spin_lock(&olcmd->spin);
     qu_cmd_push(&olcmd->qu, cmd);
-    mutex_unlock(&olcmd->lck);
+    spin_unlock(&olcmd->spin);
     static char trigger[1] = { 's' };
     ASSERTAB(1 == send(olcmd->fd, trigger, sizeof(trigger), 0), ERRORSTR(ERRNO));
 }

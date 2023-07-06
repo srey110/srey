@@ -3,6 +3,7 @@
 
 #include "utils.h"
 #include "queue.h"
+#include "sarray.h"
 #include "mutex.h"
 #include "buffer.h"
 #include "netaddr.h"
@@ -18,7 +19,7 @@ typedef enum sock_status {
 }sock_status;
 
 QUEUE_DECL(off_buf_ctx, qu_off_buf);
-QUEUE_DECL(struct listener_ctx *, qu_lsn);
+ARRAY_DECL(struct listener_ctx *, arr_lsn);
 
 typedef struct ev_ctx {
     uint32_t nthreads;
@@ -27,8 +28,8 @@ typedef struct ev_ctx {
     struct acceptex_ctx *acpex;
 #endif
     struct watcher_ctx *watcher;
-    qu_lsn qulsn;
-    mutex_ctx qulsnlck;
+    arr_lsn arrlsn;
+    mutex_ctx lcklsn;
 }ev_ctx;
 struct evssl_ctx;
 

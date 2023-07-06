@@ -20,7 +20,7 @@ void tw_free(tw_ctx *ctx) {
     _free_slot(ctx->tv4, TVN_SIZE);
     _free_slot(ctx->tv5, TVN_SIZE);
     _free_slot(&ctx->reqadd, 1);
-    mutex_free(&ctx->lockreq);
+    spin_free(&ctx->spin);
 }
 static void _insert(tw_slot_ctx *slot, tw_node_ctx *node) {
     if (NULL == slot->head) {
@@ -37,9 +37,9 @@ void tw_add(tw_ctx *ctx, const uint32_t timeout, void(*tw_cb)(ud_cxt *), ud_cxt 
     node->expires = (uint32_t)(timer_cur(&ctx->timer) / TIMER_ACCURACY) + timeout;
     node->tw_cb = tw_cb;
     node->next = NULL;
-    mutex_lock(&ctx->lockreq);
+    spin_lock(&ctx->spin);
     _insert(&ctx->reqadd, node);
-    mutex_unlock(&ctx->lockreq);
+    spin_unlock(&ctx->spin);
 }
 static tw_slot_ctx *_getslot(tw_ctx *ctx, tw_node_ctx *node) {
     tw_slot_ctx *slot;
@@ -103,7 +103,7 @@ static void _loop(void *arg) {
     tw_ctx *ctx = (tw_ctx *)arg;
     ctx->jiffies = (uint32_t)(timer_cur(&ctx->timer) / TIMER_ACCURACY);
     while (0 == ctx->exit) {
-        mutex_lock(&ctx->lockreq);
+        spin_lock(&ctx->spin);
         node = ctx->reqadd.head;
         while (NULL != node) {
             next = node->next;
@@ -112,18 +112,18 @@ static void _loop(void *arg) {
             node = next;
         }
         _clear(&ctx->reqadd);
-        mutex_unlock(&ctx->lockreq);
+        spin_unlock(&ctx->spin);
         curtick = (uint32_t)(timer_cur(&ctx->timer) / TIMER_ACCURACY);
         while (ctx->jiffies <= curtick) {
             _run(ctx);
         }
-        USLEEP(10);
+        USLEEP(1000);
     }
 }
 void tw_init(tw_ctx *ctx) {
     ctx->exit = 0;
     ctx->jiffies = 0;
-    mutex_init(&ctx->lockreq);
+    spin_init(&ctx->spin, SPIN_CNT_TIMEWHEEL);
     timer_init(&ctx->timer);
     ctx->reqadd.head = ctx->reqadd.tail = NULL;
     ZERO(ctx->tv1, sizeof(ctx->tv1));
