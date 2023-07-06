@@ -4,7 +4,6 @@
 #include "event/event.h"
 #include "event/skpool.h"
 #include "thread.h"
-#include "mutex.h"
 
 #ifndef EV_IOCP
 

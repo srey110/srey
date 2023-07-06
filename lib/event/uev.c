@@ -386,10 +386,6 @@ static void _loop_event(void *arg) {
 #endif
             if (NULL != skctx) {
                 skctx->ev_cb(watcher, skctx, ev);
-            } else {
-                LOG_ERROR("can't find socket %d in map.", (int32_t)fd);
-                int32_t oldev = (EVENT_READ | EVENT_WRITE);
-                _del_event(watcher, fd, &oldev, oldev, NULL);
             }
         }
         if (0 == watcher->stop
@@ -442,7 +438,7 @@ static struct pip_ctx *_new_pips(uint32_t npipes) {
 }
 void ev_init(ev_ctx *ctx, uint32_t nthreads) {
     ctx->nthreads = (0 == nthreads ? 1 : nthreads);
-    mutex_init(&ctx->lcklsn);
+    spin_init(&ctx->spin, SPIN_CNT_LSN);
     arr_lsn_init(&ctx->arrlsn, ARRAY_INIT_SIZE);
     if (ATOMIC_CAS(&_init_once, 0, 1)) {
         _init_callback();
@@ -471,7 +467,11 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads) {
         _init_cmd(watcher);
         watcher->thevent = thread_creat(_loop_event, watcher);
     }
-    LOG_INFO("event: %s", EV_STR);
+#ifdef SO_REUSEPORT 
+    LOG_INFO("event: %s, SO_REUSEPORT: true.", EV_STR);
+#else
+    LOG_INFO("event: %s, SO_REUSEPORT: false.", EV_STR);
+#endif
 }
 static void _free_pips(watcher_ctx *watcher) {
     void *data;
@@ -530,7 +530,7 @@ void ev_free(ev_ctx *ctx) {
         _freelsn(*lsn);
     }
     arr_lsn_free(&ctx->arrlsn);
-    mutex_free(&ctx->lcklsn);
+    spin_free(&ctx->spin);
 }
 
 #endif//EV_IOCP

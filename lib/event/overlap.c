@@ -667,9 +667,9 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
         FREE(lsn);
         return ERR_FAILED;
     }
-    mutex_lock(&ctx->lcklsn);
+    spin_lock(&ctx->spin);
     arr_lsn_push_back(&ctx->arrlsn, &lsn);
-    mutex_unlock(&ctx->lcklsn);
+    spin_unlock(&ctx->spin);
     lsn->id = createid();
     if (NULL != id) {
         *id = lsn->id;
@@ -686,7 +686,7 @@ void _freelsn(listener_ctx *lsn) {
 static inline listener_ctx * _get_listener(ev_ctx *ctx, uint64_t id) {
     listener_ctx *lsn = NULL;
     listener_ctx **tmp;
-    mutex_lock(&ctx->lcklsn);
+    spin_lock(&ctx->spin);
     size_t n = arr_lsn_size(&ctx->arrlsn);
     for (size_t i = 0; i < n; i++) {
         tmp = arr_lsn_at(&ctx->arrlsn, i);
@@ -696,7 +696,7 @@ static inline listener_ctx * _get_listener(ev_ctx *ctx, uint64_t id) {
             break;
         }
     }
-    mutex_unlock(&ctx->lcklsn);
+    spin_unlock(&ctx->spin);
     return lsn;
 }
 void ev_unlisten(ev_ctx *ctx, uint64_t id) {

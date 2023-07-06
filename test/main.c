@@ -66,7 +66,7 @@ static void timeout(ud_cxt *ud) {
         cbs.acp_cb = test_acpt_cb;
         cbs.c_cb = test_close_cb;
         cbs.r_cb = test_recv_cb;
-        ev_listen(ud->data, ssl, "0.0.0.0", 16000, &cbs, NULL, &lsnid);
+        ev_listen(ud->data, NULL, "0.0.0.0", 16000, &cbs, NULL, &lsnid);
     } else {
         ev_unlisten(ud->data, lsnid);
         lsnid = 0;

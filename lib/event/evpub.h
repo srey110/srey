@@ -4,7 +4,7 @@
 #include "utils.h"
 #include "queue.h"
 #include "sarray.h"
-#include "mutex.h"
+#include "spinlock.h"
 #include "buffer.h"
 #include "netaddr.h"
 #include "structs.h"
@@ -29,7 +29,7 @@ typedef struct ev_ctx {
 #endif
     struct watcher_ctx *watcher;
     arr_lsn arrlsn;
-    mutex_ctx lcklsn;
+    spin_ctx spin;
 }ev_ctx;
 struct evssl_ctx;
 

@@ -20,7 +20,7 @@ typedef struct listener_ctx {
     cbs_ctx cbs;
     ud_cxt ud;
 #ifndef SO_REUSEPORT
-    mutex_ctx lsnlck;
+    spin_ctx spin;
 #endif
     uint64_t id;
 }listener_ctx;
@@ -460,7 +460,7 @@ void _add_conn_inloop(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx) {
 static inline void _on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
     lsnsock_ctx *acpt = UPCAST(skctx, lsnsock_ctx, sock);
 #ifndef SO_REUSEPORT
-    if (ERR_OK != mutex_trylock(&acpt->lsn->lsnlck)) {
+    if (ERR_OK != spin_trylock(&acpt->lsn->spin)) {
         return;
     }
 #endif
@@ -479,7 +479,7 @@ static inline void _on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t 
         }
     }
 #ifndef SO_REUSEPORT
-    mutex_unlock(&acpt->lsn->lsnlck);
+    spin_unlock(&acpt->lsn->spin);
 #endif
 #ifdef MANUAL_ADD
     if (ERR_OK != _add_event(watcher, acpt->sock.fd, &acpt->sock.events, ev, &acpt->sock)) {
@@ -553,7 +553,7 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
     lsn->evssl = evssl;
 #endif
 #ifndef SO_REUSEPORT
-    mutex_init(&lsn->lsnlck);
+    spin_init(&lsn->spin, SPIN_CNT_LSN);
 #endif
     MALLOC(lsn->lsnsock, sizeof(lsnsock_ctx) * lsn->nlsn);
     int32_t i;
@@ -576,14 +576,10 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
         }
 #endif
     }
-#ifndef SO_REUSEPORT
-    lsn->ref = 1;
-#else
-    lsn->ref = lsn->nlsn;
-#endif
-    mutex_lock(&ctx->lcklsn);
+    spin_lock(&ctx->spin);
     arr_lsn_push_back(&ctx->arrlsn, &lsn);
-    mutex_unlock(&ctx->lcklsn);
+    spin_unlock(&ctx->spin);
+    lsn->ref = lsn->nlsn;
     for (i = 0; i < lsn->nlsn; i++) {
         _cmd_listen(&ctx->watcher[i], lsn->lsnsock[i].sock.fd, &lsn->lsnsock[i].sock);
     }
@@ -605,7 +601,7 @@ void _freelsn(listener_ctx *lsn) {
         _close_lsnsock(lsn, lsn->nlsn);
     }
 #ifndef SO_REUSEPORT
-    mutex_free(&lsn->lsnlck);
+    spin_free(&lsn->spin);
 #endif
     FREE(lsn->lsnsock);
     FREE(lsn);
@@ -613,7 +609,7 @@ void _freelsn(listener_ctx *lsn) {
 static inline listener_ctx * _get_listener(ev_ctx *ctx, uint64_t id) {
     listener_ctx *lsn = NULL;
     listener_ctx **tmp;
-    mutex_lock(&ctx->lcklsn);
+    spin_lock(&ctx->spin);
     size_t n = arr_lsn_size(&ctx->arrlsn);
     for (size_t i = 0; i < n; i++) {
         tmp = arr_lsn_at(&ctx->arrlsn, i);
@@ -623,7 +619,7 @@ static inline listener_ctx * _get_listener(ev_ctx *ctx, uint64_t id) {
             break;
         }
     }
-    mutex_unlock(&ctx->lcklsn);
+    spin_unlock(&ctx->spin);
     return lsn;
 }
 void ev_unlisten(ev_ctx *ctx, uint64_t id) {
@@ -636,17 +632,13 @@ void ev_unlisten(ev_ctx *ctx, uint64_t id) {
         _freelsn(lsn);
         return;
     }
-#ifndef SO_REUSEPORT
-    _cmd_unlisten(&ctx->watcher[0], lsn->lsnsock[0].sock.fd, lsn);
-#else
     for (int32_t i = 0; i < lsn->nlsn; i++) {
         _cmd_unlisten(&ctx->watcher[i], lsn->lsnsock[i].sock.fd, lsn);
     }
-#endif
 }
 void _remove_lsn(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) {
-    SOCK_CLOSE(fd);
     sock_ctx **skctx = _remove_fd(watcher, fd);
+    SOCK_CLOSE(fd);
     if (NULL != skctx) {
 #ifdef MANUAL_REMOVE
         lsnsock_ctx *acpt = UPCAST(*skctx, lsnsock_ctx, sock);

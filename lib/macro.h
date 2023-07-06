@@ -80,7 +80,7 @@ void slog(int32_t lv, const char *fmt, ...);
 do {\
     if (!(exp)) {\
         LOG_FATAL("%s", errstr);\
-        abort();\
+        exit(ERR_FAILED);\
     }\
 } while (0);
 

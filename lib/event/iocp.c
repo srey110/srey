@@ -264,7 +264,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads) {
         watcher->thevent = thread_creat(_loop_event, watcher);
     }
 
-    mutex_init(&ctx->lcklsn);
+    spin_init(&ctx->spin, SPIN_CNT_LSN);
     arr_lsn_init(&ctx->arrlsn, ARRAY_INIT_SIZE);
     HANDLE iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, ctx->nacpex);
     ASSERTAB(NULL != iocp, ERRORSTR(ERRNO));
@@ -333,7 +333,7 @@ void ev_free(ev_ctx *ctx) {
         _freelsn(*lsn);
     }
     arr_lsn_free(&ctx->arrlsn);
-    mutex_free(&ctx->lcklsn);
+    spin_free(&ctx->spin);
     (void)CloseHandle(ctx->acpex[0].iocp);
     FREE(ctx->acpex);
     sock_clean();
