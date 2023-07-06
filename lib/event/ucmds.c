@@ -29,6 +29,16 @@ void _cmd_listen(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx) {
 void _on_cmd_lsn(watcher_ctx *watcher, cmd_ctx *cmd) {
     _add_lsn_inloop(watcher, cmd->fd, (sock_ctx *)cmd->arg);
 }
+void _cmd_unlisten(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn) {
+    cmd_ctx cmd;
+    cmd.cmd = CMD_UNLSN;
+    cmd.fd = fd;
+    cmd.arg = (uint64_t)lsn;
+    _send_cmd(watcher, GET_POS(fd, watcher->npipes), &cmd);
+}
+void _on_cmd_unlsn(watcher_ctx *watcher, cmd_ctx *cmd) {
+    _remove_lsn(watcher, cmd->fd, (struct listener_ctx *)cmd->arg);
+}
 void _cmd_connect(ev_ctx *ctx, SOCKET fd, sock_ctx *skctx) {
     cmd_ctx cmd;
     cmd.cmd = CMD_CONN;

@@ -1015,7 +1015,7 @@ static inline void _task_net_close(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt 
     _push_message(ud->data, &msg);
 }
 int32_t task_netlisten(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
-    const char *ip, uint16_t port, int32_t sendev) {
+    const char *ip, uint16_t port, int32_t sendev, uint64_t *id) {
     ud_cxt ud;
     ZERO(&ud, sizeof(ud));
     ud.pktype = pktype;
@@ -1029,7 +1029,7 @@ int32_t task_netlisten(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl
         cbs.s_cb = _task_net_send;
     }
     cbs.ud_free = protos_udfree;
-    return ev_listen(&task->srey->netev, evssl, ip, port, &cbs, &ud);
+    return ev_listen(&task->srey->netev, evssl, ip, port, &cbs, &ud, id);
 }
 static inline int32_t _task_net_connect(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t err, ud_cxt *ud) {
     message_ctx msg;

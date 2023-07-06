@@ -303,7 +303,8 @@ end
     ssl evssl_ctx  nil不启用ssl
     sendev 是否触发发送事件 :boolean
 返回:
-    bool
+    id :integer
+    nil失败
 --]]
 function core.listen(ip, port, pktype, ssl, sendev)
     return sutils.listen(curtask, pktype or PACK_TYPE.NONE, ssl, ip, port, sendev and 1 or 0)

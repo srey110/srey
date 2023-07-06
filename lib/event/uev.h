@@ -44,6 +44,7 @@ typedef enum UEV_CMDS {
     CMD_STOP = 0x00,
     CMD_DISCONN,
     CMD_LSN,
+    CMD_UNLSN,
     CMD_CONN,
     CMD_ADDACP,
     CMD_ADDUDP,
@@ -92,12 +93,14 @@ void _del_event(watcher_ctx *watcher, SOCKET fd, int32_t *events, int32_t ev, vo
 void _send_cmd(watcher_ctx *watcher, uint32_t index, cmd_ctx *cmd);
 void _cmd_connect(ev_ctx *ctx, SOCKET fd, sock_ctx *skctx);
 void _cmd_listen(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx);
+void _cmd_unlisten(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn);
 void _cmd_add_acpfd(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn);
 void _cmd_add_udp(ev_ctx *ctx, SOCKET fd, sock_ctx *skctx);
 
 void _on_cmd_stop(watcher_ctx *watcher, cmd_ctx *cmd);
 void _on_cmd_disconn(watcher_ctx *watcher, cmd_ctx *cmd);
 void _on_cmd_lsn(watcher_ctx *watcher, cmd_ctx *cmd);
+void _on_cmd_unlsn(watcher_ctx *watcher, cmd_ctx *cmd);
 void _on_cmd_conn(watcher_ctx *watcher, cmd_ctx *cmd);
 void _on_cmd_send(watcher_ctx *watcher, cmd_ctx *cmd);
 void _on_cmd_addacp(watcher_ctx *watcher, cmd_ctx *cmd);
@@ -105,6 +108,7 @@ void _on_cmd_add_udp(watcher_ctx *watcher, cmd_ctx *cmd);
 void _on_cmd_setud(watcher_ctx *watcher, cmd_ctx *cmd);
 
 void _add_lsn_inloop(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx);
+void _remove_lsn(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn);
 void _add_conn_inloop(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx);
 void _add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn);
 void _add_write_inloop(watcher_ctx *watcher, sock_ctx *skctx, off_buf_ctx *buf);

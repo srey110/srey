@@ -11,6 +11,8 @@ typedef struct lsnsock_ctx {
 }lsnsock_ctx;
 typedef struct listener_ctx {
     int32_t nlsn;
+    int32_t ref;
+    int32_t remove;
     lsnsock_ctx *lsnsock;
 #if WITH_SSL
     evssl_ctx *evssl;
@@ -20,6 +22,7 @@ typedef struct listener_ctx {
 #ifndef SO_REUSEPORT
     mutex_ctx lsnlck;
 #endif
+    uint64_t id;
 }listener_ctx;
 typedef struct tcp_ctx {
     sock_ctx sock;
@@ -148,11 +151,11 @@ void _disconnect(watcher_ctx *watcher, sock_ctx *skctx) {
 void _add_fd(watcher_ctx *watcher, sock_ctx *skctx) {
     ASSERTAB(NULL == hashmap_set(watcher->element, &skctx), "socket repeat.");
 }
-static inline void _remove_fd(watcher_ctx *watcher, SOCKET fd) {
+static inline void *_remove_fd(watcher_ctx *watcher, SOCKET fd) {
     sock_ctx key;
     key.fd = fd;
     sock_ctx *pkey = &key;
-    hashmap_delete(watcher->element, &pkey);
+    return (void *)hashmap_delete(watcher->element, &pkey);
 }
 static inline int32_t _call_acp_cb(ev_ctx *ev, tcp_ctx *tcp) {
     return tcp->cbs.acp_cb(ev, tcp->sock.fd, tcp->skid, &tcp->ud);
@@ -480,6 +483,7 @@ static inline void _on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t 
 #endif
 #ifdef MANUAL_ADD
     if (ERR_OK != _add_event(watcher, acpt->sock.fd, &acpt->sock.events, ev, &acpt->sock)) {
+        _remove_fd(watcher, acpt->sock.fd);
         LOG_ERROR("%s", ERRORSTR(ERRNO));
     }
 #endif
@@ -525,7 +529,7 @@ static inline void _close_lsnsock(listener_ctx *lsn, int32_t cnt) {
 #endif
 }
 int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const uint16_t port,
-    cbs_ctx *cbs, ud_cxt *ud) {
+    cbs_ctx *cbs, ud_cxt *ud, uint64_t *id) {
     ASSERTAB(NULL != cbs && NULL != cbs->acp_cb && NULL != cbs->r_cb, ERRSTR_NULLP);
     netaddr_ctx addr;
     if (ERR_OK != netaddr_set(&addr, ip, port)) {
@@ -541,6 +545,8 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
     listener_ctx *lsn;
     MALLOC(lsn, sizeof(listener_ctx));
     lsn->nlsn = ctx->nthreads;
+    lsn->ref = 0;
+    lsn->remove = 0;
     lsn->cbs = *cbs;
     COPY_UD(lsn->ud, ud);
 #if WITH_SSL
@@ -570,11 +576,20 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
         }
 #endif
     }
+#ifndef SO_REUSEPORT
+    lsn->ref = 1;
+#else
+    lsn->ref = lsn->nlsn;
+#endif
     mutex_lock(&ctx->lcklsn);
     arr_lsn_push_back(&ctx->arrlsn, &lsn);
     mutex_unlock(&ctx->lcklsn);
     for (i = 0; i < lsn->nlsn; i++) {
         _cmd_listen(&ctx->watcher[i], lsn->lsnsock[i].sock.fd, &lsn->lsnsock[i].sock);
+    }
+    lsn->id = createid();
+    if (NULL != id) {
+        *id = lsn->id;
     }
     return ERR_OK;
 }
@@ -586,12 +601,61 @@ void _add_lsn_inloop(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx) {
     }
 }
 void _freelsn(listener_ctx *lsn) {
-    _close_lsnsock(lsn, lsn->nlsn);
+    if (0 == lsn->remove) {
+        _close_lsnsock(lsn, lsn->nlsn);
+    }
 #ifndef SO_REUSEPORT
     mutex_free(&lsn->lsnlck);
 #endif
     FREE(lsn->lsnsock);
     FREE(lsn);
+}
+static inline listener_ctx * _get_listener(ev_ctx *ctx, uint64_t id) {
+    listener_ctx *lsn = NULL;
+    listener_ctx **tmp;
+    mutex_lock(&ctx->lcklsn);
+    size_t n = arr_lsn_size(&ctx->arrlsn);
+    for (size_t i = 0; i < n; i++) {
+        tmp = arr_lsn_at(&ctx->arrlsn, i);
+        if ((*tmp)->id == id) {
+            lsn = *tmp;
+            arr_lsn_del_nomove(&ctx->arrlsn, i);
+            break;
+        }
+    }
+    mutex_unlock(&ctx->lcklsn);
+    return lsn;
+}
+void ev_unlisten(ev_ctx *ctx, uint64_t id) {
+    listener_ctx *lsn = _get_listener(ctx, id);
+    if (NULL == lsn) {
+        return;
+    }
+    lsn->remove = 1;
+    if (0 == lsn->ref) {
+        _freelsn(lsn);
+        return;
+    }
+#ifndef SO_REUSEPORT
+    _cmd_unlisten(&ctx->watcher[0], lsn->lsnsock[0].sock.fd, lsn);
+#else
+    for (int32_t i = 0; i < lsn->nlsn; i++) {
+        _cmd_unlisten(&ctx->watcher[i], lsn->lsnsock[i].sock.fd, lsn);
+    }
+#endif
+}
+void _remove_lsn(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) {
+    SOCK_CLOSE(fd);
+    sock_ctx **skctx = _remove_fd(watcher, fd);
+    if (NULL != skctx) {
+#ifdef MANUAL_REMOVE
+        lsnsock_ctx *acpt = UPCAST(*skctx, lsnsock_ctx, sock);
+        _del_event(watcher, fd, &acpt->sock.events, EVENT_READ, &acpt->sock);
+#endif
+    }
+    if (1 == ATOMIC_ADD(&lsn->ref, -1)) {
+        _freelsn(lsn);
+    }
 }
 //UDP
 static inline void _init_msghdr(struct msghdr *msg, netaddr_ctx *addr, IOV_TYPE *iov, uint32_t niov) {

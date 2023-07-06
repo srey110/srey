@@ -17,12 +17,15 @@ typedef struct overlap_acpt_ctx {
 }overlap_acpt_ctx;
 typedef struct listener_ctx {
     int32_t family;
+    int32_t remove;
+    atomic_t ref;
     SOCKET fd;
 #if WITH_SSL
     evssl_ctx *evssl;
 #endif
     cbs_ctx cbs;
     ud_cxt ud;
+    uint64_t id;
     overlap_acpt_ctx overlap_acpt[MAX_ACCEPTEX_CNT];
 }listener_ctx;
 typedef struct overlap_tcp_ctx {
@@ -549,18 +552,32 @@ static inline int32_t _post_accept(overlap_acpt_ctx *olacp) {
 }
 static inline void _on_accept_cb(acceptex_ctx *acpctx, sock_ctx *skctx, DWORD bytes) {
     overlap_acpt_ctx *olacp = UPCAST(skctx, overlap_acpt_ctx, overlap);
+    listener_ctx *lsn = olacp->lsn;
+    if (0 != lsn->remove) {
+        if (1 == ATOMIC_ADD(&lsn->ref, -1)) {
+            _freelsn(lsn);
+        }
+        return;
+    }
     SOCKET fd = olacp->overlap.fd;
-    if (ERR_OK != _post_accept(olacp)
-        || ERR_OK != setsockopt(fd, 
-                                SOL_SOCKET, 
-                                SO_UPDATE_ACCEPT_CONTEXT, 
-                                (char *)&olacp->lsn->fd, 
-                                (int32_t)sizeof(olacp->lsn->fd))
+    if (ERR_OK != _post_accept(olacp)) {
+        CLOSE_SOCK(fd);
+        if (1 == ATOMIC_ADD(&lsn->ref, -1)
+            && 0 != lsn->remove) {
+            _freelsn(lsn);
+        }
+        return;
+    }
+    if (ERR_OK != setsockopt(fd, 
+                             SOL_SOCKET, 
+                             SO_UPDATE_ACCEPT_CONTEXT, 
+                             (char *)&lsn->fd,
+                             (int32_t)sizeof(lsn->fd))
         || ERR_OK != _set_sockops(fd)) {
         CLOSE_SOCK(fd);
         return;
     }
-    _cmd_add_acpfd(GET_PTR(acpctx->ev->watcher, acpctx->ev->nthreads, fd), fd, olacp->lsn);
+    _cmd_add_acpfd(GET_PTR(acpctx->ev->watcher, acpctx->ev->nthreads, fd), fd, lsn);
 }
 void _add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) {
     if (ERR_OK != _join_iocp(watcher, fd)) {
@@ -619,10 +636,11 @@ static inline int32_t _acceptex(ev_ctx *ev, listener_ctx *lsn) {
             return ERR_FAILED;
         }
     }
+    lsn->ref = MAX_ACCEPTEX_CNT;
     return ERR_OK;
 }
 int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const uint16_t port,
-    cbs_ctx *cbs, ud_cxt *ud) {
+    cbs_ctx *cbs, ud_cxt *ud, uint64_t *id) {
     ASSERTAB(NULL != cbs && NULL != cbs->acp_cb && NULL != cbs->r_cb, ERRSTR_NULLP);
     netaddr_ctx addr;
     if (ERR_OK != netaddr_set(&addr, ip, port)) {
@@ -636,6 +654,8 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
     listener_ctx *lsn;
     MALLOC(lsn, sizeof(listener_ctx));
     lsn->family = netaddr_family(&addr);
+    lsn->ref = 0;
+    lsn->remove = 0;
     lsn->fd = fd;
     lsn->cbs = *cbs;
     COPY_UD(lsn->ud, ud);
@@ -650,12 +670,48 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
     mutex_lock(&ctx->lcklsn);
     arr_lsn_push_back(&ctx->arrlsn, &lsn);
     mutex_unlock(&ctx->lcklsn);
+    lsn->id = createid();
+    if (NULL != id) {
+        *id = lsn->id;
+    }
     return ERR_OK;
 }
 void _freelsn(listener_ctx *lsn) {
-    _free_acceptex(lsn, MAX_ACCEPTEX_CNT);
+    if (0 == lsn->remove) {
+        _free_acceptex(lsn, MAX_ACCEPTEX_CNT);
+    }
     CLOSE_SOCK(lsn->fd);
     FREE(lsn);
+}
+static inline listener_ctx * _get_listener(ev_ctx *ctx, uint64_t id) {
+    listener_ctx *lsn = NULL;
+    listener_ctx **tmp;
+    mutex_lock(&ctx->lcklsn);
+    size_t n = arr_lsn_size(&ctx->arrlsn);
+    for (size_t i = 0; i < n; i++) {
+        tmp = arr_lsn_at(&ctx->arrlsn, i);
+        if ((*tmp)->id == id) {
+            lsn = *tmp;
+            arr_lsn_del_nomove(&ctx->arrlsn, i);
+            break;
+        }
+    }
+    mutex_unlock(&ctx->lcklsn);
+    return lsn;
+}
+void ev_unlisten(ev_ctx *ctx, uint64_t id) {
+    listener_ctx *lsn = _get_listener(ctx, id);
+    if (NULL == lsn) {
+        return;
+    }
+    lsn->remove = 1;
+    if (0 == lsn->ref) {
+        _freelsn(lsn);
+        return;
+    }
+    for (int32_t i = 0; i < MAX_ACCEPTEX_CNT; i++) {
+        SOCK_CLOSE(lsn->overlap_acpt[i].overlap.fd);
+    }
 }
 //UDP
 static inline int32_t _post_recv_from(overlap_udp_ctx *oludp) {

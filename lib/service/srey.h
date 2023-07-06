@@ -65,7 +65,7 @@ void *task_request(task_ctx *dst, task_ctx *src, void *data, size_t size, int32_
 void task_response(task_ctx *dst, uint64_t sess, void *data, size_t size, int32_t copy);
 void *task_slice(task_ctx *task, uint64_t sess, size_t *size, int32_t *end);
 int32_t task_netlisten(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
-    const char *ip, uint16_t port, int32_t sendev);
+    const char *ip, uint16_t port, int32_t sendev, uint64_t *id);
 SOCKET task_netconnect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
     const char *ip, uint16_t port, int32_t sendev, uint64_t *skid);
 SOCKET task_netudp(task_ctx *task, const char *ip, uint16_t port, uint64_t *skid);

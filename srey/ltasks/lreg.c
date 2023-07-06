@@ -316,11 +316,11 @@ static int32_t _lreg_listen(lua_State *lua) {
     const char *ip = luaL_checkstring(lua, 4);
     uint16_t port = (uint16_t)luaL_checkinteger(lua, 5);
     int32_t sendev = (int32_t)luaL_checkinteger(lua, 6);
-    if (ERR_OK == task_netlisten(task, ptype, evssl, ip, port, sendev)) {
-        lua_pushboolean(lua, 1);
-    } else {
-        lua_pushboolean(lua, 0);
+    uint64_t id;
+    if (ERR_OK != task_netlisten(task, ptype, evssl, ip, port, sendev, &id)) {
+        return 0;
     }
+    lua_pushinteger(lua, id);
     return 1;
 }
 static int32_t _lreg_udp(lua_State *lua) {

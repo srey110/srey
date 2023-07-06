@@ -14,6 +14,9 @@ end
 function log.setlv(loglv)
     sutils.log_setlv(loglv)
 end
+function log.FATAL(fmt, ...)
+    _log(LOG_LV.FATAL, fmt, ...)
+end
 function log.ERROR(fmt, ...)
     _log(LOG_LV.ERROR, fmt, ...)
 end

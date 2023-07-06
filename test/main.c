@@ -3,7 +3,7 @@
 #include "lib.h"
 
 #ifdef OS_WIN
-//#include "vld.h"
+#include "vld.h"
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "lib.lib")
 #if WITH_SSL
@@ -21,6 +21,8 @@ mutex_ctx muexit;
 cond_ctx condexit;
 atomic_t count = 0;
 tw_ctx tw;
+uint64_t lsnid = 0;
+struct evssl_ctx *ssl = NULL;
 
 static void on_sigcb(int32_t sig, void *arg) {
     PRINT("catch sign: %d", sig);
@@ -58,6 +60,17 @@ static void timeout(ud_cxt *ud) {
     PRINT("timeout:%d ms link cnt %d", elapsed, ATOMIC_GET(&count));
     timer_start(&tw.timer);
     tw_add(&tw, 3000, timeout, ud);
+    if (0 == lsnid) {
+        cbs_ctx cbs;
+        ZERO(&cbs, sizeof(cbs));
+        cbs.acp_cb = test_acpt_cb;
+        cbs.c_cb = test_close_cb;
+        cbs.r_cb = test_recv_cb;
+        ev_listen(ud->data, ssl, "0.0.0.0", 16000, &cbs, NULL, &lsnid);
+    } else {
+        ev_unlisten(ud->data, lsnid);
+        lsnid = 0;
+    }
 }
 
 int main(int argc, char *argv[]) {
@@ -87,7 +100,7 @@ int main(int argc, char *argv[]) {
     cbs.c_cb = test_close_cb;
     cbs.r_cb = test_recv_cb;
     cbs.rf_cb = test_recvfrom_cb;
-    ev_listen(&ev, NULL, "0.0.0.0", 15000, &cbs, NULL);
+    ev_listen(&ev, NULL, "0.0.0.0", 15000, &cbs, NULL, NULL);
     uint64_t skid;
     ev_udp(&ev, "0.0.0.0", 15002, &cbs, NULL, &skid);
 #if WITH_SSL
@@ -100,10 +113,9 @@ int main(int argc, char *argv[]) {
     SNPRINTF(svcrt, sizeof(svcrt) - 1, "%s%s%s%s%s", local, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, "sever.crt");
     SNPRINTF(svkey, sizeof(svkey) - 1, "%s%s%s%s%s", local, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, "sever.key");
     SNPRINTF(p12, sizeof(p12) - 1, "%s%s%s%s%s", local, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, "client.p12");
-    struct evssl_ctx *ssl = evssl_new(ca, svcrt, svkey, SSL_FILETYPE_PEM, 0);
-    ev_listen(&ev, ssl, "0.0.0.0", 15001, &cbs, NULL);
+    ssl = evssl_new(ca, svcrt, svkey, SSL_FILETYPE_PEM, 0);
+    ev_listen(&ev, ssl, "0.0.0.0", 15001, &cbs, NULL, NULL);
 #endif
-
     timer_start(&tw.timer);
     ud_cxt ud;
     ud.data = &ev;

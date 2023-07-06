@@ -16,10 +16,11 @@ PACK_TYPE = {
     SIMPLE = 0x05
 }
 LOG_LV = {
-    ERROR = 0x00,
-    WARN = 0x01,
-    INFO = 0x02,
-    DEBUG = 0x03
+    FATAL = 0x00,
+    ERROR = 0x01,
+    WARN = 0x02,
+    INFO = 0x03,
+    DEBUG = 0x04
 }
 --ssl文件类型
 SSLFILE_TYPE = {
