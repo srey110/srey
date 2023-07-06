@@ -15,6 +15,12 @@ PACK_TYPE = {
     MQTT = 0x04,
     SIMPLE = 0x05
 }
+LOG_LV = {
+    ERROR = 0x00,
+    WARN = 0x01,
+    INFO = 0x02,
+    DEBUG = 0x03
+}
 --ssl文件类型
 SSLFILE_TYPE = {
     PEM = 0x01,

@@ -1,12 +1,13 @@
 #include "service/srey.h"
-#include "service/maps.h"
 #include "service/minicoro.h"
-#include "sarray.h"
+#include "service/maps.h"
 #include "hashmap.h"
-#include "tw.h"
-#include "cond.h"
+#include "sarray.h"
+#include "spinlock.h"
 #include "rwlock.h"
 #include "queue.h"
+#include "cond.h"
+#include "tw.h"
 
 typedef enum timeout_type {
     TMO_TYPE_SLEEP = 0x01,
@@ -81,7 +82,7 @@ struct task_ctx {
     srey_ctx *srey;
     mco_coro *curco;
     mapco_ctx mapco;
-    mutex_ctx mutex;
+    spin_ctx spin;
     qu_message qumsg;
     qu_copool qucopool;
 };
@@ -300,30 +301,39 @@ static inline void _dispatch_message(co_arg_ctx *arg) {
         break;
     }
 }
+static inline void _wakeup_worker(worker_ctx *worker, task_ctx *task, int32_t sig) {
+    mutex_lock(&worker->mutex);
+    if (NULL != task) {
+        qu_void_push(&worker->qutasks, (void **)&task);
+    }
+    if (worker->waiting > 0
+        && 0 != sig) {
+        cond_signal(&worker->cond);
+    }
+    mutex_unlock(&worker->mutex);
+}
 static inline void _push_message(task_ctx *task, message_ctx *msg) {
-    mutex_lock(&task->mutex);
+    int32_t add = 0;
+    spin_lock(&task->spin);
     qu_message_push(&task->qumsg, msg);
     if (0 == task->global) {
+        add = 1;
         task->global = 1;
-        worker_ctx *worker = &task->srey->worker[task->index];
-        mutex_lock(&worker->mutex);
-        qu_void_push(&worker->qutasks, (void **)&task);
-        if (worker->waiting > 0) {
-            cond_signal(&worker->cond);
-        }
-        mutex_unlock(&worker->mutex);
     }
-    mutex_unlock(&task->mutex);
+    spin_unlock(&task->spin);
+    if (0 != add) {
+        _wakeup_worker(&task->srey->worker[task->index], task, 1);
+    }
 }
 static inline int32_t _task_dispatch_message(worker_ctx *worker, worker_monitor *monitor, co_arg_ctx *coarg) {
-    mutex_lock(&coarg->task->mutex);
+    spin_lock(&coarg->task->spin);
     message_ctx *tmp = qu_message_pop(&coarg->task->qumsg);
     if (NULL == tmp) {
-        mutex_unlock(&coarg->task->mutex);
+        spin_unlock(&coarg->task->spin);
         return ERR_FAILED;
     }
     coarg->msg = *tmp;
-    mutex_unlock(&coarg->task->mutex);
+    spin_unlock(&coarg->task->spin);
 
     ATOMIC_ADD(&monitor->ver, 1);
     monitor->msgtype = coarg->msg.msgtype;
@@ -369,8 +379,8 @@ static inline int32_t _adjustment_taskto(arr_void *arractive, uint32_t toindex) 
     size_t i;
     size_t n = arr_void_size(arractive);
     if (n < 2) {
-        for (i = 0; i < n; i++) {
-            ((task_ctx *)*arr_void_at(arractive, i))->cpu_cost = 0;
+        if (1 == n) {
+            ((task_ctx *)*arr_void_at(arractive, 0))->cpu_cost = 0;
         }
         return ERR_FAILED;
     }
@@ -379,6 +389,7 @@ static inline int32_t _adjustment_taskto(arr_void *arractive, uint32_t toindex) 
     task_ctx *tmp;
     for (i = 0; i < n; i++) {
         tmp = *arr_void_at(arractive, i);
+        LOG_DEBUG("thread %d task %d cpu_cost %d.", tmp->index, tmp->name, tmp->cpu_cost);
         if (0 == tmp->cpu_cost) {
             continue;
         }
@@ -413,16 +424,11 @@ static inline int32_t _adjustment_taskto(arr_void *arractive, uint32_t toindex) 
         min_task->cpu_cost = 0;
         max_task->cpu_cost = 0;
     }
-    arr_void_del_nomove(arractive, min_pos);
-    mutex_lock(&min_task->mutex);
+    LOG_DEBUG("adjustment task %d from thread %d to %d.", min_task->name, min_task->index, toindex);
     min_task->index = toindex;
-    mutex_unlock(&min_task->mutex);
     return ERR_OK;
 }
 static inline void _adjustment_load(srey_ctx *ctx, worker_ctx *worker, arr_void *arractive) {
-    if (0 == worker->adjusting) {
-        return;
-    }
     if (INVALID_INDEX != worker->toindex) {
         if (ERR_OK == _adjustment_taskto(arractive, worker->toindex)) {
             ATOMIC_ADD(&ctx->worker[worker->index].ntask, -1);
@@ -432,6 +438,7 @@ static inline void _adjustment_load(srey_ctx *ctx, worker_ctx *worker, arr_void 
     } else {
         _clear_cpu_cost(arractive);
     }
+    arr_void_clear(arractive);
     worker->adjusting = 0;
     worker->cpu_cost = 0;
 }
@@ -440,6 +447,7 @@ static void _loop_worker(void *arg) {
     worker_ctx *worker = (worker_ctx *)arg;
     srey_ctx *ctx = worker->srey;
     worker_monitor *monitor = &ctx->monitor.minfo[worker->index];
+    int32_t add;
     arr_void arractive;
     arr_void_init(&arractive, 256);
     co_arg_ctx coarg;
@@ -456,10 +464,16 @@ static void _loop_worker(void *arg) {
         }
         mutex_unlock(&worker->mutex);
         if (NULL == tmp) {
-            if (ctx->nworker > 1) {
+            if (ctx->nworker > 1
+                && 0 != worker->adjusting) {
                 //调整线程负载
                 _adjustment_load(ctx, worker, &arractive);
             }
+            continue;
+        }
+        if (worker->index != coarg.task->index) {
+            LOG_DEBUG("different thread id,cur %d task %d, task name %d.", worker->index, coarg.task->index, coarg.task->name);
+            _wakeup_worker(&ctx->worker[coarg.task->index], coarg.task, 1);
             continue;
         }
         //执行
@@ -467,19 +481,23 @@ static void _loop_worker(void *arg) {
         _task_run(worker, monitor, &coarg);
         if (ctx->nworker > 1) {
             _add_active_tasks(&arractive, coarg.task);
-            //调整线程负载
-            _adjustment_load(ctx, worker, &arractive);
+            if (0 != worker->adjusting) {
+                //调整线程负载
+                _adjustment_load(ctx, worker, &arractive);
+            }
         }
         //加回队列
-        mutex_lock(&coarg.task->mutex);
+        spin_lock(&coarg.task->spin);
         if (0 == qu_message_size(&coarg.task->qumsg)) {
+            add = 0;
             coarg.task->global = 0;
         } else {
-            mutex_lock(&ctx->worker[coarg.task->index].mutex);
-            qu_void_push(&ctx->worker[coarg.task->index].qutasks, (void **)&coarg.task);
-            mutex_unlock(&ctx->worker[coarg.task->index].mutex);
+            add = 1;
         }
-        mutex_unlock(&coarg.task->mutex);
+        spin_unlock(&coarg.task->spin);
+        if (0 != add) {
+            _wakeup_worker(&ctx->worker[coarg.task->index], coarg.task, 0);
+        }
     }
     arr_void_free(&arractive);
 }
@@ -501,14 +519,7 @@ static inline void _set_adjusting(srey_ctx *ctx) {
         ctx->worker[i].adjusting = 1;
     }
 }
-static inline void _wakeup_worker(worker_ctx *worker) {
-    mutex_lock(&worker->mutex);
-    if (worker->waiting > 0) {
-        cond_signal(&worker->cond);
-    }
-    mutex_unlock(&worker->mutex);
-}
-static inline void _monitor_adjustment(srey_ctx *ctx) {
+static inline void _monitor_worker(srey_ctx *ctx) {
     if (ctx->nworker <= 1) {
         return;
     }
@@ -516,6 +527,8 @@ static inline void _monitor_adjustment(srey_ctx *ctx) {
     if (0 != ctx->worker[0].adjusting) {//上次调整都还未执行,该线程空闲
         cpu_cost = 0;
     }
+    LOG_DEBUG("-----------------------------------------");
+    LOG_DEBUG("thread %d cpu_cost %d ntask %d.", 0, cpu_cost, ctx->worker[0].ntask);
     uint32_t max_cpu_cost = cpu_cost, min_cpu_cost = cpu_cost;
     uint32_t max_index = 0, min_index = 0;
     for (uint32_t i = 1; i < ctx->nworker; i++) {
@@ -523,6 +536,7 @@ static inline void _monitor_adjustment(srey_ctx *ctx) {
         if (0 != ctx->worker[i].adjusting) {
             cpu_cost = 0;
         }
+        LOG_DEBUG("thread %d cpu_cost %d ntask %d.", i, cpu_cost, ctx->worker[i].ntask);
         if (cpu_cost > max_cpu_cost) {
             max_cpu_cost = cpu_cost;
             max_index = i;
@@ -539,9 +553,10 @@ static inline void _monitor_adjustment(srey_ctx *ctx) {
         _set_adjusting(ctx);
         return;
     }
+    LOG_DEBUG("prepare adjustment from thread %d to %d.", max_index, min_index);
     ctx->worker[max_index].toindex = min_index;
     _set_adjusting(ctx);
-    _wakeup_worker(&ctx->worker[max_index]);
+    _wakeup_worker(&ctx->worker[max_index], NULL, 1);
 }
 static void _loop_monitor(void *arg) {
     uint64_t time = 0;
@@ -553,7 +568,7 @@ static void _loop_monitor(void *arg) {
             _monitor_check_ver(ctx);
         }
         if (0 == time % ctx->monitor.adjinterval) {
-            _monitor_adjustment(ctx);
+            _monitor_worker(ctx);
         }
     }
 }
@@ -644,11 +659,7 @@ void srey_free(srey_ctx *ctx) {
     worker_ctx *worker;
     for (i = 0; i < ctx->nworker; i++) {
         worker = &ctx->worker[i];
-        mutex_lock(&worker->mutex);
-        if (worker->waiting > 0) {
-            cond_signal(&worker->cond);
-        }
-        mutex_unlock(&worker->mutex);
+        _wakeup_worker(worker, NULL, 1);
         thread_join(worker->thread);
     }
     ctx->monitor.stop = 1;
@@ -691,7 +702,7 @@ static void _task_free(task_ctx *task) {
     }
     qu_copool_free(&task->qucopool);
     _map_co_free(&task->mapco);
-    mutex_free(&task->mutex);
+    spin_free(&task->spin);
     FREE(task);
 }
 task_ctx *srey_tasknew(srey_ctx *ctx, int32_t name, uint32_t maxcnt, uint32_t maxmsgqulens,
@@ -709,7 +720,7 @@ task_ctx *srey_tasknew(srey_ctx *ctx, int32_t name, uint32_t maxcnt, uint32_t ma
     task->_run = _run;
     task->_free = _tfree;
     task->srey = ctx;
-    mutex_init(&task->mutex);
+    spin_init(&task->spin, 64);
     _map_co_init(&task->mapco);
     qu_message_init(&task->qumsg, MSG_INIT_CAP);
     qu_copool_init(&task->qucopool, COPOOL_INIT_CAP);

@@ -3,9 +3,13 @@
 
 #define  LOG_FMT "[%s][%s]%s\n"
 static FILE *_handle = NULL;
+static int32_t _log_lv = LOGLV_DEBUG;
 
 void log_handle(FILE *file) {
     _handle = file;
+}
+void log_setlv(LOG_LEVEL lv) {
+    _log_lv = lv;
 }
 static inline const char *_lvstr(int32_t lv) {
     switch (lv) {
@@ -39,6 +43,9 @@ static inline void _slog(int32_t lv, const char *fmt, va_list args) {
     }
 }
 void slog(int32_t lv, const char *fmt, ...) {
+    if (lv > _log_lv) {
+        return;
+    }
     va_list args;
     va_start(args, fmt);
     _slog(lv, fmt, args);

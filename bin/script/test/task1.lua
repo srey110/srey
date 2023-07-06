@@ -165,7 +165,7 @@ local function ontimeout()
     testhttp()
     testudp()
 
-    printd("....................... %.2f ........................", collectgarbage("count") / 1024)
+    --printd("....................... %.2f ........................", collectgarbage("count") / 1024)
     srey.timeout(3000, ontimeout)
 end
 local function onstarted()

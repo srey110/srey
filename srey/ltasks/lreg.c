@@ -7,6 +7,11 @@ lua_pushinteger(lua, msg->pktype);\
 lua_pushinteger(lua, msg->fd);\
 lua_pushinteger(lua, msg->skid)
 
+static int32_t _lreg_log_setlv(lua_State *lua) {
+    LOG_LEVEL lv = (LOG_LEVEL)luaL_checkinteger(lua, 1);
+    log_setlv(lv);
+    return 0;
+}
 static int32_t _lreg_log(lua_State *lua) {
     LOG_LEVEL lv = (LOG_LEVEL)luaL_checkinteger(lua, 1);
     const char *file = luaL_checkstring(lua, 2);
@@ -712,6 +717,7 @@ static int32_t _lreg_msg_info(lua_State *lua) {
 }
 LUAMOD_API int luaopen_srey_utils(lua_State *lua) {
     luaL_Reg reg[] = {
+        { "log_setlv", _lreg_log_setlv },
         { "log", _lreg_log },
 
         { "remoteaddr", _lreg_remoteaddr },
