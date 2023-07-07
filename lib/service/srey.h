@@ -42,7 +42,7 @@ typedef void *(*task_new)(task_ctx *task, void *arg);
 typedef void(*task_run)(task_ctx *task, message_ctx *msg);
 typedef void(*task_free)(task_ctx *task);
 
-srey_ctx *srey_init(uint16_t nnet, uint16_t nworker, uint16_t adjinterval, uint16_t adjthreshold);
+srey_ctx *srey_init(uint16_t nnet, uint16_t nworker, uint16_t interval, uint16_t threshold);
 void srey_startup(srey_ctx *ctx);
 void srey_free(srey_ctx *ctx);
 

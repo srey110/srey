@@ -439,7 +439,7 @@ static struct pip_ctx *_new_pips(uint32_t npipes) {
 void ev_init(ev_ctx *ctx, uint32_t nthreads) {
     ctx->nthreads = (0 == nthreads ? 1 : nthreads);
     spin_init(&ctx->spin, SPIN_CNT_LSN);
-    arr_ptr_init(&ctx->arrlsn, ARRAY_INIT_SIZE);
+    arr_ptr_init(&ctx->arrlsn, 0);
     if (ATOMIC_CAS(&_init_once, 0, 1)) {
         _init_callback();
     }

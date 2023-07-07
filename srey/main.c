@@ -9,8 +9,8 @@ typedef struct config_ctx {
     uint8_t logfile;
     uint16_t nnet;
     uint16_t nworker;
-    uint16_t adjinterval;
-    uint16_t adjthreshold;
+    uint16_t interval;
+    uint16_t threshold;
     char fmt[64];
 }config_ctx;
 static char *_config_read(void) {
@@ -50,13 +50,13 @@ static void _parse_config(config_ctx *cnf) {
     if (cJSON_IsNumber(val)) {
         cnf->nworker = (uint16_t)val->valueint;
     }
-    val = cJSON_GetObjectItem(json, "adjinterval");
+    val = cJSON_GetObjectItem(json, "interval");
     if (cJSON_IsNumber(val)) {
-        cnf->adjinterval = (uint16_t)val->valueint;
+        cnf->interval = (uint16_t)val->valueint;
     }
-    val = cJSON_GetObjectItem(json, "adjthreshold");
+    val = cJSON_GetObjectItem(json, "threshold");
     if (cJSON_IsNumber(val)) {
-        cnf->adjthreshold = (uint16_t)val->valueint;
+        cnf->threshold = (uint16_t)val->valueint;
     }
     val = cJSON_GetObjectItem(json, "loglv");
     if (cJSON_IsNumber(val)) {
@@ -127,7 +127,7 @@ static int32_t service_init(void) {
     unlimit();
     mutex_init(&muexit);
     cond_init(&condexit);
-    srey = srey_init(config.nnet, config.nworker, config.adjinterval, config.adjthreshold);
+    srey = srey_init(config.nnet, config.nworker, config.interval, config.threshold);
     if (ERR_OK != task_startup()) {
         service_exit();
         return ERR_FAILED;

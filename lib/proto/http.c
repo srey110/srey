@@ -170,7 +170,7 @@ static inline http_pack_ctx *_http_headpack(size_t lens) {
     CALLOC(pack, 1, sizeof(http_pack_ctx) + lens);
     ((http_pack_ctx *)pack)->head.data = pack + sizeof(http_pack_ctx);
     ((http_pack_ctx *)pack)->head.lens = lens;
-    arr_header_init(&((http_pack_ctx *)pack)->header, ARRAY_INIT_SIZE);
+    arr_header_init(&((http_pack_ctx *)pack)->header, 0);
     return (http_pack_ctx *)pack;
 }
 http_pack_ctx *_http_parsehead(buffer_ctx *buf, int32_t *status, int32_t *closefd) {

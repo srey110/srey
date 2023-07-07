@@ -29,8 +29,8 @@ typedef struct worker_version {
 }worker_version;
 typedef struct monitor_ctx {
     uint8_t stop;
-    uint16_t adjinterval;
-    uint16_t adjthreshold;
+    uint16_t interval;
+    uint16_t threshold;
     worker_version *version;
     pthread_t thread;
 }monitor_ctx;
@@ -536,7 +536,7 @@ static inline void _monitor_worker(srey_ctx *ctx) {
         }
     }
     if (min_index == max_index
-        || (max_cpu_cost - min_cpu_cost) / 1000 < ctx->monitor.adjthreshold) {
+        || (max_cpu_cost - min_cpu_cost) / 1000 < ctx->monitor.threshold) {
         _set_adjusting(ctx);
         return;
     }
@@ -554,17 +554,17 @@ static void _loop_monitor(void *arg) {
         if (0 == time % CHECKVER_TIME) {
             _monitor_check_ver(ctx);
         }
-        if (0 == time % ctx->monitor.adjinterval) {
+        if (0 == time % ctx->monitor.interval) {
             _monitor_worker(ctx);
         }
     }
 }
-srey_ctx *srey_init(uint16_t nnet, uint16_t nworker, uint16_t adjinterval, uint16_t adjthreshold) {
+srey_ctx *srey_init(uint16_t nnet, uint16_t nworker, uint16_t interval, uint16_t threshold) {
     srey_ctx *ctx;
     CALLOC(ctx, 1, sizeof(srey_ctx));
     ctx->nworker = nworker;
-    ctx->monitor.adjinterval = 0 == adjinterval ? ADJINDEX_TIME : adjinterval;
-    ctx->monitor.adjthreshold = 0 == adjthreshold ? ADJ_THRESHOLD : adjthreshold;
+    ctx->monitor.interval = 0 == interval ? ADJINDEX_TIME : interval;
+    ctx->monitor.threshold = 0 == threshold ? ADJ_THRESHOLD : threshold;
     CALLOC(ctx->worker, 1, sizeof(worker_ctx) * ctx->nworker);
     CALLOC(ctx->monitor.version, 1, sizeof(worker_version) * ctx->nworker);
     ctx->codesc = mco_desc_init(_co_cb, 0);
