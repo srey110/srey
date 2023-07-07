@@ -7,7 +7,7 @@ function harbor_config:ctor(file)
     content.ips = {}
     content.lsnip = "0.0.0.0"
     content.port = "8080"
-    content.sslname = ""
+    content.sslname = SSL_NAME.NONE
 end
 function harbor_config:lsnip()
     return self:content().lsnip

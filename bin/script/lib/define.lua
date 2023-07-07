@@ -6,6 +6,12 @@ TASK_NAME = {
     TASK3 = 0x03,
     TASK4 = 0x04
 }
+--SSL名
+SSL_NAME = {
+    NONE = 0x00,
+    SERVER = 0x01,
+    CLIENT = 0x02
+}
 --包类型 标识该socket类型 与c pack_type对应
 PACK_TYPE = {
     NONE = 0x00,

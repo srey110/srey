@@ -16,31 +16,30 @@ typedef enum timeout_type {
 }timeout_type;
 #if WITH_SSL
 typedef struct certs_ctx {
+    uint32_t name;
     struct evssl_ctx *ssl;
-    char name[64];
 }certs_ctx;
 ARRAY_DECL(certs_ctx, arr_certs);
 #endif
 typedef struct worker_monitor {
-    int32_t name;
-    int32_t msgtype;
-    atomic_t ver;
+    int8_t msgtype;
+    uint32_t name;
     uint32_t ck_ver;
+    atomic_t ver;
 }worker_monitor;
 typedef struct monitor_ctx {
-    int32_t stop;
-    uint32_t adjinterval;
-    uint32_t adjthreshold;
-    worker_monitor *minfo;
-    pthread_t thmonitor;
+    uint8_t stop;
+    uint16_t adjinterval;
+    uint16_t adjthreshold;
+    worker_monitor *info;
+    pthread_t thread;
 }monitor_ctx;
 typedef struct worker_ctx {
-    int32_t index;
-    int32_t waiting;
-    int32_t adjusting;
-    uint32_t toindex;
+    uint8_t waiting;
+    uint8_t adjusting;
+    uint16_t index;
+    uint16_t toindex;
     atomic_t cpu_cost;
-    atomic_t ntask;
     srey_ctx *srey;
     pthread_t thread;
     mutex_ctx mutex;
@@ -49,9 +48,9 @@ typedef struct worker_ctx {
     timer_ctx timer;
 }worker_ctx;
 struct srey_ctx {
-    int32_t stop;
-    int32_t startup;
-    uint32_t nworker;
+    uint8_t stop;
+    uint8_t startup;
+    uint16_t nworker;
     atomic_t index;
     worker_ctx *worker;
 #if WITH_SSL
@@ -68,12 +67,12 @@ struct srey_ctx {
 QUEUE_DECL(mco_coro *, qu_copool);
 QUEUE_DECL(message_ctx, qu_message);
 struct task_ctx {
-    int32_t global;
-    int32_t closed;
-    int32_t name;
-    int32_t index;
-    uint32_t maxcnt;
-    uint32_t maxmsgqulens;
+    uint8_t global;
+    uint8_t closed;
+    uint16_t index;
+    uint16_t maxcnt;
+    uint16_t maxmsgqulens;
+    uint32_t name;
     uint32_t cpu_cost;
     atomic_t startup;
     task_run _run;
@@ -96,7 +95,7 @@ typedef struct co_arg_ctx {
 #define MSG_INIT_CAP          512
 #define MSG_MAX_QULENS        ONEK
 #define COPOOL_INIT_CAP       128
-#define INVALID_INDEX         UINT_MAX//无效的工作线程下标
+#define INVALID_INDEX         USHRT_MAX//无效的工作线程下标
 #define CHECKVER_TIME         5000//检查死循环间隔
 #define ADJINDEX_TIME         5000//检测时间间隔
 #define ADJ_THRESHOLD         50//调整的阈值
@@ -347,17 +346,9 @@ static inline int32_t _task_dispatch_message(worker_ctx *worker, worker_monitor 
     return ERR_OK;
 }
 static inline void _task_run(worker_ctx *worker, worker_monitor *monitor, co_arg_ctx *coarg) {
-    if (worker->ntask > 1) {
-        for (uint32_t i = 0; i < coarg->task->maxcnt; i++) {
-            if (ERR_OK != _task_dispatch_message(worker, monitor, coarg)) {
-                break;
-            }
-        }
-    } else {
-        for (;;) {
-            if (ERR_OK != _task_dispatch_message(worker, monitor, coarg)) {
-                break;
-            }
+    for (uint16_t i = 0; i < coarg->task->maxcnt; i++) {
+        if (ERR_OK != _task_dispatch_message(worker, monitor, coarg)) {
+            break;
         }
     }
 }
@@ -376,14 +367,14 @@ static inline void _clear_cpu_cost(arr_void *arractive) {
         ((task_ctx *)*arr_void_at(arractive, i))->cpu_cost = 0;
     }
 }
-static inline int32_t _adjustment_taskto(arr_void *arractive, uint32_t toindex) {
+static inline void _adjustment_taskto(arr_void *arractive, uint16_t toindex) {
     size_t i;
     size_t n = arr_void_size(arractive);
     if (n < 2) {
         if (1 == n) {
             ((task_ctx *)*arr_void_at(arractive, 0))->cpu_cost = 0;
         }
-        return ERR_FAILED;
+        return;
     }
     task_ctx *min_task = NULL, *max_task = NULL;
     size_t min_pos = 0, max_pos = 0;
@@ -416,25 +407,21 @@ static inline int32_t _adjustment_taskto(arr_void *arractive, uint32_t toindex) 
         tmp->cpu_cost = 0;
     }
     if (NULL == min_task) {
-        return ERR_FAILED;
+        return;
     }
     if (min_pos == max_pos) {
         min_task->cpu_cost = 0;
-        return ERR_FAILED;
+        return;
     } else {
         min_task->cpu_cost = 0;
         max_task->cpu_cost = 0;
     }
     LOG_DEBUG("adjustment task %d from thread %d to %d.", min_task->name, min_task->index, toindex);
     min_task->index = toindex;
-    return ERR_OK;
 }
 static inline void _adjustment_load(srey_ctx *ctx, worker_ctx *worker, arr_void *arractive) {
     if (INVALID_INDEX != worker->toindex) {
-        if (ERR_OK == _adjustment_taskto(arractive, worker->toindex)) {
-            ATOMIC_ADD(&ctx->worker[worker->index].ntask, -1);
-            ATOMIC_ADD(&ctx->worker[worker->toindex].ntask, 1);
-        }
+        _adjustment_taskto(arractive, worker->toindex);
         worker->toindex = INVALID_INDEX;
     } else {
         _clear_cpu_cost(arractive);
@@ -447,7 +434,7 @@ static void _loop_worker(void *arg) {
     void **tmp;
     worker_ctx *worker = (worker_ctx *)arg;
     srey_ctx *ctx = worker->srey;
-    worker_monitor *monitor = &ctx->monitor.minfo[worker->index];
+    worker_monitor *monitor = &ctx->monitor.info[worker->index];
     int32_t add;
     arr_void arractive;
     arr_void_init(&arractive, 256);
@@ -504,8 +491,8 @@ static void _loop_worker(void *arg) {
 }
 static inline void _monitor_check_ver(srey_ctx *ctx) {
     worker_monitor *m;
-    for (uint32_t i = 0; i < ctx->nworker; i++) {
-        m = &ctx->monitor.minfo[i];
+    for (uint16_t i = 0; i < ctx->nworker; i++) {
+        m = &ctx->monitor.info[i];
         if (m->ck_ver == m->ver) {
             if (MSG_TYPE_NONE != m->msgtype) {
                 LOG_ERROR("task: %d message type: %d, maybe in an endless loop. version: %d", m->name, m->msgtype, m->ver);
@@ -516,7 +503,7 @@ static inline void _monitor_check_ver(srey_ctx *ctx) {
     }
 }
 static inline void _set_adjusting(srey_ctx *ctx) {
-    for (uint32_t i = 0; i < ctx->nworker; i++) {
+    for (uint16_t i = 0; i < ctx->nworker; i++) {
         ctx->worker[i].adjusting = 1;
     }
 }
@@ -529,15 +516,15 @@ static inline void _monitor_worker(srey_ctx *ctx) {
         cpu_cost = 0;
     }
     LOG_DEBUG("-----------------------------------------");
-    LOG_DEBUG("thread %d cpu_cost %d ntask %d.", 0, cpu_cost, ctx->worker[0].ntask);
+    LOG_DEBUG("thread %d cpu_cost %d.", 0, cpu_cost);
     uint32_t max_cpu_cost = cpu_cost, min_cpu_cost = cpu_cost;
-    uint32_t max_index = 0, min_index = 0;
-    for (uint32_t i = 1; i < ctx->nworker; i++) {
+    uint16_t max_index = 0, min_index = 0;
+    for (uint16_t i = 1; i < ctx->nworker; i++) {
         cpu_cost = ctx->worker[i].cpu_cost;
         if (0 != ctx->worker[i].adjusting) {
             cpu_cost = 0;
         }
-        LOG_DEBUG("thread %d cpu_cost %d ntask %d.", i, cpu_cost, ctx->worker[i].ntask);
+        LOG_DEBUG("thread %d cpu_cost %d.", i, cpu_cost);
         if (cpu_cost > max_cpu_cost) {
             max_cpu_cost = cpu_cost;
             max_index = i;
@@ -549,8 +536,7 @@ static inline void _monitor_worker(srey_ctx *ctx) {
         }
     }
     if (min_index == max_index
-        || (max_cpu_cost - min_cpu_cost) / 1000 < ctx->monitor.adjthreshold
-        || ctx->worker[max_index].ntask <= 1) {
+        || (max_cpu_cost - min_cpu_cost) / 1000 < ctx->monitor.adjthreshold) {
         _set_adjusting(ctx);
         return;
     }
@@ -581,7 +567,7 @@ srey_ctx *srey_init(uint16_t nnet, uint16_t nworker, uint16_t adjinterval, uint1
     ctx->monitor.adjthreshold = 0 == adjthreshold ? ADJ_THRESHOLD : adjthreshold;
     CALLOC(ctx->worker, 1, sizeof(worker_ctx) * ctx->nworker);
     ctx->monitor.stop = 0;
-    CALLOC(ctx->monitor.minfo, 1, sizeof(worker_monitor) * ctx->nworker);
+    CALLOC(ctx->monitor.info, 1, sizeof(worker_monitor) * ctx->nworker);
     ctx->codesc = mco_desc_init(_co_cb, 0);
     rwlock_init(&ctx->lckmaptask);
     ctx->maptask = hashmap_new_with_allocator(_malloc, _realloc, _free,
@@ -589,11 +575,11 @@ srey_ctx *srey_init(uint16_t nnet, uint16_t nworker, uint16_t adjinterval, uint1
                                               _maptask_hash, _maptask_compare, _maptask_free, NULL);
 #if WITH_SSL
     rwlock_init(&ctx->lckarrcert);
-    arr_certs_init(&ctx->arrcert, 16);
+    arr_certs_init(&ctx->arrcert, 0);
 #endif
-    ctx->monitor.thmonitor = thread_creat(_loop_monitor, ctx);
+    ctx->monitor.thread = thread_creat(_loop_monitor, ctx);
     worker_ctx *worker;
-    for (uint32_t i = 0; i < ctx->nworker; i++) {
+    for (uint16_t i = 0; i < ctx->nworker; i++) {
         worker = &ctx->worker[i];
         worker->index = i;
         worker->srey = ctx;
@@ -654,7 +640,7 @@ static void _task_closing(srey_ctx *ctx) {
     } while (0 != closed);
 }
 void srey_free(srey_ctx *ctx) {
-    uint32_t i;
+    uint16_t i;
     _task_closing(ctx);
     ctx->stop = 1;
     worker_ctx *worker;
@@ -664,7 +650,7 @@ void srey_free(srey_ctx *ctx) {
         thread_join(worker->thread);
     }
     ctx->monitor.stop = 1;
-    thread_join(ctx->monitor.thmonitor);
+    thread_join(ctx->monitor.thread);
     ev_free(&ctx->netev);
     tw_free(&ctx->tw);
     hashmap_free(ctx->maptask);
@@ -685,7 +671,7 @@ void srey_free(srey_ctx *ctx) {
         qu_void_free(&worker->qutasks);
     }
     FREE(ctx->worker);
-    FREE(ctx->monitor.minfo);
+    FREE(ctx->monitor.info);
     FREE(ctx);
 }
 static void _task_free(task_ctx *task) {
@@ -706,7 +692,7 @@ static void _task_free(task_ctx *task) {
     spin_free(&task->spin);
     FREE(task);
 }
-task_ctx *srey_tasknew(srey_ctx *ctx, int32_t name, uint32_t maxcnt, uint32_t maxmsgqulens,
+task_ctx *srey_tasknew(srey_ctx *ctx, uint32_t name, uint16_t maxcnt, uint16_t maxmsgqulens,
     task_new _init, task_run _run, task_free _tfree, void *arg) {
     if (NULL == _run) {
         LOG_WARN("task %d, %s", name, ERRSTR_INVPARAM);
@@ -714,7 +700,7 @@ task_ctx *srey_tasknew(srey_ctx *ctx, int32_t name, uint32_t maxcnt, uint32_t ma
     }
     task_ctx *task;
     CALLOC(task, 1, sizeof(task_ctx));
-    task->index = (int32_t)(ATOMIC_ADD(&ctx->index, 1) % ctx->nworker);
+    task->index = (uint16_t)(ATOMIC_ADD(&ctx->index, 1) % ctx->nworker);
     task->name = name;
     task->maxcnt = maxcnt;
     task->maxmsgqulens = 0 == maxmsgqulens ? MSG_MAX_QULENS : maxmsgqulens;
@@ -732,7 +718,7 @@ task_ctx *srey_tasknew(srey_ctx *ctx, int32_t name, uint32_t maxcnt, uint32_t ma
             return NULL;
         }
     }
-    int32_t started = 0;
+    uint8_t started = 0;
     rwlock_wrlock(&ctx->lckmaptask);
     if (NULL != hashmap_get(ctx->maptask, &task)) {
         rwlock_unlock(&ctx->lckmaptask);
@@ -740,7 +726,6 @@ task_ctx *srey_tasknew(srey_ctx *ctx, int32_t name, uint32_t maxcnt, uint32_t ma
         LOG_ERROR("task %d repeat.", name);
         return NULL;
     }
-    ATOMIC_ADD(&ctx->worker[task->index].ntask, 1);
     hashmap_set(ctx->maptask, &task);
     started = ctx->startup;
     rwlock_unlock(&ctx->lckmaptask);
@@ -753,7 +738,7 @@ task_ctx *srey_tasknew(srey_ctx *ctx, int32_t name, uint32_t maxcnt, uint32_t ma
     }
     return task;
 }
-task_ctx *srey_taskqury(srey_ctx *ctx, int32_t name) {
+task_ctx *srey_taskqury(srey_ctx *ctx, uint32_t name) {
     task_ctx key;
     key.name = name;
     task_ctx *pkey = &key;
@@ -775,33 +760,29 @@ ev_ctx *task_netev(task_ctx *task) {
 void *task_handle(task_ctx *task) {
     return task->handle;
 }
-int32_t task_name(task_ctx *task) {
+uint32_t task_name(task_ctx *task) {
     return task->name;
 }
 #if WITH_SSL
-static inline certs_ctx *_certs_get(srey_ctx *ctx, const char *name) {
+static inline certs_ctx *_certs_get(srey_ctx *ctx, uint32_t name) {
     certs_ctx *cert;
-    for (size_t i = 0; i < arr_certs_size(&ctx->arrcert); i++) {
+    size_t n = arr_certs_size(&ctx->arrcert);
+    for (size_t i = 0; i < n; i++) {
         cert = arr_certs_at(&ctx->arrcert, i);
-        if (0 == strcmp(name, cert->name)) {
+        if (name == cert->name) {
             return cert;
         }
     }
     return NULL;
 }
-int32_t certs_register(srey_ctx *ctx, const char *name, struct evssl_ctx *evssl) {
+int32_t certs_register(srey_ctx *ctx, uint32_t name, struct evssl_ctx *evssl) {
     certs_ctx cert;
-    if (strlen(name) >= sizeof(cert.name)) {
-        ASSERTAB("ssl name %s too long.", name);
-        return ERR_FAILED;
-    }
-    ZERO(&cert, sizeof(certs_ctx));
-    strcpy(cert.name, name);
+    cert.name = name;
     cert.ssl = evssl;
     int32_t rtn;
     rwlock_wrlock(&ctx->lckarrcert);
     if (NULL != _certs_get(ctx, name)) {
-        LOG_ERROR("ssl name %s repeat.", name);
+        LOG_ERROR("ssl name %d repeat.", name);
         rtn = ERR_FAILED;
     } else {
         arr_certs_push_back(&ctx->arrcert, &cert);
@@ -810,7 +791,7 @@ int32_t certs_register(srey_ctx *ctx, const char *name, struct evssl_ctx *evssl)
     rwlock_unlock(&ctx->lckarrcert);
     return rtn;
 }
-struct evssl_ctx *certs_qury(srey_ctx *ctx, const char *name) {
+struct evssl_ctx *certs_qury(srey_ctx *ctx, uint32_t name) {
     certs_ctx *cert;
     rwlock_rdlock(&ctx->lckarrcert);
     cert = _certs_get(ctx, name);

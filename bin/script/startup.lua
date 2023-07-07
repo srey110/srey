@@ -1,8 +1,9 @@
+require("lib.define")
 local srey = require("lib.srey")
 require("test.test")
 
-srey.evssl_new("server", "ca.crt", "sever.crt", "sever.key", SSLFILE_TYPE.PEM)
-srey.evssl_p12new("client", "client.p12", "srey")
+srey.evssl_new(SSL_NAME.SERVER, "ca.crt", "sever.crt", "sever.key", SSLFILE_TYPE.PEM)
+srey.evssl_p12new(SSL_NAME.CLIENT, "client.p12", "srey")
 
 srey.task_register("service.harbor", TASK_NAME.HARBOR)
 srey.task_register("test.task1", TASK_NAME.TASK1)

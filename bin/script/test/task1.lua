@@ -54,7 +54,7 @@ local function testwebsock(ipv4, chs, port)
     else
         connip = "::1"
     end
-    local ssl = srey.evssl_qury("client")
+    local ssl = srey.evssl_qury(SSL_NAME.CLIENT)
     local websockfd
     local skid
     if chs then
@@ -99,7 +99,7 @@ local function onchunked(fd, skid, hinfo, data, size, fin)
     end
 end
 local function testhttp()
-    local ssl = srey.evssl_qury("client")
+    local ssl = srey.evssl_qury(SSL_NAME.CLIENT)
     local fd, skid = srey.connect("127.0.0.1", 15003, PACK_TYPE.HTTP, nil)
     if INVALID_SOCK == fd then
         return
@@ -181,7 +181,7 @@ local function onstarted()
     srey.call(harbor, "addip", "127.0.0.1", "10")
     srey.call(harbor, "removeip", "192.168.100.5")
     srey.call(harbor, "removeip", "192.168.100.2")
-    local ssl = srey.evssl_qury("client")
+    local ssl = srey.evssl_qury(SSL_NAME.CLIENT)
     rpcfd, rpcfdid = srey.connect("127.0.0.1", 8080, PACK_TYPE.RPC, ssl)
     if INVALID_SOCK ~= rpcfd then
         printd("rpc connect.... fd: %d id: %d", rpcfd, rpcfdid)

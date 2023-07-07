@@ -2,7 +2,7 @@ local srey = require("lib.srey")
 
 local function onstarted()
     printd(srey.task_name() .. " onstarted....")
-    local ssl = srey.evssl_qury("server")
+    local ssl = srey.evssl_qury(SSL_NAME.SERVER)
     srey.listen("0.0.0.0", 15001, PACK_TYPE.NONE, ssl)
 end
 srey.started(onstarted)

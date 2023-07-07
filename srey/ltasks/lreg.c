@@ -119,7 +119,7 @@ static int32_t _lreg_urlencode(lua_State *lua) {
 }
 static int32_t _lreg_evssl_new(lua_State *lua) {
 #if WITH_SSL
-    const char *name = luaL_checkstring(lua, 1);
+    int32_t name = (int32_t)luaL_checkinteger(lua, 1);
     const char *ca = luaL_checkstring(lua, 2);
     const char *cert = luaL_checkstring(lua, 3);
     const char *key = luaL_checkstring(lua, 4);
@@ -157,7 +157,7 @@ static int32_t _lreg_evssl_new(lua_State *lua) {
 }
 static int32_t _lreg_evssl_p12new(lua_State *lua) {
 #if WITH_SSL
-    const char *name = luaL_checkstring(lua, 1);
+    uint32_t name = (uint32_t)luaL_checkinteger(lua, 1);
     const char *p12 = luaL_checkstring(lua, 2);
     const char *pwd = luaL_checkstring(lua, 3);
     int32_t verify = (int32_t)luaL_checkinteger(lua, 4);
@@ -183,7 +183,7 @@ static int32_t _lreg_evssl_p12new(lua_State *lua) {
 }
 static int32_t _lreg_evssl_qury(lua_State *lua) {
 #if WITH_SSL
-    const char *name = luaL_checkstring(lua, 1);
+    uint32_t name = (uint32_t)luaL_checkinteger(lua, 1);
     struct evssl_ctx *ssl = certs_qury(srey, name);
     if (NULL == ssl) {
         return 0;
@@ -195,7 +195,7 @@ static int32_t _lreg_evssl_qury(lua_State *lua) {
 #endif
 }
 static int32_t _lreg_task_qury(lua_State *lua) {
-    int32_t name = (int32_t)luaL_checkinteger(lua, 1);
+    uint32_t name = (uint32_t)luaL_checkinteger(lua, 1);
     task_ctx *task = srey_taskqury(srey, name);
     if (NULL == task) {
         return 0;

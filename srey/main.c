@@ -5,11 +5,12 @@ static FILE *logstream = NULL;
 static mutex_ctx muexit;
 static cond_ctx condexit;
 typedef struct config_ctx {
-    uint16_t adjinterval;
-    uint16_t adjthreshold;
+    uint8_t loglv;
+    uint8_t logfile;
     uint16_t nnet;
     uint16_t nworker;
-    int32_t logfile;
+    uint16_t adjinterval;
+    uint16_t adjthreshold;
     char fmt[64];
 }config_ctx;
 static char *_config_read(void) {
@@ -49,9 +50,21 @@ static void _parse_config(config_ctx *cnf) {
     if (cJSON_IsNumber(val)) {
         cnf->nworker = (uint16_t)val->valueint;
     }
+    val = cJSON_GetObjectItem(json, "adjinterval");
+    if (cJSON_IsNumber(val)) {
+        cnf->adjinterval = (uint16_t)val->valueint;
+    }
+    val = cJSON_GetObjectItem(json, "adjthreshold");
+    if (cJSON_IsNumber(val)) {
+        cnf->adjthreshold = (uint16_t)val->valueint;
+    }
+    val = cJSON_GetObjectItem(json, "loglv");
+    if (cJSON_IsNumber(val)) {
+        cnf->loglv = (uint8_t)val->valueint;
+    }
     val = cJSON_GetObjectItem(json, "logfile");
     if (cJSON_IsNumber(val)) {
-        cnf->logfile = (int32_t)val->valueint;
+        cnf->logfile = (uint8_t)val->valueint;
     }
     val = cJSON_GetObjectItem(json, "namefmt");
     if (cJSON_IsString(val)) {
@@ -62,14 +75,6 @@ static void _parse_config(config_ctx *cnf) {
         } else {
             PRINT("log file name format too long.");
         }
-    }
-    val = cJSON_GetObjectItem(json, "adjinterval");
-    if (cJSON_IsNumber(val)) {
-        cnf->adjinterval = (uint16_t)val->valueint;
-    }
-    val = cJSON_GetObjectItem(json, "adjthreshold");
-    if (cJSON_IsNumber(val)) {
-        cnf->adjthreshold = (uint16_t)val->valueint;
     }
     cJSON_Delete(json);
 }
@@ -102,6 +107,7 @@ static int32_t service_exit(void) {
 }
 static void _config_init(config_ctx *config) {
     ZERO(config, sizeof(config_ctx));
+    config->loglv = LOGLV_DEBUG;
     config->logfile = 1;
     config->nnet = 1;
     config->nworker = 2;
@@ -114,6 +120,7 @@ static int32_t service_init(void) {
     config_ctx config;
     _config_init(&config);
     _parse_config(&config);
+    log_setlv(config.loglv);
     if (0 != config.logfile) {
         _open_log(config.fmt);
     }

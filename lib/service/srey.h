@@ -22,8 +22,8 @@ typedef enum msg_type {
 typedef struct message_ctx {
     int8_t msgtype;//msg_type
     int8_t pktype;//unpack_type
+    int8_t slice;//slice_type
     int8_t erro;
-    int8_t slice;
     int32_t src;
     SOCKET fd;
     void *data;
@@ -46,17 +46,17 @@ srey_ctx *srey_init(uint16_t nnet, uint16_t nworker, uint16_t adjinterval, uint1
 void srey_startup(srey_ctx *ctx);
 void srey_free(srey_ctx *ctx);
 
-task_ctx *srey_tasknew(srey_ctx *ctx, int32_t name, uint32_t maxcnt, uint32_t maxmsgqulens,
+task_ctx *srey_tasknew(srey_ctx *ctx, uint32_t name, uint16_t maxcnt, uint16_t maxmsgqulens,
     task_new _init, task_run _run, task_free _tfree, void *arg);
-task_ctx *srey_taskqury(srey_ctx *ctx, int32_t name);
+task_ctx *srey_taskqury(srey_ctx *ctx, uint32_t name);
 ev_ctx *srey_netev(srey_ctx *ctx);
 srey_ctx *task_srey(task_ctx *task);
 ev_ctx *task_netev(task_ctx *task);
 void *task_handle(task_ctx *task);
-int32_t task_name(task_ctx *task);
+uint32_t task_name(task_ctx *task);
 #if WITH_SSL
-int32_t certs_register(srey_ctx *ctx, const char *name, struct evssl_ctx *evssl);
-struct evssl_ctx *certs_qury(srey_ctx *ctx, const char *name);
+int32_t certs_register(srey_ctx *ctx, uint32_t name, struct evssl_ctx *evssl);
+struct evssl_ctx *certs_qury(srey_ctx *ctx, uint32_t name);
 #endif
 void task_sleep(task_ctx *task, uint32_t ms);
 void task_timeout(task_ctx *task, uint64_t sess, uint32_t ms);

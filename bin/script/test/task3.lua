@@ -22,7 +22,7 @@ local function onstarted()
         printd("domain ips:" .. dump(ips))
     end
     srey.udp("0.0.0.0", 15002)
-    local ssl = srey.evssl_qury("server")
+    local ssl = srey.evssl_qury(SSL_NAME.SERVER)
     srey.listen("0.0.0.0", 15003, PACK_TYPE.HTTP)
 end
 srey.started(onstarted)

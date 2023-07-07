@@ -16,11 +16,15 @@ local function harbor_started()
     config:load()
     local ssl
     local name = config:sslname()
-    if not strempty(name) then
+    if "number" == type(name) and SSL_NAME.NONE ~= name then
         ssl = srey.evssl_qury(name)
     end
     srey.listen(config:lsnip(), config:port(), PACK_TYPE.RPC, ssl)
-    log.INFO("harbor listen at %s:%d, with ssl %s.", config:lsnip(), config:port(), ssl and "true" or "false")
+    if ssl then
+        log.INFO("harbor listen at %s:%d, SSL_NAME: %d", config:lsnip(), config:port(), name)
+    else
+        log.INFO("harbor listen at %s:%d.", config:lsnip(), config:port())
+    end
 end
 srey.started(harbor_started)
 local function harbor_closing()

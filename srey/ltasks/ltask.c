@@ -135,8 +135,8 @@ static inline void _ltask_run(task_ctx *task, message_ctx *msg) {
 static int32_t _ltask_register(lua_State *lua) {
     const char *file = luaL_checkstring(lua, 1);
     int32_t name = (int32_t)luaL_checkinteger(lua, 2);
-    uint32_t maxcnt = (uint32_t)luaL_checkinteger(lua, 3);
-    uint32_t maxmsgqulens = (uint32_t)luaL_checkinteger(lua, 4);
+    uint16_t maxcnt = (uint16_t)luaL_checkinteger(lua, 3);
+    uint16_t maxmsgqulens = (uint16_t)luaL_checkinteger(lua, 4);
     ltask_ctx *ltask;
     CALLOC(ltask, 1, sizeof(ltask_ctx));
     strcpy(ltask->file, file);

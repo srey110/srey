@@ -139,7 +139,7 @@ end
 --[[
 描述:创建evssl_ctx
 参数:
-    name 名称 :string
+    name 名称 :SSL_NAME
     ca ca文件 :string
     cert cert文件 :string
     key key文件 :string
@@ -157,7 +157,7 @@ end
 --[[
 描述:创建evssl_ctx
 参数:
-    name 名称 :string
+    name 名称 :SSL_NAME
     p12 p12文件 :string
     pwd 密码 :string
     verify SSLVERIFY_TYPE
@@ -171,7 +171,7 @@ end
 --[[
 描述:evssl_ctx 查询
 参数:
-    name :string
+    name :SSL_NAME
 返回:
     evssl_ctx
     nil无

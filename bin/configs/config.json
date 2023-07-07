@@ -4,5 +4,6 @@
     "adjinterval": 5000,
     "adjthreshold": 50,
     "logfile": 0,
+    "loglv": 4,
     "namefmt": "%Y-%m-%d %H-%M-%S"
 }
