@@ -566,7 +566,6 @@ srey_ctx *srey_init(uint16_t nnet, uint16_t nworker, uint16_t adjinterval, uint1
     ctx->monitor.adjinterval = 0 == adjinterval ? ADJINDEX_TIME : adjinterval;
     ctx->monitor.adjthreshold = 0 == adjthreshold ? ADJ_THRESHOLD : adjthreshold;
     CALLOC(ctx->worker, 1, sizeof(worker_ctx) * ctx->nworker);
-    ctx->monitor.stop = 0;
     CALLOC(ctx->monitor.info, 1, sizeof(worker_monitor) * ctx->nworker);
     ctx->codesc = mco_desc_init(_co_cb, 0);
     rwlock_init(&ctx->lckmaptask);
@@ -657,7 +656,8 @@ void srey_free(srey_ctx *ctx) {
     rwlock_free(&ctx->lckmaptask);
 #if WITH_SSL
     certs_ctx *cert;
-    for (size_t i = 0; i < arr_certs_size(&ctx->arrcert); i++) {
+    size_t n = arr_certs_size(&ctx->arrcert);
+    for (size_t i = 0; i < n; i++) {
         cert = arr_certs_at(&ctx->arrcert, i);
         evssl_free(cert->ssl);
     }
@@ -843,7 +843,6 @@ static inline void *_task_request(task_ctx *dst, task_ctx *src, void *data, size
     msg.msgtype = MSG_TYPE_REQUEST;
     if (NULL == src) {
         msg.sess = 0;
-        msg.src = -1;
     } else {
         msg.sess = createid();
         msg.src = src->name;

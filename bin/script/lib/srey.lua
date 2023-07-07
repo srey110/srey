@@ -248,14 +248,14 @@ local function dispatch_request(sess, src, data, size)
     local info = decode(data, size)
     local func = rpc_func[info.func]
     if nil == func then
-        if -1 ~=  src then
+        if 0 ~= sess then
             local resp = {}
             resp.ok = false
             sutils.task_response(core.task_qury(src), sess, encode(resp))
         end
         return
     end
-    if -1 ~= src then
+    if 0 ~= sess then
         local resp = {}
         resp.arg = {core.xpcall(func, table.unpack(info.arg))}
         resp.ok = table.remove(resp.arg, 1)

@@ -20,11 +20,11 @@ typedef enum msg_type {
     MSG_TYPE_RESPONSE
 }msg_type;
 typedef struct message_ctx {
-    int8_t msgtype;//msg_type
-    int8_t pktype;//unpack_type
-    int8_t slice;//slice_type
+    uint8_t msgtype;//msg_type
+    uint8_t pktype;//unpack_type
+    uint8_t slice;//slice_type
     int8_t erro;
-    int32_t src;
+    uint32_t src;
     SOCKET fd;
     void *data;
     size_t size;
