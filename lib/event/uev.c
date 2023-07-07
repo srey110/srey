@@ -439,7 +439,7 @@ static struct pip_ctx *_new_pips(uint32_t npipes) {
 void ev_init(ev_ctx *ctx, uint32_t nthreads) {
     ctx->nthreads = (0 == nthreads ? 1 : nthreads);
     spin_init(&ctx->spin, SPIN_CNT_LSN);
-    arr_lsn_init(&ctx->arrlsn, ARRAY_INIT_SIZE);
+    arr_ptr_init(&ctx->arrlsn, ARRAY_INIT_SIZE);
     if (ATOMIC_CAS(&_init_once, 0, 1)) {
         _init_callback();
     }
@@ -524,12 +524,12 @@ void ev_free(ev_ctx *ctx) {
     }
     FREE(ctx->watcher);
     struct listener_ctx **lsn;
-    size_t nlsn = arr_lsn_size(&ctx->arrlsn);
+    size_t nlsn = arr_ptr_size(&ctx->arrlsn);
     for (i = 0; i < (uint32_t)nlsn; i++) {
-        lsn = arr_lsn_at(&ctx->arrlsn, i);
+        lsn = (struct listener_ctx **)arr_ptr_at(&ctx->arrlsn, i);
         _freelsn(*lsn);
     }
-    arr_lsn_free(&ctx->arrlsn);
+    arr_ptr_free(&ctx->arrlsn);
     spin_free(&ctx->spin);
 }
 

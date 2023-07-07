@@ -81,6 +81,6 @@ static inline type *qtype##_at(qtype *p, size_t pos) {\
     }\
 };\
 
-QUEUE_DECL(void *, qu_void);
+QUEUE_DECL(void *, qu_ptr);
 
 #endif//QUEUE_H_

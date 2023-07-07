@@ -114,7 +114,6 @@ static inline void atype##_swap(atype *p, size_t pos1, size_t pos2) {\
     p->ptr[pos2] = tmp;\
 };\
 
-ARRAY_DECL(void *, arr_void);
-ARRAY_DECL(buf_ctx, arr_buf);
+ARRAY_DECL(void *, arr_ptr);
 
 #endif//SARRAY_H_

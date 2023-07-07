@@ -17,10 +17,6 @@ typedef enum sock_status {
     STATUS_SERVER = 0x08,
     STATUS_HANDSHAAKE = 0x10,
 }sock_status;
-
-QUEUE_DECL(off_buf_ctx, qu_off_buf);
-ARRAY_DECL(struct listener_ctx *, arr_lsn);
-
 typedef struct ev_ctx {
     uint32_t nthreads;
 #ifdef EV_IOCP
@@ -28,7 +24,7 @@ typedef struct ev_ctx {
     struct acceptex_ctx *acpex;
 #endif
     struct watcher_ctx *watcher;
-    arr_lsn arrlsn;
+    arr_ptr arrlsn;
     spin_ctx spin;
 }ev_ctx;
 struct evssl_ctx;
@@ -53,6 +49,7 @@ typedef struct cbs_ctx {
 
 #define GET_POS(fd, n) (fd % n)
 #define GET_PTR(p, n, fd) (1 == n ? p : &p[GET_POS(fd, n)])
+QUEUE_DECL(off_buf_ctx, qu_off_buf);
 
 //¹«¹²º¯Êý
 void _bufs_clear(qu_off_buf *bufs);
