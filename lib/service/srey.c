@@ -91,8 +91,6 @@ typedef struct co_arg_ctx {
 
 #define CONNECT_TIMEOUT       3000
 #define NETRD_TIMEOUT         3000
-#define MSG_INIT_CAP          512
-#define MSG_MAX_QULENS        ONEK
 #define COPOOL_INIT_CAP       128
 #define INVALID_INDEX         USHRT_MAX//无效的工作线程下标
 #define CHECKVER_TIME         5000//检查死循环间隔
@@ -324,7 +322,7 @@ static inline void _push_message(task_ctx *task, message_ctx *msg) {
         _wakeup_worker(&task->srey->worker[task->index], task, 1);
     }
 }
-static inline int32_t _task_dispatch_message(worker_ctx *worker, worker_version *version, co_arg_ctx *coarg) {
+static inline int32_t _task_dispatch_message(srey_ctx *ctx, worker_ctx *worker, worker_version *version, co_arg_ctx *coarg) {
     spin_lock(&coarg->task->spin);
     message_ctx *tmp = qu_message_pop(&coarg->task->qumsg);
     if (NULL == tmp) {
@@ -336,17 +334,21 @@ static inline int32_t _task_dispatch_message(worker_ctx *worker, worker_version 
 
     ATOMIC_ADD(&version->ver, 1);
     version->msgtype = coarg->msg.msgtype;
-    timer_start(&worker->timer);
+    if (ctx->nworker > 1) {
+        timer_start(&worker->timer);
+    }
     _dispatch_message(coarg);
-    uint32_t elapsed = (uint32_t)(timer_elapsed(&worker->timer) / 1000);
-    ATOMIC_ADD(&worker->cpu_cost, elapsed);
-    coarg->task->cpu_cost += elapsed;
+    if (ctx->nworker > 1) {
+        uint32_t elapsed = (uint32_t)(timer_elapsed(&worker->timer) / 1000);
+        ATOMIC_ADD(&worker->cpu_cost, elapsed);
+        coarg->task->cpu_cost += elapsed;
+    }
     version->msgtype = MSG_TYPE_NONE;
     return ERR_OK;
 }
-static inline void _task_run(worker_ctx *worker, worker_version *version, co_arg_ctx *coarg) {
+static inline void _task_run(srey_ctx *ctx, worker_ctx *worker, worker_version *version, co_arg_ctx *coarg) {
     for (uint16_t i = 0; i < coarg->task->maxcnt; i++) {
-        if (ERR_OK != _task_dispatch_message(worker, version, coarg)) {
+        if (ERR_OK != _task_dispatch_message(ctx, worker, version, coarg)) {
             break;
         }
     }
@@ -434,7 +436,7 @@ static void _loop_worker(void *arg) {
     worker_ctx *worker = (worker_ctx *)arg;
     srey_ctx *ctx = worker->srey;
     worker_version *version = &ctx->monitor.version[worker->index];
-    int32_t add;
+    int8_t add;
     arr_ptr arractive;
     arr_ptr_init(&arractive, 256);
     co_arg_ctx coarg;
@@ -450,12 +452,12 @@ static void _loop_worker(void *arg) {
             coarg.task = *tmp;
         }
         mutex_unlock(&worker->mutex);
+        if (ctx->nworker > 1
+            && 0 != worker->adjusting) {
+            //调整线程负载
+            _adjustment_load(ctx, worker, &arractive);
+        }
         if (NULL == tmp) {
-            if (ctx->nworker > 1
-                && 0 != worker->adjusting) {
-                //调整线程负载
-                _adjustment_load(ctx, worker, &arractive);
-            }
             continue;
         }
         if (worker->index != coarg.task->index) {
@@ -465,13 +467,9 @@ static void _loop_worker(void *arg) {
         }
         //执行
         version->name = coarg.task->name;
-        _task_run(worker, version, &coarg);
+        _task_run(ctx, worker, version, &coarg);
         if (ctx->nworker > 1) {
             _add_active_tasks(&arractive, coarg.task);
-            if (0 != worker->adjusting) {
-                //调整线程负载
-                _adjustment_load(ctx, worker, &arractive);
-            }
         }
         //加回队列
         spin_lock(&coarg.task->spin);
@@ -702,14 +700,14 @@ task_ctx *srey_tasknew(srey_ctx *ctx, uint32_t name, uint16_t maxcnt, uint16_t m
     CALLOC(task, 1, sizeof(task_ctx));
     task->index = (uint16_t)(ATOMIC_ADD(&ctx->index, 1) % ctx->nworker);
     task->name = name;
-    task->maxcnt = maxcnt;
-    task->maxmsgqulens = 0 == maxmsgqulens ? MSG_MAX_QULENS : maxmsgqulens;
+    task->maxcnt = 0 == maxcnt ? 5 : maxcnt;
+    task->maxmsgqulens = 0 == maxmsgqulens ? ONEK : maxmsgqulens;
     task->_run = _run;
     task->_free = _tfree;
     task->srey = ctx;
     spin_init(&task->spin, SPIN_CNT_TASKMSG);
     _map_co_init(&task->mapco);
-    qu_message_init(&task->qumsg, MSG_INIT_CAP);
+    qu_message_init(&task->qumsg, ONEK);
     qu_ptr_init(&task->qucopool, 0);
     if (NULL != _init) {
         task->handle = _init(task, arg);
@@ -718,7 +716,6 @@ task_ctx *srey_tasknew(srey_ctx *ctx, uint32_t name, uint16_t maxcnt, uint16_t m
             return NULL;
         }
     }
-    uint8_t started = 0;
     rwlock_wrlock(&ctx->lcktasks);
     if (NULL != hashmap_get(ctx->maptasks, &task)) {
         rwlock_unlock(&ctx->lcktasks);
@@ -727,14 +724,12 @@ task_ctx *srey_tasknew(srey_ctx *ctx, uint32_t name, uint16_t maxcnt, uint16_t m
         return NULL;
     }
     hashmap_set(ctx->maptasks, &task);
-    started = ctx->startup;
     rwlock_unlock(&ctx->lcktasks);
-    if (0 != started) {
-        if (ATOMIC_CAS(&task->startup, 0, 1)) {
-            message_ctx msg;
-            msg.msgtype = MSG_TYPE_STARTED;
-            _push_message(task, &msg);
-        }
+    if (0 != ctx->startup
+        && ATOMIC_CAS(&task->startup, 0, 1)) {
+        message_ctx msg;
+        msg.msgtype = MSG_TYPE_STARTED;
+        _push_message(task, &msg);
     }
     return task;
 }
