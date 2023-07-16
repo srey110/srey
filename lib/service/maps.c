@@ -1,10 +1,9 @@
 #include "service/maps.h"
+#if WITH_CORO
 #define MINICORO_IMPL
 #include "service/minicoro.h"
 #include "utils.h"
 #include "hashmap.h"
-
-#define MAPCO_INIT_CAP 512
 
 static inline uint64_t _map_cosess_hash(const void *item, uint64_t seed0, uint64_t seed1) {
     return hash((const char *)&(((co_sess_ctx *)item)->sess), sizeof(((co_sess_ctx *)item)->sess));
@@ -57,23 +56,24 @@ void _map_cotmo_del(mapco_ctx *map, uint64_t sess) {
 int32_t _map_cotmo_get(mapco_ctx *map, uint64_t sess, co_tmo_ctx *cotmo) {
     co_tmo_ctx key;
     key.sess = sess;
-    co_tmo_ctx *tmp = (co_tmo_ctx *)hashmap_get(map->cotmo, &key);
+    co_tmo_ctx *tmp = (co_tmo_ctx *)hashmap_delete(map->cotmo, &key);
     if (NULL == tmp) {
         return ERR_FAILED;
     }
     *cotmo = *tmp;
-    hashmap_delete(map->cotmo, &key);
     return ERR_OK;
 }
 void _map_co_init(mapco_ctx *map) {
     map->coids = hashmap_new_with_allocator(_malloc, _realloc, _free,
-                                            sizeof(co_sess_ctx), MAPCO_INIT_CAP, 0, 0,
+                                            sizeof(co_sess_ctx), 512, 0, 0,
                                             _map_cosess_hash, _map_cosess_compare, NULL, NULL);
     map->cotmo = hashmap_new_with_allocator(_malloc, _realloc, _free,
-                                            sizeof(co_tmo_ctx), MAPCO_INIT_CAP, 0, 0,
+                                            sizeof(co_tmo_ctx), 512, 0, 0,
                                             _map_cotmo_hash, _map_cotmo_compare, NULL, NULL);
 }
 void _map_co_free(mapco_ctx *map) {
     hashmap_free(map->coids);
     hashmap_free(map->cotmo);
 }
+
+#endif

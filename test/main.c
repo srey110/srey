@@ -1,6 +1,11 @@
 #include "test_base.h"
 #include "test_utils.h"
-#include "lib.h"
+#include "test1.h"
+#include "test2.h"
+#include "test3.h"
+#include "test4.h"
+#include "test5.h"
+#include "test6.h"
 
 #ifdef OS_WIN
 #include "vld.h"
@@ -17,28 +22,16 @@
 #endif
 #endif
 
+
 mutex_ctx muexit;
 cond_ctx condexit;
-atomic_t count = 0;
-tw_ctx tw;
-uint64_t lsnid = 0;
-struct evssl_ctx *ssl = NULL;
-
-static void on_sigcb(int32_t sig, void *arg) {
-    PRINT("catch sign: %d", sig);
-    cond_signal(&condexit);
-}
-static void test_close_cb(ev_ctx *ctx, SOCKET sock, uint64_t skid, ud_cxt *ud) {
-    //PRINT("test_close_cb: sock %d ", (int32_t)sock);
-    ATOMIC_ADD(&count, -1);
-}
+srey_ctx *srey = NULL;
+#define START_ONLY_EV 1
+#if START_ONLY_EV
 static int32_t test_acpt_cb(ev_ctx *ctx, SOCKET sock, uint64_t skid, ud_cxt *ud) {
-    //PRINT("test_acpt_cb : sock %d ", (int32_t)sock);
-    ATOMIC_ADD(&count, 1);
     return ERR_OK;
 }
 static void test_recv_cb(ev_ctx *ctx, SOCKET sock, uint64_t skid, buffer_ctx *buf, size_t lens, ud_cxt *ud) {
-    //PRINT("test_recv_cb: lens %d ", (int32_t)lens);
     if (randrange(1, 100) <= 1) {
         ev_close(ctx, sock, skid);
         return;
@@ -55,24 +48,11 @@ static void test_recvfrom_cb(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, si
     uint16_t port = netaddr_port(addr);
     ev_sendto(ev, fd, skid, host, port, buf, size);
 }
-static void timeout(ud_cxt *ud) {
-    int32_t elapsed = (int32_t)timer_elapsed_ms(&tw.timer);
-    PRINT("timeout:%d ms link cnt %d", elapsed, ATOMIC_GET(&count));
-    timer_start(&tw.timer);
-    tw_add(&tw, 3000, timeout, ud);
-    if (0 == lsnid) {
-        cbs_ctx cbs;
-        ZERO(&cbs, sizeof(cbs));
-        cbs.acp_cb = test_acpt_cb;
-        cbs.c_cb = test_close_cb;
-        cbs.r_cb = test_recv_cb;
-        ev_listen(ud->data, NULL, "0.0.0.0", 16000, &cbs, NULL, &lsnid);
-    } else {
-        ev_unlisten(ud->data, lsnid);
-        lsnid = 0;
-    }
+#endif
+static void on_sigcb(int32_t sig, void *arg) {
+    PRINT("catch sign: %d", sig);
+    cond_signal(&condexit);
 }
-
 int main(int argc, char *argv[]) {
     unlimit();
     srand((unsigned int)time(NULL)); 
@@ -91,18 +71,18 @@ int main(int argc, char *argv[]) {
     CuStringDelete(poutput);
     CuSuiteDelete(psuite);
 
-    tw_init(&tw);
+    PRINT("-------------------------------------------------");
+#if START_ONLY_EV
     ev_ctx ev;
     ev_init(&ev, 2);
     cbs_ctx cbs;
     ZERO(&cbs, sizeof(cbs));
     cbs.acp_cb = test_acpt_cb;
-    cbs.c_cb = test_close_cb;
     cbs.r_cb = test_recv_cb;
     cbs.rf_cb = test_recvfrom_cb;
-    ev_listen(&ev, NULL, "0.0.0.0", 15000, &cbs, NULL, NULL);
-    uint64_t skid;
-    ev_udp(&ev, "0.0.0.0", 15002, &cbs, NULL, &skid);
+#endif
+
+    srey = srey_init(2, 2, 0, 0, 0);
 #if WITH_SSL
     const char *local = procpath();
     char ca[PATH_LENS] = { 0 };
@@ -113,27 +93,41 @@ int main(int argc, char *argv[]) {
     SNPRINTF(svcrt, sizeof(svcrt) - 1, "%s%s%s%s%s", local, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, "sever.crt");
     SNPRINTF(svkey, sizeof(svkey) - 1, "%s%s%s%s%s", local, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, "sever.key");
     SNPRINTF(p12, sizeof(p12) - 1, "%s%s%s%s%s", local, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, "client.p12");
-    ssl = evssl_new(ca, svcrt, svkey, SSL_FILETYPE_PEM, 0);
-    ev_listen(&ev, ssl, "0.0.0.0", 15001, &cbs, NULL, NULL);
+    evssl_ctx *ssl = evssl_new(ca, svcrt, svkey, SSL_FILETYPE_PEM, 0);
+    if (ERR_OK != srey_ssl_register(srey, SSL_SERVER, ssl)) {
+        PRINT("srey_ssl_register error.");
+    }
+#if START_ONLY_EV
+    ev_listen(&ev, ssl, "0.0.0.0", 16001, &cbs, NULL, NULL);
 #endif
-    timer_start(&tw.timer);
-    ud_cxt ud;
-    ud.data = &ev;
-    tw_add(&tw, 1000, timeout, &ud);
-
+    ssl = evssl_p12_new(p12, "srey", 0);
+    if (ERR_OK != srey_ssl_register(srey, SSL_CLINET, ssl)) {
+        PRINT("srey_ssl_register error.");
+    }
+#endif
+    task_type ttype = TTYPE_DEF;
+#if WITH_CORO
+    ttype = TTYPE_CORO;
+#endif
+    srey_task_new(srey, ttype, TEST1, 0, 0, INVALID_TNAME, 0, NULL, test1_run, NULL, NULL, NULL);
+    srey_task_new(srey, ttype, TEST2, 0, 0, INVALID_TNAME, 0, NULL, test2_run, NULL, NULL, NULL);
+    srey_task_new(srey, ttype, TEST3, 0, 0, INVALID_TNAME, 0, NULL, test3_run, NULL, NULL, NULL);
+    srey_task_new(srey, ttype, TEST4, 0, 0, INVALID_TNAME, 0, NULL, test4_run, NULL, NULL, NULL);
+    srey_task_new(srey, ttype, TEST5, 0, 0, INVALID_TNAME, 0, NULL, test5_run, NULL, NULL, NULL);
+    srey_task_new(srey, ttype, TEST6, 0, 0, INVALID_TNAME, 0, NULL, test6_run, NULL, NULL, NULL);
+#if START_ONLY_EV
+    ev_listen(&ev, NULL, "0.0.0.0", 16000, &cbs, NULL, NULL);
+    uint64_t skid;
+    ev_udp(&ev, "0.0.0.0", 16002, &cbs, NULL, &skid);
+#endif
     mutex_lock(&muexit);
     cond_wait(&condexit, &muexit);
     mutex_unlock(&muexit);
-
-    tw_free(&tw);
-    PRINT("link cnt %d", ATOMIC_GET(&count));
+    srey_free(srey);
+#if START_ONLY_EV
     ev_free(&ev);
-
-#if WITH_SSL
-    evssl_free(ssl);
 #endif
     mutex_free(&muexit);
     cond_free(&condexit);
-
     return 0;
 }

@@ -357,7 +357,7 @@ void test_http(CuTest* tc) {
     CuAssertTrue(tc, NULL != rtnbuf);
     protos_pkfree(PACK_HTTP, rtnbuf);
 
-    const char *http5 = "POST /users HTTP/1.1\r\nHost: api.github.com\r\nTransfer-Encoding: chunked\r\n\r\n7\r\nMozilla\r\n11\r\nDeveloper N\r\n0\r\n\r\n";
+    const char *http5 = "POST /users HTTP/1.1\r\nHost: api.github.com\r\nTransfer-Encoding: chunked\r\n\r\n7\r\nMozilla\r\nb\r\nDeveloper N\r\n0\r\n\r\n";
     buffer_append(&buf, (void *)http5, strlen(http5));
     rtnbuf = http_unpack(&buf, &size, &ud, &closed, &slice);
     CuAssertTrue(tc, NULL != rtnbuf && SLICE_START == slice);
@@ -372,6 +372,44 @@ void test_http(CuTest* tc) {
     CuAssertTrue(tc, NULL != rtnbuf && SLICE_END == slice);
     protos_pkfree(PACK_HTTP, rtnbuf);
     protos_udfree(&ud);
+
+    buffer_drain(&buf, buffer_size(&buf));
+    http_pack_req(&buf, "Get", "/mth?a=≤‚ ‘");
+    http_pack_head(&buf, "Host", "127.0.0.1");
+    http_pack_head(&buf, "User-Agent", "curl/7.16.3");
+    char *hbuf = http_pack_end(&buf, &size);
+    CuAssertTrue(tc, NULL != hbuf && 84 == size);
+    FREE(hbuf);
+
+    http_pack_req(&buf, "Get", "/mth?b=test");
+    http_pack_head(&buf, "Host", "127.0.0.1");
+    http_pack_head(&buf, "User-Agent", "curl/7.16.3");
+    const char *content1 = "OK";
+    hbuf = http_pack_content(&buf, (void *)content1, strlen(content1), &size);
+    CuAssertTrue(tc, NULL != hbuf && 97 == size);
+    FREE(hbuf);
+
+    http_pack_resp(&buf, 200, "ok");
+    http_pack_head(&buf, "User-Agent", "curl/7.16.3");
+    hbuf = http_pack_end(&buf, &size);
+    CuAssertTrue(tc, NULL != hbuf && 44 == size);
+    FREE(hbuf);
+
+    http_pack_req(&buf, "Post", "/mth?p=test");
+    http_pack_head(&buf, "Host", "127.0.0.1");
+    http_pack_head(&buf, "User-Agent", "curl/7.16.3");
+    hbuf = http_pack_chunked(&buf, &size);
+    CuAssertTrue(tc, NULL != hbuf && 105 == size);
+    FREE(hbuf);
+
+    char empty[20];
+    hbuf = http_pack_chunked_data(&buf, empty, sizeof(empty), &size);
+    CuAssertTrue(tc, NULL != hbuf && 24 == size);
+    FREE(hbuf);
+
+    hbuf = http_pack_chunked_data(&buf, NULL, 0, &size);
+    CuAssertTrue(tc, NULL != hbuf && 5 == size);
+    FREE(hbuf);
 
     buffer_free(&buf);
 }

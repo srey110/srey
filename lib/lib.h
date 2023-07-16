@@ -2,7 +2,6 @@
 #define LIB_H_
 
 #include "macro.h"
-
 #include "log.h"
 #include "sarray.h"
 #include "netaddr.h"
@@ -13,22 +12,19 @@
 #include "buffer.h"
 #include "hashmap.h"
 #include "utils.h"
-
 #include "cond.h"
 #include "mutex.h"
 #include "rwlock.h"
 #include "spinlock.h"
 #include "thread.h"
-#include "cjson/cJSON.h"
-
 #include "proto/simple.h"
 #include "proto/dns.h"
 #include "proto/http.h"
 #include "proto/websock.h"
 #include "proto/mqtt.h"
-
 #include "event/event.h"
 #include "service/srey.h"
+#include "service/synsl.h"
 
 extern srey_ctx *srey;
 

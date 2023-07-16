@@ -1,4 +1,5 @@
-#include "tasks/tasks.h"
+#include "startup.h"
+#include "cjson/cJSON.h"
 
 srey_ctx *srey = NULL;
 static FILE *logstream = NULL;
@@ -11,6 +12,7 @@ typedef struct config_ctx {
     uint16_t nworker;
     uint16_t interval;
     uint16_t threshold;
+    size_t stack_size;
     char fmt[64];
 }config_ctx;
 static char *_config_read(void) {
@@ -19,7 +21,7 @@ static char *_config_read(void) {
              procpath(), PATH_SEPARATORSTR, "configs", PATH_SEPARATORSTR, "config.json");
     FILE *file = fopen(config, "r");
     if (NULL == file) {
-        PRINT("open file failed. %s", config);
+        LOG_WARN("%s", ERRORSTR(errno));
         return NULL;
     }
     fseek(file, 0, SEEK_END);
@@ -39,7 +41,10 @@ static void _parse_config(config_ctx *cnf) {
     cJSON *json = cJSON_Parse(config);
     FREE(config);
     if (NULL == json) {
-        PRINT("cJSON_Parse failed.");
+        const char *erro = cJSON_GetErrorPtr();
+        if (NULL != erro) {
+            LOG_WARN("%s", erro);
+        }
         return;
     }
     cJSON *val = cJSON_GetObjectItem(json, "nnet");
@@ -49,6 +54,10 @@ static void _parse_config(config_ctx *cnf) {
     val = cJSON_GetObjectItem(json, "nworker");
     if (cJSON_IsNumber(val)) {
         cnf->nworker = (uint16_t)val->valueint;
+    }
+    val = cJSON_GetObjectItem(json, "stacksize");
+    if (cJSON_IsNumber(val)) {
+        cnf->stack_size = (size_t)val->valueint;
     }
     val = cJSON_GetObjectItem(json, "interval");
     if (cJSON_IsNumber(val)) {
@@ -120,19 +129,18 @@ static int32_t service_init(void) {
     config_ctx config;
     _config_init(&config);
     _parse_config(&config);
-    log_setlv(config.loglv);
+    log_setlv((LOG_LEVEL)config.loglv);
     if (0 != config.logfile) {
         _open_log(config.fmt);
     }
     unlimit();
     mutex_init(&muexit);
     cond_init(&condexit);
-    srey = srey_init(config.nnet, config.nworker, config.interval, config.threshold);
-    if (ERR_OK != task_startup()) {
+    srey = srey_init(config.nnet, config.nworker, config.stack_size, config.interval, config.threshold);
+    if (ERR_OK != task_startup(srey)) {
         service_exit();
         return ERR_FAILED;
     }
-    srey_startup(srey);
     return ERR_OK;
 }
 static void _on_sigcb(int32_t sig, void *arg) {
@@ -150,7 +158,6 @@ static int32_t service_hug(void) {
     }
     return rtn;
 }
-
 #ifdef OS_WIN
     //#include "vld.h"
     #pragma comment(lib, "ws2_32.lib")
@@ -171,7 +178,6 @@ static int32_t service_hug(void) {
 typedef WINADVAPI BOOL(WINAPI *_csd_t)(SC_HANDLE, DWORD, LPCVOID);
 typedef int32_t(*_wsv_cb)(void);
 static int32_t _wsv_initbasic(void);
-
 static _wsv_cb initcbs[] = { _wsv_initbasic, service_init, NULL };
 static _wsv_cb exitcbs[] = { service_exit, NULL };
 static SERVICE_STATUS_HANDLE psvstatus;

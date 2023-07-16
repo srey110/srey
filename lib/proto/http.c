@@ -44,7 +44,7 @@ static inline void _check_fileld(http_pack_ctx *pack, http_header_ctx *field, in
     case 'c':
         if (ERR_OK == _http_check_keyval(field, FLAG_CONTENT, NULL)) {
             *status = CONTENT;
-            pack->data.lens = atoi(field->value.data);
+            pack->data.lens = strtol(field->value.data, NULL, 10);
         }
         break;
     case 't':
@@ -239,7 +239,7 @@ static inline http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud,
             return NULL;
         }
         ASSERTAB(pos == buffer_copyout(buf, 0, lensbuf, pos), "copy buffer failed.");
-        size_t dlens = atoi(lensbuf);
+        size_t dlens = strtol(lensbuf, NULL, 16);
         if (PACK_TOO_LONG(dlens)) {
             *closefd = 1;
             return NULL;
@@ -328,4 +328,55 @@ int32_t http_chunked(http_pack_ctx *pack) {
 void *http_data(http_pack_ctx *pack, size_t *lens) {
     *lens = pack->data.lens;
     return pack->data.data;
+}
+void http_pack_req(buffer_ctx *buf, const char *method, const char *url) {
+    size_t ulens;
+    char *enurl = urlencode(url, strlen(url), &ulens);
+    buffer_appendv(buf, "%s %s HTTP/1.1\r\n", method, enurl);
+    FREE(enurl);
+}
+void http_pack_resp(buffer_ctx *buf, int32_t code, const char *reason) {
+    buffer_appendv(buf, "HTTP/1.1 %d %s\r\n", code, reason);
+}
+void http_pack_head(buffer_ctx *buf, const char *key, const char *val) {
+    buffer_appendv(buf, "%s: %s\r\n", key, val);
+}
+char *http_pack_content(buffer_ctx *buf, void *data, size_t lens, size_t *size) {
+    buffer_appendv(buf, "Content-Length: %d\r\n\r\n", (uint32_t)lens);
+    buffer_append(buf, data, lens);
+    *size = buffer_size(buf);
+    char *rtn;
+    MALLOC(rtn, *size);
+    buffer_remove(buf, rtn, *size);
+    return rtn;
+}
+char *http_pack_chunked(buffer_ctx *buf, size_t *size) {
+    buffer_appendv(buf, "Transfer-Encoding: Chunked\r\n\r\n");
+    *size = buffer_size(buf);
+    char *rtn;
+    MALLOC(rtn, *size);
+    buffer_remove(buf, rtn, *size);
+    return rtn;
+}
+char *http_pack_chunked_data(buffer_ctx *buf, void *data, size_t lens, size_t *size) {
+    buffer_appendv(buf, "%x\r\n", (uint32_t)lens);
+    if (NULL != data
+        && lens > 0) {
+        buffer_append(buf, data, lens);
+    } else {
+        buffer_append(buf, "\r\n", strlen("\r\n"));
+    }
+    *size = buffer_size(buf);
+    char *rtn;
+    MALLOC(rtn, *size);
+    buffer_remove(buf, rtn, *size);
+    return rtn;
+}
+char *http_pack_end(buffer_ctx *buf, size_t *size) {
+    buffer_appendv(buf, "\r\n");
+    *size = buffer_size(buf);
+    char *rtn;
+    MALLOC(rtn, *size);
+    buffer_remove(buf, rtn, *size);
+    return rtn;
 }

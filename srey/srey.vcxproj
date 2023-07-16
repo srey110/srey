@@ -160,11 +160,10 @@
     <ClCompile Include="ltasks\lreg.c" />
     <ClCompile Include="ltasks\ltask.c" />
     <ClCompile Include="main.c" />
-    <ClCompile Include="tasks\tasks.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="ltasks\ltask.h" />
-    <ClInclude Include="tasks\tasks.h" />
+    <ClInclude Include="startup.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

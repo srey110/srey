@@ -4,6 +4,9 @@
     <Filter Include="CuTest">
       <UniqueIdentifier>{3239bf22-0598-4920-b3f1-bbf4cd376d49}</UniqueIdentifier>
     </Filter>
+    <Filter Include="test">
+      <UniqueIdentifier>{4fdfb858-7cd3-49e6-903f-b1591f42d6c5}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="CuTest.c">
@@ -12,6 +15,24 @@
     <ClCompile Include="main.c" />
     <ClCompile Include="test_base.c" />
     <ClCompile Include="test_utils.c" />
+    <ClCompile Include="test1.c">
+      <Filter>test</Filter>
+    </ClCompile>
+    <ClCompile Include="test2.c">
+      <Filter>test</Filter>
+    </ClCompile>
+    <ClCompile Include="test3.c">
+      <Filter>test</Filter>
+    </ClCompile>
+    <ClCompile Include="test4.c">
+      <Filter>test</Filter>
+    </ClCompile>
+    <ClCompile Include="test5.c">
+      <Filter>test</Filter>
+    </ClCompile>
+    <ClCompile Include="test6.c">
+      <Filter>test</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="CuTest.h">
@@ -19,5 +40,26 @@
     </ClInclude>
     <ClInclude Include="test_base.h" />
     <ClInclude Include="test_utils.h" />
+    <ClInclude Include="test1.h">
+      <Filter>test</Filter>
+    </ClInclude>
+    <ClInclude Include="test2.h">
+      <Filter>test</Filter>
+    </ClInclude>
+    <ClInclude Include="test3.h">
+      <Filter>test</Filter>
+    </ClInclude>
+    <ClInclude Include="test4.h">
+      <Filter>test</Filter>
+    </ClInclude>
+    <ClInclude Include="testpub.h">
+      <Filter>test</Filter>
+    </ClInclude>
+    <ClInclude Include="test5.h">
+      <Filter>test</Filter>
+    </ClInclude>
+    <ClInclude Include="test6.h">
+      <Filter>test</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

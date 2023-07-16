@@ -7,17 +7,8 @@
     <Filter Include="utils">
       <UniqueIdentifier>{8915a949-0c9d-4ddc-8950-8c0342a0f5e0}</UniqueIdentifier>
     </Filter>
-    <Filter Include="utils\md5">
-      <UniqueIdentifier>{9c8059d5-b299-4f96-8c87-766cb728aa7b}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="utils\sha1">
-      <UniqueIdentifier>{8d0f8248-4127-4be8-93c0-282ff58b790f}</UniqueIdentifier>
-    </Filter>
     <Filter Include="thread">
       <UniqueIdentifier>{fdd12c60-2ba2-4b60-b4c8-135cb0f4f80d}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="utils\map">
-      <UniqueIdentifier>{f48dd8e8-89dd-43e8-8803-6ae5cb8869d3}</UniqueIdentifier>
     </Filter>
     <Filter Include="event">
       <UniqueIdentifier>{592350de-6276-4356-a720-a8d95c38cf56}</UniqueIdentifier>
@@ -34,8 +25,20 @@
     <Filter Include="proto">
       <UniqueIdentifier>{6de5de1a-091e-4521-8005-38cdba96ae3e}</UniqueIdentifier>
     </Filter>
-    <Filter Include="utils\cjson">
-      <UniqueIdentifier>{e5acf1bd-7207-4eb5-add0-4f8fb028a93a}</UniqueIdentifier>
+    <Filter Include="3rd">
+      <UniqueIdentifier>{bb0b652c-a2b5-4497-8b1a-f86b792cafbe}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="3rd\map">
+      <UniqueIdentifier>{f48dd8e8-89dd-43e8-8803-6ae5cb8869d3}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="3rd\md5">
+      <UniqueIdentifier>{9c8059d5-b299-4f96-8c87-766cb728aa7b}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="3rd\sha1">
+      <UniqueIdentifier>{8d0f8248-4127-4be8-93c0-282ff58b790f}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="3rd\cjson">
+      <UniqueIdentifier>{ea3d6e8d-1afa-4288-8fba-edbe2cd27e12}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
@@ -65,10 +68,10 @@
       <Filter>utils</Filter>
     </ClInclude>
     <ClInclude Include="md5\md5.h">
-      <Filter>utils\md5</Filter>
+      <Filter>3rd\md5</Filter>
     </ClInclude>
     <ClInclude Include="sha1\sha1.h">
-      <Filter>utils\sha1</Filter>
+      <Filter>3rd\sha1</Filter>
     </ClInclude>
     <ClInclude Include="cond.h">
       <Filter>thread</Filter>
@@ -101,7 +104,7 @@
       <Filter>utils</Filter>
     </ClInclude>
     <ClInclude Include="hashmap.h">
-      <Filter>utils\map</Filter>
+      <Filter>3rd\map</Filter>
     </ClInclude>
     <ClInclude Include="event\event.h">
       <Filter>event</Filter>
@@ -130,23 +133,14 @@
     <ClInclude Include="structs.h">
       <Filter>base</Filter>
     </ClInclude>
-    <ClInclude Include="proto\protos.h">
-      <Filter>proto</Filter>
-    </ClInclude>
     <ClInclude Include="proto\simple.h">
       <Filter>proto</Filter>
     </ClInclude>
     <ClInclude Include="proto\http.h">
       <Filter>proto</Filter>
     </ClInclude>
-    <ClInclude Include="proto\websock.h">
-      <Filter>proto</Filter>
-    </ClInclude>
     <ClInclude Include="proto\mqtt.h">
       <Filter>proto</Filter>
-    </ClInclude>
-    <ClInclude Include="cjson\cJSON.h">
-      <Filter>utils\cjson</Filter>
     </ClInclude>
     <ClInclude Include="proto\dns.h">
       <Filter>proto</Filter>
@@ -163,6 +157,21 @@
     <ClInclude Include="service\minicoro.h">
       <Filter>service</Filter>
     </ClInclude>
+    <ClInclude Include="proto\protos.h">
+      <Filter>proto</Filter>
+    </ClInclude>
+    <ClInclude Include="proto\websock.h">
+      <Filter>proto</Filter>
+    </ClInclude>
+    <ClInclude Include="service\spub.h">
+      <Filter>service</Filter>
+    </ClInclude>
+    <ClInclude Include="service\synsl.h">
+      <Filter>service</Filter>
+    </ClInclude>
+    <ClInclude Include="cjson\cJSON.h">
+      <Filter>3rd\cjson</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="memory.c">
@@ -172,10 +181,10 @@
       <Filter>utils</Filter>
     </ClCompile>
     <ClCompile Include="md5\md5.c">
-      <Filter>utils\md5</Filter>
+      <Filter>3rd\md5</Filter>
     </ClCompile>
     <ClCompile Include="sha1\sha1.c">
-      <Filter>utils\sha1</Filter>
+      <Filter>3rd\sha1</Filter>
     </ClCompile>
     <ClCompile Include="thread.c">
       <Filter>thread</Filter>
@@ -196,7 +205,7 @@
       <Filter>utils</Filter>
     </ClCompile>
     <ClCompile Include="hashmap.c">
-      <Filter>utils\map</Filter>
+      <Filter>3rd\map</Filter>
     </ClCompile>
     <ClCompile Include="event\event.c">
       <Filter>event</Filter>
@@ -222,23 +231,14 @@
     <ClCompile Include="event\wcmd.c">
       <Filter>event\win</Filter>
     </ClCompile>
-    <ClCompile Include="proto\protos.c">
-      <Filter>proto</Filter>
-    </ClCompile>
     <ClCompile Include="proto\simple.c">
       <Filter>proto</Filter>
     </ClCompile>
     <ClCompile Include="proto\http.c">
       <Filter>proto</Filter>
     </ClCompile>
-    <ClCompile Include="proto\websock.c">
-      <Filter>proto</Filter>
-    </ClCompile>
     <ClCompile Include="proto\mqtt.c">
       <Filter>proto</Filter>
-    </ClCompile>
-    <ClCompile Include="cjson\cJSON.c">
-      <Filter>utils\cjson</Filter>
     </ClCompile>
     <ClCompile Include="proto\dns.c">
       <Filter>proto</Filter>
@@ -251,6 +251,18 @@
     </ClCompile>
     <ClCompile Include="service\maps.c">
       <Filter>service</Filter>
+    </ClCompile>
+    <ClCompile Include="proto\protos.c">
+      <Filter>proto</Filter>
+    </ClCompile>
+    <ClCompile Include="proto\websock.c">
+      <Filter>proto</Filter>
+    </ClCompile>
+    <ClCompile Include="service\synsl.c">
+      <Filter>service</Filter>
+    </ClCompile>
+    <ClCompile Include="cjson\cJSON.c">
+      <Filter>3rd\cjson</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

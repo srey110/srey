@@ -4,6 +4,9 @@
 #include "proto/websock.h"
 
 void protos_pkfree(pack_type type, void *data) {
+    if (NULL == data) {
+        return;
+    }
     switch (type) {
     case PACK_HTTP:
         http_pkfree(data);
@@ -55,24 +58,4 @@ void *protos_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid,
         break;
     }
     return unpack;
-}
-static inline void *_pack_default(void *data, size_t lens, size_t *size) {
-    void *pack;
-    MALLOC(pack, lens);
-    memcpy(pack, data, lens);
-    *size = lens;
-    return pack;
-}
-void *protos_pack(pack_type type, void *data, size_t lens, size_t *size) {
-    void *pack;
-    switch (type) {
-    case PACK_RPC:
-    case PACK_SIMPLE:
-        pack = simple_pack(data, lens, size);
-        break;
-    default:
-        pack = _pack_default(data, lens, size);
-        break;
-    }
-    return pack;
 }

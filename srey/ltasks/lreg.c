@@ -117,9 +117,27 @@ static int32_t _lreg_urlencode(lua_State *lua) {
     FREE(encode);
     return 1;
 }
+static int32_t _lreg_worker_load(lua_State *lua) {
+    uint32_t ntask, cpu_cost;
+    uint16_t n = srey_nworker(srey);
+    lua_createtable(lua, 0, (int32_t)n);
+    for (uint16_t i = 0; i < n; i++) {
+        srey_worker_load(srey, i, &ntask, &cpu_cost);
+        lua_pushinteger(lua, i + 1);
+        lua_createtable(lua, 0, 2);
+        lua_pushstring(lua, "ntask");
+        lua_pushinteger(lua, ntask);
+        lua_settable(lua, -3);
+        lua_pushstring(lua, "cpu_cost");
+        lua_pushinteger(lua, cpu_cost);
+        lua_settable(lua, -3);
+        lua_settable(lua, -3);
+    }
+    return 1;
+}
 static int32_t _lreg_evssl_new(lua_State *lua) {
 #if WITH_SSL
-    int32_t name = (int32_t)luaL_checkinteger(lua, 1);
+    name_t name = (name_t)luaL_checkinteger(lua, 1);
     const char *ca = luaL_checkstring(lua, 2);
     const char *cert = luaL_checkstring(lua, 3);
     const char *key = luaL_checkstring(lua, 4);
@@ -145,7 +163,7 @@ static int32_t _lreg_evssl_new(lua_State *lua) {
             propath, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, key);
     }
     evssl_ctx *ssl = evssl_new(capath, certpath, keypath, keytype, verify);
-    if (ERR_OK != certs_register(srey, name, ssl)) {
+    if (ERR_OK != srey_ssl_register(srey, name, ssl)) {
         evssl_free(ssl);
         return 0;
     }
@@ -157,7 +175,7 @@ static int32_t _lreg_evssl_new(lua_State *lua) {
 }
 static int32_t _lreg_evssl_p12new(lua_State *lua) {
 #if WITH_SSL
-    uint32_t name = (uint32_t)luaL_checkinteger(lua, 1);
+    name_t name = (name_t)luaL_checkinteger(lua, 1);
     const char *p12 = luaL_checkstring(lua, 2);
     const char *pwd = luaL_checkstring(lua, 3);
     int32_t verify = (int32_t)luaL_checkinteger(lua, 4);
@@ -171,7 +189,7 @@ static int32_t _lreg_evssl_p12new(lua_State *lua) {
             propath, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, p12);
     }
     evssl_ctx *ssl = evssl_p12_new(p12path, pwd, verify);
-    if (ERR_OK != certs_register(srey, name, ssl)) {
+    if (ERR_OK != srey_ssl_register(srey, name, ssl)) {
         evssl_free(ssl);
         return 0;
     }
@@ -183,8 +201,8 @@ static int32_t _lreg_evssl_p12new(lua_State *lua) {
 }
 static int32_t _lreg_evssl_qury(lua_State *lua) {
 #if WITH_SSL
-    uint32_t name = (uint32_t)luaL_checkinteger(lua, 1);
-    struct evssl_ctx *ssl = certs_qury(srey, name);
+    name_t name = (name_t)luaL_checkinteger(lua, 1);
+    struct evssl_ctx *ssl = srey_ssl_qury(srey, name);
     if (NULL == ssl) {
         return 0;
     }
@@ -194,21 +212,36 @@ static int32_t _lreg_evssl_qury(lua_State *lua) {
     return 0;
 #endif
 }
-static int32_t _lreg_task_qury(lua_State *lua) {
-    uint32_t name = (uint32_t)luaL_checkinteger(lua, 1);
-    task_ctx *task = srey_taskqury(srey, name);
+static int32_t _lreg_task_grab(lua_State *lua) {
+    name_t name = (name_t)luaL_checkinteger(lua, 1);
+    task_ctx *task = srey_task_grab(srey, name);
     if (NULL == task) {
         return 0;
     }
     lua_pushlightuserdata(lua, task);
     return 1;
 }
-static int32_t _lreg_task_name(lua_State *lua) {
+static int32_t _lreg_task_addref(lua_State *lua) {
     task_ctx *task = lua_touserdata(lua, 1);
-    lua_pushinteger(lua, task_name(task));
+    srey_task_addref(task);
+    return 0;
+}
+static int32_t _lreg_task_release(lua_State *lua) {
+    task_ctx *task = lua_touserdata(lua, 1);
+    srey_task_release(task);
+    return 0;
+}
+static int32_t _lreg_task_qusize(lua_State *lua) {
+    task_ctx *task = lua_touserdata(lua, 1);
+    lua_pushinteger(lua, srey_task_qusize(task));
     return 1;
 }
-static int32_t _lreg_task_call(lua_State *lua) {
+static int32_t _lreg_task_name(lua_State *lua) {
+    task_ctx *task = lua_touserdata(lua, 1);
+    lua_pushinteger(lua, task->name);
+    return 1;
+}
+static int32_t _lreg_call(lua_State *lua) {
     task_ctx *task = lua_touserdata(lua, 1);
     void *data;
     size_t size;
@@ -218,86 +251,93 @@ static int32_t _lreg_task_call(lua_State *lua) {
         data = lua_touserdata(lua, 2);
         size = (size_t)luaL_checkinteger(lua, 3);
     }
-    task_call(task, data, size, 1);
+    int32_t copy = (int32_t)luaL_checkinteger(lua, 4);
+    srey_call(task, data, size, copy);
     return 0;
 }
-static int32_t _lreg_task_request(lua_State *lua) {
+static int32_t _lreg_request(lua_State *lua) {
     task_ctx *dst = lua_touserdata(lua, 1);
     task_ctx *src = lua_touserdata(lua, 2);
+    uint64_t sess = (uint64_t)luaL_checkinteger(lua, 3);
     void *data;
     size_t size;
-    if (LUA_TSTRING == lua_type(lua, 3)) {
-        data = (void *)luaL_checklstring(lua, 3, &size);
+    if (LUA_TSTRING == lua_type(lua, 4)) {
+        data = (void *)luaL_checklstring(lua, 4, &size);
     } else {
-        data = lua_touserdata(lua, 3);
-        size = (size_t)luaL_checkinteger(lua, 4);
+        data = lua_touserdata(lua, 4);
+        size = (size_t)luaL_checkinteger(lua, 5);
     }
-    size_t lens;
-    void *resp = task_request(dst, src, data, size, 1, &lens);
-    if (NULL == resp) {
-        return 0;
-    }
-    lua_pushlightuserdata(lua, resp);
-    lua_pushinteger(lua, lens);
-    return 2;
+    int32_t copy = (int32_t)luaL_checkinteger(lua, 6);
+    srey_request(dst, src, sess, data, size, copy);
+    return 0;
 }
-static int32_t _lreg_task_response(lua_State *lua) {
+static int32_t _lreg_response(lua_State *lua) {
     task_ctx *task = lua_touserdata(lua, 1);
-    uint64_t id = (uint64_t)luaL_checkinteger(lua, 2);
+    uint64_t sess = (uint64_t)luaL_checkinteger(lua, 2);
+    int32_t erro = (int32_t)luaL_checkinteger(lua, 3);
     void *data;
     size_t size;
-    if (LUA_TSTRING == lua_type(lua, 3)) {
-        data = (void *)luaL_checklstring(lua, 3, &size);
+    int32_t ttype = lua_type(lua, 4);
+    if (LUA_TNIL == ttype) {
+        data = NULL;
+        size = 0;
     } else {
-        data = lua_touserdata(lua, 3);
-        size = (size_t)luaL_checkinteger(lua, 4);
+        if (LUA_TSTRING == ttype) {
+            data = (void *)luaL_checklstring(lua, 4, &size);
+        } else {
+            data = lua_touserdata(lua, 4);
+            size = (size_t)luaL_checkinteger(lua, 5);
+        }
     }
-    task_response(task, id, data, size, 1);
+    int32_t copy = (int32_t)luaL_checkinteger(lua, 6);
+    srey_response(task, sess, erro, data, size, copy);
     return 0;
 }
 static int32_t _lreg_setud_pktype(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
     int8_t pktype = (int8_t)luaL_checkinteger(lua, 3);
-    ev_ud_pktype(srey_netev(srey), fd, skid, pktype);
+    ev_ud_pktype(&srey->netev, fd, skid, pktype);
     return 0;
 }
 static int32_t _lreg_setud_status(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
     int8_t status = (int8_t)luaL_checkinteger(lua, 3);
-    ev_ud_status(srey_netev(srey), fd, skid, status);
+    ev_ud_status(&srey->netev, fd, skid, status);
     return 0;
 }
-static int32_t _lreg_setud_data(lua_State *lua) {
+static int32_t _lreg_setud_name(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    void *task = lua_touserdata(lua, 3);
-    ev_ud_data(srey_netev(srey), fd, skid, task);
+    name_t name = (name_t)luaL_checkinteger(lua, 3);
+    ev_ud_name(&srey->netev, fd, skid, name);
     return 0;
 }
-static int32_t _lreg_sleep(lua_State *lua) {
-    task_ctx *task = lua_touserdata(lua, 1);
-    uint32_t time = (uint32_t)luaL_checkinteger(lua, 2);
-    task_sleep(task, time);
+static int32_t _lreg_setud_sess(lua_State *lua) {
+    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
+    uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
+    uint64_t sess = (uint64_t)luaL_checkinteger(lua, 3);
+    ev_ud_sess(&srey->netev, fd, skid, sess);
     return 0;
 }
 static int32_t _lreg_timeout(lua_State *lua) {
     task_ctx *task = lua_touserdata(lua, 1);
-    uint64_t id = (uint64_t)luaL_checkinteger(lua, 2);
+    uint64_t sess = (uint64_t)luaL_checkinteger(lua, 2);
     uint32_t time = (uint32_t)luaL_checkinteger(lua, 3);
-    task_timeout(task, id, time);
+    srey_timeout(task, sess, time);
     return 0;
 }
 static int32_t _lreg_connect(lua_State *lua) {
     task_ctx *task = lua_touserdata(lua, 1);
-    int32_t ptype = (int32_t)luaL_checkinteger(lua, 2);
-    struct evssl_ctx *evssl = lua_touserdata(lua, 3);
-    const char *ip = luaL_checkstring(lua, 4);
-    uint16_t port = (uint16_t)luaL_checkinteger(lua, 5);
-    int32_t sendev = (int32_t)luaL_checkinteger(lua, 6);
+    uint64_t sess = (uint64_t)luaL_checkinteger(lua, 2);
+    int32_t ptype = (int32_t)luaL_checkinteger(lua, 3);
+    struct evssl_ctx *evssl = lua_touserdata(lua, 4);
+    const char *ip = luaL_checkstring(lua, 5);
+    uint16_t port = (uint16_t)luaL_checkinteger(lua, 6);
+    int32_t sendev = (int32_t)luaL_checkinteger(lua, 7);
     uint64_t skid;
-    SOCKET fd = task_netconnect(task, ptype, evssl, ip, port, sendev, &skid);
+    SOCKET fd = srey_connect(task, sess, ptype, evssl, ip, port, sendev, &skid);
     if (INVALID_SOCK == fd) {
         lua_pushinteger(lua, -1);
         return 1;
@@ -317,18 +357,23 @@ static int32_t _lreg_listen(lua_State *lua) {
     uint16_t port = (uint16_t)luaL_checkinteger(lua, 5);
     int32_t sendev = (int32_t)luaL_checkinteger(lua, 6);
     uint64_t id;
-    if (ERR_OK != task_netlisten(task, ptype, evssl, ip, port, sendev, &id)) {
+    if (ERR_OK != srey_listen(task, ptype, evssl, ip, port, sendev, &id)) {
         return 0;
     }
     lua_pushinteger(lua, id);
     return 1;
+}
+static int32_t _lreg_unlisten(lua_State *lua) {
+    uint64_t id = (uint64_t)luaL_checkinteger(lua, 1);
+    ev_unlisten(&srey->netev, id);
+    return 0;
 }
 static int32_t _lreg_udp(lua_State *lua) {
     task_ctx *task = lua_touserdata(lua, 1);
     const char *ip = luaL_checkstring(lua, 2);
     uint16_t port = (uint16_t)luaL_checkinteger(lua, 3);
     uint64_t skid;
-    SOCKET fd = task_netudp(task, ip, port, &skid);
+    SOCKET fd = srey_udp(task, ip, port, &skid);
     if (INVALID_SOCK == fd) {
         lua_pushinteger(lua, -1);
         return 1;
@@ -337,68 +382,21 @@ static int32_t _lreg_udp(lua_State *lua) {
     lua_pushinteger(lua, skid);
     return 2;
 }
-static int32_t _lreg_synsend(lua_State *lua) {
-    task_ctx *task = lua_touserdata(lua, 1);
-    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 2);
-    uint64_t skid = (uint64_t)luaL_checkinteger(lua, 3);
-    pack_type ptype = (pack_type)luaL_checkinteger(lua, 4);
-    void *data;
-    size_t size;
-    if (LUA_TSTRING == lua_type(lua, 5)) {
-        data = (void *)luaL_checklstring(lua, 5, &size);
-    } else {
-        data = lua_touserdata(lua, 5);
-        size = (size_t)luaL_checkinteger(lua, 6);
-    }
-    size_t lens;
-    uint64_t sess;
-    void *resp = task_synsend(task, fd, skid, data, size, &lens, ptype, &sess);
-    if (NULL == resp) {
-        return 0;
-    }
-    lua_pushlightuserdata(lua, resp);
-    lua_pushinteger(lua, lens);
-    lua_pushinteger(lua, sess);
-    return 3;
-}
 static int32_t _lreg_send(lua_State *lua) {
     task_ctx *task = lua_touserdata(lua, 1);
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 2);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 3);
-    pack_type ptype = (pack_type)luaL_checkinteger(lua, 4);
     void *data;
     size_t size;
-    if (LUA_TSTRING == lua_type(lua, 5)) {
-        data = (void *)luaL_checklstring(lua, 5, &size);
+    if (LUA_TSTRING == lua_type(lua, 4)) {
+        data = (void *)luaL_checklstring(lua, 4, &size);
     } else {
-        data = lua_touserdata(lua, 5);
-        size = (size_t)luaL_checkinteger(lua, 6);
+        data = lua_touserdata(lua, 4);
+        size = (size_t)luaL_checkinteger(lua, 5);
     }
-    task_netsend(task, fd, skid, data, size, ptype);
+    int32_t copy = (int32_t)luaL_checkinteger(lua, 6);
+    ev_send(&task->srey->netev, fd, skid, data, size, copy);
     return 0;
-}
-static int32_t _lreg_synsendto(lua_State *lua) {
-    task_ctx *task = lua_touserdata(lua, 1);
-    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 2);
-    uint64_t skid = (uint64_t)luaL_checkinteger(lua, 3);
-    const char *ip = luaL_checkstring(lua, 4);
-    uint16_t port = (uint16_t)luaL_checkinteger(lua, 5);
-    void *data;
-    size_t size;
-    if (LUA_TSTRING == lua_type(lua, 6)) {
-        data = (void *)luaL_checklstring(lua, 6, &size);
-    } else {
-        data = lua_touserdata(lua, 6);
-        size = (size_t)luaL_checkinteger(lua, 7);
-    }
-    size_t lens;
-    void *resp = task_synsendto(task, fd, skid, ip, port, data, size, &lens);
-    if (NULL == resp) {
-        return 0;
-    }
-    lua_pushlightuserdata(lua, resp);
-    lua_pushinteger(lua, lens);
-    return 2;
 }
 static int32_t _lreg_sendto(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
@@ -413,56 +411,64 @@ static int32_t _lreg_sendto(lua_State *lua) {
         data = lua_touserdata(lua, 5);
         size = (size_t)luaL_checkinteger(lua, 6);
     }
-    ev_sendto(srey_netev(srey), fd, skid, ip, port, data, size);
-    return 0;
+    if (ERR_OK == ev_sendto(&srey->netev, fd, skid, ip, port, data, size)) {
+        lua_pushboolean(lua, 1);
+    } else {
+        lua_pushboolean(lua, 0);
+    }
+    return 1;
 }
 static int32_t _lreg_close(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    ev_close(srey_netev(srey), fd, skid);
+    ev_close(&srey->netev, fd, skid);
     return 0;
 }
-static int32_t _lreg_slice(lua_State *lua) {
-    task_ctx *task = lua_touserdata(lua, 1);
-    uint64_t sess = (uint64_t)luaL_checkinteger(lua, 2);
-    size_t size;
-    int32_t end = 0;
-    void *data = task_slice(task, sess, &size, &end);
-    if (NULL == data) {
-        return 0;
+static int32_t _lreg_dns_pack(lua_State *lua) {
+    const char *domain = luaL_checkstring(lua, 1);
+    int32_t ipv6 = (int32_t)luaL_checkinteger(lua, 2);
+    char buf[ONEK] = { 0 };
+    size_t lens = (size_t)dns_request_pack(buf, domain, ipv6);
+    lua_pushlstring(lua, buf, lens);
+    return 1;
+}
+static int32_t _lreg_dns_unpack(lua_State *lua) {
+    void *pack = lua_touserdata(lua, 1);
+    size_t n;
+    dns_ip *ips = dns_parse_pack(pack, &n);
+    lua_createtable(lua, 0, (int32_t)n);
+    if (NULL == ips) {
+        return 1;
     }
-    lua_pushlightuserdata(lua, data);
-    lua_pushinteger(lua, size);
-    lua_pushboolean(lua, end);
-    return 3;
+    for (size_t i = 0; i < n; i++) {
+        lua_pushinteger(lua, i + 1);
+        lua_pushstring(lua, ips[i].ip);
+        lua_settable(lua, -3);
+    }
+    FREE(ips);
+    return 1;
 }
 static int32_t _lreg_simple_pack(lua_State *lua) {
+    void *data;
+    size_t size;
+    if (LUA_TSTRING == lua_type(lua, 1)) {
+        data = (void *)luaL_checklstring(lua, 1, &size);
+    } else {
+        data = lua_touserdata(lua, 1);
+        size = (size_t)luaL_checkinteger(lua, 2);
+    }
+    data = simple_pack(data, size, &size);
+    lua_pushlightuserdata(lua, data);
+    lua_pushinteger(lua, size);
+    return 2;
+}
+static int32_t _lreg_simple_unpack(lua_State *lua) {
     void *pack = lua_touserdata(lua, 1);
     size_t lens;
     void *data = simple_data(pack, &lens);
     lua_pushlightuserdata(lua, data);
     lua_pushinteger(lua, lens);
     return 2;
-}
-static int32_t _lreg_dns_lookup(lua_State *lua) {
-    task_ctx *task = lua_touserdata(lua, 1);
-    const char *dns = luaL_checkstring(lua, 2);
-    const char *domain = luaL_checkstring(lua, 3);
-    int32_t ipv6 = (int32_t)luaL_checkinteger(lua, 4);
-    size_t cnt;
-    dns_ip *ips = dns_lookup(task, dns, domain, ipv6, &cnt);
-    if (NULL == ips) {
-        return 0;
-    }
-    lua_createtable(lua, (int32_t)cnt, 0);
-    dns_ip *ip;
-    for (size_t i = 0; i < cnt; i++) {
-        ip = &ips[i];
-        lua_pushstring(lua, ip->ip);
-        lua_rawseti(lua, -2, i + 1);
-    }
-    FREE(ips);
-    return 1;
 }
 static int32_t _lreg_http_chunked(lua_State *lua) {
     void *pack = lua_touserdata(lua, 1);
@@ -529,22 +535,17 @@ static int32_t _lreg_http_data(lua_State *lua) {
     lua_pushinteger(lua, lens);
     return 2;
 }
-static int32_t _lreg_websock_connect(lua_State *lua) {
-    task_ctx *task = lua_touserdata(lua, 1);
-    const char *host = luaL_checkstring(lua, 2);
-    uint16_t port = (uint16_t)luaL_checkinteger(lua, 3);
-    struct evssl_ctx *evssl = lua_touserdata(lua, 4);
-    uint64_t skid;
-    SOCKET fd = websock_connect(task, host, port, evssl, &skid);
-    if (INVALID_SOCK == fd) {
-        lua_pushinteger(lua, -1);
-        return 1;
+static int32_t _lreg_websock_hspack(lua_State *lua) {
+    char *host = NULL;
+    if (LUA_TSTRING == lua_type(lua, 1)) {
+        host = (char *)luaL_checkstring(lua, 1);
     }
-    lua_pushinteger(lua, fd);
-    lua_pushinteger(lua, skid);
-    return 2;
+    char *hspack = websock_handshake_pack(host);
+    lua_pushstring(lua, hspack);
+    FREE(hspack);
+    return 1;
 }
-static int32_t _lreg_websock_pack(lua_State *lua) {
+static int32_t _lreg_websock_unpack(lua_State *lua) {
     void *pack = lua_touserdata(lua, 1);
     lua_pushinteger(lua, websock_pack_proto(pack));
     lua_pushinteger(lua, websock_pack_fin(pack));
@@ -560,19 +561,22 @@ static int32_t _lreg_websock_pack(lua_State *lua) {
 static int32_t _lreg_websock_ping(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    websock_ping(srey_netev(srey), fd, skid);
+    int32_t client = (int32_t)luaL_checkinteger(lua, 3);
+    websock_ping(&srey->netev, fd, skid, client);
     return 0;
 }
 static int32_t _lreg_websock_pong(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    websock_pong(srey_netev(srey), fd, skid);
+    int32_t client = (int32_t)luaL_checkinteger(lua, 3);
+    websock_pong(&srey->netev, fd, skid, client);
     return 0;
 }
 static int32_t _lreg_websock_close(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    websock_close(srey_netev(srey), fd, skid);
+    int32_t client = (int32_t)luaL_checkinteger(lua, 3);
+    websock_close(&srey->netev, fd, skid, client);
     return 0;
 }
 static int32_t _lreg_websock_text(lua_State *lua) {
@@ -580,20 +584,15 @@ static int32_t _lreg_websock_text(lua_State *lua) {
     size_t dlens;
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    int32_t fin = (int32_t)luaL_checkinteger(lua, 3);
-    if (LUA_TSTRING == lua_type(lua, 4)) {
-        data = (void *)luaL_checklstring(lua, 4, &dlens);
+    int32_t client = (int32_t)luaL_checkinteger(lua, 3);
+    int32_t fin = (int32_t)luaL_checkinteger(lua, 4);
+    if (LUA_TSTRING == lua_type(lua, 5)) {
+        data = (void *)luaL_checklstring(lua, 5, &dlens);
     } else {
-        data = lua_touserdata(lua, 4);
-        dlens = (size_t)luaL_checkinteger(lua, 5);
+        data = lua_touserdata(lua, 5);
+        dlens = (size_t)luaL_checkinteger(lua, 6);
     }
-    if (LUA_TSTRING == lua_type(lua, 6)) {
-        size_t klens;
-        const char *key = luaL_checklstring(lua, 6, &klens);
-        websock_text(srey_netev(srey), fd, skid, fin, (char *)key, data, dlens);
-    } else {
-        websock_text(srey_netev(srey), fd, skid, fin, NULL, data, dlens);
-    }
+    websock_text(&srey->netev, fd, skid, client, fin, data, dlens);
     return 0;
 }
 static int32_t _lreg_websock_binary(lua_State *lua) {
@@ -601,20 +600,15 @@ static int32_t _lreg_websock_binary(lua_State *lua) {
     size_t dlens;
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    int32_t fin = (int32_t)luaL_checkinteger(lua, 3);
-    if (LUA_TSTRING == lua_type(lua, 4)) {
-        data = (void *)luaL_checklstring(lua, 4, &dlens);
+    int32_t client = (int32_t)luaL_checkinteger(lua, 3);
+    int32_t fin = (int32_t)luaL_checkinteger(lua, 4);
+    if (LUA_TSTRING == lua_type(lua, 5)) {
+        data = (void *)luaL_checklstring(lua, 5, &dlens);
     } else {
-        data = lua_touserdata(lua, 4);
-        dlens = (size_t)luaL_checkinteger(lua, 5);
+        data = lua_touserdata(lua, 5);
+        dlens = (size_t)luaL_checkinteger(lua, 6);
     }
-    if (LUA_TSTRING == lua_type(lua, 6)) {
-        size_t klens;
-        const char *key = luaL_checklstring(lua, 6, &klens);
-        websock_binary(srey_netev(srey), fd, skid, fin, (char *)key, data, dlens);
-    } else {
-        websock_binary(srey_netev(srey), fd, skid, fin, NULL, data, dlens);
-    }
+    websock_binary(&srey->netev, fd, skid, client, fin, data, dlens);
     return 0;
 }
 static int32_t _lreg_websock_continuation(lua_State *lua) {
@@ -622,98 +616,26 @@ static int32_t _lreg_websock_continuation(lua_State *lua) {
     size_t dlens;
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    int32_t fin = (int32_t)luaL_checkinteger(lua, 3);
-    if (LUA_TSTRING == lua_type(lua, 4)) {
-        data = (void *)luaL_checklstring(lua, 4, &dlens);
+    int32_t client = (int32_t)luaL_checkinteger(lua, 3);
+    int32_t fin = (int32_t)luaL_checkinteger(lua, 4);
+    if (LUA_TSTRING == lua_type(lua, 5)) {
+        data = (void *)luaL_checklstring(lua, 5, &dlens);
     } else {
-        data = lua_touserdata(lua, 4);
-        dlens = (size_t)luaL_checkinteger(lua, 5);
+        data = lua_touserdata(lua, 5);
+        dlens = (size_t)luaL_checkinteger(lua, 6);
     }
-    if (LUA_TSTRING == lua_type(lua, 6)) {
-        size_t klens;
-        const char *key = luaL_checklstring(lua, 6, &klens);
-        websock_continuation(srey_netev(srey), fd, skid, fin, (char *)key, data, dlens);
-    } else {
-        websock_continuation(srey_netev(srey), fd, skid, fin, NULL, data, dlens);
-    }
+    websock_continuation(&srey->netev, fd, skid, client, fin, data, dlens);
     return 0;
 }
-static int32_t _lreg_msg_info(lua_State *lua) {
-    message_ctx *msg = lua_touserdata(lua, 1);
-    int32_t argc = 0;
-    switch (msg->msgtype) {
-    case MSG_TYPE_STARTED:
-        break;
-    case MSG_TYPE_CLOSING:
-        break;
-    case MSG_TYPE_TIMEOUT://id
-        lua_pushinteger(lua, msg->sess);
-        argc++;
-        break;
-    case MSG_TYPE_CONNECT://pktype fd skid err
-        MSG_PUSH_NETPUB(msg);
-        argc += 3;
-        lua_pushinteger(lua, msg->erro);
-        argc++;
-        break;
-    case MSG_TYPE_HANDSHAKED://pktype fd skid
-        MSG_PUSH_NETPUB(msg);
-        argc += 3;
-        break;
-    case MSG_TYPE_ACCEPT://pktype fd skid
-        MSG_PUSH_NETPUB(msg);
-        argc += 3;
-        break;
-    case MSG_TYPE_SEND://pktype fd skid size
-        MSG_PUSH_NETPUB(msg);
-        argc += 3;
-        lua_pushinteger(lua, msg->size);
-        argc++;
-        break;
-    case MSG_TYPE_CLOSE://pktype fd skid
-        MSG_PUSH_NETPUB(msg);
-        argc += 3;
-        break;
-    case MSG_TYPE_RECV://pktype fd skid data size
-        MSG_PUSH_NETPUB(msg);
-        argc += 3;
-        lua_pushlightuserdata(lua, msg->data);
-        argc++;
-        lua_pushinteger(lua, msg->size);
-        argc++;
-        break;
-    case MSG_TYPE_RECVFROM: {//fd skid data size ip port
-        char ip[IP_LENS];
-        udp_msg_ctx *umsg = msg->data;
-        netaddr_ip(&umsg->addr, ip);
-        lua_pushinteger(lua, msg->fd);
-        argc++;
-        lua_pushinteger(lua, msg->skid);
-        argc++;
-        lua_pushlightuserdata(lua, umsg->data);
-        argc++;
-        lua_pushinteger(lua, msg->size);
-        argc++;
-        lua_pushstring(lua, ip);
-        argc++;
-        lua_pushinteger(lua, netaddr_port(&umsg->addr));
-        argc++;
-        break;
+static int32_t _lreg_msg_clean(lua_State *lua) {
+    msg_type mtype = (msg_type)luaL_checkinteger(lua, 1);
+    pack_type pktype = PACK_NONE;
+    if (LUA_TNUMBER == lua_type(lua, 2)) {
+        pktype = (pack_type)luaL_checkinteger(lua, 2);
     }
-    case MSG_TYPE_REQUEST://sess src data size
-        lua_pushinteger(lua, msg->sess);
-        argc++;
-        lua_pushinteger(lua, msg->src);
-        argc++;
-        lua_pushlightuserdata(lua, msg->data);
-        argc++;
-        lua_pushinteger(lua, msg->size);
-        argc++;
-        break;
-    default:
-        break;
-    }
-    return argc;
+    void *data = lua_touserdata(lua, 3);
+    message_clean(mtype, pktype, data);
+    return 0;
 }
 LUAMOD_API int luaopen_srey_utils(lua_State *lua) {
     luaL_Reg reg[] = {
@@ -730,36 +652,40 @@ LUAMOD_API int luaopen_srey_utils(lua_State *lua) {
         { "b64decode", _lreg_b64decode },
         { "urlencode", _lreg_urlencode },
 
+        { "worker_load", _lreg_worker_load },
+
         { "evssl_new", _lreg_evssl_new },
         { "evssl_p12new", _lreg_evssl_p12new },
         { "evssl_qury", _lreg_evssl_qury },
 
-        { "task_qury", _lreg_task_qury },
+        { "task_grab", _lreg_task_grab },
+        { "task_addref", _lreg_task_addref },
+        { "task_release", _lreg_task_release },
+        { "task_qusize", _lreg_task_qusize },
         { "task_name", _lreg_task_name },
-        { "task_call", _lreg_task_call },
-        { "task_request", _lreg_task_request },
-        { "task_response", _lreg_task_response },
+        { "task_call", _lreg_call },
+        { "task_request", _lreg_request },
+        { "task_response", _lreg_response },
 
         { "setud_pktype", _lreg_setud_pktype },
         { "setud_status", _lreg_setud_status },
-        { "setud_data", _lreg_setud_data },
+        { "setud_name", _lreg_setud_name },
+        { "setud_sess",_lreg_setud_sess },
 
-        { "sleep", _lreg_sleep },
         { "timeout", _lreg_timeout },
         { "connect", _lreg_connect },
         { "listen", _lreg_listen },
+        { "unlisten", _lreg_unlisten },
         { "udp", _lreg_udp },
-        { "synsend", _lreg_synsend },
         { "send", _lreg_send },
-        { "synsendto", _lreg_synsendto },
         { "sendto", _lreg_sendto },
         { "close", _lreg_close },
 
-        { "slice", _lreg_slice },
+        { "dns_pack", _lreg_dns_pack },
+        { "dns_unpack", _lreg_dns_unpack },
 
         { "simple_pack", _lreg_simple_pack },
-
-        { "dns_lookup", _lreg_dns_lookup },
+        { "simple_unpack", _lreg_simple_unpack },
 
         { "http_chunked", _lreg_http_chunked },
         { "http_status", _lreg_http_status },
@@ -767,8 +693,8 @@ LUAMOD_API int luaopen_srey_utils(lua_State *lua) {
         { "http_heads", _lreg_http_heads },
         { "http_data", _lreg_http_data },
 
-        { "websock_connect", _lreg_websock_connect },
-        { "websock_pack", _lreg_websock_pack },
+        { "websock_hspack", _lreg_websock_hspack },
+        { "websock_unpack", _lreg_websock_unpack },
         { "websock_ping", _lreg_websock_ping },
         { "websock_pong", _lreg_websock_pong },
         { "websock_close", _lreg_websock_close },
@@ -776,7 +702,7 @@ LUAMOD_API int luaopen_srey_utils(lua_State *lua) {
         { "websock_binary", _lreg_websock_binary },
         { "websock_continuation", _lreg_websock_continuation },
 
-        { "msg_info", _lreg_msg_info },
+        { "msg_clean", _lreg_msg_clean },
         { NULL, NULL },
     };
     luaL_newlib(lua, reg);

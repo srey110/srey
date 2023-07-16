@@ -2,6 +2,7 @@
 #define MAPS_H_
 
 #include "macro.h"
+#if WITH_CORO
 
 typedef struct co_sess_ctx {
     struct mco_coro *co;
@@ -28,4 +29,5 @@ int32_t _map_cotmo_get(mapco_ctx *map, uint64_t sess, co_tmo_ctx *cotmo);
 void _map_co_init(mapco_ctx *map);
 void _map_co_free(mapco_ctx *map);
 
+#endif
 #endif//MAPS_H_

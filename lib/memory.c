@@ -12,7 +12,7 @@ void *_malloc(size_t size) {
 #endif
     void *ptr = malloc(size);
     if (NULL == ptr) {
-        LOG_ERROR("malloc(%zu) failed!\n", size);
+        LOG_ERROR("malloc(%zu) failed!", size);
         exit(ERR_FAILED);
     }
     return ptr;
@@ -23,7 +23,7 @@ void *_calloc(size_t count, size_t size) {
 #endif
     void *ptr = calloc(count, size);
     if (NULL == ptr) {
-        LOG_ERROR("calloc(%zu, %zu) failed!\n", count, size);
+        LOG_ERROR("calloc(%zu, %zu) failed!", count, size);
         exit(ERR_FAILED);
     }
     return ptr;
@@ -35,7 +35,7 @@ void *_realloc(void* oldptr, size_t size) {
 #endif
     void *ptr = realloc(oldptr, size);
     if (NULL == ptr) {
-        LOG_ERROR("realloc(%p, %zu) failed!\n", oldptr, size);
+        LOG_ERROR("realloc(%p, %zu) failed!", oldptr, size);
         exit(ERR_FAILED);
     }
     return ptr;
@@ -48,6 +48,6 @@ void _free(void* ptr) {
 }
 void _memcheck(void) {
 #if MEMORY_CHECK
-    LOG_INFO("memory check => alloc:%"PRIu64" free:%"PRIu64"\n", _nalloc, _nfree);
+    LOG_INFO("memory check => not free: %d.", (int32_t)(_nalloc - _nfree));
 #endif
 }

@@ -1,6 +1,4 @@
 #include "proto/dns.h"
-#include "service/srey.h"
-#include "netaddr.h"
 #include "utils.h"
 
 typedef struct dns_head  {
@@ -45,7 +43,7 @@ static inline void _encode_domain(char *qname, const char *domain) {
     }
     *qname++ = '\0';
 }
-static inline size_t _create_pack(char *buf, const char *domain, int32_t ipv6) {
+size_t dns_request_pack(char *buf, const char *domain, int32_t ipv6) {
     dns_head *head = (dns_head *)buf;
     head->id = (uint16_t)htons((u_short)(createid() % USHRT_MAX));
     head->rd = 1;
@@ -126,7 +124,7 @@ static inline char *_dns_parse_data(char *buf, char *reader, uint16_t n, dns_ip 
     }
     return reader;
 }
-static inline dns_ip *_dns_parse(char *buf, size_t lens, size_t *cnt) {
+dns_ip *dns_parse_pack(char *buf, size_t *cnt) {
     dns_head *head = (dns_head *)buf;
     if (0 != head->rcode) {
         LOG_WARN("qurey domain error: %d.", head->rcode);
@@ -148,24 +146,4 @@ static inline dns_ip *_dns_parse(char *buf, size_t lens, size_t *cnt) {
     reader = _dns_parse_data(buf, reader, nadd, dnsips, &index);
     *cnt = (size_t)index;
     return dnsips;
-}
-dns_ip *dns_lookup(struct task_ctx *task, const char *dns, const char *domain, int32_t ipv6, size_t *cnt) {
-    uint64_t skid;
-    SOCKET fd;
-    if (ERR_OK == is_ipv6(dns)) {
-        fd = task_netudp(task, "::", 0, &skid);
-    } else {
-        fd = task_netudp(task, "0.0.0.0", 0, &skid);
-    }
-    if (INVALID_SOCK == fd) {
-        return NULL;
-    }
-    char buf[ONEK] = { 0 };
-    size_t lens = _create_pack(buf, domain, ipv6);
-    void *resp = task_synsendto(task, fd, skid, dns, 53, buf, lens, &lens);
-    ev_close(task_netev(task), fd, skid);
-    if (NULL == resp) {
-        return NULL;
-    }
-    return _dns_parse(resp, lens, cnt);
 }

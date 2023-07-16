@@ -1,14 +1,13 @@
 --任务名
 TASK_NAME = {
-    HARBOR = 0x00,
-    TASK1 = 0x01,
-    TASK2 = 0x02,
-    TASK3 = 0x03,
-    TASK4 = 0x04
+    NONE = 0x00,--保留
+    TEST1 = 10001,
+    TEST2 = 10002,
+    TEST3 = 10003,
+    TEST4 = 10004
 }
 --SSL名
 SSL_NAME = {
-    NONE = 0x00,
     SERVER = 0x01,
     CLIENT = 0x02
 }
@@ -21,6 +20,36 @@ PACK_TYPE = {
     MQTT = 0x04,
     SIMPLE = 0x05
 }
+--消息类型
+MSG_TYPE = {
+    WAKEUP = 1,
+    STARTUP = 2,
+    CLOSING = 3,
+    TIMEOUT = 4,
+    ACCEPT = 5,
+    CONNECT = 6,
+    HANDSHAKED = 7,
+    RECV = 8,
+    SEND = 9,
+    CLOSE = 10,
+    RECVFROM = 11,
+    REQUEST = 12,
+    RESPONSE = 13
+}
+--分片消息类型
+SLICE_TYPE = {
+    NONE = 0x00,
+    START = 0x01,
+    SLICE = 0x02,
+    END = 0x03,
+}
+--超时类型
+TIMEOUT_TYPE = {
+    SLEEP = 0x01,
+    NORMAL = 0x02,
+    SESSION = 0x03
+}
+--日志级别
 LOG_LV = {
     FATAL = 0x00,
     ERROR = 0x01,
@@ -46,15 +75,18 @@ SSLVERIFY_TYPE = {
 PRINT_DEBUG = true
 RPC_USEJSON = true
 
-RPCREQ_TIMEOUT = 500
-NETRD_TIMEOUT = 3000
+REQUEST_TIMEOUT = 1000
+NETRD_TIMEOUT = 1500
 CONNECT_TIMEOUT = 3000
 EVERY_EXLENS = 5
 MAX_QULENS = 1024
 
+DNS_IP = "8.8.8.8"
+DNS_PORT = 53
 FMT_TIME = "%H:%M:%S"
 FMT_DATETIME = "%Y-%m-%d %H:%M:%S"
 
 ERR_OK = 0
 ERR_FAILED = -1
 INVALID_SOCK = -1
+INVALID_TNAME = 0

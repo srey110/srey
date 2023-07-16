@@ -13,6 +13,8 @@ void log_setlv(LOG_LEVEL lv) {
 }
 static inline const char *_lvstr(int32_t lv) {
     switch (lv) {
+    case LOGLV_FATAL:
+        return "fatal";
     case LOGLV_ERROR:
         return "error";
     case LOGLV_WARN:

@@ -1,5 +1,6 @@
 local sutils = require("srey.utils")
 local core = require("lib.core")
+local syn = require("lib.synsl")
 local hstatus = require("lib.http_status")
 local json = require("cjson")
 local table = table
@@ -79,11 +80,13 @@ function http.unpack(pack)
     return tb
 end
 local function http_send(rsp, fd, skid, msg, ckfunc)
+    local smsg = table.concat(msg)
     if rsp then
-        core.send(fd, skid, PACK_TYPE.HTTP, table.concat(msg))
+        core.send(fd, skid, smsg, #smsg, true)
         return
     end
-    local pack, _, sess = core.synsend(fd, skid, PACK_TYPE.HTTP, table.concat(msg))
+    local sess = core.getid()
+    local pack, _ = syn.send(fd, skid, sess, smsg, #smsg, true)
     if not pack then
         return
     end
@@ -94,7 +97,7 @@ local function http_send(rsp, fd, skid, msg, ckfunc)
         pack.fin = false
         local data, hdata, hsize, fin
         while true do
-            data, _, fin = core.slice(sess)
+            data, _, fin = syn.slice(fd, skid, sess)
             if not data then
                 return
             end
@@ -131,7 +134,8 @@ local function http_msg(rsp, fd, skid, fline, headers, ckfunc, info, ...)
         return http_send(rsp, fd, skid, msg, ckfunc)
     elseif "function" == msgtype then
         table.insert(msg, "Transfer-Encoding: chunked\r\n\r\n")
-        core.send(fd, skid, PACK_TYPE.HTTP, table.concat(msg))
+        local smsg = table.concat(msg)
+        core.send(fd, skid, smsg, #smsg, true)
         local rtn
         while true do
             rtn = info(...)
@@ -140,8 +144,9 @@ local function http_msg(rsp, fd, skid, fline, headers, ckfunc, info, ...)
                 table.insert(msg, string.format("%d\r\n", #rtn))
                 table.insert(msg, rtn)
                 table.insert(msg, "\r\n")
-                core.send(fd, skid, PACK_TYPE.HTTP, table.concat(msg))
-                core.sleep(10)--让其他能执行
+                smsg = table.concat(msg)
+                core.send(fd, skid, smsg, #smsg, true)
+                syn.sleep(10)--让其他能执行
             else
                 table.insert(msg, "0\r\n\r\n")
                 return http_send(rsp, fd, skid, msg, ckfunc)
@@ -197,28 +202,8 @@ end
     ...  info为function是的参数
 --]]
 function http.response(fd, skid, code, headers, info, ...)
-    local status = hstatus[code]
-    local fline = string.format("HTTP/1.1 %03d %s\r\n", code, status or "")
-    if nil == info then
-        info = status or ""
-    end
+    local fline = string.format("HTTP/1.1 %03d %s\r\n", code, hstatus[code])
     http_msg(true, fd, skid, fline, headers, nil, info, ...)
-end
---[[
-描述:http 服务器返回websocket握手信息
-参数:
-    fd :integer
-    skid :integer
-    sign :string
---]]
-function http.rsp_websock_allowed(fd, skid, sign)
-    local fline = "HTTP/1.1 101 Switching Protocols\r\n"
-    local headers = {
-        Upgrade = "websocket",
-        Connection = "Upgrade"
-    }
-    headers["Sec-WebSocket-Accept"] = sign
-    http_msg(true, fd, skid, fline, headers)
 end
 
 return http

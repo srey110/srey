@@ -53,7 +53,9 @@
     <ClInclude Include="sarray.h" />
     <ClInclude Include="service\maps.h" />
     <ClInclude Include="service\minicoro.h" />
+    <ClInclude Include="service\spub.h" />
     <ClInclude Include="service\srey.h" />
+    <ClInclude Include="service\synsl.h" />
     <ClInclude Include="sha1\sha1.h" />
     <ClInclude Include="spinlock.h" />
     <ClInclude Include="structs.h" />
@@ -87,6 +89,7 @@
     <ClCompile Include="proto\websock.c" />
     <ClCompile Include="service\maps.c" />
     <ClCompile Include="service\srey.c" />
+    <ClCompile Include="service\synsl.c" />
     <ClCompile Include="sha1\sha1.c" />
     <ClCompile Include="thread.c" />
     <ClCompile Include="timer.c" />

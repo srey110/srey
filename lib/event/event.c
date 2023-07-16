@@ -4,7 +4,7 @@
 typedef enum ud_type {
     UD_PKTYPE = 0x00,
     UD_STATUS,
-    UD_DATA,
+    UD_NAME,
     UD_SESS
 }ud_type;
 
@@ -279,8 +279,8 @@ void ev_ud_status(ev_ctx *ctx, SOCKET fd, uint64_t skid, uint8_t status) {
 void ev_ud_sess(ev_ctx *ctx, SOCKET fd, uint64_t skid, uint64_t sess) {
     _ev_set_ud(ctx, fd, skid, UD_SESS, sess);
 }
-void ev_ud_data(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *data) {
-    _ev_set_ud(ctx, fd, skid, UD_DATA, (uint64_t)data);
+void ev_ud_name(ev_ctx *ctx, SOCKET fd, uint64_t skid, name_t name) {
+    _ev_set_ud(ctx, fd, skid, UD_NAME, name);
 }
 void _set_ud(ud_cxt *ud, int32_t type, uint64_t val) {
     switch (type) {
@@ -290,8 +290,8 @@ void _set_ud(ud_cxt *ud, int32_t type, uint64_t val) {
     case UD_STATUS:
         ud->status = (uint8_t)val;
         break;
-    case UD_DATA:
-        ud->data = (void *)val;
+    case UD_NAME:
+        ud->name = (name_t)val;
         break;
     case UD_SESS:
         ud->sess = val;

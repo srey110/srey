@@ -24,7 +24,7 @@ function enum(tb, bg)
     return tbenum
 end
 function strempty(str)
-    return nil == str or '' == str
+    return not str or '' == str
 end
 function split(str, delimiter)
     if ('' == delimiter) then
@@ -46,7 +46,7 @@ function tbsize(tb)
     return cnt
 end
 function tbempty(tb)
-    if nil == tb then
+    if not tb then
         return true
     end
     for _, _ in pairs(tb) do

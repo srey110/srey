@@ -9,7 +9,7 @@ typedef enum pack_type {
     PACK_HTTP,
     PACK_WEBSOCK,
     PACK_MQTT,
-    PACK_SIMPLE,
+    PACK_SIMPLE
 }pack_type;
 typedef enum slice_type {
     SLICE_NONE = 0x00,
@@ -22,6 +22,5 @@ void protos_pkfree(pack_type type, void *data);
 void protos_udfree(ud_cxt *ud);
 void *protos_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid,
     buffer_ctx *buf, size_t *size, ud_cxt *ud, int32_t *closefd, int32_t *slice);
-void *protos_pack(pack_type type, void *data, size_t lens, size_t *size);
 
 #endif//PROTOS_H_

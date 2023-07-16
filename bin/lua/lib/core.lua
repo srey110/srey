@@ -2,6 +2,7 @@ require("lib.define")
 local sutils = require("srey.utils")
 local score = require("srey.core")
 local log = require("lib.log")
+local MSG_TYPE = MSG_TYPE
 local curtask = _curtask
 local core = {}
 
@@ -17,7 +18,7 @@ end
 --]]
 function core.xpcall(func, ...)
     local function error(err)
-        log.WARN("%s.\n%s", err, debug.traceback())
+        log.ERROR("%s.\n%s", err, debug.traceback())
     end
     return xpcall(func, error, ...)
 end
@@ -30,8 +31,8 @@ end
 --]]
 function core.dostring(msg)
     local func, err = load(msg)
-    if nil == func then
-        log.WARN("%s.\n%s", err, debug.traceback())
+    if not func then
+        log.ERROR("%s.\n%s", err, debug.traceback())
         return false
     end
     return core.xpcall(func)
@@ -57,7 +58,7 @@ end
     nil失败
 --]]
 function core.utostr(data, size)
-    if nil == data then
+    if not data then
         log.WARN("invalid argument.")
         return nil
     end
@@ -65,6 +66,14 @@ function core.utostr(data, size)
         return ""
     end
     return sutils.utostr(data, size)
+end
+--[[
+描述:获取id
+返回:id
+    integer
+--]]
+function core.getid()
+    return sutils.getid()
 end
 --[[
 描述:md5
@@ -75,7 +84,7 @@ end
     string
 --]]
 function core.md5(data, size)
-    if nil == data then
+    if not data then
         log.WARN("invalid argument.")
         return nil
     end
@@ -90,7 +99,7 @@ end
     string
 --]]
 function core.sha1_b64encode(data, size)
-    if nil == data then
+    if not data then
         log.WARN("invalid argument.")
         return nil
     end
@@ -105,7 +114,7 @@ end
     string
 --]]
 function core.b64encode(data, size)
-    if nil == data then
+    if not data then
         log.WARN("invalid argument.")
         return nil
     end
@@ -120,7 +129,7 @@ end
     string
 --]]
 function core.b64decode(data, size)
-    if nil == data then
+    if not data then
         log.WARN("invalid argument.")
         return nil
     end
@@ -135,6 +144,14 @@ end
 --]]
 function core.urlencode(data)
     return sutils.urlencode(data)
+end
+--[[
+描述:线程负载
+返回:
+    tabke
+--]]
+function core.worker_load()
+    return sutils.worker_load()
 end
 --[[
 描述:创建evssl_ctx
@@ -180,34 +197,63 @@ function core.evssl_qury(name)
     return sutils.evssl_qury(name)
 end
 --[[
-描述:任务注册
+描述:发起任务注册
 参数:
     file lua文件名 :string
     name :TASK_NAME
     maxcnt 每次最多执行多少条消息: integer
     maxqulens 消息队列最大长度: integer
+    src: TASK_NAME
+    sess: integer
 返回:
-    task_ctx
-    nil失败
+    boolean
 --]]
-function core.task_register(file, name, maxcnt, maxqulens)
-    return score.task_register(file, name, maxcnt or EVERY_EXLENS, maxqulens or MAX_QULENS)
+function core.task_register(file, name, maxcnt, maxqulens, src, sess)
+    return score.task_register(file, name, maxcnt or EVERY_EXLENS, maxqulens or MAX_QULENS, src or INVALID_TNAME, sess or 0)
 end
 --[[
-描述:任务查询
+描述:释放任务
+参数:
+    task :task_ctx
+--]]
+function core.task_release(task)
+    sutils.task_release(task or curtask)
+end
+--[[
+描述:消息队列 消息数
+返回:
+    integer
+--]]
+function core.task_qusize()
+    return sutils.task_qusize(curtask)
+end
+--[[
+描述:任务获取
 参数:
     name :TASK_NAME
 返回:
-    task_ctx  
-    nil无
+    table<close> table[1]为task_ctx
+    nil失败
 --]]
-function core.task_qury(name)
-    return sutils.task_qury(name)
+function core.task_grab(name)
+    local task = sutils.task_grab(name)
+    if not task then
+        return nil
+    end
+    local rtn = setmetatable({}, {__close = function() core.task_release(task) end})
+    table.insert(rtn, task)
+    return rtn
+end
+--[[
+描述:加引用
+参数:
+    task :task_ctx
+--]]
+function core.task_refadd(task)
+    sutils.task_addref(task or curtask)
 end
 --[[
 描述:获取任务名
-参数:
-    task nil为本任务 :task_ctx
 返回:
     TASK_NAME
 --]]
@@ -215,46 +261,47 @@ function core.task_name(task)
     return sutils.task_name(task or curtask)
 end
 --[[
-描述:获取id
-返回:id
-    integer
+描述:任务通信，无返回
+参数:
+    task :task_grab返回值
+    data : string or uerdata
+    lens : integer
+    copy : bool
 --]]
-function core.getid()
-    return sutils.getid()
+function core.task_call(task, data, lens, copy)
+    if not task or not data then
+        return
+    end
+    sutils.task_call(task[1], data, lens, copy and 1 or 0)
 end
 --[[
-描述:任务间通信,无返回
+描述:任务通信
 参数:
-    dst :task_ctx
-    data :string or userdata
-    size :integer
+    task : task_grab返回值
+    sess : integer
+    data : string or uerdata
+    size : integer
+    copy : bool
 --]]
-function core.task_call(dst, data, size)
-    sutils.task_call(dst, data, size)
+function core.task_request(task, sess, data, size, copy)
+    assert(task, "invalid parameter.")
+    sutils.task_request(task[1], curtask, sess, data, size, copy and 1 or 0)
 end
 --[[
-描述:任务间通信,有返回
+描述:返回任务通信
 参数:
-    dst :task_ctx
-    data :string or userdata
-    size :integer
-返回:
-    data size
-    nil失败
---]]
-function core.task_request(dst, data, size)
-    return sutils.task_request(dst, curtask, data, size)
-end
---[[
-描述:任务间通信,返回数据
-参数:
-    dst :task_ctx
+    task :task_grab返回值
     sess :integer
-    data :string or userdata
-    size :integer
+    erro : ERR_OK
+    data : string or uerdata
+    lens : integer
+    copy : bool
 --]]
-function core.task_response(dst, sess, data, size)
-    sutils.task_response(dst, sess, data, size)
+function core.task_response(task, sess, erro, data, lens, copy)
+    if not task then
+        return
+    end
+    sutils.task_response(task[1], sess, erro, data, lens, copy and 1 or 0)
 end
 --[[
 描述:设置socket的pktype
@@ -277,22 +324,40 @@ function core.ud_status(fd, skid, status)
     sutils.setud_status(fd, skid, status)
 end
 --[[
-描述:设置socket消息处理的任务
+描述:设置socket消息处理的任务名
 参数:
     fd :integer
     skid :integer
-    task :task_ctx
+    name :TASK_NAME
 --]]
-function core.ud_data(fd, skid, task)
-    sutils.setud_data(fd, skid, task)
+function core.ud_name(fd, skid, name)
+    sutils.setud_name(fd, skid, name)
 end
 --[[
-描述:休眠
+描述:设置socket 的session
 参数:
-    ms :integer
+    fd :integer
+    skid :integer
+    sess :integer
 --]]
-function core.sleep(ms)
-    sutils.sleep(curtask, ms)
+function core.ud_sess(fd, skid, sess)
+    sutils.setud_sess(fd, skid, sess)
+end
+--[[
+描述:链接
+参数:
+    sess :integer
+    ip ip :string
+    port 端口 :integer
+    pktype :PACK_TYPE
+    ssl nil不启用ssl :evssl_ctx
+    sendev 是否触发发送事件 :boolean
+返回:
+    socket :integer skid :integer
+    INVALID_SOCK失败
+--]]
+function core.connect(sess, ip, port, pktype, ssl, sendev)
+    return sutils.connect(curtask, sess, pktype, ssl, ip, port, sendev and 1 or 0)
 end
 --[[
 描述:监听
@@ -310,19 +375,12 @@ function core.listen(ip, port, pktype, ssl, sendev)
     return sutils.listen(curtask, pktype or PACK_TYPE.NONE, ssl, ip, port, sendev and 1 or 0)
 end
 --[[
-描述:链接
+描述:取消监听
 参数:
-    ip ip :string
-    port 端口 :integer
-    pktype :PACK_TYPE
-    ssl nil不启用ssl :evssl_ctx
-    sendev 是否触发发送事件 :boolean
-返回:
-    socket :integer skid :integer
-    INVALID_SOCK失败
+    id listen 返回的id :integer
 --]]
-function core.connect(ip, port, pktype, ssl, sendev)
-    return sutils.connect(curtask, pktype, ssl, ip, port, sendev and 1 or 0)
+function core.unlisten(id)
+    sutils.unlisten(id)
 end
 --[[
 描述:udp
@@ -341,35 +399,15 @@ end
 参数:
     fd socket :integer
     skid :integer
-    pktype :PACK_TYPE
     data lstring或userdata
     lens data长度 :integer
+    copy 是否拷贝 :boolean
 --]]
-function core.send(fd, skid, pktype, data, lens)
-    if INVALID_SOCK == fd or nil == data then
-        log.WARN("invalid argument.")
+function core.send(fd, skid, data, lens, copy)
+    if INVALID_SOCK == fd or not data then
         return
     end
-    sutils.send(curtask, fd, skid, pktype or PACK_TYPE.NONE, data, lens)
-end
---[[
-描述:tcp发送,等待数据返回
-参数:
-    fd socket :integer
-    skid :integer
-    pktype :PACK_TYPE
-    data lstring或userdata
-    size data长度 :integer
-返回:
-    data size sess
-    nil失败
---]]
-function core.synsend(fd, skid, pktype, data, size)
-    if INVALID_SOCK == fd or nil == data then
-        log.WARN("invalid argument.")
-        return nil
-    end
-    return sutils.synsend(curtask, fd, skid, pktype or PACK_TYPE.NONE, data, size)
+    sutils.send(curtask, fd, skid, data, lens, copy and 1 or 0)
 end
 --[[
 描述:udp发送
@@ -380,33 +418,14 @@ end
     port 端口 :integer
     data lstring或userdata
     lens data长度 :integer
+返回:
+    bool
 --]]
 function core.sendto(fd, skid, ip, port, data, lens)
-    if INVALID_SOCK == fd or nil == data then
-        log.WARN("invalid argument.")
+    if INVALID_SOCK == fd or not data then
         return
     end
-    sutils.sendto(fd, skid, ip, port, data, lens)
-end
---[[
-描述:udp发送,等待数据返回
-参数:
-    fd socket :integer
-    skid :integer
-    ip ip :string
-    port 端口 :integer
-    data lstring或userdata
-    lens data长度 :integer
-返回:
-    data size
-    nil失败
---]]
-function core.synsendto(fd, skid, ip, port, data, lens)
-    if INVALID_SOCK == fd or nil == data then
-        log.WARN("invalid argument.")
-        return nil
-    end
-    return sutils.synsendto(curtask, fd, skid, ip, port, data, lens)
+    return sutils.sendto(fd, skid, ip, port, data, lens)
 end
 --[[
 描述:关闭链接
@@ -421,27 +440,18 @@ function core.close(fd, skid)
     sutils.close(fd, skid)
 end
 --[[
-描述:分片同步接收
+描述:消息释放
 参数:
-    sess :integer
-返回:
-    data,size,end
-    nil失败
+    msg :table
 --]]
-function core.slice(sess)
-    return sutils.slice(curtask, sess)
-end
---[[
-描述:域名查询
-参数:
-    dns dns 服务器ip :string
-    domain 待查询的域名 :string
-    ipv6 :boolean
-返回:
-    table ips
---]]
-function core.dns_lookup(dns, domain, ipv6)
-    return sutils.dns_lookup(curtask, dns, domain, ipv6 and 1 or 0)
+function core.msg_clean(msg)
+    if MSG_TYPE.RECV ~= msg.mtype and
+       MSG_TYPE.RECVFROM ~= msg.mtype and
+       MSG_TYPE.REQUEST ~= msg.mtype and
+       MSG_TYPE.RESPONSE ~= msg.mtype then
+        return
+    end
+    sutils.msg_clean(msg.mtype, msg.pktype, msg.data)
 end
 
 return core

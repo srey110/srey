@@ -11,8 +11,8 @@ typedef struct lsnsock_ctx {
 }lsnsock_ctx;
 typedef struct listener_ctx {
     int32_t nlsn;
-    int32_t ref;
     int32_t remove;
+    atomic_t ref;
     lsnsock_ctx *lsnsock;
 #if WITH_SSL
     evssl_ctx *evssl;

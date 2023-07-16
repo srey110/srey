@@ -2,11 +2,12 @@ require("lib.define")
 local sutils = require("srey.utils")
 local debug = debug
 local string = string
+local LOG_LV = LOG_LV
 local log = {}
 
 local function _log(loglv, fmt, ...)
     local info = debug.getinfo(3)
-    if nil == info then
+    if not info then
         return
     end
     sutils.log(loglv, info.source, info.currentline, string.format(fmt, ...))
