@@ -1,6 +1,8 @@
 #include "lib.h"
 #if WITH_LUA
+#include "lua/lapi.h"
 #include "lua/lauxlib.h"
+#include "lua/lstring.h"
 
 #define MSG_PUSH_NETPUB(msg)\
 lua_pushinteger(lua, msg->pktype);\
@@ -529,7 +531,9 @@ static int32_t _lreg_http_data(lua_State *lua) {
     size_t lens;
     void *data = http_data(pack, &lens);
     if (0 == lens) {
-        return 0;
+        lua_pushnil(lua);
+        lua_pushinteger(lua, 0);
+        return 2;
     }
     lua_pushlightuserdata(lua, data);
     lua_pushinteger(lua, lens);
@@ -547,22 +551,30 @@ static int32_t _lreg_websock_hspack(lua_State *lua) {
 }
 static int32_t _lreg_websock_unpack(lua_State *lua) {
     void *pack = lua_touserdata(lua, 1);
+    lua_createtable(lua, 0, 4);
+    lua_pushstring(lua, "proto");
     lua_pushinteger(lua, websock_pack_proto(pack));
-    lua_pushinteger(lua, websock_pack_fin(pack));
+    lua_settable(lua, -3);
+    lua_pushstring(lua, "fin");
+    lua_pushboolean(lua, websock_pack_fin(pack));
+    lua_settable(lua, -3);
     size_t lens;
     void *data = websock_pack_data(pack, &lens);
     if (lens > 0){
+        lua_pushstring(lua, "data");
         lua_pushlightuserdata(lua, data);
+        lua_settable(lua, -3);
+        lua_pushstring(lua, "size");
         lua_pushinteger(lua, lens);
-        return 4;
+        lua_settable(lua, -3);
     }
-    return 2;
+    return 1;
 }
 static int32_t _lreg_websock_ping(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    int32_t client = (int32_t)luaL_checkinteger(lua, 3);
-    websock_ping(&srey->netev, fd, skid, client);
+    int32_t mask = (int32_t)luaL_checkinteger(lua, 3);
+    websock_ping(&srey->netev, fd, skid, mask);
     return 0;
 }
 static int32_t _lreg_websock_pong(lua_State *lua) {
@@ -575,8 +587,8 @@ static int32_t _lreg_websock_pong(lua_State *lua) {
 static int32_t _lreg_websock_close(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    int32_t client = (int32_t)luaL_checkinteger(lua, 3);
-    websock_close(&srey->netev, fd, skid, client);
+    int32_t mask = (int32_t)luaL_checkinteger(lua, 3);
+    websock_close(&srey->netev, fd, skid, mask);
     return 0;
 }
 static int32_t _lreg_websock_text(lua_State *lua) {
@@ -584,7 +596,7 @@ static int32_t _lreg_websock_text(lua_State *lua) {
     size_t dlens;
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    int32_t client = (int32_t)luaL_checkinteger(lua, 3);
+    int32_t mask = (int32_t)luaL_checkinteger(lua, 3);
     int32_t fin = (int32_t)luaL_checkinteger(lua, 4);
     if (LUA_TSTRING == lua_type(lua, 5)) {
         data = (void *)luaL_checklstring(lua, 5, &dlens);
@@ -592,7 +604,7 @@ static int32_t _lreg_websock_text(lua_State *lua) {
         data = lua_touserdata(lua, 5);
         dlens = (size_t)luaL_checkinteger(lua, 6);
     }
-    websock_text(&srey->netev, fd, skid, client, fin, data, dlens);
+    websock_text(&srey->netev, fd, skid, mask, fin, data, dlens);
     return 0;
 }
 static int32_t _lreg_websock_binary(lua_State *lua) {
@@ -600,7 +612,7 @@ static int32_t _lreg_websock_binary(lua_State *lua) {
     size_t dlens;
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    int32_t client = (int32_t)luaL_checkinteger(lua, 3);
+    int32_t mask = (int32_t)luaL_checkinteger(lua, 3);
     int32_t fin = (int32_t)luaL_checkinteger(lua, 4);
     if (LUA_TSTRING == lua_type(lua, 5)) {
         data = (void *)luaL_checklstring(lua, 5, &dlens);
@@ -608,7 +620,7 @@ static int32_t _lreg_websock_binary(lua_State *lua) {
         data = lua_touserdata(lua, 5);
         dlens = (size_t)luaL_checkinteger(lua, 6);
     }
-    websock_binary(&srey->netev, fd, skid, client, fin, data, dlens);
+    websock_binary(&srey->netev, fd, skid, mask, fin, data, dlens);
     return 0;
 }
 static int32_t _lreg_websock_continuation(lua_State *lua) {
@@ -616,7 +628,7 @@ static int32_t _lreg_websock_continuation(lua_State *lua) {
     size_t dlens;
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    int32_t client = (int32_t)luaL_checkinteger(lua, 3);
+    int32_t mask = (int32_t)luaL_checkinteger(lua, 3);
     int32_t fin = (int32_t)luaL_checkinteger(lua, 4);
     if (LUA_TSTRING == lua_type(lua, 5)) {
         data = (void *)luaL_checklstring(lua, 5, &dlens);
@@ -624,7 +636,7 @@ static int32_t _lreg_websock_continuation(lua_State *lua) {
         data = lua_touserdata(lua, 5);
         dlens = (size_t)luaL_checkinteger(lua, 6);
     }
-    websock_continuation(&srey->netev, fd, skid, client, fin, data, dlens);
+    websock_continuation(&srey->netev, fd, skid, mask, fin, data, dlens);
     return 0;
 }
 static int32_t _lreg_msg_clean(lua_State *lua) {

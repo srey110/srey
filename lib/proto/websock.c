@@ -26,6 +26,7 @@ typedef struct websock_pack_ctx {
 #define SIGNKEY "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 #define RSP_CODE  "101"
 #define RSP_REASON  "switching protocols"
+static char _mask_key[MASK_LENS + 1] = { 0 };
 
 static inline http_header_ctx *_websock_handshake_svcheck(struct http_pack_ctx *hpack) {
     size_t glens = strlen(REQ_METHOD);
@@ -406,73 +407,61 @@ static inline void _websock_control_frame(ev_ctx *ev, SOCKET fd, uint64_t skid, 
     void *frame = _websock_create_pack(1, proto, key, NULL, 0, &flens);
     ev_send(ev, fd, skid, frame, flens, 0);
 }
-void websock_ping(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client) {
-    if (0 == client) {
+void websock_ping(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t mask) {
+    if (0 == mask) {
         _websock_control_frame(ev, fd, skid, WBSK_PING, NULL);
     } else {
-        char key[MASK_LENS + 1];
-        randstr(key, sizeof(key) - 1);
-        _websock_control_frame(ev, fd, skid, WBSK_PING, key);
+        _websock_control_frame(ev, fd, skid, WBSK_PING, _mask_key);
     }
 }
-void websock_pong(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client) {
-    if (0 == client) {
+void websock_pong(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t mask) {
+    if (0 == mask) {
         _websock_control_frame(ev, fd, skid, WBSK_PONG, NULL);
     } else {
-        char key[MASK_LENS + 1];
-        randstr(key, sizeof(key) - 1);
-        _websock_control_frame(ev, fd, skid, WBSK_PONG, key);
+        _websock_control_frame(ev, fd, skid, WBSK_PONG, _mask_key);
     }
 }
-void websock_close(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client) {
-    if (0 == client) {
+void websock_close(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t mask) {
+    if (0 == mask) {
         _websock_control_frame(ev, fd, skid, WBSK_CLOSE, NULL);
     } else {
-        char key[MASK_LENS + 1];
-        randstr(key, sizeof(key) - 1);
-        _websock_control_frame(ev, fd, skid, WBSK_CLOSE, key);
+        _websock_control_frame(ev, fd, skid, WBSK_CLOSE, _mask_key);
     }
     
 }
-void websock_text(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
+void websock_text(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t mask,
     int32_t fin, const char *data, size_t dlens) {
-    if (0 == client) {
+    if (0 == mask) {
         size_t flens;
         void *frame = _websock_create_pack(fin, WBSK_TEXT, NULL, (void *)data, dlens, &flens);
         ev_send(ev, fd, skid, frame, flens, 0);
     } else {
-        char key[MASK_LENS + 1];
-        randstr(key, sizeof(key) - 1);
         size_t flens;
-        void *frame = _websock_create_pack(fin, WBSK_TEXT, key, (void *)data, dlens, &flens);
+        void *frame = _websock_create_pack(fin, WBSK_TEXT, _mask_key, (void *)data, dlens, &flens);
         ev_send(ev, fd, skid, frame, flens, 0);
     }
 }
-void websock_binary(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
+void websock_binary(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t mask,
     int32_t fin, void *data, size_t dlens) {
-    if (0 == client) {
+    if (0 == mask) {
         size_t flens;
         void *frame = _websock_create_pack(fin, WBSK_BINARY, NULL, data, dlens, &flens);
         ev_send(ev, fd, skid, frame, flens, 0);
     } else {
-        char key[MASK_LENS + 1];
-        randstr(key, sizeof(key) - 1);
         size_t flens;
-        void *frame = _websock_create_pack(fin, WBSK_BINARY, key, data, dlens, &flens);
+        void *frame = _websock_create_pack(fin, WBSK_BINARY, _mask_key, data, dlens, &flens);
         ev_send(ev, fd, skid, frame, flens, 0);
     }
 }
-void websock_continuation(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
+void websock_continuation(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t mask,
     int32_t fin, void *data, size_t dlens) {
-    if (0 == client) {
+    if (0 == mask) {
         size_t flens;
         void *frame = _websock_create_pack(fin, WBSK_CONTINUE, NULL, data, dlens, &flens);
         ev_send(ev, fd, skid, frame, flens, 0);
     } else {
-        char key[SIGNKEY_LENS + 1];
-        randstr(key, sizeof(key) - 1);
         size_t flens;
-        void *frame = _websock_create_pack(fin, WBSK_CONTINUE, key, data, dlens, &flens);
+        void *frame = _websock_create_pack(fin, WBSK_CONTINUE, _mask_key, data, dlens, &flens);
         ev_send(ev, fd, skid, frame, flens, 0);
     }
 }
@@ -501,4 +490,7 @@ char *websock_handshake_pack(const char *host) {
     }
     FREE(b64);
     return data;
+}
+void _websock_init_key(void) {
+    randstr(_mask_key, sizeof(_mask_key) - 1);
 }

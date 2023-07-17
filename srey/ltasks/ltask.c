@@ -27,7 +27,6 @@ LUA_TB_NUMBER("pktype", msg->pktype);\
 LUA_TB_NUMBER("fd", msg->fd);\
 LUA_TB_NUMBER("skid", msg->skid);
 
-
 typedef struct ltask_ctx {
     int32_t ref;
     lua_State *lua;

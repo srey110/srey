@@ -4,7 +4,9 @@ TASK_NAME = {
     TEST1 = 10001,
     TEST2 = 10002,
     TEST3 = 10003,
-    TEST4 = 10004
+    TEST4 = 10004,
+    TEST_WBSK = 10005,
+    TEST_HTTP = 10006
 }
 --SSL名
 SSL_NAME = {
@@ -19,6 +21,15 @@ PACK_TYPE = {
     WEBSOCK = 0x03,
     MQTT = 0x04,
     SIMPLE = 0x05
+}
+--websock proto
+WEBSOCK_PROTO = {
+    CONTINUA = 0x00,
+    TEXT = 0x01,
+    BINARY = 0x02,
+    CLOSE = 0x08,
+    PING = 0x09,
+    PONG = 0x0A
 }
 --消息类型
 MSG_TYPE = {

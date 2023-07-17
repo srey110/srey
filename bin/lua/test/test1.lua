@@ -41,7 +41,7 @@ end
 cbs.cb_accept(accept)
 local function recv(msg)
     --printd("recv lens %d", msg.size)
-    syn.sleep(10)
+    --syn.sleep(10)
     local pack, size = simpel.unpack(msg.data)
     pack, size = simpel.pack(pack, size)
     srey.send(msg.fd, msg.skid, pack, size, false)

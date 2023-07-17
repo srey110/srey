@@ -56,6 +56,7 @@ local function _coro_cb(func, msg, ...)
     _xpcall(func, ...)
     task_release()
     if MSG_TYPE.CLOSING == msg.mtype then
+        core.task_set_closing()
         task_release()
     end
 end

@@ -4,8 +4,15 @@ local score = require("srey.core")
 local log = require("lib.log")
 local MSG_TYPE = MSG_TYPE
 local curtask = _curtask
+local closing = false
 local core = {}
 
+function core.task_closing()
+    return closing
+end
+function core.task_set_closing()
+    closing = true
+end
 function core.self()
     return curtask
 end

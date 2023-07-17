@@ -20,6 +20,7 @@ typedef enum slice_type {
 
 void protos_pkfree(pack_type type, void *data);
 void protos_udfree(ud_cxt *ud);
+void protos_init(void);
 void *protos_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid,
     buffer_ctx *buf, size_t *size, ud_cxt *ud, int32_t *closefd, int32_t *slice);
 

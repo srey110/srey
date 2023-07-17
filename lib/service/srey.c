@@ -447,6 +447,7 @@ srey_ctx *srey_init(uint16_t nnet, uint16_t nworker, size_t stack_size, uint16_t
     _coro_init_desc(stack_size);
 #endif
     _disp_funcs_init();
+    protos_init();
     ctx->nworker = 0 == nworker ? 1 : nworker;
     ctx->monitor.interval = 0 == interval ? 10000 : interval;
     ctx->monitor.threshold = 0 == threshold ? 100 : threshold;

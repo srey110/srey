@@ -5,6 +5,7 @@ local hstatus = require("lib.http_status")
 local json = require("cjson")
 local table = table
 local string = string
+local http_ver = "1.1"
 local http = {}
 
 --[[
@@ -96,7 +97,7 @@ local function http_send(rsp, fd, skid, msg, ckfunc)
         pack.cksize = 0
         pack.fin = false
         local data, hdata, hsize, fin
-        while true do
+        while not core.task_closing() do
             data, _, fin = syn.slice(fd, skid, sess)
             if not data then
                 return
@@ -134,18 +135,16 @@ local function http_msg(rsp, fd, skid, fline, headers, ckfunc, info, ...)
         return http_send(rsp, fd, skid, msg, ckfunc)
     elseif "function" == msgtype then
         table.insert(msg, "Transfer-Encoding: chunked\r\n\r\n")
-        local smsg = table.concat(msg)
-        core.send(fd, skid, smsg, #smsg, true)
-        local rtn
-        while true do
+        local smsg, rtn
+        while not core.task_closing() do
             rtn = info(...)
-            msg = {}
             if rtn then
-                table.insert(msg, string.format("%d\r\n", #rtn))
+                table.insert(msg, string.format("%x\r\n", #rtn))
                 table.insert(msg, rtn)
                 table.insert(msg, "\r\n")
                 smsg = table.concat(msg)
                 core.send(fd, skid, smsg, #smsg, true)
+                msg = {}
                 syn.sleep(10)--让其他能执行
             else
                 table.insert(msg, "0\r\n\r\n")
@@ -170,7 +169,7 @@ end
     nil 失败 
 --]]
 function http.get(fd, skid, url, headers, ckfunc)
-    local fline = string.format("GET %s HTTP/1.1\r\n", core.urlencode(url or "/"))
+    local fline = string.format("GET %s HTTP/%s\r\n", core.urlencode(url or "/"), http_ver)
     return http_msg(false, fd, skid, fline, headers, ckfunc)
 end
 --[[
@@ -188,7 +187,7 @@ end
     nil 失败 
 --]]
 function http.post(fd, skid, url, headers, ckfunc, info, ...)
-    local fline = string.format("POST %s HTTP/1.1\r\n", core.urlencode(url or "/"))
+    local fline = string.format("POST %s HTTP/%s\r\n", core.urlencode(url or "/"), http_ver)
     return http_msg(false, fd, skid, fline, headers, ckfunc, info, ...)
 end
 --[[
@@ -202,8 +201,52 @@ end
     ...  info为function是的参数
 --]]
 function http.response(fd, skid, code, headers, info, ...)
-    local fline = string.format("HTTP/1.1 %03d %s\r\n", code, hstatus[code])
+    local fline = string.format("HTTP/%s %03d %s\r\n", http_ver, code, hstatus[code])
     http_msg(true, fd, skid, fline, headers, nil, info, ...)
+end
+--[[
+描述: 检查是否升级为websocket，并返回签名字符
+参数:
+    hpack :http_pack_ctx
+返回:
+    签名字符 :string
+    nil 非websocket握手
+--]]
+function http.upgrade_websock(hpack)
+    local val = http.head(hpack, "connection")
+    if not val or not string.find(string.lower(val), "upgrade") then
+        return nil
+    end
+    val = http.head(hpack, "upgrade")
+    if not val or "websocket" ~= string.lower(val) then
+        return nil
+    end
+    val = http.head(hpack, "sec-websocket-version")
+    if not val or "13" ~= val then
+        return nil
+    end
+    val = http.head(hpack, "sec-websocket-key")
+    if not val then
+        return nil
+    end
+    return core.sha1_b64encode(string.format("%s258EAFA5-E914-47DA-95CA-C5AB0DC85B11", val))
+end
+--[[
+描述:向客户端返回握手成功,并切换socket对应的协议解析
+参数:
+    fd :integer
+    skid :integer
+    sign websock.upgrade 返回值 :string
+--]]
+function http.upgrade_websock_allowed(fd, skid, sign)
+    core.ud_pktype(fd, skid, PACK_TYPE.WEBSOCK)
+    core.ud_status(fd, skid, 1)
+    local headers = {
+        Upgrade = "websocket",
+        Connection = "Upgrade"
+    }
+    headers["Sec-WebSocket-Accept"] = sign
+    http.response(fd, skid, 101, headers)
 end
 
 return http

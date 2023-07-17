@@ -389,7 +389,7 @@ void test_http(CuTest* tc) {
     CuAssertTrue(tc, NULL != hbuf && 97 == size);
     FREE(hbuf);
 
-    http_pack_resp(&buf, 200, "ok");
+    http_pack_resp(&buf, 200);
     http_pack_head(&buf, "User-Agent", "curl/7.16.3");
     hbuf = http_pack_end(&buf, &size);
     CuAssertTrue(tc, NULL != hbuf && 44 == size);
@@ -398,16 +398,13 @@ void test_http(CuTest* tc) {
     http_pack_req(&buf, "Post", "/mth?p=test");
     http_pack_head(&buf, "Host", "127.0.0.1");
     http_pack_head(&buf, "User-Agent", "curl/7.16.3");
-    hbuf = http_pack_chunked(&buf, &size);
-    CuAssertTrue(tc, NULL != hbuf && 105 == size);
-    FREE(hbuf);
 
     char empty[20];
-    hbuf = http_pack_chunked_data(&buf, empty, sizeof(empty), &size);
-    CuAssertTrue(tc, NULL != hbuf && 24 == size);
+    hbuf = http_pack_chunked(&buf, empty, sizeof(empty), &size);
+    CuAssertTrue(tc, NULL != hbuf && 129 == size);
     FREE(hbuf);
 
-    hbuf = http_pack_chunked_data(&buf, NULL, 0, &size);
+    hbuf = http_pack_chunked(&buf, NULL, 0, &size);
     CuAssertTrue(tc, NULL != hbuf && 5 == size);
     FREE(hbuf);
 

@@ -8,5 +8,7 @@ core.evssl_p12new(SSL_NAME.CLIENT, "client.p12", "srey")
 core.task_register("test.test1", TASK_NAME.TEST1)
 core.task_register("test.test2", TASK_NAME.TEST2)
 core.task_register("test.test4", TASK_NAME.TEST4)
+core.task_register("test.test_wbsk", TASK_NAME.TEST_WBSK)
+core.task_register("test.test_http", TASK_NAME.TEST_HTTP)
 
 log.FATAL("FATAL")

@@ -294,7 +294,7 @@ end
     skid :integer
     sess :integer
 返回:
-    data, size，fin
+    data, size，fin(boolean)
     nil失败
 --]]
 function synsl.slice(fd, skid, sess)

@@ -37,6 +37,9 @@ static inline void *_unpack_default(buffer_ctx *buf, size_t *size, ud_cxt *ud) {
     *size = lens;
     return unpack;
 }
+void protos_init(void) {
+    _websock_init_key();
+}
 void *protos_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid,
     buffer_ctx *buf, size_t *size, ud_cxt *ud, int32_t *closefd, int32_t *slice) {
     void *unpack;

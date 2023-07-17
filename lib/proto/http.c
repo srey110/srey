@@ -276,6 +276,7 @@ void http_pkfree(http_pack_ctx *pack) {
 }
 void http_udfree(ud_cxt *ud) {
     http_pkfree(ud->extra);
+    ud->extra = NULL;
 }
 http_pack_ctx *http_unpack(buffer_ctx *buf, size_t *size, ud_cxt *ud,
     int32_t *closefd, int32_t *slice) {
@@ -335,11 +336,65 @@ void http_pack_req(buffer_ctx *buf, const char *method, const char *url) {
     buffer_appendv(buf, "%s %s HTTP/1.1\r\n", method, enurl);
     FREE(enurl);
 }
-void http_pack_resp(buffer_ctx *buf, int32_t code, const char *reason) {
-    buffer_appendv(buf, "HTTP/1.1 %d %s\r\n", code, reason);
+static inline const char *_http_status(int32_t code) {
+    switch (code) {
+    case 100: return "Continue";
+    case 101: return "Switching Protocols";
+    case 200: return "OK";
+    case 201: return "Created";
+    case 202: return "Accepted";
+    case 203: return "Non-Authoritative Information";
+    case 204: return "No Content";
+    case 205: return "Reset Content";
+    case 206: return "Partial Content";
+    case 300: return "Multiple Choices";
+    case 301: return "Moved Permanently";
+    case 302: return "Found";
+    case 303: return "See Other";
+    case 304: return "Not Modified";
+    case 305: return "Use Proxy";
+    case 307: return "Temporary Redirect";
+    case 400: return "Bad Request";
+    case 401: return "Unauthorized";
+    case 402: return "Payment Required";
+    case 403: return "Forbidden";
+    case 404: return "Not Found";
+    case 405: return "Method Not Allowed";
+    case 406: return "Not Acceptable";
+    case 407: return "Proxy Authentication Required";
+    case 408: return "Request Time-out";
+    case 409: return "Conflict";
+    case 410: return "Gone";
+    case 411: return "Length Required";
+    case 412: return "Precondition Failed";
+    case 413: return "Request Entity Too Large";
+    case 414: return "Request-URI Too Large";
+    case 415: return "Unsupported Media Type";
+    case 416: return "Requested range not satisfiable";
+    case 417: return "Expectation Failed";
+    case 500: return "Internal Server Error";
+    case 501: return "Not Implemented";
+    case 502: return "Bad Gateway";
+    case 503: return "Service Unavailable";
+    case 504: return "Gateway Time-out";
+    case 505: return "HTTP Version not supported";
+    default:
+        return "Unknown";
+    }
+}
+void http_pack_resp(buffer_ctx *buf, int32_t code) {
+    buffer_appendv(buf, "HTTP/1.1 %d %s\r\n", code, _http_status(code));
 }
 void http_pack_head(buffer_ctx *buf, const char *key, const char *val) {
     buffer_appendv(buf, "%s: %s\r\n", key, val);
+}
+char *http_pack_end(buffer_ctx *buf, size_t *size) {
+    buffer_appendv(buf, "\r\n");
+    *size = buffer_size(buf);
+    char *rtn;
+    MALLOC(rtn, *size);
+    buffer_remove(buf, rtn, *size);
+    return rtn;
 }
 char *http_pack_content(buffer_ctx *buf, void *data, size_t lens, size_t *size) {
     buffer_appendv(buf, "Content-Length: %d\r\n\r\n", (uint32_t)lens);
@@ -350,30 +405,15 @@ char *http_pack_content(buffer_ctx *buf, void *data, size_t lens, size_t *size) 
     buffer_remove(buf, rtn, *size);
     return rtn;
 }
-char *http_pack_chunked(buffer_ctx *buf, size_t *size) {
-    buffer_appendv(buf, "Transfer-Encoding: Chunked\r\n\r\n");
-    *size = buffer_size(buf);
-    char *rtn;
-    MALLOC(rtn, *size);
-    buffer_remove(buf, rtn, *size);
-    return rtn;
-}
-char *http_pack_chunked_data(buffer_ctx *buf, void *data, size_t lens, size_t *size) {
-    buffer_appendv(buf, "%x\r\n", (uint32_t)lens);
-    if (NULL != data
-        && lens > 0) {
-        buffer_append(buf, data, lens);
-    } else {
-        buffer_append(buf, "\r\n", strlen("\r\n"));
+char *http_pack_chunked(buffer_ctx *buf, void *data, size_t lens, size_t *size) {
+    if (buffer_size(buf) > 0){
+        buffer_appendv(buf, "Transfer-Encoding: Chunked\r\n\r\n");
     }
-    *size = buffer_size(buf);
-    char *rtn;
-    MALLOC(rtn, *size);
-    buffer_remove(buf, rtn, *size);
-    return rtn;
-}
-char *http_pack_end(buffer_ctx *buf, size_t *size) {
-    buffer_appendv(buf, "\r\n");
+    buffer_appendv(buf, "%x\r\n", (uint32_t)lens);
+    if (lens > 0) {
+        buffer_append(buf, data, lens);
+    }
+    buffer_append(buf, "\r\n", strlen("\r\n"));
     *size = buffer_size(buf);
     char *rtn;
     MALLOC(rtn, *size);
