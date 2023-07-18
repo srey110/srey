@@ -20,7 +20,7 @@ static void _test_synsend(task_ctx *task) {
     size_t rlen;
     uint64_t sess = createid();
     void *spack = simple_pack((void *)sdata, strlen(sdata), &rlen);
-    char *data = syn_synsend(task, fd, skid, sess, spack, rlen, &rlen, 0);
+    char *data = syn_send(task, fd, skid, sess, spack, rlen, &rlen, 0);
     ev_close(&task->srey->netev, fd, skid);
     if (NULL == data) {
         LOG_WARN("syn_synsend error.");
@@ -42,7 +42,7 @@ static void _test_synsendto(task_ctx *task) {
     }
     const char *sdata = "this is syn_synsendto.";
     size_t rlen;
-    char *data = syn_synsendto(task, fd, skid, "127.0.0.1", 15002, (void *)sdata, strlen(sdata), &rlen);
+    char *data = syn_sendto(task, fd, skid, "127.0.0.1", 15002, (void *)sdata, strlen(sdata), &rlen);
     ev_close(&task->srey->netev, fd, skid);
     if (NULL == data) {
         LOG_WARN("syn_synsendto error.");
@@ -127,7 +127,7 @@ void test5_run(task_ctx *task, message_ctx *msg) {
         if (0 != _handshaked) {
             websock_ping(&task->srey->netev, _wbsk_fd, _wbsk_skid, 1);
             const char *wdata = "this is websocket text continuation 0";
-            websock_text(&task->srey->netev, _wbsk_fd, _wbsk_skid, 1, 0, wdata, strlen(wdata));
+            websock_text(&task->srey->netev, _wbsk_fd, _wbsk_skid, 1, 0, (void *)wdata, strlen(wdata));
             websock_continuation(&task->srey->netev, _wbsk_fd, _wbsk_skid, 1, 0, "1", 1);
             websock_continuation(&task->srey->netev, _wbsk_fd, _wbsk_skid, 1, 0, "2", 1);
             websock_continuation(&task->srey->netev, _wbsk_fd, _wbsk_skid, 1, 1, "3", 1);
@@ -140,11 +140,11 @@ void test5_run(task_ctx *task, message_ctx *msg) {
         break;
     }
     case MSG_TYPE_RECV: {
-        LOG_INFO("websock proto %d.", websock_pack_proto(msg->data));
+        //LOG_INFO("websock proto %d.", websock_pack_proto(msg->data));
         size_t lens;
         char *data = websock_pack_data(msg->data, &lens);
         if (0 != lens) {
-            LOG_INFO("websock data lens %d.", (uint32_t)lens);
+            //LOG_INFO("websock data lens %d.", (uint32_t)lens);
         }
         break;
     }

@@ -5,6 +5,8 @@
 #include "service/maps.h"
 #include "proto/dns.h"
 #include "proto/websock.h"
+#include "proto/http.h"
+#include "buffer.h"
 
 typedef enum timeout_type {
     TMO_TYPE_SLEEP = 0x01,
@@ -282,10 +284,10 @@ void _dispatch_coro(task_msg_arg *arg) {
 
 //MSG_TYPE_WAKEUP´¥·¢
 int32_t syn_task_new(task_ctx *task, task_type ttype, name_t name, uint16_t maxcnt, uint16_t maxmsgqulens,
-    task_new _init, task_run _run, task_free _tfree, void(*_arg_free)(void *arg), void *arg) {
+    task_new _init, task_run _run, free_cb _tfree, free_cb _argfree, void *arg) {
     uint64_t sess = createid();
     if (ERR_OK != srey_task_new(task->srey, ttype, name, maxcnt, maxmsgqulens,
-                                task->name, sess, _init, _run, _tfree, _arg_free, arg)) {
+                                task->name, sess, _init, _run, _tfree, _argfree, arg)) {
         return ERR_FAILED;
     }
     _map_cosess_add(&task->coro->mapco, task->coro->curco, sess);
@@ -408,7 +410,7 @@ SOCKET syn_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
     return fd;
 }
 //MSG_TYPE_RECV MSG_TYPE_TIMEOUT MSG_TYPE_CLOSE´¥·¢
-void *syn_synsend(task_ctx *task, SOCKET fd, uint64_t skid, uint64_t sess,
+void *syn_send(task_ctx *task, SOCKET fd, uint64_t skid, uint64_t sess,
     void *data, size_t len, size_t *size, int32_t copy) {
     ev_ud_sess(&task->srey->netev, fd, skid, sess);
     _map_cosess_add(&task->coro->mapco, task->coro->curco, sess);
@@ -440,7 +442,7 @@ void *syn_synsend(task_ctx *task, SOCKET fd, uint64_t skid, uint64_t sess,
     return msg.data;
 }
 //MSG_TYPE_RECVFROM MSG_TYPE_TIMEOUT´¥·¢
-void *syn_synsendto(task_ctx *task, SOCKET fd, uint64_t skid,
+void *syn_sendto(task_ctx *task, SOCKET fd, uint64_t skid,
     const char *ip, const uint16_t port, void *data, size_t len, size_t *size) {
     uint64_t sess = createid();
     ev_ud_sess(&task->srey->netev, fd, skid, sess);
@@ -483,7 +485,7 @@ dns_ip *syn_dns_lookup(task_ctx *task, const char *dns, const char *domain, int3
     }
     char buf[ONEK] = { 0 };
     size_t lens = dns_request_pack(buf, domain, ipv6);
-    void *resp = syn_synsendto(task, fd, skid, dns, 53, buf, lens, &lens);
+    void *resp = syn_sendto(task, fd, skid, dns, 53, buf, lens, &lens);
     ev_close(&task->srey->netev, fd, skid);
     if (NULL == resp) {
         return NULL;
@@ -531,4 +533,135 @@ SOCKET syn_websock_connect(task_ctx *task, const char *host, uint16_t port, stru
     }
     return fd;
 }
+static void syn_websock_continua(task_ctx *task, SOCKET fd, uint64_t skid, int32_t mask, websock_proto proto,
+    send_chunck sendck, free_cb _sckdata_free, void *arg) {
+    char *data;
+    size_t size;
+    data = sendck(&size, arg);
+    if (NULL == data) {
+        LOG_WARN("continua, but get NULL data at first pack.");
+        return;
+    }
+    if (WBSK_TEXT == proto) {
+        websock_text(&task->srey->netev, fd, skid, mask, 0, data, size);
+    } else {
+        websock_binary(&task->srey->netev, fd, skid, mask, 0, data, size);
+    }
+    if (NULL != _sckdata_free) {
+        _sckdata_free(data);
+    }
+    for (;;) {
+        data = sendck(&size, arg);
+        if (NULL == data) {
+            websock_continuation(&task->srey->netev, fd, skid, mask, 1, NULL, 0);
+            break;
+        } else {
+            websock_continuation(&task->srey->netev, fd, skid, mask, 0, data, size);
+            if (NULL != _sckdata_free) {
+                _sckdata_free(data);
+            }
+            syn_sleep(task, 10);
+        }
+    }
+}
+void syn_websock_text(task_ctx *task, SOCKET fd, uint64_t skid, int32_t mask,
+    send_chunck sendck, free_cb _sckdata_free, void *arg) {
+    syn_websock_continua(task, fd, skid, mask, WBSK_TEXT, sendck, _sckdata_free, arg);
+}
+void syn_websock_binary(task_ctx *task, SOCKET fd, uint64_t skid, int32_t mask,
+    send_chunck sendck, free_cb _sckdata_free, void *arg) {
+    syn_websock_continua(task, fd, skid, mask, WBSK_BINARY, sendck, _sckdata_free, arg);
+}
+static struct http_pack_ctx *_http_send_content(task_ctx *task, SOCKET fd, uint64_t skid, uint64_t sess,
+    int32_t req, buffer_ctx *buf) {
+    char *data;
+    size_t size =  buffer_size(buf);
+    MALLOC(data, size);
+    buffer_remove(buf, data, size);
+    if (0 != req) {
+        return syn_send(task, fd, skid, sess, data, size, &size, 0);
+    } else {
+        ev_send(&task->srey->netev, fd, skid, data, size, 0);
+        return NULL;
+    }
+}
+static struct http_pack_ctx *_http_send_chuncked(task_ctx *task, SOCKET fd, uint64_t skid, uint64_t sess,
+    int32_t req, buffer_ctx *buf, send_chunck sendck, free_cb _sckdata_free, void *arg) {
+    char *data;
+    size_t size;
+    for (;;) {
+        data = sendck(&size, arg);
+        if (NULL == data) {
+            http_pack_chunked(buf, NULL, 0);
+            size = buffer_size(buf);
+            MALLOC(data, size);
+            buffer_remove(buf, data, size);
+            if (0 != req) {
+                return syn_send(task, fd, skid, sess, data, size, &size, 0);
+            } else {
+                ev_send(&task->srey->netev, fd, skid, data, size, 0);
+                return NULL;
+            }
+        } else {
+            http_pack_chunked(buf, data, size);
+            if (NULL != _sckdata_free) {
+                _sckdata_free(data);
+            }
+            size = buffer_size(buf);
+            MALLOC(data, size);
+            buffer_remove(buf, data, size);
+            ev_send(&task->srey->netev, fd, skid, data, size, 0);
+            syn_sleep(task, 10);
+        }
+    }
+    return NULL;
+}
+static struct http_pack_ctx *_syn_http_send(task_ctx *task, SOCKET fd, uint64_t skid, int32_t req, buffer_ctx *buf,
+    send_chunck sendck, recv_chunck recvck, free_cb _sckdata_free, void *arg) {
+    uint64_t sess;
+    if (0 != req) {
+        sess = createid();
+    } else  {
+        sess = 0;
+    }
+    struct http_pack_ctx *hpack;
+    if (NULL == sendck) {
+        hpack = _http_send_content(task, fd, skid, sess, req, buf);
+    } else {
+        hpack = _http_send_chuncked(task, fd, skid, sess, req, buf, sendck, _sckdata_free, arg);
+    }
+    if (NULL == hpack
+        || NULL == recvck){
+        return hpack;
+    }
+    char *data;
+    size_t size;
+    int32_t end = 0;
+    for (;;) {
+        data = syn_slice(task, fd, skid, sess, &size, &end);
+        if (NULL == data
+            && 1 != end) {
+            return NULL;
+        }
+        data = http_data((struct http_pack_ctx *)data, &size);
+        recvck((void *)data, size, end, arg);
+        if (0 != end) {
+            break;
+        }
+    }
+    return hpack;
+}
+struct http_pack_ctx * http_get(task_ctx *task, SOCKET fd, uint64_t skid, buffer_ctx *buf,
+    recv_chunck recvck, void *arg) {
+    return _syn_http_send(task, fd, skid, 1, buf, NULL, recvck, NULL, arg);
+}
+struct http_pack_ctx *http_post(task_ctx *task, SOCKET fd, uint64_t skid, buffer_ctx *buf,
+    send_chunck sendck, recv_chunck recvck, free_cb _sckdata_free, void *arg) {
+    return _syn_http_send(task, fd, skid, 1, buf, sendck, recvck, _sckdata_free, arg);
+}
+void http_response(task_ctx *task, SOCKET fd, uint64_t skid, buffer_ctx *buf,
+    send_chunck sendck, free_cb _sckdata_free, void *arg) {
+    _syn_http_send(task, fd, skid, 0, buf, sendck, NULL, _sckdata_free, arg);
+}
+
 #endif

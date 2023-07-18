@@ -17,9 +17,9 @@ void http_udfree(ud_cxt *ud);
 void http_pack_req(buffer_ctx *buf, const char *method, const char *url);
 void http_pack_resp(buffer_ctx *buf, int32_t code);
 void http_pack_head(buffer_ctx *buf, const char *key, const char *val);
-char *http_pack_end(buffer_ctx *buf, size_t *size);//只有头的时候
-char *http_pack_content(buffer_ctx *buf, void *data, size_t lens, size_t *size);
-char *http_pack_chunked(buffer_ctx *buf, void *data, size_t lens, size_t *size);
+void http_pack_end(buffer_ctx *buf);//只有头的时候
+void http_pack_content(buffer_ctx *buf, void *data, size_t lens);
+void http_pack_chunked(buffer_ctx *buf, void *data, size_t lens);
 
 struct http_pack_ctx *_http_parsehead(buffer_ctx *buf, int32_t *status, int32_t *closefd);
 int32_t _http_check_keyval(http_header_ctx *head, const char *key, const char *val);

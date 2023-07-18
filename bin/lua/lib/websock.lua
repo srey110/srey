@@ -69,20 +69,20 @@ function wbsk.close(fd, skid, mask)
     sutils.websock_close(fd, skid, mask and 1 or 0)
 end
 local function continua(fd, skid, proto, func, mask, ...)
-    local data = func(...)
+    local data, size = func(...)
     if not data then
         log.WARN("continua, but get nil data at first pack.")
         return
     end
     if WEBSOCK_PROTO.TEXT == proto then
-        sutils.websock_text(fd, skid, mask, 0, data, #data)
+        sutils.websock_text(fd, skid, mask, 0, data, size or #data)
     elseif WEBSOCK_PROTO.BINARY == proto then
-        sutils.websock_binary(fd, skid, mask, 0, data, #data)
+        sutils.websock_binary(fd, skid, mask, 0, data, size or #data)
     end
     while not core.task_closing()  do
-        data = func(...)
+        data, size = func(...)
         if data then
-            sutils.websock_continuation(fd, skid, mask, 0, data, #data)
+            sutils.websock_continuation(fd, skid, mask, 0, data, size or #data)
             syn.sleep(10)
         else
             sutils.websock_continuation(fd, skid, mask, 1, nil, 0)
@@ -95,7 +95,7 @@ end
  参数:
      fd :integer
      skid :integer
-     info :string or userdata or func(返回 data)
+     info :string or userdata or func(返回 data size)
      lens :integer
      mask :bool
  --]]
@@ -111,7 +111,7 @@ end
  参数:
      fd :integer
      skid :integer
-     info :string or userdata or func(返回 data)
+     info :string or userdata or func(返回 data, size)
      lens :integer
      mask :bool
  --]]

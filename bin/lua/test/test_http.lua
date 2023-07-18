@@ -46,16 +46,16 @@ local function recv(msg)
     elseif 1 == pack.chunked then
         --printd("chunked start")
         cksize = 0
-        local filename = string.format("%s%s%d %s", _propath, _pathsep, msg.skid, os.date("%H-%M-%S", os.time()))
-        local file = io.open(filename, "wb")
-        files[msg.skid] = file
+        --local filename = string.format("%s%s%d %s", _propath, _pathsep, msg.skid, os.date("%H-%M-%S", os.time()))
+        --local file = io.open(filename, "wb")
+        --files[msg.skid] = file
     elseif 2 == pack.chunked then
         if pack.data then
             cksize = cksize + #pack.data
-            files[msg.skid]:write(pack.data)
+            --files[msg.skid]:write(pack.data)
         else
-            files[msg.skid]:close()
-            files[msg.skid] = nil
+            --files[msg.skid]:close()
+            --files[msg.skid] = nil
             --printd("chunked end  size %d", cksize)
             local cnt = {n = 0}
             http.response(msg.fd, msg.skid, 200, head, chunked, cnt)

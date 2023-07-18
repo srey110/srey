@@ -141,13 +141,13 @@ local function startup()
     test_request()
     test_dns()
     test_websk()
-    --test_http()
+    test_http()
     syn.timeout(5000, timeout)
 end
 cbs.cb_startup(startup)
 
 local function recv(msg)
-    printd("pack type %d, size %d", msg.pktype, msg.size)
+    --printd("pack type %d, size %d", msg.pktype, msg.size)
     srey.close(msg.fd, msg.skid)
 end
 cbs.cb_recv(recv)

@@ -14,7 +14,7 @@ struct evssl_ctx *srey_ssl_qury(srey_ctx *ctx, name_t name);
 #endif
 
 int32_t srey_task_new(srey_ctx *ctx, task_type ttype, name_t name, uint16_t maxcnt, uint16_t maxmsgqulens,
-    name_t src, uint64_t sess, task_new _init, task_run _run, task_free _tfree, void(*_arg_free)(void *arg), void *arg);
+    name_t src, uint64_t sess, task_new _init, task_run _run, free_cb _tfree, free_cb _argfree, void *arg);
 task_ctx *srey_task_grab(srey_ctx *ctx, name_t name);
 void srey_task_addref(task_ctx *task);
 void srey_task_release(task_ctx *task);

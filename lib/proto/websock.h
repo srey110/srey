@@ -20,7 +20,7 @@ void websock_ping(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t mask);
 void websock_pong(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t mask);
 void websock_close(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t mask);
 void websock_text(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t mask,
-    int32_t fin, const char *data, size_t dlens);
+    int32_t fin, void *data, size_t dlens);
 void websock_binary(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t mask,
     int32_t fin, void *data, size_t dlens);
 void websock_continuation(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t mask,

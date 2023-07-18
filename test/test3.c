@@ -17,11 +17,11 @@ void test3_run(task_ctx *task, message_ctx *msg) {
         task_ctx *test4 = srey_task_grab(task->srey, TEST4);
         if (NULL == test4) {
 #if WITH_CORO
-            if (ERR_OK != syn_task_new(task, TTYPE_CORO, TEST4, 0, 0, NULL, test4_run, NULL, NULL, NULL)){
+            if (ERR_OK != syn_task_new(task, TTYPE_C, TEST4, 0, 0, NULL, test4_run, NULL, NULL, NULL)){
                 LOG_WARN("syn_task_new test4 error.");
             }
 #else
-            if (ERR_OK != srey_task_new(task->srey, TTYPE_DEF, TEST4, 0, 0, INVALID_TNAME, 0, NULL, test4_run, NULL, NULL, NULL)) {
+            if (ERR_OK != srey_task_new(task->srey, TTYPE_C, TEST4, 0, 0, INVALID_TNAME, 0, NULL, test4_run, NULL, NULL, NULL)) {
                 LOG_WARN("syn_task_new test4 error.");
             }
 #endif 

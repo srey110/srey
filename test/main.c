@@ -105,16 +105,12 @@ int main(int argc, char *argv[]) {
         PRINT("srey_ssl_register error.");
     }
 #endif
-    task_type ttype = TTYPE_DEF;
-#if WITH_CORO
-    ttype = TTYPE_CORO;
-#endif
-    srey_task_new(srey, ttype, TEST1, 0, 0, INVALID_TNAME, 0, NULL, test1_run, NULL, NULL, NULL);
-    srey_task_new(srey, ttype, TEST2, 0, 0, INVALID_TNAME, 0, NULL, test2_run, NULL, NULL, NULL);
-    srey_task_new(srey, ttype, TEST3, 0, 0, INVALID_TNAME, 0, NULL, test3_run, NULL, NULL, NULL);
-    srey_task_new(srey, ttype, TEST4, 0, 0, INVALID_TNAME, 0, NULL, test4_run, NULL, NULL, NULL);
-    srey_task_new(srey, ttype, TEST5, 0, 0, INVALID_TNAME, 0, NULL, test5_run, NULL, NULL, NULL);
-    srey_task_new(srey, ttype, TEST6, 0, 0, INVALID_TNAME, 0, NULL, test6_run, NULL, NULL, NULL);
+    srey_task_new(srey, TTYPE_C, TEST1, 0, 0, INVALID_TNAME, 0, NULL, test1_run, NULL, NULL, NULL);
+    srey_task_new(srey, TTYPE_C, TEST2, 0, 0, INVALID_TNAME, 0, NULL, test2_run, NULL, NULL, NULL);
+    srey_task_new(srey, TTYPE_C, TEST3, 0, 0, INVALID_TNAME, 0, NULL, test3_run, NULL, NULL, NULL);
+    srey_task_new(srey, TTYPE_C, TEST4, 0, 0, INVALID_TNAME, 0, NULL, test4_run, NULL, NULL, NULL);
+    srey_task_new(srey, TTYPE_C, TEST5, 0, 0, INVALID_TNAME, 0, NULL, test5_run, NULL, NULL, NULL);
+    srey_task_new(srey, TTYPE_C, TEST6, 0, 0, INVALID_TNAME, 0, NULL, test6_run, NULL, NULL, NULL);
 #if START_ONLY_EV
     ev_listen(&ev, NULL, "0.0.0.0", 16000, &cbs, NULL, NULL);
     uint64_t skid;

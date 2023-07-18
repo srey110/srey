@@ -22,7 +22,6 @@ typedef struct task_ctx task_ctx;
 typedef struct message_ctx message_ctx;
 typedef void *(*task_new)(task_ctx *task, void *arg);
 typedef void(*task_run)(task_ctx *task, message_ctx *msg);
-typedef void(*task_free)(void *handle);
 
 typedef enum msg_type {
     MSG_TYPE_NONE = 0x00,
@@ -43,10 +42,7 @@ typedef enum msg_type {
     MSG_TYPE_CNT
 }msg_type;
 typedef enum task_type{
-    TTYPE_DEF = 0x00,
-#if WITH_CORO
-    TTYPE_CORO,
-#endif
+    TTYPE_C = 0x00,
 #if WITH_LUA
     TTYPE_LUA,
 #endif
@@ -154,8 +150,8 @@ struct task_ctx {
     atomic_t ref;
     task_new _init;
     task_run _run;
-    task_free _free;
-    void(*_arg_free)(void *arg);
+    free_cb _free;
+    free_cb _arg_free;
     void *arg;
     void *handle;
     srey_ctx *srey;

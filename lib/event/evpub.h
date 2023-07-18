@@ -36,7 +36,7 @@ typedef void(*recv_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, si
 typedef void(*recvfrom_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud);
 typedef void(*send_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid, size_t size, ud_cxt *ud);
 typedef void(*close_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud);
-typedef void(*free_udcb)(ud_cxt *ud);
+typedef void(*free_cb)(void *arg);
 typedef struct cbs_ctx {
     accept_cb acp_cb;
     connect_cb conn_cb;
@@ -44,7 +44,7 @@ typedef struct cbs_ctx {
     recvfrom_cb rf_cb;
     close_cb c_cb;
     send_cb s_cb;
-    free_udcb ud_free;
+    free_cb ud_free;
 }cbs_ctx;
 
 #define GET_POS(fd, n) (fd % n)

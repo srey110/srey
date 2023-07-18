@@ -135,11 +135,11 @@ local function http_msg(rsp, fd, skid, fline, headers, ckfunc, info, ...)
         return http_send(rsp, fd, skid, msg, ckfunc)
     elseif "function" == msgtype then
         table.insert(msg, "Transfer-Encoding: chunked\r\n\r\n")
-        local smsg, rtn
+        local smsg, rtn, size
         while not core.task_closing() do
-            rtn = info(...)
+            rtn, size = info(...)
             if rtn then
-                table.insert(msg, string.format("%x\r\n", #rtn))
+                table.insert(msg, string.format("%x\r\n", size or #rtn))
                 table.insert(msg, rtn)
                 table.insert(msg, "\r\n")
                 smsg = table.concat(msg)
@@ -180,7 +180,7 @@ end
     url :string
     headers :table
     ckfunc :function(fd, skid, hinfo, data, size, fin)
-    info :string table function
+    info :string table function(返回 data size)
     ...  info为function时的参数
 返回:
     table {chunked, status, head, data, cksize}

@@ -388,24 +388,14 @@ void http_pack_resp(buffer_ctx *buf, int32_t code) {
 void http_pack_head(buffer_ctx *buf, const char *key, const char *val) {
     buffer_appendv(buf, "%s: %s\r\n", key, val);
 }
-char *http_pack_end(buffer_ctx *buf, size_t *size) {
-    buffer_appendv(buf, "\r\n");
-    *size = buffer_size(buf);
-    char *rtn;
-    MALLOC(rtn, *size);
-    buffer_remove(buf, rtn, *size);
-    return rtn;
+void http_pack_end(buffer_ctx *buf) {
+    buffer_append(buf, "\r\n", strlen("\r\n"));
 }
-char *http_pack_content(buffer_ctx *buf, void *data, size_t lens, size_t *size) {
+void http_pack_content(buffer_ctx *buf, void *data, size_t lens) {
     buffer_appendv(buf, "Content-Length: %d\r\n\r\n", (uint32_t)lens);
     buffer_append(buf, data, lens);
-    *size = buffer_size(buf);
-    char *rtn;
-    MALLOC(rtn, *size);
-    buffer_remove(buf, rtn, *size);
-    return rtn;
 }
-char *http_pack_chunked(buffer_ctx *buf, void *data, size_t lens, size_t *size) {
+void http_pack_chunked(buffer_ctx *buf, void *data, size_t lens) {
     if (buffer_size(buf) > 0){
         buffer_appendv(buf, "Transfer-Encoding: Chunked\r\n\r\n");
     }
@@ -414,9 +404,4 @@ char *http_pack_chunked(buffer_ctx *buf, void *data, size_t lens, size_t *size) 
         buffer_append(buf, data, lens);
     }
     buffer_append(buf, "\r\n", strlen("\r\n"));
-    *size = buffer_size(buf);
-    char *rtn;
-    MALLOC(rtn, *size);
-    buffer_remove(buf, rtn, *size);
-    return rtn;
 }

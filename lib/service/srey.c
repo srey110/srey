@@ -218,11 +218,11 @@ static inline void _dispatch_message(srey_ctx *ctx, worker_ctx *worker, worker_v
     int32_t over;
     for (uint16_t i = 0; i < arg->task->maxcnt; i++) {
         over = 1;
-        if (ERR_OK == _get_tmo_message(arg->task, &arg->msg)) {
+        if (ERR_OK == _get_message(arg->task, &arg->msg)) {
             _message_run(ctx, worker, version, arg);
             over = 0;
         }
-        if (ERR_OK == _get_message(arg->task, &arg->msg)) {
+        if (ERR_OK == _get_tmo_message(arg->task, &arg->msg)) {
             _message_run(ctx, worker, version, arg);
             over = 0;
         }
@@ -432,9 +432,10 @@ static inline void _dispatch_lua(task_msg_arg *arg) {
 }
 #endif
 static void _disp_funcs_init(void) {
-    _disp_funcs[TTYPE_DEF] = _dispatch_default;
 #if WITH_CORO
-    _disp_funcs[TTYPE_CORO] = _dispatch_coro;
+    _disp_funcs[TTYPE_C] = _dispatch_coro;
+#else
+    _disp_funcs[TTYPE_C] = _dispatch_default;
 #endif
 #if WITH_LUA
     _disp_funcs[TTYPE_LUA] = _dispatch_lua;
@@ -643,14 +644,14 @@ static void _task_free(task_ctx *task) {
     FREE(task);
 }
 int32_t srey_task_new(srey_ctx *ctx, task_type ttype, name_t name, uint16_t maxcnt, uint16_t maxmsgqulens,
-    name_t src, uint64_t sess, task_new _init, task_run _run, task_free _tfree, void(*_arg_free)(void *arg), void *arg) {
+    name_t src, uint64_t sess, task_new _init, task_run _run, free_cb _tfree, free_cb _argfree, void *arg) {
     if (INVALID_TNAME == name
         || NULL == _run
         || (INVALID_TNAME != src
             && 0 == sess)) {
-        if (NULL != _arg_free
+        if (NULL != _argfree
             && NULL != arg) {
-            _arg_free(arg);
+            _argfree(arg);
         }
         return ERR_FAILED;
     }
@@ -665,13 +666,11 @@ int32_t srey_task_new(srey_ctx *ctx, task_type ttype, name_t name, uint16_t maxc
     task->_init = _init;
     task->_run = _run;
     task->_free = _tfree;
-    task->_arg_free = _arg_free;
+    task->_arg_free = _argfree;
     task->arg = arg;
     task->srey = ctx;
 #if WITH_CORO
-    if (TTYPE_CORO == ttype) {
-        task->coro = _coro_new();
-    }
+    task->coro = _coro_new();
 #endif
     spin_init(&task->spin_msg, SPIN_CNT_TASKMSG);
     qu_message_init(&task->qumsg, task->maxmsgqulens);

@@ -430,14 +430,14 @@ void websock_close(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t mask) {
     
 }
 void websock_text(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t mask,
-    int32_t fin, const char *data, size_t dlens) {
+    int32_t fin, void *data, size_t dlens) {
     if (0 == mask) {
         size_t flens;
-        void *frame = _websock_create_pack(fin, WBSK_TEXT, NULL, (void *)data, dlens, &flens);
+        void *frame = _websock_create_pack(fin, WBSK_TEXT, NULL, data, dlens, &flens);
         ev_send(ev, fd, skid, frame, flens, 0);
     } else {
         size_t flens;
-        void *frame = _websock_create_pack(fin, WBSK_TEXT, _mask_key, (void *)data, dlens, &flens);
+        void *frame = _websock_create_pack(fin, WBSK_TEXT, _mask_key, data, dlens, &flens);
         ev_send(ev, fd, skid, frame, flens, 0);
     }
 }

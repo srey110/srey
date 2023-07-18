@@ -8,13 +8,16 @@
       <Filter>ltasks</Filter>
     </ClCompile>
     <ClCompile Include="main.c" />
+    <ClCompile Include="ctasks\ctask.c">
+      <Filter>ctasks</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <Filter Include="tasks">
-      <UniqueIdentifier>{fabfe5af-2f5a-4d69-b198-b89a7facbfc6}</UniqueIdentifier>
-    </Filter>
     <Filter Include="ltasks">
       <UniqueIdentifier>{89dccd9f-87ab-426b-8905-bfc3e48849a0}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="ctasks">
+      <UniqueIdentifier>{fabfe5af-2f5a-4d69-b198-b89a7facbfc6}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
@@ -22,5 +25,8 @@
       <Filter>ltasks</Filter>
     </ClInclude>
     <ClInclude Include="startup.h" />
+    <ClInclude Include="ctasks\ctask.h">
+      <Filter>ctasks</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>
