@@ -28,6 +28,7 @@ typedef struct off_buf_ctx {
 }off_buf_ctx;
 struct task_ctx;
 
+typedef void(*free_cb)(void *arg);
 #define COPY_UD(dst, src)\
 do {\
     if (NULL != (src)){\

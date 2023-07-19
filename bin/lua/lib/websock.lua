@@ -79,7 +79,7 @@ local function continua(fd, skid, proto, func, mask, ...)
     elseif WEBSOCK_PROTO.BINARY == proto then
         sutils.websock_binary(fd, skid, mask, 0, data, size or #data)
     end
-    while not core.task_closing()  do
+    while true do
         data, size = func(...)
         if data then
             sutils.websock_continuation(fd, skid, mask, 0, data, size or #data)

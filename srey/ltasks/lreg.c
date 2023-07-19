@@ -640,12 +640,12 @@ static int32_t _lreg_websock_continuation(lua_State *lua) {
     return 0;
 }
 static int32_t _lreg_msg_clean(lua_State *lua) {
-    msg_type mtype = (msg_type)luaL_checkinteger(lua, 1);
+    msg_type mtype = (msg_type)luaL_checkinteger(lua, 2);
     pack_type pktype = PACK_NONE;
-    if (LUA_TNUMBER == lua_type(lua, 2)) {
-        pktype = (pack_type)luaL_checkinteger(lua, 2);
+    if (LUA_TNUMBER == lua_type(lua, 3)) {
+        pktype = (pack_type)luaL_checkinteger(lua, 3);
     }
-    void *data = lua_touserdata(lua, 3);
+    void *data = lua_touserdata(lua, 4);
     message_clean(mtype, pktype, data);
     return 0;
 }

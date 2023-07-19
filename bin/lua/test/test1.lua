@@ -7,7 +7,7 @@ local cbs = require("lib.cbs")
 local function timeout(tmoarg)
     local task2<close> = srey.task_grab(TASK_NAME.TEST2)
     if not task2 then
-        if not syn.task_register("test.test2", TASK_NAME.TEST2, 0, 0) then
+        if not srey.task_register("test.test2", TASK_NAME.TEST2) then
             printd("task_synregister error.")
         end
     end

@@ -157,13 +157,11 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="ctasks\ctask.c" />
     <ClCompile Include="ltasks\lreg.c" />
     <ClCompile Include="ltasks\ltask.c" />
     <ClCompile Include="main.c" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="ctasks\ctask.h" />
     <ClInclude Include="ltasks\ltask.h" />
     <ClInclude Include="startup.h" />
   </ItemGroup>

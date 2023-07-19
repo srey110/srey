@@ -33,19 +33,18 @@ WEBSOCK_PROTO = {
 }
 --消息类型
 MSG_TYPE = {
-    WAKEUP = 1,
-    STARTUP = 2,
-    CLOSING = 3,
-    TIMEOUT = 4,
-    ACCEPT = 5,
-    CONNECT = 6,
-    HANDSHAKED = 7,
-    RECV = 8,
-    SEND = 9,
-    CLOSE = 10,
-    RECVFROM = 11,
-    REQUEST = 12,
-    RESPONSE = 13
+    STARTUP = 0x01,
+    CLOSING = 0x02,
+    TIMEOUT = 0x03,
+    ACCEPT = 0x04,
+    CONNECT = 0x05,
+    HANDSHAKED = 0x06,
+    RECV = 0x07,
+    SEND = 0x08,
+    CLOSE = 0x09,
+    RECVFROM = 0x0a,
+    REQUEST = 0x0b,
+    RESPONSE = 0x0c
 }
 --分片消息类型
 SLICE_TYPE = {

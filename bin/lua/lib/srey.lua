@@ -56,7 +56,6 @@ local function _coro_cb(func, msg, ...)
     _xpcall(func, ...)
     task_release()
     if MSG_TYPE.CLOSING == msg.mtype then
-        core.task_set_closing()
         task_release()
     end
 end
@@ -121,9 +120,7 @@ local function _dispatch_request(msg)
 end
 function dispatch_message(msg)
     setmetatable(msg, { __gc = function (tmsg) msg_clean(tmsg) end })
-    if MSG_TYPE.WAKEUP == msg.mtype then
-        resume_sess(msg, true, false)
-    elseif MSG_TYPE.STARTUP == msg.mtype then
+    if MSG_TYPE.STARTUP == msg.mtype then
         local func = cb_func(msg.mtype)
         if func then
             coro_run(_coro_cb, func, msg)

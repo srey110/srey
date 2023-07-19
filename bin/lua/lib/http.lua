@@ -97,7 +97,7 @@ local function http_send(rsp, fd, skid, msg, ckfunc)
         pack.cksize = 0
         pack.fin = false
         local data, hdata, hsize, fin
-        while not core.task_closing() do
+        while true do
             data, _, fin = syn.slice(fd, skid, sess)
             if not data then
                 return
@@ -136,7 +136,7 @@ local function http_msg(rsp, fd, skid, fline, headers, ckfunc, info, ...)
     elseif "function" == msgtype then
         table.insert(msg, "Transfer-Encoding: chunked\r\n\r\n")
         local smsg, rtn, size
-        while not core.task_closing() do
+        while true do
             rtn, size = info(...)
             if rtn then
                 table.insert(msg, string.format("%x\r\n", size or #rtn))

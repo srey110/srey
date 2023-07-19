@@ -8,8 +8,6 @@
 typedef void (*recv_chunck)(void *data, size_t lens, int32_t end, void *arg);
 typedef void *(*send_chunck)(size_t *lens, void *arg);
 
-int32_t syn_task_new(task_ctx *task, task_type ttype, name_t name, uint16_t maxcnt, uint16_t maxmsgqulens,
-    task_new _init, task_run _run, free_cb _tfree, free_cb _argfree, void *arg);
 void syn_sleep(task_ctx *task, uint32_t ms);
 void syn_timeout(task_ctx *task, uint64_t sess, uint32_t ms);
 void *syn_request(task_ctx *dst, task_ctx *src, void *data, size_t size, int32_t copy, int32_t *erro, size_t *lens);

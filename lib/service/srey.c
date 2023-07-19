@@ -5,7 +5,6 @@
 typedef void(*_dispatch_func)(task_msg_arg *arg);
 static _dispatch_func _disp_funcs[TTYPE_CNT] = { 0 };
 
-static void _task_free(task_ctx *task);
 static inline uint64_t _map_task_hash(const void *item, uint64_t seed0, uint64_t seed1) {
     return hash((const char *)(*(name_t **)item), sizeof(name_t));
 }
@@ -29,7 +28,7 @@ static inline task_ctx *_map_task_get(struct hashmap *map, name_t name) {
     return UPCAST(*ptr, task_ctx, name);
 }
 static void _map_task_free(void *item) {
-    _task_free(UPCAST(*((name_t **)item), task_ctx, name));
+    srey_task_free(UPCAST(*((name_t **)item), task_ctx, name));
 }
 void message_clean(msg_type mtype, pack_type pktype, void *data) {
     switch (mtype) {
@@ -359,68 +358,10 @@ static void _loop_monitor(void *arg) {
         }
     }
 }
-static inline int32_t _task_startup(srey_ctx *ctx, task_ctx *task, message_ctx *startup) {
-    if (NULL != task->_init) {
-        task->handle = task->_init(task, task->arg);
-        if (NULL == task->handle) {
-            LOG_ERROR("task %d init failed.", task->name);
-            _task_free(task);
-            return ERR_FAILED;
-        }
-    }
-    rwlock_wrlock(&ctx->lcktasks);
-    if (NULL != _map_task_get(ctx->maptasks, task->name)) {
-        rwlock_unlock(&ctx->lcktasks);
-        LOG_ERROR("task name %d repeat.", task->name);
-        _task_free(task);
-        return ERR_FAILED;
-    }
-    _map_task_set(ctx->maptasks, task);
-    qu_message_push(&task->qumsg, startup);
-    task->global = 1;
-    rwlock_unlock(&ctx->lcktasks);
-#if RECORD_WORKER_LOAD
-    ATOMIC_ADD(&ctx->worker[task->index].ntask, 1);
-#endif
-    _worker_wakeup(&ctx->worker[task->index], task->name, 1);
-    return ERR_OK;
-}
-static void _loop_initer(void *arg) {
-    srey_ctx *ctx = (srey_ctx *)arg;
-    initer_ctx *initer = &ctx->initer;
-    task_ctx *totask;
-    initer_msg *tmp;
-    initer_msg initmsg;
-    message_ctx startup;
-    startup.mtype = MSG_TYPE_STARTUP;
-    message_ctx wakeup;
-    wakeup.mtype = MSG_TYPE_WAKEUP;
-    while (0 == initer->stop) {
-        mutex_lock(&initer->mutex);
-        tmp = qu_initer_pop(&initer->qutask);
-        if (NULL == tmp) {
-            initer->waiting++;
-            cond_wait(&initer->cond, &initer->mutex);
-            initer->waiting--;
-        } else {
-            initmsg = *tmp;
-        }
-        mutex_unlock(&initer->mutex);
-        if (NULL == tmp) {
-            continue;
-        }
-        wakeup.erro = (int8_t)_task_startup(ctx, initmsg.task, &startup);
-        totask = srey_task_grab(ctx, initmsg.src);
-        if (NULL == totask) {
-            continue;
-        }
-        wakeup.sess = initmsg.sess;
-        _push_message(totask, &wakeup);
-        srey_task_release(totask);
-    }
-}
 static inline void _dispatch_default(task_msg_arg *arg) {
-    arg->task->_run(arg->task, &arg->msg);
+    if (NULL != arg->task->_run[arg->msg.mtype]) {
+        arg->task->_run[arg->msg.mtype](arg->task, &arg->msg);
+    }
     message_clean(arg->msg.mtype, arg->msg.pktype, arg->msg.data);
     if (MSG_TYPE_CLOSING == arg->msg.mtype) {
         srey_task_release(arg->task);
@@ -428,7 +369,8 @@ static inline void _dispatch_default(task_msg_arg *arg) {
 }
 #if WITH_LUA
 static inline void _dispatch_lua(task_msg_arg *arg) {
-    arg->task->_run(arg->task, &arg->msg);
+    ASSERTAB(NULL != arg->task->_run[arg->msg.mtype], "lua task not set callback functhion.");
+    arg->task->_run[arg->msg.mtype](arg->task, &arg->msg);
 }
 #endif
 static void _disp_funcs_init(void) {
@@ -462,10 +404,6 @@ srey_ctx *srey_init(uint16_t nnet, uint16_t nworker, size_t stack_size, uint16_t
     rwlock_init(&ctx->lckcerts);
     arr_certs_init(&ctx->arrcerts, 0);
 #endif
-    mutex_init(&ctx->initer.mutex);
-    cond_init(&ctx->initer.cond);
-    qu_initer_init(&ctx->initer.qutask, 0);
-    ctx->initer.thread = thread_creat(_loop_initer, ctx);
     ctx->monitor.thread = thread_creat(_loop_monitor, ctx);
     worker_ctx *worker;
     for (uint16_t i = 0; i < ctx->nworker; i++) {
@@ -510,7 +448,7 @@ static void _task_closing(srey_ctx *ctx) {
             rwlock_unlock(&ctx->lcktasks);
             break;
         }
-        if (time >= 3000) {
+        if (time >= 20 * 1000) {
             hashmap_scan(ctx->maptasks, _scan_timeout, NULL);
             rwlock_unlock(&ctx->lcktasks);
             break;
@@ -529,12 +467,6 @@ void srey_free(srey_ctx *ctx) {
         _worker_wakeup(worker, INVALID_TNAME, 1);
         thread_join(worker->thread);
     }
-    ctx->initer.stop = 1;
-    mutex_lock(&ctx->initer.mutex);
-    if (ctx->initer.waiting > 0) {
-        cond_signal(&ctx->initer.cond);
-    }
-    mutex_unlock(&ctx->initer.mutex);
     ctx->monitor.stop = 1;
     thread_join(ctx->monitor.thread);
     ev_free(&ctx->netev);
@@ -553,15 +485,8 @@ void srey_free(srey_ctx *ctx) {
         cond_free(&worker->cond);
         qu_task_free(&worker->qutasks);
     }
-    initer_msg *msg;
-    while (NULL != (msg = qu_initer_pop(&ctx->initer.qutask))) {
-        _task_free(msg->task);
-    }
     hashmap_free(ctx->maptasks);
     rwlock_free(&ctx->lcktasks);
-    mutex_free(&ctx->initer.mutex);
-    cond_free(&ctx->initer.cond);
-    qu_initer_free(&ctx->initer.qutask);
     FREE(ctx->worker);
     FREE(ctx->monitor.version);
     FREE(ctx);
@@ -622,14 +547,31 @@ struct evssl_ctx *srey_ssl_qury(srey_ctx *ctx, name_t name) {
     return NULL == cert ? NULL : cert->ssl;
 }
 #endif
-static void _task_free(task_ctx *task) {
+task_ctx *srey_task_new(task_type ttype, name_t name, uint16_t maxcnt, uint16_t maxmsgqulens, free_cb _argfree, void *arg) {
+    if (INVALID_TNAME == name) {
+        return NULL;
+    }
+    task_ctx *task;
+    CALLOC(task, 1, sizeof(task_ctx));
+    task->ttype = (uint8_t)ttype;
+    task->name = name;
+    task->maxcnt = 0 == maxcnt ? 5 : maxcnt;
+    task->ref = 1;
+    task->maxmsgqulens = 0 == maxmsgqulens ? ONEK : maxmsgqulens;
+    task->_arg_free = _argfree;
+    task->arg = arg;
+#if WITH_CORO
+    task->coro = _coro_new();
+#endif
+    spin_init(&task->spin_msg, SPIN_CNT_TASKMSG);
+    qu_message_init(&task->qumsg, task->maxmsgqulens);
+    qu_message_init(&task->qutmo, task->maxmsgqulens);
+    return task;
+}
+void srey_task_free(task_ctx *task) {
     if (NULL != task->_arg_free
         && NULL != task->arg) {
         task->_arg_free(task->arg);
-    }
-    if (NULL != task->_free
-        && NULL != task->handle) {
-        task->_free(task->handle);
     }
     message_ctx *msg;
     while (NULL != (msg = qu_message_pop(&task->qumsg))) {
@@ -643,48 +585,34 @@ static void _task_free(task_ctx *task) {
     qu_message_free(&task->qutmo);
     FREE(task);
 }
-int32_t srey_task_new(srey_ctx *ctx, task_type ttype, name_t name, uint16_t maxcnt, uint16_t maxmsgqulens,
-    name_t src, uint64_t sess, task_new _init, task_run _run, free_cb _tfree, free_cb _argfree, void *arg) {
-    if (INVALID_TNAME == name
-        || NULL == _run
-        || (INVALID_TNAME != src
-            && 0 == sess)) {
-        if (NULL != _argfree
-            && NULL != arg) {
-            _argfree(arg);
+void srey_task_regcb(task_ctx *task, msg_type mtype, task_run _cb) {
+    if (MSG_TYPE_ALL == mtype) {
+        for (msg_type i = MSG_TYPE_NONE + 1; i < MSG_TYPE_ALL; i++) {
+            task->_run[i] = _cb;
         }
+    } else {
+        task->_run[mtype] = _cb;
+    }
+}
+int32_t srey_task_register(srey_ctx *ctx, task_ctx *task) {
+    task->index = (uint16_t)(ATOMIC_ADD(&ctx->index, 1) % ctx->nworker);
+    task->srey = ctx;
+    message_ctx startup;
+    startup.mtype = MSG_TYPE_STARTUP;
+    rwlock_wrlock(&ctx->lcktasks);
+    if (NULL != _map_task_get(ctx->maptasks, task->name)) {
+        rwlock_unlock(&ctx->lcktasks);
+        LOG_ERROR("task name %d repeat.", task->name);
         return ERR_FAILED;
     }
-    task_ctx *task;
-    CALLOC(task, 1, sizeof(task_ctx));
-    task->index = (uint16_t)(ATOMIC_ADD(&ctx->index, 1) % ctx->nworker);
-    task->ttype = (uint8_t)ttype;
-    task->name = name;
-    task->maxcnt = 0 == maxcnt ? 5 : maxcnt;
-    task->ref = 1;
-    task->maxmsgqulens = 0 == maxmsgqulens ? ONEK : maxmsgqulens;
-    task->_init = _init;
-    task->_run = _run;
-    task->_free = _tfree;
-    task->_arg_free = _argfree;
-    task->arg = arg;
-    task->srey = ctx;
-#if WITH_CORO
-    task->coro = _coro_new();
+    _map_task_set(ctx->maptasks, task);
+    qu_message_push(&task->qumsg, &startup);
+    task->global = 1;
+    rwlock_unlock(&ctx->lcktasks);
+#if RECORD_WORKER_LOAD
+    ATOMIC_ADD(&ctx->worker[task->index].ntask, 1);
 #endif
-    spin_init(&task->spin_msg, SPIN_CNT_TASKMSG);
-    qu_message_init(&task->qumsg, task->maxmsgqulens);
-    qu_message_init(&task->qutmo, task->maxmsgqulens);
-    initer_msg initer;
-    initer.src = src;
-    initer.task = task;
-    initer.sess = sess;
-    mutex_lock(&ctx->initer.mutex);
-    qu_initer_push(&ctx->initer.qutask, &initer);
-    if (ctx->initer.waiting > 0) {
-        cond_signal(&ctx->initer.cond);
-    }
-    mutex_unlock(&ctx->initer.mutex);
+    _worker_wakeup(&ctx->worker[task->index], task->name, 1);
     return ERR_OK;
 }
 task_ctx *srey_task_grab(srey_ctx *ctx, name_t name) {
@@ -722,7 +650,7 @@ void srey_task_release(task_ctx *task) {
 #if RECORD_WORKER_LOAD
             ATOMIC_ADD(&task->srey->worker[task->index].ntask, -1);
 #endif
-            _task_free(task);
+            srey_task_free(task);
         }
     }
 }
@@ -745,7 +673,7 @@ void srey_timeout(task_ctx *task, uint64_t sess, uint32_t ms) {
     ud.name = task->name;
     ud.data = task->srey;
     ud.sess = sess;
-    tw_add(&task->srey->tw, ms, _srey_timeout, &ud);
+    tw_add(&task->srey->tw, ms, _srey_timeout, NULL, &ud);
 }
 void srey_request(task_ctx *dst, task_ctx *src, uint64_t sess, void *data, size_t size, int32_t copy) {
     message_ctx msg;

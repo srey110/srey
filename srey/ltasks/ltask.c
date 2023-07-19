@@ -30,7 +30,6 @@ LUA_TB_NUMBER("skid", msg->skid);
 typedef struct ltask_ctx {
     int32_t ref;
     lua_State *lua;
-    char file[PATH_LENS];
 }ltask_ctx;
 static char luapath[PATH_LENS] = { 0 };
 
@@ -107,22 +106,24 @@ int32_t _ltask_startup(void) {
     lua_close(lua);
     return rtn;
 }
-static void *_ltask_init(task_ctx *task, void *arg) {
-    ltask_ctx *ltask = arg;
-    ltask->lua = _ltask_luainit(task);
-    if (NULL == ltask->lua) {
-        return NULL;
+static int32_t _ltask_init(task_ctx *task, ltask_ctx *ltask, const char *file) {
+    lua_State *lua = _ltask_luainit(task);
+    if (NULL == lua) {
+        return ERR_FAILED;
     }
-    if (ERR_OK != _ltask_dofile(ltask->lua, ltask->file)) {
-        return NULL;
+    if (ERR_OK != _ltask_dofile(lua, file)) {
+        lua_close(lua);
+        return ERR_FAILED;
     }
-    lua_getglobal(ltask->lua, "dispatch_message");
-    if (LUA_TFUNCTION != lua_type(ltask->lua, 1)) {
+    lua_getglobal(lua, "dispatch_message");
+    if (LUA_TFUNCTION != lua_type(lua, 1)) {
+        lua_close(lua);
         LOG_ERROR("not have function dispatch_message.");
-        return NULL;
+        return ERR_FAILED;
     }
+    ltask->lua = lua;
     ltask->ref = luaL_ref(ltask->lua, LUA_REGISTRYINDEX);
-    return ltask;
+    return ERR_OK;
 }
 static void _ltask_arg_free(ltask_ctx *ltask) {
     if (NULL != ltask->lua) {
@@ -134,10 +135,6 @@ static inline void _ltask_pack_msg(lua_State *lua, message_ctx *msg) {
     lua_createtable(lua, 0, 11);
     LUA_TB_NUMBER("mtype", msg->mtype);
     switch (msg->mtype) {
-    case MSG_TYPE_WAKEUP:
-        LUA_TB_NUMBER("sess", msg->sess);
-        LUA_TB_NUMBER("erro", msg->erro);
-        break;
     case MSG_TYPE_STARTUP:
         break;
     case MSG_TYPE_CLOSING:
@@ -206,15 +203,11 @@ static inline void _ltask_pack_msg(lua_State *lua, message_ctx *msg) {
     }
 }
 static inline void _ltask_run(task_ctx *task, message_ctx *msg) {
-    ltask_ctx *ltask = task->handle;
-    if (0 == ltask->ref) {
-        return;
-    }
-    lua_State *lua = ltask->lua;
-    lua_rawgeti(lua, LUA_REGISTRYINDEX, ltask->ref);
-    _ltask_pack_msg(lua, msg);
-    if (LUA_OK != lua_pcall(lua, 1, 0, 0)) {
-        LOG_ERROR("%s", lua_tostring(lua, 1));
+    ltask_ctx *ltask = task->arg;
+    lua_rawgeti(ltask->lua, LUA_REGISTRYINDEX, ltask->ref);
+    _ltask_pack_msg(ltask->lua, msg);
+    if (LUA_OK != lua_pcall(ltask->lua, 1, 0, 0)) {
+        LOG_ERROR("%s", lua_tostring(ltask->lua, 1));
     }
 }
 static int32_t _ltask_register(lua_State *lua) {
@@ -222,15 +215,24 @@ static int32_t _ltask_register(lua_State *lua) {
     name_t name = (name_t)luaL_checkinteger(lua, 2);
     uint16_t maxcnt = (uint16_t)luaL_checkinteger(lua, 3);
     uint16_t maxmsgqulens = (uint16_t)luaL_checkinteger(lua, 4);
-    name_t src = (name_t)luaL_checkinteger(lua, 5);
-    uint64_t sess = (uint64_t)luaL_checkinteger(lua, 6);
     ltask_ctx *ltask;
     CALLOC(ltask, 1, sizeof(ltask_ctx));
-    strcpy(ltask->file, file);
-    if (ERR_OK == srey_task_new(srey, TTYPE_LUA, name, maxcnt, maxmsgqulens, src, sess,
-                                _ltask_init, _ltask_run, NULL, _ltask_arg_free, ltask)) {
+    task_ctx *task = srey_task_new(TTYPE_LUA, name, maxcnt, maxmsgqulens, _ltask_arg_free, ltask);
+    if (NULL == task) {
+        FREE(ltask);
+        lua_pushboolean(lua, 0);
+        return 1;
+    }
+    if (ERR_OK != _ltask_init(task, ltask, file)) {
+        srey_task_free(task);
+        lua_pushboolean(lua, 0);
+        return 1;
+    }
+    srey_task_regcb(task, MSG_TYPE_ALL, _ltask_run);
+    if (ERR_OK == srey_task_register(srey, task)) {
         lua_pushboolean(lua, 1);
     } else {
+        srey_task_free(task);
         lua_pushboolean(lua, 0);
     }
     return 1;

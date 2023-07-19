@@ -8,6 +8,8 @@
 #define WITH_LUA             1
 #define WITH_CORO            1
 
+#define KEEPALIVE_TIME      30
+#define KEEPALIVE_INTERVAL  2
 #define CMD_MAX_NREAD       64
 #define EVENT_WAIT_TIMEOUT  100
 #define EVENT_CHANGES_CNT   128

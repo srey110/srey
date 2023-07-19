@@ -20,12 +20,10 @@ struct coro_ctx;
 typedef struct srey_ctx srey_ctx;
 typedef struct task_ctx task_ctx;
 typedef struct message_ctx message_ctx;
-typedef void *(*task_new)(task_ctx *task, void *arg);
 typedef void(*task_run)(task_ctx *task, message_ctx *msg);
 
 typedef enum msg_type {
     MSG_TYPE_NONE = 0x00,
-    MSG_TYPE_WAKEUP,//mtype sess erro
     MSG_TYPE_STARTUP,//mtype
     MSG_TYPE_CLOSING,//mtype
     MSG_TYPE_TIMEOUT,//mtype sess
@@ -39,7 +37,7 @@ typedef enum msg_type {
     MSG_TYPE_REQUEST,//mtype src sess data size
     MSG_TYPE_RESPONSE,//mtype sess data size
 
-    MSG_TYPE_CNT
+    MSG_TYPE_ALL
 }msg_type;
 typedef enum task_type{
     TTYPE_C = 0x00,
@@ -105,21 +103,6 @@ typedef struct worker_ctx {
     timer_ctx timer;
 }worker_ctx;
 
-typedef struct initer_msg {
-    name_t src;
-    task_ctx *task;
-    uint64_t sess;
-}initer_msg;
-QUEUE_DECL(initer_msg, qu_initer);
-typedef struct initer_ctx {
-    uint8_t stop;
-    uint8_t waiting;
-    pthread_t thread;
-    mutex_ctx mutex;
-    cond_ctx cond;
-    qu_initer qutask;
-}initer_ctx;
-
 struct srey_ctx {
     uint8_t stop;
     uint16_t nworker;
@@ -132,7 +115,6 @@ struct srey_ctx {
     struct hashmap *maptasks;
     rwlock_ctx lcktasks;
     monitor_ctx monitor;
-    initer_ctx initer;
     tw_ctx tw;
     ev_ctx netev;
 };
@@ -148,12 +130,8 @@ struct task_ctx {
     uint32_t warning;
     atomic_t closing;
     atomic_t ref;
-    task_new _init;
-    task_run _run;
-    free_cb _free;
     free_cb _arg_free;
     void *arg;
-    void *handle;
     srey_ctx *srey;
 #if WITH_CORO
     struct coro_ctx *coro;
@@ -161,6 +139,7 @@ struct task_ctx {
     spin_ctx spin_msg;
     qu_message qumsg;
     qu_message qutmo;
+    task_run _run[MSG_TYPE_ALL];
 };
 
 typedef struct task_msg_arg {

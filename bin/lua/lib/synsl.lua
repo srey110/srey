@@ -94,30 +94,6 @@ function synsl.timeout(ms, func, ...)
     timeout(cur_task, sess, ms)
 end
 --[[
-描述:任务注册 同步模式
-    file lua文件名 :string
-    name :TASK_NAME
-    maxcnt 每次最多执行多少条消息: integer
-    maxqulens 消息队列最大长度: integer
-返回:
-    boolean
---]]
-function synsl.task_register(file, name, maxcnt, maxqulens)
-    local sess = getid()
-    if not core.task_register(file, name, maxcnt, maxqulens, core.task_name(), sess) then
-        return false
-    end
-    sess_add(sess, cur_coro)
-    local msg = yield()
-    if sess ~= msg.sess then
-        synsl.sess_del(sess)
-        log.FATAL("task %d, request session: %d, response session: %d not the same.",
-            core.task_name(), sess, msg.sess)
-        return false
-    end
-    return ERR_OK == msg.erro
-end
---[[
 描述:任务通信，等待返回
 参数:
     task :task_grab返回值

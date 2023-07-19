@@ -172,8 +172,8 @@ static int32_t service_hug(void) {
         #endif
     #endif
 
-#define WINSV_STOP_TIMEOUT       10 * 1000      //windows 服务停止超时时间
-#define WINSV_START_TIMEOUT      10 * 1000      //windows 服务启动超时时间
+#define WINSV_STOP_TIMEOUT       30 * 1000      //windows 服务停止超时时间
+#define WINSV_START_TIMEOUT      30 * 1000      //windows 服务启动超时时间
 
 typedef WINADVAPI BOOL(WINAPI *_csd_t)(SC_HANDLE, DWORD, LPCVOID);
 typedef int32_t(*_wsv_cb)(void);

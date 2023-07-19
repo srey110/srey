@@ -4,15 +4,8 @@ local score = require("srey.core")
 local log = require("lib.log")
 local MSG_TYPE = MSG_TYPE
 local curtask = _curtask
-local closing = false
 local core = {}
 
-function core.task_closing()
-    return closing
-end
-function core.task_set_closing()
-    closing = true
-end
 function core.self()
     return curtask
 end
@@ -204,19 +197,17 @@ function core.evssl_qury(name)
     return sutils.evssl_qury(name)
 end
 --[[
-描述:发起任务注册
+描述:任务注册
 参数:
     file lua文件名 :string
     name :TASK_NAME
     maxcnt 每次最多执行多少条消息: integer
     maxqulens 消息队列最大长度: integer
-    src: TASK_NAME
-    sess: integer
 返回:
     boolean
 --]]
-function core.task_register(file, name, maxcnt, maxqulens, src, sess)
-    return score.task_register(file, name, maxcnt or EVERY_EXLENS, maxqulens or MAX_QULENS, src or INVALID_TNAME, sess or 0)
+function core.task_register(file, name, maxcnt, maxqulens)
+    return score.task_register(file, name, maxcnt or EVERY_EXLENS, maxqulens or MAX_QULENS)
 end
 --[[
 描述:释放任务

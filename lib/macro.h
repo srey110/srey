@@ -12,8 +12,6 @@
 #define IP_LENS              64
 #define PORT_LENS            8
 #define INVALID_FD           -1
-#define KEEPALIVE_TIME       30
-#define KEEPALIVE_INTERVAL   2
 
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 #define EMPTYSTR(str) ((NULL == str) || (0 == strlen(str)))
@@ -82,7 +80,7 @@ void slog(int32_t lv, const char *fmt, ...);
 do {\
     if (!(exp)) {\
         LOG_FATAL("%s", errstr);\
-        exit(ERR_FAILED);\
+        abort();\
     }\
 } while (0);
 

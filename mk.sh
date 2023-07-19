@@ -58,7 +58,6 @@ else
     then
         Dir=$Dir" srey/ltasks"
     fi
-    Dir=$Dir" srey/ctasks"
 fi
 #SSL库
 SSLLIB=""

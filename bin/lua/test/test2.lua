@@ -8,9 +8,6 @@ local wbsk = require("lib.websock")
 local http = require("lib.http")
 
 local function test_synsend()
-    if srey.task_closing() then
-        return
-    end
     local fd, skid = syn.connect("127.0.0.1", 15000, PACK_TYPE.SIMPLE)
     if INVALID_SOCK == fd then
         printd("synconnect error.")
@@ -30,9 +27,6 @@ local function test_synsend()
     end
 end
 local function test_synsendto()
-    if srey.task_closing() then
-        return
-    end
     local fd, skid = srey.udp("0.0.0.0", 0)
     local req = "this is synsendto test."
     local udata, size = syn.sendto(fd, skid, "127.0.0.1", 15002, req)
@@ -46,9 +40,6 @@ local function test_synsendto()
     end
 end
 local function test_request()
-    if srey.task_closing() then
-        return
-    end
     local test1<close> = srey.task_grab(TASK_NAME.TEST1)
     if not test1 then
         printd("not find test1.")
@@ -67,15 +58,9 @@ local function test_request()
     end
 end
 local function test_dns()
-    if srey.task_closing() then
-        return
-    end
     local ips = dns.lookup("8.8.8.8", "www.google.com", false)
     if 0 == #ips then
         printd("dns.lookup error")
-    end
-    if srey.task_closing() then
-        return
     end
     ips = dns.lookup("8.8.8.8", "www.google.com", true)
     if 0 == #ips then
@@ -83,9 +68,6 @@ local function test_dns()
     end
 end
 local function test_websk()
-    if srey.task_closing() then
-        return
-    end
     local fd, skid = wbsk.connect("124.222.224.186", 8800)
     if INVALID_SOCK == fd then
         printd("wbsk.connect error")
@@ -104,9 +86,6 @@ local function onchuncked(fd, skid, pack, hdata, hsize, fin)
     --printd("size %d, fin %s", hsize, tostring(fin))
 end
 local function test_http()
-    if srey.task_closing() then
-        return
-    end
     local fd, skid = syn.connect("127.0.0.1", 15004, PACK_TYPE.HTTP)
     if INVALID_SOCK == fd then
         printd("http connect error")
@@ -116,15 +95,9 @@ local function test_http()
     if not hrtn then
         printd("http.get /gettest error")
     end
-    if srey.task_closing() then
-        return
-    end
     hrtn = http.post(fd, skid, "/getpost", nil, nil, "http post test.")
     if not hrtn then
         printd("http.post /getpost error")
-    end
-    if srey.task_closing() then
-        return
     end
     local cnt = {n = 0}
     hrtn = http.post(fd, skid, "/getchuncked", nil, onchuncked, chunked, cnt)
