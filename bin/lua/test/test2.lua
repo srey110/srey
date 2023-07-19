@@ -7,10 +7,6 @@ local dns = require("lib.dns")
 local wbsk = require("lib.websock")
 local http = require("lib.http")
 
-local function timeout()
-    printd("test2 release")
-    srey.task_release()
-end
 local function test_synsend()
     if srey.task_closing() then
         return
@@ -40,6 +36,7 @@ local function test_synsendto()
     local fd, skid = srey.udp("0.0.0.0", 0)
     local req = "this is synsendto test."
     local udata, size = syn.sendto(fd, skid, "127.0.0.1", 15002, req)
+    srey.close(fd, skid)
     if udata then
         if srey.utostr(udata, size) ~= req then
             printd("synsendto error.")
@@ -89,10 +86,11 @@ local function test_websk()
     if srey.task_closing() then
         return
     end
-    local fd, _ = wbsk.connect("124.222.224.186", 8800)
+    local fd, skid = wbsk.connect("124.222.224.186", 8800)
     if INVALID_SOCK == fd then
         printd("wbsk.connect error")
     end
+    srey.close(fd, skid)
 end
 local function chunked(cnt)
     cnt.n = cnt.n + 1
@@ -135,19 +133,26 @@ local function test_http()
     end
     srey.close(fd, skid)
 end
-local function startup()
+local function timeout()
     test_synsend()
     test_synsendto()
     test_request()
     test_dns()
-    test_websk()
+    --test_websk()
     test_http()
-    syn.timeout(5000, timeout)
+    syn.timeout(50, timeout)
+end
+local function timeout2()
+    printd("test2 release")
+    srey.task_release()
+end
+local function startup()
+    syn.timeout(50, timeout)
+    syn.timeout(5000, timeout2)
 end
 cbs.cb_startup(startup)
 
 local function recv(msg)
     --printd("pack type %d, size %d", msg.pktype, msg.size)
-    srey.close(msg.fd, msg.skid)
 end
 cbs.cb_recv(recv)

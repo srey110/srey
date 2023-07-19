@@ -467,7 +467,8 @@ static inline void _on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t 
     SOCKET fd;
     watcher_ctx *to;
     while (INVALID_SOCK != (fd = accept(acpt->sock.fd, NULL, NULL))) {
-        if (ERR_OK != _set_sockops(fd)) {
+        if (ERR_OK != _set_sockops(fd)
+            || ERR_OK != sock_kpa(fd, KEEPALIVE_TIME, KEEPALIVE_INTERVAL)) {
             CLOSE_SOCK(fd);
             continue;
         }

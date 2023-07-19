@@ -32,7 +32,7 @@ int32_t sock_checkrport(void);
 int32_t sock_rport(SOCKET fd);
 //SO_KEEPALIVE
 int32_t sock_kpa(SOCKET fd, const int32_t delay, const int32_t intvl);
-//设置SO_LINGER 避免了TIME_WAIT状态
+//设置SO_LINGER 避免TIME_WAIT状态
 int32_t sock_linger(SOCKET fd);
 //一组相互链接的socket
 int32_t sock_pair(SOCKET sock[2]);

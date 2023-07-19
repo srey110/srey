@@ -573,7 +573,8 @@ static inline void _on_accept_cb(acceptex_ctx *acpctx, sock_ctx *skctx, DWORD by
                              SO_UPDATE_ACCEPT_CONTEXT, 
                              (char *)&lsn->fd,
                              (int32_t)sizeof(lsn->fd))
-        || ERR_OK != _set_sockops(fd)) {
+        || ERR_OK != _set_sockops(fd)
+        || ERR_OK != sock_kpa(fd, KEEPALIVE_TIME, KEEPALIVE_INTERVAL)) {
         CLOSE_SOCK(fd);
         return;
     }

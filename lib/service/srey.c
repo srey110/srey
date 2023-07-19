@@ -6,21 +6,21 @@ typedef void(*_dispatch_func)(task_msg_arg *arg);
 static _dispatch_func _disp_funcs[TTYPE_CNT] = { 0 };
 
 static void _task_free(task_ctx *task);
-static inline uint64_t _maptask_hash(const void *item, uint64_t seed0, uint64_t seed1) {
+static inline uint64_t _map_task_hash(const void *item, uint64_t seed0, uint64_t seed1) {
     return hash((const char *)(*(name_t **)item), sizeof(name_t));
 }
-static inline int _maptask_compare(const void *a, const void *b, void *ud) {
+static inline int _map_task_compare(const void *a, const void *b, void *ud) {
     return *(*(name_t **)a) - *(*(name_t **)b);
 }
-static inline void _maptask_set(struct hashmap *map, task_ctx *task) {
+static inline void _map_task_set(struct hashmap *map, task_ctx *task) {
     name_t *key = &task->name;
     ASSERTAB(NULL == hashmap_set(map, &key), "task name repeat.");
 }
-static inline void *_maptask_del(struct hashmap *map, name_t name) {
+static inline void *_map_task_del(struct hashmap *map, name_t name) {
     name_t *key = &name;
     return (void *)hashmap_delete(map, &key);
 }
-static inline task_ctx *_maptask_get(struct hashmap *map, name_t name) {
+static inline task_ctx *_map_task_get(struct hashmap *map, name_t name) {
     name_t *key = &name;
     name_t **ptr =(name_t **)hashmap_get(map, &key);
     if (NULL == ptr) {
@@ -28,7 +28,7 @@ static inline task_ctx *_maptask_get(struct hashmap *map, name_t name) {
     }
     return UPCAST(*ptr, task_ctx, name);
 }
-static void _maptask_free(void *item) {
+static void _map_task_free(void *item) {
     _task_free(UPCAST(*((name_t **)item), task_ctx, name));
 }
 void message_clean(msg_type mtype, pack_type pktype, void *data) {
@@ -369,13 +369,13 @@ static inline int32_t _task_startup(srey_ctx *ctx, task_ctx *task, message_ctx *
         }
     }
     rwlock_wrlock(&ctx->lcktasks);
-    if (NULL != _maptask_get(ctx->maptasks, task->name)) {
+    if (NULL != _map_task_get(ctx->maptasks, task->name)) {
         rwlock_unlock(&ctx->lcktasks);
         LOG_ERROR("task name %d repeat.", task->name);
         _task_free(task);
         return ERR_FAILED;
     }
-    _maptask_set(ctx->maptasks, task);
+    _map_task_set(ctx->maptasks, task);
     qu_message_push(&task->qumsg, startup);
     task->global = 1;
     rwlock_unlock(&ctx->lcktasks);
@@ -457,7 +457,7 @@ srey_ctx *srey_init(uint16_t nnet, uint16_t nworker, size_t stack_size, uint16_t
     rwlock_init(&ctx->lcktasks);
     ctx->maptasks = hashmap_new_with_allocator(_malloc, _realloc, _free,
                                               sizeof(name_t *), ONEK, 0, 0,
-                                              _maptask_hash, _maptask_compare, _maptask_free, NULL);
+                                              _map_task_hash, _map_task_compare, _map_task_free, NULL);
 #if WITH_SSL
     rwlock_init(&ctx->lckcerts);
     arr_certs_init(&ctx->arrcerts, 0);
@@ -692,7 +692,7 @@ task_ctx *srey_task_grab(srey_ctx *ctx, name_t name) {
         return NULL;
     }
     rwlock_rdlock(&ctx->lcktasks);
-    task_ctx *task = _maptask_get(ctx->maptasks, name);
+    task_ctx *task = _map_task_get(ctx->maptasks, name);
     if (NULL != task) {
         ATOMIC_ADD(&task->ref, 1);
     }
@@ -715,7 +715,7 @@ void srey_task_release(task_ctx *task) {
         void *ptr = NULL;
         rwlock_wrlock(&task->srey->lcktasks);
         if (0 == task->ref) {
-            ptr = _maptask_del(task->srey->maptasks, task->name);
+            ptr = _map_task_del(task->srey->maptasks, task->name);
         }
         rwlock_unlock(&task->srey->lcktasks);
         if (NULL != ptr) {

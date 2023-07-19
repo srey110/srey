@@ -4,8 +4,6 @@ local log = require("lib.log")
 local syn = require("lib.synsl")
 local dns_pool_ipv6 = {}
 local dns_pool_ipv4 = {}
-local fd = INVALID_SOCK
-local skid = 0
 local dns = {}
 
 -- return 'ipv4', 'ipv6', or 'hostname'
@@ -30,15 +28,14 @@ function dns.lookup(dnsip, domain, ipv6)
             return ips
         end
     end
+    local fd, skid = core.udp("0.0.0.0", 0)
     if INVALID_SOCK == fd then
-        fd, skid = core.udp("0.0.0.0", 0)
-        if INVALID_SOCK == fd then
-            log.ERROR("dns coreate udp failed.")
-            return {}
-        end
+        log.ERROR("dns coreate udp failed.")
+        return {}
     end
     local req = sutils.dns_pack(domain, ipv6 and 1 or 0)
     local resp,_ = syn.sendto(fd, skid, dnsip, DNS_PORT, req, #req)
+    core.close(fd, skid)
     if resp then
         local ips = sutils.dns_unpack(resp)
         if ipv6 then
