@@ -108,7 +108,7 @@ static inline void _reset_cpu_cost(srey_ctx *ctx, arr_task *arractive) {
             _coro_shrink(task->coro);
 #endif
             task->cpu_cost = 0;
-            srey_task_release(task);
+            srey_task_ungrab(task);
         }
     }
 }
@@ -132,7 +132,7 @@ static inline void _adjustment_task(srey_ctx *ctx, worker_ctx *worker, arr_task 
 #endif
         if (0 == task->cpu_cost
             || task->index != worker->index) {//可能释放后重新加到其他线程
-            srey_task_release(task);
+            srey_task_ungrab(task);
             continue;
         }
 #if RECORD_WORKER_LOAD
@@ -145,19 +145,19 @@ static inline void _adjustment_task(srey_ctx *ctx, worker_ctx *worker, arr_task 
         onlyone = 0;
         if (task->cpu_cost < min_task->cpu_cost) {
             min_task->cpu_cost = 0;
-            srey_task_release(min_task);
+            srey_task_ungrab(min_task);
             min_task = task;
             continue;
         }
         task->cpu_cost = 0;
-        srey_task_release(task);
+        srey_task_ungrab(task);
     }
     if (NULL == min_task) {
         return;
     }
     min_task->cpu_cost = 0;
     if (0 != onlyone) {
-        srey_task_release(min_task);
+        srey_task_ungrab(min_task);
         return;
     }
 #if RECORD_WORKER_LOAD
@@ -166,7 +166,7 @@ static inline void _adjustment_task(srey_ctx *ctx, worker_ctx *worker, arr_task 
     LOG_INFO("move task %d from thread %d to thread %d.", min_task->name, min_task->index, worker->toindex);
 #endif
     min_task->index = worker->toindex;
-    srey_task_release(min_task);  
+    srey_task_ungrab(min_task);  
 }
 static inline void _adjustment(srey_ctx *ctx, worker_ctx *worker, arr_task *arractive) {
     if (INVALID_INDEX != worker->toindex) {
@@ -298,7 +298,7 @@ static void _loop_worker(void *arg) {
             continue;
         }
         _task_run(ctx, worker, version, &arractive, &msgarg);
-        srey_task_release(msgarg.task);
+        srey_task_ungrab(msgarg.task);
     }
     arr_task_free(&arractive);
 }
@@ -385,7 +385,7 @@ static inline void _dispatch_default(task_msg_arg *arg) {
     }
     message_clean(arg->task, arg->msg.mtype, arg->msg.pktype, arg->msg.data);
     if (MSG_TYPE_CLOSING == arg->msg.mtype) {
-        srey_task_release(arg->task);
+        srey_task_ungrab(arg->task);
     }
 }
 #if WITH_LUA
@@ -685,31 +685,31 @@ task_ctx *srey_task_grab(srey_ctx *ctx, name_t name) {
     rwlock_unlock(&ctx->lcktasks);
     return task;
 }
-void srey_task_addref(task_ctx *task) {
+void srey_task_incref(task_ctx *task) {
     ATOMIC_ADD(&task->ref, 1);
 }
-void srey_task_release(task_ctx *task) {
+void srey_task_ungrab(task_ctx *task) {
     if (1 != ATOMIC_ADD(&task->ref, -1)) {
         return;
     }
+    void *ptr = NULL;
+    rwlock_wrlock(&task->srey->lcktasks);
+    if (0 == task->ref) {
+        ptr = _map_task_del(task->srey->maptasks, task->name);
+    }
+    rwlock_unlock(&task->srey->lcktasks);
+    if (NULL != ptr) {
+#if RECORD_WORKER_LOAD
+        ATOMIC_ADD(&task->srey->worker[task->index].ntask, -1);
+#endif
+        srey_task_free(task);
+    }
+}
+void srey_task_close(task_ctx *task) {
     if (ATOMIC_CAS(&task->closing, 0, 1)) {
         message_ctx closing;
         closing.mtype = MSG_TYPE_CLOSING;
-        ATOMIC_ADD(&task->ref, 1);//MSG_TYPE_CLOSING(_co_cb)消息有一次release
         _push_message(task, &closing);
-    } else {
-        void *ptr = NULL;
-        rwlock_wrlock(&task->srey->lcktasks);
-        if (0 == task->ref) {
-            ptr = _map_task_del(task->srey->maptasks, task->name);
-        }
-        rwlock_unlock(&task->srey->lcktasks);
-        if (NULL != ptr) {
-#if RECORD_WORKER_LOAD
-            ATOMIC_ADD(&task->srey->worker[task->index].ntask, -1);
-#endif
-            srey_task_free(task);
-        }
     }
 }
 size_t srey_task_qusize(task_ctx *task) {
@@ -726,7 +726,7 @@ static inline void _srey_timeout(ud_cxt *ud) {
     msg.sess = ud->sess;
     msg.data = ud->extra;
     _push_message(task, &msg);
-    srey_task_release(task);
+    srey_task_ungrab(task);
 }
 static inline void _timeout_free_ud(ud_cxt *ud) {
     _timeout_free_arg(ud->extra);
@@ -808,7 +808,7 @@ static inline int32_t _net_accept(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *
     msg.fd = fd;
     msg.skid = skid;
     _push_message(task, &msg);
-    srey_task_release(task);
+    srey_task_ungrab(task);
     return ERR_OK;
 }
 static inline void _set_sess_slice(message_ctx *msg, ud_cxt *ud, int32_t slice) {
@@ -868,7 +868,7 @@ static inline void _net_recv(ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *b
     if (0 != closefd) {
         ev_close(ev, fd, skid);
     }
-    srey_task_release(task);
+    srey_task_ungrab(task);
 }
 static inline void _net_send(ev_ctx *ev, SOCKET fd, uint64_t skid, size_t size, ud_cxt *ud) {
     task_ctx *task = srey_task_grab(ud->data, ud->name);
@@ -885,7 +885,7 @@ static inline void _net_send(ev_ctx *ev, SOCKET fd, uint64_t skid, size_t size, 
     msg.sess = ud->sess;
     msg.size = size;
     _push_message(task, &msg);
-    srey_task_release(task);
+    srey_task_ungrab(task);
 }
 static inline void _net_close(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud) {
     task_ctx *task = srey_task_grab(ud->data, ud->name);
@@ -899,7 +899,7 @@ static inline void _net_close(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud) 
     msg.skid = skid;
     msg.sess = ud->sess;
     _push_message(task, &msg);
-    srey_task_release(task);
+    srey_task_ungrab(task);
 }
 int32_t srey_listen(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
     const char *ip, uint16_t port, int32_t sendev, uint64_t *id) {
@@ -933,7 +933,7 @@ static inline int32_t _net_connect(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t
     msg.sess = ud->sess;
     ud->sess = 0;
     _push_message(task, &msg);
-    srey_task_release(task);
+    srey_task_ungrab(task);
     return ERR_OK;
 }
 SOCKET srey_connect(task_ctx *task, uint64_t sess, pack_type pktype, struct evssl_ctx *evssl,
@@ -976,7 +976,7 @@ static inline void _net_recvfrom(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf
     msg.slice = SLICE_NONE;
     ud->sess = 0;
     _push_message(task, &msg);
-    srey_task_release(task);
+    srey_task_ungrab(task);
 }
 SOCKET srey_udp(task_ctx *task, const char *ip, uint16_t port, uint64_t *skid) {
     ud_cxt ud;
@@ -1004,5 +1004,5 @@ void push_handshaked(SOCKET fd, uint64_t skid, ud_cxt *ud, int32_t *closefd, int
     msg.sess = ud->sess;
     msg.erro = (int8_t)erro;
     _push_message(task, &msg);
-    srey_task_release(task);
+    srey_task_ungrab(task);
 }

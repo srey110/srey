@@ -1,3 +1,4 @@
+local sutils = require("srey.utils")
 local core = require("lib.core")
 local syn = require("lib.synsl")
 local cbs = require("lib.cbs")
@@ -16,9 +17,9 @@ local sess_get = syn.sess_get
 local timeout_get =syn.timeout_get
 local timeout_del = syn.timeout_del
 local msg_clean = core.msg_clean
-local task_refadd = core.task_refadd
-local task_release = core.task_release
 local task_grab = core.task_grab
+local task_incref = sutils.task_incref
+local task_ungrab = sutils.task_ungrab
 local _xpcall = core.xpcall
 local task_response = core.task_response
 local coro_pool = setmetatable({}, { __mode = "kv" })
@@ -52,11 +53,11 @@ local function coro_run(func, ...)
     coro_resume(_coro_create(func), ...)
 end
 local function _coro_cb(func, msg, ...)
-    task_refadd()
+    task_incref(core.self())
     _xpcall(func, ...)
-    task_release()
+    task_ungrab(core.self())
     if MSG_TYPE.CLOSING == msg.mtype then
-        task_release()
+        task_ungrab(core.self())
     end
 end
 local function resume_sess(msg, delsess, deltmo)
@@ -119,14 +120,19 @@ local function _dispatch_request(msg)
     coro_run(_coro_cb, func, msg, msg)
 end
 function dispatch_message(msg)
-    setmetatable(msg, { __gc = function (tmsg) core.msg_clean(tmsg) end })
+    setmetatable(msg, { __gc = function (tmsg) msg_clean(tmsg) end })
     if MSG_TYPE.STARTUP == msg.mtype then
         local func = cb_func(msg.mtype)
         if func then
             coro_run(_coro_cb, func, msg)
         end
     elseif MSG_TYPE.CLOSING == msg.mtype then
-        coro_run(_coro_cb, cb_func(msg.mtype), msg)
+        local func = cb_func(msg.mtype)
+        if func then
+            coro_run(_coro_cb, func, msg)
+        else
+            task_ungrab(core.self())
+        end
     elseif MSG_TYPE.TIMEOUT == msg.mtype then
         _dispatch_timeout(msg)
     elseif MSG_TYPE.ACCEPT == msg.mtype then

@@ -19,8 +19,9 @@ void srey_task_regcb(task_ctx *task, msg_type mtype, task_run _cb);
 
 int32_t srey_task_register(srey_ctx *ctx, task_ctx *task);
 task_ctx *srey_task_grab(srey_ctx *ctx, name_t name);
-void srey_task_addref(task_ctx *task);
-void srey_task_release(task_ctx *task);
+void srey_task_incref(task_ctx *task);
+void srey_task_ungrab(task_ctx *task);//与 srey_task_grab srey_task_addref 配对
+void srey_task_close(task_ctx *task);//任务关闭
 size_t srey_task_qusize(task_ctx *task);
 
 void srey_timeout(task_ctx *task, uint64_t sess, uint32_t ms, ctask_timeout _timeout, free_cb _argfree, void *arg);

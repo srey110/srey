@@ -17,7 +17,7 @@ static void _timeout(task_ctx *task, void *arg) {
     if (NULL == test_syn) {
         test_synsl();
     } else {
-        srey_task_release(test_syn);
+        srey_task_ungrab(test_syn);
     }
 #if WITH_CORO
     syn_timeout(task, TIMEOUT_TIME, _timeout, test_free_cb, test_init_arg());
@@ -37,7 +37,7 @@ static void _request(task_ctx *task, message_ctx *msg) {
         task_ctx *src = srey_task_grab(task->srey, msg->src);
         if (NULL != src) {
             srey_response(src, msg->sess, ERR_OK, msg->data, msg->size, 1);
-            srey_task_release(src);
+            srey_task_ungrab(src);
         }
     } else {
         const char *call = "this is srey_call.";

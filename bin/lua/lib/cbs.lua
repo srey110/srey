@@ -1,13 +1,11 @@
 require("lib.define")
 local cb_funcs = {}
 local cbs = {}
-cb_funcs[MSG_TYPE.CLOSING] = function () end
 
 function cbs.cb_startup(func)
     cb_funcs[MSG_TYPE.STARTUP] = func
 end
 function cbs.cb_closing(func)
-    assert(func, "invalid parameter.")
     cb_funcs[MSG_TYPE.CLOSING] = func
 end
 function cbs.cb_accept(func)

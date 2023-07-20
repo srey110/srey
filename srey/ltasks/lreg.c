@@ -223,14 +223,19 @@ static int32_t _lreg_task_grab(lua_State *lua) {
     lua_pushlightuserdata(lua, task);
     return 1;
 }
-static int32_t _lreg_task_addref(lua_State *lua) {
+static int32_t _lreg_task_incref(lua_State *lua) {
     task_ctx *task = lua_touserdata(lua, 1);
-    srey_task_addref(task);
+    srey_task_incref(task);
     return 0;
 }
-static int32_t _lreg_task_release(lua_State *lua) {
+static int32_t _lreg_task_ungrab(lua_State *lua) {
     task_ctx *task = lua_touserdata(lua, 1);
-    srey_task_release(task);
+    srey_task_ungrab(task);
+    return 0;
+}
+static int32_t _lreg_task_close(lua_State *lua) {
+    task_ctx *task = lua_touserdata(lua, 1);
+    srey_task_close(task);
     return 0;
 }
 static int32_t _lreg_task_qusize(lua_State *lua) {
@@ -672,8 +677,9 @@ LUAMOD_API int luaopen_srey_utils(lua_State *lua) {
         { "evssl_qury", _lreg_evssl_qury },
 
         { "task_grab", _lreg_task_grab },
-        { "task_addref", _lreg_task_addref },
-        { "task_release", _lreg_task_release },
+        { "task_incref", _lreg_task_incref },
+        { "task_ungrab", _lreg_task_ungrab },
+        { "task_close", _lreg_task_close },
         { "task_qusize", _lreg_task_qusize },
         { "task_name", _lreg_task_name },
         { "task_call", _lreg_call },

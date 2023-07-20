@@ -20,7 +20,7 @@ static void recv_ck(void *data, size_t lens, int32_t end, void *arg) {
 }
 static void _timeout_free(task_ctx *task, void *arg) {
     //LOG_INFO("test_synsl release");
-    srey_task_release(task);
+    srey_task_close(task);
 }
 #if WITH_CORO
 static void _syn_wbsk_conn(task_ctx *task) {
@@ -74,7 +74,7 @@ static void _call_request(task_ctx *task) {
         || 0 != memcmp(rtn, req, lens)) {
         LOG_WARN("syn_request error.");
     }
-    srey_task_release(test);
+    srey_task_ungrab(test);
 }
 #endif
 static void _timeout_loop(task_ctx *task, void *arg) {

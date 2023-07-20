@@ -44,13 +44,13 @@ static void _co_cb(mco_coro *co) {
     task_msg_arg arg;
     mco_result cortn = mco_pop(co, &arg, sizeof(arg));
     ASSERTAB(MCO_SUCCESS == cortn, mco_result_description(cortn));
-    srey_task_addref(arg.task);//保证YIELD后不会被释放
+    srey_task_incref(arg.task);//保证YIELD后不会被释放
     arg.task->_run[arg.msg.mtype](arg.task, &arg.msg);
     message_clean(arg.task, arg.msg.mtype, arg.msg.pktype, arg.msg.data);
     qu_ptr_push(&arg.task->coro->qucopool, (void **)&co);
-    srey_task_release(arg.task);
+    srey_task_ungrab(arg.task);
     if (MSG_TYPE_CLOSING == arg.msg.mtype) {
-        srey_task_release(arg.task);
+        srey_task_ungrab(arg.task);
     }
 }
 void _coro_init_desc(size_t stack_size) {
@@ -139,7 +139,7 @@ static inline void _co_create(task_msg_arg *arg) {
     } else {
         message_clean(arg->task, arg->msg.mtype, arg->msg.pktype, arg->msg.data);
         if (MSG_TYPE_CLOSING == arg->msg.mtype) {
-            srey_task_release(arg->task);
+            srey_task_ungrab(arg->task);
         }
     }
 }

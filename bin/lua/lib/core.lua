@@ -210,15 +210,7 @@ function core.task_register(file, name, maxcnt, maxqulens)
     return score.task_register(file, name, maxcnt or EVERY_EXLENS, maxqulens or MAX_QULENS)
 end
 --[[
-描述:释放任务
-参数:
-    task :task_ctx
---]]
-function core.task_release(task)
-    sutils.task_release(task or curtask)
-end
---[[
-描述:消息队列 消息数
+描述:消息队列中的消息数
 返回:
     integer
 --]]
@@ -238,17 +230,17 @@ function core.task_grab(name)
     if not task then
         return nil
     end
-    local rtn = setmetatable({}, {__close = function() core.task_release(task) end})
+    local rtn = setmetatable({}, {__close = function() sutils.task_ungrab(task) end})
     table.insert(rtn, task)
     return rtn
 end
 --[[
-描述:加引用
+描述:关闭任务
 参数:
     task :task_ctx
 --]]
-function core.task_refadd(task)
-    sutils.task_addref(task or curtask)
+function core.task_close(task)
+    sutils.task_close(task or curtask)
 end
 --[[
 描述:获取任务名

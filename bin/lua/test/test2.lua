@@ -117,7 +117,7 @@ local function timeout()
 end
 local function timeout2()
     printd("test2 release")
-    srey.task_release()
+    srey.task_close()
 end
 local function startup()
     syn.timeout(50, timeout)
