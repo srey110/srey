@@ -21,6 +21,7 @@ typedef struct srey_ctx srey_ctx;
 typedef struct task_ctx task_ctx;
 typedef struct message_ctx message_ctx;
 typedef void(*task_run)(task_ctx *task, message_ctx *msg);
+typedef void(*ctask_timeout)(task_ctx *task, void *arg);
 
 typedef enum msg_type {
     MSG_TYPE_NONE = 0x00,
@@ -139,6 +140,7 @@ struct task_ctx {
     spin_ctx spin_msg;
     qu_message qumsg;
     qu_message qutmo;
+    qu_ptr qutmoarg;
     task_run _run[MSG_TYPE_ALL];
 };
 

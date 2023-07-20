@@ -9,12 +9,13 @@ enum {
     SSL_CLINET,
 };
 enum {
-    TEST1 = 1000,
-    TEST2,
-    TEST3,
-    TEST4,
-    TEST5,
-    TEST6
+    TEST_TIMEOUT = 1000,
+    TEST_TCP,
+    TEST_SSL,
+    TEST_UDP,
+    TEST_HTTP,
+    TEST_WBSK,
+    TEST_SYN
 };
 
 #define RAND_CLOSE 1

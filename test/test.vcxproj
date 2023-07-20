@@ -171,26 +171,28 @@
   <ItemGroup>
     <ClCompile Include="CuTest.c" />
     <ClCompile Include="main.c" />
-    <ClCompile Include="test1.c" />
-    <ClCompile Include="test2.c" />
-    <ClCompile Include="test3.c" />
-    <ClCompile Include="test4.c" />
-    <ClCompile Include="test5.c" />
-    <ClCompile Include="test6.c" />
     <ClCompile Include="test_base.c" />
+    <ClCompile Include="test_http.c" />
+    <ClCompile Include="test_ssl.c" />
+    <ClCompile Include="test_synsl.c" />
+    <ClCompile Include="test_tcp.c" />
+    <ClCompile Include="test_timeout.c" />
+    <ClCompile Include="test_udp.c" />
     <ClCompile Include="test_utils.c" />
+    <ClCompile Include="test_wbsk.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="CuTest.h" />
-    <ClInclude Include="test1.h" />
-    <ClInclude Include="test2.h" />
-    <ClInclude Include="test3.h" />
-    <ClInclude Include="test4.h" />
-    <ClInclude Include="test5.h" />
-    <ClInclude Include="test6.h" />
     <ClInclude Include="testpub.h" />
     <ClInclude Include="test_base.h" />
+    <ClInclude Include="test_http.h" />
+    <ClInclude Include="test_ssl.h" />
+    <ClInclude Include="test_synsl.h" />
+    <ClInclude Include="test_tcp.h" />
+    <ClInclude Include="test_timeout.h" />
+    <ClInclude Include="test_udp.h" />
     <ClInclude Include="test_utils.h" />
+    <ClInclude Include="test_wbsk.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

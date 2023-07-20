@@ -1,4 +1,4 @@
-#include "test6.h"
+#include "test_http.h"
 
 struct _send_ck_arg {
     int32_t n;
@@ -16,7 +16,7 @@ static void *_send_huncked(size_t *lens, void *arg) {
         return NULL;
     }
 }
-static void _http_recv(task_ctx *task, message_ctx *msg) {
+static void _recv(task_ctx *task, message_ctx *msg) {
     int32_t chunck = http_chunked(msg->data);
     switch (chunck) {
     case 0: {
@@ -39,9 +39,8 @@ static void _http_recv(task_ctx *task, message_ctx *msg) {
         buffer_free(&buf);
         break;
     }
-    case 1: {
+    case 1: 
         break;
-    }
     case 2: {
         size_t lens;
         char *pack = http_data(msg->data, &lens);
@@ -79,70 +78,12 @@ static void _http_recv(task_ctx *task, message_ctx *msg) {
         }
         break;
     }
-    default:
-        break;
     }
 }
-static void _websock_recv(task_ctx *task, message_ctx *msg) {
-    int32_t fin = websock_pack_fin(msg->data);
-    int32_t proto = websock_pack_proto(msg->data);
-    switch (proto) {
-    case WBSK_CLOSE: {
-        ev_close(&task->srey->netev, msg->fd, msg->skid);
-        break;
-    }
-    case WBSK_PING: {
-        websock_pong(&task->srey->netev, msg->fd, msg->skid, 0);
-        break;
-    }
-    default: {
-        if (1 == fin) {
-            if (WBSK_CONTINUE == proto) {
-                //PRINT("continua end");
-            }
-            size_t lens;
-            char cbuf[128];
-            char time[TIME_LENS];
-            nowtime("%Y-%m-%d %H:%M:%S ", time);
-            char *data = websock_pack_data(msg->data, &lens);
-            if (0 == memcmp(data, "chunked", strlen("chunked"))) {
-                websock_text(&task->srey->netev, msg->fd, msg->skid, 0, 0, time, strlen(time));
-                for (int32_t i = 0; i < 3; i++) {
-                    ZERO(cbuf, sizeof(cbuf));
-                    SNPRINTF(cbuf, sizeof(cbuf) - 1, "%s %d ", time, i);
-                    websock_continuation(&task->srey->netev, msg->fd, msg->skid, 0, 0, cbuf, strlen(cbuf));
-                }
-                websock_continuation(&task->srey->netev, msg->fd, msg->skid, 0, 1, " over.", strlen(" over."));
-            } else {
-                websock_text(&task->srey->netev, msg->fd, msg->skid, 0, 1, time, strlen(time));
-            }
-        } else {
-            size_t lens;
-            char *cdata = websock_pack_data(msg->data, &lens);
-            //PRINT("continua size %d", (uint32_t)lens);
-        }
-        break;
-    }
-    }
-    
-}
-void test6_run(task_ctx *task, message_ctx *msg) {
-    switch (msg->mtype) {
-    case MSG_TYPE_STARTUP: {
-        uint64_t lsnid;
-        srey_listen(task, PACK_HTTP, NULL, "0.0.0.0", 15004, 0, &lsnid);
-        srey_listen(task, PACK_WEBSOCK, NULL, "0.0.0.0", 15003, 0, &lsnid);
-        break;
-    }
-    case MSG_TYPE_RECV: {
-        if (PACK_HTTP == msg->pktype) {
-            _http_recv(task, msg);
-        } else if (PACK_WEBSOCK == msg->pktype) {
-            _websock_recv(task, msg);
-        }
-        break;  
-    }
-    default:
-        break;
-    }
+void test_httpsv(void) {
+    task_ctx *task = srey_task_new(TTYPE_C, TEST_HTTP, 0, 0, NULL, NULL);
+    srey_task_regcb(task, MSG_TYPE_RECV, _recv);
+    srey_task_register(srey, task);
+    uint64_t lsnid;
+    srey_listen(task, PACK_HTTP, NULL, "0.0.0.0", 15004, 1, &lsnid);
 }

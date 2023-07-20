@@ -443,13 +443,10 @@ end
     msg :table
 --]]
 function core.msg_clean(msg)
-    if MSG_TYPE.RECV ~= msg.mtype and
-       MSG_TYPE.RECVFROM ~= msg.mtype and
-       MSG_TYPE.REQUEST ~= msg.mtype and
-       MSG_TYPE.RESPONSE ~= msg.mtype then
+    if not msg.data then
         return
     end
-    sutils.msg_clean(msg.mtype, msg.pktype, msg.data)
+    sutils.msg_clean(curtask, msg.mtype, msg.pktype, msg.data)
 end
 
 return core

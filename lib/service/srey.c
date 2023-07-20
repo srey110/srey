@@ -1,6 +1,12 @@
 #include "service/srey.h"
 #include "hashmap.h"
 
+typedef struct ctask_tmo_arg {
+    ctask_timeout _timeout;
+    free_cb _argfree;
+    void *arg;
+}ctask_tmo_arg;
+
 #define INVALID_INDEX         USHRT_MAX//无效的工作线程下标
 typedef void(*_dispatch_func)(task_msg_arg *arg);
 static _dispatch_func _disp_funcs[TTYPE_CNT] = { 0 };
@@ -30,7 +36,7 @@ static inline task_ctx *_map_task_get(struct hashmap *map, name_t name) {
 static void _map_task_free(void *item) {
     srey_task_free(UPCAST(*((name_t **)item), task_ctx, name));
 }
-void message_clean(msg_type mtype, pack_type pktype, void *data) {
+void message_clean(task_ctx *task, msg_type mtype, pack_type pktype, void *data) {
     switch (mtype) {
     case MSG_TYPE_RECV:
     case MSG_TYPE_RECVFROM:
@@ -39,6 +45,17 @@ void message_clean(msg_type mtype, pack_type pktype, void *data) {
     case MSG_TYPE_REQUEST:
     case MSG_TYPE_RESPONSE:
         FREE(data);
+        break;
+    case MSG_TYPE_TIMEOUT:
+        if (NULL != data) {
+            ctask_tmo_arg *tmo = data;
+            if (NULL != tmo->_argfree
+                && NULL != tmo->arg) {
+                tmo->_argfree(tmo->arg);
+            }
+            ZERO(tmo, sizeof(ctask_tmo_arg));
+            qu_ptr_push(&task->qutmoarg, &tmo);
+        }
         break;
     default:
         break;
@@ -95,6 +112,7 @@ static inline void _reset_cpu_cost(srey_ctx *ctx, arr_task *arractive) {
         }
     }
 }
+//标记要移出的空闲任务
 static inline void _adjustment_task(srey_ctx *ctx, worker_ctx *worker, arr_task *arractive) {
     size_t n = arr_task_size(arractive);
     if (n < 2) {
@@ -232,6 +250,7 @@ static inline void _dispatch_message(srey_ctx *ctx, worker_ctx *worker, worker_v
 }
 static inline void _task_run(srey_ctx *ctx, worker_ctx *worker, worker_version *version,
     arr_task *arractive, task_msg_arg *msgarg) {
+    //执行调整
     if (worker->index != msgarg->task->index) {
         _worker_wakeup(&ctx->worker[msgarg->task->index], msgarg->task->name, 1);
         return;
@@ -240,6 +259,7 @@ static inline void _task_run(srey_ctx *ctx, worker_ctx *worker, worker_version *
     version->name = msgarg->task->name;
     _dispatch_message(ctx, worker, version, msgarg);
     if (ctx->nworker > 1) {
+        //记录活跃的任务
         _add_active_tasks(arractive, msgarg->task->name);
     }
     //加回队列
@@ -270,7 +290,7 @@ static void _loop_worker(void *arg) {
         name = _get_task_name(worker);
         if (ctx->nworker > 1
             && 0 != worker->adjusting) {
-            //调整负载 协程池
+            //调整负载标记要移出的任务(_task_run 或 _push_message 中执行) 协程池释放
             _adjustment(ctx, worker, &arractive);
         }
         msgarg.task = srey_task_grab(ctx, name);
@@ -282,6 +302,7 @@ static void _loop_worker(void *arg) {
     }
     arr_task_free(&arractive);
 }
+//检查死循环
 static inline void _monitor_check_ver(srey_ctx *ctx) {
     worker_version *version;
     for (uint16_t i = 0; i < ctx->nworker; i++) {
@@ -362,7 +383,7 @@ static inline void _dispatch_default(task_msg_arg *arg) {
     if (NULL != arg->task->_run[arg->msg.mtype]) {
         arg->task->_run[arg->msg.mtype](arg->task, &arg->msg);
     }
-    message_clean(arg->msg.mtype, arg->msg.pktype, arg->msg.data);
+    message_clean(arg->task, arg->msg.mtype, arg->msg.pktype, arg->msg.data);
     if (MSG_TYPE_CLOSING == arg->msg.mtype) {
         srey_task_release(arg->task);
     }
@@ -448,7 +469,7 @@ static void _task_closing(srey_ctx *ctx) {
             rwlock_unlock(&ctx->lcktasks);
             break;
         }
-        if (time >= 20 * 1000) {
+        if (time >= 10 * 1000) {
             hashmap_scan(ctx->maptasks, _scan_timeout, NULL);
             rwlock_unlock(&ctx->lcktasks);
             break;
@@ -547,6 +568,14 @@ struct evssl_ctx *srey_ssl_qury(srey_ctx *ctx, name_t name) {
     return NULL == cert ? NULL : cert->ssl;
 }
 #endif
+static inline void _ctask_timeout_run(task_ctx *task, message_ctx *msg) {
+    ctask_tmo_arg *tmo = msg->data;
+    if (NULL == tmo
+        || NULL == tmo->_timeout) {
+        return;
+    }
+    tmo->_timeout(task, tmo->arg);
+}
 task_ctx *srey_task_new(task_type ttype, name_t name, uint16_t maxcnt, uint16_t maxmsgqulens, free_cb _argfree, void *arg) {
     if (INVALID_TNAME == name) {
         return NULL;
@@ -563,10 +592,24 @@ task_ctx *srey_task_new(task_type ttype, name_t name, uint16_t maxcnt, uint16_t 
 #if WITH_CORO
     task->coro = _coro_new();
 #endif
+    if (TTYPE_C == ttype) {
+        task->_run[MSG_TYPE_TIMEOUT] = _ctask_timeout_run;
+    }
     spin_init(&task->spin_msg, SPIN_CNT_TASKMSG);
     qu_message_init(&task->qumsg, task->maxmsgqulens);
     qu_message_init(&task->qutmo, task->maxmsgqulens);
+    qu_ptr_init(&task->qutmoarg, 0);
     return task;
+}
+static inline void _timeout_free_arg(ctask_tmo_arg *tmo) {
+    if (NULL == tmo) {
+        return;
+    }
+    if (NULL != tmo->_argfree
+        && NULL != tmo->arg) {
+        tmo->_argfree(tmo->arg);
+    }
+    FREE(tmo);
 }
 void srey_task_free(task_ctx *task) {
     if (NULL != task->_arg_free
@@ -575,7 +618,14 @@ void srey_task_free(task_ctx *task) {
     }
     message_ctx *msg;
     while (NULL != (msg = qu_message_pop(&task->qumsg))) {
-        message_clean(msg->mtype, msg->pktype, msg->data);
+        message_clean(task, msg->mtype, msg->pktype, msg->data);
+    }
+    while (NULL != (msg = qu_message_pop(&task->qutmo))) {
+        message_clean(task, msg->mtype, msg->pktype, msg->data);
+    }
+    ctask_tmo_arg **tmo;
+    while (NULL != (tmo = (ctask_tmo_arg **)qu_ptr_pop(&task->qutmoarg))) {
+        _timeout_free_arg(*tmo);
     }
 #if WITH_CORO
     _coro_free(task->coro);
@@ -583,14 +633,22 @@ void srey_task_free(task_ctx *task) {
     qu_message_free(&task->qumsg);
     spin_free(&task->spin_msg);
     qu_message_free(&task->qutmo);
+    qu_ptr_free(&task->qutmoarg);
     FREE(task);
 }
 void srey_task_regcb(task_ctx *task, msg_type mtype, task_run _cb) {
     if (MSG_TYPE_ALL == mtype) {
+        if (TTYPE_C == task->ttype) {
+            LOG_WARN("reset default timeout.");
+        }
         for (msg_type i = MSG_TYPE_NONE + 1; i < MSG_TYPE_ALL; i++) {
             task->_run[i] = _cb;
         }
     } else {
+        if (TTYPE_C == task->ttype
+            && MSG_TYPE_TIMEOUT == mtype) {
+            LOG_WARN("reset default timeout.");
+        }
         task->_run[mtype] = _cb;
     }
 }
@@ -637,7 +695,7 @@ void srey_task_release(task_ctx *task) {
     if (ATOMIC_CAS(&task->closing, 0, 1)) {
         message_ctx closing;
         closing.mtype = MSG_TYPE_CLOSING;
-        ATOMIC_ADD(&task->ref, 1);//MSG_TYPE_CLOSING(_coro)消息有一次release
+        ATOMIC_ADD(&task->ref, 1);//MSG_TYPE_CLOSING(_co_cb)消息有一次release
         _push_message(task, &closing);
     } else {
         void *ptr = NULL;
@@ -660,20 +718,43 @@ size_t srey_task_qusize(task_ctx *task) {
 static inline void _srey_timeout(ud_cxt *ud) {
     task_ctx *task = srey_task_grab(ud->data, ud->name);
     if (NULL == task) {
+        _timeout_free_arg(ud->extra);
         return;
     }
     message_ctx msg;
     msg.mtype = MSG_TYPE_TIMEOUT;
     msg.sess = ud->sess;
+    msg.data = ud->extra;
     _push_message(task, &msg);
     srey_task_release(task);
 }
-void srey_timeout(task_ctx *task, uint64_t sess, uint32_t ms) {
+static inline void _timeout_free_ud(ud_cxt *ud) {
+    _timeout_free_arg(ud->extra);
+}
+static inline ctask_tmo_arg *_timeout_arg(task_ctx *task, ctask_timeout _timeout, free_cb _argfree, void *arg) {
+    ctask_tmo_arg *tmo, **tmp;
+    tmp = (ctask_tmo_arg **)qu_ptr_pop(&task->qutmoarg);
+    if (NULL == tmp) {
+        MALLOC(tmo, sizeof(ctask_tmo_arg));
+    } else {
+        tmo = *tmp;
+    }
+    tmo->_timeout = _timeout;
+    tmo->_argfree = _argfree;
+    tmo->arg = arg;
+    return tmo;
+}
+void srey_timeout(task_ctx *task, uint64_t sess, uint32_t ms, ctask_timeout _timeout, free_cb _argfree, void *arg) {
     ud_cxt ud;
     ud.name = task->name;
     ud.data = task->srey;
     ud.sess = sess;
-    tw_add(&task->srey->tw, ms, _srey_timeout, NULL, &ud);
+    if (NULL != _timeout) {
+        ud.extra = _timeout_arg(task, _timeout, _argfree, arg);
+    } else {
+        ud.extra = NULL;
+    }
+    tw_add(&task->srey->tw, ms, _srey_timeout, _timeout_free_ud, &ud);
 }
 void srey_request(task_ctx *dst, task_ctx *src, uint64_t sess, void *data, size_t size, int32_t copy) {
     message_ctx msg;

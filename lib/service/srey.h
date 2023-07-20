@@ -23,7 +23,7 @@ void srey_task_addref(task_ctx *task);
 void srey_task_release(task_ctx *task);
 size_t srey_task_qusize(task_ctx *task);
 
-void srey_timeout(task_ctx *task, uint64_t sess, uint32_t ms);
+void srey_timeout(task_ctx *task, uint64_t sess, uint32_t ms, ctask_timeout _timeout, free_cb _argfree, void *arg);
 void srey_request(task_ctx *dst, task_ctx *src, uint64_t sess, void *data, size_t size, int32_t copy);
 void srey_response(task_ctx *dst, uint64_t sess, int32_t erro, void *data, size_t size, int32_t copy);
 void srey_call(task_ctx *dst, void *data, size_t size, int32_t copy);
@@ -35,6 +35,6 @@ SOCKET srey_connect(task_ctx *task, uint64_t sess, pack_type pktype, struct evss
 SOCKET srey_udp(task_ctx *task, const char *ip, uint16_t port, uint64_t *skid);
 
 void push_handshaked(SOCKET fd, uint64_t skid, ud_cxt *ud, int32_t *closefd, int32_t erro);
-void message_clean(msg_type mtype, pack_type pktype, void *data);
+void message_clean(task_ctx *task, msg_type mtype, pack_type pktype, void *data);
 
 #endif //SREY_H_

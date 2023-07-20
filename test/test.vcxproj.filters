@@ -15,22 +15,25 @@
     <ClCompile Include="main.c" />
     <ClCompile Include="test_base.c" />
     <ClCompile Include="test_utils.c" />
-    <ClCompile Include="test1.c">
+    <ClCompile Include="test_timeout.c">
       <Filter>test</Filter>
     </ClCompile>
-    <ClCompile Include="test2.c">
+    <ClCompile Include="test_tcp.c">
       <Filter>test</Filter>
     </ClCompile>
-    <ClCompile Include="test3.c">
+    <ClCompile Include="test_ssl.c">
       <Filter>test</Filter>
     </ClCompile>
-    <ClCompile Include="test4.c">
+    <ClCompile Include="test_udp.c">
       <Filter>test</Filter>
     </ClCompile>
-    <ClCompile Include="test5.c">
+    <ClCompile Include="test_http.c">
       <Filter>test</Filter>
     </ClCompile>
-    <ClCompile Include="test6.c">
+    <ClCompile Include="test_wbsk.c">
+      <Filter>test</Filter>
+    </ClCompile>
+    <ClCompile Include="test_synsl.c">
       <Filter>test</Filter>
     </ClCompile>
   </ItemGroup>
@@ -40,25 +43,28 @@
     </ClInclude>
     <ClInclude Include="test_base.h" />
     <ClInclude Include="test_utils.h" />
-    <ClInclude Include="test1.h">
-      <Filter>test</Filter>
-    </ClInclude>
-    <ClInclude Include="test2.h">
-      <Filter>test</Filter>
-    </ClInclude>
-    <ClInclude Include="test3.h">
-      <Filter>test</Filter>
-    </ClInclude>
-    <ClInclude Include="test4.h">
-      <Filter>test</Filter>
-    </ClInclude>
     <ClInclude Include="testpub.h">
       <Filter>test</Filter>
     </ClInclude>
-    <ClInclude Include="test5.h">
+    <ClInclude Include="test_timeout.h">
       <Filter>test</Filter>
     </ClInclude>
-    <ClInclude Include="test6.h">
+    <ClInclude Include="test_tcp.h">
+      <Filter>test</Filter>
+    </ClInclude>
+    <ClInclude Include="test_ssl.h">
+      <Filter>test</Filter>
+    </ClInclude>
+    <ClInclude Include="test_udp.h">
+      <Filter>test</Filter>
+    </ClInclude>
+    <ClInclude Include="test_http.h">
+      <Filter>test</Filter>
+    </ClInclude>
+    <ClInclude Include="test_wbsk.h">
+      <Filter>test</Filter>
+    </ClInclude>
+    <ClInclude Include="test_synsl.h">
       <Filter>test</Filter>
     </ClInclude>
   </ItemGroup>

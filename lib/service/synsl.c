@@ -46,7 +46,7 @@ static void _co_cb(mco_coro *co) {
     ASSERTAB(MCO_SUCCESS == cortn, mco_result_description(cortn));
     srey_task_addref(arg.task);//保证YIELD后不会被释放
     arg.task->_run[arg.msg.mtype](arg.task, &arg.msg);
-    message_clean(arg.msg.mtype, arg.msg.pktype, arg.msg.data);
+    message_clean(arg.task, arg.msg.mtype, arg.msg.pktype, arg.msg.data);
     qu_ptr_push(&arg.task->coro->qucopool, (void **)&co);
     srey_task_release(arg.task);
     if (MSG_TYPE_CLOSING == arg.msg.mtype) {
@@ -68,8 +68,12 @@ void _coro_free(coro_ctx *coctx) {
         return;
     }
     mco_coro **co;
+    mco_result cortn;
     while (NULL != (co = (mco_coro **)qu_ptr_pop(&coctx->qucopool))) {
-        mco_destroy(*co);
+        cortn = mco_destroy(*co);
+        if (MCO_SUCCESS != cortn) {
+            LOG_WARN("%s", mco_result_description(cortn));
+        }
     }
     qu_ptr_free(&coctx->qucopool);
     _map_co_free(&coctx->mapco);
@@ -133,23 +137,16 @@ static inline void _co_create(task_msg_arg *arg) {
         cortn = mco_resume(arg->task->coro->curco);
         ASSERTAB(MCO_SUCCESS == cortn, mco_result_description(cortn));
     } else {
-        message_clean(arg->msg.mtype, arg->msg.pktype, arg->msg.data);
+        message_clean(arg->task, arg->msg.mtype, arg->msg.pktype, arg->msg.data);
         if (MSG_TYPE_CLOSING == arg->msg.mtype) {
             srey_task_release(arg->task);
         }
     }
 }
-static inline void _dispatch_wakeup(task_msg_arg *arg) {
-    co_sess_ctx cosess;
-    if (ERR_OK == _map_cosess_get(&arg->task->coro->mapco, arg->msg.sess, &cosess, 1)) {
-        CO_RESUME(arg, cosess.co);
-    } else {
-        LOG_ERROR("task: %d, can't find session:%"PRIu64, arg->task->name, arg->msg.sess);
-    }
-}
 static inline void _dispatch_timeout(task_msg_arg *arg) {
     co_tmo_ctx cotmo;
     if (ERR_OK != _map_cotmo_get(&arg->task->coro->mapco, arg->msg.sess, &cotmo)) {
+        message_clean(arg->task, arg->msg.mtype, arg->msg.pktype, arg->msg.data);
         return;
     }
     switch (cotmo.type) {
@@ -210,7 +207,7 @@ static inline void _dispatch_netrd(task_msg_arg *arg) {
             }
             CO_RESUME(arg, cosess.co);
         }
-        message_clean(arg->msg.mtype, arg->msg.pktype, arg->msg.data);
+        message_clean(arg->task, arg->msg.mtype, arg->msg.pktype, arg->msg.data);
     } else {
         _co_create(arg);
     }
@@ -232,7 +229,7 @@ static inline void _dispatch_response(task_msg_arg *arg) {
     } else {
         LOG_ERROR("task: %d, can't find session:%"PRIu64, arg->task->name, arg->msg.sess);
     }
-    message_clean(arg->msg.mtype, arg->msg.pktype, arg->msg.data);
+    message_clean(arg->task, arg->msg.mtype, arg->msg.pktype, arg->msg.data);
 }
 void _dispatch_coro(task_msg_arg *arg) {
     switch (arg->msg.mtype) {
@@ -280,7 +277,7 @@ void _dispatch_coro(task_msg_arg *arg) {
 void syn_sleep(task_ctx *task, uint32_t ms) {
     uint64_t sess = createid();
     _map_cotmo_add(&task->coro->mapco, TMO_TYPE_SLEEP, task->coro->curco, sess);
-    srey_timeout(task, sess, ms);
+    srey_timeout(task, sess, ms, NULL, NULL, NULL);
     message_ctx msg;
     CO_YIELD(task, msg);
     if (sess != msg.sess) {
@@ -290,16 +287,17 @@ void syn_sleep(task_ctx *task, uint32_t ms) {
     }
 }
 //MSG_TYPE_TIMEOUT触发 TMO_TYPE_NORMAL
-void syn_timeout(task_ctx *task, uint64_t sess, uint32_t ms) {
+void syn_timeout(task_ctx *task, uint32_t ms, ctask_timeout _timeout, free_cb _argfree, void *arg) {
+    uint64_t sess = createid();
     _map_cotmo_add(&task->coro->mapco, TMO_TYPE_NORMAL, task->coro->curco, sess);
-    srey_timeout(task, sess, ms);
+    srey_timeout(task, sess, ms, _timeout, _argfree, arg);
 }
 //MSG_TYPE_RESPONSE触发
 void *syn_request(task_ctx *dst, task_ctx *src, void *data, size_t size, int32_t copy, int32_t *erro, size_t *lens) {
     uint64_t sess = createid();
     _map_cosess_add(&src->coro->mapco, src->coro->curco, sess);
     _map_cotmo_add(&src->coro->mapco, TMO_TYPE_SESS, src->coro->curco, sess);
-    srey_timeout(src, sess, REQUEST_TIMEOUT);
+    srey_timeout(src, sess, REQUEST_TIMEOUT, NULL, NULL, NULL);
     srey_request(dst, src, sess, data, size, copy);
     message_ctx msg;
     CO_YIELD(src, msg);
@@ -354,7 +352,7 @@ SOCKET syn_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
     }
     _map_cosess_add(&task->coro->mapco, task->coro->curco, sess);
     _map_cotmo_add(&task->coro->mapco, TMO_TYPE_SESS, task->coro->curco, sess);
-    srey_timeout(task, sess, CONNECT_TIMEOUT);
+    srey_timeout(task, sess, CONNECT_TIMEOUT, NULL, NULL, NULL);
     message_ctx msg;
     CO_YIELD(task, msg);
     if (sess != msg.sess) {
@@ -384,7 +382,7 @@ void *syn_send(task_ctx *task, SOCKET fd, uint64_t skid, uint64_t sess,
     ev_ud_sess(&task->srey->netev, fd, skid, sess);
     _map_cosess_add(&task->coro->mapco, task->coro->curco, sess);
     _map_cotmo_add(&task->coro->mapco, TMO_TYPE_SESS, task->coro->curco, sess);
-    srey_timeout(task, sess, NETRD_TIMEOUT);
+    srey_timeout(task, sess, NETRD_TIMEOUT, NULL, NULL, NULL);
     ev_send(&task->srey->netev, fd, skid, data, len, copy);
     message_ctx msg;
     CO_YIELD(task, msg);
@@ -420,7 +418,7 @@ void *syn_sendto(task_ctx *task, SOCKET fd, uint64_t skid,
     }
     _map_cosess_add(&task->coro->mapco, task->coro->curco, sess);
     _map_cotmo_add(&task->coro->mapco, TMO_TYPE_SESS, task->coro->curco, sess);
-    srey_timeout(task, sess, NETRD_TIMEOUT);
+    srey_timeout(task, sess, NETRD_TIMEOUT, NULL, NULL, NULL);
     message_ctx msg;
     CO_YIELD(task, msg);
     if (sess != msg.sess) {
@@ -470,7 +468,7 @@ SOCKET syn_websock_connect(task_ctx *task, const char *host, uint16_t port, stru
     ev_ud_sess(&task->srey->netev, fd, *skid, sess);
     _map_cosess_add(&task->coro->mapco, task->coro->curco, sess);
     _map_cotmo_add(&task->coro->mapco, TMO_TYPE_SESS, task->coro->curco, sess);
-    srey_timeout(task, sess, NETRD_TIMEOUT);
+    srey_timeout(task, sess, NETRD_TIMEOUT, NULL, NULL, NULL);
     ev_send(&task->srey->netev, fd, *skid, wbreq, strlen(wbreq), 0);
     message_ctx msg;
     CO_YIELD(task, msg);
@@ -604,12 +602,12 @@ static struct http_pack_ctx *_syn_http_send(task_ctx *task, SOCKET fd, uint64_t 
     size_t size;
     int32_t end = 0;
     for (;;) {
-        data = syn_slice(task, fd, skid, sess, &size, &end);
-        if (NULL == data
+        hpack = syn_slice(task, fd, skid, sess, &size, &end);
+        if (NULL == hpack
             && 1 != end) {
             return NULL;
         }
-        data = http_data((struct http_pack_ctx *)data, &size);
+        data = http_data(hpack, &size);
         recvck((void *)data, size, end, arg);
         if (0 != end) {
             break;

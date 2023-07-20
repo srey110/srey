@@ -119,7 +119,7 @@ local function _dispatch_request(msg)
     coro_run(_coro_cb, func, msg, msg)
 end
 function dispatch_message(msg)
-    setmetatable(msg, { __gc = function (tmsg) msg_clean(tmsg) end })
+    setmetatable(msg, { __gc = function (tmsg) core.msg_clean(tmsg) end })
     if MSG_TYPE.STARTUP == msg.mtype then
         local func = cb_func(msg.mtype)
         if func then

@@ -327,7 +327,7 @@ static int32_t _lreg_timeout(lua_State *lua) {
     task_ctx *task = lua_touserdata(lua, 1);
     uint64_t sess = (uint64_t)luaL_checkinteger(lua, 2);
     uint32_t time = (uint32_t)luaL_checkinteger(lua, 3);
-    srey_timeout(task, sess, time);
+    srey_timeout(task, sess, time, NULL, NULL, NULL);
     return 0;
 }
 static int32_t _lreg_connect(lua_State *lua) {
@@ -640,13 +640,14 @@ static int32_t _lreg_websock_continuation(lua_State *lua) {
     return 0;
 }
 static int32_t _lreg_msg_clean(lua_State *lua) {
+    task_ctx *task = lua_touserdata(lua, 1);
     msg_type mtype = (msg_type)luaL_checkinteger(lua, 2);
     pack_type pktype = PACK_NONE;
     if (LUA_TNUMBER == lua_type(lua, 3)) {
         pktype = (pack_type)luaL_checkinteger(lua, 3);
     }
     void *data = lua_touserdata(lua, 4);
-    message_clean(mtype, pktype, data);
+    message_clean(task, mtype, pktype, data);
     return 0;
 }
 LUAMOD_API int luaopen_srey_utils(lua_State *lua) {
