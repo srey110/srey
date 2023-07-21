@@ -233,7 +233,9 @@ static inline void _message_run(srey_ctx *ctx, worker_ctx *worker, worker_versio
 }
 static inline void _dispatch_message(srey_ctx *ctx, worker_ctx *worker, worker_version *version, task_msg_arg *arg) {
     int32_t over;
-    for (uint16_t i = 0; i < arg->task->maxcnt; i++) {
+    uint16_t n = qu_message_size(&arg->task->qumsg) >= arg->task->maxmsgqulens ?
+                                 arg->task->maxcnt * 2 : arg->task->maxcnt;
+    for (uint16_t i = 0; i < n; i++) {
         over = 1;
         if (ERR_OK == _get_message(arg->task, &arg->msg)) {
             _message_run(ctx, worker, version, arg);
@@ -469,10 +471,9 @@ static void _task_closing(srey_ctx *ctx) {
             rwlock_unlock(&ctx->lcktasks);
             break;
         }
-        if (time >= 10 * 1000) {
+        if (time >= 5 * 1000) {
+            time = 0;
             hashmap_scan(ctx->maptasks, _scan_timeout, NULL);
-            rwlock_unlock(&ctx->lcktasks);
-            break;
         }
         rwlock_unlock(&ctx->lcktasks);
         MSLEEP(50);
@@ -511,22 +512,6 @@ void srey_free(srey_ctx *ctx) {
     FREE(ctx->worker);
     FREE(ctx->monitor.version);
     FREE(ctx);
-}
-uint16_t srey_nworker(srey_ctx *ctx) {
-    return ctx->nworker;
-}
-void srey_worker_load(srey_ctx *ctx, uint16_t index, uint32_t *ntask, uint32_t *cpu_cost) {
-    if (index >= ctx->nworker) {
-        *ntask = 0;
-        *cpu_cost = 0;
-    } else {
-#if RECORD_WORKER_LOAD
-        *ntask = ctx->worker[index].ntask;
-#else
-        *ntask = 0;
-#endif
-        *cpu_cost = ctx->worker[index].cpu_cost;
-    }
 }
 #if WITH_SSL
 static inline certs_ctx *_ssl_get(srey_ctx *ctx, name_t name) {
@@ -711,9 +696,6 @@ void srey_task_close(task_ctx *task) {
         closing.mtype = MSG_TYPE_CLOSING;
         _push_message(task, &closing);
     }
-}
-size_t srey_task_qusize(task_ctx *task) {
-    return qu_message_size(&task->qumsg) + qu_message_size(&task->qutmo);
 }
 static inline void _srey_timeout(ud_cxt *ud) {
     task_ctx *task = srey_task_grab(ud->data, ud->name);

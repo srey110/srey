@@ -63,9 +63,6 @@ function synsl.timeout_get(sess)
     synsl.timeout_del(sess)
     return tmo
 end
-function synsl.coro_cnt()
-    return co_sess_size, co_tmo_size
-end
 --[[
 描述:休眠
 参数:

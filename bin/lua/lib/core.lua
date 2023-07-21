@@ -146,14 +146,6 @@ function core.urlencode(data)
     return sutils.urlencode(data)
 end
 --[[
-描述:线程负载
-返回:
-    tabke
---]]
-function core.worker_load()
-    return sutils.worker_load()
-end
---[[
 描述:创建evssl_ctx
 参数:
     name 名称 :SSL_NAME
@@ -208,14 +200,6 @@ end
 --]]
 function core.task_register(file, name, maxcnt, maxqulens)
     return score.task_register(file, name, maxcnt or EVERY_EXLENS, maxqulens or MAX_QULENS)
-end
---[[
-描述:消息队列中的消息数
-返回:
-    integer
---]]
-function core.task_qusize()
-    return sutils.task_qusize(curtask)
 end
 --[[
 描述:任务获取

@@ -24,9 +24,6 @@ local _xpcall = core.xpcall
 local task_response = core.task_response
 local coro_pool = setmetatable({}, { __mode = "kv" })
 
-function core.coro_pool_size()
-    return #coro_pool
-end
 local function _coro_create(func)
     local co = tremove(coro_pool)
     if not co then

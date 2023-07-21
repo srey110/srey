@@ -13,12 +13,6 @@ local function timeout(tmoarg)
     end
     syn.timeout(50, timeout, tmoarg)
 end
-local function timeout2()
-    --printd(dump(srey.worker_load()))
-    printd("test1 message qu lens %d coro_pool_size %s co_sess_size %d co_tmo_size %d",
-        srey.task_qusize(), srey.coro_pool_size(), syn.coro_cnt())
-    syn.timeout(5000, timeout2)
-end
 local function startup()
     printd("test1 startup.")
     local bg = os.time()
@@ -31,7 +25,6 @@ local function startup()
         a = 10,
     }
     syn.timeout(1000, timeout, tmoarg)
-    syn.timeout(5000, timeout2)
 end
 cbs.cb_startup(startup)
 

@@ -5,8 +5,6 @@
 
 srey_ctx *srey_init(uint16_t nnet, uint16_t nworker, size_t stack_size, uint16_t interval, uint16_t threshold);
 void srey_free(srey_ctx *ctx);
-uint16_t srey_nworker(srey_ctx *ctx);
-void srey_worker_load(srey_ctx *ctx, uint16_t index, uint32_t *ntask, uint32_t *cpu_cost);
 
 #if WITH_SSL
 int32_t srey_ssl_register(srey_ctx *ctx, name_t name, struct evssl_ctx *evssl);
@@ -22,7 +20,6 @@ task_ctx *srey_task_grab(srey_ctx *ctx, name_t name);
 void srey_task_incref(task_ctx *task);
 void srey_task_ungrab(task_ctx *task);//与 srey_task_grab srey_task_addref 配对
 void srey_task_close(task_ctx *task);//任务关闭
-size_t srey_task_qusize(task_ctx *task);
 
 void srey_timeout(task_ctx *task, uint64_t sess, uint32_t ms, ctask_timeout _timeout, free_cb _argfree, void *arg);
 void srey_request(task_ctx *dst, task_ctx *src, uint64_t sess, void *data, size_t size, int32_t copy);

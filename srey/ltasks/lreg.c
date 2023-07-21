@@ -119,24 +119,6 @@ static int32_t _lreg_urlencode(lua_State *lua) {
     FREE(encode);
     return 1;
 }
-static int32_t _lreg_worker_load(lua_State *lua) {
-    uint32_t ntask, cpu_cost;
-    uint16_t n = srey_nworker(srey);
-    lua_createtable(lua, 0, (int32_t)n);
-    for (uint16_t i = 0; i < n; i++) {
-        srey_worker_load(srey, i, &ntask, &cpu_cost);
-        lua_pushinteger(lua, i + 1);
-        lua_createtable(lua, 0, 2);
-        lua_pushstring(lua, "ntask");
-        lua_pushinteger(lua, ntask);
-        lua_settable(lua, -3);
-        lua_pushstring(lua, "cpu_cost");
-        lua_pushinteger(lua, cpu_cost);
-        lua_settable(lua, -3);
-        lua_settable(lua, -3);
-    }
-    return 1;
-}
 static int32_t _lreg_evssl_new(lua_State *lua) {
 #if WITH_SSL
     name_t name = (name_t)luaL_checkinteger(lua, 1);
@@ -237,11 +219,6 @@ static int32_t _lreg_task_close(lua_State *lua) {
     task_ctx *task = lua_touserdata(lua, 1);
     srey_task_close(task);
     return 0;
-}
-static int32_t _lreg_task_qusize(lua_State *lua) {
-    task_ctx *task = lua_touserdata(lua, 1);
-    lua_pushinteger(lua, srey_task_qusize(task));
-    return 1;
 }
 static int32_t _lreg_task_name(lua_State *lua) {
     task_ctx *task = lua_touserdata(lua, 1);
@@ -670,8 +647,6 @@ LUAMOD_API int luaopen_srey_utils(lua_State *lua) {
         { "b64decode", _lreg_b64decode },
         { "urlencode", _lreg_urlencode },
 
-        { "worker_load", _lreg_worker_load },
-
         { "evssl_new", _lreg_evssl_new },
         { "evssl_p12new", _lreg_evssl_p12new },
         { "evssl_qury", _lreg_evssl_qury },
@@ -680,7 +655,6 @@ LUAMOD_API int luaopen_srey_utils(lua_State *lua) {
         { "task_incref", _lreg_task_incref },
         { "task_ungrab", _lreg_task_ungrab },
         { "task_close", _lreg_task_close },
-        { "task_qusize", _lreg_task_qusize },
         { "task_name", _lreg_task_name },
         { "task_call", _lreg_call },
         { "task_request", _lreg_request },
