@@ -16,7 +16,8 @@ void protos_pkfree(pack_type type, void *data) {
         break;
     }
 }
-void protos_udfree(ud_cxt *ud) {
+void protos_udfree(void *arg) {
+    ud_cxt *ud = arg;
     switch (ud->pktype) {
     case PACK_HTTP:
         http_udfree(ud);

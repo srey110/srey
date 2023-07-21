@@ -54,7 +54,7 @@ void message_clean(task_ctx *task, msg_type mtype, pack_type pktype, void *data)
                 tmo->_argfree(tmo->arg);
             }
             ZERO(tmo, sizeof(ctask_tmo_arg));
-            qu_ptr_push(&task->qutmoarg, &tmo);
+            qu_ptr_push(&task->qutmoarg, (void **)&tmo);
         }
         break;
     default:
@@ -728,8 +728,8 @@ static inline void _srey_timeout(ud_cxt *ud) {
     _push_message(task, &msg);
     srey_task_ungrab(task);
 }
-static inline void _timeout_free_ud(ud_cxt *ud) {
-    _timeout_free_arg(ud->extra);
+static inline void _timeout_free_ud(void *arg) {
+    _timeout_free_arg(((ud_cxt *)arg)->extra);
 }
 static inline ctask_tmo_arg *_timeout_arg(task_ctx *task, ctask_timeout _timeout, free_cb _argfree, void *arg) {
     ctask_tmo_arg *tmo, **tmp;

@@ -125,7 +125,8 @@ static int32_t _ltask_init(task_ctx *task, ltask_ctx *ltask, const char *file) {
     ltask->ref = luaL_ref(ltask->lua, LUA_REGISTRYINDEX);
     return ERR_OK;
 }
-static void _ltask_arg_free(ltask_ctx *ltask) {
+static void _ltask_arg_free(void *arg) {
+    ltask_ctx *ltask = arg;
     if (NULL != ltask->lua) {
         lua_close(ltask->lua);
     }

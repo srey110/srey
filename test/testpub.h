@@ -18,7 +18,7 @@ enum {
     TEST_SYN
 };
 
-#define RAND_CLOSE 1
+#define RAND_CLOSE 0
 #define DELAY_SEND 0
 
 #endif

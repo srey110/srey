@@ -59,7 +59,8 @@ static void _recv(task_ctx *task, message_ctx *msg) {
             }
         } else {
             size_t lens;
-            char *cdata = websock_pack_data(msg->data, &lens);
+            //char *cdata = websock_pack_data(msg->data, &lens);
+            websock_pack_data(msg->data, &lens);
             PRINT("continua size %d", (uint32_t)lens);
         }
         break;

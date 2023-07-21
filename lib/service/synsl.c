@@ -26,7 +26,9 @@ typedef struct coro_ctx {
 #define CONNECT_TIMEOUT       3000
 #define NETRD_TIMEOUT         1500
 #define REQUEST_TIMEOUT       1000
+
 static mco_desc _coro_desc;
+static void _co_cb(mco_coro *co);
 
 #define CO_YIELD(task, msg)\
     mco_result _cortn = mco_yield(task->coro->curco); \
@@ -40,19 +42,6 @@ static mco_desc _coro_desc;
     _cortn = mco_resume(co); \
     ASSERTAB(MCO_SUCCESS == _cortn, mco_result_description(_cortn))
 
-static void _co_cb(mco_coro *co) {
-    task_msg_arg arg;
-    mco_result cortn = mco_pop(co, &arg, sizeof(arg));
-    ASSERTAB(MCO_SUCCESS == cortn, mco_result_description(cortn));
-    srey_task_incref(arg.task);//保证YIELD后不会被释放
-    arg.task->_run[arg.msg.mtype](arg.task, &arg.msg);
-    message_clean(arg.task, arg.msg.mtype, arg.msg.pktype, arg.msg.data);
-    qu_ptr_push(&arg.task->coro->qucopool, (void **)&co);
-    srey_task_ungrab(arg.task);
-    if (MSG_TYPE_CLOSING == arg.msg.mtype) {
-        srey_task_ungrab(arg.task);
-    }
-}
 void _coro_init_desc(size_t stack_size) {
     _coro_desc = mco_desc_init(_co_cb, stack_size);
 }
@@ -60,7 +49,7 @@ coro_ctx *_coro_new(void) {
     coro_ctx *coctx;
     CALLOC(coctx, 1, sizeof(coro_ctx));
     _map_co_init(&coctx->mapco);
-    qu_ptr_init(&coctx->qucopool, ONEK);
+    qu_ptr_init(&coctx->qucopool, ONEK * 4);
     return coctx;
 }
 void _coro_free(coro_ctx *coctx) {
@@ -113,18 +102,33 @@ void _coro_shrink(coro_ctx *coctx) {
     }
     coctx->nnew = 0;
 }
-static inline mco_coro *_co_pool_get(task_ctx *task) {
+static void _co_cb(mco_coro *co) {
+    task_msg_arg arg;
     mco_result cortn;
+    for (;;) {
+        cortn = mco_yield(co);
+        cortn = mco_pop(co, &arg, sizeof(arg));
+        ASSERTAB(MCO_SUCCESS == cortn, mco_result_description(cortn));
+        srey_task_incref(arg.task);//保证task->_run里YIELD后不会被释放
+        arg.task->_run[arg.msg.mtype](arg.task, &arg.msg);
+        message_clean(arg.task, arg.msg.mtype, arg.msg.pktype, arg.msg.data);
+        qu_ptr_push(&arg.task->coro->qucopool, (void **)&co);
+        //_loop_worker 有一次grab所以这里的ungrab都不会释放
+        srey_task_ungrab(arg.task);
+        if (MSG_TYPE_CLOSING == arg.msg.mtype) {
+            srey_task_ungrab(arg.task);
+        }
+    }
+}
+static inline mco_coro *_co_pool_get(task_ctx *task) {
     mco_coro **co = (mco_coro **)qu_ptr_pop(&task->coro->qucopool);
     if (NULL != co) {
-        cortn = mco_uninit(*co);
-        ASSERTAB(MCO_SUCCESS == cortn, mco_result_description(cortn));
-        cortn = mco_init(*co, &_coro_desc);
-        ASSERTAB(MCO_SUCCESS == cortn, mco_result_description(cortn));
         return *co;
     }
     mco_coro *conew;
-    cortn = mco_create(&conew, &_coro_desc);
+    mco_result cortn = mco_create(&conew, &_coro_desc);
+    ASSERTAB(MCO_SUCCESS == cortn, mco_result_description(cortn));
+    cortn = mco_resume(conew);
     ASSERTAB(MCO_SUCCESS == cortn, mco_result_description(cortn));
     task->coro->nnew++;
     return conew;

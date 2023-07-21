@@ -43,7 +43,8 @@ static void _recv(task_ctx *task, message_ctx *msg) {
         break;
     case 2: {
         size_t lens;
-        char *pack = http_data(msg->data, &lens);
+        //char *pack = http_data(msg->data, &lens);
+        http_data(msg->data, &lens);
         if (0 == lens) {
             buffer_ctx buf;
             buffer_init(&buf);

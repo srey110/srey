@@ -65,10 +65,10 @@ int32_t _map_cotmo_get(mapco_ctx *map, uint64_t sess, co_tmo_ctx *cotmo) {
 }
 void _map_co_init(mapco_ctx *map) {
     map->coids = hashmap_new_with_allocator(_malloc, _realloc, _free,
-                                            sizeof(co_sess_ctx), 512, 0, 0,
+                                            sizeof(co_sess_ctx), ONEK, 0, 0,
                                             _map_cosess_hash, _map_cosess_compare, NULL, NULL);
     map->cotmo = hashmap_new_with_allocator(_malloc, _realloc, _free,
-                                            sizeof(co_tmo_ctx), 512, 0, 0,
+                                            sizeof(co_tmo_ctx), ONEK, 0, 0,
                                             _map_cotmo_hash, _map_cotmo_compare, NULL, NULL);
 }
 void _map_co_free(mapco_ctx *map) {
