@@ -107,6 +107,7 @@ static void _co_cb(mco_coro *co) {
     mco_result cortn;
     for (;;) {
         cortn = mco_yield(co);
+        ASSERTAB(MCO_SUCCESS == cortn, mco_result_description(cortn));
         cortn = mco_pop(co, &arg, sizeof(arg));
         ASSERTAB(MCO_SUCCESS == cortn, mco_result_description(cortn));
         srey_task_incref(arg.task);//保证task->_run里YIELD后不会被释放
