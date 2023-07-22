@@ -11,11 +11,10 @@
 typedef enum timeout_type {
     TMO_TYPE_SLEEP = 0x01,
     TMO_TYPE_NORMAL,
-    TMO_TYPE_SESS
+    TMO_TYPE_SESS,
+    TMO_TYPE_SLICE,
 }timeout_type;
 typedef struct coro_ctx {
-    uint32_t cnt;
-    uint32_t nnew;
     mco_coro *curco;
     mapco_ctx mapco;
     qu_ptr qucopool;
@@ -28,7 +27,6 @@ typedef struct coro_ctx {
 #define REQUEST_TIMEOUT       1000
 
 static mco_desc _coro_desc;
-static void _co_cb(mco_coro *co);
 
 #define CO_YIELD(task, msg)\
     mco_result _cortn = mco_yield(task->coro->curco); \
@@ -42,66 +40,6 @@ static void _co_cb(mco_coro *co);
     _cortn = mco_resume(co); \
     ASSERTAB(MCO_SUCCESS == _cortn, mco_result_description(_cortn))
 
-void _coro_init_desc(size_t stack_size) {
-    _coro_desc = mco_desc_init(_co_cb, stack_size);
-}
-coro_ctx *_coro_new(void) {
-    coro_ctx *coctx;
-    CALLOC(coctx, 1, sizeof(coro_ctx));
-    _map_co_init(&coctx->mapco);
-    qu_ptr_init(&coctx->qucopool, ONEK * 4);
-    return coctx;
-}
-void _coro_free(coro_ctx *coctx) {
-    if (NULL == coctx) {
-        return;
-    }
-    mco_coro **co;
-    mco_result cortn;
-    while (NULL != (co = (mco_coro **)qu_ptr_pop(&coctx->qucopool))) {
-        cortn = mco_destroy(*co);
-        if (MCO_SUCCESS != cortn) {
-            LOG_WARN("%s", mco_result_description(cortn));
-        }
-    }
-    qu_ptr_free(&coctx->qucopool);
-    _map_co_free(&coctx->mapco);
-    FREE(coctx);
-}
-static inline void _coro_pool_shrink(coro_ctx *coctx) {
-    size_t npool = qu_ptr_size(&coctx->qucopool);
-    if (npool <= COROPOOL_KEEP) {
-        return;
-    }
-    size_t ndel, reduce, atmost;
-    atmost = npool - COROPOOL_KEEP;
-    reduce = COROPOOL_KEEP * (coctx->cnt - (COROPOOL_NDEL - 1));
-    if (reduce <= atmost) {
-        ndel = reduce;
-    } else {
-        ndel = atmost;
-    }
-    mco_coro **co;
-    for (size_t i = 0; i < ndel; i++) {
-        co = (mco_coro **)qu_ptr_pop(&coctx->qucopool);
-        mco_destroy(*co);
-    }
-}
-void _coro_shrink(coro_ctx *coctx) {
-    if (NULL == coctx) {
-        return;
-    }
-    //活跃转为一直无消息，则不能
-    if (0 == coctx->nnew) {
-        coctx->cnt++;
-        if (coctx->cnt >= COROPOOL_NDEL) {
-            _coro_pool_shrink(coctx);
-        }
-    } else {
-        coctx->cnt = 0;
-    }
-    coctx->nnew = 0;
-}
 static void _co_cb(mco_coro *co) {
     task_msg_arg arg;
     mco_result cortn;
@@ -121,6 +59,32 @@ static void _co_cb(mco_coro *co) {
         }
     }
 }
+void _coro_init_desc(size_t stack_size) {
+    _coro_desc = mco_desc_init(_co_cb, stack_size);
+}
+coro_ctx *_coro_new(void) {
+    coro_ctx *coctx;
+    CALLOC(coctx, 1, sizeof(coro_ctx));
+    _map_co_init(&coctx->mapco);
+    qu_ptr_init(&coctx->qucopool, 0);
+    return coctx;
+}
+void _coro_free(coro_ctx *coctx) {
+    if (NULL == coctx) {
+        return;
+    }
+    mco_coro **co;
+    mco_result cortn;
+    while (NULL != (co = (mco_coro **)qu_ptr_pop(&coctx->qucopool))) {
+        cortn = mco_destroy(*co);
+        if (MCO_SUCCESS != cortn) {
+            LOG_WARN("%s", mco_result_description(cortn));
+        }
+    }
+    qu_ptr_free(&coctx->qucopool);
+    _map_co_free(&coctx->mapco);
+    FREE(coctx);
+}
 static inline mco_coro *_co_pool_get(task_ctx *task) {
     mco_coro **co = (mco_coro **)qu_ptr_pop(&task->coro->qucopool);
     if (NULL != co) {
@@ -131,7 +95,6 @@ static inline mco_coro *_co_pool_get(task_ctx *task) {
     ASSERTAB(MCO_SUCCESS == cortn, mco_result_description(cortn));
     cortn = mco_resume(conew);
     ASSERTAB(MCO_SUCCESS == cortn, mco_result_description(cortn));
-    task->coro->nnew++;
     return conew;
 }
 static inline void _co_create(task_msg_arg *arg) {
@@ -169,6 +132,9 @@ static inline void _dispatch_timeout(task_msg_arg *arg) {
         }
         break;
     }
+    case TMO_TYPE_SLICE:
+        CO_RESUME(arg, cotmo.co);
+        break;
     default:
         break;
     }
@@ -328,7 +294,24 @@ void *syn_request(task_ctx *dst, task_ctx *src, void *data, size_t size, int32_t
 //MSG_TYPE_RECV MSG_TYPE_CLOSE触发
 void *syn_slice(task_ctx *task, SOCKET fd, uint64_t skid, uint64_t sess, size_t *size, int32_t *end) {
     message_ctx msg;
+    uint64_t slice_sess = createid();
+    _map_cotmo_add(&task->coro->mapco, TMO_TYPE_SLICE, task->coro->curco, slice_sess);
+    srey_timeout(task, slice_sess, NETRD_TIMEOUT, NULL, NULL, NULL);
     CO_YIELD(task, msg);
+    if (MSG_TYPE_TIMEOUT == msg.mtype) {
+        _map_cosess_del(&task->coro->mapco, sess);
+        ev_ud_sess(&task->srey->netev, fd, skid, 0);
+        ev_close(&task->srey->netev, fd, skid);
+        if (slice_sess != msg.sess) {
+            _map_cotmo_del(&task->coro->mapco, slice_sess);
+            LOG_FATAL("task: %d, request session: %"PRIu64", response session: %"PRIu64" not the same.",
+                task->name, slice_sess, msg.sess);
+        } else {
+            LOG_WARN("task: %d, slice timeout.", task->name);
+        }
+        return NULL;
+    }
+    _map_cotmo_del(&task->coro->mapco, slice_sess);
     if (sess != msg.sess) {
         _map_cosess_del(&task->coro->mapco, sess);
         ev_ud_sess(&task->srey->netev, fd, skid, 0);
@@ -402,6 +385,7 @@ void *syn_send(task_ctx *task, SOCKET fd, uint64_t skid, uint64_t sess,
     }
     if (MSG_TYPE_TIMEOUT == msg.mtype) {
         ev_ud_sess(&task->srey->netev, fd, skid, 0);
+        ev_close(&task->srey->netev, fd, skid);
         LOG_WARN("task %d, send timeout.", task->name);
         return NULL;
     }

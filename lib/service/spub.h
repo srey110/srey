@@ -150,11 +150,10 @@ typedef struct task_msg_arg {
 }task_msg_arg;
 
 #if WITH_CORO
-void _dispatch_coro(task_msg_arg *arg);
 void _coro_init_desc(size_t stack_size);
 struct coro_ctx *_coro_new(void);
 void _coro_free(struct coro_ctx *coctx);
-void _coro_shrink(struct coro_ctx *coctx);
+void _dispatch_coro(task_msg_arg *arg);
 #endif
 
 #endif//SPUB_H_

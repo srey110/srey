@@ -20,6 +20,9 @@ static void _recv(task_ctx *task, message_ctx *msg) {
     size_t lens;
     char *sbuf = simple_data(msg->data, &lens);
     void *outbuf = simple_pack(sbuf, lens, &lens);
+#if DELAY_SEND
+    syn_sleep(task, 10);
+#endif
     ev_send(&task->srey->netev, msg->fd, msg->skid, outbuf, lens, 0);
 }
 static void _sended(task_ctx *task, message_ctx *msg) {

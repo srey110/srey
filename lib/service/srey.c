@@ -104,9 +104,6 @@ static inline void _reset_cpu_cost(srey_ctx *ctx, arr_task *arractive) {
     for (size_t i = 0; i < n; i++) {
         task = srey_task_grab(ctx, *arr_task_at(arractive, i));
         if (NULL != task) {
-#if WITH_CORO
-            _coro_shrink(task->coro);
-#endif
             task->cpu_cost = 0;
             srey_task_ungrab(task);
         }
@@ -127,9 +124,6 @@ static inline void _adjustment_task(srey_ctx *ctx, worker_ctx *worker, arr_task 
         if (NULL == task) {
             continue;
         }
-#if WITH_CORO
-        _coro_shrink(task->coro);
-#endif
         if (0 == task->cpu_cost
             || task->index != worker->index) {//可能释放后重新加到其他线程
             srey_task_ungrab(task);
@@ -574,12 +568,12 @@ task_ctx *srey_task_new(task_type ttype, name_t name, uint16_t maxcnt, uint16_t 
     task->maxmsgqulens = 0 == maxmsgqulens ? ONEK : maxmsgqulens;
     task->_arg_free = _argfree;
     task->arg = arg;
-#if WITH_CORO
-    task->coro = _coro_new();
-#endif
     if (TTYPE_C == ttype) {
         task->_run[MSG_TYPE_TIMEOUT] = _ctask_timeout_run;
     }
+#if WITH_CORO
+    task->coro = _coro_new();
+#endif
     spin_init(&task->spin_msg, SPIN_CNT_TASKMSG);
     qu_message_init(&task->qumsg, task->maxmsgqulens);
     qu_message_init(&task->qutmo, task->maxmsgqulens);
