@@ -26,6 +26,11 @@ static void _timeout(task_ctx *task, void *arg) {
 #endif
 }
 static void _startup(task_ctx *task, message_ctx *msg) {
+    uint64_t bg = nowsec();
+    syn_sleep(task, 1000);
+    if (nowsec() - bg != 1) {
+        LOG_WARN("syn_sleep error.");
+    }
 #if WITH_CORO
     syn_timeout(task, TIMEOUT_TIME, _timeout, test_free_cb, test_init_arg());
 #else
@@ -36,6 +41,7 @@ static void _request(task_ctx *task, message_ctx *msg) {
     if (INVALID_TNAME != msg->src) {
         task_ctx *src = srey_task_grab(task->srey, msg->src);
         if (NULL != src) {
+            //syn_sleep(task, 2000);
             srey_response(src, msg->sess, ERR_OK, msg->data, msg->size, 1);
             srey_task_ungrab(src);
         }

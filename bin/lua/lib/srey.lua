@@ -13,9 +13,9 @@ local yield = coroutine.yield
 local resume = coroutine.resume
 local cb_func = cbs.cb
 local cur_coro = syn.cur_coro
-local sess_get = syn.sess_get
-local timeout_get =syn.timeout_get
-local timeout_del = syn.timeout_del
+local cosess_set = syn.cosess_set
+local cosess_get = syn.cosess_get
+local cosess_del = syn.cosess_del
 local msg_clean = core.msg_clean
 local task_grab = core.task_grab
 local task_incref = sutils.task_incref
@@ -57,52 +57,77 @@ local function _coro_cb(func, msg, ...)
         task_ungrab(core.self())
     end
 end
-local function resume_sess(msg, delsess, deltmo)
-    local coro = sess_get(msg.sess, delsess)
-    if not coro then
-        return false
-    end
-    if deltmo then
-        timeout_del(msg.sess)
-    end
-    coro_resume(coro, msg)
-    return true
-end
 local function _dispatch_timeout(msg)
-    local cotmo = timeout_get(msg.sess)
-    if not cotmo then
+    local cosess = cosess_get(msg.sess)
+    if not cosess then
         return
     end
-    if TIMEOUT_TYPE.SLEEP == cotmo.ttype then
-        coro_resume(cotmo.co, msg)
-    elseif TIMEOUT_TYPE.NORMAL == cotmo.ttype then
-        coro_run(_coro_cb, cotmo.func, msg, tunpack(cotmo.args))
-    elseif TIMEOUT_TYPE.SESSION == cotmo.ttype then
-        resume_sess(msg, true, false)
+    if TIMEOUT_TYPE.NORMAL == cosess.ttype then
+        coro_run(_coro_cb, cosess.func, msg, tunpack(cosess.args))
+    elseif TIMEOUT_TYPE.WAIT == cosess.ttype then
+        if 0 ~= cosess.assoc then
+            cosess_del(cosess.assoc)
+        end
+        coro_resume(cosess.co, msg)
     end
 end
-local function _dispatch_netrd(msg)
+local function _dispatch_connect(msg)
     if 0 ~= msg.sess then
-        local delsess
-        if SLICE_TYPE.SLICE == msg.slice or
-           SLICE_TYPE.START == msg.slice then
-            delsess = false
-        else
-            delsess = true
+        local cosess = cosess_get(msg.sess)
+        if cosess then
+            coro_resume(cosess.co, msg)
         end
-        local deltmo
-        if SLICE_TYPE.NONE == msg.slice or
-           SLICE_TYPE.START == msg.slice then
-            deltmo = true
-        else
-            deltmo = false
-        end
-        resume_sess(msg, delsess, deltmo)
     else
         local func = cb_func(msg.mtype)
         if func then
             coro_run(_coro_cb, func, msg, msg)
         end
+    end
+end
+local function _dispatch_handshaked(msg)
+    if 0 ~= msg.sess then
+        local cosess = cosess_get(msg.sess)
+        if cosess then
+            coro_resume(cosess.co, msg)
+        end
+    else
+        local func = cb_func(msg.mtype)
+        if func then
+            coro_run(_coro_cb, func, msg, msg)
+        end
+    end
+end
+local function _dispatch_netrd(msg)
+    if 0 ~= msg.sess then
+        local cosess = cosess_get(msg.sess)
+        if cosess then
+            if SLICE_TYPE.START == msg.slice then
+                cosess_set(TIMEOUT_TYPE.NONE, msg.sess)
+            elseif SLICE_TYPE.END == msg.slice then
+                cosess_del(msg.sess)
+            end
+            coro_resume(cosess.co, msg)
+        end
+    else
+        local func = cb_func(msg.mtype)
+        if func then
+            coro_run(_coro_cb, func, msg, msg)
+        end
+    end
+end
+local function _dispatch_close(msg)
+    if 0 ~= msg.sess then
+        local cosess = cosess_get(msg.sess)
+        if cosess then
+            if TIMEOUT_TYPE.NONE == cosess.ttype then
+                cosess_del(msg.sess)
+            end
+            coro_resume(cosess.co, msg)
+        end
+    end
+    local func = cb_func(msg.mtype)
+    if func then
+        coro_run(_coro_cb, func, msg, msg)
     end
 end
 local function _dispatch_request(msg)
@@ -115,6 +140,14 @@ local function _dispatch_request(msg)
         return
     end
     coro_run(_coro_cb, func, msg, msg)
+end
+local function _dispatch_response(msg)
+    local cosess = cosess_get(msg.sess)
+    if cosess then
+        coro_resume(cosess.co, msg)
+    else
+        log.ERROR("not find session %s.", tostring(msg.sess))
+    end
 end
 function dispatch_message(msg)
     setmetatable(msg, { __gc = function (tmsg) msg_clean(tmsg) end })
@@ -138,23 +171,9 @@ function dispatch_message(msg)
             coro_run(_coro_cb, func, msg, msg)
         end
     elseif MSG_TYPE.CONNECT == msg.mtype then
-        if 0 ~= msg.sess then
-            resume_sess(msg, true, true)
-        else
-            local func = cb_func(msg.mtype)
-            if func then
-                coro_run(_coro_cb, func, msg, msg)
-            end
-        end
+        _dispatch_connect(msg)
     elseif MSG_TYPE.HANDSHAKED == msg.mtype then
-        if 0 ~= msg.sess then
-            resume_sess(msg, true, true)
-        else
-            local func = cb_func(msg.mtype)
-            if func then
-                coro_run(_coro_cb, func, msg, msg)
-            end
-        end
+        _dispatch_handshaked(msg)
     elseif MSG_TYPE.RECV == msg.mtype then
         _dispatch_netrd(msg)
     elseif MSG_TYPE.SEND == msg.mtype then
@@ -163,21 +182,13 @@ function dispatch_message(msg)
             coro_run(_coro_cb, func, msg, msg)
         end
     elseif MSG_TYPE.CLOSE == msg.mtype then
-        if 0 ~= msg.sess then
-            resume_sess(msg, true, true)
-        end
-        local func = cb_func(msg.mtype)
-        if func then
-            coro_run(_coro_cb, func, msg, msg)
-        end
+        _dispatch_close(msg)
     elseif MSG_TYPE.RECVFROM == msg.mtype then
         _dispatch_netrd(msg)
     elseif MSG_TYPE.REQUEST == msg.mtype then
         _dispatch_request(msg)
     elseif MSG_TYPE.RESPONSE == msg.mtype then
-        if not resume_sess(msg, true, true) then
-            log.ERROR("not find session %s.", tostring(msg.sess))
-        end
+        _dispatch_response(msg)
     end
 end
 

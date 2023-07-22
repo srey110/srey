@@ -10,58 +10,48 @@ local MSG_TYPE = MSG_TYPE
 local SLICE_TYPE = SLICE_TYPE
 local TIMEOUT_TYPE = TIMEOUT_TYPE
 local co_sess = {}
-local co_tmo = {}
 local synsl = {}
-local co_sess_size = 0
-local co_tmo_size = 0
 local cur_coro = nil
 
 function synsl.cur_coro(coro)
     cur_coro = coro
 end
-local function sess_add(sess, coro)
-    co_sess[sess] = coro
-    co_sess_size = co_sess_size + 1
-end
-function synsl.sess_del(sess)
-    co_sess[sess] = nil
-    co_sess_size = co_sess_size - 1
-end
-function synsl.sess_get(sess, del)
-    local coro = co_sess[sess]
-    if del then
-        synsl.sess_del(sess)
-    end
-    return coro
-end
-local function timeout_add(sess, ttype, func, ...)
-    if TIMEOUT_TYPE.SLEEP == ttype then
-        co_tmo[sess] = {
-            ttype = ttype,
-            co = cur_coro
-        }
-    elseif TIMEOUT_TYPE.NORMAL == ttype then
+function synsl.cosess_set(ttype, sess, assoc, func, ...)
+    if TIMEOUT_TYPE.NORMAL == ttype then
         assert(func, "invalid parameter.")
-        co_tmo[sess] = {
+        co_sess[sess] = {
             ttype = ttype,
+            co = cur_coro,
             func = func,
             args = {...}
         }
-    elseif TIMEOUT_TYPE.SESSION == ttype then
-        co_tmo[sess] = {
-            ttype = ttype
+    else
+        co_sess[sess] = {
+            ttype = ttype,
+            co = cur_coro,
+            assoc = assoc or 0
         }
     end
-    co_tmo_size = co_tmo_size + 1
 end
-function synsl.timeout_del(sess)
-    co_tmo[sess] = nil
-    co_tmo_size = co_tmo_size - 1
+function synsl.cosess_get(sess)
+    local cosess = co_sess[sess]
+    if not cosess then
+        return
+    end
+    if TIMEOUT_TYPE.NONE ~= cosess.ttype then
+        co_sess[sess] = nil
+    end
+    return cosess
 end
-function synsl.timeout_get(sess)
-    local tmo = co_tmo[sess]
-    synsl.timeout_del(sess)
-    return tmo
+function synsl.cosess_del(sess)
+    co_sess[sess] = nil
+end
+local function wait_until(ms, sess, assoc)
+    synsl.cosess_set(TIMEOUT_TYPE.WAIT, sess, assoc)
+    timeout(cur_task, sess, ms)
+    local msg = yield()
+    assert(0 ~= msg.sess and (sess == msg.sess or assoc == msg.sess), "different session.")
+    return msg
 end
 --[[
 描述:休眠
@@ -69,15 +59,7 @@ end
     ms :integer
 --]]
 function synsl.sleep(ms)
-    local sess = getid()
-    timeout_add(sess, TIMEOUT_TYPE.SLEEP)
-    timeout(cur_task, sess, ms)
-    local msg = yield()
-    if sess ~= msg.sess then
-        synsl.timeout_del(sess)
-        log.FATAL("task %d, request session: %d, response session: %d not the same.",
-            core.task_name(), sess, msg.sess)
-    end
+    wait_until(ms, getid())
 end
 --[[
 描述:超时
@@ -87,7 +69,7 @@ end
 --]]
 function synsl.timeout(ms, func, ...)
     local sess = getid()
-    timeout_add(sess, TIMEOUT_TYPE.NORMAL, func, ...)
+    synsl.cosess_set(TIMEOUT_TYPE.NORMAL, sess, 0, func, ...)
     timeout(cur_task, sess, ms)
 end
 --[[
@@ -105,18 +87,8 @@ function synsl.task_request(task, data, size, copy)
         return false
     end
     local sess = getid()
-    sess_add(sess, cur_coro)
-    timeout_add(sess, TIMEOUT_TYPE.SESSION)
-    timeout(cur_task, sess, REQUEST_TIMEOUT)
     core.task_request(task, sess, data, size, copy)
-    local msg = yield()
-    if sess ~= msg.sess then
-        synsl.sess_del(sess)
-        synsl.timeout_del(sess)
-        log.FATAL("task %d, request session: %d, response session: %d not the same.",
-            core.task_name(), sess, msg.sess)
-        return false
-    end
+    local msg = wait_until(REQUEST_TIMEOUT, sess)
     if MSG_TYPE.TIMEOUT == msg.mtype then
         log.WARN("task %d, request timeout.", core.task_name())
         return false
@@ -141,19 +113,7 @@ function synsl.connect(ip, port, pktype, ssl, sendev)
     if INVALID_SOCK == fd then
         return INVALID_SOCK
     end
-    sess_add(sess, cur_coro)
-    timeout_add(sess, TIMEOUT_TYPE.SESSION)
-    timeout(cur_task, sess, CONNECT_TIMEOUT)
-    local msg = yield()
-    if sess ~= msg.sess then
-        synsl.sess_del(sess)
-        synsl.timeout_del(sess)
-        ud_sess(fd, skid, 0)
-        core.close(fd, skid)
-        log.FATAL("task %d, request session: %d, response session: %d not the same.",
-            core.task_name(), sess, msg.sess)
-        return INVALID_SOCK
-    end
+    local msg = wait_until(CONNECT_TIMEOUT, sess)
     if MSG_TYPE.TIMEOUT == msg.mtype then
         ud_sess(fd, skid, 0)
         core.close(fd, skid)
@@ -187,20 +147,8 @@ function synsl.conn_handshake(ip, port, pktype, ssl, hspack, size, sendev)
     end
     local sess = getid()
     ud_sess(fd, skid, sess)
-    sess_add(sess, cur_coro)
-    timeout_add(sess, TIMEOUT_TYPE.SESSION)
-    timeout(cur_task, sess, NETRD_TIMEOUT)
     core.send(fd, skid, hspack, size, true)
-    local msg = yield()
-    if sess ~= msg.sess then
-        synsl.sess_del(sess)
-        synsl.timeout_del(sess)
-        ud_sess(fd, skid, 0)
-        core.close(fd, skid)
-        log.FATAL("task %d, request session: %d, response session: %d not the same.",
-            core.task_name(), sess, msg.sess)
-        return INVALID_SOCK
-    end
+    local msg = wait_until(NETRD_TIMEOUT, sess)
     if MSG_TYPE.TIMEOUT == msg.mtype then
         ud_sess(fd, skid, 0)
         core.close(fd, skid)
@@ -235,22 +183,11 @@ function synsl.send(fd, skid, sess, data, lens, copy)
         return
     end
     ud_sess(fd, skid, sess)
-    sess_add(sess, cur_coro)
-    timeout_add(sess, TIMEOUT_TYPE.SESSION)
-    timeout(cur_task, sess, NETRD_TIMEOUT)
     core.send(fd, skid, data, lens, copy)
-    local msg = yield()
-    if sess ~= msg.sess then
-        synsl.sess_del(sess)
-        synsl.timeout_del(sess)
-        ud_sess(fd, skid, 0)
-        core.close(fd, skid)
-        log.FATAL("task %d, request session: %d, response session: %d not the same.",
-            core.task_name(), sess, msg.sess)
-        return
-    end
+    local msg = wait_until(NETRD_TIMEOUT, sess)
     if MSG_TYPE.TIMEOUT == msg.mtype then
         ud_sess(fd, skid, 0)
+        core.close(fd, skid)
         log.WARN("task %d, send timeout.", core.task_name())
         return
     end
@@ -271,15 +208,15 @@ end
     nil失败
 --]]
 function synsl.slice(fd, skid, sess)
-    local msg = yield()
-    if sess ~= msg.sess then
-        synsl.sess_del(sess)
+    local slice_sess = getid()
+    local msg = wait_until(NETRD_TIMEOUT, slice_sess, sess)
+    if MSG_TYPE.TIMEOUT == msg.mtype then
         ud_sess(fd, skid, 0)
         core.close(fd, skid)
-        log.FATAL("task %d, request session: %d, response session: %d not the same.",
-            core.task_name(), sess, msg.sess)
+        log.WARN("task: %d, slice timeout.", core.task_name())
         return
     end
+    synsl.cosess_del(slice_sess)
     if MSG_TYPE.CLOSE == msg.mtype then
         log.WARN("task %d, connction closed.", core.task_name())
         return
@@ -310,18 +247,7 @@ function synsl.sendto(fd, skid, ip, port, data, lens)
         ud_sess(fd, skid, 0)
         return
     end
-    sess_add(sess, cur_coro)
-    timeout_add(sess, TIMEOUT_TYPE.SESSION)
-    timeout(cur_task, sess, NETRD_TIMEOUT)
-    local msg = yield()
-    if sess ~= msg.sess then
-        synsl.sess_del(sess)
-        synsl.timeout_del(sess)
-        ud_sess(fd, skid, 0)
-        log.FATAL("task %d, request session: %d, response session: %d not the same.",
-            core.task_name(), sess, msg.sess)
-        return
-    end
+    local msg = wait_until(NETRD_TIMEOUT, sess)
     if MSG_TYPE.TIMEOUT == msg.mtype then
         ud_sess(fd, skid, 0)
         log.WARN("task %d, sendto timeout.", core.task_name())

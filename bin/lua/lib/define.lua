@@ -55,9 +55,9 @@ SLICE_TYPE = {
 }
 --超时类型
 TIMEOUT_TYPE = {
-    SLEEP = 0x01,
-    NORMAL = 0x02,
-    SESSION = 0x03
+    NONE = 0x00,
+    NORMAL = 0x01,
+    WAIT = 0x02,
 }
 --日志级别
 LOG_LV = {

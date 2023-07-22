@@ -51,7 +51,6 @@
     <ClInclude Include="queue.h" />
     <ClInclude Include="rwlock.h" />
     <ClInclude Include="sarray.h" />
-    <ClInclude Include="service\maps.h" />
     <ClInclude Include="service\minicoro.h" />
     <ClInclude Include="service\spub.h" />
     <ClInclude Include="service\srey.h" />
@@ -87,7 +86,6 @@
     <ClCompile Include="proto\protos.c" />
     <ClCompile Include="proto\simple.c" />
     <ClCompile Include="proto\websock.c" />
-    <ClCompile Include="service\maps.c" />
     <ClCompile Include="service\srey.c" />
     <ClCompile Include="service\synsl.c" />
     <ClCompile Include="sha1\sha1.c" />

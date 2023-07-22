@@ -111,7 +111,7 @@ local function timeout()
     test_synsendto()
     test_request()
     test_dns()
-    --test_websk()
+    test_websk()
     test_http()
     syn.timeout(50, timeout)
 end

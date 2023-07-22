@@ -4,6 +4,7 @@ struct _send_ck_arg {
     int32_t n;
     char data[128];
 };
+static atomic_t _once = 0;
 static void *_send_huncked(size_t *lens, void *arg) {
     struct _send_ck_arg *ckarg = arg;
     ckarg->n++;
@@ -87,21 +88,23 @@ static void _timeout_loop(task_ctx *task, void *arg) {
 }
 static void _print_ips(dns_ip *ips, size_t n) {
     for (size_t i = 0; i < n; i++) {
-        //LOG_INFO("%s", ips[i].ip);
+        LOG_INFO("%s", ips[i].ip);
     }
 }
 static void _startup(task_ctx *task, message_ctx *msg) {
 #if WITH_CORO
-    size_t n;
-    dns_ip *ips = syn_dns_lookup(task, "8.8.8.8", "www.google.com", 0, &n);
-    if (NULL != ips) {
-        _print_ips(ips, n);
-        FREE(ips);
-    }
-    ips = syn_dns_lookup(task, "8.8.8.8", "www.google.com", 1, &n);
-    if (NULL != ips) {
-        _print_ips(ips, n);
-        FREE(ips);
+    if (ATOMIC_CAS(&_once, 0, 1)) {
+        size_t n;
+        dns_ip *ips = syn_dns_lookup(task, "8.8.8.8", "www.google.com", 0, &n);
+        if (NULL != ips) {
+            _print_ips(ips, n);
+            FREE(ips);
+        }
+        ips = syn_dns_lookup(task, "8.8.8.8", "www.google.com", 1, &n);
+        if (NULL != ips) {
+            _print_ips(ips, n);
+            FREE(ips);
+        }
     }
 #endif
 }
