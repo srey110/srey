@@ -102,7 +102,7 @@ local function _dispatch_netrd(msg)
         local cosess = cosess_get(msg.sess)
         if cosess then
             if SLICE_TYPE.START == msg.slice then
-                cosess_set(TIMEOUT_TYPE.NONE, msg.sess)
+                cosess_set(TIMEOUT_TYPE.NONE, msg.sess, 0, cosess.co)
             elseif SLICE_TYPE.END == msg.slice then
                 cosess_del(msg.sess)
             end

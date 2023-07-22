@@ -16,19 +16,19 @@ local cur_coro = nil
 function synsl.cur_coro(coro)
     cur_coro = coro
 end
-function synsl.cosess_set(ttype, sess, assoc, func, ...)
+function synsl.cosess_set(ttype, sess, assoc, co, func, ...)
     if TIMEOUT_TYPE.NORMAL == ttype then
         assert(func, "invalid parameter.")
         co_sess[sess] = {
             ttype = ttype,
-            co = cur_coro,
+            co = co or cur_coro,
             func = func,
             args = {...}
         }
     else
         co_sess[sess] = {
             ttype = ttype,
-            co = cur_coro,
+            co = co or cur_coro,
             assoc = assoc or 0
         }
     end
@@ -69,7 +69,7 @@ end
 --]]
 function synsl.timeout(ms, func, ...)
     local sess = getid()
-    synsl.cosess_set(TIMEOUT_TYPE.NORMAL, sess, 0, func, ...)
+    synsl.cosess_set(TIMEOUT_TYPE.NORMAL, sess, 0, cur_coro, func, ...)
     timeout(cur_task, sess, ms)
 end
 --[[
