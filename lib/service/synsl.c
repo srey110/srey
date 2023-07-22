@@ -2,7 +2,7 @@
 #if WITH_CORO
 #include "service/srey.h"
 #define MINICORO_IMPL
-#include "service/minicoro.h"
+#include "minicoro/minicoro.h"
 #include "proto/dns.h"
 #include "proto/websock.h"
 #include "proto/http.h"

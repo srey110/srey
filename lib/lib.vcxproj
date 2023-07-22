@@ -38,6 +38,7 @@
     <ClInclude Include="macro_win.h" />
     <ClInclude Include="md5\md5.h" />
     <ClInclude Include="memory.h" />
+    <ClInclude Include="minicoro\minicoro.h" />
     <ClInclude Include="mutex.h" />
     <ClInclude Include="netaddr.h" />
     <ClInclude Include="netutils.h" />
@@ -51,7 +52,6 @@
     <ClInclude Include="queue.h" />
     <ClInclude Include="rwlock.h" />
     <ClInclude Include="sarray.h" />
-    <ClInclude Include="service\minicoro.h" />
     <ClInclude Include="service\spub.h" />
     <ClInclude Include="service\srey.h" />
     <ClInclude Include="service\synsl.h" />

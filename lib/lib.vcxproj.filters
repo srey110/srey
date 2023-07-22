@@ -40,6 +40,9 @@
     <Filter Include="3rd\cjson">
       <UniqueIdentifier>{ea3d6e8d-1afa-4288-8fba-edbe2cd27e12}</UniqueIdentifier>
     </Filter>
+    <Filter Include="3rd\minicoro">
+      <UniqueIdentifier>{b69c7530-416f-4779-bda3-0284c2777556}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="errcode.h">
@@ -151,9 +154,6 @@
     <ClInclude Include="service\srey.h">
       <Filter>service</Filter>
     </ClInclude>
-    <ClInclude Include="service\minicoro.h">
-      <Filter>service</Filter>
-    </ClInclude>
     <ClInclude Include="proto\protos.h">
       <Filter>proto</Filter>
     </ClInclude>
@@ -168,6 +168,9 @@
     </ClInclude>
     <ClInclude Include="cjson\cJSON.h">
       <Filter>3rd\cjson</Filter>
+    </ClInclude>
+    <ClInclude Include="minicoro\minicoro.h">
+      <Filter>3rd\minicoro</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>

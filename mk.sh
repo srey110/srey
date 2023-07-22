@@ -24,6 +24,7 @@ fi
 OSNAME=`uname`
 withlua=0
 withssl=0
+withcoro=0
 wk="awk"
 if [ "$OSNAME" = "SunOS" ]
 then
@@ -40,19 +41,32 @@ do
     then
         withssl=`echo $line|$wk -F ' ' '{print int($3)}'`
     fi
+    if [ "$val" = "WITH_CORO" ]
+    then
+        withcoro=`echo $line|$wk -F ' ' '{print int($3)}'`
+    fi
 done < `pwd`/lib/config.h
 echo "WITH_LUA:"$withlua
 echo "WITH_SSL:"$withssl
+echo "WITH_CORO:"$withcoro
 #文件夹
 Dir="lib lib/cjson lib/event lib/md5 lib/proto lib/service lib/sha1"
+if [ $withcoro -eq 1 ]
+then
+    Dir=$Dir" lib/minicoro"
+fi
+if [ $withssl -eq 1 ]
+then
+    Dir=$Dir" lib/openssl"
+fi
+if [ $withlua -eq 1 ]
+then
+    Dir=$Dir" lualib lualib/lua lualib/luacjson lualib/msgpack lualib/pb"
+fi
 if [ $istest -eq 1 ]
 then
     Dir=$Dir" test"
 else
-    if [ $withlua -eq 1 ]
-    then
-        Dir=$Dir" lualib lualib/lua lualib/luacjson lualib/msgpack lualib/pb"
-    fi
     Dir=$Dir" srey"
     if [ $withlua -eq 1 ]
     then

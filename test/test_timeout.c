@@ -26,12 +26,12 @@ static void _timeout(task_ctx *task, void *arg) {
 #endif
 }
 static void _startup(task_ctx *task, message_ctx *msg) {
+#if WITH_CORO
     uint64_t bg = nowsec();
     syn_sleep(task, 1000);
     if (nowsec() - bg != 1) {
         LOG_WARN("syn_sleep error.");
     }
-#if WITH_CORO
     syn_timeout(task, TIMEOUT_TIME, _timeout, test_free_cb, test_init_arg());
 #else
     srey_timeout(task, 0, TIMEOUT_TIME, _timeout, test_free_cb, test_init_arg());
