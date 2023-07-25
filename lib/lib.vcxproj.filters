@@ -34,14 +34,14 @@
     <Filter Include="3rd\md5">
       <UniqueIdentifier>{9c8059d5-b299-4f96-8c87-766cb728aa7b}</UniqueIdentifier>
     </Filter>
-    <Filter Include="3rd\sha1">
-      <UniqueIdentifier>{8d0f8248-4127-4be8-93c0-282ff58b790f}</UniqueIdentifier>
-    </Filter>
     <Filter Include="3rd\cjson">
       <UniqueIdentifier>{ea3d6e8d-1afa-4288-8fba-edbe2cd27e12}</UniqueIdentifier>
     </Filter>
     <Filter Include="3rd\minicoro">
       <UniqueIdentifier>{b69c7530-416f-4779-bda3-0284c2777556}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="3rd\sha">
+      <UniqueIdentifier>{8d0f8248-4127-4be8-93c0-282ff58b790f}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
@@ -72,9 +72,6 @@
     </ClInclude>
     <ClInclude Include="md5\md5.h">
       <Filter>3rd\md5</Filter>
-    </ClInclude>
-    <ClInclude Include="sha1\sha1.h">
-      <Filter>3rd\sha1</Filter>
     </ClInclude>
     <ClInclude Include="cond.h">
       <Filter>thread</Filter>
@@ -181,6 +178,9 @@
     <ClInclude Include="proto\urlparse.h">
       <Filter>proto</Filter>
     </ClInclude>
+    <ClInclude Include="sha\sha1.h">
+      <Filter>3rd\sha</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="memory.c">
@@ -191,9 +191,6 @@
     </ClCompile>
     <ClCompile Include="md5\md5.c">
       <Filter>3rd\md5</Filter>
-    </ClCompile>
-    <ClCompile Include="sha1\sha1.c">
-      <Filter>3rd\sha1</Filter>
     </ClCompile>
     <ClCompile Include="thread.c">
       <Filter>thread</Filter>
@@ -278,6 +275,9 @@
     </ClCompile>
     <ClCompile Include="proto\urlparse.c">
       <Filter>proto</Filter>
+    </ClCompile>
+    <ClCompile Include="sha\sha1.c">
+      <Filter>3rd\sha</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

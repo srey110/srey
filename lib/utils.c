@@ -1,6 +1,6 @@
 #include "utils.h"
 #include "md5/md5.h"
-#include "sha1/sha1.h"
+#include "sha/sha1.h"
 
 #ifdef OS_WIN
 #pragma warning(disable:4091)

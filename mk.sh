@@ -44,7 +44,7 @@ done < `pwd`/lib/config.h
 echo "WITH_LUA:"$withlua
 echo "WITH_SSL:"$withssl
 #文件夹
-Dir="lib lib/cjson lib/event lib/md5 lib/minicoro lib/proto lib/service lib/sha1"
+Dir="lib lib/cjson lib/event lib/md5 lib/minicoro lib/proto lib/service lib/sha"
 if [ $withlua -eq 1 ]
 then
     Dir=$Dir" lualib lualib/lua lualib/luacjson lualib/msgpack lualib/pb"

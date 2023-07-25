@@ -58,7 +58,7 @@
     <ClInclude Include="service\srey.h" />
     <ClInclude Include="service\srpc.h" />
     <ClInclude Include="service\synsl.h" />
-    <ClInclude Include="sha1\sha1.h" />
+    <ClInclude Include="sha\sha1.h" />
     <ClInclude Include="spinlock.h" />
     <ClInclude Include="structs.h" />
     <ClInclude Include="thread.h" />
@@ -94,7 +94,7 @@
     <ClCompile Include="service\srey.c" />
     <ClCompile Include="service\srpc.c" />
     <ClCompile Include="service\synsl.c" />
-    <ClCompile Include="sha1\sha1.c" />
+    <ClCompile Include="sha\sha1.c" />
     <ClCompile Include="thread.c" />
     <ClCompile Include="timer.c" />
     <ClCompile Include="tw.c" />
