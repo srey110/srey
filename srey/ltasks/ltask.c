@@ -190,6 +190,7 @@ static inline void _ltask_pack_msg(lua_State *lua, message_ctx *msg) {
         break;
     }
     case MSG_TYPE_REQUEST:
+        LUA_TB_NUMBER("pktype", msg->pktype);
         LUA_TB_NUMBER("sess", msg->sess);
         LUA_TB_NUMBER("src", msg->src);
         LUA_TB_UD(msg->data, msg->size);

@@ -28,15 +28,7 @@ static void _recv(task_ctx *task, message_ctx *msg) {
         char time[TIME_LENS];
         nowtime("%Y-%m-%d %H:%M:%S ", time);
         http_pack_content(&buf, time, strlen(time));
-#if WITH_CORO
         http_response(task, msg->fd, msg->skid, &buf, NULL, NULL, NULL);
-#else
-        size_t rlen = buffer_size(&buf);
-        char *resp;
-        MALLOC(resp, rlen);
-        buffer_copyout(&buf, 0, resp, rlen);
-        ev_send(&task->srey->netev, msg->fd, msg->skid, resp, rlen, 0);
-#endif
         buffer_free(&buf);
         break;
     }
@@ -51,29 +43,9 @@ static void _recv(task_ctx *task, message_ctx *msg) {
             buffer_init(&buf);
             http_pack_resp(&buf, 200);
             http_pack_head(&buf, "Server", "Srey");
-#if WITH_CORO
             struct _send_ck_arg arg;
             arg.n = 0;
             http_response(task, msg->fd, msg->skid, &buf, _send_huncked, NULL, &arg);
-#else
-            char data[128];
-            size_t rlen;
-            char *resp;
-            for (int32_t i = 0; i < 3; i++) {
-                ZERO(data, sizeof(data));
-                SNPRINTF(data, sizeof(data) - 1, "1234567890 %d.", i);
-                http_pack_chunked(&buf, data, strlen(data));
-                rlen = buffer_size(&buf);
-                MALLOC(resp, rlen);
-                buffer_remove(&buf, resp, rlen);
-                ev_send(&task->srey->netev, msg->fd, msg->skid, resp, rlen, 0);
-            }
-            http_pack_chunked(&buf, NULL, 0);
-            rlen = buffer_size(&buf);
-            MALLOC(resp, rlen);
-            buffer_remove(&buf, resp, rlen);
-            ev_send(&task->srey->netev, msg->fd, msg->skid, resp, rlen, 0);
-#endif
             buffer_free(&buf);
         } else {
             //fwrite(pack, 1, lens, file);

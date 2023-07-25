@@ -17,7 +17,6 @@
 #define SNPRINTF _snprintf
 #define SWPRINTF swprintf
 #define STRNCPY strncpy_s
-#define ITOA _itoa
 #define FSTAT _stat
 #define USLEEP(us)\
 do {\

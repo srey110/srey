@@ -1,10 +1,15 @@
 {
     "nnet": 1,
     "nworker": 2,
-    "stacksize": 0,
+    "stacksize": 32768,
     "interval": 10000,
     "threshold": 100,
     "logfile": 0,
     "loglv": 4,
-    "namefmt": "%Y-%m-%d %H-%M-%S"
+    "namefmt": "%Y-%m-%d %H-%M-%S",
+    "harborname": 1,
+    "harborssl": 0,
+    "harborport": 8080,
+    "harborip": "0.0.0.0",
+    "harborkey":"1234455"
 }

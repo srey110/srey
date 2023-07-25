@@ -172,6 +172,15 @@
     <ClInclude Include="minicoro\minicoro.h">
       <Filter>3rd\minicoro</Filter>
     </ClInclude>
+    <ClInclude Include="service\srpc.h">
+      <Filter>service</Filter>
+    </ClInclude>
+    <ClInclude Include="service\harbor.h">
+      <Filter>service</Filter>
+    </ClInclude>
+    <ClInclude Include="proto\urlparse.h">
+      <Filter>proto</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="memory.c">
@@ -260,6 +269,15 @@
     </ClCompile>
     <ClCompile Include="cjson\cJSON.c">
       <Filter>3rd\cjson</Filter>
+    </ClCompile>
+    <ClCompile Include="service\srpc.c">
+      <Filter>service</Filter>
+    </ClCompile>
+    <ClCompile Include="service\harbor.c">
+      <Filter>service</Filter>
+    </ClCompile>
+    <ClCompile Include="proto\urlparse.c">
+      <Filter>proto</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

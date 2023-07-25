@@ -1,5 +1,4 @@
 #include "service/synsl.h"
-#if WITH_CORO
 #include "service/srey.h"
 #define MINICORO_IMPL
 #include "minicoro/minicoro.h"
@@ -93,30 +92,28 @@ static void _co_cb(mco_coro *co) {
 void _coro_init_desc(size_t stack_size) {
     _coro_desc = mco_desc_init(_co_cb, stack_size);
 }
-coro_ctx *_coro_new(void) {
-    coro_ctx *coctx;
-    CALLOC(coctx, 1, sizeof(coro_ctx));
-    qu_ptr_init(&coctx->qucopool, 0);
-    coctx->mapco = hashmap_new_with_allocator(_malloc, _realloc, _free,
-                                              sizeof(coro_sess), ONEK, 0, 0,
-                                              _map_cosess_hash, _map_cosess_compare, NULL, NULL);
-    return coctx;
+void _coro_new(task_ctx *task) {
+    CALLOC(task->coro, 1, sizeof(coro_ctx));
+    qu_ptr_init(&task->coro->qucopool, 0);
+    task->coro->mapco = hashmap_new_with_allocator(_malloc, _realloc, _free,
+                                                   sizeof(coro_sess), ONEK, 0, 0,
+                                                   _map_cosess_hash, _map_cosess_compare, NULL, NULL);
 }
-void _coro_free(coro_ctx *coctx) {
-    if (NULL == coctx) {
+void _coro_free(task_ctx *task) {
+    if (NULL == task->coro) {
         return;
     }
     mco_coro **co;
     mco_result cortn;
-    while (NULL != (co = (mco_coro **)qu_ptr_pop(&coctx->qucopool))) {
+    while (NULL != (co = (mco_coro **)qu_ptr_pop(&task->coro->qucopool))) {
         cortn = mco_destroy(*co);
         if (MCO_SUCCESS != cortn) {
             LOG_WARN("%s", mco_result_description(cortn));
         }
     }
-    qu_ptr_free(&coctx->qucopool);
-    hashmap_free(coctx->mapco);
-    FREE(coctx);
+    qu_ptr_free(&task->coro->qucopool);
+    hashmap_free(task->coro->mapco);
+    FREE(task->coro);
 }
 static inline mco_coro *_co_pool_get(task_ctx *task) {
     mco_coro **co = (mco_coro **)qu_ptr_pop(&task->coro->qucopool);
@@ -284,9 +281,10 @@ void syn_timeout(task_ctx *task, uint32_t ms, ctask_timeout _timeout, free_cb _a
     srey_timeout(task, sess, ms, _timeout, _argfree, arg);
 }
 //MSG_TYPE_RESPONSE´¥·¢
-void *syn_request(task_ctx *dst, task_ctx *src, void *data, size_t size, int32_t copy, int32_t *erro, size_t *lens) {
+void *syn_request(task_ctx *dst, task_ctx *src, request_type rtype, void *data, size_t size, int32_t copy,
+    int32_t *erro, size_t *lens) {
     uint64_t sess = createid();
-    srey_request(dst, src, sess, data, size, copy);
+    srey_request(dst, src, rtype, sess, data, size, copy);
     message_ctx msg;
     _wait_until(src, REQUEST_TIMEOUT, sess, 0, &msg);
     if (MSG_TYPE_TIMEOUT == msg.mtype) {
@@ -560,5 +558,3 @@ void http_response(task_ctx *task, SOCKET fd, uint64_t skid, buffer_ctx *buf,
     send_chunck sendck, free_cb _sckdata_free, void *arg) {
     _syn_http_send(task, fd, skid, 0, buf, sendck, NULL, _sckdata_free, arg);
 }
-
-#endif

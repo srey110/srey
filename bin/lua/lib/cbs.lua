@@ -35,5 +35,8 @@ end
 function cbs.cb(mtype)
     return cb_funcs[mtype]
 end
+function cbs.rpc_register(method, func)
+    cb_funcs[method] = func
+end
 
 return cbs

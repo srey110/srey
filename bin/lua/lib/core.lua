@@ -91,6 +91,21 @@ function core.md5(data, size)
     return sutils.md5(data, size)
 end
 --[[
+描述:sha1 - md5
+参数:
+    data string or userdata
+    size :integer
+返回:
+    string
+--]]
+function core.sha1_md5(data, size)
+    if not data then
+        log.WARN("invalid argument.")
+        return nil
+    end
+    return sutils.sha1_md5(data, size)
+end
+--[[
 描述:sha1 然后 base64编码
 参数:
     data :string or userdata
@@ -142,8 +157,26 @@ end
 返回:
     string
 --]]
-function core.urlencode(data)
-    return sutils.urlencode(data)
+function core.url_encode(data)
+    if not data then
+        log.WARN("invalid argument.")
+        return nil
+    end
+    return sutils.url_encode(data)
+end
+--[[
+描述:url解析
+参数:
+    data :string
+返回:
+    table
+--]]
+function core.url_parse(data, size)
+    if not data then
+        log.WARN("invalid argument.")
+        return nil
+    end
+    return sutils.url_parse(data, size)
 end
 --[[
 描述:创建evssl_ctx
@@ -210,6 +243,9 @@ end
     nil失败
 --]]
 function core.task_grab(name)
+    if INVALID_TNAME == name then
+        return nil
+    end
     local task = sutils.task_grab(name)
     if not task then
         return nil
@@ -238,28 +274,30 @@ end
 描述:任务通信，无返回
 参数:
     task :task_grab返回值
+    rtype :REQUEST_TYPE
     data : string or uerdata
     lens : integer
     copy : bool
 --]]
-function core.task_call(task, data, lens, copy)
+function core.task_call(task, rtype, data, lens, copy)
     if not task or not data then
         return
     end
-    sutils.task_call(task[1], data, lens, copy and 1 or 0)
+    sutils.task_call(task[1], rtype, data, lens, copy and 1 or 0)
 end
 --[[
 描述:任务通信
 参数:
     task : task_grab返回值
+    rtype :REQUEST_TYPE
     sess : integer
     data : string or uerdata
     size : integer
     copy : bool
 --]]
-function core.task_request(task, sess, data, size, copy)
+function core.task_request(task, rtype, sess, data, size, copy)
     assert(task, "invalid parameter.")
-    sutils.task_request(task[1], curtask, sess, data, size, copy and 1 or 0)
+    sutils.task_request(task[1], curtask, rtype, sess, data, size, copy and 1 or 0)
 end
 --[[
 描述:返回任务通信

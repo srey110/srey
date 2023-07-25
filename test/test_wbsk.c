@@ -38,22 +38,9 @@ static void _recv(task_ctx *task, message_ctx *msg) {
             nowtime("%Y-%m-%d %H:%M:%S ", time);
             char *data = websock_pack_data(msg->data, &lens);
             if (0 == memcmp(data, "ck", strlen("ck"))) {
-#if WITH_CORO
                 struct _send_ck_arg arg;
                 arg.n = 0;
-                syn_websock_text(task, msg->fd, msg->skid, 0, _send_huncked, NULL, &arg);
-#else
-                char cbuf[128] = {0};
-                SNPRINTF(cbuf, sizeof(cbuf) - 1, "%s %d ", time, 0);
-                websock_text(&task->srey->netev, msg->fd, msg->skid, 0, 0, cbuf, strlen(cbuf));
-                for (int32_t i = 1; i < 3; i++) {
-                    ZERO(cbuf, sizeof(cbuf));
-                    SNPRINTF(cbuf, sizeof(cbuf) - 1, "%s %d ", time, i);
-                    websock_continuation(&task->srey->netev, msg->fd, msg->skid, 0, 0, cbuf, strlen(cbuf));
-                }
-                websock_continuation(&task->srey->netev, msg->fd, msg->skid, 0, 1, NULL, 0);
-#endif
-                
+                syn_websock_text(task, msg->fd, msg->skid, 0, _send_huncked, NULL, &arg);                
             } else {
                 websock_text(&task->srey->netev, msg->fd, msg->skid, 0, 1, time, strlen(time));
             }

@@ -19,20 +19,13 @@ typedef struct websock_pack_ctx {
     char data[0];
 }websock_pack_ctx;
 
-#define HEAD_LESN 2
-#define SIGNKEY_LENS 8
-#define MASK_LENS    4
-#define REQ_METHOD  "get"
+#define HEAD_LESN    2
 #define SIGNKEY "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-#define RSP_CODE  "101"
-#define RSP_REASON  "switching protocols"
-static char _mask_key[MASK_LENS + 1] = { 0 };
+static char _mask_key[4 + 1] = { 0 };
 
 static inline http_header_ctx *_websock_handshake_svcheck(struct http_pack_ctx *hpack) {
-    size_t glens = strlen(REQ_METHOD);
     buf_ctx *status = http_status(hpack);
-    if (glens > status[0].lens
-        || 0 != _memicmp(status[0].data, REQ_METHOD, glens)) {
+    if (!buf_icompare(&status[0], "get", strlen("get"))) {
         return NULL;
     }
     http_header_ctx *head;
@@ -109,15 +102,8 @@ static inline void _websock_handshake_server(ev_ctx *ev, SOCKET fd, uint64_t ski
     push_handshaked(fd, skid, ud, closefd, ERR_OK);
 }
 static inline int32_t _websock_handshake_clientckstatus(struct http_pack_ctx *hpack) {
-    size_t klens = strlen(RSP_CODE);
     buf_ctx *status = http_status(hpack);
-    if (status[1].lens < klens
-        || 0 != memcmp(status[1].data, RSP_CODE, klens)) {
-        return ERR_FAILED;
-    }
-    klens = strlen(RSP_REASON);
-    if (status[2].lens < klens
-        || 0 != _memicmp(status[2].data, RSP_REASON, klens)) {
+    if (!buf_compare(&status[1], "101", strlen("101"))) {
         return ERR_FAILED;
     }
     return ERR_OK;
@@ -189,10 +175,8 @@ static inline void _websock_handshake(ev_ctx *ev, SOCKET fd, uint64_t skid, buff
         http_pkfree(hpack);
         return;
     }
-    size_t glens = strlen(REQ_METHOD);
     buf_ctx *hstatus = http_status(hpack);
-    if (glens > hstatus[0].lens
-        || 0 != _memicmp(hstatus[0].data, REQ_METHOD, glens)) {
+    if (!buf_icompare(&hstatus[0], "get", strlen("get"))) {
         _websock_handshake_client(hpack, fd, skid, ud, closefd);
     } else {
         _websock_handshake_server(ev, fd, skid, hpack, ud, closefd);
@@ -476,7 +460,7 @@ char *websock_pack_data(websock_pack_ctx *pack, size_t *lens) {
     return pack->data;
 }
 char *websock_handshake_pack(const char *host) {
-    char rdstr[SIGNKEY_LENS + 1];
+    char rdstr[8 + 1];
     randstr(rdstr, sizeof(rdstr) - 1);
     size_t blens;
     char *b64 = b64encode(rdstr, strlen(rdstr), &blens);

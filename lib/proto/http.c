@@ -19,16 +19,10 @@ typedef struct http_pack_ctx {
 
 #define MAX_HEADLENS ONEK * 4
 #define FLAG_CRLF "\r\n"
-#define FLAG_HEND "\r\n\r\n"
-#define FLAG_CONTENT "content-length"
-#define FLAG_CHUNKED "transfer-encoding"
-#define CHUNKED_KEY "chunked"
 #define HEAD_REMAIN (pack->head.lens - (head - (char *)pack->head.data))
 
 int32_t _http_check_keyval(http_header_ctx *head, const char *key, const char *val) {
-    size_t lens = strlen(key);
-    if (head->key.lens < lens
-        || 0 != _memicmp(head->key.data, key, lens)) {
+    if (!buf_icompare(&head->key, key, strlen(key))) {
         return ERR_FAILED;
     }
     if (NULL == val) {
@@ -42,13 +36,13 @@ int32_t _http_check_keyval(http_header_ctx *head, const char *key, const char *v
 static inline void _check_fileld(http_pack_ctx *pack, http_header_ctx *field, int32_t *status) {
     switch (tolower(*((char *)field->key.data))) {
     case 'c':
-        if (ERR_OK == _http_check_keyval(field, FLAG_CONTENT, NULL)) {
+        if (ERR_OK == _http_check_keyval(field, "content-length", NULL)) {
             *status = CONTENT;
             pack->data.lens = strtol(field->value.data, NULL, 10);
         }
         break;
     case 't':
-        if (ERR_OK == _http_check_keyval(field, FLAG_CHUNKED, CHUNKED_KEY)){
+        if (ERR_OK == _http_check_keyval(field, "transfer-encoding", "chunked")){
             *status = CHUNKED;
             pack->data.lens = 0;
             pack->chunked = 1;
@@ -150,8 +144,8 @@ static inline http_pack_ctx *_http_content(buffer_ctx *buf, ud_cxt *ud, int32_t 
     }
 }
 static inline size_t _http_headlens(buffer_ctx *buf, int32_t *closefd) {
-    size_t flens = strlen(FLAG_HEND);
-    int32_t pos = buffer_search(buf, 0, 0, 0, FLAG_HEND, flens);
+    size_t flens = strlen("\r\n\r\n");
+    int32_t pos = buffer_search(buf, 0, 0, 0, "\r\n\r\n", flens);
     if (ERR_FAILED == pos) {
         if (buffer_size(buf) > MAX_HEADLENS) {
             *closefd = 1;
@@ -336,7 +330,7 @@ void http_pack_req(buffer_ctx *buf, const char *method, const char *url) {
     buffer_appendv(buf, "%s %s HTTP/1.1\r\n", method, enurl);
     FREE(enurl);
 }
-static inline const char *_http_status(int32_t code) {
+const char *http_code_status(int32_t code) {
     switch (code) {
     case 100: return "Continue";
     case 101: return "Switching Protocols";
@@ -383,7 +377,7 @@ static inline const char *_http_status(int32_t code) {
     }
 }
 void http_pack_resp(buffer_ctx *buf, int32_t code) {
-    buffer_appendv(buf, "HTTP/1.1 %d %s\r\n", code, _http_status(code));
+    buffer_appendv(buf, "HTTP/1.1 %d %s\r\n", code, http_code_status(code));
 }
 void http_pack_head(buffer_ctx *buf, const char *key, const char *val) {
     buffer_appendv(buf, "%s: %s\r\n", key, val);

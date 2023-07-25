@@ -3,11 +3,31 @@
 
 #include "ltasks/ltask.h"
 
-static inline int32_t task_startup(srey_ctx *ctx) {
-    int32_t rtn = ERR_OK;
+typedef struct config_ctx {
+    uint8_t loglv;
+    uint8_t logfile;
+    uint16_t nnet;
+    uint16_t nworker;
+    uint16_t interval;
+    uint16_t threshold;
+    uint16_t harborport;
+    name_t harborname;
+    name_t harborssl;
+    size_t stack_size;
+    char harborip[IP_LENS];
+    char fmt[64];
+    char harborkey[SIGN_KEY_LENS];
+}config_ctx;
+
+static inline int32_t task_startup(srey_ctx *ctx, config_ctx *config) {
+    int32_t rtn;
 #if WITH_LUA
     rtn = _ltask_startup();
+    if (ERR_OK != rtn) {
+        return rtn;
+    }
 #endif
+    rtn = harbor_start(ctx, config->harborname, config->harborssl, config->harborip, config->harborport);
     return rtn;
 };
 

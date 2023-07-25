@@ -53,6 +53,11 @@ static void on_sigcb(int32_t sig, void *arg) {
     cond_signal(&condexit);
 }
 int main(int argc, char *argv[]) {
+    cJSON_Hooks hooks;
+    hooks.malloc_fn = _malloc;
+    hooks.realloc_fn = _realloc;
+    hooks.free_fn = _free;
+    cJSON_InitHooks(&hooks);
     unlimit();
     srand((unsigned int)time(NULL)); 
     mutex_init(&muexit);
@@ -81,7 +86,7 @@ int main(int argc, char *argv[]) {
     cbs.rf_cb = test_recvfrom_cb;
 #endif
 
-    srey = srey_init(2, 2, 0, 0, 0);
+    srey = srey_init(2, 2, 0, 0, 0, "12234x455");
 #if WITH_SSL
     const char *local = procpath();
     char ca[PATH_LENS] = { 0 };
@@ -110,6 +115,7 @@ int main(int argc, char *argv[]) {
     test_udp();
     test_httpsv();
     test_wbsk();
+    harbor_start(srey, 1, 0, "0.0.0.0", 8080);
 #if START_ONLY_EV
     ev_listen(&ev, NULL, "0.0.0.0", 16000, &cbs, NULL, NULL);
     uint64_t skid;

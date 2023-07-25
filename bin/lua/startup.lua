@@ -12,3 +12,5 @@ core.task_register("test.test_wbsk", TASK_NAME.TEST_WBSK)
 core.task_register("test.test_http", TASK_NAME.TEST_HTTP)
 
 log.FATAL("FATAL")
+local url = "ftp://user:psw@127.0.0.1:8080/path/file?a=1&b=2#anchor"
+printd(dump(core.url_parse(url)))

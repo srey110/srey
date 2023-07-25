@@ -6,6 +6,7 @@ local cbs = require("lib.cbs")
 local dns = require("lib.dns")
 local wbsk = require("lib.websock")
 local http = require("lib.http")
+local rpc = require("lib.rpc")
 
 local function test_synsend()
     local fd, skid = syn.connect("127.0.0.1", 15000, PACK_TYPE.SIMPLE)
@@ -46,15 +47,32 @@ local function test_request()
         return
     end
     local call = "this is test2 call."
-    srey.task_call(test1, call, #call, 1)
+    srey.task_call(test1, REQUEST_TYPE.DEF, call, #call, 1)
     local req = "this is test2 synrequest."
-    local ok, data, size = syn.task_request(test1, req, #req, 1)
+    local ok, data, size = syn.task_request(test1, REQUEST_TYPE.DEF, req, #req, 1)
     if not ok  then
         printd("task_synrequest error")
     else
         if srey.utostr(data, size) ~= req then
             printd("task_synrequest error")
         end
+    end
+
+    rpc.call(test1, "rpc_void")
+    local sum
+    ok, sum = rpc.request(test1, "rpc_add", 1, 2)
+    if not ok or 3 ~= sum then
+        printd("rpc_request rpc_add error")
+    end
+
+    local fd, skid = syn.connect("127.0.0.1", 8080, PACK_TYPE.HTTP, nil, 0)
+    if INVALID_SOCK ~= fd then
+        rpc.net_call(TASK_NAME.TEST1, fd, skid, "rpc_void")
+        ok, sum = rpc.net_request(TASK_NAME.TEST1, fd, skid, "rpc_add", 9, 10)
+         if not ok or 19 ~= sum then
+            printd("net_request c_add error")
+        end
+        srey.close(fd, skid)
     end
 end
 local function test_dns()
@@ -68,11 +86,12 @@ local function test_dns()
     end
 end
 local function test_websk()
-    local fd, skid = wbsk.connect("124.222.224.186", 8800)
+    local fd, skid = wbsk.connect("127.0.0.1", 15003)
     if INVALID_SOCK == fd then
         printd("wbsk.connect error")
+    else
+        srey.close(fd, skid)
     end
-    srey.close(fd, skid)
 end
 local function chunked(cnt)
     cnt.n = cnt.n + 1

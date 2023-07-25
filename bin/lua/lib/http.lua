@@ -115,7 +115,7 @@ local function http_send(rsp, fd, skid, msg, ckfunc)
     end
     return pack
 end
-local function http_msg(rsp, fd, skid, fline, headers, ckfunc, info, ...)
+function http.http_msg(rsp, fd, skid, fline, headers, ckfunc, info, ...)
     local msg = {}
     table.insert(msg, fline)
     if nil ~= headers then
@@ -169,8 +169,8 @@ end
     nil 失败 
 --]]
 function http.get(fd, skid, url, headers, ckfunc)
-    local fline = string.format("GET %s HTTP/%s\r\n", core.urlencode(url or "/"), http_ver)
-    return http_msg(false, fd, skid, fline, headers, ckfunc)
+    local fline = string.format("GET %s HTTP/%s\r\n", core.url_encode(url or "/"), http_ver)
+    return http.http_msg(false, fd, skid, fline, headers, ckfunc)
 end
 --[[
 描述:post
@@ -187,8 +187,8 @@ end
     nil 失败 
 --]]
 function http.post(fd, skid, url, headers, ckfunc, info, ...)
-    local fline = string.format("POST %s HTTP/%s\r\n", core.urlencode(url or "/"), http_ver)
-    return http_msg(false, fd, skid, fline, headers, ckfunc, info, ...)
+    local fline = string.format("POST %s HTTP/%s\r\n", core.url_encode(url or "/"), http_ver)
+    return http.http_msg(false, fd, skid, fline, headers, ckfunc, info, ...)
 end
 --[[
 描述:response
@@ -202,7 +202,7 @@ end
 --]]
 function http.response(fd, skid, code, headers, info, ...)
     local fline = string.format("HTTP/%s %03d %s\r\n", http_ver, code, hstatus[code])
-    http_msg(true, fd, skid, fline, headers, nil, info, ...)
+    http.http_msg(true, fd, skid, fline, headers, nil, info, ...)
 end
 --[[
 描述: 检查是否升级为websocket，并返回签名字符

@@ -5,7 +5,7 @@
 #include "service/synsl.h"
 
 enum {
-    SSL_SERVER = 0,
+    SSL_SERVER = 1,
     SSL_CLINET,
 };
 enum {

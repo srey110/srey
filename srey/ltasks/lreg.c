@@ -64,6 +64,22 @@ static int32_t _lreg_md5(lua_State *lua) {
     lua_pushstring(lua, strmd5);
     return 1;
 }
+static int32_t _lreg_sha1_md5(lua_State *lua) {
+    void *data;
+    size_t size;
+    if (LUA_TSTRING == lua_type(lua, 1)) {
+        data = (void *)luaL_checklstring(lua, 1, &size);
+    } else {
+        data = lua_touserdata(lua, 1);
+        size = (size_t)luaL_checkinteger(lua, 2);
+    }
+    char sha1str[20];
+    sha1(data, size, sha1str);
+    char strmd5[33];
+    md5(sha1str, sizeof(sha1str), strmd5);
+    lua_pushstring(lua, strmd5);
+    return 1;
+}
 static int32_t _lreg_sha1_b64encode(lua_State *lua) {
     void *data;
     size_t size;
@@ -117,6 +133,72 @@ static int32_t _lreg_urlencode(lua_State *lua) {
     char *encode = urlencode(data, size, &lens);
     lua_pushlstring(lua, encode, lens);
     FREE(encode);
+    return 1;
+}
+static int32_t _lreg_url_parse(lua_State *lua) {
+    void *data;
+    size_t size;
+    if (LUA_TSTRING == lua_type(lua, 1)) {
+        data = (void *)luaL_checklstring(lua, 1, &size);
+    } else {
+        data = lua_touserdata(lua, 1);
+        size = (size_t)luaL_checkinteger(lua, 2);
+    }
+    url_ctx url;
+    url_parse(&url, data, size);
+    lua_createtable(lua, 0, 8);
+    if (!buf_empty(&url.scheme)) {
+        lua_pushstring(lua, "scheme");
+        lua_pushlstring(lua, url.scheme.data, url.scheme.lens);
+        lua_settable(lua, -3);
+    }
+    if (!buf_empty(&url.user)) {
+        lua_pushstring(lua, "user");
+        lua_pushlstring(lua, url.user.data, url.user.lens);
+        lua_settable(lua, -3);
+    }
+    if (!buf_empty(&url.psw)) {
+        lua_pushstring(lua, "psw");
+        lua_pushlstring(lua, url.psw.data, url.psw.lens);
+        lua_settable(lua, -3);
+    }
+    if (!buf_empty(&url.host)) {
+        lua_pushstring(lua, "host");
+        lua_pushlstring(lua, url.host.data, url.host.lens);
+        lua_settable(lua, -3);
+    }
+    if (!buf_empty(&url.port)) {
+        lua_pushstring(lua, "port");
+        lua_pushlstring(lua, url.port.data, url.port.lens);
+        lua_settable(lua, -3);
+    }
+    if (!buf_empty(&url.path)) {
+        lua_pushstring(lua, "path");
+        lua_pushlstring(lua, url.path.data, url.path.lens);
+        lua_settable(lua, -3);
+    }
+    if (!buf_empty(&url.anchor)) {
+        lua_pushstring(lua, "anchor");
+        lua_pushlstring(lua, url.anchor.data, url.anchor.lens);
+        lua_settable(lua, -3);
+    }
+    lua_pushstring(lua, "param");
+    lua_createtable(lua, 0, MAX_NPARAM);
+    url_param *param;
+    for (int32_t i = 0; i < MAX_NPARAM; i++) {
+        param = &url.param[i];
+        if (buf_empty(&param->key)) {
+            break;
+        }
+        lua_pushlstring(lua, param->key.data, param->key.lens);
+        if (buf_empty(&param->val)) {
+            lua_pushstring(lua, "");
+        } else {
+            lua_pushlstring(lua, param->val.data, param->val.lens);
+        }
+        lua_settable(lua, -3);
+    }
+    lua_settable(lua, -3);
     return 1;
 }
 static int32_t _lreg_evssl_new(lua_State *lua) {
@@ -227,32 +309,34 @@ static int32_t _lreg_task_name(lua_State *lua) {
 }
 static int32_t _lreg_call(lua_State *lua) {
     task_ctx *task = lua_touserdata(lua, 1);
+    request_type rtype = (request_type)luaL_checkinteger(lua, 2);
     void *data;
     size_t size;
-    if (LUA_TSTRING == lua_type(lua, 2)) {
-        data = (void *)luaL_checklstring(lua, 2, &size);
+    if (LUA_TSTRING == lua_type(lua, 3)) {
+        data = (void *)luaL_checklstring(lua, 3, &size);
     } else {
-        data = lua_touserdata(lua, 2);
-        size = (size_t)luaL_checkinteger(lua, 3);
+        data = lua_touserdata(lua, 3);
+        size = (size_t)luaL_checkinteger(lua, 4);
     }
-    int32_t copy = (int32_t)luaL_checkinteger(lua, 4);
-    srey_call(task, data, size, copy);
+    int32_t copy = (int32_t)luaL_checkinteger(lua, 5);
+    srey_call(task, rtype, data, size, copy);
     return 0;
 }
 static int32_t _lreg_request(lua_State *lua) {
     task_ctx *dst = lua_touserdata(lua, 1);
     task_ctx *src = lua_touserdata(lua, 2);
-    uint64_t sess = (uint64_t)luaL_checkinteger(lua, 3);
+    request_type rtype = (request_type)luaL_checkinteger(lua, 3);
+    uint64_t sess = (uint64_t)luaL_checkinteger(lua, 4);
     void *data;
     size_t size;
-    if (LUA_TSTRING == lua_type(lua, 4)) {
-        data = (void *)luaL_checklstring(lua, 4, &size);
+    if (LUA_TSTRING == lua_type(lua, 5)) {
+        data = (void *)luaL_checklstring(lua, 5, &size);
     } else {
-        data = lua_touserdata(lua, 4);
-        size = (size_t)luaL_checkinteger(lua, 5);
+        data = lua_touserdata(lua, 5);
+        size = (size_t)luaL_checkinteger(lua, 6);
     }
-    int32_t copy = (int32_t)luaL_checkinteger(lua, 6);
-    srey_request(dst, src, sess, data, size, copy);
+    int32_t copy = (int32_t)luaL_checkinteger(lua, 7);
+    srey_request(dst, src, rtype, sess, data, size, copy);
     return 0;
 }
 static int32_t _lreg_response(lua_State *lua) {
@@ -642,10 +726,12 @@ LUAMOD_API int luaopen_srey_utils(lua_State *lua) {
         { "getid", _lreg_getid },
 
         { "md5", _lreg_md5 },
+        { "sha1_md5" ,_lreg_sha1_md5 },
         { "sha1_b64encode", _lreg_sha1_b64encode },
         { "b64encode", _lreg_b64encode },
         { "b64decode", _lreg_b64decode },
-        { "urlencode", _lreg_urlencode },
+        { "url_encode", _lreg_urlencode },
+        { "url_parse", _lreg_url_parse },
 
         { "evssl_new", _lreg_evssl_new },
         { "evssl_p12new", _lreg_evssl_p12new },

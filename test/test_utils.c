@@ -375,6 +375,165 @@ void test_http(CuTest* tc) {
 
     buffer_free(&buf);
 }
+void test_url(CuTest* tc) {
+    //[协议类型]://[访问资源需要的凭证信息]@[服务器地址]:[端口号]/[资源层级UNIX文件路径][文件名]?[查询]#[片段ID]
+    url_ctx url;
+    const char *url1 = "ftp://user:psw@127.0.0.1:8080/path/file?a=1&b=2#anchor";
+    url_parse(&url, (char *)url1, strlen(url1));
+    CuAssertTrue(tc, 
+        NULL != url.scheme.data
+        && NULL != url.user.data
+        && NULL != url.psw.data
+        && NULL != url.host.data
+        && NULL != url.port.data
+        && NULL != url.path.data
+        && NULL != url.anchor.data
+        && NULL != url.param[0].key.data
+        && NULL != url.param[1].key.data);
+    const char *url2 = "ftp://user@127.0.0.1/path?c=#anchor";
+    url_parse(&url, (char *)url2, strlen(url2));
+    CuAssertTrue(tc,
+        NULL != url.scheme.data
+        && NULL != url.user.data
+        && NULL == url.psw.data
+        && NULL != url.host.data
+        && NULL == url.port.data
+        && NULL != url.path.data
+        && NULL != url.anchor.data
+        && NULL != url.param[0].key.data);
+    const char *url3 = "ftp://127.0.0.1/?c=";
+    url_parse(&url, (char *)url3, strlen(url3));
+    CuAssertTrue(tc,
+        NULL != url.scheme.data
+        && NULL == url.user.data
+        && NULL == url.psw.data
+        && NULL != url.host.data
+        && NULL == url.port.data
+        && NULL == url.path.data
+        && NULL == url.anchor.data
+        && NULL != url.param[0].key.data);
+    const char *url4 = "ftp://127.0.0.1/?c=#";
+    url_parse(&url, (char *)url4, strlen(url4));
+    CuAssertTrue(tc,
+        NULL != url.scheme.data
+        && NULL == url.user.data
+        && NULL == url.psw.data
+        && NULL != url.host.data
+        && NULL == url.port.data
+        && NULL == url.path.data
+        && NULL == url.anchor.data
+        && NULL != url.param[0].key.data);
+    const char *url5 = "ftp://127.0.0.1/?#";
+    url_parse(&url, (char *)url5, strlen(url5));
+    CuAssertTrue(tc,
+        NULL != url.scheme.data
+        && NULL == url.user.data
+        && NULL == url.psw.data
+        && NULL != url.host.data
+        && NULL == url.port.data
+        && NULL == url.path.data
+        && NULL == url.anchor.data
+        && NULL == url.param[0].key.data);
+    const char *url6 = "127.0.0.1/?a=1";
+    url_parse(&url, (char *)url6, strlen(url6));
+    CuAssertTrue(tc,
+        NULL == url.scheme.data
+        && NULL == url.user.data
+        && NULL == url.psw.data
+        && NULL != url.host.data
+        && NULL == url.port.data
+        && NULL == url.path.data
+        && NULL == url.anchor.data
+        && NULL != url.param[0].key.data);
+    const char *url7 = "127.0.0.1/#1";
+    url_parse(&url, (char *)url7, strlen(url7));
+    CuAssertTrue(tc,
+        NULL == url.scheme.data
+        && NULL == url.user.data
+        && NULL == url.psw.data
+        && NULL != url.host.data
+        && NULL == url.port.data
+        && NULL == url.path.data
+        && NULL != url.anchor.data
+        && NULL == url.param[0].key.data);
+    const char *url8 = "/path?a=1";
+    url_parse(&url, (char *)url8, strlen(url8));
+    CuAssertTrue(tc,
+        NULL == url.scheme.data
+        && NULL == url.user.data
+        && NULL == url.psw.data
+        && NULL == url.host.data
+        && NULL == url.port.data
+        && NULL != url.path.data
+        && NULL == url.anchor.data
+        && NULL != url.param[0].key.data);
+    const char *url9 = "/path#12";
+    url_parse(&url, (char *)url9, strlen(url9));
+    CuAssertTrue(tc,
+        NULL == url.scheme.data
+        && NULL == url.user.data
+        && NULL == url.psw.data
+        && NULL == url.host.data
+        && NULL == url.port.data
+        && NULL != url.path.data
+        && NULL != url.anchor.data
+        && NULL == url.param[0].key.data);
+    const char *url10 = "/path";
+    url_parse(&url, (char *)url10, strlen(url10));
+    CuAssertTrue(tc,
+        NULL == url.scheme.data
+        && NULL == url.user.data
+        && NULL == url.psw.data
+        && NULL == url.host.data
+        && NULL == url.port.data
+        && NULL != url.path.data
+        && NULL == url.anchor.data
+        && NULL == url.param[0].key.data);
+    const char *url11 = "127.0.0.1/path#anchor";
+    url_parse(&url, (char *)url11, strlen(url11));
+    CuAssertTrue(tc,
+        NULL == url.scheme.data
+        && NULL == url.user.data
+        && NULL == url.psw.data
+        && NULL != url.host.data
+        && NULL == url.port.data
+        && NULL != url.path.data
+        && NULL != url.anchor.data
+        && NULL == url.param[0].key.data);
+    const char *url12 = "ftp://127.0.0.1";
+    url_parse(&url, (char *)url12, strlen(url12));
+    CuAssertTrue(tc,
+        NULL != url.scheme.data
+        && NULL == url.user.data
+        && NULL == url.psw.data
+        && NULL != url.host.data
+        && NULL == url.port.data
+        && NULL == url.path.data
+        && NULL == url.anchor.data
+        && NULL == url.param[0].key.data);
+    const char *url13 = "ftp://";
+    url_parse(&url, (char *)url13, strlen(url13));
+    CuAssertTrue(tc,
+        NULL != url.scheme.data
+        && NULL == url.user.data
+        && NULL == url.psw.data
+        && NULL == url.host.data
+        && NULL == url.port.data
+        && NULL == url.path.data
+        && NULL == url.anchor.data
+        && NULL == url.param[0].key.data);
+    const char *url14 = "ws://127.0.0.1:15003";
+    url_parse(&url, (char *)url14, strlen(url14));
+    CuAssertTrue(tc,
+        NULL != url.scheme.data
+        && NULL == url.user.data
+        && NULL == url.psw.data
+        && NULL != url.host.data
+        && NULL != url.port.data
+        && NULL == url.path.data
+        && NULL == url.anchor.data
+        && NULL == url.param[0].key.data);
+}
 void test_utils(CuSuite* suite) {
     SUITE_ADD_TEST(suite, test_array);
     SUITE_ADD_TEST(suite, test_queue);
@@ -384,4 +543,5 @@ void test_utils(CuSuite* suite) {
     SUITE_ADD_TEST(suite, test_buffer);
     SUITE_ADD_TEST(suite, test_log);
     SUITE_ADD_TEST(suite, test_http);
+    SUITE_ADD_TEST(suite, test_url);
 }

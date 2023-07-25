@@ -32,7 +32,6 @@
 #define SNPRINTF snprintf
 #define SWPRINTF swprintf
 #define STRNCPY strncpy
-#define ITOA itoa
 #define FSTAT stat
 #define USLEEP(us) usleep(us)
 #define MSLEEP(ms) usleep(ms * 1000)
@@ -118,5 +117,7 @@
     #define ATOMIC64_CAS(ptr, oldval, newval) __sync_bool_compare_and_swap(ptr, oldval, newval)
 #endif
 
-#endif
+int32_t _memicmp(const void *ptr1, const void *ptr2, size_t lens);
+
+#endif//OS_WIN
 #endif//MACRO_UNIX_H_

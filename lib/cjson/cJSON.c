@@ -228,13 +228,20 @@ CJSON_PUBLIC(void) cJSON_InitHooks(cJSON_Hooks* hooks)
     {
         global_hooks.deallocate = hooks->free_fn;
     }
-
     /* use realloc only if both free and malloc are used */
     global_hooks.reallocate = NULL;
-    if ((global_hooks.allocate == malloc) && (global_hooks.deallocate == free))
+    if (NULL == hooks->realloc_fn)
     {
-        global_hooks.reallocate = realloc;
+        if ((global_hooks.allocate == malloc) && (global_hooks.deallocate == free))
+        {
+            global_hooks.reallocate = realloc;
+        }
     }
+    else
+    {
+        global_hooks.reallocate = hooks->realloc_fn;
+    }
+    
 }
 
 /* Internal constructor. */

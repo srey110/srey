@@ -19,23 +19,15 @@ static void _timeout(task_ctx *task, void *arg) {
     } else {
         srey_task_ungrab(test_syn);
     }
-#if WITH_CORO
     syn_timeout(task, TIMEOUT_TIME, _timeout, test_free_cb, test_init_arg());
-#else
-    srey_timeout(task, 0, TIMEOUT_TIME, _timeout, test_free_cb, test_init_arg());
-#endif
 }
 static void _startup(task_ctx *task, message_ctx *msg) {
-#if WITH_CORO
     uint64_t bg = nowsec();
     syn_sleep(task, 1000);
     if (nowsec() - bg != 1) {
         LOG_WARN("syn_sleep error.");
     }
     syn_timeout(task, TIMEOUT_TIME, _timeout, test_free_cb, test_init_arg());
-#else
-    srey_timeout(task, 0, TIMEOUT_TIME, _timeout, test_free_cb, test_init_arg());
-#endif
 }
 static void _request(task_ctx *task, message_ctx *msg) {
     if (INVALID_TNAME != msg->src) {
@@ -54,9 +46,26 @@ static void _request(task_ctx *task, message_ctx *msg) {
         }
     }
 }
+static cJSON *test_void(task_ctx *task, cJSON *args) {
+    /*char *info = cJSON_PrintUnformatted(args);
+    FREE(info);*/
+    return cJSON_CreateObject();
+}
+static cJSON *test_add(task_ctx *task, cJSON *args) {
+    int32_t n = cJSON_GetArraySize(args);
+    if (2 != n) {
+        return NULL;
+    }
+    cJSON *val1 = cJSON_GetArrayItem(args, 0);
+    cJSON *val2 = cJSON_GetArrayItem(args, 1);
+    int32_t sum = (int32_t)(val1->valuedouble + val2->valuedouble);
+    return rpc_format_args("i", sum);
+}
 void test_timeout(void) {
     task_ctx *task = srey_task_new(TTYPE_C, TEST_TIMEOUT, 0, 0, NULL, NULL);
     srey_task_regcb(task, MSG_TYPE_STARTUP, _startup);
     srey_task_regcb(task, MSG_TYPE_REQUEST, _request);
+    rpc_register(task, "test_void", test_void);
+    rpc_register(task, "test_add", test_add);
     srey_task_register(srey, task);
 }

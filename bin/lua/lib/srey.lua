@@ -3,6 +3,7 @@ local core = require("lib.core")
 local syn = require("lib.synsl")
 local cbs = require("lib.cbs")
 local log = require("lib.log")
+local json = require("cjson")
 local MSG_TYPE = MSG_TYPE
 local SLICE_TYPE = SLICE_TYPE
 local TIMEOUT_TYPE = TIMEOUT_TYPE
@@ -130,16 +131,43 @@ local function _dispatch_close(msg)
         coro_run(_coro_cb, func, msg, msg)
     end
 end
-local function _dispatch_request(msg)
-    local func = cb_func(msg.mtype)
-    if not func then
-        if INVALID_TNAME ~= msg.src and 0 ~= msg.sess then
-            local src<close> = task_grab(msg.src)
-            task_response(src, msg.sess, ERR_FAILED)
-        end
+local function _rpc_call(func, msg, ...)
+    local rtn = {core.xpcall(func, ...)}
+    local ok = table.remove(rtn, 1)
+    local src<close> = task_grab(msg.src)
+    if not src then
         return
     end
-    coro_run(_coro_cb, func, msg, msg)
+    if ok then
+        local jrtn = json.encode(rtn)
+        task_response(src, msg.sess, ERR_OK, jrtn, #jrtn, true)
+    else
+        task_response(src, msg.sess, ERR_FAILED)
+    end
+end
+local function _dispatch_request(msg)
+    if REQUEST_TYPE.RPC == msg.pktype then
+        local info = json.decode(msg.data, msg.size)
+        local func = cb_func(info.method)
+        if not func then
+            local src<close> = task_grab(msg.src)
+            if src then
+                task_response(src, msg.sess, ERR_FAILED)
+            end
+            return
+        end
+        coro_run(_coro_cb, _rpc_call, msg, func, msg, table.unpack(info.args))
+    elseif REQUEST_TYPE.DEF == msg.pktype then
+        local func = cb_func(msg.mtype)
+        if not func then
+            local src<close> = task_grab(msg.src)
+            if src then
+                task_response(src, msg.sess, ERR_FAILED)
+            end
+            return
+        end
+        coro_run(_coro_cb, func, msg, msg)
+    end
 end
 local function _dispatch_response(msg)
     local cosess = cosess_get(msg.sess)

@@ -13,15 +13,16 @@
 #include "tw.h"
 
 #define INVALID_TNAME         0
+#define RPC_NAME_LENS         64
+#define SIGN_KEY_LENS         128
 #define RECORD_WORKER_LOAD    0
-#if WITH_CORO
 struct coro_ctx;
-#endif
 typedef struct srey_ctx srey_ctx;
 typedef struct task_ctx task_ctx;
 typedef struct message_ctx message_ctx;
 typedef void(*task_run)(task_ctx *task, message_ctx *msg);
 typedef void(*ctask_timeout)(task_ctx *task, void *arg);
+typedef struct cJSON *(*rpc_cb)(task_ctx *task, struct cJSON *args);
 
 typedef enum msg_type {
     MSG_TYPE_NONE = 0x00,
@@ -47,6 +48,12 @@ typedef enum task_type{
 #endif
     TTYPE_CNT
 }task_type;
+typedef enum request_type {
+    REQ_TYPE_DEF = 0x00,
+    REQ_TYPE_RPC,
+
+    REQ_TYPE_CNT
+}request_type;
 
 struct message_ctx {
     uint8_t mtype;//msg_type
@@ -118,7 +125,13 @@ struct srey_ctx {
     monitor_ctx monitor;
     tw_ctx tw;
     ev_ctx netev;
+    char key[SIGN_KEY_LENS];
 };
+
+typedef struct rpc_ctx {
+    rpc_cb rpc;
+    char method[RPC_NAME_LENS];
+}rpc_ctx;
 
 struct task_ctx {
     uint8_t global;
@@ -134,13 +147,13 @@ struct task_ctx {
     free_cb _arg_free;
     void *arg;
     srey_ctx *srey;
-#if WITH_CORO
     struct coro_ctx *coro;
-#endif
+    struct hashmap *maprpc;
     spin_ctx spin_msg;
     qu_message qumsg;
     qu_message qutmo;
     qu_ptr qutmoarg;
+    task_run _request[REQ_TYPE_CNT];
     task_run _run[MSG_TYPE_ALL];
 };
 
@@ -149,11 +162,13 @@ typedef struct task_msg_arg {
     message_ctx msg;
 }task_msg_arg;
 
-#if WITH_CORO
 void _coro_init_desc(size_t stack_size);
-struct coro_ctx *_coro_new(void);
-void _coro_free(struct coro_ctx *coctx);
+void _coro_new(task_ctx *task);
+void _coro_free(task_ctx *task);
 void _dispatch_coro(task_msg_arg *arg);
-#endif
+
+void _rpc_new(task_ctx *task);
+void _rpc_free(task_ctx *task);
+void _ctask_rpc(task_ctx *task, message_ctx *msg);
 
 #endif//SPUB_H_

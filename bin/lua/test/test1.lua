@@ -56,6 +56,14 @@ local function request(msg)
     end
 end
 cbs.cb_request(request)
+local function rpc_void()
+    --printd("rpc_void")
+end
+cbs.rpc_register("rpc_void", rpc_void)
+local function rpc_add(a, b)
+    return a + b
+end
+cbs.rpc_register("rpc_add", rpc_add)
 
 local function closing()
     printd("test1 closing.")

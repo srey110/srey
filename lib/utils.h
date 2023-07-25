@@ -55,9 +55,6 @@ uint64_t hash(const char *buf, size_t len);
 uint64_t fnv1a_hash(const char *buf, size_t len);
 
 void *memichr(const void *ptr, int32_t val, size_t maxlen);
-#ifndef OS_WIN
-int32_t _memicmp(const void *ptr1, const void *ptr2, size_t lens);
-#endif
 //内存查找 ncs 0 区分大小写
 void *memstr(int32_t ncs, const void *ptr, size_t plens, const void *what, size_t wlen);
 //跳过空字节

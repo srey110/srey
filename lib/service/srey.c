@@ -27,7 +27,7 @@ static inline void *_map_task_del(struct hashmap *map, name_t name) {
 }
 static inline task_ctx *_map_task_get(struct hashmap *map, name_t name) {
     name_t *key = &name;
-    name_t **ptr =(name_t **)hashmap_get(map, &key);
+    name_t **ptr = (name_t **)hashmap_get(map, &key);
     if (NULL == ptr) {
         return NULL;
     }
@@ -375,15 +375,6 @@ static void _loop_monitor(void *arg) {
         }
     }
 }
-static inline void _dispatch_default(task_msg_arg *arg) {
-    if (NULL != arg->task->_run[arg->msg.mtype]) {
-        arg->task->_run[arg->msg.mtype](arg->task, &arg->msg);
-    }
-    message_clean(arg->task, arg->msg.mtype, arg->msg.pktype, arg->msg.data);
-    if (MSG_TYPE_CLOSING == arg->msg.mtype) {
-        srey_task_ungrab(arg->task);
-    }
-}
 #if WITH_LUA
 static inline void _dispatch_lua(task_msg_arg *arg) {
     ASSERTAB(NULL != arg->task->_run[arg->msg.mtype], "lua task not set callback functhion.");
@@ -391,21 +382,21 @@ static inline void _dispatch_lua(task_msg_arg *arg) {
 }
 #endif
 static void _disp_funcs_init(void) {
-#if WITH_CORO
     _disp_funcs[TTYPE_C] = _dispatch_coro;
-#else
-    _disp_funcs[TTYPE_C] = _dispatch_default;
-#endif
 #if WITH_LUA
     _disp_funcs[TTYPE_LUA] = _dispatch_lua;
 #endif
 }
-srey_ctx *srey_init(uint16_t nnet, uint16_t nworker, size_t stack_size, uint16_t interval, uint16_t threshold) {
+srey_ctx *srey_init(uint16_t nnet, uint16_t nworker, size_t stack_size,
+    uint16_t interval, uint16_t threshold, const char *key) {
+    size_t klens = strlen(key);
+    if (klens >= SIGN_KEY_LENS) {
+        return NULL;
+    }
     srey_ctx *ctx;
     CALLOC(ctx, 1, sizeof(srey_ctx));
-#if WITH_CORO
+    strcpy(ctx->key, key);
     _coro_init_desc(stack_size);
-#endif
     _disp_funcs_init();
     protos_init();
     ctx->nworker = 0 == nworker ? 1 : nworker;
@@ -547,6 +538,18 @@ struct evssl_ctx *srey_ssl_qury(srey_ctx *ctx, name_t name) {
     return NULL == cert ? NULL : cert->ssl;
 }
 #endif
+static inline void _ctask_request_run(task_ctx *task, message_ctx *msg) {
+    if (NULL != task->_request[msg->pktype]) {
+        task->_request[msg->pktype](task, msg);
+    } else {
+        task_ctx *dst = srey_task_grab(task->srey, msg->src);
+        if (NULL != dst) {
+            srey_response(dst, msg->sess, ERR_FAILED, NULL, 0, 0);
+            srey_task_ungrab(dst);
+        }
+        LOG_WARN("request type %d not register callback.", msg->pktype);
+    }
+}
 static inline void _ctask_timeout_run(task_ctx *task, message_ctx *msg) {
     ctask_tmo_arg *tmo = msg->data;
     if (NULL == tmo
@@ -569,11 +572,12 @@ task_ctx *srey_task_new(task_type ttype, name_t name, uint16_t maxcnt, uint16_t 
     task->_arg_free = _argfree;
     task->arg = arg;
     if (TTYPE_C == ttype) {
+        task->_run[MSG_TYPE_REQUEST] = _ctask_request_run;
         task->_run[MSG_TYPE_TIMEOUT] = _ctask_timeout_run;
+        task->_request[REQ_TYPE_RPC] = _ctask_rpc;
     }
-#if WITH_CORO
-    task->coro = _coro_new();
-#endif
+    _coro_new(task);
+    _rpc_new(task);
     spin_init(&task->spin_msg, SPIN_CNT_TASKMSG);
     qu_message_init(&task->qumsg, task->maxmsgqulens);
     qu_message_init(&task->qutmo, task->maxmsgqulens);
@@ -606,9 +610,8 @@ void srey_task_free(task_ctx *task) {
     while (NULL != (tmo = (ctask_tmo_arg **)qu_ptr_pop(&task->qutmoarg))) {
         _timeout_free_arg(*tmo);
     }
-#if WITH_CORO
-    _coro_free(task->coro);
-#endif
+    _coro_free(task);
+    _rpc_free(task);
     qu_message_free(&task->qumsg);
     spin_free(&task->spin_msg);
     qu_message_free(&task->qutmo);
@@ -616,19 +619,23 @@ void srey_task_free(task_ctx *task) {
     FREE(task);
 }
 void srey_task_regcb(task_ctx *task, msg_type mtype, task_run _cb) {
-    if (MSG_TYPE_ALL == mtype) {
-        if (TTYPE_C == task->ttype) {
-            LOG_WARN("reset default timeout.");
+    if (TTYPE_C == task->ttype) {
+        if (MSG_TYPE_TIMEOUT == mtype) {
+            return;
         }
-        for (msg_type i = MSG_TYPE_NONE + 1; i < MSG_TYPE_ALL; i++) {
-            task->_run[i] = _cb;
-        }
-    } else {
-        if (TTYPE_C == task->ttype
-            && MSG_TYPE_TIMEOUT == mtype) {
-            LOG_WARN("reset default timeout.");
+        if (MSG_TYPE_REQUEST == mtype) {
+            task->_request[REQ_TYPE_DEF] = _cb;
+            return;
         }
         task->_run[mtype] = _cb;
+    } else {
+        if (MSG_TYPE_ALL == mtype) {
+            for (msg_type i = MSG_TYPE_NONE + 1; i < MSG_TYPE_ALL; i++) {
+                task->_run[i] = _cb;
+            }
+        } else {
+            task->_run[mtype] = _cb;
+        }
     }
 }
 int32_t srey_task_register(srey_ctx *ctx, task_ctx *task) {
@@ -732,9 +739,10 @@ void srey_timeout(task_ctx *task, uint64_t sess, uint32_t ms, ctask_timeout _tim
     }
     tw_add(&task->srey->tw, ms, _srey_timeout, _timeout_free_ud, &ud);
 }
-void srey_request(task_ctx *dst, task_ctx *src, uint64_t sess, void *data, size_t size, int32_t copy) {
+void srey_request(task_ctx *dst, task_ctx *src, request_type rtype, uint64_t sess, void *data, size_t size, int32_t copy) {
     message_ctx msg;
     msg.mtype = MSG_TYPE_REQUEST;
+    msg.pktype = rtype;
     if (NULL != src) {
         msg.src = src->name;
         msg.sess = sess;
@@ -757,8 +765,7 @@ void srey_response(task_ctx *dst, uint64_t sess, int32_t erro, void *data, size_
     msg.sess = sess;
     msg.erro = (int8_t)erro;
     msg.size = size;
-    if (NULL != data
-        && 0 != size) {
+    if (NULL != data) {
         if (0 != copy) {
             MALLOC(msg.data, size);
             memcpy(msg.data, data, size);
@@ -770,8 +777,8 @@ void srey_response(task_ctx *dst, uint64_t sess, int32_t erro, void *data, size_
     }
     _push_message(dst, &msg);
 }
-void srey_call(task_ctx *dst, void *data, size_t size, int32_t copy) {
-    srey_request(dst, NULL, 0, data, size, copy);
+void srey_call(task_ctx *dst, request_type rtype, void *data, size_t size, int32_t copy) {
+    srey_request(dst, NULL, rtype, 0, data, size, copy);
 }
 static inline int32_t _net_accept(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud) {
     task_ctx *task = srey_task_grab(ud->data, ud->name);

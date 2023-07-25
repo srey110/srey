@@ -17,6 +17,8 @@
 #include "rwlock.h"
 #include "spinlock.h"
 #include "thread.h"
+#include "cjson/cJSON.h"
+#include "proto/urlparse.h"
 #include "proto/simple.h"
 #include "proto/dns.h"
 #include "proto/http.h"
@@ -25,6 +27,8 @@
 #include "event/event.h"
 #include "service/srey.h"
 #include "service/synsl.h"
+#include "service/srpc.h"
+#include "service/harbor.h"
 
 extern srey_ctx *srey;
 

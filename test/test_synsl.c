@@ -23,7 +23,6 @@ static void _timeout_free(task_ctx *task, void *arg) {
     //LOG_INFO("test_synsl release");
     srey_task_close(task);
 }
-#if WITH_CORO
 static void _syn_wbsk_conn(task_ctx *task) {
     uint64_t skid;
     SOCKET fd = syn_websock_connect(task, "127.0.0.1", 15003, NULL, &skid);
@@ -66,25 +65,42 @@ static void _call_request(task_ctx *task) {
         return;
     }
     const char *call = "this is srey_call.";
-    srey_call(test, (void *)call, strlen(call), 1);
+    srey_call(test, REQ_TYPE_DEF, (void *)call, strlen(call), 1);
     const char *req = "this is syn_request, test_synsl->test_timeout.";
     int32_t err;
     size_t lens;
-    char *rtn = syn_request(test, task, (void *)req, strlen(req), 1, &err, &lens);
+    char *rtn = syn_request(test, task, REQ_TYPE_DEF, (void *)req, strlen(req), 1, &err, &lens);
     if (lens != strlen(req)
         || 0 != memcmp(rtn, req, lens)) {
         LOG_WARN("syn_request error.");
     }
+    rpc_call(test, "test_void", "s i I u U n f b", "string", -123, -12345, 123, 12345, 123456.1, 1);
+    rtn = rpc_request(test, task, &err, &lens, "test_add", "ii", 12, 21);
+    if (ERR_OK != err
+        || 4 != lens
+        || 0 != memcmp(rtn, "[33]", lens)) {
+        LOG_WARN("rpc_request error.");
+    }
     srey_task_ungrab(test);
+
+    uint64_t skid;
+    SOCKET fd = syn_connect(task, PACK_HTTP, NULL, "127.0.0.1", 8080, 0, &skid);
+    if (INVALID_SOCK != fd) {
+        rpc_net_call(task, TEST_TIMEOUT, fd, skid, "test_void", "");
+        char *resp = rpc_net_request(task, TEST_TIMEOUT, fd, skid, &lens, "test_add", "ii", 11, 12);
+        if (NULL == resp
+            || 4 != lens
+            || 0 != memcmp(resp, "[23]", lens)) {
+            LOG_WARN("rpc_net_request rpc_add error.");
+        }
+        ev_close(&task->srey->netev, fd, skid);
+    }
 }
-#endif
 static void _timeout_loop(task_ctx *task, void *arg) {
-#if WITH_CORO
     _syn_wbsk_conn(task);
     _syn_http(task);
     _call_request(task);
     syn_timeout(task, 50, _timeout_loop, NULL, NULL);
-#endif
 }
 static void _print_ips(dns_ip *ips, size_t n) {
     for (size_t i = 0; i < n; i++) {
@@ -92,7 +108,6 @@ static void _print_ips(dns_ip *ips, size_t n) {
     }
 }
 static void _startup(task_ctx *task, message_ctx *msg) {
-#if WITH_CORO
     if (ATOMIC_CAS(&_once, 0, 1)) {
         size_t n;
         dns_ip *ips = syn_dns_lookup(task, "8.8.8.8", "www.google.com", 0, &n);
@@ -106,17 +121,12 @@ static void _startup(task_ctx *task, message_ctx *msg) {
             FREE(ips);
         }
     }
-#endif
 }
 void test_synsl(void) {
     task_ctx *task = srey_task_new(TTYPE_C, TEST_SYN, 0, 0, NULL, NULL);
     srey_task_regcb(task, MSG_TYPE_STARTUP, _startup);
     srey_task_register(srey, task);
     //LOG_INFO("test_synsl after 5s close.");
-#if WITH_CORO
     syn_timeout(task, 50, _timeout_loop, NULL, NULL);
     syn_timeout(task, 100, _timeout_free, NULL, NULL);
-#else
-    srey_timeout(task, 0, 100, _timeout_free, NULL, NULL);
-#endif
 }

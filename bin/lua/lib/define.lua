@@ -1,6 +1,7 @@
 --任务名
 TASK_NAME = {
     NONE = 0x00,--保留
+    HARBOR = 0x01,
     TEST1 = 10001,
     TEST2 = 10002,
     TEST3 = 10003,
@@ -10,6 +11,7 @@ TASK_NAME = {
 }
 --SSL名
 SSL_NAME = {
+    NONE = 0x00,
     SERVER = 0x01,
     CLIENT = 0x02
 }
@@ -45,6 +47,11 @@ MSG_TYPE = {
     RECVFROM = 0x0a,
     REQUEST = 0x0b,
     RESPONSE = 0x0c
+}
+--任务间通信类型
+REQUEST_TYPE = {
+    DEF = 0x00,
+    RPC = 0x01
 }
 --分片消息类型
 SLICE_TYPE = {

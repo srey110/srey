@@ -1,20 +1,9 @@
 #include "startup.h"
-#include "cjson/cJSON.h"
 
 srey_ctx *srey = NULL;
 static FILE *logstream = NULL;
 static mutex_ctx muexit;
 static cond_ctx condexit;
-typedef struct config_ctx {
-    uint8_t loglv;
-    uint8_t logfile;
-    uint16_t nnet;
-    uint16_t nworker;
-    uint16_t interval;
-    uint16_t threshold;
-    size_t stack_size;
-    char fmt[64];
-}config_ctx;
 static char *_config_read(void) {
     char config[PATH_LENS] = { 0 };
     SNPRINTF(config, sizeof(config) - 1, "%s%s%s%s%s",
@@ -48,35 +37,80 @@ static void _parse_config(config_ctx *cnf) {
         return;
     }
     cJSON *val = cJSON_GetObjectItem(json, "nnet");
-    if (cJSON_IsNumber(val)) {
-        cnf->nnet = (uint16_t)val->valueint;
+    if (NULL != val 
+        && cJSON_IsNumber(val)) {
+        cnf->nnet = (uint16_t)val->valuedouble;
     }
     val = cJSON_GetObjectItem(json, "nworker");
-    if (cJSON_IsNumber(val)) {
-        cnf->nworker = (uint16_t)val->valueint;
+    if (NULL != val
+        && cJSON_IsNumber(val)) {
+        cnf->nworker = (uint16_t)val->valuedouble;
     }
     val = cJSON_GetObjectItem(json, "stacksize");
-    if (cJSON_IsNumber(val)) {
-        cnf->stack_size = (size_t)val->valueint;
+    if (NULL != val
+        && cJSON_IsNumber(val)) {
+        cnf->stack_size = (size_t)val->valuedouble;
     }
     val = cJSON_GetObjectItem(json, "interval");
-    if (cJSON_IsNumber(val)) {
-        cnf->interval = (uint16_t)val->valueint;
+    if (NULL != val
+        && cJSON_IsNumber(val)) {
+        cnf->interval = (uint16_t)val->valuedouble;
     }
     val = cJSON_GetObjectItem(json, "threshold");
-    if (cJSON_IsNumber(val)) {
-        cnf->threshold = (uint16_t)val->valueint;
+    if (NULL != val
+        && cJSON_IsNumber(val)) {
+        cnf->threshold = (uint16_t)val->valuedouble;
     }
     val = cJSON_GetObjectItem(json, "loglv");
-    if (cJSON_IsNumber(val)) {
-        cnf->loglv = (uint8_t)val->valueint;
+    if (NULL != val
+        && cJSON_IsNumber(val)) {
+        cnf->loglv = (uint8_t)val->valuedouble;
     }
     val = cJSON_GetObjectItem(json, "logfile");
-    if (cJSON_IsNumber(val)) {
-        cnf->logfile = (uint8_t)val->valueint;
+    if (NULL != val
+        && cJSON_IsNumber(val)) {
+        cnf->logfile = (uint8_t)val->valuedouble;
+    }
+    val = cJSON_GetObjectItem(json, "harborname");
+    if (NULL != val
+        && cJSON_IsNumber(val)) {
+        cnf->harborname = (name_t)val->valuedouble;
+    }
+    val = cJSON_GetObjectItem(json, "harborssl");
+    if (NULL != val
+        && cJSON_IsNumber(val)) {
+        cnf->harborssl = (name_t)val->valuedouble;
+    }
+    val = cJSON_GetObjectItem(json, "harborport");
+    if (NULL != val
+        && cJSON_IsNumber(val)) {
+        cnf->harborport = (uint16_t)val->valuedouble;
+    }
+    val = cJSON_GetObjectItem(json, "harborip");
+    if (NULL != val
+        && cJSON_IsString(val)) {
+        size_t flen = strlen(val->valuestring);
+        if (flen < sizeof(cnf->harborip)) {
+            memcpy(cnf->harborip, val->valuestring, flen);
+            cnf->harborip[flen] = '\0';
+        } else {
+            PRINT("harborip too long.");
+        }
+    }
+    val = cJSON_GetObjectItem(json, "harborkey");
+    if (NULL != val
+        && cJSON_IsString(val)) {
+        size_t flen = strlen(val->valuestring);
+        if (flen < sizeof(cnf->harborkey)) {
+            memcpy(cnf->harborkey, val->valuestring, flen);
+            cnf->harborkey[flen] = '\0';
+        } else {
+            PRINT("harborkey too long.");
+        }
     }
     val = cJSON_GetObjectItem(json, "namefmt");
-    if (cJSON_IsString(val)) {
+    if (NULL != val
+        && cJSON_IsString(val)) {
         size_t flen = strlen(val->valuestring);
         if (flen < sizeof(cnf->fmt)) {
             memcpy(cnf->fmt, val->valuestring, flen);
@@ -120,6 +154,10 @@ static void _config_init(config_ctx *config) {
     config->logfile = 1;
     config->nnet = 1;
     config->nworker = 2;
+    config->harborname = 100000,
+    config->harborssl = 0;
+    config->harborport = 8080;
+    strcpy(config->harborip, "0.0.0.0");
     const char *fmt = "%Y-%m-%d %H-%M-%S";
     size_t flen = strlen(fmt);
     memcpy(config->fmt, fmt, flen);
@@ -136,8 +174,9 @@ static int32_t service_init(void) {
     unlimit();
     mutex_init(&muexit);
     cond_init(&condexit);
-    srey = srey_init(config.nnet, config.nworker, config.stack_size, config.interval, config.threshold);
-    if (ERR_OK != task_startup(srey)) {
+    srey = srey_init(config.nnet, config.nworker, config.stack_size,
+        config.interval, config.threshold, config.harborkey);
+    if (ERR_OK != task_startup(srey, &config)) {
         service_exit();
         return ERR_FAILED;
     }
@@ -357,6 +396,11 @@ static void _stop_sh(const char *sh) {
 }
 #endif
 int main(int argc, char *argv[]) {
+    cJSON_Hooks hooks;
+    hooks.malloc_fn = _malloc;
+    hooks.realloc_fn = _realloc;
+    hooks.free_fn = _free;
+    cJSON_InitHooks(&hooks);
 #ifdef OS_WIN
     if (1 == argc) {
         return service_hug();

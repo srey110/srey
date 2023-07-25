@@ -76,18 +76,19 @@ end
 描述:任务通信，等待返回
 参数:
     task :task_grab返回值
+    rtype :REQUEST_TYPE
     data : string or uerdata
     size : integer
     copy : bool
 返回:
     boolean data size
 --]]
-function synsl.task_request(task, data, size, copy)
+function synsl.task_request(task, rtype, data, size, copy)
     if not task or not data then
         return false
     end
     local sess = getid()
-    core.task_request(task, sess, data, size, copy)
+    core.task_request(task, rtype, sess, data, size, copy)
     local msg = wait_until(REQUEST_TIMEOUT, sess)
     if MSG_TYPE.TIMEOUT == msg.mtype then
         log.WARN("task %d, request timeout.", core.task_name())

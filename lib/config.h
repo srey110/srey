@@ -6,7 +6,6 @@
 #define MEMORY_CHECK         1
 #define WITH_SSL             1
 #define WITH_LUA             1
-#define WITH_CORO            1
 
 #define KEEPALIVE_TIME      30
 #define KEEPALIVE_INTERVAL  2
