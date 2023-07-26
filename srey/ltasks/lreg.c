@@ -56,7 +56,7 @@ static int32_t _lreg_tohex(lua_State *lua) {
         size = (size_t)luaL_checkinteger(lua, 2);
     }
     char *out;
-    MALLOC(out, HEX_LES(size));
+    MALLOC(out, HEX_ENSIZE(size));
     tohex(data, size, out);
     lua_pushstring(lua, out);
     FREE(out);

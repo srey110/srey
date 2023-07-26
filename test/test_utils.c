@@ -211,7 +211,7 @@ void test_system(CuTest* tc) {
     sha1_init(&sha1);
     sha1_update(&sha1, str, len);
     sha1_final(&sha1, sha1str);
-    char out[HEX_LES(20)];
+    char out[HEX_ENSIZE(20)];
     tohex(sha1str, sizeof(sha1str), out);
     CuAssertTrue(tc, 0 == strcmp("F1B188A879C1C82D561CB8A064D825FDCBFE4191", out));
 
@@ -220,7 +220,7 @@ void test_system(CuTest* tc) {
     sha256_init(&sha256);
     sha256_update(&sha256, str, len);
     sha256_final(&sha256, sh256);
-    char osh256[HEX_LES(32)];
+    char osh256[HEX_ENSIZE(32)];
     tohex(sh256, sizeof(sh256), osh256);
     CuAssertTrue(tc, 0 == strcmp(osh256, "FECC75FE2A23D8EAFBA452EE0B8B6B56BECCF52278BF1398AADDEECFE0EA0FCE"));
 
@@ -229,7 +229,7 @@ void test_system(CuTest* tc) {
     md5_init(&md5);  
     md5_update(&md5, str, len);
     md5_final(&md5, md5str);
-    char omd5str[HEX_LES(16)];
+    char omd5str[HEX_ENSIZE(16)];
     tohex(md5str, sizeof(md5str), omd5str);
     CuAssertTrue(tc, 0 == strcmp("480FC0D368462326386DA7BB8ED56AD7", omd5str));
 

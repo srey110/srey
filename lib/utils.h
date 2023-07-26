@@ -3,7 +3,6 @@
 
 #include "macro.h"
 
-#define HEX_LES(s) (s * 2 + 1)
 typedef void *(*chr_func)(const void *, int32_t, size_t);
 typedef int32_t(*cmp_func)(const void *, const void *, size_t);
 
@@ -56,7 +55,8 @@ char* strreverse(char* str);
 int32_t randrange(int32_t min, int32_t max);
 //随机字符串
 char *randstr(char *buf, size_t len);
-//转16进制字符串 out 长度为 HEX_LES
+//转16进制字符串 out 长度为 HEX_ENSIZE
+#define HEX_ENSIZE(s) (s * 2 + 1)
 char *tohex(const unsigned char *buf, size_t len, char *out);
 //变参 返回值需要free
 char *formatargs(const char *fmt, va_list args);
