@@ -64,15 +64,15 @@ static int32_t _lcrypto_crc32(lua_State *lua) {
     lua_pushinteger(lua, crc);
     return 1;
 }
-static inline void *_get_crypto_global(lua_State *lua, const char *name, size_t lens, void(*_init_crypto)(void *)) {
+static inline void *_get_crypto_global(lua_State *lua, const char *name, size_t lens, int32_t *init) {
     lua_pop(lua, -1);
     lua_getglobal(lua, name);
     void *ptr = lua_touserdata(lua, 1);
     if (NULL == ptr
-        && NULL != _init_crypto) {
+        && NULL != init) {
         ptr = lua_newuserdata(lua, lens);
         lua_setglobal(lua, name);
-        _init_crypto(ptr);
+        *init = 1;
     }
     lua_pop(lua, -1);
     return ptr;
@@ -86,7 +86,11 @@ static int32_t _lcrypto_md5_update(lua_State *lua) {
         data = lua_touserdata(lua, 1);
         size = (size_t)luaL_checkinteger(lua, 2);
     }
-    md5_ctx *md5 = _get_crypto_global(lua, "_md5_ctx", sizeof(md5_ctx), md5_init);
+    int32_t init = 0;
+    md5_ctx *md5 = _get_crypto_global(lua, "_md5_ctx", sizeof(md5_ctx), &init);
+    if (0 != init) {
+        md5_init(md5);
+    }
     md5_update(md5, data, size);
     return 0;
 }
@@ -107,7 +111,11 @@ static int32_t _lcrypto_sha1_update(lua_State *lua) {
         data = lua_touserdata(lua, 1);
         size = (size_t)luaL_checkinteger(lua, 2);
     }
-    sha1_ctx *sha1 = _get_crypto_global(lua, "_sha1_ctx", sizeof(sha1_ctx), sha1_init); 
+    int32_t init = 0;
+    sha1_ctx *sha1 = _get_crypto_global(lua, "_sha1_ctx", sizeof(sha1_ctx), &init);
+    if (0 != init) {
+        sha1_init(sha1);
+    }
     sha1_update(sha1, data, size);
     return 0;
 }
@@ -128,7 +136,11 @@ static int32_t _lcrypto_sha256_update(lua_State *lua) {
         data = lua_touserdata(lua, 1);
         size = (size_t)luaL_checkinteger(lua, 2);
     }
-    sha256_ctx *sha256 = _get_crypto_global(lua, "_sha256_ctx", sizeof(sha256_ctx), sha256_init);
+    int32_t init = 0;
+    sha256_ctx *sha256 = _get_crypto_global(lua, "_sha256_ctx", sizeof(sha256_ctx), &init);
+    if (0 != init) {
+        sha256_init(sha256);
+    }
     sha256_update(sha256, data, size);
     return 0;
 }
