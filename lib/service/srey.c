@@ -391,6 +391,7 @@ srey_ctx *srey_init(uint16_t nnet, uint16_t nworker, size_t stack_size,
     uint16_t interval, uint16_t threshold, const char *key) {
     size_t klens = strlen(key);
     if (klens >= SIGN_KEY_LENS) {
+        LOG_ERROR("sign key too long.");
         return NULL;
     }
     srey_ctx *ctx;

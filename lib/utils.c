@@ -531,8 +531,8 @@ static char HEX[16] = {
     'C', 'D', 'E', 'F'
 };
 char *tohex(const unsigned char *buf, size_t len, char *out) {
-    int j = 0;
-    int i = 0;
+    size_t j = 0;
+    size_t i = 0;
     for (i = 0; i < len; ++i) {
         int t = buf[i];
         int a = t / 16;
@@ -542,7 +542,7 @@ char *tohex(const unsigned char *buf, size_t len, char *out) {
         out[j] = HEX[b];
         ++j;
     }
-    out[len * 2] = '\0';
+    out[j] = '\0';
     return out;
 }
 char *formatargs(const char *fmt, va_list args) {

@@ -4,11 +4,11 @@
 #include "crypto/crypto.h"
 
 typedef struct {
-    unsigned char data[64];
     word_t datalen;
     unsigned long long bitlen;
     word_t state[5];
     word_t k[4];
+    unsigned char data[64];
 } sha1_ctx;
 
 void sha1_init(sha1_ctx *ctx);

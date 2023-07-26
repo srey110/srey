@@ -14,7 +14,7 @@
 
 #define INVALID_TNAME         0
 #define RPC_NAME_LENS         64
-#define SIGN_KEY_LENS         128
+#define SIGN_KEY_LENS         256
 #define RECORD_WORKER_LOAD    0
 struct coro_ctx;
 typedef struct srey_ctx srey_ctx;

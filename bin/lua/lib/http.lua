@@ -231,9 +231,8 @@ function http.upgrade_websock(hpack)
     if not val then
         return nil
     end
-    sha1 = crypto.sha1_init(sha1)
-    crypto.sha1_update(sha1, string.format("%s258EAFA5-E914-47DA-95CA-C5AB0DC85B11", val))
-    local en = crypto.sha1_final(sha1)
+    crypto.sha1_update(string.format("%s258EAFA5-E914-47DA-95CA-C5AB0DC85B11", val))
+    local en = crypto.sha1_final()
     return crypto.b64_encode(en)
 end
 --[[

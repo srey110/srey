@@ -132,6 +132,10 @@ static int32_t _lreg_url_parse(lua_State *lua) {
     lua_settable(lua, -3);
     return 1;
 }
+static int32_t _lreg_sign_key(lua_State *lua) {
+    lua_pushstring(lua, srey->key);
+    return 1;
+}
 static int32_t _lreg_evssl_new(lua_State *lua) {
 #if WITH_SSL
     name_t name = (name_t)luaL_checkinteger(lua, 1);
@@ -140,10 +144,10 @@ static int32_t _lreg_evssl_new(lua_State *lua) {
     const char *key = luaL_checkstring(lua, 4);
     int32_t keytype = (int32_t)luaL_checkinteger(lua, 5);
     int32_t verify = (int32_t)luaL_checkinteger(lua, 6);
-    lua_pop(lua, 6);
+    lua_pop(lua, -1);
     lua_getglobal(lua, "_propath");
     const char *propath = lua_tostring(lua, 1);
-    lua_pop(lua, 1);
+    lua_pop(lua, -1);
     char capath[PATH_LENS] = { 0 };
     char certpath[PATH_LENS] = { 0 };
     char keypath[PATH_LENS] = { 0 };
@@ -178,10 +182,10 @@ static int32_t _lreg_evssl_p12new(lua_State *lua) {
     int32_t verify = (int32_t)luaL_checkinteger(lua, 4);
     char p12path[PATH_LENS] = { 0 };
     if (0 != strlen(p12)) {
-        lua_pop(lua, 4);
+        lua_pop(lua, -1);
         lua_getglobal(lua, "_propath");
         const char *propath = lua_tostring(lua, 1);
-        lua_pop(lua, 1);
+        lua_pop(lua, -1);
         SNPRINTF(p12path, sizeof(p12path) - 1, "%s%s%s%s%s",
             propath, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, p12);
     }
@@ -657,6 +661,8 @@ LUAMOD_API int luaopen_srey_utils(lua_State *lua) {
         { "tohex", _lreg_tohex },
         { "getid", _lreg_getid },
         { "url_parse", _lreg_url_parse },
+
+        { "sign_key", _lreg_sign_key },
 
         { "evssl_new", _lreg_evssl_new },
         { "evssl_p12new", _lreg_evssl_p12new },

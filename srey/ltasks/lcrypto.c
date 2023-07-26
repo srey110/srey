@@ -64,97 +64,80 @@ static int32_t _lcrypto_crc32(lua_State *lua) {
     lua_pushinteger(lua, crc);
     return 1;
 }
-static int32_t _lcrypto_md5_init(lua_State *lua) {
-    md5_ctx *md5 = lua_touserdata(lua, 1);
-    if (NULL == md5) {
-        md5 = lua_newuserdata(lua, sizeof(md5_ctx));
-        md5_init(md5);
-    } else {
-        md5_init(md5);
-        lua_pushlightuserdata(lua, md5);
+static inline void *_get_crypto_global(lua_State *lua, const char *name, size_t lens, void(*_init_crypto)(void *)) {
+    lua_pop(lua, -1);
+    lua_getglobal(lua, name);
+    void *ptr = lua_touserdata(lua, 1);
+    if (NULL == ptr
+        && NULL != _init_crypto) {
+        ptr = lua_newuserdata(lua, lens);
+        lua_setglobal(lua, name);
+        _init_crypto(ptr);
     }
-    return 1;
+    lua_pop(lua, -1);
+    return ptr;
 }
 static int32_t _lcrypto_md5_update(lua_State *lua) {
-    md5_ctx *md5 = lua_touserdata(lua, 1);
     void *data;
     size_t size;
-    if (LUA_TSTRING == lua_type(lua, 2)) {
-        data = (void *)luaL_checklstring(lua, 2, &size);
+    if (LUA_TSTRING == lua_type(lua, 1)) {
+        data = (void *)luaL_checklstring(lua, 1, &size);
     } else {
-        data = lua_touserdata(lua, 3);
-        size = (size_t)luaL_checkinteger(lua, 3);
+        data = lua_touserdata(lua, 1);
+        size = (size_t)luaL_checkinteger(lua, 2);
     }
+    md5_ctx *md5 = _get_crypto_global(lua, "_md5_ctx", sizeof(md5_ctx), md5_init);
     md5_update(md5, data, size);
     return 0;
 }
 static int32_t _lcrypto_md5_final(lua_State *lua) {
-    md5_ctx *md5 = lua_touserdata(lua, 1);
+    md5_ctx *md5 = _get_crypto_global(lua, "_md5_ctx", 0, NULL);
     unsigned char out[16];
     md5_final(md5, out);
     lua_pushlstring(lua, (char *)out, sizeof(out));
-    return 1;
-}
-static int32_t _lcrypto_sha1_init(lua_State *lua) {
-    sha1_ctx *sha1 = lua_touserdata(lua, 1);
-    if (NULL == sha1) {
-        sha1 = lua_newuserdata(lua, sizeof(sha1_ctx));
-        sha1_init(sha1);
-    } else {
-        sha1_init(sha1);
-        lua_pushlightuserdata(lua, sha1);
-    }
+    md5_init(md5);
     return 1;
 }
 static int32_t _lcrypto_sha1_update(lua_State *lua) {
-    sha1_ctx *sha1 = lua_touserdata(lua, 1);
     void *data;
     size_t size;
-    if (LUA_TSTRING == lua_type(lua, 2)) {
-        data = (void *)luaL_checklstring(lua, 2, &size);
+    if (LUA_TSTRING == lua_type(lua, 1)) {
+        data = (void *)luaL_checklstring(lua, 1, &size);
     } else {
-        data = lua_touserdata(lua, 3);
-        size = (size_t)luaL_checkinteger(lua, 3);
+        data = lua_touserdata(lua, 1);
+        size = (size_t)luaL_checkinteger(lua, 2);
     }
+    sha1_ctx *sha1 = _get_crypto_global(lua, "_sha1_ctx", sizeof(sha1_ctx), sha1_init); 
     sha1_update(sha1, data, size);
     return 0;
 }
 static int32_t _lcrypto_sha1_final(lua_State *lua) {
-    sha1_ctx *sha1 = lua_touserdata(lua, 1);
+    sha1_ctx *sha1 = _get_crypto_global(lua, "_sha1_ctx", 0, NULL);
     unsigned char out[20];
     sha1_final(sha1, out);
     lua_pushlstring(lua, (char *)out, sizeof(out));
-    return 1;
-}
-static int32_t _lcrypto_sha256_init(lua_State *lua) {
-    sha256_ctx *sha256 = lua_touserdata(lua, 1);
-    if (NULL == sha256) {
-        sha256 = lua_newuserdata(lua, sizeof(sha256_ctx));
-        sha256_init(sha256);
-    } else {
-        sha256_init(sha256);
-        lua_pushlightuserdata(lua, sha256);
-    }
+    sha1_init(sha1);
     return 1;
 }
 static int32_t _lcrypto_sha256_update(lua_State *lua) {
-    sha256_ctx *sha256 = lua_touserdata(lua, 1);
     void *data;
     size_t size;
-    if (LUA_TSTRING == lua_type(lua, 2)) {
-        data = (void *)luaL_checklstring(lua, 2, &size);
+    if (LUA_TSTRING == lua_type(lua, 1)) {
+        data = (void *)luaL_checklstring(lua, 1, &size);
     } else {
-        data = lua_touserdata(lua, 3);
-        size = (size_t)luaL_checkinteger(lua, 3);
+        data = lua_touserdata(lua, 1);
+        size = (size_t)luaL_checkinteger(lua, 2);
     }
+    sha256_ctx *sha256 = _get_crypto_global(lua, "_sha256_ctx", sizeof(sha256_ctx), sha256_init);
     sha256_update(sha256, data, size);
     return 0;
 }
 static int32_t _lcrypto_sha256_final(lua_State *lua) {
-    sha256_ctx *sha256 = lua_touserdata(lua, 1);
+    sha256_ctx *sha256 = _get_crypto_global(lua, "_sha256_ctx", 0, NULL);
     unsigned char out[32];
     sha256_final(sha256, out);
     lua_pushlstring(lua, (char *)out, sizeof(out));
+    sha256_init(sha256);
     return 1;
 }
 static int32_t _lcrypto_url_encode(lua_State *lua) {
@@ -163,7 +146,7 @@ static int32_t _lcrypto_url_encode(lua_State *lua) {
     if (LUA_TSTRING == lua_type(lua, 1)) {
         data = (void *)luaL_checklstring(lua, 1, &size);
     } else {
-        data = lua_touserdata(lua, 2);
+        data = lua_touserdata(lua, 1);
         size = (size_t)luaL_checkinteger(lua, 2);
     }
     char *out;
@@ -181,15 +164,12 @@ LUAMOD_API int luaopen_crypto(lua_State *lua) {
         { "crc16", _lcrypto_crc16 },
         { "crc32", _lcrypto_crc32 },
 
-        { "md5_init", _lcrypto_md5_init },
         { "md5_update", _lcrypto_md5_update },
         { "md5_final", _lcrypto_md5_final },
 
-        { "sha1_init", _lcrypto_sha1_init },
         { "sha1_update", _lcrypto_sha1_update },
         { "sha1_final", _lcrypto_sha1_final },
 
-        { "sha256_init", _lcrypto_sha256_init },
         { "sha256_update", _lcrypto_sha256_update },
         { "sha256_final", _lcrypto_sha256_final },
 

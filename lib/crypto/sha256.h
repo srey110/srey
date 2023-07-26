@@ -4,10 +4,10 @@
 #include "crypto/crypto.h"
 
 typedef struct {
-    unsigned char data[64];
     word_t datalen;
     unsigned long long bitlen;
     word_t state[8];
+    unsigned char data[64];
 } sha256_ctx;
 
 void sha256_init(sha256_ctx *ctx);

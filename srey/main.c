@@ -94,7 +94,7 @@ static void _parse_config(config_ctx *cnf) {
             memcpy(cnf->harborip, val->valuestring, flen);
             cnf->harborip[flen] = '\0';
         } else {
-            PRINT("harborip too long.");
+            LOG_WARN("harborip too long.");
         }
     }
     val = cJSON_GetObjectItem(json, "harborkey");
@@ -105,7 +105,7 @@ static void _parse_config(config_ctx *cnf) {
             memcpy(cnf->harborkey, val->valuestring, flen);
             cnf->harborkey[flen] = '\0';
         } else {
-            PRINT("harborkey too long.");
+            LOG_WARN("harborkey too long.");
         }
     }
     val = cJSON_GetObjectItem(json, "namefmt");
@@ -116,7 +116,7 @@ static void _parse_config(config_ctx *cnf) {
             memcpy(cnf->fmt, val->valuestring, flen);
             cnf->fmt[flen] = '\0';
         } else {
-            PRINT("log file name format too long.");
+            LOG_WARN("log file name format too long.");
         }
     }
     cJSON_Delete(json);

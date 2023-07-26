@@ -86,7 +86,7 @@ int main(int argc, char *argv[]) {
     cbs.rf_cb = test_recvfrom_cb;
 #endif
 
-    srey = srey_init(2, 2, 0, 0, 0, "12234x455");
+    srey = srey_init(2, 2, 0, 0, 0, "p1KaLmIg2kB7fZp5Tm1qbi6dss92C31aPGJK9Lvk7DMPDONXrwD2yVLZrHBio74s");
 #if WITH_SSL
     const char *local = procpath();
     char ca[PATH_LENS] = { 0 };

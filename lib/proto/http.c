@@ -310,8 +310,7 @@ char *http_header(http_pack_ctx *pack, const char *header, size_t *lens) {
     size_t klens = strlen(header);
     for (size_t i = 0; i < arr_header_size(&pack->header); i++) {
         filed = arr_header_at(&pack->header, i);
-        if (filed->key.lens >= klens
-            && 0 == _memicmp(filed->key.data, header, klens)) {
+        if (buf_icompare(&filed->key, header, klens)) {
             *lens = filed->value.lens;
             return filed->value.data;
         }

@@ -1,6 +1,8 @@
 #include "service/srpc.h"
 #include "service/srey.h"
 #include "service/synsl.h"
+#include "crypto/sha256.h"
+#include "crypto/md5.h"
 #include "proto/http.h"
 #include "cjson/cJSON.h"
 #include "ds/hashmap.h"
@@ -205,6 +207,36 @@ void *rpc_request(task_ctx *dst, task_ctx *src, int32_t *erro, size_t *lens, con
     }
     return syn_request(dst, src, REQ_TYPE_RPC, req, strlen(req), 0, erro, lens);
 }
+static inline void _net_rpc_sign(buffer_ctx *buf, const char *url, const char *jreq, const char *key) {
+    size_t klens = strlen(key);
+    if (0 == klens) {
+        return;
+    }
+    char tms[64];
+    SNPRINTF(tms, sizeof(tms) - 1, "%"PRIu64, nowsec());
+    size_t lens = strlen(url) + strlen(jreq) + strlen(tms) + klens + 1;
+    char *sbuf;
+    MALLOC(sbuf, lens);
+    SNPRINTF(sbuf, lens, "%s%s%s%s", url, jreq, tms, key);
+
+    unsigned char sh[32];
+    sha256_ctx sha256;
+    sha256_init(&sha256);
+    sha256_update(&sha256, (unsigned char*)sbuf, lens - 1);
+    sha256_final(&sha256, sh);
+    FREE(sbuf);
+
+    unsigned char md[16];
+    md5_ctx md5;
+    md5_init(&md5);
+    md5_update(&md5, sh, sizeof(sh));
+    md5_final(&md5, md);
+
+    char hex[HEX_ENSIZE(sizeof(md))];
+    tohex(md, sizeof(md), hex);
+    http_pack_head(buf, "X-Timestamp", tms);
+    http_pack_head(buf, "Authorization", hex);
+}
 void rpc_net_call(task_ctx *task, name_t dst, SOCKET fd, uint64_t skid,
     const char *method, const char *fomat, ...) {
     va_list args;
@@ -222,6 +254,7 @@ void rpc_net_call(task_ctx *task, name_t dst, SOCKET fd, uint64_t skid,
     http_pack_head(&buf, "Server", "Srey");
     http_pack_head(&buf, "Connection", "Keep-Alive");
     http_pack_head(&buf, "Content-Type", "application/json");
+    _net_rpc_sign(&buf, url, jreq, task->srey->key);
     http_pack_content(&buf, jreq, strlen(jreq));
     FREE(jreq);
     size_t lens = buffer_size(&buf);
@@ -246,6 +279,7 @@ void *rpc_net_request(task_ctx *task, name_t dst, SOCKET fd, uint64_t skid,
     http_pack_req(&buf, "POST", url);
     http_pack_head(&buf, "Server", "Srey");
     http_pack_head(&buf, "Connection", "Keep-Alive");
+    _net_rpc_sign(&buf, url, jreq, task->srey->key);
     http_pack_head(&buf, "Content-Type", "application/json");
     http_pack_content(&buf, jreq, strlen(jreq));
     FREE(jreq);

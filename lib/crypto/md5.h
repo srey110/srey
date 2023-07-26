@@ -4,10 +4,10 @@
 #include "crypto/crypto.h"
 
 typedef struct {
-    unsigned char data[64];
     word_t datalen;
     unsigned long long bitlen;
     word_t state[4];
+    unsigned char data[64];
 } md5_ctx;
 
 void md5_init(md5_ctx *ctx);

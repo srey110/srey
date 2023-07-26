@@ -3,6 +3,8 @@
 #include "service/synsl.h"
 #include "proto/urlparse.h"
 #include "proto/http.h"
+#include "crypto/sha256.h"
+#include "crypto/md5.h"
 
 static uint64_t lsnid = 0;
 
@@ -28,6 +30,75 @@ static void _harbor_response(task_ctx *harbor, char *jresp, size_t lens, int32_t
     http_response(harbor, msg->fd, msg->skid, &buffer, NULL, NULL, NULL);
     buffer_free(&buffer);
 }
+static int32_t _check_sign(struct http_pack_ctx *pack, buf_ctx *url, char *jreq, size_t jlens, const char *key) {
+    size_t klens = strlen(key);
+    if (0 == klens) {
+        return ERR_OK;
+    }
+    size_t tlens = 0;
+    char *tbuf = http_header(pack, "X-Timestamp", &tlens);
+    if (NULL == tbuf
+        || 0 == tlens) {
+        LOG_WARN("not find X-Timestamp head.");
+        return ERR_FAILED;
+    }
+    size_t slens = 0;
+    char *sign = http_header(pack, "Authorization", &slens);
+    if (NULL == sign
+        || 0 == slens) {
+        LOG_WARN("not find authorization head.");
+        return ERR_FAILED;
+    }
+
+    uint64_t tms = (uint64_t)atoll(tbuf);
+    uint64_t tnow = nowsec();
+    int32_t diff;
+    if (tnow >= tms) {
+        diff = (int32_t)(tnow - tms);
+    } else {
+        diff = (int32_t)(tms - tnow);
+    }
+    if (diff >= 5 * 60) {
+        LOG_WARN("timestamp error.");
+        return ERR_FAILED;
+    }
+
+    size_t off = 0;
+    size_t total = url->lens + jlens + tlens + klens + 1;
+    char *signstr;
+    MALLOC(signstr, total);
+    memcpy(signstr + off, url->data, url->lens);
+    off += url->lens;
+    memcpy(signstr + off, jreq, jlens);
+    off += jlens;
+    memcpy(signstr + off, tbuf, tlens);
+    off += tlens;
+    memcpy(signstr + off, key, klens);
+    off += klens;
+    signstr[off] = '\0';
+
+    unsigned char sh[32];
+    sha256_ctx sha256;
+    sha256_init(&sha256);
+    sha256_update(&sha256, (unsigned char *)signstr, off);
+    sha256_final(&sha256, sh);
+    FREE(signstr);
+
+    unsigned char md[16];
+    md5_ctx md5;
+    md5_init(&md5);
+    md5_update(&md5, sh, sizeof(sh));
+    md5_final(&md5, md);
+
+    char hex[HEX_ENSIZE(sizeof(md))];
+    tohex(md, sizeof(md), hex);
+    if (strlen(hex) != slens
+        || 0 != _memicmp(sign, hex, slens)) {
+        LOG_WARN("check sign failed.");
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
 static void _harbor_recv(task_ctx *harbor, message_ctx *msg) {
     size_t lens;
     char *jreq = http_data(msg->data, &lens);
@@ -50,6 +121,10 @@ static void _harbor_recv(task_ctx *harbor, message_ctx *msg) {
     }
     buf_ctx *bdst = url_get_param(&url, "dst");
     if (buf_empty(bdst)) {
+        ev_close(&harbor->srey->netev, msg->fd, msg->skid);
+        return;
+    }
+    if (ERR_OK != _check_sign(msg->data, &hstatus[1], jreq, lens, harbor->srey->key)) {
         ev_close(&harbor->srey->netev, msg->fd, msg->skid);
         return;
     }
