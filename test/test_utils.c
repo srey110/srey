@@ -206,40 +206,59 @@ void test_system(CuTest* tc) {
     CuAssertTrue(tc, 0x7610 == crc16(str, len));
     CuAssertTrue(tc, 0x3B610CF9 == crc32(str, len));
 
-    char md5str[33] = { 0 };
-    md5(str, len, md5str);
-    CuAssertTrue(tc, 0 == strcmp("480fc0d368462326386da7bb8ed56ad7", md5str));
+    char sha1str[20];
+    sha1_ctx sha1;
+    sha1_init(&sha1);
+    sha1_update(&sha1, str, len);
+    sha1_final(&sha1, sha1str);
+    char out[HEX_LES(20)];
+    tohex(sha1str, sizeof(sha1str), out);
+    CuAssertTrue(tc, 0 == strcmp("F1B188A879C1C82D561CB8A064D825FDCBFE4191", out));
 
-    char sha1str[20] = { 0 };
-    sha1(str, len, sha1str);
-    char out[20 * 3 + 1] = { 0 };
-    tohex(sha1str, sizeof(sha1str), out, sizeof(out));
-    PRINT("sha1:%s", out);
-    //CuAssertTrue(tc, 0 == strcmp("F1 B1 88 A8 79 C1 C8 2D 56 1C B8 A0 64 D8 25 FD CB FE 41 91", out));
-    size_t benlen;
-    char *b64 = b64encode(str, len, &benlen);
-    CuAssertTrue(tc, 0 == strncmp("dGhpcyBpcyB0ZXN0Lg==", b64, benlen));
-    size_t bdelen;
-    char *b64de = b64decode(b64, benlen, &bdelen);
-    CuAssertTrue(tc, 0 == strcmp(b64de, str));
-    FREE(b64);
+    char sh256[32];
+    sha256_ctx sha256;
+    sha256_init(&sha256);
+    sha256_update(&sha256, str, len);
+    sha256_final(&sha256, sh256);
+    char osh256[HEX_LES(32)];
+    tohex(sh256, sizeof(sh256), osh256);
+    CuAssertTrue(tc, 0 == strcmp(osh256, "FECC75FE2A23D8EAFBA452EE0B8B6B56BECCF52278BF1398AADDEECFE0EA0FCE"));
+
+    char md5str[16];
+    md5_ctx md5;
+    md5_init(&md5);  
+    md5_update(&md5, str, len);
+    md5_final(&md5, md5str);
+    char omd5str[HEX_LES(16)];
+    tohex(md5str, sizeof(md5str), omd5str);
+    CuAssertTrue(tc, 0 == strcmp("480FC0D368462326386DA7BB8ED56AD7", omd5str));
+
+    char *en;
+    MALLOC(en, B64_ENSIZE(len));
+    b64_encode(str, len, en);
+    CuAssertTrue(tc, 0 == strcmp("dGhpcyBpcyB0ZXN0Lg==", en));
+    char *de;
+    MALLOC(de, B64_DESIZE(strlen(en)));
+    size_t bdelen = b64_decode(en, strlen(en), de);
+    CuAssertTrue(tc, 0 == strcmp(de, str));
+    FREE(en);
 
     char key[4] = { 1, 5 ,25, 120 };
-    xorencode(key, 1, b64de, bdelen);
-    xordecode(key, 1, b64de, bdelen);
-    CuAssertTrue(tc, 0 == strcmp(b64de, str));
-    FREE(b64de);
+    xor_encode(key, 1, de, len);
+    xor_decode(key, 1, de, bdelen);
+    CuAssertTrue(tc, 0 == strcmp(de, str));
+    FREE(de);
+
+    uint64_t hs = hash(str, len);
+    CuAssertTrue(tc, 14869103789476489700 == hs);
 
     const char *url = "this is URL²ÎÊý±àÂë test #@.";
-    size_t newlen;
-    char *enurl = urlencode(url, strlen(url), &newlen);
-    urldecode(enurl, newlen);
+    char *enurl;
+    MALLOC(enurl, URL_ENSIZE(strlen(url)));
+    url_encode(url, strlen(url), enurl);
+    url_decode(enurl, strlen(enurl));
     CuAssertTrue(tc, 0 == strcmp(url, enurl));
     FREE(enurl);
-
-    SOCKET fd = 12454;
-    PRINT("hash:%"PRIu64"", hash((const char *)&fd, sizeof(fd)));
-    PRINT("fnv1a_hash:%"PRIu64"", fnv1a_hash((const char *)&fd, sizeof(fd)));
 
     char *buf;
     CALLOC(buf, 1, (size_t)32);

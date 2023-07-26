@@ -1,7 +1,7 @@
 #ifndef COND_H_
 #define COND_H_
 
-#include "mutex.h"
+#include "thread/mutex.h"
 
 #if defined(OS_WIN)
 typedef CONDITION_VARIABLE cond_ctx;

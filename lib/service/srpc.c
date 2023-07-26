@@ -3,7 +3,7 @@
 #include "service/synsl.h"
 #include "proto/http.h"
 #include "cjson/cJSON.h"
-#include "hashmap.h"
+#include "ds/hashmap.h"
 
 static inline uint64_t _map_rpc_hash(const void *item, uint64_t seed0, uint64_t seed1) {
     return hash(((rpc_ctx *)item)->method, strlen(((rpc_ctx *)item)->method));

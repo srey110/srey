@@ -2,6 +2,8 @@
 #include "proto/protos.h"
 #include "proto/http.h"
 #include "service/srey.h"
+#include "crypto/base64.h"
+#include "crypto/sha1.h"
 #include "netutils.h"
 
 typedef enum parse_status {
@@ -90,13 +92,16 @@ static inline void _websock_handshake_server(ev_ctx *ev, SOCKET fd, uint64_t ski
     MALLOC(key, lens);
     memcpy(key, signstr->value.data, signstr->value.lens);
     memcpy(key + signstr->value.lens, SIGNKEY, klens);
-    char sha1str[20];
-    sha1(key, lens, sha1str);
+    unsigned char sha1str[20];
+    sha1_ctx sha1;
+    sha1_init(&sha1);
+    sha1_update(&sha1, key, lens);
+    sha1_final(&sha1, sha1str);
     FREE(key);
-    key = b64encode(sha1str, sizeof(sha1str), &lens);
+    char b64[B64_ENSIZE(sizeof(sha1str))];
+    b64_encode(sha1str, sizeof(sha1str), b64);
     static const char *fmt = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n";
-    char *rsp = formatv(fmt, key);
-    FREE(key);
+    char *rsp = formatv(fmt, b64);
     ud->status = START;
     ev_send(ev, fd, skid, rsp, strlen(rsp), 0);
     push_handshaked(fd, skid, ud, closefd, ERR_OK);
@@ -462,8 +467,8 @@ char *websock_pack_data(websock_pack_ctx *pack, size_t *lens) {
 char *websock_handshake_pack(const char *host) {
     char rdstr[8 + 1];
     randstr(rdstr, sizeof(rdstr) - 1);
-    size_t blens;
-    char *b64 = b64encode(rdstr, strlen(rdstr), &blens);
+    char b64[B64_ENSIZE(sizeof(rdstr) - 1)];
+    b64_encode(rdstr, sizeof(rdstr) - 1, b64);
     char *data;
     if (NULL != host) {
         const char *fmt = "GET / HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade,Keep-Alive\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n";
@@ -472,7 +477,6 @@ char *websock_handshake_pack(const char *host) {
         const char *fmt = "GET / HTTP/1.1\r\nUpgrade: websocket\r\nConnection: Upgrade,Keep-Alive\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n";
         data = formatv(fmt, b64);
     }
-    FREE(b64);
     return data;
 }
 void _websock_init_key(void) {

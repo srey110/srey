@@ -3,12 +3,12 @@
 
 #include "event/event.h"
 #include "proto/protos.h"
-#include "sarray.h"
-#include "queue.h"
-#include "rwlock.h"
-#include "spinlock.h"
-#include "mutex.h"
-#include "cond.h"
+#include "ds/sarray.h"
+#include "ds/queue.h"
+#include "thread/rwlock.h"
+#include "thread/spinlock.h"
+#include "thread/mutex.h"
+#include "thread/cond.h"
 #include "timer.h"
 #include "tw.h"
 

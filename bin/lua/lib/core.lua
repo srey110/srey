@@ -2,7 +2,6 @@ require("lib.define")
 local sutils = require("srey.utils")
 local score = require("srey.core")
 local log = require("lib.log")
-local MSG_TYPE = MSG_TYPE
 local curtask = _curtask
 local core = {}
 
@@ -67,6 +66,15 @@ function core.utostr(data, size)
     end
     return sutils.utostr(data, size)
 end
+function core.tohex(data, size)
+    if not data then
+        return nil
+    end
+    if 0 == size then
+        return ""
+    end
+    return sutils.tohex(data, size)
+end
 --[[
 描述:获取id
 返回:id
@@ -74,95 +82,6 @@ end
 --]]
 function core.getid()
     return sutils.getid()
-end
---[[
-描述:md5
-参数:
-    data string or userdata
-    size :integer
-返回:
-    string
---]]
-function core.md5(data, size)
-    if not data then
-        log.WARN("invalid argument.")
-        return nil
-    end
-    return sutils.md5(data, size)
-end
---[[
-描述:sha1 - md5
-参数:
-    data string or userdata
-    size :integer
-返回:
-    string
---]]
-function core.sha1_md5(data, size)
-    if not data then
-        log.WARN("invalid argument.")
-        return nil
-    end
-    return sutils.sha1_md5(data, size)
-end
---[[
-描述:sha1 然后 base64编码
-参数:
-    data :string or userdata
-    size :integer
-返回:
-    string
---]]
-function core.sha1_b64encode(data, size)
-    if not data then
-        log.WARN("invalid argument.")
-        return nil
-    end
-    return sutils.sha1_b64encode(data, size)
-end
---[[
-描述:base64编码
-参数:
-    data :string or userdata
-    size :integer
-返回:
-    string
---]]
-function core.b64encode(data, size)
-    if not data then
-        log.WARN("invalid argument.")
-        return nil
-    end
-    return sutils.b64encode(data, size)
-end
---[[
-描述:base64解码
-参数:
-    data :string or userdata
-    size :integer
-返回:
-    string
---]]
-function core.b64decode(data, size)
-    if not data then
-        log.WARN("invalid argument.")
-        return nil
-    end
-    return sutils.b64decode(data, size)
-end
---[[
-描述:url编码
-参数:
-    data :string
-返回:
-    string
---]]
-function core.url_encode(data)
-    if not data then
-        log.WARN("invalid argument.")
-        return nil
-    end
-    return sutils.url_encode(data)
 end
 --[[
 描述:url解析

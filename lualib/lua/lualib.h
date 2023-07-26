@@ -56,6 +56,9 @@ LUAMOD_API int (luaopen_pb)(lua_State *L);
 #define LUA_SREYUTILSNAME "srey.utils"
 LUAMOD_API int (luaopen_srey_utils)(lua_State *L);
 
+#define LUA_SREYCREPTO "srey.crypto"
+LUAMOD_API int (luaopen_crypto)(lua_State *L);
+
 #define LUA_SREYNAME "srey.core"
 LUAMOD_API int (luaopen_srey)(lua_State *L);
 

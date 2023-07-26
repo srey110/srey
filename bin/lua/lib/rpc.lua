@@ -2,6 +2,7 @@ local core = require("lib.core")
 local syn = require("lib.synsl")
 local http = require("lib.http")
 local json = require("cjson")
+local crypto = require("lib.crypto")
 local rpc = {}
 
 --[[
@@ -56,7 +57,7 @@ function rpc.net_call(dst, fd, skid, method, ...)
         Connection = "Keep-Alive"
     }
     local url = string.format("/rpc_call?dst=%d", dst)
-    local fline = string.format("POST %s HTTP/1.1\r\n", core.url_encode(url))
+    local fline = string.format("POST %s HTTP/1.1\r\n", crypto.url_encode(url))
     http.http_msg(true, fd, skid, fline, head, nil, req)
 end
 --[[

@@ -89,5 +89,9 @@ int32_t harbor_start(srey_ctx *ctx, name_t tname, name_t ssl, const char *host, 
         srey_task_free(harbor);
         return ERR_FAILED;
     }
+#if WITH_SSL
     return srey_listen(harbor, PACK_HTTP, srey_ssl_qury(ctx, ssl), host, port, 0, &lsnid);
+#else
+    return srey_listen(harbor, PACK_HTTP, NULL, host, port, 0, &lsnid);
+#endif
 }

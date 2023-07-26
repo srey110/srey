@@ -1,11 +1,11 @@
 #include "service/synsl.h"
 #include "service/srey.h"
 #define MINICORO_IMPL
-#include "minicoro/minicoro.h"
+#include "service/minicoro.h"
 #include "proto/dns.h"
 #include "proto/websock.h"
 #include "proto/http.h"
-#include "hashmap.h"
+#include "ds/hashmap.h"
 #include "buffer.h"
 
 typedef enum timeout_type {

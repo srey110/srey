@@ -26,6 +26,7 @@ static void _timeout_free(task_ctx *task, void *arg) {
 static void _syn_wbsk_conn(task_ctx *task) {
     uint64_t skid;
     SOCKET fd = syn_websock_connect(task, "127.0.0.1", 15003, NULL, &skid);
+    //SOCKET fd = syn_websock_connect(task, "124.222.224.186", 8800, NULL, &skid);
     if (INVALID_SOCK != fd) {
         ev_close(&task->srey->netev, fd, skid);
     } else {

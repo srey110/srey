@@ -1,0 +1,17 @@
+#ifndef SHA256_H_
+#define SHA256_H_
+
+#include "crypto/crypto.h"
+
+typedef struct {
+    unsigned char data[64];
+    word_t datalen;
+    unsigned long long bitlen;
+    word_t state[8];
+} sha256_ctx;
+
+void sha256_init(sha256_ctx *ctx);
+void sha256_update(sha256_ctx *ctx, const unsigned char *data, size_t len);
+void sha256_final(sha256_ctx *ctx, unsigned char hash[32]);
+
+#endif//SHA256_H_

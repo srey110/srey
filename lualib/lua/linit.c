@@ -55,6 +55,7 @@ static const luaL_Reg loadedlibs[] = {
   {LUA_PBPACKNAME, luaopen_pb},
   {LUA_SREYUTILSNAME, luaopen_srey_utils},
   {LUA_SREYNAME, luaopen_srey},
+  {LUA_SREYCREPTO, luaopen_crypto},
   {NULL, NULL}
 };
 

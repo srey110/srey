@@ -46,93 +46,24 @@ static int32_t _lreg_udtostr(lua_State *lua) {
     lua_pushlstring(lua, data, size);
     return 1;
 }
+static int32_t _lreg_tohex(lua_State *lua) {
+    void *data;
+    size_t size;
+    if (LUA_TSTRING == lua_type(lua, 1)) {
+        data = (void *)luaL_checklstring(lua, 1, &size);
+    } else {
+        data = lua_touserdata(lua, 1);
+        size = (size_t)luaL_checkinteger(lua, 2);
+    }
+    char *out;
+    MALLOC(out, HEX_LES(size));
+    tohex(data, size, out);
+    lua_pushstring(lua, out);
+    FREE(out);
+    return 1;
+}
 static int32_t _lreg_getid(lua_State *lua) {
     lua_pushinteger(lua, createid());
-    return 1;
-}
-static int32_t _lreg_md5(lua_State *lua) {
-    void *data;
-    size_t size;
-    if (LUA_TSTRING == lua_type(lua, 1)) {
-        data = (void *)luaL_checklstring(lua, 1, &size);
-    } else {
-        data = lua_touserdata(lua, 1);
-        size = (size_t)luaL_checkinteger(lua, 2);
-    }
-    char strmd5[33];
-    md5((const char*)data, size, strmd5);
-    lua_pushstring(lua, strmd5);
-    return 1;
-}
-static int32_t _lreg_sha1_md5(lua_State *lua) {
-    void *data;
-    size_t size;
-    if (LUA_TSTRING == lua_type(lua, 1)) {
-        data = (void *)luaL_checklstring(lua, 1, &size);
-    } else {
-        data = lua_touserdata(lua, 1);
-        size = (size_t)luaL_checkinteger(lua, 2);
-    }
-    char sha1str[20];
-    sha1(data, size, sha1str);
-    char strmd5[33];
-    md5(sha1str, sizeof(sha1str), strmd5);
-    lua_pushstring(lua, strmd5);
-    return 1;
-}
-static int32_t _lreg_sha1_b64encode(lua_State *lua) {
-    void *data;
-    size_t size;
-    if (LUA_TSTRING == lua_type(lua, 1)) {
-        data = (void *)luaL_checklstring(lua, 1, &size);
-    } else {
-        data = lua_touserdata(lua, 1);
-        size = (size_t)luaL_checkinteger(lua, 2);
-    }
-    char sha1str[20];
-    sha1(data, size, sha1str);
-    char *b64 = b64encode(sha1str, sizeof(sha1str), &size);
-    lua_pushlstring(lua, b64, size);
-    FREE(b64);
-    return 1;
-}
-static int32_t _lreg_b64encode(lua_State *lua) {
-    void *data;
-    size_t size;
-    if (LUA_TSTRING == lua_type(lua, 1)) {
-        data = (void *)luaL_checklstring(lua, 1, &size);
-    } else {
-        data = lua_touserdata(lua, 1);
-        size = (size_t)luaL_checkinteger(lua, 2);
-    }
-    size_t blens;
-    char *b64 = b64encode(data, size, &blens);
-    lua_pushlstring(lua, b64, blens);
-    FREE(b64);
-    return 1;
-}
-static int32_t _lreg_b64decode(lua_State *lua) {
-    void *data;
-    size_t size;
-    if (LUA_TSTRING == lua_type(lua, 1)) {
-        data = (void *)luaL_checklstring(lua, 1, &size);
-    } else {
-        data = lua_touserdata(lua, 1);
-        size = (size_t)luaL_checkinteger(lua, 2);
-    }
-    size_t blens;
-    char *b64 = b64decode(data, size, &blens);
-    lua_pushlstring(lua, b64, blens);
-    FREE(b64);
-    return 1;
-}
-static int32_t _lreg_urlencode(lua_State *lua) {
-    size_t size;
-    size_t lens;
-    const char *data = luaL_checklstring(lua, 1, &size);
-    char *encode = urlencode(data, size, &lens);
-    lua_pushlstring(lua, encode, lens);
-    FREE(encode);
     return 1;
 }
 static int32_t _lreg_url_parse(lua_State *lua) {
@@ -723,14 +654,8 @@ LUAMOD_API int luaopen_srey_utils(lua_State *lua) {
 
         { "remoteaddr", _lreg_remoteaddr },
         { "utostr", _lreg_udtostr },
+        { "tohex", _lreg_tohex },
         { "getid", _lreg_getid },
-
-        { "md5", _lreg_md5 },
-        { "sha1_md5" ,_lreg_sha1_md5 },
-        { "sha1_b64encode", _lreg_sha1_b64encode },
-        { "b64encode", _lreg_b64encode },
-        { "b64decode", _lreg_b64decode },
-        { "url_encode", _lreg_urlencode },
         { "url_parse", _lreg_url_parse },
 
         { "evssl_new", _lreg_evssl_new },

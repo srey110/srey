@@ -25,23 +25,14 @@
     <Filter Include="proto">
       <UniqueIdentifier>{6de5de1a-091e-4521-8005-38cdba96ae3e}</UniqueIdentifier>
     </Filter>
-    <Filter Include="3rd">
-      <UniqueIdentifier>{bb0b652c-a2b5-4497-8b1a-f86b792cafbe}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="3rd\map">
-      <UniqueIdentifier>{f48dd8e8-89dd-43e8-8803-6ae5cb8869d3}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="3rd\md5">
-      <UniqueIdentifier>{9c8059d5-b299-4f96-8c87-766cb728aa7b}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="3rd\cjson">
+    <Filter Include="utils\cjson">
       <UniqueIdentifier>{ea3d6e8d-1afa-4288-8fba-edbe2cd27e12}</UniqueIdentifier>
     </Filter>
-    <Filter Include="3rd\minicoro">
-      <UniqueIdentifier>{b69c7530-416f-4779-bda3-0284c2777556}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="3rd\sha">
+    <Filter Include="crypto">
       <UniqueIdentifier>{8d0f8248-4127-4be8-93c0-282ff58b790f}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="ds">
+      <UniqueIdentifier>{9243310e-d6f4-44b1-bd17-bada164a1c0d}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
@@ -63,30 +54,9 @@
     <ClInclude Include="macro.h">
       <Filter>base</Filter>
     </ClInclude>
-    <ClInclude Include="queue.h">
-      <Filter>utils</Filter>
-    </ClInclude>
     <ClInclude Include="lib.h" />
     <ClInclude Include="utils.h">
       <Filter>utils</Filter>
-    </ClInclude>
-    <ClInclude Include="md5\md5.h">
-      <Filter>3rd\md5</Filter>
-    </ClInclude>
-    <ClInclude Include="cond.h">
-      <Filter>thread</Filter>
-    </ClInclude>
-    <ClInclude Include="mutex.h">
-      <Filter>thread</Filter>
-    </ClInclude>
-    <ClInclude Include="rwlock.h">
-      <Filter>thread</Filter>
-    </ClInclude>
-    <ClInclude Include="spinlock.h">
-      <Filter>thread</Filter>
-    </ClInclude>
-    <ClInclude Include="thread.h">
-      <Filter>thread</Filter>
     </ClInclude>
     <ClInclude Include="timer.h">
       <Filter>utils</Filter>
@@ -103,9 +73,6 @@
     <ClInclude Include="tw.h">
       <Filter>utils</Filter>
     </ClInclude>
-    <ClInclude Include="hashmap.h">
-      <Filter>3rd\map</Filter>
-    </ClInclude>
     <ClInclude Include="event\event.h">
       <Filter>event</Filter>
     </ClInclude>
@@ -117,9 +84,6 @@
     </ClInclude>
     <ClInclude Include="event\uev.h">
       <Filter>event\unix</Filter>
-    </ClInclude>
-    <ClInclude Include="sarray.h">
-      <Filter>utils</Filter>
     </ClInclude>
     <ClInclude Include="event\skpool.h">
       <Filter>event</Filter>
@@ -164,10 +128,7 @@
       <Filter>service</Filter>
     </ClInclude>
     <ClInclude Include="cjson\cJSON.h">
-      <Filter>3rd\cjson</Filter>
-    </ClInclude>
-    <ClInclude Include="minicoro\minicoro.h">
-      <Filter>3rd\minicoro</Filter>
+      <Filter>utils\cjson</Filter>
     </ClInclude>
     <ClInclude Include="service\srpc.h">
       <Filter>service</Filter>
@@ -178,8 +139,56 @@
     <ClInclude Include="proto\urlparse.h">
       <Filter>proto</Filter>
     </ClInclude>
-    <ClInclude Include="sha\sha1.h">
-      <Filter>3rd\sha</Filter>
+    <ClInclude Include="crypto\md5.h">
+      <Filter>crypto</Filter>
+    </ClInclude>
+    <ClInclude Include="crypto\sha1.h">
+      <Filter>crypto</Filter>
+    </ClInclude>
+    <ClInclude Include="crypto\sha256.h">
+      <Filter>crypto</Filter>
+    </ClInclude>
+    <ClInclude Include="crypto\base64.h">
+      <Filter>crypto</Filter>
+    </ClInclude>
+    <ClInclude Include="crypto\crc.h">
+      <Filter>crypto</Filter>
+    </ClInclude>
+    <ClInclude Include="crypto\xor.h">
+      <Filter>crypto</Filter>
+    </ClInclude>
+    <ClInclude Include="crypto\urlraw.h">
+      <Filter>crypto</Filter>
+    </ClInclude>
+    <ClInclude Include="crypto\crypto.h">
+      <Filter>crypto</Filter>
+    </ClInclude>
+    <ClInclude Include="service\minicoro.h">
+      <Filter>service</Filter>
+    </ClInclude>
+    <ClInclude Include="thread\cond.h">
+      <Filter>thread</Filter>
+    </ClInclude>
+    <ClInclude Include="thread\mutex.h">
+      <Filter>thread</Filter>
+    </ClInclude>
+    <ClInclude Include="thread\rwlock.h">
+      <Filter>thread</Filter>
+    </ClInclude>
+    <ClInclude Include="thread\spinlock.h">
+      <Filter>thread</Filter>
+    </ClInclude>
+    <ClInclude Include="thread\thread.h">
+      <Filter>thread</Filter>
+    </ClInclude>
+    <ClInclude Include="ds\hashmap.h">
+      <Filter>ds</Filter>
+    </ClInclude>
+    <ClInclude Include="ds\queue.h">
+      <Filter>ds</Filter>
+    </ClInclude>
+    <ClInclude Include="ds\sarray.h">
+      <Filter>ds</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -188,12 +197,6 @@
     </ClCompile>
     <ClCompile Include="utils.c">
       <Filter>utils</Filter>
-    </ClCompile>
-    <ClCompile Include="md5\md5.c">
-      <Filter>3rd\md5</Filter>
-    </ClCompile>
-    <ClCompile Include="thread.c">
-      <Filter>thread</Filter>
     </ClCompile>
     <ClCompile Include="timer.c">
       <Filter>utils</Filter>
@@ -209,9 +212,6 @@
     </ClCompile>
     <ClCompile Include="tw.c">
       <Filter>utils</Filter>
-    </ClCompile>
-    <ClCompile Include="hashmap.c">
-      <Filter>3rd\map</Filter>
     </ClCompile>
     <ClCompile Include="event\event.c">
       <Filter>event</Filter>
@@ -265,7 +265,7 @@
       <Filter>service</Filter>
     </ClCompile>
     <ClCompile Include="cjson\cJSON.c">
-      <Filter>3rd\cjson</Filter>
+      <Filter>utils\cjson</Filter>
     </ClCompile>
     <ClCompile Include="service\srpc.c">
       <Filter>service</Filter>
@@ -276,8 +276,32 @@
     <ClCompile Include="proto\urlparse.c">
       <Filter>proto</Filter>
     </ClCompile>
-    <ClCompile Include="sha\sha1.c">
-      <Filter>3rd\sha</Filter>
+    <ClCompile Include="crypto\md5.c">
+      <Filter>crypto</Filter>
+    </ClCompile>
+    <ClCompile Include="crypto\sha1.c">
+      <Filter>crypto</Filter>
+    </ClCompile>
+    <ClCompile Include="crypto\sha256.c">
+      <Filter>crypto</Filter>
+    </ClCompile>
+    <ClCompile Include="crypto\base64.c">
+      <Filter>crypto</Filter>
+    </ClCompile>
+    <ClCompile Include="crypto\crc.c">
+      <Filter>crypto</Filter>
+    </ClCompile>
+    <ClCompile Include="crypto\xor.c">
+      <Filter>crypto</Filter>
+    </ClCompile>
+    <ClCompile Include="crypto\urlraw.c">
+      <Filter>crypto</Filter>
+    </ClCompile>
+    <ClCompile Include="thread\thread.c">
+      <Filter>thread</Filter>
+    </ClCompile>
+    <ClCompile Include="ds\hashmap.c">
+      <Filter>ds</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

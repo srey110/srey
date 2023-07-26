@@ -2,9 +2,9 @@
 #define EVPUB_H_
 
 #include "utils.h"
-#include "queue.h"
-#include "sarray.h"
-#include "spinlock.h"
+#include "ds/queue.h"
+#include "ds/sarray.h"
+#include "thread/spinlock.h"
 #include "buffer.h"
 #include "netaddr.h"
 #include "structs.h"

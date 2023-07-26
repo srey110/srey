@@ -8,6 +8,9 @@
       <Filter>ltasks</Filter>
     </ClCompile>
     <ClCompile Include="main.c" />
+    <ClCompile Include="ltasks\lcrypto.c">
+      <Filter>ltasks</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <Filter Include="ltasks">

@@ -1,7 +1,8 @@
 #include "proto/http.h"
 #include "proto/protos.h"
+#include "crypto/urlraw.h"
 #include "utils.h"
-#include "sarray.h"
+#include "ds/sarray.h"
 
 typedef enum parse_status{
     INIT = 0,
@@ -79,7 +80,7 @@ static inline char *_http_parse_status(http_pack_ctx *pack, size_t flens) {
     }
     head = pos + 1;
     if (0 != _memicmp(pack->status[0].data, "http", strlen("http"))) {
-        pack->status[1].lens = urldecode(pack->status[1].data, pack->status[1].lens);
+        pack->status[1].lens = url_decode(pack->status[1].data, pack->status[1].lens);
     }
     pos = memstr(0, head, HEAD_REMAIN, FLAG_CRLF, flens);
     if (NULL == pos) {
@@ -325,8 +326,10 @@ void *http_data(http_pack_ctx *pack, size_t *lens) {
     return pack->data.data;
 }
 void http_pack_req(buffer_ctx *buf, const char *method, const char *url) {
-    size_t ulens;
-    char *enurl = urlencode(url, strlen(url), &ulens);
+    size_t ulens = strlen(url);
+    char *enurl;
+    MALLOC(enurl, URL_ENSIZE(ulens));
+    url_encode(url, ulens, enurl);
     buffer_appendv(buf, "%s %s HTTP/1.1\r\n", method, enurl);
     FREE(enurl);
 }

@@ -3,6 +3,7 @@
 
 #include "macro.h"
 
+#define HEX_LES(s) (s * 2 + 1)
 typedef void *(*chr_func)(const void *, int32_t, size_t);
 typedef int32_t(*cmp_func)(const void *, const void *, size_t);
 
@@ -37,22 +38,8 @@ void nowtime(const char *fmt, char time[TIME_LENS]);
 //格式化输出当前时间戳 毫秒  %Y-%m-%d %H:%M:%S 
 void nowmtime(const char *fmt, char time[TIME_LENS]);
 void fill_timespec(struct timespec* timeout, uint32_t ms);
-//crc 16 IBM
-uint16_t crc16(const char *buf, const size_t len);
-uint32_t crc32(const char *buf, const size_t len);
-void md5(const char *buf, const size_t len, char md5str[33]);
-void sha1(const char *buf, const size_t lens, char sha1str[20]);
-char *xorencode(const char key[4], const size_t round, char *buf, const size_t len);
-char *xordecode(const char key[4], const size_t round, char *buf, const size_t len);
-//返回值 需要FREE
-char *b64encode(const char *buf, const size_t len, size_t *new_len);
-//返回值 需要FREE
-char *b64decode(const char *buf, const size_t len, size_t *new_len);
-//返回值 需要FREE
-char *urlencode(const char *str, const size_t len, size_t *new_len);
-int32_t urldecode(char *str, size_t len);
+
 uint64_t hash(const char *buf, size_t len);
-uint64_t fnv1a_hash(const char *buf, size_t len);
 
 void *memichr(const void *ptr, int32_t val, size_t maxlen);
 //内存查找 ncs 0 区分大小写
@@ -69,8 +56,8 @@ char* strreverse(char* str);
 int32_t randrange(int32_t min, int32_t max);
 //随机字符串
 char *randstr(char *buf, size_t len);
-//转16进制字符串 长度为 ilens * 3 + 1
-char *tohex(const char *buf, size_t len, char *out, size_t outlen);
+//转16进制字符串 out 长度为 HEX_LES
+char *tohex(const unsigned char *buf, size_t len, char *out);
 //变参 返回值需要free
 char *formatargs(const char *fmt, va_list args);
 char *formatv(const char *fmt, ...);

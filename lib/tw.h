@@ -1,8 +1,8 @@
 #ifndef TW_H_
 #define TW_H_
 
-#include "thread.h"
-#include "spinlock.h"
+#include "thread/thread.h"
+#include "thread/spinlock.h"
 #include "timer.h"
 #include "structs.h"
 

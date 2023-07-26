@@ -1,7 +1,7 @@
 #ifndef SOCK_POOL_H_
 #define SOCK_POOL_H_
 
-#include "queue.h"
+#include "ds/queue.h"
 
 typedef struct skpool_ctx {
     qu_ptr pool;

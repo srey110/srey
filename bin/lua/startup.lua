@@ -1,5 +1,6 @@
 local log = require("lib.log")
 local core = require("lib.core")
+require("test.test_crypto")
 require("lib.funcs")
 
 core.evssl_new(SSL_NAME.SERVER, "ca.crt", "sever.crt", "sever.key", SSLFILE_TYPE.PEM)

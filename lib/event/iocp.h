@@ -3,8 +3,8 @@
 
 #include "event/event.h"
 #include "event/skpool.h"
-#include "thread.h"
-#include "spinlock.h"
+#include "thread/thread.h"
+#include "thread/spinlock.h"
 
 #ifdef EV_IOCP
 

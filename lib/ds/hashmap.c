@@ -7,7 +7,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <stddef.h>
-#include "hashmap.h"
+#include "ds/hashmap.h"
 
 #ifdef _WIN32
 #pragma warning(disable:4018)
@@ -798,7 +798,7 @@ static size_t deepcount(struct hashmap *map) {
 #include <time.h>
 #include <assert.h>
 #include <stdio.h>
-#include "hashmap.h"
+#include "ds/hashmap.h"
 
 static bool rand_alloc_fail = false;
 static int rand_alloc_fail_odds = 3; // 1 in 3 chance malloc will fail.

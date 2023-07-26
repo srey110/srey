@@ -2,7 +2,7 @@
 #include "event/iocp.h"
 #include "event/skpool.h"
 #include "buffer.h"
-#include "hashmap.h"
+#include "ds/hashmap.h"
 #include "netutils.h"
 
 #ifdef EV_IOCP
