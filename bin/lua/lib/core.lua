@@ -57,19 +57,14 @@ end
     nil失败
 --]]
 function core.utostr(data, size)
-    if not data then
-        log.WARN("invalid argument.")
-        return nil
-    end
+    assert(data, "invalid argument.")
     if 0 == size then
         return ""
     end
     return sutils.utostr(data, size)
 end
 function core.tohex(data, size)
-    if not data then
-        return nil
-    end
+    assert(data, "invalid argument.")
     if 0 == size then
         return ""
     end
@@ -91,10 +86,7 @@ end
     table
 --]]
 function core.url_parse(data, size)
-    if not data then
-        log.WARN("invalid argument.")
-        return nil
-    end
+    assert(data, "invalid argument.")
     return sutils.url_parse(data, size)
 end
 --[[
@@ -199,9 +191,7 @@ end
     copy : bool
 --]]
 function core.task_call(task, rtype, data, lens, copy)
-    if not task or not data then
-        return
-    end
+    assert(task and data, "invalid argument.")
     sutils.task_call(task[1], rtype, data, lens, copy and 1 or 0)
 end
 --[[
@@ -229,9 +219,7 @@ end
     copy : bool
 --]]
 function core.task_response(task, sess, erro, data, lens, copy)
-    if not task then
-        return
-    end
+    assert(task, "invalid argument.")
     sutils.task_response(task[1], sess, erro, data, lens, copy and 1 or 0)
 end
 --[[

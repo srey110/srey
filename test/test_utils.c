@@ -206,28 +206,28 @@ void test_system(CuTest* tc) {
     CuAssertTrue(tc, 0x7610 == crc16(str, len));
     CuAssertTrue(tc, 0x3B610CF9 == crc32(str, len));
 
-    char sha1str[20];
+    unsigned char sha1str[20];
     sha1_ctx sha1;
     sha1_init(&sha1);
-    sha1_update(&sha1, str, len);
+    sha1_update(&sha1, (unsigned char*)str, len);
     sha1_final(&sha1, sha1str);
     char out[HEX_ENSIZE(20)];
     tohex(sha1str, sizeof(sha1str), out);
     CuAssertTrue(tc, 0 == strcmp("F1B188A879C1C82D561CB8A064D825FDCBFE4191", out));
 
-    char sh256[32];
+    unsigned char sh256[32];
     sha256_ctx sha256;
     sha256_init(&sha256);
-    sha256_update(&sha256, str, len);
+    sha256_update(&sha256, (unsigned char*)str, len);
     sha256_final(&sha256, sh256);
     char osh256[HEX_ENSIZE(32)];
     tohex(sh256, sizeof(sh256), osh256);
     CuAssertTrue(tc, 0 == strcmp(osh256, "FECC75FE2A23D8EAFBA452EE0B8B6B56BECCF52278BF1398AADDEECFE0EA0FCE"));
 
-    char md5str[16];
+    unsigned char md5str[16];
     md5_ctx md5;
     md5_init(&md5);  
-    md5_update(&md5, str, len);
+    md5_update(&md5, (unsigned char*)str, len);
     md5_final(&md5, md5str);
     char omd5str[HEX_ENSIZE(16)];
     tohex(md5str, sizeof(md5str), omd5str);
@@ -250,7 +250,7 @@ void test_system(CuTest* tc) {
     FREE(de);
 
     uint64_t hs = hash(str, len);
-    CuAssertTrue(tc, 14869103789476489700 == hs);
+    CuAssertTrue(tc, 14869103789476489700ULL == hs);
 
     const char *url = "this is URL²ÎÊý±àÂë test #@.";
     char *enurl;

@@ -68,8 +68,11 @@ static int32_t _lcrypto_md5_init(lua_State *lua) {
     md5_ctx *md5 = lua_touserdata(lua, 1);
     if (NULL == md5) {
         md5 = lua_newuserdata(lua, sizeof(md5_ctx));
+        md5_init(md5);
+    } else {
+        md5_init(md5);
+        lua_pushlightuserdata(lua, md5);
     }
-    md5_init(md5);
     return 1;
 }
 static int32_t _lcrypto_md5_update(lua_State *lua) {
@@ -87,17 +90,20 @@ static int32_t _lcrypto_md5_update(lua_State *lua) {
 }
 static int32_t _lcrypto_md5_final(lua_State *lua) {
     md5_ctx *md5 = lua_touserdata(lua, 1);
-    char out[16];
+    unsigned char out[16];
     md5_final(md5, out);
-    lua_pushlstring(lua, out, sizeof(out));
+    lua_pushlstring(lua, (char *)out, sizeof(out));
     return 1;
 }
 static int32_t _lcrypto_sha1_init(lua_State *lua) {
     sha1_ctx *sha1 = lua_touserdata(lua, 1);
     if (NULL == sha1) {
         sha1 = lua_newuserdata(lua, sizeof(sha1_ctx));
+        sha1_init(sha1);
+    } else {
+        sha1_init(sha1);
+        lua_pushlightuserdata(lua, sha1);
     }
-    sha1_init(sha1);
     return 1;
 }
 static int32_t _lcrypto_sha1_update(lua_State *lua) {
@@ -115,17 +121,20 @@ static int32_t _lcrypto_sha1_update(lua_State *lua) {
 }
 static int32_t _lcrypto_sha1_final(lua_State *lua) {
     sha1_ctx *sha1 = lua_touserdata(lua, 1);
-    char out[20];
+    unsigned char out[20];
     sha1_final(sha1, out);
-    lua_pushlstring(lua, out, sizeof(out));
+    lua_pushlstring(lua, (char *)out, sizeof(out));
     return 1;
 }
 static int32_t _lcrypto_sha256_init(lua_State *lua) {
     sha256_ctx *sha256 = lua_touserdata(lua, 1);
     if (NULL == sha256) {
         sha256 = lua_newuserdata(lua, sizeof(sha256_ctx));
+        sha256_init(sha256);
+    } else {
+        sha256_init(sha256);
+        lua_pushlightuserdata(lua, sha256);
     }
-    sha256_init(sha256);
     return 1;
 }
 static int32_t _lcrypto_sha256_update(lua_State *lua) {
@@ -143,9 +152,9 @@ static int32_t _lcrypto_sha256_update(lua_State *lua) {
 }
 static int32_t _lcrypto_sha256_final(lua_State *lua) {
     sha256_ctx *sha256 = lua_touserdata(lua, 1);
-    char out[32];
+    unsigned char out[32];
     sha256_final(sha256, out);
-    lua_pushlstring(lua, out, sizeof(out));
+    lua_pushlstring(lua, (char *)out, sizeof(out));
     return 1;
 }
 static int32_t _lcrypto_url_encode(lua_State *lua) {

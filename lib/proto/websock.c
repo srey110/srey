@@ -86,7 +86,7 @@ static inline void _websock_handshake_server(ev_ctx *ev, SOCKET fd, uint64_t ski
         push_handshaked(fd, skid, ud, closefd, ERR_FAILED);
         return;
     }
-    char *key;
+    unsigned char *key;
     size_t klens = strlen(SIGNKEY);
     size_t lens = klens + signstr->value.lens;
     MALLOC(key, lens);
@@ -99,7 +99,7 @@ static inline void _websock_handshake_server(ev_ctx *ev, SOCKET fd, uint64_t ski
     sha1_final(&sha1, sha1str);
     FREE(key);
     char b64[B64_ENSIZE(sizeof(sha1str))];
-    b64_encode(sha1str, sizeof(sha1str), b64);
+    b64_encode((char *)sha1str, sizeof(sha1str), b64);
     static const char *fmt = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n";
     char *rsp = formatv(fmt, b64);
     ud->status = START;

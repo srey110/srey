@@ -10,9 +10,7 @@ local cypt={}
     string
 --]]
 function cypt.b64_encode(data, size)
-    if not data then
-        return nil
-    end
+    assert(data, "invalid argument.")
     return crypto.b64_encode(data, size)
 end
 --[[
@@ -24,9 +22,7 @@ end
     string
 --]]
 function cypt.b64_decode(data, size)
-    if not data then
-        return nil
-    end
+    assert(data, "invalid argument.")
     return crypto.b64_decode(data, size)
 end
 --[[
@@ -38,9 +34,7 @@ end
     integer
 --]]
 function cypt.crc16(data, size)
-    if not data then
-        return nil
-    end
+    assert(data, "invalid argument.")
     return crypto.crc16(data, size)
 end
 --[[
@@ -52,9 +46,7 @@ end
     integer
 --]]
 function cypt.crc32(data, size)
-    if not data then
-        return nil
-    end
+    assert(data, "invalid argument.")
     return crypto.crc32(data, size)
 end
 --[[
@@ -69,12 +61,11 @@ function cypt.md5_init(md5)
     return crypto.md5_init(md5)
 end
 function cypt.md5_update(md5, data, size)
-    if not md5 or not data then
-        return
-    end
+    assert(md5 and data, "invalid argument.")
     crypto.md5_update(md5, data, size)
 end
 function cypt.md5_final(md5)
+    assert(md5, "invalid argument.")
     return crypto.md5_final(md5)
 end
 
@@ -82,12 +73,11 @@ function cypt.sha1_init(sha1)
     return crypto.sha1_init(sha1)
 end
 function cypt.sha1_update(sha1, data, size)
-    if not sha1 or not data then
-        return
-    end
+    assert(sha1 and data, "invalid argument.")
     crypto.sha1_update(sha1, data, size)
 end
 function cypt.sha1_final(sha1)
+    assert(sha1, "invalid argument.")
     return crypto.sha1_final(sha1)
 end
 
@@ -95,18 +85,15 @@ function cypt.sha256_init(sha256)
     return crypto.sha256_init(sha256)
 end
 function cypt.sha256_update(sha256, data, size)
-    if not sha256 or not data then
-        return
-    end
+    assert(sha256 and data, "invalid argument.")
     crypto.sha256_update(sha256, data, size)
 end
 function cypt.sha256_final(sha256)
+    assert(sha256, "invalid argument.")
     return crypto.sha256_final(sha256)
 end
 function cypt.url_encode(data, size)
-    if not data then
-        return nil
-    end
+    assert(data, "invalid argument.")
     return crypto.url_encode(data, size)
 end
 
