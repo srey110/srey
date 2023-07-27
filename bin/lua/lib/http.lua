@@ -231,9 +231,7 @@ function http.upgrade_websock(hpack)
     if not val then
         return nil
     end
-    crypto.sha1_update(string.format("%s258EAFA5-E914-47DA-95CA-C5AB0DC85B11", val))
-    local en = crypto.sha1_final()
-    return crypto.b64_encode(en)
+    return crypto.sha1_b64(string.format("%s258EAFA5-E914-47DA-95CA-C5AB0DC85B11", val))
 end
 --[[
 描述:向客户端返回握手成功,并切换socket对应的协议解析

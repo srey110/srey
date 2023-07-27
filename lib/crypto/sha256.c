@@ -78,7 +78,7 @@ void sha256_update(sha256_ctx *ctx, const unsigned char *data, size_t len) {
         }
     }
 }
-void sha256_final(sha256_ctx *ctx, unsigned char hash[32]) {
+void sha256_final(sha256_ctx *ctx, unsigned char hash[SHA256_BLOCK_SIZE]) {
     word_t i;
     i = ctx->datalen;
     // Pad whatever data is left in the buffer.

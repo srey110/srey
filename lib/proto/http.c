@@ -327,7 +327,7 @@ void *http_data(http_pack_ctx *pack, size_t *lens) {
 void http_pack_req(buffer_ctx *buf, const char *method, const char *url) {
     size_t ulens = strlen(url);
     char *enurl;
-    MALLOC(enurl, URL_ENSIZE(ulens));
+    MALLOC(enurl, URLEN_BLOCK_SIZE(ulens));
     url_encode(url, ulens, enurl);
     buffer_appendv(buf, "%s %s HTTP/1.1\r\n", method, enurl);
     FREE(enurl);

@@ -20,14 +20,16 @@ typedef struct config_ctx {
 }config_ctx;
 
 static inline int32_t task_startup(srey_ctx *ctx, config_ctx *config) {
-    int32_t rtn;
+    int32_t rtn = harbor_start(ctx, config->harborname, config->harborssl, config->harborip, config->harborport);
+    if (ERR_OK != rtn) {
+        return rtn;
+    }
 #if WITH_LUA
     rtn = _ltask_startup();
     if (ERR_OK != rtn) {
         return rtn;
     }
 #endif
-    rtn = harbor_start(ctx, config->harborname, config->harborssl, config->harborip, config->harborport);
     return rtn;
 };
 

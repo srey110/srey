@@ -14,7 +14,7 @@ static int32_t _lcrypto_b64_encode(lua_State *lua) {
         size = (size_t)luaL_checkinteger(lua, 2);
     }
     char *out;
-    size_t lens = B64_ENSIZE(size);
+    size_t lens = B64EN_BLOCK_SIZE(size);
     MALLOC(out, lens);
     size = b64_encode(data, size, out);
     lua_pushlstring(lua, out, size);
@@ -31,7 +31,7 @@ static int32_t _lcrypto_b64_decode(lua_State *lua) {
         size = (size_t)luaL_checkinteger(lua, 2);
     }
     char *out;
-    size_t lens = B64_DESIZE(size);
+    size_t lens = B64DE_BLOCK_SIZE(size);
     MALLOC(out, lens);
     size = b64_decode(data, size, out);
     lua_pushlstring(lua, out, size);
@@ -96,7 +96,7 @@ static int32_t _lcrypto_md5_update(lua_State *lua) {
 }
 static int32_t _lcrypto_md5_final(lua_State *lua) {
     md5_ctx *md5 = _get_crypto_global(lua, "_md5_ctx", 0, NULL);
-    unsigned char out[16];
+    unsigned char out[MD5_BLOCK_SIZE];
     md5_final(md5, out);
     lua_pushlstring(lua, (char *)out, sizeof(out));
     md5_init(md5);
@@ -121,7 +121,7 @@ static int32_t _lcrypto_sha1_update(lua_State *lua) {
 }
 static int32_t _lcrypto_sha1_final(lua_State *lua) {
     sha1_ctx *sha1 = _get_crypto_global(lua, "_sha1_ctx", 0, NULL);
-    unsigned char out[20];
+    unsigned char out[SHA1_BLOCK_SIZE];
     sha1_final(sha1, out);
     lua_pushlstring(lua, (char *)out, sizeof(out));
     sha1_init(sha1);
@@ -146,10 +146,56 @@ static int32_t _lcrypto_sha256_update(lua_State *lua) {
 }
 static int32_t _lcrypto_sha256_final(lua_State *lua) {
     sha256_ctx *sha256 = _get_crypto_global(lua, "_sha256_ctx", 0, NULL);
-    unsigned char out[32];
+    unsigned char out[SHA256_BLOCK_SIZE];
     sha256_final(sha256, out);
     lua_pushlstring(lua, (char *)out, sizeof(out));
     sha256_init(sha256);
+    return 1;
+}
+static int32_t _lcrypto_sha256_md5_hex(lua_State *lua) {
+    void *data;
+    size_t size;
+    if (LUA_TSTRING == lua_type(lua, 1)) {
+        data = (void *)luaL_checklstring(lua, 1, &size);
+    } else {
+        data = lua_touserdata(lua, 1);
+        size = (size_t)luaL_checkinteger(lua, 2);
+    }
+    sha256_ctx sha256;
+    unsigned char out265[SHA256_BLOCK_SIZE];
+    sha256_init(&sha256);
+    sha256_update(&sha256, data, size);
+    sha256_final(&sha256, out265);
+
+    md5_ctx md5;
+    unsigned char outmd5[MD5_BLOCK_SIZE];
+    md5_init(&md5);
+    md5_update(&md5, out265, sizeof(out265));
+    md5_final(&md5, outmd5);
+    
+    char hex[HEX_ENSIZE(sizeof(outmd5))];
+    tohex(outmd5, sizeof(outmd5), hex);
+    lua_pushstring(lua, hex);
+    return 1;
+}
+static int32_t _lcrypto_sha1_b64(lua_State *lua) {
+    void *data;
+    size_t size;
+    if (LUA_TSTRING == lua_type(lua, 1)) {
+        data = (void *)luaL_checklstring(lua, 1, &size);
+    } else {
+        data = lua_touserdata(lua, 1);
+        size = (size_t)luaL_checkinteger(lua, 2);
+    }
+    sha1_ctx sha1;
+    unsigned char outsh[SHA1_BLOCK_SIZE];
+    sha1_init(&sha1);
+    sha1_update(&sha1, data, size);
+    sha1_final(&sha1, outsh);
+
+    char b64[B64EN_BLOCK_SIZE(sizeof(outsh))];
+    b64_encode(outsh, sizeof(outsh), b64);
+    lua_pushstring(lua, b64);
     return 1;
 }
 static int32_t _lcrypto_url_encode(lua_State *lua) {
@@ -162,7 +208,7 @@ static int32_t _lcrypto_url_encode(lua_State *lua) {
         size = (size_t)luaL_checkinteger(lua, 2);
     }
     char *out;
-    MALLOC(out, URL_ENSIZE(size));
+    MALLOC(out, URLEN_BLOCK_SIZE(size));
     url_encode(data, size, out);
     lua_pushstring(lua, out);
     FREE(out);
@@ -186,6 +232,9 @@ LUAMOD_API int luaopen_crypto(lua_State *lua) {
         { "sha256_final", _lcrypto_sha256_final },
 
         { "url_encode", _lcrypto_url_encode },
+
+        { "sha256_md5_hex",_lcrypto_sha256_md5_hex },
+        { "sha1_b64",_lcrypto_sha1_b64 },
         { NULL, NULL },
     };
     luaL_newlib(lua, reg);

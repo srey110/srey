@@ -219,15 +219,15 @@ static inline void _net_rpc_sign(buffer_ctx *buf, const char *url, const char *j
     MALLOC(sbuf, lens);
     SNPRINTF(sbuf, lens, "%s%s%s%s", url, jreq, tms, key);
 
-    unsigned char sh[32];
     sha256_ctx sha256;
+    unsigned char sh[SHA256_BLOCK_SIZE];
     sha256_init(&sha256);
     sha256_update(&sha256, (unsigned char*)sbuf, lens - 1);
     sha256_final(&sha256, sh);
     FREE(sbuf);
 
-    unsigned char md[16];
     md5_ctx md5;
+    unsigned char md[MD5_BLOCK_SIZE];
     md5_init(&md5);
     md5_update(&md5, sh, sizeof(sh));
     md5_final(&md5, md);

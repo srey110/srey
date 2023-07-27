@@ -116,7 +116,7 @@ void md5_update(md5_ctx *ctx, const unsigned char *data, size_t len) {
         }
     }
 }
-void md5_final(md5_ctx *ctx, unsigned char hash[16]) {
+void md5_final(md5_ctx *ctx, unsigned char hash[MD5_BLOCK_SIZE]) {
     size_t i;
     i = ctx->datalen;
     // Pad whatever data is left in the buffer.

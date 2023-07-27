@@ -206,8 +206,8 @@ void test_system(CuTest* tc) {
     CuAssertTrue(tc, 0x7610 == crc16(str, len));
     CuAssertTrue(tc, 0x3B610CF9 == crc32(str, len));
 
-    unsigned char sha1str[20];
     sha1_ctx sha1;
+    unsigned char sha1str[SHA1_BLOCK_SIZE];
     sha1_init(&sha1);
     sha1_update(&sha1, (unsigned char*)str, len);
     sha1_final(&sha1, sha1str);
@@ -215,8 +215,8 @@ void test_system(CuTest* tc) {
     tohex(sha1str, sizeof(sha1str), out);
     CuAssertTrue(tc, 0 == strcmp("F1B188A879C1C82D561CB8A064D825FDCBFE4191", out));
 
-    unsigned char sh256[32];
     sha256_ctx sha256;
+    unsigned char sh256[SHA256_BLOCK_SIZE];
     sha256_init(&sha256);
     sha256_update(&sha256, (unsigned char*)str, len);
     sha256_final(&sha256, sh256);
@@ -224,8 +224,8 @@ void test_system(CuTest* tc) {
     tohex(sh256, sizeof(sh256), osh256);
     CuAssertTrue(tc, 0 == strcmp(osh256, "FECC75FE2A23D8EAFBA452EE0B8B6B56BECCF52278BF1398AADDEECFE0EA0FCE"));
 
-    unsigned char md5str[16];
     md5_ctx md5;
+    unsigned char md5str[MD5_BLOCK_SIZE];
     md5_init(&md5);  
     md5_update(&md5, (unsigned char*)str, len);
     md5_final(&md5, md5str);
@@ -234,11 +234,11 @@ void test_system(CuTest* tc) {
     CuAssertTrue(tc, 0 == strcmp("480FC0D368462326386DA7BB8ED56AD7", omd5str));
 
     char *en;
-    MALLOC(en, B64_ENSIZE(len));
+    MALLOC(en, B64EN_BLOCK_SIZE(len));
     b64_encode(str, len, en);
     CuAssertTrue(tc, 0 == strcmp("dGhpcyBpcyB0ZXN0Lg==", en));
     char *de;
-    MALLOC(de, B64_DESIZE(strlen(en)));
+    MALLOC(de, B64DE_BLOCK_SIZE(strlen(en)));
     size_t bdelen = b64_decode(en, strlen(en), de);
     CuAssertTrue(tc, 0 == strcmp(de, str));
     FREE(en);
@@ -254,7 +254,7 @@ void test_system(CuTest* tc) {
 
     const char *url = "this is URL²ÎÊý±àÂë test #@.";
     char *enurl;
-    MALLOC(enurl, URL_ENSIZE(strlen(url)));
+    MALLOC(enurl, URLEN_BLOCK_SIZE(strlen(url)));
     url_encode(url, strlen(url), enurl);
     url_decode(enurl, strlen(enurl));
     CuAssertTrue(tc, 0 == strcmp(url, enurl));

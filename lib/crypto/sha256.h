@@ -3,6 +3,8 @@
 
 #include "crypto/crypto.h"
 
+#define SHA256_BLOCK_SIZE 32
+
 typedef struct {
     word_t datalen;
     unsigned long long bitlen;
@@ -12,6 +14,6 @@ typedef struct {
 
 void sha256_init(sha256_ctx *ctx);
 void sha256_update(sha256_ctx *ctx, const unsigned char *data, size_t len);
-void sha256_final(sha256_ctx *ctx, unsigned char hash[32]);
+void sha256_final(sha256_ctx *ctx, unsigned char hash[SHA256_BLOCK_SIZE]);
 
 #endif//SHA256_H_

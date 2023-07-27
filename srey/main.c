@@ -172,6 +172,7 @@ static int32_t service_init(void) {
         _open_log(config.fmt);
     }
     unlimit();
+    srand((uint32_t)time(NULL));
     mutex_init(&muexit);
     cond_init(&condexit);
     srey = srey_init(config.nnet, config.nworker, config.stack_size,

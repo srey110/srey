@@ -77,15 +77,15 @@ static int32_t _check_sign(struct http_pack_ctx *pack, buf_ctx *url, char *jreq,
     off += klens;
     signstr[off] = '\0';
 
-    unsigned char sh[32];
     sha256_ctx sha256;
+    unsigned char sh[SHA256_BLOCK_SIZE];
     sha256_init(&sha256);
     sha256_update(&sha256, (unsigned char *)signstr, off);
     sha256_final(&sha256, sh);
     FREE(signstr);
 
-    unsigned char md[16];
     md5_ctx md5;
+    unsigned char md[MD5_BLOCK_SIZE];
     md5_init(&md5);
     md5_update(&md5, sh, sizeof(sh));
     md5_final(&md5, md);

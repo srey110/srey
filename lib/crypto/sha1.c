@@ -78,7 +78,7 @@ void sha1_update(sha1_ctx *ctx, const unsigned char *data, size_t len) {
         }
     }
 }
-void sha1_final(sha1_ctx *ctx, unsigned char hash[20]) {
+void sha1_final(sha1_ctx *ctx, unsigned char hash[SHA1_BLOCK_SIZE]) {
     word_t i;
     i = ctx->datalen;
     // Pad whatever data is left in the buffer.

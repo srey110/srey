@@ -79,4 +79,13 @@ function cypt.url_encode(data, size)
     return crypto.url_encode(data, size)
 end
 
+function cypt.sha256_md5_hex(data, size)
+    assert(data, "invalid argument.")
+    return crypto.sha256_md5_hex(data, size)
+end
+function cypt.sha1_b64(data, size)
+    assert(data, "invalid argument.")
+    return crypto.sha1_b64(data, size)
+end
+
 return cypt

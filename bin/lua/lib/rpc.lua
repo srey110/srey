@@ -47,14 +47,8 @@ local function _net_rpc_sign(head, url, jreq)
     end
     local tms = tostring(os.time())
     local sign = string.format("%s%s%s%s", url, jreq, tms, key)
-
-    crypto.sha256_update(sign)
-    local en = crypto.sha256_final()
-
-    crypto.md5_update(en)
-    en = crypto.md5_final()
     head["X-Timestamp"] = tms
-    head["Authorization"] = core.tohex(en)
+    head["Authorization"] = crypto.sha256_md5_hex(sign)
 end
 --[[
 描述:远程RPC，无返回
