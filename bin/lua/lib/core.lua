@@ -138,12 +138,11 @@ end
     file lua文件名 :string
     name :TASK_NAME
     maxcnt 每次最多执行多少条消息: integer
-    maxqulens 消息队列最大长度: integer
 返回:
     boolean
 --]]
-function core.task_register(file, name, maxcnt, maxqulens)
-    return score.task_register(file, name, maxcnt or EVERY_EXLENS, maxqulens or MAX_QULENS)
+function core.task_register(file, name, maxcnt)
+    return score.task_register(file, name, maxcnt or EVERY_EXLENS)
 end
 --[[
 描述:任务获取

@@ -14,7 +14,7 @@ static void _recv(task_ctx *task, message_ctx *msg) {
 }
 void test_ssl(void) {
 #if WITH_SSL
-    task_ctx *task = srey_task_new(TTYPE_C, TEST_SSL, 0, 0, NULL, NULL);
+    task_ctx *task = srey_task_new(TTYPE_C, TEST_SSL, 0, NULL, NULL);
     srey_task_regcb(task, MSG_TYPE_RECV, _recv);
     srey_task_register(srey, task);
     uint64_t lsnid;

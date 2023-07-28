@@ -62,7 +62,7 @@ static cJSON *test_add(task_ctx *task, cJSON *args) {
     return rpc_format_args("i", sum);
 }
 void test_timeout(void) {
-    task_ctx *task = srey_task_new(TTYPE_C, TEST_TIMEOUT, 0, 0, NULL, NULL);
+    task_ctx *task = srey_task_new(TTYPE_C, TEST_TIMEOUT, 0, NULL, NULL);
     srey_task_regcb(task, MSG_TYPE_STARTUP, _startup);
     srey_task_regcb(task, MSG_TYPE_REQUEST, _request);
     rpc_register(task, "test_void", test_void);

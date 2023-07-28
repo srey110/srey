@@ -216,10 +216,9 @@ static int32_t _ltask_register(lua_State *lua) {
     const char *file = luaL_checkstring(lua, 1);
     name_t name = (name_t)luaL_checkinteger(lua, 2);
     uint16_t maxcnt = (uint16_t)luaL_checkinteger(lua, 3);
-    uint16_t maxmsgqulens = (uint16_t)luaL_checkinteger(lua, 4);
     ltask_ctx *ltask;
     CALLOC(ltask, 1, sizeof(ltask_ctx));
-    task_ctx *task = srey_task_new(TTYPE_LUA, name, maxcnt, maxmsgqulens, _ltask_arg_free, ltask);
+    task_ctx *task = srey_task_new(TTYPE_LUA, name, maxcnt, _ltask_arg_free, ltask);
     if (NULL == task) {
         FREE(ltask);
         lua_pushboolean(lua, 0);

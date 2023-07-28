@@ -55,7 +55,7 @@ static void _recv(task_ctx *task, message_ctx *msg) {
     }
 }
 void test_httpsv(void) {
-    task_ctx *task = srey_task_new(TTYPE_C, TEST_HTTP, 0, 0, NULL, NULL);
+    task_ctx *task = srey_task_new(TTYPE_C, TEST_HTTP, 0, NULL, NULL);
     srey_task_regcb(task, MSG_TYPE_RECV, _recv);
     srey_task_register(srey, task);
     uint64_t lsnid;

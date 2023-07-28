@@ -12,7 +12,7 @@ int32_t srey_ssl_register(srey_ctx *ctx, name_t name, struct evssl_ctx *evssl);
 struct evssl_ctx *srey_ssl_qury(srey_ctx *ctx, name_t name);
 #endif
 
-task_ctx *srey_task_new(task_type ttype, name_t name, uint16_t maxcnt, uint16_t maxmsgqulens, free_cb _argfree, void *arg);
+task_ctx *srey_task_new(task_type ttype, name_t name, uint16_t maxcnt, free_cb _argfree, void *arg);
 void srey_task_free(task_ctx *task);
 /*MSG_TYPE_STARTUP MSG_TYPE_CLOSING MSG_TYPE_ACCEPT MSG_TYPE_CONNECT MSG_TYPE_HANDSHAKED
 MSG_TYPE_RECV MSG_TYPE_SEND MSG_TYPE_CLOSE MSG_TYPE_RECVFROM MSG_TYPE_REQUEST*/

@@ -227,9 +227,7 @@ static inline void _message_run(srey_ctx *ctx, worker_ctx *worker, worker_versio
 }
 static inline void _dispatch_message(srey_ctx *ctx, worker_ctx *worker, worker_version *version, task_msg_arg *arg) {
     int32_t over;
-    uint16_t n = qu_message_size(&arg->task->qumsg) >= arg->task->maxmsgqulens ?
-                                 arg->task->maxcnt * 2 : arg->task->maxcnt;
-    for (uint16_t i = 0; i < n; i++) {
+    for (uint16_t i = 0; i < arg->task->maxcnt; i++) {
         over = 1;
         if (ERR_OK == _get_message(arg->task, &arg->msg)) {
             _message_run(ctx, worker, version, arg);
@@ -559,7 +557,7 @@ static inline void _ctask_timeout_run(task_ctx *task, message_ctx *msg) {
     }
     tmo->_timeout(task, tmo->arg);
 }
-task_ctx *srey_task_new(task_type ttype, name_t name, uint16_t maxcnt, uint16_t maxmsgqulens, free_cb _argfree, void *arg) {
+task_ctx *srey_task_new(task_type ttype, name_t name, uint16_t maxcnt, free_cb _argfree, void *arg) {
     if (INVALID_TNAME == name) {
         return NULL;
     }
@@ -569,7 +567,6 @@ task_ctx *srey_task_new(task_type ttype, name_t name, uint16_t maxcnt, uint16_t 
     task->name = name;
     task->maxcnt = 0 == maxcnt ? 5 : maxcnt;
     task->ref = 1;
-    task->maxmsgqulens = 0 == maxmsgqulens ? ONEK : maxmsgqulens;
     task->_arg_free = _argfree;
     task->arg = arg;
     if (TTYPE_C == ttype) {
@@ -580,8 +577,8 @@ task_ctx *srey_task_new(task_type ttype, name_t name, uint16_t maxcnt, uint16_t 
     _coro_new(task);
     _rpc_new(task);
     spin_init(&task->spin_msg, SPIN_CNT_TASKMSG);
-    qu_message_init(&task->qumsg, task->maxmsgqulens);
-    qu_message_init(&task->qutmo, task->maxmsgqulens);
+    qu_message_init(&task->qumsg, ONEK * 4);
+    qu_message_init(&task->qutmo, ONEK);
     qu_ptr_init(&task->qutmoarg, 0);
     return task;
 }
@@ -764,7 +761,7 @@ void srey_response(task_ctx *dst, uint64_t sess, int32_t erro, void *data, size_
     message_ctx msg;
     msg.mtype = MSG_TYPE_RESPONSE;
     msg.sess = sess;
-    msg.erro = (int8_t)erro;
+    msg.erro = erro;
     msg.size = size;
     if (NULL != data) {
         if (0 != copy) {
@@ -913,7 +910,7 @@ static inline int32_t _net_connect(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t
     msg.pktype = ud->pktype;
     msg.skid = skid;
     msg.fd = fd;
-    msg.erro = (int8_t)err;
+    msg.erro = err;
     msg.sess = ud->sess;
     ud->sess = 0;
     _push_message(task, &msg);
@@ -986,7 +983,7 @@ void push_handshaked(SOCKET fd, uint64_t skid, ud_cxt *ud, int32_t *closefd, int
     msg.fd = fd;
     msg.skid = skid;
     msg.sess = ud->sess;
-    msg.erro = (int8_t)erro;
+    msg.erro = erro;
     _push_message(task, &msg);
     srey_task_ungrab(task);
 }

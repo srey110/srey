@@ -60,7 +60,7 @@ struct message_ctx {
     uint8_t pktype;//unpack_type
     uint8_t slice;//slice_type
     uint8_t client;
-    int8_t erro;
+    int32_t erro;
     name_t src;
     SOCKET fd;
     void *data;
@@ -138,7 +138,6 @@ struct task_ctx {
     uint8_t ttype;
     uint16_t index;
     uint16_t maxcnt;
-    uint16_t maxmsgqulens;
     name_t name;
     uint32_t cpu_cost;
     uint32_t warning;
