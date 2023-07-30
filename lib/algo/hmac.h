@@ -4,7 +4,6 @@
 #include "algo/md5.h"
 #include "algo/sha1.h"
 #include "algo/sha256.h"
-//https://github.com/ogay/hmac
 
 #define HMAC_DECL(hs_type, hmac_type, block_size, trans_size, _hs_init, _hs_update, _hs_final)\
 typedef struct hmac_type {\

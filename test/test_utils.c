@@ -200,7 +200,29 @@ void test_system(CuTest* tc) {
     PRINT("nowtime: %s", time);
     nowmtime("%Y-%m-%d %H:%M:%S", time);
     PRINT("nowmtime: %s", time);
+    
+    const char *str = "this is test.";
+    size_t len = strlen(str);
+    char *buf;
+    CALLOC(buf, 1, (size_t)32);
+    memcpy(buf, str, strlen(str));
+    CuAssertTrue(tc, 0 == strcmp(strupper(buf), "THIS IS TEST."));
+    CuAssertTrue(tc, 0 == strcmp(strlower(buf), "this is test."));
+    CuAssertTrue(tc, 0 == strcmp(strreverse(buf), ".tset si siht"));
+    FREE(buf);
 
+    PRINT("randrange: %d", randrange(0, 100));
+    PRINT("randrange: %d", randrange(0, 100));
+    PRINT("randrange: %d", randrange(0, 100));
+    char rdbuf[64] = { 0 };
+    randstr(rdbuf, sizeof(rdbuf) - 1);
+    PRINT("randstr: %s", rdbuf);
+
+    char *fmt = formatv("%d-%s", 110, "come");
+    CuAssertTrue(tc, 0 == strcmp(fmt, "110-come"));
+    FREE(fmt);
+}
+void test_algo(CuTest* tc) {
     const char *str = "this is test.";
     size_t len = strlen(str);
     CuAssertTrue(tc, 0x7610 == crc16(str, len));
@@ -232,7 +254,7 @@ void test_system(CuTest* tc) {
     char omd5str[HEX_ENSIZE(16)];
     tohex(md5str, sizeof(md5str), omd5str);
     CuAssertTrue(tc, 0 == strcmp("480FC0D368462326386DA7BB8ED56AD7", omd5str));
-    
+
     const char *hmac_key[] = { "n3iDbIxJ79GaNxAfjTbSims0nQnEH131RnmQYZ6ofxoOn3bvVGBN45lcozfguAJl", //== 64
         "Dws6758XGKWG0OK1LNLD2H4DQ4sFCSUdZ8RJFLo6OXbPfh4dbmSACYiMU0pPxU44b",// > 64
         "Shm3lWMaDIxwKH64" };
@@ -307,25 +329,6 @@ void test_system(CuTest* tc) {
     url_decode(enurl, strlen(enurl));
     CuAssertTrue(tc, 0 == strcmp(url, enurl));
     FREE(enurl);
-
-    char *buf;
-    CALLOC(buf, 1, (size_t)32);
-    memcpy(buf, str, strlen(str));
-    CuAssertTrue(tc, 0 == strcmp(strupper(buf), "THIS IS TEST."));
-    CuAssertTrue(tc, 0 == strcmp(strlower(buf), "this is test."));
-    CuAssertTrue(tc, 0 == strcmp(strreverse(buf), ".tset si siht"));
-    FREE(buf);
-
-    PRINT("randrange: %d", randrange(0, 100));
-    PRINT("randrange: %d", randrange(0, 100));
-    PRINT("randrange: %d", randrange(0, 100));
-    char rdbuf[64] = { 0 };
-    randstr(rdbuf, sizeof(rdbuf) - 1);
-    PRINT("randstr: %s", rdbuf);
-
-    char *fmt = formatv("%d-%s", 110, "come");
-    CuAssertTrue(tc, 0 == strcmp(fmt, "110-come"));
-    FREE(fmt);
 }
 void test_timer(CuTest* tc) {
     timer_ctx timer;
@@ -741,6 +744,7 @@ void test_utils(CuSuite* suite) {
     SUITE_ADD_TEST(suite, test_array);
     SUITE_ADD_TEST(suite, test_queue);
     SUITE_ADD_TEST(suite, test_system);
+    SUITE_ADD_TEST(suite, test_algo);
     SUITE_ADD_TEST(suite, test_timer);
     SUITE_ADD_TEST(suite, test_netutils);
     SUITE_ADD_TEST(suite, test_buffer);

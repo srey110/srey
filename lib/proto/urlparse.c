@@ -2,17 +2,12 @@
 #include "utils.h"
 
 static inline char *_scheme(buf_ctx *scheme, char *cur, size_t lens) {
-    char *pos = memchr(cur, ':', lens);
+    char *pos = memstr(1, cur, lens, "://", 3);
     if (NULL == pos) {
         return cur;
     }
-    size_t size = pos - cur;
-    if (3 > lens - size
-        || 0 != memcmp(pos, "://", 3)) {
-        return cur;
-    }
     scheme->data = cur;
-    scheme->lens = size;
+    scheme->lens = pos - cur;
     return pos + 3;
 }
 static inline void _split(buf_ctx *buf1, buf_ctx *buf2, char *cur, size_t lens) {
