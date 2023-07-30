@@ -89,7 +89,7 @@ static inline void _push_message(task_ctx *task, message_ctx *msg) {
         _worker_wakeup(&task->srey->worker[task->index], task->name, 1);
     }
 }
-static inline void _add_active_tasks(arr_task *arractive, name_t name) {
+static inline void _add_active_tasks(arr_task_ctx *arractive, name_t name) {
     size_t n = arr_task_size(arractive);
     for (size_t i = 0; i < n; i++) {
         if (name == *arr_task_at(arractive, i)) {
@@ -98,7 +98,7 @@ static inline void _add_active_tasks(arr_task *arractive, name_t name) {
     }
     arr_task_push_back(arractive, &name);
 }
-static inline void _reset_cpu_cost(srey_ctx *ctx, arr_task *arractive) {
+static inline void _reset_cpu_cost(srey_ctx *ctx, arr_task_ctx *arractive) {
     size_t n = arr_task_size(arractive);
     task_ctx *task;
     for (size_t i = 0; i < n; i++) {
@@ -110,7 +110,7 @@ static inline void _reset_cpu_cost(srey_ctx *ctx, arr_task *arractive) {
     }
 }
 //标记要移出的空闲任务
-static inline void _adjustment_task(srey_ctx *ctx, worker_ctx *worker, arr_task *arractive) {
+static inline void _adjustment_task(srey_ctx *ctx, worker_ctx *worker, arr_task_ctx *arractive) {
     size_t n = arr_task_size(arractive);
     if (n < 2) {
         _reset_cpu_cost(ctx, arractive);
@@ -162,7 +162,7 @@ static inline void _adjustment_task(srey_ctx *ctx, worker_ctx *worker, arr_task 
     min_task->index = worker->toindex;
     srey_task_ungrab(min_task);  
 }
-static inline void _adjustment(srey_ctx *ctx, worker_ctx *worker, arr_task *arractive) {
+static inline void _adjustment(srey_ctx *ctx, worker_ctx *worker, arr_task_ctx *arractive) {
     if (INVALID_INDEX != worker->toindex) {
         _adjustment_task(ctx, worker, arractive);
         worker->toindex = INVALID_INDEX;
@@ -243,7 +243,7 @@ static inline void _dispatch_message(srey_ctx *ctx, worker_ctx *worker, worker_v
     }
 }
 static inline void _task_run(srey_ctx *ctx, worker_ctx *worker, worker_version *version,
-    arr_task *arractive, task_msg_arg *msgarg) {
+    arr_task_ctx *arractive, task_msg_arg *msgarg) {
     //执行调整
     if (worker->index != msgarg->task->index) {
         _worker_wakeup(&ctx->worker[msgarg->task->index], msgarg->task->name, 1);
@@ -277,7 +277,7 @@ static void _loop_worker(void *arg) {
     srey_ctx *ctx = worker->srey;
     worker_version *version = &ctx->monitor.version[worker->index];
     task_msg_arg msgarg;
-    arr_task arractive;
+    arr_task_ctx arractive;
     arr_task_init(&arractive, ONEK);
     while (0 == ctx->stop) {
         //从队列取一任务

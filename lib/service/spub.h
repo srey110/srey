@@ -14,7 +14,7 @@
 
 #define INVALID_TNAME         0
 #define RPC_NAME_LENS         64
-#define SIGN_KEY_LENS         256
+#define SIGN_KEY_LENS         128
 #define RECORD_WORKER_LOAD    0
 struct coro_ctx;
 typedef struct srey_ctx srey_ctx;
@@ -107,7 +107,7 @@ typedef struct worker_ctx {
     pthread_t thread;
     mutex_ctx mutex;
     cond_ctx cond;
-    qu_task qutasks;
+    qu_task_ctx qutasks;
     timer_ctx timer;
 }worker_ctx;
 
@@ -117,7 +117,7 @@ struct srey_ctx {
     atomic_t index;
     worker_ctx *worker;
 #if WITH_SSL
-    arr_certs arrcerts;
+    arr_certs_ctx arrcerts;
     rwlock_ctx lckcerts;
 #endif
     struct hashmap *maptasks;
@@ -149,9 +149,9 @@ struct task_ctx {
     struct coro_ctx *coro;
     struct hashmap *maprpc;
     spin_ctx spin_msg;
-    qu_message qumsg;
-    qu_message qutmo;
-    qu_ptr qutmoarg;
+    qu_message_ctx qumsg;
+    qu_message_ctx qutmo;
+    qu_ptr_ctx qutmoarg;
     task_run _request[REQ_TYPE_CNT];
     task_run _run[MSG_TYPE_ALL];
 };

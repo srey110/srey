@@ -2,12 +2,11 @@ local sutils = require("srey.utils")
 local core = require("lib.core")
 local syn = require("lib.synsl")
 local hstatus = require("lib.http_status")
-local crypto = require("lib.crypto")
+local algo = require("lib.algo")
 local json = require("cjson")
 local table = table
 local string = string
 local http_ver = "1.1"
-local sha1 = nil
 local http = {}
 
 --[[
@@ -171,7 +170,7 @@ end
     nil 失败 
 --]]
 function http.get(fd, skid, url, headers, ckfunc)
-    local fline = string.format("GET %s HTTP/%s\r\n", crypto.url_encode(url or "/"), http_ver)
+    local fline = string.format("GET %s HTTP/%s\r\n", algo.url_encode(url or "/"), http_ver)
     return http.http_msg(false, fd, skid, fline, headers, ckfunc)
 end
 --[[
@@ -189,7 +188,7 @@ end
     nil 失败 
 --]]
 function http.post(fd, skid, url, headers, ckfunc, info, ...)
-    local fline = string.format("POST %s HTTP/%s\r\n", crypto.url_encode(url or "/"), http_ver)
+    local fline = string.format("POST %s HTTP/%s\r\n", algo.url_encode(url or "/"), http_ver)
     return http.http_msg(false, fd, skid, fline, headers, ckfunc, info, ...)
 end
 --[[
@@ -231,7 +230,7 @@ function http.upgrade_websock(hpack)
     if not val then
         return nil
     end
-    return crypto.sha1_b64(string.format("%s258EAFA5-E914-47DA-95CA-C5AB0DC85B11", val))
+    return algo.sha1_b64(string.format("%s258EAFA5-E914-47DA-95CA-C5AB0DC85B11", val))
 end
 --[[
 描述:向客户端返回握手成功,并切换socket对应的协议解析

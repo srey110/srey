@@ -4,7 +4,7 @@
 #include "ds/queue.h"
 
 typedef struct skpool_ctx {
-    qu_ptr pool;
+    qu_ptr_ctx pool;
 }skpool_ctx;
 
 struct sock_ctx * _new_sk(SOCKET fd, struct cbs_ctx *cbs, struct ud_cxt *ud);

@@ -8,7 +8,7 @@ typedef enum ud_type {
     UD_SESS
 }ud_type;
 
-void _bufs_clear(qu_off_buf *bufs) {
+void _bufs_clear(qu_off_buf_ctx *bufs) {
     off_buf_ctx *buf;
     while (NULL != (buf = qu_off_buf_pop(bufs))) {
         FREE(buf->data);
@@ -146,7 +146,7 @@ int32_t _sock_read(SOCKET fd, IOV_TYPE *iov, uint32_t niov, void *arg, size_t *r
     return _sock_read_normal(fd, iov, niov, readed);
 #endif
 }
-static inline uint32_t _bufs_fill_iov(qu_off_buf *buf_s, size_t bufsize, IOV_TYPE iov[MAX_SEND_NIOV]) {
+static inline uint32_t _bufs_fill_iov(qu_off_buf_ctx *buf_s, size_t bufsize, IOV_TYPE iov[MAX_SEND_NIOV]) {
     if (bufsize > MAX_SEND_NIOV) {
         bufsize = MAX_SEND_NIOV;
     }
@@ -165,7 +165,7 @@ static inline uint32_t _bufs_fill_iov(qu_off_buf *buf_s, size_t bufsize, IOV_TYP
     }
     return cnt;
 }
-static inline void _bufs_size_del(qu_off_buf *buf_s, size_t len) {
+static inline void _bufs_size_del(qu_off_buf_ctx *buf_s, size_t len) {
     if (0 == len) {
         return;
     }
@@ -214,7 +214,7 @@ static inline int32_t _sock_send_iov(SOCKET fd, IOV_TYPE *iov, uint32_t niov, si
     return ERR_OK;
 #endif
 }
-static inline int32_t _sock_send_normal(SOCKET fd, qu_off_buf *buf_s, size_t *nsend) {
+static inline int32_t _sock_send_normal(SOCKET fd, qu_off_buf_ctx *buf_s, size_t *nsend) {
     int32_t rtn = ERR_OK;
     size_t size;
     uint32_t niov;
@@ -232,7 +232,7 @@ static inline int32_t _sock_send_normal(SOCKET fd, qu_off_buf *buf_s, size_t *ns
     return rtn;
 }
 #if WITH_SSL
-static inline int32_t _sock_send_ssl(SSL *ssl, qu_off_buf *buf_s, size_t *nsend) {
+static inline int32_t _sock_send_ssl(SSL *ssl, qu_off_buf_ctx *buf_s, size_t *nsend) {
     int32_t rtn = ERR_OK;
     size_t sended;
     off_buf_ctx *buf;
@@ -259,7 +259,7 @@ static inline int32_t _sock_send_ssl(SSL *ssl, qu_off_buf *buf_s, size_t *nsend)
     return rtn;
 }
 #endif
-int32_t _sock_send(SOCKET fd, qu_off_buf *buf_s, size_t *nsend, void *arg) {
+int32_t _sock_send(SOCKET fd, qu_off_buf_ctx *buf_s, size_t *nsend, void *arg) {
     *nsend = 0;
 #if WITH_SSL
     if (NULL == arg) {

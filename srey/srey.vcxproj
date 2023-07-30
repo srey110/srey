@@ -157,7 +157,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="ltasks\lcrypto.c" />
+    <ClCompile Include="ltasks\lalgo.c" />
     <ClCompile Include="ltasks\lreg.c" />
     <ClCompile Include="ltasks\ltask.c" />
     <ClCompile Include="main.c" />

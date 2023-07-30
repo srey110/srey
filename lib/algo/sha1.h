@@ -1,7 +1,7 @@
 #ifndef SHA1_H_
 #define SHA1_H_
 
-#include "crypto/crypto.h"
+#include "algo/algo.h"
 
 #define SHA1_BLOCK_SIZE 20
 

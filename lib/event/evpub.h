@@ -24,7 +24,7 @@ typedef struct ev_ctx {
     struct acceptex_ctx *acpex;
 #endif
     struct watcher_ctx *watcher;
-    arr_ptr arrlsn;
+    arr_ptr_ctx arrlsn;
     spin_ctx spin;
 }ev_ctx;
 struct evssl_ctx;
@@ -51,14 +51,14 @@ typedef struct cbs_ctx {
 QUEUE_DECL(off_buf_ctx, qu_off_buf);
 
 //¹«¹²º¯Êý
-void _bufs_clear(qu_off_buf *bufs);
+void _bufs_clear(qu_off_buf_ctx *bufs);
 int32_t _set_sockops(SOCKET fd);
 //SOCK_DGRAM  SOCK_STREAM  AF_INET  AF_INET6
 SOCKET _create_sock(int32_t type, int32_t family);
 SOCKET _listen(netaddr_ctx *addr);
 SOCKET _udp(netaddr_ctx *addr);
 int32_t _sock_read(SOCKET fd, IOV_TYPE *iov, uint32_t niov, void *arg, size_t *readed);
-int32_t _sock_send(SOCKET fd, qu_off_buf *buf_s, size_t *nsend, void *arg);
+int32_t _sock_send(SOCKET fd, qu_off_buf_ctx *buf_s, size_t *nsend, void *arg);
 void _ev_set_ud(ev_ctx *ctx, SOCKET fd, uint64_t skid, int32_t type, uint64_t val);
 void _set_ud(ud_cxt *ud, int32_t type, uint64_t val);
 

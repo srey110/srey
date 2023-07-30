@@ -1,8 +1,7 @@
 #include "service/srpc.h"
 #include "service/srey.h"
 #include "service/synsl.h"
-#include "crypto/sha256.h"
-#include "crypto/md5.h"
+#include "algo/hmac.h"
 #include "proto/http.h"
 #include "cjson/cJSON.h"
 #include "ds/hashmap.h"
@@ -214,30 +213,25 @@ static inline void _net_rpc_sign(buffer_ctx *buf, const char *url, const char *j
     }
     char tms[64];
     SNPRINTF(tms, sizeof(tms) - 1, "%"PRIu64, nowsec());
-    size_t lens = strlen(url) + strlen(jreq) + strlen(tms) + klens + 1;
+    size_t lens = strlen(url) + strlen(jreq) + strlen(tms) + 1;
     char *sbuf;
     MALLOC(sbuf, lens);
-    SNPRINTF(sbuf, lens, "%s%s%s%s", url, jreq, tms, key);
+    SNPRINTF(sbuf, lens, "%s%s%s", url, jreq, tms);
 
-    sha256_ctx sha256;
-    unsigned char sh[SHA256_BLOCK_SIZE];
-    sha256_init(&sha256);
-    sha256_update(&sha256, (unsigned char*)sbuf, lens - 1);
-    sha256_final(&sha256, sh);
+    hmac_sha256_ctx macsha256;
+    unsigned char hs[SHA256_BLOCK_SIZE];
+    char hexhs[HEX_ENSIZE(sizeof(hs))];
+    hmac_sha256_key(&macsha256, (unsigned char *)key, klens);
+    hmac_sha256_init(&macsha256);
+    hmac_sha256_update(&macsha256, (unsigned char *)sbuf, lens - 1);
+    hmac_sha256_final(&macsha256, hs);
+    tohex(hs, sizeof(hs), hexhs);
     FREE(sbuf);
 
-    md5_ctx md5;
-    unsigned char md[MD5_BLOCK_SIZE];
-    md5_init(&md5);
-    md5_update(&md5, sh, sizeof(sh));
-    md5_final(&md5, md);
-
-    char hex[HEX_ENSIZE(sizeof(md))];
-    tohex(md, sizeof(md), hex);
     http_pack_head(buf, "X-Timestamp", tms);
-    http_pack_head(buf, "Authorization", hex);
+    http_pack_head(buf, "Authorization", hexhs);
 }
-void rpc_net_call(task_ctx *task, name_t dst, SOCKET fd, uint64_t skid,
+void rpc_net_call(task_ctx *task, name_t dst, SOCKET fd, uint64_t skid, const char *key,
     const char *method, const char *fomat, ...) {
     va_list args;
     va_start(args, fomat);
@@ -254,7 +248,7 @@ void rpc_net_call(task_ctx *task, name_t dst, SOCKET fd, uint64_t skid,
     http_pack_head(&buf, "Server", "Srey");
     http_pack_head(&buf, "Connection", "Keep-Alive");
     http_pack_head(&buf, "Content-Type", "application/json");
-    _net_rpc_sign(&buf, url, jreq, task->srey->key);
+    _net_rpc_sign(&buf, url, jreq, key);
     http_pack_content(&buf, jreq, strlen(jreq));
     FREE(jreq);
     size_t lens = buffer_size(&buf);
@@ -263,7 +257,7 @@ void rpc_net_call(task_ctx *task, name_t dst, SOCKET fd, uint64_t skid,
     ev_send(&task->srey->netev, fd, skid, jreq, lens, 0);
     buffer_free(&buf);
 }
-void *rpc_net_request(task_ctx *task, name_t dst, SOCKET fd, uint64_t skid,
+void *rpc_net_request(task_ctx *task, name_t dst, SOCKET fd, uint64_t skid, const char *key,
     size_t *lens, const char *method, const char *fomat, ...) {
     va_list args;
     va_start(args, fomat);
@@ -279,7 +273,7 @@ void *rpc_net_request(task_ctx *task, name_t dst, SOCKET fd, uint64_t skid,
     http_pack_req(&buf, "POST", url);
     http_pack_head(&buf, "Server", "Srey");
     http_pack_head(&buf, "Connection", "Keep-Alive");
-    _net_rpc_sign(&buf, url, jreq, task->srey->key);
+    _net_rpc_sign(&buf, url, jreq, key);
     http_pack_head(&buf, "Content-Type", "application/json");
     http_pack_content(&buf, jreq, strlen(jreq));
     FREE(jreq);

@@ -41,7 +41,7 @@ typedef struct overlap_tcp_ctx {
     uint64_t skid;
     IOV_TYPE wsabuf;
     buffer_ctx buf_r;
-    qu_off_buf buf_s;
+    qu_off_buf_ctx buf_s;
     cbs_ctx cbs;
     ud_cxt ud;
 }overlap_tcp_ctx;
@@ -57,7 +57,7 @@ typedef struct overlap_udp_ctx {
     cbs_ctx cbs;
     IOV_TYPE wsabuf_s;
     IOV_TYPE wsabuf_r;
-    qu_off_buf buf_s;
+    qu_off_buf_ctx buf_s;
     netaddr_ctx addr;
     ud_cxt ud;
     char buf[MAX_RECVFROM_SIZE];

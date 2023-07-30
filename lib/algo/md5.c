@@ -1,4 +1,4 @@
-#include "crypto/md5.h"
+#include "algo/md5.h"
 #include <stdlib.h>
 #include <memory.h>
 
@@ -109,7 +109,7 @@ void md5_update(md5_ctx *ctx, const unsigned char *data, size_t len) {
     for (i = 0; i < len; ++i) {
         ctx->data[ctx->datalen] = data[i];
         ctx->datalen++;
-        if (ctx->datalen == 64) {
+        if (64 == ctx->datalen) {
             _transform(ctx, ctx->data);
             ctx->bitlen += 512;
             ctx->datalen = 0;

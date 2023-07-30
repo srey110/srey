@@ -26,14 +26,14 @@ static int32_t _lreg_remoteaddr(lua_State *lua) {
     netaddr_ctx addr;
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     if (-1 == fd) {
-        return 0;
+        return luaL_error(lua, "INVALID_SOCK.");
     }
     if (ERR_OK != netaddr_remote(&addr, fd)) {
-        return 0;
+        return luaL_error(lua, "netaddr_remote failed.");
     }
     char ip[IP_LENS];
     if (ERR_OK != netaddr_ip(&addr, ip)) {
-        return 0;
+        return luaL_error(lua, "netaddr_ip failed.");
     }
     uint16_t port = netaddr_port(&addr);
     lua_pushstring(lua, ip);
@@ -166,7 +166,7 @@ static int32_t _lreg_evssl_new(lua_State *lua) {
     evssl_ctx *ssl = evssl_new(capath, certpath, keypath, keytype, verify);
     if (ERR_OK != srey_ssl_register(srey, name, ssl)) {
         evssl_free(ssl);
-        return 0;
+        return luaL_error(lua, "srey_ssl_register failed.");
     }
     lua_pushlightuserdata(lua, ssl);
     return 1;
@@ -192,7 +192,7 @@ static int32_t _lreg_evssl_p12new(lua_State *lua) {
     evssl_ctx *ssl = evssl_p12_new(p12path, pwd, verify);
     if (ERR_OK != srey_ssl_register(srey, name, ssl)) {
         evssl_free(ssl);
-        return 0;
+        return luaL_error(lua, "srey_ssl_register failed.");
     }
     lua_pushlightuserdata(lua, ssl);
     return 1;
@@ -361,7 +361,7 @@ static int32_t _lreg_listen(lua_State *lua) {
     int32_t sendev = (int32_t)luaL_checkinteger(lua, 6);
     uint64_t id;
     if (ERR_OK != srey_listen(task, ptype, evssl, ip, port, sendev, &id)) {
-        return 0;
+        return luaL_error(lua, "srey_listen failed.");
     }
     lua_pushinteger(lua, id);
     return 1;
@@ -378,8 +378,7 @@ static int32_t _lreg_udp(lua_State *lua) {
     uint64_t skid;
     SOCKET fd = srey_udp(task, ip, port, &skid);
     if (INVALID_SOCK == fd) {
-        lua_pushinteger(lua, -1);
-        return 1;
+        return luaL_error(lua, "INVALID_SOCK.");
     }
     lua_pushinteger(lua, fd);
     lua_pushinteger(lua, skid);

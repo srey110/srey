@@ -44,7 +44,7 @@ done < `pwd`/lib/config.h
 echo "WITH_LUA:"$withlua
 echo "WITH_SSL:"$withssl
 #文件夹
-Dir="lib lib/cjson lib/crypto lib/ds lib/event lib/proto lib/service lib/thread"
+Dir="lib lib/algo lib/cjson lib/ds lib/event lib/proto lib/service lib/thread"
 if [ $withlua -eq 1 ]
 then
     Dir=$Dir" lualib lualib/lua lualib/luacjson lualib/msgpack lualib/pb"
@@ -123,6 +123,14 @@ CFLAGS="-Wall -O2"
 if [ "$X64" = "x64" ]
 then
     CFLAGS=$CFLAGS" -m64"
+fi
+if [ "$OSNAME" == "Darwin" ]
+then
+    CFLAGS=$CFLAGS" -Wno-unused-function"
+fi
+if [ "$OSNAME" == "AIX" ]
+then
+    CFLAGS=$CFLAGS" -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast"
 fi
 LIBDIR=$Dir
 Clean()

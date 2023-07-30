@@ -1,4 +1,4 @@
-#include "crypto/xor.h"
+#include "algo/xor.h"
 
 char *xor_encode(const char key[4], const size_t round, char *buf, const size_t len) {
     for (size_t i = 0; i < round; i++) {

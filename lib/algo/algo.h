@@ -1,8 +1,8 @@
-#ifndef CRYPTO_H_
-#define CRYPTO_H_
+#ifndef ALGO_H_
+#define ALGO_H_
 
 #include "macro.h"
 
 typedef unsigned int  word_t;// 32-bit word, change to "long" for 16-bit machines
 
-#endif//CRYPTO_H_
+#endif//ALGO_H_

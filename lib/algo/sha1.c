@@ -1,4 +1,4 @@
-#include "crypto/sha1.h"
+#include "algo/sha1.h"
 
 #define ROTLEFT(a, b) ((a << b) | (a >> (32 - b)))
 
@@ -71,7 +71,7 @@ void sha1_update(sha1_ctx *ctx, const unsigned char *data, size_t len) {
     for (i = 0; i < len; ++i) {
         ctx->data[ctx->datalen] = data[i];
         ctx->datalen++;
-        if (ctx->datalen == 64) {
+        if (64 == ctx->datalen) {
             _transform(ctx, ctx->data);
             ctx->bitlen += 512;
             ctx->datalen = 0;

@@ -1,6 +1,6 @@
 #include "proto/http.h"
 #include "proto/protos.h"
-#include "crypto/urlraw.h"
+#include "algo/urlraw.h"
 #include "utils.h"
 #include "ds/sarray.h"
 
@@ -15,7 +15,7 @@ typedef struct http_pack_ctx {
     buf_ctx head;
     buf_ctx data;
     buf_ctx status[3];
-    arr_header header;
+    arr_header_ctx header;
 }http_pack_ctx;
 
 #define MAX_HEADLENS ONEK * 4

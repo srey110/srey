@@ -19,17 +19,19 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="algo\algo.h" />
+    <ClInclude Include="algo\base64.h" />
+    <ClInclude Include="algo\crc.h" />
+    <ClInclude Include="algo\hash_ring.h" />
+    <ClInclude Include="algo\hmac.h" />
+    <ClInclude Include="algo\md5.h" />
+    <ClInclude Include="algo\sha1.h" />
+    <ClInclude Include="algo\sha256.h" />
+    <ClInclude Include="algo\urlraw.h" />
+    <ClInclude Include="algo\xor.h" />
     <ClInclude Include="buffer.h" />
     <ClInclude Include="cjson\cJSON.h" />
     <ClInclude Include="config.h" />
-    <ClInclude Include="crypto\base64.h" />
-    <ClInclude Include="crypto\crc.h" />
-    <ClInclude Include="crypto\crypto.h" />
-    <ClInclude Include="crypto\md5.h" />
-    <ClInclude Include="crypto\sha1.h" />
-    <ClInclude Include="crypto\sha256.h" />
-    <ClInclude Include="crypto\urlraw.h" />
-    <ClInclude Include="crypto\xor.h" />
     <ClInclude Include="ds\hashmap.h" />
     <ClInclude Include="ds\queue.h" />
     <ClInclude Include="ds\sarray.h" />
@@ -73,15 +75,16 @@
     <ClInclude Include="utils.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="algo\base64.c" />
+    <ClCompile Include="algo\crc.c" />
+    <ClCompile Include="algo\hash_ring.c" />
+    <ClCompile Include="algo\md5.c" />
+    <ClCompile Include="algo\sha1.c" />
+    <ClCompile Include="algo\sha256.c" />
+    <ClCompile Include="algo\urlraw.c" />
+    <ClCompile Include="algo\xor.c" />
     <ClCompile Include="buffer.c" />
     <ClCompile Include="cjson\cJSON.c" />
-    <ClCompile Include="crypto\base64.c" />
-    <ClCompile Include="crypto\crc.c" />
-    <ClCompile Include="crypto\md5.c" />
-    <ClCompile Include="crypto\sha1.c" />
-    <ClCompile Include="crypto\sha256.c" />
-    <ClCompile Include="crypto\urlraw.c" />
-    <ClCompile Include="crypto\xor.c" />
     <ClCompile Include="ds\hashmap.c" />
     <ClCompile Include="event\event.c" />
     <ClCompile Include="event\evssl.c" />

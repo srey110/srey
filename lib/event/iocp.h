@@ -40,7 +40,7 @@ typedef struct overlap_cmd_ctx {
     DWORD bytes;
     DWORD flag;
     SOCKET fd;
-    qu_cmd qu;
+    qu_cmd_ctx qu;
     spin_ctx spin;
     IOV_TYPE wsabuf;
 }overlap_cmd_ctx;

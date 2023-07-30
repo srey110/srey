@@ -87,8 +87,8 @@ static void _call_request(task_ctx *task) {
     uint64_t skid;
     SOCKET fd = syn_connect(task, PACK_HTTP, NULL, "127.0.0.1", 8080, 0, &skid);
     if (INVALID_SOCK != fd) {
-        rpc_net_call(task, TEST_TIMEOUT, fd, skid, "test_void", "");
-        char *resp = rpc_net_request(task, TEST_TIMEOUT, fd, skid, &lens, "test_add", "ii", 11, 12);
+        rpc_net_call(task, TEST_TIMEOUT, fd, skid, task->srey->key, "test_void", "");
+        char *resp = rpc_net_request(task, TEST_TIMEOUT, fd, skid, task->srey->key, &lens, "test_add", "ii", 11, 12);
         if (NULL == resp
             || 4 != lens
             || 0 != memcmp(resp, "[23]", lens)) {

@@ -22,7 +22,7 @@ typedef struct coro_sess {
 typedef struct coro_ctx {
     mco_coro *curco;
     struct hashmap *mapco;
-    qu_ptr qucopool;
+    qu_ptr_ctx qucopool;
 }coro_ctx;
 static mco_desc _coro_desc;
 

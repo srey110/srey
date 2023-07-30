@@ -32,7 +32,7 @@ typedef struct tcp_ctx {
 #endif
     uint64_t skid;
     buffer_ctx buf_r;
-    qu_off_buf buf_s;
+    qu_off_buf_ctx buf_s;
     cbs_ctx cbs;
     ud_cxt ud;
 }tcp_ctx;
@@ -43,7 +43,7 @@ typedef struct udp_ctx {
     cbs_ctx cbs;
     IOV_TYPE buf_r;
     struct msghdr msg;
-    qu_off_buf buf_s;
+    qu_off_buf_ctx buf_s;
     netaddr_ctx addr;
     ud_cxt ud;
     char buf[MAX_RECVFROM_SIZE];

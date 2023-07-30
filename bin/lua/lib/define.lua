@@ -74,6 +74,14 @@ LOG_LV = {
     INFO = 0x03,
     DEBUG = 0x04
 }
+HASH_RING_FUNC = {
+    SHA1 = 0x01,
+    MD5 = 0x02
+}
+HASH_RING_MODE = {
+    NORMAL = 0x01,
+    COMPAT = 0x02 --HASH_RING_FUNC必须为 MD5
+}
 --ssl文件类型
 SSLFILE_TYPE = {
     PEM = 0x01,

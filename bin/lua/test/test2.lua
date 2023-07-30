@@ -67,8 +67,8 @@ local function test_request()
 
     local fd, skid = syn.connect("127.0.0.1", 8080, PACK_TYPE.HTTP, nil, 0)
     if INVALID_SOCK ~= fd then
-        rpc.net_call(TASK_NAME.TEST1, fd, skid, "rpc_void")
-        ok, sum = rpc.net_request(TASK_NAME.TEST1, fd, skid, "rpc_add", 9, 10)
+        rpc.net_call(TASK_NAME.TEST1, fd, skid, rpc.sign_key(), "rpc_void")
+        ok, sum = rpc.net_request(TASK_NAME.TEST1, fd, skid, rpc.sign_key(), "rpc_add", 9, 10)
          if not ok or 19 ~= sum then
             printd("net_request c_add error")
         end

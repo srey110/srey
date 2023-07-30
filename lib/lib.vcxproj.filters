@@ -28,11 +28,11 @@
     <Filter Include="utils\cjson">
       <UniqueIdentifier>{ea3d6e8d-1afa-4288-8fba-edbe2cd27e12}</UniqueIdentifier>
     </Filter>
-    <Filter Include="crypto">
-      <UniqueIdentifier>{8d0f8248-4127-4be8-93c0-282ff58b790f}</UniqueIdentifier>
-    </Filter>
     <Filter Include="ds">
       <UniqueIdentifier>{9243310e-d6f4-44b1-bd17-bada164a1c0d}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="algo">
+      <UniqueIdentifier>{b8309848-77b2-4ec6-9bc0-a234857c1244}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
@@ -139,30 +139,6 @@
     <ClInclude Include="proto\urlparse.h">
       <Filter>proto</Filter>
     </ClInclude>
-    <ClInclude Include="crypto\md5.h">
-      <Filter>crypto</Filter>
-    </ClInclude>
-    <ClInclude Include="crypto\sha1.h">
-      <Filter>crypto</Filter>
-    </ClInclude>
-    <ClInclude Include="crypto\sha256.h">
-      <Filter>crypto</Filter>
-    </ClInclude>
-    <ClInclude Include="crypto\base64.h">
-      <Filter>crypto</Filter>
-    </ClInclude>
-    <ClInclude Include="crypto\crc.h">
-      <Filter>crypto</Filter>
-    </ClInclude>
-    <ClInclude Include="crypto\xor.h">
-      <Filter>crypto</Filter>
-    </ClInclude>
-    <ClInclude Include="crypto\urlraw.h">
-      <Filter>crypto</Filter>
-    </ClInclude>
-    <ClInclude Include="crypto\crypto.h">
-      <Filter>crypto</Filter>
-    </ClInclude>
     <ClInclude Include="service\minicoro.h">
       <Filter>service</Filter>
     </ClInclude>
@@ -189,6 +165,36 @@
     </ClInclude>
     <ClInclude Include="ds\sarray.h">
       <Filter>ds</Filter>
+    </ClInclude>
+    <ClInclude Include="algo\algo.h">
+      <Filter>algo</Filter>
+    </ClInclude>
+    <ClInclude Include="algo\base64.h">
+      <Filter>algo</Filter>
+    </ClInclude>
+    <ClInclude Include="algo\crc.h">
+      <Filter>algo</Filter>
+    </ClInclude>
+    <ClInclude Include="algo\hash_ring.h">
+      <Filter>algo</Filter>
+    </ClInclude>
+    <ClInclude Include="algo\md5.h">
+      <Filter>algo</Filter>
+    </ClInclude>
+    <ClInclude Include="algo\sha1.h">
+      <Filter>algo</Filter>
+    </ClInclude>
+    <ClInclude Include="algo\sha256.h">
+      <Filter>algo</Filter>
+    </ClInclude>
+    <ClInclude Include="algo\urlraw.h">
+      <Filter>algo</Filter>
+    </ClInclude>
+    <ClInclude Include="algo\xor.h">
+      <Filter>algo</Filter>
+    </ClInclude>
+    <ClInclude Include="algo\hmac.h">
+      <Filter>algo</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -276,32 +282,35 @@
     <ClCompile Include="proto\urlparse.c">
       <Filter>proto</Filter>
     </ClCompile>
-    <ClCompile Include="crypto\md5.c">
-      <Filter>crypto</Filter>
-    </ClCompile>
-    <ClCompile Include="crypto\sha1.c">
-      <Filter>crypto</Filter>
-    </ClCompile>
-    <ClCompile Include="crypto\sha256.c">
-      <Filter>crypto</Filter>
-    </ClCompile>
-    <ClCompile Include="crypto\base64.c">
-      <Filter>crypto</Filter>
-    </ClCompile>
-    <ClCompile Include="crypto\crc.c">
-      <Filter>crypto</Filter>
-    </ClCompile>
-    <ClCompile Include="crypto\xor.c">
-      <Filter>crypto</Filter>
-    </ClCompile>
-    <ClCompile Include="crypto\urlraw.c">
-      <Filter>crypto</Filter>
-    </ClCompile>
     <ClCompile Include="thread\thread.c">
       <Filter>thread</Filter>
     </ClCompile>
     <ClCompile Include="ds\hashmap.c">
       <Filter>ds</Filter>
+    </ClCompile>
+    <ClCompile Include="algo\base64.c">
+      <Filter>algo</Filter>
+    </ClCompile>
+    <ClCompile Include="algo\crc.c">
+      <Filter>algo</Filter>
+    </ClCompile>
+    <ClCompile Include="algo\hash_ring.c">
+      <Filter>algo</Filter>
+    </ClCompile>
+    <ClCompile Include="algo\md5.c">
+      <Filter>algo</Filter>
+    </ClCompile>
+    <ClCompile Include="algo\sha1.c">
+      <Filter>algo</Filter>
+    </ClCompile>
+    <ClCompile Include="algo\sha256.c">
+      <Filter>algo</Filter>
+    </ClCompile>
+    <ClCompile Include="algo\urlraw.c">
+      <Filter>algo</Filter>
+    </ClCompile>
+    <ClCompile Include="algo\xor.c">
+      <Filter>algo</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

@@ -1,7 +1,7 @@
 #ifndef MD5_H_
 #define MD5_H_
 
-#include "crypto/crypto.h"
+#include "algo/algo.h"
 
 #define MD5_BLOCK_SIZE 16
 

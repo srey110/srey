@@ -3,10 +3,10 @@
 #include "service/synsl.h"
 #include "proto/urlparse.h"
 #include "proto/http.h"
-#include "crypto/sha256.h"
-#include "crypto/md5.h"
+#include "algo/hmac.h"
 
 static uint64_t lsnid = 0;
+static hmac_sha256_ctx macsha256;
 
 static void _harbor_closing(task_ctx *harbor, message_ctx *msg) {
     if (0 != lsnid) {
@@ -49,7 +49,6 @@ static int32_t _check_sign(struct http_pack_ctx *pack, buf_ctx *url, char *jreq,
         LOG_WARN("not find authorization head.");
         return ERR_FAILED;
     }
-
     uint64_t tms = (uint64_t)atoll(tbuf);
     uint64_t tnow = nowsec();
     int32_t diff;
@@ -64,7 +63,7 @@ static int32_t _check_sign(struct http_pack_ctx *pack, buf_ctx *url, char *jreq,
     }
 
     size_t off = 0;
-    size_t total = url->lens + jlens + tlens + klens + 1;
+    size_t total = url->lens + jlens + tlens + 1;
     char *signstr;
     MALLOC(signstr, total);
     memcpy(signstr + off, url->data, url->lens);
@@ -73,27 +72,18 @@ static int32_t _check_sign(struct http_pack_ctx *pack, buf_ctx *url, char *jreq,
     off += jlens;
     memcpy(signstr + off, tbuf, tlens);
     off += tlens;
-    memcpy(signstr + off, key, klens);
-    off += klens;
     signstr[off] = '\0';
 
-    sha256_ctx sha256;
-    unsigned char sh[SHA256_BLOCK_SIZE];
-    sha256_init(&sha256);
-    sha256_update(&sha256, (unsigned char *)signstr, off);
-    sha256_final(&sha256, sh);
+    unsigned char hs[SHA256_BLOCK_SIZE];
+    char hexhs[HEX_ENSIZE(sizeof(hs))];
+    hmac_sha256_init(&macsha256);
+    hmac_sha256_update(&macsha256, (unsigned char *)signstr, off);
+    hmac_sha256_final(&macsha256, hs);
+    tohex(hs, sizeof(hs), hexhs);
     FREE(signstr);
 
-    md5_ctx md5;
-    unsigned char md[MD5_BLOCK_SIZE];
-    md5_init(&md5);
-    md5_update(&md5, sh, sizeof(sh));
-    md5_final(&md5, md);
-
-    char hex[HEX_ENSIZE(sizeof(md))];
-    tohex(md, sizeof(md), hex);
-    if (strlen(hex) != slens
-        || 0 != _memicmp(sign, hex, slens)) {
+    if (strlen(hexhs) != slens
+        || 0 != _memicmp(sign, hexhs, slens)) {
         LOG_WARN("check sign failed.");
         return ERR_FAILED;
     }
@@ -157,6 +147,10 @@ static void _harbor_recv(task_ctx *harbor, message_ctx *msg) {
     }
 }
 int32_t harbor_start(srey_ctx *ctx, name_t tname, name_t ssl, const char *host, uint16_t port) {
+    size_t klens = strlen(ctx->key);
+    if (klens > 0) {
+        hmac_sha256_key(&macsha256, (unsigned char *)ctx->key, klens);
+    }
     task_ctx *harbor = srey_task_new(TTYPE_C, tname, 0, NULL, NULL);
     srey_task_regcb(harbor, MSG_TYPE_RECV, _harbor_recv);
     srey_task_regcb(harbor, MSG_TYPE_CLOSING, _harbor_closing);

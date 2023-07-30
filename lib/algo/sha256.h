@@ -1,7 +1,7 @@
 #ifndef SHA256_H_
 #define SHA256_H_
 
-#include "crypto/crypto.h"
+#include "algo/algo.h"
 
 #define SHA256_BLOCK_SIZE 32
 
