@@ -26,8 +26,6 @@ typedef struct coro_ctx {
 }coro_ctx;
 static mco_desc _coro_desc;
 
-#define COROPOOL_KEEP         8
-#define COROPOOL_NDEL         3
 #define CONNECT_TIMEOUT       3000
 #define NETRD_TIMEOUT         1500
 #define REQUEST_TIMEOUT       1000
