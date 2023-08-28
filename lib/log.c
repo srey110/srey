@@ -32,7 +32,7 @@ static inline void _slog(int32_t lv, const char *fmt, va_list args) {
     char out[4096];
     vsnprintf(out, sizeof(out) - 1, fmt, args);
     if (NULL == _handle) {
-        if (LOGLV_ERROR == lv) {
+        if (lv <= LOGLV_ERROR) {
             fprintf(stderr, LOG_FMT, time, _lvstr(lv), out);
             fflush(stderr);
         } else {
