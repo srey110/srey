@@ -41,9 +41,6 @@ static BOOL _EnablePrivilege(LPCTSTR priv, HANDLE handle, TOKEN_PRIVILEGES *priv
     DWORD dsize = sizeof(TOKEN_PRIVILEGES);
     return AdjustTokenPrivileges(handle, FALSE, &tpriv, dsize, privold, &dsize);
 }
-static void _ResetPrivilege(HANDLE handle, TOKEN_PRIVILEGES *privold) {
-    (void)AdjustTokenPrivileges(handle, FALSE, privold, 0, NULL, NULL);
-}
 static LONG __stdcall _MiniDump(struct _EXCEPTION_POINTERS *excep) {
     char acdmp[PATH_LENS] = { 0 };
     SNPRINTF(acdmp, sizeof(acdmp) - 1, "%s%s%lld_%d.dmp",
@@ -85,7 +82,7 @@ static LONG __stdcall _MiniDump(struct _EXCEPTION_POINTERS *excep) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
     }
     if (bprienabled) {
-        _ResetPrivilege(ptoken, &tprivold);
+        (void)AdjustTokenPrivileges(ptoken, FALSE, &tprivold, 0, NULL, NULL);
     }
     CloseHandle(pdmpfile);
     TerminateProcess(GetCurrentProcess(), 0);
