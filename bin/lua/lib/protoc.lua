@@ -147,7 +147,7 @@ end
 
 function Lexer:full_ident(name, opt)
    self:whitespace()
-   local b, ident, pos = self "^()([%a_][%w_.]*)%s*()"
+   local b, ident, pos = self "^()([%a_.][%w_.]*)%s*()"
    if not ident or ident:match "%.%.+" then
       return self:opterror(opt, (name or 'name')..' expected')
    end
@@ -488,7 +488,7 @@ local function label_field(self, lex, ident, parent)
    if proto3_optional then
       local ot = default(parent, "oneof_decl")
       info.oneof_index = #ot
-      ot[#ot+1] = { name = "optional_" .. info.name }
+      ot[#ot+1] = { name = "_" .. info.name }
    else
       info.label = label
    end
