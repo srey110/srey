@@ -64,6 +64,7 @@
     <ClInclude Include="service\srey.h" />
     <ClInclude Include="service\srpc.h" />
     <ClInclude Include="service\synsl.h" />
+    <ClInclude Include="sfid.h" />
     <ClInclude Include="structs.h" />
     <ClInclude Include="thread\cond.h" />
     <ClInclude Include="thread\mutex.h" />
@@ -109,6 +110,7 @@
     <ClCompile Include="service\srey.c" />
     <ClCompile Include="service\srpc.c" />
     <ClCompile Include="service\synsl.c" />
+    <ClCompile Include="sfid.c" />
     <ClCompile Include="thread\thread.c" />
     <ClCompile Include="timer.c" />
     <ClCompile Include="tw.c" />

@@ -4,6 +4,7 @@
 #include "log.h"
 #include "timer.h"
 #include "tw.h"
+#include "sfid.h"
 #include "buffer.h"
 #include "utils.h"
 #include "netaddr.h"

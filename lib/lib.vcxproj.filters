@@ -196,6 +196,9 @@
     <ClInclude Include="algo\hmac.h">
       <Filter>algo</Filter>
     </ClInclude>
+    <ClInclude Include="sfid.h">
+      <Filter>utils</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="memory.c">
@@ -311,6 +314,9 @@
     </ClCompile>
     <ClCompile Include="algo\xor.c">
       <Filter>algo</Filter>
+    </ClCompile>
+    <ClCompile Include="sfid.c">
+      <Filter>utils</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>
