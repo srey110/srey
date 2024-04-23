@@ -34,7 +34,7 @@ uint64_t sfid_id(sfid_ctx *ctx) {
         spin_lock(ctx->spin);
     }
     while (1) {
-        curms = nowms() -ctx->customepoch;
+        curms = nowms() - ctx->customepoch;
         if (curms < ctx->lasttimestamp) {
             continue;
         } else if (curms == ctx->lasttimestamp) {
