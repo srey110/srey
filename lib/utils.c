@@ -1,4 +1,5 @@
 #include "utils.h"
+#include "strptime.h"
 
 #ifdef OS_WIN
 #pragma warning(disable:4091)
@@ -340,6 +341,12 @@ void timeofday(struct timeval *tv) {
     (void)gettimeofday(tv, NULL);
 #endif
 }
+int32_t timeoffset(void) {
+    time_t now = time(NULL);
+    //系统时间转换为GMT时间 再将GMT时间重新转换为系统时间
+    time_t gt = mktime(gmtime(&now));
+    return ((int32_t)(now - gt) + (localtime(&gt)->tm_isdst ? 3600 : 0)) / 60;
+}
 uint64_t nowms(void) {
     struct timeval tv;
     timeofday(&tv);
@@ -350,19 +357,20 @@ uint64_t nowsec(void) {
     timeofday(&tv);
     return (uint64_t)tv.tv_sec;
 }
-void nowtime(const char *fmt, char time[TIME_LENS]) {
-    struct timeval tv;
-    timeofday(&tv);
-    time_t t = tv.tv_sec;
+void sectostr(uint64_t sec, const char *fmt, char time[TIME_LENS]) {
+    time_t t = (time_t)sec;
     strftime(time, TIME_LENS - 1, fmt, localtime(&t));
 }
-void nowmtime(const char *fmt, char time[TIME_LENS]) {
-    struct timeval tv;
-    timeofday(&tv);
-    time_t t = tv.tv_sec;
+void mstostr(uint64_t ms, const char *fmt, char time[TIME_LENS]) {
+    time_t t = (time_t)(ms / 1000);
     strftime(time, TIME_LENS - 1, fmt, localtime(&t));
     size_t uilen = strlen(time);
-    SNPRINTF(time + uilen, TIME_LENS - uilen - 1, " %03d", (int32_t)(tv.tv_usec / 1000));
+    SNPRINTF(time + uilen, TIME_LENS - uilen - 1, " %03d", (int32_t)(ms % 1000));
+}
+uint64_t strtots(const char *time, const char *fmt) {
+    struct tm dttm;
+    _strptime(time, fmt, &dttm);
+    return (uint64_t)mktime(&dttm);
 }
 void fill_timespec(struct timespec* timeout, uint32_t ms) {
     if (ms >= 1000) {

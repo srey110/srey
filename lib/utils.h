@@ -28,14 +28,19 @@ const char *procpath(void);
 
 //timeofday
 void timeofday(struct timeval *tv);
+//与UTC时差 分钟
+int32_t timeoffset(void);
 //当前时间戳  毫秒
 uint64_t nowms(void);
 //当前时间戳  秒
 uint64_t nowsec(void);
-//格式化输出当前时间戳 秒   %Y-%m-%d %H:%M:%S 
-void nowtime(const char *fmt, char time[TIME_LENS]);
-//格式化输出当前时间戳 毫秒  %Y-%m-%d %H:%M:%S 
-void nowmtime(const char *fmt, char time[TIME_LENS]);
+//格式化输出时间戳 秒   %Y-%m-%d %H:%M:%S 
+void sectostr(uint64_t sec, const char *fmt, char time[TIME_LENS]);
+//格式化输出时间戳 毫秒  %Y-%m-%d %H:%M:%S
+void mstostr(uint64_t ms, const char *fmt, char time[TIME_LENS]);
+//字符串转时间戳 %Y-%m-%d %H:%M:%S 
+uint64_t strtots(const char *time, const char *fmt);
+
 void fill_timespec(struct timespec* timeout, uint32_t ms);
 
 uint64_t hash(const char *buf, size_t len);

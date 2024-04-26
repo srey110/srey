@@ -199,6 +199,9 @@
     <ClInclude Include="sfid.h">
       <Filter>utils</Filter>
     </ClInclude>
+    <ClInclude Include="strptime.h">
+      <Filter>utils</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="memory.c">
@@ -316,6 +319,9 @@
       <Filter>algo</Filter>
     </ClCompile>
     <ClCompile Include="sfid.c">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="strptime.c">
       <Filter>utils</Filter>
     </ClCompile>
   </ItemGroup>

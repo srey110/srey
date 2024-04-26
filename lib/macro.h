@@ -8,7 +8,7 @@
 #include "memory.h"
 
 #define ONEK                 1024
-#define TIME_LENS            64
+#define TIME_LENS            128
 #define IP_LENS              64
 #define PORT_LENS            8
 #define INVALID_FD           -1

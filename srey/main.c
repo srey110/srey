@@ -131,7 +131,7 @@ static void _open_log(const char *fmt) {
     }
     size_t lens = strlen(logfile);
     char time[TIME_LENS] = { 0 };
-    nowtime(fmt, time);
+    sectostr(nowsec(), fmt, time);
     SNPRINTF((char*)logfile + lens, sizeof(logfile) - lens - 1, "%s%s", time, ".log");
     logstream = fopen(logfile, "a");
     if (NULL != logstream) {

@@ -8,7 +8,7 @@ static void test_free_cb(void *arg) {
 static char *test_init_arg() {
     char *arg;
     CALLOC(arg, 1, 1024);
-    nowmtime("%Y-%m-%d %H:%M:%S", arg);
+    mstostr(nowms(), "%Y-%m-%d %H:%M:%S", arg);
     return arg;
 }
 static void _timeout(task_ctx *task, void *arg) {

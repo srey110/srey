@@ -28,7 +28,7 @@ static inline const char *_lvstr(int32_t lv) {
 }
 static inline void _slog(int32_t lv, const char *fmt, va_list args) {
     char time[TIME_LENS] = { 0 };
-    nowmtime("%Y-%m-%d %H:%M:%S", time);
+    mstostr(nowms(), "%Y-%m-%d %H:%M:%S", time);
     char out[4096];
     vsnprintf(out, sizeof(out) - 1, fmt, args);
     if (NULL == _handle) {

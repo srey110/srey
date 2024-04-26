@@ -35,7 +35,7 @@ static void _recv(task_ctx *task, message_ctx *msg) {
             }
             size_t lens;
             char time[TIME_LENS];
-            nowtime("%Y-%m-%d %H:%M:%S ", time);
+            sectostr(nowsec(), "%Y-%m-%d %H:%M:%S ", time);
             char *data = websock_pack_data(msg->data, &lens);
             if (0 == memcmp(data, "ck", strlen("ck"))) {
                 struct _send_ck_arg arg;

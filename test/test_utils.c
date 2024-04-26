@@ -190,16 +190,39 @@ void test_system(CuTest* tc) {
     pos = memstr(1, ptr1, strlen(ptr1), "test1", strlen("test1"));
     CuAssertTrue(tc, pos == NULL);  
 
+    sfid_ctx sfid;
+    sfid_init(&sfid, 101, 0, 0, 0, NULL);
+    uint64_t id = sfid_id(&sfid);
+    PRINT("sfid_id: %"PRIu64"", id);
+    uint64_t timestamp;
+    int32_t machineid;
+    int32_t sequence;
+    sfid_decode(&sfid, id, &timestamp, &machineid, &sequence);  
+    CuAssertTrue(tc, 101 == machineid);
+
+    int32_t tz = timeoffset()/60;
+    PRINT("timeoffset: %d", tz);
     struct timeval tv;
     timeofday(&tv);
     PRINT("timeofday tv_sec: %d tv_usec: %d", (uint32_t)tv.tv_sec, (uint32_t)tv.tv_usec);
     PRINT("nowsec: %"PRIu64"", nowsec());
     PRINT("nowms: %"PRIu64"", nowms());
     char time[TIME_LENS] = { 0 };
-    nowtime("%Y-%m-%d %H:%M:%S", time);
-    PRINT("nowtime: %s", time);
-    nowmtime("%Y-%m-%d %H:%M:%S", time);
+    mstostr(nowms(), "%Y-%m-%d %H:%M:%S", time);
     PRINT("nowmtime: %s", time);
+    timestamp = nowsec();
+    sectostr(timestamp, "%Y-%m-%d %H:%M:%S", time);
+    PRINT("nowtime: %s", time);
+    PRINT("%s", "test strtots");
+    CuAssertTrue(tc, timestamp == strtots(time, "%Y-%m-%d %H:%M:%S"));
+    sectostr(timestamp, "%Y-%m-%d %I:%M:%S %p", time);
+    CuAssertTrue(tc, timestamp == strtots(time, "%Y-%m-%d %I:%M:%S %p"));
+    sectostr(timestamp, "%y%m%d %I:%M:%S %p", time);
+    CuAssertTrue(tc, timestamp == strtots(time, "%y%m%d %I:%M:%S %p"));
+    sectostr(timestamp, "%y%m%d %I:%M:%S %p %Z", time);
+    CuAssertTrue(tc, timestamp == strtots(time, "%y%m%d %I:%M:%S %p %Z"));
+    PRINT("%s", "test strtots end");
+    
     
     const char *str = "this is test.";
     size_t len = strlen(str);

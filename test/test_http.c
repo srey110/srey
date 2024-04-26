@@ -26,7 +26,7 @@ static void _recv(task_ctx *task, message_ctx *msg) {
         http_pack_resp(&buf, 200);
         http_pack_head(&buf, "Server", "Srey");
         char time[TIME_LENS];
-        nowtime("%Y-%m-%d %H:%M:%S ", time);
+        sectostr(nowsec(), "%Y-%m-%d %H:%M:%S ", time);
         http_pack_content(&buf, time, strlen(time));
         http_response(task, msg->fd, msg->skid, &buf, NULL, NULL, NULL);
         buffer_free(&buf);
