@@ -1,7 +1,7 @@
 #include "proto/urlparse.h"
 #include "utils.h"
 
-static inline char *_scheme(buf_ctx *scheme, char *cur, size_t lens) {
+static char *_scheme(buf_ctx *scheme, char *cur, size_t lens) {
     char *pos = memstr(1, cur, lens, "://", 3);
     if (NULL == pos) {
         return cur;
@@ -10,7 +10,7 @@ static inline char *_scheme(buf_ctx *scheme, char *cur, size_t lens) {
     scheme->lens = pos - cur;
     return pos + 3;
 }
-static inline void _split(buf_ctx *buf1, buf_ctx *buf2, char *cur, size_t lens) {
+static void _split(buf_ctx *buf1, buf_ctx *buf2, char *cur, size_t lens) {
     char *pos = memchr(cur, ':', lens);
     if (NULL == pos) {
         buf1->data = cur;
@@ -25,7 +25,7 @@ static inline void _split(buf_ctx *buf1, buf_ctx *buf2, char *cur, size_t lens) 
         buf2->lens = size;
     }
 }
-static inline char *_parse_two(buf_ctx *buf1, buf_ctx *buf2, char *cur, char what, size_t lens) {
+static char *_parse_two(buf_ctx *buf1, buf_ctx *buf2, char *cur, char what, size_t lens) {
     char *pos = memchr(cur, what, lens);
     if (NULL == pos) {
         if ('/' == what) {
@@ -41,7 +41,7 @@ static inline char *_parse_two(buf_ctx *buf1, buf_ctx *buf2, char *cur, char wha
     _split(buf1, buf2, cur, pos - cur);
     return pos + 1;
 }
-static inline char *_path(buf_ctx *path, char *cur, size_t lens) {
+static char *_path(buf_ctx *path, char *cur, size_t lens) {
     char *pos = memchr(cur, '?', lens);
     if (NULL == pos) {
         pos = memchr(cur, '#', lens);
@@ -64,7 +64,7 @@ static inline char *_path(buf_ctx *path, char *cur, size_t lens) {
     path->lens = pos - cur;
     return pos + 1;
 }
-static inline size_t _anchor(buf_ctx *anchor, char *cur, size_t lens) {
+static size_t _anchor(buf_ctx *anchor, char *cur, size_t lens) {
     char *pos = memchr(cur, '#', lens);
     if (NULL == pos) {
         return lens;
@@ -85,7 +85,7 @@ static inline size_t _anchor(buf_ctx *anchor, char *cur, size_t lens) {
     }
     return pos - cur;
 }
-static inline void _param(url_param *param, char *cur, size_t lens) {
+static void _param(url_param *param, char *cur, size_t lens) {
     char *pos;
     char *start = cur;
     url_param *tmp;

@@ -9,7 +9,7 @@ do {\
     _send_cmd(watcher, GET_POS(cmd.fd, watcher->ncmd), &cmd);\
 } while (0)
 
-static inline sock_ctx *_map_get(watcher_ctx *watcher, SOCKET fd) {
+static sock_ctx *_map_get(watcher_ctx *watcher, SOCKET fd) {
     sock_ctx key;
     key.fd = fd;
     sock_ctx *pkey = &key;
@@ -22,7 +22,13 @@ void _send_cmd(watcher_ctx *watcher, uint32_t index, cmd_ctx *cmd) {
     qu_cmd_push(&olcmd->qu, cmd);
     spin_unlock(&olcmd->spin);
     static char trigger[1] = { 's' };
-    ASSERTAB(1 == send(olcmd->fd, trigger, sizeof(trigger), 0), ERRORSTR(ERRNO));
+    int32_t erro;
+    while (0 == watcher->stop
+        && SOCKET_ERROR == send(olcmd->fd, trigger, sizeof(trigger), 0)) {
+        erro = ERRNO;
+        ASSERTAB(IS_EAGAIN(erro), ERRORSTR(erro));
+        USLEEP(0);
+    }
 }
 void _on_cmd_stop(watcher_ctx *watcher, cmd_ctx *cmd) {
     watcher->stop = 1;

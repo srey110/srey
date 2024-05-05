@@ -26,7 +26,7 @@ typedef struct dns_question {
 #define DNS_A    1
 #define DNS_AAAA 28
 
-static inline void _encode_domain(char *qname, const char *domain) {
+static void _encode_domain(char *qname, const char *domain) {
     size_t lock = 0, i, blens;
     char buf[256] = { 0 };
     memcpy(buf, domain, strlen(domain));
@@ -60,7 +60,7 @@ size_t dns_request_pack(char *buf, const char *domain, int32_t ipv6) {
     qinfo->qclass = htons(1);
     return sizeof(dns_head) + qlens + sizeof(dns_question);
 }
-static inline void _decode_domain(unsigned char *name, unsigned char *reader, unsigned char *buffer, int32_t *count) {
+static void _decode_domain(unsigned char *name, unsigned char *reader, unsigned char *buffer, int32_t *count) {
     uint32_t p = 0, jumped = 0, offset;
     *count = 1;
     name[0] = '\0';
@@ -93,7 +93,7 @@ static inline void _decode_domain(unsigned char *name, unsigned char *reader, un
     }
     name[i - 1] = '\0';
 }
-static inline char *_dns_parse_data(char *buf, char *reader, uint16_t n, dns_ip *dnsips, int32_t *index) {
+static char *_dns_parse_data(char *buf, char *reader, uint16_t n, dns_ip *dnsips, int32_t *index) {
     if (0 == n) {
         return reader;
     }

@@ -8,7 +8,7 @@ static void _recvfrom(task_ctx *task, message_ctx *msg) {
     ev_sendto(&task->srey->netev, msg->fd, msg->skid, ip, port, (char *)msg->data + sizeof(netaddr_ctx), msg->size);
 }
 void test_udp(void) {
-    task_ctx *task = srey_task_new(TTYPE_C, TEST_UDP, 0, NULL, NULL);
+    task_ctx *task = srey_task_new(TTYPE_C, TEST_UDP, NULL, NULL);
     srey_task_regcb(task, MSG_TYPE_RECVFROM, _recvfrom);
     srey_task_register(srey, task);
     uint64_t lsnid;

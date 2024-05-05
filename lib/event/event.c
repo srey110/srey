@@ -83,7 +83,7 @@ SOCKET _udp(netaddr_ctx *addr) {
     return fd;
 }
 #if WITH_SSL
-static inline int32_t _sock_read_ssl(SSL *ssl, IOV_TYPE *iov, uint32_t niov, size_t *nread) {
+static int32_t _sock_read_ssl(SSL *ssl, IOV_TYPE *iov, uint32_t niov, size_t *nread) {
     size_t readed;
     int32_t rtn;
     for (uint32_t i = 0; i < niov; i++) {
@@ -100,7 +100,7 @@ static inline int32_t _sock_read_ssl(SSL *ssl, IOV_TYPE *iov, uint32_t niov, siz
     return ERR_OK;
 }
 #endif
-static inline int32_t _sock_read_normal(SOCKET fd, IOV_TYPE *iov, uint32_t niov, size_t *readed) {
+static int32_t _sock_read_normal(SOCKET fd, IOV_TYPE *iov, uint32_t niov, size_t *readed) {
 #ifdef EV_IOCP 
     DWORD bytes, flags = 0;
     if (SOCKET_ERROR != WSARecv(fd, 
@@ -146,14 +146,14 @@ int32_t _sock_read(SOCKET fd, IOV_TYPE *iov, uint32_t niov, void *arg, size_t *r
     return _sock_read_normal(fd, iov, niov, readed);
 #endif
 }
-static inline uint32_t _bufs_fill_iov(qu_off_buf_ctx *buf_s, size_t bufsize, IOV_TYPE iov[MAX_SEND_NIOV]) {
+static uint32_t _bufs_fill_iov(qu_off_buf_ctx *buf_s, size_t bufsize, IOV_TYPE iov[MAX_SEND_NIOV]) {
     if (bufsize > MAX_SEND_NIOV) {
         bufsize = MAX_SEND_NIOV;
     }
     off_buf_ctx *buf;
     size_t total = 0;
     uint32_t cnt = 0;
-    for (size_t i = 0; i < bufsize; i++) {
+    for (uint32_t i = 0; i < (uint32_t)bufsize; i++) {
         buf = qu_off_buf_at(buf_s, i);
         iov[i].IOV_PTR_FIELD = ((char *)buf->data) + buf->offset;
         iov[i].IOV_LEN_FIELD = (IOV_LEN_TYPE)(buf->len - buf->offset);
@@ -165,7 +165,7 @@ static inline uint32_t _bufs_fill_iov(qu_off_buf_ctx *buf_s, size_t bufsize, IOV
     }
     return cnt;
 }
-static inline void _bufs_size_del(qu_off_buf_ctx *buf_s, size_t len) {
+static void _bufs_size_del(qu_off_buf_ctx *buf_s, size_t len) {
     if (0 == len) {
         return;
     }
@@ -184,7 +184,7 @@ static inline void _bufs_size_del(qu_off_buf_ctx *buf_s, size_t len) {
         }
     }
 }
-static inline int32_t _sock_send_iov(SOCKET fd, IOV_TYPE *iov, uint32_t niov, size_t *sended) {
+static int32_t _sock_send_iov(SOCKET fd, IOV_TYPE *iov, uint32_t niov, size_t *sended) {
     *sended = 0;
 #ifdef EV_IOCP
     DWORD bytes;
@@ -214,7 +214,7 @@ static inline int32_t _sock_send_iov(SOCKET fd, IOV_TYPE *iov, uint32_t niov, si
     return ERR_OK;
 #endif
 }
-static inline int32_t _sock_send_normal(SOCKET fd, qu_off_buf_ctx *buf_s, size_t *nsend) {
+static int32_t _sock_send_normal(SOCKET fd, qu_off_buf_ctx *buf_s, size_t *nsend) {
     int32_t rtn = ERR_OK;
     size_t size;
     uint32_t niov;
@@ -232,7 +232,7 @@ static inline int32_t _sock_send_normal(SOCKET fd, qu_off_buf_ctx *buf_s, size_t
     return rtn;
 }
 #if WITH_SSL
-static inline int32_t _sock_send_ssl(SSL *ssl, qu_off_buf_ctx *buf_s, size_t *nsend) {
+static int32_t _sock_send_ssl(SSL *ssl, qu_off_buf_ctx *buf_s, size_t *nsend) {
     int32_t rtn = ERR_OK;
     size_t sended;
     off_buf_ctx *buf;

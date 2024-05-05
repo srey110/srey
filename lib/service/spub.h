@@ -15,7 +15,6 @@
 #define INVALID_TNAME         0
 #define RPC_NAME_LENS         64
 #define SIGN_KEY_LENS         128
-#define RECORD_WORKER_LOAD    0
 struct coro_ctx;
 typedef struct srey_ctx srey_ctx;
 typedef struct task_ctx task_ctx;
@@ -81,47 +80,45 @@ ARRAY_DECL(certs_ctx, arr_certs);
 typedef struct worker_version {
     int8_t msgtype;
     name_t name;
-    uint32_t ck_ver;
-    atomic_t ver;
+    uint32_t ckver;
+    uint32_t ver;
 }worker_version;
 typedef struct monitor_ctx {
     uint8_t stop;
-    uint16_t interval;
-    uint16_t threshold;
     worker_version *version;
     pthread_t thread;
 }monitor_ctx;
-
 QUEUE_DECL(name_t, qu_task);
-ARRAY_DECL(name_t, arr_task);
 typedef struct worker_ctx {
-    uint8_t waiting;
-    uint8_t adjusting;
     uint16_t index;
-    uint16_t toindex;
-    atomic_t cpu_cost;
-#if RECORD_WORKER_LOAD
-    atomic_t ntask;
-#endif
     srey_ctx *srey;
     pthread_t thread;
+#if !SCHEDULER_GLOBAL
+    int32_t waiting;
+    spin_ctx lcktasks;
+    qu_task_ctx qutasks;
     mutex_ctx mutex;
     cond_ctx cond;
-    qu_task_ctx qutasks;
-    timer_ctx timer;
+#endif
 }worker_ctx;
 
 struct srey_ctx {
     uint8_t stop;
     uint16_t nworker;
-    atomic_t index;
+    int32_t waiting;
     worker_ctx *worker;
 #if WITH_SSL
     arr_certs_ctx arrcerts;
     rwlock_ctx lckcerts;
 #endif
     struct hashmap *maptasks;
-    rwlock_ctx lcktasks;
+    rwlock_ctx lckmaptasks;
+#if SCHEDULER_GLOBAL
+    spin_ctx lckglobal;
+    qu_task_ctx quglobal;
+    mutex_ctx mutex;
+    cond_ctx cond;
+#endif
     monitor_ctx monitor;
     tw_ctx tw;
     ev_ctx netev;
@@ -136,11 +133,7 @@ typedef struct rpc_ctx {
 struct task_ctx {
     uint8_t global;
     uint8_t ttype;
-    uint16_t index;
-    uint16_t maxcnt;
     name_t name;
-    uint32_t cpu_cost;
-    uint32_t warning;
     atomic_t closing;
     atomic_t ref;
     free_cb _arg_free;
@@ -148,10 +141,9 @@ struct task_ctx {
     srey_ctx *srey;
     struct coro_ctx *coro;
     struct hashmap *maprpc;
-    spin_ctx spin_msg;
+    spin_ctx lckmsg;
     qu_message_ctx qumsg;
-    qu_message_ctx qutmo;
-    qu_ptr_ctx qutmoarg;
+    qu_ptr_ctx qutmoarg;//³¬Ê±²ÎÊý³Ø
     task_run _request[REQ_TYPE_CNT];
     task_run _run[MSG_TYPE_ALL];
 };
@@ -161,10 +153,10 @@ typedef struct task_msg_arg {
     message_ctx msg;
 }task_msg_arg;
 
-void _coro_init_desc(size_t stack_size);
+void _coro_init(size_t stack_size);
 void _coro_new(task_ctx *task);
 void _coro_free(task_ctx *task);
-void _dispatch_coro(task_msg_arg *arg);
+void _coro_dispatch(task_msg_arg *arg);
 
 void _rpc_new(task_ctx *task);
 void _rpc_free(task_ctx *task);

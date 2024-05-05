@@ -59,10 +59,10 @@ static cJSON *test_add(task_ctx *task, cJSON *args) {
     cJSON *val1 = cJSON_GetArrayItem(args, 0);
     cJSON *val2 = cJSON_GetArrayItem(args, 1);
     int32_t sum = (int32_t)(val1->valuedouble + val2->valuedouble);
-    return rpc_format_args("i", sum);
+    return rpc_args_format("i", sum);
 }
 void test_timeout(void) {
-    task_ctx *task = srey_task_new(TTYPE_C, TEST_TIMEOUT, 0, NULL, NULL);
+    task_ctx *task = srey_task_new(TTYPE_C, TEST_TIMEOUT, NULL, NULL);
     srey_task_regcb(task, MSG_TYPE_STARTUP, _startup);
     srey_task_regcb(task, MSG_TYPE_REQUEST, _request);
     rpc_register(task, "test_void", test_void);

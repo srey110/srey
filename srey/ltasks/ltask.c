@@ -33,14 +33,14 @@ typedef struct ltask_ctx {
 }ltask_ctx;
 static char luapath[PATH_LENS] = { 0 };
 
-static inline void _ltask_setpath(lua_State *lua, const char *name, const char *exname) {
+static void _ltask_setpath(lua_State *lua, const char *name, const char *exname) {
     lua_getglobal(lua, "package");
     lua_getfield(lua, -1, name);
     lua_pushfstring(lua, "%s;%s?.%s", lua_tostring(lua, -1), luapath, exname);
     lua_setfield(lua, -3, name);
     lua_pop(lua, 2);
 }
-static inline lua_State *_ltask_luainit(task_ctx *task) {
+static lua_State *_ltask_luainit(task_ctx *task) {
     lua_State *lua = luaL_newstate();
     if (NULL == lua) {
         LOG_ERROR("%s", "luaL_newstate failed.");
@@ -59,11 +59,11 @@ static inline lua_State *_ltask_luainit(task_ctx *task) {
     }
     return lua;
 }
-static inline void _ltask_fmtfile(const char *file, char *path) {
+static void _ltask_fmtfile(const char *file, char *path) {
     ZERO(path, PATH_LENS);
     SNPRINTF(path, PATH_LENS - 1, "%s%s%s", luapath, file, ".lua");
 }
-static inline int32_t _ltask_searchfile(const char *file, char *path) {
+static int32_t _ltask_searchfile(const char *file, char *path) {
     _ltask_fmtfile(file, path);
     if (ERR_OK == isfile(path)) {
         return ERR_OK;
@@ -82,7 +82,7 @@ static inline int32_t _ltask_searchfile(const char *file, char *path) {
     }
     return ERR_FAILED;
 }
-static inline int32_t _ltask_dofile(lua_State *lua, const char *file) {
+static int32_t _ltask_dofile(lua_State *lua, const char *file) {
     char path[PATH_LENS];
     if (ERR_OK != _ltask_searchfile(file, path)) {
         LOG_ERROR("cannot find %s:, no such file.", file);
@@ -132,7 +132,7 @@ static void _ltask_arg_free(void *arg) {
     }
     FREE(ltask);
 }
-static inline void _ltask_pack_msg(lua_State *lua, message_ctx *msg) {
+static void _ltask_pack_msg(lua_State *lua, message_ctx *msg) {
     lua_createtable(lua, 0, 11);
     LUA_TB_NUMBER("mtype", msg->mtype);
     switch (msg->mtype) {
@@ -204,7 +204,7 @@ static inline void _ltask_pack_msg(lua_State *lua, message_ctx *msg) {
         break;
     }
 }
-static inline void _ltask_run(task_ctx *task, message_ctx *msg) {
+static void _ltask_run(task_ctx *task, message_ctx *msg) {
     ltask_ctx *ltask = task->arg;
     lua_rawgeti(ltask->lua, LUA_REGISTRYINDEX, ltask->ref);
     _ltask_pack_msg(ltask->lua, msg);
@@ -215,10 +215,9 @@ static inline void _ltask_run(task_ctx *task, message_ctx *msg) {
 static int32_t _ltask_register(lua_State *lua) {
     const char *file = luaL_checkstring(lua, 1);
     name_t name = (name_t)luaL_checkinteger(lua, 2);
-    uint16_t maxcnt = (uint16_t)luaL_checkinteger(lua, 3);
     ltask_ctx *ltask;
     CALLOC(ltask, 1, sizeof(ltask_ctx));
-    task_ctx *task = srey_task_new(TTYPE_LUA, name, maxcnt, _ltask_arg_free, ltask);
+    task_ctx *task = srey_task_new(TTYPE_LUA, name, _ltask_arg_free, ltask);
     if (NULL == task) {
         FREE(ltask);
         lua_pushboolean(lua, 0);

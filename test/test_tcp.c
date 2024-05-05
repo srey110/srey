@@ -39,7 +39,7 @@ static void _closing(task_ctx *task, message_ctx *msg) {
     ev_unlisten(&task->srey->netev, lsnid);
 }
 void test_tcp(void) {
-    task_ctx *task = srey_task_new(TTYPE_C, TEST_TCP, 0, NULL, NULL);
+    task_ctx *task = srey_task_new(TTYPE_C, TEST_TCP, NULL, NULL);
     srey_task_regcb(task, MSG_TYPE_ACCEPT, _acpt);
     srey_task_regcb(task, MSG_TYPE_RECV, _recv);
     srey_task_regcb(task, MSG_TYPE_SEND, _sended);

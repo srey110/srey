@@ -13,14 +13,20 @@ typedef struct pip_ctx {
     sock_ctx skpip;
 }pip_ctx;
 
-static inline uint64_t _map_hash(const void *item, uint64_t seed0, uint64_t seed1) {
+static uint64_t _map_hash(const void *item, uint64_t seed0, uint64_t seed1) {
     return hash((const char *)&((*(const sock_ctx **)item)->fd), sizeof(SOCKET));
 }
-static inline int _map_compare(const void *a, const void *b, void *ud) {
+static int _map_compare(const void *a, const void *b, void *ud) {
     return (int)((*(const sock_ctx **)a)->fd - (*(const sock_ctx **)b)->fd);
 }
 void _send_cmd(watcher_ctx *watcher, uint32_t index, cmd_ctx *cmd) {
-    ASSERTAB(sizeof(cmd_ctx) == write(watcher->pipes[index].pipes[1], cmd, sizeof(cmd_ctx)), ERRORSTR(ERRNO));
+    int32_t erro;
+    while (0 == watcher->stop
+        && ERR_FAILED == write(watcher->pipes[index].pipes[1], cmd, sizeof(cmd_ctx))) {
+        erro = ERRNO;
+        ASSERTAB(ERR_RW_RETRIABLE(erro), ERRORSTR(erro));
+        USLEEP(0);
+    };
 }
 static void _cmd_loop(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
     int32_t i, cnt, nread;
@@ -65,7 +71,7 @@ static void _init_cmd(watcher_ctx *watcher) {
     }
 }
 #ifdef COMMIT_NCHANGES
-static inline void _check_changes(watcher_ctx *watcher) {
+static void _check_changes(watcher_ctx *watcher) {
     if (watcher->nchanges >= watcher->nsize) {
 #if defined(EV_KQUEUE)
         watcher->nsize *= 2;
@@ -262,7 +268,7 @@ void _del_event(watcher_ctx *watcher, SOCKET fd, int32_t *events, int32_t ev, vo
     }
 #endif
 }
-static inline int32_t _parse_event(events_t *ev, SOCKET *fd, void **arg) {
+static int32_t _parse_event(events_t *ev, SOCKET *fd, void **arg) {
     int32_t rtn = 0;
 #if defined(EV_EPOLL)
     if (BIT_CHECK(ev->events, (EPOLLHUP | EPOLLERR))) {
@@ -323,7 +329,7 @@ static inline int32_t _parse_event(events_t *ev, SOCKET *fd, void **arg) {
 #endif
     return rtn;
 }
-static inline void _pool_shrink(watcher_ctx *watcher, timer_ctx *timer) {
+static void _pool_shrink(watcher_ctx *watcher, timer_ctx *timer) {
     if (timer_elapsed_ms(timer) < SHRINK_TIME) {
         return;
     }
@@ -400,8 +406,9 @@ static void _loop_event(void *arg) {
         }
         _pool_shrink(watcher, &tmshrink);
     }
+    LOG_INFO("net event thread %d exited.", watcher->index);
 }
-static inline void _free_element(void *item) {
+static void _free_element(void *item) {
     sock_ctx *sock = *((sock_ctx **)item);
     if (SOCK_STREAM == sock->type) {
         _free_sk(sock);
@@ -411,7 +418,7 @@ static inline void _free_element(void *item) {
         _free_udp(sock);
     }
 }
-static inline int32_t _init_evfd(void) {
+static int32_t _init_evfd(void) {
     int32_t evfd = INVALID_FD;
 #if defined(EV_EPOLL)
     evfd = epoll_create1(EPOLL_CLOEXEC);
@@ -524,8 +531,8 @@ void ev_free(ev_ctx *ctx) {
     }
     FREE(ctx->watcher);
     struct listener_ctx **lsn;
-    size_t nlsn = arr_ptr_size(&ctx->arrlsn);
-    for (i = 0; i < (uint32_t)nlsn; i++) {
+    uint32_t nlsn = arr_ptr_size(&ctx->arrlsn);
+    for (i = 0; i < nlsn; i++) {
         lsn = (struct listener_ctx **)arr_ptr_at(&ctx->arrlsn, i);
         _freelsn(*lsn);
     }

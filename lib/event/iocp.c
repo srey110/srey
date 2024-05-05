@@ -9,10 +9,10 @@ exfuncs_ctx _exfuncs;
 static atomic_t _init_once = 0;
 static void(*cmd_cbs[CMD_TOTAL])(watcher_ctx *watcher, cmd_ctx *cmd);
 
-static inline uint64_t _map_hash(const void *item, uint64_t seed0, uint64_t seed1) {
+static uint64_t _map_hash(const void *item, uint64_t seed0, uint64_t seed1) {
     return hash((const char *)&((*(const sock_ctx **)item)->fd), sizeof(SOCKET));
 }
-static inline int _map_compare(const void *a, const void *b, void *ud) {
+static int _map_compare(const void *a, const void *b, void *ud) {
     return (int)((*(const sock_ctx **)a)->fd - (*(const sock_ctx **)b)->fd);
 }
 static void *_exfunc(SOCKET fd, GUID  *guid) {
@@ -62,7 +62,7 @@ static void _on_cmd(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
     int32_t i, nread;
     char cmdbuf[CMD_MAX_NREAD];
     overlap_cmd_ctx *olcmd = UPCAST(skctx, overlap_cmd_ctx, ol_r);
-    do {
+    for (;;) {
         nread = recv(olcmd->ol_r.fd, cmdbuf, sizeof(cmdbuf), 0);
         if (nread <= 0) {
             break;
@@ -73,12 +73,12 @@ static void _on_cmd(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
             spin_unlock(&olcmd->spin);
             cmd_cbs[cmd.cmd](watcher, &cmd);
         }
-    } while (nread == sizeof(cmdbuf));
+    }
     if (0 == watcher->stop) {
         ASSERTAB(ERR_OK == _post_recv(&olcmd->ol_r, &olcmd->bytes, &olcmd->flag, &olcmd->wsabuf, 1), ERRORSTR(ERRNO));
     }
 }
-static inline void _pool_shrink(watcher_ctx *watcher, timer_ctx *timer) {
+static void _pool_shrink(watcher_ctx *watcher, timer_ctx *timer) {
     if (timer_elapsed_ms(timer) < SHRINK_TIME) {
         return;
     }
@@ -125,6 +125,7 @@ static void _loop_event(void *arg) {
         }
         _pool_shrink(watcher, &timer);
     }
+    LOG_INFO("net event thread %d exited.", watcher->index);
     FREE(overlappeds);
 }
 static void _loop_acpex(void *arg) {
@@ -162,6 +163,7 @@ static void _loop_acpex(void *arg) {
             LOG_ERROR("%s", ERRORSTR(err));
         }
     }
+    LOG_INFO("accept thread %d exited.", acpex->index);
     FREE(overlappeds);
 }
 #else
@@ -189,6 +191,7 @@ static void _loop_event(void *arg) {
         }
         _pool_shrink(watcher, &timer);
     }
+    LOG_INFO("net event thread %d exited.", watcher->index);
 }
 static void _loop_acpex(void *arg) {
     acceptex_ctx *acpex = (acceptex_ctx *)arg;
@@ -210,9 +213,10 @@ static void _loop_acpex(void *arg) {
             LOG_ERROR("%s", ERRORSTR(err));
         }
     }
+    LOG_INFO("accept thread %d exited.", acpex->index);
 }
 #endif
-static inline void _free_element(void *item) {
+static void _free_element(void *item) {
     sock_ctx *sock = *((sock_ctx **)item);
     if (SOCK_STREAM == sock->type) {
         _free_sk(sock);
@@ -244,7 +248,6 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads) {
     ctx->nacpex = ctx->nthreads;
     sock_init();
     _init_funcs(ctx);
-
     MALLOC(ctx->watcher, sizeof(watcher_ctx) * ctx->nthreads);
     watcher_ctx *watcher;
     uint32_t i;
@@ -327,8 +330,8 @@ void ev_free(ev_ctx *ctx) {
     }
     FREE(ctx->watcher);
     struct listener_ctx **lsn;
-    size_t nlsn = arr_ptr_size(&ctx->arrlsn);
-    for (i = 0; i < (uint32_t)nlsn; i++) {
+    uint32_t nlsn = arr_ptr_size(&ctx->arrlsn);
+    for (i = 0; i < nlsn; i++) {
         lsn = (struct listener_ctx **)arr_ptr_at(&ctx->arrlsn, i);
         _freelsn(*lsn);
     }

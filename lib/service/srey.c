@@ -11,21 +11,21 @@ typedef struct ctask_tmo_arg {
 typedef void(*_dispatch_func)(task_msg_arg *arg);
 static _dispatch_func _disp_funcs[TTYPE_CNT] = { 0 };
 
-static inline uint64_t _map_task_hash(const void *item, uint64_t seed0, uint64_t seed1) {
+static uint64_t _map_task_hash(const void *item, uint64_t seed0, uint64_t seed1) {
     return hash((const char *)(*(name_t **)item), sizeof(name_t));
 }
-static inline int _map_task_compare(const void *a, const void *b, void *ud) {
+static int _map_task_compare(const void *a, const void *b, void *ud) {
     return *(*(name_t **)a) - *(*(name_t **)b);
 }
-static inline void _map_task_set(struct hashmap *map, task_ctx *task) {
+static void _map_task_set(struct hashmap *map, task_ctx *task) {
     name_t *key = &task->name;
     ASSERTAB(NULL == hashmap_set(map, &key), "task name repeat.");
 }
-static inline void *_map_task_del(struct hashmap *map, name_t name) {
+static void *_map_task_del(struct hashmap *map, name_t name) {
     name_t *key = &name;
     return (void *)hashmap_delete(map, &key);
 }
-static inline task_ctx *_map_task_get(struct hashmap *map, name_t name) {
+static task_ctx *_map_task_get(struct hashmap *map, name_t name) {
     name_t *key = &name;
     name_t **ptr = (name_t **)hashmap_get(map, &key);
     if (NULL == ptr) {
@@ -61,332 +61,230 @@ void message_clean(task_ctx *task, msg_type mtype, pack_type pktype, void *data)
         break;
     }
 }
-static inline void _worker_wakeup(worker_ctx *worker, name_t name, int32_t sig) {
-    mutex_lock(&worker->mutex);
-    if (INVALID_TNAME != name) {
-        qu_task_push(&worker->qutasks, &name);
+#if !SCHEDULER_GLOBAL
+static uint16_t _min_task_index(srey_ctx *ctx) {
+    uint32_t min = qu_task_size(&ctx->worker[0].qutasks);
+    if (0 == min) {
+        return 0;
     }
-    if (worker->waiting > 0
-        && 0 != sig) {
+    uint16_t index = 0;
+    uint32_t count;
+    for (uint16_t i = 1; i < ctx->nworker; i++) {
+        count = qu_task_size(&ctx->worker[i].qutasks);
+        if (count < min) {
+            index = i;
+            if (0 == count) {
+                break;
+            }
+            min = count;
+        }
+    }
+    return index;
+}
+static int32_t _max_task_index(srey_ctx *ctx) {
+    uint16_t index = 0;
+    uint32_t max = qu_task_size(&ctx->worker[0].qutasks);
+    uint32_t count;
+    for (uint16_t i = 1; i < ctx->nworker; i++) {
+        count = qu_task_size(&ctx->worker[i].qutasks);
+        if (count > max) {
+            index = i;
+            max = count;
+        }
+    }
+    return 0 == max ? -1 : (int32_t)index;
+}
+#endif
+static void _worker_wakeup_all(srey_ctx *ctx) {
+#if SCHEDULER_GLOBAL
+    mutex_lock(&ctx->mutex);
+    if (ctx->waiting > 0) {
+        cond_broadcast(&ctx->cond);
+    }
+    mutex_unlock(&ctx->mutex);
+#else
+    worker_ctx *worker;
+    for (uint16_t i = 0; i < ctx->nworker; i++) {
+        worker = &ctx->worker[i];
+        mutex_lock(&worker->mutex);
+        if (worker->waiting > 0) {
+            cond_signal(&worker->cond);
+        }
+        mutex_unlock(&worker->mutex);
+    }
+#endif
+}
+static void _worker_wakeup(srey_ctx *ctx, name_t *task) {
+#if SCHEDULER_GLOBAL
+    spin_lock(&ctx->lckglobal);
+    qu_task_push(&ctx->quglobal, task);
+    spin_unlock(&ctx->lckglobal);
+    mutex_lock(&ctx->mutex);
+    if (ctx->waiting > 0) {
+        cond_signal(&ctx->cond);
+    }
+    mutex_unlock(&ctx->mutex);
+#else
+    uint16_t index = _min_task_index(ctx);
+    worker_ctx *worker = &ctx->worker[index];
+    spin_lock(&worker->lcktasks);
+    qu_task_push(&worker->qutasks, task);
+    spin_unlock(&worker->lcktasks);
+    mutex_lock(&worker->mutex);
+    if (worker->waiting > 0) {
         cond_signal(&worker->cond);
     }
     mutex_unlock(&worker->mutex);
+#endif
 }
-static inline void _push_message(task_ctx *task, message_ctx *msg) {
-    uint8_t add = 0;
-    spin_lock(&task->spin_msg);
-    if (MSG_TYPE_TIMEOUT == msg->mtype) {
-        qu_message_push(&task->qutmo, msg);
-    } else {
-        qu_message_push(&task->qumsg, msg);
-    }
+static void _task_message_push(task_ctx *task, message_ctx *msg) {
+    int32_t add = 0;
+    spin_lock(&task->lckmsg);
+    qu_message_push(&task->qumsg, msg);
     if (0 == task->global) {
         add = 1;
         task->global = 1;
     }
-    spin_unlock(&task->spin_msg);
+    spin_unlock(&task->lckmsg);
     if (0 != add) {
-        _worker_wakeup(&task->srey->worker[task->index], task->name, 1);
+        _worker_wakeup(task->srey, &task->name);
     }
 }
-static inline void _add_active_tasks(arr_task_ctx *arractive, name_t name) {
-    size_t n = arr_task_size(arractive);
-    for (size_t i = 0; i < n; i++) {
-        if (name == *arr_task_at(arractive, i)) {
-            return;
-        }
-    }
-    arr_task_push_back(arractive, &name);
-}
-static inline void _reset_cpu_cost(srey_ctx *ctx, arr_task_ctx *arractive) {
-    size_t n = arr_task_size(arractive);
-    task_ctx *task;
-    for (size_t i = 0; i < n; i++) {
-        task = srey_task_grab(ctx, *arr_task_at(arractive, i));
-        if (NULL != task) {
-            task->cpu_cost = 0;
-            srey_task_ungrab(task);
-        }
-    }
-}
-//标记要移出的空闲任务
-static inline void _adjustment_task(srey_ctx *ctx, worker_ctx *worker, arr_task_ctx *arractive) {
-    size_t n = arr_task_size(arractive);
-    if (n < 2) {
-        _reset_cpu_cost(ctx, arractive);
-        return;
-    }
-    uint8_t onlyone = 1;
-    task_ctx *min_task = NULL;
-    task_ctx *task;
-    for (size_t i = 0; i < n; i++) {
-        task = srey_task_grab(ctx, *arr_task_at(arractive, i));
-        if (NULL == task) {
-            continue;
-        }
-        if (0 == task->cpu_cost
-            || task->index != worker->index) {//可能释放后重新加到其他线程
-            srey_task_ungrab(task);
-            continue;
-        }
-#if RECORD_WORKER_LOAD
-        LOG_INFO("thread %d task %d cpu cost %d.", worker->index, task->name, task->cpu_cost);
-#endif
-        if (NULL == min_task) {
-            min_task = task;
-            continue;
-        }
-        onlyone = 0;
-        if (task->cpu_cost < min_task->cpu_cost) {
-            min_task->cpu_cost = 0;
-            srey_task_ungrab(min_task);
-            min_task = task;
-            continue;
-        }
-        task->cpu_cost = 0;
-        srey_task_ungrab(task);
-    }
-    if (NULL == min_task) {
-        return;
-    }
-    min_task->cpu_cost = 0;
-    if (0 != onlyone) {
-        srey_task_ungrab(min_task);
-        return;
-    }
-#if RECORD_WORKER_LOAD
-    ATOMIC_ADD(&ctx->worker[task->index].ntask, -1);
-    ATOMIC_ADD(&ctx->worker[worker->toindex].ntask, 1);
-    LOG_INFO("move task %d from thread %d to thread %d.", min_task->name, min_task->index, worker->toindex);
-#endif
-    min_task->index = worker->toindex;
-    srey_task_ungrab(min_task);  
-}
-static inline void _adjustment(srey_ctx *ctx, worker_ctx *worker, arr_task_ctx *arractive) {
-    if (INVALID_INDEX != worker->toindex) {
-        _adjustment_task(ctx, worker, arractive);
-        worker->toindex = INVALID_INDEX;
-    } else {
-        _reset_cpu_cost(ctx, arractive);
-    }
-    arr_task_clear(arractive);
-    worker->adjusting = 0;
-    worker->cpu_cost = 0;
-}
-static inline name_t _get_task_name(worker_ctx *worker) {
+static name_t _task_name_pop(srey_ctx *ctx, worker_ctx *worker) {
+    name_t *ptr;
     name_t name = INVALID_TNAME;
-    mutex_lock(&worker->mutex);
-    name_t *ptr = qu_task_pop(&worker->qutasks);
-    if (NULL == ptr) {
-        worker->waiting++;
-        cond_wait(&worker->cond, &worker->mutex);
-        worker->waiting--;
-    } else {
+#if SCHEDULER_GLOBAL
+    spin_lock(&ctx->lckglobal);
+    ptr = qu_task_pop(&ctx->quglobal);
+    if (NULL != ptr) {
         name = *ptr;
     }
-    mutex_unlock(&worker->mutex);
+    spin_unlock(&ctx->lckglobal);
+#else
+    spin_lock(&worker->lcktasks);
+    ptr = qu_task_pop(&worker->qutasks);
+    if (NULL != ptr) {
+        name = *ptr;
+    }
+    spin_unlock(&worker->lcktasks);
+    if (INVALID_TNAME == name) {
+        int32_t index = _max_task_index(ctx);
+        if (-1 != index) {
+            spin_lock(&ctx->worker[index].lcktasks);
+            ptr = qu_task_pop(&ctx->worker[index].qutasks);
+            if (NULL != ptr) {
+                name = *ptr;
+            }
+            spin_unlock(&ctx->worker[index].lcktasks);
+        }
+    }
+#endif
     return name;
 }
-static inline int32_t _get_tmo_message(task_ctx *task, message_ctx *msg) {
+static int32_t _task_message_pop(task_ctx *task, message_ctx *msg) {
     message_ctx *tmp;
-    spin_lock(&task->spin_msg);
-    tmp = qu_message_pop(&task->qutmo);
-    if (NULL == tmp) {
-        spin_unlock(&task->spin_msg);
-        return ERR_FAILED;
-    }
-    *msg = *tmp;
-    spin_unlock(&task->spin_msg);
-    return ERR_OK;
-}
-static inline int32_t _get_message(task_ctx *task, message_ctx *msg) {
-    message_ctx *tmp;
-    spin_lock(&task->spin_msg);
+    spin_lock(&task->lckmsg);
     tmp = qu_message_pop(&task->qumsg);
     if (NULL == tmp) {
-        spin_unlock(&task->spin_msg);
+        spin_unlock(&task->lckmsg);
         return ERR_FAILED;
     }
     *msg = *tmp;
-    spin_unlock(&task->spin_msg);
+    spin_unlock(&task->lckmsg);
     return ERR_OK;
 }
-static inline void _message_run(srey_ctx *ctx, worker_ctx *worker, worker_version *version, task_msg_arg *arg) {
-    ATOMIC_ADD(&version->ver, 1);
-    version->msgtype = arg->msg.mtype;
-    if (ctx->nworker > 1) {
-        timer_start(&worker->timer);
-    }
-    _disp_funcs[arg->task->ttype](arg);
-    if (ctx->nworker > 1) {
-        uint32_t elapsed = (uint32_t)(timer_elapsed(&worker->timer) / 1000);
-        ATOMIC_ADD(&worker->cpu_cost, elapsed);
-        arg->task->cpu_cost += elapsed;
-    }
-    version->msgtype = MSG_TYPE_NONE;
-}
-static inline void _dispatch_message(srey_ctx *ctx, worker_ctx *worker, worker_version *version, task_msg_arg *arg) {
-    int32_t over;
-    for (uint16_t i = 0; i < arg->task->maxcnt; i++) {
-        over = 1;
-        if (ERR_OK == _get_message(arg->task, &arg->msg)) {
-            _message_run(ctx, worker, version, arg);
-            over = 0;
-        }
-        if (ERR_OK == _get_tmo_message(arg->task, &arg->msg)) {
-            _message_run(ctx, worker, version, arg);
-            over = 0;
-        }
-        if (0 != over) {
-            break;
-        }
-    }
-}
-static inline void _task_run(srey_ctx *ctx, worker_ctx *worker, worker_version *version,
-    arr_task_ctx *arractive, task_msg_arg *msgarg) {
-    //执行调整
-    if (worker->index != msgarg->task->index) {
-        _worker_wakeup(&ctx->worker[msgarg->task->index], msgarg->task->name, 1);
-        return;
-    }
+static void _task_message_dispatch(srey_ctx *ctx, worker_ctx *worker,
+    worker_version *version, task_msg_arg *msgarg) {
     //执行
     version->name = msgarg->task->name;
-    _dispatch_message(ctx, worker, version, msgarg);
-    if (ctx->nworker > 1) {
-        //记录活跃的任务
-        _add_active_tasks(arractive, msgarg->task->name);
+    while (ERR_OK == _task_message_pop(msgarg->task, &msgarg->msg)) {
+        ++version->ver;
+        version->msgtype = msgarg->msg.mtype;
+        _disp_funcs[msgarg->task->ttype](msgarg);
+        version->msgtype = MSG_TYPE_NONE;
     }
     //加回队列
-    uint8_t add;
-    spin_lock(&msgarg->task->spin_msg);
-    if (0 == qu_message_size(&msgarg->task->qumsg)
-        &&0 == qu_message_size(&msgarg->task->qutmo)) {
+    int32_t add = 1;
+    spin_lock(&msgarg->task->lckmsg);
+    if (0 == qu_message_size(&msgarg->task->qumsg)) {
         add = 0;
         msgarg->task->global = 0;
-    } else {
-        add = 1;
     }
-    spin_unlock(&msgarg->task->spin_msg);
+    spin_unlock(&msgarg->task->lckmsg);
     if (0 != add) {
-        _worker_wakeup(&ctx->worker[msgarg->task->index], msgarg->task->name, 0);
+        _worker_wakeup(ctx, &msgarg->task->name);
     }
 }
-static void _loop_worker(void *arg) {
+static void _worker_hang(srey_ctx *ctx, worker_ctx *worker) {
+#if SCHEDULER_GLOBAL
+    mutex_lock(&ctx->mutex);
+    ++ctx->waiting;
+    cond_wait(&ctx->cond, &ctx->mutex);
+    --ctx->waiting;
+    mutex_unlock(&ctx->mutex);
+#else
+    mutex_lock(&worker->mutex);
+    ++worker->waiting;
+    cond_wait(&worker->cond, &worker->mutex);
+    --worker->waiting;
+    mutex_unlock(&worker->mutex);
+#endif
+}
+static void _worker_loop(void *arg) {
     name_t name;
     worker_ctx *worker = (worker_ctx *)arg;
     srey_ctx *ctx = worker->srey;
     worker_version *version = &ctx->monitor.version[worker->index];
     task_msg_arg msgarg;
-    arr_task_ctx arractive;
-    arr_task_init(&arractive, ONEK);
     while (0 == ctx->stop) {
         //从队列取一任务
-        name = _get_task_name(worker);
-        if (ctx->nworker > 1
-            && 0 != worker->adjusting) {
-            //调整负载标记要移出的任务(_task_run 或 _push_message 中执行) 协程池释放
-            _adjustment(ctx, worker, &arractive);
-        }
-        msgarg.task = srey_task_grab(ctx, name);
-        if (NULL == msgarg.task) {
+        name = _task_name_pop(ctx, worker);
+        if (INVALID_TNAME != name) {
+            msgarg.task = srey_task_grab(ctx, name);
+            if (NULL == msgarg.task) {
+                continue;
+            }
+            _task_message_dispatch(ctx, worker, version, &msgarg);
+            srey_task_ungrab(msgarg.task);
             continue;
         }
-        _task_run(ctx, worker, version, &arractive, &msgarg);
-        srey_task_ungrab(msgarg.task);
+        _worker_hang(ctx, worker);
     }
-    arr_task_free(&arractive);
+    LOG_INFO("worker thread %d exited.", worker->index);
 }
 //检查死循环
-static inline void _monitor_check_ver(srey_ctx *ctx) {
+static void _monitor_check(srey_ctx *ctx) {
     worker_version *version;
     for (uint16_t i = 0; i < ctx->nworker; i++) {
         version = &ctx->monitor.version[i];
-        if (version->ck_ver == version->ver
+        if (version->ckver == version->ver
             && MSG_TYPE_NONE != version->msgtype) {
-            LOG_ERROR("task: %d message type: %d, maybe in an endless loop. version: %d",
-                version->name, version->msgtype, version->ver);
+            LOG_ERROR("task: %d message type: %d, maybe in an endless loop.",
+                version->name, version->msgtype);
         } else {
-            version->ck_ver = version->ver;
+            version->ckver = version->ver;
         }
     }
 }
-static inline void _set_adjusting(srey_ctx *ctx) {
-    for (uint16_t i = 0; i < ctx->nworker; i++) {
-        ctx->worker[i].adjusting = 1;
-    }
-}
-static inline void _monitor_worker(srey_ctx *ctx) {
-    if (ctx->nworker <= 1) {
-        return;
-    }
-    uint32_t cpu_cost = ctx->worker[0].cpu_cost;
-    if (0 != ctx->worker[0].adjusting) {//上次调整都还未执行,该线程空闲
-        cpu_cost = 0;
-    }
-#if RECORD_WORKER_LOAD
-    LOG_INFO("thread 0 cpu cost %d task number %d.", cpu_cost, ctx->worker[0].ntask);
-#endif
-    uint32_t max_cpu_cost = cpu_cost, min_cpu_cost = cpu_cost;
-    uint16_t max_index = 0, min_index = 0;
-    for (uint16_t i = 1; i < ctx->nworker; i++) {
-        cpu_cost = ctx->worker[i].cpu_cost;
-        if (0 != ctx->worker[i].adjusting) {
-            cpu_cost = 0;
-        }
-#if RECORD_WORKER_LOAD
-        LOG_INFO("thread %d cpu cost %d task number %d.", i, cpu_cost, ctx->worker[i].ntask);
-#endif
-        if (cpu_cost > max_cpu_cost) {
-            max_cpu_cost = cpu_cost;
-            max_index = i;
-            continue;
-        }
-        if (cpu_cost < min_cpu_cost) {
-            min_cpu_cost = cpu_cost;
-            min_index = i;
-        }
-    }
-    if (min_index == max_index
-        || min_cpu_cost >= max_cpu_cost
-        || (max_cpu_cost - min_cpu_cost) / 1000 < (uint32_t)ctx->monitor.threshold) {
-        _set_adjusting(ctx);
-        return;
-    }
-#if RECORD_WORKER_LOAD
-    LOG_INFO("prepare move task from thread %d to thread %d.", max_index, min_index);
-#endif
-    ctx->worker[max_index].toindex = min_index;
-    _set_adjusting(ctx);
-    _worker_wakeup(&ctx->worker[max_index], INVALID_TNAME, 1);
-}
-static void _loop_monitor(void *arg) {
+static void _monitor_loop(void *arg) {
     srey_ctx *ctx = (srey_ctx *)arg;
     uint64_t time = 0;
     while (0 == ctx->monitor.stop) {
         MSLEEP(100);
         time += 100;
         if (0 == time % 5000) {
-            _monitor_check_ver(ctx);
-        }
-        if (0 == time % ctx->monitor.interval) {
-            _monitor_worker(ctx);
+            _monitor_check(ctx);
         }
     }
+    LOG_INFO("%s", "worker monitor thread exited.");
 }
 #if WITH_LUA
-static inline void _dispatch_lua(task_msg_arg *arg) {
+static void _lua_dispatch(task_msg_arg *arg) {
     ASSERTAB(NULL != arg->task->_run[arg->msg.mtype], "lua task not set callback functhion.");
     arg->task->_run[arg->msg.mtype](arg->task, &arg->msg);
 }
 #endif
-static void _disp_funcs_init(void) {
-    _disp_funcs[TTYPE_C] = _dispatch_coro;
-#if WITH_LUA
-    _disp_funcs[TTYPE_LUA] = _dispatch_lua;
-#endif
-}
-srey_ctx *srey_init(uint16_t nnet, uint16_t nworker, size_t stack_size,
-    uint16_t interval, uint16_t threshold, const char *key) {
+srey_ctx *srey_init(uint16_t nnet, uint16_t nworker, size_t stack_size, const char *key) {
     size_t klens = strlen(key);
     if (klens >= SIGN_KEY_LENS) {
         LOG_ERROR("sign key too long.");
@@ -395,15 +293,22 @@ srey_ctx *srey_init(uint16_t nnet, uint16_t nworker, size_t stack_size,
     srey_ctx *ctx;
     CALLOC(ctx, 1, sizeof(srey_ctx));
     strcpy(ctx->key, key);
-    _coro_init_desc(stack_size);
-    _disp_funcs_init();
+    _coro_init(stack_size);
+    _disp_funcs[TTYPE_C] = _coro_dispatch;
+#if WITH_LUA
+    _disp_funcs[TTYPE_LUA] = _lua_dispatch;
+#endif
     protos_init();
+#if SCHEDULER_GLOBAL
+    spin_init(&ctx->lckglobal, SPIN_CNT_SCHEDULER);
+    qu_task_init(&ctx->quglobal, ONEK);
+    mutex_init(&ctx->mutex);
+    cond_init(&ctx->cond);
+#endif
     ctx->nworker = 0 == nworker ? 1 : nworker;
-    ctx->monitor.interval = 0 == interval ? 10000 : interval;
-    ctx->monitor.threshold = 0 == threshold ? 100 : threshold;
     CALLOC(ctx->worker, 1, sizeof(worker_ctx) * ctx->nworker);
     CALLOC(ctx->monitor.version, 1, sizeof(worker_version) * ctx->nworker);
-    rwlock_init(&ctx->lcktasks);
+    rwlock_init(&ctx->lckmaptasks);
     ctx->maptasks = hashmap_new_with_allocator(_malloc, _realloc, _free,
                                               sizeof(name_t *), ONEK, 0, 0,
                                               _map_task_hash, _map_task_compare, _map_task_free, NULL);
@@ -411,31 +316,32 @@ srey_ctx *srey_init(uint16_t nnet, uint16_t nworker, size_t stack_size,
     rwlock_init(&ctx->lckcerts);
     arr_certs_init(&ctx->arrcerts, 0);
 #endif
-    ctx->monitor.thread = thread_creat(_loop_monitor, ctx);
+    ctx->monitor.thread = thread_creat(_monitor_loop, ctx);
     worker_ctx *worker;
     for (uint16_t i = 0; i < ctx->nworker; i++) {
         worker = &ctx->worker[i];
         worker->index = i;
         worker->srey = ctx;
-        worker->toindex = INVALID_INDEX;
+#if !SCHEDULER_GLOBAL
+        spin_init(&worker->lcktasks, SPIN_CNT_SCHEDULER);
+        qu_task_init(&worker->qutasks, ONEK);
         mutex_init(&worker->mutex);
         cond_init(&worker->cond);
-        qu_task_init(&worker->qutasks, ONEK);
-        timer_init(&worker->timer);
-        worker->thread = thread_creat(_loop_worker, worker);
+#endif
+        worker->thread = thread_creat(_worker_loop, worker);
     }
     tw_init(&ctx->tw);
     ev_init(&ctx->netev, nnet);
     return ctx;
 }
-static bool _scan_closing(const void *item, void *udata) {
+static bool _closing_push(const void *item, void *udata) {
     task_ctx *task = UPCAST(*((name_t **)item), task_ctx, name);
     if (ATOMIC_CAS(&task->closing, 0, 1)) {
-        _push_message(task, udata);
+        _task_message_push(task, udata);
     }
     return true;
 }
-static bool _scan_timeout(const void *item, void *udata) {
+static bool _closing_timeout(const void *item, void *udata) {
     task_ctx *task = UPCAST(*((name_t **)item), task_ctx, name);
     LOG_WARN("task %d close timeout, ref %d.", task->name, task->ref);
     return true;
@@ -443,23 +349,23 @@ static bool _scan_timeout(const void *item, void *udata) {
 static void _task_closing(srey_ctx *ctx) {
     message_ctx closing;
     closing.mtype = MSG_TYPE_CLOSING;
-    rwlock_rdlock(&ctx->lcktasks);
-    hashmap_scan(ctx->maptasks, _scan_closing, &closing);
-    rwlock_unlock(&ctx->lcktasks);
+    rwlock_rdlock(&ctx->lckmaptasks);
+    hashmap_scan(ctx->maptasks, _closing_push, &closing);
+    rwlock_unlock(&ctx->lckmaptasks);
     size_t n;
     uint32_t time = 0;
     for (;;) {
-        rwlock_rdlock(&ctx->lcktasks);
+        rwlock_rdlock(&ctx->lckmaptasks);
         n = hashmap_count(ctx->maptasks);
         if (0 == n) {
-            rwlock_unlock(&ctx->lcktasks);
+            rwlock_unlock(&ctx->lckmaptasks);
             break;
         }
         if (time >= 5 * 1000) {
             time = 0;
-            hashmap_scan(ctx->maptasks, _scan_timeout, NULL);
+            hashmap_scan(ctx->maptasks, _closing_timeout, NULL);
         }
-        rwlock_unlock(&ctx->lcktasks);
+        rwlock_unlock(&ctx->lckmaptasks);
         MSLEEP(50);
         time += 50;
     }
@@ -468,9 +374,9 @@ void srey_free(srey_ctx *ctx) {
     _task_closing(ctx);
     ctx->stop = 1;
     worker_ctx *worker;
+    _worker_wakeup_all(ctx);
     for (uint16_t i = 0; i < ctx->nworker; i++) {
         worker = &ctx->worker[i];
-        _worker_wakeup(worker, INVALID_TNAME, 1);
         thread_join(worker->thread);
     }
     ctx->monitor.stop = 1;
@@ -478,30 +384,38 @@ void srey_free(srey_ctx *ctx) {
     ev_free(&ctx->netev);
     tw_free(&ctx->tw);
 #if WITH_SSL
-    size_t n = arr_certs_size(&ctx->arrcerts);
-    for (size_t i = 0; i < n; i++) {
+    uint32_t n = arr_certs_size(&ctx->arrcerts);
+    for (uint32_t i = 0; i < n; i++) {
         evssl_free(arr_certs_at(&ctx->arrcerts, i)->ssl);
     }
     arr_certs_free(&ctx->arrcerts);
     rwlock_free(&ctx->lckcerts);
 #endif
+#if SCHEDULER_GLOBAL
+    spin_free(&ctx->lckglobal);
+    qu_task_free(&ctx->quglobal);
+    mutex_free(&ctx->mutex);
+    cond_free(&ctx->cond);
+#else
     for (uint16_t i = 0; i < ctx->nworker; i++) {
         worker = &ctx->worker[i];
+        spin_free(&worker->lcktasks);
+        qu_task_free(&worker->qutasks);
         mutex_free(&worker->mutex);
         cond_free(&worker->cond);
-        qu_task_free(&worker->qutasks);
     }
+#endif
     hashmap_free(ctx->maptasks);
-    rwlock_free(&ctx->lcktasks);
+    rwlock_free(&ctx->lckmaptasks);
     FREE(ctx->worker);
     FREE(ctx->monitor.version);
     FREE(ctx);
 }
 #if WITH_SSL
-static inline certs_ctx *_ssl_get(srey_ctx *ctx, name_t name) {
+static certs_ctx *_ssl_get(srey_ctx *ctx, name_t name) {
     certs_ctx *cert;
-    size_t n = arr_certs_size(&ctx->arrcerts);
-    for (size_t i = 0; i < n; i++) {
+    uint32_t n = arr_certs_size(&ctx->arrcerts);
+    for (uint32_t i = 0; i < n; i++) {
         cert = arr_certs_at(&ctx->arrcerts, i);
         if (name == cert->name) {
             return cert;
@@ -537,7 +451,7 @@ struct evssl_ctx *srey_ssl_qury(srey_ctx *ctx, name_t name) {
     return NULL == cert ? NULL : cert->ssl;
 }
 #endif
-static inline void _ctask_request_run(task_ctx *task, message_ctx *msg) {
+static void _ctask_request_run(task_ctx *task, message_ctx *msg) {
     if (NULL != task->_request[msg->pktype]) {
         task->_request[msg->pktype](task, msg);
     } else {
@@ -549,7 +463,7 @@ static inline void _ctask_request_run(task_ctx *task, message_ctx *msg) {
         LOG_WARN("request type %d not register callback.", msg->pktype);
     }
 }
-static inline void _ctask_timeout_run(task_ctx *task, message_ctx *msg) {
+static void _ctask_timeout_run(task_ctx *task, message_ctx *msg) {
     ctask_tmo_arg *tmo = msg->data;
     if (NULL == tmo
         || NULL == tmo->_timeout) {
@@ -557,7 +471,7 @@ static inline void _ctask_timeout_run(task_ctx *task, message_ctx *msg) {
     }
     tmo->_timeout(task, tmo->arg);
 }
-task_ctx *srey_task_new(task_type ttype, name_t name, uint16_t maxcnt, free_cb _argfree, void *arg) {
+task_ctx *srey_task_new(task_type ttype, name_t name, free_cb _argfree, void *arg) {
     if (INVALID_TNAME == name) {
         return NULL;
     }
@@ -565,7 +479,6 @@ task_ctx *srey_task_new(task_type ttype, name_t name, uint16_t maxcnt, free_cb _
     CALLOC(task, 1, sizeof(task_ctx));
     task->ttype = (uint8_t)ttype;
     task->name = name;
-    task->maxcnt = 0 == maxcnt ? 5 : maxcnt;
     task->ref = 1;
     task->_arg_free = _argfree;
     task->arg = arg;
@@ -576,13 +489,12 @@ task_ctx *srey_task_new(task_type ttype, name_t name, uint16_t maxcnt, free_cb _
     }
     _coro_new(task);
     _rpc_new(task);
-    spin_init(&task->spin_msg, SPIN_CNT_TASKMSG);
-    qu_message_init(&task->qumsg, ONEK * 4);
-    qu_message_init(&task->qutmo, ONEK);
+    spin_init(&task->lckmsg, SPIN_CNT_TASKMSG);
+    qu_message_init(&task->qumsg, ONEK);
     qu_ptr_init(&task->qutmoarg, 0);
     return task;
 }
-static inline void _timeout_free_arg(ctask_tmo_arg *tmo) {
+static void _timeout_arg_free(ctask_tmo_arg *tmo) {
     if (NULL == tmo) {
         return;
     }
@@ -601,18 +513,14 @@ void srey_task_free(task_ctx *task) {
     while (NULL != (msg = qu_message_pop(&task->qumsg))) {
         message_clean(task, msg->mtype, msg->pktype, msg->data);
     }
-    while (NULL != (msg = qu_message_pop(&task->qutmo))) {
-        message_clean(task, msg->mtype, msg->pktype, msg->data);
-    }
     ctask_tmo_arg **tmo;
     while (NULL != (tmo = (ctask_tmo_arg **)qu_ptr_pop(&task->qutmoarg))) {
-        _timeout_free_arg(*tmo);
+        _timeout_arg_free(*tmo);
     }
     _coro_free(task);
     _rpc_free(task);
     qu_message_free(&task->qumsg);
-    spin_free(&task->spin_msg);
-    qu_message_free(&task->qutmo);
+    spin_free(&task->lckmsg);
     qu_ptr_free(&task->qutmoarg);
     FREE(task);
 }
@@ -637,36 +545,30 @@ void srey_task_regcb(task_ctx *task, msg_type mtype, task_run _cb) {
     }
 }
 int32_t srey_task_register(srey_ctx *ctx, task_ctx *task) {
-    task->index = (uint16_t)(ATOMIC_ADD(&ctx->index, 1) % ctx->nworker);
     task->srey = ctx;
     message_ctx startup;
     startup.mtype = MSG_TYPE_STARTUP;
-    rwlock_wrlock(&ctx->lcktasks);
+    rwlock_wrlock(&ctx->lckmaptasks);
     if (NULL != _map_task_get(ctx->maptasks, task->name)) {
-        rwlock_unlock(&ctx->lcktasks);
+        rwlock_unlock(&ctx->lckmaptasks);
         LOG_ERROR("task name %d repeat.", task->name);
         return ERR_FAILED;
     }
     _map_task_set(ctx->maptasks, task);
-    qu_message_push(&task->qumsg, &startup);
-    task->global = 1;
-    rwlock_unlock(&ctx->lcktasks);
-#if RECORD_WORKER_LOAD
-    ATOMIC_ADD(&ctx->worker[task->index].ntask, 1);
-#endif
-    _worker_wakeup(&ctx->worker[task->index], task->name, 1);
+    _task_message_push(task, &startup);
+    rwlock_unlock(&ctx->lckmaptasks);
     return ERR_OK;
 }
 task_ctx *srey_task_grab(srey_ctx *ctx, name_t name) {
     if (INVALID_TNAME == name) {
         return NULL;
     }
-    rwlock_rdlock(&ctx->lcktasks);
+    rwlock_rdlock(&ctx->lckmaptasks);
     task_ctx *task = _map_task_get(ctx->maptasks, name);
     if (NULL != task) {
         ATOMIC_ADD(&task->ref, 1);
     }
-    rwlock_unlock(&ctx->lcktasks);
+    rwlock_unlock(&ctx->lckmaptasks);
     return task;
 }
 void srey_task_incref(task_ctx *task) {
@@ -677,15 +579,12 @@ void srey_task_ungrab(task_ctx *task) {
         return;
     }
     void *ptr = NULL;
-    rwlock_wrlock(&task->srey->lcktasks);
+    rwlock_wrlock(&task->srey->lckmaptasks);
     if (0 == task->ref) {
         ptr = _map_task_del(task->srey->maptasks, task->name);
     }
-    rwlock_unlock(&task->srey->lcktasks);
+    rwlock_unlock(&task->srey->lckmaptasks);
     if (NULL != ptr) {
-#if RECORD_WORKER_LOAD
-        ATOMIC_ADD(&task->srey->worker[task->index].ntask, -1);
-#endif
         srey_task_free(task);
     }
 }
@@ -693,26 +592,26 @@ void srey_task_close(task_ctx *task) {
     if (ATOMIC_CAS(&task->closing, 0, 1)) {
         message_ctx closing;
         closing.mtype = MSG_TYPE_CLOSING;
-        _push_message(task, &closing);
+        _task_message_push(task, &closing);
     }
 }
-static inline void _srey_timeout(ud_cxt *ud) {
+static void _srey_timeout(ud_cxt *ud) {
     task_ctx *task = srey_task_grab(ud->data, ud->name);
     if (NULL == task) {
-        _timeout_free_arg(ud->extra);
+        _timeout_arg_free(ud->extra);
         return;
     }
     message_ctx msg;
     msg.mtype = MSG_TYPE_TIMEOUT;
     msg.sess = ud->sess;
     msg.data = ud->extra;
-    _push_message(task, &msg);
+    _task_message_push(task, &msg);
     srey_task_ungrab(task);
 }
-static inline void _timeout_free_ud(void *arg) {
-    _timeout_free_arg(((ud_cxt *)arg)->extra);
+static void _timeout_ud_free(void *arg) {
+    _timeout_arg_free(((ud_cxt *)arg)->extra);
 }
-static inline ctask_tmo_arg *_timeout_arg(task_ctx *task, ctask_timeout _timeout, free_cb _argfree, void *arg) {
+static ctask_tmo_arg *_timeout_arg(task_ctx *task, ctask_timeout _timeout, free_cb _argfree, void *arg) {
     ctask_tmo_arg *tmo, **tmp;
     tmp = (ctask_tmo_arg **)qu_ptr_pop(&task->qutmoarg);
     if (NULL == tmp) {
@@ -735,7 +634,7 @@ void srey_timeout(task_ctx *task, uint64_t sess, uint32_t ms, ctask_timeout _tim
     } else {
         ud.extra = NULL;
     }
-    tw_add(&task->srey->tw, ms, _srey_timeout, _timeout_free_ud, &ud);
+    tw_add(&task->srey->tw, ms, _srey_timeout, _timeout_ud_free, &ud);
 }
 void srey_request(task_ctx *dst, task_ctx *src, request_type rtype, uint64_t sess, void *data, size_t size, int32_t copy) {
     message_ctx msg;
@@ -755,7 +654,7 @@ void srey_request(task_ctx *dst, task_ctx *src, request_type rtype, uint64_t ses
         msg.data = data;
     }
     msg.size = size;
-    _push_message(dst, &msg);
+    _task_message_push(dst, &msg);
 }
 void srey_response(task_ctx *dst, uint64_t sess, int32_t erro, void *data, size_t size, int32_t copy) {
     message_ctx msg;
@@ -773,12 +672,12 @@ void srey_response(task_ctx *dst, uint64_t sess, int32_t erro, void *data, size_
     } else {
         msg.data = NULL;
     }
-    _push_message(dst, &msg);
+    _task_message_push(dst, &msg);
 }
 void srey_call(task_ctx *dst, request_type rtype, void *data, size_t size, int32_t copy) {
     srey_request(dst, NULL, rtype, 0, data, size, copy);
 }
-static inline int32_t _net_accept(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud) {
+static int32_t _net_accept(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud) {
     task_ctx *task = srey_task_grab(ud->data, ud->name);
     if (NULL == task) {
         return ERR_FAILED;
@@ -788,11 +687,11 @@ static inline int32_t _net_accept(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *
     msg.pktype = ud->pktype;
     msg.fd = fd;
     msg.skid = skid;
-    _push_message(task, &msg);
+    _task_message_push(task, &msg);
     srey_task_ungrab(task);
     return ERR_OK;
 }
-static inline void _set_sess_slice(message_ctx *msg, ud_cxt *ud, int32_t slice) {
+static void _set_sess_slice(message_ctx *msg, ud_cxt *ud, int32_t slice) {
     if (0 != ud->sess
         && SLICE_NONE == ud->slice) {
         msg->sess = ud->sess;
@@ -821,7 +720,7 @@ static inline void _set_sess_slice(message_ctx *msg, ud_cxt *ud, int32_t slice) 
         msg->sess = 0;
     }
 }
-static inline void _net_recv(ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, size_t size, ud_cxt *ud) {
+static void _net_recv(ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, size_t size, ud_cxt *ud) {
     task_ctx *task = srey_task_grab(ud->data, ud->name);
     if (NULL == task) {
         ev_close(ev, fd, skid);
@@ -843,7 +742,7 @@ static inline void _net_recv(ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *b
             msg.data = data;
             msg.size = lens;
             _set_sess_slice(&msg, ud, slice);
-            _push_message(task, &msg);
+            _task_message_push(task, &msg);
         }
     } while (NULL != data && 0 != buffer_size(buf));
     if (0 != closefd) {
@@ -851,7 +750,7 @@ static inline void _net_recv(ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *b
     }
     srey_task_ungrab(task);
 }
-static inline void _net_send(ev_ctx *ev, SOCKET fd, uint64_t skid, size_t size, ud_cxt *ud) {
+static void _net_send(ev_ctx *ev, SOCKET fd, uint64_t skid, size_t size, ud_cxt *ud) {
     task_ctx *task = srey_task_grab(ud->data, ud->name);
     if (NULL == task) {
         ev_close(ev, fd, skid);
@@ -865,10 +764,10 @@ static inline void _net_send(ev_ctx *ev, SOCKET fd, uint64_t skid, size_t size, 
     msg.skid = skid;
     msg.sess = ud->sess;
     msg.size = size;
-    _push_message(task, &msg);
+    _task_message_push(task, &msg);
     srey_task_ungrab(task);
 }
-static inline void _net_close(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud) {
+static void _net_close(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud) {
     task_ctx *task = srey_task_grab(ud->data, ud->name);
     if (NULL == task) {
         return;
@@ -879,7 +778,7 @@ static inline void _net_close(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud) 
     msg.fd = fd;
     msg.skid = skid;
     msg.sess = ud->sess;
-    _push_message(task, &msg);
+    _task_message_push(task, &msg);
     srey_task_ungrab(task);
 }
 int32_t srey_listen(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
@@ -900,7 +799,7 @@ int32_t srey_listen(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
     cbs.ud_free = protos_udfree;
     return ev_listen(&task->srey->netev, evssl, ip, port, &cbs, &ud, id);
 }
-static inline int32_t _net_connect(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t err, ud_cxt *ud) {
+static int32_t _net_connect(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t err, ud_cxt *ud) {
     task_ctx *task = srey_task_grab(ud->data, ud->name);
     if (NULL == task) {
         return ERR_FAILED;
@@ -913,7 +812,7 @@ static inline int32_t _net_connect(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t
     msg.erro = err;
     msg.sess = ud->sess;
     ud->sess = 0;
-    _push_message(task, &msg);
+    _task_message_push(task, &msg);
     srey_task_ungrab(task);
     return ERR_OK;
 }
@@ -937,7 +836,7 @@ SOCKET srey_connect(task_ctx *task, uint64_t sess, pack_type pktype, struct evss
     cbs.ud_free = protos_udfree;
     return ev_connect(&task->srey->netev, evssl, ip, port, &cbs, &ud, skid);
 }
-static inline void _net_recvfrom(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
+static void _net_recvfrom(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
     task_ctx *task = srey_task_grab(ud->data, ud->name);
     if (NULL == task) {
         ev_close(ev, fd, skid);
@@ -956,7 +855,7 @@ static inline void _net_recvfrom(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf
     msg.sess = ud->sess;
     msg.slice = SLICE_NONE;
     ud->sess = 0;
-    _push_message(task, &msg);
+    _task_message_push(task, &msg);
     srey_task_ungrab(task);
 }
 SOCKET srey_udp(task_ctx *task, const char *ip, uint16_t port, uint64_t *skid) {
@@ -970,7 +869,7 @@ SOCKET srey_udp(task_ctx *task, const char *ip, uint16_t port, uint64_t *skid) {
     cbs.ud_free = protos_udfree;
     return ev_udp(&task->srey->netev, ip, port, &cbs, &ud, skid);
 }
-void push_handshaked(SOCKET fd, uint64_t skid, ud_cxt *ud, int32_t *closefd, int32_t erro) {
+void handshaked_push(SOCKET fd, uint64_t skid, ud_cxt *ud, int32_t *closefd, int32_t erro) {
     task_ctx *task = srey_task_grab(ud->data, ud->name);
     if (NULL == task) {
         *closefd = 1;
@@ -984,6 +883,6 @@ void push_handshaked(SOCKET fd, uint64_t skid, ud_cxt *ud, int32_t *closefd, int
     msg.skid = skid;
     msg.sess = ud->sess;
     msg.erro = erro;
-    _push_message(task, &msg);
+    _task_message_push(task, &msg);
     srey_task_ungrab(task);
 }

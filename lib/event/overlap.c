@@ -177,29 +177,29 @@ void _remove_fd(watcher_ctx *watcher, SOCKET fd) {
     sock_ctx *pkey = &key;
     hashmap_delete(watcher->element, &pkey);
 }
-static inline int32_t _call_acp_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp) {
+static int32_t _call_acp_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp) {
     return oltcp->cbs.acp_cb(ev, oltcp->ol_r.fd, oltcp->skid, &oltcp->ud);
 }
-static inline int32_t _call_conn_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp, int32_t err) {
+static int32_t _call_conn_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp, int32_t err) {
     return oltcp->cbs.conn_cb(ev, oltcp->ol_r.fd, oltcp->skid, err, &oltcp->ud);
 }
-static inline void _call_recv_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp, size_t nread) {
+static void _call_recv_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp, size_t nread) {
     if (nread > 0) {
         oltcp->cbs.r_cb(ev, oltcp->ol_r.fd, oltcp->skid, &oltcp->buf_r, nread, &oltcp->ud);
     }
 }
-static inline void _call_send_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp, size_t nsend) {
+static void _call_send_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp, size_t nsend) {
     if (NULL != oltcp->cbs.s_cb
         && nsend > 0) {
         oltcp->cbs.s_cb(ev, oltcp->ol_s.fd, oltcp->skid, nsend, &oltcp->ud);
     }
 }
-static inline void _call_close_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp) {
+static void _call_close_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp) {
     if (NULL != oltcp->cbs.c_cb) {
         oltcp->cbs.c_cb(ev, oltcp->ol_r.fd, oltcp->skid, &oltcp->ud);
     }
 }
-static inline void _call_recvfrom_cb(ev_ctx *ev, overlap_udp_ctx *oludp, size_t nread) {
+static void _call_recvfrom_cb(ev_ctx *ev, overlap_udp_ctx *oludp, size_t nread) {
     if (nread > 0) {
         oludp->cbs.rf_cb(ev, oludp->ol_r.fd, oludp->skid, oludp->wsabuf_r.buf, nread, &oludp->addr, &oludp->ud);
     }
@@ -223,7 +223,7 @@ int32_t _post_recv(sock_ctx *skctx, DWORD  *bytes, DWORD  *flag, IOV_TYPE *wsabu
     return ERR_OK;
 }
 #if WITH_SSL
-static inline int32_t _ssl_handshake_acpt(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
+static int32_t _ssl_handshake_acpt(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
     int32_t rtn = ERR_FAILED;
     switch (evssl_tryacpt(oltcp->ssl)) {
     case ERR_FAILED://´íÎó
@@ -248,7 +248,7 @@ static inline int32_t _ssl_handshake_acpt(watcher_ctx *watcher, overlap_tcp_ctx 
     }
     return rtn;
 }
-static inline int32_t _ssl_handshake_conn(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
+static int32_t _ssl_handshake_conn(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
     int32_t rtn = ERR_FAILED;
     switch (evssl_tryconn(oltcp->ssl)) {
     case ERR_FAILED://´íÎó
@@ -275,14 +275,14 @@ static inline int32_t _ssl_handshake_conn(watcher_ctx *watcher, overlap_tcp_ctx 
     }
     return rtn;
 }
-static inline int32_t _ssl_handshake(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
+static int32_t _ssl_handshake(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
     if (BIT_CHECK(oltcp->status, STATUS_SERVER)) {
         return _ssl_handshake_acpt(watcher, oltcp);
     }
     return _ssl_handshake_conn(watcher, oltcp);
 }
 #endif
-static inline void _tcp_recv(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
+static void _tcp_recv(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
     size_t nread;
 #if WITH_SSL
     int32_t rtn = buffer_from_sock(&oltcp->buf_r, oltcp->ol_r.fd, &nread, _sock_read, oltcp->ssl);
@@ -340,7 +340,7 @@ static void _on_recv_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
     _tcp_recv(watcher, oltcp);
 }
 //send
-static inline int32_t _post_send(overlap_tcp_ctx *oltcp) {
+static int32_t _post_send(overlap_tcp_ctx *oltcp) {
     oltcp->bytes_s = 0;
     ZERO(&oltcp->ol_s.overlapped, sizeof(oltcp->ol_s.overlapped));
     if (ERR_OK != WSASend(oltcp->ol_s.fd,
@@ -402,7 +402,7 @@ void _add_bufs_trypost(sock_ctx *skctx, off_buf_ctx *buf) {
     }
 }
 //connect
-static inline int32_t _trybind(SOCKET fd, int32_t family) {
+static int32_t _trybind(SOCKET fd, int32_t family) {
     int32_t rtn;
     netaddr_ctx addr;
     if (AF_INET == family) {
@@ -420,7 +420,7 @@ static inline int32_t _trybind(SOCKET fd, int32_t family) {
     }
     return ERR_OK;
 }
-static inline int32_t _post_connect(overlap_tcp_ctx *oltcp, netaddr_ctx *addr) {
+static int32_t _post_connect(overlap_tcp_ctx *oltcp, netaddr_ctx *addr) {
     oltcp->bytes_r = 0;
     ZERO(&oltcp->ol_r.overlapped, sizeof(oltcp->ol_r.overlapped));
     if (!_exfuncs.connectex(oltcp->ol_r.fd,
@@ -438,7 +438,7 @@ static inline int32_t _post_connect(overlap_tcp_ctx *oltcp, netaddr_ctx *addr) {
     }
     return ERR_OK;
 }
-static inline void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
+static void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
     skctx->ev_cb = _on_recv_cb;
     overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
     if (ERROR_SUCCESS != oltcp->ol_r.overlapped.Internal) {
@@ -524,7 +524,7 @@ SOCKET ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
     return fd;
 }
 //listen
-static inline int32_t _post_accept(overlap_acpt_ctx *olacp) {
+static int32_t _post_accept(overlap_acpt_ctx *olacp) {
     SOCKET fd = _create_sock(SOCK_STREAM, olacp->lsn->family);
     if (INVALID_SOCK == fd) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
@@ -550,7 +550,7 @@ static inline int32_t _post_accept(overlap_acpt_ctx *olacp) {
     }
     return ERR_OK;
 }
-static inline void _on_accept_cb(acceptex_ctx *acpctx, sock_ctx *skctx, DWORD bytes) {
+static void _on_accept_cb(acceptex_ctx *acpctx, sock_ctx *skctx, DWORD bytes) {
     overlap_acpt_ctx *olacp = UPCAST(skctx, overlap_acpt_ctx, overlap);
     listener_ctx *lsn = olacp->lsn;
     if (0 != lsn->remove) {
@@ -616,12 +616,12 @@ void _add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) {
         pool_push(&watcher->pool, skctx);
     }
 }
-static inline void _free_acceptex(listener_ctx *lsn, int32_t cnt) {
+static void _free_acceptex(listener_ctx *lsn, int32_t cnt) {
     for (int32_t i = 0; i < cnt; i++) {
         CLOSE_SOCK(lsn->overlap_acpt[i].overlap.fd);
     }
 }
-static inline int32_t _acceptex(ev_ctx *ev, listener_ctx *lsn) {
+static int32_t _acceptex(ev_ctx *ev, listener_ctx *lsn) {
     if (NULL == CreateIoCompletionPort((HANDLE)lsn->fd, ev->acpex[0].iocp, 0, ev->nacpex)) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
@@ -684,12 +684,12 @@ void _freelsn(listener_ctx *lsn) {
     CLOSE_SOCK(lsn->fd);
     FREE(lsn);
 }
-static inline listener_ctx * _get_listener(ev_ctx *ctx, uint64_t id) {
+static listener_ctx * _get_listener(ev_ctx *ctx, uint64_t id) {
     listener_ctx *lsn = NULL;
     listener_ctx **tmp;
     spin_lock(&ctx->spin);
-    size_t n = arr_ptr_size(&ctx->arrlsn);
-    for (size_t i = 0; i < n; i++) {
+    uint32_t n = arr_ptr_size(&ctx->arrlsn);
+    for (uint32_t i = 0; i < n; i++) {
         tmp = (listener_ctx **)arr_ptr_at(&ctx->arrlsn, i);
         if ((*tmp)->id == id) {
             lsn = *tmp;
@@ -715,7 +715,7 @@ void ev_unlisten(ev_ctx *ctx, uint64_t id) {
     }
 }
 //UDP
-static inline int32_t _post_recv_from(overlap_udp_ctx *oludp) {
+static int32_t _post_recv_from(overlap_udp_ctx *oludp) {
     ZERO(&oludp->ol_r.overlapped, sizeof(oludp->ol_r.overlapped));
     oludp->flag = oludp->bytes_r = 0;
     if (ERR_OK != WSARecvFrom(oludp->ol_r.fd,
@@ -733,7 +733,7 @@ static inline int32_t _post_recv_from(overlap_udp_ctx *oludp) {
     }
     return ERR_OK;
 }
-static inline void _on_udp_close_r(watcher_ctx *watcher, overlap_udp_ctx *oludp) {
+static void _on_udp_close_r(watcher_ctx *watcher, overlap_udp_ctx *oludp) {
     if (BIT_CHECK(oludp->status, STATUS_SENDING)) {
         BIT_SET(oludp->status, STATUS_REMOVE);
     } else {
@@ -741,7 +741,7 @@ static inline void _on_udp_close_r(watcher_ctx *watcher, overlap_udp_ctx *oludp)
         _free_udp(&oludp->ol_r);
     }
 }
-static inline void _on_recvfrom_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
+static void _on_recvfrom_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
     overlap_udp_ctx *oludp = UPCAST(skctx, overlap_udp_ctx, ol_r);
     if (0 == bytes) {
         BIT_SET(oludp->status, STATUS_ERROR);
@@ -758,7 +758,7 @@ static inline void _on_recvfrom_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD 
         _on_udp_close_r(watcher, oludp);
     }
 }
-static inline int32_t _post_sendto(overlap_udp_ctx *oludp, off_buf_ctx *buf) {
+static int32_t _post_sendto(overlap_udp_ctx *oludp, off_buf_ctx *buf) {
     ZERO(&oludp->ol_s.overlapped, sizeof(oludp->ol_s.overlapped));
     oludp->bytes_s = 0;
     netaddr_ctx *addr = (netaddr_ctx *)buf->data;
@@ -779,7 +779,7 @@ static inline int32_t _post_sendto(overlap_udp_ctx *oludp, off_buf_ctx *buf) {
     }
     return ERR_OK;
 }
-static inline void _on_sendto_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
+static void _on_sendto_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
     overlap_udp_ctx *oludp = UPCAST(skctx, overlap_udp_ctx, ol_s); 
     void *data = oludp->wsabuf_s.IOV_PTR_FIELD - sizeof(netaddr_ctx);
     FREE(data);
@@ -818,7 +818,7 @@ void _add_bufs_trysendto(sock_ctx *skctx, off_buf_ctx *buf) {
         BIT_REMOVE(oludp->status, STATUS_SENDING);
     }
 }
-static inline sock_ctx *_new_udp(SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
+static sock_ctx *_new_udp(SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
     overlap_udp_ctx *oludp;
     MALLOC(oludp, sizeof(overlap_udp_ctx));
     oludp->ol_r.type = SOCK_DGRAM;

@@ -6,13 +6,13 @@
 #include "cjson/cJSON.h"
 #include "ds/hashmap.h"
 
-static inline uint64_t _map_rpc_hash(const void *item, uint64_t seed0, uint64_t seed1) {
+static uint64_t _map_rpc_hash(const void *item, uint64_t seed0, uint64_t seed1) {
     return hash(((rpc_ctx *)item)->method, strlen(((rpc_ctx *)item)->method));
 }
-static inline int _map_rpc_compare(const void *a, const void *b, void *ud) {
+static int _map_rpc_compare(const void *a, const void *b, void *ud) {
     return strcmp(((rpc_ctx *)a)->method, ((rpc_ctx *)b)->method);
 }
-static inline rpc_cb _map_rpc_get(task_ctx *task, const char *name) {
+static rpc_cb _map_rpc_get(task_ctx *task, const char *name) {
     rpc_ctx key;
     size_t nlens = strlen(name);
     strcpy(key.method, name);
@@ -31,7 +31,7 @@ void _rpc_new(task_ctx *task) {
 void _rpc_free(task_ctx *task) {
     hashmap_free(task->maprpc);
 }
-static inline cJSON *_rpc_call(task_ctx *task, cJSON *request) {
+static cJSON *_rpc_call(task_ctx *task, cJSON *request) {
     cJSON *val = cJSON_GetObjectItemCaseSensitive(request, "method");
     if (NULL == val
         || !cJSON_IsString(val)
@@ -78,7 +78,7 @@ void rpc_register(task_ctx *task, const char *method, rpc_cb _cb) {
     rpc.rpc = _cb;
     hashmap_set(task->maprpc, &rpc);
 }
-static inline int32_t _dump_args(cJSON *jarg, const char *fomat, va_list args) {
+static int32_t _args_dump(cJSON *jarg, const char *fomat, va_list args) {
     size_t flens = strlen(fomat);
     if (0 == flens) {
         return ERR_OK;
@@ -151,7 +151,7 @@ static inline int32_t _dump_args(cJSON *jarg, const char *fomat, va_list args) {
     }
     return ERR_OK;
 }
-static inline char *_format_method(const char *method, const char *fomat, va_list args) {
+static char *_method_format(const char *method, const char *fomat, va_list args) {
     cJSON *request = cJSON_CreateObject();
     if (NULL == request) {
         return NULL;
@@ -165,7 +165,7 @@ static inline char *_format_method(const char *method, const char *fomat, va_lis
         cJSON_Delete(request);
         return NULL;
     }
-    if (ERR_OK != _dump_args(jarg, fomat, args)) {
+    if (ERR_OK != _args_dump(jarg, fomat, args)) {
         cJSON_Delete(request);
         return NULL;
     }
@@ -173,11 +173,11 @@ static inline char *_format_method(const char *method, const char *fomat, va_lis
     cJSON_Delete(request);
     return json;
 }
-cJSON *rpc_format_args(const char *fomat, ...) {
+cJSON *rpc_args_format(const char *fomat, ...) {
     cJSON *resp = cJSON_CreateArray();
     va_list args;
     va_start(args, fomat);
-    int32_t rtn = _dump_args(resp, fomat, args);
+    int32_t rtn = _args_dump(resp, fomat, args);
     va_end(args);
     if (ERR_OK != rtn) {
         cJSON_Delete(resp);
@@ -188,7 +188,7 @@ cJSON *rpc_format_args(const char *fomat, ...) {
 void rpc_call(task_ctx *dst, const char *method, const char *fomat, ...) {
     va_list args;
     va_start(args, fomat);
-    char *req = _format_method(method, fomat, args);
+    char *req = _method_format(method, fomat, args);
     va_end(args);
     if (NULL == req) {
         return;
@@ -198,7 +198,7 @@ void rpc_call(task_ctx *dst, const char *method, const char *fomat, ...) {
 void *rpc_request(task_ctx *dst, task_ctx *src, int32_t *erro, size_t *lens, const char *method, const char *fomat, ...) {
     va_list args;
     va_start(args, fomat);
-    char *req = _format_method(method, fomat, args);
+    char *req = _method_format(method, fomat, args);
     va_end(args);
     if (NULL == req) {
         *erro = ERR_FAILED;
@@ -206,7 +206,7 @@ void *rpc_request(task_ctx *dst, task_ctx *src, int32_t *erro, size_t *lens, con
     }
     return syn_request(dst, src, REQ_TYPE_RPC, req, strlen(req), 0, erro, lens);
 }
-static inline void _net_rpc_sign(buffer_ctx *buf, const char *url, const char *jreq, const char *key) {
+static void _net_rpc_sign(buffer_ctx *buf, const char *url, const char *jreq, const char *key) {
     size_t klens = strlen(key);
     if (0 == klens) {
         return;
@@ -235,7 +235,7 @@ void rpc_net_call(task_ctx *task, name_t dst, SOCKET fd, uint64_t skid, const ch
     const char *method, const char *fomat, ...) {
     va_list args;
     va_start(args, fomat);
-    char *jreq = _format_method(method, fomat, args);
+    char *jreq = _method_format(method, fomat, args);
     va_end(args);
     if (NULL == jreq) {
         return;
@@ -261,7 +261,7 @@ void *rpc_net_request(task_ctx *task, name_t dst, SOCKET fd, uint64_t skid, cons
     size_t *lens, const char *method, const char *fomat, ...) {
     va_list args;
     va_start(args, fomat);
-    char *jreq = _format_method(method, fomat, args);
+    char *jreq = _method_format(method, fomat, args);
     va_end(args);
     if (NULL == jreq) {
         return NULL;

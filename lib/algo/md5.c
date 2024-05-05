@@ -16,7 +16,7 @@
 #define II(a,b,c,d,m,s,t) { a += I(b,c,d) + m + t; \
                             a = b + ROTLEFT(a,s); }
 
-static inline void _transform(md5_ctx *ctx, const unsigned char *data) {
+static void _transform(md5_ctx *ctx, const unsigned char *data) {
     word_t a, b, c, d, m[16], i, j;
     // MD5 specifies big endian byte order, but this implementation assumes a little
     // endian byte order CPU. Reverse all the bytes upon input, and re-reverse them

@@ -3,13 +3,14 @@
 
 #include "os.h"
 
-#define MEMORY_CHECK         1
-#define WITH_SSL             0
-#define WITH_LUA             0
+#define MEMORY_CHECK        1
+#define WITH_SSL            0
+#define WITH_LUA            1
+#define SCHEDULER_GLOBAL    0
 
 #define KEEPALIVE_TIME      30
 #define KEEPALIVE_INTERVAL  2
-#define CMD_MAX_NREAD       64
+#define CMD_MAX_NREAD       1024
 #define EVENT_WAIT_TIMEOUT  100
 #define EVENT_CHANGES_CNT   128
 #define INIT_EVENTS_CNT     256
@@ -24,6 +25,7 @@
 #define TIMER_ACCURACY      1000000
 
 #define SPIN_CNT_TIMEWHEEL  32
+#define SPIN_CNT_SCHEDULER  32
 #define SPIN_CNT_TASKMSG    32
 #define SPIN_CNT_CMD        32
 #define SPIN_CNT_LSN        32

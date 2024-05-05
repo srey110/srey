@@ -51,16 +51,6 @@ static void _parse_config(config_ctx *cnf) {
         && cJSON_IsNumber(val)) {
         cnf->stack_size = (size_t)val->valuedouble;
     }
-    val = cJSON_GetObjectItem(json, "interval");
-    if (NULL != val
-        && cJSON_IsNumber(val)) {
-        cnf->interval = (uint16_t)val->valuedouble;
-    }
-    val = cJSON_GetObjectItem(json, "threshold");
-    if (NULL != val
-        && cJSON_IsNumber(val)) {
-        cnf->threshold = (uint16_t)val->valuedouble;
-    }
     val = cJSON_GetObjectItem(json, "loglv");
     if (NULL != val
         && cJSON_IsNumber(val)) {
@@ -175,8 +165,7 @@ static int32_t service_init(void) {
     srand((uint32_t)time(NULL));
     mutex_init(&muexit);
     cond_init(&condexit);
-    srey = srey_init(config.nnet, config.nworker, config.stack_size,
-        config.interval, config.threshold, config.harborkey);
+    srey = srey_init(config.nnet, config.nworker, config.stack_size, config.harborkey);
     if (ERR_OK != task_startup(srey, &config)) {
         service_exit();
         return ERR_FAILED;

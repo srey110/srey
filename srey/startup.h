@@ -8,8 +8,6 @@ typedef struct config_ctx {
     uint8_t logfile;
     uint16_t nnet;
     uint16_t nworker;
-    uint16_t interval;
-    uint16_t threshold;
     uint16_t harborport;
     name_t harborname;
     name_t harborssl;
@@ -19,7 +17,7 @@ typedef struct config_ctx {
     char harborkey[SIGN_KEY_LENS];
 }config_ctx;
 
-static inline int32_t task_startup(srey_ctx *ctx, config_ctx *config) {
+static int32_t task_startup(srey_ctx *ctx, config_ctx *config) {
     int32_t rtn = harbor_start(ctx, config->harborname, config->harborssl, config->harborip, config->harborport);
     if (ERR_OK != rtn) {
         return rtn;

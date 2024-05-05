@@ -11,7 +11,7 @@ void log_handle(FILE *file) {
 void log_setlv(LOG_LEVEL lv) {
     _log_lv = lv;
 }
-static inline const char *_lvstr(int32_t lv) {
+static const char *_lvstr(int32_t lv) {
     switch (lv) {
     case LOGLV_FATAL:
         return "fatal";
@@ -26,7 +26,7 @@ static inline const char *_lvstr(int32_t lv) {
     }
     return "";
 }
-static inline void _slog(int32_t lv, const char *fmt, va_list args) {
+static void _slog(int32_t lv, const char *fmt, va_list args) {
     char time[TIME_LENS] = { 0 };
     mstostr(nowms(), "%Y-%m-%d %H:%M:%S", time);
     char out[4096];

@@ -34,7 +34,7 @@ int32_t _http_check_keyval(http_header_ctx *head, const char *key, const char *v
     }
     return ERR_FAILED;
 }
-static inline void _check_fileld(http_pack_ctx *pack, http_header_ctx *field, int32_t *status) {
+static void _check_fileld(http_pack_ctx *pack, http_header_ctx *field, int32_t *status) {
     switch (tolower(*((char *)field->key.data))) {
     case 'c':
         if (ERR_OK == _http_check_keyval(field, "content-length", NULL)) {
@@ -53,7 +53,7 @@ static inline void _check_fileld(http_pack_ctx *pack, http_header_ctx *field, in
         break;
     }
 }
-static inline char *_http_parse_status(http_pack_ctx *pack, size_t flens) {
+static char *_http_parse_status(http_pack_ctx *pack, size_t flens) {
     char *head = pack->head.data;
     head = skipempty(head, pack->head.lens);
     if (NULL == head) {
@@ -90,7 +90,7 @@ static inline char *_http_parse_status(http_pack_ctx *pack, size_t flens) {
     pack->status[2].lens = pos - head;
     return pos + flens;
 }
-static inline int32_t _http_parse_head(http_pack_ctx *pack, int32_t *status) {
+static int32_t _http_parse_head(http_pack_ctx *pack, int32_t *status) {
     size_t flens = strlen(FLAG_CRLF);
     char *head = _http_parse_status(pack, flens);
     if (NULL == head) {
@@ -132,7 +132,7 @@ static inline int32_t _http_parse_head(http_pack_ctx *pack, int32_t *status) {
     }
     return ERR_OK;
 }
-static inline http_pack_ctx *_http_content(buffer_ctx *buf, ud_cxt *ud, int32_t *closefd) {
+static http_pack_ctx *_http_content(buffer_ctx *buf, ud_cxt *ud, int32_t *closefd) {
     http_pack_ctx *pack = ud->extra;
     if (buffer_size(buf) >= pack->data.lens) {
         MALLOC(pack->data.data, pack->data.lens);
@@ -144,7 +144,7 @@ static inline http_pack_ctx *_http_content(buffer_ctx *buf, ud_cxt *ud, int32_t 
         return NULL;
     }
 }
-static inline size_t _http_headlens(buffer_ctx *buf, int32_t *closefd) {
+static size_t _http_headlens(buffer_ctx *buf, int32_t *closefd) {
     size_t flens = strlen("\r\n\r\n");
     int32_t pos = buffer_search(buf, 0, 0, 0, "\r\n\r\n", flens);
     if (ERR_FAILED == pos) {
@@ -160,7 +160,7 @@ static inline size_t _http_headlens(buffer_ctx *buf, int32_t *closefd) {
     }
     return hlens;
 }
-static inline http_pack_ctx *_http_headpack(size_t lens) {
+static http_pack_ctx *_http_headpack(size_t lens) {
     char *pack;
     CALLOC(pack, 1, sizeof(http_pack_ctx) + lens);
     ((http_pack_ctx *)pack)->head.data = pack + sizeof(http_pack_ctx);
@@ -183,7 +183,7 @@ http_pack_ctx *_http_parsehead(buffer_ctx *buf, int32_t *status, int32_t *closef
     }
     return pack;
 }
-static inline http_pack_ctx *_http_header(buffer_ctx *buf, ud_cxt *ud, int32_t *closefd, int32_t *slice) {
+static http_pack_ctx *_http_header(buffer_ctx *buf, ud_cxt *ud, int32_t *closefd, int32_t *slice) {
     int32_t status;
     http_pack_ctx *pack = _http_parsehead(buf, &status, closefd);
     if (NULL == pack) {
@@ -207,7 +207,7 @@ static inline http_pack_ctx *_http_header(buffer_ctx *buf, ud_cxt *ud, int32_t *
         return pack;
     }
 }
-static inline http_pack_ctx *_http_chunkedpack(size_t lens) {
+static http_pack_ctx *_http_chunkedpack(size_t lens) {
     char *pack;
     CALLOC(pack, 1, sizeof(http_pack_ctx) + lens);
     http_pack_ctx *pctx = (http_pack_ctx *)pack;
@@ -218,7 +218,7 @@ static inline http_pack_ctx *_http_chunkedpack(size_t lens) {
     pctx->chunked = 2;
     return pctx;
 }
-static inline http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud,
+static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud,
     int32_t *closefd, int32_t *slice) {
     size_t drain;
     size_t flens = strlen(FLAG_CRLF);
@@ -296,10 +296,10 @@ http_pack_ctx *http_unpack(buffer_ctx *buf, size_t *size, ud_cxt *ud,
 buf_ctx *http_status(http_pack_ctx *pack) {
     return pack->status;
 }
-size_t http_nheader(http_pack_ctx *pack) {
+uint32_t http_nheader(http_pack_ctx *pack) {
     return arr_header_size(&pack->header);
 }
-http_header_ctx *http_header_at(http_pack_ctx *pack, size_t pos) {
+http_header_ctx *http_header_at(http_pack_ctx *pack, uint32_t pos) {
     return arr_header_at(&pack->header, pos);
 }
 char *http_header(http_pack_ctx *pack, const char *header, size_t *lens) {
@@ -308,7 +308,8 @@ char *http_header(http_pack_ctx *pack, const char *header, size_t *lens) {
     }
     http_header_ctx *filed;
     size_t klens = strlen(header);
-    for (size_t i = 0; i < arr_header_size(&pack->header); i++) {
+    uint32_t n = arr_header_size(&pack->header);
+    for (uint32_t i = 0; i < n; i++) {
         filed = arr_header_at(&pack->header, i);
         if (buf_icompare(&filed->key, header, klens)) {
             *lens = filed->value.lens;

@@ -47,7 +47,7 @@ void test_array(CuTest* tc) {
     arr_del_nomove(&arry, 18);
     CuAssertTrue(tc, 20 == *arr_at(&arry, 18) && 20 == *arr_back(&arry));
     CuAssertTrue(tc, 20 == *arr_pop_back(&arry));
-    for (size_t i = 0; i < arr_size(&arry); i++) {
+    for (uint32_t i = 0; i < arr_size(&arry); i++) {
         CuAssertTrue(tc, i + 1 == *arr_at(&arry, i));
     }
 

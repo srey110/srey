@@ -2,7 +2,7 @@
 
 #define ROTLEFT(a, b) ((a << b) | (a >> (32 - b)))
 
-static inline void _transform(sha1_ctx *ctx, const unsigned char *data) {
+static void _transform(sha1_ctx *ctx, const unsigned char *data) {
     word_t a, b, c, d, e, i, j, t, m[80];
     for (i = 0, j = 0; i < 16; ++i, j += 4)
         m[i] = (data[j] << 24) + (data[j + 1] << 16) + (data[j + 2] << 8) + (data[j + 3]);

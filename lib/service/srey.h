@@ -3,8 +3,7 @@
 
 #include "service/spub.h"
 
-srey_ctx *srey_init(uint16_t nnet, uint16_t nworker, size_t stack_size,
-    uint16_t interval, uint16_t threshold, const char *key);
+srey_ctx *srey_init(uint16_t nnet, uint16_t nworker, size_t stack_size, const char *key);
 void srey_free(srey_ctx *ctx);
 
 #if WITH_SSL
@@ -12,7 +11,7 @@ int32_t srey_ssl_register(srey_ctx *ctx, name_t name, struct evssl_ctx *evssl);
 struct evssl_ctx *srey_ssl_qury(srey_ctx *ctx, name_t name);
 #endif
 
-task_ctx *srey_task_new(task_type ttype, name_t name, uint16_t maxcnt, free_cb _argfree, void *arg);
+task_ctx *srey_task_new(task_type ttype, name_t name, free_cb _argfree, void *arg);
 void srey_task_free(task_ctx *task);
 /*MSG_TYPE_STARTUP MSG_TYPE_CLOSING MSG_TYPE_ACCEPT MSG_TYPE_CONNECT MSG_TYPE_HANDSHAKED
 MSG_TYPE_RECV MSG_TYPE_SEND MSG_TYPE_CLOSE MSG_TYPE_RECVFROM MSG_TYPE_REQUEST*/
@@ -35,7 +34,7 @@ SOCKET srey_connect(task_ctx *task, uint64_t sess, pack_type pktype, struct evss
     const char *ip, uint16_t port, int32_t sendev, uint64_t *skid);
 SOCKET srey_udp(task_ctx *task, const char *ip, uint16_t port, uint64_t *skid);
 
-void push_handshaked(SOCKET fd, uint64_t skid, ud_cxt *ud, int32_t *closefd, int32_t erro);
+void handshaked_push(SOCKET fd, uint64_t skid, ud_cxt *ud, int32_t *closefd, int32_t erro);
 void message_clean(task_ctx *task, msg_type mtype, pack_type pktype, void *data);
 
 #endif //SREY_H_

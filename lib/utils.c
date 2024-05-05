@@ -124,7 +124,7 @@ static BOOL WINAPI _sighandler(DWORD dsig) {
     return TRUE;
 }
 #else
-static inline void _sighandler(int32_t isig) {
+static void _sighandler(int32_t isig) {
     _sig_cb(isig, _ud);
 }
 #endif
@@ -239,7 +239,7 @@ static int32_t _get_proc_fullpath(pid_t pid, char path[PATH_LENS]) {
     return ERR_OK;
 }
 #endif
-static inline int32_t _get_procpath(char path[PATH_LENS]) {
+static int32_t _get_procpath(char path[PATH_LENS]) {
 #ifndef OS_AIX
     size_t len = PATH_LENS;
 #endif

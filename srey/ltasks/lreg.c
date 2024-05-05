@@ -515,10 +515,10 @@ static int32_t _lreg_http_heads(lua_State *lua) {
         && 1 != chunck) {
         return 0;
     }
-    size_t nhead = http_nheader(pack);
+    uint32_t nhead = http_nheader(pack);
     lua_createtable(lua, 0, (int32_t)nhead);
     http_header_ctx *header;
-    for (size_t i = 0; i < nhead; i++) {
+    for (uint32_t i = 0; i < nhead; i++) {
         header = http_header_at(pack, i);
         lua_pushlstring(lua, header->key.data, header->key.lens);
         lua_pushlstring(lua, header->value.data, header->value.lens);

@@ -12,12 +12,12 @@ do {\
     LOG_WARN("errno: %lu, %s", err, ERR_error_string(err, NULL)); \
 } while (0)
 
-static inline void _ssl_options(evssl_ctx *evssl, int32_t verify) {
+static void _ssl_options(evssl_ctx *evssl, int32_t verify) {
     SSL_CTX_set_options(evssl->ssl, SSL_OP_IGNORE_UNEXPECTED_EOF);//error:0A000126:SSL routines::unexpected eof while reading
     SSL_CTX_set_verify(evssl->ssl, verify, NULL);
     SSL_CTX_set_mode(evssl->ssl, SSL_MODE_AUTO_RETRY);
 }
-static inline evssl_ctx *_new_evssl(void) {
+static evssl_ctx *_new_evssl(void) {
     if (ATOMIC_CAS(&_init_once, 0, 1)) {
         SSL_library_init();
         OpenSSL_add_all_algorithms();

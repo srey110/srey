@@ -27,7 +27,7 @@ void protos_udfree(void *arg) {
         break;
     }
 }
-static inline void *_unpack_default(buffer_ctx *buf, size_t *size, ud_cxt *ud) {
+static void *_unpack_default(buffer_ctx *buf, size_t *size, ud_cxt *ud) {
     size_t lens = buffer_size(buf);
     if (0 == lens) {
         return NULL;

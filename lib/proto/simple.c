@@ -10,15 +10,15 @@ typedef struct simple_pack_ctx {
     char data[0];
 }simple_pack_ctx;
 
-static inline void _simple_ntoh(simple_pack_ctx *pack, lens_t lens) {
+static void _simple_ntoh(simple_pack_ctx *pack, lens_t lens) {
     pack->lens = lens;
     //其他变量赋值
 }
-static inline void _simple_hton(simple_pack_ctx *pack, lens_t lens) {
+static void _simple_hton(simple_pack_ctx *pack, lens_t lens) {
     pack->lens = lens;
     //其他变量赋值
 }
-static inline simple_pack_ctx *_simple_data(buffer_ctx *buf, size_t *size, ud_cxt *ud) {
+static simple_pack_ctx *_simple_data(buffer_ctx *buf, size_t *size, ud_cxt *ud) {
     simple_pack_ctx *pack = ud->extra;
     if (buffer_size(buf) < pack->lens) {
         return NULL;

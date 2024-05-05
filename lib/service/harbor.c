@@ -151,7 +151,7 @@ int32_t harbor_start(srey_ctx *ctx, name_t tname, name_t ssl, const char *host, 
     if (klens > 0) {
         hmac_sha256_key(&macsha256, (unsigned char *)ctx->key, klens);
     }
-    task_ctx *harbor = srey_task_new(TTYPE_C, tname, 0, NULL, NULL);
+    task_ctx *harbor = srey_task_new(TTYPE_C, tname, NULL, NULL);
     srey_task_regcb(harbor, MSG_TYPE_RECV, _harbor_recv);
     srey_task_regcb(harbor, MSG_TYPE_CLOSING, _harbor_closing);
     if (ERR_OK != srey_task_register(ctx, harbor)) {

@@ -57,7 +57,7 @@ static const unsigned short int __mon_yday[2][13] = {
 /* Status of lookup: do we use the locale data or the raw data?  */
 enum locale_status { not, loc, raw };
 /* Compute the day of the week.  */
-static inline void _day_of_the_week(struct tm *tm) {
+static void _day_of_the_week(struct tm *tm) {
     /* We know that January 1st 1970 was a Thursday (= 4).  Compute the
     the difference between this data in the one on TM and so determine
     the weekday.  */
@@ -72,7 +72,7 @@ static inline void _day_of_the_week(struct tm *tm) {
     tm->tm_wday = ((wday % 7) + 7) % 7;
 }
 /* Compute the day of the year.  */
-static inline void _day_of_the_year(struct tm *tm) {
+static void _day_of_the_year(struct tm *tm) {
     tm->tm_yday = (__mon_yday[__isleap(1900 + tm->tm_year)][tm->tm_mon]
         + (tm->tm_mday - 1));
 }

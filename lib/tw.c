@@ -123,6 +123,7 @@ static void _loop(void *arg) {
         }
         USLEEP(1000);
     }
+    LOG_INFO("%s", "time wheel thread exited.");
 }
 void tw_init(tw_ctx *ctx) {
     ctx->exit = 0;

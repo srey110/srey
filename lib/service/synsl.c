@@ -36,13 +36,13 @@ static mco_desc _coro_desc;
     _cortn = mco_resume(co); \
     ASSERTAB(MCO_SUCCESS == _cortn, mco_result_description(_cortn))
 
-static inline uint64_t _map_cosess_hash(const void *item, uint64_t seed0, uint64_t seed1) {
+static uint64_t _map_cosess_hash(const void *item, uint64_t seed0, uint64_t seed1) {
     return hash((const char *)&(((coro_sess *)item)->sess), sizeof(((coro_sess *)item)->sess));
 }
-static inline int _map_cosess_compare(const void *a, const void *b, void *ud) {
+static int _map_cosess_compare(const void *a, const void *b, void *ud) {
     return (int)(((coro_sess *)a)->sess - ((coro_sess *)b)->sess);
 }
-static inline void _map_cosess_set(task_ctx *task, mco_coro *co, uint64_t sess, uint64_t assoc, timeout_type type) {
+static void _map_cosess_set(task_ctx *task, mco_coro *co, uint64_t sess, uint64_t assoc, timeout_type type) {
     coro_sess cosess;
     cosess.type = type;
     cosess.co = co;
@@ -50,12 +50,12 @@ static inline void _map_cosess_set(task_ctx *task, mco_coro *co, uint64_t sess, 
     cosess.assoc = assoc;
     hashmap_set(task->coro->mapco, &cosess);
 }
-static inline void _map_cosess_del(task_ctx *task, uint64_t sess) {
+static void _map_cosess_del(task_ctx *task, uint64_t sess) {
     coro_sess key;
     key.sess = sess;
     hashmap_delete(task->coro->mapco, &key);
 }
-static inline int32_t _map_cosess_get(task_ctx *task, uint64_t sess, coro_sess *cosess) {
+static int32_t _map_cosess_get(task_ctx *task, uint64_t sess, coro_sess *cosess) {
     coro_sess key;
     key.sess = sess;
     coro_sess *tmp = (coro_sess *)hashmap_get(task->coro->mapco, &key);
@@ -68,7 +68,7 @@ static inline int32_t _map_cosess_get(task_ctx *task, uint64_t sess, coro_sess *
     }
     return  ERR_OK;
 }
-static void _co_cb(mco_coro *co) {
+static void _coro_cb(mco_coro *co) {
     task_msg_arg arg;
     mco_result cortn;
     for (;;) {
@@ -87,8 +87,8 @@ static void _co_cb(mco_coro *co) {
         }
     }
 }
-void _coro_init_desc(size_t stack_size) {
-    _coro_desc = mco_desc_init(_co_cb, stack_size);
+void _coro_init(size_t stack_size) {
+    _coro_desc = mco_desc_init(_coro_cb, stack_size);
 }
 void _coro_new(task_ctx *task) {
     CALLOC(task->coro, 1, sizeof(coro_ctx));
@@ -113,7 +113,7 @@ void _coro_free(task_ctx *task) {
     hashmap_free(task->coro->mapco);
     FREE(task->coro);
 }
-static inline mco_coro *_co_pool_get(task_ctx *task) {
+static mco_coro *_coro_pool_get(task_ctx *task) {
     mco_coro **co = (mco_coro **)qu_ptr_pop(&task->coro->qucopool);
     if (NULL != co) {
         return *co;
@@ -125,9 +125,9 @@ static inline mco_coro *_co_pool_get(task_ctx *task) {
     ASSERTAB(MCO_SUCCESS == cortn, mco_result_description(cortn));
     return conew;
 }
-static inline void _co_create(task_msg_arg *arg) {
+static void _coro_create(task_msg_arg *arg) {
     if (NULL != arg->task->_run[arg->msg.mtype]) {
-        arg->task->coro->curco = _co_pool_get(arg->task);
+        arg->task->coro->curco = _coro_pool_get(arg->task);
         mco_result cortn = mco_push(arg->task->coro->curco, arg, sizeof(task_msg_arg));
         ASSERTAB(MCO_SUCCESS == cortn, mco_result_description(cortn));
         cortn = mco_resume(arg->task->coro->curco);
@@ -139,7 +139,7 @@ static inline void _co_create(task_msg_arg *arg) {
         }
     }
 }
-static inline void _dispatch_timeout(task_msg_arg *arg) {
+static void _timeout_dispatch(task_msg_arg *arg) {
     coro_sess cosess;
     if (ERR_OK != _map_cosess_get(arg->task, arg->msg.sess, &cosess)) {
         message_clean(arg->task, arg->msg.mtype, arg->msg.pktype, arg->msg.data);
@@ -147,7 +147,7 @@ static inline void _dispatch_timeout(task_msg_arg *arg) {
     }
     switch (cosess.type) {
     case TMO_TYPE_NORMAL:
-        _co_create(arg);
+        _coro_create(arg);
         break;
     case TMO_TYPE_WAIT:
         if (0 != cosess.assoc) {
@@ -159,27 +159,27 @@ static inline void _dispatch_timeout(task_msg_arg *arg) {
         break;
     }
 }
-static inline void _dispatch_connect(task_msg_arg *arg) {
+static void _connect_dispatch(task_msg_arg *arg) {
     if (0 != arg->msg.sess) {
         coro_sess cosess;
         if (ERR_OK == _map_cosess_get(arg->task, arg->msg.sess, &cosess)) {
             CO_RESUME(arg, cosess.co);
         }
     } else {
-        _co_create(arg);
+        _coro_create(arg);
     }
 }
-static inline void _dispatch_handshaked(task_msg_arg *arg) {
+static void _handshaked_dispatch(task_msg_arg *arg) {
     if (0 != arg->msg.sess) {
         coro_sess cosess;
         if (ERR_OK == _map_cosess_get(arg->task, arg->msg.sess, &cosess)) {
             CO_RESUME(arg, cosess.co);
         }
     } else {
-        _co_create(arg);
+        _coro_create(arg);
     }
 }
-static inline void _dispatch_netrd(task_msg_arg *arg) {
+static void _netrecv_dispatch(task_msg_arg *arg) {
     if (0 != arg->msg.sess) {
         coro_sess cosess;
         if (ERR_OK == _map_cosess_get(arg->task, arg->msg.sess, &cosess)) {
@@ -192,10 +192,10 @@ static inline void _dispatch_netrd(task_msg_arg *arg) {
         }
         message_clean(arg->task, arg->msg.mtype, arg->msg.pktype, arg->msg.data);
     } else {
-        _co_create(arg);
+        _coro_create(arg);
     }
 }
-static inline void _dispatch_close(task_msg_arg *arg) {
+static void _netclose_dispatch(task_msg_arg *arg) {
     if (0 != arg->msg.sess) {
         coro_sess cosess;
         if (ERR_OK == _map_cosess_get(arg->task, arg->msg.sess, &cosess)) {
@@ -205,9 +205,9 @@ static inline void _dispatch_close(task_msg_arg *arg) {
             CO_RESUME(arg, cosess.co);
         }
     }
-    _co_create(arg);
+    _coro_create(arg);
 }
-static inline void _dispatch_response(task_msg_arg *arg) {
+static void _response_dispatch(task_msg_arg *arg) {
     coro_sess cosess;
     if (ERR_OK == _map_cosess_get(arg->task, arg->msg.sess, &cosess)) {
         CO_RESUME(arg, cosess.co);
@@ -216,49 +216,49 @@ static inline void _dispatch_response(task_msg_arg *arg) {
     }
     message_clean(arg->task, arg->msg.mtype, arg->msg.pktype, arg->msg.data);
 }
-void _dispatch_coro(task_msg_arg *arg) {
+void _coro_dispatch(task_msg_arg *arg) {
     switch (arg->msg.mtype) {
     case MSG_TYPE_STARTUP:
-        _co_create(arg);
+        _coro_create(arg);
         break;
     case MSG_TYPE_CLOSING:
-        _co_create(arg);
+        _coro_create(arg);
         break;
     case MSG_TYPE_TIMEOUT:
-        _dispatch_timeout(arg);
+        _timeout_dispatch(arg);
         break;
     case MSG_TYPE_ACCEPT:
-        _co_create(arg);
+        _coro_create(arg);
         break;
     case MSG_TYPE_CONNECT:
-        _dispatch_connect(arg);
+        _connect_dispatch(arg);
         break;
     case MSG_TYPE_HANDSHAKED:
-        _dispatch_handshaked(arg);
+        _handshaked_dispatch(arg);
         break;
     case MSG_TYPE_RECV:
-        _dispatch_netrd(arg);
+        _netrecv_dispatch(arg);
         break;
     case MSG_TYPE_SEND:
-        _co_create(arg);
+        _coro_create(arg);
         break;
     case MSG_TYPE_CLOSE:
-        _dispatch_close(arg);
+        _netclose_dispatch(arg);
         break;
     case MSG_TYPE_RECVFROM:
-        _dispatch_netrd(arg);
+        _netrecv_dispatch(arg);
         break;
     case MSG_TYPE_REQUEST:
-        _co_create(arg);
+        _coro_create(arg);
         break;
     case MSG_TYPE_RESPONSE:
-        _dispatch_response(arg);
+        _response_dispatch(arg);
         break;
     default:
         break;
     }
 }
-static inline void _wait_until(task_ctx *task, uint32_t ms, uint64_t sess, uint64_t assoc, message_ctx *msg) {
+static void _wait_until(task_ctx *task, uint32_t ms, uint64_t sess, uint64_t assoc, message_ctx *msg) {
     _map_cosess_set(task, task->coro->curco, sess, assoc, TMO_TYPE_WAIT);
     srey_timeout(task, sess, ms, NULL, NULL, NULL);
     mco_result cortn = mco_yield(task->coro->curco);
@@ -465,7 +465,7 @@ void syn_websock_binary(task_ctx *task, SOCKET fd, uint64_t skid, int32_t mask,
     send_chunck sendck, free_cb _sckdata_free, void *arg) {
     syn_websock_continua(task, fd, skid, mask, WBSK_BINARY, sendck, _sckdata_free, arg);
 }
-static struct http_pack_ctx *_http_send_content(task_ctx *task, SOCKET fd, uint64_t skid, uint64_t sess,
+static struct http_pack_ctx *_http_content_send(task_ctx *task, SOCKET fd, uint64_t skid, uint64_t sess,
     int32_t req, buffer_ctx *buf) {
     char *data;
     size_t size =  buffer_size(buf);
@@ -478,7 +478,7 @@ static struct http_pack_ctx *_http_send_content(task_ctx *task, SOCKET fd, uint6
         return NULL;
     }
 }
-static struct http_pack_ctx *_http_send_chuncked(task_ctx *task, SOCKET fd, uint64_t skid, uint64_t sess,
+static struct http_pack_ctx *_http_chuncked_send(task_ctx *task, SOCKET fd, uint64_t skid, uint64_t sess,
     int32_t req, buffer_ctx *buf, send_chunck sendck, free_cb _sckdata_free, void *arg) {
     char *data;
     size_t size;
@@ -519,9 +519,9 @@ static struct http_pack_ctx *_syn_http_send(task_ctx *task, SOCKET fd, uint64_t 
     }
     struct http_pack_ctx *hpack;
     if (NULL == sendck) {
-        hpack = _http_send_content(task, fd, skid, sess, req, buf);
+        hpack = _http_content_send(task, fd, skid, sess, req, buf);
     } else {
-        hpack = _http_send_chuncked(task, fd, skid, sess, req, buf, sendck, _sckdata_free, arg);
+        hpack = _http_chuncked_send(task, fd, skid, sess, req, buf, sendck, _sckdata_free, arg);
     }
     if (NULL == hpack
         || NULL == recvck){

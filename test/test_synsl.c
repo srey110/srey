@@ -124,7 +124,7 @@ static void _startup(task_ctx *task, message_ctx *msg) {
     }
 }
 void test_synsl(void) {
-    task_ctx *task = srey_task_new(TTYPE_C, TEST_SYN, 0, NULL, NULL);
+    task_ctx *task = srey_task_new(TTYPE_C, TEST_SYN, NULL, NULL);
     srey_task_regcb(task, MSG_TYPE_STARTUP, _startup);
     srey_task_register(srey, task);
     //LOG_INFO("test_synsl after 5s close.");

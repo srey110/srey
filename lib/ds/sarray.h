@@ -8,10 +8,10 @@
 #define ARRAY_DECL(type, atype) \
 typedef struct atype {      \
     type   *ptr;    \
-    size_t  size;   \
-    size_t  maxsize;\
+    uint32_t  size;   \
+    uint32_t  maxsize;\
 }atype##_ctx;\
-static inline void atype##_init(atype##_ctx *p, size_t maxsize) {\
+static inline void atype##_init(atype##_ctx *p, uint32_t maxsize) {\
     p->size = 0;\
     p->maxsize = ((0 == maxsize) ? ARRAY_INIT_SIZE : ROUND_UP(maxsize, 2));\
     MALLOC(p->ptr, sizeof(type) * p->maxsize);\
@@ -22,16 +22,16 @@ static inline void atype##_clear(atype##_ctx *p) {\
 static inline void atype##_free(atype##_ctx *p) {\
     FREE(p->ptr);\
 };\
-static inline size_t atype##_size(atype##_ctx *p) {\
+static inline uint32_t atype##_size(atype##_ctx *p) {\
     return p->size;\
 };\
-static inline size_t atype##_maxsize(atype##_ctx *p) {\
+static inline uint32_t atype##_maxsize(atype##_ctx *p) {\
     return p->maxsize;\
 };\
 static inline int32_t atype##_empty(atype##_ctx *p) {\
     return 0 == p->size;\
 };\
-static inline void atype##_resize(atype##_ctx *p, size_t maxsize) {\
+static inline void atype##_resize(atype##_ctx *p, uint32_t maxsize) {\
     maxsize = ((0 == maxsize) ? ARRAY_INIT_SIZE : ROUND_UP(maxsize, 2));\
     ASSERTAB(maxsize >= p->size, "max size must big than element count.");\
     void *pold = p->ptr;\
@@ -41,7 +41,7 @@ static inline void atype##_resize(atype##_ctx *p, size_t maxsize) {\
 static inline void atype##_double_resize(atype##_ctx *p) {\
     atype##_resize(p, p->maxsize * 2);\
 };\
-static inline type *atype##_at(atype##_ctx *p, size_t pos) {\
+static inline type *atype##_at(atype##_ctx *p, uint32_t pos) {\
     if (pos < 0){\
         pos += p->size;\
     }\
@@ -67,7 +67,7 @@ static inline type *atype##_pop_back(atype##_ctx *p) {\
     p->size--; \
     return ptr;\
 };\
-static inline void atype##_add(atype##_ctx *p, type *elem, size_t pos) {\
+static inline void atype##_add(atype##_ctx *p, type *elem, uint32_t pos) {\
     if (pos < 0) {\
         pos += p->size;\
     }\
@@ -81,7 +81,7 @@ static inline void atype##_add(atype##_ctx *p, type *elem, size_t pos) {\
     p->ptr[pos] = *elem;\
     p->size++;\
 };\
-static inline void atype##_del(atype##_ctx *p, size_t pos) {\
+static inline void atype##_del(atype##_ctx *p, uint32_t pos) {\
     if (pos < 0) {\
         pos += p->size;\
     }\
@@ -91,7 +91,7 @@ static inline void atype##_del(atype##_ctx *p, size_t pos) {\
         memmove(p->ptr + pos, p->ptr + pos+1, sizeof(type) * (p->size - pos));\
     }\
 };\
-static inline void atype##_del_nomove(atype##_ctx *p, size_t pos) {\
+static inline void atype##_del_nomove(atype##_ctx *p, uint32_t pos) {\
     if (pos < 0) {\
         pos += p->size;\
     }\
@@ -101,7 +101,7 @@ static inline void atype##_del_nomove(atype##_ctx *p, size_t pos) {\
         p->ptr[pos] = p->ptr[p->size];\
     }\
 };\
-static inline void atype##_swap(atype##_ctx *p, size_t pos1, size_t pos2) {\
+static inline void atype##_swap(atype##_ctx *p, uint32_t pos1, uint32_t pos2) {\
     if (pos1 < 0) {\
         pos1 += p->size;\
     }\
