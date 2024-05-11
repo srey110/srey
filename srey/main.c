@@ -1,6 +1,6 @@
 #include "startup.h"
+#include "cjson/cJSON.h"
 
-srey_ctx *srey = NULL;
 static FILE *logstream = NULL;
 static mutex_ctx muexit;
 static cond_ctx condexit;
@@ -46,20 +46,10 @@ static void _parse_config(config_ctx *cnf) {
         && cJSON_IsNumber(val)) {
         cnf->nworker = (uint16_t)val->valuedouble;
     }
-    val = cJSON_GetObjectItem(json, "stacksize");
-    if (NULL != val
-        && cJSON_IsNumber(val)) {
-        cnf->stack_size = (size_t)val->valuedouble;
-    }
     val = cJSON_GetObjectItem(json, "loglv");
     if (NULL != val
         && cJSON_IsNumber(val)) {
         cnf->loglv = (uint8_t)val->valuedouble;
-    }
-    val = cJSON_GetObjectItem(json, "logfile");
-    if (NULL != val
-        && cJSON_IsNumber(val)) {
-        cnf->logfile = (uint8_t)val->valuedouble;
     }
     val = cJSON_GetObjectItem(json, "harborname");
     if (NULL != val
@@ -71,10 +61,10 @@ static void _parse_config(config_ctx *cnf) {
         && cJSON_IsNumber(val)) {
         cnf->harborssl = (name_t)val->valuedouble;
     }
-    val = cJSON_GetObjectItem(json, "harborport");
+    val = cJSON_GetObjectItem(json, "harbortimeout");
     if (NULL != val
         && cJSON_IsNumber(val)) {
-        cnf->harborport = (uint16_t)val->valuedouble;
+        cnf->harbortimeout = (int32_t)val->valuedouble;
     }
     val = cJSON_GetObjectItem(json, "harborip");
     if (NULL != val
@@ -87,6 +77,11 @@ static void _parse_config(config_ctx *cnf) {
             LOG_WARN("harborip too long.");
         }
     }
+    val = cJSON_GetObjectItem(json, "harborport");
+    if (NULL != val
+        && cJSON_IsNumber(val)) {
+        cnf->harborport = (uint16_t)val->valuedouble;
+    }
     val = cJSON_GetObjectItem(json, "harborkey");
     if (NULL != val
         && cJSON_IsString(val)) {
@@ -98,20 +93,9 @@ static void _parse_config(config_ctx *cnf) {
             LOG_WARN("harborkey too long.");
         }
     }
-    val = cJSON_GetObjectItem(json, "namefmt");
-    if (NULL != val
-        && cJSON_IsString(val)) {
-        size_t flen = strlen(val->valuestring);
-        if (flen < sizeof(cnf->fmt)) {
-            memcpy(cnf->fmt, val->valuestring, flen);
-            cnf->fmt[flen] = '\0';
-        } else {
-            LOG_WARN("log file name format too long.");
-        }
-    }
     cJSON_Delete(json);
 }
-static void _open_log(const char *fmt) {
+static void _open_log(void) {
     char logfile[PATH_LENS] = { 0 };
     SNPRINTF(logfile, sizeof(logfile) - 1, "%s%s%s%s", procpath(), PATH_SEPARATORSTR, "logs", PATH_SEPARATORSTR);
     if (ERR_OK != ACCESS(logfile, 0)) {
@@ -121,7 +105,7 @@ static void _open_log(const char *fmt) {
     }
     size_t lens = strlen(logfile);
     char time[TIME_LENS] = { 0 };
-    sectostr(nowsec(), fmt, time);
+    sectostr(nowsec(), "%Y-%m-%d %H-%M-%S", time);
     SNPRINTF((char*)logfile + lens, sizeof(logfile) - lens - 1, "%s%s", time, ".log");
     logstream = fopen(logfile, "a");
     if (NULL != logstream) {
@@ -129,7 +113,7 @@ static void _open_log(const char *fmt) {
     }
 }
 static int32_t service_exit(void) {
-    srey_free(srey);
+    scheduler_free(g_scheduler);
     mutex_free(&muexit);
     cond_free(&condexit);
     _memcheck();
@@ -141,32 +125,27 @@ static int32_t service_exit(void) {
 static void _config_init(config_ctx *config) {
     ZERO(config, sizeof(config_ctx));
     config->loglv = LOGLV_DEBUG;
-    config->logfile = 1;
     config->nnet = 1;
     config->nworker = 2;
     config->harborname = 100000,
     config->harborssl = 0;
+    config->harbortimeout = -1;
     config->harborport = 8080;
     strcpy(config->harborip, "0.0.0.0");
-    const char *fmt = "%Y-%m-%d %H-%M-%S";
-    size_t flen = strlen(fmt);
-    memcpy(config->fmt, fmt, flen);
-    config->fmt[flen] = '\0';
+    ZERO(config->harborkey, sizeof(config->harborkey));
 }
 static int32_t service_init(void) {
     config_ctx config;
     _config_init(&config);
     _parse_config(&config);
     log_setlv((LOG_LEVEL)config.loglv);
-    if (0 != config.logfile) {
-        _open_log(config.fmt);
-    }
+    //_open_log();
     unlimit();
     srand((uint32_t)time(NULL));
     mutex_init(&muexit);
     cond_init(&condexit);
-    srey = srey_init(config.nnet, config.nworker, config.stack_size, config.harborkey);
-    if (ERR_OK != task_startup(srey, &config)) {
+    g_scheduler = scheduler_init(config.nnet, config.nworker);
+    if (ERR_OK != task_startup(g_scheduler, &config)) {
         service_exit();
         return ERR_FAILED;
     }
@@ -386,11 +365,6 @@ static void _stop_sh(const char *sh) {
 }
 #endif
 int main(int argc, char *argv[]) {
-    cJSON_Hooks hooks;
-    hooks.malloc_fn = _malloc;
-    hooks.realloc_fn = _realloc;
-    hooks.free_fn = _free;
-    cJSON_InitHooks(&hooks);
 #ifdef OS_WIN
     if (1 == argc) {
         return service_hug();

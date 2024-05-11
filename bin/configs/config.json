@@ -1,13 +1,11 @@
 {
     "nnet": 1,
     "nworker": 2,
-    "stacksize": 32768,
-    "logfile": 1,
     "loglv": 4,
-    "namefmt": "%Y-%m-%d %H-%M-%S",
     "harborname": 1,
     "harborssl": 0,
-    "harborport": 8080,
+    "harbortimeout": 1000,
     "harborip": "0.0.0.0",
+    "harborport": 8080,
     "harborkey":"p1KaLmIg2kB7fZp5Tm1qbi6dss92C31aPGJK9Lvk7DMPDONXrwD2yVLZrHBio74s"
 }

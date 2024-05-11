@@ -30,6 +30,6 @@ int32_t websock_pack_fin(struct websock_pack_ctx *pack);
 int32_t websock_pack_proto(struct websock_pack_ctx *pack);
 char *websock_pack_data(struct websock_pack_ctx *pack, size_t *lens);
 
-void _websock_init_key(void);
+void _websock_init(void *hspush);
 
 #endif//WEBSOCK_H_

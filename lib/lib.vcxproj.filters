@@ -19,20 +19,17 @@
     <Filter Include="event\unix">
       <UniqueIdentifier>{942da95e-2cdb-4ff7-ab71-5d496e592712}</UniqueIdentifier>
     </Filter>
-    <Filter Include="service">
-      <UniqueIdentifier>{4514f60a-300d-4622-a8d5-d93bdac30c0a}</UniqueIdentifier>
-    </Filter>
     <Filter Include="proto">
       <UniqueIdentifier>{6de5de1a-091e-4521-8005-38cdba96ae3e}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="utils\cjson">
-      <UniqueIdentifier>{ea3d6e8d-1afa-4288-8fba-edbe2cd27e12}</UniqueIdentifier>
     </Filter>
     <Filter Include="ds">
       <UniqueIdentifier>{9243310e-d6f4-44b1-bd17-bada164a1c0d}</UniqueIdentifier>
     </Filter>
     <Filter Include="algo">
       <UniqueIdentifier>{b8309848-77b2-4ec6-9bc0-a234857c1244}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="srey">
+      <UniqueIdentifier>{2f052cf0-39f4-455f-94ec-2d469dcab809}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
@@ -112,35 +109,11 @@
     <ClInclude Include="log.h">
       <Filter>utils</Filter>
     </ClInclude>
-    <ClInclude Include="service\srey.h">
-      <Filter>service</Filter>
-    </ClInclude>
     <ClInclude Include="proto\protos.h">
       <Filter>proto</Filter>
     </ClInclude>
-    <ClInclude Include="proto\websock.h">
-      <Filter>proto</Filter>
-    </ClInclude>
-    <ClInclude Include="service\spub.h">
-      <Filter>service</Filter>
-    </ClInclude>
-    <ClInclude Include="service\synsl.h">
-      <Filter>service</Filter>
-    </ClInclude>
-    <ClInclude Include="cjson\cJSON.h">
-      <Filter>utils\cjson</Filter>
-    </ClInclude>
-    <ClInclude Include="service\srpc.h">
-      <Filter>service</Filter>
-    </ClInclude>
-    <ClInclude Include="service\harbor.h">
-      <Filter>service</Filter>
-    </ClInclude>
     <ClInclude Include="proto\urlparse.h">
       <Filter>proto</Filter>
-    </ClInclude>
-    <ClInclude Include="service\minicoro.h">
-      <Filter>service</Filter>
     </ClInclude>
     <ClInclude Include="thread\cond.h">
       <Filter>thread</Filter>
@@ -201,6 +174,33 @@
     </ClInclude>
     <ClInclude Include="strptime.h">
       <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="srey\task.h">
+      <Filter>srey</Filter>
+    </ClInclude>
+    <ClInclude Include="srey\trigger.h">
+      <Filter>srey</Filter>
+    </ClInclude>
+    <ClInclude Include="srey\scheduler.h">
+      <Filter>srey</Filter>
+    </ClInclude>
+    <ClInclude Include="srey\coro.h">
+      <Filter>srey</Filter>
+    </ClInclude>
+    <ClInclude Include="proto\websock.h">
+      <Filter>proto</Filter>
+    </ClInclude>
+    <ClInclude Include="srey\ssls.h">
+      <Filter>srey</Filter>
+    </ClInclude>
+    <ClInclude Include="srey\spub.h">
+      <Filter>srey</Filter>
+    </ClInclude>
+    <ClInclude Include="srey\coro_utils.h">
+      <Filter>srey</Filter>
+    </ClInclude>
+    <ClInclude Include="srey\register.h">
+      <Filter>srey</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -264,26 +264,8 @@
     <ClCompile Include="log.c">
       <Filter>utils</Filter>
     </ClCompile>
-    <ClCompile Include="service\srey.c">
-      <Filter>service</Filter>
-    </ClCompile>
     <ClCompile Include="proto\protos.c">
       <Filter>proto</Filter>
-    </ClCompile>
-    <ClCompile Include="proto\websock.c">
-      <Filter>proto</Filter>
-    </ClCompile>
-    <ClCompile Include="service\synsl.c">
-      <Filter>service</Filter>
-    </ClCompile>
-    <ClCompile Include="cjson\cJSON.c">
-      <Filter>utils\cjson</Filter>
-    </ClCompile>
-    <ClCompile Include="service\srpc.c">
-      <Filter>service</Filter>
-    </ClCompile>
-    <ClCompile Include="service\harbor.c">
-      <Filter>service</Filter>
     </ClCompile>
     <ClCompile Include="proto\urlparse.c">
       <Filter>proto</Filter>
@@ -323,6 +305,27 @@
     </ClCompile>
     <ClCompile Include="strptime.c">
       <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="srey\task.c">
+      <Filter>srey</Filter>
+    </ClCompile>
+    <ClCompile Include="srey\trigger.c">
+      <Filter>srey</Filter>
+    </ClCompile>
+    <ClCompile Include="srey\scheduler.c">
+      <Filter>srey</Filter>
+    </ClCompile>
+    <ClCompile Include="srey\coro.c">
+      <Filter>srey</Filter>
+    </ClCompile>
+    <ClCompile Include="proto\websock.c">
+      <Filter>proto</Filter>
+    </ClCompile>
+    <ClCompile Include="srey\ssls.c">
+      <Filter>srey</Filter>
+    </ClCompile>
+    <ClCompile Include="srey\coro_utils.c">
+      <Filter>srey</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

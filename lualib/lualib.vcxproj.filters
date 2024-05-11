@@ -4,9 +4,6 @@
     <Filter Include="lua">
       <UniqueIdentifier>{434cd915-7f4d-4791-bf44-bd60fb640f79}</UniqueIdentifier>
     </Filter>
-    <Filter Include="msgpack">
-      <UniqueIdentifier>{7ee87165-a695-44a5-83ff-216c586d398e}</UniqueIdentifier>
-    </Filter>
     <Filter Include="cjson">
       <UniqueIdentifier>{f0ddfc78-633e-4ef8-a28e-110df7f945b7}</UniqueIdentifier>
     </Filter>
@@ -119,9 +116,6 @@
     </ClCompile>
     <ClCompile Include="luacjson\strbuf.c">
       <Filter>cjson</Filter>
-    </ClCompile>
-    <ClCompile Include="msgpack\lua_cmsgpack.c">
-      <Filter>msgpack</Filter>
     </ClCompile>
     <ClCompile Include="pb\pb.c">
       <Filter>pb</Filter>

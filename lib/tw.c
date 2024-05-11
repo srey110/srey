@@ -67,9 +67,6 @@ static tw_slot_ctx *_getslot(tw_ctx *ctx, tw_node_ctx *node) {
     }
     return slot;
 }
-static void _clear(tw_slot_ctx *slot) {
-    slot->head = slot->tail = NULL;
-}
 static uint32_t _cascade(tw_ctx *ctx, tw_slot_ctx *slot, const uint32_t index) {
     tw_node_ctx *pnext, *pnode = slot[index].head;
     while (NULL != pnode) {
@@ -78,7 +75,7 @@ static uint32_t _cascade(tw_ctx *ctx, tw_slot_ctx *slot, const uint32_t index) {
         _insert(_getslot(ctx, pnode), pnode);
         pnode = pnext;
     }
-    _clear(&slot[index]);
+    slot[index].head = slot[index].tail = NULL;
     return index;
 }
 static void _run(tw_ctx *ctx) {
@@ -99,7 +96,7 @@ static void _run(tw_ctx *ctx) {
         FREE(pnode);
         pnode = pnext;
     }
-    _clear(&ctx->tv1[ulidx]);
+    ctx->tv1[ulidx].head = ctx->tv1[ulidx].tail = NULL;
 }
 static void _loop(void *arg) {
     uint32_t curtick = 0;
@@ -115,7 +112,7 @@ static void _loop(void *arg) {
             _insert(_getslot(ctx, node), node);
             node = next;
         }
-        _clear(&ctx->reqadd);
+        ctx->reqadd.head = ctx->reqadd.tail = NULL;
         spin_unlock(&ctx->spin);
         curtick = (uint32_t)(timer_cur(&ctx->timer) / TIMER_ACCURACY);
         while (ctx->jiffies <= curtick) {

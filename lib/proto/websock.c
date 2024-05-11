@@ -1,7 +1,6 @@
 #include "proto/websock.h"
 #include "proto/protos.h"
 #include "proto/http.h"
-#include "service/srey.h"
 #include "algo/base64.h"
 #include "algo/sha1.h"
 #include "netutils.h"
@@ -24,6 +23,7 @@ typedef struct websock_pack_ctx {
 #define HEAD_LESN    2
 #define SIGNKEY "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 static char _mask_key[4 + 1] = { 0 };
+static _handshaked_push _hs_push;
 
 static http_header_ctx *_websock_handshake_svcheck(struct http_pack_ctx *hpack) {
     buf_ctx *status = http_status(hpack);
@@ -83,7 +83,7 @@ static void _websock_handshake_server(ev_ctx *ev, SOCKET fd, uint64_t skid, stru
     http_header_ctx *signstr = _websock_handshake_svcheck(hpack);
     if (NULL == signstr) {
         *closefd = 1;
-        handshaked_push(fd, skid, ud, closefd, ERR_FAILED);
+        _hs_push(fd, skid, ud, closefd, ERR_FAILED);
         return;
     }
     unsigned char *key;
@@ -104,7 +104,7 @@ static void _websock_handshake_server(ev_ctx *ev, SOCKET fd, uint64_t skid, stru
     char *rsp = formatv(fmt, b64);
     ud->status = START;
     ev_send(ev, fd, skid, rsp, strlen(rsp), 0);
-    handshaked_push(fd, skid, ud, closefd, ERR_OK);
+    _hs_push(fd, skid, ud, closefd, ERR_OK);
 }
 static int32_t _websock_handshake_clientckstatus(struct http_pack_ctx *hpack) {
     buf_ctx *status = http_status(hpack);
@@ -162,11 +162,11 @@ static void _websock_handshake_client(struct http_pack_ctx *hpack, SOCKET fd, ui
     http_header_ctx *signstr = websock_client_checkhs(hpack);
     if (NULL == signstr) {
         *closefd = 1;
-        handshaked_push(fd, skid, ud, closefd, ERR_FAILED);
+        _hs_push(fd, skid, ud, closefd, ERR_FAILED);
         return;
     }
     ud->status = START;
-    handshaked_push(fd, skid, ud, closefd, ERR_OK);
+    _hs_push(fd, skid, ud, closefd, ERR_OK);
 }
 static void _websock_handshake(ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt *ud, int32_t *closefd) {
     int32_t status;
@@ -176,7 +176,7 @@ static void _websock_handshake(ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx 
     }
     if (0 != status) {
         *closefd = 1;
-        handshaked_push(fd, skid, ud, closefd, ERR_FAILED);
+        _hs_push(fd, skid, ud, closefd, ERR_FAILED);
         http_pkfree(hpack);
         return;
     }
@@ -479,6 +479,7 @@ char *websock_handshake_pack(const char *host) {
     }
     return data;
 }
-void _websock_init_key(void) {
+void _websock_init(void *hspush) {
+    _hs_push = (_handshaked_push)hspush;
     randstr(_mask_key, sizeof(_mask_key) - 1);
 }

@@ -158,7 +158,10 @@ static void *_remove_fd(watcher_ctx *watcher, SOCKET fd) {
     return (void *)hashmap_delete(watcher->element, &pkey);
 }
 static int32_t _call_acp_cb(ev_ctx *ev, tcp_ctx *tcp) {
-    return tcp->cbs.acp_cb(ev, tcp->sock.fd, tcp->skid, &tcp->ud);
+    if (NULL != tcp->cbs.acp_cb) {
+        return tcp->cbs.acp_cb(ev, tcp->sock.fd, tcp->skid, &tcp->ud);
+    }
+    return ERR_OK;
 }
 static int32_t _call_conn_cb(ev_ctx *ev, tcp_ctx *tcp, int32_t err) {
     return tcp->cbs.conn_cb(ev, tcp->sock.fd, tcp->skid, err, &tcp->ud);
@@ -531,7 +534,7 @@ static void _close_lsnsock(listener_ctx *lsn, int32_t cnt) {
 }
 int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const uint16_t port,
     cbs_ctx *cbs, ud_cxt *ud, uint64_t *id) {
-    ASSERTAB(NULL != cbs && NULL != cbs->acp_cb && NULL != cbs->r_cb, ERRSTR_NULLP);
+    ASSERTAB(NULL != cbs && NULL != cbs->r_cb, ERRSTR_NULLP);
     netaddr_ctx addr;
     if (ERR_OK != netaddr_set(&addr, ip, port)) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));

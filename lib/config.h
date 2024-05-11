@@ -4,8 +4,9 @@
 #include "os.h"
 
 #define MEMORY_CHECK        1
-#define WITH_SSL            0
+#define WITH_SSL            1
 #define WITH_LUA            1
+#define WITH_CORO           1
 #define SCHEDULER_GLOBAL    0
 
 #define KEEPALIVE_TIME      30

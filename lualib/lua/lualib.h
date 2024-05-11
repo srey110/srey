@@ -47,20 +47,29 @@ LUAMOD_API int (luaopen_package) (lua_State *L);
 #define LUA_CJSONLIBNAME "cjson"
 LUAMOD_API int (luaopen_cjson)(lua_State *L);
 
-#define LUA_CMSGPACKNAME "cmsgpack"
-LUAMOD_API int (luaopen_cmsgpack_safe)(lua_State *L);
-
 #define LUA_PBPACKNAME "pb"
 LUAMOD_API int (luaopen_pb)(lua_State *L);
 
-#define LUA_SREYUTILSNAME "srey.utils"
-LUAMOD_API int (luaopen_srey_utils)(lua_State *L);
+#define LUA_SREYTASK "srey.task"
+LUAMOD_API int (luaopen_task)(lua_State *L);
 
-#define LUA_SREYALGO "srey.algo"
-LUAMOD_API int (luaopen_srey_algo)(lua_State *L);
+#define LUA_SREYCORE "srey.core"
+LUAMOD_API int (luaopen_core)(lua_State *L);
 
-#define LUA_SREYNAME "srey.core"
-LUAMOD_API int (luaopen_srey)(lua_State *L);
+#define LUA_SREYHARBOR "srey.harbor"
+LUAMOD_API int (luaopen_harbor)(lua_State *L);
+
+#define LUA_SREYDNS "srey.dns"
+LUAMOD_API int (luaopen_dns)(lua_State *L);
+
+#define LUA_SREYSIMPLE "srey.simple"
+LUAMOD_API int (luaopen_simple)(lua_State *L);
+
+#define LUA_SREYWEBSOCK "srey.websock"
+LUAMOD_API int (luaopen_websock)(lua_State *L);
+
+#define LUA_SREYHTTP "srey.http"
+LUAMOD_API int (luaopen_http)(lua_State *L);
 
 /* open all previous libraries */
 LUALIB_API void (luaL_openlibs) (lua_State *L);

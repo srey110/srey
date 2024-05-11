@@ -54,7 +54,6 @@
     <ClCompile Include="lua\lutf8lib.c" />
     <ClCompile Include="lua\lvm.c" />
     <ClCompile Include="lua\lzio.c" />
-    <ClCompile Include="msgpack\lua_cmsgpack.c" />
     <ClCompile Include="pb\pb.c" />
   </ItemGroup>
   <ItemGroup>

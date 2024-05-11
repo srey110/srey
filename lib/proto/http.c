@@ -333,7 +333,7 @@ void http_pack_req(buffer_ctx *buf, const char *method, const char *url) {
     buffer_appendv(buf, "%s %s HTTP/1.1\r\n", method, enurl);
     FREE(enurl);
 }
-const char *http_code_status(int32_t code) {
+const char *http_error(int32_t code) {
     switch (code) {
     case 100: return "Continue";
     case 101: return "Switching Protocols";
@@ -380,7 +380,7 @@ const char *http_code_status(int32_t code) {
     }
 }
 void http_pack_resp(buffer_ctx *buf, int32_t code) {
-    buffer_appendv(buf, "HTTP/1.1 %d %s\r\n", code, http_code_status(code));
+    buffer_appendv(buf, "HTTP/1.1 %d %s\r\n", code, http_error(code));
 }
 void http_pack_head(buffer_ctx *buf, const char *key, const char *val) {
     buffer_appendv(buf, "%s: %s\r\n", key, val);
@@ -389,8 +389,12 @@ void http_pack_end(buffer_ctx *buf) {
     buffer_append(buf, "\r\n", strlen("\r\n"));
 }
 void http_pack_content(buffer_ctx *buf, void *data, size_t lens) {
-    buffer_appendv(buf, "Content-Length: %d\r\n\r\n", (uint32_t)lens);
-    buffer_append(buf, data, lens);
+    if (NULL != data) {
+        buffer_appendv(buf, "Content-Length: %d\r\n\r\n", (uint32_t)lens);
+        buffer_append(buf, data, lens);
+    } else {
+        buffer_appendv(buf, "%s", "Content-Length: 0\r\n\r\n");
+    }
 }
 void http_pack_chunked(buffer_ctx *buf, void *data, size_t lens) {
     if (buffer_size(buf) > 0){

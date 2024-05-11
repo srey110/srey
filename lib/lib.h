@@ -23,7 +23,6 @@
 #include "thread/rwlock.h"
 #include "thread/spinlock.h"
 #include "thread/thread.h"
-#include "cjson/cJSON.h"
 #include "proto/urlparse.h"
 #include "proto/simple.h"
 #include "proto/dns.h"
@@ -31,11 +30,16 @@
 #include "proto/websock.h"
 #include "proto/mqtt.h"
 #include "event/event.h"
-#include "service/srey.h"
-#include "service/synsl.h"
-#include "service/srpc.h"
-#include "service/harbor.h"
+#include "srey/scheduler.h"
+#include "srey/ssls.h"
+#include "srey/task.h"
+#include "srey/register.h"
+#include "srey/trigger.h"
+#if WITH_CORO
+#include "srey/coro.h"
+#include "srey/coro_utils.h"
+#endif
 
-extern srey_ctx *srey;
+extern scheduler_ctx *g_scheduler;
 
 #endif //LIB_H_

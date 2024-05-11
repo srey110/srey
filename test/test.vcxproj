@@ -171,28 +171,37 @@
   <ItemGroup>
     <ClCompile Include="CuTest.c" />
     <ClCompile Include="main.c" />
+    <ClCompile Include="task_auto_close.c" />
+    <ClCompile Include="task_coro_comm1.c" />
+    <ClCompile Include="task_coro_net.c" />
+    <ClCompile Include="task_coro_timeout.c" />
+    <ClCompile Include="task_coro_utils.c" />
+    <ClCompile Include="task_ssl.c" />
+    <ClCompile Include="task_startup_closing.c" />
+    <ClCompile Include="task_tcp.c" />
+    <ClCompile Include="task_thread_comm1.c" />
+    <ClCompile Include="task_thread_comm2.c" />
+    <ClCompile Include="task_timeout.c" />
+    <ClCompile Include="task_udp.c" />
     <ClCompile Include="test_base.c" />
-    <ClCompile Include="test_http.c" />
-    <ClCompile Include="test_ssl.c" />
-    <ClCompile Include="test_synsl.c" />
-    <ClCompile Include="test_tcp.c" />
-    <ClCompile Include="test_timeout.c" />
-    <ClCompile Include="test_udp.c" />
     <ClCompile Include="test_utils.c" />
-    <ClCompile Include="test_wbsk.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="CuTest.h" />
-    <ClInclude Include="testpub.h" />
+    <ClInclude Include="task_auto_close.h" />
+    <ClInclude Include="task_coro_comm1.h" />
+    <ClInclude Include="task_coro_net.h" />
+    <ClInclude Include="task_coro_timeout.h" />
+    <ClInclude Include="task_coro_utils.h" />
+    <ClInclude Include="task_ssl.h" />
+    <ClInclude Include="task_startup_closing.h" />
+    <ClInclude Include="task_tcp.h" />
+    <ClInclude Include="task_thread_comm1.h" />
+    <ClInclude Include="task_thread_comm2.h" />
+    <ClInclude Include="task_timeout.h" />
+    <ClInclude Include="task_udp.h" />
     <ClInclude Include="test_base.h" />
-    <ClInclude Include="test_http.h" />
-    <ClInclude Include="test_ssl.h" />
-    <ClInclude Include="test_synsl.h" />
-    <ClInclude Include="test_tcp.h" />
-    <ClInclude Include="test_timeout.h" />
-    <ClInclude Include="test_udp.h" />
     <ClInclude Include="test_utils.h" />
-    <ClInclude Include="test_wbsk.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

@@ -4,8 +4,11 @@
     <Filter Include="CuTest">
       <UniqueIdentifier>{3239bf22-0598-4920-b3f1-bbf4cd376d49}</UniqueIdentifier>
     </Filter>
-    <Filter Include="test">
-      <UniqueIdentifier>{4fdfb858-7cd3-49e6-903f-b1591f42d6c5}</UniqueIdentifier>
+    <Filter Include="tasks">
+      <UniqueIdentifier>{8daf7e76-0d29-4779-b979-6cb4c3ef6388}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="taskcoro">
+      <UniqueIdentifier>{bd684aa3-bb3f-4d3a-a8f2-962f6a6c063a}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
@@ -15,26 +18,41 @@
     <ClCompile Include="main.c" />
     <ClCompile Include="test_base.c" />
     <ClCompile Include="test_utils.c" />
-    <ClCompile Include="test_timeout.c">
-      <Filter>test</Filter>
+    <ClCompile Include="task_timeout.c">
+      <Filter>tasks</Filter>
     </ClCompile>
-    <ClCompile Include="test_tcp.c">
-      <Filter>test</Filter>
+    <ClCompile Include="task_tcp.c">
+      <Filter>tasks</Filter>
     </ClCompile>
-    <ClCompile Include="test_ssl.c">
-      <Filter>test</Filter>
+    <ClCompile Include="task_udp.c">
+      <Filter>tasks</Filter>
     </ClCompile>
-    <ClCompile Include="test_udp.c">
-      <Filter>test</Filter>
+    <ClCompile Include="task_thread_comm1.c">
+      <Filter>tasks</Filter>
     </ClCompile>
-    <ClCompile Include="test_http.c">
-      <Filter>test</Filter>
+    <ClCompile Include="task_thread_comm2.c">
+      <Filter>tasks</Filter>
     </ClCompile>
-    <ClCompile Include="test_wbsk.c">
-      <Filter>test</Filter>
+    <ClCompile Include="task_ssl.c">
+      <Filter>tasks</Filter>
     </ClCompile>
-    <ClCompile Include="test_synsl.c">
-      <Filter>test</Filter>
+    <ClCompile Include="task_startup_closing.c">
+      <Filter>tasks</Filter>
+    </ClCompile>
+    <ClCompile Include="task_auto_close.c">
+      <Filter>tasks</Filter>
+    </ClCompile>
+    <ClCompile Include="task_coro_timeout.c">
+      <Filter>taskcoro</Filter>
+    </ClCompile>
+    <ClCompile Include="task_coro_comm1.c">
+      <Filter>taskcoro</Filter>
+    </ClCompile>
+    <ClCompile Include="task_coro_net.c">
+      <Filter>taskcoro</Filter>
+    </ClCompile>
+    <ClCompile Include="task_coro_utils.c">
+      <Filter>taskcoro</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -43,29 +61,41 @@
     </ClInclude>
     <ClInclude Include="test_base.h" />
     <ClInclude Include="test_utils.h" />
-    <ClInclude Include="testpub.h">
-      <Filter>test</Filter>
+    <ClInclude Include="task_timeout.h">
+      <Filter>tasks</Filter>
     </ClInclude>
-    <ClInclude Include="test_timeout.h">
-      <Filter>test</Filter>
+    <ClInclude Include="task_tcp.h">
+      <Filter>tasks</Filter>
     </ClInclude>
-    <ClInclude Include="test_tcp.h">
-      <Filter>test</Filter>
+    <ClInclude Include="task_udp.h">
+      <Filter>tasks</Filter>
     </ClInclude>
-    <ClInclude Include="test_ssl.h">
-      <Filter>test</Filter>
+    <ClInclude Include="task_thread_comm1.h">
+      <Filter>tasks</Filter>
     </ClInclude>
-    <ClInclude Include="test_udp.h">
-      <Filter>test</Filter>
+    <ClInclude Include="task_thread_comm2.h">
+      <Filter>tasks</Filter>
     </ClInclude>
-    <ClInclude Include="test_http.h">
-      <Filter>test</Filter>
+    <ClInclude Include="task_ssl.h">
+      <Filter>tasks</Filter>
     </ClInclude>
-    <ClInclude Include="test_wbsk.h">
-      <Filter>test</Filter>
+    <ClInclude Include="task_startup_closing.h">
+      <Filter>tasks</Filter>
     </ClInclude>
-    <ClInclude Include="test_synsl.h">
-      <Filter>test</Filter>
+    <ClInclude Include="task_auto_close.h">
+      <Filter>tasks</Filter>
+    </ClInclude>
+    <ClInclude Include="task_coro_timeout.h">
+      <Filter>taskcoro</Filter>
+    </ClInclude>
+    <ClInclude Include="task_coro_comm1.h">
+      <Filter>taskcoro</Filter>
+    </ClInclude>
+    <ClInclude Include="task_coro_net.h">
+      <Filter>taskcoro</Filter>
+    </ClInclude>
+    <ClInclude Include="task_coro_utils.h">
+      <Filter>taskcoro</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

@@ -1,26 +1,50 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
-    <ClCompile Include="ltasks\lreg.c">
-      <Filter>ltasks</Filter>
-    </ClCompile>
-    <ClCompile Include="ltasks\ltask.c">
-      <Filter>ltasks</Filter>
-    </ClCompile>
     <ClCompile Include="main.c" />
-    <ClCompile Include="ltasks\lalgo.c">
-      <Filter>ltasks</Filter>
+    <ClCompile Include="tasks\harbor.c">
+      <Filter>tasks</Filter>
+    </ClCompile>
+    <ClCompile Include="cjson\cJSON.c">
+      <Filter>cjson</Filter>
+    </ClCompile>
+    <ClCompile Include="ltask\ltask.c">
+      <Filter>ltask</Filter>
+    </ClCompile>
+    <ClCompile Include="ltask\lpub.c">
+      <Filter>ltask</Filter>
+    </ClCompile>
+    <ClCompile Include="ltask\lcore.c">
+      <Filter>ltask</Filter>
+    </ClCompile>
+    <ClCompile Include="ltask\lproto.c">
+      <Filter>ltask</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <Filter Include="ltasks">
-      <UniqueIdentifier>{89dccd9f-87ab-426b-8905-bfc3e48849a0}</UniqueIdentifier>
+    <Filter Include="tasks">
+      <UniqueIdentifier>{82879d30-2a0a-4624-a282-0b3dce568463}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="cjson">
+      <UniqueIdentifier>{245979bf-1858-4cf5-956d-48f2d9d6eb72}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="ltask">
+      <UniqueIdentifier>{ed4f73b7-f67a-4a01-8032-02335a34f708}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="ltasks\ltask.h">
-      <Filter>ltasks</Filter>
-    </ClInclude>
     <ClInclude Include="startup.h" />
+    <ClInclude Include="tasks\harbor.h">
+      <Filter>tasks</Filter>
+    </ClInclude>
+    <ClInclude Include="cjson\cJSON.h">
+      <Filter>cjson</Filter>
+    </ClInclude>
+    <ClInclude Include="ltask\ltask.h">
+      <Filter>ltask</Filter>
+    </ClInclude>
+    <ClInclude Include="ltask\lpub.h">
+      <Filter>ltask</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

@@ -157,14 +157,20 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="ltasks\lalgo.c" />
-    <ClCompile Include="ltasks\lreg.c" />
-    <ClCompile Include="ltasks\ltask.c" />
+    <ClCompile Include="cjson\cJSON.c" />
+    <ClCompile Include="ltask\lcore.c" />
+    <ClCompile Include="ltask\lproto.c" />
+    <ClCompile Include="ltask\lpub.c" />
+    <ClCompile Include="ltask\ltask.c" />
     <ClCompile Include="main.c" />
+    <ClCompile Include="tasks\harbor.c" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="ltasks\ltask.h" />
+    <ClInclude Include="cjson\cJSON.h" />
+    <ClInclude Include="ltask\lpub.h" />
+    <ClInclude Include="ltask\ltask.h" />
     <ClInclude Include="startup.h" />
+    <ClInclude Include="tasks\harbor.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

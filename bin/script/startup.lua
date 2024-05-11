@@ -1,0 +1,11 @@
+require("lib.utils")
+local task = require("srey.task")
+
+printd("%s", "11111111111")
+local task1 = task.register("test.startup_closing", 1000)
+task1 = task.grab(1000)
+task.incref(task1)
+task.ungrab(task1)
+task.ungrab(task1)
+printd(task.name(task1))
+task.close(task1)

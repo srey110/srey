@@ -50,12 +50,17 @@ static const luaL_Reg loadedlibs[] = {
   {LUA_MATHLIBNAME, luaopen_math},
   {LUA_UTF8LIBNAME, luaopen_utf8},
   {LUA_DBLIBNAME, luaopen_debug},
+
   {LUA_CJSONLIBNAME, luaopen_cjson},
-  {LUA_CMSGPACKNAME, luaopen_cmsgpack_safe},
   {LUA_PBPACKNAME, luaopen_pb},
-  {LUA_SREYUTILSNAME, luaopen_srey_utils},
-  {LUA_SREYNAME, luaopen_srey},
-  {LUA_SREYALGO, luaopen_srey_algo},
+  {LUA_SREYTASK, luaopen_task},
+  {LUA_SREYCORE, luaopen_core},
+  {LUA_SREYHARBOR, luaopen_harbor},
+  {LUA_SREYDNS, luaopen_dns},
+  {LUA_SREYSIMPLE, luaopen_simple},
+  {LUA_SREYWEBSOCK, luaopen_websock},
+  {LUA_SREYHTTP, luaopen_http},
+
   {NULL, NULL}
 };
 
