@@ -139,7 +139,7 @@ static int32_t service_init(void) {
     _config_init(&config);
     _parse_config(&config);
     log_setlv((LOG_LEVEL)config.loglv);
-    //_open_log();
+    _open_log();
     unlimit();
     srand((uint32_t)time(NULL));
     mutex_init(&muexit);
@@ -167,7 +167,7 @@ static int32_t service_hug(void) {
     return rtn;
 }
 #ifdef OS_WIN
-    //#include "vld.h"
+    #include "vld.h"
     #pragma comment(lib, "ws2_32.lib")
     #pragma comment(lib, "lib.lib")
     #if WITH_SSL

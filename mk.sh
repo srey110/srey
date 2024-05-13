@@ -44,10 +44,10 @@ done < `pwd`/lib/config.h
 echo "WITH_LUA:"$withlua
 echo "WITH_SSL:"$withssl
 #文件夹
-Dir="lib lib/algo lib/cjson lib/ds lib/event lib/proto lib/service lib/thread"
+Dir="lib lib/algo lib/ds lib/event lib/proto lib/srey lib/thread"
 if [ $withlua -eq 1 ]
 then
-    Dir=$Dir" lualib lualib/lua lualib/luacjson lualib/msgpack lualib/pb"
+    Dir=$Dir" lualib lualib/lua lualib/luacjson lualib/pb"
 fi
 if [ $istest -eq 1 ]
 then
@@ -56,7 +56,7 @@ else
     Dir=$Dir" srey"
     if [ $withlua -eq 1 ]
     then
-        Dir=$Dir" srey/ltasks"
+        Dir=$Dir" srey/cjson srey/tasks srey/ltask"
     fi
 fi
 #SSL库

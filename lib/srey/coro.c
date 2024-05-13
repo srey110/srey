@@ -190,6 +190,18 @@ static void _net_close_dispatch(task_dispatch_arg *arg) {
     }
     _coro_create(arg);
 }
+static void _net_recvfrom_dispatch(task_dispatch_arg *arg) {
+    if (0 == arg->msg.sess) {
+        _coro_create(arg);
+        return;
+    }
+    coro_sess cosess;
+    if (ERR_OK == _map_cosess_get(arg->task, arg->msg.sess, &cosess)) {
+        CO_RESUME(arg, cosess.co);
+    } else {
+        _coro_create(arg);
+    }
+}
 static void _response_dispatch(task_dispatch_arg *arg) {
     coro_sess cosess;
     if (ERR_OK == _map_cosess_get(arg->task, arg->msg.sess, &cosess)) {
@@ -228,7 +240,7 @@ void _message_dispatch(task_dispatch_arg *arg) {
         _net_close_dispatch(arg);
         break;
     case MSG_TYPE_RECVFROM:
-        _net_recv_dispatch(arg);
+        _net_recvfrom_dispatch(arg);
         break;
     case MSG_TYPE_REQUEST:
         _coro_create(arg);

@@ -158,10 +158,12 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="cjson\cJSON.c" />
+    <ClCompile Include="ltask\lalgo.c" />
     <ClCompile Include="ltask\lcore.c" />
     <ClCompile Include="ltask\lproto.c" />
     <ClCompile Include="ltask\lpub.c" />
     <ClCompile Include="ltask\ltask.c" />
+    <ClCompile Include="ltask\lutils.c" />
     <ClCompile Include="main.c" />
     <ClCompile Include="tasks\harbor.c" />
   </ItemGroup>

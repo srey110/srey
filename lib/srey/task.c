@@ -17,12 +17,13 @@ static task_ctx *_map_task_get(struct hashmap *map, name_t name) {
     }
     return UPCAST(*ptr, task_ctx, name);
 }
-task_ctx *task_new(name_t name, _task_dispatch_cb _dispatch, free_cb _argfree, void *arg) {
+task_ctx *task_new(scheduler_ctx *scheduler, name_t name, _task_dispatch_cb _dispatch, free_cb _argfree, void *arg) {
     if (INVALID_TNAME == name) {
         return NULL;
     }
     task_ctx *task;
     CALLOC(task, 1, sizeof(task_ctx));
+    task->scheduler = scheduler;
     task->name = name;
     task->ref = 1;
     if (NULL == _dispatch) {
@@ -55,21 +56,20 @@ void task_free(task_ctx *task) {
     spin_free(&task->lckmsg);
     FREE(task);
 }
-int32_t task_register(scheduler_ctx *scheduler, task_ctx *task, _task_startup_cb _startup, _task_closing_cb _closing) {
-    task->scheduler = scheduler;
+int32_t task_register(task_ctx *task, _task_startup_cb _startup, _task_closing_cb _closing) {
     task->_task_startup = _startup;
     task->_task_closing = _closing;
     message_ctx startup;
     startup.mtype = MSG_TYPE_STARTUP;
-    rwlock_wrlock(&scheduler->lckmaptasks);
-    if (NULL != _map_task_get(scheduler->maptasks, task->name)) {
-        rwlock_unlock(&scheduler->lckmaptasks);
+    rwlock_wrlock(&task->scheduler->lckmaptasks);
+    if (NULL != _map_task_get(task->scheduler->maptasks, task->name)) {
+        rwlock_unlock(&task->scheduler->lckmaptasks);
         LOG_ERROR("task name %d repeat.", task->name);
         return ERR_FAILED;
     }
-    _map_task_set(scheduler->maptasks, task);
+    _map_task_set(task->scheduler->maptasks, task);
     _task_message_push(task, &startup);
-    rwlock_unlock(&scheduler->lckmaptasks);
+    rwlock_unlock(&task->scheduler->lckmaptasks);
     return ERR_OK;
 }
 void task_close(task_ctx *task) {

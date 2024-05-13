@@ -49,12 +49,14 @@ static void _timeout(task_ctx *task, uint64_t sess) {
     _test_syn_sendto(task);
     trigger_timeout(task, createid(), 3000, _timeout);
 }
+static void _startup(task_ctx *task) {
+    on_closed(task, _net_close);
+    trigger_timeout(task, createid(), 1000, _timeout);
+}
 void task_coro_net_start(scheduler_ctx *scheduler, name_t name, int32_t pt) {
     _prt = pt;
-    task_ctx *task = task_new(name, NULL, NULL, NULL);
-    register_net_close(task, _net_close);
-    task_register(scheduler, task, NULL, NULL);
-    trigger_timeout(task, createid(), 1000, _timeout);
+    task_ctx *task = task_new(scheduler, name, NULL, NULL, NULL);
+    task_register(task, _startup, NULL);
 }
 
 #endif

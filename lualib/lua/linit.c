@@ -60,6 +60,14 @@ static const luaL_Reg loadedlibs[] = {
   {LUA_SREYSIMPLE, luaopen_simple},
   {LUA_SREYWEBSOCK, luaopen_websock},
   {LUA_SREYHTTP, luaopen_http},
+  {LUA_SREYUTILS, luaopen_utils},
+  {LUA_SREYURL,  luaopen_url},
+  {LUA_SREYBASE64,  luaopen_base64},
+  {LUA_SREYCRC,  luaopen_crc},
+  {LUA_SREYMD5,  luaopen_md5},
+  {LUA_SREYSHA1,  luaopen_sha1},
+  {LUA_SREYSHA256,  luaopen_sha256},
+  {LUA_SREYHMAC256,  luaopen_hmac256},
 
   {NULL, NULL}
 };

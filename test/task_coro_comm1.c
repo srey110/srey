@@ -29,12 +29,14 @@ static void _response(task_ctx *task, uint64_t sess, int32_t error, void *data, 
         LOG_INFO("_response: %s", buf);
     }
 }
+static void _startup(task_ctx *task) {
+    on_responsed(task, _response);
+    trigger_timeout(task, createid(), 3000, _timeout);
+}
 void task_coro_comm1_start(scheduler_ctx *scheduler, name_t name, int32_t pt) {
     _prt = pt;
-    task_ctx *task = task_new(name, NULL, NULL, NULL);
-    task_register(scheduler, task, NULL, NULL);
-    register_response(task, _response);
-    trigger_timeout(task, createid(), 3000, _timeout);
+    task_ctx *task = task_new(scheduler, name, NULL, NULL, NULL);
+    task_register(task, _startup, NULL);
 }
 
 #endif

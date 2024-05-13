@@ -193,21 +193,26 @@ static int32_t _lcore_session(lua_State *lua) {
     ev_ud_sess(&g_scheduler->netev, fd, skid, sess);
     return 0;
 }
-static int32_t _lcore_msg_clean(lua_State *lua) {
-    msg_type mtype = (msg_type)luaL_checkinteger(lua, 1);
-    pack_type pktype = (pack_type)luaL_checkinteger(lua, 2);
-    void *data = lua_touserdata(lua, 3);
-    _message_clean(mtype, pktype, data);
-    return 0;
-}
 static int32_t _lcore_cert_register(lua_State *lua) {
 #if WITH_SSL
     name_t name = (name_t)luaL_checkinteger(lua, 1);
     const char *ca = luaL_checkstring(lua, 2);
     const char *cert = luaL_checkstring(lua, 3);
     const char *key = luaL_checkstring(lua, 4);
-    int32_t keytype = (int32_t)luaL_checkinteger(lua, 5);
-    int32_t verify = (int32_t)luaL_checkinteger(lua, 6);
+    int32_t keytype;
+    int32_t type = (int32_t)lua_type(lua, 5);
+    if (LUA_TNUMBER == type) {
+        keytype = (int32_t)luaL_checkinteger(lua, 5);
+    } else {
+        keytype = CERT_PEM;
+    }
+    int32_t verify;
+    type = (int32_t)lua_type(lua, 6);
+    if (LUA_TNUMBER == type) {
+        verify = (int32_t)luaL_checkinteger(lua, 6);
+    } else  {
+        verify = VERIFY_NONE;
+    }
     char capath[PATH_LENS] = { 0 };
     char certpath[PATH_LENS] = { 0 };
     char keypath[PATH_LENS] = { 0 };
@@ -245,7 +250,13 @@ static int32_t _lcore_p12_register(lua_State *lua) {
     name_t name = (name_t)luaL_checkinteger(lua, 1);
     const char *p12 = luaL_checkstring(lua, 2);
     const char *pwd = luaL_checkstring(lua, 3);
-    int32_t verify = (int32_t)luaL_checkinteger(lua, 4);
+    int32_t verify;
+    int32_t type = (int32_t)lua_type(lua, 4);
+    if (LUA_TNUMBER == type) {
+        verify = (int32_t)luaL_checkinteger(lua, 4);
+    } else  {
+        verify = VERIFY_NONE;
+    }
     char p12path[PATH_LENS] = { 0 };
     if (0 != strlen(p12)) {
         const char *propath = global_string(lua, PATH_NAME);
@@ -293,8 +304,6 @@ LUAMOD_API int luaopen_core(lua_State *lua) {
         { "unlisten", _lcore_unlisten },
         { "connect", _lcore_connect },
         { "udp", _lcore_udp },
-
-        { "msg_clean", _lcore_msg_clean },
 
         { "send", _lcore_send },
         { "sendto", _lcore_sendto },

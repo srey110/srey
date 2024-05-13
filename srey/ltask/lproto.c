@@ -25,9 +25,9 @@ static int32_t _lproto_harbor_pack(lua_State *lua) {
         break;
     }
     data = harbor_pack(task, call, reqtype, key, data, size, &size);
-    lua_pushlstring(lua, data, size);
-    FREE(data);
-    return 1;
+    lua_pushlightuserdata(lua, data);
+    lua_pushinteger(lua, size);
+    return 2;
 }
 //srey.harbor
 LUAMOD_API int luaopen_harbor(lua_State *lua) {

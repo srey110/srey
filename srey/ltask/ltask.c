@@ -130,8 +130,48 @@ static void _ltask_arg_free(void *arg) {
     }
     FREE(ltask);
 }
+static int32_t _msg_clean(lua_State *lua) {
+    ASSERTAB(LUA_TTABLE == lua_type(lua, 1), "_msg_clean type error.");
+    lua_gettable(lua, 1);
+    lua_pushnil(lua);
+    void *data = NULL;
+    char *key;
+    uint8_t mtype = 0;
+    uint8_t pktype = 0;
+    int32_t n = 0;
+    while (lua_next(lua, -2)) {
+        if (LUA_TSTRING != lua_type(lua, -2)) {
+            continue;
+        }
+        key = (char *)lua_tostring(lua, -2);
+        if (0 == strcmp(key, "mtype")) {
+            mtype = (uint8_t)lua_tointeger(lua, -1);
+            n++;
+        } else if (0 == strcmp(key, "pktype")) {
+            pktype = (uint8_t)lua_tointeger(lua, -1);
+            n++;
+        } else if (0 == strcmp(key, "data")) {
+            data = lua_touserdata(lua, -1);
+            n++;
+        }
+        lua_pop(lua, 1);
+        if (n >= 3) {
+            break;
+        }
+    }
+    if (NULL != data) {
+        _message_clean(mtype, pktype, data);
+    }
+    return 0;
+}
 static void _ltask_pack_msg(lua_State *lua, message_ctx *msg) {
     lua_createtable(lua, 0, 11);
+    if (ERR_OK == _message_should_clean(msg)) {
+        lua_newtable(lua);
+        lua_pushcfunction(lua, _msg_clean);
+        lua_setfield(lua, -2, "__gc");
+        lua_setmetatable(lua, -2);
+    }
     LUA_TB_NUMBER("mtype", msg->mtype);
     switch (msg->mtype) {
     case MSG_TYPE_STARTUP:
@@ -215,7 +255,7 @@ static int32_t _ltask_register(lua_State *lua) {
     name_t name = (name_t)luaL_checkinteger(lua, 2);
     ltask_ctx *ltask;
     CALLOC(ltask, 1, sizeof(ltask_ctx));
-    task_ctx *task = task_new(name, _ltask_run, _ltask_arg_free, ltask);
+    task_ctx *task = task_new(g_scheduler, name, _ltask_run, _ltask_arg_free, ltask);
     if (NULL == task) {
         FREE(ltask);
         lua_pushnil(lua);
@@ -226,7 +266,7 @@ static int32_t _ltask_register(lua_State *lua) {
         lua_pushnil(lua);
         return 1;
     }
-    if (ERR_OK == task_register(g_scheduler, task, NULL, NULL)) {
+    if (ERR_OK == task_register(task, NULL, NULL)) {
         lua_pushlightuserdata(lua, task);
     } else {
         task_free(task);

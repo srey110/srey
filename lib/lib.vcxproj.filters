@@ -100,9 +100,6 @@
     <ClInclude Include="proto\http.h">
       <Filter>proto</Filter>
     </ClInclude>
-    <ClInclude Include="proto\mqtt.h">
-      <Filter>proto</Filter>
-    </ClInclude>
     <ClInclude Include="proto\dns.h">
       <Filter>proto</Filter>
     </ClInclude>
@@ -253,9 +250,6 @@
       <Filter>proto</Filter>
     </ClCompile>
     <ClCompile Include="proto\http.c">
-      <Filter>proto</Filter>
-    </ClCompile>
-    <ClCompile Include="proto\mqtt.c">
       <Filter>proto</Filter>
     </ClCompile>
     <ClCompile Include="proto\dns.c">

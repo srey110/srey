@@ -30,7 +30,7 @@
 mutex_ctx muexit;
 cond_ctx condexit;
 static void on_sigcb(int32_t sig, void *arg) {
-    PRINT("catch sign: %d", sig);
+    LOG_INFO("catch sign: %d", sig);
     cond_signal(&condexit);
 }
 int main(int argc, char *argv[]) {
@@ -79,7 +79,7 @@ int main(int argc, char *argv[]) {
     task_coro_timeout_start(g_scheduler, 20000, 0);
     task_coro_comm1_start(g_scheduler, 20001, 0);
     task_coro_net_start(g_scheduler, 20002, 0);
-    task_coro_utils_start(g_scheduler, 20003, 1);
+    task_coro_utils_start(g_scheduler, 20003, 0);
 #endif
     mutex_lock(&muexit);
     cond_wait(&condexit, &muexit);

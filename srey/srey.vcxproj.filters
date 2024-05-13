@@ -20,6 +20,12 @@
     <ClCompile Include="ltask\lproto.c">
       <Filter>ltask</Filter>
     </ClCompile>
+    <ClCompile Include="ltask\lalgo.c">
+      <Filter>ltask</Filter>
+    </ClCompile>
+    <ClCompile Include="ltask\lutils.c">
+      <Filter>ltask</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <Filter Include="tasks">

@@ -3,6 +3,7 @@
 #if WITH_SSL
 
 static int32_t _prt = 0;
+static evssl_ctx *_ssl;
 static void _net_accept(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype) {
     if (_prt) {
         LOG_INFO("accept socket %d.", (uint32_t)fd);
@@ -31,16 +32,19 @@ static void _net_close(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype,
         LOG_INFO("socket %d closed", (uint32_t)fd);
     }
 }
+static void _startup(task_ctx *task) {
+    on_accepted(task, _net_accept);    
+    on_recved(task, _net_recv);
+    on_sended(task, _net_send);
+    on_closed(task, _net_close);
+    uint64_t id;
+    trigger_listen(task, PACK_SIMPLE, _ssl, "0.0.0.0", 15001, &id, APPEND_ACCEPT | APPEND_SEND | APPEND_CLOSE);
+}
 void task_ssl_start(scheduler_ctx *scheduler, name_t name, evssl_ctx *ssl, int32_t pt) {
     _prt = pt;
-    task_ctx *task = task_new(name, NULL, NULL, NULL);
-    task_register(scheduler, task, NULL, NULL);
-    register_net_accpet(task, _net_accept);
-    register_net_recv(task, _net_recv);
-    register_net_send(task, _net_send);
-    register_net_close(task, _net_close);
-    uint64_t id;
-    trigger_listen(task, PACK_SIMPLE, ssl, "0.0.0.0", 15001, &id, APPEND_ACCEPT | APPEND_SEND | APPEND_CLOSE);
+    _ssl = ssl;
+    task_ctx *task = task_new(scheduler, name, NULL, NULL, NULL);
+    task_register(task, _startup, NULL);
 }
 
 #endif

@@ -99,7 +99,7 @@ static void _websock_handshake_server(ev_ctx *ev, SOCKET fd, uint64_t skid, stru
     sha1_final(&sha1, sha1str);
     FREE(key);
     char b64[B64EN_BLOCK_SIZE(sizeof(sha1str))];
-    bs64_encode((char *)sha1str, sizeof(sha1str), b64);
+    b64_encode((char *)sha1str, sizeof(sha1str), b64);
     static const char *fmt = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n";
     char *rsp = formatv(fmt, b64);
     ud->status = START;
@@ -468,7 +468,7 @@ char *websock_handshake_pack(const char *host) {
     char rdstr[8 + 1];
     randstr(rdstr, sizeof(rdstr) - 1);
     char b64[B64EN_BLOCK_SIZE(sizeof(rdstr) - 1)];
-    bs64_encode(rdstr, sizeof(rdstr) - 1, b64);
+    b64_encode(rdstr, sizeof(rdstr) - 1, b64);
     char *data;
     if (NULL != host) {
         const char *fmt = "GET / HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade,Keep-Alive\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n";

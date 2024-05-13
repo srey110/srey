@@ -6,10 +6,8 @@
 typedef void(*_handshaked_push)(SOCKET fd, uint64_t skid, ud_cxt *ud, int32_t *closefd, int32_t erro);
 typedef enum pack_type {
     PACK_NONE = 0x0,
-    PACK_RPC,
     PACK_HTTP,
     PACK_WEBSOCK,
-    PACK_MQTT,
     PACK_SIMPLE
 }pack_type;
 typedef enum slice_type {

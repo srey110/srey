@@ -14,6 +14,16 @@ do {\
         ssl = NULL; \
     }\
 }while (0)
+
+typedef enum CERT_FILE_TYPE {
+    CERT_PEM = 0x01,
+    CERT_ASN1 = 0x02
+}CERT_FILE_TYPE;
+typedef enum VERIFY_TYPE {
+    VERIFY_NONE = 0x00,
+    VERIFY_PEER = 0x01,
+    VERIFY_FAIL_IF_NO_PEER_CERT = 0x03
+}VERIFY_TYPE;
 typedef struct evssl_ctx evssl_ctx;
 
 //SSL_FILETYPE_PEM SSL_FILETYPE_ASN1

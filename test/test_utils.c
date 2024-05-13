@@ -225,7 +225,6 @@ void test_system(CuTest* tc) {
     
     
     const char *str = "this is test.";
-    size_t len = strlen(str);
     char *buf;
     CALLOC(buf, 1, (size_t)32);
     memcpy(buf, str, strlen(str));
@@ -328,11 +327,11 @@ void test_algo(CuTest* tc) {
 
     char *en;
     MALLOC(en, B64EN_BLOCK_SIZE(len));
-    bs64_encode(str, len, en);
+    b64_encode(str, len, en);
     CuAssertTrue(tc, 0 == strcmp("dGhpcyBpcyB0ZXN0Lg==", en));
     char *de;
     MALLOC(de, B64DE_BLOCK_SIZE(strlen(en)));
-    size_t bdelen = bs64_decode(en, strlen(en), de);
+    size_t bdelen = b64_decode(en, strlen(en), de);
     CuAssertTrue(tc, 0 == strcmp(de, str));
     FREE(en);
 

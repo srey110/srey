@@ -13,6 +13,6 @@ static void _closing(task_ctx *task) {
 }
 void task_startup_closing_start(scheduler_ctx *scheduler, name_t name, int32_t pt) {
     _prt = pt;
-    task_ctx *task = task_new(name, NULL, NULL, NULL);
-    task_register(scheduler, task, _startup, _closing);
+    task_ctx *task = task_new(scheduler, name, NULL, NULL, NULL);
+    task_register(task, _startup, _closing);
 }

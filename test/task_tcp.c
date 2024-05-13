@@ -35,17 +35,19 @@ static void _net_close(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype,
         LOG_INFO("socket %d closed", (uint32_t)fd);
     }
 }
-void task_tcp_start(scheduler_ctx *scheduler, name_t name, int32_t pt) {
-    _prt = pt;
-    task_ctx *task = task_new(name, NULL, NULL, NULL);
-    task_register(scheduler, task, NULL, NULL);
-    register_net_accpet(task, _net_accept);
-    register_net_connect(task, _net_connect);
-    register_net_recv(task, _net_recv);
-    register_net_send(task, _net_send);
-    register_net_close(task, _net_close);
+static void _startup(task_ctx *task) {
+    on_accepted(task, _net_accept);
+    on_connected(task, _net_connect);
+    on_recved(task, _net_recv);
+    on_sended(task, _net_send);
+    on_closed(task, _net_close);
     uint64_t id;
     trigger_listen(task, PACK_SIMPLE, NULL, "0.0.0.0", 15000, &id, APPEND_ACCEPT | APPEND_SEND | APPEND_CLOSE);
     trigger_connect(task, createid(), PACK_SIMPLE, NULL, "127.0.0.1", 15000, &id, APPEND_SEND | APPEND_CLOSE);
     trigger_connect(task, createid(), PACK_SIMPLE, NULL, "127.0.0.1", 15001, &id, APPEND_SEND | APPEND_CLOSE);
+}
+void task_tcp_start(scheduler_ctx *scheduler, name_t name, int32_t pt) {
+    _prt = pt;
+    task_ctx *task = task_new(scheduler, name, NULL, NULL, NULL);
+    task_register(task, _startup, NULL);
 }

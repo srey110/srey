@@ -1,6 +1,16 @@
 #include "srey/trigger.h"
 #include "srey/task.h"
 
+int32_t _message_should_clean(message_ctx *msg) {
+    if ((MSG_TYPE_RECV == msg->mtype
+        || MSG_TYPE_RECVFROM == msg->mtype
+        || MSG_TYPE_REQUEST == msg->mtype
+        || MSG_TYPE_RESPONSE == msg->mtype)
+        && NULL != msg->data) {
+        return ERR_OK;
+    }
+    return ERR_FAILED;
+}
 void _message_clean(msg_type mtype, pack_type pktype, void *data) {
     switch (mtype) {
     case MSG_TYPE_RECV:

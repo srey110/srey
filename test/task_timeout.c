@@ -26,10 +26,12 @@ static void _timeout2(task_ctx *task, uint64_t sess) {
     }
     trigger_timeout(task, createid(), 5000, _timeout2);
 }
-void task_timeout_start(scheduler_ctx *scheduler, name_t name, int32_t pt) {
-    _prt = pt;
-    task_ctx *task = task_new(name, NULL, NULL, NULL);
-    task_register(scheduler, task, NULL, NULL);
+static void _startup(task_ctx *task) {
     trigger_timeout(task, createid(), 3000, _timeout1);
     trigger_timeout(task, createid(), 5000, _timeout2);
+}
+void task_timeout_start(scheduler_ctx *scheduler, name_t name, int32_t pt) {
+    _prt = pt;
+    task_ctx *task = task_new(scheduler, name, NULL, NULL, NULL);
+    task_register(task, _startup, NULL);
 }

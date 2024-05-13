@@ -47,7 +47,6 @@ void *protos_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid,
     *size = 0;
     *slice = SLICE_NONE;
     switch (ud->pktype) {
-    case PACK_RPC:
     case PACK_SIMPLE:
         unpack = simple_unpack(buf, size, ud, closefd);
         break;
