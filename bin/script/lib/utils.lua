@@ -6,6 +6,15 @@ local string = string
 local pathsep = _pathsep
 local PRINT_DEBUG = true
 
+function host_type(host)
+	if host:match("^[%d%.]+$") then
+		return "ipv4"
+	end
+	if host:find(":") then
+		return "ipv6"
+	end
+	return "hostname"
+end
 function printd(fmt, ...)
     if not PRINT_DEBUG then
         return

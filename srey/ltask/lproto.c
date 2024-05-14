@@ -110,9 +110,9 @@ static int32_t _lproto_websock_handshake_pack(lua_State *lua) {
         host = (char *)luaL_checkstring(lua, 1);
     }
     char *hspack = websock_handshake_pack(host);
-    lua_pushstring(lua, hspack);
-    FREE(hspack);
-    return 1;
+    lua_pushlightuserdata(lua, hspack);
+    lua_pushinteger(lua, strlen(hspack));
+    return 2;
 }
 static int32_t _lproto_websock_unpack(lua_State *lua) {
     struct websock_pack_ctx *pack = lua_touserdata(lua, 1);
@@ -121,7 +121,7 @@ static int32_t _lproto_websock_unpack(lua_State *lua) {
     lua_pushinteger(lua, websock_pack_proto(pack));
     lua_settable(lua, -3);
     lua_pushstring(lua, "fin");
-    lua_pushboolean(lua, websock_pack_fin(pack));
+    lua_pushinteger(lua, websock_pack_fin(pack));
     lua_settable(lua, -3);
     size_t lens;
     void *data = websock_pack_data(pack, &lens);
@@ -129,10 +129,10 @@ static int32_t _lproto_websock_unpack(lua_State *lua) {
         lua_pushstring(lua, "data");
         lua_pushlightuserdata(lua, data);
         lua_settable(lua, -3);
-        lua_pushstring(lua, "size");
-        lua_pushinteger(lua, lens);
-        lua_settable(lua, -3);
     }
+    lua_pushstring(lua, "size");
+    lua_pushinteger(lua, lens);
+    lua_settable(lua, -3);
     return 1;
 }
 static int32_t _lproto_websock_ping(lua_State *lua) {
@@ -199,7 +199,11 @@ static int32_t _lproto_websock_continuation(lua_State *lua) {
         data = (void *)luaL_checklstring(lua, 5, &dlens);
     } else {
         data = lua_touserdata(lua, 5);
-        dlens = (size_t)luaL_checkinteger(lua, 6);
+        if (LUA_TNUMBER == lua_type(lua, 6)) {
+            dlens = (size_t)luaL_checkinteger(lua, 6);
+        } else {
+            dlens = 0;
+        }
     }
     websock_continuation(&g_scheduler->netev, fd, skid, mask, fin, data, dlens);
     return 0;
@@ -296,6 +300,17 @@ static int32_t _lproto_http_data(lua_State *lua) {
     lua_pushinteger(lua, lens);
     return 2;
 }
+static int32_t _lproto_http_datastr(lua_State *lua) {
+    struct http_pack_ctx *pack = lua_touserdata(lua, 1);
+    size_t lens;
+    void *data = http_data(pack, &lens);
+    if (0 == lens) {
+        lua_pushnil(lua);
+        return 1;
+    }
+    lua_pushlstring(lua, data, lens);
+    return 1;
+}
 //srey.http
 LUAMOD_API int luaopen_http(lua_State *lua) {
     luaL_Reg reg[] = {
@@ -305,6 +320,7 @@ LUAMOD_API int luaopen_http(lua_State *lua) {
         { "head", _lproto_http_head },
         { "heads", _lproto_http_heads },
         { "data", _lproto_http_data },
+        { "datastr", _lproto_http_datastr },
         { NULL, NULL },
     };
     luaL_newlib(lua, reg);

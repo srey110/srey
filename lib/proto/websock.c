@@ -416,7 +416,6 @@ void websock_close(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t mask) {
     } else {
         _websock_control_frame(ev, fd, skid, WBSK_CLOSE, _mask_key);
     }
-    
 }
 void websock_text(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t mask,
     int32_t fin, void *data, size_t dlens) {

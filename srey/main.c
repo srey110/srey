@@ -139,7 +139,7 @@ static int32_t service_init(void) {
     _config_init(&config);
     _parse_config(&config);
     log_setlv((LOG_LEVEL)config.loglv);
-    _open_log();
+    //_open_log();
     unlimit();
     srand((uint32_t)time(NULL));
     mutex_init(&muexit);

@@ -9,7 +9,11 @@ TASK_NAME = {
     ssl = 1005,
     udp = 1006,
     syn = 1007,
-    netharbor = 1008
+    netharbor = 1008,
+    wbskd = 1009,
+    wbsksv = 1010,
+    httpd = 1011,
+    httpsv = 1012
 }
 --SSL名
 SSL_NAME = {
@@ -66,3 +70,4 @@ ERR_OK = 0
 ERR_FAILED = -1
 INVALID_SOCK = -1
 INVALID_TNAME = 0
+DNS_IP = "8.8.8.8"
