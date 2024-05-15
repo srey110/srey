@@ -7,7 +7,7 @@ typedef struct skpool_ctx {
     qu_ptr_ctx pool;
 }skpool_ctx;
 
-struct sock_ctx * _new_sk(SOCKET fd, struct cbs_ctx *cbs, struct ud_cxt *ud);
+struct sock_ctx *_new_sk(SOCKET fd, struct cbs_ctx *cbs, struct ud_cxt *ud);
 void _free_sk(struct sock_ctx *skctx);
 void _clear_sk(struct sock_ctx *skctx);
 void _reset_sk(struct sock_ctx *skctx, SOCKET fd, struct cbs_ctx *cbs, struct ud_cxt *ud);

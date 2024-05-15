@@ -15,7 +15,7 @@ srey.startup(
             Server = "Srey"
         }
         srey.on_recved(
-            function (pktype, fd, skid, client, sess, slice, data, size)
+            function (pktype, fd, skid, client, slice, data, size)
                 local chunked = http.chunked(data)
                 if 0 == chunked then
                     --升级 websock  http://www.websocket-test.com/
@@ -50,6 +50,6 @@ srey.startup(
                 end
             end
         )
-        srey.listen(PACK_TYPE.HTTP, 0, "0.0.0.0", 15005)
+        srey.listen(PACK_TYPE.HTTP, 0, "0.0.0.0", 15003)
     end
 )

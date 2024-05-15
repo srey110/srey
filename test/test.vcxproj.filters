@@ -54,6 +54,12 @@
     <ClCompile Include="task_coro_utils.c">
       <Filter>taskcoro</Filter>
     </ClCompile>
+    <ClCompile Include="task_wbsock_sv.c">
+      <Filter>tasks</Filter>
+    </ClCompile>
+    <ClCompile Include="task_http_sv.c">
+      <Filter>tasks</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="CuTest.h">
@@ -96,6 +102,12 @@
     </ClInclude>
     <ClInclude Include="task_coro_utils.h">
       <Filter>taskcoro</Filter>
+    </ClInclude>
+    <ClInclude Include="task_wbsock_sv.h">
+      <Filter>tasks</Filter>
+    </ClInclude>
+    <ClInclude Include="task_http_sv.h">
+      <Filter>tasks</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

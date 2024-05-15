@@ -6,7 +6,9 @@
 #if WITH_CORO
 
 //dns_ip *ÐèÒªFREE
-struct dns_ip *coro_dns_lookup(task_ctx *task, int32_t ms, const char *dns, const char *domain, int32_t ipv6, size_t *cnt);
+struct dns_ip *coro_dns_lookup(task_ctx *task, const char *domain, int32_t ipv6, size_t *cnt);
+//ws://host:port
+SOCKET coro_wbsock_connect(task_ctx *task, const char *ws, struct evssl_ctx *evssl, uint64_t *skid, int32_t appendev);
 
 #endif
 #endif//CORO_UTILS_H_

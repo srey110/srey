@@ -56,8 +56,8 @@ LUAMOD_API int (luaopen_core)(lua_State *L);
 LUAMOD_API int (luaopen_harbor)(lua_State *L);
 #define LUA_SREYDNS "srey.dns"
 LUAMOD_API int (luaopen_dns)(lua_State *L);
-#define LUA_SREYSIMPLE "srey.simple"
-LUAMOD_API int (luaopen_simple)(lua_State *L);
+#define LUA_SREYCUSTZ "srey.custz"
+LUAMOD_API int (luaopen_custz)(lua_State *L);
 #define LUA_SREYWEBSOCK "srey.websock"
 LUAMOD_API int (luaopen_websock)(lua_State *L);
 #define LUA_SREYHTTP "srey.http"

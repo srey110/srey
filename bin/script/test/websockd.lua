@@ -11,7 +11,7 @@ local function _cont(tag)
     return msg, #msg
 end
 local function _wbsock_test(ws)
-    local fd, skid = wbsk.connect(ws, 0, 2000, 0)
+    local fd, skid = wbsk.connect(ws, 0, 0)
     if INVALID_SOCK == fd then
         printd("websock.connect error")
         return
@@ -28,7 +28,7 @@ end
 srey.startup(
     function ()
         srey.on_recved(
-            function (pktype, fd, skid, client, sess, slice, data, size)
+            function (pktype, fd, skid, client, slice, data, size)
                 local wbskpk = wbsk.unpack(data)
                 --printd("websock proto %s", wbsk.protostr(wbskpk.proto))
                 if WEBSOCK_PROTO.CLOSE == wbskpk.proto then

@@ -43,6 +43,9 @@ uint64_t timer_cur(timer_ctx *ctx) {
     return (((uint64_t)ts.tv_sec) * NANOSEC + ts.tv_nsec);
 #endif
 }
+uint64_t timer_cur_ms(timer_ctx *ctx) {
+    return timer_cur(ctx) / TIMER_ACCURACY;
+}
 void timer_start(timer_ctx *ctx) {
     ctx->starttick = timer_cur(ctx);
 }

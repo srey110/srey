@@ -12,6 +12,7 @@ typedef struct config_ctx {
     int32_t harbortimeout;
     name_t harborname;
     name_t harborssl;
+    char dns[IP_LENS];
     char harborip[IP_LENS];
     char harborkey[128];
 }config_ctx;

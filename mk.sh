@@ -53,10 +53,10 @@ if [ $istest -eq 1 ]
 then
     Dir=$Dir" test"
 else
-    Dir=$Dir" srey"
+    Dir=$Dir" srey srey/cjson srey/tasks"
     if [ $withlua -eq 1 ]
     then
-        Dir=$Dir" srey/cjson srey/tasks srey/ltask"
+        Dir=$Dir" srey/ltask"
     fi
 fi
 #SSL库

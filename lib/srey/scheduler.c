@@ -57,8 +57,7 @@ static void _worker_wakeup(scheduler_ctx *scheduler, name_t *task) {
     }
     mutex_unlock(&scheduler->mutex);
 #else
-    uint16_t index = (uint16_t)(ATOMIC64_ADD(&scheduler->index, 1) % scheduler->nworker);
-    worker_ctx *worker = &scheduler->worker[index];
+    worker_ctx *worker = &scheduler->worker[ATOMIC64_ADD(&scheduler->index, 1) % scheduler->nworker];
     spin_lock(&worker->lcktasks);
     qu_task_push(&worker->qutasks, task);
     spin_unlock(&worker->lcktasks);
@@ -191,7 +190,7 @@ static void _monitor_check(scheduler_ctx *scheduler) {
         version = &scheduler->monitor.version[i];
         if (version->ckver == version->ver
             && MSG_TYPE_NONE != version->msgtype) {
-            LOG_ERROR("task: %d message type: %d, maybe in an endless loop.",
+            LOG_WARN("task: %d message type: %d, maybe in an endless loop.",
                 version->name, version->msgtype);
         } else {
             version->ckver = version->ver;
@@ -215,7 +214,7 @@ scheduler_ctx *scheduler_init(uint16_t nnet, uint16_t nworker) {
     CALLOC(scheduler, 1, sizeof(scheduler_ctx));
     protos_init(_message_handshaked_push);
 #if WITH_CORO
-    _coro_init(0);
+    _mcoro_init(0);
 #endif
 #if SCHEDULER_GLOBAL
     spin_init(&scheduler->lckglobal, SPIN_CNT_SCHEDULER);

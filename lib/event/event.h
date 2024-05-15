@@ -10,7 +10,7 @@ void ev_free(ev_ctx *ctx);
 int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const uint16_t port,
     cbs_ctx *cbs, ud_cxt *ud, uint64_t *id);
 SOCKET ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const uint16_t port,
-    cbs_ctx *cbs, ud_cxt *ud, uint64_t *skid);
+    cbs_ctx *cbs, ud_cxt *ud, uint64_t *skid, int32_t setsess);
 SOCKET ev_udp(ev_ctx *ctx, const char *ip, const uint16_t port,
     cbs_ctx *cbs, ud_cxt *ud, uint64_t *skid);
 

@@ -57,7 +57,7 @@ static const luaL_Reg loadedlibs[] = {
   {LUA_SREYCORE, luaopen_core},
   {LUA_SREYHARBOR, luaopen_harbor},
   {LUA_SREYDNS, luaopen_dns},
-  {LUA_SREYSIMPLE, luaopen_simple},
+  {LUA_SREYCUSTZ, luaopen_custz},
   {LUA_SREYWEBSOCK, luaopen_websock},
   {LUA_SREYHTTP, luaopen_http},
   {LUA_SREYUTILS, luaopen_utils},

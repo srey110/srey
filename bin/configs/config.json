@@ -2,6 +2,7 @@
     "nnet": 1,
     "nworker": 2,
     "loglv": 4,
+    "dns": "8.8.8.8",
     "harborname": 1,
     "harborssl": 0,
     "harbortimeout": 1000,

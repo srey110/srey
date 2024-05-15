@@ -23,6 +23,8 @@ typedef struct websock_pack_ctx {
 #define HEAD_LESN    2
 #define SIGNKEY "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 static char _mask_key[4 + 1] = { 0 };
+static char _hs_key[B64EN_BLOCK_SIZE(8)] = { 0 };
+static char _hs_sign[B64EN_BLOCK_SIZE(SHA1_BLOCK_SIZE)] = { 0 };
 static _handshaked_push _hs_push;
 
 static http_header_ctx *_websock_handshake_svcheck(struct http_pack_ctx *hpack) {
@@ -79,6 +81,21 @@ static http_header_ctx *_websock_handshake_svcheck(struct http_pack_ctx *hpack) 
     }
     return sign;
 }
+static void _websock_sign(char *key, size_t klens, char b64[B64EN_BLOCK_SIZE(SHA1_BLOCK_SIZE)]) {
+    unsigned char *signstr;
+    size_t slens = strlen(SIGNKEY);
+    size_t lens = klens + slens;
+    MALLOC(signstr, lens);
+    memcpy(signstr, key, klens);
+    memcpy(signstr + klens, SIGNKEY, slens);
+    sha1_ctx sha1;
+    unsigned char sha1str[SHA1_BLOCK_SIZE];
+    sha1_init(&sha1);
+    sha1_update(&sha1, signstr, lens);
+    sha1_final(&sha1, sha1str);
+    FREE(signstr);
+    b64_encode((char *)sha1str, sizeof(sha1str), b64);
+}
 static void _websock_handshake_server(ev_ctx *ev, SOCKET fd, uint64_t skid, struct http_pack_ctx *hpack, ud_cxt *ud, int32_t *closefd) {
     http_header_ctx *signstr = _websock_handshake_svcheck(hpack);
     if (NULL == signstr) {
@@ -86,20 +103,8 @@ static void _websock_handshake_server(ev_ctx *ev, SOCKET fd, uint64_t skid, stru
         _hs_push(fd, skid, ud, closefd, ERR_FAILED);
         return;
     }
-    unsigned char *key;
-    size_t klens = strlen(SIGNKEY);
-    size_t lens = klens + signstr->value.lens;
-    MALLOC(key, lens);
-    memcpy(key, signstr->value.data, signstr->value.lens);
-    memcpy(key + signstr->value.lens, SIGNKEY, klens);
-    sha1_ctx sha1;
-    unsigned char sha1str[SHA1_BLOCK_SIZE];
-    sha1_init(&sha1);
-    sha1_update(&sha1, key, lens);
-    sha1_final(&sha1, sha1str);
-    FREE(key);
-    char b64[B64EN_BLOCK_SIZE(sizeof(sha1str))];
-    b64_encode((char *)sha1str, sizeof(sha1str), b64);
+    char b64[B64EN_BLOCK_SIZE(SHA1_BLOCK_SIZE)];
+    _websock_sign(signstr->value.data, signstr->value.lens, b64);
     static const char *fmt = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n";
     char *rsp = formatv(fmt, b64);
     ud->status = START;
@@ -165,6 +170,11 @@ static void _websock_handshake_client(struct http_pack_ctx *hpack, SOCKET fd, ui
         _hs_push(fd, skid, ud, closefd, ERR_FAILED);
         return;
     }
+    if (!buf_compare(&signstr->value, _hs_sign, strlen(_hs_sign))){
+        *closefd = 1;
+        _hs_push(fd, skid, ud, closefd, ERR_FAILED);
+        return;
+    }
     ud->status = START;
     _hs_push(fd, skid, ud, closefd, ERR_OK);
 }
@@ -180,8 +190,7 @@ static void _websock_handshake(ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx 
         http_pkfree(hpack);
         return;
     }
-    buf_ctx *hstatus = http_status(hpack);
-    if (!buf_icompare(&hstatus[0], "get", strlen("get"))) {
+    if (ud->client) {
         _websock_handshake_client(hpack, fd, skid, ud, closefd);
     } else {
         _websock_handshake_server(ev, fd, skid, hpack, ud, closefd);
@@ -464,21 +473,21 @@ char *websock_pack_data(websock_pack_ctx *pack, size_t *lens) {
     return pack->data;
 }
 char *websock_handshake_pack(const char *host) {
-    char rdstr[8 + 1];
-    randstr(rdstr, sizeof(rdstr) - 1);
-    char b64[B64EN_BLOCK_SIZE(sizeof(rdstr) - 1)];
-    b64_encode(rdstr, sizeof(rdstr) - 1, b64);
     char *data;
     if (NULL != host) {
         const char *fmt = "GET / HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade,Keep-Alive\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n";
-        data = formatv(fmt, host, b64);
+        data = formatv(fmt, host, _hs_key);
     } else {
         const char *fmt = "GET / HTTP/1.1\r\nUpgrade: websocket\r\nConnection: Upgrade,Keep-Alive\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n";
-        data = formatv(fmt, b64);
+        data = formatv(fmt, _hs_key);
     }
     return data;
 }
 void _websock_init(void *hspush) {
     _hs_push = (_handshaked_push)hspush;
     randstr(_mask_key, sizeof(_mask_key) - 1);
+    char key[8 + 1];
+    randstr(key, sizeof(key) - 1);
+    b64_encode(key, sizeof(key) - 1, _hs_key);
+    _websock_sign(_hs_key, strlen(_hs_key), _hs_sign);
 }

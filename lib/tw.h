@@ -18,8 +18,8 @@ typedef struct tw_node_ctx {
     struct tw_node_ctx *next;
     tw_cb _cb;//回调函数
     free_cb _freecb;
-    uint32_t expires;
     ud_cxt ud;//用户数据
+    uint64_t expires;
 }tw_node_ctx;
 typedef struct tw_slot_ctx {
     tw_node_ctx *head;
@@ -27,7 +27,7 @@ typedef struct tw_slot_ctx {
 }tw_slot_ctx;
 typedef struct tw_ctx {
     volatile int32_t exit;
-    uint32_t jiffies;
+    uint64_t jiffies;
     spin_ctx spin;
     pthread_t thtw;
     timer_ctx timer;

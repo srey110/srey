@@ -38,6 +38,10 @@ LUAMOD_API int luaopen_harbor(lua_State *lua) {
     luaL_newlib(lua, reg);
     return 1;
 }
+static int32_t _lproto_dns_ip(lua_State *lua) {
+    lua_pushstring(lua, dns_get_ip());
+    return 1;
+}
 static int32_t _lproto_dns_pack(lua_State *lua) {
     const char *domain = luaL_checkstring(lua, 1);
     int32_t ipv6 = (int32_t)luaL_checkinteger(lua, 2);
@@ -50,10 +54,11 @@ static int32_t _lproto_dns_unpack(lua_State *lua) {
     void *pack = lua_touserdata(lua, 1);
     size_t n;
     dns_ip *ips = dns_parse_pack(pack, &n);
-    lua_createtable(lua, 0, (int32_t)n);
     if (NULL == ips) {
+        lua_pushnil(lua);
         return 1;
     }
+    lua_createtable(lua, 0, (int32_t)n);
     for (size_t i = 0; i < n; i++) {
         lua_pushinteger(lua, i + 1);
         lua_pushstring(lua, ips[i].ip);
@@ -65,6 +70,7 @@ static int32_t _lproto_dns_unpack(lua_State *lua) {
 //srey.dns
 LUAMOD_API int luaopen_dns(lua_State *lua) {
     luaL_Reg reg[] = {
+        { "ip", _lproto_dns_ip },
         { "pack", _lproto_dns_pack },
         { "unpack", _lproto_dns_unpack },
         { NULL, NULL },
@@ -72,7 +78,7 @@ LUAMOD_API int luaopen_dns(lua_State *lua) {
     luaL_newlib(lua, reg);
     return 1;
 }
-static int32_t _lproto_simple_pack(lua_State *lua) {
+static int32_t _lproto_custz_pack(lua_State *lua) {
     void *data;
     size_t size;
     if (LUA_TSTRING == lua_type(lua, 1)) {
@@ -81,24 +87,24 @@ static int32_t _lproto_simple_pack(lua_State *lua) {
         data = lua_touserdata(lua, 1);
         size = (size_t)luaL_checkinteger(lua, 2);
     }
-    data = simple_pack(data, size, &size);
+    data = (void *)custz_pack(data, size, &size);
     lua_pushlightuserdata(lua, data);
     lua_pushinteger(lua, size);
     return 2;
 }
-static int32_t _lproto_simple_unpack(lua_State *lua) {
-    void *pack = lua_touserdata(lua, 1);
+static int32_t _lproto_custz_unpack(lua_State *lua) {
+    struct custz_pack_ctx *pack = lua_touserdata(lua, 1);
     size_t lens;
-    void *data = simple_data(pack, &lens);
+    void *data = custz_data(pack, &lens);
     lua_pushlightuserdata(lua, data);
     lua_pushinteger(lua, lens);
     return 2;
 }
-//srey.simple
-LUAMOD_API int luaopen_simple(lua_State *lua) {
+//srey.custz
+LUAMOD_API int luaopen_custz(lua_State *lua) {
     luaL_Reg reg[] = {
-        { "pack", _lproto_simple_pack },
-        { "unpack", _lproto_simple_unpack },
+        { "pack", _lproto_custz_pack },
+        { "unpack", _lproto_custz_unpack },
         { NULL, NULL },
     };
     luaL_newlib(lua, reg);
@@ -224,9 +230,9 @@ LUAMOD_API int luaopen_websock(lua_State *lua) {
     luaL_newlib(lua, reg);
     return 1;
 }
-static int32_t _lproto_http_error(lua_State *lua) {
+static int32_t _lproto_http_code_status(lua_State *lua) {
     int32_t err = (int32_t)luaL_checkinteger(lua, 1);
-    lua_pushstring(lua, http_error(err));
+    lua_pushstring(lua, http_code_status(err));
     return 1;
 }
 static int32_t _lproto_http_chunked(lua_State *lua) {
@@ -314,7 +320,7 @@ static int32_t _lproto_http_datastr(lua_State *lua) {
 //srey.http
 LUAMOD_API int luaopen_http(lua_State *lua) {
     luaL_Reg reg[] = {
-        { "error", _lproto_http_error },
+        { "code_status", _lproto_http_code_status },
         { "chunked", _lproto_http_chunked },
         { "status", _lproto_http_status },
         { "head", _lproto_http_head },

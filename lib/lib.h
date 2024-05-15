@@ -24,7 +24,7 @@
 #include "thread/spinlock.h"
 #include "thread/thread.h"
 #include "proto/urlparse.h"
-#include "proto/simple.h"
+#include "proto/custz.h"
 #include "proto/dns.h"
 #include "proto/http.h"
 #include "proto/websock.h"

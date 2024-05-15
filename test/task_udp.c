@@ -1,7 +1,7 @@
 #include "task_udp.h"
 
 static int32_t _prt = 0;
-static void _net_recvfrom(task_ctx *task, SOCKET fd, uint64_t skid, uint64_t sess,
+static void _net_recvfrom(task_ctx *task, SOCKET fd, uint64_t skid, 
     char ip[IP_LENS], uint16_t port, void *data, size_t size) {
     ev_sendto(&task->scheduler->netev, fd, skid, ip, port, data, size);
 }

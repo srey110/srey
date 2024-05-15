@@ -8,7 +8,7 @@ static void _timeout(task_ctx *task, uint64_t sess) {
     const char *reqmsg = "this is task_coro_comm1 request";
     int32_t error;
     size_t size;
-    void *data = coro_request(comm2, task, 1000, 0, (void *)reqmsg, strlen(reqmsg), 1, &error, &size);
+    void *data = coro_request(comm2, task, 0, (void *)reqmsg, strlen(reqmsg), 1, &error, &size);
     task_ungrab(comm2);
     if (ERR_OK != error) {
         LOG_ERROR("%s", "syn_request error");
@@ -19,7 +19,7 @@ static void _timeout(task_ctx *task, uint64_t sess) {
             LOG_INFO("syn_request return: %s", buf);
         }
     }
-    trigger_timeout(task, createid(), 3000, _timeout);
+    trigger_timeout(task, 0, 3000, _timeout);
 }
 //超时后如果注册了 _response_cb 也会收到消息
 static void _response(task_ctx *task, uint64_t sess, int32_t error, void *data, size_t size) {
@@ -31,7 +31,7 @@ static void _response(task_ctx *task, uint64_t sess, int32_t error, void *data, 
 }
 static void _startup(task_ctx *task) {
     on_responsed(task, _response);
-    trigger_timeout(task, createid(), 3000, _timeout);
+    trigger_timeout(task, 0, 3000, _timeout);
 }
 void task_coro_comm1_start(scheduler_ctx *scheduler, name_t name, int32_t pt) {
     _prt = pt;

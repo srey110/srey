@@ -2,11 +2,18 @@ require("lib.dns")
 local srey = require("lib.srey")
 local websock = require("srey.websock")
 local srey_url = require("srey.url")
-local WEBSOCK_PROTO = WEBSOCK_PROTO
 local PACK_TYPE = PACK_TYPE
 local wbsk = {}
+--websock proto
+WEBSOCK_PROTO = {
+    CONTINUA = 0x00,
+    TEXT =     0x01,
+    BINARY =   0x02,
+    CLOSE =    0x08,
+    PING =     0x09,
+    PONG =     0x0A
+}
 
---{proto, fin, data, size}
 function wbsk.protostr(proto)
     if WEBSOCK_PROTO.CONTINUA == proto then
         return "CONTINUA"
@@ -23,41 +30,40 @@ function wbsk.protostr(proto)
     end
     return "UNKNOWN"
 end
+--{proto, fin, data, size}
 function wbsk.unpack(pack)
     return websock.unpack(pack)
 end
---ws://ip:port
-function wbsk.connect(ws, sslname, ms, appendev)
+--ws://host:port
+function wbsk.connect(ws, sslname, appendev)
     local url = srey_url.parse(ws)
     if "ws" ~= url.scheme or not url.host then
         return INVALID_SOCK
     end
     local ip = url.host
     if "hostname"  == host_type(url.host)  then
-        local ips = nslookup(DNS_IP, url.host, false, ms)
-        if 0 == #ips then
+        local ips = nslookup(url.host, false)
+        if not ips or 0 == #ips then
             return INVALID_SOCK
         end
         ip = ips[1]
     end
     local port = url.port
     if not port then
-        if INVALID_TNAME == sslname then
+        if SSL_NAME.NONE == sslname then
             port = 80
         else
             port = 443
         end
     end
-    local fd, skid = srey.syn_connect(PACK_TYPE.WEBSOCK, sslname, ip, port, ms, appendev)
+    local fd, skid = srey.connect(PACK_TYPE.WEBSOCK, sslname, ip, port, appendev)
     if INVALID_SOCK == fd then
         return INVALID_SOCK
     end
     local hspack, size = websock.handshake_pack(url.host)
-    local sess = srey.id();
-    srey.sock_session(fd, skid, sess)
+    srey.sock_session(fd, skid, skid)
     srey.send(fd, skid, hspack, size, 0)
-    if not srey.wait_handshaked(sess, ms) then
-        srey.sock_session(fd, skid, 0)
+    if not srey.wait_handshaked(skid) then
         srey.close(fd, skid)
         return INVALID_SOCK
     end

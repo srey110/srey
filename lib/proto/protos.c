@@ -1,5 +1,5 @@
 #include "proto/protos.h"
-#include "proto/simple.h"
+#include "proto/custz.h"
 #include "proto/http.h"
 #include "proto/websock.h"
 
@@ -47,8 +47,8 @@ void *protos_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid,
     *size = 0;
     *slice = SLICE_NONE;
     switch (ud->pktype) {
-    case PACK_SIMPLE:
-        unpack = simple_unpack(buf, size, ud, closefd);
+    case PACK_CUSTZ:
+        unpack = custz_unpack(buf, size, ud, closefd);
         break;
     case PACK_HTTP:
         unpack = http_unpack(buf, size, ud, closefd, slice);

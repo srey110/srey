@@ -37,7 +37,7 @@ void tw_add(tw_ctx *ctx, const uint32_t timeout, tw_cb _cb, free_cb _freecb, ud_
     tw_node_ctx *node;
     MALLOC(node, sizeof(tw_node_ctx));
     COPY_UD(node->ud, ud);
-    node->expires = (uint32_t)(timer_cur(&ctx->timer) / TIMER_ACCURACY) + timeout;
+    node->expires = timer_cur_ms(&ctx->timer) + timeout;
     node->_cb = _cb;
     node->_freecb = _freecb;
     node->next = NULL;
@@ -47,7 +47,7 @@ void tw_add(tw_ctx *ctx, const uint32_t timeout, tw_cb _cb, free_cb _freecb, ud_
 }
 static tw_slot_ctx *_getslot(tw_ctx *ctx, tw_node_ctx *node) {
     tw_slot_ctx *slot;
-    uint32_t idx = node->expires - ctx->jiffies;
+    uint32_t idx = (uint32_t)(node->expires - ctx->jiffies);
     if ((int32_t)idx < 0) {
         slot = &ctx->tv1[(ctx->jiffies & TVR_MASK)];
     } else if (idx < TVR_SIZE) {
@@ -80,7 +80,7 @@ static uint32_t _cascade(tw_ctx *ctx, tw_slot_ctx *slot, const uint32_t index) {
 }
 static void _run(tw_ctx *ctx) {
     //µ÷Õû
-    uint32_t ulidx = ctx->jiffies & TVR_MASK;
+    uint32_t ulidx = (uint32_t)(ctx->jiffies & TVR_MASK);
     if (!ulidx
         && (!_cascade(ctx, ctx->tv2, INDEX(0)))
         && (!_cascade(ctx, ctx->tv3, INDEX(1)))
@@ -99,10 +99,10 @@ static void _run(tw_ctx *ctx) {
     ctx->tv1[ulidx].head = ctx->tv1[ulidx].tail = NULL;
 }
 static void _loop(void *arg) {
-    uint32_t curtick = 0;
+    uint64_t curtick;
     tw_node_ctx *next, *node;
     tw_ctx *ctx = (tw_ctx *)arg;
-    ctx->jiffies = (uint32_t)(timer_cur(&ctx->timer) / TIMER_ACCURACY);
+    ctx->jiffies = timer_cur_ms(&ctx->timer);
     while (0 == ctx->exit) {
         spin_lock(&ctx->spin);
         node = ctx->reqadd.head;
@@ -114,7 +114,7 @@ static void _loop(void *arg) {
         }
         ctx->reqadd.head = ctx->reqadd.tail = NULL;
         spin_unlock(&ctx->spin);
-        curtick = (uint32_t)(timer_cur(&ctx->timer) / TIMER_ACCURACY);
+        curtick = timer_cur_ms(&ctx->timer);
         while (ctx->jiffies <= curtick) {
             _run(ctx);
         }

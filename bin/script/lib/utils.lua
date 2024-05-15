@@ -36,6 +36,25 @@ function split(str, delimiter)
     table.insert(arr, string.sub(str, pos))
     return arr
 end
+function str_nullorempty(str)
+    return not str or '' == str
+end
+function table_size(tb)
+    local cnt = 0
+    for _, _ in pairs(tb) do
+        cnt = cnt + 1
+    end
+    return cnt
+end
+function table_nullorempty(tb)
+    if not tb then
+        return true
+    end
+    for _, _ in pairs(tb) do
+        return false
+    end
+    return true
+end
 function randstr(cnt)
     local char = {"0","1","2","3","4","5","6","7","8","9",
                   "a","b","c","d","e","f","g","h","i","j","k","l","m","n","o","p","q","r","s","t","u","v","w","x","y","z",

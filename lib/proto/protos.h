@@ -8,7 +8,7 @@ typedef enum pack_type {
     PACK_NONE = 0x0,
     PACK_HTTP,
     PACK_WEBSOCK,
-    PACK_SIMPLE
+    PACK_CUSTZ
 }pack_type;
 typedef enum slice_type {
     SLICE_NONE = 0x00,

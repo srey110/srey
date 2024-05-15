@@ -90,18 +90,17 @@ static int32_t _lcore_unlisten(lua_State *lua) {
     return 0;
 }
 static int32_t _lcore_connect(lua_State *lua) {
-    uint64_t sess = (uint64_t)luaL_checkinteger(lua, 1);
-    pack_type pktype = (pack_type)luaL_checkinteger(lua, 2);
+    pack_type pktype = (pack_type)luaL_checkinteger(lua, 1);
     struct evssl_ctx *evssl = NULL;
-    if (LUA_TNIL != lua_type(lua, 3)) {
-        evssl = lua_touserdata(lua, 3);
+    if (LUA_TNIL != lua_type(lua, 2)) {
+        evssl = lua_touserdata(lua, 2);
     }
-    const char *ip = luaL_checkstring(lua, 4);
-    uint16_t port = (uint16_t)luaL_checkinteger(lua, 5);
-    int32_t appendev = lua_isinteger(lua, 6) ? (int32_t)luaL_checkinteger(lua, 6) : APPEND_CLOSE;
+    const char *ip = luaL_checkstring(lua, 3);
+    uint16_t port = (uint16_t)luaL_checkinteger(lua, 4);
+    int32_t appendev = lua_isinteger(lua, 5) ? (int32_t)luaL_checkinteger(lua, 5) : APPEND_CLOSE;
     uint64_t skid;
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    SOCKET fd = trigger_connect(task, sess, pktype, evssl, ip, port, &skid, appendev);
+    SOCKET fd = trigger_connect(task, pktype, evssl, ip, port, &skid, 1, appendev);
     if (INVALID_SOCK == fd) {
         lua_pushinteger(lua, INVALID_SOCK);
         return 1;

@@ -1,7 +1,7 @@
 #include "test_utils.h"
 #include "lib.h"
 #include "proto/http.h"
-#include "proto/simple.h"
+#include "proto/custz.h"
 
 
 ARRAY_DECL(int, arr);

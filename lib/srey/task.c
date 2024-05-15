@@ -34,7 +34,7 @@ task_ctx *task_new(scheduler_ctx *scheduler, name_t name, _task_dispatch_cb _dis
     task->_arg_free = _argfree;
     task->arg = arg;
 #if WITH_CORO
-    _coro_new(task);
+    _mcoro_new(task);
 #endif
     spin_init(&task->lckmsg, SPIN_CNT_TASKMSG);
     qu_message_init(&task->qumsg, ONEK);
@@ -50,7 +50,7 @@ void task_free(task_ctx *task) {
         _message_clean(msg->mtype, msg->pktype, msg->data);
     }
 #if WITH_CORO
-    _coro_free(task);
+    _mcoro_free(task);
 #endif
     qu_message_free(&task->qumsg);
     spin_free(&task->lckmsg);

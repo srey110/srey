@@ -13,37 +13,50 @@ local coroutine_create = coroutine.create
 local coroutine_yield = coroutine.yield
 local coroutine_resume = coroutine.resume
 local cur_task = _curtask
+local TASK_NAME = TASK_NAME
+local SSL_NAME = SSL_NAME
 local coro_running = nil
 local coro_sess = {}
-local slice_sess = {}
 local func_cbs = {}
 local srey = {}
+local nyield = 0
 local coro_pool = setmetatable({}, { __mode = "kv" })
 local MSG_TYPE = {
-    STARTUP =    0x01,
-    CLOSING =    0x02,
-    TIMEOUT =    0x03,
-    ACCEPT =     0x04,
-    CONNECT =    0x05,
+    STARTUP    = 0x01,
+    CLOSING    = 0x02,
+    TIMEOUT    = 0x03,
+    ACCEPT     = 0x04,
+    CONNECT    = 0x05,
     HANDSHAKED = 0x06,
-    RECV =       0x07,
-    SEND =       0x08,
-    CLOSE =      0x09,
-    RECVFROM =   0x0a,
-    REQUEST =    0x0b,
-    RESPONSE =   0x0c
+    RECV       = 0x07,
+    SEND       = 0x08,
+    CLOSE      = 0x09,
+    RECVFROM   = 0x0a,
+    REQUEST    = 0x0b,
+    RESPONSE   = 0x0c
+}
+local TIMEOUT = {
+    REQUEST = 1500,
+    CONNECT = 3000,
+    NETREAD = 3000,
+}
+local SLICE_TYPE = {
+    NONE  = 0x00,
+    START = 0x01,
+    SLICE = 0x02,
+    END   = 0x03,
 }
 
 function srey.xpcall(func, ...)
     local function _error(err)
-        ERROR("%s\n%s", err, debug.traceback())
+        ERROR("%s\n%s.", err, debug.traceback())
     end
     return xpcall(func, _error, ...)
 end
 function srey.dostring(str)
     local func, err = load(str)
     if not func then
-        ERROR("%s.\n%s", err, debug.traceback())
+        ERROR("%s.\n%s.", err, debug.traceback())
         return false
     end
     return srey.xpcall(func)
@@ -113,6 +126,9 @@ end
 function srey.task_name(taskctx)
     return task.name(taskctx)
 end
+function srey.timer_ms()
+    return task.timer_ms()
+end
 
 --func()
 function srey.startup(func)
@@ -135,58 +151,62 @@ local function _closing()
 end
 local function _closing_dispatch()
     _coro_run(_coro_cb, _closing)
+    if nyield > 0 then
+        WARN("yield %d.", nyield)
+    end
 end
 
-local function _set_coro_sess(sess, assoc, coro, keep, func, ...)
+local function _set_coro_sess(sess, coro, ms, func, ...)
+    assert(not coro_sess[sess], "repeat session")
+    local timeout = 0
+    if ms > 0 then
+        timeout = srey.timer_ms() + ms
+    end
     coro_sess[sess] = {
-        assoc = assoc,
+        timeout = timeout,
         coro = coro,
-        keep = keep,
         func = func,
         args = {...}
     }
 end
 local function _get_coro_sess(sess)
-    local cosess = coro_sess[sess]
-    if not cosess then
+    local corosess = coro_sess[sess]
+    if not corosess then
         return nil
     end
-    if not cosess.keep then
-        coro_sess[sess] = nil
-    end
-    return cosess
+    coro_sess[sess] = nil
+    return corosess
 end
-local function _coro_wait(sess, assoc, ms)
-    _set_coro_sess(sess, assoc, coro_running)
-    if ms and ms >= 0 then
-        core.timeout(sess, ms)
-    end
+local function _coro_wait(sess, ms)
+    _set_coro_sess(sess, coro_running, ms)
+    nyield = nyield + 1
     local msg = coroutine_yield()
-    assert((0 ~= sess) and (sess == msg.sess or assoc == msg.sess), "different session.")
+    nyield = nyield - 1
+    assert(sess == msg.sess, "different session.")
     return msg
 end
 
 function srey.sleep(ms)
-    _coro_wait(srey.id(), 0, ms)
+    local sess = srey.id()
+    core.timeout(sess, ms)
+    _coro_wait(sess, 0)
 end
 --func(...)
 function srey.timeout(ms, func, ...)
     local sess = srey.id()
-    _set_coro_sess(sess, 0, nil, false, func, ...)
+    _set_coro_sess(sess, nil, 0, func, ...)
     core.timeout(sess, ms)
 end
 local function _timeout_dispatch(msg)
-    local cosess = _get_coro_sess(msg.sess)
-    if not cosess then
+    local corosess = _get_coro_sess(msg.sess)
+    if not corosess then
+        WARN("can't find session %s.", tostring(msg.sess))
         return
     end
-    if cosess.func then
-        _coro_run(_coro_cb, cosess.func, tunpack(cosess.args))
+    if corosess.func then
+        _coro_run(_coro_cb, corosess.func, tunpack(corosess.args))
     else
-        if 0 ~= cosess.assoc then
-            coro_sess[cosess.assoc] = nil
-        end
-        _coro_resume(cosess.coro, msg)
+        _coro_resume(corosess.coro, msg)
     end
 end
 
@@ -195,34 +215,42 @@ function srey.on_requested(func)
     func_cbs[MSG_TYPE.REQUEST] = func
 end
 function srey.call(dst, reqtype, data, size, copy)
-    if INVALID_TNAME == dst then
+    if TASK_NAME.NONE == dst then
+        WARN("parameter error.")
         return
     end
     local dtask = srey.task_grab(dst)
     if not dtask then
+        WARN("grab task error.")
         return
     end
     core.call(dtask, reqtype, data, size, copy)
     srey.task_ungrab(dtask)
 end
 --data size
-function srey.request(dst, ms, reqtype, data, size, copy)
-    if INVALID_TNAME == dst then
+function srey.request(dst, reqtype, data, size, copy)
+    if TASK_NAME.NONE == dst then
+        WARN("parameter error.")
         return nil
     end
     local dtask = srey.task_grab(dst)
     if not dtask then
+        WARN("grab task error.")
         return nil
     end
     local sess = srey.id()
     core.request(dtask, reqtype, sess, data, size, copy)
     srey.task_ungrab(dtask)
-    local msg = _coro_wait(sess, 0, ms)
+    local msg = _coro_wait(sess, TIMEOUT.REQUEST)
     if MSG_TYPE.TIMEOUT == msg.mtype then
-        WARN("task %d session %s request timeout.", srey.task_name(), tostring(sess))
+        WARN("request timeout, session %s.", tostring(sess))
         return nil
     end
     if ERR_OK ~= msg.erro then
+        if msg.data then
+            WARN("request error, session:%s code:%d message:%s.",
+             tostring(sess), msg.erro, srey.ud_str(msg.data, msg.size))
+        end
         return nil
     end
     return msg.data, msg.size
@@ -237,23 +265,25 @@ local function _request_dispatch(msg)
 end
 
 function srey.response(dst, sess, erro, data, size, copy)
-    if INVALID_TNAME == dst or 0 == sess then
+    if TASK_NAME.NONE == dst or 0 == sess then
+        WARN("parameter error.")
         return
     end
     local dtask = srey.task_grab(dst)
     if not dtask then
+        WARN("grab task error.")
         return
     end
     core.response(dtask, sess, erro, data, size, copy)
     srey.task_ungrab(dtask)
 end
 local function _response_dispatch(msg)
-    local cosess = _get_coro_sess(msg.sess)
-    if not cosess then
-        WARN("_response_dispatch not find session %s.", tostring(msg.sess))
+    local corosess = _get_coro_sess(msg.sess)
+    if not corosess then
+        WARN("can't find session %s.", tostring(msg.sess))
         return
     end
-    _coro_resume(cosess.coro, msg)
+    _coro_resume(corosess.coro, msg)
 end
 
 function srey.sock_session(fd, skid, sess)
@@ -276,10 +306,11 @@ end
 --id  -1 error
 function srey.listen(pktype, sslname, ip, port, appendev)
     local ssl
-    if INVALID_TNAME ~= sslname then
+    if SSL_NAME.NONE ~= sslname then
         ssl = core.ssl_qury(sslname)
         if not ssl then
-            ERROR("ssl_qury not find ssl name: %s",  sslname)
+            WARN("ssl_qury not find ssl name %d.", sslname)
+            return ERR_FAILED
         end
     end
     return core.listen(pktype, ssl, ip, port, appendev)
@@ -294,90 +325,76 @@ local function _net_accept_dispatch(msg)
     end
 end
 
---func(pktype, fd, skid, sess, erro)
-function srey.on_connected(func)
-    func_cbs[MSG_TYPE.CONNECT] = func
-end
 --fd skid
-function srey.connect(sess, pktype, sslname, ip, port, appendev)
+function srey.connect(pktype, sslname, ip, port, appendev)
     local ssl
-    if INVALID_TNAME ~= sslname then
+    if SSL_NAME.NONE ~= sslname then
         ssl = core.ssl_qury(sslname)
         if not ssl then
-            ERROR("ssl_qury not find ssl name: %s",  sslname)
+            WARN("ssl_qury not find ssl name %d.", sslname)
+            return INVALID_SOCK
         end
     end
-    return core.connect(sess, pktype, ssl, ip, port, appendev)
-end
---fd skid
-function srey.syn_connect(pktype, sslname, ip, port, ms, appendev)
-    local sess = srey.id()
-    local fd, skid = srey.connect(sess, pktype, sslname, ip, port, appendev)
+    local fd, skid = core.connect(pktype, ssl, ip, port, appendev)
     if INVALID_SOCK == fd then
+        WARN("connect %s:%d error.", ip, port)
         return INVALID_SOCK
     end
-    local msg = _coro_wait(sess, 0, ms)
+    local msg = _coro_wait(skid, TIMEOUT.CONNECT)
     if MSG_TYPE.TIMEOUT == msg.mtype then
-        srey.sock_session(fd, skid, 0)
         srey.close(fd, skid)
-        WARN("task %d session %s connect host %s:%d timeout.", srey.task_name(), tostring(sess), ip, port)
+        WARN("connect %s:%d timeout, skid %s.", ip, port, tostring(skid))
         return INVALID_SOCK
     end
     if ERR_OK ~= msg.erro then
-        WARN("task %d session %s connect host %s:%d error.", srey.task_name(), tostring(sess), ip, port)
+        WARN("connect %s:%d error, skid %s.", ip, port, tostring(skid))
         return INVALID_SOCK
     end
     return fd, skid
 end
 local function _net_connect_dispatch(msg)
-    if 0 ~= msg.sess then
-        local cosess = _get_coro_sess(msg.sess)
-        if cosess then
-            _coro_resume(cosess.coro, msg)
-        else
-            WARN("_net_connect_dispatch not find session %s error %d.", tostring(msg.sess), msg.erro)
-        end
-    else
-        local func = func_cbs[MSG_TYPE.CONNECT]
-        if func then
-            _coro_run(_coro_cb, func, msg.pktype, msg.fd, msg.skid, msg.sess, msg.erro)
-        end
+    local corosess = _get_coro_sess(msg.skid)
+    if not corosess then
+        WARN("can't find session %s.", tostring(msg.skid))
+        return
     end
+    _coro_resume(corosess.coro, msg)
 end
 
---func(pktype, fd, skid, client, sess, erro)
+--func(pktype, fd, skid, client, erro)
 function srey.on_handshaked(func)
     func_cbs[MSG_TYPE.HANDSHAKED] = func
 end
 --bool
-function srey.wait_handshaked(sess, ms)
-    local msg = _coro_wait(sess, 0, ms)
+function srey.wait_handshaked(skid)
+    local msg = _coro_wait(skid, TIMEOUT.NETREAD)
     if MSG_TYPE.TIMEOUT == msg.mtype then
+        WARN("handshake timeout, skid %s.", tostring(skid))
         return false
     end
     if MSG_TYPE.CLOSE == msg.mtype then
+        WARN("handshake connction closed, skid %s.", tostring(skid))
         return false
     end
-    if ERR_OK ~= msg.erro then
-        return false
-    end
-    return true
+    return ERR_OK == msg.erro
 end
 local function _net_handshaked_dispatch(msg)
-    if 0 ~= msg.sess then
-        local cosess = _get_coro_sess(msg.sess)
-        if cosess then
-            _coro_resume(cosess.coro, msg)
-        end
-    else
+    if 0 == msg.sess then
         local func = func_cbs[MSG_TYPE.HANDSHAKED]
         if func then
-            _coro_run(_coro_cb, func, msg.pktype, msg.fd, msg.skid, msg.client, msg.sess, msg.erro)
+            _coro_run(_coro_cb, func, msg.pktype, msg.fd, msg.skid, msg.client, msg.erro)
         end
+        return
     end
+    local corosess = _get_coro_sess(msg.skid)
+    if not corosess then
+        WARN("can't find session %s.", tostring(msg.skid))
+        return
+    end
+    _coro_resume(corosess.coro, msg)
 end
 
---func(pktype, fd, skid, client, sess, slice, data, size)
+--func(pktype, fd, skid, client, slice, data, size)
 function srey.on_recved(func)
     func_cbs[MSG_TYPE.RECV] = func
 end
@@ -385,109 +402,110 @@ function srey.send(fd, skid, data, size, copy)
     core.send(fd, skid, data, size, copy)
 end
 --data size
-function srey.syn_send(fd, skid, sess, data, size, ms, copy)
-    srey.sock_session(fd, skid, sess)
+function srey.syn_send(fd, skid, data, size, copy)
+    srey.sock_session(fd, skid, skid)
     srey.send(fd, skid, data, size, copy)
-    local msg = _coro_wait(sess, 0, ms)
+    local msg = _coro_wait(skid, TIMEOUT.NETREAD)
     if MSG_TYPE.TIMEOUT == msg.mtype then
-        srey.sock_session(fd, skid, 0)
         srey.close(fd, skid)
-        WARN("task %d session %s send timeout.", srey.task_name(), tostring(sess))
+        WARN("send timeout, skid %s.", tostring(skid))
         return nil
     end
     if MSG_TYPE.CLOSE == msg.type then
-        WARN("task %d session %s connction closed.", srey.task_name(), tostring(sess))
+        WARN("connction closed, skid %s.", tostring(skid))
         return nil
     end
     return msg.data, msg.size
 end
 --bool data size
-function srey.syn_slice(fd, skid, assoc, ms)
-    local sess = srey.id()
-    slice_sess[skid] = sess
-    local msg = _coro_wait(sess, assoc, ms)
-    slice_sess[skid] = nil
+function srey.syn_slice(fd, skid)
+    local msg = _coro_wait(skid, TIMEOUT.NETREAD)
     if MSG_TYPE.TIMEOUT == msg.mtype then
-        srey.sock_session(fd, skid, 0)
         srey.close(fd, skid)
-        WARN("task: %d, slice timeout.", srey.task_name())
+        WARN("slice timeout, skid %s.", tostring(skid))
         return false
     end
-    coro_sess[sess] = nil
     if MSG_TYPE.CLOSE == msg.mtype then
-        WARN("task %d, connction closed.", srey.task_name())
+        WARN("slice connction closed, skid %s.", tostring(skid))
         return false
     end
     return SLICE_TYPE.END == msg.slice, msg.data, msg.size
 end
 --bool  fd pktype HTTP
-function srey.net_call(fd, skid, dst, reqtype, key, data, size, ms)
+function srey.net_call(fd, skid, dst, reqtype, key, data, size)
     local reqdata, reqsize = harbor.pack(dst, 1, reqtype, key, data, size)
-    local respdata, _ = srey.syn_send(fd, skid, srey.id(), reqdata, reqsize, ms, 0)
+    local respdata, _ = srey.syn_send(fd, skid, reqdata, reqsize, 0)
     if not respdata then
+        WARN("syn_send error, skid %s.", tostring(skid))
         return false
     end
     local status = http.status(respdata)
     if not status then
+        WARN("not have status, skid %s.", tostring(skid))
         return false
     end
     return "200" == status[2]
 end
 --data size
-function srey.net_request(fd, skid, dst, reqtype, key, data, size, ms)
+function srey.net_request(fd, skid, dst, reqtype, key, data, size)
     local reqdata, reqsize = harbor.pack(dst, 0, reqtype, key, data, size)
-    local respdata, _ = srey.syn_send(fd, skid, srey.id(), reqdata, reqsize, ms, 0)
+    local respdata, _ = srey.syn_send(fd, skid, reqdata, reqsize, 0)
     if not respdata then
+        WARN("syn_send error, skid %s.", tostring(skid))
         return nil
     end
     local status = http.status(respdata)
     if not status then
+        WARN("not have status, skid %s.", tostring(skid))
         return nil
     end
     if "200" ~= status[2] then
+        WARN("net request return code %s skid %s.", status[2], tostring(skid))
         return nil
     end
     return http.data(respdata)
 end
 local function _net_recv_dispatch(msg)
-    if 0 ~= msg.sess then
-        local cosess = _get_coro_sess(msg.sess)
-        if cosess then
-            if SLICE_TYPE.START == msg.slice then
-                _set_coro_sess(msg.sess, 0, coro_running, true)
-            elseif SLICE_TYPE.END == msg.slice then
-                coro_sess[msg.sess] = nil
-            end
-            if SLICE_TYPE.END == msg.slice or SLICE_TYPE.SLICE == msg.slice  then
-                if slice_sess[msg.skid] then
-                    _coro_resume(cosess.coro, msg)
-                else
-                    ERROR("%s", "slice error.")
+    if 0 == msg.sess then
+        if SLICE_TYPE.NONE ~=  msg.slice then
+            local corosess = _get_coro_sess(msg.skid)
+            if not corosess then
+                local func = func_cbs[MSG_TYPE.RECV]
+                if func then
+                    _coro_run(_coro_cb, func, msg.pktype, msg.fd, msg.skid, msg.client, msg.slice, msg.data, msg.size)
                 end
             else
-                _coro_resume(cosess.coro, msg)
+                msg.sess = msg.skid
+                _coro_resume(corosess.coro, msg)
+            end
+        else
+            local func = func_cbs[MSG_TYPE.RECV]
+            if func then
+                _coro_run(_coro_cb, func, msg.pktype, msg.fd, msg.skid, msg.client, msg.slice, msg.data, msg.size)
             end
         end
-    else
-        local func = func_cbs[MSG_TYPE.RECV]
-        if func then
-            _coro_run(_coro_cb, func, msg.pktype, msg.fd, msg.skid, msg.client, msg.sess, msg.slice, msg.data, msg.size)
-        end
+        return
     end
+    local corosess = _get_coro_sess(msg.skid)
+    if not corosess then
+        WARN("can't find session %s.", tostring(msg.skid))
+        return
+    end
+    _coro_resume(corosess.coro, msg)
 end
 
---func(pktype, fd, skid, client, sess, size)
+--func(pktype, fd, skid, client, size)
 function srey.on_sended(func)
     func_cbs[MSG_TYPE.SEND] = func
 end
 local function _net_sended_dispatch(msg)
     local func = func_cbs[MSG_TYPE.SEND]
     if func then
-        _coro_run(_coro_cb, func, msg.pktype, msg.fd, msg.skid, msg.client, msg.sess, msg.size)
+        _coro_run(_coro_cb, func, msg.pktype, msg.fd, msg.skid, msg.client, msg.size)
     end
 end
 
---func(pktype, fd, skid, sess)
+--func(pktype, fd, skid, client)
 function srey.on_closed(func)
     func_cbs[MSG_TYPE.CLOSE] = func
 end
@@ -495,22 +513,17 @@ function srey.close(fd, skid)
     core.close(fd, skid)
 end
 local function _net_close_dispatch(msg)
-    if 0 ~= msg.sess then
-        local cosess = _get_coro_sess(msg.sess)
-        if cosess then
-            if cosess.keep then
-                coro_sess[msg.sess] = nil
-            end
-            _coro_resume(cosess.coro, msg)
-        end
+    local corosess = _get_coro_sess(msg.skid)
+    if corosess then
+        _coro_resume(corosess.coro, msg)
     end
     local func = func_cbs[MSG_TYPE.CLOSE]
     if func then
-        _coro_run(_coro_cb, func, msg.pktype, msg.fd, msg.skid, msg.sess)
+        _coro_run(_coro_cb, func, msg.pktype, msg.fd, msg.skid, msg.client)
     end
 end
 
---func(fd, skid, sess, ip, port, data, size)
+--func(fd, skid, ip, port, data, size)
 function srey.on_recvedfrom(func)
     func_cbs[MSG_TYPE.RECVFROM] = func
 end
@@ -526,38 +539,65 @@ function srey.sendto(fd, skid, ip, port, data, size)
     return core.sendto(fd, skid, ip, port, data, size)
 end
 --data size
-function srey.syn_sendto(fd, skid, ip, port, data, size, ms)
-    local sess = srey.id()
-    srey.sock_session(fd, skid, sess)
+function srey.syn_sendto(fd, skid, ip, port, data, size)
+    srey.sock_session(fd, skid, skid)
     if not srey.sendto(fd, skid, ip, port, data, size) then
         srey.sock_session(fd, skid, 0)
+        WARN("sendto error, skid %s.", tostring(skid))
         return nil
     end
-    local msg = _coro_wait(sess, 0, ms)
+    local msg = _coro_wait(skid, TIMEOUT.NETREAD)
     if MSG_TYPE.TIMEOUT == msg.mtype then
         srey.sock_session(fd, skid, 0)
-        WARN("task %d, sendto timeout.", srey.task_name())
+        WARN("sendto timeout, skid %s.", tostring(skid))
         return nil
     end
     return msg.udata, msg.size
 end
 local function _net_recvfrom_dispatch(msg)
-    if 0 ~= msg.sess then
-        local cosess = _get_coro_sess(msg.sess)
-        if cosess then
-            _coro_resume(cosess.coro, msg)
-        end
-    else
+    if 0 == msg.sess then
         local func = func_cbs[MSG_TYPE.RECVFROM]
         if func then
-            _coro_run(_coro_cb, func, msg.fd, msg.skid, msg.sess, msg.ip, msg.port, msg.udata, msg.size)
+            _coro_run(_coro_cb, func, msg.fd, msg.skid, msg.ip, msg.port, msg.udata, msg.size)
         end
+        return
     end
+    local corosess = _get_coro_sess(msg.skid)
+    if not corosess then
+        WARN("can't find session %s.", tostring(msg.skid))
+        return
+    end
+    _coro_resume(corosess.coro, msg)
 end
 
+local function _coro_timeout()
+    if nyield > 0 then
+        local now = srey.timer_ms()
+        local del = {}
+        for key, value in pairs(coro_sess) do
+            if value.timeout > 0 and now >= value.timeout then
+                del[#del + 1] = key
+            end
+        end
+        local corosess
+        for _, value in ipairs(del) do
+            corosess = _get_coro_sess(value)
+            if corosess then
+                local msg = {
+                    mtype = MSG_TYPE.TIMEOUT,
+                    sess = value
+                }
+                WARN("resume timeout session %s.", tostring(value))
+                _coro_resume(corosess.coro, msg)
+            end
+        end
+    end
+    srey.timeout(200, _coro_timeout)
+end
 function message_dispatch(msg)
     if MSG_TYPE.STARTUP == msg.mtype then
         _startup_dispatch()
+        srey.timeout(200, _coro_timeout)
     elseif MSG_TYPE.CLOSING == msg.mtype then
         _closing_dispatch()
     elseif MSG_TYPE.TIMEOUT == msg.mtype then

@@ -50,10 +50,10 @@
     <ClInclude Include="netaddr.h" />
     <ClInclude Include="netutils.h" />
     <ClInclude Include="os.h" />
+    <ClInclude Include="proto\custz.h" />
     <ClInclude Include="proto\dns.h" />
     <ClInclude Include="proto\http.h" />
     <ClInclude Include="proto\protos.h" />
-    <ClInclude Include="proto\simple.h" />
     <ClInclude Include="proto\urlparse.h" />
     <ClInclude Include="proto\websock.h" />
     <ClInclude Include="sfid.h" />
@@ -99,10 +99,10 @@
     <ClCompile Include="memory.c" />
     <ClCompile Include="netaddr.c" />
     <ClCompile Include="netutils.c" />
+    <ClCompile Include="proto\custz.c" />
     <ClCompile Include="proto\dns.c" />
     <ClCompile Include="proto\http.c" />
     <ClCompile Include="proto\protos.c" />
-    <ClCompile Include="proto\simple.c" />
     <ClCompile Include="proto\urlparse.c" />
     <ClCompile Include="proto\websock.c" />
     <ClCompile Include="sfid.c" />

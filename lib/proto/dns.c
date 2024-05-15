@@ -25,7 +25,14 @@ typedef struct dns_question {
 
 #define DNS_A    1
 #define DNS_AAAA 28
-
+static char _dns_ip[IP_LENS];
+void dns_set_ip(const char *ip) {
+    ZERO(_dns_ip, sizeof(_dns_ip));
+    memcpy(_dns_ip, ip, strlen(ip));
+}
+const char *dns_get_ip(void) {
+    return _dns_ip;
+}
 static void _encode_domain(char *qname, const char *domain) {
     size_t lock = 0, i, blens;
     char buf[256] = { 0 };

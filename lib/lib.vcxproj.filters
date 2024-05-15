@@ -94,9 +94,6 @@
     <ClInclude Include="structs.h">
       <Filter>base</Filter>
     </ClInclude>
-    <ClInclude Include="proto\simple.h">
-      <Filter>proto</Filter>
-    </ClInclude>
     <ClInclude Include="proto\http.h">
       <Filter>proto</Filter>
     </ClInclude>
@@ -199,6 +196,9 @@
     <ClInclude Include="srey\register.h">
       <Filter>srey</Filter>
     </ClInclude>
+    <ClInclude Include="proto\custz.h">
+      <Filter>proto</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="memory.c">
@@ -245,9 +245,6 @@
     </ClCompile>
     <ClCompile Include="event\wcmd.c">
       <Filter>event\win</Filter>
-    </ClCompile>
-    <ClCompile Include="proto\simple.c">
-      <Filter>proto</Filter>
     </ClCompile>
     <ClCompile Include="proto\http.c">
       <Filter>proto</Filter>
@@ -320,6 +317,9 @@
     </ClCompile>
     <ClCompile Include="srey\coro_utils.c">
       <Filter>srey</Filter>
+    </ClCompile>
+    <ClCompile Include="proto\custz.c">
+      <Filter>proto</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

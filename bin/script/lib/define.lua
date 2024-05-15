@@ -1,4 +1,5 @@
 TASK_NAME = {
+    NONE =   0x00,
     HARBOR = 0x01,
     --test
     startup_closing = 1000,
@@ -47,27 +48,9 @@ PACK_TYPE = {
     NONE =    0x00,
     HTTP =    0x01,
     WEBSOCK = 0x02,
-    SIMPLE =  0x03
-}
---websock proto
-WEBSOCK_PROTO = {
-    CONTINUA = 0x00,
-    TEXT =     0x01,
-    BINARY =   0x02,
-    CLOSE =    0x08,
-    PING =     0x09,
-    PONG =     0x0A
-}
---分片消息类型
-SLICE_TYPE = {
-    NONE =  0x00,
-    START = 0x01,
-    SLICE = 0x02,
-    END =   0x03,
+    CUSTZ =  0x03
 }
 
 ERR_OK = 0
 ERR_FAILED = -1
 INVALID_SOCK = -1
-INVALID_TNAME = 0
-DNS_IP = "8.8.8.8"

@@ -7,6 +7,8 @@
 #include "task_thread_comm1.h"
 #include "task_thread_comm2.h"
 #include "task_ssl.h"
+#include "task_wbsock_sv.h"
+#include "task_http_sv.h"
 #include "task_coro_timeout.h"
 #include "task_coro_comm1.h"
 #include "task_coro_net.h"
@@ -39,6 +41,7 @@ int main(int argc, char *argv[]) {
     mutex_init(&muexit);
     cond_init(&condexit);
     sighandle(on_sigcb, NULL);
+    dns_set_ip("8.8.8.8");
 
     CuString *poutput = CuStringNew();
     CuSuite* psuite = CuSuiteNew();
@@ -75,6 +78,8 @@ int main(int argc, char *argv[]) {
     task_ssl_start(g_scheduler, 10006, srey_ssl_qury(g_scheduler, 100), 0);
     //10007 task_auto_close
 #endif
+    task_wbsock_sv_start(g_scheduler, 10008, 0);
+    task_http_sv_start(g_scheduler, 10009, 1);
 #if WITH_CORO
     task_coro_timeout_start(g_scheduler, 20000, 0);
     task_coro_comm1_start(g_scheduler, 20001, 0);

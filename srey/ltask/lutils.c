@@ -12,7 +12,12 @@ static int32_t _lutils_log(lua_State *lua) {
     const char *file = luaL_checkstring(lua, 2);
     int32_t line = (int32_t)luaL_checkinteger(lua, 3);
     const char *log = luaL_checkstring(lua, 4);
-    slog(lv, "[%s %d] %s", __FILENAME__(file), line, log);
+    task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
+    if (NULL == task) {
+        slog(lv, "[%s %d] %s", __FILENAME__(file), line, log);
+    } else {
+        slog(lv, "[%s %d][%d] %s", __FILENAME__(file), line, task->name, log);
+    }
     return 0;
 }
 static int32_t _lutils_ud_str(lua_State *lua) {

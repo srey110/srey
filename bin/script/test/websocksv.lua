@@ -4,7 +4,7 @@ local websock = require("lib.websock")
 srey.startup(
     function ()
         srey.on_recved(
-            function (pktype, fd, skid, client, sess, slice, data, size)
+            function (pktype, fd, skid, client, slice, data, size)
                 local pack = websock.unpack(data)
                 if WEBSOCK_PROTO.PING == pack.proto then
                     websock.pong(fd, skid, client)

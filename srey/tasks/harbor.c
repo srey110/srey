@@ -13,6 +13,7 @@ typedef struct harbor_ctx {
     struct hashmap *mapargs;
     struct evssl_ctx *ssl;
     uint64_t lsnid;
+    timer_ctx timer;
     hmac_sha256_ctx macsha256;
     char ip[IP_LENS];
     char signkey[HARBOR_KEY_LENS + 1];
@@ -30,7 +31,11 @@ static void _map_args_set(task_ctx *harbor, uint64_t sess, SOCKET fd, uint64_t s
     arg.sess = sess;
     arg.fd = fd;
     arg.skid = skid;
-    arg.timeout = nowms() + hbctx->timeout;
+    if (hbctx->timeout > 0) {
+        arg.timeout = timer_cur_ms(&hbctx->timer) + hbctx->timeout;
+    } else {
+        arg.timeout = 0;
+    }
     hashmap_set(hbctx->mapargs, &arg);
 }
 static int32_t _map_args_get(task_ctx *harbor, uint64_t sess, harbor_args *args) {
@@ -60,7 +65,7 @@ static void _harbor_response(task_ctx *harbor, SOCKET fd, uint64_t skid, char *r
         http_pack_content(&buffer, respdata, lens);
     } else {
         http_pack_head(&buffer, "Content-Type", "text/plain");
-        const char *erro = http_error(code);
+        const char *erro = http_code_status(code);
         http_pack_content(&buffer, (void *)erro, strlen(erro));
     }
     char *data;
@@ -124,7 +129,7 @@ static int32_t _check_sign(harbor_ctx *hbctx, struct http_pack_ctx *pack, buf_ct
     return ERR_OK;
 }
 static void _harbor_net_recv(task_ctx *harbor, SOCKET fd, uint64_t skid, uint8_t pktype,
-    uint64_t sess, uint8_t client, uint8_t slice, void *data, size_t size) {
+    uint8_t client, uint8_t slice, void *data, size_t size) {
     size_t lens;
     harbor_ctx *hbctx = harbor->arg;
     char *reqdata = http_data(data, &lens);
@@ -197,23 +202,23 @@ static void _harbor_onresponse(task_ctx *harbor, uint64_t sess, int32_t error, v
 }
 static void _harbor_timeout(task_ctx *harbor, uint64_t sess) {
     size_t iter = 0;
-    uint64_t now = nowms();
     harbor_args *arg;
     harbor_ctx *hbctx = harbor->arg;
+    uint64_t now = timer_cur_ms(&hbctx->timer);
     while (hashmap_iter(hbctx->mapargs, &iter, (void **)&arg)) {
-        if (now > arg->timeout) {
+        if (now >= arg->timeout) {
             _harbor_response(harbor, arg->fd, arg->skid, NULL, 0, 408);
             hashmap_delete(hbctx->mapargs, arg);
         }
     }
-    trigger_timeout(harbor, 0, 100, _harbor_timeout);
+    trigger_timeout(harbor, 0, 200, _harbor_timeout);
 }
 static void _harbor_startup(task_ctx *harbor) {
     harbor_ctx *hbctx = harbor->arg;
     on_recved(harbor, _harbor_net_recv);
     on_responsed(harbor, _harbor_onresponse);
     if (hbctx->timeout > 0) {
-        trigger_timeout(harbor, 0, 100, _harbor_timeout);
+        trigger_timeout(harbor, 0, 200, _harbor_timeout);
     }
     if (ERR_OK != trigger_listen(harbor, PACK_HTTP, hbctx->ssl, hbctx->ip, hbctx->port, &hbctx->lsnid, 0)) {
         LOG_ERROR("trigger_listen %s:%d error", hbctx->ip, hbctx->port);
@@ -247,6 +252,7 @@ int32_t harbor_start(scheduler_ctx *scheduler, name_t tname, name_t ssl,
 #else
     hbctx->ssl = NULL;
 #endif
+    timer_init(&hbctx->timer);
     hbctx->mapargs = hashmap_new_with_allocator(_malloc, _realloc, _free,
         sizeof(harbor_args), ONEK, 0, 0, _map_args_hash, _map_args_compare, NULL, NULL);
     task_ctx *harbor = task_new(scheduler, tname, NULL, _harbor_free, (void *)hbctx);

@@ -6,28 +6,31 @@
 #endif
 
 #define LUA_TB_NUMBER(key, val)\
-lua_pushstring(lua, key);\
-lua_pushinteger(lua, val);\
-lua_settable(lua, -3)
+    lua_pushstring(lua, key);\
+    lua_pushinteger(lua, val);\
+    lua_settable(lua, -3)
 #define LUA_TB_STRING(key, val)\
-lua_pushstring(lua, key);\
-lua_pushstring(lua, val);\
-lua_settable(lua, -3)
+    lua_pushstring(lua, key);\
+    lua_pushstring(lua, val);\
+    lua_settable(lua, -3)
 #define LUA_TB_UD(val, size)\
-lua_pushstring(lua, "data"); \
-lua_pushlightuserdata(lua, val); \
-lua_settable(lua, -3); \
-lua_pushstring(lua, "size"); \
-lua_pushinteger(lua, size);\
-lua_settable(lua, -3)
+    if (NULL != val){\
+        lua_pushstring(lua, "data"); \
+        lua_pushlightuserdata(lua, val); \
+        lua_settable(lua, -3); \
+    }\
+    lua_pushstring(lua, "size"); \
+    lua_pushinteger(lua, size);\
+    lua_settable(lua, -3)
 #define LUA_TB_NETPUB(msg)\
-LUA_TB_NUMBER("pktype", msg->pktype);\
-LUA_TB_NUMBER("fd", msg->fd);\
-LUA_TB_NUMBER("skid", msg->skid);
+    LUA_TB_NUMBER("pktype", msg->pktype);\
+    LUA_TB_NUMBER("fd", msg->fd);\
+    LUA_TB_NUMBER("skid", msg->skid);
 
 typedef struct ltask_ctx {
     int32_t ref;
     lua_State *lua;
+    timer_ctx timer;
 }ltask_ctx;
 static char luapath[PATH_LENS] = { 0 };
 
@@ -194,11 +197,11 @@ static void _ltask_pack_msg(lua_State *lua, message_ctx *msg) {
     case MSG_TYPE_SEND:
         LUA_TB_NETPUB(msg);
         LUA_TB_NUMBER("client", msg->client);
-        LUA_TB_NUMBER("sess", msg->sess);
         LUA_TB_NUMBER("size", msg->size);
         break;
     case MSG_TYPE_CLOSE:
         LUA_TB_NETPUB(msg);
+        LUA_TB_NUMBER("client", msg->client);
         LUA_TB_NUMBER("sess", msg->sess);
         break;
     case MSG_TYPE_CONNECT:
@@ -255,6 +258,7 @@ static int32_t _ltask_register(lua_State *lua) {
     name_t name = (name_t)luaL_checkinteger(lua, 2);
     ltask_ctx *ltask;
     CALLOC(ltask, 1, sizeof(ltask_ctx));
+    timer_init(&ltask->timer);
     task_ctx *task = task_new(g_scheduler, name, _ltask_run, _ltask_arg_free, ltask);
     if (NULL == task) {
         FREE(ltask);
@@ -318,6 +322,12 @@ static int32_t _ltask_name(lua_State *lua) {
     lua_pushinteger(lua, task->name);
     return 1;
 }
+static int32_t _ltask_timer_ms(lua_State *lua) {
+    task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
+    ltask_ctx *ltask = task->arg;
+    lua_pushinteger(lua, timer_cur_ms(&ltask->timer));
+    return 1;
+}
 //srey.task
 LUAMOD_API int luaopen_task(lua_State *lua) {
     luaL_Reg reg[] = {
@@ -327,6 +337,7 @@ LUAMOD_API int luaopen_task(lua_State *lua) {
         { "incref", _ltask_incref },
         { "ungrab", _ltask_ungrab },
         { "name", _ltask_name },
+        { "timer_ms", _ltask_timer_ms },
         { NULL, NULL },
     };
     luaL_newlib(lua, reg);

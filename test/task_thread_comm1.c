@@ -15,11 +15,11 @@ static void _timeout(task_ctx *task, uint64_t sess) {
     const char *callmsg = "this is task_thread_comm1 call";
     trigger_call(comm2, 1, (void*)callmsg, strlen(callmsg), 1);
     task_ungrab(comm2);
-    trigger_timeout(task, createid(), 3000, _timeout);
+    trigger_timeout(task, 0, 3000, _timeout);
 }
 static void _startup(task_ctx *task) {
     on_responsed(task, _response);
-    trigger_timeout(task, createid(), 3000, _timeout);
+    trigger_timeout(task, 0, 3000, _timeout);
 }
 void task_threadcomm1_start(scheduler_ctx *scheduler, name_t name, int32_t pt) {
     _prt = pt;

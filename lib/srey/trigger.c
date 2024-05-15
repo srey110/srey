@@ -50,27 +50,28 @@ void _message_run(task_ctx *task, message_ctx *msg) {
         break;
     case MSG_TYPE_CONNECT:
         if (NULL != task->_net_connect) {
-            task->_net_connect(task, msg->fd, msg->skid, msg->pktype, msg->sess, msg->erro);
+            task->_net_connect(task, msg->fd, msg->skid, msg->pktype, msg->erro);
         }
         break;
     case MSG_TYPE_HANDSHAKED:
         if (NULL != task->_net_handshaked) {
-            task->_net_handshaked(task, msg->fd, msg->skid, msg->pktype, msg->sess, msg->client, msg->erro);
+            task->_net_handshaked(task, msg->fd, msg->skid, msg->pktype, msg->client, msg->erro);
         }
         break;
     case MSG_TYPE_RECV:
         if (NULL != task->_net_recv) {
-            task->_net_recv(task, msg->fd, msg->skid, msg->pktype, msg->sess, msg->client,msg->slice, msg->data, msg->size);
+            task->_net_recv(task, msg->fd, msg->skid, msg->pktype, msg->client, msg->slice, msg->data, msg->size);
         }
+        _message_clean(msg->mtype, msg->pktype, msg->data);
         break;
     case MSG_TYPE_SEND:
         if (NULL != task->_net_send) {
-            task->_net_send(task, msg->fd, msg->skid, msg->pktype, msg->sess, msg->client, msg->size);
+            task->_net_send(task, msg->fd, msg->skid, msg->pktype, msg->client, msg->size);
         }
         break;
     case MSG_TYPE_CLOSE:
         if (NULL != task->_net_close) {
-            task->_net_close(task, msg->fd, msg->skid, msg->pktype, msg->sess);
+            task->_net_close(task, msg->fd, msg->skid, msg->pktype, msg->client);
         }
         break;
     case MSG_TYPE_RECVFROM:
@@ -80,46 +81,38 @@ void _message_run(task_ctx *task, message_ctx *msg) {
             netaddr_ip(addr, ip);
             uint16_t port = netaddr_port(addr);
             char *data = ((char*)msg->data) + sizeof(netaddr_ctx);
-            task->_net_recvfrom(task, msg->fd, msg->skid, msg->sess, ip, port, data, msg->size);
+            task->_net_recvfrom(task, msg->fd, msg->skid, ip, port, data, msg->size);
         }
+        _message_clean(msg->mtype, msg->pktype, msg->data);
         break;
     case MSG_TYPE_REQUEST:
         if (NULL != task->_request) {
             task->_request(task, msg->pktype, msg->sess, msg->src, msg->data, msg->size);
+        } else {
+            task_ctx *dtask = task_grab(task->scheduler, msg->src);
+            if (NULL != dtask) {
+                const char *erro = "not register request function.";
+                trigger_response(dtask, msg->sess, ERR_FAILED, (void *)erro, strlen(erro), 1);
+                task_ungrab(dtask);
+            }
         }
+        _message_clean(msg->mtype, msg->pktype, msg->data);
         break;
     case MSG_TYPE_RESPONSE:
         if (NULL != task->_response) {
             task->_response(task, msg->sess, msg->erro, msg->data, msg->size);
         }
+        _message_clean(msg->mtype, msg->pktype, msg->data);
         break;
     default:
         break;
     }
-    _message_clean(msg->mtype, msg->pktype, msg->data);
 }
 #if !WITH_CORO
 void _message_dispatch(task_dispatch_arg *arg) {
     _message_run(arg->task, &arg->msg);
 }
 #endif
-void _message_handshaked_push(SOCKET fd, uint64_t skid, ud_cxt *ud, int32_t *closefd, int32_t erro) {
-    task_ctx *task = task_grab(ud->data, ud->name);
-    if (NULL == task) {
-        *closefd = 1;
-        return;
-    }
-    message_ctx msg;
-    msg.mtype = MSG_TYPE_HANDSHAKED;
-    msg.pktype = ud->pktype;
-    msg.client = ud->client;
-    msg.fd = fd;
-    msg.skid = skid;
-    msg.sess = ud->sess;
-    msg.erro = erro;
-    _task_message_push(task, &msg);
-    task_ungrab(task);
-}
 static void _message_timeout_push(ud_cxt *ud) {
     task_ctx *task = task_grab(ud->data, ud->name);
     if (NULL == task) {
@@ -133,6 +126,7 @@ static void _message_timeout_push(ud_cxt *ud) {
     task_ungrab(task);
 }
 void trigger_timeout(task_ctx *task, uint64_t sess, uint32_t ms, _timeout_cb _timeout) {
+    ASSERTAB((NULL == _timeout && 0 != sess) || (NULL != _timeout && 0 == sess), "parameter error");
     ud_cxt ud;
     ud.name = task->name;
     ud.data = task->scheduler;
@@ -141,6 +135,7 @@ void trigger_timeout(task_ctx *task, uint64_t sess, uint32_t ms, _timeout_cb _ti
     tw_add(&task->scheduler->tw, ms, _message_timeout_push, NULL, &ud);
 }
 void trigger_request(task_ctx *dst, task_ctx *src, uint8_t reqtype, uint64_t sess, void *data, size_t size, int32_t copy) {
+    ASSERTAB((NULL != src && 0 != sess) || (NULL == src && 0 == sess), "parameter error");
     message_ctx msg;
     msg.mtype = MSG_TYPE_REQUEST;
     msg.pktype = reqtype;
@@ -195,34 +190,23 @@ static int32_t _net_accept(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud) {
     task_ungrab(task);
     return ERR_OK;
 }
-static void _set_sess_slice(message_ctx *msg, ud_cxt *ud, int32_t slice) {
-    if (0 != ud->sess
-        && SLICE_NONE == ud->slice) {
-        msg->sess = ud->sess;
-        if (SLICE_START == slice) {
-            ud->slice = SLICE;
-            msg->slice = SLICE_START;
-        } else {
-            ud->sess = 0;
-            msg->slice = SLICE_NONE;
-        }
-    } else if (SLICE == ud->slice) {
-        if (SLICE_NONE == slice) {
-            msg->slice = SLICE_NONE;
-            msg->sess = 0;
-        } else if (SLICE_END == slice) {
-            msg->slice = SLICE_END;
-            msg->sess = ud->sess;
-            ud->sess = 0;
-            ud->slice = SLICE_NONE;
-        } else {
-            msg->slice = SLICE;
-            msg->sess = ud->sess;
-        }
-    } else {
-        msg->slice = SLICE_NONE;
-        msg->sess = 0;
+void _message_handshaked_push(SOCKET fd, uint64_t skid, ud_cxt *ud, int32_t *closefd, int32_t erro) {
+    task_ctx *task = task_grab(ud->data, ud->name);
+    if (NULL == task) {
+        *closefd = 1;
+        return;
     }
+    message_ctx msg;
+    msg.mtype = MSG_TYPE_HANDSHAKED;
+    msg.pktype = ud->pktype;
+    msg.fd = fd;
+    msg.skid = skid;
+    msg.client = ud->client;
+    msg.erro = erro;
+    msg.sess = ud->sess;
+    ud->sess = 0;
+    _task_message_push(task, &msg);
+    task_ungrab(task);
 }
 static void _net_recv(ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, size_t size, ud_cxt *ud) {
     task_ctx *task = task_grab(ud->data, ud->name);
@@ -233,9 +217,9 @@ static void _net_recv(ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, siz
     message_ctx msg;
     msg.mtype = MSG_TYPE_RECV;
     msg.pktype = ud->pktype;
-    msg.client = ud->client;
     msg.fd = fd;
     msg.skid = skid;
+    msg.client = ud->client;
     void *data;
     size_t lens;
     int32_t closefd = 0;
@@ -245,7 +229,9 @@ static void _net_recv(ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, siz
         if (NULL != data) {
             msg.data = data;
             msg.size = lens;
-            _set_sess_slice(&msg, ud, slice);
+            msg.slice = (uint8_t)slice;
+            msg.sess = ud->sess;
+            ud->sess = 0;
             _task_message_push(task, &msg);
         }
     } while (NULL != data && 0 != buffer_size(buf));
@@ -263,10 +249,9 @@ static void _net_send(ev_ctx *ev, SOCKET fd, uint64_t skid, size_t size, ud_cxt 
     message_ctx msg;
     msg.mtype = MSG_TYPE_SEND;
     msg.pktype = ud->pktype;
-    msg.client = ud->client;
     msg.fd = fd;
     msg.skid = skid;
-    msg.sess = ud->sess;
+    msg.client = ud->client;
     msg.size = size;
     _task_message_push(task, &msg);
     task_ungrab(task);
@@ -281,6 +266,7 @@ static void _net_close(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud) {
     msg.pktype = ud->pktype;
     msg.fd = fd;
     msg.skid = skid;
+    msg.client = ud->client;
     msg.sess = ud->sess;
     _task_message_push(task, &msg);
     task_ungrab(task);
@@ -315,8 +301,8 @@ static int32_t _net_connect(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t err, u
     message_ctx msg;
     msg.mtype = MSG_TYPE_CONNECT;
     msg.pktype = ud->pktype;
-    msg.skid = skid;
     msg.fd = fd;
+    msg.skid = skid;
     msg.erro = err;
     msg.sess = ud->sess;
     ud->sess = 0;
@@ -324,15 +310,14 @@ static int32_t _net_connect(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t err, u
     task_ungrab(task);
     return ERR_OK;
 }
-SOCKET trigger_connect(task_ctx *task, uint64_t sess, pack_type pktype, struct evssl_ctx *evssl,
-    const char *ip, uint16_t port, uint64_t *skid, int32_t appendev) {
+SOCKET trigger_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
+    const char *ip, uint16_t port, uint64_t *skid, int32_t setsess, int32_t appendev) {
     ud_cxt ud;
     ZERO(&ud, sizeof(ud));
     ud.pktype = pktype;
     ud.client = 1;
     ud.name = task->name;
     ud.data = task->scheduler;
-    ud.sess = sess;
     cbs_ctx cbs;
     ZERO(&cbs, sizeof(cbs));
     if (BIT_CHECK(appendev, APPEND_SEND)) {
@@ -344,7 +329,7 @@ SOCKET trigger_connect(task_ctx *task, uint64_t sess, pack_type pktype, struct e
     cbs.conn_cb = _net_connect;
     cbs.r_cb = _net_recv;
     cbs.ud_free = protos_udfree;
-    return ev_connect(&task->scheduler->netev, evssl, ip, port, &cbs, &ud, skid);
+    return ev_connect(&task->scheduler->netev, evssl, ip, port, &cbs, &ud, skid, setsess);
 }
 static void _net_recvfrom(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
     task_ctx *task = task_grab(ud->data, ud->name);
@@ -363,7 +348,6 @@ static void _net_recvfrom(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, size_
     msg.data = umsg;
     msg.size = size;
     msg.sess = ud->sess;
-    msg.slice = SLICE_NONE;
     ud->sess = 0;
     _task_message_push(task, &msg);
     task_ungrab(task);

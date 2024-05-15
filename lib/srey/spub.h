@@ -24,18 +24,12 @@ typedef void(*_timeout_cb)(task_ctx *task, uint64_t sess);
 typedef void(*_request_cb)(task_ctx *task, uint8_t reqtype, uint64_t sess, name_t src, void *data, size_t size);
 typedef void(*_response_cb)(task_ctx *task, uint64_t sess, int32_t error, void *data, size_t size);
 typedef void(*_net_accept_cb)(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype);
-typedef void(*_net_recv_cb)(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype,
-    uint64_t sess, uint8_t client, uint8_t slice, void *data, size_t size);
-typedef void(*_net_send_cb)(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype,
-    uint64_t sess, uint8_t client, size_t size);
-typedef void(*_net_connect_cb)(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype,
-    uint64_t sess, int32_t erro);
-typedef void(*_net_handshake_cb)(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype,
-    uint64_t sess, uint8_t client, int32_t erro);
-typedef void(*_net_close_cb)(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype,
-    uint64_t sess);
-typedef void(*_net_recvfrom_cb)(task_ctx *task, SOCKET fd, uint64_t skid, uint64_t sess, 
-    char ip[IP_LENS], uint16_t port, void *data, size_t size);
+typedef void(*_net_recv_cb)(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, uint8_t client, uint8_t slice, void *data, size_t size);
+typedef void(*_net_send_cb)(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, uint8_t client, size_t size);
+typedef void(*_net_connect_cb)(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, int32_t erro);
+typedef void(*_net_handshake_cb)(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, uint8_t client, int32_t erro);
+typedef void(*_net_close_cb)(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, uint8_t client);
+typedef void(*_net_recvfrom_cb)(task_ctx *task, SOCKET fd, uint64_t skid, char ip[IP_LENS], uint16_t port, void *data, size_t size);
 
 typedef enum msg_type {
     MSG_TYPE_NONE = 0x00,
@@ -159,9 +153,9 @@ void _task_message_push(task_ctx *task, message_ctx *msg);
 int32_t _message_should_clean(message_ctx *msg);
 void _message_clean(msg_type mtype, pack_type pktype, void *data);
 #if WITH_CORO
-void _coro_init(size_t stack_size);
-void _coro_new(task_ctx *task);
-void _coro_free(task_ctx *task);
+void _mcoro_init(size_t stack_size);
+void _mcoro_new(task_ctx *task);
+void _mcoro_free(task_ctx *task);
 #endif
 
 #endif//SVPUB_H_

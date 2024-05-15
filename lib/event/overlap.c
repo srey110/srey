@@ -483,11 +483,11 @@ static void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
     }
 }
 SOCKET ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const uint16_t port,
-    cbs_ctx *cbs, ud_cxt *ud, uint64_t *skid) {
+    cbs_ctx *cbs, ud_cxt *ud, uint64_t *skid, int32_t setsess) {
     ASSERTAB(NULL != cbs && NULL != cbs->conn_cb && NULL != cbs->r_cb, ERRSTR_NULLP);
     netaddr_ctx addr;
     if (ERR_OK != netaddr_set(&addr, ip, port)) {
-        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        LOG_ERROR("netaddr_set %s:%d, %s", ip, port, ERRORSTR(ERRNO));
         return INVALID_SOCK;
     }
     SOCKET fd = _create_sock(SOCK_STREAM, netaddr_family(&addr));
@@ -511,6 +511,9 @@ SOCKET ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
     skctx->ev_cb = _on_connect_cb;
     overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
     *skid = oltcp->skid;
+    if (setsess) {
+        oltcp->ud.sess = oltcp->skid;
+    }
 #if WITH_SSL
     if (NULL != evssl) {
         oltcp->ssl = evssl_setfd(evssl, fd);
@@ -648,11 +651,12 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
     ASSERTAB(NULL != cbs && NULL != cbs->r_cb, ERRSTR_NULLP);
     netaddr_ctx addr;
     if (ERR_OK != netaddr_set(&addr, ip, port)) {
-        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        LOG_ERROR("netaddr_set %s:%d, %s", ip, port, ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
     SOCKET fd = _listen(&addr);
     if (INVALID_SOCK == fd) {
+        LOG_ERROR("listen %s:%d error.", ip, port);
         return ERR_FAILED;
     }
     listener_ctx *lsn;
@@ -856,11 +860,12 @@ SOCKET ev_udp(ev_ctx *ctx, const char *ip, const uint16_t port, cbs_ctx *cbs,
     ASSERTAB(NULL != cbs->rf_cb, ERRSTR_NULLP);
     netaddr_ctx addr;
     if (ERR_OK != netaddr_set(&addr, ip, port)) {
-        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        LOG_ERROR("netaddr_set %s:%d, %s", ip, port, ERRORSTR(ERRNO));
         return INVALID_SOCK;
     }
     SOCKET fd = _udp(&addr);
     if (INVALID_SOCK == fd) {
+        LOG_ERROR("udp %s:%d error.", ip, port);
         return INVALID_SOCK;
     }
     watcher_ctx *watcher = GET_PTR(ctx->watcher, ctx->nthreads, fd);

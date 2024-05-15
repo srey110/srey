@@ -2,227 +2,251 @@
 #include "srey/task.h"
 #include "srey/trigger.h"
 #include "ds/hashmap.h"
+#include "timer.h"
 #if WITH_CORO
 #define MINICORO_IMPL
 #include "srey/minicoro.h"
 
+#define TIMEOUT_REQUEST 1500 
+#define TIMEOUT_CONNECT 3000 
+#define TIMEOUT_NETREAD 3000 
+
 typedef struct coro_sess {
-    int32_t keep;
-    mco_coro *co;
+    mco_coro *coro;
     uint64_t sess;
-    uint64_t assoc;//关联
+    uint64_t timeout;
 }coro_sess;
 typedef struct coro_ctx {
-    mco_coro *curco;
-    struct hashmap *mapco;
-    qu_ptr_ctx qucopool;
+    int32_t nyield;
+    mco_coro *curcoro;
+    struct hashmap *mapcoro;
+    qu_ptr_ctx qucoropool;
+    timer_ctx timer;
 }coro_ctx;
 static mco_desc _coro_desc;
 
-#define CO_RESUME(arg, co) \
-    arg->task->coro->curco = co; \
-    mco_result _cortn = mco_push(co, &arg->msg, sizeof(message_ctx)); \
-    ASSERTAB(MCO_SUCCESS == _cortn, mco_result_description(_cortn)); \
-    _cortn = mco_resume(co); \
-    ASSERTAB(MCO_SUCCESS == _cortn, mco_result_description(_cortn));\
-    _message_clean(arg->msg.mtype, arg->msg.pktype, arg->msg.data)
-
-static uint64_t _map_cosess_hash(const void *item, uint64_t seed0, uint64_t seed1) {
+static uint64_t _map_corosess_hash(const void *item, uint64_t seed0, uint64_t seed1) {
     return hash((const char *)&(((coro_sess *)item)->sess), sizeof(((coro_sess *)item)->sess));
 }
-static int _map_cosess_compare(const void *a, const void *b, void *ud) {
+static int _map_corosess_compare(const void *a, const void *b, void *ud) {
     return (int)(((coro_sess *)a)->sess - ((coro_sess *)b)->sess);
 }
-static void _map_cosess_set(task_ctx *task, mco_coro *co, uint64_t sess, uint64_t assoc, int32_t keep) {
+static void _map_corosess_set(task_ctx *task, mco_coro *coro, uint64_t sess, uint32_t ms) {
     coro_sess cosess;
-    cosess.keep = keep;
-    cosess.co = co;
+    cosess.coro = coro;
     cosess.sess = sess;
-    cosess.assoc = assoc;
-    hashmap_set(task->coro->mapco, &cosess);
+    if (ms > 0) {
+        cosess.timeout = timer_cur_ms(&task->coro->timer) + ms;
+    } else {
+        cosess.timeout = 0;
+    }
+    ASSERTAB(NULL == hashmap_set(task->coro->mapcoro, &cosess), "repeat session");
 }
-static void _map_cosess_del(task_ctx *task, uint64_t sess) {
+static int32_t _map_corosess_get(task_ctx *task, uint64_t sess, coro_sess *corosess) {
     coro_sess key;
     key.sess = sess;
-    hashmap_delete(task->coro->mapco, &key);
-}
-static int32_t _map_cosess_get(task_ctx *task, uint64_t sess, coro_sess *cosess) {
-    coro_sess key;
-    key.sess = sess;
-    coro_sess *tmp = (coro_sess *)hashmap_get(task->coro->mapco, &key);
+    coro_sess *tmp = (coro_sess *)hashmap_get(task->coro->mapcoro, &key);
     if (NULL == tmp) {
         return ERR_FAILED;
     }
-    *cosess = *tmp;
-    if (0 == cosess->keep) {
-        hashmap_delete(task->coro->mapco, &key);
-    }
+    *corosess = *tmp;
+    hashmap_delete(task->coro->mapcoro, &key);
     return  ERR_OK;
 }
-static void _coro_cb(mco_coro *co) {
-    task_dispatch_arg arg;
+static void _mcoro_cb(mco_coro *coro) {
     mco_result rtn;
+    task_dispatch_arg arg;
     for (;;) {
-        rtn = mco_yield(co);
+        rtn = mco_yield(coro);
         ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
-        rtn = mco_pop(co, &arg, sizeof(arg));
+        rtn = mco_pop(coro, &arg, sizeof(arg));
         ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
-        task_incref(arg.task);//保证task->_run里YIELD后不会被释放
+        task_incref(arg.task);//保证_message_run里yield后不会被释放
         _message_run(arg.task, &arg.msg);
-        qu_ptr_push(&arg.task->coro->qucopool, (void **)&co);
+        qu_ptr_push(&arg.task->coro->qucoropool, (void **)&coro);
         task_ungrab(arg.task);
     }
 }
-void _coro_init(size_t stack_size) {
-    _coro_desc = mco_desc_init(_coro_cb, stack_size);
+void _mcoro_init(size_t stack_size) {
+    _coro_desc = mco_desc_init(_mcoro_cb, stack_size);
 }
-void _coro_new(task_ctx *task) {
+void _mcoro_new(task_ctx *task) {
     CALLOC(task->coro, 1, sizeof(coro_ctx));
-    qu_ptr_init(&task->coro->qucopool, 0);
-    task->coro->mapco = hashmap_new_with_allocator(_malloc, _realloc, _free,
+    qu_ptr_init(&task->coro->qucoropool, 0);
+    timer_init(&task->coro->timer);
+    task->coro->mapcoro = hashmap_new_with_allocator(_malloc, _realloc, _free,
                                                    sizeof(coro_sess), ONEK, 0, 0,
-                                                   _map_cosess_hash, _map_cosess_compare, NULL, NULL);
+                                                   _map_corosess_hash, _map_corosess_compare, NULL, NULL);
 }
-void _coro_free(task_ctx *task) {
+void _mcoro_free(task_ctx *task) {
     if (NULL == task->coro) {
         return;
     }
-    mco_coro **co;
-    mco_result cortn;
-    while (NULL != (co = (mco_coro **)qu_ptr_pop(&task->coro->qucopool))) {
-        cortn = mco_destroy(*co);
-        if (MCO_SUCCESS != cortn) {
-            LOG_WARN("%s", mco_result_description(cortn));
+    mco_result rtn;
+    mco_coro **coro;
+    while (NULL != (coro = (mco_coro **)qu_ptr_pop(&task->coro->qucoropool))) {
+        rtn = mco_destroy(*coro);
+        if (MCO_SUCCESS != rtn) {
+            LOG_WARN("%s", mco_result_description(rtn));
         }
     }
-    qu_ptr_free(&task->coro->qucopool);
-    hashmap_free(task->coro->mapco);
+    qu_ptr_free(&task->coro->qucoropool);
+    hashmap_free(task->coro->mapcoro);
     FREE(task->coro);
 }
-static mco_coro *_coro_pool_get(task_ctx *task) {
-    mco_coro **co = (mco_coro **)qu_ptr_pop(&task->coro->qucopool);
-    if (NULL != co) {
-        return *co;
+static mco_coro *_mcoro_pool_get(task_ctx *task) {
+    mco_coro **coro = (mco_coro **)qu_ptr_pop(&task->coro->qucoropool);
+    if (NULL != coro) {
+        return *coro;
     }
-    mco_coro *conew;
-    mco_result cortn = mco_create(&conew, &_coro_desc);
-    ASSERTAB(MCO_SUCCESS == cortn, mco_result_description(cortn));
-    cortn = mco_resume(conew);
-    ASSERTAB(MCO_SUCCESS == cortn, mco_result_description(cortn));
-    return conew;
+    mco_coro *coronew;
+    mco_result rtn = mco_create(&coronew, &_coro_desc);
+    ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
+    rtn = mco_resume(coronew);
+    ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
+    return coronew;
 }
-static void _coro_create(task_dispatch_arg *arg) {
-    arg->task->coro->curco = _coro_pool_get(arg->task);
-    mco_result cortn = mco_push(arg->task->coro->curco, arg, sizeof(task_dispatch_arg));
-    ASSERTAB(MCO_SUCCESS == cortn, mco_result_description(cortn));
-    cortn = mco_resume(arg->task->coro->curco);
-    ASSERTAB(MCO_SUCCESS == cortn, mco_result_description(cortn));
+static void _mcoro_create(task_dispatch_arg *arg) {
+    arg->task->coro->curcoro = _mcoro_pool_get(arg->task);
+    mco_result rtn = mco_push(arg->task->coro->curcoro, arg, sizeof(task_dispatch_arg));
+    ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
+    rtn = mco_resume(arg->task->coro->curcoro);
+    ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
+}
+static void _mcoro_resume(task_dispatch_arg *arg, mco_coro *coro) {
+    arg->task->coro->curcoro = coro;
+    mco_result rtn = mco_push(coro, &arg->msg, sizeof(message_ctx));
+    ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
+    rtn = mco_resume(coro);
+    ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
+    _message_clean(arg->msg.mtype, arg->msg.pktype, arg->msg.data);
 }
 static void _timeout_dispatch(task_dispatch_arg *arg) {
     if (0 == arg->msg.sess) {
-        if (NULL != arg->msg.data) {
-            _coro_create(arg);
-        }
+        _mcoro_create(arg);
         return;
     }
-    coro_sess cosess;
-    if (ERR_OK == _map_cosess_get(arg->task, arg->msg.sess, &cosess)) {
-        if (0 != cosess.assoc) {
-            _map_cosess_del(arg->task, cosess.assoc);
-        }
-        CO_RESUME(arg, cosess.co);
-    } else {
-        if (NULL != arg->msg.data) {
-            _coro_create(arg);
-        }
+    coro_sess corosess;
+    if (ERR_OK != _map_corosess_get(arg->task, arg->msg.sess, &corosess)) {
+        LOG_WARN("task %d can't find session %"PRIu64, arg->task->name, arg->msg.sess);
+        return;
     }
+    _mcoro_resume(arg, corosess.coro);
 }
 static void _net_connect_dispatch(task_dispatch_arg *arg) {
     if (0 == arg->msg.sess) {
-        _coro_create(arg);
+        _mcoro_create(arg);
         return;
     }
-    coro_sess cosess;
-    if (ERR_OK == _map_cosess_get(arg->task, arg->msg.sess, &cosess)) {
-        CO_RESUME(arg, cosess.co);
-    } else {
-        _coro_create(arg);
+    coro_sess corosess;
+    if (ERR_OK != _map_corosess_get(arg->task, arg->msg.skid, &corosess)) {
+        LOG_WARN("task %d can't find skid %"PRIu64".", arg->task->name, arg->msg.skid);
+        return;
     }
+    _mcoro_resume(arg, corosess.coro);
 }
 static void _net_handshaked_dispatch(task_dispatch_arg *arg) {
     if (0 == arg->msg.sess) {
-        _coro_create(arg);
+        _mcoro_create(arg);
         return;
     }
-    coro_sess cosess;
-    if (ERR_OK == _map_cosess_get(arg->task, arg->msg.sess, &cosess)) {
-        CO_RESUME(arg, cosess.co);
-    } else {
-        _coro_create(arg);
+    coro_sess corosess;
+    if (ERR_OK != _map_corosess_get(arg->task, arg->msg.skid, &corosess)) {
+        LOG_WARN("task %d can't find skid %"PRIu64".", arg->task->name, arg->msg.skid);
+        return;
     }
+    _mcoro_resume(arg, corosess.coro);
 }
 static void _net_recv_dispatch(task_dispatch_arg *arg) {
     if (0 == arg->msg.sess) {
-        _coro_create(arg);
+        if (SLICE_NONE != arg->msg.slice) {
+            coro_sess corosess;
+            if (ERR_OK != _map_corosess_get(arg->task, arg->msg.skid, &corosess)) {
+                _mcoro_create(arg);
+            } else {
+                arg->msg.sess = arg->msg.skid;
+                _mcoro_resume(arg, corosess.coro);
+            }
+        } else {
+            _mcoro_create(arg);
+        }
         return;
     }
-    coro_sess cosess;
-    if (ERR_OK == _map_cosess_get(arg->task, arg->msg.sess, &cosess)) {
-        if (SLICE_START == arg->msg.slice) {
-            _map_cosess_set(arg->task, cosess.co, cosess.sess, 0, 1);
-        } else if (SLICE_END == arg->msg.slice) {
-            _map_cosess_del(arg->task, arg->msg.sess);
-        }
-        CO_RESUME(arg, cosess.co);
-    } else {
-        _coro_create(arg);
+    coro_sess corosess;
+    if (ERR_OK != _map_corosess_get(arg->task, arg->msg.skid, &corosess)) {
+        LOG_WARN("task %d can't find skid %"PRIu64".", arg->task->name, arg->msg.skid);
+        _message_clean(arg->msg.mtype, arg->msg.pktype, arg->msg.data);
+        return;
     }
+    _mcoro_resume(arg, corosess.coro);
 }
 static void _net_close_dispatch(task_dispatch_arg *arg) {
-    if (0 != arg->msg.sess) {
-        coro_sess cosess;
-        if (ERR_OK == _map_cosess_get(arg->task, arg->msg.sess, &cosess)) {
-            if (0 != cosess.keep) {
-                _map_cosess_del(arg->task, arg->msg.sess);
-            }
-            CO_RESUME(arg, cosess.co);
-        }
+    coro_sess corosess;
+    if (ERR_OK == _map_corosess_get(arg->task, arg->msg.skid, &corosess)) {
+        _mcoro_resume(arg, corosess.coro);
     }
-    _coro_create(arg);
+    _mcoro_create(arg);
 }
 static void _net_recvfrom_dispatch(task_dispatch_arg *arg) {
     if (0 == arg->msg.sess) {
-        _coro_create(arg);
+        _mcoro_create(arg);
         return;
     }
-    coro_sess cosess;
-    if (ERR_OK == _map_cosess_get(arg->task, arg->msg.sess, &cosess)) {
-        CO_RESUME(arg, cosess.co);
-    } else {
-        _coro_create(arg);
+    coro_sess corosess;
+    if (ERR_OK != _map_corosess_get(arg->task, arg->msg.skid, &corosess)) {
+        LOG_WARN("task %d can't find skid %"PRIu64".", arg->task->name, arg->msg.skid);
+        _message_clean(arg->msg.mtype, arg->msg.pktype, arg->msg.data);
+        return;
     }
+    _mcoro_resume(arg, corosess.coro);
 }
 static void _response_dispatch(task_dispatch_arg *arg) {
     coro_sess cosess;
-    if (ERR_OK == _map_cosess_get(arg->task, arg->msg.sess, &cosess)) {
-        CO_RESUME(arg, cosess.co);
+    if (ERR_OK == _map_corosess_get(arg->task, arg->msg.sess, &cosess)) {
+        _mcoro_resume(arg, cosess.coro);
     } else {
-        _coro_create(arg);
+        _mcoro_create(arg);
     }
+}
+static void _mcoro_timeout(task_ctx *task, uint64_t sess) {
+    if (task->coro->nyield > 0) {
+        size_t iter = 0;
+        mco_coro *coro;
+        coro_sess *corosess;
+        uint64_t now = timer_cur_ms(&task->coro->timer);
+        task_dispatch_arg arg;
+        arg.task = task;
+        arg.msg.mtype = MSG_TYPE_TIMEOUT;
+        while (hashmap_iter(task->coro->mapcoro, &iter, (void **)&corosess)) {
+            if (corosess->timeout > 0
+                && now >= corosess->timeout) {
+                arg.msg.sess = corosess->sess;
+                coro = corosess->coro;
+                LOG_INFO("task %d resume timeout, session %"PRIu64".", task->name, corosess->sess);
+                hashmap_delete(task->coro->mapcoro, corosess);
+                _mcoro_resume(&arg, coro);
+            }
+        }
+    }
+    trigger_timeout(task, 0, 200, _mcoro_timeout);
 }
 void _message_dispatch(task_dispatch_arg *arg) {
     switch (arg->msg.mtype) {
     case MSG_TYPE_STARTUP:
-        _coro_create(arg);
+        trigger_timeout(arg->task, 0, 200, _mcoro_timeout);
+        _mcoro_create(arg);
         break;
     case MSG_TYPE_CLOSING:
-        _coro_create(arg);
+        _mcoro_create(arg);
+        if (arg->task->coro->nyield > 0) {
+            LOG_WARN("task %d yield %d.", arg->task->name, arg->task->coro->nyield);
+        }
         break;
     case MSG_TYPE_TIMEOUT:
         _timeout_dispatch(arg);
         break;
     case MSG_TYPE_ACCEPT:
-        _coro_create(arg);
+        _mcoro_create(arg);
         break;
     case MSG_TYPE_CONNECT:
         _net_connect_dispatch(arg);
@@ -234,7 +258,7 @@ void _message_dispatch(task_dispatch_arg *arg) {
         _net_recv_dispatch(arg);
         break;
     case MSG_TYPE_SEND:
-        _coro_create(arg);
+        _mcoro_create(arg);
         break;
     case MSG_TYPE_CLOSE:
         _net_close_dispatch(arg);
@@ -243,7 +267,7 @@ void _message_dispatch(task_dispatch_arg *arg) {
         _net_recvfrom_dispatch(arg);
         break;
     case MSG_TYPE_REQUEST:
-        _coro_create(arg);
+        _mcoro_create(arg);
         break;
     case MSG_TYPE_RESPONSE:
         _response_dispatch(arg);
@@ -252,53 +276,48 @@ void _message_dispatch(task_dispatch_arg *arg) {
         break;
     }
 }
-void _coro_wait(task_ctx *task, int32_t ms, uint64_t sess, uint64_t assoc, message_ctx *msg) {
-    _map_cosess_set(task, task->coro->curco, sess, assoc, 0);
-    if (ms >= 0) {
-        trigger_timeout(task, sess, ms, NULL);
-    }
-    mco_result cortn = mco_yield(task->coro->curco);
-    ASSERTAB(MCO_SUCCESS == cortn, mco_result_description(cortn));
-    cortn = mco_pop(task->coro->curco, msg, sizeof(message_ctx));
-    ASSERTAB(MCO_SUCCESS == cortn, mco_result_description(cortn));
-    ASSERTAB(0 != msg->sess && (sess == msg->sess || assoc == msg->sess), "different session.");
+static void _mcoro_wait(task_ctx *task, uint64_t sess, message_ctx *msg, uint32_t ms) {
+    _map_corosess_set(task, task->coro->curcoro, sess, ms);
+    ++task->coro->nyield;
+    mco_result rtn = mco_yield(task->coro->curcoro);
+    --task->coro->nyield;
+    ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
+    rtn = mco_pop(task->coro->curcoro, msg, sizeof(message_ctx));
+    ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
+    ASSERTAB(sess == msg->sess, "different session");
 }
 void coro_sleep(task_ctx *task, uint32_t ms) {
     message_ctx msg;
-    _coro_wait(task, (int32_t)ms, createid(), 0, &msg);
+    uint64_t sess = createid();
+    trigger_timeout(task, sess, ms, NULL);
+    _mcoro_wait(task, sess, &msg, 0);
 }
-void *coro_request(task_ctx *dst, task_ctx *src, int32_t ms,
-    uint8_t rtype, void *data, size_t size, int32_t copy,
-    int32_t *erro, size_t *lens) {
+void *coro_request(task_ctx *dst, task_ctx *src, uint8_t rtype,
+    void *data, size_t size, int32_t copy, int32_t *erro, size_t *lens) {
     uint64_t sess = createid();
     trigger_request(dst, src, rtype, sess, data, size, copy);
     message_ctx msg;
-    _coro_wait(src, ms, sess, 0, &msg);
+    _mcoro_wait(src, sess, &msg, TIMEOUT_REQUEST);
     if (MSG_TYPE_TIMEOUT == msg.mtype) {
         *lens = 0;
         *erro = ERR_FAILED;
-        LOG_WARN("dst %d src %d, request timeout.", dst->name, src->name);
+        LOG_WARN("dst %d src %d, request timeout, session %"PRIu64".", dst->name, src->name, sess);
         return NULL;
     }
     *erro = msg.erro;
     *lens = msg.size;
     return msg.data;
 }
-void *coro_slice(task_ctx *task, int32_t ms,
-    SOCKET fd, uint64_t skid, uint64_t sess,
-    size_t *size, int32_t *end) {
+void *coro_slice(task_ctx *task, SOCKET fd, uint64_t skid, size_t *size, int32_t *end) {
     message_ctx msg;
-    uint64_t slice_sess = createid();
-    _coro_wait(task, ms, slice_sess, sess, &msg);
+    _mcoro_wait(task, skid, &msg, TIMEOUT_NETREAD);
     if (MSG_TYPE_TIMEOUT == msg.mtype) {
-        ev_ud_sess(&task->scheduler->netev, fd, skid, 0);
         ev_close(&task->scheduler->netev, fd, skid);
-        LOG_WARN("task: %d, slice timeout.", task->name);
+        LOG_WARN("task: %d, slice timeout, skid %"PRIu64".", task->name, skid);
         return NULL;
     }
-    _map_cosess_del(task, slice_sess);
     if (MSG_TYPE_CLOSE == msg.mtype) {
-        LOG_WARN("task: %d, slice connction closed,session: %"PRIu64".", task->name, sess);
+        LOG_WARN("task: %d, slice connction closed, skid: %"PRIu64".", task->name, skid);
         return NULL;
     }
     if (SLICE_END == msg.slice) {
@@ -307,59 +326,70 @@ void *coro_slice(task_ctx *task, int32_t ms,
     *size = msg.size;
     return msg.data;
 }
-SOCKET coro_connect(task_ctx *task, int32_t ms, pack_type pktype, struct evssl_ctx *evssl,
+int32_t coro_handshake(task_ctx *task, uint64_t skid) {
+    message_ctx msg;
+    _mcoro_wait(task, skid, &msg, TIMEOUT_NETREAD);
+    if (MSG_TYPE_TIMEOUT == msg.mtype) {
+        LOG_WARN("task: %d, handshake timeout, skid %"PRIu64".", task->name, skid);
+        return ERR_FAILED;
+    }
+    if (MSG_TYPE_CLOSE == msg.mtype) {
+        LOG_WARN("task: %d, handshake connction closed, skid: %"PRIu64".", task->name, skid);
+        return ERR_FAILED;
+    }
+    return msg.erro;
+}
+SOCKET coro_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl, 
     const char *ip, uint16_t port, uint64_t *skid, int32_t appendev) {
-    uint64_t sess = createid();
-    SOCKET fd = trigger_connect(task, sess, pktype, evssl, ip, port, skid, appendev);
+    SOCKET fd = trigger_connect(task, pktype, evssl, ip, port, skid, 1, appendev);
     if (INVALID_SOCK == fd) {
+        LOG_WARN("task: %d, connect %s:%d error.", task->name, ip, port);
         return INVALID_SOCK;
     }
     message_ctx msg;
-    _coro_wait(task, ms, sess, 0, &msg);
+    _mcoro_wait(task, *skid, &msg, TIMEOUT_CONNECT);
     if (MSG_TYPE_TIMEOUT == msg.mtype) {
-        ev_ud_sess(&task->scheduler->netev, fd, *skid, 0);
         ev_close(&task->scheduler->netev, fd, *skid);
-        LOG_WARN("task: %d, connect host %s:%d timeout.", task->name, ip, port);
+        LOG_WARN("task: %d, connect %s:%d timeout.", task->name, ip, port);
         return INVALID_SOCK;
     }
     if (ERR_OK != msg.erro) {
-        LOG_WARN("task: %d, connect host %s:%d error.", task->name, ip, port);
+        LOG_WARN("task: %d, connect %s:%d error.", task->name, ip, port);
         return INVALID_SOCK;
     }
     return fd;
 }
-void *coro_send(task_ctx *task, int32_t ms, SOCKET fd, uint64_t skid, uint64_t sess,
+void *coro_send(task_ctx *task, SOCKET fd, uint64_t skid,
     void *data, size_t len, size_t *size, int32_t copy) {
-    ev_ud_sess(&task->scheduler->netev, fd, skid, sess);
+    ev_ud_sess(&task->scheduler->netev, fd, skid, skid);
     ev_send(&task->scheduler->netev, fd, skid, data, len, copy);
     message_ctx msg;
-    _coro_wait(task, ms, sess, 0, &msg);
+    _mcoro_wait(task, skid, &msg, TIMEOUT_NETREAD);
     if (MSG_TYPE_TIMEOUT == msg.mtype) {
-        ev_ud_sess(&task->scheduler->netev, fd, skid, 0);
         ev_close(&task->scheduler->netev, fd, skid);
-        LOG_WARN("task %d, send timeout.", task->name);
+        LOG_WARN("task %d, send timeout, skid %"PRIu64".", task->name, skid);
         return NULL;
     }
     if (MSG_TYPE_CLOSE == msg.mtype) {
-        LOG_WARN("task %d, connction closed.", task->name);
+        LOG_WARN("task %d, connction closed, skid %"PRIu64".", task->name, skid);
         return NULL;
     }
     *size = msg.size;
     return msg.data;
 }
-void *coro_sendto(task_ctx *task, int32_t ms, SOCKET fd, uint64_t skid,
+void *coro_sendto(task_ctx *task, SOCKET fd, uint64_t skid,
     const char *ip, const uint16_t port, void *data, size_t len, size_t *size) {
-    uint64_t sess = createid();
-    ev_ud_sess(&task->scheduler->netev, fd, skid, sess);
+    ev_ud_sess(&task->scheduler->netev, fd, skid, skid);
     if (ERR_OK != ev_sendto(&task->scheduler->netev, fd, skid, ip, port, data, len)) {
+        LOG_WARN("task %d, sendto error, skid %"PRIu64".", task->name, skid);
         ev_ud_sess(&task->scheduler->netev, fd, skid, 0);
         return NULL;
     }
     message_ctx msg;
-    _coro_wait(task, ms, sess, 0, &msg);
+    _mcoro_wait(task, skid, &msg, TIMEOUT_NETREAD);
     if (MSG_TYPE_TIMEOUT == msg.mtype) {
         ev_ud_sess(&task->scheduler->netev, fd, skid, 0);
-        LOG_WARN("task %d, sendto timeout.", task->name);
+        LOG_WARN("task %d, sendto timeout, skid %"PRIu64".", task->name, skid);
         return NULL;
     }
     *size = msg.size;

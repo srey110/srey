@@ -51,6 +51,17 @@ static void _parse_config(config_ctx *cnf) {
         && cJSON_IsNumber(val)) {
         cnf->loglv = (uint8_t)val->valuedouble;
     }
+    val = cJSON_GetObjectItem(json, "dns");
+    if (NULL != val
+        && cJSON_IsString(val)) {
+        size_t flen = strlen(val->valuestring);
+        if (flen < sizeof(cnf->dns)) {
+            memcpy(cnf->dns, val->valuestring, flen);
+            cnf->dns[flen] = '\0';
+        } else {
+            LOG_WARN("dns too long.");
+        }
+    }
     val = cJSON_GetObjectItem(json, "harborname");
     if (NULL != val
         && cJSON_IsNumber(val)) {
@@ -132,14 +143,16 @@ static void _config_init(config_ctx *config) {
     config->harbortimeout = -1;
     config->harborport = 8080;
     strcpy(config->harborip, "0.0.0.0");
+    strcpy(config->dns, "8.8.8.8");
     ZERO(config->harborkey, sizeof(config->harborkey));
 }
 static int32_t service_init(void) {
     config_ctx config;
     _config_init(&config);
     _parse_config(&config);
+    dns_set_ip(config.dns);
     log_setlv((LOG_LEVEL)config.loglv);
-    //_open_log();
+    _open_log();
     unlimit();
     srand((uint32_t)time(NULL));
     mutex_init(&muexit);
@@ -167,7 +180,7 @@ static int32_t service_hug(void) {
     return rtn;
 }
 #ifdef OS_WIN
-    #include "vld.h"
+    //#include "vld.h"
     #pragma comment(lib, "ws2_32.lib")
     #pragma comment(lib, "lib.lib")
     #if WITH_SSL
