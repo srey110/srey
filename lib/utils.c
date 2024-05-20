@@ -1,4 +1,5 @@
 #include "utils.h"
+#include "structs.h"
 #include "strptime.h"
 
 #ifdef OS_WIN
@@ -549,6 +550,61 @@ char *tohex(const unsigned char *buf, size_t len, char *out) {
     }
     out[j] = '\0';
     return out;
+}
+buf_ctx *split(const void *ptr, size_t plens, const void *sep, size_t seplens, size_t *n) {
+    if (NULL == ptr
+        || 0 == plens) {
+        return NULL;
+    }
+    *n = 0;
+    buf_ctx *buf;
+    if (NULL == sep
+        || 0 == seplens) {
+        MALLOC(buf, sizeof(buf_ctx));
+        buf[*n].data = (void *)ptr;
+        buf[*n].lens = plens;
+        (*n)++;
+        return buf;
+    }
+    size_t size, total = 32;
+    MALLOC(buf, sizeof(buf_ctx) * total);
+    char *pos;
+    char *cur = (char *)ptr;
+    do {
+        pos = memstr(0, cur, plens, sep, seplens);
+        if (*n >= total) {
+            total *= 2;
+            buf = REALLOC(buf, buf, sizeof(buf_ctx) * total);
+        }
+        if (NULL != pos) {
+            size = (size_t)(pos - cur);
+            if (size > 0) {
+                buf[*n].data = (void *)cur;
+                buf[*n].lens = size;
+            } else {
+                buf[*n].data = NULL;
+                buf[*n].lens = 0;
+            }
+            (*n)++;
+            cur += (size + seplens);
+            plens -= (size + seplens);
+            //ÒÔ·Ö¸ô·û½áÎ²
+            if (0 == plens) {
+                if (*n >= total) {
+                    ++total;
+                    buf = REALLOC(buf, buf, sizeof(buf_ctx) * total);
+                }
+                buf[*n].data = NULL;
+                buf[*n].lens = 0;
+                (*n)++;
+            }
+        } else {
+            buf[*n].data = (void *)cur;
+            buf[*n].lens = plens;
+            (*n)++;
+        }
+    } while (NULL != pos && plens > 0);
+    return buf;
 }
 char *formatargs(const char *fmt, va_list args) {
     int32_t num;

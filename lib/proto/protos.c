@@ -2,6 +2,7 @@
 #include "proto/custz.h"
 #include "proto/http.h"
 #include "proto/websock.h"
+#include "proto/redis.h"
 
 void protos_pkfree(pack_type type, void *data) {
     if (NULL == data) {
@@ -10,6 +11,9 @@ void protos_pkfree(pack_type type, void *data) {
     switch (type) {
     case PACK_HTTP:
         http_pkfree(data);
+        break;
+    case PACK_REDIS:
+        redis_pkfree(data);
         break;
     default:
         FREE(data);
@@ -21,6 +25,9 @@ void protos_udfree(void *arg) {
     switch (ud->pktype) {
     case PACK_HTTP:
         http_udfree(ud);
+        break;
+    case PACK_REDIS:
+        redis_udfree(ud);
         break;
     default:
         FREE(ud->extra);
@@ -51,10 +58,13 @@ void *protos_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid,
         unpack = custz_unpack(buf, size, ud, closefd);
         break;
     case PACK_HTTP:
-        unpack = http_unpack(buf, size, ud, closefd, slice);
+        unpack = http_unpack(buf, ud, closefd, slice);
         break;
     case PACK_WEBSOCK:
-        unpack = websock_unpack(ev, fd, skid, buf, size, ud, closefd, slice);
+        unpack = websock_unpack(ev, fd, skid, buf, ud, closefd, slice);
+        break;
+    case PACK_REDIS:
+        unpack = redis_unpack(buf, ud, closefd);
         break;
     default:
         unpack = _unpack_default(buf, size, ud);

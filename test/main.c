@@ -9,6 +9,7 @@
 #include "task_ssl.h"
 #include "task_wbsock_sv.h"
 #include "task_http_sv.h"
+#include "task_redis.h"
 #include "task_coro_timeout.h"
 #include "task_coro_comm1.h"
 #include "task_coro_net.h"
@@ -79,12 +80,13 @@ int main(int argc, char *argv[]) {
     //10007 task_auto_close
 #endif
     task_wbsock_sv_start(g_scheduler, 10008, 0);
-    task_http_sv_start(g_scheduler, 10009, 1);
+    task_http_sv_start(g_scheduler, 10009, 0);
 #if WITH_CORO
     task_coro_timeout_start(g_scheduler, 20000, 0);
     task_coro_comm1_start(g_scheduler, 20001, 0);
     task_coro_net_start(g_scheduler, 20002, 0);
     task_coro_utils_start(g_scheduler, 20003, 0);
+    task_redis_start(g_scheduler, 20004, 1);
 #endif
     mutex_lock(&muexit);
     cond_wait(&condexit, &muexit);

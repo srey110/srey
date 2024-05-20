@@ -19,7 +19,6 @@ typedef struct http_pack_ctx {
 }http_pack_ctx;
 
 #define MAX_HEADLENS ONEK * 4
-#define FLAG_CRLF "\r\n"
 #define HEAD_REMAIN (pack->head.lens - (head - (char *)pack->head.data))
 
 int32_t _http_check_keyval(http_header_ctx *head, const char *key, const char *val) {
@@ -53,7 +52,7 @@ static void _check_fileld(http_pack_ctx *pack, http_header_ctx *field, int32_t *
         break;
     }
 }
-static char *_http_parse_status(http_pack_ctx *pack, size_t flens) {
+static char *_http_parse_status(http_pack_ctx *pack) {
     char *head = pack->head.data;
     head = skipempty(head, pack->head.lens);
     if (NULL == head) {
@@ -82,22 +81,21 @@ static char *_http_parse_status(http_pack_ctx *pack, size_t flens) {
     if (0 != _memicmp(pack->status[0].data, "http", strlen("http"))) {
         pack->status[1].lens = url_decode(pack->status[1].data, pack->status[1].lens);
     }
-    pos = memstr(0, head, HEAD_REMAIN, FLAG_CRLF, flens);
+    pos = memstr(0, head, HEAD_REMAIN, FLAG_CRLF, CRLF_SIZE);
     if (NULL == pos) {
         return NULL;
     }
     pack->status[2].data = head;
     pack->status[2].lens = pos - head;
-    return pos + flens;
+    return pos + CRLF_SIZE;
 }
 static int32_t _http_parse_head(http_pack_ctx *pack, int32_t *status) {
-    size_t flens = strlen(FLAG_CRLF);
-    char *head = _http_parse_status(pack, flens);
+    char *head = _http_parse_status(pack);
     if (NULL == head) {
         return ERR_FAILED;
     }
     char *pos;
-    size_t least = 2 * flens + 1;//\r\n\r\n + :
+    size_t least = 2 * CRLF_SIZE + 1;//\r\n\r\n + :
     http_header_ctx field;
     while ((size_t)(head + least - (char *)pack->head.data) <= pack->head.lens) {
         head = skipempty(head, HEAD_REMAIN);
@@ -118,13 +116,13 @@ static int32_t _http_parse_head(http_pack_ctx *pack, int32_t *status) {
         if (NULL == head) {
             return ERR_FAILED;
         }
-        pos = memstr(0, head, HEAD_REMAIN, FLAG_CRLF, flens);
+        pos = memstr(0, head, HEAD_REMAIN, FLAG_CRLF, CRLF_SIZE);
         if (NULL == pos) {
             return ERR_FAILED;
         }
         field.value.data = head;
         field.value.lens = pos - head;
-        head = pos + flens;
+        head = pos + CRLF_SIZE;
         if (CHUNKED != *status) {
             _check_fileld(pack, &field, status);
         }
@@ -145,8 +143,8 @@ static http_pack_ctx *_http_content(buffer_ctx *buf, ud_cxt *ud, int32_t *closef
     }
 }
 static size_t _http_headlens(buffer_ctx *buf, int32_t *closefd) {
-    size_t flens = strlen("\r\n\r\n");
-    int32_t pos = buffer_search(buf, 0, 0, 0, "\r\n\r\n", flens);
+    size_t flens = CRLF_SIZE * 2;
+    int32_t pos = buffer_search(buf, 0, 0, 0, CONCAT2(FLAG_CRLF,FLAG_CRLF), flens);
     if (ERR_FAILED == pos) {
         if (buffer_size(buf) > MAX_HEADLENS) {
             *closefd = 1;
@@ -221,10 +219,9 @@ static http_pack_ctx *_http_chunkedpack(size_t lens) {
 static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud,
     int32_t *closefd, int32_t *slice) {
     size_t drain;
-    size_t flens = strlen(FLAG_CRLF);
     http_pack_ctx *pack = ud->extra;
     if (NULL == pack) {
-        int32_t pos = buffer_search(buf, 0, 0, 0, FLAG_CRLF, flens);
+        int32_t pos = buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE);
         if (ERR_FAILED == pos) {
             return NULL;
         }
@@ -239,12 +236,12 @@ static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud,
             *closefd = 1;
             return NULL;
         }
-        drain = pos + flens;
+        drain = pos + CRLF_SIZE;
         ASSERTAB(drain == buffer_drain(buf, drain), "drain buffer failed.");
         pack = _http_chunkedpack(dlens);
         ud->extra = pack;
     }
-    drain = pack->data.lens + flens;
+    drain = pack->data.lens + CRLF_SIZE;
     if (buffer_size(buf) < drain) {
         return NULL;
     }
@@ -273,8 +270,7 @@ void http_udfree(ud_cxt *ud) {
     http_pkfree(ud->extra);
     ud->extra = NULL;
 }
-http_pack_ctx *http_unpack(buffer_ctx *buf, size_t *size, ud_cxt *ud,
-    int32_t *closefd, int32_t *slice) {
+http_pack_ctx *http_unpack(buffer_ctx *buf, ud_cxt *ud, int32_t *closefd, int32_t *slice) {
     http_pack_ctx *pack;
     switch (ud->status) {
     case INIT:
@@ -330,7 +326,7 @@ void http_pack_req(buffer_ctx *buf, const char *method, const char *url) {
     char *enurl;
     MALLOC(enurl, URLEN_BLOCK_SIZE(ulens));
     url_encode(url, ulens, enurl);
-    buffer_appendv(buf, "%s %s HTTP/1.1\r\n", method, enurl);
+    buffer_appendv(buf, "%s %s HTTP/1.1"FLAG_CRLF, method, enurl);
     FREE(enurl);
 }
 const char *http_code_status(int32_t code) {
@@ -380,29 +376,29 @@ const char *http_code_status(int32_t code) {
     }
 }
 void http_pack_resp(buffer_ctx *buf, int32_t code) {
-    buffer_appendv(buf, "HTTP/1.1 %d %s\r\n", code, http_code_status(code));
+    buffer_appendv(buf, "HTTP/1.1 %d %s"FLAG_CRLF, code, http_code_status(code));
 }
 void http_pack_head(buffer_ctx *buf, const char *key, const char *val) {
-    buffer_appendv(buf, "%s: %s\r\n", key, val);
+    buffer_appendv(buf, "%s: %s"FLAG_CRLF, key, val);
 }
 void http_pack_end(buffer_ctx *buf) {
-    buffer_append(buf, "\r\n", strlen("\r\n"));
+    buffer_append(buf, FLAG_CRLF, CRLF_SIZE);
 }
 void http_pack_content(buffer_ctx *buf, void *data, size_t lens) {
     if (NULL != data) {
-        buffer_appendv(buf, "Content-Length: %d\r\n\r\n", (uint32_t)lens);
+        buffer_appendv(buf, "Content-Length: %d"CONCAT2(FLAG_CRLF, FLAG_CRLF), (uint32_t)lens);
         buffer_append(buf, data, lens);
     } else {
-        buffer_appendv(buf, "%s", "Content-Length: 0\r\n\r\n");
+        buffer_appendv(buf, "%s", "Content-Length: 0"CONCAT2(FLAG_CRLF, FLAG_CRLF));
     }
 }
 void http_pack_chunked(buffer_ctx *buf, void *data, size_t lens) {
     if (buffer_size(buf) > 0){
-        buffer_appendv(buf, "Transfer-Encoding: Chunked\r\n\r\n");
+        buffer_appendv(buf, "Transfer-Encoding: Chunked"CONCAT2(FLAG_CRLF, FLAG_CRLF));
     }
-    buffer_appendv(buf, "%x\r\n", (uint32_t)lens);
+    buffer_appendv(buf, "%x"FLAG_CRLF, (uint32_t)lens);
     if (lens > 0) {
         buffer_append(buf, data, lens);
     }
-    buffer_append(buf, "\r\n", strlen("\r\n"));
+    buffer_append(buf, FLAG_CRLF, CRLF_SIZE);
 }

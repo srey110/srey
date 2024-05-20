@@ -326,10 +326,11 @@ void *coro_slice(task_ctx *task, SOCKET fd, uint64_t skid, size_t *size, int32_t
     *size = msg.size;
     return msg.data;
 }
-int32_t coro_handshake(task_ctx *task, uint64_t skid) {
+int32_t coro_handshake(task_ctx *task, SOCKET fd, uint64_t skid) {
     message_ctx msg;
     _mcoro_wait(task, skid, &msg, TIMEOUT_NETREAD);
     if (MSG_TYPE_TIMEOUT == msg.mtype) {
+        ev_close(&task->scheduler->netev, fd, skid);
         LOG_WARN("task: %d, handshake timeout, skid %"PRIu64".", task->name, skid);
         return ERR_FAILED;
     }

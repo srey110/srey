@@ -28,6 +28,7 @@
 #include "proto/dns.h"
 #include "proto/http.h"
 #include "proto/websock.h"
+#include "proto/redis.h"
 #include "event/event.h"
 #include "srey/scheduler.h"
 #include "srey/ssls.h"

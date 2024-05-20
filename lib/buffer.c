@@ -312,6 +312,10 @@ size_t buffer_size(buffer_ctx *ctx) {
 }
 int32_t buffer_append(buffer_ctx *ctx, void *data, const size_t len) {
     ASSERTAB(0 == ctx->freeze_write, "write freezed");
+    if (0 == len
+        || NULL == data) {
+        return ERR_OK;
+    }
     char *tmp = (char*)data;
     IOV_TYPE iov[MAX_EXPAND_NIOV];
     size_t remain = len;
@@ -536,6 +540,14 @@ int32_t buffer_search(buffer_ctx *ctx, const int32_t ncs,
         }
     }
     return ERR_FAILED;
+}
+char buffer_at(buffer_ctx *ctx, size_t pos) {
+    ASSERTAB(0 == ctx->freeze_read, "read freezed");
+    ASSERTAB(pos < ctx->total_len, "index error.");
+    size_t off = 0;
+    bufnode_ctx *node = _search_start(ctx->head, pos, &off);
+    off = node->off - (off - pos);
+    return (node->buffer + node->misalign + off)[0];
 }
 uint32_t buffer_expand(buffer_ctx *ctx, const size_t lens, IOV_TYPE *iov, const uint32_t cnt) {
     ASSERTAB(0 == ctx->freeze_write, "write freezed");

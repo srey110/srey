@@ -332,5 +332,40 @@ LUAMOD_API int luaopen_http(lua_State *lua) {
     luaL_newlib(lua, reg);
     return 1;
 }
+static int32_t _lproto_redis_unpack(lua_State *lua) {
+    redis_pack_ctx *pack = lua_touserdata(lua, 1);
+    if (NULL == pack) {
+        lua_pushnil(lua);
+        return 1;
+    }
+    /*while (NULL != pack) {
+        switch (pack->type) {
+        case RESP_STRING:
+        case RESP_ERROR:
+        case RESP_INTEGER:
+        case RESP_NULL:
+        case RESP_BOOL:
+        case RESP_DOUBLE:
+        case RESP_BIG_NUMBER:
+
+            break;
+        case RESP_BULK_STRING:
+        case RESP_BULK_ERROR:
+        case RESP_VERB_STRING:
+
+            break;
+        case RESP_ARRAY:
+        case RESP_MAP:
+        case RESP_SET:
+        case RESP_PUSHE:
+
+            break;
+        default:
+            break;
+        }
+        pack = pack->next;
+    }*/
+    return 1;
+}
 
 #endif

@@ -221,14 +221,12 @@ static void _net_recv(ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, siz
     msg.skid = skid;
     msg.client = ud->client;
     void *data;
-    size_t lens;
     int32_t closefd = 0;
     int32_t slice;
     do {
-        data = protos_unpack(ev, fd, skid, buf, &lens, ud, &closefd, &slice);
+        data = protos_unpack(ev, fd, skid, buf, &msg.size, ud, &closefd, &slice);
         if (NULL != data) {
             msg.data = data;
-            msg.size = lens;
             msg.slice = (uint8_t)slice;
             msg.sess = ud->sess;
             ud->sess = 0;

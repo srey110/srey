@@ -63,8 +63,7 @@ function wbsk.connect(ws, sslname, appendev)
     local hspack, size = websock.handshake_pack(url.host)
     srey.sock_session(fd, skid, skid)
     srey.send(fd, skid, hspack, size, 0)
-    if not srey.wait_handshaked(skid) then
-        srey.close(fd, skid)
+    if not srey.wait_handshaked(fd, skid) then
         return INVALID_SOCK
     end
     return fd, skid

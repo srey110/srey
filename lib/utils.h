@@ -63,6 +63,8 @@ char *randstr(char *buf, size_t len);
 //转16进制字符串 out 长度为 HEX_ENSIZE
 #define HEX_ENSIZE(s) (s * 2 + 1)
 char *tohex(const unsigned char *buf, size_t len, char *out);
+//返回值需要free
+struct buf_ctx *split(const void *ptr, size_t plens, const void *sep, size_t seplens, size_t *n);
 //变参 返回值需要free
 char *formatargs(const char *fmt, va_list args);
 char *formatv(const char *fmt, ...);

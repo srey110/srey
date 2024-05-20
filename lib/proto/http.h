@@ -9,8 +9,7 @@ typedef struct http_header_ctx {
     buf_ctx value;
 }http_header_ctx;
 
-struct http_pack_ctx *http_unpack(buffer_ctx *buf, size_t *size, ud_cxt *ud,
-    int32_t *closefd, int32_t *slice);
+struct http_pack_ctx *http_unpack(buffer_ctx *buf, ud_cxt *ud, int32_t *closefd, int32_t *slice);
 void http_pkfree(struct http_pack_ctx *pack);
 void http_udfree(ud_cxt *ud);
 

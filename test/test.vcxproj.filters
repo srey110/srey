@@ -60,6 +60,9 @@
     <ClCompile Include="task_http_sv.c">
       <Filter>tasks</Filter>
     </ClCompile>
+    <ClCompile Include="task_redis.c">
+      <Filter>taskcoro</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="CuTest.h">
@@ -108,6 +111,9 @@
     </ClInclude>
     <ClInclude Include="task_http_sv.h">
       <Filter>tasks</Filter>
+    </ClInclude>
+    <ClInclude Include="task_redis.h">
+      <Filter>taskcoro</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

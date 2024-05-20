@@ -6,6 +6,7 @@
 #include "proto/dns.h"
 #include "proto/websock.h"
 #include "proto/http.h"
+#include "proto/redis.h"
 #include "buffer.h"
 
 #if WITH_CORO
@@ -32,7 +33,7 @@ dns_ip *coro_dns_lookup(task_ctx *task, const char *domain, int32_t ipv6, size_t
     }
     return dns_parse_pack(resp, cnt);
 }
-SOCKET coro_wbsock_connect(task_ctx *task, const char *ws, struct evssl_ctx *evssl, uint64_t *skid, int32_t appendev) {
+SOCKET coro_wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, uint64_t *skid, int32_t appendev) {
     url_ctx url;
     url_parse(&url, (char *)ws, strlen(ws));
     if (!buf_icompare(&url.scheme, "ws", strlen("ws"))) {
@@ -77,9 +78,28 @@ SOCKET coro_wbsock_connect(task_ctx *task, const char *ws, struct evssl_ctx *evs
     FREE(host);
     ev_ud_sess(&task->scheduler->netev, fd, *skid, *skid);
     ev_send(&task->scheduler->netev, fd, *skid, reqpack, strlen(reqpack), 0);
-    if (ERR_OK != coro_handshake(task, *skid)) {
-        ev_close(&task->scheduler->netev, fd, *skid);
+    if (ERR_OK != coro_handshake(task, fd, *skid)) {
         return INVALID_SOCK;
+    }
+    return fd;
+}
+SOCKET coro_redis_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ip, uint16_t port, const char *key,
+    uint64_t *skid, int32_t appendev) {
+    SOCKET fd = coro_connect(task, PACK_REDIS, evssl, ip, port, skid, appendev);
+    if (INVALID_SOCK == fd) {
+        return INVALID_SOCK;
+    }
+    if (NULL != key
+        && 0 != strlen(key)) {
+        size_t size;
+        char *auth = redis_pack(&size, "AUTH %s", key);
+        redis_pack_ctx *rtn = coro_send(task, fd, *skid, auth, size, &size, 0);
+        if (RESP_STRING != rtn->type
+            || 2 != rtn->len
+            || 0 != _memicmp(rtn->data, "ok", rtn->len)) {
+            ev_close(&task->scheduler->netev, fd, *skid);
+            return INVALID_SOCK;
+        }
     }
     return fd;
 }

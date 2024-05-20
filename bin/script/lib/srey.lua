@@ -366,9 +366,10 @@ function srey.on_handshaked(func)
     func_cbs[MSG_TYPE.HANDSHAKED] = func
 end
 --bool
-function srey.wait_handshaked(skid)
+function srey.wait_handshaked(fd, skid)
     local msg = _coro_wait(skid, TIMEOUT.NETREAD)
     if MSG_TYPE.TIMEOUT == msg.mtype then
+        srey.close(fd, skid)
         WARN("handshake timeout, skid %s.", tostring(skid))
         return false
     end

@@ -13,6 +13,9 @@
 #define PORT_LENS            8
 #define INVALID_FD           -1
 
+#define FLAG_CRLF           "\r\n"
+#define CRLF_SIZE           2
+
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 #define EMPTYSTR(str) ((NULL == str) || (0 == strlen(str)))
 

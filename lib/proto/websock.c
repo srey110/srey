@@ -325,7 +325,7 @@ static websock_pack_ctx *_websock_parse_head(buffer_ctx *buf, ud_cxt *ud, int32_
     return _websock_parse_data(buf, ud, closefd, slice);
 }
 websock_pack_ctx *websock_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid,
-    buffer_ctx *buf, size_t *size, ud_cxt *ud, int32_t *closefd, int32_t *slice) {
+    buffer_ctx *buf, ud_cxt *ud, int32_t *closefd, int32_t *slice) {
     websock_pack_ctx *pack = NULL;
     switch (ud->status) {
     case INIT:

@@ -24,7 +24,7 @@ SSL_NAME = {
 }
 --ssl文件类型
 SSLFILE_TYPE = {
-    PEM =  0x01,
+    PEM  = 0x01,
     ASN1 = 0x02
 }
 --证书验证
@@ -38,17 +38,18 @@ SSLVERIFY_TYPE = {
 }
 --事件
 APPEND_EV = {
-    ACCEPT =  0x01,
+    ACCEPT  = 0x01,
     CONNECT = 0x02,
-    CLOSE =   0x04,
-    SEND =    0x08
+    CLOSE   = 0x04,
+    SEND    = 0x08
 }
 --包类型 标识该socket类型 与c pack_type对应
 PACK_TYPE = {
-    NONE =    0x00,
-    HTTP =    0x01,
+    NONE    = 0x00,
+    HTTP    = 0x01,
     WEBSOCK = 0x02,
-    CUSTZ =  0x03
+    REDIS   = 0x03,
+    CUSTZ   = 0x04
 }
 
 ERR_OK = 0

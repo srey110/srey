@@ -13,7 +13,7 @@ typedef enum  websock_proto {
 }websock_proto;
 
 struct websock_pack_ctx *websock_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid,
-    buffer_ctx *buf, size_t *size, ud_cxt *ud, int32_t *closefd, int32_t *slice);
+    buffer_ctx *buf, ud_cxt *ud, int32_t *closefd, int32_t *slice);
 char *websock_handshake_pack(const char *host);
 
 void websock_ping(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t mask);

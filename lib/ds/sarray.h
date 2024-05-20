@@ -34,8 +34,7 @@ static inline int32_t atype##_empty(atype##_ctx *p) {\
 static inline void atype##_resize(atype##_ctx *p, uint32_t maxsize) {\
     maxsize = ((0 == maxsize) ? ARRAY_INIT_SIZE : ROUND_UP(maxsize, 2));\
     ASSERTAB(maxsize >= p->size, "max size must big than element count.");\
-    void *pold = p->ptr;\
-    REALLOC(p->ptr, pold, sizeof(type) * maxsize);\
+    REALLOC(p->ptr, p->ptr, sizeof(type) * maxsize);\
     p->maxsize = maxsize;\
 };\
 static inline void atype##_double_resize(atype##_ctx *p) {\

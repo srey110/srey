@@ -199,6 +199,9 @@
     <ClInclude Include="proto\custz.h">
       <Filter>proto</Filter>
     </ClInclude>
+    <ClInclude Include="proto\redis.h">
+      <Filter>proto</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="memory.c">
@@ -319,6 +322,9 @@
       <Filter>srey</Filter>
     </ClCompile>
     <ClCompile Include="proto\custz.c">
+      <Filter>proto</Filter>
+    </ClCompile>
+    <ClCompile Include="proto\redis.c">
       <Filter>proto</Filter>
     </ClCompile>
   </ItemGroup>
