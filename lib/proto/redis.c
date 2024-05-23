@@ -1,19 +1,12 @@
 #include "proto/redis.h"
 #include "ds/sarray.h"
 
-typedef struct mark_ctx {
-    resp_type type;
-    size_t element;//总节点数
-    size_t count;//当前读取到的数量
-}mark_ctx;
-ARRAY_DECL(mark_ctx, arr_mark);
 typedef struct reader_ctx {
     redis_pack_ctx *head;
     redis_pack_ctx *tail;
-    arr_mark_ctx mark;
+    int64_t nelem;
 }reader_ctx;
 
-#define MAX_BULK_SIZE ONEK * ONEK * 512
 #define FMT_INTEGER_FLAG  "diouxX"
 #define FMT_TYPE(type)\
     lens = (size_t)(f - p) + 1;\
@@ -38,7 +31,6 @@ void redis_udfree(ud_cxt *ud) {
     }
     reader_ctx *rd = ud->extra;
     redis_pkfree(rd->head);
-    arr_mark_free(&rd->mark);
     FREE(rd);
     ud->extra = NULL;
 }
@@ -217,46 +209,12 @@ char *redis_pack(size_t *size, const char *fmt, ...) {
     va_end(args);
     return buf;
 }
-static inline resp_type _resp_type(char type) {
-    switch (type) {
-    case '+':
-        return RESP_STRING;
-    case '-':
-        return RESP_ERROR;
-    case ':':
-        return RESP_INTEGER;
-    case '_':
-        return RESP_NULL;
-    case '#':
-        return RESP_BOOL;
-    case ',':
-        return RESP_DOUBLE;
-    case '(':
-        return RESP_BIG_NUMBER;
-    case '$':
-        return RESP_BULK_STRING;
-    case '!':
-        return RESP_BULK_ERROR;
-    case '=':
-        return RESP_VERB_STRING;
-    case '*':
-        return RESP_ARRAY;
-    case '%':
-        return RESP_MAP;
-    case '~':
-        return RESP_SET;
-    case '>':
-        return RESP_PUSHE;
-    default:
-        return RESP_NONE;
-    }
-}
 static reader_ctx *_create_reader(ud_cxt *ud) {
     if (NULL == ud->extra) {
         reader_ctx *rd;
         MALLOC(rd, sizeof(reader_ctx));
         rd->head = rd->tail = NULL;
-        arr_mark_init(&rd->mark, 0);
+        rd->nelem = 1;
         ud->extra = rd;
     }
     return ud->extra;
@@ -268,31 +226,31 @@ static inline void _add_node(reader_ctx *rd, redis_pack_ctx *pk) {
         rd->tail->next = pk;
         rd->tail = pk;
     }
+    if (RESP_ATTR != pk->proto) {
+        rd->nelem--;
+    }
 }
-static int32_t _reader_simple(reader_ctx *rd, resp_type rtype, buffer_ctx *buf, int32_t *closefd) {
+//<type><data>\r\n
+static int32_t _reader_line(reader_ctx *rd, int32_t proto, buffer_ctx *buf, int32_t *closefd) {
     int32_t pos = buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE);
     if (ERR_FAILED == pos) {
         return ERR_FAILED;
     }
     redis_pack_ctx *pk;
     CALLOC(pk, 1, sizeof(redis_pack_ctx) + pos);//前面还有1个type字节
-    pk->type = rtype;
-    pk->len = (size_t)(pos - 1);
-    switch (rtype) {
+    pk->proto = proto;
+    pk->len = pos - 1;//pos 至少为1
+    switch (proto) {
     case RESP_STRING:
     case RESP_ERROR:
-        if (0 == pk->len) {
-            *closefd = 1;
-        } else {
-            buffer_copyout(buf, 1, pk->data, pk->len);
-        }
+        buffer_copyout(buf, 1, pk->data, (size_t)pk->len);
         break;
     case RESP_INTEGER:
-    case RESP_BIG_NUMBER:
+    case RESP_BIGNUM:
         if (0 == pk->len) {
             *closefd = 1;
         } else {
-            buffer_copyout(buf, 1, pk->data, pk->len);
+            buffer_copyout(buf, 1, pk->data, (size_t)pk->len);
             char *end;
             pk->ival = strtoll(pk->data, &end, 10);
             if (end != pk->data + pk->len) {
@@ -300,7 +258,7 @@ static int32_t _reader_simple(reader_ctx *rd, resp_type rtype, buffer_ctx *buf, 
             }
         }
         break;
-    case RESP_NULL:
+    case RESP_NIL:
         if (0 != pk->len) {
             *closefd = 1;
         }
@@ -310,7 +268,7 @@ static int32_t _reader_simple(reader_ctx *rd, resp_type rtype, buffer_ctx *buf, 
             *closefd = 1;
             break;
         }
-        buffer_copyout(buf, 1, pk->data, pk->len);
+        buffer_copyout(buf, 1, pk->data, (size_t)pk->len);
         if (NULL == strchr("tTfF", pk->data[0])) {
             *closefd = 1;
             break;
@@ -324,19 +282,19 @@ static int32_t _reader_simple(reader_ctx *rd, resp_type rtype, buffer_ctx *buf, 
             *closefd = 1;
             break;
         }
-        buffer_copyout(buf, 1, pk->data, pk->len);
-        if (3 == pk->len && 0 == _memicmp(pk->data, "inf", pk->len)) {
+        buffer_copyout(buf, 1, pk->data, (size_t)pk->len);
+        if (3 == pk->len && 0 == _memicmp(pk->data, "inf", (size_t)pk->len)) {
             pk->dval = INFINITY;
-        } else if (4 == pk->len && 0 == _memicmp(pk->data, "-inf", pk->len)) {
+        } else if (4 == pk->len && 0 == _memicmp(pk->data, "-inf", (size_t)pk->len)) {
             pk->dval = -INFINITY;
-        } else if ((3 == pk->len && 0 == _memicmp(pk->data, "nan", pk->len))
-                    ||(4 == pk->len && 0 == _memicmp(pk->data, "-nan", pk->len))) {
+        } else if ((3 == pk->len && 0 == _memicmp(pk->data, "nan", (size_t)pk->len))
+                   ||(4 == pk->len && 0 == _memicmp(pk->data, "-nan", (size_t)pk->len))) {
             pk->dval = NAN;
         } else {
             char *end;
             pk->dval = strtod(pk->data, &end);
-            if (!isfinite(pk->dval) 
-                || end != pk->data + pk->len) {
+            if (end != pk->data + pk->len
+                || !isfinite(pk->dval)) {
                 *closefd = 1;
             }
         }
@@ -353,7 +311,8 @@ static int32_t _reader_simple(reader_ctx *rd, resp_type rtype, buffer_ctx *buf, 
     _add_node(rd, pk);
     return ERR_OK;
 }
-static int32_t _reader_bulk(reader_ctx *rd, resp_type rtype, buffer_ctx *buf, int32_t *closefd) {
+//<type><length>\r\n<data>\r\n   <type>-1\r\n NUll
+static int32_t _reader_bulk(reader_ctx *rd, int32_t proto, buffer_ctx *buf, int32_t *closefd) {
     int32_t pos = buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE);
     if (ERR_FAILED == pos) {
         return ERR_FAILED;
@@ -367,14 +326,24 @@ static int32_t _reader_bulk(reader_ctx *rd, resp_type rtype, buffer_ctx *buf, in
     buffer_copyout(buf, 1, num, lens);
     num[lens] = '\0';
     char *end;
-    int32_t blens = (int32_t)strtol(num, &end, 10);
+    int64_t blens = (int64_t)strtoll(num, &end, 10);
     if (num + lens != end
-        || blens > MAX_BULK_SIZE
-        || blens < 0) {
+        || blens < -1) {
         *closefd = 1;
         return ERR_FAILED;
     }
-    size_t total = (size_t)(blens + pos + CRLF_SIZE * 2);
+    size_t total;
+    if (-1 == blens) {
+        redis_pack_ctx *pk;
+        CALLOC(pk, 1, sizeof(redis_pack_ctx) + 1);
+        pk->proto = proto;
+        pk->len = blens;
+        total = (size_t)(pos + CRLF_SIZE);
+        ASSERTAB(total == buffer_drain(buf, total), "drain buffer failed.");
+        _add_node(rd, pk);
+        return ERR_OK;
+    }
+    total = (size_t)(blens + pos + CRLF_SIZE * 2);
     if (buffer_size(buf) < total) {
         return ERR_FAILED;
     }
@@ -385,29 +354,25 @@ static int32_t _reader_bulk(reader_ctx *rd, resp_type rtype, buffer_ctx *buf, in
     }
     redis_pack_ctx *pk;
     CALLOC(pk, 1, sizeof(redis_pack_ctx) + (size_t)blens + 1);
-    pk->type = rtype;
-    switch (rtype) {
-    case RESP_BULK_STRING:
-    case RESP_BULK_ERROR: 
-        pk->len = (size_t)blens;
-        if (pk->len > 0) {
-            buffer_copyout(buf, (size_t)(pos + CRLF_SIZE), pk->data, pk->len);
-        }
+    pk->proto = proto;
+    switch (proto) {
+    case RESP_BSTRING:
+    case RESP_BERROR:
+        pk->len = blens;
+        buffer_copyout(buf, (size_t)(pos + CRLF_SIZE), pk->data, (size_t)pk->len);
         break;
-    case RESP_VERB_STRING:
+    case RESP_VERB:
         if (blens < 4) {
             *closefd = 1;
             break;
         }
-        if (':' != buffer_at(buf, pos + CRLF_SIZE + 3)) {
+        if (':' != buffer_at(buf, (size_t)(pos + CRLF_SIZE + 3))) {
             *closefd = 1;
             break;
         }
         pk->len = blens - 4;
-        buffer_copyout(buf, pos + CRLF_SIZE, pk->vtype, 3);//3 bytes encoding
-        if (pk->len > 0) {
-            buffer_copyout(buf, pos + CRLF_SIZE + 4, pk->data, pk->len);
-        }
+        buffer_copyout(buf, (size_t)(pos + CRLF_SIZE), pk->venc, 3);//3 bytes encoding
+        buffer_copyout(buf, (size_t)(pos + CRLF_SIZE + 4), pk->data, (size_t)pk->len);
         break;
     default:
         break;
@@ -420,7 +385,8 @@ static int32_t _reader_bulk(reader_ctx *rd, resp_type rtype, buffer_ctx *buf, in
     _add_node(rd, pk);
     return ERR_OK;
 }
-static int32_t _reader_aggregate(reader_ctx *rd, resp_type rtype, buffer_ctx *buf, int32_t *closefd) {
+//<type><number-of-elements>\r\n<element-1>\r\n...<element-n>\r\n
+static int32_t _reader_agg(reader_ctx *rd, int32_t proto, buffer_ctx *buf, int32_t *closefd) {
     int32_t pos = buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE);
     if (ERR_FAILED == pos) {
         return ERR_FAILED;
@@ -434,92 +400,53 @@ static int32_t _reader_aggregate(reader_ctx *rd, resp_type rtype, buffer_ctx *bu
     buffer_copyout(buf, 1, num, lens);
     num[lens] = '\0';
     char *end;
-    int32_t element = (int32_t)strtol(num, &end, 10);
+    int64_t nelem = (int64_t)strtoll(num, &end, 10);
     if (num + lens != end
-        || element < 0) {
+        || nelem < -1) {
         *closefd = 1;
         return ERR_FAILED;
     }
+    size_t del = (size_t)(pos + CRLF_SIZE);
+    ASSERTAB(del == buffer_drain(buf, del), "drain buffer failed.");
     redis_pack_ctx *pk;
     CALLOC(pk, 1, sizeof(redis_pack_ctx) + 1);
-    pk->type = rtype;
-    pk->element = (size_t)element;
-    if (pk->element > 0) {
-        mark_ctx mk;
-        mk.count = 0;
-        mk.element = pk->element;
-        mk.type = pk->type;
-        arr_mark_push_back(&rd->mark, &mk);
-    }
-    int32_t del = pos + CRLF_SIZE;
-    ASSERTAB(del == buffer_drain(buf, del), "drain buffer failed.");
+    pk->proto = proto;
+    pk->nelem = nelem;
     _add_node(rd, pk);
+    if (nelem > 0) {
+        rd->nelem += ((RESP_ATTR == proto || RESP_MAP == proto) ? nelem * 2 : nelem);
+    }
     return ERR_OK;
 }
-static inline void _update_mark(reader_ctx *rd) {
-    int32_t size = (int32_t)arr_mark_size(&rd->mark);
-    if (0 == size) {
-        return;
-    }
-    //向前加
-    mark_ctx *mk;
-    for (int32_t i = size - 1; i >= 0; i--) {
-        mk = arr_mark_at(&rd->mark, i);
-        mk->count++;
-        if (RESP_MAP == mk->type) {
-            if (mk->count >= mk->element * 2) {
-                arr_mark_pop_back(&rd->mark);
-            } else {
-                break;
-            }
-        } else {
-            if (mk->count >= mk->element) {
-                arr_mark_pop_back(&rd->mark);
-            } else {
-                break;
-            }
-        }
-    }
-}
 redis_pack_ctx *redis_unpack(buffer_ctx *buf, ud_cxt *ud, int32_t *closefd) {
-    resp_type rtype;
-    int32_t rtn = ERR_OK;
+    int32_t rtn, proto;
     reader_ctx *rd = _create_reader(ud);
     for (;;) {
         if (buffer_size(buf) < 1 + CRLF_SIZE) {
             break;
         }
-        rtype = _resp_type(buffer_at(buf, 0));
-        switch (rtype) {
+        proto = buffer_at(buf, 0);
+        switch (proto) {
         case RESP_STRING:
         case RESP_ERROR:
         case RESP_INTEGER:
-        case RESP_NULL:
+        case RESP_NIL:
         case RESP_BOOL:
         case RESP_DOUBLE:
-        case RESP_BIG_NUMBER:
-            rtn = _reader_simple(rd, rtype, buf, closefd);
-            if (ERR_OK == rtn) {
-                _update_mark(rd);
-            }
+        case RESP_BIGNUM:
+            rtn = _reader_line(rd, proto, buf, closefd);
             break;
-        case RESP_BULK_STRING:
-        case RESP_BULK_ERROR:
-        case RESP_VERB_STRING:
-            rtn = _reader_bulk(rd, rtype, buf, closefd);
-            if (ERR_OK == rtn) {
-                _update_mark(rd);
-            }
+        case RESP_BSTRING:
+        case RESP_BERROR:
+        case RESP_VERB:
+            rtn = _reader_bulk(rd, proto, buf, closefd);
             break;
         case RESP_ARRAY:
-        case RESP_MAP:
         case RESP_SET:
         case RESP_PUSHE:
-            rtn = _reader_aggregate(rd, rtype, buf, closefd);
-            if (ERR_OK == rtn
-                && 0 == rd->tail->element) {
-                _update_mark(rd);
-            }
+        case RESP_MAP:
+        case RESP_ATTR:
+            rtn = _reader_agg(rd, proto, buf, closefd);
             break;
         default:
             *closefd = 1;
@@ -529,9 +456,10 @@ redis_pack_ctx *redis_unpack(buffer_ctx *buf, ud_cxt *ud, int32_t *closefd) {
             || 0 != *closefd) {
             break;
         }
-        if (0 == arr_mark_size(&rd->mark)) {
+        if (0 == rd->nelem) {
             redis_pack_ctx *pk = rd->head;
             rd->head = rd->tail = NULL;
+            rd->nelem = 1;
             return pk;
         }
     }

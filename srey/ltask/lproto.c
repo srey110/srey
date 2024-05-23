@@ -332,39 +332,86 @@ LUAMOD_API int luaopen_http(lua_State *lua) {
     luaL_newlib(lua, reg);
     return 1;
 }
-static int32_t _lproto_redis_unpack(lua_State *lua) {
-    redis_pack_ctx *pack = lua_touserdata(lua, 1);
-    if (NULL == pack) {
+static void _lproto_redis_agg(lua_State *lua, const char *type, int64_t nelem) {
+    lua_createtable(lua, 0, 2);
+    lua_pushstring(lua, "resp_type");
+    lua_pushstring(lua, type);
+    lua_settable(lua, -3);
+    lua_pushstring(lua, "resp_nelem");
+    lua_pushinteger(lua, nelem);
+    lua_settable(lua, -3);
+}
+static int32_t _lproto_redis_value(lua_State *lua) {
+    redis_pack_ctx *pk = lua_touserdata(lua, 1);
+    if (NULL == pk) {
         lua_pushnil(lua);
         return 1;
     }
-    /*while (NULL != pack) {
-        switch (pack->type) {
-        case RESP_STRING:
-        case RESP_ERROR:
-        case RESP_INTEGER:
-        case RESP_NULL:
-        case RESP_BOOL:
-        case RESP_DOUBLE:
-        case RESP_BIG_NUMBER:
-
-            break;
-        case RESP_BULK_STRING:
-        case RESP_BULK_ERROR:
-        case RESP_VERB_STRING:
-
-            break;
-        case RESP_ARRAY:
-        case RESP_MAP:
-        case RESP_SET:
-        case RESP_PUSHE:
-
-            break;
-        default:
-            break;
+    switch (pk->proto) {
+    case RESP_STRING:
+    case RESP_ERROR:
+    case RESP_BSTRING:
+    case RESP_BERROR:
+    case RESP_VERB:
+        if (pk->len < 0) {
+            lua_pushnil(lua);
+        } else if (0 == pk->len) {
+            lua_pushstring(lua, "");
+        } else {
+            lua_pushlstring(lua, pk->data, pk->len);
         }
-        pack = pack->next;
-    }*/
+        break;
+    case RESP_INTEGER:
+    case RESP_BIGNUM:
+        lua_pushinteger(lua, pk->ival);
+        break;
+    case RESP_NIL:
+        lua_pushnil(lua);
+        break;
+    case RESP_BOOL:
+        lua_pushboolean(lua, (int32_t)pk->ival);
+        break;
+    case RESP_DOUBLE:
+        lua_pushnumber(lua, pk->dval);
+        break;
+    case RESP_ARRAY:
+        _lproto_redis_agg(lua, "array", pk->nelem);
+        break;
+    case RESP_SET:
+        _lproto_redis_agg(lua, "set", pk->nelem);
+        break;
+    case RESP_PUSHE:
+        _lproto_redis_agg(lua, "push", pk->nelem);
+        break;
+    case RESP_MAP:
+        _lproto_redis_agg(lua, "map", pk->nelem);
+        break;
+    case RESP_ATTR:
+        _lproto_redis_agg(lua, "attr", pk->nelem);
+        break;
+    default:
+        break;
+    }
+    return 1;
+}
+static int32_t _lproto_redis_next(lua_State *lua) {
+    redis_pack_ctx *pk = lua_touserdata(lua, 1);
+    if (NULL == pk
+        || NULL == pk->next) {
+        lua_pushnil(lua);
+        return 1;
+    }
+    lua_pushlightuserdata(lua, pk->next);
+    return 1;
+}
+//srey.redis
+LUAMOD_API int luaopen_redis(lua_State *lua) {
+    luaL_Reg reg[] = {
+        { "value", _lproto_redis_value },
+        { "next", _lproto_redis_next },
+        { NULL, NULL },
+    };
+    luaL_newlib(lua, reg);
     return 1;
 }
 
