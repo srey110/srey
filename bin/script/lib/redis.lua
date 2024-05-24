@@ -115,18 +115,14 @@ local function _fisrt_nodes(mark, pk)
     elseif 0 == val.resp_nelem then
         if _is_attr(val) then
             return {{}}
-        else
-            WARN("resp message error.")
-            return nil
         end
     else
         if _is_attr(val) then
             return {}
-        else
-            WARN("resp message error.")
-            return nil
         end
     end
+    WARN("resp message error.")
+    return nil
 end
 function redis.unpack(pk)
     --单一节点

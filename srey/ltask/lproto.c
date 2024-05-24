@@ -358,7 +358,7 @@ static int32_t _lproto_redis_value(lua_State *lua) {
         } else if (0 == pk->len) {
             lua_pushstring(lua, "");
         } else {
-            lua_pushlstring(lua, pk->data, pk->len);
+            lua_pushlstring(lua, pk->data, (size_t)pk->len);
         }
         break;
     case RESP_INTEGER:
