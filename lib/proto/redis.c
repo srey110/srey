@@ -1,5 +1,4 @@
 #include "proto/redis.h"
-#include "ds/sarray.h"
 
 typedef struct reader_ctx {
     redis_pack_ctx *head;
