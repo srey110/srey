@@ -16,14 +16,18 @@ local function _wbsock_test(ws)
         printd("websock.connect error")
         return
     end
-    wbsk.ping(fd, skid, 1)
-    wbsk.text(fd, skid, 1, "this is text test.")
-    wbsk.binary(fd, skid, 1, "this is binary test.")
+    local data, size = wbsk.ping(1)
+    srey.send(fd, skid, data, size, 0)
+    data, size = wbsk.text(1, "this is text test.")
+    srey.send(fd, skid, data, size, 0)
+    data, size = wbsk.binary(1, "this is binary test.")
+    srey.send(fd, skid, data, size, 0)
     ncont = 0
     wbsk.text_continua(fd, skid, 1, _cont, "text continuation")
     ncont = 0
     wbsk.binary_continua(fd, skid, 1, _cont, "binary continuation")
-    wbsk.close(fd, skid, 1)
+    data, size =wbsk.close(1)
+    srey.send(fd, skid, data, size, 0)
 end
 srey.startup(
     function ()

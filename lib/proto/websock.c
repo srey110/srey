@@ -400,66 +400,46 @@ static void *_websock_create_pack(uint8_t fin, uint8_t proto, char key[4], void 
     }
     return frame;
 }
-static void _websock_control_frame(ev_ctx *ev, SOCKET fd, uint64_t skid, uint8_t proto, char key[4]) {
-    size_t flens;
-    void *frame = _websock_create_pack(1, proto, key, NULL, 0, &flens);
-    ev_send(ev, fd, skid, frame, flens, 0);
-}
-void websock_ping(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t mask) {
+void *websock_ping(int32_t mask, size_t *size) {
     if (0 == mask) {
-        _websock_control_frame(ev, fd, skid, WBSK_PING, NULL);
+        return _websock_create_pack(1, WBSK_PING, NULL, NULL, 0, size);
     } else {
-        _websock_control_frame(ev, fd, skid, WBSK_PING, _mask_key);
+        return _websock_create_pack(1, WBSK_PING, _mask_key, NULL, 0, size);
     }
 }
-void websock_pong(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t mask) {
+void *websock_pong(int32_t mask, size_t *size) {
     if (0 == mask) {
-        _websock_control_frame(ev, fd, skid, WBSK_PONG, NULL);
+        return _websock_create_pack(1, WBSK_PONG, NULL, NULL, 0, size);
     } else {
-        _websock_control_frame(ev, fd, skid, WBSK_PONG, _mask_key);
+        return _websock_create_pack(1, WBSK_PONG, _mask_key, NULL, 0, size);
     }
 }
-void websock_close(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t mask) {
+void *websock_close(int32_t mask, size_t *size) {
     if (0 == mask) {
-        _websock_control_frame(ev, fd, skid, WBSK_CLOSE, NULL);
+        return _websock_create_pack(1, WBSK_CLOSE, NULL, NULL, 0, size);
     } else {
-        _websock_control_frame(ev, fd, skid, WBSK_CLOSE, _mask_key);
+        return _websock_create_pack(1, WBSK_CLOSE, _mask_key, NULL, 0, size);
     }
 }
-void websock_text(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t mask,
-    int32_t fin, void *data, size_t dlens) {
+void *websock_text(int32_t mask, int32_t fin, void *data, size_t dlens, size_t *size) {
     if (0 == mask) {
-        size_t flens;
-        void *frame = _websock_create_pack(fin, WBSK_TEXT, NULL, data, dlens, &flens);
-        ev_send(ev, fd, skid, frame, flens, 0);
+        return _websock_create_pack(fin, WBSK_TEXT, NULL, data, dlens, size);
     } else {
-        size_t flens;
-        void *frame = _websock_create_pack(fin, WBSK_TEXT, _mask_key, data, dlens, &flens);
-        ev_send(ev, fd, skid, frame, flens, 0);
+        return _websock_create_pack(fin, WBSK_TEXT, _mask_key, data, dlens, size);
     }
 }
-void websock_binary(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t mask,
-    int32_t fin, void *data, size_t dlens) {
+void *websock_binary(int32_t mask, int32_t fin, void *data, size_t dlens, size_t *size) {
     if (0 == mask) {
-        size_t flens;
-        void *frame = _websock_create_pack(fin, WBSK_BINARY, NULL, data, dlens, &flens);
-        ev_send(ev, fd, skid, frame, flens, 0);
+        return _websock_create_pack(fin, WBSK_BINARY, NULL, data, dlens, size);
     } else {
-        size_t flens;
-        void *frame = _websock_create_pack(fin, WBSK_BINARY, _mask_key, data, dlens, &flens);
-        ev_send(ev, fd, skid, frame, flens, 0);
+        return _websock_create_pack(fin, WBSK_BINARY, _mask_key, data, dlens, size);
     }
 }
-void websock_continuation(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t mask,
-    int32_t fin, void *data, size_t dlens) {
+void *websock_continuation(int32_t mask, int32_t fin, void *data, size_t dlens, size_t *size) {
     if (0 == mask) {
-        size_t flens;
-        void *frame = _websock_create_pack(fin, WBSK_CONTINUE, NULL, data, dlens, &flens);
-        ev_send(ev, fd, skid, frame, flens, 0);
+        return _websock_create_pack(fin, WBSK_CONTINUE, NULL, data, dlens, size);
     } else {
-        size_t flens;
-        void *frame = _websock_create_pack(fin, WBSK_CONTINUE, _mask_key, data, dlens, &flens);
-        ev_send(ev, fd, skid, frame, flens, 0);
+        return _websock_create_pack(fin, WBSK_CONTINUE, _mask_key, data, dlens, size);
     }
 }
 int32_t websock_pack_fin(websock_pack_ctx *pack) {

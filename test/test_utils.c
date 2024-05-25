@@ -784,9 +784,10 @@ void test_hash_ring(CuTest* tc) {
 }
 void test_redis_pack(CuTest* tc) {
     size_t size;
+    size_t blens = strlen("binary");
     char *cmd;// = redis_pack(&size, "%        lld %d", 123);
     cmd = redis_pack(&size, "  Test %d   %.2f %hhd  %hd %lld  %ld %s %b  %%  end  ",
-        1, 2.015, 3, 4, (long long)5, (long)6, "text", "binary", strlen("binary"));
+        1, 2.015, 3, 4, (long long)5, (long)6, "text", "binary", blens);
     CuAssertTrue(tc, 0 == strcmp("*11\r\n$4\r\nTest\r\n$1\r\n1\r\n$4\r\n2.02\r\n$1\r\n3\r\n$1\r\n4\r\n$1\r\n5\r\n$1\r\n6\r\n$4\r\ntext\r\n$6\r\nbinary\r\n$1\r\n%\r\n$3\r\nend\r\n", cmd));
     FREE(cmd);
     cmd = redis_pack(&size, "  ", 65, &cmd, 123);
@@ -801,22 +802,22 @@ void test_redis_pack(CuTest* tc) {
     cmd = redis_pack(&size, " SET  KEY1  TEST1  ");
     CuAssertTrue(tc, 0 == strcmp("*3\r\n$3\r\nSET\r\n$4\r\nKEY1\r\n$5\r\nTEST1\r\n", cmd));
     FREE(cmd);
-    cmd = redis_pack(&size, "%s%b%d%.2f end", "text", "binary", strlen("binary"), 123, 2.015);
+    cmd = redis_pack(&size, "%s%b%d%.2f end", "text", "binary", blens, 123, 2.015);
     CuAssertTrue(tc, 0 == strcmp("*2\r\n$17\r\ntextbinary1232.02\r\n$3\r\nend\r\n", cmd));
     FREE(cmd);
-    cmd = redis_pack(&size, " %s%b%d%.2f end", "text", "binary", strlen("binary"), 123, 2.015);
+    cmd = redis_pack(&size, " %s%b%d%.2f end", "text", "binary", blens, 123, 2.015);
     CuAssertTrue(tc, 0 == strcmp("*2\r\n$17\r\ntextbinary1232.02\r\n$3\r\nend\r\n", cmd));
     FREE(cmd);
-    cmd = redis_pack(&size, "%s%b%d%.2f", "text", "binary", strlen("binary"), 123, 2.015);
+    cmd = redis_pack(&size, "%s%b%d%.2f", "text", "binary", blens, 123, 2.015);
     CuAssertTrue(tc, 0 == strcmp("*1\r\n$17\r\ntextbinary1232.02\r\n", cmd));
     FREE(cmd);
-    cmd = redis_pack(&size, "%s%b%d%.2f ", "text", "binary", strlen("binary"), 123, 2.015);
+    cmd = redis_pack(&size, "%s%b%d%.2f ", "text", "binary", blens, 123, 2.015);
     CuAssertTrue(tc, 0 == strcmp("*1\r\n$17\r\ntextbinary1232.02\r\n", cmd));
     FREE(cmd);
-    cmd = redis_pack(&size, "Set %s%b%d%.2f %lld%% ", "text", "binary", strlen("binary"), 123, 2.015, (long long)456);
+    cmd = redis_pack(&size, "Set %s%b%d%.2f %lld%% ", "text", "binary", blens, 123, 2.015, (long long)456);
     CuAssertTrue(tc, 0 == strcmp("*3\r\n$3\r\nSet\r\n$17\r\ntextbinary1232.02\r\n$4\r\n456%\r\n", cmd));
     FREE(cmd);
-    cmd = redis_pack(&size, "Set %s%b%d%.2f %lld%%", "text", "binary", strlen("binary"), 123, 2.015, (long long)456);
+    cmd = redis_pack(&size, "Set %s%b%d%.2f %lld%%", "text", "binary", blens, 123, 2.015, (long long)456);
     CuAssertTrue(tc, 0 == strcmp("*3\r\n$3\r\nSet\r\n$17\r\ntextbinary1232.02\r\n$4\r\n456%\r\n", cmd));
     FREE(cmd);
     cmd = redis_pack(&size, "%");

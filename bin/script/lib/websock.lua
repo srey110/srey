@@ -68,29 +68,29 @@ function wbsk.connect(ws, sslname, appendev)
     end
     return fd, skid
 end
-function wbsk.ping(fd, skid, client)
-    websock.ping(fd, skid, client)
+function wbsk.ping(client)
+    return websock.ping(client)
 end
-function wbsk.pong(fd, skid, client)
-    websock.pong(fd, skid, client)
+function wbsk.pong(client)
+    return websock.pong(client)
 end
-function wbsk.close(fd, skid, client)
-    websock.close(fd, skid,  client)
+function wbsk.close(client)
+    return websock.close(client)
 end
-function wbsk.text_fin(fd, skid, client, fin, data, size)
-    websock.text(fd, skid, client, fin, data, size)
+function wbsk.text_fin(client, fin, data, size)
+    return websock.text(client, fin, data, size)
 end
-function wbsk.text(fd, skid, client, data, size)
-    wbsk.text_fin(fd, skid, client, 1, data, size)
+function wbsk.text(client, data, size)
+    return wbsk.text_fin(client, 1, data, size)
 end
-function wbsk.binary_fin(fd, skid, client, fin, data, size)
-    websock.binary(fd, skid, client, fin, data, size)
+function wbsk.binary_fin(client, fin, data, size)
+    return websock.binary(client, fin, data, size)
 end
-function wbsk.binary(fd, skid, client, data, size)
-    wbsk.binary_fin(fd, skid, client, 1, data, size)
+function wbsk.binary(client, data, size)
+    return wbsk.binary_fin(client, 1, data, size)
 end
-function wbsk.continua(fd, skid, client, fin, data, size)
-    websock.continuation(fd, skid, client, fin, data, size)
+function wbsk.continua(client, fin, data, size)
+    return websock.continuation(client, fin, data, size)
 end
 local function _continua(fd, skid, proto, client, func, ...)
     local data, size = func(...)
@@ -98,16 +98,20 @@ local function _continua(fd, skid, proto, client, func, ...)
         return
     end
     if WEBSOCK_PROTO.TEXT == proto then
-        wbsk.text_fin(fd, skid, client, 0, data, size)
+        data, size = wbsk.text_fin(client, 0, data, size)
+        srey.send(fd, skid, data, size, 0)
     elseif WEBSOCK_PROTO.BINARY == proto then
-        wbsk.binary_fin(fd, skid, client, 0, data, size)
+        data, size = wbsk.binary_fin(client, 0, data, size)
+        srey.send(fd, skid, data, size, 0)
     end
     while true do
         data, size = func(...)
         if data then
-            wbsk.continua(fd, skid, client, 0, data, size)
+            data, size = wbsk.continua(client, 0, data, size)
+            srey.send(fd, skid, data, size, 0)
         else
-            wbsk.continua(fd, skid, client, 1, nil, 0)
+            data, size = wbsk.continua(client, 1, nil, 0)
+            srey.send(fd, skid, data, size, 0)
             break
         end
     end

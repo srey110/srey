@@ -142,77 +142,80 @@ static int32_t _lproto_websock_unpack(lua_State *lua) {
     return 1;
 }
 static int32_t _lproto_websock_ping(lua_State *lua) {
-    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
-    uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    int32_t mask = (int32_t)luaL_checkinteger(lua, 3);
-    websock_ping(&g_scheduler->netev, fd, skid, mask);
-    return 0;
+    int32_t mask = (int32_t)luaL_checkinteger(lua, 1);
+    size_t lens;
+    void *pack = websock_ping(mask, &lens);
+    lua_pushlightuserdata(lua, pack);
+    lua_pushinteger(lua, lens);
+    return 2;
 }
 static int32_t _lproto_websock_pong(lua_State *lua) {
-    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
-    uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    int32_t client = (int32_t)luaL_checkinteger(lua, 3);
-    websock_pong(&g_scheduler->netev, fd, skid, client);
-    return 0;
+    int32_t mask = (int32_t)luaL_checkinteger(lua, 1);
+    size_t lens;
+    void *pack = websock_pong(mask, &lens);
+    lua_pushlightuserdata(lua, pack);
+    lua_pushinteger(lua, lens);
+    return 2;
 }
 static int32_t _lproto_websock_close(lua_State *lua) {
-    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
-    uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    int32_t mask = (int32_t)luaL_checkinteger(lua, 3);
-    websock_close(&g_scheduler->netev, fd, skid, mask);
-    return 0;
+    int32_t mask = (int32_t)luaL_checkinteger(lua, 1);
+    size_t lens;
+    void *pack = websock_close(mask, &lens);
+    lua_pushlightuserdata(lua, pack);
+    lua_pushinteger(lua, lens);
+    return 2;
 }
 static int32_t _lproto_websock_text(lua_State *lua) {
     void *data;
     size_t dlens;
-    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
-    uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    int32_t mask = (int32_t)luaL_checkinteger(lua, 3);
-    int32_t fin = (int32_t)luaL_checkinteger(lua, 4);
-    if (LUA_TSTRING == lua_type(lua, 5)) {
-        data = (void *)luaL_checklstring(lua, 5, &dlens);
+    int32_t mask = (int32_t)luaL_checkinteger(lua, 1);
+    int32_t fin = (int32_t)luaL_checkinteger(lua, 2);
+    if (LUA_TSTRING == lua_type(lua, 3)) {
+        data = (void *)luaL_checklstring(lua, 3, &dlens);
     } else {
-        data = lua_touserdata(lua, 5);
-        dlens = (size_t)luaL_checkinteger(lua, 6);
+        data = lua_touserdata(lua, 3);
+        dlens = (size_t)luaL_checkinteger(lua, 4);
     }
-    websock_text(&g_scheduler->netev, fd, skid, mask, fin, data, dlens);
-    return 0;
+    void *pack = websock_text(mask, fin, data, dlens, &dlens);
+    lua_pushlightuserdata(lua, pack);
+    lua_pushinteger(lua, dlens);
+    return 2;
 }
 static int32_t _lproto_websock_binary(lua_State *lua) {
     void *data;
     size_t dlens;
-    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
-    uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    int32_t mask = (int32_t)luaL_checkinteger(lua, 3);
-    int32_t fin = (int32_t)luaL_checkinteger(lua, 4);
-    if (LUA_TSTRING == lua_type(lua, 5)) {
-        data = (void *)luaL_checklstring(lua, 5, &dlens);
+    int32_t mask = (int32_t)luaL_checkinteger(lua, 1);
+    int32_t fin = (int32_t)luaL_checkinteger(lua, 2);
+    if (LUA_TSTRING == lua_type(lua, 3)) {
+        data = (void *)luaL_checklstring(lua, 3, &dlens);
     } else {
-        data = lua_touserdata(lua, 5);
-        dlens = (size_t)luaL_checkinteger(lua, 6);
+        data = lua_touserdata(lua, 3);
+        dlens = (size_t)luaL_checkinteger(lua, 4);
     }
-    websock_binary(&g_scheduler->netev, fd, skid, mask, fin, data, dlens);
-    return 0;
+    void *pack = websock_binary(mask, fin, data, dlens, &dlens);
+    lua_pushlightuserdata(lua, pack);
+    lua_pushinteger(lua, dlens);
+    return 2;
 }
 static int32_t _lproto_websock_continuation(lua_State *lua) {
     void *data;
     size_t dlens;
-    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
-    uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    int32_t mask = (int32_t)luaL_checkinteger(lua, 3);
-    int32_t fin = (int32_t)luaL_checkinteger(lua, 4);
-    if (LUA_TSTRING == lua_type(lua, 5)) {
-        data = (void *)luaL_checklstring(lua, 5, &dlens);
+    int32_t mask = (int32_t)luaL_checkinteger(lua, 1);
+    int32_t fin = (int32_t)luaL_checkinteger(lua, 2);
+    if (LUA_TSTRING == lua_type(lua, 3)) {
+        data = (void *)luaL_checklstring(lua, 3, &dlens);
     } else {
-        data = lua_touserdata(lua, 5);
-        if (LUA_TNUMBER == lua_type(lua, 6)) {
-            dlens = (size_t)luaL_checkinteger(lua, 6);
+        data = lua_touserdata(lua, 3);
+        if (LUA_TNUMBER == lua_type(lua, 4)) {
+            dlens = (size_t)luaL_checkinteger(lua, 4);
         } else {
             dlens = 0;
         }
     }
-    websock_continuation(&g_scheduler->netev, fd, skid, mask, fin, data, dlens);
-    return 0;
+    void *pack = websock_continuation(mask, fin, data, dlens, &dlens);
+    lua_pushlightuserdata(lua, pack);
+    lua_pushinteger(lua, dlens);
+    return 2;
 }
 //srey.websock
 LUAMOD_API int luaopen_websock(lua_State *lua) {

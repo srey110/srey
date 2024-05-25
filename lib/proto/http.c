@@ -1,8 +1,8 @@
 #include "proto/http.h"
 #include "proto/protos.h"
 #include "algo/urlraw.h"
-#include "utils.h"
 #include "ds/sarray.h"
+#include "utils.h"
 
 typedef enum parse_status{
     INIT = 0,

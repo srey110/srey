@@ -7,15 +7,20 @@ srey.startup(
             function (pktype, fd, skid, client, slice, data, size)
                 local pack = websock.unpack(data)
                 if WEBSOCK_PROTO.PING == pack.proto then
-                    websock.pong(fd, skid, client)
+                    data, size = websock.pong(client)
+                    srey.send(fd, skid, data, size, 0)
                 elseif WEBSOCK_PROTO.CLOSE == pack.proto then
-                    websock.close(fd, skid, client)
+                    data, size = websock.close(client)
+                    srey.send(fd, skid, data, size, 0)
                 elseif WEBSOCK_PROTO.TEXT == pack.proto then
-                    websock.text_fin(fd, skid, client, pack.fin, pack.data, pack.size)
+                    data, size = websock.text_fin(client, pack.fin, pack.data, pack.size)
+                    srey.send(fd, skid, data, size, 0)
                 elseif WEBSOCK_PROTO.BINARY == pack.proto then
-                    websock.binary_fin(fd, skid, client, pack.fin, pack.data, pack.size)
+                    data, size = websock.binary_fin(client, pack.fin, pack.data, pack.size)
+                    srey.send(fd, skid, data, size, 0)
                 elseif WEBSOCK_PROTO.CONTINUA == pack.proto then
-                    websock.continua(fd, skid, client, pack.fin, pack.data, pack.size)
+                    data, size =websock.continua(client, pack.fin, pack.data, pack.size)
+                    srey.send(fd, skid, data, size, 0)
                 end
             end
         )

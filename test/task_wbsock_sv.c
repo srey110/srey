@@ -5,29 +5,36 @@ static int32_t _prt = 1;
 static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, uint8_t client, uint8_t slice, void *data, size_t size) {
     struct websock_pack_ctx *pack = data;
     int32_t proto = websock_pack_proto(pack);
+    void *rpack;
+    size_t rlens;
     switch (proto) {
     case WBSK_PING:
-        websock_pong(&task->scheduler->netev, fd, skid, client);
+        rpack = websock_pong(client, &rlens);
+        ev_send(&task->scheduler->netev, fd, skid, rpack, rlens, 0);
         break;
     case WBSK_CLOSE:
-        websock_close(&task->scheduler->netev, fd, skid, client);
+        rpack = websock_close(client, &rlens);
+        ev_send(&task->scheduler->netev, fd, skid, rpack, rlens, 0);
         break;
     case WBSK_TEXT: {
         size_t lens;
         void *msg = websock_pack_data(pack, &lens);
-        websock_text(&task->scheduler->netev, fd, skid, client, websock_pack_fin(pack), msg, lens);
+        rpack = websock_text(client, websock_pack_fin(pack), msg, lens, &rlens);
+        ev_send(&task->scheduler->netev, fd, skid, rpack, rlens, 0);
         break;
     }
     case WBSK_BINARY: {
         size_t lens;
         void *msg = websock_pack_data(pack, &lens);
-        websock_binary(&task->scheduler->netev, fd, skid, client, websock_pack_fin(pack), msg, lens);
+        rpack = websock_binary(client, websock_pack_fin(pack), msg, lens, &rlens);
+        ev_send(&task->scheduler->netev, fd, skid, rpack, rlens, 0);
         break;
     }
     case WBSK_CONTINUE: {
         size_t lens;
         void *msg = websock_pack_data(pack, &lens);
-        websock_continuation(&task->scheduler->netev, fd, skid, client, websock_pack_fin(pack), msg, lens);
+        rpack = websock_continuation(client, websock_pack_fin(pack), msg, lens, &rlens);
+        ev_send(&task->scheduler->netev, fd, skid, rpack, rlens, 0);
         break;
     }
     default:
