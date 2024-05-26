@@ -37,5 +37,11 @@ static inline struct sock_ctx *pool_pop(skpool_ctx *pool, SOCKET fd, struct cbs_
     }
     return _new_sk(fd, cbs, ud);
 };
+static inline void pool_shrink(skpool_ctx *pool, size_t keep) {
+    size_t plsize = qu_ptr_size(&pool->pool);
+    if (plsize > keep) {
+        _pool_nfree(pool, plsize - keep);
+    }
+};
 
 #endif//SOCK_POOL_H_

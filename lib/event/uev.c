@@ -1,6 +1,7 @@
 #include "event/uev.h"
 #include "ds/hashmap.h"
 #include "netutils.h"
+#include "timer.h"
 #include "utils.h"
 
 #ifndef EV_IOCP
@@ -328,6 +329,13 @@ static int32_t _parse_event(events_t *ev, SOCKET *fd, void **arg) {
 #endif
     return rtn;
 }
+static void _pool_shrink(watcher_ctx *watcher, timer_ctx *timer) {
+    if (timer_elapsed_ms(timer) < SHRINK_TIME) {
+        return;
+    }
+    timer_start(timer);
+    pool_shrink(&watcher->pool, hashmap_count(watcher->element) / 2);
+}
 static void _loop_event(void *arg) {
     watcher_ctx *watcher = (watcher_ctx *)arg;
 #if defined(EV_EPOLL) || defined(EV_POLLSET) || defined(EV_DEVPOLL)
@@ -348,6 +356,9 @@ static void _loop_event(void *arg) {
     SOCKET fd = INVALID_SOCK;
     sock_ctx *skctx;
     int32_t i, cnt, ev;
+    timer_ctx tmshrink;
+    timer_init(&tmshrink);
+    timer_start(&tmshrink);
     while (0 == watcher->stop) {
 #if defined(EV_EPOLL)
         cnt = epoll_wait(watcher->evfd, watcher->events, watcher->nevents, timeout);
@@ -393,6 +404,7 @@ static void _loop_event(void *arg) {
             dvp.dp_nfds = watcher->nevents;
 #endif
         }
+        _pool_shrink(watcher, &tmshrink);
     }
     LOG_INFO("net event thread %d exited.", watcher->index);
 }
