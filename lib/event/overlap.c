@@ -177,32 +177,37 @@ void _remove_fd(watcher_ctx *watcher, SOCKET fd) {
     sock_ctx *pkey = &key;
     hashmap_delete(watcher->element, &pkey);
 }
-static int32_t _call_acp_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp) {
+static inline int32_t _call_acp_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp) {
     if (NULL != oltcp->cbs.acp_cb) {
         return oltcp->cbs.acp_cb(ev, oltcp->ol_r.fd, oltcp->skid, &oltcp->ud);
     }
     return ERR_OK;
 }
-static int32_t _call_conn_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp, int32_t err) {
+static inline int32_t _call_conn_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp, int32_t err) {
     return oltcp->cbs.conn_cb(ev, oltcp->ol_r.fd, oltcp->skid, err, &oltcp->ud);
 }
-static void _call_recv_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp, size_t nread) {
+static inline void _call_auth_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp) {
+    if (NULL != oltcp->cbs.auth_cb) {
+        oltcp->cbs.auth_cb(ev, oltcp->ol_r.fd, oltcp->skid, BIT_CHECK(oltcp->status, STATUS_CLIENT), &oltcp->ud);
+    }
+}
+static inline void _call_recv_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp, size_t nread) {
     if (nread > 0) {
         oltcp->cbs.r_cb(ev, oltcp->ol_r.fd, oltcp->skid, BIT_CHECK(oltcp->status, STATUS_CLIENT), &oltcp->buf_r, nread, &oltcp->ud);
     }
 }
-static void _call_send_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp, size_t nsend) {
+static inline void _call_send_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp, size_t nsend) {
     if (NULL != oltcp->cbs.s_cb
         && nsend > 0) {
         oltcp->cbs.s_cb(ev, oltcp->ol_s.fd, oltcp->skid, BIT_CHECK(oltcp->status, STATUS_CLIENT), nsend, &oltcp->ud);
     }
 }
-static void _call_close_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp) {
+static inline void _call_close_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp) {
     if (NULL != oltcp->cbs.c_cb) {
         oltcp->cbs.c_cb(ev, oltcp->ol_r.fd, oltcp->skid, BIT_CHECK(oltcp->status, STATUS_CLIENT), &oltcp->ud);
     }
 }
-static void _call_recvfrom_cb(ev_ctx *ev, overlap_udp_ctx *oludp, size_t nread) {
+static inline void _call_recvfrom_cb(ev_ctx *ev, overlap_udp_ctx *oludp, size_t nread) {
     if (nread > 0) {
         oludp->cbs.rf_cb(ev, oludp->ol_r.fd, oludp->skid, oludp->wsabuf_r.buf, nread, &oludp->addr, &oludp->ud);
     }
@@ -264,6 +269,7 @@ static void _on_recv_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
             BIT_SET(oltcp->status, STATUS_ERROR);
             break;
         case 1://完成
+            _call_auth_cb(watcher->ev, oltcp);
             BIT_REMOVE(oltcp->status, STATUS_AUTHSSL);
             break;
         case ERR_OK://等待更多数据
@@ -395,14 +401,22 @@ static void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
         pool_push(&watcher->pool, &oltcp->ol_r);
         return;
     }
+    _add_fd(watcher, &oltcp->ol_r);
+    if (ERR_OK != _call_conn_cb(watcher->ev, oltcp, ERR_OK)) {
+        _remove_fd(watcher, oltcp->ol_r.fd);
+        pool_push(&watcher->pool, &oltcp->ol_r);
+        return;
+    }
 #if WITH_SSL
     if (NULL != oltcp->ssl) {
         switch (evssl_tryconn(oltcp->ssl)) {
         case ERR_FAILED://错误
-            _call_conn_cb(watcher->ev, oltcp, ERR_FAILED);
+            _call_close_cb(watcher->ev, oltcp);
+            _remove_fd(watcher, oltcp->ol_r.fd);
             pool_push(&watcher->pool, &oltcp->ol_r);
             return;
         case 1://完成
+            _call_auth_cb(watcher->ev, oltcp);
             break;
         case ERR_OK://等待更多数据
             BIT_SET(oltcp->status, STATUS_AUTHSSL);
@@ -410,12 +424,6 @@ static void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
         }
     }
 #endif
-    _add_fd(watcher, &oltcp->ol_r);
-    if (ERR_OK != _call_conn_cb(watcher->ev, oltcp, ERR_OK)) {
-        _remove_fd(watcher, oltcp->ol_r.fd);
-        pool_push(&watcher->pool, &oltcp->ol_r);
-        return;
-    }
     if (ERR_OK != _post_recv(&oltcp->ol_r, &oltcp->bytes_r, &oltcp->flag, &oltcp->wsabuf, 1)) {
         _call_close_cb(watcher->ev, oltcp);
         _remove_fd(watcher, oltcp->ol_r.fd);

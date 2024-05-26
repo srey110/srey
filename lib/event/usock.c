@@ -157,32 +157,37 @@ static void *_remove_fd(watcher_ctx *watcher, SOCKET fd) {
     sock_ctx *pkey = &key;
     return (void *)hashmap_delete(watcher->element, &pkey);
 }
-static int32_t _call_acp_cb(ev_ctx *ev, tcp_ctx *tcp) {
+static inline int32_t _call_acp_cb(ev_ctx *ev, tcp_ctx *tcp) {
     if (NULL != tcp->cbs.acp_cb) {
         return tcp->cbs.acp_cb(ev, tcp->sock.fd, tcp->skid, &tcp->ud);
     }
     return ERR_OK;
 }
-static int32_t _call_conn_cb(ev_ctx *ev, tcp_ctx *tcp, int32_t err) {
+static inline int32_t _call_conn_cb(ev_ctx *ev, tcp_ctx *tcp, int32_t err) {
     return tcp->cbs.conn_cb(ev, tcp->sock.fd, tcp->skid, err, &tcp->ud);
 }
-static void _call_recv_cb(ev_ctx *ev, tcp_ctx *tcp, size_t nread) {
+static inline void _call_auth_cb(ev_ctx *ev, tcp_ctx *tcp) {
+    if (NULL != tcp->cbs.auth_cb) {
+        tcp->cbs.auth_cb(ev, tcp->sock.fd, tcp->skid, BIT_CHECK(tcp->status, STATUS_CLIENT), &tcp->ud);
+    }
+}
+static inline void _call_recv_cb(ev_ctx *ev, tcp_ctx *tcp, size_t nread) {
     if (nread > 0) {
         tcp->cbs.r_cb(ev, tcp->sock.fd, tcp->skid, BIT_CHECK(tcp->status, STATUS_CLIENT), &tcp->buf_r, nread, &tcp->ud);
     }
 }
-static void _call_send_cb(ev_ctx *ev, tcp_ctx *tcp, size_t nsend) {
+static inline void _call_send_cb(ev_ctx *ev, tcp_ctx *tcp, size_t nsend) {
     if (NULL != tcp->cbs.s_cb
         && nsend > 0) {
         tcp->cbs.s_cb(ev, tcp->sock.fd, tcp->skid, BIT_CHECK(tcp->status, STATUS_CLIENT), nsend, &tcp->ud);
     }
 }
-static void _call_close_cb(ev_ctx *ev, tcp_ctx *tcp) {
+static inline void _call_close_cb(ev_ctx *ev, tcp_ctx *tcp) {
     if (NULL != tcp->cbs.c_cb) {
         tcp->cbs.c_cb(ev, tcp->sock.fd, tcp->skid, BIT_CHECK(tcp->status, STATUS_CLIENT), &tcp->ud);
     }
 }
-static void _call_recvfrom_cb(ev_ctx *ev, udp_ctx *udp, size_t nread) {
+static inline void _call_recvfrom_cb(ev_ctx *ev, udp_ctx *udp, size_t nread) {
     if (nread > 0) {
         udp->cbs.rf_cb(ev, udp->sock.fd, udp->skid, udp->buf_r.IOV_PTR_FIELD, nread, &udp->addr, &udp->ud);
     }
@@ -250,6 +255,7 @@ static void _on_rw_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
             BIT_SET(tcp->status, STATUS_ERROR);
             break;
         case 1://完成
+            _call_auth_cb(watcher->ev, tcp);
             BIT_REMOVE(tcp->status, STATUS_AUTHSSL);
 #ifdef READV_EINVAL
             return;
@@ -309,15 +315,21 @@ static void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
         pool_push(&watcher->pool, &tcp->sock);
         return;
     }
+    if (ERR_OK != _call_conn_cb(watcher->ev, tcp, ERR_OK)) {
+        _remove_fd(watcher, tcp->sock.fd);
+        pool_push(&watcher->pool, &tcp->sock);
+        return;
+    }
 #if WITH_SSL
     if (NULL != tcp->ssl) {
         switch (evssl_tryconn(tcp->ssl)) {
         case ERR_FAILED://错误
-            _call_conn_cb(watcher->ev, tcp, ERR_FAILED);
+            _call_close_cb(watcher->ev, tcp);
             _remove_fd(watcher, tcp->sock.fd);
             pool_push(&watcher->pool, &tcp->sock);
             return;
         case 1://完成
+            _call_auth_cb(watcher->ev, tcp);
             break;
         case ERR_OK://等待更多数据
             BIT_SET(tcp->status, STATUS_AUTHSSL);
@@ -325,11 +337,6 @@ static void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
         }
     }
 #endif
-    if (ERR_OK != _call_conn_cb(watcher->ev, tcp, ERR_OK)) {
-        _remove_fd(watcher, tcp->sock.fd);
-        pool_push(&watcher->pool, &tcp->sock);
-        return;
-    }
     if (ERR_OK != _add_event(watcher, tcp->sock.fd, &tcp->sock.events, EVENT_READ, &tcp->sock)) {
         _call_close_cb(watcher->ev, tcp);
         _remove_fd(watcher, tcp->sock.fd);
