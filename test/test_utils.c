@@ -785,8 +785,7 @@ void test_hash_ring(CuTest* tc) {
 void test_redis_pack(CuTest* tc) {
     size_t size;
     size_t blens = strlen("binary");
-    char *cmd;// = redis_pack(&size, "%        lld %d", 123);
-    cmd = redis_pack(&size, "  Test %d   %.2f %hhd  %hd %lld  %ld %s %b  %%  end  ",
+    char *cmd = redis_pack(&size, "  Test %d   %.2f %hhd  %hd %lld  %ld %s %b  %%  end  ",
         1, 2.015, 3, 4, (long long)5, (long)6, "text", "binary", blens);
     CuAssertTrue(tc, 0 == strcmp("*11\r\n$4\r\nTest\r\n$1\r\n1\r\n$4\r\n2.02\r\n$1\r\n3\r\n$1\r\n4\r\n$1\r\n5\r\n$1\r\n6\r\n$4\r\ntext\r\n$6\r\nbinary\r\n$1\r\n%\r\n$3\r\nend\r\n", cmd));
     FREE(cmd);

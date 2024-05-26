@@ -53,6 +53,7 @@
     <ClInclude Include="proto\custz.h" />
     <ClInclude Include="proto\dns.h" />
     <ClInclude Include="proto\http.h" />
+    <ClInclude Include="proto\mysql.h" />
     <ClInclude Include="proto\protos.h" />
     <ClInclude Include="proto\redis.h" />
     <ClInclude Include="proto\urlparse.h" />
@@ -103,6 +104,7 @@
     <ClCompile Include="proto\custz.c" />
     <ClCompile Include="proto\dns.c" />
     <ClCompile Include="proto\http.c" />
+    <ClCompile Include="proto\mysql.c" />
     <ClCompile Include="proto\protos.c" />
     <ClCompile Include="proto\redis.c" />
     <ClCompile Include="proto\urlparse.c" />

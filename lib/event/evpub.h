@@ -14,7 +14,7 @@ typedef enum sock_status {
     STATUS_SENDING = 0x01,
     STATUS_ERROR = 0x02,
     STATUS_REMOVE = 0x04,
-    STATUS_SERVER = 0x08,
+    STATUS_CLIENT = 0x08,
     STATUS_HANDSHAAKE = 0x10,
 }sock_status;
 typedef struct ev_ctx {
@@ -32,17 +32,17 @@ struct evssl_ctx;
 //回调函数 accept_cb connect_cb 返回失败则不加进事件循环
 typedef int32_t(*accept_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud);
 typedef int32_t(*connect_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t err, ud_cxt *ud);
-typedef void(*recv_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, size_t size, ud_cxt *ud);
+typedef void(*recv_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, buffer_ctx *buf, size_t size, ud_cxt *ud);
+typedef void(*send_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, size_t size, ud_cxt *ud);
+typedef void(*close_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud);
 typedef void(*recvfrom_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud);
-typedef void(*send_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid, size_t size, ud_cxt *ud);
-typedef void(*close_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud);
 typedef struct cbs_ctx {
     accept_cb acp_cb;
     connect_cb conn_cb;
     recv_cb r_cb;
-    recvfrom_cb rf_cb;
-    close_cb c_cb;
     send_cb s_cb;
+    close_cb c_cb;
+    recvfrom_cb rf_cb;
     free_cb ud_free;
 }cbs_ctx;
 

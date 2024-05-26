@@ -49,7 +49,8 @@ PACK_TYPE = {
     HTTP    = 0x01,
     WEBSOCK = 0x02,
     REDIS   = 0x03,
-    CUSTZ   = 0x04
+    MYSQL   = 0x04,
+    CUSTZ   = 0x05
 }
 
 ERR_OK = 0

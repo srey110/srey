@@ -3,6 +3,7 @@
 #include "proto/http.h"
 #include "proto/websock.h"
 #include "proto/redis.h"
+#include "proto/mysql.h"
 
 void protos_pkfree(pack_type type, void *data) {
     if (NULL == data) {
@@ -14,6 +15,9 @@ void protos_pkfree(pack_type type, void *data) {
         break;
     case PACK_REDIS:
         redis_pkfree(data);
+        break;
+    case PACK_MYSQL:
+        mysql_pkfree(data);
         break;
     default:
         FREE(data);
@@ -28,6 +32,9 @@ void protos_udfree(void *arg) {
         break;
     case PACK_REDIS:
         redis_udfree(ud);
+        break;
+    case PACK_MYSQL:
+        mysql_udfree(ud);
         break;
     default:
         FREE(ud->extra);
@@ -47,8 +54,9 @@ static void *_unpack_default(buffer_ctx *buf, size_t *size, ud_cxt *ud) {
 }
 void protos_init(_handshaked_push hspush) {
     _websock_init(hspush);
+    _mysql_init(hspush);
 }
-void *protos_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid,
+void *protos_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
     buffer_ctx *buf, size_t *size, ud_cxt *ud, int32_t *closefd, int32_t *slice) {
     void *unpack;
     *size = 0;
@@ -61,10 +69,13 @@ void *protos_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid,
         unpack = http_unpack(buf, ud, closefd, slice);
         break;
     case PACK_WEBSOCK:
-        unpack = websock_unpack(ev, fd, skid, buf, ud, closefd, slice);
+        unpack = websock_unpack(ev, fd, skid, client, buf, ud, closefd, slice);
         break;
     case PACK_REDIS:
         unpack = redis_unpack(buf, ud, closefd);
+        break;
+    case PACK_MYSQL:
+        unpack = mysql_unpack(ev, fd, skid, buf, ud, closefd, slice);
         break;
     default:
         unpack = _unpack_default(buf, size, ud);

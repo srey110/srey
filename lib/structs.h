@@ -10,7 +10,6 @@ typedef uint32_t name_t;
 typedef struct ud_cxt {
     uint8_t pktype;//数据包类型
     uint8_t status;//解包状态
-    uint8_t client;//1 客户端
     name_t name;//任务名
     void *data;//scheduler_ctx
     void *extra;//数据包

@@ -14,6 +14,7 @@
 #include "task_coro_comm1.h"
 #include "task_coro_net.h"
 #include "task_coro_utils.h"
+#include "task_mysql.h"
 
 #ifdef OS_WIN
 #include "vld.h"
@@ -86,7 +87,8 @@ int main(int argc, char *argv[]) {
     task_coro_comm1_start(g_scheduler, 20001, 0);
     task_coro_net_start(g_scheduler, 20002, 0);
     task_coro_utils_start(g_scheduler, 20003, 0);
-    task_redis_start(g_scheduler, 20004, 1);
+    task_redis_start(g_scheduler, 20004, 0);
+    //task_mysql_start(g_scheduler, 20005, 1);
 #endif
     mutex_lock(&muexit);
     cond_wait(&condexit, &muexit);

@@ -342,7 +342,7 @@ int32_t coro_handshake(task_ctx *task, SOCKET fd, uint64_t skid) {
 }
 SOCKET coro_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl, 
     const char *ip, uint16_t port, uint64_t *skid, int32_t appendev) {
-    SOCKET fd = trigger_connect(task, pktype, evssl, ip, port, skid, 1, appendev);
+    SOCKET fd = trigger_connect(task, pktype, evssl, ip, port, NULL, skid, 1, appendev);
     if (INVALID_SOCK == fd) {
         LOG_WARN("task: %d, connect %s:%d error.", task->name, ip, port);
         return INVALID_SOCK;

@@ -10,10 +10,10 @@ static void _net_accept(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype
     }
 }
 static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, uint8_t client, uint8_t slice, void *data, size_t size) {
-    if (randrange(0, 100) <= 1) {
+    /*if (randrange(0, 100) <= 1) {
         ev_close(&task->scheduler->netev, fd, skid);
         return;
-    }
+    }*/
     size_t lens;
     char *sbuf = custz_data(data, &lens);
     void *outbuf = custz_pack(sbuf, lens, &lens);

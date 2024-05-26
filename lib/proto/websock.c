@@ -96,11 +96,11 @@ static void _websock_sign(char *key, size_t klens, char b64[B64EN_BLOCK_SIZE(SHA
     FREE(signstr);
     b64_encode((char *)sha1str, sizeof(sha1str), b64);
 }
-static void _websock_handshake_server(ev_ctx *ev, SOCKET fd, uint64_t skid, struct http_pack_ctx *hpack, ud_cxt *ud, int32_t *closefd) {
+static void _websock_handshake_server(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, struct http_pack_ctx *hpack, ud_cxt *ud, int32_t *closefd) {
     http_header_ctx *signstr = _websock_handshake_svcheck(hpack);
     if (NULL == signstr) {
         *closefd = 1;
-        _hs_push(fd, skid, ud, closefd, ERR_FAILED);
+        _hs_push(fd, skid, client, ud, closefd, ERR_FAILED);
         return;
     }
     char b64[B64EN_BLOCK_SIZE(SHA1_BLOCK_SIZE)];
@@ -109,7 +109,7 @@ static void _websock_handshake_server(ev_ctx *ev, SOCKET fd, uint64_t skid, stru
     char *rsp = formatv(fmt, b64);
     ud->status = START;
     ev_send(ev, fd, skid, rsp, strlen(rsp), 0);
-    _hs_push(fd, skid, ud, closefd, ERR_OK);
+    _hs_push(fd, skid, client, ud, closefd, ERR_OK);
 }
 static int32_t _websock_handshake_clientckstatus(struct http_pack_ctx *hpack) {
     buf_ctx *status = http_status(hpack);
@@ -163,22 +163,22 @@ static http_header_ctx *websock_client_checkhs(struct http_pack_ctx *hpack) {
     }
     return sign;
 }
-static void _websock_handshake_client(struct http_pack_ctx *hpack, SOCKET fd, uint64_t skid, ud_cxt *ud, int32_t *closefd) {
+static void _websock_handshake_client(struct http_pack_ctx *hpack, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud, int32_t *closefd) {
     http_header_ctx *signstr = websock_client_checkhs(hpack);
     if (NULL == signstr) {
         *closefd = 1;
-        _hs_push(fd, skid, ud, closefd, ERR_FAILED);
+        _hs_push(fd, skid, client, ud, closefd, ERR_FAILED);
         return;
     }
     if (!buf_compare(&signstr->value, _hs_sign, strlen(_hs_sign))){
         *closefd = 1;
-        _hs_push(fd, skid, ud, closefd, ERR_FAILED);
+        _hs_push(fd, skid, client, ud, closefd, ERR_FAILED);
         return;
     }
     ud->status = START;
-    _hs_push(fd, skid, ud, closefd, ERR_OK);
+    _hs_push(fd, skid, client, ud, closefd, ERR_OK);
 }
-static void _websock_handshake(ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt *ud, int32_t *closefd) {
+static void _websock_handshake(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, buffer_ctx *buf, ud_cxt *ud, int32_t *closefd) {
     int32_t status;
     struct http_pack_ctx *hpack = _http_parsehead(buf, &status, closefd);
     if (NULL == hpack) {
@@ -186,14 +186,14 @@ static void _websock_handshake(ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx 
     }
     if (0 != status) {
         *closefd = 1;
-        _hs_push(fd, skid, ud, closefd, ERR_FAILED);
+        _hs_push(fd, skid, client, ud, closefd, ERR_FAILED);
         http_pkfree(hpack);
         return;
     }
-    if (ud->client) {
-        _websock_handshake_client(hpack, fd, skid, ud, closefd);
+    if (client) {
+        _websock_handshake_client(hpack, fd, skid, client, ud, closefd);
     } else {
-        _websock_handshake_server(ev, fd, skid, hpack, ud, closefd);
+        _websock_handshake_server(ev, fd, skid, client, hpack, ud, closefd);
     }
     http_pkfree(hpack);
 }
@@ -291,7 +291,7 @@ static websock_pack_ctx *_websock_parse_pllens(buffer_ctx *buf, size_t blens,
     }
     return pack;
 }
-static websock_pack_ctx *_websock_parse_head(buffer_ctx *buf, ud_cxt *ud, int32_t *closefd, int32_t *slice) {
+static websock_pack_ctx *_websock_parse_head(buffer_ctx *buf, int32_t client, ud_cxt *ud, int32_t *closefd, int32_t *slice) {
     size_t blens = buffer_size(buf);
     if (blens < HEAD_LESN) {
         return NULL;
@@ -307,7 +307,7 @@ static websock_pack_ctx *_websock_parse_head(buffer_ctx *buf, ud_cxt *ud, int32_
     uint8_t fin = (head[0] & 0x80) >> 7;
     uint8_t proto = head[0] & 0xf;
     uint8_t mask = (head[1] & 0x80) >> 7;
-    if (0 == ud->client
+    if (!client
         && 0 == mask) {
         *closefd = 1;
         return NULL;
@@ -324,15 +324,15 @@ static websock_pack_ctx *_websock_parse_head(buffer_ctx *buf, ud_cxt *ud, int32_
     ud->status = DATA;
     return _websock_parse_data(buf, ud, closefd, slice);
 }
-websock_pack_ctx *websock_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid,
+websock_pack_ctx *websock_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, int32_t *closefd, int32_t *slice) {
     websock_pack_ctx *pack = NULL;
     switch (ud->status) {
     case INIT:
-        _websock_handshake(ev, fd, skid, buf, ud, closefd);
+        _websock_handshake(ev, fd, skid, client, buf, ud, closefd);
         break;
     case START:
-        pack = _websock_parse_head(buf, ud, closefd, slice);
+        pack = _websock_parse_head(buf, client, ud, closefd, slice);
         break;
     case DATA:
         pack = _websock_parse_data(buf, ud, closefd, slice);

@@ -148,7 +148,7 @@ struct task_dispatch_arg {
 
 void _message_dispatch(task_dispatch_arg *arg);
 void _message_run(task_ctx *task, message_ctx *msg);
-void _message_handshaked_push(SOCKET fd, uint64_t skid, ud_cxt *ud, int32_t *closefd, int32_t erro);
+void _message_handshaked_push(SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud, int32_t *closefd, int32_t erro);
 void _task_message_push(task_ctx *task, message_ctx *msg);
 int32_t _message_should_clean(message_ctx *msg);
 void _message_clean(msg_type mtype, pack_type pktype, void *data);

@@ -202,6 +202,9 @@
     <ClInclude Include="proto\redis.h">
       <Filter>proto</Filter>
     </ClInclude>
+    <ClInclude Include="proto\mysql.h">
+      <Filter>proto</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="memory.c">
@@ -325,6 +328,9 @@
       <Filter>proto</Filter>
     </ClCompile>
     <ClCompile Include="proto\redis.c">
+      <Filter>proto</Filter>
+    </ClCompile>
+    <ClCompile Include="proto\mysql.c">
       <Filter>proto</Filter>
     </ClCompile>
   </ItemGroup>

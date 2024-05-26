@@ -100,7 +100,7 @@ static int32_t _lcore_connect(lua_State *lua) {
     int32_t appendev = lua_isinteger(lua, 5) ? (int32_t)luaL_checkinteger(lua, 5) : APPEND_CLOSE;
     uint64_t skid;
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    SOCKET fd = trigger_connect(task, pktype, evssl, ip, port, &skid, 1, appendev);
+    SOCKET fd = trigger_connect(task, pktype, evssl, ip, port, NULL, &skid, 1, appendev);
     if (INVALID_SOCK == fd) {
         lua_pushinteger(lua, INVALID_SOCK);
         return 1;

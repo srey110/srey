@@ -1,7 +1,6 @@
 #include "event/iocp.h"
 #include "ds/hashmap.h"
 #include "netutils.h"
-#include "timer.h"
 
 #ifdef EV_IOCP
 
@@ -78,13 +77,6 @@ static void _on_cmd(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
         ASSERTAB(ERR_OK == _post_recv(&olcmd->ol_r, &olcmd->bytes, &olcmd->flag, &olcmd->wsabuf, 1), ERRORSTR(ERRNO));
     }
 }
-static void _pool_shrink(watcher_ctx *watcher, timer_ctx *timer) {
-    if (timer_elapsed_ms(timer) < SHRINK_TIME) {
-        return;
-    }
-    timer_start(timer);
-    pool_shrink(&watcher->pool, hashmap_count(watcher->element) / 2);
-}
 #if (_WIN32_WINNT >= 0x0600)
 static void _loop_event(void *arg) {
     watcher_ctx *watcher = (watcher_ctx *)arg;
@@ -93,12 +85,9 @@ static void _loop_event(void *arg) {
     ULONG count;
     ULONG nevent = INIT_EVENTS_CNT;
     sock_ctx *sock;
-    timer_ctx timer;
     LPOVERLAPPED overlap;
     LPOVERLAPPED_ENTRY overlappeds;
     MALLOC(overlappeds, sizeof(OVERLAPPED_ENTRY) * nevent);
-    timer_init(&timer);
-    timer_start(&timer);
     while (0 == watcher->stop) {
         if (GetQueuedCompletionStatusEx(watcher->iocp,
                                         overlappeds,
@@ -123,7 +112,6 @@ static void _loop_event(void *arg) {
         } else if (WAIT_TIMEOUT != (err = ERRNO)) {
             LOG_ERROR("%s", ERRORSTR(err));
         }
-        _pool_shrink(watcher, &timer);
     }
     LOG_INFO("net event thread %d exited.", watcher->index);
     FREE(overlappeds);
@@ -173,10 +161,7 @@ static void _loop_event(void *arg) {
     int32_t err;
     ULONG_PTR key;
     sock_ctx *sock;
-    timer_ctx timer;
     OVERLAPPED *overlap;
-    timer_init(&timer);
-    timer_start(&timer);
     while (0 == watcher->stop) {
         GetQueuedCompletionStatus(watcher->iocp,
                                   &bytes,
@@ -189,7 +174,6 @@ static void _loop_event(void *arg) {
         } else if (WAIT_TIMEOUT != (err = ERRNO)) {
             LOG_ERROR("%s", ERRORSTR(err));
         }
-        _pool_shrink(watcher, &timer);
     }
     LOG_INFO("net event thread %d exited.", watcher->index);
 }

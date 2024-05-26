@@ -168,18 +168,18 @@ static int32_t _call_conn_cb(ev_ctx *ev, tcp_ctx *tcp, int32_t err) {
 }
 static void _call_recv_cb(ev_ctx *ev, tcp_ctx *tcp, size_t nread) {
     if (nread > 0) {
-        tcp->cbs.r_cb(ev, tcp->sock.fd, tcp->skid, &tcp->buf_r, nread, &tcp->ud);
+        tcp->cbs.r_cb(ev, tcp->sock.fd, tcp->skid, BIT_CHECK(tcp->status, STATUS_CLIENT), &tcp->buf_r, nread, &tcp->ud);
     }
 }
 static void _call_send_cb(ev_ctx *ev, tcp_ctx *tcp, size_t nsend) {
     if (NULL != tcp->cbs.s_cb
         && nsend > 0) {
-        tcp->cbs.s_cb(ev, tcp->sock.fd, tcp->skid, nsend, &tcp->ud);
+        tcp->cbs.s_cb(ev, tcp->sock.fd, tcp->skid, BIT_CHECK(tcp->status, STATUS_CLIENT), nsend, &tcp->ud);
     }
 }
 static void _call_close_cb(ev_ctx *ev, tcp_ctx *tcp) {
     if (NULL != tcp->cbs.c_cb) {
-        tcp->cbs.c_cb(ev, tcp->sock.fd, tcp->skid, &tcp->ud);
+        tcp->cbs.c_cb(ev, tcp->sock.fd, tcp->skid, BIT_CHECK(tcp->status, STATUS_CLIENT), &tcp->ud);
     }
 }
 static void _call_recvfrom_cb(ev_ctx *ev, udp_ctx *udp, size_t nread) {
@@ -258,10 +258,10 @@ static int32_t _ssl_handshake_conn(watcher_ctx *watcher, tcp_ctx *tcp) {
     return rtn;
 }
 static int32_t _ssl_handshake(watcher_ctx *watcher, tcp_ctx *tcp) {
-    if (BIT_CHECK(tcp->status, STATUS_SERVER)) {
-        return _ssl_handshake_acpt(watcher, tcp);
+    if (BIT_CHECK(tcp->status, STATUS_CLIENT)) {
+        return _ssl_handshake_conn(watcher, tcp);
     }
-    return _ssl_handshake_conn(watcher, tcp);
+    return _ssl_handshake_acpt(watcher, tcp);
 }
 #endif
 static int32_t _tcp_recv(watcher_ctx *watcher, tcp_ctx *tcp) {
@@ -312,7 +312,7 @@ static void _on_rw_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
         if (handshake) {
             _call_close_cb(watcher->ev, tcp);
         } else {
-            if (!BIT_CHECK(tcp->status, STATUS_SERVER)) {
+            if (BIT_CHECK(tcp->status, STATUS_CLIENT)) {
                 _call_conn_cb(watcher->ev, tcp, ERR_FAILED);
             }
         }
@@ -436,6 +436,7 @@ SOCKET ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
     sock_ctx *skctx = _new_sk(fd, cbs, ud);
     skctx->ev_cb = _on_connect_cb;
     tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
+    BIT_SET(tcp->status, STATUS_CLIENT);
     *skid = tcp->skid;
     if (setsess) {
         tcp->ud.sess = tcp->skid;
@@ -507,7 +508,6 @@ void _add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) {
             return;
         }
         handshake = 0;
-        BIT_SET(tcp->status, STATUS_SERVER);
     }
 #endif
     _add_fd(watcher, skctx);
