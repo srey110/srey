@@ -3,10 +3,15 @@ local srey_redis = require("srey.redis")
 local table = table
 local redis = {}
 
-function redis.connect(ip, port, sslname, psw, appendev)
-    local fd, skid = srey.connect(PACK_TYPE.REDIS, sslname, ip, port, appendev)
+function redis.connect(ip, port, sslname, psw, netev)
+    local fd, skid = srey.connect(PACK_TYPE.REDIS, ip, port, netev)
     if INVALID_SOCK == fd then
         return INVALID_SOCK
+    end
+    if SSL_NAME.NONE ~= sslname then
+        if not srey.syn_auth_ssl(fd, skid, 1, sslname) then
+            return INVALID_SOCK
+        end
     end
     if str_nullorempty(psw) then
         return fd, skid

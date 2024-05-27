@@ -74,10 +74,10 @@ static int32_t _lcore_listen(lua_State *lua) {
     }
     const char *ip = luaL_checkstring(lua, 3);
     uint16_t port = (uint16_t)luaL_checkinteger(lua, 4);
-    int32_t appendev = lua_isinteger(lua, 5) ? (int32_t)luaL_checkinteger(lua, 5) : (APPEND_ACCEPT | APPEND_CLOSE);
+    int32_t netev = lua_isinteger(lua, 5) ? (int32_t)luaL_checkinteger(lua, 5) : NETEV_NONE;
     uint64_t id;
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    if (ERR_OK != trigger_listen(task, pktype, evssl, ip, port, &id, appendev)) {
+    if (ERR_OK != trigger_listen(task, pktype, evssl, ip, port, &id, netev)) {
         lua_pushinteger(lua, -1);
     } else {
         lua_pushinteger(lua, id);
@@ -91,16 +91,12 @@ static int32_t _lcore_unlisten(lua_State *lua) {
 }
 static int32_t _lcore_connect(lua_State *lua) {
     pack_type pktype = (pack_type)luaL_checkinteger(lua, 1);
-    struct evssl_ctx *evssl = NULL;
-    if (LUA_TNIL != lua_type(lua, 2)) {
-        evssl = lua_touserdata(lua, 2);
-    }
-    const char *ip = luaL_checkstring(lua, 3);
-    uint16_t port = (uint16_t)luaL_checkinteger(lua, 4);
-    int32_t appendev = lua_isinteger(lua, 5) ? (int32_t)luaL_checkinteger(lua, 5) : APPEND_CLOSE;
+    const char *ip = luaL_checkstring(lua, 2);
+    uint16_t port = (uint16_t)luaL_checkinteger(lua, 3);
+    int32_t netev = lua_isinteger(lua, 4) ? (int32_t)luaL_checkinteger(lua, 4) : NETEV_NONE;
     uint64_t skid;
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    SOCKET fd = trigger_connect(task, pktype, evssl, ip, port, NULL, &skid, 1, appendev);
+    SOCKET fd = trigger_connect(task, pktype, ip, port, &skid, netev);
     if (INVALID_SOCK == fd) {
         lua_pushinteger(lua, INVALID_SOCK);
         return 1;
@@ -108,6 +104,15 @@ static int32_t _lcore_connect(lua_State *lua) {
     lua_pushinteger(lua, fd);
     lua_pushinteger(lua, skid);
     return 2;
+}
+static int32_t _lcore_auth_ssl(lua_State *lua) {
+    SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
+    uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
+    int32_t client = (int32_t)luaL_checkinteger(lua, 3);
+    struct evssl_ctx *evssl = lua_touserdata(lua, 4);
+    task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
+    ev_ssl(&task->scheduler->netev, fd, skid, client, evssl);
+    return 0;
 }
 static int32_t _lcore_udp(lua_State *lua) {
     const char *ip = luaL_checkstring(lua, 1);
@@ -302,6 +307,7 @@ LUAMOD_API int luaopen_core(lua_State *lua) {
         { "listen", _lcore_listen },
         { "unlisten", _lcore_unlisten },
         { "connect", _lcore_connect },
+        { "auth_ssl", _lcore_auth_ssl },
         { "udp", _lcore_udp },
 
         { "send", _lcore_send },

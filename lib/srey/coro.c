@@ -140,6 +140,18 @@ static void _net_connect_dispatch(task_dispatch_arg *arg) {
     }
     coro_sess corosess;
     if (ERR_OK != _map_corosess_get(arg->task, arg->msg.skid, &corosess)) {
+        _mcoro_create(arg);
+    } else {
+        _mcoro_resume(arg, corosess.coro);
+    }
+}
+static void _net_authssl_dispatch(task_dispatch_arg *arg) {
+    if (0 == arg->msg.sess) {
+        _mcoro_create(arg);
+        return;
+    }
+    coro_sess corosess;
+    if (ERR_OK != _map_corosess_get(arg->task, arg->msg.skid, &corosess)) {
         LOG_WARN("task %d can't find skid %"PRIu64".", arg->task->name, arg->msg.skid);
         return;
     }
@@ -251,6 +263,9 @@ void _message_dispatch(task_dispatch_arg *arg) {
     case MSG_TYPE_CONNECT:
         _net_connect_dispatch(arg);
         break;
+    case MSG_TYPE_AUTHSSL:
+        _net_authssl_dispatch(arg);
+        break;
     case MSG_TYPE_HANDSHAKED:
         _net_handshaked_dispatch(arg);
         break;
@@ -340,9 +355,8 @@ int32_t coro_handshake(task_ctx *task, SOCKET fd, uint64_t skid) {
     }
     return msg.erro;
 }
-SOCKET coro_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl, 
-    const char *ip, uint16_t port, uint64_t *skid, int32_t appendev) {
-    SOCKET fd = trigger_connect(task, pktype, evssl, ip, port, NULL, skid, 1, appendev);
+SOCKET coro_connect(task_ctx *task, pack_type pktype, const char *ip, uint16_t port, uint64_t *skid, int32_t netev) {
+    SOCKET fd = trigger_connect(task, pktype, ip, port, skid, netev);
     if (INVALID_SOCK == fd) {
         LOG_WARN("task: %d, connect %s:%d error.", task->name, ip, port);
         return INVALID_SOCK;
@@ -359,6 +373,22 @@ SOCKET coro_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
         return INVALID_SOCK;
     }
     return fd;
+}
+int32_t coro_auth_ssl(task_ctx *task, SOCKET fd, uint64_t skid, int32_t client, struct evssl_ctx *evssl) {
+    ev_ud_sess(&task->scheduler->netev, fd, skid, skid);
+    ev_ssl(&task->scheduler->netev, fd, skid, client, evssl);
+    message_ctx msg;
+    _mcoro_wait(task, skid, &msg, TIMEOUT_NETREAD);
+    if (MSG_TYPE_TIMEOUT == msg.mtype) {
+        ev_close(&task->scheduler->netev, fd, skid);
+        LOG_WARN("task %d, ssl auth timeout, skid %"PRIu64".", task->name, skid);
+        return ERR_FAILED;
+    }
+    if (MSG_TYPE_CLOSE == msg.mtype) {
+        LOG_WARN("task %d, connction closed, skid %"PRIu64".", task->name, skid);
+        return ERR_FAILED;
+    }
+    return ERR_OK;
 }
 void *coro_send(task_ctx *task, SOCKET fd, uint64_t skid,
     void *data, size_t len, size_t *size, int32_t copy) {

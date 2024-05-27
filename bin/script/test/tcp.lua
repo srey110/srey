@@ -26,6 +26,6 @@ srey.startup(
                 --printd("socket %d, skid %s closed", fd, tostring(skid))
             end
         )
-        srey.listen(PACK_TYPE.CUSTZ, 0, "0.0.0.0", 15000, APPEND_EV.ACCEPT | APPEND_EV.CLOSE)-- | APPEND_EV.SEND)
+        srey.listen(PACK_TYPE.CUSTZ, 0, "0.0.0.0", 15000, NET_EV.ACCEPT)-- | APPEND_EV.SEND)
     end
 )

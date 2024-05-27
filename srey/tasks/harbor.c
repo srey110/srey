@@ -96,13 +96,8 @@ static int32_t _check_sign(harbor_ctx *hbctx, struct http_pack_ctx *pack, buf_ct
     }
     uint64_t tms = (uint64_t)atoll(tbuf);
     uint64_t tnow = nowsec();
-    int32_t diff;
-    if (tnow >= tms) {
-        diff = (int32_t)(tnow - tms);
-    } else {
-        diff = (int32_t)(tms - tnow);
-    }
-    if (diff >= 5 * 60) {
+    int32_t diff = tnow >= tms ? (int32_t)(tnow - tms) : (int32_t)(tms - tnow);
+    if (diff >= 1 * 60) {
         LOG_WARN("timestamp error.");
         return ERR_FAILED;
     }
@@ -249,8 +244,6 @@ int32_t harbor_start(scheduler_ctx *scheduler, name_t tname, name_t ssl,
     hbctx->timeout = ms;
 #if WITH_SSL
     hbctx->ssl = srey_ssl_qury(scheduler, ssl);
-#else
-    hbctx->ssl = NULL;
 #endif
     timer_init(&hbctx->timer);
     hbctx->mapargs = hashmap_new_with_allocator(_malloc, _realloc, _free,

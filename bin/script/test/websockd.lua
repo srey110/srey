@@ -28,6 +28,7 @@ local function _wbsock_test(ws)
     wbsk.binary_continua(fd, skid, 1, _cont, "binary continuation")
     data, size =wbsk.close(1)
     srey.send(fd, skid, data, size, 0)
+    printd("websock tested.")
 end
 srey.startup(
     function ()

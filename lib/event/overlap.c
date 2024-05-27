@@ -184,7 +184,10 @@ static inline int32_t _call_acp_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp) {
     return ERR_OK;
 }
 static inline int32_t _call_conn_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp, int32_t err) {
-    return oltcp->cbs.conn_cb(ev, oltcp->ol_r.fd, oltcp->skid, err, &oltcp->ud);
+    if (NULL != oltcp->cbs.conn_cb) {
+        return oltcp->cbs.conn_cb(ev, oltcp->ol_r.fd, oltcp->skid, err, &oltcp->ud);
+    }
+    return ERR_OK;
 }
 static inline void _call_auth_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp) {
     if (NULL != oltcp->cbs.auth_cb) {
@@ -230,7 +233,16 @@ int32_t _post_recv(sock_ctx *skctx, DWORD  *bytes, DWORD  *flag, IOV_TYPE *wsabu
     }
     return ERR_OK;
 }
-static void _tcp_recv(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
+static inline _close_tcp(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
+    if (BIT_CHECK(oltcp->status, STATUS_SENDING)) {
+        BIT_SET(oltcp->status, STATUS_REMOVE);
+    } else {
+        _call_close_cb(watcher->ev, oltcp);
+        _remove_fd(watcher, oltcp->ol_r.fd);
+        pool_push(&watcher->pool, &oltcp->ol_r);
+    }
+}
+static inline void _tcp_recv(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
     size_t nread;
 #if WITH_SSL
     int32_t rtn = buffer_from_sock(&oltcp->buf_r, oltcp->ol_r.fd, &nread, _sock_read, oltcp->ssl);
@@ -243,13 +255,7 @@ static void _tcp_recv(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
     }
     if (ERR_OK != rtn) {
         BIT_SET(oltcp->status, STATUS_ERROR);
-        _call_close_cb(watcher->ev, oltcp);
-        if (BIT_CHECK(oltcp->status, STATUS_SENDING)) {
-            BIT_SET(oltcp->status, STATUS_REMOVE);
-        } else {
-            _remove_fd(watcher, oltcp->ol_r.fd);
-            pool_push(&watcher->pool, &oltcp->ol_r);
-        }
+        _close_tcp(watcher, oltcp);
     }
 }
 static void _on_recv_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
@@ -283,16 +289,40 @@ static void _on_recv_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
     }
 #endif
     if (BIT_CHECK(oltcp->status, STATUS_ERROR)) {
-        _call_close_cb(watcher->ev, oltcp);
-        if (BIT_CHECK(oltcp->status, STATUS_SENDING)) {
-            BIT_SET(oltcp->status, STATUS_REMOVE);
-        } else {
-            _remove_fd(watcher, oltcp->ol_r.fd);
-            pool_push(&watcher->pool, &oltcp->ol_r);
-        }
+        _close_tcp(watcher, oltcp);
         return;
     }
     _tcp_recv(watcher, oltcp);
+}
+int32_t _switch_ssl(watcher_ctx *watcher, sock_ctx *skctx, struct evssl_ctx *evssl, int32_t client) {
+#if WITH_SSL
+    overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
+    if (NULL != oltcp->ssl) {
+        LOG_WARN("repeat switch ssl.");
+        return ERR_OK;
+    }
+    oltcp->ssl = evssl_setfd(evssl, oltcp->ol_r.fd);
+    if (NULL == oltcp->ssl) {
+        return ERR_FAILED;
+    }
+    if (client) {
+        BIT_SET(oltcp->status, STATUS_CLIENT);
+        switch (evssl_tryconn(oltcp->ssl)) {
+        case ERR_FAILED://错误
+            return ERR_FAILED;
+        case 1://完成
+            _call_auth_cb(watcher->ev, oltcp);
+            break;
+        case ERR_OK://等待更多数据
+            BIT_SET(oltcp->status, STATUS_AUTHSSL);
+            break;
+        }
+    } else {
+        BIT_REMOVE(oltcp->status, STATUS_CLIENT);
+        BIT_SET(oltcp->status, STATUS_AUTHSSL);
+    }
+#endif
+    return ERR_OK;
 }
 //send
 static int32_t _post_send(overlap_tcp_ctx *oltcp) {
@@ -315,6 +345,7 @@ static void _on_send_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
     overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_s);
     if (BIT_CHECK(oltcp->status, STATUS_ERROR)) {
         if (BIT_CHECK(oltcp->status, STATUS_REMOVE)) {
+            _call_close_cb(watcher->ev, oltcp);
             _remove_fd(watcher, oltcp->ol_r.fd);
             pool_push(&watcher->pool, &oltcp->ol_r);
         } else {
@@ -407,32 +438,14 @@ static void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
         pool_push(&watcher->pool, &oltcp->ol_r);
         return;
     }
-#if WITH_SSL
-    if (NULL != oltcp->ssl) {
-        switch (evssl_tryconn(oltcp->ssl)) {
-        case ERR_FAILED://错误
-            _call_close_cb(watcher->ev, oltcp);
-            _remove_fd(watcher, oltcp->ol_r.fd);
-            pool_push(&watcher->pool, &oltcp->ol_r);
-            return;
-        case 1://完成
-            _call_auth_cb(watcher->ev, oltcp);
-            break;
-        case ERR_OK://等待更多数据
-            BIT_SET(oltcp->status, STATUS_AUTHSSL);
-            break;
-        }
-    }
-#endif
     if (ERR_OK != _post_recv(&oltcp->ol_r, &oltcp->bytes_r, &oltcp->flag, &oltcp->wsabuf, 1)) {
         _call_close_cb(watcher->ev, oltcp);
         _remove_fd(watcher, oltcp->ol_r.fd);
         pool_push(&watcher->pool, &oltcp->ol_r);
     }
 }
-SOCKET ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const uint16_t port,
-    cbs_ctx *cbs, ud_cxt *ud, uint64_t *skid, int32_t setsess) {
-    ASSERTAB(NULL != cbs && NULL != cbs->conn_cb && NULL != cbs->r_cb, ERRSTR_NULLP);
+SOCKET ev_connect(ev_ctx *ctx, const char *ip, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud, uint64_t *skid) {
+    ASSERTAB(NULL != cbs && NULL != cbs->r_cb, ERRSTR_NULLP);
     netaddr_ctx addr;
     if (ERR_OK != netaddr_set(&addr, ip, port)) {
         LOG_ERROR("netaddr_set %s:%d, %s", ip, port, ERRORSTR(ERRNO));
@@ -460,18 +473,6 @@ SOCKET ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
     overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
     BIT_SET(oltcp->status, STATUS_CLIENT);
     *skid = oltcp->skid;
-    if (setsess) {
-        oltcp->ud.sess = oltcp->skid;
-    }
-#if WITH_SSL
-    if (NULL != evssl) {
-        oltcp->ssl = evssl_setfd(evssl, fd);
-        if (NULL == oltcp->ssl) {
-            _free_sk(skctx);
-            return INVALID_SOCK;
-        }
-    }
-#endif
     if (ERR_OK != _post_connect(oltcp, &addr)) {
         _free_sk(skctx);
         return INVALID_SOCK;
@@ -542,17 +543,15 @@ void _add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) {
         return;
     }
     sock_ctx *skctx = pool_pop(&watcher->pool, fd, &lsn->cbs, &lsn->ud);
-    overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
 #if WITH_SSL
     if (NULL != lsn->evssl) {
-        oltcp->ssl = evssl_setfd(lsn->evssl, skctx->fd);
-        if (NULL == oltcp->ssl) {
+        if (ERR_OK != _switch_ssl(watcher, skctx, lsn->evssl, 0)) {
             pool_push(&watcher->pool, skctx);
             return;
         }
-        BIT_SET(oltcp->status, STATUS_AUTHSSL);
     }
 #endif
+    overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
     _add_fd(watcher, skctx);
     if (ERR_OK != _call_acp_cb(watcher->ev, oltcp)) {
         _remove_fd(watcher, skctx->fd);

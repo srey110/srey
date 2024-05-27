@@ -164,7 +164,10 @@ static inline int32_t _call_acp_cb(ev_ctx *ev, tcp_ctx *tcp) {
     return ERR_OK;
 }
 static inline int32_t _call_conn_cb(ev_ctx *ev, tcp_ctx *tcp, int32_t err) {
-    return tcp->cbs.conn_cb(ev, tcp->sock.fd, tcp->skid, err, &tcp->ud);
+    if (NULL != tcp->cbs.conn_cb) {
+        return tcp->cbs.conn_cb(ev, tcp->sock.fd, tcp->skid, err, &tcp->ud);
+    }
+    return ERR_OK;
 }
 static inline void _call_auth_cb(ev_ctx *ev, tcp_ctx *tcp) {
     if (NULL != tcp->cbs.auth_cb) {
@@ -292,6 +295,36 @@ static void _on_rw_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
         _close_tcp(watcher, tcp);
     }
 }
+int32_t _switch_ssl(watcher_ctx *watcher, sock_ctx *skctx, struct evssl_ctx *evssl, int32_t client) {
+#if WITH_SSL
+    tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
+    if (NULL != tcp->ssl) {
+        LOG_WARN("repeat switch ssl.");
+        return ERR_OK;
+    }
+    tcp->ssl = evssl_setfd(evssl, tcp->sock.fd);
+    if (NULL == tcp->ssl) {
+        return ERR_FAILED;
+    }
+    if (client) {
+        BIT_SET(tcp->status, STATUS_CLIENT);
+        switch (evssl_tryconn(tcp->ssl)) {
+        case ERR_FAILED://错误
+            return ERR_FAILED;
+        case 1://完成
+            _call_auth_cb(watcher->ev, tcp);
+            break;
+        case ERR_OK://等待更多数据
+            BIT_SET(tcp->status, STATUS_AUTHSSL);
+            break;
+        }
+    } else {
+        BIT_REMOVE(tcp->status, STATUS_CLIENT);
+        BIT_SET(tcp->status, STATUS_AUTHSSL);
+    }
+#endif
+    return ERR_OK;
+}
 void _add_write_inloop(watcher_ctx *watcher, sock_ctx *skctx, off_buf_ctx *buf) {
     if (SOCK_STREAM == skctx->type) {
         tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
@@ -320,32 +353,14 @@ static void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
         pool_push(&watcher->pool, &tcp->sock);
         return;
     }
-#if WITH_SSL
-    if (NULL != tcp->ssl) {
-        switch (evssl_tryconn(tcp->ssl)) {
-        case ERR_FAILED://错误
-            _call_close_cb(watcher->ev, tcp);
-            _remove_fd(watcher, tcp->sock.fd);
-            pool_push(&watcher->pool, &tcp->sock);
-            return;
-        case 1://完成
-            _call_auth_cb(watcher->ev, tcp);
-            break;
-        case ERR_OK://等待更多数据
-            BIT_SET(tcp->status, STATUS_AUTHSSL);
-            break;
-        }
-    }
-#endif
     if (ERR_OK != _add_event(watcher, tcp->sock.fd, &tcp->sock.events, EVENT_READ, &tcp->sock)) {
         _call_close_cb(watcher->ev, tcp);
         _remove_fd(watcher, tcp->sock.fd);
         pool_push(&watcher->pool, &tcp->sock);
     }
 }
-SOCKET ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const uint16_t port,
-    cbs_ctx *cbs, ud_cxt *ud, uint64_t *skid, int32_t setsess) {
-    ASSERTAB(NULL != cbs && NULL != cbs->conn_cb && NULL != cbs->r_cb, ERRSTR_NULLP);
+SOCKET ev_connect(ev_ctx *ctx, const char *ip, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud, uint64_t *skid) {
+    ASSERTAB(NULL != cbs && NULL != cbs->r_cb, ERRSTR_NULLP);
     netaddr_ctx addr;
     if (ERR_OK != netaddr_set(&addr, ip, port)) {
         LOG_ERROR("netaddr_set %s:%d, %s", ip, port, ERRORSTR(ERRNO));
@@ -372,18 +387,6 @@ SOCKET ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
     tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
     BIT_SET(tcp->status, STATUS_CLIENT);
     *skid = tcp->skid;
-    if (setsess) {
-        tcp->ud.sess = tcp->skid;
-    }
-#if WITH_SSL
-    if (NULL != evssl) {
-        tcp->ssl = evssl_setfd(evssl, fd);
-        if (NULL == tcp->ssl) {
-            _free_sk(skctx);
-            return INVALID_SOCK;
-        }
-    }
-#endif
     _cmd_connect(ctx, fd, skctx);
     return fd;
 }
@@ -432,17 +435,15 @@ static void _on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
 }
 void _add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) {
     sock_ctx *skctx = pool_pop(&watcher->pool, fd, &lsn->cbs, &lsn->ud);
-    tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
 #if WITH_SSL
     if (NULL != lsn->evssl) {
-        tcp->ssl = evssl_setfd(lsn->evssl, fd);
-        if (NULL == tcp->ssl) {
+        if (ERR_OK != _switch_ssl(watcher, skctx, lsn->evssl, 0)) {
             pool_push(&watcher->pool, skctx);
             return;
         }
-        BIT_SET(tcp->status, STATUS_AUTHSSL);
     }
 #endif
+    tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
     _add_fd(watcher, skctx);
     if (ERR_OK != _call_acp_cb(watcher->ev, tcp)) {
         _remove_fd(watcher, fd);

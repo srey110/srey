@@ -17,6 +17,7 @@ typedef enum WEV_CMDS {
     CMD_REMOVE,
     CMD_SEND,
     CMD_SETUD,
+    CMD_SSL,
 
     CMD_TOTAL,
 }WEV_CMDS;
@@ -77,6 +78,7 @@ void _on_cmd_stop(watcher_ctx *watcher, cmd_ctx *cmd);
 void _on_cmd_add(watcher_ctx *watcher, cmd_ctx *cmd);
 void _on_cmd_addacp(watcher_ctx *watcher, cmd_ctx *cmd);
 void _on_cmd_remove(watcher_ctx *watcher, cmd_ctx *cmd); 
+void _on_cmd_ssl(watcher_ctx *watcher, cmd_ctx *cmd);
 void _on_cmd_send(watcher_ctx *watcher, cmd_ctx *cmd);
 void _on_cmd_disconn(watcher_ctx *watcher, cmd_ctx *cmd);
 void _on_cmd_setud(watcher_ctx *watcher, cmd_ctx *cmd);
@@ -84,6 +86,7 @@ void _on_cmd_setud(watcher_ctx *watcher, cmd_ctx *cmd);
 void _add_fd(watcher_ctx *watcher, sock_ctx *skctx);
 void _remove_fd(watcher_ctx *watcher, SOCKET fd);
 int32_t _join_iocp(watcher_ctx *watcher, SOCKET fd);
+int32_t _switch_ssl(watcher_ctx *watcher, sock_ctx *skctx, struct evssl_ctx *evssl, int32_t client);
 void _add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn);
 int32_t _post_recv(sock_ctx *skctx, DWORD  *bytes, DWORD  *flag, IOV_TYPE *wsabuf, DWORD niov);
 void _add_bufs_trypost(sock_ctx *skctx, off_buf_ctx *buf);

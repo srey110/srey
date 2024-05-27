@@ -38,6 +38,7 @@ static void _init_callback(void) {
     cmd_cbs[CMD_REMOVE] = _on_cmd_remove;
     cmd_cbs[CMD_SEND] = _on_cmd_send;
     cmd_cbs[CMD_SETUD] = _on_cmd_setud;
+    cmd_cbs[CMD_SSL] = _on_cmd_ssl;
 }
 static void _init_funcs(ev_ctx *ctx) {
     if (ATOMIC_CAS(&_init_once, 0, 1)) {

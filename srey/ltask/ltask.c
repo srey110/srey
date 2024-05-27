@@ -209,6 +209,11 @@ static void _ltask_pack_msg(lua_State *lua, message_ctx *msg) {
         LUA_TB_NUMBER("sess", msg->sess);
         LUA_TB_NUMBER("erro", msg->erro);
         break;
+    case MSG_TYPE_AUTHSSL:
+        LUA_TB_NETPUB(msg);
+        LUA_TB_NUMBER("client", msg->client);
+        LUA_TB_NUMBER("sess", msg->sess);
+        break;
     case MSG_TYPE_HANDSHAKED:
         LUA_TB_NETPUB(msg);
         LUA_TB_NUMBER("client", msg->client);

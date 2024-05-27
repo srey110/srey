@@ -27,13 +27,14 @@ local MSG_TYPE = {
     TIMEOUT    = 0x03,
     ACCEPT     = 0x04,
     CONNECT    = 0x05,
-    HANDSHAKED = 0x06,
-    RECV       = 0x07,
-    SEND       = 0x08,
-    CLOSE      = 0x09,
-    RECVFROM   = 0x0a,
-    REQUEST    = 0x0b,
-    RESPONSE   = 0x0c
+    AUTHSSL    = 0x06,
+    HANDSHAKED = 0x07,
+    RECV       = 0x08,
+    SEND       = 0x09,
+    CLOSE      = 0x0a,
+    RECVFROM   = 0x0b,
+    REQUEST    = 0x0c,
+    RESPONSE   = 0x0d
 }
 local TIMEOUT = {
     REQUEST = 1500,
@@ -304,7 +305,7 @@ function srey.on_accepted(func)
     func_cbs[MSG_TYPE.ACCEPT] = func
 end
 --id  -1 error
-function srey.listen(pktype, sslname, ip, port, appendev)
+function srey.listen(pktype, sslname, ip, port, netev)
     local ssl
     if SSL_NAME.NONE ~= sslname then
         ssl = core.ssl_qury(sslname)
@@ -313,7 +314,7 @@ function srey.listen(pktype, sslname, ip, port, appendev)
             return ERR_FAILED
         end
     end
-    return core.listen(pktype, ssl, ip, port, appendev)
+    return core.listen(pktype, ssl, ip, port, netev)
 end
 function srey.unlisten(lsnid)
     core.unlisten(lsnid)
@@ -326,16 +327,8 @@ local function _net_accept_dispatch(msg)
 end
 
 --fd skid
-function srey.connect(pktype, sslname, ip, port, appendev)
-    local ssl
-    if SSL_NAME.NONE ~= sslname then
-        ssl = core.ssl_qury(sslname)
-        if not ssl then
-            WARN("ssl_qury not find ssl name %d.", sslname)
-            return INVALID_SOCK
-        end
-    end
-    local fd, skid = core.connect(pktype, ssl, ip, port, appendev)
+function srey.connect(pktype, ip, port, netev)
+    local fd, skid = core.connect(pktype, ip, port, netev)
     if INVALID_SOCK == fd then
         WARN("connect %s:%d error.", ip, port)
         return INVALID_SOCK
@@ -353,6 +346,61 @@ function srey.connect(pktype, sslname, ip, port, appendev)
     return fd, skid
 end
 local function _net_connect_dispatch(msg)
+    local corosess = _get_coro_sess(msg.skid)
+    if not corosess then
+        WARN("can't find session %s.", tostring(msg.skid))
+        return
+    end
+    _coro_resume(corosess.coro, msg)
+end
+
+--func(pktype, fd, skid, client)
+function srey.on_auth_ssl(func)
+    func_cbs[MSG_TYPE.AUTHSSL] = func
+end
+function srey.auth_ssl(fd, skid, client, sslname)
+    local ssl
+    if SSL_NAME.NONE ~= sslname then
+        ssl = core.ssl_qury(sslname)
+        if not ssl then
+            WARN("ssl_qury not find ssl name %d.", sslname)
+            return false
+        end
+    end
+    core.auth_ssl(fd, skid, client, ssl)
+    return true
+end
+function srey.syn_auth_ssl(fd, skid, client, sslname)
+    local ssl
+    if SSL_NAME.NONE ~= sslname then
+        ssl = core.ssl_qury(sslname)
+        if not ssl then
+            WARN("ssl_qury not find ssl name %d.", sslname)
+            return false
+        end
+    end
+    srey.sock_session(fd, skid, skid)
+    core.auth_ssl(fd, skid, client, ssl)
+    local msg = _coro_wait(skid, TIMEOUT.NETREAD)
+    if MSG_TYPE.TIMEOUT == msg.mtype then
+        srey.close(fd, skid)
+        WARN("auth ssl timeout, skid %s.", tostring(skid))
+        return false
+    end
+    if MSG_TYPE.CLOSE == msg.type then
+        WARN("connction closed, skid %s.", tostring(skid))
+        return false
+    end
+    return true
+end
+local function _net_auth_ssl_dispatch(msg)
+    if 0 == msg.sess then
+        local func = func_cbs[MSG_TYPE.AUTHSSL]
+        if func then
+            _coro_run(_coro_cb, func, msg.pktype, msg.fd, msg.skid, msg.client)
+        end
+        return
+    end
     local corosess = _get_coro_sess(msg.skid)
     if not corosess then
         WARN("can't find session %s.", tostring(msg.skid))
@@ -607,6 +655,8 @@ function message_dispatch(msg)
         _net_accept_dispatch(msg)
     elseif MSG_TYPE.CONNECT == msg.mtype then
         _net_connect_dispatch(msg)
+    elseif MSG_TYPE.AUTHSSL == msg.mtype then
+        _net_auth_ssl_dispatch(msg)
     elseif MSG_TYPE.HANDSHAKED == msg.mtype then
         _net_handshaked_dispatch(msg)
     elseif MSG_TYPE.RECV == msg.mtype then

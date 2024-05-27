@@ -17,6 +17,8 @@ static void _test_dns(task_ctx *task) {
             }
         }
         FREE(ips);
+    } else {
+        LOG_ERROR("%s", "coro_dns_lookup error");
     }
     ips = coro_dns_lookup(task, "www.google.com", 1, &n);
     if (NULL != ips) {
@@ -26,6 +28,8 @@ static void _test_dns(task_ctx *task) {
             }
         }
         FREE(ips);
+    } else {
+        LOG_ERROR("%s", "coro_dns_lookup error");
     }
 }
 static void _timeout(task_ctx *task, uint64_t sess) {

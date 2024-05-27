@@ -12,7 +12,7 @@ end
 local function _onchuncked(fin, hdata, hsize)
 end
 local function _timeout()
-    local fd, skid = srey.connect(PACK_TYPE.HTTP, 0, "127.0.0.1", 15003)
+    local fd, skid = srey.connect(PACK_TYPE.HTTP, "127.0.0.1", 15003)
     assert(INVALID_SOCK ~= fd)
     local hrtn = http.get(fd, skid, "/gettest")
     assert(hrtn)
@@ -22,7 +22,7 @@ local function _timeout()
     hrtn = http.post(fd, skid, "/getchuncked", nil, _onchuncked, _chunked, cnt)
     assert(hrtn)
     srey.close(fd, skid)
-    srey.timeout(1000, _timeout)
+    printd("httpd tested.")
 end
 srey.startup(
     function ()

@@ -37,11 +37,11 @@ SSLVERIFY_TYPE = {
     FAIL_IF_NO_PEER_CERT = 0x03,
 }
 --事件
-APPEND_EV = {
+NET_EV = {
+    NONE    = 0x00,
     ACCEPT  = 0x01,
-    CONNECT = 0x02,
-    CLOSE   = 0x04,
-    SEND    = 0x08
+    AUTHSSL = 0x02,
+    SEND    = 0x04
 }
 --包类型 标识该socket类型 与c pack_type对应
 PACK_TYPE = {

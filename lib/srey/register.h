@@ -15,6 +15,9 @@ static inline void on_sended(task_ctx *task, _net_send_cb _send) {
 static inline void on_connected(task_ctx *task, _net_connect_cb _connect) {
     task->_net_connect = _connect;
 }
+static inline void on_authssl(task_ctx *task, _net_auth_ssl_cb _auth) {
+    task->_auth_ssl = _auth;
+}
 static inline void on_handshaked(task_ctx *task, _net_handshake_cb _handshake) {
     task->_net_handshaked = _handshake;
 }

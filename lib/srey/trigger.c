@@ -53,6 +53,11 @@ void _message_run(task_ctx *task, message_ctx *msg) {
             task->_net_connect(task, msg->fd, msg->skid, msg->pktype, msg->erro);
         }
         break;
+    case MSG_TYPE_AUTHSSL:
+        if (NULL != task->_auth_ssl) {
+            task->_auth_ssl(task, msg->fd, msg->skid, msg->pktype, msg->client);
+        }
+        break;
     case MSG_TYPE_HANDSHAKED:
         if (NULL != task->_net_handshaked) {
             task->_net_handshaked(task, msg->fd, msg->skid, msg->pktype, msg->client, msg->erro);
@@ -254,6 +259,22 @@ static void _net_send(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, size
     _task_message_push(task, &msg);
     task_ungrab(task);
 }
+static void _net_auth_ssl(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud) {
+    task_ctx *task = task_grab(ud->data, ud->name);
+    if (NULL == task) {
+        return;
+    }
+    message_ctx msg;
+    msg.mtype = MSG_TYPE_AUTHSSL;
+    msg.pktype = ud->pktype;
+    msg.fd = fd;
+    msg.skid = skid;
+    msg.client = client;
+    msg.sess = ud->sess;
+    ud->sess = 0;
+    _task_message_push(task, &msg);
+    task_ungrab(task);
+}
 static void _net_close(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud) {
     task_ctx *task = task_grab(ud->data, ud->name);
     if (NULL == task) {
@@ -270,7 +291,7 @@ static void _net_close(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_
     task_ungrab(task);
 }
 int32_t trigger_listen(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
-    const char *ip, uint16_t port, uint64_t *id, int32_t appendev) {
+    const char *ip, uint16_t port, uint64_t *id, int32_t netev) {
     ud_cxt ud;
     ZERO(&ud, sizeof(ud));
     ud.pktype = pktype;
@@ -278,16 +299,18 @@ int32_t trigger_listen(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl
     ud.data = task->scheduler;
     cbs_ctx cbs;
     ZERO(&cbs, sizeof(cbs));
-    if (BIT_CHECK(appendev, APPEND_ACCEPT)) {
+    if (BIT_CHECK(netev, NETEV_ACCEPT)) {
         cbs.acp_cb = _net_accept;
     }
-    if (BIT_CHECK(appendev, APPEND_SEND)) {
+    if (BIT_CHECK(netev, NETEV_SEND)) {
         cbs.s_cb = _net_send;
     }
-    if (BIT_CHECK(appendev, APPEND_CLOSE)) {
-        cbs.c_cb = _net_close;
+    if (NULL != evssl
+        || BIT_CHECK(netev, NETEV_AUTHSSL)) {
+        cbs.auth_cb = _net_auth_ssl;
     }
     cbs.r_cb = _net_recv;
+    cbs.c_cb = _net_close;
     cbs.ud_free = protos_udfree;
     return ev_listen(&task->scheduler->netev, evssl, ip, port, &cbs, &ud, id);
 }
@@ -302,32 +325,30 @@ static int32_t _net_connect(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t err, u
     msg.fd = fd;
     msg.skid = skid;
     msg.erro = err;
-    msg.sess = ud->sess;
-    ud->sess = 0;
+    msg.sess = skid;
     _task_message_push(task, &msg);
     task_ungrab(task);
     return ERR_OK;
 }
-SOCKET trigger_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
-    const char *ip, uint16_t port, void *extra, uint64_t *skid, int32_t setsess, int32_t appendev) {
+SOCKET trigger_connect(task_ctx *task, pack_type pktype, const char *ip, uint16_t port, uint64_t *skid, int32_t netev) {
     ud_cxt ud;
     ZERO(&ud, sizeof(ud));
     ud.pktype = pktype;
     ud.name = task->name;
     ud.data = task->scheduler;
-    ud.extra = extra;
     cbs_ctx cbs;
     ZERO(&cbs, sizeof(cbs));
-    if (BIT_CHECK(appendev, APPEND_SEND)) {
+    if (BIT_CHECK(netev, NETEV_SEND)) {
         cbs.s_cb = _net_send;
     }
-    if (BIT_CHECK(appendev, APPEND_CLOSE)) {
-        cbs.c_cb = _net_close;
+    if (BIT_CHECK(netev, NETEV_AUTHSSL)) {
+        cbs.auth_cb = _net_auth_ssl;
     }
     cbs.conn_cb = _net_connect;
     cbs.r_cb = _net_recv;
+    cbs.c_cb = _net_close;
     cbs.ud_free = protos_udfree;
-    return ev_connect(&task->scheduler->netev, evssl, ip, port, &cbs, &ud, skid, setsess);
+    return ev_connect(&task->scheduler->netev, ip, port, &cbs, &ud, skid);
 }
 static void _net_recvfrom(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
     task_ctx *task = task_grab(ud->data, ud->name);

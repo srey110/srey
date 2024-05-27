@@ -6,7 +6,7 @@ static int32_t _prt = 1;
 
 static void _test_syn_send(task_ctx *task) {
     uint64_t skid;
-    SOCKET fd = coro_connect(task, PACK_CUSTZ, NULL, "127.0.0.1", 15000, &skid, APPEND_CLOSE);
+    SOCKET fd = coro_connect(task, PACK_CUSTZ, "127.0.0.1", 15000, &skid, 0);
     if (INVALID_SOCK == fd) {
         LOG_ERROR("%s", "syn_connect error");
         return;
@@ -23,6 +23,33 @@ static void _test_syn_send(task_ctx *task) {
     data = custz_data(data, &size);
     ASSERTAB(0 == _memicmp(data, msg, strlen(msg)), "syn_send error");
     ev_close(&task->scheduler->netev, fd, skid);
+}
+static void _test_syn_ssl_send(task_ctx *task) {
+#if WITH_SSL
+    uint64_t skid;
+    SOCKET fd = coro_connect(task, PACK_CUSTZ, "127.0.0.1", 15001, &skid, NETEV_AUTHSSL);
+    if (INVALID_SOCK == fd) {
+        LOG_ERROR("%s", "syn_connect error");
+        return;
+    }
+    struct evssl_ctx *ssl = srey_ssl_qury(task->scheduler, 101);
+    if (ERR_OK != coro_auth_ssl(task, fd, skid, 1, ssl)) {
+        LOG_ERROR("%s", "coro_auth_ssl error");
+        return;
+    }
+    const char *msg = "this is tcp task_coro_net.";
+    size_t size;
+    struct custz_pack_ctx *pack = custz_pack((void*)msg, strlen(msg), &size);
+    void *data = coro_send(task, fd, skid, pack, size, &size, 0);
+    if (NULL == data) {
+        LOG_ERROR("%s", "syn_send error");
+        ev_close(&task->scheduler->netev, fd, skid);
+        return;
+    }
+    data = custz_data(data, &size);
+    ASSERTAB(0 == _memicmp(data, msg, strlen(msg)), "syn_send error");
+    ev_close(&task->scheduler->netev, fd, skid);
+#endif
 }
 static void _test_syn_sendto(task_ctx *task) {
     uint64_t skid;
@@ -47,8 +74,7 @@ static void _net_close(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype,
 static void _timeout(task_ctx *task, uint64_t sess) {
     _test_syn_send(task);
     _test_syn_sendto(task);
-    //uint64_t skid;
-    //coro_wbsock_connect(task, NULL, "ws://124.222.224.186:8800", &skid, 0);
+    _test_syn_ssl_send(task);
     trigger_timeout(task, 0, 3000, _timeout);
 }
 static void _startup(task_ctx *task) {

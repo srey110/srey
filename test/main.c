@@ -69,6 +69,8 @@ int main(int argc, char *argv[]) {
     SNPRINTF(p12, sizeof(p12) - 1, "%s%s%s%s%s", local, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, "client.p12");
     evssl_ctx *ssl = evssl_new(ca, svcrt, svkey, SSL_FILETYPE_PEM, 0);
     srey_ssl_register(g_scheduler, 100, ssl);
+    ssl = evssl_p12_new(p12, "srey", 0);
+    srey_ssl_register(g_scheduler, 101, ssl);
 #endif
     task_startup_closing_start(g_scheduler, 10000, 0);
     task_timeout_start(g_scheduler, 10001, 0);

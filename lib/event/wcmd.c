@@ -72,6 +72,25 @@ void _on_cmd_remove(watcher_ctx *watcher, cmd_ctx *cmd) {
         _free_udp(skctx);
     }
 }
+void ev_ssl(ev_ctx *ctx, SOCKET fd, uint64_t skid, int32_t client, struct evssl_ctx *evssl) {
+#if WITH_SSL
+    cmd_ctx cmd;
+    cmd.cmd = CMD_SSL;
+    cmd.fd = fd;
+    cmd.skid = skid;
+    cmd.len = (size_t)client;
+    cmd.arg = (uint64_t)evssl;
+    _SEND_CMD(ctx, cmd);
+#endif
+}
+void _on_cmd_ssl(watcher_ctx *watcher, cmd_ctx *cmd) {
+    sock_ctx *skctx = _map_get(watcher, cmd->fd);
+    if (NULL == skctx
+        || ERR_OK != _check_skid(skctx, cmd->skid)) {
+        return;
+    }
+    _switch_ssl(watcher, skctx, (struct evssl_ctx *)cmd->arg, (int32_t)cmd->len);
+}
 void ev_send(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *data, size_t len, int32_t copy) {
     cmd_ctx cmd;
     cmd.cmd = CMD_SEND;
