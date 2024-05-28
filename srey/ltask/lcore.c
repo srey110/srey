@@ -91,12 +91,16 @@ static int32_t _lcore_unlisten(lua_State *lua) {
 }
 static int32_t _lcore_connect(lua_State *lua) {
     pack_type pktype = (pack_type)luaL_checkinteger(lua, 1);
-    const char *ip = luaL_checkstring(lua, 2);
-    uint16_t port = (uint16_t)luaL_checkinteger(lua, 3);
-    int32_t netev = lua_isinteger(lua, 4) ? (int32_t)luaL_checkinteger(lua, 4) : NETEV_NONE;
+    struct evssl_ctx *evssl = NULL;
+    if (LUA_TNIL != lua_type(lua, 2)) {
+        evssl = lua_touserdata(lua, 2);
+    }
+    const char *ip = luaL_checkstring(lua, 3);
+    uint16_t port = (uint16_t)luaL_checkinteger(lua, 4);
+    int32_t netev = lua_isinteger(lua, 5) ? (int32_t)luaL_checkinteger(lua, 5) : NETEV_NONE;
     uint64_t skid;
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    SOCKET fd = trigger_connect(task, pktype, ip, port, &skid, netev);
+    SOCKET fd = trigger_connect(task, pktype, evssl, ip, port, &skid, netev);
     if (INVALID_SOCK == fd) {
         lua_pushinteger(lua, INVALID_SOCK);
         return 1;

@@ -37,6 +37,7 @@ typedef struct overlap_tcp_ctx {
     DWORD flag;
 #if WITH_SSL
     SSL *ssl;
+    struct evssl_ctx *evssl;
 #endif
     uint64_t skid;
     IOV_TYPE wsabuf;
@@ -87,6 +88,7 @@ sock_ctx *_new_sk(SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
     oltcp->skid = createid();
 #if WITH_SSL
     oltcp->ssl = NULL;
+    oltcp->evssl = NULL;
 #endif
     oltcp->wsabuf.IOV_PTR_FIELD = NULL;
     oltcp->wsabuf.IOV_LEN_FIELD = 0;
@@ -115,6 +117,7 @@ void _clear_sk(sock_ctx *skctx) {
     oltcp->status = STATUS_NONE;
 #if WITH_SSL
     FREE_SSL(oltcp->ssl);
+    oltcp->evssl = NULL;
 #endif
     CLOSE_SOCK(oltcp->ol_r.fd);
     oltcp->ol_s.fd = INVALID_SOCK;
@@ -438,13 +441,24 @@ static void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
         pool_push(&watcher->pool, &oltcp->ol_r);
         return;
     }
+#if WITH_SSL
+    if (NULL != oltcp->evssl) {
+        if (ERR_OK != _switch_ssl(watcher, skctx, oltcp->evssl, 1)) {
+            _call_close_cb(watcher->ev, oltcp);
+            _remove_fd(watcher, oltcp->ol_r.fd);
+            pool_push(&watcher->pool, &oltcp->ol_r);
+            return;
+        }
+    }
+#endif
     if (ERR_OK != _post_recv(&oltcp->ol_r, &oltcp->bytes_r, &oltcp->flag, &oltcp->wsabuf, 1)) {
         _call_close_cb(watcher->ev, oltcp);
         _remove_fd(watcher, oltcp->ol_r.fd);
         pool_push(&watcher->pool, &oltcp->ol_r);
     }
 }
-SOCKET ev_connect(ev_ctx *ctx, const char *ip, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud, uint64_t *skid) {
+SOCKET ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const uint16_t port,
+    cbs_ctx *cbs, ud_cxt *ud, uint64_t *skid) {
     ASSERTAB(NULL != cbs && NULL != cbs->r_cb, ERRSTR_NULLP);
     netaddr_ctx addr;
     if (ERR_OK != netaddr_set(&addr, ip, port)) {
@@ -473,6 +487,9 @@ SOCKET ev_connect(ev_ctx *ctx, const char *ip, const uint16_t port, cbs_ctx *cbs
     overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
     BIT_SET(oltcp->status, STATUS_CLIENT);
     *skid = oltcp->skid;
+#if WITH_SSL
+    oltcp->evssl = evssl;
+#endif
     if (ERR_OK != _post_connect(oltcp, &addr)) {
         _free_sk(skctx);
         return INVALID_SOCK;

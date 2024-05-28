@@ -16,7 +16,8 @@ void trigger_response(task_ctx *dst, uint64_t sess, int32_t erro, void *data, si
 void trigger_call(task_ctx *dst, uint8_t reqtype, void *data, size_t size, int32_t copy);
 int32_t trigger_listen(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
     const char *ip, uint16_t port, uint64_t *id, int32_t netev);
-SOCKET trigger_connect(task_ctx *task, pack_type pktype, const char *ip, uint16_t port, uint64_t *skid, int32_t netev);
+SOCKET trigger_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
+    const char *ip, uint16_t port, uint64_t *skid, int32_t netev);
 SOCKET trigger_udp(task_ctx *task, const char *ip, uint16_t port, uint64_t *skid);
 
 #endif//TRIGGER_H_

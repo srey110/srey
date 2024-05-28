@@ -29,6 +29,7 @@ typedef struct tcp_ctx {
     int32_t status;
 #if WITH_SSL
     SSL *ssl;
+    struct evssl_ctx *evssl;
 #endif
     uint64_t skid;
     buffer_ctx buf_r;
@@ -70,6 +71,7 @@ sock_ctx *_new_sk(SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
     tcp->skid = createid();
 #if WITH_SSL
     tcp->ssl = NULL;
+    tcp->evssl = NULL;
 #endif
     tcp->cbs = *cbs;
     COPY_UD(tcp->ud, ud);
@@ -97,6 +99,7 @@ void _clear_sk(sock_ctx *skctx) {
     tcp->status = STATUS_NONE;
 #if WITH_SSL
     FREE_SSL(tcp->ssl);
+    tcp->evssl = NULL;
 #endif
     CLOSE_SOCK(tcp->sock.fd);
     _bufs_clear(&tcp->buf_s);
@@ -353,13 +356,24 @@ static void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
         pool_push(&watcher->pool, &tcp->sock);
         return;
     }
+#if WITH_SSL
+    if (NULL != tcp->evssl) {
+        if (ERR_OK != _switch_ssl(watcher, skctx, tcp->evssl, 1)) {
+            _call_close_cb(watcher->ev, tcp);
+            _remove_fd(watcher, tcp->sock.fd);
+            pool_push(&watcher->pool, &tcp->sock);
+            return;
+        }
+    }
+#endif
     if (ERR_OK != _add_event(watcher, tcp->sock.fd, &tcp->sock.events, EVENT_READ, &tcp->sock)) {
         _call_close_cb(watcher->ev, tcp);
         _remove_fd(watcher, tcp->sock.fd);
         pool_push(&watcher->pool, &tcp->sock);
     }
 }
-SOCKET ev_connect(ev_ctx *ctx, const char *ip, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud, uint64_t *skid) {
+SOCKET ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const uint16_t port,
+    cbs_ctx *cbs, ud_cxt *ud, uint64_t *skid) {
     ASSERTAB(NULL != cbs && NULL != cbs->r_cb, ERRSTR_NULLP);
     netaddr_ctx addr;
     if (ERR_OK != netaddr_set(&addr, ip, port)) {
@@ -387,6 +401,9 @@ SOCKET ev_connect(ev_ctx *ctx, const char *ip, const uint16_t port, cbs_ctx *cbs
     tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
     BIT_SET(tcp->status, STATUS_CLIENT);
     *skid = tcp->skid;
+#if WITH_SSL
+    tcp->evssl = evssl;
+#endif
     _cmd_connect(ctx, fd, skctx);
     return fd;
 }

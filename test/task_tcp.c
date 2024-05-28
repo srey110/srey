@@ -39,7 +39,7 @@ static void _startup(task_ctx *task) {
     on_closed(task, _net_close);
     uint64_t id;
     trigger_listen(task, PACK_CUSTZ, NULL, "0.0.0.0", 15000, &id, NETEV_ACCEPT | NETEV_SEND );
-    trigger_connect(task, PACK_CUSTZ, "127.0.0.1", 15000, &id,  NETEV_SEND);
+    trigger_connect(task, PACK_CUSTZ, NULL, "127.0.0.1", 15000, &id,  NETEV_SEND);
 }
 void task_tcp_start(scheduler_ctx *scheduler, name_t name, int32_t pt) {
     _prt = pt;

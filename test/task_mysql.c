@@ -7,7 +7,7 @@ SOCKET _fd;
 uint64_t _skid;
 
 static void _startup(task_ctx *task) {
-    _fd = coro_connect(task, PACK_MYSQL, "127.0.0.1", 3306, &_skid, 0);
+    _fd = coro_connect(task, PACK_MYSQL, NULL, "127.0.0.1", 3306, &_skid, 0);
     if (INVALID_FD == _fd) {
         LOG_ERROR("connect mysql error.");
         return;

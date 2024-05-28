@@ -12,7 +12,7 @@ end
 local function _onchuncked(fin, hdata, hsize)
 end
 local function _timeout()
-    local fd, skid = srey.connect(PACK_TYPE.HTTP, "127.0.0.1", 15003)
+    local fd, skid = srey.connect(PACK_TYPE.HTTP, SSL_NAME.NONE, "127.0.0.1", 15003)
     assert(INVALID_SOCK ~= fd)
     local hrtn = http.get(fd, skid, "/gettest")
     assert(hrtn)

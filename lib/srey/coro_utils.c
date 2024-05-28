@@ -69,16 +69,10 @@ SOCKET coro_wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *
     } else {
         port = NULL == evssl ? 80 : 443;
     }
-    SOCKET fd = coro_connect(task, PACK_WEBSOCK, ip, port, skid, netev);
+    SOCKET fd = coro_connect(task, PACK_WEBSOCK, evssl, ip, port, skid, netev);
     if (INVALID_SOCK == fd) {
         FREE(host);
         return INVALID_SOCK;
-    }
-    if (NULL != evssl) {
-        if (ERR_OK != coro_auth_ssl(task, fd, *skid, 1, evssl)) {
-            FREE(host);
-            return INVALID_SOCK;
-        }
     }
     char *reqpack = websock_handshake_pack(host);
     FREE(host);
@@ -91,14 +85,9 @@ SOCKET coro_wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *
 }
 SOCKET coro_redis_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ip, uint16_t port, const char *key,
     uint64_t *skid, int32_t netev) {
-    SOCKET fd = coro_connect(task, PACK_REDIS, ip, port, skid, netev);
+    SOCKET fd = coro_connect(task, PACK_REDIS, evssl, ip, port, skid, netev);
     if (INVALID_SOCK == fd) {
         return INVALID_SOCK;
-    }
-    if (NULL != evssl) {
-        if (ERR_OK != coro_auth_ssl(task, fd, *skid, 1, evssl)) {
-            return INVALID_SOCK;
-        }
     }
     if (NULL != key
         && 0 != strlen(key)) {

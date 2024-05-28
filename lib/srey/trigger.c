@@ -270,8 +270,7 @@ static void _net_auth_ssl(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, 
     msg.fd = fd;
     msg.skid = skid;
     msg.client = client;
-    msg.sess = ud->sess;
-    ud->sess = 0;
+    msg.sess = skid;
     _task_message_push(task, &msg);
     task_ungrab(task);
 }
@@ -286,7 +285,7 @@ static void _net_close(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_
     msg.fd = fd;
     msg.skid = skid;
     msg.client = client;
-    msg.sess = ud->sess;
+    msg.sess = skid;
     _task_message_push(task, &msg);
     task_ungrab(task);
 }
@@ -330,7 +329,8 @@ static int32_t _net_connect(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t err, u
     task_ungrab(task);
     return ERR_OK;
 }
-SOCKET trigger_connect(task_ctx *task, pack_type pktype, const char *ip, uint16_t port, uint64_t *skid, int32_t netev) {
+SOCKET trigger_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
+    const char *ip, uint16_t port, uint64_t *skid, int32_t netev) {
     ud_cxt ud;
     ZERO(&ud, sizeof(ud));
     ud.pktype = pktype;
@@ -341,14 +341,15 @@ SOCKET trigger_connect(task_ctx *task, pack_type pktype, const char *ip, uint16_
     if (BIT_CHECK(netev, NETEV_SEND)) {
         cbs.s_cb = _net_send;
     }
-    if (BIT_CHECK(netev, NETEV_AUTHSSL)) {
+    if (NULL != evssl
+        || BIT_CHECK(netev, NETEV_AUTHSSL)) {
         cbs.auth_cb = _net_auth_ssl;
     }
     cbs.conn_cb = _net_connect;
     cbs.r_cb = _net_recv;
     cbs.c_cb = _net_close;
     cbs.ud_free = protos_udfree;
-    return ev_connect(&task->scheduler->netev, ip, port, &cbs, &ud, skid);
+    return ev_connect(&task->scheduler->netev, evssl, ip, port, &cbs, &ud, skid);
 }
 static void _net_recvfrom(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
     task_ctx *task = task_grab(ud->data, ud->name);

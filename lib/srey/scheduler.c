@@ -324,6 +324,7 @@ void scheduler_free(scheduler_ctx *scheduler) {
 #endif
     hashmap_free(scheduler->maptasks);
     rwlock_free(&scheduler->lckmaptasks);
+    protos_free();
     FREE(scheduler->worker);
     FREE(scheduler->monitor.version);
     FREE(scheduler);

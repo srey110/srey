@@ -56,14 +56,9 @@ function wbsk.connect(ws, sslname, netev)
             port = 443
         end
     end
-    local fd, skid = srey.connect(PACK_TYPE.WEBSOCK, ip, port, netev)
+    local fd, skid = srey.connect(PACK_TYPE.WEBSOCK, sslname, ip, port, netev)
     if INVALID_SOCK == fd then
         return INVALID_SOCK
-    end
-    if SSL_NAME.NONE ~= sslname then
-        if not srey.syn_auth_ssl(fd, skid, 1, sslname) then
-            return INVALID_SOCK
-        end
     end
     local hspack, size = websock.handshake_pack(url.host)
     srey.sock_session(fd, skid, skid)

@@ -56,6 +56,8 @@ void protos_init(_handshaked_push hspush) {
     _websock_init(hspush);
     _mysql_init(hspush);
 }
+void protos_free(void) {
+}
 void *protos_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
     buffer_ctx *buf, size_t *size, ud_cxt *ud, int32_t *closefd, int32_t *slice) {
     void *unpack;
