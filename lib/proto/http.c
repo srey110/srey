@@ -33,17 +33,17 @@ int32_t _http_check_keyval(http_header_ctx *head, const char *key, const char *v
     }
     return ERR_FAILED;
 }
-static void _check_fileld(http_pack_ctx *pack, http_header_ctx *field, int32_t *status) {
+static void _check_fileld(http_pack_ctx *pack, http_header_ctx *field, int32_t *transfer) {
     switch (tolower(*((char *)field->key.data))) {
     case 'c':
         if (ERR_OK == _http_check_keyval(field, "content-length", NULL)) {
-            *status = CONTENT;
+            *transfer = CONTENT;
             pack->data.lens = strtol(field->value.data, NULL, 10);
         }
         break;
     case 't':
         if (ERR_OK == _http_check_keyval(field, "transfer-encoding", "chunked")){
-            *status = CHUNKED;
+            *transfer = CHUNKED;
             pack->data.lens = 0;
             pack->chunked = 1;
         }
@@ -89,7 +89,7 @@ static char *_http_parse_status(http_pack_ctx *pack) {
     pack->status[2].lens = pos - head;
     return pos + CRLF_SIZE;
 }
-static int32_t _http_parse_head(http_pack_ctx *pack, int32_t *status) {
+static int32_t _http_parse_head(http_pack_ctx *pack, int32_t *transfer) {
     char *head = _http_parse_status(pack);
     if (NULL == head) {
         return ERR_FAILED;
@@ -123,14 +123,14 @@ static int32_t _http_parse_head(http_pack_ctx *pack, int32_t *status) {
         field.value.data = head;
         field.value.lens = pos - head;
         head = pos + CRLF_SIZE;
-        if (CHUNKED != *status) {
-            _check_fileld(pack, &field, status);
+        if (CHUNKED != *transfer) {
+            _check_fileld(pack, &field, transfer);
         }
         arr_header_push_back(&pack->header, &field);
     }
     return ERR_OK;
 }
-static http_pack_ctx *_http_content(buffer_ctx *buf, ud_cxt *ud, int32_t *closefd) {
+static http_pack_ctx *_http_content(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     http_pack_ctx *pack = ud->extra;
     if (buffer_size(buf) >= pack->data.lens) {
         MALLOC(pack->data.data, pack->data.lens);
@@ -139,21 +139,24 @@ static http_pack_ctx *_http_content(buffer_ctx *buf, ud_cxt *ud, int32_t *closef
         ud->extra = NULL;
         return pack;
     } else {
+        BIT_SET(*status, PROTO_MOREDATA);
         return NULL;
     }
 }
-static size_t _http_headlens(buffer_ctx *buf, int32_t *closefd) {
+static size_t _http_headlens(buffer_ctx *buf, int32_t *status) {
     size_t flens = CRLF_SIZE * 2;
     int32_t pos = buffer_search(buf, 0, 0, 0, CONCAT2(FLAG_CRLF,FLAG_CRLF), flens);
     if (ERR_FAILED == pos) {
         if (buffer_size(buf) > MAX_HEADLENS) {
-            *closefd = 1;
+            BIT_SET(*status, PROTO_ERROR);
+        } else {
+            BIT_SET(*status, PROTO_MOREDATA);
         }
         return 0;
     }
     size_t hlens = pos + flens;
     if (hlens > MAX_HEADLENS) {
-        *closefd = 1;
+        BIT_SET(*status, PROTO_ERROR);
         return 0;
     }
     return hlens;
@@ -166,42 +169,42 @@ static http_pack_ctx *_http_headpack(size_t lens) {
     arr_header_init(&((http_pack_ctx *)pack)->header, 0);
     return (http_pack_ctx *)pack;
 }
-http_pack_ctx *_http_parsehead(buffer_ctx *buf, int32_t *status, int32_t *closefd) {
-    size_t hlens = _http_headlens(buf, closefd);
+http_pack_ctx *_http_parsehead(buffer_ctx *buf, int32_t *transfer, int32_t *status) {
+    size_t hlens = _http_headlens(buf, status);
     if (0 == hlens) {
         return NULL;
     }
-    *status = 0;
+    *transfer = 0;
     http_pack_ctx *pack = _http_headpack(hlens);
     ASSERTAB(hlens == buffer_remove(buf, pack->head.data, hlens), "copy buffer failed.");
-    if (ERR_OK != _http_parse_head(pack, status)) {
-        *closefd = 1;
+    if (ERR_OK != _http_parse_head(pack, transfer)) {
+        BIT_SET(*status, PROTO_ERROR);
         http_pkfree(pack);
         return NULL;
     }
     return pack;
 }
-static http_pack_ctx *_http_header(buffer_ctx *buf, ud_cxt *ud, int32_t *closefd, int32_t *slice) {
-    int32_t status;
-    http_pack_ctx *pack = _http_parsehead(buf, &status, closefd);
+static http_pack_ctx *_http_header(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
+    int32_t transfer;
+    http_pack_ctx *pack = _http_parsehead(buf, &transfer, status);
     if (NULL == pack) {
         return NULL;
     }
-    if (CONTENT == status) {
+    if (CONTENT == transfer) {
         if (PACK_TOO_LONG(pack->data.lens)) {
-            *closefd = 1;
+            BIT_SET(*status, PROTO_ERROR);
             http_pkfree(pack);
             return NULL;
         } else {
             ud->extra = pack;
-            ud->status = status;
-            return _http_content(buf, ud, closefd);
+            ud->status = transfer;
+            return _http_content(buf, ud, status);
         }
     } else {
         if (1 == pack->chunked) {
-            *slice = SLICE_START;
+            BIT_SET(*status, PROTO_SLICE_START);
         }
-        ud->status = status;
+        ud->status = transfer;
         return pack;
     }
 }
@@ -216,24 +219,24 @@ static http_pack_ctx *_http_chunkedpack(size_t lens) {
     pctx->chunked = 2;
     return pctx;
 }
-static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud,
-    int32_t *closefd, int32_t *slice) {
+static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     size_t drain;
     http_pack_ctx *pack = ud->extra;
     if (NULL == pack) {
         int32_t pos = buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE);
         if (ERR_FAILED == pos) {
+            BIT_SET(*status, PROTO_MOREDATA);
             return NULL;
         }
         char lensbuf[16] = { 0 };
         if (pos >= sizeof(lensbuf)) {
-            *closefd = 1;
+            BIT_SET(*status, PROTO_ERROR);
             return NULL;
         }
         ASSERTAB(pos == buffer_copyout(buf, 0, lensbuf, pos), "copy buffer failed.");
         size_t dlens = strtol(lensbuf, NULL, 16);
         if (PACK_TOO_LONG(dlens)) {
-            *closefd = 1;
+            BIT_SET(*status, PROTO_ERROR);
             return NULL;
         }
         drain = pos + CRLF_SIZE;
@@ -243,13 +246,14 @@ static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud,
     }
     drain = pack->data.lens + CRLF_SIZE;
     if (buffer_size(buf) < drain) {
+        BIT_SET(*status, PROTO_MOREDATA);
         return NULL;
     }
     if (pack->data.lens > 0) {
-        *slice = SLICE;
+        BIT_SET(*status, PROTO_SLICE);
         ASSERTAB(pack->data.lens == buffer_copyout(buf, 0, pack->data.data, pack->data.lens), "copy buffer failed.");
     } else {
-        *slice = SLICE_END;
+        BIT_SET(*status, PROTO_SLICE_END);
         ud->status = INIT;
     }
     ASSERTAB(drain == buffer_drain(buf, drain), "drain buffer failed.");
@@ -270,21 +274,21 @@ void http_udfree(ud_cxt *ud) {
     http_pkfree(ud->extra);
     ud->extra = NULL;
 }
-http_pack_ctx *http_unpack(buffer_ctx *buf, ud_cxt *ud, int32_t *closefd, int32_t *slice) {
+http_pack_ctx *http_unpack(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     http_pack_ctx *pack;
     switch (ud->status) {
     case INIT:
-        pack = _http_header(buf, ud, closefd, slice);
+        pack = _http_header(buf, ud, status);
         break;
     case CONTENT:
-        pack = _http_content(buf, ud, closefd);
+        pack = _http_content(buf, ud, status);
         break;
     case CHUNKED:
-        pack = _http_chunked(buf, ud, closefd, slice);
+        pack = _http_chunked(buf, ud, status);
         break;
     default:
         pack = NULL;
-        *closefd = 1;
+        BIT_SET(*status, PROTO_ERROR);
         break;
     }
     return pack;

@@ -163,7 +163,7 @@ static void _net_handshaked_dispatch(task_dispatch_arg *arg) {
 }
 static void _net_recv_dispatch(task_dispatch_arg *arg) {
     if (0 == arg->msg.sess) {
-        if (SLICE_NONE != arg->msg.slice) {
+        if (0 != arg->msg.slice) {
             coro_sess corosess;
             if (ERR_OK != _map_corosess_get(arg->task, arg->msg.skid, &corosess)) {
                 _mcoro_create(arg);
@@ -327,7 +327,7 @@ void *coro_slice(task_ctx *task, SOCKET fd, uint64_t skid, size_t *size, int32_t
         LOG_WARN("task: %d, slice connction closed, skid: %"PRIu64".", task->name, skid);
         return NULL;
     }
-    if (SLICE_END == msg.slice) {
+    if (PROTO_SLICE_END == msg.slice) {
         *end = 1;
     }
     *size = msg.size;

@@ -66,11 +66,13 @@ int main(int argc, char *argv[]) {
     SNPRINTF(ca, sizeof(ca) - 1, "%s%s%s%s%s", local, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, "ca.crt");
     SNPRINTF(svcrt, sizeof(svcrt) - 1, "%s%s%s%s%s", local, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, "sever.crt");
     SNPRINTF(svkey, sizeof(svkey) - 1, "%s%s%s%s%s", local, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, "sever.key");
-    SNPRINTF(p12, sizeof(p12) - 1, "%s%s%s%s%s", local, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, "client.p12");
     evssl_ctx *ssl = evssl_new(ca, svcrt, svkey, SSL_FILETYPE_PEM, 0);
     srey_ssl_register(g_scheduler, 100, ssl);
+    SNPRINTF(p12, sizeof(p12) - 1, "%s%s%s%s%s", local, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, "client.p12");
     ssl = evssl_p12_new(p12, "srey", 0);
     srey_ssl_register(g_scheduler, 101, ssl);
+    ssl = evssl_new(NULL, NULL, NULL, SSL_FILETYPE_PEM, 0);
+    srey_ssl_register(g_scheduler, 102, ssl);
 #endif
     task_startup_closing_start(g_scheduler, 10000, 0);
     task_timeout_start(g_scheduler, 10001, 0);
@@ -84,13 +86,13 @@ int main(int argc, char *argv[]) {
 #endif
     task_wbsock_sv_start(g_scheduler, 10008, 0);
     task_http_sv_start(g_scheduler, 10009, 0);
+    task_mysql_start(g_scheduler, 10010, 1);
 #if WITH_CORO
     task_coro_timeout_start(g_scheduler, 20000, 0);
     task_coro_comm1_start(g_scheduler, 20001, 0);
     task_coro_net_start(g_scheduler, 20002, 0);
     task_coro_utils_start(g_scheduler, 20003, 0);
     task_redis_start(g_scheduler, 20004, 0);
-    //task_mysql_start(g_scheduler, 20005, 1);
 #endif
     mutex_lock(&muexit);
     cond_wait(&condexit, &muexit);

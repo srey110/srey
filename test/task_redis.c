@@ -113,7 +113,6 @@ static void _timeout(task_ctx *task, uint64_t sess) {
     buffer_copyout(&pipe, 0, tmp, rsize);
     ev_send(&task->scheduler->netev, _fd, _skid, tmp, rsize, 1);
     buffer_free(&pipe);
-
     trigger_timeout(task, 0, 3000, _timeout);
 }
 static void _startup(task_ctx *task) {

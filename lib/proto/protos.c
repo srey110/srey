@@ -58,26 +58,35 @@ void protos_init(_handshaked_push hspush) {
 }
 void protos_free(void) {
 }
+int32_t protos_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud) {
+    switch (ud->pktype) {
+    case PACK_MYSQL:
+        return mysql_ssl_exchanged(ev, fd, skid, client, ud);
+    default:
+        break;
+    }
+    return ERR_OK;
+}
 void *protos_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
-    buffer_ctx *buf, size_t *size, ud_cxt *ud, int32_t *closefd, int32_t *slice) {
-    void *unpack;
+    buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status) {
     *size = 0;
-    *slice = SLICE_NONE;
+    *status = PROTO_NONE;
+    void *unpack;
     switch (ud->pktype) {
     case PACK_CUSTZ:
-        unpack = custz_unpack(buf, size, ud, closefd);
+        unpack = custz_unpack(buf, ud, size, status);
         break;
     case PACK_HTTP:
-        unpack = http_unpack(buf, ud, closefd, slice);
+        unpack = http_unpack(buf, ud, status);
         break;
     case PACK_WEBSOCK:
-        unpack = websock_unpack(ev, fd, skid, client, buf, ud, closefd, slice);
+        unpack = websock_unpack(ev, fd, skid, client, buf, ud, status);
         break;
     case PACK_REDIS:
-        unpack = redis_unpack(buf, ud, closefd);
+        unpack = redis_unpack(buf, ud, status);
         break;
     case PACK_MYSQL:
-        unpack = mysql_unpack(ev, fd, skid, buf, ud, closefd, slice);
+        unpack = mysql_unpack(ev, fd, skid, buf, ud, status);
         break;
     default:
         unpack = _unpack_default(buf, size, ud);

@@ -89,7 +89,7 @@ void _on_cmd_ssl(watcher_ctx *watcher, cmd_ctx *cmd) {
         || ERR_OK != _check_skid(skctx, cmd->skid)) {
         return;
     }
-    _switch_ssl(watcher, skctx, (struct evssl_ctx *)cmd->arg, (int32_t)cmd->len);
+    _try_ssl_exchange(watcher, skctx, (struct evssl_ctx *)cmd->arg, (int32_t)cmd->len);
 }
 void ev_send(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *data, size_t len, int32_t copy) {
     cmd_ctx cmd;
@@ -137,7 +137,7 @@ void _on_cmd_send(watcher_ctx *watcher, cmd_ctx *cmd) {
     }
     off_buf_ctx buf;
     buf.data = data;
-    buf.len = cmd->len;
+    buf.lens = cmd->len;
     buf.offset = 0;
     if (SOCK_STREAM == skctx->type) {
         _add_bufs_trypost(skctx, &buf);

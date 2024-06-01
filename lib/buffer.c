@@ -6,7 +6,7 @@ typedef struct bufnode_ctx {
     int32_t used;
     struct bufnode_ctx *next;
     char *buffer;
-    size_t buffer_len;
+    size_t buffer_lens;
     size_t misalign;
     size_t off;
 }bufnode_ctx;
@@ -15,7 +15,7 @@ typedef struct bufnode_ctx {
 #define MAX_REALIGN_IN_EXPAND    2048
 #define FIRST_FORMAT_IN_EXPAND   64
 #define NODE_SPACE_PTR(ch) ((ch)->buffer + (ch)->misalign + (ch)->off)
-#define NODE_SPACE_LEN(ch) ((ch)->buffer_len - ((ch)->misalign + (ch)->off))
+#define NODE_SPACE_LEN(ch) ((ch)->buffer_lens - ((ch)->misalign + (ch)->off))
 #define RECOED_IOV(ch, lens) \
     iov[index].IOV_PTR_FIELD = NODE_SPACE_PTR(ch);\
     iov[index].IOV_LEN_FIELD = (IOV_LEN_TYPE)lens;\
@@ -30,14 +30,14 @@ static bufnode_ctx *_node_new(const size_t size) {
     MALLOC(buf, total);
     bufnode_ctx *node = (bufnode_ctx *)buf;
     ZERO(node, sizeof(bufnode_ctx));
-    node->buffer_len = total - sizeof(bufnode_ctx);
+    node->buffer_lens = total - sizeof(bufnode_ctx);
     node->buffer = (char *)(node + 1);
     return node;
 }
 //通过调整是否足够
-static int32_t _should_realign(bufnode_ctx *node, const size_t len) {
-    return node->buffer_len - node->off >= len &&
-        (node->off < node->buffer_len / 2) &&
+static int32_t _should_realign(bufnode_ctx *node, const size_t lens) {
+    return node->buffer_lens - node->off >= lens &&
+        (node->off < node->buffer_lens / 2) &&
         (node->off <= MAX_REALIGN_IN_EXPAND);
 }
 //调整
@@ -90,11 +90,11 @@ static void _node_insert(buffer_ctx *ctx, bufnode_ctx *node) {
         }
         ctx->tail = node;
     }
-    ctx->total_len += node->off;
+    ctx->total_lens += node->off;
 }
 //新建节点并插入
-static bufnode_ctx *_node_insert_new(buffer_ctx *ctx, const size_t len) {
-    bufnode_ctx *pnode = _node_new(len);
+static bufnode_ctx *_node_insert_new(buffer_ctx *ctx, const size_t lens) {
+    bufnode_ctx *pnode = _node_new(lens);
     _node_insert(ctx, pnode);
     return pnode;
 }
@@ -111,7 +111,7 @@ static void _last_with_data(buffer_ctx *ctx) {
     }
 }
 //扩展空间，保证连续内存 used 外部设定
-static bufnode_ctx *_buffer_expand_single(buffer_ctx *ctx, const size_t len) {
+static bufnode_ctx *_buffer_expand_single(buffer_ctx *ctx, const size_t lens) {
     bufnode_ctx *node, **last;
     last = ctx->tail_with_data;
     //最后一个有数据的节点满的
@@ -121,32 +121,32 @@ static bufnode_ctx *_buffer_expand_single(buffer_ctx *ctx, const size_t len) {
     }
     node = *last;
     if (NULL == node) {
-        return _node_insert_new(ctx, len);
+        return _node_insert_new(ctx, lens);
     }
-    if (NODE_SPACE_LEN(node) >= len) {
+    if (NODE_SPACE_LEN(node) >= lens) {
         return node;
     }
     if (0 == node->off) {
         //插入新的，并删除pnode
-        return _node_insert_new(ctx, len);
+        return _node_insert_new(ctx, lens);
     }
     //调整
-    if (_should_realign(node, len)) {
+    if (_should_realign(node, lens)) {
         _align(node);
         return node;
     }
     //空闲空间小于总空间的1/8 或者 已有的数据量大于MAX_COPY_IN_EXPAND(4096)
-    if (NODE_SPACE_LEN(node) < node->buffer_len / 8 
+    if (NODE_SPACE_LEN(node) < node->buffer_lens / 8 
         || node->off > MAX_COPY_IN_EXPAND) {
         if (NULL != node->next 
-            && NODE_SPACE_LEN(node->next) >= len) {
+            && NODE_SPACE_LEN(node->next) >= lens) {
             return node->next;
         } else {
-            return _node_insert_new(ctx, len);
+            return _node_insert_new(ctx, lens);
         }
     }
     //数据迁移
-    bufnode_ctx *tmp = _node_new(node->off + len);
+    bufnode_ctx *tmp = _node_new(node->off + lens);
     tmp->off = node->off;
     memcpy(tmp->buffer, node->buffer + node->misalign, node->off);
     ASSERTAB(*last == node, "tail_with_data not equ pnode.");
@@ -158,15 +158,15 @@ static bufnode_ctx *_buffer_expand_single(buffer_ctx *ctx, const size_t len) {
     FREE(node);
     return tmp;
 }
-static uint32_t _buffer_expand(buffer_ctx *ctx, const size_t len, IOV_TYPE *iov, const uint32_t cnt) {
+static uint32_t _buffer_expand(buffer_ctx *ctx, const size_t lens, IOV_TYPE *iov, const uint32_t cnt) {
     bufnode_ctx *tmp, *next, *node = ctx->tail;
     size_t avail, remain, used, space;
     uint32_t index = 0;
     ASSERTAB(cnt >= 2, "param error.");
     if (NULL == node) {
-        node = _node_new(len);
+        node = _node_new(lens);
         _node_insert(ctx, node);
-        RECOED_IOV(node, len);
+        RECOED_IOV(node, lens);
         return index;
     }
     used = 0; //使用了多少个节点
@@ -182,11 +182,11 @@ static uint32_t _buffer_expand(buffer_ctx *ctx, const size_t len, IOV_TYPE *iov,
             }
         } else {
             node->misalign = 0;
-            avail += node->buffer_len;
+            avail += node->buffer_lens;
             ++used;
-            RECOED_IOV(node, node->buffer_len);
+            RECOED_IOV(node, node->buffer_lens);
         }
-        if (avail >= len) {
+        if (avail >= lens) {
             return index;
         }
         if (used == cnt) {
@@ -195,7 +195,7 @@ static uint32_t _buffer_expand(buffer_ctx *ctx, const size_t len, IOV_TYPE *iov,
     }
     //没有达到最大节点数，空间还不够
     if (used < cnt) {
-        remain = len - avail;
+        remain = lens - avail;
         ASSERTAB(NULL == node, "pnode not equ NULL.");
         tmp = _node_new(remain);
         ctx->tail->next = tmp;
@@ -224,8 +224,8 @@ static uint32_t _buffer_expand(buffer_ctx *ctx, const size_t len, IOV_TYPE *iov,
         ASSERTAB(0 == node->off, "node not empty.");
         FREE(node);
     }
-    ASSERTAB(len >= avail, "logic error.");
-    remain = len - avail;
+    ASSERTAB(lens >= avail, "logic error.");
+    remain = lens - avail;
     tmp = _node_new(remain);
     RECOED_IOV(tmp, remain);
     if (delall) {
@@ -238,7 +238,7 @@ static uint32_t _buffer_expand(buffer_ctx *ctx, const size_t len, IOV_TYPE *iov,
     return index;
 }
 //cnt _buffer_expand_iov 返回数量
-static size_t _buffer_commit_expand(buffer_ctx *ctx, size_t len, IOV_TYPE *iov, const uint32_t cnt) {
+static size_t _buffer_commit_expand(buffer_ctx *ctx, size_t lens, IOV_TYPE *iov, const uint32_t cnt) {
     if (0 == cnt) {
         return 0;
     }
@@ -246,14 +246,14 @@ static size_t _buffer_commit_expand(buffer_ctx *ctx, size_t len, IOV_TYPE *iov, 
     if (1 == cnt
         && NULL != ctx->tail
         && iov[0].IOV_PTR_FIELD == (void *)NODE_SPACE_PTR(ctx->tail)) {
-        ASSERTAB(len <= (size_t)NODE_SPACE_LEN(ctx->tail), "logic error.");
+        ASSERTAB(lens <= (size_t)NODE_SPACE_LEN(ctx->tail), "logic error.");
         ctx->tail->used = 0;
-        ctx->tail->off += len;
-        ctx->total_len += len;
-        if (0 != len) {
+        ctx->tail->off += lens;
+        ctx->total_lens += lens;
+        if (0 != lens) {
             _last_with_data(ctx);
         }
-        return len;
+        return lens;
     }
     uint32_t i;
     bufnode_ctx *node, **first, **fill;
@@ -280,15 +280,15 @@ static size_t _buffer_commit_expand(buffer_ctx *ctx, size_t len, IOV_TYPE *iov, 
     fill = first;
     for (i = 0; i < cnt; ++i) {
         (*fill)->used = 0;
-        if (len > 0) {
-            if (len >= iov[i].IOV_LEN_FIELD) {
+        if (lens > 0) {
+            if (lens >= iov[i].IOV_LEN_FIELD) {
                 (*fill)->off += iov[i].IOV_LEN_FIELD;
                 added += iov[i].IOV_LEN_FIELD;
-                len -= iov[i].IOV_LEN_FIELD;
+                lens -= iov[i].IOV_LEN_FIELD;
             } else {
-                (*fill)->off += len;
-                added += len;
-                len = 0;
+                (*fill)->off += lens;
+                added += lens;
+                lens = 0;
             }
         }
         if ((*fill)->off > 0) {
@@ -296,8 +296,8 @@ static size_t _buffer_commit_expand(buffer_ctx *ctx, size_t len, IOV_TYPE *iov, 
         }
         fill = &(*fill)->next;
     }
-    ASSERTAB(0 == len, "logic error.");
-    ctx->total_len += added;
+    ASSERTAB(0 == lens, "logic error.");
+    ctx->total_lens += added;
     return added;
 }
 void buffer_init(buffer_ctx *ctx) {
@@ -308,19 +308,19 @@ void buffer_free(buffer_ctx *ctx) {
     _free_all_node(ctx->head);
 }
 size_t buffer_size(buffer_ctx *ctx) {
-    return ctx->total_len;
+    return ctx->total_lens;
 }
-int32_t buffer_append(buffer_ctx *ctx, void *data, const size_t len) {
+int32_t buffer_append(buffer_ctx *ctx, void *data, const size_t lens) {
     ASSERTAB(0 == ctx->freeze_write, "write freezed");
-    if (0 == len
+    if (0 == lens
         || NULL == data) {
         return ERR_OK;
     }
     char *tmp = (char*)data;
     IOV_TYPE iov[MAX_EXPAND_NIOV];
-    size_t remain = len;
+    size_t remain = lens;
     size_t i, off = 0;
-    uint32_t num = _buffer_expand(ctx, len, iov, MAX_EXPAND_NIOV);
+    uint32_t num = _buffer_expand(ctx, lens, iov, MAX_EXPAND_NIOV);
     for (i = 0; i < num && remain > 0; i++) {
         if ((IOV_LEN_TYPE)remain >= iov[i].IOV_LEN_FIELD) {
             memcpy(iov[i].IOV_PTR_FIELD, tmp + off, iov[i].IOV_LEN_FIELD);
@@ -332,7 +332,7 @@ int32_t buffer_append(buffer_ctx *ctx, void *data, const size_t len) {
             remain = 0;
         }
     }
-    ASSERTAB(len == _buffer_commit_expand(ctx, len, iov, num), "commit lens not equ buffer lens.");
+    ASSERTAB(lens == _buffer_commit_expand(ctx, lens, iov, num), "commit lens not equ buffer lens.");
     return ERR_OK;
 }
 int32_t buffer_appendv(buffer_ctx *ctx, const char *fmt, ...) {
@@ -349,7 +349,7 @@ int32_t buffer_appendv(buffer_ctx *ctx, const char *fmt, ...) {
             && (rtn < size)) {
             node->used = 0;
             node->off += rtn;
-            ctx->total_len += rtn;
+            ctx->total_lens += rtn;
             break;
         }
         node->used = 0;
@@ -371,19 +371,19 @@ static bufnode_ctx *_search_start(bufnode_ctx *node, size_t start, size_t *total
     }
     return NULL;
 }
-int32_t buffer_copyout(buffer_ctx *ctx, const size_t start, void *out, size_t len) {
+int32_t buffer_copyout(buffer_ctx *ctx, const size_t start, void *out, size_t lens) {
     ASSERTAB(0 == ctx->freeze_read, "read freezed");
-    if (start >= ctx->total_len 
-        || 0 == len) {
+    if (start >= ctx->total_lens 
+        || 0 == lens) {
         return 0;
     }
-    size_t remain = ctx->total_len - start;
-    if (len > remain) {
-        len = remain;
+    size_t remain = ctx->total_lens - start;
+    if (lens > remain) {
+        lens = remain;
     }
     bufnode_ctx *node;
     char *data = out;
-    size_t nread = len;
+    size_t nread = lens;
     if (0 == start) {
         node = ctx->head;
     } else {
@@ -392,42 +392,42 @@ int32_t buffer_copyout(buffer_ctx *ctx, const size_t start, void *out, size_t le
         off = node->off - (off - start);
         if (off > 0) {
             remain = node->off - off;
-            if (len > remain) {
+            if (lens > remain) {
                 memcpy(data, node->buffer + node->misalign + off, remain);
                 data += remain;
-                len -= remain;
+                lens -= remain;
                 node = node->next;
             } else {
-                memcpy(data, node->buffer + node->misalign + off, len);
+                memcpy(data, node->buffer + node->misalign + off, lens);
                 return (int32_t)nread;
             }
         }
     }
-    while (0 != len
-        && len >= node->off) {
+    while (0 != lens
+        && lens >= node->off) {
         memcpy(data, node->buffer + node->misalign, node->off);
         data += node->off;
-        len -= node->off;
+        lens -= node->off;
         node = node->next;
     }
-    if (0 != len) {
-        memcpy(data, node->buffer + node->misalign, len);
+    if (0 != lens) {
+        memcpy(data, node->buffer + node->misalign, lens);
     }
     return (int32_t)nread;
 }
-int32_t buffer_drain(buffer_ctx *ctx, size_t len) {
+int32_t buffer_drain(buffer_ctx *ctx, size_t lens) {
     ASSERTAB(0 == ctx->freeze_read, "read freezed");
     bufnode_ctx *node, *next;
     size_t remain, oldlen;
-    oldlen = ctx->total_len;
+    oldlen = ctx->total_lens;
     if (0 == oldlen) {
         return 0;
     }
-    if (len > oldlen) {
-        len = oldlen;
+    if (lens > oldlen) {
+        lens = oldlen;
     }
-    ctx->total_len -= len;
-    remain = len;
+    ctx->total_lens -= lens;
+    remain = lens;
     for (node = ctx->head; NULL != node && remain >= node->off; node = next) {
         next = node->next;
         remain -= node->off;
@@ -455,10 +455,10 @@ int32_t buffer_drain(buffer_ctx *ctx, size_t len) {
         ctx->head = ctx->tail = NULL;
         ctx->tail_with_data = &(ctx)->head;
     }
-    return (int32_t)len;
+    return (int32_t)lens;
 }
-int32_t buffer_remove(buffer_ctx *ctx, void *out, size_t len) {
-    int32_t rtn = buffer_copyout(ctx, 0, out, len);
+int32_t buffer_remove(buffer_ctx *ctx, void *out, size_t lens) {
+    int32_t rtn = buffer_copyout(ctx, 0, out, lens);
     if (rtn > 0) {
         ASSERTAB(rtn == buffer_drain(ctx, rtn), "drain lens not equ copy lens.");
     }
@@ -480,17 +480,17 @@ static int32_t _search_memcmp(bufnode_ctx *node, cmp_func cmp, size_t off, char 
     return ERR_OK;
 }
 int32_t buffer_search(buffer_ctx *ctx, const int32_t ncs,
-    const size_t start, size_t end, char *what, size_t wlen) {
+    const size_t start, size_t end, char *what, size_t wlens) {
     ASSERTAB(0 == ctx->freeze_read, "read freezed");
-    if (0 == ctx->total_len) {
+    if (0 == ctx->total_lens) {
         return ERR_FAILED;
     }
-    if (0 == end || end >= ctx->total_len) {
-        end = ctx->total_len;
+    if (0 == end || end >= ctx->total_lens) {
+        end = ctx->total_lens;
     } else {
         end++;
     }
-    if (start + wlen > end) {
+    if (start + wlens > end) {
         return ERR_FAILED;
     }
     chr_func chr;
@@ -510,17 +510,17 @@ int32_t buffer_search(buffer_ctx *ctx, const int32_t ncs,
     size_t uioff = node->off - (totaloff - start);
     while (NULL != node
         && 0 != node->off) {
-        if (totaloff - node->off + uioff + wlen > end) {
+        if (totaloff - node->off + uioff + wlens > end) {
             break;
         }
         pstart = node->buffer + node->misalign + uioff;
         pschar = (char *)chr(pstart, what[0], node->off - uioff);
         if (NULL != pschar) {
             uioff += (pschar - pstart);
-            if (totaloff - node->off + uioff + wlen > end) {
+            if (totaloff - node->off + uioff + wlens > end) {
                 break;
             }
-            if (ERR_OK == _search_memcmp(node, cmp, uioff, what, wlen)) {
+            if (ERR_OK == _search_memcmp(node, cmp, uioff, what, wlens)) {
                 return (int32_t)(totaloff - node->off + uioff);
             }
             uioff++;
@@ -543,7 +543,7 @@ int32_t buffer_search(buffer_ctx *ctx, const int32_t ncs,
 }
 char buffer_at(buffer_ctx *ctx, size_t pos) {
     ASSERTAB(0 == ctx->freeze_read, "read freezed");
-    ASSERTAB(pos < ctx->total_len, "index error.");
+    ASSERTAB(pos < ctx->total_lens, "index error.");
     size_t off = 0;
     bufnode_ctx *node = _search_start(ctx->head, pos, &off);
     off = node->off - (off - pos);
@@ -554,16 +554,16 @@ uint32_t buffer_expand(buffer_ctx *ctx, const size_t lens, IOV_TYPE *iov, const 
     ctx->freeze_write = 1;
     return _buffer_expand(ctx, lens, iov, cnt);
 }
-void buffer_commit_expand(buffer_ctx *ctx, size_t len, IOV_TYPE *iov, const uint32_t cnt) {
+void buffer_commit_expand(buffer_ctx *ctx, size_t lens, IOV_TYPE *iov, const uint32_t cnt) {
     ASSERTAB(1 == ctx->freeze_write, "write unfreezed");    
-    ASSERTAB(len == _buffer_commit_expand(ctx, len, iov, cnt), "commit error.");
+    ASSERTAB(lens == _buffer_commit_expand(ctx, lens, iov, cnt), "commit error.");
     ctx->freeze_write = 0;
 }
 uint32_t buffer_get(buffer_ctx *ctx, size_t atmost, IOV_TYPE *iov, const uint32_t cnt) {
     ASSERTAB(0 == ctx->freeze_read, "read freezed");
     ctx->freeze_read = 1;
-    if (atmost > ctx->total_len) {
-        atmost = ctx->total_len;
+    if (atmost > ctx->total_lens) {
+        atmost = ctx->total_lens;
     }
     if (0 == atmost) {
         return 0;
@@ -586,10 +586,10 @@ uint32_t buffer_get(buffer_ctx *ctx, size_t atmost, IOV_TYPE *iov, const uint32_
     }
     return index;
 }
-void buffer_commit_get(buffer_ctx *ctx, size_t len) {
+void buffer_commit_get(buffer_ctx *ctx, size_t lens) {
     ASSERTAB(1 == ctx->freeze_read, "read unfreezed.");
-    if (len > 0) {
-        buffer_drain(ctx, len);
+    if (lens > 0) {
+        buffer_drain(ctx, lens);
     }
     ctx->freeze_read = 0;
 }

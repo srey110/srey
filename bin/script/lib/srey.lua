@@ -42,10 +42,9 @@ local TIMEOUT = {
     NETREAD = 3000,
 }
 local SLICE_TYPE = {
-    NONE  = 0x00,
     START = 0x01,
     SLICE = 0x02,
-    END   = 0x03,
+    END   = 0x04,
 }
 
 function srey.xpcall(func, ...)
@@ -525,7 +524,7 @@ function srey.net_request(fd, skid, dst, reqtype, key, data, size)
 end
 local function _net_recv_dispatch(msg)
     if 0 == msg.sess then
-        if SLICE_TYPE.NONE ~=  msg.slice then
+        if 0 ~=  msg.slice then
             local corosess = _get_coro_sess(msg.skid)
             if not corosess then
                 local func = func_cbs[MSG_TYPE.RECV]

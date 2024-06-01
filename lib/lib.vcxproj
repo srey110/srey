@@ -29,6 +29,7 @@
     <ClInclude Include="algo\sha256.h" />
     <ClInclude Include="algo\urlraw.h" />
     <ClInclude Include="algo\xor.h" />
+    <ClInclude Include="binary.h" />
     <ClInclude Include="buffer.h" />
     <ClInclude Include="config.h" />
     <ClInclude Include="ds\hashmap.h" />
@@ -54,6 +55,8 @@
     <ClInclude Include="proto\dns.h" />
     <ClInclude Include="proto\http.h" />
     <ClInclude Include="proto\mysql.h" />
+    <ClInclude Include="proto\mysql_macro.h" />
+    <ClInclude Include="proto\mysql_parse.h" />
     <ClInclude Include="proto\protos.h" />
     <ClInclude Include="proto\redis.h" />
     <ClInclude Include="proto\urlparse.h" />
@@ -105,6 +108,7 @@
     <ClCompile Include="proto\dns.c" />
     <ClCompile Include="proto\http.c" />
     <ClCompile Include="proto\mysql.c" />
+    <ClCompile Include="proto\mysql_parse.c" />
     <ClCompile Include="proto\protos.c" />
     <ClCompile Include="proto\redis.c" />
     <ClCompile Include="proto\urlparse.c" />

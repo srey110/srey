@@ -156,7 +156,7 @@ static uint32_t _bufs_fill_iov(qu_off_buf_ctx *buf_s, size_t bufsize, IOV_TYPE i
     for (uint32_t i = 0; i < (uint32_t)bufsize; i++) {
         buf = qu_off_buf_at(buf_s, i);
         iov[i].IOV_PTR_FIELD = ((char *)buf->data) + buf->offset;
-        iov[i].IOV_LEN_FIELD = (IOV_LEN_TYPE)(buf->len - buf->offset);
+        iov[i].IOV_LEN_FIELD = (IOV_LEN_TYPE)(buf->lens - buf->offset);
         total += (size_t)iov[i].IOV_LEN_FIELD;
         cnt++;
         if (total >= MAX_SEND_SIZE) {
@@ -173,7 +173,7 @@ static void _bufs_size_del(qu_off_buf_ctx *buf_s, size_t len) {
     off_buf_ctx *buf;
     while (len > 0) {
         buf = qu_off_buf_peek(buf_s);
-        buflen = buf->len - buf->offset;
+        buflen = buf->lens - buf->offset;
         if (len >= buflen) {
             FREE(buf->data);
             len -= buflen;
@@ -241,11 +241,11 @@ static int32_t _sock_send_ssl(SSL *ssl, qu_off_buf_ctx *buf_s, size_t *nsend) {
         if (NULL == buf) {
             break;
         }
-        rtn = evssl_send(ssl, (char *)buf->data + buf->offset, buf->len - buf->offset, &sended);
+        rtn = evssl_send(ssl, (char *)buf->data + buf->offset, buf->lens - buf->offset, &sended);
         if (ERR_OK == rtn) {
             (*nsend) += sended;
             buf->offset += sended;
-            if (buf->offset == buf->len) {
+            if (buf->offset == buf->lens) {
                 qu_off_buf_pop(buf_s);
                 FREE(buf->data);
                 continue;

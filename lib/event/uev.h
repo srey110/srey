@@ -110,7 +110,7 @@ void _on_cmd_setud(watcher_ctx *watcher, cmd_ctx *cmd);
 
 void _add_lsn_inloop(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx);
 void _remove_lsn(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn);
-int32_t _switch_ssl(watcher_ctx *watcher, sock_ctx *skctx, struct evssl_ctx *evssl, int32_t client);
+void _try_ssl_exchange(watcher_ctx *watcher, sock_ctx *skctx, struct evssl_ctx *evssl, int32_t client);
 void _add_conn_inloop(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx);
 void _add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn);
 void _add_write_inloop(watcher_ctx *watcher, sock_ctx *skctx, off_buf_ctx *buf);

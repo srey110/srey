@@ -205,6 +205,15 @@
     <ClInclude Include="proto\mysql.h">
       <Filter>proto</Filter>
     </ClInclude>
+    <ClInclude Include="binary.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="proto\mysql_macro.h">
+      <Filter>proto</Filter>
+    </ClInclude>
+    <ClInclude Include="proto\mysql_parse.h">
+      <Filter>proto</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="memory.c">
@@ -331,6 +340,9 @@
       <Filter>proto</Filter>
     </ClCompile>
     <ClCompile Include="proto\mysql.c">
+      <Filter>proto</Filter>
+    </ClCompile>
+    <ClCompile Include="proto\mysql_parse.c">
       <Filter>proto</Filter>
     </ClCompile>
   </ItemGroup>

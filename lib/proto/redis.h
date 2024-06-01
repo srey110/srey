@@ -38,6 +38,6 @@ void redis_pkfree(redis_pack_ctx *pack);
 void redis_udfree(ud_cxt *ud);
 //%b:binary - size_t %%:%  C format
 char *redis_pack(size_t *size, const char *fmt, ...);
-redis_pack_ctx *redis_unpack(buffer_ctx *buf, ud_cxt *ud, int32_t *closefd);
+redis_pack_ctx *redis_unpack(buffer_ctx *buf, ud_cxt *ud, int32_t *status);
 
 #endif//REDIS_H_

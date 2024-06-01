@@ -3,9 +3,8 @@
 #include "proto/http.h"
 #include "proto/custz.h"
 
-
 ARRAY_DECL(int, arr);
-void test_array(CuTest* tc) {
+static void test_array(CuTest* tc) {
     arr_ctx arry;
     arr_init(&arry, 10);
     CuAssertTrue(tc, 0 == arr_size(&arry));
@@ -61,7 +60,7 @@ void test_array(CuTest* tc) {
 }
 QUEUE_DECL(int, que);
 QUEUE_DECL(int *, qup);
-void test_queue(CuTest* tc) {
+static void test_queue(CuTest* tc) {
     int test = 12;
     int *ptest = &test;
     qup_ctx qp;
@@ -145,7 +144,7 @@ void test_queue(CuTest* tc) {
     
     que_free(&qu);
 }
-void test_system(CuTest* tc) {
+static void test_system(CuTest* tc) {
     PRINT("createid: %"PRIu64"", createid());
     PRINT("threadid: %"PRIu64"", threadid());
     PRINT("procscnt: %d", procscnt());
@@ -259,7 +258,7 @@ void test_system(CuTest* tc) {
     CuAssertTrue(tc, 0 == strcmp(fmt, "110-come"));
     FREE(fmt);
 }
-void test_algo(CuTest* tc) {
+static void test_algo(CuTest* tc) {
     const char *str = "this is test.";
     size_t len = strlen(str);
     CuAssertTrue(tc, 0x7610 == crc16(str, len));
@@ -268,7 +267,8 @@ void test_algo(CuTest* tc) {
     sha1_ctx sha1;
     unsigned char sha1str[SHA1_BLOCK_SIZE];
     sha1_init(&sha1);
-    sha1_update(&sha1, (unsigned char*)str, len);
+    sha1_update(&sha1, (uint8_t *)"this is", strlen("this is"));
+    sha1_update(&sha1, (uint8_t *)" test.", strlen(" test."));
     sha1_final(&sha1, sha1str);
     char out[HEX_ENSIZE(20)];
     tohex(sha1str, sizeof(sha1str), out);
@@ -367,14 +367,17 @@ void test_algo(CuTest* tc) {
     CuAssertTrue(tc, 0 == strcmp(url, enurl));
     FREE(enurl);
 }
-void test_timer(CuTest* tc) {
+static void test_rsa(CuTest* tc) {
+
+}
+static void test_timer(CuTest* tc) {
     timer_ctx timer;
     timer_init(&timer);
     timer_start(&timer);
     MSLEEP(100);
     PRINT("timer_elapsed_ms: %"PRIu64"", timer_elapsed_ms(&timer));
 }
-void test_netutils(CuTest* tc) {
+static void test_netutils(CuTest* tc) {
     sock_init();
     SOCKET sock[2];
     CuAssertTrue(tc, ERR_OK == sock_pair(sock));
@@ -389,7 +392,7 @@ void test_netutils(CuTest* tc) {
     CLOSE_SOCK(sock[1]);
     sock_clean();
 }
-void test_buffer(CuTest* tc) {
+static void test_buffer(CuTest* tc) {
     buffer_ctx buf;
     buffer_init(&buf); 
     char c;
@@ -433,61 +436,60 @@ void test_buffer(CuTest* tc) {
 
     buffer_free(&buf);
 }
-void test_log(CuTest* tc) {
+static void test_log(CuTest* tc) {
     LOG_DEBUG("%s", "LOG_DEBUG");
     LOG_INFO("%s", "LOG_INFO");
     LOG_WARN("%s", "LOG_WARN");
     LOG_ERROR("%s", "LOG_ERROR");
 }
-void test_http(CuTest* tc) {
+static void test_http(CuTest* tc) {
     buffer_ctx buf;
     buffer_init(&buf);
-    int32_t closed = 0;
-    int32_t slice;
+    int32_t status = 0;
     ud_cxt ud;
     ZERO(&ud, sizeof(ud));
     ud.pktype = PACK_HTTP;
     const char *http1 = "POST /users HTTP/1.1\r\n  Host:   api.github.com\r\nContent-Length: 5\r\na: \r\n\r\n1";
     buffer_append(&buf, (void *)http1, strlen(http1));
-    void *rtnbuf = http_unpack(&buf, &ud, &closed, &slice);
+    void *rtnbuf = http_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, NULL == rtnbuf);
     const char *http2 = "2345";
     buffer_append(&buf, (void *)http2, strlen(http2));
-    rtnbuf = http_unpack(&buf, &ud, &closed, &slice);
+    rtnbuf = http_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, NULL != rtnbuf);
     protos_pkfree(PACK_HTTP, rtnbuf);
 
     const char *http3 = "POST /users HTTP/1.1\r\nHost: api.github.com\r\nContent-Length: 5\r\n\r\n12345";
     buffer_append(&buf, (void *)http3, strlen(http3));
-    rtnbuf = http_unpack(&buf, &ud, &closed, &slice);
+    rtnbuf = http_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, NULL != rtnbuf);
     protos_pkfree(PACK_HTTP, rtnbuf);
 
     const char *http4 = "POST /users HTTP/1.1\r\nHost: api.github.com\r\n\r\n";
     buffer_append(&buf, (void *)http4, strlen(http4));
-    rtnbuf = http_unpack(&buf, &ud, &closed, &slice);
+    rtnbuf = http_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, NULL != rtnbuf);
     protos_pkfree(PACK_HTTP, rtnbuf);
 
     const char *http5 = "POST /users HTTP/1.1\r\nHost: api.github.com\r\nTransfer-Encoding: chunked\r\n\r\n7\r\nMozilla\r\nb\r\nDeveloper N\r\n0\r\n\r\n";
     buffer_append(&buf, (void *)http5, strlen(http5));
-    rtnbuf = http_unpack(&buf, &ud, &closed, &slice);
-    CuAssertTrue(tc, NULL != rtnbuf && SLICE_START == slice);
+    rtnbuf = http_unpack(&buf, &ud, &status);
+    CuAssertTrue(tc, NULL != rtnbuf && BIT_CHECK(status, PROTO_SLICE_START));
     protos_pkfree(PACK_HTTP, rtnbuf);
-    rtnbuf = http_unpack(&buf, &ud, &closed, &slice);
-    CuAssertTrue(tc, NULL != rtnbuf && SLICE == slice);
+    rtnbuf = http_unpack(&buf, &ud, &status);
+    CuAssertTrue(tc, NULL != rtnbuf && BIT_CHECK(status, PROTO_SLICE));
     protos_pkfree(PACK_HTTP, rtnbuf);
-    rtnbuf = http_unpack(&buf, &ud, &closed, &slice);
-    CuAssertTrue(tc, NULL != rtnbuf && SLICE == slice);
+    rtnbuf = http_unpack(&buf, &ud, &status);
+    CuAssertTrue(tc, NULL != rtnbuf && BIT_CHECK(status, PROTO_SLICE));
     protos_pkfree(PACK_HTTP, rtnbuf);
-    rtnbuf = http_unpack(&buf, &ud, &closed, &slice);
-    CuAssertTrue(tc, NULL != rtnbuf && SLICE_END == slice);
+    rtnbuf = http_unpack(&buf, &ud, &status);
+    CuAssertTrue(tc, NULL != rtnbuf && BIT_CHECK(status, PROTO_SLICE_END));
     protos_pkfree(PACK_HTTP, rtnbuf);
     protos_udfree(&ud);
 
     buffer_free(&buf);
 }
-void test_url(CuTest* tc) {
+static void test_url(CuTest* tc) {
     //[协议类型]://[访问资源需要的凭证信息]@[服务器地址]:[端口号]/[资源层级UNIX文件路径][文件名]?[查询]#[片段ID]
     url_ctx url;
     const char *url1 = "ftp://user:psw@127.0.0.1:8080/path/file?a=1&b=2#anchor";
@@ -646,7 +648,7 @@ void test_url(CuTest* tc) {
         && NULL == url.anchor.data
         && NULL == url.param[0].key.data);
 }
-void test_hash_ring(CuTest* tc) {
+static void test_hash_ring(CuTest* tc) {
     hash_ring_t *ring = hash_ring_create(8, HASH_FUNCTION_SHA1);
     CuAssertTrue(tc, NULL != ring);
     CuAssertTrue(tc, NULL == hash_ring_find_next_highest_item(ring, 0));
@@ -782,7 +784,7 @@ void test_hash_ring(CuTest* tc) {
     CuAssertTrue(tc, hash_ring_set_mode(ring, HASH_RING_MODE_LIBMEMCACHED_COMPAT) == HASH_RING_OK);
     hash_ring_free(ring);
 }
-void test_redis_pack(CuTest* tc) {
+static void test_redis_pack(CuTest* tc) {
     size_t size;
     size_t blens = strlen("binary");
     char *cmd = redis_pack(&size, "  Test %d   %.2f %hhd  %hd %lld  %ld %s %b  %%  end  ",
@@ -847,255 +849,255 @@ void test_redis_pack(CuTest* tc) {
     CuAssertTrue(tc, 0 == strcmp("*2\r\n$3\r\n%%l\r\n$6\r\n123.46\r\n", cmd));
     FREE(cmd);
 }
-void test_redis_unpack(CuTest* tc) {
-    int32_t closed = 0;
+static void test_redis_unpack(CuTest* tc) {
+    int32_t status = 0;
     ud_cxt ud;
     ZERO(&ud, sizeof(ud_cxt));
     buffer_ctx buf;
     buffer_init(&buf);
     //simple string
     buffer_appendv(&buf, "%s", "+\r\n");
-    redis_pack_ctx *pk = redis_unpack(&buf, &ud, &closed);
+    redis_pack_ctx *pk = redis_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, 0 == buffer_size(&buf) && RESP_STRING == pk->proto && 0 == pk->len);
     redis_pkfree(pk);
     buffer_appendv(&buf, "%s", "+OK\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
+    pk = redis_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, 0 == buffer_size(&buf) && RESP_STRING == pk->proto && 0 == strcmp("OK", pk->data));
     redis_pkfree(pk);
     buffer_appendv(&buf, "%s", "-Error message\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
+    pk = redis_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, 0 == buffer_size(&buf) && RESP_ERROR == pk->proto && 0 == strcmp("Error message", pk->data));
     redis_pkfree(pk);
     //INTEGER big number
     buffer_appendv(&buf, "%s", "(\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
-    CuAssertTrue(tc, NULL == pk && 1 == closed);
-    closed = 0;
+    pk = redis_unpack(&buf, &ud, &status);
+    CuAssertTrue(tc, NULL == pk && BIT_CHECK(status, PROTO_ERROR));
+    status = 0;
     buffer_drain(&buf, buffer_size(&buf));
     buffer_appendv(&buf, "%s", "(123a\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
-    CuAssertTrue(tc, NULL == pk && 1 == closed);
-    closed = 0;
+    pk = redis_unpack(&buf, &ud, &status);
+    CuAssertTrue(tc, NULL == pk && BIT_CHECK(status, PROTO_ERROR));
+    status = 0;
     buffer_drain(&buf, buffer_size(&buf));
 
     buffer_appendv(&buf, "%s", ":-123\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
+    pk = redis_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, 0 == buffer_size(&buf) && RESP_INTEGER == pk->proto && -123 == pk->ival);
     redis_pkfree(pk);
     buffer_appendv(&buf, "%s", "(12345678\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
+    pk = redis_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, 0 == buffer_size(&buf) && RESP_BIGNUM == pk->proto && 12345678 == pk->ival);
     redis_pkfree(pk);
     //NULL
     buffer_appendv(&buf, "%s", "_a\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
-    CuAssertTrue(tc, NULL == pk && 1 == closed);
-    closed = 0;
+    pk = redis_unpack(&buf, &ud, &status);
+    CuAssertTrue(tc, NULL == pk && BIT_CHECK(status, PROTO_ERROR));
+    status = 0;
     buffer_drain(&buf, buffer_size(&buf));
 
     buffer_appendv(&buf, "%s", "_\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
+    pk = redis_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, 0 == buffer_size(&buf) && RESP_NIL == pk->proto);
     redis_pkfree(pk);
     //BOOL
     buffer_appendv(&buf, "%s", "#\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
-    CuAssertTrue(tc, NULL == pk && 1 == closed);
-    closed = 0;
+    pk = redis_unpack(&buf, &ud, &status);
+    CuAssertTrue(tc, NULL == pk && BIT_CHECK(status, PROTO_ERROR));
+    status = 0;
     buffer_drain(&buf, buffer_size(&buf));
     buffer_appendv(&buf, "%s", "#A\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
-    CuAssertTrue(tc, NULL == pk && 1 == closed);
-    closed = 0;
+    pk = redis_unpack(&buf, &ud, &status);
+    CuAssertTrue(tc, NULL == pk && BIT_CHECK(status, PROTO_ERROR));
+    status = 0;
     buffer_drain(&buf, buffer_size(&buf));
 
     buffer_appendv(&buf, "%s", "#T\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
+    pk = redis_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, 0 == buffer_size(&buf) && RESP_BOOL == pk->proto && 1 == pk->ival);
     redis_pkfree(pk);
     buffer_appendv(&buf, "%s", "#f\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
+    pk = redis_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, 0 == buffer_size(&buf) && RESP_BOOL == pk->proto && 0 == pk->ival);
     redis_pkfree(pk);
     //DOUBLE
     buffer_appendv(&buf, "%s", ",\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
+    pk = redis_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, NULL == pk);
-    closed = 0;
+    status = 0;
     buffer_drain(&buf, buffer_size(&buf));
     buffer_appendv(&buf, "%s", ",12.354a\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
+    pk = redis_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, NULL == pk);
-    closed = 0;
+    status = 0;
     buffer_drain(&buf, buffer_size(&buf));
 
     buffer_appendv(&buf, "%s", ",inf\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
+    pk = redis_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, 0 == buffer_size(&buf) && RESP_DOUBLE == pk->proto);
     redis_pkfree(pk);
     buffer_appendv(&buf, "%s", ",-inf\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
+    pk = redis_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, 0 == buffer_size(&buf) && RESP_DOUBLE == pk->proto);
     redis_pkfree(pk);
     buffer_appendv(&buf, "%s", ",NAN\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
+    pk = redis_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, 0 == buffer_size(&buf) && RESP_DOUBLE == pk->proto);
     redis_pkfree(pk);
     buffer_appendv(&buf, "%s", ",-nan\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
+    pk = redis_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, 0 == buffer_size(&buf) && RESP_DOUBLE == pk->proto);
     redis_pkfree(pk);
     buffer_appendv(&buf, "%s", ",12.345\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
+    pk = redis_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, 0 == buffer_size(&buf) && RESP_DOUBLE == pk->proto);
     redis_pkfree(pk);
     buffer_appendv(&buf, "%s", ",-1.23400E-03\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
+    pk = redis_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, 0 == buffer_size(&buf) && RESP_DOUBLE == pk->proto);
     redis_pkfree(pk);
     
     //BULK
     buffer_appendv(&buf, "%s", "!\r\n\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
-    CuAssertTrue(tc, NULL == pk && 1 == closed);
-    closed = 0;
+    pk = redis_unpack(&buf, &ud, &status);
+    CuAssertTrue(tc, NULL == pk && BIT_CHECK(status, PROTO_ERROR));
+    status = 0;
     buffer_drain(&buf, buffer_size(&buf));
     buffer_appendv(&buf, "%s", "!10A\r\n\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
-    CuAssertTrue(tc, NULL == pk && 1 == closed);
-    closed = 0;
+    pk = redis_unpack(&buf, &ud, &status);
+    CuAssertTrue(tc, NULL == pk && BIT_CHECK(status, PROTO_ERROR));
+    status = 0;
     buffer_drain(&buf, buffer_size(&buf));
     buffer_appendv(&buf, "%s", "!5\r\nError\rA");
-    pk = redis_unpack(&buf, &ud, &closed);
-    CuAssertTrue(tc, NULL == pk && 1 == closed);
-    closed = 0;
+    pk = redis_unpack(&buf, &ud, &status);
+    CuAssertTrue(tc, NULL == pk && BIT_CHECK(status, PROTO_ERROR));
+    status = 0;
     buffer_drain(&buf, buffer_size(&buf));
     buffer_appendv(&buf, "%s", "=9\r\ntxtAhello\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
-    CuAssertTrue(tc, pk == NULL && 1 == closed);
-    closed = 0;
+    pk = redis_unpack(&buf, &ud, &status);
+    CuAssertTrue(tc, pk == NULL && BIT_CHECK(status, PROTO_ERROR));
+    status = 0;
     buffer_drain(&buf, buffer_size(&buf));
     buffer_appendv(&buf, "%s", "=3\r\ntxt\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
-    CuAssertTrue(tc, pk == NULL && 1 == closed);
-    closed = 0;
+    pk = redis_unpack(&buf, &ud, &status);
+    CuAssertTrue(tc, pk == NULL && BIT_CHECK(status, PROTO_ERROR));
+    status = 0;
     buffer_drain(&buf, buffer_size(&buf));
 
     buffer_appendv(&buf, "%s", "$-1\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
+    pk = redis_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, 0 == buffer_size(&buf) && RESP_BSTRING == pk->proto && -1 == pk->len);
     redis_pkfree(pk);
     buffer_appendv(&buf, "%s", "$0\r\n\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
+    pk = redis_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, 0 == buffer_size(&buf) && RESP_BSTRING == pk->proto && 0 == pk->len);
     redis_pkfree(pk);
     buffer_appendv(&buf, "%s", "$5\r\nhello\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
+    pk = redis_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, 0 == buffer_size(&buf) && RESP_BSTRING == pk->proto && 0 == strcmp("hello", pk->data));
     redis_pkfree(pk);
     buffer_appendv(&buf, "%s", "!5\r\nError\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
+    pk = redis_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, 0 == buffer_size(&buf) && RESP_BERROR == pk->proto && 0 == strcmp("Error", pk->data));
     redis_pkfree(pk);
     buffer_appendv(&buf, "%s", "!0\r\n\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
+    pk = redis_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, 0 == buffer_size(&buf) && RESP_BERROR == pk->proto && 0 == pk->len);
     redis_pkfree(pk);
     buffer_appendv(&buf, "%s", "!5\r\nError\r");
-    pk = redis_unpack(&buf, &ud, &closed);
-    CuAssertTrue(tc, NULL == pk && 0 == closed);
+    pk = redis_unpack(&buf, &ud, &status);
+    CuAssertTrue(tc, NULL == pk && !BIT_CHECK(status, PROTO_ERROR));
     buffer_appendv(&buf, "%s", "\n");
-    pk = redis_unpack(&buf, &ud, &closed);
+    pk = redis_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, 0 == buffer_size(&buf) && RESP_BERROR == pk->proto && 0 == strcmp("Error", pk->data));
     redis_pkfree(pk);
     buffer_appendv(&buf, "%s", "=9\r\ntxt:hello\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
+    pk = redis_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, 0 == buffer_size(&buf) && RESP_VERB == pk->proto && 0 == strcmp("txt", pk->venc) && 0 == strcmp("hello", pk->data));
     redis_pkfree(pk);
     buffer_appendv(&buf, "%s", "=4\r\ntxt:\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
+    pk = redis_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, 0 == buffer_size(&buf) && RESP_VERB == pk->proto && 0 == strcmp("txt", pk->venc) && 0 == pk->len);
     redis_pkfree(pk);
 
     //Aggregate
     buffer_appendv(&buf, "%s", "*\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
-    CuAssertTrue(tc, NULL == pk && 1 == closed);
-    closed = 0;
+    pk = redis_unpack(&buf, &ud, &status);
+    CuAssertTrue(tc, NULL == pk && BIT_CHECK(status, PROTO_ERROR));
+    status = 0;
     buffer_drain(&buf, buffer_size(&buf));
     buffer_appendv(&buf, "%s", "*10A\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
-    CuAssertTrue(tc, NULL == pk && 1 == closed);
-    closed = 0;
+    pk = redis_unpack(&buf, &ud, &status);
+    CuAssertTrue(tc, NULL == pk && BIT_CHECK(status, PROTO_ERROR));
+    status = 0;
     buffer_drain(&buf, buffer_size(&buf));
 
     buffer_appendv(&buf, "%s", "*0\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
+    pk = redis_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, 0 == pk->nelem && 0 == buffer_size(&buf));
     redis_pkfree(pk);
     buffer_appendv(&buf, "%s", "*-1\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
+    pk = redis_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, -1 == pk->nelem && 0 == buffer_size(&buf));
     redis_pkfree(pk);
     buffer_appendv(&buf, "%s", "|0\r\n+test\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
+    pk = redis_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, 0 == pk->nelem && 0 == buffer_size(&buf) && 0 == strcmp("test", pk->next->data));
     redis_pkfree(pk);
     buffer_appendv(&buf, "%s", "|-1\r\n+test\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
+    pk = redis_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, -1 == pk->nelem && 0 == buffer_size(&buf) && 0 == strcmp("test", pk->next->data));
     redis_pkfree(pk);
     buffer_appendv(&buf, "%s", "*3\r\n$3\r\nSET\r\n$4\r\nK");
-    pk = redis_unpack(&buf, &ud, &closed);
-    CuAssertTrue(tc, NULL == pk && 0 == closed);
+    pk = redis_unpack(&buf, &ud, &status);
+    CuAssertTrue(tc, NULL == pk && !BIT_CHECK(status, PROTO_ERROR));
     buffer_appendv(&buf, "%s", "EY1\r\n$5\r\nTEST1\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
+    pk = redis_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, 0 == buffer_size(&buf) && 0 == strcmp("SET", pk->next->data) && 0 == strcmp("KEY1", pk->next->next->data) && 0 == strcmp("TEST1", pk->next->next->next->data));
     redis_pkfree(pk);
     buffer_appendv(&buf, "%s", "*2\r\n*3\r\n:1\r\n$5\r\nhello\r\n:2\r\n#f\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
+    pk = redis_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, 0 == buffer_size(&buf) && NULL != pk);
     redis_pkfree(pk);
     buffer_appendv(&buf, "%s", "%2\r\n+first\r\n:1\r\n+second\r\n:2\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
+    pk = redis_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, 0 == buffer_size(&buf) && 0 == strcmp("first", pk->next->data) && 2 ==  pk->next->next->next->next->ival);
     redis_pkfree(pk);
     buffer_appendv(&buf, "%s", "~5\r\n+orange\r\n+apple\r\n#t\r\n:100\r\n:999\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
+    pk = redis_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, 0 == buffer_size(&buf) && NULL != pk);
     redis_pkfree(pk);
     buffer_appendv(&buf, "%s", "|1\r\n+key-popularity\r\n%2\r\n$1\r\na\r\n,0.1923\r\n$1\r\nb\r\n,0.0012\r\n*2\r\n:2039123\r\n:9543892\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
+    pk = redis_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, 0 == buffer_size(&buf) && NULL != pk);
     redis_pkfree(pk);
     buffer_appendv(&buf, "%s", "*3\r\n:1\r\n:2\r\n|1\r\n+ttl\r\n:3600\r\n:3\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
+    pk = redis_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, 0 == buffer_size(&buf) && NULL != pk);
     redis_pkfree(pk);
     buffer_appendv(&buf, "%s", ">3\r\n+message\r\n+somechannel\r\n+this is the message\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
+    pk = redis_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, 0 == buffer_size(&buf) && NULL != pk);
     redis_pkfree(pk);
     buffer_appendv(&buf, "%s", "$9\r\nGet-Reply\r\n>3\r\n+message\r\n+somechannel\r\n+this is the message\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
+    pk = redis_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, 0 != buffer_size(&buf) && NULL != pk);
     redis_pkfree(pk);
-    pk = redis_unpack(&buf, &ud, &closed);
+    pk = redis_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, 0 == buffer_size(&buf) && NULL != pk);
     redis_pkfree(pk);
     buffer_appendv(&buf, "%s", ">3\r\n+message\r\n+somechannel\r\n+this is the message\r\n$9\r\nGet-Reply\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
+    pk = redis_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, 0 != buffer_size(&buf) && NULL != pk);
     redis_pkfree(pk);
-    pk = redis_unpack(&buf, &ud, &closed);
+    pk = redis_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, 0 == buffer_size(&buf) && NULL != pk);
     redis_pkfree(pk);
     buffer_appendv(&buf, "%s", "*4\r\n%2\r\n+first\r\n:1\r\n+second\r\n:2\r\n%2\r\n+first2\r\n:3\r\n+second2\r\n:4\r\n,12.345\r\n$5\r\nhello\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
+    pk = redis_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, 0 == buffer_size(&buf) && NULL != pk);
     redis_pkfree(pk);
     buffer_appendv(&buf, "%s", "*6\r\n%2\r\n%1\r\n+first1\r\n:1\r\n%1\r\n+first2\r\n:2\r\n+second1\r\n:2\r\n%2\r\n+first3\r\n:3\r\n|1\r\n+ttl\r\n:3600\r\n+second2\r\n:4\r\n,12.345\r\n$5\r\nhello\r\n%0\r\n*1\r\n+array\r\n");
-    pk = redis_unpack(&buf, &ud, &closed);
+    pk = redis_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, 0 == buffer_size(&buf) && NULL != pk);
     redis_pkfree(pk);
 
@@ -1107,6 +1109,7 @@ void test_utils(CuSuite* suite) {
     SUITE_ADD_TEST(suite, test_queue);
     SUITE_ADD_TEST(suite, test_system);
     SUITE_ADD_TEST(suite, test_algo);
+    SUITE_ADD_TEST(suite, test_rsa);
     SUITE_ADD_TEST(suite, test_timer);
     SUITE_ADD_TEST(suite, test_netutils);
     SUITE_ADD_TEST(suite, test_buffer);

@@ -68,5 +68,13 @@ struct buf_ctx *split(const void *ptr, size_t plens, const void *sep, size_t sep
 //变参 返回值需要free
 char *formatargs(const char *fmt, va_list args);
 char *formatv(const char *fmt, ...);
+int32_t is_little(void);
+//数字 char* 转换
+void pack_integer(char *buf, uint64_t val, int32_t size, int32_t islittle);
+int64_t unpack_integer(const char *buf, int32_t size, int32_t islittle, int32_t issigned);
+void pack_float(char *buf, float val, int32_t islittle);
+float unpack_float(const char *buf, int32_t islittle);
+void pack_double(char *buf, double val, int32_t islittle);
+double unpack_double(const char *buf, int32_t islittle);
 
 #endif//UTILS_H_

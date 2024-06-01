@@ -94,7 +94,8 @@ SOCKET coro_redis_connect(task_ctx *task, struct evssl_ctx *evssl, const char *i
         size_t size;
         char *auth = redis_pack(&size, "AUTH %s", key);
         redis_pack_ctx *rtn = coro_send(task, fd, *skid, auth, size, &size, 0);
-        if (RESP_STRING != rtn->proto
+        if (NULL == rtn
+            || RESP_STRING != rtn->proto
             || 2 != rtn->len
             || 0 != _memicmp(rtn->data, "ok", (size_t)rtn->len)) {
             ev_close(&task->scheduler->netev, fd, *skid);

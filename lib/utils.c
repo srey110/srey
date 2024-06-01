@@ -9,6 +9,7 @@
 static atomic_t _exindex = 0;
 #endif
 
+#define _MC ((1 << CHAR_BIT) - 1) //0xff
 static void *_ud;
 static void(*_sig_cb)(int32_t, void *);
 static atomic64_t _ids = 1;
@@ -629,4 +630,59 @@ char *formatv(const char *fmt, ...) {
     char *buf = formatargs(fmt, args);
     va_end(args);
     return buf;
+}
+static const union {
+    int32_t dummy;
+    int8_t little;  /* true if machine is little endian */
+} nativeendian = { 1 };
+int32_t is_little(void) {
+    return nativeendian.little;
+}
+void pack_integer(char *buf, uint64_t val, int32_t size, int32_t islittle) {
+    buf[islittle ? 0 : size - 1] = (int8_t)(val & _MC);
+    for (int32_t i = 1; i < size; i++) {
+        val >>= CHAR_BIT;
+        buf[islittle ? i : size - 1 - i] = (int8_t)(val & _MC);
+    }
+}
+int64_t unpack_integer(const char *buf, int32_t size, int32_t islittle, int32_t issigned) {
+    uint64_t rtn = 0;
+    int32_t limit = (size <= sizeof(uint64_t)) ? size : sizeof(uint64_t);
+    for (int32_t i = limit - 1; i >= 0; i--) {
+        rtn <<= CHAR_BIT;
+        rtn |= (uint64_t)(uint8_t)buf[islittle ? i : size - 1 - i];
+    }
+    if (size < sizeof(uint64_t)) {
+        if (issigned) {
+            uint64_t mask = (uint64_t)1 << (size * CHAR_BIT - 1);
+            rtn = ((rtn ^ mask) - mask);
+        }
+    }
+    return (int64_t)rtn;
+}
+static void _copy_with_endian(char *dest, const char *src, size_t size, int32_t islittle) {
+    if (islittle == is_little()) {
+        memcpy(dest, src, size);
+    } else {
+        dest += size - 1;
+        while (0 != size--) {
+            *(dest--) = *(src++);
+        }
+    }
+}
+void pack_float(char *buf, float val, int32_t islittle) {
+    _copy_with_endian(buf, (const char *)&val, sizeof(val), islittle);
+}
+float unpack_float(const char *buf, int32_t islittle) {
+    float rtn;
+    _copy_with_endian((char *)&rtn, buf, sizeof(rtn), islittle);
+    return rtn;
+}
+void pack_double(char *buf, double val, int32_t islittle) {
+    _copy_with_endian(buf, (const char *)&val, sizeof(val), islittle);
+}
+double unpack_double(const char *buf, int32_t islittle) {
+    double rtn;
+    _copy_with_endian((char *)&rtn, buf, sizeof(rtn), islittle);
+    return rtn;
 }

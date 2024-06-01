@@ -3,7 +3,7 @@
 
 #include "event/evpub.h"
 
-typedef void(*_handshaked_push)(SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud, int32_t *closefd, int32_t erro);
+typedef int32_t(*_handshaked_push)(SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud, int32_t erro);
 typedef enum pack_type {
     PACK_NONE = 0x0,
     PACK_HTTP,
@@ -12,18 +12,21 @@ typedef enum pack_type {
     PACK_MYSQL,
     PACK_CUSTZ
 }pack_type;
-typedef enum slice_type {
-    SLICE_NONE = 0x00,
-    SLICE_START,
-    SLICE,
-    SLICE_END,
-}slice_type;
+typedef enum proto_status {
+    PROTO_NONE = 0x00,
+    PROTO_SLICE_START = 0x01,
+    PROTO_SLICE = 0x02,
+    PROTO_SLICE_END = 0x04,
+    PROTO_ERROR = 0x08,
+    PROTO_MOREDATA = 0x10
+}proto_status;
 
 void protos_pkfree(pack_type type, void *data);
 void protos_udfree(void *arg);
 void protos_init(_handshaked_push hspush);
 void protos_free(void);
+int32_t protos_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud);
 void *protos_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
-    buffer_ctx *buf, size_t *size, ud_cxt *ud, int32_t *closefd, int32_t *slice);
+    buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status);
 
 #endif//PROTOS_H_

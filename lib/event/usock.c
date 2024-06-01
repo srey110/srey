@@ -172,9 +172,9 @@ static inline int32_t _call_conn_cb(ev_ctx *ev, tcp_ctx *tcp, int32_t err) {
     }
     return ERR_OK;
 }
-static inline void _call_auth_cb(ev_ctx *ev, tcp_ctx *tcp) {
-    if (NULL != tcp->cbs.auth_cb) {
-        tcp->cbs.auth_cb(ev, tcp->sock.fd, tcp->skid, BIT_CHECK(tcp->status, STATUS_CLIENT), &tcp->ud);
+static inline void _call_ssl_exchanged_cb(ev_ctx *ev, tcp_ctx *tcp) {
+    if (NULL != tcp->cbs.xch_cb) {
+        tcp->cbs.xch_cb(ev, tcp->sock.fd, tcp->skid, BIT_CHECK(tcp->status, STATUS_CLIENT), &tcp->ud);
     }
 }
 static inline void _call_recv_cb(ev_ctx *ev, tcp_ctx *tcp, size_t nread) {
@@ -197,6 +197,63 @@ static inline void _call_recvfrom_cb(ev_ctx *ev, udp_ctx *udp, size_t nread) {
     if (nread > 0) {
         udp->cbs.rf_cb(ev, udp->sock.fd, udp->skid, udp->buf_r.IOV_PTR_FIELD, nread, &udp->addr, &udp->ud);
     }
+}
+static int32_t _ssl_exchange(watcher_ctx *watcher, tcp_ctx *tcp, struct evssl_ctx *evssl) {
+#if WITH_SSL
+    tcp->ssl = evssl_setfd(evssl, tcp->sock.fd);
+    if (NULL == tcp->ssl) {
+        return ERR_FAILED;
+    }
+    if (BIT_CHECK(tcp->status, STATUS_CLIENT)) {
+        switch (evssl_tryconn(tcp->ssl)) {
+        case ERR_FAILED://错误
+            return ERR_FAILED;
+        case 1://完成
+            _call_ssl_exchanged_cb(watcher->ev, tcp);
+            break;
+        case ERR_OK://等待更多数据
+            BIT_SET(tcp->status, STATUS_AUTHSSL);
+            break;
+        }
+    } else {
+        BIT_SET(tcp->status, STATUS_AUTHSSL);
+    }
+#endif
+    return ERR_OK;
+}
+void _try_ssl_exchange(watcher_ctx *watcher, sock_ctx *skctx, struct evssl_ctx *evssl, int32_t client) {
+#if WITH_SSL
+    if (SOCK_STREAM != skctx->type) {
+        LOG_WARN("can't switch ssl on udp.");
+        return;
+    }
+    tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
+    if (NULL != tcp->ssl) {
+        LOG_WARN("ssl already in use.");
+        return;
+    }
+    if (BIT_CHECK(tcp->status, STATUS_SWITCHSSL)) {
+        LOG_WARN("repeat request switch ssl.");
+        return;
+    }
+    if (BIT_CHECK(tcp->status, STATUS_ERROR)) {
+        return;
+    }
+    if (client) {
+        BIT_SET(tcp->status, STATUS_CLIENT);
+    } else {
+        BIT_REMOVE(tcp->status, STATUS_CLIENT);
+    }
+    if (BIT_CHECK(skctx->events, EVENT_WRITE)) {
+        tcp->evssl = evssl;
+        BIT_SET(tcp->status, STATUS_SWITCHSSL);
+    } else {
+        if (ERR_OK != _ssl_exchange(watcher, tcp, evssl)) {
+            _disconnect(watcher, skctx);
+            LOG_ERROR("switch ssl error.");
+        }
+    }
+#endif
 }
 //rw
 static int32_t _tcp_recv(watcher_ctx *watcher, tcp_ctx *tcp) {
@@ -227,6 +284,13 @@ static int32_t _tcp_send(watcher_ctx *watcher, tcp_ctx *tcp) {
     }
     if (0 == qu_off_buf_size(&tcp->buf_s)) {
         _del_event(watcher, tcp->sock.fd, &tcp->sock.events, EVENT_WRITE, &tcp->sock);
+        if (BIT_CHECK(tcp->status, STATUS_SWITCHSSL)) {
+            BIT_REMOVE(tcp->status, STATUS_SWITCHSSL);
+            if (ERR_OK != _ssl_exchange(watcher, tcp, tcp->evssl)) {
+                LOG_ERROR("switch ssl error.");
+                return ERR_FAILED;
+            }
+        }
         return ERR_OK;
     }
 #ifdef MANUAL_ADD
@@ -261,7 +325,7 @@ static void _on_rw_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
             BIT_SET(tcp->status, STATUS_ERROR);
             break;
         case 1://完成
-            _call_auth_cb(watcher->ev, tcp);
+            _call_ssl_exchanged_cb(watcher->ev, tcp);
             BIT_REMOVE(tcp->status, STATUS_AUTHSSL);
 #ifdef READV_EINVAL
             return;
@@ -298,36 +362,6 @@ static void _on_rw_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
         _close_tcp(watcher, tcp);
     }
 }
-int32_t _switch_ssl(watcher_ctx *watcher, sock_ctx *skctx, struct evssl_ctx *evssl, int32_t client) {
-#if WITH_SSL
-    tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
-    if (NULL != tcp->ssl) {
-        LOG_WARN("repeat switch ssl.");
-        return ERR_OK;
-    }
-    tcp->ssl = evssl_setfd(evssl, tcp->sock.fd);
-    if (NULL == tcp->ssl) {
-        return ERR_FAILED;
-    }
-    if (client) {
-        BIT_SET(tcp->status, STATUS_CLIENT);
-        switch (evssl_tryconn(tcp->ssl)) {
-        case ERR_FAILED://错误
-            return ERR_FAILED;
-        case 1://完成
-            _call_auth_cb(watcher->ev, tcp);
-            break;
-        case ERR_OK://等待更多数据
-            BIT_SET(tcp->status, STATUS_AUTHSSL);
-            break;
-        }
-    } else {
-        BIT_REMOVE(tcp->status, STATUS_CLIENT);
-        BIT_SET(tcp->status, STATUS_AUTHSSL);
-    }
-#endif
-    return ERR_OK;
-}
 void _add_write_inloop(watcher_ctx *watcher, sock_ctx *skctx, off_buf_ctx *buf) {
     if (SOCK_STREAM == skctx->type) {
         tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
@@ -358,7 +392,7 @@ static void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
     }
 #if WITH_SSL
     if (NULL != tcp->evssl) {
-        if (ERR_OK != _switch_ssl(watcher, skctx, tcp->evssl, 1)) {
+        if (ERR_OK != _ssl_exchange(watcher, tcp, tcp->evssl)) {
             _call_close_cb(watcher->ev, tcp);
             _remove_fd(watcher, tcp->sock.fd);
             pool_push(&watcher->pool, &tcp->sock);
@@ -378,11 +412,17 @@ SOCKET ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
     netaddr_ctx addr;
     if (ERR_OK != netaddr_set(&addr, ip, port)) {
         LOG_ERROR("netaddr_set %s:%d, %s", ip, port, ERRORSTR(ERRNO));
+        if (NULL != cbs->ud_free) {
+            cbs->ud_free(ud);
+        }
         return INVALID_SOCK;
     }
     SOCKET fd = _create_sock(SOCK_STREAM, netaddr_family(&addr));
     if (INVALID_SOCK == fd) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
+        if (NULL != cbs->ud_free) {
+            cbs->ud_free(ud);
+        }
         return INVALID_SOCK;
     }
     sock_raddr(fd);
@@ -393,6 +433,9 @@ SOCKET ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
         if (!ERR_CONNECT_RETRIABLE(rtn)) {
             LOG_ERROR("connect %s:%d, %s", ip, port, ERRORSTR(ERRNO));
             CLOSE_SOCK(fd);
+            if (NULL != cbs->ud_free) {
+                cbs->ud_free(ud);
+            }
             return INVALID_SOCK;
         }
     }
@@ -452,15 +495,15 @@ static void _on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
 }
 void _add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) {
     sock_ctx *skctx = pool_pop(&watcher->pool, fd, &lsn->cbs, &lsn->ud);
+    tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
 #if WITH_SSL
     if (NULL != lsn->evssl) {
-        if (ERR_OK != _switch_ssl(watcher, skctx, lsn->evssl, 0)) {
+        if (ERR_OK != _ssl_exchange(watcher, tcp, lsn->evssl)) {
             pool_push(&watcher->pool, skctx);
             return;
         }
     }
 #endif
-    tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
     _add_fd(watcher, skctx);
     if (ERR_OK != _call_acp_cb(watcher->ev, tcp)) {
         _remove_fd(watcher, fd);
@@ -488,12 +531,18 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
     netaddr_ctx addr;
     if (ERR_OK != netaddr_set(&addr, ip, port)) {
         LOG_ERROR("netaddr_set %s:%d, %s", ip, port, ERRORSTR(ERRNO));
+        if (NULL != cbs->ud_free) {
+            cbs->ud_free(ud);
+        }
         return ERR_FAILED;
     }
 #ifndef SO_REUSEPORT
     SOCKET fd = _listen(&addr);
     if (INVALID_SOCK == fd) {
         LOG_ERROR("listen %s:%d error.", ip, port);
+        if (NULL != cbs->ud_free) {
+            cbs->ud_free(ud);
+        }
         return ERR_FAILED;
     }
 #endif
@@ -527,6 +576,9 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
             _close_lsnsock(lsn, i);
             FREE(lsn->lsnsock);
             FREE(lsn);
+            if (NULL != cbs->ud_free) {
+                cbs->ud_free(ud);
+            }
             return ERR_FAILED;
         }
 #endif
@@ -642,7 +694,7 @@ static int32_t _on_udp_wcb(watcher_ctx *watcher, udp_ctx *udp) {
     while (NULL != (buf = qu_off_buf_pop(&udp->buf_s))) {
         addr = (netaddr_ctx *)buf->data;
         iov.IOV_PTR_FIELD = (char *)buf->data + sizeof(netaddr_ctx);
-        iov.IOV_LEN_FIELD = (IOV_LEN_TYPE)buf->len;
+        iov.IOV_LEN_FIELD = (IOV_LEN_TYPE)buf->lens;
         _init_msghdr(&msg, addr, &iov, 1);
         rtn = sendmsg(udp->sock.fd, &msg, 0);
         FREE(buf->data);
