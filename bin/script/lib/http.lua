@@ -52,10 +52,10 @@ local function _http_send(rsp, fd, skid, msg, ckfunc)
     if 1 == pack.chunked then
         pack.cksize = 0
         pack.fin = false
-        local data, hdata, hsize, fin
+        local ok, data, hdata, hsize, fin
         while true do
-            fin, data, _ = srey.syn_slice(fd, skid)
-            if not data then
+            ok, fin, data, _ = srey.syn_slice(fd, skid)
+            if not ok then
                 return
             end
             hdata, hsize = http.data(data)

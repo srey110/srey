@@ -173,8 +173,8 @@ static inline int32_t _call_conn_cb(ev_ctx *ev, tcp_ctx *tcp, int32_t err) {
     return ERR_OK;
 }
 static inline void _call_ssl_exchanged_cb(ev_ctx *ev, tcp_ctx *tcp) {
-    if (NULL != tcp->cbs.xch_cb) {
-        tcp->cbs.xch_cb(ev, tcp->sock.fd, tcp->skid, BIT_CHECK(tcp->status, STATUS_CLIENT), &tcp->ud);
+    if (NULL != tcp->cbs.exch_cb) {
+        tcp->cbs.exch_cb(ev, tcp->sock.fd, tcp->skid, BIT_CHECK(tcp->status, STATUS_CLIENT), &tcp->ud);
     }
 }
 static inline void _call_recv_cb(ev_ctx *ev, tcp_ctx *tcp, size_t nread) {

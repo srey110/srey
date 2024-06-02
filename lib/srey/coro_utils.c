@@ -7,6 +7,7 @@
 #include "proto/websock.h"
 #include "proto/http.h"
 #include "proto/redis.h"
+#include "proto/mysql.h"
 #include "buffer.h"
 
 #if WITH_CORO
@@ -76,15 +77,13 @@ SOCKET coro_wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *
     }
     char *reqpack = websock_handshake_pack(host);
     FREE(host);
-    ev_ud_sess(&task->scheduler->netev, fd, *skid, *skid);
     ev_send(&task->scheduler->netev, fd, *skid, reqpack, strlen(reqpack), 0);
-    if (ERR_OK != coro_handshake(task, fd, *skid)) {
+    if (ERR_OK != coro_handshaked(task, fd, *skid)) {
         return INVALID_SOCK;
     }
     return fd;
 }
-SOCKET coro_redis_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ip, uint16_t port, const char *key,
-    uint64_t *skid, int32_t netev) {
+SOCKET coro_redis_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ip, uint16_t port, const char *key, uint64_t *skid, int32_t netev) {
     SOCKET fd = coro_connect(task, PACK_REDIS, evssl, ip, port, skid, netev);
     if (INVALID_SOCK == fd) {
         return INVALID_SOCK;
@@ -101,6 +100,17 @@ SOCKET coro_redis_connect(task_ctx *task, struct evssl_ctx *evssl, const char *i
             ev_close(&task->scheduler->netev, fd, *skid);
             return INVALID_SOCK;
         }
+    }
+    return fd;
+}
+SOCKET coro_mysql_connect(task_ctx *task, const char *ip, uint16_t port, struct evssl_ctx *evssl,
+    const char *user, const char *password, const char *database, const char *charset, int32_t maxpk, uint64_t *skid) {
+    SOCKET fd = mysql_connect(task, ip, port, evssl, user, password, database, charset, maxpk, skid);
+    if (INVALID_SOCK == fd) {
+        return INVALID_SOCK;
+    }
+    if (ERR_OK != coro_handshaked(task, fd, *skid)) {
+        return INVALID_SOCK;
     }
     return fd;
 }

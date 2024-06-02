@@ -41,7 +41,7 @@ typedef void(*recvfrom_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, size
 typedef struct cbs_ctx {
     accept_cb acp_cb;
     connect_cb conn_cb;
-    ssl_exchanged_cb xch_cb;
+    ssl_exchanged_cb exch_cb;
     recv_cb r_cb;
     send_cb s_cb;
     close_cb c_cb;

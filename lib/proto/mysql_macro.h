@@ -7,6 +7,16 @@
 #define MYSQL_PACK_ERR    0xff
 #define MYSQL_CLIENT_CAPS 227271
 
+#define COM_QUIT 0x01
+#define COM_INIT_DB 0x02
+#define COM_QUERY 0x03
+#define COM_PING 0x0e
+#define COM_STMT_PREPARE 0x16
+#define COM_STMT_EXECUTE 0x17
+#define COM_STMT_SEND_LONG_DATA 0x18
+#define COM_STMT_CLOSE 0x19
+#define COM_STMT_RESET 0x1a
+
 #define MYSQL_CACHING_SHA2     "caching_sha2_password"
 #define MYSQL_NATIVE_PASSWORLD "mysql_native_password"
 

@@ -64,7 +64,7 @@
       <Filter>taskcoro</Filter>
     </ClCompile>
     <ClCompile Include="task_mysql.c">
-      <Filter>tasks</Filter>
+      <Filter>taskcoro</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -119,7 +119,7 @@
       <Filter>taskcoro</Filter>
     </ClInclude>
     <ClInclude Include="task_mysql.h">
-      <Filter>tasks</Filter>
+      <Filter>taskcoro</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

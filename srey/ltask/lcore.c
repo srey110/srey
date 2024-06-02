@@ -109,7 +109,7 @@ static int32_t _lcore_connect(lua_State *lua) {
     lua_pushinteger(lua, skid);
     return 2;
 }
-static int32_t _lcore_auth_ssl(lua_State *lua) {
+static int32_t _lcore_ssl_exchange(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
     int32_t client = (int32_t)luaL_checkinteger(lua, 3);
@@ -311,7 +311,7 @@ LUAMOD_API int luaopen_core(lua_State *lua) {
         { "listen", _lcore_listen },
         { "unlisten", _lcore_unlisten },
         { "connect", _lcore_connect },
-        { "auth_ssl", _lcore_auth_ssl },
+        { "ssl_exchange", _lcore_ssl_exchange },
         { "udp", _lcore_udp },
 
         { "send", _lcore_send },

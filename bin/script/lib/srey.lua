@@ -27,7 +27,7 @@ local MSG_TYPE = {
     TIMEOUT    = 0x03,
     ACCEPT     = 0x04,
     CONNECT    = 0x05,
-    AUTHSSL    = 0x06,
+    SSLEXCHANGED = 0x06,
     HANDSHAKED = 0x07,
     RECV       = 0x08,
     SEND       = 0x09,
@@ -156,7 +156,7 @@ local function _closing_dispatch()
     end
 end
 
-local function _set_coro_sess(sess, coro, ms, func, ...)
+local function _set_coro_sess(coro, sess, mtype, ms, func, ...)
     assert(not coro_sess[sess], "repeat session")
     local timeout = 0
     if ms > 0 then
@@ -165,20 +165,24 @@ local function _set_coro_sess(sess, coro, ms, func, ...)
     coro_sess[sess] = {
         timeout = timeout,
         coro = coro,
+        mtype = mtype,
         func = func,
         args = {...}
     }
 end
-local function _get_coro_sess(sess)
+local function _get_coro_sess(sess, mtype)
     local corosess = coro_sess[sess]
     if not corosess then
+        return nil
+    end
+    if mtype ~= corosess.mtype and MSG_TYPE.CLOSE ~= mtype then
         return nil
     end
     coro_sess[sess] = nil
     return corosess
 end
-local function _coro_wait(sess, ms)
-    _set_coro_sess(sess, coro_running, ms)
+local function _coro_wait(sess, mtype, ms)
+    _set_coro_sess(coro_running, sess, mtype, ms)
     nyield = nyield + 1
     local msg = coroutine_yield()
     nyield = nyield - 1
@@ -189,16 +193,16 @@ end
 function srey.sleep(ms)
     local sess = srey.id()
     core.timeout(sess, ms)
-    _coro_wait(sess, 0)
+    _coro_wait(sess, MSG_TYPE.TIMEOUT, 0)
 end
 --func(...)
 function srey.timeout(ms, func, ...)
     local sess = srey.id()
-    _set_coro_sess(sess, nil, 0, func, ...)
+    _set_coro_sess(nil, sess, MSG_TYPE.TIMEOUT, 0, func, ...)
     core.timeout(sess, ms)
 end
 local function _timeout_dispatch(msg)
-    local corosess = _get_coro_sess(msg.sess)
+    local corosess = _get_coro_sess(msg.sess, MSG_TYPE.TIMEOUT)
     if not corosess then
         WARN("can't find session %s.", tostring(msg.sess))
         return
@@ -241,7 +245,7 @@ function srey.request(dst, reqtype, data, size, copy)
     local sess = srey.id()
     core.request(dtask, reqtype, sess, data, size, copy)
     srey.task_ungrab(dtask)
-    local msg = _coro_wait(sess, TIMEOUT.REQUEST)
+    local msg = _coro_wait(sess, MSG_TYPE.RESPONSE, TIMEOUT.REQUEST)
     if MSG_TYPE.TIMEOUT == msg.mtype then
         WARN("request timeout, session %s.", tostring(sess))
         return nil
@@ -278,7 +282,7 @@ function srey.response(dst, sess, erro, data, size, copy)
     srey.task_ungrab(dtask)
 end
 local function _response_dispatch(msg)
-    local corosess = _get_coro_sess(msg.sess)
+    local corosess = _get_coro_sess(msg.sess, MSG_TYPE.RESPONSE)
     if not corosess then
         WARN("can't find session %s.", tostring(msg.sess))
         return
@@ -327,7 +331,7 @@ end
 
 --fd skid
 function srey.connect(pktype, sslname, ip, port, netev)
-    local ssl = nil
+    local ssl
     if SSL_NAME.NONE ~= sslname then
         ssl = core.ssl_qury(sslname)
         if not ssl then
@@ -340,7 +344,7 @@ function srey.connect(pktype, sslname, ip, port, netev)
         WARN("connect %s:%d error.", ip, port)
         return INVALID_SOCK
     end
-    local msg = _coro_wait(skid, TIMEOUT.CONNECT)
+    local msg = _coro_wait(skid, MSG_TYPE.CONNECT, TIMEOUT.CONNECT)
     if MSG_TYPE.TIMEOUT == msg.mtype then
         srey.close(fd, skid)
         WARN("connect %s:%d timeout, skid %s.", ip, port, tostring(skid))
@@ -351,21 +355,14 @@ function srey.connect(pktype, sslname, ip, port, netev)
         return INVALID_SOCK
     end
     if nil ~= ssl then
-        msg = _coro_wait(skid, TIMEOUT.NETREAD)
-        if MSG_TYPE.TIMEOUT == msg.mtype then
-            srey.close(fd, skid)
-            WARN("auth ssl timeout, skid %s.", tostring(skid))
-            return INVALID_SOCK
-        end
-        if MSG_TYPE.CLOSE == msg.mtype then
-            WARN("connction closed, skid %s.", tostring(skid))
+        if not srey.wait_ssl_exchanged(fd, skid) then
             return INVALID_SOCK
         end
     end
     return fd, skid
 end
 local function _net_connect_dispatch(msg)
-    local corosess = _get_coro_sess(msg.skid)
+    local corosess = _get_coro_sess(msg.skid, MSG_TYPE.CONNECT)
     if not corosess then
         WARN("can't find session %s.", tostring(msg.skid))
         return
@@ -374,26 +371,29 @@ local function _net_connect_dispatch(msg)
 end
 
 --func(pktype, fd, skid, client)
-function srey.on_auth_ssl(func)
-    func_cbs[MSG_TYPE.AUTHSSL] = func
+function srey.on_ssl_exchanged(func)
+    func_cbs[MSG_TYPE.SSLEXCHANGED] = func
 end
-function srey.auth_ssl(fd, skid, client, sslname)
-    local ssl
-    if SSL_NAME.NONE ~= sslname then
-        ssl = core.ssl_qury(sslname)
-        if not ssl then
-            WARN("ssl_qury not find ssl name %d.", sslname)
-            return false
-        end
-    end
-    core.auth_ssl(fd, skid, client, ssl)
-    return true
-end
-function srey.syn_auth_ssl(fd, skid, client, sslname)
-    if not srey.auth_ssl(fd, skid, client, sslname) then
+function srey.ssl_exchange(fd, skid, client, sslname)
+    if SSL_NAME.NONE == sslname then
         return false
     end
-    local msg = _coro_wait(skid, TIMEOUT.NETREAD)
+    local ssl = core.ssl_qury(sslname)
+    if not ssl then
+        WARN("ssl_qury not find ssl name %d.", sslname)
+        return false
+    end
+    core.ssl_exchange(fd, skid, client, ssl)
+    return true
+end
+function srey.syn_ssl_exchange(fd, skid, client, sslname)
+    if not srey.ssl_exchange(fd, skid, client, sslname) then
+        return false
+    end
+    return srey.wait_ssl_exchanged(fd, skid)
+end
+function srey.wait_ssl_exchanged(fd, skid)
+    local msg = _coro_wait(skid, MSG_TYPE.SSLEXCHANGED, TIMEOUT.NETREAD)
     if MSG_TYPE.TIMEOUT == msg.mtype then
         srey.close(fd, skid)
         WARN("auth ssl timeout, skid %s.", tostring(skid))
@@ -405,10 +405,10 @@ function srey.syn_auth_ssl(fd, skid, client, sslname)
     end
     return true
 end
-local function _net_auth_ssl_dispatch(msg)
-    local corosess = _get_coro_sess(msg.skid)
+local function _net_ssl_exchanged_dispatch(msg)
+    local corosess = _get_coro_sess(msg.skid, MSG_TYPE.SSLEXCHANGED)
     if not corosess then
-        local func = func_cbs[MSG_TYPE.AUTHSSL]
+        local func = func_cbs[MSG_TYPE.SSLEXCHANGED]
         if func then
             _coro_run(_coro_cb, func, msg.pktype, msg.fd, msg.skid, msg.client)
         end
@@ -423,7 +423,7 @@ function srey.on_handshaked(func)
 end
 --bool
 function srey.wait_handshaked(fd, skid)
-    local msg = _coro_wait(skid, TIMEOUT.NETREAD)
+    local msg = _coro_wait(skid, MSG_TYPE.HANDSHAKED, TIMEOUT.NETREAD)
     if MSG_TYPE.TIMEOUT == msg.mtype then
         srey.close(fd, skid)
         WARN("handshake timeout, skid %s.", tostring(skid))
@@ -436,19 +436,15 @@ function srey.wait_handshaked(fd, skid)
     return ERR_OK == msg.erro
 end
 local function _net_handshaked_dispatch(msg)
-    if 0 == msg.sess then
+    local corosess = _get_coro_sess(msg.skid, MSG_TYPE.HANDSHAKED)
+    if not corosess then
         local func = func_cbs[MSG_TYPE.HANDSHAKED]
         if func then
             _coro_run(_coro_cb, func, msg.pktype, msg.fd, msg.skid, msg.client, msg.erro)
         end
-        return
+    else
+        _coro_resume(corosess.coro, msg)
     end
-    local corosess = _get_coro_sess(msg.skid)
-    if not corosess then
-        WARN("can't find session %s.", tostring(msg.skid))
-        return
-    end
-    _coro_resume(corosess.coro, msg)
 end
 
 --func(pktype, fd, skid, client, slice, data, size)
@@ -458,11 +454,8 @@ end
 function srey.send(fd, skid, data, size, copy)
     core.send(fd, skid, data, size, copy)
 end
---data size
-function srey.syn_send(fd, skid, data, size, copy)
-    srey.sock_session(fd, skid, skid)
-    srey.send(fd, skid, data, size, copy)
-    local msg = _coro_wait(skid, TIMEOUT.NETREAD)
+local function _wait_net_recv(fd, skid)
+    local msg = _coro_wait(skid, MSG_TYPE.RECV, TIMEOUT.NETREAD)
     if MSG_TYPE.TIMEOUT == msg.mtype then
         srey.close(fd, skid)
         WARN("send timeout, skid %s.", tostring(skid))
@@ -472,21 +465,25 @@ function srey.syn_send(fd, skid, data, size, copy)
         WARN("connction closed, skid %s.", tostring(skid))
         return nil
     end
+    return msg
+end
+--data size
+function srey.syn_send(fd, skid, data, size, copy)
+    srey.sock_session(fd, skid, skid)
+    srey.send(fd, skid, data, size, copy)
+    local msg = _wait_net_recv(fd, skid)
+    if not msg then
+        return nil
+    end
     return msg.data, msg.size
 end
---bool data size
+--bool fin data size
 function srey.syn_slice(fd, skid)
-    local msg = _coro_wait(skid, TIMEOUT.NETREAD)
-    if MSG_TYPE.TIMEOUT == msg.mtype then
-        srey.close(fd, skid)
-        WARN("slice timeout, skid %s.", tostring(skid))
+    local msg = _wait_net_recv(fd, skid)
+    if not msg then
         return false
     end
-    if MSG_TYPE.CLOSE == msg.mtype then
-        WARN("slice connction closed, skid %s.", tostring(skid))
-        return false
-    end
-    return SLICE_TYPE.END == msg.slice, msg.data, msg.size
+    return true, SLICE_TYPE.END == msg.slice, msg.data, msg.size
 end
 --bool  fd pktype HTTP
 function srey.net_call(fd, skid, dst, reqtype, key, data, size)
@@ -525,7 +522,7 @@ end
 local function _net_recv_dispatch(msg)
     if 0 == msg.sess then
         if 0 ~=  msg.slice then
-            local corosess = _get_coro_sess(msg.skid)
+            local corosess = _get_coro_sess(msg.skid, MSG_TYPE.RECV)
             if not corosess then
                 local func = func_cbs[MSG_TYPE.RECV]
                 if func then
@@ -543,7 +540,7 @@ local function _net_recv_dispatch(msg)
         end
         return
     end
-    local corosess = _get_coro_sess(msg.skid)
+    local corosess = _get_coro_sess(msg.skid, MSG_TYPE.RECV)
     if not corosess then
         WARN("can't find session %s.", tostring(msg.skid))
         return
@@ -570,7 +567,7 @@ function srey.close(fd, skid)
     core.close(fd, skid)
 end
 local function _net_close_dispatch(msg)
-    local corosess = _get_coro_sess(msg.skid)
+    local corosess = _get_coro_sess(msg.skid, MSG_TYPE.CLOSE)
     if corosess then
         _coro_resume(corosess.coro, msg)
     end
@@ -603,7 +600,7 @@ function srey.syn_sendto(fd, skid, ip, port, data, size)
         WARN("sendto error, skid %s.", tostring(skid))
         return nil
     end
-    local msg = _coro_wait(skid, TIMEOUT.NETREAD)
+    local msg = _coro_wait(skid, MSG_TYPE.RECVFROM, TIMEOUT.NETREAD)
     if MSG_TYPE.TIMEOUT == msg.mtype then
         srey.sock_session(fd, skid, 0)
         WARN("sendto timeout, skid %s.", tostring(skid))
@@ -619,7 +616,7 @@ local function _net_recvfrom_dispatch(msg)
         end
         return
     end
-    local corosess = _get_coro_sess(msg.skid)
+    local corosess = _get_coro_sess(msg.skid, MSG_TYPE.RECVFROM)
     if not corosess then
         WARN("can't find session %s.", tostring(msg.skid))
         return
@@ -663,8 +660,8 @@ function message_dispatch(msg)
         _net_accept_dispatch(msg)
     elseif MSG_TYPE.CONNECT == msg.mtype then
         _net_connect_dispatch(msg)
-    elseif MSG_TYPE.AUTHSSL == msg.mtype then
-        _net_auth_ssl_dispatch(msg)
+    elseif MSG_TYPE.SSLEXCHANGED == msg.mtype then
+        _net_ssl_exchanged_dispatch(msg)
     elseif MSG_TYPE.HANDSHAKED == msg.mtype then
         _net_handshaked_dispatch(msg)
     elseif MSG_TYPE.RECV == msg.mtype then

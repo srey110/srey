@@ -36,7 +36,7 @@ static void _test_syn_ssl1_send(task_ctx *task) {
         return;
     }
     struct evssl_ctx *ssl = srey_ssl_qury(task->scheduler, 101);
-    if (ERR_OK != coro_auth_ssl(task, fd, skid, 1, ssl)) {
+    if (ERR_OK != coro_ssl_exchange(task, fd, skid, 1, ssl)) {
         LOG_ERROR("%s", "coro_auth_ssl error");
         return;
     }

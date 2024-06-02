@@ -3,8 +3,8 @@
 #if WITH_CORO
 
 static int32_t _prt = 0;
-SOCKET _fd;
-uint64_t _skid;
+static SOCKET _fd;
+static uint64_t _skid = 0;
 static void _net_close(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, uint8_t client) {
     if (_prt) {
         LOG_WARN("redis connection closed");
@@ -113,6 +113,9 @@ static void _timeout(task_ctx *task, uint64_t sess) {
     buffer_copyout(&pipe, 0, tmp, rsize);
     ev_send(&task->scheduler->netev, _fd, _skid, tmp, rsize, 1);
     buffer_free(&pipe);
+    if (_prt) {
+        LOG_INFO("redis test ok.");
+    }
     trigger_timeout(task, 0, 3000, _timeout);
 }
 static void _startup(task_ctx *task) {
@@ -123,6 +126,7 @@ static void _startup(task_ctx *task) {
         LOG_ERROR("connect redis error.");
         return;
     }
+    LOG_INFO("redis connected.");
     trigger_timeout(task, 0, 1000, _timeout);
 }
 void task_redis_start(scheduler_ctx *scheduler, name_t name, int32_t pt) {

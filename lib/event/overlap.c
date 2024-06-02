@@ -193,8 +193,8 @@ static inline int32_t _call_conn_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp, int32_t 
     return ERR_OK;
 }
 static inline void _call_ssl_exchanged_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp) {
-    if (NULL != oltcp->cbs.xch_cb) {
-        oltcp->cbs.xch_cb(ev, oltcp->ol_r.fd, oltcp->skid, BIT_CHECK(oltcp->status, STATUS_CLIENT), &oltcp->ud);
+    if (NULL != oltcp->cbs.exch_cb) {
+        oltcp->cbs.exch_cb(ev, oltcp->ol_r.fd, oltcp->skid, BIT_CHECK(oltcp->status, STATUS_CLIENT), &oltcp->ud);
     }
 }
 static inline void _call_recv_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp, size_t nread) {

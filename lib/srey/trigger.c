@@ -53,7 +53,7 @@ void _message_run(task_ctx *task, message_ctx *msg) {
             task->_net_connect(task, msg->fd, msg->skid, msg->pktype, msg->erro);
         }
         break;
-    case MSG_TYPE_AUTHSSL:
+    case MSG_TYPE_SSLEXCHANGED:
         if (NULL != task->_auth_ssl) {
             task->_auth_ssl(task, msg->fd, msg->skid, msg->pktype, msg->client);
         }
@@ -207,8 +207,7 @@ int32_t _message_handshaked_push(SOCKET fd, uint64_t skid, int32_t client, ud_cx
     msg.skid = skid;
     msg.client = client;
     msg.erro = erro;
-    msg.sess = ud->sess;
-    ud->sess = 0;
+    msg.sess = skid;
     _task_message_push(task, &msg);
     task_ungrab(task);
     return ERR_OK;
@@ -282,7 +281,7 @@ static void _net_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t cli
         return;
     }
     message_ctx msg;
-    msg.mtype = MSG_TYPE_AUTHSSL;
+    msg.mtype = MSG_TYPE_SSLEXCHANGED;
     msg.pktype = ud->pktype;
     msg.fd = fd;
     msg.skid = skid;
@@ -326,7 +325,7 @@ int32_t trigger_listen(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl
     }
     if (NULL != evssl
         || BIT_CHECK(netev, NETEV_AUTHSSL)) {
-        cbs.xch_cb = _net_ssl_exchanged;
+        cbs.exch_cb = _net_ssl_exchanged;
     }
     cbs.r_cb = _net_recv;
     cbs.c_cb = _net_close;
@@ -363,7 +362,7 @@ SOCKET trigger_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl
     }
     if (NULL != evssl
         || BIT_CHECK(netev, NETEV_AUTHSSL)) {
-        cbs.xch_cb = _net_ssl_exchanged;
+        cbs.exch_cb = _net_ssl_exchanged;
     }
     cbs.conn_cb = _net_connect;
     cbs.r_cb = _net_recv;
@@ -385,7 +384,7 @@ SOCKET trigger_conn_extra(task_ctx *task, pack_type pktype, void *extra,
         cbs.s_cb = _net_send;
     }
     if (BIT_CHECK(netev, NETEV_AUTHSSL)) {
-        cbs.xch_cb = _net_ssl_exchanged;
+        cbs.exch_cb = _net_ssl_exchanged;
     }
     cbs.conn_cb = _net_connect;
     cbs.r_cb = _net_recv;

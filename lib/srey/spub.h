@@ -27,7 +27,7 @@ typedef void(*_net_accept_cb)(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t 
 typedef void(*_net_recv_cb)(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, uint8_t client, uint8_t slice, void *data, size_t size);
 typedef void(*_net_send_cb)(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, uint8_t client, size_t size);
 typedef void(*_net_connect_cb)(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, int32_t erro);
-typedef void(*_net_auth_ssl_cb)(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, uint8_t client);
+typedef void(*_net_ssl_exchanged_cb)(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, uint8_t client);
 typedef void(*_net_handshake_cb)(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, uint8_t client, int32_t erro);
 typedef void(*_net_close_cb)(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, uint8_t client);
 typedef void(*_net_recvfrom_cb)(task_ctx *task, SOCKET fd, uint64_t skid, char ip[IP_LENS], uint16_t port, void *data, size_t size);
@@ -39,7 +39,7 @@ typedef enum msg_type {
     MSG_TYPE_TIMEOUT,
     MSG_TYPE_ACCEPT,
     MSG_TYPE_CONNECT,
-    MSG_TYPE_AUTHSSL,
+    MSG_TYPE_SSLEXCHANGED,
     MSG_TYPE_HANDSHAKED,
     MSG_TYPE_RECV,
     MSG_TYPE_SEND,
@@ -140,7 +140,7 @@ struct task_ctx {
     _net_recvfrom_cb _net_recvfrom;
     _request_cb _request;
     _response_cb _response;
-    _net_auth_ssl_cb _auth_ssl;
+    _net_ssl_exchanged_cb _auth_ssl;
     spin_ctx lckmsg;
     qu_message_ctx qumsg;
 };

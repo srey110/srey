@@ -14,7 +14,7 @@ local function _timeout()
 
     fd, skid = srey.connect(PACK_TYPE.CUSTZ, SSL_NAME.NONE, "127.0.0.1", 15001, NET_EV.AUTHSSL)
     assert(INVALID_SOCK ~= fd)
-    local auth = srey.syn_auth_ssl(fd, skid, 1, SSL_NAME.CLIENT)
+    local auth = srey.syn_ssl_exchange(fd, skid, 1, SSL_NAME.CLIENT)
     assert(auth)
     sdata, ssize = custz.pack("this is ssl syn send test.")
     rdata, rsize = srey.syn_send(fd, skid, sdata, ssize, 0)
