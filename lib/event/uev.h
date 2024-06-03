@@ -9,25 +9,20 @@
 
 #if defined(EV_EPOLL)
     typedef struct epoll_event events_t;
-    #define EV_STR "EPOLL"
 #elif defined(EV_KQUEUE)
     typedef struct kevent events_t;
     typedef struct kevent changes_t;
-    #define EV_STR "KQUEUE"
     #define COMMIT_NCHANGES
 #elif defined(EV_EVPORT)
     typedef port_event_t events_t;
-    #define EV_STR "EVPORT"
     #define MANUAL_ADD
 #elif defined(EV_POLLSET)
     typedef struct pollfd events_t;
-    #define EV_STR "POLLSET"
     #define MANUAL_REMOVE
     #define NO_UDATA
 #elif defined(EV_DEVPOLL)
     typedef struct pollfd events_t;
     typedef struct pollfd changes_t;
-    #define EV_STR "DEVPOLL"
     #define MANUAL_REMOVE
     #define COMMIT_NCHANGES
     #define NO_UDATA

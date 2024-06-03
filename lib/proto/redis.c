@@ -14,7 +14,7 @@ typedef struct reader_ctx {
     _fmt[lens] = '\0';\
     buffer_appendv(&fbuf, _fmt, va_arg(args, type))
 
-void redis_pkfree(redis_pack_ctx *pack) {
+void _redis_pkfree(redis_pack_ctx *pack) {
     if (NULL == pack) {
         return;
     }
@@ -25,12 +25,12 @@ void redis_pkfree(redis_pack_ctx *pack) {
         pack = next;
     } while (NULL != pack);
 }
-void redis_udfree(ud_cxt *ud) {
+void _redis_udfree(ud_cxt *ud) {
     if (NULL == ud->extra) {
         return;
     }
     reader_ctx *rd = ud->extra;
-    redis_pkfree(rd->head);
+    _redis_pkfree(rd->head);
     FREE(rd);
     ud->extra = NULL;
 }

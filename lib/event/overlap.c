@@ -297,8 +297,8 @@ static void _on_recv_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
     }
     _tcp_recv(watcher, oltcp);
 }
-static int32_t _ssl_exchange(watcher_ctx *watcher, overlap_tcp_ctx *oltcp, struct evssl_ctx *evssl) {
 #if WITH_SSL
+static int32_t _ssl_exchange(watcher_ctx *watcher, overlap_tcp_ctx *oltcp, struct evssl_ctx *evssl) {
     oltcp->ssl = evssl_setfd(evssl, oltcp->ol_r.fd);
     if (NULL == oltcp->ssl) {
         return ERR_FAILED;
@@ -317,13 +317,13 @@ static int32_t _ssl_exchange(watcher_ctx *watcher, overlap_tcp_ctx *oltcp, struc
     } else {
         BIT_SET(oltcp->status, STATUS_AUTHSSL);
     }
-#endif
     return ERR_OK;
 }
+#endif
 void _try_ssl_exchange(watcher_ctx *watcher, sock_ctx *skctx, struct evssl_ctx *evssl, int32_t client) {
 #if WITH_SSL
     if (SOCK_STREAM != skctx->type) {
-        LOG_WARN("can't switch ssl on udp.");
+        LOG_WARN("can't ssl exchange on udp.");
         return;
     }
     overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
@@ -331,8 +331,8 @@ void _try_ssl_exchange(watcher_ctx *watcher, sock_ctx *skctx, struct evssl_ctx *
         LOG_WARN("ssl already in use.");
         return;
     }
-    if (BIT_CHECK(oltcp->status, STATUS_SWITCHSSL)) {
-        LOG_WARN("repeat request switch ssl.");
+    if (BIT_CHECK(oltcp->status, STATUS_SSLEXCHANGE)) {
+        LOG_WARN("repeat request ssl exchange.");
         return;
     }
     if (BIT_CHECK(oltcp->status, STATUS_ERROR)) {
@@ -345,11 +345,11 @@ void _try_ssl_exchange(watcher_ctx *watcher, sock_ctx *skctx, struct evssl_ctx *
     }
     if (BIT_CHECK(oltcp->status, STATUS_SENDING)) {
         oltcp->evssl = evssl;
-        BIT_SET(oltcp->status, STATUS_SWITCHSSL);
+        BIT_SET(oltcp->status, STATUS_SSLEXCHANGE);
     } else {
         if (ERR_OK != _ssl_exchange(watcher, oltcp, evssl)) {
             _disconnect(skctx);
-            LOG_ERROR("switch ssl error.");
+            LOG_ERROR("ssl exchange error.");
         }
     }
 #endif
@@ -397,13 +397,15 @@ static void _on_send_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
     }
     if (0 == qu_off_buf_size(&oltcp->buf_s)) {
         BIT_REMOVE(oltcp->status, STATUS_SENDING);
-        if (BIT_CHECK(oltcp->status, STATUS_SWITCHSSL)) {
-            BIT_REMOVE(oltcp->status, STATUS_SWITCHSSL);
+#if WITH_SSL
+        if (BIT_CHECK(oltcp->status, STATUS_SSLEXCHANGE)) {
+            BIT_REMOVE(oltcp->status, STATUS_SSLEXCHANGE);
             if (ERR_OK != _ssl_exchange(watcher, oltcp, oltcp->evssl)) {
                 BIT_SET(oltcp->status, STATUS_ERROR);
-                LOG_ERROR("switch ssl error.");
+                LOG_ERROR("ssl exchange error.");
             }
         }
+#endif        
         return;
     }
     if (ERR_OK != _post_send(oltcp)) {

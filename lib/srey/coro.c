@@ -316,12 +316,12 @@ void *coro_request(task_ctx *dst, task_ctx *src, uint8_t rtype, void *data, size
     *lens = msg.size;
     return msg.data;
 }
-static int32_t _ssl_exchanged(task_ctx *task, SOCKET fd, uint64_t skid) {
+static int32_t _wait_ssl_exchanged(task_ctx *task, SOCKET fd, uint64_t skid) {
     message_ctx msg;
     _mcoro_wait(task, skid, MSG_TYPE_SSLEXCHANGED, TIMEOUT_NETREAD, &msg);
     if (MSG_TYPE_TIMEOUT == msg.mtype) {
         ev_close(&task->scheduler->netev, fd, skid);
-        LOG_WARN("task %d, ssl auth timeout, skid %"PRIu64".", task->name, skid);
+        LOG_WARN("task %d, ssl exchange timeout, skid %"PRIu64".", task->name, skid);
         return ERR_FAILED;
     }
     if (MSG_TYPE_CLOSE == msg.mtype) {
@@ -332,7 +332,7 @@ static int32_t _ssl_exchanged(task_ctx *task, SOCKET fd, uint64_t skid) {
 }
 int32_t coro_ssl_exchange(task_ctx *task, SOCKET fd, uint64_t skid, int32_t client, struct evssl_ctx *evssl) {
     ev_ssl(&task->scheduler->netev, fd, skid, client, evssl);
-    return _ssl_exchanged(task, fd, skid);
+    return _wait_ssl_exchanged(task, fd, skid);
 }
 int32_t coro_handshaked(task_ctx *task, SOCKET fd, uint64_t skid) {
     message_ctx msg;
@@ -366,13 +366,13 @@ SOCKET coro_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl, c
         return INVALID_SOCK;
     }
     if (NULL != evssl) {
-        if (ERR_OK != _ssl_exchanged(task, fd, *skid)) {
+        if (ERR_OK != _wait_ssl_exchanged(task, fd, *skid)) {
             return INVALID_SOCK;
         }
     }
     return fd;
 }
-static int32_t _net_recved(task_ctx *task, SOCKET fd, uint64_t skid, message_ctx *msg) {
+static int32_t _wait_recved(task_ctx *task, SOCKET fd, uint64_t skid, message_ctx *msg) {
     _mcoro_wait(task, skid, MSG_TYPE_RECV, TIMEOUT_NETREAD, msg);
     if (MSG_TYPE_TIMEOUT == msg->mtype) {
         ev_close(&task->scheduler->netev, fd, skid);
@@ -389,7 +389,7 @@ void *coro_send(task_ctx *task, SOCKET fd, uint64_t skid, void *data, size_t len
     ev_ud_sess(&task->scheduler->netev, fd, skid, skid);
     ev_send(&task->scheduler->netev, fd, skid, data, len, copy);
     message_ctx msg;
-    if (ERR_OK != _net_recved(task, fd, skid, &msg)) {
+    if (ERR_OK != _wait_recved(task, fd, skid, &msg)) {
         return NULL;
     }
     *size = msg.size;
@@ -397,7 +397,7 @@ void *coro_send(task_ctx *task, SOCKET fd, uint64_t skid, void *data, size_t len
 }
 void *coro_slice(task_ctx *task, SOCKET fd, uint64_t skid, size_t *size, int32_t *end) {
     message_ctx msg;
-    if (ERR_OK != _net_recved(task, fd, skid, &msg)) {
+    if (ERR_OK != _wait_recved(task, fd, skid, &msg)) {
         return NULL;
     }
     if (PROTO_SLICE_END == msg.slice) {

@@ -476,9 +476,9 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads) {
         watcher->thevent = thread_creat(_loop_event, watcher);
     }
 #ifdef SO_REUSEPORT 
-    LOG_INFO("event: %s, SO_REUSEPORT: true.", EV_STR);
+    LOG_INFO("event: %s, SO_REUSEPORT: true.", EV_NAME);
 #else
-    LOG_INFO("event: %s, SO_REUSEPORT: false.", EV_STR);
+    LOG_INFO("event: %s, SO_REUSEPORT: false.", EV_NAME);
 #endif
 }
 static void _free_pips(watcher_ctx *watcher) {

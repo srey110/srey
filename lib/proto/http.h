@@ -10,8 +10,8 @@ typedef struct http_header_ctx {
 }http_header_ctx;
 struct http_pack_ctx;
 
-void http_pkfree(struct http_pack_ctx *pack);
-void http_udfree(ud_cxt *ud);
+void _http_pkfree(struct http_pack_ctx *pack);
+void _http_udfree(ud_cxt *ud);
 struct http_pack_ctx *http_unpack(buffer_ctx *buf, ud_cxt *ud, int32_t *status);
 
 const char *http_code_status(int32_t code);

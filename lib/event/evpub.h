@@ -15,7 +15,7 @@ typedef enum sock_status {
     STATUS_ERROR = 0x02,
     STATUS_REMOVE = 0x04,
     STATUS_CLIENT = 0x08,
-    STATUS_SWITCHSSL = 0x10,
+    STATUS_SSLEXCHANGE = 0x10,
     STATUS_AUTHSSL = 0x20,
 }sock_status;
 typedef struct ev_ctx {

@@ -152,7 +152,7 @@ static int32_t service_init(void) {
     _parse_config(&config);
     dns_set_ip(config.dns);
     log_setlv((LOG_LEVEL)config.loglv);
-    //_open_log();
+    _open_log();
     unlimit();
     srand((uint32_t)time(NULL));
     mutex_init(&muexit);

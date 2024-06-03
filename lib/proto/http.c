@@ -179,7 +179,7 @@ http_pack_ctx *_http_parsehead(buffer_ctx *buf, int32_t *transfer, int32_t *stat
     ASSERTAB(hlens == buffer_remove(buf, pack->head.data, hlens), "copy buffer failed.");
     if (ERR_OK != _http_parse_head(pack, transfer)) {
         BIT_SET(*status, PROTO_ERROR);
-        http_pkfree(pack);
+        _http_pkfree(pack);
         return NULL;
     }
     return pack;
@@ -193,7 +193,7 @@ static http_pack_ctx *_http_header(buffer_ctx *buf, ud_cxt *ud, int32_t *status)
     if (CONTENT == transfer) {
         if (PACK_TOO_LONG(pack->data.lens)) {
             BIT_SET(*status, PROTO_ERROR);
-            http_pkfree(pack);
+            _http_pkfree(pack);
             return NULL;
         } else {
             ud->extra = pack;
@@ -260,7 +260,7 @@ static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_t *status
     ud->extra = NULL;
     return pack;
 }
-void http_pkfree(http_pack_ctx *pack) {
+void _http_pkfree(http_pack_ctx *pack) {
     if (NULL == pack) {
         return;
     }
@@ -270,8 +270,8 @@ void http_pkfree(http_pack_ctx *pack) {
     }
     FREE(pack);
 }
-void http_udfree(ud_cxt *ud) {
-    http_pkfree(ud->extra);
+void _http_udfree(ud_cxt *ud) {
+    _http_pkfree(ud->extra);
     ud->extra = NULL;
 }
 http_pack_ctx *http_unpack(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {

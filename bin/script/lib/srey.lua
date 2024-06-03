@@ -396,7 +396,7 @@ function srey.wait_ssl_exchanged(fd, skid)
     local msg = _coro_wait(skid, MSG_TYPE.SSLEXCHANGED, TIMEOUT.NETREAD)
     if MSG_TYPE.TIMEOUT == msg.mtype then
         srey.close(fd, skid)
-        WARN("auth ssl timeout, skid %s.", tostring(skid))
+        WARN("ssl exchange timeout, skid %s.", tostring(skid))
         return false
     end
     if MSG_TYPE.CLOSE == msg.mtype then

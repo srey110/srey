@@ -56,6 +56,7 @@
     <ClInclude Include="proto\http.h" />
     <ClInclude Include="proto\mysql.h" />
     <ClInclude Include="proto\mysql_macro.h" />
+    <ClInclude Include="proto\mysql_pack.h" />
     <ClInclude Include="proto\mysql_parse.h" />
     <ClInclude Include="proto\protos.h" />
     <ClInclude Include="proto\redis.h" />

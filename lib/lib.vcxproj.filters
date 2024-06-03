@@ -214,6 +214,9 @@
     <ClInclude Include="proto\mysql_parse.h">
       <Filter>proto</Filter>
     </ClInclude>
+    <ClInclude Include="proto\mysql_pack.h">
+      <Filter>proto</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="memory.c">

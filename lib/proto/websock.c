@@ -195,7 +195,7 @@ static void _websock_handshake(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t cli
     if (0 != transfer) {
         BIT_SET(*status, PROTO_ERROR);
         _hs_push(fd, skid, client, ud, ERR_FAILED);
-        http_pkfree(hpack);
+        _http_pkfree(hpack);
         return;
     }
     if (client) {
@@ -203,7 +203,7 @@ static void _websock_handshake(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t cli
     } else {
         _websock_handshake_server(ev, fd, skid, client, ud, hpack, status);
     }
-    http_pkfree(hpack);
+    _http_pkfree(hpack);
 }
 static websock_pack_ctx *_websock_parse_data(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     websock_pack_ctx *pack = ud->extra;

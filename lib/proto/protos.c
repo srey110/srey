@@ -11,13 +11,13 @@ void protos_pkfree(pack_type type, void *data) {
     }
     switch (type) {
     case PACK_HTTP:
-        http_pkfree(data);
+        _http_pkfree(data);
         break;
     case PACK_REDIS:
-        redis_pkfree(data);
+        _redis_pkfree(data);
         break;
     case PACK_MYSQL:
-        mysql_pkfree(data);
+        _mysql_pkfree(data);
         break;
     default:
         FREE(data);
@@ -28,13 +28,13 @@ void protos_udfree(void *arg) {
     ud_cxt *ud = arg;
     switch (ud->pktype) {
     case PACK_HTTP:
-        http_udfree(ud);
+        _http_udfree(ud);
         break;
     case PACK_REDIS:
-        redis_udfree(ud);
+        _redis_udfree(ud);
         break;
     case PACK_MYSQL:
-        mysql_udfree(ud);
+        _mysql_udfree(ud);
         break;
     default:
         FREE(ud->extra);
@@ -61,7 +61,7 @@ void protos_free(void) {
 int32_t protos_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud) {
     switch (ud->pktype) {
     case PACK_MYSQL:
-        return mysql_ssl_exchanged(ev, fd, skid, client, ud);
+        return _mysql_ssl_exchanged(ev, fd, skid, client, ud);
     default:
         break;
     }

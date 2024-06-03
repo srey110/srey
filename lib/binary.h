@@ -4,7 +4,7 @@
 #include "structs.h"
 #include "utils.h"
 
-#define BINARY_INCREASE 128
+#define BINARY_INCREASE 256
 
 typedef struct binary_ctx {
     char *data;
