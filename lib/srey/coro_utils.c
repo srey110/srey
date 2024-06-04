@@ -107,13 +107,13 @@ int32_t mysql_connect(task_ctx *task, mysql_ctx *mysql) {
     if (ERR_OK != mysql_try_connect(task, mysql)) {
         return ERR_FAILED;
     }
-    return coro_handshaked(task, mysql->fd, mysql->skid);
+    return coro_handshaked(task, mysql->client.fd, mysql->client.skid);
 }
 void mysql_quit(task_ctx *task, mysql_ctx *mysql) {
     size_t size;
     void *quit = mysql_pack_quit(mysql, &size);
     if (NULL != quit) {
-        coro_send(task, mysql->fd, mysql->skid, quit, size, &size, 0);
+        coro_send(task, mysql->client.fd, mysql->client.skid, quit, size, &size, 0);
     }
 }
 int32_t mysql_selectdb(task_ctx *task, mysql_ctx *mysql, const char *database) {
@@ -122,7 +122,7 @@ int32_t mysql_selectdb(task_ctx *task, mysql_ctx *mysql, const char *database) {
     if (NULL == selectdb) {
         return ERR_FAILED;
     }
-    mpack_ctx *mpack = coro_send(task, mysql->fd, mysql->skid, selectdb, size, &size, 0);
+    mpack_ctx *mpack = coro_send(task, mysql->client.fd, mysql->client.skid, selectdb, size, &size, 0);
     if (NULL == mpack) {
         return ERR_FAILED;
     }
@@ -137,7 +137,7 @@ int32_t mysql_ping(task_ctx *task, mysql_ctx *mysql) {
     if (NULL == ping) {
         return ERR_FAILED;
     }
-    mpack_ctx *mpack = coro_send(task, mysql->fd, mysql->skid, ping, size, &size, 0);
+    mpack_ctx *mpack = coro_send(task, mysql->client.fd, mysql->client.skid, ping, size, &size, 0);
     if (NULL == mpack) {
         return ERR_FAILED;
     }

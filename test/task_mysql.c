@@ -18,19 +18,17 @@ static void _timeout(task_ctx *task, uint64_t sess) {
         LOG_WARN("coro_mysql_ping error.");
     }
 
-    /*req = mysql_pack_query("SELECT * FROM `al_config`", &rlens);
-    ev_send(&task->scheduler->netev, mysql.fd, mysql.skid, req, rlens, 0);
-    mpk = coro_send(task, fd, skid, req, rlens, &rlens, 0);
-    if (MYSQL_OK != mpk->command) {
-        LOG_WARN("mysql_ping error.");
-    }*/
+    size_t rlens;
+    void *req = mysql_pack_query(&_mysql, "SELECT * FROM `al_config`", &rlens);
+    ev_send(&task->scheduler->netev, _mysql.client.fd, _mysql.client.skid, req, rlens, 0);
+    
 
-    mysql_quit(task, &_mysql);
+    //mysql_quit(task, &_mysql);
 }
 static void _startup(task_ctx *task) {
     on_closed(task, _net_close);
     struct evssl_ctx *evssl = srey_ssl_qury(task->scheduler, 102);
-    if (ERR_OK != mysql_init(&_mysql, "192.168.8.3", 3306, evssl, "admin", "12345678", "test", "utf8", 0)) {
+    if (ERR_OK != mysql_init(&_mysql, "192.168.8.3", 3306, NULL, "admin", "12345678", "test", "utf8", 0, 1)) {
         LOG_WARN("mysql_init error.");
         return;
     }
@@ -43,10 +41,13 @@ static void _startup(task_ctx *task) {
     }
     trigger_timeout(task, 0, 1000, _timeout);
 }
+void _closing_cb(task_ctx *task) {
+    mysql_free(&_mysql);
+}
 void task_mysql_start(scheduler_ctx *scheduler, name_t name, int32_t pt) {
     _prt = pt;
     task_ctx *task = task_new(scheduler, name, NULL, NULL, NULL);
-    task_register(task, _startup, NULL);
+    task_register(task, _startup, _closing_cb);
 }
 
 #endif

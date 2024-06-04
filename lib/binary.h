@@ -91,6 +91,10 @@ static inline void binary_set_skip(binary_ctx *ctx, size_t lens) {
     _binary_expand(ctx, lens);
     ctx->offset += lens;
 }
+static inline char *binary_at(binary_ctx *ctx, size_t pos) {
+    ASSERTAB(pos < ctx->offset, "out of memory.");
+    return ctx->data + pos;
+}
 static inline int8_t binary_get_int8(binary_ctx *ctx) {
     ASSERTAB(ctx->offset + sizeof(int8_t) <= ctx->size, "out of memory.");
     int8_t val = (ctx->data + ctx->offset)[0];
