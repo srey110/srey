@@ -40,6 +40,7 @@ static void on_sigcb(int32_t sig, void *arg) {
 int main(int argc, char *argv[]) {
     unlimit();
     srand((unsigned int)time(NULL)); 
+    log_init(NULL);
     mutex_init(&muexit);
     cond_init(&condexit);
     sighandle(on_sigcb, NULL);

@@ -31,7 +31,6 @@
 #include "proto/websock.h"
 #include "proto/redis.h"
 #include "proto/mysql_macro.h"
-#include "proto/mysql_pack.h"
 #include "proto/mysql.h"
 #include "event/event.h"
 #include "srey/scheduler.h"

@@ -111,6 +111,7 @@ static void _open_log(void) {
     SNPRINTF(logfile, sizeof(logfile) - 1, "%s%s%s%s", procpath(), PATH_SEPARATORSTR, "logs", PATH_SEPARATORSTR);
     if (ERR_OK != ACCESS(logfile, 0)) {
         if (ERR_OK != MKDIR(logfile)) {
+            log_init(NULL);
             return;
         }
     }
@@ -119,9 +120,7 @@ static void _open_log(void) {
     sectostr(nowsec(), "%Y-%m-%d %H-%M-%S", time);
     SNPRINTF((char*)logfile + lens, sizeof(logfile) - lens - 1, "%s%s", time, ".log");
     logstream = fopen(logfile, "a");
-    if (NULL != logstream) {
-        log_handle(logstream);
-    }
+    log_init(logstream);
 }
 static int32_t service_exit(void) {
     scheduler_free(g_scheduler);

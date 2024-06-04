@@ -61,7 +61,7 @@ void protos_free(void) {
 int32_t protos_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud) {
     switch (ud->pktype) {
     case PACK_MYSQL:
-        return _mysql_ssl_exchanged(ev, fd, skid, client, ud);
+        return _mysql_ssl_exchanged(ev, ud);
     default:
         break;
     }
@@ -86,7 +86,7 @@ void *protos_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
         unpack = redis_unpack(buf, ud, status);
         break;
     case PACK_MYSQL:
-        unpack = mysql_unpack(ev, fd, skid, buf, ud, status);
+        unpack = mysql_unpack(ev, buf, ud, status);
         break;
     default:
         unpack = _unpack_default(buf, size, ud);

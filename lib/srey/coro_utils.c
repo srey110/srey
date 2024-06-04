@@ -7,7 +7,7 @@
 #include "proto/websock.h"
 #include "proto/http.h"
 #include "proto/redis.h"
-#include "proto/mysql.h"
+#include "proto/mysql_macro.h"
 #include "buffer.h"
 
 #if WITH_CORO
@@ -103,16 +103,48 @@ SOCKET coro_redis_connect(task_ctx *task, struct evssl_ctx *evssl, const char *i
     }
     return fd;
 }
-SOCKET coro_mysql_connect(task_ctx *task, const char *ip, uint16_t port, struct evssl_ctx *evssl,
-    const char *user, const char *password, const char *database, const char *charset, int32_t maxpk, uint64_t *skid) {
-    SOCKET fd = mysql_connect(task, ip, port, evssl, user, password, database, charset, maxpk, skid);
-    if (INVALID_SOCK == fd) {
-        return INVALID_SOCK;
+int32_t mysql_connect(task_ctx *task, mysql_ctx *mysql) {
+    if (ERR_OK != mysql_try_connect(task, mysql)) {
+        return ERR_FAILED;
     }
-    if (ERR_OK != coro_handshaked(task, fd, *skid)) {
-        return INVALID_SOCK;
+    return coro_handshaked(task, mysql->fd, mysql->skid);
+}
+void mysql_quit(task_ctx *task, mysql_ctx *mysql) {
+    size_t size;
+    void *quit = mysql_pack_quit(mysql, &size);
+    if (NULL != quit) {
+        coro_send(task, mysql->fd, mysql->skid, quit, size, &size, 0);
     }
-    return fd;
+}
+int32_t mysql_selectdb(task_ctx *task, mysql_ctx *mysql, const char *database) {
+    size_t size;
+    void *selectdb = mysql_pack_selectdb(mysql, database, &size);
+    if (NULL == selectdb) {
+        return ERR_FAILED;
+    }
+    mpack_ctx *mpack = coro_send(task, mysql->fd, mysql->skid, selectdb, size, &size, 0);
+    if (NULL == mpack) {
+        return ERR_FAILED;
+    }
+    if (MYSQL_OK == mpack->command) {
+        return ERR_OK;
+    }
+    return ERR_FAILED;
+}
+int32_t mysql_ping(task_ctx *task, mysql_ctx *mysql) {
+    size_t size;
+    void *ping = mysql_pack_ping(mysql, &size);
+    if (NULL == ping) {
+        return ERR_FAILED;
+    }
+    mpack_ctx *mpack = coro_send(task, mysql->fd, mysql->skid, ping, size, &size, 0);
+    if (NULL == mpack) {
+        return ERR_FAILED;
+    }
+    if (MYSQL_OK == mpack->command) {
+        return ERR_OK;
+    }
+    return ERR_FAILED;
 }
 
 #endif

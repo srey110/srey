@@ -325,7 +325,6 @@ static int32_t _wait_ssl_exchanged(task_ctx *task, SOCKET fd, uint64_t skid) {
         return ERR_FAILED;
     }
     if (MSG_TYPE_CLOSE == msg.mtype) {
-        LOG_WARN("task %d, connction closed, skid %"PRIu64".", task->name, skid);
         return ERR_FAILED;
     }
     return ERR_OK;
@@ -343,7 +342,6 @@ int32_t coro_handshaked(task_ctx *task, SOCKET fd, uint64_t skid) {
         return ERR_FAILED;
     }
     if (MSG_TYPE_CLOSE == msg.mtype) {
-        LOG_WARN("task: %d, handshake connction closed, skid: %"PRIu64".", task->name, skid);
         return ERR_FAILED;
     }
     return msg.erro;
@@ -380,7 +378,6 @@ static int32_t _wait_recved(task_ctx *task, SOCKET fd, uint64_t skid, message_ct
         return ERR_FAILED;
     }
     if (MSG_TYPE_CLOSE == msg->mtype) {
-        LOG_WARN("task %d, connction closed, skid %"PRIu64".", task->name, skid);
         return ERR_FAILED;
     }
     return ERR_OK;

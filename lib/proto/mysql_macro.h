@@ -1,6 +1,8 @@
 #ifndef MYSQL_MACRO_H_
 #define MYSQL_MACRO_H_
 
+#define INT3_MAX                  0xFFFFFF
+
 #define MYSQL_OK                  0x00
 #define MYSQL_EOF                 0xfe
 #define MYSQL_ERR                 0xff
