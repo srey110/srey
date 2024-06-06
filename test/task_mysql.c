@@ -4,26 +4,74 @@
 
 static int32_t _prt = 0;
 static mysql_ctx _mysql;
+static mysql_bind_ctx _bind;
 
 static void _net_close(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, uint8_t client) {
     if (_prt) {
         LOG_INFO("mysql connection closed.");
     }
 }
+static void _test_bind(task_ctx *task) {
+    for (int i = 0; i < 10; i++) {
+        mysql_bind_int8(&_bind, "t_int8", i + 1);
+        mysql_bind_int16(&_bind, "t_int16", 2014 + i);
+        mysql_bind_int32(&_bind, "t_int32", i + 2);
+        mysql_bind_int64(&_bind, "t_int64", i + 3);
+        mysql_bind_float(&_bind, "t_float", (float)(i + 4) + 0.123456f);
+        mysql_bind_double(&_bind, "t_double", (double)(i + 5) + 0.789);
+        mysql_bind_string(&_bind, "t_string", "this is test.", strlen("this is test."));
+        //mysql_bind_nil(&_bind, "t_datetime");
+        mysql_bind_datetime(&_bind, "t_datetime", time(NULL) + i + 6);
+        mysql_bind_time(&_bind, "t_time", 0, 0, 15, 30 + i + 7, 29);
+        const char *sql1 = "insert into test_bind (t_int8,t_int16,t_int32,t_int64,t_float,t_double, t_string,t_datetime,t_time) \
+         values(mysql_query_attribute_string('t_int8'),\
+         mysql_query_attribute_string('t_int16'),\
+         mysql_query_attribute_string('t_int32'),\
+         mysql_query_attribute_string('t_int64'),\
+         mysql_query_attribute_string('t_float'),\
+         mysql_query_attribute_string('t_double'),\
+         mysql_query_attribute_string('t_string'),\
+         mysql_query_attribute_string('t_datetime'),\
+         mysql_query_attribute_string('t_time')\
+        )";
+        mpack_ctx *pack = mysql_query(task, &_mysql, sql1, &_bind);
+        if (MPACK_OK != pack->pack_type) {
+            LOG_WARN("mysql_query error.");
+        }
+        mysql_bind_clear(&_bind);
+    }
+    mpack_ctx *pack = mysql_query(task, &_mysql,
+        "insert into test1_bind (t_int8,t_int16,t_int32,t_int64,t_float,t_double, t_string,t_datetime,t_time) values (...)", NULL);
+    if (MPACK_ERR != pack->pack_type) {
+        LOG_WARN("mysql_query error.");
+    }
+    pack = mysql_query(task, &_mysql, "delete from test_bind", NULL);
+    if (MPACK_OK != pack->pack_type) {
+        LOG_WARN("mysql_query error.");
+    }
+}
 static void _timeout(task_ctx *task, uint64_t sess) {
+    if (ERR_FAILED != mysql_selectdb(task, &_mysql, "tes1t")) {
+        LOG_WARN("selectdb wrong db error.");
+    }
+    mysql_quit(task, &_mysql);
     if (ERR_OK != mysql_selectdb(task, &_mysql, "test")) {
-        LOG_WARN("coro_mysql_selectdb error.");
+        LOG_WARN("selectdb error.");
     }
     if (ERR_OK != mysql_ping(task, &_mysql)) {
         LOG_WARN("coro_mysql_ping error.");
     }
-
-    size_t rlens;
-    void *req = mysql_pack_query(&_mysql, "SELECT * FROM `al_config`", &rlens);
-    ev_send(&task->scheduler->netev, _mysql.client.fd, _mysql.client.skid, req, rlens, 0);
-    
-
-    //mysql_quit(task, &_mysql);
+    mpack_ctx * mpack = mysql_query(task, &_mysql, "select * from admin", NULL);
+    if (NULL == mpack
+        || MPACK_QUERY != mpack->pack_type) {
+        LOG_WARN("mysql_query error.");
+    } else {
+        if (_prt) {
+            mpack_query *rst = mpack->pack;
+            LOG_INFO("field %d, rows %d", rst->field_count, arr_ptr_size(&rst->arr_rows));
+        }
+    }
+    _test_bind(task);
 }
 static void _startup(task_ctx *task) {
     on_closed(task, _net_close);
@@ -39,10 +87,11 @@ static void _startup(task_ctx *task) {
     if (_prt) {
         LOG_INFO("mysql connected.");
     }
+    mysql_bind_init(&_bind);
     trigger_timeout(task, 0, 1000, _timeout);
 }
 void _closing_cb(task_ctx *task) {
-    mysql_free(&_mysql);
+    mysql_bind_free(&_bind);
 }
 void task_mysql_start(scheduler_ctx *scheduler, name_t name, int32_t pt) {
     _prt = pt;

@@ -41,6 +41,15 @@ void protos_udfree(void *arg) {
         break;
     }
 }
+void protos_closed(ud_cxt *ud) {
+    switch (ud->pktype) {
+    case PACK_MYSQL:
+        _mysql_closed(ud);
+        break;
+    default:
+        break;
+    }
+}
 static void *_unpack_default(buffer_ctx *buf, size_t *size, ud_cxt *ud) {
     size_t lens = buffer_size(buf);
     if (0 == lens) {

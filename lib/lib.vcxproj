@@ -55,6 +55,7 @@
     <ClInclude Include="proto\dns.h" />
     <ClInclude Include="proto\http.h" />
     <ClInclude Include="proto\mysql.h" />
+    <ClInclude Include="proto\mysql_bind.h" />
     <ClInclude Include="proto\mysql_macro.h" />
     <ClInclude Include="proto\mysql_parse.h" />
     <ClInclude Include="proto\mysql_struct.h" />
@@ -109,6 +110,7 @@
     <ClCompile Include="proto\dns.c" />
     <ClCompile Include="proto\http.c" />
     <ClCompile Include="proto\mysql.c" />
+    <ClCompile Include="proto\mysql_bind.c" />
     <ClCompile Include="proto\mysql_parse.c" />
     <ClCompile Include="proto\protos.c" />
     <ClCompile Include="proto\redis.c" />

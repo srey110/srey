@@ -1,5 +1,4 @@
 #include "proto/mysql.h"
-#include "proto/mysql_macro.h"
 #include "proto/mysql_parse.h"
 #include "proto/protos.h"
 #include "algo/sha1.h"
@@ -10,7 +9,6 @@
 #include <openssl/rsa.h>
 #endif
 
-#define MYSQL_HEAD_LENS              4
 #define MYSQL_AUTH_SWITCH            0xfe
 #define MYSQL_CACHING_SHA2           0x01
 #define MYSQL_CACHING_SHA2_FAST      0x03
@@ -21,12 +19,10 @@
 #define CLIENT_LONG_PASSWORD                  1 //旧密码插件
 #define CLIENT_LONG_FLAG                      4 //Get all column flags
 #define CLIENT_CONNECT_WITH_DB                8 //是否带有 dbname
-#define CLIENT_LOCAL_FILES                    128 //能否使用 LOAD DATA LOCAL
 #define CLIENT_IGNORE_SPACE                   256 //是否忽略 括号( 前面的空格
 #define CLIENT_PROTOCOL_41                    512 //New 4.1 protocol. 
 #define CLIENT_INTERACTIVE                    1024 //是否为交互式终端
 #define CLIENT_SSL                            2048 //是否支持SSL
-#define CLIENT_TRANSACTIONS                   8192 //OK/EOF包的status_flags
 #define CLIENT_RESERVED2                      32768 //DEPRECATED: Old flag for 4.1 authentication \ CLIENT_SECURE_CONNECTION
 #define CLIENT_MULTI_STATEMENTS               (1UL << 16) //是否支持multi-stmt.  COM_QUERY/COM_STMT_PREPARE中多条语句
 #define CLIENT_MULTI_RESULTS                  (1UL << 17) //multi-results
@@ -35,19 +31,11 @@
 #define CLIENT_CONNECT_ATTRS                  (1UL << 20) //client supports connection attributes
 #define CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA (1UL << 21) //密码认证包能否大于255字节
 #define CLIENT_CAN_HANDLE_EXPIRED_PASSWORDS   (1UL << 22) //不关闭密码过期的连接
-#define CLIENT_SESSION_TRACK                  (1UL << 23) //能够处理服务器状态变更信息
-#define CLIENT_DEPRECATE_EOF                  (1UL << 24) //Client no longer needs EOF_Packet and will use OK_Packet instead
-#define CLIENT_OPTIONAL_RESULTSET_METADATA    (1UL << 25) //The client can handle optional metadata information in the resultset. 
 #define CLIENT_QUERY_ATTRIBUTES               (1UL << 27) //支持COM_QUERY/COM_STMT_EXECUTE中的可选参数
-#define CLIENT_CAPABILITY_EXTENSION           (1UL << 29) //This flag will be reserved to extend the 32bit capabilities structure to 64bits
-#define CLIENT_SSL_VERIFY_SERVER_CERT         (1UL << 30) //Verify server certificate
-#define CLIENT_REMEMBER_OPTIONS               (1UL << 31) //Don't reset the options after an unsuccessful connect.
 #define CLIENT_CAPS\
-    (CLIENT_LONG_PASSWORD | CLIENT_LONG_FLAG | CLIENT_LOCAL_FILES | CLIENT_PROTOCOL_41 |\
-    CLIENT_INTERACTIVE | CLIENT_TRANSACTIONS | CLIENT_RESERVED2 | CLIENT_MULTI_STATEMENTS |\
-    CLIENT_MULTI_RESULTS | CLIENT_PS_MULTI_RESULTS | CLIENT_PLUGIN_AUTH | CLIENT_CONNECT_ATTRS |\
-    CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA | CLIENT_CAN_HANDLE_EXPIRED_PASSWORDS | CLIENT_SESSION_TRACK |\
-    CLIENT_OPTIONAL_RESULTSET_METADATA)
+    (CLIENT_LONG_PASSWORD | CLIENT_LONG_FLAG | CLIENT_PROTOCOL_41 | CLIENT_INTERACTIVE | CLIENT_RESERVED2 |\
+    CLIENT_MULTI_STATEMENTS | CLIENT_MULTI_RESULTS | CLIENT_PS_MULTI_RESULTS | CLIENT_PLUGIN_AUTH | CLIENT_CONNECT_ATTRS |\
+    CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA | CLIENT_CAN_HANDLE_EXPIRED_PASSWORDS | CLIENT_QUERY_ATTRIBUTES)
 
 typedef enum parse_status {
     INIT = 0,
@@ -57,8 +45,7 @@ typedef enum parse_status {
 }parse_status;
 typedef enum client_status {
     LINKING = 0x01,
-    LINKED = 0x02,
-    AUTHED = 0x04
+    AUTHED = 0x02
 }client_status;
 typedef struct mpack_auth_switch {
     char *plugin;//name of the client authentication plugin to switch to
@@ -76,9 +63,9 @@ void _mysql_pkfree(void *pack) {
     }
     mpack_ctx *mpack = pack;
     if (NULL != mpack->_free_mpack) {
-        mpack->_free_mpack(mpack->mpack);
+        mpack->_free_mpack(mpack->pack);
     }
-    FREE(mpack->mpack);
+    FREE(mpack->pack);
     FREE(mpack->payload);
     FREE(mpack);
 }
@@ -87,9 +74,13 @@ void _mysql_udfree(ud_cxt *ud) {
         return;
     }
     mysql_ctx *mysql = ud->extra;
+    _mysql_pkfree(mysql->mpack);
     mysql->status = 0;
     mysql->cur_cmd = 0;
     ud->extra = NULL;
+}
+void _mysql_closed(ud_cxt *ud) {
+    _mysql_udfree(ud);
 }
 void _mysql_init(void *hspush) {
     _hs_push = (_handshaked_push)hspush;
@@ -175,31 +166,6 @@ static uint8_t _mysql_charset(const char *charset) {
         return 0;
     }
 }
-static int32_t _mysql_head(mysql_ctx *mysql, buffer_ctx *buf, size_t *payload_lens) {
-    size_t size = buffer_size(buf);
-    if (size < MYSQL_HEAD_LENS) {
-        return ERR_FAILED;
-    }
-    char head[MYSQL_HEAD_LENS];
-    ASSERTAB(sizeof(head) == buffer_copyout(buf, 0, head, sizeof(head)), "copy buffer failed.");
-    *payload_lens = (size_t)unpack_integer(head, 3, 1, 0);
-    if (size < *payload_lens + sizeof(head)) {
-        return ERR_FAILED;
-    }
-    mysql->id = head[3];
-    ASSERTAB(sizeof(head) == buffer_drain(buf, sizeof(head)), "drain buffer failed.");
-    return ERR_OK;
-}
-static char *_mysql_payload(mysql_ctx *mysql, buffer_ctx *buf, size_t *payload_lens, int32_t *status) {
-    if (ERR_OK != _mysql_head(mysql, buf, payload_lens)) {
-        BIT_SET(*status, PROTO_MOREDATA);
-        return NULL;
-    }
-    char *payload;
-    MALLOC(payload, *payload_lens);
-    ASSERTAB(*payload_lens == buffer_remove(buf, payload, *payload_lens), "copy buffer failed.");
-    return payload;
-}
 static void _mysql_native_sign(mysql_ctx *mysql, uint8_t sh1[SHA1_BLOCK_SIZE]) {
     uint8_t shpsw[SHA1_BLOCK_SIZE];
     uint8_t shscr[SHA1_BLOCK_SIZE];
@@ -244,10 +210,10 @@ static void _mysql_connect_attrs(binary_ctx *battrs) {
     size_t lens;
     for (size_t i = 0; i < ARRAY_SIZE(attrs); i++) {
         lens = strlen(attrs[i].key);
-        _mysql_set_lenenc_int(battrs, lens);
+        _mysql_set_lenenc(battrs, lens);
         binary_set_string(battrs, attrs[i].key, lens);
         lens = strlen(attrs[i].val);
-        _mysql_set_lenenc_int(battrs, lens);
+        _mysql_set_lenenc(battrs, lens);
         binary_set_string(battrs, attrs[i].val, lens);
     }
 }
@@ -272,7 +238,7 @@ static void _mysql_auth_response(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
         uint8_t sign[SHA256_BLOCK_SIZE];
         _mysql_caching_sha2_sign(mysql, sign);
         if (BIT_CHECK(mysql->client.caps, CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA)) {
-            _mysql_set_lenenc_int(&bwriter, sizeof(sign));
+            _mysql_set_lenenc(&bwriter, sizeof(sign));
             binary_set_string(&bwriter, (const char *)sign, sizeof(sign));//auth_response
         } else {
             binary_set_uint8(&bwriter, (uint8_t)sizeof(sign));
@@ -282,7 +248,7 @@ static void _mysql_auth_response(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
         uint8_t sign[SHA1_BLOCK_SIZE];
         _mysql_native_sign(mysql, sign);
         if (BIT_CHECK(mysql->client.caps, CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA)){
-            _mysql_set_lenenc_int(&bwriter, sizeof(sign));
+            _mysql_set_lenenc(&bwriter, sizeof(sign));
             binary_set_string(&bwriter, (const char *)sign, sizeof(sign));//auth_response
         } else {
             binary_set_uint8(&bwriter, (uint8_t)sizeof(sign));
@@ -299,7 +265,7 @@ static void _mysql_auth_response(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
         binary_ctx battrs;
         binary_init(&battrs, NULL, 0, 0);
         _mysql_connect_attrs(&battrs);
-        _mysql_set_lenenc_int(&bwriter, battrs.offset);
+        _mysql_set_lenenc(&bwriter, battrs.offset);
         binary_set_string(&bwriter, battrs.data, battrs.offset);
         FREE(battrs.data);
     }
@@ -329,8 +295,6 @@ int32_t _mysql_ssl_exchanged(ev_ctx *ev, ud_cxt *ud) {
 static void _mysql_auth_request(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     size_t payload_lens;
     mysql_ctx *mysql = ud->extra;
-    BIT_REMOVE(mysql->status, LINKING);
-    BIT_SET(mysql->status, LINKED);
     char *payload = _mysql_payload(mysql, buf, &payload_lens, status);
     if (NULL == payload) {
         return;
@@ -384,6 +348,7 @@ static void _mysql_auth_request(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t
     }
     strcpy(mysql->server.plugin, val);
     mysql->client.caps = CLIENT_CAPS;
+    mysql->client.caps &= mysql->server.caps;
     if (0 != strlen(mysql->client.database)) {
         BIT_SET(mysql->client.caps, CLIENT_CONNECT_WITH_DB);
     }
@@ -632,20 +597,7 @@ static mpack_ctx *_mysql_command_process(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud
     }
     binary_ctx breader;
     binary_init(&breader, payload, payload_lens, 0);
-    mpack_ctx *mpack;
-    MALLOC(mpack, sizeof(mpack_ctx));
-    mpack->sequence_id = mysql->id;
-    mpack->payload_lens = payload_lens;
-    mpack->payload = payload;
-    mpack->mpack = NULL;
-    mpack->_free_mpack = NULL;
-    mpack->command = binary_get_uint8(&breader);
-    if (ERR_OK != _mpack_parser(mysql, &breader, mpack)) {
-        BIT_SET(*status, PROTO_ERROR);
-        _mysql_pkfree(mpack);
-        return NULL;
-    }
-    return mpack;
+    return _mpack_parser(mysql, buf, &breader, status);
 }
 void *mysql_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     mpack_ctx *pack = NULL;
@@ -686,15 +638,7 @@ int32_t mysql_init(mysql_ctx *mysql, const char *ip, uint16_t port, struct evssl
     mysql->client.evssl = evssl;
     mysql->client.charset = _mysql_charset(charset);
     mysql->client.maxpack = 0 == maxpk ? ONEK * ONEK : maxpk;
-    binary_init(&mysql->bform.bitmap, NULL, 0, 0);
-    binary_init(&mysql->bform.type_name, NULL, 0, 0);
-    binary_init(&mysql->bform.values, NULL, 0, 0);
     return ERR_OK;
-}
-void mysql_free(mysql_ctx *mysql) {
-    FREE(mysql->bform.bitmap.data);
-    FREE(mysql->bform.type_name.data);
-    FREE(mysql->bform.values.data);
 }
 int32_t mysql_try_connect(task_ctx *task, mysql_ctx *mysql) {
     if (0 != mysql->status) {
@@ -714,10 +658,11 @@ void *mysql_pack_quit(mysql_ctx *mysql, size_t *size) {
         || 0 != mysql->cur_cmd) {
         return NULL;
     }
+    mysql->id = 0;
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
     binary_set_integer(&bwriter, 1, 3, 1);
-    binary_set_int8(&bwriter, 0);
+    binary_set_int8(&bwriter, mysql->id);
     binary_set_uint8(&bwriter, MYSQL_QUIT);
     *size = bwriter.offset;
     mysql->cur_cmd = MYSQL_QUIT;
@@ -728,13 +673,14 @@ void *mysql_pack_selectdb(mysql_ctx *mysql, const char *database, size_t *size) 
         || 0 != mysql->cur_cmd) {
         return NULL;
     }
+    mysql->id = 0;
+    size_t lens = strlen(database);
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
-    binary_set_skip(&bwriter, 3);
-    binary_set_int8(&bwriter, 0);
+    binary_set_integer(&bwriter, lens + 1, 3, 1);
+    binary_set_int8(&bwriter, mysql->id);
     binary_set_uint8(&bwriter, MYSQL_INIT_DB);
-    binary_set_string(&bwriter, database, strlen(database));
-    _set_payload_lens(&bwriter);
+    binary_set_string(&bwriter, database, lens);
     *size = bwriter.offset;
     mysql->cur_cmd = MYSQL_INIT_DB;
     return bwriter.data;
@@ -744,28 +690,49 @@ void *mysql_pack_ping(mysql_ctx *mysql, size_t *size) {
         || 0 != mysql->cur_cmd) {
         return NULL;
     }
+    mysql->id = 0;
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
     binary_set_integer(&bwriter, 1, 3, 1);
-    binary_set_int8(&bwriter, 0);
+    binary_set_int8(&bwriter, mysql->id);
     binary_set_uint8(&bwriter, MYSQL_PING);
     *size = bwriter.offset;
     mysql->cur_cmd = MYSQL_PING;
     return bwriter.data;
 }
-void *mysql_pack_query(mysql_ctx *mysql, const char *sql, size_t *size) {
+void *mysql_pack_query(mysql_ctx *mysql, const char *sql, mysql_bind_ctx *bind, size_t *size) {
     if (!BIT_CHECK(mysql->status, AUTHED)
         || 0 != mysql->cur_cmd) {
         return NULL;
     }
+    mysql->id = 0;
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
     binary_set_skip(&bwriter, 3);
-    binary_set_int8(&bwriter, 0);
-    binary_set_uint8(&bwriter, MYSQL_QUERY);
-    binary_set_string(&bwriter, sql, strlen(sql));
+    binary_set_int8(&bwriter, mysql->id);
+    binary_set_uint8(&bwriter, MYSQL_QUERY);//command
+    if (BIT_CHECK(mysql->client.caps, CLIENT_QUERY_ATTRIBUTES)) {
+        size_t count = 0;
+        if (NULL != bind
+            && 0 != bind->count) {
+            count = (size_t)bind->count;
+        }
+        _mysql_set_lenenc(&bwriter, count);//parameter_count
+        _mysql_set_lenenc(&bwriter, 1);//parameter_set_count
+        if (count > 0) {
+            binary_set_string(&bwriter, bind->bitmap.data, bind->bitmap.offset);//null_bitmap
+            int8_t bind_flag = 1;
+            binary_set_int8(&bwriter, bind_flag);//new_params_bind_flag
+            if (bind_flag) {
+                binary_set_string(&bwriter, bind->type_name.data, bind->type_name.offset);//param_type_and_flag parameter name
+            }
+            binary_set_string(&bwriter, bind->value.data, bind->value.offset);//parameter_values
+        }
+    }
+    binary_set_string(&bwriter, sql, strlen(sql));//query
     _set_payload_lens(&bwriter);
     *size = bwriter.offset;
     mysql->cur_cmd = MYSQL_QUERY;
+    mysql->parse_status = 0;
     return bwriter.data;
 }

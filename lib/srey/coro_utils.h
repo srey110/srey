@@ -16,6 +16,7 @@ int32_t mysql_connect(task_ctx *task, mysql_ctx *mysql);
 void mysql_quit(task_ctx *task, mysql_ctx *mysql);
 int32_t mysql_selectdb(task_ctx *task, mysql_ctx *mysql, const char *database);
 int32_t mysql_ping(task_ctx *task, mysql_ctx *mysql);
+mpack_ctx *mysql_query(task_ctx *task, mysql_ctx *mysql, const char *sql, mysql_bind_ctx *bind);
 
 #endif
 #endif//CORO_UTILS_H_

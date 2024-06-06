@@ -23,6 +23,7 @@ typedef enum proto_status {
 
 void protos_pkfree(pack_type type, void *data);
 void protos_udfree(void *arg);
+void protos_closed(ud_cxt *ud);
 void protos_init(_handshaked_push hspush);
 void protos_free(void);
 int32_t protos_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud);

@@ -305,6 +305,7 @@ static void _net_close(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_
     msg.skid = skid;
     msg.client = client;
     msg.sess = skid;
+    protos_closed(ud);
     _task_message_push(task, &msg);
     task_ungrab(task);
 }

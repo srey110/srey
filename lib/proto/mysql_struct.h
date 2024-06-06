@@ -3,45 +3,11 @@
 
 #include "structs.h"
 #include "binary.h"
+#include "ds/sarray.h"
+#include "proto/mysql_macro.h"
 
-typedef enum mysql_field_types {
-    MYSQL_TYPE_DECIMAL,
-    MYSQL_TYPE_TINY,
-    MYSQL_TYPE_SHORT,
-    MYSQL_TYPE_LONG,
-    MYSQL_TYPE_FLOAT,
-    MYSQL_TYPE_DOUBLE,
-    MYSQL_TYPE_NULL,
-    MYSQL_TYPE_TIMESTAMP,
-    MYSQL_TYPE_LONGLONG,
-    MYSQL_TYPE_INT24,
-    MYSQL_TYPE_DATE,
-    MYSQL_TYPE_TIME,
-    MYSQL_TYPE_DATETIME,
-    MYSQL_TYPE_YEAR,
-    MYSQL_TYPE_NEWDATE,
-    MYSQL_TYPE_VARCHAR,
-    MYSQL_TYPE_BIT,
-    MYSQL_TYPE_TIMESTAMP2,
-    MYSQL_TYPE_DATETIME2,
-    MYSQL_TYPE_TIME2,
-    MYSQL_TYPE_TYPED_ARRAY,
-    MYSQL_TYPE_INVALID = 243,
-    MYSQL_TYPE_BOOL = 244,
-    MYSQL_TYPE_JSON = 245,
-    MYSQL_TYPE_NEWDECIMAL = 246,
-    MYSQL_TYPE_ENUM = 247,
-    MYSQL_TYPE_SET = 248,
-    MYSQL_TYPE_TINY_BLOB = 249,
-    MYSQL_TYPE_MEDIUM_BLOB = 250,
-    MYSQL_TYPE_LONG_BLOB = 251,
-    MYSQL_TYPE_BLOB = 252,
-    MYSQL_TYPE_VAR_STRING = 253,
-    MYSQL_TYPE_STRING = 254,
-    MYSQL_TYPE_GEOMETRY = 255
-}mysql_field_types;
-
-typedef struct mysql_client_params {
+struct mpack_ctx;
+typedef struct mysql_client_param {
     int8_t relink;
     uint8_t charset;
     uint16_t port;
@@ -54,34 +20,36 @@ typedef struct mysql_client_params {
     char user[64];
     char database[64];
     char password[64];
-}mysql_client_params;
-typedef struct mysql_server_params {
+}mysql_client_param;
+typedef struct mysql_server_param {
     uint16_t status_flags;
     uint32_t caps;
     char salt[20];
     char plugin[32];
-}mysql_server_params;
-typedef struct mysql_binary_form {
-    int32_t count;
-    binary_ctx bitmap;
-    binary_ctx type_name;
-    binary_ctx values;
-}mysql_binary_form;
+}mysql_server_param;
 typedef struct mysql_ctx {
     int8_t id;
+    int8_t parse_status;
     uint8_t cur_cmd;
     int32_t status;
-    mysql_server_params server;
-    mysql_client_params client;
-    mysql_binary_form bform;
+    struct mpack_ctx *mpack;
+    mysql_server_param server;
+    mysql_client_param client;
 }mysql_ctx;
 
+typedef struct mysql_bind_ctx {
+    int32_t count;
+    binary_ctx bitmap;
+    binary_ctx type;
+    binary_ctx type_name;
+    binary_ctx value;
+}mysql_bind_ctx;
+
 typedef struct mpack_ctx {
-    uint8_t command;
     int8_t sequence_id;
-    size_t payload_lens;
+    mpack_type pack_type;
     char *payload;
-    void *mpack;
+    void *pack;
     void(*_free_mpack)(void *);
 }mpack_ctx;
 typedef struct mpack_ok {
@@ -98,5 +66,28 @@ typedef struct mpack_err {
     int16_t error_code;
     buf_ctx error_msg;
 }mpack_err;
+typedef struct mpack_field {
+    uint8_t decimals;//max shown decimal digits
+    uint8_t type;//enum_field_types
+    uint16_t flags;//Flags as defined in Column Definition Flags
+    int16_t character;//character set
+    int32_t field_lens;//maximum length of the field
+    char schema[64];//schema name
+    char table[64];//virtual table name
+    char org_table[64];//physical table name
+    char name[64];//virtual column name
+    char org_name[64];//physical column name
+}mpack_field;
+typedef struct mpack_row {
+    int32_t nil;//1 : NULL
+    buf_ctx val;//NULL and 0 == nil ""
+    char *payload;
+}mpack_row;
+typedef struct mpack_query {
+    int32_t field_count;
+    int32_t index;
+    mpack_field *fields;
+    arr_ptr_ctx arr_rows;
+}mpack_query;
 
 #endif//MYSQL_STRUCT_H_
