@@ -36,9 +36,9 @@ uint64_t nowms(void);
 uint64_t nowsec(void);
 //格式化输出时间戳 秒   %Y-%m-%d %H:%M:%S 
 void sectostr(uint64_t sec, const char *fmt, char time[TIME_LENS]);
-//格式化输出时间戳 毫秒  %Y-%m-%d %H:%M:%S
+//格式化输出时间戳 毫秒
 void mstostr(uint64_t ms, const char *fmt, char time[TIME_LENS]);
-//字符串转时间戳 %Y-%m-%d %H:%M:%S 
+//字符串转时间戳
 uint64_t strtots(const char *time, const char *fmt);
 
 void fill_timespec(struct timespec* timeout, uint32_t ms);

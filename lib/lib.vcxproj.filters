@@ -32,7 +32,7 @@
       <UniqueIdentifier>{2f052cf0-39f4-455f-94ec-2d469dcab809}</UniqueIdentifier>
     </Filter>
     <Filter Include="proto\mysql">
-      <UniqueIdentifier>{b39a0557-c3be-4c9e-bdbc-c86d95648978}</UniqueIdentifier>
+      <UniqueIdentifier>{e34dfc93-e61e-4ef5-9535-626e0915b907}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
@@ -208,19 +208,28 @@
     <ClInclude Include="binary.h">
       <Filter>utils</Filter>
     </ClInclude>
-    <ClInclude Include="proto\mysql.h">
+    <ClInclude Include="proto\mysql\mysql.h">
       <Filter>proto\mysql</Filter>
     </ClInclude>
-    <ClInclude Include="proto\mysql_bind.h">
+    <ClInclude Include="proto\mysql\mysql_bind.h">
       <Filter>proto\mysql</Filter>
     </ClInclude>
-    <ClInclude Include="proto\mysql_macro.h">
+    <ClInclude Include="proto\mysql\mysql_macro.h">
       <Filter>proto\mysql</Filter>
     </ClInclude>
-    <ClInclude Include="proto\mysql_parse.h">
+    <ClInclude Include="proto\mysql\mysql_pack.h">
       <Filter>proto\mysql</Filter>
     </ClInclude>
-    <ClInclude Include="proto\mysql_struct.h">
+    <ClInclude Include="proto\mysql\mysql_parse.h">
+      <Filter>proto\mysql</Filter>
+    </ClInclude>
+    <ClInclude Include="proto\mysql\mysql_reader.h">
+      <Filter>proto\mysql</Filter>
+    </ClInclude>
+    <ClInclude Include="proto\mysql\mysql_struct.h">
+      <Filter>proto\mysql</Filter>
+    </ClInclude>
+    <ClInclude Include="proto\mysql\mysql_utils.h">
       <Filter>proto\mysql</Filter>
     </ClInclude>
   </ItemGroup>
@@ -348,13 +357,22 @@
     <ClCompile Include="proto\redis.c">
       <Filter>proto</Filter>
     </ClCompile>
-    <ClCompile Include="proto\mysql.c">
+    <ClCompile Include="proto\mysql\mysql.c">
       <Filter>proto\mysql</Filter>
     </ClCompile>
-    <ClCompile Include="proto\mysql_bind.c">
+    <ClCompile Include="proto\mysql\mysql_bind.c">
       <Filter>proto\mysql</Filter>
     </ClCompile>
-    <ClCompile Include="proto\mysql_parse.c">
+    <ClCompile Include="proto\mysql\mysql_pack.c">
+      <Filter>proto\mysql</Filter>
+    </ClCompile>
+    <ClCompile Include="proto\mysql\mysql_parse.c">
+      <Filter>proto\mysql</Filter>
+    </ClCompile>
+    <ClCompile Include="proto\mysql\mysql_reader.c">
+      <Filter>proto\mysql</Filter>
+    </ClCompile>
+    <ClCompile Include="proto\mysql\mysql_utils.c">
       <Filter>proto\mysql</Filter>
     </ClCompile>
   </ItemGroup>

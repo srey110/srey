@@ -100,22 +100,6 @@ static void _timeout(task_ctx *task, uint64_t sess) {
     if (1 != rtn->ival) {
         LOG_WARN("DEL error.");
     }
-
-    req = redis_pack(&rsize, "PING");
-    buffer_ctx pipe;
-    buffer_init(&pipe);
-    buffer_append(&pipe, req, rsize);
-    buffer_append(&pipe, req, rsize);
-    buffer_append(&pipe, req, rsize);
-    FREE(req);
-    char tmp[1024] = { 0 };
-    rsize = buffer_size(&pipe);
-    buffer_copyout(&pipe, 0, tmp, rsize);
-    ev_send(&task->scheduler->netev, _fd, _skid, tmp, rsize, 1);
-    buffer_free(&pipe);
-    if (_prt) {
-        LOG_INFO("redis test ok.");
-    }
     trigger_timeout(task, 0, 3000, _timeout);
 }
 static void _startup(task_ctx *task) {

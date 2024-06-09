@@ -126,12 +126,12 @@ static void test_binary(CuTest* tc) {
     binary_init(&bread, bwrite.data, bwrite.offset, 2);
     CuAssertTrue(tc, i8 == binary_get_int8(&bread));
     CuAssertTrue(tc, ui8 == binary_get_uint8(&bread));
-    CuAssertTrue(tc, i16 == binary_get_int16(&bread, sizeof(i16), 1));
-    CuAssertTrue(tc, ui16 == binary_get_uint16(&bread, sizeof(ui16), 1));
-    CuAssertTrue(tc, i32 == binary_get_int32(&bread, 3, 1));
-    CuAssertTrue(tc, ui32 == binary_get_uint32(&bread, 4, 1));
-    CuAssertTrue(tc, i64 == binary_get_int64(&bread, 4, 1));
-    CuAssertTrue(tc, ui64 == binary_get_int64(&bread, sizeof(ui64), 0));
+    CuAssertTrue(tc, i16 == (int16_t)binary_get_integer(&bread, sizeof(i16), 1));
+    CuAssertTrue(tc, ui16 == (uint16_t)binary_get_uinteger(&bread, sizeof(ui16), 1));
+    CuAssertTrue(tc, i32 == (int32_t)binary_get_integer(&bread, 3, 1));
+    CuAssertTrue(tc, ui32 == (uint32_t)binary_get_uinteger(&bread, 4, 1));
+    CuAssertTrue(tc, i64 == binary_get_integer(&bread, 4, 1));
+    CuAssertTrue(tc, ui64 == binary_get_uinteger(&bread, sizeof(ui64), 0));
     binary_get_skip(&bread, 4);
     float f2 = binary_get_float(&bread, 1);
     CuAssertTrue(tc, f2 - f <= 0.0000001);

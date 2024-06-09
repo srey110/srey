@@ -214,7 +214,7 @@ static void test_system(CuTest* tc) {
     sfid_decode(&sfid, id, &timestamp, &machineid, &sequence);  
     CuAssertTrue(tc, 101 == machineid);
 
-    /*int32_t tz = timeoffset()/60;
+    int32_t tz = timeoffset() / 60;
     PRINT("timeoffset: %d", tz);
     struct timeval tv;
     timeofday(&tv);
@@ -229,15 +229,8 @@ static void test_system(CuTest* tc) {
     PRINT("nowtime: %s", time);
     PRINT("%s", "test strtots");
     CuAssertTrue(tc, timestamp == strtots(time, "%Y-%m-%d %H:%M:%S"));
-    sectostr(timestamp, "%Y-%m-%d %I:%M:%S %p", time);
-    CuAssertTrue(tc, timestamp == strtots(time, "%Y-%m-%d %I:%M:%S %p"));
-    sectostr(timestamp, "%y%m%d %I:%M:%S %p", time);
-    CuAssertTrue(tc, timestamp == strtots(time, "%y%m%d %I:%M:%S %p"));
-    sectostr(timestamp, "%y%m%d %I:%M:%S %p %Z", time);
-    CuAssertTrue(tc, timestamp == strtots(time, "%y%m%d %I:%M:%S %p %Z"));
-    PRINT("%s", "test strtots end");*/
-    
-    
+    PRINT("%s", "test strtots end");
+   
     const char *str = "this is test.";
     char *buf;
     CALLOC(buf, 1, (size_t)32);

@@ -69,6 +69,10 @@ static const luaL_Reg loadedlibs[] = {
   {LUA_SREYSHA1,  luaopen_sha1},
   {LUA_SREYSHA256,  luaopen_sha256},
   {LUA_SREYHMAC256,  luaopen_hmac256},
+  {LUA_MYSQL,  luaopen_mysql},
+  {LUA_MYSQLBIND,  luaopen_mysql_bind},
+  {LUA_MYSQLREADER,  luaopen_mysql_reader},
+  {LUA_MYSQLSTMT,  luaopen_mysql_stmt},
 
   {NULL, NULL}
 };

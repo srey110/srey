@@ -7,7 +7,8 @@
 #include "proto/websock.h"
 #include "proto/http.h"
 #include "proto/redis.h"
-#include "proto/mysql_macro.h"
+#include "proto/mysql/mysql_parse.h"
+#include "proto/mysql/mysql_pack.h"
 #include "buffer.h"
 
 #if WITH_CORO
@@ -109,13 +110,6 @@ int32_t mysql_connect(task_ctx *task, mysql_ctx *mysql) {
     }
     return coro_handshaked(task, mysql->client.fd, mysql->client.skid);
 }
-void mysql_quit(task_ctx *task, mysql_ctx *mysql) {
-    size_t size;
-    void *quit = mysql_pack_quit(mysql, &size);
-    if (NULL != quit) {
-        coro_send(task, mysql->client.fd, mysql->client.skid, quit, size, &size, 0);
-    }
-}
 static int32_t _mysql_check_link(task_ctx *task, mysql_ctx *mysql) {
     if (mysql->client.relink
         && 0 == mysql->status) {
@@ -124,9 +118,6 @@ static int32_t _mysql_check_link(task_ctx *task, mysql_ctx *mysql) {
     return ERR_OK;
 }
 int32_t mysql_selectdb(task_ctx *task, mysql_ctx *mysql, const char *database) {
-    if (ERR_OK != _mysql_check_link(task, mysql)) {
-        return ERR_FAILED;
-    }
     size_t size;
     void *selectdb = mysql_pack_selectdb(mysql, database, &size);
     if (NULL == selectdb) {
@@ -153,16 +144,50 @@ int32_t mysql_ping(task_ctx *task, mysql_ctx *mysql) {
     }
     return MPACK_OK == mpack->pack_type ? ERR_OK : ERR_FAILED;
 }
-mpack_ctx *mysql_query(task_ctx *task, mysql_ctx *mysql, const char *sql, mysql_bind_ctx *bind) {
-    if (ERR_OK != _mysql_check_link(task, mysql)) {
-        return NULL;
-    }
+mpack_ctx *mysql_query(task_ctx *task, mysql_ctx *mysql, const char *sql, mysql_bind_ctx *mbind) {
     size_t size;
-    void *query = mysql_pack_query(mysql, sql, bind, &size);
+    void *query = mysql_pack_query(mysql, sql, mbind, &size);
     if (NULL == query) {
         return NULL;
     }
     return coro_send(task, mysql->client.fd, mysql->client.skid, query, size, &size, 0);
+}
+mysql_stmt_ctx *mysql_stmt_prepare(task_ctx *task, mysql_ctx *mysql, const char *sql) {
+    size_t size;
+    void *prepare = mysql_pack_stmt_prepare(mysql, sql, &size);
+    if (NULL == prepare) {
+        return NULL;
+    }
+    mpack_ctx *mpack = coro_send(task, mysql->client.fd, mysql->client.skid, prepare, size, &size, 0);
+    return mysql_stmt_init(mpack);
+}
+mpack_ctx *mysql_stmt_execute(task_ctx *task, mysql_stmt_ctx *stmt, mysql_bind_ctx *mbind) {
+    size_t size;
+    void *exec = mysql_pack_stmt_execute(stmt, mbind, &size);
+    if (NULL == exec) {
+        return NULL;
+    }
+    return coro_send(task, stmt->mysql->client.fd, stmt->mysql->client.skid, exec, size, &size, 0);
+}
+int32_t mysql_stmt_reset(task_ctx *task, mysql_stmt_ctx *stmt) {
+    size_t size;
+    void *resetpk = mysql_pack_stmt_reset(stmt, &size);
+    if (NULL == resetpk) {
+        return ERR_FAILED;
+    }
+    mpack_ctx *mpack = coro_send(task, stmt->mysql->client.fd, stmt->mysql->client.skid, resetpk, size, &size, 0);
+    if (NULL == mpack) {
+        return ERR_FAILED;
+    }
+    return MPACK_OK == mpack->pack_type ? ERR_OK : ERR_FAILED;
+}
+void mysql_quit(task_ctx *task, mysql_ctx *mysql) {
+    size_t size;
+    void *quit = mysql_pack_quit(mysql, &size);
+    if (NULL == quit) {
+        return;
+    }
+    coro_send(task, mysql->client.fd, mysql->client.skid, quit, size, &size, 0);
 }
 
 #endif

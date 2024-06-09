@@ -80,6 +80,14 @@ LUAMOD_API int (luaopen_sha1)(lua_State *L);
 LUAMOD_API int (luaopen_sha256)(lua_State *L);
 #define LUA_SREYHMAC256 "srey.hmac256"
 LUAMOD_API int (luaopen_hmac256)(lua_State *L);
+#define LUA_MYSQLBIND "mysql.bind"
+LUAMOD_API int (luaopen_mysql_bind)(lua_State *L);
+#define LUA_MYSQLREADER "mysql.reader"
+LUAMOD_API int (luaopen_mysql_reader)(lua_State *L);
+#define LUA_MYSQLSTMT "mysql.stmt"
+LUAMOD_API int (luaopen_mysql_stmt)(lua_State *L);
+#define LUA_MYSQL "mysql"
+LUAMOD_API int (luaopen_mysql)(lua_State *L);
 
 /* open all previous libraries */
 LUALIB_API void (luaL_openlibs) (lua_State *L);

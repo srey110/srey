@@ -24,5 +24,6 @@ void ev_ud_pktype(ev_ctx *ctx, SOCKET fd, uint64_t skid, uint8_t pktype);
 void ev_ud_status(ev_ctx *ctx, SOCKET fd, uint64_t skid, uint8_t status);
 void ev_ud_sess(ev_ctx *ctx, SOCKET fd, uint64_t skid, uint64_t sess);
 void ev_ud_name(ev_ctx *ctx, SOCKET fd, uint64_t skid, name_t name);
+void ev_ud_extra(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *extra);
 
 #endif//EVENT_H_

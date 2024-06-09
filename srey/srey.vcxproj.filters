@@ -26,6 +26,9 @@
     <ClCompile Include="ltask\lutils.c">
       <Filter>ltask</Filter>
     </ClCompile>
+    <ClCompile Include="ltask\lmysql.c">
+      <Filter>ltask</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <Filter Include="tasks">

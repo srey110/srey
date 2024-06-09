@@ -4,7 +4,7 @@
 #include "structs.h"
 #include "binary.h"
 #include "ds/sarray.h"
-#include "proto/mysql_macro.h"
+#include "proto/mysql/mysql_macro.h"
 
 struct mpack_ctx;
 typedef struct mysql_client_param {
@@ -31,10 +31,14 @@ typedef struct mysql_ctx {
     int8_t id;
     int8_t parse_status;
     uint8_t cur_cmd;
+    int16_t error_code;
     int32_t status;
+    int64_t last_id;
+    int64_t affected_rows;
     struct mpack_ctx *mpack;
     mysql_server_param server;
     mysql_client_param client;
+    char error_msg[256];
 }mysql_ctx;
 
 typedef struct mysql_bind_ctx {
@@ -83,11 +87,21 @@ typedef struct mpack_row {
     buf_ctx val;//NULL and 0 == nil ""
     char *payload;
 }mpack_row;
-typedef struct mpack_query {
+typedef struct mysql_reader_ctx {//Resultset
+    mpack_type pack_type;
     int32_t field_count;
     int32_t index;
     mpack_field *fields;
     arr_ptr_ctx arr_rows;
-}mpack_query;
+}mysql_reader_ctx;
+typedef struct mysql_stmt_ctx {
+    uint16_t field_count;
+    uint16_t params_count;
+    int32_t index;
+    int32_t stmt_id;
+    mpack_field *params;
+    mpack_field *fields;
+    mysql_ctx *mysql;
+}mysql_stmt_ctx;
 
 #endif//MYSQL_STRUCT_H_

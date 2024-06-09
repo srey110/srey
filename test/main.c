@@ -75,24 +75,24 @@ int main(int argc, char *argv[]) {
     ssl = evssl_new(NULL, NULL, NULL, SSL_FILETYPE_PEM, 0);
     srey_ssl_register(g_scheduler, 102, ssl);
 #endif
-    /*task_startup_closing_start(g_scheduler, 10000, 0);
+    task_startup_closing_start(g_scheduler, 10000, 0);
     task_timeout_start(g_scheduler, 10001, 0);
     task_tcp_start(g_scheduler, 10002, 0);
     task_udp_start(g_scheduler, 10003, 0);
     task_threadcomm1_start(g_scheduler, 10004, 0);
-    task_threadcomm2_start(g_scheduler, 10005, 0);*/
+    task_threadcomm2_start(g_scheduler, 10005, 0);
 #if WITH_SSL
-    //task_ssl_start(g_scheduler, 10006, srey_ssl_qury(g_scheduler, 100), 0);
+    task_ssl_start(g_scheduler, 10006, srey_ssl_qury(g_scheduler, 100), 0);
     //10007 task_auto_close
 #endif
-    /*task_wbsock_sv_start(g_scheduler, 10008, 0);
-    task_http_sv_start(g_scheduler, 10009, 0);*/
+    task_wbsock_sv_start(g_scheduler, 10008, 0);
+    task_http_sv_start(g_scheduler, 10009, 0);
 #if WITH_CORO
-    /*task_coro_timeout_start(g_scheduler, 20000, 0);
+    task_coro_timeout_start(g_scheduler, 20000, 0);
     task_coro_comm1_start(g_scheduler, 20001, 0);
     task_coro_net_start(g_scheduler, 20002, 0);
     task_coro_utils_start(g_scheduler, 20003, 0);
-    task_redis_start(g_scheduler, 20004, 0);*/
+    task_redis_start(g_scheduler, 20004, 0);
     task_mysql_start(g_scheduler, 20005, 1);
 #endif
     mutex_lock(&muexit);

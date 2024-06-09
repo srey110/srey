@@ -3,7 +3,7 @@
 #include "proto/http.h"
 #include "proto/websock.h"
 #include "proto/redis.h"
-#include "proto/mysql.h"
+#include "proto/mysql/mysql.h"
 
 void protos_pkfree(pack_type type, void *data) {
     if (NULL == data) {

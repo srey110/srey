@@ -2,17 +2,6 @@
 
 #if WITH_LUA
 
-#define ASSOC_MTABLE(lua, name) \
-    luaL_getmetatable(lua, name);\
-    lua_setmetatable(lua, -2)
-
-#define REG_MTABLE(lua, name, regnew, regfunc)\
-    luaL_newmetatable(lua, name);\
-    lua_pushvalue(lua, -1);\
-    lua_setfield(lua, -2, "__index");\
-    luaL_setfuncs(lua, regfunc, 0);\
-    luaL_newlib(lua, regnew)
-
 static int32_t _lalgo_url_encode(lua_State *lua) {
     void *data;
     size_t size;

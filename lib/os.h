@@ -109,6 +109,7 @@
 #include <fcntl.h>
 #include <wchar.h>
 #include <math.h>
+#include <float.h>
 #include <string.h>
 #include <stdint.h>
 #include <limits.h>

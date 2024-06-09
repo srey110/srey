@@ -11,19 +11,120 @@ static void _net_close(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype,
         LOG_INFO("mysql connection closed.");
     }
 }
+static void _show_print(mysql_reader_ctx *reader) {
+    int32_t err;
+    int8_t i8;
+    int16_t i16;
+    int32_t i32;
+    int64_t i64;
+    uint64_t ui64;
+    float f;
+    double d;
+    char str[ONEK];
+    size_t lens;
+    i64 = mysql_reader_integer(reader, "id", &err);
+    if (1 == err) {
+        printf("nil   ");
+    } else {
+        printf("%lld   ", i64);
+    }
+    i8 = (int8_t)mysql_reader_integer(reader, "t_int8", &err);
+    if (1 == err) {
+        printf("nil   ");
+    } else {
+        printf("%d   ", (uint8_t)i8);
+    }
+    i16 = (int16_t)mysql_reader_integer(reader, "t_int16", &err);
+    if (1 == err) {
+        printf("nil   ");
+    } else {
+        printf("%d   ", (uint8_t)i16);
+    }
+    i32 = (int32_t)mysql_reader_integer(reader, "t_int32", &err);
+    if (1 == err) {
+        printf("nil   ");
+    }
+    else {
+        printf("%d   ", i32);
+    }
+    ui64 = mysql_reader_uinteger(reader, "t_int64", &err);
+    if (1 == err) {
+        printf("nil   ");
+    } else {
+        printf("%lld   ", ui64);
+    }
+    f = (float)mysql_reader_double(reader, "t_float", &err);
+    if (1 == err) {
+        printf("nil   ");
+    } else {
+        printf("%f   ", f);
+    }
+    d = mysql_reader_double(reader, "t_double", &err);
+    if (1 == err) {
+        printf("nil   ");
+    } else {
+        printf("%f   ", d);
+    }
+    char *val = mysql_reader_string(reader, "t_string", &lens, &err);
+    if (1 == err) {
+        printf("nil   ");
+    } else {
+        memcpy(str, val, lens);
+        str[lens] = '\0';
+        printf("%s   ", str);
+    }
+    ui64 = mysql_reader_datetime(reader, "t_datetime", &err);
+    if (1 == err) {
+        printf("nil   ");
+    } else {
+        printf("%lld   ", ui64);
+    }
+    struct tm dt;
+    mysql_reader_time(reader, "t_time", &dt, &err);
+    if (1 == err) {
+        printf("nil   ");
+    } else {
+        printf("%lld   ", ui64);
+    }
+}
+static void _show_result1(mpack_ctx *pack, int32_t eof) {
+    if (!_prt) {
+        return;
+    }
+    mysql_reader_ctx *reader = mysql_reader_init(pack);
+    if (NULL == reader) {
+        return;
+    }
+    printf("--------------------------------------------------------------------\n");
+    if (eof) {
+        while (!mysql_reader_eof(reader)) {
+            _show_print(reader);
+            printf("\n");
+            mysql_reader_next(reader);
+        }
+    } else {
+        size_t count = mysql_reader_size(reader);
+        for (size_t i = 0; i < count; i++) {
+            mysql_reader_seek(reader, i);
+            _show_print(reader);
+            printf("\n");
+        }
+    }
+    mysql_reader_free(reader);
+}
 static void _test_bind(task_ctx *task) {
     for (int i = 0; i < 10; i++) {
-        mysql_bind_int8(&_bind, "t_int8", i + 1);
-        mysql_bind_int16(&_bind, "t_int16", 2014 + i);
-        mysql_bind_int32(&_bind, "t_int32", i + 2);
-        mysql_bind_int64(&_bind, "t_int64", i + 3);
-        mysql_bind_float(&_bind, "t_float", (float)(i + 4) + 0.123456f);
+        mysql_bind_integer(&_bind, "t_int8", i + 1);
+        mysql_bind_integer(&_bind, "t_int16", i + 2);
+        mysql_bind_integer(&_bind, "t_int32", i + 3);
+        mysql_bind_integer(&_bind, "t_int64", i + 4);
+        mysql_bind_double(&_bind, "t_float", (float)(i + 5) + 0.123456f);
         mysql_bind_double(&_bind, "t_double", (double)(i + 5) + 0.789);
         mysql_bind_string(&_bind, "t_string", "this is test.", strlen("this is test."));
-        //mysql_bind_nil(&_bind, "t_datetime");
         mysql_bind_datetime(&_bind, "t_datetime", time(NULL) + i + 6);
-        mysql_bind_time(&_bind, "t_time", 0, 0, 15, 30 + i + 7, 29);
-        const char *sql1 = "insert into test_bind (t_int8,t_int16,t_int32,t_int64,t_float,t_double, t_string,t_datetime,t_time) \
+        mysql_bind_time(&_bind, "t_time", 1, 2, 15, 30 + i, 29);
+        mysql_bind_nil(&_bind, "t_nil");
+        const char *sql1 = "insert into test_bind (t_int8,t_int16,t_int32,t_int64,t_float,t_double, t_string,t_datetime,t_time,t_nil) \
          values(mysql_query_attribute_string('t_int8'),\
          mysql_query_attribute_string('t_int16'),\
          mysql_query_attribute_string('t_int32'),\
@@ -32,7 +133,8 @@ static void _test_bind(task_ctx *task) {
          mysql_query_attribute_string('t_double'),\
          mysql_query_attribute_string('t_string'),\
          mysql_query_attribute_string('t_datetime'),\
-         mysql_query_attribute_string('t_time')\
+         mysql_query_attribute_string('t_time'),\
+         mysql_query_attribute_string('t_nil')\
         )";
         mpack_ctx *pack = mysql_query(task, &_mysql, sql1, &_bind);
         if (MPACK_OK != pack->pack_type) {
@@ -44,20 +146,67 @@ static void _test_bind(task_ctx *task) {
         "insert into test1_bind (t_int8,t_int16,t_int32,t_int64,t_float,t_double, t_string,t_datetime,t_time) values (...)", NULL);
     if (MPACK_ERR != pack->pack_type) {
         LOG_WARN("mysql_query error.");
+    } else {
+        if (_prt) {
+            LOG_WARN("%s", mysql_erro(&_mysql, NULL));
+        }
     }
-    pack = mysql_query(task, &_mysql, "delete from test_bind", NULL);
-    if (MPACK_OK != pack->pack_type) {
-        LOG_WARN("mysql_query error.");
+    pack = mysql_query(task, &_mysql, "select * from test_bind", NULL);
+    _show_result1(pack, 1);
+}
+static void _test_stmt(task_ctx *task) {
+    const char *sql1 = "insert into test_bind (t_int8,t_int16,t_int32,t_int64,t_float,t_double,t_string,t_datetime,t_time,t_nil) \
+         values(?,?,?,?,?,?,?,?,?,?)";
+    uint64_t curts = nowsec();
+    mysql_stmt_ctx *stmt = mysql_stmt_prepare(task, &_mysql, sql1);
+    mysql_bind_integer(&_bind, NULL, CHAR_MIN);
+    mysql_bind_integer(&_bind, NULL, CHAR_MIN);
+    mysql_bind_integer(&_bind, NULL, SHRT_MIN);
+    mysql_bind_integer(&_bind, NULL, curts);
+    mysql_bind_double(&_bind, NULL, FLT_MAX);
+    mysql_bind_double(&_bind, NULL, FLT_MAX + 1);
+    mysql_bind_string(&_bind, NULL, "this is text.", strlen("this is text."));
+    mysql_bind_datetime(&_bind, "t_datetime", (time_t)curts);
+    mysql_bind_time(&_bind, "t_time", 0, 2, 15, 30, 29);
+    mysql_bind_nil(&_bind, NULL);
+    mpack_ctx *pack = mysql_stmt_execute(task, stmt, &_bind);
+    mysql_bind_clear(&_bind);
+    if (NULL == pack
+        || MPACK_OK !=  pack->pack_type) {
+        LOG_WARN("mysql_stmt_execute error");
     }
+    mysql_stmt_close(task, stmt);
+
+    const char *sql2 = "select * from test_bind where t_int64=?";
+    stmt = mysql_stmt_prepare(task, &_mysql, sql2);
+    mysql_bind_uinteger(&_bind, NULL, curts);
+    pack = mysql_stmt_execute(task, stmt, &_bind);
+    _show_result1(pack, 1);
+    mysql_stmt_close(task, stmt);
+
+    const char *sql3 = "select * from test_bind";
+    stmt = mysql_stmt_prepare(task, &_mysql, sql3);
+    pack = mysql_stmt_execute(task, stmt, &_bind);
+    _show_result1(pack, 0);
+    mysql_stmt_close(task, stmt);
+
+    const char *sql4 = "delete from test_bind";
+    stmt = mysql_stmt_prepare(task, &_mysql, sql4);
+    pack = mysql_stmt_execute(task, stmt, NULL);
+    if (NULL == pack
+        || pack->pack_type != MPACK_OK) {
+        LOG_WARN("mysql_stmt_execute error");
+    }
+    mysql_stmt_close(task, stmt);
 }
 static void _timeout(task_ctx *task, uint64_t sess) {
     if (ERR_FAILED != mysql_selectdb(task, &_mysql, "tes1t")) {
         LOG_WARN("selectdb wrong db error.");
     }
-    mysql_quit(task, &_mysql);
     if (ERR_OK != mysql_selectdb(task, &_mysql, "test")) {
         LOG_WARN("selectdb error.");
     }
+    mysql_quit(task, &_mysql);
     if (ERR_OK != mysql_ping(task, &_mysql)) {
         LOG_WARN("coro_mysql_ping error.");
     }
@@ -67,16 +216,17 @@ static void _timeout(task_ctx *task, uint64_t sess) {
         LOG_WARN("mysql_query error.");
     } else {
         if (_prt) {
-            mpack_query *rst = mpack->pack;
+            mysql_reader_ctx *rst = mpack->pack;
             LOG_INFO("field %d, rows %d", rst->field_count, arr_ptr_size(&rst->arr_rows));
         }
     }
     _test_bind(task);
+    _test_stmt(task);
 }
 static void _startup(task_ctx *task) {
     on_closed(task, _net_close);
     struct evssl_ctx *evssl = srey_ssl_qury(task->scheduler, 102);
-    if (ERR_OK != mysql_init(&_mysql, "192.168.8.3", 3306, NULL, "admin", "12345678", "test", "utf8", 0, 1)) {
+    if (ERR_OK != mysql_init(&_mysql, "192.168.8.3", 3306, evssl, "admin", "12345678", "test", "utf8", 0, 1)) {
         LOG_WARN("mysql_init error.");
         return;
     }

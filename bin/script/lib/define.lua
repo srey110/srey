@@ -14,7 +14,15 @@ TASK_NAME = {
     wbskd = 1009,
     wbsksv = 1010,
     httpd = 1011,
-    httpsv = 1012
+    httpsv = 1012,
+    mysql = 1013
+}
+MYSQL_PACK_TYPE =  {
+    MPACK_OK = 0x00,
+    MPACK_ERR = 0x01,
+    MPACK_QUERY = 0x02,
+    MPACK_STMT_PREPARE = 0x03,
+    MPACK_STMT_EXECUTE = 0x04
 }
 --SSL名
 SSL_NAME = {

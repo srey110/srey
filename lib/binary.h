@@ -107,37 +107,13 @@ static inline uint8_t binary_get_uint8(binary_ctx *ctx) {
     ctx->offset += sizeof(val);
     return val;
 }
-static inline int16_t binary_get_int16(binary_ctx *ctx, size_t lens, int32_t islittle) {
-    ASSERTAB(ctx->offset + lens <= ctx->size, "out of memory.");
-    int16_t val = (int16_t)unpack_integer(ctx->data + ctx->offset, (int32_t)lens, islittle, 1);
-    ctx->offset += lens;
-    return val;
-}
-static inline uint16_t binary_get_uint16(binary_ctx *ctx, size_t lens, int32_t islittle) {
-    ASSERTAB(ctx->offset + lens <= ctx->size, "out of memory.");
-    uint16_t val = (uint16_t)unpack_integer(ctx->data + ctx->offset, (int32_t)lens, islittle, 0);
-    ctx->offset += lens;
-    return val;
-}
-static inline int32_t binary_get_int32(binary_ctx *ctx, size_t lens, int32_t islittle) {
-    ASSERTAB(ctx->offset + lens <= ctx->size, "out of memory.");
-    int32_t val = (int32_t)unpack_integer(ctx->data + ctx->offset, (int32_t)lens, islittle, 1);
-    ctx->offset += lens;
-    return val;
-}
-static inline uint32_t binary_get_uint32(binary_ctx *ctx, size_t lens, int32_t islittle) {
-    ASSERTAB(ctx->offset + lens <= ctx->size, "out of memory.");
-    uint32_t val = (uint32_t)unpack_integer(ctx->data + ctx->offset, (int32_t)lens, islittle, 0);
-    ctx->offset += lens;
-    return val;
-}
-static inline int64_t binary_get_int64(binary_ctx *ctx, size_t lens, int32_t islittle) {
+static inline int64_t binary_get_integer(binary_ctx *ctx, size_t lens, int32_t islittle) {
     ASSERTAB(ctx->offset + lens <= ctx->size, "out of memory.");
     int64_t val = unpack_integer(ctx->data + ctx->offset, (int32_t)lens, islittle, 1);
     ctx->offset += lens;
     return val;
 }
-static inline uint64_t binary_get_uint64(binary_ctx *ctx, size_t lens, int32_t islittle) {
+static inline uint64_t binary_get_uinteger(binary_ctx *ctx, size_t lens, int32_t islittle) {
     ASSERTAB(ctx->offset + lens <= ctx->size, "out of memory.");
     uint64_t val = (uint64_t)unpack_integer(ctx->data + ctx->offset, (int32_t)lens, islittle, 0);
     ctx->offset += lens;
@@ -159,8 +135,8 @@ static inline char *binary_get_string(binary_ctx *ctx, size_t lens) {
     char *val = ctx->data + ctx->offset;
     if (0 == lens) {
         size_t slen = strlen(val) + 1;
-        ASSERTAB(ctx->offset + slen <= ctx->size, "out of memory.");
-        ctx->offset += slen;
+        size_t remain = ctx->size - ctx->offset;
+        ctx->offset += (slen > remain ? remain : slen);
     } else {
         ASSERTAB(ctx->offset + lens <= ctx->size, "out of memory.");
         ctx->offset += lens;
