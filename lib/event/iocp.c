@@ -1,7 +1,7 @@
 #include "event/iocp.h"
-#include "ds/hashmap.h"
-#include "netutils.h"
-#include "timer.h"
+#include "containers/hashmap.h"
+#include "utils/netutils.h"
+#include "utils/timer.h"
 
 #ifdef EV_IOCP
 

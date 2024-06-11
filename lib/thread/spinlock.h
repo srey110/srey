@@ -1,7 +1,7 @@
 #ifndef SPINLOCK_H_
 #define SPINLOCK_H_
 
-#include "macro.h"
+#include "base/macro.h"
 
 #if defined(OS_WIN)
 typedef CRITICAL_SECTION spin_ctx;

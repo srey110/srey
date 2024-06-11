@@ -1,8 +1,8 @@
 #include "srey/coro.h"
 #include "srey/task.h"
 #include "srey/trigger.h"
-#include "ds/hashmap.h"
-#include "timer.h"
+#include "containers/hashmap.h"
+#include "utils/timer.h"
 #if WITH_CORO
 #define MINICORO_IMPL
 #include "srey/minicoro.h"

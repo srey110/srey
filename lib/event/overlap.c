@@ -1,9 +1,9 @@
 #include "event/event.h"
 #include "event/iocp.h"
 #include "event/skpool.h"
-#include "buffer.h"
-#include "ds/hashmap.h"
-#include "netutils.h"
+#include "utils/buffer.h"
+#include "utils/netutils.h"
+#include "containers/hashmap.h"
 
 #ifdef EV_IOCP
 

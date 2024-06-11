@@ -1,5 +1,5 @@
 #include "srey/scheduler.h"
-#include "ds/hashmap.h"
+#include "containers/hashmap.h"
 #include "srey/task.h"
 
 scheduler_ctx *g_scheduler;

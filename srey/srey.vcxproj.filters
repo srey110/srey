@@ -8,26 +8,26 @@
     <ClCompile Include="cjson\cJSON.c">
       <Filter>cjson</Filter>
     </ClCompile>
-    <ClCompile Include="ltask\ltask.c">
-      <Filter>ltask</Filter>
+    <ClCompile Include="lbind\lalgo.c">
+      <Filter>lbind</Filter>
     </ClCompile>
-    <ClCompile Include="ltask\lpub.c">
-      <Filter>ltask</Filter>
+    <ClCompile Include="lbind\lcore.c">
+      <Filter>lbind</Filter>
     </ClCompile>
-    <ClCompile Include="ltask\lcore.c">
-      <Filter>ltask</Filter>
+    <ClCompile Include="lbind\lmysql.c">
+      <Filter>lbind</Filter>
     </ClCompile>
-    <ClCompile Include="ltask\lproto.c">
-      <Filter>ltask</Filter>
+    <ClCompile Include="lbind\lproto.c">
+      <Filter>lbind</Filter>
     </ClCompile>
-    <ClCompile Include="ltask\lalgo.c">
-      <Filter>ltask</Filter>
+    <ClCompile Include="lbind\lpub.c">
+      <Filter>lbind</Filter>
     </ClCompile>
-    <ClCompile Include="ltask\lutils.c">
-      <Filter>ltask</Filter>
+    <ClCompile Include="lbind\ltask.c">
+      <Filter>lbind</Filter>
     </ClCompile>
-    <ClCompile Include="ltask\lmysql.c">
-      <Filter>ltask</Filter>
+    <ClCompile Include="lbind\lutils.c">
+      <Filter>lbind</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -37,7 +37,7 @@
     <Filter Include="cjson">
       <UniqueIdentifier>{245979bf-1858-4cf5-956d-48f2d9d6eb72}</UniqueIdentifier>
     </Filter>
-    <Filter Include="ltask">
+    <Filter Include="lbind">
       <UniqueIdentifier>{ed4f73b7-f67a-4a01-8032-02335a34f708}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
@@ -49,11 +49,11 @@
     <ClInclude Include="cjson\cJSON.h">
       <Filter>cjson</Filter>
     </ClInclude>
-    <ClInclude Include="ltask\ltask.h">
-      <Filter>ltask</Filter>
+    <ClInclude Include="lbind\lpub.h">
+      <Filter>lbind</Filter>
     </ClInclude>
-    <ClInclude Include="ltask\lpub.h">
-      <Filter>ltask</Filter>
+    <ClInclude Include="lbind\ltask.h">
+      <Filter>lbind</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

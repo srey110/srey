@@ -1,7 +1,7 @@
 #ifndef THREAD_H_
 #define THREAD_H_
 
-#include "macro.h"
+#include "base/macro.h"
 
 #if defined(OS_WIN)
 typedef HANDLE pthread_t;

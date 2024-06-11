@@ -2,7 +2,7 @@
 #define CORO_UTILS_H_
 
 #include "srey/spub.h"
-#include "proto/mysql/mysql.h"
+#include "protocol/mysql/mysql.h"
 
 #if WITH_CORO
 

@@ -1,7 +1,7 @@
 #ifndef EVSSL_H_
 #define EVSSL_H_
 
-#include "macro.h"
+#include "base/macro.h"
 
 #if WITH_SSL
 #include <openssl/ssl.h>

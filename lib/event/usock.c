@@ -1,7 +1,7 @@
 #include "event/uev.h"
-#include "buffer.h"
-#include "netutils.h"
-#include "ds/hashmap.h"
+#include "utils/buffer.h"
+#include "utils/netutils.h"
+#include "containers/hashmap.h"
 
 #ifndef EV_IOCP
 

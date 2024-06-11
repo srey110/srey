@@ -1,13 +1,13 @@
 #ifndef EVPUB_H_
 #define EVPUB_H_
 
-#include "utils.h"
-#include "ds/queue.h"
-#include "ds/sarray.h"
+#include "utils/utils.h"
+#include "containers/queue.h"
+#include "containers/sarray.h"
 #include "thread/spinlock.h"
-#include "buffer.h"
-#include "netaddr.h"
-#include "structs.h"
+#include "utils/buffer.h"
+#include "utils/netaddr.h"
+#include "base/structs.h"
 
 typedef enum sock_status {
     STATUS_NONE = 0x00,

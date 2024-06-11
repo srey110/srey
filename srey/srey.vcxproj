@@ -158,20 +158,20 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="cjson\cJSON.c" />
-    <ClCompile Include="ltask\lalgo.c" />
-    <ClCompile Include="ltask\lcore.c" />
-    <ClCompile Include="ltask\lmysql.c" />
-    <ClCompile Include="ltask\lproto.c" />
-    <ClCompile Include="ltask\lpub.c" />
-    <ClCompile Include="ltask\ltask.c" />
-    <ClCompile Include="ltask\lutils.c" />
+    <ClCompile Include="lbind\lalgo.c" />
+    <ClCompile Include="lbind\lcore.c" />
+    <ClCompile Include="lbind\lmysql.c" />
+    <ClCompile Include="lbind\lproto.c" />
+    <ClCompile Include="lbind\lpub.c" />
+    <ClCompile Include="lbind\ltask.c" />
+    <ClCompile Include="lbind\lutils.c" />
     <ClCompile Include="main.c" />
     <ClCompile Include="tasks\harbor.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="cjson\cJSON.h" />
-    <ClInclude Include="ltask\lpub.h" />
-    <ClInclude Include="ltask\ltask.h" />
+    <ClInclude Include="lbind\lpub.h" />
+    <ClInclude Include="lbind\ltask.h" />
     <ClInclude Include="startup.h" />
     <ClInclude Include="tasks\harbor.h" />
   </ItemGroup>

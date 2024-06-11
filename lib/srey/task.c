@@ -1,5 +1,5 @@
 #include "srey/task.h"
-#include "ds/hashmap.h"
+#include "containers/hashmap.h"
 
 static void _map_task_set(struct hashmap *map, task_ctx *task) {
     name_t *key = &task->name;

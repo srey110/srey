@@ -1,7 +1,7 @@
 #include "test_utils.h"
 #include "lib.h"
-#include "proto/http.h"
-#include "proto/custz.h"
+#include "protocol/http.h"
+#include "protocol/custz.h"
 
 ARRAY_DECL(int, arr);
 static void test_array(CuTest* tc) {

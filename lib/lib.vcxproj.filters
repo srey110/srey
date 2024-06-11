@@ -19,60 +19,24 @@
     <Filter Include="event\unix">
       <UniqueIdentifier>{942da95e-2cdb-4ff7-ab71-5d496e592712}</UniqueIdentifier>
     </Filter>
-    <Filter Include="proto">
-      <UniqueIdentifier>{6de5de1a-091e-4521-8005-38cdba96ae3e}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="ds">
-      <UniqueIdentifier>{9243310e-d6f4-44b1-bd17-bada164a1c0d}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="algo">
-      <UniqueIdentifier>{b8309848-77b2-4ec6-9bc0-a234857c1244}</UniqueIdentifier>
-    </Filter>
     <Filter Include="srey">
       <UniqueIdentifier>{2f052cf0-39f4-455f-94ec-2d469dcab809}</UniqueIdentifier>
     </Filter>
-    <Filter Include="proto\mysql">
+    <Filter Include="containers">
+      <UniqueIdentifier>{cd829b77-70f0-407b-99ba-befdb960c7e6}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="protocol">
+      <UniqueIdentifier>{6de5de1a-091e-4521-8005-38cdba96ae3e}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="protocol\mysql">
       <UniqueIdentifier>{e34dfc93-e61e-4ef5-9535-626e0915b907}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="crypt">
+      <UniqueIdentifier>{b8309848-77b2-4ec6-9bc0-a234857c1244}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="errcode.h">
-      <Filter>base</Filter>
-    </ClInclude>
-    <ClInclude Include="os.h">
-      <Filter>base</Filter>
-    </ClInclude>
-    <ClInclude Include="memory.h">
-      <Filter>base</Filter>
-    </ClInclude>
-    <ClInclude Include="macro_unix.h">
-      <Filter>base</Filter>
-    </ClInclude>
-    <ClInclude Include="macro_win.h">
-      <Filter>base</Filter>
-    </ClInclude>
-    <ClInclude Include="macro.h">
-      <Filter>base</Filter>
-    </ClInclude>
     <ClInclude Include="lib.h" />
-    <ClInclude Include="utils.h">
-      <Filter>utils</Filter>
-    </ClInclude>
-    <ClInclude Include="timer.h">
-      <Filter>utils</Filter>
-    </ClInclude>
-    <ClInclude Include="netaddr.h">
-      <Filter>utils</Filter>
-    </ClInclude>
-    <ClInclude Include="netutils.h">
-      <Filter>utils</Filter>
-    </ClInclude>
-    <ClInclude Include="buffer.h">
-      <Filter>utils</Filter>
-    </ClInclude>
-    <ClInclude Include="tw.h">
-      <Filter>utils</Filter>
-    </ClInclude>
     <ClInclude Include="event\event.h">
       <Filter>event</Filter>
     </ClInclude>
@@ -88,29 +52,8 @@
     <ClInclude Include="event\skpool.h">
       <Filter>event</Filter>
     </ClInclude>
-    <ClInclude Include="config.h">
-      <Filter>base</Filter>
-    </ClInclude>
     <ClInclude Include="event\evssl.h">
       <Filter>event</Filter>
-    </ClInclude>
-    <ClInclude Include="structs.h">
-      <Filter>base</Filter>
-    </ClInclude>
-    <ClInclude Include="proto\http.h">
-      <Filter>proto</Filter>
-    </ClInclude>
-    <ClInclude Include="proto\dns.h">
-      <Filter>proto</Filter>
-    </ClInclude>
-    <ClInclude Include="log.h">
-      <Filter>utils</Filter>
-    </ClInclude>
-    <ClInclude Include="proto\protos.h">
-      <Filter>proto</Filter>
-    </ClInclude>
-    <ClInclude Include="proto\urlparse.h">
-      <Filter>proto</Filter>
     </ClInclude>
     <ClInclude Include="thread\cond.h">
       <Filter>thread</Filter>
@@ -127,51 +70,6 @@
     <ClInclude Include="thread\thread.h">
       <Filter>thread</Filter>
     </ClInclude>
-    <ClInclude Include="ds\hashmap.h">
-      <Filter>ds</Filter>
-    </ClInclude>
-    <ClInclude Include="ds\queue.h">
-      <Filter>ds</Filter>
-    </ClInclude>
-    <ClInclude Include="ds\sarray.h">
-      <Filter>ds</Filter>
-    </ClInclude>
-    <ClInclude Include="algo\algo.h">
-      <Filter>algo</Filter>
-    </ClInclude>
-    <ClInclude Include="algo\base64.h">
-      <Filter>algo</Filter>
-    </ClInclude>
-    <ClInclude Include="algo\crc.h">
-      <Filter>algo</Filter>
-    </ClInclude>
-    <ClInclude Include="algo\hash_ring.h">
-      <Filter>algo</Filter>
-    </ClInclude>
-    <ClInclude Include="algo\md5.h">
-      <Filter>algo</Filter>
-    </ClInclude>
-    <ClInclude Include="algo\sha1.h">
-      <Filter>algo</Filter>
-    </ClInclude>
-    <ClInclude Include="algo\sha256.h">
-      <Filter>algo</Filter>
-    </ClInclude>
-    <ClInclude Include="algo\urlraw.h">
-      <Filter>algo</Filter>
-    </ClInclude>
-    <ClInclude Include="algo\xor.h">
-      <Filter>algo</Filter>
-    </ClInclude>
-    <ClInclude Include="algo\hmac.h">
-      <Filter>algo</Filter>
-    </ClInclude>
-    <ClInclude Include="sfid.h">
-      <Filter>utils</Filter>
-    </ClInclude>
-    <ClInclude Include="strptime.h">
-      <Filter>utils</Filter>
-    </ClInclude>
     <ClInclude Include="srey\task.h">
       <Filter>srey</Filter>
     </ClInclude>
@@ -183,9 +81,6 @@
     </ClInclude>
     <ClInclude Include="srey\coro.h">
       <Filter>srey</Filter>
-    </ClInclude>
-    <ClInclude Include="proto\websock.h">
-      <Filter>proto</Filter>
     </ClInclude>
     <ClInclude Include="srey\ssls.h">
       <Filter>srey</Filter>
@@ -199,62 +94,146 @@
     <ClInclude Include="srey\register.h">
       <Filter>srey</Filter>
     </ClInclude>
-    <ClInclude Include="proto\custz.h">
-      <Filter>proto</Filter>
+    <ClInclude Include="containers\hashmap.h">
+      <Filter>containers</Filter>
     </ClInclude>
-    <ClInclude Include="proto\redis.h">
-      <Filter>proto</Filter>
+    <ClInclude Include="containers\queue.h">
+      <Filter>containers</Filter>
     </ClInclude>
-    <ClInclude Include="binary.h">
+    <ClInclude Include="containers\sarray.h">
+      <Filter>containers</Filter>
+    </ClInclude>
+    <ClInclude Include="base\config.h">
+      <Filter>base</Filter>
+    </ClInclude>
+    <ClInclude Include="base\errcode.h">
+      <Filter>base</Filter>
+    </ClInclude>
+    <ClInclude Include="base\macro.h">
+      <Filter>base</Filter>
+    </ClInclude>
+    <ClInclude Include="base\macro_unix.h">
+      <Filter>base</Filter>
+    </ClInclude>
+    <ClInclude Include="base\macro_win.h">
+      <Filter>base</Filter>
+    </ClInclude>
+    <ClInclude Include="base\memory.h">
+      <Filter>base</Filter>
+    </ClInclude>
+    <ClInclude Include="base\os.h">
+      <Filter>base</Filter>
+    </ClInclude>
+    <ClInclude Include="base\structs.h">
+      <Filter>base</Filter>
+    </ClInclude>
+    <ClInclude Include="utils\binary.h">
       <Filter>utils</Filter>
     </ClInclude>
-    <ClInclude Include="proto\mysql\mysql.h">
-      <Filter>proto\mysql</Filter>
+    <ClInclude Include="utils\buffer.h">
+      <Filter>utils</Filter>
     </ClInclude>
-    <ClInclude Include="proto\mysql\mysql_bind.h">
-      <Filter>proto\mysql</Filter>
+    <ClInclude Include="utils\log.h">
+      <Filter>utils</Filter>
     </ClInclude>
-    <ClInclude Include="proto\mysql\mysql_macro.h">
-      <Filter>proto\mysql</Filter>
+    <ClInclude Include="utils\netaddr.h">
+      <Filter>utils</Filter>
     </ClInclude>
-    <ClInclude Include="proto\mysql\mysql_pack.h">
-      <Filter>proto\mysql</Filter>
+    <ClInclude Include="utils\netutils.h">
+      <Filter>utils</Filter>
     </ClInclude>
-    <ClInclude Include="proto\mysql\mysql_parse.h">
-      <Filter>proto\mysql</Filter>
+    <ClInclude Include="utils\sfid.h">
+      <Filter>utils</Filter>
     </ClInclude>
-    <ClInclude Include="proto\mysql\mysql_reader.h">
-      <Filter>proto\mysql</Filter>
+    <ClInclude Include="utils\strptime.h">
+      <Filter>utils</Filter>
     </ClInclude>
-    <ClInclude Include="proto\mysql\mysql_struct.h">
-      <Filter>proto\mysql</Filter>
+    <ClInclude Include="utils\timer.h">
+      <Filter>utils</Filter>
     </ClInclude>
-    <ClInclude Include="proto\mysql\mysql_utils.h">
-      <Filter>proto\mysql</Filter>
+    <ClInclude Include="utils\tw.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="utils\utils.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\mysql\mysql.h">
+      <Filter>protocol\mysql</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\mysql\mysql_bind.h">
+      <Filter>protocol\mysql</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\mysql\mysql_macro.h">
+      <Filter>protocol\mysql</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\mysql\mysql_pack.h">
+      <Filter>protocol\mysql</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\mysql\mysql_parse.h">
+      <Filter>protocol\mysql</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\mysql\mysql_reader.h">
+      <Filter>protocol\mysql</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\mysql\mysql_struct.h">
+      <Filter>protocol\mysql</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\mysql\mysql_utils.h">
+      <Filter>protocol\mysql</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\custz.h">
+      <Filter>protocol</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\dns.h">
+      <Filter>protocol</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\http.h">
+      <Filter>protocol</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\protos.h">
+      <Filter>protocol</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\redis.h">
+      <Filter>protocol</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\urlparse.h">
+      <Filter>protocol</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\websock.h">
+      <Filter>protocol</Filter>
+    </ClInclude>
+    <ClInclude Include="crypt\base64.h">
+      <Filter>crypt</Filter>
+    </ClInclude>
+    <ClInclude Include="crypt\crc.h">
+      <Filter>crypt</Filter>
+    </ClInclude>
+    <ClInclude Include="crypt\hmac.h">
+      <Filter>crypt</Filter>
+    </ClInclude>
+    <ClInclude Include="crypt\md5.h">
+      <Filter>crypt</Filter>
+    </ClInclude>
+    <ClInclude Include="crypt\sha1.h">
+      <Filter>crypt</Filter>
+    </ClInclude>
+    <ClInclude Include="crypt\sha256.h">
+      <Filter>crypt</Filter>
+    </ClInclude>
+    <ClInclude Include="crypt\urlraw.h">
+      <Filter>crypt</Filter>
+    </ClInclude>
+    <ClInclude Include="crypt\xor.h">
+      <Filter>crypt</Filter>
+    </ClInclude>
+    <ClInclude Include="crypt\crypt.h">
+      <Filter>crypt</Filter>
+    </ClInclude>
+    <ClInclude Include="utils\hash_ring.h">
+      <Filter>utils</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="memory.c">
-      <Filter>base</Filter>
-    </ClCompile>
-    <ClCompile Include="utils.c">
-      <Filter>utils</Filter>
-    </ClCompile>
-    <ClCompile Include="timer.c">
-      <Filter>utils</Filter>
-    </ClCompile>
-    <ClCompile Include="netaddr.c">
-      <Filter>utils</Filter>
-    </ClCompile>
-    <ClCompile Include="netutils.c">
-      <Filter>utils</Filter>
-    </ClCompile>
-    <ClCompile Include="buffer.c">
-      <Filter>utils</Filter>
-    </ClCompile>
-    <ClCompile Include="tw.c">
-      <Filter>utils</Filter>
-    </ClCompile>
     <ClCompile Include="event\event.c">
       <Filter>event</Filter>
     </ClCompile>
@@ -279,56 +258,8 @@
     <ClCompile Include="event\wcmd.c">
       <Filter>event\win</Filter>
     </ClCompile>
-    <ClCompile Include="proto\http.c">
-      <Filter>proto</Filter>
-    </ClCompile>
-    <ClCompile Include="proto\dns.c">
-      <Filter>proto</Filter>
-    </ClCompile>
-    <ClCompile Include="log.c">
-      <Filter>utils</Filter>
-    </ClCompile>
-    <ClCompile Include="proto\protos.c">
-      <Filter>proto</Filter>
-    </ClCompile>
-    <ClCompile Include="proto\urlparse.c">
-      <Filter>proto</Filter>
-    </ClCompile>
     <ClCompile Include="thread\thread.c">
       <Filter>thread</Filter>
-    </ClCompile>
-    <ClCompile Include="ds\hashmap.c">
-      <Filter>ds</Filter>
-    </ClCompile>
-    <ClCompile Include="algo\base64.c">
-      <Filter>algo</Filter>
-    </ClCompile>
-    <ClCompile Include="algo\crc.c">
-      <Filter>algo</Filter>
-    </ClCompile>
-    <ClCompile Include="algo\hash_ring.c">
-      <Filter>algo</Filter>
-    </ClCompile>
-    <ClCompile Include="algo\md5.c">
-      <Filter>algo</Filter>
-    </ClCompile>
-    <ClCompile Include="algo\sha1.c">
-      <Filter>algo</Filter>
-    </ClCompile>
-    <ClCompile Include="algo\sha256.c">
-      <Filter>algo</Filter>
-    </ClCompile>
-    <ClCompile Include="algo\urlraw.c">
-      <Filter>algo</Filter>
-    </ClCompile>
-    <ClCompile Include="algo\xor.c">
-      <Filter>algo</Filter>
-    </ClCompile>
-    <ClCompile Include="sfid.c">
-      <Filter>utils</Filter>
-    </ClCompile>
-    <ClCompile Include="strptime.c">
-      <Filter>utils</Filter>
     </ClCompile>
     <ClCompile Include="srey\task.c">
       <Filter>srey</Filter>
@@ -342,38 +273,107 @@
     <ClCompile Include="srey\coro.c">
       <Filter>srey</Filter>
     </ClCompile>
-    <ClCompile Include="proto\websock.c">
-      <Filter>proto</Filter>
-    </ClCompile>
     <ClCompile Include="srey\ssls.c">
       <Filter>srey</Filter>
     </ClCompile>
     <ClCompile Include="srey\coro_utils.c">
       <Filter>srey</Filter>
     </ClCompile>
-    <ClCompile Include="proto\custz.c">
-      <Filter>proto</Filter>
+    <ClCompile Include="containers\hashmap.c">
+      <Filter>containers</Filter>
     </ClCompile>
-    <ClCompile Include="proto\redis.c">
-      <Filter>proto</Filter>
+    <ClCompile Include="base\memory.c">
+      <Filter>base</Filter>
     </ClCompile>
-    <ClCompile Include="proto\mysql\mysql.c">
-      <Filter>proto\mysql</Filter>
+    <ClCompile Include="utils\buffer.c">
+      <Filter>utils</Filter>
     </ClCompile>
-    <ClCompile Include="proto\mysql\mysql_bind.c">
-      <Filter>proto\mysql</Filter>
+    <ClCompile Include="utils\log.c">
+      <Filter>utils</Filter>
     </ClCompile>
-    <ClCompile Include="proto\mysql\mysql_pack.c">
-      <Filter>proto\mysql</Filter>
+    <ClCompile Include="utils\netaddr.c">
+      <Filter>utils</Filter>
     </ClCompile>
-    <ClCompile Include="proto\mysql\mysql_parse.c">
-      <Filter>proto\mysql</Filter>
+    <ClCompile Include="utils\netutils.c">
+      <Filter>utils</Filter>
     </ClCompile>
-    <ClCompile Include="proto\mysql\mysql_reader.c">
-      <Filter>proto\mysql</Filter>
+    <ClCompile Include="utils\sfid.c">
+      <Filter>utils</Filter>
     </ClCompile>
-    <ClCompile Include="proto\mysql\mysql_utils.c">
-      <Filter>proto\mysql</Filter>
+    <ClCompile Include="utils\strptime.c">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="utils\timer.c">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="utils\tw.c">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="utils\utils.c">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\mysql\mysql.c">
+      <Filter>protocol\mysql</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\mysql\mysql_bind.c">
+      <Filter>protocol\mysql</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\mysql\mysql_pack.c">
+      <Filter>protocol\mysql</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\mysql\mysql_parse.c">
+      <Filter>protocol\mysql</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\mysql\mysql_reader.c">
+      <Filter>protocol\mysql</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\mysql\mysql_utils.c">
+      <Filter>protocol\mysql</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\custz.c">
+      <Filter>protocol</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\dns.c">
+      <Filter>protocol</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\http.c">
+      <Filter>protocol</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\protos.c">
+      <Filter>protocol</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\redis.c">
+      <Filter>protocol</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\urlparse.c">
+      <Filter>protocol</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\websock.c">
+      <Filter>protocol</Filter>
+    </ClCompile>
+    <ClCompile Include="crypt\base64.c">
+      <Filter>crypt</Filter>
+    </ClCompile>
+    <ClCompile Include="crypt\crc.c">
+      <Filter>crypt</Filter>
+    </ClCompile>
+    <ClCompile Include="crypt\md5.c">
+      <Filter>crypt</Filter>
+    </ClCompile>
+    <ClCompile Include="crypt\sha1.c">
+      <Filter>crypt</Filter>
+    </ClCompile>
+    <ClCompile Include="crypt\sha256.c">
+      <Filter>crypt</Filter>
+    </ClCompile>
+    <ClCompile Include="crypt\urlraw.c">
+      <Filter>crypt</Filter>
+    </ClCompile>
+    <ClCompile Include="crypt\xor.c">
+      <Filter>crypt</Filter>
+    </ClCompile>
+    <ClCompile Include="utils\hash_ring.c">
+      <Filter>utils</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

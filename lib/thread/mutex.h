@@ -1,7 +1,7 @@
 #ifndef MUTEX_H_
 #define MUTEX_H_
 
-#include "macro.h"
+#include "base/macro.h"
 
 #if defined(OS_WIN)
 typedef CRITICAL_SECTION mutex_ctx;

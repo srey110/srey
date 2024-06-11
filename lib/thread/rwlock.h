@@ -1,7 +1,7 @@
 #ifndef RWLOCK_H_
 #define RWLOCK_H_
 
-#include "macro.h"
+#include "base/macro.h"
 
 typedef struct rwlock_ctx {
 #if defined(OS_WIN)

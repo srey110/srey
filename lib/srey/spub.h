@@ -1,15 +1,15 @@
 #ifndef SVPUB_H_
 #define SVPUB_H_
 
-#include "proto/protos.h"
+#include "protocol/protos.h"
 #include "event/event.h"
-#include "ds/sarray.h"
-#include "ds/queue.h"
+#include "containers/sarray.h"
+#include "containers/queue.h"
 #include "thread/rwlock.h"
 #include "thread/spinlock.h"
 #include "thread/mutex.h"
 #include "thread/cond.h"
-#include "tw.h"
+#include "utils/tw.h"
 
 #define INVALID_TNAME         0
 typedef struct scheduler_ctx scheduler_ctx;

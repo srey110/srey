@@ -40,11 +40,11 @@ do
     then
         withssl=`echo $line|$wk -F ' ' '{print int($3)}'`
     fi
-done < `pwd`/lib/config.h
+done < `pwd`/lib/base/config.h
 echo "WITH_LUA:"$withlua
 echo "WITH_SSL:"$withssl
 #文件夹
-Dir="lib lib/algo lib/ds lib/event lib/proto lib/proto/mysql lib/srey lib/thread"
+Dir="lib lib/base lib/utils lib/containers lib/crypt lib/event lib/protocol lib/protocol/mysql lib/srey lib/thread"
 if [ $withlua -eq 1 ]
 then
     Dir=$Dir" lualib lualib/lua lualib/luacjson lualib/pb"
@@ -56,7 +56,7 @@ else
     Dir=$Dir" srey srey/cjson srey/tasks"
     if [ $withlua -eq 1 ]
     then
-        Dir=$Dir" srey/ltask"
+        Dir=$Dir" srey/lbind"
     fi
 fi
 #SSL库
