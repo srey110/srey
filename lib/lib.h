@@ -14,6 +14,8 @@
 #include "crypt/urlraw.h"
 #include "crypt/xor.h"
 #include "crypt/hmac.h"
+#include "crypt/md2.h"
+#include "crypt/md4.h"
 #include "utils/log.h"
 #include "utils/timer.h"
 #include "utils/tw.h"

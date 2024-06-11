@@ -251,7 +251,7 @@ static void test_system(CuTest* tc) {
     CuAssertTrue(tc, 0 == strcmp(fmt, "110-come"));
     FREE(fmt);
 }
-static void test_algo(CuTest* tc) {
+static void test_crypt(CuTest* tc) {
     const char *str = "this is test.";
     size_t len = strlen(str);
     CuAssertTrue(tc, 0x7610 == crc16(str, len));
@@ -263,7 +263,7 @@ static void test_algo(CuTest* tc) {
     sha1_update(&sha1, (uint8_t *)"this is", strlen("this is"));
     sha1_update(&sha1, (uint8_t *)" test.", strlen(" test."));
     sha1_final(&sha1, sha1str);
-    char out[HEX_ENSIZE(20)];
+    char out[HEX_ENSIZE(SHA1_BLOCK_SIZE)];
     tohex(sha1str, sizeof(sha1str), out);
     CuAssertTrue(tc, 0 == strcmp("F1B188A879C1C82D561CB8A064D825FDCBFE4191", out));
 
@@ -272,16 +272,34 @@ static void test_algo(CuTest* tc) {
     sha256_init(&sha256);
     sha256_update(&sha256, (unsigned char*)str, len);
     sha256_final(&sha256, sh256);
-    char osh256[HEX_ENSIZE(32)];
+    char osh256[HEX_ENSIZE(SHA256_BLOCK_SIZE)];
     tohex(sh256, sizeof(sh256), osh256);
     CuAssertTrue(tc, 0 == strcmp(osh256, "FECC75FE2A23D8EAFBA452EE0B8B6B56BECCF52278BF1398AADDEECFE0EA0FCE"));
+
+    md2_ctx md2;
+    unsigned char md2str[MD2_BLOCK_SIZE];
+    md2_init(&md2);
+    md2_update(&md2, (unsigned char*)str, len);
+    md2_final(&md2, md2str);
+    char omd2str[HEX_ENSIZE(MD2_BLOCK_SIZE)];
+    tohex(md2str, sizeof(md2str), omd2str);
+    CuAssertTrue(tc, 0 == strcmp(omd2str, "0293DC9418C7E1672E7B3890CC33C836"));
+
+    md4_ctx md4;
+    unsigned char md4str[MD4_BLOCK_SIZE];
+    md4_init(&md4);
+    md4_update(&md4, (unsigned char*)str, len);
+    md4_final(&md4, md4str);
+    char omd4str[HEX_ENSIZE(MD4_BLOCK_SIZE)];
+    tohex(md4str, sizeof(md4str), omd4str);
+    CuAssertTrue(tc, 0 == strcmp(omd4str, "08460DC7F94343679501374943864A13"));
 
     md5_ctx md5;
     unsigned char md5str[MD5_BLOCK_SIZE];
     md5_init(&md5);
     md5_update(&md5, (unsigned char*)str, len);
     md5_final(&md5, md5str);
-    char omd5str[HEX_ENSIZE(16)];
+    char omd5str[HEX_ENSIZE(MD5_BLOCK_SIZE)];
     tohex(md5str, sizeof(md5str), omd5str);
     CuAssertTrue(tc, 0 == strcmp("480FC0D368462326386DA7BB8ED56AD7", omd5str));
 
@@ -354,9 +372,10 @@ static void test_algo(CuTest* tc) {
 
     const char *url = "this is URL²ÎÊý±àÂë test #@.";
     char *enurl;
-    MALLOC(enurl, URLEN_BLOCK_SIZE(strlen(url)));
-    url_encode(url, strlen(url), enurl);
-    url_decode(enurl, strlen(enurl));
+    len = strlen(url);
+    MALLOC(enurl, URLEN_BLOCK_SIZE(len));
+    url_encode(url, len, enurl);
+    len = url_decode(enurl, strlen(enurl));
     CuAssertTrue(tc, 0 == strcmp(url, enurl));
     FREE(enurl);
 }
@@ -1102,7 +1121,7 @@ void test_utils(CuSuite* suite) {
     SUITE_ADD_TEST(suite, test_array);
     SUITE_ADD_TEST(suite, test_queue);
     SUITE_ADD_TEST(suite, test_system);
-    SUITE_ADD_TEST(suite, test_algo);
+    SUITE_ADD_TEST(suite, test_crypt);
     SUITE_ADD_TEST(suite, test_rsa);
     SUITE_ADD_TEST(suite, test_timer);
     SUITE_ADD_TEST(suite, test_netutils);

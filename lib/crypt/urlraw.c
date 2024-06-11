@@ -1,11 +1,11 @@
 #include "crypt/urlraw.h"
 
 static unsigned char hexchars[] = "0123456789ABCDEF";
-char *url_encode(const char *str, const size_t len, char *out) {
+char *url_encode(const char *data, const size_t lens, char *out) {
     register unsigned char c;
     unsigned char const *from, *end;
-    from = (unsigned char *)str;
-    end = (unsigned char *)str + len;
+    from = (unsigned char *)data;
+    end = (unsigned char *)data + lens;
     unsigned char *to = (unsigned char *)out;
     while (from < end) {
         c = *from++;
@@ -40,25 +40,25 @@ static int32_t _htoi(char *s) {
     value += c >= '0' && c <= '9' ? c - '0' : c - 'a' + 10;
     return (value);
 }
-size_t url_decode(char *str, size_t len) {
-    char *dest = str;
-    char *data = str;
-    while (len--) {
-        if (*data == '+') {
+size_t url_decode(char *data, size_t lens) {
+    char *dest = data;
+    char *p = data;
+    while (lens--) {
+        if (*p == '+') {
             *dest = ' ';
-        } else if (*data == '%'
-            && len >= 2
-            && isxdigit((int) *(data + 1))
-            && isxdigit((int) *(data + 2))) {
-            *dest = (char)_htoi(data + 1);
-            data += 2;
-            len -= 2;
+        } else if (*p == '%'
+            && lens >= 2
+            && isxdigit((int) *(p + 1))
+            && isxdigit((int) *(p + 2))) {
+            *dest = (char)_htoi(p + 1);
+            p += 2;
+            lens -= 2;
         } else {
-            *dest = *data;
+            *dest = *p;
         }
-        data++;
+        p++;
         dest++;
     }
     *dest = '\0';
-    return dest - str;
+    return (size_t)(dest - data);
 }

@@ -34,10 +34,10 @@ static uint16_t crc16_tab[256] = {
     0x4400, 0x84C1, 0x8581, 0x4540, 0x8701, 0x47C0, 0x4680, 0x8641,
     0x8201, 0x42C0, 0x4380, 0x8341, 0x4100, 0x81C1, 0x8081, 0x4040
 };
-uint16_t crc16(const char *buf, const size_t len) {
+uint16_t crc16(const char *data, const size_t lens) {
     uint16_t uscrc = 0;
-    const uint8_t *tmp = (const uint8_t *)buf;
-    for (size_t i = 0; i < len; ++i) {
+    const uint8_t *tmp = (const uint8_t *)data;
+    for (size_t i = 0; i < lens; ++i) {
         uscrc = (uscrc >> 8) ^ crc16_tab[(uscrc ^ *tmp++) & 0xFF];
     }
     return uscrc;
@@ -108,10 +108,10 @@ static uint32_t crc32_tab[256] = {
     0xb3667a2e, 0xc4614ab8, 0x5d681b02, 0x2a6f2b94,
     0xb40bbe37, 0xc30c8ea1, 0x5a05df1b, 0x2d02ef8d
 };
-uint32_t crc32(const char *buf, const size_t len) {
+uint32_t crc32(const char *data, const size_t lens) {
     uint32_t uicrc = ~0U;
-    const uint8_t *tmp = (const uint8_t *)buf;
-    for (size_t i = 0; i < len; ++i) {
+    const uint8_t *tmp = (const uint8_t *)data;
+    for (size_t i = 0; i < lens; ++i) {
         uicrc = crc32_tab[(uicrc ^ *tmp++) & 0xFF] ^ (uicrc >> 8);
     }
     return uicrc ^ ~0U;

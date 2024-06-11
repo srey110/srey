@@ -226,11 +226,14 @@
     <ClInclude Include="crypt\xor.h">
       <Filter>crypt</Filter>
     </ClInclude>
-    <ClInclude Include="crypt\crypt.h">
-      <Filter>crypt</Filter>
-    </ClInclude>
     <ClInclude Include="utils\hash_ring.h">
       <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="crypt\md2.h">
+      <Filter>crypt</Filter>
+    </ClInclude>
+    <ClInclude Include="crypt\md4.h">
+      <Filter>crypt</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -374,6 +377,12 @@
     </ClCompile>
     <ClCompile Include="utils\hash_ring.c">
       <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="crypt\md2.c">
+      <Filter>crypt</Filter>
+    </ClCompile>
+    <ClCompile Include="crypt\md4.c">
+      <Filter>crypt</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

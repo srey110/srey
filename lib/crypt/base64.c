@@ -27,21 +27,21 @@ static char base64de[] = {
     36,  37,  38,  39,  40,  41,  42,  43,
     44,  45,  46,  47,  48,  49,  50,  51,
 };
-size_t b64_encode(const char *buf, const size_t len, char *out) {
+size_t b64_encode(const char *data, const size_t lens, char *out) {
     int32_t s;
     uint32_t i, j;
-    for (i = j = 0; i < len; i++) {
+    for (i = j = 0; i < lens; i++) {
         s = i % 3;
         switch (s) {
         case 0:
-            out[j++] = base64en[(buf[i] >> 2) & 0x3F];
+            out[j++] = base64en[(data[i] >> 2) & 0x3F];
             continue;
         case 1:
-            out[j++] = base64en[((buf[i - 1] & 0x3) << 4) + ((buf[i] >> 4) & 0xF)];
+            out[j++] = base64en[((data[i - 1] & 0x3) << 4) + ((data[i] >> 4) & 0xF)];
             continue;
         case 2:
-            out[j++] = base64en[((buf[i - 1] & 0xF) << 2) + ((buf[i] >> 6) & 0x3)];
-            out[j++] = base64en[buf[i] & 0x3F];
+            out[j++] = base64en[((data[i - 1] & 0xF) << 2) + ((data[i] >> 6) & 0x3)];
+            out[j++] = base64en[data[i] & 0x3F];
         }
     }
     /* move back */
@@ -49,30 +49,30 @@ size_t b64_encode(const char *buf, const size_t len, char *out) {
     /* check the last and add padding */
     switch (i % 3) {
     case 0:
-        out[j++] = base64en[(buf[i] & 0x3) << 4];
+        out[j++] = base64en[(data[i] & 0x3) << 4];
         out[j++] = BASE64_PAD;
         out[j++] = BASE64_PAD;
         break;
     case 1:
-        out[j++] = base64en[(buf[i] & 0xF) << 2];
+        out[j++] = base64en[(data[i] & 0xF) << 2];
         out[j++] = BASE64_PAD;
         break;
     }
     out[j] = '\0';
     return j;
 }
-size_t b64_decode(const char *buf, const size_t len, char *out) {
+size_t b64_decode(const char *data, const size_t lens, char *out) {
     int32_t c, s;
     uint32_t i, j;
-    for (i = j = 0; i < len; i++) {
+    for (i = j = 0; i < lens; i++) {
         s = i % 4;
-        if (buf[i] == '=') {
+        if (data[i] == '=') {
             out[j] = '\0';
             return j;
         }
-        if (buf[i] < BASE64DE_FIRST
-            || buf[i] > BASE64DE_LAST
-            || (c = base64de[buf[i] - BASE64DE_FIRST]) == -1) {
+        if (data[i] < BASE64DE_FIRST
+            || data[i] > BASE64DE_LAST
+            || (c = base64de[data[i] - BASE64DE_FIRST]) == -1) {
             return 0;
         }
         switch (s) {
@@ -81,13 +81,13 @@ size_t b64_decode(const char *buf, const size_t len, char *out) {
             continue;
         case 1:
             out[j++] += ((uint32_t)c >> 4) & 0x3;
-            if (i < (len - 3) || buf[len - 2] != '=') {
+            if (i < (lens - 3) || data[lens - 2] != '=') {
                 out[j] = ((uint32_t)c & 0xF) << 4;
             }
             continue;
         case 2:
             out[j++] += ((uint32_t)c >> 2) & 0xF;
-            if (i < (len - 2) || buf[len - 1] != '=') {
+            if (i < (lens - 2) || data[lens - 1] != '=') {
                 out[j] = ((uint32_t)c & 0x3) << 6;
             }
             continue;

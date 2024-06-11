@@ -1,6 +1,4 @@
 #include "crypt/md5.h"
-#include <stdlib.h>
-#include <memory.h>
 
 #define ROTLEFT(a,b) ((a << b) | (a >> (32-b)))
 #define F(x,y,z) ((x & y) | (~x & z))
@@ -16,17 +14,15 @@
 #define II(a,b,c,d,m,s,t) { a += I(b,c,d) + m + t; \
                             a = b + ROTLEFT(a,s); }
 
-static void _transform(md5_ctx *ctx, const unsigned char *data) {
-    word_t a, b, c, d, m[16], i, j;
-    // MD5 specifies big endian byte order, but this implementation assumes a little
-    // endian byte order CPU. Reverse all the bytes upon input, and re-reverse them
-    // on output (in md5_final()).
-    for (i = 0, j = 0; i < 16; ++i, j += 4)
+static void _transform(md5_ctx *md5, const unsigned char *data) {
+    uint32_t a, b, c, d, m[16], i, j;
+    for (i = 0, j = 0; i < 16; ++i, j += 4) {
         m[i] = (data[j]) + (data[j + 1] << 8) + (data[j + 2] << 16) + (data[j + 3] << 24);
-    a = ctx->state[0];
-    b = ctx->state[1];
-    c = ctx->state[2];
-    d = ctx->state[3];
+    }
+    a = md5->state[0];
+    b = md5->state[1];
+    c = md5->state[2];
+    d = md5->state[3];
     FF(a, b, c, d, m[0], 7, 0xd76aa478);
     FF(d, a, b, c, m[1], 12, 0xe8c7b756);
     FF(c, d, a, b, m[2], 17, 0x242070db);
@@ -91,63 +87,59 @@ static void _transform(md5_ctx *ctx, const unsigned char *data) {
     II(d, a, b, c, m[11], 10, 0xbd3af235);
     II(c, d, a, b, m[2], 15, 0x2ad7d2bb);
     II(b, c, d, a, m[9], 21, 0xeb86d391);
-    ctx->state[0] += a;
-    ctx->state[1] += b;
-    ctx->state[2] += c;
-    ctx->state[3] += d;
+    md5->state[0] += a;
+    md5->state[1] += b;
+    md5->state[2] += c;
+    md5->state[3] += d;
 }
-void md5_init(md5_ctx *ctx) {
-    ctx->datalen = 0;
-    ctx->bitlen = 0;
-    ctx->state[0] = 0x67452301;
-    ctx->state[1] = 0xEFCDAB89;
-    ctx->state[2] = 0x98BADCFE;
-    ctx->state[3] = 0x10325476;
+void md5_init(md5_ctx *md5) {
+    md5->datalen = 0;
+    md5->bitlen = 0;
+    md5->state[0] = 0x67452301;
+    md5->state[1] = 0xEFCDAB89;
+    md5->state[2] = 0x98BADCFE;
+    md5->state[3] = 0x10325476;
 }
-void md5_update(md5_ctx *ctx, const unsigned char *data, size_t len) {
-    size_t i;
-    for (i = 0; i < len; ++i) {
-        ctx->data[ctx->datalen] = data[i];
-        ctx->datalen++;
-        if (64 == ctx->datalen) {
-            _transform(ctx, ctx->data);
-            ctx->bitlen += 512;
-            ctx->datalen = 0;
+void md5_update(md5_ctx *md5, const unsigned char *data, size_t lens) {
+    for (size_t i = 0; i < lens; ++i) {
+        md5->data[md5->datalen] = data[i];
+        md5->datalen++;
+        if (64 == md5->datalen) {
+            _transform(md5, md5->data);
+            md5->bitlen += 512;
+            md5->datalen = 0;
         }
     }
 }
-void md5_final(md5_ctx *ctx, unsigned char hash[MD5_BLOCK_SIZE]) {
-    size_t i;
-    i = ctx->datalen;
-    // Pad whatever data is left in the buffer.
-    if (ctx->datalen < 56) {
-        ctx->data[i++] = 0x80;
-        while (i < 56)
-            ctx->data[i++] = 0x00;
-    } else if (ctx->datalen >= 56) {
-        ctx->data[i++] = 0x80;
-        while (i < 64)
-            ctx->data[i++] = 0x00;
-        _transform(ctx, ctx->data);
-        memset(ctx->data, 0, 56);
+void md5_final(md5_ctx *md5, unsigned char hash[MD5_BLOCK_SIZE]) {
+    size_t i = md5->datalen;
+    if (md5->datalen < 56) {
+        md5->data[i++] = 0x80;
+        while (i < 56) {
+            md5->data[i++] = 0x00;
+        }
+    } else if (md5->datalen >= 56) {
+        md5->data[i++] = 0x80;
+        while (i < 64) {
+            md5->data[i++] = 0x00;
+        }
+        _transform(md5, md5->data);
+        memset(md5->data, 0, 56);
     }
-    // Append to the padding the total message's length in bits and transform.
-    ctx->bitlen += ctx->datalen * 8;
-    ctx->data[56] = (unsigned char)(ctx->bitlen);
-    ctx->data[57] = (unsigned char)(ctx->bitlen >> 8);
-    ctx->data[58] = (unsigned char)(ctx->bitlen >> 16);
-    ctx->data[59] = (unsigned char)(ctx->bitlen >> 24);
-    ctx->data[60] = (unsigned char)(ctx->bitlen >> 32);
-    ctx->data[61] = (unsigned char)(ctx->bitlen >> 40);
-    ctx->data[62] = (unsigned char)(ctx->bitlen >> 48);
-    ctx->data[63] = (unsigned char)(ctx->bitlen >> 56);
-    _transform(ctx, ctx->data);
-    // Since this implementation uses little endian byte ordering and MD uses big endian,
-    // reverse all the bytes when copying the final state to the output hash.
+    md5->bitlen += md5->datalen * 8;
+    md5->data[56] = (unsigned char)(md5->bitlen);
+    md5->data[57] = (unsigned char)(md5->bitlen >> 8);
+    md5->data[58] = (unsigned char)(md5->bitlen >> 16);
+    md5->data[59] = (unsigned char)(md5->bitlen >> 24);
+    md5->data[60] = (unsigned char)(md5->bitlen >> 32);
+    md5->data[61] = (unsigned char)(md5->bitlen >> 40);
+    md5->data[62] = (unsigned char)(md5->bitlen >> 48);
+    md5->data[63] = (unsigned char)(md5->bitlen >> 56);
+    _transform(md5, md5->data);
     for (i = 0; i < 4; ++i) {
-        hash[i] = (ctx->state[0] >> (i * 8)) & 0x000000ff;
-        hash[i + 4] = (ctx->state[1] >> (i * 8)) & 0x000000ff;
-        hash[i + 8] = (ctx->state[2] >> (i * 8)) & 0x000000ff;
-        hash[i + 12] = (ctx->state[3] >> (i * 8)) & 0x000000ff;
+        hash[i] = (md5->state[0] >> (i * 8)) & 0x000000ff;
+        hash[i + 4] = (md5->state[1] >> (i * 8)) & 0x000000ff;
+        hash[i + 8] = (md5->state[2] >> (i * 8)) & 0x000000ff;
+        hash[i + 12] = (md5->state[3] >> (i * 8)) & 0x000000ff;
     }
 }
