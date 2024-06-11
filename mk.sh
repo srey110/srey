@@ -4,78 +4,55 @@
 # Description: make file
 # Make By    :
 # Date Time  :2011/06/15 
+# UsAge      :mk.sh  mk.sh x86/x64 mk.sh test mk.sh x86/x64 test mk.sh clean
 #***********************************************
-UsAge="UsAge:\"./mk.sh\" or \"./mk.sh x86/x64\" or \"./mk.sh clean\" or \"./mk.sh test\""
-
-istest=0
-if [ $# -eq 1 ]
-then
-    if [ "$1" = "test" ]
-    then
-        istest=1
-    fi
-fi
-#生成程序的名称
-PROGRAMNAME="srey"
-if [ $istest -eq 1 ]
-then
-    PROGRAMNAME="test"
-fi
+#config.h
+LUA=0
+SSLLIB=""
+WK="awk"
 OSNAME=`uname`
-withlua=0
-withssl=0
-wk="awk"
 if [ "$OSNAME" = "SunOS" ]
 then
-	wk="nawk"
+	WK="nawk"
 fi
 while read line
 do
-    val=`echo $line|$wk -F ' ' '{print $2}'`
+    val=`echo $line|$WK -F ' ' '{print $2}'`
     if [ "$val" = "WITH_LUA" ]
     then
-        withlua=`echo $line|$wk -F ' ' '{print int($3)}'`
+        LUA=`echo $line|$WK -F ' ' '{print int($3)}'`
     fi
     if [ "$val" = "WITH_SSL" ]
     then
-        withssl=`echo $line|$wk -F ' ' '{print int($3)}'`
+        if [ `echo $line|$WK -F ' ' '{print int($3)}'` -eq 1 ]
+        then
+            SSLLIB="-lssl -lcrypto"
+        fi
     fi
 done < `pwd`/lib/base/config.h
-echo "WITH_LUA:"$withlua
-echo "WITH_SSL:"$withssl
-#文件夹
+#程序的名称 文件夹
+MAINDIR="srey"
+PROGRAMNAME="srey"
+MAINFILE="main.c"
 Dir="lib lib/base lib/utils lib/containers lib/crypt lib/event lib/protocol lib/protocol/mysql lib/srey lib/thread"
-if [ $withlua -eq 1 ]
+if [ $LUA -eq 1 ]
 then
     Dir=$Dir" lualib lualib/lua lualib/luacjson lualib/pb"
 fi
-if [ $istest -eq 1 ]
+if [ "$1" = "test" ] || [ "$2" = "test" ]
 then
+    MAINDIR="test"
+    PROGRAMNAME="test"
     Dir=$Dir" test"
 else
     Dir=$Dir" srey srey/cjson srey/tasks"
-    if [ $withlua -eq 1 ]
+    if [ $LUA -eq 1 ]
     then
         Dir=$Dir" srey/lbind"
     fi
 fi
-#SSL库
-SSLLIB=""
-if [ $withssl -eq 1 ]
-then
-    SSLLIB="-lssl -lcrypto"
-fi 
-#main函数所在文件夹
-MAINDIR="srey"
-if [ $istest -eq 1 ]
-then
-    MAINDIR="test"
-fi 
-#main函数所在文件
-MAINFILE="main.c"
-#附加包含库
+#包含库
 INCLUDELIB="-lpthread -lm"
-#系统 位数
 if [ "$OSNAME" != "Darwin" ]
 then
     INCLUDELIB=$INCLUDELIB" -lrt"
@@ -87,24 +64,6 @@ fi
 if [ "$OSNAME" = "SunOS" ]
 then
 	INCLUDELIB=$INCLUDELIB" -lsocket -lnsl"
-fi
-X64=""
-OS_Version=`uname -m`
-echo $OSNAME $OS_Version
-if [ "$OS_Version" = "x86_64" ] || [ "$OS_Version" = "amd64" ]
-then
-	X64="x64"
-fi
-if [ $# -eq 1 ]
-then
-    if [ "$1" = "x64" ]
-    then
-        X64="x64"
-    fi
-	if [ "$1" = "x86" ]
-    then
-        X64=""
-    fi
 fi
 #结果存放路径
 RSTPATH="bin"
@@ -120,9 +79,18 @@ ARCH="ar -rv"
 INCLUDEPATH=""
 OBJFILE=""
 CFLAGS="-Wall -O2"
-if [ "$X64" = "x64" ]
+if [ "$1" = "x64" ] || [ "$1" = "x86" ]
 then
-    CFLAGS=$CFLAGS" -m64"
+    if [ "$1" = "x64" ]
+    then
+        CFLAGS=$CFLAGS" -m64"
+    fi
+else
+    OS_Version=`uname -m`
+    if [ "$OS_Version" = "x86_64" ] || [ "$OS_Version" = "amd64" ]
+    then
+        CFLAGS=$CFLAGS" -m64"
+    fi
 fi
 if [ "$OSNAME" == "Darwin" ]
 then
@@ -133,34 +101,33 @@ then
     CFLAGS=$CFLAGS" -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast"
 fi
 LIBDIR=$Dir
-Clean()
-{
-    rm -rf *.o
-    for EachSub in $LIBDIR
-    do
-	    rm -rf $MAKEFILEPATH/$EachSub/*.o
-    done
-
-    cd $RSTPATH    
-    rm -rf lib$LIBNAME.a
-    rm -rf $PROGRAMNAME
-    cd $MAKEFILEPATH
-}
-Clean
+#先clean
+rm -rf *.o
+for EachSub in $LIBDIR
+do
+	rm -rf $MAKEFILEPATH/$EachSub/*.o
+done
+cd $RSTPATH    
+rm -rf lib$LIBNAME.a
+rm -rf $PROGRAMNAME
+cd $MAKEFILEPATH
+#clean
+if [ "$1" = "clean" ]
+then
+    exit 0
+fi
 GetIncludePath()
 {
     for EachSub in $LIBDIR
     do
         INCLUDEPATH=$INCLUDEPATH" -I$MAKEFILEPATH/$EachSub"
     done
-    INCLUDEPATH=`echo $INCLUDEPATH|$wk '{gsub(/^\s+|\s+$/, "");print}'`
+    INCLUDEPATH=`echo $INCLUDEPATH|$WK '{gsub(/^\s+|\s+$/, "");print}'`
     echo ---------------------Dir---------------------------
     echo $LIBDIR
-
     echo ---------------------Include Dir---------------------------
     echo $INCLUDEPATH
 }
-
 IsExcePTL()
 {
     for EachExec in $EXCEPTL
@@ -170,10 +137,8 @@ IsExcePTL()
             return 1
         fi
     done
-
     return 0
 }
-
 Make()
 {
     for EachSub in $LIBDIR
@@ -184,7 +149,6 @@ Make()
         then
             exit 1
         fi
-		
 		SourceFile=`ls *.cpp 2>/dev/null`
         for EachFile in $SourceFile
         do
@@ -200,7 +164,6 @@ Make()
                 fi
             fi
         done
-
         SourceFile=`ls *.c 2>/dev/null`
         for EachFile in $SourceFile
         do
@@ -216,7 +179,6 @@ Make()
                 fi
             fi
         done
-        
 	RstFile=`ls *.o 2>/dev/null`
 	for EachFile in $RstFile
         do
@@ -228,7 +190,6 @@ Make()
         done
         cd $MAKEFILEPATH
     done
-
     echo ---------------------Make .a file--------------------------- 
     cd $MAKEFILEPATH
     OBJFILE=`ls *.o 2>/dev/null`
@@ -238,47 +199,12 @@ Make()
     mv lib$LIBNAME.a $RSTPATH
 }
 
-while [ 1 = 1 ]
-do
-    if [ $# -eq 1 ]
-    then
-        if [ "$1" = "clean" ]
-        then
-            Clean
-            exit 0
-        fi
-		if [ "$1" = "x64" ]
-        then
-            break
-        fi
-		if [ "$1" = "x86" ]
-        then
-            break
-        fi
-        if [ "$1" = "test" ]
-        then
-            break
-        fi
-        echo "$UsAge"
-        exit 1
-    elif [ $# -gt 1 ]
-    then
-        echo "$UsAge"
-        exit 1
-    else
-        break
-    fi
-done
-
 GetIncludePath
 Make
-
 mkmaindir=$MAKEFILEPATH/$MAINDIR
 mkmaincpp=$MAINFILE
 proname=$PROGRAMNAME
-
 cd $mkmaindir
-
 echo ---------------------Make program file---------------------------
 echo "$CC $CFLAGS $mkmaincpp $INCLUDEPATH $LIBPATH $INCLUDELIB -l$LIBNAME -o $proname $SSLLIB"
 $CC $CFLAGS $mkmaincpp $INCLUDEPATH $LIBPATH $INCLUDELIB -l$LIBNAME -o $proname $SSLLIB
@@ -287,8 +213,6 @@ then
     echo "---------------------Error---------------------"
     exit 1
 fi
-
 mv $proname $MAKEFILEPATH/$RSTPATH
 cd $MAKEFILEPATH
-
 exit 0

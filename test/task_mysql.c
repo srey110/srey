@@ -225,7 +225,10 @@ static void _timeout(task_ctx *task, uint64_t sess) {
 }
 static void _startup(task_ctx *task) {
     on_closed(task, _net_close);
-    struct evssl_ctx *evssl = srey_ssl_qury(task->scheduler, 102);
+    struct evssl_ctx *evssl = NULL;
+#if WITH_SSL
+    evssl = srey_ssl_qury(task->scheduler, 102);
+#endif
     if (ERR_OK != mysql_init(&_mysql, "192.168.8.3", 3306, evssl, "admin", "12345678", "test", "utf8", 0, 1)) {
         LOG_WARN("mysql_init error.");
         return;
