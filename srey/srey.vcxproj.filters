@@ -8,9 +8,6 @@
     <ClCompile Include="cjson\cJSON.c">
       <Filter>cjson</Filter>
     </ClCompile>
-    <ClCompile Include="lbind\lalgo.c">
-      <Filter>lbind</Filter>
-    </ClCompile>
     <ClCompile Include="lbind\lcore.c">
       <Filter>lbind</Filter>
     </ClCompile>
@@ -27,6 +24,9 @@
       <Filter>lbind</Filter>
     </ClCompile>
     <ClCompile Include="lbind\lutils.c">
+      <Filter>lbind</Filter>
+    </ClCompile>
+    <ClCompile Include="lbind\lcrypt.c">
       <Filter>lbind</Filter>
     </ClCompile>
   </ItemGroup>

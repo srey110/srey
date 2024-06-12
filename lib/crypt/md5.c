@@ -13,11 +13,10 @@
                             a = b + ROTLEFT(a,s); }
 #define II(a,b,c,d,m,s,t) { a += I(b,c,d) + m + t; \
                             a = b + ROTLEFT(a,s); }
-
 static void _transform(md5_ctx *md5, const unsigned char *data) {
     uint32_t a, b, c, d, m[16], i, j;
     for (i = 0, j = 0; i < 16; ++i, j += 4) {
-        m[i] = (data[j]) + (data[j + 1] << 8) + (data[j + 2] << 16) + (data[j + 3] << 24);
+        m[i] = ((uint32_t)data[j]) | ((uint32_t)data[j + 1] << 8) | ((uint32_t)data[j + 2] << 16) | ((uint32_t)data[j + 3] << 24);
     }
     a = md5->state[0];
     b = md5->state[1];
@@ -91,6 +90,7 @@ static void _transform(md5_ctx *md5, const unsigned char *data) {
     md5->state[1] += b;
     md5->state[2] += c;
     md5->state[3] += d;
+    ZERO(m, sizeof(m));
 }
 void md5_init(md5_ctx *md5) {
     md5->datalen = 0;
@@ -137,9 +137,10 @@ void md5_final(md5_ctx *md5, unsigned char hash[MD5_BLOCK_SIZE]) {
     md5->data[63] = (unsigned char)(md5->bitlen >> 56);
     _transform(md5, md5->data);
     for (i = 0; i < 4; ++i) {
-        hash[i] = (md5->state[0] >> (i * 8)) & 0x000000ff;
-        hash[i + 4] = (md5->state[1] >> (i * 8)) & 0x000000ff;
-        hash[i + 8] = (md5->state[2] >> (i * 8)) & 0x000000ff;
-        hash[i + 12] = (md5->state[3] >> (i * 8)) & 0x000000ff;
+        hash[i] = (md5->state[0] >> (i * 8)) & 0xff;
+        hash[i + 4] = (md5->state[1] >> (i * 8)) & 0xff;
+        hash[i + 8] = (md5->state[2] >> (i * 8)) & 0xff;
+        hash[i + 12] = (md5->state[3] >> (i * 8)) & 0xff;
     }
+    ZERO(md5, sizeof(md5_ctx));
 }

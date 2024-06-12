@@ -252,20 +252,20 @@ static void test_system(CuTest* tc) {
     FREE(fmt);
 }
 static void test_crypt(CuTest* tc) {
-    const char *str = "this is test.";
+    const char *str = "RHdzNjc1OFhHS1dHME9LMUxOTEQySDREUTRz5Lit5paHRkNTVWRaOFJKRkxvNk9YYlBmaDRkYm1TQUNZaU1VMHBQeFU0NGI";
     size_t len = strlen(str);
-    CuAssertTrue(tc, 0x7610 == crc16(str, len));
-    CuAssertTrue(tc, 0x3B610CF9 == crc32(str, len));
+    CuAssertTrue(tc, 0xA6F5 == crc16(str, len));
+    CuAssertTrue(tc, 0xFCD68BE4 == crc32(str, len));
 
     sha1_ctx sha1;
     unsigned char sha1str[SHA1_BLOCK_SIZE];
     sha1_init(&sha1);
-    sha1_update(&sha1, (uint8_t *)"this is", strlen("this is"));
-    sha1_update(&sha1, (uint8_t *)" test.", strlen(" test."));
+    sha1_update(&sha1, (uint8_t *)"RHdzNjc1OFhHS1dHME9LMUxOTEQySDREUTRz5Lit5paHRkNTVWRaOFJKRkxvNk", strlen("RHdzNjc1OFhHS1dHME9LMUxOTEQySDREUTRz5Lit5paHRkNTVWRaOFJKRkxvNk"));
+    sha1_update(&sha1, (uint8_t *)"9YYlBmaDRkYm1TQUNZaU1VMHBQeFU0NGI", strlen("9YYlBmaDRkYm1TQUNZaU1VMHBQeFU0NGI"));
     sha1_final(&sha1, sha1str);
     char out[HEX_ENSIZE(SHA1_BLOCK_SIZE)];
     tohex(sha1str, sizeof(sha1str), out);
-    CuAssertTrue(tc, 0 == strcmp("F1B188A879C1C82D561CB8A064D825FDCBFE4191", out));
+    CuAssertTrue(tc, 0 == strcmp("8AE1EA68BC319E9BD0B55CBD93E4B2BCDCEF11A0", out));
 
     sha256_ctx sha256;
     unsigned char sh256[SHA256_BLOCK_SIZE];
@@ -274,25 +274,7 @@ static void test_crypt(CuTest* tc) {
     sha256_final(&sha256, sh256);
     char osh256[HEX_ENSIZE(SHA256_BLOCK_SIZE)];
     tohex(sh256, sizeof(sh256), osh256);
-    CuAssertTrue(tc, 0 == strcmp(osh256, "FECC75FE2A23D8EAFBA452EE0B8B6B56BECCF52278BF1398AADDEECFE0EA0FCE"));
-
-    md2_ctx md2;
-    unsigned char md2str[MD2_BLOCK_SIZE];
-    md2_init(&md2);
-    md2_update(&md2, (unsigned char*)str, len);
-    md2_final(&md2, md2str);
-    char omd2str[HEX_ENSIZE(MD2_BLOCK_SIZE)];
-    tohex(md2str, sizeof(md2str), omd2str);
-    CuAssertTrue(tc, 0 == strcmp(omd2str, "0293DC9418C7E1672E7B3890CC33C836"));
-
-    md4_ctx md4;
-    unsigned char md4str[MD4_BLOCK_SIZE];
-    md4_init(&md4);
-    md4_update(&md4, (unsigned char*)str, len);
-    md4_final(&md4, md4str);
-    char omd4str[HEX_ENSIZE(MD4_BLOCK_SIZE)];
-    tohex(md4str, sizeof(md4str), omd4str);
-    CuAssertTrue(tc, 0 == strcmp(omd4str, "08460DC7F94343679501374943864A13"));
+    CuAssertTrue(tc, 0 == strcmp(osh256, "93AADF88D01C0D64B3376017DD5B2007CD51C04F0FF9BFA95A76E9319E4E428E"));
 
     md5_ctx md5;
     unsigned char md5str[MD5_BLOCK_SIZE];
@@ -301,14 +283,14 @@ static void test_crypt(CuTest* tc) {
     md5_final(&md5, md5str);
     char omd5str[HEX_ENSIZE(MD5_BLOCK_SIZE)];
     tohex(md5str, sizeof(md5str), omd5str);
-    CuAssertTrue(tc, 0 == strcmp("480FC0D368462326386DA7BB8ED56AD7", omd5str));
+    CuAssertTrue(tc, 0 == strcmp("EB8CE1674B09464492A4CE35C38E89CE", omd5str));
 
     const char *hmac_key[] = { "n3iDbIxJ79GaNxAfjTbSims0nQnEH131RnmQYZ6ofxoOn3bvVGBN45lcozfguAJl", //== 64
         "Dws6758XGKWG0OK1LNLD2H4DQ4sFCSUdZ8RJFLo6OXbPfh4dbmSACYiMU0pPxU44b",// > 64
         "Shm3lWMaDIxwKH64" };
-    const char *hmac_md5_result[] = { "AE52F3FF98901D6F9AAA00EB512A3569",
-        "0CF03D3E69431F3C2178ED6F8664B68B",
-        "2D6A06526C72176940DA91D38BDDEF5D" };
+    const char *hmac_md5_result[] = { "8A2A097E491D02E96383D63B7EFC97F5",
+        "139100334F4EE0C4D9D506457F4811C7",
+        "24E9A3D055F2E1984D78E52F7FDF03E3" };
     hmac_md5_ctx macmd5;
     unsigned char outmmd5[MD5_BLOCK_SIZE];
     char hexmm5[HEX_ENSIZE(sizeof(outmmd5))];
@@ -321,9 +303,9 @@ static void test_crypt(CuTest* tc) {
         CuAssertTrue(tc, 0 == strcmp(hmac_md5_result[i], hexmm5));
     }
 
-    const char *hmac_sha1_result[] = { "57503CE54CC8FA246AAA96EB8259CDBF3247ED1C",
-        "C54642665A172450F8B815140D04034796D4FFBB",
-        "9E51EA4DF1CB4B52DC605B0CC94B154BE065E759" };
+    const char *hmac_sha1_result[] = { "451A902233ADDAF949F696D9333F0FE73B2B126E",
+        "EA2A165A590F4D2A276CAD63D17E7FD004E0232C",
+        "0BE13599959E0F24902E9840B992A75231F071A2" };
     hmac_sha1_ctx macsha1;
     unsigned char outmsha1[SHA1_BLOCK_SIZE];
     char hexmsha1[HEX_ENSIZE(sizeof(outmsha1))];
@@ -336,9 +318,9 @@ static void test_crypt(CuTest* tc) {
         CuAssertTrue(tc, 0 == strcmp(hmac_sha1_result[i], hexmsha1));
     }
 
-    const char *hmac_sha256_result[] = { "B048BAD60AA7E35635A1807259CA022AC5256C991825AF8B9872846CA538E625",
-        "97597C334136127017A99E05307059BB055A756A825059D9B8357F282E4AE264",
-        "EF5FC7063B934D3778FB9D5F9628851D3A732FAD39ED7C02D9398A10854A871B" };
+    const char *hmac_sha256_result[] = { "0E4A35BCF8D7466C5AA146AF1F70DB395B87B2176567503FAD27CB669D686174",
+        "31F7613A4FDBF36EEC435976550576282D0C319632DAE09A94A296068DC8E017",
+        "E5F25394FC77487B3C930ADDE609D260FFF722FFCE64E1778DD0EC4C3768918A" };
     hmac_sha256_ctx macsha256;
     unsigned char outmsha256[SHA256_BLOCK_SIZE];
     char hexmsha256[HEX_ENSIZE(sizeof(outmsha256))];
@@ -354,7 +336,7 @@ static void test_crypt(CuTest* tc) {
     char *en;
     MALLOC(en, B64EN_BLOCK_SIZE(len));
     b64_encode(str, len, en);
-    CuAssertTrue(tc, 0 == strcmp("dGhpcyBpcyB0ZXN0Lg==", en));
+    CuAssertTrue(tc, 0 == strcmp("Ukhkek5qYzFPRmhIUzFkSE1FOUxNVXhPVEVReVNEUkVVVFJ6NUxpdDVwYUhSa05UVldSYU9GSktSa3h2Tms5WVlsQm1hRFJrWW0xVFFVTlphVTFWTUhCUWVGVTBOR0k=", en));
     char *de;
     MALLOC(de, B64DE_BLOCK_SIZE(strlen(en)));
     size_t bdelen = b64_decode(en, strlen(en), de);
@@ -368,7 +350,7 @@ static void test_crypt(CuTest* tc) {
     FREE(de);
 
     uint64_t hs = hash(str, len);
-    CuAssertTrue(tc, 14869103789476489700ULL == hs);
+    CuAssertTrue(tc, 5232889973870020308ULL == hs);
 
     const char *url = "this is URL²ÎÊý±àÂë test #@.";
     char *enurl;
@@ -377,10 +359,7 @@ static void test_crypt(CuTest* tc) {
     url_encode(url, len, enurl);
     len = url_decode(enurl, strlen(enurl));
     CuAssertTrue(tc, 0 == strcmp(url, enurl));
-    FREE(enurl);
-}
-static void test_rsa(CuTest* tc) {
-
+    FREE(enurl);    
 }
 static void test_timer(CuTest* tc) {
     timer_ctx timer;
@@ -660,142 +639,6 @@ static void test_url(CuTest* tc) {
         && NULL == url.path.data
         && NULL == url.anchor.data
         && NULL == url.param[0].key.data);
-}
-static void test_hash_ring(CuTest* tc) {
-    hash_ring_t *ring = hash_ring_create(8, HASH_FUNCTION_SHA1);
-    CuAssertTrue(tc, NULL != ring);
-    CuAssertTrue(tc, NULL == hash_ring_find_next_highest_item(ring, 0));
-    hash_ring_free(ring);
-
-    ring = hash_ring_create(8, HASH_FUNCTION_SHA1);
-    CuAssertTrue(tc, NULL == hash_ring_find_node(ring, (unsigned char *)"key", strlen("key")));
-    hash_ring_free(ring);
-
-    ring = hash_ring_create(8, HASH_FUNCTION_SHA1);
-    char *slotA = "slotA";
-    char *slotB = "slotB";
-    char *keyA = "keyA";
-    char *keyB = "keyBBBB";
-    char *keyC = "keyB_";
-    hash_ring_node_t *node;
-    CuAssertTrue(tc, HASH_RING_OK == hash_ring_add_node(ring, (uint8_t*)slotA, strlen(slotA)));
-    CuAssertTrue(tc, HASH_RING_OK == hash_ring_add_node(ring, (uint8_t*)slotB, strlen(slotB)));
-    node = hash_ring_find_node(ring, (unsigned char*)keyA, strlen(keyA));
-    CuAssertTrue(tc, node != NULL && node->nameLen == strlen(slotA) && memcmp(node->name, slotA, strlen(slotA)) == 0);
-    node = hash_ring_find_node(ring, (unsigned char*)keyB, strlen(keyB));
-    CuAssertTrue(tc, node != NULL && node->nameLen == strlen(slotA) && memcmp(node->name, slotA, strlen(slotA)) == 0);
-    node = hash_ring_find_node(ring, (unsigned char*)keyC, strlen(keyC));
-    CuAssertTrue(tc, node != NULL && node->nameLen == strlen(slotB) && memcmp(node->name, slotB, strlen(slotB)) == 0);
-    hash_ring_free(ring);
-
-    ring = hash_ring_create(8, HASH_FUNCTION_SHA1);
-    slotA = "slotA";
-    slotB = "slotB";
-    char *slotC = "slotC";
-    // hashes to a low number
-    keyA = "keyA";
-    // hashes to high number
-    keyB = "keyB*_*_*_";
-    int x;
-    hash_ring_node_t *nodes[3];
-    CuAssertTrue(tc, hash_ring_add_node(ring, (unsigned char*)slotA, strlen(slotA)) == HASH_RING_OK);
-    CuAssertTrue(tc, hash_ring_add_node(ring, (unsigned char*)slotB, strlen(slotB)) == HASH_RING_OK);
-    x = hash_ring_find_nodes(ring, (unsigned char*)keyA, strlen(keyA), nodes, 3);
-    CuAssertTrue(tc,
-        x == 2 &&
-        nodes[0] != NULL &&
-        nodes[0]->nameLen == strlen(slotA) &&
-        memcmp(nodes[0]->name, slotA, strlen(slotA)) == 0 &&
-        nodes[1] != NULL &&
-        nodes[1]->nameLen == strlen(slotB) &&
-        memcmp(nodes[1]->name, slotB, strlen(slotB)) == 0);
-    x = hash_ring_find_nodes(ring, (unsigned char*)keyB, strlen(keyB), nodes, 3);
-    CuAssertTrue(tc,
-        x == 2 &&
-        nodes[0] != NULL &&
-        nodes[0]->nameLen == strlen(slotB) &&
-        memcmp(nodes[0]->name, slotB, strlen(slotB)) == 0 &&
-        nodes[1] != NULL &&
-        nodes[1]->nameLen == strlen(slotA) &&
-        memcmp(nodes[1]->name, slotA, strlen(slotA)) == 0);
-    CuAssertTrue(tc, hash_ring_add_node(ring, (unsigned char*)slotC, strlen(slotC)) == HASH_RING_OK);
-    x = hash_ring_find_nodes(ring, (unsigned char*)keyA, strlen(keyA), nodes, 3);
-    CuAssertTrue(tc,
-        x == 3 &&
-        nodes[0] != NULL &&
-        nodes[0]->nameLen == strlen(slotC) &&
-        memcmp(nodes[0]->name, slotC, strlen(slotC)) == 0 &&
-        nodes[1] != NULL &&
-        nodes[1]->nameLen == strlen(slotA) &&
-        memcmp(nodes[1]->name, slotA, strlen(slotA)) == 0 &&
-        nodes[2] != NULL &&
-        nodes[2]->nameLen == strlen(slotB) &&
-        memcmp(nodes[2]->name, slotB, strlen(slotB)) == 0);
-    x = hash_ring_find_nodes(ring, (unsigned char*)keyB, strlen(keyB), nodes, 3);
-    CuAssertTrue(tc,
-        x == 3 &&
-        nodes[0] != NULL &&
-        nodes[0]->nameLen == strlen(slotC) &&
-        memcmp(nodes[0]->name, slotC, strlen(slotC)) == 0 &&
-        nodes[1] != NULL &&
-        nodes[1]->nameLen == strlen(slotB) &&
-        memcmp(nodes[1]->name, slotB, strlen(slotB)) == 0 &&
-        nodes[2] != NULL &&
-        nodes[2]->nameLen == strlen(slotA) &&
-        memcmp(nodes[2]->name, slotA, strlen(slotA)) == 0);
-    hash_ring_free(ring);
-
-    ring = hash_ring_create(8, HASH_FUNCTION_SHA1);
-    slotA = "slotA";
-    slotB = "slotB";
-    CuAssertTrue(tc, hash_ring_add_node(ring, (unsigned char*)slotA, strlen(slotA)) == HASH_RING_OK);
-    CuAssertTrue(tc, hash_ring_add_node(ring, (unsigned char*)slotB, strlen(slotB)) == HASH_RING_OK);
-    // next highest for first item should yield the second
-    CuAssertTrue(tc, hash_ring_find_next_highest_item(ring, 2351641940735260693u)->number == 2584980261350711786u);
-    // number less than the first should yield the first
-    CuAssertTrue(tc, hash_ring_find_next_highest_item(ring, 2351641940735260692u)->number == 2351641940735260693u);
-    // number in the middle should yield the next
-    CuAssertTrue(tc, hash_ring_find_next_highest_item(ring, 5908063426886290069u)->number == 6065789416862870789u);
-    // number equal to the last should wrap around to the first
-    CuAssertTrue(tc, hash_ring_find_next_highest_item(ring, 17675051572751928939u)->number == 2351641940735260693u);
-    hash_ring_free(ring);
-
-    ring = hash_ring_create(1, HASH_FUNCTION_SHA1);
-    char *mynode = "mynode";
-    char *mynode1 = "mynode1";
-    char *mynode2 = "mynode2";
-    char *mykey = "mykey";
-    CuAssertTrue(tc, hash_ring_add_node(ring, (unsigned char*)mynode, strlen(mynode)) == HASH_RING_OK);
-    CuAssertTrue(tc, hash_ring_add_node(ring, (unsigned char*)mynode1, strlen(mynode2)) == HASH_RING_OK);
-    CuAssertTrue(tc, hash_ring_add_node(ring, (unsigned char*)mynode2, strlen(mynode2)) == HASH_RING_OK);
-    CuAssertTrue(tc, ring->numNodes == 3);
-    node = hash_ring_find_node(ring, (unsigned char*)mykey, strlen(mykey));
-    CuAssertTrue(tc, node != NULL && node->nameLen == strlen(mynode) && memcmp(mynode, node->name, node->nameLen) == 0);
-    CuAssertTrue(tc, hash_ring_remove_node(ring, (unsigned char*)mynode, strlen(mynode)) == HASH_RING_OK);
-    CuAssertTrue(tc, ring->numNodes == 2);
-    CuAssertTrue(tc, hash_ring_get_node(ring, (unsigned char*)mynode, strlen(mynode)) == NULL);
-    // remove node1, and try to search for a key that went to it before, and verify it goes to node2
-    CuAssertTrue(tc, hash_ring_remove_node(ring, (unsigned char*)mynode1, strlen(mynode1)) == HASH_RING_OK);
-    CuAssertTrue(tc, ring->numNodes == 1);
-    node = hash_ring_find_node(ring, (unsigned char*)mykey, strlen(mykey));
-    CuAssertTrue(tc, node != NULL && node->nameLen == strlen(mynode2) && memcmp(mynode2, node->name, node->nameLen) == 0);
-    hash_ring_free(ring);
-
-    ring = hash_ring_create(1, HASH_FUNCTION_SHA1);
-    CuAssertTrue(tc, ring != NULL);
-    mynode = "mynode";
-    hash_ring_add_node(ring, (unsigned char*)mynode, strlen(mynode));
-    CuAssertTrue(tc, ring->numNodes == 1);
-    CuAssertTrue(tc, hash_ring_add_node(ring, (unsigned char*)mynode, strlen(mynode)) == HASH_RING_ERR);
-    CuAssertTrue(tc, ring->numNodes == 1);
-    hash_ring_free(ring);
-
-    ring = hash_ring_create(1, HASH_FUNCTION_SHA1);
-    CuAssertTrue(tc, hash_ring_set_mode(ring, HASH_RING_MODE_LIBMEMCACHED_COMPAT) == HASH_RING_ERR);
-    hash_ring_free(ring);
-    ring = hash_ring_create(1, HASH_FUNCTION_MD5);
-    CuAssertTrue(tc, hash_ring_set_mode(ring, HASH_RING_MODE_LIBMEMCACHED_COMPAT) == HASH_RING_OK);
-    hash_ring_free(ring);
 }
 static void test_redis_pack(CuTest* tc) {
     size_t size;
@@ -1122,14 +965,12 @@ void test_utils(CuSuite* suite) {
     SUITE_ADD_TEST(suite, test_queue);
     SUITE_ADD_TEST(suite, test_system);
     SUITE_ADD_TEST(suite, test_crypt);
-    SUITE_ADD_TEST(suite, test_rsa);
     SUITE_ADD_TEST(suite, test_timer);
     SUITE_ADD_TEST(suite, test_netutils);
     SUITE_ADD_TEST(suite, test_buffer);
     SUITE_ADD_TEST(suite, test_log);
     SUITE_ADD_TEST(suite, test_http);
     SUITE_ADD_TEST(suite, test_url);
-    SUITE_ADD_TEST(suite, test_hash_ring);
     SUITE_ADD_TEST(suite, test_redis_pack);
     SUITE_ADD_TEST(suite, test_redis_unpack);
 }

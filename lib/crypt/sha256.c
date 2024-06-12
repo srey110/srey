@@ -8,7 +8,6 @@
 #define EP1(x) (ROTRIGHT(x,6) ^ ROTRIGHT(x,11) ^ ROTRIGHT(x,25))
 #define SIG0(x) (ROTRIGHT(x,7) ^ ROTRIGHT(x,18) ^ ((x) >> 3))
 #define SIG1(x) (ROTRIGHT(x,17) ^ ROTRIGHT(x,19) ^ ((x) >> 10))
-
 static const uint32_t k[64] = {
     0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
     0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
@@ -22,7 +21,7 @@ static const uint32_t k[64] = {
 static void _transform(sha256_ctx *sha256, const unsigned char *data) {
     uint32_t a, b, c, d, e, f, g, h, i, j, t1, t2, m[64];
     for (i = 0, j = 0; i < 16; ++i, j += 4) {
-        m[i] = (data[j] << 24) | (data[j + 1] << 16) | (data[j + 2] << 8) | (data[j + 3]);
+        m[i] = ((uint32_t)data[j] << 24) | ((uint32_t)data[j + 1] << 16) | ((uint32_t)data[j + 2] << 8) | ((uint32_t)data[j + 3]);
     }
     for (; i < 64; ++i) {
         m[i] = SIG1(m[i - 2]) + m[i - 7] + SIG0(m[i - 15]) + m[i - 16];
@@ -55,6 +54,7 @@ static void _transform(sha256_ctx *sha256, const unsigned char *data) {
     sha256->state[5] += f;
     sha256->state[6] += g;
     sha256->state[7] += h;
+    ZERO(m, sizeof(m));
 }
 void sha256_init(sha256_ctx *sha256) {
     sha256->datalen = 0;
@@ -106,13 +106,14 @@ void sha256_final(sha256_ctx *sha256, unsigned char hash[SHA256_BLOCK_SIZE]) {
     sha256->data[56] = (unsigned char)(sha256->bitlen >> 56);
     _transform(sha256, sha256->data);
     for (i = 0; i < 4; ++i) {
-        hash[i] = (sha256->state[0] >> (24 - i * 8)) & 0x000000ff;
-        hash[i + 4] = (sha256->state[1] >> (24 - i * 8)) & 0x000000ff;
-        hash[i + 8] = (sha256->state[2] >> (24 - i * 8)) & 0x000000ff;
-        hash[i + 12] = (sha256->state[3] >> (24 - i * 8)) & 0x000000ff;
-        hash[i + 16] = (sha256->state[4] >> (24 - i * 8)) & 0x000000ff;
-        hash[i + 20] = (sha256->state[5] >> (24 - i * 8)) & 0x000000ff;
-        hash[i + 24] = (sha256->state[6] >> (24 - i * 8)) & 0x000000ff;
-        hash[i + 28] = (sha256->state[7] >> (24 - i * 8)) & 0x000000ff;
+        hash[i] = (sha256->state[0] >> (24 - i * 8)) & 0xff;
+        hash[i + 4] = (sha256->state[1] >> (24 - i * 8)) & 0xff;
+        hash[i + 8] = (sha256->state[2] >> (24 - i * 8)) & 0xff;
+        hash[i + 12] = (sha256->state[3] >> (24 - i * 8)) & 0xff;
+        hash[i + 16] = (sha256->state[4] >> (24 - i * 8)) & 0xff;
+        hash[i + 20] = (sha256->state[5] >> (24 - i * 8)) & 0xff;
+        hash[i + 24] = (sha256->state[6] >> (24 - i * 8)) & 0xff;
+        hash[i + 28] = (sha256->state[7] >> (24 - i * 8)) & 0xff;
     }
+    ZERO(sha256, sizeof(sha256_ctx));
 }

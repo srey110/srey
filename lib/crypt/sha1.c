@@ -1,11 +1,10 @@
 #include "crypt/sha1.h"
 
 #define ROTLEFT(a, b) ((a << b) | (a >> (32 - b)))
-
 static void _transform(sha1_ctx *sha1, const unsigned char *data) {
     uint32_t a, b, c, d, e, i, j, t, m[80];
     for (i = 0, j = 0; i < 16; ++i, j += 4) {
-        m[i] = (data[j] << 24) + (data[j + 1] << 16) + (data[j + 2] << 8) + (data[j + 3]);
+        m[i] = ((uint32_t)data[j] << 24) | ((uint32_t)data[j + 1] << 16) | ((uint32_t)data[j + 2] << 8) | ((uint32_t)data[j + 3]);
     }
     for (; i < 80; ++i) {
         m[i] = (m[i - 3] ^ m[i - 8] ^ m[i - 14] ^ m[i - 16]);
@@ -53,6 +52,7 @@ static void _transform(sha1_ctx *sha1, const unsigned char *data) {
     sha1->state[2] += c;
     sha1->state[3] += d;
     sha1->state[4] += e;
+    ZERO(m, sizeof(m));
 }
 void sha1_init(sha1_ctx *sha1) {
     sha1->datalen = 0;
@@ -104,10 +104,11 @@ void sha1_final(sha1_ctx *sha1, unsigned char hash[SHA1_BLOCK_SIZE]) {
     sha1->data[56] = (unsigned char)(sha1->bitlen >> 56);
     _transform(sha1, sha1->data);
     for (i = 0; i < 4; ++i) {
-        hash[i] = (sha1->state[0] >> (24 - i * 8)) & 0x000000ff;
-        hash[i + 4] = (sha1->state[1] >> (24 - i * 8)) & 0x000000ff;
-        hash[i + 8] = (sha1->state[2] >> (24 - i * 8)) & 0x000000ff;
-        hash[i + 12] = (sha1->state[3] >> (24 - i * 8)) & 0x000000ff;
-        hash[i + 16] = (sha1->state[4] >> (24 - i * 8)) & 0x000000ff;
+        hash[i] = (sha1->state[0] >> (24 - i * 8)) & 0xff;
+        hash[i + 4] = (sha1->state[1] >> (24 - i * 8)) & 0xff;
+        hash[i + 8] = (sha1->state[2] >> (24 - i * 8)) & 0xff;
+        hash[i + 12] = (sha1->state[3] >> (24 - i * 8)) & 0xff;
+        hash[i + 16] = (sha1->state[4] >> (24 - i * 8)) & 0xff;
     }
+    ZERO(sha1, sizeof(sha1_ctx));
 }

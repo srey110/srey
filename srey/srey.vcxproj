@@ -158,8 +158,8 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="cjson\cJSON.c" />
-    <ClCompile Include="lbind\lalgo.c" />
     <ClCompile Include="lbind\lcore.c" />
+    <ClCompile Include="lbind\lcrypt.c" />
     <ClCompile Include="lbind\lmysql.c" />
     <ClCompile Include="lbind\lproto.c" />
     <ClCompile Include="lbind\lpub.c" />

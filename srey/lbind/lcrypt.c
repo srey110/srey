@@ -2,7 +2,7 @@
 
 #if WITH_LUA
 
-static int32_t _lalgo_url_encode(lua_State *lua) {
+static int32_t _lcrypt_url_encode(lua_State *lua) {
     void *data;
     size_t size;
     if (LUA_TSTRING == lua_type(lua, 1)) {
@@ -18,7 +18,7 @@ static int32_t _lalgo_url_encode(lua_State *lua) {
     FREE(out);
     return 1;
 }
-static int32_t _lalgo_url_decode(lua_State *lua) {
+static int32_t _lcrypt_url_decode(lua_State *lua) {
     void *data;
     size_t size;
     if (LUA_TSTRING == lua_type(lua, 1)) {
@@ -35,7 +35,7 @@ static int32_t _lalgo_url_decode(lua_State *lua) {
     FREE(out);
     return 1;
 }
-static int32_t _lalgo_url_parse(lua_State *lua) {
+static int32_t _lcrypt_url_parse(lua_State *lua) {
     void *data;
     size_t size;
     if (LUA_TSTRING == lua_type(lua, 1)) {
@@ -104,15 +104,15 @@ static int32_t _lalgo_url_parse(lua_State *lua) {
 //srey.url
 LUAMOD_API int luaopen_url(lua_State *lua) {
     luaL_Reg reg[] = {
-        { "encode", _lalgo_url_encode },
-        { "decode", _lalgo_url_decode },
-        { "parse", _lalgo_url_parse },
+        { "encode", _lcrypt_url_encode },
+        { "decode", _lcrypt_url_decode },
+        { "parse", _lcrypt_url_parse },
         { NULL, NULL },
     };
     luaL_newlib(lua, reg);
     return 1;
 }
-static int32_t _lalgo_b64_encode(lua_State *lua) {
+static int32_t _lcrypt_b64_encode(lua_State *lua) {
     void *data;
     size_t size;
     if (LUA_TSTRING == lua_type(lua, 1)) {
@@ -129,7 +129,7 @@ static int32_t _lalgo_b64_encode(lua_State *lua) {
     FREE(out);
     return 1;
 }
-static int32_t _lalgo_b64_decode(lua_State *lua) {
+static int32_t _lcrypt_b64_decode(lua_State *lua) {
     void *data;
     size_t size;
     if (LUA_TSTRING == lua_type(lua, 1)) {
@@ -149,14 +149,14 @@ static int32_t _lalgo_b64_decode(lua_State *lua) {
 //srey.base64
 LUAMOD_API int luaopen_base64(lua_State *lua) {
     luaL_Reg reg[] = {
-        { "encode", _lalgo_b64_encode },
-        { "decode", _lalgo_b64_decode },
+        { "encode", _lcrypt_b64_encode },
+        { "decode", _lcrypt_b64_decode },
         { NULL, NULL },
     };
     luaL_newlib(lua, reg);
     return 1;
 }
-static int32_t _lalgo_crc16(lua_State *lua) {
+static int32_t _lcrypt_crc16(lua_State *lua) {
     void *data;
     size_t size;
     if (LUA_TSTRING == lua_type(lua, 1)) {
@@ -169,7 +169,7 @@ static int32_t _lalgo_crc16(lua_State *lua) {
     lua_pushinteger(lua, crc);
     return 1;
 }
-static int32_t _lalgo_crc32(lua_State *lua) {
+static int32_t _lcrypt_crc32(lua_State *lua) {
     void *data;
     size_t size;
     if (LUA_TSTRING == lua_type(lua, 1)) {
@@ -185,25 +185,25 @@ static int32_t _lalgo_crc32(lua_State *lua) {
 //srey.crc
 LUAMOD_API int luaopen_crc(lua_State *lua) {
     luaL_Reg reg[] = {
-        { "crc16", _lalgo_crc16 },
-        { "crc32", _lalgo_crc32 },
+        { "crc16", _lcrypt_crc16 },
+        { "crc32", _lcrypt_crc32 },
         { NULL, NULL },
     };
     luaL_newlib(lua, reg);
     return 1;
 }
 
-static int32_t _lalgo_md5_new(lua_State *lua) {
+static int32_t _lcrypt_md5_new(lua_State *lua) {
     lua_newuserdata(lua, sizeof(md5_ctx));
     ASSOC_MTABLE(lua, "_md5_ctx");
     return 1;
 }
-static int32_t _lalgo_md5_init(lua_State *lua) {
+static int32_t _lcrypt_md5_init(lua_State *lua) {
     md5_ctx *md5 = lua_touserdata(lua, 1);
     md5_init(md5);
     return 0;
 }
-static int32_t _lalgo_md5_update(lua_State *lua) {
+static int32_t _lcrypt_md5_update(lua_State *lua) {
     md5_ctx *md5 = lua_touserdata(lua, 1);
     void *data;
     size_t size;
@@ -216,7 +216,7 @@ static int32_t _lalgo_md5_update(lua_State *lua) {
     md5_update(md5, data, size);
     return 0;
 }
-static int32_t _lalgo_md5_final(lua_State *lua) {
+static int32_t _lcrypt_md5_final(lua_State *lua) {
     md5_ctx *md5 = lua_touserdata(lua, 1);
     unsigned char out[MD5_BLOCK_SIZE];
     md5_final(md5, out);
@@ -226,31 +226,29 @@ static int32_t _lalgo_md5_final(lua_State *lua) {
 //srey.md5
 LUAMOD_API int luaopen_md5(lua_State *lua) {
     luaL_Reg reg_new[] = {
-        { "new", _lalgo_md5_new },
+        { "new", _lcrypt_md5_new },
         { NULL, NULL }
     };
     luaL_Reg reg_func[] = {
-        { "init", _lalgo_md5_init },
-        { "update", _lalgo_md5_update },
-        { "final", _lalgo_md5_final },
-        //{ "__gc", _lalgo_md5_gc },
-        //{ "__tostring", _lalgo_md5_str },
+        { "init", _lcrypt_md5_init },
+        { "update", _lcrypt_md5_update },
+        { "final", _lcrypt_md5_final },
         { NULL, NULL }
     };
     REG_MTABLE(lua, "_md5_ctx", reg_new, reg_func);
     return 1;
 }
-static int32_t _lalgo_sha1_new(lua_State *lua) {
+static int32_t _lcrypt_sha1_new(lua_State *lua) {
     lua_newuserdata(lua, sizeof(sha1_ctx));
     ASSOC_MTABLE(lua, "_sha1_ctx");
     return 1;
 }
-static int32_t _lalgo_sha1_init(lua_State *lua) {
+static int32_t _lcrypt_sha1_init(lua_State *lua) {
     sha1_ctx *sha1 = lua_touserdata(lua, 1);
     sha1_init(sha1);
     return 0;
 }
-static int32_t _lalgo_sha1_update(lua_State *lua) {
+static int32_t _lcrypt_sha1_update(lua_State *lua) {
     sha1_ctx *sha1 = lua_touserdata(lua, 1);
     void *data;
     size_t size;
@@ -263,7 +261,7 @@ static int32_t _lalgo_sha1_update(lua_State *lua) {
     sha1_update(sha1, data, size);
     return 0;
 }
-static int32_t _lalgo_sha1_final(lua_State *lua) {
+static int32_t _lcrypt_sha1_final(lua_State *lua) {
     sha1_ctx *sha1 = lua_touserdata(lua, 1);
     unsigned char out[SHA1_BLOCK_SIZE];
     sha1_final(sha1, out);
@@ -273,29 +271,29 @@ static int32_t _lalgo_sha1_final(lua_State *lua) {
 //srey.sha1
 LUAMOD_API int luaopen_sha1(lua_State *lua) {
     luaL_Reg reg_new[] = {
-        { "new", _lalgo_sha1_new },
+        { "new", _lcrypt_sha1_new },
         { NULL, NULL }
     };
     luaL_Reg reg_func[] = {
-        { "init", _lalgo_sha1_init },
-        { "update", _lalgo_sha1_update },
-        { "final", _lalgo_sha1_final },
+        { "init", _lcrypt_sha1_init },
+        { "update", _lcrypt_sha1_update },
+        { "final", _lcrypt_sha1_final },
         { NULL, NULL }
     };
     REG_MTABLE(lua, "_sha1_ctx", reg_new, reg_func);
     return 1;
 }
-static int32_t _lalgo_sha256_new(lua_State *lua) {
+static int32_t _lcrypt_sha256_new(lua_State *lua) {
     lua_newuserdata(lua, sizeof(sha256_ctx));
     ASSOC_MTABLE(lua, "_sha256_ctx");
     return 1;
 }
-static int32_t _lalgo_sha256_init(lua_State *lua) {
+static int32_t _lcrypt_sha256_init(lua_State *lua) {
     sha256_ctx *sha256 = lua_touserdata(lua, 1);
     sha256_init(sha256);
     return 0;
 }
-static int32_t _lalgo_sha256_update(lua_State *lua) {
+static int32_t _lcrypt_sha256_update(lua_State *lua) {
     sha256_ctx *sha256 = lua_touserdata(lua, 1);
     void *data;
     size_t size;
@@ -308,7 +306,7 @@ static int32_t _lalgo_sha256_update(lua_State *lua) {
     sha256_update(sha256, data, size);
     return 0;
 }
-static int32_t _lalgo_sha256_final(lua_State *lua) {
+static int32_t _lcrypt_sha256_final(lua_State *lua) {
     sha256_ctx *sha256 = lua_touserdata(lua, 1);
     unsigned char out[SHA256_BLOCK_SIZE];
     sha256_final(sha256, out);
@@ -318,19 +316,19 @@ static int32_t _lalgo_sha256_final(lua_State *lua) {
 //srey.sha256
 LUAMOD_API int luaopen_sha256(lua_State *lua) {
     luaL_Reg reg_new[] = {
-        { "new", _lalgo_sha256_new },
+        { "new", _lcrypt_sha256_new },
         { NULL, NULL }
     };
     luaL_Reg reg_func[] = {
-        { "init", _lalgo_sha256_init },
-        { "update", _lalgo_sha256_update },
-        { "final", _lalgo_sha256_final },
+        { "init", _lcrypt_sha256_init },
+        { "update", _lcrypt_sha256_update },
+        { "final", _lcrypt_sha256_final },
         { NULL, NULL }
     };
     REG_MTABLE(lua, "_sha256_ctx", reg_new, reg_func);
     return 1;
 }
-static int32_t _lalgo_hmac_sha256_new(lua_State *lua) {
+static int32_t _lcrypt_hmac_sha256_new(lua_State *lua) {
     size_t lens;
     const char *key = luaL_checklstring(lua, 1, &lens);
     hmac_sha256_ctx *mac256 = lua_newuserdata(lua, sizeof(hmac_sha256_ctx));
@@ -338,12 +336,12 @@ static int32_t _lalgo_hmac_sha256_new(lua_State *lua) {
     ASSOC_MTABLE(lua, "_hmac_sha256_ctx");
     return 1;
 }
-static int32_t _lalgo_hmac_sha256_init(lua_State *lua) {
+static int32_t _lcrypt_hmac_sha256_init(lua_State *lua) {
     hmac_sha256_ctx *mac256 = lua_touserdata(lua, 1);
     hmac_sha256_init(mac256);
     return 0;
 }
-static int32_t _lalgo_hmac_sha256_update(lua_State *lua) {
+static int32_t _lcrypt_hmac_sha256_update(lua_State *lua) {
     hmac_sha256_ctx *mac256 = lua_touserdata(lua, 1);
     void *data;
     size_t size;
@@ -356,7 +354,7 @@ static int32_t _lalgo_hmac_sha256_update(lua_State *lua) {
     hmac_sha256_update(mac256, data, size);
     return 0;
 }
-static int32_t _lalgo_hmac_sha256_final(lua_State *lua) {
+static int32_t _lcrypt_hmac_sha256_final(lua_State *lua) {
     hmac_sha256_ctx *mac256 = lua_touserdata(lua, 1);
     unsigned char out[SHA256_BLOCK_SIZE];
     hmac_sha256_final(mac256, out);
@@ -366,13 +364,13 @@ static int32_t _lalgo_hmac_sha256_final(lua_State *lua) {
 //srey.hmac256
 LUAMOD_API int luaopen_hmac256(lua_State *lua) {
     luaL_Reg reg_new[] = {
-        { "new", _lalgo_hmac_sha256_new },
+        { "new", _lcrypt_hmac_sha256_new },
         { NULL, NULL }
     };
     luaL_Reg reg_func[] = {
-        { "init", _lalgo_hmac_sha256_init },
-        { "update", _lalgo_hmac_sha256_update },
-        { "final", _lalgo_hmac_sha256_final },
+        { "init", _lcrypt_hmac_sha256_init },
+        { "update", _lcrypt_hmac_sha256_update },
+        { "final", _lcrypt_hmac_sha256_final },
         { NULL, NULL }
     };
     REG_MTABLE(lua, "_hmac_sha256_ctx", reg_new, reg_func);
