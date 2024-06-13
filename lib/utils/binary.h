@@ -14,7 +14,6 @@ typedef struct binary_ctx {
 }binary_ctx;
 
 static inline void binary_init(binary_ctx *ctx, char *buf, size_t lens, size_t inc) {
-    ASSERTAB(BINARY_INCREASE > 0 && 0 == BINARY_INCREASE % 2, "");
     ctx->offset = 0;
     if (0 == inc) {
         ctx->inc = BINARY_INCREASE;

@@ -41,7 +41,7 @@ void mstostr(uint64_t ms, const char *fmt, char time[TIME_LENS]);
 //×Ö·û´®×ªÊ±¼ä´Á
 uint64_t strtots(const char *time, const char *fmt);
 
-void fill_timespec(struct timespec* timeout, uint32_t ms);
+void fill_timespec(struct timespec *timeout, uint32_t ms);
 
 uint64_t hash(const char *buf, size_t len);
 

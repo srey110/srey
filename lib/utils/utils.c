@@ -1,8 +1,7 @@
 #include "utils/utils.h"
 #include "base/structs.h"
-#include "utils/strptime.h"
-
 #ifdef OS_WIN
+#include "utils/strptime.h"
 #pragma warning(disable:4091)
 #include <DbgHelp.h>
 #pragma comment(lib, "Dbghelp.lib" )
@@ -371,10 +370,12 @@ void mstostr(uint64_t ms, const char *fmt, char time[TIME_LENS]) {
 }
 uint64_t strtots(const char *time, const char *fmt) {
     struct tm dttm;
-    _strptime(time, fmt, &dttm);
+    if (NULL == strptime(time, fmt, &dttm)) {
+        return 0;
+    }
     return (uint64_t)mktime(&dttm);
 }
-void fill_timespec(struct timespec* timeout, uint32_t ms) {
+void fill_timespec(struct timespec *timeout, uint32_t ms) {
     if (ms >= 1000) {
         timeout->tv_sec = ms / 1000;
         timeout->tv_nsec = (long)(ms - timeout->tv_sec * 1000) * (1000 * 1000);

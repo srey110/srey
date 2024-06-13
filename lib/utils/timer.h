@@ -14,7 +14,6 @@ typedef struct timer_ctx {
     uint64_t starttick;
 }timer_ctx;
 
-
 void timer_init(timer_ctx *ctx);
 uint64_t timer_cur(timer_ctx *ctx);
 uint64_t timer_cur_ms(timer_ctx *ctx);

@@ -148,7 +148,7 @@ static void test_system(CuTest* tc) {
     PRINT("createid: %"PRIu64"", createid());
     PRINT("threadid: %"PRIu64"", threadid());
     PRINT("procscnt: %d", procscnt());
-    if (ERR_OK == bigendian()) {
+    if (!is_little()) {
         PRINT("big endian");
     }  else  {
         PRINT("little ndian");

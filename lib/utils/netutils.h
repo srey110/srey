@@ -5,12 +5,6 @@
 
 void sock_init(void);
 void sock_clean(void);
-//是否为大端
-int32_t bigendian(void);
-#if !defined(OS_WIN) && !defined(OS_DARWIN) && !defined(OS_AIX)
-uint64_t ntohll(uint64_t val);
-uint64_t htonll(uint64_t val);
-#endif
 //获取socket可读长度
 int32_t sock_nread(SOCKET fd);
 //错误状态

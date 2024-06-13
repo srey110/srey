@@ -5,6 +5,12 @@
 #include "protocol/redis.h"
 #include "protocol/mysql/mysql.h"
 
+void protos_init(_handshaked_push hspush) {
+    _websock_init(hspush);
+    _mysql_init(hspush);
+}
+void protos_free(void) {
+}
 void protos_pkfree(pack_type type, void *data) {
     if (NULL == data) {
         return;
@@ -50,6 +56,15 @@ void protos_closed(ud_cxt *ud) {
         break;
     }
 }
+int32_t protos_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud) {
+    switch (ud->pktype) {
+    case PACK_MYSQL:
+        return _mysql_ssl_exchanged(ev, ud);
+    default:
+        break;
+    }
+    return ERR_OK;
+}
 static void *_unpack_default(buffer_ctx *buf, size_t *size, ud_cxt *ud) {
     size_t lens = buffer_size(buf);
     if (0 == lens) {
@@ -60,21 +75,6 @@ static void *_unpack_default(buffer_ctx *buf, size_t *size, ud_cxt *ud) {
     ASSERTAB(lens == buffer_remove(buf, unpack, lens), "copy buffer error.");
     *size = lens;
     return unpack;
-}
-void protos_init(_handshaked_push hspush) {
-    _websock_init(hspush);
-    _mysql_init(hspush);
-}
-void protos_free(void) {
-}
-int32_t protos_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud) {
-    switch (ud->pktype) {
-    case PACK_MYSQL:
-        return _mysql_ssl_exchanged(ev, ud);
-    default:
-        break;
-    }
-    return ERR_OK;
 }
 void *protos_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status) {

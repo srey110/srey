@@ -3,7 +3,7 @@
 #include "protocol/http.h"
 #include "crypt/base64.h"
 #include "crypt/sha1.h"
-#include "utils/netutils.h"
+#include "utils/utils.h"
 
 typedef enum parse_status {
     INIT = 0,
@@ -277,7 +277,7 @@ static websock_pack_ctx *_websock_parse_pllens(buffer_ctx *buf, size_t blens,
             return NULL;
         }
         ASSERTAB(sizeof(pllens) == buffer_copyout(buf, HEAD_LESN, &pllens, sizeof(pllens)), "copy buffer failed.");
-        pllens = ntohll(pllens);
+        pllens = (uint64_t)unpack_integer((char *)&pllens, (int32_t)sizeof(uint64_t), 0, 0);
         if (PACK_TOO_LONG(pllens)) {
             BIT_SET(*status, PROTO_ERROR);
             return NULL;
@@ -385,9 +385,8 @@ static void *_websock_create_pack(uint8_t fin, uint8_t proto, char key[4], void 
         offset += sizeof(pllens);
     } else {
         BIT_SET(frame[1], 127);
-        uint64_t pllens = htonll(dlens);
-        memcpy(frame + offset, &pllens, sizeof(pllens));
-        offset += sizeof(pllens);
+        pack_integer(frame + offset, (uint64_t)dlens, (int32_t)sizeof(uint64_t), 0);
+        offset += sizeof(uint64_t);
     }
     if (NULL != key) {
         memcpy(frame + offset, key, 4);

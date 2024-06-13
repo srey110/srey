@@ -26,7 +26,7 @@ static void _show_print(mysql_reader_ctx *reader) {
     if (1 == err) {
         printf("nil   ");
     } else {
-        printf("%lld   ", i64);
+        printf("%d   ", (uint32_t)i64);
     }
     i8 = (int8_t)mysql_reader_integer(reader, "t_int8", &err);
     if (1 == err) {
@@ -51,7 +51,7 @@ static void _show_print(mysql_reader_ctx *reader) {
     if (1 == err) {
         printf("nil   ");
     } else {
-        printf("%lld   ", ui64);
+        printf("%d   ", (uint32_t)ui64);
     }
     f = (float)mysql_reader_double(reader, "t_float", &err);
     if (1 == err) {
@@ -77,14 +77,14 @@ static void _show_print(mysql_reader_ctx *reader) {
     if (1 == err) {
         printf("nil   ");
     } else {
-        printf("%lld   ", ui64);
+        printf("%d   ", (uint32_t)ui64);
     }
     struct tm dt;
     mysql_reader_time(reader, "t_time", &dt, &err);
     if (1 == err) {
         printf("nil   ");
     } else {
-        printf("%lld   ", ui64);
+        printf("%d   ", (uint32_t)ui64);
     }
 }
 static void _show_result1(mpack_ctx *pack, int32_t eof) {
