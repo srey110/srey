@@ -687,3 +687,21 @@ double unpack_double(const char *buf, int32_t islittle) {
     _copy_with_endian((char *)&rtn, buf, sizeof(rtn), islittle);
     return rtn;
 }
+#if !defined(OS_WIN) && !defined(OS_DARWIN) && !defined(OS_AIX)
+uint64_t ntohll(uint64_t val) {
+    if (!is_little()) {
+        return val;
+    }
+    uint64_t rtn;
+    pack_integer((char *)&rtn, val, (int32_t)sizeof(uint64_t), 0);
+    return rtn;
+}
+uint64_t htonll(uint64_t val) {
+    if (!is_little()) {
+        return val;
+    }
+    uint64_t rtn;
+    pack_integer((char *)&rtn, val, (int32_t)sizeof(uint64_t), 0);
+    return rtn;
+}
+#endif

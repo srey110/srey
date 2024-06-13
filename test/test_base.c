@@ -91,6 +91,12 @@ static void test_utils(CuTest* tc) {
     pack_double(buf, d, 1);
     d = unpack_double(buf, 1);
     CuAssertTrue(tc, d - (-123456.789) <= 0.000001);
+
+    uint64_t i64 = (uint64_t)UINT_MAX + 10;
+    i64 = ntohll(i64);
+    CuAssertTrue(tc, 648518346358128640 == i64);
+    i64 = htonll(i64);
+    CuAssertTrue(tc, (uint64_t)UINT_MAX + 10 == i64);
 }
 static void test_binary(CuTest* tc) {
     binary_ctx bwrite;

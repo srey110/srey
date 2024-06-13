@@ -76,5 +76,9 @@ void pack_float(char *buf, float val, int32_t islittle);
 float unpack_float(const char *buf, int32_t islittle);
 void pack_double(char *buf, double val, int32_t islittle);
 double unpack_double(const char *buf, int32_t islittle);
+#if !defined(OS_WIN) && !defined(OS_DARWIN) && !defined(OS_AIX)
+uint64_t ntohll(uint64_t val);
+uint64_t htonll(uint64_t val);
+#endif
 
 #endif//UTILS_H_

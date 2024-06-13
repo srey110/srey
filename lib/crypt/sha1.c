@@ -1,6 +1,7 @@
 #include "crypt/sha1.h"
 
 #define ROTLEFT(a, b) ((a << b) | (a >> (32 - b)))
+
 static void _transform(sha1_ctx *sha1, const unsigned char *data) {
     uint32_t a, b, c, d, e, i, j, t, m[80];
     for (i = 0, j = 0; i < 16; ++i, j += 4) {

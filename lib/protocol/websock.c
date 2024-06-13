@@ -277,7 +277,7 @@ static websock_pack_ctx *_websock_parse_pllens(buffer_ctx *buf, size_t blens,
             return NULL;
         }
         ASSERTAB(sizeof(pllens) == buffer_copyout(buf, HEAD_LESN, &pllens, sizeof(pllens)), "copy buffer failed.");
-        pllens = (uint64_t)unpack_integer((char *)&pllens, (int32_t)sizeof(uint64_t), 0, 0);
+        pllens = ntohll(pllens);
         if (PACK_TOO_LONG(pllens)) {
             BIT_SET(*status, PROTO_ERROR);
             return NULL;
@@ -381,11 +381,12 @@ static void *_websock_create_pack(uint8_t fin, uint8_t proto, char key[4], void 
     } else if (dlens <= 0xffff) {
         BIT_SET(frame[1], 126);
         uint16_t pllens = htons((u_short)dlens);
-        memcpy(frame + offset, &pllens, sizeof(pllens));
+        memcpy(frame + offset, &pllens, sizeof(uint16_t));
         offset += sizeof(pllens);
     } else {
         BIT_SET(frame[1], 127);
-        pack_integer(frame + offset, (uint64_t)dlens, (int32_t)sizeof(uint64_t), 0);
+        uint64_t pllens = htonll((uint64_t)dlens);
+        memcpy(frame + offset, &pllens, sizeof(uint64_t));
         offset += sizeof(uint64_t);
     }
     if (NULL != key) {

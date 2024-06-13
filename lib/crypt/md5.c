@@ -13,6 +13,7 @@
                             a = b + ROTLEFT(a,s); }
 #define II(a,b,c,d,m,s,t) { a += I(b,c,d) + m + t; \
                             a = b + ROTLEFT(a,s); }
+
 static void _transform(md5_ctx *md5, const unsigned char *data) {
     uint32_t a, b, c, d, m[16], i, j;
     for (i = 0, j = 0; i < 16; ++i, j += 4) {

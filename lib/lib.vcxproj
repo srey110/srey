@@ -33,9 +33,12 @@
     <ClInclude Include="crypt\base64.h" />
     <ClInclude Include="crypt\crc.h" />
     <ClInclude Include="crypt\hmac.h" />
+    <ClInclude Include="crypt\md2.h" />
+    <ClInclude Include="crypt\md4.h" />
     <ClInclude Include="crypt\md5.h" />
     <ClInclude Include="crypt\sha1.h" />
     <ClInclude Include="crypt\sha256.h" />
+    <ClInclude Include="crypt\sha512.h" />
     <ClInclude Include="crypt\urlraw.h" />
     <ClInclude Include="crypt\xor.h" />
     <ClInclude Include="event\event.h" />
@@ -89,9 +92,12 @@
     <ClCompile Include="containers\hashmap.c" />
     <ClCompile Include="crypt\base64.c" />
     <ClCompile Include="crypt\crc.c" />
+    <ClCompile Include="crypt\md2.c" />
+    <ClCompile Include="crypt\md4.c" />
     <ClCompile Include="crypt\md5.c" />
     <ClCompile Include="crypt\sha1.c" />
     <ClCompile Include="crypt\sha256.c" />
+    <ClCompile Include="crypt\sha512.c" />
     <ClCompile Include="crypt\urlraw.c" />
     <ClCompile Include="crypt\xor.c" />
     <ClCompile Include="event\event.c" />

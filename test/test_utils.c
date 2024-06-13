@@ -276,6 +276,34 @@ static void test_crypt(CuTest* tc) {
     tohex(sh256, sizeof(sh256), osh256);
     CuAssertTrue(tc, 0 == strcmp(osh256, "93AADF88D01C0D64B3376017DD5B2007CD51C04F0FF9BFA95A76E9319E4E428E"));
 
+    sha512_ctx sha512;
+    unsigned char sh512[SHA512_BLOCK_SIZE];
+    sha512_init(&sha512);
+    sha512_update(&sha512, (unsigned char*)str, len);
+    sha512_update(&sha512, (unsigned char*)str, len);
+    sha512_final(&sha512, sh512);
+    char osh512[HEX_ENSIZE(SHA512_BLOCK_SIZE)];
+    tohex(sh512, sizeof(sh512), osh512);
+    CuAssertTrue(tc, 0 == strcmp(osh512, "E241F4163F124BA5C91505A60683D749F2BE0940597315D414CAA6137EA5C60E0B1446F8DA736A9B3DFAE9CE4D82905384EA6126DFE389AACE97485A13F22158"));
+
+    md2_ctx md2;
+    unsigned char md2str[MD2_BLOCK_SIZE];
+    md2_init(&md2);
+    md2_update(&md2, (unsigned char*)str, len);
+    md2_final(&md2, md2str);
+    char omd2str[HEX_ENSIZE(MD2_BLOCK_SIZE)];
+    tohex(md2str, sizeof(md2str), omd2str);
+    CuAssertTrue(tc, 0 == strcmp(omd2str, "2E3929E8835E1359F0E9B3436B09F564"));
+
+    md4_ctx md4;
+    unsigned char md4str[MD4_BLOCK_SIZE];
+    md4_init(&md4);
+    md4_update(&md4, (unsigned char*)str, len);
+    md4_final(&md4, md4str);
+    char omd4str[HEX_ENSIZE(MD4_BLOCK_SIZE)];
+    tohex(md4str, sizeof(md4str), omd4str);
+    CuAssertTrue(tc, 0 == strcmp(omd4str, "17FD8C05936B20BD8678FDC8D7C60FA5"));
+
     md5_ctx md5;
     unsigned char md5str[MD5_BLOCK_SIZE];
     md5_init(&md5);

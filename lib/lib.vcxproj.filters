@@ -226,6 +226,15 @@
     <ClInclude Include="crypt\xor.h">
       <Filter>crypt</Filter>
     </ClInclude>
+    <ClInclude Include="crypt\md2.h">
+      <Filter>crypt</Filter>
+    </ClInclude>
+    <ClInclude Include="crypt\md4.h">
+      <Filter>crypt</Filter>
+    </ClInclude>
+    <ClInclude Include="crypt\sha512.h">
+      <Filter>crypt</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="event\event.c">
@@ -364,6 +373,15 @@
       <Filter>crypt</Filter>
     </ClCompile>
     <ClCompile Include="crypt\xor.c">
+      <Filter>crypt</Filter>
+    </ClCompile>
+    <ClCompile Include="crypt\md2.c">
+      <Filter>crypt</Filter>
+    </ClCompile>
+    <ClCompile Include="crypt\md4.c">
+      <Filter>crypt</Filter>
+    </ClCompile>
+    <ClCompile Include="crypt\sha512.c">
       <Filter>crypt</Filter>
     </ClCompile>
   </ItemGroup>
