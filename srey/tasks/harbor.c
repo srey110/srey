@@ -109,10 +109,10 @@ static int32_t _check_sign(harbor_ctx *hbctx, struct http_pack_ctx *pack, buf_ct
         memcpy(signstr + url->lens, reqdata, reqlens);
     }
     memcpy(signstr + url->lens + reqlens, tbuf, tlens);
-    unsigned char hs[SHA256_BLOCK_SIZE];
+    char hs[SHA256_BLOCK_SIZE];
     char hexhs[HEX_ENSIZE(sizeof(hs))];
     hmac_sha256_init(&hbctx->macsha256);
-    hmac_sha256_update(&hbctx->macsha256, (unsigned char *)signstr, total);
+    hmac_sha256_update(&hbctx->macsha256, signstr, total);
     hmac_sha256_final(&hbctx->macsha256, hs);
     tohex(hs, sizeof(hs), hexhs);
     FREE(signstr);
@@ -237,7 +237,7 @@ int32_t harbor_start(scheduler_ctx *scheduler, name_t tname, name_t ssl,
     CALLOC(hbctx, 1, sizeof(harbor_ctx));
     if (klens > 0) {
         memcpy(hbctx->signkey, key, klens);
-        hmac_sha256_key(&hbctx->macsha256, (unsigned char *)hbctx->signkey, klens);
+        hmac_sha256_key(&hbctx->macsha256, hbctx->signkey, klens);
     }
     strcpy(hbctx->ip, host);
     hbctx->port = port;
@@ -273,11 +273,11 @@ static void _harbor_sign(buffer_ctx *buf, const char *key, const char *url, void
     }
     memcpy(sbuf + ulens + size, tms, tslens);
     hmac_sha256_ctx macsha256;
-    unsigned char hs[SHA256_BLOCK_SIZE];
+    char hs[SHA256_BLOCK_SIZE];
     char hexhs[HEX_ENSIZE(sizeof(hs))];
-    hmac_sha256_key(&macsha256, (unsigned char *)key, klens);
+    hmac_sha256_key(&macsha256, key, klens);
     hmac_sha256_init(&macsha256);
-    hmac_sha256_update(&macsha256, (unsigned char *)sbuf, lens);
+    hmac_sha256_update(&macsha256, sbuf, lens);
     hmac_sha256_final(&macsha256, hs);
     tohex(hs, sizeof(hs), hexhs);
     FREE(sbuf);
