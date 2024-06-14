@@ -97,8 +97,9 @@ void md4_init(md4_ctx *md4) {
     md4->state[2] = 0x98badcfe;
     md4->state[3] = 0x10325476;
 }
-void md4_update(md4_ctx *md4, const unsigned char *data, size_t lens) {
+void md4_update(md4_ctx *md4, const void *data, size_t lens) {
     uint32_t i, index, partlens;
+    unsigned char *p = (unsigned char *)data;
     index = (uint32_t)((md4->count[0] >> 3) & 0x3F);
     if ((md4->count[0] += ((uint32_t)lens << 3)) < ((uint32_t)lens << 3)) {
         md4->count[1]++;
@@ -106,16 +107,16 @@ void md4_update(md4_ctx *md4, const unsigned char *data, size_t lens) {
     md4->count[1] += ((uint32_t)lens >> 29);
     partlens = 64 - index;
     if ((uint32_t)lens >= partlens) {
-        memcpy(&md4->data[index], data, partlens);
+        memcpy(&md4->data[index], p, partlens);
         _transform(md4, md4->data);
         for (i = partlens; i + 63 < (uint32_t)lens; i += 64) {
-            _transform(md4, &data[i]);
+            _transform(md4, &p[i]);
         }
         index = 0;
     } else {
         i = 0;
     }
-    memcpy(&md4->data[index], &data[i], lens - i);
+    memcpy(&md4->data[index], &p[i], lens - i);
 }
 static void _encode(const uint32_t *data, uint32_t lens, unsigned char *out) {
     uint32_t i, j;
@@ -126,14 +127,14 @@ static void _encode(const uint32_t *data, uint32_t lens, unsigned char *out) {
         out[j + 3] = (unsigned char)((data[i] >> 24) & 0xff);
     }
 }
-void md4_final(md4_ctx *md4, unsigned char hash[MD4_BLOCK_SIZE]) {
+void md4_final(md4_ctx *md4, char hash[MD4_BLOCK_SIZE]) {
     unsigned char bits[8];
-    unsigned int index, padlens;
+    uint32_t index, padlens;
     _encode(md4->count, 8, bits);
-    index = (unsigned int)((md4->count[0] >> 3) & 0x3f);
+    index = (uint32_t)((md4->count[0] >> 3) & 0x3f);
     padlens = (index < 56) ? (56 - index) : (120 - index);
     md4_update(md4, padding, padlens);
     md4_update(md4, bits, 8);
-    _encode(md4->state, 16, hash);
+    _encode(md4->state, 16, (unsigned char *)hash);
     ZERO(md4, sizeof(md4_ctx));
 }

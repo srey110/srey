@@ -45,9 +45,10 @@ void md2_init(md2_ctx *md2) {
     ZERO(md2->checksum, sizeof(md2->checksum));
     md2->lens = 0;
 }
-void md2_update(md2_ctx *md2, const unsigned char *data, size_t lens) {
+void md2_update(md2_ctx *md2, const void *data, size_t lens) {
+    unsigned char *p = (unsigned char *)data;
     for (size_t i = 0; i < lens; ++i) {
-        md2->data[md2->lens] = data[i];
+        md2->data[md2->lens] = p[i];
         md2->lens++;
         if (MD2_BLOCK_SIZE == md2->lens) {
             _transform(md2, md2->data);
@@ -55,7 +56,7 @@ void md2_update(md2_ctx *md2, const unsigned char *data, size_t lens) {
         }
     }
 }
-void md2_final(md2_ctx *md2, unsigned char hash[MD2_BLOCK_SIZE]) {
+void md2_final(md2_ctx *md2, char hash[MD2_BLOCK_SIZE]) {
     int32_t to_pad = MD2_BLOCK_SIZE - md2->lens;
     while (md2->lens < MD2_BLOCK_SIZE) {
         md2->data[md2->lens++] = to_pad;

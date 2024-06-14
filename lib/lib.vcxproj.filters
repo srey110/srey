@@ -235,9 +235,6 @@
     <ClInclude Include="crypt\sha512.h">
       <Filter>crypt</Filter>
     </ClInclude>
-    <ClInclude Include="crypt\des.h">
-      <Filter>crypt</Filter>
-    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="event\event.c">
@@ -385,9 +382,6 @@
       <Filter>crypt</Filter>
     </ClCompile>
     <ClCompile Include="crypt\sha512.c">
-      <Filter>crypt</Filter>
-    </ClCompile>
-    <ClCompile Include="crypt\des.c">
       <Filter>crypt</Filter>
     </ClCompile>
   </ItemGroup>

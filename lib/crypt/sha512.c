@@ -137,31 +137,32 @@ static void _transform(sha512_ctx *sha512, const uint64_t *data) {
     sha512->state[7] += h;
     a = b = c = d = e = f = g = h = T1 = T2 = 0;
 }
-void sha512_update(sha512_ctx *sha512, const unsigned char *data, size_t lens) {
+void sha512_update(sha512_ctx *sha512, const void *data, size_t lens) {
+    unsigned char *p = (unsigned char *)data;
     size_t usedspace = (sha512->bitcount[0] >> 3) % SHA512_BLOCK_LENGTH;
     if (usedspace > 0) {
         size_t freespace = SHA512_BLOCK_LENGTH - usedspace;
         if (lens >= freespace) {
-            memcpy(&sha512->data[usedspace], data, freespace);
+            memcpy(&sha512->data[usedspace], p, freespace);
             ADDINC128(sha512->bitcount, freespace << 3);
             lens -= freespace;
-            data += freespace;
+            p += freespace;
             _transform(sha512, (uint64_t *)sha512->data);
         } else {
-            memcpy(&sha512->data[usedspace], data, lens);
+            memcpy(&sha512->data[usedspace], p, lens);
             ADDINC128(sha512->bitcount, lens << 3);
             usedspace = freespace = 0;
             return;
         }
     }
     while (lens >= SHA512_BLOCK_LENGTH) {
-        _transform(sha512, (uint64_t*)data);
+        _transform(sha512, (uint64_t*)p);
         ADDINC128(sha512->bitcount, SHA512_BLOCK_LENGTH << 3);
         lens -= SHA512_BLOCK_LENGTH;
-        data += SHA512_BLOCK_LENGTH;
+        p += SHA512_BLOCK_LENGTH;
     }
     if (lens > 0) {
-        memcpy(sha512->data, data, lens);
+        memcpy(sha512->data, p, lens);
         ADDINC128(sha512->bitcount, lens << 3);
     }
 }
@@ -190,7 +191,7 @@ static void _last(sha512_ctx *sha512) {
     cast_var.thelongs[SHA512_SHORT_BLOCK_LENGTH / 8 + 1] = sha512->bitcount[0];
     _transform(sha512, (uint64_t*)sha512->data);
 }
-void sha512_final(sha512_ctx *sha512, unsigned char hash[SHA512_BLOCK_SIZE]) {
+void sha512_final(sha512_ctx *sha512, char hash[SHA512_BLOCK_SIZE]) {
     uint64_t *d = (uint64_t*)hash;
     _last(sha512);
     for (int j = 0; j < 8; j++) {

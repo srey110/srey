@@ -12,7 +12,7 @@ typedef struct sha512_ctx {
 } sha512_ctx;
 
 void sha512_init(sha512_ctx *sha512);
-void sha512_update(sha512_ctx *sha512, const unsigned char *data, size_t lens);
-void sha512_final(sha512_ctx *sha512, unsigned char hash[SHA512_BLOCK_SIZE]);
+void sha512_update(sha512_ctx *sha512, const void *data, size_t lens);
+void sha512_final(sha512_ctx *sha512, char hash[SHA512_BLOCK_SIZE]);
 
 #endif//SHA512_H_

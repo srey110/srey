@@ -13,7 +13,7 @@ typedef struct {
 } sha256_ctx;
 
 void sha256_init(sha256_ctx *sha256);
-void sha256_update(sha256_ctx *sha256, const unsigned char *data, size_t lens);
-void sha256_final(sha256_ctx *sha256, unsigned char hash[SHA256_BLOCK_SIZE]);
+void sha256_update(sha256_ctx *sha256, const void *data, size_t lens);
+void sha256_final(sha256_ctx *sha256, char hash[SHA256_BLOCK_SIZE]);
 
 #endif//SHA256_H_

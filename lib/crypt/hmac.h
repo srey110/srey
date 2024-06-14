@@ -12,12 +12,12 @@ typedef struct hmac_type {\
     hs_type inside_init;\
     hs_type outside_init;\
 }hmac_type##_ctx;\
-static inline void hmac_type##_key(hmac_type##_ctx *ctx, unsigned char *key ,size_t klens) {\
+static inline void hmac_type##_key(hmac_type##_ctx *ctx, const char *key ,size_t klens) {\
     size_t num;\
-    unsigned char *key_used;\
-    unsigned char key_temp[block_size], block_ipad[trans_size], block_opad[trans_size];\
+    char *key_used;\
+    char key_temp[block_size], block_ipad[trans_size], block_opad[trans_size];\
     if (trans_size == klens) {\
-        key_used = key;\
+        key_used = (char *)key;\
         num = trans_size;\
     } else {\
         if (klens > trans_size) {\
@@ -28,7 +28,7 @@ static inline void hmac_type##_key(hmac_type##_ctx *ctx, unsigned char *key ,siz
             _hs_final(&hs, key_temp);\
             key_used = key_temp;\
         } else {\
-            key_used = key;\
+            key_used = (char *)key;\
             num = klens;\
         }\
         size_t fill = trans_size - num;\
@@ -48,10 +48,10 @@ static inline void hmac_type##_init(hmac_type##_ctx *ctx) {\
     memcpy(&ctx->inside, &ctx->inside_init, sizeof(hs_type));\
     memcpy(&ctx->outside, &ctx->outside_init, sizeof(hs_type));\
 };\
-static inline void hmac_type##_update(hmac_type##_ctx *ctx, unsigned char *data, size_t lens) {\
+static inline void hmac_type##_update(hmac_type##_ctx *ctx, const void *data, size_t lens) {\
     _hs_update(&ctx->inside, data, lens);\
 };\
-static inline void hmac_type##_final(hmac_type##_ctx *ctx, unsigned char mac[block_size]) {\
+static inline void hmac_type##_final(hmac_type##_ctx *ctx, char mac[block_size]) {\
     _hs_final(&ctx->inside, mac);\
     _hs_update(&ctx->outside, mac, block_size);\
     _hs_final(&ctx->outside, mac);\

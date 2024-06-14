@@ -218,9 +218,9 @@ static int32_t _lcrypt_md5_update(lua_State *lua) {
 }
 static int32_t _lcrypt_md5_final(lua_State *lua) {
     md5_ctx *md5 = lua_touserdata(lua, 1);
-    unsigned char out[MD5_BLOCK_SIZE];
+    char out[MD5_BLOCK_SIZE];
     md5_final(md5, out);
-    lua_pushlstring(lua, (char *)out, sizeof(out));
+    lua_pushlstring(lua, out, sizeof(out));
     return 1;
 }
 //srey.md5
@@ -263,9 +263,9 @@ static int32_t _lcrypt_sha1_update(lua_State *lua) {
 }
 static int32_t _lcrypt_sha1_final(lua_State *lua) {
     sha1_ctx *sha1 = lua_touserdata(lua, 1);
-    unsigned char out[SHA1_BLOCK_SIZE];
+    char out[SHA1_BLOCK_SIZE];
     sha1_final(sha1, out);
-    lua_pushlstring(lua, (char *)out, sizeof(out));
+    lua_pushlstring(lua, out, sizeof(out));
     return 1;
 }
 //srey.sha1
@@ -308,9 +308,9 @@ static int32_t _lcrypt_sha256_update(lua_State *lua) {
 }
 static int32_t _lcrypt_sha256_final(lua_State *lua) {
     sha256_ctx *sha256 = lua_touserdata(lua, 1);
-    unsigned char out[SHA256_BLOCK_SIZE];
+    char out[SHA256_BLOCK_SIZE];
     sha256_final(sha256, out);
-    lua_pushlstring(lua, (char *)out, sizeof(out));
+    lua_pushlstring(lua, out, sizeof(out));
     return 1;
 }
 //srey.sha256
@@ -332,7 +332,7 @@ static int32_t _lcrypt_hmac_sha256_new(lua_State *lua) {
     size_t lens;
     const char *key = luaL_checklstring(lua, 1, &lens);
     hmac_sha256_ctx *mac256 = lua_newuserdata(lua, sizeof(hmac_sha256_ctx));
-    hmac_sha256_key(mac256, (uint8_t *)key, lens);
+    hmac_sha256_key(mac256, key, lens);
     ASSOC_MTABLE(lua, "_hmac_sha256_ctx");
     return 1;
 }
@@ -356,7 +356,7 @@ static int32_t _lcrypt_hmac_sha256_update(lua_State *lua) {
 }
 static int32_t _lcrypt_hmac_sha256_final(lua_State *lua) {
     hmac_sha256_ctx *mac256 = lua_touserdata(lua, 1);
-    unsigned char out[SHA256_BLOCK_SIZE];
+    char out[SHA256_BLOCK_SIZE];
     hmac_sha256_final(mac256, out);
     lua_pushlstring(lua, (char *)out, sizeof(out));
     return 1;

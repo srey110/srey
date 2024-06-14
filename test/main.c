@@ -93,7 +93,7 @@ int main(int argc, char *argv[]) {
     task_coro_net_start(g_scheduler, 20002, 0);
     task_coro_utils_start(g_scheduler, 20003, 0);
     task_redis_start(g_scheduler, 20004, 0);
-    task_mysql_start(g_scheduler, 20005, 0);
+    task_mysql_start(g_scheduler, 20005, 1);
 #endif
     mutex_lock(&muexit);
     cond_wait(&condexit, &muexit);

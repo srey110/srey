@@ -142,37 +142,37 @@ static uint8_t _mysql_charset(const char *charset) {
         return 0;
     }
 }
-static void _mysql_native_sign(mysql_ctx *mysql, uint8_t sh1[SHA1_BLOCK_SIZE]) {
-    uint8_t shpsw[SHA1_BLOCK_SIZE];
-    uint8_t shscr[SHA1_BLOCK_SIZE];
+static void _mysql_native_sign(mysql_ctx *mysql, char sh1[SHA1_BLOCK_SIZE]) {
+    char shpsw[SHA1_BLOCK_SIZE];
+    char shscr[SHA1_BLOCK_SIZE];
     sha1_ctx sha1;
     sha1_init(&sha1);
-    sha1_update(&sha1, (uint8_t *)mysql->client.password, strlen(mysql->client.password));
+    sha1_update(&sha1, mysql->client.password, strlen(mysql->client.password));
     sha1_final(&sha1, shpsw);
     sha1_init(&sha1);
     sha1_update(&sha1, shpsw, SHA1_BLOCK_SIZE);
     sha1_final(&sha1, sh1);
     sha1_init(&sha1);
-    sha1_update(&sha1, (uint8_t *)mysql->server.salt, sizeof(mysql->server.salt));
+    sha1_update(&sha1, mysql->server.salt, sizeof(mysql->server.salt));
     sha1_update(&sha1, sh1, SHA1_BLOCK_SIZE);
     sha1_final(&sha1, shscr);
     for (size_t i = 0; i < SHA1_BLOCK_SIZE; i++) {
         sh1[i] = shpsw[i] ^ shscr[i];
     }
 }
-static void _mysql_caching_sha2_sign(mysql_ctx *mysql, uint8_t sh2[SHA256_BLOCK_SIZE]) {
-    uint8_t shpsw[SHA256_BLOCK_SIZE];
-    uint8_t shscr[SHA256_BLOCK_SIZE];
+static void _mysql_caching_sha2_sign(mysql_ctx *mysql, char sh2[SHA256_BLOCK_SIZE]) {
+    char shpsw[SHA256_BLOCK_SIZE];
+    char shscr[SHA256_BLOCK_SIZE];
     sha256_ctx sha256;
     sha256_init(&sha256);
-    sha256_update(&sha256, (uint8_t *)mysql->client.password, strlen(mysql->client.password));
+    sha256_update(&sha256, mysql->client.password, strlen(mysql->client.password));
     sha256_final(&sha256, shpsw);
     sha256_init(&sha256);
     sha256_update(&sha256, shpsw, SHA256_BLOCK_SIZE);
     sha256_final(&sha256, sh2);
     sha256_init(&sha256);
     sha256_update(&sha256, sh2, SHA256_BLOCK_SIZE);
-    sha256_update(&sha256, (uint8_t *)mysql->server.salt, sizeof(mysql->server.salt));
+    sha256_update(&sha256, mysql->server.salt, sizeof(mysql->server.salt));
     sha256_final(&sha256, shscr);
     for (size_t i = 0; i < SHA256_BLOCK_SIZE; i++) {
         sh2[i] = shpsw[i] ^ shscr[i];
@@ -205,24 +205,24 @@ static void _mysql_auth_response(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
     binary_set_fill(&bwriter, 0, 23);//filler
     binary_set_string(&bwriter, mysql->client.user, strlen(mysql->client.user) + 1);//username
     if (0 == strcmp(CACHING_SHA2_PASSWORLD, mysql->server.plugin)) {
-        uint8_t sign[SHA256_BLOCK_SIZE];
+        char sign[SHA256_BLOCK_SIZE];
         _mysql_caching_sha2_sign(mysql, sign);
         if (BIT_CHECK(mysql->client.caps, CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA)) {
             _mysql_set_lenenc(&bwriter, sizeof(sign));
-            binary_set_string(&bwriter, (const char *)sign, sizeof(sign));//auth_response
+            binary_set_string(&bwriter, sign, sizeof(sign));//auth_response
         } else {
             binary_set_uint8(&bwriter, (uint8_t)sizeof(sign));
-            binary_set_string(&bwriter, (const char *)sign, sizeof(sign));//auth_response
+            binary_set_string(&bwriter, sign, sizeof(sign));//auth_response
         }
     } else {
-        uint8_t sign[SHA1_BLOCK_SIZE];
+        char sign[SHA1_BLOCK_SIZE];
         _mysql_native_sign(mysql, sign);
         if (BIT_CHECK(mysql->client.caps, CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA)){
             _mysql_set_lenenc(&bwriter, sizeof(sign));
-            binary_set_string(&bwriter, (const char *)sign, sizeof(sign));//auth_response
+            binary_set_string(&bwriter, sign, sizeof(sign));//auth_response
         } else {
             binary_set_uint8(&bwriter, (uint8_t)sizeof(sign));
-            binary_set_string(&bwriter, (const char *)sign, sizeof(sign));//auth_response
+            binary_set_string(&bwriter, sign, sizeof(sign));//auth_response
         }
     }
     if (BIT_CHECK(mysql->client.caps, CLIENT_CONNECT_WITH_DB)) {
@@ -452,13 +452,13 @@ static int32_t _mysql_auth_switch_response(mysql_ctx *mysql, ev_ctx *ev, mpack_a
     binary_set_skip(&bwriter, 3);
     binary_set_int8(&bwriter, mysql->id);
     if (0 == strcmp(CACHING_SHA2_PASSWORLD, mysql->server.plugin)) {
-        uint8_t sign[SHA256_BLOCK_SIZE];
+        char sign[SHA256_BLOCK_SIZE];
         _mysql_caching_sha2_sign(mysql, sign);
-        binary_set_string(&bwriter, (const char *)sign, sizeof(sign));
+        binary_set_string(&bwriter, sign, sizeof(sign));
     } else {
-        uint8_t sign[SHA1_BLOCK_SIZE];
+        char sign[SHA1_BLOCK_SIZE];
         _mysql_native_sign(mysql, sign);
-        binary_set_string(&bwriter, (const char *)sign, sizeof(sign));
+        binary_set_string(&bwriter, sign, sizeof(sign));
     }
     _set_payload_lens(&bwriter);
     ev_send(ev, mysql->client.fd, mysql->client.skid, bwriter.data, bwriter.offset, 0);

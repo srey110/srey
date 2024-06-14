@@ -258,56 +258,56 @@ static void test_crypt(CuTest* tc) {
     CuAssertTrue(tc, 0xFCD68BE4 == crc32(str, len));
 
     sha1_ctx sha1;
-    unsigned char sha1str[SHA1_BLOCK_SIZE];
+    char sha1str[SHA1_BLOCK_SIZE];
     sha1_init(&sha1);
-    sha1_update(&sha1, (uint8_t *)"RHdzNjc1OFhHS1dHME9LMUxOTEQySDREUTRz5Lit5paHRkNTVWRaOFJKRkxvNk", strlen("RHdzNjc1OFhHS1dHME9LMUxOTEQySDREUTRz5Lit5paHRkNTVWRaOFJKRkxvNk"));
-    sha1_update(&sha1, (uint8_t *)"9YYlBmaDRkYm1TQUNZaU1VMHBQeFU0NGI", strlen("9YYlBmaDRkYm1TQUNZaU1VMHBQeFU0NGI"));
+    sha1_update(&sha1, "RHdzNjc1OFhHS1dHME9LMUxOTEQySDREUTRz5Lit5paHRkNTVWRaOFJKRkxvNk", strlen("RHdzNjc1OFhHS1dHME9LMUxOTEQySDREUTRz5Lit5paHRkNTVWRaOFJKRkxvNk"));
+    sha1_update(&sha1, "9YYlBmaDRkYm1TQUNZaU1VMHBQeFU0NGI", strlen("9YYlBmaDRkYm1TQUNZaU1VMHBQeFU0NGI"));
     sha1_final(&sha1, sha1str);
     char out[HEX_ENSIZE(SHA1_BLOCK_SIZE)];
     tohex(sha1str, sizeof(sha1str), out);
     CuAssertTrue(tc, 0 == strcmp("8AE1EA68BC319E9BD0B55CBD93E4B2BCDCEF11A0", out));
 
     sha256_ctx sha256;
-    unsigned char sh256[SHA256_BLOCK_SIZE];
+    char sh256[SHA256_BLOCK_SIZE];
     sha256_init(&sha256);
-    sha256_update(&sha256, (unsigned char*)str, len);
+    sha256_update(&sha256, str, len);
     sha256_final(&sha256, sh256);
     char osh256[HEX_ENSIZE(SHA256_BLOCK_SIZE)];
     tohex(sh256, sizeof(sh256), osh256);
     CuAssertTrue(tc, 0 == strcmp(osh256, "93AADF88D01C0D64B3376017DD5B2007CD51C04F0FF9BFA95A76E9319E4E428E"));
 
     sha512_ctx sha512;
-    unsigned char sh512[SHA512_BLOCK_SIZE];
+    char sh512[SHA512_BLOCK_SIZE];
     sha512_init(&sha512);
-    sha512_update(&sha512, (unsigned char*)str, len);
-    sha512_update(&sha512, (unsigned char*)str, len);
+    sha512_update(&sha512, str, len);
+    sha512_update(&sha512, str, len);
     sha512_final(&sha512, sh512);
     char osh512[HEX_ENSIZE(SHA512_BLOCK_SIZE)];
     tohex(sh512, sizeof(sh512), osh512);
     CuAssertTrue(tc, 0 == strcmp(osh512, "E241F4163F124BA5C91505A60683D749F2BE0940597315D414CAA6137EA5C60E0B1446F8DA736A9B3DFAE9CE4D82905384EA6126DFE389AACE97485A13F22158"));
 
     md2_ctx md2;
-    unsigned char md2str[MD2_BLOCK_SIZE];
+    char md2str[MD2_BLOCK_SIZE];
     md2_init(&md2);
-    md2_update(&md2, (unsigned char*)str, len);
+    md2_update(&md2, str, len);
     md2_final(&md2, md2str);
     char omd2str[HEX_ENSIZE(MD2_BLOCK_SIZE)];
     tohex(md2str, sizeof(md2str), omd2str);
     CuAssertTrue(tc, 0 == strcmp(omd2str, "2E3929E8835E1359F0E9B3436B09F564"));
 
     md4_ctx md4;
-    unsigned char md4str[MD4_BLOCK_SIZE];
+    char md4str[MD4_BLOCK_SIZE];
     md4_init(&md4);
-    md4_update(&md4, (unsigned char*)str, len);
+    md4_update(&md4, str, len);
     md4_final(&md4, md4str);
     char omd4str[HEX_ENSIZE(MD4_BLOCK_SIZE)];
     tohex(md4str, sizeof(md4str), omd4str);
     CuAssertTrue(tc, 0 == strcmp(omd4str, "17FD8C05936B20BD8678FDC8D7C60FA5"));
 
     md5_ctx md5;
-    unsigned char md5str[MD5_BLOCK_SIZE];
+    char md5str[MD5_BLOCK_SIZE];
     md5_init(&md5);
-    md5_update(&md5, (unsigned char*)str, len);
+    md5_update(&md5, str, len);
     md5_final(&md5, md5str);
     char omd5str[HEX_ENSIZE(MD5_BLOCK_SIZE)];
     tohex(md5str, sizeof(md5str), omd5str);
@@ -320,12 +320,12 @@ static void test_crypt(CuTest* tc) {
         "139100334F4EE0C4D9D506457F4811C7",
         "24E9A3D055F2E1984D78E52F7FDF03E3" };
     hmac_md5_ctx macmd5;
-    unsigned char outmmd5[MD5_BLOCK_SIZE];
+    char outmmd5[MD5_BLOCK_SIZE];
     char hexmm5[HEX_ENSIZE(sizeof(outmmd5))];
     for (int32_t i = 0; i < 3; i++) {
-        hmac_md5_key(&macmd5, (unsigned char *)hmac_key[i], strlen(hmac_key[i]));
+        hmac_md5_key(&macmd5, hmac_key[i], strlen(hmac_key[i]));
         hmac_md5_init(&macmd5);
-        hmac_md5_update(&macmd5, (unsigned char *)str, len);
+        hmac_md5_update(&macmd5, str, len);
         hmac_md5_final(&macmd5, outmmd5);
         tohex(outmmd5, sizeof(outmmd5), hexmm5);
         CuAssertTrue(tc, 0 == strcmp(hmac_md5_result[i], hexmm5));
@@ -335,12 +335,12 @@ static void test_crypt(CuTest* tc) {
         "EA2A165A590F4D2A276CAD63D17E7FD004E0232C",
         "0BE13599959E0F24902E9840B992A75231F071A2" };
     hmac_sha1_ctx macsha1;
-    unsigned char outmsha1[SHA1_BLOCK_SIZE];
+    char outmsha1[SHA1_BLOCK_SIZE];
     char hexmsha1[HEX_ENSIZE(sizeof(outmsha1))];
     for (int32_t i = 0; i < 3; i++) {
-        hmac_sha1_key(&macsha1, (unsigned char *)hmac_key[i], strlen(hmac_key[i]));
+        hmac_sha1_key(&macsha1, hmac_key[i], strlen(hmac_key[i]));
         hmac_sha1_init(&macsha1);
-        hmac_sha1_update(&macsha1, (unsigned char *)str, len);
+        hmac_sha1_update(&macsha1, str, len);
         hmac_sha1_final(&macsha1, outmsha1);
         tohex(outmsha1, sizeof(outmsha1), hexmsha1);
         CuAssertTrue(tc, 0 == strcmp(hmac_sha1_result[i], hexmsha1));
@@ -350,12 +350,12 @@ static void test_crypt(CuTest* tc) {
         "31F7613A4FDBF36EEC435976550576282D0C319632DAE09A94A296068DC8E017",
         "E5F25394FC77487B3C930ADDE609D260FFF722FFCE64E1778DD0EC4C3768918A" };
     hmac_sha256_ctx macsha256;
-    unsigned char outmsha256[SHA256_BLOCK_SIZE];
+    char outmsha256[SHA256_BLOCK_SIZE];
     char hexmsha256[HEX_ENSIZE(sizeof(outmsha256))];
     for (int32_t i = 0; i < 3; i++) {
-        hmac_sha256_key(&macsha256, (unsigned char *)hmac_key[i], strlen(hmac_key[i]));
+        hmac_sha256_key(&macsha256, hmac_key[i], strlen(hmac_key[i]));
         hmac_sha256_init(&macsha256);
-        hmac_sha256_update(&macsha256, (unsigned char *)str, len);
+        hmac_sha256_update(&macsha256, str, len);
         hmac_sha256_final(&macsha256, outmsha256);
         tohex(outmsha256, sizeof(outmsha256), hexmsha256);
         CuAssertTrue(tc, 0 == strcmp(hmac_sha256_result[i], hexmsha256));

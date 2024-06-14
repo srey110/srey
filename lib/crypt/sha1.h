@@ -14,7 +14,7 @@ typedef struct {
 } sha1_ctx;
 
 void sha1_init(sha1_ctx *sha1);
-void sha1_update(sha1_ctx *sha1, const unsigned char *data, size_t lens);
-void sha1_final(sha1_ctx *sha1, unsigned char hash[SHA1_BLOCK_SIZE]);
+void sha1_update(sha1_ctx *sha1, const void *data, size_t lens);
+void sha1_final(sha1_ctx *sha1, char hash[SHA1_BLOCK_SIZE]);
 
 #endif//SHA1_H_

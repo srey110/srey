@@ -69,9 +69,10 @@ void sha256_init(sha256_ctx *sha256) {
     sha256->state[6] = 0x1f83d9ab;
     sha256->state[7] = 0x5be0cd19;
 }
-void sha256_update(sha256_ctx *sha256, const unsigned char *data, size_t lens) {
+void sha256_update(sha256_ctx *sha256, const void *data, size_t lens) {
+    unsigned char *p = (unsigned char *)data;
     for (size_t i = 0; i < lens; ++i) {
-        sha256->data[sha256->datalen] = data[i];
+        sha256->data[sha256->datalen] = p[i];
         sha256->datalen++;
         if (64 == sha256->datalen) {
             _transform(sha256, sha256->data);
@@ -80,7 +81,7 @@ void sha256_update(sha256_ctx *sha256, const unsigned char *data, size_t lens) {
         }
     }
 }
-void sha256_final(sha256_ctx *sha256, unsigned char hash[SHA256_BLOCK_SIZE]) {
+void sha256_final(sha256_ctx *sha256, char hash[SHA256_BLOCK_SIZE]) {
     uint32_t i;
     i = sha256->datalen;
     if (sha256->datalen < 56) {

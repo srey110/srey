@@ -101,9 +101,10 @@ void md5_init(md5_ctx *md5) {
     md5->state[2] = 0x98BADCFE;
     md5->state[3] = 0x10325476;
 }
-void md5_update(md5_ctx *md5, const unsigned char *data, size_t lens) {
+void md5_update(md5_ctx *md5, const void *data, size_t lens) {
+    unsigned char *p = (unsigned char *)data;
     for (size_t i = 0; i < lens; ++i) {
-        md5->data[md5->datalen] = data[i];
+        md5->data[md5->datalen] = p[i];
         md5->datalen++;
         if (64 == md5->datalen) {
             _transform(md5, md5->data);
@@ -112,7 +113,7 @@ void md5_update(md5_ctx *md5, const unsigned char *data, size_t lens) {
         }
     }
 }
-void md5_final(md5_ctx *md5, unsigned char hash[MD5_BLOCK_SIZE]) {
+void md5_final(md5_ctx *md5, char hash[MD5_BLOCK_SIZE]) {
     size_t i = md5->datalen;
     if (md5->datalen < 56) {
         md5->data[i++] = 0x80;

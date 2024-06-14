@@ -13,7 +13,7 @@ typedef struct md2_ctx {
 } md2_ctx;
 
 void md2_init(md2_ctx *md2);
-void md2_update(md2_ctx *md2, const unsigned char *data, size_t lens);
-void md2_final(md2_ctx *md2, unsigned char hash[MD2_BLOCK_SIZE]);
+void md2_update(md2_ctx *md2, const void *data, size_t lens);
+void md2_final(md2_ctx *md2, char hash[MD2_BLOCK_SIZE]);
 
 #endif//MD2_H_

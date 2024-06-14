@@ -532,22 +532,19 @@ char *randstr(char *buf, size_t len) {
     buf[i] = '\0';
     return buf;
 }
-static char HEX[16] = {
+static const char hex_char[16] = {
     '0', '1', '2', '3',
     '4', '5', '6', '7',
     '8', '9', 'A', 'B',
     'C', 'D', 'E', 'F'
 };
-char *tohex(const unsigned char *buf, size_t len, char *out) {
+char *tohex(const void *buf, size_t len, char *out) {
     size_t j = 0;
-    size_t i = 0;
-    for (i = 0; i < len; ++i) {
-        int t = buf[i];
-        int a = t / 16;
-        int b = t % 16;
-        out[j] = HEX[a];
+    unsigned char *p = (unsigned char *)buf;
+    for (size_t i = 0; i < len; ++i) {
+        out[j] = hex_char[(p[i] / 16)];
         ++j;
-        out[j] = HEX[b];
+        out[j] = hex_char[(p[i] % 16)];
         ++j;
     }
     out[j] = '\0';

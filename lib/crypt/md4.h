@@ -12,7 +12,7 @@ typedef struct md4_ctx {
 }md4_ctx;
 
 void md4_init(md4_ctx *md4);
-void md4_update(md4_ctx *md4, const unsigned char *data, size_t lens);
-void md4_final(md4_ctx *md4, unsigned char hash[MD4_BLOCK_SIZE]);
+void md4_update(md4_ctx *md4, const void *data, size_t lens);
+void md4_final(md4_ctx *md4, char hash[MD4_BLOCK_SIZE]);
 
 #endif//MD4_H_

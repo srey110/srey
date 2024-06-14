@@ -68,9 +68,10 @@ void sha1_init(sha1_ctx *sha1) {
     sha1->k[2] = 0x8f1bbcdc;
     sha1->k[3] = 0xca62c1d6;
 }
-void sha1_update(sha1_ctx *sha1, const unsigned char *data, size_t lens) {
+void sha1_update(sha1_ctx *sha1, const void *data, size_t lens) {
+    unsigned char *p = (unsigned char *)data;
     for (size_t i = 0; i < lens; ++i) {
-        sha1->data[sha1->datalen] = data[i];
+        sha1->data[sha1->datalen] = p[i];
         sha1->datalen++;
         if (64 == sha1->datalen) {
             _transform(sha1, sha1->data);
@@ -79,7 +80,7 @@ void sha1_update(sha1_ctx *sha1, const unsigned char *data, size_t lens) {
         }
     }
 }
-void sha1_final(sha1_ctx *sha1, unsigned char hash[SHA1_BLOCK_SIZE]) {
+void sha1_final(sha1_ctx *sha1, char hash[SHA1_BLOCK_SIZE]) {
     uint32_t i = sha1->datalen;
     if (sha1->datalen < 56) {
         sha1->data[i++] = 0x80;
