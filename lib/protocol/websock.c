@@ -94,7 +94,7 @@ static void _websock_sign(char *key, size_t klens, char b64[B64EN_BLOCK_SIZE(SHA
     sha1_update(&sha1, signstr, lens);
     sha1_final(&sha1, sha1str);
     FREE(signstr);
-    b64_encode(sha1str, sizeof(sha1str), b64);
+    bs64_encode(sha1str, sizeof(sha1str), b64);
 }
 static void _websock_handshake_server(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
     ud_cxt *ud, struct http_pack_ctx *hpack, int32_t *status) {
@@ -474,6 +474,6 @@ void _websock_init(void *hspush) {
     randstr(_mask_key, sizeof(_mask_key) - 1);
     char key[8 + 1];
     randstr(key, sizeof(key) - 1);
-    b64_encode(key, sizeof(key) - 1, _hs_key);
+    bs64_encode(key, sizeof(key) - 1, _hs_key);
     _websock_sign(_hs_key, strlen(_hs_key), _hs_sign);
 }

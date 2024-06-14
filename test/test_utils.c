@@ -363,11 +363,11 @@ static void test_crypt(CuTest* tc) {
 
     char *en;
     MALLOC(en, B64EN_BLOCK_SIZE(len));
-    b64_encode(str, len, en);
+    bs64_encode(str, len, en);
     CuAssertTrue(tc, 0 == strcmp("Ukhkek5qYzFPRmhIUzFkSE1FOUxNVXhPVEVReVNEUkVVVFJ6NUxpdDVwYUhSa05UVldSYU9GSktSa3h2Tms5WVlsQm1hRFJrWW0xVFFVTlphVTFWTUhCUWVGVTBOR0k=", en));
     char *de;
     MALLOC(de, B64DE_BLOCK_SIZE(strlen(en)));
-    size_t bdelen = b64_decode(en, strlen(en), de);
+    size_t bdelen = bs64_decode(en, strlen(en), de);
     CuAssertTrue(tc, 0 == strcmp(de, str));
     FREE(en);
 

@@ -112,7 +112,7 @@ LUAMOD_API int luaopen_url(lua_State *lua) {
     luaL_newlib(lua, reg);
     return 1;
 }
-static int32_t _lcrypt_b64_encode(lua_State *lua) {
+static int32_t _lcrypt_bs64_encode(lua_State *lua) {
     void *data;
     size_t size;
     if (LUA_TSTRING == lua_type(lua, 1)) {
@@ -124,12 +124,12 @@ static int32_t _lcrypt_b64_encode(lua_State *lua) {
     char *out;
     size_t lens = B64EN_BLOCK_SIZE(size);
     MALLOC(out, lens);
-    size = b64_encode(data, size, out);
+    size = bs64_encode(data, size, out);
     lua_pushlstring(lua, out, size);
     FREE(out);
     return 1;
 }
-static int32_t _lcrypt_b64_decode(lua_State *lua) {
+static int32_t _lcrypt_bs64_decode(lua_State *lua) {
     void *data;
     size_t size;
     if (LUA_TSTRING == lua_type(lua, 1)) {
@@ -141,7 +141,7 @@ static int32_t _lcrypt_b64_decode(lua_State *lua) {
     char *out;
     size_t lens = B64DE_BLOCK_SIZE(size);
     MALLOC(out, lens);
-    size = b64_decode(data, size, out);
+    size = bs64_decode(data, size, out);
     lua_pushlstring(lua, out, size);
     FREE(out);
     return 1;
@@ -149,8 +149,8 @@ static int32_t _lcrypt_b64_decode(lua_State *lua) {
 //srey.base64
 LUAMOD_API int luaopen_base64(lua_State *lua) {
     luaL_Reg reg[] = {
-        { "encode", _lcrypt_b64_encode },
-        { "decode", _lcrypt_b64_decode },
+        { "encode", _lcrypt_bs64_encode },
+        { "decode", _lcrypt_bs64_decode },
         { NULL, NULL },
     };
     luaL_newlib(lua, reg);

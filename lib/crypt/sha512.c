@@ -1,4 +1,5 @@
 #include "crypt/sha512.h"
+#include "utils/utils.h"
 
 #define SHA512_BLOCK_LENGTH 128
 #define SHA512_SHORT_BLOCK_LENGTH (SHA512_BLOCK_LENGTH - 16)
@@ -97,8 +98,14 @@ static void _transform(sha512_ctx *sha512, const uint64_t *data) {
     h = sha512->state[7];
     j = 0;
     do {
-        REVERSE64(*data++, W512[j]);
-        T1 = h + Sigma1_512(e) + Ch(e, f, g) + k512[j] + W512[j];
+        if (is_little()) {
+            /* Convert TO host byte order */
+            REVERSE64(*data++, W512[j]);
+            /* Apply the SHA-512 compression function to update a..h */
+            T1 = h + Sigma1_512(e) + Ch(e, f, g) + k512[j] + W512[j];
+        } else {
+            T1 = h + Sigma1_512(e) + Ch(e, f, g) + k512[j] + (W512[j] = *data++);
+        }
         T2 = Sigma0_512(a) + Maj(a, b, c);
         h = g;
         g = f;
@@ -168,8 +175,10 @@ void sha512_update(sha512_ctx *sha512, const void *data, size_t lens) {
 }
 static void _last(sha512_ctx *sha512) {   
     size_t usedspace = (sha512->bitcount[0] >> 3) % SHA512_BLOCK_LENGTH;
-    REVERSE64(sha512->bitcount[0], sha512->bitcount[0]);
-    REVERSE64(sha512->bitcount[1], sha512->bitcount[1]);
+    if (is_little()) {
+        REVERSE64(sha512->bitcount[0], sha512->bitcount[0]);
+        REVERSE64(sha512->bitcount[1], sha512->bitcount[1]);
+    }
     if (usedspace > 0) {
         sha512->data[usedspace++] = 0x80;
         if (usedspace <= SHA512_SHORT_BLOCK_LENGTH) {
@@ -194,9 +203,13 @@ static void _last(sha512_ctx *sha512) {
 void sha512_final(sha512_ctx *sha512, char hash[SHA512_BLOCK_SIZE]) {
     uint64_t *d = (uint64_t*)hash;
     _last(sha512);
-    for (int j = 0; j < 8; j++) {
-        REVERSE64(sha512->state[j], sha512->state[j]);
-        *d++ = sha512->state[j];
+    if (is_little()) {
+        for (int j = 0; j < 8; j++) {
+            REVERSE64(sha512->state[j], sha512->state[j]);
+            *d++ = sha512->state[j];
+        }
+    } else {
+        memcpy(d, sha512->state, SHA512_BLOCK_SIZE);
     }
     ZERO(sha512, sizeof(sha512_ctx));
 }

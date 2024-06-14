@@ -27,7 +27,7 @@ static char base64de[] = {
     36,  37,  38,  39,  40,  41,  42,  43,
     44,  45,  46,  47,  48,  49,  50,  51,
 };
-size_t b64_encode(const void *data, const size_t lens, char *out) {
+size_t bs64_encode(const void *data, const size_t lens, char *out) {
     const char *p = (const char *)data;
     int32_t s;
     uint32_t i, j;
@@ -62,7 +62,7 @@ size_t b64_encode(const void *data, const size_t lens, char *out) {
     out[j] = '\0';
     return j;
 }
-size_t b64_decode(const char *data, const size_t lens, char *out) {
+size_t bs64_decode(const char *data, const size_t lens, char *out) {
     int32_t c, s;
     uint32_t i, j;
     for (i = j = 0; i < lens; i++) {
