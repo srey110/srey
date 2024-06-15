@@ -82,11 +82,11 @@ typedef union buffer_union {
 void sha512_init(sha512_ctx *sha512) {
     memcpy(sha512->state, ihv, SHA512_BLOCK_SIZE);
     ZERO(sha512->data, SHA512_BLOCK_LENGTH);
-    sha512->bitcount[0] = sha512->bitcount[1] = 0;
+    sha512->bitlen[0] = sha512->bitlen[1] = 0;
 }
 static void _transform(sha512_ctx *sha512, const uint64_t *data) {
     uint64_t a, b, c, d, e, f, g, h, s0, s1;
-    uint64_t T1, T2, *W512 = (uint64_t *)sha512->data;
+    uint64_t t1, t2, *w512 = (uint64_t *)sha512->data;
     int32_t j;
     a = sha512->state[0];
     b = sha512->state[1];
@@ -100,38 +100,38 @@ static void _transform(sha512_ctx *sha512, const uint64_t *data) {
     do {
         if (is_little()) {
             /* Convert TO host byte order */
-            REVERSE64(*data++, W512[j]);
+            REVERSE64(*data++, w512[j]);
             /* Apply the SHA-512 compression function to update a..h */
-            T1 = h + Sigma1_512(e) + Ch(e, f, g) + k512[j] + W512[j];
+            t1 = h + Sigma1_512(e) + Ch(e, f, g) + k512[j] + w512[j];
         } else {
-            T1 = h + Sigma1_512(e) + Ch(e, f, g) + k512[j] + (W512[j] = *data++);
+            t1 = h + Sigma1_512(e) + Ch(e, f, g) + k512[j] + (w512[j] = *data++);
         }
-        T2 = Sigma0_512(a) + Maj(a, b, c);
+        t2 = Sigma0_512(a) + Maj(a, b, c);
         h = g;
         g = f;
         f = e;
-        e = d + T1;
+        e = d + t1;
         d = c;
         c = b;
         b = a;
-        a = T1 + T2;
+        a = t1 + t2;
         j++;
     } while (j < 16);
     do {
-        s0 = W512[(j + 1) & 0x0f];
+        s0 = w512[(j + 1) & 0x0f];
         s0 = sigma0_512(s0);
-        s1 = W512[(j + 14) & 0x0f];
+        s1 = w512[(j + 14) & 0x0f];
         s1 = sigma1_512(s1);
-        T1 = h + Sigma1_512(e) + Ch(e, f, g) + k512[j] + (W512[j & 0x0f] += s1 + W512[(j + 9) & 0x0f] + s0);
-        T2 = Sigma0_512(a) + Maj(a, b, c);
+        t1 = h + Sigma1_512(e) + Ch(e, f, g) + k512[j] + (w512[j & 0x0f] += s1 + w512[(j + 9) & 0x0f] + s0);
+        t2 = Sigma0_512(a) + Maj(a, b, c);
         h = g;
         g = f;
         f = e;
-        e = d + T1;
+        e = d + t1;
         d = c;
         c = b;
         b = a;
-        a = T1 + T2;
+        a = t1 + t2;
         j++;
     } while (j < 80);
     sha512->state[0] += a;
@@ -142,42 +142,42 @@ static void _transform(sha512_ctx *sha512, const uint64_t *data) {
     sha512->state[5] += f;
     sha512->state[6] += g;
     sha512->state[7] += h;
-    a = b = c = d = e = f = g = h = T1 = T2 = 0;
+    a = b = c = d = e = f = g = h = t1 = t2 = 0;
 }
 void sha512_update(sha512_ctx *sha512, const void *data, size_t lens) {
-    unsigned char *p = (unsigned char *)data;
-    size_t usedspace = (sha512->bitcount[0] >> 3) % SHA512_BLOCK_LENGTH;
+    uint8_t *p = (uint8_t *)data;
+    size_t usedspace = (sha512->bitlen[0] >> 3) % SHA512_BLOCK_LENGTH;
     if (usedspace > 0) {
         size_t freespace = SHA512_BLOCK_LENGTH - usedspace;
         if (lens >= freespace) {
             memcpy(&sha512->data[usedspace], p, freespace);
-            ADDINC128(sha512->bitcount, freespace << 3);
+            ADDINC128(sha512->bitlen, freespace << 3);
             lens -= freespace;
             p += freespace;
             _transform(sha512, (uint64_t *)sha512->data);
         } else {
             memcpy(&sha512->data[usedspace], p, lens);
-            ADDINC128(sha512->bitcount, lens << 3);
+            ADDINC128(sha512->bitlen, lens << 3);
             usedspace = freespace = 0;
             return;
         }
     }
     while (lens >= SHA512_BLOCK_LENGTH) {
         _transform(sha512, (uint64_t*)p);
-        ADDINC128(sha512->bitcount, SHA512_BLOCK_LENGTH << 3);
+        ADDINC128(sha512->bitlen, SHA512_BLOCK_LENGTH << 3);
         lens -= SHA512_BLOCK_LENGTH;
         p += SHA512_BLOCK_LENGTH;
     }
     if (lens > 0) {
         memcpy(sha512->data, p, lens);
-        ADDINC128(sha512->bitcount, lens << 3);
+        ADDINC128(sha512->bitlen, lens << 3);
     }
 }
 static void _last(sha512_ctx *sha512) {   
-    size_t usedspace = (sha512->bitcount[0] >> 3) % SHA512_BLOCK_LENGTH;
+    size_t usedspace = (sha512->bitlen[0] >> 3) % SHA512_BLOCK_LENGTH;
     if (is_little()) {
-        REVERSE64(sha512->bitcount[0], sha512->bitcount[0]);
-        REVERSE64(sha512->bitcount[1], sha512->bitcount[1]);
+        REVERSE64(sha512->bitlen[0], sha512->bitlen[0]);
+        REVERSE64(sha512->bitlen[1], sha512->bitlen[1]);
     }
     if (usedspace > 0) {
         sha512->data[usedspace++] = 0x80;
@@ -196,8 +196,8 @@ static void _last(sha512_ctx *sha512) {
     }
     buffer_union cast_var;
     cast_var.thechars = sha512->data;
-    cast_var.thelongs[SHA512_SHORT_BLOCK_LENGTH / 8] = sha512->bitcount[1];
-    cast_var.thelongs[SHA512_SHORT_BLOCK_LENGTH / 8 + 1] = sha512->bitcount[0];
+    cast_var.thelongs[SHA512_SHORT_BLOCK_LENGTH / 8] = sha512->bitlen[1];
+    cast_var.thelongs[SHA512_SHORT_BLOCK_LENGTH / 8 + 1] = sha512->bitlen[0];
     _transform(sha512, (uint64_t*)sha512->data);
 }
 void sha512_final(sha512_ctx *sha512, char hash[SHA512_BLOCK_SIZE]) {

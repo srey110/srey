@@ -8,7 +8,7 @@
 typedef struct md4_ctx {
     uint32_t  state[4];
     uint32_t count[2];
-    unsigned char data[64];
+    uint8_t data[64];
 }md4_ctx;
 
 void md4_init(md4_ctx *md4);

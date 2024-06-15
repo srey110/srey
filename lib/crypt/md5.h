@@ -7,9 +7,9 @@
 
 typedef struct md5_ctx {
     uint32_t datalen;
-    unsigned long long bitlen;
+    uint64_t bitlen;
     uint32_t state[4];
-    unsigned char data[64];
+    uint8_t data[64];
 } md5_ctx;
 
 void md5_init(md5_ctx *md5);

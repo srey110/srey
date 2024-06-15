@@ -7,10 +7,10 @@
 
 typedef struct {
     uint32_t datalen;
-    unsigned long long bitlen;
+    uint64_t bitlen;
     uint32_t state[5];
     uint32_t k[4];
-    unsigned char data[64];
+    uint8_t data[64];
 } sha1_ctx;
 
 void sha1_init(sha1_ctx *sha1);

@@ -388,6 +388,50 @@ static void test_crypt(CuTest* tc) {
     len = url_decode(enurl, strlen(enurl));
     CuAssertTrue(tc, 0 == strcmp(url, enurl));
     FREE(enurl);    
+
+    char hexaes[HEX_ENSIZE(AES_BLOCK_SIZE)];
+    aes_ctx aes;
+    aes_init(&aes, "bPeu8B1FX2BqT4Oo", 128, 1);
+    char *aesout = aes_crypt(&aes, "1234567812345678");
+    tohex(aesout, AES_BLOCK_SIZE, hexaes);
+    CuAssertTrue(tc, 0 == strcmp(hexaes, "95466A3D24DA99E58430F2D528157CF0"));
+    aes_init(&aes, "bPeu8B1FX2BqT4Oo", 128, 0);
+    aesout = aes_crypt(&aes, aesout);
+    CuAssertTrue(tc, 0 == memcmp(aesout, "1234567812345678", AES_BLOCK_SIZE));
+
+    aes_init(&aes, "DbRJjEQXYDhBkEWWeOuCeaR3", 192, 1);
+    aesout = aes_crypt(&aes, "1234567812345678");
+    tohex(aesout, AES_BLOCK_SIZE, hexaes);
+    CuAssertTrue(tc, 0 == strcmp(hexaes, "389C7CBDCDDF02EB96254E102383ABD0"));
+    aes_init(&aes, "DbRJjEQXYDhBkEWWeOuCeaR3", 192, 0);
+    aesout = aes_crypt(&aes, aesout);
+    CuAssertTrue(tc, 0 == memcmp(aesout, "1234567812345678", AES_BLOCK_SIZE));
+
+    aes_init(&aes, "cMEYqsmzxybOcUw4DPhgg4D2y6uJAuIC", 256, 1);
+    aesout = aes_crypt(&aes, "1234567812345678");
+    tohex(aesout, AES_BLOCK_SIZE, hexaes);
+    CuAssertTrue(tc, 0 == strcmp(hexaes, "99FCBC57EEB5B54178494ACDCA16D3B5"));
+    aes_init(&aes, "cMEYqsmzxybOcUw4DPhgg4D2y6uJAuIC", 256, 0);
+    aesout = aes_crypt(&aes, aesout);
+    CuAssertTrue(tc, 0 == memcmp(aesout, "1234567812345678", AES_BLOCK_SIZE));
+
+    char hexdes[HEX_ENSIZE(DES_BLOCK_SIZE)];
+    des_ctx des;
+    des_init(&des, "bOcUw4DP", 0, 1);
+    char *desout = des_crypt(&des, "12345678");
+    tohex(desout, DES_BLOCK_SIZE, hexdes);
+    CuAssertTrue(tc, 0 == strcmp(hexdes, "721DD0760AF558FF"));
+    des_init(&des, "bOcUw4DP", 0, 0);
+    desout = des_crypt(&des, desout);
+    CuAssertTrue(tc, 0 == memcmp(desout, "12345678", 8));
+
+    des_init(&des, "bOcUw4DPDbRJjEQXNVXhPVEV", 1, 1);
+    desout = des_crypt(&des, "12345678");
+    tohex(desout, DES_BLOCK_SIZE, hexdes);
+    CuAssertTrue(tc, 0 == strcmp(hexdes, "B0A36B7AC8F9DBD1"));
+    des_init(&des, "bOcUw4DPDbRJjEQXNVXhPVEV", 1, 0);
+    desout = des_crypt(&des, desout);
+    CuAssertTrue(tc, 0 == memcmp(desout, "12345678", 8));
 }
 static void test_timer(CuTest* tc) {
     timer_ctx timer;

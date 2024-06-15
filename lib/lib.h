@@ -17,6 +17,8 @@
 #include "crypt/sha512.h"
 #include "crypt/md2.h"
 #include "crypt/md4.h"
+#include "crypt/des.h"
+#include "crypt/aes.h"
 #include "utils/log.h"
 #include "utils/timer.h"
 #include "utils/tw.h"

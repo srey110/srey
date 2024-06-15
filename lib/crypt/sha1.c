@@ -2,7 +2,7 @@
 
 #define ROTLEFT(a, b) ((a << b) | (a >> (32 - b)))
 
-static void _transform(sha1_ctx *sha1, const unsigned char *data) {
+static void _transform(sha1_ctx *sha1, const uint8_t *data) {
     uint32_t a, b, c, d, e, i, j, t, m[80];
     for (i = 0, j = 0; i < 16; ++i, j += 4) {
         m[i] = ((uint32_t)data[j] << 24) | ((uint32_t)data[j + 1] << 16) | ((uint32_t)data[j + 2] << 8) | ((uint32_t)data[j + 3]);
@@ -69,7 +69,7 @@ void sha1_init(sha1_ctx *sha1) {
     sha1->k[3] = 0xca62c1d6;
 }
 void sha1_update(sha1_ctx *sha1, const void *data, size_t lens) {
-    unsigned char *p = (unsigned char *)data;
+    uint8_t *p = (uint8_t *)data;
     for (size_t i = 0; i < lens; ++i) {
         sha1->data[sha1->datalen] = p[i];
         sha1->datalen++;
@@ -96,14 +96,14 @@ void sha1_final(sha1_ctx *sha1, char hash[SHA1_BLOCK_SIZE]) {
         memset(sha1->data, 0, 56);
     }
     sha1->bitlen += sha1->datalen * 8;
-    sha1->data[63] = (unsigned char)(sha1->bitlen);
-    sha1->data[62] = (unsigned char)(sha1->bitlen >> 8);
-    sha1->data[61] = (unsigned char)(sha1->bitlen >> 16);
-    sha1->data[60] = (unsigned char)(sha1->bitlen >> 24);
-    sha1->data[59] = (unsigned char)(sha1->bitlen >> 32);
-    sha1->data[58] = (unsigned char)(sha1->bitlen >> 40);
-    sha1->data[57] = (unsigned char)(sha1->bitlen >> 48);
-    sha1->data[56] = (unsigned char)(sha1->bitlen >> 56);
+    sha1->data[63] = (uint8_t)(sha1->bitlen);
+    sha1->data[62] = (uint8_t)(sha1->bitlen >> 8);
+    sha1->data[61] = (uint8_t)(sha1->bitlen >> 16);
+    sha1->data[60] = (uint8_t)(sha1->bitlen >> 24);
+    sha1->data[59] = (uint8_t)(sha1->bitlen >> 32);
+    sha1->data[58] = (uint8_t)(sha1->bitlen >> 40);
+    sha1->data[57] = (uint8_t)(sha1->bitlen >> 48);
+    sha1->data[56] = (uint8_t)(sha1->bitlen >> 56);
     _transform(sha1, sha1->data);
     for (i = 0; i < 4; ++i) {
         hash[i] = (sha1->state[0] >> (24 - i * 8)) & 0xff;

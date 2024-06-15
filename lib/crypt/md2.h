@@ -6,10 +6,10 @@
 #define MD2_BLOCK_SIZE 16
 
 typedef struct md2_ctx {
-   unsigned char data[16];
-   unsigned char state[48];
-   unsigned char checksum[16];
-   int32_t lens;
+    uint8_t data[16];
+    uint8_t state[48];
+    uint8_t checksum[16];
+    int32_t lens;
 } md2_ctx;
 
 void md2_init(md2_ctx *md2);

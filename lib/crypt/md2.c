@@ -1,6 +1,6 @@
 #include "crypt/md2.h"
 
-static const unsigned char s[256] = {
+static const uint8_t s[256] = {
     41, 46, 67, 201, 162, 216, 124, 1, 61, 54, 84, 161, 236, 240, 6,
     19, 98, 167, 5, 243, 192, 199, 115, 140, 152, 147, 43, 217, 188,
     76, 130, 202, 30, 155, 87, 60, 253, 212, 224, 22, 103, 66, 111, 24,
@@ -20,7 +20,7 @@ static const unsigned char s[256] = {
     166, 119, 114, 248, 235, 117, 75, 10, 49, 68, 80, 180, 143, 237,
     31, 26, 219, 153, 141, 51, 159, 17, 131, 20
 };
-static void _transform(md2_ctx *md2, const unsigned char *data) {
+static void _transform(md2_ctx *md2, const uint8_t *data) {
     int32_t j, k, t;
     for (j = 0; j < 16; ++j) {
         md2->state[j + 16] = data[j];
@@ -46,7 +46,7 @@ void md2_init(md2_ctx *md2) {
     md2->lens = 0;
 }
 void md2_update(md2_ctx *md2, const void *data, size_t lens) {
-    unsigned char *p = (unsigned char *)data;
+    uint8_t *p = (uint8_t *)data;
     for (size_t i = 0; i < lens; ++i) {
         md2->data[md2->lens] = p[i];
         md2->lens++;

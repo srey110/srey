@@ -7,8 +7,8 @@
 
 typedef struct sha512_ctx {
     uint64_t state[8];
-    uint64_t bitcount[2];
-    unsigned char data[128];
+    uint64_t bitlen[2];
+    uint8_t data[128];
 } sha512_ctx;
 
 void sha512_init(sha512_ctx *sha512);

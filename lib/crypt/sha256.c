@@ -19,7 +19,7 @@ static const uint32_t k[64] = {
     0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
     0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
 };
-static void _transform(sha256_ctx *sha256, const unsigned char *data) {
+static void _transform(sha256_ctx *sha256, const uint8_t *data) {
     uint32_t a, b, c, d, e, f, g, h, i, j, t1, t2, m[64];
     for (i = 0, j = 0; i < 16; ++i, j += 4) {
         m[i] = ((uint32_t)data[j] << 24) | ((uint32_t)data[j + 1] << 16) | ((uint32_t)data[j + 2] << 8) | ((uint32_t)data[j + 3]);
@@ -70,7 +70,7 @@ void sha256_init(sha256_ctx *sha256) {
     sha256->state[7] = 0x5be0cd19;
 }
 void sha256_update(sha256_ctx *sha256, const void *data, size_t lens) {
-    unsigned char *p = (unsigned char *)data;
+    uint8_t *p = (uint8_t *)data;
     for (size_t i = 0; i < lens; ++i) {
         sha256->data[sha256->datalen] = p[i];
         sha256->datalen++;
@@ -98,14 +98,14 @@ void sha256_final(sha256_ctx *sha256, char hash[SHA256_BLOCK_SIZE]) {
         memset(sha256->data, 0, 56);
     }
     sha256->bitlen += sha256->datalen * 8;
-    sha256->data[63] = (unsigned char)(sha256->bitlen);
-    sha256->data[62] = (unsigned char)(sha256->bitlen >> 8);
-    sha256->data[61] = (unsigned char)(sha256->bitlen >> 16);
-    sha256->data[60] = (unsigned char)(sha256->bitlen >> 24);
-    sha256->data[59] = (unsigned char)(sha256->bitlen >> 32);
-    sha256->data[58] = (unsigned char)(sha256->bitlen >> 40);
-    sha256->data[57] = (unsigned char)(sha256->bitlen >> 48);
-    sha256->data[56] = (unsigned char)(sha256->bitlen >> 56);
+    sha256->data[63] = (uint8_t)(sha256->bitlen);
+    sha256->data[62] = (uint8_t)(sha256->bitlen >> 8);
+    sha256->data[61] = (uint8_t)(sha256->bitlen >> 16);
+    sha256->data[60] = (uint8_t)(sha256->bitlen >> 24);
+    sha256->data[59] = (uint8_t)(sha256->bitlen >> 32);
+    sha256->data[58] = (uint8_t)(sha256->bitlen >> 40);
+    sha256->data[57] = (uint8_t)(sha256->bitlen >> 48);
+    sha256->data[56] = (uint8_t)(sha256->bitlen >> 56);
     _transform(sha256, sha256->data);
     for (i = 0; i < 4; ++i) {
         hash[i] = (sha256->state[0] >> (24 - i * 8)) & 0xff;

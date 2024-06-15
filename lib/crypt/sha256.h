@@ -7,9 +7,9 @@
 
 typedef struct {
     uint32_t datalen;
-    unsigned long long bitlen;
+    uint64_t bitlen;
     uint32_t state[8];
-    unsigned char data[64];
+    uint8_t data[64];
 } sha256_ctx;
 
 void sha256_init(sha256_ctx *sha256);

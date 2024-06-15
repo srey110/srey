@@ -14,7 +14,7 @@
 #define II(a,b,c,d,m,s,t) { a += I(b,c,d) + m + t; \
                             a = b + ROTLEFT(a,s); }
 
-static void _transform(md5_ctx *md5, const unsigned char *data) {
+static void _transform(md5_ctx *md5, const uint8_t *data) {
     uint32_t a, b, c, d, m[16], i, j;
     for (i = 0, j = 0; i < 16; ++i, j += 4) {
         m[i] = ((uint32_t)data[j]) | ((uint32_t)data[j + 1] << 8) | ((uint32_t)data[j + 2] << 16) | ((uint32_t)data[j + 3] << 24);
@@ -102,7 +102,7 @@ void md5_init(md5_ctx *md5) {
     md5->state[3] = 0x10325476;
 }
 void md5_update(md5_ctx *md5, const void *data, size_t lens) {
-    unsigned char *p = (unsigned char *)data;
+    uint8_t *p = (uint8_t *)data;
     for (size_t i = 0; i < lens; ++i) {
         md5->data[md5->datalen] = p[i];
         md5->datalen++;
@@ -129,14 +129,14 @@ void md5_final(md5_ctx *md5, char hash[MD5_BLOCK_SIZE]) {
         memset(md5->data, 0, 56);
     }
     md5->bitlen += md5->datalen * 8;
-    md5->data[56] = (unsigned char)(md5->bitlen);
-    md5->data[57] = (unsigned char)(md5->bitlen >> 8);
-    md5->data[58] = (unsigned char)(md5->bitlen >> 16);
-    md5->data[59] = (unsigned char)(md5->bitlen >> 24);
-    md5->data[60] = (unsigned char)(md5->bitlen >> 32);
-    md5->data[61] = (unsigned char)(md5->bitlen >> 40);
-    md5->data[62] = (unsigned char)(md5->bitlen >> 48);
-    md5->data[63] = (unsigned char)(md5->bitlen >> 56);
+    md5->data[56] = (uint8_t)(md5->bitlen);
+    md5->data[57] = (uint8_t)(md5->bitlen >> 8);
+    md5->data[58] = (uint8_t)(md5->bitlen >> 16);
+    md5->data[59] = (uint8_t)(md5->bitlen >> 24);
+    md5->data[60] = (uint8_t)(md5->bitlen >> 32);
+    md5->data[61] = (uint8_t)(md5->bitlen >> 40);
+    md5->data[62] = (uint8_t)(md5->bitlen >> 48);
+    md5->data[63] = (uint8_t)(md5->bitlen >> 56);
     _transform(md5, md5->data);
     for (i = 0; i < 4; ++i) {
         hash[i] = (md5->state[0] >> (i * 8)) & 0xff;

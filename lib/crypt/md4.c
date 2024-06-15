@@ -23,12 +23,12 @@
 #define HH(a, b, c, d, x, s) { (a) += H ((b), (c), (d)) + (x) + (uint32_t)0x6ed9eba1; \
                                (a) = ROTATE_LEFT ((a), (s)); }
 
-static const unsigned char padding[64] = {
+static const uint8_t padding[64] = {
     0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 };
-static void _transform(md4_ctx *md4, const unsigned char *data) {
+static void _transform(md4_ctx *md4, const uint8_t *data) {
     uint32_t i, j, a = md4->state[0], b = md4->state[1], c = md4->state[2], d = md4->state[3], x[16];
     for (i = 0, j = 0; j < 64; i++, j += 4) {
         x[i] = ((uint32_t)data[j]) | (((uint32_t)data[j + 1]) << 8) | (((uint32_t)data[j + 2]) << 16) | (((uint32_t)data[j + 3]) << 24);
@@ -99,7 +99,7 @@ void md4_init(md4_ctx *md4) {
 }
 void md4_update(md4_ctx *md4, const void *data, size_t lens) {
     uint32_t i, index, partlens;
-    unsigned char *p = (unsigned char *)data;
+    uint8_t *p = (uint8_t *)data;
     index = (uint32_t)((md4->count[0] >> 3) & 0x3F);
     if ((md4->count[0] += ((uint32_t)lens << 3)) < ((uint32_t)lens << 3)) {
         md4->count[1]++;
@@ -118,23 +118,23 @@ void md4_update(md4_ctx *md4, const void *data, size_t lens) {
     }
     memcpy(&md4->data[index], &p[i], lens - i);
 }
-static void _encode(const uint32_t *data, uint32_t lens, unsigned char *out) {
+static void _encode(const uint32_t *data, uint32_t lens, uint8_t *out) {
     uint32_t i, j;
     for (i = 0, j = 0; j < lens; i++, j += 4) {
-        out[j] = (unsigned char)(data[i] & 0xff);
-        out[j + 1] = (unsigned char)((data[i] >> 8) & 0xff);
-        out[j + 2] = (unsigned char)((data[i] >> 16) & 0xff);
-        out[j + 3] = (unsigned char)((data[i] >> 24) & 0xff);
+        out[j] = (uint8_t)(data[i] & 0xff);
+        out[j + 1] = (uint8_t)((data[i] >> 8) & 0xff);
+        out[j + 2] = (uint8_t)((data[i] >> 16) & 0xff);
+        out[j + 3] = (uint8_t)((data[i] >> 24) & 0xff);
     }
 }
 void md4_final(md4_ctx *md4, char hash[MD4_BLOCK_SIZE]) {
-    unsigned char bits[8];
+    uint8_t bits[8];
     uint32_t index, padlens;
     _encode(md4->count, 8, bits);
     index = (uint32_t)((md4->count[0] >> 3) & 0x3f);
     padlens = (index < 56) ? (56 - index) : (120 - index);
     md4_update(md4, padding, padlens);
     md4_update(md4, bits, 8);
-    _encode(md4->state, 16, (unsigned char *)hash);
+    _encode(md4->state, 16, (uint8_t *)hash);
     ZERO(md4, sizeof(md4_ctx));
 }
