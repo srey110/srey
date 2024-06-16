@@ -1,6 +1,8 @@
 #include "crypt/aes.h"
+#include "crypt/padding.h"
 
 #define FULL_UNROLL
+#define KEYLENGTH(keybits) ((keybits) / 8)
 #define GETU32(plaintext) (((uint32_t)(plaintext)[0] << 24) ^ \
                             ((uint32_t)(plaintext)[1] << 16) ^ \
                             ((uint32_t)(plaintext)[2] <<  8) ^ \
@@ -1093,31 +1095,35 @@ static void _decrypt(const uint32_t *rk, int32_t nrounds, const uint8_t *ciphert
          rk[3];
     PUTU32(plaintext + 12, s3);
 }
-int32_t aes_init(aes_ctx *aes, const char *key, int32_t keybits, int32_t encrypt) {
-    if (128 != keybits
-        && 192 != keybits
-        && 256 != keybits) {
-        return ERR_FAILED;
-    }
-    if ((keybits / 8) != strlen(key)) {
-        return ERR_FAILED;
+void aes_init(aes_ctx *aes, const char *key, size_t klens, int32_t keybits, int32_t encrypt) {
+    uint8_t *k;
+    uint8_t pdkey[KEYLENGTH(256)];
+    switch (keybits) {
+    case 128:
+        k = _padding_key(key, klens, pdkey, KEYLENGTH(128));
+        break;
+    case 192:
+        k = _padding_key(key, klens, pdkey, KEYLENGTH(192));
+        break;
+    case 256:
+        k = _padding_key(key, klens, pdkey, KEYLENGTH(256));
+        break;
+    default:
+        ASSERTAB(0, "key bits error.");
+        break;
     }
     aes->encrypt = encrypt;
     if (aes->encrypt) {
-        aes->nrounds = _key_setup_encrypt((const uint8_t *)key, keybits, aes->rk);
+        aes->nrounds = _key_setup_encrypt(k, keybits, aes->schedule);
     } else {
-        aes->nrounds = _key_setup_decrypt((const uint8_t *)key, keybits, aes->rk);
+        aes->nrounds = _key_setup_decrypt(k, keybits, aes->schedule);
     }
-    if (0 == aes->nrounds) {
-        return ERR_FAILED;
-    }
-    return ERR_OK;
 }
-char *aes_crypt(aes_ctx *aes, const void *input) {
+char *aes_crypt(aes_ctx *aes, const void *data) {
     if (aes->encrypt) {
-        _encrypt(aes->rk, aes->nrounds, (const uint8_t *)input, aes->output);
+        _encrypt(aes->schedule, aes->nrounds, (const uint8_t *)data, aes->output);
     } else {
-        _decrypt(aes->rk, aes->nrounds, (const uint8_t *)input, aes->output);
+        _decrypt(aes->schedule, aes->nrounds, (const uint8_t *)data, aes->output);
     }
     return (char *)aes->output;
 }

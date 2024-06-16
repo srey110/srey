@@ -5,14 +5,14 @@
 
 #define AES_BLOCK_SIZE 16
 typedef struct aes_ctx {
-    uint32_t rk[256/8 + 28];
     int32_t encrypt;
     int32_t nrounds;
     uint8_t output[AES_BLOCK_SIZE];
+    uint32_t schedule[256 / 8 + 28];    
 }aes_ctx;
 //key: 16 24 32 keybits: 128 192 256
-int32_t aes_init(aes_ctx *aes, const char *key, int32_t keybits, int32_t encrypt);
+void aes_init(aes_ctx *aes, const char *key, size_t klens, int32_t keybits, int32_t encrypt);
 //input: DES_BLOCK_SIZE
-char *aes_crypt(aes_ctx *aes, const void *input);
+char *aes_crypt(aes_ctx *aes, const void *data);
 
 #endif//AES_H_

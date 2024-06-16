@@ -241,6 +241,12 @@
     <ClInclude Include="crypt\aes.h">
       <Filter>crypt</Filter>
     </ClInclude>
+    <ClInclude Include="crypt\crypt.h">
+      <Filter>crypt</Filter>
+    </ClInclude>
+    <ClInclude Include="crypt\padding.h">
+      <Filter>crypt</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="event\event.c">
@@ -394,6 +400,12 @@
       <Filter>crypt</Filter>
     </ClCompile>
     <ClCompile Include="crypt\aes.c">
+      <Filter>crypt</Filter>
+    </ClCompile>
+    <ClCompile Include="crypt\crypt.c">
+      <Filter>crypt</Filter>
+    </ClCompile>
+    <ClCompile Include="crypt\padding.c">
       <Filter>crypt</Filter>
     </ClCompile>
   </ItemGroup>

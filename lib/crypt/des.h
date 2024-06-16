@@ -5,13 +5,13 @@
 
 #define DES_BLOCK_SIZE 8
 typedef struct des_ctx {
-    uint8_t schedule[3 * 16 * 6];
-    uint8_t output[DES_BLOCK_SIZE];
     int32_t des3;
+    uint8_t output[DES_BLOCK_SIZE];
+    uint8_t schedule[3 * 16 * 6];
 }des_ctx;
 //key:8  3des 3 * 8
-int32_t des_init(des_ctx *des, const char *key, int32_t des3, int32_t encrypt);
+void des_init(des_ctx *des, const char *key, size_t klens, int32_t des3, int32_t encrypt);
 //input: DES_BLOCK_SIZE
-char *des_crypt(des_ctx *des, const void *input);
+char *des_crypt(des_ctx *des, const void *data);
 
 #endif//DES_H_

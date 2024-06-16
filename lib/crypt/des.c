@@ -1,4 +1,5 @@
 #include "crypt/des.h"
+#include "crypt/padding.h"
 
 #define BITNUM(a,b,c) (((a[(b)/8] >> (7 - (b%8))) & 0x01) << (c))
 #define BITNUMINTR(a,b,c) ((((a) >> (31 - (b))) & 0x00000001) << (c))
@@ -169,28 +170,25 @@ static void _key_setup(const uint8_t *key, int32_t encrypt, uint8_t schedule[16 
         }
     }
 }
-int32_t des_init(des_ctx *des, const char *key, int32_t des3, int32_t encrypt) {
+void des_init(des_ctx *des, const char *key, size_t klens, int32_t des3, int32_t encrypt) {
     des->des3 = des3;
     if (des->des3) {
-        if (3 * 8 != strlen(key)) {
-            return ERR_FAILED;
-        }
+        uint8_t pdkey[24];
+        uint8_t *k = _padding_key(key, klens, pdkey, 24);
         if (encrypt) {
-            _key_setup((const uint8_t *)key, encrypt, des->schedule);
-            _key_setup((const uint8_t *)(key + 8), !encrypt, des->schedule + 16 * 6);
-            _key_setup((const uint8_t *)(key + 16), encrypt, des->schedule + 2 * 16 * 6);
+            _key_setup(k, encrypt, des->schedule);
+            _key_setup(k + 8, !encrypt, des->schedule + 16 * 6);
+            _key_setup(k + 16, encrypt, des->schedule + 2 * 16 * 6);
         } else {
-            _key_setup((const uint8_t *)(key + 16), encrypt, des->schedule);
-            _key_setup((const uint8_t *)(key + 8), !encrypt, des->schedule + 16 * 6);
-            _key_setup((const uint8_t *)key, encrypt, des->schedule + 2 * 16 * 6);
+            _key_setup(k + 16, encrypt, des->schedule);
+            _key_setup(k + 8, !encrypt, des->schedule + 16 * 6);
+            _key_setup(k, encrypt, des->schedule + 2 * 16 * 6);
         }
     } else {
-        if (8 != strlen(key)) {
-            return ERR_FAILED;
-        }
-        _key_setup((const uint8_t *)key, encrypt, des->schedule);
+        uint8_t pdkey[8];
+        uint8_t *k = _padding_key(key, klens, pdkey, 8);
+        _key_setup(k, encrypt, des->schedule);
     }
-    return ERR_OK;
 }
 static void _crypt(uint8_t *schedule, const uint8_t *input, uint8_t output[DES_BLOCK_SIZE]) {
     uint32_t state[2], idx, t;
@@ -203,13 +201,13 @@ static void _crypt(uint8_t *schedule, const uint8_t *input, uint8_t output[DES_B
     state[0] = _transform(state[1], schedule + 15 * 6) ^ state[0];
     _invip(state, output);
 }
-char *des_crypt(des_ctx *des, const void *input) {
+char *des_crypt(des_ctx *des, const void *data) {
     if (des->des3) {
-        _crypt(des->schedule, (const uint8_t *)input, des->output);
+        _crypt(des->schedule, (const uint8_t *)data, des->output);
         _crypt(des->schedule + 16 * 6, des->output, des->output);
         _crypt(des->schedule + 2 * 16 * 6, des->output, des->output);
     } else {
-        _crypt(des->schedule, (const uint8_t *)input, des->output);
+        _crypt(des->schedule, (const uint8_t *)data, des->output);
     }
     return (char *)des->output;
 }

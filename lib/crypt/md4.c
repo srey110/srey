@@ -23,7 +23,7 @@
 #define HH(a, b, c, d, x, s) { (a) += H ((b), (c), (d)) + (x) + (uint32_t)0x6ed9eba1; \
                                (a) = ROTATE_LEFT ((a), (s)); }
 
-static const uint8_t padding[64] = {
+static const uint8_t pd[64] = {
     0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
@@ -133,7 +133,7 @@ void md4_final(md4_ctx *md4, char hash[MD4_BLOCK_SIZE]) {
     _encode(md4->count, 8, bits);
     index = (uint32_t)((md4->count[0] >> 3) & 0x3f);
     padlens = (index < 56) ? (56 - index) : (120 - index);
-    md4_update(md4, padding, padlens);
+    md4_update(md4, pd, padlens);
     md4_update(md4, bits, 8);
     _encode(md4->state, 16, (uint8_t *)hash);
     ZERO(md4, sizeof(md4_ctx));
