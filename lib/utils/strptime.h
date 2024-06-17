@@ -3,7 +3,6 @@
 
 #include "base/macro.h"
 
-#ifdef OS_WIN
-char* strptime(const char *buf, const char *fmt, struct tm *tm);
-#endif
+char* _strptime(const char *buf, const char *fmt, struct tm *tm);
+
 #endif//STRPTIME_H_

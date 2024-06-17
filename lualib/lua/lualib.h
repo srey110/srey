@@ -72,14 +72,12 @@ LUAMOD_API int (luaopen_url)(lua_State *L);
 LUAMOD_API int (luaopen_base64)(lua_State *L);
 #define LUA_SREYCRC "srey.crc"
 LUAMOD_API int (luaopen_crc)(lua_State *L);
-#define LUA_SREYMD5 "srey.md5"
-LUAMOD_API int (luaopen_md5)(lua_State *L);
-#define LUA_SREYSHA1 "srey.sha1"
-LUAMOD_API int (luaopen_sha1)(lua_State *L);
-#define LUA_SREYSHA256 "srey.sha256"
-LUAMOD_API int (luaopen_sha256)(lua_State *L);
-#define LUA_SREYHMAC256 "srey.hmac256"
-LUAMOD_API int (luaopen_hmac256)(lua_State *L);
+#define LUA_SREYDIGEST "srey.digest"
+LUAMOD_API int (luaopen_digest)(lua_State *L);
+#define LUA_SREYHMAC "srey.hmac"
+LUAMOD_API int (luaopen_hmac)(lua_State *L);
+#define LUA_SREYCIPHER "srey.cipher"
+LUAMOD_API int (luaopen_cipher)(lua_State *L);
 #define LUA_MYSQLBIND "mysql.bind"
 LUAMOD_API int (luaopen_mysql_bind)(lua_State *L);
 #define LUA_MYSQLREADER "mysql.reader"

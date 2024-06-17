@@ -14,7 +14,7 @@ typedef struct harbor_ctx {
     struct evssl_ctx *ssl;
     uint64_t lsnid;
     timer_ctx timer;
-    hmac_sha256_ctx macsha256;
+    hmac_ctx hmac;
     char ip[IP_LENS];
     char signkey[HARBOR_KEY_LENS + 1];
 }harbor_ctx;
@@ -111,9 +111,9 @@ static int32_t _check_sign(harbor_ctx *hbctx, struct http_pack_ctx *pack, buf_ct
     memcpy(signstr + url->lens + reqlens, tbuf, tlens);
     char hs[SHA256_BLOCK_SIZE];
     char hexhs[HEX_ENSIZE(sizeof(hs))];
-    hmac_sha256_init(&hbctx->macsha256);
-    hmac_sha256_update(&hbctx->macsha256, signstr, total);
-    hmac_sha256_final(&hbctx->macsha256, hs);
+    hmac_update(&hbctx->hmac, signstr, total);
+    hmac_final(&hbctx->hmac, hs);
+    hmac_reset(&hbctx->hmac);
     tohex(hs, sizeof(hs), hexhs);
     FREE(signstr);
     if (strlen(hexhs) != slens
@@ -237,7 +237,7 @@ int32_t harbor_start(scheduler_ctx *scheduler, name_t tname, name_t ssl,
     CALLOC(hbctx, 1, sizeof(harbor_ctx));
     if (klens > 0) {
         memcpy(hbctx->signkey, key, klens);
-        hmac_sha256_key(&hbctx->macsha256, hbctx->signkey, klens);
+        hmac_init(&hbctx->hmac, DG_SHA256, hbctx->signkey, klens);
     }
     strcpy(hbctx->ip, host);
     hbctx->port = port;
@@ -272,13 +272,12 @@ static void _harbor_sign(buffer_ctx *buf, const char *key, const char *url, void
         memcpy(sbuf + ulens, data, size);
     }
     memcpy(sbuf + ulens + size, tms, tslens);
-    hmac_sha256_ctx macsha256;
     char hs[SHA256_BLOCK_SIZE];
     char hexhs[HEX_ENSIZE(sizeof(hs))];
-    hmac_sha256_key(&macsha256, key, klens);
-    hmac_sha256_init(&macsha256);
-    hmac_sha256_update(&macsha256, sbuf, lens);
-    hmac_sha256_final(&macsha256, hs);
+    hmac_ctx hmac;
+    hmac_init(&hmac, DG_SHA256, key, klens);
+    hmac_update(&hmac, sbuf, lens);
+    hmac_final(&hmac, hs);
     tohex(hs, sizeof(hs), hexhs);
     FREE(sbuf);
     http_pack_head(buf, "X-Timestamp", tms);

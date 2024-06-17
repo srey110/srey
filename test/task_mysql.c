@@ -159,12 +159,12 @@ static void _test_stmt(task_ctx *task) {
          values(?,?,?,?,?,?,?,?,?,?)";
     uint64_t curts = nowsec();
     mysql_stmt_ctx *stmt = mysql_stmt_prepare(task, &_mysql, sql1);
-    mysql_bind_integer(&_bind, NULL, CHAR_MIN);
-    mysql_bind_integer(&_bind, NULL, CHAR_MIN);
-    mysql_bind_integer(&_bind, NULL, SHRT_MIN);
+    mysql_bind_integer(&_bind, NULL, 125);
+    mysql_bind_integer(&_bind, NULL, 2024);
+    mysql_bind_integer(&_bind, NULL, 127);
     mysql_bind_integer(&_bind, NULL, curts);
-    mysql_bind_double(&_bind, NULL, FLT_MAX);
-    mysql_bind_double(&_bind, NULL, FLT_MAX + 1);
+    mysql_bind_double(&_bind, NULL, 128.0123);
+    mysql_bind_double(&_bind, NULL, 129.0123);
     mysql_bind_string(&_bind, NULL, "this is text.", strlen("this is text."));
     mysql_bind_datetime(&_bind, "t_datetime", (time_t)curts);
     mysql_bind_time(&_bind, "t_time", 0, 2, 15, 30, 29);
@@ -173,7 +173,7 @@ static void _test_stmt(task_ctx *task) {
     mysql_bind_clear(&_bind);
     if (NULL == pack
         || MPACK_OK !=  pack->pack_type) {
-        LOG_WARN("mysql_stmt_execute error");
+        LOG_WARN("mysql_stmt_execute %s", mysql_erro(&_mysql, NULL));
     }
     mysql_stmt_close(task, stmt);
 

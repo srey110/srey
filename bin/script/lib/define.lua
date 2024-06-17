@@ -60,6 +60,33 @@ PACK_TYPE = {
     MYSQL   = 0x04,
     CUSTZ   = 0x05
 }
+CIPHER_TYPE = {
+    DES  = 0x01,
+    DES3 = 0x02,
+    AES  = 0x03
+}
+CIPHER_MODEL = {
+    ECB = 0x01,
+    CBC = 0x02,
+    CFB = 0x03,
+    OFB = 0x04,
+    CTR = 0x05
+}
+PADDING_MODEL = {
+    NoPadding   = 0x00,
+    ZeroPadding = 0x01,
+    PKCS57      = 0x02,
+    ISO10126    = 0x03,
+    ANSIX923    = 0x04
+}
+DIGEST_TYPE = {
+    MD2    = 0x01,
+    MD4    = 0x02,
+    MD5    = 0x03,
+    SHA1   = 0x04,
+    SHA256 = 0x05,
+    SHA512 = 0x06
+}
 
 ERR_OK = 0
 ERR_FAILED = -1

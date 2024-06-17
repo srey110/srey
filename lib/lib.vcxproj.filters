@@ -34,6 +34,12 @@
     <Filter Include="crypt">
       <UniqueIdentifier>{b8309848-77b2-4ec6-9bc0-a234857c1244}</UniqueIdentifier>
     </Filter>
+    <Filter Include="crypt\digest">
+      <UniqueIdentifier>{942b76b8-c459-477b-b450-5ecdf7cd0dce}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="crypt\cipher">
+      <UniqueIdentifier>{e480e006-68f9-4290-b6d2-aaf21a931981}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="lib.h" />
@@ -208,18 +214,6 @@
     <ClInclude Include="crypt\crc.h">
       <Filter>crypt</Filter>
     </ClInclude>
-    <ClInclude Include="crypt\hmac.h">
-      <Filter>crypt</Filter>
-    </ClInclude>
-    <ClInclude Include="crypt\md5.h">
-      <Filter>crypt</Filter>
-    </ClInclude>
-    <ClInclude Include="crypt\sha1.h">
-      <Filter>crypt</Filter>
-    </ClInclude>
-    <ClInclude Include="crypt\sha256.h">
-      <Filter>crypt</Filter>
-    </ClInclude>
     <ClInclude Include="crypt\urlraw.h">
       <Filter>crypt</Filter>
     </ClInclude>
@@ -227,24 +221,39 @@
       <Filter>crypt</Filter>
     </ClInclude>
     <ClInclude Include="crypt\md2.h">
-      <Filter>crypt</Filter>
+      <Filter>crypt\digest</Filter>
     </ClInclude>
     <ClInclude Include="crypt\md4.h">
-      <Filter>crypt</Filter>
+      <Filter>crypt\digest</Filter>
+    </ClInclude>
+    <ClInclude Include="crypt\md5.h">
+      <Filter>crypt\digest</Filter>
+    </ClInclude>
+    <ClInclude Include="crypt\sha1.h">
+      <Filter>crypt\digest</Filter>
+    </ClInclude>
+    <ClInclude Include="crypt\sha256.h">
+      <Filter>crypt\digest</Filter>
     </ClInclude>
     <ClInclude Include="crypt\sha512.h">
-      <Filter>crypt</Filter>
-    </ClInclude>
-    <ClInclude Include="crypt\des.h">
-      <Filter>crypt</Filter>
+      <Filter>crypt\digest</Filter>
     </ClInclude>
     <ClInclude Include="crypt\aes.h">
-      <Filter>crypt</Filter>
+      <Filter>crypt\cipher</Filter>
     </ClInclude>
-    <ClInclude Include="crypt\crypt.h">
-      <Filter>crypt</Filter>
+    <ClInclude Include="crypt\des.h">
+      <Filter>crypt\cipher</Filter>
     </ClInclude>
     <ClInclude Include="crypt\padding.h">
+      <Filter>crypt\cipher</Filter>
+    </ClInclude>
+    <ClInclude Include="crypt\cipher.h">
+      <Filter>crypt</Filter>
+    </ClInclude>
+    <ClInclude Include="crypt\digest.h">
+      <Filter>crypt</Filter>
+    </ClInclude>
+    <ClInclude Include="crypt\hmac.h">
       <Filter>crypt</Filter>
     </ClInclude>
   </ItemGroup>
@@ -372,15 +381,6 @@
     <ClCompile Include="crypt\crc.c">
       <Filter>crypt</Filter>
     </ClCompile>
-    <ClCompile Include="crypt\md5.c">
-      <Filter>crypt</Filter>
-    </ClCompile>
-    <ClCompile Include="crypt\sha1.c">
-      <Filter>crypt</Filter>
-    </ClCompile>
-    <ClCompile Include="crypt\sha256.c">
-      <Filter>crypt</Filter>
-    </ClCompile>
     <ClCompile Include="crypt\urlraw.c">
       <Filter>crypt</Filter>
     </ClCompile>
@@ -388,24 +388,39 @@
       <Filter>crypt</Filter>
     </ClCompile>
     <ClCompile Include="crypt\md2.c">
-      <Filter>crypt</Filter>
+      <Filter>crypt\digest</Filter>
     </ClCompile>
     <ClCompile Include="crypt\md4.c">
-      <Filter>crypt</Filter>
+      <Filter>crypt\digest</Filter>
+    </ClCompile>
+    <ClCompile Include="crypt\md5.c">
+      <Filter>crypt\digest</Filter>
+    </ClCompile>
+    <ClCompile Include="crypt\sha1.c">
+      <Filter>crypt\digest</Filter>
+    </ClCompile>
+    <ClCompile Include="crypt\sha256.c">
+      <Filter>crypt\digest</Filter>
     </ClCompile>
     <ClCompile Include="crypt\sha512.c">
-      <Filter>crypt</Filter>
-    </ClCompile>
-    <ClCompile Include="crypt\des.c">
-      <Filter>crypt</Filter>
+      <Filter>crypt\digest</Filter>
     </ClCompile>
     <ClCompile Include="crypt\aes.c">
-      <Filter>crypt</Filter>
+      <Filter>crypt\cipher</Filter>
     </ClCompile>
-    <ClCompile Include="crypt\crypt.c">
-      <Filter>crypt</Filter>
+    <ClCompile Include="crypt\des.c">
+      <Filter>crypt\cipher</Filter>
     </ClCompile>
     <ClCompile Include="crypt\padding.c">
+      <Filter>crypt\cipher</Filter>
+    </ClCompile>
+    <ClCompile Include="crypt\cipher.c">
+      <Filter>crypt</Filter>
+    </ClCompile>
+    <ClCompile Include="crypt\digest.c">
+      <Filter>crypt</Filter>
+    </ClCompile>
+    <ClCompile Include="crypt\hmac.c">
       <Filter>crypt</Filter>
     </ClCompile>
   </ItemGroup>

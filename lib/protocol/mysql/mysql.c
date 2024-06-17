@@ -4,8 +4,7 @@
 #include "protocol/mysql/mysql_pack.h"
 #include "mysql_bind.h"
 #include "protocol/protos.h"
-#include "crypt/sha1.h"
-#include "crypt/sha256.h"
+#include "crypt/digest.h"
 #include "srey/trigger.h"
 #if WITH_SSL
 #include <openssl/evp.h>
@@ -145,17 +144,17 @@ static uint8_t _mysql_charset(const char *charset) {
 static void _mysql_native_sign(mysql_ctx *mysql, char sh1[SHA1_BLOCK_SIZE]) {
     char shpsw[SHA1_BLOCK_SIZE];
     char shscr[SHA1_BLOCK_SIZE];
-    sha1_ctx sha1;
-    sha1_init(&sha1);
-    sha1_update(&sha1, mysql->client.password, strlen(mysql->client.password));
-    sha1_final(&sha1, shpsw);
-    sha1_init(&sha1);
-    sha1_update(&sha1, shpsw, SHA1_BLOCK_SIZE);
-    sha1_final(&sha1, sh1);
-    sha1_init(&sha1);
-    sha1_update(&sha1, mysql->server.salt, sizeof(mysql->server.salt));
-    sha1_update(&sha1, sh1, SHA1_BLOCK_SIZE);
-    sha1_final(&sha1, shscr);
+    digest_ctx digest;
+    digest_init(&digest, DG_SHA1);
+    digest_update(&digest, mysql->client.password, strlen(mysql->client.password));
+    digest_final(&digest, shpsw);
+    digest_reset(&digest);
+    digest_update(&digest, shpsw, SHA1_BLOCK_SIZE);
+    digest_final(&digest, sh1);
+    digest_reset(&digest);
+    digest_update(&digest, mysql->server.salt, sizeof(mysql->server.salt));
+    digest_update(&digest, sh1, SHA1_BLOCK_SIZE);
+    digest_final(&digest, shscr);
     for (size_t i = 0; i < SHA1_BLOCK_SIZE; i++) {
         sh1[i] = shpsw[i] ^ shscr[i];
     }
@@ -163,17 +162,17 @@ static void _mysql_native_sign(mysql_ctx *mysql, char sh1[SHA1_BLOCK_SIZE]) {
 static void _mysql_caching_sha2_sign(mysql_ctx *mysql, char sh2[SHA256_BLOCK_SIZE]) {
     char shpsw[SHA256_BLOCK_SIZE];
     char shscr[SHA256_BLOCK_SIZE];
-    sha256_ctx sha256;
-    sha256_init(&sha256);
-    sha256_update(&sha256, mysql->client.password, strlen(mysql->client.password));
-    sha256_final(&sha256, shpsw);
-    sha256_init(&sha256);
-    sha256_update(&sha256, shpsw, SHA256_BLOCK_SIZE);
-    sha256_final(&sha256, sh2);
-    sha256_init(&sha256);
-    sha256_update(&sha256, sh2, SHA256_BLOCK_SIZE);
-    sha256_update(&sha256, mysql->server.salt, sizeof(mysql->server.salt));
-    sha256_final(&sha256, shscr);
+    digest_ctx digest;
+    digest_init(&digest, DG_SHA256);
+    digest_update(&digest, mysql->client.password, strlen(mysql->client.password));
+    digest_final(&digest, shpsw);
+    digest_reset(&digest);
+    digest_update(&digest, shpsw, SHA256_BLOCK_SIZE);
+    digest_final(&digest, sh2);
+    digest_reset(&digest);
+    digest_update(&digest, sh2, SHA256_BLOCK_SIZE);
+    digest_update(&digest, mysql->server.salt, sizeof(mysql->server.salt));
+    digest_final(&digest, shscr);
     for (size_t i = 0; i < SHA256_BLOCK_SIZE; i++) {
         sh2[i] = shpsw[i] ^ shscr[i];
     }

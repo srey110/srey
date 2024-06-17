@@ -1,7 +1,8 @@
 #include "utils/utils.h"
-#include "base/structs.h"
-#ifdef OS_WIN
 #include "utils/strptime.h"
+#include "base/structs.h"
+
+#ifdef OS_WIN
 #pragma warning(disable:4091)
 #include <DbgHelp.h>
 #pragma comment(lib, "Dbghelp.lib" )
@@ -370,7 +371,7 @@ void mstostr(uint64_t ms, const char *fmt, char time[TIME_LENS]) {
 }
 uint64_t strtots(const char *time, const char *fmt) {
     struct tm dttm;
-    if (NULL == strptime(time, fmt, &dttm)) {
+    if (NULL == _strptime(time, fmt, &dttm)) {
         return 0;
     }
     return (uint64_t)mktime(&dttm);

@@ -257,61 +257,52 @@ static void test_hash(CuTest* tc) {
     CuAssertTrue(tc, 0xA6F5 == crc16(str, len));
     CuAssertTrue(tc, 0xFCD68BE4 == crc32(str, len));
 
-    sha1_ctx sha1;
-    char sha1str[SHA1_BLOCK_SIZE];
-    sha1_init(&sha1);
-    sha1_update(&sha1, "RHdzNjc1OFhHS1dHME9LMUxOTEQySDREUTRz5Lit5paHRkNTVWRaOFJKRkxvNk", strlen("RHdzNjc1OFhHS1dHME9LMUxOTEQySDREUTRz5Lit5paHRkNTVWRaOFJKRkxvNk"));
-    sha1_update(&sha1, "9YYlBmaDRkYm1TQUNZaU1VMHBQeFU0NGI", strlen("9YYlBmaDRkYm1TQUNZaU1VMHBQeFU0NGI"));
-    sha1_final(&sha1, sha1str);
-    char out[HEX_ENSIZE(SHA1_BLOCK_SIZE)];
-    tohex(sha1str, sizeof(sha1str), out);
+    digest_ctx digest;
+    char hsbuf[DG_BLOCK_SIZE];
+    char out[HEX_ENSIZE(DG_BLOCK_SIZE)];
+    digest_init(&digest, DG_SHA1);
+    digest_update(&digest, "RHdzNjc1OFhHS1dHME9LMUxOTEQySDREUTRz5Lit5paHRkNTVWRaOFJKRkxvNk", strlen("RHdzNjc1OFhHS1dHME9LMUxOTEQySDREUTRz5Lit5paHRkNTVWRaOFJKRkxvNk"));
+    digest_update(&digest, "9YYlBmaDRkYm1TQUNZaU1VMHBQeFU0NGI", strlen("9YYlBmaDRkYm1TQUNZaU1VMHBQeFU0NGI"));
+    digest_final(&digest, hsbuf);
+    tohex(hsbuf, digest_size(&digest), out);
     CuAssertTrue(tc, 0 == strcmp("8AE1EA68BC319E9BD0B55CBD93E4B2BCDCEF11A0", out));
 
-    sha256_ctx sha256;
-    char sh256[SHA256_BLOCK_SIZE];
-    sha256_init(&sha256);
-    sha256_update(&sha256, str, len);
-    sha256_final(&sha256, sh256);
-    char osh256[HEX_ENSIZE(SHA256_BLOCK_SIZE)];
-    tohex(sh256, sizeof(sh256), osh256);
-    CuAssertTrue(tc, 0 == strcmp(osh256, "93AADF88D01C0D64B3376017DD5B2007CD51C04F0FF9BFA95A76E9319E4E428E"));
+    digest_init(&digest, DG_SHA256);
+    digest_update(&digest, str, len);
+    digest_final(&digest, hsbuf);
+    tohex(hsbuf, digest_size(&digest), out);
+    CuAssertTrue(tc, 0 == strcmp(out, "93AADF88D01C0D64B3376017DD5B2007CD51C04F0FF9BFA95A76E9319E4E428E"));
+    digest_reset(&digest);
+    digest_update(&digest, str, len);
+    digest_update(&digest, str, len);
+    digest_final(&digest, hsbuf);
+    tohex(hsbuf, digest_size(&digest), out);
+    CuAssertTrue(tc, 0 == strcmp(out, "60081338233A2372D5C0599E1335F860B45CC28905D1C9B9C4C6C6E5BC935FCE"));
 
-    sha512_ctx sha512;
-    char sh512[SHA512_BLOCK_SIZE];
-    sha512_init(&sha512);
-    sha512_update(&sha512, str, len);
-    sha512_update(&sha512, str, len);
-    sha512_final(&sha512, sh512);
-    char osh512[HEX_ENSIZE(SHA512_BLOCK_SIZE)];
-    tohex(sh512, sizeof(sh512), osh512);
-    CuAssertTrue(tc, 0 == strcmp(osh512, "E241F4163F124BA5C91505A60683D749F2BE0940597315D414CAA6137EA5C60E0B1446F8DA736A9B3DFAE9CE4D82905384EA6126DFE389AACE97485A13F22158"));
+    digest_init(&digest, DG_SHA512);
+    digest_update(&digest, str, len);
+    digest_update(&digest, str, len);
+    digest_final(&digest, hsbuf);
+    tohex(hsbuf, digest_size(&digest), out);
+    CuAssertTrue(tc, 0 == strcmp(out, "E241F4163F124BA5C91505A60683D749F2BE0940597315D414CAA6137EA5C60E0B1446F8DA736A9B3DFAE9CE4D82905384EA6126DFE389AACE97485A13F22158"));
 
-    md2_ctx md2;
-    char md2str[MD2_BLOCK_SIZE];
-    md2_init(&md2);
-    md2_update(&md2, str, len);
-    md2_final(&md2, md2str);
-    char omd2str[HEX_ENSIZE(MD2_BLOCK_SIZE)];
-    tohex(md2str, sizeof(md2str), omd2str);
-    CuAssertTrue(tc, 0 == strcmp(omd2str, "2E3929E8835E1359F0E9B3436B09F564"));
+    digest_init(&digest, DG_MD2);
+    digest_update(&digest, str, len);
+    digest_final(&digest, hsbuf);
+    tohex(hsbuf, digest_size(&digest), out);
+    CuAssertTrue(tc, 0 == strcmp(out, "2E3929E8835E1359F0E9B3436B09F564"));
 
-    md4_ctx md4;
-    char md4str[MD4_BLOCK_SIZE];
-    md4_init(&md4);
-    md4_update(&md4, str, len);
-    md4_final(&md4, md4str);
-    char omd4str[HEX_ENSIZE(MD4_BLOCK_SIZE)];
-    tohex(md4str, sizeof(md4str), omd4str);
-    CuAssertTrue(tc, 0 == strcmp(omd4str, "17FD8C05936B20BD8678FDC8D7C60FA5"));
+    digest_init(&digest, DG_MD4);
+    digest_update(&digest, str, len);
+    digest_final(&digest, hsbuf);
+    tohex(hsbuf, digest_size(&digest), out);
+    CuAssertTrue(tc, 0 == strcmp(out, "17FD8C05936B20BD8678FDC8D7C60FA5"));
 
-    md5_ctx md5;
-    char md5str[MD5_BLOCK_SIZE];
-    md5_init(&md5);
-    md5_update(&md5, str, len);
-    md5_final(&md5, md5str);
-    char omd5str[HEX_ENSIZE(MD5_BLOCK_SIZE)];
-    tohex(md5str, sizeof(md5str), omd5str);
-    CuAssertTrue(tc, 0 == strcmp("EB8CE1674B09464492A4CE35C38E89CE", omd5str));
+    digest_init(&digest, DG_MD5);
+    digest_update(&digest, str, len);
+    digest_final(&digest, hsbuf);
+    tohex(hsbuf, digest_size(&digest), out);
+    CuAssertTrue(tc, 0 == strcmp("EB8CE1674B09464492A4CE35C38E89CE", out));
 
     const char *hmac_key[] = { "n3iDbIxJ79GaNxAfjTbSims0nQnEH131RnmQYZ6ofxoOn3bvVGBN45lcozfguAJl", //== 64
         "Dws6758XGKWG0OK1LNLD2H4DQ4sFCSUdZ8RJFLo6OXbPfh4dbmSACYiMU0pPxU44b",// > 64
@@ -319,14 +310,13 @@ static void test_hash(CuTest* tc) {
     const char *hmac_md5_result[] = { "8A2A097E491D02E96383D63B7EFC97F5",
         "139100334F4EE0C4D9D506457F4811C7",
         "24E9A3D055F2E1984D78E52F7FDF03E3" };
-    hmac_md5_ctx macmd5;
+    hmac_ctx macmd5;
     char outmmd5[MD5_BLOCK_SIZE];
     char hexmm5[HEX_ENSIZE(sizeof(outmmd5))];
     for (int32_t i = 0; i < 3; i++) {
-        hmac_md5_key(&macmd5, hmac_key[i], strlen(hmac_key[i]));
-        hmac_md5_init(&macmd5);
-        hmac_md5_update(&macmd5, str, len);
-        hmac_md5_final(&macmd5, outmmd5);
+        hmac_init(&macmd5, DG_MD5, hmac_key[i], strlen(hmac_key[i]));
+        hmac_update(&macmd5, str, len);
+        hmac_final(&macmd5, outmmd5);
         tohex(outmmd5, sizeof(outmmd5), hexmm5);
         CuAssertTrue(tc, 0 == strcmp(hmac_md5_result[i], hexmm5));
     }
@@ -334,14 +324,13 @@ static void test_hash(CuTest* tc) {
     const char *hmac_sha1_result[] = { "451A902233ADDAF949F696D9333F0FE73B2B126E",
         "EA2A165A590F4D2A276CAD63D17E7FD004E0232C",
         "0BE13599959E0F24902E9840B992A75231F071A2" };
-    hmac_sha1_ctx macsha1;
+    hmac_ctx macsha1;
     char outmsha1[SHA1_BLOCK_SIZE];
     char hexmsha1[HEX_ENSIZE(sizeof(outmsha1))];
     for (int32_t i = 0; i < 3; i++) {
-        hmac_sha1_key(&macsha1, hmac_key[i], strlen(hmac_key[i]));
-        hmac_sha1_init(&macsha1);
-        hmac_sha1_update(&macsha1, str, len);
-        hmac_sha1_final(&macsha1, outmsha1);
+        hmac_init(&macsha1, DG_SHA1, hmac_key[i], strlen(hmac_key[i]));
+        hmac_update(&macsha1, str, len);
+        hmac_final(&macsha1, outmsha1);
         tohex(outmsha1, sizeof(outmsha1), hexmsha1);
         CuAssertTrue(tc, 0 == strcmp(hmac_sha1_result[i], hexmsha1));
     }
@@ -349,17 +338,21 @@ static void test_hash(CuTest* tc) {
     const char *hmac_sha256_result[] = { "0E4A35BCF8D7466C5AA146AF1F70DB395B87B2176567503FAD27CB669D686174",
         "31F7613A4FDBF36EEC435976550576282D0C319632DAE09A94A296068DC8E017",
         "E5F25394FC77487B3C930ADDE609D260FFF722FFCE64E1778DD0EC4C3768918A" };
-    hmac_sha256_ctx macsha256;
+    hmac_ctx macsha256;
     char outmsha256[SHA256_BLOCK_SIZE];
     char hexmsha256[HEX_ENSIZE(sizeof(outmsha256))];
     for (int32_t i = 0; i < 3; i++) {
-        hmac_sha256_key(&macsha256, hmac_key[i], strlen(hmac_key[i]));
-        hmac_sha256_init(&macsha256);
-        hmac_sha256_update(&macsha256, str, len);
-        hmac_sha256_final(&macsha256, outmsha256);
+        hmac_init(&macsha256, DG_SHA256, hmac_key[i], strlen(hmac_key[i]));
+        hmac_update(&macsha256, str, len);
+        hmac_final(&macsha256, outmsha256);
         tohex(outmsha256, sizeof(outmsha256), hexmsha256);
         CuAssertTrue(tc, 0 == strcmp(hmac_sha256_result[i], hexmsha256));
     }
+    hmac_reset(&macsha256);
+    hmac_update(&macsha256, str, len);
+    hmac_final(&macsha256, outmsha256);
+    tohex(outmsha256, sizeof(outmsha256), hexmsha256);
+    CuAssertTrue(tc, 0 == strcmp(hmac_sha256_result[2], hexmsha256));
 
     char *en;
     MALLOC(en, B64EN_BLOCK_SIZE(len));
@@ -389,371 +382,371 @@ static void test_hash(CuTest* tc) {
     CuAssertTrue(tc, 0 == strcmp(url, enurl));
     FREE(enurl);
 }
-static void test_crypt_ecb(CuTest* tc) {
+static void test_cipher_ecb(CuTest* tc) {
     //PADDING_NONE
     char hex[HEX_ENSIZE(16)];
     size_t size;
-    crypt_ctx crypt;
-    crypt_init(&crypt, DES, ECB, "bOcUw4DP", strlen("bOcUw4DP"), 0, 1);
-    size_t bklens = crypt_block_size(&crypt);
-    void *out = crypt_block(&crypt, "12345678", bklens, &size);
+    cipher_ctx cipher;
+    cipher_init(&cipher, DES, ECB, "bOcUw4DP", strlen("bOcUw4DP"), 0, 1);
+    size_t bklens = cipher_size(&cipher);
+    void *out = cipher_block(&cipher, "12345678", bklens, &size);
     tohex(out, bklens, hex);
     CuAssertTrue(tc, 0 == strcmp(hex, "721DD0760AF558FF"));
-    crypt_init(&crypt, DES, ECB, "bOcUw4DP", strlen("bOcUw4DP"), 0, 0);
-    out = crypt_block(&crypt, out, bklens, &size);
+    cipher_init(&cipher, DES, ECB, "bOcUw4DP", strlen("bOcUw4DP"), 0, 0);
+    out = cipher_block(&cipher, out, bklens, &size);
     CuAssertTrue(tc, 0 == memcmp(out, "12345678", bklens));
 
-    crypt_init(&crypt, DES3, ECB, "bOcUw4DPDbRJjEQXNVXhPVEV", strlen("bOcUw4DPDbRJjEQXNVXhPVEV"), 0, 1);
-    bklens = crypt_block_size(&crypt);
-    out = crypt_block(&crypt, "12345678", bklens, &size);
+    cipher_init(&cipher, DES3, ECB, "bOcUw4DPDbRJjEQXNVXhPVEV", strlen("bOcUw4DPDbRJjEQXNVXhPVEV"), 0, 1);
+    bklens = cipher_size(&cipher);
+    out = cipher_block(&cipher, "12345678", bklens, &size);
     tohex(out, bklens, hex);
     CuAssertTrue(tc, 0 == strcmp(hex, "B0A36B7AC8F9DBD1"));
-    crypt_init(&crypt, DES3, ECB, "bOcUw4DPDbRJjEQXNVXhPVEV", strlen("bOcUw4DPDbRJjEQXNVXhPVEV"), 0, 0);
-    out = crypt_block(&crypt, out, bklens, &size);
+    cipher_init(&cipher, DES3, ECB, "bOcUw4DPDbRJjEQXNVXhPVEV", strlen("bOcUw4DPDbRJjEQXNVXhPVEV"), 0, 0);
+    out = cipher_block(&cipher, out, bklens, &size);
     CuAssertTrue(tc, 0 == memcmp(out, "12345678", bklens));
 
-    crypt_init(&crypt, AES, ECB, "bPeu8B1FX2Bq", strlen("bPeu8B1FX2Bq"), 128, 1);
-    bklens = crypt_block_size(&crypt);
-    out = crypt_block(&crypt, "1234567812345678", bklens, &size);
+    cipher_init(&cipher, AES, ECB, "bPeu8B1FX2Bq", strlen("bPeu8B1FX2Bq"), 128, 1);
+    bklens = cipher_size(&cipher);
+    out = cipher_block(&cipher, "1234567812345678", bklens, &size);
     tohex(out, bklens, hex);
     CuAssertTrue(tc, 0 == strcmp(hex, "BFFD98F3FD59E7068007DC42E65D512D"));
-    crypt_init(&crypt, AES, ECB, "bPeu8B1FX2Bq", strlen("bPeu8B1FX2Bq"), 128, 0);
-    out = crypt_block(&crypt, out, bklens, &size);
+    cipher_init(&cipher, AES, ECB, "bPeu8B1FX2Bq", strlen("bPeu8B1FX2Bq"), 128, 0);
+    out = cipher_block(&cipher, out, bklens, &size);
     CuAssertTrue(tc, 0 == memcmp(out, "1234567812345678", bklens));
 
-    crypt_init(&crypt, AES, ECB, "DbRJjEQXYDhBkEWWeOuCeaR3", strlen("DbRJjEQXYDhBkEWWeOuCeaR3"), 192, 1);
-    out = crypt_block(&crypt, "1234567812345678", bklens, &size);
+    cipher_init(&cipher, AES, ECB, "DbRJjEQXYDhBkEWWeOuCeaR3", strlen("DbRJjEQXYDhBkEWWeOuCeaR3"), 192, 1);
+    out = cipher_block(&cipher, "1234567812345678", bklens, &size);
     tohex(out, bklens, hex);
     CuAssertTrue(tc, 0 == strcmp(hex, "389C7CBDCDDF02EB96254E102383ABD0"));
-    crypt_init(&crypt, AES, ECB, "DbRJjEQXYDhBkEWWeOuCeaR3", strlen("DbRJjEQXYDhBkEWWeOuCeaR3"), 192, 0);
-    out = crypt_block(&crypt, out, bklens, &size);
+    cipher_init(&cipher, AES, ECB, "DbRJjEQXYDhBkEWWeOuCeaR3", strlen("DbRJjEQXYDhBkEWWeOuCeaR3"), 192, 0);
+    out = cipher_block(&cipher, out, bklens, &size);
     CuAssertTrue(tc, 0 == memcmp(out, "1234567812345678", bklens));
 
-    crypt_init(&crypt, AES, ECB, "cMEYqsmzxybOcUw4DPhgg4D2y6uJAuIC", strlen("cMEYqsmzxybOcUw4DPhgg4D2y6uJAuIC"), 256, 1);
-    out = crypt_block(&crypt, "1234567812345678", bklens, &size);
+    cipher_init(&cipher, AES, ECB, "cMEYqsmzxybOcUw4DPhgg4D2y6uJAuIC", strlen("cMEYqsmzxybOcUw4DPhgg4D2y6uJAuIC"), 256, 1);
+    out = cipher_block(&cipher, "1234567812345678", bklens, &size);
     tohex(out, bklens, hex);
     CuAssertTrue(tc, 0 == strcmp(hex, "99FCBC57EEB5B54178494ACDCA16D3B5"));
-    crypt_init(&crypt, AES, ECB, "cMEYqsmzxybOcUw4DPhgg4D2y6uJAuIC", strlen("cMEYqsmzxybOcUw4DPhgg4D2y6uJAuIC"), 256, 0);
-    out = crypt_block(&crypt, out, bklens, &size);
+    cipher_init(&cipher, AES, ECB, "cMEYqsmzxybOcUw4DPhgg4D2y6uJAuIC", strlen("cMEYqsmzxybOcUw4DPhgg4D2y6uJAuIC"), 256, 0);
+    out = cipher_block(&cipher, out, bklens, &size);
     CuAssertTrue(tc, 0 == memcmp(out, "1234567812345678", bklens));
 
-    crypt_init(&crypt, AES, ECB, "cMEYqsmzxybOcUw4DPhgg4D2y6uJAuIC", strlen("cMEYqsmzxybOcUw4DPhgg4D2y6uJAuIC"), 256, 1);
-    crypt_padding(&crypt, ZeroPadding);
-    out = crypt_block(&crypt, "12345678", 8, &size);
+    cipher_init(&cipher, AES, ECB, "cMEYqsmzxybOcUw4DPhgg4D2y6uJAuIC", strlen("cMEYqsmzxybOcUw4DPhgg4D2y6uJAuIC"), 256, 1);
+    cipher_padding(&cipher, ZeroPadding);
+    out = cipher_block(&cipher, "12345678", 8, &size);
     tohex(out, bklens, hex);
     CuAssertTrue(tc, 0 == strcmp(hex, "10D97A9B601556D63B19A5FE927527EE"));
-    crypt_init(&crypt, AES, ECB, "cMEYqsmzxybOcUw4DPhgg4D2y6uJAuIC", strlen("cMEYqsmzxybOcUw4DPhgg4D2y6uJAuIC"), 256, 0);
-    crypt_padding(&crypt, ZeroPadding);
-    out = crypt_block(&crypt, out, bklens, &size);
+    cipher_init(&cipher, AES, ECB, "cMEYqsmzxybOcUw4DPhgg4D2y6uJAuIC", strlen("cMEYqsmzxybOcUw4DPhgg4D2y6uJAuIC"), 256, 0);
+    cipher_padding(&cipher, ZeroPadding);
+    out = cipher_block(&cipher, out, bklens, &size);
     CuAssertTrue(tc, 0 == memcmp(out, "12345678", 8));
 
-    crypt_init(&crypt, AES, ECB, "cMEYqsmzxybOcUw4DPhgg4D2y6uJAuIC", strlen("cMEYqsmzxybOcUw4DPhgg4D2y6uJAuIC"), 256, 1);
-    crypt_padding(&crypt, PKCS57);
-    out = crypt_block(&crypt, "12345678", 8, &size);
+    cipher_init(&cipher, AES, ECB, "cMEYqsmzxybOcUw4DPhgg4D2y6uJAuIC", strlen("cMEYqsmzxybOcUw4DPhgg4D2y6uJAuIC"), 256, 1);
+    cipher_padding(&cipher, PKCS57);
+    out = cipher_block(&cipher, "12345678", 8, &size);
     tohex(out, bklens, hex);
     CuAssertTrue(tc, 0 == strcmp(hex, "F1F0FD6E3DE1F7121592B3705C9F2F4B"));
-    crypt_init(&crypt, AES, ECB, "cMEYqsmzxybOcUw4DPhgg4D2y6uJAuIC", strlen("cMEYqsmzxybOcUw4DPhgg4D2y6uJAuIC"), 256, 0);
-    crypt_padding(&crypt, PKCS57);
-    out = crypt_block(&crypt, out, bklens, &size);
+    cipher_init(&cipher, AES, ECB, "cMEYqsmzxybOcUw4DPhgg4D2y6uJAuIC", strlen("cMEYqsmzxybOcUw4DPhgg4D2y6uJAuIC"), 256, 0);
+    cipher_padding(&cipher, PKCS57);
+    out = cipher_block(&cipher, out, bklens, &size);
     CuAssertTrue(tc, 0 == memcmp(out, "12345678", 8));
 
-    crypt_init(&crypt, AES, ECB, "cMEYqsmzxybOcUw4DPhgg4D2y6uJAuIC", strlen("cMEYqsmzxybOcUw4DPhgg4D2y6uJAuIC"), 256, 1);
-    crypt_padding(&crypt, ISO10126);
-    out = crypt_block(&crypt, "12345678", 8, &size);
+    cipher_init(&cipher, AES, ECB, "cMEYqsmzxybOcUw4DPhgg4D2y6uJAuIC", strlen("cMEYqsmzxybOcUw4DPhgg4D2y6uJAuIC"), 256, 1);
+    cipher_padding(&cipher, ISO10126);
+    out = cipher_block(&cipher, "12345678", 8, &size);
     tohex(out, bklens, hex);
-    crypt_init(&crypt, AES, ECB, "cMEYqsmzxybOcUw4DPhgg4D2y6uJAuIC", strlen("cMEYqsmzxybOcUw4DPhgg4D2y6uJAuIC"), 256, 0);
-    crypt_padding(&crypt, ISO10126);
-    out = crypt_block(&crypt, out, bklens, &size);
+    cipher_init(&cipher, AES, ECB, "cMEYqsmzxybOcUw4DPhgg4D2y6uJAuIC", strlen("cMEYqsmzxybOcUw4DPhgg4D2y6uJAuIC"), 256, 0);
+    cipher_padding(&cipher, ISO10126);
+    out = cipher_block(&cipher, out, bklens, &size);
     CuAssertTrue(tc, 0 == memcmp(out, "12345678", 8) && 8 == ((char *)out)[15]);
 
-    crypt_init(&crypt, AES, ECB, "cMEYqsmzxybOcUw4DPhgg4D2y6uJAuIC", strlen("cMEYqsmzxybOcUw4DPhgg4D2y6uJAuIC"), 256, 1);
-    crypt_padding(&crypt, ANSIX923);
-    out = crypt_block(&crypt, "12345678", 8, &size);
+    cipher_init(&cipher, AES, ECB, "cMEYqsmzxybOcUw4DPhgg4D2y6uJAuIC", strlen("cMEYqsmzxybOcUw4DPhgg4D2y6uJAuIC"), 256, 1);
+    cipher_padding(&cipher, ANSIX923);
+    out = cipher_block(&cipher, "12345678", 8, &size);
     tohex(out, bklens, hex);
     CuAssertTrue(tc, 0 == strcmp(hex, "33A3AEAFFEAA414C3BD4CEAB2D9890B0"));
-    crypt_init(&crypt, AES, ECB, "cMEYqsmzxybOcUw4DPhgg4D2y6uJAuIC", strlen("cMEYqsmzxybOcUw4DPhgg4D2y6uJAuIC"), 256, 0);
-    crypt_padding(&crypt, ANSIX923);
-    out = crypt_block(&crypt, out, bklens, &size);
+    cipher_init(&cipher, AES, ECB, "cMEYqsmzxybOcUw4DPhgg4D2y6uJAuIC", strlen("cMEYqsmzxybOcUw4DPhgg4D2y6uJAuIC"), 256, 0);
+    cipher_padding(&cipher, ANSIX923);
+    out = cipher_block(&cipher, out, bklens, &size);
     CuAssertTrue(tc, 0 == memcmp(out, "12345678", 8));
 }
-static void test_crypt_cbc(CuTest* tc) {
+static void test_cipher_cbc(CuTest* tc) {
     char hex[HEX_ENSIZE(16)];
     char out1[16];
     char out2[16];
-    crypt_ctx crypt;
+    cipher_ctx cipher;
     size_t bklens;
-    crypt_init(&crypt, DES, CBC, "bOcUw4DP", strlen("bOcUw4DP"), 0, 1);
-    bklens = crypt_block_size(&crypt);
-    crypt_iv(&crypt, "ybOc", 4);
-    void *out = crypt_block(&crypt, "12345678", 8, NULL);
+    cipher_init(&cipher, DES, CBC, "bOcUw4DP", strlen("bOcUw4DP"), 0, 1);
+    bklens = cipher_size(&cipher);
+    cipher_iv(&cipher, "ybOc", 4);
+    void *out = cipher_block(&cipher, "12345678", 8, NULL);
     memcpy(out1, out, bklens);
     tohex(out1, bklens, hex);
     CuAssertTrue(tc, 0 == strcmp(hex, "4EEF732BA8A71007"));
-    out = crypt_block(&crypt, "abcdefgh", 8, NULL);
+    out = cipher_block(&cipher, "abcdefgh", 8, NULL);
     memcpy(out2, out, bklens);
     tohex(out2, bklens, hex);
     CuAssertTrue(tc, 0 == strcmp(hex, "1C8305879464A797"));
 
-    crypt_clear(&crypt);
-    out = crypt_block(&crypt, "12345678", 8, NULL);
+    cipher_reset(&cipher);
+    out = cipher_block(&cipher, "12345678", 8, NULL);
     memcpy(out1, out, bklens);
     tohex(out1, bklens, hex);
     CuAssertTrue(tc, 0 == strcmp(hex, "4EEF732BA8A71007"));
-    out = crypt_block(&crypt, "abcdefgh", 8, NULL);
+    out = cipher_block(&cipher, "abcdefgh", 8, NULL);
     memcpy(out2, out, bklens);
     tohex(out2, bklens, hex);
     CuAssertTrue(tc, 0 == strcmp(hex, "1C8305879464A797"));
     
-    crypt_init(&crypt, DES, CBC, "bOcUw4DP", strlen("bOcUw4DP"), 0, 0);
-    crypt_iv(&crypt, "ybOc", 4);
-    out = crypt_block(&crypt, out1, 8, NULL);
+    cipher_init(&cipher, DES, CBC, "bOcUw4DP", strlen("bOcUw4DP"), 0, 0);
+    cipher_iv(&cipher, "ybOc", 4);
+    out = cipher_block(&cipher, out1, 8, NULL);
     CuAssertTrue(tc, 0 == memcmp(out, "12345678", 8));
-    out = crypt_block(&crypt, out2, 8, NULL);
+    out = cipher_block(&cipher, out2, 8, NULL);
     CuAssertTrue(tc, 0 == memcmp(out, "abcdefgh", 8));
     //AES
-    crypt_init(&crypt, AES, CBC, "cMEYqsmzxybOcUw4DPhgg4D2y6u", strlen("cMEYqsmzxybOcUw4DPhgg4D2y6u"), 256, 1);
-    bklens = crypt_block_size(&crypt);
-    crypt_iv(&crypt, "bOcUw4DPDbRJ1aT&", strlen("bOcUw4DPDbRJ1aT&"));
-    out = crypt_block(&crypt, "12345678abcdefgh", 16, NULL);
+    cipher_init(&cipher, AES, CBC, "cMEYqsmzxybOcUw4DPhgg4D2y6u", strlen("cMEYqsmzxybOcUw4DPhgg4D2y6u"), 256, 1);
+    bklens = cipher_size(&cipher);
+    cipher_iv(&cipher, "bOcUw4DPDbRJ1aT&", strlen("bOcUw4DPDbRJ1aT&"));
+    out = cipher_block(&cipher, "12345678abcdefgh", 16, NULL);
     memcpy(out1, out, bklens);
     tohex(out1, bklens, hex);
     CuAssertTrue(tc, 0 == strcmp(hex, "7255B1518E40815FFE99BF80013940A6"));
-    out = crypt_block(&crypt, "abcdefgh12345678", 16, NULL);
+    out = cipher_block(&cipher, "abcdefgh12345678", 16, NULL);
     memcpy(out2, out, bklens);
     tohex(out2, bklens, hex);
     CuAssertTrue(tc, 0 == strcmp(hex, "DA4D5876ED487A0B30AB54D1B942D905"));
 
-    crypt_clear(&crypt);
-    out = crypt_block(&crypt, "12345678abcdefgh", 16, NULL);
+    cipher_reset(&cipher);
+    out = cipher_block(&cipher, "12345678abcdefgh", 16, NULL);
     memcpy(out1, out, bklens);
     tohex(out1, bklens, hex);
     CuAssertTrue(tc, 0 == strcmp(hex, "7255B1518E40815FFE99BF80013940A6"));
-    out = crypt_block(&crypt, "abcdefgh12345678", 16, NULL);
+    out = cipher_block(&cipher, "abcdefgh12345678", 16, NULL);
     memcpy(out2, out, bklens);
     tohex(out2, bklens, hex);
     CuAssertTrue(tc, 0 == strcmp(hex, "DA4D5876ED487A0B30AB54D1B942D905"));
 
-    crypt_init(&crypt, AES, CBC, "cMEYqsmzxybOcUw4DPhgg4D2y6u", strlen("cMEYqsmzxybOcUw4DPhgg4D2y6u"), 256, 0);
-    crypt_iv(&crypt, "bOcUw4DPDbRJ1aT&", strlen("bOcUw4DPDbRJ1aT&"));
-    out = crypt_block(&crypt, out1, 16, NULL);
+    cipher_init(&cipher, AES, CBC, "cMEYqsmzxybOcUw4DPhgg4D2y6u", strlen("cMEYqsmzxybOcUw4DPhgg4D2y6u"), 256, 0);
+    cipher_iv(&cipher, "bOcUw4DPDbRJ1aT&", strlen("bOcUw4DPDbRJ1aT&"));
+    out = cipher_block(&cipher, out1, 16, NULL);
     CuAssertTrue(tc, 0 == memcmp(out, "12345678abcdefgh", 16));
-    out = crypt_block(&crypt, out2, 16, NULL);
+    out = cipher_block(&cipher, out2, 16, NULL);
     CuAssertTrue(tc, 0 == memcmp(out, "abcdefgh12345678", 16));
 }
-static void test_crypt_cfb(CuTest* tc) {
+static void test_cipher_cfb(CuTest* tc) {
     char hex[HEX_ENSIZE(16)];
     char out1[16];
     char out2[16];
     char out3[16];
-    crypt_ctx crypt;
+    cipher_ctx cipher;
     size_t bklens;
     size_t size;
-    crypt_init(&crypt, DES, CFB, "bOcUw4DP", strlen("bOcUw4DP"), 0, 1);
-    bklens = crypt_block_size(&crypt);
-    crypt_iv(&crypt, "ybOc", 4);
-    void *out = crypt_block(&crypt, "12345678", 8, NULL);
+    cipher_init(&cipher, DES, CFB, "bOcUw4DP", strlen("bOcUw4DP"), 0, 1);
+    bklens = cipher_size(&cipher);
+    cipher_iv(&cipher, "ybOc", 4);
+    void *out = cipher_block(&cipher, "12345678", 8, NULL);
     memcpy(out1, out, bklens);
     tohex(out1, bklens, hex);
     CuAssertTrue(tc, 0 == strcmp(hex, "CF55CE0D5E865FEA"));
-    out = crypt_block(&crypt, "abcdefgh", 8, NULL);
+    out = cipher_block(&cipher, "abcdefgh", 8, NULL);
     memcpy(out2, out, bklens);
     tohex(out2, bklens, hex);
     CuAssertTrue(tc, 0 == strcmp(hex, "47EFF5E1D24DDE7A"));
-    out = crypt_block(&crypt, "xyzq", 4, &size);
+    out = cipher_block(&cipher, "xyzq", 4, &size);
     memcpy(out3, out, size);
     tohex(out3, size, hex);
     CuAssertTrue(tc, 0 == strcmp(hex, "BC298FFF"));
 
-    crypt_init(&crypt, DES, CFB, "bOcUw4DP", strlen("bOcUw4DP"), 0, 0);
-    crypt_iv(&crypt, "ybOc", 4);
-    out = crypt_block(&crypt, out1, 8, NULL);
+    cipher_init(&cipher, DES, CFB, "bOcUw4DP", strlen("bOcUw4DP"), 0, 0);
+    cipher_iv(&cipher, "ybOc", 4);
+    out = cipher_block(&cipher, out1, 8, NULL);
     CuAssertTrue(tc, 0 == memcmp(out, "12345678", 8));
-    out = crypt_block(&crypt, out2, 8, NULL);
+    out = cipher_block(&cipher, out2, 8, NULL);
     CuAssertTrue(tc, 0 == memcmp(out, "abcdefgh", 8));
-    out = crypt_block(&crypt, out3, size, &size);
+    out = cipher_block(&cipher, out3, size, &size);
     CuAssertTrue(tc, 0 == memcmp(out, "xyzq", size));
     //AES
-    crypt_init(&crypt, AES, CFB, "cMEYqsmzxybOcUw4DPhgg4D2y6u", strlen("cMEYqsmzxybOcUw4DPhgg4D2y6u"), 256, 1);
-    bklens = crypt_block_size(&crypt);
-    crypt_iv(&crypt, "bOcUw4DPDbRJ1aT&", strlen("bOcUw4DPDbRJ1aT&"));
-    out = crypt_block(&crypt, "12345678abcdefgh", 16, NULL);
+    cipher_init(&cipher, AES, CFB, "cMEYqsmzxybOcUw4DPhgg4D2y6u", strlen("cMEYqsmzxybOcUw4DPhgg4D2y6u"), 256, 1);
+    bklens = cipher_size(&cipher);
+    cipher_iv(&cipher, "bOcUw4DPDbRJ1aT&", strlen("bOcUw4DPDbRJ1aT&"));
+    out = cipher_block(&cipher, "12345678abcdefgh", 16, NULL);
     memcpy(out1, out, bklens);
     tohex(out1, bklens, hex);
     CuAssertTrue(tc, 0 == strcmp(hex, "68830B207697A753E05578EAED7B222C"));
-    out = crypt_block(&crypt, "abcdefgh12345678", 16, NULL);
+    out = cipher_block(&cipher, "abcdefgh12345678", 16, NULL);
     memcpy(out2, out, bklens);
     tohex(out2, bklens, hex);
     CuAssertTrue(tc, 0 == strcmp(hex, "D09494F1056B7B54CFE8ECA7621C0FA8"));
-    out = crypt_block(&crypt, "xyzq", 4, &size);
+    out = cipher_block(&cipher, "xyzq", 4, &size);
     memcpy(out3, out, size);
     tohex(out3, size, hex);
     CuAssertTrue(tc, 0 == strcmp(hex, "0C77DB35"));
 
-    crypt_init(&crypt, AES, CFB, "cMEYqsmzxybOcUw4DPhgg4D2y6u", strlen("cMEYqsmzxybOcUw4DPhgg4D2y6u"), 256, 0);
-    crypt_iv(&crypt, "bOcUw4DPDbRJ1aT&", strlen("bOcUw4DPDbRJ1aT&"));
-    out = crypt_block(&crypt, out1, 16, NULL);
+    cipher_init(&cipher, AES, CFB, "cMEYqsmzxybOcUw4DPhgg4D2y6u", strlen("cMEYqsmzxybOcUw4DPhgg4D2y6u"), 256, 0);
+    cipher_iv(&cipher, "bOcUw4DPDbRJ1aT&", strlen("bOcUw4DPDbRJ1aT&"));
+    out = cipher_block(&cipher, out1, 16, NULL);
     CuAssertTrue(tc, 0 == memcmp(out, "12345678abcdefgh", 16));
-    out = crypt_block(&crypt, out2, 16, NULL);
+    out = cipher_block(&cipher, out2, 16, NULL);
     CuAssertTrue(tc, 0 == memcmp(out, "abcdefgh12345678", 16));
-    out = crypt_block(&crypt, out3, size, &size);
+    out = cipher_block(&cipher, out3, size, &size);
     CuAssertTrue(tc, 0 == memcmp(out, "xyzq", size));
 }
-static void test_crypt_ofb(CuTest* tc) {
+static void test_cipher_ofb(CuTest* tc) {
     char hex[HEX_ENSIZE(16)];
     char out1[16];
     char out2[16];
     char out3[16];
-    crypt_ctx crypt;
+    cipher_ctx cipher;
     size_t bklens;
     size_t size;
-    crypt_init(&crypt, DES, OFB, "bOcUw4DP", strlen("bOcUw4DP"), 0, 1);
-    bklens = crypt_block_size(&crypt);
-    crypt_iv(&crypt, "ybOcybOc", 8);
-    void *out = crypt_block(&crypt, "12345678", 8, NULL);
+    cipher_init(&cipher, DES, OFB, "bOcUw4DP", strlen("bOcUw4DP"), 0, 1);
+    bklens = cipher_size(&cipher);
+    cipher_iv(&cipher, "ybOcybOc", 8);
+    void *out = cipher_block(&cipher, "12345678", 8, NULL);
     memcpy(out1, out, bklens);
     tohex(out1, bklens, hex);
     CuAssertTrue(tc, 0 == strcmp(hex, "FB1F70EBC1F82512"));
-    out = crypt_block(&crypt, "abcdefgh", 8, NULL);
+    out = cipher_block(&cipher, "abcdefgh", 8, NULL);
     memcpy(out2, out, bklens);
     tohex(out2, bklens, hex);
     CuAssertTrue(tc, 0 == strcmp(hex, "AC928BBF2C0EDF9B"));
-    out = crypt_block(&crypt, "xyzq", 4, &size);
+    out = cipher_block(&cipher, "xyzq", 4, &size);
     memcpy(out3, out, size);
     tohex(out3, size, hex);
     CuAssertTrue(tc, 0 == strcmp(hex, "BFB208B8"));
 
-    crypt_init(&crypt, DES, OFB, "bOcUw4DP", strlen("bOcUw4DP"), 0, 0);
-    crypt_iv(&crypt, "ybOcybOc", 8);
-    out = crypt_block(&crypt, out1, 8, NULL);
+    cipher_init(&cipher, DES, OFB, "bOcUw4DP", strlen("bOcUw4DP"), 0, 0);
+    cipher_iv(&cipher, "ybOcybOc", 8);
+    out = cipher_block(&cipher, out1, 8, NULL);
     CuAssertTrue(tc, 0 == memcmp(out, "12345678", 8));
-    out = crypt_block(&crypt, out2, 8, NULL);
+    out = cipher_block(&cipher, out2, 8, NULL);
     CuAssertTrue(tc, 0 == memcmp(out, "abcdefgh", 8));
-    out = crypt_block(&crypt, out3, size, &size);
+    out = cipher_block(&cipher, out3, size, &size);
     CuAssertTrue(tc, 0 == memcmp(out, "xyzq", size));
     //AES
-    crypt_init(&crypt, AES, OFB, "cMEYqsmzxybOcUw4DPhgg4D2y6u", strlen("cMEYqsmzxybOcUw4DPhgg4D2y6u"), 256, 1);
-    bklens = crypt_block_size(&crypt);
-    crypt_iv(&crypt, "bOcUw4DPDbRJ1aT&", strlen("bOcUw4DPDbRJ1aT&"));
-    out = crypt_block(&crypt, "12345678abcdefgh", 16, NULL);
+    cipher_init(&cipher, AES, OFB, "cMEYqsmzxybOcUw4DPhgg4D2y6u", strlen("cMEYqsmzxybOcUw4DPhgg4D2y6u"), 256, 1);
+    bklens = cipher_size(&cipher);
+    cipher_iv(&cipher, "bOcUw4DPDbRJ1aT&", strlen("bOcUw4DPDbRJ1aT&"));
+    out = cipher_block(&cipher, "12345678abcdefgh", 16, NULL);
     memcpy(out1, out, bklens);
     tohex(out1, bklens, hex);
     CuAssertTrue(tc, 0 == strcmp(hex, "68830B207697A753E05578EAED7B222C"));
-    out = crypt_block(&crypt, "abcdefgh12345678", 16, NULL);
+    out = cipher_block(&cipher, "abcdefgh12345678", 16, NULL);
     memcpy(out2, out, bklens);
     tohex(out2, bklens, hex);
     CuAssertTrue(tc, 0 == strcmp(hex, "E98A7CE553F6C5D8E6E1237F2E52722D"));
-    out = crypt_block(&crypt, "xyzq", 4, &size);
+    out = cipher_block(&cipher, "xyzq", 4, &size);
     memcpy(out3, out, size);
     tohex(out3, size, hex);
     CuAssertTrue(tc, 0 == strcmp(hex, "38E8C199"));
 
-    crypt_init(&crypt, AES, OFB, "cMEYqsmzxybOcUw4DPhgg4D2y6u", strlen("cMEYqsmzxybOcUw4DPhgg4D2y6u"), 256, 0);
-    crypt_iv(&crypt, "bOcUw4DPDbRJ1aT&", strlen("bOcUw4DPDbRJ1aT&"));
-    out = crypt_block(&crypt, out1, 16, NULL);
+    cipher_init(&cipher, AES, OFB, "cMEYqsmzxybOcUw4DPhgg4D2y6u", strlen("cMEYqsmzxybOcUw4DPhgg4D2y6u"), 256, 0);
+    cipher_iv(&cipher, "bOcUw4DPDbRJ1aT&", strlen("bOcUw4DPDbRJ1aT&"));
+    out = cipher_block(&cipher, out1, 16, NULL);
     CuAssertTrue(tc, 0 == memcmp(out, "12345678abcdefgh", 16));
-    out = crypt_block(&crypt, out2, 16, NULL);
+    out = cipher_block(&cipher, out2, 16, NULL);
     CuAssertTrue(tc, 0 == memcmp(out, "abcdefgh12345678", 16));
-    out = crypt_block(&crypt, out3, size, &size);
+    out = cipher_block(&cipher, out3, size, &size);
     CuAssertTrue(tc, 0 == memcmp(out, "xyzq", size));
 }
-static void test_crypt_ctr(CuTest* tc) {
+static void test_cipher_ctr(CuTest* tc) {
     char hex[HEX_ENSIZE(16)];
     char out1[16];
     char out2[16];
-    crypt_ctx crypt;
+    cipher_ctx cipher;
     size_t bklens;
     size_t size;
-    crypt_init(&crypt, DES, CTR, "bOcUw4DP", strlen("bOcUw4DP"), 0, 1);
-    bklens = crypt_block_size(&crypt);
-    crypt_iv(&crypt, "ybOc", 4);
-    void *out = crypt_block(&crypt, "12345678", 8, NULL);
+    cipher_init(&cipher, DES, CTR, "bOcUw4DP", strlen("bOcUw4DP"), 0, 1);
+    bklens = cipher_size(&cipher);
+    cipher_iv(&cipher, "ybOc", 4);
+    void *out = cipher_block(&cipher, "12345678", 8, NULL);
     memcpy(out1, out, bklens);
     tohex(out1, bklens, hex);
     CuAssertTrue(tc, 0 == strcmp(hex, "CF55CE0D5E865FEA"));
-    out = crypt_block(&crypt, "xyzq", 4, &size);
+    out = cipher_block(&cipher, "xyzq", 4, &size);
     memcpy(out2, out, size);
     tohex(out2, size, hex);
     CuAssertTrue(tc, 0 == strcmp(hex, "E59EAD64"));
 
-    crypt_init(&crypt, DES, CTR, "bOcUw4DP", strlen("bOcUw4DP"), 0, 0);
-    crypt_iv(&crypt, "ybOc", 4);
-    out = crypt_block(&crypt, out1, 8, NULL);
+    cipher_init(&cipher, DES, CTR, "bOcUw4DP", strlen("bOcUw4DP"), 0, 0);
+    cipher_iv(&cipher, "ybOc", 4);
+    out = cipher_block(&cipher, out1, 8, NULL);
     CuAssertTrue(tc, 0 == memcmp(out, "12345678", 8));
-    out = crypt_block(&crypt, out2, 4, NULL);
+    out = cipher_block(&cipher, out2, 4, NULL);
     CuAssertTrue(tc, 0 == memcmp(out, "xyzq", 4));
     //AES
-    crypt_init(&crypt, AES, CTR, "cMEYqsmzxybOcUw4DPhgg4D2y6u", strlen("cMEYqsmzxybOcUw4DPhgg4D2y6u"), 256, 1);
-    bklens = crypt_block_size(&crypt);
-    crypt_iv(&crypt, "bOcUw4DP", strlen("bOcUw4DP"));
-    out = crypt_block(&crypt, "12345678abcdefgh", 16, NULL);
+    cipher_init(&cipher, AES, CTR, "cMEYqsmzxybOcUw4DPhgg4D2y6u", strlen("cMEYqsmzxybOcUw4DPhgg4D2y6u"), 256, 1);
+    bklens = cipher_size(&cipher);
+    cipher_iv(&cipher, "bOcUw4DP", strlen("bOcUw4DP"));
+    out = cipher_block(&cipher, "12345678abcdefgh", 16, NULL);
     memcpy(out1, out, bklens);
     tohex(out1, bklens, hex);
     CuAssertTrue(tc, 0 == strcmp(hex, "38B5E0BB4C654722315C918855322DFF"));
-    out = crypt_block(&crypt, "xyzq", 4, &size);
+    out = cipher_block(&cipher, "xyzq", 4, &size);
     memcpy(out2, out, size);
     tohex(out2, size, hex);
     CuAssertTrue(tc, 0 == strcmp(hex, "63CA3B21"));
 
-    crypt_init(&crypt, AES, CTR, "cMEYqsmzxybOcUw4DPhgg4D2y6u", strlen("cMEYqsmzxybOcUw4DPhgg4D2y6u"), 256, 0);
-    crypt_iv(&crypt, "bOcUw4DP", strlen("bOcUw4DP"));
-    out = crypt_block(&crypt, out1, 16, NULL);
+    cipher_init(&cipher, AES, CTR, "cMEYqsmzxybOcUw4DPhgg4D2y6u", strlen("cMEYqsmzxybOcUw4DPhgg4D2y6u"), 256, 0);
+    cipher_iv(&cipher, "bOcUw4DP", strlen("bOcUw4DP"));
+    out = cipher_block(&cipher, out1, 16, NULL);
     CuAssertTrue(tc, 0 == memcmp(out, "12345678abcdefgh", 16));
-    out = crypt_block(&crypt, out2, 4, NULL);
+    out = cipher_block(&cipher, out2, 4, NULL);
     CuAssertTrue(tc, 0 == memcmp(out, "xyzq", 4));
 }
-static void test_crypt(CuTest* tc) {
+static void test_cipher(CuTest* tc) {
     char enbuf[512];
     char debuf[512];
     char hex[512];
-    crypt_ctx en;
-    crypt_ctx de;
-    crypt_init(&en, DES, CTR, "cMEYqsmu", strlen("cMEYqsmu"), 0, 1);
-    crypt_padding(&en, ZeroPadding);
-    crypt_iv(&en, "bOcU", strlen("bOcU"));
-    crypt_init(&de, DES, CTR, "cMEYqsmu", strlen("cMEYqsmu"), 0, 0);
-    crypt_padding(&de, ZeroPadding);
-    crypt_iv(&de, "bOcU", strlen("bOcU"));
+    cipher_ctx en;
+    cipher_ctx de;
+    cipher_init(&en, DES, CTR, "cMEYqsmu", strlen("cMEYqsmu"), 0, 1);
+    cipher_padding(&en, ZeroPadding);
+    cipher_iv(&en, "bOcU", strlen("bOcU"));
+    cipher_init(&de, DES, CTR, "cMEYqsmu", strlen("cMEYqsmu"), 0, 0);
+    cipher_padding(&de, ZeroPadding);
+    cipher_iv(&de, "bOcU", strlen("bOcU"));
 
-    size_t lens = crypt_dofinal(&en, "12345", 5, enbuf);
+    size_t lens = cipher_dofinal(&en, "12345", 5, enbuf);
     tohex(enbuf, lens, hex);
     CuAssertTrue(tc, 0 == strcmp(hex, "EBDB5957790A9E24"));
     ZERO(debuf, sizeof(debuf));
-    lens = crypt_dofinal(&de, enbuf, lens, debuf);
+    lens = cipher_dofinal(&de, enbuf, lens, debuf);
     CuAssertTrue(tc, 0 == strcmp(debuf, "12345") && 8 == lens);
 
-    lens = crypt_dofinal(&en, "12345678", 8, enbuf);
+    lens = cipher_dofinal(&en, "12345678", 8, enbuf);
     tohex(enbuf, lens, hex);
     CuAssertTrue(tc, 0 == strcmp(hex, "EBDB5957793CA91C"));
     ZERO(debuf, sizeof(debuf));
-    lens = crypt_dofinal(&de, enbuf, lens, debuf);
+    lens = cipher_dofinal(&de, enbuf, lens, debuf);
     CuAssertTrue(tc, 0 == strcmp(debuf, "12345678") && 8 == lens);
 
-    lens = crypt_dofinal(&en, "1234567890", 10, enbuf);
+    lens = cipher_dofinal(&en, "1234567890", 10, enbuf);
     tohex(enbuf, lens, hex);
     CuAssertTrue(tc, 0 == strcmp(hex, "EBDB5957793CA91CED4FD8736AB3EB57"));
-    lens = crypt_dofinal(&de, enbuf, lens, debuf);
+    lens = cipher_dofinal(&de, enbuf, lens, debuf);
     CuAssertTrue(tc, 0 == strcmp(debuf, "1234567890") && 16 == lens);
     //
-    crypt_padding(&en, PKCS57);
-    crypt_padding(&de, PKCS57);
-    lens = crypt_dofinal(&en, "12345", 5, enbuf);
+    cipher_padding(&en, PKCS57);
+    cipher_padding(&de, PKCS57);
+    lens = cipher_dofinal(&en, "12345", 5, enbuf);
     tohex(enbuf, lens, hex);
     CuAssertTrue(tc, 0 == strcmp(hex, "EBDB595779099D27"));
-    lens = crypt_dofinal(&de, enbuf, lens, debuf);
+    lens = cipher_dofinal(&de, enbuf, lens, debuf);
     debuf[lens] = '\0';
     CuAssertTrue(tc, 0 == strcmp(debuf, "12345") && 5 == lens);
 
-    lens = crypt_dofinal(&en, "12345678", 8, enbuf);
+    lens = cipher_dofinal(&en, "12345678", 8, enbuf);
     tohex(enbuf, lens, hex);
     CuAssertTrue(tc, 0 == strcmp(hex, "EBDB5957793CA91CDC77D07B62BBE35F"));
-    lens = crypt_dofinal(&de, enbuf, lens, debuf);
+    lens = cipher_dofinal(&de, enbuf, lens, debuf);
     debuf[lens] = '\0';
     CuAssertTrue(tc, 0 == strcmp(debuf, "12345678") && 8 == lens);
 
-    lens = crypt_dofinal(&en, "1234567890", 10, enbuf);
+    lens = cipher_dofinal(&en, "1234567890", 10, enbuf);
     tohex(enbuf, lens, hex);
     CuAssertTrue(tc, 0 == strcmp(hex, "EBDB5957793CA91CED4FDE756CB5ED51"));
-    lens = crypt_dofinal(&de, enbuf, lens, debuf);
+    lens = cipher_dofinal(&de, enbuf, lens, debuf);
     debuf[lens] = '\0';
     CuAssertTrue(tc, 0 == strcmp(debuf, "1234567890") && 10 == lens);
 }
@@ -1361,12 +1354,12 @@ void test_utils(CuSuite* suite) {
     SUITE_ADD_TEST(suite, test_queue);
     SUITE_ADD_TEST(suite, test_system);
     SUITE_ADD_TEST(suite, test_hash);
-    SUITE_ADD_TEST(suite, test_crypt_ecb);
-    SUITE_ADD_TEST(suite, test_crypt_cbc);
-    SUITE_ADD_TEST(suite, test_crypt_cfb);
-    SUITE_ADD_TEST(suite, test_crypt_ofb);
-    SUITE_ADD_TEST(suite, test_crypt_ctr);
-    SUITE_ADD_TEST(suite, test_crypt);
+    SUITE_ADD_TEST(suite, test_cipher_ecb);
+    SUITE_ADD_TEST(suite, test_cipher_cbc);
+    SUITE_ADD_TEST(suite, test_cipher_cfb);
+    SUITE_ADD_TEST(suite, test_cipher_ofb);
+    SUITE_ADD_TEST(suite, test_cipher_ctr);
+    SUITE_ADD_TEST(suite, test_cipher);
     SUITE_ADD_TEST(suite, test_timer);
     SUITE_ADD_TEST(suite, test_netutils);
     SUITE_ADD_TEST(suite, test_buffer);

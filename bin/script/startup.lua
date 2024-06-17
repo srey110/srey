@@ -1,6 +1,5 @@
 require("lib.define")
 require("lib.utils")
-require("test.algo")
 local task = require("srey.task")
 local core = require("srey.core")
 

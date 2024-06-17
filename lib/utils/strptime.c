@@ -1,7 +1,5 @@
 #include "utils/strptime.h"
 //https://github.com/res2001/strptime.git
-#ifdef OS_WIN
-
 #define ALT_E 0x01
 #define ALT_O 0x02
 #define LEGAL_ALT(x) { if (alt_format & ~(x)) return NULL; }
@@ -83,11 +81,11 @@ static const int start_of_month[2][13] = {
 * and its colonies. Ref:
 * http://en.wikipedia.org/wiki/Determination_of_the_day_of_the_week
 */
-static int first_wday_of(int yr) {
+static int _first_wday_of(int yr) {
     return ((2 * (3 - (yr / 100) % 4)) + (yr % 100) + ((yr % 100) / 4) +
         (isleap(yr) ? 6 : 0) + 1) % 7;
 }
-static int fromzone(const unsigned char **bp, struct tm *tm, int mandatory) {
+static int _fromzone(const unsigned char **bp, struct tm *tm, int mandatory) {
     //    timezone_t tz;
     char buf[512], *p;
     const unsigned char *rp;
@@ -114,7 +112,7 @@ static int fromzone(const unsigned char **bp, struct tm *tm, int mandatory) {
                         //    tzfree(tz);
     return 1;
 }
-static const unsigned char *conv_num(const unsigned char *buf, int *dest, unsigned int llim, unsigned int ulim) {
+static const unsigned char *_conv_num(const unsigned char *buf, int *dest, unsigned int llim, unsigned int ulim) {
     unsigned int result = 0;
     unsigned char ch;
     /* The limit also determines the number of valid digits. */
@@ -133,7 +131,7 @@ static const unsigned char *conv_num(const unsigned char *buf, int *dest, unsign
     *dest = result;
     return buf;
 }
-static const unsigned char *find_string(const unsigned char *bp, int *tgt, const char * const *n1, const char * const *n2, int c) {
+static const unsigned char *_find_string(const unsigned char *bp, int *tgt, const char * const *n1, const char * const *n2, int c) {
     int i;
     size_t len;
     /* check full name - then abbreviated ones */
@@ -149,7 +147,7 @@ static const unsigned char *find_string(const unsigned char *bp, int *tgt, const
     /* Nothing matched */
     return NULL;
 }
-char* strptime(const char *buf, const char *fmt, struct tm *tm) {
+char* _strptime(const char *buf, const char *fmt, struct tm *tm) {
     unsigned char c;
     const unsigned char *bp, *ep, *zname;
     int alt_format, i, split_year = 0, neg = 0, state = 0,
@@ -224,7 +222,7 @@ char* strptime(const char *buf, const char *fmt, struct tm *tm) {
         LEGAL_ALT(0);
 
     recurse:
-        bp = (const unsigned char *)strptime((const char *)bp,
+        bp = (const unsigned char *)_strptime((const char *)bp,
             new_fmt, tm);
         LEGAL_ALT(ALT_E);
         continue;
@@ -239,7 +237,7 @@ char* strptime(const char *buf, const char *fmt, struct tm *tm) {
         state |= S_MON | S_MDAY | S_YEAR;
         const int year = split_year ? tm->tm_year : 0;
 
-        bp = (const unsigned char *)strptime((const char *)bp,
+        bp = (const unsigned char *)_strptime((const char *)bp,
             new_fmt, tm);
         LEGAL_ALT(ALT_E);
         tm->tm_year += year;
@@ -253,7 +251,7 @@ char* strptime(const char *buf, const char *fmt, struct tm *tm) {
     */
     case 'A':/* The day of week, using the locale's form. */
     case 'a':
-        bp = find_string(bp, &tm->tm_wday, weekday_name, ab_weekday_name, 7);
+        bp = _find_string(bp, &tm->tm_wday, weekday_name, ab_weekday_name, 7);
         LEGAL_ALT(0);
         state |= S_WDAY;
         continue;
@@ -261,14 +259,14 @@ char* strptime(const char *buf, const char *fmt, struct tm *tm) {
     case 'B':/* The month, using the locale's form. */
     case 'b':
     case 'h':
-        bp = find_string(bp, &tm->tm_mon, month_name, ab_month_name, 12);
+        bp = _find_string(bp, &tm->tm_mon, month_name, ab_month_name, 12);
         LEGAL_ALT(0);
         state |= S_MON;
         continue;
 
     case 'C':/* The century number. */
         i = 20;
-        bp = conv_num(bp, &i, 0, 99);
+        bp = _conv_num(bp, &i, 0, 99);
 
         i = i * 100 - TM_YEAR_BASE;
         if (split_year)
@@ -281,7 +279,7 @@ char* strptime(const char *buf, const char *fmt, struct tm *tm) {
 
     case 'd':/* The day of month. */
     case 'e':
-        bp = conv_num(bp, &tm->tm_mday, 1, 31);
+        bp = _conv_num(bp, &tm->tm_mday, 1, 31);
         LEGAL_ALT(ALT_O);
         state |= S_MDAY;
         continue;
@@ -290,7 +288,7 @@ char* strptime(const char *buf, const char *fmt, struct tm *tm) {
         LEGAL_ALT(0);
         /* FALLTHROUGH */
     case 'H':
-        bp = conv_num(bp, &tm->tm_hour, 0, 23);
+        bp = _conv_num(bp, &tm->tm_hour, 0, 23);
         LEGAL_ALT(ALT_O);
         state |= S_HOUR;
         continue;
@@ -299,7 +297,7 @@ char* strptime(const char *buf, const char *fmt, struct tm *tm) {
         LEGAL_ALT(0);
         /* FALLTHROUGH */
     case 'I':
-        bp = conv_num(bp, &tm->tm_hour, 1, 12);
+        bp = _conv_num(bp, &tm->tm_hour, 1, 12);
         if (tm->tm_hour == 12)
             tm->tm_hour = 0;
         LEGAL_ALT(ALT_O);
@@ -308,27 +306,27 @@ char* strptime(const char *buf, const char *fmt, struct tm *tm) {
 
     case 'j':/* The day of year. */
         i = 1;
-        bp = conv_num(bp, &i, 1, 366);
+        bp = _conv_num(bp, &i, 1, 366);
         tm->tm_yday = i - 1;
         LEGAL_ALT(0);
         state |= S_YDAY;
         continue;
 
     case 'M':/* The minute. */
-        bp = conv_num(bp, &tm->tm_min, 0, 59);
+        bp = _conv_num(bp, &tm->tm_min, 0, 59);
         LEGAL_ALT(ALT_O);
         continue;
 
     case 'm':/* The month. */
         i = 1;
-        bp = conv_num(bp, &i, 1, 12);
+        bp = _conv_num(bp, &i, 1, 12);
         tm->tm_mon = i - 1;
         LEGAL_ALT(ALT_O);
         state |= S_MON;
         continue;
 
     case 'p':/* The locale's equivalent of AM/PM. */
-        bp = find_string(bp, &i, am_pm, NULL, 2);
+        bp = _find_string(bp, &i, am_pm, NULL, 2);
         if (HAVE_HOUR(state) && tm->tm_hour > 11)
             return NULL;
         tm->tm_hour += i * 12;
@@ -336,7 +334,7 @@ char* strptime(const char *buf, const char *fmt, struct tm *tm) {
         continue;
 
     case 'S':/* The seconds. */
-        bp = conv_num(bp, &tm->tm_sec, 0, 61);
+        bp = _conv_num(bp, &tm->tm_sec, 0, 61);
         LEGAL_ALT(ALT_O);
         continue;
 
@@ -383,7 +381,7 @@ char* strptime(const char *buf, const char *fmt, struct tm *tm) {
                 * point to calculate a real value, so save the
                 * week for now in case it can be used later.
                 */
-        bp = conv_num(bp, &i, 0, 53);
+        bp = _conv_num(bp, &i, 0, 53);
         LEGAL_ALT(ALT_O);
         if (c == 'U')
             day_offset = TM_SUNDAY;
@@ -393,13 +391,13 @@ char* strptime(const char *buf, const char *fmt, struct tm *tm) {
         continue;
 
     case 'w':/* The day of week, beginning on sunday. */
-        bp = conv_num(bp, &tm->tm_wday, 0, 6);
+        bp = _conv_num(bp, &tm->tm_wday, 0, 6);
         LEGAL_ALT(ALT_O);
         state |= S_WDAY;
         continue;
 
     case 'u':/* The day of week, monday = 1. */
-        bp = conv_num(bp, &i, 1, 7);
+        bp = _conv_num(bp, &i, 1, 7);
         tm->tm_wday = i % 7;
         LEGAL_ALT(ALT_O);
         state |= S_WDAY;
@@ -408,7 +406,7 @@ char* strptime(const char *buf, const char *fmt, struct tm *tm) {
     case 'g':/* The year corresponding to the ISO week
                 * number but without the century.
                 */
-        bp = conv_num(bp, &i, 0, 99);
+        bp = _conv_num(bp, &i, 0, 99);
         continue;
 
     case 'G':/* The year corresponding to the ISO week
@@ -420,12 +418,12 @@ char* strptime(const char *buf, const char *fmt, struct tm *tm) {
         continue;
 
     case 'V':/* The ISO 8601:1988 week number as decimal */
-        bp = conv_num(bp, &i, 0, 53);
+        bp = _conv_num(bp, &i, 0, 53);
         continue;
 
     case 'Y':/* The year. */
         i = TM_YEAR_BASE;/* just for data sanity... */
-        bp = conv_num(bp, &i, 0, 9999);
+        bp = _conv_num(bp, &i, 0, 9999);
         tm->tm_year = i - TM_YEAR_BASE;
         LEGAL_ALT(ALT_E);
         state |= S_YEAR;
@@ -433,7 +431,7 @@ char* strptime(const char *buf, const char *fmt, struct tm *tm) {
 
     case 'y':/* The year within 100 years of the epoch. */
                 /* LEGAL_ALT(ALT_E | ALT_O); */
-        bp = conv_num(bp, &i, 0, 99);
+        bp = _conv_num(bp, &i, 0, 99);
 
         if (split_year)
             /* preserve century */
@@ -551,7 +549,7 @@ char* strptime(const char *buf, const char *fmt, struct tm *tm) {
             if (delim(bp[0]) || delim(bp[1]) ||
                 delim(bp[2]) || !delim(bp[3]))
                 goto loadzone;
-            ep = find_string(bp, &i, nast, NULL, 4);
+            ep = _find_string(bp, &i, nast, NULL, 4);
             if (ep != NULL) {
 #ifdef TM_GMTOFF
                 tm->TM_GMTOFF = (-5 - i) * SECSPERHOUR;
@@ -562,7 +560,7 @@ char* strptime(const char *buf, const char *fmt, struct tm *tm) {
                 bp = ep;
                 continue;
             }
-            ep = find_string(bp, &i, nadt, NULL, 4);
+            ep = _find_string(bp, &i, nadt, NULL, 4);
             if (ep != NULL) {
                 tm->tm_isdst = 1;
 #ifdef TM_GMTOFF
@@ -577,7 +575,7 @@ char* strptime(const char *buf, const char *fmt, struct tm *tm) {
             /*
             * Our current timezone
             */
-            ep = find_string(bp, &i,
+            ep = _find_string(bp, &i,
                 (const char * const *)tzname,
                 NULL, 2);
             if (ep != NULL) {
@@ -595,7 +593,7 @@ char* strptime(const char *buf, const char *fmt, struct tm *tm) {
             /*
             * The hard way, load the zone!
             */
-            if (fromzone(&bp, tm, mandatory))
+            if (_fromzone(&bp, tm, mandatory))
                 continue;
             goto out;
         }
@@ -680,7 +678,7 @@ char* strptime(const char *buf, const char *fmt, struct tm *tm) {
                 state |= S_WDAY;
             }
             tm->tm_yday = (7 -
-                first_wday_of(tm->tm_year + TM_YEAR_BASE) +
+                _first_wday_of(tm->tm_year + TM_YEAR_BASE) +
                 day_offset) % 7 + (week_offset - 1) * 7 +
                 tm->tm_wday - day_offset;
             state |= S_YDAY;
@@ -716,7 +714,7 @@ char* strptime(const char *buf, const char *fmt, struct tm *tm) {
         if (!HAVE_WDAY(state)) {
             /* calculate day of week */
             i = 0;
-            week_offset = first_wday_of(tm->tm_year);
+            week_offset = _first_wday_of(tm->tm_year);
             while (i++ <= tm->tm_yday) {
                 if (week_offset++ >= 6)
                     week_offset = 0;
@@ -728,5 +726,3 @@ char* strptime(const char *buf, const char *fmt, struct tm *tm) {
 
     return (char*)bp;
 }
-
-#endif

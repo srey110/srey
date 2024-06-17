@@ -1,7 +1,7 @@
 local srey = require("lib.srey")
 local srey_http = require("srey.http")
 local srey_url = require("srey.url")
-local srey_sha1 = require("srey.sha1")
+local digest = require("srey.digest")
 local base64 = require("srey.base64")
 local json = require("cjson")
 local table = table
@@ -142,8 +142,7 @@ function http.websock_upgrade(hpack)
         return nil
     end
     local signstr = string.format("%s258EAFA5-E914-47DA-95CA-C5AB0DC85B11", val)
-    local sha1 = srey_sha1.new()
-    sha1:init()
+    local sha1 = digest.new(DIGEST_TYPE.SHA1)
     sha1:update(signstr)
     local sha1str = sha1:final()
     return base64.encode(sha1str)

@@ -2,7 +2,7 @@
 #include "protocol/protos.h"
 #include "protocol/http.h"
 #include "crypt/base64.h"
-#include "crypt/sha1.h"
+#include "crypt/digest.h"
 #include "utils/utils.h"
 
 typedef enum parse_status {
@@ -88,11 +88,11 @@ static void _websock_sign(char *key, size_t klens, char b64[B64EN_BLOCK_SIZE(SHA
     MALLOC(signstr, lens);
     memcpy(signstr, key, klens);
     memcpy(signstr + klens, SIGNKEY, slens);
-    sha1_ctx sha1;
     char sha1str[SHA1_BLOCK_SIZE];
-    sha1_init(&sha1);
-    sha1_update(&sha1, signstr, lens);
-    sha1_final(&sha1, sha1str);
+    digest_ctx digest;
+    digest_init(&digest, DG_SHA1);
+    digest_update(&digest, signstr, lens);
+    digest_final(&digest, sha1str);
     FREE(signstr);
     bs64_encode(sha1str, sizeof(sha1str), b64);
 }
