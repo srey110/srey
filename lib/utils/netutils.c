@@ -132,7 +132,7 @@ int32_t sock_checkrport(void) {
     return ERR_FAILED;
 #endif
 }
-int32_t sock_rport(SOCKET fd) {
+int32_t sock_reuseport(SOCKET fd) {
 #ifdef SO_REUSEPORT
     int32_t flag = 1;
    if (setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, (char *)&flag, (int32_t)sizeof(flag)) < ERR_OK) {

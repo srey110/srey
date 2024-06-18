@@ -251,12 +251,46 @@ static void test_system(CuTest* tc) {
     CuAssertTrue(tc, 0 == strcmp(fmt, "110-come"));
     FREE(fmt);
 }
-static void test_hash(CuTest* tc) {
+static void test_crypt_other(CuTest* tc) {
     const char *str = "RHdzNjc1OFhHS1dHME9LMUxOTEQySDREUTRz5Lit5paHRkNTVWRaOFJKRkxvNk9YYlBmaDRkYm1TQUNZaU1VMHBQeFU0NGI";
     size_t len = strlen(str);
     CuAssertTrue(tc, 0xA6F5 == crc16(str, len));
     CuAssertTrue(tc, 0xFCD68BE4 == crc32(str, len));
 
+    char *en;
+    MALLOC(en, B64EN_BLOCK_SIZE(len));
+    bs64_encode(str, len, en);
+    CuAssertTrue(tc, 0 == strcmp("Ukhkek5qYzFPRmhIUzFkSE1FOUxNVXhPVEVReVNEUkVVVFJ6NUxpdDVwYUhSa05UVldSYU9GSktSa3h2Tms5WVlsQm1hRFJrWW0xVFFVTlphVTFWTUhCUWVGVTBOR0k=", en));
+    char *de;
+    MALLOC(de, B64DE_BLOCK_SIZE(strlen(en)));
+    size_t bdelen = bs64_decode(en, strlen(en), de);
+    CuAssertTrue(tc, 0 == strcmp(de, str));
+    const char *de2 = "\r\nUkhkek5qYzFPRmhIUzFkSE1FOUxNVXhPVEVRe\r\nVNEUkVVVFJ6NUxpdDVwYUhSa05UVldSYU9GSktSa3h2Tms5WVls\nQm1hRFJrWW0xVFFVTlphVTFWTUhCUWVGVTBOR0k\r\n=";
+    bdelen = bs64_decode(en, strlen(en), de);
+    CuAssertTrue(tc, 0 == strcmp(de, str));
+    FREE(en);
+
+    char key[4] = { 1, 5 ,25, 120 };
+    xor_encode(key, 1, de, len);
+    xor_decode(key, 1, de, bdelen);
+    CuAssertTrue(tc, 0 == strcmp(de, str));
+    FREE(de);
+
+    uint64_t hs = hash(str, len);
+    CuAssertTrue(tc, 5232889973870020308ULL == hs);
+
+    const char *url = "this is URL参数编码 test #@.";
+    char *enurl;
+    len = strlen(url);
+    MALLOC(enurl, URLEN_BLOCK_SIZE(len));
+    url_encode(url, len, enurl);
+    len = url_decode(enurl, strlen(enurl));
+    CuAssertTrue(tc, 0 == strcmp(url, enurl));
+    FREE(enurl);
+}
+static void test_digest(CuTest* tc) {
+    const char *str = "RHdzNjc1OFhHS1dHME9LMUxOTEQySDREUTRz5Lit5paHRkNTVWRaOFJKRkxvNk9YYlBmaDRkYm1TQUNZaU1VMHBQeFU0NGI";
+    size_t len = strlen(str);
     digest_ctx digest;
     char hsbuf[DG_BLOCK_SIZE];
     char out[HEX_ENSIZE(DG_BLOCK_SIZE)];
@@ -353,34 +387,6 @@ static void test_hash(CuTest* tc) {
     hmac_final(&macsha256, outmsha256);
     tohex(outmsha256, sizeof(outmsha256), hexmsha256);
     CuAssertTrue(tc, 0 == strcmp(hmac_sha256_result[2], hexmsha256));
-
-    char *en;
-    MALLOC(en, B64EN_BLOCK_SIZE(len));
-    bs64_encode(str, len, en);
-    CuAssertTrue(tc, 0 == strcmp("Ukhkek5qYzFPRmhIUzFkSE1FOUxNVXhPVEVReVNEUkVVVFJ6NUxpdDVwYUhSa05UVldSYU9GSktSa3h2Tms5WVlsQm1hRFJrWW0xVFFVTlphVTFWTUhCUWVGVTBOR0k=", en));
-    char *de;
-    MALLOC(de, B64DE_BLOCK_SIZE(strlen(en)));
-    size_t bdelen = bs64_decode(en, strlen(en), de);
-    CuAssertTrue(tc, 0 == strcmp(de, str));
-    FREE(en);
-
-    char key[4] = { 1, 5 ,25, 120 };
-    xor_encode(key, 1, de, len);
-    xor_decode(key, 1, de, bdelen);
-    CuAssertTrue(tc, 0 == strcmp(de, str));
-    FREE(de);
-
-    uint64_t hs = hash(str, len);
-    CuAssertTrue(tc, 5232889973870020308ULL == hs);
-
-    const char *url = "this is URL参数编码 test #@.";
-    char *enurl;
-    len = strlen(url);
-    MALLOC(enurl, URLEN_BLOCK_SIZE(len));
-    url_encode(url, len, enurl);
-    len = url_decode(enurl, strlen(enurl));
-    CuAssertTrue(tc, 0 == strcmp(url, enurl));
-    FREE(enurl);
 }
 static void test_cipher_ecb(CuTest* tc) {
     //PADDING_NONE
@@ -1353,7 +1359,8 @@ void test_utils(CuSuite* suite) {
     SUITE_ADD_TEST(suite, test_array);
     SUITE_ADD_TEST(suite, test_queue);
     SUITE_ADD_TEST(suite, test_system);
-    SUITE_ADD_TEST(suite, test_hash);
+    SUITE_ADD_TEST(suite, test_crypt_other);
+    SUITE_ADD_TEST(suite, test_digest);
     SUITE_ADD_TEST(suite, test_cipher_ecb);
     SUITE_ADD_TEST(suite, test_cipher_cbc);
     SUITE_ADD_TEST(suite, test_cipher_cfb);

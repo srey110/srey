@@ -23,7 +23,7 @@ int32_t sock_raddr(SOCKET fd);
 //是否支持端口重用
 int32_t sock_checkrport(void);
 //端口重用
-int32_t sock_rport(SOCKET fd);
+int32_t sock_reuseport(SOCKET fd);
 //SO_KEEPALIVE
 int32_t sock_kpa(SOCKET fd, const int32_t delay, const int32_t intvl);
 //设置SO_LINGER 避免TIME_WAIT状态

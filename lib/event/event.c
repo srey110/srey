@@ -37,7 +37,7 @@ SOCKET _listen(netaddr_ctx *addr) {
         return INVALID_SOCK;
     }
     sock_raddr(fd);
-    sock_rport(fd);
+    sock_reuseport(fd);
     sock_nbio(fd);
     if (ERR_OK != bind(fd, netaddr_addr(addr), netaddr_size(addr))) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));

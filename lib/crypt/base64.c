@@ -1,7 +1,7 @@
 #include "crypt/base64.h"
 
 /* BASE 64 encode table */
-static char base64en[] = {
+static const char b64en[] = {
     'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H',
     'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P',
     'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X',
@@ -11,11 +11,8 @@ static char base64en[] = {
     'w', 'x', 'y', 'z', '0', '1', '2', '3',
     '4', '5', '6', '7', '8', '9', '+', '/',
 };
-#define BASE64_PAD      '='
-#define BASE64DE_FIRST  '+'
-#define BASE64DE_LAST   'z'
 /* ASCII order for BASE 64 decode, -1 in unused character */
-static char base64de[] = {
+static const char b64de[] = {
     62,  -1,  -1,  -1,  63,  52,  53,  54,
     55,  56,  57,  58,  59,  60,  61,  -1,
     -1,  -1,  -1,  -1,  -1,  -1,   0,   1,
@@ -29,20 +26,19 @@ static char base64de[] = {
 };
 size_t bs64_encode(const void *data, const size_t lens, char *out) {
     const char *p = (const char *)data;
-    int32_t s;
     uint32_t i, j;
     for (i = j = 0; i < lens; i++) {
-        s = i % 3;
-        switch (s) {
+        switch (i % 3) {
         case 0:
-            out[j++] = base64en[(p[i] >> 2) & 0x3F];
-            continue;
+            out[j++] = b64en[(p[i] >> 2) & 0x3F];
+            break;
         case 1:
-            out[j++] = base64en[((p[i - 1] & 0x3) << 4) + ((p[i] >> 4) & 0xF)];
-            continue;
+            out[j++] = b64en[((p[i - 1] & 0x3) << 4) + ((p[i] >> 4) & 0xF)];
+            break;
         case 2:
-            out[j++] = base64en[((p[i - 1] & 0xF) << 2) + ((p[i] >> 6) & 0x3)];
-            out[j++] = base64en[p[i] & 0x3F];
+            out[j++] = b64en[((p[i - 1] & 0xF) << 2) + ((p[i] >> 6) & 0x3)];
+            out[j++] = b64en[p[i] & 0x3F];
+            break;
         }
     }
     /* move back */
@@ -50,51 +46,56 @@ size_t bs64_encode(const void *data, const size_t lens, char *out) {
     /* check the last and add padding */
     switch (i % 3) {
     case 0:
-        out[j++] = base64en[(p[i] & 0x3) << 4];
-        out[j++] = BASE64_PAD;
-        out[j++] = BASE64_PAD;
+        out[j++] = b64en[(p[i] & 0x3) << 4];
+        out[j++] = '=';
+        out[j++] = '=';
         break;
     case 1:
-        out[j++] = base64en[(p[i] & 0xF) << 2];
-        out[j++] = BASE64_PAD;
+        out[j++] = b64en[(p[i] & 0xF) << 2];
+        out[j++] = '=';
         break;
     }
     out[j] = '\0';
     return j;
 }
 size_t bs64_decode(const char *data, const size_t lens, char *out) {
-    int32_t c, s;
-    uint32_t i, j;
+    int32_t c;
+    uint32_t i, j, idx = 0;
     for (i = j = 0; i < lens; i++) {
-        s = i % 4;
-        if (data[i] == '=') {
+        if ('\r' == data[i]
+            || '\n' == data[i]) {
+            continue;
+        }
+        if ('=' == data[i]) {
             out[j] = '\0';
             return j;
         }
-        if (data[i] < BASE64DE_FIRST
-            || data[i] > BASE64DE_LAST
-            || (c = base64de[data[i] - BASE64DE_FIRST]) == -1) {
+        if (data[i] < '+'
+            || data[i] > 'z'
+            || (c = b64de[data[i] - '+']) == -1) {
             return 0;
         }
-        switch (s) {
+        switch (idx % 4) {
         case 0:
             out[j] = ((uint32_t)c << 2) & 0xFF;
-            continue;
+            break;
         case 1:
             out[j++] += ((uint32_t)c >> 4) & 0x3;
-            if (i < (lens - 3) || data[lens - 2] != '=') {
+            if (idx < (lens - 3) || data[lens - 2] != '=') {
                 out[j] = ((uint32_t)c & 0xF) << 4;
             }
-            continue;
+            break;
         case 2:
             out[j++] += ((uint32_t)c >> 2) & 0xF;
-            if (i < (lens - 2) || data[lens - 1] != '=') {
+            if (idx < (lens - 2) || data[lens - 1] != '=') {
                 out[j] = ((uint32_t)c & 0x3) << 6;
             }
-            continue;
+            break;
         case 3:
             out[j++] += (uint8_t)c;
+            break;
         }
+        idx++;
     }
     out[j] = '\0';
     return j;

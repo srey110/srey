@@ -1,6 +1,6 @@
 #include "crypt/urlraw.h"
 
-static unsigned char hexchars[] = "0123456789ABCDEF";
+static const unsigned char hexchars[] = "0123456789ABCDEF";
 char *url_encode(const char *data, const size_t lens, char *out) {
     register unsigned char c;
     unsigned char const *from, *end;
