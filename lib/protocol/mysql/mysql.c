@@ -391,6 +391,7 @@ static int32_t _mysql_sha2_rsa(binary_ctx *bwriter, char *pubkey, size_t klens, 
         EVP_PKEY_CTX_free(evpctx);
         return ERR_FAILED;
     }
+    //RSA_size(rsa) - 11 for the PKCS #1  RSA_size(rsa) - 42 for RSA_PKCS1_OAEP_PADDING
     size_t offset, outlens, block_size = enlens  - 42;
     for (size_t i = 0; i < xlens; i += block_size) {
         offset = bwriter->offset;
