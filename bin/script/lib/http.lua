@@ -1,6 +1,5 @@
 local srey = require("lib.srey")
 local srey_http = require("srey.http")
-local srey_url = require("srey.url")
 local digest = require("srey.digest")
 local base64 = require("srey.base64")
 local json = require("cjson")
@@ -113,11 +112,11 @@ local function _http_msg(rsp, fd, skid, status, headers, ckfunc, info, ...)
 end
 --ckfunc(fin, data, size)
 function http.get(fd, skid, url, headers, ckfunc)
-    local status = string.format("GET %s HTTP/%s\r\n", srey_url.encode(url or "/"), HTTP_VERSION)
+    local status = string.format("GET %s HTTP/%s\r\n", url or "/", HTTP_VERSION)
     return _http_msg(false, fd, skid, status, headers, ckfunc)
 end
 function http.post(fd, skid, url, headers, ckfunc, info, ...)
-    local status = string.format("POST %s HTTP/%s\r\n", srey_url.encode(url or "/"), HTTP_VERSION)
+    local status = string.format("POST %s HTTP/%s\r\n", url or "/", HTTP_VERSION)
     return _http_msg(false, fd, skid, status, headers, ckfunc, info, ...)
 end
 function http.response(fd, skid, code, headers, info, ...)

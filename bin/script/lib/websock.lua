@@ -35,7 +35,7 @@ function wbsk.unpack(pack)
     return websock.unpack(pack)
 end
 --ws://host:port
-function wbsk.connect(ws, sslname, netev)
+function wbsk.connect(ws, sslname, secproto, netev)
     local url = srey_url.parse(ws)
     if "ws" ~= url.scheme or not url.host then
         return INVALID_SOCK
@@ -60,7 +60,7 @@ function wbsk.connect(ws, sslname, netev)
     if INVALID_SOCK == fd then
         return INVALID_SOCK
     end
-    local hspack, size = websock.handshake_pack(url.host)
+    local hspack, size = websock.handshake_pack(url.host, secproto)
     srey.send(fd, skid, hspack, size, 0)
     if not srey.wait_handshaked(fd, skid) then
         return INVALID_SOCK

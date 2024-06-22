@@ -37,9 +37,12 @@
 #define _ANONYMOUS(type, line)  __ANONYMOUS(type, _anonymous, line)
 #define ANONYMOUS(type)  _ANONYMOUS(type, __LINE__)
 
-#define BIT_SET(status, flag) status |= flag
+#define BIT_SET(status, flag) (status |= flag)
 #define BIT_CHECK(status, flag) (status & flag)
-#define BIT_REMOVE(status, flag) status = status & ~flag
+#define BIT_REMOVE(status, flag) (status &= ~flag)
+
+#define BIT_GETN(x, n) ((x >> n) & 1u)
+#define BIT_SETN(x, n, val) (x ^= (x & (1llu << n))^((uint64_t)(val) << n))
 
 #define ATOMIC_GET(ptr) ATOMIC_ADD(ptr, 0)
 #define ATOMIC64_GET(ptr) ATOMIC64_ADD(ptr, 0)

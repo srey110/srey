@@ -15,7 +15,7 @@ typedef enum  websock_proto {
 struct websock_pack_ctx *websock_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, int32_t *status);
 
-char *websock_handshake_pack(const char *host);
+char *websock_handshake_pack(const char *host, const char *secproto);
 void *websock_ping(int32_t mask, size_t *size);
 void *websock_pong(int32_t mask, size_t *size);
 void *websock_close(int32_t mask, size_t *size);

@@ -78,9 +78,6 @@ static char *_http_parse_status(http_pack_ctx *pack) {
         return NULL;
     }
     head = pos + 1;
-    if (0 != _memicmp(pack->status[0].data, "http", strlen("http"))) {
-        pack->status[1].lens = url_decode(pack->status[1].data, pack->status[1].lens);
-    }
     pos = memstr(0, head, HEAD_REMAIN, FLAG_CRLF, CRLF_SIZE);
     if (NULL == pos) {
         return NULL;
@@ -326,12 +323,7 @@ void *http_data(http_pack_ctx *pack, size_t *lens) {
     return pack->data.data;
 }
 void http_pack_req(buffer_ctx *buf, const char *method, const char *url) {
-    size_t ulens = strlen(url);
-    char *enurl;
-    MALLOC(enurl, URLEN_BLOCK_SIZE(ulens));
-    url_encode(url, ulens, enurl);
-    buffer_appendv(buf, "%s %s HTTP/1.1"FLAG_CRLF, method, enurl);
-    FREE(enurl);
+    buffer_appendv(buf, "%s %s HTTP/1.1"FLAG_CRLF, method, url);
 }
 const char *http_code_status(int32_t code) {
     switch (code) {

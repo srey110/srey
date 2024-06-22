@@ -76,7 +76,7 @@ SOCKET coro_wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *
         FREE(host);
         return INVALID_SOCK;
     }
-    char *reqpack = websock_handshake_pack(host);
+    char *reqpack = websock_handshake_pack(host, NULL);
     FREE(host);
     ev_send(&task->scheduler->netev, fd, *skid, reqpack, strlen(reqpack), 0);
     if (ERR_OK != coro_handshaked(task, fd, *skid)) {

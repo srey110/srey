@@ -115,7 +115,11 @@ static int32_t _lproto_websock_handshake_pack(lua_State *lua) {
     if (LUA_TSTRING == lua_type(lua, 1)) {
         host = (char *)luaL_checkstring(lua, 1);
     }
-    char *hspack = websock_handshake_pack(host);
+    char *secproto = NULL;
+    if (LUA_TSTRING == lua_type(lua, 2)) {
+        secproto = (char *)luaL_checkstring(lua, 2);
+    }
+    char *hspack = websock_handshake_pack(host, secproto);
     lua_pushlightuserdata(lua, hspack);
     lua_pushinteger(lua, strlen(hspack));
     return 2;
