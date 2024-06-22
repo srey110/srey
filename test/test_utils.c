@@ -844,34 +844,34 @@ static void test_http(CuTest* tc) {
     buffer_append(&buf, (void *)http2, strlen(http2));
     rtnbuf = http_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, NULL != rtnbuf);
-    protos_pkfree(PACK_HTTP, rtnbuf);
+    protos_pkfree(PACK_HTTP, 0, rtnbuf);
 
     const char *http3 = "POST /users HTTP/1.1\r\nHost: api.github.com\r\nContent-Length: 5\r\n\r\n12345";
     buffer_append(&buf, (void *)http3, strlen(http3));
     rtnbuf = http_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, NULL != rtnbuf);
-    protos_pkfree(PACK_HTTP, rtnbuf);
+    protos_pkfree(PACK_HTTP, 0, rtnbuf);
 
     const char *http4 = "POST /users HTTP/1.1\r\nHost: api.github.com\r\n\r\n";
     buffer_append(&buf, (void *)http4, strlen(http4));
     rtnbuf = http_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, NULL != rtnbuf);
-    protos_pkfree(PACK_HTTP, rtnbuf);
+    protos_pkfree(PACK_HTTP, 0, rtnbuf);
 
     const char *http5 = "POST /users HTTP/1.1\r\nHost: api.github.com\r\nTransfer-Encoding: chunked\r\n\r\n7\r\nMozilla\r\nb\r\nDeveloper N\r\n0\r\n\r\n";
     buffer_append(&buf, (void *)http5, strlen(http5));
     rtnbuf = http_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, NULL != rtnbuf && BIT_CHECK(status, PROTO_SLICE_START));
-    protos_pkfree(PACK_HTTP, rtnbuf);
+    protos_pkfree(PACK_HTTP, 0, rtnbuf);
     rtnbuf = http_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, NULL != rtnbuf && BIT_CHECK(status, PROTO_SLICE));
-    protos_pkfree(PACK_HTTP, rtnbuf);
+    protos_pkfree(PACK_HTTP, 0, rtnbuf);
     rtnbuf = http_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, NULL != rtnbuf && BIT_CHECK(status, PROTO_SLICE));
-    protos_pkfree(PACK_HTTP, rtnbuf);
+    protos_pkfree(PACK_HTTP, 0, rtnbuf);
     rtnbuf = http_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, NULL != rtnbuf && BIT_CHECK(status, PROTO_SLICE_END));
-    protos_pkfree(PACK_HTTP, rtnbuf);
+    protos_pkfree(PACK_HTTP, 0, rtnbuf);
     protos_udfree(&ud);
 
     buffer_free(&buf);

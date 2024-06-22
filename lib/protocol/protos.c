@@ -11,13 +11,16 @@ void protos_init(_handshaked_push hspush) {
 }
 void protos_free(void) {
 }
-void protos_pkfree(pack_type type, void *data) {
+void protos_pkfree(pack_type pktype, int32_t mtype, void *data) {
     if (NULL == data) {
         return;
     }
-    switch (type) {
+    switch (pktype) {
     case PACK_HTTP:
         _http_pkfree(data);
+        break;
+    case PACK_WEBSOCK:
+        _websock_pkfree(data);
         break;
     case PACK_REDIS:
         _redis_pkfree(data);
@@ -44,16 +47,6 @@ void protos_udfree(void *arg) {
         break;
     default:
         FREE(ud->extra);
-        break;
-    }
-}
-void protos_hsfree(pack_type type, void *data) {
-    switch (type) {
-    case PACK_WEBSOCK:
-        _websock_hsfree(data);
-        break;
-    default:
-        FREE(data);
         break;
     }
 }

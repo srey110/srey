@@ -27,7 +27,7 @@ static char _hs_key[B64EN_BLOCK_SIZE(8)] = { 0 };
 static char _hs_sign[B64EN_BLOCK_SIZE(SHA1_BLOCK_SIZE)] = { 0 };
 static _handshaked_push _hs_push;
 
-void _websock_hsfree(void *data) {
+void _websock_pkfree(void *data) {
     FREE(data);
 }
 static http_header_ctx *_websock_handshake_svcheck(struct http_pack_ctx *hpack) {
