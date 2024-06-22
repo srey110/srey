@@ -7,10 +7,8 @@ struct evssl_ctx {
 };
 static atomic_t _init_once = 0;
 #define SSLCTX_ERRO()\
-do {\
     unsigned long err = ERR_get_error();\
-    LOG_WARN("errno: %lu, %s", err, ERR_error_string(err, NULL)); \
-} while (0)
+    LOG_WARN("errno: %lu, %s", err, ERR_error_string(err, NULL))
 
 static void _ssl_options(evssl_ctx *evssl, int32_t verify) {
     SSL_CTX_set_options(evssl->ssl, SSL_OP_IGNORE_UNEXPECTED_EOF);//error:0A000126:SSL routines::unexpected eof while reading

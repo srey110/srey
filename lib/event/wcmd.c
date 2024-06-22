@@ -4,10 +4,8 @@
 #ifdef EV_IOCP
 
 #define _SEND_CMD(ev, cmd)\
-do {\
     watcher_ctx *watcher = GET_PTR((ev)->watcher, (ev)->nthreads, cmd.fd);\
-    _send_cmd(watcher, GET_POS(cmd.fd, watcher->ncmd), &cmd);\
-} while (0)
+    _send_cmd(watcher, GET_POS(cmd.fd, watcher->ncmd), &cmd)
 
 static sock_ctx *_map_get(watcher_ctx *watcher, SOCKET fd) {
     sock_ctx key;

@@ -51,22 +51,14 @@
 #define MALLOC(ptr, size) *(void**)&(ptr) = _malloc(size)
 #define CALLOC(ptr, count, size) *(void**)&(ptr) = _calloc(count, size)
 #define REALLOC(ptr, oldptr, size) *(void**)&(ptr) = _realloc(oldptr, size)
-#define FREE(ptr)\
-do {\
-    if (NULL != ptr) {\
-        _free(ptr); \
-        ptr = NULL; \
-    }\
-}while (0)
-
-#define CLOSE_SOCK(fd)\
-do {\
-    if (INVALID_SOCK != (fd) && 0 != (fd)) {\
-        SOCK_CLOSE(fd);\
-        (fd) = INVALID_SOCK;\
-    }\
-}while(0)
-
+#define FREE(ptr) if (NULL != ptr) {\
+                      _free(ptr); \
+                      ptr = NULL; \
+                  }
+#define CLOSE_SOCK(fd) if (INVALID_SOCK != (fd) && 0 != (fd)) {\
+                           SOCK_CLOSE(fd);\
+                           (fd) = INVALID_SOCK;\
+                       }
 typedef enum LOG_LEVEL {
     LOGLV_FATAL = 0,
     LOGLV_ERROR,
@@ -82,12 +74,9 @@ void slog(int32_t lv, const char *fmt, ...);
 #define LOG_INFO(fmt, ...)  LOG(LOGLV_INFO, fmt, ##__VA_ARGS__)
 #define LOG_DEBUG(fmt, ...) LOG(LOGLV_DEBUG, fmt, ##__VA_ARGS__)
 
-#define ASSERTAB(exp, errstr)\
-do {\
-    if (!(exp)) {\
-        LOG_FATAL("%s", errstr);\
-        abort();\
-    }\
-} while (0);
+#define ASSERTAB(exp, errstr) if (!(exp)) {\
+                                  LOG_FATAL("%s", errstr);\
+                                  abort();\
+                              }
 
 #endif//MACRO_H_

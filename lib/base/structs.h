@@ -27,14 +27,11 @@ typedef struct off_buf_ctx {
 struct task_ctx;
 
 typedef void(*free_cb)(void *arg);
-#define COPY_UD(dst, src)\
-do {\
-    if (NULL != (src)){\
-        (dst) = *(src);\
-    }else{\
-        ZERO(&(dst), sizeof(ud_cxt));\
-    }\
-} while (0)
+#define COPY_UD(dst, src) if (NULL != (src)){\
+                              (dst) = *(src);\
+                          }else{\
+                              ZERO(&(dst), sizeof(ud_cxt));\
+                          }
 
 static inline int32_t buf_empty(buf_ctx *buf) {
     return NULL == buf || NULL == buf->data || 0 == buf->lens;

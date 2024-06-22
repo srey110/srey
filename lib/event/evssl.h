@@ -7,14 +7,10 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 
-#define FREE_SSL(ssl)\
-do {\
-    if (NULL != ssl){\
-        SSL_free(ssl); \
-        ssl = NULL; \
-    }\
-}while (0)
-
+#define FREE_SSL(ssl) if (NULL != ssl){\
+                          SSL_free(ssl); \
+                          ssl = NULL; \
+                      }
 typedef enum CERT_FILE_TYPE {
     CERT_PEM = 0x01,
     CERT_ASN1 = 0x02
