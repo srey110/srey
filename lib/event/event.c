@@ -104,12 +104,12 @@ static int32_t _sock_read_ssl(SSL *ssl, IOV_TYPE *iov, uint32_t niov, size_t *nr
 static int32_t _sock_read_normal(SOCKET fd, IOV_TYPE *iov, uint32_t niov, size_t *readed) {
 #ifdef EV_IOCP 
     DWORD bytes, flags = 0;
-    if (SOCKET_ERROR != WSARecv(fd, 
-                                iov, 
-                                niov, 
-                                &bytes, 
-                                &flags, 
-                                NULL, 
+    if (SOCKET_ERROR != WSARecv(fd,
+                                iov,
+                                niov,
+                                &bytes,
+                                &flags,
+                                NULL,
                                 NULL)) {
         if (bytes > 0) {
             *readed = bytes;

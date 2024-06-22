@@ -140,7 +140,7 @@ struct task_ctx {
     _net_recvfrom_cb _net_recvfrom;
     _request_cb _request;
     _response_cb _response;
-    _net_ssl_exchanged_cb _auth_ssl;
+    _net_ssl_exchanged_cb _ssl_exchanged;
     spin_ctx lckmsg;
     qu_message_ctx qumsg;
 };

@@ -256,6 +256,9 @@
     <ClInclude Include="crypt\hmac.h">
       <Filter>crypt</Filter>
     </ClInclude>
+    <ClInclude Include="srey\minicoro.h">
+      <Filter>srey</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="event\event.c">

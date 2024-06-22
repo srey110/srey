@@ -70,6 +70,7 @@
     <ClInclude Include="protocol\websock.h" />
     <ClInclude Include="srey\coro.h" />
     <ClInclude Include="srey\coro_utils.h" />
+    <ClInclude Include="srey\minicoro.h" />
     <ClInclude Include="srey\register.h" />
     <ClInclude Include="srey\scheduler.h" />
     <ClInclude Include="srey\spub.h" />

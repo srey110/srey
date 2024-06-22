@@ -56,8 +56,8 @@ void _message_run(task_ctx *task, message_ctx *msg) {
         }
         break;
     case MSG_TYPE_SSLEXCHANGED:
-        if (NULL != task->_auth_ssl) {
-            task->_auth_ssl(task, msg->fd, msg->skid, msg->pktype, msg->client);
+        if (NULL != task->_ssl_exchanged) {
+            task->_ssl_exchanged(task, msg->fd, msg->skid, msg->pktype, msg->client);
         }
         break;
     case MSG_TYPE_HANDSHAKED:
