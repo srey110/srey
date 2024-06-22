@@ -421,7 +421,7 @@ end
 function srey.on_handshaked(func)
     func_cbs[MSG_TYPE.HANDSHAKED] = func
 end
---bool
+--bool data size
 function srey.wait_handshaked(fd, skid)
     local msg = _coro_wait(skid, MSG_TYPE.HANDSHAKED, TIMEOUT.NETREAD)
     if MSG_TYPE.TIMEOUT == msg.mtype then
@@ -433,7 +433,7 @@ function srey.wait_handshaked(fd, skid)
         WARN("handshake connction closed, skid %s.", tostring(skid))
         return false
     end
-    return ERR_OK == msg.erro
+    return ERR_OK == msg.erro, msg.data, msg.size
 end
 local function _net_handshaked_dispatch(msg)
     local corosess = _get_coro_sess(msg.skid, MSG_TYPE.HANDSHAKED)

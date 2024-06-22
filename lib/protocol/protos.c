@@ -47,6 +47,16 @@ void protos_udfree(void *arg) {
         break;
     }
 }
+void protos_hsfree(pack_type type, void *data) {
+    switch (type) {
+    case PACK_WEBSOCK:
+        _websock_hsfree(data);
+        break;
+    default:
+        FREE(data);
+        break;
+    }
+}
 void protos_closed(ud_cxt *ud) {
     switch (ud->pktype) {
     case PACK_MYSQL:

@@ -19,12 +19,13 @@ typedef enum proto_status {
     PROTO_ERROR = 0x08,
     PROTO_MOREDATA = 0x10
 }proto_status;
-typedef int32_t(*_handshaked_push)(SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud, int32_t erro);
+typedef int32_t(*_handshaked_push)(SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud, int32_t erro, void *data, size_t lens);
 
 void protos_init(_handshaked_push hspush);
 void protos_free(void);
 void protos_pkfree(pack_type type, void *data);
 void protos_udfree(void *arg);
+void protos_hsfree(pack_type type, void *data);
 void protos_closed(ud_cxt *ud);
 int32_t protos_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud);
 void *protos_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,

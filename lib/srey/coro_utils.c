@@ -35,7 +35,7 @@ dns_ip *coro_dns_lookup(task_ctx *task, const char *domain, int32_t ipv6, size_t
     }
     return dns_parse_pack(resp, cnt);
 }
-SOCKET coro_wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, uint64_t *skid, int32_t netev) {
+SOCKET coro_wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, const char *secproto, uint64_t *skid, int32_t netev) {
     url_ctx url;
     url_parse(&url, (char *)ws, strlen(ws));
     if (!buf_icompare(&url.scheme, "ws", strlen("ws"))) {
@@ -76,11 +76,22 @@ SOCKET coro_wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *
         FREE(host);
         return INVALID_SOCK;
     }
-    char *reqpack = websock_handshake_pack(host, NULL);
+    char *reqpack = websock_handshake_pack(host, secproto);
     FREE(host);
     ev_send(&task->scheduler->netev, fd, *skid, reqpack, strlen(reqpack), 0);
-    if (ERR_OK != coro_handshaked(task, fd, *skid)) {
+    message_ctx msg;
+    if (ERR_OK != coro_handshaked(task, fd, *skid, &msg)) {
         return INVALID_SOCK;
+    }
+    if (ERR_OK != msg.erro){
+        return INVALID_SOCK;
+    }
+    if (NULL != secproto
+        && 0 != strlen(secproto)) {
+        if (0 != memcmp(secproto, msg.data, msg.size)) {
+            ev_close(&task->scheduler->netev, fd, *skid);
+            return INVALID_SOCK;
+        }
     }
     return fd;
 }
@@ -108,7 +119,11 @@ int32_t mysql_connect(task_ctx *task, mysql_ctx *mysql) {
     if (ERR_OK != mysql_try_connect(task, mysql)) {
         return ERR_FAILED;
     }
-    return coro_handshaked(task, mysql->client.fd, mysql->client.skid);
+    message_ctx msg;
+    if (ERR_OK != coro_handshaked(task, mysql->client.fd, mysql->client.skid, &msg)) {
+        return ERR_FAILED;
+    }
+    return msg.erro;
 }
 static int32_t _mysql_check_link(task_ctx *task, mysql_ctx *mysql) {
     if (mysql->client.relink

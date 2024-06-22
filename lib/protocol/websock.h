@@ -12,6 +12,7 @@ typedef enum  websock_proto {
     WBSK_PONG = 0x0A
 }websock_proto;
 
+void _websock_hsfree(void *data);
 struct websock_pack_ctx *websock_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, int32_t *status);
 

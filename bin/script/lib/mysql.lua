@@ -19,7 +19,8 @@ function ctx:connect()
         return false
     end
     local fd, skid = self.mysql:sock_id()
-    return srey.wait_handshaked(fd, skid)
+    local ok,_,_ = srey.wait_handshaked(fd, skid)
+    return ok
 end
 function ctx:selectdb(database)
     local pack, size = self.mysql:pack_selectdb(database)

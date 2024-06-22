@@ -111,6 +111,8 @@ static void _timeout(task_ctx *task, uint64_t sess) {
     _test_syn_sendto(task);
     _test_syn_ssl1_send(task);
     _test_syn_ssl2_send(task);
+    uint64_t skid;
+    coro_wbsock_connect(task, NULL, "ws://127.0.0.1:15004", "mqtt", &skid, 0);
     trigger_timeout(task, 0, 1000, _timeout);
 }
 static void _startup(task_ctx *task) {

@@ -5,7 +5,8 @@ int32_t _message_should_clean(message_ctx *msg) {
     if ((MSG_TYPE_RECV == msg->mtype
         || MSG_TYPE_RECVFROM == msg->mtype
         || MSG_TYPE_REQUEST == msg->mtype
-        || MSG_TYPE_RESPONSE == msg->mtype)
+        || MSG_TYPE_RESPONSE == msg->mtype
+        || MSG_TYPE_HANDSHAKED == msg->mtype)
         && NULL != msg->data) {
         return ERR_OK;
     }
@@ -16,6 +17,9 @@ void _message_clean(msg_type mtype, pack_type pktype, void *data) {
     case MSG_TYPE_RECV:
     case MSG_TYPE_RECVFROM:
         protos_pkfree(pktype, data);
+        break; 
+    case MSG_TYPE_HANDSHAKED:
+        protos_hsfree(pktype, data);
         break;
     case MSG_TYPE_REQUEST:
     case MSG_TYPE_RESPONSE:
@@ -62,6 +66,7 @@ void _message_run(task_ctx *task, message_ctx *msg) {
         if (NULL != task->_net_handshaked) {
             task->_net_handshaked(task, msg->fd, msg->skid, msg->pktype, msg->client, msg->erro);
         }
+        _message_clean(msg->mtype, msg->pktype, msg->data);
         break;
     case MSG_TYPE_RECV:
         if (NULL != task->_net_recv) {
@@ -195,7 +200,7 @@ static int32_t _net_accept(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud) {
     task_ungrab(task);
     return ERR_OK;
 }
-int32_t _message_handshaked_push(SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud, int32_t erro) {
+int32_t _message_handshaked_push(SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud, int32_t erro, void *data, size_t lens) {
     task_ctx *task = task_grab(ud->data, ud->name);
     if (NULL == task) {
         return ERR_FAILED;
@@ -207,6 +212,8 @@ int32_t _message_handshaked_push(SOCKET fd, uint64_t skid, int32_t client, ud_cx
     msg.skid = skid;
     msg.client = client;
     msg.erro = erro;
+    msg.data = data;
+    msg.size = lens;
     msg.sess = skid;
     _task_message_push(task, &msg);
     task_ungrab(task);

@@ -23,6 +23,10 @@ static int32_t _lutils_log(lua_State *lua) {
 static int32_t _lutils_ud_str(lua_State *lua) {
     void *data = lua_touserdata(lua, 1);
     size_t size = (size_t)luaL_checkinteger(lua, 2);
+    if (NULL == data) {
+        lua_pushnil(lua);
+        return 1;
+    }
     lua_pushlstring(lua, data, size);
     return 1;
 }

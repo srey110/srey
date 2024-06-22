@@ -62,8 +62,15 @@ function wbsk.connect(ws, sslname, secproto, netev)
     end
     local hspack, size = websock.handshake_pack(url.host, secproto)
     srey.send(fd, skid, hspack, size, 0)
-    if not srey.wait_handshaked(fd, skid) then
+    local ok, data, dlens = srey.wait_handshaked(fd, skid)
+    if not ok then
         return INVALID_SOCK
+    end
+    if secproto and #secproto > 0 then
+        if srey.ud_str(data, dlens) ~= secproto then
+            srey.close(fd, skid)
+            return INVALID_SOCK
+        end
     end
     return fd, skid
 end
