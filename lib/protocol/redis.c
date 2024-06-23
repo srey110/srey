@@ -55,8 +55,6 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
     char *f = (char *)fmt;
     while ('\0' != *f) {
         if ('%' != *f) {
-            //跳过多余空格
-            while (' ' == *f && ' ' == f[1]) f++;
             p = f;
             while ('\0' != *f && '%' != *f && ' ' != *f) f++;
             lens = (size_t)(f - p);
@@ -65,33 +63,14 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
             }
             if ('\0' == *f || ' ' == *f) {
                 _create_sds(&fbuf, &sdsbuf, &n);
-                //跳过空格
-                while (' ' == *f) f++;
+                if (' ' == *f) {
+                    f++;
+                }
             }
             continue;
         }
-        //%
         p = f;
         f++;
-        if ('\0' == *f) {
-            binary_set_string(&fbuf, "%", 1);
-            break;
-        }
-        //跳过前缀
-        while ('\0' != *f && NULL != strchr("#0-+ ", *f)) f++;
-        while ('\0' != *f && isdigit((int)*f)) f++;
-        if ('.' == *f) {
-            f++;
-            while ('\0' != *f && isdigit((int)*f)) f++;
-        }
-        if ('\0' == *f) {
-            binary_set_string(&fbuf, p, (size_t)(f - p));
-            break;
-        }
-        if ((size_t)(f - p) + 3 >= sizeof(_fmt)) {
-            binary_set_string(&fbuf, p, (size_t)(f - p));
-            continue;
-        }
         switch (*f) {
         case 's': {
             FMT_TYPE(char *);
@@ -123,6 +102,20 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
             break;
         }
         default: {
+            //跳过前缀
+            while ('\0' != *f && NULL != strchr("#0-+ ", *f)) f++;
+            while ('\0' != *f && isdigit((int)*f)) f++;
+            if ('.' == *f) {
+                f++;
+                while ('\0' != *f && isdigit((int)*f)) f++;
+            }
+            if ('\0' == *f) {
+                lens = (size_t)(f - p);
+                if (lens >= 2) {
+                    binary_set_string(&fbuf, p + 1, lens - 1);
+                }
+                break;
+            }
             //double
             if (NULL != strchr("eEfFgGaA", *f)) {
                 FMT_TYPE(double);
@@ -135,51 +128,50 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
                 f++;
                 break;
             }
-            //char
             if ('h' == *f && 'h' == f[1]) {
                 f += 2;
                 if ('\0' != *f && NULL != strchr(FMT_INTEGER_FLAG, *f)) {
                     FMT_TYPE(int);
                     f++;
                 } else {
-                    binary_set_string(&fbuf, p, (size_t)(f - p));
+                    binary_set_string(&fbuf, p + 1, (size_t)(f - p) - 1);
                 }
                 break;
             }
-            //short
             if ('h' == *f) {
                 f++;
                 if ('\0' != *f && NULL != strchr(FMT_INTEGER_FLAG, *f)) {
                     FMT_TYPE(int);
                     f++;
                 } else {
-                    binary_set_string(&fbuf, p, (size_t)(f - p));
+                    binary_set_string(&fbuf, p + 1, (size_t)(f - p) - 1);
                 }
                 break;
             }
-            //long long
             if ('l' == *f && 'l' == f[1]) {
                 f += 2;
                 if ('\0' != *f && NULL != strchr(FMT_INTEGER_FLAG, *f)) {
                     FMT_TYPE(long long);
                     f++;
                 } else {
-                    binary_set_string(&fbuf, p, (size_t)(f - p));
+                    binary_set_string(&fbuf, p + 1, (size_t)(f - p) - 1);
                 }
                 break;
             }
-            //long
             if ('l' == *f) {
                 f++;
                 if ('\0' != *f && NULL != strchr(FMT_INTEGER_FLAG, *f)) {
                     FMT_TYPE(long);
                     f++;
                 } else {
-                    binary_set_string(&fbuf, p, (size_t)(f - p));
+                    binary_set_string(&fbuf, p + 1, (size_t)(f - p) - 1);
                 }
                 break;
             }
-            binary_set_string(&fbuf, p, (size_t)(f - p));
+            lens = (size_t)(f - p);
+            if (lens >= 2) {
+                binary_set_string(&fbuf, p + 1, lens - 1);
+            }
             break;
         }
         }

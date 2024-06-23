@@ -64,6 +64,10 @@ void binary_set_double(binary_ctx *ctx, double val, int32_t islittle) {
     ctx->offset += sizeof(val);
 }
 void binary_set_string(binary_ctx *ctx, const char *buf, size_t lens) {
+    if (0 == lens
+        || NULL == buf) {
+        return;
+    }
     _binary_expand(ctx, lens);
     memcpy(ctx->data + ctx->offset, buf, lens);
     ctx->offset += lens;
