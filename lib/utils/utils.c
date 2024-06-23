@@ -617,8 +617,8 @@ static char *_format_va(const char *fmt, va_list args) {
             FREE(pbuff);
             return NULL;
         }
-        if ((rtn >= 0)
-            && (rtn < (int32_t)size)) {
+        if (rtn >= 0
+            && rtn < (int32_t)size) {
             return pbuff;
         }
         size = rtn + 1;

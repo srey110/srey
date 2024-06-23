@@ -79,7 +79,7 @@ void binary_set_skip(binary_ctx *ctx, size_t lens) {
 }
 static void _binary_va(binary_ctx *ctx, const char *fmt, va_list args) {
     if (0 == ctx->size - ctx->offset) {
-        _binary_expand(ctx, ctx->inc);
+        _binary_expand(ctx, ctx->inc - 1);
     }
     int32_t rtn;
     size_t size;
@@ -89,8 +89,8 @@ static void _binary_va(binary_ctx *ctx, const char *fmt, va_list args) {
         if (rtn < 0) {
             break;
         }
-        if ((rtn >= 0)
-            && (rtn < (int32_t)size)) {
+        if (rtn >= 0
+            && rtn < (int32_t)size) {
             ctx->offset += rtn;
             break;
         }
