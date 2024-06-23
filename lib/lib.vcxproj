@@ -140,6 +140,7 @@
     <ClCompile Include="srey\task.c" />
     <ClCompile Include="srey\trigger.c" />
     <ClCompile Include="thread\thread.c" />
+    <ClCompile Include="utils\binary.c" />
     <ClCompile Include="utils\buffer.c" />
     <ClCompile Include="utils\log.c" />
     <ClCompile Include="utils\netaddr.c" />

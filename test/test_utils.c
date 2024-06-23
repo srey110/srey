@@ -247,7 +247,7 @@ static void test_system(CuTest* tc) {
     randstr(rdbuf, sizeof(rdbuf) - 1);
     PRINT("randstr: %s", rdbuf);
 
-    char *fmt = formatv("%d-%s", 110, "come");
+    char *fmt = format_va("%d-%s", 110, "come");
     CuAssertTrue(tc, 0 == strcmp(fmt, "110-come"));
     FREE(fmt);
 }

@@ -111,27 +111,22 @@ static void _websock_handshake_server(ev_ctx *ev, SOCKET fd, uint64_t skid, int3
     char *sechead = http_header(hpack, "Sec-WebSocket-Protocol", &lens);
     char b64[B64EN_BLOCK_SIZE(SHA1_BLOCK_SIZE)];
     _websock_sign(signstr->value.data, signstr->value.lens, b64);
-    buffer_ctx buf;
-    buffer_init(&buf);
-    http_pack_resp(&buf, 101);
-    http_pack_head(&buf, "Upgrade", "websocket");
-    http_pack_head(&buf, "Connection", "Upgrade");
-    http_pack_head(&buf, "Sec-WebSocket-Accept", b64);
+    binary_ctx bwriter;
+    binary_init(&bwriter, NULL, 0, 0);
+    http_pack_resp(&bwriter, 101);
+    http_pack_head(&bwriter, "Upgrade", "websocket");
+    http_pack_head(&bwriter, "Connection", "Upgrade");
+    http_pack_head(&bwriter, "Sec-WebSocket-Accept", b64);
     char *secproto = NULL;
     if (NULL != sechead
         && 0 != lens) {
         MALLOC(secproto, lens + 1);
         memcpy(secproto, sechead, lens);
         secproto[lens] = '\0';
-        http_pack_head(&buf, "Sec-WebSocket-Protocol", secproto);
+        http_pack_head(&bwriter, "Sec-WebSocket-Protocol", secproto);
     }
-    http_pack_end(&buf);
-    char *rsp;
-    size_t blens = buffer_size(&buf);
-    MALLOC(rsp, blens);
-    ASSERTAB(blens == buffer_copyout(&buf, 0, rsp, blens), "copy buffer failed.");
-    buffer_free(&buf);
-    ev_send(ev, fd, skid, rsp, blens, 0);
+    http_pack_end(&bwriter);
+    ev_send(ev, fd, skid, bwriter.data, bwriter.offset, 0);
     if (ERR_OK != _hs_push(fd, skid, client, ud, ERR_OK, secproto, lens)) {
         BIT_SET(*status, PROTO_ERROR);
         FREE(secproto);
@@ -494,29 +489,24 @@ char *websock_pack_data(websock_pack_ctx *pack, size_t *lens) {
     return pack->data;
 }
 char *websock_handshake_pack(const char *host, const char *secproto) {
-    buffer_ctx buf;
-    buffer_init(&buf);
-    http_pack_req(&buf, "GET", "/");
+    binary_ctx bwriter;
+    binary_init(&bwriter, NULL, 0, 0);
+    http_pack_req(&bwriter, "GET", "/");
     if (NULL != host
         && 0 != strlen(host)) {
-        http_pack_head(&buf, "Host", host);
+        http_pack_head(&bwriter, "Host", host);
     }
-    http_pack_head(&buf, "Upgrade", "websocket");
-    http_pack_head(&buf, "Connection", "Upgrade,Keep-Alive");
-    http_pack_head(&buf, "Sec-WebSocket-Key", _hs_key);
-    http_pack_head(&buf, "Sec-WebSocket-Version", "13");
+    http_pack_head(&bwriter, "Upgrade", "websocket");
+    http_pack_head(&bwriter, "Connection", "Upgrade,Keep-Alive");
+    http_pack_head(&bwriter, "Sec-WebSocket-Key", _hs_key);
+    http_pack_head(&bwriter, "Sec-WebSocket-Version", "13");
     if (NULL != secproto
         && 0 != strlen(host)) {
-        http_pack_head(&buf, "Sec-WebSocket-Protocol", secproto);
+        http_pack_head(&bwriter, "Sec-WebSocket-Protocol", secproto);
     }
-    http_pack_end(&buf);
-    size_t lens = buffer_size(&buf);
-    char *data;
-    MALLOC(data, lens + 1);
-    ASSERTAB(lens == buffer_copyout(&buf, 0, data, lens), "copy buffer failed.");
-    buffer_free(&buf);
-    data[lens] = '\0';
-    return data;
+    http_pack_end(&bwriter);
+    bwriter.data[bwriter.offset] = '\0';
+    return bwriter.data;
 }
 void _websock_init(void *hspush) {
     _hs_push = (_handshaked_push)hspush;

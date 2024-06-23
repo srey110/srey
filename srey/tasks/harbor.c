@@ -56,24 +56,19 @@ static void _harbor_free(void *arg) {
     FREE(hbctx);
 }
 static void _harbor_response(task_ctx *harbor, SOCKET fd, uint64_t skid, char *respdata, size_t lens, int32_t code) {
-    buffer_ctx buffer;
-    buffer_init(&buffer);
-    http_pack_resp(&buffer, code);
-    http_pack_head(&buffer, "Server", "Srey");
+    binary_ctx bwriter;
+    binary_init(&bwriter, NULL, 0, 0);
+    http_pack_resp(&bwriter, code);
+    http_pack_head(&bwriter, "Server", "Srey");
     if (NULL != respdata) {
-        http_pack_head(&buffer, "Content-Type", "application/octet-stream");
-        http_pack_content(&buffer, respdata, lens);
+        http_pack_head(&bwriter, "Content-Type", "application/octet-stream");
+        http_pack_content(&bwriter, respdata, lens);
     } else {
-        http_pack_head(&buffer, "Content-Type", "text/plain");
+        http_pack_head(&bwriter, "Content-Type", "text/plain");
         const char *erro = http_code_status(code);
-        http_pack_content(&buffer, (void *)erro, strlen(erro));
+        http_pack_content(&bwriter, (void *)erro, strlen(erro));
     }
-    char *data;
-    size_t size = buffer_size(&buffer);
-    MALLOC(data, size);
-    buffer_copyout(&buffer, 0, data, size);
-    ev_send(&harbor->scheduler->netev, fd, skid, data, size, 0);
-    buffer_free(&buffer);
+    ev_send(&harbor->scheduler->netev, fd, skid, bwriter.data, bwriter.offset, 0);
 }
 static int32_t _check_sign(harbor_ctx *hbctx, struct http_pack_ctx *pack, buf_ctx *url, char *reqdata, size_t reqlens) {
     size_t klens = strlen(hbctx->signkey);
@@ -255,13 +250,13 @@ int32_t harbor_start(scheduler_ctx *scheduler, name_t tname, name_t ssl,
     }
     return ERR_OK;
 }
-static void _harbor_sign(buffer_ctx *buf, const char *key, const char *url, void *data, size_t size) {
+static void _harbor_sign(binary_ctx *bwriter, const char *key, const char *url, void *data, size_t size) {
     size_t klens = strlen(key);
     if (0 == klens) {
         return;
     }
-    char tms[64] = {0};
-    SNPRINTF(tms, sizeof(tms) - 1, "%"PRIu64, nowsec());
+    char tms[64];
+    SNPRINTF(tms, sizeof(tms), "%"PRIu64, nowsec());
     size_t ulens = strlen(url);
     size_t tslens = strlen(tms);
     size_t lens = ulens + size + tslens;
@@ -280,27 +275,23 @@ static void _harbor_sign(buffer_ctx *buf, const char *key, const char *url, void
     hmac_final(&hmac, hs);
     tohex(hs, sizeof(hs), hexhs);
     FREE(sbuf);
-    http_pack_head(buf, "X-Timestamp", tms);
-    http_pack_head(buf, "Authorization", hexhs);
+    http_pack_head(bwriter, "X-Timestamp", tms);
+    http_pack_head(bwriter, "Authorization", hexhs);
 }
 void *harbor_pack(name_t task, int32_t call, uint8_t reqtype, const char *key, void *data, size_t size, size_t *lens) {
-    char url[128] = {0};
+    char url[512];
     if (0 != call) {
-        SNPRINTF(url, sizeof(url) - 1, "/call?dst=%d&type=%d", task, reqtype);
+        SNPRINTF(url, sizeof(url), "/call?dst=%d&type=%d", task, reqtype);
     } else {
-        SNPRINTF(url, sizeof(url) - 1, "/request?dst=%d&type=%d", task, reqtype);
+        SNPRINTF(url, sizeof(url), "/request?dst=%d&type=%d", task, reqtype);
     }
-    buffer_ctx buf;
-    buffer_init(&buf);
-    http_pack_req(&buf, "POST", url);
-    http_pack_head(&buf, "Connection", "Keep-Alive");
-    http_pack_head(&buf, "Content-Type", "application/octet-stream");
-    _harbor_sign(&buf, key, url, data, size);
-    http_pack_content(&buf, data, size);
-    char *hpack;
-    *lens = buffer_size(&buf);
-    MALLOC(hpack, *lens);
-    buffer_copyout(&buf, 0, hpack, *lens);
-    buffer_free(&buf);
-    return hpack;
+    binary_ctx bwriter;
+    binary_init(&bwriter, NULL, 0, 0);
+    http_pack_req(&bwriter, "POST", url);
+    http_pack_head(&bwriter, "Connection", "Keep-Alive");
+    http_pack_head(&bwriter, "Content-Type", "application/octet-stream");
+    _harbor_sign(&bwriter, key, url, data, size);
+    http_pack_content(&bwriter, data, size);
+    *lens = bwriter.offset;
+    return bwriter.data;
 }

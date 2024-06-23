@@ -6,19 +6,14 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, 
     int32_t chunck = http_chunked(data);
     switch (chunck) {
     case 0: {
-        buffer_ctx buf;
-        buffer_init(&buf);
-        http_pack_resp(&buf, 200);
-        http_pack_head(&buf, "Service", "Srey");
+        binary_ctx bwriter;
+        binary_init(&bwriter, NULL, 0, 0);
+        http_pack_resp(&bwriter, 200);
+        http_pack_head(&bwriter, "Service", "Srey");
         char time[TIME_LENS];
         sectostr(nowsec(), "%Y-%m-%d %H:%M:%S", time);
-        http_pack_content(&buf, time, strlen(time));
-        char *httpdata;
-        size_t lens = buffer_size(&buf);
-        MALLOC(httpdata, lens);
-        buffer_copyout(&buf, 0, httpdata, lens);
-        ev_send(&task->scheduler->netev, fd, skid, httpdata, lens, 0);
-        buffer_free(&buf);
+        http_pack_content(&bwriter, time, strlen(time));
+        ev_send(&task->scheduler->netev, fd, skid, bwriter.data, bwriter.offset, 0);
         break;
     }
     case 1: {

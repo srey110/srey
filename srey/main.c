@@ -5,8 +5,8 @@ static FILE *logstream = NULL;
 static mutex_ctx muexit;
 static cond_ctx condexit;
 static char *_config_read(void) {
-    char config[PATH_LENS] = { 0 };
-    SNPRINTF(config, sizeof(config) - 1, "%s%s%s%s%s",
+    char config[PATH_LENS];
+    SNPRINTF(config, sizeof(config), "%s%s%s%s%s",
              procpath(), PATH_SEPARATORSTR, "configs", PATH_SEPARATORSTR, "config.json");
     FILE *file = fopen(config, "r");
     if (NULL == file) {
@@ -107,8 +107,8 @@ static void _parse_config(config_ctx *cnf) {
     cJSON_Delete(json);
 }
 static void _open_log(void) {
-    char logfile[PATH_LENS] = { 0 };
-    SNPRINTF(logfile, sizeof(logfile) - 1, "%s%s%s%s", procpath(), PATH_SEPARATORSTR, "logs", PATH_SEPARATORSTR);
+    char logfile[PATH_LENS];
+    SNPRINTF(logfile, sizeof(logfile), "%s%s%s%s", procpath(), PATH_SEPARATORSTR, "logs", PATH_SEPARATORSTR);
     if (ERR_OK != ACCESS(logfile, 0)) {
         if (ERR_OK != MKDIR(logfile)) {
             log_init(NULL);
@@ -118,7 +118,7 @@ static void _open_log(void) {
     size_t lens = strlen(logfile);
     char time[TIME_LENS] = { 0 };
     sectostr(nowsec(), "%Y-%m-%d %H-%M-%S", time);
-    SNPRINTF((char*)logfile + lens, sizeof(logfile) - lens - 1, "%s%s", time, ".log");
+    SNPRINTF((char*)logfile + lens, sizeof(logfile) - lens, "%s%s", time, ".log");
     logstream = fopen(logfile, "a");
     log_init(logstream);
 }
@@ -310,10 +310,10 @@ static BOOL wsv_install(LPCTSTR name) {
     if (!scm) {
         return FALSE;
     }
-    char tmp[PATH_LENS] = { 0 };
+    char tmp[PATH_LENS];
     char propath[PATH_LENS] = { 0 };
     GetModuleFileName(NULL, propath, sizeof(propath));
-    SNPRINTF(tmp, sizeof(tmp) - 1, "\"%s\" \"-r\" \"%s\"", propath, name);
+    SNPRINTF(tmp, sizeof(tmp), "\"%s\" \"-r\" \"%s\"", propath, name);
     SC_HANDLE service = CreateService(scm,
                                       name,
                                       name,
@@ -363,8 +363,8 @@ static void _useage(void) {
 }
 #else
 static void _stop_sh(const char *sh) {
-    char cmd[64] = { 0 };
-    SNPRINTF(cmd, sizeof(cmd) - 1, "kill -%d %d\n", SIGUSR1, (int32_t)getpid());
+    char cmd[128];
+    SNPRINTF(cmd, sizeof(cmd), "kill -%d %d\n", SIGUSR1, (int32_t)getpid());
     FILE *file = fopen(sh, "w");
     if (NULL == file) {
         return;
@@ -430,8 +430,8 @@ int main(int argc, char *argv[]) {
     }
     pid_t pid = fork();
     if (0 == pid) {
-        char sh[PATH_LENS] = { 0 };
-        SNPRINTF(sh, sizeof(sh) - 1, "%s%s%s", procpath(), PATH_SEPARATORSTR, "stop.sh");
+        char sh[PATH_LENS];
+        SNPRINTF(sh, sizeof(sh), "%s%s%s", procpath(), PATH_SEPARATORSTR, "stop.sh");
         _stop_sh(sh);
         int32_t rtn = service_hug();
         remove(sh);

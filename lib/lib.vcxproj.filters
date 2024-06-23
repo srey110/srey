@@ -426,5 +426,8 @@
     <ClCompile Include="crypt\hmac.c">
       <Filter>crypt</Filter>
     </ClCompile>
+    <ClCompile Include="utils\binary.c">
+      <Filter>utils</Filter>
+    </ClCompile>
   </ItemGroup>
 </Project>

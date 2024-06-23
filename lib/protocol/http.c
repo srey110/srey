@@ -322,8 +322,8 @@ void *http_data(http_pack_ctx *pack, size_t *lens) {
     *lens = pack->data.lens;
     return pack->data.data;
 }
-void http_pack_req(buffer_ctx *buf, const char *method, const char *url) {
-    buffer_appendv(buf, "%s %s HTTP/1.1"FLAG_CRLF, method, url);
+void http_pack_req(binary_ctx *bwriter, const char *method, const char *url) {
+    binary_set_va(bwriter, "%s %s HTTP/1.1"FLAG_CRLF, method, url);
 }
 const char *http_code_status(int32_t code) {
     switch (code) {
@@ -371,30 +371,30 @@ const char *http_code_status(int32_t code) {
         return "Unknown";
     }
 }
-void http_pack_resp(buffer_ctx *buf, int32_t code) {
-    buffer_appendv(buf, "HTTP/1.1 %d %s"FLAG_CRLF, code, http_code_status(code));
+void http_pack_resp(binary_ctx *bwriter, int32_t code) {
+    binary_set_va(bwriter, "HTTP/1.1 %d %s"FLAG_CRLF, code, http_code_status(code));
 }
-void http_pack_head(buffer_ctx *buf, const char *key, const char *val) {
-    buffer_appendv(buf, "%s: %s"FLAG_CRLF, key, val);
+void http_pack_head(binary_ctx *bwriter, const char *key, const char *val) {
+    binary_set_va(bwriter, "%s: %s"FLAG_CRLF, key, val);
 }
-void http_pack_end(buffer_ctx *buf) {
-    buffer_append(buf, FLAG_CRLF, CRLF_SIZE);
+void http_pack_end(binary_ctx *bwriter) {
+    binary_set_va(bwriter, FLAG_CRLF, CRLF_SIZE);
 }
-void http_pack_content(buffer_ctx *buf, void *data, size_t lens) {
+void http_pack_content(binary_ctx *bwriter, void *data, size_t lens) {
     if (NULL != data) {
-        buffer_appendv(buf, "Content-Length: %d"CONCAT2(FLAG_CRLF, FLAG_CRLF), (uint32_t)lens);
-        buffer_append(buf, data, lens);
+        binary_set_va(bwriter, "Content-Length: %d"CONCAT2(FLAG_CRLF, FLAG_CRLF), (uint32_t)lens);
+        binary_set_string(bwriter, data, lens);
     } else {
-        buffer_appendv(buf, "%s", "Content-Length: 0"CONCAT2(FLAG_CRLF, FLAG_CRLF));
+        binary_set_va(bwriter, "%s", "Content-Length: 0"CONCAT2(FLAG_CRLF, FLAG_CRLF));
     }
 }
-void http_pack_chunked(buffer_ctx *buf, void *data, size_t lens) {
-    if (buffer_size(buf) > 0){
-        buffer_appendv(buf, "Transfer-Encoding: Chunked"CONCAT2(FLAG_CRLF, FLAG_CRLF));
+void http_pack_chunked(binary_ctx *bwriter, void *data, size_t lens) {
+    if (bwriter->offset > 0){
+        binary_set_va(bwriter, "Transfer-Encoding: Chunked"CONCAT2(FLAG_CRLF, FLAG_CRLF));
     }
-    buffer_appendv(buf, "%x"FLAG_CRLF, (uint32_t)lens);
+    binary_set_va(bwriter, "%x"FLAG_CRLF, (uint32_t)lens);
     if (lens > 0) {
-        buffer_append(buf, data, lens);
+        binary_set_string(bwriter, data, lens);
     }
-    buffer_append(buf, FLAG_CRLF, CRLF_SIZE);
+    binary_set_string(bwriter, FLAG_CRLF, CRLF_SIZE);
 }

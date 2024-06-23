@@ -13,7 +13,7 @@ typedef struct bufnode_ctx {
 
 #define MAX_COPY_IN_EXPAND       4096
 #define MAX_REALIGN_IN_EXPAND    2048
-#define FIRST_FORMAT_IN_EXPAND   64
+#define FIRST_FORMAT_IN_EXPAND   256
 #define NODE_SPACE_PTR(ch) ((ch)->buffer + (ch)->misalign + (ch)->off)
 #define NODE_SPACE_LEN(ch) ((ch)->buffer_lens - ((ch)->misalign + (ch)->off))
 #define RECOED_IOV(ch, lens) \
@@ -345,8 +345,13 @@ int32_t buffer_appendv(buffer_ctx *ctx, const char *fmt, ...) {
     while (1) {
         size = (int32_t)NODE_SPACE_LEN(node);
         rtn = vsnprintf(NODE_SPACE_PTR(node), (size_t)size, fmt, va);
-        if ((rtn > -1)
-            && (rtn < size)) {
+        if (rtn < 0) {
+            node->used = 0;
+            va_end(va);
+            return ERR_FAILED;
+        }
+        if (rtn >= 0
+            && rtn < size) {
             node->used = 0;
             node->off += rtn;
             ctx->total_lens += rtn;

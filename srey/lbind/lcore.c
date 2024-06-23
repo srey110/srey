@@ -221,20 +221,20 @@ static int32_t _lcore_cert_register(lua_State *lua) {
     } else  {
         verify = VERIFY_NONE;
     }
-    char capath[PATH_LENS] = { 0 };
-    char certpath[PATH_LENS] = { 0 };
-    char keypath[PATH_LENS] = { 0 };
+    char capath[PATH_LENS];
+    char certpath[PATH_LENS];
+    char keypath[PATH_LENS];
     const char *propath = global_string(lua, PATH_NAME);
     if (0 != strlen(ca)) {
-        SNPRINTF(capath, sizeof(capath) - 1, "%s%s%s%s%s",
+        SNPRINTF(capath, sizeof(capath), "%s%s%s%s%s",
             propath, PATH_SEPARATORSTR, CERT_FOLDER, PATH_SEPARATORSTR, ca);
     }
     if (0 != strlen(cert)) {
-        SNPRINTF(certpath, sizeof(certpath) - 1, "%s%s%s%s%s",
+        SNPRINTF(certpath, sizeof(certpath), "%s%s%s%s%s",
             propath, PATH_SEPARATORSTR, CERT_FOLDER, PATH_SEPARATORSTR, cert);
     }
     if (0 != strlen(key)) {
-        SNPRINTF(keypath, sizeof(keypath) - 1, "%s%s%s%s%s",
+        SNPRINTF(keypath, sizeof(keypath), "%s%s%s%s%s",
             propath, PATH_SEPARATORSTR, CERT_FOLDER, PATH_SEPARATORSTR, key);
     }
     evssl_ctx *ssl = evssl_new(capath, certpath, keypath, keytype, verify);
@@ -265,10 +265,10 @@ static int32_t _lcore_p12_register(lua_State *lua) {
     } else  {
         verify = VERIFY_NONE;
     }
-    char p12path[PATH_LENS] = { 0 };
+    char p12path[PATH_LENS];
     if (0 != strlen(p12)) {
         const char *propath = global_string(lua, PATH_NAME);
-        SNPRINTF(p12path, sizeof(p12path) - 1, "%s%s%s%s%s",
+        SNPRINTF(p12path, sizeof(p12path), "%s%s%s%s%s",
             propath, PATH_SEPARATORSTR, CERT_FOLDER, PATH_SEPARATORSTR, p12);
     }
     evssl_ctx *ssl = evssl_p12_new(p12path, pwd, verify);

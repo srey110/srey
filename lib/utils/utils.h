@@ -66,8 +66,7 @@ char *tohex(const void *buf, size_t len, char *out);
 //返回值需要free
 struct buf_ctx *split(const void *ptr, size_t plens, const void *sep, size_t seplens, size_t *n);
 //变参 返回值需要free
-char *formatargs(const char *fmt, va_list args);
-char *formatv(const char *fmt, ...);
+char *format_va(const char *fmt, ...);
 int32_t is_little(void);
 //数字 char* 转换
 void pack_integer(char *buf, uint64_t val, int32_t size, int32_t islittle);

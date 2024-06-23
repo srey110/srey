@@ -17,7 +17,7 @@
 #include "task_mysql.h"
 
 #ifdef OS_WIN
-#include "vld.h"
+//#include "vld.h"
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "lib.lib")
 #if WITH_SSL
@@ -60,16 +60,16 @@ int main(int argc, char *argv[]) {
     g_scheduler = scheduler_init(1, 2);
 #if WITH_SSL
     const char *local = procpath();
-    char ca[PATH_LENS] = { 0 };
-    char svcrt[PATH_LENS] = { 0 };
-    char svkey[PATH_LENS] = { 0 };
-    char p12[PATH_LENS] = { 0 };
-    SNPRINTF(ca, sizeof(ca) - 1, "%s%s%s%s%s", local, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, "ca.crt");
-    SNPRINTF(svcrt, sizeof(svcrt) - 1, "%s%s%s%s%s", local, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, "sever.crt");
-    SNPRINTF(svkey, sizeof(svkey) - 1, "%s%s%s%s%s", local, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, "sever.key");
+    char ca[PATH_LENS];
+    char svcrt[PATH_LENS];
+    char svkey[PATH_LENS];
+    char p12[PATH_LENS];
+    SNPRINTF(ca, sizeof(ca), "%s%s%s%s%s", local, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, "ca.crt");
+    SNPRINTF(svcrt, sizeof(svcrt), "%s%s%s%s%s", local, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, "sever.crt");
+    SNPRINTF(svkey, sizeof(svkey), "%s%s%s%s%s", local, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, "sever.key");
     evssl_ctx *ssl = evssl_new(ca, svcrt, svkey, SSL_FILETYPE_PEM, 0);
     srey_ssl_register(g_scheduler, 100, ssl);
-    SNPRINTF(p12, sizeof(p12) - 1, "%s%s%s%s%s", local, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, "client.p12");
+    SNPRINTF(p12, sizeof(p12), "%s%s%s%s%s", local, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, "client.p12");
     ssl = evssl_p12_new(p12, "srey", 0);
     srey_ssl_register(g_scheduler, 101, ssl);
     ssl = evssl_new(NULL, NULL, NULL, SSL_FILETYPE_PEM, 0);

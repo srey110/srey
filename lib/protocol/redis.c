@@ -1,5 +1,6 @@
 #include "protocol/redis.h"
 #include "protocol/protos.h"
+#include "utils/binary.h"
 
 typedef struct reader_ctx {
     redis_pack_ctx *head;
@@ -12,7 +13,7 @@ typedef struct reader_ctx {
     lens = (size_t)(f - p) + 1;\
     memcpy(_fmt, p, lens);\
     _fmt[lens] = '\0';\
-    buffer_appendv(&fbuf, _fmt, va_arg(args, type))
+    binary_set_va(&fbuf, _fmt, va_arg(args, type))
 
 void _redis_pkfree(redis_pack_ctx *pack) {
     if (NULL == pack) {
@@ -34,25 +35,21 @@ void _redis_udfree(ud_cxt *ud) {
     FREE(rd);
     ud->extra = NULL;
 }
-static inline void _create_sds(buffer_ctx *fbuf, buffer_ctx *sdsbuf, size_t *n) {
-    size_t lens = buffer_size(fbuf);
-    if (0 == lens) {
+static inline void _create_sds(binary_ctx *fbuf, binary_ctx *sdsbuf, size_t *n) {
+    if (0 == fbuf->offset) {
         return;
     }
-    char *buf;
-    MALLOC(buf, lens);
-    buffer_remove(fbuf, buf, lens);
-    buffer_appendv(sdsbuf, "$%u"FLAG_CRLF, (uint32_t)lens);
-    buffer_append(sdsbuf, buf, lens);
-    buffer_append(sdsbuf, FLAG_CRLF, CRLF_SIZE);
-    FREE(buf);
+    binary_set_va(sdsbuf, "$%u"FLAG_CRLF, (uint32_t)fbuf->offset);
+    binary_set_string(sdsbuf, fbuf->data, fbuf->offset);
+    binary_set_string(sdsbuf, FLAG_CRLF, CRLF_SIZE);
+    binary_offset(fbuf, 0);
     (*n)++;
 }
 static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
     size_t lens, n = 0;
-    buffer_ctx fbuf, sdsbuf;
-    buffer_init(&fbuf);
-    buffer_init(&sdsbuf);
+    binary_ctx fbuf, sdsbuf;
+    binary_init(&fbuf, NULL, 0, 0);
+    binary_init(&sdsbuf, NULL, 0, 0);
     char *p;
     char _fmt[64];
     char *f = (char *)fmt;
@@ -64,7 +61,7 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
             while ('\0' != *f && '%' != *f && ' ' != *f) f++;
             lens = (size_t)(f - p);
             if (lens > 0) {
-                buffer_append(&fbuf, p, lens);
+                binary_set_string(&fbuf, p, lens);
             }
             if ('\0' == *f || ' ' == *f) {
                 _create_sds(&fbuf, &sdsbuf, &n);
@@ -77,7 +74,7 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
         p = f;
         f++;
         if ('\0' == *f) {
-            buffer_append(&fbuf, "%", 1);
+            binary_set_string(&fbuf, "%", 1);
             break;
         }
         //Ìø¹ýÇ°×º
@@ -88,11 +85,11 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
             while ('\0' != *f && isdigit((int)*f)) f++;
         }
         if ('\0' == *f) {
-            buffer_append(&fbuf, p, (size_t)(f - p));
+            binary_set_string(&fbuf, p, (size_t)(f - p));
             break;
         }
         if ((size_t)(f - p) + 3 >= sizeof(_fmt)) {
-            buffer_append(&fbuf, p, (size_t)(f - p));
+            binary_set_string(&fbuf, p, (size_t)(f - p));
             continue;
         }
         switch (*f) {
@@ -105,7 +102,7 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
             char *val = va_arg(args, char *);
             lens = va_arg(args, size_t);
             if (lens > 0) {
-                buffer_append(&fbuf, val, lens);
+                binary_set_string(&fbuf, val, lens);
             }
             f++;
             break;
@@ -121,7 +118,7 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
             break;
         }
         case '%': {
-            buffer_append(&fbuf, "%", 1);
+            binary_set_string(&fbuf, "%", 1);
             f++;
             break;
         }
@@ -145,7 +142,7 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
                     FMT_TYPE(int);
                     f++;
                 } else {
-                    buffer_append(&fbuf, p, (size_t)(f - p));
+                    binary_set_string(&fbuf, p, (size_t)(f - p));
                 }
                 break;
             }
@@ -156,7 +153,7 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
                     FMT_TYPE(int);
                     f++;
                 } else {
-                    buffer_append(&fbuf, p, (size_t)(f - p));
+                    binary_set_string(&fbuf, p, (size_t)(f - p));
                 }
                 break;
             }
@@ -167,7 +164,7 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
                     FMT_TYPE(long long);
                     f++;
                 } else {
-                    buffer_append(&fbuf, p, (size_t)(f - p));
+                    binary_set_string(&fbuf, p, (size_t)(f - p));
                 }
                 break;
             }
@@ -178,27 +175,26 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
                     FMT_TYPE(long);
                     f++;
                 } else {
-                    buffer_append(&fbuf, p, (size_t)(f - p));
+                    binary_set_string(&fbuf, p, (size_t)(f - p));
                 }
                 break;
             }
-            buffer_append(&fbuf, p, (size_t)(f - p));
+            binary_set_string(&fbuf, p, (size_t)(f - p));
             break;
         }
         }
     }
     _create_sds(&fbuf, &sdsbuf, &n);
-    SNPRINTF(_fmt, sizeof(_fmt) - 1, "*%d"FLAG_CRLF, (int32_t)n);
+    SNPRINTF(_fmt, sizeof(_fmt), "*%d"FLAG_CRLF, (int32_t)n);
     size_t hlens = strlen(_fmt);
-    lens = buffer_size(&sdsbuf);
-    *size = lens + hlens;
+    *size = sdsbuf.offset + hlens;
     char *buf;
     MALLOC(buf, *size + 1);
     memcpy(buf, _fmt, hlens);
-    buffer_copyout(&sdsbuf, 0, buf + hlens, lens);
+    memcpy(buf + hlens, sdsbuf.data, sdsbuf.offset);
     buf[*size] = '\0';
-    buffer_free(&fbuf);
-    buffer_free(&sdsbuf);
+    FREE(fbuf.data);
+    FREE(sdsbuf.data);
     return buf;
 }
 //%b:binary - size_t %%:%  C format

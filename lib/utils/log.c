@@ -49,7 +49,7 @@ static void _slog(int32_t lv, const char *fmt, va_list args) {
     char time[TIME_LENS] = { 0 };
     mstostr(nowms(), "%Y-%m-%d %H:%M:%S", time);
     char out[4096];
-    vsnprintf(out, sizeof(out) - 1, fmt, args);
+    vsnprintf(out, sizeof(out), fmt, args);
     if (NULL == _handle) {
 #ifdef OS_WIN
         switch (lv) {

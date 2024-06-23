@@ -62,7 +62,7 @@ static lua_State *_ltask_luainit(task_ctx *task) {
 }
 static inline void _ltask_fmtfile(const char *file, char *path) {
     ZERO(path, PATH_LENS);
-    SNPRINTF(path, PATH_LENS - 1, "%s%s.lua", luapath, file);
+    SNPRINTF(path, PATH_LENS, "%s%s.lua", luapath, file);
 }
 static int32_t _ltask_searchfile(const char *file, char *path) {
     _ltask_fmtfile(file, path);
@@ -97,7 +97,7 @@ static int32_t _ltask_dofile(lua_State *lua, const char *file) {
 }
 int32_t ltask_startup(void) {
     LOG_INFO(LUA_RELEASE);
-    SNPRINTF(luapath, sizeof(luapath) - 1, "%s%s%s%s",
+    SNPRINTF(luapath, sizeof(luapath), "%s%s%s%s",
              procpath(), PATH_SEPARATORSTR, SCRIPT_FOLDER, PATH_SEPARATORSTR);
     lua_State *lua = _ltask_luainit(NULL);
     if (NULL == lua) {

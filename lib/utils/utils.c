@@ -45,8 +45,8 @@ static BOOL _EnablePrivilege(LPCTSTR priv, HANDLE handle, TOKEN_PRIVILEGES *priv
     return AdjustTokenPrivileges(handle, FALSE, &tpriv, dsize, privold, &dsize);
 }
 static LONG __stdcall _MiniDump(struct _EXCEPTION_POINTERS *excep) {
-    char acdmp[PATH_LENS] = { 0 };
-    SNPRINTF(acdmp, sizeof(acdmp) - 1, "%s%s%lld_%d.dmp",
+    char acdmp[PATH_LENS];
+    SNPRINTF(acdmp, sizeof(acdmp), "%s%s%lld_%d.dmp",
              procpath(), PATH_SEPARATORSTR, nowsec(), (int32_t)ATOMIC_ADD(&_exindex, 1));
     HANDLE ptoken = NULL;
     if (!_GetImpersonationToken(&ptoken)) {
@@ -262,8 +262,8 @@ static int32_t _get_procpath(char path[PATH_LENS]) {
         return ERR_FAILED;
     }
 #elif defined(OS_SUN)  
-    char in[64] = { 0 };
-    SNPRINTF(in, sizeof(in) - 1, "/proc/%d/path/a.out", (uint32_t)getpid());
+    char in[64];
+    SNPRINTF(in, sizeof(in), "/proc/%d/path/a.out", (uint32_t)getpid());
     if (0 > readlink(in, path, len - 1)) {
         return ERR_FAILED;
     }
@@ -367,7 +367,7 @@ void mstostr(uint64_t ms, const char *fmt, char time[TIME_LENS]) {
     time_t t = (time_t)(ms / 1000);
     strftime(time, TIME_LENS - 1, fmt, localtime(&t));
     size_t uilen = strlen(time);
-    SNPRINTF(time + uilen, TIME_LENS - uilen - 1, " %03d", (int32_t)(ms % 1000));
+    SNPRINTF(time + uilen, TIME_LENS - uilen, " %03d", (int32_t)(ms % 1000));
 }
 uint64_t strtots(const char *time, const char *fmt) {
     struct tm dttm;
@@ -606,27 +606,29 @@ buf_ctx *split(const void *ptr, size_t plens, const void *sep, size_t seplens, s
     } while (NULL != pos && plens > 0);
     return buf;
 }
-char *formatargs(const char *fmt, va_list args) {
-    int32_t num;
+static char *_format_va(const char *fmt, va_list args) {
+    int32_t rtn;
     size_t size = 256;
     char *pbuff;
-    CALLOC(pbuff, 1, size);    
+    MALLOC(pbuff, size);
     while (1) {
-        num = vsnprintf(pbuff, size, fmt, args);
-        if ((num > -1)
-            && (num < (int32_t)size)) {
+        rtn = vsnprintf(pbuff, size, fmt, args);
+        if (rtn < 0) {
+            FREE(pbuff);
+            return NULL;
+        }
+        if ((rtn >= 0)
+            && (rtn < (int32_t)size)) {
             return pbuff;
         }
-        FREE(pbuff);
-        //分配更大空间
-        size = (num > -1) ? (num + 1) : size * 2;
-        CALLOC(pbuff, 1, size);
+        size = rtn + 1;
+        REALLOC(pbuff, pbuff, size);
     }
 }
-char *formatv(const char *fmt, ...) {
+char *format_va(const char *fmt, ...) {
     va_list args;
     va_start(args, fmt);
-    char *buf = formatargs(fmt, args);
+    char *buf = _format_va(fmt, args);
     va_end(args);
     return buf;
 }
