@@ -6,9 +6,9 @@ typedef struct th_ctx {
 }th_ctx;
 
 #if defined(OS_WIN)
-static uint32_t __stdcall _funccb(void *arg) {
+static uint32_t __stdcall _thread_cb(void *arg) {
 #else
-static void *_funccb(void *arg) {
+static void *_thread_cb(void *arg) {
 #endif
     th_ctx *th = (th_ctx *)arg;
     th->th_cb(th->udata);
@@ -26,10 +26,10 @@ pthread_t thread_creat(void(*cb)(void*), void *udata) {
     th->udata = udata;
     pthread_t pthread;
 #if defined(OS_WIN)
-    pthread = (HANDLE)_beginthreadex(NULL, 0, _funccb, (void*)th, 0, NULL);
+    pthread = (HANDLE)_beginthreadex(NULL, 0, _thread_cb, (void*)th, 0, NULL);
     ASSERTAB(NULL != pthread, ERRORSTR(ERRNO));
 #else
-    ASSERTAB((ERR_OK == pthread_create(&pthread, NULL, _funccb, (void*)th)),
+    ASSERTAB((ERR_OK == pthread_create(&pthread, NULL, _thread_cb, (void*)th)),
         ERRORSTR(ERRNO));
 #endif
     return pthread;

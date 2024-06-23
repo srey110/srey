@@ -440,7 +440,7 @@ static struct pip_ctx *_new_pips(uint32_t npipes) {
     MALLOC(pips, sizeof(pip_ctx) * npipes);
     for (uint32_t i = 0; i < npipes; i++) {
         ASSERTAB(ERR_OK == pipe(pips[i].pipes), ERRORSTR(ERRNO));
-        ASSERTAB(ERR_OK == sock_nbio(pips[i].pipes[0]), ERRORSTR(ERRNO));
+        ASSERTAB(ERR_OK == sock_nonblock(pips[i].pipes[0]), ERRORSTR(ERRNO));
     }
     return pips;
 }

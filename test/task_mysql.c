@@ -6,6 +6,11 @@ static int32_t _prt = 0;
 static mysql_ctx _mysql;
 static mysql_bind_ctx _bind;
 
+static void _net_connect(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, int32_t erro) {
+    if (_prt) {
+        LOG_INFO("mysql connect: %d", erro);
+    }
+}
 static void _net_close(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, uint8_t client) {
     if (_prt) {
         LOG_INFO("mysql connection closed.");
@@ -225,6 +230,7 @@ static void _timeout(task_ctx *task, uint64_t sess) {
 }
 static void _startup(task_ctx *task) {
     on_closed(task, _net_close);
+    on_connected(task, _net_connect);
     struct evssl_ctx *evssl = NULL;
 #if WITH_SSL
     evssl = srey_ssl_qury(task->scheduler, 102);
@@ -234,7 +240,7 @@ static void _startup(task_ctx *task) {
         return;
     }
     if (ERR_OK != mysql_connect(task, &_mysql)) {
-        LOG_ERROR("connect mysql error.");
+        LOG_ERROR("mysql connect error. %s", mysql_erro(&_mysql, NULL));
         return;
     }
     if (_prt) {

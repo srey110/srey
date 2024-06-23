@@ -265,8 +265,8 @@ static void test_crypt_other(CuTest* tc) {
     MALLOC(de, B64DE_BLOCK_SIZE(strlen(en)));
     size_t bdelen = bs64_decode(en, strlen(en), de);
     CuAssertTrue(tc, 0 == strcmp(de, str));
-    const char *de2 = "\r\nUkhkek5qYzFPRmhIUzFkSE1FOUxNVXhPVEVRe\r\nVNEUkVVVFJ6NUxpdDVwYUhSa05UVldSYU9GSktSa3h2Tms5WVls\nQm1hRFJrWW0xVFFVTlphVTFWTUhCUWVGVTBOR0k\r\n=";
-    bdelen = bs64_decode(en, strlen(en), de);
+    const char *en2 = "\r\nUkhkek5qYzFPRmhIUzFkSE1FOUxNVXhPVEVRe\r\nVNEUkVVVFJ6NUxpdDVwYUhSa05UVldSYU9GSktSa3h2Tms5WVls\nQm1hRFJrWW0xVFFVTlphVTFWTUhCUWVGVTBOR0k\r\n=";
+    bdelen = bs64_decode(en2, strlen(en2), de);
     CuAssertTrue(tc, 0 == strcmp(de, str));
     FREE(en);
 

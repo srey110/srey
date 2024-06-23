@@ -99,7 +99,7 @@ int32_t sock_nodelay(SOCKET fd) {
     }
     return ERR_OK;
 }
-int32_t sock_nbio(SOCKET fd) {
+int32_t sock_nonblock(SOCKET fd) {
 #if defined(OS_WIN)
     u_long flag = 1;
     if (ioctlsocket(fd, FIONBIO, &flag) < ERR_OK) {
@@ -118,19 +118,12 @@ int32_t sock_nbio(SOCKET fd) {
 #endif
     return ERR_OK;
 }
-int32_t sock_raddr(SOCKET fd) {
+int32_t sock_reuseaddr(SOCKET fd) {
     int32_t flag = 1;
     if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (char *)&flag, (int32_t)sizeof(flag)) < ERR_OK) {
         return ERR_FAILED;
     }
     return ERR_OK;
-}
-int32_t sock_checkrport(void) {
-#ifdef SO_REUSEPORT
-    return ERR_OK;
-#else
-    return ERR_FAILED;
-#endif
 }
 int32_t sock_reuseport(SOCKET fd) {
 #ifdef SO_REUSEPORT
@@ -141,7 +134,7 @@ int32_t sock_reuseport(SOCKET fd) {
 #endif 
    return ERR_OK;
 }
-int32_t sock_kpa(SOCKET fd, const int32_t delay, const int32_t intvl) {
+int32_t sock_keepalive(SOCKET fd, const int32_t delay, const int32_t intvl) {
     int32_t flag = 1;
     if (setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, (char *)&flag, (int32_t)sizeof(flag)) < ERR_OK) {
         return ERR_FAILED;
@@ -259,8 +252,8 @@ int32_t sock_pair(SOCKET acSock[2]) {
     }
     sock_nodelay(fdacp);
     sock_nodelay(fdcn);
-    sock_nbio(fdacp);
-    sock_nbio(fdcn);
+    sock_nonblock(fdacp);
+    sock_nonblock(fdcn);
     acSock[0] = fdacp;
     acSock[1] = fdcn;
     return ERR_OK;

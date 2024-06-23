@@ -427,7 +427,7 @@ SOCKET ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
         }
         return INVALID_SOCK;
     }
-    sock_raddr(fd);
+    sock_reuseaddr(fd);
     _set_sockops(fd);
     int32_t rtn = connect(fd, netaddr_addr(&addr), netaddr_size(&addr));
     if (ERR_OK != rtn) {
@@ -474,7 +474,7 @@ static void _on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
     watcher_ctx *to;
     while (INVALID_SOCK != (fd = accept(acpt->sock.fd, NULL, NULL))) {
         if (ERR_OK != _set_sockops(fd)
-            || ERR_OK != sock_kpa(fd, KEEPALIVE_TIME, KEEPALIVE_INTERVAL)) {
+            || ERR_OK != sock_keepalive(fd, KEEPALIVE_TIME, KEEPALIVE_INTERVAL)) {
             CLOSE_SOCK(fd);
             continue;
         }

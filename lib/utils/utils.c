@@ -653,7 +653,7 @@ int64_t unpack_integer(const char *buf, int32_t size, int32_t islittle, int32_t 
     }
     if (size < sizeof(uint64_t)) {
         if (issigned) {
-            uint64_t mask = (uint64_t)1 << (size * CHAR_BIT - 1);
+            uint64_t mask = 1llu << (size * CHAR_BIT - 1);
             rtn = ((rtn ^ mask) - mask);
         }
     }

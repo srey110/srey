@@ -512,7 +512,7 @@ SOCKET ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
         }
         return INVALID_SOCK;
     }
-    sock_raddr(fd);
+    sock_reuseaddr(fd);
     _set_sockops(fd);
     if (ERR_OK != _trybind(fd, netaddr_family(&addr))) {
         CLOSE_SOCK(fd);
@@ -595,7 +595,7 @@ static void _on_accept_cb(acceptex_ctx *acpctx, sock_ctx *skctx, DWORD bytes) {
                              (char *)&lsn->fd,
                              (int32_t)sizeof(lsn->fd))
         || ERR_OK != _set_sockops(fd)
-        || ERR_OK != sock_kpa(fd, KEEPALIVE_TIME, KEEPALIVE_INTERVAL)) {
+        || ERR_OK != sock_keepalive(fd, KEEPALIVE_TIME, KEEPALIVE_INTERVAL)) {
         CLOSE_SOCK(fd);
         return;
     }

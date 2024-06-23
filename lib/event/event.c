@@ -18,7 +18,7 @@ void _bufs_clear(qu_off_buf_ctx *bufs) {
 }
 int32_t _set_sockops(SOCKET fd) {
     if (ERR_OK != sock_nodelay(fd)
-        || ERR_OK != sock_nbio(fd)) {
+        || ERR_OK != sock_nonblock(fd)) {
         return ERR_FAILED;
     }
     return ERR_OK;
@@ -36,9 +36,9 @@ SOCKET _listen(netaddr_ctx *addr) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         return INVALID_SOCK;
     }
-    sock_raddr(fd);
+    sock_reuseaddr(fd);
     sock_reuseport(fd);
-    sock_nbio(fd);
+    sock_nonblock(fd);
     if (ERR_OK != bind(fd, netaddr_addr(addr), netaddr_size(addr))) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         CLOSE_SOCK(fd);
@@ -74,8 +74,8 @@ SOCKET _udp(netaddr_ctx *addr) {
         return INVALID_SOCK;
     }
 #endif
-    sock_raddr(fd);
-    sock_nbio(fd);
+    sock_reuseaddr(fd);
+    sock_nonblock(fd);
     if (ERR_OK != bind(fd, netaddr_addr(addr), netaddr_size(addr))) {
         CLOSE_SOCK(fd);
         LOG_ERROR("%s", ERRORSTR(ERRNO));
