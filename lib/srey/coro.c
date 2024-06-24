@@ -333,17 +333,24 @@ int32_t coro_ssl_exchange(task_ctx *task, SOCKET fd, uint64_t skid, int32_t clie
     ev_ssl(&task->scheduler->netev, fd, skid, client, evssl);
     return _wait_ssl_exchanged(task, fd, skid);
 }
-int32_t coro_handshaked(task_ctx *task, SOCKET fd, uint64_t skid, message_ctx *msg) {
-    _mcoro_wait(task, skid, MSG_TYPE_HANDSHAKED, TIMEOUT_NETREAD, msg);
-    if (MSG_TYPE_TIMEOUT == msg->mtype) {
+void *coro_handshaked(task_ctx *task, SOCKET fd, uint64_t skid, int32_t *err, size_t *size) {
+    message_ctx msg;
+    _mcoro_wait(task, skid, MSG_TYPE_HANDSHAKED, TIMEOUT_NETREAD, &msg);
+    if (MSG_TYPE_TIMEOUT == msg.mtype) {
+        *err = ERR_FAILED;
         ev_close(&task->scheduler->netev, fd, skid);
         LOG_WARN("task: %d, handshake timeout, skid %"PRIu64".", task->name, skid);
-        return ERR_FAILED;
+        return NULL;
     }
-    if (MSG_TYPE_CLOSE == msg->mtype) {
-        return ERR_FAILED;
+    if (MSG_TYPE_CLOSE == msg.mtype) {
+        *err = ERR_FAILED;
+        return NULL;
     }
-    return ERR_OK;
+    *err = msg.erro;
+    if (NULL != size) {
+        *size = msg.size;
+    }
+    return msg.data;
 }
 SOCKET coro_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl, const char *ip, uint16_t port, uint64_t *skid, int32_t netev) {
     SOCKET fd = trigger_connect(task, pktype, evssl, ip, port, skid, netev);

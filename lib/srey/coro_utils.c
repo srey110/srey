@@ -79,16 +79,16 @@ SOCKET coro_wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *
     char *reqpack = websock_handshake_pack(host, secproto);
     FREE(host);
     ev_send(&task->scheduler->netev, fd, *skid, reqpack, strlen(reqpack), 0);
-    message_ctx msg;
-    if (ERR_OK != coro_handshaked(task, fd, *skid, &msg)) {
+    int32_t err;
+    size_t size;
+    char *hsdata = coro_handshaked(task, fd, *skid, &err, &size);
+    if (ERR_OK != err) {
         return INVALID_SOCK;
     }
-    if (ERR_OK != msg.erro){
-        return INVALID_SOCK;
-    }
+    size_t seclens = strlen(secproto);
     if (NULL != secproto
-        && 0 != strlen(secproto)) {
-        if (0 != memcmp(secproto, msg.data, msg.size)) {
+        && 0 != seclens) {
+        if (seclens != size || 0 != memcmp(secproto, hsdata, seclens)) {
             ev_close(&task->scheduler->netev, fd, *skid);
             return INVALID_SOCK;
         }
@@ -119,11 +119,9 @@ int32_t mysql_connect(task_ctx *task, mysql_ctx *mysql) {
     if (ERR_OK != mysql_try_connect(task, mysql)) {
         return ERR_FAILED;
     }
-    message_ctx msg;
-    if (ERR_OK != coro_handshaked(task, mysql->client.fd, mysql->client.skid, &msg)) {
-        return ERR_FAILED;
-    }
-    return msg.erro;
+    int32_t err;
+    coro_handshaked(task, mysql->client.fd, mysql->client.skid, &err, NULL);
+    return err;
 }
 static int32_t _mysql_check_link(task_ctx *task, mysql_ctx *mysql) {
     if (mysql->client.relink
