@@ -84,9 +84,11 @@
     <ClInclude Include="thread\thread.h" />
     <ClInclude Include="utils\binary.h" />
     <ClInclude Include="utils\buffer.h" />
+    <ClInclude Include="utils\dl.h" />
     <ClInclude Include="utils\log.h" />
     <ClInclude Include="utils\netaddr.h" />
     <ClInclude Include="utils\netutils.h" />
+    <ClInclude Include="utils\popen2.h" />
     <ClInclude Include="utils\sfid.h" />
     <ClInclude Include="utils\strptime.h" />
     <ClInclude Include="utils\timer.h" />
@@ -145,6 +147,7 @@
     <ClCompile Include="utils\log.c" />
     <ClCompile Include="utils\netaddr.c" />
     <ClCompile Include="utils\netutils.c" />
+    <ClCompile Include="utils\popen2.c" />
     <ClCompile Include="utils\sfid.c" />
     <ClCompile Include="utils\strptime.c" />
     <ClCompile Include="utils\timer.c" />

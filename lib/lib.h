@@ -16,6 +16,8 @@
 #include "crypt/hmac.h"
 #include "crypt/digest.h"
 #include "crypt/cipher.h"
+#include "utils/dl.h"
+#include "utils/popen2.h"
 #include "utils/log.h"
 #include "utils/timer.h"
 #include "utils/tw.h"

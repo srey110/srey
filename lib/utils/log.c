@@ -48,8 +48,7 @@ static const char *_lvstr(int32_t lv) {
 static void _slog(int32_t lv, const char *fmt, va_list args) {
     char time[TIME_LENS] = { 0 };
     mstostr(nowms(), "%Y-%m-%d %H:%M:%S", time);
-    char out[4096];
-    vsnprintf(out, sizeof(out), fmt, args);
+    char *out = _format_va(fmt, args);
     if (NULL == _handle) {
 #ifdef OS_WIN
         switch (lv) {
@@ -81,6 +80,7 @@ static void _slog(int32_t lv, const char *fmt, va_list args) {
     } else {
         fprintf(_handle, LOG_FMT, time, _lvstr(lv), out);
     }
+    FREE(out);
 }
 void slog(int32_t lv, const char *fmt, ...) {
     if (lv > _log_lv) {

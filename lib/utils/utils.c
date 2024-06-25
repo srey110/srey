@@ -606,7 +606,7 @@ buf_ctx *split(const void *ptr, size_t plens, const void *sep, size_t seplens, s
     } while (NULL != pos && plens > 0);
     return buf;
 }
-static char *_format_va(const char *fmt, va_list args) {
+char *_format_va(const char *fmt, va_list args) {
     int32_t rtn;
     size_t size = 256;
     char *pbuff;

@@ -182,6 +182,7 @@
     #elif defined (OS_HPUX)
         #include <sys/param.h>
         #include <sys/pstat.h>
+        #include <dl.h>
         #include <sys/devpoll.h>
     #endif
 #endif // OS_WIN
