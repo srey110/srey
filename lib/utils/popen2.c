@@ -115,6 +115,7 @@ int32_t popen_startup(popen_ctx *ctx, const char *cmd, const char *mode) {
     }
 #else
     int sock[2];
+    ctx->sock = INVALID_SOCK;
     if (r || w) {
         if (ERR_FAILED == socketpair(AF_UNIX, SOCK_STREAM, 0, sock)) {
             LOG_ERROR("%s", ERRORSTR(ERRNO));
@@ -134,9 +135,10 @@ int32_t popen_startup(popen_ctx *ctx, const char *cmd, const char *mode) {
             close(sock[0]);
             close(sock[1]);
         }
-        if (ERR_FAILED == execl("/bin/sh", "sh", "-c", cmd, NULL)){
-            exit(ERRNO);
-        }
+        execl("/bin/sh", "sh", "-c", cmd, NULL);
+        int32_t err = ERRNO;
+        LOG_WARN("%s", ERRORSTR(err));
+        exit(err);
     } else if (pid > 0) {
         ctx->pid = pid;
         if (r || w) {
@@ -217,7 +219,7 @@ void popen_free(popen_ctx *ctx) {
         CloseHandle(ctx->pipe[1]);
     }
 #else
-    if (0 != ctx->sock) {
+    if (INVALID_SOCK != ctx->sock) {
         shutdown(ctx->sock, SHUT_RD);
         close(ctx->sock);
     }
@@ -276,7 +278,8 @@ int32_t popen_waitexit(popen_ctx *ctx, uint32_t ms) {
         || ctx->exited) {
         return ERR_OK;
     }
-    if (_sock_closed(ctx->sock)) {
+    if (INVALID_SOCK != ctx->sock
+        && _sock_closed(ctx->sock)) {
         ctx->exited = 1;
         ctx->exitcode = ERR_FAILED;
         return ERR_OK;
@@ -346,7 +349,7 @@ int32_t popen_read(popen_ctx *ctx, char *output, size_t lens) {
     }
     return (int32_t)nread;
 #else
-    if (0 == ctx->sock) {
+    if (INVALID_SOCK == ctx->sock) {
         return ERR_FAILED;
     }
     int32_t nread = sock_nread(ctx->sock);
@@ -374,7 +377,7 @@ int32_t popen_write(popen_ctx *ctx, const char *input, size_t lens) {
     }
     return (int32_t)nwrite;
 #else
-    if (0 == ctx->sock) {
+    if (INVALID_SOCK == ctx->sock) {
         return ERR_FAILED;
     }
     return write(ctx->sock, input, lens);
