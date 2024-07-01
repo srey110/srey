@@ -41,7 +41,7 @@ void cipher_init(cipher_ctx *cipher, engine_type engine, cipher_model model,
     const char *key, size_t klens, int32_t keybits, int32_t encrypt);
 //block_lens
 size_t cipher_size(cipher_ctx *cipher);
-//ECB CBC需要  CBC CFB OFB CTR可选
+//ECB CBC需要  CFB OFB CTR可选
 void cipher_padding(cipher_ctx *cipher, padding_model padding);
 //CBC CFB OFB CTR
 void cipher_iv(cipher_ctx *cipher, const char *iv, size_t ilens);
