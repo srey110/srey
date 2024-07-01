@@ -114,7 +114,7 @@ int32_t popen_startup(popen_ctx *ctx, const char *cmd, const char *mode) {
         return ERR_FAILED;
     }
 #else
-    int sock[2];
+    SOCKET sock[2];
     ctx->sock = INVALID_SOCK;
     if (r || w) {
         if (ERR_FAILED == socketpair(AF_UNIX, SOCK_STREAM, 0, sock)) {

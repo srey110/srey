@@ -10,8 +10,8 @@ typedef struct popen_ctx {
 #else
     int32_t exited;
     int32_t exitcode;
+    SOCKET sock;
     pid_t pid;
-    int sock;
 #endif
 }popen_ctx;
 //mode  rw
