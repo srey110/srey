@@ -18,7 +18,7 @@ void _message_clean(msg_type mtype, pack_type pktype, void *data) {
     case MSG_TYPE_RECVFROM:
     case MSG_TYPE_HANDSHAKED:
         protos_pkfree(pktype, mtype, data);
-        break; 
+        break;
     case MSG_TYPE_REQUEST:
     case MSG_TYPE_RESPONSE:
         FREE(data);
