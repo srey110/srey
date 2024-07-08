@@ -9,7 +9,7 @@ static void _test_dns(task_ctx *task) {
     if (_prt) {
         LOG_INFO("%s", "coro_dns_lookup:");
     }
-    ips = coro_dns_lookup(task, "www.google.com", 0, &n);
+    ips = dns_lookup(task, "www.google.com", 0, &n);
     if (NULL != ips) {
         if (_prt) {
             for (size_t i = 0; i < n; i++) {
@@ -20,7 +20,7 @@ static void _test_dns(task_ctx *task) {
     } else {
         LOG_ERROR("%s", "coro_dns_lookup error");
     }
-    ips = coro_dns_lookup(task, "www.google.com", 1, &n);
+    ips = dns_lookup(task, "www.google.com", 1, &n);
     if (NULL != ips) {
         if (_prt) {
             for (size_t i = 0; i < n; i++) {

@@ -35,15 +35,6 @@ SSLFILE_TYPE = {
     PEM  = 0x01,
     ASN1 = 0x02
 }
---证书验证
---NONE 不验证
---PEER 验证
---FAIL_IF_NO_PEER_CERT只能用于服务端
-SSLVERIFY_TYPE = {
-    NONE = 0x00,
-    PEER = 0x01,
-    FAIL_IF_NO_PEER_CERT = 0x03,
-}
 --事件
 NET_EV = {
     NONE    = 0x00,

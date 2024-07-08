@@ -11,4 +11,15 @@ task_ctx *task_grab(scheduler_ctx *scheduler, name_t name);
 void task_incref(task_ctx *task);
 void task_ungrab(task_ctx *task);//”Î task_grab task_incref ≈‰∂‘
 
+void on_accepted(task_ctx *task, _net_accept_cb _accept);
+void on_recved(task_ctx *task, _net_recv_cb _recv);
+void on_sended(task_ctx *task, _net_send_cb _send);
+void on_connected(task_ctx *task, _net_connect_cb _connect);
+void on_ssl_exchanged(task_ctx *task, _net_ssl_exchanged_cb _exchanged);
+void on_handshaked(task_ctx *task, _net_handshake_cb _handshake);
+void on_closed(task_ctx *task, _net_close_cb _close);
+void on_recvedfrom(task_ctx *task, _net_recvfrom_cb _recvfrom);
+void on_requested(task_ctx *task, _request_cb _request);
+void on_responsed(task_ctx *task, _response_cb _response);
+
 #endif//TASK_H_

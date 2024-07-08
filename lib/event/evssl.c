@@ -1,18 +1,29 @@
 #include "event/evssl.h"
 #if WITH_SSL
 #include <openssl/pkcs12.h>
+#include "containers/sarray.h"
+#include "thread/rwlock.h"
 
-struct evssl_ctx {
-    SSL_CTX *ssl;
-};
-static atomic_t _init_once = 0;
 #define SSLCTX_ERRO()\
     unsigned long err = ERR_get_error();\
     LOG_WARN("errno: %lu, %s", err, ERR_error_string(err, NULL))
 
-static void _ssl_options(evssl_ctx *evssl, int32_t verify) {
+struct evssl_ctx {
+    SSL_CTX *ssl;
+};
+typedef struct certs_ctx {
+    name_t name;
+    struct evssl_ctx *ssl;
+}certs_ctx;
+ARRAY_DECL(certs_ctx, arr_certs);
+
+static atomic_t _init_once = 0;
+static arr_certs_ctx *_arr_certs = NULL;
+static rwlock_ctx *_rwlck_certs = NULL;
+
+static void _ssl_options(evssl_ctx *evssl) {
     SSL_CTX_set_options(evssl->ssl, SSL_OP_IGNORE_UNEXPECTED_EOF);//error:0A000126:SSL routines::unexpected eof while reading
-    SSL_CTX_set_verify(evssl->ssl, verify, NULL);
+    SSL_CTX_set_verify(evssl->ssl, SSL_VERIFY_NONE, NULL);
     SSL_CTX_set_mode(evssl->ssl, SSL_MODE_AUTO_RETRY);
 }
 static evssl_ctx *_new_evssl(void) {
@@ -34,7 +45,7 @@ static evssl_ctx *_new_evssl(void) {
     SSL_CTX_set_security_level(evssl->ssl, 0);//ca md too weak
     return evssl;
 }
-evssl_ctx *evssl_new(const char *ca, const char *cert, const char *key, int32_t type, int32_t verify) {
+evssl_ctx *evssl_new(const char *ca, const char *cert, const char *key, int32_t type) {
     evssl_ctx *evssl = _new_evssl();
     if (NULL == evssl) {
         return NULL;
@@ -65,16 +76,16 @@ evssl_ctx *evssl_new(const char *ca, const char *cert, const char *key, int32_t 
             return NULL;
         }
     }
-    _ssl_options(evssl, verify);
+    _ssl_options(evssl);
     return evssl;
 }
-evssl_ctx *evssl_p12_new(const char *p12, const char *pwd, int32_t verify) {
+evssl_ctx *evssl_p12_new(const char *p12, const char *pwd) {
     evssl_ctx *evssl = _new_evssl();
     if (NULL == evssl) {
         return NULL;
     }
     if (EMPTYSTR(p12)) {
-        _ssl_options(evssl, verify);
+        _ssl_options(evssl);
         return evssl;
     }
     BIO *bio = BIO_new_file(p12, "rb");
@@ -107,12 +118,73 @@ evssl_ctx *evssl_p12_new(const char *p12, const char *pwd, int32_t verify) {
         return NULL;
     }
     PKCS12_free(pk12);
-    _ssl_options(evssl, verify);
+    _ssl_options(evssl);
     return evssl;
+}
+SSL_CTX *evssl_sslctx(evssl_ctx *evssl) {
+    return evssl->ssl;
 }
 void evssl_free(evssl_ctx *evssl) {
     SSL_CTX_free(evssl->ssl);
     FREE(evssl);
+}
+void evssl_pool_init(void) {
+    MALLOC(_rwlck_certs, sizeof(rwlock_ctx));
+    MALLOC(_arr_certs, sizeof(arr_certs_ctx));
+    rwlock_init(_rwlck_certs);
+    arr_certs_init(_arr_certs, 0);
+}
+void evssl_pool_free(void) {
+    if (NULL == _arr_certs
+        || NULL == _rwlck_certs) {
+        return;
+    }
+    uint32_t n = arr_certs_size(_arr_certs);
+    for (uint32_t i = 0; i < n; i++) {
+        evssl_free(arr_certs_at(_arr_certs, i)->ssl);
+    }
+    arr_certs_free(_arr_certs);
+    rwlock_free(_rwlck_certs);
+    FREE(_arr_certs);
+    FREE(_rwlck_certs);
+}
+static certs_ctx *_ssl_get(name_t name) {
+    certs_ctx *cert;
+    uint32_t n = arr_certs_size(_arr_certs);
+    for (uint32_t i = 0; i < n; i++) {
+        cert = arr_certs_at(_arr_certs, i);
+        if (name == cert->name) {
+            return cert;
+        }
+    }
+    return NULL;
+}
+int32_t evssl_register(name_t name, evssl_ctx *evssl) {
+    if (NULL == evssl) {
+        LOG_WARN("%s", ERRSTR_NULLP);
+        return ERR_FAILED;
+    }
+    certs_ctx cert;
+    cert.name = name;
+    cert.ssl = evssl;
+    int32_t rtn;
+    rwlock_wrlock(_rwlck_certs);
+    if (NULL != _ssl_get(name)) {
+        LOG_ERROR("ssl name %d repeat.", name);
+        rtn = ERR_FAILED;
+    } else {
+        arr_certs_push_back(_arr_certs, &cert);
+        rtn = ERR_OK;
+    }
+    rwlock_unlock(_rwlck_certs);
+    return rtn;
+}
+evssl_ctx *evssl_qury(name_t name) {
+    certs_ctx *cert;
+    rwlock_rdlock(_rwlck_certs);
+    cert = _ssl_get(name);
+    rwlock_unlock(_rwlck_certs);
+    return NULL == cert ? NULL : cert->ssl;
 }
 SSL *evssl_setfd(evssl_ctx *evssl, SOCKET fd) {
     ERR_clear_error();

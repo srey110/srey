@@ -15,8 +15,8 @@ typedef enum sock_status {
     STATUS_ERROR = 0x02,
     STATUS_REMOVE = 0x04,
     STATUS_CLIENT = 0x08,
-    STATUS_SSLEXCHANGE = 0x10,
-    STATUS_AUTHSSL = 0x20,
+    STATUS_SSLEXCHANGE = 0x10,//是否切换成SSL链接，发送队列为空时移除该标识，并开始SSL握手
+    STATUS_AUTHSSL = 0x20     //SSL握手
 }sock_status;
 typedef struct ev_ctx {
     uint32_t nthreads;

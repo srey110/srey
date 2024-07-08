@@ -230,8 +230,7 @@ scheduler_ctx *scheduler_init(uint16_t nnet, uint16_t nworker) {
                                                sizeof(name_t *), ONEK, 0, 0,
                                                _map_task_hash, _map_task_compare, _map_task_free, NULL);
 #if WITH_SSL
-    rwlock_init(&scheduler->lckcerts);
-    arr_certs_init(&scheduler->arrcerts, 0);
+    evssl_pool_init();
 #endif
     scheduler->monitor.thread_monitor = thread_creat(_monitor_loop, scheduler);
     worker_ctx *worker;
@@ -301,12 +300,7 @@ void scheduler_free(scheduler_ctx *scheduler) {
     ev_free(&scheduler->netev);
     tw_free(&scheduler->tw);
 #if WITH_SSL
-    uint32_t n = arr_certs_size(&scheduler->arrcerts);
-    for (uint32_t i = 0; i < n; i++) {
-        evssl_free(arr_certs_at(&scheduler->arrcerts, i)->ssl);
-    }
-    arr_certs_free(&scheduler->arrcerts);
-    rwlock_free(&scheduler->lckcerts);
+    evssl_pool_free();
 #endif
 #if SCHEDULER_GLOBAL
     spin_free(&scheduler->lckglobal);

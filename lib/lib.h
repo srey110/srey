@@ -40,9 +40,7 @@
 #include "protocol/mysql/mysql_pack.h"
 #include "protocol/mysql/mysql.h"
 #include "srey/scheduler.h"
-#include "srey/ssls.h"
 #include "srey/task.h"
-#include "srey/register.h"
 #include "srey/trigger.h"
 #if WITH_CORO
 #include "srey/coro.h"

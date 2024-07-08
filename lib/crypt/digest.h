@@ -40,6 +40,7 @@ typedef struct digest_ctx {
 void digest_init(digest_ctx *digest, digest_type dtype);
 size_t digest_size(digest_ctx *digest);
 void digest_update(digest_ctx *digest, const void *data, size_t lens);
+//DG_BLOCK_SIZE
 size_t digest_final(digest_ctx *digest, char *hash);
 void digest_reset(digest_ctx *digest);
 

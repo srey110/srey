@@ -71,10 +71,8 @@
     <ClInclude Include="srey\coro.h" />
     <ClInclude Include="srey\coro_utils.h" />
     <ClInclude Include="srey\minicoro.h" />
-    <ClInclude Include="srey\register.h" />
     <ClInclude Include="srey\scheduler.h" />
     <ClInclude Include="srey\spub.h" />
-    <ClInclude Include="srey\ssls.h" />
     <ClInclude Include="srey\task.h" />
     <ClInclude Include="srey\trigger.h" />
     <ClInclude Include="thread\cond.h" />
@@ -138,7 +136,6 @@
     <ClCompile Include="srey\coro.c" />
     <ClCompile Include="srey\coro_utils.c" />
     <ClCompile Include="srey\scheduler.c" />
-    <ClCompile Include="srey\ssls.c" />
     <ClCompile Include="srey\task.c" />
     <ClCompile Include="srey\trigger.c" />
     <ClCompile Include="thread\thread.c" />

@@ -88,13 +88,6 @@ typedef struct worker_ctx {
     cond_ctx cond;
 #endif
 }worker_ctx;
-#if WITH_SSL
-typedef struct certs_ctx {
-    name_t name;
-    struct evssl_ctx *ssl;
-}certs_ctx;
-ARRAY_DECL(certs_ctx, arr_certs);
-#endif
 struct scheduler_ctx {
     uint8_t stop;
     uint16_t nworker;
@@ -102,10 +95,6 @@ struct scheduler_ctx {
     atomic64_t index;
     worker_ctx *worker;
     struct hashmap *maptasks;
-#if WITH_SSL
-    arr_certs_ctx arrcerts;
-    rwlock_ctx lckcerts;
-#endif
     rwlock_ctx lckmaptasks;
 #if SCHEDULER_GLOBAL
     spin_ctx lckglobal;

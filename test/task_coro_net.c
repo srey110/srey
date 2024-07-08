@@ -35,7 +35,7 @@ static void _test_syn_ssl1_send(task_ctx *task) {
         LOG_ERROR("%s", "syn_connect error");
         return;
     }
-    struct evssl_ctx *ssl = srey_ssl_qury(task->scheduler, 101);
+    struct evssl_ctx *ssl = evssl_qury(101);
     if (ERR_OK != coro_ssl_exchange(task, fd, skid, 1, ssl)) {
         LOG_ERROR("%s", "coro_auth_ssl error");
         return;
@@ -60,7 +60,7 @@ static void _test_syn_ssl1_send(task_ctx *task) {
 static void _test_syn_ssl2_send(task_ctx *task) {
 #if WITH_SSL
     uint64_t skid;
-    struct evssl_ctx *ssl = srey_ssl_qury(task->scheduler, 101);
+    struct evssl_ctx *ssl = evssl_qury(101);
     SOCKET fd = coro_connect(task, PACK_CUSTZ, ssl, "127.0.0.1", 15001, &skid, NETEV_AUTHSSL);
     if (INVALID_SOCK == fd) {
         LOG_ERROR("%s", "syn_connect error");
@@ -112,7 +112,7 @@ static void _timeout(task_ctx *task, uint64_t sess) {
     _test_syn_ssl1_send(task);
     _test_syn_ssl2_send(task);
     uint64_t skid;
-    coro_wbsock_connect(task, NULL, "ws://127.0.0.1:15004", "mqtt", &skid, 0);
+    wbsock_connect(task, NULL, "ws://127.0.0.1:15004", "mqtt", &skid, 0);
     trigger_timeout(task, 0, 1000, _timeout);
 }
 static void _startup(task_ctx *task) {

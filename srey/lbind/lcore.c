@@ -212,14 +212,7 @@ static int32_t _lcore_cert_register(lua_State *lua) {
     if (LUA_TNUMBER == type) {
         keytype = (int32_t)luaL_checkinteger(lua, 5);
     } else {
-        keytype = CERT_PEM;
-    }
-    int32_t verify;
-    type = (int32_t)lua_type(lua, 6);
-    if (LUA_TNUMBER == type) {
-        verify = (int32_t)luaL_checkinteger(lua, 6);
-    } else  {
-        verify = VERIFY_NONE;
+        keytype = SSL_FILETYPE_PEM;
     }
     char capath[PATH_LENS];
     char certpath[PATH_LENS];
@@ -237,9 +230,9 @@ static int32_t _lcore_cert_register(lua_State *lua) {
         SNPRINTF(keypath, sizeof(keypath), "%s%s%s%s%s",
             propath, PATH_SEPARATORSTR, CERT_FOLDER, PATH_SEPARATORSTR, key);
     }
-    evssl_ctx *ssl = evssl_new(capath, certpath, keypath, keytype, verify);
+    evssl_ctx *ssl = evssl_new(capath, certpath, keypath, keytype);
     if (NULL != ssl) {
-        if (ERR_OK != srey_ssl_register(g_scheduler, name, ssl)) {
+        if (ERR_OK != evssl_register(name, ssl)) {
             evssl_free(ssl);
             lua_pushnil(lua);
         } else {
@@ -258,22 +251,15 @@ static int32_t _lcore_p12_register(lua_State *lua) {
     name_t name = (name_t)luaL_checkinteger(lua, 1);
     const char *p12 = luaL_checkstring(lua, 2);
     const char *pwd = luaL_checkstring(lua, 3);
-    int32_t verify;
-    int32_t type = (int32_t)lua_type(lua, 4);
-    if (LUA_TNUMBER == type) {
-        verify = (int32_t)luaL_checkinteger(lua, 4);
-    } else  {
-        verify = VERIFY_NONE;
-    }
     char p12path[PATH_LENS];
     if (0 != strlen(p12)) {
         const char *propath = global_string(lua, PATH_NAME);
         SNPRINTF(p12path, sizeof(p12path), "%s%s%s%s%s",
             propath, PATH_SEPARATORSTR, CERT_FOLDER, PATH_SEPARATORSTR, p12);
     }
-    evssl_ctx *ssl = evssl_p12_new(p12path, pwd, verify);
+    evssl_ctx *ssl = evssl_p12_new(p12path, pwd);
     if (NULL != ssl) {
-        if (ERR_OK != srey_ssl_register(g_scheduler, name, ssl)) {
+        if (ERR_OK != evssl_register(name, ssl)) {
             evssl_free(ssl);
             lua_pushnil(lua);
         } else {
@@ -290,7 +276,7 @@ static int32_t _lcore_p12_register(lua_State *lua) {
 static int32_t _lcore_ssl_qury(lua_State *lua) {
 #if WITH_SSL
     name_t name = (name_t)luaL_checkinteger(lua, 1);
-    struct evssl_ctx *ssl = srey_ssl_qury(g_scheduler, name);
+    struct evssl_ctx *ssl = evssl_qury(name);
     if (NULL != ssl) {
         lua_pushlightuserdata(lua, ssl);
     } else {

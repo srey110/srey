@@ -1,6 +1,5 @@
 #include "srey/coro_utils.h"
 #include "srey/coro.h"
-#include "srey/ssls.h"
 #include "srey/trigger.h"
 #include "protocol/urlparse.h"
 #include "protocol/dns.h"
@@ -13,7 +12,7 @@
 
 #if WITH_CORO
 
-dns_ip *coro_dns_lookup(task_ctx *task, const char *domain, int32_t ipv6, size_t *cnt) {
+dns_ip *dns_lookup(task_ctx *task, const char *domain, int32_t ipv6, size_t *cnt) {
     uint64_t skid;
     SOCKET fd;
     const char *dnsip = dns_get_ip();
@@ -35,7 +34,7 @@ dns_ip *coro_dns_lookup(task_ctx *task, const char *domain, int32_t ipv6, size_t
     }
     return dns_parse_pack(resp, cnt);
 }
-SOCKET coro_wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, const char *secproto, uint64_t *skid, int32_t netev) {
+SOCKET wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, const char *secproto, uint64_t *skid, int32_t netev) {
     url_ctx url;
     url_parse(&url, (char *)ws, strlen(ws));
     if (!buf_icompare(&url.scheme, "ws", strlen("ws"))) {
@@ -50,7 +49,7 @@ SOCKET coro_wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *
     memcpy(host, url.host.data, url.host.lens);
     if (ERR_OK != is_ipaddr(host)) {
         size_t nips;
-        dns_ip *ips = coro_dns_lookup(task, host, 0, &nips);
+        dns_ip *ips = dns_lookup(task, host, 0, &nips);
         if (NULL == ips) {
             FREE(host);
             return INVALID_SOCK;
@@ -95,7 +94,7 @@ SOCKET coro_wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *
     }
     return fd;
 }
-SOCKET coro_redis_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ip, uint16_t port, const char *key, uint64_t *skid, int32_t netev) {
+SOCKET redis_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ip, uint16_t port, const char *key, uint64_t *skid, int32_t netev) {
     SOCKET fd = coro_connect(task, PACK_REDIS, evssl, ip, port, skid, netev);
     if (INVALID_SOCK == fd) {
         return INVALID_SOCK;

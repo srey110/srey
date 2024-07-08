@@ -88,16 +88,10 @@
     <ClInclude Include="srey\coro.h">
       <Filter>srey</Filter>
     </ClInclude>
-    <ClInclude Include="srey\ssls.h">
-      <Filter>srey</Filter>
-    </ClInclude>
     <ClInclude Include="srey\spub.h">
       <Filter>srey</Filter>
     </ClInclude>
     <ClInclude Include="srey\coro_utils.h">
-      <Filter>srey</Filter>
-    </ClInclude>
-    <ClInclude Include="srey\register.h">
       <Filter>srey</Filter>
     </ClInclude>
     <ClInclude Include="containers\hashmap.h">
@@ -304,9 +298,6 @@
       <Filter>srey</Filter>
     </ClCompile>
     <ClCompile Include="srey\coro.c">
-      <Filter>srey</Filter>
-    </ClCompile>
-    <ClCompile Include="srey\ssls.c">
       <Filter>srey</Filter>
     </ClCompile>
     <ClCompile Include="srey\coro_utils.c">

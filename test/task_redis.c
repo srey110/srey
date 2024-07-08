@@ -105,7 +105,7 @@ static void _timeout(task_ctx *task, uint64_t sess) {
 static void _startup(task_ctx *task) {
     on_recved(task, _net_recv);
     on_closed(task, _net_close);
-    _fd = coro_redis_connect(task, NULL, "127.0.0.1", 6379, "123456", &_skid, 0);
+    _fd = redis_connect(task, NULL, "127.0.0.1", 6379, "123456", &_skid, 0);
     if (INVALID_FD == _fd) {
         LOG_ERROR("connect redis error.");
         return;

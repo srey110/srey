@@ -233,7 +233,7 @@ static void _startup(task_ctx *task) {
     on_connected(task, _net_connect);
     struct evssl_ctx *evssl = NULL;
 #if WITH_SSL
-    evssl = srey_ssl_qury(task->scheduler, 102);
+    evssl = evssl_qury(102);
 #endif
     if (ERR_OK != mysql_init(&_mysql, "192.168.8.3", 3306, evssl, "admin", "12345678", "test", "utf8", 0, 1)) {
         LOG_WARN("mysql_init error.");

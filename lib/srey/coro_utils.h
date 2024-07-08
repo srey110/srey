@@ -7,10 +7,10 @@
 #if WITH_CORO
 
 //dns_ip *ÐèÒªFREE
-struct dns_ip *coro_dns_lookup(task_ctx *task, const char *domain, int32_t ipv6, size_t *cnt);
+struct dns_ip *dns_lookup(task_ctx *task, const char *domain, int32_t ipv6, size_t *cnt);
 //ws://host:port
-SOCKET coro_wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, const char *secproto, uint64_t *skid, int32_t netev);
-SOCKET coro_redis_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ip, uint16_t port, const char *key, uint64_t *skid, int32_t netev);
+SOCKET wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, const char *secproto, uint64_t *skid, int32_t netev);
+SOCKET redis_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ip, uint16_t port, const char *key, uint64_t *skid, int32_t netev);
 
 int32_t mysql_connect(task_ctx *task, mysql_ctx *mysql);
 int32_t mysql_selectdb(task_ctx *task, mysql_ctx *mysql, const char *database);

@@ -21,7 +21,7 @@ void http_pack_resp(binary_ctx *bwriter, int32_t code);
 void http_pack_head(binary_ctx *bwriter, const char *key, const char *val);
 void http_pack_end(binary_ctx *bwriter);//只有头的时候
 void http_pack_content(binary_ctx *bwriter, void *data, size_t lens);
-void http_pack_chunked(binary_ctx *bwriter, void *data, size_t lens);//循环 buffer_remove send
+void http_pack_chunked(binary_ctx *bwriter, void *data, size_t lens);//循环 binary_offset send
 
 struct http_pack_ctx *_http_parsehead(buffer_ctx *buf, int32_t *transfer, int32_t *status);
 int32_t _http_check_keyval(http_header_ctx *head, const char *key, const char *val);

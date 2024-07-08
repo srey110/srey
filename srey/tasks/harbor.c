@@ -238,7 +238,7 @@ int32_t harbor_start(scheduler_ctx *scheduler, name_t tname, name_t ssl,
     hbctx->port = port;
     hbctx->timeout = ms;
 #if WITH_SSL
-    hbctx->ssl = srey_ssl_qury(scheduler, ssl);
+    hbctx->ssl = evssl_qury(ssl);
 #endif
     timer_init(&hbctx->timer);
     hbctx->mapargs = hashmap_new_with_allocator(_malloc, _realloc, _free,
