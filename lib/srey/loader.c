@@ -230,6 +230,7 @@ loader_ctx *loader_init(uint16_t nnet, uint16_t nworker) {
                                                sizeof(name_t *), ONEK, 0, 0,
                                                _map_task_hash, _map_task_compare, _map_task_free, NULL);
 #if WITH_SSL
+    evssl_init();
     evssl_pool_init();
 #endif
     loader->monitor.thread_monitor = thread_creat(_monitor_loop, loader);

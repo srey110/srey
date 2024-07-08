@@ -1,8 +1,8 @@
 #include "event/evssl.h"
 #if WITH_SSL
-#include <openssl/pkcs12.h>
 #include "containers/sarray.h"
 #include "thread/rwlock.h"
+#include <openssl/pkcs12.h>
 
 #define SSLCTX_ERRO()\
     unsigned long err = ERR_get_error();\
@@ -17,7 +17,6 @@ typedef struct certs_ctx {
 }certs_ctx;
 ARRAY_DECL(certs_ctx, arr_certs);
 
-static atomic_t _init_once = 0;
 static arr_certs_ctx *_arr_certs = NULL;
 static rwlock_ctx *_rwlck_certs = NULL;
 
@@ -26,13 +25,13 @@ static void _ssl_options(evssl_ctx *evssl) {
     SSL_CTX_set_verify(evssl->ssl, SSL_VERIFY_NONE, NULL);
     SSL_CTX_set_mode(evssl->ssl, SSL_MODE_AUTO_RETRY);
 }
+void evssl_init(void) {
+    SSL_library_init();
+    OpenSSL_add_all_algorithms();
+    SSL_load_error_strings();
+    ERR_load_crypto_strings();
+}
 static evssl_ctx *_new_evssl(void) {
-    if (ATOMIC_CAS(&_init_once, 0, 1)) {
-        SSL_library_init();
-        OpenSSL_add_all_algorithms();
-        SSL_load_error_strings();
-        ERR_load_crypto_strings();
-    }
     evssl_ctx *evssl;
     MALLOC(evssl, sizeof(evssl_ctx));
     ERR_clear_error();

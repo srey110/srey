@@ -12,9 +12,12 @@
                           ssl = NULL; \
                       }
 typedef struct evssl_ctx evssl_ctx;
+
+void evssl_init(void);
 //type:SSL_FILETYPE_PEM SSL_FILETYPE_ASN1    Ä¬ÈÏSSL_VERIFY_NONE
 evssl_ctx *evssl_new(const char *ca, const char *cert, const char *key, int32_t type);
 evssl_ctx *evssl_p12_new(const char *p12, const char *pwd);
+//SSL_CTX_set_options  SSL_CTX_set_verify...
 SSL_CTX *evssl_sslctx(evssl_ctx *evssl);
 void evssl_free(evssl_ctx *evssl);
 

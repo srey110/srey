@@ -1,4 +1,5 @@
 #include "srey/coro_utils.h"
+#if WITH_CORO
 #include "srey/coro.h"
 #include "srey/task.h"
 #include "protocol/urlparse.h"
@@ -9,8 +10,6 @@
 #include "protocol/mysql/mysql_parse.h"
 #include "protocol/mysql/mysql_pack.h"
 #include "utils/buffer.h"
-
-#if WITH_CORO
 
 dns_ip *dns_lookup(task_ctx *task, const char *domain, int32_t ipv6, size_t *cnt) {
     uint64_t skid;
