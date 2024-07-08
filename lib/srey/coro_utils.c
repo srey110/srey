@@ -1,6 +1,6 @@
 #include "srey/coro_utils.h"
 #include "srey/coro.h"
-#include "srey/trigger.h"
+#include "srey/task.h"
 #include "protocol/urlparse.h"
 #include "protocol/dns.h"
 #include "protocol/websock.h"
@@ -17,9 +17,9 @@ dns_ip *dns_lookup(task_ctx *task, const char *domain, int32_t ipv6, size_t *cnt
     SOCKET fd;
     const char *dnsip = dns_get_ip();
     if (ERR_OK == is_ipv6(dnsip)) {
-        fd = trigger_udp(task, "::", 0, &skid);
+        fd = task_udp(task, "::", 0, &skid);
     } else {
-        fd = trigger_udp(task, "0.0.0.0", 0, &skid);
+        fd = task_udp(task, "0.0.0.0", 0, &skid);
     }
     if (INVALID_SOCK == fd) {
         LOG_WARN("init udp error.");

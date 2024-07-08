@@ -11,7 +11,7 @@ static void _request(task_ctx *task, uint8_t reqtype, uint64_t sess, name_t src,
         task_ctx *comm1 = task_grab(task->loader, src);
         if (NULL != comm1) {
             const char *respmsg = "this is task_thread_comm2 response";
-            trigger_response(comm1, sess, ERR_OK, (void*)respmsg, strlen(respmsg), 1);
+            task_response(comm1, sess, ERR_OK, (void*)respmsg, strlen(respmsg), 1);
             task_ungrab(comm1);
         }
     }

@@ -85,9 +85,9 @@ static void _test_syn_ssl2_send(task_ctx *task) {
 }
 static void _test_syn_sendto(task_ctx *task) {
     uint64_t skid;
-    SOCKET fd = trigger_udp(task, "0.0.0.0", 0, &skid);
+    SOCKET fd = task_udp(task, "0.0.0.0", 0, &skid);
     if (INVALID_SOCK == fd) {
-        LOG_ERROR("%s", "trigger_udp error");
+        LOG_ERROR("%s", "task_udp error");
         return;
     }
     const char *msg = "this is udp task_coro_net.";
@@ -113,11 +113,11 @@ static void _timeout(task_ctx *task, uint64_t sess) {
     _test_syn_ssl2_send(task);
     uint64_t skid;
     wbsock_connect(task, NULL, "ws://127.0.0.1:15004", "mqtt", &skid, 0);
-    trigger_timeout(task, 0, 1000, _timeout);
+    task_timeout(task, 0, 1000, _timeout);
 }
 static void _startup(task_ctx *task) {
     on_closed(task, _net_close);
-    trigger_timeout(task, 0, 1000, _timeout);
+    task_timeout(task, 0, 1000, _timeout);
 }
 void task_coro_net_start(loader_ctx *loader, name_t name, int32_t pt) {
     _prt = pt;

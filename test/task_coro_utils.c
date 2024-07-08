@@ -36,7 +36,7 @@ static void _timeout(task_ctx *task, uint64_t sess) {
     _test_dns(task);
 }
 static void _startup(task_ctx *task) {
-    trigger_timeout(task, 0, 3000, _timeout);
+    task_timeout(task, 0, 3000, _timeout);
 }
 void task_coro_utils_start(loader_ctx *loader, name_t name, int32_t pt) {
     _prt = pt;

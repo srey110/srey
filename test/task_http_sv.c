@@ -29,7 +29,7 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, 
 static void _startup(task_ctx *task) {
     on_recved(task, _net_recv);
     uint64_t id;
-    trigger_listen(task, PACK_HTTP, NULL, "0.0.0.0", 15003, &id, 0);
+    task_listen(task, PACK_HTTP, NULL, "0.0.0.0", 15003, &id, 0);
 }
 void task_http_sv_start(loader_ctx *loader, name_t name, int32_t pt) {
     _prt = pt;

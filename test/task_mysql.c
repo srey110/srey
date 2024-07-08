@@ -247,7 +247,7 @@ static void _startup(task_ctx *task) {
         LOG_INFO("mysql connected.");
     }
     mysql_bind_init(&_bind);
-    trigger_timeout(task, 0, 1000, _timeout);
+    task_timeout(task, 0, 1000, _timeout);
 }
 void _closing_cb(task_ctx *task) {
     mysql_bind_free(&_bind);

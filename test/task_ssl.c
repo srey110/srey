@@ -35,7 +35,7 @@ static void _startup(task_ctx *task) {
     on_sended(task, _net_send);
     on_closed(task, _net_close);
     uint64_t id;
-    trigger_listen(task, PACK_CUSTZ, _ssl, "0.0.0.0", 15001, &id, NETEV_ACCEPT | NETEV_SEND);
+    task_listen(task, PACK_CUSTZ, _ssl, "0.0.0.0", 15001, &id, NETEV_ACCEPT | NETEV_SEND);
 }
 void task_ssl_start(loader_ctx *loader, name_t name, evssl_ctx *ssl, int32_t pt) {
     _prt = pt;

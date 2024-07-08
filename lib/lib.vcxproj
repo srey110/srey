@@ -74,7 +74,6 @@
     <ClInclude Include="srey\minicoro.h" />
     <ClInclude Include="srey\spub.h" />
     <ClInclude Include="srey\task.h" />
-    <ClInclude Include="srey\trigger.h" />
     <ClInclude Include="thread\cond.h" />
     <ClInclude Include="thread\mutex.h" />
     <ClInclude Include="thread\rwlock.h" />
@@ -137,7 +136,6 @@
     <ClCompile Include="srey\coro_utils.c" />
     <ClCompile Include="srey\loader.c" />
     <ClCompile Include="srey\task.c" />
-    <ClCompile Include="srey\trigger.c" />
     <ClCompile Include="thread\thread.c" />
     <ClCompile Include="utils\binary.c" />
     <ClCompile Include="utils\buffer.c" />

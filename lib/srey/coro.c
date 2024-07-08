@@ -1,6 +1,5 @@
 #include "srey/coro.h"
 #include "srey/task.h"
-#include "srey/trigger.h"
 #include "containers/hashmap.h"
 #include "utils/timer.h"
 #if WITH_CORO
@@ -234,12 +233,12 @@ static void _mcoro_timeout(task_ctx *task, uint64_t sess) {
             }
         }
     }
-    trigger_timeout(task, 0, 200, _mcoro_timeout);
+    task_timeout(task, 0, 200, _mcoro_timeout);
 }
 void _message_dispatch(task_dispatch_arg *arg) {
     switch (arg->msg.mtype) {
     case MSG_TYPE_STARTUP:
-        trigger_timeout(arg->task, 0, 200, _mcoro_timeout);
+        task_timeout(arg->task, 0, 200, _mcoro_timeout);
         _mcoro_create(arg);
         break;
     case MSG_TYPE_CLOSING:
@@ -298,12 +297,12 @@ static inline void _mcoro_wait(task_ctx *task, uint64_t sess, msg_type mtype, ui
 void coro_sleep(task_ctx *task, uint32_t ms) {
     message_ctx msg;
     uint64_t sess = createid();
-    trigger_timeout(task, sess, ms, NULL);
+    task_timeout(task, sess, ms, NULL);
     _mcoro_wait(task, sess, MSG_TYPE_TIMEOUT, 0, &msg);
 }
 void *coro_request(task_ctx *dst, task_ctx *src, uint8_t rtype, void *data, size_t size, int32_t copy, int32_t *erro, size_t *lens) {
     uint64_t sess = createid();
-    trigger_request(dst, src, rtype, sess, data, size, copy);
+    task_request(dst, src, rtype, sess, data, size, copy);
     message_ctx msg;
     _mcoro_wait(src, sess, MSG_TYPE_RESPONSE, TIMEOUT_REQUEST, &msg);
     if (MSG_TYPE_TIMEOUT == msg.mtype) {
@@ -353,7 +352,7 @@ void *coro_handshaked(task_ctx *task, SOCKET fd, uint64_t skid, int32_t *err, si
     return msg.data;
 }
 SOCKET coro_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl, const char *ip, uint16_t port, uint64_t *skid, int32_t netev) {
-    SOCKET fd = trigger_connect(task, pktype, evssl, ip, port, skid, netev);
+    SOCKET fd = task_connect(task, pktype, evssl, ip, port, skid, netev);
     if (INVALID_SOCK == fd) {
         LOG_WARN("task: %d, connect %s:%d error.", task->name, ip, port);
         return INVALID_SOCK;

@@ -38,8 +38,8 @@ static void _startup(task_ctx *task) {
     on_sended(task, _net_send);
     on_closed(task, _net_close);
     uint64_t id;
-    trigger_listen(task, PACK_CUSTZ, NULL, "0.0.0.0", 15000, &id, NETEV_ACCEPT | NETEV_SEND );
-    trigger_connect(task, PACK_CUSTZ, NULL, "127.0.0.1", 15000, &id,  NETEV_SEND);
+    task_listen(task, PACK_CUSTZ, NULL, "0.0.0.0", 15000, &id, NETEV_ACCEPT | NETEV_SEND );
+    task_connect(task, PACK_CUSTZ, NULL, "127.0.0.1", 15000, &id,  NETEV_SEND);
 }
 void task_tcp_start(loader_ctx *loader, name_t name, int32_t pt) {
     _prt = pt;

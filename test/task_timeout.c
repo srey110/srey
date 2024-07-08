@@ -13,7 +13,7 @@ static void _timeout1(task_ctx *task, uint64_t sess) {
     } else {
         task_ungrab(autoclose);
     }
-    trigger_timeout(task, 0, 3000, _timeout1);
+    task_timeout(task, 0, 3000, _timeout1);
 }
 static void _timeout2(task_ctx *task, uint64_t sess) {
     if (_prt) {
@@ -24,11 +24,11 @@ static void _timeout2(task_ctx *task, uint64_t sess) {
         task_close(autoclose);
         task_ungrab(autoclose);
     }
-    trigger_timeout(task, 0, 5000, _timeout2);
+    task_timeout(task, 0, 5000, _timeout2);
 }
 static void _startup(task_ctx *task) {
-    trigger_timeout(task, 0, 3000, _timeout1);
-    trigger_timeout(task, 0, 5000, _timeout2);
+    task_timeout(task, 0, 3000, _timeout1);
+    task_timeout(task, 0, 5000, _timeout2);
 }
 void task_timeout_start(loader_ctx *loader, name_t name, int32_t pt) {
     _prt = pt;

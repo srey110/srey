@@ -40,6 +40,9 @@
     <Filter Include="crypt\cipher">
       <UniqueIdentifier>{e480e006-68f9-4290-b6d2-aaf21a931981}</UniqueIdentifier>
     </Filter>
+    <Filter Include="srey\minicoro">
+      <UniqueIdentifier>{cdeff177-3099-41e3-8e26-1fa06cab4c8a}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="lib.h" />
@@ -77,9 +80,6 @@
       <Filter>thread</Filter>
     </ClInclude>
     <ClInclude Include="srey\task.h">
-      <Filter>srey</Filter>
-    </ClInclude>
-    <ClInclude Include="srey\trigger.h">
       <Filter>srey</Filter>
     </ClInclude>
     <ClInclude Include="srey\coro.h">
@@ -247,9 +247,6 @@
     <ClInclude Include="crypt\hmac.h">
       <Filter>crypt</Filter>
     </ClInclude>
-    <ClInclude Include="srey\minicoro.h">
-      <Filter>srey</Filter>
-    </ClInclude>
     <ClInclude Include="utils\dl.h">
       <Filter>utils</Filter>
     </ClInclude>
@@ -258,6 +255,9 @@
     </ClInclude>
     <ClInclude Include="srey\loader.h">
       <Filter>srey</Filter>
+    </ClInclude>
+    <ClInclude Include="srey\minicoro.h">
+      <Filter>srey\minicoro</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -289,9 +289,6 @@
       <Filter>thread</Filter>
     </ClCompile>
     <ClCompile Include="srey\task.c">
-      <Filter>srey</Filter>
-    </ClCompile>
-    <ClCompile Include="srey\trigger.c">
       <Filter>srey</Filter>
     </ClCompile>
     <ClCompile Include="srey\coro.c">

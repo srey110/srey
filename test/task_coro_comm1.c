@@ -19,7 +19,7 @@ static void _timeout(task_ctx *task, uint64_t sess) {
             LOG_INFO("syn_request return: %s", buf);
         }
     }
-    trigger_timeout(task, 0, 3000, _timeout);
+    task_timeout(task, 0, 3000, _timeout);
 }
 //超时后如果注册了 _response_cb 也会收到消息
 static void _response(task_ctx *task, uint64_t sess, int32_t error, void *data, size_t size) {
@@ -31,7 +31,7 @@ static void _response(task_ctx *task, uint64_t sess, int32_t error, void *data, 
 }
 static void _startup(task_ctx *task) {
     on_responsed(task, _response);
-    trigger_timeout(task, 0, 3000, _timeout);
+    task_timeout(task, 0, 3000, _timeout);
 }
 void task_coro_comm1_start(loader_ctx *loader, name_t name, int32_t pt) {
     _prt = pt;

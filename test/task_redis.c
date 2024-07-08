@@ -100,7 +100,7 @@ static void _timeout(task_ctx *task, uint64_t sess) {
     if (1 != rtn->ival) {
         LOG_WARN("DEL error.");
     }
-    trigger_timeout(task, 0, 3000, _timeout);
+    task_timeout(task, 0, 3000, _timeout);
 }
 static void _startup(task_ctx *task) {
     on_recved(task, _net_recv);
@@ -111,7 +111,7 @@ static void _startup(task_ctx *task) {
         return;
     }
     LOG_INFO("redis connected.");
-    trigger_timeout(task, 0, 1000, _timeout);
+    task_timeout(task, 0, 1000, _timeout);
 }
 void task_redis_start(loader_ctx *loader, name_t name, int32_t pt) {
     _prt = pt;

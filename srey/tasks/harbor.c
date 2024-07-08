@@ -162,7 +162,7 @@ static void _harbor_net_recv(task_ctx *harbor, SOCKET fd, uint64_t skid, uint8_t
             _harbor_response(harbor, fd, skid, NULL, 0, 404);
             return;
         }
-        trigger_call(to, type, reqdata, lens, 1);
+        task_call(to, type, reqdata, lens, 1);
         task_ungrab(to);
         _harbor_response(harbor, fd, skid, NULL, 0, 200);
     } else if (buf_icompare(&url.path, "request", strlen("request"))) {
@@ -173,7 +173,7 @@ static void _harbor_net_recv(task_ctx *harbor, SOCKET fd, uint64_t skid, uint8_t
         }
         uint64_t sess = createid();
         _map_args_set(harbor, sess, fd, skid);
-        trigger_request(to, harbor, type, sess, (void *)reqdata, lens, 1);
+        task_request(to, harbor, type, sess, (void *)reqdata, lens, 1);
         task_ungrab(to);
     } else {
         ev_close(&harbor->loader->netev, fd, skid);
@@ -201,17 +201,17 @@ static void _harbor_timeout(task_ctx *harbor, uint64_t sess) {
             hashmap_delete(hbctx->mapargs, arg);
         }
     }
-    trigger_timeout(harbor, 0, 200, _harbor_timeout);
+    task_timeout(harbor, 0, 200, _harbor_timeout);
 }
 static void _harbor_startup(task_ctx *harbor) {
     harbor_ctx *hbctx = harbor->arg;
     on_recved(harbor, _harbor_net_recv);
     on_responsed(harbor, _harbor_onresponse);
     if (hbctx->timeout > 0) {
-        trigger_timeout(harbor, 0, 200, _harbor_timeout);
+        task_timeout(harbor, 0, 200, _harbor_timeout);
     }
-    if (ERR_OK != trigger_listen(harbor, PACK_HTTP, hbctx->ssl, hbctx->ip, hbctx->port, &hbctx->lsnid, 0)) {
-        LOG_ERROR("trigger_listen %s:%d error", hbctx->ip, hbctx->port);
+    if (ERR_OK != task_listen(harbor, PACK_HTTP, hbctx->ssl, hbctx->ip, hbctx->port, &hbctx->lsnid, 0)) {
+        LOG_ERROR("task_listen %s:%d error", hbctx->ip, hbctx->port);
     }
 }
 static void _harbor_closing(task_ctx *harbor) {

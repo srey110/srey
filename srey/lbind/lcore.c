@@ -8,7 +8,7 @@ static int32_t _lcore_timeout(lua_State *lua) {
     uint64_t sess = (uint64_t)luaL_checkinteger(lua, 1);
     uint32_t time = (uint32_t)luaL_checkinteger(lua, 2);
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    trigger_timeout(task, sess, time, NULL);
+    task_timeout(task, sess, time, NULL);
     return 0;
 }
 static int32_t _lcore_call(lua_State *lua) {
@@ -23,7 +23,7 @@ static int32_t _lcore_call(lua_State *lua) {
         size = (size_t)luaL_checkinteger(lua, 4);
     }
     int32_t copy = COPY_TYPE(lua, 5);
-    trigger_call(dst, reqtype, data, size, copy);
+    task_call(dst, reqtype, data, size, copy);
     return 0;
 }
 static int32_t _lcore_request(lua_State *lua) {
@@ -40,7 +40,7 @@ static int32_t _lcore_request(lua_State *lua) {
     }
     int32_t copy = COPY_TYPE(lua, 6);
     task_ctx *src = global_userdata(lua, CUR_TASK_NAME);
-    trigger_request(dst, src, reqtype, sess, data, size, copy);
+    task_request(dst, src, reqtype, sess, data, size, copy);
     return 0;
 }
 static int32_t _lcore_response(lua_State *lua) {
@@ -63,7 +63,7 @@ static int32_t _lcore_response(lua_State *lua) {
         }
     }
     int32_t copy = COPY_TYPE(lua, 6);
-    trigger_response(dst, sess, erro, data, size, copy);
+    task_response(dst, sess, erro, data, size, copy);
     return 0;
 }
 static int32_t _lcore_listen(lua_State *lua) {
@@ -77,7 +77,7 @@ static int32_t _lcore_listen(lua_State *lua) {
     int32_t netev = lua_isinteger(lua, 5) ? (int32_t)luaL_checkinteger(lua, 5) : NETEV_NONE;
     uint64_t id;
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    if (ERR_OK != trigger_listen(task, pktype, evssl, ip, port, &id, netev)) {
+    if (ERR_OK != task_listen(task, pktype, evssl, ip, port, &id, netev)) {
         lua_pushinteger(lua, -1);
     } else {
         lua_pushinteger(lua, id);
@@ -100,7 +100,7 @@ static int32_t _lcore_connect(lua_State *lua) {
     int32_t netev = lua_isinteger(lua, 5) ? (int32_t)luaL_checkinteger(lua, 5) : NETEV_NONE;
     uint64_t skid;
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    SOCKET fd = trigger_connect(task, pktype, evssl, ip, port, &skid, netev);
+    SOCKET fd = task_connect(task, pktype, evssl, ip, port, &skid, netev);
     if (INVALID_SOCK == fd) {
         lua_pushinteger(lua, INVALID_SOCK);
         return 1;
@@ -123,7 +123,7 @@ static int32_t _lcore_udp(lua_State *lua) {
     uint16_t port = (uint16_t)luaL_checkinteger(lua, 2);
     uint64_t skid;
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    SOCKET fd = trigger_udp(task, ip, port, &skid);
+    SOCKET fd = task_udp(task, ip, port, &skid);
     if (INVALID_SOCK == fd) {
         lua_pushinteger(lua, INVALID_SOCK);
         return 1;
