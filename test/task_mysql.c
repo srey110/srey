@@ -252,9 +252,9 @@ static void _startup(task_ctx *task) {
 void _closing_cb(task_ctx *task) {
     mysql_bind_free(&_bind);
 }
-void task_mysql_start(scheduler_ctx *scheduler, name_t name, int32_t pt) {
+void task_mysql_start(loader_ctx *loader, name_t name, int32_t pt) {
     _prt = pt;
-    task_ctx *task = task_new(scheduler, name, NULL, NULL, NULL);
+    task_ctx *task = task_new(loader, name, NULL, NULL, NULL);
     task_register(task, _startup, _closing_cb);
 }
 

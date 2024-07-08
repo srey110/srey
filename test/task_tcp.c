@@ -13,13 +13,13 @@ static void _net_connect(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktyp
 }
 static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, uint8_t client, uint8_t slice, void *data, size_t size) {
     /*if (randrange(0, 100) <= 1) {
-        ev_close(&task->scheduler->netev,fd, skid);
+        ev_close(&task->loader->netev,fd, skid);
         return;
     }*/
     size_t lens;
     char *sbuf = custz_data(data, &lens);
     void *outbuf = custz_pack(sbuf, lens, &lens);
-    ev_send(&task->scheduler->netev, fd, skid, outbuf, lens, 0);
+    ev_send(&task->loader->netev, fd, skid, outbuf, lens, 0);
 }
 static void _net_send(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, uint8_t client, size_t size) {
     if (_prt) {
@@ -41,8 +41,8 @@ static void _startup(task_ctx *task) {
     trigger_listen(task, PACK_CUSTZ, NULL, "0.0.0.0", 15000, &id, NETEV_ACCEPT | NETEV_SEND );
     trigger_connect(task, PACK_CUSTZ, NULL, "127.0.0.1", 15000, &id,  NETEV_SEND);
 }
-void task_tcp_start(scheduler_ctx *scheduler, name_t name, int32_t pt) {
+void task_tcp_start(loader_ctx *loader, name_t name, int32_t pt) {
     _prt = pt;
-    task_ctx *task = task_new(scheduler, name, NULL, NULL, NULL);
+    task_ctx *task = task_new(loader, name, NULL, NULL, NULL);
     task_register(task, _startup, NULL);
 }

@@ -5,7 +5,7 @@
 
 #if WITH_CORO
 
-void task_coro_utils_start(scheduler_ctx *scheduler, name_t name, int32_t pt);
+void task_coro_utils_start(loader_ctx *loader, name_t name, int32_t pt);
 
 #endif
 #endif//TASK_CORO_UTILS_H_

@@ -17,13 +17,13 @@ static task_ctx *_map_task_get(struct hashmap *map, name_t name) {
     }
     return UPCAST(*ptr, task_ctx, name);
 }
-task_ctx *task_new(scheduler_ctx *scheduler, name_t name, _task_dispatch_cb _dispatch, free_cb _argfree, void *arg) {
+task_ctx *task_new(loader_ctx *loader, name_t name, _task_dispatch_cb _dispatch, free_cb _argfree, void *arg) {
     if (INVALID_TNAME == name) {
         return NULL;
     }
     task_ctx *task;
     CALLOC(task, 1, sizeof(task_ctx));
-    task->scheduler = scheduler;
+    task->loader = loader;
     task->name = name;
     task->ref = 1;
     if (NULL == _dispatch) {
@@ -61,15 +61,15 @@ int32_t task_register(task_ctx *task, _task_startup_cb _startup, _task_closing_c
     task->_task_closing = _closing;
     message_ctx startup;
     startup.mtype = MSG_TYPE_STARTUP;
-    rwlock_wrlock(&task->scheduler->lckmaptasks);
-    if (NULL != _map_task_get(task->scheduler->maptasks, task->name)) {
-        rwlock_unlock(&task->scheduler->lckmaptasks);
+    rwlock_wrlock(&task->loader->lckmaptasks);
+    if (NULL != _map_task_get(task->loader->maptasks, task->name)) {
+        rwlock_unlock(&task->loader->lckmaptasks);
         LOG_ERROR("task name %d repeat.", task->name);
         return ERR_FAILED;
     }
-    _map_task_set(task->scheduler->maptasks, task);
+    _map_task_set(task->loader->maptasks, task);
     _task_message_push(task, &startup);
-    rwlock_unlock(&task->scheduler->lckmaptasks);
+    rwlock_unlock(&task->loader->lckmaptasks);
     return ERR_OK;
 }
 void task_close(task_ctx *task) {
@@ -79,16 +79,16 @@ void task_close(task_ctx *task) {
         _task_message_push(task, &closing);
     }
 }
-task_ctx *task_grab(scheduler_ctx *scheduler, name_t name) {
+task_ctx *task_grab(loader_ctx *loader, name_t name) {
     if (INVALID_TNAME == name) {
         return NULL;
     }
-    rwlock_rdlock(&scheduler->lckmaptasks);
-    task_ctx *task = _map_task_get(scheduler->maptasks, name);
+    rwlock_rdlock(&loader->lckmaptasks);
+    task_ctx *task = _map_task_get(loader->maptasks, name);
     if (NULL != task) {
         ATOMIC_ADD(&task->ref, 1);
     }
-    rwlock_unlock(&scheduler->lckmaptasks);
+    rwlock_unlock(&loader->lckmaptasks);
     return task;
 }
 void task_incref(task_ctx *task) {
@@ -99,11 +99,11 @@ void task_ungrab(task_ctx *task) {
         return;
     }
     void *ptr = NULL;
-    rwlock_wrlock(&task->scheduler->lckmaptasks);
+    rwlock_wrlock(&task->loader->lckmaptasks);
     if (0 == task->ref) {
-        ptr = _map_task_del(task->scheduler->maptasks, task->name);
+        ptr = _map_task_del(task->loader->maptasks, task->name);
     }
-    rwlock_unlock(&task->scheduler->lckmaptasks);
+    rwlock_unlock(&task->loader->lckmaptasks);
     if (NULL != ptr) {
         task_free(task);
     }

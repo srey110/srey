@@ -39,7 +39,7 @@
 #include "protocol/mysql/mysql_parse.h"
 #include "protocol/mysql/mysql_pack.h"
 #include "protocol/mysql/mysql.h"
-#include "srey/scheduler.h"
+#include "srey/loader.h"
 #include "srey/task.h"
 #include "srey/trigger.h"
 #if WITH_CORO
@@ -47,6 +47,6 @@
 #include "srey/coro_utils.h"
 #endif
 
-extern scheduler_ctx *g_scheduler;
+extern loader_ctx *g_loader;
 
 #endif //LIB_H_

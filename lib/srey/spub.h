@@ -12,7 +12,7 @@
 #include "utils/tw.h"
 
 #define INVALID_TNAME         0
-typedef struct scheduler_ctx scheduler_ctx;
+typedef struct loader_ctx loader_ctx;
 typedef struct task_ctx task_ctx;
 typedef struct message_ctx message_ctx;
 typedef struct task_dispatch_arg task_dispatch_arg;
@@ -78,9 +78,9 @@ typedef struct monitor_ctx {
 QUEUE_DECL(name_t, qu_task);
 typedef struct worker_ctx {
     uint16_t index;
-    scheduler_ctx *scheduler;
+    loader_ctx *loader;
     pthread_t thread_worker;
-#if !SCHEDULER_GLOBAL
+#if !LOADER_GLOBAL
     int32_t waiting;
     spin_ctx lcktasks;
     qu_task_ctx qutasks;
@@ -88,7 +88,7 @@ typedef struct worker_ctx {
     cond_ctx cond;
 #endif
 }worker_ctx;
-struct scheduler_ctx {
+struct loader_ctx {
     uint8_t stop;
     uint16_t nworker;
     int32_t waiting;
@@ -96,7 +96,7 @@ struct scheduler_ctx {
     worker_ctx *worker;
     struct hashmap *maptasks;
     rwlock_ctx lckmaptasks;
-#if SCHEDULER_GLOBAL
+#if LOADER_GLOBAL
     spin_ctx lckglobal;
     qu_task_ctx quglobal;
     mutex_ctx mutex;
@@ -113,7 +113,7 @@ struct task_ctx {
     atomic_t ref;
     void *arg;
     free_cb _arg_free;
-    scheduler_ctx *scheduler;
+    loader_ctx *loader;
 #if WITH_CORO
     struct coro_ctx *coro;
 #endif

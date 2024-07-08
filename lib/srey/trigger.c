@@ -97,7 +97,7 @@ void _message_run(task_ctx *task, message_ctx *msg) {
         if (NULL != task->_request) {
             task->_request(task, msg->pktype, msg->sess, msg->src, msg->data, msg->size);
         } else {
-            task_ctx *dtask = task_grab(task->scheduler, msg->src);
+            task_ctx *dtask = task_grab(task->loader, msg->src);
             if (NULL != dtask) {
                 const char *erro = "not register request function.";
                 trigger_response(dtask, msg->sess, ERR_FAILED, (void *)erro, strlen(erro), 1);
@@ -137,10 +137,10 @@ void trigger_timeout(task_ctx *task, uint64_t sess, uint32_t ms, _timeout_cb _ti
     ASSERTAB((NULL == _timeout && 0 != sess) || (NULL != _timeout && 0 == sess), "parameter error");
     ud_cxt ud;
     ud.name = task->name;
-    ud.data = task->scheduler;
+    ud.data = task->loader;
     ud.sess = sess;
     ud.extra = (void*)_timeout;
-    tw_add(&task->scheduler->tw, ms, _message_timeout_push, NULL, &ud);
+    tw_add(&task->loader->tw, ms, _message_timeout_push, NULL, &ud);
 }
 void trigger_request(task_ctx *dst, task_ctx *src, uint8_t reqtype, uint64_t sess, void *data, size_t size, int32_t copy) {
     ASSERTAB((NULL != src && 0 != sess) || (NULL == src && 0 == sess), "parameter error");
@@ -320,7 +320,7 @@ int32_t trigger_listen(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl
     ZERO(&ud, sizeof(ud));
     ud.pktype = pktype;
     ud.name = task->name;
-    ud.data = task->scheduler;
+    ud.data = task->loader;
     cbs_ctx cbs;
     ZERO(&cbs, sizeof(cbs));
     if (BIT_CHECK(netev, NETEV_ACCEPT)) {
@@ -336,7 +336,7 @@ int32_t trigger_listen(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl
     cbs.r_cb = _net_recv;
     cbs.c_cb = _net_close;
     cbs.ud_free = protos_udfree;
-    return ev_listen(&task->scheduler->netev, evssl, ip, port, &cbs, &ud, id);
+    return ev_listen(&task->loader->netev, evssl, ip, port, &cbs, &ud, id);
 }
 static int32_t _net_connect(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t err, ud_cxt *ud) {
     task_ctx *task = task_grab(ud->data, ud->name);
@@ -360,7 +360,7 @@ SOCKET trigger_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl
     ZERO(&ud, sizeof(ud));
     ud.pktype = pktype;
     ud.name = task->name;
-    ud.data = task->scheduler;
+    ud.data = task->loader;
     cbs_ctx cbs;
     ZERO(&cbs, sizeof(cbs));
     if (BIT_CHECK(netev, NETEV_SEND)) {
@@ -374,7 +374,7 @@ SOCKET trigger_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl
     cbs.r_cb = _net_recv;
     cbs.c_cb = _net_close;
     cbs.ud_free = protos_udfree;
-    return ev_connect(&task->scheduler->netev, evssl, ip, port, &cbs, &ud, skid);
+    return ev_connect(&task->loader->netev, evssl, ip, port, &cbs, &ud, skid);
 }
 SOCKET trigger_conn_extra(task_ctx *task, pack_type pktype, void *extra,
     const char *ip, uint16_t port, uint64_t *skid, int32_t netev) {
@@ -382,7 +382,7 @@ SOCKET trigger_conn_extra(task_ctx *task, pack_type pktype, void *extra,
     ZERO(&ud, sizeof(ud));
     ud.pktype = pktype;
     ud.name = task->name;
-    ud.data = task->scheduler;
+    ud.data = task->loader;
     ud.extra = extra;
     cbs_ctx cbs;
     ZERO(&cbs, sizeof(cbs));
@@ -396,7 +396,7 @@ SOCKET trigger_conn_extra(task_ctx *task, pack_type pktype, void *extra,
     cbs.r_cb = _net_recv;
     cbs.c_cb = _net_close;
     cbs.ud_free = protos_udfree;
-    return ev_connect(&task->scheduler->netev, NULL, ip, port, &cbs, &ud, skid);
+    return ev_connect(&task->loader->netev, NULL, ip, port, &cbs, &ud, skid);
 }
 static void _net_recvfrom(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
     task_ctx *task = task_grab(ud->data, ud->name);
@@ -423,10 +423,10 @@ SOCKET trigger_udp(task_ctx *task, const char *ip, uint16_t port, uint64_t *skid
     ud_cxt ud;
     ZERO(&ud, sizeof(ud));
     ud.name = task->name;
-    ud.data = task->scheduler;
+    ud.data = task->loader;
     cbs_ctx cbs;
     ZERO(&cbs, sizeof(cbs));
     cbs.rf_cb = _net_recvfrom;
     cbs.ud_free = protos_udfree;
-    return ev_udp(&task->scheduler->netev, ip, port, &cbs, &ud, skid);
+    return ev_udp(&task->loader->netev, ip, port, &cbs, &ud, skid);
 }

@@ -320,7 +320,7 @@ static int32_t _wait_ssl_exchanged(task_ctx *task, SOCKET fd, uint64_t skid) {
     message_ctx msg;
     _mcoro_wait(task, skid, MSG_TYPE_SSLEXCHANGED, TIMEOUT_NETREAD, &msg);
     if (MSG_TYPE_TIMEOUT == msg.mtype) {
-        ev_close(&task->scheduler->netev, fd, skid);
+        ev_close(&task->loader->netev, fd, skid);
         LOG_WARN("task %d, ssl exchange timeout, skid %"PRIu64".", task->name, skid);
         return ERR_FAILED;
     }
@@ -330,7 +330,7 @@ static int32_t _wait_ssl_exchanged(task_ctx *task, SOCKET fd, uint64_t skid) {
     return ERR_OK;
 }
 int32_t coro_ssl_exchange(task_ctx *task, SOCKET fd, uint64_t skid, int32_t client, struct evssl_ctx *evssl) {
-    ev_ssl(&task->scheduler->netev, fd, skid, client, evssl);
+    ev_ssl(&task->loader->netev, fd, skid, client, evssl);
     return _wait_ssl_exchanged(task, fd, skid);
 }
 void *coro_handshaked(task_ctx *task, SOCKET fd, uint64_t skid, int32_t *err, size_t *size) {
@@ -338,7 +338,7 @@ void *coro_handshaked(task_ctx *task, SOCKET fd, uint64_t skid, int32_t *err, si
     _mcoro_wait(task, skid, MSG_TYPE_HANDSHAKED, TIMEOUT_NETREAD, &msg);
     if (MSG_TYPE_TIMEOUT == msg.mtype) {
         *err = ERR_FAILED;
-        ev_close(&task->scheduler->netev, fd, skid);
+        ev_close(&task->loader->netev, fd, skid);
         LOG_WARN("task: %d, handshake timeout, skid %"PRIu64".", task->name, skid);
         return NULL;
     }
@@ -361,7 +361,7 @@ SOCKET coro_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl, c
     message_ctx msg;
     _mcoro_wait(task, *skid, MSG_TYPE_CONNECT, TIMEOUT_CONNECT, &msg);
     if (MSG_TYPE_TIMEOUT == msg.mtype) {
-        ev_close(&task->scheduler->netev, fd, *skid);
+        ev_close(&task->loader->netev, fd, *skid);
         LOG_WARN("task: %d, connect %s:%d timeout.", task->name, ip, port);
         return INVALID_SOCK;
     }
@@ -379,7 +379,7 @@ SOCKET coro_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl, c
 static int32_t _wait_recved(task_ctx *task, SOCKET fd, uint64_t skid, message_ctx *msg) {
     _mcoro_wait(task, skid, MSG_TYPE_RECV, TIMEOUT_NETREAD, msg);
     if (MSG_TYPE_TIMEOUT == msg->mtype) {
-        ev_close(&task->scheduler->netev, fd, skid);
+        ev_close(&task->loader->netev, fd, skid);
         LOG_WARN("task %d, send timeout, skid %"PRIu64".", task->name, skid);
         return ERR_FAILED;
     }
@@ -389,8 +389,8 @@ static int32_t _wait_recved(task_ctx *task, SOCKET fd, uint64_t skid, message_ct
     return ERR_OK;
 }
 void *coro_send(task_ctx *task, SOCKET fd, uint64_t skid, void *data, size_t len, size_t *size, int32_t copy) {
-    ev_ud_sess(&task->scheduler->netev, fd, skid, skid);
-    ev_send(&task->scheduler->netev, fd, skid, data, len, copy);
+    ev_ud_sess(&task->loader->netev, fd, skid, skid);
+    ev_send(&task->loader->netev, fd, skid, data, len, copy);
     message_ctx msg;
     if (ERR_OK != _wait_recved(task, fd, skid, &msg)) {
         return NULL;
@@ -411,16 +411,16 @@ void *coro_slice(task_ctx *task, SOCKET fd, uint64_t skid, size_t *size, int32_t
 }
 void *coro_sendto(task_ctx *task, SOCKET fd, uint64_t skid,
     const char *ip, const uint16_t port, void *data, size_t len, size_t *size) {
-    ev_ud_sess(&task->scheduler->netev, fd, skid, skid);
-    if (ERR_OK != ev_sendto(&task->scheduler->netev, fd, skid, ip, port, data, len)) {
+    ev_ud_sess(&task->loader->netev, fd, skid, skid);
+    if (ERR_OK != ev_sendto(&task->loader->netev, fd, skid, ip, port, data, len)) {
         LOG_WARN("task %d, sendto error, skid %"PRIu64".", task->name, skid);
-        ev_ud_sess(&task->scheduler->netev, fd, skid, 0);
+        ev_ud_sess(&task->loader->netev, fd, skid, 0);
         return NULL;
     }
     message_ctx msg;
     _mcoro_wait(task, skid, MSG_TYPE_RECVFROM, TIMEOUT_NETREAD, &msg);
     if (MSG_TYPE_TIMEOUT == msg.mtype) {
-        ev_ud_sess(&task->scheduler->netev, fd, skid, 0);
+        ev_ud_sess(&task->loader->netev, fd, skid, 0);
         LOG_WARN("task %d, sendto timeout, skid %"PRIu64".", task->name, skid);
         return NULL;
     }

@@ -3,11 +3,11 @@
 
 #include "srey/spub.h"
 
-task_ctx *task_new(scheduler_ctx *scheduler, name_t name, _task_dispatch_cb _dispatch, free_cb _argfree, void *arg);
+task_ctx *task_new(loader_ctx *loader, name_t name, _task_dispatch_cb _dispatch, free_cb _argfree, void *arg);
 void task_free(task_ctx *task);
 int32_t task_register(task_ctx *task, _task_startup_cb _startup, _task_closing_cb _closing);
 void task_close(task_ctx *task);//任务关闭
-task_ctx *task_grab(scheduler_ctx *scheduler, name_t name);
+task_ctx *task_grab(loader_ctx *loader, name_t name);
 void task_incref(task_ctx *task);
 void task_ungrab(task_ctx *task);//与 task_grab task_incref 配对
 

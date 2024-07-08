@@ -3,6 +3,6 @@
 
 #include "lib.h"
 
-void task_tcp_start(scheduler_ctx *scheduler, name_t name, int32_t pt);
+void task_tcp_start(loader_ctx *loader, name_t name, int32_t pt);
 
 #endif//TASK_TCP_H_

@@ -113,9 +113,9 @@ static void _startup(task_ctx *task) {
     LOG_INFO("redis connected.");
     trigger_timeout(task, 0, 1000, _timeout);
 }
-void task_redis_start(scheduler_ctx *scheduler, name_t name, int32_t pt) {
+void task_redis_start(loader_ctx *loader, name_t name, int32_t pt) {
     _prt = pt;
-    task_ctx *task = task_new(scheduler, name, NULL, NULL, NULL);
+    task_ctx *task = task_new(loader, name, NULL, NULL, NULL);
     task_register(task, _startup, NULL);
 }
 

@@ -38,9 +38,9 @@ static void _timeout(task_ctx *task, uint64_t sess) {
 static void _startup(task_ctx *task) {
     trigger_timeout(task, 0, 3000, _timeout);
 }
-void task_coro_utils_start(scheduler_ctx *scheduler, name_t name, int32_t pt) {
+void task_coro_utils_start(loader_ctx *loader, name_t name, int32_t pt) {
     _prt = pt;
-    task_ctx *task = task_new(scheduler, name, NULL, NULL, NULL);
+    task_ctx *task = task_new(loader, name, NULL, NULL, NULL);
     task_register(task, _startup, NULL);
 }
 

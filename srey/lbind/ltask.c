@@ -265,7 +265,7 @@ static int32_t _ltask_register(lua_State *lua) {
     ltask_ctx *ltask;
     CALLOC(ltask, 1, sizeof(ltask_ctx));
     timer_init(&ltask->timer);
-    task_ctx *task = task_new(g_scheduler, name, _ltask_run, _ltask_arg_free, ltask);
+    task_ctx *task = task_new(g_loader, name, _ltask_run, _ltask_arg_free, ltask);
     if (NULL == task) {
         FREE(ltask);
         lua_pushnil(lua);
@@ -298,7 +298,7 @@ static int32_t _ltask_close(lua_State *lua) {
 }
 static int32_t _ltask_grab(lua_State *lua) {
     name_t name = (name_t)luaL_checkinteger(lua, 1);
-    task_ctx *task = task_grab(g_scheduler, name);
+    task_ctx *task = task_grab(g_loader, name);
     if (NULL == task) {
         lua_pushnil(lua);
     } else {

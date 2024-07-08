@@ -648,5 +648,5 @@ void mysql_stmt_close(task_ctx *task, mysql_stmt_ctx *stmt) {
     if (NULL == close) {
         return;
     }
-    ev_send(&task->scheduler->netev, mysql->client.fd, mysql->client.skid, close, size, 0);
+    ev_send(&task->loader->netev, mysql->client.fd, mysql->client.skid, close, size, 0);
 }

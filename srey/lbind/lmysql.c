@@ -438,8 +438,8 @@ static int32_t _lmysql_free(lua_State *lua) {
         return 0;
     }
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    ev_ud_extra(&task->scheduler->netev, mysql->client.fd, mysql->client.skid, NULL);
-    ev_send(&task->scheduler->netev, mysql->client.fd, mysql->client.skid, pack, size, 0);
+    ev_ud_extra(&task->loader->netev, mysql->client.fd, mysql->client.skid, NULL);
+    ev_send(&task->loader->netev, mysql->client.fd, mysql->client.skid, pack, size, 0);
     return 0;
 }
 static int32_t _lmysql_try_connect(lua_State *lua) {

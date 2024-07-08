@@ -17,12 +17,12 @@ static void _test_syn_send(task_ctx *task) {
     void *data = coro_send(task, fd, skid, pack, size, &size, 0);
     if (NULL == data) {
         LOG_ERROR("%s", "syn_send error");
-        ev_close(&task->scheduler->netev, fd, skid);
+        ev_close(&task->loader->netev, fd, skid);
         return;
     }
     data = custz_data(data, &size);
     ASSERTAB(0 == _memicmp(data, msg, strlen(msg)), "syn_send error");
-    ev_close(&task->scheduler->netev, fd, skid);
+    ev_close(&task->loader->netev, fd, skid);
     if (_prt) {
         LOG_INFO("_test_syn_send ok.");
     }
@@ -46,12 +46,12 @@ static void _test_syn_ssl1_send(task_ctx *task) {
     void *data = coro_send(task, fd, skid, pack, size, &size, 0);
     if (NULL == data) {
         LOG_ERROR("%s", "syn_send error");
-        ev_close(&task->scheduler->netev, fd, skid);
+        ev_close(&task->loader->netev, fd, skid);
         return;
     }
     data = custz_data(data, &size);
     ASSERTAB(0 == _memicmp(data, msg, strlen(msg)), "syn_send error");
-    ev_close(&task->scheduler->netev, fd, skid);
+    ev_close(&task->loader->netev, fd, skid);
     if (_prt) {
         LOG_INFO("_test_syn_ssl1_send ok.");
     }
@@ -72,12 +72,12 @@ static void _test_syn_ssl2_send(task_ctx *task) {
     void *data = coro_send(task, fd, skid, pack, size, &size, 0);
     if (NULL == data) {
         LOG_ERROR("%s", "syn_send error");
-        ev_close(&task->scheduler->netev, fd, skid);
+        ev_close(&task->loader->netev, fd, skid);
         return;
     }
     data = custz_data(data, &size);
     ASSERTAB(0 == _memicmp(data, msg, strlen(msg)), "syn_send error");
-    ev_close(&task->scheduler->netev, fd, skid);
+    ev_close(&task->loader->netev, fd, skid);
     if (_prt) {
         LOG_INFO("_test_syn_ssl2_send ok.");
     }
@@ -95,11 +95,11 @@ static void _test_syn_sendto(task_ctx *task) {
     void *data = coro_sendto(task, fd, skid, "127.0.0.1", 15002, (void*)msg, strlen(msg), &size);
     if (NULL == data) {
         LOG_ERROR("%s", "syn_sendto error");
-        ev_close(&task->scheduler->netev, fd, skid);
+        ev_close(&task->loader->netev, fd, skid);
         return;
     }
     ASSERTAB(0 == _memicmp(data, msg, strlen(msg)), "syn_sendto error");
-    ev_close(&task->scheduler->netev, fd, skid);
+    ev_close(&task->loader->netev, fd, skid);
     if (_prt) {
         LOG_INFO("_test_syn_sendto ok.");
     }
@@ -119,9 +119,9 @@ static void _startup(task_ctx *task) {
     on_closed(task, _net_close);
     trigger_timeout(task, 0, 1000, _timeout);
 }
-void task_coro_net_start(scheduler_ctx *scheduler, name_t name, int32_t pt) {
+void task_coro_net_start(loader_ctx *loader, name_t name, int32_t pt) {
     _prt = pt;
-    task_ctx *task = task_new(scheduler, name, NULL, NULL, NULL);
+    task_ctx *task = task_new(loader, name, NULL, NULL, NULL);
     task_register(task, _startup, NULL);
 }
 

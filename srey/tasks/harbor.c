@@ -68,7 +68,7 @@ static void _harbor_response(task_ctx *harbor, SOCKET fd, uint64_t skid, char *r
         const char *erro = http_code_status(code);
         http_pack_content(&bwriter, (void *)erro, strlen(erro));
     }
-    ev_send(&harbor->scheduler->netev, fd, skid, bwriter.data, bwriter.offset, 0);
+    ev_send(&harbor->loader->netev, fd, skid, bwriter.data, bwriter.offset, 0);
 }
 static int32_t _check_sign(harbor_ctx *hbctx, struct http_pack_ctx *pack, buf_ctx *url, char *reqdata, size_t reqlens) {
     size_t klens = strlen(hbctx->signkey);
@@ -126,38 +126,38 @@ static void _harbor_net_recv(task_ctx *harbor, SOCKET fd, uint64_t skid, uint8_t
     if (NULL == reqdata
         || 0 == lens
         || 0 != http_chunked(data)) {
-        ev_close(&harbor->scheduler->netev, fd, skid);
+        ev_close(&harbor->loader->netev, fd, skid);
         return;
     }
     buf_ctx *hstatus = http_status(data);
     if (!buf_icompare(&hstatus[0], "post", strlen("post"))) {
-        ev_close(&harbor->scheduler->netev, fd, skid);
+        ev_close(&harbor->loader->netev, fd, skid);
         return;
     }
     url_ctx url;
     url_parse(&url, hstatus[1].data, hstatus[1].lens);
     if (buf_empty(&url.path)) {
-        ev_close(&harbor->scheduler->netev, fd, skid);
+        ev_close(&harbor->loader->netev, fd, skid);
         return;
     }
     if (ERR_OK != _check_sign(hbctx, data, &hstatus[1], reqdata, lens)) {
-        ev_close(&harbor->scheduler->netev, fd, skid);
+        ev_close(&harbor->loader->netev, fd, skid);
         return;
     }
     buf_ctx *bdst = url_get_param(&url, "dst");
     if (buf_empty(bdst)) {
-        ev_close(&harbor->scheduler->netev, fd, skid);
+        ev_close(&harbor->loader->netev, fd, skid);
         return;
     }
     buf_ctx *reqtype = url_get_param(&url, "type");
     if (buf_empty(reqtype)) {
-        ev_close(&harbor->scheduler->netev, fd, skid);
+        ev_close(&harbor->loader->netev, fd, skid);
         return;
     }
     name_t dst = (name_t)strtol(bdst->data, NULL, 10);
     uint8_t type = (uint8_t)strtol(reqtype->data, NULL, 10);
     if (buf_icompare(&url.path, "call", strlen("call"))) {
-        task_ctx *to = task_grab(harbor->scheduler, dst);
+        task_ctx *to = task_grab(harbor->loader, dst);
         if (NULL == to){
             _harbor_response(harbor, fd, skid, NULL, 0, 404);
             return;
@@ -166,7 +166,7 @@ static void _harbor_net_recv(task_ctx *harbor, SOCKET fd, uint64_t skid, uint8_t
         task_ungrab(to);
         _harbor_response(harbor, fd, skid, NULL, 0, 200);
     } else if (buf_icompare(&url.path, "request", strlen("request"))) {
-        task_ctx *to = task_grab(harbor->scheduler, dst);
+        task_ctx *to = task_grab(harbor->loader, dst);
         if (NULL == to) {
             _harbor_response(harbor, fd, skid, NULL, 0, 404);
             return;
@@ -176,7 +176,7 @@ static void _harbor_net_recv(task_ctx *harbor, SOCKET fd, uint64_t skid, uint8_t
         trigger_request(to, harbor, type, sess, (void *)reqdata, lens, 1);
         task_ungrab(to);
     } else {
-        ev_close(&harbor->scheduler->netev, fd, skid);
+        ev_close(&harbor->loader->netev, fd, skid);
     }
 }
 static void _harbor_onresponse(task_ctx *harbor, uint64_t sess, int32_t error, void *data, size_t size) {
@@ -217,11 +217,11 @@ static void _harbor_startup(task_ctx *harbor) {
 static void _harbor_closing(task_ctx *harbor) {
     harbor_ctx *hbctx = harbor->arg;
     if (0 != hbctx->lsnid) {
-        ev_unlisten(&harbor->scheduler->netev, hbctx->lsnid);
+        ev_unlisten(&harbor->loader->netev, hbctx->lsnid);
         hbctx->lsnid = 0;
     }
 }
-int32_t harbor_start(scheduler_ctx *scheduler, name_t tname, name_t ssl,
+int32_t harbor_start(loader_ctx *loader, name_t tname, name_t ssl,
     const char *host, uint16_t port, const char *key, int32_t ms) {
     if (INVALID_TNAME == tname) {
         return ERR_OK;
@@ -243,7 +243,7 @@ int32_t harbor_start(scheduler_ctx *scheduler, name_t tname, name_t ssl,
     timer_init(&hbctx->timer);
     hbctx->mapargs = hashmap_new_with_allocator(_malloc, _realloc, _free,
         sizeof(harbor_args), ONEK, 0, 0, _map_args_hash, _map_args_compare, NULL, NULL);
-    task_ctx *harbor = task_new(scheduler, tname, NULL, _harbor_free, (void *)hbctx);
+    task_ctx *harbor = task_new(loader, tname, NULL, _harbor_free, (void *)hbctx);
     if (ERR_OK != task_register(harbor, _harbor_startup, _harbor_closing)) {
         task_free(harbor);
         return ERR_FAILED;

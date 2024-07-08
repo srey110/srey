@@ -123,7 +123,7 @@ static void _open_log(void) {
     log_init(logstream);
 }
 static int32_t service_exit(void) {
-    scheduler_free(g_scheduler);
+    loader_free(g_loader);
     mutex_free(&muexit);
     cond_free(&condexit);
     _memcheck();
@@ -156,8 +156,8 @@ static int32_t service_init(void) {
     srand((uint32_t)time(NULL));
     mutex_init(&muexit);
     cond_init(&condexit);
-    g_scheduler = scheduler_init(config.nnet, config.nworker);
-    if (ERR_OK != task_startup(g_scheduler, &config)) {
+    g_loader = loader_init(config.nnet, config.nworker);
+    if (ERR_OK != task_startup(g_loader, &config)) {
         service_exit();
         return ERR_FAILED;
     }

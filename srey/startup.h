@@ -17,8 +17,8 @@ typedef struct config_ctx {
     char harborkey[128];
 }config_ctx;
 
-static int32_t task_startup(scheduler_ctx *scheduler, config_ctx *config) {
-    int32_t rtn = harbor_start(scheduler, config->harborname, config->harborssl,
+static int32_t task_startup(loader_ctx *loader, config_ctx *config) {
+    int32_t rtn = harbor_start(loader, config->harborname, config->harborssl,
         config->harborip, config->harborport, config->harborkey, config->harbortimeout);
     if (ERR_OK != rtn) {
         return rtn;

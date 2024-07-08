@@ -13,7 +13,7 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, 
         char time[TIME_LENS];
         sectostr(nowsec(), "%Y-%m-%d %H:%M:%S", time);
         http_pack_content(&bwriter, time, strlen(time));
-        ev_send(&task->scheduler->netev, fd, skid, bwriter.data, bwriter.offset, 0);
+        ev_send(&task->loader->netev, fd, skid, bwriter.data, bwriter.offset, 0);
         break;
     }
     case 1: {
@@ -31,8 +31,8 @@ static void _startup(task_ctx *task) {
     uint64_t id;
     trigger_listen(task, PACK_HTTP, NULL, "0.0.0.0", 15003, &id, 0);
 }
-void task_http_sv_start(scheduler_ctx *scheduler, name_t name, int32_t pt) {
+void task_http_sv_start(loader_ctx *loader, name_t name, int32_t pt) {
     _prt = pt;
-    task_ctx *task = task_new(scheduler, name, NULL, NULL, NULL);
+    task_ctx *task = task_new(loader, name, NULL, NULL, NULL);
     task_register(task, _startup, NULL);
 }

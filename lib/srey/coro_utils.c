@@ -28,7 +28,7 @@ dns_ip *dns_lookup(task_ctx *task, const char *domain, int32_t ipv6, size_t *cnt
     char buf[ONEK] = { 0 };
     size_t lens = dns_request_pack(buf, domain, ipv6);
     void *resp = coro_sendto(task, fd, skid, dnsip, 53, buf, lens, &lens);
-    ev_close(&task->scheduler->netev, fd, skid);
+    ev_close(&task->loader->netev, fd, skid);
     if (NULL == resp) {
         return NULL;
     }
@@ -77,7 +77,7 @@ SOCKET wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, c
     }
     char *reqpack = websock_handshake_pack(host, secproto);
     FREE(host);
-    ev_send(&task->scheduler->netev, fd, *skid, reqpack, strlen(reqpack), 0);
+    ev_send(&task->loader->netev, fd, *skid, reqpack, strlen(reqpack), 0);
     int32_t err;
     size_t size;
     char *hsdata = coro_handshaked(task, fd, *skid, &err, &size);
@@ -88,7 +88,7 @@ SOCKET wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, c
     if (NULL != secproto
         && 0 != seclens) {
         if (seclens != size || 0 != memcmp(secproto, hsdata, seclens)) {
-            ev_close(&task->scheduler->netev, fd, *skid);
+            ev_close(&task->loader->netev, fd, *skid);
             return INVALID_SOCK;
         }
     }
@@ -108,7 +108,7 @@ SOCKET redis_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ip, ui
             || RESP_STRING != rtn->proto
             || 2 != rtn->len
             || 0 != _memicmp(rtn->data, "ok", (size_t)rtn->len)) {
-            ev_close(&task->scheduler->netev, fd, *skid);
+            ev_close(&task->loader->netev, fd, *skid);
             return INVALID_SOCK;
         }
     }

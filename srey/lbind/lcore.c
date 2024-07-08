@@ -86,7 +86,7 @@ static int32_t _lcore_listen(lua_State *lua) {
 }
 static int32_t _lcore_unlisten(lua_State *lua) {
     uint64_t id = (uint64_t)luaL_checkinteger(lua, 1);
-    ev_unlisten(&g_scheduler->netev, id);
+    ev_unlisten(&g_loader->netev, id);
     return 0;
 }
 static int32_t _lcore_connect(lua_State *lua) {
@@ -115,7 +115,7 @@ static int32_t _lcore_ssl_exchange(lua_State *lua) {
     int32_t client = (int32_t)luaL_checkinteger(lua, 3);
     struct evssl_ctx *evssl = lua_touserdata(lua, 4);
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    ev_ssl(&task->scheduler->netev, fd, skid, client, evssl);
+    ev_ssl(&task->loader->netev, fd, skid, client, evssl);
     return 0;
 }
 static int32_t _lcore_udp(lua_State *lua) {
@@ -144,7 +144,7 @@ static int32_t _lcore_send(lua_State *lua) {
         size = (size_t)luaL_checkinteger(lua, 4);
     }
     int32_t copy = COPY_TYPE(lua, 5);
-    ev_send(&g_scheduler->netev, fd, skid, data, size, copy);
+    ev_send(&g_loader->netev, fd, skid, data, size, copy);
     return 0;
 }
 static int32_t _lcore_sendto(lua_State *lua) {
@@ -160,7 +160,7 @@ static int32_t _lcore_sendto(lua_State *lua) {
         data = lua_touserdata(lua, 5);
         size = (size_t)luaL_checkinteger(lua, 6);
     }
-    if (ERR_OK == ev_sendto(&g_scheduler->netev, fd, skid, ip, port, data, size)) {
+    if (ERR_OK == ev_sendto(&g_loader->netev, fd, skid, ip, port, data, size)) {
         lua_pushboolean(lua, 1);
     } else {
         lua_pushboolean(lua, 0);
@@ -170,35 +170,35 @@ static int32_t _lcore_sendto(lua_State *lua) {
 static int32_t _lcore_close(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    ev_close(&g_scheduler->netev, fd, skid);
+    ev_close(&g_loader->netev, fd, skid);
     return 0;
 }
 static int32_t _lcore_pack_type(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
     pack_type pktype = (pack_type)luaL_checkinteger(lua, 3);
-    ev_ud_pktype(&g_scheduler->netev, fd, skid, pktype);
+    ev_ud_pktype(&g_loader->netev, fd, skid, pktype);
     return 0;
 }
 static int32_t _lcore_status(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
     int8_t status = (int8_t)luaL_checkinteger(lua, 3);
-    ev_ud_status(&g_scheduler->netev, fd, skid, status);
+    ev_ud_status(&g_loader->netev, fd, skid, status);
     return 0;
 }
 static int32_t _lcore_bind_task(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
     name_t name = (name_t)luaL_checkinteger(lua, 3);
-    ev_ud_name(&g_scheduler->netev, fd, skid, name);
+    ev_ud_name(&g_loader->netev, fd, skid, name);
     return 0;
 }
 static int32_t _lcore_session(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
     uint64_t sess = (uint64_t)luaL_checkinteger(lua, 3);
-    ev_ud_sess(&g_scheduler->netev, fd, skid, sess);
+    ev_ud_sess(&g_loader->netev, fd, skid, sess);
     return 0;
 }
 static int32_t _lcore_cert_register(lua_State *lua) {

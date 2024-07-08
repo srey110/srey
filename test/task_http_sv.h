@@ -3,6 +3,6 @@
 
 #include "lib.h"
 
-void task_http_sv_start(scheduler_ctx *scheduler, name_t name, int32_t pt);
+void task_http_sv_start(loader_ctx *loader, name_t name, int32_t pt);
 
 #endif//TASK_HTTP_SV_H_

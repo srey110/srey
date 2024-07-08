@@ -1,8 +1,8 @@
-#include "srey/scheduler.h"
+#include "srey/loader.h"
 #include "containers/hashmap.h"
 #include "srey/task.h"
 
-scheduler_ctx *g_scheduler;
+loader_ctx *g_loader;
 static uint64_t _map_task_hash(const void *item, uint64_t seed0, uint64_t seed1) {
     return hash((const char *)(*(name_t **)item), sizeof(name_t));
 }
@@ -12,13 +12,13 @@ static int _map_task_compare(const void *a, const void *b, void *ud) {
 static void _map_task_free(void *item) {
     task_free(UPCAST(*((name_t **)item), task_ctx, name));
 }
-#if !SCHEDULER_GLOBAL
-static int32_t _max_task_index(scheduler_ctx *scheduler) {
+#if !LOADER_GLOBAL
+static int32_t _max_task_index(loader_ctx *loader) {
     uint16_t index = 0;
-    uint32_t max = qu_task_size(&scheduler->worker[0].qutasks);
+    uint32_t max = qu_task_size(&loader->worker[0].qutasks);
     uint32_t count;
-    for (uint16_t i = 1; i < scheduler->nworker; i++) {
-        count = qu_task_size(&scheduler->worker[i].qutasks);
+    for (uint16_t i = 1; i < loader->nworker; i++) {
+        count = qu_task_size(&loader->worker[i].qutasks);
         if (count > max) {
             index = i;
             max = count;
@@ -27,17 +27,17 @@ static int32_t _max_task_index(scheduler_ctx *scheduler) {
     return 0 == max ? -1 : (int32_t)index;
 }
 #endif
-static void _worker_wakeup_all(scheduler_ctx *scheduler) {
-#if SCHEDULER_GLOBAL
-    mutex_lock(&scheduler->mutex);
-    if (scheduler->waiting > 0) {
-        cond_broadcast(&scheduler->cond);
+static void _worker_wakeup_all(loader_ctx *loader) {
+#if LOADER_GLOBAL
+    mutex_lock(&loader->mutex);
+    if (loader->waiting > 0) {
+        cond_broadcast(&loader->cond);
     }
-    mutex_unlock(&scheduler->mutex);
+    mutex_unlock(&loader->mutex);
 #else
     worker_ctx *worker;
-    for (uint16_t i = 0; i < scheduler->nworker; i++) {
-        worker = &scheduler->worker[i];
+    for (uint16_t i = 0; i < loader->nworker; i++) {
+        worker = &loader->worker[i];
         mutex_lock(&worker->mutex);
         if (worker->waiting > 0) {
             cond_signal(&worker->cond);
@@ -46,18 +46,18 @@ static void _worker_wakeup_all(scheduler_ctx *scheduler) {
     }
 #endif
 }
-static void _worker_wakeup(scheduler_ctx *scheduler, name_t *task) {
-#if SCHEDULER_GLOBAL
-    spin_lock(&scheduler->lckglobal);
-    qu_task_push(&scheduler->quglobal, task);
-    spin_unlock(&scheduler->lckglobal);
-    mutex_lock(&scheduler->mutex);
-    if (scheduler->waiting > 0) {
-        cond_signal(&scheduler->cond);
+static void _worker_wakeup(loader_ctx *loader, name_t *task) {
+#if LOADER_GLOBAL
+    spin_lock(&loader->lckglobal);
+    qu_task_push(&loader->quglobal, task);
+    spin_unlock(&loader->lckglobal);
+    mutex_lock(&loader->mutex);
+    if (loader->waiting > 0) {
+        cond_signal(&loader->cond);
     }
-    mutex_unlock(&scheduler->mutex);
+    mutex_unlock(&loader->mutex);
 #else
-    worker_ctx *worker = &scheduler->worker[ATOMIC64_ADD(&scheduler->index, 1) % scheduler->nworker];
+    worker_ctx *worker = &loader->worker[ATOMIC64_ADD(&loader->index, 1) % loader->nworker];
     spin_lock(&worker->lcktasks);
     qu_task_push(&worker->qutasks, task);
     spin_unlock(&worker->lcktasks);
@@ -78,19 +78,19 @@ void _task_message_push(task_ctx *task, message_ctx *msg) {
     }
     spin_unlock(&task->lckmsg);
     if (0 != add) {
-        _worker_wakeup(task->scheduler, &task->name);
+        _worker_wakeup(task->loader, &task->name);
     }
 }
-static name_t _task_name_get(scheduler_ctx *scheduler, worker_ctx *worker) {
+static name_t _task_name_get(loader_ctx *loader, worker_ctx *worker) {
     name_t *ptr;
     name_t name = INVALID_TNAME;
-#if SCHEDULER_GLOBAL
-    spin_lock(&scheduler->lckglobal);
-    ptr = qu_task_pop(&scheduler->quglobal);
+#if LOADER_GLOBAL
+    spin_lock(&loader->lckglobal);
+    ptr = qu_task_pop(&loader->quglobal);
     if (NULL != ptr) {
         name = *ptr;
     }
-    spin_unlock(&scheduler->lckglobal);
+    spin_unlock(&loader->lckglobal);
 #else
     spin_lock(&worker->lcktasks);
     ptr = qu_task_pop(&worker->qutasks);
@@ -99,14 +99,14 @@ static name_t _task_name_get(scheduler_ctx *scheduler, worker_ctx *worker) {
     }
     spin_unlock(&worker->lcktasks);
     if (INVALID_TNAME == name) {
-        int32_t index = _max_task_index(scheduler);
+        int32_t index = _max_task_index(loader);
         if (-1 != index) {
-            spin_lock(&scheduler->worker[index].lcktasks);
-            ptr = qu_task_pop(&scheduler->worker[index].qutasks);
+            spin_lock(&loader->worker[index].lcktasks);
+            ptr = qu_task_pop(&loader->worker[index].qutasks);
             if (NULL != ptr) {
                 name = *ptr;
             }
-            spin_unlock(&scheduler->worker[index].lcktasks);
+            spin_unlock(&loader->worker[index].lcktasks);
         }
     }
 #endif
@@ -124,7 +124,7 @@ static int32_t _task_message_pop(task_ctx *task, message_ctx *msg) {
     spin_unlock(&task->lckmsg);
     return ERR_OK;
 }
-static void _task_run(scheduler_ctx *scheduler, worker_ctx *worker,
+static void _task_run(loader_ctx *loader, worker_ctx *worker,
     worker_version *version, task_dispatch_arg *runarg) {
     //执行
     version->name = runarg->task->name;
@@ -143,16 +143,16 @@ static void _task_run(scheduler_ctx *scheduler, worker_ctx *worker,
     }
     spin_unlock(&runarg->task->lckmsg);
     if (0 != add) {
-        _worker_wakeup(scheduler, &runarg->task->name);
+        _worker_wakeup(loader, &runarg->task->name);
     }
 }
-static void _worker_hang(scheduler_ctx *scheduler, worker_ctx *worker) {
-#if SCHEDULER_GLOBAL
-    mutex_lock(&scheduler->mutex);
-    ++scheduler->waiting;
-    cond_wait(&scheduler->cond, &scheduler->mutex);
-    --scheduler->waiting;
-    mutex_unlock(&scheduler->mutex);
+static void _worker_hang(loader_ctx *loader, worker_ctx *worker) {
+#if LOADER_GLOBAL
+    mutex_lock(&loader->mutex);
+    ++loader->waiting;
+    cond_wait(&loader->cond, &loader->mutex);
+    --loader->waiting;
+    mutex_unlock(&loader->mutex);
 #else
     mutex_lock(&worker->mutex);
     ++worker->waiting;
@@ -164,30 +164,30 @@ static void _worker_hang(scheduler_ctx *scheduler, worker_ctx *worker) {
 static void _worker_loop(void *arg) {
     name_t name;
     worker_ctx *worker = (worker_ctx *)arg;
-    scheduler_ctx *scheduler = worker->scheduler;
-    worker_version *version = &scheduler->monitor.version[worker->index];
+    loader_ctx *loader = worker->loader;
+    worker_version *version = &loader->monitor.version[worker->index];
     task_dispatch_arg runarg;
-    while (0 == scheduler->stop) {
+    while (0 == loader->stop) {
         //从队列取一任务
-        name = _task_name_get(scheduler, worker);
+        name = _task_name_get(loader, worker);
         if (INVALID_TNAME != name) {
-            runarg.task = task_grab(scheduler, name);
+            runarg.task = task_grab(loader, name);
             if (NULL == runarg.task) {
                 continue;
             }
-            _task_run(scheduler, worker, version, &runarg);
+            _task_run(loader, worker, version, &runarg);
             task_ungrab(runarg.task);
             continue;
         }
-        _worker_hang(scheduler, worker);
+        _worker_hang(loader, worker);
     }
     LOG_INFO("worker thread %d exited.", worker->index);
 }
 //检查死循环
-static void _monitor_check(scheduler_ctx *scheduler) {
+static void _monitor_check(loader_ctx *loader) {
     worker_version *version;
-    for (uint16_t i = 0; i < scheduler->nworker; i++) {
-        version = &scheduler->monitor.version[i];
+    for (uint16_t i = 0; i < loader->nworker; i++) {
+        version = &loader->monitor.version[i];
         if (version->ckver == version->ver
             && MSG_TYPE_NONE != version->msgtype) {
             LOG_WARN("task: %d message type: %d, maybe in an endless loop.",
@@ -198,57 +198,57 @@ static void _monitor_check(scheduler_ctx *scheduler) {
     }
 }
 static void _monitor_loop(void *arg) {
-    scheduler_ctx *scheduler = (scheduler_ctx *)arg;
+    loader_ctx *loader = (loader_ctx *)arg;
     uint64_t time = 0;
-    while (0 == scheduler->monitor.stop) {
+    while (0 == loader->monitor.stop) {
         MSLEEP(100);
         time += 100;
         if (0 == time % 5000) {
-            _monitor_check(scheduler);
+            _monitor_check(loader);
         }
     }
     LOG_INFO("%s", "worker monitor thread exited.");
 }
-scheduler_ctx *scheduler_init(uint16_t nnet, uint16_t nworker) {
-    scheduler_ctx *scheduler;
-    CALLOC(scheduler, 1, sizeof(scheduler_ctx));
+loader_ctx *loader_init(uint16_t nnet, uint16_t nworker) {
+    loader_ctx *loader;
+    CALLOC(loader, 1, sizeof(loader_ctx));
     protos_init(_message_handshaked_push);
 #if WITH_CORO
     _mcoro_init(0);
 #endif
-#if SCHEDULER_GLOBAL
-    spin_init(&scheduler->lckglobal, SPIN_CNT_SCHEDULER);
-    qu_task_init(&scheduler->quglobal, ONEK);
-    mutex_init(&scheduler->mutex);
-    cond_init(&scheduler->cond);
+#if LOADER_GLOBAL
+    spin_init(&loader->lckglobal, SPIN_CNT_LOADER);
+    qu_task_init(&loader->quglobal, ONEK);
+    mutex_init(&loader->mutex);
+    cond_init(&loader->cond);
 #endif
-    scheduler->nworker = 0 == nworker ? 1 : nworker;
-    CALLOC(scheduler->worker, 1, sizeof(worker_ctx) * scheduler->nworker);
-    CALLOC(scheduler->monitor.version, 1, sizeof(worker_version) * scheduler->nworker);
-    rwlock_init(&scheduler->lckmaptasks);
-    scheduler->maptasks = hashmap_new_with_allocator(_malloc, _realloc, _free,
+    loader->nworker = 0 == nworker ? 1 : nworker;
+    CALLOC(loader->worker, 1, sizeof(worker_ctx) * loader->nworker);
+    CALLOC(loader->monitor.version, 1, sizeof(worker_version) * loader->nworker);
+    rwlock_init(&loader->lckmaptasks);
+    loader->maptasks = hashmap_new_with_allocator(_malloc, _realloc, _free,
                                                sizeof(name_t *), ONEK, 0, 0,
                                                _map_task_hash, _map_task_compare, _map_task_free, NULL);
 #if WITH_SSL
     evssl_pool_init();
 #endif
-    scheduler->monitor.thread_monitor = thread_creat(_monitor_loop, scheduler);
+    loader->monitor.thread_monitor = thread_creat(_monitor_loop, loader);
     worker_ctx *worker;
-    for (uint16_t i = 0; i < scheduler->nworker; i++) {
-        worker = &scheduler->worker[i];
+    for (uint16_t i = 0; i < loader->nworker; i++) {
+        worker = &loader->worker[i];
         worker->index = i;
-        worker->scheduler = scheduler;
-#if !SCHEDULER_GLOBAL
-        spin_init(&worker->lcktasks, SPIN_CNT_SCHEDULER);
+        worker->loader = loader;
+#if !LOADER_GLOBAL
+        spin_init(&worker->lcktasks, SPIN_CNT_LOADER);
         qu_task_init(&worker->qutasks, ONEK);
         mutex_init(&worker->mutex);
         cond_init(&worker->cond);
 #endif
         worker->thread_worker = thread_creat(_worker_loop, worker);
     }
-    tw_init(&scheduler->tw);
-    ev_init(&scheduler->netev, nnet);
-    return scheduler;
+    tw_init(&loader->tw);
+    ev_init(&loader->netev, nnet);
+    return loader;
 }
 static bool _closing_push(const void *item, void *udata) {
     task_ctx *task = UPCAST(*((name_t **)item), task_ctx, name);
@@ -262,64 +262,64 @@ static bool _closing_timeout(const void *item, void *udata) {
     LOG_WARN("task %d close timeout, ref %d.", task->name, task->ref);
     return true;
 }
-static void _task_closing(scheduler_ctx *scheduler) {
+static void _task_closing(loader_ctx *loader) {
     message_ctx closing;
     closing.mtype = MSG_TYPE_CLOSING;
-    rwlock_rdlock(&scheduler->lckmaptasks);
-    hashmap_scan(scheduler->maptasks, _closing_push, &closing);
-    rwlock_unlock(&scheduler->lckmaptasks);
+    rwlock_rdlock(&loader->lckmaptasks);
+    hashmap_scan(loader->maptasks, _closing_push, &closing);
+    rwlock_unlock(&loader->lckmaptasks);
     size_t n;
     uint32_t time = 0;
     for (;;) {
-        rwlock_rdlock(&scheduler->lckmaptasks);
-        n = hashmap_count(scheduler->maptasks);
+        rwlock_rdlock(&loader->lckmaptasks);
+        n = hashmap_count(loader->maptasks);
         if (0 == n) {
-            rwlock_unlock(&scheduler->lckmaptasks);
+            rwlock_unlock(&loader->lckmaptasks);
             break;
         }
         if (time >= 5 * 1000) {
             time = 0;
-            hashmap_scan(scheduler->maptasks, _closing_timeout, NULL);
+            hashmap_scan(loader->maptasks, _closing_timeout, NULL);
         }
-        rwlock_unlock(&scheduler->lckmaptasks);
+        rwlock_unlock(&loader->lckmaptasks);
         MSLEEP(50);
         time += 50;
     }
 }
-void scheduler_free(scheduler_ctx *scheduler) {
-    _task_closing(scheduler);
-    scheduler->stop = 1;
+void loader_free(loader_ctx *loader) {
+    _task_closing(loader);
+    loader->stop = 1;
     worker_ctx *worker;
-    _worker_wakeup_all(scheduler);
-    for (uint16_t i = 0; i < scheduler->nworker; i++) {
-        worker = &scheduler->worker[i];
+    _worker_wakeup_all(loader);
+    for (uint16_t i = 0; i < loader->nworker; i++) {
+        worker = &loader->worker[i];
         thread_join(worker->thread_worker);
     }
-    scheduler->monitor.stop = 1;
-    thread_join(scheduler->monitor.thread_monitor);
-    ev_free(&scheduler->netev);
-    tw_free(&scheduler->tw);
+    loader->monitor.stop = 1;
+    thread_join(loader->monitor.thread_monitor);
+    ev_free(&loader->netev);
+    tw_free(&loader->tw);
 #if WITH_SSL
     evssl_pool_free();
 #endif
-#if SCHEDULER_GLOBAL
-    spin_free(&scheduler->lckglobal);
-    qu_task_free(&scheduler->quglobal);
-    mutex_free(&scheduler->mutex);
-    cond_free(&scheduler->cond);
+#if LOADER_GLOBAL
+    spin_free(&loader->lckglobal);
+    qu_task_free(&loader->quglobal);
+    mutex_free(&loader->mutex);
+    cond_free(&loader->cond);
 #else
-    for (uint16_t i = 0; i < scheduler->nworker; i++) {
-        worker = &scheduler->worker[i];
+    for (uint16_t i = 0; i < loader->nworker; i++) {
+        worker = &loader->worker[i];
         spin_free(&worker->lcktasks);
         qu_task_free(&worker->qutasks);
         mutex_free(&worker->mutex);
         cond_free(&worker->cond);
     }
 #endif
-    hashmap_free(scheduler->maptasks);
-    rwlock_free(&scheduler->lckmaptasks);
+    hashmap_free(loader->maptasks);
+    rwlock_free(&loader->lckmaptasks);
     protos_free();
-    FREE(scheduler->worker);
-    FREE(scheduler->monitor.version);
-    FREE(scheduler);
+    FREE(loader->worker);
+    FREE(loader->monitor.version);
+    FREE(loader);
 }

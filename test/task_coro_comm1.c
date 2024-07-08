@@ -4,7 +4,7 @@
 
 static int32_t _prt = 0;
 static void _timeout(task_ctx *task, uint64_t sess) {
-    task_ctx *comm2 = task_grab(task->scheduler, 10005);
+    task_ctx *comm2 = task_grab(task->loader, 10005);
     const char *reqmsg = "this is task_coro_comm1 request";
     int32_t error;
     size_t size;
@@ -33,9 +33,9 @@ static void _startup(task_ctx *task) {
     on_responsed(task, _response);
     trigger_timeout(task, 0, 3000, _timeout);
 }
-void task_coro_comm1_start(scheduler_ctx *scheduler, name_t name, int32_t pt) {
+void task_coro_comm1_start(loader_ctx *loader, name_t name, int32_t pt) {
     _prt = pt;
-    task_ctx *task = task_new(scheduler, name, NULL, NULL, NULL);
+    task_ctx *task = task_new(loader, name, NULL, NULL, NULL);
     task_register(task, _startup, NULL);
 }
 

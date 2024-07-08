@@ -11,13 +11,13 @@ static void _net_accept(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype
 }
 static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, uint8_t client, uint8_t slice, void *data, size_t size) {
     /*if (randrange(0, 100) <= 1) {
-        ev_close(&task->scheduler->netev, fd, skid);
+        ev_close(&task->loader->netev, fd, skid);
         return;
     }*/
     size_t lens;
     char *sbuf = custz_data(data, &lens);
     void *outbuf = custz_pack(sbuf, lens, &lens);
-    ev_send(&task->scheduler->netev, fd, skid, outbuf, lens, 0);
+    ev_send(&task->loader->netev, fd, skid, outbuf, lens, 0);
 }
 static void _net_send(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, uint8_t client, size_t size) {
     if (_prt) {
@@ -37,10 +37,10 @@ static void _startup(task_ctx *task) {
     uint64_t id;
     trigger_listen(task, PACK_CUSTZ, _ssl, "0.0.0.0", 15001, &id, NETEV_ACCEPT | NETEV_SEND);
 }
-void task_ssl_start(scheduler_ctx *scheduler, name_t name, evssl_ctx *ssl, int32_t pt) {
+void task_ssl_start(loader_ctx *loader, name_t name, evssl_ctx *ssl, int32_t pt) {
     _prt = pt;
     _ssl = ssl;
-    task_ctx *task = task_new(scheduler, name, NULL, NULL, NULL);
+    task_ctx *task = task_new(loader, name, NULL, NULL, NULL);
     task_register(task, _startup, NULL);
 }
 

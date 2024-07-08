@@ -7,9 +7,9 @@ static void _timeout1(task_ctx *task, uint64_t sess) {
     if (_prt) {
         LOG_INFO("task %d run _timeout1 session %"PRIu64, task->name, sess);
     }
-    task_ctx *autoclose = task_grab(task->scheduler, _autoclose);
+    task_ctx *autoclose = task_grab(task->loader, _autoclose);
     if (NULL == autoclose) {
-        task_auto_close_start(task->scheduler, _autoclose, _prt);
+        task_auto_close_start(task->loader, _autoclose, _prt);
     } else {
         task_ungrab(autoclose);
     }
@@ -19,7 +19,7 @@ static void _timeout2(task_ctx *task, uint64_t sess) {
     if (_prt) {
         LOG_INFO("task %d run _timeout2 session %"PRIu64, task->name, sess);
     }
-    task_ctx *autoclose = task_grab(task->scheduler, _autoclose);
+    task_ctx *autoclose = task_grab(task->loader, _autoclose);
     if (NULL != autoclose) {
         task_close(autoclose);
         task_ungrab(autoclose);
@@ -30,8 +30,8 @@ static void _startup(task_ctx *task) {
     trigger_timeout(task, 0, 3000, _timeout1);
     trigger_timeout(task, 0, 5000, _timeout2);
 }
-void task_timeout_start(scheduler_ctx *scheduler, name_t name, int32_t pt) {
+void task_timeout_start(loader_ctx *loader, name_t name, int32_t pt) {
     _prt = pt;
-    task_ctx *task = task_new(scheduler, name, NULL, NULL, NULL);
+    task_ctx *task = task_new(loader, name, NULL, NULL, NULL);
     task_register(task, _startup, NULL);
 }
