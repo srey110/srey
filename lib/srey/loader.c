@@ -3,6 +3,7 @@
 #include "srey/task.h"
 
 loader_ctx *g_loader;
+
 static uint64_t _map_task_hash(const void *item, uint64_t seed0, uint64_t seed1) {
     return hash((const char *)(*(name_t **)item), sizeof(name_t));
 }
@@ -12,7 +13,6 @@ static int _map_task_compare(const void *a, const void *b, void *ud) {
 static void _map_task_free(void *item) {
     task_free(UPCAST(*((name_t **)item), task_ctx, name));
 }
-#if !LOADER_GLOBAL
 static int32_t _max_task_index(loader_ctx *loader) {
     uint16_t index = 0;
     uint32_t max = qu_task_size(&loader->worker[0].qutasks);
@@ -26,15 +26,7 @@ static int32_t _max_task_index(loader_ctx *loader) {
     }
     return 0 == max ? -1 : (int32_t)index;
 }
-#endif
 static void _worker_wakeup_all(loader_ctx *loader) {
-#if LOADER_GLOBAL
-    mutex_lock(&loader->mutex);
-    if (loader->waiting > 0) {
-        cond_broadcast(&loader->cond);
-    }
-    mutex_unlock(&loader->mutex);
-#else
     worker_ctx *worker;
     for (uint16_t i = 0; i < loader->nworker; i++) {
         worker = &loader->worker[i];
@@ -44,19 +36,8 @@ static void _worker_wakeup_all(loader_ctx *loader) {
         }
         mutex_unlock(&worker->mutex);
     }
-#endif
 }
 static void _worker_wakeup(loader_ctx *loader, name_t *task) {
-#if LOADER_GLOBAL
-    spin_lock(&loader->lckglobal);
-    qu_task_push(&loader->quglobal, task);
-    spin_unlock(&loader->lckglobal);
-    mutex_lock(&loader->mutex);
-    if (loader->waiting > 0) {
-        cond_signal(&loader->cond);
-    }
-    mutex_unlock(&loader->mutex);
-#else
     worker_ctx *worker = &loader->worker[ATOMIC64_ADD(&loader->index, 1) % loader->nworker];
     spin_lock(&worker->lcktasks);
     qu_task_push(&worker->qutasks, task);
@@ -66,7 +47,6 @@ static void _worker_wakeup(loader_ctx *loader, name_t *task) {
         cond_signal(&worker->cond);
     }
     mutex_unlock(&worker->mutex);
-#endif
 }
 void _task_message_push(task_ctx *task, message_ctx *msg) {
     int32_t add = 0;
@@ -84,14 +64,6 @@ void _task_message_push(task_ctx *task, message_ctx *msg) {
 static name_t _task_name_get(loader_ctx *loader, worker_ctx *worker) {
     name_t *ptr;
     name_t name = INVALID_TNAME;
-#if LOADER_GLOBAL
-    spin_lock(&loader->lckglobal);
-    ptr = qu_task_pop(&loader->quglobal);
-    if (NULL != ptr) {
-        name = *ptr;
-    }
-    spin_unlock(&loader->lckglobal);
-#else
     spin_lock(&worker->lcktasks);
     ptr = qu_task_pop(&worker->qutasks);
     if (NULL != ptr) {
@@ -109,7 +81,6 @@ static name_t _task_name_get(loader_ctx *loader, worker_ctx *worker) {
             spin_unlock(&loader->worker[index].lcktasks);
         }
     }
-#endif
     return name;
 }
 static int32_t _task_message_pop(task_ctx *task, message_ctx *msg) {
@@ -147,19 +118,11 @@ static void _task_run(loader_ctx *loader, worker_ctx *worker,
     }
 }
 static void _worker_hang(loader_ctx *loader, worker_ctx *worker) {
-#if LOADER_GLOBAL
-    mutex_lock(&loader->mutex);
-    ++loader->waiting;
-    cond_wait(&loader->cond, &loader->mutex);
-    --loader->waiting;
-    mutex_unlock(&loader->mutex);
-#else
     mutex_lock(&worker->mutex);
     ++worker->waiting;
     cond_wait(&worker->cond, &worker->mutex);
     --worker->waiting;
     mutex_unlock(&worker->mutex);
-#endif
 }
 static void _worker_loop(void *arg) {
     name_t name;
@@ -216,11 +179,9 @@ loader_ctx *loader_init(uint16_t nnet, uint16_t nworker) {
 #if WITH_CORO
     _mcoro_init(0);
 #endif
-#if LOADER_GLOBAL
-    spin_init(&loader->lckglobal, SPIN_CNT_LOADER);
-    qu_task_init(&loader->quglobal, ONEK);
-    mutex_init(&loader->mutex);
-    cond_init(&loader->cond);
+#if WITH_SSL
+    evssl_init();
+    evssl_pool_init();
 #endif
     loader->nworker = 0 == nworker ? 1 : nworker;
     CALLOC(loader->worker, 1, sizeof(worker_ctx) * loader->nworker);
@@ -229,22 +190,16 @@ loader_ctx *loader_init(uint16_t nnet, uint16_t nworker) {
     loader->maptasks = hashmap_new_with_allocator(_malloc, _realloc, _free,
                                                   sizeof(name_t *), ONEK, 0, 0,
                                                   _map_task_hash, _map_task_compare, _map_task_free, NULL);
-#if WITH_SSL
-    evssl_init();
-    evssl_pool_init();
-#endif
     loader->monitor.thread_monitor = thread_creat(_monitor_loop, loader);
     worker_ctx *worker;
     for (uint16_t i = 0; i < loader->nworker; i++) {
         worker = &loader->worker[i];
         worker->index = i;
         worker->loader = loader;
-#if !LOADER_GLOBAL
         spin_init(&worker->lcktasks, SPIN_CNT_LOADER);
         qu_task_init(&worker->qutasks, ONEK);
         mutex_init(&worker->mutex);
         cond_init(&worker->cond);
-#endif
         worker->thread_worker = thread_creat(_worker_loop, worker);
     }
     tw_init(&loader->tw);
@@ -300,15 +255,6 @@ void loader_free(loader_ctx *loader) {
     thread_join(loader->monitor.thread_monitor);
     ev_free(&loader->netev);
     tw_free(&loader->tw);
-#if WITH_SSL
-    evssl_pool_free();
-#endif
-#if LOADER_GLOBAL
-    spin_free(&loader->lckglobal);
-    qu_task_free(&loader->quglobal);
-    mutex_free(&loader->mutex);
-    cond_free(&loader->cond);
-#else
     for (uint16_t i = 0; i < loader->nworker; i++) {
         worker = &loader->worker[i];
         spin_free(&worker->lcktasks);
@@ -316,10 +262,12 @@ void loader_free(loader_ctx *loader) {
         mutex_free(&worker->mutex);
         cond_free(&worker->cond);
     }
-#endif
     hashmap_free(loader->maptasks);
     rwlock_free(&loader->lckmaptasks);
     protos_free();
+#if WITH_SSL
+    evssl_pool_free();
+#endif
     FREE(loader->worker);
     FREE(loader->monitor.version);
     FREE(loader);

@@ -80,13 +80,11 @@ typedef struct worker_ctx {
     uint16_t index;
     loader_ctx *loader;
     pthread_t thread_worker;
-#if !LOADER_GLOBAL
     int32_t waiting;
     spin_ctx lcktasks;
     qu_task_ctx qutasks;
     mutex_ctx mutex;
     cond_ctx cond;
-#endif
 }worker_ctx;
 struct loader_ctx {
     uint8_t stop;
@@ -96,12 +94,6 @@ struct loader_ctx {
     worker_ctx *worker;
     struct hashmap *maptasks;
     rwlock_ctx lckmaptasks;
-#if LOADER_GLOBAL
-    spin_ctx lckglobal;
-    qu_task_ctx quglobal;
-    mutex_ctx mutex;
-    cond_ctx cond;
-#endif
     monitor_ctx monitor;
     tw_ctx tw;
     ev_ctx netev;
