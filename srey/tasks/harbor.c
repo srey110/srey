@@ -242,7 +242,8 @@ int32_t harbor_start(loader_ctx *loader, name_t tname, name_t ssl,
 #endif
     timer_init(&hbctx->timer);
     hbctx->mapargs = hashmap_new_with_allocator(_malloc, _realloc, _free,
-        sizeof(harbor_args), ONEK, 0, 0, _map_args_hash, _map_args_compare, NULL, NULL);
+                                                sizeof(harbor_args), ONEK, 0, 0,
+                                                _map_args_hash, _map_args_compare, NULL, NULL);
     task_ctx *harbor = task_new(loader, tname, NULL, _harbor_free, (void *)hbctx);
     if (ERR_OK != task_register(harbor, _harbor_startup, _harbor_closing)) {
         task_free(harbor);

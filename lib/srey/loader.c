@@ -38,7 +38,8 @@ static void _worker_wakeup_all(loader_ctx *loader) {
     }
 }
 static void _worker_wakeup(loader_ctx *loader, name_t *task) {
-    worker_ctx *worker = &loader->worker[ATOMIC64_ADD(&loader->index, 1) % loader->nworker];
+    worker_ctx *worker = &loader->worker[
+        (1 == loader->nworker) ? 0 : (ATOMIC64_ADD(&loader->index, 1) % loader->nworker)];
     spin_lock(&worker->lcktasks);
     qu_task_push(&worker->qutasks, task);
     spin_unlock(&worker->lcktasks);

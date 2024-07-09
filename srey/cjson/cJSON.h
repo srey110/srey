@@ -81,7 +81,7 @@ then using the CJSON_API_VISIBILITY flag to "export" the same symbols the way CJ
 /* project version */
 #define CJSON_VERSION_MAJOR 1
 #define CJSON_VERSION_MINOR 7
-#define CJSON_VERSION_PATCH 16
+#define CJSON_VERSION_PATCH 18
 
 #include <stddef.h>
 
@@ -127,7 +127,6 @@ typedef struct cJSON_Hooks
       /* malloc/free are CDECL on Windows regardless of the default calling convention of the compiler, so ensure the hooks allow passing those functions directly. */
       void *(CJSON_CDECL *malloc_fn)(size_t sz);
       void (CJSON_CDECL *free_fn)(void *ptr);
-      void *(CJSON_CDECL *realloc_fn)(void *ptr, size_t sz);
 } cJSON_Hooks;
 
 typedef int cJSON_bool;
