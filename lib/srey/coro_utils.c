@@ -98,8 +98,7 @@ SOCKET redis_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ip, ui
     if (INVALID_SOCK == fd) {
         return INVALID_SOCK;
     }
-    if (NULL != key
-        && 0 != strlen(key)) {
+    if (!EMPTYSTR(key)) {
         size_t size;
         char *auth = redis_pack(&size, "AUTH %s", key);
         redis_pack_ctx *rtn = coro_send(task, fd, *skid, auth, size, &size, 0);

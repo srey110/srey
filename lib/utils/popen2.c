@@ -71,8 +71,7 @@ static int32_t _popen_pipe(HANDLE pipe[2]) {
 #endif
 
 int32_t popen_startup(popen_ctx *ctx, const char *cmd, const char *mode) {
-    if (NULL == cmd
-        || 0 == strlen(cmd)) {
+    if (EMPTYSTR(cmd)) {
         return ERR_FAILED;
     }
     int32_t r = 0, w = 0;
