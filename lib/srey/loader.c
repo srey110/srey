@@ -227,8 +227,8 @@ loader_ctx *loader_init(uint16_t nnet, uint16_t nworker) {
     CALLOC(loader->monitor.version, 1, sizeof(worker_version) * loader->nworker);
     rwlock_init(&loader->lckmaptasks);
     loader->maptasks = hashmap_new_with_allocator(_malloc, _realloc, _free,
-                                               sizeof(name_t *), ONEK, 0, 0,
-                                               _map_task_hash, _map_task_compare, _map_task_free, NULL);
+                                                  sizeof(name_t *), ONEK, 0, 0,
+                                                  _map_task_hash, _map_task_compare, _map_task_free, NULL);
 #if WITH_SSL
     evssl_init();
     evssl_pool_init();
