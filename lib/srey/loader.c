@@ -205,8 +205,8 @@ loader_ctx *loader_init(uint16_t nnet, uint16_t nworker) {
     for (uint16_t i = 0; i < loader->nworker; i++) {
         worker = &loader->worker[i];
         worker->index = i;
-        worker->loader = loader;
         worker->weight = weights[i % n];
+        worker->loader = loader;
         spin_init(&worker->lcktasks, SPIN_CNT_LOADER);
         qu_task_init(&worker->qutasks, ONEK);
         mutex_init(&worker->mutex);
