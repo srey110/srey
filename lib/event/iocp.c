@@ -245,7 +245,7 @@ static void _init_cmd(watcher_ctx *watcher) {
     }
 }
 void ev_init(ev_ctx *ctx, uint32_t nthreads) {
-    ctx->nthreads = (0 == nthreads ? 1 : nthreads);
+    ctx->nthreads = (0 == nthreads ? procscnt() : nthreads);
     ctx->nacpex = ctx->nthreads;
     sock_init();
     _init_funcs(ctx);

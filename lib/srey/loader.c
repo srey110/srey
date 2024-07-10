@@ -98,9 +98,16 @@ static int32_t _task_message_pop(task_ctx *task, message_ctx *msg) {
 }
 static void _task_run(loader_ctx *loader, worker_ctx *worker,
     worker_version *version, task_dispatch_arg *runarg) {
+    uint32_t n = worker->weight >= 0 ? (qu_message_size(&runarg->task->qumsg) >> worker->weight) : 1;
+    if (0 == n) {
+        n = 1;
+    }
     //Ö´ÐÐ
     version->name = runarg->task->name;
-    while (ERR_OK == _task_message_pop(runarg->task, &runarg->msg)) {
+    for (uint32_t i = 0; i < n; i++) {
+        if (ERR_OK != _task_message_pop(runarg->task, &runarg->msg)) {
+            break;
+        }
         ++version->ver;
         version->msgtype = runarg->msg.mtype;
         runarg->task->_task_dispatch(runarg);
@@ -184,7 +191,7 @@ loader_ctx *loader_init(uint16_t nnet, uint16_t nworker) {
     evssl_init();
     evssl_pool_init();
 #endif
-    loader->nworker = 0 == nworker ? 1 : nworker;
+    loader->nworker = 0 == nworker ? procscnt() : nworker;
     CALLOC(loader->worker, 1, sizeof(worker_ctx) * loader->nworker);
     CALLOC(loader->monitor.version, 1, sizeof(worker_version) * loader->nworker);
     rwlock_init(&loader->lckmaptasks);
@@ -192,11 +199,14 @@ loader_ctx *loader_init(uint16_t nnet, uint16_t nworker) {
                                                   sizeof(name_t *), ONEK, 0, 0,
                                                   _map_task_hash, _map_task_compare, _map_task_free, NULL);
     loader->monitor.thread_monitor = thread_creat(_monitor_loop, loader);
+    int32_t weights[] = { -1, 0, 0, 1, 2, 3 };
     worker_ctx *worker;
+    uint16_t n = ARRAY_SIZE(weights);
     for (uint16_t i = 0; i < loader->nworker; i++) {
         worker = &loader->worker[i];
         worker->index = i;
         worker->loader = loader;
+        worker->weight = weights[i % n];
         spin_init(&worker->lcktasks, SPIN_CNT_LOADER);
         qu_task_init(&worker->qutasks, ONEK);
         mutex_init(&worker->mutex);

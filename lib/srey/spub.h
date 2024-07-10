@@ -78,9 +78,10 @@ typedef struct monitor_ctx {
 QUEUE_DECL(name_t, qu_task);
 typedef struct worker_ctx {
     uint16_t index;
+    int32_t weight;
+    int32_t waiting;
     loader_ctx *loader;
     pthread_t thread_worker;
-    int32_t waiting;
     spin_ctx lcktasks;
     qu_task_ctx qutasks;
     mutex_ctx mutex;
