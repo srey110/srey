@@ -66,9 +66,9 @@ struct message_ctx {
 QUEUE_DECL(message_ctx, qu_message);
 typedef struct worker_version {
     uint8_t msgtype;
+    int32_t ckver;
+    int32_t ver;
     name_t name;
-    uint32_t ckver;
-    uint32_t ver;
 }worker_version;
 typedef struct monitor_ctx {
     uint8_t stop;

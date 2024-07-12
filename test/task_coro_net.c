@@ -17,7 +17,6 @@ static void _test_syn_send(task_ctx *task) {
     void *data = coro_send(task, fd, skid, pack, size, &size, 0);
     if (NULL == data) {
         LOG_ERROR("%s", "syn_send error");
-        ev_close(&task->loader->netev, fd, skid);
         return;
     }
     data = custz_data(data, &size);
@@ -46,7 +45,6 @@ static void _test_syn_ssl1_send(task_ctx *task) {
     void *data = coro_send(task, fd, skid, pack, size, &size, 0);
     if (NULL == data) {
         LOG_ERROR("%s", "syn_send error");
-        ev_close(&task->loader->netev, fd, skid);
         return;
     }
     data = custz_data(data, &size);
@@ -72,7 +70,6 @@ static void _test_syn_ssl2_send(task_ctx *task) {
     void *data = coro_send(task, fd, skid, pack, size, &size, 0);
     if (NULL == data) {
         LOG_ERROR("%s", "syn_send error");
-        ev_close(&task->loader->netev, fd, skid);
         return;
     }
     data = custz_data(data, &size);
@@ -112,7 +109,10 @@ static void _timeout(task_ctx *task, uint64_t sess) {
     _test_syn_ssl1_send(task);
     _test_syn_ssl2_send(task);
     uint64_t skid;
-    wbsock_connect(task, NULL, "ws://127.0.0.1:15004", "mqtt", &skid, 0);
+    SOCKET fd = wbsock_connect(task, NULL, "ws://127.0.0.1:15004", "mqtt", &skid, 0);
+    if (INVALID_SOCK != fd) {
+        ev_close(&task->loader->netev, fd, skid);
+    }
     task_timeout(task, 0, 1000, _timeout);
 }
 static void _startup(task_ctx *task) {
