@@ -38,6 +38,7 @@ task_ctx *task_new(loader_ctx *loader, name_t name, _task_dispatch_cb _dispatch,
 #endif
     spin_init(&task->lckmsg, SPIN_CNT_TASKMSG);
     qu_message_init(&task->qumsg, ONEK);
+    task->overload = ONEK;
     return task;
 }
 void task_free(task_ctx *task) {

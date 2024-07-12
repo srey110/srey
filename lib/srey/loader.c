@@ -98,7 +98,12 @@ static int32_t _task_message_pop(task_ctx *task, message_ctx *msg) {
 }
 static void _task_run(loader_ctx *loader, worker_ctx *worker,
     worker_version *version, task_dispatch_arg *runarg) {
-    uint32_t n = worker->weight >= 0 ? (qu_message_size(&runarg->task->qumsg) >> worker->weight) : 1;
+    uint32_t lens = qu_message_size(&runarg->task->qumsg);
+    if (lens > runarg->task->overload) {
+        runarg->task->overload *= 2;
+        LOG_WARN("task %d may overload, message queue length %d.", runarg->task->name, lens);
+    }
+    uint32_t n = worker->weight >= 0 ? (lens >> worker->weight) : 1;
     if (0 == n) {
         n = 1;
     }
@@ -123,6 +128,8 @@ static void _task_run(loader_ctx *loader, worker_ctx *worker,
     spin_unlock(&runarg->task->lckmsg);
     if (0 != add) {
         _worker_wakeup(loader, &runarg->task->name);
+    } else {
+        runarg->task->overload = ONEK;
     }
 }
 static void _worker_hang(loader_ctx *loader, worker_ctx *worker) {

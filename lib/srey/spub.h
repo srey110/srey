@@ -102,6 +102,7 @@ struct loader_ctx {
 struct task_ctx {
     uint8_t global;
     name_t name;
+    uint32_t overload;
     atomic_t closing;
     atomic_t ref;
     void *arg;
