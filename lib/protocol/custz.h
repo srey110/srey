@@ -4,6 +4,7 @@
 #include "base/structs.h"
 #include "utils/buffer.h"
 
+//解包
 struct custz_pack_ctx *custz_unpack(buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status);
 /// <summary>
 /// 组包

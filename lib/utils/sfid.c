@@ -5,8 +5,7 @@
 #define DefSequenceBitLen 12
 #define DefCustomEpoch 1704067200000llu
 
-sfid_ctx *sfid_init(sfid_ctx *ctx, int32_t machineid,
-    int32_t machinebitlen, int32_t sequencebitlen, uint64_t customepoch) {
+sfid_ctx *sfid_init(sfid_ctx *ctx, int32_t machineid, int32_t machinebitlen, int32_t sequencebitlen, uint64_t customepoch) {
     ctx->machineid = machineid;
     ctx->machinebitlen = 0 == machinebitlen ? DefMachineBitLen : machinebitlen;
     ctx->sequencebitlen = 0 == sequencebitlen ? DefSequenceBitLen : sequencebitlen;
@@ -18,7 +17,7 @@ sfid_ctx *sfid_init(sfid_ctx *ctx, int32_t machineid,
         || ctx->machineid < 0
         || ctx->machineid > maxmachineid
         || ctx->customepoch >= curms) {
-        return NULL ;
+        return NULL;
     }
     ctx->lasttimestamp = curms - ctx->customepoch;
     ctx->sequence = 0;
@@ -51,8 +50,7 @@ uint64_t sfid_id(sfid_ctx *ctx) {
          (ctx->sequence & ctx->sequencemask);
     return id;
 }
-void sfid_decode(sfid_ctx *ctx, uint64_t id,
-    uint64_t *timestamp, int32_t *machineid, int32_t *sequence) {
+void sfid_decode(sfid_ctx *ctx, uint64_t id, uint64_t *timestamp, int32_t *machineid, int32_t *sequence) {
     uint64_t timestampmask = (1llu << (63 - ctx->timestampshift)) - 1;
     uint64_t machineidmask = (1llu << ctx->machinebitlen) - 1;
     uint64_t sequencemask = (1llu << ctx->sequencebitlen) - 1;

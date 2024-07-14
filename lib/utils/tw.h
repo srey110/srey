@@ -38,9 +38,24 @@ typedef struct tw_ctx {
     tw_slot_ctx tv4[TVN_SIZE];
     tw_slot_ctx tv5[TVN_SIZE];
 }tw_ctx;
-//时间轮
+/// <summary>
+/// 时间轮初始化
+/// </summary>
+/// <param name="ctx">tw_ctx</param>
 void tw_init(tw_ctx *ctx);
+/// <summary>
+/// 时间轮释放
+/// </summary>
+/// <param name="ctx">tw_ctx</param>
 void tw_free(tw_ctx *ctx);
+/// <summary>
+/// 超时
+/// </summary>
+/// <param name="ctx">tw_ctx</param>
+/// <param name="timeout">超时 毫秒</param>
+/// <param name="_cb">超时回调函数</param>
+/// <param name="_freecb">参数释放函数</param>
+/// <param name="ud">参数</param>
 void tw_add(tw_ctx *ctx, const uint32_t timeout, tw_cb _cb, free_cb _freecb, ud_cxt *ud);
 
 #endif//TW_H_
