@@ -12,7 +12,7 @@ static int32_t _lcrypt_url_encode(lua_State *lua) {
         size = (size_t)luaL_checkinteger(lua, 2);
     }
     char *out;
-    MALLOC(out, URLEN_BLOCK_SIZE(size));
+    MALLOC(out, URLEN_SIZE(size));
     url_encode(data, size, out);
     lua_pushstring(lua, out);
     FREE(out);
@@ -122,7 +122,7 @@ static int32_t _lcrypt_bs64_encode(lua_State *lua) {
         size = (size_t)luaL_checkinteger(lua, 2);
     }
     char *out;
-    size_t lens = B64EN_BLOCK_SIZE(size);
+    size_t lens = B64EN_SIZE(size);
     MALLOC(out, lens);
     size = bs64_encode(data, size, out);
     lua_pushlstring(lua, out, size);
@@ -139,7 +139,7 @@ static int32_t _lcrypt_bs64_decode(lua_State *lua) {
         size = (size_t)luaL_checkinteger(lua, 2);
     }
     char *out;
-    size_t lens = B64DE_BLOCK_SIZE(size);
+    size_t lens = B64DE_SIZE(size);
     MALLOC(out, lens);
     size = bs64_decode(data, size, out);
     lua_pushlstring(lua, out, size);

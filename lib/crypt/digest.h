@@ -36,12 +36,36 @@ typedef struct digest_ctx {
         sha512_ctx sha512;
     }eng_ctx;
 }digest_ctx;
-
+/// <summary>
+/// 初始化
+/// </summary>
+/// <param name="digest">digest_ctx</param>
+/// <param name="dtype">类型</param>
 void digest_init(digest_ctx *digest, digest_type dtype);
+/// <summary>
+/// 获取hash长度
+/// </summary>
+/// <param name="digest">digest_ctx</param>
+/// <returns>hash长度</returns>
 size_t digest_size(digest_ctx *digest);
+/// <summary>
+/// 填入数据
+/// </summary>
+/// <param name="digest">digest_ctx</param>
+/// <param name="data">数据</param>
+/// <param name="lens">数据长度</param>
 void digest_update(digest_ctx *digest, const void *data, size_t lens);
-//DG_BLOCK_SIZE
+/// <summary>
+/// 计算hash
+/// </summary>
+/// <param name="digest">digest_ctx</param>
+/// <param name="hash">hash, hash[DG_BLOCK_SIZE]</param>
+/// <returns>hash长度</returns>
 size_t digest_final(digest_ctx *digest, char *hash);
+/// <summary>
+/// 重置,准备新一轮计算
+/// </summary>
+/// <param name="digest">digest_ctx</param>
 void digest_reset(digest_ctx *digest);
 
 #endif//DIGEST_H_

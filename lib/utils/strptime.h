@@ -3,6 +3,7 @@
 
 #include "base/macro.h"
 
-char* _strptime(const char *buf, const char *fmt, struct tm *tm);
+//字符串格式化为时间
+char *_strptime(const char *buf, const char *fmt, struct tm *tm);
 
 #endif//STRPTIME_H_

@@ -16,6 +16,7 @@ typedef struct popen_ctx {
 }popen_ctx;
 //mode  rw
 int32_t popen_startup(popen_ctx *ctx, const char *cmd, const char *mode);
+//¹Ø±Õ½ø³Ì
 void popen_close(popen_ctx *ctx);
 void popen_free(popen_ctx *ctx);
 int32_t popen_waitexit(popen_ctx *ctx, uint32_t ms);

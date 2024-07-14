@@ -11,7 +11,10 @@ typedef struct rwlock_ctx {
     pthread_rwlock_t rwlock;
 #endif
 }rwlock_ctx;
-
+/// <summary>
+/// ¶ÁÐ´Ëø³õÊ¼»¯
+/// </summary>
+/// <param name="ctx">rwlock_ctx</param>
 static inline void rwlock_init(rwlock_ctx *ctx) {
 #if defined(OS_WIN)
     InitializeSRWLock(&ctx->rwlock);
@@ -21,12 +24,20 @@ static inline void rwlock_init(rwlock_ctx *ctx) {
         ERRORSTR(ERRNO));
 #endif
 };
+/// <summary>
+/// ¶ÁÐ´ËøÊÍ·Å
+/// </summary>
+/// <param name="ctx">rwlock_ctx</param>
 static inline void rwlock_free(rwlock_ctx *ctx) {
 #if defined(OS_WIN)
 #else
     (void)pthread_rwlock_destroy(&ctx->rwlock);
 #endif
 };
+/// <summary>
+/// ¶ÁËø¶¨
+/// </summary>
+/// <param name="ctx">rwlock_ctx</param>
 static inline void rwlock_rdlock(rwlock_ctx *ctx) {
 #if defined(OS_WIN)
     AcquireSRWLockShared(&ctx->rwlock);
@@ -34,6 +45,11 @@ static inline void rwlock_rdlock(rwlock_ctx *ctx) {
     ASSERTAB(ERR_OK == pthread_rwlock_rdlock(&ctx->rwlock), ERRORSTR(ERRNO));
 #endif
 };
+/// <summary>
+/// ³¢ÊÔ¶ÁËø¶¨
+/// </summary>
+/// <param name="ctx">rwlock_ctx</param>
+/// <returns>ERR_OK ³É¹¦</returns>
 static inline int32_t rwlock_tryrdlock(rwlock_ctx *ctx) {
 #if defined(OS_WIN)
     return 0 != TryAcquireSRWLockShared(&ctx->rwlock) ? ERR_OK : ERR_FAILED;
@@ -41,6 +57,10 @@ static inline int32_t rwlock_tryrdlock(rwlock_ctx *ctx) {
     return pthread_rwlock_tryrdlock(&ctx->rwlock);
 #endif
 };
+/// <summary>
+/// Ð´Ëø¶¨
+/// </summary>
+/// <param name="ctx">rwlock_ctx</param>
 static inline void rwlock_wrlock(rwlock_ctx *ctx) {
 #if defined(OS_WIN)
     AcquireSRWLockExclusive(&ctx->rwlock);
@@ -49,6 +69,11 @@ static inline void rwlock_wrlock(rwlock_ctx *ctx) {
     ASSERTAB(ERR_OK == pthread_rwlock_wrlock(&ctx->rwlock), ERRORSTR(ERRNO));
 #endif
 };
+/// <summary>
+/// ³¢ÊÔÐ´Ëø¶¨
+/// </summary>
+/// <param name="ctx">rwlock_ctx</param>
+/// <returns>ERR_OK ³É¹¦</returns>
 static inline int32_t rwlock_trywrlock(rwlock_ctx *ctx) {
 #if defined(OS_WIN)
     if (0 != TryAcquireSRWLockExclusive(&ctx->rwlock)) {
@@ -60,6 +85,10 @@ static inline int32_t rwlock_trywrlock(rwlock_ctx *ctx) {
     return pthread_rwlock_trywrlock(&ctx->rwlock);
 #endif
 };
+/// <summary>
+/// ½âËø
+/// </summary>
+/// <param name="ctx">rwlock_ctx</param>
 static inline void rwlock_unlock(rwlock_ctx *ctx) {
 #if defined(OS_WIN)
     if (0 != ctx->wlock) {

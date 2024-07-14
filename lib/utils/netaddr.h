@@ -8,7 +8,7 @@ typedef union netaddr_ctx {
     struct sockaddr_in ipv4;
     struct sockaddr_in6 ipv6;
 }netaddr_ctx;
-
+//ipµØÖ·ÀàĞÍÅĞ¶Ï
 int32_t is_ipv4(const char *ip);
 int32_t is_ipv6(const char *ip);
 int32_t is_ipaddr(const char* ip);

@@ -8,7 +8,10 @@ typedef CONDITION_VARIABLE cond_ctx;
 #else
 typedef pthread_cond_t cond_ctx;
 #endif
-
+/// <summary>
+/// 信号量初始化
+/// </summary>
+/// <param name="ctx">cond_ctx</param>
 static inline void cond_init(cond_ctx *ctx) {
 #if defined(OS_WIN)
     InitializeConditionVariable(ctx);
@@ -17,12 +20,21 @@ static inline void cond_init(cond_ctx *ctx) {
         ERRORSTR(ERRNO));
 #endif
 };
+/// <summary>
+/// 信号量释放
+/// </summary>
+/// <param name="ctx">cond_ctx</param>
 static inline void cond_free(cond_ctx *ctx) {
 #if defined(OS_WIN)
 #else
     (void)pthread_cond_destroy(ctx);
 #endif
 };
+/// <summary>
+/// 等待信号
+/// </summary>
+/// <param name="ctx">cond_ctx</param>
+/// <param name="mu">mutex_ctx</param>
 static inline void cond_wait(cond_ctx *ctx, mutex_ctx *mu) {
 #if defined(OS_WIN)
     ASSERTAB(SleepConditionVariableCS(ctx, mu, INFINITE),
@@ -32,6 +44,12 @@ static inline void cond_wait(cond_ctx *ctx, mutex_ctx *mu) {
         ERRORSTR(ERRNO));
 #endif
 };
+/// <summary>
+/// 等待信号
+/// </summary>
+/// <param name="ctx">cond_ctx</param>
+/// <param name="mu">mutex_ctx</param>
+/// <param name="ms">毫秒</param>
 static inline void cond_timedwait(cond_ctx *ctx, mutex_ctx *mu, const uint32_t ms) {
 #if defined(OS_WIN)
     if (!SleepConditionVariableCS(ctx, mu, (DWORD)ms)) {
@@ -54,6 +72,10 @@ static inline void cond_timedwait(cond_ctx *ctx, mutex_ctx *mu, const uint32_t m
     ASSERTAB((ERR_OK == rtn || ETIMEDOUT == rtn), ERRORSTR(ERRNO));
 #endif
 };
+/// <summary>
+/// 激活信号
+/// </summary>
+/// <param name="ctx">cond_ctx</param>
 static inline void cond_signal(cond_ctx *ctx) {
 #if defined(OS_WIN)
     WakeConditionVariable(ctx);
@@ -61,6 +83,10 @@ static inline void cond_signal(cond_ctx *ctx) {
     ASSERTAB(ERR_OK == pthread_cond_signal(ctx), ERRORSTR(ERRNO));
 #endif
 };
+/// <summary>
+/// 激活全部信号
+/// </summary>
+/// <param name="ctx">cond_ctx</param>
 static inline void cond_broadcast(cond_ctx *ctx) {
 #if defined(OS_WIN)
     WakeAllConditionVariable(ctx);

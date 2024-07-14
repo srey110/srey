@@ -57,7 +57,7 @@ int main(int argc, char *argv[]) {
     CuStringDelete(poutput);
     CuSuiteDelete(psuite);
 
-    g_loader = loader_init(1, 2);
+    g_loader = loader_init(0, 0);
 #if WITH_SSL
     const char *local = procpath();
     char ca[PATH_LENS];

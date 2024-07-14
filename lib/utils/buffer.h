@@ -3,6 +3,7 @@
 
 #include "base/macro.h"
 
+//非连续内存读写
 #if defined(OS_WIN)
 #define IOV_TYPE WSABUF
 #define IOV_PTR_FIELD buf

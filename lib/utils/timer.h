@@ -3,6 +3,7 @@
 
 #include "base/macro.h"
 
+//¼ÆÊ±Æ÷
 typedef struct timer_ctx {
 #if defined(OS_WIN)
     double interval;

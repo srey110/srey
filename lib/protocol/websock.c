@@ -23,8 +23,8 @@ typedef struct websock_pack_ctx {
 #define HEAD_LESN    2
 #define SIGNKEY "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 static char _mask_key[4 + 1] = { 0 };
-static char _hs_key[B64EN_BLOCK_SIZE(8)] = { 0 };
-static char _hs_sign[B64EN_BLOCK_SIZE(SHA1_BLOCK_SIZE)] = { 0 };
+static char _hs_key[B64EN_SIZE(8)] = { 0 };
+static char _hs_sign[B64EN_SIZE(SHA1_BLOCK_SIZE)] = { 0 };
 static _handshaked_push _hs_push;
 
 void _websock_pkfree(void *data) {
@@ -84,7 +84,7 @@ static http_header_ctx *_websock_handshake_svcheck(struct http_pack_ctx *hpack) 
     }
     return sign;
 }
-static void _websock_sign(char *key, size_t klens, char b64[B64EN_BLOCK_SIZE(SHA1_BLOCK_SIZE)]) {
+static void _websock_sign(char *key, size_t klens, char b64[B64EN_SIZE(SHA1_BLOCK_SIZE)]) {
     char *signstr;
     size_t slens = strlen(SIGNKEY);
     size_t lens = klens + slens;
@@ -109,7 +109,7 @@ static void _websock_handshake_server(ev_ctx *ev, SOCKET fd, uint64_t skid, int3
     }
     size_t lens = 0;
     char *sechead = http_header(hpack, "Sec-WebSocket-Protocol", &lens);
-    char b64[B64EN_BLOCK_SIZE(SHA1_BLOCK_SIZE)];
+    char b64[B64EN_SIZE(SHA1_BLOCK_SIZE)];
     _websock_sign(signstr->value.data, signstr->value.lens, b64);
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);

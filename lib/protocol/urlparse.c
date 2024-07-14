@@ -117,7 +117,6 @@ static void _param(url_param *param, char *cur, size_t lens) {
         cur = pos + 1;
     }
 }
-//[协议类型]://[访问资源需要的凭证信息]@[服务器地址]:[端口号]/[资源层级UNIX文件路径][文件名]?[查询]#[片段ID]
 void url_parse(url_ctx *ctx, char *url, size_t lens) {
     ZERO(ctx, sizeof(url_ctx));
     size_t remain = lens;

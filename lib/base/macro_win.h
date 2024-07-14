@@ -19,12 +19,14 @@
 #define STRNCPY strncpy_s
 #define FSTAT _stat
 #define USLEEP(us)\
-    LARGE_INTEGER ft;\
-    ft.QuadPart = -(10 * (__int64)us);\
-    HANDLE timer = CreateWaitableTimer(NULL, TRUE, NULL);\
-    SetWaitableTimer(timer, &ft, 0, NULL, NULL, 0);\
-    WaitForSingleObject(timer, INFINITE);\
-    CloseHandle(timer);
+    do {\
+        LARGE_INTEGER ft;\
+        ft.QuadPart = -(10 * (__int64)us);\
+        HANDLE timer = CreateWaitableTimer(NULL, TRUE, NULL);\
+        SetWaitableTimer(timer, &ft, 0, NULL, NULL, 0);\
+        WaitForSingleObject(timer, INFINITE);\
+        CloseHandle(timer);\
+    }while(0)
 #define MSLEEP(ms) Sleep(ms)
 #define TIMEB _timeb
 #define FTIME _ftime

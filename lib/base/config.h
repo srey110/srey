@@ -2,10 +2,13 @@
 #define CONFIG_H_
 
 #include "base/os.h"
-
+//是否开启内存检查
 #define MEMORY_CHECK        0
+//是否使用SSL
 #define WITH_SSL            0
+//是否使用LUA
 #define WITH_LUA            1
+//是否使用协程
 #define WITH_CORO           1
 
 #define KEEPALIVE_TIME      30
@@ -23,7 +26,7 @@
 #define INIT_SENDBUF_LEN    32
 #define SHRINK_TIME         30000
 #define TIMER_ACCURACY      1000000
-
+//spin spcnt值
 #define SPIN_CNT_TIMEWHEEL  32
 #define SPIN_CNT_LOADER     32
 #define SPIN_CNT_TASKMSG    32

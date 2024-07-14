@@ -602,7 +602,7 @@ int32_t mysql_init(mysql_ctx *mysql, const char *ip, uint16_t port, struct evssl
     strcpy(mysql->client.ip, ip);
     strcpy(mysql->client.user, user);
     strcpy(mysql->client.password, password);
-    if (NULL != database) {
+    if (!EMPTYSTR(database)) {
         strcpy(mysql->client.database, database);
     }
     mysql->client.relink = (0 == relink ? 0 : 1);

@@ -205,7 +205,7 @@ static void test_system(CuTest* tc) {
     }
     FREE(spbuf);
     sfid_ctx sfid;
-    sfid_init(&sfid, 101, 0, 0, 0, NULL);
+    sfid_init(&sfid, 101, 0, 0, 0);
     uint64_t id = sfid_id(&sfid);
     PRINT("sfid_id: %"PRIu64"", id);
     uint64_t timestamp;
@@ -258,11 +258,11 @@ static void test_crypt_other(CuTest* tc) {
     CuAssertTrue(tc, 0xFCD68BE4 == crc32(str, len));
 
     char *en;
-    MALLOC(en, B64EN_BLOCK_SIZE(len));
+    MALLOC(en, B64EN_SIZE(len));
     bs64_encode(str, len, en);
     CuAssertTrue(tc, 0 == strcmp("Ukhkek5qYzFPRmhIUzFkSE1FOUxNVXhPVEVReVNEUkVVVFJ6NUxpdDVwYUhSa05UVldSYU9GSktSa3h2Tms5WVlsQm1hRFJrWW0xVFFVTlphVTFWTUhCUWVGVTBOR0k=", en));
     char *de;
-    MALLOC(de, B64DE_BLOCK_SIZE(strlen(en)));
+    MALLOC(de, B64DE_SIZE(strlen(en)));
     size_t bdelen = bs64_decode(en, strlen(en), de);
     CuAssertTrue(tc, 0 == strcmp(de, str));
     const char *en2 = "\r\nUkhkek5qYzFPRmhIUzFkSE1FOUxNVXhPVEVRe\r\nVNEUkVVVFJ6NUxpdDVwYUhSa05UVldSYU9GSktSa3h2Tms5WVls\nQm1hRFJrWW0xVFFVTlphVTFWTUhCUWVGVTBOR0k\r\n=";
@@ -282,7 +282,7 @@ static void test_crypt_other(CuTest* tc) {
     const char *url = "this is URL²ÎÊý±àÂë test #@.";
     char *enurl;
     len = strlen(url);
-    MALLOC(enurl, URLEN_BLOCK_SIZE(len));
+    MALLOC(enurl, URLEN_SIZE(len));
     url_encode(url, len, enurl);
     len = url_decode(enurl, strlen(enurl));
     CuAssertTrue(tc, 0 == strcmp(url, enurl));

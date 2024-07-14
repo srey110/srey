@@ -8,7 +8,10 @@ typedef CRITICAL_SECTION mutex_ctx;
 #else
 typedef pthread_mutex_t mutex_ctx;
 #endif
-
+/// <summary>
+/// 互斥锁初始化
+/// </summary>
+/// <param name="ctx">mutex_ctx</param>
 static inline void mutex_init(mutex_ctx *ctx) {
 #if defined(OS_WIN)
     InitializeCriticalSection(ctx);
@@ -17,6 +20,10 @@ static inline void mutex_init(mutex_ctx *ctx) {
         ERRORSTR(ERRNO));
 #endif
 };
+/// <summary>
+/// 互斥锁释放
+/// </summary>
+/// <param name="ctx">mutex_ctx</param>
 static inline void mutex_free(mutex_ctx *ctx) {
 #if defined(OS_WIN)
     DeleteCriticalSection(ctx);
@@ -24,6 +31,10 @@ static inline void mutex_free(mutex_ctx *ctx) {
     (void)pthread_mutex_destroy(ctx);
 #endif
 };
+/// <summary>
+/// 锁定
+/// </summary>
+/// <param name="ctx">mutex_ctx</param>
 static inline void mutex_lock(mutex_ctx *ctx) {
 #if defined(OS_WIN)
     EnterCriticalSection(ctx);
@@ -31,6 +42,11 @@ static inline void mutex_lock(mutex_ctx *ctx) {
     ASSERTAB(ERR_OK == pthread_mutex_lock(ctx), ERRORSTR(ERRNO));
 #endif
 };
+/// <summary>
+/// 尝试锁定
+/// </summary>
+/// <param name="ctx">mutex_ctx</param>
+/// <returns>ERR_OK 成功</returns>
 static inline int32_t mutex_trylock(mutex_ctx *ctx) {
 #if defined(OS_WIN)
     return TRUE == TryEnterCriticalSection(ctx) ? ERR_OK : ERR_FAILED;
@@ -38,6 +54,10 @@ static inline int32_t mutex_trylock(mutex_ctx *ctx) {
     return pthread_mutex_trylock(ctx);
 #endif
 };
+/// <summary>
+/// 解锁
+/// </summary>
+/// <param name="ctx">mutex_ctx</param>
 static inline void mutex_unlock(mutex_ctx *ctx) {
 #if defined(OS_WIN)
     LeaveCriticalSection(ctx);

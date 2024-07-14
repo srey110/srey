@@ -36,8 +36,15 @@ typedef struct redis_pack_ctx {
 
 void _redis_pkfree(redis_pack_ctx *pack);
 void _redis_udfree(ud_cxt *ud);
-//%b:binary - size_t %%:%  C format
+/// <summary>
+/// 请求包
+/// </summary>
+/// <param name="size">请求包长度</param>
+/// <param name="fmt">格式化 参数以空格分割, %b:binary - size_t %%:%  C format</param>
+/// <param name="...">变参</param>
+/// <returns>请求包</returns>
 char *redis_pack(size_t *size, const char *fmt, ...);
+//解包
 redis_pack_ctx *redis_unpack(buffer_ctx *buf, ud_cxt *ud, int32_t *status);
 
 #endif//REDIS_H_

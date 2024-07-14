@@ -3,6 +3,7 @@
 
 #include "protocol/mysql/mysql_bind.h"
 
+//ÇëÇó°ü
 void *mysql_pack_quit(mysql_ctx *mysql, size_t *size);
 void *mysql_pack_selectdb(mysql_ctx *mysql, const char *database, size_t *size);
 void *mysql_pack_ping(mysql_ctx *mysql, size_t *size);

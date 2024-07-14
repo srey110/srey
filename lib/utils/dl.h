@@ -3,6 +3,7 @@
 
 #include "base/macro.h"
 
+//dll so ²Ù×÷
 typedef struct dl_ctx {
 #ifdef OS_WIN
     HMODULE handle;

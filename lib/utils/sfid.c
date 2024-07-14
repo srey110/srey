@@ -6,12 +6,11 @@
 #define DefCustomEpoch 1704067200000llu
 
 sfid_ctx *sfid_init(sfid_ctx *ctx, int32_t machineid,
-    int32_t machinebitlen, int32_t sequencebitlen, uint64_t customepoch, spin_ctx *spin) {
+    int32_t machinebitlen, int32_t sequencebitlen, uint64_t customepoch) {
     ctx->machineid = machineid;
     ctx->machinebitlen = 0 == machinebitlen ? DefMachineBitLen : machinebitlen;
     ctx->sequencebitlen = 0 == sequencebitlen ? DefSequenceBitLen : sequencebitlen;
     ctx->customepoch = 0 == customepoch ? DefCustomEpoch : customepoch;
-    ctx->spin = spin;
     int32_t maxmachineid = (1 << ctx->machinebitlen) - 1;
     uint64_t curms = nowms();
     if (ctx->sequencebitlen < 1
@@ -30,9 +29,6 @@ sfid_ctx *sfid_init(sfid_ctx *ctx, int32_t machineid,
 }
 uint64_t sfid_id(sfid_ctx *ctx) {
     uint64_t id, curms;
-    if (NULL != ctx->spin) {
-        spin_lock(ctx->spin);
-    }
     while (1) {
         curms = nowms() - ctx->customepoch;
         if (curms < ctx->lasttimestamp) {
@@ -53,9 +49,6 @@ uint64_t sfid_id(sfid_ctx *ctx) {
     id = (ctx->lasttimestamp << ctx->timestampshift) |
          ((uint64_t)ctx->machineid << ctx->machineidshift) |
          (ctx->sequence & ctx->sequencemask);
-    if (NULL != ctx->spin) {
-        spin_unlock(ctx->spin);
-    }
     return id;
 }
 void sfid_decode(sfid_ctx *ctx, uint64_t id,

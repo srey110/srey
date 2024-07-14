@@ -147,7 +147,7 @@ static const unsigned char *_find_string(const unsigned char *bp, int *tgt, cons
     /* Nothing matched */
     return NULL;
 }
-char* _strptime(const char *buf, const char *fmt, struct tm *tm) {
+char *_strptime(const char *buf, const char *fmt, struct tm *tm) {
     unsigned char c;
     const unsigned char *bp, *ep, *zname;
     int alt_format, i, split_year = 0, neg = 0, state = 0,

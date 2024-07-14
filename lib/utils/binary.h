@@ -6,16 +6,18 @@
 
 #define BINARY_INCREASE 256
 
+//连续内存读写
 typedef struct binary_ctx {
     char *data;
     size_t inc;
     size_t size;
     size_t offset;
 }binary_ctx;
-
+//初始化
 void binary_init(binary_ctx *ctx, char *buf, size_t lens, size_t inc);
+//设置偏移值
 void binary_offset(binary_ctx *ctx, size_t off);
-
+//写入数据
 void binary_set_int8(binary_ctx *ctx, int8_t val);
 void binary_set_uint8(binary_ctx *ctx, uint8_t val);
 void binary_set_integer(binary_ctx *ctx, int64_t val, size_t lens, int32_t islittle);
@@ -26,7 +28,7 @@ void binary_set_string(binary_ctx *ctx, const char *buf, size_t lens);
 void binary_set_fill(binary_ctx *ctx, char val, size_t lens);
 void binary_set_skip(binary_ctx *ctx, size_t lens);
 void binary_set_va(binary_ctx *ctx, const char *fmt, ...);
-
+//读取数据
 char *binary_at(binary_ctx *ctx, size_t pos);
 int8_t binary_get_int8(binary_ctx *ctx);
 uint8_t binary_get_uint8(binary_ctx *ctx);
