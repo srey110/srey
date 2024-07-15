@@ -49,7 +49,7 @@ void tw_init(tw_ctx *ctx);
 /// <param name="ctx">tw_ctx</param>
 void tw_free(tw_ctx *ctx);
 /// <summary>
-/// 超时
+/// 添加计时任务
 /// </summary>
 /// <param name="ctx">tw_ctx</param>
 /// <param name="timeout">超时 毫秒</param>

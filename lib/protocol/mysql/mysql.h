@@ -39,7 +39,7 @@ int32_t mysql_try_connect(task_ctx *task, mysql_ctx *mysql);
 /// 获取错误信息
 /// </summary>
 /// <param name="mysql">mysql_ctx</param>
-/// <param name="code">错误码</param>
+/// <param name="code">错误码, NULL不设置</param>
 /// <returns>错误信息</returns>
 const char *mysql_erro(mysql_ctx *mysql, int32_t *code);
 /// <summary>

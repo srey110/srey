@@ -381,7 +381,7 @@ void http_pack_end(binary_ctx *bwriter) {
     binary_set_va(bwriter, FLAG_CRLF, CRLF_SIZE);
 }
 void http_pack_content(binary_ctx *bwriter, void *data, size_t lens) {
-    if (NULL != data) {
+    if (!EMPTYSTR(data)) {
         binary_set_va(bwriter, "Content-Length: %d"CONCAT2(FLAG_CRLF, FLAG_CRLF), (uint32_t)lens);
         binary_set_string(bwriter, data, lens);
     } else {

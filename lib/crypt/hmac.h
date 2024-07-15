@@ -21,6 +21,7 @@ void hmac_init(hmac_ctx *hmac, digest_type dtype, const char *key, size_t klens)
 /// 获取hash长度
 /// </summary>
 /// <param name="hmac">hmac_ctx</param>
+/// <returns>长度</returns>
 size_t hmac_size(hmac_ctx *hmac);
 /// <summary>
 /// 填入数据

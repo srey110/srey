@@ -14,7 +14,7 @@ typedef HANDLE pthread_t;
 /// <returns>pthread_t</returns>
 pthread_t thread_creat(void(*cb)(void*), void *udata);
 /// <summary>
-/// 等待线程结束
+/// 等待线程退出
 /// </summary>
 /// <param name="th">pthread_t</param>
 void thread_join(pthread_t th);

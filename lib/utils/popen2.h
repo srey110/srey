@@ -54,7 +54,7 @@ int32_t popen_exitcode(popen_ctx *ctx);
 /// <returns>读到的字节数, ERR_FAILED 失败</returns>
 int32_t popen_read(popen_ctx *ctx, char *output, size_t lens);
 /// <summary>
-/// 向命令写入,\n结束 才会执行 w
+/// 写入,\n结束 才会执行 w
 /// </summary>
 /// <param name="ctx">popen_ctx</param>
 /// <param name="input">输入</param>

@@ -50,10 +50,10 @@ typedef struct cipher_ctx {
 void cipher_init(cipher_ctx *cipher, engine_type engine, cipher_model model,
     const char *key, size_t klens, int32_t keybits, int32_t encrypt);
 /// <summary>
-/// 获取块长度
+/// 获取分组长度
 /// </summary>
 /// <param name="cipher">cipher_ctx</param>
-/// <returns>块长度</returns>
+/// <returns>长度</returns>
 size_t cipher_size(cipher_ctx *cipher);
 /// <summary>
 /// 设置填充模式.ECB CBC需要  CFB OFB CTR可选
@@ -62,11 +62,11 @@ size_t cipher_size(cipher_ctx *cipher);
 /// <param name="padding">填充模式</param>
 void cipher_padding(cipher_ctx *cipher, padding_model padding);
 /// <summary>
-/// 设置IV. CBC CFB OFB CTR需要
+/// 设置IV向量. CBC CFB OFB CTR需要
 /// </summary>
 /// <param name="cipher">cipher_ctx</param>
 /// <param name="iv">IV</param>
-/// <param name="ilens">IV长度,小于块长度会自动填充</param>
+/// <param name="ilens">IV长度,小于分组长度会自动填充</param>
 void cipher_iv(cipher_ctx *cipher, const char *iv, size_t ilens);
 /// <summary>
 /// 重置,准备新一轮加解密
@@ -74,11 +74,11 @@ void cipher_iv(cipher_ctx *cipher, const char *iv, size_t ilens);
 /// <param name="cipher">cipher_ctx</param>
 void cipher_reset(cipher_ctx *cipher);
 /// <summary>
-/// 加解密一块数据
+/// 加解密分组数据
 /// </summary>
 /// <param name="cipher">cipher_ctx</param>
 /// <param name="data">要加解密的数据</param>
-/// <param name="lens">数据长度,小于等于块长度</param>
+/// <param name="lens">数据长度,小于等于分组长度</param>
 /// <param name="size">加解密后的长度</param>
 /// <returns>加解密后的数据</returns>
 void *cipher_block(cipher_ctx *cipher, const void *data, size_t lens, size_t *size);
@@ -88,7 +88,7 @@ void *cipher_block(cipher_ctx *cipher, const void *data, size_t lens, size_t *si
 /// <param name="cipher">cipher_ctx</param>
 /// <param name="data">要加解密的数据</param>
 /// <param name="lens">数据长度</param>
-/// <param name="output">加解密后的数据,长度:data长度 + 块长度</param>
+/// <param name="output">加解密后的数据,预估长度:lens + 分组长度</param>
 /// <returns>加解密后的长度</returns>
 size_t cipher_dofinal(cipher_ctx *cipher, const void *data, size_t lens, char *output);
 

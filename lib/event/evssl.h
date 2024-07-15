@@ -14,7 +14,7 @@
     }
 typedef struct evssl_ctx evssl_ctx;
 /// <summary>
-/// SSL环境初始化
+/// 环境初始化
 /// </summary>
 void evssl_init(void);
 /// <summary>
@@ -66,7 +66,7 @@ int32_t evssl_register(name_t name, evssl_ctx *evssl);
 /// <returns>evssl_ctx  NULL失败</returns>
 evssl_ctx *evssl_qury(name_t name);
 /// <summary>
-/// 设置socket句柄为SSL链接
+/// 设置socket为SSL链接
 /// </summary>
 /// <param name="evssl">evssl_ctx</param>
 /// <param name="fd">socket句柄</param>

@@ -60,7 +60,7 @@ static void _harbor_response(task_ctx *harbor, SOCKET fd, uint64_t skid, char *r
     binary_init(&bwriter, NULL, 0, 0);
     http_pack_resp(&bwriter, code);
     http_pack_head(&bwriter, "Server", "Srey");
-    if (NULL != respdata) {
+    if (!EMPTYSTR(respdata)) {
         http_pack_head(&bwriter, "Content-Type", "application/octet-stream");
         http_pack_content(&bwriter, respdata, lens);
     } else {
@@ -222,7 +222,7 @@ static void _harbor_closing(task_ctx *harbor) {
     }
 }
 int32_t harbor_start(loader_ctx *loader, name_t tname, name_t ssl,
-    const char *host, uint16_t port, const char *key, int32_t ms) {
+    const char *ip, uint16_t port, const char *key, int32_t ms) {
     if (INVALID_TNAME == tname) {
         return ERR_OK;
     }
@@ -234,7 +234,7 @@ int32_t harbor_start(loader_ctx *loader, name_t tname, name_t ssl,
         memcpy(hbctx->signkey, key, klens);
         hmac_init(&hbctx->hmac, DG_SHA256, hbctx->signkey, klens);
     }
-    strcpy(hbctx->ip, host);
+    strcpy(hbctx->ip, ip);
     hbctx->port = port;
     hbctx->timeout = ms;
 #if WITH_SSL
@@ -264,7 +264,7 @@ static void _harbor_sign(binary_ctx *bwriter, const char *key, const char *url, 
     char *sbuf;
     MALLOC(sbuf, lens);
     memcpy(sbuf, url, ulens);
-    if (NULL != data) {
+    if (!EMPTYSTR(data)) {
         memcpy(sbuf + ulens, data, size);
     }
     memcpy(sbuf + ulens + size, tms, tslens);

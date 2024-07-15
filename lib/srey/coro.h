@@ -13,9 +13,9 @@ void coro_sleep(task_ctx *task, uint32_t ms);
 /// <summary>
 /// 任务间通信 请求
 /// </summary>
-/// <param name="dst">目标task_ctx</param>
-/// <param name="src">发起task_ctx</param>
-/// <param name="rtype">类型</param>
+/// <param name="dst">目标任务</param>
+/// <param name="src">发起者</param>
+/// <param name="rtype">请求类型</param>
 /// <param name="data">数据</param>
 /// <param name="size">数据长度</param>
 /// <param name="copy">1 拷贝数据 0 不拷贝数据</param>

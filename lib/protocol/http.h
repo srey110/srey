@@ -54,7 +54,7 @@ void http_pack_end(binary_ctx *bwriter);
 /// <param name="lens">长度</param>
 void http_pack_content(binary_ctx *bwriter, void *data, size_t lens);
 /// <summary>
-/// http包内容,Chunked 方式. 循环 send(...); binary_offset(bwriter, 0);
+/// http包内容,Chunked 方式. 循环 send(...) copy 1; binary_offset(bwriter, 0);
 /// </summary>
 /// <param name="bwriter">binary_ctx</param>
 /// <param name="data">数据</param>

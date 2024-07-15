@@ -40,13 +40,13 @@ typedef struct digest_ctx {
 /// 初始化
 /// </summary>
 /// <param name="digest">digest_ctx</param>
-/// <param name="dtype">类型</param>
+/// <param name="dtype">摘要算法</param>
 void digest_init(digest_ctx *digest, digest_type dtype);
 /// <summary>
 /// 获取hash长度
 /// </summary>
 /// <param name="digest">digest_ctx</param>
-/// <returns>hash长度</returns>
+/// <returns>长度</returns>
 size_t digest_size(digest_ctx *digest);
 /// <summary>
 /// 填入数据
@@ -60,7 +60,7 @@ void digest_update(digest_ctx *digest, const void *data, size_t lens);
 /// </summary>
 /// <param name="digest">digest_ctx</param>
 /// <param name="hash">hash, hash[DG_BLOCK_SIZE]</param>
-/// <returns>hash长度</returns>
+/// <returns>长度</returns>
 size_t digest_final(digest_ctx *digest, char *hash);
 /// <summary>
 /// 重置,准备新一轮计算
