@@ -65,9 +65,9 @@ void task_timeout(task_ctx *task, uint64_t sess, uint32_t ms, _timeout_cb _timeo
 /// <summary>
 /// 任务间通信,请求
 /// </summary>
-/// <param name="dst">目标task_ctx</param>
-/// <param name="src">发起task_ctx</param>
-/// <param name="reqtype">类型</param>
+/// <param name="dst">目标任务</param>
+/// <param name="src">发起者</param>
+/// <param name="reqtype">请求类型</param>
 /// <param name="sess">session</param>
 /// <param name="data">数据</param>
 /// <param name="size">数据长度</param>
@@ -76,7 +76,7 @@ void task_request(task_ctx *dst, task_ctx *src, uint8_t reqtype, uint64_t sess, 
 /// <summary>
 /// 任务间通信,返回
 /// </summary>
-/// <param name="dst">目标task_ctx</param>
+/// <param name="dst">目标任务</param>
 /// <param name="sess">session</param>
 /// <param name="erro">错误码</param>
 /// <param name="data">数据</param>
@@ -86,8 +86,8 @@ void task_response(task_ctx *dst, uint64_t sess, int32_t erro, void *data, size_
 /// <summary>
 /// 任务间通信,无返回
 /// </summary>
-/// <param name="dst">目标task_ctx</param>
-/// <param name="reqtype">类型</param>
+/// <param name="dst">目标任务</param>
+/// <param name="reqtype">请求类型</param>
 /// <param name="data">数据</param>
 /// <param name="size">数据长度</param>
 /// <param name="copy">1 拷贝 0不拷贝</param>
