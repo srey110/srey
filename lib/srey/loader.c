@@ -132,13 +132,6 @@ static void _task_run(loader_ctx *loader, worker_ctx *worker,
         runarg->task->overload = ONEK;
     }
 }
-static void _worker_hang(loader_ctx *loader, worker_ctx *worker) {
-    mutex_lock(&worker->mutex);
-    ++worker->waiting;
-    cond_wait(&worker->cond, &worker->mutex);
-    --worker->waiting;
-    mutex_unlock(&worker->mutex);
-}
 static void _worker_loop(void *arg) {
     name_t name;
     worker_ctx *worker = (worker_ctx *)arg;
@@ -157,7 +150,11 @@ static void _worker_loop(void *arg) {
             task_ungrab(runarg.task);
             continue;
         }
-        _worker_hang(loader, worker);
+        mutex_lock(&worker->mutex);
+        ++worker->waiting;
+        cond_wait(&worker->cond, &worker->mutex);
+        --worker->waiting;
+        mutex_unlock(&worker->mutex);
     }
     LOG_INFO("worker thread %d exited.", worker->index);
 }
