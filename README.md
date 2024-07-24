@@ -52,5 +52,5 @@ c lua (可选)跨平台服务器框架.
       task_register(task, _startup, NULL);
   }
   ```
-  然后在startup.h注册该服务(http_sv(...))即可
+  然后在startup.h注册该服务(http_sv(...))即可   
   更多功能请参考代码... 
