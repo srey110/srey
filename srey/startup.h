@@ -15,6 +15,7 @@ typedef struct config_ctx {
     char dns[IP_LENS];
     char harborip[IP_LENS];
     char harborkey[128];
+    char script[PATH_LENS];
 }config_ctx;
 
 static int32_t task_startup(loader_ctx *loader, config_ctx *config) {
@@ -24,7 +25,7 @@ static int32_t task_startup(loader_ctx *loader, config_ctx *config) {
         return rtn;
     }
 #if WITH_LUA
-    rtn = ltask_startup();
+    rtn = ltask_startup(config->script);
     if (ERR_OK != rtn) {
         return rtn;
     }

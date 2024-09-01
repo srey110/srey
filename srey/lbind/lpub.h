@@ -6,7 +6,6 @@
 #include "lua/lualib.h"
 #include "lua/lauxlib.h"
 
-#define SCRIPT_FOLDER "script"
 #define CERT_FOLDER "keys"
 #define CUR_TASK_NAME "_curtask"
 #define PATH_NAME "_propath"

@@ -1,8 +1,9 @@
 {
-    "nnet": 1,
-    "nworker": 2,
+    "nnet": 2,
+    "nworker": 8,
     "loglv": 4,
     "dns": "8.8.8.8",
+    "script": "script",
     "harborname": 1,
     "harborssl": 0,
     "harbortimeout": 1000,

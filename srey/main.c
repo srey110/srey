@@ -22,6 +22,27 @@ static char *_config_read(void) {
     fclose(file);
     return info;
 }
+static double _json_get_number(cJSON *json, const char *name) {
+    cJSON *val = cJSON_GetObjectItem(json, name);
+    if (NULL != val
+        && cJSON_IsNumber(val)) {
+        return val->valuedouble;
+    }
+    return 0;
+}
+static void _json_get_string(cJSON *json, const char *name, char *str, size_t lens) {
+    cJSON *val = cJSON_GetObjectItem(json, name);
+    if (NULL != val
+        && cJSON_IsString(val)) {
+        size_t vlen = strlen(val->valuestring);
+        if (vlen < lens) {
+            memcpy(str, val->valuestring, vlen);
+            str[vlen] = '\0';
+        } else {
+            LOG_WARN("dns too long.");
+        }
+    }
+}
 static void _parse_config(config_ctx *cnf) {
     char *config = _config_read();
     if (NULL == config) {
@@ -36,74 +57,17 @@ static void _parse_config(config_ctx *cnf) {
         }
         return;
     }
-    cJSON *val = cJSON_GetObjectItem(json, "nnet");
-    if (NULL != val 
-        && cJSON_IsNumber(val)) {
-        cnf->nnet = (uint16_t)val->valuedouble;
-    }
-    val = cJSON_GetObjectItem(json, "nworker");
-    if (NULL != val
-        && cJSON_IsNumber(val)) {
-        cnf->nworker = (uint16_t)val->valuedouble;
-    }
-    val = cJSON_GetObjectItem(json, "loglv");
-    if (NULL != val
-        && cJSON_IsNumber(val)) {
-        cnf->loglv = (uint8_t)val->valuedouble;
-    }
-    val = cJSON_GetObjectItem(json, "dns");
-    if (NULL != val
-        && cJSON_IsString(val)) {
-        size_t flen = strlen(val->valuestring);
-        if (flen < sizeof(cnf->dns)) {
-            memcpy(cnf->dns, val->valuestring, flen);
-            cnf->dns[flen] = '\0';
-        } else {
-            LOG_WARN("dns too long.");
-        }
-    }
-    val = cJSON_GetObjectItem(json, "harborname");
-    if (NULL != val
-        && cJSON_IsNumber(val)) {
-        cnf->harborname = (name_t)val->valuedouble;
-    }
-    val = cJSON_GetObjectItem(json, "harborssl");
-    if (NULL != val
-        && cJSON_IsNumber(val)) {
-        cnf->harborssl = (name_t)val->valuedouble;
-    }
-    val = cJSON_GetObjectItem(json, "harbortimeout");
-    if (NULL != val
-        && cJSON_IsNumber(val)) {
-        cnf->harbortimeout = (int32_t)val->valuedouble;
-    }
-    val = cJSON_GetObjectItem(json, "harborip");
-    if (NULL != val
-        && cJSON_IsString(val)) {
-        size_t flen = strlen(val->valuestring);
-        if (flen < sizeof(cnf->harborip)) {
-            memcpy(cnf->harborip, val->valuestring, flen);
-            cnf->harborip[flen] = '\0';
-        } else {
-            LOG_WARN("harborip too long.");
-        }
-    }
-    val = cJSON_GetObjectItem(json, "harborport");
-    if (NULL != val
-        && cJSON_IsNumber(val)) {
-        cnf->harborport = (uint16_t)val->valuedouble;
-    }
-    val = cJSON_GetObjectItem(json, "harborkey");
-    if (NULL != val
-        && cJSON_IsString(val)) {
-        size_t flen = strlen(val->valuestring);
-        if (flen < sizeof(cnf->harborkey)) {
-            memcpy(cnf->harborkey, val->valuestring, flen);
-            cnf->harborkey[flen] = '\0';
-        } else {
-            LOG_WARN("harborkey too long.");
-        }
-    }
+    cnf->nnet = (uint16_t)_json_get_number(json, "nnet");
+    cnf->nworker = (uint16_t)_json_get_number(json, "nworker");
+    cnf->loglv = (uint8_t)_json_get_number(json, "loglv");
+    _json_get_string(json, "dns", cnf->dns, sizeof(cnf->dns));
+    _json_get_string(json, "script", cnf->script, sizeof(cnf->script));
+    cnf->harborname = (name_t)_json_get_number(json, "harborname");
+    cnf->harborssl = (name_t)_json_get_number(json, "harborssl");
+    cnf->harbortimeout = (int32_t)_json_get_number(json, "harbortimeout");
+    _json_get_string(json, "harborip", cnf->harborip, sizeof(cnf->harborip));
+    cnf->harborport = (uint16_t)_json_get_number(json, "harborport");
+    _json_get_string(json, "harborkey", cnf->harborkey, sizeof(cnf->harborkey));
     cJSON_Delete(json);
 }
 static void _open_log(void) {
@@ -135,15 +99,13 @@ static int32_t service_exit(void) {
 static void _config_init(config_ctx *config) {
     ZERO(config, sizeof(config_ctx));
     config->loglv = LOGLV_DEBUG;
-    config->nnet = 1;
-    config->nworker = 2;
     config->harborname = 100000,
-    config->harborssl = 0;
     config->harbortimeout = -1;
     config->harborport = 8080;
     strcpy(config->harborip, "0.0.0.0");
     strcpy(config->dns, "8.8.8.8");
     ZERO(config->harborkey, sizeof(config->harborkey));
+    strcpy(config->script, "script");
 }
 static int32_t service_init(void) {
     config_ctx config;
