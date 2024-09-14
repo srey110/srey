@@ -66,6 +66,8 @@ LUAMOD_API int (luaopen_http)(lua_State *L);
 LUAMOD_API int (luaopen_redis)(lua_State *L);
 #define LUA_SREYUTILS "srey.utils"
 LUAMOD_API int (luaopen_utils)(lua_State *L);
+#define LUA_SREYHASHRING "srey.hashring"
+LUAMOD_API int (luaopen_hashring)(lua_State *L);
 #define LUA_SREYURL "srey.url"
 LUAMOD_API int (luaopen_url)(lua_State *L);
 #define LUA_SREYBASE64 "srey.base64"

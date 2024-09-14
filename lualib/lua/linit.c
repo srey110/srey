@@ -62,6 +62,7 @@ static const luaL_Reg loadedlibs[] = {
   {LUA_SREYHTTP, luaopen_http},
   {LUA_SREYREDIS, luaopen_redis},
   {LUA_SREYUTILS, luaopen_utils},
+  {LUA_SREYHASHRING, luaopen_hashring},
   {LUA_SREYURL, luaopen_url},
   {LUA_SREYBASE64, luaopen_base64},
   {LUA_SREYCRC,  luaopen_crc},

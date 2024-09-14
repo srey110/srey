@@ -74,14 +74,14 @@ static void _add_items(hash_ring_ctx *ring, hash_ring_node *node) {
     }
     ring->nitems += node->nreplicas;
 }
-int32_t hash_ring_add_node(hash_ring_ctx *ring, void *name, size_t lens, uint32_t nreplicas) {
+int32_t hash_ring_add(hash_ring_ctx *ring, void *name, size_t lens, uint32_t nreplicas) {
     if (NULL == ring
         || NULL == name
         || 0 == lens
         || 0 == nreplicas) {
         return ERR_FAILED;
     }
-    if (NULL != hash_ring_get_node(ring, name, lens)) {
+    if (NULL != hash_ring_get(ring, name, lens)) {
         return ERR_FAILED;
     }
     hash_ring_node *node;
@@ -104,7 +104,7 @@ int32_t hash_ring_add_node(hash_ring_ctx *ring, void *name, size_t lens, uint32_
     qsort((void**)ring->items, ring->nitems, sizeof(struct hash_ring_item*), _item_sort);
     return ERR_OK;
 }
-hash_ring_node *hash_ring_get_node(hash_ring_ctx *ring, void *name, size_t lens) {
+hash_ring_node *hash_ring_get(hash_ring_ctx *ring, void *name, size_t lens) {
     if (NULL == ring
         || NULL == name
         || 0 == lens) {
@@ -120,7 +120,7 @@ hash_ring_node *hash_ring_get_node(hash_ring_ctx *ring, void *name, size_t lens)
     }
     return NULL;
 }
-void hash_ring_remove_node(hash_ring_ctx *ring, void *name, size_t lens) {
+void hash_ring_remove(hash_ring_ctx *ring, void *name, size_t lens) {
     if (NULL == ring
         || NULL == name
         || 0 == lens) {
@@ -187,7 +187,7 @@ static hash_ring_item *_find_next_highest_item(hash_ring_ctx *ring, uint64_t dig
     }
     return NULL;
 }
-hash_ring_node *hash_ring_find_node(hash_ring_ctx *ring, void *key, size_t lens) {
+hash_ring_node *hash_ring_find(hash_ring_ctx *ring, void *key, size_t lens) {
     if (NULL == ring
         || NULL == key
         || 0 == lens) {

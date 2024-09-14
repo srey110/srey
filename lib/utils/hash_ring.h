@@ -34,7 +34,7 @@ void hash_ring_free(hash_ring_ctx *ring);
 /// <param name="lens">name长度</param>
 /// <param name="nreplicas">节点数</param>
 /// <returns>ERR_OK 成功 </returns>
-int32_t hash_ring_add_node(hash_ring_ctx *ring, void *name, size_t lens, uint32_t nreplicas);
+int32_t hash_ring_add(hash_ring_ctx *ring, void *name, size_t lens, uint32_t nreplicas);
 /// <summary>
 /// 获取已经添加的节点
 /// </summary>
@@ -42,14 +42,14 @@ int32_t hash_ring_add_node(hash_ring_ctx *ring, void *name, size_t lens, uint32_
 /// <param name="name">节点名</param>
 /// <param name="lens">name长度</param>
 /// <returns>hash_ring_node</returns>
-hash_ring_node *hash_ring_get_node(hash_ring_ctx *ring, void *name, size_t lens);
+hash_ring_node *hash_ring_get(hash_ring_ctx *ring, void *name, size_t lens);
 /// <summary>
 /// 移除已经添加的节点
 /// </summary>
 /// <param name="ring">hash_ring_ctx</param>
 /// <param name="name">节点名</param>
 /// <param name="lens">name长度</param>
-void hash_ring_remove_node(hash_ring_ctx *ring, void *name, size_t lens);
+void hash_ring_remove(hash_ring_ctx *ring, void *name, size_t lens);
 /// <summary>
 /// 查找key对应的节点
 /// </summary>
@@ -57,7 +57,7 @@ void hash_ring_remove_node(hash_ring_ctx *ring, void *name, size_t lens);
 /// <param name="key">节点名</param>
 /// <param name="lens">key长度</param>
 /// <returns>hash_ring_node</returns>
-hash_ring_node *hash_ring_find_node(hash_ring_ctx *ring, void *key, size_t lens);
+hash_ring_node *hash_ring_find(hash_ring_ctx *ring, void *key, size_t lens);
 /// <summary>
 /// 打印
 /// </summary>
