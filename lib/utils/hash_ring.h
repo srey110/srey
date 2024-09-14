@@ -9,10 +9,10 @@ typedef struct hash_ring_node {
     size_t lens;//name ³¤¶È
 } hash_ring_node;
 typedef struct hash_ring_ctx {
-    struct hash_ring_list *nodes;
     uint32_t nnodes;
-    struct hash_ring_item **items;
     uint32_t nitems;
+    struct hash_ring_list *nodes;
+    struct hash_ring_item **items;
     digest_ctx md5;
 } hash_ring_ctx;
 
