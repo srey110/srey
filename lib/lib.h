@@ -24,6 +24,7 @@
 #include "utils/sfid.h"
 #include "utils/binary.h"
 #include "utils/buffer.h"
+#include "utils/hash_ring.h"
 #include "utils/utils.h"
 #include "utils/netaddr.h"
 #include "utils/netutils.h"

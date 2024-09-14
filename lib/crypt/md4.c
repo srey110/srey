@@ -100,7 +100,7 @@ void md4_init(md4_ctx *md4) {
 void md4_update(md4_ctx *md4, const void *data, size_t lens) {
     uint32_t i, index, partlens;
     uint8_t *p = (uint8_t *)data;
-    index = (uint32_t)((md4->count[0] >> 3) & 0x3F);
+    index = (uint32_t)((md4->count[0] >> 3) & 0x3f);
     if ((md4->count[0] += ((uint32_t)lens << 3)) < ((uint32_t)lens << 3)) {
         md4->count[1]++;
     }

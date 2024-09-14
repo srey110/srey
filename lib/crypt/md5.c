@@ -97,8 +97,8 @@ void md5_init(md5_ctx *md5) {
     md5->datalen = 0;
     md5->bitlen = 0;
     md5->state[0] = 0x67452301;
-    md5->state[1] = 0xEFCDAB89;
-    md5->state[2] = 0x98BADCFE;
+    md5->state[1] = 0xefcdab89;
+    md5->state[2] = 0x98badcfe;
     md5->state[3] = 0x10325476;
 }
 void md5_update(md5_ctx *md5, const void *data, size_t lens) {

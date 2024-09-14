@@ -82,6 +82,7 @@
     <ClInclude Include="utils\binary.h" />
     <ClInclude Include="utils\buffer.h" />
     <ClInclude Include="utils\dl.h" />
+    <ClInclude Include="utils\hash_ring.h" />
     <ClInclude Include="utils\log.h" />
     <ClInclude Include="utils\netaddr.h" />
     <ClInclude Include="utils\netutils.h" />
@@ -139,6 +140,7 @@
     <ClCompile Include="thread\thread.c" />
     <ClCompile Include="utils\binary.c" />
     <ClCompile Include="utils\buffer.c" />
+    <ClCompile Include="utils\hash_ring.c" />
     <ClCompile Include="utils\log.c" />
     <ClCompile Include="utils\netaddr.c" />
     <ClCompile Include="utils\netutils.c" />

@@ -59,8 +59,8 @@ void sha1_init(sha1_ctx *sha1) {
     sha1->datalen = 0;
     sha1->bitlen = 0;
     sha1->state[0] = 0x67452301;
-    sha1->state[1] = 0xEFCDAB89;
-    sha1->state[2] = 0x98BADCFE;
+    sha1->state[1] = 0xefcdab89;
+    sha1->state[2] = 0x98badcfe;
     sha1->state[3] = 0x10325476;
     sha1->state[4] = 0xc3d2e1f0;
     sha1->k[0] = 0x5a827999;
