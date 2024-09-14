@@ -44,10 +44,13 @@ LUAMOD_API int (luaopen_debug) (lua_State *L);
 #define LUA_LOADLIBNAME	"package"
 LUAMOD_API int (luaopen_package) (lua_State *L);
 
+#define LUA_LFS "lfs"
+LUAMOD_API int (luaopen_lfs)(lua_State *L);
 #define LUA_CJSONLIBNAME "cjson"
 LUAMOD_API int (luaopen_cjson)(lua_State *L);
 #define LUA_PBPACKNAME "pb"
 LUAMOD_API int (luaopen_pb)(lua_State *L);
+
 #define LUA_SREYTASK "srey.task"
 LUAMOD_API int (luaopen_task)(lua_State *L);
 #define LUA_SREYCORE "srey.core"

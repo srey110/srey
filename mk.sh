@@ -37,7 +37,7 @@ MAINFILE="main.c"
 Dir="lib lib/base lib/utils lib/containers lib/crypt lib/event lib/protocol lib/protocol/mysql lib/srey lib/thread"
 if [ $LUA -eq 1 ]
 then
-    Dir=$Dir" lualib lualib/lua lualib/luacjson lualib/pb"
+    Dir=$Dir" lualib lualib/lua lualib/lfs lualib/luacjson lualib/pb"
 fi
 if [ "$1" = "test" ] || [ "$2" = "test" ]
 then

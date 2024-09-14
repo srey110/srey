@@ -10,6 +10,9 @@
     <Filter Include="pb">
       <UniqueIdentifier>{36299be0-2ac4-4f95-bc8f-1e013c215820}</UniqueIdentifier>
     </Filter>
+    <Filter Include="lfs">
+      <UniqueIdentifier>{5590ed9c-2845-403f-9150-363adeb3b68f}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="lua\lapi.c">
@@ -120,6 +123,9 @@
     <ClCompile Include="pb\pb.c">
       <Filter>pb</Filter>
     </ClCompile>
+    <ClCompile Include="lfs\lfs.c">
+      <Filter>lfs</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="lua\lapi.h">
@@ -211,6 +217,9 @@
     </ClInclude>
     <ClInclude Include="pb\pb.h">
       <Filter>pb</Filter>
+    </ClInclude>
+    <ClInclude Include="lfs\lfs.h">
+      <Filter>lfs</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

@@ -51,8 +51,10 @@ static const luaL_Reg loadedlibs[] = {
   {LUA_UTF8LIBNAME, luaopen_utf8},
   {LUA_DBLIBNAME, luaopen_debug},
 
+  {LUA_LFS, luaopen_lfs},
   {LUA_CJSONLIBNAME, luaopen_cjson},
   {LUA_PBPACKNAME, luaopen_pb},
+
   {LUA_SREYTASK, luaopen_task},
   {LUA_SREYCORE, luaopen_core},
   {LUA_SREYHARBOR, luaopen_harbor},
