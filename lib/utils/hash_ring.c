@@ -112,7 +112,7 @@ int32_t hash_ring_add(hash_ring_ctx *ring, void *name, size_t lens, uint32_t nre
     // Add the items for this node
     _add_items(ring, node);
     // Sort the items
-    qsort((void**)ring->items, ring->nitems, sizeof(struct hash_ring_item*), _item_sort);
+    qsort((void**)ring->items, ring->nitems, sizeof(hash_ring_item *), _item_sort);
     return ERR_OK;
 }
 void hash_ring_remove(hash_ring_ctx *ring, void *name, size_t lens) {
@@ -142,7 +142,7 @@ void hash_ring_remove(hash_ring_ctx *ring, void *name, size_t lens) {
             }
             // By re-sorting, all the NULLs will be at the end of the array
             // Then the numItems is reset and that memory is no longer used
-            qsort((void**)ring->items, ring->nitems, sizeof(struct hash_ring_item*), _item_sort);
+            qsort((void**)ring->items, ring->nitems, sizeof(hash_ring_item *), _item_sort);
             ring->nitems -= cur->node->nreplicas;
             FREE(cur->node);
             FREE(cur);
