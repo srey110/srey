@@ -36,14 +36,6 @@ void hash_ring_free(hash_ring_ctx *ring);
 /// <returns>ERR_OK 成功 </returns>
 int32_t hash_ring_add(hash_ring_ctx *ring, void *name, size_t lens, uint32_t nreplicas);
 /// <summary>
-/// 获取已经添加的节点
-/// </summary>
-/// <param name="ring">hash_ring_ctx</param>
-/// <param name="name">节点名</param>
-/// <param name="lens">name长度</param>
-/// <returns>hash_ring_node</returns>
-hash_ring_node *hash_ring_get(hash_ring_ctx *ring, void *name, size_t lens);
-/// <summary>
 /// 移除已经添加的节点
 /// </summary>
 /// <param name="ring">hash_ring_ctx</param>

@@ -74,6 +74,17 @@ static void _add_items(hash_ring_ctx *ring, hash_ring_node *node) {
     }
     ring->nitems += node->nreplicas;
 }
+static hash_ring_node *_get_node(hash_ring_ctx *ring, void *name, size_t lens) {
+    hash_ring_list *cur = ring->nodes;
+    while (NULL != cur) {
+        if (cur->node->lens == lens
+            && 0 == memcmp(cur->node->name, name, lens)) {
+            return cur->node;
+        }
+        cur = cur->next;
+    }
+    return NULL;
+}
 int32_t hash_ring_add(hash_ring_ctx *ring, void *name, size_t lens, uint32_t nreplicas) {
     if (NULL == ring
         || NULL == name
@@ -81,7 +92,7 @@ int32_t hash_ring_add(hash_ring_ctx *ring, void *name, size_t lens, uint32_t nre
         || 0 == nreplicas) {
         return ERR_FAILED;
     }
-    if (NULL != hash_ring_get(ring, name, lens)) {
+    if (NULL != _get_node(ring, name, lens)) {
         return ERR_FAILED;
     }
     hash_ring_node *node;
@@ -103,22 +114,6 @@ int32_t hash_ring_add(hash_ring_ctx *ring, void *name, size_t lens, uint32_t nre
     // Sort the items
     qsort((void**)ring->items, ring->nitems, sizeof(struct hash_ring_item*), _item_sort);
     return ERR_OK;
-}
-hash_ring_node *hash_ring_get(hash_ring_ctx *ring, void *name, size_t lens) {
-    if (NULL == ring
-        || NULL == name
-        || 0 == lens) {
-        return NULL;
-    }
-    hash_ring_list *cur = ring->nodes;
-    while (NULL != cur) {
-        if (cur->node->lens == lens
-            && 0 == memcmp(cur->node->name, name, lens)) {
-            return cur->node;
-        }
-        cur = cur->next;
-    }
-    return NULL;
 }
 void hash_ring_remove(hash_ring_ctx *ring, void *name, size_t lens) {
     if (NULL == ring

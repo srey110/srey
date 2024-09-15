@@ -114,24 +114,6 @@ static int32_t _lhash_ring_add(lua_State *lua) {
     }
     return 1;
 }
-static int32_t _lhash_ring_get(lua_State *lua) {
-    hash_ring_ctx *ring = lua_touserdata(lua, 1);
-    size_t lens;
-    void *name = NULL;
-    if (LUA_TSTRING == lua_type(lua, 2)) {
-        name = (void *)luaL_checklstring(lua, 2, &lens);
-    } else {
-        name = lua_touserdata(lua, 2);
-        lens = (size_t)luaL_checkinteger(lua, 3);
-    }
-    hash_ring_node *node = hash_ring_get(ring, name, lens);
-    if (NULL == node) {
-        lua_pushinteger(lua, 0);
-    } else {
-        lua_pushinteger(lua, node->nreplicas);
-    }
-    return 1;
-}
 static int32_t _lhash_ring_remove(lua_State *lua) {
     hash_ring_ctx *ring = lua_touserdata(lua, 1);
     size_t lens;
@@ -176,7 +158,6 @@ LUAMOD_API int luaopen_hashring(lua_State *lua) {
     };
     luaL_Reg reg_func[] = {
         { "add", _lhash_ring_add },
-        { "get", _lhash_ring_get },
         { "remove", _lhash_ring_remove },
         { "find", _lhash_ring_find },
         { "print", _lhash_ring_print },
