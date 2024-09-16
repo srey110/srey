@@ -151,7 +151,7 @@ char *strlower(char *str);
 /// <returns>char *</returns>
 char* strreverse(char* str);
 /// <summary>
-/// 随机[min, max)
+/// 随机[min, max]
 /// </summary>
 /// <param name="min">最小</param>
 /// <param name="max">最大</param>

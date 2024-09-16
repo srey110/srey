@@ -115,7 +115,6 @@ static int32_t service_init(void) {
     log_setlv((LOG_LEVEL)config.loglv);
     _open_log();
     unlimit();
-    srand((uint32_t)time(NULL));
     mutex_init(&muexit);
     cond_init(&condexit);
     g_loader = loader_init(config.nnet, config.nworker);

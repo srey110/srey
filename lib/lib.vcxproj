@@ -28,6 +28,7 @@
     <ClInclude Include="base\os.h" />
     <ClInclude Include="base\structs.h" />
     <ClInclude Include="containers\hashmap.h" />
+    <ClInclude Include="containers\heap.h" />
     <ClInclude Include="containers\queue.h" />
     <ClInclude Include="containers\sarray.h" />
     <ClInclude Include="crypt\aes.h" />
@@ -96,6 +97,7 @@
   <ItemGroup>
     <ClCompile Include="base\memory.c" />
     <ClCompile Include="containers\hashmap.c" />
+    <ClCompile Include="containers\heap.c" />
     <ClCompile Include="crypt\aes.c" />
     <ClCompile Include="crypt\base64.c" />
     <ClCompile Include="crypt\cipher.c" />

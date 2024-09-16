@@ -17,7 +17,7 @@ void _padding_data(padding_model padding, const void *data, size_t dlens, uint8_
         break;
     case ISO10126:
         for (size_t i = 0; i < remain - 1; i++) {
-            output[i] = (uint8_t)randrange(0, UCHAR_MAX + 1);
+            output[i] = (uint8_t)randrange(0, UCHAR_MAX);
         }
         output[remain - 1] = (uint8_t)remain;
         break;

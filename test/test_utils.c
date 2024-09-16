@@ -144,6 +144,34 @@ static void test_queue(CuTest* tc) {
     
     que_free(&qu);
 }
+typedef struct heap_test {
+    heap_node node;
+    int32_t index;
+}heap_test;
+static int _heap_test_compare(const heap_node* lhs, const heap_node* rhs) {
+    return UPCAST(lhs, heap_test, node)->index < UPCAST(rhs, heap_test, node)->index;
+}
+static void test_heap(CuTest* tc) {
+    heap_ctx heap;
+    heap_init(&heap, _heap_test_compare);
+    heap_test ht[10];
+    ZERO(ht, sizeof(ht));
+    for (int32_t i = 0; i < 10; i++) {
+        ht[i].index = i + 1;
+        heap_insert(&heap, &ht[i].node);
+    }
+    heap_remove(&heap, &ht[1].node);
+    int32_t iVal;
+    for (int32_t i = 1; i <= 9; i++) {
+        iVal = UPCAST(heap.root, heap_test, node)->index;
+        if (1 == i) {
+            CuAssertTrue(tc, i == iVal);
+        } else {
+            CuAssertTrue(tc, i + 1 == iVal);
+        }
+        heap_dequeue(&heap);
+    }
+}
 static void test_system(CuTest* tc) {
     PRINT("createid: %"PRIu64"", createid());
     PRINT("threadid: %"PRIu64"", threadid());
@@ -1358,6 +1386,7 @@ static void test_redis_unpack(CuTest* tc) {
 void test_utils(CuSuite* suite) {
     SUITE_ADD_TEST(suite, test_array);
     SUITE_ADD_TEST(suite, test_queue);
+    SUITE_ADD_TEST(suite, test_heap);
     SUITE_ADD_TEST(suite, test_system);
     SUITE_ADD_TEST(suite, test_crypt_other);
     SUITE_ADD_TEST(suite, test_digest);

@@ -517,8 +517,15 @@ char* strreverse(char* str) {
     return str;
 }
 int32_t randrange(int32_t min, int32_t max) {
+    static uint32_t seed = 0;
     ASSERTAB(max > min, "rand range max must big than min.");
-    return (rand() % (max - min)) + min;
+    if (0 == seed) {
+        seed = (uint32_t)time(NULL);
+        srand(seed);
+    }
+    int32_t _rand = rand();
+    _rand = min + (int32_t)((double)((double)(max)-(min)+1.0) * ((_rand) / ((RAND_MAX)+1.0)));
+    return _rand;
 }
 char *randstr(char *buf, size_t len) {
     static char characters[] = {
@@ -528,7 +535,7 @@ char *randstr(char *buf, size_t len) {
     };
     size_t i = 0;
     for (; i < len; i++) {
-        buf[i] = characters[randrange(0, sizeof(characters))];
+        buf[i] = characters[randrange(0, sizeof(characters) - 1)];
     }
     buf[i] = '\0';
     return buf;

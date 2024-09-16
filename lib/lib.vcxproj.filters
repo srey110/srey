@@ -262,6 +262,9 @@
     <ClInclude Include="utils\hash_ring.h">
       <Filter>utils</Filter>
     </ClInclude>
+    <ClInclude Include="containers\heap.h">
+      <Filter>containers</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="event\event.c">
@@ -431,6 +434,9 @@
     </ClCompile>
     <ClCompile Include="utils\hash_ring.c">
       <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="containers\heap.c">
+      <Filter>containers</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>
