@@ -5,7 +5,7 @@ void heap_init(heap_ctx *heap, _heap_compare _compare) {
     heap->_compare = _compare;
 }
 static void _heap_swap(heap_ctx *heap, heap_node *parent, heap_node *child) {
-    ASSERTAB(child->parent == parent 
+    ASSERTAB(child->parent == parent
         && (parent->left == child || parent->right == child), ERRSTR_INVPARAM);
     heap_node *pparent = parent->parent;
     heap_node *lchild = child->left;
