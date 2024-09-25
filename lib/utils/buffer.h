@@ -69,13 +69,13 @@ int32_t buffer_appendv(buffer_ctx *ctx, const char *fmt, ...);
 /// <param name="out">数据</param>
 /// <param name="lens">读取长度</param>
 /// <returns>实际读取到的长度</returns>
-int32_t buffer_copyout(buffer_ctx *ctx, const size_t start, void *out, size_t lens);
+size_t buffer_copyout(buffer_ctx *ctx, const size_t start, void *out, size_t lens);
 /// <summary>
 /// 删除数据
 /// </summary>
 /// <param name="lens">长度</param>
 /// <returns>实际删除的长度</returns>
-int32_t buffer_drain(buffer_ctx *ctx, size_t lens);
+size_t buffer_drain(buffer_ctx *ctx, size_t lens);
 /// <summary>
 /// 读取，并删除数据
 /// </summary>
@@ -83,7 +83,7 @@ int32_t buffer_drain(buffer_ctx *ctx, size_t lens);
 /// <param name="out">数据</param>
 /// <param name="lens">长度</param>
 /// <returns>实际长度</returns>
-int32_t buffer_remove(buffer_ctx *ctx, void *out, size_t lens);
+size_t buffer_remove(buffer_ctx *ctx, void *out, size_t lens);
 /// <summary>
 /// 查找
 /// </summary>

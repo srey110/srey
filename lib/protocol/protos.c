@@ -86,7 +86,7 @@ void *protos_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
     void *unpack;
     switch (ud->pktype) {
     case PACK_CUSTZ:
-        unpack = custz_unpack(buf, ud, size, status);
+        unpack = custz_unpack(buf, size, status);
         break;
     case PACK_HTTP:
         unpack = http_unpack(buf, ud, status);

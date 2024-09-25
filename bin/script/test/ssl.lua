@@ -5,8 +5,7 @@ srey.startup(
     function ()
         srey.on_recved(
             function (pktype, fd, skid, client, slice, data, size)
-                local rdata, rsize = custz.unpack(data)
-                local sdata, ssize = custz.pack(rdata, rsize)
+                local sdata, ssize = custz.pack(data, size)
                 srey.send(fd, skid, sdata, ssize, 0)
             end
         )

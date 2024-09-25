@@ -1,74 +1,91 @@
 #include "protocol/custz.h"
 #include "protocol/protos.h"
 
-typedef uint32_t lens_t;
-#define  ntoh  ntohl
-#define  hton  htonl
-
-//simple_head_ctx + 内容
-typedef struct custz_pack_ctx {
-    lens_t lens;//内容长度
-    char data[0];
-}custz_pack_ctx;
-
-static void _custz_ntoh(custz_pack_ctx *pack, lens_t lens) {
-    pack->lens = lens;
-    //其他变量赋值
-}
-static void _custz_hton(custz_pack_ctx *pack, lens_t lens) {
-    pack->lens = lens;
-    //其他变量赋值
-}
-static custz_pack_ctx *_custz_data(buffer_ctx *buf, size_t *size, ud_cxt *ud, int32_t *status) {
-    custz_pack_ctx *pack = ud->extra;
-    if (buffer_size(buf) < pack->lens) {
+void *custz_unpack(buffer_ctx *buf, size_t *size, int32_t *status) {
+    size_t total = buffer_size(buf);
+    if (total < 1) {
         BIT_SET(*status, PROTO_MOREDATA);
         return NULL;
     }
-    ASSERTAB(pack->lens == buffer_remove(buf, pack->data, pack->lens), "copy buffer error.");
-    *size = sizeof(custz_pack_ctx) + pack->lens;
-    ud->extra = NULL;
-    return pack;
-}
-custz_pack_ctx *custz_unpack(buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status) {
-    if (NULL == ud->extra) {
-        if (buffer_size(buf) < sizeof(custz_pack_ctx)) {
+    uint8_t flag = buffer_at(buf, 0);
+    size_t hlens = sizeof(flag);
+    if (flag <= 0xfc) {
+        *size = flag;
+    } else if (0xfd == flag) {
+        char buf16[sizeof(uint16_t)];
+        hlens += sizeof(buf16);
+        if (hlens > total) {
             BIT_SET(*status, PROTO_MOREDATA);
             return NULL;
         }
-        lens_t dlens;
-        ASSERTAB(sizeof(dlens) == buffer_copyout(buf, offsetof(custz_pack_ctx, lens), &dlens, sizeof(dlens)), "copy buffer error.");
-        dlens = (lens_t)ntoh(dlens);
-        if (PACK_TOO_LONG(dlens)) {
-            BIT_SET(*status, PROTO_ERROR);
+        ASSERTAB(sizeof(buf16) == buffer_copyout(buf, sizeof(flag), buf16, sizeof(buf16)), "copy buffer error.");
+        *size = (size_t)unpack_integer(buf16, sizeof(buf16), 0, 0);
+    } else if (0xfe == flag) {
+        char buf32[sizeof(uint32_t)];
+        hlens += sizeof(buf32);
+        if (hlens > total) {
+            BIT_SET(*status, PROTO_MOREDATA);
             return NULL;
         }
-        custz_pack_ctx *pack;
-        MALLOC(pack, sizeof(custz_pack_ctx) + dlens);
-        ASSERTAB(sizeof(custz_pack_ctx) == buffer_remove(buf, pack, sizeof(custz_pack_ctx)), "copy buffer error.");
-        _custz_ntoh(pack, dlens);
-        if (0 == dlens) {
-            *size = sizeof(custz_pack_ctx);
-            return pack;
-        } else {
-            ud->extra = pack;
-            return _custz_data(buf, size, ud, status);
-        }
+        ASSERTAB(sizeof(buf32) == buffer_copyout(buf, sizeof(flag), buf32, sizeof(buf32)), "copy buffer error.");
+        *size = (size_t)unpack_integer(buf32, sizeof(buf32), 0, 0);
     } else {
-        return _custz_data(buf, size, ud, status);
+        char buf64[sizeof(uint64_t)];
+        hlens += sizeof(buf64);
+        if (hlens > total) {
+            BIT_SET(*status, PROTO_MOREDATA);
+            return NULL;
+        }
+        ASSERTAB(sizeof(buf64) == buffer_copyout(buf, sizeof(flag), buf64, sizeof(buf64)), "copy buffer error.");
+        *size = (size_t)unpack_integer(buf64, sizeof(buf64), 0, 0);
     }
+    if (PACK_TOO_LONG(*size)) {
+        BIT_SET(*status, PROTO_ERROR);
+        return NULL;
+    }
+    size_t pklens = hlens + *size;
+    if (pklens > total) {
+        BIT_SET(*status, PROTO_MOREDATA);
+        return NULL;
+    }
+    if (0 == *size) {
+        ASSERTAB(hlens == buffer_drain(buf, hlens), "drain buffer error.");
+        return NULL;
+    }
+    char *msg;
+    MALLOC(msg, *size);
+    ASSERTAB(*size == buffer_copyout(buf, hlens, msg, *size), "copy buffer error.");
+    ASSERTAB(pklens == buffer_drain(buf, pklens), "drain buffer error.");
+    return msg;
 }
-custz_pack_ctx *custz_pack(void *data, size_t lens, size_t *size) {
-    custz_pack_ctx *pack;
-    *size = sizeof(custz_pack_ctx) + lens;
-    MALLOC(pack, *size);
-    _custz_hton(pack, (lens_t)hton((lens_t)lens));
-    if (lens > 0) {
-        memcpy(pack->data, data, lens);
+void *custz_pack(void *data, size_t lens, size_t *size) {
+    char *pack;
+    size_t hlens = sizeof(uint8_t);
+    if (lens <= 0xfc) {
+        *size = hlens + lens;
+        MALLOC(pack, *size);
+        pack[0] = (uint8_t)lens;
+    } else if (lens > 0xfc && lens <= USHRT_MAX) {
+        hlens += sizeof(uint16_t);
+        *size = hlens + lens;
+        MALLOC(pack, *size);
+        pack[0] = 0xfd;
+        pack_integer(pack + sizeof(uint8_t), lens, sizeof(uint16_t), 0);
+    } else if (lens > USHRT_MAX && lens <= UINT_MAX) {
+        hlens += sizeof(uint32_t);
+        *size = hlens + lens;
+        MALLOC(pack, *size);
+        pack[0] = 0xfe;
+        pack_integer(pack + sizeof(uint8_t), lens, sizeof(uint32_t), 0);
+    } else {
+        hlens += sizeof(uint64_t);
+        *size = hlens + lens;
+        MALLOC(pack, *size);
+        pack[0] = 0xff;
+        pack_integer(pack + sizeof(uint8_t), lens, sizeof(uint64_t), 0);
+    }
+    if (0 != lens) {
+        memcpy(pack + hlens, data, lens);
     }
     return pack;
-}
-void *custz_data(custz_pack_ctx *pack, size_t *lens) {
-    *lens = pack->lens;
-    return pack->data;
 }

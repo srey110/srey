@@ -142,7 +142,7 @@ static void _test_bind(task_ctx *task) {
          mysql_query_attribute_string('t_nil')\
         )";
         mpack_ctx *pack = mysql_query(task, &_mysql, sql1, &_bind);
-        if (MPACK_OK != pack->pack_type) {
+        if (NULL == pack || MPACK_OK != pack->pack_type) {
             LOG_WARN("mysql_query error.");
         }
         mysql_bind_clear(&_bind);

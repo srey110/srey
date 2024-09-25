@@ -87,24 +87,15 @@ static int32_t _lproto_custz_pack(lua_State *lua) {
         data = lua_touserdata(lua, 1);
         size = (size_t)luaL_checkinteger(lua, 2);
     }
-    data = (void *)custz_pack(data, size, &size);
+    data = custz_pack(data, size, &size);
     lua_pushlightuserdata(lua, data);
     lua_pushinteger(lua, size);
-    return 2;
-}
-static int32_t _lproto_custz_unpack(lua_State *lua) {
-    struct custz_pack_ctx *pack = lua_touserdata(lua, 1);
-    size_t lens;
-    void *data = custz_data(pack, &lens);
-    lua_pushlightuserdata(lua, data);
-    lua_pushinteger(lua, lens);
     return 2;
 }
 //srey.custz
 LUAMOD_API int luaopen_custz(lua_State *lua) {
     luaL_Reg reg[] = {
         { "pack", _lproto_custz_pack },
-        { "unpack", _lproto_custz_unpack },
         { NULL, NULL },
     };
     luaL_newlib(lua, reg);

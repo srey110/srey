@@ -376,7 +376,7 @@ static bufnode_ctx *_search_start(bufnode_ctx *node, size_t start, size_t *total
     }
     return NULL;
 }
-int32_t buffer_copyout(buffer_ctx *ctx, const size_t start, void *out, size_t lens) {
+size_t buffer_copyout(buffer_ctx *ctx, const size_t start, void *out, size_t lens) {
     ASSERTAB(0 == ctx->freeze_read, "read freezed");
     if (start >= ctx->total_lens 
         || 0 == lens) {
@@ -404,7 +404,7 @@ int32_t buffer_copyout(buffer_ctx *ctx, const size_t start, void *out, size_t le
                 node = node->next;
             } else {
                 memcpy(data, node->buffer + node->misalign + off, lens);
-                return (int32_t)nread;
+                return nread;
             }
         }
     }
@@ -418,9 +418,9 @@ int32_t buffer_copyout(buffer_ctx *ctx, const size_t start, void *out, size_t le
     if (0 != lens) {
         memcpy(data, node->buffer + node->misalign, lens);
     }
-    return (int32_t)nread;
+    return nread;
 }
-int32_t buffer_drain(buffer_ctx *ctx, size_t lens) {
+size_t buffer_drain(buffer_ctx *ctx, size_t lens) {
     ASSERTAB(0 == ctx->freeze_read, "read freezed");
     bufnode_ctx *node, *next;
     size_t remain, oldlen;
@@ -460,10 +460,10 @@ int32_t buffer_drain(buffer_ctx *ctx, size_t lens) {
         ctx->head = ctx->tail = NULL;
         ctx->tail_with_data = &(ctx)->head;
     }
-    return (int32_t)lens;
+    return lens;
 }
-int32_t buffer_remove(buffer_ctx *ctx, void *out, size_t lens) {
-    int32_t rtn = buffer_copyout(ctx, 0, out, lens);
+size_t buffer_remove(buffer_ctx *ctx, void *out, size_t lens) {
+    size_t rtn = buffer_copyout(ctx, 0, out, lens);
     if (rtn > 0) {
         ASSERTAB(rtn == buffer_drain(ctx, rtn), "drain lens not equ copy lens.");
     }

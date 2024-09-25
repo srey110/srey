@@ -17,8 +17,7 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, 
         return;
     }*/
     size_t lens;
-    char *sbuf = custz_data(data, &lens);
-    void *outbuf = custz_pack(sbuf, lens, &lens);
+    void *outbuf = custz_pack(data, size, &lens);
     ev_send(&task->loader->netev, fd, skid, outbuf, lens, 0);
 }
 static void _net_send(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, uint8_t client, size_t size) {

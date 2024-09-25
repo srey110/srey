@@ -10,9 +10,7 @@ srey.startup(
         )
         srey.on_recved(
             function (pktype, fd, skid, client, slice, data, size)
-                local rdata, rsize = custz.unpack(data)
-                --printd("socket %d, skid %s recv %s", fd, tostring(skid), srey.ud_str(rdata, rsize))
-                local sdata, ssize = custz.pack(rdata, rsize)
+                local sdata, ssize = custz.pack(data, size)
                 srey.send(fd, skid, sdata, ssize, 0)
             end
         )

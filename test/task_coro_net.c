@@ -13,14 +13,13 @@ static void _test_syn_send(task_ctx *task) {
     }
     const char *msg = "this is tcp task_coro_net.";
     size_t size;
-    struct custz_pack_ctx *pack = custz_pack((void*)msg, strlen(msg), &size);
+    void *pack = custz_pack((void*)msg, strlen(msg), &size);
     void *data = coro_send(task, fd, skid, pack, size, &size, 0);
     if (NULL == data) {
         LOG_ERROR("%s", "syn_send error");
         return;
     }
-    data = custz_data(data, &size);
-    ASSERTAB(0 == _memicmp(data, msg, strlen(msg)), "syn_send error");
+    ASSERTAB(size == strlen(msg) && 0 == _memicmp(data, msg, strlen(msg)), "syn_send error");
     ev_close(&task->loader->netev, fd, skid);
     if (_prt) {
         LOG_INFO("_test_syn_send ok.");
@@ -41,14 +40,13 @@ static void _test_syn_ssl1_send(task_ctx *task) {
     }
     const char *msg = "this is tcp task_coro_net.";
     size_t size;
-    struct custz_pack_ctx *pack = custz_pack((void*)msg, strlen(msg), &size);
+    void *pack = custz_pack((void*)msg, strlen(msg), &size);
     void *data = coro_send(task, fd, skid, pack, size, &size, 0);
     if (NULL == data) {
         LOG_ERROR("%s", "syn_send error");
         return;
     }
-    data = custz_data(data, &size);
-    ASSERTAB(0 == _memicmp(data, msg, strlen(msg)), "syn_send error");
+    ASSERTAB(size == strlen(msg) && 0 == _memicmp(data, msg, strlen(msg)), "syn_send error");
     ev_close(&task->loader->netev, fd, skid);
     if (_prt) {
         LOG_INFO("_test_syn_ssl1_send ok.");
@@ -66,14 +64,13 @@ static void _test_syn_ssl2_send(task_ctx *task) {
     }
     const char *msg = "this is tcp task_coro_net.";
     size_t size;
-    struct custz_pack_ctx *pack = custz_pack((void*)msg, strlen(msg), &size);
+    void *pack = custz_pack((void*)msg, strlen(msg), &size);
     void *data = coro_send(task, fd, skid, pack, size, &size, 0);
     if (NULL == data) {
         LOG_ERROR("%s", "syn_send error");
         return;
     }
-    data = custz_data(data, &size);
-    ASSERTAB(0 == _memicmp(data, msg, strlen(msg)), "syn_send error");
+    ASSERTAB(size == strlen(msg) && 0 == _memicmp(data, msg, strlen(msg)), "syn_send error");
     ev_close(&task->loader->netev, fd, skid);
     if (_prt) {
         LOG_INFO("_test_syn_ssl2_send ok.");

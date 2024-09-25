@@ -840,7 +840,7 @@ static void test_buffer(CuTest* tc) {
 
     CuAssertTrue(tc, strlen(str1) + strlen(str2) == buffer_size(&buf));
     char out[ONEK] = { 0 };
-    int32_t rtn = buffer_copyout(&buf, 0, out, strlen(str1));
+    size_t rtn = buffer_copyout(&buf, 0, out, strlen(str1));
     CuAssertTrue(tc, rtn == strlen(str1) && 0 == strcmp(str1, out));
     rtn = buffer_drain(&buf, rtn);
     CuAssertTrue(tc, rtn == strlen(str1) && strlen(str2) == buffer_size(&buf));
