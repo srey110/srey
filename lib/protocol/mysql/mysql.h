@@ -36,6 +36,12 @@ int32_t mysql_init(mysql_ctx *mysql, const char *ip, uint16_t port, struct evssl
 /// <returns>ERR_OK 请求成功</returns>
 int32_t mysql_try_connect(task_ctx *task, mysql_ctx *mysql);
 /// <summary>
+/// 获取版本信息
+/// </summary>
+/// <param name="mysql">mysql_ctx</param>
+/// <returns>版本信息</returns>
+const char *mysql_version(mysql_ctx *mysql);
+/// <summary>
 /// 获取错误信息
 /// </summary>
 /// <param name="mysql">mysql_ctx</param>

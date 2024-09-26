@@ -462,6 +462,11 @@ static int32_t _lmysql_link_closed(lua_State *lua) {
     }
     return 1;
 }
+static int32_t _lmysql_version(lua_State *lua) {
+    mysql_ctx *mysql = lua_touserdata(lua, 1);
+    lua_pushstring(lua, mysql_version(mysql));
+    return 1;
+}
 static int32_t _lmysql_erro(lua_State *lua) {
     mysql_ctx *mysql = lua_touserdata(lua, 1);
     lua_pushstring(lua, mysql_erro(mysql, NULL));
@@ -498,6 +503,7 @@ LUAMOD_API int luaopen_mysql(lua_State *lua) {
         { "pack_stmt_prepare", _lmysql_pack_stmt_prepare },
         { "try_connect", _lmysql_try_connect },
         { "link_closed", _lmysql_link_closed },
+        { "version", _lmysql_version },
         { "erro", _lmysql_erro },
         { "sock_id", _lmysql_sock_id },
         { "last_id", _lmysql_last_id },

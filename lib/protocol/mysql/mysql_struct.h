@@ -38,6 +38,7 @@ typedef struct mysql_ctx {
     struct mpack_ctx *mpack;
     mysql_server_param server;
     mysql_client_param client;
+    char version[64];
     char error_msg[256];
 }mysql_ctx;
 

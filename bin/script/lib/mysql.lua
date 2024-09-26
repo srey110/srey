@@ -85,6 +85,9 @@ function ctx:prepare(sql)
     end
     return stmt.new(mpack)
 end
+function ctx:version()
+    return self.mysql:version()
+end
 function ctx:erro()
     return self.mysql:erro()
 end

@@ -329,6 +329,10 @@ local function _net_accept_dispatch(msg)
     end
 end
 
+--func(pktype, fd, skid, err)
+function srey.on_connected(func)
+    func_cbs[MSG_TYPE.CONNECT] = func
+end
 --fd skid
 function srey.connect(pktype, sslname, ip, port, netev)
     local ssl
@@ -364,10 +368,13 @@ end
 local function _net_connect_dispatch(msg)
     local corosess = _get_coro_sess(msg.skid, MSG_TYPE.CONNECT)
     if not corosess then
-        WARN("can't find session %s.", tostring(msg.skid))
-        return
+        local func = func_cbs[MSG_TYPE.CONNECT]
+        if func then
+            _coro_run(_coro_cb, func, msg.pktype, msg.fd, msg.skid, msg.erro)
+        end
+    else
+        _coro_resume(corosess.coro, msg)
     end
-    _coro_resume(corosess.coro, msg)
 end
 
 --func(pktype, fd, skid, client)

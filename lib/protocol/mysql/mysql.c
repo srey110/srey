@@ -276,9 +276,10 @@ static void _mysql_auth_request(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t
         LOG_ERROR("mysql protocol version not 0x0a.");
         return;
     }
-    binary_get_string(&breader, 0);//server version
+    char *val = binary_get_string(&breader, 0);//server version
+    strcpy(mysql->version, val);
     binary_get_skip(&breader, 4);//thread id
-    char *val = binary_get_string(&breader, 8);//auth-plugin-data-part-1
+    val = binary_get_string(&breader, 8);//auth-plugin-data-part-1
     memcpy(mysql->server.salt, val, 8);
     binary_get_skip(&breader, 1);//filler
     mysql->server.caps = (uint32_t)binary_get_uinteger(&breader, 2, 1);//capability_flags_1
@@ -624,6 +625,9 @@ int32_t mysql_try_connect(task_ctx *task, mysql_ctx *mysql) {
         return ERR_FAILED;
     }
     return ERR_OK;
+}
+const char *mysql_version(mysql_ctx *mysql) {
+    return mysql->version;
 }
 const char *mysql_erro(mysql_ctx *mysql, int32_t *code) {
     if (NULL != code) {

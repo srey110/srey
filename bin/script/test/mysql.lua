@@ -2,6 +2,9 @@ local srey = require("lib.srey")
 local mysql = require("lib.mysql")
 local mbind = require("mysql.bind")
 
+local function _onconnect(pktype, fd, skid, err)
+    printd("connected mysql " .. pktype .. " " .. err)
+end
 local function print_reader(reader)
     printd("-----------------------------------------")
     local prt, ok, val, size, isneg, day, h, m, s
@@ -25,6 +28,7 @@ local function _timeout()
     if not mctx:connect() then
         printd("mysql connect error")
     end
+    printd("mysql version: " .. mctx:version())
     local rtn = mctx:selectdb("test1")
     if rtn then
         printd("selectdb test1 error")
@@ -93,6 +97,7 @@ local function _timeout()
 end
 srey.startup(
     function ()
+        srey.on_connected(_onconnect)
         srey.timeout(1000, _timeout)
     end
 )
