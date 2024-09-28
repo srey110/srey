@@ -265,6 +265,9 @@
     <ClInclude Include="base\err.h">
       <Filter>base</Filter>
     </ClInclude>
+    <ClInclude Include="protocol\custz_head.h">
+      <Filter>protocol</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="event\event.c">
@@ -437,6 +440,9 @@
     </ClCompile>
     <ClCompile Include="containers\heap.c">
       <Filter>containers</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\custz_head.c">
+      <Filter>protocol</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

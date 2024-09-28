@@ -1,7 +1,6 @@
 #ifndef CUSTOMIZE_H_
 #define CUSTOMIZE_H_
 
-#include "base/structs.h"
 #include "utils/buffer.h"
 
 //½â°ü

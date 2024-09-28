@@ -55,6 +55,7 @@
     <ClInclude Include="event\uev.h" />
     <ClInclude Include="lib.h" />
     <ClInclude Include="protocol\custz.h" />
+    <ClInclude Include="protocol\custz_head.h" />
     <ClInclude Include="protocol\dns.h" />
     <ClInclude Include="protocol\http.h" />
     <ClInclude Include="protocol\mysql\mysql.h" />
@@ -123,6 +124,7 @@
     <ClCompile Include="event\usock.c" />
     <ClCompile Include="event\wcmd.c" />
     <ClCompile Include="protocol\custz.c" />
+    <ClCompile Include="protocol\custz_head.c" />
     <ClCompile Include="protocol\dns.c" />
     <ClCompile Include="protocol\http.c" />
     <ClCompile Include="protocol\mysql\mysql.c" />
