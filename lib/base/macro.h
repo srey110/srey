@@ -2,7 +2,7 @@
 #define MACRO_H_
 
 #include "base/config.h"
-#include "base/errcode.h"
+#include "base/err.h"
 #include "base/macro_unix.h"
 #include "base/macro_win.h"
 #include "base/memory.h"
@@ -19,7 +19,7 @@
 
 #define ABS(n) ((n) > 0 ? (n) : -(n))
 #define FLOAT_EQZERO(f) (ABS(f) < FLOAT_PRECISION)
-#define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
+#define ARRAY_SIZE(a) (sizeof(a) / sizeof(*(a)))
 #define EMPTYSTR(str) ((NULL == str) || (0 == strlen(str)))
 
 //s向上 取n(n 为2的倍数)的整数倍

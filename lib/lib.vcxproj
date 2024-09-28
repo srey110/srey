@@ -20,7 +20,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="base\config.h" />
-    <ClInclude Include="base\errcode.h" />
+    <ClInclude Include="base\err.h" />
     <ClInclude Include="base\macro.h" />
     <ClInclude Include="base\macro_unix.h" />
     <ClInclude Include="base\macro_win.h" />

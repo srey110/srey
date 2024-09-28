@@ -103,9 +103,6 @@
     <ClInclude Include="base\config.h">
       <Filter>base</Filter>
     </ClInclude>
-    <ClInclude Include="base\errcode.h">
-      <Filter>base</Filter>
-    </ClInclude>
     <ClInclude Include="base\macro.h">
       <Filter>base</Filter>
     </ClInclude>
@@ -264,6 +261,9 @@
     </ClInclude>
     <ClInclude Include="containers\heap.h">
       <Filter>containers</Filter>
+    </ClInclude>
+    <ClInclude Include="base\err.h">
+      <Filter>base</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
