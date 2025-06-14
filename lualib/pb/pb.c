@@ -1,5 +1,5 @@
 #ifdef _MSC_VER
-# define _CRT_SECURE_NO_WARNINGS
+//# define _CRT_SECURE_NO_WARNINGS
 # define _CRT_NONSTDC_NO_WARNINGS
 # pragma warning(disable: 4244) /* int -> char */
 # pragma warning(disable: 4706) /* = in if condition */
@@ -1635,7 +1635,7 @@ static void lpbE_field(lpb_Env *e, int idx, const pb_Field *f, lpbE_Mode m) {
         len = pb_bufflen(e->b); /* len != 0 because tag written */
         lpbE_encode(e, idx, f->type);
         if (m == lpbE_NoZero && len == pb_bufflen(e->b))
-            pb_bufflen(e->b) = oldlen;
+            pb_bufflen(e->b) = (unsigned int)oldlen;
         else
             len = pb_addlength(e->b, len, 1);
         break;
@@ -1683,7 +1683,7 @@ static void lpbE_repeated(lpb_Env *e, int idx, const pb_Type *t, const pb_Field 
         for (i = 1; lua53_rawgeti(L, idx, i) != LUA_TNIL; ++i)
             lpbE_field(e, -1, f, lpbE_Raw), lua_pop(L, 1);
         if (i == 1 && lpbE_ignorezero(e, t, f))
-            pb_bufflen(b) = oldlen;
+            pb_bufflen(b) = (unsigned int)oldlen;
         else
             lpb_checkmem(L, pb_addlength(b, len, 1));
     } else {
