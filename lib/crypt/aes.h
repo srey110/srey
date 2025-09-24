@@ -8,7 +8,7 @@ typedef struct aes_ctx {
     int32_t encrypt;
     int32_t nrounds;
     uint8_t output[AES_BLOCK_SIZE];
-    uint32_t schedule[256 / 8 + 28];    
+    uint32_t schedule[256 / 8 + 28];
 }aes_ctx;
 /// <summary>
 /// aes ≥ı ºªØ
