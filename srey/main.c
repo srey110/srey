@@ -39,7 +39,7 @@ static void _json_get_string(cJSON *json, const char *name, char *str, size_t le
             memcpy(str, val->valuestring, vlen);
             str[vlen] = '\0';
         } else {
-            LOG_WARN("dns too long.");
+            LOG_WARN("%s value too long.", name);
         }
     }
 }

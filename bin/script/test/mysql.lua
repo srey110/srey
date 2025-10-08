@@ -66,7 +66,7 @@ local function _timeout()
     end
 
     local sql = "select * from test_bind"
-    local reader = mctx:query(sql, bind)
+    local reader = mctx:query(sql)
     if not reader then
         printd("mysql query error")
     end
@@ -89,7 +89,7 @@ local function _timeout()
     print_reader(reader)
 
     sql = "delete from test_bind"
-    rtn = mctx:query(sql, bind)
+    rtn = mctx:query(sql)
     if not reader then
         printd("mysql query error")
     end
