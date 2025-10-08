@@ -223,7 +223,8 @@ static void _harbor_closing(task_ctx *harbor) {
 }
 int32_t harbor_start(loader_ctx *loader, name_t tname, name_t ssl,
     const char *ip, uint16_t port, const char *key, int32_t ms) {
-    if (INVALID_TNAME == tname) {
+    if (INVALID_TNAME == tname
+        || 0 == port) {
         return ERR_OK;
     }
     size_t klens = strlen(key);
