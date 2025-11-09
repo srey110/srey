@@ -9,7 +9,11 @@ typedef enum pack_type {
     PACK_WEBSOCK,
     PACK_REDIS,
     PACK_MYSQL,
-    PACK_CUSTZ
+    PACK_PGSQL,
+    PACK_MQTT,
+    PACK_CUSTZ_FIXED,
+    PACK_CUSTZ_FLAG,
+    PACK_CUSTZ_VAR
 }pack_type;
 typedef enum proto_status {
     PROTO_NONE = 0x00,

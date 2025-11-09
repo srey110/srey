@@ -43,6 +43,9 @@
     <Filter Include="srey\minicoro">
       <UniqueIdentifier>{cdeff177-3099-41e3-8e26-1fa06cab4c8a}</UniqueIdentifier>
     </Filter>
+    <Filter Include="protocol\postgresql">
+      <UniqueIdentifier>{76629710-3d94-484d-a390-d5e686d9cb73}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="lib.h" />

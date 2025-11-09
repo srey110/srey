@@ -4,6 +4,7 @@
 
 static int32_t _prt = 0;
 static evssl_ctx *_ssl;
+static uint8_t _pktype = PACK_CUSTZ_FLAG;
 static void _net_accept(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype) {
     if (_prt) {
         LOG_INFO("accept socket %d.", (uint32_t)fd);
@@ -15,7 +16,7 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, 
         return;
     }*/
     size_t lens;
-    void *outbuf = custz_pack(data, size, &lens);
+    void *outbuf = custz_pack(_pktype, data, size, &lens);
     ev_send(&task->loader->netev, fd, skid, outbuf, lens, 0);
 }
 static void _net_send(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, uint8_t client, size_t size) {
@@ -34,7 +35,7 @@ static void _startup(task_ctx *task) {
     on_sended(task, _net_send);
     on_closed(task, _net_close);
     uint64_t id;
-    task_listen(task, PACK_CUSTZ, _ssl, "0.0.0.0", 15001, &id, NETEV_ACCEPT | NETEV_SEND);
+    task_listen(task, _pktype, _ssl, "0.0.0.0", 15001, &id, NETEV_ACCEPT | NETEV_SEND);
 }
 void task_ssl_start(loader_ctx *loader, name_t name, evssl_ctx *ssl, int32_t pt) {
     _prt = pt;

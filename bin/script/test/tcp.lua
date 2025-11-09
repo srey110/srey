@@ -1,6 +1,6 @@
 local srey = require("lib.srey")
 local custz = require("srey.custz")
-
+local pktype = PACK_TYPE.CUSTZ_FLAG
 srey.startup(
     function ()
         srey.on_accepted(
@@ -10,7 +10,7 @@ srey.startup(
         )
         srey.on_recved(
             function (pktype, fd, skid, client, slice, data, size)
-                local sdata, ssize = custz.pack(data, size)
+                local sdata, ssize = custz.pack(pktype, data, size)
                 srey.send(fd, skid, sdata, ssize, 0)
             end
         )
@@ -24,6 +24,6 @@ srey.startup(
                 --printd("socket %d, skid %s closed", fd, tostring(skid))
             end
         )
-        srey.listen(PACK_TYPE.CUSTZ, 0, "0.0.0.0", 15000, NET_EV.ACCEPT)-- | APPEND_EV.SEND)
+        srey.listen(pktype, 0, "0.0.0.0", 15000, NET_EV.ACCEPT)-- | APPEND_EV.SEND)
     end
 )

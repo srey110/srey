@@ -79,15 +79,16 @@ LUAMOD_API int luaopen_dns(lua_State *lua) {
     return 1;
 }
 static int32_t _lproto_custz_pack(lua_State *lua) {
+    uint8_t pktype = (uint8_t)luaL_checkinteger(lua, 1);
     void *data;
     size_t size;
-    if (LUA_TSTRING == lua_type(lua, 1)) {
-        data = (void *)luaL_checklstring(lua, 1, &size);
+    if (LUA_TSTRING == lua_type(lua, 2)) {
+        data = (void *)luaL_checklstring(lua, 2, &size);
     } else {
-        data = lua_touserdata(lua, 1);
-        size = (size_t)luaL_checkinteger(lua, 2);
+        data = lua_touserdata(lua, 2);
+        size = (size_t)luaL_checkinteger(lua, 3);
     }
-    data = custz_pack(data, size, &size);
+    data = custz_pack(pktype, data, size, &size);
     lua_pushlightuserdata(lua, data);
     lua_pushinteger(lua, size);
     return 2;

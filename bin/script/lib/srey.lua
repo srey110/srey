@@ -424,7 +424,7 @@ local function _net_ssl_exchanged_dispatch(msg)
     end
 end
 
---func(pktype, fd, skid, client, erro)
+--func(pktype, fd, skid, client, erro, data, size)
 function srey.on_handshaked(func)
     func_cbs[MSG_TYPE.HANDSHAKED] = func
 end
@@ -447,7 +447,7 @@ local function _net_handshaked_dispatch(msg)
     if not corosess then
         local func = func_cbs[MSG_TYPE.HANDSHAKED]
         if func then
-            _coro_run(_coro_cb, func, msg.pktype, msg.fd, msg.skid, msg.client, msg.erro)
+            _coro_run(_coro_cb, func, msg.pktype, msg.fd, msg.skid, msg.client, msg.erro, msg.data, msg.size)
         end
     else
         _coro_resume(corosess.coro, msg)

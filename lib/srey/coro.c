@@ -118,7 +118,7 @@ static void _mcoro_create(task_dispatch_arg *arg) {
     rtn = mco_resume(arg->task->coro->curcoro);
     ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
 }
-static void _mcoro_resume(task_dispatch_arg *arg, mco_coro *coro) {
+static void _mcoro_resume(mco_coro *coro, task_dispatch_arg *arg) {
     arg->task->coro->curcoro = coro;
     mco_result rtn = mco_push(coro, &arg->msg, sizeof(message_ctx));
     ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
@@ -136,14 +136,14 @@ static void _timeout_dispatch(task_dispatch_arg *arg) {
         LOG_WARN("task %d can't find session %"PRIu64, arg->task->name, arg->msg.sess);
         return;
     }
-    _mcoro_resume(arg, corosess.coro);
+    _mcoro_resume(corosess.coro, arg);
 }
 static void _net_connect_dispatch(task_dispatch_arg *arg) {
     coro_sess corosess;
     if (ERR_OK != _map_corosess_get(arg->task, arg->msg.skid, (msg_type)arg->msg.mtype, &corosess)) {
         _mcoro_create(arg);
     } else {
-        _mcoro_resume(arg, corosess.coro);
+        _mcoro_resume(corosess.coro, arg);
     }
 }
 static void _net_ssl_exchanged_dispatch(task_dispatch_arg *arg) {
@@ -151,7 +151,7 @@ static void _net_ssl_exchanged_dispatch(task_dispatch_arg *arg) {
     if (ERR_OK != _map_corosess_get(arg->task, arg->msg.skid, (msg_type)arg->msg.mtype, &corosess)) {
         _mcoro_create(arg);
     } else {
-        _mcoro_resume(arg, corosess.coro);
+        _mcoro_resume(corosess.coro, arg);
     }
 }
 static void _net_handshaked_dispatch(task_dispatch_arg *arg) {
@@ -159,7 +159,7 @@ static void _net_handshaked_dispatch(task_dispatch_arg *arg) {
     if (ERR_OK != _map_corosess_get(arg->task, arg->msg.skid, (msg_type)arg->msg.mtype, &corosess)) {
         _mcoro_create(arg);
     } else {
-        _mcoro_resume(arg, corosess.coro);
+        _mcoro_resume(corosess.coro, arg);
     }
 }
 static void _net_recv_dispatch(task_dispatch_arg *arg) {
@@ -170,7 +170,7 @@ static void _net_recv_dispatch(task_dispatch_arg *arg) {
                 _mcoro_create(arg);
             } else {
                 arg->msg.sess = arg->msg.skid;
-                _mcoro_resume(arg, corosess.coro);
+                _mcoro_resume(corosess.coro, arg);
             }
         } else {
             _mcoro_create(arg);
@@ -183,12 +183,12 @@ static void _net_recv_dispatch(task_dispatch_arg *arg) {
         _message_clean(arg->msg.mtype, arg->msg.pktype, arg->msg.data);
         return;
     }
-    _mcoro_resume(arg, corosess.coro);
+    _mcoro_resume(corosess.coro, arg);
 }
 static void _net_close_dispatch(task_dispatch_arg *arg) {
     coro_sess corosess;
     if (ERR_OK == _map_corosess_get(arg->task, arg->msg.skid, (msg_type)arg->msg.mtype, &corosess)) {
-        _mcoro_resume(arg, corosess.coro);
+        _mcoro_resume(corosess.coro, arg);
     }
     _mcoro_create(arg);
 }
@@ -203,12 +203,12 @@ static void _net_recvfrom_dispatch(task_dispatch_arg *arg) {
         _message_clean(arg->msg.mtype, arg->msg.pktype, arg->msg.data);
         return;
     }
-    _mcoro_resume(arg, corosess.coro);
+    _mcoro_resume(corosess.coro, arg);
 }
 static void _response_dispatch(task_dispatch_arg *arg) {
     coro_sess cosess;
     if (ERR_OK == _map_corosess_get(arg->task, arg->msg.sess, (msg_type)arg->msg.mtype, &cosess)) {
-        _mcoro_resume(arg, cosess.coro);
+        _mcoro_resume(cosess.coro, arg);
     } else {
         _mcoro_create(arg);
     }
@@ -229,7 +229,7 @@ static void _mcoro_timeout(task_ctx *task, uint64_t sess) {
                 coro = corosess->coro;
                 LOG_INFO("task %d resume timeout, session %"PRIu64".", task->name, corosess->sess);
                 hashmap_delete(task->coro->mapcoro, corosess);
-                _mcoro_resume(&arg, coro);
+                _mcoro_resume(coro, &arg);
             }
         }
     }

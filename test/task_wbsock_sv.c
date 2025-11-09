@@ -41,7 +41,16 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, 
         break;
     }
 }
+static void _on_handshaked(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, uint8_t client, int32_t erro, void *data, size_t lens) {
+    if (NULL != data) {
+        char secproto[32];
+        ZERO(secproto, sizeof(secproto));
+        memcpy(secproto, data, lens);
+        LOG_INFO("Sec-WebSocket-Protocol:%s", secproto);
+    }
+}
 static void _startup(task_ctx *task) {
+    on_handshaked(task, _on_handshaked);
     on_recved(task, _net_recv);
     uint64_t id;
     task_listen(task, PACK_WEBSOCK, NULL, "0.0.0.0", 15004, &id, 0);

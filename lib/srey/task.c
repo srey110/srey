@@ -170,7 +170,7 @@ void _message_run(task_ctx *task, message_ctx *msg) {
         break;
     case MSG_TYPE_HANDSHAKED:
         if (NULL != task->_net_handshaked) {
-            task->_net_handshaked(task, msg->fd, msg->skid, msg->pktype, msg->client, msg->erro);
+            task->_net_handshaked(task, msg->fd, msg->skid, msg->pktype, msg->client, msg->erro, msg->data, msg->size);
         }
         _message_clean(msg->mtype, msg->pktype, msg->data);
         break;

@@ -24,6 +24,13 @@ srey.startup(
                 end
             end
         )
+        srey.on_handshaked(
+            function (pktype, fd, skid, client, erro, data, size)
+                if 0 ~=  size then
+                    printd("Sec-WebSocket-Protocol:" .. srey.ud_str(data, size));
+                end
+            end
+        )
         srey.listen(PACK_TYPE.WEBSOCK, 0, "0.0.0.0", 15004)
     end
 )

@@ -28,7 +28,7 @@ typedef void(*_net_recv_cb)(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pk
 typedef void(*_net_send_cb)(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, uint8_t client, size_t size);
 typedef void(*_net_connect_cb)(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, int32_t erro);
 typedef void(*_net_ssl_exchanged_cb)(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, uint8_t client);
-typedef void(*_net_handshake_cb)(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, uint8_t client, int32_t erro);
+typedef void(*_net_handshake_cb)(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, uint8_t client, int32_t erro, void *data, size_t lens);
 typedef void(*_net_close_cb)(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, uint8_t client);
 typedef void(*_net_recvfrom_cb)(task_ctx *task, SOCKET fd, uint64_t skid, char ip[IP_LENS], uint16_t port, void *data, size_t size);
 
