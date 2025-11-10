@@ -47,13 +47,15 @@ PACK_TYPE = {
     NONE    = 0x00,
     HTTP    = 0x01,
     WEBSOCK = 0x02,
-    REDIS   = 0x03,
-    MYSQL   = 0x04,
-    PGSQL   = 0x05,
-    MQTT    = 0x06,
-    CUSTZ_FIXED =  0x07,
-    CUSTZ_FLAG = 0x08,
-    CUSTZ_VAR = 0x09,
+    MQTT    = 0x03,
+    CUSTZ_FIXED =  0x04,
+    CUSTZ_FLAG = 0x05,
+    CUSTZ_VAR = 0x06,
+
+    REDIS   = 0x50,
+    MYSQL   = 0x51,
+    PGSQL   = 0x52,
+    MGDB    = 0x53
 }
 CIPHER_TYPE = {
     DES  = 0x01,

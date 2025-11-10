@@ -46,6 +46,9 @@
     <Filter Include="protocol\postgresql">
       <UniqueIdentifier>{76629710-3d94-484d-a390-d5e686d9cb73}</UniqueIdentifier>
     </Filter>
+    <Filter Include="protocol\mongodb">
+      <UniqueIdentifier>{ba178282-ff74-4f66-9a43-917a17232393}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="lib.h" />
