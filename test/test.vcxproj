@@ -179,6 +179,7 @@
     <ClCompile Include="task_http_sv.c" />
     <ClCompile Include="task_mysql.c" />
     <ClCompile Include="task_redis.c" />
+    <ClCompile Include="task_smtp.c" />
     <ClCompile Include="task_ssl.c" />
     <ClCompile Include="task_startup_closing.c" />
     <ClCompile Include="task_tcp.c" />
@@ -200,6 +201,7 @@
     <ClInclude Include="task_http_sv.h" />
     <ClInclude Include="task_mysql.h" />
     <ClInclude Include="task_redis.h" />
+    <ClInclude Include="task_smtp.h" />
     <ClInclude Include="task_ssl.h" />
     <ClInclude Include="task_startup_closing.h" />
     <ClInclude Include="task_tcp.h" />

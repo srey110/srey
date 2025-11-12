@@ -3,13 +3,11 @@
 
 #include "base/os.h"
 //是否开启内存检查
-#define MEMORY_CHECK        0
+#define MEMORY_CHECK        1
 //是否使用SSL
-#define WITH_SSL            0
+#define WITH_SSL            1
 //是否使用LUA
 #define WITH_LUA            1
-//是否使用协程
-#define WITH_CORO           1
 
 #define KEEPALIVE_TIME      30
 #define KEEPALIVE_INTERVAL  2

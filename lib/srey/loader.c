@@ -188,9 +188,7 @@ loader_ctx *loader_init(uint16_t nnet, uint16_t nworker) {
     loader_ctx *loader;
     CALLOC(loader, 1, sizeof(loader_ctx));
     protos_init(_message_handshaked_push);
-#if WITH_CORO
     _mcoro_init(0);
-#endif
 #if WITH_SSL
     evssl_init();
     evssl_pool_init();

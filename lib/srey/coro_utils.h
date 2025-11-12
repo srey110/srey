@@ -3,8 +3,8 @@
 
 #include "srey/spub.h"
 #include "protocol/mysql/mysql.h"
+#include "protocol/smtp.h"
 
-#if WITH_CORO
 /// <summary>
 /// dns域名解析
 /// </summary>
@@ -97,6 +97,34 @@ int32_t mysql_stmt_reset(task_ctx *task, mysql_stmt_ctx *stmt);
 /// <param name="task">task_ctx</param>
 /// <param name="mysql">mysql_ctx</param>
 void mysql_quit(task_ctx *task, mysql_ctx *mysql);
+/// <summary>
+/// 电子邮件建立链接
+/// </summary>
+/// <param name="task">task_ctx</param>
+/// <param name="smtp">smtp_ctx</param>
+/// <returns>ERR_OK 成功</returns>
+int32_t smtp_connect(task_ctx *task, smtp_ctx *smtp);
+/// <summary>
+/// 电子邮件信息清空
+/// </summary>
+/// <param name="smtp">smtp_ctx</param>
+/// <returns>ERR_OK 成功</returns>
+int32_t smtp_reset(smtp_ctx *smtp);
+/// <summary>
+/// 邮件关闭
+/// </summary>
+/// <param name="smtp">smtp_ctx</param>
+/// <returns>ERR_OK 成功</returns>
+int32_t smtp_close(smtp_ctx *smtp);
+/// <summary>
+/// 邮件发送
+/// </summary>
+/// <param name="smtp">smtp_ctx</param>
+/// <param name="from">发件人地址</param>
+/// <param name="rcpt">收件人地址</param>
+/// <param name="subject">标题</param>
+/// <param name="data">内容</param>
+/// <returns>ERR_OK 成功</returns>
+int32_t smtp_send(smtp_ctx *smtp, const char *from, const char *rcpt, const char *subject, const char *data);
 
-#endif
 #endif//CORO_UTILS_H_

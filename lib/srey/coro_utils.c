@@ -1,5 +1,4 @@
 #include "srey/coro_utils.h"
-#if WITH_CORO
 #include "srey/coro.h"
 #include "srey/task.h"
 #include "protocol/urlparse.h"
@@ -199,5 +198,74 @@ void mysql_quit(task_ctx *task, mysql_ctx *mysql) {
     }
     coro_send(task, mysql->client.fd, mysql->client.skid, quit, size, &size, 0);
 }
-
-#endif
+int32_t smtp_connect(task_ctx *task, smtp_ctx *smtp) {
+    if (ERR_OK != smtp_try_connect(task, smtp)) {
+        return ERR_FAILED;
+    }
+    int32_t err;
+    coro_handshaked(task, smtp->fd, smtp->skid, &err, NULL);
+    return err;
+}
+int32_t smtp_reset(smtp_ctx *smtp) {
+    if (ERR_OK != smtp_check_auth(smtp)) {
+        return ERR_FAILED;
+    }
+    size_t size;
+    char *cmd = smtp_pack_reset();
+    char *pack = coro_send(smtp->task, smtp->fd, smtp->skid, cmd, strlen(cmd), &size, 0);
+    if (NULL == pack) {
+        return ERR_FAILED;
+    }
+    return smtp_check_ok(pack);
+}
+int32_t smtp_close(smtp_ctx *smtp) {
+    size_t size;
+    char *cmd = smtp_pack_close();
+    char *pack = coro_send(smtp->task, smtp->fd, smtp->skid, cmd, strlen(cmd), &size, 0);
+    if (NULL == pack) {
+        return ERR_FAILED;
+    }
+    if (ERR_OK == smtp_check_code(pack, "221")) {
+        return ERR_OK;
+    }
+    ev_close(&smtp->task->loader->netev, smtp->fd, smtp->skid);
+    return ERR_FAILED;
+}
+static int32_t _smtp_send(smtp_ctx *smtp, const char *from, const char *rcpt, const char *subject, const char *data) {
+    size_t size;
+    char *cmd = smtp_pack_from(from);
+    char *pack = coro_send(smtp->task, smtp->fd, smtp->skid, cmd, strlen(cmd), &size, 0);
+    if (NULL == pack
+        || ERR_OK != smtp_check_ok(pack)) {
+        return ERR_FAILED;
+    }
+    cmd = smtp_pack_rcpt(rcpt);
+    pack = coro_send(smtp->task, smtp->fd, smtp->skid, cmd, strlen(cmd), &size, 0);
+    if (NULL == pack
+        || ERR_OK != smtp_check_ok(pack)) {
+        return ERR_FAILED;
+    }
+    cmd = smtp_pack_data();
+    pack = coro_send(smtp->task, smtp->fd, smtp->skid, cmd, strlen(cmd), &size, 0);
+    if (NULL == pack) {
+        return ERR_FAILED;
+    }
+    if (ERR_OK != smtp_check_code(pack, "354")) {
+        return ERR_FAILED;
+    }
+    cmd = smtp_pack_mail(subject, data);
+    pack = coro_send(smtp->task, smtp->fd, smtp->skid, cmd, strlen(cmd), &size, 0);
+    if (NULL == pack
+        || ERR_OK != smtp_check_ok(pack)) {
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+int32_t smtp_send(smtp_ctx *smtp, const char *from, const char *rcpt, const char *subject, const char *data) {
+    if (ERR_OK != smtp_check_auth(smtp)) {
+        return ERR_FAILED;
+    }
+    int32_t rtn = _smtp_send(smtp, from, rcpt, subject, data);
+    smtp_reset(smtp);
+    return rtn;
+}

@@ -108,9 +108,7 @@ struct task_ctx {
     void *arg;
     free_cb _arg_free;
     loader_ctx *loader;
-#if WITH_CORO
     struct coro_ctx *coro;
-#endif
     _task_dispatch_cb _task_dispatch;
     _task_startup_cb _task_startup;
     _task_closing_cb _task_closing;
@@ -138,10 +136,8 @@ int32_t _message_handshaked_push(SOCKET fd, uint64_t skid, int32_t client, ud_cx
 void _task_message_push(task_ctx *task, message_ctx *msg);
 int32_t _message_should_clean(message_ctx *msg);
 void _message_clean(msg_type mtype, pack_type pktype, void *data);
-#if WITH_CORO
 void _mcoro_init(size_t stack_size);
 void _mcoro_new(task_ctx *task);
 void _mcoro_free(task_ctx *task);
-#endif
 
 #endif//SVPUB_H_

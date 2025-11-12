@@ -15,7 +15,8 @@ TASK_NAME = {
     wbsksv = 1010,
     httpd = 1011,
     httpsv = 1012,
-    mysql = 1013
+    mysql = 1013,
+    smtp = 1014,
 }
 MYSQL_PACK_TYPE =  {
     MPACK_OK = 0x00,
@@ -48,9 +49,10 @@ PACK_TYPE = {
     HTTP    = 0x01,
     WEBSOCK = 0x02,
     MQTT    = 0x03,
-    CUSTZ_FIXED =  0x04,
-    CUSTZ_FLAG = 0x05,
-    CUSTZ_VAR = 0x06,
+    SMTP    = 0x04,
+    CUSTZ_FIXED =  0x05,
+    CUSTZ_FLAG = 0x06,
+    CUSTZ_VAR = 0x07,
 
     REDIS   = 0x50,
     MYSQL   = 0x51,

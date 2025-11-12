@@ -15,6 +15,7 @@
 #include "task_coro_net.h"
 #include "task_coro_utils.h"
 #include "task_mysql.h"
+#include "task_smtp.h"
 
 #ifdef OS_WIN
 //#include "vld.h"
@@ -86,14 +87,13 @@ int main(int argc, char *argv[]) {
 #endif
     task_wbsock_sv_start(g_loader, 10008, 0);
     task_http_sv_start(g_loader, 10009, 0);
-#if WITH_CORO
+    task_smtp_start(g_loader, 10010, 0);
     task_coro_timeout_start(g_loader, 20000, 0);
     task_coro_comm1_start(g_loader, 20001, 0);
     task_coro_net_start(g_loader, 20002, 0);
     task_coro_utils_start(g_loader, 20003, 0);
     task_redis_start(g_loader, 20004, 0);
     task_mysql_start(g_loader, 20005, 1);
-#endif
     mutex_lock(&muexit);
     cond_wait(&condexit, &muexit);
     mutex_unlock(&muexit);

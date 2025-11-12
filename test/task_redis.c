@@ -1,7 +1,5 @@
 #include "task_redis.h"
 
-#if WITH_CORO
-
 static int32_t _prt = 0;
 static SOCKET _fd;
 static uint64_t _skid = 0;
@@ -118,5 +116,3 @@ void task_redis_start(loader_ctx *loader, name_t name, int32_t pt) {
     task_ctx *task = task_new(loader, name, NULL, NULL, NULL);
     task_register(task, _startup, NULL);
 }
-
-#endif

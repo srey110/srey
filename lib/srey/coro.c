@@ -1,5 +1,4 @@
 #include "srey/coro.h"
-#if WITH_CORO
 #include "srey/task.h"
 #include "containers/hashmap.h"
 #include "utils/timer.h"
@@ -426,5 +425,3 @@ void *coro_sendto(task_ctx *task, SOCKET fd, uint64_t skid,
     *size = msg.size;
     return ((char *)msg.data) + sizeof(netaddr_ctx);
 }
-
-#endif

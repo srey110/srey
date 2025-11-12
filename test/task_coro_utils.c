@@ -1,7 +1,5 @@
 #include "task_coro_utils.h"
 
-#if WITH_CORO
-
 static int32_t _prt = 0;
 static void _test_dns(task_ctx *task) {
     dns_ip *ips;
@@ -43,5 +41,3 @@ void task_coro_utils_start(loader_ctx *loader, name_t name, int32_t pt) {
     task_ctx *task = task_new(loader, name, NULL, NULL, NULL);
     task_register(task, _startup, NULL);
 }
-
-#endif

@@ -33,6 +33,7 @@
 #include "protocol/urlparse.h"
 #include "protocol/custz.h"
 #include "protocol/dns.h"
+#include "protocol/smtp.h"
 #include "protocol/http.h"
 #include "protocol/websock.h"
 #include "protocol/redis.h"
@@ -43,10 +44,8 @@
 #include "protocol/mysql/mysql.h"
 #include "srey/loader.h"
 #include "srey/task.h"
-#if WITH_CORO
 #include "srey/coro.h"
 #include "srey/coro_utils.h"
-#endif
 
 extern loader_ctx *g_loader;
 

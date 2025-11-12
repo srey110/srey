@@ -274,6 +274,9 @@
     <ClInclude Include="protocol\custz_head.h">
       <Filter>protocol</Filter>
     </ClInclude>
+    <ClInclude Include="protocol\smtp.h">
+      <Filter>protocol</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="event\event.c">
@@ -448,6 +451,9 @@
       <Filter>containers</Filter>
     </ClCompile>
     <ClCompile Include="protocol\custz_head.c">
+      <Filter>protocol</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\smtp.c">
       <Filter>protocol</Filter>
     </ClCompile>
   </ItemGroup>

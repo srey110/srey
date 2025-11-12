@@ -413,5 +413,133 @@ LUAMOD_API int luaopen_redis(lua_State *lua) {
     luaL_newlib(lua, reg);
     return 1;
 }
+//srey.smtp
+static int32_t _lproto_smtp_new(lua_State *lua) {
+    const char *ip = luaL_checkstring(lua, 1);
+    uint16_t port = (uint16_t)luaL_checkinteger(lua, 2);
+    struct evssl_ctx *evssl = lua_touserdata(lua, 3);
+    const char *user = luaL_checkstring(lua, 4);
+    const char *psw = luaL_checkstring(lua, 5);
+    smtp_ctx *smtp = lua_newuserdata(lua, sizeof(smtp_ctx));
+    smtp_init(smtp, ip, port, evssl, user, psw);
+    ASSOC_MTABLE(lua, "_smtp_ctx");
+    return 1;
+}
+static int32_t _lproto_smtp_free(lua_State *lua) {
+    smtp_ctx *smtp = lua_touserdata(lua, 1);
+    task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
+    char *cmd = smtp_pack_close();
+    ev_ud_extra(&task->loader->netev, smtp->fd, smtp->skid, NULL);
+    ev_send(&task->loader->netev, smtp->fd, smtp->skid, cmd, strlen(cmd), 0);
+    return 0;
+}
+static int32_t _lproto_smtp_sock_id(lua_State *lua) {
+    smtp_ctx *smtp = lua_touserdata(lua, 1);
+    lua_pushinteger(lua, smtp->fd);
+    lua_pushinteger(lua, smtp->skid);
+    return 2;
+}
+static int32_t _lproto_smtp_try_connect(lua_State *lua) {
+    smtp_ctx *smtp = lua_touserdata(lua, 1);
+    task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
+    int32_t rtn = smtp_try_connect(task, smtp);
+    if (ERR_OK == rtn) {
+        lua_pushboolean(lua, 1);
+    } else {
+        lua_pushboolean(lua, 0);
+    }
+    return 1;
+}
+static int32_t _lproto_smtp_check_auth(lua_State *lua) {
+    smtp_ctx *smtp = lua_touserdata(lua, 1);
+    if (ERR_OK == smtp_check_auth(smtp)) {
+        lua_pushboolean(lua, 1);
+    } else {
+        lua_pushboolean(lua, 0);
+    }
+    return 1;
+}
+static int32_t _lproto_smtp_check_code(lua_State *lua) {
+    char *pack = (char *)lua_touserdata(lua, 2);
+    const char *code = luaL_checkstring(lua, 3);
+    if (ERR_OK == smtp_check_code(pack, code)) {
+        lua_pushboolean(lua, 1);
+    } else {
+        lua_pushboolean(lua, 0);
+    }
+    return 1;
+}
+static int32_t _lproto_smtp_check_ok(lua_State *lua) {
+    char *pack = (char *)lua_touserdata(lua, 2);
+    if (ERR_OK == smtp_check_ok(pack)) {
+        lua_pushboolean(lua, 1);
+    } else {
+        lua_pushboolean(lua, 0);
+    }
+    return 1;
+}
+static int32_t _lproto_smtp_pack_reset(lua_State *lua) {
+    char *cmd = smtp_pack_reset();
+    lua_pushlightuserdata(lua, (void *)cmd);
+    lua_pushinteger(lua, strlen(cmd));
+    return 2;
+}
+static int32_t _lproto_smtp_pack_from(lua_State *lua) {
+    const char *from = luaL_checkstring(lua, 2);
+    char *cmd = smtp_pack_from(from);
+    lua_pushlightuserdata(lua, cmd);
+    lua_pushinteger(lua, strlen(cmd));
+    return 2;
+}
+static int32_t _lproto_smtp_pack_rcpt(lua_State *lua) {
+    const char *rcpt = luaL_checkstring(lua, 2);
+    char *cmd = smtp_pack_rcpt(rcpt);
+    lua_pushlightuserdata(lua, cmd);
+    lua_pushinteger(lua, strlen(cmd));
+    return 2;
+}
+static int32_t _lproto_smtp_pack_data(lua_State *lua) {
+    char *cmd = smtp_pack_data();
+    lua_pushlightuserdata(lua, cmd);
+    lua_pushinteger(lua, strlen(cmd));
+    return 2;
+}
+static int32_t _lproto_smtp_pack_mail(lua_State *lua) {
+    const char *subject = luaL_checkstring(lua, 2);
+    const char *data = luaL_checkstring(lua, 3);
+    char *cmd = smtp_pack_mail(subject, data);
+    lua_pushlightuserdata(lua, cmd);
+    lua_pushinteger(lua, strlen(cmd));
+    return 2;
+}
+static int32_t _lproto_smtp_pack_close(lua_State *lua) {
+    char *cmd = smtp_pack_close();
+    lua_pushlightuserdata(lua, cmd);
+    lua_pushinteger(lua, strlen(cmd));
+    return 2;
+}
+LUAMOD_API int luaopen_smtp(lua_State *lua) {
+    luaL_Reg reg_new[] = {
+        { "new", _lproto_smtp_new },
+        { NULL, NULL }
+    };
+    luaL_Reg reg_func[] = {
+        { "try_connect", _lproto_smtp_try_connect },
+        { "check_auth", _lproto_smtp_check_auth },
+        { "check_code",_lproto_smtp_check_code },
+        { "check_ok", _lproto_smtp_check_ok },
+        { "pack_reset", _lproto_smtp_pack_reset },
+        { "pack_from", _lproto_smtp_pack_from },
+        { "pack_rcpt", _lproto_smtp_pack_rcpt },
+        { "pack_data", _lproto_smtp_pack_data },
+        { "pack_mail", _lproto_smtp_pack_mail },
+        { "pack_close", _lproto_smtp_pack_close },
+        { "sock_id", _lproto_smtp_sock_id },
+        { "__gc", _lproto_smtp_free },
+        { NULL, NULL }
+    };
+    REG_MTABLE(lua, "_smtp_ctx", reg_new, reg_func);
+    return 1;
+}
 
 #endif

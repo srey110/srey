@@ -1,7 +1,5 @@
 #include "task_mysql.h"
 
-#if WITH_CORO
-
 static int32_t _prt = 0;
 static mysql_ctx _mysql;
 static mysql_bind_ctx _bind;
@@ -258,4 +256,3 @@ void task_mysql_start(loader_ctx *loader, name_t name, int32_t pt) {
     task_register(task, _startup, _closing_cb);
 }
 
-#endif

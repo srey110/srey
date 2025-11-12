@@ -4,10 +4,12 @@
 #include "protocol/websock.h"
 #include "protocol/redis.h"
 #include "protocol/mysql/mysql.h"
+#include "protocol/smtp.h"
 
 void protos_init(_handshaked_push hspush) {
     _websock_init(hspush);
     _mysql_init(hspush);
+    _smtp_init(hspush);
 }
 void protos_free(void) {
 }
@@ -45,6 +47,9 @@ void protos_udfree(void *arg) {
     case PACK_MYSQL:
         _mysql_udfree(ud);
         break;
+    case PACK_SMTP:
+        _smtp_udfree(ud);
+        break;
     default:
         FREE(ud->extra);
         break;
@@ -55,9 +60,15 @@ void protos_closed(ud_cxt *ud) {
     case PACK_MYSQL:
         _mysql_closed(ud);
         break;
+    case PACK_SMTP:
+        _smtp_closed(ud);
+        break;
     default:
         break;
     }
+}
+int32_t protos_connected(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud) {
+    return ERR_OK;
 }
 int32_t protos_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud) {
     switch (ud->pktype) {
@@ -85,22 +96,32 @@ void *protos_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
     *status = PROTO_NONE;
     void *unpack;
     switch (ud->pktype) {
-    case PACK_CUSTZ_FIXED:
-    case PACK_CUSTZ_FLAG:
-    case PACK_CUSTZ_VAR:
-        unpack = custz_unpack(ud->pktype, buf, size, status);
-        break;
     case PACK_HTTP:
         unpack = http_unpack(buf, ud, status);
         break;
     case PACK_WEBSOCK:
         unpack = websock_unpack(ev, fd, skid, client, buf, ud, status);
         break;
+    case PACK_MQTT:
+        break;
+    case PACK_SMTP:
+        unpack = smtp_unpack(ev, fd, skid, buf, ud, size, status);
+        break;
+    case PACK_CUSTZ_FIXED:
+    case PACK_CUSTZ_FLAG:
+    case PACK_CUSTZ_VAR:
+        unpack = custz_unpack(ud->pktype, buf, size, status);
+        break;
+
     case PACK_REDIS:
         unpack = redis_unpack(buf, ud, status);
         break;
     case PACK_MYSQL:
         unpack = mysql_unpack(ev, buf, ud, status);
+        break;
+    case PACK_PGSQL:
+        break;
+    case PACK_MGDB:
         break;
     default:
         unpack = _unpack_default(buf, size, ud);

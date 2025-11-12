@@ -1,7 +1,5 @@
 #include "task_coro_net.h"
 
-#if WITH_CORO
-
 static int32_t _prt = 1;
 static uint8_t _pktype = PACK_CUSTZ_FLAG;
 static void _test_syn_send(task_ctx *task) {
@@ -121,5 +119,3 @@ void task_coro_net_start(loader_ctx *loader, name_t name, int32_t pt) {
     task_ctx *task = task_new(loader, name, NULL, NULL, NULL);
     task_register(task, _startup, NULL);
 }
-
-#endif

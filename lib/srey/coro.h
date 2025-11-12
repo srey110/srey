@@ -3,7 +3,6 @@
 
 #include "srey/spub.h"
 
-#if WITH_CORO
 /// <summary>
 /// ÐÝÃß
 /// </summary>
@@ -91,5 +90,4 @@ void *coro_slice(task_ctx *task, SOCKET fd, uint64_t skid, size_t *size, int32_t
 /// <returns>Êý¾Ý</returns>
 void *coro_sendto(task_ctx *task, SOCKET fd, uint64_t skid, const char *ip, const uint16_t port, void *data, size_t len, size_t *size);
 
-#endif
 #endif//CORO_H_

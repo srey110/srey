@@ -66,6 +66,9 @@
     <ClCompile Include="task_mysql.c">
       <Filter>taskcoro</Filter>
     </ClCompile>
+    <ClCompile Include="task_smtp.c">
+      <Filter>tasks</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="CuTest.h">
@@ -120,6 +123,9 @@
     </ClInclude>
     <ClInclude Include="task_mysql.h">
       <Filter>taskcoro</Filter>
+    </ClInclude>
+    <ClInclude Include="task_smtp.h">
+      <Filter>tasks</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

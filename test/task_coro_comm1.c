@@ -1,7 +1,5 @@
 #include "task_coro_comm1.h"
 
-#if WITH_CORO
-
 static int32_t _prt = 0;
 static void _timeout(task_ctx *task, uint64_t sess) {
     task_ctx *comm2 = task_grab(task->loader, 10005);
@@ -38,5 +36,3 @@ void task_coro_comm1_start(loader_ctx *loader, name_t name, int32_t pt) {
     task_ctx *task = task_new(loader, name, NULL, NULL, NULL);
     task_register(task, _startup, NULL);
 }
-
-#endif
