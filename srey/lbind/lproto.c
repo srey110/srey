@@ -427,10 +427,11 @@ static int32_t _lproto_smtp_new(lua_State *lua) {
 }
 static int32_t _lproto_smtp_free(lua_State *lua) {
     smtp_ctx *smtp = lua_touserdata(lua, 1);
-    task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    char *cmd = smtp_pack_quit();
-    ev_ud_extra(&task->loader->netev, smtp->fd, smtp->skid, NULL);
-    ev_send(&task->loader->netev, smtp->fd, smtp->skid, cmd, strlen(cmd), 0);
+    if (NULL != smtp->task) {
+        char *cmd = smtp_pack_quit();
+        ev_ud_extra(&smtp->task->loader->netev, smtp->fd, smtp->skid, NULL);
+        ev_send(&smtp->task->loader->netev, smtp->fd, smtp->skid, cmd, strlen(cmd), 0);
+    }
     return 0;
 }
 static int32_t _lproto_smtp_sock_id(lua_State *lua) {

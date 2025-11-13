@@ -443,13 +443,15 @@ static int32_t _lmysql_pack_type(lua_State *lua) {
 }
 static int32_t _lmysql_free(lua_State *lua) {
     mysql_ctx *mysql = lua_touserdata(lua, 1);
-    size_t size;
-    void *pack = mysql_pack_quit(mysql, &size);
-    if (NULL == pack) {
-        return 0;
+    if (NULL != mysql->task) {
+        size_t size;
+        void *pack = mysql_pack_quit(mysql, &size);
+        if (NULL == pack) {
+            return 0;
+        }
+        ev_ud_extra(&mysql->task->loader->netev, mysql->client.fd, mysql->client.skid, NULL);
+        ev_send(&mysql->task->loader->netev, mysql->client.fd, mysql->client.skid, pack, size, 0);
     }
-    ev_ud_extra(&mysql->task->loader->netev, mysql->client.fd, mysql->client.skid, NULL);
-    ev_send(&mysql->task->loader->netev, mysql->client.fd, mysql->client.skid, pack, size, 0);
     return 0;
 }
 static int32_t _lmysql_try_connect(lua_State *lua) {
