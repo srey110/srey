@@ -47,56 +47,49 @@ int32_t mysql_connect(task_ctx *task, mysql_ctx *mysql);
 /// <summary>
 /// 选择数据库
 /// </summary>
-/// <param name="task">task_ctx</param>
 /// <param name="mysql">mysql_ctx</param>
 /// <param name="mysql">数据库</param>
 /// <returns>ERR_OK 成功</returns>
-int32_t mysql_selectdb(task_ctx *task, mysql_ctx *mysql, const char *database);
+int32_t mysql_selectdb(mysql_ctx *mysql, const char *database);
 /// <summary>
 /// ping
 /// </summary>
-/// <param name="task">task_ctx</param>
 /// <param name="mysql">mysql_ctx</param>
 /// <returns>ERR_OK 成功</returns>
-int32_t mysql_ping(task_ctx *task, mysql_ctx *mysql);
+int32_t mysql_ping(mysql_ctx *mysql);
 /// <summary>
 /// 执行SQL语句
 /// </summary>
-/// <param name="task">task_ctx</param>
 /// <param name="mysql">mysql_ctx</param>
 /// <param name="sql">SQL语句</param>
 /// <param name="mbind">mysql_bind_ctx</param>
 /// <returns>mpack_ctx NULL 失败</returns>
-mpack_ctx *mysql_query(task_ctx *task, mysql_ctx *mysql, const char *sql, mysql_bind_ctx *mbind);
+mpack_ctx *mysql_query(mysql_ctx *mysql, const char *sql, mysql_bind_ctx *mbind);
 /// <summary>
 /// 预处理
 /// </summary>
-/// <param name="task">task_ctx</param>
 /// <param name="mysql">mysql_ctx</param>
 /// <param name="sql">SQL语句</param>
 /// <returns>mysql_stmt_ctx NULL 失败</returns>
-mysql_stmt_ctx *mysql_stmt_prepare(task_ctx *task, mysql_ctx *mysql, const char *sql);
+mysql_stmt_ctx *mysql_stmt_prepare(mysql_ctx *mysql, const char *sql);
 /// <summary>
 /// 预处理执行
 /// </summary>
-/// <param name="task">task_ctx</param>
 /// <param name="stmt">mysql_stmt_ctx</param>
 /// <param name="mbind">mysql_bind_ctx</param>
 /// <returns>mpack_ctx NULL 失败</returns>
-mpack_ctx *mysql_stmt_execute(task_ctx *task, mysql_stmt_ctx *stmt, mysql_bind_ctx *mbind);
+mpack_ctx *mysql_stmt_execute(mysql_stmt_ctx *stmt, mysql_bind_ctx *mbind);
 /// <summary>
 /// 预处理重置
 /// </summary>
-/// <param name="task">task_ctx</param>
 /// <param name="stmt">mysql_stmt_ctx</param>
 /// <returns>ERR_OK 成功</returns>
-int32_t mysql_stmt_reset(task_ctx *task, mysql_stmt_ctx *stmt);
+int32_t mysql_stmt_reset(mysql_stmt_ctx *stmt);
 /// <summary>
 /// 退出关闭链接
 /// </summary>
-/// <param name="task">task_ctx</param>
 /// <param name="mysql">mysql_ctx</param>
-void mysql_quit(task_ctx *task, mysql_ctx *mysql);
+void mysql_quit(mysql_ctx *mysql);
 /// <summary>
 /// 电子邮件建立链接
 /// </summary>

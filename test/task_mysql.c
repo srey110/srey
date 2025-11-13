@@ -139,13 +139,13 @@ static void _test_bind(task_ctx *task) {
          mysql_query_attribute_string('t_time'),\
          mysql_query_attribute_string('t_nil')\
         )";
-        mpack_ctx *pack = mysql_query(task, &_mysql, sql1, &_bind);
+        mpack_ctx *pack = mysql_query(&_mysql, sql1, &_bind);
         if (NULL == pack || MPACK_OK != pack->pack_type) {
             LOG_WARN("mysql_query error.");
         }
         mysql_bind_clear(&_bind);
     }
-    mpack_ctx *pack = mysql_query(task, &_mysql,
+    mpack_ctx *pack = mysql_query(&_mysql,
         "insert into test1_bind (t_int8,t_int16,t_int32,t_int64,t_float,t_double, t_string,t_datetime,t_time) values (...)", NULL);
     if (MPACK_ERR != pack->pack_type) {
         LOG_WARN("mysql_query error.");
@@ -154,14 +154,14 @@ static void _test_bind(task_ctx *task) {
             LOG_WARN("%s", mysql_erro(&_mysql, NULL));
         }
     }
-    pack = mysql_query(task, &_mysql, "select * from test_bind", NULL);
+    pack = mysql_query(&_mysql, "select * from test_bind", NULL);
     _show_result1(pack, 1);
 }
 static void _test_stmt(task_ctx *task) {
     const char *sql1 = "insert into test_bind (t_int8,t_int16,t_int32,t_int64,t_float,t_double,t_string,t_datetime,t_time,t_nil) \
          values(?,?,?,?,?,?,?,?,?,?)";
     uint64_t curts = nowsec();
-    mysql_stmt_ctx *stmt = mysql_stmt_prepare(task, &_mysql, sql1);
+    mysql_stmt_ctx *stmt = mysql_stmt_prepare(&_mysql, sql1);
     mysql_bind_integer(&_bind, NULL, 125);
     mysql_bind_integer(&_bind, NULL, 2024);
     mysql_bind_integer(&_bind, NULL, 127);
@@ -172,49 +172,49 @@ static void _test_stmt(task_ctx *task) {
     mysql_bind_datetime(&_bind, "t_datetime", (time_t)curts);
     mysql_bind_time(&_bind, "t_time", 0, 2, 15, 30, 29);
     mysql_bind_nil(&_bind, NULL);
-    mpack_ctx *pack = mysql_stmt_execute(task, stmt, &_bind);
+    mpack_ctx *pack = mysql_stmt_execute(stmt, &_bind);
     mysql_bind_clear(&_bind);
     if (NULL == pack
         || MPACK_OK !=  pack->pack_type) {
         LOG_WARN("mysql_stmt_execute %s", mysql_erro(&_mysql, NULL));
     }
-    mysql_stmt_close(task, stmt);
+    mysql_stmt_close(stmt);
 
     const char *sql2 = "select * from test_bind where t_int64=?";
-    stmt = mysql_stmt_prepare(task, &_mysql, sql2);
+    stmt = mysql_stmt_prepare(&_mysql, sql2);
     mysql_bind_uinteger(&_bind, NULL, curts);
-    pack = mysql_stmt_execute(task, stmt, &_bind);
+    pack = mysql_stmt_execute(stmt, &_bind);
     _show_result1(pack, 1);
-    mysql_stmt_close(task, stmt);
+    mysql_stmt_close(stmt);
 
     const char *sql3 = "select * from test_bind";
-    stmt = mysql_stmt_prepare(task, &_mysql, sql3);
-    pack = mysql_stmt_execute(task, stmt, &_bind);
+    stmt = mysql_stmt_prepare(&_mysql, sql3);
+    pack = mysql_stmt_execute(stmt, &_bind);
     _show_result1(pack, 0);
-    mysql_stmt_close(task, stmt);
+    mysql_stmt_close(stmt);
 
     const char *sql4 = "delete from test_bind";
-    stmt = mysql_stmt_prepare(task, &_mysql, sql4);
-    pack = mysql_stmt_execute(task, stmt, NULL);
+    stmt = mysql_stmt_prepare(&_mysql, sql4);
+    pack = mysql_stmt_execute(stmt, NULL);
     if (NULL == pack
         || pack->pack_type != MPACK_OK) {
         LOG_WARN("mysql_stmt_execute error");
     }
-    mysql_stmt_close(task, stmt);
+    mysql_stmt_close(stmt);
 }
 static void _timeout(task_ctx *task, uint64_t sess) {
-    if (ERR_FAILED != mysql_selectdb(task, &_mysql, "tes1t")) {
+    if (ERR_FAILED != mysql_selectdb(&_mysql, "tes1t")) {
         LOG_WARN("selectdb wrong db error.");
     }
-    if (ERR_OK != mysql_selectdb(task, &_mysql, "test")) {
+    if (ERR_OK != mysql_selectdb(&_mysql, "test")) {
         LOG_WARN("selectdb error.");
     }
-    mysql_ping(task, &_mysql);
-    mysql_quit(task, &_mysql);
-    if (ERR_OK != mysql_ping(task, &_mysql)) {
+    mysql_ping(&_mysql);
+    mysql_quit(&_mysql);
+    if (ERR_OK != mysql_ping(&_mysql)) {
         LOG_WARN("coro_mysql_ping error.");
     }
-    mpack_ctx * mpack = mysql_query(task, &_mysql, "select * from admin", NULL);
+    mpack_ctx * mpack = mysql_query(&_mysql, "select * from admin", NULL);
     if (NULL == mpack
         || MPACK_QUERY != mpack->pack_type) {
         LOG_WARN("mysql_query error.");

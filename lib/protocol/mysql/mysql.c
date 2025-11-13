@@ -616,6 +616,7 @@ int32_t mysql_try_connect(task_ctx *task, mysql_ctx *mysql) {
     if (0 != mysql->status) {
         return ERR_FAILED;
     }
+    mysql->task = task;
     BIT_SET(mysql->status, LINKING);
     mysql->client.fd = task_conn_extra(task, PACK_MYSQL, NULL, mysql, mysql->client.ip, mysql->client.port,
         &mysql->client.skid, NULL == mysql->client.evssl ? NETEV_NONE : NETEV_AUTHSSL);
@@ -644,12 +645,12 @@ int64_t mysql_last_id(mysql_ctx *mysql) {
 int64_t mysql_affected_rows(mysql_ctx *mysql) {
     return mysql->affected_rows;
 }
-void mysql_stmt_close(task_ctx *task, mysql_stmt_ctx *stmt) {
+void mysql_stmt_close(mysql_stmt_ctx *stmt) {
     size_t size;
     mysql_ctx *mysql = stmt->mysql;
     void *close = mysql_pack_stmt_close(stmt, &size);
     if (NULL == close) {
         return;
     }
-    ev_send(&task->loader->netev, mysql->client.fd, mysql->client.skid, close, size, 0);
+    ev_send(&mysql->task->loader->netev, mysql->client.fd, mysql->client.skid, close, size, 0);
 }

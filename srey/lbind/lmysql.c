@@ -299,8 +299,7 @@ static int32_t _lmysql_stmt_new(lua_State *lua) {
 }
 static int32_t _lmysql_stmt_free(lua_State *lua) {
     mysql_stmt_ctx **stmt = lua_touserdata(lua, 1);
-    task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    mysql_stmt_close(task, *stmt);
+    mysql_stmt_close(*stmt);
     return 0;
 }
 static int32_t _lmysql_pack_stmt_execute(lua_State *lua) {
@@ -449,9 +448,8 @@ static int32_t _lmysql_free(lua_State *lua) {
     if (NULL == pack) {
         return 0;
     }
-    task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    ev_ud_extra(&task->loader->netev, mysql->client.fd, mysql->client.skid, NULL);
-    ev_send(&task->loader->netev, mysql->client.fd, mysql->client.skid, pack, size, 0);
+    ev_ud_extra(&mysql->task->loader->netev, mysql->client.fd, mysql->client.skid, NULL);
+    ev_send(&mysql->task->loader->netev, mysql->client.fd, mysql->client.skid, pack, size, 0);
     return 0;
 }
 static int32_t _lmysql_try_connect(lua_State *lua) {

@@ -69,6 +69,6 @@ int64_t mysql_affected_rows(mysql_ctx *mysql);
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="stmt">mysql_stmt_ctx</param>
-void mysql_stmt_close(task_ctx *task, mysql_stmt_ctx *stmt);
+void mysql_stmt_close(mysql_stmt_ctx *stmt);
 
 #endif//MYSQL_H_

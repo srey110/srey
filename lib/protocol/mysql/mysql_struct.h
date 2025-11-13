@@ -35,6 +35,7 @@ typedef struct mysql_ctx {
     int64_t last_id;
     int64_t affected_rows;
     struct mpack_ctx *mpack;
+    struct task_ctx *task;
     mysql_server_param server;
     mysql_client_param client;
     char version[64];
