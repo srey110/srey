@@ -23,6 +23,9 @@ static void _startup(task_ctx *task) {
         LOG_WARN("smtp_send error.");
         return;
     }
+    smtp_ping(&_smtp);
+    smtp_quit(&_smtp);
+    smtp_ping(&_smtp);
     if (ERR_OK != smtp_send(&_smtp, _smtp_from, _smtp_rcpt, "test subject2", "456")) {
         LOG_WARN("smtp_send error.");
         return;

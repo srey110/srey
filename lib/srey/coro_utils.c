@@ -227,6 +227,21 @@ int32_t smtp_quit(smtp_ctx *smtp) {
     ev_close(&smtp->task->loader->netev, smtp->fd, smtp->skid);
     return ERR_FAILED;
 }
+static int32_t _smtp_ping(smtp_ctx *smtp) {
+    size_t size;
+    char *cmd = smtp_pack_ping();
+    char *pack = coro_send(smtp->task, smtp->fd, smtp->skid, cmd, strlen(cmd), &size, 0);
+    if (NULL == pack) {
+        return ERR_FAILED;
+    }
+    return smtp_check_ok(pack);
+}
+int32_t smtp_ping(smtp_ctx *smtp) {
+    if (ERR_OK != _smtp_ping(smtp)) {
+        return smtp_connect(smtp->task, smtp);
+    }
+    return ERR_OK;
+}
 static int32_t _smtp_send(smtp_ctx *smtp, const char *from, const char *rcpt, const char *subject, const char *data) {
     size_t size;
     char *cmd = smtp_pack_from(from);

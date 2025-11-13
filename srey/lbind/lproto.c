@@ -518,6 +518,12 @@ static int32_t _lproto_smtp_pack_quit(lua_State *lua) {
     lua_pushinteger(lua, strlen(cmd));
     return 2;
 }
+static int32_t _lproto_smtp_pack_ping(lua_State *lua) {
+    char *cmd = smtp_pack_ping();
+    lua_pushlightuserdata(lua, cmd);
+    lua_pushinteger(lua, strlen(cmd));
+    return 2;
+}
 LUAMOD_API int luaopen_smtp(lua_State *lua) {
     luaL_Reg reg_new[] = {
         { "new", _lproto_smtp_new },
@@ -534,6 +540,7 @@ LUAMOD_API int luaopen_smtp(lua_State *lua) {
         { "pack_data", _lproto_smtp_pack_data },
         { "pack_mail", _lproto_smtp_pack_mail },
         { "pack_quit", _lproto_smtp_pack_quit },
+        { "pack_ping", _lproto_smtp_pack_ping },
         { "sock_id", _lproto_smtp_sock_id },
         { "__gc", _lproto_smtp_free },
         { NULL, NULL }

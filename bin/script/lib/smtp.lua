@@ -30,6 +30,21 @@ function ctx:reset()
     end
     return self.smtp:check_ok(pack)
 end
+function ctx:_ping()
+    local fd, skid = self.smtp:sock_id()
+    local cmd, csize = self.smtp:pack_ping()
+    local pack, _ =  srey.syn_send(fd, skid, cmd, csize, 0)
+    if nil == pack then
+        return false
+    end
+    return self.smtp:check_ok(pack)
+end
+function ctx:ping()
+    if not self:_ping() then
+        return self:connect()
+    end
+    return true
+end
 function ctx:_send(from, rcpt, subject, data)
     local fd, skid = self.smtp:sock_id()
     local cmd, csize = self.smtp:pack_from(from)

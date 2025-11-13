@@ -22,6 +22,9 @@ srey.startup(
              printd("smtp reset error")
             return
         end
+        smtpctx:ping()
+        smtpctx:quit()
+        smtpctx:ping()
         if not smtpctx:send(_from, _to, "lua subject 22", "lua 3333") then
              printd("smtp reset error")
             return

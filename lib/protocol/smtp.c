@@ -86,6 +86,9 @@ char *smtp_pack_reset(void) {
 char *smtp_pack_quit(void) {
     return format_va("QUIT%s", FLAG_CRLF);
 }
+char *smtp_pack_ping(void) {
+    return format_va("NOOP%s", FLAG_CRLF);
+}
 char *smtp_pack_from(const char *from) {
     return format_va("MAIL FROM:<%s>%s", from, FLAG_CRLF);
 }
@@ -98,7 +101,10 @@ char *smtp_pack_data(void) {
 char *smtp_pack_mail(const char *subject, const char *data) {
     char time[TIME_LENS];
     sectostr(nowsec(), "%Y-%m-%d %H:%M:%S", time);
-    return format_va("Date:%s%sSubject:%s%s%s%s%s.%s", time, FLAG_CRLF, subject, FLAG_CRLF, FLAG_CRLF, data, FLAG_CRLF, FLAG_CRLF);
+    return format_va("Date: %s%sSubject: %s%s%s%s%s.%s",
+        time, FLAG_CRLF,
+        subject, FLAG_CRLF, FLAG_CRLF, 
+        data, FLAG_CRLF, FLAG_CRLF);
 }
 static void _smtp_connected(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     size_t blens = buffer_size(buf);
