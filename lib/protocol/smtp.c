@@ -80,25 +80,46 @@ int32_t smtp_check_code(char *pack, const char *code) {
 int32_t smtp_check_ok(char *pack) {
     return smtp_check_code(pack, SMTP_OK);
 }
-char *smtp_pack_reset(void) {
+char *smtp_pack_reset(smtp_ctx *smtp) {
+    if (ERR_OK != smtp_check_auth(smtp)) {
+        return NULL;
+    }
     return format_va("RSET%s", FLAG_CRLF);
 }
-char *smtp_pack_quit(void) {
+char *smtp_pack_quit(smtp_ctx *smtp) {
+    if (ERR_OK != smtp_check_auth(smtp)) {
+        return NULL;
+    }
     return format_va("QUIT%s", FLAG_CRLF);
 }
-char *smtp_pack_ping(void) {
+char *smtp_pack_ping(smtp_ctx *smtp) {
+    if (ERR_OK != smtp_check_auth(smtp)) {
+        return NULL;
+    }
     return format_va("NOOP%s", FLAG_CRLF);
 }
-char *smtp_pack_from(const char *from) {
+char *smtp_pack_from(smtp_ctx *smtp, const char *from) {
+    if (ERR_OK != smtp_check_auth(smtp)) {
+        return NULL;
+    }
     return format_va("MAIL FROM:<%s>%s", from, FLAG_CRLF);
 }
-char *smtp_pack_rcpt(const char *rcpt) {
+char *smtp_pack_rcpt(smtp_ctx *smtp, const char *rcpt) {
+    if (ERR_OK != smtp_check_auth(smtp)) {
+        return NULL;
+    }
     return format_va("RCPT TO:<%s>%s", rcpt, FLAG_CRLF);
 }
-char *smtp_pack_data(void) {
+char *smtp_pack_data(smtp_ctx *smtp) {
+    if (ERR_OK != smtp_check_auth(smtp)) {
+        return NULL;
+    }
     return format_va("DATA%s", FLAG_CRLF);
 }
-char *smtp_pack_mail(const char *subject, const char *data) {
+char *smtp_pack_mail(smtp_ctx *smtp, const char *subject, const char *data) {
+    if (ERR_OK != smtp_check_auth(smtp)) {
+        return NULL;
+    }
     char time[TIME_LENS];
     sectostr(nowsec(), "%Y-%m-%d %H:%M:%S", time);
     return format_va("Date: %s%sSubject: %s%s%s%s%s.%s",

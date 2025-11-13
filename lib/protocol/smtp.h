@@ -26,13 +26,13 @@ int32_t smtp_check_auth(smtp_ctx *smtp);
 int32_t smtp_check_code(char *pack, const char *code);
 int32_t smtp_check_ok(char *pack);
 
-char *smtp_pack_reset(void);
-char *smtp_pack_quit(void);
-char *smtp_pack_ping(void);
-char *smtp_pack_from(const char *from);
-char *smtp_pack_rcpt(const char *rcpt);
-char *smtp_pack_data(void);
-char *smtp_pack_mail(const char *subject, const char *data);
+char *smtp_pack_reset(smtp_ctx *smtp);
+char *smtp_pack_quit(smtp_ctx *smtp);
+char *smtp_pack_ping(smtp_ctx *smtp);
+char *smtp_pack_from(smtp_ctx *smtp, const char *from);
+char *smtp_pack_rcpt(smtp_ctx *smtp, const char *rcpt);
+char *smtp_pack_data(smtp_ctx *smtp);
+char *smtp_pack_mail(smtp_ctx *smtp, const char *subject, const char *data);
 
 void *smtp_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status);
 
