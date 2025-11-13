@@ -3,10 +3,10 @@
 static int32_t _prt = 1;
 const char *_smtp_sv = "smtp.163.com";
 const uint16_t _smtp_port = 465;
-const char *_smtp_user = "200309129@163.com";
-const char *_smtp_from = "200309129@163.com";
-const char *_smtp_rcpt = "279133271@qq.com";
-const char *_smtp_psw = "AVemMsFCAZMcsYms";
+const char *_smtp_user = "test@163.com";
+const char *_smtp_from = "test@163.com";
+const char *_smtp_rcpt = "test@qq.com";
+const char *_smtp_psw = "CAZMcsYms";
 static smtp_ctx _smtp;
 
 static void _startup(task_ctx *task) {
