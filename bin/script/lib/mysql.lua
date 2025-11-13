@@ -6,12 +6,11 @@ local reader = require("mysql.reader")
 local MYSQL_PACK_TYPE = MYSQL_PACK_TYPE
 
 local ctx = class("mysql_ctx")
-function ctx:ctor(ip, port, sslname, user, password, database, charset, maxpk, relink)
+function ctx:ctor(ip, port, sslname, user, password, database, charset, maxpk)
     local ssl
     if SSL_NAME.NONE ~= sslname then
         ssl = core.ssl_qury(sslname)
     end
-    self.relink = relink
     self.mysql = mysql.new(ip, port, ssl, user, password, database, charset, maxpk)
 end
 function ctx:connect()
@@ -34,12 +33,7 @@ function ctx:selectdb(database)
     end
     return MYSQL_PACK_TYPE.MPACK_OK == mysql.pack_type(mpack)
 end
-function ctx:ping()
-    if self.relink and self.mysql:link_closed() then
-        if not self:connect() then
-            return false
-        end
-    end
+function ctx:_ping()
     local pack, size = self.mysql:pack_ping()
     if not pack then
         return false
@@ -48,6 +42,12 @@ function ctx:ping()
     local mpack, _ =  srey.syn_send(fd, skid, pack, size, 0)
     if not mpack then
         return false
+    end
+    return true
+end
+function ctx:ping()
+    if not self:_ping() then
+        return self:connect()
     end
     return true
 end
@@ -84,6 +84,14 @@ function ctx:prepare(sql)
         return false
     end
     return stmt.new(mpack)
+end
+function ctx:quit()
+    local pack, size = self.mysql:pack_quit()
+    if not pack then
+        return
+    end
+    local fd, skid = self.mysql:sock_id()
+    srey.syn_send(fd, skid, pack, size, 0)
 end
 function ctx:version()
     return self.mysql:version()

@@ -46,7 +46,7 @@ static void _on_handshaked(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pkt
         char secproto[32];
         ZERO(secproto, sizeof(secproto));
         memcpy(secproto, data, lens);
-        LOG_INFO("Sec-WebSocket-Protocol:%s", secproto);
+        //LOG_INFO("Sec-WebSocket-Protocol:%s", secproto);
     }
 }
 static void _startup(task_ctx *task) {

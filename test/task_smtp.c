@@ -27,7 +27,7 @@ static void _startup(task_ctx *task) {
         LOG_WARN("smtp_send error.");
         return;
     }
-    smtp_close(&_smtp);
+    smtp_quit(&_smtp);
 }
 static void _net_close(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, uint8_t client) {
     if (_prt) {

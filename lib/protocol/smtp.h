@@ -27,7 +27,7 @@ int32_t smtp_check_code(char *pack, const char *code);
 int32_t smtp_check_ok(char *pack);
 
 char *smtp_pack_reset(void);
-char *smtp_pack_close(void);
+char *smtp_pack_quit(void);
 char *smtp_pack_from(const char *from);
 char *smtp_pack_rcpt(const char *rcpt);
 char *smtp_pack_data(void);

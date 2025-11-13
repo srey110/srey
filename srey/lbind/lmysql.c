@@ -395,6 +395,18 @@ static int32_t _lmysql_pack_query(lua_State *lua) {
     lua_pushinteger(lua, size);
     return 2;
 }
+static int32_t _lmysql_pack_quit(lua_State *lua) {
+    mysql_ctx *mysql = lua_touserdata(lua, 1);
+    size_t size;
+    void *pack = mysql_pack_quit(mysql, &size);
+    if (NULL == pack) {
+        lua_pushnil(lua);
+        return 1;
+    }
+    lua_pushlightuserdata(lua, pack);
+    lua_pushinteger(lua, size);
+    return 2;
+}
 static int32_t _lmysql_pack_stmt_prepare(lua_State *lua) {
     mysql_ctx *mysql = lua_touserdata(lua, 1);
     const char *sql = luaL_checkstring(lua, 2);
@@ -421,7 +433,7 @@ static int32_t _lmysql_new(lua_State *lua) {
         maxpk = (uint32_t)luaL_checkinteger(lua, 8);
     }
     mysql_ctx *mysql = lua_newuserdata(lua, sizeof(mysql_ctx));
-    mysql_init(mysql, ip, port, evssl, user, password, database, charset, maxpk, 0);
+    mysql_init(mysql, ip, port, evssl, user, password, database, charset, maxpk);
     ASSOC_MTABLE(lua, "_mysql_ctx");
     return 1;
 }
@@ -448,15 +460,6 @@ static int32_t _lmysql_try_connect(lua_State *lua) {
     int32_t rtn = mysql_try_connect(task, mysql);
     if (ERR_OK == rtn) {
         lua_pushboolean(lua, 1);
-    } else {
-        lua_pushboolean(lua, 0);
-    }
-    return 1;
-}
-static int32_t _lmysql_link_closed(lua_State *lua) {
-    mysql_ctx *mysql = lua_touserdata(lua, 1);
-    if (0 == mysql->status) {
-        lua_pushboolean(lua, 1); 
     } else {
         lua_pushboolean(lua, 0);
     }
@@ -500,9 +503,9 @@ LUAMOD_API int luaopen_mysql(lua_State *lua) {
         { "pack_selectdb", _lmysql_pack_selectdb },
         { "pack_ping", _lmysql_pack_ping },
         { "pack_query", _lmysql_pack_query },
+        { "pack_quit", _lmysql_pack_quit },
         { "pack_stmt_prepare", _lmysql_pack_stmt_prepare },
         { "try_connect", _lmysql_try_connect },
-        { "link_closed", _lmysql_link_closed },
         { "version", _lmysql_version },
         { "erro", _lmysql_erro },
         { "sock_id", _lmysql_sock_id },

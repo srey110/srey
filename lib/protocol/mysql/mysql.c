@@ -591,7 +591,7 @@ void *mysql_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     return pack;
 }
 int32_t mysql_init(mysql_ctx *mysql, const char *ip, uint16_t port, struct evssl_ctx *evssl,
-    const char *user, const char *password, const char *database, const char *charset, uint32_t maxpk, int32_t relink) {
+    const char *user, const char *password, const char *database, const char *charset, uint32_t maxpk) {
     if (0 == port
         || strlen(ip) > sizeof(mysql->client.ip) - 1
         || strlen(user) > sizeof(mysql->client.user) - 1
@@ -606,7 +606,6 @@ int32_t mysql_init(mysql_ctx *mysql, const char *ip, uint16_t port, struct evssl
     if (!EMPTYSTR(database)) {
         strcpy(mysql->client.database, database);
     }
-    mysql->client.relink = (0 == relink ? 0 : 1);
     mysql->client.port = port;
     mysql->client.evssl = evssl;
     mysql->client.charset = _mysql_charset(charset);

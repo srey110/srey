@@ -8,7 +8,6 @@
 
 struct mpack_ctx;
 typedef struct mysql_client_param {
-    int8_t relink;
     uint8_t charset;
     uint16_t port;
     uint32_t maxpack;

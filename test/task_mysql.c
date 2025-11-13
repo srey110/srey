@@ -209,6 +209,7 @@ static void _timeout(task_ctx *task, uint64_t sess) {
     if (ERR_OK != mysql_selectdb(task, &_mysql, "test")) {
         LOG_WARN("selectdb error.");
     }
+    mysql_ping(task, &_mysql);
     mysql_quit(task, &_mysql);
     if (ERR_OK != mysql_ping(task, &_mysql)) {
         LOG_WARN("coro_mysql_ping error.");
@@ -233,7 +234,7 @@ static void _startup(task_ctx *task) {
 #if WITH_SSL
     evssl = evssl_qury(102);
 #endif
-    if (ERR_OK != mysql_init(&_mysql, "192.168.8.3", 3306, evssl, "admin", "12345678", "test", "utf8", 0, 1)) {
+    if (ERR_OK != mysql_init(&_mysql, "192.168.8.3", 3306, evssl, "admin", "12345678", "test", "utf8", 0)) {
         LOG_WARN("mysql_init error.");
         return;
     }

@@ -24,10 +24,9 @@ void *mysql_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status);
 /// <param name="database">数据库, NULL 或 "" 不设置</param>
 /// <param name="charset">编码格式</param>
 /// <param name="maxpk">最大数据包, 0: ONEK * ONEK</param>
-/// <param name="relink">1 ping的时候自动重链</param>
 /// <returns>ERR_OK 成功</returns>
 int32_t mysql_init(mysql_ctx *mysql, const char *ip, uint16_t port, struct evssl_ctx *evssl,
-    const char *user, const char *password, const char *database, const char *charset, uint32_t maxpk, int32_t relink);
+    const char *user, const char *password, const char *database, const char *charset, uint32_t maxpk);
 /// <summary>
 /// 链接数据库
 /// </summary>

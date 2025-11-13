@@ -24,21 +24,24 @@ local function print_reader(reader)
     end
 end
 local function _timeout()
-    local mctx = mysql.new("192.168.8.3", 3306, SSL_NAME.NONE, "admin", "12345678", "mysql", "utf8", 0, true)
+    local mctx = mysql.new("192.168.8.3", 3306, SSL_NAME.NONE, "admin", "12345678", "test", "utf8", 0)
     if not mctx:connect() then
         printd("mysql connect error")
     end
     printd("mysql version: " .. mctx:version())
     local rtn = mctx:selectdb("test1")
-    if rtn then
-        printd("selectdb test1 error")
-    else
+    if not rtn then
         printd(mctx:erro())
     end
     rtn = mctx:selectdb("test")
     if not rtn then
-        printd("selectdb test error")
+        printd(mctx:erro())
     end
+    rtn = mctx:ping()
+    if not rtn then
+        printd("ping error")
+    end
+    mctx:quit()
     rtn = mctx:ping()
     if not rtn then
         printd("ping error")
@@ -59,7 +62,7 @@ local function _timeout()
         local sql = "insert into test_bind (t_int8,t_int16,t_int32,t_int64,t_float,t_double, t_string,t_datetime,t_time,t_nil) values(mysql_query_attribute_string('t_int8'),mysql_query_attribute_string('t_int16'), mysql_query_attribute_string('t_int32'),mysql_query_attribute_string('t_int64'),mysql_query_attribute_string('t_float'),mysql_query_attribute_string('t_double'),mysql_query_attribute_string('t_string'),mysql_query_attribute_string('t_datetime'),mysql_query_attribute_string('t_time'),mysql_query_attribute_string('t_nil'))"
         rtn = mctx:query(sql, bind)
         if not rtn then
-            printd("mysql query error")
+            printd(mctx:erro())
             break
         end
         print("last id:"..mctx:last_id())
@@ -68,20 +71,20 @@ local function _timeout()
     local sql = "select * from test_bind"
     local reader = mctx:query(sql)
     if not reader then
-        printd("mysql query error")
+        printd(mctx:erro())
     end
     print_reader(reader)
 
     local stmt = mctx:prepare("select * from test_bind")
     if not stmt then
-        printd("mysql prepare error")
+        printd(mctx:erro())
     end
     reader = stmt:execute()
     print_reader(reader)
 
     stmt = mctx:prepare("select * from test_bind where t_int8=?")
     if not stmt then
-        printd("mysql prepare error")
+        printd(mctx:erro())
     end
     bind:clear()
     bind:integer("t_int8", 2);
@@ -91,7 +94,7 @@ local function _timeout()
     sql = "delete from test_bind"
     rtn = mctx:query(sql)
     if not reader then
-        printd("mysql query error")
+        printd(mctx:erro())
     end
     print("affectd rows:"..mctx:affectd_rows())
 end

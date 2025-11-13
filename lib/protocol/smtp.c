@@ -83,7 +83,7 @@ int32_t smtp_check_ok(char *pack) {
 char *smtp_pack_reset(void) {
     return format_va("RSET%s", FLAG_CRLF);
 }
-char *smtp_pack_close(void) {
+char *smtp_pack_quit(void) {
     return format_va("QUIT%s", FLAG_CRLF);
 }
 char *smtp_pack_from(const char *from) {

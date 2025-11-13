@@ -97,6 +97,7 @@ int32_t mysql_stmt_reset(task_ctx *task, mysql_stmt_ctx *stmt);
 /// <param name="task">task_ctx</param>
 /// <param name="mysql">mysql_ctx</param>
 void mysql_quit(task_ctx *task, mysql_ctx *mysql);
+
 /// <summary>
 /// 电子邮件建立链接
 /// </summary>
@@ -115,7 +116,7 @@ int32_t smtp_reset(smtp_ctx *smtp);
 /// </summary>
 /// <param name="smtp">smtp_ctx</param>
 /// <returns>ERR_OK 成功</returns>
-int32_t smtp_close(smtp_ctx *smtp);
+int32_t smtp_quit(smtp_ctx *smtp);
 /// <summary>
 /// 邮件发送
 /// </summary>

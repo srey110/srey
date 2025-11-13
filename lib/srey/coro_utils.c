@@ -119,13 +119,6 @@ int32_t mysql_connect(task_ctx *task, mysql_ctx *mysql) {
     coro_handshaked(task, mysql->client.fd, mysql->client.skid, &err, NULL);
     return err;
 }
-static int32_t _mysql_check_link(task_ctx *task, mysql_ctx *mysql) {
-    if (mysql->client.relink
-        && 0 == mysql->status) {
-        return mysql_connect(task, mysql);
-    }
-    return ERR_OK;
-}
 int32_t mysql_selectdb(task_ctx *task, mysql_ctx *mysql, const char *database) {
     size_t size;
     void *selectdb = mysql_pack_selectdb(mysql, database, &size);
@@ -138,10 +131,7 @@ int32_t mysql_selectdb(task_ctx *task, mysql_ctx *mysql, const char *database) {
     }
     return MPACK_OK == mpack->pack_type ? ERR_OK : ERR_FAILED;
 }
-int32_t mysql_ping(task_ctx *task, mysql_ctx *mysql) {
-    if (ERR_OK != _mysql_check_link(task, mysql)) {
-        return ERR_FAILED;
-    }
+static int32_t _mysql_ping(task_ctx *task, mysql_ctx *mysql) {
     size_t size;
     void *ping = mysql_pack_ping(mysql, &size);
     if (NULL == ping) {
@@ -152,6 +142,12 @@ int32_t mysql_ping(task_ctx *task, mysql_ctx *mysql) {
         return ERR_FAILED;
     }
     return MPACK_OK == mpack->pack_type ? ERR_OK : ERR_FAILED;
+}
+int32_t mysql_ping(task_ctx *task, mysql_ctx *mysql) {
+    if (ERR_OK != _mysql_ping(task, mysql)) {
+        return mysql_connect(task, mysql);
+    }
+    return ERR_OK;
 }
 mpack_ctx *mysql_query(task_ctx *task, mysql_ctx *mysql, const char *sql, mysql_bind_ctx *mbind) {
     size_t size;
@@ -218,9 +214,9 @@ int32_t smtp_reset(smtp_ctx *smtp) {
     }
     return smtp_check_ok(pack);
 }
-int32_t smtp_close(smtp_ctx *smtp) {
+int32_t smtp_quit(smtp_ctx *smtp) {
     size_t size;
-    char *cmd = smtp_pack_close();
+    char *cmd = smtp_pack_quit();
     char *pack = coro_send(smtp->task, smtp->fd, smtp->skid, cmd, strlen(cmd), &size, 0);
     if (NULL == pack) {
         return ERR_FAILED;

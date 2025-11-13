@@ -428,7 +428,7 @@ static int32_t _lproto_smtp_new(lua_State *lua) {
 static int32_t _lproto_smtp_free(lua_State *lua) {
     smtp_ctx *smtp = lua_touserdata(lua, 1);
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    char *cmd = smtp_pack_close();
+    char *cmd = smtp_pack_quit();
     ev_ud_extra(&task->loader->netev, smtp->fd, smtp->skid, NULL);
     ev_send(&task->loader->netev, smtp->fd, smtp->skid, cmd, strlen(cmd), 0);
     return 0;
@@ -512,8 +512,8 @@ static int32_t _lproto_smtp_pack_mail(lua_State *lua) {
     lua_pushinteger(lua, strlen(cmd));
     return 2;
 }
-static int32_t _lproto_smtp_pack_close(lua_State *lua) {
-    char *cmd = smtp_pack_close();
+static int32_t _lproto_smtp_pack_quit(lua_State *lua) {
+    char *cmd = smtp_pack_quit();
     lua_pushlightuserdata(lua, cmd);
     lua_pushinteger(lua, strlen(cmd));
     return 2;
@@ -533,7 +533,7 @@ LUAMOD_API int luaopen_smtp(lua_State *lua) {
         { "pack_rcpt", _lproto_smtp_pack_rcpt },
         { "pack_data", _lproto_smtp_pack_data },
         { "pack_mail", _lproto_smtp_pack_mail },
-        { "pack_close", _lproto_smtp_pack_close },
+        { "pack_quit", _lproto_smtp_pack_quit },
         { "sock_id", _lproto_smtp_sock_id },
         { "__gc", _lproto_smtp_free },
         { NULL, NULL }

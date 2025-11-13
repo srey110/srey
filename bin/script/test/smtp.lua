@@ -26,7 +26,7 @@ srey.startup(
              printd("smtp reset error")
             return
         end
-        smtpctx:close()
+        smtpctx:quit()
         printd("smtp tested.")
     end
 )
