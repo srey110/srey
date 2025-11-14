@@ -304,12 +304,10 @@ static void _smtp_auth_check(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t ski
     ASSERTAB(SMTP_CODE_LENS == buffer_copyout(buf, 0, code, SMTP_CODE_LENS), "copy buffer failed.");
     if (0 != strcmp(code, "235")) {
         BIT_SET(*status, PROTO_ERROR);
-        _hs_push(fd, skid, 1, ud, ERR_FAILED, NULL, 0);
         char *err;
         CALLOC(err, 1, blens);
         ASSERTAB(blens - CRLF_SIZE == buffer_copyout(buf, 0, err, blens - CRLF_SIZE), "copy buffer failed.");
-        LOG_WARN("%s", err);
-        FREE(err);
+        _hs_push(fd, skid, 1, ud, ERR_FAILED, err, blens - CRLF_SIZE);
         return;
     }
     buffer_drain(buf, blens);

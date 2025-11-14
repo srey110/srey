@@ -15,7 +15,10 @@ function ctx:connect()
         return false
     end
     local fd, skid = self.smtp:sock_id()
-    local ok,_,_ = srey.wait_handshaked(fd, skid)
+    local ok, err, elens = srey.wait_handshaked(fd, skid)
+    if not ok and err then
+        WARN("%s", srey.ud_str(err, elens))
+    end
     return ok
 end
 function ctx:reset()

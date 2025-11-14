@@ -199,7 +199,11 @@ int32_t smtp_connect(task_ctx *task, smtp_ctx *smtp) {
         return ERR_FAILED;
     }
     int32_t err;
-    coro_handshaked(task, smtp->fd, smtp->skid, &err, NULL);
+    char *msg = (char *)coro_handshaked(task, smtp->fd, smtp->skid, &err, NULL);
+    if (ERR_OK != err
+        && NULL != msg) {
+        LOG_WARN("%s", msg);
+    }
     return err;
 }
 int32_t smtp_reset(smtp_ctx *smtp) {
