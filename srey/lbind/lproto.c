@@ -118,12 +118,15 @@ static int32_t _lproto_websock_handshake_pack(lua_State *lua) {
 }
 static int32_t _lproto_websock_unpack(lua_State *lua) {
     struct websock_pack_ctx *pack = lua_touserdata(lua, 1);
-    lua_createtable(lua, 0, 4);
+    lua_createtable(lua, 0, 5);
+    lua_pushstring(lua, "fin");
+    lua_pushinteger(lua, websock_pack_fin(pack));
+    lua_settable(lua, -3);
     lua_pushstring(lua, "proto");
     lua_pushinteger(lua, websock_pack_proto(pack));
     lua_settable(lua, -3);
-    lua_pushstring(lua, "fin");
-    lua_pushinteger(lua, websock_pack_fin(pack));
+    lua_pushstring(lua, "secproto");
+    lua_pushinteger(lua, websock_pack_secproto(pack));
     lua_settable(lua, -3);
     size_t lens;
     void *data = websock_pack_data(pack, &lens);

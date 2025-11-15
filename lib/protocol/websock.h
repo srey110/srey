@@ -3,7 +3,7 @@
 
 #include "event/event.h"
 
-typedef enum  websock_proto {
+typedef enum websock_proto {
     WBSK_CONTINUE = 0x00,
     WBSK_TEXT = 0x01,
     WBSK_BINARY = 0x02,
@@ -13,6 +13,7 @@ typedef enum  websock_proto {
 }websock_proto;
 
 void _websock_pkfree(void *data);
+void _websock_udfree(ud_cxt *ud);
 //解包
 struct websock_pack_ctx *websock_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, int32_t *status);
@@ -86,6 +87,12 @@ int32_t websock_pack_fin(struct websock_pack_ctx *pack);
 /// <param name="pack">websock_pack_ctx</param>
 /// <returns>协议号</returns>
 int32_t websock_pack_proto(struct websock_pack_ctx *pack);
+/// <summary>
+/// 获取子协议
+/// </summary>
+/// <param name="pack">websock_pack_ctx</param>
+/// <returns>协议号</returns>
+int32_t websock_pack_secproto(struct websock_pack_ctx *pack);
 /// <summary>
 /// 获取数据
 /// </summary>

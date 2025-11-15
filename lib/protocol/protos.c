@@ -41,6 +41,9 @@ void protos_udfree(void *arg) {
     case PACK_HTTP:
         _http_udfree(ud);
         break;
+    case PACK_WEBSOCK:
+        _websock_udfree(ud);
+        break;
     case PACK_REDIS:
         _redis_udfree(ud);
         break;

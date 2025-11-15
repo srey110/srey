@@ -216,7 +216,7 @@ static uint32_t _buffer_expand(buffer_ctx *ctx, const size_t lens, IOV_TYPE *iov
         if (0 != avail) {
             RECOED_IOV(node, avail);
         }        
-        node = node->next;        
+        node = node->next;
     }
     // Õ∑≈
     for (; NULL != node; node = next) {

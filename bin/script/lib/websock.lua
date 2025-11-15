@@ -30,7 +30,7 @@ function wbsk.protostr(proto)
     end
     return "UNKNOWN"
 end
---{proto, fin, data, size}
+--{fin, proto, secproto, data, size}
 function wbsk.unpack(pack)
     return websock.unpack(pack)
 end

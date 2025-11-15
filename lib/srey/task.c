@@ -303,6 +303,7 @@ static int32_t _net_accept(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud) {
 int32_t _message_handshaked_push(SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud, int32_t erro, void *data, size_t lens) {
     task_ctx *task = task_grab(ud->data, ud->name);
     if (NULL == task) {
+        _message_clean(MSG_TYPE_HANDSHAKED, ud->pktype, data);
         return ERR_FAILED;
     }
     message_ctx msg;
