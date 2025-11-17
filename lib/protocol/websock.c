@@ -279,6 +279,9 @@ static void _websock_handshake(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t cli
     }
     _http_pkfree(hpack);
 }
+static websock_pack_ctx *_websock_secproto_unpack(websock_ctx *ws, websock_pack_ctx *pack, ud_cxt *ud, int32_t *status) {
+    return pack;
+}
 static websock_pack_ctx *_websock_parse_data(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     websock_ctx *ws = (websock_ctx *)ud->extra;
     websock_pack_ctx *pack = ws->pack;
@@ -311,7 +314,14 @@ static websock_pack_ctx *_websock_parse_data(buffer_ctx *buf, ud_cxt *ud, int32_
     }
     ws->pack = NULL;
     ud->status = START;
-    return pack;
+    if (PACK_NONE != ws->secproto
+        && (WBSK_CONTINUE == pack->proto
+            || WBSK_TEXT == pack->proto
+            || WBSK_BINARY == pack->proto)) {
+        return _websock_secproto_unpack(ws, pack, ud, status);
+    } else {
+        return pack;
+    }
 }
 static websock_pack_ctx *_websock_parse_pllens(buffer_ctx *buf, size_t blens, 
     uint8_t mask, uint8_t payloadlen, int32_t *status) {
