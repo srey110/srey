@@ -13,7 +13,7 @@ void protos_init(_handshaked_push hspush) {
 }
 void protos_free(void) {
 }
-void protos_pkfree(pack_type pktype, int32_t mtype, void *data) {
+void protos_pkfree(pack_type pktype, void *data) {
     if (NULL == data) {
         return;
     }
@@ -34,6 +34,9 @@ void protos_pkfree(pack_type pktype, int32_t mtype, void *data) {
         FREE(data);
         break;
     }
+}
+void protos_hsfree(pack_type pktype, void *data) {
+    FREE(data);
 }
 void protos_udfree(void *arg) {
     ud_cxt *ud = arg;

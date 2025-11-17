@@ -15,6 +15,7 @@ typedef struct websock_pack_ctx {
     char proto;
     char mask;
     pack_type secproto;
+    void *secpack;
     char key[4];
     size_t remain;
     size_t dlens;
@@ -36,15 +37,17 @@ void _websock_pkfree(void *data) {
     if (NULL == data) {
         return;
     }
+    websock_pack_ctx *pack = (websock_pack_ctx *)data;
+    protos_pkfree(pack->secproto, pack->secpack);
     FREE(data);
 }
 void _websock_udfree(ud_cxt *ud) {
     if (NULL == ud->extra) {
         return;
     }
-    websock_ctx *wb = (websock_ctx *)ud->extra;
-    _websock_pkfree(wb->pack);
-    FREE(wb);
+    websock_ctx *ws = (websock_ctx *)ud->extra;
+    _websock_pkfree(ws->pack);
+    FREE(ws);
     ud->extra = NULL;
 }
 static int32_t _websock_sec_proto(char *secproto, pack_type *sectype) {
@@ -271,14 +274,14 @@ static void _websock_handshake(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t cli
     }
     if (ERR_OK == rtn) {
         CALLOC(ud->extra, 1, sizeof(websock_ctx));
-        websock_ctx *wb = (websock_ctx *)ud->extra;
-        wb->secproto = sectype;
+        websock_ctx *ws = (websock_ctx *)ud->extra;
+        ws->secproto = sectype;
     }
     _http_pkfree(hpack);
 }
 static websock_pack_ctx *_websock_parse_data(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
-    websock_ctx *wb = (websock_ctx *)ud->extra;
-    websock_pack_ctx *pack = wb->pack;
+    websock_ctx *ws = (websock_ctx *)ud->extra;
+    websock_pack_ctx *pack = ws->pack;
     if (pack->remain > buffer_size(buf)) {
         BIT_SET(*status, PROTO_MOREDATA);
         return NULL;
@@ -306,7 +309,7 @@ static websock_pack_ctx *_websock_parse_data(buffer_ctx *buf, ud_cxt *ud, int32_
         && 0 == pack->proto) {
         BIT_SET(*status, PROTO_SLICE_END);
     }
-    wb->pack = NULL;
+    ws->pack = NULL;
     ud->status = START;
     return pack;
 }
@@ -398,9 +401,10 @@ static websock_pack_ctx *_websock_parse_head(buffer_ctx *buf, int32_t client, ud
     pack->fin = fin;
     pack->proto = proto;
     pack->mask = mask;
-    websock_ctx *wb = (websock_ctx *)ud->extra;
-    pack->secproto = wb->secproto;
-    wb->pack = pack;
+    websock_ctx *ws = (websock_ctx *)ud->extra;
+    pack->secproto = ws->secproto;
+    pack->secpack = NULL;
+    ws->pack = pack;
     ud->status = DATA;
     return _websock_parse_data(buf, ud, status);
 }

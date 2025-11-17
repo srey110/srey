@@ -31,7 +31,8 @@ typedef int32_t(*_handshaked_push)(SOCKET fd, uint64_t skid, int32_t client, ud_
 
 void protos_init(_handshaked_push hspush);
 void protos_free(void);
-void protos_pkfree(pack_type pktype, int32_t mtype, void *data);
+void protos_pkfree(pack_type pktype, void *data);
+void protos_hsfree(pack_type pktype, void *data);
 void protos_udfree(void *arg);
 void protos_closed(ud_cxt *ud);
 int32_t protos_connected(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud);

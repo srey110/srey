@@ -120,8 +120,10 @@ void _message_clean(msg_type mtype, pack_type pktype, void *data) {
     switch (mtype) {
     case MSG_TYPE_RECV:
     case MSG_TYPE_RECVFROM:
+        protos_pkfree(pktype, data);
+        break;
     case MSG_TYPE_HANDSHAKED:
-        protos_pkfree(pktype, mtype, data);
+        protos_hsfree(pktype, data);
         break;
     case MSG_TYPE_REQUEST:
     case MSG_TYPE_RESPONSE:
