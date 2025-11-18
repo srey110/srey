@@ -312,9 +312,7 @@ static websock_pack_ctx *_websock_sec_mqtt(websock_ctx *ws, websock_pack_ctx *pa
         _websock_pkfree(pack);
         return NULL;
     }
-    if (pack->dlens > 0) {
-        buffer_external(ws->buf, pack->data, pack->dlens, _websock_mqtt_buffree);
-    }
+    buffer_external(ws->buf, pack->data, pack->dlens, _websock_mqtt_buffree);
     struct mqtt_pack_ctx *mpack = mqtt_unpack(client, ws->buf, ws->ud, status);
     if (NULL == mpack) {
         return NULL;
@@ -378,10 +376,11 @@ static websock_pack_ctx *_websock_parse_data(buffer_ctx *buf, int32_t client, ud
     }
     ws->pack = NULL;
     ud->status = START;
-    if (PACK_NONE != ws->secproto
+    if (PACK_NONE != ws->secproto//有子协议
+        && pack->dlens > 0//排除空包
         && (WS_CONTINUE == pack->proto
             || WS_TEXT == pack->proto
-            || WS_BINARY == pack->proto)) {//子协议解析
+            || WS_BINARY == pack->proto)) {
         return _websock_sec_unpack(ws, pack, client, status);
     } else {
         return pack;
