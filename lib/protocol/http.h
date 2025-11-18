@@ -1,7 +1,6 @@
 #ifndef HTTP_H_
 #define HTTP_H_
 
-#include "base/structs.h"
 #include "utils/buffer.h"
 #include "utils/binary.h"
 

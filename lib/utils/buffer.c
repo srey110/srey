@@ -2,10 +2,14 @@
 #include "utils/utils.h"
 #include "utils/netutils.h"
 
+//|              |   misalign   |    off    |           | 
+//|--------------|--------------|-----------|-----------|
+//|node          |buffer                                |
 typedef struct bufnode_ctx {
-    int32_t used;
+    int32_t used;//是否正常被使用
     struct bufnode_ctx *next;
     char *buffer;
+    free_cb _free;
     size_t buffer_lens;
     size_t misalign;
     size_t off;
@@ -34,6 +38,12 @@ static bufnode_ctx *_node_new(const size_t size) {
     node->buffer = (char *)(node + 1);
     return node;
 }
+static void _node_free(bufnode_ctx *node) {
+    if (NULL != node->_free) {
+        node->_free(node->buffer);
+    }
+    FREE(node);
+}
 //通过调整是否足够
 static int32_t _should_realign(bufnode_ctx *node, const size_t lens) {
     return node->buffer_lens - node->off >= lens &&
@@ -50,7 +60,7 @@ static void _free_all_node(bufnode_ctx *node) {
     bufnode_ctx *pnext;
     for (; NULL != node; node = pnext) {
         pnext = node->next;
-        FREE(node);
+        _node_free(node);
     }
 }
 //pnode 及后面节点是否为空
@@ -155,7 +165,7 @@ static bufnode_ctx *_buffer_expand_single(buffer_ctx *ctx, const size_t lens) {
         ctx->tail = tmp;
     }
     tmp->next = node->next;
-    FREE(node);
+    _node_free(node);
     return tmp;
 }
 static uint32_t _buffer_expand(buffer_ctx *ctx, const size_t lens, IOV_TYPE *iov, const uint32_t cnt) {
@@ -222,7 +232,7 @@ static uint32_t _buffer_expand(buffer_ctx *ctx, const size_t lens, IOV_TYPE *iov
     for (; NULL != node; node = next) {
         next = node->next;
         ASSERTAB(0 == node->off, "node not empty.");
-        FREE(node);
+        _node_free(node);
     }
     ASSERTAB(lens >= avail, "logic error.");
     remain = lens - avail;
@@ -309,6 +319,15 @@ void buffer_free(buffer_ctx *ctx) {
 }
 size_t buffer_size(buffer_ctx *ctx) {
     return ctx->total_lens;
+}
+void buffer_external(buffer_ctx *ctx, void *data, const size_t lens, free_cb _free) {
+    bufnode_ctx *node;
+    CALLOC(node, 1, sizeof(bufnode_ctx));
+    node->buffer = (char *)data;
+    node->_free = _free;
+    node->buffer_lens = lens;
+    node->off = lens;
+    _node_insert(ctx, node);
 }
 int32_t buffer_append(buffer_ctx *ctx, void *data, const size_t lens) {
     ASSERTAB(0 == ctx->freeze_write, "write freezed");
@@ -443,7 +462,7 @@ size_t buffer_drain(buffer_ctx *ctx, size_t lens) {
             ctx->tail_with_data = &ctx->head;
         }
         if (0 == node->used) {
-            FREE(node);
+            _node_free(node);
         } else {
             ASSERTAB(0 == remain, "logic error.");
             node->misalign += node->off;

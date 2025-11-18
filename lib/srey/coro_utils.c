@@ -82,12 +82,14 @@ SOCKET wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, c
     if (ERR_OK != err) {
         return INVALID_SOCK;
     }
-    size_t seclens = strlen(secproto);
-    if (NULL != secproto
-        && 0 != seclens) {
-        if (seclens != size || 0 != memcmp(secproto, hsdata, seclens)) {
-            ev_close(&task->loader->netev, fd, *skid);
-            return INVALID_SOCK;
+    if (!EMPTYSTR(secproto)) {
+        size_t seclens = strlen(secproto);
+        if (NULL != secproto
+            && 0 != seclens) {
+            if (seclens != size || 0 != memcmp(secproto, hsdata, seclens)) {
+                ev_close(&task->loader->netev, fd, *skid);
+                return INVALID_SOCK;
+            }
         }
     }
     return fd;

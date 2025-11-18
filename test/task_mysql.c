@@ -91,7 +91,7 @@ static void _show_print(mysql_reader_ctx *reader) {
     }
 }
 static void _show_result1(mpack_ctx *pack, int32_t eof) {
-    if (!_prt) {
+    if (!_prt || NULL == pack) {
         return;
     }
     mysql_reader_ctx *reader = mysql_reader_init(pack);
@@ -147,7 +147,7 @@ static void _test_bind(task_ctx *task) {
     }
     mpack_ctx *pack = mysql_query(&_mysql,
         "insert into test1_bind (t_int8,t_int16,t_int32,t_int64,t_float,t_double, t_string,t_datetime,t_time) values (...)", NULL);
-    if (MPACK_ERR != pack->pack_type) {
+    if (NULL == pack || MPACK_ERR != pack->pack_type) {
         LOG_WARN("mysql_query error.");
     } else {
         if (_prt) {

@@ -1,7 +1,7 @@
 #ifndef BUFFER_H_
 #define BUFFER_H_
 
-#include "base/macro.h"
+#include "base/structs.h"
 
 //非连续内存读写
 #if defined(OS_WIN)
@@ -45,6 +45,14 @@ void buffer_free(buffer_ctx *ctx);
 /// <param name="ctx">buffer_ctx</param>
 /// <returns>长度</returns>
 size_t buffer_size(buffer_ctx *ctx);
+/// <summary>
+/// 将外部数据data链接到buffer,减少一次拷贝,方便后续的读取。
+/// </summary>
+/// <param name="ctx">buffer_ctx</param>
+/// <param name="data">数据</param>
+/// <param name="lens">长度</param>
+/// <param name="free_cb">data释放函数</param>
+void buffer_external(buffer_ctx *ctx, void *data, const size_t lens, free_cb _free);
 /// <summary>
 /// 写入数据
 /// </summary>

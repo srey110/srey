@@ -4,12 +4,12 @@
 #include "event/event.h"
 
 typedef enum websock_proto {
-    WBSK_CONTINUE = 0x00,
-    WBSK_TEXT = 0x01,
-    WBSK_BINARY = 0x02,
-    WBSK_CLOSE = 0x08,
-    WBSK_PING = 0x09,
-    WBSK_PONG = 0x0A
+    WS_CONTINUE = 0x00,
+    WS_TEXT = 0x01,
+    WS_BINARY = 0x02,
+    WS_CLOSE = 0x08,
+    WS_PING = 0x09,
+    WS_PONG = 0x0A
 }websock_proto;
 
 void _websock_pkfree(void *data);
@@ -93,6 +93,12 @@ int32_t websock_pack_proto(struct websock_pack_ctx *pack);
 /// <param name="pack">websock_pack_ctx</param>
 /// <returns>协议号</returns>
 int32_t websock_pack_secproto(struct websock_pack_ctx *pack);
+/// <summary>
+/// 获取子协议包
+/// </summary>
+/// <param name="pack">websock_pack_ctx</param>
+/// <returns>协议包</returns>
+void *websock_pack_secpack(struct websock_pack_ctx *pack);
 /// <summary>
 /// 获取数据
 /// </summary>

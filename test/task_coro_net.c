@@ -104,7 +104,7 @@ static void _timeout(task_ctx *task, uint64_t sess) {
     _test_syn_ssl1_send(task);
     _test_syn_ssl2_send(task);
     uint64_t skid;
-    SOCKET fd = wbsock_connect(task, NULL, "ws://127.0.0.1:15004", "mqtt", &skid, 0);
+    SOCKET fd = wbsock_connect(task, NULL, "ws://127.0.0.1:15004", NULL, &skid, 0);
     if (INVALID_SOCK != fd) {
         ev_close(&task->loader->netev, fd, skid);
     }

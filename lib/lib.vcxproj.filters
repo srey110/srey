@@ -277,6 +277,9 @@
     <ClInclude Include="protocol\smtp.h">
       <Filter>protocol</Filter>
     </ClInclude>
+    <ClInclude Include="protocol\mqtt.h">
+      <Filter>protocol</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="event\event.c">
@@ -454,6 +457,9 @@
       <Filter>protocol</Filter>
     </ClCompile>
     <ClCompile Include="protocol\smtp.c">
+      <Filter>protocol</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\mqtt.c">
       <Filter>protocol</Filter>
     </ClCompile>
   </ItemGroup>

@@ -1,7 +1,6 @@
 #ifndef REDIS_H_
 #define REDIS_H_
 
-#include "base/structs.h"
 #include "utils/buffer.h"
 
 #define RESP_STRING  '+' //+  Simple strings   RESP2  +OK\r\n

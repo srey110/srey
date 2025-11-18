@@ -850,6 +850,60 @@ static void test_buffer(CuTest* tc) {
 
     buffer_free(&buf);
 }
+static void test_buffer_external(CuTest* tc) {
+    buffer_ctx buf;
+    buffer_init(&buf);
+
+    const char *str1 = "this is test.";
+    const char *teststr2 = "who am i?";
+    size_t tlens = strlen(teststr2);
+    char *str2;
+    CALLOC(str2, 1, tlens + 1);
+    memcpy(str2, teststr2, tlens);
+    buffer_external(&buf, (void *)str1, strlen(str1), NULL);
+    buffer_external(&buf, (void *)str2, tlens, _free);
+
+    char c;
+    char tmp[1024] = { 0 };
+    for (size_t i = 0; i < buffer_size(&buf); i++) {
+        c = buffer_at(&buf, i);
+        tmp[i] = c;
+    }
+    CuAssertTrue(tc, 0 == strcmp("this is test.who am i?", tmp));
+    CuAssertTrue(tc, ERR_FAILED == buffer_search(&buf, 1, 12, 13, "t.W", strlen("t.W")));
+    CuAssertTrue(tc, ERR_FAILED == buffer_search(&buf, 1, 0, 12, "t.W", strlen("t.W")));
+    CuAssertTrue(tc, 11 == buffer_search(&buf, 1, 0, 13, "t.W", strlen("t.W")));
+
+    CuAssertTrue(tc, ERR_FAILED == buffer_search(&buf, 1, 0, 12, "Who", strlen("Who")));
+    CuAssertTrue(tc, ERR_FAILED == buffer_search(&buf, 1, 0, 14, "Who", strlen("Who")));
+    CuAssertTrue(tc, 13 == buffer_search(&buf, 1, 0, 15, "Who", strlen("Who")));
+
+    CuAssertTrue(tc, ERR_FAILED == buffer_search(&buf, 0, 12, 13, "t.w", strlen("t.w")));
+    CuAssertTrue(tc, ERR_FAILED == buffer_search(&buf, 0, 0, 12, "t.w", strlen("t.w")));
+    CuAssertTrue(tc, ERR_FAILED == buffer_search(&buf, 0, 0, 13, "t.W", strlen("t.W")));
+    CuAssertTrue(tc, 11 == buffer_search(&buf, 0, 0, 13, "t.w", strlen("t.w")));
+
+    CuAssertTrue(tc, ERR_FAILED == buffer_search(&buf, 0, 0, 12, "who", strlen("who")));
+    CuAssertTrue(tc, ERR_FAILED == buffer_search(&buf, 0, 0, 14, "who", strlen("who")));
+    CuAssertTrue(tc, ERR_FAILED == buffer_search(&buf, 0, 0, 15, "Who", strlen("Who")));
+    CuAssertTrue(tc, 13 == buffer_search(&buf, 0, 0, 15, "who", strlen("who")));
+
+    CuAssertTrue(tc, strlen(str1) + strlen(str2) == buffer_size(&buf));
+    char out[ONEK] = { 0 };
+    size_t rtn = buffer_copyout(&buf, 0, out, strlen(str1));
+    CuAssertTrue(tc, rtn == strlen(str1) && 0 == strcmp(str1, out));
+    rtn = buffer_drain(&buf, rtn - 1);
+    CuAssertTrue(tc, rtn == strlen(str1) - 1 && strlen(str2) + 1 == buffer_size(&buf));
+    CuAssertTrue(tc, '.' == buffer_at(&buf, 0));
+    rtn = buffer_drain(&buf, 1);
+    CuAssertTrue(tc, 1 == rtn);
+
+    ZERO(out, sizeof(out));
+    rtn = buffer_remove(&buf, out, buffer_size(&buf));
+    CuAssertTrue(tc, rtn == tlens && 0 == strcmp(teststr2, out));
+
+    buffer_free(&buf);
+}
 static void test_log(CuTest* tc) {
     LOG_DEBUG("%s", "LOG_DEBUG");
     LOG_INFO("%s", "LOG_INFO");
@@ -1399,6 +1453,7 @@ void test_utils(CuSuite* suite) {
     SUITE_ADD_TEST(suite, test_timer);
     SUITE_ADD_TEST(suite, test_netutils);
     SUITE_ADD_TEST(suite, test_buffer);
+    SUITE_ADD_TEST(suite, test_buffer_external);
     SUITE_ADD_TEST(suite, test_log);
     SUITE_ADD_TEST(suite, test_http);
     SUITE_ADD_TEST(suite, test_url);

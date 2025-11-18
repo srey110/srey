@@ -58,6 +58,7 @@
     <ClInclude Include="protocol\custz_head.h" />
     <ClInclude Include="protocol\dns.h" />
     <ClInclude Include="protocol\http.h" />
+    <ClInclude Include="protocol\mqtt.h" />
     <ClInclude Include="protocol\mysql\mysql.h" />
     <ClInclude Include="protocol\mysql\mysql_bind.h" />
     <ClInclude Include="protocol\mysql\mysql_macro.h" />
@@ -128,6 +129,7 @@
     <ClCompile Include="protocol\custz_head.c" />
     <ClCompile Include="protocol\dns.c" />
     <ClCompile Include="protocol\http.c" />
+    <ClCompile Include="protocol\mqtt.c" />
     <ClCompile Include="protocol\mysql\mysql.c" />
     <ClCompile Include="protocol\mysql\mysql_bind.c" />
     <ClCompile Include="protocol\mysql\mysql_pack.c" />

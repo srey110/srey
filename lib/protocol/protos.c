@@ -2,6 +2,7 @@
 #include "protocol/custz.h"
 #include "protocol/http.h"
 #include "protocol/websock.h"
+#include "protocol/mqtt.h"
 #include "protocol/redis.h"
 #include "protocol/mysql/mysql.h"
 #include "protocol/smtp.h"
@@ -24,6 +25,9 @@ void protos_pkfree(pack_type pktype, void *data) {
     case PACK_WEBSOCK:
         _websock_pkfree(data);
         break;
+    case PACK_MQTT:
+        _mqtt_pkfree(data);
+        break;
     case PACK_REDIS:
         _redis_pkfree(data);
         break;
@@ -39,6 +43,9 @@ void protos_hsfree(pack_type pktype, void *data) {
     FREE(data);
 }
 void protos_udfree(void *arg) {
+    if (NULL == arg) {
+        return;
+    }
     ud_cxt *ud = arg;
     switch (ud->pktype) {
     case PACK_HTTP:
@@ -46,6 +53,9 @@ void protos_udfree(void *arg) {
         break;
     case PACK_WEBSOCK:
         _websock_udfree(ud);
+        break;
+    case PACK_MQTT:
+        _mqtt_udfree(ud);
         break;
     case PACK_REDIS:
         _redis_udfree(ud);
@@ -62,6 +72,9 @@ void protos_udfree(void *arg) {
     }
 }
 void protos_closed(ud_cxt *ud) {
+    if (NULL == ud) {
+        return;
+    }
     switch (ud->pktype) {
     case PACK_MYSQL:
         _mysql_closed(ud);
@@ -109,6 +122,7 @@ void *protos_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
         unpack = websock_unpack(ev, fd, skid, client, buf, ud, status);
         break;
     case PACK_MQTT:
+        unpack = mqtt_unpack(client, buf, ud, status);
         break;
     case PACK_SMTP:
         unpack = smtp_unpack(ev, fd, skid, buf, ud, size, status);
