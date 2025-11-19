@@ -69,6 +69,9 @@
     <ClCompile Include="task_smtp.c">
       <Filter>tasks</Filter>
     </ClCompile>
+    <ClCompile Include="task_mqttsv.c">
+      <Filter>tasks</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="CuTest.h">
@@ -125,6 +128,9 @@
       <Filter>taskcoro</Filter>
     </ClInclude>
     <ClInclude Include="task_smtp.h">
+      <Filter>tasks</Filter>
+    </ClInclude>
+    <ClInclude Include="task_mqttsv.h">
       <Filter>tasks</Filter>
     </ClInclude>
   </ItemGroup>
