@@ -6,7 +6,8 @@ typedef enum ud_type {
     UD_STATUS,
     UD_NAME,
     UD_SESS,
-    UD_EXTRA
+    UD_EXTRA,
+    UD_SECEXTRA
 }ud_type;
 
 void _bufs_clear(qu_off_buf_ctx *bufs) {
@@ -286,6 +287,9 @@ void ev_ud_name(ev_ctx *ctx, SOCKET fd, uint64_t skid, name_t name) {
 void ev_ud_extra(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *extra) {
     _ev_set_ud(ctx, fd, skid, UD_EXTRA, (uint64_t)extra);
 }
+void ev_ud_secextra(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *extra) {
+    _ev_set_ud(ctx, fd, skid, UD_SECEXTRA, (uint64_t)extra);
+}
 void _set_ud(ud_cxt *ud, int32_t type, uint64_t val) {
     switch (type) {
     case UD_PKTYPE:
@@ -302,6 +306,9 @@ void _set_ud(ud_cxt *ud, int32_t type, uint64_t val) {
         break;
     case UD_EXTRA:
         ud->extra = (void *)val;
+        break;
+    case UD_SECEXTRA:
+        _set_secextra(ud, (void *)val);
         break;
     default:
         break;

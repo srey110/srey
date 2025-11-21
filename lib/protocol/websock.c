@@ -1,7 +1,7 @@
 #include "protocol/websock.h"
 #include "protocol/protos.h"
 #include "protocol/http.h"
-#include "protocol/mqtt.h"
+#include "protocol/mqtt/mqtt.h"
 #include "crypt/base64.h"
 #include "crypt/digest.h"
 #include "utils/utils.h"
@@ -12,9 +12,9 @@ typedef enum parse_status {
     DATA
 }parse_status;
 typedef struct websock_pack_ctx {
-    char fin;
-    char proto;
-    char mask;
+    int8_t fin;
+    int8_t proto;
+    int8_t mask;
     pack_type secproto;
     void *secpack;
     char key[4];
@@ -59,6 +59,18 @@ void _websock_udfree(ud_cxt *ud) {
     }
     FREE(ws);
     ud->extra = NULL;
+}
+void _websock_secextra(ud_cxt *ud, void *val) {
+    if (NULL == ud->extra) {
+        LOG_WARN("set second ud_cxt extra data error.");
+        return;
+    }
+    websock_ctx *ws = (websock_ctx *)ud->extra;
+    if (NULL == ws->ud) {
+        LOG_WARN("set second ud_cxt extra data error.");
+        return;
+    }
+    ws->ud->extra = val;
 }
 static int32_t _websock_sec_proto(char *secproto, pack_type *sectype) {
     if (0 == _memicmp(secproto, "mqtt", strlen("mqtt"))) {
@@ -374,6 +386,9 @@ static websock_pack_ctx *_websock_parse_data(buffer_ctx *buf, int32_t client, ud
         ws->slice = 0;
         BIT_SET(*status, PROTO_SLICE_END);
     }
+    if (WS_CLOSE == pack->proto) {
+        BIT_SET(*status, PROTO_CLOSE);
+    }
     ws->pack = NULL;
     ud->status = START;
     if (PACK_NONE != ws->secproto//有子协议
@@ -557,65 +572,65 @@ static void *_websock_create_pack(uint8_t fin, uint8_t proto, char key[4], void 
     }
     return frame;
 }
-void *websock_ping(int32_t mask, size_t *size) {
+void *websock_pack_ping(int32_t mask, size_t *size) {
     if (0 == mask) {
         return _websock_create_pack(1, WS_PING, NULL, NULL, 0, size);
     } else {
         return _websock_create_pack(1, WS_PING, _mask_key, NULL, 0, size);
     }
 }
-void *websock_pong(int32_t mask, size_t *size) {
+void *websock_pack_pong(int32_t mask, size_t *size) {
     if (0 == mask) {
         return _websock_create_pack(1, WS_PONG, NULL, NULL, 0, size);
     } else {
         return _websock_create_pack(1, WS_PONG, _mask_key, NULL, 0, size);
     }
 }
-void *websock_close(int32_t mask, size_t *size) {
+void *websock_pack_close(int32_t mask, size_t *size) {
     if (0 == mask) {
         return _websock_create_pack(1, WS_CLOSE, NULL, NULL, 0, size);
     } else {
         return _websock_create_pack(1, WS_CLOSE, _mask_key, NULL, 0, size);
     }
 }
-void *websock_text(int32_t mask, int32_t fin, void *data, size_t dlens, size_t *size) {
+void *websock_pack_text(int32_t mask, int32_t fin, void *data, size_t dlens, size_t *size) {
     if (0 == mask) {
         return _websock_create_pack(fin, WS_TEXT, NULL, data, dlens, size);
     } else {
         return _websock_create_pack(fin, WS_TEXT, _mask_key, data, dlens, size);
     }
 }
-void *websock_binary(int32_t mask, int32_t fin, void *data, size_t dlens, size_t *size) {
+void *websock_pack_binary(int32_t mask, int32_t fin, void *data, size_t dlens, size_t *size) {
     if (0 == mask) {
         return _websock_create_pack(fin, WS_BINARY, NULL, data, dlens, size);
     } else {
         return _websock_create_pack(fin, WS_BINARY, _mask_key, data, dlens, size);
     }
 }
-void *websock_continuation(int32_t mask, int32_t fin, void *data, size_t dlens, size_t *size) {
+void *websock_pack_continua(int32_t mask, int32_t fin, void *data, size_t dlens, size_t *size) {
     if (0 == mask) {
         return _websock_create_pack(fin, WS_CONTINUE, NULL, data, dlens, size);
     } else {
         return _websock_create_pack(fin, WS_CONTINUE, _mask_key, data, dlens, size);
     }
 }
-int32_t websock_pack_fin(websock_pack_ctx *pack) {
+int32_t websock_fin(websock_pack_ctx *pack) {
     return pack->fin;
 }
-int32_t websock_pack_proto(websock_pack_ctx *pack) {
+int32_t websock_proto(websock_pack_ctx *pack) {
     return pack->proto;
 }
-int32_t websock_pack_secproto(websock_pack_ctx *pack) {
+int32_t websock_secproto(websock_pack_ctx *pack) {
     return pack->secproto;
 }
-void *websock_pack_secpack(struct websock_pack_ctx *pack) {
+void *websock_secpack(struct websock_pack_ctx *pack) {
     return pack->secpack;
 }
-char *websock_pack_data(websock_pack_ctx *pack, size_t *lens) {
+char *websock_data(websock_pack_ctx *pack, size_t *lens) {
     *lens = pack->dlens;
     return pack->data;
 }
-char *websock_handshake_pack(const char *host, const char *secproto) {
+char *websock_pack_handshake(const char *host, const char *secproto) {
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
     http_pack_req(&bwriter, "GET", "/");

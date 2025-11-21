@@ -107,8 +107,7 @@ int32_t smtp_reset(smtp_ctx *smtp);
 /// 邮件关闭
 /// </summary>
 /// <param name="smtp">smtp_ctx</param>
-/// <returns>ERR_OK 成功</returns>
-int32_t smtp_quit(smtp_ctx *smtp);
+void smtp_quit(smtp_ctx *smtp);
 /// <summary>
 /// ping测试
 /// </summary>

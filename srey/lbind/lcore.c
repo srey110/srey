@@ -100,7 +100,7 @@ static int32_t _lcore_connect(lua_State *lua) {
     int32_t netev = lua_isinteger(lua, 5) ? (int32_t)luaL_checkinteger(lua, 5) : NETEV_NONE;
     uint64_t skid;
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    SOCKET fd = task_connect(task, pktype, evssl, ip, port, &skid, netev);
+    SOCKET fd = task_connect(task, pktype, evssl, ip, port, &skid, netev, NULL);
     if (INVALID_SOCK == fd) {
         lua_pushinteger(lua, INVALID_SOCK);
         return 1;

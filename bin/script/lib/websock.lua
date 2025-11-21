@@ -30,7 +30,7 @@ function wbsk.protostr(proto)
     end
     return "UNKNOWN"
 end
---{fin, proto, secproto, data, size}
+--{fin, proto, secproto,secpack, data, size}
 function wbsk.unpack(pack)
     return websock.unpack(pack)
 end
@@ -60,7 +60,7 @@ function wbsk.connect(ws, sslname, secproto, netev)
     if INVALID_SOCK == fd then
         return INVALID_SOCK
     end
-    local hspack, size = websock.handshake_pack(url.host, secproto)
+    local hspack, size = websock.pack_handshake(url.host, secproto)
     srey.send(fd, skid, hspack, size, 0)
     local ok, data, dlens = srey.wait_handshaked(fd, skid)
     if not ok then
@@ -75,28 +75,28 @@ function wbsk.connect(ws, sslname, secproto, netev)
     return fd, skid
 end
 function wbsk.ping(client)
-    return websock.ping(client)
+    return websock.pack_ping(client)
 end
 function wbsk.pong(client)
-    return websock.pong(client)
+    return websock.pack_pong(client)
 end
 function wbsk.close(client)
-    return websock.close(client)
+    return websock.pack_close(client)
 end
 function wbsk.text_fin(client, fin, data, size)
-    return websock.text(client, fin, data, size)
+    return websock.pack_text(client, fin, data, size)
 end
 function wbsk.text(client, data, size)
     return wbsk.text_fin(client, 1, data, size)
 end
 function wbsk.binary_fin(client, fin, data, size)
-    return websock.binary(client, fin, data, size)
+    return websock.pack_binary(client, fin, data, size)
 end
 function wbsk.binary(client, data, size)
     return wbsk.binary_fin(client, 1, data, size)
 end
 function wbsk.continua(client, fin, data, size)
-    return websock.continuation(client, fin, data, size)
+    return websock.pack_continua(client, fin, data, size)
 end
 local function _continua(fd, skid, proto, client, func, ...)
     local data, size = func(...)

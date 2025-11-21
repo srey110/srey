@@ -4,36 +4,36 @@ static int32_t _prt = 1;
 
 static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, uint8_t client, uint8_t slice, void *data, size_t size) {
     struct websock_pack_ctx *pack = data;
-    int32_t proto = websock_pack_proto(pack);
+    int32_t proto = websock_proto(pack);
     void *rpack;
     size_t rlens;
     switch (proto) {
     case WS_PING:
-        rpack = websock_pong(client, &rlens);
+        rpack = websock_pack_pong(client, &rlens);
         ev_send(&task->loader->netev, fd, skid, rpack, rlens, 0);
         break;
     case WS_CLOSE:
-        rpack = websock_close(client, &rlens);
+        rpack = websock_pack_close(client, &rlens);
         ev_send(&task->loader->netev, fd, skid, rpack, rlens, 0);
         break;
     case WS_TEXT: {
         size_t lens;
-        void *msg = websock_pack_data(pack, &lens);
-        rpack = websock_text(client, websock_pack_fin(pack), msg, lens, &rlens);
+        void *msg = websock_data(pack, &lens);
+        rpack = websock_pack_text(client, websock_fin(pack), msg, lens, &rlens);
         ev_send(&task->loader->netev, fd, skid, rpack, rlens, 0);
         break;
     }
     case WS_BINARY: {
         size_t lens;
-        void *msg = websock_pack_data(pack, &lens);
-        rpack = websock_binary(client, websock_pack_fin(pack), msg, lens, &rlens);
+        void *msg = websock_data(pack, &lens);
+        rpack = websock_pack_binary(client, websock_fin(pack), msg, lens, &rlens);
         ev_send(&task->loader->netev, fd, skid, rpack, rlens, 0);
         break;
     }
     case WS_CONTINUE: {
         size_t lens;
-        void *msg = websock_pack_data(pack, &lens);
-        rpack = websock_continuation(client, websock_pack_fin(pack), msg, lens, &rlens);
+        void *msg = websock_data(pack, &lens);
+        rpack = websock_pack_continua(client, websock_fin(pack), msg, lens, &rlens);
         ev_send(&task->loader->netev, fd, skid, rpack, rlens, 0);
         break;
     }

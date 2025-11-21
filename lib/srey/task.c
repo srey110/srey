@@ -462,29 +462,7 @@ static int32_t _net_connect(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t err, u
     return ERR_OK;
 }
 SOCKET task_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
-    const char *ip, uint16_t port, uint64_t *skid, int32_t netev) {
-    ud_cxt ud;
-    ZERO(&ud, sizeof(ud));
-    ud.pktype = pktype;
-    ud.name = task->name;
-    ud.data = task->loader;
-    cbs_ctx cbs;
-    ZERO(&cbs, sizeof(cbs));
-    if (BIT_CHECK(netev, NETEV_SEND)) {
-        cbs.s_cb = _net_send;
-    }
-    if (NULL != evssl
-        || BIT_CHECK(netev, NETEV_AUTHSSL)) {
-        cbs.exch_cb = _net_ssl_exchanged;
-    }
-    cbs.conn_cb = _net_connect;
-    cbs.r_cb = _net_recv;
-    cbs.c_cb = _net_close;
-    cbs.ud_free = protos_udfree;
-    return ev_connect(&task->loader->netev, evssl, ip, port, &cbs, &ud, skid);
-}
-SOCKET task_conn_extra(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl, void *extra,
-    const char *ip, uint16_t port, uint64_t *skid, int32_t netev) {
+    const char *ip, uint16_t port, uint64_t *skid, int32_t netev, void *extra) {
     ud_cxt ud;
     ZERO(&ud, sizeof(ud));
     ud.pktype = pktype;

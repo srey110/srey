@@ -56,7 +56,7 @@ int32_t smtp_try_connect(task_ctx *task, smtp_ctx *smtp) {
     }
     BIT_SET(smtp->status, LINKING);
     smtp->task = task;
-    smtp->fd = task_conn_extra(task, PACK_SMTP, smtp->evssl, smtp, smtp->ip, smtp->port, &smtp->skid, 0);
+    smtp->fd = task_connect(task, PACK_SMTP, smtp->evssl, smtp->ip, smtp->port, &smtp->skid, 0, smtp);
     if (INVALID_SOCK == smtp->fd) {
         BIT_REMOVE(smtp->status, LINKING);
         LOG_WARN("requested action aborted: socket function error.");

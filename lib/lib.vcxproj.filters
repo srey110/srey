@@ -49,6 +49,9 @@
     <Filter Include="protocol\mongodb">
       <UniqueIdentifier>{ba178282-ff74-4f66-9a43-917a17232393}</UniqueIdentifier>
     </Filter>
+    <Filter Include="protocol\mqtt">
+      <UniqueIdentifier>{d19d0b55-3181-4773-b35f-3ffaad64b1d1}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="lib.h" />
@@ -277,8 +280,14 @@
     <ClInclude Include="protocol\smtp.h">
       <Filter>protocol</Filter>
     </ClInclude>
-    <ClInclude Include="protocol\mqtt.h">
-      <Filter>protocol</Filter>
+    <ClInclude Include="protocol\mqtt\mqtt.h">
+      <Filter>protocol\mqtt</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\mqtt\mqtt_macro.h">
+      <Filter>protocol\mqtt</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\mqtt\mqtt_struct.h">
+      <Filter>protocol\mqtt</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -459,8 +468,11 @@
     <ClCompile Include="protocol\smtp.c">
       <Filter>protocol</Filter>
     </ClCompile>
-    <ClCompile Include="protocol\mqtt.c">
-      <Filter>protocol</Filter>
+    <ClCompile Include="protocol\mqtt\mqtt.c">
+      <Filter>protocol\mqtt</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\mqtt\mqtt_struct.c">
+      <Filter>protocol\mqtt</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

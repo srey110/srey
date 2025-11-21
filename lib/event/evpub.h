@@ -64,5 +64,6 @@ int32_t _sock_read(SOCKET fd, IOV_TYPE *iov, uint32_t niov, void *arg, size_t *r
 int32_t _sock_send(SOCKET fd, qu_off_buf_ctx *buf_s, size_t *nsend, void *arg);
 void _ev_set_ud(ev_ctx *ctx, SOCKET fd, uint64_t skid, int32_t type, uint64_t val);
 void _set_ud(ud_cxt *ud, int32_t type, uint64_t val);
+void _set_secextra(ud_cxt *ud, void *val);
 
 #endif//EVPUB_H_

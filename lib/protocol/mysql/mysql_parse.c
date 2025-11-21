@@ -534,7 +534,7 @@ mpack_ctx *_mpack_parser(mysql_ctx *mysql, buffer_ctx *buf, binary_ctx *breader,
     switch (mysql->cur_cmd) {
     case MYSQL_QUIT:
         FREE(breader->data);
-        BIT_SET(*status, PROTO_ERROR);
+        BIT_SET(*status, PROTO_CLOSE);
         break;
     case MYSQL_INIT_DB:
         mpack = _selectdb_response(mysql, breader);

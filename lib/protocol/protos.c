@@ -2,7 +2,7 @@
 #include "protocol/custz.h"
 #include "protocol/http.h"
 #include "protocol/websock.h"
-#include "protocol/mqtt.h"
+#include "protocol/mqtt/mqtt.h"
 #include "protocol/redis.h"
 #include "protocol/mysql/mysql.h"
 #include "protocol/smtp.h"
@@ -13,6 +13,13 @@ void protos_init(_handshaked_push hspush) {
     _smtp_init(hspush);
 }
 void protos_free(void) {
+}
+void _set_secextra(ud_cxt *ud, void *val) {
+    switch (ud->pktype) {
+    case PACK_WEBSOCK:
+        _websock_secextra(ud, val);
+        break;
+    }
 }
 void protos_pkfree(pack_type pktype, void *data) {
     if (NULL == data) {

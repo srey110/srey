@@ -39,7 +39,7 @@ static void _startup(task_ctx *task) {
     on_closed(task, _net_close);
     uint64_t id;
     task_listen(task, _pktype, NULL, "0.0.0.0", 15000, &id, NETEV_ACCEPT | NETEV_SEND );
-    task_connect(task, _pktype, NULL, "127.0.0.1", 15000, &id,  NETEV_SEND);
+    task_connect(task, _pktype, NULL, "127.0.0.1", 15000, &id,  NETEV_SEND, NULL);
 }
 void task_tcp_start(loader_ctx *loader, name_t name, int32_t pt) {
     _prt = pt;

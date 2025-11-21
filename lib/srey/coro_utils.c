@@ -68,12 +68,12 @@ SOCKET wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, c
     } else {
         port = NULL == evssl ? 80 : 443;
     }
-    SOCKET fd = coro_connect(task, PACK_WEBSOCK, evssl, ip, port, skid, netev);
+    SOCKET fd = coro_connect(task, PACK_WEBSOCK, evssl, ip, port, skid, netev, NULL);
     if (INVALID_SOCK == fd) {
         FREE(host);
         return INVALID_SOCK;
     }
-    char *reqpack = websock_handshake_pack(host, secproto);
+    char *reqpack = websock_pack_handshake(host, secproto);
     FREE(host);
     ev_send(&task->loader->netev, fd, *skid, reqpack, strlen(reqpack), 0);
     int32_t err;
@@ -95,7 +95,7 @@ SOCKET wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, c
     return fd;
 }
 SOCKET redis_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ip, uint16_t port, const char *key, uint64_t *skid, int32_t netev) {
-    SOCKET fd = coro_connect(task, PACK_REDIS, evssl, ip, port, skid, netev);
+    SOCKET fd = coro_connect(task, PACK_REDIS, evssl, ip, port, skid, netev, NULL);
     if (INVALID_SOCK == fd) {
         return INVALID_SOCK;
     }
@@ -223,21 +223,21 @@ int32_t smtp_reset(smtp_ctx *smtp) {
     }
     return smtp_check_ok(pack);
 }
-int32_t smtp_quit(smtp_ctx *smtp) {
+static void _smtp_quit(smtp_ctx *smtp) {
     size_t size;
     char *cmd = smtp_pack_quit(smtp);
     if (NULL == cmd) {
-        return ERR_FAILED;
+        return;
     }
     char *pack = coro_send(smtp->task, smtp->fd, smtp->skid, cmd, strlen(cmd), &size, 0);
     if (NULL == pack) {
-        return ERR_FAILED;
+        return;
     }
-    if (ERR_OK == smtp_check_code(pack, "221")) {
-        return ERR_OK;
-    }
+    smtp_check_code(pack, "221");
+}
+void smtp_quit(smtp_ctx *smtp) {
+    _smtp_quit(smtp);
     ev_close(&smtp->task->loader->netev, smtp->fd, smtp->skid);
-    return ERR_FAILED;
 }
 static int32_t _smtp_ping(smtp_ctx *smtp) {
     size_t size;

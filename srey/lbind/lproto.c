@@ -102,34 +102,29 @@ LUAMOD_API int luaopen_custz(lua_State *lua) {
     luaL_newlib(lua, reg);
     return 1;
 }
-static int32_t _lproto_websock_handshake_pack(lua_State *lua) {
-    char *host = NULL;
-    if (LUA_TSTRING == lua_type(lua, 1)) {
-        host = (char *)luaL_checkstring(lua, 1);
-    }
-    char *secproto = NULL;
-    if (LUA_TSTRING == lua_type(lua, 2)) {
-        secproto = (char *)luaL_checkstring(lua, 2);
-    }
-    char *hspack = websock_handshake_pack(host, secproto);
-    lua_pushlightuserdata(lua, hspack);
-    lua_pushinteger(lua, strlen(hspack));
-    return 2;
-}
 static int32_t _lproto_websock_unpack(lua_State *lua) {
     struct websock_pack_ctx *pack = lua_touserdata(lua, 1);
-    lua_createtable(lua, 0, 5);
+    lua_createtable(lua, 0, 6);
     lua_pushstring(lua, "fin");
-    lua_pushinteger(lua, websock_pack_fin(pack));
+    lua_pushinteger(lua, websock_fin(pack));
     lua_settable(lua, -3);
     lua_pushstring(lua, "proto");
-    lua_pushinteger(lua, websock_pack_proto(pack));
+    lua_pushinteger(lua, websock_proto(pack));
     lua_settable(lua, -3);
-    lua_pushstring(lua, "secproto");
-    lua_pushinteger(lua, websock_pack_secproto(pack));
-    lua_settable(lua, -3);
+    int32_t secproto = websock_secproto(pack);
+    if (PACK_NONE != secproto) {
+        lua_pushstring(lua, "secproto");
+        lua_pushinteger(lua, secproto);
+        lua_settable(lua, -3);
+    }
+    void *secpack = websock_secpack(pack);
+    if (NULL != secpack) {
+        lua_pushstring(lua, "secpack");
+        lua_pushlightuserdata(lua, secpack);
+        lua_settable(lua, -3);
+    }
     size_t lens;
-    void *data = websock_pack_data(pack, &lens);
+    void *data = websock_data(pack, &lens);
     if (lens > 0) {
         lua_pushstring(lua, "data");
         lua_pushlightuserdata(lua, data);
@@ -140,31 +135,45 @@ static int32_t _lproto_websock_unpack(lua_State *lua) {
     lua_settable(lua, -3);
     return 1;
 }
-static int32_t _lproto_websock_ping(lua_State *lua) {
+static int32_t _lproto_websock_pack_handshake(lua_State *lua) {
+    char *host = NULL;
+    if (LUA_TSTRING == lua_type(lua, 1)) {
+        host = (char *)luaL_checkstring(lua, 1);
+    }
+    char *secproto = NULL;
+    if (LUA_TSTRING == lua_type(lua, 2)) {
+        secproto = (char *)luaL_checkstring(lua, 2);
+    }
+    char *hspack = websock_pack_handshake(host, secproto);
+    lua_pushlightuserdata(lua, hspack);
+    lua_pushinteger(lua, strlen(hspack));
+    return 2;
+}
+static int32_t _lproto_websock_pack_ping(lua_State *lua) {
     int32_t mask = (int32_t)luaL_checkinteger(lua, 1);
     size_t lens;
-    void *pack = websock_ping(mask, &lens);
+    void *pack = websock_pack_ping(mask, &lens);
     lua_pushlightuserdata(lua, pack);
     lua_pushinteger(lua, lens);
     return 2;
 }
-static int32_t _lproto_websock_pong(lua_State *lua) {
+static int32_t _lproto_websock_pack_pong(lua_State *lua) {
     int32_t mask = (int32_t)luaL_checkinteger(lua, 1);
     size_t lens;
-    void *pack = websock_pong(mask, &lens);
+    void *pack = websock_pack_pong(mask, &lens);
     lua_pushlightuserdata(lua, pack);
     lua_pushinteger(lua, lens);
     return 2;
 }
-static int32_t _lproto_websock_close(lua_State *lua) {
+static int32_t _lproto_websock_pack_close(lua_State *lua) {
     int32_t mask = (int32_t)luaL_checkinteger(lua, 1);
     size_t lens;
-    void *pack = websock_close(mask, &lens);
+    void *pack = websock_pack_close(mask, &lens);
     lua_pushlightuserdata(lua, pack);
     lua_pushinteger(lua, lens);
     return 2;
 }
-static int32_t _lproto_websock_text(lua_State *lua) {
+static int32_t _lproto_websock_pack_text(lua_State *lua) {
     void *data;
     size_t dlens;
     int32_t mask = (int32_t)luaL_checkinteger(lua, 1);
@@ -175,12 +184,12 @@ static int32_t _lproto_websock_text(lua_State *lua) {
         data = lua_touserdata(lua, 3);
         dlens = (size_t)luaL_checkinteger(lua, 4);
     }
-    void *pack = websock_text(mask, fin, data, dlens, &dlens);
+    void *pack = websock_pack_text(mask, fin, data, dlens, &dlens);
     lua_pushlightuserdata(lua, pack);
     lua_pushinteger(lua, dlens);
     return 2;
 }
-static int32_t _lproto_websock_binary(lua_State *lua) {
+static int32_t _lproto_websock_pack_binary(lua_State *lua) {
     void *data;
     size_t dlens;
     int32_t mask = (int32_t)luaL_checkinteger(lua, 1);
@@ -191,12 +200,12 @@ static int32_t _lproto_websock_binary(lua_State *lua) {
         data = lua_touserdata(lua, 3);
         dlens = (size_t)luaL_checkinteger(lua, 4);
     }
-    void *pack = websock_binary(mask, fin, data, dlens, &dlens);
+    void *pack = websock_pack_binary(mask, fin, data, dlens, &dlens);
     lua_pushlightuserdata(lua, pack);
     lua_pushinteger(lua, dlens);
     return 2;
 }
-static int32_t _lproto_websock_continuation(lua_State *lua) {
+static int32_t _lproto_websock_pack_continua(lua_State *lua) {
     void *data;
     size_t dlens;
     int32_t mask = (int32_t)luaL_checkinteger(lua, 1);
@@ -211,7 +220,7 @@ static int32_t _lproto_websock_continuation(lua_State *lua) {
             dlens = 0;
         }
     }
-    void *pack = websock_continuation(mask, fin, data, dlens, &dlens);
+    void *pack = websock_pack_continua(mask, fin, data, dlens, &dlens);
     lua_pushlightuserdata(lua, pack);
     lua_pushinteger(lua, dlens);
     return 2;
@@ -219,14 +228,14 @@ static int32_t _lproto_websock_continuation(lua_State *lua) {
 //srey.websock
 LUAMOD_API int luaopen_websock(lua_State *lua) {
     luaL_Reg reg[] = {
-        { "handshake_pack", _lproto_websock_handshake_pack },
         { "unpack", _lproto_websock_unpack },
-        { "ping", _lproto_websock_ping },
-        { "pong", _lproto_websock_pong },
-        { "close", _lproto_websock_close },
-        { "text", _lproto_websock_text },
-        { "binary", _lproto_websock_binary },
-        { "continuation", _lproto_websock_continuation },
+        { "pack_handshake", _lproto_websock_pack_handshake },
+        { "pack_ping", _lproto_websock_pack_ping },
+        { "pack_pong", _lproto_websock_pack_pong },
+        { "pack_close", _lproto_websock_pack_close },
+        { "pack_text", _lproto_websock_pack_text },
+        { "pack_binary", _lproto_websock_pack_binary },
+        { "pack_continua", _lproto_websock_pack_continua },
         { NULL, NULL },
     };
     luaL_newlib(lua, reg);

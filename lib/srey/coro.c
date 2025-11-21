@@ -350,8 +350,9 @@ void *coro_handshaked(task_ctx *task, SOCKET fd, uint64_t skid, int32_t *err, si
     }
     return msg.data;
 }
-SOCKET coro_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl, const char *ip, uint16_t port, uint64_t *skid, int32_t netev) {
-    SOCKET fd = task_connect(task, pktype, evssl, ip, port, skid, netev);
+SOCKET coro_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
+    const char *ip, uint16_t port, uint64_t *skid, int32_t netev, void *extra) {
+    SOCKET fd = task_connect(task, pktype, evssl, ip, port, skid, netev, extra);
     if (INVALID_SOCK == fd) {
         LOG_WARN("task: %d, connect %s:%d error.", task->name, ip, port);
         return INVALID_SOCK;

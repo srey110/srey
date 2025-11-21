@@ -136,5 +136,13 @@ void ev_ud_name(ev_ctx *ctx, SOCKET fd, uint64_t skid, name_t name);
 /// <param name="skid">链接ID</param>
 /// <param name="extra">extra</param>
 void ev_ud_extra(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *extra);
+/// <summary>
+/// 设置子协议的ud_cxt的extra,websocket
+/// </summary>
+/// <param name="ctx">ev_ctx</param>
+/// <param name="fd">socket句柄</param>
+/// <param name="skid">链接ID</param>
+/// <param name="extra">extra</param>
+void ev_ud_secextra(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *extra);
 
 #endif//EVENT_H_

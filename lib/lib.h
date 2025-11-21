@@ -36,7 +36,7 @@
 #include "protocol/smtp.h"
 #include "protocol/http.h"
 #include "protocol/websock.h"
-#include "protocol/mqtt.h"
+#include "protocol/mqtt/mqtt.h"
 #include "protocol/redis.h"
 #include "protocol/mysql/mysql_bind.h"
 #include "protocol/mysql/mysql_reader.h"

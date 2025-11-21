@@ -618,8 +618,8 @@ int32_t mysql_try_connect(task_ctx *task, mysql_ctx *mysql) {
     }
     mysql->task = task;
     BIT_SET(mysql->status, LINKING);
-    mysql->client.fd = task_conn_extra(task, PACK_MYSQL, NULL, mysql, mysql->client.ip, mysql->client.port,
-        &mysql->client.skid, NULL == mysql->client.evssl ? NETEV_NONE : NETEV_AUTHSSL);
+    mysql->client.fd = task_connect(task, PACK_MYSQL, NULL, mysql->client.ip, mysql->client.port,
+        &mysql->client.skid, NULL == mysql->client.evssl ? NETEV_NONE : NETEV_AUTHSSL, mysql);
     if (INVALID_SOCK == mysql->client.fd) {
         BIT_REMOVE(mysql->status, LINKING);
         return ERR_FAILED;

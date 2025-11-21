@@ -107,13 +107,17 @@ function ctx:send(from, rcpt, subject, data)
     self:reset()
     return rtn
 end
-function ctx:quit()
-    local fd, skid = self.smtp:sock_id()
+function ctx:_quit(fd, skid)
     local cmd, csize = self.smtp:pack_quit()
     if not cmd then
         return
     end
     srey.syn_send(fd, skid, cmd, csize, 0)
+end
+function ctx:quit()
+    local fd, skid = self.smtp:sock_id()
+    self:_quit(fd, skid)
+    srey.close(fd, skid)
 end
 
 return ctx
