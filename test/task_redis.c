@@ -22,14 +22,14 @@ static void _timeout(task_ctx *task, uint64_t sess) {
     size_t rsize;
     char *req = redis_pack(&rsize, "PING");
     redis_pack_ctx *rtn = coro_send(task, _fd, _skid, req, rsize, &rsize, 0);
-    if (RESP_STRING != rtn->proto
+    if (RESP_STRING != rtn->prot
         || 0 != _memicmp(rtn->data, "PONG", (size_t)rtn->len)) {
         LOG_WARN("PING error.");
     }
     req = redis_pack(&rsize, "INFO");
     rtn = coro_send(task, _fd, _skid, req, rsize, &rsize, 0);
-    if (RESP_BSTRING != rtn->proto
-        && RESP_VERB != rtn->proto) {
+    if (RESP_BSTRING != rtn->prot
+        && RESP_VERB != rtn->prot) {
         LOG_WARN("INFO error.");
     }
     req = redis_pack(&rsize, "SELECT 9");
@@ -39,12 +39,12 @@ static void _timeout(task_ctx *task, uint64_t sess) {
     }
     req = redis_pack(&rsize, "DBSIZE");
     rtn = coro_send(task, _fd, _skid, req, rsize, &rsize, 0);
-    if (RESP_INTEGER != rtn->proto) {
+    if (RESP_INTEGER != rtn->prot) {
         LOG_WARN("DBSIZE error.");
     }
     req = redis_pack(&rsize, "hello %d", 3);
     rtn = coro_send(task, _fd, _skid, req, rsize, &rsize, 0);
-    if (RESP_MAP != rtn->proto) {
+    if (RESP_MAP != rtn->prot) {
         LOG_WARN("hello error.");
     }
     req = redis_pack(&rsize, "SET srey 123456");
@@ -64,7 +64,7 @@ static void _timeout(task_ctx *task, uint64_t sess) {
     }
     req = redis_pack(&rsize, "GET nokey");
     rtn = coro_send(task, _fd, _skid, req, rsize, &rsize, 0);
-    if (RESP_NIL != rtn->proto) {
+    if (RESP_NIL != rtn->prot) {
         LOG_WARN("GET nokey error.");
     }
     req = redis_pack(&rsize, "LPUSH srey 123 456 789");
@@ -74,7 +74,7 @@ static void _timeout(task_ctx *task, uint64_t sess) {
     }
     req = redis_pack(&rsize, "LRANGE srey 0 -1");
     rtn = coro_send(task, _fd, _skid, req, rsize, &rsize, 0);
-    if (RESP_ARRAY != rtn->proto
+    if (RESP_ARRAY != rtn->prot
         || 3 != rtn->nelem) {
         LOG_WARN("LRANGE error.");
     }
@@ -90,7 +90,7 @@ static void _timeout(task_ctx *task, uint64_t sess) {
     }
     req = redis_pack(&rsize, "HGETALL srey");
     rtn = coro_send(task, _fd, _skid, req, rsize, &rsize, 0);
-    if (RESP_MAP != rtn->proto) {
+    if (RESP_MAP != rtn->prot) {
         LOG_WARN("HMSET error.");
     }
     req = redis_pack(&rsize, "DEL srey");

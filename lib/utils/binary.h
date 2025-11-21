@@ -8,9 +8,9 @@
 
 typedef struct binary_ctx {
     char *data;
-    size_t inc;
-    size_t size;
-    size_t offset;
+    size_t inc;//增加基数
+    size_t size;//总长度
+    size_t offset;//数据长度
 }binary_ctx;
 /// <summary>
 /// 连续内存读写初始化

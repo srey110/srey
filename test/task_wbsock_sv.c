@@ -4,10 +4,10 @@ static int32_t _prt = 1;
 
 static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, uint8_t client, uint8_t slice, void *data, size_t size) {
     struct websock_pack_ctx *pack = data;
-    int32_t proto = websock_proto(pack);
+    int32_t prot = websock_prot(pack);
     void *rpack;
     size_t rlens;
-    switch (proto) {
+    switch (prot) {
     case WS_PING:
         rpack = websock_pack_pong(client, &rlens);
         ev_send(&task->loader->netev, fd, skid, rpack, rlens, 0);
@@ -43,10 +43,10 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, 
 }
 static void _on_handshaked(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, uint8_t client, int32_t erro, void *data, size_t lens) {
     if (NULL != data) {
-        char secproto[32];
-        ZERO(secproto, sizeof(secproto));
-        memcpy(secproto, data, lens);
-        //LOG_INFO("Sec-WebSocket-Protocol:%s", secproto);
+        char secprot[32];
+        ZERO(secprot, sizeof(secprot));
+        memcpy(secprot, data, lens);
+        //LOG_INFO("Sec-WebSocket-Protocol:%s", secprot);
     }
 }
 static void _startup(task_ctx *task) {

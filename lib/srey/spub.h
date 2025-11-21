@@ -1,7 +1,7 @@
 #ifndef SVPUB_H_
 #define SVPUB_H_
 
-#include "protocol/protos.h"
+#include "protocol/prots.h"
 #include "event/event.h"
 #include "containers/sarray.h"
 #include "containers/queue.h"

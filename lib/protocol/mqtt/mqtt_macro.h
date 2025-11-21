@@ -3,11 +3,11 @@
 
 #include "base/macro.h"
 
-typedef enum mqtt_protoversion {//版本
+typedef enum mqtt_protversion {//版本
     MQTT_311 = 0x04,
     MQTT_50 = 0x05
-}mqtt_protoversion;
-typedef enum mqtt_propt_flag {
+}mqtt_protversion;
+typedef enum mqtt_prop_flag {
     PAYLOAD_FORMAT = 0x01,//载荷格式说明	字节	PUBLISH, Will Properties
     MSG_EXPIRY = 0x02,//消息过期时间	四字节整数	PUBLISH, Will Properties
     CONTENT_TYPE = 0x03,//内容类型	UTF-8编码字符串	PUBLISH, Will Properties
@@ -35,8 +35,8 @@ typedef enum mqtt_propt_flag {
     WILDCARD_SUBSCRIPTION = 0x28,//通配符订阅可用性	字节	CONNACK
     SUBSCRIPTIONID_AVAILABLE = 0x29,//订阅标识符可用性	字节	CONNACK
     SHARED_SUBSCRIPTION = 0x2A//共享订阅可用性	字节	CONNACK
-}mqtt_propt_flag;
-typedef enum mqtt_proto {
+}mqtt_prop_flag;
+typedef enum mqtt_prot {
     MQTT_RESERVED = 0x00, //禁止	保留
     MQTT_CONNECT,         //客户端到服务端  客户端请求连接服务端
     MQTT_CONNACK,         //服务端到客户端  连接报文确认
@@ -53,6 +53,6 @@ typedef enum mqtt_proto {
     MQTT_PINGRESP,        //服务端到客户端  心跳响应
     MQTT_DISCONNECT,      //两个方向都允许  断开连接通知
     MQTT_AUTH,            //两个方向都允许  认证信息交换
-}mqtt_proto;
+}mqtt_prot;
 
 #endif//MQTT_MACRO_H_

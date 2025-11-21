@@ -14,9 +14,6 @@
     <ClCompile Include="lbind\lmysql.c">
       <Filter>lbind</Filter>
     </ClCompile>
-    <ClCompile Include="lbind\lproto.c">
-      <Filter>lbind</Filter>
-    </ClCompile>
     <ClCompile Include="lbind\lpub.c">
       <Filter>lbind</Filter>
     </ClCompile>
@@ -27,6 +24,9 @@
       <Filter>lbind</Filter>
     </ClCompile>
     <ClCompile Include="lbind\lcrypt.c">
+      <Filter>lbind</Filter>
+    </ClCompile>
+    <ClCompile Include="lbind\lprot.c">
       <Filter>lbind</Filter>
     </ClCompile>
   </ItemGroup>

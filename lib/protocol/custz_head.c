@@ -1,12 +1,12 @@
 #include "protocol/custz_head.h"
-#include "protocol/protos.h"
+#include "protocol/prots.h"
 #include "utils/utils.h"
 
 #define CUSTZ_FIXED_LENS 4 //固定头长度
 
 int32_t _custz_decode_fixed(buffer_ctx *buf, size_t *hlens, size_t *size, int32_t *status) {
     if (buffer_size(buf) < CUSTZ_FIXED_LENS) {
-        BIT_SET(*status, PROTO_MOREDATA);
+        BIT_SET(*status, PROT_MOREDATA);
         return ERR_FAILED;
     }
     *hlens = CUSTZ_FIXED_LENS;
@@ -25,7 +25,7 @@ char *_custz_encode_fixed(size_t dlens, size_t *hlens, size_t *size) {
 }
 int32_t _custz_decode_flag(buffer_ctx *buf, size_t *hlens, size_t *size, int32_t *status) {
     if (buffer_size(buf) < 1){
-        BIT_SET(*status, PROTO_MOREDATA);
+        BIT_SET(*status, PROT_MOREDATA);
         return ERR_FAILED;
     }
     uint8_t flag = buffer_at(buf, 0);
@@ -36,7 +36,7 @@ int32_t _custz_decode_flag(buffer_ctx *buf, size_t *hlens, size_t *size, int32_t
         char buf16[sizeof(uint16_t)];
         *hlens += sizeof(buf16);
         if (*hlens > buffer_size(buf)) {
-            BIT_SET(*status, PROTO_MOREDATA);
+            BIT_SET(*status, PROT_MOREDATA);
             return ERR_FAILED;
         }
         ASSERTAB(sizeof(buf16) == buffer_copyout(buf, sizeof(flag), buf16, sizeof(buf16)), "copy buffer error.");
@@ -45,7 +45,7 @@ int32_t _custz_decode_flag(buffer_ctx *buf, size_t *hlens, size_t *size, int32_t
         char buf32[sizeof(uint32_t)];
         *hlens += sizeof(buf32);
         if (*hlens > buffer_size(buf)) {
-            BIT_SET(*status, PROTO_MOREDATA);
+            BIT_SET(*status, PROT_MOREDATA);
             return ERR_FAILED;
         }
         ASSERTAB(sizeof(buf32) == buffer_copyout(buf, sizeof(flag), buf32, sizeof(buf32)), "copy buffer error.");
@@ -54,7 +54,7 @@ int32_t _custz_decode_flag(buffer_ctx *buf, size_t *hlens, size_t *size, int32_t
         char buf64[sizeof(uint64_t)];
         *hlens += sizeof(buf64);
         if (*hlens > buffer_size(buf)) {
-            BIT_SET(*status, PROTO_MOREDATA);
+            BIT_SET(*status, PROT_MOREDATA);
             return ERR_FAILED;
         }
         ASSERTAB(sizeof(buf64) == buffer_copyout(buf, sizeof(flag), buf64, sizeof(buf64)), "copy buffer error.");
@@ -92,7 +92,7 @@ char *_custz_encode_flag(size_t dlens, size_t *hlens, size_t *size) {
 }
 int32_t _custz_decode_variable(buffer_ctx *buf, size_t *hlens, size_t *size, int32_t *status) {
     if (buffer_size(buf) < 1) {
-        BIT_SET(*status, PROTO_MOREDATA);
+        BIT_SET(*status, PROT_MOREDATA);
         return ERR_FAILED;
     }
     *size = 0;
@@ -108,9 +108,9 @@ int32_t _custz_decode_variable(buffer_ctx *buf, size_t *hlens, size_t *size, int
         mcl *= 0x80;
     }
     if (buffer_size(buf) >= 8) {
-        BIT_SET(*status, PROTO_ERROR);
+        BIT_SET(*status, PROT_ERROR);
     } else {
-        BIT_SET(*status, PROTO_MOREDATA);
+        BIT_SET(*status, PROT_MOREDATA);
     }
     return ERR_FAILED;
 }

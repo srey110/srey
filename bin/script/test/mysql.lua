@@ -24,7 +24,7 @@ local function print_reader(reader)
     end
 end
 local function _timeout()
-    local mctx = mysql.new("192.168.8.3", 3306, SSL_NAME.NONE, "admin", "12345678", "test", "utf8", 0)
+    local mctx = mysql.new("127.0.0.1", 3306, SSL_NAME.NONE, "admin", "12345678", "test", "utf8", 0)
     if not mctx:connect() then
         printd("mysql connect error")
     end

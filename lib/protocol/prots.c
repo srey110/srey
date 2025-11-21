@@ -1,4 +1,4 @@
-#include "protocol/protos.h"
+#include "protocol/prots.h"
 #include "protocol/custz.h"
 #include "protocol/http.h"
 #include "protocol/websock.h"
@@ -7,12 +7,12 @@
 #include "protocol/mysql/mysql.h"
 #include "protocol/smtp.h"
 
-void protos_init(_handshaked_push hspush) {
+void prots_init(_handshaked_push hspush) {
     _websock_init(hspush);
     _mysql_init(hspush);
     _smtp_init(hspush);
 }
-void protos_free(void) {
+void prots_free(void) {
 }
 void _set_secextra(ud_cxt *ud, void *val) {
     switch (ud->pktype) {
@@ -21,7 +21,7 @@ void _set_secextra(ud_cxt *ud, void *val) {
         break;
     }
 }
-void protos_pkfree(pack_type pktype, void *data) {
+void prots_pkfree(pack_type pktype, void *data) {
     if (NULL == data) {
         return;
     }
@@ -46,10 +46,10 @@ void protos_pkfree(pack_type pktype, void *data) {
         break;
     }
 }
-void protos_hsfree(pack_type pktype, void *data) {
+void prots_hsfree(pack_type pktype, void *data) {
     FREE(data);
 }
-void protos_udfree(void *arg) {
+void prots_udfree(void *arg) {
     if (NULL == arg) {
         return;
     }
@@ -78,7 +78,7 @@ void protos_udfree(void *arg) {
         break;
     }
 }
-void protos_closed(ud_cxt *ud) {
+void prots_closed(ud_cxt *ud) {
     if (NULL == ud) {
         return;
     }
@@ -93,10 +93,10 @@ void protos_closed(ud_cxt *ud) {
         break;
     }
 }
-int32_t protos_connected(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud) {
+int32_t prots_connected(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud) {
     return ERR_OK;
 }
-int32_t protos_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud) {
+int32_t prots_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud) {
     switch (ud->pktype) {
     case PACK_MYSQL:
         return _mysql_ssl_exchanged(ev, ud);
@@ -116,10 +116,10 @@ static void *_unpack_default(buffer_ctx *buf, size_t *size, ud_cxt *ud) {
     *size = lens;
     return unpack;
 }
-void *protos_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
+void *prots_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status) {
     *size = 0;
-    *status = PROTO_NONE;
+    *status = PROT_NONE;
     void *unpack;
     switch (ud->pktype) {
     case PACK_HTTP:
@@ -139,7 +139,6 @@ void *protos_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
     case PACK_CUSTZ_VAR:
         unpack = custz_unpack(ud->pktype, buf, size, status);
         break;
-
     case PACK_REDIS:
         unpack = redis_unpack(buf, ud, status);
         break;

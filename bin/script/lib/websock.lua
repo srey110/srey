@@ -4,8 +4,8 @@ local websock = require("srey.websock")
 local srey_url = require("srey.url")
 local PACK_TYPE = PACK_TYPE
 local wbsk = {}
---websock proto
-WEBSOCK_PROTO = {
+--websock prot
+WEBSOCK_PROT = {
     CONTINUA = 0x00,
     TEXT =     0x01,
     BINARY =   0x02,
@@ -14,28 +14,28 @@ WEBSOCK_PROTO = {
     PONG =     0x0A
 }
 
-function wbsk.protostr(proto)
-    if WEBSOCK_PROTO.CONTINUA == proto then
+function wbsk.prottostr(prot)
+    if WEBSOCK_PROT.CONTINUA == prot then
         return "CONTINUA"
-    elseif WEBSOCK_PROTO.TEXT == proto  then
+    elseif WEBSOCK_PROT.TEXT == prot  then
         return "TEXT"
-    elseif WEBSOCK_PROTO.BINARY == proto  then
+    elseif WEBSOCK_PROT.BINARY == prot  then
         return "BINARY"
-    elseif WEBSOCK_PROTO.CLOSE == proto  then
+    elseif WEBSOCK_PROT.CLOSE == prot  then
         return "CLOSE"
-    elseif WEBSOCK_PROTO.PING == proto  then
+    elseif WEBSOCK_PROT.PING == prot  then
         return "PING"
-    elseif WEBSOCK_PROTO.PONG == proto  then
+    elseif WEBSOCK_PROT.PONG == prot  then
         return "PONG"
     end
     return "UNKNOWN"
 end
---{fin, proto, secproto,secpack, data, size}
+--{fin, prot, secprot,secpack, data, size}
 function wbsk.unpack(pack)
     return websock.unpack(pack)
 end
 --ws://host:port
-function wbsk.connect(ws, sslname, secproto, netev)
+function wbsk.connect(ws, sslname, secprot, netev)
     local url = srey_url.parse(ws)
     if "ws" ~= url.scheme or not url.host then
         return INVALID_SOCK
@@ -60,14 +60,14 @@ function wbsk.connect(ws, sslname, secproto, netev)
     if INVALID_SOCK == fd then
         return INVALID_SOCK
     end
-    local hspack, size = websock.pack_handshake(url.host, secproto)
+    local hspack, size = websock.pack_handshake(url.host, secprot)
     srey.send(fd, skid, hspack, size, 0)
     local ok, data, dlens = srey.wait_handshaked(fd, skid)
     if not ok then
         return INVALID_SOCK
     end
-    if secproto and #secproto > 0 then
-        if srey.ud_str(data, dlens) ~= secproto then
+    if secprot and #secprot > 0 then
+        if srey.ud_str(data, dlens) ~= secprot then
             srey.close(fd, skid)
             return INVALID_SOCK
         end
@@ -98,15 +98,15 @@ end
 function wbsk.continua(client, fin, data, size)
     return websock.pack_continua(client, fin, data, size)
 end
-local function _continua(fd, skid, proto, client, func, ...)
+local function _continua(fd, skid, prot, client, func, ...)
     local data, size = func(...)
     if not data then
         return
     end
-    if WEBSOCK_PROTO.TEXT == proto then
+    if WEBSOCK_PROT.TEXT == prot then
         data, size = wbsk.text_fin(client, 0, data, size)
         srey.send(fd, skid, data, size, 0)
-    elseif WEBSOCK_PROTO.BINARY == proto then
+    elseif WEBSOCK_PROT.BINARY == prot then
         data, size = wbsk.binary_fin(client, 0, data, size)
         srey.send(fd, skid, data, size, 0)
     end
@@ -123,10 +123,10 @@ local function _continua(fd, skid, proto, client, func, ...)
     end
 end
 function wbsk.text_continua(fd, skid, client, func, ...)
-    _continua(fd, skid, WEBSOCK_PROTO.TEXT, client, func, ...)
+    _continua(fd, skid, WEBSOCK_PROT.TEXT, client, func, ...)
 end
 function wbsk.binary_continua(fd, skid, client, func, ...)
-    _continua(fd, skid, WEBSOCK_PROTO.BINARY, client, func, ...)
+    _continua(fd, skid, WEBSOCK_PROT.BINARY, client, func, ...)
 end
 
 return wbsk

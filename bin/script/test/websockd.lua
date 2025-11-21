@@ -35,8 +35,8 @@ srey.startup(
         srey.on_recved(
             function (pktype, fd, skid, client, slice, data, size)
                 local wbskpk = wbsk.unpack(data)
-                --printd("websock proto %s", wbsk.protostr(wbskpk.proto))
-                if WEBSOCK_PROTO.CLOSE == wbskpk.proto then
+                --printd("websock prot %s", wbsk.prottostr(wbskpk.prot))
+                if WEBSOCK_PROT.CLOSE == wbskpk.prot then
                     srey.close(fd, skid)
                 end
                 if wbskpk.data then

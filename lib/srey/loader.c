@@ -187,7 +187,7 @@ static void _monitor_loop(void *arg) {
 loader_ctx *loader_init(uint16_t nnet, uint16_t nworker) {
     loader_ctx *loader;
     CALLOC(loader, 1, sizeof(loader_ctx));
-    protos_init(_message_handshaked_push);
+    prots_init(_message_handshaked_push);
     _mcoro_init(0);
 #if WITH_SSL
     evssl_init();
@@ -277,7 +277,7 @@ void loader_free(loader_ctx *loader) {
     }
     hashmap_free(loader->maptasks);
     rwlock_free(&loader->lckmaptasks);
-    protos_free();
+    prots_free();
 #if WITH_SSL
     evssl_pool_free();
 #endif

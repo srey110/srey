@@ -3,7 +3,7 @@
 #include "protocol/mysql/mysql_utils.h"
 #include "protocol/mysql/mysql_pack.h"
 #include "mysql_bind.h"
-#include "protocol/protos.h"
+#include "protocol/prots.h"
 #include "crypt/digest.h"
 #include "srey/task.h"
 #if WITH_SSL
@@ -271,7 +271,7 @@ static void _mysql_auth_request(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t
     binary_ctx breader;
     binary_init(&breader, payload, payload_lens, 0);
     if (0x0a != binary_get_int8(&breader)) {//protocol version
-        BIT_SET(*status, PROTO_ERROR);
+        BIT_SET(*status, PROT_ERROR);
         FREE(payload);
         LOG_ERROR("mysql protocol version not 0x0a.");
         return;
@@ -288,13 +288,13 @@ static void _mysql_auth_request(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t
     mysql->server.caps |= ((uint32_t)binary_get_uinteger(&breader, 2, 1) << 16);//capability_flags_2
     if (!BIT_CHECK(mysql->server.caps, CLIENT_PROTOCOL_41)
         || !BIT_CHECK(mysql->server.caps, CLIENT_PLUGIN_AUTH)) {
-        BIT_SET(*status, PROTO_ERROR);
+        BIT_SET(*status, PROT_ERROR);
         FREE(payload);
         LOG_ERROR("CLIENT_PROTOCOL_41 or CLIENT_PLUGIN_AUTH is requred.");
         return;
     }
     if ((size_t)binary_get_uint8(&breader) != sizeof(mysql->server.salt) + 1) {//auth_plugin_data_len
-        BIT_SET(*status, PROTO_ERROR);
+        BIT_SET(*status, PROT_ERROR);
         FREE(payload);
         LOG_ERROR("auth_plugin_data_len error.");
         return;
@@ -304,14 +304,14 @@ static void _mysql_auth_request(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t
     memcpy(mysql->server.salt + 8, val, 12);
     val = binary_get_string(&breader, 0);//auth_plugin_name
     if (strlen(val) > sizeof(mysql->server.plugin) - 1) {
-        BIT_SET(*status, PROTO_ERROR);
+        BIT_SET(*status, PROT_ERROR);
         LOG_ERROR("auth plugin name %s too long.", val);
         FREE(payload);
         return;
     }
     if (0 != strcmp(val, CACHING_SHA2_PASSWORLD)
         && 0 != strcmp(val, MYSQL_NATIVE_PASSWORLD)) {
-        BIT_SET(*status, PROTO_ERROR);
+        BIT_SET(*status, PROT_ERROR);
         LOG_ERROR("unknow auth plugin %s.", val);
         FREE(payload);
         return;
@@ -467,7 +467,7 @@ static int32_t _mysql_auth_switch_response(mysql_ctx *mysql, ev_ctx *ev, mpack_a
 }
 static void _mysql_auth_ok(mysql_ctx *mysql, ud_cxt *ud, int32_t *status) {
     if (ERR_OK != _hs_push(mysql->client.fd, mysql->client.skid, 1, ud, ERR_OK, NULL, 0)) {
-        BIT_SET(*status, PROTO_ERROR);
+        BIT_SET(*status, PROT_ERROR);
         return;
     }
     BIT_SET(mysql->status, AUTHED);
@@ -476,7 +476,7 @@ static void _mysql_auth_ok(mysql_ctx *mysql, ud_cxt *ud, int32_t *status) {
 static void _mysql_auth_err(mysql_ctx *mysql, binary_ctx *breader, int32_t *status) {
     mpack_err err;
     _mpack_err(mysql, breader, &err);
-    BIT_SET(*status, PROTO_ERROR);
+    BIT_SET(*status, PROT_ERROR);
 }
 static void _mysql_auth_switch(mysql_ctx *mysql, ev_ctx *ev, binary_ctx *breader, int32_t *status) {
     if (BIT_CHECK(mysql->client.caps, CLIENT_PLUGIN_AUTH)) {
@@ -484,17 +484,17 @@ static void _mysql_auth_switch(mysql_ctx *mysql, ev_ctx *ev, binary_ctx *breader
         auswitch.plugin = binary_get_string(breader, 0);
         auswitch.provided.lens = breader->size - breader->offset;
         if (0 == auswitch.provided.lens) {
-            BIT_SET(*status, PROTO_ERROR);
+            BIT_SET(*status, PROT_ERROR);
             return;
         }
         auswitch.provided.data = binary_get_string(breader, auswitch.provided.lens);
         if (ERR_OK != _mysql_auth_switch_response(mysql, ev, &auswitch)) {
-            BIT_SET(*status, PROTO_ERROR);
+            BIT_SET(*status, PROT_ERROR);
             LOG_ERROR("mysql auth switch failed.");
         }
         return;
     }
-    BIT_SET(*status, PROTO_ERROR);
+    BIT_SET(*status, PROT_ERROR);
     LOG_ERROR("mysql auth failed.");
 }
 static void _mysql_caching_sha2(mysql_ctx *mysql, ev_ctx *ev, binary_ctx *breader, int32_t *status) {
@@ -510,7 +510,7 @@ static void _mysql_caching_sha2(mysql_ctx *mysql, ev_ctx *ev, binary_ctx *breade
             }
             break;
         default:
-            BIT_SET(*status, PROTO_ERROR);
+            BIT_SET(*status, PROT_ERROR);
             LOG_ERROR("unknow command.");
             break;
         }
@@ -520,12 +520,12 @@ static void _mysql_caching_sha2(mysql_ctx *mysql, ev_ctx *ev, binary_ctx *breade
         size_t klens = breader->size - 1;
         char *pubkey = binary_get_string(breader, klens);
         if (ERR_OK != _mysql_full_auth(mysql, ev, pubkey, klens)) {
-            BIT_SET(*status, PROTO_ERROR);
+            BIT_SET(*status, PROT_ERROR);
             LOG_ERROR("_mysql_full_auth error.");
         }
         return;
     }
-    BIT_SET(*status, PROTO_ERROR);
+    BIT_SET(*status, PROT_ERROR);
     LOG_ERROR("unknow command.");
 }
 static void _mysql_auth_process(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
@@ -551,7 +551,7 @@ static void _mysql_auth_process(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t
         _mysql_caching_sha2(mysql, ev, &breader, status);
         break;
     default:
-        BIT_SET(*status, PROTO_ERROR);
+        BIT_SET(*status, PROT_ERROR);
         LOG_ERROR("unknow command.");
         break;
     }
@@ -570,7 +570,7 @@ static mpack_ctx *_mysql_command_process(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud
 }
 void *mysql_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     if (NULL == ud->extra) {
-        BIT_SET(*status, PROTO_ERROR);
+        BIT_SET(*status, PROT_ERROR);
         return NULL;
     }
     mpack_ctx *pack = NULL;
@@ -585,7 +585,7 @@ void *mysql_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
         pack = _mysql_command_process(ev, buf, ud, status);
         break;
     default:
-        BIT_SET(*status, PROTO_ERROR);
+        BIT_SET(*status, PROT_ERROR);
         break;
     }
     return pack;

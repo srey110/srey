@@ -120,10 +120,10 @@ void _message_clean(msg_type mtype, pack_type pktype, void *data) {
     switch (mtype) {
     case MSG_TYPE_RECV:
     case MSG_TYPE_RECVFROM:
-        protos_pkfree(pktype, data);
+        prots_pkfree(pktype, data);
         break;
     case MSG_TYPE_HANDSHAKED:
-        protos_hsfree(pktype, data);
+        prots_hsfree(pktype, data);
         break;
     case MSG_TYPE_REQUEST:
     case MSG_TYPE_RESPONSE:
@@ -290,7 +290,7 @@ static int32_t _net_accept(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud) {
     if (NULL == task) {
         return ERR_FAILED;
     }
-    int32_t rtn = protos_connected(ev, fd, skid, ud);
+    int32_t rtn = prots_connected(ev, fd, skid, ud);
     if (ERR_OK == rtn) {
         message_ctx msg;
         msg.mtype = MSG_TYPE_ACCEPT;
@@ -339,31 +339,31 @@ static void _net_recv(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, buff
     size_t esize;
     for (;;) {
         size = buffer_size(buf);
-        data = protos_unpack(ev, fd, skid, client, buf, ud, &msg.size, &status);
+        data = prots_unpack(ev, fd, skid, client, buf, ud, &msg.size, &status);
         if (NULL != data) {
             msg.data = data;
             msg.sess = ud->sess;
             ud->sess = 0;
-            if (BIT_CHECK(status, PROTO_SLICE_START)) {
-                msg.slice = PROTO_SLICE_START;
-            } else if(BIT_CHECK(status, PROTO_SLICE)) {
-                msg.slice = PROTO_SLICE;
-            } else if(BIT_CHECK(status, PROTO_SLICE_END)) {
-                msg.slice = PROTO_SLICE_END;
+            if (BIT_CHECK(status, PROT_SLICE_START)) {
+                msg.slice = PROT_SLICE_START;
+            } else if(BIT_CHECK(status, PROT_SLICE)) {
+                msg.slice = PROT_SLICE;
+            } else if(BIT_CHECK(status, PROT_SLICE_END)) {
+                msg.slice = PROT_SLICE_END;
             } else {
                 msg.slice = 0;
             }
             _task_message_push(task, &msg);
         }
-        if (BIT_CHECK(status, PROTO_ERROR)
-            || BIT_CHECK(status, PROTO_CLOSE)) {
+        if (BIT_CHECK(status, PROT_ERROR)
+            || BIT_CHECK(status, PROT_CLOSE)) {
             ev_close(ev, fd, skid);
             break;
         }
         esize = buffer_size(buf);
         if (0 == esize
             || size == esize
-            || BIT_CHECK(status, PROTO_MOREDATA)) {
+            || BIT_CHECK(status, PROT_MOREDATA)) {
             break;
         }
     }
@@ -391,7 +391,7 @@ static void _net_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t cli
         ev_close(ev, fd, skid);
         return;
     }
-    if (ERR_OK == protos_ssl_exchanged(ev, fd, skid, client, ud)) {
+    if (ERR_OK == prots_ssl_exchanged(ev, fd, skid, client, ud)) {
         message_ctx msg;
         msg.mtype = MSG_TYPE_SSLEXCHANGED;
         msg.pktype = ud->pktype;
@@ -417,7 +417,7 @@ static void _net_close(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_
     msg.skid = skid;
     msg.client = client;
     msg.sess = skid;
-    protos_closed(ud);
+    prots_closed(ud);
     _task_message_push(task, &msg);
     task_ungrab(task);
 }
@@ -442,7 +442,7 @@ int32_t task_listen(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
     }
     cbs.r_cb = _net_recv;
     cbs.c_cb = _net_close;
-    cbs.ud_free = protos_udfree;
+    cbs.ud_free = prots_udfree;
     return ev_listen(&task->loader->netev, evssl, ip, port, &cbs, &ud, id);
 }
 static int32_t _net_connect(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t err, ud_cxt *ud) {
@@ -480,7 +480,7 @@ SOCKET task_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
     cbs.conn_cb = _net_connect;
     cbs.r_cb = _net_recv;
     cbs.c_cb = _net_close;
-    cbs.ud_free = protos_udfree;
+    cbs.ud_free = prots_udfree;
     return ev_connect(&task->loader->netev, evssl, ip, port, &cbs, &ud, skid);
 }
 static void _net_recvfrom(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
@@ -512,7 +512,7 @@ SOCKET task_udp(task_ctx *task, const char *ip, uint16_t port, uint64_t *skid) {
     cbs_ctx cbs;
     ZERO(&cbs, sizeof(cbs));
     cbs.rf_cb = _net_recvfrom;
-    cbs.ud_free = protos_udfree;
+    cbs.ud_free = prots_udfree;
     return ev_udp(&task->loader->netev, ip, port, &cbs, &ud, skid);
 }
 void on_accepted(task_ctx *task, _net_accept_cb _accept) {

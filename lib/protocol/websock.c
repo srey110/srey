@@ -1,5 +1,5 @@
 #include "protocol/websock.h"
-#include "protocol/protos.h"
+#include "protocol/prots.h"
 #include "protocol/http.h"
 #include "protocol/mqtt/mqtt.h"
 #include "crypt/base64.h"
@@ -13,9 +13,9 @@ typedef enum parse_status {
 }parse_status;
 typedef struct websock_pack_ctx {
     int8_t fin;
-    int8_t proto;
+    int8_t prot;
     int8_t mask;
-    pack_type secproto;
+    pack_type secprot;
     void *secpack;
     char key[4];
     size_t remain;
@@ -24,7 +24,7 @@ typedef struct websock_pack_ctx {
 }websock_pack_ctx;
 typedef struct websock_ctx {
     int8_t slice;
-    pack_type secproto;//子协议
+    pack_type secprot;//子协议
     buffer_ctx *buf;
     ud_cxt *ud;
     websock_pack_ctx *pack;
@@ -42,7 +42,7 @@ void _websock_pkfree(void *data) {
         return;
     }
     websock_pack_ctx *pack = (websock_pack_ctx *)data;
-    protos_pkfree(pack->secproto, pack->secpack);
+    prots_pkfree(pack->secprot, pack->secpack);
     FREE(data);
 }
 void _websock_udfree(ud_cxt *ud) {
@@ -51,7 +51,7 @@ void _websock_udfree(ud_cxt *ud) {
     }
     websock_ctx *ws = (websock_ctx *)ud->extra;
     _websock_pkfree(ws->pack);
-    protos_udfree(ws->ud);
+    prots_udfree(ws->ud);
     FREE(ws->ud);
     if (NULL != ws->buf) {
         buffer_free(ws->buf);
@@ -72,8 +72,8 @@ void _websock_secextra(ud_cxt *ud, void *val) {
     }
     ws->ud->extra = val;
 }
-static int32_t _websock_sec_proto(char *secproto, pack_type *sectype) {
-    if (0 == _memicmp(secproto, "mqtt", strlen("mqtt"))) {
+static int32_t _websock_sec_prot(char *secprot, pack_type *sectype) {
+    if (0 == _memicmp(secprot, "mqtt", strlen("mqtt"))) {
         *sectype = PACK_MQTT;
         return ERR_OK;
     }
@@ -152,21 +152,21 @@ static int32_t _websock_handshake_server(ev_ctx *ev, SOCKET fd, uint64_t skid, i
     ud_cxt *ud, struct http_pack_ctx *hpack, int32_t *status, pack_type *sectype) {
     http_header_ctx *signstr = _websock_handshake_svcheck(hpack);
     if (NULL == signstr) {
-        BIT_SET(*status, PROTO_ERROR);
+        BIT_SET(*status, PROT_ERROR);
         _hs_push(fd, skid, client, ud, ERR_FAILED, NULL, 0);
         return ERR_FAILED;
     }
     size_t lens = 0;
     char *sechead = http_header(hpack, "Sec-WebSocket-Protocol", &lens);
-    char *secproto = NULL;
+    char *secprot = NULL;
     if (NULL != sechead
         && 0 != lens) {
-        MALLOC(secproto, lens + 1);
-        memcpy(secproto, sechead, lens);
-        secproto[lens] = '\0';
-        if (ERR_OK != _websock_sec_proto(secproto, sectype)) {
+        MALLOC(secprot, lens + 1);
+        memcpy(secprot, sechead, lens);
+        secprot[lens] = '\0';
+        if (ERR_OK != _websock_sec_prot(secprot, sectype)) {
             _hs_push(fd, skid, client, ud, ERR_FAILED, NULL, 0);
-            FREE(secproto);
+            FREE(secprot);
             return ERR_FAILED;
         }
     }
@@ -178,13 +178,13 @@ static int32_t _websock_handshake_server(ev_ctx *ev, SOCKET fd, uint64_t skid, i
     char b64[B64EN_SIZE(SHA1_BLOCK_SIZE)];
     _websock_sign(signstr->value.data, signstr->value.lens, b64);
     http_pack_head(&bwriter, "Sec-WebSocket-Accept", b64);
-    if (NULL != secproto) {
-        http_pack_head(&bwriter, "Sec-WebSocket-Protocol", secproto);
+    if (NULL != secprot) {
+        http_pack_head(&bwriter, "Sec-WebSocket-Protocol", secprot);
     }
     http_pack_end(&bwriter);
     ev_send(ev, fd, skid, bwriter.data, bwriter.offset, 0);
-    if (ERR_OK != _hs_push(fd, skid, client, ud, ERR_OK, secproto, lens)) {
-        BIT_SET(*status, PROTO_ERROR);
+    if (ERR_OK != _hs_push(fd, skid, client, ud, ERR_OK, secprot, lens)) {
+        BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     } else {
         ud->status = START;
@@ -247,31 +247,31 @@ static int32_t _websock_handshake_client(SOCKET fd, uint64_t skid, int32_t clien
     struct http_pack_ctx *hpack, int32_t *status, pack_type *sectype) {
     http_header_ctx *signstr = websock_client_checkhs(hpack);
     if (NULL == signstr) {
-        BIT_SET(*status, PROTO_ERROR);
+        BIT_SET(*status, PROT_ERROR);
         _hs_push(fd, skid, client, ud, ERR_FAILED, NULL, 0);
         return ERR_FAILED;
     }
     if (!buf_compare(&signstr->value, _hs_sign, strlen(_hs_sign))){
-        BIT_SET(*status, PROTO_ERROR);
+        BIT_SET(*status, PROT_ERROR);
         _hs_push(fd, skid, client, ud, ERR_FAILED, NULL, 0);
         return ERR_FAILED;
     }
     size_t lens = 0;
     char *sechead = http_header(hpack, "Sec-WebSocket-Protocol", &lens);
-    char *secproto = NULL;
+    char *secprot = NULL;
     if (NULL != sechead
         && 0 != lens) {
-        MALLOC(secproto, lens + 1);
-        memcpy(secproto, sechead, lens);
-        secproto[lens] = '\0';
-        if (ERR_OK != _websock_sec_proto(secproto, sectype)) {
+        MALLOC(secprot, lens + 1);
+        memcpy(secprot, sechead, lens);
+        secprot[lens] = '\0';
+        if (ERR_OK != _websock_sec_prot(secprot, sectype)) {
             _hs_push(fd, skid, client, ud, ERR_FAILED, NULL, 0);
-            FREE(secproto);
+            FREE(secprot);
             return ERR_FAILED;
         }
     }
-    if (ERR_OK != _hs_push(fd, skid, client, ud, ERR_OK, secproto, lens)) {
-        BIT_SET(*status, PROTO_ERROR);
+    if (ERR_OK != _hs_push(fd, skid, client, ud, ERR_OK, secprot, lens)) {
+        BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     } else {
         ud->status = START;
@@ -286,7 +286,7 @@ static void _websock_handshake(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t cli
         return;
     }
     if (0 != transfer) {
-        BIT_SET(*status, PROTO_ERROR);
+        BIT_SET(*status, PROT_ERROR);
         _hs_push(fd, skid, client, ud, ERR_FAILED, NULL, 0);
         _http_pkfree(hpack);
         return;
@@ -301,7 +301,7 @@ static void _websock_handshake(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t cli
     if (ERR_OK == rtn) {
         CALLOC(ud->extra, 1, sizeof(websock_ctx));
         websock_ctx *ws = (websock_ctx *)ud->extra;
-        ws->secproto = sectype;
+        ws->secprot = sectype;
         if (PACK_NONE != sectype) {//有子协议
             MALLOC(ws->buf, sizeof(buffer_ctx));
             buffer_init(ws->buf);
@@ -318,9 +318,9 @@ static void _websock_mqtt_buffree(void *buf) {
     _websock_pkfree(pack);
 }
 static websock_pack_ctx *_websock_sec_mqtt(websock_ctx *ws, websock_pack_ctx *pack, int32_t client, int32_t *status) {
-    if (WS_BINARY != pack->proto
-        && WS_CONTINUE != pack->proto) {
-        BIT_SET(*status, PROTO_ERROR);
+    if (WS_BINARY != pack->prot
+        && WS_CONTINUE != pack->prot) {
+        BIT_SET(*status, PROT_ERROR);
         _websock_pkfree(pack);
         return NULL;
     }
@@ -332,21 +332,21 @@ static websock_pack_ctx *_websock_sec_mqtt(websock_ctx *ws, websock_pack_ctx *pa
     websock_pack_ctx *rtn;
     CALLOC(rtn, 1, sizeof(websock_pack_ctx));
     rtn->fin = 1;
-    rtn->proto = WS_BINARY;
-    rtn->secproto = ws->secproto;
+    rtn->prot = WS_BINARY;
+    rtn->secprot = ws->secprot;
     rtn->secpack = mpack;
     return rtn;
 }
 static websock_pack_ctx *_websock_sec_unpack(websock_ctx *ws, websock_pack_ctx *pack, int32_t client, int32_t *status) {
     websock_pack_ctx *rtn = NULL;
-    switch (ws->secproto) {
+    switch (ws->secprot) {
     case PACK_MQTT:
         rtn = _websock_sec_mqtt(ws, pack, client, status);
         break;
     }
     //移除标记,可以继续循环
-    if (BIT_CHECK(*status, PROTO_MOREDATA)) {
-        BIT_REMOVE(*status, PROTO_MOREDATA);
+    if (BIT_CHECK(*status, PROT_MOREDATA)) {
+        BIT_REMOVE(*status, PROT_MOREDATA);
     }
     return rtn;
 }
@@ -354,7 +354,7 @@ static websock_pack_ctx *_websock_parse_data(buffer_ctx *buf, int32_t client, ud
     websock_ctx *ws = (websock_ctx *)ud->extra;
     websock_pack_ctx *pack = ws->pack;
     if (pack->remain > buffer_size(buf)) {
-        BIT_SET(*status, PROTO_MOREDATA);
+        BIT_SET(*status, PROT_MOREDATA);
         return NULL;
     }
     if (pack->remain > 0) {
@@ -371,31 +371,31 @@ static websock_pack_ctx *_websock_parse_data(buffer_ctx *buf, int32_t client, ud
     }
     //起始帧:FIN为0,opcode非0 中间帧:FIN为0,opcode为0 结束帧:FIN为1,opcode为0
     if (0 == pack->fin 
-        && 0 != pack->proto) {
+        && 0 != pack->prot) {
         if (0 != ws->slice) {
-            BIT_SET(*status, PROTO_ERROR);
+            BIT_SET(*status, PROT_ERROR);
             return NULL;
         }
         ws->slice = 1;
-        BIT_SET(*status, PROTO_SLICE_START);
+        BIT_SET(*status, PROT_SLICE_START);
     } else if (0 == pack->fin
-        && 0 == pack->proto) {
-        BIT_SET(*status, PROTO_SLICE);
+        && 0 == pack->prot) {
+        BIT_SET(*status, PROT_SLICE);
     } else if (1 == pack->fin
-        && 0 == pack->proto) {
+        && 0 == pack->prot) {
         ws->slice = 0;
-        BIT_SET(*status, PROTO_SLICE_END);
+        BIT_SET(*status, PROT_SLICE_END);
     }
-    if (WS_CLOSE == pack->proto) {
-        BIT_SET(*status, PROTO_CLOSE);
+    if (WS_CLOSE == pack->prot) {
+        BIT_SET(*status, PROT_CLOSE);
     }
     ws->pack = NULL;
     ud->status = START;
-    if (PACK_NONE != ws->secproto//有子协议
+    if (PACK_NONE != ws->secprot//有子协议
         && pack->dlens > 0//排除空包
-        && (WS_CONTINUE == pack->proto
-            || WS_TEXT == pack->proto
-            || WS_BINARY == pack->proto)) {
+        && (WS_CONTINUE == pack->prot
+            || WS_TEXT == pack->prot
+            || WS_BINARY == pack->prot)) {
         return _websock_sec_unpack(ws, pack, client, status);
     } else {
         return pack;
@@ -422,7 +422,7 @@ static websock_pack_ctx *_websock_parse_pllens(buffer_ctx *buf, size_t blens,
         ASSERTAB(sizeof(pllens) == buffer_copyout(buf, HEAD_LESN, &pllens, sizeof(pllens)), "copy buffer failed.");
         pllens = ntohs(pllens);
         if (PACK_TOO_LONG(pllens)) {
-            BIT_SET(*status, PROTO_ERROR);
+            BIT_SET(*status, PROT_ERROR);
             return NULL;
         }
         MALLOC(pack, sizeof(websock_pack_ctx) + pllens);
@@ -442,7 +442,7 @@ static websock_pack_ctx *_websock_parse_pllens(buffer_ctx *buf, size_t blens,
         ASSERTAB(sizeof(pllens) == buffer_copyout(buf, HEAD_LESN, &pllens, sizeof(pllens)), "copy buffer failed.");
         pllens = ntohll(pllens);
         if (PACK_TOO_LONG(pllens)) {
-            BIT_SET(*status, PROTO_ERROR);
+            BIT_SET(*status, PROT_ERROR);
             return NULL;
         }
         MALLOC(pack, sizeof(websock_pack_ctx) + (size_t)pllens);
@@ -454,7 +454,7 @@ static websock_pack_ctx *_websock_parse_pllens(buffer_ctx *buf, size_t blens,
         }
         ASSERTAB(atlest == buffer_drain(buf, atlest), "drain buffer failed.");
     } else {
-        BIT_SET(*status, PROTO_ERROR);
+        BIT_SET(*status, PROT_ERROR);
         return NULL;
     }
     return pack;
@@ -462,7 +462,7 @@ static websock_pack_ctx *_websock_parse_pllens(buffer_ctx *buf, size_t blens,
 static websock_pack_ctx *_websock_parse_head(buffer_ctx *buf, int32_t client, ud_cxt *ud, int32_t *status) {
     size_t blens = buffer_size(buf);
     if (blens < HEAD_LESN) {
-        BIT_SET(*status, PROTO_MOREDATA);
+        BIT_SET(*status, PROT_MOREDATA);
         return NULL;
     }
     uint8_t head[HEAD_LESN];
@@ -470,15 +470,15 @@ static websock_pack_ctx *_websock_parse_head(buffer_ctx *buf, int32_t client, ud
     if (0 != ((head[0] & 0x40) >> 6)
         || 0 != ((head[0] & 0x20) >> 5)
         || 0 != ((head[0] & 0x10) >> 4)) {
-        BIT_SET(*status, PROTO_ERROR);
+        BIT_SET(*status, PROT_ERROR);
         return NULL;
     }
     uint8_t fin = (head[0] & 0x80) >> 7;
-    uint8_t proto = head[0] & 0xf;
+    uint8_t prot = head[0] & 0xf;
     uint8_t mask = (head[1] & 0x80) >> 7;
     if (!client
         && 0 == mask) {
-        BIT_SET(*status, PROTO_ERROR);
+        BIT_SET(*status, PROT_ERROR);
         return NULL;
     }
     uint8_t payloadlen = head[1] & 0x7f;
@@ -487,10 +487,10 @@ static websock_pack_ctx *_websock_parse_head(buffer_ctx *buf, int32_t client, ud
         return NULL;
     }
     pack->fin = fin;
-    pack->proto = proto;
+    pack->prot = prot;
     pack->mask = mask;
     websock_ctx *ws = (websock_ctx *)ud->extra;
-    pack->secproto = ws->secproto;
+    pack->secprot = ws->secprot;
     pack->secpack = NULL;
     ws->pack = pack;
     ud->status = DATA;
@@ -528,7 +528,7 @@ static size_t _websock_create_callens(char key[4], size_t dlens) {
     }
     return size;
 }
-static void *_websock_create_pack(uint8_t fin, uint8_t proto, char key[4], void *data, size_t dlens, size_t *size) {
+static void *_websock_create_pack(uint8_t fin, uint8_t prot, char key[4], void *data, size_t dlens, size_t *size) {
     *size = _websock_create_callens(key, dlens);
     char *frame;
     MALLOC(frame, *size);
@@ -537,7 +537,7 @@ static void *_websock_create_pack(uint8_t fin, uint8_t proto, char key[4], void 
     if (0 != fin) {
         BIT_SET(frame[0], 0x80);
     }
-    BIT_SET(frame[0], (proto & 0xf));
+    BIT_SET(frame[0], (prot & 0xf));
     if (NULL != key) {
         BIT_SET(frame[1], 0x80);
     }
@@ -617,11 +617,11 @@ void *websock_pack_continua(int32_t mask, int32_t fin, void *data, size_t dlens,
 int32_t websock_fin(websock_pack_ctx *pack) {
     return pack->fin;
 }
-int32_t websock_proto(websock_pack_ctx *pack) {
-    return pack->proto;
+int32_t websock_prot(websock_pack_ctx *pack) {
+    return pack->prot;
 }
-int32_t websock_secproto(websock_pack_ctx *pack) {
-    return pack->secproto;
+int32_t websock_secprot(websock_pack_ctx *pack) {
+    return pack->secprot;
 }
 void *websock_secpack(struct websock_pack_ctx *pack) {
     return pack->secpack;
@@ -630,7 +630,7 @@ char *websock_data(websock_pack_ctx *pack, size_t *lens) {
     *lens = pack->dlens;
     return pack->data;
 }
-char *websock_pack_handshake(const char *host, const char *secproto) {
+char *websock_pack_handshake(const char *host, const char *secprot) {
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
     http_pack_req(&bwriter, "GET", "/");
@@ -641,8 +641,8 @@ char *websock_pack_handshake(const char *host, const char *secproto) {
     http_pack_head(&bwriter, "Connection", "Upgrade,Keep-Alive");
     http_pack_head(&bwriter, "Sec-WebSocket-Key", _hs_key);
     http_pack_head(&bwriter, "Sec-WebSocket-Version", "13");
-    if (!EMPTYSTR(secproto)) {
-        http_pack_head(&bwriter, "Sec-WebSocket-Protocol", secproto);
+    if (!EMPTYSTR(secprot)) {
+        http_pack_head(&bwriter, "Sec-WebSocket-Protocol", secprot);
     }
     http_pack_end(&bwriter);
     bwriter.data[bwriter.offset] = '\0';

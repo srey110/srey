@@ -402,7 +402,7 @@ void *coro_slice(task_ctx *task, SOCKET fd, uint64_t skid, size_t *size, int32_t
     if (ERR_OK != _wait_recved(task, fd, skid, &msg)) {
         return NULL;
     }
-    if (PROTO_SLICE_END == msg.slice) {
+    if (PROT_SLICE_END == msg.slice) {
         *end = 1;
     }
     *size = msg.size;

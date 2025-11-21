@@ -32,7 +32,7 @@ dns_ip *dns_lookup(task_ctx *task, const char *domain, int32_t ipv6, size_t *cnt
     }
     return dns_parse_pack(resp, cnt);
 }
-SOCKET wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, const char *secproto, uint64_t *skid, int32_t netev) {
+SOCKET wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, const char *secprot, uint64_t *skid, int32_t netev) {
     url_ctx url;
     url_parse(&url, (char *)ws, strlen(ws));
     if (!buf_icompare(&url.scheme, "ws", strlen("ws"))) {
@@ -73,7 +73,7 @@ SOCKET wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, c
         FREE(host);
         return INVALID_SOCK;
     }
-    char *reqpack = websock_pack_handshake(host, secproto);
+    char *reqpack = websock_pack_handshake(host, secprot);
     FREE(host);
     ev_send(&task->loader->netev, fd, *skid, reqpack, strlen(reqpack), 0);
     int32_t err;
@@ -82,11 +82,11 @@ SOCKET wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, c
     if (ERR_OK != err) {
         return INVALID_SOCK;
     }
-    if (!EMPTYSTR(secproto)) {
-        size_t seclens = strlen(secproto);
-        if (NULL != secproto
+    if (!EMPTYSTR(secprot)) {
+        size_t seclens = strlen(secprot);
+        if (NULL != secprot
             && 0 != seclens) {
-            if (seclens != size || 0 != memcmp(secproto, hsdata, seclens)) {
+            if (seclens != size || 0 != memcmp(secprot, hsdata, seclens)) {
                 ev_close(&task->loader->netev, fd, *skid);
                 return INVALID_SOCK;
             }
@@ -104,7 +104,7 @@ SOCKET redis_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ip, ui
         char *auth = redis_pack(&size, "AUTH %s", key);
         redis_pack_ctx *rtn = coro_send(task, fd, *skid, auth, size, &size, 0);
         if (NULL == rtn
-            || RESP_STRING != rtn->proto
+            || RESP_STRING != rtn->prot
             || 2 != rtn->len
             || 0 != _memicmp(rtn->data, "ok", (size_t)rtn->len)) {
             ev_close(&task->loader->netev, fd, *skid);

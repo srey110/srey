@@ -161,7 +161,7 @@
     <ClCompile Include="lbind\lcore.c" />
     <ClCompile Include="lbind\lcrypt.c" />
     <ClCompile Include="lbind\lmysql.c" />
-    <ClCompile Include="lbind\lproto.c" />
+    <ClCompile Include="lbind\lprot.c" />
     <ClCompile Include="lbind\lpub.c" />
     <ClCompile Include="lbind\ltask.c" />
     <ClCompile Include="lbind\lutils.c" />

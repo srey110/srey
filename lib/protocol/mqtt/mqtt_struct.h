@@ -6,11 +6,11 @@
 
 typedef struct mqtt_fixhead {//固定头
     uint8_t flags;//标志
-    mqtt_proto proto;//控制报文的类型
+    mqtt_prot prot;//控制报文的类型
     size_t remaining_lens;
 }mqtt_fixhead;
 typedef struct mqtt_propertie {//属性
-    mqtt_propt_flag flag;//标识符
+    mqtt_prop_flag flag;//标识符
     int32_t nval;//数字值
     size_t slens;//sval长度
     size_t flens;//fval长度

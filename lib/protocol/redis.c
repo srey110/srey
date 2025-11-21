@@ -1,5 +1,5 @@
 #include "protocol/redis.h"
-#include "protocol/protos.h"
+#include "protocol/prots.h"
 #include "utils/binary.h"
 
 typedef struct reader_ctx {
@@ -214,22 +214,22 @@ static inline void _add_node(reader_ctx *rd, redis_pack_ctx *pk) {
         rd->tail->next = pk;
         rd->tail = pk;
     }
-    if (RESP_ATTR != pk->proto) {
+    if (RESP_ATTR != pk->prot) {
         rd->nelem--;
     }
 }
 //<type><data>\r\n
-static int32_t _reader_line(reader_ctx *rd, int32_t proto, buffer_ctx *buf, int32_t *status) {
+static int32_t _reader_line(reader_ctx *rd, int32_t prot, buffer_ctx *buf, int32_t *status) {
     int32_t pos = buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE);
     if (ERR_FAILED == pos) {
-        BIT_SET(*status, PROTO_MOREDATA);
+        BIT_SET(*status, PROT_MOREDATA);
         return ERR_FAILED;
     }
     redis_pack_ctx *pk;
     CALLOC(pk, 1, sizeof(redis_pack_ctx) + pos);//前面还有1个type字节
-    pk->proto = proto;
+    pk->prot = prot;
     pk->len = pos - 1;//pos 至少为1
-    switch (proto) {
+    switch (prot) {
     case RESP_STRING:
     case RESP_ERROR:
         buffer_copyout(buf, 1, pk->data, (size_t)pk->len);
@@ -237,29 +237,29 @@ static int32_t _reader_line(reader_ctx *rd, int32_t proto, buffer_ctx *buf, int3
     case RESP_INTEGER:
     case RESP_BIGNUM:
         if (0 == pk->len) {
-            BIT_SET(*status, PROTO_ERROR);
+            BIT_SET(*status, PROT_ERROR);
         } else {
             buffer_copyout(buf, 1, pk->data, (size_t)pk->len);
             char *end;
             pk->ival = strtoll(pk->data, &end, 10);
             if (end != pk->data + pk->len) {
-                BIT_SET(*status, PROTO_ERROR);
+                BIT_SET(*status, PROT_ERROR);
             }
         }
         break;
     case RESP_NIL:
         if (0 != pk->len) {
-            BIT_SET(*status, PROTO_ERROR);
+            BIT_SET(*status, PROT_ERROR);
         }
         break;
     case RESP_BOOL:
         if (1 != pk->len) {
-            BIT_SET(*status, PROTO_ERROR);
+            BIT_SET(*status, PROT_ERROR);
             break;
         }
         buffer_copyout(buf, 1, pk->data, (size_t)pk->len);
         if (NULL == strchr("tTfF", pk->data[0])) {
-            BIT_SET(*status, PROTO_ERROR);
+            BIT_SET(*status, PROT_ERROR);
             break;
         }
         if ('t' == pk->data[0] || 'T' == pk->data[0]) {
@@ -268,7 +268,7 @@ static int32_t _reader_line(reader_ctx *rd, int32_t proto, buffer_ctx *buf, int3
         break;
     case RESP_DOUBLE:
         if (0 == pk->len) {
-            BIT_SET(*status, PROTO_ERROR);
+            BIT_SET(*status, PROT_ERROR);
             break;
         }
         buffer_copyout(buf, 1, pk->data, (size_t)pk->len);
@@ -284,14 +284,14 @@ static int32_t _reader_line(reader_ctx *rd, int32_t proto, buffer_ctx *buf, int3
             pk->dval = strtod(pk->data, &end);
             if (end != pk->data + pk->len
                 || !isfinite(pk->dval)) {
-                BIT_SET(*status, PROTO_ERROR);
+                BIT_SET(*status, PROT_ERROR);
             }
         }
         break;
     default:
         break;
     }
-    if (BIT_CHECK(*status, PROTO_ERROR)) {
+    if (BIT_CHECK(*status, PROT_ERROR)) {
         FREE(pk);
         return ERR_FAILED;
     }
@@ -301,15 +301,15 @@ static int32_t _reader_line(reader_ctx *rd, int32_t proto, buffer_ctx *buf, int3
     return ERR_OK;
 }
 //<type><length>\r\n<data>\r\n   <type>-1\r\n NUll
-static int32_t _reader_bulk(reader_ctx *rd, int32_t proto, buffer_ctx *buf, int32_t *status) {
+static int32_t _reader_bulk(reader_ctx *rd, int32_t prot, buffer_ctx *buf, int32_t *status) {
     int32_t pos = buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE);
     if (ERR_FAILED == pos) {
-        BIT_SET(*status, PROTO_MOREDATA);
+        BIT_SET(*status, PROT_MOREDATA);
         return ERR_FAILED;
     }
     int32_t lens = pos - 1;
     if (0 == lens) {
-        BIT_SET(*status, PROTO_ERROR);
+        BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
     char num[64];
@@ -319,14 +319,14 @@ static int32_t _reader_bulk(reader_ctx *rd, int32_t proto, buffer_ctx *buf, int3
     int64_t blens = (int64_t)strtoll(num, &end, 10);
     if (num + lens != end
         || blens < -1) {
-        BIT_SET(*status, PROTO_ERROR);
+        BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
     size_t total;
     if (-1 == blens) {
         redis_pack_ctx *pk;
         CALLOC(pk, 1, sizeof(redis_pack_ctx) + 1);
-        pk->proto = proto;
+        pk->prot = prot;
         pk->len = blens;
         total = (size_t)(pos + CRLF_SIZE);
         ASSERTAB(total == buffer_drain(buf, total), "drain buffer failed.");
@@ -335,18 +335,18 @@ static int32_t _reader_bulk(reader_ctx *rd, int32_t proto, buffer_ctx *buf, int3
     }
     total = (size_t)(blens + pos + CRLF_SIZE * 2);
     if (buffer_size(buf) < total) {
-        BIT_SET(*status, PROTO_MOREDATA);
+        BIT_SET(*status, PROT_MOREDATA);
         return ERR_FAILED;
     }
     if ('\r' != buffer_at(buf, total - 2)
         || '\n' != buffer_at(buf, total - 1)) {
-        BIT_SET(*status, PROTO_ERROR);
+        BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
     redis_pack_ctx *pk;
     CALLOC(pk, 1, sizeof(redis_pack_ctx) + (size_t)blens + 1);
-    pk->proto = proto;
-    switch (proto) {
+    pk->prot = prot;
+    switch (prot) {
     case RESP_BSTRING:
     case RESP_BERROR:
         pk->len = blens;
@@ -354,11 +354,11 @@ static int32_t _reader_bulk(reader_ctx *rd, int32_t proto, buffer_ctx *buf, int3
         break;
     case RESP_VERB:
         if (blens < 4) {
-            BIT_SET(*status, PROTO_ERROR);
+            BIT_SET(*status, PROT_ERROR);
             break;
         }
         if (':' != buffer_at(buf, (size_t)(pos + CRLF_SIZE + 3))) {
-            BIT_SET(*status, PROTO_ERROR);
+            BIT_SET(*status, PROT_ERROR);
             break;
         }
         pk->len = blens - 4;
@@ -368,7 +368,7 @@ static int32_t _reader_bulk(reader_ctx *rd, int32_t proto, buffer_ctx *buf, int3
     default:
         break;
     }
-    if (BIT_CHECK(*status, PROTO_ERROR)) {
+    if (BIT_CHECK(*status, PROT_ERROR)) {
         FREE(pk);
         return ERR_FAILED;
     }
@@ -377,15 +377,15 @@ static int32_t _reader_bulk(reader_ctx *rd, int32_t proto, buffer_ctx *buf, int3
     return ERR_OK;
 }
 //<type><number-of-elements>\r\n<element-1>\r\n...<element-n>\r\n
-static int32_t _reader_agg(reader_ctx *rd, int32_t proto, buffer_ctx *buf, int32_t *status) {
+static int32_t _reader_agg(reader_ctx *rd, int32_t prot, buffer_ctx *buf, int32_t *status) {
     int32_t pos = buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE);
     if (ERR_FAILED == pos) {
-        BIT_SET(*status, PROTO_MOREDATA);
+        BIT_SET(*status, PROT_MOREDATA);
         return ERR_FAILED;
     }
     int32_t lens = pos - 1;
     if (0 == lens) {
-        BIT_SET(*status, PROTO_ERROR);
+        BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
     char num[64];
@@ -395,31 +395,31 @@ static int32_t _reader_agg(reader_ctx *rd, int32_t proto, buffer_ctx *buf, int32
     int64_t nelem = (int64_t)strtoll(num, &end, 10);
     if (num + lens != end
         || nelem < -1) {
-        BIT_SET(*status, PROTO_ERROR);
+        BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
     size_t del = (size_t)(pos + CRLF_SIZE);
     ASSERTAB(del == buffer_drain(buf, del), "drain buffer failed.");
     redis_pack_ctx *pk;
     CALLOC(pk, 1, sizeof(redis_pack_ctx) + 1);
-    pk->proto = proto;
+    pk->prot = prot;
     pk->nelem = nelem;
     _add_node(rd, pk);
     if (nelem > 0) {
-        rd->nelem += ((RESP_ATTR == proto || RESP_MAP == proto) ? nelem * 2 : nelem);
+        rd->nelem += ((RESP_ATTR == prot || RESP_MAP == prot) ? nelem * 2 : nelem);
     }
     return ERR_OK;
 }
 redis_pack_ctx *redis_unpack(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
-    int32_t rtn, proto;
+    int32_t rtn, prot;
     reader_ctx *rd = _create_reader(ud);
     for (;;) {
         if (buffer_size(buf) < (1 + CRLF_SIZE)) {
-            BIT_SET(*status, PROTO_MOREDATA);
+            BIT_SET(*status, PROT_MOREDATA);
             break;
         }
-        proto = buffer_at(buf, 0);
-        switch (proto) {
+        prot = buffer_at(buf, 0);
+        switch (prot) {
         case RESP_STRING:
         case RESP_ERROR:
         case RESP_INTEGER:
@@ -427,22 +427,22 @@ redis_pack_ctx *redis_unpack(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
         case RESP_BOOL:
         case RESP_DOUBLE:
         case RESP_BIGNUM:
-            rtn = _reader_line(rd, proto, buf, status);
+            rtn = _reader_line(rd, prot, buf, status);
             break;
         case RESP_BSTRING:
         case RESP_BERROR:
         case RESP_VERB:
-            rtn = _reader_bulk(rd, proto, buf, status);
+            rtn = _reader_bulk(rd, prot, buf, status);
             break;
         case RESP_ARRAY:
         case RESP_SET:
         case RESP_PUSHE:
         case RESP_MAP:
         case RESP_ATTR:
-            rtn = _reader_agg(rd, proto, buf, status);
+            rtn = _reader_agg(rd, prot, buf, status);
             break;
         default:
-            BIT_SET(*status, PROTO_ERROR);
+            BIT_SET(*status, PROT_ERROR);
             return NULL;
         }
         if (ERR_OK != rtn) {

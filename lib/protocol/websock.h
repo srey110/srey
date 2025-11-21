@@ -3,14 +3,14 @@
 
 #include "event/event.h"
 
-typedef enum ws_proto {
+typedef enum ws_prot {
     WS_CONTINUE = 0x00,
     WS_TEXT = 0x01,
     WS_BINARY = 0x02,
     WS_CLOSE = 0x08,
     WS_PING = 0x09,
     WS_PONG = 0x0A
-}ws_proto;
+}ws_prot;
 
 void _websock_pkfree(void *data);
 void _websock_udfree(ud_cxt *ud);
@@ -22,9 +22,9 @@ struct websock_pack_ctx *websock_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, in
 /// 握手包
 /// </summary>
 /// <param name="host">Host</param>
-/// <param name="secproto">Sec-WebSocket-Protocol</param>
+/// <param name="secprot">Sec-WebSocket-Protocol</param>
 /// <returns>握手包</returns>
-char *websock_pack_handshake(const char *host, const char *secproto);
+char *websock_pack_handshake(const char *host, const char *secprot);
 /// <summary>
 /// ping包
 /// </summary>
@@ -87,13 +87,13 @@ int32_t websock_fin(struct websock_pack_ctx *pack);
 /// </summary>
 /// <param name="pack">websock_pack_ctx</param>
 /// <returns>协议号</returns>
-int32_t websock_proto(struct websock_pack_ctx *pack);
+int32_t websock_prot(struct websock_pack_ctx *pack);
 /// <summary>
 /// 获取子协议
 /// </summary>
 /// <param name="pack">websock_pack_ctx</param>
 /// <returns>协议号</returns>
-int32_t websock_secproto(struct websock_pack_ctx *pack);
+int32_t websock_secprot(struct websock_pack_ctx *pack);
 /// <summary>
 /// 获取子协议数据包
 /// </summary>

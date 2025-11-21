@@ -203,6 +203,9 @@ static void _test_stmt(task_ctx *task) {
     mysql_stmt_close(stmt);
 }
 static void _timeout(task_ctx *task, uint64_t sess) {
+    if (ERR_OK != mysql_ping(&_mysql)) {
+        return;
+    }
     if (ERR_FAILED != mysql_selectdb(&_mysql, "tes1t")) {
         LOG_WARN("selectdb wrong db error.");
     }
@@ -234,7 +237,7 @@ static void _startup(task_ctx *task) {
 #if WITH_SSL
     evssl = evssl_qury(102);
 #endif
-    if (ERR_OK != mysql_init(&_mysql, "192.168.8.3", 3306, evssl, "admin", "12345678", "test", "utf8", 0)) {
+    if (ERR_OK != mysql_init(&_mysql, "127.0.0.1", 3306, evssl, "admin", "12345678", "test", "utf8", 0)) {
         LOG_WARN("mysql_init error.");
         return;
     }

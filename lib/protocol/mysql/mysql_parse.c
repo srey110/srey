@@ -1,6 +1,6 @@
 #include "protocol/mysql/mysql_parse.h"
 #include "protocol/mysql/mysql_utils.h"
-#include "protocol/protos.h"
+#include "protocol/prots.h"
 #include "utils/utils.h"
 
 typedef enum RST_STATUS {
@@ -29,7 +29,7 @@ static int32_t _mysql_head(mysql_ctx *mysql, buffer_ctx *buf, size_t *payload_le
 }
 char *_mysql_payload(mysql_ctx *mysql, buffer_ctx *buf, size_t *payload_lens, int32_t *status) {
     if (ERR_OK != _mysql_head(mysql, buf, payload_lens)) {
-        BIT_SET(*status, PROTO_MOREDATA);
+        BIT_SET(*status, PROT_MOREDATA);
         return NULL;
     }
     char *payload;
@@ -135,7 +135,7 @@ static int32_t _mpack_check_final(binary_ctx *breader, int32_t *status) {
     mpack_eof eof;
     _mpack_eof(breader, &eof);
     if (BIT_CHECK(eof.status_flags, SERVER_MORE_RESULTS_EXISTS)) {
-        BIT_SET(*status, PROTO_MOREDATA);
+        BIT_SET(*status, PROT_MOREDATA);
         return ERR_FAILED;
     }
     return ERR_OK;
@@ -244,12 +244,12 @@ static mpack_ctx *_mpack_reader_rows(mysql_ctx *mysql, buffer_ctx *buf, binary_c
             _mpack_parse_text_row(reader, breader);
         } else {
             if (0x00 != first) {
-                BIT_SET(*status, PROTO_ERROR);
+                BIT_SET(*status, PROT_ERROR);
                 return NULL;
             }
             binary_get_skip(breader, 1);
             if (ERR_OK != _mpack_parse_binary_row(reader, breader)) {
-                BIT_SET(*status, PROTO_ERROR);
+                BIT_SET(*status, PROT_ERROR);
                 return NULL;
             }
         }
@@ -355,7 +355,7 @@ static mpack_ctx *_query_response(mysql_ctx *mysql, buffer_ctx *buf, binary_ctx 
             mysql->cur_cmd = 0;
             break;
         case MYSQL_LOCAL_INFILE:
-            BIT_SET(*status, PROTO_ERROR);
+            BIT_SET(*status, PROT_ERROR);
             FREE(breader->data);
             break;
         default:
@@ -534,7 +534,7 @@ mpack_ctx *_mpack_parser(mysql_ctx *mysql, buffer_ctx *buf, binary_ctx *breader,
     switch (mysql->cur_cmd) {
     case MYSQL_QUIT:
         FREE(breader->data);
-        BIT_SET(*status, PROTO_CLOSE);
+        BIT_SET(*status, PROT_CLOSE);
         break;
     case MYSQL_INIT_DB:
         mpack = _selectdb_response(mysql, breader);
@@ -556,7 +556,7 @@ mpack_ctx *_mpack_parser(mysql_ctx *mysql, buffer_ctx *buf, binary_ctx *breader,
         break;
     default:
         FREE(breader->data);
-        BIT_SET(*status, PROTO_ERROR);
+        BIT_SET(*status, PROT_ERROR);
         break;
     }
     return mpack;

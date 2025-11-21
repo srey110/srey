@@ -23,7 +23,7 @@
                                                     //however the client should not consider such a dictionary part of the reply, 
                                                     //but just auxiliary data that is used in order to augment the reply.
 typedef struct redis_pack_ctx {
-    int32_t proto;
+    int32_t prot;
     char venc[4]; //RESP_VERB  encoding
     int64_t nelem;//多少条数据 RESP_ARRAY RESP_SET RESP_PUSHE RESP_MAP  RESP_ATTR
     int64_t len;//data 长度

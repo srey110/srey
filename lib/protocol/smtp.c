@@ -1,7 +1,7 @@
 #include "protocol/smtp.h"
 #include "utils/utils.h"
 #include "srey/task.h"
-#include "protocol/protos.h"
+#include "protocol/prots.h"
 #include "crypt/base64.h"
 
 #define SMTP_OK "250"
@@ -130,17 +130,17 @@ char *smtp_pack_mail(smtp_ctx *smtp, const char *subject, const char *data) {
 static void _smtp_connected(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     size_t blens = buffer_size(buf);
     if (blens < SMTP_CODE_LENS + CRLF_SIZE) {
-        BIT_SET(*status, PROTO_MOREDATA);
+        BIT_SET(*status, PROT_MOREDATA);
         return;
     }
     if (ERR_FAILED == buffer_search(buf, 0, blens - CRLF_SIZE, 0, FLAG_CRLF, CRLF_SIZE)) {
-        BIT_SET(*status, PROTO_MOREDATA);
+        BIT_SET(*status, PROT_MOREDATA);
         return;
     }
     char code[SMTP_CODE_LENS + 1] = {0};
     ASSERTAB(SMTP_CODE_LENS == buffer_copyout(buf, 0, code, SMTP_CODE_LENS), "copy buffer failed.");
     if (0 != strcmp(code, "220")) {
-        BIT_SET(*status, PROTO_ERROR);
+        BIT_SET(*status, PROT_ERROR);
         return;
     }
     buffer_drain(buf, blens);
@@ -173,22 +173,22 @@ static int32_t _smtp_get_authtype(buffer_ctx *buf) {
 static void _smtp_ehlo(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     size_t blens = buffer_size(buf);
     if (blens < SMTP_CODE_LENS + CRLF_SIZE) {
-        BIT_SET(*status, PROTO_MOREDATA);
+        BIT_SET(*status, PROT_MOREDATA);
         return;
     }
     if (ERR_FAILED == buffer_search(buf, 0, blens - CRLF_SIZE, 0, FLAG_CRLF, CRLF_SIZE)) {
-        BIT_SET(*status, PROTO_MOREDATA);
+        BIT_SET(*status, PROT_MOREDATA);
         return;
     }
     char code[SMTP_CODE_LENS + 1] = { 0 };
     ASSERTAB(SMTP_CODE_LENS == buffer_copyout(buf, 0, code, SMTP_CODE_LENS), "copy buffer failed.");
     if (0 != strcmp(code, SMTP_OK)) {
-        BIT_SET(*status, PROTO_ERROR);
+        BIT_SET(*status, PROT_ERROR);
         return;
     }
     smtp->authtype = _smtp_get_authtype(buf);
     if (ERR_FAILED == smtp->authtype) {
-        BIT_SET(*status, PROTO_ERROR);
+        BIT_SET(*status, PROT_ERROR);
         return;
     }
     buffer_drain(buf, blens);
@@ -217,7 +217,7 @@ static void _smtp_loin(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buf
     char code[SMTP_CODE_LENS + 1] = { 0 };
     ASSERTAB(SMTP_CODE_LENS == buffer_copyout(buf, 0, code, SMTP_CODE_LENS), "copy buffer failed.");
     if (0 != strcmp(code, "334")) {
-        BIT_SET(*status, PROTO_ERROR);
+        BIT_SET(*status, PROT_ERROR);
         return;
     }
     size_t blens = buffer_size(buf);
@@ -244,14 +244,14 @@ static void _smtp_loin(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buf
         ud->status = AUTH_CHECK;
         return;
     }
-    BIT_SET(*status, PROTO_ERROR);
+    BIT_SET(*status, PROT_ERROR);
     FREE(flag);
 }
 static void _smtp_plain(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     char code[SMTP_CODE_LENS + 1] = { 0 };
     ASSERTAB(SMTP_CODE_LENS == buffer_copyout(buf, 0, code, SMTP_CODE_LENS), "copy buffer failed.");
     if (0 != strcmp(code, "334")) {
-        BIT_SET(*status, PROTO_ERROR);
+        BIT_SET(*status, PROT_ERROR);
         return;
     }
     buffer_drain(buf, buffer_size(buf));
@@ -274,11 +274,11 @@ static void _smtp_plain(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, bu
 static void _smtp_auth(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     size_t blens = buffer_size(buf);
     if (blens < SMTP_CODE_LENS + CRLF_SIZE) {
-        BIT_SET(*status, PROTO_MOREDATA);
+        BIT_SET(*status, PROT_MOREDATA);
         return;
     }
     if (ERR_FAILED == buffer_search(buf, 0, blens - CRLF_SIZE, 0, FLAG_CRLF, CRLF_SIZE)) {
-        BIT_SET(*status, PROTO_MOREDATA);
+        BIT_SET(*status, PROT_MOREDATA);
         return;
     }
     switch (smtp->authtype) {
@@ -293,17 +293,17 @@ static void _smtp_auth(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buf
 static void _smtp_auth_check(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     size_t blens = buffer_size(buf);
     if (blens < SMTP_CODE_LENS + CRLF_SIZE) {
-        BIT_SET(*status, PROTO_MOREDATA);
+        BIT_SET(*status, PROT_MOREDATA);
         return;
     }
     if (ERR_FAILED == buffer_search(buf, 0, blens - CRLF_SIZE, 0, FLAG_CRLF, CRLF_SIZE)) {
-        BIT_SET(*status, PROTO_MOREDATA);
+        BIT_SET(*status, PROT_MOREDATA);
         return;
     }
     char code[SMTP_CODE_LENS + 1] = { 0 };
     ASSERTAB(SMTP_CODE_LENS == buffer_copyout(buf, 0, code, SMTP_CODE_LENS), "copy buffer failed.");
     if (0 != strcmp(code, "235")) {
-        BIT_SET(*status, PROTO_ERROR);
+        BIT_SET(*status, PROT_ERROR);
         char *err;
         CALLOC(err, 1, blens);
         ASSERTAB(blens - CRLF_SIZE == buffer_copyout(buf, 0, err, blens - CRLF_SIZE), "copy buffer failed.");
@@ -318,11 +318,11 @@ static void _smtp_auth_check(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t ski
 static char *_smtp_command(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status) {
     size_t blens = buffer_size(buf);
     if (blens < SMTP_CODE_LENS + CRLF_SIZE) {
-        BIT_SET(*status, PROTO_MOREDATA);
+        BIT_SET(*status, PROT_MOREDATA);
         return NULL;
     }
     if (ERR_FAILED == buffer_search(buf, 0, blens - CRLF_SIZE, 0, FLAG_CRLF, CRLF_SIZE)) {
-        BIT_SET(*status, PROTO_MOREDATA);
+        BIT_SET(*status, PROT_MOREDATA);
         return NULL;
     }
     char *pack;

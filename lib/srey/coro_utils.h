@@ -24,7 +24,7 @@ struct dns_ip *dns_lookup(task_ctx *task, const char *domain, int32_t ipv6, size
 /// <param name="skid">Á´½ÓID</param>
 /// <param name="netev">task_netev</param>
 /// <returns>socket¾ä±ú</returns>
-SOCKET wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, const char *secproto, uint64_t *skid, int32_t netev);
+SOCKET wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, const char *secprot, uint64_t *skid, int32_t netev);
 /// <summary>
 /// redisÁ´½Ó
 /// </summary>

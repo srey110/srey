@@ -60,6 +60,7 @@
     <ClInclude Include="protocol\http.h" />
     <ClInclude Include="protocol\mqtt\mqtt.h" />
     <ClInclude Include="protocol\mqtt\mqtt_macro.h" />
+    <ClInclude Include="protocol\mqtt\mqtt_pack.h" />
     <ClInclude Include="protocol\mqtt\mqtt_struct.h" />
     <ClInclude Include="protocol\mysql\mysql.h" />
     <ClInclude Include="protocol\mysql\mysql_bind.h" />
@@ -69,7 +70,7 @@
     <ClInclude Include="protocol\mysql\mysql_reader.h" />
     <ClInclude Include="protocol\mysql\mysql_struct.h" />
     <ClInclude Include="protocol\mysql\mysql_utils.h" />
-    <ClInclude Include="protocol\protos.h" />
+    <ClInclude Include="protocol\prots.h" />
     <ClInclude Include="protocol\redis.h" />
     <ClInclude Include="protocol\smtp.h" />
     <ClInclude Include="protocol\urlparse.h" />
@@ -132,6 +133,7 @@
     <ClCompile Include="protocol\dns.c" />
     <ClCompile Include="protocol\http.c" />
     <ClCompile Include="protocol\mqtt\mqtt.c" />
+    <ClCompile Include="protocol\mqtt\mqtt_pack.c" />
     <ClCompile Include="protocol\mqtt\mqtt_struct.c" />
     <ClCompile Include="protocol\mysql\mysql.c" />
     <ClCompile Include="protocol\mysql\mysql_bind.c" />
@@ -139,7 +141,7 @@
     <ClCompile Include="protocol\mysql\mysql_parse.c" />
     <ClCompile Include="protocol\mysql\mysql_reader.c" />
     <ClCompile Include="protocol\mysql\mysql_utils.c" />
-    <ClCompile Include="protocol\protos.c" />
+    <ClCompile Include="protocol\prots.c" />
     <ClCompile Include="protocol\redis.c" />
     <ClCompile Include="protocol\smtp.c" />
     <ClCompile Include="protocol\urlparse.c" />

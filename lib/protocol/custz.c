@@ -1,6 +1,6 @@
 #include "protocol/custz.h"
 #include "protocol/custz_head.h"
-#include "protocol/protos.h"
+#include "protocol/prots.h"
 
 void *custz_unpack(uint8_t pktype, buffer_ctx *buf, size_t *size, int32_t *status) {
     size_t hlens;
@@ -23,12 +23,12 @@ void *custz_unpack(uint8_t pktype, buffer_ctx *buf, size_t *size, int32_t *statu
         return NULL;
     }
     if (PACK_TOO_LONG(*size)) {
-        BIT_SET(*status, PROTO_ERROR);
+        BIT_SET(*status, PROT_ERROR);
         return NULL;
     }
     size_t pklens = hlens + *size;
     if (pklens > buffer_size(buf)) {
-        BIT_SET(*status, PROTO_MOREDATA);
+        BIT_SET(*status, PROT_MOREDATA);
         return NULL;
     }
     if (0 == *size) {

@@ -1,5 +1,5 @@
 #include "protocol/http.h"
-#include "protocol/protos.h"
+#include "protocol/prots.h"
 #include "crypt/urlraw.h"
 #include "containers/sarray.h"
 #include "utils/utils.h"
@@ -136,7 +136,7 @@ static http_pack_ctx *_http_content(buffer_ctx *buf, ud_cxt *ud, int32_t *status
         ud->extra = NULL;
         return pack;
     } else {
-        BIT_SET(*status, PROTO_MOREDATA);
+        BIT_SET(*status, PROT_MOREDATA);
         return NULL;
     }
 }
@@ -145,15 +145,15 @@ static size_t _http_headlens(buffer_ctx *buf, int32_t *status) {
     int32_t pos = buffer_search(buf, 0, 0, 0, CONCAT2(FLAG_CRLF,FLAG_CRLF), flens);
     if (ERR_FAILED == pos) {
         if (buffer_size(buf) > MAX_HEADLENS) {
-            BIT_SET(*status, PROTO_ERROR);
+            BIT_SET(*status, PROT_ERROR);
         } else {
-            BIT_SET(*status, PROTO_MOREDATA);
+            BIT_SET(*status, PROT_MOREDATA);
         }
         return 0;
     }
     size_t hlens = pos + flens;
     if (hlens > MAX_HEADLENS) {
-        BIT_SET(*status, PROTO_ERROR);
+        BIT_SET(*status, PROT_ERROR);
         return 0;
     }
     return hlens;
@@ -175,7 +175,7 @@ http_pack_ctx *_http_parsehead(buffer_ctx *buf, int32_t *transfer, int32_t *stat
     http_pack_ctx *pack = _http_headpack(hlens);
     ASSERTAB(hlens == buffer_remove(buf, pack->head.data, hlens), "copy buffer failed.");
     if (ERR_OK != _http_parse_head(pack, transfer)) {
-        BIT_SET(*status, PROTO_ERROR);
+        BIT_SET(*status, PROT_ERROR);
         _http_pkfree(pack);
         return NULL;
     }
@@ -189,7 +189,7 @@ static http_pack_ctx *_http_header(buffer_ctx *buf, ud_cxt *ud, int32_t *status)
     }
     if (CONTENT == transfer) {
         if (PACK_TOO_LONG(pack->data.lens)) {
-            BIT_SET(*status, PROTO_ERROR);
+            BIT_SET(*status, PROT_ERROR);
             _http_pkfree(pack);
             return NULL;
         } else {
@@ -199,7 +199,7 @@ static http_pack_ctx *_http_header(buffer_ctx *buf, ud_cxt *ud, int32_t *status)
         }
     } else {
         if (1 == pack->chunked) {
-            BIT_SET(*status, PROTO_SLICE_START);
+            BIT_SET(*status, PROT_SLICE_START);
         }
         ud->status = transfer;
         return pack;
@@ -222,18 +222,18 @@ static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_t *status
     if (NULL == pack) {
         int32_t pos = buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE);
         if (ERR_FAILED == pos) {
-            BIT_SET(*status, PROTO_MOREDATA);
+            BIT_SET(*status, PROT_MOREDATA);
             return NULL;
         }
         char lensbuf[16] = { 0 };
         if (pos >= sizeof(lensbuf)) {
-            BIT_SET(*status, PROTO_ERROR);
+            BIT_SET(*status, PROT_ERROR);
             return NULL;
         }
         ASSERTAB(pos == buffer_copyout(buf, 0, lensbuf, pos), "copy buffer failed.");
         size_t dlens = strtol(lensbuf, NULL, 16);
         if (PACK_TOO_LONG(dlens)) {
-            BIT_SET(*status, PROTO_ERROR);
+            BIT_SET(*status, PROT_ERROR);
             return NULL;
         }
         drain = pos + CRLF_SIZE;
@@ -243,14 +243,14 @@ static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_t *status
     }
     drain = pack->data.lens + CRLF_SIZE;
     if (buffer_size(buf) < drain) {
-        BIT_SET(*status, PROTO_MOREDATA);
+        BIT_SET(*status, PROT_MOREDATA);
         return NULL;
     }
     if (pack->data.lens > 0) {
-        BIT_SET(*status, PROTO_SLICE);
+        BIT_SET(*status, PROT_SLICE);
         ASSERTAB(pack->data.lens == buffer_copyout(buf, 0, pack->data.data, pack->data.lens), "copy buffer failed.");
     } else {
-        BIT_SET(*status, PROTO_SLICE_END);
+        BIT_SET(*status, PROT_SLICE_END);
         ud->status = INIT;
     }
     ASSERTAB(drain == buffer_drain(buf, drain), "drain buffer failed.");
@@ -285,7 +285,7 @@ http_pack_ctx *http_unpack(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
         break;
     default:
         pack = NULL;
-        BIT_SET(*status, PROTO_ERROR);
+        BIT_SET(*status, PROT_ERROR);
         break;
     }
     return pack;
