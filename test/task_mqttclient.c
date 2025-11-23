@@ -18,7 +18,6 @@ static void _net_connect(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktyp
     binary_init(&willprop, NULL, 0, 0);
     mqtt_props_fixnum(&willprop, WILLDELAY_INTERVAL, 60);
     mqtt_props_kv(&willprop, USER_PROPERTY, "key2", 4, "val2", 4);
-
     size_t lens;
     char *pk = mqtt_pack_connect(_version, 1, 120, "mqtt_srey123",
         "admin", "123", 3,
@@ -57,7 +56,7 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, 
     }
     case MQTT_PUBACK: {
         mqtt_puback_varhead *vh = pack->varhead;
-        LOG_INFO("<--PUBACK. %d", (int32_t)vh->reason);
+        LOG_INFO("<--PUBACK %d", (int32_t)vh->reason);
         if (0x00 == vh->reason || 0x10 == vh->reason) {
             _send_publish(pack, task, fd, skid, 2);
         }
@@ -65,7 +64,7 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, 
     }
     case MQTT_PUBREC: {
         mqtt_pubrec_varhead *vh = pack->varhead;
-        LOG_INFO("<--PUBREC. %d", (int32_t)vh->reason);
+        LOG_INFO("<--PUBREC %d", (int32_t)vh->reason);
         if (0x00 == vh->reason || 0x10 == vh->reason) {
             size_t lens;
             char *pk = mqtt_pack_pubrel(pack->version, vh->packid, 0, NULL, &lens);
@@ -78,7 +77,7 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, 
     }
     case MQTT_PUBCOMP: {
         mqtt_pubcomp_varhead *vh = pack->varhead;
-        LOG_INFO("<--PUBCOMP. %d", (int32_t)vh->reason);
+        LOG_INFO("<--PUBCOMP %d", (int32_t)vh->reason);
         binary_ctx topics;
         binary_init(&topics, NULL, 0, 0);
         mqtt_topics_subscribe(&topics, pack->version, "/test/topic1", 1, 1, 1, 1);
@@ -94,7 +93,7 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, 
     case MQTT_SUBACK: {
         mqtt_suback_varhead *vh = pack->varhead;
         mqtt_suback_payload *pl = pack->payload;
-        LOG_INFO("<--PUBCOMP. %d", (int32_t)pl->reasons[0]);
+        LOG_INFO("<--SUBACK %d", (int32_t)pl->reasons[0]);
         if (0x00 == pl->reasons[0] || 0x01 == pl->reasons[0] || 0x02 == pl->reasons[0]) {
             binary_ctx topics;
             binary_init(&topics, NULL, 0, 0);
@@ -112,9 +111,13 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, 
     case MQTT_UNSUBACK: {
         mqtt_unsuback_varhead *vh = pack->varhead;
         mqtt_unsuback_payload *pl = pack->payload;
-        LOG_INFO("<--UNSUBACK. %d", (int32_t)pl->reasons[0]);
+        if (NULL != pl) {
+            LOG_INFO("<--UNSUBACK %d", (int32_t)pl->reasons[0]);
+        } else {
+            LOG_INFO("<--UNSUBACK");
+        }
         size_t lens;
-        char *pk = mqtt_pack_ping(_version, &lens);
+        char *pk = mqtt_pack_ping(pack->version, &lens);
         if (NULL != pk) {
             ev_send(&task->loader->netev, _fd, _skid, pk, lens, 0);
             LOG_INFO("-->PING");
@@ -122,7 +125,7 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, 
         break;
     }
     case MQTT_PINGRESP: {
-        LOG_INFO("<--PONG.");
+        LOG_INFO("<--PONG");
         size_t lens;
         char *pk = mqtt_pack_disconnect(pack->version, 0, NULL, &lens);
         if (NULL != pk) {
