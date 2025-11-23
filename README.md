@@ -1,7 +1,7 @@
 # srey
 c lua (可选)跨平台服务器框架.   
 支持IOCP、EPOLL、KQUEUE、EVPORT、POLLSET、DEVPOLL网络模型;   
-支持SSL、Http、Websocket、DNS、MySql、Redis等
+支持SSL、Http、Websocket、MQTT、DNS、MySql、Redis等
 
 ## 编译     
 * windows使用vs2015;   
