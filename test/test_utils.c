@@ -1437,6 +1437,683 @@ static void test_redis_unpack(CuTest* tc) {
     buffer_free(&buf);
     _redis_udfree(&ud);
 }
+static int32_t _test_mqtt_connect(mqtt_protversion version, ud_cxt *ud, int32_t *status) {
+    buffer_ctx buf;
+    buffer_init(&buf);
+    binary_ctx connprop;
+    binary_init(&connprop, NULL, 0, 0);
+    mqtt_props_fixnum(&connprop, SESSION_EXPIRY, 120);
+    mqtt_props_fixnum(&connprop, RECEIVE_MAXIMUM, 20000);
+    mqtt_props_kv(&connprop, USER_PROPERTY, "key1", 4, "val1", 4);
+    binary_ctx willprop;
+    binary_init(&willprop, NULL, 0, 0);
+    mqtt_props_fixnum(&willprop, WILLDELAY_INTERVAL, 60);
+    mqtt_props_kv(&willprop, USER_PROPERTY, "key2", 4, "val2", 4);
+    ud->status = 0;
+
+    size_t lens;
+    char *pack = mqtt_pack_connect(version, 1, 120, "mqtt_id123",
+        "admin", "123", 3,
+        "/test/will", "will message", strlen("will message"), 2, 1,
+        &connprop, &willprop, &lens);
+    buffer_append(&buf, pack, lens);
+    FREE(pack);
+    void *extra = ud->extra;
+    mqtt_pack_ctx *mqpack = mqtt_unpack(0, &buf, ud, status);
+    FREE(ud->extra);
+    ud->extra = extra;
+    ud->status = 0;
+    if (NULL == mqpack) {
+        FREE(connprop.data);
+        FREE(willprop.data);
+        buffer_free(&buf);
+        return ERR_FAILED;
+    }
+    mqtt_connect_payload *pl = mqpack->payload;
+    if (0 != strcmp(pl->password, "123")) {
+        FREE(connprop.data);
+        FREE(willprop.data);
+        buffer_free(&buf);
+        _mqtt_pkfree(mqpack);
+        return ERR_FAILED;
+    }
+    _mqtt_pkfree(mqpack);
+
+    pack = mqtt_pack_connect(version, 1, 120, "mqtt_id123",
+        "admin", "123", 3,
+        "/test/will", "will message", strlen("will message"), 1, 1,
+        &connprop, NULL, &lens);
+    buffer_append(&buf, pack, lens);
+    FREE(pack);
+    extra = ud->extra;
+    mqpack = mqtt_unpack(0, &buf, ud, status);
+    FREE(ud->extra);
+    ud->extra = extra;
+    ud->status = 0;
+    if (NULL == mqpack) {
+        FREE(connprop.data);
+        FREE(willprop.data);
+        buffer_free(&buf);
+        return ERR_FAILED;
+    }
+    pl = mqpack->payload;
+    if (0 != strcmp(pl->password, "123")) {
+        FREE(connprop.data);
+        FREE(willprop.data);
+        buffer_free(&buf);
+        _mqtt_pkfree(mqpack);
+        return ERR_FAILED;
+    }
+    _mqtt_pkfree(mqpack);
+
+    pack = mqtt_pack_connect(version, 1, 120, "mqtt_id123",
+        "", "123", 3, NULL, "will message", strlen("will message"), 0, 1, NULL, NULL, &lens);
+    buffer_append(&buf, pack, lens);
+    FREE(pack);
+    extra = ud->extra;
+    mqpack = mqtt_unpack(0, &buf, ud, status);
+    FREE(ud->extra);
+    ud->extra = extra;
+    ud->status = 0;
+    if (NULL == mqpack) {
+        FREE(connprop.data);
+        FREE(willprop.data);
+        buffer_free(&buf);
+        return ERR_FAILED;
+    }
+    pl = mqpack->payload;
+    if (0 != strcmp(pl->password, "123")) {
+        FREE(connprop.data);
+        FREE(willprop.data);
+        buffer_free(&buf);
+        _mqtt_pkfree(mqpack);
+        return ERR_FAILED;
+    }
+    _mqtt_pkfree(mqpack);
+
+    FREE(connprop.data);
+    FREE(willprop.data);
+    buffer_free(&buf);
+    return ERR_OK;
+}
+static int32_t _test_mqtt_connack(mqtt_protversion version, ud_cxt *ud, int32_t *status) {
+    buffer_ctx buf;
+    buffer_init(&buf);
+    binary_ctx props;
+    binary_init(&props, NULL, 0, 0);
+    mqtt_props_fixnum(&props, SESSION_EXPIRY, 120);
+    mqtt_props_fixnum(&props, RECEIVE_MAXIMUM, 15000);
+    mqtt_props_fixnum(&props, MAXIMUM_QOS, 1);//
+    mqtt_props_binary(&props, CLIENT_ID, "mqtt_cid123", (int32_t)strlen("mqtt_cid123"));
+    mqtt_props_kv(&props, USER_PROPERTY, "key1", 4, "val1", 4);
+    mqtt_props_kv(&props, USER_PROPERTY, "key2", 4, "val2", 4);
+    size_t lens;
+    char *pack = mqtt_pack_connack(version, 1, 0, &props, &lens);
+    buffer_append(&buf, pack, lens);
+    FREE(pack);
+    mqtt_pack_ctx *mqpack = mqtt_unpack(1, &buf, ud, status);
+    if (NULL == mqpack) {
+        FREE(props.data);
+        buffer_free(&buf);
+        return ERR_FAILED;
+    }
+    _mqtt_pkfree(mqpack);
+    ud->status = 0;
+
+    pack = mqtt_pack_connack(version, 1, 0, NULL, &lens);
+    buffer_append(&buf, pack, lens);
+    FREE(pack);
+    mqpack = mqtt_unpack(1, &buf, ud, status);
+    if (NULL == mqpack) {
+        FREE(props.data);
+        buffer_free(&buf);
+        return ERR_FAILED;
+    }
+    _mqtt_pkfree(mqpack);
+    ud->status = 0;
+
+    FREE(props.data);
+    buffer_free(&buf);
+    return ERR_OK;
+}
+static int32_t _test_mqtt_publish(mqtt_protversion version, ud_cxt *ud, int32_t *status) {
+    buffer_ctx buf;
+    buffer_init(&buf);
+    binary_ctx props;
+    binary_init(&props, NULL, 0, 0);
+    mqtt_props_fixnum(&props, PAYLOAD_FORMAT, 1);
+    mqtt_props_kv(&props, USER_PROPERTY, "key1", 4, "val1", 4);
+    ud->status = 1;
+
+    size_t lens;
+    char *pack = mqtt_pack_publish(version, 1, 2, 1, "/test/will", 456, "publish payload", strlen("publish payload"), &props, &lens);
+    buffer_append(&buf, pack, lens);
+    FREE(pack);
+    mqtt_pack_ctx *mqpack = mqtt_unpack(1, &buf, ud, status);
+    if (NULL == mqpack) {
+        FREE(props.data);
+        buffer_free(&buf);
+        return ERR_FAILED;
+    }
+    _mqtt_pkfree(mqpack);
+
+    pack = mqtt_pack_publish(version, 0, 0, 0, "/test/will", 456, NULL, 0, NULL, &lens);
+    buffer_append(&buf, pack, lens);
+    FREE(pack);
+    mqpack = mqtt_unpack(1, &buf, ud, status);
+    if (NULL == mqpack) {
+        FREE(props.data);
+        buffer_free(&buf);
+        return ERR_FAILED;
+    }
+    _mqtt_pkfree(mqpack);
+
+    FREE(props.data);
+    buffer_free(&buf);
+    return ERR_OK;
+}
+static int32_t _test_mqtt_puback(mqtt_protversion version, ud_cxt *ud, int32_t *status) {
+    buffer_ctx buf;
+    buffer_init(&buf);
+    binary_ctx props;
+    binary_init(&props, NULL, 0, 0);
+    mqtt_props_binary(&props, REASON_STR, "REASON_STR", (int32_t)strlen("REASON_STR"));
+    ud->status = 1;
+
+    size_t lens;
+    char *pack = mqtt_pack_puback(version, 456, 0, &props, &lens);
+    buffer_append(&buf, pack, lens);
+    FREE(pack);
+    mqtt_pack_ctx *mqpack = mqtt_unpack(1, &buf, ud, status);
+    if (NULL == mqpack) {
+        FREE(props.data);
+        buffer_free(&buf);
+        return ERR_FAILED;
+    }
+    _mqtt_pkfree(mqpack);
+
+    pack = mqtt_pack_puback(version, 456, 1, NULL, &lens);
+    buffer_append(&buf, pack, lens);
+    FREE(pack);
+    mqpack = mqtt_unpack(1, &buf, ud, status);
+    if (NULL == mqpack) {
+        FREE(props.data);
+        buffer_free(&buf);
+        return ERR_FAILED;
+    }
+    _mqtt_pkfree(mqpack);
+
+    pack = mqtt_pack_puback(version, 456, 0, NULL, &lens);
+    buffer_append(&buf, pack, lens);
+    FREE(pack);
+    mqpack = mqtt_unpack(1, &buf, ud, status);
+    if (NULL == mqpack) {
+        FREE(props.data);
+        buffer_free(&buf);
+        return ERR_FAILED;
+    }
+    _mqtt_pkfree(mqpack);
+
+    FREE(props.data);
+    buffer_free(&buf);
+    return ERR_OK;
+}
+static int32_t _test_mqtt_pubrec(mqtt_protversion version, ud_cxt *ud, int32_t *status) {
+    buffer_ctx buf;
+    buffer_init(&buf);
+    binary_ctx props;
+    binary_init(&props, NULL, 0, 0);
+    mqtt_props_binary(&props, REASON_STR, "REASON_STR", (int32_t)strlen("REASON_STR"));
+    ud->status = 1;
+
+    size_t lens;
+    char *pack = mqtt_pack_pubrec(version, 456, 0, &props, &lens);
+    buffer_append(&buf, pack, lens);
+    FREE(pack);
+    mqtt_pack_ctx *mqpack = mqtt_unpack(1, &buf, ud, status);
+    if (NULL == mqpack) {
+        FREE(props.data);
+        buffer_free(&buf);
+        return ERR_FAILED;
+    }
+    _mqtt_pkfree(mqpack);
+
+    pack = mqtt_pack_pubrec(version, 456, 1, NULL, &lens);
+    buffer_append(&buf, pack, lens);
+    FREE(pack);
+    mqpack = mqtt_unpack(1, &buf, ud, status);
+    if (NULL == mqpack) {
+        FREE(props.data);
+        buffer_free(&buf);
+        return ERR_FAILED;
+    }
+    _mqtt_pkfree(mqpack);
+
+    pack = mqtt_pack_pubrec(version, 456, 0, NULL, &lens);
+    buffer_append(&buf, pack, lens);
+    FREE(pack);
+    mqpack = mqtt_unpack(1, &buf, ud, status);
+    if (NULL == mqpack) {
+        FREE(props.data);
+        buffer_free(&buf);
+        return ERR_FAILED;
+    }
+    _mqtt_pkfree(mqpack);
+
+    FREE(props.data);
+    buffer_free(&buf);
+    return ERR_OK;
+}
+static int32_t _test_mqtt_pubrel(mqtt_protversion version, ud_cxt *ud, int32_t *status) {
+    buffer_ctx buf;
+    buffer_init(&buf);
+    binary_ctx props;
+    binary_init(&props, NULL, 0, 0);
+    mqtt_props_binary(&props, REASON_STR, "REASON_STR", (int32_t)strlen("REASON_STR"));
+    ud->status = 1;
+
+    size_t lens;
+    char *pack = mqtt_pack_pubrel(version, 456, 0, &props, &lens);
+    buffer_append(&buf, pack, lens);
+    FREE(pack);
+    mqtt_pack_ctx *mqpack = mqtt_unpack(1, &buf, ud, status);
+    if (NULL == mqpack) {
+        FREE(props.data);
+        buffer_free(&buf);
+        return ERR_FAILED;
+    }
+    _mqtt_pkfree(mqpack);
+
+    pack = mqtt_pack_pubrel(version, 456, 1, NULL, &lens);
+    buffer_append(&buf, pack, lens);
+    FREE(pack);
+    mqpack = mqtt_unpack(1, &buf, ud, status);
+    if (NULL == mqpack) {
+        FREE(props.data);
+        buffer_free(&buf);
+        return ERR_FAILED;
+    }
+    _mqtt_pkfree(mqpack);
+
+    pack = mqtt_pack_pubrel(version, 456, 0, NULL, &lens);
+    buffer_append(&buf, pack, lens);
+    FREE(pack);
+    mqpack = mqtt_unpack(1, &buf, ud, status);
+    if (NULL == mqpack) {
+        FREE(props.data);
+        buffer_free(&buf);
+        return ERR_FAILED;
+    }
+    _mqtt_pkfree(mqpack);
+
+    FREE(props.data);
+    buffer_free(&buf);
+    return ERR_OK;
+}
+static int32_t _test_mqtt_pubcomp(mqtt_protversion version, ud_cxt *ud, int32_t *status) {
+    buffer_ctx buf;
+    buffer_init(&buf);
+    binary_ctx props;
+    binary_init(&props, NULL, 0, 0);
+    mqtt_props_binary(&props, REASON_STR, "REASON_STR", (int32_t)strlen("REASON_STR"));
+    ud->status = 1;
+
+    size_t lens;
+    char *pack = mqtt_pack_pubcomp(version, 456, 0, &props, &lens);
+    buffer_append(&buf, pack, lens);
+    FREE(pack);
+    mqtt_pack_ctx *mqpack = mqtt_unpack(1, &buf, ud, status);
+    if (NULL == mqpack) {
+        FREE(props.data);
+        buffer_free(&buf);
+        return ERR_FAILED;
+    }
+    _mqtt_pkfree(mqpack);
+
+    pack = mqtt_pack_pubcomp(version, 456, 1, NULL, &lens);
+    buffer_append(&buf, pack, lens);
+    FREE(pack);
+    mqpack = mqtt_unpack(1, &buf, ud, status);
+    if (NULL == mqpack) {
+        FREE(props.data);
+        buffer_free(&buf);
+        return ERR_FAILED;
+    }
+    _mqtt_pkfree(mqpack);
+
+    pack = mqtt_pack_pubcomp(version, 456, 0, NULL, &lens);
+    buffer_append(&buf, pack, lens);
+    FREE(pack);
+    mqpack = mqtt_unpack(1, &buf, ud, status);
+    if (NULL == mqpack) {
+        FREE(props.data);
+        buffer_free(&buf);
+        return ERR_FAILED;
+    }
+    _mqtt_pkfree(mqpack);
+
+    FREE(props.data);
+    buffer_free(&buf);
+    return ERR_OK;
+}
+static int32_t _test_mqtt_ping_pong(mqtt_protversion version, ud_cxt *ud, int32_t *status) {
+    buffer_ctx buf;
+    buffer_init(&buf);
+
+    size_t lens;
+    char *pack = mqtt_pack_ping(version, &lens);
+    buffer_append(&buf, pack, lens);
+    FREE(pack);
+    mqtt_pack_ctx *mqpack = mqtt_unpack(0, &buf, ud, status);
+    if (NULL == mqpack) {
+        buffer_free(&buf);
+        return ERR_FAILED;
+    }
+    _mqtt_pkfree(mqpack);
+
+    pack = mqtt_pack_pong(version, &lens);
+    buffer_append(&buf, pack, lens);
+    FREE(pack);
+    mqpack = mqtt_unpack(1, &buf, ud, status);
+    if (NULL == mqpack) {
+        buffer_free(&buf);
+        return ERR_FAILED;
+    }
+    _mqtt_pkfree(mqpack);
+
+    buffer_free(&buf);
+    return ERR_OK;
+}
+static int32_t _test_mqtt_disconnect(mqtt_protversion version, ud_cxt *ud, int32_t *status) {
+    buffer_ctx buf;
+    buffer_init(&buf);
+    binary_ctx props;
+    binary_init(&props, NULL, 0, 0);
+    mqtt_props_binary(&props, REASON_STR, "REASON_STR", (int32_t)strlen("REASON_STR"));
+    ud->status = 1;
+
+    size_t lens;
+    char *pack = mqtt_pack_disconnect(version, 0, &props, &lens);
+    buffer_append(&buf, pack, lens);
+    FREE(pack);
+    mqtt_pack_ctx *mqpack = mqtt_unpack(1, &buf, ud, status);
+    if (NULL == mqpack) {
+        FREE(props.data);
+        buffer_free(&buf);
+        return ERR_FAILED;
+    }
+    _mqtt_pkfree(mqpack);
+
+    pack = mqtt_pack_disconnect(version, 0x04, NULL, &lens);
+    buffer_append(&buf, pack, lens);
+    FREE(pack);
+    mqpack = mqtt_unpack(1, &buf, ud, status);
+    if (NULL == mqpack) {
+        FREE(props.data);
+        buffer_free(&buf);
+        return ERR_FAILED;
+    }
+    _mqtt_pkfree(mqpack);
+
+    pack = mqtt_pack_disconnect(version, 0, NULL, &lens);
+    buffer_append(&buf, pack, lens);
+    FREE(pack);
+    mqpack = mqtt_unpack(1, &buf, ud, status);
+    if (NULL == mqpack) {
+        FREE(props.data);
+        buffer_free(&buf);
+        return ERR_FAILED;
+    }
+    _mqtt_pkfree(mqpack);
+
+    FREE(props.data);
+    buffer_free(&buf);
+    return ERR_OK;
+}
+static int32_t _test_mqtt_auth(mqtt_protversion version, ud_cxt *ud, int32_t *status) {
+    buffer_ctx buf;
+    buffer_init(&buf);
+    binary_ctx props;
+    binary_init(&props, NULL, 0, 0);
+    mqtt_props_binary(&props, REASON_STR, "REASON_STR", (int32_t)strlen("REASON_STR"));
+    ud->status = 1;
+
+    size_t lens;
+    char *pack = mqtt_pack_auth(version, 0, &props, &lens);
+    buffer_append(&buf, pack, lens);
+    FREE(pack);
+    mqtt_pack_ctx *mqpack = mqtt_unpack(1, &buf, ud, status);
+    if (NULL == mqpack) {
+        FREE(props.data);
+        buffer_free(&buf);
+        return ERR_FAILED;
+    }
+    _mqtt_pkfree(mqpack);
+
+    pack = mqtt_pack_auth(version, 0x18, NULL, &lens);
+    buffer_append(&buf, pack, lens);
+    FREE(pack);
+    mqpack = mqtt_unpack(1, &buf, ud, status);
+    if (NULL == mqpack) {
+        FREE(props.data);
+        buffer_free(&buf);
+        return ERR_FAILED;
+    }
+    _mqtt_pkfree(mqpack);
+
+    pack = mqtt_pack_auth(version, 0, &props, &lens);
+    buffer_append(&buf, pack, lens);
+    FREE(pack);
+    mqpack = mqtt_unpack(1, &buf, ud, status);
+    if (NULL == mqpack) {
+        FREE(props.data);
+        buffer_free(&buf);
+        return ERR_FAILED;
+    }
+    _mqtt_pkfree(mqpack);
+
+    pack = mqtt_pack_auth(version, 0, NULL, &lens);
+    buffer_append(&buf, pack, lens);
+    FREE(pack);
+    mqpack = mqtt_unpack(1, &buf, ud, status);
+    if (NULL == mqpack) {
+        FREE(props.data);
+        buffer_free(&buf);
+        return ERR_FAILED;
+    }
+    _mqtt_pkfree(mqpack);
+
+    FREE(props.data);
+    buffer_free(&buf);
+    return ERR_OK;
+}
+static int32_t _test_mqtt_subscribe(mqtt_protversion version, ud_cxt *ud, int32_t *status) {
+    buffer_ctx buf;
+    buffer_init(&buf);
+    binary_ctx props;
+    binary_init(&props, NULL, 0, 0);
+    mqtt_props_kv(&props, USER_PROPERTY, "key1", 4, "val1", 4);
+    binary_ctx topics;
+    binary_init(&topics, NULL, 0, 0);
+    mqtt_topics_subscribe(&topics, version, "/test/topic1", 1, 1, 1, 1);
+    mqtt_topics_subscribe(&topics, version, "/test/topic2", 2, 1, 1, 2);
+    ud->status = 1;
+
+    size_t lens;
+    char *pack = mqtt_pack_subscribe(version, 456, &topics, &props, &lens);
+    buffer_append(&buf, pack, lens);
+    FREE(pack);
+    mqtt_pack_ctx *mqpack = mqtt_unpack(0, &buf, ud, status);
+    if (NULL == mqpack) {
+        FREE(props.data);
+        FREE(topics.data);
+        buffer_free(&buf);
+        return ERR_FAILED;
+    }
+    _mqtt_pkfree(mqpack);
+
+    pack = mqtt_pack_subscribe(version, 456, &topics, NULL, &lens);
+    buffer_append(&buf, pack, lens);
+    FREE(pack);
+    mqpack = mqtt_unpack(0, &buf, ud, status);
+    if (NULL == mqpack) {
+        FREE(props.data);
+        FREE(topics.data);
+        buffer_free(&buf);
+        return ERR_FAILED;
+    }
+    _mqtt_pkfree(mqpack);
+
+    FREE(props.data);
+    FREE(topics.data);
+    buffer_free(&buf);
+    return ERR_OK;
+}
+static int32_t _test_mqtt_suback(mqtt_protversion version, ud_cxt *ud, int32_t *status) {
+    buffer_ctx buf;
+    buffer_init(&buf);
+    binary_ctx props;
+    binary_init(&props, NULL, 0, 0);
+    mqtt_props_kv(&props, USER_PROPERTY, "key1", 4, "val1", 4);
+    uint8_t reasons[2] = { 0, 1 };
+    ud->status = 1;
+
+    size_t lens;
+    char *pack = mqtt_pack_suback(version, 456, reasons, sizeof(reasons), &props, &lens);
+    buffer_append(&buf, pack, lens);
+    FREE(pack);
+    mqtt_pack_ctx *mqpack = mqtt_unpack(1, &buf, ud, status);
+    if (NULL == mqpack) {
+        FREE(props.data);
+        buffer_free(&buf);
+        return ERR_FAILED;
+    }
+    _mqtt_pkfree(mqpack);
+
+    pack = mqtt_pack_suback(version, 456, reasons, sizeof(reasons), NULL, &lens);
+    buffer_append(&buf, pack, lens);
+    FREE(pack);
+    mqpack = mqtt_unpack(1, &buf, ud, status);
+    if (NULL == mqpack) {
+        FREE(props.data);
+        buffer_free(&buf);
+        return ERR_FAILED;
+    }
+    _mqtt_pkfree(mqpack);
+
+    FREE(props.data);
+    buffer_free(&buf);
+    return ERR_OK;
+}
+static int32_t _test_mqtt_unsubscribe(mqtt_protversion version, ud_cxt *ud, int32_t *status) {
+    buffer_ctx buf;
+    buffer_init(&buf);
+    binary_ctx props;
+    binary_init(&props, NULL, 0, 0);
+    mqtt_props_kv(&props, USER_PROPERTY, "key1", 4, "val1", 4);
+    binary_ctx topics;
+    binary_init(&topics, NULL, 0, 0);
+    mqtt_topics_unsubscribe(&topics, "/test/topic1");
+    mqtt_topics_unsubscribe(&topics, "/test/topic2");
+    ud->status = 1;
+
+    size_t lens;
+    char *pack = mqtt_pack_unsubscribe(version, 456, &topics, &props, &lens);
+    buffer_append(&buf, pack, lens);
+    FREE(pack);
+    mqtt_pack_ctx *mqpack = mqtt_unpack(0, &buf, ud, status);
+    if (NULL == mqpack) {
+        FREE(props.data);
+        FREE(topics.data);
+        buffer_free(&buf);
+        return ERR_FAILED;
+    }
+    _mqtt_pkfree(mqpack);
+
+    pack = mqtt_pack_unsubscribe(version, 456, &topics, NULL, &lens);
+    buffer_append(&buf, pack, lens);
+    FREE(pack);
+    mqpack = mqtt_unpack(0, &buf, ud, status);
+    if (NULL == mqpack) {
+        FREE(props.data);
+        FREE(topics.data);
+        buffer_free(&buf);
+        return ERR_FAILED;
+    }
+    _mqtt_pkfree(mqpack);
+
+    FREE(props.data);
+    FREE(topics.data);
+    buffer_free(&buf);
+    return ERR_OK;
+}
+static int32_t _test_mqtt_unsuback(mqtt_protversion version, ud_cxt *ud, int32_t *status) {
+    buffer_ctx buf;
+    buffer_init(&buf);
+    binary_ctx props;
+    binary_init(&props, NULL, 0, 0);
+    mqtt_props_kv(&props, USER_PROPERTY, "key1", 4, "val1", 4);
+    uint8_t reasons[2] = { 0, 1 };
+    ud->status = 1;
+
+    size_t lens;
+    char *pack = mqtt_pack_unsuback(version, 456, reasons, sizeof(reasons), &props, &lens);
+    buffer_append(&buf, pack, lens);
+    FREE(pack);
+    mqtt_pack_ctx *mqpack = mqtt_unpack(1, &buf, ud, status);
+    if (NULL == mqpack) {
+        FREE(props.data);
+        buffer_free(&buf);
+        return ERR_FAILED;
+    }
+    _mqtt_pkfree(mqpack);
+
+    pack = mqtt_pack_unsuback(version, 456, reasons, sizeof(reasons), NULL, &lens);
+    buffer_append(&buf, pack, lens);
+    FREE(pack);
+    mqpack = mqtt_unpack(1, &buf, ud, status);
+    if (NULL == mqpack) {
+        FREE(props.data);
+        buffer_free(&buf);
+        return ERR_FAILED;
+    }
+    _mqtt_pkfree(mqpack);
+
+    FREE(props.data);
+    buffer_free(&buf);
+    return ERR_OK;
+}
+static void _test_mqtt_prot(CuTest* tc, mqtt_protversion version, ud_cxt *ud, int32_t *status) {
+    CuAssertTrue(tc, ERR_OK == _test_mqtt_connect(version, ud, status));
+    CuAssertTrue(tc, ERR_OK == _test_mqtt_connack(version, ud, status));
+    CuAssertTrue(tc, ERR_OK == _test_mqtt_publish(version, ud, status));
+    CuAssertTrue(tc, ERR_OK == _test_mqtt_puback(version, ud, status));
+    CuAssertTrue(tc, ERR_OK == _test_mqtt_pubrec(version, ud, status));
+    CuAssertTrue(tc, ERR_OK == _test_mqtt_pubrel(version, ud, status));
+    CuAssertTrue(tc, ERR_OK == _test_mqtt_pubcomp(version, ud, status));
+    CuAssertTrue(tc, ERR_OK == _test_mqtt_subscribe(version, ud, status));
+    CuAssertTrue(tc, ERR_OK == _test_mqtt_suback(version, ud, status));
+    CuAssertTrue(tc, ERR_OK == _test_mqtt_unsubscribe(version, ud, status));
+    CuAssertTrue(tc, ERR_OK == _test_mqtt_unsuback(version, ud, status));
+    CuAssertTrue(tc, ERR_OK == _test_mqtt_ping_pong(version, ud, status));
+    CuAssertTrue(tc, ERR_OK == _test_mqtt_disconnect(version, ud, status));
+    if (version >= MQTT_50) {
+        CuAssertTrue(tc, ERR_OK == _test_mqtt_auth(version, ud, status));
+    }
+    
+}
+static void test_mqtt_prot(CuTest* tc) {
+    int32_t status = 0;
+    mqtt_ctx mq;
+    mq.version = MQTT_50;
+    ud_cxt ud;
+    ZERO(&ud, sizeof(ud_cxt));
+    ud.pktype = PACK_MQTT;
+    ud.extra = &mq;
+    _test_mqtt_prot(tc, mq.version, &ud, &status);
+    mq.version = MQTT_311;
+    _test_mqtt_prot(tc, mq.version, &ud, &status);
+}
 void test_utils(CuSuite* suite) {
     SUITE_ADD_TEST(suite, test_array);
     SUITE_ADD_TEST(suite, test_queue);
@@ -1459,4 +2136,5 @@ void test_utils(CuSuite* suite) {
     SUITE_ADD_TEST(suite, test_url);
     SUITE_ADD_TEST(suite, test_redis_pack);
     SUITE_ADD_TEST(suite, test_redis_unpack);
+    SUITE_ADD_TEST(suite, test_mqtt_prot);
 }

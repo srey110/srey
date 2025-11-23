@@ -17,6 +17,7 @@
 #include "task_mysql.h"
 #include "task_smtp.h"
 #include "task_mqttsv.h"
+#include "task_mqttclient.h"
 
 #ifdef OS_WIN
 //#include "vld.h"
@@ -90,6 +91,7 @@ int main(int argc, char *argv[]) {
     task_http_sv_start(g_loader, 10009, 0);
     task_smtp_start(g_loader, 10010, 0);
     task_mqtt_sv_start(g_loader, 10011, 0);
+    task_mqtt_client_start(g_loader, 10012, 0);
     task_coro_timeout_start(g_loader, 20000, 0);
     task_coro_comm1_start(g_loader, 20001, 0);
     task_coro_net_start(g_loader, 20002, 0);

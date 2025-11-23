@@ -41,7 +41,7 @@ typedef struct mqtt_connect_payload {
 }mqtt_connect_payload;
 typedef struct mqtt_connack_varhead {
     int8_t sesspresent;//会话存在
-    int8_t reason;//连接原因码
+    uint8_t reason;//连接原因码
     arr_propertie_ctx *properties;//属性  5.0
 }mqtt_connack_varhead;
 //PUBLISH报文的预期响应 QoS 0	无响应; QoS 1	PUBACK报文; QoS 2	PUBREC报文
@@ -58,22 +58,22 @@ typedef struct mqtt_publish_payload {
     char content[0];//内容
 }mqtt_publish_payload;
 typedef struct mqtt_puback_varhead {
-    int8_t reason;//原因码  5.0
+    uint8_t reason;//原因码  5.0
     int16_t packid;//报文标识符
     arr_propertie_ctx *properties;//属性 5.0
 }mqtt_puback_varhead;
 typedef struct mqtt_pubrec_varhead {
-    int8_t reason;//原因码  5.0
+    uint8_t reason;//原因码  5.0
     int16_t packid;//报文标识符
     arr_propertie_ctx *properties;//属性 5.0
 }mqtt_pubrec_varhead;
 typedef struct mqtt_pubrel_varhead {
-    int8_t reason;//原因码 5.0
+    uint8_t reason;//原因码 5.0
     int16_t packid;//报文标识符
     arr_propertie_ctx *properties;//属性 5.0
 }mqtt_pubrel_varhead;
 typedef struct mqtt_pubcomp_varhead {
-    int8_t reason;//原因码 5.0
+    uint8_t reason;//原因码 5.0
     int16_t packid;//报文标识符
     arr_propertie_ctx *properties;//属性 5.0
 }mqtt_pubcomp_varhead;
@@ -82,7 +82,10 @@ typedef struct mqtt_subscribe_varhead {
     arr_propertie_ctx *properties;//属性 5.0
 }mqtt_subscribe_varhead;
 typedef struct subscribe_option {
-    int8_t subop;
+    int8_t qos;//最大服务质量
+    int8_t nl;//非本地(MQTT5.0)
+    int8_t rap;//发布保留(MQTT5.0)
+    int8_t retain;//保留操作(MQTT5.0)
     char *topic;
 }subscribe_option;
 ARRAY_DECL(subscribe_option *, arr_subscribe_option);
@@ -95,7 +98,7 @@ typedef struct mqtt_suback_varhead {
 }mqtt_suback_varhead;
 typedef struct mqtt_suback_payload {
     int32_t rlens;//原因码长度
-    char reasons[0];//原因码列表
+    uint8_t reasons[0];//原因码列表
 }mqtt_suback_payload;
 typedef struct mqtt_unsubscribe_varhead {
     int16_t packid;//报文标识符
@@ -110,14 +113,14 @@ typedef struct mqtt_unsuback_varhead {
 }mqtt_unsuback_varhead;
 typedef struct mqtt_unsuback_payload { //5.0
     int32_t rlens;//原因码长度
-    char reasons[0];//原因码列表
+    uint8_t reasons[0];//原因码列表
 }mqtt_unsuback_payload;
 typedef struct mqtt_disconnect_varhead {//5.0
-    int8_t reason;//断开原因码 5.0
+    uint8_t reason;//断开原因码 5.0
     arr_propertie_ctx *properties;//属性 5.0
 }mqtt_disconnect_varhead;
 typedef struct mqtt_auth_varhead {//5.0
-    int8_t reason;//认证原因码
+    uint8_t reason;//认证原因码
     arr_propertie_ctx *properties;//属性 5.0
 }mqtt_auth_varhead;
 typedef struct mqtt_pack_ctx {

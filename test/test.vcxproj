@@ -177,6 +177,7 @@
     <ClCompile Include="task_coro_timeout.c" />
     <ClCompile Include="task_coro_utils.c" />
     <ClCompile Include="task_http_sv.c" />
+    <ClCompile Include="task_mqttclient.c" />
     <ClCompile Include="task_mqttsv.c" />
     <ClCompile Include="task_mysql.c" />
     <ClCompile Include="task_redis.c" />
@@ -200,6 +201,7 @@
     <ClInclude Include="task_coro_timeout.h" />
     <ClInclude Include="task_coro_utils.h" />
     <ClInclude Include="task_http_sv.h" />
+    <ClInclude Include="task_mqttclient.h" />
     <ClInclude Include="task_mqttsv.h" />
     <ClInclude Include="task_mysql.h" />
     <ClInclude Include="task_redis.h" />

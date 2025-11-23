@@ -2,6 +2,11 @@
 #include "protocol/prots.h"
 #include "utils/utils.h"
 
+typedef enum parse_status {
+    INIT = 0,
+    COMMAND
+}parse_status;
+
 void _mqtt_pkfree(void *data) {
     if (NULL == data) {
         return;
@@ -175,11 +180,11 @@ static arr_propertie_ctx *_mqtt_properties(buffer_ctx *buf, int32_t *status, int
         BIT_SET(*status, PROT_ERROR);
         return NULL;
     }
-    if (0 == plens) {
-        return NULL;
-    }
     if (NULL != total) {
         *total = occupy + plens;
+    }
+    if (0 == plens) {
+        return NULL;
     }
     int32_t num;
     size_t off;
@@ -301,13 +306,14 @@ static int32_t _mqtt_connect(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *bu
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
-    //可变报头
+    //可变报头 协议名（Protocol Name），协议级别（Protocol Level），连接标志（Connect Flags），保持连接（Keep Alive）,
+    //属性（Properties MQTT_50）
     mqtt_connect_varhead *vh;
     MALLOC(vh, sizeof(mqtt_connect_varhead));
     vh->properties = NULL;
     pack->varhead = vh;
     vh->version = _mqtt_check_prot(buf);
-    if (ERR_FAILED == vh->version) {//协议名检查
+    if (ERR_FAILED == vh->version) {//协议名 协议级别 检查
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
@@ -345,7 +351,8 @@ static int32_t _mqtt_connect(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *bu
             return ERR_FAILED;
         }
     }
-    //载荷
+    //载荷 客户标识符（Client Identifier）、遗嘱属性（Will Properties MQTT_50）、遗嘱主题（Will Topic）、遗嘱载荷（Will Payload）、
+    //用户名（User Name）、密码（Password）
     mqtt_connect_payload *pl;
     CALLOC(pl, 1, sizeof(mqtt_connect_payload));
     pack->payload = pl;
@@ -393,6 +400,7 @@ static int32_t _mqtt_connect(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *bu
     CALLOC(mq, 1, sizeof(mqtt_ctx));
     mq->version = vh->version;
     ud->extra = mq;
+    ud->status = COMMAND;
     return ERR_OK;
 }
 //服务端到客户端  连接报文确认
@@ -402,7 +410,7 @@ static int32_t _mqtt_connack(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *bu
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
-    //可变报头
+    //可变报头 连接确认标志（Connect Acknowledge Flags），连接原因码（Reason Code），属性（Properties MQTT_50）
     int32_t num;
     if (ERR_OK != _mqtt_data_fixnum(buf, 1, &num)) {//连接确认标志
         BIT_SET(*status, PROT_ERROR);
@@ -420,7 +428,7 @@ static int32_t _mqtt_connack(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *bu
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
-    vh->reason = (int8_t)num;
+    vh->reason = (uint8_t)num;
     pack->version = ((mqtt_ctx *)ud->extra)->version;
     if (pack->version >= MQTT_50) {
         vh->properties = _mqtt_properties(buf, status, NULL);//属性
@@ -429,22 +437,26 @@ static int32_t _mqtt_connack(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *bu
             return ERR_FAILED;
         }
     }
+    if (0x00 == vh->reason) {
+        ud->status = COMMAND;
+    }
     return ERR_OK;
 }
 //两个方向都允许  发布消息
 static int32_t _mqtt_publish(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
-    //可变报头
-    int32_t num, off = 0;
+    //可变报头 主题名（Topic Name），报文标识符（Packet Identifier），属性（Properties MQTT_50）
+    int32_t num;
     char *topic = _mqtt_data_string2(buf, &num);//主题名
     if (NULL == topic) {
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
-    off += (2 + num);
+    int32_t off = (2 + num);//主题名(2 + 主题名长度)
     mqtt_publish_varhead *vh;
     CALLOC(vh, 1, sizeof(mqtt_publish_varhead));
     pack->varhead = vh;
     vh->topic = topic;
+    //解析固定报头标志
     vh->retain = BIT_GETN(pack->fixhead.flags, 0);
     vh->qos = BIT_GETN(pack->fixhead.flags, 1);
     vh->qos |= (BIT_GETN(pack->fixhead.flags, 2) << 1);
@@ -467,6 +479,7 @@ static int32_t _mqtt_publish(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, i
         }
         off += num;
     }
+    //载荷
     int32_t remain = (int32_t)pack->fixhead.remaining_lens - off;
     if (remain < 0) {
         BIT_SET(*status, PROT_ERROR);
@@ -490,7 +503,7 @@ static int32_t _mqtt_puback(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, in
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
-    //可变报头
+    //可变报头 报文标识符，[原因码(MQTT_50)，属性(MQTT_50)]
     int32_t num;
     if (ERR_OK != _mqtt_data_fixnum(buf, 2, &num)) {//报文标识符
         BIT_SET(*status, PROT_ERROR);
@@ -501,18 +514,23 @@ static int32_t _mqtt_puback(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, in
     pack->varhead = vh;
     vh->packid = (int16_t)num;
     pack->version = ((mqtt_ctx *)ud->extra)->version;
-    if (pack->version < MQTT_50) {
+    if (pack->version < MQTT_50
+        || 2 == pack->fixhead.remaining_lens) {//剩余长度为2，则表示使用原因码0x00（成功）
         return ERR_OK;
     }
-    if (ERR_OK != _mqtt_data_fixnum(buf, 1, &num)) {//原因码
-        BIT_SET(*status, PROT_ERROR);
-        return ERR_FAILED;
+    if (pack->fixhead.remaining_lens >= 3) {
+        if (ERR_OK != _mqtt_data_fixnum(buf, 1, &num)) {//原因码
+            BIT_SET(*status, PROT_ERROR);
+            return ERR_FAILED;
+        }
+        vh->reason = (uint8_t)num;
     }
-    vh->reason = (int8_t)num;
-    vh->properties = _mqtt_properties(buf, status, NULL);//属性
-    if (NULL == vh->properties
-        && BIT_CHECK(*status, PROT_ERROR)) {
-        return ERR_FAILED;
+    if (pack->fixhead.remaining_lens >= 4) {
+        vh->properties = _mqtt_properties(buf, status, NULL);//属性
+        if (NULL == vh->properties
+            && BIT_CHECK(*status, PROT_ERROR)) {
+            return ERR_FAILED;
+        }
     }
     return ERR_OK;
 }
@@ -522,7 +540,7 @@ static int32_t _mqtt_pubrec(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, in
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
-    //可变报头
+    //可变报头 报文标识符，[原因码(MQTT_50)，属性(MQTT_50)]
     int32_t num;
     if (ERR_OK != _mqtt_data_fixnum(buf, 2, &num)) {//报文标识符
         BIT_SET(*status, PROT_ERROR);
@@ -533,18 +551,23 @@ static int32_t _mqtt_pubrec(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, in
     pack->varhead = vh;
     vh->packid = (int16_t)num;
     pack->version = ((mqtt_ctx *)ud->extra)->version;
-    if (pack->version < MQTT_50) {
+    if (pack->version < MQTT_50
+        || 2 == pack->fixhead.remaining_lens) {//剩余长度为2，则表示使用原因码0x00（成功
         return ERR_OK;
     }
-    if (ERR_OK != _mqtt_data_fixnum(buf, 1, &num)) {//原因码
-        BIT_SET(*status, PROT_ERROR);
-        return ERR_FAILED;
+    if (pack->fixhead.remaining_lens >= 3) {
+        if (ERR_OK != _mqtt_data_fixnum(buf, 1, &num)) {//原因码
+            BIT_SET(*status, PROT_ERROR);
+            return ERR_FAILED;
+        }
+        vh->reason = (uint8_t)num;
     }
-    vh->reason = (int8_t)num;
-    vh->properties = _mqtt_properties(buf, status, NULL);//属性
-    if (NULL == vh->properties
-        && BIT_CHECK(*status, PROT_ERROR)) {
-        return ERR_FAILED;
+    if (pack->fixhead.remaining_lens >= 4) {
+        vh->properties = _mqtt_properties(buf, status, NULL);//属性
+        if (NULL == vh->properties
+            && BIT_CHECK(*status, PROT_ERROR)) {
+            return ERR_FAILED;
+        }
     }
     return ERR_OK;
 }
@@ -554,7 +577,7 @@ static int32_t _mqtt_pubrel(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, in
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
-    //可变报头
+    //可变报头 报文标识符，[原因码(MQTT_50)，属性(MQTT_50)]
     int32_t num;
     if (ERR_OK != _mqtt_data_fixnum(buf, 2, &num)) {//报文标识符
         BIT_SET(*status, PROT_ERROR);
@@ -565,18 +588,23 @@ static int32_t _mqtt_pubrel(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, in
     pack->varhead = vh;
     vh->packid = (int16_t)num;
     pack->version = ((mqtt_ctx *)ud->extra)->version;
-    if (pack->version < MQTT_50) {
+    if (pack->version < MQTT_50
+        || 2 == pack->fixhead.remaining_lens) {//剩余长度为2，则表示使用原因码0x00 （成功）
         return ERR_OK;
     }
-    if (ERR_OK != _mqtt_data_fixnum(buf, 1, &num)) {//原因码
-        BIT_SET(*status, PROT_ERROR);
-        return ERR_FAILED;
+    if (pack->fixhead.remaining_lens >= 3) {
+        if (ERR_OK != _mqtt_data_fixnum(buf, 1, &num)) {//原因码
+            BIT_SET(*status, PROT_ERROR);
+            return ERR_FAILED;
+        }
+        vh->reason = (uint8_t)num;
     }
-    vh->reason = (int8_t)num;
-    vh->properties = _mqtt_properties(buf, status, NULL);//属性
-    if (NULL == vh->properties
-        && BIT_CHECK(*status, PROT_ERROR)) {
-        return ERR_FAILED;
+    if (pack->fixhead.remaining_lens >= 4) {
+        vh->properties = _mqtt_properties(buf, status, NULL);//属性
+        if (NULL == vh->properties
+            && BIT_CHECK(*status, PROT_ERROR)) {
+            return ERR_FAILED;
+        }
     }
     return ERR_OK;
 }
@@ -586,7 +614,7 @@ static int32_t _mqtt_pubcomp(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, i
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
-    //可变报头
+    //可变报头 报文标识符，[原因码(MQTT_50)，属性(MQTT_50)]
     int32_t num;
     if (ERR_OK != _mqtt_data_fixnum(buf, 2, &num)) {//报文标识符
         BIT_SET(*status, PROT_ERROR);
@@ -597,18 +625,23 @@ static int32_t _mqtt_pubcomp(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, i
     pack->varhead = vh;
     vh->packid = (int16_t)num;
     pack->version = ((mqtt_ctx *)ud->extra)->version;
-    if (pack->version < MQTT_50) {
+    if (pack->version < MQTT_50
+        || 2 == pack->fixhead.remaining_lens) {//剩余长度为2，则表示使用原因码0x00（成功）
         return ERR_OK;
     }
-    if (ERR_OK != _mqtt_data_fixnum(buf, 1, &num)) {//原因码
-        BIT_SET(*status, PROT_ERROR);
-        return ERR_FAILED;
+    if (pack->fixhead.remaining_lens >= 3) {
+        if (ERR_OK != _mqtt_data_fixnum(buf, 1, &num)) {//原因码
+            BIT_SET(*status, PROT_ERROR);
+            return ERR_FAILED;
+        }
+        vh->reason = (uint8_t)num;
     }
-    vh->reason = (int8_t)num;
-    vh->properties = _mqtt_properties(buf, status, NULL);//属性
-    if (NULL == vh->properties
-        && BIT_CHECK(*status, PROT_ERROR)) {
-        return ERR_FAILED;
+    if (pack->fixhead.remaining_lens >= 4) {
+        vh->properties = _mqtt_properties(buf, status, NULL);//属性
+        if (NULL == vh->properties
+            && BIT_CHECK(*status, PROT_ERROR)) {
+            return ERR_FAILED;
+        }
     }
     return ERR_OK;
 }
@@ -619,7 +652,7 @@ static int32_t _mqtt_subscribe(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
-    //可变报头
+    //可变报头 报文标识符，属性(MQTT_50)
     int32_t num;
     if (ERR_OK != _mqtt_data_fixnum(buf, 2, &num)) {//报文标识符
         BIT_SET(*status, PROT_ERROR);
@@ -652,7 +685,7 @@ static int32_t _mqtt_subscribe(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *
     pack->payload = pl;
     arr_subscribe_option_init(&pl->subop, 0);
     for (off = 0; off < remain;) {
-        topic = _mqtt_data_string2(buf, &num);//主题过滤器
+        topic = _mqtt_data_string2(buf, &num);//主题
         if (NULL == topic) {
             BIT_SET(*status, PROT_ERROR);
             return ERR_FAILED;
@@ -663,11 +696,17 @@ static int32_t _mqtt_subscribe(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *
             FREE(topic);
             return ERR_FAILED;
         }
-        //to do订阅选项检查 3.11 与5.0不同
         off++;
         MALLOC(subop, sizeof(subscribe_option));
-        subop->subop = (int8_t)num;
         subop->topic = topic;
+        subop->qos = BIT_GETN(num, 0);//订阅选项 解析
+        subop->qos |= (BIT_GETN(num, 1) << 1);
+        if (pack->version >= MQTT_50) {
+            subop->nl = BIT_GETN(num, 2);
+            subop->rap = BIT_GETN(num, 3);
+            subop->retain = BIT_GETN(num, 4);
+            subop->retain |= (BIT_GETN(num, 5) << 1);
+        }
         arr_subscribe_option_push_back(&pl->subop, &subop);
     }
     if (off != remain) {
@@ -682,7 +721,7 @@ static int32_t _mqtt_suback(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
-    //可变报头
+    //可变报头 报文标识符，属性(MQTT_50)
     int32_t num;
     if (ERR_OK != _mqtt_data_fixnum(buf, 2, &num)) {//报文标识符
         BIT_SET(*status, PROT_ERROR);
@@ -724,7 +763,7 @@ static int32_t _mqtt_unsubscribe(mqtt_pack_ctx *pack, int32_t client, buffer_ctx
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
-    //可变报头
+    //可变报头 报文标识符，属性(MQTT_50)
     int32_t num;
     if (ERR_OK != _mqtt_data_fixnum(buf, 2, &num)) {//报文标识符
         BIT_SET(*status, PROT_ERROR);
@@ -756,7 +795,7 @@ static int32_t _mqtt_unsubscribe(mqtt_pack_ctx *pack, int32_t client, buffer_ctx
     pack->payload = pl;
     arr_ptr_init(&pl->topics, 0);
     for (off = 0; off < remain;) {
-        topic = _mqtt_data_string2(buf, &num);
+        topic = _mqtt_data_string2(buf, &num);//主题
         if (NULL == topic) {
             BIT_SET(*status, PROT_ERROR);
             return ERR_FAILED;
@@ -777,7 +816,7 @@ static int32_t _mqtt_unsuback(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *b
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
-    //可变报头
+    //可变报头 报文标识符，属性(MQTT_50)
     int32_t num;
     if (ERR_OK != _mqtt_data_fixnum(buf, 2, &num)) {//报文标识符
         BIT_SET(*status, PROT_ERROR);
@@ -841,19 +880,18 @@ static int32_t _mqtt_disconnect(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud
     pack->varhead = vh;
     BIT_SET(*status, PROT_CLOSE);
     pack->version = ((mqtt_ctx *)ud->extra)->version;
-    if (pack->version < MQTT_50) {
+    if (pack->version < MQTT_50
+        || 0 == pack->fixhead.remaining_lens) {//如果剩余长度小于1，则表示使用原因码0x00（正常断开）. 如果剩余长度小于2，属性长度使用0。
         return ERR_OK;
     }
     //可变报头
     int32_t num;
-    if (pack->fixhead.remaining_lens >= 1) {
-        if (ERR_OK != _mqtt_data_fixnum(buf, 1, &num)) {//断开原因码
-            BIT_SET(*status, PROT_ERROR);
-            return ERR_FAILED;
-        }
-        vh->reason = (int8_t)num;
+    if (ERR_OK != _mqtt_data_fixnum(buf, 1, &num)) {//断开原因码
+        BIT_SET(*status, PROT_ERROR);
+        return ERR_FAILED;
     }
-    if (pack->fixhead.remaining_lens >= 2) {
+    vh->reason = (uint8_t)num;
+    if (pack->fixhead.remaining_lens > 1) {
         vh->properties = _mqtt_properties(buf, status, NULL);//属性
         if (NULL == vh->properties
             && BIT_CHECK(*status, PROT_ERROR)) {
@@ -868,6 +906,13 @@ static int32_t _mqtt_auth(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, int3
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
+    //如果原因码为0x00（成功）并且没有属性字段，则可以省略原因码和属性长度。这种情况下，AUTH报文剩余长度为0。
+    if (0 == pack->fixhead.remaining_lens) {
+        mqtt_auth_varhead *vh;
+        CALLOC(vh, 1, sizeof(mqtt_auth_varhead));
+        pack->varhead = vh;
+        return ERR_OK;
+    }
     //可变报头
     int32_t num;
     if (ERR_OK != _mqtt_data_fixnum(buf, 1, &num)) {//认证原因码
@@ -877,7 +922,7 @@ static int32_t _mqtt_auth(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, int3
     mqtt_auth_varhead *vh;
     CALLOC(vh, 1, sizeof(mqtt_auth_varhead));
     pack->varhead = vh;
-    vh->reason = (int8_t)num;
+    vh->reason = (uint8_t)num;
     vh->properties = _mqtt_properties(buf, status, NULL);//属性
     if (NULL == vh->properties
         && BIT_CHECK(*status, PROT_ERROR)) {
@@ -885,7 +930,7 @@ static int32_t _mqtt_auth(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, int3
     }
     return ERR_OK;
 }
-static int32_t _mqtt_commands(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
+static int32_t _mqtt_init(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     int32_t rtn = ERR_FAILED;
     switch (pack->fixhead.prot) {
     case MQTT_CONNECT:
@@ -894,6 +939,20 @@ static int32_t _mqtt_commands(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *b
     case MQTT_CONNACK:
         rtn = _mqtt_connack(pack, client, buf, ud, status);
         break;
+    case MQTT_AUTH:
+        if (client) {
+            rtn = _mqtt_auth(pack, buf, ud, status);
+        }
+        break;
+    default:
+        BIT_SET(*status, PROT_ERROR);
+        break;
+    }
+    return rtn;
+}
+static int32_t _mqtt_commands(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
+    int32_t rtn = ERR_FAILED;
+    switch (pack->fixhead.prot) {
     case MQTT_PUBLISH:
         rtn = _mqtt_publish(pack, buf, ud, status);
         break;
@@ -961,14 +1020,23 @@ mqtt_pack_ctx *mqtt_unpack(int32_t client, buffer_ctx *buf, ud_cxt *ud, int32_t 
         BIT_SET(*status, PROT_MOREDATA);
         return NULL;
     }
-    char val = buffer_at(buf, 0);
+    uint8_t val = (uint8_t)buffer_at(buf, 0);
     mqtt_pack_ctx *pack;
     CALLOC(pack, 1, sizeof(mqtt_pack_ctx));
     pack->fixhead.remaining_lens = remaining_lens;
-    pack->fixhead.prot = (mqtt_prot)(val >> 4);
-    pack->fixhead.flags = (uint8_t)(val & 0x0F);
+    pack->fixhead.prot = (val >> 4);
+    pack->fixhead.flags = (val & 0x0F);
     ASSERTAB(fhlens == buffer_drain(buf, fhlens), "drain buffer failed.");
-    if (ERR_OK != _mqtt_commands(pack, client, buf, ud, status)) {
+    int32_t rtn = ERR_FAILED;
+    switch (ud->status) {
+    case INIT:
+        rtn = _mqtt_init(pack, client, buf, ud, status);
+        break;
+    case COMMAND:
+        rtn = _mqtt_commands(pack, client, buf, ud, status);
+        break;
+    }
+    if (ERR_OK != rtn) {
         _mqtt_pkfree(pack);
         return NULL;
     }
