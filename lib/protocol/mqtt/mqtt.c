@@ -858,6 +858,7 @@ static int32_t _mqtt_ping(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf, 
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
+    pack->version = ((mqtt_ctx *)ud->extra)->version;
     return ERR_OK;
 }
 //服务端到客户端  心跳响应
@@ -867,6 +868,7 @@ static int32_t _mqtt_pong(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf, 
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
+    pack->version = ((mqtt_ctx *)ud->extra)->version;
     return ERR_OK;
 }
 //两个方向都允许  断开连接通知
@@ -906,6 +908,7 @@ static int32_t _mqtt_auth(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, int3
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
+    pack->version = ((mqtt_ctx *)ud->extra)->version;
     //如果原因码为0x00（成功）并且没有属性字段，则可以省略原因码和属性长度。这种情况下，AUTH报文剩余长度为0。
     if (0 == pack->fixhead.remaining_lens) {
         mqtt_auth_varhead *vh;

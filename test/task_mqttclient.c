@@ -27,7 +27,7 @@ static void _net_connect(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktyp
     FREE(willprop.data);
     if (NULL != pk) {
         ev_send(&task->loader->netev, fd, skid, pk, lens, 0);
-        LOG_INFO("-->CONNECT");
+        LOG_INFO("->CONNECT");
     }
 }
 static void _send_publish(mqtt_pack_ctx *pack, task_ctx *task, SOCKET fd, uint64_t skid, int8_t qos) {
@@ -39,7 +39,7 @@ static void _send_publish(mqtt_pack_ctx *pack, task_ctx *task, SOCKET fd, uint64
     FREE(props.data);
     if (NULL != pk) {
         ev_send(&task->loader->netev, fd, skid, pk, lens, 0);
-        LOG_INFO("-->PUBLISH QOS %d", qos);
+        LOG_INFO("->PUBLISH QOS %d", qos);
     }
 }
 static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, uint8_t client, uint8_t slice, void *data, size_t size) {
@@ -47,7 +47,7 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, 
     switch (pack->fixhead.prot) {
     case MQTT_CONNACK: {
         mqtt_connack_varhead *vh = pack->varhead;
-        LOG_INFO("<--CONNACK %d", vh->reason);
+        LOG_INFO("<-CONNACK %d (%s)", vh->reason, mqtt_reason(pack->fixhead.prot, vh->reason));
         if (0x00 != vh->reason) {
             break;
         } 
@@ -56,7 +56,7 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, 
     }
     case MQTT_PUBACK: {
         mqtt_puback_varhead *vh = pack->varhead;
-        LOG_INFO("<--PUBACK %d", (int32_t)vh->reason);
+        LOG_INFO("<-PUBACK %d (%s)", (int32_t)vh->reason, mqtt_reason(pack->fixhead.prot, vh->reason));
         if (0x00 == vh->reason || 0x10 == vh->reason) {
             _send_publish(pack, task, fd, skid, 2);
         }
@@ -64,20 +64,20 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, 
     }
     case MQTT_PUBREC: {
         mqtt_pubrec_varhead *vh = pack->varhead;
-        LOG_INFO("<--PUBREC %d", (int32_t)vh->reason);
+        LOG_INFO("<-PUBREC %d (%s)", (int32_t)vh->reason, mqtt_reason(pack->fixhead.prot, vh->reason));
         if (0x00 == vh->reason || 0x10 == vh->reason) {
             size_t lens;
             char *pk = mqtt_pack_pubrel(pack->version, vh->packid, 0, NULL, &lens);
             if (NULL != pk) {
                 ev_send(&task->loader->netev, fd, skid, pk, lens, 0);
-                LOG_INFO("-->PUBREL");
+                LOG_INFO("->PUBREL");
             }
         }
         break;
     }
     case MQTT_PUBCOMP: {
         mqtt_pubcomp_varhead *vh = pack->varhead;
-        LOG_INFO("<--PUBCOMP %d", (int32_t)vh->reason);
+        LOG_INFO("<-PUBCOMP %d (%s)", (int32_t)vh->reason, mqtt_reason(pack->fixhead.prot, vh->reason));
         binary_ctx topics;
         binary_init(&topics, NULL, 0, 0);
         mqtt_topics_subscribe(&topics, pack->version, "/test/topic1", 1, 1, 1, 1);
@@ -86,14 +86,14 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, 
         FREE(topics.data);
         if (NULL != pk) {
             ev_send(&task->loader->netev, fd, skid, pk, lens, 0);
-            LOG_INFO("-->SUBSCRIBE");
+            LOG_INFO("->SUBSCRIBE");
         }
         break;
     }
     case MQTT_SUBACK: {
         mqtt_suback_varhead *vh = pack->varhead;
         mqtt_suback_payload *pl = pack->payload;
-        LOG_INFO("<--SUBACK %d", (int32_t)pl->reasons[0]);
+        LOG_INFO("<-SUBACK %d (%s)", (int32_t)pl->reasons[0], mqtt_reason(pack->fixhead.prot, pl->reasons[0]));
         if (0x00 == pl->reasons[0] || 0x01 == pl->reasons[0] || 0x02 == pl->reasons[0]) {
             binary_ctx topics;
             binary_init(&topics, NULL, 0, 0);
@@ -103,7 +103,7 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, 
             FREE(topics.data);
             if (NULL != pk) {
                 ev_send(&task->loader->netev, fd, skid, pk, lens, 0);
-                LOG_INFO("-->UNSUBSCRIBE");
+                LOG_INFO("->UNSUBSCRIBE");
             }
         }
         break;
@@ -112,25 +112,25 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, 
         mqtt_unsuback_varhead *vh = pack->varhead;
         mqtt_unsuback_payload *pl = pack->payload;
         if (NULL != pl) {
-            LOG_INFO("<--UNSUBACK %d", (int32_t)pl->reasons[0]);
+            LOG_INFO("<-UNSUBACK %d (%s)", (int32_t)pl->reasons[0], mqtt_reason(pack->fixhead.prot, pl->reasons[0]));
         } else {
-            LOG_INFO("<--UNSUBACK");
+            LOG_INFO("<-UNSUBACK");
         }
         size_t lens;
         char *pk = mqtt_pack_ping(pack->version, &lens);
         if (NULL != pk) {
             ev_send(&task->loader->netev, _fd, _skid, pk, lens, 0);
-            LOG_INFO("-->PING");
+            LOG_INFO("->PING");
         }
         break;
     }
     case MQTT_PINGRESP: {
-        LOG_INFO("<--PONG");
+        LOG_INFO("<-PONG");
         size_t lens;
         char *pk = mqtt_pack_disconnect(pack->version, 0, NULL, &lens);
         if (NULL != pk) {
             ev_send(&task->loader->netev, _fd, _skid, pk, lens, 0);
-            LOG_INFO("-->DISCONNECT");
+            LOG_INFO("->DISCONNECT");
         }
         break;
     }
