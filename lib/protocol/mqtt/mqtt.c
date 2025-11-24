@@ -1047,3 +1047,235 @@ mqtt_pack_ctx *mqtt_unpack(int32_t client, buffer_ctx *buf, ud_cxt *ud, int32_t 
     }
     return pack;
 }
+const char *mqtt_reason(mqtt_prot prot, int32_t code) {
+    switch (code) {
+    case 0x00:
+        if (MQTT_CONNACK == prot || MQTT_PUBACK == prot || MQTT_PUBREC == prot || MQTT_PUBREL == prot
+            || MQTT_PUBCOMP == prot || MQTT_UNSUBACK == prot || MQTT_AUTH == prot) {
+            return "Success";//成功
+        }
+        if (MQTT_DISCONNECT == prot) {
+            return "Normal disconnection";//正常断开
+        }
+        if (MQTT_SUBACK == prot) {
+            return "Granted QoS 0";//授权的QoS 0
+        }
+        break;
+    case 0x01:
+        if (MQTT_SUBACK == prot) {
+            return "Granted QoS 1";//授权的QoS 1
+        }
+        break;
+    case 0x02:
+        if (MQTT_SUBACK == prot) {
+            return "Granted QoS 2";//授权的QoS 2
+        }
+        break;
+    case 0x04:
+        if (MQTT_DISCONNECT == prot) {
+            return "Disconnect with Will Message";//包含遗嘱的断开
+        }
+        break;
+    case 0x10:
+        if (MQTT_PUBACK == prot || MQTT_PUBREC == prot) {
+            return "No matching subscribers";//无匹配订阅
+        }
+        break;
+    case 0x11:
+        if (MQTT_UNSUBACK == prot) {
+            return "No subscription existed";//订阅不存在
+        }
+        break;
+    case 0x18:
+        if (MQTT_AUTH == prot) {
+            return "Continue authentication";//继续认证
+        }
+        break;
+    case 0x19:
+        if (MQTT_AUTH == prot) {
+            return "Re-authenticate";//重新认证
+        }
+        break;
+    case 0x80:
+        if (MQTT_CONNACK == prot || MQTT_PUBACK == prot || MQTT_PUBREC == prot
+            || MQTT_SUBACK == prot || MQTT_UNSUBACK == prot || MQTT_DISCONNECT == prot) {
+            return "Unspecified error";//未指明的错误
+        }
+        break;
+    case 0x81:
+        if (MQTT_CONNACK == prot || MQTT_DISCONNECT == prot) {
+            return "Malformed Packet";//无效报文
+        }
+        break;
+    case 0x82:
+        if (MQTT_CONNACK == prot || MQTT_DISCONNECT == prot) {
+            return "Protocol Error";//协议错误
+        }
+        break;
+    case 0x83:
+        if (MQTT_CONNACK == prot || MQTT_PUBACK == prot || MQTT_PUBREC == prot
+            || MQTT_SUBACK == prot || MQTT_UNSUBACK == prot || MQTT_DISCONNECT == prot) {
+            return "Implementation specific error";//实现错误
+        }
+        break;
+    case 0x84:
+        if (MQTT_CONNACK == prot) {
+            return "Unsupported Protocol Version";//协议版本不支持
+        }
+        break;
+    case 0x85:
+        if (MQTT_CONNACK == prot) {
+            return "Client Identifier not valid";//客户标识符无效
+        }
+        break;
+    case 0x86:
+        if (MQTT_CONNACK == prot) {
+            return "Bad User Name or Password";//用户名密码错误
+        }
+        break;
+    case 0x87:
+        if (MQTT_CONNACK == prot || MQTT_PUBACK == prot || MQTT_PUBREC == prot
+            || MQTT_SUBACK == prot || MQTT_UNSUBACK == prot || MQTT_DISCONNECT == prot) {
+            return "Not authorized";//未授权
+        }
+        break;
+    case 0x88:
+        if (MQTT_CONNACK == prot) {
+            return "Server unavailable";//服务端不可用
+        }
+        break;
+    case 0x89:
+        if (MQTT_CONNACK == prot || MQTT_DISCONNECT == prot) {
+            return "Server busy";//服务端正忙
+        }
+        break;
+    case 0x8A:
+        if (MQTT_CONNACK == prot) {
+            return "Banned";//禁止
+        }
+        break;
+    case 0x8B:
+        if (MQTT_DISCONNECT == prot) {
+            return "Server shutting down";//服务端关闭中
+        }
+        break;
+    case 0x8C:
+        if (MQTT_CONNACK == prot || MQTT_DISCONNECT == prot) {
+            return "Bad authentication method";//无效的认证方法
+        }
+        break;
+    case 0x8D:
+        if (MQTT_DISCONNECT == prot) {
+            return "Keep Alive timeout";//保活超时
+        }
+        break;
+    case 0x8E:
+        if (MQTT_DISCONNECT == prot) {
+            return "Session taken over";//会话被接管
+        }
+        break;
+    case 0x8F:
+        if (MQTT_SUBACK == prot || MQTT_UNSUBACK == prot || MQTT_DISCONNECT == prot) {
+            return "Topic Filter invalid";//主题过滤器无效
+        }
+        break;
+    case 0x90:
+        if (MQTT_CONNACK == prot || MQTT_PUBACK == prot || MQTT_PUBREC == prot || MQTT_DISCONNECT == prot) {
+            return "Topic Name invalid";//主题名无效
+        }
+        break;
+    case 0x91:
+        if (MQTT_PUBACK == prot || MQTT_PUBREC == prot || MQTT_SUBACK == prot || MQTT_UNSUBACK == prot) {
+            return "Packet Identifier in use";//报文标识符已被占用
+        }
+        break;
+    case 0x92:
+        if (MQTT_PUBREL == prot || MQTT_PUBCOMP == prot) {
+            return "Packet Identifier not found";//报文标识符无效
+        }
+        break;
+    case 0x93:
+        if (MQTT_DISCONNECT == prot) {
+            return "Receive Maximum exceeded";//接收超出最大数量
+        }
+        break;
+    case 0x94:
+        if (MQTT_DISCONNECT == prot) {
+            return "Topic Alias invalid";//主题别名无效
+        }
+        break;
+    case 0x95:
+        if (MQTT_CONNACK == prot || MQTT_DISCONNECT == prot) {
+            return "Packet too large";//报文过长
+        }
+        break;
+    case 0x96:
+        if (MQTT_DISCONNECT == prot) {
+            return "Message rate too high";//消息太过频繁
+        }
+        break;
+    case 0x97:
+        if (MQTT_CONNACK == prot || MQTT_PUBACK == prot || MQTT_PUBREC == prot
+            || MQTT_SUBACK == prot || MQTT_DISCONNECT == prot) {
+            return "Quota exceeded";//超出配额
+        }
+        break;
+    case 0x98:
+        if (MQTT_DISCONNECT == prot) {
+            return "Administrative action";//管理行为
+        }
+        break;
+    case 0x99:
+        if (MQTT_CONNACK == prot || MQTT_PUBACK == prot
+            || MQTT_PUBREC == prot || MQTT_DISCONNECT == prot) {
+            return "Payload format invalid";//载荷格式无效
+        }
+        break;
+    case 0x9A:
+        if (MQTT_CONNACK == prot || MQTT_DISCONNECT == prot) {
+            return "Retain not supported";//不支持保留
+        }
+        break;
+    case 0x9B:
+        if (MQTT_CONNACK == prot || MQTT_DISCONNECT == prot) {
+            return "QoS not supported";//不支持的QoS等级
+        }
+        break;
+    case 0x9C:
+        if (MQTT_CONNACK == prot || MQTT_DISCONNECT == prot) {
+            return "Use another server";//(临时)使用其他服务端
+        }
+        break;
+    case 0x9D:
+        if (MQTT_CONNACK == prot || MQTT_DISCONNECT == prot) {
+            return "Server moved";//服务端已(永久)移动
+        }
+        break;
+    case 0x9E:
+        if (MQTT_SUBACK == prot || MQTT_DISCONNECT == prot) {
+            return "Shared Subscriptions not supported";//不支持共享订阅
+        }
+        break;
+    case 0x9F:
+        if (MQTT_CONNACK == prot || MQTT_DISCONNECT == prot) {
+            return "Connection rate exceeded";//超出连接速率限制
+        }
+        break;
+    case 0xA0:
+        if (MQTT_DISCONNECT == prot) {
+            return "Maximum connect time";//最大连接时间
+        }
+        break;
+    case 0xA1:
+        if (MQTT_SUBACK == prot || MQTT_DISCONNECT == prot) {
+            return "Subscription Identifiers not supported";//不支持订阅标识符
+        }
+        break;
+    case 0xA2:
+        if (MQTT_SUBACK == prot || MQTT_DISCONNECT == prot) {
+            return "Wildcard Subscriptions not supported";//不支持通配符订阅
+        }
+        break;
+    }
+    return "Unknown";
+}

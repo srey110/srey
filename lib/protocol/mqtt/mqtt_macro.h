@@ -34,7 +34,7 @@ typedef enum mqtt_prop_flag {
     MAXIMUM_PACKETSIZE       = 0x27,//最大报文长度	四字节整数	CONNECT, CONNACK
     WILDCARD_SUBSCRIPTION    = 0x28,//通配符订阅可用性	字节	CONNACK
     SUBSCRIPTIONID_AVAILABLE = 0x29,//订阅标识符可用性	字节	CONNACK
-    SHARED_SUBSCRIPTION      = 0x2A//共享订阅可用性	字节	CONNACK
+    SHARED_SUBSCRIPTION      = 0x2A //共享订阅可用性	字节	CONNACK
 }mqtt_prop_flag;
 typedef enum mqtt_prot {
     MQTT_RESERVED = 0x00, //禁止	保留
