@@ -72,6 +72,12 @@ typedef enum LOG_LEVEL {
     LOGLV_INFO,
     LOGLV_DEBUG,
 }LOG_LEVEL;
+//SCRAM
+typedef enum scram_authmod {
+    SCRAM_SHA1 = 0x01,
+    SCRAM_SHA256,
+    SCRAM_SHA512
+}scram_authmod;
 void slog(int32_t lv, const char *fmt, ...);
 #define LOG(lv, fmt, ...) slog(lv, CONCAT2("[%s %s %d] ", fmt), __FILENAME__(__FILE__), __FUNCTION__, __LINE__, ##__VA_ARGS__)
 #define LOG_FATAL(fmt, ...) LOG(LOGLV_FATAL, fmt, ##__VA_ARGS__)

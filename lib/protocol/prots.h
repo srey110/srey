@@ -4,7 +4,7 @@
 #include "event/evpub.h"
 
 typedef enum pack_type {
-    PACK_NONE = 0x0,
+    PACK_NONE = 0x00,
     PACK_HTTP,
     PACK_WEBSOCK,
     PACK_MQTT,
@@ -16,10 +16,10 @@ typedef enum pack_type {
     PACK_REDIS = 0x50,
     PACK_MYSQL,
     PACK_PGSQL,
-    PACK_MGDB
+    PACK_MONGO
 }pack_type;
 typedef enum prot_status {
-    PROT_NONE = 0x00,
+    PROT_INIT = 0x00,
     PROT_SLICE_START = 0x01,
     PROT_SLICE = 0x02,
     PROT_SLICE_END = 0x04,

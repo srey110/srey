@@ -91,7 +91,7 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, 
         break;
     }
     case MQTT_SUBACK: {
-        mqtt_suback_varhead *vh = pack->varhead;
+        //mqtt_suback_varhead *vh = pack->varhead;
         mqtt_suback_payload *pl = pack->payload;
         LOG_INFO("<-SUBACK %d (%s)", (int32_t)pl->reasons[0], mqtt_reason(pack->fixhead.prot, pl->reasons[0]));
         if (0x00 == pl->reasons[0] || 0x01 == pl->reasons[0] || 0x02 == pl->reasons[0]) {
@@ -109,7 +109,7 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, 
         break;
     }
     case MQTT_UNSUBACK: {
-        mqtt_unsuback_varhead *vh = pack->varhead;
+        //mqtt_unsuback_varhead *vh = pack->varhead;
         mqtt_unsuback_payload *pl = pack->payload;
         if (NULL != pl) {
             LOG_INFO("<-UNSUBACK %d (%s)", (int32_t)pl->reasons[0], mqtt_reason(pack->fixhead.prot, pl->reasons[0]));
@@ -134,6 +134,8 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, 
         }
         break;
     }
+    default:
+        break;
     }
 }
 static void _startup(task_ctx *task) {

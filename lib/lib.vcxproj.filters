@@ -43,14 +43,14 @@
     <Filter Include="srey\minicoro">
       <UniqueIdentifier>{cdeff177-3099-41e3-8e26-1fa06cab4c8a}</UniqueIdentifier>
     </Filter>
-    <Filter Include="protocol\postgresql">
-      <UniqueIdentifier>{76629710-3d94-484d-a390-d5e686d9cb73}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="protocol\mongodb">
-      <UniqueIdentifier>{ba178282-ff74-4f66-9a43-917a17232393}</UniqueIdentifier>
-    </Filter>
     <Filter Include="protocol\mqtt">
       <UniqueIdentifier>{d19d0b55-3181-4773-b35f-3ffaad64b1d1}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="protocol\mongo">
+      <UniqueIdentifier>{ba178282-ff74-4f66-9a43-917a17232393}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="protocol\pgsql">
+      <UniqueIdentifier>{76629710-3d94-484d-a390-d5e686d9cb73}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
@@ -292,6 +292,9 @@
     <ClInclude Include="protocol\prots.h">
       <Filter>protocol</Filter>
     </ClInclude>
+    <ClInclude Include="protocol\mongo\mongo.h">
+      <Filter>protocol\mongo</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="event\event.c">
@@ -479,6 +482,9 @@
     </ClCompile>
     <ClCompile Include="protocol\prots.c">
       <Filter>protocol</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\mongo\mongo.c">
+      <Filter>protocol\mongo</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

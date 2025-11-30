@@ -8,9 +8,9 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, 
     switch (pack->fixhead.prot) {
     case MQTT_CONNECT: {
         if (_prt) {
-            LOG_INFO("CONNECT.");
+            LOG_INFO("CONNECT");
         }
-        mqtt_connect_varhead *vh = pack->varhead;
+        //mqtt_connect_varhead *vh = pack->varhead;
         mqtt_connect_payload *pl = pack->payload;
         char *pk;
         size_t plens;
@@ -25,7 +25,6 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, 
             mqtt_props_kv(&props, USER_PROPERTY, "key2", 4, "val2", 4);
             pk = mqtt_pack_connack(pack->version, 1, 0, &props, &plens);
             FREE(props.data);
-            
         } else {
             pk = mqtt_pack_connack(pack->version, 1, 0, NULL, &plens);
         }
@@ -36,7 +35,7 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, 
     }
     case MQTT_PUBLISH: {
         if (_prt) {
-            LOG_INFO("PUBLISH.");
+            LOG_INFO("PUBLISH");
         }
         char *pk = NULL;
         size_t lens;
@@ -85,7 +84,7 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, 
     }
     case MQTT_PUBREL: {
         if (_prt) {
-            LOG_INFO("PUBREL.");
+            LOG_INFO("PUBREL");
         }
         char *pk = NULL;
         size_t lens;
@@ -98,7 +97,7 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, 
     }
     case MQTT_SUBSCRIBE: {
         if (_prt) {
-            LOG_INFO("SUBSCRIBE.");
+            LOG_INFO("SUBSCRIBE");
         }
         mqtt_subscribe_varhead *vh = pack->varhead;
         char *pk = NULL;
@@ -116,7 +115,7 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, 
     }
     case MQTT_UNSUBSCRIBE: {
         if (_prt) {
-            LOG_INFO("UNSUBSCRIBE.");
+            LOG_INFO("UNSUBSCRIBE");
         }
         mqtt_unsubscribe_varhead *vh = pack->varhead;
         char *pk = NULL;
@@ -134,7 +133,7 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, 
     }
     case MQTT_PINGREQ: {
         if (_prt) {
-            LOG_INFO("PING.");
+            LOG_INFO("PING");
         }
         char *pk = NULL;
         size_t lens;
@@ -146,16 +145,18 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, 
     }
     case MQTT_DISCONNECT: {
         if (_prt) {
-            LOG_INFO("DISCONNECT.");
+            LOG_INFO("DISCONNECT");
         }
         break;
     }
     case MQTT_AUTH: {
         if (_prt) {
-            LOG_INFO("AUTH.");
+            LOG_INFO("AUTH");
         }
         break;
     }
+    default:
+        break;
     }
 }
 static void _startup(task_ctx *task) {

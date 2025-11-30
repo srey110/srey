@@ -62,6 +62,8 @@ void _mqtt_pkfree(void *data) {
     case MQTT_AUTH:
         _mqtt_auth_varhead_free(pack->varhead);
         break;
+    default:
+        break;
     }
     FREE(pack);
 }

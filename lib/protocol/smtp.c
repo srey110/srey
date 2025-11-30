@@ -192,7 +192,7 @@ static void _smtp_ehlo(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buf
         return;
     }
     buffer_drain(buf, blens);
-    char *cmd;
+    char *cmd = NULL;
     switch (smtp->authtype) {
     case LOGIN:
         cmd = format_va("AUTH LOGIN%s", FLAG_CRLF);

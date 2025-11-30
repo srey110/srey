@@ -5,11 +5,13 @@
 #include "protocol/mqtt/mqtt.h"
 #include "protocol/redis.h"
 #include "protocol/mysql/mysql.h"
+#include "protocol/mongo/mongo.h"
 #include "protocol/smtp.h"
 
 void prots_init(_handshaked_push hspush) {
     _websock_init(hspush);
     _mysql_init(hspush);
+    _mongo_init(hspush);
     _smtp_init(hspush);
 }
 void prots_free(void) {
@@ -40,6 +42,9 @@ void prots_pkfree(pack_type pktype, void *data) {
         break;
     case PACK_MYSQL:
         _mysql_pkfree(data);
+        break;
+    case PACK_MONGO:
+        _mongo_pkfree(data);
         break;
     default:
         FREE(data);
@@ -73,6 +78,9 @@ void prots_udfree(void *arg) {
     case PACK_SMTP:
         _smtp_udfree(ud);
         break;
+    case PACK_MONGO:
+        _mongo_udfree(ud);
+        break;
     default:
         FREE(ud->extra);
         break;
@@ -89,17 +97,29 @@ void prots_closed(ud_cxt *ud) {
     case PACK_SMTP:
         _smtp_closed(ud);
         break;
+    case PACK_MONGO:
+        _mongo_closed(ud);
+        break;
     default:
         break;
     }
 }
 int32_t prots_connected(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud) {
+    switch (ud->pktype) {
+    case PACK_MONGO:
+        return _mongo_connected(ev, ud);
+        break;
+    default:
+        break;
+    }
     return ERR_OK;
 }
 int32_t prots_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud) {
     switch (ud->pktype) {
     case PACK_MYSQL:
         return _mysql_ssl_exchanged(ev, ud);
+    case PACK_MONGO:
+        return _mongo_ssl_exchanged(ev, ud);
     default:
         break;
     }
@@ -119,8 +139,8 @@ static void *_unpack_default(buffer_ctx *buf, size_t *size, ud_cxt *ud) {
 void *prots_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status) {
     *size = 0;
-    *status = PROT_NONE;
-    void *unpack;
+    *status = PROT_INIT;
+    void *unpack = NULL;
     switch (ud->pktype) {
     case PACK_HTTP:
         unpack = http_unpack(buf, ud, status);
@@ -147,7 +167,8 @@ void *prots_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
         break;
     case PACK_PGSQL:
         break;
-    case PACK_MGDB:
+    case PACK_MONGO:
+        unpack = mongo_unpack(ev, buf, ud, status);
         break;
     default:
         unpack = _unpack_default(buf, size, ud);

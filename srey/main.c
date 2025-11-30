@@ -152,7 +152,6 @@ static int32_t service_hug(void) {
             #pragma comment(lib, "libssl.lib")
         #endif
     #endif
-
 #define WINSV_STOP_TIMEOUT       30 * 1000      //windows 服务停止超时时间
 #define WINSV_START_TIMEOUT      30 * 1000      //windows 服务启动超时时间
 

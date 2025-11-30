@@ -34,7 +34,7 @@ done < `pwd`/lib/base/config.h
 MAINDIR="srey"
 PROGRAMNAME="srey"
 MAINFILE="main.c"
-Dir="lib lib/base lib/utils lib/containers lib/crypt lib/event lib/protocol lib/protocol/mysql lib/protocol/mqtt lib/srey lib/thread"
+Dir="lib lib/base lib/utils lib/containers lib/crypt lib/event lib/protocol lib/protocol/mongo lib/protocol/mysql lib/protocol/mqtt lib/srey lib/thread"
 if [ $LUA -eq 1 ]
 then
     Dir=$Dir" lualib lualib/lua lualib/lfs lualib/luacjson lualib/pb"

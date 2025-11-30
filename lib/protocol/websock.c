@@ -343,6 +343,9 @@ static websock_pack_ctx *_websock_sec_unpack(websock_ctx *ws, websock_pack_ctx *
     case PACK_MQTT:
         rtn = _websock_sec_mqtt(ws, pack, client, status);
         break;
+    default:
+        BIT_SET(*status, PROT_ERROR);
+        break;
     }
     //移除标记,可以继续循环
     if (BIT_CHECK(*status, PROT_MOREDATA)) {
