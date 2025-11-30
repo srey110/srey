@@ -58,7 +58,6 @@
     <ClInclude Include="protocol\custz_head.h" />
     <ClInclude Include="protocol\dns.h" />
     <ClInclude Include="protocol\http.h" />
-    <ClInclude Include="protocol\mongo\mongo.h" />
     <ClInclude Include="protocol\mqtt\mqtt.h" />
     <ClInclude Include="protocol\mqtt\mqtt_macro.h" />
     <ClInclude Include="protocol\mqtt\mqtt_pack.h" />
@@ -133,7 +132,6 @@
     <ClCompile Include="protocol\custz_head.c" />
     <ClCompile Include="protocol\dns.c" />
     <ClCompile Include="protocol\http.c" />
-    <ClCompile Include="protocol\mongo\mongo.c" />
     <ClCompile Include="protocol\mqtt\mqtt.c" />
     <ClCompile Include="protocol\mqtt\mqtt_pack.c" />
     <ClCompile Include="protocol\mqtt\mqtt_struct.c" />

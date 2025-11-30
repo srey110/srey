@@ -8,7 +8,7 @@
 #***********************************************
 #config.h
 LUA=0
-SSLLIB=""
+EXTRALIB=""
 WK="awk"
 OSNAME=`uname`
 if [ "$OSNAME" = "SunOS" ]
@@ -26,7 +26,7 @@ do
     then
         if [ `echo $line|$WK -F ' ' '{print int($3)}'` -eq 1 ]
         then
-            SSLLIB="-lssl -lcrypto"
+            EXTRALIB="-lssl -lcrypto"
         fi
     fi
 done < `pwd`/lib/base/config.h
@@ -34,7 +34,7 @@ done < `pwd`/lib/base/config.h
 MAINDIR="srey"
 PROGRAMNAME="srey"
 MAINFILE="main.c"
-Dir="lib lib/base lib/utils lib/containers lib/crypt lib/event lib/protocol lib/protocol/mongo lib/protocol/mysql lib/protocol/mqtt lib/srey lib/thread"
+Dir="lib lib/base lib/utils lib/containers lib/crypt lib/event lib/protocol lib/protocol/mysql lib/protocol/mqtt lib/srey lib/thread"
 if [ $LUA -eq 1 ]
 then
     Dir=$Dir" lualib lualib/lua lualib/lfs lualib/luacjson lualib/pb"
@@ -206,8 +206,8 @@ mkmaincpp=$MAINFILE
 proname=$PROGRAMNAME
 cd $mkmaindir
 echo ---------------------Make program file---------------------------
-echo "$CC $CFLAGS $mkmaincpp $INCLUDEPATH $LIBPATH $INCLUDELIB -l$LIBNAME -o $proname $SSLLIB"
-$CC $CFLAGS $mkmaincpp $INCLUDEPATH $LIBPATH $INCLUDELIB -l$LIBNAME -o $proname $SSLLIB
+echo "$CC $CFLAGS $mkmaincpp $INCLUDEPATH $LIBPATH $INCLUDELIB -l$LIBNAME -o $proname $EXTRALIB"
+$CC $CFLAGS $mkmaincpp $INCLUDEPATH $LIBPATH $INCLUDELIB -l$LIBNAME -o $proname $EXTRALIB
 if [ "$?" != "0" ]
 then
     echo "---------------------Error---------------------"
