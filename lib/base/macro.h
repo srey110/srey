@@ -74,7 +74,8 @@ typedef enum LOG_LEVEL {
 }LOG_LEVEL;
 //SCRAM
 typedef enum scram_authmod {
-    SCRAM_SHA1 = 0x01,
+    SCRAM_NONE = 0x00,
+    SCRAM_SHA1,
     SCRAM_SHA256,
     SCRAM_SHA512
 }scram_authmod;

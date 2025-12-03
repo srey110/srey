@@ -251,7 +251,7 @@ static void _startup(task_ctx *task) {
     mysql_bind_init(&_bind);
     task_timeout(task, 0, 1000, _timeout);
 }
-void _closing_cb(task_ctx *task) {
+static void _closing_cb(task_ctx *task) {
     mysql_bind_free(&_bind);
 }
 void task_mysql_start(loader_ctx *loader, name_t name, int32_t pt) {
