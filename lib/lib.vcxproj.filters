@@ -292,6 +292,12 @@
     <ClInclude Include="protocol\prots.h">
       <Filter>protocol</Filter>
     </ClInclude>
+    <ClInclude Include="protocol\mongo\mongo.h">
+      <Filter>protocol\mongo</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\pgsql\pgsql.h">
+      <Filter>protocol\pgsql</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="event\event.c">
@@ -479,6 +485,12 @@
     </ClCompile>
     <ClCompile Include="protocol\prots.c">
       <Filter>protocol</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\mongo\mongo.c">
+      <Filter>protocol\mongo</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\pgsql\pgsql.c">
+      <Filter>protocol\pgsql</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

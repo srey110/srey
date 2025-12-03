@@ -2,7 +2,6 @@
 #define MYSQL_H_
 
 #include "protocol/mysql/mysql_struct.h"
-#include "event/event.h"
 #include "srey/spub.h"
 
 void _mysql_pkfree(void *pack);
