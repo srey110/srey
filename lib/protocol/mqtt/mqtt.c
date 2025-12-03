@@ -947,6 +947,8 @@ static int32_t _mqtt_init(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf, 
     case MQTT_AUTH:
         if (client) {
             rtn = _mqtt_auth(pack, buf, ud, status);
+        } else {
+            BIT_SET(*status, PROT_ERROR);
         }
         break;
     default:
