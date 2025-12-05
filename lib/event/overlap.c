@@ -192,10 +192,11 @@ static inline int32_t _call_conn_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp, int32_t 
     }
     return ERR_OK;
 }
-static inline void _call_ssl_exchanged_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp) {
+static inline int32_t _call_ssl_exchanged_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp) {
     if (NULL != oltcp->cbs.exch_cb) {
-        oltcp->cbs.exch_cb(ev, oltcp->ol_r.fd, oltcp->skid, BIT_CHECK(oltcp->status, STATUS_CLIENT), &oltcp->ud);
+        return oltcp->cbs.exch_cb(ev, oltcp->ol_r.fd, oltcp->skid, BIT_CHECK(oltcp->status, STATUS_CLIENT), &oltcp->ud);
     }
+    return ERR_OK;
 }
 static inline void _call_recv_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp, size_t nread) {
     if (nread > 0) {
@@ -278,8 +279,11 @@ static void _on_recv_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
             BIT_SET(oltcp->status, STATUS_ERROR);
             break;
         case 1://完成
-            _call_ssl_exchanged_cb(watcher->ev, oltcp);
-            BIT_REMOVE(oltcp->status, STATUS_AUTHSSL);
+            if (ERR_OK == _call_ssl_exchanged_cb(watcher->ev, oltcp)) {
+                BIT_REMOVE(oltcp->status, STATUS_AUTHSSL);
+            } else {
+                BIT_SET(oltcp->status, STATUS_ERROR);
+            }
             break;
         case ERR_OK://等待更多数据
             if (ERR_OK != _post_recv(&oltcp->ol_r, &oltcp->bytes_r, &oltcp->flag, &oltcp->wsabuf, 1)) {
@@ -308,8 +312,7 @@ static int32_t _ssl_exchange(watcher_ctx *watcher, overlap_tcp_ctx *oltcp, struc
         case ERR_FAILED://错误
             return ERR_FAILED;
         case 1://完成
-            _call_ssl_exchanged_cb(watcher->ev, oltcp);
-            break;
+            return _call_ssl_exchanged_cb(watcher->ev, oltcp);
         case ERR_OK://等待更多数据
             BIT_SET(oltcp->status, STATUS_AUTHSSL);
             break;
@@ -472,6 +475,12 @@ static void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
         return;
     }
     _add_fd(watcher, &oltcp->ol_r);
+    if (ERR_OK != _post_recv(&oltcp->ol_r, &oltcp->bytes_r, &oltcp->flag, &oltcp->wsabuf, 1)) {
+        _call_conn_cb(watcher->ev, oltcp, ERR_FAILED);
+        _remove_fd(watcher, oltcp->ol_r.fd);
+        pool_push(&watcher->pool, &oltcp->ol_r);
+        return;
+    }
     if (ERR_OK != _call_conn_cb(watcher->ev, oltcp, ERR_OK)) {
         _remove_fd(watcher, oltcp->ol_r.fd);
         pool_push(&watcher->pool, &oltcp->ol_r);
@@ -483,18 +492,12 @@ static void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
             _call_close_cb(watcher->ev, oltcp);
             _remove_fd(watcher, oltcp->ol_r.fd);
             pool_push(&watcher->pool, &oltcp->ol_r);
-            return;
         }
     }
 #endif
-    if (ERR_OK != _post_recv(&oltcp->ol_r, &oltcp->bytes_r, &oltcp->flag, &oltcp->wsabuf, 1)) {
-        _call_close_cb(watcher->ev, oltcp);
-        _remove_fd(watcher, oltcp->ol_r.fd);
-        pool_push(&watcher->pool, &oltcp->ol_r);
-    }
 }
-SOCKET ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const uint16_t port,
-    cbs_ctx *cbs, ud_cxt *ud, uint64_t *skid) {
+int32_t ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud,
+    SOCKET *fd, uint64_t *skid) {
     ASSERTAB(NULL != cbs && NULL != cbs->r_cb, ERRSTR_NULLP);
     netaddr_ctx addr;
     if (ERR_OK != netaddr_set(&addr, ip, port)) {
@@ -502,35 +505,35 @@ SOCKET ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
         if (NULL != cbs->ud_free) {
             cbs->ud_free(ud);
         }
-        return INVALID_SOCK;
+        return ERR_FAILED;
     }
-    SOCKET fd = _create_sock(SOCK_STREAM, netaddr_family(&addr));
-    if (INVALID_SOCK == fd) {
+    *fd = _create_sock(SOCK_STREAM, netaddr_family(&addr));
+    if (INVALID_SOCK == *fd) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         if (NULL != cbs->ud_free) {
             cbs->ud_free(ud);
         }
-        return INVALID_SOCK;
+        return ERR_FAILED;
     }
-    sock_reuseaddr(fd);
-    _set_sockops(fd);
-    if (ERR_OK != _trybind(fd, netaddr_family(&addr))) {
-        CLOSE_SOCK(fd);
+    sock_reuseaddr(*fd);
+    _set_sockops(*fd);
+    if (ERR_OK != _trybind(*fd, netaddr_family(&addr))) {
+        CLOSE_SOCK((*fd));
         if (NULL != cbs->ud_free) {
             cbs->ud_free(ud);
         }
-        return INVALID_SOCK;
+        return ERR_FAILED;
     }
-    watcher_ctx *watcher = GET_PTR(ctx->watcher, ctx->nthreads, fd);
-    if (ERR_OK != _join_iocp(watcher, fd)) {
+    watcher_ctx *watcher = GET_PTR(ctx->watcher, ctx->nthreads, (*fd));
+    if (ERR_OK != _join_iocp(watcher, *fd)) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
-        CLOSE_SOCK(fd);
+        CLOSE_SOCK((*fd));
         if (NULL != cbs->ud_free) {
             cbs->ud_free(ud);
         }
-        return INVALID_SOCK;
+        return ERR_FAILED;
     }
-    sock_ctx *skctx = _new_sk(fd, cbs, ud);
+    sock_ctx *skctx = _new_sk(*fd, cbs, ud);
     skctx->ev_cb = _on_connect_cb;
     overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
     BIT_SET(oltcp->status, STATUS_CLIENT);
@@ -540,9 +543,9 @@ SOCKET ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
 #endif
     if (ERR_OK != _post_connect(oltcp, &addr)) {
         _free_sk(skctx);
-        return INVALID_SOCK;
+        return ERR_FAILED;
     }
-    return fd;
+    return ERR_OK;
 }
 //listen
 static int32_t _post_accept(overlap_acpt_ctx *olacp) {
@@ -618,13 +621,12 @@ void _add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) {
     }
 #endif
     _add_fd(watcher, skctx);
-    if (ERR_OK != _call_acp_cb(watcher->ev, oltcp)) {
+    if (ERR_OK != _post_recv(&oltcp->ol_r, &oltcp->bytes_r, &oltcp->flag, &oltcp->wsabuf, 1)) {
         _remove_fd(watcher, skctx->fd);
         pool_push(&watcher->pool, skctx);
         return;
     }
-    if (ERR_OK != _post_recv(&oltcp->ol_r, &oltcp->bytes_r, &oltcp->flag, &oltcp->wsabuf, 1)) {
-        _call_close_cb(watcher->ev, oltcp);
+    if (ERR_OK != _call_acp_cb(watcher->ev, oltcp)) {
         _remove_fd(watcher, skctx->fd);
         pool_push(&watcher->pool, skctx);
     }
@@ -871,34 +873,34 @@ void _free_udp(sock_ctx *skctx) {
     }
     FREE(oludp);
 }
-SOCKET ev_udp(ev_ctx *ctx, const char *ip, const uint16_t port, cbs_ctx *cbs,
-    ud_cxt *ud, uint64_t *skid) {
+int32_t ev_udp(ev_ctx *ctx, const char *ip, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud, 
+    SOCKET *fd, uint64_t *skid) {
     ASSERTAB(NULL != cbs->rf_cb, ERRSTR_NULLP);
     netaddr_ctx addr;
     if (ERR_OK != netaddr_set(&addr, ip, port)) {
         LOG_ERROR("netaddr_set %s:%d, %s", ip, port, ERRORSTR(ERRNO));
-        return INVALID_SOCK;
+        return ERR_FAILED;
     }
-    SOCKET fd = _udp(&addr);
-    if (INVALID_SOCK == fd) {
+    *fd = _udp(&addr);
+    if (INVALID_SOCK == *fd) {
         LOG_ERROR("udp %s:%d error.", ip, port);
-        return INVALID_SOCK;
+        return ERR_FAILED;
     }
-    watcher_ctx *watcher = GET_PTR(ctx->watcher, ctx->nthreads, fd);
-    if (ERR_OK != _join_iocp(watcher, fd)) {
+    watcher_ctx *watcher = GET_PTR(ctx->watcher, ctx->nthreads, (*fd));
+    if (ERR_OK != _join_iocp(watcher, *fd)) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
-        CLOSE_SOCK(fd);
-        return INVALID_SOCK;
+        CLOSE_SOCK((*fd));
+        return ERR_FAILED;
     }
-    sock_ctx *skctx = _new_udp(fd, cbs, ud);
+    sock_ctx *skctx = _new_udp(*fd, cbs, ud);
     overlap_udp_ctx *udp = UPCAST(skctx, overlap_udp_ctx, ol_r);
     *skid = udp->skid;
-    _cmd_add(watcher, skctx, fd);
+    _cmd_add(watcher, skctx, *fd);
     if (ERR_OK != _post_recv_from(udp)) {
-        _cmd_remove(watcher, fd, *skid);
-        return INVALID_SOCK;
+        _cmd_remove(watcher, *fd, *skid);
+        return ERR_FAILED;
     }
-    return fd;
+    return ERR_OK;
 }
 
 #endif

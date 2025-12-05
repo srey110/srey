@@ -50,12 +50,13 @@ void *coro_handshaked(task_ctx *task, SOCKET fd, uint64_t skid, int32_t *err, si
 /// <param name="evssl">evssl_ctx</param>
 /// <param name="ip">IP</param>
 /// <param name="port">端口</param>
-/// <param name="skid">链接ID</param>
 /// <param name="netev">task_netev</param>
 /// <param name="extra">ud_cxt extra</param>
-/// <returns>socket句柄</returns>
-SOCKET coro_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
-    const char *ip, uint16_t port, uint64_t *skid, int32_t netev, void *extra);
+/// <param name="fd">SOCKET</param>
+/// <param name="skid">链接ID</param>
+/// <returns>ERR_OK 成功</returns>
+int32_t coro_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl, const char *ip, uint16_t port, int32_t netev, void *extra,
+    SOCKET *fd, uint64_t *skid);
 /// <summary>
 /// TCP发送
 /// </summary>

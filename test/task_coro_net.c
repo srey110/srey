@@ -3,9 +3,9 @@
 static int32_t _prt = 1;
 static uint8_t _pktype = PACK_CUSTZ_FLAG;
 static void _test_syn_send(task_ctx *task) {
+    SOCKET fd;
     uint64_t skid;
-    SOCKET fd = coro_connect(task, _pktype, NULL, "127.0.0.1", 15000, &skid, 0, NULL);
-    if (INVALID_SOCK == fd) {
+    if (ERR_OK != coro_connect(task, _pktype, NULL, "127.0.0.1", 15000, 0, NULL, &fd, &skid)) {
         LOG_ERROR("%s", "syn_connect error");
         return;
     }
@@ -25,9 +25,9 @@ static void _test_syn_send(task_ctx *task) {
 }
 static void _test_syn_ssl1_send(task_ctx *task) {
 #if WITH_SSL
+    SOCKET fd;
     uint64_t skid;
-    SOCKET fd = coro_connect(task, _pktype, NULL, "127.0.0.1", 15001, &skid, NETEV_AUTHSSL, NULL);
-    if (INVALID_SOCK == fd) {
+    if (ERR_OK != coro_connect(task, _pktype, NULL, "127.0.0.1", 15001, NETEV_AUTHSSL, NULL, &fd, &skid)) {
         LOG_ERROR("%s", "syn_connect error");
         return;
     }
@@ -53,10 +53,10 @@ static void _test_syn_ssl1_send(task_ctx *task) {
 }
 static void _test_syn_ssl2_send(task_ctx *task) {
 #if WITH_SSL
+    SOCKET fd;
     uint64_t skid;
     struct evssl_ctx *ssl = evssl_qury(101);
-    SOCKET fd = coro_connect(task, _pktype, ssl, "127.0.0.1", 15001, &skid, NETEV_AUTHSSL, NULL);
-    if (INVALID_SOCK == fd) {
+    if (ERR_OK != coro_connect(task, _pktype, ssl, "127.0.0.1", 15001, NETEV_AUTHSSL, NULL, &fd, &skid)) {
         LOG_ERROR("%s", "syn_connect error");
         return;
     }
@@ -76,9 +76,9 @@ static void _test_syn_ssl2_send(task_ctx *task) {
 #endif
 }
 static void _test_syn_sendto(task_ctx *task) {
+    SOCKET fd;
     uint64_t skid;
-    SOCKET fd = task_udp(task, "0.0.0.0", 0, &skid);
-    if (INVALID_SOCK == fd) {
+    if (ERR_OK != task_udp(task, "0.0.0.0", 0, &fd, &skid)) {
         LOG_ERROR("%s", "task_udp error");
         return;
     }

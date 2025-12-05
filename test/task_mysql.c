@@ -237,7 +237,7 @@ static void _startup(task_ctx *task) {
 #if WITH_SSL
     evssl = evssl_qury(102);
 #endif
-    if (ERR_OK != mysql_init(&_mysql, "127.0.0.1", 3306, evssl, "admin", "12345678", "test", "utf8", 0)) {
+    if (ERR_OK != mysql_init(&_mysql, "192.168.8.3", 3306, evssl, "admin", "12345678", "test", "utf8", 0)) {
         LOG_WARN("mysql_init error.");
         return;
     }

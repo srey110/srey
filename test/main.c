@@ -15,6 +15,8 @@
 #include "task_coro_net.h"
 #include "task_coro_utils.h"
 #include "task_mysql.h"
+#include "task_pgsql.h"
+#include "task_mongo.h"
 #include "task_smtp.h"
 #include "task_mqttsv.h"
 #include "task_mqttclient.h"
@@ -92,6 +94,8 @@ int main(int argc, char *argv[]) {
     task_smtp_start(g_loader, 10010, 0);
     task_mqtt_sv_start(g_loader, 10011, 0);
     task_mqtt_client_start(g_loader, 10012, 0);
+    task_pgsql_start(g_loader, 10013, 0);
+    task_mongo_start(g_loader, 10014, 0);
     task_coro_timeout_start(g_loader, 20000, 0);
     task_coro_comm1_start(g_loader, 20001, 0);
     task_coro_net_start(g_loader, 20002, 0);

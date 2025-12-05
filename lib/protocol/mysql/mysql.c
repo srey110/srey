@@ -32,6 +32,9 @@ typedef struct connect_attr {
 }connect_attr;
 static _handshaked_push _hs_push;
 
+void _mysql_init(void *hspush) {
+    _hs_push = (_handshaked_push)hspush;
+}
 void _mysql_pkfree(void *pack) {
     if (NULL == pack) {
         return;
@@ -56,9 +59,6 @@ void _mysql_udfree(ud_cxt *ud) {
 }
 void _mysql_closed(ud_cxt *ud) {
     _mysql_udfree(ud);
-}
-void _mysql_init(void *hspush) {
-    _hs_push = (_handshaked_push)hspush;
 }
 static uint8_t _mysql_charset(const char *charset) {
     if(0 == strcmp("big5", charset)) {
@@ -592,8 +592,7 @@ void *mysql_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
 }
 int32_t mysql_init(mysql_ctx *mysql, const char *ip, uint16_t port, struct evssl_ctx *evssl,
     const char *user, const char *password, const char *database, const char *charset, uint32_t maxpk) {
-    if (0 == port
-        || strlen(ip) > sizeof(mysql->client.ip) - 1
+    if (strlen(ip) > sizeof(mysql->client.ip) - 1
         || strlen(user) > sizeof(mysql->client.user) - 1
         || strlen(password) > sizeof(mysql->client.password) - 1
         || (NULL != database && strlen(database) > sizeof(mysql->client.database) - 1)) {
@@ -606,7 +605,7 @@ int32_t mysql_init(mysql_ctx *mysql, const char *ip, uint16_t port, struct evssl
     if (!EMPTYSTR(database)) {
         strcpy(mysql->client.database, database);
     }
-    mysql->client.port = port;
+    mysql->client.port = 0 == port ? 3306 : port;
     mysql->client.evssl = evssl;
     mysql->client.charset = _mysql_charset(charset);
     mysql->client.maxpack = 0 == maxpk ? ONEK * ONEK : maxpk;
@@ -618,9 +617,8 @@ int32_t mysql_try_connect(task_ctx *task, mysql_ctx *mysql) {
     }
     mysql->task = task;
     BIT_SET(mysql->status, LINKING);
-    mysql->client.fd = task_connect(task, PACK_MYSQL, NULL, mysql->client.ip, mysql->client.port,
-        &mysql->client.skid, NULL == mysql->client.evssl ? NETEV_NONE : NETEV_AUTHSSL, mysql);
-    if (INVALID_SOCK == mysql->client.fd) {
+    if (ERR_OK != task_connect(task, PACK_MYSQL, NULL, mysql->client.ip, mysql->client.port,
+        NULL == mysql->client.evssl ? NETEV_NONE : NETEV_AUTHSSL, mysql, &mysql->client.fd, &mysql->client.skid)) {
         BIT_REMOVE(mysql->status, LINKING);
         return ERR_FAILED;
     }

@@ -11,15 +11,16 @@
 #include "utils/buffer.h"
 
 dns_ip *dns_lookup(task_ctx *task, const char *domain, int32_t ipv6, size_t *cnt) {
-    uint64_t skid;
+    int32_t rtn;
     SOCKET fd;
+    uint64_t skid;
     const char *dnsip = dns_get_ip();
     if (ERR_OK == is_ipv6(dnsip)) {
-        fd = task_udp(task, "::", 0, &skid);
+        rtn = task_udp(task, "::", 0, &fd, &skid);
     } else {
-        fd = task_udp(task, "0.0.0.0", 0, &skid);
+        rtn = task_udp(task, "0.0.0.0", 0, &fd, &skid);
     }
-    if (INVALID_SOCK == fd) {
+    if (ERR_OK != rtn) {
         LOG_WARN("init udp error.");
         return NULL;
     }
@@ -68,8 +69,8 @@ SOCKET wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, c
     } else {
         port = NULL == evssl ? 80 : 443;
     }
-    SOCKET fd = coro_connect(task, PACK_WEBSOCK, evssl, ip, port, skid, netev, NULL);
-    if (INVALID_SOCK == fd) {
+    SOCKET fd;
+    if (ERR_OK != coro_connect(task, PACK_WEBSOCK, evssl, ip, port, netev, NULL, &fd, skid)) {
         FREE(host);
         return INVALID_SOCK;
     }
@@ -95,8 +96,8 @@ SOCKET wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, c
     return fd;
 }
 SOCKET redis_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ip, uint16_t port, const char *key, uint64_t *skid, int32_t netev) {
-    SOCKET fd = coro_connect(task, PACK_REDIS, evssl, ip, port, skid, netev, NULL);
-    if (INVALID_SOCK == fd) {
+    SOCKET fd;
+    if (ERR_OK != coro_connect(task, PACK_REDIS, evssl, ip, port, netev, NULL, &fd, skid)) {
         return INVALID_SOCK;
     }
     if (!EMPTYSTR(key)) {

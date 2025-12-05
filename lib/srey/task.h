@@ -113,21 +113,23 @@ int32_t task_listen(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
 /// <param name="evssl">evssl_ctx</param>
 /// <param name="ip">IP</param>
 /// <param name="port">端口</param>
-/// <param name="skid">链接ID</param>
 /// <param name="netev">task_netev</param>
 /// <param name="extra">ud_cxt extra</param>
-/// <returns>socket句柄</returns>
-SOCKET task_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
-    const char *ip, uint16_t port, uint64_t *skid, int32_t netev, void *extra);
+/// <param name="fd">SOCKET</param>
+/// <param name="skid">链接ID</param>
+/// <returns>ERR_OK 成功</returns>
+int32_t task_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl, const char *ip, uint16_t port, int32_t netev, void *extra,
+    SOCKET *fd, uint64_t *skid);
 /// <summary>
 /// UDP
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="ip">IP</param>
 /// <param name="port">端口</param>
+/// <param name="fd">SOCKET</param>
 /// <param name="skid">链接ID</param>
-/// <returns>socket句柄</returns>
-SOCKET task_udp(task_ctx *task, const char *ip, uint16_t port, uint64_t *skid);
+/// <returns>ERR_OK 成功</returns>
+int32_t task_udp(task_ctx *task, const char *ip, uint16_t port, SOCKET *fd, uint64_t *skid);
 //注册回调
 void on_accepted(task_ctx *task, _net_accept_cb _accept);
 void on_recved(task_ctx *task, _net_recv_cb _recv);

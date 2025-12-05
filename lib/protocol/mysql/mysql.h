@@ -4,8 +4,8 @@
 #include "protocol/mysql/mysql_struct.h"
 #include "srey/spub.h"
 
-void _mysql_pkfree(void *pack);
 void _mysql_init(void *hspush);
+void _mysql_pkfree(void *pack);
 void _mysql_udfree(ud_cxt *ud);
 void _mysql_closed(ud_cxt *ud);
 int32_t _mysql_ssl_exchanged(ev_ctx *ev, ud_cxt *ud);
@@ -16,7 +16,7 @@ void *mysql_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status);
 /// </summary>
 /// <param name="mysql">mysql_ctx</param>
 /// <param name="ip">IP</param>
-/// <param name="port">端口 3306</param>
+/// <param name="port">端口 0:3306</param>
 /// <param name="evssl">evssl_ctx 非NULL 启用SSL链接</param>
 /// <param name="user">用户名</param>
 /// <param name="password">密码</param>

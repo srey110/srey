@@ -7,9 +7,6 @@
     <Filter Include="tasks">
       <UniqueIdentifier>{8daf7e76-0d29-4779-b979-6cb4c3ef6388}</UniqueIdentifier>
     </Filter>
-    <Filter Include="taskcoro">
-      <UniqueIdentifier>{bd684aa3-bb3f-4d3a-a8f2-962f6a6c063a}</UniqueIdentifier>
-    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="CuTest.c">
@@ -42,29 +39,11 @@
     <ClCompile Include="task_auto_close.c">
       <Filter>tasks</Filter>
     </ClCompile>
-    <ClCompile Include="task_coro_timeout.c">
-      <Filter>taskcoro</Filter>
-    </ClCompile>
-    <ClCompile Include="task_coro_comm1.c">
-      <Filter>taskcoro</Filter>
-    </ClCompile>
-    <ClCompile Include="task_coro_net.c">
-      <Filter>taskcoro</Filter>
-    </ClCompile>
-    <ClCompile Include="task_coro_utils.c">
-      <Filter>taskcoro</Filter>
-    </ClCompile>
     <ClCompile Include="task_wbsock_sv.c">
       <Filter>tasks</Filter>
     </ClCompile>
     <ClCompile Include="task_http_sv.c">
       <Filter>tasks</Filter>
-    </ClCompile>
-    <ClCompile Include="task_redis.c">
-      <Filter>taskcoro</Filter>
-    </ClCompile>
-    <ClCompile Include="task_mysql.c">
-      <Filter>taskcoro</Filter>
     </ClCompile>
     <ClCompile Include="task_smtp.c">
       <Filter>tasks</Filter>
@@ -73,6 +52,30 @@
       <Filter>tasks</Filter>
     </ClCompile>
     <ClCompile Include="task_mqttclient.c">
+      <Filter>tasks</Filter>
+    </ClCompile>
+    <ClCompile Include="task_coro_comm1.c">
+      <Filter>tasks</Filter>
+    </ClCompile>
+    <ClCompile Include="task_coro_net.c">
+      <Filter>tasks</Filter>
+    </ClCompile>
+    <ClCompile Include="task_coro_timeout.c">
+      <Filter>tasks</Filter>
+    </ClCompile>
+    <ClCompile Include="task_coro_utils.c">
+      <Filter>tasks</Filter>
+    </ClCompile>
+    <ClCompile Include="task_mongo.c">
+      <Filter>tasks</Filter>
+    </ClCompile>
+    <ClCompile Include="task_mysql.c">
+      <Filter>tasks</Filter>
+    </ClCompile>
+    <ClCompile Include="task_pgsql.c">
+      <Filter>tasks</Filter>
+    </ClCompile>
+    <ClCompile Include="task_redis.c">
       <Filter>tasks</Filter>
     </ClCompile>
   </ItemGroup>
@@ -106,29 +109,11 @@
     <ClInclude Include="task_auto_close.h">
       <Filter>tasks</Filter>
     </ClInclude>
-    <ClInclude Include="task_coro_timeout.h">
-      <Filter>taskcoro</Filter>
-    </ClInclude>
-    <ClInclude Include="task_coro_comm1.h">
-      <Filter>taskcoro</Filter>
-    </ClInclude>
-    <ClInclude Include="task_coro_net.h">
-      <Filter>taskcoro</Filter>
-    </ClInclude>
-    <ClInclude Include="task_coro_utils.h">
-      <Filter>taskcoro</Filter>
-    </ClInclude>
     <ClInclude Include="task_wbsock_sv.h">
       <Filter>tasks</Filter>
     </ClInclude>
     <ClInclude Include="task_http_sv.h">
       <Filter>tasks</Filter>
-    </ClInclude>
-    <ClInclude Include="task_redis.h">
-      <Filter>taskcoro</Filter>
-    </ClInclude>
-    <ClInclude Include="task_mysql.h">
-      <Filter>taskcoro</Filter>
     </ClInclude>
     <ClInclude Include="task_smtp.h">
       <Filter>tasks</Filter>
@@ -137,6 +122,30 @@
       <Filter>tasks</Filter>
     </ClInclude>
     <ClInclude Include="task_mqttclient.h">
+      <Filter>tasks</Filter>
+    </ClInclude>
+    <ClInclude Include="task_coro_comm1.h">
+      <Filter>tasks</Filter>
+    </ClInclude>
+    <ClInclude Include="task_coro_net.h">
+      <Filter>tasks</Filter>
+    </ClInclude>
+    <ClInclude Include="task_coro_timeout.h">
+      <Filter>tasks</Filter>
+    </ClInclude>
+    <ClInclude Include="task_coro_utils.h">
+      <Filter>tasks</Filter>
+    </ClInclude>
+    <ClInclude Include="task_mongo.h">
+      <Filter>tasks</Filter>
+    </ClInclude>
+    <ClInclude Include="task_mysql.h">
+      <Filter>tasks</Filter>
+    </ClInclude>
+    <ClInclude Include="task_pgsql.h">
+      <Filter>tasks</Filter>
+    </ClInclude>
+    <ClInclude Include="task_redis.h">
       <Filter>tasks</Filter>
     </ClInclude>
   </ItemGroup>

@@ -35,6 +35,7 @@ void prots_pkfree(pack_type pktype, void *data);
 void prots_hsfree(pack_type pktype, void *data);
 void prots_udfree(void *arg);
 void prots_closed(ud_cxt *ud);
+int32_t prots_accepted(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud);
 int32_t prots_connected(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud);
 int32_t prots_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud);
 void *prots_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,

@@ -98,10 +98,10 @@ static int32_t _lcore_connect(lua_State *lua) {
     const char *ip = luaL_checkstring(lua, 3);
     uint16_t port = (uint16_t)luaL_checkinteger(lua, 4);
     int32_t netev = lua_isinteger(lua, 5) ? (int32_t)luaL_checkinteger(lua, 5) : NETEV_NONE;
+    SOCKET fd;
     uint64_t skid;
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    SOCKET fd = task_connect(task, pktype, evssl, ip, port, &skid, netev, NULL);
-    if (INVALID_SOCK == fd) {
+    if (ERR_OK != task_connect(task, pktype, evssl, ip, port, netev, NULL, &fd, &skid)) {
         lua_pushinteger(lua, INVALID_SOCK);
         return 1;
     }
@@ -121,10 +121,10 @@ static int32_t _lcore_ssl_exchange(lua_State *lua) {
 static int32_t _lcore_udp(lua_State *lua) {
     const char *ip = luaL_checkstring(lua, 1);
     uint16_t port = (uint16_t)luaL_checkinteger(lua, 2);
+    SOCKET fd;
     uint64_t skid;
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    SOCKET fd = task_udp(task, ip, port, &skid);
-    if (INVALID_SOCK == fd) {
+    if (ERR_OK != task_udp(task, ip, port, &fd, &skid)) {
         lua_pushinteger(lua, INVALID_SOCK);
         return 1;
     }

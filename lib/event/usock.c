@@ -172,10 +172,11 @@ static inline int32_t _call_conn_cb(ev_ctx *ev, tcp_ctx *tcp, int32_t err) {
     }
     return ERR_OK;
 }
-static inline void _call_ssl_exchanged_cb(ev_ctx *ev, tcp_ctx *tcp) {
+static inline int32_t _call_ssl_exchanged_cb(ev_ctx *ev, tcp_ctx *tcp) {
     if (NULL != tcp->cbs.exch_cb) {
-        tcp->cbs.exch_cb(ev, tcp->sock.fd, tcp->skid, BIT_CHECK(tcp->status, STATUS_CLIENT), &tcp->ud);
+        return tcp->cbs.exch_cb(ev, tcp->sock.fd, tcp->skid, BIT_CHECK(tcp->status, STATUS_CLIENT), &tcp->ud);
     }
+    return ERR_OK;
 }
 static inline void _call_recv_cb(ev_ctx *ev, tcp_ctx *tcp, size_t nread) {
     if (nread > 0) {
@@ -209,8 +210,7 @@ static int32_t _ssl_exchange(watcher_ctx *watcher, tcp_ctx *tcp, struct evssl_ct
         case ERR_FAILED://错误
             return ERR_FAILED;
         case 1://完成
-            _call_ssl_exchanged_cb(watcher->ev, tcp);
-            break;
+            return _call_ssl_exchanged_cb(watcher->ev, tcp);
         case ERR_OK://等待更多数据
             BIT_SET(tcp->status, STATUS_AUTHSSL);
             break;
@@ -327,8 +327,11 @@ static void _on_rw_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
             BIT_SET(tcp->status, STATUS_ERROR);
             break;
         case 1://完成
-            _call_ssl_exchanged_cb(watcher->ev, tcp);
-            BIT_REMOVE(tcp->status, STATUS_AUTHSSL);
+            if (ERR_OK == _call_ssl_exchanged_cb(watcher->ev, tcp)) {
+                BIT_REMOVE(tcp->status, STATUS_AUTHSSL);
+            } else {
+                BIT_SET(tcp->status, STATUS_ERROR);
+            }
 #ifdef READV_EINVAL
             return;
 #else
@@ -387,6 +390,12 @@ static void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
         pool_push(&watcher->pool, &tcp->sock);
         return;
     }
+    if (ERR_OK != _add_event(watcher, tcp->sock.fd, &tcp->sock.events, EVENT_READ, &tcp->sock)) {
+        _call_conn_cb(watcher->ev, tcp, ERR_FAILED);
+        _remove_fd(watcher, tcp->sock.fd);
+        pool_push(&watcher->pool, &tcp->sock);
+        return;
+    }
     if (ERR_OK != _call_conn_cb(watcher->ev, tcp, ERR_OK)) {
         _remove_fd(watcher, tcp->sock.fd);
         pool_push(&watcher->pool, &tcp->sock);
@@ -398,18 +407,12 @@ static void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
             _call_close_cb(watcher->ev, tcp);
             _remove_fd(watcher, tcp->sock.fd);
             pool_push(&watcher->pool, &tcp->sock);
-            return;
         }
     }
 #endif
-    if (ERR_OK != _add_event(watcher, tcp->sock.fd, &tcp->sock.events, EVENT_READ, &tcp->sock)) {
-        _call_close_cb(watcher->ev, tcp);
-        _remove_fd(watcher, tcp->sock.fd);
-        pool_push(&watcher->pool, &tcp->sock);
-    }
 }
-SOCKET ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const uint16_t port,
-    cbs_ctx *cbs, ud_cxt *ud, uint64_t *skid) {
+int32_t ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud,
+    SOCKET *fd, uint64_t *skid) {
     ASSERTAB(NULL != cbs && NULL != cbs->r_cb, ERRSTR_NULLP);
     netaddr_ctx addr;
     if (ERR_OK != netaddr_set(&addr, ip, port)) {
@@ -417,31 +420,31 @@ SOCKET ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
         if (NULL != cbs->ud_free) {
             cbs->ud_free(ud);
         }
-        return INVALID_SOCK;
+        return ERR_FAILED;
     }
-    SOCKET fd = _create_sock(SOCK_STREAM, netaddr_family(&addr));
-    if (INVALID_SOCK == fd) {
+    *fd = _create_sock(SOCK_STREAM, netaddr_family(&addr));
+    if (INVALID_SOCK == *fd) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         if (NULL != cbs->ud_free) {
             cbs->ud_free(ud);
         }
-        return INVALID_SOCK;
+        return ERR_FAILED;
     }
-    sock_reuseaddr(fd);
-    _set_sockops(fd);
-    int32_t rtn = connect(fd, netaddr_addr(&addr), netaddr_size(&addr));
+    sock_reuseaddr(*fd);
+    _set_sockops(*fd);
+    int32_t rtn = connect(*fd, netaddr_addr(&addr), netaddr_size(&addr));
     if (ERR_OK != rtn) {
         rtn = ERRNO;
         if (!ERR_CONNECT_RETRIABLE(rtn)) {
             LOG_ERROR("connect %s:%d, %s", ip, port, ERRORSTR(ERRNO));
-            CLOSE_SOCK(fd);
+            CLOSE_SOCK((*fd));
             if (NULL != cbs->ud_free) {
                 cbs->ud_free(ud);
             }
-            return INVALID_SOCK;
+            return ERR_FAILED;
         }
     }
-    sock_ctx *skctx = _new_sk(fd, cbs, ud);
+    sock_ctx *skctx = _new_sk(*fd, cbs, ud);
     skctx->ev_cb = _on_connect_cb;
     tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
     BIT_SET(tcp->status, STATUS_CLIENT);
@@ -449,8 +452,8 @@ SOCKET ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
 #if WITH_SSL
     tcp->evssl = evssl;
 #endif
-    _cmd_connect(ctx, fd, skctx);
-    return fd;
+    _cmd_connect(ctx, *fd, skctx);
+    return ERR_OK;
 }
 void _add_conn_inloop(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx) {
     _add_fd(watcher, skctx);
@@ -507,13 +510,12 @@ void _add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) {
     }
 #endif
     _add_fd(watcher, skctx);
-    if (ERR_OK != _call_acp_cb(watcher->ev, tcp)) {
+    if (ERR_OK != _add_event(watcher, fd, &skctx->events, EVENT_READ, skctx)) {
         _remove_fd(watcher, fd);
         pool_push(&watcher->pool, skctx);
         return;
     }
-    if (ERR_OK != _add_event(watcher, fd, &skctx->events, EVENT_READ, skctx)) {
-        _call_close_cb(watcher->ev, tcp);
+    if (ERR_OK != _call_acp_cb(watcher->ev, tcp)) {
         _remove_fd(watcher, fd);
         pool_push(&watcher->pool, skctx);
     }
@@ -779,23 +781,23 @@ void _free_udp(sock_ctx *skctx) {
     }
     FREE(udp);
 }
-SOCKET ev_udp(ev_ctx *ctx, const char *ip, const uint16_t port,
-    cbs_ctx *cbs, ud_cxt *ud, uint64_t *skid) {
+int32_t ev_udp(ev_ctx *ctx, const char *ip, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud,
+    SOCKET *fd, uint64_t *skid) {
     ASSERTAB(NULL != cbs->rf_cb, ERRSTR_NULLP);
     netaddr_ctx addr;
     if (ERR_OK != netaddr_set(&addr, ip, port)) {
         LOG_ERROR("netaddr_set %s:%d, %s", ip, port, ERRORSTR(ERRNO));
-        return INVALID_SOCK;
+        return ERR_FAILED;
     }
-    SOCKET fd = _udp(&addr);
-    if (INVALID_SOCK == fd) {
+    *fd = _udp(&addr);
+    if (INVALID_SOCK == *fd) {
         LOG_ERROR("udp %s:%d error.", ip, port);
-        return INVALID_SOCK;
+        return ERR_FAILED;
     }
-    sock_ctx *skctx = _new_udp(fd, cbs, ud);
+    sock_ctx *skctx = _new_udp(*fd, cbs, ud);
     *skid = UPCAST(skctx, udp_ctx, sock)->skid;
-    _cmd_add_udp(ctx, fd, skctx);
-    return fd;
+    _cmd_add_udp(ctx, *fd, skctx);
+    return ERR_OK;
 }
 void _add_udp_inloop(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx) {
     _add_fd(watcher, skctx);

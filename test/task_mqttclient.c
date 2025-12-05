@@ -154,7 +154,7 @@ static void _startup(task_ctx *task) {
     CALLOC(mq, 1, sizeof(mqtt_ctx));
     mq->version = _version;
     coro_sleep(task, 2000);
-    _fd = task_connect(task, PACK_MQTT, NULL, ips[0].ip, 1883, &_skid, 0, mq);
+    task_connect(task, PACK_MQTT, NULL, ips[0].ip, 1883, 0, mq, &_fd, &_skid);
     FREE(ips);
 }
 void task_mqtt_client_start(loader_ctx *loader, name_t name, int32_t pt) {

@@ -7,8 +7,9 @@ static void _net_recvfrom(task_ctx *task, SOCKET fd, uint64_t skid,
 }
 static void _startup(task_ctx *task) {
     on_recvedfrom(task, _net_recvfrom);
+    SOCKET fd;
     uint64_t id;
-    task_udp(task, "0.0.0.0", 15002, &id);
+    task_udp(task, "0.0.0.0", 15002, &fd, &id);
 }
 void task_udp_start(loader_ctx *loader, name_t name, int32_t pt) {
     _prt = pt;

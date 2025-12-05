@@ -350,30 +350,29 @@ void *coro_handshaked(task_ctx *task, SOCKET fd, uint64_t skid, int32_t *err, si
     }
     return msg.data;
 }
-SOCKET coro_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
-    const char *ip, uint16_t port, uint64_t *skid, int32_t netev, void *extra) {
-    SOCKET fd = task_connect(task, pktype, evssl, ip, port, skid, netev, extra);
-    if (INVALID_SOCK == fd) {
+int32_t coro_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl, const char *ip, uint16_t port, int32_t netev, void *extra,
+    SOCKET *fd, uint64_t *skid) {
+    if (ERR_OK != task_connect(task, pktype, evssl, ip, port, netev, extra, fd, skid)) {
         LOG_WARN("task: %d, connect %s:%d error.", task->name, ip, port);
-        return INVALID_SOCK;
+        return ERR_FAILED;
     }
     message_ctx msg;
     _mcoro_wait(task, *skid, MSG_TYPE_CONNECT, TIMEOUT_CONNECT, &msg);
     if (MSG_TYPE_TIMEOUT == msg.mtype) {
-        ev_close(&task->loader->netev, fd, *skid);
+        ev_close(&task->loader->netev, *fd, *skid);
         LOG_WARN("task: %d, connect %s:%d timeout.", task->name, ip, port);
-        return INVALID_SOCK;
+        return ERR_FAILED;
     }
     if (ERR_OK != msg.erro) {
         LOG_WARN("task: %d, connect %s:%d error.", task->name, ip, port);
-        return INVALID_SOCK;
+        return ERR_FAILED;
     }
     if (NULL != evssl) {
-        if (ERR_OK != _wait_ssl_exchanged(task, fd, *skid)) {
-            return INVALID_SOCK;
+        if (ERR_OK != _wait_ssl_exchanged(task, *fd, *skid)) {
+            return ERR_FAILED;
         }
     }
-    return fd;
+    return ERR_OK;
 }
 static int32_t _wait_recved(task_ctx *task, SOCKET fd, uint64_t skid, message_ctx *msg) {
     _mcoro_wait(task, skid, MSG_TYPE_RECV, TIMEOUT_NETREAD, msg);

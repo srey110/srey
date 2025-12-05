@@ -37,10 +37,11 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
 /// <param name="port">端口</param>
 /// <param name="cbs">回调函数</param>
 /// <param name="ud">用户数据</param>
+/// <param name="fd">SOCKET</param>
 /// <param name="skid">链接ID</param>
-/// <returns>socket句柄</returns>
-SOCKET ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const uint16_t port,
-    cbs_ctx *cbs, ud_cxt *ud, uint64_t *skid);
+/// <returns>ERR_OK 成功</returns>
+int32_t ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud,
+    SOCKET *fd, uint64_t *skid);
 /// <summary>
 /// 切换为SSL链接
 /// </summary>
@@ -58,9 +59,10 @@ void ev_ssl(ev_ctx *ctx, SOCKET fd, uint64_t skid, int32_t client, struct evssl_
 /// <param name="port">端口</param>
 /// <param name="cbs">回调函数</param>
 /// <param name="ud">用户数据</param>
+/// <param name="fd">SOCKET</param>
 /// <param name="skid">链接ID</param>
-/// <returns>socket句柄</returns>
-SOCKET ev_udp(ev_ctx *ctx, const char *ip, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud, uint64_t *skid);
+/// <returns>ERR_OK 成功</returns>
+int32_t ev_udp(ev_ctx *ctx, const char *ip, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud, SOCKET *fd, uint64_t *skid);
 /// <summary>
 /// TCP发送数据
 /// </summary>
