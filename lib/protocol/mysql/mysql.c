@@ -239,8 +239,8 @@ static void _mysql_auth_response(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
         FREE(battrs.data);
     }
     _set_payload_lens(&bwriter);
-    ev_send(ev, mysql->client.fd, mysql->client.skid, bwriter.data, bwriter.offset, 0);
     ud->status = AUTH_PROCESS;
+    ev_send(ev, mysql->client.fd, mysql->client.skid, bwriter.data, bwriter.offset, 0);
 }
 static void _mysql_ssl_exchange(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
     mysql->id++;
@@ -253,9 +253,9 @@ static void _mysql_ssl_exchange(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
     binary_set_uint8(&bwriter, mysql->client.charset);//character_set
     binary_set_fill(&bwriter, 0, 23);//filler
     _set_payload_lens(&bwriter);
+    ud->status = SSL_EXCHANGE;
     ev_send(ev, mysql->client.fd, mysql->client.skid, bwriter.data, bwriter.offset, 0);
     ev_ssl(ev, mysql->client.fd, mysql->client.skid, 1, mysql->client.evssl);
-    ud->status = SSL_EXCHANGE;
 }
 int32_t _mysql_ssl_exchanged(ev_ctx *ev, ud_cxt *ud) {
     _mysql_auth_response(ud->extra, ev, ud);
