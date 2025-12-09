@@ -19,6 +19,7 @@ typedef struct smtp_ctx {
 void _smtp_init(void *hspush);
 void _smtp_udfree(ud_cxt *ud);
 void _smtp_closed(ud_cxt *ud);
+int32_t _smtp_on_connected(ud_cxt *ud, int32_t err);
 /// <summary>
 /// 简单邮件传输协议smtp初始化
 /// </summary>

@@ -8,7 +8,7 @@ static void _startup(task_ctx *task) {
 #if WITH_SSL
     evssl = evssl_qury(102);
 #endif
-    pgsql_init(&_pg, "192.168.8.3", 0, evssl, "postgres", "12345678", "postgres");
+    pgsql_init(&_pg, "127.0.0.1", 0, evssl, "postgres", "12345678", "postgres");
     pgsql_try_connect(task, &_pg);
 }
 static void _closing_cb(task_ctx *task) {

@@ -53,12 +53,20 @@ void _mysql_udfree(ud_cxt *ud) {
     }
     mysql_ctx *mysql = ud->extra;
     _mysql_pkfree(mysql->mpack);
+    mysql->mpack = NULL;
     mysql->status = 0;
     mysql->cur_cmd = 0;
     ud->extra = NULL;
 }
 void _mysql_closed(ud_cxt *ud) {
     _mysql_udfree(ud);
+}
+int32_t _mysql_on_connected(ud_cxt *ud, int32_t err) {
+    if (ERR_OK != err) {
+        mysql_ctx *mysql = ud->extra;
+        mysql->status = 0;
+    }
+    return err;
 }
 static uint8_t _mysql_charset(const char *charset) {
     if(0 == strcmp("big5", charset)) {
@@ -202,7 +210,7 @@ static void _mysql_auth_response(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
     binary_set_integer(&bwriter, mysql->client.maxpack, 4, 1);//max_packet_size
     binary_set_uint8(&bwriter, mysql->client.charset);//character_set
     binary_set_fill(&bwriter, 0, 23);//filler
-    binary_set_string(&bwriter, mysql->client.user, strlen(mysql->client.user) + 1);//username
+    binary_set_string(&bwriter, mysql->client.user, 0);//username
     if (0 == strcmp(CACHING_SHA2_PASSWORLD, mysql->server.plugin)) {
         char sign[SHA256_BLOCK_SIZE];
         _mysql_caching_sha2_sign(mysql, sign);
@@ -225,10 +233,10 @@ static void _mysql_auth_response(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
         }
     }
     if (BIT_CHECK(mysql->client.caps, CLIENT_CONNECT_WITH_DB)) {
-        binary_set_string(&bwriter, mysql->client.database, strlen(mysql->client.database) + 1);//database
+        binary_set_string(&bwriter, mysql->client.database, 0);//database
     }
     if (BIT_CHECK(mysql->client.caps, CLIENT_PLUGIN_AUTH)){
-        binary_set_string(&bwriter, mysql->server.plugin, strlen(mysql->server.plugin) + 1);//client_plugin_name
+        binary_set_string(&bwriter, mysql->server.plugin, 0);//client_plugin_name
     }
     if (BIT_CHECK(mysql->client.caps, CLIENT_CONNECT_ATTRS)) {
         binary_ctx battrs;
@@ -434,7 +442,7 @@ static void _mysql_password_send(mysql_ctx *mysql, ev_ctx *ev) {
     binary_init(&bwriter, NULL, 0, 0);
     binary_set_skip(&bwriter, 3);
     binary_set_int8(&bwriter, mysql->id);
-    binary_set_string(&bwriter, mysql->client.password, strlen(mysql->client.password) + 1);
+    binary_set_string(&bwriter, mysql->client.password, 0);
     _set_payload_lens(&bwriter);
     ev_send(ev, mysql->client.fd, mysql->client.skid, bwriter.data, bwriter.offset, 0);
 }

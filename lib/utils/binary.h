@@ -4,8 +4,6 @@
 #include "base/structs.h"
 #include "utils/utils.h"
 
-#define BINARY_INCREASE 256
-
 typedef struct binary_ctx {
     char *data;
     size_t inc;//增加基数
@@ -73,7 +71,7 @@ void binary_set_double(binary_ctx *ctx, double val, int32_t islittle);
 /// </summary>
 /// <param name="ctx">binary_ctx</param>
 /// <param name="buf">值</param>
-/// <param name="lens">长度</param>
+/// <param name="lens">长度0 字符串写入'\0'结束</param>
 void binary_set_string(binary_ctx *ctx, const char *buf, size_t lens);
 /// <summary>
 /// 填充

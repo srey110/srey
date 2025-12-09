@@ -124,7 +124,7 @@ static void test_binary(CuTest* tc) {
     binary_set_double(&bwrite, d, 1);
     binary_set_fill(&bwrite, 0, 4);
     const char *str = "this is test";
-    binary_set_string(&bwrite, str, strlen(str) + 1);
+    binary_set_string(&bwrite, str, 0);
     const char *binary = "this is test";
     binary_set_string(&bwrite, str, strlen(binary));
 

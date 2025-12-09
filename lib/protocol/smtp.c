@@ -42,6 +42,13 @@ void _smtp_udfree(ud_cxt *ud) {
 void _smtp_closed(ud_cxt *ud) {
     _smtp_udfree(ud);
 }
+int32_t _smtp_on_connected(ud_cxt *ud, int32_t err) {
+    if (ERR_OK != err) {
+        smtp_ctx *smtp = (smtp_ctx *)ud->extra;
+        smtp->status = 0;
+    }
+    return err;
+}
 void smtp_init(smtp_ctx *smtp, const char *ip, uint16_t port, struct evssl_ctx *evssl, const char *user, const char *psw) {
     ZERO(smtp, sizeof(smtp_ctx));
     memcpy(smtp->ip, ip, strlen(ip));
@@ -144,8 +151,8 @@ static void _smtp_connected(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid
     }
     buffer_drain(buf, blens);
     char *cmd = format_va("EHLO %s%s", _smtp_host, FLAG_CRLF);
-    ev_send(ev, fd, skid, cmd, strlen(cmd), 0);
     ud->status = EHLO;
+    ev_send(ev, fd, skid, cmd, strlen(cmd), 0);
 }
 static int32_t _smtp_get_authtype(buffer_ctx *buf) {
     const char *authtype = "250-AUTH";
@@ -200,8 +207,8 @@ static void _smtp_ehlo(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buf
         cmd = format_va("AUTH PLAIN%s", FLAG_CRLF);
         break;
     }
-    ev_send(ev, fd, skid, cmd, strlen(cmd), 0);
     ud->status = AUTH;
+    ev_send(ev, fd, skid, cmd, strlen(cmd), 0);
 }
 static char *_smtp_loin_cmd(const char *up) {
     size_t lens = strlen(up);
@@ -239,8 +246,8 @@ static void _smtp_loin(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buf
     if (0 == strcmp(flag, "password:")) {
         FREE(flag);
         char *cmd = _smtp_loin_cmd(smtp->psw);
-        ev_send(ev, fd, skid, cmd, strlen(cmd), 0);
         ud->status = AUTH_CHECK;
+        ev_send(ev, fd, skid, cmd, strlen(cmd), 0);
         return;
     }
     BIT_SET(*status, PROT_ERROR);
@@ -267,8 +274,8 @@ static void _smtp_plain(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, bu
     FREE(enbuf);
     char *cmd = format_va("%s%s", b64, FLAG_CRLF);
     FREE(b64);
-    ev_send(ev, fd, skid, cmd, strlen(cmd), 0);
     ud->status = AUTH_CHECK;
+    ev_send(ev, fd, skid, cmd, strlen(cmd), 0);
 }
 static void _smtp_auth(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     size_t blens = buffer_size(buf);

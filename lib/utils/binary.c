@@ -1,5 +1,7 @@
 #include "utils/binary.h"
 
+#define BINARY_INCREASE 256
+
 void binary_init(binary_ctx *ctx, char *buf, size_t lens, size_t inc) {
     ctx->offset = 0;
     if (0 == inc) {
@@ -64,8 +66,16 @@ void binary_set_double(binary_ctx *ctx, double val, int32_t islittle) {
     ctx->offset += sizeof(val);
 }
 void binary_set_string(binary_ctx *ctx, const char *buf, size_t lens) {
-    if (0 == lens
-        || NULL == buf) {
+    if (NULL == buf) {
+        return;
+    }
+    if (0 == lens) {
+        lens = strlen(buf);
+        _binary_expand(ctx, lens + 1);
+        memcpy(ctx->data + ctx->offset, buf, lens);
+        ctx->offset += lens;
+        ctx->data[ctx->offset] = '\0';
+        ctx->offset++;
         return;
     }
     _binary_expand(ctx, lens);

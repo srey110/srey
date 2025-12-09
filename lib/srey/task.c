@@ -449,8 +449,9 @@ static int32_t _net_connect(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t err, u
     if (NULL == task) {
         return ERR_FAILED;
     }
-    if (ERR_OK == err) {
-        err = prots_connected(ev, fd, skid, ud);
+    int32_t rtn = prots_connected(ev, fd, skid, ud, err);
+    if (ERR_OK != rtn) {
+        err = rtn;
     }
     message_ctx msg;
     msg.mtype = MSG_TYPE_CONNECT;

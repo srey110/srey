@@ -53,7 +53,7 @@ void _mongo_udfree(ud_cxt *ud) {
 void _mongo_closed(ud_cxt *ud) {
     _mongo_udfree(ud);
 }
-int32_t _mongo_connected(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud) {
+int32_t _mongo_on_connected(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud, int32_t err) {
     return ERR_OK;
 }
 int32_t _mongo_ssl_exchanged(ev_ctx *ev, ud_cxt *ud) {
@@ -102,7 +102,7 @@ void *mongo_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     return pack;
 }
 void mongo_init(mongo_ctx *mongo, const char *ip, uint16_t port, struct evssl_ctx *evssl,
-    const char *user, const char *password, scram_authmod authmod, const char *authdb) {
+    const char *user, const char *password, int8_t authmod, const char *authdb) {
     ZERO(mongo, sizeof(mongo_ctx));
     mongo->id = 1;
     strcpy(mongo->ip, ip);
@@ -114,12 +114,12 @@ void mongo_init(mongo_ctx *mongo, const char *ip, uint16_t port, struct evssl_ct
     if (!EMPTYSTR(password)) {
         strcpy(mongo->password, password);
     }
-    if (SCRAM_SHA1 == authmod
+    /*if (SCRAM_SHA1 == authmod
         || SCRAM_SHA256 == authmod) {
         mongo->authmod = authmod;
     } else {
         mongo->authmod = SCRAM_SHA1;
-    }
+    }*/
     if (!EMPTYSTR(authdb)) {
         strcpy(mongo->authdb, authdb);
     } else {

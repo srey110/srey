@@ -118,16 +118,20 @@ void prots_closed(ud_cxt *ud) {
 int32_t prots_accepted(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud) {
     return ERR_OK;
 }
-int32_t prots_connected(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud) {
+int32_t prots_connected(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud, int32_t err) {
     switch (ud->pktype) {
+    case PACK_SMTP:
+        return _smtp_on_connected(ud, err);
+    case PACK_MYSQL:
+        return _mysql_on_connected(ud, err);
     case PACK_PGSQL:
-        return _pgsql_connected(ev, fd, skid, ud);
+        return _pgsql_on_connected(ev, fd, skid, ud, err);
     case PACK_MONGO:
-        return _mongo_connected(ev, fd, skid, ud);
+        return _mongo_on_connected(ev, fd, skid, ud, err);
     default:
         break;
     }
-    return ERR_OK;
+    return err;
 }
 int32_t prots_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud) {
     switch (ud->pktype) {

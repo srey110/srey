@@ -267,7 +267,6 @@ static void test_system(CuTest* tc) {
     CuAssertTrue(tc, 0 == strcmp(strlower(buf), "this is test."));
     CuAssertTrue(tc, 0 == strcmp(strreverse(buf), ".tset si siht"));
     FREE(buf);
-
     PRINT("randrange: %d", randrange(0, 100));
     PRINT("randrange: %d", randrange(0, 100));
     PRINT("randrange: %d", randrange(0, 100));

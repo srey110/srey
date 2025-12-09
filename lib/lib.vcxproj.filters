@@ -292,10 +292,16 @@
     <ClInclude Include="protocol\prots.h">
       <Filter>protocol</Filter>
     </ClInclude>
+    <ClInclude Include="protocol\pgsql\pgsql.h">
+      <Filter>protocol\pgsql</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\pgsql\pgsql_struct.h">
+      <Filter>protocol\pgsql</Filter>
+    </ClInclude>
     <ClInclude Include="protocol\mongo\mongo.h">
       <Filter>protocol\mongo</Filter>
     </ClInclude>
-    <ClInclude Include="protocol\pgsql\pgsql.h">
+    <ClInclude Include="protocol\pgsql\pgsql_scram.h">
       <Filter>protocol\pgsql</Filter>
     </ClInclude>
   </ItemGroup>
@@ -486,10 +492,13 @@
     <ClCompile Include="protocol\prots.c">
       <Filter>protocol</Filter>
     </ClCompile>
+    <ClCompile Include="protocol\pgsql\pgsql.c">
+      <Filter>protocol\pgsql</Filter>
+    </ClCompile>
     <ClCompile Include="protocol\mongo\mongo.c">
       <Filter>protocol\mongo</Filter>
     </ClCompile>
-    <ClCompile Include="protocol\pgsql\pgsql.c">
+    <ClCompile Include="protocol\pgsql\pgsql_scram.c">
       <Filter>protocol\pgsql</Filter>
     </ClCompile>
   </ItemGroup>
