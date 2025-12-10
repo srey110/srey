@@ -4,12 +4,13 @@ static int32_t _prt = 1;
 const char *_smtp_sv = "smtp.163.com";
 const uint16_t _smtp_port = 465;
 const char *_smtp_user = "test@163.com";
-const char *_smtp_from = "test@163.com";
-const char *_smtp_rcpt = "test@qq.com";
-const char *_smtp_psw = "CAZMcsYms";
+const char *_smtp_psw = "FCAZMcsYms";
 static smtp_ctx _smtp;
+static mail_ctx _mail;
 
 static void _startup(task_ctx *task) {
+    mail_init(&_mail);
+    mail_from(&_mail, "srey", "test@163.com");
     size_t n;
     dns_ip *ips = dns_lookup(task, _smtp_sv, 0, &n);
     struct evssl_ctx *ssl = evssl_qury(102);
@@ -19,14 +20,18 @@ static void _startup(task_ctx *task) {
         LOG_WARN("smtp_connect error.");
         return;
     }
-    if (ERR_OK != smtp_send(&_smtp, _smtp_from, _smtp_rcpt, "test subject", "123")) {
+    mail_addrs_add(&_mail, "test@qq.com", TO);
+    mail_addrs_add(&_mail, "test@gmail.com", TO);
+    mail_subject(&_mail, "subject1");
+    mail_msg(&_mail, "this is message");
+    if (ERR_OK != smtp_send(&_smtp, &_mail)) {
         LOG_WARN("smtp_send error.");
         return;
     }
-    smtp_ping(&_smtp);
-    smtp_quit(&_smtp);
-    smtp_ping(&_smtp);
-    if (ERR_OK != smtp_send(&_smtp, _smtp_from, _smtp_rcpt, "test subject2", "456")) {
+    const char *html = "<!DOCTYPE html><html><title>HTML Tutorial</title><body><h1>This is a heading</h1><p>This is a paragraph.</p></body></html>";
+    mail_html(&_mail, html, strlen(html));
+    mail_attach_add(&_mail, "D:\\....\\panda.jpg");
+    if (ERR_OK != smtp_send(&_smtp, &_mail)) {
         LOG_WARN("smtp_send error.");
         return;
     }
@@ -36,6 +41,7 @@ static void _net_close(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype,
     if (_prt) {
         LOG_INFO("socket %d closed", (uint32_t)fd);
     }
+    mail_free(&_mail);
 }
 void task_smtp_start(loader_ctx *loader, name_t name, int32_t pt) {
     _prt = pt;

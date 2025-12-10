@@ -1,5 +1,6 @@
-#include "protocol/smtp.h"
+#include "protocol/smtp/smtp.h"
 #include "utils/utils.h"
+#include "utils/binary.h"
 #include "srey/task.h"
 #include "protocol/prots.h"
 #include "crypt/base64.h"
@@ -121,17 +122,6 @@ char *smtp_pack_data(smtp_ctx *smtp) {
         return NULL;
     }
     return format_va("DATA%s", FLAG_CRLF);
-}
-char *smtp_pack_mail(smtp_ctx *smtp, const char *subject, const char *data) {
-    if (ERR_OK != smtp_check_auth(smtp)) {
-        return NULL;
-    }
-    char time[TIME_LENS];
-    sectostr(nowsec(), "%Y-%m-%d %H:%M:%S", time);
-    return format_va("Date: %s%sSubject: %s%s%s%s%s.%s",
-        time, FLAG_CRLF,
-        subject, FLAG_CRLF, FLAG_CRLF, 
-        data, FLAG_CRLF, FLAG_CRLF);
 }
 static void _smtp_connected(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     size_t blens = buffer_size(buf);

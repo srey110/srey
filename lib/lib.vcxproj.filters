@@ -52,6 +52,9 @@
     <Filter Include="protocol\pgsql">
       <UniqueIdentifier>{76629710-3d94-484d-a390-d5e686d9cb73}</UniqueIdentifier>
     </Filter>
+    <Filter Include="protocol\smtp">
+      <UniqueIdentifier>{f41d9e5d-747c-42d2-a196-ba323c83600d}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="lib.h" />
@@ -274,9 +277,6 @@
     <ClInclude Include="protocol\custz_head.h">
       <Filter>protocol</Filter>
     </ClInclude>
-    <ClInclude Include="protocol\smtp.h">
-      <Filter>protocol</Filter>
-    </ClInclude>
     <ClInclude Include="protocol\mqtt\mqtt.h">
       <Filter>protocol\mqtt</Filter>
     </ClInclude>
@@ -303,6 +303,12 @@
     </ClInclude>
     <ClInclude Include="protocol\pgsql\pgsql_scram.h">
       <Filter>protocol\pgsql</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\smtp\smtp.h">
+      <Filter>protocol\smtp</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\smtp\mail.h">
+      <Filter>protocol\smtp</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -477,9 +483,6 @@
     <ClCompile Include="protocol\custz_head.c">
       <Filter>protocol</Filter>
     </ClCompile>
-    <ClCompile Include="protocol\smtp.c">
-      <Filter>protocol</Filter>
-    </ClCompile>
     <ClCompile Include="protocol\mqtt\mqtt.c">
       <Filter>protocol\mqtt</Filter>
     </ClCompile>
@@ -500,6 +503,12 @@
     </ClCompile>
     <ClCompile Include="protocol\pgsql\pgsql_scram.c">
       <Filter>protocol\pgsql</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\smtp\smtp.c">
+      <Filter>protocol\smtp</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\smtp\mail.c">
+      <Filter>protocol\smtp</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

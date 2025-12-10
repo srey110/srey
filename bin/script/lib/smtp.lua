@@ -54,56 +54,46 @@ function ctx:ping()
     end
     return true
 end
-function ctx:_send(from, rcpt, subject, data)
+function ctx:_send(mail)
     local fd, skid = self.smtp:sock_id()
-    local cmd, csize = self.smtp:pack_from(from)
+    local cmd, csize = self.smtp:pack_from(mail:from_get())
     if not cmd then
         return false
     end
     local pack, _ =  srey.syn_send(fd, skid, cmd, csize, 0)
-    if nil == pack then
+    if nil == pack or not self.smtp:check_ok(pack)  then
         return false
     end
-    if not self.smtp:check_ok(pack) then
-        return false
-    end
-    cmd, csize = self.smtp:pack_rcpt(rcpt)
-    if not cmd then
-        return false
-    end
-    pack, _ =  srey.syn_send(fd, skid, cmd, csize, 0)
-    if nil == pack then
-        return false
-    end
-    if not self.smtp:check_ok(pack) then
-        return false
+    for _, addr in pairs(mail:addrs_get()) do
+        cmd, csize = self.smtp:pack_rcpt(addr)
+        if not cmd then
+            return false
+        end
+        pack, _ =  srey.syn_send(fd, skid, cmd, csize, 0)
+        if nil == pack or not self.smtp:check_ok(pack) then
+            return false
+        end
     end
     cmd, csize = self.smtp:pack_data()
     if not cmd then
         return false
     end
     pack, _ =  srey.syn_send(fd, skid, cmd, csize, 0)
-    if nil == pack then
+    if nil == pack or not self.smtp:check_code(pack, "354") then
         return false
     end
-    if not self.smtp:check_code(pack, "354") then
-        return false
-    end
-    cmd, csize = self.smtp:pack_mail(subject, data)
-    if not cmd then
-        return
-    end
+    cmd, csize = mail:pack()
     pack, _ =  srey.syn_send(fd, skid, cmd, csize, 0)
-    if nil == pack then
+    if nil == pack or not self.smtp:check_ok(pack) then
         return false
     end
-    return self.smtp:check_ok(pack)
+    return true
 end
-function ctx:send(from, rcpt, subject, data)
+function ctx:send(mail)
     if not self.smtp:check_auth() then
         return false
     end
-    local rtn = self:_send(from, rcpt, subject, data)
+    local rtn = self:_send(mail)
     self:reset()
     return rtn
 end

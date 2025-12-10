@@ -7,7 +7,7 @@
 #include "protocol/mysql/mysql.h"
 #include "protocol/pgsql/pgsql.h"
 #include "protocol/mongo/mongo.h"
-#include "protocol/smtp.h"
+#include "protocol/smtp/smtp.h"
 
 void prots_init(_handshaked_push hspush) {
     _websock_init(hspush);

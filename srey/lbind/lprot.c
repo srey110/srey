@@ -540,19 +540,6 @@ static int32_t _lprot_smtp_pack_data(lua_State *lua) {
     lua_pushinteger(lua, strlen(cmd));
     return 2;
 }
-static int32_t _lprot_smtp_pack_mail(lua_State *lua) {
-    smtp_ctx *smtp = lua_touserdata(lua, 1);
-    const char *subject = luaL_checkstring(lua, 2);
-    const char *data = luaL_checkstring(lua, 3);
-    char *cmd = smtp_pack_mail(smtp, subject, data);
-    if (NULL == cmd) {
-        lua_pushnil(lua);
-        return 1;
-    }
-    lua_pushlightuserdata(lua, cmd);
-    lua_pushinteger(lua, strlen(cmd));
-    return 2;
-}
 static int32_t _lprot_smtp_pack_quit(lua_State *lua) {
     smtp_ctx *smtp = lua_touserdata(lua, 1);
     char *cmd = smtp_pack_quit(smtp);
@@ -589,7 +576,6 @@ LUAMOD_API int luaopen_smtp(lua_State *lua) {
         { "pack_from", _lprot_smtp_pack_from },
         { "pack_rcpt", _lprot_smtp_pack_rcpt },
         { "pack_data", _lprot_smtp_pack_data },
-        { "pack_mail", _lprot_smtp_pack_mail },
         { "pack_quit", _lprot_smtp_pack_quit },
         { "pack_ping", _lprot_smtp_pack_ping },
         { "sock_id", _lprot_smtp_sock_id },
@@ -597,6 +583,100 @@ LUAMOD_API int luaopen_smtp(lua_State *lua) {
         { NULL, NULL }
     };
     REG_MTABLE(lua, "_smtp_ctx", reg_new, reg_func);
+    return 1;
+}
+//srey.smtp.mail
+static int32_t _lprot_mail_new(lua_State *lua) {
+    mail_ctx *mail = lua_newuserdata(lua, sizeof(mail_ctx));
+    mail_init(mail);
+    ASSOC_MTABLE(lua, "_smtp_mail_ctx");
+    return 1;
+}
+static int32_t _lprot_mail_free(lua_State *lua) {
+    mail_ctx *mail = lua_touserdata(lua, 1);
+    mail_free(mail);
+    return 0;
+}
+static int32_t _lprot_mail_subject(lua_State *lua) {
+    mail_ctx *mail = lua_touserdata(lua, 1);
+    const char *subject = luaL_checkstring(lua, 2);
+    mail_subject(mail, subject);
+    return 0;
+}
+static int32_t _lprot_mail_msg(lua_State *lua) {
+    mail_ctx *mail = lua_touserdata(lua, 1);
+    const char *msg = luaL_checkstring(lua, 2);
+    mail_msg(mail, msg);
+    return 0;
+}
+static int32_t _lprot_mail_html(lua_State *lua) {
+    mail_ctx *mail = lua_touserdata(lua, 1);
+    const char *html = luaL_checkstring(lua, 2);
+    mail_html(mail, html, strlen(html));
+    return 0;
+}
+static int32_t _lprot_mail_from(lua_State *lua) {
+    mail_ctx *mail = lua_touserdata(lua, 1);
+    const char *name = luaL_checkstring(lua, 2);
+    const char *email = luaL_checkstring(lua, 3);
+    mail_from(mail, name, email);
+    return 0;
+}
+static int32_t _lprot_mail_addrs_add(lua_State *lua) {
+    mail_ctx *mail = lua_touserdata(lua, 1);
+    const char *email = luaL_checkstring(lua, 2);
+    mail_addr_type type = (mail_addr_type)luaL_checkinteger(lua, 3);
+    mail_addrs_add(mail, email, type);
+    return 0;
+}
+static int32_t _lprot_mail_addrs_clear(lua_State *lua) {
+    mail_ctx *mail = lua_touserdata(lua, 1);
+    mail_addrs_clear(mail);
+    return 0;
+}
+static int32_t _lprot_mail_attach_add(lua_State *lua) {
+    mail_ctx *mail = lua_touserdata(lua, 1);
+    const char *file = luaL_checkstring(lua, 2);
+    mail_attach_add(mail, file);
+    return 0;
+}
+static int32_t _lprot_mail_attach_clear(lua_State *lua) {
+    mail_ctx *mail = lua_touserdata(lua, 1);
+    mail_attach_clear(mail);
+    return 0;
+}
+static int32_t _lprot_mail_clear(lua_State *lua) {
+    mail_ctx *mail = lua_touserdata(lua, 1);
+    mail_clear(mail);
+    return 0;
+}
+static int32_t _lprot_mail_pack(lua_State *lua) {
+    mail_ctx *mail = lua_touserdata(lua, 1);
+    char *content = mail_pack(mail);
+    lua_pushlightuserdata(lua, content);
+    lua_pushinteger(lua, strlen(content));
+    return 2;
+}
+LUAMOD_API int luaopen_mail(lua_State *lua) {
+    luaL_Reg reg_new[] = {
+        { "new", _lprot_mail_new },
+        { NULL, NULL }
+    };
+    luaL_Reg reg_func[] = {
+        { "subject",  _lprot_mail_subject },
+        { "msg",  _lprot_mail_msg },
+        { "html",  _lprot_mail_html },
+        { "from",  _lprot_mail_from },
+        { "addrs_add",  _lprot_mail_addrs_add },
+        { "addrs_clear",  _lprot_mail_addrs_clear },
+        { "attach_add",  _lprot_mail_attach_add },
+        { "attach_clear",  _lprot_mail_attach_clear },
+        { "clear",  _lprot_mail_clear },
+        { "pack",  _lprot_mail_pack },
+        { "__gc", _lprot_mail_free },
+        { NULL, NULL }
+    };
+    REG_MTABLE(lua, "_smtp_mail_ctx", reg_new, reg_func);
     return 1;
 }
 

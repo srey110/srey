@@ -3,7 +3,8 @@
 
 #include "srey/spub.h"
 #include "protocol/mysql/mysql.h"
-#include "protocol/smtp.h"
+#include "protocol/pgsql/pgsql.h"
+#include "protocol/smtp/smtp.h"
 
 /// <summary>
 /// dns域名解析
@@ -98,12 +99,6 @@ void mysql_quit(mysql_ctx *mysql);
 /// <returns>ERR_OK 成功</returns>
 int32_t smtp_connect(task_ctx *task, smtp_ctx *smtp);
 /// <summary>
-/// 电子邮件信息清空
-/// </summary>
-/// <param name="smtp">smtp_ctx</param>
-/// <returns>ERR_OK 成功</returns>
-int32_t smtp_reset(smtp_ctx *smtp);
-/// <summary>
 /// 邮件关闭
 /// </summary>
 /// <param name="smtp">smtp_ctx</param>
@@ -118,11 +113,18 @@ int32_t smtp_ping(smtp_ctx *smtp);
 /// 邮件发送
 /// </summary>
 /// <param name="smtp">smtp_ctx</param>
-/// <param name="from">发件人地址</param>
-/// <param name="rcpt">收件人地址</param>
-/// <param name="subject">标题</param>
-/// <param name="data">内容</param>
+/// <param name="mail">mail_ctx</param>
 /// <returns>ERR_OK 成功</returns>
-int32_t smtp_send(smtp_ctx *smtp, const char *from, const char *rcpt, const char *subject, const char *data);
+int32_t smtp_send(smtp_ctx *smtp, mail_ctx *mail);
+/// <summary>
+/// pgsql链接
+/// </summary>
+/// <param name="task">task_ctx</param>
+/// <param name="pg">pgsql_ctx, pgsql_init</param>
+/// <returns>ERR_OK 成功</returns>
+int32_t pgsql_connect(task_ctx *task, pgsql_ctx *pg);
+void pgsql_quit(pgsql_ctx *pg);
+int32_t pgsql_ping(pgsql_ctx *pg);
+
 
 #endif//CORO_UTILS_H_

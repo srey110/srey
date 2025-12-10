@@ -8,18 +8,12 @@ static char *_config_read(void) {
     char config[PATH_LENS];
     SNPRINTF(config, sizeof(config), "%s%s%s%s%s",
              procpath(), PATH_SEPARATORSTR, "configs", PATH_SEPARATORSTR, "config.json");
-    FILE *file = fopen(config, "r");
-    if (NULL == file) {
+    size_t lens;
+    char *info = readall(config, &lens);
+    if (NULL == info) {
         LOG_WARN("%s", ERRORSTR(errno));
         return NULL;
     }
-    fseek(file, 0, SEEK_END);
-    size_t lens = ftell(file);
-    rewind(file);
-    char *info;
-    CALLOC(info, 1, lens + 1);
-    fread(info, 1, lens, file);
-    fclose(file);
     return info;
 }
 static double _json_get_number(cJSON *json, const char *name) {

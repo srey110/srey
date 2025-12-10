@@ -33,7 +33,7 @@
 #include "protocol/urlparse.h"
 #include "protocol/custz.h"
 #include "protocol/dns.h"
-#include "protocol/smtp.h"
+#include "protocol/smtp/smtp.h"
 #include "protocol/http.h"
 #include "protocol/websock.h"
 #include "protocol/mqtt/mqtt.h"

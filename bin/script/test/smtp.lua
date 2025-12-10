@@ -1,10 +1,9 @@
 local srey = require("lib.srey")
 local smtp = require("lib.smtp")
+local mail = require("lib.mail")
 require("lib.dns")
 local _user = "test@163.com"
 local _psw = "FCAZMcsYms"
-local _from = "test@163.com"
-local _to = "test@qq.com"
 
 srey.startup(
     function ()
@@ -18,15 +17,20 @@ srey.startup(
             printd("smtp connect error")
             return
         end
-        if not smtpctx:send(_from, _to, "lua subject 11", "lua 12222") then
-             printd("smtp reset error")
+        local mailctx = mail.new()
+        mailctx:from("srey", "test@163.com")
+        mailctx:addrs_add("test@qq.com", MAIL_ADDR_TYPE.TO)
+        mailctx:addrs_add("test@gmail.com", MAIL_ADDR_TYPE.TO)
+        mailctx:subject("subject_lua")
+        mailctx:msg("this message from lua.")
+        if not smtpctx:send(mailctx) then
+            printd("smtp send main error")
             return
         end
-        smtpctx:ping()
-        smtpctx:quit()
-        smtpctx:ping()
-        if not smtpctx:send(_from, _to, "lua subject 22", "lua 3333") then
-             printd("smtp reset error")
+        mailctx:html("<!DOCTYPE html><html><title>HTML Tutorial</title><body><h1>This is a heading,LUA</h1><p>This is a paragraph.</p></body></html>")
+        mailctx:attach_add("D:\\....\\panda.jpg")
+        if not smtpctx:send(mailctx) then
+            printd("smtp send main error")
             return
         end
         smtpctx:quit()

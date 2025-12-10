@@ -86,11 +86,12 @@ function ctx:prepare(sql)
     return stmt.new(mpack)
 end
 function ctx:quit()
+    local fd, skid = self.mysql:sock_id()
     local pack, size = self.mysql:pack_quit()
     if not pack then
+        srey.close(fd, skid);
         return
     end
-    local fd, skid = self.mysql:sock_id()
     srey.syn_send(fd, skid, pack, size, 0)
 end
 function ctx:version()

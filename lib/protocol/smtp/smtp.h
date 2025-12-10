@@ -2,6 +2,7 @@
 #define SMTP_H_
 
 #include "srey/spub.h"
+#include "protocol/smtp/mail.h"
 
 typedef struct smtp_ctx {
     uint16_t port;
@@ -78,14 +79,14 @@ char *smtp_pack_ping(smtp_ctx *smtp);
 /// MAIL FROM 命令数据包
 /// </summary>
 /// <param name="smtp">smtp_ctx</param>
-/// <param name="from">发件人地址</param>
+/// <param name="from">发件人地址 test@163.com</param>
 /// <returns>数据包</returns>
 char *smtp_pack_from(smtp_ctx *smtp, const char *from);
 /// <summary>
 /// RCPT TO 命令数据包
 /// </summary>
 /// <param name="smtp">smtp_ctx</param>
-/// <param name="from">收件人地址</param>
+/// <param name="from">收件人地址 test@163.com</param>
 /// <returns>数据包</returns>
 char *smtp_pack_rcpt(smtp_ctx *smtp, const char *rcpt);
 /// <summary>
@@ -94,14 +95,7 @@ char *smtp_pack_rcpt(smtp_ctx *smtp, const char *rcpt);
 /// <param name="smtp">smtp_ctx</param>
 /// <returns>数据包</returns>
 char *smtp_pack_data(smtp_ctx *smtp);
-/// <summary>
-/// DATA 命令数据包 (邮件内容)
-/// </summary>
-/// <param name="smtp">smtp_ctx</param>
-/// <param name="subject">主题</param>
-/// <param name="data">内容</param>
-/// <returns>数据包</returns>
-char *smtp_pack_mail(smtp_ctx *smtp, const char *subject, const char *data);
+
 void *smtp_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status);
 
 #endif//SMTP_H_

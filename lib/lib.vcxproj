@@ -76,7 +76,8 @@
     <ClInclude Include="protocol\pgsql\pgsql_struct.h" />
     <ClInclude Include="protocol\prots.h" />
     <ClInclude Include="protocol\redis.h" />
-    <ClInclude Include="protocol\smtp.h" />
+    <ClInclude Include="protocol\smtp\mail.h" />
+    <ClInclude Include="protocol\smtp\smtp.h" />
     <ClInclude Include="protocol\urlparse.h" />
     <ClInclude Include="protocol\websock.h" />
     <ClInclude Include="srey\coro.h" />
@@ -150,7 +151,8 @@
     <ClCompile Include="protocol\pgsql\pgsql_scram.c" />
     <ClCompile Include="protocol\prots.c" />
     <ClCompile Include="protocol\redis.c" />
-    <ClCompile Include="protocol\smtp.c" />
+    <ClCompile Include="protocol\smtp\mail.c" />
+    <ClCompile Include="protocol\smtp\smtp.c" />
     <ClCompile Include="protocol\urlparse.c" />
     <ClCompile Include="protocol\websock.c" />
     <ClCompile Include="srey\coro.c" />

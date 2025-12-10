@@ -378,4 +378,14 @@ int32_t pgsql_try_connect(task_ctx *task, pgsql_ctx *pg) {
     }
     return ERR_OK;
 }
-
+void *pgsql_pack_quit(pgsql_ctx *pg, size_t *size) {
+    if (!BIT_CHECK(pg->status, AUTHED)) {
+        return NULL;
+    }
+    binary_ctx bwriter;
+    binary_init(&bwriter, NULL, 0, 0);
+    binary_set_int8(&bwriter, 'X');//Terminate
+    binary_set_integer(&bwriter, 4, 4, 0);
+    *size = bwriter.offset;
+    return bwriter.data;
+}

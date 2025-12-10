@@ -31,6 +31,12 @@ void sighandle(void(*cb)(int32_t, void *), void *data);
 /// <returns>核心数</returns>
 uint32_t procscnt(void);
 /// <summary>
+/// 获取Content-Type
+/// </summary>
+/// <param name="extension">扩展名字.xx</param>
+/// <returns>Content-Type</returns>
+const char *contenttype(const char *extension);
+/// <summary>
 /// 是否为文件
 /// </summary>
 /// <param name="file">路径</param>
@@ -53,6 +59,13 @@ int64_t filesize(const char *file);
 /// </summary>
 /// <returns>路径</returns>
 const char *procpath(void);
+/// <summary>
+/// 读取文件全部
+/// </summary>
+/// <param name="file">路径</param>
+/// <param name="lens">文件大小</param>
+/// <returns>文件内容</returns>
+char *readall(const char *file, size_t *lens);
 /// <summary>
 /// timeofday
 /// </summary>

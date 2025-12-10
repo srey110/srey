@@ -14,5 +14,7 @@ int32_t pgsql_init(pgsql_ctx *pg, const char *ip, uint16_t port, struct evssl_ct
     const char *user, const char *password, const char *database);
 int32_t pgsql_try_connect(task_ctx *task, pgsql_ctx *pg);
 
+void *pgsql_pack_quit(pgsql_ctx *pg, size_t *size);
+
 
 #endif//PGSQL_H_

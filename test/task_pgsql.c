@@ -9,7 +9,11 @@ static void _startup(task_ctx *task) {
     evssl = evssl_qury(102);
 #endif
     pgsql_init(&_pg, "127.0.0.1", 0, evssl, "postgres", "12345678", "postgres");
-    pgsql_try_connect(task, &_pg);
+    if (ERR_OK != pgsql_connect(task, &_pg)) {
+        LOG_ERROR("pgsql_connect error.");
+    }
+    pgsql_quit(&_pg);
+    pgsql_ping(&_pg);
 }
 static void _closing_cb(task_ctx *task) {
 

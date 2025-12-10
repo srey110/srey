@@ -64,6 +64,7 @@ static const luaL_Reg loadedlibs[] = {
   {LUA_SREYHTTP, luaopen_http},
   {LUA_SREYREDIS, luaopen_redis},
   {LUA_SMTP, luaopen_smtp},
+  {LUA_SMTP_MAIL, luaopen_mail},
   {LUA_SREYUTILS, luaopen_utils},
   {LUA_SREYHASHRING, luaopen_hashring},
   {LUA_SREYURL, luaopen_url},
