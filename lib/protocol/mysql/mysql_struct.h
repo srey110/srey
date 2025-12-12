@@ -31,7 +31,6 @@ typedef struct mysql_ctx {
     int8_t parse_status;
     uint8_t cur_cmd;
     int16_t error_code;
-    int32_t status;
     int64_t last_id;
     int64_t affected_rows;
     struct mpack_ctx *mpack;

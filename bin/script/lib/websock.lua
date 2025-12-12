@@ -61,7 +61,9 @@ function wbsk.connect(ws, sslname, secprot, netev)
         return INVALID_SOCK
     end
     local hspack, size = websock.pack_handshake(url.host, secprot)
-    srey.send(fd, skid, hspack, size, 0)
+    if not srey.send(fd, skid, hspack, size, 0) then
+        return INVALID_SOCK
+    end
     local ok, data, dlens = srey.wait_handshaked(fd, skid)
     if not ok then
         return INVALID_SOCK
@@ -105,16 +107,22 @@ local function _continua(fd, skid, prot, client, func, ...)
     end
     if WEBSOCK_PROT.TEXT == prot then
         data, size = wbsk.text_fin(client, 0, data, size)
-        srey.send(fd, skid, data, size, 0)
+        if not srey.send(fd, skid, data, size, 0) then
+            return
+        end
     elseif WEBSOCK_PROT.BINARY == prot then
         data, size = wbsk.binary_fin(client, 0, data, size)
-        srey.send(fd, skid, data, size, 0)
+        if not srey.send(fd, skid, data, size, 0) then
+            return
+        end
     end
     while true do
         data, size = func(...)
         if data then
             data, size = wbsk.continua(client, 0, data, size)
-            srey.send(fd, skid, data, size, 0)
+            if not srey.send(fd, skid, data, size, 0) then
+                return
+            end
         else
             data, size = wbsk.continua(client, 1, nil, 0)
             srey.send(fd, skid, data, size, 0)

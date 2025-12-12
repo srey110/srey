@@ -229,6 +229,7 @@ static void _timeout(task_ctx *task, uint64_t sess) {
     }
     _test_bind(task);
     _test_stmt(task);
+    LOG_INFO("mysql tested.");
 }
 static void _startup(task_ctx *task) {
     on_closed(task, _net_close);

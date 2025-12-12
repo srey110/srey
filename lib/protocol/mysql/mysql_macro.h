@@ -50,10 +50,6 @@ typedef enum mpack_type {
     MPACK_STMT_PREPARE,
     MPACK_STMT_EXECUTE
 }mpack_type;
-typedef enum mysql_client_status {
-    LINKING = 0x01,
-    AUTHED = 0x02
-}mysql_client_status;
 typedef enum mysql_field_types {
     MYSQL_TYPE_DECIMAL,
     MYSQL_TYPE_TINY,

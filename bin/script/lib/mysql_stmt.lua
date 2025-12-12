@@ -11,9 +11,6 @@ function ctx:ctor(mpack)
 end
 function ctx:execute(mbind)
     local pack, size = self.stmt:pack_stmt_execute(mbind)
-    if not pack then
-        return false
-    end
     local mpack, _ =  srey.syn_send(self.fd, self.skid, pack, size, 0)
     if not mpack then
         return false
@@ -29,9 +26,6 @@ function ctx:execute(mbind)
 end
 function ctx:reset()
     local pack, size = self.stmt:pack_stmt_reset()
-    if not pack then
-        return false
-    end
     local mpack, _ =  srey.syn_send(self.fd, self.skid, pack, size, 0)
     if not mpack then
         return false

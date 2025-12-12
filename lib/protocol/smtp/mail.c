@@ -57,7 +57,7 @@ void mail_addrs_add(mail_ctx *mail, const char *email, mail_addr_type type) {
 void mail_addrs_clear(mail_ctx *mail) {
     arr_mail_addr_clear(&mail->addrs);
 }
-void mail_attach_add(mail_ctx *content, const char *file) {
+void mail_attach_add(mail_ctx *mail, const char *file) {
     size_t flens;
     char *info = readall(file, &flens);
     if (NULL == info) {
@@ -75,7 +75,7 @@ void mail_attach_add(mail_ctx *content, const char *file) {
     MALLOC(att.content, b64lens);
     bs64_encode(info, flens, att.content);
     FREE(info);
-    arr_mail_attach_push_back(&content->attach, &att);
+    arr_mail_attach_push_back(&mail->attach, &att);
 }
 void mail_attach_clear(mail_ctx *mail) {
     _mail_attach_free(&mail->attach);

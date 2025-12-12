@@ -1,10 +1,6 @@
 #include "protocol/mongo/mongo.h"
 #include "protocol/prots.h"
 
-typedef enum mongo_client_status {
-    LINKING = 0x01,
-    AUTHED = 0x02
-}mongo_client_status;
 typedef enum parse_status {
     INIT = 0,
     AUTH,
@@ -47,7 +43,7 @@ void _mongo_udfree(ud_cxt *ud) {
         return;
     }
     mongo_ctx *mongo = (mongo_ctx *)ud->extra;
-    mongo->status = 0;
+    mongo->fd = INVALID_SOCK;
     ud->extra = NULL;
 }
 void _mongo_closed(ud_cxt *ud) {
@@ -105,6 +101,7 @@ void mongo_init(mongo_ctx *mongo, const char *ip, uint16_t port, struct evssl_ct
     const char *user, const char *password, int8_t authmod, const char *authdb) {
     ZERO(mongo, sizeof(mongo_ctx));
     mongo->id = 1;
+    mongo->fd = INVALID_SOCK;
     strcpy(mongo->ip, ip);
     mongo->port = 0 == port ? 27017 : port;
     mongo->evssl = evssl;

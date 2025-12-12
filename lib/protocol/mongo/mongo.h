@@ -7,7 +7,6 @@ typedef struct mongo_ctx {
     int8_t authmod;
     uint16_t port;
     int32_t id;
-    int32_t status;
     SOCKET fd;
     uint64_t skid;
     struct task_ctx *task;

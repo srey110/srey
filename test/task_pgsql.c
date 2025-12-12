@@ -12,8 +12,10 @@ static void _startup(task_ctx *task) {
     if (ERR_OK != pgsql_connect(task, &_pg)) {
         LOG_ERROR("pgsql_connect error.");
     }
+    pgsql_ping(&_pg);
     pgsql_quit(&_pg);
     pgsql_ping(&_pg);
+    pgsql_selectdb(&_pg, "test2");
 }
 static void _closing_cb(task_ctx *task) {
 

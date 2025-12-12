@@ -124,6 +124,7 @@ int32_t smtp_send(smtp_ctx *smtp, mail_ctx *mail);
 /// <returns>ERR_OK ³É¹¦</returns>
 int32_t pgsql_connect(task_ctx *task, pgsql_ctx *pg);
 void pgsql_quit(pgsql_ctx *pg);
+int32_t pgsql_selectdb(pgsql_ctx *pg, const char *database);
 int32_t pgsql_ping(pgsql_ctx *pg);
 
 

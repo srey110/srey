@@ -5,7 +5,7 @@
 #define MINICORO_IMPL
 #include "srey/minicoro.h"
 
-#define TIMEOUT_REQUEST 1500 
+#define TIMEOUT_REQUEST 3000 
 #define TIMEOUT_CONNECT 3000 
 #define TIMEOUT_NETREAD 3000 
 
@@ -328,7 +328,9 @@ static int32_t _wait_ssl_exchanged(task_ctx *task, SOCKET fd, uint64_t skid) {
     return ERR_OK;
 }
 int32_t coro_ssl_exchange(task_ctx *task, SOCKET fd, uint64_t skid, int32_t client, struct evssl_ctx *evssl) {
-    ev_ssl(&task->loader->netev, fd, skid, client, evssl);
+    if (ERR_OK != ev_ssl(&task->loader->netev, fd, skid, client, evssl)) {
+        return ERR_FAILED;
+    }
     return _wait_ssl_exchanged(task, fd, skid);
 }
 void *coro_handshaked(task_ctx *task, SOCKET fd, uint64_t skid, int32_t *err, size_t *size) {
@@ -388,7 +390,9 @@ static int32_t _wait_recved(task_ctx *task, SOCKET fd, uint64_t skid, message_ct
 }
 void *coro_send(task_ctx *task, SOCKET fd, uint64_t skid, void *data, size_t len, size_t *size, int32_t copy) {
     ev_ud_sess(&task->loader->netev, fd, skid, skid);
-    ev_send(&task->loader->netev, fd, skid, data, len, copy);
+    if (ERR_OK != ev_send(&task->loader->netev, fd, skid, data, len, copy)) {
+        return NULL;
+    }
     message_ctx msg;
     if (ERR_OK != _wait_recved(task, fd, skid, &msg)) {
         return NULL;

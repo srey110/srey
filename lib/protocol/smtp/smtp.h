@@ -7,7 +7,6 @@
 typedef struct smtp_ctx {
     uint16_t port;
     int32_t authtype;
-    int32_t status;
     struct evssl_ctx *evssl;
     task_ctx *task;
     SOCKET fd;
@@ -20,7 +19,6 @@ typedef struct smtp_ctx {
 void _smtp_init(void *hspush);
 void _smtp_udfree(ud_cxt *ud);
 void _smtp_closed(ud_cxt *ud);
-int32_t _smtp_on_connected(ud_cxt *ud, int32_t err);
 /// <summary>
 /// 简单邮件传输协议smtp初始化
 /// </summary>
@@ -38,12 +36,6 @@ void smtp_init(smtp_ctx *smtp, const char *ip, uint16_t port, struct evssl_ctx *
 /// <param name="smtp">smtp_ctx</param>
 /// <returns>ERR_OK 成功</returns>
 int32_t smtp_try_connect(task_ctx *task, smtp_ctx *smtp);
-/// <summary>
-/// 检查是否完成身份验证
-/// </summary>
-/// <param name="smtp">smtp_ctx</param>
-/// <returns>ERR_OK 成功</returns>
-int32_t smtp_check_auth(smtp_ctx *smtp);
 /// <summary>
 /// 检查返回码是否匹配
 /// </summary>

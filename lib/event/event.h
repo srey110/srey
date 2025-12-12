@@ -50,7 +50,8 @@ int32_t ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const u
 /// <param name="skid">链接ID</param>
 /// <param name="client">1 作为客户端, 0 作为服务端</param>
 /// <param name="evssl">evssl_ctx</param>
-void ev_ssl(ev_ctx *ctx, SOCKET fd, uint64_t skid, int32_t client, struct evssl_ctx *evssl);
+/// <returns>ERR_OK 成功</returns>
+int32_t ev_ssl(ev_ctx *ctx, SOCKET fd, uint64_t skid, int32_t client, struct evssl_ctx *evssl);
 /// <summary>
 /// UDP
 /// </summary>
@@ -72,7 +73,8 @@ int32_t ev_udp(ev_ctx *ctx, const char *ip, const uint16_t port, cbs_ctx *cbs, u
 /// <param name="data">要发送的数据</param>
 /// <param name="len">数据长度</param>
 /// <param name="copy">1 拷贝数据, 0不拷贝数据</param>
-void ev_send(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *data, size_t len, int32_t copy);
+/// <returns>ERR_OK 成功</returns>
+int32_t ev_send(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *data, size_t len, int32_t copy);
 /// <summary>
 /// UDP发送数据
 /// </summary>

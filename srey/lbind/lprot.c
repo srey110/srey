@@ -441,9 +441,6 @@ static int32_t _lprot_smtp_free(lua_State *lua) {
     smtp_ctx *smtp = lua_touserdata(lua, 1);
     if (NULL != smtp->task) {
         char *cmd = smtp_pack_quit(smtp);
-        if (NULL == cmd) {
-            return 0;
-        }
         ev_ud_extra(&smtp->task->loader->netev, smtp->fd, smtp->skid, NULL);
         ev_send(&smtp->task->loader->netev, smtp->fd, smtp->skid, cmd, strlen(cmd), 0);
     }
@@ -460,15 +457,6 @@ static int32_t _lprot_smtp_try_connect(lua_State *lua) {
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
     int32_t rtn = smtp_try_connect(task, smtp);
     if (ERR_OK == rtn) {
-        lua_pushboolean(lua, 1);
-    } else {
-        lua_pushboolean(lua, 0);
-    }
-    return 1;
-}
-static int32_t _lprot_smtp_check_auth(lua_State *lua) {
-    smtp_ctx *smtp = lua_touserdata(lua, 1);
-    if (ERR_OK == smtp_check_auth(smtp)) {
         lua_pushboolean(lua, 1);
     } else {
         lua_pushboolean(lua, 0);
@@ -497,10 +485,6 @@ static int32_t _lprot_smtp_check_ok(lua_State *lua) {
 static int32_t _lprot_smtp_pack_reset(lua_State *lua) {
     smtp_ctx *smtp = lua_touserdata(lua, 1);
     char *cmd = smtp_pack_reset(smtp);
-    if (NULL == cmd) {
-        lua_pushnil(lua);
-        return 1;
-    }
     lua_pushlightuserdata(lua, (void *)cmd);
     lua_pushinteger(lua, strlen(cmd));
     return 2;
@@ -509,10 +493,6 @@ static int32_t _lprot_smtp_pack_from(lua_State *lua) {
     smtp_ctx *smtp = lua_touserdata(lua, 1);
     const char *from = luaL_checkstring(lua, 2);
     char *cmd = smtp_pack_from(smtp, from);
-    if (NULL == cmd) {
-        lua_pushnil(lua);
-        return 1;
-    }
     lua_pushlightuserdata(lua, cmd);
     lua_pushinteger(lua, strlen(cmd));
     return 2;
@@ -521,10 +501,6 @@ static int32_t _lprot_smtp_pack_rcpt(lua_State *lua) {
     smtp_ctx *smtp = lua_touserdata(lua, 1);
     const char *rcpt = luaL_checkstring(lua, 2);
     char *cmd = smtp_pack_rcpt(smtp, rcpt);
-    if (NULL == cmd) {
-        lua_pushnil(lua);
-        return 1;
-    }
     lua_pushlightuserdata(lua, cmd);
     lua_pushinteger(lua, strlen(cmd));
     return 2;
@@ -532,10 +508,6 @@ static int32_t _lprot_smtp_pack_rcpt(lua_State *lua) {
 static int32_t _lprot_smtp_pack_data(lua_State *lua) {
     smtp_ctx *smtp = lua_touserdata(lua, 1);
     char *cmd = smtp_pack_data(smtp);
-    if (NULL == cmd) {
-        lua_pushnil(lua);
-        return 1;
-    }
     lua_pushlightuserdata(lua, cmd);
     lua_pushinteger(lua, strlen(cmd));
     return 2;
@@ -543,10 +515,6 @@ static int32_t _lprot_smtp_pack_data(lua_State *lua) {
 static int32_t _lprot_smtp_pack_quit(lua_State *lua) {
     smtp_ctx *smtp = lua_touserdata(lua, 1);
     char *cmd = smtp_pack_quit(smtp);
-    if (NULL == cmd) {
-        lua_pushnil(lua);
-        return 1;
-    }
     lua_pushlightuserdata(lua, cmd);
     lua_pushinteger(lua, strlen(cmd));
     return 2;
@@ -554,10 +522,6 @@ static int32_t _lprot_smtp_pack_quit(lua_State *lua) {
 static int32_t _lprot_smtp_pack_ping(lua_State *lua) {
     smtp_ctx *smtp = lua_touserdata(lua, 1);
     char *cmd = smtp_pack_ping(smtp);
-    if (NULL == cmd) {
-        lua_pushnil(lua);
-        return 1;
-    }
     lua_pushlightuserdata(lua, cmd);
     lua_pushinteger(lua, strlen(cmd));
     return 2;
@@ -569,7 +533,6 @@ LUAMOD_API int luaopen_smtp(lua_State *lua) {
     };
     luaL_Reg reg_func[] = {
         { "try_connect", _lprot_smtp_try_connect },
-        { "check_auth", _lprot_smtp_check_auth },
         { "check_code",_lprot_smtp_check_code },
         { "check_ok", _lprot_smtp_check_ok },
         { "pack_reset", _lprot_smtp_pack_reset },

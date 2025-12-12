@@ -175,7 +175,7 @@ local function _get_coro_sess(sess, mtype)
     if not corosess then
         return nil
     end
-    if mtype ~= corosess.mtype and MSG_TYPE.CLOSE ~= mtype then
+    if nil ~= mtype and mtype ~= corosess.mtype and MSG_TYPE.CLOSE ~= mtype then
         return nil
     end
     coro_sess[sess] = nil
@@ -390,8 +390,7 @@ function srey.ssl_exchange(fd, skid, client, sslname)
         WARN("ssl_qury not find ssl name %d.", sslname)
         return false
     end
-    core.ssl_exchange(fd, skid, client, ssl)
-    return true
+    return core.ssl_exchange(fd, skid, client, ssl)
 end
 function srey.syn_ssl_exchange(fd, skid, client, sslname)
     if not srey.ssl_exchange(fd, skid, client, sslname) then
@@ -459,7 +458,7 @@ function srey.on_recved(func)
     func_cbs[MSG_TYPE.RECV] = func
 end
 function srey.send(fd, skid, data, size, copy)
-    core.send(fd, skid, data, size, copy)
+    return core.send(fd, skid, data, size, copy)
 end
 local function _wait_net_recv(fd, skid)
     local msg = _coro_wait(skid, MSG_TYPE.RECV, TIMEOUT.NETREAD)
@@ -477,7 +476,9 @@ end
 --data size
 function srey.syn_send(fd, skid, data, size, copy)
     srey.sock_session(fd, skid, skid)
-    srey.send(fd, skid, data, size, copy)
+    if not srey.send(fd, skid, data, size, copy) then
+        return nil
+    end
     local msg = _wait_net_recv(fd, skid)
     if not msg then
         return nil

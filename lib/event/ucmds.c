@@ -47,7 +47,10 @@ void _cmd_connect(ev_ctx *ctx, SOCKET fd, sock_ctx *skctx) {
 void _on_cmd_conn(watcher_ctx *watcher, cmd_ctx *cmd) {
     _add_conn_inloop(watcher, cmd->fd, (sock_ctx *)cmd->arg);
 }
-void ev_ssl(ev_ctx *ctx, SOCKET fd, uint64_t skid, int32_t client, struct evssl_ctx *evssl) {
+int32_t ev_ssl(ev_ctx *ctx, SOCKET fd, uint64_t skid, int32_t client, struct evssl_ctx *evssl) {
+    if (INVALID_SOCK == fd) {
+        return ERR_FAILED;
+    }
 #if WITH_SSL
     cmd_ctx cmd;
     cmd.cmd = CMD_SSL;
@@ -57,6 +60,7 @@ void ev_ssl(ev_ctx *ctx, SOCKET fd, uint64_t skid, int32_t client, struct evssl_
     cmd.arg = (uint64_t)evssl;
     _SEND_CMD(ctx, cmd);
 #endif
+    return ERR_OK;
 }
 void _on_cmd_ssl(watcher_ctx *watcher, cmd_ctx *cmd) {
     sock_ctx *skctx = _map_get(watcher, cmd->fd);
@@ -66,7 +70,13 @@ void _on_cmd_ssl(watcher_ctx *watcher, cmd_ctx *cmd) {
     }
     _try_ssl_exchange(watcher, skctx, (struct evssl_ctx *)cmd->arg, (int32_t)cmd->len);
 }
-void ev_send(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *data, size_t len, int32_t copy) {
+int32_t ev_send(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *data, size_t len, int32_t copy) {
+    if (INVALID_SOCK == fd) {
+        if (!copy) {
+            FREE(data);
+        }
+        return ERR_FAILED;
+    }
     cmd_ctx cmd;
     cmd.cmd = CMD_SEND;
     cmd.fd = fd;
@@ -81,9 +91,13 @@ void ev_send(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *data, size_t len, int3
         cmd.arg = (uint64_t)data;
     }
     _SEND_CMD(ctx, cmd);
+    return ERR_OK;
 }
 int32_t ev_sendto(ev_ctx *ctx, SOCKET fd, uint64_t skid,
     const char *ip, const uint16_t port, void *data, size_t len) {
+    if (INVALID_SOCK == fd) {
+        return ERR_FAILED;
+    }
     cmd_ctx cmd;
     cmd.cmd = CMD_SEND;
     cmd.fd = fd;
@@ -117,6 +131,9 @@ void _on_cmd_send(watcher_ctx *watcher, cmd_ctx *cmd) {
     _add_write_inloop(watcher, skctx, &buf);
 }
 void ev_close(ev_ctx *ctx, SOCKET fd, uint64_t skid) {
+    if (INVALID_SOCK == fd) {
+        return;
+    }
     cmd_ctx cmd;
     cmd.cmd = CMD_DISCONN;
     cmd.fd = fd;
@@ -152,6 +169,9 @@ void _on_cmd_add_udp(watcher_ctx *watcher, cmd_ctx *cmd) {
     _add_udp_inloop(watcher, cmd->fd, (sock_ctx *)cmd->arg);
 }
 void _ev_set_ud(ev_ctx *ctx, SOCKET fd, uint64_t skid, int32_t type, uint64_t val) {
+    if (INVALID_SOCK == fd) {
+        return;
+    }
     cmd_ctx cmd;
     cmd.cmd = CMD_SETUD;
     cmd.fd = fd;

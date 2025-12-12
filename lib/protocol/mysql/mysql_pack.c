@@ -3,10 +3,6 @@
 #include "protocol/mysql/mysql_parse.h"
 
 void *mysql_pack_quit(mysql_ctx *mysql, size_t *size) {
-    if (!BIT_CHECK(mysql->status, AUTHED)
-        || 0 != mysql->cur_cmd) {
-        return NULL;
-    }
     mysql->id = 0;
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
@@ -18,10 +14,6 @@ void *mysql_pack_quit(mysql_ctx *mysql, size_t *size) {
     return bwriter.data;
 }
 void *mysql_pack_selectdb(mysql_ctx *mysql, const char *database, size_t *size) {
-    if (!BIT_CHECK(mysql->status, AUTHED)
-        || 0 != mysql->cur_cmd) {
-        return NULL;
-    }
     mysql->id = 0;
     size_t lens = strlen(database);
     binary_ctx bwriter;
@@ -35,10 +27,6 @@ void *mysql_pack_selectdb(mysql_ctx *mysql, const char *database, size_t *size) 
     return bwriter.data;
 }
 void *mysql_pack_ping(mysql_ctx *mysql, size_t *size) {
-    if (!BIT_CHECK(mysql->status, AUTHED)
-        || 0 != mysql->cur_cmd) {
-        return NULL;
-    }
     mysql->id = 0;
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
@@ -50,10 +38,6 @@ void *mysql_pack_ping(mysql_ctx *mysql, size_t *size) {
     return bwriter.data;
 }
 void *mysql_pack_query(mysql_ctx *mysql, const char *sql, mysql_bind_ctx *mbind, size_t *size) {
-    if (!BIT_CHECK(mysql->status, AUTHED)
-        || 0 != mysql->cur_cmd) {
-        return NULL;
-    }
     mysql->id = 0;
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
@@ -86,10 +70,6 @@ void *mysql_pack_query(mysql_ctx *mysql, const char *sql, mysql_bind_ctx *mbind,
     return bwriter.data;
 }
 void *mysql_pack_stmt_prepare(mysql_ctx *mysql, const char *sql, size_t *size) {
-    if (!BIT_CHECK(mysql->status, AUTHED)
-        || 0 != mysql->cur_cmd) {
-        return NULL;
-    }
     mysql->id = 0;
     size_t lens = strlen(sql);
     binary_ctx bwriter;
@@ -104,10 +84,6 @@ void *mysql_pack_stmt_prepare(mysql_ctx *mysql, const char *sql, size_t *size) {
     return bwriter.data;
 }
 void *mysql_pack_stmt_execute(mysql_stmt_ctx *stmt, mysql_bind_ctx *mbind, size_t *size) {
-    if (!BIT_CHECK(stmt->mysql->status, AUTHED)
-        || 0 != stmt->mysql->cur_cmd) {
-        return NULL;
-    }
     stmt->mysql->id = 0;
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
@@ -147,10 +123,6 @@ void *mysql_pack_stmt_execute(mysql_stmt_ctx *stmt, mysql_bind_ctx *mbind, size_
     return bwriter.data;
 }
 void *mysql_pack_stmt_reset(mysql_stmt_ctx *stmt, size_t *size) {
-    if (!BIT_CHECK(stmt->mysql->status, AUTHED)
-        || 0 != stmt->mysql->cur_cmd) {
-        return NULL;
-    }
     stmt->mysql->id = 0;
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
@@ -163,11 +135,6 @@ void *mysql_pack_stmt_reset(mysql_stmt_ctx *stmt, size_t *size) {
     return bwriter.data;
 }
 void *mysql_pack_stmt_close(mysql_stmt_ctx *stmt, size_t *size) {
-    if (!BIT_CHECK(stmt->mysql->status, AUTHED)) {
-        _mpack_stm_free(stmt);
-        FREE(stmt);
-        return NULL;
-    }
     stmt->mysql->id = 0;
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);

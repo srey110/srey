@@ -1,7 +1,7 @@
 #ifndef PGSQL_H_
 #define PGSQL_H_
 
-#include "protocol/pgsql/pgsql_struct.h"
+#include "protocol/pgsql/pgsql_pack.h"
 
 void _pgsql_init(void *hspush);
 void _pgsql_pkfree(void *pack);
@@ -13,8 +13,8 @@ void *pgsql_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status);
 int32_t pgsql_init(pgsql_ctx *pg, const char *ip, uint16_t port, struct evssl_ctx *evssl,
     const char *user, const char *password, const char *database);
 int32_t pgsql_try_connect(task_ctx *task, pgsql_ctx *pg);
-
-void *pgsql_pack_quit(pgsql_ctx *pg, size_t *size);
-
+void pgsql_set_userpwd(pgsql_ctx *pg, const char *user, const char *password);
+void pgsql_set_db(pgsql_ctx *pg, const char *database);
+const char *pgsql_get_db(pgsql_ctx *pg);
 
 #endif//PGSQL_H_

@@ -8,7 +8,6 @@ void _mysql_init(void *hspush);
 void _mysql_pkfree(void *pack);
 void _mysql_udfree(ud_cxt *ud);
 void _mysql_closed(ud_cxt *ud);
-int32_t _mysql_on_connected(ud_cxt *ud, int32_t err);
 int32_t _mysql_ssl_exchanged(ev_ctx *ev, ud_cxt *ud);
 //mysql 验证 数据解包
 void *mysql_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status);

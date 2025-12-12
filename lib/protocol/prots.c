@@ -120,10 +120,6 @@ int32_t prots_accepted(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud) {
 }
 int32_t prots_connected(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud, int32_t err) {
     switch (ud->pktype) {
-    case PACK_SMTP:
-        return _smtp_on_connected(ud, err);
-    case PACK_MYSQL:
-        return _mysql_on_connected(ud, err);
     case PACK_PGSQL:
         return _pgsql_on_connected(ev, fd, skid, ud, err);
     case PACK_MONGO:

@@ -183,7 +183,10 @@ static int32_t _websock_handshake_server(ev_ctx *ev, SOCKET fd, uint64_t skid, i
     }
     http_pack_end(&bwriter);
     ud->status = START;
-    ev_send(ev, fd, skid, bwriter.data, bwriter.offset, 0);
+    if (ERR_OK != ev_send(ev, fd, skid, bwriter.data, bwriter.offset, 0)) {
+        BIT_SET(*status, PROT_ERROR);
+        return ERR_FAILED;
+    }
     if (ERR_OK != _hs_push(fd, skid, client, ud, ERR_OK, secprot, lens)) {
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;

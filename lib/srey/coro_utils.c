@@ -76,7 +76,9 @@ SOCKET wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, c
     }
     char *reqpack = websock_pack_handshake(host, secprot);
     FREE(host);
-    ev_send(&task->loader->netev, fd, *skid, reqpack, strlen(reqpack), 0);
+    if (ERR_OK != ev_send(&task->loader->netev, fd, *skid, reqpack, strlen(reqpack), 0)) {
+        return INVALID_SOCK;
+    }
     int32_t err;
     size_t size;
     char *hsdata = coro_handshaked(task, fd, *skid, &err, &size);
@@ -125,9 +127,6 @@ int32_t mysql_connect(task_ctx *task, mysql_ctx *mysql) {
 int32_t mysql_selectdb(mysql_ctx *mysql, const char *database) {
     size_t size;
     void *selectdb = mysql_pack_selectdb(mysql, database, &size);
-    if (NULL == selectdb) {
-        return ERR_FAILED;
-    }
     mpack_ctx *mpack = coro_send(mysql->task, mysql->client.fd, mysql->client.skid, selectdb, size, &size, 0);
     if (NULL == mpack) {
         return ERR_FAILED;
@@ -137,9 +136,6 @@ int32_t mysql_selectdb(mysql_ctx *mysql, const char *database) {
 static int32_t _mysql_ping(mysql_ctx *mysql) {
     size_t size;
     void *ping = mysql_pack_ping(mysql, &size);
-    if (NULL == ping) {
-        return ERR_FAILED;
-    }
     mpack_ctx *mpack = coro_send(mysql->task, mysql->client.fd, mysql->client.skid, ping, size, &size, 0);
     if (NULL == mpack) {
         return ERR_FAILED;
@@ -155,34 +151,22 @@ int32_t mysql_ping(mysql_ctx *mysql) {
 mpack_ctx *mysql_query(mysql_ctx *mysql, const char *sql, mysql_bind_ctx *mbind) {
     size_t size;
     void *query = mysql_pack_query(mysql, sql, mbind, &size);
-    if (NULL == query) {
-        return NULL;
-    }
     return coro_send(mysql->task, mysql->client.fd, mysql->client.skid, query, size, &size, 0);
 }
 mysql_stmt_ctx *mysql_stmt_prepare(mysql_ctx *mysql, const char *sql) {
     size_t size;
     void *prepare = mysql_pack_stmt_prepare(mysql, sql, &size);
-    if (NULL == prepare) {
-        return NULL;
-    }
     mpack_ctx *mpack = coro_send(mysql->task, mysql->client.fd, mysql->client.skid, prepare, size, &size, 0);
     return mysql_stmt_init(mpack);
 }
 mpack_ctx *mysql_stmt_execute(mysql_stmt_ctx *stmt, mysql_bind_ctx *mbind) {
     size_t size;
     void *exec = mysql_pack_stmt_execute(stmt, mbind, &size);
-    if (NULL == exec) {
-        return NULL;
-    }
     return coro_send(stmt->mysql->task, stmt->mysql->client.fd, stmt->mysql->client.skid, exec, size, &size, 0);
 }
 int32_t mysql_stmt_reset(mysql_stmt_ctx *stmt) {
     size_t size;
     void *resetpk = mysql_pack_stmt_reset(stmt, &size);
-    if (NULL == resetpk) {
-        return ERR_FAILED;
-    }
     mpack_ctx *mpack = coro_send(stmt->mysql->task, stmt->mysql->client.fd, stmt->mysql->client.skid, resetpk, size, &size, 0);
     if (NULL == mpack) {
         return ERR_FAILED;
@@ -192,10 +176,6 @@ int32_t mysql_stmt_reset(mysql_stmt_ctx *stmt) {
 void mysql_quit(mysql_ctx *mysql) {
     size_t size;
     void *quit = mysql_pack_quit(mysql, &size);
-    if (NULL == quit) {
-        ev_close(&mysql->task->loader->netev, mysql->client.fd, mysql->client.skid);
-        return;
-    }
     coro_send(mysql->task, mysql->client.fd, mysql->client.skid, quit, size, &size, 0);
 }
 int32_t smtp_connect(task_ctx *task, smtp_ctx *smtp) {
@@ -210,27 +190,9 @@ int32_t smtp_connect(task_ctx *task, smtp_ctx *smtp) {
     }
     return err;
 }
-static int32_t _smtp_reset(smtp_ctx *smtp) {
-    if (ERR_OK != smtp_check_auth(smtp)) {
-        return ERR_FAILED;
-    }
-    size_t size;
-    char *cmd = smtp_pack_reset(smtp);
-    if (NULL == cmd) {
-        return ERR_FAILED;
-    }
-    char *pack = coro_send(smtp->task, smtp->fd, smtp->skid, cmd, strlen(cmd), &size, 0);
-    if (NULL == pack) {
-        return ERR_FAILED;
-    }
-    return smtp_check_ok(pack);
-}
 static void _smtp_quit(smtp_ctx *smtp) {
     size_t size;
     char *cmd = smtp_pack_quit(smtp);
-    if (NULL == cmd) {
-        return;
-    }
     char *pack = coro_send(smtp->task, smtp->fd, smtp->skid, cmd, strlen(cmd), &size, 0);
     if (NULL == pack) {
         return;
@@ -244,9 +206,6 @@ void smtp_quit(smtp_ctx *smtp) {
 static int32_t _smtp_ping(smtp_ctx *smtp) {
     size_t size;
     char *cmd = smtp_pack_ping(smtp);
-    if (NULL == cmd) {
-        return ERR_FAILED;
-    }
     char *pack = coro_send(smtp->task, smtp->fd, smtp->skid, cmd, strlen(cmd), &size, 0);
     if (NULL == pack) {
         return ERR_FAILED;
@@ -262,9 +221,6 @@ int32_t smtp_ping(smtp_ctx *smtp) {
 static int32_t _smtp_send(smtp_ctx *smtp, mail_ctx *mail) {
     size_t size;
     char *cmd = smtp_pack_from(smtp, mail->from.addr);
-    if (NULL == cmd) {
-        return ERR_FAILED;
-    }
     char *pack = coro_send(smtp->task, smtp->fd, smtp->skid, cmd, strlen(cmd), &size, 0);
     if (NULL == pack
         || ERR_OK != smtp_check_ok(pack)) {
@@ -273,9 +229,6 @@ static int32_t _smtp_send(smtp_ctx *smtp, mail_ctx *mail) {
     uint32_t naddr = arr_mail_addr_size(&mail->addrs);
     for (uint32_t i = 0; i < naddr; i++) {
         cmd = smtp_pack_rcpt(smtp, arr_mail_addr_at(&mail->addrs, i)->addr);
-        if (NULL == cmd) {
-            return ERR_FAILED;
-        }
         pack = coro_send(smtp->task, smtp->fd, smtp->skid, cmd, strlen(cmd), &size, 0);
         if (NULL == pack
             || ERR_OK != smtp_check_ok(pack)) {
@@ -283,9 +236,6 @@ static int32_t _smtp_send(smtp_ctx *smtp, mail_ctx *mail) {
         }
     }
     cmd = smtp_pack_data(smtp);
-    if (NULL == cmd) {
-        return ERR_FAILED;
-    }
     pack = coro_send(smtp->task, smtp->fd, smtp->skid, cmd, strlen(cmd), &size, 0);
     if (NULL == pack) {
         return ERR_FAILED;
@@ -294,9 +244,6 @@ static int32_t _smtp_send(smtp_ctx *smtp, mail_ctx *mail) {
         return ERR_FAILED;
     }
     cmd = mail_pack(mail);
-    if (NULL == cmd) {
-        return ERR_FAILED;
-    }
     pack = coro_send(smtp->task, smtp->fd, smtp->skid, cmd, strlen(cmd), &size, 0);
     if (NULL == pack
         || ERR_OK != smtp_check_ok(pack)) {
@@ -304,10 +251,16 @@ static int32_t _smtp_send(smtp_ctx *smtp, mail_ctx *mail) {
     }
     return ERR_OK;
 }
-int32_t smtp_send(smtp_ctx *smtp, mail_ctx *mail) {
-    if (ERR_OK != smtp_check_auth(smtp)) {
+static int32_t _smtp_reset(smtp_ctx *smtp) {
+    size_t size;
+    char *cmd = smtp_pack_reset(smtp);
+    char *pack = coro_send(smtp->task, smtp->fd, smtp->skid, cmd, strlen(cmd), &size, 0);
+    if (NULL == pack) {
         return ERR_FAILED;
     }
+    return smtp_check_ok(pack);
+}
+int32_t smtp_send(smtp_ctx *smtp, mail_ctx *mail) {
     int32_t rtn = _smtp_send(smtp, mail);
     _smtp_reset(smtp);
     return rtn;
@@ -316,22 +269,33 @@ int32_t pgsql_connect(task_ctx *task, pgsql_ctx *pg) {
     if (ERR_OK != pgsql_try_connect(task, pg)) {
         return ERR_FAILED;
     }
-    int32_t err;
-    coro_handshaked(task, pg->fd, pg->skid, &err, NULL);
-    return err;
+    int32_t code;
+    char *err = coro_handshaked(task, pg->fd, pg->skid, &code, NULL);
+    if (NULL != err) {
+        LOG_WARN("%s", err);
+    }
+    return code;
 }
 void pgsql_quit(pgsql_ctx *pg) {
     size_t lens;
     void *quit = pgsql_pack_quit(pg, &lens);
-    if (NULL == quit) {
-        ev_close(&pg->task->loader->netev, pg->fd, pg->skid);
-        return;
-    }
     size_t size;
     coro_send(pg->task, pg->fd, pg->skid, quit, lens, &size, 0);
 }
+int32_t pgsql_selectdb(pgsql_ctx *pg, const char *database) {
+    pgsql_quit(pg);
+    pgsql_set_db(pg, database);
+    return pgsql_connect(pg->task, pg);
+}
+static int32_t _pgsql_ping(pgsql_ctx *pg) {
+    size_t lens;
+    void *query = pgsql_pack_query(pg, ";", &lens);
+    size_t size;
+    pgpack_ctx *pgpack = coro_send(pg->task, pg->fd, pg->skid, query, lens, &size, 0);
+    return NULL != pgpack ? ERR_OK : ERR_FAILED;
+}
 int32_t pgsql_ping(pgsql_ctx *pg) {
-    if (0 == pg->status) {
+    if (ERR_OK != _pgsql_ping(pg)) {
         return pgsql_connect(pg->task, pg);
     }
     return ERR_OK;

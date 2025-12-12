@@ -115,8 +115,12 @@ static int32_t _lcore_ssl_exchange(lua_State *lua) {
     int32_t client = (int32_t)luaL_checkinteger(lua, 3);
     struct evssl_ctx *evssl = lua_touserdata(lua, 4);
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    ev_ssl(&task->loader->netev, fd, skid, client, evssl);
-    return 0;
+    if (ERR_OK == ev_ssl(&task->loader->netev, fd, skid, client, evssl)) {
+        lua_pushboolean(lua, 1);
+    } else {
+        lua_pushboolean(lua, 0);
+    }
+    return 1;
 }
 static int32_t _lcore_udp(lua_State *lua) {
     const char *ip = luaL_checkstring(lua, 1);
@@ -144,8 +148,12 @@ static int32_t _lcore_send(lua_State *lua) {
         size = (size_t)luaL_checkinteger(lua, 4);
     }
     int32_t copy = COPY_TYPE(lua, 5);
-    ev_send(&g_loader->netev, fd, skid, data, size, copy);
-    return 0;
+    if (ERR_OK == ev_send(&g_loader->netev, fd, skid, data, size, copy)) {
+        lua_pushboolean(lua, 1);
+    } else {
+        lua_pushboolean(lua, 0);
+    }
+    return 1;
 }
 static int32_t _lcore_sendto(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);

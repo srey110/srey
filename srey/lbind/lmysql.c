@@ -310,10 +310,6 @@ static int32_t _lmysql_pack_stmt_execute(lua_State *lua) {
     }
     size_t size;
     void *pack = mysql_pack_stmt_execute(*stmt, mbind, &size);
-    if (NULL == pack) {
-        lua_pushnil(lua);
-        return 1;
-    }
     lua_pushlightuserdata(lua, pack);
     lua_pushinteger(lua, size);
     return 2;
@@ -322,10 +318,6 @@ static int32_t _lmysql_pack_stmt_reset(lua_State *lua) {
     mysql_stmt_ctx **stmt = lua_touserdata(lua, 1);
     size_t size;
     void *pack = mysql_pack_stmt_reset(*stmt, &size);
-    if (NULL == pack) {
-        lua_pushnil(lua);
-        return 1;
-    }
     lua_pushlightuserdata(lua, pack);
     lua_pushinteger(lua, size);
     return 2;
@@ -357,10 +349,6 @@ static int32_t _lmysql_pack_selectdb(lua_State *lua) {
     const char *db = luaL_checkstring(lua, 2);
     size_t size;
     void *pack = mysql_pack_selectdb(mysql, db, &size);
-    if (NULL == pack) {
-        lua_pushnil(lua);
-        return 1;
-    }
     lua_pushlightuserdata(lua, pack);
     lua_pushinteger(lua, size);
     return 2;
@@ -369,10 +357,6 @@ static int32_t _lmysql_pack_ping(lua_State *lua) {
     mysql_ctx *mysql = lua_touserdata(lua, 1);
     size_t size;
     void *pack = mysql_pack_ping(mysql, &size);
-    if (NULL == pack) {
-        lua_pushnil(lua);
-        return 1;
-    }
     lua_pushlightuserdata(lua, pack);
     lua_pushinteger(lua, size);
     return 2;
@@ -386,10 +370,6 @@ static int32_t _lmysql_pack_query(lua_State *lua) {
     }
     size_t size;
     void *pack = mysql_pack_query(mysql, sql, mbind, &size);
-    if (NULL == pack) {
-        lua_pushnil(lua);
-        return 1;
-    }
     lua_pushlightuserdata(lua, pack);
     lua_pushinteger(lua, size);
     return 2;
@@ -398,10 +378,6 @@ static int32_t _lmysql_pack_quit(lua_State *lua) {
     mysql_ctx *mysql = lua_touserdata(lua, 1);
     size_t size;
     void *pack = mysql_pack_quit(mysql, &size);
-    if (NULL == pack) {
-        lua_pushnil(lua);
-        return 1;
-    }
     lua_pushlightuserdata(lua, pack);
     lua_pushinteger(lua, size);
     return 2;
@@ -411,10 +387,6 @@ static int32_t _lmysql_pack_stmt_prepare(lua_State *lua) {
     const char *sql = luaL_checkstring(lua, 2);
     size_t size;
     void *pack = mysql_pack_stmt_prepare(mysql, sql, &size);
-    if (NULL == pack) {
-        lua_pushnil(lua);
-        return 1;
-    }
     lua_pushlightuserdata(lua, pack);
     lua_pushinteger(lua, size);
     return 2;
@@ -446,9 +418,6 @@ static int32_t _lmysql_free(lua_State *lua) {
     if (NULL != mysql->task) {
         size_t size;
         void *pack = mysql_pack_quit(mysql, &size);
-        if (NULL == pack) {
-            return 0;
-        }
         ev_ud_extra(&mysql->task->loader->netev, mysql->client.fd, mysql->client.skid, NULL);
         ev_send(&mysql->task->loader->netev, mysql->client.fd, mysql->client.skid, pack, size, 0);
     }

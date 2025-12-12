@@ -310,6 +310,15 @@
     <ClInclude Include="protocol\smtp\mail.h">
       <Filter>protocol\smtp</Filter>
     </ClInclude>
+    <ClInclude Include="protocol\pgsql\pgsql_pack.h">
+      <Filter>protocol\pgsql</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\pgsql\pgsql_macro.h">
+      <Filter>protocol\pgsql</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\pgsql\pgsql_parse.h">
+      <Filter>protocol\pgsql</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="event\event.c">
@@ -509,6 +518,12 @@
     </ClCompile>
     <ClCompile Include="protocol\smtp\mail.c">
       <Filter>protocol\smtp</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\pgsql\pgsql_pack.c">
+      <Filter>protocol\pgsql</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\pgsql\pgsql_parse.c">
+      <Filter>protocol\pgsql</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

@@ -12,10 +12,6 @@ typedef enum smtp_authtype {
     LOGIN = 1,
     PLAIN
 }smtp_authtype;
-typedef enum smtp_client_status {
-    LINKING = 0x01,
-    AUTHED = 0x02
-}smtp_client_status;
 typedef enum parse_status {
     INIT = 0,
     EHLO,
@@ -36,46 +32,25 @@ void _smtp_udfree(ud_cxt *ud) {
     if (NULL == ud->extra) {
         return;
     }
-    smtp_ctx *smtp = (smtp_ctx *)ud->extra;
-    smtp->status = 0;
+    smtp_ctx *smtp = ud->extra;
+    smtp->fd = INVALID_SOCK;
     ud->extra = NULL;
 }
 void _smtp_closed(ud_cxt *ud) {
     _smtp_udfree(ud);
-}
-int32_t _smtp_on_connected(ud_cxt *ud, int32_t err) {
-    if (ERR_OK != err) {
-        smtp_ctx *smtp = (smtp_ctx *)ud->extra;
-        smtp->status = 0;
-    }
-    return err;
 }
 void smtp_init(smtp_ctx *smtp, const char *ip, uint16_t port, struct evssl_ctx *evssl, const char *user, const char *psw) {
     ZERO(smtp, sizeof(smtp_ctx));
     memcpy(smtp->ip, ip, strlen(ip));
     smtp->port = port;
     smtp->evssl = evssl;
+    smtp->fd = INVALID_SOCK;
     memcpy(smtp->user, user, strlen(user));
     memcpy(smtp->psw, psw, strlen(psw));
 }
 int32_t smtp_try_connect(task_ctx *task, smtp_ctx *smtp) {
-    if (0 != smtp->status) {
-        return ERR_FAILED;
-    }
-    BIT_SET(smtp->status, LINKING);
     smtp->task = task;
-    if (ERR_OK != task_connect(task, PACK_SMTP, smtp->evssl, smtp->ip, smtp->port, 0, smtp, &smtp->fd, &smtp->skid)) {
-        BIT_REMOVE(smtp->status, LINKING);
-        LOG_WARN("requested action aborted: socket function error.");
-        return ERR_FAILED;
-    }
-    return ERR_OK;
-}
-int32_t smtp_check_auth(smtp_ctx *smtp) {
-    if (!BIT_CHECK(smtp->status, AUTHED)) {
-        return ERR_FAILED;
-    }
-    return ERR_OK;
+    return task_connect(task, PACK_SMTP, smtp->evssl, smtp->ip, smtp->port, 0, smtp, &smtp->fd, &smtp->skid);
 }
 int32_t smtp_check_code(char *pack, const char *code) {
     if (0 == memcmp(pack, code, strlen(code))) {
@@ -88,39 +63,21 @@ int32_t smtp_check_ok(char *pack) {
     return smtp_check_code(pack, SMTP_OK);
 }
 char *smtp_pack_reset(smtp_ctx *smtp) {
-    if (ERR_OK != smtp_check_auth(smtp)) {
-        return NULL;
-    }
     return format_va("RSET%s", FLAG_CRLF);
 }
 char *smtp_pack_quit(smtp_ctx *smtp) {
-    if (ERR_OK != smtp_check_auth(smtp)) {
-        return NULL;
-    }
     return format_va("QUIT%s", FLAG_CRLF);
 }
 char *smtp_pack_ping(smtp_ctx *smtp) {
-    if (ERR_OK != smtp_check_auth(smtp)) {
-        return NULL;
-    }
     return format_va("NOOP%s", FLAG_CRLF);
 }
 char *smtp_pack_from(smtp_ctx *smtp, const char *from) {
-    if (ERR_OK != smtp_check_auth(smtp)) {
-        return NULL;
-    }
     return format_va("MAIL FROM:<%s>%s", from, FLAG_CRLF);
 }
 char *smtp_pack_rcpt(smtp_ctx *smtp, const char *rcpt) {
-    if (ERR_OK != smtp_check_auth(smtp)) {
-        return NULL;
-    }
     return format_va("RCPT TO:<%s>%s", rcpt, FLAG_CRLF);
 }
 char *smtp_pack_data(smtp_ctx *smtp) {
-    if (ERR_OK != smtp_check_auth(smtp)) {
-        return NULL;
-    }
     return format_va("DATA%s", FLAG_CRLF);
 }
 static void _smtp_connected(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
@@ -142,7 +99,9 @@ static void _smtp_connected(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid
     buffer_drain(buf, blens);
     char *cmd = format_va("EHLO %s%s", _smtp_host, FLAG_CRLF);
     ud->status = EHLO;
-    ev_send(ev, fd, skid, cmd, strlen(cmd), 0);
+    if (ERR_OK != ev_send(ev, fd, skid, cmd, strlen(cmd), 0)) {
+        BIT_SET(*status, PROT_ERROR);
+    }
 }
 static int32_t _smtp_get_authtype(buffer_ctx *buf) {
     const char *authtype = "250-AUTH";
@@ -198,7 +157,9 @@ static void _smtp_ehlo(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buf
         break;
     }
     ud->status = AUTH;
-    ev_send(ev, fd, skid, cmd, strlen(cmd), 0);
+    if (ERR_OK != ev_send(ev, fd, skid, cmd, strlen(cmd), 0)) {
+        BIT_SET(*status, PROT_ERROR);
+    }
 }
 static char *_smtp_loin_cmd(const char *up) {
     size_t lens = strlen(up);
@@ -230,14 +191,18 @@ static void _smtp_loin(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buf
     if (0 == strcmp(flag, "username:")) {
         FREE(flag);
         char *cmd = _smtp_loin_cmd(smtp->user);
-        ev_send(ev, fd, skid, cmd, strlen(cmd), 0);
+        if (ERR_OK != ev_send(ev, fd, skid, cmd, strlen(cmd), 0)) {
+            BIT_SET(*status, PROT_ERROR);
+        }
         return;
     }
     if (0 == strcmp(flag, "password:")) {
         FREE(flag);
         char *cmd = _smtp_loin_cmd(smtp->psw);
         ud->status = AUTH_CHECK;
-        ev_send(ev, fd, skid, cmd, strlen(cmd), 0);
+        if (ERR_OK != ev_send(ev, fd, skid, cmd, strlen(cmd), 0)) {
+            BIT_SET(*status, PROT_ERROR);
+        }
         return;
     }
     BIT_SET(*status, PROT_ERROR);
@@ -265,7 +230,9 @@ static void _smtp_plain(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, bu
     char *cmd = format_va("%s%s", b64, FLAG_CRLF);
     FREE(b64);
     ud->status = AUTH_CHECK;
-    ev_send(ev, fd, skid, cmd, strlen(cmd), 0);
+    if (ERR_OK != ev_send(ev, fd, skid, cmd, strlen(cmd), 0)) {
+        BIT_SET(*status, PROT_ERROR);
+    }
 }
 static void _smtp_auth(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     size_t blens = buffer_size(buf);
@@ -307,7 +274,6 @@ static void _smtp_auth_check(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t ski
         return;
     }
     buffer_drain(buf, blens);
-    BIT_SET(smtp->status, AUTHED);
     _hs_push(fd, skid, 1, ud, ERR_OK, NULL, 0);
     ud->status = COMMAND;
 }

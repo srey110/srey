@@ -23,9 +23,6 @@ function ctx:connect()
 end
 function ctx:selectdb(database)
     local pack, size = self.mysql:pack_selectdb(database)
-    if not pack then
-        return false
-    end
     local fd, skid = self.mysql:sock_id()
     local mpack, _ =  srey.syn_send(fd, skid, pack, size, 0)
     if nil == mpack then
@@ -35,9 +32,6 @@ function ctx:selectdb(database)
 end
 function ctx:_ping()
     local pack, size = self.mysql:pack_ping()
-    if not pack then
-        return false
-    end
     local fd, skid = self.mysql:sock_id()
     local mpack, _ =  srey.syn_send(fd, skid, pack, size, 0)
     if not mpack then
@@ -53,9 +47,6 @@ function ctx:ping()
 end
 function ctx:query(sql, mbind)
     local pack, size = self.mysql:pack_query(sql, mbind)
-    if not pack then
-        return false
-    end
     local fd, skid = self.mysql:sock_id()
     local mpack, _ =  srey.syn_send(fd, skid, pack, size, 0)
     if not mpack then
@@ -72,9 +63,6 @@ function ctx:query(sql, mbind)
 end
 function ctx:prepare(sql)
     local pack, size = self.mysql:pack_stmt_prepare(sql)
-    if not pack then
-        return false
-    end
     local fd, skid = self.mysql:sock_id()
     local mpack, _ =  srey.syn_send(fd, skid, pack, size, 0)
     if not mpack then
@@ -88,10 +76,6 @@ end
 function ctx:quit()
     local fd, skid = self.mysql:sock_id()
     local pack, size = self.mysql:pack_quit()
-    if not pack then
-        srey.close(fd, skid);
-        return
-    end
     srey.syn_send(fd, skid, pack, size, 0)
 end
 function ctx:version()

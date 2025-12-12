@@ -54,19 +54,11 @@ void _mysql_udfree(ud_cxt *ud) {
     mysql_ctx *mysql = ud->extra;
     _mysql_pkfree(mysql->mpack);
     mysql->mpack = NULL;
-    mysql->status = 0;
-    mysql->cur_cmd = 0;
+    mysql->client.fd = INVALID_SOCK;
     ud->extra = NULL;
 }
 void _mysql_closed(ud_cxt *ud) {
     _mysql_udfree(ud);
-}
-int32_t _mysql_on_connected(ud_cxt *ud, int32_t err) {
-    if (ERR_OK != err) {
-        mysql_ctx *mysql = ud->extra;
-        mysql->status = 0;
-    }
-    return err;
 }
 static uint8_t _mysql_charset(const char *charset) {
     if(0 == strcmp("big5", charset)) {
@@ -200,7 +192,7 @@ static void _mysql_connect_attrs(binary_ctx *battrs) {
         binary_set_string(battrs, attrs[i].val, lens);
     }
 }
-static void _mysql_auth_response(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
+static int32_t _mysql_auth_response(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
     mysql->id++;
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
@@ -248,9 +240,9 @@ static void _mysql_auth_response(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
     }
     _set_payload_lens(&bwriter);
     ud->status = AUTH_PROCESS;
-    ev_send(ev, mysql->client.fd, mysql->client.skid, bwriter.data, bwriter.offset, 0);
+    return ev_send(ev, mysql->client.fd, mysql->client.skid, bwriter.data, bwriter.offset, 0);
 }
-static void _mysql_ssl_exchange(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
+static int32_t _mysql_ssl_exchange(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
     mysql->id++;
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
@@ -262,12 +254,14 @@ static void _mysql_ssl_exchange(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
     binary_set_fill(&bwriter, 0, 23);//filler
     _set_payload_lens(&bwriter);
     ud->status = SSL_EXCHANGE;
-    ev_send(ev, mysql->client.fd, mysql->client.skid, bwriter.data, bwriter.offset, 0);
-    ev_ssl(ev, mysql->client.fd, mysql->client.skid, 1, mysql->client.evssl);
+    if (ERR_OK != ev_send(ev, mysql->client.fd, mysql->client.skid, bwriter.data, bwriter.offset, 0)
+        || ERR_OK != ev_ssl(ev, mysql->client.fd, mysql->client.skid, 1, mysql->client.evssl)) {
+        return ERR_FAILED;
+    }
+    return ERR_OK;
 }
 int32_t _mysql_ssl_exchanged(ev_ctx *ev, ud_cxt *ud) {
-    _mysql_auth_response(ud->extra, ev, ud);
-    return ERR_OK;
+    return _mysql_auth_response(ud->extra, ev, ud);
 }
 static void _mysql_auth_request(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     size_t payload_lens;
@@ -333,20 +327,24 @@ static void _mysql_auth_request(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t
     if (NULL != mysql->client.evssl
         && BIT_CHECK(mysql->server.caps, CLIENT_SSL)) {
         BIT_SET(mysql->client.caps, CLIENT_SSL);
-        _mysql_ssl_exchange(mysql, ev, ud);
+        if (ERR_OK != _mysql_ssl_exchange(mysql, ev, ud)) {
+            BIT_SET(*status, PROT_ERROR);
+        }
     } else {
-        _mysql_auth_response(mysql, ev, ud);
+        if (ERR_OK != _mysql_auth_response(mysql, ev, ud)) {
+            BIT_SET(*status, PROT_ERROR);
+        }
     }
     FREE(payload);
 }
-static void _mysql_public_key(mysql_ctx *mysql, ev_ctx *ev) {
+static int32_t _mysql_public_key(mysql_ctx *mysql, ev_ctx *ev) {
     mysql->id++;
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
     binary_set_integer(&bwriter, 1, 3, 1);
     binary_set_int8(&bwriter, mysql->id);
     binary_set_uint8(&bwriter, 0x02);
-    ev_send(ev, mysql->client.fd, mysql->client.skid, bwriter.data, bwriter.offset, 0);
+    return ev_send(ev, mysql->client.fd, mysql->client.skid, bwriter.data, bwriter.offset, 0);
 }
 static char *_mysql_password_xor_salt(mysql_ctx *mysql, size_t *lens) {
     size_t plens = strlen(mysql->client.password);
@@ -433,10 +431,9 @@ static int32_t _mysql_full_auth(mysql_ctx *mysql, ev_ctx *ev, char *pubkey, size
     }
     FREE(xorpsw);
     _set_payload_lens(&bwriter);
-    ev_send(ev, mysql->client.fd, mysql->client.skid, bwriter.data, bwriter.offset, 0);
-    return ERR_OK;
+    return ev_send(ev, mysql->client.fd, mysql->client.skid, bwriter.data, bwriter.offset, 0);
 }
-static void _mysql_password_send(mysql_ctx *mysql, ev_ctx *ev) {
+static int32_t _mysql_password_send(mysql_ctx *mysql, ev_ctx *ev) {
     mysql->id++;
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
@@ -444,7 +441,7 @@ static void _mysql_password_send(mysql_ctx *mysql, ev_ctx *ev) {
     binary_set_int8(&bwriter, mysql->id);
     binary_set_string(&bwriter, mysql->client.password, 0);
     _set_payload_lens(&bwriter);
-    ev_send(ev, mysql->client.fd, mysql->client.skid, bwriter.data, bwriter.offset, 0);
+    return ev_send(ev, mysql->client.fd, mysql->client.skid, bwriter.data, bwriter.offset, 0);
 }
 static int32_t _mysql_auth_switch_response(mysql_ctx *mysql, ev_ctx *ev, mpack_auth_switch *auswitch) {
     if (strlen(auswitch->plugin) >= sizeof(mysql->server.plugin)
@@ -470,15 +467,13 @@ static int32_t _mysql_auth_switch_response(mysql_ctx *mysql, ev_ctx *ev, mpack_a
         binary_set_string(&bwriter, sign, sizeof(sign));
     }
     _set_payload_lens(&bwriter);
-    ev_send(ev, mysql->client.fd, mysql->client.skid, bwriter.data, bwriter.offset, 0);
-    return ERR_OK;
+    return ev_send(ev, mysql->client.fd, mysql->client.skid, bwriter.data, bwriter.offset, 0);
 }
 static void _mysql_auth_ok(mysql_ctx *mysql, ud_cxt *ud, int32_t *status) {
     if (ERR_OK != _hs_push(mysql->client.fd, mysql->client.skid, 1, ud, ERR_OK, NULL, 0)) {
         BIT_SET(*status, PROT_ERROR);
         return;
     }
-    BIT_SET(mysql->status, AUTHED);
     ud->status = COMMAND;
 }
 static void _mysql_auth_err(mysql_ctx *mysql, binary_ctx *breader, int32_t *status) {
@@ -512,9 +507,13 @@ static void _mysql_caching_sha2(mysql_ctx *mysql, ev_ctx *ev, binary_ctx *breade
             break;
         case MYSQL_CACHING_SHA2_FULL://full auth
             if (BIT_CHECK(mysql->client.caps, CLIENT_SSL)) {
-                _mysql_password_send(mysql, ev);
+                if (ERR_OK != _mysql_password_send(mysql, ev)) {
+                    BIT_SET(*status, PROT_ERROR);
+                }
             } else {
-                _mysql_public_key(mysql, ev);
+                if (ERR_OK != _mysql_public_key(mysql, ev)) {
+                    BIT_SET(*status, PROT_ERROR);
+                }
             }
             break;
         default:
@@ -617,20 +616,13 @@ int32_t mysql_init(mysql_ctx *mysql, const char *ip, uint16_t port, struct evssl
     mysql->client.evssl = evssl;
     mysql->client.charset = _mysql_charset(charset);
     mysql->client.maxpack = 0 == maxpk ? ONEK * ONEK : maxpk;
+    mysql->client.fd = INVALID_SOCK;
     return ERR_OK;
 }
 int32_t mysql_try_connect(task_ctx *task, mysql_ctx *mysql) {
-    if (0 != mysql->status) {
-        return ERR_FAILED;
-    }
     mysql->task = task;
-    BIT_SET(mysql->status, LINKING);
-    if (ERR_OK != task_connect(task, PACK_MYSQL, NULL, mysql->client.ip, mysql->client.port,
-        NULL == mysql->client.evssl ? NETEV_NONE : NETEV_AUTHSSL, mysql, &mysql->client.fd, &mysql->client.skid)) {
-        BIT_REMOVE(mysql->status, LINKING);
-        return ERR_FAILED;
-    }
-    return ERR_OK;
+    return task_connect(task, PACK_MYSQL, NULL, mysql->client.ip, mysql->client.port,
+        NULL == mysql->client.evssl ? NETEV_NONE : NETEV_AUTHSSL, mysql, &mysql->client.fd, &mysql->client.skid);
 }
 const char *mysql_version(mysql_ctx *mysql) {
     return mysql->version;
@@ -655,8 +647,5 @@ void mysql_stmt_close(mysql_stmt_ctx *stmt) {
     size_t size;
     mysql_ctx *mysql = stmt->mysql;
     void *close = mysql_pack_stmt_close(stmt, &size);
-    if (NULL == close) {
-        return;
-    }
     ev_send(&mysql->task->loader->netev, mysql->client.fd, mysql->client.skid, close, size, 0);
 }
