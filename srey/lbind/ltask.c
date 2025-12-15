@@ -334,6 +334,39 @@ static int32_t _ltask_timer_ms(lua_State *lua) {
     lua_pushinteger(lua, timer_cur_ms(&ltask->timer));
     return 1;
 }
+static int32_t _ltask_set_request_timeout(lua_State *lua) {
+    uint32_t ms = (uint32_t)luaL_checkinteger(lua, 1);
+    task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
+    task_set_request_timeout(task, ms);
+    return 0;
+}
+static int32_t _ltask_get_request_timeout(lua_State *lua) {
+    task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
+    lua_pushinteger(lua, task_get_request_timeout(task));
+    return 1;
+}
+static int32_t _ltask_set_connect_timeout(lua_State *lua) {
+    uint32_t ms = (uint32_t)luaL_checkinteger(lua, 1);
+    task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
+    task_set_connect_timeout(task, ms);
+    return 0;
+}
+static int32_t _ltask_get_connect_timeout(lua_State *lua) {
+    task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
+    lua_pushinteger(lua, task_get_connect_timeout(task));
+    return 1;
+}
+static int32_t _ltask_set_netread_timeout(lua_State *lua) {
+    uint32_t ms = (uint32_t)luaL_checkinteger(lua, 1);
+    task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
+    task_set_netread_timeout(task, ms);
+    return 0;
+}
+static int32_t _ltask_get_netread_timeout(lua_State *lua) {
+    task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
+    lua_pushinteger(lua, task_get_netread_timeout(task));
+    return 1;
+}
 //srey.task
 LUAMOD_API int luaopen_task(lua_State *lua) {
     luaL_Reg reg[] = {
@@ -344,6 +377,13 @@ LUAMOD_API int luaopen_task(lua_State *lua) {
         { "ungrab", _ltask_ungrab },
         { "name", _ltask_name },
         { "timer_ms", _ltask_timer_ms },
+
+        { "set_request_timeout", _ltask_set_request_timeout },
+        { "get_request_timeout", _ltask_get_request_timeout },
+        { "set_connect_timeout", _ltask_set_connect_timeout },
+        { "get_connect_timeout", _ltask_get_connect_timeout },
+        { "set_netread_timeout", _ltask_set_netread_timeout },
+        { "get_netread_timeout", _ltask_get_netread_timeout },
         { NULL, NULL },
     };
     luaL_newlib(lua, reg);

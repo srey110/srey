@@ -9,6 +9,7 @@ void _pgsql_udfree(ud_cxt *ud);
 void _pgsql_closed(ud_cxt *ud);
 int32_t _pgsql_on_connected(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud, int32_t err);
 int32_t _pgsql_ssl_exchanged(ev_ctx *ev, ud_cxt *ud);
+int32_t _pgsql_may_resume(void *data);
 void *pgsql_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status);
 int32_t pgsql_init(pgsql_ctx *pg, const char *ip, uint16_t port, struct evssl_ctx *evssl,
     const char *user, const char *password, const char *database);

@@ -168,7 +168,8 @@ static int32_t _lcore_sendto(lua_State *lua) {
         data = lua_touserdata(lua, 5);
         size = (size_t)luaL_checkinteger(lua, 6);
     }
-    if (ERR_OK == ev_sendto(&g_loader->netev, fd, skid, ip, port, data, size)) {
+    int32_t copy = COPY_TYPE(lua, 7);
+    if (ERR_OK == ev_sendto(&g_loader->netev, fd, skid, ip, port, data, size, copy)) {
         lua_pushboolean(lua, 1);
     } else {
         lua_pushboolean(lua, 0);
@@ -208,6 +209,16 @@ static int32_t _lcore_session(lua_State *lua) {
     uint64_t sess = (uint64_t)luaL_checkinteger(lua, 3);
     ev_ud_sess(&g_loader->netev, fd, skid, sess);
     return 0;
+}
+static int32_t _lcore_may_resume(lua_State *lua) {
+    pack_type pktype = (pack_type)luaL_checkinteger(lua, 1);
+    void *data = lua_touserdata(lua, 2);
+    if (ERR_OK == prots_may_resume(pktype, data)) {
+        lua_pushboolean(lua, 1);
+    } else {
+        lua_pushboolean(lua, 0);
+    }
+    return 1;
 }
 static int32_t _lcore_cert_register(lua_State *lua) {
 #if WITH_SSL
@@ -316,6 +327,8 @@ LUAMOD_API int luaopen_core(lua_State *lua) {
         { "status", _lcore_status },
         { "bind_task", _lcore_bind_task },
         { "session", _lcore_session },
+
+        { "may_resume", _lcore_may_resume },
 
         { "cert_register", _lcore_cert_register },
         { "p12_register", _lcore_p12_register },

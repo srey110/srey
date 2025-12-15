@@ -26,6 +26,9 @@ task_ctx *task_new(loader_ctx *loader, name_t name, _task_dispatch_cb _dispatch,
     task->loader = loader;
     task->name = name;
     task->ref = 1;
+    task->timeout_request = 3 * 1000;
+    task->timeout_connect = 5 * 1000;
+    task->timeout_netread = 10 * 1000;
     if (NULL == _dispatch) {
         task->_task_dispatch = _message_dispatch;
     } else {
@@ -517,6 +520,24 @@ int32_t task_udp(task_ctx *task, const char *ip, uint16_t port, SOCKET *fd, uint
     cbs.rf_cb = _net_recvfrom;
     cbs.ud_free = prots_udfree;
     return ev_udp(&task->loader->netev, ip, port, &cbs, &ud, fd, skid);
+}
+void task_set_request_timeout(task_ctx *task, uint32_t ms) {
+    task->timeout_request = ms;
+}
+uint32_t task_get_request_timeout(task_ctx *task) {
+    return task->timeout_request;
+}
+void task_set_connect_timeout(task_ctx *task, uint32_t ms) {
+    task->timeout_connect = ms;
+}
+uint32_t task_get_connect_timeout(task_ctx *task) {
+    return task->timeout_connect;
+}
+void task_set_netread_timeout(task_ctx *task, uint32_t ms) {
+    task->timeout_netread = ms;
+}
+uint32_t task_get_netread_timeout(task_ctx *task) {
+    return task->timeout_netread;
 }
 void on_accepted(task_ctx *task, _net_accept_cb _accept) {
     task->_net_accept = _accept;

@@ -5,10 +5,6 @@
 #define MINICORO_IMPL
 #include "srey/minicoro.h"
 
-#define TIMEOUT_REQUEST 3000 
-#define TIMEOUT_CONNECT 3000 
-#define TIMEOUT_NETREAD 3000 
-
 typedef struct coro_sess {
     msg_type mtype;
     mco_coro *coro;
@@ -162,6 +158,10 @@ static void _net_handshaked_dispatch(task_dispatch_arg *arg) {
     }
 }
 static void _net_recv_dispatch(task_dispatch_arg *arg) {
+    if (ERR_OK != prots_may_resume(arg->msg.pktype, arg->msg.data)) {
+        _mcoro_create(arg);
+        return;
+    }
     if (0 == arg->msg.sess) {
         if (0 != arg->msg.slice) {
             coro_sess corosess;
@@ -232,12 +232,12 @@ static void _mcoro_timeout(task_ctx *task, uint64_t sess) {
             }
         }
     }
-    task_timeout(task, 0, 200, _mcoro_timeout);
+    task_timeout(task, 0, 500, _mcoro_timeout);
 }
 void _message_dispatch(task_dispatch_arg *arg) {
     switch (arg->msg.mtype) {
     case MSG_TYPE_STARTUP:
-        task_timeout(arg->task, 0, 200, _mcoro_timeout);
+        task_timeout(arg->task, 0, 500, _mcoro_timeout);
         _mcoro_create(arg);
         break;
     case MSG_TYPE_CLOSING:
@@ -303,20 +303,21 @@ void *coro_request(task_ctx *dst, task_ctx *src, uint8_t rtype, void *data, size
     uint64_t sess = createid();
     task_request(dst, src, rtype, sess, data, size, copy);
     message_ctx msg;
-    _mcoro_wait(src, sess, MSG_TYPE_RESPONSE, TIMEOUT_REQUEST, &msg);
+    _mcoro_wait(src, sess, MSG_TYPE_RESPONSE, task_get_request_timeout(src), &msg);
     if (MSG_TYPE_TIMEOUT == msg.mtype) {
-        *lens = 0;
         *erro = ERR_FAILED;
-        LOG_WARN("dst %d src %d, request timeout, session %"PRIu64".", dst->name, src->name, sess);
+        LOG_WARN("dst %d src %d request type %d timeout, session %"PRIu64".", dst->name, src->name, rtype, sess);
         return NULL;
     }
     *erro = msg.erro;
-    *lens = msg.size;
+    if (NULL != lens) {
+        *lens = msg.size;
+    }
     return msg.data;
 }
 static int32_t _wait_ssl_exchanged(task_ctx *task, SOCKET fd, uint64_t skid) {
     message_ctx msg;
-    _mcoro_wait(task, skid, MSG_TYPE_SSLEXCHANGED, TIMEOUT_NETREAD, &msg);
+    _mcoro_wait(task, skid, MSG_TYPE_SSLEXCHANGED, task_get_netread_timeout(task), &msg);
     if (MSG_TYPE_TIMEOUT == msg.mtype) {
         ev_close(&task->loader->netev, fd, skid);
         LOG_WARN("task %d, ssl exchange timeout, skid %"PRIu64".", task->name, skid);
@@ -335,7 +336,7 @@ int32_t coro_ssl_exchange(task_ctx *task, SOCKET fd, uint64_t skid, int32_t clie
 }
 void *coro_handshaked(task_ctx *task, SOCKET fd, uint64_t skid, int32_t *err, size_t *size) {
     message_ctx msg;
-    _mcoro_wait(task, skid, MSG_TYPE_HANDSHAKED, TIMEOUT_NETREAD, &msg);
+    _mcoro_wait(task, skid, MSG_TYPE_HANDSHAKED, task_get_netread_timeout(task), &msg);
     if (MSG_TYPE_TIMEOUT == msg.mtype) {
         *err = ERR_FAILED;
         ev_close(&task->loader->netev, fd, skid);
@@ -359,7 +360,7 @@ int32_t coro_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl, 
         return ERR_FAILED;
     }
     message_ctx msg;
-    _mcoro_wait(task, *skid, MSG_TYPE_CONNECT, TIMEOUT_CONNECT, &msg);
+    _mcoro_wait(task, *skid, MSG_TYPE_CONNECT, task_get_connect_timeout(task), &msg);
     if (MSG_TYPE_TIMEOUT == msg.mtype) {
         ev_close(&task->loader->netev, *fd, *skid);
         LOG_WARN("task: %d, connect %s:%d timeout.", task->name, ip, port);
@@ -377,10 +378,10 @@ int32_t coro_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl, 
     return ERR_OK;
 }
 static int32_t _wait_recved(task_ctx *task, SOCKET fd, uint64_t skid, message_ctx *msg) {
-    _mcoro_wait(task, skid, MSG_TYPE_RECV, TIMEOUT_NETREAD, msg);
+    _mcoro_wait(task, skid, MSG_TYPE_RECV, task_get_netread_timeout(task), msg);
     if (MSG_TYPE_TIMEOUT == msg->mtype) {
-        ev_close(&task->loader->netev, fd, skid);
-        LOG_WARN("task %d, send timeout, skid %"PRIu64".", task->name, skid);
+        ev_ud_sess(&task->loader->netev, fd, skid, 0);
+        LOG_WARN("task %d, recve timeout, skid %"PRIu64".", task->name, skid);
         return ERR_FAILED;
     }
     if (MSG_TYPE_CLOSE == msg->mtype) {
@@ -397,7 +398,9 @@ void *coro_send(task_ctx *task, SOCKET fd, uint64_t skid, void *data, size_t len
     if (ERR_OK != _wait_recved(task, fd, skid, &msg)) {
         return NULL;
     }
-    *size = msg.size;
+    if (NULL != size) {
+        *size = msg.size;
+    }
     return msg.data;
 }
 void *coro_slice(task_ctx *task, SOCKET fd, uint64_t skid, size_t *size, int32_t *end) {
@@ -408,24 +411,28 @@ void *coro_slice(task_ctx *task, SOCKET fd, uint64_t skid, size_t *size, int32_t
     if (PROT_SLICE_END == msg.slice) {
         *end = 1;
     }
-    *size = msg.size;
+    if (NULL != size) {
+        *size = msg.size;
+    }
     return msg.data;
 }
-void *coro_sendto(task_ctx *task, SOCKET fd, uint64_t skid,
-    const char *ip, const uint16_t port, void *data, size_t len, size_t *size) {
+void *coro_sendto(task_ctx *task, SOCKET fd, uint64_t skid, const char *ip, const uint16_t port,
+    void *data, size_t len, size_t *size, int32_t copy) {
     ev_ud_sess(&task->loader->netev, fd, skid, skid);
-    if (ERR_OK != ev_sendto(&task->loader->netev, fd, skid, ip, port, data, len)) {
+    if (ERR_OK != ev_sendto(&task->loader->netev, fd, skid, ip, port, data, len, copy)) {
         LOG_WARN("task %d, sendto error, skid %"PRIu64".", task->name, skid);
         ev_ud_sess(&task->loader->netev, fd, skid, 0);
         return NULL;
     }
     message_ctx msg;
-    _mcoro_wait(task, skid, MSG_TYPE_RECVFROM, TIMEOUT_NETREAD, &msg);
+    _mcoro_wait(task, skid, MSG_TYPE_RECVFROM, task_get_netread_timeout(task), &msg);
     if (MSG_TYPE_TIMEOUT == msg.mtype) {
         ev_ud_sess(&task->loader->netev, fd, skid, 0);
         LOG_WARN("task %d, sendto timeout, skid %"PRIu64".", task->name, skid);
         return NULL;
     }
-    *size = msg.size;
+    if (NULL != size) {
+        *size = msg.size;
+    }
     return ((char *)msg.data) + sizeof(netaddr_ctx);
 }

@@ -84,7 +84,7 @@ static void _test_syn_sendto(task_ctx *task) {
     }
     const char *msg = "this is udp task_coro_net.";
     size_t size;
-    void *data = coro_sendto(task, fd, skid, "127.0.0.1", 15002, (void*)msg, strlen(msg), &size);
+    void *data = coro_sendto(task, fd, skid, "127.0.0.1", 15002, (void*)msg, strlen(msg), &size, 1);
     if (NULL == data) {
         LOG_ERROR("%s", "syn_sendto error");
         ev_close(&task->loader->netev, fd, skid);

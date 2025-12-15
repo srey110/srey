@@ -36,11 +36,6 @@ local MSG_TYPE = {
     REQUEST    = 0x0c,
     RESPONSE   = 0x0d
 }
-local TIMEOUT = {
-    REQUEST = 1500,
-    CONNECT = 3000,
-    NETREAD = 3000,
-}
 local SLICE_TYPE = {
     START = 0x01,
     SLICE = 0x02,
@@ -129,7 +124,24 @@ end
 function srey.timer_ms()
     return task.timer_ms()
 end
-
+function srey.set_request_timeout(ms)
+    task.set_request_timeout(ms)
+end
+function srey.get_request_timeout()
+    return task.get_request_timeout()
+end
+function srey.set_connect_timeout(ms)
+    task.set_connect_timeout(ms)
+end
+function srey.get_connect_timeout()
+    return task.get_connect_timeout()
+end
+function srey.set_netread_timeout(ms)
+    task.set_netread_timeout(ms)
+end
+function srey.get_netread_timeout()
+    return task.get_netread_timeout()
+end
 --func()
 function srey.startup(func)
     func_cbs[MSG_TYPE.STARTUP] = func
@@ -137,7 +149,6 @@ end
 local function _startup_dispatch()
     _coro_run(_coro_cb, func_cbs[MSG_TYPE.STARTUP])
 end
-
 --func()
 function srey.closing(func)
     func_cbs[MSG_TYPE.CLOSING] = func
@@ -175,7 +186,7 @@ local function _get_coro_sess(sess, mtype)
     if not corosess then
         return nil
     end
-    if nil ~= mtype and mtype ~= corosess.mtype and MSG_TYPE.CLOSE ~= mtype then
+    if mtype ~= corosess.mtype and MSG_TYPE.CLOSE ~= mtype then
         return nil
     end
     coro_sess[sess] = nil
@@ -245,7 +256,7 @@ function srey.request(dst, reqtype, data, size, copy)
     local sess = srey.id()
     core.request(dtask, reqtype, sess, data, size, copy)
     srey.task_ungrab(dtask)
-    local msg = _coro_wait(sess, MSG_TYPE.RESPONSE, TIMEOUT.REQUEST)
+    local msg = _coro_wait(sess, MSG_TYPE.RESPONSE, srey.get_request_timeout())
     if MSG_TYPE.TIMEOUT == msg.mtype then
         WARN("request timeout, session %s.", tostring(sess))
         return nil
@@ -348,7 +359,7 @@ function srey.connect(pktype, sslname, ip, port, netev)
         WARN("connect %s:%d error.", ip, port)
         return INVALID_SOCK
     end
-    local msg = _coro_wait(skid, MSG_TYPE.CONNECT, TIMEOUT.CONNECT)
+    local msg = _coro_wait(skid, MSG_TYPE.CONNECT, srey.get_connect_timeout())
     if MSG_TYPE.TIMEOUT == msg.mtype then
         srey.close(fd, skid)
         WARN("connect %s:%d timeout, skid %s.", ip, port, tostring(skid))
@@ -399,7 +410,7 @@ function srey.syn_ssl_exchange(fd, skid, client, sslname)
     return srey.wait_ssl_exchanged(fd, skid)
 end
 function srey.wait_ssl_exchanged(fd, skid)
-    local msg = _coro_wait(skid, MSG_TYPE.SSLEXCHANGED, TIMEOUT.NETREAD)
+    local msg = _coro_wait(skid, MSG_TYPE.SSLEXCHANGED, srey.get_netread_timeout())
     if MSG_TYPE.TIMEOUT == msg.mtype then
         srey.close(fd, skid)
         WARN("ssl exchange timeout, skid %s.", tostring(skid))
@@ -429,7 +440,7 @@ function srey.on_handshaked(func)
 end
 --bool data size
 function srey.wait_handshaked(fd, skid)
-    local msg = _coro_wait(skid, MSG_TYPE.HANDSHAKED, TIMEOUT.NETREAD)
+    local msg = _coro_wait(skid, MSG_TYPE.HANDSHAKED, srey.get_netread_timeout())
     if MSG_TYPE.TIMEOUT == msg.mtype then
         srey.close(fd, skid)
         WARN("handshake timeout, skid %s.", tostring(skid))
@@ -461,9 +472,9 @@ function srey.send(fd, skid, data, size, copy)
     return core.send(fd, skid, data, size, copy)
 end
 local function _wait_net_recv(fd, skid)
-    local msg = _coro_wait(skid, MSG_TYPE.RECV, TIMEOUT.NETREAD)
+    local msg = _coro_wait(skid, MSG_TYPE.RECV, srey.get_netread_timeout())
     if MSG_TYPE.TIMEOUT == msg.mtype then
-        srey.close(fd, skid)
+        srey.sock_session(fd, skid, 0)
         WARN("send timeout, skid %s.", tostring(skid))
         return nil
     end
@@ -528,6 +539,13 @@ function srey.net_request(fd, skid, dst, reqtype, key, data, size)
     return http.data(respdata)
 end
 local function _net_recv_dispatch(msg)
+    if not core.may_resume(msg.pktype, msg.data) then
+        local func = func_cbs[MSG_TYPE.RECV]
+        if func then
+            _coro_run(_coro_cb, func, msg.pktype, msg.fd, msg.skid, msg.client, msg.slice, msg.data, msg.size)
+         end
+        return
+    end
     if 0 == msg.sess then
         if 0 ~=  msg.slice then
             local corosess = _get_coro_sess(msg.skid, MSG_TYPE.RECV)
@@ -593,22 +611,24 @@ end
 function srey.udp(ip, port)
     if not ip then
         ip = "0.0.0.0"
+    end
+    if not port then
         port = 0
     end
     return core.udp(ip, port)
 end
-function srey.sendto(fd, skid, ip, port, data, size)
-    return core.sendto(fd, skid, ip, port, data, size)
+function srey.sendto(fd, skid, ip, port, data, size, copy)
+    return core.sendto(fd, skid, ip, port, data, size, copy)
 end
 --data size
-function srey.syn_sendto(fd, skid, ip, port, data, size)
+function srey.syn_sendto(fd, skid, ip, port, data, size, copy)
     srey.sock_session(fd, skid, skid)
-    if not srey.sendto(fd, skid, ip, port, data, size) then
+    if not srey.sendto(fd, skid, ip, port, data, size, copy) then
         srey.sock_session(fd, skid, 0)
         WARN("sendto error, skid %s.", tostring(skid))
         return nil
     end
-    local msg = _coro_wait(skid, MSG_TYPE.RECVFROM, TIMEOUT.NETREAD)
+    local msg = _coro_wait(skid, MSG_TYPE.RECVFROM, srey.get_netread_timeout())
     if MSG_TYPE.TIMEOUT == msg.mtype then
         srey.sock_session(fd, skid, 0)
         WARN("sendto timeout, skid %s.", tostring(skid))
@@ -643,7 +663,8 @@ local function _coro_timeout()
         end
         local corosess
         for _, value in ipairs(del) do
-            corosess = _get_coro_sess(value)
+            corosess = coro_sess[value]
+            coro_sess[value] = nil
             if corosess then
                 local msg = {
                     mtype = MSG_TYPE.TIMEOUT,
@@ -654,11 +675,11 @@ local function _coro_timeout()
             end
         end
     end
-    srey.timeout(200, _coro_timeout)
+    srey.timeout(500, _coro_timeout)
 end
 function message_dispatch(msg)
     if MSG_TYPE.STARTUP == msg.mtype then
-        srey.timeout(200, _coro_timeout)
+        srey.timeout(500, _coro_timeout)
         _startup_dispatch()
     elseif MSG_TYPE.CLOSING == msg.mtype then
         _closing_dispatch()

@@ -93,9 +93,12 @@ int32_t ev_send(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *data, size_t len, i
     _SEND_CMD(ctx, cmd);
     return ERR_OK;
 }
-int32_t ev_sendto(ev_ctx *ctx, SOCKET fd, uint64_t skid,
-    const char *ip, const uint16_t port, void *data, size_t len) {
+int32_t ev_sendto(ev_ctx *ctx, SOCKET fd, uint64_t skid, const char *ip, const uint16_t port,
+    void *data, size_t len, int32_t copy) {
     if (INVALID_SOCK == fd) {
+        if (!copy) {
+            FREE(data);
+        }
         return ERR_FAILED;
     }
     cmd_ctx cmd;
@@ -114,6 +117,9 @@ int32_t ev_sendto(ev_ctx *ctx, SOCKET fd, uint64_t skid,
     memcpy(buf + sizeof(netaddr_ctx), data, len);
     cmd.arg = (uint64_t)buf;
     _SEND_CMD(ctx, cmd);
+    if (!copy) {
+        FREE(data);
+    }
     return ERR_OK;
 }
 void _on_cmd_send(watcher_ctx *watcher, cmd_ctx *cmd) {

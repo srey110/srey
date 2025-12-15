@@ -72,7 +72,7 @@ int32_t ev_udp(ev_ctx *ctx, const char *ip, const uint16_t port, cbs_ctx *cbs, u
 /// <param name="skid">链接ID</param>
 /// <param name="data">要发送的数据</param>
 /// <param name="len">数据长度</param>
-/// <param name="copy">1 拷贝数据, 0不拷贝数据</param>
+/// <param name="copy">1 拷贝数据 不自动释放, 0不拷贝数据 自动释放</param>
 /// <returns>ERR_OK 成功</returns>
 int32_t ev_send(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *data, size_t len, int32_t copy);
 /// <summary>
@@ -85,8 +85,10 @@ int32_t ev_send(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *data, size_t len, i
 /// <param name="port">端口</param>
 /// <param name="data">要发送的数据</param>
 /// <param name="len">数据长度</param>
+/// <param name="copy">1 不自动释放, 0 自动释放</param>
 /// <returns>ERR_OK 请求成功</returns>
-int32_t ev_sendto(ev_ctx *ctx, SOCKET fd, uint64_t skid, const char *ip, const uint16_t port, void *data, size_t len);
+int32_t ev_sendto(ev_ctx *ctx, SOCKET fd, uint64_t skid, const char *ip, const uint16_t port,
+    void *data, size_t len, int32_t copy);
 /// <summary>
 /// 关闭链接
 /// </summary>

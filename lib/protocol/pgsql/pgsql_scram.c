@@ -21,7 +21,7 @@ void scram_free(scram_ctx *scram) {
 char *scram_client_first_message(scram_ctx *scram, const char *user) {
     char nonce[SCRAM_NONCE_LEN + 1];
     randstr(nonce, SCRAM_NONCE_LEN);
-    size_t b64lens = bs64_encode(nonce, SCRAM_NONCE_LEN, scram->client_nonce);
+    bs64_encode(nonce, SCRAM_NONCE_LEN, scram->client_nonce);
     char *cfbuf;
     if (EMPTYSTR(user)){
         cfbuf = format_va("n,,n=,r=%s", scram->client_nonce);

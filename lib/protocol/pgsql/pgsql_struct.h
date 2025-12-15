@@ -6,25 +6,32 @@
 
 typedef struct pgpack_ctx {
     pgpack_type type;
-    char *payload;
     void *pack;
     void(*_free_pgpack)(void *);
+    char complete[32];//CommandComplete 
 }pgpack_ctx;
+typedef struct pgpack_notification {
+    int32_t pid;//后端进程的进程ID
+    char *channel;//频道名
+    char *notification;//消息
+    char *payload;//完整消息
+}pgpack_notification;
 typedef struct pgpack_field {//RowDescription 行描述
     int16_t index;//如果该字段可以被识别为特定表格的列，则为该列的属性编号；否则为零
     int16_t lens;//数据类型大小 负值表示可变宽度类型
     int16_t format;//字段格式代码。0(文本) 1(二进制)
     int32_t table_oid;//表的对象ID
-    int32_t type_oid;//数据类型的对象ID1   
+    int32_t type_oid;//数据类型的对象ID  
     int32_t type_modifier;//类型修饰符
     char name[64];//字段名称
 }pgpack_field;
 typedef struct pgpack_row {//DataRow  数据行
     int32_t lens;//列值的长度  可以为零  -1表示空列值
     char *val;//列值
-    char *payload;
+    char *payload;//完整消息
 }pgpack_row;
 typedef struct pgsql_reader_ctx {
+    int16_t format;
     int16_t field_count;
     int32_t index;
     pgpack_field *fields;
@@ -48,5 +55,10 @@ typedef struct pgsql_ctx {
     char password[64];
     char database[64];
 }pgsql_ctx;
+typedef struct pgsql_bind_ctx {
+    uint16_t nparam;
+    buf_ctx *values;
+    int16_t *format;
+}pgsql_bind_ctx;
 
 #endif//PGSQL_STRUCT_H_

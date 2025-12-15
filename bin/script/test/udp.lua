@@ -5,7 +5,7 @@ srey.startup(
         srey.on_recvedfrom(
             function (fd, skid, ip, port, data, size)
                 --printd("%s:%d, send message %s", ip, port, srey.ud_str(data, size))
-                srey.sendto(fd, skid, ip, port, data, size)
+                srey.sendto(fd, skid, ip, port, data, size, 1)
             end
         )
         srey.udp("0.0.0.0", 15002)

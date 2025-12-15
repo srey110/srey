@@ -87,10 +87,12 @@ void *coro_slice(task_ctx *task, SOCKET fd, uint64_t skid, size_t *size, int32_t
 /// <param name="skid">链接ID</param>
 /// <param name="ip">IP</param>
 /// <param name="port">端口</param>
-/// <param name="data">数据</param>
+/// <param name="data">数据 需要手动Free</param>
 /// <param name="len">数据长度</param>
 /// <param name="size">返回数据长度</param>
+/// <param name="copy">1 不自动释放, 0 自动释放</param>
 /// <returns>数据</returns>
-void *coro_sendto(task_ctx *task, SOCKET fd, uint64_t skid, const char *ip, const uint16_t port, void *data, size_t len, size_t *size);
+void *coro_sendto(task_ctx *task, SOCKET fd, uint64_t skid, const char *ip, const uint16_t port,
+    void *data, size_t len, size_t *size, int32_t copy);
 
 #endif//CORO_H_

@@ -105,6 +105,9 @@ struct task_ctx {
     uint32_t overload;
     atomic_t closing;
     atomic_t ref;
+    uint32_t timeout_request;
+    uint32_t timeout_connect;
+    uint32_t timeout_netread;
     void *arg;
     free_cb _arg_free;
     loader_ctx *loader;

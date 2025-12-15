@@ -44,6 +44,7 @@
 #include "protocol/mysql/mysql_pack.h"
 #include "protocol/mysql/mysql.h"
 #include "protocol/pgsql/pgsql.h"
+#include "protocol/pgsql/pgsql_reader.h"
 #include "protocol/mongo/mongo.h"
 #include "srey/loader.h"
 #include "srey/task.h"

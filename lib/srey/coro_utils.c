@@ -26,7 +26,7 @@ dns_ip *dns_lookup(task_ctx *task, const char *domain, int32_t ipv6, size_t *cnt
     }
     char buf[ONEK] = { 0 };
     size_t lens = dns_request_pack(buf, domain, ipv6);
-    void *resp = coro_sendto(task, fd, skid, dnsip, 53, buf, lens, &lens);
+    void *resp = coro_sendto(task, fd, skid, dnsip, 53, buf, lens, &lens, 1);
     ev_close(&task->loader->netev, fd, skid);
     if (NULL == resp) {
         return NULL;
@@ -278,7 +278,7 @@ int32_t pgsql_connect(task_ctx *task, pgsql_ctx *pg) {
 }
 void pgsql_quit(pgsql_ctx *pg) {
     size_t lens;
-    void *quit = pgsql_pack_quit(pg, &lens);
+    void *quit = pgsql_pack_terminate(&lens);
     size_t size;
     coro_send(pg->task, pg->fd, pg->skid, quit, lens, &size, 0);
 }
@@ -287,16 +287,45 @@ int32_t pgsql_selectdb(pgsql_ctx *pg, const char *database) {
     pgsql_set_db(pg, database);
     return pgsql_connect(pg->task, pg);
 }
-static int32_t _pgsql_ping(pgsql_ctx *pg) {
-    size_t lens;
-    void *query = pgsql_pack_query(pg, ";", &lens);
-    size_t size;
-    pgpack_ctx *pgpack = coro_send(pg->task, pg->fd, pg->skid, query, lens, &size, 0);
-    return NULL != pgpack ? ERR_OK : ERR_FAILED;
-}
 int32_t pgsql_ping(pgsql_ctx *pg) {
-    if (ERR_OK != _pgsql_ping(pg)) {
+    pgpack_ctx *pgpack = pgsql_query(pg, ";");
+    if (NULL == pgpack) {
         return pgsql_connect(pg->task, pg);
     }
     return ERR_OK;
+}
+pgpack_ctx *pgsql_query(pgsql_ctx *pg, const char *sql) {
+    size_t lens;
+    void *query = pgsql_pack_query(sql, &lens);
+    size_t size;
+    return coro_send(pg->task, pg->fd, pg->skid, query, lens, &size, 0);
+}
+int32_t pgsql_stmt_prepare(pgsql_ctx *pg, const char *name, const char *sql, int16_t nparam, uint32_t *oids) {
+    if (EMPTYSTR(sql)) {
+        return ERR_FAILED;
+    }
+    size_t lens;
+    void *parse = pgsql_pack_stmt_prepare(name, sql, nparam, oids, &lens);
+    size_t size;
+    pgpack_ctx *pgpack = coro_send(pg->task, pg->fd, pg->skid, parse, lens, &size, 0);
+    if (NULL == pgpack) {
+        return ERR_FAILED;
+    }
+    if (PGPACK_ERR == pgpack->type) {
+        LOG_WARN("%s", (const char *)pgpack->pack);
+        return ERR_FAILED;
+    }
+    return PGPACK_OK == pgpack->type ? ERR_OK : ERR_FAILED;
+}
+pgpack_ctx *pgsql_stmt_execute(pgsql_ctx *pg, const char *name, pgsql_bind_ctx *bind, int16_t resultformat) {
+    size_t lens;
+    void *exec = pgsql_pack_stmt_execute(name, bind, resultformat, &lens);
+    size_t size;
+    return coro_send(pg->task, pg->fd, pg->skid, exec, lens, &size, 0);
+}
+void pgsql_stmt_close(pgsql_ctx *pg, const char *name) {
+    size_t lens;
+    void *close = pgsql_pack_stmt_close(name, &lens);
+    size_t size;
+    coro_send(pg->task, pg->fd, pg->skid, close, lens, &size, 0);
 }

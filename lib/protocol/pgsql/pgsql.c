@@ -21,16 +21,7 @@ void _pgsql_init(void *hspush) {
     _hs_push = hspush;
 }
 void _pgsql_pkfree(void *pack) {
-    if (NULL == pack) {
-        return;
-    }
-    pgpack_ctx *pgpack = pack;
-    if (NULL != pgpack->_free_pgpack) {
-        pgpack->_free_pgpack(pgpack->pack);
-    }
-    FREE(pgpack->pack);
-    FREE(pgpack->payload);
-    FREE(pgpack);
+    _pgpack_free(pack);
 }
 void _pgsql_udfree(ud_cxt *ud) {
     if (NULL == ud->extra) {
@@ -46,6 +37,16 @@ void _pgsql_udfree(ud_cxt *ud) {
 }
 void _pgsql_closed(ud_cxt *ud) {
     _pgsql_udfree(ud);
+}
+int32_t _pgsql_may_resume(void *data) {
+    if (NULL == data) {
+        return ERR_OK;
+    }
+    pgpack_ctx *pgpack = data;
+    if (PGPACK_NOTIFICATION == pgpack->type) {
+        return ERR_FAILED;
+    }
+    return ERR_OK;
 }
 //请求是否ssl加密
 int32_t _pgsql_on_connected(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud, int32_t err) {
@@ -152,32 +153,24 @@ static char *_pgsql_get_authmod(pgsql_ctx *pg, binary_ctx *breader) {
 //password方式认证 GSSResponse 
 static int32_t _pgsql_password_auth(pgsql_ctx *pg, ev_ctx *ev, ud_cxt *ud) {
     binary_ctx bwriter;
-    binary_init(&bwriter, NULL, 0, 0);
-    binary_set_int8(&bwriter, 'p');
-    binary_set_skip(&bwriter, 4);
+    pgsql_pack_start(&bwriter, 'p');
     binary_set_string(&bwriter, pg->password, 0);
-    size_t size = bwriter.offset;
-    binary_offset(&bwriter, 1);
-    binary_set_integer(&bwriter, size - 1, 4, 0);
-    return ev_send(ev, pg->fd, pg->skid, bwriter.data, size, 0);
+    pgsql_pack_end(&bwriter);
+    return ev_send(ev, pg->fd, pg->skid, bwriter.data, bwriter.offset, 0);
 }
 //scram-sha-256 第一步
 static int32_t _pgsql_scram_client_first(pgsql_ctx *pg, ev_ctx *ev, ud_cxt *ud, const char *mod) {
     pg->scram = scram_init(DG_SHA256);
     char *first_message = scram_client_first_message(pg->scram, NULL);
     binary_ctx bwriter;
-    binary_init(&bwriter, NULL, 0, 0);
-    binary_set_int8(&bwriter, 'p');
-    binary_set_skip(&bwriter, 4);
+    pgsql_pack_start(&bwriter, 'p');
     binary_set_string(&bwriter, mod, 0);
     size_t fmlens = strlen(first_message);
     binary_set_integer(&bwriter, fmlens, 4, 0);
     binary_set_string(&bwriter, first_message, fmlens);
     FREE(first_message);
-    size_t size = bwriter.offset;
-    binary_offset(&bwriter, 1);
-    binary_set_integer(&bwriter, size - 1, 4, 0);
-    return ev_send(ev, pg->fd, pg->skid, bwriter.data, size, 0);
+    pgsql_pack_end(&bwriter);
+    return ev_send(ev, pg->fd, pg->skid, bwriter.data, bwriter.offset, 0);
 }
 //scram-sha-256 第二步
 static int32_t _pgsql_scram_client_final(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *breader, ud_cxt *ud) {
@@ -186,15 +179,11 @@ static int32_t _pgsql_scram_client_final(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *
    }
    char *final_message = scram_client_final_message(pg->scram, pg->password);
    binary_ctx bwriter;
-   binary_init(&bwriter, NULL, 0, 0);
-   binary_set_int8(&bwriter, 'p');
-   binary_set_skip(&bwriter, 4);
+   pgsql_pack_start(&bwriter, 'p');
    binary_set_string(&bwriter, final_message, strlen(final_message));
    FREE(final_message);
-   size_t size = bwriter.offset;
-   binary_offset(&bwriter, 1);
-   binary_set_integer(&bwriter, size - 1, 4, 0);
-   return ev_send(ev, pg->fd, pg->skid, bwriter.data, size, 0);
+   pgsql_pack_end(&bwriter);
+   return ev_send(ev, pg->fd, pg->skid, bwriter.data, bwriter.offset, 0);
 }
 static void _pgsql_auth_process(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *breader, ud_cxt *ud, int32_t *status) {
     int32_t code = (int32_t)binary_get_integer(breader, 4, 0);
@@ -248,7 +237,7 @@ static void _pgsql_auth_response(pgsql_ctx *pg, ev_ctx *ev, buffer_ctx *buf, ud_
     binary_get_skip(&breader, 5);
     switch (pack[0]) {// R/R/S/.../K/Z
     case 'E': {
-        char *err = _pgpack_error(pg, &breader);
+        char *err = _pgpack_error_notice(&breader);
         _hs_push(pg->fd, pg->skid, 1, ud, ERR_FAILED, err, strlen(err));
         BIT_SET(*status, PROT_ERROR);
         break;
@@ -281,7 +270,7 @@ static pgpack_ctx *_pgsql_command_response(pgsql_ctx *pg, buffer_ctx *buf, ud_cx
     }
     binary_ctx breader;
     binary_init(&breader, payload, lens + 1, 0);//1 操作码
-    return _pgsql_parser(pg, &breader, ud, status);
+    return _pgpack_parser(pg, &breader, ud, status);
 }
 void *pgsql_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     pgsql_ctx *pg = (pgsql_ctx *)ud->extra;

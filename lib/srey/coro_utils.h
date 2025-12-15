@@ -126,6 +126,10 @@ int32_t pgsql_connect(task_ctx *task, pgsql_ctx *pg);
 void pgsql_quit(pgsql_ctx *pg);
 int32_t pgsql_selectdb(pgsql_ctx *pg, const char *database);
 int32_t pgsql_ping(pgsql_ctx *pg);
+pgpack_ctx *pgsql_query(pgsql_ctx *pg, const char *sql);
 
+int32_t pgsql_stmt_prepare(pgsql_ctx *pg, const char *name, const char *sql, int16_t nparam, uint32_t *oids);
+pgpack_ctx *pgsql_stmt_execute(pgsql_ctx *pg, const char *name, pgsql_bind_ctx *bind, int16_t resultformat);
+void pgsql_stmt_close(pgsql_ctx *pg, const char *name);
 
 #endif//CORO_UTILS_H_

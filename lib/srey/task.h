@@ -130,6 +130,42 @@ int32_t task_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl, 
 /// <param name="skid">链接ID</param>
 /// <returns>ERR_OK 成功</returns>
 int32_t task_udp(task_ctx *task, const char *ip, uint16_t port, SOCKET *fd, uint64_t *skid);
+/// <summary>
+/// 设置task_request超时时间
+/// </summary>
+/// <param name="task">task_ctx</param>
+/// <param name="ms">毫秒</param>
+void task_set_request_timeout(task_ctx *task, uint32_t ms);
+/// <summary>
+/// 获取task_request超时时间
+/// </summary>
+/// <param name="task">task_ctx</param>
+/// <returns>毫秒</returns>
+uint32_t task_get_request_timeout(task_ctx *task);
+/// <summary>
+/// 设置task_connect超时时间
+/// </summary>
+/// <param name="task">task_ctx</param>
+/// <param name="ms">毫秒</param>
+void task_set_connect_timeout(task_ctx *task, uint32_t ms);
+/// <summary>
+/// 获取task_connect超时时间
+/// </summary>
+/// <param name="task">task_ctx</param>
+/// <returns>毫秒</returns>
+uint32_t task_get_connect_timeout(task_ctx *task);
+/// <summary>
+/// 设置网络读取超时时间
+/// </summary>
+/// <param name="task">task_ctx</param>
+/// <param name="ms">毫秒</param>
+void task_set_netread_timeout(task_ctx *task, uint32_t ms);
+/// <summary>
+/// 获取网络读取超时时间
+/// </summary>
+/// <param name="task">task_ctx</param>
+/// <returns>毫秒</returns>
+uint32_t task_get_netread_timeout(task_ctx *task);
 //注册回调
 void on_accepted(task_ctx *task, _net_accept_cb _accept);
 void on_recved(task_ctx *task, _net_recv_cb _recv);

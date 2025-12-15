@@ -153,6 +153,15 @@ static void *_unpack_default(buffer_ctx *buf, size_t *size, ud_cxt *ud) {
     *size = lens;
     return unpack;
 }
+int32_t prots_may_resume(pack_type pktype, void *data) {
+    switch (pktype) {
+    case PACK_PGSQL:
+        return _pgsql_may_resume(data);
+    default:
+        break;
+    }
+    return ERR_OK;
+}
 void *prots_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status) {
     *size = 0;
