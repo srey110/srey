@@ -322,6 +322,9 @@
     <ClInclude Include="protocol\pgsql\pgsql_reader.h">
       <Filter>protocol\pgsql</Filter>
     </ClInclude>
+    <ClInclude Include="protocol\pgsql\pgsql_bind.h">
+      <Filter>protocol\pgsql</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="event\event.c">
@@ -529,6 +532,9 @@
       <Filter>protocol\pgsql</Filter>
     </ClCompile>
     <ClCompile Include="protocol\pgsql\pgsql_reader.c">
+      <Filter>protocol\pgsql</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\pgsql\pgsql_bind.c">
       <Filter>protocol\pgsql</Filter>
     </ClCompile>
   </ItemGroup>

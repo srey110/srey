@@ -88,7 +88,7 @@ static void _pgpack_row_description(pgsql_ctx *pg, binary_ctx *breader) {
         field->type_oid = (int32_t)binary_get_integer(breader, 4, 0);
         field->lens = (int16_t)binary_get_integer(breader, 2, 0);
         field->type_modifier = (int32_t)binary_get_integer(breader, 4, 0);
-        field->format = (int16_t)binary_get_integer(breader, 2, 0);
+        field->format = (pgpack_format)binary_get_integer(breader, 2, 0);
     }
 }
 //DataRow

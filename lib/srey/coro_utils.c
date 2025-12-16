@@ -317,7 +317,7 @@ int32_t pgsql_stmt_prepare(pgsql_ctx *pg, const char *name, const char *sql, int
     }
     return PGPACK_OK == pgpack->type ? ERR_OK : ERR_FAILED;
 }
-pgpack_ctx *pgsql_stmt_execute(pgsql_ctx *pg, const char *name, pgsql_bind_ctx *bind, int16_t resultformat) {
+pgpack_ctx *pgsql_stmt_execute(pgsql_ctx *pg, const char *name, pgsql_bind_ctx *bind, pgpack_format resultformat) {
     size_t lens;
     void *exec = pgsql_pack_stmt_execute(name, bind, resultformat, &lens);
     size_t size;

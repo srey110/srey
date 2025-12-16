@@ -19,7 +19,7 @@ typedef struct pgpack_notification {
 typedef struct pgpack_field {//RowDescription 行描述
     int16_t index;//如果该字段可以被识别为特定表格的列，则为该列的属性编号；否则为零
     int16_t lens;//数据类型大小 负值表示可变宽度类型
-    int16_t format;//字段格式代码。0(文本) 1(二进制)
+    pgpack_format format;//字段格式代码
     int32_t table_oid;//表的对象ID
     int32_t type_oid;//数据类型的对象ID  
     int32_t type_modifier;//类型修饰符
@@ -31,8 +31,8 @@ typedef struct pgpack_row {//DataRow  数据行
     char *payload;//完整消息
 }pgpack_row;
 typedef struct pgsql_reader_ctx {
-    int16_t format;
     int16_t field_count;
+    pgpack_format format;
     int32_t index;
     pgpack_field *fields;
     arr_ptr_ctx arr_rows;
@@ -58,7 +58,7 @@ typedef struct pgsql_ctx {
 typedef struct pgsql_bind_ctx {
     uint16_t nparam;
     buf_ctx *values;
-    int16_t *format;
+    pgpack_format *format;
 }pgsql_bind_ctx;
 
 #endif//PGSQL_STRUCT_H_

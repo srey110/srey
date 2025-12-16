@@ -7,8 +7,10 @@ typedef enum pgpack_type {
     PGPACK_NOTIFICATION//NotificationResponse
 }pgpack_type;
 
-#define FORMAT_TEXT 0
-#define FORMAT_BINARY 1
+typedef enum pgpack_format {
+    FORMAT_TEXT = 0,
+    FORMAT_BINARY
+}pgpack_format;
 
 //OID
 #define BOOLOID 16

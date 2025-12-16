@@ -72,6 +72,7 @@
     <ClInclude Include="protocol\mysql\mysql_struct.h" />
     <ClInclude Include="protocol\mysql\mysql_utils.h" />
     <ClInclude Include="protocol\pgsql\pgsql.h" />
+    <ClInclude Include="protocol\pgsql\pgsql_bind.h" />
     <ClInclude Include="protocol\pgsql\pgsql_macro.h" />
     <ClInclude Include="protocol\pgsql\pgsql_pack.h" />
     <ClInclude Include="protocol\pgsql\pgsql_parse.h" />
@@ -152,6 +153,7 @@
     <ClCompile Include="protocol\mysql\mysql_reader.c" />
     <ClCompile Include="protocol\mysql\mysql_utils.c" />
     <ClCompile Include="protocol\pgsql\pgsql.c" />
+    <ClCompile Include="protocol\pgsql\pgsql_bind.c" />
     <ClCompile Include="protocol\pgsql\pgsql_pack.c" />
     <ClCompile Include="protocol\pgsql\pgsql_parse.c" />
     <ClCompile Include="protocol\pgsql\pgsql_reader.c" />

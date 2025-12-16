@@ -164,9 +164,9 @@ int32_t pgsql_stmt_prepare(pgsql_ctx *pg, const char *name, const char *sql, int
 /// <param name="pg">pgsql_ctx</param>
 /// <param name="name">名称</param>
 /// <param name="bind">pgsql_bind_ctx</param>
-/// <param name="resultformat">结果格式 FORMAT_TEXT FORMAT_BINARY</param>
+/// <param name="resultformat">pgpack_format</param>
 /// <returns>NULL 失败  pgpack_ctx</returns>
-pgpack_ctx *pgsql_stmt_execute(pgsql_ctx *pg, const char *name, pgsql_bind_ctx *bind, int16_t resultformat);
+pgpack_ctx *pgsql_stmt_execute(pgsql_ctx *pg, const char *name, pgsql_bind_ctx *bind, pgpack_format resultformat);
 /// <summary>
 /// 预处理关闭
 /// </summary>

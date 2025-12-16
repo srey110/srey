@@ -7,9 +7,9 @@
 /// pgsql_reader_ctx 初始化
 /// </summary>
 /// <param name="pgpack">pgpack_ctx</param>
-/// <param name="format">格式 FORMAT_TEXT FORMAT_BINARY pgsql_stmt_execute中的格式</param>
+/// <param name="format">pgpack_format</param>
 /// <returns>pgsql_reader_ctx NULL 失败</returns>
-pgsql_reader_ctx *pgsql_reader_init(pgpack_ctx *pgpack, int16_t format);
+pgsql_reader_ctx *pgsql_reader_init(pgpack_ctx *pgpack, pgpack_format format);
 /// <summary>
 /// pgsql_reader_ctx 释放
 /// </summary>

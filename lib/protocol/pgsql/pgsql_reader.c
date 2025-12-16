@@ -1,7 +1,7 @@
 #include "protocol/pgsql/pgsql_reader.h"
 #include "protocol/pgsql/pgsql_parse.h"
 
-pgsql_reader_ctx *pgsql_reader_init(pgpack_ctx *pgpack, int16_t format) {
+pgsql_reader_ctx *pgsql_reader_init(pgpack_ctx *pgpack, pgpack_format format) {
     if (NULL == pgpack->pack
         || PGPACK_OK != pgpack->type) {
         return NULL;
