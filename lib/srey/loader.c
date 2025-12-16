@@ -246,7 +246,7 @@ static void _task_closing(loader_ctx *loader) {
             rwlock_unlock(&loader->lckmaptasks);
             break;
         }
-        if (time >= 5 * 1000) {
+        if (time >= 15 * 1000) {
             time = 0;
             hashmap_scan(loader->maptasks, _closing_timeout, NULL);
         }

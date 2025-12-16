@@ -21,7 +21,7 @@ void mysql_reader_free(mysql_reader_ctx *reader);
 /// <returns>数据条数</returns>
 size_t mysql_reader_size(mysql_reader_ctx *reader);
 /// <summary>
-/// 第几条数据
+/// 移到第几条数据
 /// </summary>
 /// <param name="reader">mysql_reader_ctx</param>
 /// <param name="pos">条数</param>

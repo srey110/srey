@@ -483,6 +483,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads) {
 }
 static void _free_pips(watcher_ctx *watcher) {
     void *data;
+    sock_ctx *skctx;
     int32_t j, cnt, nread;
     cmd_ctx cmds[CMD_MAX_NREAD];
     for (uint32_t i = 0; i < watcher->npipes; i++) {
@@ -493,9 +494,21 @@ static void _free_pips(watcher_ctx *watcher) {
             }
             cnt = nread / sizeof(cmd_ctx);
             for (j = 0; j < cnt; j++) {
-                if (CMD_SEND == cmds[j].cmd) {
+                switch (cmds[j].cmd) {
+                case CMD_SEND:
                     data = (void *)cmds[j].arg;
                     FREE(data);
+                    break;
+                case CMD_CONN:
+                    skctx = (sock_ctx *)cmds[j].arg;
+                    _free_sk(skctx);
+                    break;
+                case CMD_ADDUDP:
+                    skctx = (sock_ctx *)cmds[j].arg;
+                    _free_udp(skctx);
+                    break;
+                default:
+                    break;
                 }
             }
         }
@@ -505,23 +518,23 @@ static void _free_pips(watcher_ctx *watcher) {
     FREE(watcher->pipes);
 }
 void ev_free(ev_ctx *ctx) {
+    //stop
     uint32_t i;
     cmd_ctx cmd;
     cmd.cmd = CMD_STOP;
-    for (i = 0; i < ctx->nthreads; i++) {
-        _send_cmd(&ctx->watcher[i], ctx->watcher[i].npipes - 1, &cmd);
-    }
-    for (i = 0; i < ctx->nthreads; i++) {
-        thread_join(ctx->watcher[i].thevent);
-    }
     watcher_ctx *watcher;
     for (i = 0; i < ctx->nthreads; i++) {
         watcher = &ctx->watcher[i];
+        _send_cmd(watcher, watcher->npipes - 1, &cmd);
+    }
+    for (i = 0; i < ctx->nthreads; i++) {
+        watcher = &ctx->watcher[i];
+        thread_join(watcher->thevent);
         _free_pips(watcher);
 #ifdef EV_POLLSET
         pollset_destroy(watcher->evfd);
 #else
-        close(watcher->evfd); 
+        close(watcher->evfd);
 #endif
 #ifdef COMMIT_NCHANGES
         FREE(watcher->changes);
@@ -531,6 +544,7 @@ void ev_free(ev_ctx *ctx) {
         pool_free(&watcher->pool);
     }
     FREE(ctx->watcher);
+    //free listener
     struct listener_ctx **lsn;
     uint32_t nlsn = arr_ptr_size(&ctx->arrlsn);
     for (i = 0; i < nlsn; i++) {

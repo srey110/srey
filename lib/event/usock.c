@@ -397,16 +397,14 @@ static void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
         return;
     }
     if (ERR_OK != _call_conn_cb(watcher->ev, tcp, ERR_OK)) {
-        _remove_fd(watcher, tcp->sock.fd);
-        pool_push(&watcher->pool, &tcp->sock);
+        _disconnect(watcher, skctx);
         return;
     }
 #if WITH_SSL
     if (NULL != tcp->evssl) {
         if (ERR_OK != _ssl_exchange(watcher, tcp, tcp->evssl)) {
-            _call_close_cb(watcher->ev, tcp);
-            _remove_fd(watcher, tcp->sock.fd);
-            pool_push(&watcher->pool, &tcp->sock);
+            _disconnect(watcher, skctx);
+            return;
         }
     }
 #endif
@@ -501,14 +499,6 @@ static void _on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
 void _add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) {
     sock_ctx *skctx = pool_pop(&watcher->pool, fd, &lsn->cbs, &lsn->ud);
     tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
-#if WITH_SSL
-    if (NULL != lsn->evssl) {
-        if (ERR_OK != _ssl_exchange(watcher, tcp, lsn->evssl)) {
-            pool_push(&watcher->pool, skctx);
-            return;
-        }
-    }
-#endif
     _add_fd(watcher, skctx);
     if (ERR_OK != _add_event(watcher, fd, &skctx->events, EVENT_READ, skctx)) {
         _remove_fd(watcher, fd);
@@ -516,9 +506,17 @@ void _add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) {
         return;
     }
     if (ERR_OK != _call_acp_cb(watcher->ev, tcp)) {
-        _remove_fd(watcher, fd);
-        pool_push(&watcher->pool, skctx);
+        _disconnect(watcher, skctx);
+        return;
     }
+#if WITH_SSL
+    if (NULL != lsn->evssl) {
+        if (ERR_OK != _ssl_exchange(watcher, tcp, lsn->evssl)) {
+            _disconnect(watcher, skctx);
+            return;
+        }
+    }
+#endif
 }
 static void _close_lsnsock(listener_ctx *lsn, int32_t cnt) {
 #ifndef SO_REUSEPORT

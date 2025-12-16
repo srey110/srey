@@ -471,10 +471,10 @@ static void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
     overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
     if (ERROR_SUCCESS != oltcp->ol_r.overlapped.Internal) {
         _call_conn_cb(watcher->ev, oltcp, ERR_FAILED);
+        _remove_fd(watcher, oltcp->ol_r.fd);
         pool_push(&watcher->pool, &oltcp->ol_r);
         return;
     }
-    _add_fd(watcher, &oltcp->ol_r);
     if (ERR_OK != _post_recv(&oltcp->ol_r, &oltcp->bytes_r, &oltcp->flag, &oltcp->wsabuf, 1)) {
         _call_conn_cb(watcher->ev, oltcp, ERR_FAILED);
         _remove_fd(watcher, oltcp->ol_r.fd);
@@ -482,16 +482,14 @@ static void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
         return;
     }
     if (ERR_OK != _call_conn_cb(watcher->ev, oltcp, ERR_OK)) {
-        _remove_fd(watcher, oltcp->ol_r.fd);
-        pool_push(&watcher->pool, &oltcp->ol_r);
+        _disconnect(skctx);
         return;
     }
 #if WITH_SSL
     if (NULL != oltcp->evssl) {
         if (ERR_OK != _ssl_exchange(watcher, oltcp, oltcp->evssl)) {
-            _call_close_cb(watcher->ev, oltcp);
-            _remove_fd(watcher, oltcp->ol_r.fd);
-            pool_push(&watcher->pool, &oltcp->ol_r);
+            _disconnect(skctx);
+            return;
         }
     }
 #endif
@@ -541,8 +539,9 @@ int32_t ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const u
 #if WITH_SSL
     oltcp->evssl = evssl;
 #endif
+    _cmd_add(watcher, skctx, *fd);
     if (ERR_OK != _post_connect(oltcp, &addr)) {
-        _free_sk(skctx);
+        _cmd_remove(watcher, *fd, *skid);
         return ERR_FAILED;
     }
     return ERR_OK;
@@ -612,14 +611,6 @@ void _add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) {
     }
     sock_ctx *skctx = pool_pop(&watcher->pool, fd, &lsn->cbs, &lsn->ud);
     overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
-#if WITH_SSL
-    if (NULL != lsn->evssl) {
-        if (ERR_OK != _ssl_exchange(watcher, oltcp, lsn->evssl)) {
-            pool_push(&watcher->pool, skctx);
-            return;
-        }
-    }
-#endif
     _add_fd(watcher, skctx);
     if (ERR_OK != _post_recv(&oltcp->ol_r, &oltcp->bytes_r, &oltcp->flag, &oltcp->wsabuf, 1)) {
         _remove_fd(watcher, skctx->fd);
@@ -627,9 +618,17 @@ void _add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) {
         return;
     }
     if (ERR_OK != _call_acp_cb(watcher->ev, oltcp)) {
-        _remove_fd(watcher, skctx->fd);
-        pool_push(&watcher->pool, skctx);
+        _disconnect(skctx);
+        return;
     }
+#if WITH_SSL
+    if (NULL != lsn->evssl) {
+        if (ERR_OK != _ssl_exchange(watcher, oltcp, lsn->evssl)) {
+            _disconnect(skctx);
+            return;
+        }
+    }
+#endif
 }
 static void _free_acceptex(listener_ctx *lsn, int32_t cnt) {
     for (int32_t i = 0; i < cnt; i++) {

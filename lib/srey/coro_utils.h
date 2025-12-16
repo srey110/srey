@@ -123,13 +123,55 @@ int32_t smtp_send(smtp_ctx *smtp, mail_ctx *mail);
 /// <param name="pg">pgsql_ctx, pgsql_init</param>
 /// <returns>ERR_OK 成功</returns>
 int32_t pgsql_connect(task_ctx *task, pgsql_ctx *pg);
+/// <summary>
+/// 关闭链接
+/// </summary>
+/// <param name="pg">pgsql_ctx</param>
 void pgsql_quit(pgsql_ctx *pg);
+/// <summary>
+/// 选择数据库
+/// </summary>
+/// <param name="pg">pgsql_ctx</param>
+/// <param name="database">数据库</param>
+/// <returns>ERR_OK 成功</returns>
 int32_t pgsql_selectdb(pgsql_ctx *pg, const char *database);
+/// <summary>
+/// ping
+/// </summary>
+/// <param name="pg">pgsql_ctx</param>
+/// <returns>ERR_OK 成功</returns>
 int32_t pgsql_ping(pgsql_ctx *pg);
+/// <summary>
+/// 执行SQL语句
+/// </summary>
+/// <param name="pg">pgsql_ctx</param>
+/// <param name="sql">SQL语句</param>
+/// <returns>NULL 失败  pgpack_ctx</returns>
 pgpack_ctx *pgsql_query(pgsql_ctx *pg, const char *sql);
-
+/// <summary>
+/// 预处理
+/// </summary>
+/// <param name="pg">pgsql_ctx</param>
+/// <param name="name">名称</param>
+/// <param name="sql">sql语句</param>
+/// <param name="nparam">参数数量</param>
+/// <param name="oids">参数OID(pgsql_macro.h)</param>
+/// <returns>ERR_OK 成功</returns>
 int32_t pgsql_stmt_prepare(pgsql_ctx *pg, const char *name, const char *sql, int16_t nparam, uint32_t *oids);
+/// <summary>
+/// 预处理执行
+/// </summary>
+/// <param name="pg">pgsql_ctx</param>
+/// <param name="name">名称</param>
+/// <param name="bind">pgsql_bind_ctx</param>
+/// <param name="resultformat">结果格式 FORMAT_TEXT FORMAT_BINARY</param>
+/// <returns>NULL 失败  pgpack_ctx</returns>
 pgpack_ctx *pgsql_stmt_execute(pgsql_ctx *pg, const char *name, pgsql_bind_ctx *bind, int16_t resultformat);
+/// <summary>
+/// 预处理关闭
+/// </summary>
+/// <param name="pg">pgsql_ctx</param>
+/// <param name="name">名称</param>
 void pgsql_stmt_close(pgsql_ctx *pg, const char *name);
 
 #endif//CORO_UTILS_H_

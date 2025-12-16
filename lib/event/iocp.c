@@ -246,7 +246,7 @@ static void _init_cmd(watcher_ctx *watcher) {
 }
 void ev_init(ev_ctx *ctx, uint32_t nthreads) {
     ctx->nthreads = (0 == nthreads ? procscnt() : nthreads);
-    ctx->nacpex = ctx->nthreads;
+    ctx->nacpex = ctx->nthreads > 1 ? ctx->nthreads / 2 : 1;
     sock_init();
     _init_funcs(ctx);
     MALLOC(ctx->watcher, sizeof(watcher_ctx) * ctx->nthreads);
@@ -267,7 +267,6 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads) {
         _init_cmd(watcher);
         watcher->thevent = thread_creat(_loop_event, watcher);
     }
-
     spin_init(&ctx->spin, SPIN_CNT_LSN);
     arr_ptr_init(&ctx->arrlsn, 0);
     HANDLE iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, ctx->nacpex);
@@ -287,13 +286,26 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads) {
 static void _free_cmd(watcher_ctx *watcher) {
     cmd_ctx *cmd;
     void *data;
+    sock_ctx *skctx;
     overlap_cmd_ctx *olcmd;
     for (uint32_t i = 0; i < watcher->ncmd; i++) {
         olcmd = &watcher->cmd[i];
         while (NULL != (cmd = qu_cmd_pop(&olcmd->qu))) {
-            if (CMD_SEND == cmd->cmd) {
+            switch (cmd->cmd) {
+            case CMD_SEND:
                 data = (void *)cmd->arg;
                 FREE(data);
+                break;
+            case CMD_ADD:
+                skctx = (sock_ctx *)cmd->arg;
+                if (SOCK_STREAM == skctx->type) {
+                    _free_sk(skctx);
+                } else {
+                    _free_udp(skctx);
+                }
+                break;
+            default:
+                break;
             }
         }
         CLOSE_SOCK(olcmd->ol_r.fd);
@@ -304,6 +316,7 @@ static void _free_cmd(watcher_ctx *watcher) {
     FREE(watcher->cmd);
 }
 void ev_free(ev_ctx *ctx) {
+    //stop free accept
     uint32_t i;
     for (i = 0; i < ctx->nacpex; i++) {
         ctx->acpex[i].stop = 1;
@@ -312,6 +325,17 @@ void ev_free(ev_ctx *ctx) {
     for (i = 0; i < ctx->nacpex; i++) {
         thread_join(ctx->acpex[i].thacp);
     }
+    (void)CloseHandle(ctx->acpex[0].iocp);
+    FREE(ctx->acpex);
+    //free listener
+    struct listener_ctx **lsn;
+    uint32_t nlsn = arr_ptr_size(&ctx->arrlsn);
+    for (i = 0; i < nlsn; i++) {
+        lsn = (struct listener_ctx **)arr_ptr_at(&ctx->arrlsn, i);
+        _freelsn(*lsn);
+    }
+    arr_ptr_free(&ctx->arrlsn);
+    //stop free watcher
     cmd_ctx cmd;
     cmd.cmd = CMD_STOP;
     watcher_ctx *watcher;
@@ -320,26 +344,15 @@ void ev_free(ev_ctx *ctx) {
         _send_cmd(watcher, watcher->ncmd - 1, &cmd);
     }
     for (i = 0; i < ctx->nthreads; i++) {
-        thread_join(ctx->watcher[i].thevent);
-    }
-    for (i = 0; i < ctx->nthreads; i++) {
         watcher = &ctx->watcher[i];
+        thread_join(watcher->thevent);
+        (void)CloseHandle(watcher->iocp);
         _free_cmd(watcher);
         hashmap_free(watcher->element);
         pool_free(&watcher->pool);
-        (void)CloseHandle(watcher->iocp);
     }
     FREE(ctx->watcher);
-    struct listener_ctx **lsn;
-    uint32_t nlsn = arr_ptr_size(&ctx->arrlsn);
-    for (i = 0; i < nlsn; i++) {
-        lsn = (struct listener_ctx **)arr_ptr_at(&ctx->arrlsn, i);
-        _freelsn(*lsn);
-    }
-    arr_ptr_free(&ctx->arrlsn);
     spin_free(&ctx->spin);
-    (void)CloseHandle(ctx->acpex[0].iocp);
-    FREE(ctx->acpex);
     sock_clean();
 }
 
