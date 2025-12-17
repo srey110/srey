@@ -1,5 +1,5 @@
 # Srey
-c lua(Optional)lightweight server framework.   
+c lua(opt)lightweight server framework.   
 support IOCP、EPOLL、KQUEUE、EVPORT、POLLSET、DEVPOLL、
 SSL、Http、Websocket、MQTT、DNS、MySql、PostgreSQL、Redis...
 
