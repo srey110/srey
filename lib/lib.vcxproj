@@ -42,6 +42,7 @@
     <ClInclude Include="crypt\md4.h" />
     <ClInclude Include="crypt\md5.h" />
     <ClInclude Include="crypt\padding.h" />
+    <ClInclude Include="crypt\scram.h" />
     <ClInclude Include="crypt\sha1.h" />
     <ClInclude Include="crypt\sha256.h" />
     <ClInclude Include="crypt\sha512.h" />
@@ -59,6 +60,8 @@
     <ClInclude Include="protocol\dns.h" />
     <ClInclude Include="protocol\http.h" />
     <ClInclude Include="protocol\mongo\mongo.h" />
+    <ClInclude Include="protocol\mongo\mongo_macro.h" />
+    <ClInclude Include="protocol\mongo\mongo_struct.h" />
     <ClInclude Include="protocol\mqtt\mqtt.h" />
     <ClInclude Include="protocol\mqtt\mqtt_macro.h" />
     <ClInclude Include="protocol\mqtt\mqtt_pack.h" />
@@ -77,7 +80,6 @@
     <ClInclude Include="protocol\pgsql\pgsql_pack.h" />
     <ClInclude Include="protocol\pgsql\pgsql_parse.h" />
     <ClInclude Include="protocol\pgsql\pgsql_reader.h" />
-    <ClInclude Include="protocol\pgsql\pgsql_scram.h" />
     <ClInclude Include="protocol\pgsql\pgsql_struct.h" />
     <ClInclude Include="protocol\prots.h" />
     <ClInclude Include="protocol\redis.h" />
@@ -125,6 +127,7 @@
     <ClCompile Include="crypt\md4.c" />
     <ClCompile Include="crypt\md5.c" />
     <ClCompile Include="crypt\padding.c" />
+    <ClCompile Include="crypt\scram.c" />
     <ClCompile Include="crypt\sha1.c" />
     <ClCompile Include="crypt\sha256.c" />
     <ClCompile Include="crypt\sha512.c" />
@@ -157,7 +160,6 @@
     <ClCompile Include="protocol\pgsql\pgsql_pack.c" />
     <ClCompile Include="protocol\pgsql\pgsql_parse.c" />
     <ClCompile Include="protocol\pgsql\pgsql_reader.c" />
-    <ClCompile Include="protocol\pgsql\pgsql_scram.c" />
     <ClCompile Include="protocol\prots.c" />
     <ClCompile Include="protocol\redis.c" />
     <ClCompile Include="protocol\smtp\mail.c" />

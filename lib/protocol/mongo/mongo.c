@@ -6,26 +6,7 @@ typedef enum parse_status {
     AUTH,
     COMMAND
 }parse_status;
-typedef enum mongo_prot {
-    MONGO_COMPRESSED = 2012,
-    MONGO_MSG = 2013
-}mongo_prot;
-typedef enum mongo_flags {
-    MF_CHECKSUM = 0x01,
-    MF_MORETOCOME = 0x02,
-    EXHAUSTALLOWED = 1 << 16,
-}mongo_flags;
-typedef struct mongo_head {
-    int32_t size; // total message size, including this
-    int32_t reqid;//id for this message
-    int32_t respto;//requestID from the original request(used in responses from the database)
-    int32_t prot;//message
-}mongo_head;
-typedef struct mongo_msg {
-    mongo_head head;
-    uint32_t flags;//message flags
-    char data[0];
-}mongo_msg;
+
 static _handshaked_push _hs_push;
 
 void _mongo_init(void *hspush) {
@@ -75,7 +56,7 @@ void *mongo_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     pack->head.reqid = (int32_t)unpack_integer((const char *)&pack->head.reqid, sizeof(pack->head.reqid), 1, 0);
     pack->head.respto = (int32_t)unpack_integer((const char *)&pack->head.respto, sizeof(pack->head.respto), 1, 0);
     pack->head.prot = (int32_t)unpack_integer((const char *)&pack->head.prot, sizeof(pack->head.prot), 1, 0);
-    if (MONGO_MSG != pack->head.prot) {
+    if (OP_MSG != pack->head.prot) {
         BIT_SET(*status, PROT_ERROR);
         FREE(pack);
         return NULL;
@@ -98,7 +79,7 @@ void *mongo_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     return pack;
 }
 void mongo_init(mongo_ctx *mongo, const char *ip, uint16_t port, struct evssl_ctx *evssl,
-    const char *user, const char *password, int8_t authmod, const char *authdb) {
+    const char *user, const char *password, const char *authmod, const char *authdb) {
     ZERO(mongo, sizeof(mongo_ctx));
     mongo->id = 1;
     mongo->fd = INVALID_SOCK;
@@ -111,12 +92,9 @@ void mongo_init(mongo_ctx *mongo, const char *ip, uint16_t port, struct evssl_ct
     if (!EMPTYSTR(password)) {
         strcpy(mongo->password, password);
     }
-    /*if (SCRAM_SHA1 == authmod
-        || SCRAM_SHA256 == authmod) {
-        mongo->authmod = authmod;
-    } else {
-        mongo->authmod = SCRAM_SHA1;
-    }*/
+    if (!EMPTYSTR(authmod)){
+        strcpy(mongo->authmod, authmod);
+    }
     if (!EMPTYSTR(authdb)) {
         strcpy(mongo->authdb, authdb);
     } else {
@@ -134,7 +112,7 @@ void *mongo_pack_msg(mongo_ctx *mongo, const uint8_t *doc, size_t dlens, int32_t
         *reqid = mongo->id;
     }
     msg->head.respto = 0;
-    pack_integer((char *)&msg->head.prot, MONGO_MSG, 4, 1);
+    pack_integer((char *)&msg->head.prot, OP_MSG, 4, 1);
     msg->flags = 0;
     if (NULL != doc
         && 0 != dlens) {

@@ -301,9 +301,6 @@
     <ClInclude Include="protocol\mongo\mongo.h">
       <Filter>protocol\mongo</Filter>
     </ClInclude>
-    <ClInclude Include="protocol\pgsql\pgsql_scram.h">
-      <Filter>protocol\pgsql</Filter>
-    </ClInclude>
     <ClInclude Include="protocol\smtp\smtp.h">
       <Filter>protocol\smtp</Filter>
     </ClInclude>
@@ -324,6 +321,15 @@
     </ClInclude>
     <ClInclude Include="protocol\pgsql\pgsql_bind.h">
       <Filter>protocol\pgsql</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\mongo\mongo_macro.h">
+      <Filter>protocol\mongo</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\mongo\mongo_struct.h">
+      <Filter>protocol\mongo</Filter>
+    </ClInclude>
+    <ClInclude Include="crypt\scram.h">
+      <Filter>crypt</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -516,9 +522,6 @@
     <ClCompile Include="protocol\mongo\mongo.c">
       <Filter>protocol\mongo</Filter>
     </ClCompile>
-    <ClCompile Include="protocol\pgsql\pgsql_scram.c">
-      <Filter>protocol\pgsql</Filter>
-    </ClCompile>
     <ClCompile Include="protocol\smtp\smtp.c">
       <Filter>protocol\smtp</Filter>
     </ClCompile>
@@ -536,6 +539,9 @@
     </ClCompile>
     <ClCompile Include="protocol\pgsql\pgsql_bind.c">
       <Filter>protocol\pgsql</Filter>
+    </ClCompile>
+    <ClCompile Include="crypt\scram.c">
+      <Filter>crypt</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

@@ -39,7 +39,6 @@ typedef struct pgsql_reader_ctx {
 }pgsql_reader_ctx;
 
 typedef struct pgsql_ctx {
-    int8_t scrammod;
     int8_t readyforquery;//'I': 空闲（不在事务块中） 'T': 事务块中  'E':失败的事务块中
     uint16_t port;
     int32_t pid;//后端的进程ID

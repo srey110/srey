@@ -1,6 +1,6 @@
 #include "protocol/pgsql/pgsql.h"
-#include "protocol/pgsql/pgsql_scram.h"
 #include "protocol/pgsql/pgsql_parse.h"
+#include "crypt/scram.h"
 #include "srey/task.h"
 #include "utils/utils.h"
 
@@ -10,11 +10,8 @@ typedef enum parse_status {
     AUTH,
     COMMAND
 }parse_status;
-typedef enum pgsql_scram {
-    SCRAM_SHA_256 = 0x00
-}pgsql_scram;
 
-static const char *_pgsql_authmod[] = {"SCRAM-SHA-256"};//下标与pgsql_scram对应
+static const char *_pgsql_scram_mod[] = { "SCRAM-SHA-256" };
 static _handshaked_push _hs_push;
 
 void _pgsql_init(void *hspush) {
@@ -136,13 +133,12 @@ static char *_pgsql_get_authmod(pgsql_ctx *pg, binary_ctx *breader) {
     char *mod;
     int32_t i;
     size_t remain = breader->size - breader->offset;
-    size_t n = ARRAY_SIZE(_pgsql_authmod);
+    size_t n = ARRAY_SIZE(_pgsql_scram_mod);
     while (remain > 1) {
         mod = binary_get_string(breader, 0);
         for (i = 0; i < n; i++) {
-            if (NULL != _pgsql_authmod[i]
-                && 0 == STRCMP(mod, _pgsql_authmod[i])) {
-                pg->scrammod = i;
+            if (NULL != _pgsql_scram_mod[i]
+                && 0 == STRCMP(mod, _pgsql_scram_mod[i])) {
                 return mod;
             }
         }
@@ -160,7 +156,10 @@ static int32_t _pgsql_password_auth(pgsql_ctx *pg, ev_ctx *ev, ud_cxt *ud) {
 }
 //scram-sha-256 第一步
 static int32_t _pgsql_scram_client_first(pgsql_ctx *pg, ev_ctx *ev, ud_cxt *ud, const char *mod) {
-    pg->scram = scram_init(DG_SHA256);
+    pg->scram = scram_init(mod);
+    if (NULL == pg->scram) {
+        return ERR_FAILED;
+    }
     char *first_message = scram_client_first_message(pg->scram, NULL);
     binary_ctx bwriter;
     pgsql_pack_start(&bwriter, 'p');
@@ -174,7 +173,8 @@ static int32_t _pgsql_scram_client_first(pgsql_ctx *pg, ev_ctx *ev, ud_cxt *ud, 
 }
 //scram-sha-256 第二步
 static int32_t _pgsql_scram_client_final(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *breader, ud_cxt *ud) {
-   if (ERR_OK != scram_read_server_first_message(pg->scram, breader)) {
+   if (ERR_OK != scram_server_first_message(pg->scram,
+       breader->data + breader->offset, breader->size - breader->offset)) {
        return ERR_FAILED;
    }
    char *final_message = scram_client_final_message(pg->scram, pg->password);
@@ -204,7 +204,6 @@ static void _pgsql_auth_process(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *breader, 
             LOG_WARN("unsupported verification methods.");
             break;
         }
-        ASSERTAB(NULL == pg->scram, "scram error.");
         if (ERR_OK != _pgsql_scram_client_first(pg, ev, ud, mod)) {
             BIT_SET(*status, PROT_ERROR);
         }
@@ -215,7 +214,8 @@ static void _pgsql_auth_process(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *breader, 
         }
         break;
     case 0x0c://AuthenticationSASLFinal 
-        if (ERR_OK != scram_server_final(pg->scram, breader)) {
+        if (ERR_OK != scram_server_final_message(pg->scram,
+            breader->data + breader->offset, breader->size - breader->offset)) {
             BIT_SET(*status, PROT_ERROR);
         }
         break;

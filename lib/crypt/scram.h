@@ -7,7 +7,15 @@
 
 #define SCRAM_NONCE_LEN	18
 
+typedef enum scram_status {
+    SCRAM_INIT = 0x00,
+    SCRAM_CLIENT_FIRST_MESSAGE,
+    SCRAM_SERVER_FIRST_MESSAGE,
+    SCRAM_CLIENT_FINAL_MESSAGE,
+    SCRAM_SERVER_FINAL_MESSAGE
+}scram_status;
 typedef struct scram_ctx {
+    scram_status status;
     digest_type dtype;
     int32_t saltlen;//salt³¤¶È
     int32_t	iter;//ÂÖÊý
@@ -23,11 +31,16 @@ typedef struct scram_ctx {
     char saltedpwd[DG_BLOCK_SIZE];//Salted Password
 }scram_ctx;
 
-scram_ctx *scram_init(digest_type dtype);
+//SCRAM-SHA-1 SCRAM-SHA-256 
+scram_ctx *scram_init(const char *method);
 void scram_free(scram_ctx *scram);
+//n,,n=,r=
 char *scram_client_first_message(scram_ctx *scram, const char *user);
-int32_t scram_read_server_first_message(scram_ctx *scram, binary_ctx *breader);
+//r=,s=,i=
+int32_t scram_server_first_message(scram_ctx *scram, char *msg, size_t mlens);
+//c=biws,r=,p=
 char *scram_client_final_message(scram_ctx *scram, const char *pwd);
-int32_t scram_server_final(scram_ctx *scram, binary_ctx *breader);
+//[e=] v=
+int32_t scram_server_final_message(scram_ctx *scram, char *msg, size_t mlens);
 
 #endif//SCRAM_H_
