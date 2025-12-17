@@ -1,18 +1,18 @@
-# srey
-c lua (可选)跨平台服务器框架.   
-支持IOCP、EPOLL、KQUEUE、EVPORT、POLLSET、DEVPOLL网络模型;   
-支持SSL、Http、Websocket、MQTT、DNS、MySql、PostgreSQL、Redis等
+# Srey
+c lua(Optional)lightweight server framework.   
+support IOCP、EPOLL、KQUEUE、EVPORT、POLLSET、DEVPOLL、
+SSL、Http、Websocket、MQTT、DNS、MySql、PostgreSQL、Redis...
 
-## 编译     
-* windows使用vs2015;   
-* linux、unix执行mk.sh编译.
+## Compile     
+* windows use vs2015;   
+* linux、unix run mk.sh.
 
-## 配置文件  
-* config.json 文件配置服务启动参数. 
+## Configuration  
+* config.json Configure service startup parameters. 
 
-## 使用(以http时间显示为例)
-* lua 实现   
-  创建http_sv.lua 并写入如下代码：
+## Use(eg httpd)
+* LUA   
+  create http_sv.lua：
   ```lua
   local srey = require("lib.srey")
   local http = require("lib.http")
@@ -28,9 +28,9 @@ c lua (可选)跨平台服务器框架.
     end
   )
   ```
-  然后在startup.lua注册该服务(task.register("test.http_sv", TASK_NAME.httpsv))即可   
-* c 实现   
-  创建http_sv.h http_sv.c写入如下代码：   
+  then register the service in startup.lua(task.register("test.http_sv", TASK_NAME.httpsv))   
+* C    
+  create http_sv.h http_sv.c：   
   ```c
   static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, uint8_t client, uint8_t slice, void *data, 
       size_t size) {
@@ -52,5 +52,4 @@ c lua (可选)跨平台服务器框架.
       task_register(task, _startup, NULL);
   }
   ```
-  然后在startup.h注册该服务(http_sv(...))即可   
-  更多功能请参考代码... 
+  then register the service in startup.h   
