@@ -20,11 +20,25 @@ char *_pgpack_error_notice(binary_ctx *breader) {
     }
     return bwriter.data;
 }
-static pgpack_ctx *_pgpack_init(pgpack_type type) {
+static pgpack_ctx *_pgpack_new(pgpack_type type) {
     pgpack_ctx *pgpack;
     CALLOC(pgpack, 1, sizeof(pgpack_ctx));
     pgpack->type = type;
     return pgpack;
+}
+static pgpack_ctx *_pgpack_init(pgsql_ctx *pg, pgpack_type type) {
+    if (NULL == pg) {
+        return _pgpack_new(type);
+    }
+    if (NULL == pg->pack) {
+        pg->pack = _pgpack_new(type);
+        return pg->pack;
+    }
+    pgpack_type oldtype = ((pgpack_ctx *)pg->pack)->type;
+    if (type != oldtype) {
+        LOG_WARN("different pack type: %d  %d.", oldtype, type);
+    }
+    return pg->pack;
 }
 void _pgpack_free(pgpack_ctx *pgpack) {
     if (NULL == pgpack) {
@@ -49,7 +63,7 @@ static pgpack_ctx *_pgpack_notification_response(binary_ctx *breader) {
     notification->pid = (int32_t)binary_get_integer(breader, 4, 0);
     notification->channel = binary_get_string(breader, 0);
     notification->notification = binary_get_string(breader, 0);
-    pgpack_ctx *pgpack = _pgpack_init(PGPACK_NOTIFICATION);
+    pgpack_ctx *pgpack = _pgpack_init(NULL, PGPACK_NOTIFICATION);
     pgpack->pack = notification;
     pgpack->_free_pgpack = _pgpack_notification_response_free;
     return pgpack;
@@ -141,9 +155,10 @@ pgpack_ctx *_pgpack_parser(pgsql_ctx *pg, binary_ctx *breader, ud_cxt *ud, int32
     case 'E'://ErrorResponse  ´íÎó
         if (NULL != pg->pack) {
             _pgpack_free(pg->pack);
+            pg->pack = NULL;
             LOG_WARN("an error occurred during the query.");
         }
-        pg->pack = _pgpack_init(PGPACK_ERR);
+        _pgpack_init(pg, PGPACK_ERR);
         pg->pack->pack = _pgpack_error_notice(breader);
         FREE(breader->data);
         break;
@@ -151,49 +166,35 @@ pgpack_ctx *_pgpack_parser(pgsql_ctx *pg, binary_ctx *breader, ud_cxt *ud, int32
         FREE(breader->data);
         break;
     case 'I'://EmptyQueryResponse Query
-        if (NULL == pg->pack) {
-            pg->pack = _pgpack_init(PGPACK_OK);
-        }
+        _pgpack_init(pg, PGPACK_OK);
         FREE(breader->data);
         break;
     case '1'://ParseComplete Parse
-        if (NULL == pg->pack) {
-            pg->pack = _pgpack_init(PGPACK_OK);
-        }
+        _pgpack_init(pg, PGPACK_OK);
         FREE(breader->data);
         break;
     case '2'://BindComplete Bind
-        if (NULL == pg->pack) {
-            pg->pack = _pgpack_init(PGPACK_OK);
-        }
+        _pgpack_init(pg, PGPACK_OK);
         FREE(breader->data);
         break;
     case '3'://CloseComplete Close
-        if (NULL == pg->pack) {
-            pg->pack = _pgpack_init(PGPACK_OK);
-        }
+        _pgpack_init(pg, PGPACK_OK);
         FREE(breader->data);
         break;
     case 't'://ParameterDescription Describe
         FREE(breader->data);
         break;
     case 'T'://RowDescription
-        if (NULL == pg->pack) {
-            pg->pack = _pgpack_init(PGPACK_OK);
-        }
+        _pgpack_init(pg, PGPACK_OK);
         _pgpack_row_description(pg->pack, breader);
         FREE(breader->data);
         break;
     case 'D'://DataRow 
-        if (NULL == pg->pack) {
-            pg->pack = _pgpack_init(PGPACK_OK);
-        }
+        _pgpack_init(pg, PGPACK_OK);
         _pgpack_data_row(pg->pack, breader);
         break;
     case 'C': { //CommandComplete
-        if (NULL == pg->pack) {
-            pg->pack = _pgpack_init(PGPACK_OK);
-        }
+        _pgpack_init(pg, PGPACK_OK);
         char *complete = binary_get_string(breader, 0);
         if (!EMPTYSTR(complete)) {
             MALLOC(pg->pack->complete, strlen(complete) + 1);
