@@ -50,5 +50,11 @@ void pgsql_set_db(pgsql_ctx *pg, const char *database);
 /// <param name="pg">pgsql_ctx</param>
 /// <returns>数据库名</returns>
 const char *pgsql_get_db(pgsql_ctx *pg);
+/// <summary>
+/// 命令执行影响的行数
+/// </summary>
+/// <param name="pgpack">pgpack_ctx</param>
+/// <returns>行数</returns>
+int32_t pgsql_affected_rows(pgpack_ctx *pgpack);
 
 #endif//PGSQL_H_

@@ -33,27 +33,34 @@ void pgsql_reader_next(pgsql_reader_ctx *reader) {
         reader->index++;
     }
 }
-static pgpack_field *_pgsql_reader_field(pgsql_reader_ctx *reader, const char *name, int32_t *pos) {
-    for (int16_t i = 0; i < reader->field_count; i++) {
-        if (0 == strcmp(reader->fields[i].name, name)) {
-            *pos = i;
-            return &reader->fields[i];
-        }
-    }
-    return NULL;
-}
-pgpack_row *pgsql_reader_read(pgsql_reader_ctx *reader, const char *name, pgpack_field **field) {
-    if (reader->index >= (int32_t)arr_ptr_size(&reader->arr_rows)) {
-        return NULL;
-    }
-    int32_t pos;
-    pgpack_field *column = _pgsql_reader_field(reader, name, &pos);
-    if (NULL == column) {
+pgpack_row *pgsql_reader_index(pgsql_reader_ctx *reader, int16_t index, pgpack_field **field) {
+    if (reader->index >= (int32_t)arr_ptr_size(&reader->arr_rows)
+        || (index < 0 || index >= reader->field_count)) {
         return NULL;
     }
     pgpack_row *row = *arr_ptr_at(&reader->arr_rows, (uint32_t)reader->index);
-    if (NULL != field) {
-        *field = column;
+    if (NULL != field
+        && NULL != reader->fields) {
+        *field = &reader->fields[index];
     }
-    return &row[pos];
+    return &row[index];
 }
+static int16_t _pgsql_reader_index(pgsql_reader_ctx *reader, const char *name) {
+    for (int16_t i = 0; i < reader->field_count; i++) {
+        if (0 == strcmp(reader->fields[i].name, name)) {
+            return i;
+        }
+    }
+    return ERR_FAILED;
+}
+pgpack_row *pgsql_reader_name(pgsql_reader_ctx *reader, const char *name, pgpack_field **field) {
+    if (NULL == reader->fields) {
+        return NULL;
+    }
+    int16_t index = _pgsql_reader_index(reader, name);
+    if (ERR_FAILED == index) {
+        return NULL;
+    }
+    return pgsql_reader_index(reader, index, field);
+}
+

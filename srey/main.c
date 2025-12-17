@@ -54,6 +54,7 @@ static void _parse_config(config_ctx *cnf) {
     cnf->nnet = (uint16_t)_json_get_number(json, "nnet");
     cnf->nworker = (uint16_t)_json_get_number(json, "nworker");
     cnf->loglv = (uint8_t)_json_get_number(json, "loglv");
+    cnf->stacksize = (uint32_t)_json_get_number(json, "stacksize");
     _json_get_string(json, "dns", cnf->dns, sizeof(cnf->dns));
     _json_get_string(json, "script", cnf->script, sizeof(cnf->script));
     cnf->harborname = (name_t)_json_get_number(json, "harborname");
@@ -111,7 +112,7 @@ static int32_t service_init(void) {
     unlimit();
     mutex_init(&muexit);
     cond_init(&condexit);
-    g_loader = loader_init(config.nnet, config.nworker);
+    g_loader = loader_init(config.nnet, config.nworker, config.stacksize);
     if (ERR_OK != task_startup(g_loader, &config)) {
         service_exit();
         return ERR_FAILED;

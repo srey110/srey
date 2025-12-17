@@ -322,3 +322,23 @@ void pgsql_set_db(pgsql_ctx *pg, const char *database) {
 const char *pgsql_get_db(pgsql_ctx *pg) {
     return pg->database;
 }
+int32_t pgsql_affected_rows(pgpack_ctx *pgpack) {
+    if (EMPTYSTR(pgpack->complete)) {
+        return 0;
+    }
+    size_t lens = strlen(pgpack->complete);
+    int32_t space = 1;
+    for (size_t i = lens - 1; i >= 0; i--) {
+        if (space){
+            if (' ' != pgpack->complete[i]) {
+                space = 0;
+            }
+            continue;
+        }
+        if (' ' == pgpack->complete[i]) {
+            char *rows = pgpack->complete + i + 1;
+            return (int32_t)strtol(rows, NULL, 10);
+        }
+    }
+    return 0;
+}

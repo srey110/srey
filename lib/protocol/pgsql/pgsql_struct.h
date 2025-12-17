@@ -8,7 +8,7 @@ typedef struct pgpack_ctx {
     pgpack_type type;
     void *pack;
     void(*_free_pgpack)(void *);
-    char complete[32];//CommandComplete 
+    char *complete;//CommandComplete INSERT oid rows; DELETE rows; UPDATE rows; MERGE rows; SELECT rows; MOVE rows; FETCH rows; COPY rows 
 }pgpack_ctx;
 typedef struct pgpack_notification {
     int32_t pid;//后端进程的进程ID

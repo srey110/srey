@@ -184,11 +184,11 @@ static void _monitor_loop(void *arg) {
     }
     LOG_INFO("%s", "worker monitor thread exited.");
 }
-loader_ctx *loader_init(uint16_t nnet, uint16_t nworker) {
+loader_ctx *loader_init(uint16_t nnet, uint16_t nworker, uint32_t stacksize) {
     loader_ctx *loader;
     CALLOC(loader, 1, sizeof(loader_ctx));
     prots_init(_message_handshaked_push);
-    _mcoro_init(0);
+    _mcoro_init(stacksize);
 #if WITH_SSL
     evssl_init();
     evssl_pool_init();

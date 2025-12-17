@@ -38,6 +38,7 @@ int32_t pgsql_reader_eof(pgsql_reader_ctx *reader);
 /// </summary>
 /// <param name="reader">pgsql_reader_ctx</param>
 void pgsql_reader_next(pgsql_reader_ctx *reader);
-pgpack_row *pgsql_reader_read(pgsql_reader_ctx *reader, const char *name, pgpack_field **field);
+pgpack_row *pgsql_reader_index(pgsql_reader_ctx *reader, int16_t index, pgpack_field **field);
+pgpack_row *pgsql_reader_name(pgsql_reader_ctx *reader, const char *name, pgpack_field **field);
 
 #endif//PGSQL_READER_H_

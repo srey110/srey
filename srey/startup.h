@@ -10,6 +10,7 @@ typedef struct config_ctx {
     uint16_t nworker;
     uint16_t harborport;
     int32_t harbortimeout;
+    uint32_t stacksize;
     name_t harborname;
     name_t harborssl;
     char dns[IP_LENS];

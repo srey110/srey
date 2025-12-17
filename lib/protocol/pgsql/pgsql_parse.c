@@ -34,6 +34,7 @@ void _pgpack_free(pgpack_ctx *pgpack) {
         pgpack->_free_pgpack(pgpack->pack);
     }
     FREE(pgpack->pack);
+    FREE(pgpack->complete);
     FREE(pgpack);
 }
 //NotificationResponse
@@ -65,15 +66,19 @@ void _pgpack_reader_free(void *arg) {
     arr_ptr_free(&reader->arr_rows);
     FREE(reader->fields);
 }
-static void _pgpack_row_description(pgsql_ctx *pg, binary_ctx *breader) {
-    if (NULL == pg->pack) {
-        pg->pack = _pgpack_init(PGPACK_OK);
+static pgsql_reader_ctx *_pgpack_reader_init(pgpack_ctx *pgpack) {
+    if (NULL != pgpack->pack) {
+        return pgpack->pack;
     }
     pgsql_reader_ctx *reader;
     CALLOC(reader, 1, sizeof(pgsql_reader_ctx));
-    pg->pack->pack = reader;
-    pg->pack->_free_pgpack = _pgpack_reader_free;
+    pgpack->pack = reader;
+    pgpack->_free_pgpack = _pgpack_reader_free;
     arr_ptr_init(&reader->arr_rows, 0);
+    return reader;
+}
+static void _pgpack_row_description(pgpack_ctx *pgpack, binary_ctx *breader) {
+    pgsql_reader_ctx *reader = _pgpack_reader_init(pgpack);
     reader->field_count = (int16_t)binary_get_integer(breader, 2, 0);
     if (0 == reader->field_count) {
         return;
@@ -95,7 +100,12 @@ static void _pgpack_row_description(pgsql_ctx *pg, binary_ctx *breader) {
 static void _pgpack_data_row(pgpack_ctx *pgpack, binary_ctx *breader) {
     int16_t ncolumn = (int16_t)binary_get_integer(breader, 2, 0);
     if (0 == ncolumn) {
+        FREE(breader->data);
         return;
+    }
+    pgsql_reader_ctx *reader = _pgpack_reader_init(pgpack);
+    if (0 == reader->field_count) {
+        reader->field_count = ncolumn;
     }
     pgpack_row *row;
     pgpack_row *rows;
@@ -111,7 +121,7 @@ static void _pgpack_data_row(pgpack_ctx *pgpack, binary_ctx *breader) {
             row->val = NULL;
         }
     }
-    arr_ptr_push_back(&((pgsql_reader_ctx *)pgpack->pack)->arr_rows, (void **)&rows);
+    arr_ptr_push_back(&reader->arr_rows, (void **)&rows);
 }
 pgpack_ctx *_pgpack_parser(pgsql_ctx *pg, binary_ctx *breader, ud_cxt *ud, int32_t *status) {
     pgpack_ctx *pack = NULL;
@@ -137,43 +147,61 @@ pgpack_ctx *_pgpack_parser(pgsql_ctx *pg, binary_ctx *breader, ud_cxt *ud, int32
         pg->pack->pack = _pgpack_error_notice(breader);
         FREE(breader->data);
         break;
+    case 'n'://NoData 
+        FREE(breader->data);
+        break;
     case 'I'://EmptyQueryResponse Query
-        ASSERTAB(NULL == pg->pack, "logic error.");
-        pg->pack = _pgpack_init(PGPACK_OK);
+        if (NULL == pg->pack) {
+            pg->pack = _pgpack_init(PGPACK_OK);
+        }
         FREE(breader->data);
         break;
     case '1'://ParseComplete Parse
-        ASSERTAB(NULL == pg->pack, "logic error.");
-        pg->pack = _pgpack_init(PGPACK_OK);
+        if (NULL == pg->pack) {
+            pg->pack = _pgpack_init(PGPACK_OK);
+        }
         FREE(breader->data);
         break;
     case '2'://BindComplete Bind
-        ASSERTAB(NULL == pg->pack, "logic error.");
-        pg->pack = _pgpack_init(PGPACK_OK);
+        if (NULL == pg->pack) {
+            pg->pack = _pgpack_init(PGPACK_OK);
+        }
         FREE(breader->data);
         break;
     case '3'://CloseComplete Close
-        ASSERTAB(NULL == pg->pack, "logic error.");
-        pg->pack = _pgpack_init(PGPACK_OK);
+        if (NULL == pg->pack) {
+            pg->pack = _pgpack_init(PGPACK_OK);
+        }
         FREE(breader->data);
         break;
     case 't'://ParameterDescription Describe
         FREE(breader->data);
         break;
     case 'T'://RowDescription
-        _pgpack_row_description(pg, breader);
-        FREE(breader->data);
-        break;
-    case 'D'://DataRow 
-        _pgpack_data_row(pg->pack, breader);
-        break;
-    case 'C'://CommandComplete
         if (NULL == pg->pack) {
             pg->pack = _pgpack_init(PGPACK_OK);
         }
-        strcpy(pg->pack->complete, binary_get_string(breader, 0));
+        _pgpack_row_description(pg->pack, breader);
         FREE(breader->data);
         break;
+    case 'D'://DataRow 
+        if (NULL == pg->pack) {
+            pg->pack = _pgpack_init(PGPACK_OK);
+        }
+        _pgpack_data_row(pg->pack, breader);
+        break;
+    case 'C': { //CommandComplete
+        if (NULL == pg->pack) {
+            pg->pack = _pgpack_init(PGPACK_OK);
+        }
+        char *complete = binary_get_string(breader, 0);
+        if (!EMPTYSTR(complete)) {
+            MALLOC(pg->pack->complete, strlen(complete) + 1);
+            strcpy(pg->pack->complete, complete);
+        }
+        FREE(breader->data);
+        break;
+    }
     case 'Z'://ReadyForQuery
         pg->readyforquery = binary_get_int8(breader);
         pack = pg->pack;

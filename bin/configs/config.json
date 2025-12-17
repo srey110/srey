@@ -4,6 +4,7 @@
     "loglv": 4,
     "dns": "8.8.8.8",
     "script": "script",
+    "stacksize": 0,
     "harborname": 1,
     "harborssl": 0,
     "harbortimeout": 1000,

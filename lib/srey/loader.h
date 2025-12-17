@@ -8,8 +8,9 @@
 /// </summary>
 /// <param name="nnet">网络线程数, 0 cpu核心数</param>
 /// <param name="nworker">工作线程数, 0 cpu核心数</param>
+/// <param name="stacksize">minicoro stacksize  0默认大小</param>
 /// <returns>loader_ctx</returns>
-loader_ctx *loader_init(uint16_t nnet, uint16_t nworker);
+loader_ctx *loader_init(uint16_t nnet, uint16_t nworker, uint32_t stacksize);
 /// <summary>
 /// 任务调度释放
 /// </summary>
