@@ -28,7 +28,7 @@ SSL、Http、Websocket、MQTT、DNS、MySql、PostgreSQL、Redis...
     end
   )
   ```
-  then register the service in startup.lua(task.register("test.http_sv", TASK_NAME.httpsv))   
+  then register the service in startup.lua(task.register(...))   
 * C    
   create http_sv.h http_sv.c：   
   ```c
@@ -52,4 +52,4 @@ SSL、Http、Websocket、MQTT、DNS、MySql、PostgreSQL、Redis...
       task_register(task, _startup, NULL);
   }
   ```
-  then register the service in startup.h   
+  then register the service in startup.h(task_startup func)   
