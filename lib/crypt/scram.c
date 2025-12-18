@@ -27,6 +27,24 @@ void scram_free(scram_ctx *scram) {
     FREE(scram->server_sign);
     FREE(scram);
 }
+//RFC 5802 specifies that ',' and '=' and encoded as '=2C' and '=3D'
+static char *_scram_username_filter(const char *user) {
+    binary_ctx bwriter;
+    binary_init(&bwriter, NULL, 0, 0);
+    for (size_t i = 0; i < strlen(user); i++) {
+        if (',' == user[i]) {
+            binary_set_string(&bwriter, "=2C", strlen("=2C"));
+            continue;
+        }
+        if ('=' == user[i]) {
+            binary_set_string(&bwriter, "=3D", strlen("=3D"));
+            continue;
+        }
+        binary_set_int8(&bwriter, user[i]);
+    }
+    binary_set_int8(&bwriter, 0);
+    return bwriter.data;
+}
 char *scram_client_first_message(scram_ctx *scram, const char *user) {
     if (SCRAM_INIT != scram->status) {
         return NULL;
@@ -38,7 +56,15 @@ char *scram_client_first_message(scram_ctx *scram, const char *user) {
     if (EMPTYSTR(user)){
         buf = format_va("n,,n=,r=%s", scram->client_nonce);
     } else {
-        buf = format_va("n,,n=%s,r=%s", user, scram->client_nonce);
+        size_t ulens = strlen(user);
+        if (NULL != memchr(user, ',', ulens)
+            || NULL != memchr(user, '=', ulens)) {
+            char *filter = _scram_username_filter(user);
+            buf = format_va("n,,n=%s,r=%s", filter, scram->client_nonce);
+            FREE(filter);
+        } else {
+            buf = format_va("n,,n=%s,r=%s", user, scram->client_nonce);
+        }
     }
     size_t blens = strlen(buf) - 3;
     CALLOC(scram->client_first_message_bare, 1, blens + 1);
