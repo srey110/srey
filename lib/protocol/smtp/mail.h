@@ -21,6 +21,7 @@ typedef struct mail_attach {
 }mail_attach;
 ARRAY_DECL(mail_attach, arr_mail_attach);
 typedef struct mail_ctx {
+    int32_t reply;
     char *subject;
     char *msg;
     char *html;
@@ -39,6 +40,12 @@ void mail_init(mail_ctx *mail);
 /// </summary>
 /// <param name="mail">mail_ctx</param>
 void mail_free(mail_ctx *mail);
+/// <summary>
+/// 是否回复
+/// </summary>
+/// <param name="mail">mail_ctx</param>
+/// <param name="reply">1回复(默认) 0不回复</param>
+void mail_reply(mail_ctx *mail, int32_t reply);
 /// <summary>
 /// 邮件主题
 /// </summary>

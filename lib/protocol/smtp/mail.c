@@ -5,6 +5,7 @@
 
 void mail_init(mail_ctx *mail) {
     ZERO(mail, sizeof(mail_ctx));
+    mail->reply = 1;
     arr_mail_addr_init(&mail->addrs, 0);
     arr_mail_attach_init(&mail->attach, 0);
 }
@@ -20,6 +21,9 @@ void mail_free(mail_ctx *mail) {
     arr_mail_addr_free(&mail->addrs);
     _mail_attach_free(&mail->attach);
     arr_mail_attach_free(&mail->attach);
+}
+void mail_reply(mail_ctx *mail, int32_t reply) {
+    mail->reply = reply;
 }
 void mail_subject(mail_ctx *mail, const char *subject) {
     FREE(mail->subject);
@@ -150,7 +154,11 @@ char *mail_pack(mail_ctx *mail) {
     } else {
         binary_set_va(&bwriter, "From: %s\r\n", mail->from.addr);
     }
-    binary_set_va(&bwriter, "Reply-To: %s\r\n", mail->from.addr);
+    if (mail->reply) {
+        binary_set_va(&bwriter, "Reply-To: %s\r\n", mail->from.addr);
+    } else {
+        binary_set_va(&bwriter, "No-Reply: %s\r\n", mail->from.addr);
+    }
     _smtp_pack_addr(mail, &bwriter, TO);
     _smtp_pack_addr(mail, &bwriter, CC);
     _smtp_pack_addr(mail, &bwriter, BCC);
