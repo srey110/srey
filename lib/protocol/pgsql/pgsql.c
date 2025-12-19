@@ -119,7 +119,7 @@ static char *_pgsql_payload(buffer_ctx *buf, int32_t *lens, int32_t *status) {
     ASSERTAB(sizeof(*lens) == buffer_copyout(buf, 1, lens, sizeof(*lens)), "copy buffer failed.");
     *lens = (int32_t)unpack_integer((const char*)lens, 4, 0, 0);
     int32_t total = (*lens) + 1;
-    if (total > blens) {
+    if ((size_t)total > blens) {
         BIT_SET(*status, PROT_MOREDATA);
         return NULL;
     }
@@ -131,7 +131,7 @@ static char *_pgsql_payload(buffer_ctx *buf, int32_t *lens, int32_t *status) {
 //取得支持的认证方法
 static char *_pgsql_get_authmod(pgsql_ctx *pg, binary_ctx *breader) {
     char *mod;
-    int32_t i;
+    size_t i;
     size_t remain = breader->size - breader->offset;
     size_t n = ARRAY_SIZE(_pgsql_scram_mod);
     while (remain > 1) {
@@ -161,6 +161,9 @@ static int32_t _pgsql_scram_client_first(pgsql_ctx *pg, ev_ctx *ev, ud_cxt *ud, 
         return ERR_FAILED;
     }
     char *first_message = scram_client_first_message(pg->scram, NULL);
+    if (NULL == first_message) {
+        return ERR_FAILED;
+    }
     binary_ctx bwriter;
     pgsql_pack_start(&bwriter, 'p');
     binary_set_string(&bwriter, mod, 0);
@@ -178,6 +181,9 @@ static int32_t _pgsql_scram_client_final(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *
        return ERR_FAILED;
    }
    char *final_message = scram_client_final_message(pg->scram, pg->password);
+   if (NULL == final_message) {
+       return ERR_FAILED;
+   }
    binary_ctx bwriter;
    pgsql_pack_start(&bwriter, 'p');
    binary_set_string(&bwriter, final_message, strlen(final_message));

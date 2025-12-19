@@ -178,7 +178,7 @@ static arr_propertie_ctx *_mqtt_properties(buffer_ctx *buf, int32_t *status, int
     int32_t plens;
     int32_t occupy = _mqtt_data_varnum(buf, &plens);//ÊôÐÔ³¤¶È
     if (ERR_FAILED == occupy 
-        || plens > buffer_size(buf)) {
+        || (size_t)plens > buffer_size(buf)) {
         BIT_SET(*status, PROT_ERROR);
         return NULL;
     }
@@ -195,7 +195,7 @@ static arr_propertie_ctx *_mqtt_properties(buffer_ctx *buf, int32_t *status, int
     arr_propertie_ctx *arrpropts;
     MALLOC(arrpropts, sizeof(arr_propertie_ctx));
     arr_propertie_init(arrpropts, 0);
-    for (off = 0; off < plens;) {
+    for (off = 0; off < (size_t)plens;) {
         if (ERR_OK != _mqtt_data_fixnum(buf, 1, &num)) {
             BIT_SET(*status, PROT_ERROR);
             _mqtt_propertie_free(arrpropts);
