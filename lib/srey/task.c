@@ -480,7 +480,8 @@ int32_t task_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl, 
     if (BIT_CHECK(netev, NETEV_SEND)) {
         cbs.s_cb = _net_send;
     }
-    if (BIT_CHECK(netev, NETEV_AUTHSSL)) {
+    if (NULL != evssl 
+        || BIT_CHECK(netev, NETEV_AUTHSSL)) {
         cbs.exch_cb = _net_ssl_exchanged;
     }
     cbs.conn_cb = _net_connect;

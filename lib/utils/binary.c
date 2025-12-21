@@ -1,6 +1,6 @@
 #include "utils/binary.h"
 
-#define BINARY_INCREASE 512
+#define BINARY_INCREASE 256
 
 void binary_init(binary_ctx *ctx, char *buf, size_t lens, size_t inc) {
     ctx->offset = 0;
