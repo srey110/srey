@@ -19,7 +19,7 @@ typedef enum parse_status {
     AUTH_CHECK,
     COMMAND,
 }parse_status;
-static char _smtp_host[64] = { 0 };
+static char _smtp_host[HOST_LENS] = { 0 };
 static _handshaked_push _hs_push;
 
 void _smtp_init(void *hspush) {

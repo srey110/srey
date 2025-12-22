@@ -4,6 +4,7 @@
 #include "srey/spub.h"
 #include "protocol/mysql/mysql.h"
 #include "protocol/pgsql/pgsql.h"
+#include "protocol/mongo/mongo.h"
 #include "protocol/smtp/smtp.h"
 
 /// <summary>
@@ -173,5 +174,8 @@ pgpack_ctx *pgsql_stmt_execute(pgsql_ctx *pg, const char *name, pgsql_bind_ctx *
 /// <param name="pg">pgsql_ctx</param>
 /// <param name="name">Ãû³Æ</param>
 void pgsql_stmt_close(pgsql_ctx *pg, const char *name);
+int32_t mongo_connect(task_ctx *task, mongo_ctx *mongo);
+int32_t mongo_auth(mongo_ctx *mongo, const char *authmod, const char *user, const char *pwd);
+mgopack_ctx *mongo_hello(mongo_ctx *mongo);
 
 #endif//CORO_UTILS_H_

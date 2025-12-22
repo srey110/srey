@@ -122,8 +122,6 @@ int32_t prots_connected(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud, int32_
     switch (ud->pktype) {
     case PACK_PGSQL:
         return _pgsql_on_connected(ev, fd, skid, ud, err);
-    case PACK_MONGO:
-        return _mongo_on_connected(ev, fd, skid, ud, err);
     default:
         break;
     }
@@ -135,8 +133,6 @@ int32_t prots_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client
         return _mysql_ssl_exchanged(ev, ud);
     case PACK_PGSQL:
         return _pgsql_ssl_exchanged(ev, ud);
-    case PACK_MONGO:
-        return _mongo_ssl_exchanged(ev, ud);
     default:
         break;
     }

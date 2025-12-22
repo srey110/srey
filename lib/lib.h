@@ -48,6 +48,7 @@
 #include "protocol/pgsql/pgsql_reader.h"
 #include "protocol/pgsql/pgsql.h"
 #include "protocol/mongo/mongo.h"
+#include "protocol/mongo/bson.h"
 #include "srey/loader.h"
 #include "srey/task.h"
 #include "srey/coro.h"

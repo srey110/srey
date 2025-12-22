@@ -1,9 +1,21 @@
 #include "task_mongo.h"
 
 static int32_t _prt = 1;
+static mongo_ctx _mongo;
 
 static void _startup(task_ctx *task) {
-
+    mongo_init(&_mongo, "127.0.0.1", 0, NULL);
+    if (ERR_OK != mongo_connect(task, &_mongo)){
+        LOG_ERROR("mongo_connect error.");
+    }
+    mongo_db(&_mongo, "admin");
+    mgopack_ctx *hel = mongo_hello(&_mongo);
+    binary_ctx bson;
+    bson_init(&bson, hel->doc, hel->dlens);
+    if (ERR_OK != mongo_auth(&_mongo, "SCRAM-SHA-256", "admin", "12345678")) {
+        LOG_ERROR("mongo_auth error.");
+    }
+    LOG_INFO("mongo tested.");
 }
 static void _closing_cb(task_ctx *task) {
 

@@ -161,9 +161,6 @@ static int32_t _pgsql_scram_client_first(pgsql_ctx *pg, ev_ctx *ev, ud_cxt *ud, 
         return ERR_FAILED;
     }
     char *first_message = scram_client_first_message(pg->scram, NULL);
-    if (NULL == first_message) {
-        return ERR_FAILED;
-    }
     binary_ctx bwriter;
     pgsql_pack_start(&bwriter, 'p');
     binary_set_string(&bwriter, mod, 0);

@@ -329,3 +329,27 @@ void pgsql_stmt_close(pgsql_ctx *pg, const char *name) {
     size_t size;
     coro_send(pg->task, pg->fd, pg->skid, close, lens, &size, 0);
 }
+int32_t mongo_connect(task_ctx *task, mongo_ctx *mongo) {
+    mongo->task = task;
+    return coro_connect(task, PACK_MONGO, mongo->evssl, mongo->ip, mongo->port, 0, mongo, &mongo->fd, &mongo->skid);
+}
+int32_t mongo_auth(mongo_ctx *mongo, const char *authmod, const char *user, const char *pwd) {
+    mongo_user_pwd(mongo, user, pwd);
+    size_t lens;
+    void *client_first = mongo_pack_scram_client_first(mongo, authmod, NULL, &lens);
+    if (NULL == client_first) {
+        return ERR_FAILED;
+    }
+    ev_ud_status(&mongo->task->loader->netev, mongo->fd, mongo->skid, mongo_status_auth());
+    if (ERR_OK != ev_send(&mongo->task->loader->netev, mongo->fd, mongo->skid, client_first, lens, 0)) {
+        return ERR_FAILED;
+    }
+    int32_t err;
+    coro_handshaked(mongo->task, mongo->fd, mongo->skid, &err, NULL);
+    return err;
+}
+mgopack_ctx *mongo_hello(mongo_ctx *mongo) {
+    size_t lens;
+    void *hello = mongo_pack_hello(mongo, NULL, &lens);
+    return coro_send(mongo->task, mongo->fd, mongo->skid, hello, lens, &lens, 0);
+}

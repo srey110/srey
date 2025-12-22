@@ -331,6 +331,12 @@
     <ClInclude Include="crypt\scram.h">
       <Filter>crypt</Filter>
     </ClInclude>
+    <ClInclude Include="protocol\mongo\mongo_pack.h">
+      <Filter>protocol\mongo</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\mongo\bson.h">
+      <Filter>protocol\mongo</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="event\event.c">
@@ -542,6 +548,12 @@
     </ClCompile>
     <ClCompile Include="crypt\scram.c">
       <Filter>crypt</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\mongo\mongo_pack.c">
+      <Filter>protocol\mongo</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\mongo\bson.c">
+      <Filter>protocol\mongo</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>
