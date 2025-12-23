@@ -156,11 +156,11 @@ static int32_t _pgsql_password_auth(pgsql_ctx *pg, ev_ctx *ev, ud_cxt *ud) {
 }
 //scram-sha-256 第一步
 static int32_t _pgsql_scram_client_first(pgsql_ctx *pg, ev_ctx *ev, ud_cxt *ud, const char *mod) {
-    pg->scram = scram_init(mod);
+    pg->scram = scram_init(mod, 1);
     if (NULL == pg->scram) {
         return ERR_FAILED;
     }
-    char *first_message = scram_client_first_message(pg->scram, NULL);
+    char *first_message = scram_first_message(pg->scram);
     binary_ctx bwriter;
     pgsql_pack_start(&bwriter, 'p');
     binary_set_string(&bwriter, mod, 0);
@@ -173,11 +173,12 @@ static int32_t _pgsql_scram_client_first(pgsql_ctx *pg, ev_ctx *ev, ud_cxt *ud, 
 }
 //scram-sha-256 第二步
 static int32_t _pgsql_scram_client_final(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *breader, ud_cxt *ud) {
-   if (ERR_OK != scram_server_first_message(pg->scram,
+   if (ERR_OK != scram_parse_first_message(pg->scram,
        breader->data + breader->offset, breader->size - breader->offset)) {
        return ERR_FAILED;
    }
-   char *final_message = scram_client_final_message(pg->scram, pg->password);
+   scram_set_pwd(pg->scram, pg->password);
+   char *final_message = scram_final_message(pg->scram);
    if (NULL == final_message) {
        return ERR_FAILED;
    }
@@ -217,7 +218,7 @@ static void _pgsql_auth_process(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *breader, 
         }
         break;
     case 0x0c://AuthenticationSASLFinal 
-        if (ERR_OK != scram_server_final_message(pg->scram,
+        if (ERR_OK != scram_check_final_message(pg->scram,
             breader->data + breader->offset, breader->size - breader->offset)) {
             BIT_SET(*status, PROT_ERROR);
         }

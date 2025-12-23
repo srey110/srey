@@ -2,6 +2,8 @@
 #include "protocol/prots.h"
 #include "utils/utils.h"
 
+//https://mqtt.p2hp.com/mqtt311
+//https://mqtt.p2hp.com/mqtt-5-0
 typedef enum parse_status {
     INIT = 0,
     COMMAND

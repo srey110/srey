@@ -35,7 +35,7 @@ typedef enum bson_subtype {
     BSON_SUBTYPE_UUID = 0x04,//UUID
     BSON_SUBTYPE_MD5 = 0x05,//MD5
     BSON_SUBTYPE_ENCRYPTED = 0x06,//加密的 BSON 值
-    BSON_SUBTYPE_COLUMN = 0x07,//压缩时间序列数据
+    BSON_SUBTYPE_COMPRESSED = 0x07,//压缩
     BSON_SUBTYPE_SENSITIVE = 0x08,//敏感数据
     BSON_SUBTYPE_VECTOR = 0x09,//向量数据是由相同类型的数字组成的密集数组
     BSON_SUBTYPE_USER = 0x80,//自定义数据

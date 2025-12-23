@@ -36,11 +36,7 @@ static char *_mongo_pack_comment(size_t *lens) {
     bson_init(&bson, NULL, 0);
     bson_append_start(&bson);
     bson_append_utf8(&bson, "application", "srey");
-    bson_append_utf8(&bson, "platform", "c/lua");
     bson_append_utf8(&bson, "os", OS_NAME);
-    char host[HOST_LENS] = {0};
-    gethostname(host, sizeof(host));
-    bson_append_utf8(&bson, "host", host);
     bson_append_end(&bson);
     *lens = bson.offset;
     return bson.data;
@@ -68,7 +64,7 @@ void *mongo_pack_scram_client_first(mongo_ctx *mongo, const char *method, int32_
         || NULL != mongo->scram) {
         return NULL;
     }
-    mongo->scram = scram_init(method);
+    mongo->scram = scram_init(method, 1);
     if (NULL == mongo->scram) {
         return NULL;
     }
@@ -77,7 +73,8 @@ void *mongo_pack_scram_client_first(mongo_ctx *mongo, const char *method, int32_
     bson_append_start(&bson);
     bson_append_int32(&bson, "saslStart", 1);
     bson_append_utf8(&bson, "mechanism", method);
-    char *first_message = scram_client_first_message(mongo->scram, mongo->user);
+    scram_set_user(mongo->scram, mongo->user);
+    char *first_message = scram_first_message(mongo->scram);
     bson_append_binary(&bson, "payload", BSON_SUBTYPE_BINARY, first_message, strlen(first_message));
     FREE(first_message);
     bson_append_int32(&bson, "autoAuthorize", 1);

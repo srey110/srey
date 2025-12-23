@@ -184,7 +184,6 @@ int32_t bson_iter_next(bson_iter *iter) {
         iter->val = binary_get_string(iter->bson, iter->lens);
         break;
     case BSON_DECIMAL128:
-        break;
     default:
         more = 0;
         LOG_WARN("unsupported bson type %d.", iter->type);
@@ -298,34 +297,36 @@ const char *bson_type_tostring(bson_type type) {
         return "double";
     case BSON_UTF8:
         return "string";
-    case BSON_JSCODE:
-        return "javascript";
     case BSON_DOCUMENT:
-        return "document";
+        return "object";
     case BSON_ARRAY:
         return "array";
     case BSON_BINARY:
-        return "binary";
+        return "binData";
     case BSON_OID:
-        return "objectid";
+        return "objectId";
     case BSON_BOOL:
         return "bool";
     case BSON_DATE:
         return "date";
+    case BSON_NULL:
+        return "null";
+    case BSON_REGEX:
+        return "regex";
+    case BSON_JSCODE:
+        return "javascript";
+    case BSON_INT32:
+        return "int";
     case BSON_TIMESTAMP:
         return "timestamp";
     case BSON_INT64:
-        return "int64";
-    case BSON_NULL:
-        return "null";
+        return "long";
+    case BSON_DECIMAL128:
+        return "decimal";
     case BSON_MINKEY:
-        return "minkey";
+        return "minKey";
     case BSON_MAXKEY:
-        return "maxkey";
-    case BSON_REGEX:
-        return "regex";
-    case BSON_INT32: 
-        return "int32";
+        return "maxKey";
     default:
         return "unknown";
     }
@@ -342,8 +343,8 @@ const char *bson_subtype_tostring(bson_subtype type) {
         return "md5";
     case BSON_SUBTYPE_ENCRYPTED:
         return "encrypted";
-    case BSON_SUBTYPE_COLUMN:
-        return "column";
+    case BSON_SUBTYPE_COMPRESSED:
+        return "compressed";
     case BSON_SUBTYPE_SENSITIVE:
         return "sensitive";
     case BSON_SUBTYPE_VECTOR:
@@ -355,7 +356,6 @@ const char *bson_subtype_tostring(bson_subtype type) {
     }
 }
 static void _bson_dump(binary_ctx *bson, int32_t index, binary_ctx *str) {
-    char buf[128];
     bson_iter iter;
     bson_iter_init(&iter, bson);
     while (bson_iter_next(&iter)) {
@@ -369,8 +369,7 @@ static void _bson_dump(binary_ctx *bson, int32_t index, binary_ctx *str) {
         switch (iter.type) {
         case BSON_DOUBLE: {
             double val = bson_iter_double(&iter, NULL);
-            SNPRINTF(buf, sizeof(buf), "%f", val);
-            binary_set_string(str, buf, strlen(buf));
+            binary_set_va(str, "%lf", val);
             break;
         }
         case BSON_UTF8: {
@@ -443,20 +442,17 @@ static void _bson_dump(binary_ctx *bson, int32_t index, binary_ctx *str) {
         case BSON_TIMESTAMP: {
             uint32_t inc;
             uint32_t ts = bson_iter_timestamp(&iter, &inc, NULL);
-            SNPRINTF(buf, sizeof(buf), "%d %d", inc, ts);
-            binary_set_string(str, buf, strlen(buf));
+            binary_set_va(str, "%d %d", inc, ts);
             break;
         }
         case BSON_DATE: {
             int64_t val = bson_iter_date(&iter, NULL);
-            SNPRINTF(buf, sizeof(buf), "%"PRIu64, val);
-            binary_set_string(str, buf, strlen(buf));
+            binary_set_va(str, "%"PRIu64, val);
             break;
         }
         case BSON_INT64: {
             int64_t val = bson_iter_int64(&iter, NULL);
-            SNPRINTF(buf, sizeof(buf), "%"PRIu64, val);
-            binary_set_string(str, buf, strlen(buf));
+            binary_set_va(str, "%"PRIu64, val);
             break;
         }
         case BSON_NULL:
@@ -473,8 +469,7 @@ static void _bson_dump(binary_ctx *bson, int32_t index, binary_ctx *str) {
         }
         case BSON_INT32: {
             int32_t val = (int32_t)bson_iter_int32(&iter, NULL);
-            SNPRINTF(buf, sizeof(buf), "%d", val);
-            binary_set_string(str, buf, strlen(buf));
+            binary_set_va(str, "%d", val);
             break;
         }
         default:

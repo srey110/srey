@@ -78,16 +78,18 @@ static int32_t _mongo_server_first_message(ev_ctx *ev, mongo_ctx *mongo, mgopack
         }
         return ERR_FAILED;
     }
-    if (ERR_OK != scram_server_first_message(mongo->scram, payload, size)) {
+    if (ERR_OK != scram_parse_first_message(mongo->scram, payload, size)) {
         return ERR_FAILED;
     }
     char *client_final;
     if (DG_SHA1 == mongo->scram->dtype) {
         char fmtpwd[HEX_ENSIZE(MD5_BLOCK_SIZE)];
         _mongo_format_pwd(mongo, fmtpwd);
-        client_final = scram_client_final_message(mongo->scram, fmtpwd);
+        scram_set_pwd(mongo->scram, fmtpwd);
+        client_final = scram_final_message(mongo->scram);
     } else {
-        client_final = scram_client_final_message(mongo->scram, mongo->password);
+        scram_set_pwd(mongo->scram, mongo->password);
+        client_final = scram_final_message(mongo->scram);
     }
     if (NULL == client_final) {
         return ERR_FAILED;
@@ -108,13 +110,13 @@ static int32_t _mongo_server_final_message(ev_ctx *ev, mongo_ctx *mongo, mgopack
         }
         return ERR_FAILED;
     }
-    return scram_server_final_message(mongo->scram, payload, plens);
+    return scram_check_final_message(mongo->scram, payload, plens);
 }
 static void _mongo_scram_auth(ev_ctx *ev, mgopack_ctx *mgopack, ud_cxt *ud) {
     int32_t rtn;
     mongo_ctx *mongo = ud->extra;
     switch (mongo->scram->status) {
-    case SCRAM_CLIENT_FIRST_MESSAGE:
+    case SCRAM_FIRST_MESSAGE:
         rtn = _mongo_server_first_message(ev, mongo, mgopack);
         if (ERR_OK != rtn) {
             ud->status = COMMAND;
@@ -123,7 +125,7 @@ static void _mongo_scram_auth(ev_ctx *ev, mgopack_ctx *mgopack, ud_cxt *ud) {
             mongo->scram = NULL;
         }
         break;
-    case SCRAM_CLIENT_FINAL_MESSAGE:
+    case SCRAM_FINAL_MESSAGE:
         ud->status = COMMAND;
         rtn = _mongo_server_final_message(ev, mongo, mgopack);
         _hs_push(mongo->fd, mongo->skid, 1, ud, rtn, NULL, 0);

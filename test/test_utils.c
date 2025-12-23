@@ -783,6 +783,43 @@ static void test_cipher(CuTest* tc) {
     debuf[lens] = '\0';
     CuAssertTrue(tc, 0 == strcmp(debuf, "1234567890") && 10 == lens);
 }
+static void _test_scram(CuTest* tc, const char *mod) {
+    scram_ctx *client = scram_init(mod, 1);
+    scram_set_user(client, ",admin=");
+    scram_set_pwd(client, "12345678");
+
+    scram_ctx *server = scram_init(mod, 0);
+    scram_set_pwd(server, "12345678");
+    char salt[SCRAM_NONCE_LEN + 1];
+    randstr(salt, SCRAM_NONCE_LEN);
+    scram_set_salt(server, salt, strlen(salt));
+    scram_set_iter(server, 4600);
+
+    char *client_first_message = scram_first_message(client);
+    int32_t rtn = scram_parse_first_message(server, client_first_message, strlen(client_first_message));
+    FREE(client_first_message);
+    CuAssertTrue(tc, ERR_OK == rtn);
+    CuAssertTrue(tc, 0 ==  STRCMP(scram_get_user(server), ",admin="));
+    char *server_first_message = scram_first_message(server);
+    rtn = scram_parse_first_message(client, server_first_message, strlen(server_first_message));
+    FREE(server_first_message);
+    CuAssertTrue(tc, ERR_OK == rtn);
+    char *client_final_message = scram_final_message(client);
+    rtn = scram_check_final_message(server, client_final_message, strlen(client_final_message));
+    FREE(client_final_message);
+    CuAssertTrue(tc, ERR_OK == rtn);
+    char *server_final_message = scram_final_message(server);
+    rtn = scram_check_final_message(client, server_final_message, strlen(server_final_message));
+    FREE(server_final_message);
+    CuAssertTrue(tc, ERR_OK == rtn);
+    scram_free(client);
+    scram_free(server);
+}
+static void test_scram(CuTest* tc) {
+    _test_scram(tc, "SCRAM-SHA-1");
+    _test_scram(tc, "SCRAM-SHA-256");
+    _test_scram(tc, "SCRAM-SHA-512");
+}
 static void test_timer(CuTest* tc) {
     timer_ctx timer;
     timer_init(&timer);
@@ -2126,6 +2163,7 @@ void test_utils(CuSuite* suite) {
     SUITE_ADD_TEST(suite, test_cipher_ofb);
     SUITE_ADD_TEST(suite, test_cipher_ctr);
     SUITE_ADD_TEST(suite, test_cipher);
+    SUITE_ADD_TEST(suite, test_scram);
     SUITE_ADD_TEST(suite, test_timer);
     SUITE_ADD_TEST(suite, test_netutils);
     SUITE_ADD_TEST(suite, test_buffer);

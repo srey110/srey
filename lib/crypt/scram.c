@@ -1,17 +1,20 @@
 #include "crypt/scram.h"
 
-scram_ctx *scram_init(const char *method) {
+scram_ctx *scram_init(const char *method, int32_t client) {
     digest_type type;
     if (0 == STRCMP(method, "SCRAM-SHA-1")) {
         type = DG_SHA1;
     } else if (0 == STRCMP(method, "SCRAM-SHA-256")) {
         type = DG_SHA256;
-    } else {
+    } else if (0 == STRCMP(method, "SCRAM-SHA-512")) {
+        type = DG_SHA512;
+    }  else {
         LOG_WARN("unsupported verification methods.");
         return NULL;
     }
     scram_ctx *scram;
     CALLOC(scram, 1, sizeof(scram_ctx));
+    scram->client = client;
     scram->dtype = type;
     return scram;
 }
@@ -19,13 +22,39 @@ void scram_free(scram_ctx *scram) {
     if (NULL == scram) {
         return;
     }
-    FREE(scram->client_first_message_bare);
-    FREE(scram->server_first_message);
-    FREE(scram->client_final_message_without_proof);
+    FREE(scram->local_first_message);
+    FREE(scram->remote_first_message);
+    FREE(scram->final_message_without_proof);
     FREE(scram->salt);
-    FREE(scram->nonce);
-    FREE(scram->server_sign);
+    FREE(scram->remote_nonce);
     FREE(scram);
+}
+void scram_set_user(scram_ctx *scram, const char *user) {
+    if (!scram->client) {
+        return;
+    }
+    strcpy(scram->user, user);
+}
+void scram_set_pwd(scram_ctx *scram, const char *pwd) {
+    strcpy(scram->pwd, pwd);
+}
+void scram_set_salt(scram_ctx *scram, char *salt, size_t lens) {
+    if (scram->client) {
+        return;
+    }
+    FREE(scram->salt);
+    MALLOC(scram->salt, lens);
+    memcpy(scram->salt, salt, lens);
+    scram->saltlen = (int32_t)lens;
+}
+void scram_set_iter(scram_ctx *scram, int32_t iter) {
+    if (scram->client) {
+        return;
+    }
+    scram->iter = iter;
+}
+const char *scram_get_user(scram_ctx *scram) {
+    return scram->user;
 }
 //RFC 5802 specifies that ',' and '=' and encoded as '=2C' and '=3D'
 static char *_scram_username_filter(const char *user) {
@@ -45,42 +74,58 @@ static char *_scram_username_filter(const char *user) {
     binary_set_int8(&bwriter, 0);
     return bwriter.data;
 }
-char *scram_client_first_message(scram_ctx *scram, const char *user) {
-    if (SCRAM_INIT != scram->status) {
-        return NULL;
+static char *_scram_username_recover(const char *user, size_t ulens) {
+    binary_ctx bwriter;
+    binary_init(&bwriter, NULL, 0, 0);
+    for (size_t i = 0; i < ulens;) {
+        if ('=' == user[i]) {
+            if (i + 3 <= ulens) {
+                if (0 == memcmp(user + i, "=2C", 3)) {
+                    binary_set_int8(&bwriter, ',');
+                    i += 3;
+                    continue;
+                }
+                if (0 == memcmp(user + i, "=3D", 3)) {
+                    binary_set_int8(&bwriter, '=');
+                    i += 3;
+                    continue;
+                }
+            }
+        }
+        binary_set_int8(&bwriter, user[i]);
+        i++;
     }
-    char nonce[SCRAM_NONCE_LEN + 1];
-    randstr(nonce, SCRAM_NONCE_LEN);
-    bs64_encode(nonce, SCRAM_NONCE_LEN, scram->client_nonce);
-    char *buf;
-    if (EMPTYSTR(user)){
-        buf = format_va("n,,n=,r=%s", scram->client_nonce);
-    } else {
-        size_t ulens = strlen(user);
-        if (NULL != memchr(user, ',', ulens)
-            || NULL != memchr(user, '=', ulens)) {
-            char *filter = _scram_username_filter(user);
-            buf = format_va("n,,n=%s,r=%s", filter, scram->client_nonce);
-            FREE(filter);
-        } else {
-            buf = format_va("n,,n=%s,r=%s", user, scram->client_nonce);
+    binary_set_int8(&bwriter, 0);
+    return bwriter.data;
+}
+static char *_scram_attr_search(char *msg, size_t mlens, const char *attr, size_t *lens) {
+    char *pos = msg;
+    size_t remain = mlens;
+    size_t wlens = strlen(attr);
+    for (;;) {
+        pos = memstr(0, pos, remain, attr, wlens);
+        if (NULL == pos) {
+            return NULL;
+        }
+        if (pos == msg//首字符
+            || ',' == (pos - 1)[0]) {//非首字符 检查前一字符
+            return pos;
+        }
+        pos++;
+        remain = mlens - (pos - msg);
+        if (remain <= 0) {
+            return NULL;
         }
     }
-    size_t blens = strlen(buf) - 3;
-    CALLOC(scram->client_first_message_bare, 1, blens + 1);
-    memcpy(scram->client_first_message_bare, buf + 3, blens);
-    scram->status = SCRAM_CLIENT_FIRST_MESSAGE;
-    return buf;
+    return NULL;
 }
 static char *_scram_attr_value(char *msg, size_t mlens, const char *attr, size_t *lens) {
-    size_t off;
-    size_t wlens = strlen(attr);
-    char *pos = memstr(0, msg, mlens, attr, wlens);
+    char *pos = _scram_attr_search(msg, mlens, attr, lens);
     if (NULL == pos) {
         return NULL;
-    }
-    char *val = pos + wlens;
-    off = val - msg;
+    }    
+    char *val = pos + strlen(attr);
+    size_t off = val - msg;
     pos = memstr(0, val, mlens - off, ",", 1);
     if (NULL == pos) {
         *lens = mlens - off;
@@ -88,44 +133,6 @@ static char *_scram_attr_value(char *msg, size_t mlens, const char *attr, size_t
         *lens = pos - val;
     }
     return val;
-}
-int32_t scram_server_first_message(scram_ctx *scram, char *msg, size_t mlens) {
-    if (SCRAM_CLIENT_FIRST_MESSAGE != scram->status) {
-        return ERR_FAILED;
-    }
-    size_t lens;
-    char *nonce = _scram_attr_value(msg, mlens, "r=", &lens);
-    if (NULL == nonce) {
-        return ERR_FAILED;
-    }
-    if (lens < strlen(scram->client_nonce)
-        || 0 != memcmp(nonce, scram->client_nonce, strlen(scram->client_nonce))) {
-        return ERR_FAILED;
-    }
-    CALLOC(scram->nonce, 1, lens + 1);
-    memcpy(scram->nonce, nonce, lens);
-    char *salt = _scram_attr_value(msg, mlens, "s=", &lens);
-    if (NULL == salt) {
-        return ERR_FAILED;
-    }
-    scram->saltlen = (int32_t)B64DE_SIZE(lens);
-    MALLOC(scram->salt, scram->saltlen);
-    scram->saltlen = (int32_t)bs64_decode(salt, lens, scram->salt);
-    char *iter = _scram_attr_value(msg, mlens, "i=", &lens);
-    if (NULL == iter) {
-        return ERR_FAILED;
-    }
-    char ibuf[8] = { 0 };
-    if (lens >= sizeof(ibuf)) {
-        return ERR_FAILED;
-    }
-    memcpy(ibuf, iter, lens);
-    scram->iter = atoi(ibuf);
-    MALLOC(scram->server_first_message, mlens + 1);
-    memcpy(scram->server_first_message, msg, mlens);
-    scram->server_first_message[mlens] = '\0';
-    scram->status = SCRAM_SERVER_FIRST_MESSAGE;
-    return ERR_OK;
 }
 static void _scram_salt_password(scram_ctx *scram, const char *password) {
     char hash[DG_BLOCK_SIZE];
@@ -162,24 +169,158 @@ static void _scram_h(scram_ctx *scram, char client_key[DG_BLOCK_SIZE], char resu
 static void _scram_proof(scram_ctx *scram, char key[DG_BLOCK_SIZE], char result[DG_BLOCK_SIZE]) {
     hmac_ctx hmac;
     hmac_init(&hmac, scram->dtype, key, scram->hslens);
-    hmac_update(&hmac, scram->client_first_message_bare, strlen(scram->client_first_message_bare));
-    hmac_update(&hmac, ",", 1);
-    hmac_update(&hmac, scram->server_first_message, strlen(scram->server_first_message));
-    hmac_update(&hmac, ",", 1);
-    hmac_update(&hmac, scram->client_final_message_without_proof, strlen(scram->client_final_message_without_proof));
+    if (scram->client) {
+        hmac_update(&hmac, scram->local_first_message, strlen(scram->local_first_message));//n=,r= 
+        hmac_update(&hmac, ",", 1);
+        hmac_update(&hmac, scram->remote_first_message, strlen(scram->remote_first_message));//r=,s=,i=
+        hmac_update(&hmac, ",", 1);
+        hmac_update(&hmac, scram->final_message_without_proof, strlen(scram->final_message_without_proof));//c=biws,r=
+    } else {
+        hmac_update(&hmac, scram->remote_first_message, strlen(scram->remote_first_message));//n=,r=
+        hmac_update(&hmac, ",", 1);
+        hmac_update(&hmac, scram->local_first_message, strlen(scram->local_first_message));//r=,s=,i=
+        hmac_update(&hmac, ",", 1);
+        hmac_update(&hmac, scram->final_message_without_proof, strlen(scram->final_message_without_proof));//c=biws,r=
+    }
     hmac_final(&hmac, result);
 }
-char *scram_client_final_message(scram_ctx *scram, const char *pwd) {
-    if (SCRAM_SERVER_FIRST_MESSAGE != scram->status) {
+//return n,,n=,r=
+static char *_scram_client_first_message(scram_ctx *scram) {
+    if (SCRAM_INIT != scram->status) {
+        return NULL;
+    }
+    char nonce[SCRAM_NONCE_LEN + 1];
+    randstr(nonce, SCRAM_NONCE_LEN);
+    bs64_encode(nonce, SCRAM_NONCE_LEN, scram->local_nonce);
+    char *buf;
+    if (EMPTYSTR(scram->user)){
+        buf = format_va("n,,n=,r=%s", scram->local_nonce);
+    } else {
+        size_t ulens = strlen(scram->user);
+        if (NULL != memchr(scram->user, ',', ulens)
+            || NULL != memchr(scram->user, '=', ulens)) {
+            char *filter = _scram_username_filter(scram->user);
+            buf = format_va("n,,n=%s,r=%s", filter, scram->local_nonce);
+            FREE(filter);
+        } else {
+            buf = format_va("n,,n=%s,r=%s", scram->user, scram->local_nonce);
+        }
+    }
+    MALLOC(scram->local_first_message, strlen(buf) - 2);
+    strcpy(scram->local_first_message, buf + 3);
+    scram->status = SCRAM_FIRST_MESSAGE;
+    return buf;
+}
+//parse n,,n=,r=
+static int32_t _scram_parse_client_first_message(scram_ctx *scram, char *msg, size_t mlens) {
+    if (SCRAM_INIT != scram->status) {
+        return ERR_FAILED;
+    }
+    size_t lens;
+    char *user = _scram_attr_value(msg, mlens, "n=", &lens);
+    if (NULL == user) {
+        return ERR_FAILED;
+    }
+    if (NULL != memstr(0, user, lens, "=2C", 3)
+        || NULL != memstr(0, user, lens, "=3D", 3)) {
+        user = _scram_username_recover(user, lens);
+        strcpy(scram->user, user);
+        FREE(user);
+    } else {
+        memcpy(scram->user, user, lens);
+        scram->user[lens] = '\0';
+    }
+    char *nonce = _scram_attr_value(msg, mlens, "r=", &lens);
+    if (NULL == nonce) {
+        return ERR_FAILED;
+    }
+    MALLOC(scram->remote_nonce, lens + 1);
+    memcpy(scram->remote_nonce, nonce, lens);
+    scram->remote_nonce[lens] = '\0';
+    MALLOC(scram->remote_first_message, mlens - 2);
+    strcpy(scram->remote_first_message, msg + 3);
+    return ERR_OK;
+}
+//return r=,s=,i=
+static char *_scram_server_first_message(scram_ctx *scram) {
+    if (SCRAM_INIT != scram->status) {
+        return NULL;
+    }
+    char nonce[SCRAM_NONCE_LEN + 1];
+    randstr(nonce, SCRAM_NONCE_LEN);
+    bs64_encode(nonce, SCRAM_NONCE_LEN, scram->local_nonce);
+    char *salt;
+    MALLOC(salt, B64EN_SIZE(scram->saltlen));
+    bs64_encode(scram->salt, scram->saltlen, salt);
+    char *buf = format_va("r=%s%s,s=%s,i=%d", scram->remote_nonce, scram->local_nonce, salt, scram->iter);
+    FREE(salt);
+    MALLOC(scram->local_first_message, strlen(buf) + 1);
+    strcpy(scram->local_first_message, buf);
+    scram->status = SCRAM_FIRST_MESSAGE;
+    return buf;
+}
+//parse r=,s=,i=
+static int32_t _scram_parse_server_first_message(scram_ctx *scram, char *msg, size_t mlens) {
+    if (SCRAM_FIRST_MESSAGE != scram->status) {
+        return ERR_FAILED;
+    }
+    size_t lens;
+    char *nonce = _scram_attr_value(msg, mlens, "r=", &lens);
+    if (NULL == nonce) {
+        return ERR_FAILED;
+    }
+    if (lens < strlen(scram->local_nonce)
+        || 0 != memcmp(nonce, scram->local_nonce, strlen(scram->local_nonce))) {
+        return ERR_FAILED;
+    }
+    CALLOC(scram->remote_nonce, 1, lens + 1);
+    memcpy(scram->remote_nonce, nonce, lens);
+    char *salt = _scram_attr_value(msg, mlens, "s=", &lens);
+    if (NULL == salt) {
+        return ERR_FAILED;
+    }
+    scram->saltlen = (int32_t)B64DE_SIZE(lens);
+    MALLOC(scram->salt, scram->saltlen);
+    scram->saltlen = (int32_t)bs64_decode(salt, lens, scram->salt);
+    char *iter = _scram_attr_value(msg, mlens, "i=", &lens);
+    if (NULL == iter) {
+        return ERR_FAILED;
+    }
+    char ibuf[8] = { 0 };
+    if (lens >= sizeof(ibuf)) {
+        return ERR_FAILED;
+    }
+    memcpy(ibuf, iter, lens);
+    scram->iter = atoi(ibuf);
+    MALLOC(scram->remote_first_message, mlens + 1);
+    memcpy(scram->remote_first_message, msg, mlens);
+    scram->remote_first_message[mlens] = '\0';
+    return ERR_OK;
+}
+char *scram_first_message(scram_ctx *scram) {
+    if (scram->client) {
+        return _scram_client_first_message(scram);
+    }
+    return _scram_server_first_message(scram);
+}
+int32_t scram_parse_first_message(scram_ctx *scram, char *msg, size_t mlens) {
+    if (scram->client) {
+        return _scram_parse_server_first_message(scram, msg, mlens);
+    }
+    return _scram_parse_client_first_message(scram, msg, mlens);
+}
+//retrun c=biws,r=,p=
+static char *_scram_client_final_message(scram_ctx *scram) {
+    if (SCRAM_FIRST_MESSAGE != scram->status) {
         return NULL;
     }
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
-    binary_set_va(&bwriter, "c=biws,r=%s", scram->nonce);
-    MALLOC(scram->client_final_message_without_proof, bwriter.offset + 1);
-    memcpy(scram->client_final_message_without_proof, bwriter.data, bwriter.offset);
-    scram->client_final_message_without_proof[bwriter.offset] = '\0';
-    _scram_salt_password(scram, pwd);
+    binary_set_va(&bwriter, "c=biws,r=%s", scram->remote_nonce);
+    MALLOC(scram->final_message_without_proof, bwriter.offset + 1);
+    memcpy(scram->final_message_without_proof, bwriter.data, bwriter.offset);
+    scram->final_message_without_proof[bwriter.offset] = '\0';
+    _scram_salt_password(scram, scram->pwd);
     char clientkey[DG_BLOCK_SIZE];
     _scram_key(scram, "Client Key", clientkey);
     char storedkey[DG_BLOCK_SIZE];
@@ -194,11 +335,75 @@ char *scram_client_final_message(scram_ctx *scram, const char *pwd) {
     bs64_encode(client_proof, scram->hslens, b64);
     binary_set_va(&bwriter, ",p=%s", b64);
     binary_set_int8(&bwriter, 0);
-    scram->status = SCRAM_CLIENT_FINAL_MESSAGE;
+    scram->status = SCRAM_FINAL_MESSAGE;
     return bwriter.data;
 }
-int32_t scram_server_final_message(scram_ctx *scram, char *msg, size_t mlens) {
-    if (SCRAM_CLIENT_FINAL_MESSAGE != scram->status) {
+//check c=biws,r=,p=
+static int32_t _scram_server_check_final_message(scram_ctx *scram, char *msg, size_t mlens) {
+    if (SCRAM_FIRST_MESSAGE != scram->status) {
+        return ERR_FAILED;
+    }
+    size_t lens;
+    char *biws = _scram_attr_value(msg, mlens, "c=", &lens);
+    if (NULL == biws
+        || strlen("biws") != lens
+        || 0 != memcmp(biws, "biws", lens)) {
+        return ERR_FAILED;
+    }
+    char *nonce = _scram_attr_value(msg, mlens, "r=", &lens);
+    if (NULL == nonce) {
+        return ERR_FAILED;
+    }
+    char *buf = format_va("%s%s", scram->remote_nonce, scram->local_nonce);
+    if (strlen(buf) != lens
+        || 0 != memcmp(nonce, buf, lens)) {
+        FREE(buf);
+        return ERR_FAILED;
+    }
+    char *proof = _scram_attr_value(msg, mlens, "p=", &lens);
+    if (NULL == proof) {
+        FREE(buf);
+        return ERR_FAILED;
+    }
+    scram->final_message_without_proof = format_va("c=biws,r=%s", buf);
+    FREE(buf);
+    _scram_salt_password(scram, scram->pwd);
+    char clientkey[DG_BLOCK_SIZE];
+    _scram_key(scram, "Client Key", clientkey);
+    char storedkey[DG_BLOCK_SIZE];
+    _scram_h(scram, clientkey, storedkey);
+    char clientsign[DG_BLOCK_SIZE];
+    _scram_proof(scram, storedkey, clientsign);
+    char client_proof[DG_BLOCK_SIZE];
+    for (int32_t i = 0; i < scram->hslens; i++) {
+        client_proof[i] = clientkey[i] ^ clientsign[i];
+    }
+    char b64[B64EN_SIZE(DG_BLOCK_SIZE)];
+    bs64_encode(client_proof, scram->hslens, b64);
+    if (strlen(b64) != lens
+        || 0 != memcmp(proof, b64, lens)) {
+        return ERR_FAILED;
+    }
+    scram->status = SCRAM_FINAL_MESSAGE;
+    return ERR_OK;
+}
+//[e=] v=
+static char *_scram_server_final_message(scram_ctx *scram) {
+    if (SCRAM_FINAL_MESSAGE != scram->status) {
+        return NULL;
+    }
+    char serverkey[DG_BLOCK_SIZE];
+    _scram_key(scram, "Server Key", serverkey);
+    char hash[DG_BLOCK_SIZE];
+    _scram_proof(scram, serverkey, hash);
+    char b64[B64EN_SIZE(DG_BLOCK_SIZE)];
+    bs64_encode(hash, scram->hslens, b64);
+    scram->status = SCRAM_FINAL;
+    return format_va("v=%s", b64);
+}
+//check [e=] v= 
+static int32_t _scram_client_check_final_message(scram_ctx *scram, char *msg, size_t mlens) {
+    if (SCRAM_FINAL_MESSAGE != scram->status) {
         return ERR_FAILED;
     }
     size_t lens;
@@ -206,20 +411,33 @@ int32_t scram_server_final_message(scram_ctx *scram, char *msg, size_t mlens) {
     if (NULL != error) {
         return ERR_FAILED;
     }
-    char *server_sign = _scram_attr_value(msg, mlens, "v=", &lens);
-    if (NULL == server_sign) {
+    char *v = _scram_attr_value(msg, mlens, "v=", &lens);
+    if (NULL == v) {
         return ERR_FAILED;
     }
-    MALLOC(scram->server_sign, B64DE_SIZE(lens));
-    scram->svsignlens = (int32_t)bs64_decode(server_sign, lens, scram->server_sign);
     char serverkey[DG_BLOCK_SIZE];
     _scram_key(scram, "Server Key", serverkey);
     char hash[DG_BLOCK_SIZE];
     _scram_proof(scram, serverkey, hash);
-    if (scram->svsignlens == scram->hslens
-        && 0 == memcmp(hash, scram->server_sign, scram->hslens)) {
-        scram->status = SCRAM_SERVER_FINAL_MESSAGE;
-        return ERR_OK;
+    char b64[B64EN_SIZE(DG_BLOCK_SIZE)];
+    bs64_encode(hash, scram->hslens, b64);
+    int32_t rtn = ERR_OK;
+    if (strlen(b64) != lens
+        || 0 != memcmp(v, b64, lens)) {
+        rtn = ERR_FAILED;
     }
-    return ERR_FAILED;
+    scram->status = SCRAM_FINAL;
+    return rtn;
+}
+char *scram_final_message(scram_ctx *scram) {
+    if (scram->client) {
+        return _scram_client_final_message(scram);
+    }
+    return _scram_server_final_message(scram);
+}
+int32_t scram_check_final_message(scram_ctx *scram, char *msg, size_t mlens) {
+    if (scram->client) {
+        return _scram_client_check_final_message(scram, msg, mlens);
+    }
+    return _scram_server_check_final_message(scram, msg, mlens);
 }

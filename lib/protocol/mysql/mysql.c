@@ -11,6 +11,7 @@
 #include <openssl/rsa.h>
 #endif
 
+//https://dev.mysql.com/doc/dev/mysql-server/latest/PAGE_PROTOCOL.html
 #define CLIENT_CAPS\
     (CLIENT_LONG_PASSWORD | CLIENT_LONG_FLAG | CLIENT_PROTOCOL_41 | CLIENT_INTERACTIVE | CLIENT_RESERVED2 |\
     CLIENT_MULTI_STATEMENTS | CLIENT_MULTI_RESULTS | CLIENT_PS_MULTI_RESULTS | CLIENT_PLUGIN_AUTH | CLIENT_CONNECT_ATTRS |\
@@ -179,8 +180,8 @@ static void _mysql_caching_sha2_sign(mysql_ctx *mysql, char sh2[SHA256_BLOCK_SIZ
 }
 static void _mysql_connect_attrs(binary_ctx *battrs) {
     connect_attr attrs[] = {
-        {"_os", OS_NAME},
-        {"_client", "srey"},
+        { "application", "srey" },
+        { "os", OS_NAME }
     };
     size_t lens;
     for (size_t i = 0; i < ARRAY_SIZE(attrs); i++) {
