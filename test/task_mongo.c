@@ -14,6 +14,11 @@ static void _startup(task_ctx *task) {
     bson_init(&bson, hel->doc, hel->dlens);
     if (ERR_OK != mongo_auth(&_mongo, "SCRAM-SHA-256", "admin", "12345678")) {
         LOG_ERROR("mongo_auth error.");
+        return;
+    }
+    if (ERR_OK != mongo_auth(&_mongo, "SCRAM-SHA-1", "admin", "12345678")) {
+        LOG_ERROR("mongo_auth error.");
+        return;
     }
     LOG_INFO("mongo tested.");
 }

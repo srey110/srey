@@ -9,9 +9,10 @@
 
 typedef enum scram_status {
     SCRAM_INIT = 0x00,
-    SCRAM_FIRST_MESSAGE,
-    SCRAM_FINAL_MESSAGE,
-    SCRAM_FINAL
+    SCRAM_LOCAL_FIRST,
+    SCRAM_REMOTE_FIRST,
+    SCRAM_LOCAL_FINAL,
+    SCRAM_REMOTE_FINAL
 }scram_status;
 typedef struct scram_ctx {
     int32_t client;//是否为发起端
@@ -23,7 +24,7 @@ typedef struct scram_ctx {
     char *local_first_message;//client n=,r=  server r=,s=,i=
     char *remote_first_message;//client r=,s=,i=  server n=,r=
     char *final_message_without_proof;//c=biws,r=
-    char *salt;//
+    char *salt;
     char *remote_nonce;
     char local_nonce[B64EN_SIZE(SCRAM_NONCE_LEN) + 1]; //base64
     char saltedpwd[DG_BLOCK_SIZE];//Salted Password
@@ -31,11 +32,18 @@ typedef struct scram_ctx {
     char pwd[128];//password
 }scram_ctx;
 /*
-client                           server
-scram_first_message        ->    scram_parse_first_message       n,,n=,r= 
-scram_parse_first_message  <-    scram_first_message             r=,s=,i=
-scram_final_message        ->    scram_check_final_message       c=biws,r=,p=
-scram_check_final_message  <-    scram_final_message             [e=] v=
+client                                      server
+SCRAM_INIT->SCRAM_LOCAL_FIRST               SCRAM_INIT->SCRAM_REMOTE_FIRST
+scram_first_message                     ->  scram_parse_first_message                 n,,n=,r= 
+
+SCRAM_LOCAL_FIRST->SCRAM_REMOTE_FIRST       SCRAM_REMOTE_FIRST->SCRAM_LOCAL_FIRST
+scram_parse_first_message               <-  scram_first_message                       r=,s=,i=
+
+SCRAM_REMOTE_FIRST->SCRAM_LOCAL_FINAL       SCRAM_LOCAL_FIRST->SCRAM_REMOTE_FINAL
+scram_final_message                     ->  scram_check_final_message                 c=biws,r=,p=
+
+SCRAM_LOCAL_FINAL->SCRAM_REMOTE_FINAL       SCRAM_REMOTE_FINAL->SCRAM_LOCAL_FINAL
+scram_check_final_message               <-  scram_final_message                       [e=] v=
 */
 //SCRAM-SHA-1 SCRAM-SHA-256 SCRAM-SHA-512
 scram_ctx *scram_init(const char *method, int32_t client);

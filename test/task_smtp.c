@@ -3,14 +3,14 @@
 static int32_t _prt = 1;
 const char *_smtp_sv = "smtp.163.com";
 const uint16_t _smtp_port = 465;
-const char *_smtp_user = "200309129@163.com";
-const char *_smtp_psw = "AVemMsFCAZMcsYms";
+const char *_smtp_user = "test@163.com";
+const char *_smtp_psw = "FCAZMcsYms";
 static smtp_ctx _smtp;
 static mail_ctx _mail;
 
 static void _startup(task_ctx *task) {
     mail_init(&_mail);
-    mail_from(&_mail, "srey", "200309129@163.com");
+    mail_from(&_mail, "srey", "test@163.com");
     size_t n;
     dns_ip *ips = dns_lookup(task, _smtp_sv, 0, &n);
     struct evssl_ctx *ssl = evssl_qury(102);
@@ -20,8 +20,8 @@ static void _startup(task_ctx *task) {
         LOG_WARN("smtp_connect error.");
         return;
     }
-    mail_addrs_add(&_mail, "279133271@qq.com", TO);
-    mail_addrs_add(&_mail, "libin110110@gmail.com", TO);
+    mail_addrs_add(&_mail, "test@qq.com", TO);
+    mail_addrs_add(&_mail, "test@gmail.com", TO);
     mail_subject(&_mail, "subject1");
     mail_msg(&_mail, "this is message");
     mail_reply(&_mail, 0);
@@ -31,7 +31,7 @@ static void _startup(task_ctx *task) {
     }
     const char *html = "<!DOCTYPE html><html><title>HTML Tutorial</title><body><h1>This is a heading</h1><p>This is a paragraph.</p></body></html>";
     mail_html(&_mail, html, strlen(html));
-    mail_attach_add(&_mail, "D:\\codes\\srey\\bin\\panda.jpg");
+    mail_attach_add(&_mail, "D:\\....\\panda.jpg");
     mail_reply(&_mail, 1);
     if (ERR_OK != smtp_send(&_smtp, &_mail)) {
         LOG_WARN("smtp_send error.");

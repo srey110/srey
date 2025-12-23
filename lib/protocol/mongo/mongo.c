@@ -116,7 +116,7 @@ static void _mongo_scram_auth(ev_ctx *ev, mgopack_ctx *mgopack, ud_cxt *ud) {
     int32_t rtn;
     mongo_ctx *mongo = ud->extra;
     switch (mongo->scram->status) {
-    case SCRAM_FIRST_MESSAGE:
+    case SCRAM_LOCAL_FIRST:
         rtn = _mongo_server_first_message(ev, mongo, mgopack);
         if (ERR_OK != rtn) {
             ud->status = COMMAND;
@@ -125,7 +125,7 @@ static void _mongo_scram_auth(ev_ctx *ev, mgopack_ctx *mgopack, ud_cxt *ud) {
             mongo->scram = NULL;
         }
         break;
-    case SCRAM_FINAL_MESSAGE:
+    case SCRAM_LOCAL_FINAL:
         ud->status = COMMAND;
         rtn = _mongo_server_final_message(ev, mongo, mgopack);
         _hs_push(mongo->fd, mongo->skid, 1, ud, rtn, NULL, 0);
