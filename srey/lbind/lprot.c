@@ -560,6 +560,17 @@ static int32_t _lprot_mail_free(lua_State *lua) {
     mail_free(mail);
     return 0;
 }
+static int32_t _lprot_mail_reply(lua_State *lua) {
+    mail_ctx *mail = lua_touserdata(lua, 1);
+    int32_t reply;
+    if (LUA_TNIL == lua_type(lua, 2)) {
+        reply = 0;
+    } else {
+        reply = (int32_t)luaL_checkinteger(lua, 2);
+    }
+    mail_reply(mail, reply);
+    return 0;
+}
 static int32_t _lprot_mail_subject(lua_State *lua) {
     mail_ctx *mail = lua_touserdata(lua, 1);
     const char *subject = luaL_checkstring(lua, 2);
@@ -626,6 +637,7 @@ LUAMOD_API int luaopen_mail(lua_State *lua) {
         { NULL, NULL }
     };
     luaL_Reg reg_func[] = {
+        { "reply", _lprot_mail_reply },
         { "subject",  _lprot_mail_subject },
         { "msg",  _lprot_mail_msg },
         { "html",  _lprot_mail_html },
