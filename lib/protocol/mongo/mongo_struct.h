@@ -19,14 +19,17 @@ typedef struct mgopack_ctx {
 
 typedef struct mongo_ctx {
     uint16_t port;
-    int32_t id;
+    int32_t reqid;
+    uint32_t flags;//message flags
     SOCKET fd;
     uint64_t skid;
     struct task_ctx *task;
     struct evssl_ctx *evssl;
     struct scram_ctx *scram;
+    char *error;
     char ip[IP_LENS];
     char db[64];
+    char authdb[64];
     char collection[64];
     char user[64];
     char password[64];

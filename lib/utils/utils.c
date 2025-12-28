@@ -844,7 +844,7 @@ static int32_t _get_procpath(char path[PATH_LENS]) {
     }
 #elif defined(OS_SUN)  
     char in[64];
-    SNPRINTF(in, sizeof(in), "/proc/%d/path/a.out", (uint32_t)getpid());
+    SNPRINTF(in, sizeof(in), "/proc/%d/path/a.out", (int32_t)GETPID());
     if (0 > readlink(in, path, len - 1)) {
         return ERR_FAILED;
     }
@@ -855,17 +855,17 @@ static int32_t _get_procpath(char path[PATH_LENS]) {
     }
 #elif defined(OS_FBSD)
     int32_t name[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME };
-    name[3] = getpid();
+    name[3] = GETPID();
     if (0 != sysctl(name, 4, path, &len, NULL, 0)) {
         return ERR_FAILED;
     }
 #elif defined(OS_AIX)
-    if (ERR_OK != _get_proc_fullpath(getpid(), path)) {
+    if (ERR_OK != _get_proc_fullpath(GETPID(), path)) {
         return ERR_FAILED;
     }
 #elif defined(OS_HPUX)
     struct pst_status pst;
-    if (-1 == pstat_getproc(&pst, sizeof(pst), 0, getpid())) {
+    if (-1 == pstat_getproc(&pst, sizeof(pst), 0, GETPID())) {
         return ERR_FAILED;
     }
     if (-1 == pstat_getpathname(path, len - 1, &pst.pst_fid_text)) {
@@ -1113,14 +1113,7 @@ char* strreverse(char* str) {
     return str;
 }
 int32_t randrange(int32_t min, int32_t max) {
-    static uint32_t seed = 0;
     ASSERTAB(max > min, "rand range max must big than min.");
-    if (0 == seed) {
-        struct timeval tv;
-        timeofday(&tv);
-        seed = (uint32_t)(tv.tv_usec / 1000);
-        srand(seed);
-    }
     return min + rand() % (max - min + 1);
 }
 char *randstr(char *buf, size_t len) {

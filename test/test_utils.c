@@ -799,7 +799,7 @@ static void _test_scram(CuTest* tc, const char *mod) {
     int32_t rtn = scram_parse_first_message(server, client_first_message, strlen(client_first_message));
     FREE(client_first_message);
     CuAssertTrue(tc, ERR_OK == rtn);
-    CuAssertTrue(tc, 0 ==  STRCMP(scram_get_user(server), ",admin="));
+    CuAssertTrue(tc, 0 ==  strcmp(scram_get_user(server), ",admin="));
     char *server_first_message = scram_first_message(server);
     rtn = scram_parse_first_message(client, server_first_message, strlen(server_first_message));
     FREE(server_first_message);
@@ -828,7 +828,6 @@ static void test_timer(CuTest* tc) {
     PRINT("timer_elapsed_ms: %"PRIu64"", timer_elapsed_ms(&timer));
 }
 static void test_netutils(CuTest* tc) {
-    sock_init();
     SOCKET sock[2];
     CuAssertTrue(tc, ERR_OK == sock_pair(sock));
     CuAssertTrue(tc, SOCK_STREAM == sock_type(sock[0]));
@@ -840,7 +839,6 @@ static void test_netutils(CuTest* tc) {
     CuAssertTrue(tc, strlen(str) == nread);
     CLOSE_SOCK(sock[0]);
     CLOSE_SOCK(sock[1]);
-    sock_clean();
 }
 static void test_buffer(CuTest* tc) {
     buffer_ctx buf;

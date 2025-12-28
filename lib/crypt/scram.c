@@ -2,11 +2,11 @@
 
 scram_ctx *scram_init(const char *method, int32_t client) {
     digest_type type;
-    if (0 == STRCMP(method, "SCRAM-SHA-1")) {
+    if (0 == strcmp(method, "SCRAM-SHA-1")) {
         type = DG_SHA1;
-    } else if (0 == STRCMP(method, "SCRAM-SHA-256")) {
+    } else if (0 == strcmp(method, "SCRAM-SHA-256")) {
         type = DG_SHA256;
-    } else if (0 == STRCMP(method, "SCRAM-SHA-512")) {
+    } else if (0 == strcmp(method, "SCRAM-SHA-512")) {
         type = DG_SHA512;
     }  else {
         LOG_WARN("unsupported verification methods.");
@@ -340,7 +340,7 @@ static char *_scram_client_final_message(scram_ctx *scram) {
     scram->status = SCRAM_LOCAL_FINAL;
     return format_va("%s,p=%s", scram->final_message_without_proof, proof);
 }
-//server check c=biws,r=,p=
+//server parse c=biws,r=,p=
 static int32_t _scram_server_check_final_message(scram_ctx *scram, char *msg, size_t mlens) {
     if (SCRAM_LOCAL_FIRST != scram->status) {
         return ERR_FAILED;
@@ -388,7 +388,7 @@ static char *_scram_server_final_message(scram_ctx *scram) {
     scram->status = SCRAM_LOCAL_FINAL;
     return format_va("v=%s", proof);
 }
-//client check [e=] v= 
+//client parse [e=] v= 
 static int32_t _scram_client_check_final_message(scram_ctx *scram, char *msg, size_t mlens) {
     if (SCRAM_LOCAL_FINAL != scram->status) {
         return ERR_FAILED;

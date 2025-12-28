@@ -89,6 +89,7 @@ static int32_t service_exit(void) {
     if (NULL != logstream) {
         fclose(logstream);
     }
+    sock_clean();
     return ERR_OK;
 }
 static void _config_init(config_ctx *config) {
@@ -102,7 +103,13 @@ static void _config_init(config_ctx *config) {
     ZERO(config->harborkey, sizeof(config->harborkey));
     strcpy(config->script, "script");
 }
+static void _init_globle(void) {
+    sock_init();
+    srand((uint32_t)time(NULL));
+    bson_globle_init();
+}
 static int32_t service_init(void) {
+    _init_globle();
     config_ctx config;
     _config_init(&config);
     _parse_config(&config);
@@ -319,7 +326,7 @@ static void _useage(void) {
 #else
 static void _stop_sh(const char *sh) {
     char cmd[128];
-    SNPRINTF(cmd, sizeof(cmd), "kill -%d %d\n", SIGUSR1, (int32_t)getpid());
+    SNPRINTF(cmd, sizeof(cmd), "kill -%d %d\n", SIGUSR1, (int32_t)GETPID());
     FILE *file = fopen(sh, "w");
     if (NULL == file) {
         return;

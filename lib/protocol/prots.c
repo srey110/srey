@@ -57,7 +57,14 @@ void prots_pkfree(pack_type pktype, void *data) {
     }
 }
 void prots_hsfree(pack_type pktype, void *data) {
-    FREE(data);
+    switch (pktype) {
+    case PACK_MONGO:
+        _mongo_pkfree(data);
+        break;
+    default:
+        FREE(data);
+        break;
+    }
 }
 void prots_udfree(void *arg) {
     if (NULL == arg) {

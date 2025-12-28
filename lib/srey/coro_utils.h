@@ -174,8 +174,172 @@ pgpack_ctx *pgsql_stmt_execute(pgsql_ctx *pg, const char *name, pgsql_bind_ctx *
 /// <param name="pg">pgsql_ctx</param>
 /// <param name="name">名称</param>
 void pgsql_stmt_close(pgsql_ctx *pg, const char *name);
+/// <summary>
+/// 链接mongodb
+/// </summary>
+/// <param name="task">task_ctx</param>
+/// <param name="mongo">mongo_ctx</param>
+/// <returns>ERR_OK 成功</returns>
 int32_t mongo_connect(task_ctx *task, mongo_ctx *mongo);
+/// <summary>
+/// 用户验证
+/// </summary>
+/// <param name="mongo">mongo_ctx</param>
+/// <param name="authmod">SCRAM-SHA-1 SCRAM-SHA-256</param>
+/// <param name="user">用户名</param>
+/// <param name="pwd">密码</param>
+/// <returns>ERR_OK 成功</returns>
 int32_t mongo_auth(mongo_ctx *mongo, const char *authmod, const char *user, const char *pwd);
-mgopack_ctx *mongo_hello(mongo_ctx *mongo);
+/// <summary>
+/// hello 命令 显示该节点在副本集中的角色信息，包括是否为主副本
+/// </summary>
+/// <param name="mongo">mongo_ctx</param>
+/// <param name="options">可选 其他参数 document (saslSupportedMechs)</param>
+/// <returns>NULL 失败</returns>
+mgopack_ctx *mongo_hello(mongo_ctx *mongo, char *options);
+/// <summary>
+/// ping 命令
+/// </summary>
+/// <param name="mongo">mongo_ctx</param>
+/// <returns>ERR_OK 成功</returns>
+int32_t mongo_ping(mongo_ctx *mongo);
+/// <summary>
+/// drop 命令 删除当前集合 MORETOCOME 可用
+/// </summary>
+/// <param name="mongo">mongo_ctx</param>
+/// <param name="options">可选 其他参数 document (writeConcern comment)</param>
+/// <returns>ERR_OK 成功</returns>
+int32_t mongo_drop(mongo_ctx *mongo, char *options);
+/// <summary>
+/// insert 命令 插入一个或多个文档 MORETOCOME 可用
+/// </summary>
+/// <param name="mongo">mongo_ctx</param>
+/// <param name="docs">[ document, ... ]</param>
+/// <param name="dlens">docs长度</param>
+/// <param name="options">可选 其他参数 document (ordered maxTimeMS writeConcern bypassDocumentValidation comment)</param>
+/// <returns>ERR_FAILED 失败  其他 插入的数量</returns>
+int32_t mongo_insert(mongo_ctx *mongo, char *docs, size_t dlens, char *options);
+/// <summary>
+/// update 命令 更新一个或多个文档 MORETOCOME 可用
+/// </summary>
+/// <param name="mongo">mongo_ctx</param>
+/// <param name="updates">[{q:u:...}, ...]</param>
+/// <param name="ulens">updates长度</param>
+/// <param name="options">可选 其他参数 document (ordered maxTimeMS writeConcern bypassDocumentValidation comment let)</param>
+/// <returns>ERR_FAILED 失败  其他 更新的数量</returns>
+int32_t mongo_update(mongo_ctx *mongo, char *updates, size_t ulens, char *options);
+/// <summary>
+/// delete 命令 删除一个或多个文档 MORETOCOME 可用
+/// </summary>
+/// <param name="mongo">mongo_ctx</param>
+/// <param name="deletes">[{q:...}, ...]</param>
+/// <param name="dlens">deletes长度</param>
+/// <param name="options">可选 其他参数 document (comment let ordered writeConcern maxTimeMS)</param>
+/// <returns>ERR_FAILED 失败  其他 删除的数量</returns>
+int32_t mongo_delete(mongo_ctx *mongo, char *deletes, size_t dlens, char *options);
+/// <summary>
+/// bulkwrite 命令 在一个请求中对多个集合执行多次插入、更新和删除操作  MORETOCOME 可用
+/// </summary>
+/// <param name="mongo">mongo_ctx</param>
+/// <param name="ops">[insert,update,delete...]</param>
+/// <param name="olens">ops长度</param>
+/// <param name="nsinfo">[ns...] 操作的命名空间（数据库和集合）.将ops中每个操作的命名空间ID索引设置为ns中匹配的命名空间大量索引.索引从0开始</param>
+/// <param name="nlens">nsinfo长度</param>
+/// <param name="options">可选 其他参数 document (ordered bypassDocumentValidation comment let errorsOnly cursor writeConcern)</param>
+/// <returns>设置MORETOCOME始终返回NULL, 未设置则 NULL 失败</returns>
+mgopack_ctx *mongo_bulkwrite(mongo_ctx *mongo, char *ops, size_t olens, char *nsinfo, size_t nlens, char *options);
+/// <summary>
+/// find 命令 选择集合或视图中的文档
+/// </summary>
+/// <param name="mongo">mongo_ctx</param>
+/// <param name="filter">可选 查询谓词 document</param>
+/// <param name="flens">filter长度</param>
+/// <param name="options">可选 其他参数 document 
+/// (sort projection hint skip limit batchSize singleBatch comment maxTimeMS readConcern max min returnKey
+/// showRecordId tailable oplogReplay noCursorTimeout awaitData allowPartialResults collation allowDiskUse let) 
+/// </param>
+/// <returns>NULL 失败</returns>
+mgopack_ctx *mongo_find(mongo_ctx *mongo, char *filter, size_t flens, char *options);
+/// <summary>
+/// aggregate 命令 聚合
+/// </summary>
+/// <param name="mongo">mongo_ctx</param>
+/// <param name="pipeline">[ stage, ... ] 聚合管道阶段数组</param>
+/// <param name="pllens">pipeline长度</param>
+/// <param name="options">可选 其他参数 document 
+/// (explain allowDiskUse maxTimeMS bypassDocumentValidation readConcern collation hint comment writeConcern let)
+/// </param>
+/// <returns>NULL 失败</returns>
+mgopack_ctx *mongo_aggregate(mongo_ctx *mongo, char *pipeline, size_t pllens, char *options);
+/// <summary>
+/// getMore 命令 返回游标当前指向的文档的后续批次
+/// </summary>
+/// <param name="mgpack">mgopack_ctx</param>
+/// <param name="cursorid">游标标识符</param>
+/// <param name="options">可选 其他参数 document (collection batchSize maxTimeMS comment)</param>
+/// <returns>NULL 失败</returns>
+mgopack_ctx *mongo_getmore(mongo_ctx *mongo, int64_t cursorid, char *options);
+/// <summary>
+/// killCursors 命令 终止集合的一个或多个指定游标  MORETOCOME 可用
+/// </summary>
+/// <param name="mgpack">mgopack_ctx</param>
+/// <param name="cursorids">游标标识符 [cursorid, ...]</param>
+/// <param name="cslens">cursorids长度</param>
+/// <param name="options">可选 其他参数 document (comment)</param>
+/// <returns>设置MORETOCOME始终返回NULL, 未设置则 NULL 失败</returns>
+mgopack_ctx *mongo_killcursors(mongo_ctx *mongo, char *cursorids, size_t cslens, char *options);
+/// <summary>
+/// distinct 命令 查找单个集合中指定字段的不同值
+/// </summary>
+/// <param name="mgpack">mgopack_ctx</param>
+/// <param name="key">字段</param>
+/// <param name="query">可选 查询 document </param>
+/// <param name="qlens">query长度</param>
+/// <param name="options">可选 其他参数 document (readConcern collation comment hint)</param>
+/// <returns>NULL 失败</returns>
+mgopack_ctx *mongo_distinct(mongo_ctx *mongo, const char *key, char *query, size_t qlens, char *options);
+/// <summary>
+/// findandmodify 命令 返回并修改单个文档
+/// </summary>
+/// <param name="mongo">mongo_ctx</param>
+/// <param name="query">可选 条件 document</param>
+/// <param name="qlens">query长度</param>
+/// <param name="remove">true:删除所选文档 false:更新所选文档,必须有update</param>
+/// <param name="pipeline">update是否为pipeline</param>
+/// <param name="update">更新所选文档 document</param>
+/// <param name="ulens">update长度</param>
+/// <param name="options">可选 其他参数 document
+/// (sort new fields upsert bypassDocumentValidation writeConcern maxTimeMS collation arrayFilters hint comment let)
+/// </param>
+/// <returns>NULL 失败</returns>
+mgopack_ctx *mongo_findandmodify(mongo_ctx *mongo, char *query, size_t qlens,
+    int32_t remove, int32_t pipeline, char *update, size_t ulens, char *options);
+/// <summary>
+/// count 命令 计算集合或视图中的文档数量
+/// </summary>
+/// <param name="mongo">mongo_ctx</param>
+/// <param name="query">可选 查询，选择哪些文档要在集合或视图中计数</param>
+/// <param name="qlens,">query长度</param>
+/// <param name="options">可选 其他参数 document (limit skip hint readConcern maxTimeMS collation comment)</param>
+/// <returns>ERR_OK 成功</returns>
+int32_t mongo_count(mongo_ctx *mongo, char *query, size_t qlens, char *options);
+/// <summary>
+/// createindexes 命令 为集合构建一个或多个索引  MORETOCOME 可用
+/// </summary>
+/// <param name="mongo">mongo_ctx</param>
+/// <param name="indexes">指定要创建的索引[{key:{...},name:}...]</param>
+/// <param name="ilens">indexes长度</param>
+/// <param name="options">可选 其他参数 document (writeConcern commitQuorum comment)</param>
+/// <returns>ERR_OK 成功</returns>
+int32_t mongo_createindexes(mongo_ctx *mongo, char *indexes, size_t ilens, char *options);
+/// <summary>
+/// dropindexes 命令 从集合中删除索引  MORETOCOME 可用
+/// </summary>
+/// <param name="mongo">mongo_ctx</param>
+/// <param name="indexes">要删除的一个或多个索引 <arrayofstrings></param>
+/// <param name="ilens">indexes长度</param>
+/// <param name="options">可选 其他参数 document (writeConcern comment)</param>
+/// <returns>ERR_OK 成功</returns>
+int32_t mongo_dropindexes(mongo_ctx *mongo, char *indexes, size_t ilens, char *options);
 
 #endif//CORO_UTILS_H_

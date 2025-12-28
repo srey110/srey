@@ -247,7 +247,6 @@ static void _init_cmd(watcher_ctx *watcher) {
 void ev_init(ev_ctx *ctx, uint32_t nthreads) {
     ctx->nthreads = (0 == nthreads ? procscnt() : nthreads);
     ctx->nacpex = ctx->nthreads > 1 ? ctx->nthreads / 2 : 1;
-    sock_init();
     _init_funcs(ctx);
     MALLOC(ctx->watcher, sizeof(watcher_ctx) * ctx->nthreads);
     watcher_ctx *watcher;
@@ -353,7 +352,6 @@ void ev_free(ev_ctx *ctx) {
     }
     FREE(ctx->watcher);
     spin_free(&ctx->spin);
-    sock_clean();
 }
 
 #endif//EV_IOCP

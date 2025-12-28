@@ -138,7 +138,7 @@ static char *_pgsql_get_authmod(pgsql_ctx *pg, binary_ctx *breader) {
         mod = binary_get_string(breader, 0);
         for (i = 0; i < n; i++) {
             if (NULL != _pgsql_scram_mod[i]
-                && 0 == STRCMP(mod, _pgsql_scram_mod[i])) {
+                && 0 == strcmp(mod, _pgsql_scram_mod[i])) {
                 return mod;
             }
         }

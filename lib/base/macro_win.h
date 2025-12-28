@@ -11,7 +11,8 @@
 #define PATH_LENS MAX_PATH
 #define INVALID_SOCK INVALID_SOCKET
 #define IS_EAGAIN(e) (WSAEWOULDBLOCK == (e) || EAGAIN == (e))
-#define STRCMP _stricmp
+#define GETPID _getpid
+#define STRICMP _stricmp
 #define STRNCMP _strnicmp
 #define STRTOK strtok_s
 #define SNPRINTF _snprintf

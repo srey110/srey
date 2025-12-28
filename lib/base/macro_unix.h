@@ -26,7 +26,8 @@
 #endif
 #define ERR_RW_RETRIABLE(e)	((e) == EINTR || IS_EAGAIN(e))
 #define ERR_CONNECT_RETRIABLE(e) ((e) == EINTR || (e) == EINPROGRESS)
-#define STRCMP strcasecmp
+#define GETPID getpid
+#define STRICMP strcasecmp
 #define STRNCMP strncasecmp
 #define STRTOK strtok_r
 #define SNPRINTF snprintf

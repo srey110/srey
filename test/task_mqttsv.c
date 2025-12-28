@@ -41,7 +41,7 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, 
         size_t lens;
         mqtt_publish_varhead *vh = pack->varhead;
         mqtt_publish_payload *pl = pack->payload;
-        if (0 == STRCMP(pl->content, "bye")) {
+        if (0 == STRICMP(pl->content, "bye")) {
             pk = mqtt_pack_disconnect(pack->version, 0, NULL, &lens);
             if (NULL != pk) {
                 ev_send(&task->loader->netev, fd, skid, pk, lens, 0);

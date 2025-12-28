@@ -9,9 +9,10 @@
 
 #define ONEK                 1024
 #define TIME_LENS            128
-#define HOST_LENS            128
+#define HOST_LENS            256
 #define IP_LENS              64
 #define PORT_LENS            8
+#define UUID_LENS            16
 #define INVALID_FD           -1
 #define FLOAT_PRECISION      1e-6
 

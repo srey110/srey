@@ -43,6 +43,9 @@ static void on_sigcb(int32_t sig, void *arg) {
     cond_signal(&condexit);
 }
 int main(int argc, char *argv[]) {
+    sock_init();
+    srand((uint32_t)time(NULL));
+    bson_globle_init();
     unlimit();
     log_init(NULL);
     mutex_init(&muexit);
@@ -61,7 +64,7 @@ int main(int argc, char *argv[]) {
     CuStringDelete(poutput);
     CuSuiteDelete(psuite);
 
-    g_loader = loader_init(0, 0);
+    g_loader = loader_init(0, 0, 0);
 #if WITH_SSL
     const char *local = procpath();
     char ca[PATH_LENS];
@@ -109,5 +112,6 @@ int main(int argc, char *argv[]) {
     mutex_free(&muexit);
     cond_free(&condexit);
     _memcheck();
+    sock_clean();
     return 0;
 }
