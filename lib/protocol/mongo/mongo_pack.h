@@ -27,4 +27,12 @@ void *mongo_pack_count(mongo_ctx *mongo, char *query, size_t qlens, char *option
 void *mongo_pack_createindexes(mongo_ctx *mongo, char *indexes, size_t ilens, char *options, size_t *size);
 void *mongo_pack_dropindexes(mongo_ctx *mongo, char *indexes, size_t ilens, char *options, size_t *size);
 
+void *mongo_pack_startsession(mongo_ctx *mongo, size_t *size);
+void *mongo_pack_committransaction(mongo_ctx *mongo, int64_t txnnumber, char *writeconcern, size_t wclens,
+    int32_t autocommit, char *options, size_t *size);
+void *mongo_pack_aborttransaction(mongo_ctx *mongo, int64_t txnnumber, char *writeconcern, size_t wclens,
+    int32_t autocommit, char *options, size_t *size);
+void *mongo_pack_refreshsessions(mongo_ctx *mongo, char *ids, size_t lens, size_t *size);
+void *mongo_pack_endsessions(mongo_ctx *mongo, char *ids, size_t lens, size_t *size);
+
 #endif//MONGO_PACK_H_
