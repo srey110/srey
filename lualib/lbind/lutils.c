@@ -1,7 +1,5 @@
 #include "lbind/lpub.h"
 
-#if WITH_LUA
-
 static int32_t _lutils_log_setlv(lua_State *lua) {
     LOG_LEVEL lv = (LOG_LEVEL)luaL_checkinteger(lua, 1);
     log_setlv(lv);
@@ -167,5 +165,3 @@ LUAMOD_API int luaopen_hashring(lua_State *lua) {
     REG_MTABLE(lua, "_hash_ring_ctx", reg_new, reg_func);
     return 1;
 }
-
-#endif

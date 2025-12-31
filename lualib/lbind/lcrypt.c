@@ -1,7 +1,5 @@
 #include "lbind/lpub.h"
 
-#if WITH_LUA
-
 static int32_t _lcrypt_url_encode(lua_State *lua) {
     void *data;
     size_t size;
@@ -384,5 +382,3 @@ LUAMOD_API int luaopen_cipher(lua_State *lua) {
     REG_MTABLE(lua, "_cipher_ctx", reg_new, reg_func);
     return 1;
 }
-
-#endif

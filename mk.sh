@@ -34,10 +34,12 @@ done < `pwd`/lib/base/config.h
 MAINDIR="srey"
 PROGRAMNAME="srey"
 MAINFILE="main.c"
-Dir="lib lib/base lib/utils lib/containers lib/crypt lib/event lib/protocol lib/protocol/mongo lib/protocol/mqtt lib/protocol/mysql lib/protocol/pgsql lib/protocol/smtp lib/srey lib/thread"
+Dir="lib lib/base lib/utils lib/containers lib/crypt lib/event lib/srey lib/thread"
+Dir=$Dir" lib/protocol lib/protocol/mongo lib/protocol/mqtt lib/protocol/mysql lib/protocol/pgsql lib/protocol/smtp"
+Dir=$Dir" lib/services"
 if [ $LUA -eq 1 ]
 then
-    Dir=$Dir" lualib lualib/lua lualib/lfs lualib/luacjson lualib/pb"
+    Dir=$Dir" lualib lualib/lua lualib/lbind lualib/lfs lualib/luacjson lualib/pb"
 fi
 if [ "$1" = "test" ] || [ "$2" = "test" ]
 then
@@ -45,11 +47,7 @@ then
     PROGRAMNAME="test"
     Dir=$Dir" test"
 else
-    Dir=$Dir" srey srey/cjson srey/tasks"
-    if [ $LUA -eq 1 ]
-    then
-        Dir=$Dir" srey/lbind"
-    fi
+    Dir=$Dir" srey srey/cjson"
 fi
 #包含库
 INCLUDELIB="-lpthread -lm"

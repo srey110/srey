@@ -1,7 +1,5 @@
 #include "lbind/lpub.h"
 
-#if WITH_LUA
-
 static int32_t _lmysql_bind_new(lua_State *lua) {
     mysql_bind_ctx *mbind = lua_newuserdata(lua, sizeof(mysql_bind_ctx));
     mysql_bind_init(mbind);
@@ -486,5 +484,3 @@ LUAMOD_API int luaopen_mysql(lua_State *lua) {
     REG_MTABLE(lua, "_mysql_ctx", reg_new, reg_func);
     return 1;
 }
-
-#endif

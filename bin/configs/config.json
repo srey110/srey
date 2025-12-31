@@ -7,7 +7,6 @@
     "stacksize": 0,
     "harborname": 1,
     "harborssl": 0,
-    "harbortimeout": 1000,
     "harborip": "0.0.0.0",
     "harborport": 8080,
     "harborkey":"p1KaLmIg2kB7fZp5Tm1qbi6dss92C31aPGJK9Lvk7DMPDONXrwD2yVLZrHBio74s"

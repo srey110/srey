@@ -19,6 +19,13 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="lbind\lcore.c" />
+    <ClCompile Include="lbind\lcrypt.c" />
+    <ClCompile Include="lbind\lmysql.c" />
+    <ClCompile Include="lbind\lprot.c" />
+    <ClCompile Include="lbind\lpub.c" />
+    <ClCompile Include="lbind\ltask.c" />
+    <ClCompile Include="lbind\lutils.c" />
     <ClCompile Include="lfs\lfs.c" />
     <ClCompile Include="luacjson\fpconv.c" />
     <ClCompile Include="luacjson\lua_cjson.c" />
@@ -58,6 +65,8 @@
     <ClCompile Include="pb\pb.c" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="lbind\lpub.h" />
+    <ClInclude Include="lbind\ltask.h" />
     <ClInclude Include="lfs\lfs.h" />
     <ClInclude Include="luacjson\fpconv.h" />
     <ClInclude Include="luacjson\strbuf.h" />
@@ -160,7 +169,7 @@
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;WIN32;_DEBUG;_LIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>../lualib/lfs;../lualib/lua;../lualib/luacjson;../lualib/pb;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>../lib;../lualib;../lualib/lfs;../lualib/lua;../lualib/luacjson;../lualib/pb;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -173,7 +182,7 @@
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;_DEBUG;_LIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>../lualib/lfs;../lualib/lua;../lualib/luacjson;../lualib/pb;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>../lib;../lualib;../lualib/lfs;../lualib/lua;../lualib/luacjson;../lualib/pb;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -188,7 +197,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;WIN32;NDEBUG;_LIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>../lualib/lfs;../lualib/lua;../lualib/luacjson;../lualib/pb;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>../lib;../lualib;../lualib/lfs;../lualib/lua;../lualib/luacjson;../lualib/pb;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -205,7 +214,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;NDEBUG;_LIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>../lualib/lfs;../lualib/lua;../lualib/luacjson;../lualib/pb;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>../lib;../lualib;../lualib/lfs;../lualib/lua;../lualib/luacjson;../lualib/pb;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>

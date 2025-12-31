@@ -13,6 +13,9 @@
     <Filter Include="lfs">
       <UniqueIdentifier>{5590ed9c-2845-403f-9150-363adeb3b68f}</UniqueIdentifier>
     </Filter>
+    <Filter Include="lbind">
+      <UniqueIdentifier>{67134366-cad4-469c-b4c8-e5a862526e99}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="lua\lapi.c">
@@ -126,6 +129,27 @@
     <ClCompile Include="lfs\lfs.c">
       <Filter>lfs</Filter>
     </ClCompile>
+    <ClCompile Include="lbind\lcore.c">
+      <Filter>lbind</Filter>
+    </ClCompile>
+    <ClCompile Include="lbind\lcrypt.c">
+      <Filter>lbind</Filter>
+    </ClCompile>
+    <ClCompile Include="lbind\lmysql.c">
+      <Filter>lbind</Filter>
+    </ClCompile>
+    <ClCompile Include="lbind\lprot.c">
+      <Filter>lbind</Filter>
+    </ClCompile>
+    <ClCompile Include="lbind\lpub.c">
+      <Filter>lbind</Filter>
+    </ClCompile>
+    <ClCompile Include="lbind\ltask.c">
+      <Filter>lbind</Filter>
+    </ClCompile>
+    <ClCompile Include="lbind\lutils.c">
+      <Filter>lbind</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="lua\lapi.h">
@@ -220,6 +244,12 @@
     </ClInclude>
     <ClInclude Include="lfs\lfs.h">
       <Filter>lfs</Filter>
+    </ClInclude>
+    <ClInclude Include="lbind\lpub.h">
+      <Filter>lbind</Filter>
+    </ClInclude>
+    <ClInclude Include="lbind\ltask.h">
+      <Filter>lbind</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

@@ -55,6 +55,9 @@
     <Filter Include="protocol\smtp">
       <UniqueIdentifier>{f41d9e5d-747c-42d2-a196-ba323c83600d}</UniqueIdentifier>
     </Filter>
+    <Filter Include="services">
+      <UniqueIdentifier>{344f0683-5bdd-4176-8639-737a642e32ad}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="lib.h" />
@@ -337,6 +340,9 @@
     <ClInclude Include="srey\coro.h">
       <Filter>srey</Filter>
     </ClInclude>
+    <ClInclude Include="services\harbor.h">
+      <Filter>services</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="event\event.c">
@@ -554,6 +560,9 @@
     </ClCompile>
     <ClCompile Include="srey\coro.c">
       <Filter>srey</Filter>
+    </ClCompile>
+    <ClCompile Include="services\harbor.c">
+      <Filter>services</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

@@ -1,7 +1,5 @@
 #include "lbind/lpub.h"
 
-#if WITH_LUA
-
 #define COPY_TYPE(lua, idx) (lua_isinteger(lua, idx) ? (int32_t)luaL_checkinteger(lua, idx) : 1)
 
 static int32_t _lcore_timeout(lua_State *lua) {
@@ -339,5 +337,3 @@ LUAMOD_API int luaopen_core(lua_State *lua) {
     luaL_newlib(lua, reg);
     return 1;
 }
-
-#endif

@@ -89,6 +89,7 @@
     <ClInclude Include="protocol\smtp\smtp.h" />
     <ClInclude Include="protocol\urlparse.h" />
     <ClInclude Include="protocol\websock.h" />
+    <ClInclude Include="services\harbor.h" />
     <ClInclude Include="srey\coro.h" />
     <ClInclude Include="srey\coro_utils.h" />
     <ClInclude Include="srey\loader.h" />
@@ -170,6 +171,7 @@
     <ClCompile Include="protocol\smtp\smtp.c" />
     <ClCompile Include="protocol\urlparse.c" />
     <ClCompile Include="protocol\websock.c" />
+    <ClCompile Include="services\harbor.c" />
     <ClCompile Include="srey\coro.c" />
     <ClCompile Include="srey\coro_utils.c" />
     <ClCompile Include="srey\loader.c" />

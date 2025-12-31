@@ -1,7 +1,7 @@
 #ifndef HARBOR_H_
 #define HARBOR_H_
 
-#include "lib.h"
+#include "srey/coro.h"
 
 /// <summary>
 /// 启动harbor,服务器间通信
@@ -12,10 +12,8 @@
 /// <param name="ip">IP</param>
 /// <param name="port">端口</param>
 /// <param name="key">密钥</param>
-/// <param name="ms">任务间通信超时时间 毫秒</param>
 /// <returns>ERR_OK 成功</returns>
-int32_t harbor_start(loader_ctx *loader, name_t tname, name_t ssl,
-    const char *ip, uint16_t port, const char *key, int32_t ms);
+int32_t harbor_start(loader_ctx *loader, name_t tname, name_t ssl, const char *ip, uint16_t port, const char *key);
 /// <summary>
 /// 服务器间通信请求包
 /// </summary>

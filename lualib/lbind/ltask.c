@@ -1,10 +1,5 @@
 #include "lbind/ltask.h"
 
-#if WITH_LUA
-#ifdef OS_WIN
-#pragma comment(lib, "lualib.lib")
-#endif
-
 #define LUA_TB_NUMBER(key, val)\
     lua_pushstring(lua, key);\
     lua_pushinteger(lua, val);\
@@ -389,5 +384,3 @@ LUAMOD_API int luaopen_task(lua_State *lua) {
     luaL_newlib(lua, reg);
     return 1;
 }
-
-#endif

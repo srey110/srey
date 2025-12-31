@@ -53,6 +53,7 @@
 #include "srey/task.h"
 #include "srey/coro.h"
 #include "srey/coro_utils.h"
+#include "services/harbor.h"
 
 extern loader_ctx *g_loader;
 

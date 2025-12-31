@@ -1,5 +1,4 @@
 #include "lbind/lpub.h"
-#if WITH_LUA
 
 void *global_userdata(lua_State *lua, const char *name) {
     lua_pop(lua, -1);
@@ -25,5 +24,3 @@ const char *global_string(lua_State *lua, const char *name) {
     lua_pop(lua, -1);
     return data;
 }
-
-#endif

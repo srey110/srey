@@ -2,7 +2,6 @@
 #define LPUB_H_
 
 #include "lib.h"
-#if WITH_LUA
 #include "lua/lualib.h"
 #include "lua/lauxlib.h"
 
@@ -24,5 +23,4 @@
 void *global_userdata(lua_State *lua, const char *name);
 const char *global_string(lua_State *lua, const char *name);
 
-#endif
 #endif//LPUB_H_

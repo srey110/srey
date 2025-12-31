@@ -4,8 +4,7 @@
 #include "utils/binary.h"
 #include "crypt/scram.h"
 
-static void *_mongo_pack_msg(mongo_ctx *mongo, int32_t kind, const char *docid,
-    const uint8_t *docs, size_t dlens, size_t *size) {
+static void *_mongo_pack_msg(mongo_ctx *mongo, int32_t kind, const char *docid, char *docs, size_t dlens, size_t *size) {
     mongo->reqid++;
     binary_ctx bwriter;
     binary_init(&bwriter, 0, 0, 0);

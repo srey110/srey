@@ -59,7 +59,6 @@ static void _parse_config(config_ctx *cnf) {
     _json_get_string(json, "script", cnf->script, sizeof(cnf->script));
     cnf->harborname = (name_t)_json_get_number(json, "harborname");
     cnf->harborssl = (name_t)_json_get_number(json, "harborssl");
-    cnf->harbortimeout = (int32_t)_json_get_number(json, "harbortimeout");
     _json_get_string(json, "harborip", cnf->harborip, sizeof(cnf->harborip));
     cnf->harborport = (uint16_t)_json_get_number(json, "harborport");
     _json_get_string(json, "harborkey", cnf->harborkey, sizeof(cnf->harborkey));
@@ -96,7 +95,6 @@ static void _config_init(config_ctx *config) {
     ZERO(config, sizeof(config_ctx));
     config->loglv = LOGLV_DEBUG;
     config->harborname = 100000,
-    config->harbortimeout = -1;
     config->harborport = 8080;
     strcpy(config->harborip, "0.0.0.0");
     strcpy(config->dns, "8.8.8.8");
@@ -154,6 +152,9 @@ static int32_t service_hug(void) {
             #pragma comment(lib, "libcrypto.lib")
             #pragma comment(lib, "libssl.lib")
         #endif
+    #endif
+    #if WITH_LUA
+        #pragma comment(lib, "lualib.lib")
     #endif
 #define WINSV_STOP_TIMEOUT       30 * 1000      //windows 服务停止超时时间
 #define WINSV_START_TIMEOUT      30 * 1000      //windows 服务启动超时时间

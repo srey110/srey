@@ -1,15 +1,16 @@
 #ifndef STARTUP_H_
 #define STARTUP_H_
 
+#include "lib.h"
+#if WITH_LUA
 #include "lbind/ltask.h"
-#include "tasks/harbor.h"
+#endif
 
 typedef struct config_ctx {
     uint8_t loglv;
     uint16_t nnet;
     uint16_t nworker;
     uint16_t harborport;
-    int32_t harbortimeout;
     uint32_t stacksize;
     name_t harborname;
     name_t harborssl;
@@ -21,7 +22,7 @@ typedef struct config_ctx {
 
 static int32_t task_startup(loader_ctx *loader, config_ctx *config) {
     int32_t rtn = harbor_start(loader, config->harborname, config->harborssl,
-        config->harborip, config->harborport, config->harborkey, config->harbortimeout);
+        config->harborip, config->harborport, config->harborkey);
     if (ERR_OK != rtn) {
         return rtn;
     }

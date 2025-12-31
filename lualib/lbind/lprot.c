@@ -1,7 +1,4 @@
 #include "lbind/lpub.h"
-#include "tasks/harbor.h"
-
-#if WITH_LUA
 
 static int32_t _lprot_harbor_pack(lua_State *lua) {
     name_t task = (name_t)luaL_checkinteger(lua, 1);
@@ -654,5 +651,3 @@ LUAMOD_API int luaopen_mail(lua_State *lua) {
     REG_MTABLE(lua, "_smtp_mail_ctx", reg_new, reg_func);
     return 1;
 }
-
-#endif
