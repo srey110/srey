@@ -232,8 +232,8 @@ static void _timeout(task_ctx *task, uint64_t sess) {
     LOG_INFO("mysql tested.");
 }
 static void _startup(task_ctx *task) {
-    on_closed(task, _net_close);
-    on_connected(task, _net_connect);
+    task_closed(task, _net_close);
+    task_connected(task, _net_connect);
     struct evssl_ctx *evssl = NULL;
 #if WITH_SSL
     evssl = evssl_qury(102);
@@ -257,7 +257,6 @@ static void _closing_cb(task_ctx *task) {
 }
 void task_mysql_start(loader_ctx *loader, name_t name, int32_t pt) {
     _prt = pt;
-    task_ctx *task = task_new(loader, name, NULL, NULL, NULL);
-    task_register(task, _startup, _closing_cb);
+    coro_task_register(loader, name, _startup, _closing_cb);
 }
 

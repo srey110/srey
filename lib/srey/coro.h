@@ -1,8 +1,11 @@
-#ifndef CORO_H_
-#define CORO_H_
+#ifndef CORO_TASK_H_
+#define CORO_TASK_H_
 
-#include "srey/spub.h"
+#include "srey/task.h"
 
+void coro_desc_init(size_t stack_size);
+task_ctx *coro_task_register(loader_ctx *loader, name_t name, _task_startup_cb _startup, _task_closing_cb _closing);
+void coro_sync(task_ctx *task, SOCKET fd, uint64_t skid);
 /// <summary>
 /// ÐÝÃß
 /// </summary>
@@ -95,4 +98,4 @@ void *coro_slice(task_ctx *task, SOCKET fd, uint64_t skid, size_t *size, int32_t
 void *coro_sendto(task_ctx *task, SOCKET fd, uint64_t skid, const char *ip, const uint16_t port,
     void *data, size_t len, size_t *size, int32_t copy);
 
-#endif//CORO_H_
+#endif//CORO_TASK_H_

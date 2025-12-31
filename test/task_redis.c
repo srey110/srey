@@ -101,8 +101,8 @@ static void _timeout(task_ctx *task, uint64_t sess) {
     task_timeout(task, 0, 3000, _timeout);
 }
 static void _startup(task_ctx *task) {
-    on_recved(task, _net_recv);
-    on_closed(task, _net_close);
+    task_recved(task, _net_recv);
+    task_closed(task, _net_close);
     _fd = redis_connect(task, NULL, "127.0.0.1", 6379, "123456", &_skid, 0);
     if (INVALID_FD == _fd) {
         LOG_ERROR("connect redis error.");
@@ -113,6 +113,5 @@ static void _startup(task_ctx *task) {
 }
 void task_redis_start(loader_ctx *loader, name_t name, int32_t pt) {
     _prt = pt;
-    task_ctx *task = task_new(loader, name, NULL, NULL, NULL);
-    task_register(task, _startup, NULL);
+    coro_task_register(loader, name, _startup, NULL);
 }

@@ -160,7 +160,7 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, 
     }
 }
 static void _startup(task_ctx *task) {
-    on_recved(task, _net_recv);
+    task_recved(task, _net_recv);
     uint64_t id;
     task_listen(task, PACK_MQTT, NULL, "0.0.0.0", 15005, &id, 0);
 }

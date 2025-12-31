@@ -46,6 +46,7 @@ int main(int argc, char *argv[]) {
     sock_init();
     srand((uint32_t)time(NULL));
     bson_globle_init();
+    coro_desc_init(0);
     unlimit();
     log_init(NULL);
     mutex_init(&muexit);
@@ -64,7 +65,7 @@ int main(int argc, char *argv[]) {
     CuStringDelete(poutput);
     CuSuiteDelete(psuite);
 
-    g_loader = loader_init(0, 0, 0);
+    g_loader = loader_init(0, 0);
 #if WITH_SSL
     const char *local = procpath();
     char ca[PATH_LENS];

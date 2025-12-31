@@ -17,7 +17,7 @@ static void _request(task_ctx *task, uint8_t reqtype, uint64_t sess, name_t src,
     }
 }
 static void _startup(task_ctx *task) {
-    on_requested(task, _request);
+    task_requested(task, _request);
 }
 void task_threadcomm2_start(loader_ctx *loader, name_t name, int32_t pt) {
     _prt = pt;

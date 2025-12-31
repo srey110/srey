@@ -111,7 +111,6 @@ struct task_ctx {
     void *arg;
     free_cb _arg_free;
     loader_ctx *loader;
-    struct coro_ctx *coro;
     _task_dispatch_cb _task_dispatch;
     _task_startup_cb _task_startup;
     _task_closing_cb _task_closing;
@@ -133,14 +132,10 @@ struct task_dispatch_arg {
     message_ctx msg;
 };
 
-void _message_dispatch(task_dispatch_arg *arg);
 void _message_run(task_ctx *task, message_ctx *msg);
 int32_t _message_handshaked_push(SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud, int32_t erro, void *data, size_t lens);
 void _task_message_push(task_ctx *task, message_ctx *msg);
 int32_t _message_should_clean(message_ctx *msg);
 void _message_clean(msg_type mtype, pack_type pktype, void *data);
-void _mcoro_init(size_t stack_size);
-void _mcoro_new(task_ctx *task);
-void _mcoro_free(task_ctx *task);
 
 #endif//SVPUB_H_

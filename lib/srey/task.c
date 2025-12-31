@@ -17,6 +17,98 @@ static task_ctx *_map_task_get(struct hashmap *map, name_t name) {
     }
     return UPCAST(*ptr, task_ctx, name);
 }
+void _message_run(task_ctx *task, message_ctx *msg) {
+    switch (msg->mtype) {
+    case MSG_TYPE_STARTUP:
+        if (NULL != task->_task_startup) {
+            task->_task_startup(task);
+        }
+        break;
+    case MSG_TYPE_CLOSING:
+        if (NULL != task->_task_closing) {
+            task->_task_closing(task);
+        }
+        task_ungrab(task);
+        break;
+    case MSG_TYPE_TIMEOUT:
+        if (NULL != msg->data) {
+            ((_timeout_cb)msg->data)(task, msg->sess);
+        }
+        break;
+    case MSG_TYPE_ACCEPT:
+        if (NULL != task->_net_accept) {
+            task->_net_accept(task, msg->fd, msg->skid, msg->pktype);
+        }
+        break;
+    case MSG_TYPE_CONNECT:
+        if (NULL != task->_net_connect) {
+            task->_net_connect(task, msg->fd, msg->skid, msg->pktype, msg->erro);
+        }
+        break;
+    case MSG_TYPE_SSLEXCHANGED:
+        if (NULL != task->_ssl_exchanged) {
+            task->_ssl_exchanged(task, msg->fd, msg->skid, msg->pktype, msg->client);
+        }
+        break;
+    case MSG_TYPE_HANDSHAKED:
+        if (NULL != task->_net_handshaked) {
+            task->_net_handshaked(task, msg->fd, msg->skid, msg->pktype, msg->client, msg->erro, msg->data, msg->size);
+        }
+        _message_clean(msg->mtype, msg->pktype, msg->data);
+        break;
+    case MSG_TYPE_RECV:
+        if (NULL != task->_net_recv) {
+            task->_net_recv(task, msg->fd, msg->skid, msg->pktype, msg->client, msg->slice, msg->data, msg->size);
+        }
+        _message_clean(msg->mtype, msg->pktype, msg->data);
+        break;
+    case MSG_TYPE_SEND:
+        if (NULL != task->_net_send) {
+            task->_net_send(task, msg->fd, msg->skid, msg->pktype, msg->client, msg->size);
+        }
+        break;
+    case MSG_TYPE_CLOSE:
+        if (NULL != task->_net_close) {
+            task->_net_close(task, msg->fd, msg->skid, msg->pktype, msg->client);
+        }
+        break;
+    case MSG_TYPE_RECVFROM:
+        if (NULL != task->_net_recvfrom) {
+            netaddr_ctx *addr = msg->data;
+            char ip[IP_LENS];
+            netaddr_ip(addr, ip);
+            uint16_t port = netaddr_port(addr);
+            char *data = ((char*)msg->data) + sizeof(netaddr_ctx);
+            task->_net_recvfrom(task, msg->fd, msg->skid, ip, port, data, msg->size);
+        }
+        _message_clean(msg->mtype, msg->pktype, msg->data);
+        break;
+    case MSG_TYPE_REQUEST:
+        if (NULL != task->_request) {
+            task->_request(task, msg->pktype, msg->sess, msg->src, msg->data, msg->size);
+        } else {
+            task_ctx *dtask = task_grab(task->loader, msg->src);
+            if (NULL != dtask) {
+                const char *erro = "not register request callback function.";
+                task_response(dtask, msg->sess, ERR_FAILED, (void *)erro, strlen(erro), 1);
+                task_ungrab(dtask);
+            }
+        }
+        _message_clean(msg->mtype, msg->pktype, msg->data);
+        break;
+    case MSG_TYPE_RESPONSE:
+        if (NULL != task->_response) {
+            task->_response(task, msg->sess, msg->erro, msg->data, msg->size);
+        }
+        _message_clean(msg->mtype, msg->pktype, msg->data);
+        break;
+    default:
+        break;
+    }
+}
+static void _message_dispatch(task_dispatch_arg *arg) {
+    _message_run(arg->task, &arg->msg);
+}
 task_ctx *task_new(loader_ctx *loader, name_t name, _task_dispatch_cb _dispatch, free_cb _argfree, void *arg) {
     if (INVALID_TNAME == name) {
         return NULL;
@@ -36,7 +128,6 @@ task_ctx *task_new(loader_ctx *loader, name_t name, _task_dispatch_cb _dispatch,
     }
     task->_arg_free = _argfree;
     task->arg = arg;
-    _mcoro_new(task);
     spin_init(&task->lckmsg, SPIN_CNT_TASKMSG);
     qu_message_init(&task->qumsg, ONEK);
     task->overload = ONEK;
@@ -51,7 +142,6 @@ void task_free(task_ctx *task) {
     while (NULL != (msg = qu_message_pop(&task->qumsg))) {
         _message_clean(msg->mtype, msg->pktype, msg->data);
     }
-    _mcoro_free(task);
     qu_message_free(&task->qumsg);
     spin_free(&task->lckmsg);
     FREE(task);
@@ -131,95 +221,6 @@ void _message_clean(msg_type mtype, pack_type pktype, void *data) {
     case MSG_TYPE_REQUEST:
     case MSG_TYPE_RESPONSE:
         FREE(data);
-        break;
-    default:
-        break;
-    }
-}
-void _message_run(task_ctx *task, message_ctx *msg) {
-    switch (msg->mtype) {
-    case MSG_TYPE_STARTUP:
-        if (NULL != task->_task_startup) {
-            task->_task_startup(task);
-        }
-        break;
-    case MSG_TYPE_CLOSING:
-        if (NULL != task->_task_closing) {
-            task->_task_closing(task);
-        }
-        task_ungrab(task);
-        break;
-    case MSG_TYPE_TIMEOUT:
-        if (NULL != msg->data) {
-            ((_timeout_cb)msg->data)(task, msg->sess);
-        }
-        break;
-    case MSG_TYPE_ACCEPT:
-        if (NULL != task->_net_accept) {
-            task->_net_accept(task, msg->fd, msg->skid, msg->pktype);
-        }
-        break;
-    case MSG_TYPE_CONNECT:
-        if (NULL != task->_net_connect) {
-            task->_net_connect(task, msg->fd, msg->skid, msg->pktype, msg->erro);
-        }
-        break;
-    case MSG_TYPE_SSLEXCHANGED:
-        if (NULL != task->_ssl_exchanged) {
-            task->_ssl_exchanged(task, msg->fd, msg->skid, msg->pktype, msg->client);
-        }
-        break;
-    case MSG_TYPE_HANDSHAKED:
-        if (NULL != task->_net_handshaked) {
-            task->_net_handshaked(task, msg->fd, msg->skid, msg->pktype, msg->client, msg->erro, msg->data, msg->size);
-        }
-        _message_clean(msg->mtype, msg->pktype, msg->data);
-        break;
-    case MSG_TYPE_RECV:
-        if (NULL != task->_net_recv) {
-            task->_net_recv(task, msg->fd, msg->skid, msg->pktype, msg->client, msg->slice, msg->data, msg->size);
-        }
-        _message_clean(msg->mtype, msg->pktype, msg->data);
-        break;
-    case MSG_TYPE_SEND:
-        if (NULL != task->_net_send) {
-            task->_net_send(task, msg->fd, msg->skid, msg->pktype, msg->client, msg->size);
-        }
-        break;
-    case MSG_TYPE_CLOSE:
-        if (NULL != task->_net_close) {
-            task->_net_close(task, msg->fd, msg->skid, msg->pktype, msg->client);
-        }
-        break;
-    case MSG_TYPE_RECVFROM:
-        if (NULL != task->_net_recvfrom) {
-            netaddr_ctx *addr = msg->data;
-            char ip[IP_LENS];
-            netaddr_ip(addr, ip);
-            uint16_t port = netaddr_port(addr);
-            char *data = ((char*)msg->data) + sizeof(netaddr_ctx);
-            task->_net_recvfrom(task, msg->fd, msg->skid, ip, port, data, msg->size);
-        }
-        _message_clean(msg->mtype, msg->pktype, msg->data);
-        break;
-    case MSG_TYPE_REQUEST:
-        if (NULL != task->_request) {
-            task->_request(task, msg->pktype, msg->sess, msg->src, msg->data, msg->size);
-        } else {
-            task_ctx *dtask = task_grab(task->loader, msg->src);
-            if (NULL != dtask) {
-                const char *erro = "not register request function.";
-                task_response(dtask, msg->sess, ERR_FAILED, (void *)erro, strlen(erro), 1);
-                task_ungrab(dtask);
-            }
-        }
-        _message_clean(msg->mtype, msg->pktype, msg->data);
-        break;
-    case MSG_TYPE_RESPONSE:
-        if (NULL != task->_response) {
-            task->_response(task, msg->sess, msg->erro, msg->data, msg->size);
-        }
-        _message_clean(msg->mtype, msg->pktype, msg->data);
         break;
     default:
         break;
@@ -346,7 +347,6 @@ static void _net_recv(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, buff
         if (NULL != data) {
             msg.data = data;
             msg.sess = ud->sess;
-            ud->sess = 0;
             if (BIT_CHECK(status, PROT_SLICE_START)) {
                 msg.slice = PROT_SLICE_START;
             } else if(BIT_CHECK(status, PROT_SLICE)) {
@@ -540,33 +540,33 @@ void task_set_netread_timeout(task_ctx *task, uint32_t ms) {
 uint32_t task_get_netread_timeout(task_ctx *task) {
     return task->timeout_netread;
 }
-void on_accepted(task_ctx *task, _net_accept_cb _accept) {
+void task_accepted(task_ctx *task, _net_accept_cb _accept) {
     task->_net_accept = _accept;
 }
-void on_recved(task_ctx *task, _net_recv_cb _recv) {
+void task_recved(task_ctx *task, _net_recv_cb _recv) {
     task->_net_recv = _recv;
 }
-void on_sended(task_ctx *task, _net_send_cb _send) {
+void task_sended(task_ctx *task, _net_send_cb _send) {
     task->_net_send = _send;
 }
-void on_connected(task_ctx *task, _net_connect_cb _connect) {
+void task_connected(task_ctx *task, _net_connect_cb _connect) {
     task->_net_connect = _connect;
 }
-void on_ssl_exchanged(task_ctx *task, _net_ssl_exchanged_cb _exchanged) {
+void task_ssl_exchanged(task_ctx *task, _net_ssl_exchanged_cb _exchanged) {
     task->_ssl_exchanged = _exchanged;
 }
-void on_handshaked(task_ctx *task, _net_handshake_cb _handshake) {
+void task_handshaked(task_ctx *task, _net_handshake_cb _handshake) {
     task->_net_handshaked = _handshake;
 }
-void on_closed(task_ctx *task, _net_close_cb _close) {
+void task_closed(task_ctx *task, _net_close_cb _close) {
     task->_net_close = _close;
 }
-void on_recvedfrom(task_ctx *task, _net_recvfrom_cb _recvfrom) {
+void task_recvedfrom(task_ctx *task, _net_recvfrom_cb _recvfrom) {
     task->_net_recvfrom = _recvfrom;
 }
-void on_requested(task_ctx *task, _request_cb _request) {
+void task_requested(task_ctx *task, _request_cb _request) {
     task->_request = _request;
 }
-void on_responsed(task_ctx *task, _response_cb _response) {
+void task_responsed(task_ctx *task, _response_cb _response) {
     task->_response = _response;
 }

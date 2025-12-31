@@ -50,8 +50,8 @@ static void _on_handshaked(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pkt
     }
 }
 static void _startup(task_ctx *task) {
-    on_handshaked(task, _on_handshaked);
-    on_recved(task, _net_recv);
+    task_handshaked(task, _on_handshaked);
+    task_recved(task, _net_recv);
     uint64_t id;
     task_listen(task, PACK_WEBSOCK, NULL, "0.0.0.0", 15004, &id, 0);
 }

@@ -47,7 +47,6 @@ static void _net_close(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype,
 }
 void task_smtp_start(loader_ctx *loader, name_t name, int32_t pt) {
     _prt = pt;
-    task_ctx *task = task_new(loader, name, NULL, NULL, NULL);
-    task_register(task, _startup, NULL);
-    on_closed(task, _net_close);
+    task_ctx *task = coro_task_register(loader, name, _startup, NULL);
+    task_closed(task, _net_close);
 }

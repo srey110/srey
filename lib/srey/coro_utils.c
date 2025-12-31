@@ -37,7 +37,14 @@ dns_ip *dns_lookup(task_ctx *task, const char *domain, int32_t ipv6, size_t *cnt
 SOCKET wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, const char *secprot, uint64_t *skid, int32_t netev) {
     url_ctx url;
     url_parse(&url, (char *)ws, strlen(ws));
-    if (!buf_icompare(&url.scheme, "ws", strlen("ws"))) {
+    int32_t isws = buf_icompare(&url.scheme, "ws", strlen("ws"));
+    int32_t iswss = buf_icompare(&url.scheme, "wss", strlen("wss"));
+    if (!isws
+        && !iswss) {
+        return INVALID_SOCK;
+    }
+    if (iswss
+        && NULL == evssl) {
         return INVALID_SOCK;
     }
     if (0 == url.host.lens) {
@@ -123,6 +130,9 @@ int32_t mysql_connect(task_ctx *task, mysql_ctx *mysql) {
     }
     int32_t err;
     coro_handshaked(task, mysql->client.fd, mysql->client.skid, &err, NULL);
+    if (ERR_OK == err) {
+        coro_sync(task, mysql->client.fd, mysql->client.skid);
+    }
     return err;
 }
 int32_t mysql_selectdb(mysql_ctx *mysql, const char *database) {
@@ -185,9 +195,12 @@ int32_t smtp_connect(task_ctx *task, smtp_ctx *smtp) {
     }
     int32_t err;
     char *msg = (char *)coro_handshaked(task, smtp->fd, smtp->skid, &err, NULL);
-    if (ERR_OK != err
-        && NULL != msg) {
-        LOG_WARN("%s", msg);
+    if (ERR_OK != err) {
+        if (NULL != msg) {
+            LOG_WARN("%s", msg);
+        }
+    } else {
+        coro_sync(task, smtp->fd, smtp->skid);
     }
     return err;
 }
@@ -268,8 +281,12 @@ int32_t pgsql_connect(task_ctx *task, pgsql_ctx *pg) {
     }
     int32_t code;
     char *err = coro_handshaked(task, pg->fd, pg->skid, &code, NULL);
-    if (NULL != err) {
-        LOG_WARN("%s", err);
+    if (ERR_OK != code) {
+        if (NULL != err) {
+            LOG_WARN("%s", err);
+        }
+    } else {
+        coro_sync(task, pg->fd, pg->skid);
     }
     return code;
 }

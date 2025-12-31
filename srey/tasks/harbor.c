@@ -205,8 +205,8 @@ static void _harbor_timeout(task_ctx *harbor, uint64_t sess) {
 }
 static void _harbor_startup(task_ctx *harbor) {
     harbor_ctx *hbctx = harbor->arg;
-    on_recved(harbor, _harbor_net_recv);
-    on_responsed(harbor, _harbor_onresponse);
+    task_recved(harbor, _harbor_net_recv);
+    task_responsed(harbor, _harbor_onresponse);
     if (hbctx->timeout > 0) {
         task_timeout(harbor, 0, 200, _harbor_timeout);
     }

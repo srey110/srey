@@ -166,16 +166,16 @@ void task_set_netread_timeout(task_ctx *task, uint32_t ms);
 /// <param name="task">task_ctx</param>
 /// <returns>毫秒</returns>
 uint32_t task_get_netread_timeout(task_ctx *task);
-//注册回调
-void on_accepted(task_ctx *task, _net_accept_cb _accept);
-void on_recved(task_ctx *task, _net_recv_cb _recv);
-void on_sended(task_ctx *task, _net_send_cb _send);
-void on_connected(task_ctx *task, _net_connect_cb _connect);
-void on_ssl_exchanged(task_ctx *task, _net_ssl_exchanged_cb _exchanged);
-void on_handshaked(task_ctx *task, _net_handshake_cb _handshake);
-void on_closed(task_ctx *task, _net_close_cb _close);
-void on_recvedfrom(task_ctx *task, _net_recvfrom_cb _recvfrom);
-void on_requested(task_ctx *task, _request_cb _request);
-void on_responsed(task_ctx *task, _response_cb _response);
+//注册消息处理函数
+void task_accepted(task_ctx *task, _net_accept_cb _accept);
+void task_recved(task_ctx *task, _net_recv_cb _recv);
+void task_sended(task_ctx *task, _net_send_cb _send);
+void task_connected(task_ctx *task, _net_connect_cb _connect);
+void task_ssl_exchanged(task_ctx *task, _net_ssl_exchanged_cb _exchanged);
+void task_handshaked(task_ctx *task, _net_handshake_cb _handshake);
+void task_closed(task_ctx *task, _net_close_cb _close);
+void task_recvedfrom(task_ctx *task, _net_recvfrom_cb _recvfrom);
+void task_requested(task_ctx *task, _request_cb _request);
+void task_responsed(task_ctx *task, _response_cb _response);
 
 #endif//TASK_H_

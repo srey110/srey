@@ -30,10 +30,10 @@ static void _net_close(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype,
     }
 }
 static void _startup(task_ctx *task) {
-    on_accepted(task, _net_accept);    
-    on_recved(task, _net_recv);
-    on_sended(task, _net_send);
-    on_closed(task, _net_close);
+    task_accepted(task, _net_accept);
+    task_recved(task, _net_recv);
+    task_sended(task, _net_send);
+    task_closed(task, _net_close);
     uint64_t id;
     task_listen(task, _pktype, _ssl, "0.0.0.0", 15001, &id, NETEV_ACCEPT | NETEV_SEND);
 }

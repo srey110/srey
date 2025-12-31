@@ -6,7 +6,7 @@ static void _net_recvfrom(task_ctx *task, SOCKET fd, uint64_t skid,
     ev_sendto(&task->loader->netev, fd, skid, ip, port, data, size, 1);
 }
 static void _startup(task_ctx *task) {
-    on_recvedfrom(task, _net_recvfrom);
+    task_recvedfrom(task, _net_recvfrom);
     SOCKET fd;
     uint64_t id;
     task_udp(task, "0.0.0.0", 15002, &fd, &id);

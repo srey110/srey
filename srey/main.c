@@ -113,13 +113,14 @@ static int32_t service_init(void) {
     config_ctx config;
     _config_init(&config);
     _parse_config(&config);
+    coro_desc_init(config.stacksize);
     dns_set_ip(config.dns);
     log_setlv((LOG_LEVEL)config.loglv);
     _open_log();
     unlimit();
     mutex_init(&muexit);
     cond_init(&condexit);
-    g_loader = loader_init(config.nnet, config.nworker, config.stacksize);
+    g_loader = loader_init(config.nnet, config.nworker);
     if (ERR_OK != task_startup(g_loader, &config)) {
         service_exit();
         return ERR_FAILED;

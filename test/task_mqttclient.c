@@ -139,9 +139,12 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, 
     }
 }
 static void _startup(task_ctx *task) {
-    on_closed(task, _net_close);
-    on_connected(task, _net_connect);
-    on_recved(task, _net_recv);
+    task_closed(task, _net_close);
+    task_connected(task, _net_connect);
+    task_recved(task, _net_recv);
+    mqtt_ctx *mq;
+    CALLOC(mq, 1, sizeof(mqtt_ctx));
+    mq->version = _version;
     size_t n;
     dns_ip *ips = dns_lookup(task, "broker.emqx.io", 0, &n);
     if (NULL == ips) {
@@ -150,15 +153,11 @@ static void _startup(task_ctx *task) {
         }
         return;
     }
-    mqtt_ctx *mq;
-    CALLOC(mq, 1, sizeof(mqtt_ctx));
-    mq->version = _version;
     coro_sleep(task, 2000);
-    task_connect(task, PACK_MQTT, NULL, ips[0].ip, 1883, 0, mq, &_fd, &_skid);
+    task_connect(task, PACK_MQTT, NULL, ips[0].ip, 1883, 0, mq, &_fd, &_skid);//broker.emqx.io
     FREE(ips);
 }
 void task_mqtt_client_start(loader_ctx *loader, name_t name, int32_t pt) {
     _prt = pt;
-    task_ctx *task = task_new(loader, name, NULL, NULL, NULL);
-    task_register(task, _startup, NULL);
+    coro_task_register(loader, name, _startup, NULL);
 }

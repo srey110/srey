@@ -94,13 +94,7 @@
     <ClInclude Include="srey\task.h">
       <Filter>srey</Filter>
     </ClInclude>
-    <ClInclude Include="srey\coro.h">
-      <Filter>srey</Filter>
-    </ClInclude>
     <ClInclude Include="srey\spub.h">
-      <Filter>srey</Filter>
-    </ClInclude>
-    <ClInclude Include="srey\coro_utils.h">
       <Filter>srey</Filter>
     </ClInclude>
     <ClInclude Include="containers\hashmap.h">
@@ -337,6 +331,12 @@
     <ClInclude Include="protocol\mongo\bson.h">
       <Filter>protocol\mongo</Filter>
     </ClInclude>
+    <ClInclude Include="srey\coro_utils.h">
+      <Filter>srey</Filter>
+    </ClInclude>
+    <ClInclude Include="srey\coro.h">
+      <Filter>srey</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="event\event.c">
@@ -367,12 +367,6 @@
       <Filter>thread</Filter>
     </ClCompile>
     <ClCompile Include="srey\task.c">
-      <Filter>srey</Filter>
-    </ClCompile>
-    <ClCompile Include="srey\coro.c">
-      <Filter>srey</Filter>
-    </ClCompile>
-    <ClCompile Include="srey\coro_utils.c">
       <Filter>srey</Filter>
     </ClCompile>
     <ClCompile Include="containers\hashmap.c">
@@ -554,6 +548,12 @@
     </ClCompile>
     <ClCompile Include="protocol\mongo\bson.c">
       <Filter>protocol\mongo</Filter>
+    </ClCompile>
+    <ClCompile Include="srey\coro_utils.c">
+      <Filter>srey</Filter>
+    </ClCompile>
+    <ClCompile Include="srey\coro.c">
+      <Filter>srey</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

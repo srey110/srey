@@ -28,11 +28,10 @@ static void _response(task_ctx *task, uint64_t sess, int32_t error, void *data, 
     }
 }
 static void _startup(task_ctx *task) {
-    on_responsed(task, _response);
+    task_responsed(task, _response);
     task_timeout(task, 0, 3000, _timeout);
 }
 void task_coro_comm1_start(loader_ctx *loader, name_t name, int32_t pt) {
     _prt = pt;
-    task_ctx *task = task_new(loader, name, NULL, NULL, NULL);
-    task_register(task, _startup, NULL);
+    coro_task_register(loader, name, _startup, NULL);
 }
