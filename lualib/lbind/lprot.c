@@ -438,7 +438,7 @@ static int32_t _lprot_smtp_free(lua_State *lua) {
     smtp_ctx *smtp = lua_touserdata(lua, 1);
     if (NULL != smtp->task) {
         char *cmd = smtp_pack_quit(smtp);
-        ev_ud_extra(&smtp->task->loader->netev, smtp->fd, smtp->skid, NULL);
+        ev_ud_context(&smtp->task->loader->netev, smtp->fd, smtp->skid, NULL);
         ev_send(&smtp->task->loader->netev, smtp->fd, smtp->skid, cmd, strlen(cmd), 0);
     }
     return 0;

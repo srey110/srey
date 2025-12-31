@@ -29,12 +29,12 @@ void _smtp_init(void *hspush) {
     }
 }
 void _smtp_udfree(ud_cxt *ud) {
-    if (NULL == ud->extra) {
+    if (NULL == ud->context) {
         return;
     }
-    smtp_ctx *smtp = ud->extra;
+    smtp_ctx *smtp = ud->context;
     smtp->fd = INVALID_SOCK;
-    ud->extra = NULL;
+    ud->context = NULL;
 }
 void _smtp_closed(ud_cxt *ud) {
     _smtp_udfree(ud);
@@ -295,7 +295,7 @@ static char *_smtp_command(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid,
     return pack;
 }
 void *smtp_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status) {
-    smtp_ctx *smtp = (smtp_ctx *)ud->extra;
+    smtp_ctx *smtp = (smtp_ctx *)ud->context;
     void *pack = NULL;
     switch (ud->status) {
     case INIT:

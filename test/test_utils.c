@@ -1492,10 +1492,10 @@ static int32_t _test_mqtt_connect(mqtt_protversion version, ud_cxt *ud, int32_t 
         &connprop, &willprop, &lens);
     buffer_append(&buf, pack, lens);
     FREE(pack);
-    void *extra = ud->extra;
+    void *context = ud->context;
     mqtt_pack_ctx *mqpack = mqtt_unpack(0, &buf, ud, status);
-    FREE(ud->extra);
-    ud->extra = extra;
+    FREE(ud->context);
+    ud->context = context;
     ud->status = 0;
     if (NULL == mqpack) {
         FREE(connprop.data);
@@ -1519,10 +1519,10 @@ static int32_t _test_mqtt_connect(mqtt_protversion version, ud_cxt *ud, int32_t 
         &connprop, NULL, &lens);
     buffer_append(&buf, pack, lens);
     FREE(pack);
-    extra = ud->extra;
+    context = ud->context;
     mqpack = mqtt_unpack(0, &buf, ud, status);
-    FREE(ud->extra);
-    ud->extra = extra;
+    FREE(ud->context);
+    ud->context = context;
     ud->status = 0;
     if (NULL == mqpack) {
         FREE(connprop.data);
@@ -1544,10 +1544,10 @@ static int32_t _test_mqtt_connect(mqtt_protversion version, ud_cxt *ud, int32_t 
         "", "123", 3, NULL, "will message", strlen("will message"), 0, 1, NULL, NULL, &lens);
     buffer_append(&buf, pack, lens);
     FREE(pack);
-    extra = ud->extra;
+    context = ud->context;
     mqpack = mqtt_unpack(0, &buf, ud, status);
-    FREE(ud->extra);
-    ud->extra = extra;
+    FREE(ud->context);
+    ud->context = context;
     ud->status = 0;
     if (NULL == mqpack) {
         FREE(connprop.data);
@@ -2143,7 +2143,7 @@ static void test_mqtt_prot(CuTest* tc) {
     ud_cxt ud;
     ZERO(&ud, sizeof(ud_cxt));
     ud.pktype = PACK_MQTT;
-    ud.extra = &mq;
+    ud.context = &mq;
     _test_mqtt_prot(tc, mq.version, &ud, &status);
     mq.version = MQTT_311;
     _test_mqtt_prot(tc, mq.version, &ud, &status);

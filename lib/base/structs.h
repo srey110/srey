@@ -11,8 +11,8 @@ typedef struct ud_cxt {
     uint8_t pktype;//数据包类型
     uint8_t status;//解包状态
     name_t name;//任务名
-    void *data;//scheduler_ctx
-    void *extra;//数据包
+    void *loader;//loader_ctx
+    void *context;//context  _timeout_cb
     uint64_t sess;//timeout
 }ud_cxt;
 typedef struct buf_ctx {

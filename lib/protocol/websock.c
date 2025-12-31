@@ -46,10 +46,10 @@ void _websock_pkfree(void *data) {
     FREE(data);
 }
 void _websock_udfree(ud_cxt *ud) {
-    if (NULL == ud->extra) {
+    if (NULL == ud->context) {
         return;
     }
-    websock_ctx *ws = (websock_ctx *)ud->extra;
+    websock_ctx *ws = (websock_ctx *)ud->context;
     _websock_pkfree(ws->pack);
     prots_udfree(ws->ud);
     FREE(ws->ud);
@@ -58,19 +58,19 @@ void _websock_udfree(ud_cxt *ud) {
         FREE(ws->buf);
     }
     FREE(ws);
-    ud->extra = NULL;
+    ud->context = NULL;
 }
 void _websock_secextra(ud_cxt *ud, void *val) {
-    if (NULL == ud->extra) {
+    if (NULL == ud->context) {
         LOG_WARN("set second ud_cxt extra data error.");
         return;
     }
-    websock_ctx *ws = (websock_ctx *)ud->extra;
+    websock_ctx *ws = (websock_ctx *)ud->context;
     if (NULL == ws->ud) {
         LOG_WARN("set second ud_cxt extra data error.");
         return;
     }
-    ws->ud->extra = val;
+    ws->ud->context = val;
 }
 static int32_t _websock_sec_prot(char *secprot, pack_type *sectype) {
     if (0 == _memicmp(secprot, "mqtt", strlen("mqtt"))) {
@@ -302,8 +302,8 @@ static void _websock_handshake(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t cli
         rtn = _websock_handshake_server(ev, fd, skid, client, ud, hpack, status, &sectype);
     }
     if (ERR_OK == rtn) {
-        CALLOC(ud->extra, 1, sizeof(websock_ctx));
-        websock_ctx *ws = (websock_ctx *)ud->extra;
+        CALLOC(ud->context, 1, sizeof(websock_ctx));
+        websock_ctx *ws = (websock_ctx *)ud->context;
         ws->secprot = sectype;
         if (PACK_NONE != sectype) {//有子协议
             MALLOC(ws->buf, sizeof(buffer_ctx));
@@ -311,7 +311,7 @@ static void _websock_handshake(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t cli
             CALLOC(ws->ud, 1, sizeof(ud_cxt));
             ws->ud->pktype = sectype;
             ws->ud->name = ud->name;
-            ws->ud->data = ud->data;
+            ws->ud->loader = ud->loader;
         }
     }
     _http_pkfree(hpack);
@@ -357,7 +357,7 @@ static websock_pack_ctx *_websock_sec_unpack(websock_ctx *ws, websock_pack_ctx *
     return rtn;
 }
 static websock_pack_ctx *_websock_parse_data(buffer_ctx *buf, int32_t client, ud_cxt *ud, int32_t *status) {
-    websock_ctx *ws = (websock_ctx *)ud->extra;
+    websock_ctx *ws = (websock_ctx *)ud->context;
     websock_pack_ctx *pack = ws->pack;
     if (pack->remain > buffer_size(buf)) {
         BIT_SET(*status, PROT_MOREDATA);
@@ -495,7 +495,7 @@ static websock_pack_ctx *_websock_parse_head(buffer_ctx *buf, int32_t client, ud
     pack->fin = fin;
     pack->prot = prot;
     pack->mask = mask;
-    websock_ctx *ws = (websock_ctx *)ud->extra;
+    websock_ctx *ws = (websock_ctx *)ud->context;
     pack->secprot = ws->secprot;
     pack->secpack = NULL;
     ws->pack = pack;

@@ -24,15 +24,15 @@ void _mongo_pkfree(void *pack) {
     FREE(mgopack);
 }
 void _mongo_udfree(ud_cxt *ud) {
-    if (NULL == ud->extra) {
+    if (NULL == ud->context) {
         return;
     }
-    mongo_ctx *mongo = (mongo_ctx *)ud->extra;
+    mongo_ctx *mongo = (mongo_ctx *)ud->context;
     scram_free(mongo->scram);
     mongo->scram = NULL;
     FREE(mongo->error);
     mongo->fd = INVALID_SOCK;
-    ud->extra = NULL;
+    ud->context = NULL;
 }
 void _mongo_closed(ud_cxt *ud) {
     _mongo_udfree(ud);
@@ -107,7 +107,7 @@ static int32_t _mongo_server_final_message(ev_ctx *ev, mongo_ctx *mongo, mgopack
 }
 static void _mongo_scram_auth(ev_ctx *ev, mgopack_ctx *mgopack, ud_cxt *ud) {
     int32_t rtn;
-    mongo_ctx *mongo = ud->extra;
+    mongo_ctx *mongo = ud->context;
     switch (mongo->scram->status) {
     case SCRAM_LOCAL_FIRST:
         rtn = _mongo_server_first_message(ev, mongo, mgopack);

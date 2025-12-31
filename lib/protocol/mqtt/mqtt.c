@@ -70,12 +70,12 @@ void _mqtt_pkfree(void *data) {
     FREE(pack);
 }
 void _mqtt_udfree(ud_cxt *ud) {
-    if (NULL == ud->extra) {
+    if (NULL == ud->context) {
         return;
     }
-    mqtt_ctx *mq = (mqtt_ctx *)ud->extra;
+    mqtt_ctx *mq = (mqtt_ctx *)ud->context;
     FREE(mq);
-    ud->extra = NULL;
+    ud->context = NULL;
 }
 static int32_t _mqtt_varlens_decode(buffer_ctx *buf, size_t off, size_t blens, size_t *rlens) {
     *rlens = 0;
@@ -403,7 +403,7 @@ static int32_t _mqtt_connect(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *bu
     mqtt_ctx *mq;
     CALLOC(mq, 1, sizeof(mqtt_ctx));
     mq->version = vh->version;
-    ud->extra = mq;
+    ud->context = mq;
     ud->status = COMMAND;
     return ERR_OK;
 }
@@ -433,7 +433,7 @@ static int32_t _mqtt_connack(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *bu
         return ERR_FAILED;
     }
     vh->reason = (uint8_t)num;
-    pack->version = ((mqtt_ctx *)ud->extra)->version;
+    pack->version = ((mqtt_ctx *)ud->context)->version;
     if (pack->version >= MQTT_50) {
         vh->properties = _mqtt_properties(buf, status, NULL);//属性
         if (NULL == vh->properties
@@ -474,7 +474,7 @@ static int32_t _mqtt_publish(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, i
         off += 2;
         vh->packid = (int16_t)num;
     }
-    pack->version = ((mqtt_ctx *)ud->extra)->version;
+    pack->version = ((mqtt_ctx *)ud->context)->version;
     if (pack->version >= MQTT_50) {
         vh->properties = _mqtt_properties(buf, status, &num);//属性
         if (NULL == vh->properties
@@ -517,7 +517,7 @@ static int32_t _mqtt_puback(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, in
     CALLOC(vh, 1, sizeof(mqtt_puback_varhead));
     pack->varhead = vh;
     vh->packid = (int16_t)num;
-    pack->version = ((mqtt_ctx *)ud->extra)->version;
+    pack->version = ((mqtt_ctx *)ud->context)->version;
     if (pack->version < MQTT_50
         || 2 == pack->fixhead.remaining_lens) {//剩余长度为2，则表示使用原因码0x00（成功）
         return ERR_OK;
@@ -554,7 +554,7 @@ static int32_t _mqtt_pubrec(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, in
     CALLOC(vh, 1, sizeof(mqtt_pubrec_varhead));
     pack->varhead = vh;
     vh->packid = (int16_t)num;
-    pack->version = ((mqtt_ctx *)ud->extra)->version;
+    pack->version = ((mqtt_ctx *)ud->context)->version;
     if (pack->version < MQTT_50
         || 2 == pack->fixhead.remaining_lens) {//剩余长度为2，则表示使用原因码0x00（成功
         return ERR_OK;
@@ -591,7 +591,7 @@ static int32_t _mqtt_pubrel(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, in
     CALLOC(vh, 1, sizeof(mqtt_pubrel_varhead));
     pack->varhead = vh;
     vh->packid = (int16_t)num;
-    pack->version = ((mqtt_ctx *)ud->extra)->version;
+    pack->version = ((mqtt_ctx *)ud->context)->version;
     if (pack->version < MQTT_50
         || 2 == pack->fixhead.remaining_lens) {//剩余长度为2，则表示使用原因码0x00 （成功）
         return ERR_OK;
@@ -628,7 +628,7 @@ static int32_t _mqtt_pubcomp(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, i
     CALLOC(vh, 1, sizeof(mqtt_pubcomp_varhead));
     pack->varhead = vh;
     vh->packid = (int16_t)num;
-    pack->version = ((mqtt_ctx *)ud->extra)->version;
+    pack->version = ((mqtt_ctx *)ud->context)->version;
     if (pack->version < MQTT_50
         || 2 == pack->fixhead.remaining_lens) {//剩余长度为2，则表示使用原因码0x00（成功）
         return ERR_OK;
@@ -667,7 +667,7 @@ static int32_t _mqtt_subscribe(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *
     pack->varhead = vh;
     vh->packid = (int16_t)num;
     num = 0;
-    pack->version = ((mqtt_ctx *)ud->extra)->version;
+    pack->version = ((mqtt_ctx *)ud->context)->version;
     if (pack->version >= MQTT_50) {
         vh->properties = _mqtt_properties(buf, status, &num);//属性
         if (NULL == vh->properties
@@ -736,7 +736,7 @@ static int32_t _mqtt_suback(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf
     pack->varhead = vh;
     vh->packid = (int16_t)num;
     num = 0;
-    pack->version = ((mqtt_ctx *)ud->extra)->version;
+    pack->version = ((mqtt_ctx *)ud->context)->version;
     if (pack->version >= MQTT_50) {
         vh->properties = _mqtt_properties(buf, status, &num);//属性
         if (NULL == vh->properties
@@ -778,7 +778,7 @@ static int32_t _mqtt_unsubscribe(mqtt_pack_ctx *pack, int32_t client, buffer_ctx
     pack->varhead = vh;
     vh->packid = (int16_t)num;
     num = 0;
-    pack->version = ((mqtt_ctx *)ud->extra)->version;
+    pack->version = ((mqtt_ctx *)ud->context)->version;
     if (pack->version >= MQTT_50) {
         vh->properties = _mqtt_properties(buf, status, &num);//属性
         if (NULL == vh->properties
@@ -830,7 +830,7 @@ static int32_t _mqtt_unsuback(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *b
     CALLOC(vh, 1, sizeof(mqtt_unsuback_varhead));
     pack->varhead = vh;
     vh->packid = (int16_t)num;
-    pack->version = ((mqtt_ctx *)ud->extra)->version;
+    pack->version = ((mqtt_ctx *)ud->context)->version;
     if (pack->version < MQTT_50) {
         return ERR_OK;
     }
@@ -862,7 +862,7 @@ static int32_t _mqtt_ping(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf, 
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
-    pack->version = ((mqtt_ctx *)ud->extra)->version;
+    pack->version = ((mqtt_ctx *)ud->context)->version;
     return ERR_OK;
 }
 //服务端到客户端  心跳响应
@@ -872,7 +872,7 @@ static int32_t _mqtt_pong(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf, 
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
-    pack->version = ((mqtt_ctx *)ud->extra)->version;
+    pack->version = ((mqtt_ctx *)ud->context)->version;
     return ERR_OK;
 }
 //两个方向都允许  断开连接通知
@@ -885,7 +885,7 @@ static int32_t _mqtt_disconnect(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud
     CALLOC(vh, 1, sizeof(mqtt_disconnect_varhead));
     pack->varhead = vh;
     BIT_SET(*status, PROT_CLOSE);
-    pack->version = ((mqtt_ctx *)ud->extra)->version;
+    pack->version = ((mqtt_ctx *)ud->context)->version;
     if (pack->version < MQTT_50
         || 0 == pack->fixhead.remaining_lens) {//如果剩余长度小于1，则表示使用原因码0x00（正常断开）. 如果剩余长度小于2，属性长度使用0。
         return ERR_OK;
@@ -912,7 +912,7 @@ static int32_t _mqtt_auth(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, int3
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
-    pack->version = ((mqtt_ctx *)ud->extra)->version;
+    pack->version = ((mqtt_ctx *)ud->context)->version;
     //如果原因码为0x00（成功）并且没有属性字段，则可以省略原因码和属性长度。这种情况下，AUTH报文剩余长度为0。
     if (0 == pack->fixhead.remaining_lens) {
         mqtt_auth_varhead *vh;

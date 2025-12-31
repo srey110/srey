@@ -21,16 +21,16 @@ void _pgsql_pkfree(void *pack) {
     _pgpack_free(pack);
 }
 void _pgsql_udfree(ud_cxt *ud) {
-    if (NULL == ud->extra) {
+    if (NULL == ud->context) {
         return;
     }
-    pgsql_ctx *pg = (pgsql_ctx *)ud->extra;
+    pgsql_ctx *pg = (pgsql_ctx *)ud->context;
     _pgsql_pkfree(pg->pack);
     pg->pack = NULL;
     scram_free(pg->scram);
     pg->scram = NULL;
     pg->fd = INVALID_SOCK;
-    ud->extra = NULL;
+    ud->context = NULL;
 }
 void _pgsql_closed(ud_cxt *ud) {
     _pgsql_udfree(ud);
@@ -57,7 +57,7 @@ int32_t _pgsql_on_connected(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud, in
 }
 //Startup ÏûÏ¢
 static int32_t _pgsql_startup(ev_ctx *ev, ud_cxt *ud) {
-    pgsql_ctx *pg = (pgsql_ctx *)ud->extra;
+    pgsql_ctx *pg = (pgsql_ctx *)ud->context;
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
     binary_set_skip(&bwriter, 4);
@@ -277,7 +277,7 @@ static pgpack_ctx *_pgsql_command_response(pgsql_ctx *pg, buffer_ctx *buf, ud_cx
     return _pgpack_parser(pg, &breader, ud, status);
 }
 void *pgsql_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
-    pgsql_ctx *pg = (pgsql_ctx *)ud->extra;
+    pgsql_ctx *pg = (pgsql_ctx *)ud->context;
     pgpack_ctx *pack = NULL;
     switch (ud->status) {
     case INIT:

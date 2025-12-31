@@ -128,12 +128,12 @@ static int32_t _http_parse_head(http_pack_ctx *pack, int32_t *transfer) {
     return ERR_OK;
 }
 static http_pack_ctx *_http_content(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
-    http_pack_ctx *pack = ud->extra;
+    http_pack_ctx *pack = ud->context;
     if (buffer_size(buf) >= pack->data.lens) {
         MALLOC(pack->data.data, pack->data.lens);
         ASSERTAB(pack->data.lens == buffer_remove(buf, pack->data.data, pack->data.lens), "copy buffer failed.");
         ud->status = INIT;
-        ud->extra = NULL;
+        ud->context = NULL;
         return pack;
     } else {
         BIT_SET(*status, PROT_MOREDATA);
@@ -193,7 +193,7 @@ static http_pack_ctx *_http_header(buffer_ctx *buf, ud_cxt *ud, int32_t *status)
             _http_pkfree(pack);
             return NULL;
         } else {
-            ud->extra = pack;
+            ud->context = pack;
             ud->status = transfer;
             return _http_content(buf, ud, status);
         }
@@ -218,7 +218,7 @@ static http_pack_ctx *_http_chunkedpack(size_t lens) {
 }
 static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     size_t drain;
-    http_pack_ctx *pack = ud->extra;
+    http_pack_ctx *pack = ud->context;
     if (NULL == pack) {
         int32_t pos = buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE);
         if (ERR_FAILED == pos) {
@@ -239,7 +239,7 @@ static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_t *status
         drain = pos + CRLF_SIZE;
         ASSERTAB(drain == buffer_drain(buf, drain), "drain buffer failed.");
         pack = _http_chunkedpack(dlens);
-        ud->extra = pack;
+        ud->context = pack;
     }
     drain = pack->data.lens + CRLF_SIZE;
     if (buffer_size(buf) < drain) {
@@ -254,7 +254,7 @@ static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_t *status
         ud->status = INIT;
     }
     ASSERTAB(drain == buffer_drain(buf, drain), "drain buffer failed.");
-    ud->extra = NULL;
+    ud->context = NULL;
     return pack;
 }
 void _http_pkfree(http_pack_ctx *pack) {
@@ -268,8 +268,8 @@ void _http_pkfree(http_pack_ctx *pack) {
     FREE(pack);
 }
 void _http_udfree(ud_cxt *ud) {
-    _http_pkfree(ud->extra);
-    ud->extra = NULL;
+    _http_pkfree(ud->context);
+    ud->context = NULL;
 }
 http_pack_ctx *http_unpack(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     http_pack_ctx *pack;

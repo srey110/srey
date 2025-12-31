@@ -227,14 +227,14 @@ void _message_clean(msg_type mtype, pack_type pktype, void *data) {
     }
 }
 static void _message_timeout_push(ud_cxt *ud) {
-    task_ctx *task = task_grab(ud->data, ud->name);
+    task_ctx *task = task_grab(ud->loader, ud->name);
     if (NULL == task) {
         return;
     }
     message_ctx msg;
     msg.mtype = MSG_TYPE_TIMEOUT;
     msg.sess = ud->sess;
-    msg.data = ud->extra;
+    msg.data = ud->context;
     _task_message_push(task, &msg);
     task_ungrab(task);
 }
@@ -242,9 +242,9 @@ void task_timeout(task_ctx *task, uint64_t sess, uint32_t ms, _timeout_cb _timeo
     ASSERTAB((NULL == _timeout && 0 != sess) || (NULL != _timeout && 0 == sess), "parameter error");
     ud_cxt ud;
     ud.name = task->name;
-    ud.data = task->loader;
+    ud.loader = task->loader;
     ud.sess = sess;
-    ud.extra = (void*)_timeout;
+    ud.context = (void*)_timeout;
     tw_add(&task->loader->tw, ms, _message_timeout_push, NULL, &ud);
 }
 void task_request(task_ctx *dst, task_ctx *src, uint8_t reqtype, uint64_t sess, void *data, size_t size, int32_t copy) {
@@ -290,7 +290,7 @@ void task_call(task_ctx *dst, uint8_t reqtype, void *data, size_t size, int32_t 
     task_request(dst, NULL, reqtype, 0, data, size, copy);
 }
 static int32_t _net_accept(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud) {
-    task_ctx *task = task_grab(ud->data, ud->name);
+    task_ctx *task = task_grab(ud->loader, ud->name);
     if (NULL == task) {
         return ERR_FAILED;
     }
@@ -307,7 +307,7 @@ static int32_t _net_accept(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud) {
     return rtn;
 }
 int32_t _message_handshaked_push(SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud, int32_t erro, void *data, size_t lens) {
-    task_ctx *task = task_grab(ud->data, ud->name);
+    task_ctx *task = task_grab(ud->loader, ud->name);
     if (NULL == task) {
         _message_clean(MSG_TYPE_HANDSHAKED, ud->pktype, data);
         return ERR_FAILED;
@@ -327,7 +327,7 @@ int32_t _message_handshaked_push(SOCKET fd, uint64_t skid, int32_t client, ud_cx
     return ERR_OK;
 }
 static void _net_recv(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, buffer_ctx *buf, size_t size, ud_cxt *ud) {
-    task_ctx *task = task_grab(ud->data, ud->name);
+    task_ctx *task = task_grab(ud->loader, ud->name);
     if (NULL == task) {
         ev_close(ev, fd, skid);
         return;
@@ -373,7 +373,7 @@ static void _net_recv(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, buff
     task_ungrab(task);
 }
 static void _net_send(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, size_t size, ud_cxt *ud) {
-    task_ctx *task = task_grab(ud->data, ud->name);
+    task_ctx *task = task_grab(ud->loader, ud->name);
     if (NULL == task) {
         ev_close(ev, fd, skid);
         return;
@@ -389,7 +389,7 @@ static void _net_send(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, size
     task_ungrab(task);
 }
 static int32_t _net_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud) {
-    task_ctx *task = task_grab(ud->data, ud->name);
+    task_ctx *task = task_grab(ud->loader, ud->name);
     if (NULL == task) {
         return ERR_FAILED;
     }
@@ -408,7 +408,7 @@ static int32_t _net_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t 
     return rtn;
 }
 static void _net_close(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud) {
-    task_ctx *task = task_grab(ud->data, ud->name);
+    task_ctx *task = task_grab(ud->loader, ud->name);
     if (NULL == task) {
         return;
     }
@@ -429,7 +429,7 @@ int32_t task_listen(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
     ZERO(&ud, sizeof(ud));
     ud.pktype = pktype;
     ud.name = task->name;
-    ud.data = task->loader;
+    ud.loader = task->loader;
     cbs_ctx cbs;
     ZERO(&cbs, sizeof(cbs));
     if (BIT_CHECK(netev, NETEV_ACCEPT)) {
@@ -448,7 +448,7 @@ int32_t task_listen(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
     return ev_listen(&task->loader->netev, evssl, ip, port, &cbs, &ud, id);
 }
 static int32_t _net_connect(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t err, ud_cxt *ud) {
-    task_ctx *task = task_grab(ud->data, ud->name);
+    task_ctx *task = task_grab(ud->loader, ud->name);
     if (NULL == task) {
         return ERR_FAILED;
     }
@@ -473,8 +473,8 @@ int32_t task_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl, 
     ZERO(&ud, sizeof(ud));
     ud.pktype = pktype;
     ud.name = task->name;
-    ud.data = task->loader;
-    ud.extra = extra;
+    ud.loader = task->loader;
+    ud.context = extra;
     cbs_ctx cbs;
     ZERO(&cbs, sizeof(cbs));
     if (BIT_CHECK(netev, NETEV_SEND)) {
@@ -491,7 +491,7 @@ int32_t task_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl, 
     return ev_connect(&task->loader->netev, evssl, ip, port, &cbs, &ud, fd, skid);
 }
 static void _net_recvfrom(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
-    task_ctx *task = task_grab(ud->data, ud->name);
+    task_ctx *task = task_grab(ud->loader, ud->name);
     if (NULL == task) {
         ev_close(ev, fd, skid);
         return;
@@ -515,7 +515,7 @@ int32_t task_udp(task_ctx *task, const char *ip, uint16_t port, SOCKET *fd, uint
     ud_cxt ud;
     ZERO(&ud, sizeof(ud));
     ud.name = task->name;
-    ud.data = task->loader;
+    ud.loader = task->loader;
     cbs_ctx cbs;
     ZERO(&cbs, sizeof(cbs));
     cbs.rf_cb = _net_recvfrom;

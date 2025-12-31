@@ -49,14 +49,14 @@ void _mysql_pkfree(void *pack) {
     FREE(mpack);
 }
 void _mysql_udfree(ud_cxt *ud) {
-    if (NULL == ud->extra) {
+    if (NULL == ud->context) {
         return;
     }
-    mysql_ctx *mysql = ud->extra;
+    mysql_ctx *mysql = ud->context;
     _mysql_pkfree(mysql->mpack);
     mysql->mpack = NULL;
     mysql->client.fd = INVALID_SOCK;
-    ud->extra = NULL;
+    ud->context = NULL;
 }
 void _mysql_closed(ud_cxt *ud) {
     _mysql_udfree(ud);
@@ -262,11 +262,11 @@ static int32_t _mysql_ssl_exchange(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
     return ERR_OK;
 }
 int32_t _mysql_ssl_exchanged(ev_ctx *ev, ud_cxt *ud) {
-    return _mysql_auth_response(ud->extra, ev, ud);
+    return _mysql_auth_response(ud->context, ev, ud);
 }
 static void _mysql_auth_request(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     size_t payload_lens;
-    mysql_ctx *mysql = ud->extra;
+    mysql_ctx *mysql = ud->context;
     char *payload = _mysql_payload(mysql, buf, &payload_lens, status);
     if (NULL == payload) {
         return;
@@ -538,7 +538,7 @@ static void _mysql_caching_sha2(mysql_ctx *mysql, ev_ctx *ev, binary_ctx *breade
 }
 static void _mysql_auth_process(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     size_t payload_lens;
-    mysql_ctx *mysql = ud->extra;
+    mysql_ctx *mysql = ud->context;
     char *payload = _mysql_payload(mysql, buf, &payload_lens, status);
     if (NULL == payload) {
         return;
@@ -567,7 +567,7 @@ static void _mysql_auth_process(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t
 }
 static mpack_ctx *_mysql_command_process(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     size_t payload_lens;
-    mysql_ctx *mysql = ud->extra;
+    mysql_ctx *mysql = ud->context;
     char *payload = _mysql_payload(mysql, buf, &payload_lens, status);
     if (NULL == payload) {
         return NULL;
@@ -577,7 +577,7 @@ static mpack_ctx *_mysql_command_process(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud
     return _mpack_parser(mysql, buf, &breader, status);
 }
 void *mysql_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
-    if (NULL == ud->extra) {
+    if (NULL == ud->context) {
         BIT_SET(*status, PROT_ERROR);
         return NULL;
     }

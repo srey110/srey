@@ -97,7 +97,7 @@ void prots_udfree(void *arg) {
         _mongo_udfree(ud);
         break;
     default:
-        FREE(ud->extra);
+        FREE(ud->context);
         break;
     }
 }

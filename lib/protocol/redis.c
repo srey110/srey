@@ -27,13 +27,13 @@ void _redis_pkfree(redis_pack_ctx *pack) {
     } while (NULL != pack);
 }
 void _redis_udfree(ud_cxt *ud) {
-    if (NULL == ud->extra) {
+    if (NULL == ud->context) {
         return;
     }
-    reader_ctx *rd = ud->extra;
+    reader_ctx *rd = ud->context;
     _redis_pkfree(rd->head);
     FREE(rd);
-    ud->extra = NULL;
+    ud->context = NULL;
 }
 static inline void _create_sds(binary_ctx *fbuf, binary_ctx *sdsbuf, size_t *n) {
     if (0 == fbuf->offset) {
@@ -198,14 +198,14 @@ char *redis_pack(size_t *size, const char *fmt, ...) {
     return buf;
 }
 static reader_ctx *_create_reader(ud_cxt *ud) {
-    if (NULL == ud->extra) {
+    if (NULL == ud->context) {
         reader_ctx *rd;
         MALLOC(rd, sizeof(reader_ctx));
         rd->head = rd->tail = NULL;
         rd->nelem = 1;
-        ud->extra = rd;
+        ud->context = rd;
     }
-    return ud->extra;
+    return ud->context;
 }
 static inline void _add_node(reader_ctx *rd, redis_pack_ctx *pk) {
     if (NULL == rd->head) {
