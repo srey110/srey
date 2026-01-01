@@ -734,15 +734,13 @@ const char *contenttype(const char *extension) {
         { ".zip", "application/x-zip-compressed" },
         { NULL, NULL }
     };
-    size_t exlens = strlen(extension);
     contenttype_ctx *conttype;
     for (int32_t i = 0; ;i++) {
         conttype = &typegreg[i];
         if (NULL == conttype->extension) {
             break;
         }
-        if (exlens == strlen(conttype->extension)
-            && 0 == _memicmp(conttype->extension, extension, exlens)) {
+        if (0 == STRICMP(conttype->extension, extension)) {
             return conttype->type;
         }
     }

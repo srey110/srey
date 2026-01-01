@@ -66,7 +66,6 @@ static void _map_cosess_set(task_ctx *task, int32_t disposable, mco_coro *coro, 
         coro_sess cosess;
         cosess.disposable = disposable;
         cosess.sess = sess;
-        ZERO(&cosess.coinfo, sizeof(cosess.coinfo));
         MALLOC(cosess.qucoinfo, sizeof(qu_coinfo_ctx));
         qu_coinfo_init(cosess.qucoinfo, 0);
         qu_coinfo_push(cosess.qucoinfo, &coinfo);
@@ -319,7 +318,11 @@ static void _timeout_monitor(task_ctx *task, uint64_t sess) {
                 arg.msg.sess = cosess->sess;
                 coro = coinfo->co;
                 LOG_INFO("task %d message type %d session %"PRIu64" timeout.", task->name, coinfo->mtype, cosess->sess);
-                hashmap_delete(coctx->mapco, cosess);
+                if (cosess->disposable) {
+                    hashmap_delete(coctx->mapco, cosess);
+                } else {
+                    qu_coinfo_pop(cosess->qucoinfo);
+                }
                 _co_resume(coro, &arg);
             }
         }
