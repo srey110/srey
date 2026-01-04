@@ -327,10 +327,10 @@ const char *pgsql_get_db(pgsql_ctx *pg) {
     return pg->database;
 }
 int32_t pgsql_affected_rows(pgpack_ctx *pgpack) {
-    if (EMPTYSTR(pgpack->complete)) {
+    size_t lens = strlen(pgpack->complete);
+    if (0 == lens) {
         return 0;
     }
-    size_t lens = strlen(pgpack->complete);
     int32_t space = 1;
     for (size_t i = lens - 1; i >= 0; i--) {
         if (space){

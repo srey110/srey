@@ -48,7 +48,6 @@ void _pgpack_free(pgpack_ctx *pgpack) {
         pgpack->_free_pgpack(pgpack->pack);
     }
     FREE(pgpack->pack);
-    FREE(pgpack->complete);
     FREE(pgpack);
 }
 //NotificationResponse
@@ -197,7 +196,6 @@ pgpack_ctx *_pgpack_parser(pgsql_ctx *pg, binary_ctx *breader, ud_cxt *ud, int32
         _pgpack_init(pg, PGPACK_OK);
         char *complete = binary_get_string(breader, 0);
         if (!EMPTYSTR(complete)) {
-            MALLOC(pg->pack->complete, strlen(complete) + 1);
             strcpy(pg->pack->complete, complete);
         }
         FREE(breader->data);

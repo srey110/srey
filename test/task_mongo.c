@@ -4,7 +4,7 @@ static int32_t _prt = 1;
 static mongo_ctx _mongo;
 static bson_ctx _comment;
 
-static int32_t _test_insert() {
+static int32_t _test_insert(char *opts) {
     char oid[BSON_OID_LENS];
     bson_ctx students;
     bson_init(&students, NULL, 0);
@@ -23,7 +23,7 @@ static int32_t _test_insert() {
             bson_append_utf8(&students, "sex", "woman");
         bson_append_end(&students);//1
     bson_append_end(&students);
-    int32_t rtn = mongo_insert(&_mongo, students.doc.data, students.doc.offset, _comment.doc.data);
+    int32_t rtn = mongo_insert(&_mongo, students.doc.data, students.doc.offset, opts);
     BSON_FREE(&students);
     return rtn;
 }
@@ -187,10 +187,9 @@ static void _startup(task_ctx *task) {
         LOG_ERROR("%s", mongo_error(&_mongo));
         return;
     }
-
     mongo_set_flag(&_mongo, MORETOCOME);
     for (int i = 0; i < 100; i++) {
-        if (ERR_FAILED == _test_insert()) {
+        if (ERR_FAILED == _test_insert(_comment.doc.data)) {
             LOG_ERROR("%s", mongo_error(&_mongo));
             return;
         }

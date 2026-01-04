@@ -945,6 +945,56 @@ static void test_log(CuTest* tc) {
     LOG_ERROR("%s", "LOG_ERROR");
     LOG_FATAL("%s", "LOG_FATAL");
 }
+static void _chan_unbuffered(void *arg) {
+    chan_ctx *chan = arg;
+    for (int32_t index = 0; ; index++) {
+        char msg[16] = { 0 };
+        SNPRINTF(msg, sizeof(msg), "unbuffered %d", index);
+        if (ERR_OK != chan_send(chan, msg, strlen(msg), 1)) {
+            break;
+        }
+    }
+}
+static void _chan_buffered(void *arg) {
+    chan_ctx *chan = arg;
+    for (int32_t index = 0; ; index++) {
+        char msg[16] = { 0 };
+        SNPRINTF(msg, sizeof(msg), "buffered %d", index);
+        if (ERR_OK != chan_send(chan, msg, strlen(msg), 1)) {
+            break;
+        }
+    }
+}
+static void test_chan(CuTest* tc) {
+    int32_t flag = 0;
+    chan_ctx *chan = chan_init(0);
+    pthread_t th = thread_creat(_chan_unbuffered, chan);
+    size_t lens;
+    char *msg = chan_recv(chan, &lens);
+    CuAssertTrue(tc, NULL != msg && 0 == strcmp(msg, "unbuffered 0"));
+    FREE(msg);
+    msg = chan_recv(chan, &lens);
+    CuAssertTrue(tc, NULL != msg && 0 == strcmp(msg, "unbuffered 1"));
+    FREE(msg);
+    chan_close(chan);
+    thread_join(th);
+    chan_free(chan);
+
+    chan = chan_init(2);
+    th = thread_creat(_chan_buffered, chan);
+    MSLEEP(100);
+    chan_close(chan);
+    thread_join(th);
+    msg = chan_recv(chan, &lens);
+    CuAssertTrue(tc, NULL != msg && 0 == strcmp(msg, "buffered 0"));
+    FREE(msg);
+    msg = chan_recv(chan, &lens);
+    CuAssertTrue(tc, NULL != msg && 0 == strcmp(msg, "buffered 1"));
+    FREE(msg);
+    msg = chan_recv(chan, &lens);
+    CuAssertTrue(tc, NULL == msg);
+    chan_free(chan);
+}
 static void test_http(CuTest* tc) {
     buffer_ctx buf;
     buffer_init(&buf);
@@ -2167,6 +2217,7 @@ void test_utils(CuSuite* suite) {
     SUITE_ADD_TEST(suite, test_buffer);
     SUITE_ADD_TEST(suite, test_buffer_external);
     SUITE_ADD_TEST(suite, test_log);
+    SUITE_ADD_TEST(suite, test_chan);
     SUITE_ADD_TEST(suite, test_http);
     SUITE_ADD_TEST(suite, test_url);
     SUITE_ADD_TEST(suite, test_redis_pack);

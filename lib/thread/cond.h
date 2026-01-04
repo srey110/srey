@@ -50,12 +50,18 @@ static inline void cond_wait(cond_ctx *ctx, mutex_ctx *mu) {
 /// <param name="ctx">cond_ctx</param>
 /// <param name="mu">mutex_ctx</param>
 /// <param name="ms">毫秒</param>
-static inline void cond_timedwait(cond_ctx *ctx, mutex_ctx *mu, const uint32_t ms) {
+/// <returns>ERR_OK成功 ERR_FAILED 错误 1 超时 </returns>
+static inline int32_t cond_timedwait(cond_ctx *ctx, mutex_ctx *mu, const uint32_t ms) {
 #if defined(OS_WIN)
-    if (!SleepConditionVariableCS(ctx, mu, (DWORD)ms)) {
+    if (!SleepConditionVariableCS(ctx, mu, (DWORD)ms)) {//如果函数成功，则返回值为非零 如果函数失败或超时间隔已过，则返回值为零
         int32_t err = ERRNO;
-        ASSERTAB(ERROR_TIMEOUT == err, ERRORSTR(err));
+        if (ERROR_TIMEOUT == err) {
+            return 1;
+        }
+        LOG_ERROR("code %d, %s", err, ERRORSTR(err));
+        return ERR_FAILED;
     }
+    return ERR_OK;
 #else
     long seconds = ms / 1000;
     long nanoseconds = (ms - seconds * 1000) * 1000000;
@@ -69,7 +75,14 @@ static inline void cond_timedwait(cond_ctx *ctx, mutex_ctx *mu, const uint32_t m
         timewait.tv_sec++;
     }
     int32_t rtn = pthread_cond_timedwait(ctx, mu, &timewait);
-    ASSERTAB((ERR_OK == rtn || ETIMEDOUT == rtn), ERRORSTR(ERRNO));
+    if (0 == rtn) {
+        return ERR_OK;
+    }
+    if (ETIMEDOUT == rtn) {
+        return 1;
+    }
+    LOG_ERROR("code %d, %s", rtn, ERRORSTR(rtn));
+    return ERR_FAILED;
 #endif
 };
 /// <summary>

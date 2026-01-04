@@ -260,8 +260,11 @@ void task_request(task_ctx *dst, task_ctx *src, uint8_t reqtype, uint64_t sess, 
         msg.sess = 0;
     }
     if (0 != copy) {
-        MALLOC(msg.data, size);
-        memcpy(msg.data, data, size);
+        char *req;
+        MALLOC(req, size + 1);
+        memcpy(req, data, size);
+        req[size] = '\0';
+        msg.data = req;
     } else {
         msg.data = data;
     }
@@ -276,8 +279,11 @@ void task_response(task_ctx *dst, uint64_t sess, int32_t erro, void *data, size_
     msg.size = size;
     if (NULL != data) {
         if (0 != copy) {
-            MALLOC(msg.data, size);
-            memcpy(msg.data, data, size);
+            char *resp;
+            MALLOC(resp, size + 1);
+            memcpy(resp, data, size);
+            resp[size] = '\0';
+            msg.data = resp;
         } else {
             msg.data = data;
         }

@@ -18,6 +18,7 @@
 #include "crypt/digest.h"
 #include "crypt/cipher.h"
 #include "crypt/scram.h"
+#include "utils/chan.h"
 #include "utils/dl.h"
 #include "utils/popen2.h"
 #include "utils/log.h"

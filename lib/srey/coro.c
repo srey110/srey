@@ -337,6 +337,9 @@ void _message_dispatch(task_dispatch_arg *arg) {
         break;
     case MSG_TYPE_CLOSING:
         _co_create(arg);
+        if (((coro_ctx *)arg->task->arg)->nyield > 0) {
+            LOG_WARN("task %d yield %d.", arg->task->name, ((coro_ctx *)arg->task->arg)->nyield);
+        }
         break;
     case MSG_TYPE_TIMEOUT:
         _timeout_dispatch(arg);

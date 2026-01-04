@@ -343,6 +343,9 @@
     <ClInclude Include="services\harbor.h">
       <Filter>services</Filter>
     </ClInclude>
+    <ClInclude Include="utils\chan.h">
+      <Filter>utils</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="event\event.c">
@@ -563,6 +566,9 @@
     </ClCompile>
     <ClCompile Include="services\harbor.c">
       <Filter>services</Filter>
+    </ClCompile>
+    <ClCompile Include="utils\chan.c">
+      <Filter>utils</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

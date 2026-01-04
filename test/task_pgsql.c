@@ -67,7 +67,9 @@ static int32_t _test_query(){
         buf[val->lens] = '\0';
         lastId = (int32_t)strtol(buf, NULL, 10);
         pgsql_reader_free(reader);
-        printf("pgsql last insert id %d\n", lastId);
+        if (_prt) {
+            printf("pgsql last insert id %d\n", lastId);
+        }
     }
     pgpack = pgsql_query(&_pg, "COMMIT;");
     if (NULL == pgpack || PGPACK_OK != pgpack->type) {

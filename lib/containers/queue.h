@@ -3,7 +3,7 @@
 
 #include "base/macro.h"
 
-#define QUEUE_INIT_SIZE      16
+#define QUEUE_INIT_SIZE 32
 
 #define QUEUE_DECL(type, qtype) \
 typedef struct qtype { \
@@ -14,7 +14,7 @@ typedef struct qtype { \
 }qtype##_ctx; \
 static inline void qtype##_init(qtype##_ctx *p, uint32_t maxsize) {\
     p->size = p->offset = 0;\
-    p->maxsize = ((0 == maxsize) ? QUEUE_INIT_SIZE : ROUND_UP(maxsize, 2));\
+    p->maxsize = ((0 == maxsize) ? QUEUE_INIT_SIZE : maxsize);\
     MALLOC(p->ptr, sizeof(type) * p->maxsize);\
 };\
 static inline void qtype##_clear(qtype##_ctx *p) {\
