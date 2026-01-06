@@ -341,5 +341,41 @@ int32_t mongo_createindexes(mongo_ctx *mongo, char *indexes, size_t ilens, char 
 /// <param name="options">可选 其他参数 document (writeConcern comment)</param>
 /// <returns>ERR_OK 成功</returns>
 int32_t mongo_dropindexes(mongo_ctx *mongo, char *indexes, size_t ilens, char *options);
+/// <summary>
+/// startsession 命令 启动新会话
+/// </summary>
+/// <param name="mongo">mongo_ctx</param>
+/// <returns>NULL 失败 mongo_session</returns>
+mongo_session *mongo_startsession(mongo_ctx *mongo);
+/// <summary>
+/// refreshsession 命令 刷新空闲会话
+/// </summary>
+/// <param name="session">mongo_session</param>
+/// <returns>ERR_OK 成功</returns>
+int32_t mongo_refreshsession(mongo_session *session);
+/// <summary>
+/// endsessions 命令 使会话过期,释放mongo_session
+/// </summary>
+/// <param name="session">mongo_session</param>
+void mongo_freesession(mongo_session *session);
+/// <summary>
+/// 事务开始
+/// </summary>
+/// <param name="session">mongo_session</param>
+void mongo_begin(mongo_session *session);
+/// <summary>
+/// 事务提交
+/// </summary>
+/// <param name="session">mongo_session</param>
+/// <param name="options">可选 其他参数 document (writeConcern comment)</param>
+/// <returns>ERR_OK 成功</returns>
+int32_t mongo_commit(mongo_session *session, char *options);
+/// <summary>
+/// 事务回滚
+/// </summary>
+/// <param name="session">mongo_session</param>
+/// <param name="options">可选 其他参数 document (writeConcern comment)</param>
+/// <returns>ERR_OK 成功</returns>
+int32_t mongo_rollback(mongo_session *session, char *options);
 
 #endif//CORO_UTILS_H_

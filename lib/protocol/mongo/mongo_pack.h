@@ -9,8 +9,8 @@ void *mongo_pack_scram_client_final(mongo_ctx *mongo, int32_t convid, char *clie
 
 void *mongo_pack_hello(mongo_ctx *mongo, char *options, size_t *size);
 void *mongo_pack_ping(mongo_ctx *mongo, size_t *size);
-void *mongo_pack_drop(mongo_ctx *mongo, char *options, size_t *size);
 
+void *mongo_pack_drop(mongo_ctx *mongo, char *options, size_t *size);
 void *mongo_pack_insert(mongo_ctx *mongo, char *docs, size_t dlens, char *options, size_t *size);
 void *mongo_pack_update(mongo_ctx *mongo, char *updates, size_t ulens, char *options, size_t *size);
 void *mongo_pack_delete(mongo_ctx *mongo, char *deletes, size_t dlens, char *options, size_t *size);
@@ -26,5 +26,12 @@ void *mongo_pack_count(mongo_ctx *mongo, char *query, size_t qlens, char *option
 
 void *mongo_pack_createindexes(mongo_ctx *mongo, char *indexes, size_t ilens, char *options, size_t *size);
 void *mongo_pack_dropindexes(mongo_ctx *mongo, char *indexes, size_t ilens, char *options, size_t *size);
+
+void *mongo_pack_startsession(mongo_ctx *mongo, size_t *size);
+void *mongo_pack_refreshsession(mongo_session *session, size_t *size);
+void *mongo_pack_endsession(mongo_session *session, size_t *size);
+char *mongo_transaction_options(mongo_session *session);
+void *mongo_pack_committransaction(mongo_session *session, char *options, size_t *size);
+void *mongo_pack_aborttransaction(mongo_session *session, char *options, size_t *size);
 
 #endif//MONGO_PACK_H_

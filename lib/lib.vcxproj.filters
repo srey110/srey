@@ -346,6 +346,9 @@
     <ClInclude Include="utils\chan.h">
       <Filter>utils</Filter>
     </ClInclude>
+    <ClInclude Include="protocol\mongo\mongo_parse.h">
+      <Filter>protocol\mongo</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="event\event.c">
@@ -569,6 +572,9 @@
     </ClCompile>
     <ClCompile Include="utils\chan.c">
       <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\mongo\mongo_parse.c">
+      <Filter>protocol\mongo</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

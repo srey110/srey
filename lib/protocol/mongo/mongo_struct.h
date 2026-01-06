@@ -17,12 +17,21 @@ typedef struct mgopack_ctx {
     char *payload;
 }mgopack_ctx;
 
+typedef struct mongo_session {
+    int32_t timeoutmin;//会话的超时时间
+    int32_t txnnumber;
+    struct mongo_ctx *mongo;
+    char *options;
+    uint64_t timeout;
+    char uuid[UUID_LENS];
+}mongo_session;
 typedef struct mongo_ctx {
     uint16_t port;
     int32_t reqid;
     uint32_t flags;//message flags
     SOCKET fd;
     uint64_t skid;
+    mongo_session *session;
     struct task_ctx *task;
     struct evssl_ctx *evssl;
     struct scram_ctx *scram;

@@ -3,6 +3,7 @@
 
 #include "srey/spub.h"
 #include "protocol/mongo/mongo_pack.h"
+#include "protocol/mongo/mongo_parse.h"
 
 void _mongo_init(void *hspush);
 void _mongo_pkfree(void *pack);
@@ -44,22 +45,11 @@ void mongo_collection(mongo_ctx *mongo, const char *collection);
 /// <param name="pwd">密码</param>
 void mongo_user_pwd(mongo_ctx *mongo, const char *user, const char *pwd);
 /// <summary>
-/// 解析游标ID mongo_find mongo_aggregate mongo_bulkwrite  
-/// </summary>
-/// <param name="mgpack">mgopack_ctx</param>
-/// <returns>0 无数据 游标ID</returns>
-int64_t mongo_cursorid(mgopack_ctx *mgpack);
-/// <summary>
 /// 获取错误信息
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
 /// <returns>错误</returns>
 const char *mongo_error(mongo_ctx *mongo);
-/// <summary>
-/// 设置错误信息
-/// </summary>
-/// <param name="mongo">mongo_ctx</param>
-void mongo_set_error(mongo_ctx *mongo, const char *err, int32_t copy);
 /// <summary>
 /// 获取当前命令requestid
 /// </summary>

@@ -63,6 +63,7 @@
     <ClInclude Include="protocol\mongo\mongo.h" />
     <ClInclude Include="protocol\mongo\mongo_macro.h" />
     <ClInclude Include="protocol\mongo\mongo_pack.h" />
+    <ClInclude Include="protocol\mongo\mongo_parse.h" />
     <ClInclude Include="protocol\mongo\mongo_struct.h" />
     <ClInclude Include="protocol\mqtt\mqtt.h" />
     <ClInclude Include="protocol\mqtt\mqtt_macro.h" />
@@ -152,6 +153,7 @@
     <ClCompile Include="protocol\mongo\bson.c" />
     <ClCompile Include="protocol\mongo\mongo.c" />
     <ClCompile Include="protocol\mongo\mongo_pack.c" />
+    <ClCompile Include="protocol\mongo\mongo_parse.c" />
     <ClCompile Include="protocol\mqtt\mqtt.c" />
     <ClCompile Include="protocol\mqtt\mqtt_pack.c" />
     <ClCompile Include="protocol\mqtt\mqtt_struct.c" />

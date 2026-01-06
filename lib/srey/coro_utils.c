@@ -378,46 +378,6 @@ int32_t mongo_auth(mongo_ctx *mongo, const char *authmod, const char *user, cons
     mongo_set_flag(mongo, flags);
     return rtn;
 }
-static int32_t _mongo_check_error(mongo_ctx *mongo, mgopack_ctx *mgpack) {
-    bson_ctx bson;
-    bson_init(&bson, mgpack->doc, mgpack->dlens);
-    bson_iter iter;
-    bson_iter_init(&iter, &bson);
-    int32_t count = 0;
-    int32_t ok = 0, n = 0, writeerrors = 0, writeconcernerror = 0, errmsg = 0, nerrors = 0;
-    while (bson_iter_next(&iter)) {
-        if (0 == strcmp(iter.key, "ok")) {
-            count++;
-            ok = (int32_t)bson_iter_double(&iter, NULL);
-            if (!ok) {
-                break;
-            }
-        } else if(0 == strcmp(iter.key, "n")) {
-            count++;
-            n = bson_iter_int32(&iter, NULL);
-        } else if (0 == strcmp(iter.key, "writeErrors")) {
-            count++;
-            writeerrors = 1;
-        } else if (0 == strcmp(iter.key, "writeConcernError")) {
-            count++;
-            writeconcernerror = 1;
-        } else if (0 == strcmp(iter.key, "errmsg")) {
-            count++;
-            errmsg = 1;
-        } else if (0 == strcmp(iter.key, "nErrors")) {
-            count++;
-            nerrors = bson_iter_int32(&iter, NULL);
-        }
-        if (count >= 6) {
-            break;
-        }
-    }
-    if (ok && !writeerrors && !writeconcernerror && !errmsg && !nerrors) {
-        return n;
-    }
-    mongo_set_error(mongo, bson_tostring(&bson), 0);
-    return ERR_FAILED;
-}
 mgopack_ctx *mongo_hello(mongo_ctx *mongo, char *options) {
     int32_t flags = mongo_clear_flag(mongo);
     mongo_set_error(mongo, NULL, 0);
@@ -429,7 +389,7 @@ mgopack_ctx *mongo_hello(mongo_ctx *mongo, char *options) {
         mongo_set_error(mongo, "send hello message error.", 1);
         return NULL;
     }
-    if (ERR_FAILED == _mongo_check_error(mongo, mgpack)) {
+    if (ERR_FAILED == mongo_parse_check_error(mongo, mgpack)) {
         return NULL;
     }
     return mgpack;
@@ -445,7 +405,7 @@ int32_t mongo_ping(mongo_ctx *mongo) {
         mongo_set_error(mongo, "send ping message error.", 1);
         return ERR_FAILED;
     }
-    if (ERR_FAILED == _mongo_check_error(mongo, mgpack)) {
+    if (ERR_FAILED == mongo_parse_check_error(mongo, mgpack)) {
         return ERR_FAILED;
     }
     return ERR_OK;
@@ -483,7 +443,7 @@ int32_t mongo_drop(mongo_ctx *mongo, char *options) {
     if (NULL == mgpack) {
         return ERR_OK;
     }
-    if (ERR_FAILED == _mongo_check_error(mongo, mgpack)) {
+    if (ERR_FAILED == mongo_parse_check_error(mongo, mgpack)) {
         return ERR_FAILED;
     }
     return ERR_OK;
@@ -499,7 +459,7 @@ int32_t mongo_insert(mongo_ctx *mongo, char *docs, size_t dlens, char *options) 
     if (NULL == mgpack) {
         return ERR_OK;
     }
-    return _mongo_check_error(mongo, mgpack);
+    return mongo_parse_check_error(mongo, mgpack);
 }
 int32_t mongo_update(mongo_ctx *mongo, char *updates, size_t ulens, char *options) {
     mongo_set_error(mongo, NULL, 0);
@@ -512,7 +472,7 @@ int32_t mongo_update(mongo_ctx *mongo, char *updates, size_t ulens, char *option
     if (NULL == mgpack) {
         return ERR_OK;
     }
-    return _mongo_check_error(mongo, mgpack);
+    return mongo_parse_check_error(mongo, mgpack);
 }
 int32_t mongo_delete(mongo_ctx *mongo, char *deletes, size_t dlens, char *options) {
     mongo_set_error(mongo, NULL, 0);
@@ -525,7 +485,7 @@ int32_t mongo_delete(mongo_ctx *mongo, char *deletes, size_t dlens, char *option
     if (NULL == mgpack) {
         return ERR_OK;
     }
-    return _mongo_check_error(mongo, mgpack);
+    return mongo_parse_check_error(mongo, mgpack);
 }
 mgopack_ctx *mongo_bulkwrite(mongo_ctx *mongo, char *ops, size_t olens, char *nsinfo, size_t nlens, char *options) {
     mongo_set_error(mongo, NULL, 0);
@@ -538,7 +498,7 @@ mgopack_ctx *mongo_bulkwrite(mongo_ctx *mongo, char *ops, size_t olens, char *ns
     if (NULL == mgpack) {
         return NULL;
     }
-    if (ERR_FAILED == _mongo_check_error(mongo, mgpack)) {
+    if (ERR_FAILED == mongo_parse_check_error(mongo, mgpack)) {
         return NULL;
     }
     return mgpack;
@@ -554,7 +514,7 @@ mgopack_ctx *mongo_find(mongo_ctx *mongo, char *filter, size_t flens, char *opti
         mongo_set_error(mongo, "send find message error.", 1);
         return NULL;
     }
-    if (ERR_FAILED == _mongo_check_error(mongo, mgpack)) {
+    if (ERR_FAILED == mongo_parse_check_error(mongo, mgpack)) {
         return NULL;
     }
     return mgpack;
@@ -570,7 +530,7 @@ mgopack_ctx *mongo_aggregate(mongo_ctx *mongo, char *pipeline, size_t pllens, ch
         mongo_set_error(mongo, "send aggregate message error.", 1);
         return NULL;
     }
-    if (ERR_FAILED == _mongo_check_error(mongo, mgpack)) {
+    if (ERR_FAILED == mongo_parse_check_error(mongo, mgpack)) {
         return NULL;
     }
     return mgpack;
@@ -586,7 +546,7 @@ mgopack_ctx *mongo_getmore(mongo_ctx *mongo, int64_t cursorid, char *options) {
         mongo_set_error(mongo, "send getmore message error.", 1);
         return NULL;
     }
-    if (ERR_FAILED == _mongo_check_error(mongo, mgpack)) {
+    if (ERR_FAILED == mongo_parse_check_error(mongo, mgpack)) {
         return NULL;
     }
     return mgpack;
@@ -602,7 +562,7 @@ mgopack_ctx *mongo_killcursors(mongo_ctx *mongo, char *cursorids, size_t cslens,
     if (NULL == mgpack) {
         return NULL;
     }
-    if (ERR_FAILED == _mongo_check_error(mongo, mgpack)) {
+    if (ERR_FAILED == mongo_parse_check_error(mongo, mgpack)) {
         return NULL;
     }
     return mgpack;
@@ -618,7 +578,7 @@ mgopack_ctx *mongo_distinct(mongo_ctx *mongo, const char *key, char *query, size
         mongo_set_error(mongo, "send distinct message error.", 1);
         return NULL;
     }
-    if (ERR_FAILED == _mongo_check_error(mongo, mgpack)) {
+    if (ERR_FAILED == mongo_parse_check_error(mongo, mgpack)) {
         return NULL;
     }
     return mgpack;
@@ -635,7 +595,7 @@ mgopack_ctx *mongo_findandmodify(mongo_ctx *mongo, char *query, size_t qlens,
         mongo_set_error(mongo, "send findandmodify message error.", 1);
         return NULL;
     }
-    if (ERR_FAILED == _mongo_check_error(mongo, mgpack)) {
+    if (ERR_FAILED == mongo_parse_check_error(mongo, mgpack)) {
         return NULL;
     }
     return mgpack;
@@ -651,7 +611,7 @@ int32_t mongo_count(mongo_ctx *mongo, char *query, size_t qlens, char *options) 
         mongo_set_error(mongo, "send count message error.", 1);
         return ERR_FAILED;
     }
-    return _mongo_check_error(mongo, mgpack);
+    return mongo_parse_check_error(mongo, mgpack);
 }
 int32_t mongo_createindexes(mongo_ctx *mongo, char *indexes, size_t ilens, char *options) {
     mongo_set_error(mongo, NULL, 0);
@@ -664,7 +624,7 @@ int32_t mongo_createindexes(mongo_ctx *mongo, char *indexes, size_t ilens, char 
     if (NULL == mgpack) {
         return ERR_OK;
     }
-    if (ERR_FAILED == _mongo_check_error(mongo, mgpack)) {
+    if (ERR_FAILED == mongo_parse_check_error(mongo, mgpack)) {
         return ERR_FAILED;
     }
     return ERR_OK;
@@ -680,8 +640,103 @@ int32_t mongo_dropindexes(mongo_ctx *mongo, char *indexes, size_t ilens, char *o
     if (NULL == mgpack) {
         return ERR_OK;
     }
-    if (ERR_FAILED == _mongo_check_error(mongo, mgpack)) {
+    if (ERR_FAILED == mongo_parse_check_error(mongo, mgpack)) {
         return ERR_FAILED;
     }
+    return ERR_OK;
+}
+mongo_session *mongo_startsession(mongo_ctx *mongo) {
+    int32_t flags = mongo_clear_flag(mongo);
+    mongo_set_error(mongo, NULL, 0);
+    size_t lens;
+    void *startsession = mongo_pack_startsession(mongo, &lens);
+    mongo_set_flag(mongo, flags);
+    mgopack_ctx *mgpack = coro_send(mongo->task, mongo->fd, mongo->skid, startsession, lens, NULL, 0);
+    if (NULL == mgpack) {
+        mongo_set_error(mongo, "send startsession message error.", 1);
+        return NULL;
+    }
+    mongo_session *session;
+    MALLOC(session, sizeof(mongo_session));
+    if (!mongo_parse_startsession(mongo, mgpack, session->uuid, &session->timeoutmin)) {
+        FREE(session);
+        return NULL;
+    }
+    session->mongo = mongo;
+    session->txnnumber = 0;
+    session->timeout = nowsec() + session->timeoutmin * 60;
+    return session;
+}
+int32_t mongo_refreshsession(mongo_session *session) {
+    mongo_ctx *mongo = session->mongo;
+    int32_t flags = mongo_clear_flag(mongo);
+    mongo_set_error(mongo, NULL, 0);
+    size_t lens;
+    void *refreshsession = mongo_pack_refreshsession(session, &lens);
+    mongo_set_flag(mongo, flags);
+    mgopack_ctx *mgpack = coro_send(mongo->task, mongo->fd, mongo->skid, refreshsession, lens, NULL, 0);
+    if (NULL == mgpack) {
+        mongo_set_error(mongo, "send refreshsessions message error.", 1);
+        return ERR_FAILED;
+    }
+    if (ERR_FAILED == mongo_parse_check_error(mongo, mgpack)) {
+        return ERR_FAILED;
+    }
+    session->timeout = nowsec() + session->timeoutmin * 60;
+    return ERR_OK;
+}
+void mongo_freesession(mongo_session *session) {
+    mongo_ctx *mongo = session->mongo;
+    mongo_set_error(mongo, NULL, 0);
+    size_t lens;
+    void *endsession = mongo_pack_endsession(session, &lens);
+    _mongo_send(mongo, "endsessions", endsession, lens, NULL);
+    FREE(session->options);
+    FREE(session);
+}
+void mongo_begin(mongo_session *session) {
+    mongo_ctx *mongo = session->mongo;
+    session->txnnumber++;
+    session->options = mongo_transaction_options(session);
+    mongo->session = session;
+}
+int32_t mongo_commit(mongo_session *session, char *options) {
+    mongo_ctx *mongo = session->mongo;
+    int32_t flags = mongo_clear_flag(mongo);
+    mongo_set_error(mongo, NULL, 0);
+    size_t lens;
+    void *committransaction = mongo_pack_committransaction(session, options, &lens);
+    mongo_set_flag(mongo, flags);
+    mongo->session = NULL;
+    FREE(session->options);
+    mgopack_ctx *mgpack = coro_send(mongo->task, mongo->fd, mongo->skid, committransaction, lens, NULL, 0);
+    if (NULL == mgpack) {
+        mongo_set_error(mongo, "send committransaction message error.", 1);
+        return ERR_FAILED;
+    }
+    if (ERR_FAILED == mongo_parse_check_error(mongo, mgpack)) {
+        return ERR_FAILED;
+    }
+    session->timeout = nowsec() + session->timeoutmin * 60;
+    return ERR_OK;
+}
+int32_t mongo_rollback(mongo_session *session, char *options) {
+    mongo_ctx *mongo = session->mongo;
+    int32_t flags = mongo_clear_flag(mongo);
+    mongo_set_error(mongo, NULL, 0);
+    size_t lens;
+    void *aborttransaction = mongo_pack_aborttransaction(session, options, &lens);
+    mongo_set_flag(mongo, flags);
+    mongo->session = NULL;
+    FREE(session->options);
+    mgopack_ctx *mgpack = coro_send(mongo->task, mongo->fd, mongo->skid, aborttransaction, lens, NULL, 0);
+    if (NULL == mgpack) {
+        mongo_set_error(mongo, "send aborttransaction message error.", 1);
+        return ERR_FAILED;
+    }
+    if (ERR_FAILED == mongo_parse_check_error(mongo, mgpack)) {
+        return ERR_FAILED;
+    }
+    session->timeout = nowsec() + session->timeoutmin * 60;
     return ERR_OK;
 }

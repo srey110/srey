@@ -27,6 +27,25 @@ static int32_t _test_insert(char *opts) {
     BSON_FREE(&students);
     return rtn;
 }
+static int32_t _test_session() {
+    mongo_session *session = mongo_startsession(&_mongo);
+    if (NULL == session) {
+        LOG_WARN("%s", mongo_error(&_mongo));
+        return ERR_FAILED;
+    }
+    if (ERR_OK != mongo_refreshsession(session)) {
+        LOG_WARN("%s", mongo_error(&_mongo));
+        return ERR_FAILED;
+    }
+    mongo_begin(session);
+    if (ERR_OK == _test_insert(NULL)) {
+        mongo_commit(session, NULL);
+    } else {
+        mongo_rollback(session, NULL);
+    }
+    mongo_freesession(session);
+    return ERR_OK;
+}
 static int32_t _test_update(const char *name) {
     bson_ctx updates;
     bson_init(&updates, NULL, 0);
@@ -160,7 +179,7 @@ static void _startup(task_ctx *task) {
     int32_t rtn;
     mongo_init(&_mongo, "127.0.0.1", 0, NULL, NULL);
     if (ERR_OK != mongo_connect(task, &_mongo)){
-        LOG_ERROR("mongo_connect error.");
+        LOG_ERROR("%s", mongo_error(&_mongo));
         return;
     }
     bson_init(&_comment, NULL, 0);
@@ -175,11 +194,11 @@ static void _startup(task_ctx *task) {
     mgopack_ctx *mgpack = mongo_hello(&_mongo, saslsm.doc.data);
     BSON_FREE(&saslsm);
     if (ERR_OK != mongo_auth(&_mongo, "SCRAM-SHA-256", "admin", "12345678")) {
-        LOG_ERROR("mongo_auth error.");
+        LOG_ERROR("%s", mongo_error(&_mongo));
         return;
     }
     if (ERR_OK != mongo_auth(&_mongo, "SCRAM-SHA-1", "admin", "12345678")) {
-        LOG_ERROR("mongo_auth error.");
+        LOG_ERROR("%s", mongo_error(&_mongo));
         return;
     }
     mongo_collection(&_mongo, "test_collt");
@@ -187,6 +206,7 @@ static void _startup(task_ctx *task) {
         LOG_ERROR("%s", mongo_error(&_mongo));
         return;
     }
+    _test_session();
     mongo_set_flag(&_mongo, MORETOCOME);
     for (int i = 0; i < 100; i++) {
         if (ERR_FAILED == _test_insert(_comment.doc.data)) {

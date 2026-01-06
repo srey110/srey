@@ -1,5 +1,4 @@
 #include "protocol/mongo/mongo.h"
-#include "protocol/mongo/bson.h"
 #include "srey/task.h"
 #include "utils/binary.h"
 #include "crypt/scram.h"
@@ -37,24 +36,6 @@ void _mongo_udfree(ud_cxt *ud) {
 void _mongo_closed(ud_cxt *ud) {
     _mongo_udfree(ud);
 }
-static void _mongo_auth_response(mgopack_ctx *mgopack, int32_t *convid, int32_t *ok, int32_t *done,
-    char **payload, size_t *plens) {
-    bson_ctx bson;
-    bson_init(&bson, mgopack->doc, mgopack->dlens);
-    bson_iter iter;
-    bson_iter_init(&iter, &bson);
-    while (bson_iter_next(&iter)) {
-        if (0 == strcmp(iter.key, "conversationId")) {
-            *convid = bson_iter_int32(&iter, NULL);
-        } else if (0 == strcmp(iter.key, "done")) {
-            *done = bson_iter_bool(&iter, NULL);
-        } else if (0 == strcmp(iter.key, "ok")) {
-            *ok = (int32_t)bson_iter_double(&iter, NULL);
-        } else if (0 == strcmp(iter.key, "payload")) {
-            *payload = bson_iter_binary(&iter, NULL, plens, NULL);
-        }
-    }
-}
 static void _mongo_format_pwd(mongo_ctx *mongo, char fmtpwd[HEX_ENSIZE(MD5_BLOCK_SIZE)]) {
     char *buf = format_va("%s:mongo:%s", mongo->user, mongo->password);
     char hs[MD5_BLOCK_SIZE];
@@ -68,9 +49,9 @@ static void _mongo_format_pwd(mongo_ctx *mongo, char fmtpwd[HEX_ENSIZE(MD5_BLOCK
 }
 static int32_t _mongo_server_first_message(ev_ctx *ev, mongo_ctx *mongo, mgopack_ctx *mgopack) {
     size_t size;
-    int32_t convid, done, ok = 0;
+    int32_t convid, done;
     char *payload;
-    _mongo_auth_response(mgopack, &convid, &ok, &done, &payload, &size);
+    int32_t ok = mongo_parse_auth_response(mgopack, &convid, &done, &payload, &size);
     if (!ok) {
         return ERR_FAILED;
     }
@@ -96,9 +77,9 @@ static int32_t _mongo_server_first_message(ev_ctx *ev, mongo_ctx *mongo, mgopack
 }
 static int32_t _mongo_server_final_message(ev_ctx *ev, mongo_ctx *mongo, mgopack_ctx *mgopack) {
     size_t plens;
-    int32_t convid, done, ok;
+    int32_t convid, done;
     char *payload;
-    _mongo_auth_response(mgopack, &convid, &ok, &done, &payload, &plens);
+    int32_t ok = mongo_parse_auth_response(mgopack, &convid, &done, &payload, &plens);
     if (!ok
         || !done) {
         return ERR_FAILED;
@@ -229,17 +210,6 @@ void mongo_collection(mongo_ctx *mongo, const char *collection) {
 void mongo_user_pwd(mongo_ctx *mongo, const char *user, const char *pwd) {
     strcpy(mongo->user, user);
     strcpy(mongo->password, pwd);
-}
-int64_t mongo_cursorid(mgopack_ctx *mgpack) {
-    bson_ctx bson;
-    bson_init(&bson, mgpack->doc, mgpack->dlens);
-    bson_iter iter;
-    bson_iter_init(&iter, &bson);
-    bson_iter cursorid;
-    if (ERR_OK == bson_iter_find(&iter, "cursor.id", &cursorid)) {
-        return bson_iter_int64(&cursorid, NULL);
-    }
-    return 0;
 }
 const char *mongo_error(mongo_ctx *mongo) {
     return mongo->error;
