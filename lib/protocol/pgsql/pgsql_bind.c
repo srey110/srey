@@ -1,31 +1,33 @@
 #include "protocol/pgsql/pgsql_bind.h"
 
 void pgsql_bind_init(pgsql_bind_ctx *bind, uint16_t nparam) {
-    ZERO(bind, sizeof(pgsql_bind_ctx));
     bind->nparam = nparam;
     if (0 == bind->nparam) {
         return;
     }
-    CALLOC(bind->values, 1, sizeof(buf_ctx) * bind->nparam);
-    CALLOC(bind->format, 1, sizeof(pgpack_format) * bind->nparam);
+    binary_init(&bind->format, NULL, 0, 0);
+    binary_set_integer(&bind->format, bind->nparam, 2, 0);//参数格式代码数量
+    binary_init(&bind->values, NULL, 0, 0);
+    binary_set_integer(&bind->values, bind->nparam, 2, 0);//参数值数量
 }
 void pgsql_bind_free(pgsql_bind_ctx *bind) {
     if (0 == bind->nparam) {
         return;
     }
-    FREE(bind->values);
-    FREE(bind->format);
+    FREE(bind->format.data);
+    FREE(bind->values.data);
 }
 void pgsql_bind_clear(pgsql_bind_ctx *bind) {
     if (0 == bind->nparam) {
         return;
     }
-    ZERO(bind->values, sizeof(buf_ctx) * bind->nparam);
-    ZERO(bind->format, sizeof(pgpack_format) * bind->nparam);
+    binary_offset(&bind->format, 2);
+    binary_offset(&bind->values, 2);
 }
-void pgsql_bind(pgsql_bind_ctx *bind, uint16_t index, char *val, size_t lens, pgpack_format format) {
-    ASSERTAB(index >= 0 && index < bind->nparam, "out of range.");
-    bind->values[index].data = val;
-    bind->values[index].lens = lens;
-    bind->format[index] = format;
+void pgsql_bind(pgsql_bind_ctx *bind, char *value, size_t lens, pgpack_format format) {
+    binary_set_integer(&bind->format, format, 2, 0);//参数格式代码
+    binary_set_integer(&bind->values, lens, 4, 0);//参数值的长度
+    if (lens > 0) {
+        binary_set_string(&bind->values, value, lens);//参数的值
+    }
 }

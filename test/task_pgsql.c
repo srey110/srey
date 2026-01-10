@@ -112,7 +112,7 @@ static void _test_stmt(int32_t lastId) {
         return;
     }
     int32_t id = ntohl(lastId);
-    pgsql_bind(&bind, 0, (char *)&id, 4, FORMAT_BINARY);
+    pgsql_bind(&bind, (char *)&id, 4, FORMAT_BINARY);
     pgpack = pgsql_stmt_execute(&_pg, "stmt_test1", &bind, FORMAT_BINARY);
     if (NULL == pgpack || PGPACK_OK != pgpack->type) {
         LOG_ERROR("pgsql_execute error.");

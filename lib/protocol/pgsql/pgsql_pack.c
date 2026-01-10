@@ -72,18 +72,8 @@ void *pgsql_pack_stmt_execute(const char *name, pgsql_bind_ctx *bind, pgpack_for
         binary_set_integer(&bwriter, 0, 2, 0);//参数格式代码的数量
         binary_set_integer(&bwriter, 0, 2, 0);//参数格式代码
     } else {
-        uint16_t i;
-        binary_set_integer(&bwriter, bind->nparam, 2, 0);//参数格式代码的数量
-        for (i = 0; i < bind->nparam; i++) {
-            binary_set_integer(&bwriter, bind->format[i], 2, 0);//参数格式代码
-        }
-        binary_set_integer(&bwriter, bind->nparam, 2, 0);//参数值的数量
-        for (i = 0; i < bind->nparam; i++) {
-            binary_set_integer(&bwriter, bind->values[i].lens, 4, 0);//参数值的长度
-            if (bind->values[i].lens > 0) {
-                binary_set_string(&bwriter, bind->values[i].data, bind->values[i].lens);//参数的值
-            }
-        }
+        binary_set_string(&bwriter, bind->format.data, bind->format.offset);
+        binary_set_string(&bwriter, bind->values.data, bind->values.offset);
     }
     binary_set_integer(&bwriter, 1, 2, 0);//结果列格式代码数量
     binary_set_integer(&bwriter, resultformat, 2, 0);//结果列格式代码

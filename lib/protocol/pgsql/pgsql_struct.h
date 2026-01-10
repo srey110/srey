@@ -2,6 +2,7 @@
 #define PGSQL_STRUCT_H_
 
 #include "srey/spub.h"
+#include "utils/binary.h"
 #include "protocol/pgsql/pgsql_macro.h"
 
 typedef struct pgpack_ctx {
@@ -56,8 +57,8 @@ typedef struct pgsql_ctx {
 }pgsql_ctx;
 typedef struct pgsql_bind_ctx {
     uint16_t nparam;
-    buf_ctx *values;
-    pgpack_format *format;
+    binary_ctx format;
+    binary_ctx values;
 }pgsql_bind_ctx;
 
 #endif//PGSQL_STRUCT_H_

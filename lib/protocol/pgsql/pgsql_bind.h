@@ -20,13 +20,12 @@ void pgsql_bind_free(pgsql_bind_ctx *bind);
 /// <param name="bind">pgsql_bind_ctx</param>
 void pgsql_bind_clear(pgsql_bind_ctx *bind);
 /// <summary>
-/// 绑定参数(不会复制)
+/// 绑定参数
 /// </summary>
 /// <param name="bind">pgsql_bind_ctx</param>
-/// <param name="index">序号[0 - nparam)</param>
-/// <param name="val">值</param>
+/// <param name="value">值</param>
 /// <param name="lens">值长度</param>
 /// <param name="format">pgpack_format</param>
-void pgsql_bind(pgsql_bind_ctx *bind, uint16_t index, char *val, size_t lens, pgpack_format format);
+void pgsql_bind(pgsql_bind_ctx *bind, char *value, size_t lens, pgpack_format format);
 
 #endif//PGSQL_BIND_H_
