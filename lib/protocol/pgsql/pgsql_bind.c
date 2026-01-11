@@ -25,6 +25,9 @@ void pgsql_bind_clear(pgsql_bind_ctx *bind) {
     binary_offset(&bind->values, 2);
 }
 void pgsql_bind(pgsql_bind_ctx *bind, char *value, size_t lens, pgpack_format format) {
+    if (0 == bind->nparam) {
+        return;
+    }
     binary_set_integer(&bind->format, format, 2, 0);//参数格式代码
     binary_set_integer(&bind->values, lens, 4, 0);//参数值的长度
     if (lens > 0) {
