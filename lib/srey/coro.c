@@ -69,7 +69,7 @@ static void _map_cosess_set(task_ctx *task, int32_t disposable, mco_coro *coro, 
         MALLOC(cosess.qucoinfo, sizeof(qu_coinfo_ctx));
         qu_coinfo_init(cosess.qucoinfo, 0);
         qu_coinfo_push(cosess.qucoinfo, &coinfo);
-        ASSERTAB(NULL == hashmap_set(coctx->mapco, &cosess), "repeat session");
+        hashmap_set(coctx->mapco, &cosess);
     }
 }
 static int32_t _map_cosess_get(task_ctx *task, uint64_t sess, msg_type mtype, coro_sess *cosess) {

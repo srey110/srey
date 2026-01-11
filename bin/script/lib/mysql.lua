@@ -19,6 +19,9 @@ function ctx:connect()
     end
     local fd, skid = self.mysql:sock_id()
     local ok,_,_ = srey.wait_handshaked(fd, skid)
+    if ok then
+        srey.sock_session(fd, skid, skid)
+    end
     return ok
 end
 function ctx:selectdb(database)

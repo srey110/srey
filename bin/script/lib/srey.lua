@@ -147,7 +147,10 @@ function srey.startup(func)
     func_cbs[MSG_TYPE.STARTUP] = func
 end
 local function _startup_dispatch()
-    _coro_run(_coro_cb, func_cbs[MSG_TYPE.STARTUP])
+    local func = func_cbs[MSG_TYPE.STARTUP]
+    if func then
+        _coro_run(_coro_cb, func)
+    end
 end
 --func()
 function srey.closing(func)
@@ -167,33 +170,72 @@ local function _closing_dispatch()
     end
 end
 
-local function _set_coro_sess(coro, sess, mtype, ms, func, ...)
-    assert(not coro_sess[sess], "repeat session")
+local function _set_coro_sess(disposable, coro, sess, mtype, ms, func, ...)
     local timeout = 0
     if ms > 0 then
         timeout = srey.timer_ms() + ms
     end
-    coro_sess[sess] = {
+    local coroinfo = {
         timeout = timeout,
         coro = coro,
         mtype = mtype,
         func = func,
         args = {...}
     }
+    if disposable then
+        assert(not coro_sess[sess], "repeat session")
+        coro_sess[sess] = {
+            disposable = disposable,
+            coroinfo = coroinfo
+        }
+    else
+        local corosess = coro_sess[sess]
+        if not corosess then
+            coro_sess[sess] = {
+                disposable = disposable,
+                coroinfo = {coroinfo}
+            }
+        else
+            table.insert(corosess.coroinfo, coroinfo)
+        end
+    end
 end
 local function _get_coro_sess(sess, mtype)
     local corosess = coro_sess[sess]
     if not corosess then
         return nil
     end
-    if mtype ~= corosess.mtype and MSG_TYPE.CLOSE ~= mtype then
+    if corosess.disposable then
+        if mtype ~= corosess.coroinfo.mtype and MSG_TYPE.CLOSE ~= mtype then
+            return nil
+        end
+        coro_sess[sess] = nil
+        return corosess
+    end
+    if 0 == #corosess.coroinfo then
         return nil
     end
-    coro_sess[sess] = nil
+    if mtype ~= corosess.coroinfo[1].mtype and MSG_TYPE.CLOSE ~= mtype then
+        return nil
+    end
+    if MSG_TYPE.CLOSE == mtype then
+        coro_sess[sess] = nil
+    end
     return corosess
 end
-local function _coro_wait(sess, mtype, ms)
-    _set_coro_sess(coro_running, sess, mtype, ms)
+local function _coro_info(corosess)
+    if corosess.disposable then
+        return corosess.coroinfo
+    end
+    if 0 == #corosess.coroinfo then
+        return nil
+    end
+    local coroinfo = corosess.coroinfo[1]
+    table.remove(corosess.coroinfo, 1)
+    return coroinfo
+end
+local function _coro_wait(disposable, sess, mtype, ms)
+    _set_coro_sess(disposable, coro_running, sess, mtype, ms)
     nyield = nyield + 1
     local msg = coroutine_yield()
     nyield = nyield - 1
@@ -204,12 +246,12 @@ end
 function srey.sleep(ms)
     local sess = srey.id()
     core.timeout(sess, ms)
-    _coro_wait(sess, MSG_TYPE.TIMEOUT, 0)
+    _coro_wait(true, sess, MSG_TYPE.TIMEOUT, 0)
 end
 --func(...)
 function srey.timeout(ms, func, ...)
     local sess = srey.id()
-    _set_coro_sess(nil, sess, MSG_TYPE.TIMEOUT, 0, func, ...)
+    _set_coro_sess(true, nil, sess, MSG_TYPE.TIMEOUT, 0, func, ...)
     core.timeout(sess, ms)
 end
 local function _timeout_dispatch(msg)
@@ -218,10 +260,15 @@ local function _timeout_dispatch(msg)
         WARN("can't find session %s.", tostring(msg.sess))
         return
     end
-    if corosess.func then
-        _coro_run(_coro_cb, corosess.func, tunpack(corosess.args))
+    local coroinfo = _coro_info(corosess)
+    if not coroinfo then
+        WARN("can't find session %s.", tostring(msg.sess))
+        return
+    end
+    if coroinfo.func then
+        _coro_run(_coro_cb, coroinfo.func, tunpack(coroinfo.args))
     else
-        _coro_resume(corosess.coro, msg)
+        _coro_resume(coroinfo.coro, msg)
     end
 end
 
@@ -256,7 +303,7 @@ function srey.request(dst, reqtype, data, size, copy)
     local sess = srey.id()
     core.request(dtask, reqtype, sess, data, size, copy)
     srey.task_ungrab(dtask)
-    local msg = _coro_wait(sess, MSG_TYPE.RESPONSE, srey.get_request_timeout())
+    local msg = _coro_wait(true, sess, MSG_TYPE.RESPONSE, srey.get_request_timeout())
     if MSG_TYPE.TIMEOUT == msg.mtype then
         WARN("request timeout, session %s.", tostring(sess))
         return nil
@@ -298,7 +345,7 @@ local function _response_dispatch(msg)
         WARN("can't find session %s.", tostring(msg.sess))
         return
     end
-    _coro_resume(corosess.coro, msg)
+    _coro_resume(_coro_info(corosess).coro, msg)
 end
 
 function srey.sock_session(fd, skid, sess)
@@ -359,7 +406,7 @@ function srey.connect(pktype, sslname, ip, port, netev)
         WARN("connect %s:%d error.", ip, port)
         return INVALID_SOCK
     end
-    local msg = _coro_wait(skid, MSG_TYPE.CONNECT, srey.get_connect_timeout())
+    local msg = _coro_wait(false, skid, MSG_TYPE.CONNECT, srey.get_connect_timeout())
     if MSG_TYPE.TIMEOUT == msg.mtype then
         srey.close(fd, skid)
         WARN("connect %s:%d timeout, skid %s.", ip, port, tostring(skid))
@@ -374,17 +421,25 @@ function srey.connect(pktype, sslname, ip, port, netev)
             return INVALID_SOCK
         end
     end
+    srey.sock_session(fd, skid, skid)
     return fd, skid
 end
 local function _net_connect_dispatch(msg)
+    local func = func_cbs[MSG_TYPE.CONNECT]
     local corosess = _get_coro_sess(msg.skid, MSG_TYPE.CONNECT)
     if not corosess then
-        local func = func_cbs[MSG_TYPE.CONNECT]
         if func then
             _coro_run(_coro_cb, func, msg.pktype, msg.fd, msg.skid, msg.erro)
         end
     else
-        _coro_resume(corosess.coro, msg)
+        local coroinfo = _coro_info(corosess)
+        if coroinfo then
+            _coro_resume(coroinfo.coro, msg)
+        else
+            if func then
+                _coro_run(_coro_cb, func, msg.pktype, msg.fd, msg.skid, msg.erro)
+            end
+        end
     end
 end
 
@@ -410,7 +465,7 @@ function srey.syn_ssl_exchange(fd, skid, client, sslname)
     return srey.wait_ssl_exchanged(fd, skid)
 end
 function srey.wait_ssl_exchanged(fd, skid)
-    local msg = _coro_wait(skid, MSG_TYPE.SSLEXCHANGED, srey.get_netread_timeout())
+    local msg = _coro_wait(false, skid, MSG_TYPE.SSLEXCHANGED, srey.get_netread_timeout())
     if MSG_TYPE.TIMEOUT == msg.mtype then
         srey.close(fd, skid)
         WARN("ssl exchange timeout, skid %s.", tostring(skid))
@@ -423,14 +478,21 @@ function srey.wait_ssl_exchanged(fd, skid)
     return true
 end
 local function _net_ssl_exchanged_dispatch(msg)
+    local func = func_cbs[MSG_TYPE.SSLEXCHANGED]
     local corosess = _get_coro_sess(msg.skid, MSG_TYPE.SSLEXCHANGED)
     if not corosess then
-        local func = func_cbs[MSG_TYPE.SSLEXCHANGED]
         if func then
             _coro_run(_coro_cb, func, msg.pktype, msg.fd, msg.skid, msg.client)
         end
     else
-        _coro_resume(corosess.coro, msg)
+        local coroinfo = _coro_info(corosess)
+        if coroinfo then
+            _coro_resume(coroinfo.coro, msg)
+        else
+            if func then
+                _coro_run(_coro_cb, func, msg.pktype, msg.fd, msg.skid, msg.client)
+            end
+        end
     end
 end
 
@@ -440,7 +502,7 @@ function srey.on_handshaked(func)
 end
 --bool data size
 function srey.wait_handshaked(fd, skid)
-    local msg = _coro_wait(skid, MSG_TYPE.HANDSHAKED, srey.get_netread_timeout())
+    local msg = _coro_wait(false, skid, MSG_TYPE.HANDSHAKED, srey.get_netread_timeout())
     if MSG_TYPE.TIMEOUT == msg.mtype then
         srey.close(fd, skid)
         WARN("handshake timeout, skid %s.", tostring(skid))
@@ -453,14 +515,21 @@ function srey.wait_handshaked(fd, skid)
     return ERR_OK == msg.erro, msg.data, msg.size
 end
 local function _net_handshaked_dispatch(msg)
+    local func = func_cbs[MSG_TYPE.HANDSHAKED]
     local corosess = _get_coro_sess(msg.skid, MSG_TYPE.HANDSHAKED)
     if not corosess then
-        local func = func_cbs[MSG_TYPE.HANDSHAKED]
         if func then
             _coro_run(_coro_cb, func, msg.pktype, msg.fd, msg.skid, msg.client, msg.erro, msg.data, msg.size)
         end
     else
-        _coro_resume(corosess.coro, msg)
+        local coroinfo = _coro_info(corosess)
+        if coroinfo then
+            _coro_resume(coroinfo.coro, msg)
+        else
+            if func then
+                _coro_run(_coro_cb, func, msg.pktype, msg.fd, msg.skid, msg.client, msg.erro, msg.data, msg.size)
+            end
+        end
     end
 end
 
@@ -472,9 +541,9 @@ function srey.send(fd, skid, data, size, copy)
     return core.send(fd, skid, data, size, copy)
 end
 local function _wait_net_recv(fd, skid)
-    local msg = _coro_wait(skid, MSG_TYPE.RECV, srey.get_netread_timeout())
+    local msg = _coro_wait(false, skid, MSG_TYPE.RECV, srey.get_netread_timeout())
     if MSG_TYPE.TIMEOUT == msg.mtype then
-        srey.sock_session(fd, skid, 0)
+        srey.close(fd, skid)
         WARN("send timeout, skid %s.", tostring(skid))
         return nil
     end
@@ -486,7 +555,6 @@ local function _wait_net_recv(fd, skid)
 end
 --data size
 function srey.syn_send(fd, skid, data, size, copy)
-    srey.sock_session(fd, skid, skid)
     if not srey.send(fd, skid, data, size, copy) then
         return nil
     end
@@ -539,39 +607,28 @@ function srey.net_request(fd, skid, dst, reqtype, key, data, size)
     return http.data(respdata)
 end
 local function _net_recv_dispatch(msg)
-    if not core.may_resume(msg.pktype, msg.data) then
-        local func = func_cbs[MSG_TYPE.RECV]
+    local func = func_cbs[MSG_TYPE.RECV]
+    if 0 == msg.sess or not core.may_resume(msg.pktype, msg.data) then
         if func then
             _coro_run(_coro_cb, func, msg.pktype, msg.fd, msg.skid, msg.client, msg.slice, msg.data, msg.size)
-         end
-        return
-    end
-    if 0 == msg.sess then
-        if 0 ~=  msg.slice then
-            local corosess = _get_coro_sess(msg.skid, MSG_TYPE.RECV)
-            if not corosess then
-                local func = func_cbs[MSG_TYPE.RECV]
-                if func then
-                    _coro_run(_coro_cb, func, msg.pktype, msg.fd, msg.skid, msg.client, msg.slice, msg.data, msg.size)
-                end
-            else
-                msg.sess = msg.skid
-                _coro_resume(corosess.coro, msg)
-            end
-        else
-            local func = func_cbs[MSG_TYPE.RECV]
-            if func then
-                _coro_run(_coro_cb, func, msg.pktype, msg.fd, msg.skid, msg.client, msg.slice, msg.data, msg.size)
-            end
         end
         return
     end
-    local corosess = _get_coro_sess(msg.skid, MSG_TYPE.RECV)
+    local corosess = _get_coro_sess(msg.sess, MSG_TYPE.RECV)
     if not corosess then
-        WARN("can't find session %s.", tostring(msg.skid))
+        if func then
+            _coro_run(_coro_cb, func, msg.pktype, msg.fd, msg.skid, msg.client, msg.slice, msg.data, msg.size)
+        end
         return
     end
-    _coro_resume(corosess.coro, msg)
+    local coroinfo = _coro_info(corosess)
+    if coroinfo then
+        _coro_resume(coroinfo.coro, msg)
+    else
+        if func then
+            _coro_run(_coro_cb, func, msg.pktype, msg.fd, msg.skid, msg.client, msg.slice, msg.data, msg.size)
+        end
+    end
 end
 
 --func(pktype, fd, skid, client, size)
@@ -593,11 +650,18 @@ function srey.close(fd, skid)
     core.close(fd, skid)
 end
 local function _net_close_dispatch(msg)
+    local func = func_cbs[MSG_TYPE.CLOSE]
     local corosess = _get_coro_sess(msg.skid, MSG_TYPE.CLOSE)
     if corosess then
-        _coro_resume(corosess.coro, msg)
+        local coroinfo
+        while true do
+            coroinfo = _coro_info(corosess)
+            if not coroinfo then
+                break
+            end
+            _coro_resume(coroinfo.coro, msg)
+        end
     end
-    local func = func_cbs[MSG_TYPE.CLOSE]
     if func then
         _coro_run(_coro_cb, func, msg.pktype, msg.fd, msg.skid, msg.client)
     end
@@ -628,7 +692,7 @@ function srey.syn_sendto(fd, skid, ip, port, data, size, copy)
         WARN("sendto error, skid %s.", tostring(skid))
         return nil
     end
-    local msg = _coro_wait(skid, MSG_TYPE.RECVFROM, srey.get_netread_timeout())
+    local msg = _coro_wait(true, skid, MSG_TYPE.RECVFROM, srey.get_netread_timeout())
     if MSG_TYPE.TIMEOUT == msg.mtype then
         srey.sock_session(fd, skid, 0)
         WARN("sendto timeout, skid %s.", tostring(skid))
@@ -637,8 +701,8 @@ function srey.syn_sendto(fd, skid, ip, port, data, size, copy)
     return msg.udata, msg.size
 end
 local function _net_recvfrom_dispatch(msg)
+    local func = func_cbs[MSG_TYPE.RECVFROM]
     if 0 == msg.sess then
-        local func = func_cbs[MSG_TYPE.RECVFROM]
         if func then
             _coro_run(_coro_cb, func, msg.fd, msg.skid, msg.ip, msg.port, msg.udata, msg.size)
         end
@@ -646,40 +710,61 @@ local function _net_recvfrom_dispatch(msg)
     end
     local corosess = _get_coro_sess(msg.skid, MSG_TYPE.RECVFROM)
     if not corosess then
-        WARN("can't find session %s.", tostring(msg.skid))
+        if func then
+            _coro_run(_coro_cb, func, msg.fd, msg.skid, msg.ip, msg.port, msg.udata, msg.size)
+        end
         return
     end
-    _coro_resume(corosess.coro, msg)
+    local coroinfo = _coro_info(corosess)
+    if coroinfo then
+        _coro_resume(coroinfo.coro, msg)
+    else
+        if func then
+            _coro_run(_coro_cb, func, msg.fd, msg.skid, msg.ip, msg.port, msg.udata, msg.size)
+        end
+    end
 end
 
 local function _coro_timeout()
     if nyield > 0 then
         local now = srey.timer_ms()
-        local del = {}
-        for key, value in pairs(coro_sess) do
-            if value.timeout > 0 and now >= value.timeout then
-                del[#del + 1] = key
+        local timeout = {}
+        for sess, corosess in pairs(coro_sess) do
+            local coroinfo
+            if corosess.disposable then
+                coroinfo = corosess.coroinfo
+            else
+                if #corosess.coroinfo > 0 then
+                    coroinfo = corosess.coroinfo[1]
+                end
+            end
+            if coroinfo and coroinfo.timeout > 0 and now >= coroinfo.timeout then
+                timeout[#timeout + 1] = sess
             end
         end
         local corosess
-        for _, value in ipairs(del) do
-            corosess = coro_sess[value]
-            coro_sess[value] = nil
-            if corosess then
+        local coroinfo
+        for _, sess in ipairs(timeout) do
+            corosess = coro_sess[sess]
+            if corosess.disposable then
+                coro_sess[sess] = nil
+            end
+            coroinfo = _coro_info(corosess)
+            if coroinfo then
                 local msg = {
                     mtype = MSG_TYPE.TIMEOUT,
-                    sess = value
+                    sess = sess
                 }
-                WARN("resume timeout session %s.", tostring(value))
-                _coro_resume(corosess.coro, msg)
+                _coro_resume(coroinfo.coro, msg)
+                WARN("resume timeout session %s.", tostring(sess))
             end
         end
     end
-    srey.timeout(500, _coro_timeout)
+    srey.timeout(3 * 1000, _coro_timeout)
 end
 function message_dispatch(msg)
     if MSG_TYPE.STARTUP == msg.mtype then
-        srey.timeout(500, _coro_timeout)
+        srey.timeout(3 * 1000, _coro_timeout)
         _startup_dispatch()
     elseif MSG_TYPE.CLOSING == msg.mtype then
         _closing_dispatch()

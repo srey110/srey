@@ -97,6 +97,7 @@ local function _timeout()
         printd(mctx:erro())
     end
     print("affectd rows:"..mctx:affectd_rows())
+    printd("mysql tested.")
 end
 srey.startup(
     function ()

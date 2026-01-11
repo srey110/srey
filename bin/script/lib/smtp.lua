@@ -18,6 +18,8 @@ function ctx:connect()
     local ok, err, elens = srey.wait_handshaked(fd, skid)
     if not ok and err then
         WARN("%s", srey.ud_str(err, elens))
+    else
+        srey.sock_session(fd, skid, skid)
     end
     return ok
 end
