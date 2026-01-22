@@ -8,7 +8,7 @@ SSL、Http、Websocket、MQTT、DNS、MySql、PostgreSQL、Redis...
 * linux、unix run mk.sh.
 
 ## Configuration  
-* config.json configure service startup parameters. 
+* config.json Configure service startup parameters. 
 
 ## Use(eg httpd)
 * LUA   
