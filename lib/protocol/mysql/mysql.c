@@ -179,7 +179,7 @@ static void _mysql_caching_sha2_sign(mysql_ctx *mysql, char sh2[SHA256_BLOCK_SIZ
     }
 }
 static void _mysql_connect_attrs(binary_ctx *battrs) {
-    connect_attr attrs[] = {
+    static connect_attr attrs[] = {
         { "application", "srey" },
         { "os", OS_NAME }
     };

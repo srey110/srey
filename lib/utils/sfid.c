@@ -28,7 +28,7 @@ sfid_ctx *sfid_init(sfid_ctx *ctx, int32_t machineid, int32_t machinebitlen, int
 }
 uint64_t sfid_id(sfid_ctx *ctx) {
     uint64_t id, curms;
-    while (1) {
+    for (;;) {
         curms = nowms() - ctx->customepoch;
         if (curms < ctx->lasttimestamp) {
             continue;
