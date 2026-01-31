@@ -25,80 +25,95 @@ static void _timeout(task_ctx *task, uint64_t sess) {
     if (RESP_STRING != rtn->prot
         || 0 != _memicmp(rtn->data, "PONG", (size_t)rtn->len)) {
         LOG_WARN("PING error.");
+        return;
     }
     req = redis_pack(&rsize, "INFO");
     rtn = coro_send(task, _fd, _skid, req, rsize, &rsize, 0);
     if (RESP_BSTRING != rtn->prot
         && RESP_VERB != rtn->prot) {
         LOG_WARN("INFO error.");
+        return;
     }
     req = redis_pack(&rsize, "SELECT 9");
     rtn = coro_send(task, _fd, _skid, req, rsize, &rsize, 0);
     if (0 != _memicmp(rtn->data, "ok", (size_t)rtn->len)) {
         LOG_WARN("SELECT error.");
+        return;
     }
     req = redis_pack(&rsize, "DBSIZE");
     rtn = coro_send(task, _fd, _skid, req, rsize, &rsize, 0);
     if (RESP_INTEGER != rtn->prot) {
         LOG_WARN("DBSIZE error.");
+        return;
     }
     req = redis_pack(&rsize, "hello %d", 3);
     rtn = coro_send(task, _fd, _skid, req, rsize, &rsize, 0);
     if (RESP_MAP != rtn->prot) {
         LOG_WARN("hello error.");
+        return;
     }
     req = redis_pack(&rsize, "SET srey 123456");
     rtn = coro_send(task, _fd, _skid, req, rsize, &rsize, 0);
     if (0 != _memicmp(rtn->data, "ok", (size_t)rtn->len)) {
         LOG_WARN("SET error.");
+        return;
     }
     req = redis_pack(&rsize, "GET srey");
     rtn = coro_send(task, _fd, _skid, req, rsize, &rsize, 0);
     if (0 != _memicmp(rtn->data, "123456", (size_t)rtn->len)) {
         LOG_WARN("GET error.");
+        return;
     }
     req = redis_pack(&rsize, "DEL srey");
     rtn = coro_send(task, _fd, _skid, req, rsize, &rsize, 0);
     if (1 != rtn->ival) {
         LOG_WARN("DEL error.");
+        return;
     }
     req = redis_pack(&rsize, "GET nokey");
     rtn = coro_send(task, _fd, _skid, req, rsize, &rsize, 0);
     if (RESP_NIL != rtn->prot) {
         LOG_WARN("GET nokey error.");
+        return;
     }
     req = redis_pack(&rsize, "LPUSH srey 123 456 789");
     rtn = coro_send(task, _fd, _skid, req, rsize, &rsize, 0);
     if (3 != rtn->ival) {
         LOG_WARN("LPUSH error.");
+        return;
     }
     req = redis_pack(&rsize, "LRANGE srey 0 -1");
     rtn = coro_send(task, _fd, _skid, req, rsize, &rsize, 0);
     if (RESP_ARRAY != rtn->prot
         || 3 != rtn->nelem) {
         LOG_WARN("LRANGE error.");
+        return;
     }
     req = redis_pack(&rsize, "DEL srey");
     rtn = coro_send(task, _fd, _skid, req, rsize, &rsize, 0);
     if (1 != rtn->ival) {
         LOG_WARN("DEL error.");
+        return;
     }
     req = redis_pack(&rsize, "HMSET srey ke1 123 key2 456");
     rtn = coro_send(task, _fd, _skid, req, rsize, &rsize, 0);
     if (0 != _memicmp(rtn->data, "ok", (size_t)rtn->len)) {
         LOG_WARN("HMSET error.");
+        return;
     }
     req = redis_pack(&rsize, "HGETALL srey");
     rtn = coro_send(task, _fd, _skid, req, rsize, &rsize, 0);
     if (RESP_MAP != rtn->prot) {
         LOG_WARN("HMSET error.");
+        return;
     }
     req = redis_pack(&rsize, "DEL srey");
     rtn = coro_send(task, _fd, _skid, req, rsize, &rsize, 0);
     if (1 != rtn->ival) {
         LOG_WARN("DEL error.");
+        return;
     }
-    task_timeout(task, 0, 3000, _timeout);
+    LOG_INFO("redis tested.");
 }
 static void _startup(task_ctx *task) {
     task_recved(task, _net_recv);
@@ -108,7 +123,6 @@ static void _startup(task_ctx *task) {
         LOG_ERROR("connect redis error.");
         return;
     }
-    LOG_INFO("redis connected.");
     task_timeout(task, 0, 1000, _timeout);
 }
 void task_redis_start(loader_ctx *loader, name_t name, int32_t pt) {

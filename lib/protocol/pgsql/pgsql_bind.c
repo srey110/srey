@@ -34,3 +34,27 @@ void pgsql_bind(pgsql_bind_ctx *bind, char *value, size_t lens, pgpack_format fo
         binary_set_string(&bind->values, value, lens);//参数的值
     }
 }
+void pgsql_bind_bool(pgsql_bind_ctx *bind, int8_t value) {
+    char b[1] = { value ? 1 : 0 };
+    pgsql_bind(bind, b, 1, FORMAT_BINARY);
+}
+void pgsql_bind_int16(pgsql_bind_ctx *bind, int16_t value) {
+    pack_integer((char *)&value, value, sizeof(value), 0);
+    pgsql_bind(bind, (char *)&value, sizeof(value), FORMAT_BINARY);
+}
+void pgsql_bind_int32(pgsql_bind_ctx *bind, int32_t value) {
+    pack_integer((char *)&value, value, sizeof(value), 0);
+    pgsql_bind(bind, (char *)&value, sizeof(value), FORMAT_BINARY);
+}
+void pgsql_bind_int64(pgsql_bind_ctx *bind, int64_t value) {
+    pack_integer((char *)&value, value, sizeof(value), 0);
+    pgsql_bind(bind, (char *)&value, sizeof(value), FORMAT_BINARY);
+}
+void pgsql_bind_float(pgsql_bind_ctx *bind, float value) {
+    pack_float((char *)&value, value, 0);
+    pgsql_bind(bind, (char *)&value, sizeof(value), FORMAT_BINARY);
+}
+void pgsql_bind_double(pgsql_bind_ctx *bind, double value) {
+    pack_double((char *)&value, value, 0);
+    pgsql_bind(bind, (char *)&value, sizeof(value), FORMAT_BINARY);
+}

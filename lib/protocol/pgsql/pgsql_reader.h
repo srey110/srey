@@ -40,5 +40,8 @@ int32_t pgsql_reader_eof(pgsql_reader_ctx *reader);
 void pgsql_reader_next(pgsql_reader_ctx *reader);
 pgpack_row *pgsql_reader_index(pgsql_reader_ctx *reader, int16_t index, pgpack_field **field);
 pgpack_row *pgsql_reader_name(pgsql_reader_ctx *reader, const char *name, pgpack_field **field);
+int32_t pgsql_reader_bool(pgsql_reader_ctx *reader, const char *name, int32_t *err);
+int64_t pgsql_reader_integer(pgsql_reader_ctx *reader, const char *name, int32_t *err);
+double pgsql_reader_double(pgsql_reader_ctx *reader, const char *name, int32_t *err);
 
 #endif//PGSQL_READER_H_

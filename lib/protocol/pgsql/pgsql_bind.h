@@ -27,5 +27,11 @@ void pgsql_bind_clear(pgsql_bind_ctx *bind);
 /// <param name="lens">Öµ³¤¶È</param>
 /// <param name="format">pgpack_format</param>
 void pgsql_bind(pgsql_bind_ctx *bind, char *value, size_t lens, pgpack_format format);
+void pgsql_bind_bool(pgsql_bind_ctx *bind, int8_t value);
+void pgsql_bind_int16(pgsql_bind_ctx *bind, int16_t value);
+void pgsql_bind_int32(pgsql_bind_ctx *bind, int32_t value);
+void pgsql_bind_int64(pgsql_bind_ctx *bind, int64_t value);
+void pgsql_bind_float(pgsql_bind_ctx *bind, float value);
+void pgsql_bind_double(pgsql_bind_ctx *bind, double value);
 
 #endif//PGSQL_BIND_H_
