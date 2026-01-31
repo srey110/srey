@@ -427,9 +427,7 @@ static inline int32_t _mongo_send(mongo_ctx *mongo, const char *cmdname, void *p
         mongo_set_error(mongo, err, 1);
         return ERR_FAILED;
     }
-    if (NULL != mgopack) {
-        *mgopack = rtnpack;
-    }
+    SET_PTR(mgopack, rtnpack);
     return ERR_OK;
 }
 int32_t mongo_drop(mongo_ctx *mongo, char *options) {

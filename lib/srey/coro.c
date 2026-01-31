@@ -418,9 +418,7 @@ void *coro_request(task_ctx *dst, task_ctx *src, uint8_t rtype, void *data, size
         return NULL;
     }
     *erro = msg.erro;
-    if (NULL != lens) {
-        *lens = msg.size;
-    }
+    SET_PTR(lens, msg.size);
     return msg.data;
 }
 static int32_t _wait_ssl_exchanged(task_ctx *task, SOCKET fd, uint64_t skid) {
@@ -456,9 +454,7 @@ void *coro_handshaked(task_ctx *task, SOCKET fd, uint64_t skid, int32_t *err, si
         return NULL;
     }
     *err = msg.erro;
-    if (NULL != size) {
-        *size = msg.size;
-    }
+    SET_PTR(size, msg.size);
     return msg.data;
 }
 int32_t coro_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl, const char *ip, uint16_t port, int32_t netev, void *extra,
@@ -506,9 +502,7 @@ void *coro_send(task_ctx *task, SOCKET fd, uint64_t skid, void *data, size_t len
     if (ERR_OK != _wait_recved(task, fd, skid, &msg)) {
         return NULL;
     }
-    if (NULL != size) {
-        *size = msg.size;
-    }
+    SET_PTR(size, msg.size);
     return msg.data;
 }
 void *coro_slice(task_ctx *task, SOCKET fd, uint64_t skid, size_t *size, int32_t *end) {
@@ -519,9 +513,7 @@ void *coro_slice(task_ctx *task, SOCKET fd, uint64_t skid, size_t *size, int32_t
     if (PROT_SLICE_END == msg.slice) {
         *end = 1;
     }
-    if (NULL != size) {
-        *size = msg.size;
-    }
+    SET_PTR(size, msg.size);
     return msg.data;
 }
 void *coro_sendto(task_ctx *task, SOCKET fd, uint64_t skid, const char *ip, const uint16_t port,
@@ -539,8 +531,6 @@ void *coro_sendto(task_ctx *task, SOCKET fd, uint64_t skid, const char *ip, cons
         LOG_WARN("task %d, sendto timeout, skid %"PRIu64".", task->name, skid);
         return NULL;
     }
-    if (NULL != size) {
-        *size = msg.size;
-    }
+    SET_PTR(size, msg.size);
     return ((char *)msg.data) + sizeof(netaddr_ctx);
 }

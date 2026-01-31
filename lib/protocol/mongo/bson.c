@@ -50,9 +50,7 @@ void bson_oid(char oid[BSON_OID_LENS]) {
     oid[11] = id & 0xff;
 }
 const char *bson_empty(size_t *lens) {
-    if (NULL != lens) {
-        *lens = 5;
-    }
+    SET_PTR(lens, 5);
     return _bson_empty;
 }
 static inline void _bson_append_start(bson_ctx *bson) {
@@ -325,14 +323,10 @@ int32_t bson_iter_find(bson_iter *iter, const char *keys, bson_iter *result) {
 }
 static int32_t _bson_iter_check(bson_iter *iter, bson_type type, int32_t *err) {
     if (type != iter->type) {
-        if (NULL != err) {
-            *err = ERR_FAILED;
-        }
+        SET_PTR(err, ERR_FAILED);
         return ERR_FAILED;
     }
-    if (NULL != err) {
-        *err = ERR_OK;
-    }
+    SET_PTR(err, ERR_OK);
     return ERR_OK;
 }
 double bson_iter_double(bson_iter *iter, int32_t *err) {
@@ -365,9 +359,7 @@ char *bson_iter_binary(bson_iter *iter, bson_subtype *subtype, size_t *lens, int
     if (ERR_OK != _bson_iter_check(iter, BSON_BINARY, err)) {
         return NULL;
     }
-    if (NULL != subtype) {
-        *subtype = iter->subtype;
-    }
+    SET_PTR(subtype, iter->subtype);
     *lens = iter->lens;
     return iter->val;
 }
@@ -393,9 +385,7 @@ const char *bson_iter_regex(bson_iter *iter, char **options, int32_t *err) {
     if (ERR_OK != _bson_iter_check(iter, BSON_REGEX, err)) {
         return NULL;
     }
-    if (NULL != options) {
-        *options = iter->val2;
-    }
+    SET_PTR(options, iter->val2);
     return iter->val;
 }
 const char *bson_iter_jscode(bson_iter *iter, int32_t *err) {

@@ -593,9 +593,7 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
         _cmd_listen(&ctx->watcher[i], lsn->lsnsock[i].sock.fd, &lsn->lsnsock[i].sock);
     }
     lsn->id = createid();
-    if (NULL != id) {
-        *id = lsn->id;
-    }
+    SET_PTR(id, lsn->id);
     return ERR_OK;
 }
 void _add_lsn_inloop(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx) {

@@ -164,9 +164,7 @@ void *cipher_block(cipher_ctx *cipher, const void *data, size_t lens, size_t *si
     if (NULL == input) {
         return NULL;
     }
-    if (NULL != size) {
-        *size = lens;
-    }
+    SET_PTR(size, lens);
     void *rtn = NULL;
     switch (cipher->model) {
     case ECB:

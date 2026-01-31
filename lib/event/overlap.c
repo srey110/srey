@@ -696,9 +696,7 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
     arr_ptr_push_back(&ctx->arrlsn, &lsn);
     spin_unlock(&ctx->spin);
     lsn->id = createid();
-    if (NULL != id) {
-        *id = lsn->id;
-    }
+    SET_PTR(id, lsn->id);
     return ERR_OK;
 }
 void _freelsn(listener_ctx *lsn) {

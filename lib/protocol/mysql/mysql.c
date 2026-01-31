@@ -629,9 +629,7 @@ const char *mysql_version(mysql_ctx *mysql) {
     return mysql->version;
 }
 const char *mysql_erro(mysql_ctx *mysql, int32_t *code) {
-    if (NULL != code) {
-        *code = mysql->error_code;
-    }
+    SET_PTR(code, mysql->error_code);
     return mysql->error_msg;
 }
 void mysql_erro_clear(mysql_ctx *mysql) {

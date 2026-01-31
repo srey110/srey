@@ -66,6 +66,10 @@
         SOCK_CLOSE(fd);\
         fd = INVALID_SOCK;\
     }
+#define SET_PTR(ptr, val)\
+    if (NULL != (ptr)) {\
+        (*ptr) = (val);\
+    }
 //日志级别
 typedef enum LOG_LEVEL {
     LOGLV_FATAL = 0,

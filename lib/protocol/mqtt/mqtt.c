@@ -184,9 +184,7 @@ static arr_propertie_ctx *_mqtt_properties(buffer_ctx *buf, int32_t *status, int
         BIT_SET(*status, PROT_ERROR);
         return NULL;
     }
-    if (NULL != total) {
-        *total = occupy + plens;
-    }
+    SET_PTR(total, occupy + plens);
     if (0 == plens) {
         return NULL;
     }

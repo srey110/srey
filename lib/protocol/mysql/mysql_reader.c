@@ -43,33 +43,25 @@ static mpack_field *_mysql_reader_field(mysql_reader_ctx *reader, const char *na
 }
 static mpack_row *_mysql_reader_row(mysql_reader_ctx *reader, const char *name, mpack_field **field, int32_t *err) {
     if (reader->index >= (int32_t)arr_ptr_size(&reader->arr_rows)) {
-        if (NULL != err) {
-            *err = ERR_FAILED;
-        }
+        SET_PTR(err, ERR_FAILED);
         return NULL;
     }
     int32_t pos;
     mpack_field *column = _mysql_reader_field(reader, name, &pos);
     if (NULL == column) {
-        if (NULL != err) {
-            *err = ERR_FAILED;
-        }
+        SET_PTR(err, ERR_FAILED);
         return NULL;
     }
     mpack_row *row = *(mpack_row **)(arr_ptr_at(&reader->arr_rows, (uint32_t)reader->index));
     if (row[pos].nil) {
-        if (NULL != err) {
-            *err = 1;
-        }
+        SET_PTR(err, 1);
         return NULL;
     }
     *field = column;
     return &row[pos];
 }
 int64_t mysql_reader_integer(mysql_reader_ctx *reader, const char *name, int32_t *err) {
-    if (NULL != err) {
-        *err = ERR_OK;
-    }
+    SET_PTR(err, ERR_OK);
     mpack_field *field;
     mpack_row *row = _mysql_reader_row(reader, name, &field, err);
     if (NULL == row) {
@@ -81,9 +73,7 @@ int64_t mysql_reader_integer(mysql_reader_ctx *reader, const char *name, int32_t
         && MYSQL_TYPE_SHORT != field->type
         && MYSQL_TYPE_YEAR != field->type
         && MYSQL_TYPE_TINY != field->type) {
-        if (NULL != err) {
-            *err = ERR_FAILED;
-        }
+        SET_PTR(err, ERR_FAILED);
         LOG_WARN("does not match required data type.");
         return 0;
     }
@@ -94,9 +84,7 @@ int64_t mysql_reader_integer(mysql_reader_ctx *reader, const char *name, int32_t
         char *end;
         int64_t val = strtoll(tmp, &end, 10);
         if ((size_t)(end - tmp) != row->val.lens) {
-            if (NULL != err) {
-                *err = ERR_FAILED;
-            }
+            SET_PTR(err, ERR_FAILED);
             LOG_WARN("parse failed.");
             return 0;
         }
@@ -110,9 +98,7 @@ int64_t mysql_reader_integer(mysql_reader_ctx *reader, const char *name, int32_t
     }
 }
 uint64_t mysql_reader_uinteger(mysql_reader_ctx *reader, const char *name, int32_t *err) {
-    if (NULL != err) {
-        *err = ERR_OK;
-    }
+    SET_PTR(err, ERR_OK);
     mpack_field *field;
     mpack_row *row = _mysql_reader_row(reader, name, &field, err);
     if (NULL == row) {
@@ -124,9 +110,7 @@ uint64_t mysql_reader_uinteger(mysql_reader_ctx *reader, const char *name, int32
         && MYSQL_TYPE_SHORT != field->type
         && MYSQL_TYPE_YEAR != field->type
         && MYSQL_TYPE_TINY != field->type) {
-        if (NULL != err) {
-            *err = ERR_FAILED;
-        }
+        SET_PTR(err, ERR_FAILED);
         LOG_WARN("does not match required data type.");
         return 0;
     }
@@ -137,9 +121,7 @@ uint64_t mysql_reader_uinteger(mysql_reader_ctx *reader, const char *name, int32
         char *end;
         uint64_t val = strtoull(tmp, &end, 10);
         if ((size_t)(end - tmp) != row->val.lens) {
-            if (NULL != err) {
-                *err = ERR_FAILED;
-            }
+            SET_PTR(err, ERR_FAILED);
             LOG_WARN("parse failed.");
             return 0;
         }
@@ -153,9 +135,7 @@ uint64_t mysql_reader_uinteger(mysql_reader_ctx *reader, const char *name, int32
     }
 }
 double mysql_reader_double(mysql_reader_ctx *reader, const char *name, int32_t *err) {
-    if (NULL != err) {
-        *err = ERR_OK;
-    }
+    SET_PTR(err, ERR_OK);
     mpack_field *field;
     mpack_row *row = _mysql_reader_row(reader, name, &field, err);
     if (NULL == row) {
@@ -163,9 +143,7 @@ double mysql_reader_double(mysql_reader_ctx *reader, const char *name, int32_t *
     }
     if (MYSQL_TYPE_DOUBLE != field->type
         && MYSQL_TYPE_FLOAT != field->type) {
-        if (NULL != err) {
-            *err = ERR_FAILED;
-        }
+        SET_PTR(err, ERR_FAILED);
         LOG_WARN("does not match required data type.");
         return 0.0;
     }
@@ -176,9 +154,7 @@ double mysql_reader_double(mysql_reader_ctx *reader, const char *name, int32_t *
         char *end;
         double val = strtod(tmp, &end);
         if ((size_t)(end - tmp) != row->val.lens) {
-            if (NULL != err) {
-                *err = ERR_FAILED;
-            }
+            SET_PTR(err, ERR_FAILED);
             LOG_WARN("parse failed.");
             return 0.0;
         }
@@ -192,9 +168,7 @@ double mysql_reader_double(mysql_reader_ctx *reader, const char *name, int32_t *
     }
 }
 char *mysql_reader_string(mysql_reader_ctx *reader, const char *name, size_t *lens, int32_t *err) {
-    if (NULL != err) {
-        *err = ERR_OK;
-    }
+    SET_PTR(err, ERR_OK);
     mpack_field *field;
     mpack_row *row = _mysql_reader_row(reader, name, &field, err);
     if (NULL == row) {
@@ -214,9 +188,7 @@ char *mysql_reader_string(mysql_reader_ctx *reader, const char *name, size_t *le
         && MYSQL_TYPE_DECIMAL != field->type
         && MYSQL_TYPE_NEWDECIMAL != field->type
         && MYSQL_TYPE_JSON != field->type) {
-        if (NULL != err) {
-            *err = ERR_FAILED;
-        }
+        SET_PTR(err, ERR_FAILED);
         LOG_WARN("does not match required data type.");
         return NULL;
     }
@@ -224,26 +196,20 @@ char *mysql_reader_string(mysql_reader_ctx *reader, const char *name, size_t *le
     return row->val.data;
 }
 uint64_t mysql_reader_datetime(mysql_reader_ctx *reader, const char *name, int32_t *err) {
-    if (NULL != err) {
-        *err = ERR_OK;
-    }
+    SET_PTR(err, ERR_OK);
     mpack_field *field;
     mpack_row *row = _mysql_reader_row(reader, name, &field, err);
     if (NULL == row) {
         return 0;
     }
     if (0 == row->val.lens) {
-        if (NULL != err) {
-            *err = ERR_FAILED;
-        }
+        SET_PTR(err, ERR_FAILED);
         return 0;
     }
     if (MYSQL_TYPE_DATE != field->type
         && MYSQL_TYPE_DATETIME != field->type
         && MYSQL_TYPE_TIMESTAMP != field->type) {
-        if (NULL != err) {
-            *err = ERR_FAILED;
-        }
+        SET_PTR(err, ERR_FAILED);
         LOG_WARN("does not match required data type.");
         return 0;
     }
@@ -267,24 +233,18 @@ uint64_t mysql_reader_datetime(mysql_reader_ctx *reader, const char *name, int32
     }
 }
 int32_t mysql_reader_time(mysql_reader_ctx *reader, const char *name, struct tm *time, int32_t *err) {
-    if (NULL != err) {
-        *err = ERR_OK;
-    }
+    SET_PTR(err, ERR_OK);
     mpack_field *field;
     mpack_row *row = _mysql_reader_row(reader, name, &field, err);
     if (NULL == row) {
         return 0;
     }
     if (0 == row->val.lens) {
-        if (NULL != err) {
-            *err = ERR_FAILED;
-        }
+        SET_PTR(err, ERR_FAILED);
         return 0;
     }
     if (MYSQL_TYPE_TIME != field->type) {
-        if (NULL != err) {
-            *err = ERR_FAILED;
-        }
+        SET_PTR(err, ERR_FAILED);
         LOG_WARN("does not match required data type.");
         return 0;
     }
