@@ -329,7 +329,7 @@ static void _timeout_monitor(task_ctx *task, uint64_t sess) {
     }
     task_timeout(task, 0, 3 * 1000, _timeout_monitor);
 }
-void _message_dispatch(task_dispatch_arg *arg) {
+static void _message_dispatch(task_dispatch_arg *arg) {
     switch (arg->msg.mtype) {
     case MSG_TYPE_STARTUP:
         task_timeout(arg->task, 0, 3 * 1000, _timeout_monitor);
