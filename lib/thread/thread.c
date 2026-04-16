@@ -37,6 +37,7 @@ pthread_t thread_creat(void(*cb)(void*), void *udata) {
 void thread_join(pthread_t th) {
 #if defined(OS_WIN)
     ASSERTAB(WAIT_OBJECT_0 == WaitForSingleObject(th, INFINITE), ERRORSTR(ERRNO));
+    CloseHandle(th);
 #else
     ASSERTAB(ERR_OK == pthread_join(th, NULL), ERRORSTR(ERRNO));
 #endif

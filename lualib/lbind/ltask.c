@@ -130,15 +130,15 @@ static void _ltask_arg_free(void *arg) {
 }
 static int32_t _msg_clean(lua_State *lua) {
     ASSERTAB(LUA_TTABLE == lua_type(lua, 1), "_msg_clean type error.");
-    lua_gettable(lua, 1);
     lua_pushnil(lua);
     void *data = NULL;
     char *key;
     uint8_t mtype = 0;
     uint8_t pktype = 0;
     int32_t n = 0;
-    while (lua_next(lua, -2)) {
+    while (lua_next(lua, 1)) {
         if (LUA_TSTRING != lua_type(lua, -2)) {
+            lua_pop(lua, 1);
             continue;
         }
         key = (char *)lua_tostring(lua, -2);
@@ -154,6 +154,7 @@ static int32_t _msg_clean(lua_State *lua) {
         }
         lua_pop(lua, 1);
         if (n >= 3) {
+            lua_pop(lua, 1);
             break;
         }
     }
@@ -251,7 +252,8 @@ static void _ltask_run(task_dispatch_arg *arg) {
     lua_rawgeti(ltask->lua, LUA_REGISTRYINDEX, ltask->ref);
     _ltask_pack_msg(ltask->lua, &arg->msg);
     if (LUA_OK != lua_pcall(ltask->lua, 1, 0, 0)) {
-        LOG_ERROR("%s", lua_tostring(ltask->lua, 1));
+        LOG_ERROR("%s", lua_tostring(ltask->lua, -1));
+        lua_pop(ltask->lua, 1);
     }
 }
 static int32_t _ltask_register(lua_State *lua) {
@@ -259,6 +261,10 @@ static int32_t _ltask_register(lua_State *lua) {
     name_t name = (name_t)luaL_checkinteger(lua, 2);
     ltask_ctx *ltask;
     CALLOC(ltask, 1, sizeof(ltask_ctx));
+    if (NULL == ltask) {
+        lua_pushnil(lua);
+        return 1;
+    }
     timer_init(&ltask->timer);
     task_ctx *task = task_new(g_loader, name, _ltask_run, _ltask_arg_free, ltask);
     if (NULL == task) {
@@ -287,6 +293,9 @@ static int32_t _ltask_close(lua_State *lua) {
         task = global_userdata(lua, CUR_TASK_NAME);
     } else {
         task = lua_touserdata(lua, 1);
+    }
+    if (NULL == task) {
+        return luaL_error(lua, "task is nil");
     }
     task_close(task);
     return 0;
@@ -320,11 +329,17 @@ static int32_t _ltask_name(lua_State *lua) {
     } else {
         task = lua_touserdata(lua, 1);
     }
+    if (NULL == task) {
+        return luaL_error(lua, "task is nil");
+    }
     lua_pushinteger(lua, task->name);
     return 1;
 }
 static int32_t _ltask_timer_ms(lua_State *lua) {
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
+    if (NULL == task) {
+        return luaL_error(lua, "task is nil");
+    }
     ltask_ctx *ltask = task->arg;
     lua_pushinteger(lua, timer_cur_ms(&ltask->timer));
     return 1;
@@ -332,33 +347,51 @@ static int32_t _ltask_timer_ms(lua_State *lua) {
 static int32_t _ltask_set_request_timeout(lua_State *lua) {
     uint32_t ms = (uint32_t)luaL_checkinteger(lua, 1);
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
+    if (NULL == task) {
+        return luaL_error(lua, "task is nil");
+    }
     task_set_request_timeout(task, ms);
     return 0;
 }
 static int32_t _ltask_get_request_timeout(lua_State *lua) {
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
+    if (NULL == task) {
+        return luaL_error(lua, "task is nil");
+    }
     lua_pushinteger(lua, task_get_request_timeout(task));
     return 1;
 }
 static int32_t _ltask_set_connect_timeout(lua_State *lua) {
     uint32_t ms = (uint32_t)luaL_checkinteger(lua, 1);
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
+    if (NULL == task) {
+        return luaL_error(lua, "task is nil");
+    }
     task_set_connect_timeout(task, ms);
     return 0;
 }
 static int32_t _ltask_get_connect_timeout(lua_State *lua) {
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
+    if (NULL == task) {
+        return luaL_error(lua, "task is nil");
+    }
     lua_pushinteger(lua, task_get_connect_timeout(task));
     return 1;
 }
 static int32_t _ltask_set_netread_timeout(lua_State *lua) {
     uint32_t ms = (uint32_t)luaL_checkinteger(lua, 1);
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
+    if (NULL == task) {
+        return luaL_error(lua, "task is nil");
+    }
     task_set_netread_timeout(task, ms);
     return 0;
 }
 static int32_t _ltask_get_netread_timeout(lua_State *lua) {
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
+    if (NULL == task) {
+        return luaL_error(lua, "task is nil");
+    }
     lua_pushinteger(lua, task_get_netread_timeout(task));
     return 1;
 }

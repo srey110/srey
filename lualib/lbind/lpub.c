@@ -1,26 +1,20 @@
 #include "lbind/lpub.h"
 
 void *global_userdata(lua_State *lua, const char *name) {
-    lua_pop(lua, -1);
-    if (!lua_getglobal(lua, name)) {
+    if (LUA_TLIGHTUSERDATA != lua_getglobal(lua, name)) {
+        lua_pop(lua, 1);
         return NULL;
     }
-    void *data = NULL;
-    if (lua_islightuserdata(lua, 1)) {
-        data = lua_touserdata(lua, 1);
-    }
-    lua_pop(lua, -1);
+    void *data = lua_touserdata(lua, -1);
+    lua_pop(lua, 1);
     return data;
 }
 const char *global_string(lua_State *lua, const char *name) {
-    lua_pop(lua, -1);
-    if (!lua_getglobal(lua, name)) {
+    if (LUA_TSTRING != lua_getglobal(lua, name)) {
+        lua_pop(lua, 1);
         return NULL;
     }
-    char *data = NULL;
-    if (lua_isstring(lua, 1)) {
-        data = (char *)lua_tostring(lua, 1);
-    }
-    lua_pop(lua, -1);
+    const char *data = lua_tostring(lua, -1);
+    lua_pop(lua, 1);
     return data;
 }
