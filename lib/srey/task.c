@@ -1,4 +1,4 @@
-﻿#include "srey/task.h"
+#include "srey/task.h"
 #include "containers/hashmap.h"
 
 static void _map_task_set(struct hashmap *map, task_ctx *task) {
@@ -17,94 +17,110 @@ static task_ctx *_map_task_get(struct hashmap *map, name_t name) {
     }
     return UPCAST(*ptr, task_ctx, name);
 }
+static void _handle_startup(task_ctx *task, message_ctx *msg) {
+    if (NULL != task->_task_startup) {
+        task->_task_startup(task);
+    }
+}
+static void _handle_closing(task_ctx *task, message_ctx *msg) {
+    if (NULL != task->_task_closing) {
+        task->_task_closing(task);
+    }
+    task_ungrab(task);
+}
+static void _handle_timeout(task_ctx *task, message_ctx *msg) {
+    if (NULL != msg->data) {
+        ((_timeout_cb)msg->data)(task, msg->sess);
+    }
+}
+static void _handle_accept(task_ctx *task, message_ctx *msg) {
+    if (NULL != task->_net_accept) {
+        task->_net_accept(task, msg->fd, msg->skid, msg->pktype);
+    }
+}
+static void _handle_connect(task_ctx *task, message_ctx *msg) {
+    if (NULL != task->_net_connect) {
+        task->_net_connect(task, msg->fd, msg->skid, msg->pktype, msg->erro);
+    }
+}
+static void _handle_ssl_exchanged(task_ctx *task, message_ctx *msg) {
+    if (NULL != task->_ssl_exchanged) {
+        task->_ssl_exchanged(task, msg->fd, msg->skid, msg->pktype, msg->client);
+    }
+}
+static void _handle_handshaked(task_ctx *task, message_ctx *msg) {
+    if (NULL != task->_net_handshaked) {
+        task->_net_handshaked(task, msg->fd, msg->skid, msg->pktype, msg->client, msg->erro, msg->data, msg->size);
+    }
+    _message_clean(msg->mtype, msg->pktype, msg->data);
+}
+static void _handle_recv(task_ctx *task, message_ctx *msg) {
+    if (NULL != task->_net_recv) {
+        task->_net_recv(task, msg->fd, msg->skid, msg->pktype, msg->client, msg->slice, msg->data, msg->size);
+    }
+    _message_clean(msg->mtype, msg->pktype, msg->data);
+}
+static void _handle_send(task_ctx *task, message_ctx *msg) {
+    if (NULL != task->_net_send) {
+        task->_net_send(task, msg->fd, msg->skid, msg->pktype, msg->client, msg->size);
+    }
+}
+static void _handle_close(task_ctx *task, message_ctx *msg) {
+    if (NULL != task->_net_close) {
+        task->_net_close(task, msg->fd, msg->skid, msg->pktype, msg->client);
+    }
+}
+static void _handle_recvfrom(task_ctx *task, message_ctx *msg) {
+    if (NULL != task->_net_recvfrom) {
+        netaddr_ctx *addr = msg->data;
+        char ip[IP_LENS];
+        netaddr_ip(addr, ip);
+        uint16_t port = netaddr_port(addr);
+        char *data = ((char*)msg->data) + sizeof(netaddr_ctx);
+        task->_net_recvfrom(task, msg->fd, msg->skid, ip, port, data, msg->size);
+    }
+    _message_clean(msg->mtype, msg->pktype, msg->data);
+}
+static void _handle_request(task_ctx *task, message_ctx *msg) {
+    if (NULL != task->_request) {
+        task->_request(task, msg->pktype, msg->sess, msg->src, msg->data, msg->size);
+    } else {
+        task_ctx *dtask = task_grab(task->loader, msg->src);
+        if (NULL != dtask) {
+            const char *erro = "not register request callback function.";
+            task_response(dtask, msg->sess, ERR_FAILED, (void *)erro, strlen(erro), 1);
+            task_ungrab(dtask);
+        }
+    }
+    _message_clean(msg->mtype, msg->pktype, msg->data);
+}
+static void _handle_response(task_ctx *task, message_ctx *msg) {
+    if (NULL != task->_response) {
+        task->_response(task, msg->sess, msg->erro, msg->data, msg->size);
+    }
+    _message_clean(msg->mtype, msg->pktype, msg->data);
+}
+typedef void (*_msg_handler_t)(task_ctx *, message_ctx *);
+static const _msg_handler_t _msg_handlers[MSG_TYPE_ALL] = {
+    [MSG_TYPE_STARTUP]      = _handle_startup,
+    [MSG_TYPE_CLOSING]      = _handle_closing,
+    [MSG_TYPE_TIMEOUT]      = _handle_timeout,
+    [MSG_TYPE_ACCEPT]       = _handle_accept,
+    [MSG_TYPE_CONNECT]      = _handle_connect,
+    [MSG_TYPE_SSLEXCHANGED] = _handle_ssl_exchanged,
+    [MSG_TYPE_HANDSHAKED]   = _handle_handshaked,
+    [MSG_TYPE_RECV]         = _handle_recv,
+    [MSG_TYPE_SEND]         = _handle_send,
+    [MSG_TYPE_CLOSE]        = _handle_close,
+    [MSG_TYPE_RECVFROM]     = _handle_recvfrom,
+    [MSG_TYPE_REQUEST]      = _handle_request,
+    [MSG_TYPE_RESPONSE]     = _handle_response,
+};
 void _message_run(task_ctx *task, message_ctx *msg) {
-    switch (msg->mtype) {
-    case MSG_TYPE_STARTUP:
-        if (NULL != task->_task_startup) {
-            task->_task_startup(task);
-        }
-        break;
-    case MSG_TYPE_CLOSING:
-        if (NULL != task->_task_closing) {
-            task->_task_closing(task);
-        }
-        task_ungrab(task);
-        break;
-    case MSG_TYPE_TIMEOUT:
-        if (NULL != msg->data) {
-            ((_timeout_cb)msg->data)(task, msg->sess);
-        }
-        break;
-    case MSG_TYPE_ACCEPT:
-        if (NULL != task->_net_accept) {
-            task->_net_accept(task, msg->fd, msg->skid, msg->pktype);
-        }
-        break;
-    case MSG_TYPE_CONNECT:
-        if (NULL != task->_net_connect) {
-            task->_net_connect(task, msg->fd, msg->skid, msg->pktype, msg->erro);
-        }
-        break;
-    case MSG_TYPE_SSLEXCHANGED:
-        if (NULL != task->_ssl_exchanged) {
-            task->_ssl_exchanged(task, msg->fd, msg->skid, msg->pktype, msg->client);
-        }
-        break;
-    case MSG_TYPE_HANDSHAKED:
-        if (NULL != task->_net_handshaked) {
-            task->_net_handshaked(task, msg->fd, msg->skid, msg->pktype, msg->client, msg->erro, msg->data, msg->size);
-        }
-        _message_clean(msg->mtype, msg->pktype, msg->data);
-        break;
-    case MSG_TYPE_RECV:
-        if (NULL != task->_net_recv) {
-            task->_net_recv(task, msg->fd, msg->skid, msg->pktype, msg->client, msg->slice, msg->data, msg->size);
-        }
-        _message_clean(msg->mtype, msg->pktype, msg->data);
-        break;
-    case MSG_TYPE_SEND:
-        if (NULL != task->_net_send) {
-            task->_net_send(task, msg->fd, msg->skid, msg->pktype, msg->client, msg->size);
-        }
-        break;
-    case MSG_TYPE_CLOSE:
-        if (NULL != task->_net_close) {
-            task->_net_close(task, msg->fd, msg->skid, msg->pktype, msg->client);
-        }
-        break;
-    case MSG_TYPE_RECVFROM:
-        if (NULL != task->_net_recvfrom) {
-            netaddr_ctx *addr = msg->data;
-            char ip[IP_LENS];
-            netaddr_ip(addr, ip);
-            uint16_t port = netaddr_port(addr);
-            char *data = ((char*)msg->data) + sizeof(netaddr_ctx);
-            task->_net_recvfrom(task, msg->fd, msg->skid, ip, port, data, msg->size);
-        }
-        _message_clean(msg->mtype, msg->pktype, msg->data);
-        break;
-    case MSG_TYPE_REQUEST:
-        if (NULL != task->_request) {
-            task->_request(task, msg->pktype, msg->sess, msg->src, msg->data, msg->size);
-        }
-        else {
-            task_ctx *dtask = task_grab(task->loader, msg->src);
-            if (NULL != dtask) {
-                const char *erro = "not register request callback function.";
-                task_response(dtask, msg->sess, ERR_FAILED, (void *)erro, strlen(erro), 1);
-                task_ungrab(dtask);
-            }
-        }
-        _message_clean(msg->mtype, msg->pktype, msg->data);
-        break;
-    case MSG_TYPE_RESPONSE:
-        if (NULL != task->_response) {
-            task->_response(task, msg->sess, msg->erro, msg->data, msg->size);
-        }
-        _message_clean(msg->mtype, msg->pktype, msg->data);
-        break;
-    default:
-        break;
+    if (msg->mtype > MSG_TYPE_NONE
+        && msg->mtype < MSG_TYPE_ALL
+        && NULL != _msg_handlers[msg->mtype]) {
+        _msg_handlers[msg->mtype](task, msg);
     }
 }
 static void _message_dispatch(task_dispatch_arg *arg) {
@@ -124,8 +140,7 @@ task_ctx *task_new(loader_ctx *loader, name_t name, _task_dispatch_cb _dispatch,
     task->timeout_netread = 10 * 1000;
     if (NULL == _dispatch) {
         task->_task_dispatch = _message_dispatch;
-    }
-    else {
+    } else {
         task->_task_dispatch = _dispatch;
     }
     task->_arg_free = _argfree;
@@ -257,8 +272,7 @@ void task_request(task_ctx *dst, task_ctx *src, uint8_t reqtype, uint64_t sess, 
     if (NULL != src) {
         msg.src = src->name;
         msg.sess = sess;
-    }
-    else {
+    } else {
         msg.src = INVALID_TNAME;
         msg.sess = 0;
     }
@@ -268,8 +282,7 @@ void task_request(task_ctx *dst, task_ctx *src, uint8_t reqtype, uint64_t sess, 
         memcpy(req, data, size);
         req[size] = '\0';
         msg.data = req;
-    }
-    else {
+    } else {
         msg.data = data;
     }
     msg.size = size;
@@ -288,12 +301,10 @@ void task_response(task_ctx *dst, uint64_t sess, int32_t erro, void *data, size_
             memcpy(resp, data, size);
             resp[size] = '\0';
             msg.data = resp;
-        }
-        else {
+        } else {
             msg.data = data;
         }
-    }
-    else {
+    } else {
         msg.data = NULL;
     }
     _task_message_push(dst, &msg);
@@ -361,14 +372,11 @@ static void _net_recv(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, buff
             msg.sess = ud->sess;
             if (BIT_CHECK(status, PROT_SLICE_START)) {
                 msg.slice = PROT_SLICE_START;
-            }
-            else if (BIT_CHECK(status, PROT_SLICE)) {
+            } else if(BIT_CHECK(status, PROT_SLICE)) {
                 msg.slice = PROT_SLICE;
-            }
-            else if (BIT_CHECK(status, PROT_SLICE_END)) {
+            } else if(BIT_CHECK(status, PROT_SLICE_END)) {
                 msg.slice = PROT_SLICE_END;
-            }
-            else {
+            } else {
                 msg.slice = 0;
             }
             _task_message_push(task, &msg);
@@ -495,7 +503,7 @@ int32_t task_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl, 
     if (BIT_CHECK(netev, NETEV_SEND)) {
         cbs.s_cb = _net_send;
     }
-    if (NULL != evssl
+    if (NULL != evssl 
         || BIT_CHECK(netev, NETEV_AUTHSSL)) {
         cbs.exch_cb = _net_ssl_exchanged;
     }

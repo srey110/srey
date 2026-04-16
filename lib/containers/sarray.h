@@ -40,11 +40,11 @@ static inline void atype##_resize(atype##_ctx *p, uint32_t maxsize) {\
 static inline void atype##_double_resize(atype##_ctx *p) {\
     atype##_resize(p, p->maxsize * 2);\
 };\
-static inline type *atype##_at(atype##_ctx *p, uint32_t pos) {\
+static inline type *atype##_at(atype##_ctx *p, int32_t pos) {\
     if (pos < 0){\
-        pos += p->size;\
+        pos += (int32_t)p->size;\
     }\
-    ASSERTAB(pos >= 0 && pos < p->size, "array pos error.");\
+    ASSERTAB(pos >= 0 && (uint32_t)pos < p->size, "array pos error.");\
     return p->ptr + pos;\
 };\
 static inline type *atype##_front(atype##_ctx *p) {\
@@ -66,11 +66,11 @@ static inline type *atype##_pop_back(atype##_ctx *p) {\
     p->size--; \
     return ptr;\
 };\
-static inline void atype##_add(atype##_ctx *p, type *elem, uint32_t pos) {\
+static inline void atype##_add(atype##_ctx *p, type *elem, int32_t pos) {\
     if (pos < 0) {\
-        pos += p->size;\
+        pos += (int32_t)p->size;\
     }\
-    ASSERTAB(pos >= 0 && pos <= p->size, "pos error.");\
+    ASSERTAB(pos >= 0 && (uint32_t)pos <= p->size, "pos error.");\
     if (p->size == p->maxsize) {\
         atype##_double_resize(p);\
     }\
@@ -80,32 +80,32 @@ static inline void atype##_add(atype##_ctx *p, type *elem, uint32_t pos) {\
     p->ptr[pos] = *elem;\
     p->size++;\
 };\
-static inline void atype##_del(atype##_ctx *p, uint32_t pos) {\
+static inline void atype##_del(atype##_ctx *p, int32_t pos) {\
     if (pos < 0) {\
-        pos += p->size;\
+        pos += (int32_t)p->size;\
     }\
-    ASSERTAB(pos >= 0 && pos < p->size, "pos error.");\
+    ASSERTAB(pos >= 0 && (uint32_t)pos < p->size, "pos error.");\
     p->size--;\
     if (pos < p->size) {\
         memmove(p->ptr + pos, p->ptr + pos+1, sizeof(type) * (p->size - pos));\
     }\
 };\
-static inline void atype##_del_nomove(atype##_ctx *p, uint32_t pos) {\
+static inline void atype##_del_nomove(atype##_ctx *p, int32_t pos) {\
     if (pos < 0) {\
-        pos += p->size;\
+        pos += (int32_t)p->size;\
     }\
-    ASSERTAB(pos >= 0 && pos < p->size, "pos error.");\
+    ASSERTAB(pos >= 0 && (uint32_t)pos < p->size, "pos error.");\
     p->size--;\
     if (pos < p->size) {\
         p->ptr[pos] = p->ptr[p->size];\
     }\
 };\
-static inline void atype##_swap(atype##_ctx *p, uint32_t pos1, uint32_t pos2) {\
+static inline void atype##_swap(atype##_ctx *p, int32_t pos1, int32_t pos2) {\
     if (pos1 < 0) {\
-        pos1 += p->size;\
+        pos1 += (int32_t)p->size;\
     }\
     if (pos2 < 0) {\
-        pos2 += p->size;\
+        pos2 += (int32_t)p->size;\
     }\
     type tmp = p->ptr[pos1];\
     p->ptr[pos1] = p->ptr[pos2];\

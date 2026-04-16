@@ -1,4 +1,4 @@
-﻿#include "event/event.h"
+#include "event/event.h"
 #include "utils/netutils.h"
 
 typedef enum ud_type {
@@ -61,15 +61,15 @@ SOCKET _udp(netaddr_ctx *addr) {
 #ifdef EV_IOCP
     DWORD bytes = 0;
     BOOL behavior = FALSE;
-    if (WSAIoctl(fd,
-        SIO_UDP_CONNRESET,
-        &behavior,
-        sizeof(behavior),
-        NULL,
-        0,
-        &bytes,
-        NULL,
-        NULL) < ERR_OK) {
+    if (WSAIoctl(fd, 
+                 SIO_UDP_CONNRESET,
+                 &behavior, 
+                 sizeof(behavior),
+                 NULL,
+                 0, 
+                 &bytes,
+                 NULL, 
+                 NULL) < ERR_OK) {
         CLOSE_SOCK(fd);
         LOG_ERROR("WSAIoctl(%d, SIO_UDP_CONNRESET...) failed. %s", (int32_t)fd, ERRORSTR(ERRNO));
         return INVALID_SOCK;
@@ -106,12 +106,12 @@ static int32_t _sock_read_normal(SOCKET fd, IOV_TYPE *iov, uint32_t niov, size_t
 #ifdef EV_IOCP 
     DWORD bytes, flags = 0;
     if (SOCKET_ERROR != WSARecv(fd,
-        iov,
-        niov,
-        &bytes,
-        &flags,
-        NULL,
-        NULL)) {
+                                iov,
+                                niov,
+                                &bytes,
+                                &flags,
+                                NULL,
+                                NULL)) {
         if (bytes > 0) {
             *readed = bytes;
             return ERR_OK;
@@ -148,17 +148,19 @@ int32_t _sock_read(SOCKET fd, IOV_TYPE *iov, uint32_t niov, void *arg, size_t *r
     return _sock_read_normal(fd, iov, niov, readed);
 #endif
 }
-static uint32_t _bufs_fill_iov(qu_off_buf_ctx *buf_s, size_t bufsize, IOV_TYPE iov[MAX_SEND_NIOV]) {
+static uint32_t _bufs_fill_iov(qu_off_buf_ctx *buf_s, size_t bufsize,
+                                IOV_TYPE iov[MAX_SEND_NIOV],
+                                off_buf_ctx *sndbuf[MAX_SEND_NIOV]) {
     if (bufsize > MAX_SEND_NIOV) {
         bufsize = MAX_SEND_NIOV;
     }
-    off_buf_ctx *buf;
     size_t total = 0;
     uint32_t cnt = 0;
     for (uint32_t i = 0; i < (uint32_t)bufsize; i++) {
-        buf = qu_off_buf_at(buf_s, i);
+        off_buf_ctx *buf = qu_off_buf_at(buf_s, i);
         iov[i].IOV_PTR_FIELD = ((char *)buf->data) + buf->offset;
         iov[i].IOV_LEN_FIELD = (IOV_LEN_TYPE)(buf->lens - buf->offset);
+        sndbuf[i] = buf;
         total += (size_t)iov[i].IOV_LEN_FIELD;
         cnt++;
         if (total >= MAX_SEND_SIZE) {
@@ -167,23 +169,18 @@ static uint32_t _bufs_fill_iov(qu_off_buf_ctx *buf_s, size_t bufsize, IOV_TYPE i
     }
     return cnt;
 }
-static void _bufs_size_del(qu_off_buf_ctx *buf_s, size_t len) {
-    if (0 == len) {
-        return;
-    }
-    size_t buflen;
-    off_buf_ctx *buf;
-    while (len > 0) {
-        buf = qu_off_buf_peek(buf_s);
-        buflen = buf->lens - buf->offset;
-        if (len >= buflen) {
+static void _bufs_apply_sent(qu_off_buf_ctx *buf_s, off_buf_ctx *sndbuf[MAX_SEND_NIOV],
+                              uint32_t niov, size_t sent) {
+    for (uint32_t i = 0; i < niov && sent > 0; i++) {
+        off_buf_ctx *buf = sndbuf[i];
+        size_t buflen = buf->lens - buf->offset;
+        if (sent >= buflen) {
+            sent -= buflen;
             FREE(buf->data);
-            len -= buflen;
             qu_off_buf_pop(buf_s);
-        }
-        else {
-            buf->offset += len;
-            len = 0;
+        } else {
+            buf->offset += sent;
+            sent = 0;
         }
     }
 }
@@ -192,12 +189,12 @@ static int32_t _sock_send_iov(SOCKET fd, IOV_TYPE *iov, uint32_t niov, size_t *s
 #ifdef EV_IOCP
     DWORD bytes;
     if (SOCKET_ERROR != WSASend(fd,
-        iov,
-        niov,
-        &bytes,
-        0,
-        NULL,
-        NULL)) {
+                                iov, 
+                                niov, 
+                                &bytes,
+                                0, 
+                                NULL, 
+                                NULL)) {
         *sended = bytes;
         return ERR_OK;
     }
@@ -219,17 +216,17 @@ static int32_t _sock_send_iov(SOCKET fd, IOV_TYPE *iov, uint32_t niov, size_t *s
 }
 static int32_t _sock_send_normal(SOCKET fd, qu_off_buf_ctx *buf_s, size_t *nsend) {
     int32_t rtn = ERR_OK;
-    size_t size;
+    size_t size, sended;
     uint32_t niov;
     IOV_TYPE iov[MAX_SEND_NIOV];
+    off_buf_ctx *sndbuf[MAX_SEND_NIOV];
     while (0 != (size = qu_off_buf_size(buf_s))) {
-        niov = _bufs_fill_iov(buf_s, size, iov);
-        rtn = _sock_send_iov(fd, iov, niov, &size);
+        niov = _bufs_fill_iov(buf_s, size, iov, sndbuf);
+        rtn = _sock_send_iov(fd, iov, niov, &sended);
         if (ERR_OK == rtn) {
-            *nsend += size;
-            _bufs_size_del(buf_s, size);
-        }
-        else {
+            *nsend += sended;
+            _bufs_apply_sent(buf_s, sndbuf, niov, sended);
+        } else {
             break;
         }
     }
@@ -253,12 +250,10 @@ static int32_t _sock_send_ssl(SSL *ssl, qu_off_buf_ctx *buf_s, size_t *nsend) {
                 qu_off_buf_pop(buf_s);
                 FREE(buf->data);
                 continue;
-            }
-            else {
+            } else {
                 break;
             }
-        }
-        else {
+        } else {
             break;
         }
     }

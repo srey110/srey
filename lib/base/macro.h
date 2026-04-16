@@ -22,7 +22,7 @@
 #define ABS(n) ((n) > 0 ? (n) : -(n))
 #define FLOAT_EQZERO(f) (ABS(f) < FLOAT_PRECISION)
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof(*(a)))
-#define EMPTYSTR(str) ((NULL == str) || (0 == strlen(str)))
+#define EMPTYSTR(str) ((NULL == (str)) || (*(const char *)(str) == '\0'))
 
 //s向上 取n(n 为2的倍数)的整数倍
 #define ROUND_UP(s, n) (((s) + (n) - 1) & (~((n) - 1)))

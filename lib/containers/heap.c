@@ -44,15 +44,19 @@ static void _heap_swap(heap_ctx *heap, heap_node *parent, heap_node *child) {
     parent->left = lchild;
     parent->right = rchild;
 }
+static inline void _heap_path(int32_t nelts, int32_t *path, int32_t *depth) {
+    *path = 0;
+    *depth = 0;
+    for (int32_t n = nelts; n >= 2; ++(*depth), n >>= 1) {
+        *path = (*path << 1) | (n & 1);
+    }
+}
 void heap_insert(heap_ctx *heap, heap_node *node) {
     // 0: left, 1: right
-    int32_t path = 0;
-    int32_t n, d;
+    int32_t path, d;
     ++heap->nelts;
     // traverse from bottom to up, get path of last node
-    for (d = 0, n = heap->nelts; n >= 2; ++d, n >>= 1) {
-        path = (path << 1) | (n & 1);
-    }
+    _heap_path(heap->nelts, &path, &d);
     // get last->parent by path
     heap_node *parent = heap->root;
     while (d > 1) {
@@ -106,12 +110,9 @@ void heap_remove(heap_ctx *heap, heap_node *node) {
         return;
     }
     // 0: left, 1: right
-    int32_t path = 0;
-    int32_t n, d;
+    int32_t path, d;
     // traverse from bottom to up, get path of last node
-    for (d = 0, n = heap->nelts; n >= 2; ++d, n >>= 1) {
-        path = (path << 1) | (n & 1);
-    }
+    _heap_path(heap->nelts, &path, &d);
     --heap->nelts;
     // get last->parent by path
     heap_node *parent = heap->root;
