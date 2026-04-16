@@ -1,4 +1,4 @@
-﻿#include "utils/buffer.h"
+#include "utils/buffer.h"
 #include "utils/utils.h"
 #include "utils/netutils.h"
 
@@ -6,7 +6,7 @@
 //|--------------|--------------|-----------|-----------|
 //|node          |buffer                                |
 typedef struct bufnode_ctx {
-    int32_t used;//是否正常被使用
+    int32_t used;//�Ƿ�������ʹ��
     struct bufnode_ctx *next;
     char *buffer;
     free_cb _free;
@@ -26,7 +26,7 @@ typedef struct bufnode_ctx {
     ch->used = 1;\
     index++
 
-//新建一节点
+//�½�һ�ڵ�
 static bufnode_ctx *_node_new(const size_t size) {
     size_t total = ROUND_UP(size + sizeof(bufnode_ctx), sizeof(void *) < 8 ? 512 : ONEK);
     //size_t total = size + sizeof(bufnode_ctx);
@@ -44,18 +44,18 @@ static void _node_free(bufnode_ctx *node) {
     }
     FREE(node);
 }
-//通过调整是否足够
+//ͨ�������Ƿ��㹻
 static int32_t _should_realign(bufnode_ctx *node, const size_t lens) {
     return node->buffer_lens - node->off >= lens &&
         (node->off < node->buffer_lens / 2) &&
         (node->off <= MAX_REALIGN_IN_EXPAND);
 }
-//调整
+//����
 static void _align(bufnode_ctx *node) {
     memmove(node->buffer, node->buffer + node->misalign, node->off);
     node->misalign = 0;
 }
-//释放pnode及后面节点
+//�ͷ�pnode������ڵ�
 static void _free_all_node(bufnode_ctx *node) {
     bufnode_ctx *pnext;
     for (; NULL != node; node = pnext) {
@@ -63,7 +63,7 @@ static void _free_all_node(bufnode_ctx *node) {
         _node_free(node);
     }
 }
-//pnode 及后面节点是否为空
+//pnode ������ڵ��Ƿ�Ϊ��
 static int32_t _node_all_empty(bufnode_ctx *node) {
     for (; NULL != node; node = node->next) {
         if (0 != node->off) {
@@ -72,10 +72,10 @@ static int32_t _node_all_empty(bufnode_ctx *node) {
     }
     return 1;
 }
-//释放空节点
+//�ͷſսڵ�
 static bufnode_ctx **_free_trailing_empty_node(buffer_ctx *ctx) {
     bufnode_ctx **node = ctx->tail_with_data;
-    while (NULL != (*node)
+    while (NULL != (*node) 
         && (*node)->off != 0) {
         node = &(*node)->next;
     }
@@ -86,14 +86,13 @@ static bufnode_ctx **_free_trailing_empty_node(buffer_ctx *ctx) {
     }
     return node;
 }
-//插入,会清理空节点
+//����,�������սڵ�
 static void _node_insert(buffer_ctx *ctx, bufnode_ctx *node) {
     if (NULL == *ctx->tail_with_data) {
         ASSERTAB(ctx->tail_with_data == &ctx->head, "tail_with_data not equ head.");
         ASSERTAB(ctx->head == NULL, "head not NULL.");
         ctx->head = ctx->tail = node;
-    }
-    else {
+    } else {
         bufnode_ctx **last = _free_trailing_empty_node(ctx);
         *last = node;
         if (0 != node->off) {
@@ -103,7 +102,7 @@ static void _node_insert(buffer_ctx *ctx, bufnode_ctx *node) {
     }
     ctx->total_lens += node->off;
 }
-//新建节点并插入
+//�½��ڵ㲢����
 static bufnode_ctx *_node_insert_new(buffer_ctx *ctx, const size_t lens) {
     bufnode_ctx *pnode = _node_new(lens);
     _node_insert(ctx, pnode);
@@ -121,12 +120,12 @@ static void _last_with_data(buffer_ctx *ctx) {
         }
     }
 }
-//扩展空间，保证连续内存 used 外部设定
+//��չ�ռ䣬��֤�����ڴ� used �ⲿ�趨
 static bufnode_ctx *_buffer_expand_single(buffer_ctx *ctx, const size_t lens) {
     bufnode_ctx *node, **last;
     last = ctx->tail_with_data;
-    //最后一个有数据的节点满的
-    if (NULL != *last
+    //���һ�������ݵĽڵ�����
+    if (NULL != *last 
         && 0 == NODE_SPACE_LEN(*last)) {
         last = &(*last)->next;
     }
@@ -138,26 +137,25 @@ static bufnode_ctx *_buffer_expand_single(buffer_ctx *ctx, const size_t lens) {
         return node;
     }
     if (0 == node->off) {
-        //插入新的，并删除pnode
+        //�����µģ���ɾ��pnode
         return _node_insert_new(ctx, lens);
     }
-    //调整
+    //����
     if (_should_realign(node, lens)) {
         _align(node);
         return node;
     }
-    //空闲空间小于总空间的1/8 或者 已有的数据量大于MAX_COPY_IN_EXPAND(4096)
-    if (NODE_SPACE_LEN(node) < node->buffer_lens / 8
+    //���пռ�С���ܿռ��1/8 ���� ���е�����������MAX_COPY_IN_EXPAND(4096)
+    if (NODE_SPACE_LEN(node) < node->buffer_lens / 8 
         || node->off > MAX_COPY_IN_EXPAND) {
-        if (NULL != node->next
+        if (NULL != node->next 
             && NODE_SPACE_LEN(node->next) >= lens) {
             return node->next;
-        }
-        else {
+        } else {
             return _node_insert_new(ctx, lens);
         }
     }
-    //数据迁移
+    //����Ǩ��
     bufnode_ctx *tmp = _node_new(node->off + lens);
     tmp->off = node->off;
     memcpy(tmp->buffer, node->buffer + node->misalign, node->off);
@@ -181,8 +179,8 @@ static uint32_t _buffer_expand(buffer_ctx *ctx, const size_t lens, IOV_TYPE *iov
         RECOED_IOV(node, lens);
         return index;
     }
-    used = 0; //使用了多少个节点
-    avail = 0;//可用空间
+    used = 0; //ʹ���˶��ٸ��ڵ�
+    avail = 0;//���ÿռ�
     for (node = *ctx->tail_with_data; NULL != node; node = node->next) {
         if (0 != node->off) {
             space = (size_t)NODE_SPACE_LEN(node);
@@ -192,8 +190,7 @@ static uint32_t _buffer_expand(buffer_ctx *ctx, const size_t lens, IOV_TYPE *iov
                 ++used;
                 RECOED_IOV(node, space);
             }
-        }
-        else {
+        } else {
             node->misalign = 0;
             avail += node->buffer_lens;
             ++used;
@@ -206,7 +203,7 @@ static uint32_t _buffer_expand(buffer_ctx *ctx, const size_t lens, IOV_TYPE *iov
             break;
         }
     }
-    //没有达到最大节点数，空间还不够
+    //û�дﵽ���ڵ������ռ仹����
     if (used < cnt) {
         remain = lens - avail;
         ASSERTAB(NULL == node, "pnode not equ NULL.");
@@ -216,23 +213,22 @@ static uint32_t _buffer_expand(buffer_ctx *ctx, const size_t lens, IOV_TYPE *iov
         RECOED_IOV(tmp, remain);
         return index;
     }
-    //所有节点都不能装下
+    //���нڵ㶼����װ��
     index = 0;
     int32_t delall = 0;
     node = *ctx->tail_with_data;
-    if (0 == node->off) {//无数据
+    if (0 == node->off) {//������
         ASSERTAB(node == ctx->head, "head not equ pnode.");
         delall = 1;
         avail = 0;
-    }
-    else {
+    } else {
         avail = (size_t)NODE_SPACE_LEN(node);
         if (0 != avail) {
             RECOED_IOV(node, avail);
-        }
+        }        
         node = node->next;
     }
-    //释放
+    //�ͷ�
     for (; NULL != node; node = next) {
         next = node->next;
         ASSERTAB(0 == node->off, "node not empty.");
@@ -245,19 +241,18 @@ static uint32_t _buffer_expand(buffer_ctx *ctx, const size_t lens, IOV_TYPE *iov
     if (delall) {
         ctx->head = ctx->tail = tmp;
         ctx->tail_with_data = &ctx->head;
-    }
-    else {
+    } else {
         (*ctx->tail_with_data)->next = tmp;
         ctx->tail = tmp;
     }
     return index;
 }
-//cnt _buffer_expand_iov 返回数量
+//cnt _buffer_expand_iov ��������
 static size_t _buffer_commit_expand(buffer_ctx *ctx, size_t lens, IOV_TYPE *iov, const uint32_t cnt) {
     if (0 == cnt) {
         return 0;
     }
-    //只有一个
+    //ֻ��һ��
     if (1 == cnt
         && NULL != ctx->tail
         && iov[0].IOV_PTR_FIELD == (void *)NODE_SPACE_PTR(ctx->tail)) {
@@ -279,7 +274,7 @@ static size_t _buffer_commit_expand(buffer_ctx *ctx, size_t lens, IOV_TYPE *iov,
     if (0 == NODE_SPACE_LEN(*first)) {
         first = &(*first)->next;
     }
-    //检查
+    //���
     node = *first;
     for (i = 0; i < cnt; ++i) {
         if (NULL == node) {
@@ -290,7 +285,7 @@ static size_t _buffer_commit_expand(buffer_ctx *ctx, size_t lens, IOV_TYPE *iov,
         }
         node = node->next;
     }
-    //填充
+    //���
     size_t added = 0;
     fill = first;
     for (i = 0; i < cnt; ++i) {
@@ -300,8 +295,7 @@ static size_t _buffer_commit_expand(buffer_ctx *ctx, size_t lens, IOV_TYPE *iov,
                 (*fill)->off += iov[i].IOV_LEN_FIELD;
                 added += iov[i].IOV_LEN_FIELD;
                 lens -= iov[i].IOV_LEN_FIELD;
-            }
-            else {
+            } else {
                 (*fill)->off += lens;
                 added += lens;
                 lens = 0;
@@ -351,8 +345,7 @@ int32_t buffer_append(buffer_ctx *ctx, void *data, const size_t lens) {
             memcpy(iov[i].IOV_PTR_FIELD, tmp + off, iov[i].IOV_LEN_FIELD);
             off += iov[i].IOV_LEN_FIELD;
             remain -= iov[i].IOV_LEN_FIELD;
-        }
-        else {
+        } else {
             memcpy(iov[i].IOV_PTR_FIELD, tmp + off, remain);
             iov[i].IOV_LEN_FIELD = (IOV_LEN_TYPE)remain;
             remain = 0;
@@ -394,8 +387,29 @@ static bufnode_ctx *_search_start(bufnode_ctx *node, size_t start, size_t *total
     while (NULL != node
         && 0 != node->off) {
         *totaloff += node->off;
-        //到达开始位置的节点
         if (*totaloff > start) {
+            return node;
+        }
+        node = node->next;
+    }
+    return NULL;
+}
+// 带游标缓存的版本：若 start >= hint_base_off，直接从上次节点继续，
+// 避免从 head 线性遍历；命中后更新游标供下次使用
+static bufnode_ctx *_search_start_cached(buffer_ctx *ctx, size_t start, size_t *totaloff) {
+    bufnode_ctx *node;
+    if (NULL != ctx->hint_node && start >= ctx->hint_base_off) {
+        node = ctx->hint_node;
+        *totaloff = ctx->hint_base_off;
+    } else {
+        node = ctx->head;
+        *totaloff = 0;
+    }
+    while (NULL != node && 0 != node->off) {
+        *totaloff += node->off;
+        if (*totaloff > start) {
+            ctx->hint_node     = node;
+            ctx->hint_base_off = *totaloff - node->off;
             return node;
         }
         node = node->next;
@@ -404,7 +418,7 @@ static bufnode_ctx *_search_start(bufnode_ctx *node, size_t start, size_t *total
 }
 size_t buffer_copyout(buffer_ctx *ctx, const size_t start, void *out, size_t lens) {
     ASSERTAB(0 == ctx->freeze_read, "read freezed");
-    if (start >= ctx->total_lens
+    if (start >= ctx->total_lens 
         || 0 == lens) {
         return 0;
     }
@@ -417,10 +431,9 @@ size_t buffer_copyout(buffer_ctx *ctx, const size_t start, void *out, size_t len
     size_t nread = lens;
     if (0 == start) {
         node = ctx->head;
-    }
-    else {
+    } else {
         size_t off = 0;
-        node = _search_start(ctx->head, start, &off);
+        node = _search_start_cached(ctx, start, &off);
         off = node->off - (off - start);
         if (off > 0) {
             remain = node->off - off;
@@ -429,8 +442,7 @@ size_t buffer_copyout(buffer_ctx *ctx, const size_t start, void *out, size_t len
                 data += remain;
                 lens -= remain;
                 node = node->next;
-            }
-            else {
+            } else {
                 memcpy(data, node->buffer + node->misalign + off, lens);
                 return nread;
             }
@@ -450,6 +462,9 @@ size_t buffer_copyout(buffer_ctx *ctx, const size_t start, void *out, size_t len
 }
 size_t buffer_drain(buffer_ctx *ctx, size_t lens) {
     ASSERTAB(0 == ctx->freeze_read, "read freezed");
+    // drain 会释放节点，游标可能悬空，统一失效
+    ctx->hint_node     = NULL;
+    ctx->hint_base_off = 0;
     bufnode_ctx *node, *next;
     size_t remain, oldlen;
     oldlen = ctx->total_lens;
@@ -472,8 +487,7 @@ size_t buffer_drain(buffer_ctx *ctx, size_t lens) {
         }
         if (0 == node->used) {
             _node_free(node);
-        }
-        else {
+        } else {
             ASSERTAB(0 == remain, "logic error.");
             node->misalign += node->off;
             node->off = 0;
@@ -485,8 +499,7 @@ size_t buffer_drain(buffer_ctx *ctx, size_t lens) {
         ASSERTAB(remain <= node->off, "logic error.");
         node->misalign += remain;
         node->off -= remain;
-    }
-    else {
+    } else {
         ctx->head = ctx->tail = NULL;
         ctx->tail_with_data = &(ctx)->head;
     }
@@ -522,8 +535,7 @@ int32_t buffer_search(buffer_ctx *ctx, const int32_t ncs,
     }
     if (0 == end || end >= ctx->total_lens) {
         end = ctx->total_lens;
-    }
-    else {
+    } else {
         end++;
     }
     if (start + wlens > end) {
@@ -534,14 +546,13 @@ int32_t buffer_search(buffer_ctx *ctx, const int32_t ncs,
     if (0 == ncs) {
         chr = memchr;
         cmp = memcmp;
-    }
-    else {
+    } else {
         chr = memichr;
         cmp = _memicmp;
     }
-    //查找开始位置所在节点
+    //���ҿ�ʼλ�����ڽڵ�
     size_t totaloff = 0;
-    bufnode_ctx *node = _search_start(ctx->head, start, &totaloff);
+    bufnode_ctx *node = _search_start_cached(ctx, start, &totaloff);
     ASSERTAB(NULL != node && 0 != node->off, "can't search start node.");
     char *pschar, *pstart;
     size_t uioff = node->off - (totaloff - start);
@@ -568,8 +579,7 @@ int32_t buffer_search(buffer_ctx *ctx, const int32_t ncs,
                     totaloff += node->off;
                 }
             }
-        }
-        else {
+        } else {
             uioff = 0;
             node = node->next;
             if (NULL != node) {
@@ -583,7 +593,7 @@ char buffer_at(buffer_ctx *ctx, size_t pos) {
     ASSERTAB(0 == ctx->freeze_read, "read freezed");
     ASSERTAB(pos < ctx->total_lens, "index error.");
     size_t off = 0;
-    bufnode_ctx *node = _search_start(ctx->head, pos, &off);
+    bufnode_ctx *node = _search_start_cached(ctx, pos, &off);
     off = node->off - (off - pos);
     return (node->buffer + node->misalign + off)[0];
 }
@@ -593,7 +603,7 @@ uint32_t buffer_expand(buffer_ctx *ctx, const size_t lens, IOV_TYPE *iov, const 
     return _buffer_expand(ctx, lens, iov, cnt);
 }
 void buffer_commit_expand(buffer_ctx *ctx, size_t lens, IOV_TYPE *iov, const uint32_t cnt) {
-    ASSERTAB(1 == ctx->freeze_write, "write unfreezed");
+    ASSERTAB(1 == ctx->freeze_write, "write unfreezed");    
     ASSERTAB(lens == _buffer_commit_expand(ctx, lens, iov, cnt), "commit error.");
     ctx->freeze_write = 0;
 }
@@ -615,8 +625,7 @@ uint32_t buffer_get(buffer_ctx *ctx, size_t atmost, IOV_TYPE *iov, const uint32_
         if (atmost >= node->off) {
             iov[index].IOV_LEN_FIELD = (IOV_LEN_TYPE)node->off;
             atmost -= node->off;
-        }
-        else {
+        } else {
             iov[index].IOV_LEN_FIELD = (IOV_LEN_TYPE)atmost;
             atmost = 0;
         }

@@ -1,9 +1,9 @@
-﻿#ifndef BUFFER_H_
+#ifndef BUFFER_H_
 #define BUFFER_H_
 
 #include "base/structs.h"
 
-//非连续内存读写
+//�������ڴ��д
 #if defined(OS_WIN)
 #define IOV_TYPE WSABUF
 #define IOV_PTR_FIELD buf
@@ -27,131 +27,133 @@ typedef struct buffer_ctx {
     struct bufnode_ctx *head;
     struct bufnode_ctx *tail;
     struct bufnode_ctx **tail_with_data;
-    size_t total_lens;//数据总长度
+    size_t total_lens;//�����ܳ���
+    struct bufnode_ctx *hint_node;    // 搜索游标：上次命中的节点
+    size_t             hint_base_off; // 该节点之前所有节点的累计字节数
 }buffer_ctx;
 /// <summary>
-/// 非连续内存初始化
+/// �������ڴ��ʼ��
 /// </summary>
 /// <param name="ctx">buffer_ctx</param>
 void buffer_init(buffer_ctx *ctx);
 /// <summary>
-/// 非连续内存释放
+/// �������ڴ��ͷ�
 /// </summary>
 /// <param name="ctx">buffer_ctx</param>
 void buffer_free(buffer_ctx *ctx);
 /// <summary>
-/// 获取数据长度
+/// ��ȡ���ݳ���
 /// </summary>
 /// <param name="ctx">buffer_ctx</param>
-/// <returns>长度</returns>
+/// <returns>����</returns>
 size_t buffer_size(buffer_ctx *ctx);
 /// <summary>
-/// 将外部数据data链接到buffer,减少一次拷贝,方便后续的读取。
+/// ���ⲿ����data���ӵ�buffer,����һ�ο���,��������Ķ�ȡ��
 /// </summary>
 /// <param name="ctx">buffer_ctx</param>
-/// <param name="data">数据</param>
-/// <param name="lens">长度</param>
-/// <param name="free_cb">data释放函数</param>
+/// <param name="data">����</param>
+/// <param name="lens">����</param>
+/// <param name="free_cb">data�ͷź���</param>
 void buffer_external(buffer_ctx *ctx, void *data, const size_t lens, free_cb _free);
 /// <summary>
-/// 写入数据
+/// д������
 /// </summary>
 /// <param name="ctx">buffer_ctx</param>
-/// <param name="data">数据</param>
-/// <param name="lens">长度</param>
-/// <returns>ERR_OK 成功</returns>
+/// <param name="data">����</param>
+/// <param name="lens">����</param>
+/// <returns>ERR_OK �ɹ�</returns>
 int32_t buffer_append(buffer_ctx *ctx, void *data, const size_t lens);
 /// <summary>
-/// 写入数据
+/// д������
 /// </summary>
 /// <param name="ctx">buffer_ctx</param>
-/// <param name="fmt">格式化</param>
-/// <param name="...">变参</param>
-/// <returns>ERR_OK 成功</returns>
+/// <param name="fmt">��ʽ��</param>
+/// <param name="...">���</param>
+/// <returns>ERR_OK �ɹ�</returns>
 int32_t buffer_appendv(buffer_ctx *ctx, const char *fmt, ...);
 /// <summary>
-/// 读取数据
+/// ��ȡ����
 /// </summary>
 /// <param name="ctx">buffer_ctx</param>
-/// <param name="start">开始位置</param>
-/// <param name="out">数据</param>
-/// <param name="lens">读取长度</param>
-/// <returns>实际读取到的长度</returns>
+/// <param name="start">��ʼλ��</param>
+/// <param name="out">����</param>
+/// <param name="lens">��ȡ����</param>
+/// <returns>ʵ�ʶ�ȡ���ĳ���</returns>
 size_t buffer_copyout(buffer_ctx *ctx, const size_t start, void *out, size_t lens);
 /// <summary>
-/// 删除数据
+/// ɾ������
 /// </summary>
-/// <param name="lens">长度</param>
-/// <returns>实际删除的长度</returns>
+/// <param name="lens">����</param>
+/// <returns>ʵ��ɾ���ĳ���</returns>
 size_t buffer_drain(buffer_ctx *ctx, size_t lens);
 /// <summary>
-/// 读取，并删除数据
+/// ��ȡ����ɾ������
 /// </summary>
 /// <param name="ctx">buffer_ctx</param>
-/// <param name="out">数据</param>
-/// <param name="lens">长度</param>
-/// <returns>实际长度</returns>
+/// <param name="out">����</param>
+/// <param name="lens">����</param>
+/// <returns>ʵ�ʳ���</returns>
 size_t buffer_remove(buffer_ctx *ctx, void *out, size_t lens);
 /// <summary>
-/// 查找
+/// ����
 /// </summary>
 /// <param name="ctx">buffer_ctx</param>
-/// <param name="ncs">0 区分大小写</param>
-/// <param name="start">开始搜索位置</param>
-/// <param name="end">结束搜索位置, 0 直到数据结束</param>
-/// <param name="what">要搜索的数据</param>
-/// <param name="wlens">搜索的数据长度</param>
-/// <returns>ERR_FAILED 失败 其他数据所在开始位置</returns>
+/// <param name="ncs">0 ���ִ�Сд</param>
+/// <param name="start">��ʼ����λ��</param>
+/// <param name="end">��������λ��, 0 ֱ�����ݽ���</param>
+/// <param name="what">Ҫ����������</param>
+/// <param name="wlens">���������ݳ���</param>
+/// <returns>ERR_FAILED ʧ�� �����������ڿ�ʼλ��</returns>
 int32_t buffer_search(buffer_ctx *ctx, const int32_t ncs,
     const size_t start, size_t end, char *what, size_t wlens);
 /// <summary>
-/// 获取指定位置值
+/// ��ȡָ��λ��ֵ
 /// </summary>
 /// <param name="ctx">buffer_ctx</param>
-/// <param name="pos">位置</param>
+/// <param name="pos">λ��</param>
 /// <returns>char</returns>
 char buffer_at(buffer_ctx *ctx, size_t pos);
 /// <summary>
-/// 获取指定容量的内存,用于写入
+/// ��ȡָ���������ڴ�,����д��
 /// </summary>
 /// <param name="ctx">buffer_ctx</param>
-/// <param name="lens">要获取的大小</param>
-/// <param name="iov">IOV数组</param>
-/// <param name="cnt">IOV数组长度</param>
-/// <returns>IOV数量</returns>
+/// <param name="lens">Ҫ��ȡ�Ĵ�С</param>
+/// <param name="iov">IOV����</param>
+/// <param name="cnt">IOV���鳤��</param>
+/// <returns>IOV����</returns>
 uint32_t buffer_expand(buffer_ctx *ctx, const size_t lens, IOV_TYPE *iov, const uint32_t cnt);
 /// <summary>
-/// buffer_expand 提交写入
+/// buffer_expand �ύд��
 /// </summary>
 /// <param name="ctx">buffer_ctx</param>
-/// <param name="lens">数据长度</param>
-/// <param name="iov">IOV数组</param>
-/// <param name="cnt">IOV数组长度</param>
-void buffer_commit_expand(buffer_ctx *ctx, size_t lens, IOV_TYPE *iov, const uint32_t cnt);
+/// <param name="lens">���ݳ���</param>
+/// <param name="iov">IOV����</param>
+/// <param name="cnt">IOV���鳤��</param>
+void buffer_commit_expand(buffer_ctx *ctx, size_t lens ,IOV_TYPE *iov, const uint32_t cnt);
 /// <summary>
-/// 获取指定长度的数据
+/// ��ȡָ�����ȵ�����
 /// </summary>
 /// <param name="ctx">buffer_ctx</param>
-/// <param name="atmost">长度</param>
-/// <param name="iov">IOV数组</param>
-/// <param name="cnt">IOV数组长度</param>
-/// <returns>IOV数量</returns>
+/// <param name="atmost">����</param>
+/// <param name="iov">IOV����</param>
+/// <param name="cnt">IOV���鳤��</param>
+/// <returns>IOV����</returns>
 uint32_t buffer_get(buffer_ctx *ctx, size_t atmost, IOV_TYPE *iov, const uint32_t cnt);
 /// <summary>
-/// buffer_get 数据删除
+/// buffer_get ����ɾ��
 /// </summary>
 /// <param name="ctx">buffer_ctx</param>
-/// <param name="size">长度</param>
+/// <param name="size">����</param>
 void buffer_commit_get(buffer_ctx *ctx, size_t size);
 /// <summary>
-/// 从socket中读入数据
+/// ��socket�ж�������
 /// </summary>
 /// <param name="ctx">buffer_ctx</param>
-/// <param name="fd">socket句柄</param>
-/// <param name="nread">读取到的长度</param>
-/// <param name="_readv">读取函数</param>
-/// <param name="arg">参数</param>
-/// <returns>ERR_OK 成功</returns>
+/// <param name="fd">socket���</param>
+/// <param name="nread">��ȡ���ĳ���</param>
+/// <param name="_readv">��ȡ����</param>
+/// <param name="arg">����</param>
+/// <returns>ERR_OK �ɹ�</returns>
 int32_t buffer_from_sock(buffer_ctx *ctx, SOCKET fd, size_t *nread,
     int32_t(*_readv)(SOCKET, IOV_TYPE *, uint32_t, void *, size_t *), void *arg);
 
