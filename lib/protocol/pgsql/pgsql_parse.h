@@ -1,4 +1,4 @@
-﻿#ifndef PGSQL_PARSE_H_
+#ifndef PGSQL_PARSE_H_
 #define PGSQL_PARSE_H_
 
 #include "protocol/pgsql/pgsql_struct.h"

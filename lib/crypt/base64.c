@@ -1,4 +1,4 @@
-﻿#include "crypt/base64.h"
+#include "crypt/base64.h"
 
 /* BASE 64 encode table */
 static const char b64en[] = {

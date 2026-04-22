@@ -1,4 +1,4 @@
-﻿#include "utils/log.h"
+#include "utils/log.h"
 #include "utils/utils.h"
 
 #define  LOG_FMT "[%s][%s]%s\n"

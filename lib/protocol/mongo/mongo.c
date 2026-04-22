@@ -1,4 +1,4 @@
-﻿#include "protocol/mongo/mongo.h"
+#include "protocol/mongo/mongo.h"
 #include "srey/task.h"
 #include "utils/binary.h"
 #include "crypt/scram.h"

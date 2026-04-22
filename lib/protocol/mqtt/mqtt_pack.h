@@ -1,4 +1,4 @@
-﻿#ifndef MQTT_PACK_H_
+#ifndef MQTT_PACK_H_
 #define MQTT_PACK_H_
 
 #include "utils/binary.h"

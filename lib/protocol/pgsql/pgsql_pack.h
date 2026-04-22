@@ -1,4 +1,4 @@
-﻿#ifndef PGSQL_PACK_H_
+#ifndef PGSQL_PACK_H_
 #define PGSQL_PACK_H_
 
 #include "utils/binary.h"

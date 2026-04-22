@@ -1,4 +1,4 @@
-﻿#ifndef CHAN_H_
+#ifndef CHAN_H_
 #define CHAN_H_
 
 #include "base/structs.h"

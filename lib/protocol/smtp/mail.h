@@ -1,4 +1,4 @@
-﻿#ifndef MAIL_H_
+#ifndef MAIL_H_
 #define MAIL_H_
 
 #include "containers/sarray.h"

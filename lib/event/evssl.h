@@ -1,4 +1,4 @@
-﻿#ifndef EVSSL_H_
+#ifndef EVSSL_H_
 #define EVSSL_H_
 
 #include "base/macro.h"

@@ -1,4 +1,4 @@
-﻿#ifndef XOR_H_
+#ifndef XOR_H_
 #define XOR_H_
 
 #include "base/macro.h"

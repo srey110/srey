@@ -1,4 +1,4 @@
-﻿#ifndef REDIS_H_
+#ifndef REDIS_H_
 #define REDIS_H_
 
 #include "utils/buffer.h"

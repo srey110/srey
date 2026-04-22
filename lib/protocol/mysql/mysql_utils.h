@@ -1,4 +1,4 @@
-﻿#ifndef MYSQL_UTILS_H_
+#ifndef MYSQL_UTILS_H_
 #define MYSQL_UTILS_H_
 
 #include "utils/binary.h"

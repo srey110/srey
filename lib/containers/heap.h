@@ -1,4 +1,4 @@
-﻿#ifndef HEAP_H_
+#ifndef HEAP_H_
 #define HEAP_H_
 
 #include "base/macro.h"

@@ -1,4 +1,4 @@
-﻿#ifndef MYSQL_BIND_H_
+#ifndef MYSQL_BIND_H_
 #define MYSQL_BIND_H_
 
 #include "protocol/mysql/mysql_struct.h"

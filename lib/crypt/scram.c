@@ -1,4 +1,4 @@
-﻿#include "crypt/scram.h"
+#include "crypt/scram.h"
 
 scram_ctx *scram_init(const char *method, int32_t client) {
     digest_type type;

@@ -1,4 +1,4 @@
-﻿#ifndef STRUCTS_H_
+#ifndef STRUCTS_H_
 #define STRUCTS_H_
 
 #include "base/macro.h"

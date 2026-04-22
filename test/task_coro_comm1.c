@@ -19,7 +19,7 @@ static void _timeout(task_ctx *task, uint64_t sess) {
     }
     task_timeout(task, 0, 3000, _timeout);
 }
-//超时后如果注册了 _response_cb 也会收到消息
+//瓒呮椂鍚庡鏋滄敞鍐屼簡 _response_cb 涔熶細鏀跺埌娑堟伅
 static void _response(task_ctx *task, uint64_t sess, int32_t error, void *data, size_t size) {
     char buf[128] = { 0 };
     memcpy(buf, data, size);

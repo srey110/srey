@@ -1,4 +1,4 @@
-﻿#include "protocol/mqtt/mqtt.h"
+#include "protocol/mqtt/mqtt.h"
 #include "protocol/prots.h"
 #include "utils/utils.h"
 

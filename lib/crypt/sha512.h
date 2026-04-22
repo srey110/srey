@@ -1,4 +1,4 @@
-﻿#ifndef SHA512_H_
+#ifndef SHA512_H_
 #define SHA512_H_
 
 #include "base/macro.h"

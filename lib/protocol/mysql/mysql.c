@@ -1,4 +1,4 @@
-﻿#include "protocol/mysql/mysql.h"
+#include "protocol/mysql/mysql.h"
 #include "protocol/mysql/mysql_parse.h"
 #include "protocol/mysql/mysql_utils.h"
 #include "protocol/mysql/mysql_pack.h"

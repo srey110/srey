@@ -1,4 +1,4 @@
-﻿#ifndef COND_H_
+#ifndef COND_H_
 #define COND_H_
 
 #include "thread/mutex.h"

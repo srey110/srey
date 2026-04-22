@@ -1,4 +1,4 @@
-﻿#include "protocol/pgsql/pgsql.h"
+#include "protocol/pgsql/pgsql.h"
 #include "protocol/pgsql/pgsql_parse.h"
 #include "crypt/scram.h"
 #include "srey/task.h"

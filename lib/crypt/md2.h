@@ -1,4 +1,4 @@
-﻿#ifndef MD2_H_
+#ifndef MD2_H_
 #define MD2_H_
 
 #include "base/macro.h"

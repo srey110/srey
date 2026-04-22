@@ -1,4 +1,4 @@
-﻿#ifndef MYSQL_STRUCT_H_
+#ifndef MYSQL_STRUCT_H_
 #define MYSQL_STRUCT_H_
 
 #include "base/structs.h"

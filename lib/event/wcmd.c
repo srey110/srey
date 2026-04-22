@@ -1,4 +1,4 @@
-﻿#include "event/iocp.h"
+#include "event/iocp.h"
 #include "containers/hashmap.h"
 
 #ifdef EV_IOCP

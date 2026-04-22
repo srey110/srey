@@ -1,4 +1,4 @@
-﻿#ifndef HARBOR_H_
+#ifndef HARBOR_H_
 #define HARBOR_H_
 
 #include "srey/coro.h"

@@ -1,4 +1,4 @@
-﻿#ifndef CIPHER_H_
+#ifndef CIPHER_H_
 #define CIPHER_H_
 
 #include "crypt/aes.h"

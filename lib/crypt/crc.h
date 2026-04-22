@@ -1,4 +1,4 @@
-﻿#ifndef CRC_H_
+#ifndef CRC_H_
 #define CRC_H_
 
 #include "base/macro.h"

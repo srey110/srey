@@ -1,4 +1,4 @@
-﻿#include "event/uev.h"
+#include "event/uev.h"
 #include "utils/buffer.h"
 #include "utils/netutils.h"
 #include "containers/hashmap.h"

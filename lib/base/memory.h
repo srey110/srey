@@ -1,4 +1,4 @@
-﻿#ifndef MEMORY_H_
+#ifndef MEMORY_H_
 #define MEMORY_H_
 
 #include "base/os.h"

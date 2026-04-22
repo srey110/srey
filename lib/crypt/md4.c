@@ -1,4 +1,4 @@
-﻿#include "crypt/md4.h"
+#include "crypt/md4.h"
 
 #define S11 3
 #define S12 7

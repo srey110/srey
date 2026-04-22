@@ -1,4 +1,4 @@
-﻿#include "protocol/urlparse.h"
+#include "protocol/urlparse.h"
 #include "utils/utils.h"
 
 static char *_scheme(buf_ctx *scheme, char *cur, size_t lens) {

@@ -1,4 +1,4 @@
-﻿#include "event/evssl.h"
+#include "event/evssl.h"
 #if WITH_SSL
 #include "containers/sarray.h"
 #include "thread/rwlock.h"

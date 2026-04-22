@@ -1,4 +1,4 @@
-﻿#ifndef SMTP_H_
+#ifndef SMTP_H_
 #define SMTP_H_
 
 #include "srey/spub.h"

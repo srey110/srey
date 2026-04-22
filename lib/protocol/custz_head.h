@@ -1,4 +1,4 @@
-﻿#ifndef CUSTZ_HEAD_H_
+#ifndef CUSTZ_HEAD_H_
 #define CUSTZ_HEAD_H_
 
 #include "utils/buffer.h"

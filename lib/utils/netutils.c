@@ -1,4 +1,4 @@
-﻿#include "utils/netutils.h"
+#include "utils/netutils.h"
 #include "utils/netaddr.h"
 
 #define MSEC    1000

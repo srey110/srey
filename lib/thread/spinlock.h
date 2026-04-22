@@ -1,4 +1,4 @@
-﻿#ifndef SPINLOCK_H_
+#ifndef SPINLOCK_H_
 #define SPINLOCK_H_
 
 #include "base/macro.h"

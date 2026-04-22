@@ -1,4 +1,4 @@
-﻿#ifndef DIGEST_H_
+#ifndef DIGEST_H_
 #define DIGEST_H_
 
 #include "crypt/md2.h"

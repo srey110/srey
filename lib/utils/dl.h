@@ -1,4 +1,4 @@
-﻿#ifndef DYNALIB_H_
+#ifndef DYNALIB_H_
 #define DYNALIB_H_
 
 #include "base/macro.h"

@@ -1,4 +1,4 @@
-﻿#ifndef TW_H_
+#ifndef TW_H_
 #define TW_H_
 
 #include "thread/thread.h"

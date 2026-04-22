@@ -1,4 +1,4 @@
-﻿#include "protocol/mysql/mysql_utils.h"
+#include "protocol/mysql/mysql_utils.h"
 #include "protocol/mysql/mysql_macro.h"
 
 void _mysql_set_lenenc(binary_ctx *bwriter, size_t integer) {

@@ -1039,7 +1039,7 @@ static void json_next_token(json_parse_t *json, json_token_t *token)
 
     /* Eat whitespace. */
     while (1) {
-        //支持userdata
+        //鏀寔userdata
         if (json->ptr - json->data >= json->lens) {
             ch = '\0';
         } else {
@@ -1283,7 +1283,7 @@ static int json_decode(lua_State *l)
     size_t json_len;
 
     //luaL_argcheck(l, lua_gettop(l) == 1, 1, "expected 1 argument");
-    //支持userdata
+    //鏀寔userdata
     json.cfg = json_fetch_config(l);
     if (LUA_TSTRING == lua_type(l, 1)) {
         json.data = luaL_checklstring(l, 1, &json_len);

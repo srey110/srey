@@ -1,4 +1,4 @@
-﻿#include "protocol/pgsql/pgsql_pack.h"
+#include "protocol/pgsql/pgsql_pack.h"
 
 void pgsql_pack_start(binary_ctx *bwriter, int8_t code) {
     binary_init(bwriter, NULL, 0, 0);

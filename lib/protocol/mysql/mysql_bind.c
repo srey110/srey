@@ -1,4 +1,4 @@
-﻿#include "protocol/mysql/mysql_bind.h"
+#include "protocol/mysql/mysql_bind.h"
 #include "protocol/mysql/mysql_utils.h"
 
 void mysql_bind_init(mysql_bind_ctx *mbind) {

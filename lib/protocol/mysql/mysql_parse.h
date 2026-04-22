@@ -1,4 +1,4 @@
-﻿#ifndef MYSQL_PARSE_H_
+#ifndef MYSQL_PARSE_H_
 #define MYSQL_PARSE_H_
 
 #include "protocol/mysql/mysql_struct.h"

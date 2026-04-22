@@ -1,4 +1,4 @@
-﻿#ifndef SCRAM_H_
+#ifndef SCRAM_H_
 #define SCRAM_H_
 
 #include "utils/binary.h"

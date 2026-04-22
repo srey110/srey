@@ -1,4 +1,4 @@
-﻿#ifndef WEBSOCK_H_
+#ifndef WEBSOCK_H_
 #define WEBSOCK_H_
 
 #include "event/event.h"

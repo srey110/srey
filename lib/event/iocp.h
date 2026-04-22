@@ -1,4 +1,4 @@
-﻿#ifndef IOCP_H_
+#ifndef IOCP_H_
 #define IOCP_H_
 
 #include "event/event.h"

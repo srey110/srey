@@ -1,4 +1,4 @@
-﻿#ifndef MONGO_MACRO_H_
+#ifndef MONGO_MACRO_H_
 #define MONGO_MACRO_H_
 
 #include "base/macro.h"

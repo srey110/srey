@@ -1,4 +1,4 @@
-﻿#ifndef HMAC_H_
+#ifndef HMAC_H_
 #define HMAC_H_
 
 #include "crypt/digest.h"

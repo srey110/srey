@@ -1,4 +1,4 @@
-﻿#include "utils/timer.h"
+#include "utils/timer.h"
 
 #define NANOSEC 1000000000
 

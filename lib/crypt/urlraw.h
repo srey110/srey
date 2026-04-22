@@ -1,4 +1,4 @@
-﻿#ifndef URLRAW_H_
+#ifndef URLRAW_H_
 #define URLRAW_H_
 
 #include "base/macro.h"

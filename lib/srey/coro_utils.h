@@ -1,4 +1,4 @@
-﻿#ifndef CORO_UTILS_H_
+#ifndef CORO_UTILS_H_
 #define CORO_UTILS_H_
 
 #include "srey/spub.h"

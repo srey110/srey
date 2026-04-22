@@ -1,4 +1,4 @@
-﻿#ifndef EVPUB_H_
+#ifndef EVPUB_H_
 #define EVPUB_H_
 
 #include "utils/utils.h"

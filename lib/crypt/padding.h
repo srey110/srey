@@ -1,4 +1,4 @@
-﻿#ifndef PADDING_H_
+#ifndef PADDING_H_
 #define PADDING_H_
 
 #include "base/macro.h"

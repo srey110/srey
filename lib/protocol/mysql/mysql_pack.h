@@ -1,4 +1,4 @@
-﻿#ifndef MYSQL_PACK_H_
+#ifndef MYSQL_PACK_H_
 #define MYSQL_PACK_H_
 
 #include "protocol/mysql/mysql_bind.h"

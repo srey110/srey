@@ -1,4 +1,4 @@
-﻿#ifndef DNS_H_
+#ifndef DNS_H_
 #define DNS_H_
 
 #include "base/structs.h"

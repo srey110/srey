@@ -1,4 +1,4 @@
-﻿#ifndef CUSTOMIZE_H_
+#ifndef CUSTOMIZE_H_
 #define CUSTOMIZE_H_
 
 #include "utils/buffer.h"

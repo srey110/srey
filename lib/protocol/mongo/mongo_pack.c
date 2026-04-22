@@ -1,4 +1,4 @@
-﻿#include "protocol/mongo/mongo_pack.h"
+#include "protocol/mongo/mongo_pack.h"
 #include "protocol/mongo/bson.h"
 #include "utils/utils.h"
 #include "utils/binary.h"

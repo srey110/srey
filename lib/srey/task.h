@@ -1,4 +1,4 @@
-﻿#ifndef TASK_H_
+#ifndef TASK_H_
 #define TASK_H_
 
 #include "srey/spub.h"

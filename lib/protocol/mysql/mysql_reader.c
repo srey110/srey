@@ -1,4 +1,4 @@
-﻿#include "protocol/mysql/mysql_reader.h"
+#include "protocol/mysql/mysql_reader.h"
 #include "protocol/mysql/mysql_parse.h"
 
 mysql_reader_ctx *mysql_reader_init(mpack_ctx *mpack) {

@@ -1,4 +1,4 @@
-﻿#include "protocol/smtp/mail.h"
+#include "protocol/smtp/mail.h"
 #include "crypt/base64.h"
 #include "utils/utils.h"
 #include "utils/binary.h"

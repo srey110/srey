@@ -1,4 +1,4 @@
-﻿#include "protocol/mqtt/mqtt_struct.h"
+#include "protocol/mqtt/mqtt_struct.h"
 
 void _mqtt_propertie_free(arr_propertie_ctx *properties) {
     if (NULL == properties) {

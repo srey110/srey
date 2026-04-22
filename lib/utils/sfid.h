@@ -1,4 +1,4 @@
-﻿#ifndef SFID_H_
+#ifndef SFID_H_
 #define SFID_H_
 
 #include "base/macro.h"

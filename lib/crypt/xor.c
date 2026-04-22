@@ -1,4 +1,4 @@
-﻿#include "crypt/xor.h"
+#include "crypt/xor.h"
 
 void *xor_encode(const char key[4], const size_t round, void *data, const size_t lens) {
     char *p = (char *)data;

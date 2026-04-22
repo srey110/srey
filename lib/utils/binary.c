@@ -1,4 +1,4 @@
-﻿#include "utils/binary.h"
+#include "utils/binary.h"
 
 #define BINARY_INCREASE 256
 

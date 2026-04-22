@@ -1,4 +1,4 @@
-﻿#include "crypt/sha512.h"
+#include "crypt/sha512.h"
 #include "utils/utils.h"
 
 #define SHA512_BLOCK_LENGTH 128
