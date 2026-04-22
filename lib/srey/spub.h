@@ -5,6 +5,7 @@
 #include "event/event.h"
 #include "containers/sarray.h"
 #include "containers/queue.h"
+#include "containers/mspc.h"
 #include "thread/rwlock.h"
 #include "thread/spinlock.h"
 #include "thread/mutex.h"
@@ -63,7 +64,6 @@ struct message_ctx {
     uint64_t skid;
     uint64_t sess;
 };
-QUEUE_DECL(message_ctx, qu_message);
 typedef struct worker_version {
     uint8_t msgtype;
     int32_t ckver;
@@ -75,15 +75,13 @@ typedef struct monitor_ctx {
     worker_version *version;
     pthread_t thread_monitor;
 }monitor_ctx;
-QUEUE_DECL(name_t, qu_task);
 typedef struct worker_ctx {
     uint16_t index;
     int32_t weight;
     atomic_t waiting;    /* atomically maintained; read without mutex in fast path */
     loader_ctx *loader;
     pthread_t thread_worker;
-    spin_ctx lcktasks;
-    qu_task_ctx qutasks;
+    mspc_ctx qutasks;    /* 无锁任务名队列，替代原 spinlock + qu_task */
     mutex_ctx mutex;
     cond_ctx cond;
 }worker_ctx;
@@ -100,7 +98,7 @@ struct loader_ctx {
     ev_ctx netev;
 };
 struct task_ctx {
-    uint8_t global;
+    atomic_t global;     /* 0=未调度 1=已调度/运行中；无锁调度标志替代原 spinlock */
     name_t name;
     uint32_t overload;
     atomic_t closing;
@@ -124,8 +122,7 @@ struct task_ctx {
     _request_cb _request;
     _response_cb _response;
     _net_ssl_exchanged_cb _ssl_exchanged;
-    spin_ctx lckmsg;
-    qu_message_ctx qumsg;
+    mspc_ctx qumsg;      /* 无锁消息队列，替代原 spinlock + qu_message */
 };
 struct task_dispatch_arg {
     task_ctx *task;

@@ -193,6 +193,7 @@
     <ClCompile Include="task_udp.c" />
     <ClCompile Include="task_wbsock_sv.c" />
     <ClCompile Include="test_base.c" />
+    <ClCompile Include="test_mspc.c" />
     <ClCompile Include="test_utils.c" />
   </ItemGroup>
   <ItemGroup>
@@ -219,6 +220,7 @@
     <ClInclude Include="task_udp.h" />
     <ClInclude Include="task_wbsock_sv.h" />
     <ClInclude Include="test_base.h" />
+    <ClInclude Include="test_mspc.h" />
     <ClInclude Include="test_utils.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

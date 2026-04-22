@@ -15,10 +15,10 @@ static void _map_task_free(void *item) {
 }
 static int32_t _max_task_index(loader_ctx *loader) {
     uint16_t index = 0;
-    uint32_t max = qu_task_size(&loader->worker[0].qutasks);
+    uint32_t max = mspc_size(&loader->worker[0].qutasks);
     uint32_t count;
     for (uint16_t i = 1; i < loader->nworker; i++) {
-        count = qu_task_size(&loader->worker[i].qutasks);
+        count = mspc_size(&loader->worker[i].qutasks);
         if (count > max) {
             index = i;
             max = count;
@@ -42,9 +42,10 @@ static void _worker_wakeup(loader_ctx *loader, name_t *task) {
     worker_ctx *worker = (1 == loader->nworker)
         ? &loader->worker[0]
         : &loader->worker[ATOMIC64_ADD(&loader->index, 1) % loader->nworker];
-    spin_lock(&worker->lcktasks);
-    qu_task_push(&worker->qutasks, task);
-    spin_unlock(&worker->lcktasks);
+    /* 无锁入队；队列满时自旋等待（正常负载下极少发生）*/
+    while (ERR_FAILED == mspc_push(&worker->qutasks, (void *)(uintptr_t)*task)) {
+        CPU_PAUSE();
+    }
     /* Fast path: skip mutex when no worker is sleeping */
     if (ATOMIC_GET(&worker->waiting) > 0) {
         mutex_lock(&worker->mutex);
@@ -53,83 +54,78 @@ static void _worker_wakeup(loader_ctx *loader, name_t *task) {
     }
 }
 void _task_message_push(task_ctx *task, message_ctx *msg) {
-    int32_t add = 0;
-    spin_lock(&task->lckmsg);
-    qu_message_push(&task->qumsg, msg);
-    if (0 == task->global) {
-        add = 1;
-        task->global = 1;
+    /* 堆分配 message_ctx 包装体，由消费方负责释放 */
+    message_ctx *pmsg;
+    MALLOC(pmsg, sizeof(message_ctx));
+    *pmsg = *msg;
+    /* 无锁入队；队列满时自旋等待 */
+    while (ERR_FAILED == mspc_push(&task->qumsg, pmsg)) {
+        CPU_PAUSE();
     }
-    spin_unlock(&task->lckmsg);
-    if (0 != add) {
+    /* CAS 0→1：只有首个生产者负责调度，避免重复唤醒 */
+    if (ATOMIC_CAS(&task->global, 0, 1)) {
         _worker_wakeup(task->loader, &task->name);
     }
 }
 static name_t _task_name_get(loader_ctx *loader, worker_ctx *worker) {
-    name_t *ptr;
-    name_t name = INVALID_TNAME;
-    spin_lock(&worker->lcktasks);
-    ptr = qu_task_pop(&worker->qutasks);
-    if (NULL != ptr) {
-        name = *ptr;
+    void *p = mspc_pop(&worker->qutasks);
+    if (NULL != p) {
+        return (name_t)(uintptr_t)p;
     }
-    spin_unlock(&worker->lcktasks);
-    if (INVALID_TNAME == name) {
-        int32_t index = _max_task_index(loader);
-        if (-1 != index) {
-            spin_lock(&loader->worker[index].lcktasks);
-            ptr = qu_task_pop(&loader->worker[index].qutasks);
-            if (NULL != ptr) {
-                name = *ptr;
-            }
-            spin_unlock(&loader->worker[index].lcktasks);
+    /* 本地队列为空：尝试从积压最多的 worker 偷一个任务 */
+    int32_t index = _max_task_index(loader);
+    if (-1 != index) {
+        p = mspc_pop(&loader->worker[index].qutasks);
+        if (NULL != p) {
+            return (name_t)(uintptr_t)p;
         }
     }
-    return name;
+    return INVALID_TNAME;
 }
-/* 每次加锁最多批量取出的消息条数 */
+/* 无锁批量 pop：单次最多取出的消息条数（栈上数组上限）*/
 #define TASK_MSG_BATCH  64
-static uint32_t _task_messages_pop_batch(task_ctx *task,
-                                          message_ctx *batch, uint32_t n) {
-    uint32_t count = 0;
-    message_ctx *tmp;
-    spin_lock(&task->lckmsg);
-    while (count < n && NULL != (tmp = qu_message_pop(&task->qumsg))) {
-        batch[count++] = *tmp;
-    }
-    spin_unlock(&task->lckmsg);
-    return count;
-}
 static void _task_run(loader_ctx *loader, worker_ctx *worker,
     worker_version *version, task_dispatch_arg *runarg) {
-    uint32_t lens = qu_message_size(&runarg->task->qumsg);
-    if (lens > runarg->task->overload) {
-        runarg->task->overload *= 2;
-        LOG_WARN("task %d may overload, message queue length %d.", runarg->task->name, lens);
+    task_ctx *task = runarg->task;
+    uint32_t lens = mspc_size(&task->qumsg);
+    if (lens > task->overload) {
+        task->overload *= 2;
+        LOG_WARN("task %d may overload, message queue length %d.", task->name, lens);
     }
     uint32_t n = worker->weight >= 0 ? (lens >> worker->weight) : 1;
     if (0 == n) {
         n = 1;
     }
-    /* 批量 pop：一次加锁取出 TASK_MSG_BATCH 条消息到栈上数组，锁外批量 dispatch */
-    message_ctx batch[TASK_MSG_BATCH];
+    /* 无锁批量 pop：逐条取出后复制到栈上数组，立即释放堆包装体，再批量 dispatch */
+    message_ctx *ptrs[TASK_MSG_BATCH];
+    message_ctx  batch[TASK_MSG_BATCH];
     uint32_t want, got, i;
     uint32_t processed = 0;
-    version->name = runarg->task->name;
+    version->name = task->name;
     while (processed < n) {
         want = n - processed;
         if (want > TASK_MSG_BATCH) {
             want = TASK_MSG_BATCH;
         }
-        got = _task_messages_pop_batch(runarg->task, batch, want);
+        got = 0;
+        while (got < want) {
+            message_ctx *p = (message_ctx *)mspc_pop(&task->qumsg);
+            if (NULL == p) {
+                break;
+            }
+            ptrs[got] = p;
+            batch[got] = *p;
+            got++;
+        }
         if (0 == got) {
             break;
         }
         for (i = 0; i < got; i++) {
+            FREE(ptrs[i]);
             runarg->msg = batch[i];
             ++version->ver;
             version->msgtype = runarg->msg.mtype;
-            runarg->task->_task_dispatch(runarg);
+            task->_task_dispatch(runarg);
             version->msgtype = MSG_TYPE_NONE;
         }
         processed += got;
@@ -137,18 +133,18 @@ static void _task_run(loader_ctx *loader, worker_ctx *worker,
             break; /* 队列已耗尽，提前退出 */
         }
     }
-    //�ӻض���
-    int32_t add = 1;
-    spin_lock(&runarg->task->lckmsg);
-    if (0 == qu_message_size(&runarg->task->qumsg)) {
-        add = 0;
-        runarg->task->global = 0;
-    }
-    spin_unlock(&runarg->task->lckmsg);
-    if (0 != add) {
-        _worker_wakeup(loader, &runarg->task->name);
+    /*
+     * 无锁重调度：先将 global CAS 1→0（取消调度），再检查队列是否仍有消息。
+     * 若有：尝试 CAS 0→1 重新调度；若 CAS 失败说明某生产者已抢先调度。
+     * 这两步均为 seq_cst 原子操作，保证不丢消息。
+     */
+    ATOMIC_CAS(&task->global, 1, 0);
+    if (mspc_size(&task->qumsg) > 0) {
+        if (ATOMIC_CAS(&task->global, 0, 1)) {
+            _worker_wakeup(loader, &task->name);
+        }
     } else {
-        runarg->task->overload = ONEK;
+        task->overload = ONEK;
     }
 }
 static void _worker_loop(void *arg) {
@@ -173,17 +169,12 @@ static void _worker_loop(void *arg) {
         ATOMIC_ADD(&worker->waiting, 1);
         /* Re-check local queue under mutex to close the lost-wakeup window:
          * a push may have landed between _task_name_get returning empty and
-         * our ATOMIC_ADD above; the pusher saw waiting==0 and skipped signal. */
-        {
-            int32_t has_local;
-            spin_lock(&worker->lcktasks);
-            has_local = (qu_task_size(&worker->qutasks) > 0);
-            spin_unlock(&worker->lcktasks);
-            if (has_local) {
-                ATOMIC_ADD(&worker->waiting, (atomic_t)-1);
-                mutex_unlock(&worker->mutex);
-                continue;
-            }
+         * our ATOMIC_ADD above; the pusher saw waiting==0 and skipped signal.
+         * mspc_size 本身是无锁读，不需要额外锁保护。*/
+        if (mspc_size(&worker->qutasks) > 0) {
+            ATOMIC_ADD(&worker->waiting, (atomic_t)-1);
+            mutex_unlock(&worker->mutex);
+            continue;
         }
         cond_wait(&worker->cond, &worker->mutex);
         ATOMIC_ADD(&worker->waiting, (atomic_t)-1);
@@ -241,8 +232,7 @@ loader_ctx *loader_init(uint16_t nnet, uint16_t nworker) {
         worker->index = i;
         worker->weight = weights[i % n];
         worker->loader = loader;
-        spin_init(&worker->lcktasks, SPIN_CNT_LOADER);
-        qu_task_init(&worker->qutasks, ONEK);
+        mspc_init(&worker->qutasks, ONEK);
         mutex_init(&worker->mutex);
         cond_init(&worker->cond);
         worker->thread_worker = thread_creat(_worker_loop, worker);
@@ -302,8 +292,7 @@ void loader_free(loader_ctx *loader) {
     tw_free(&loader->tw);
     for (uint16_t i = 0; i < loader->nworker; i++) {
         worker = &loader->worker[i];
-        spin_free(&worker->lcktasks);
-        qu_task_free(&worker->qutasks);
+        mspc_free(&worker->qutasks);
         mutex_free(&worker->mutex);
         cond_free(&worker->cond);
     }

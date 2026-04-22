@@ -1,5 +1,7 @@
 #include "containers/mspc.h"
 
+#define MSPC_DEFAULT_CAP  1024
+
 /* 将 n 向上取整到最近的 2 的幂；n 已经是 2 的幂则原值返回 */
 static uint32_t _pow2_ceil(uint32_t n) {
     if (0 == n || 0 == (n & (n - 1))) {

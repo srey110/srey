@@ -145,8 +145,7 @@ task_ctx *task_new(loader_ctx *loader, name_t name, _task_dispatch_cb _dispatch,
     }
     task->_arg_free = _argfree;
     task->arg = arg;
-    spin_init(&task->lckmsg, SPIN_CNT_TASKMSG);
-    qu_message_init(&task->qumsg, ONEK);
+    mspc_init(&task->qumsg, ONEK);
     task->overload = ONEK;
     return task;
 }
@@ -156,11 +155,11 @@ void task_free(task_ctx *task) {
         task->_arg_free(task->arg);
     }
     message_ctx *msg;
-    while (NULL != (msg = qu_message_pop(&task->qumsg))) {
+    while (NULL != (msg = (message_ctx *)mspc_pop(&task->qumsg))) {
         _message_clean(msg->mtype, msg->pktype, msg->data);
+        FREE(msg);
     }
-    qu_message_free(&task->qumsg);
-    spin_free(&task->lckmsg);
+    mspc_free(&task->qumsg);
     FREE(task);
 }
 int32_t task_register(task_ctx *task, _task_startup_cb _startup, _task_closing_cb _closing) {

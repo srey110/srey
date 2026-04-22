@@ -25,9 +25,6 @@
  *   mspc_free(&q);
  */
 
-/* 默认容量 (2 的幂) */
-#define MSPC_DEFAULT_CAP  1024
-
 /* 单个槽位：序列号 + 数据指针 */
 typedef struct mspc_cell {
     atomic_t  sequence;

@@ -1,4 +1,5 @@
 ﻿#include "test_base.h"
+#include "test_mspc.h"
 #include "test_utils.h"
 #include "task_startup_closing.h"
 #include "task_timeout.h"
@@ -57,6 +58,7 @@ int main(int argc, char *argv[]) {
     CuString *poutput = CuStringNew();
     CuSuite* psuite = CuSuiteNew();
     test_base(psuite);
+    test_mspc(psuite);
     test_utils(psuite);
     CuSuiteRun(psuite);
     CuSuiteSummary(psuite, poutput);

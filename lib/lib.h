@@ -10,6 +10,7 @@
 #include "containers/queue.h"
 #include "containers/heap.h"
 #include "containers/hashmap.h"
+#include "containers/mspc.h"
 #include "crypt/base64.h"
 #include "crypt/crc.h"
 #include "crypt/urlraw.h"
