@@ -2,11 +2,11 @@
 #define CONFIG_H_
 
 #include "base/os.h"
-//�Ƿ����ڴ���
+//是否启用内存检测
 #define MEMORY_CHECK        1
-//�Ƿ�ʹ��SSL
+//是否启用SSL
 #define WITH_SSL            0
-//�Ƿ�ʹ��LUA
+//是否启用LUA
 #define WITH_LUA            1
 
 #define KEEPALIVE_TIME      30
