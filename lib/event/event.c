@@ -85,21 +85,11 @@ SOCKET _udp(netaddr_ctx *addr) {
     return fd;
 }
 #if WITH_SSL
-static int32_t _sock_read_ssl(SSL *ssl, IOV_TYPE *iov, uint32_t niov, size_t *nread) {
-    size_t readed;
-    int32_t rtn;
-    for (uint32_t i = 0; i < niov; i++) {
-        rtn = evssl_read(ssl, iov[i].IOV_PTR_FIELD, (size_t)iov[i].IOV_LEN_FIELD, &readed);
-        *nread += readed;
-        if (ERR_OK == rtn) {
-            if (readed < (int32_t)iov[i].IOV_LEN_FIELD) {
-                return ERR_OK;
-            }
-            continue;
-        }
-        return rtn;
-    }
-    return ERR_OK;
+/* SSL does not support scatter I/O: always read into a single contiguous segment.
+ * One SSL_read call consumes at most one TLS record; the outer buffer_from_sock
+ * loop re-invokes us until the socket is drained. */
+static int32_t _sock_read_ssl(SSL *ssl, IOV_TYPE *iov, size_t *nread) {
+    return evssl_read(ssl, iov[0].IOV_PTR_FIELD, (size_t)iov[0].IOV_LEN_FIELD, nread);
 }
 #endif
 static int32_t _sock_read_normal(SOCKET fd, IOV_TYPE *iov, uint32_t niov, size_t *readed) {
@@ -143,7 +133,9 @@ int32_t _sock_read(SOCKET fd, IOV_TYPE *iov, uint32_t niov, void *arg, size_t *r
     if (NULL == arg) {
         return _sock_read_normal(fd, iov, niov, readed);
     }
-    return _sock_read_ssl((SSL *)arg, iov, niov, readed);
+    /* Force niov=1: SSL_read reads one TLS record at a time into a single buffer */
+    (void)niov;
+    return _sock_read_ssl((SSL *)arg, iov, readed);
 #else
     return _sock_read_normal(fd, iov, niov, readed);
 #endif

@@ -1,12 +1,12 @@
-﻿#ifndef CONFIG_H_
+#ifndef CONFIG_H_
 #define CONFIG_H_
 
 #include "base/os.h"
-//是否开启内存检查
+//�Ƿ����ڴ���
 #define MEMORY_CHECK        1
-//是否使用SSL
-#define WITH_SSL            1
-//是否使用LUA
+//�Ƿ�ʹ��SSL
+#define WITH_SSL            0
+//�Ƿ�ʹ��LUA
 #define WITH_LUA            1
 
 #define KEEPALIVE_TIME      30
@@ -23,8 +23,11 @@
 #define MAX_PACK_SIZE       65536
 #define INIT_SENDBUF_LEN    32
 #define SHRINK_TIME         30000
+/* Check the shrink timer only once per this many event-loop iterations.
+ * Avoids a clock_gettime syscall on every tight loop iteration. */
+#define SHRINK_IDLE_CNT     256
 #define TIMER_ACCURACY      1000000
-//spin spcnt值
+//spin spcntֵ
 #define SPIN_CNT_TIMEWHEEL  32
 #define SPIN_CNT_LOADER     32
 #define SPIN_CNT_TASKMSG    32

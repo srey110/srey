@@ -1,4 +1,4 @@
-﻿#include "srey/loader.h"
+#include "srey/loader.h"
 #include "containers/hashmap.h"
 #include "srey/task.h"
 
@@ -30,24 +30,27 @@ static void _worker_wakeup_all(loader_ctx *loader) {
     worker_ctx *worker;
     for (uint16_t i = 0; i < loader->nworker; i++) {
         worker = &loader->worker[i];
-        mutex_lock(&worker->mutex);
-        if (worker->waiting > 0) {
+        if (ATOMIC_GET(&worker->waiting) > 0) {
+            mutex_lock(&worker->mutex);
             cond_signal(&worker->cond);
+            mutex_unlock(&worker->mutex);
         }
-        mutex_unlock(&worker->mutex);
     }
 }
 static void _worker_wakeup(loader_ctx *loader, name_t *task) {
-    worker_ctx *worker = &loader->worker[
-        (1 == loader->nworker) ? 0 : (ATOMIC64_ADD(&loader->index, 1) % loader->nworker)];
+    /* nworker==1 fast path: skip atomic round-robin */
+    worker_ctx *worker = (1 == loader->nworker)
+        ? &loader->worker[0]
+        : &loader->worker[ATOMIC64_ADD(&loader->index, 1) % loader->nworker];
     spin_lock(&worker->lcktasks);
     qu_task_push(&worker->qutasks, task);
     spin_unlock(&worker->lcktasks);
-    mutex_lock(&worker->mutex);
-    if (worker->waiting > 0) {
+    /* Fast path: skip mutex when no worker is sleeping */
+    if (ATOMIC_GET(&worker->waiting) > 0) {
+        mutex_lock(&worker->mutex);
         cond_signal(&worker->cond);
+        mutex_unlock(&worker->mutex);
     }
-    mutex_unlock(&worker->mutex);
 }
 void _task_message_push(task_ctx *task, message_ctx *msg) {
     int32_t add = 0;
@@ -84,17 +87,18 @@ static name_t _task_name_get(loader_ctx *loader, worker_ctx *worker) {
     }
     return name;
 }
-static int32_t _task_message_pop(task_ctx *task, message_ctx *msg) {
+/* 每次加锁最多批量取出的消息条数 */
+#define TASK_MSG_BATCH  64
+static uint32_t _task_messages_pop_batch(task_ctx *task,
+                                          message_ctx *batch, uint32_t n) {
+    uint32_t count = 0;
     message_ctx *tmp;
     spin_lock(&task->lckmsg);
-    tmp = qu_message_pop(&task->qumsg);
-    if (NULL == tmp) {
-        spin_unlock(&task->lckmsg);
-        return ERR_FAILED;
+    while (count < n && NULL != (tmp = qu_message_pop(&task->qumsg))) {
+        batch[count++] = *tmp;
     }
-    *msg = *tmp;
     spin_unlock(&task->lckmsg);
-    return ERR_OK;
+    return count;
 }
 static void _task_run(loader_ctx *loader, worker_ctx *worker,
     worker_version *version, task_dispatch_arg *runarg) {
@@ -107,18 +111,33 @@ static void _task_run(loader_ctx *loader, worker_ctx *worker,
     if (0 == n) {
         n = 1;
     }
-    //执行
+    /* 批量 pop：一次加锁取出 TASK_MSG_BATCH 条消息到栈上数组，锁外批量 dispatch */
+    message_ctx batch[TASK_MSG_BATCH];
+    uint32_t want, got, i;
+    uint32_t processed = 0;
     version->name = runarg->task->name;
-    for (uint32_t i = 0; i < n; i++) {
-        if (ERR_OK != _task_message_pop(runarg->task, &runarg->msg)) {
+    while (processed < n) {
+        want = n - processed;
+        if (want > TASK_MSG_BATCH) {
+            want = TASK_MSG_BATCH;
+        }
+        got = _task_messages_pop_batch(runarg->task, batch, want);
+        if (0 == got) {
             break;
         }
-        ++version->ver;
-        version->msgtype = runarg->msg.mtype;
-        runarg->task->_task_dispatch(runarg);
-        version->msgtype = MSG_TYPE_NONE;
+        for (i = 0; i < got; i++) {
+            runarg->msg = batch[i];
+            ++version->ver;
+            version->msgtype = runarg->msg.mtype;
+            runarg->task->_task_dispatch(runarg);
+            version->msgtype = MSG_TYPE_NONE;
+        }
+        processed += got;
+        if (got < want) {
+            break; /* 队列已耗尽，提前退出 */
+        }
     }
-    //加回队列
+    //�ӻض���
     int32_t add = 1;
     spin_lock(&runarg->task->lckmsg);
     if (0 == qu_message_size(&runarg->task->qumsg)) {
@@ -128,8 +147,7 @@ static void _task_run(loader_ctx *loader, worker_ctx *worker,
     spin_unlock(&runarg->task->lckmsg);
     if (0 != add) {
         _worker_wakeup(loader, &runarg->task->name);
-    }
-    else {
+    } else {
         runarg->task->overload = ONEK;
     }
 }
@@ -140,7 +158,7 @@ static void _worker_loop(void *arg) {
     worker_version *version = &loader->monitor.version[worker->index];
     task_dispatch_arg runarg;
     while (0 == loader->stop) {
-        //从队列取一任务
+        //�Ӷ���ȡһ����
         name = _task_name_get(loader, worker);
         if (INVALID_TNAME != name) {
             runarg.task = task_grab(loader, name);
@@ -152,14 +170,28 @@ static void _worker_loop(void *arg) {
             continue;
         }
         mutex_lock(&worker->mutex);
-        ++worker->waiting;
+        ATOMIC_ADD(&worker->waiting, 1);
+        /* Re-check local queue under mutex to close the lost-wakeup window:
+         * a push may have landed between _task_name_get returning empty and
+         * our ATOMIC_ADD above; the pusher saw waiting==0 and skipped signal. */
+        {
+            int32_t has_local;
+            spin_lock(&worker->lcktasks);
+            has_local = (qu_task_size(&worker->qutasks) > 0);
+            spin_unlock(&worker->lcktasks);
+            if (has_local) {
+                ATOMIC_ADD(&worker->waiting, (atomic_t)-1);
+                mutex_unlock(&worker->mutex);
+                continue;
+            }
+        }
         cond_wait(&worker->cond, &worker->mutex);
-        --worker->waiting;
+        ATOMIC_ADD(&worker->waiting, (atomic_t)-1);
         mutex_unlock(&worker->mutex);
     }
     LOG_INFO("worker thread %d exited.", worker->index);
 }
-//检查死循环
+//�����ѭ��
 static void _monitor_check(loader_ctx *loader) {
     worker_version *version;
     for (uint16_t i = 0; i < loader->nworker; i++) {
@@ -168,8 +200,7 @@ static void _monitor_check(loader_ctx *loader) {
             && MSG_TYPE_NONE != version->msgtype) {
             LOG_WARN("task: %d message type: %d, maybe in an endless loop.",
                 version->name, version->msgtype);
-        }
-        else {
+        } else {
             version->ckver = version->ver;
         }
     }
@@ -199,8 +230,8 @@ loader_ctx *loader_init(uint16_t nnet, uint16_t nworker) {
     CALLOC(loader->monitor.version, 1, sizeof(worker_version) * loader->nworker);
     rwlock_init(&loader->lckmaptasks);
     loader->maptasks = hashmap_new_with_allocator(_malloc, _realloc, _free,
-        sizeof(name_t *), ONEK, 0, 0,
-        _map_task_hash, _map_task_compare, _map_task_free, NULL);
+                                                  sizeof(name_t *), ONEK, 0, 0,
+                                                  _map_task_hash, _map_task_compare, _map_task_free, NULL);
     loader->monitor.thread_monitor = thread_creat(_monitor_loop, loader);
     int32_t weights[] = { -1, 0, 0, 1, 2, 3 };
     worker_ctx *worker;

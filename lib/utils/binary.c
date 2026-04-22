@@ -30,7 +30,7 @@ void binary_offset(binary_ctx *ctx, size_t off) {
 static inline void _binary_expand(binary_ctx *ctx, size_t size) {
     size += ctx->offset + 1;
     if (size > ctx->size) {
-        size_t lens = (ctx->size / 2) * 3;
+        size_t lens = ctx->size * 2;
         if (lens < size) {
             lens = size;
         }

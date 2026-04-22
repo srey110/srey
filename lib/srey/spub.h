@@ -79,7 +79,7 @@ QUEUE_DECL(name_t, qu_task);
 typedef struct worker_ctx {
     uint16_t index;
     int32_t weight;
-    int32_t waiting;
+    atomic_t waiting;    /* atomically maintained; read without mutex in fast path */
     loader_ctx *loader;
     pthread_t thread_worker;
     spin_ctx lcktasks;

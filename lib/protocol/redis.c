@@ -1,10 +1,19 @@
-﻿#include "protocol/redis.h"
+#include "protocol/redis.h"
 #include "protocol/prots.h"
 #include "utils/binary.h"
+#include "containers/sarray.h"
+
+/* Flat array of redis_pack_ctx pointers accumulated during parsing.
+ * Replaces the head/tail linked-list in reader_ctx: array appends are
+ * cache-friendly and avoid pointer-chasing during accumulation. */
+ARRAY_DECL(redis_pack_ctx *, arr_rpk)
+
+/* Maximum bytes needed for the RESP array-count header "*n\r\n".
+ * Even "*999999\r\n" is only 10 bytes; 32 gives a comfortable margin. */
+#define MAX_HEADER_RESERVE  32
 
 typedef struct reader_ctx {
-    redis_pack_ctx *head;
-    redis_pack_ctx *tail;
+    arr_rpk_ctx arr;
     int64_t nelem;
 }reader_ctx;
 
@@ -31,7 +40,12 @@ void _redis_udfree(ud_cxt *ud) {
         return;
     }
     reader_ctx *rd = ud->context;
-    _redis_pkfree(rd->head);
+    /* Nodes are tracked in the flat array; ->next is only wired up when a
+     * complete response is handed to the caller.  Free each node directly. */
+    for (uint32_t i = 0; i < arr_rpk_size(&rd->arr); i++) {
+        FREE(*arr_rpk_at(&rd->arr, i));
+    }
+    arr_rpk_free(&rd->arr);
     FREE(rd);
     ud->context = NULL;
 }
@@ -50,6 +64,9 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
     binary_ctx fbuf, sdsbuf;
     binary_init(&fbuf, NULL, 0, 0);
     binary_init(&sdsbuf, NULL, 0, 0);
+    /* Reserve MAX_HEADER_RESERVE bytes at the front for the "*n\r\n" header
+     * that we can only write after scanning all arguments to determine n. */
+    binary_set_skip(&sdsbuf, MAX_HEADER_RESERVE);
     char *p;
     char _fmt[64];
     char *f = (char *)fmt;
@@ -102,7 +119,7 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
             break;
         }
         default: {
-            //跳过前缀
+            //����ǰ׺
             while ('\0' != *f && NULL != strchr("#0-+ ", *f)) f++;
             while ('\0' != *f && isdigit((int)*f)) f++;
             if ('.' == *f) {
@@ -133,8 +150,7 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
                 if ('\0' != *f && NULL != strchr(FMT_INTEGER_FLAG, *f)) {
                     FMT_TYPE(int);
                     f++;
-                }
-                else {
+                } else {
                     binary_set_string(&fbuf, p + 1, (size_t)(f - p) - 1);
                 }
                 break;
@@ -144,8 +160,7 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
                 if ('\0' != *f && NULL != strchr(FMT_INTEGER_FLAG, *f)) {
                     FMT_TYPE(int);
                     f++;
-                }
-                else {
+                } else {
                     binary_set_string(&fbuf, p + 1, (size_t)(f - p) - 1);
                 }
                 break;
@@ -155,8 +170,7 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
                 if ('\0' != *f && NULL != strchr(FMT_INTEGER_FLAG, *f)) {
                     FMT_TYPE(long long);
                     f++;
-                }
-                else {
+                } else {
                     binary_set_string(&fbuf, p + 1, (size_t)(f - p) - 1);
                 }
                 break;
@@ -166,8 +180,7 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
                 if ('\0' != *f && NULL != strchr(FMT_INTEGER_FLAG, *f)) {
                     FMT_TYPE(long);
                     f++;
-                }
-                else {
+                } else {
                     binary_set_string(&fbuf, p + 1, (size_t)(f - p) - 1);
                 }
                 break;
@@ -181,17 +194,20 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
         }
     }
     _create_sds(&fbuf, &sdsbuf, &n);
-    SNPRINTF(_fmt, sizeof(_fmt), "*%d"FLAG_CRLF, (int32_t)n);
-    size_t hlens = strlen(_fmt);
-    *size = sdsbuf.offset + hlens;
-    char *buf;
-    MALLOC(buf, *size + 1);
-    memcpy(buf, _fmt, hlens);
-    memcpy(buf + hlens, sdsbuf.data, sdsbuf.offset);
-    buf[*size] = '\0';
+    /* Format the RESP array-count header and back-fill it into the reserved
+     * slot at the start of sdsbuf.  memmove shifts the bulk-string body left
+     * to eliminate the padding gap, avoiding a separate output allocation. */
+    int hlen_int = SNPRINTF(_fmt, sizeof(_fmt), "*%d"FLAG_CRLF, (int32_t)n);
+    size_t hlens     = (size_t)hlen_int;
+    size_t body_size = sdsbuf.offset - MAX_HEADER_RESERVE;
+    ASSERTAB(hlens <= MAX_HEADER_RESERVE, "RESP header too long for reserved slot.");
+    memmove(sdsbuf.data + hlens, sdsbuf.data + MAX_HEADER_RESERVE, body_size);
+    memcpy(sdsbuf.data, _fmt, hlens);
+    *size = hlens + body_size;
+    /* *size < MAX_HEADER_RESERVE + body_size == sdsbuf.offset <= sdsbuf.size */
+    sdsbuf.data[*size] = '\0';
     FREE(fbuf.data);
-    FREE(sdsbuf.data);
-    return buf;
+    return sdsbuf.data;   /* caller owns this allocation */
 }
 //%b:binary - size_t %%:%  C format
 char *redis_pack(size_t *size, const char *fmt, ...) {
@@ -205,20 +221,14 @@ static reader_ctx *_create_reader(ud_cxt *ud) {
     if (NULL == ud->context) {
         reader_ctx *rd;
         MALLOC(rd, sizeof(reader_ctx));
-        rd->head = rd->tail = NULL;
+        arr_rpk_init(&rd->arr, 0);
         rd->nelem = 1;
         ud->context = rd;
     }
     return ud->context;
 }
 static inline void _add_node(reader_ctx *rd, redis_pack_ctx *pk) {
-    if (NULL == rd->head) {
-        rd->head = rd->tail = pk;
-    }
-    else {
-        rd->tail->next = pk;
-        rd->tail = pk;
-    }
+    arr_rpk_push_back(&rd->arr, &pk);
     if (RESP_ATTR != pk->prot) {
         rd->nelem--;
     }
@@ -231,9 +241,9 @@ static int32_t _reader_line(reader_ctx *rd, int32_t prot, buffer_ctx *buf, int32
         return ERR_FAILED;
     }
     redis_pack_ctx *pk;
-    CALLOC(pk, 1, sizeof(redis_pack_ctx) + pos);//前面还有1个type字节
+    CALLOC(pk, 1, sizeof(redis_pack_ctx) + pos);//ǰ�滹��1��type�ֽ�
     pk->prot = prot;
-    pk->len = pos - 1;//pos 至少为1
+    pk->len = pos - 1;//pos ����Ϊ1
     switch (prot) {
     case RESP_STRING:
     case RESP_ERROR:
@@ -243,8 +253,7 @@ static int32_t _reader_line(reader_ctx *rd, int32_t prot, buffer_ctx *buf, int32
     case RESP_BIGNUM:
         if (0 == pk->len) {
             BIT_SET(*status, PROT_ERROR);
-        }
-        else {
+        } else {
             buffer_copyout(buf, 1, pk->data, (size_t)pk->len);
             char *end;
             pk->ival = strtoll(pk->data, &end, 10);
@@ -280,15 +289,12 @@ static int32_t _reader_line(reader_ctx *rd, int32_t prot, buffer_ctx *buf, int32
         buffer_copyout(buf, 1, pk->data, (size_t)pk->len);
         if (3 == pk->len && 0 == _memicmp(pk->data, "inf", (size_t)pk->len)) {
             pk->dval = INFINITY;
-        }
-        else if (4 == pk->len && 0 == _memicmp(pk->data, "-inf", (size_t)pk->len)) {
+        } else if (4 == pk->len && 0 == _memicmp(pk->data, "-inf", (size_t)pk->len)) {
             pk->dval = -INFINITY;
-        }
-        else if ((3 == pk->len && 0 == _memicmp(pk->data, "nan", (size_t)pk->len))
-            || (4 == pk->len && 0 == _memicmp(pk->data, "-nan", (size_t)pk->len))) {
+        } else if ((3 == pk->len && 0 == _memicmp(pk->data, "nan", (size_t)pk->len))
+                   ||(4 == pk->len && 0 == _memicmp(pk->data, "-nan", (size_t)pk->len))) {
             pk->dval = NAN;
-        }
-        else {
+        } else {
             char *end;
             pk->dval = strtod(pk->data, &end);
             if (end != pk->data + pk->len
@@ -458,8 +464,15 @@ redis_pack_ctx *redis_unpack(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
             break;
         }
         if (0 == rd->nelem) {
-            redis_pack_ctx *pk = rd->head;
-            rd->head = rd->tail = NULL;
+            uint32_t cnt = arr_rpk_size(&rd->arr);
+            for (uint32_t i = 0; i + 1 < cnt; i++) {
+                (*arr_rpk_at(&rd->arr, i))->next = *arr_rpk_at(&rd->arr, i + 1);
+            }
+            if (cnt > 0) {
+                (*arr_rpk_at(&rd->arr, cnt - 1))->next = NULL;
+            }
+            redis_pack_ctx *pk = (cnt > 0) ? *arr_rpk_at(&rd->arr, 0) : NULL;
+            arr_rpk_clear(&rd->arr);
             rd->nelem = 1;
             return pk;
         }

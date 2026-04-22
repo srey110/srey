@@ -79,7 +79,11 @@ static void _on_cmd(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
         ASSERTAB(ERR_OK == _post_recv(&olcmd->ol_r, &olcmd->bytes, &olcmd->flag, &olcmd->wsabuf, 1), ERRORSTR(ERRNO));
     }
 }
-static void _pool_shrink(watcher_ctx *watcher, timer_ctx *timer) {
+static void _pool_shrink(watcher_ctx *watcher, timer_ctx *timer, uint32_t *cnt) {
+    if (++(*cnt) < SHRINK_IDLE_CNT) {
+        return;
+    }
+    *cnt = 0;
     if (timer_elapsed_ms(timer) < SHRINK_TIME) {
         return;
     }
@@ -94,6 +98,7 @@ static void _loop_event(void *arg) {
     ULONG count;
     ULONG nevent = INIT_EVENTS_CNT;
     sock_ctx *sock;
+    uint32_t shrink_cnt = 0;
     timer_ctx timer;
     LPOVERLAPPED overlap;
     LPOVERLAPPED_ENTRY overlappeds;
@@ -125,7 +130,7 @@ static void _loop_event(void *arg) {
         else if (WAIT_TIMEOUT != (err = ERRNO)) {
             LOG_ERROR("%s", ERRORSTR(err));
         }
-        _pool_shrink(watcher, &timer);
+        _pool_shrink(watcher, &timer, &shrink_cnt);
     }
     LOG_INFO("net event thread %d exited.", watcher->index);
     FREE(overlappeds);
@@ -176,6 +181,7 @@ static void _loop_event(void *arg) {
     int32_t err;
     ULONG_PTR key;
     sock_ctx *sock;
+    uint32_t shrink_cnt = 0;
     timer_ctx timer;
     OVERLAPPED *overlap;
     timer_init(&timer);
@@ -193,7 +199,7 @@ static void _loop_event(void *arg) {
         else if (WAIT_TIMEOUT != (err = ERRNO)) {
             LOG_ERROR("%s", ERRORSTR(err));
         }
-        _pool_shrink(watcher, &timer);
+        _pool_shrink(watcher, &timer, &shrink_cnt);
     }
     LOG_INFO("net event thread %d exited.", watcher->index);
 }

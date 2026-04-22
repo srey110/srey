@@ -20,12 +20,19 @@ static int _map_compare(const void *a, const void *b, void *ud) {
     return (int)((*(const sock_ctx **)a)->fd - (*(const sock_ctx **)b)->fd);
 }
 void _send_cmd(watcher_ctx *watcher, uint32_t index, cmd_ctx *cmd) {
+    /* sizeof(cmd_ctx) < PIPE_BUF: each write is atomic under POSIX even with
+     * concurrent producers sharing one pipe.  The write end is O_NONBLOCK so
+     * we never stall the calling thread indefinitely.  On EAGAIN (pipe
+     * temporarily full) or EINTR we call sched_yield() to cooperatively hand
+     * the CPU to the watcher thread so it can drain the pipe, then retry.
+     * On any other error the assertion fires – that would be a programming
+     * error (e.g. bad fd), not a transient condition. */
     int32_t erro;
     while (0 == watcher->stop
         && ERR_FAILED == write(watcher->pipes[index].pipes[1], cmd, sizeof(cmd_ctx))) {
         erro = ERRNO;
         ASSERTAB(ERR_RW_RETRIABLE(erro), ERRORSTR(erro));
-        USLEEP(0);
+        sched_yield();
     };
 }
 static void _cmd_loop(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
@@ -337,7 +344,13 @@ static int32_t _parse_event(events_t *ev, SOCKET *fd, void **arg) {
 #endif
     return rtn;
 }
-static void _pool_shrink(watcher_ctx *watcher, timer_ctx *timer) {
+static void _pool_shrink(watcher_ctx *watcher, timer_ctx *timer, uint32_t *cnt) {
+    /* Skip the clock_gettime syscall on most iterations; only sample the clock
+     * every SHRINK_IDLE_CNT loops to amortise its cost during high-traffic bursts. */
+    if (++(*cnt) < SHRINK_IDLE_CNT) {
+        return;
+    }
+    *cnt = 0;
     if (timer_elapsed_ms(timer) < SHRINK_TIME) {
         return;
     }
@@ -364,6 +377,7 @@ static void _loop_event(void *arg) {
     SOCKET fd = INVALID_SOCK;
     sock_ctx *skctx;
     int32_t i, cnt, ev;
+    uint32_t shrink_cnt = 0;
     timer_ctx tmshrink;
     timer_init(&tmshrink);
     timer_start(&tmshrink);
@@ -412,7 +426,7 @@ static void _loop_event(void *arg) {
             dvp.dp_nfds = watcher->nevents;
 #endif
         }
-        _pool_shrink(watcher, &tmshrink);
+        _pool_shrink(watcher, &tmshrink, &shrink_cnt);
     }
     LOG_INFO("net event thread %d exited.", watcher->index);
 }
@@ -447,7 +461,13 @@ static struct pip_ctx *_new_pips(uint32_t npipes) {
     MALLOC(pips, sizeof(pip_ctx) * npipes);
     for (uint32_t i = 0; i < npipes; i++) {
         ASSERTAB(ERR_OK == pipe(pips[i].pipes), ERRORSTR(ERRNO));
+        /* Read end: non-blocking so _cmd_loop can drain with a read-until-EAGAIN
+         * loop without stalling the event thread.
+         * Write end: also non-blocking so _send_cmd never blocks indefinitely
+         * when the pipe buffer is temporarily full; callers retry with
+         * sched_yield() to allow the watcher to drain the pipe. */
         ASSERTAB(ERR_OK == sock_nonblock(pips[i].pipes[0]), ERRORSTR(ERRNO));
+        ASSERTAB(ERR_OK == sock_nonblock(pips[i].pipes[1]), ERRORSTR(ERRNO));
     }
     return pips;
 }
@@ -473,7 +493,12 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads) {
         watcher->nevents = INIT_EVENTS_CNT;
         MALLOC(watcher->events, sizeof(events_t) * watcher->nevents);
         watcher->evfd = _init_evfd();
-        watcher->npipes = ctx->nthreads * 2;
+        /* One pipe per watcher is sufficient: sizeof(cmd_ctx) < PIPE_BUF, so
+         * POSIX guarantees each write is atomic even with multiple concurrent
+         * producers.  Previously nthreads*2 pipes were used to reduce write
+         * contention, but that contention never materialises in practice and
+         * the extra fd pairs waste kernel resources. */
+        watcher->npipes = 1;
         watcher->pipes = _new_pips(watcher->npipes);
         watcher->element = hashmap_new_with_allocator(_malloc, _realloc, _free,
             sizeof(sock_ctx *), ONEK * 2, 0, 0,

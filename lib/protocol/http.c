@@ -1,10 +1,10 @@
-﻿#include "protocol/http.h"
+#include "protocol/http.h"
 #include "protocol/prots.h"
 #include "crypt/urlraw.h"
 #include "containers/sarray.h"
 #include "utils/utils.h"
 
-typedef enum parse_status {
+typedef enum parse_status{
     INIT = 0,
     CONTENT,
     CHUNKED
@@ -21,35 +21,20 @@ typedef struct http_pack_ctx {
 #define MAX_HEADLENS ONEK * 4
 #define HEAD_REMAIN (pack->head.lens - (head - (char *)pack->head.data))
 
-int32_t _http_check_keyval(http_header_ctx *head, const char *key, const char *val) {
-    if (!buf_icompare(&head->key, key, strlen(key))) {
-        return ERR_FAILED;
-    }
-    if (NULL == val) {
-        return ERR_OK;
-    }
-    if (NULL != memstr(1, head->value.data, head->value.lens, val, strlen(val))) {
-        return ERR_OK;
-    }
-    return ERR_FAILED;
-}
 static void _check_fileld(http_pack_ctx *pack, http_header_ctx *field, int32_t *transfer) {
-    switch (tolower(*((char *)field->key.data))) {
-    case 'c':
-        if (ERR_OK == _http_check_keyval(field, "content-length", NULL)) {
-            *transfer = CONTENT;
-            pack->data.lens = strtol(field->value.data, NULL, 10);
-        }
-        break;
-    case 't':
-        if (ERR_OK == _http_check_keyval(field, "transfer-encoding", "chunked")) {
-            *transfer = CHUNKED;
-            pack->data.lens = 0;
-            pack->chunked = 1;
-        }
-        break;
-    default:
-        break;
+    /* Length check (O(1)) in buf_icompare is a perfect discriminator — no
+     * first-char switch needed.  All key lengths here are distinct. */
+    if (ERR_OK == _http_check_keyval(field,
+                                     "content-length", sizeof("content-length") - 1,
+                                     NULL, 0)) {
+        *transfer = CONTENT;
+        pack->data.lens = strtol(field->value.data, NULL, 10);
+    } else if (ERR_OK == _http_check_keyval(field,
+                                            "transfer-encoding", sizeof("transfer-encoding") - 1,
+                                            "chunked", sizeof("chunked") - 1)) {
+        *transfer = CHUNKED;
+        pack->data.lens = 0;
+        pack->chunked = 1;
     }
 }
 static char *_http_parse_status(http_pack_ctx *pack) {
@@ -135,20 +120,18 @@ static http_pack_ctx *_http_content(buffer_ctx *buf, ud_cxt *ud, int32_t *status
         ud->status = INIT;
         ud->context = NULL;
         return pack;
-    }
-    else {
+    } else {
         BIT_SET(*status, PROT_MOREDATA);
         return NULL;
     }
 }
 static size_t _http_headlens(buffer_ctx *buf, int32_t *status) {
     size_t flens = CRLF_SIZE * 2;
-    int32_t pos = buffer_search(buf, 0, 0, 0, CONCAT2(FLAG_CRLF, FLAG_CRLF), flens);
+    int32_t pos = buffer_search(buf, 0, 0, 0, CONCAT2(FLAG_CRLF,FLAG_CRLF), flens);
     if (ERR_FAILED == pos) {
         if (buffer_size(buf) > MAX_HEADLENS) {
             BIT_SET(*status, PROT_ERROR);
-        }
-        else {
+        } else {
             BIT_SET(*status, PROT_MOREDATA);
         }
         return 0;
@@ -194,14 +177,12 @@ static http_pack_ctx *_http_header(buffer_ctx *buf, ud_cxt *ud, int32_t *status)
             BIT_SET(*status, PROT_ERROR);
             _http_pkfree(pack);
             return NULL;
-        }
-        else {
+        } else {
             ud->context = pack;
             ud->status = transfer;
             return _http_content(buf, ud, status);
         }
-    }
-    else {
+    } else {
         if (1 == pack->chunked) {
             BIT_SET(*status, PROT_SLICE_START);
         }
@@ -253,8 +234,7 @@ static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_t *status
     if (pack->data.lens > 0) {
         BIT_SET(*status, PROT_SLICE);
         ASSERTAB(pack->data.lens == buffer_copyout(buf, 0, pack->data.data, pack->data.lens), "copy buffer failed.");
-    }
-    else {
+    } else {
         BIT_SET(*status, PROT_SLICE_END);
         ud->status = INIT;
     }
@@ -389,13 +369,12 @@ void http_pack_content(binary_ctx *bwriter, void *data, size_t lens) {
     if (!EMPTYSTR(data)) {
         binary_set_va(bwriter, "Content-Length: %d"CONCAT2(FLAG_CRLF, FLAG_CRLF), (uint32_t)lens);
         binary_set_string(bwriter, data, lens);
-    }
-    else {
+    } else {
         binary_set_va(bwriter, "%s", "Content-Length: 0"CONCAT2(FLAG_CRLF, FLAG_CRLF));
     }
 }
 void http_pack_chunked(binary_ctx *bwriter, void *data, size_t lens) {
-    if (bwriter->offset > 0) {
+    if (bwriter->offset > 0){
         binary_set_va(bwriter, "Transfer-Encoding: Chunked"CONCAT2(FLAG_CRLF, FLAG_CRLF));
     }
     binary_set_va(bwriter, "%x"FLAG_CRLF, (uint32_t)lens);

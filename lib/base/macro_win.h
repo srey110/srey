@@ -1,4 +1,4 @@
-﻿#ifndef MACRO_WIN_H_
+#ifndef MACRO_WIN_H_
 #define MACRO_WIN_H_
 
 #include "base/os.h"
@@ -29,6 +29,8 @@
         CloseHandle(timer);\
     }while(0)
 #define MSLEEP(ms) Sleep(ms)
+/* CPU pause hint for spin-wait loops */
+#define CPU_PAUSE() YieldProcessor()
 #define TIMEB _timeb
 #define FTIME _ftime
 #define ACCESS _access
@@ -41,12 +43,12 @@
 static inline const char *_fmterror(DWORD error) {
     char *err = NULL;
     if (0 == FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-        NULL,
-        error,
-        MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US),
-        (LPTSTR)&err,
-        0,
-        NULL)) {
+                            NULL,
+                            error,
+                            MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US),
+                            (LPTSTR)&err,
+                            0,
+                            NULL)) {
         return "FormatMessageA error.";
     }
     static char errstr[4096];
@@ -61,11 +63,11 @@ static inline const char *_fmterror(DWORD error) {
 
 typedef uint32_t atomic_t;
 typedef uint64_t atomic64_t;
-//LONG InterlockedExchangeAdd(LONG volatile *Addend,LONG Value)  返回旧值
+//LONG InterlockedExchangeAdd(LONG volatile *Addend,LONG Value)  ���ؾ�ֵ
 #define ATOMIC_ADD(ptr, val) InterlockedExchangeAdd(ptr, val)
-//LONG InterlockedExchange(LONG volatile *Target,LONG Value); 返回旧值
+//LONG InterlockedExchange(LONG volatile *Target,LONG Value); ���ؾ�ֵ
 #define ATOMIC_SET(ptr, val) InterlockedExchange(ptr, val)
-//比较*ptr与oldval的值，如果两者相等，则将newval更新到*ptr并返回操作之前*ptr的值 成功 返回值等于oldval
+//�Ƚ�*ptr��oldval��ֵ�����������ȣ���newval���µ�*ptr�����ز���֮ǰ*ptr��ֵ �ɹ� ����ֵ����oldval
 //LONG InterlockedCompareExchange(LONG volatile *Destination, LONG ExChange, LONG Comperand);
 #define ATOMIC_CAS(ptr, oldval, newval) (InterlockedCompareExchange(ptr, newval, oldval) == oldval)
 #define ATOMIC64_ADD(ptr, val) InterlockedExchangeAdd64(ptr, val)

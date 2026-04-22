@@ -335,6 +335,20 @@ int32_t buffer_append(buffer_ctx *ctx, void *data, const size_t lens) {
         || NULL == data) {
         return ERR_OK;
     }
+    /* Fast path: tail node already has data (tail_with_data invariant holds),
+     * is not pinned by a scatter-gather operation, and has enough contiguous
+     * free space — skip expand/commit entirely. */
+    bufnode_ctx *tail = ctx->tail;
+    if (NULL != tail
+        && 0 != tail->off
+        && 0 == tail->used
+        && NODE_SPACE_LEN(tail) >= lens) {
+        memcpy(NODE_SPACE_PTR(tail), data, lens);
+        tail->off         += lens;
+        ctx->total_lens   += lens;
+        return ERR_OK;
+    }
+    /* Slow path: full expand + commit. */
     char *tmp = (char*)data;
     IOV_TYPE iov[MAX_EXPAND_NIOV];
     size_t remain = lens;
@@ -462,9 +476,6 @@ size_t buffer_copyout(buffer_ctx *ctx, const size_t start, void *out, size_t len
 }
 size_t buffer_drain(buffer_ctx *ctx, size_t lens) {
     ASSERTAB(0 == ctx->freeze_read, "read freezed");
-    // drain 会释放节点，游标可能悬空，统一失效
-    ctx->hint_node     = NULL;
-    ctx->hint_base_off = 0;
     bufnode_ctx *node, *next;
     size_t remain, oldlen;
     oldlen = ctx->total_lens;
@@ -474,6 +485,12 @@ size_t buffer_drain(buffer_ctx *ctx, size_t lens) {
     if (lens > oldlen) {
         lens = oldlen;
     }
+    /* Save hint before the drain loop frees nodes; we'll restore it if the
+     * hint node survives, or clear it if the node was freed. */
+    bufnode_ctx *saved_hint     = ctx->hint_node;
+    size_t       saved_hint_off = ctx->hint_base_off;
+    ctx->hint_node     = NULL;
+    ctx->hint_base_off = 0;
     ctx->total_lens -= lens;
     remain = lens;
     for (node = ctx->head; NULL != node && remain >= node->off; node = next) {
@@ -502,6 +519,20 @@ size_t buffer_drain(buffer_ctx *ctx, size_t lens) {
     } else {
         ctx->head = ctx->tail = NULL;
         ctx->tail_with_data = &(ctx)->head;
+    }
+    /* Restore hint when the cached node survived the drain:
+     *   saved_hint_off >= lens  → node was not touched; shift offset by lens.
+     *   ctx->head == saved_hint → drain stopped inside the hint node (it is
+     *                             now the new head); reset base offset to 0.
+     * Any other case means the node was freed; hint stays NULL/0. */
+    if (NULL != saved_hint) {
+        if (saved_hint_off >= lens) {
+            ctx->hint_node     = saved_hint;
+            ctx->hint_base_off = saved_hint_off - lens;
+        } else if (ctx->head == saved_hint) {
+            ctx->hint_node     = saved_hint;
+            ctx->hint_base_off = 0;
+        }
     }
     return lens;
 }

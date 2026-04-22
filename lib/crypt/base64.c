@@ -25,33 +25,27 @@ static const char b64de[] = {
     44,  45,  46,  47,  48,  49,  50,  51,
 };
 size_t bs64_encode(const void *data, const size_t lens, char *out) {
-    const char *p = (const char *)data;
-    uint32_t i, j;
-    for (i = j = 0; i < lens; i++) {
-        switch (i % 3) {
-        case 0:
-            out[j++] = b64en[(p[i] >> 2) & 0x3F];
-            break;
-        case 1:
-            out[j++] = b64en[((p[i - 1] & 0x3) << 4) + ((p[i] >> 4) & 0xF)];
-            break;
-        case 2:
-            out[j++] = b64en[((p[i - 1] & 0xF) << 2) + ((p[i] >> 6) & 0x3)];
-            out[j++] = b64en[p[i] & 0x3F];
-            break;
-        }
+    const unsigned char *p = (const unsigned char *)data;
+    size_t i = 0, j = 0;
+    /* Main loop: consume 3 input bytes → emit 4 Base64 chars; no modulo. */
+    for (; i + 3 <= lens; i += 3) {
+        out[j++] = b64en[(p[i]     >> 2) & 0x3F];
+        out[j++] = b64en[((p[i]     & 0x03) << 4) | ((p[i + 1] >> 4) & 0x0F)];
+        out[j++] = b64en[((p[i + 1] & 0x0F) << 2) | ((p[i + 2] >> 6) & 0x03)];
+        out[j++] = b64en[  p[i + 2] & 0x3F];
     }
-    /* move back */
-    i -= 1;
-    /* check the last and add padding */
-    switch (i % 3) {
-    case 0:
-        out[j++] = b64en[(p[i] & 0x3) << 4];
+    /* Tail: 0, 1 or 2 remaining bytes with '=' padding. */
+    switch (lens - i) {
+    case 1:
+        out[j++] = b64en[(p[i] >> 2) & 0x3F];
+        out[j++] = b64en[(p[i] & 0x03) << 4];
         out[j++] = '=';
         out[j++] = '=';
         break;
-    case 1:
-        out[j++] = b64en[(p[i] & 0xF) << 2];
+    case 2:
+        out[j++] = b64en[(p[i]     >> 2) & 0x3F];
+        out[j++] = b64en[((p[i]     & 0x03) << 4) | ((p[i + 1] >> 4) & 0x0F)];
+        out[j++] = b64en[ (p[i + 1] & 0x0F) << 2];
         out[j++] = '=';
         break;
     }

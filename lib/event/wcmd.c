@@ -25,7 +25,7 @@ void _send_cmd(watcher_ctx *watcher, uint32_t index, cmd_ctx *cmd) {
         && SOCKET_ERROR == send(olcmd->fd, trigger, sizeof(trigger), 0)) {
         erro = ERRNO;
         ASSERTAB(IS_EAGAIN(erro), ERRORSTR(erro));
-        USLEEP(0);
+        CPU_PAUSE();
     }
 }
 void _on_cmd_stop(watcher_ctx *watcher, cmd_ctx *cmd) {

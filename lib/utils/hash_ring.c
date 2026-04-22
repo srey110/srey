@@ -56,23 +56,40 @@ static uint64_t _hash(hash_ring_ctx *ring, void *data, size_t lens) {
     digest_reset(&ring->md5);
     return (uint32_t)(digest[3] << 24 | digest[2] << 16 | digest[1] << 8 | digest[0]);
 }
+/* Largest name we will place on the stack to avoid per-replica malloc/free.
+ * Node names are typically short host:port strings; 512 bytes covers all
+ * realistic cases. Larger names fall back to a single heap allocation. */
+#define NAME_STACK_LEN  512
+
 static void _add_items(hash_ring_ctx *ring, hash_ring_node *node) {
-    uint8_t *name;
     char concat_buf[16];
     int32_t concat_len;
     hash_ring_item *item;
+    char  name_stack[NAME_STACK_LEN];
+    char *name;
+    size_t name_len;
+    int32_t heap;
     REALLOC(ring->items, ring->items, (sizeof(hash_ring_item *) * (ring->nitems + node->nreplicas)));
     for (uint32_t i = 0; i < node->nreplicas; i++) {
         concat_len = SNPRINTF(concat_buf, sizeof(concat_buf), "-%d", i);
-        ASSERTAB(concat_len > 0, "out of memory.");
-        MALLOC(name, (size_t)concat_len + node->lens);
+        ASSERTAB(concat_len > 0, "snprintf failed.");
+        name_len = node->lens + (size_t)concat_len;
+        if (name_len <= NAME_STACK_LEN) {
+            name = name_stack;
+            heap = 0;
+        } else {
+            MALLOC(name, name_len);
+            heap = 1;
+        }
         memcpy(name, node->name, node->lens);
         memcpy(name + node->lens, concat_buf, (size_t)concat_len);
         MALLOC(item, sizeof(hash_ring_item));
         item->node = node;
-        item->digest = _hash(ring, name, (size_t)concat_len + node->lens);
+        item->digest = _hash(ring, name, name_len);
         ring->items[ring->nitems + i] = item;
-        FREE(name);
+        if (heap) {
+            FREE(name);
+        }
     }
     ring->nitems += node->nreplicas;
 }
@@ -87,7 +104,10 @@ static hash_ring_node *_get_node(hash_ring_ctx *ring, void *name, size_t lens) {
     }
     return NULL;
 }
-int32_t hash_ring_add(hash_ring_ctx *ring, void *name, size_t lens, uint32_t nreplicas) {
+void hash_ring_sort(hash_ring_ctx *ring) {
+    qsort((void **)ring->items, ring->nitems, sizeof(hash_ring_item *), _item_sort);
+}
+int32_t hash_ring_add_nosort(hash_ring_ctx *ring, void *name, size_t lens, uint32_t nreplicas) {
     if (NULL == ring
         || NULL == name
         || 0 == lens
@@ -106,16 +126,19 @@ int32_t hash_ring_add(hash_ring_ctx *ring, void *name, size_t lens, uint32_t nre
     hash_ring_list *cur;
     MALLOC(cur, sizeof(hash_ring_list));
     cur->node = node;
-    // Add the node
     hash_ring_list *tmp = ring->nodes;
     ring->nodes = cur;
     ring->nodes->next = tmp;
     ring->nnodes++;
-    // Add the items for this node
     _add_items(ring, node);
-    // Sort the items
-    qsort((void**)ring->items, ring->nitems, sizeof(hash_ring_item *), _item_sort);
     return ERR_OK;
+}
+int32_t hash_ring_add(hash_ring_ctx *ring, void *name, size_t lens, uint32_t nreplicas) {
+    int32_t rtn = hash_ring_add_nosort(ring, name, lens, nreplicas);
+    if (ERR_OK == rtn) {
+        hash_ring_sort(ring);
+    }
+    return rtn;
 }
 void hash_ring_remove(hash_ring_ctx *ring, void *name, size_t lens) {
     if (NULL == ring
