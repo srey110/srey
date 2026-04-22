@@ -1,7 +1,7 @@
 ﻿#ifndef HASH_RING_H_
 #define HASH_RING_H_
 
-#include "crypt/digest.h"
+#include "base/macro.h"
 
 typedef struct hash_ring_node {
     uint32_t nreplicas;//�ڵ���
@@ -13,7 +13,6 @@ typedef struct hash_ring_ctx {
     uint32_t nitems;
     struct hash_ring_list *nodes;
     struct hash_ring_item **items;
-    digest_ctx md5;
 } hash_ring_ctx;
 
 /// <summary>

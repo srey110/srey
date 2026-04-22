@@ -1,4 +1,5 @@
 ﻿#include "hash_ring.h"
+#include "crypt/digest.h"
 
 typedef struct hash_ring_list {
     hash_ring_node *node;
@@ -29,7 +30,6 @@ static int32_t _item_sort(const void *a, const void *b) {
 }
 void hash_ring_init(hash_ring_ctx *ring) {
     ZERO(ring, sizeof(hash_ring_ctx));
-    digest_init(&ring->md5, DG_MD5);
 }
 void hash_ring_free(hash_ring_ctx *ring) {
     if (NULL == ring) {
@@ -49,11 +49,15 @@ void hash_ring_free(hash_ring_ctx *ring) {
     }
     FREE(ring->items);
 }
-static uint64_t _hash(hash_ring_ctx *ring, void *data, size_t lens) {
+/* _hash 使用栈上局部 digest_ctx，每次调用完全独立，线程安全。
+ * 原先复用 ring->md5 会导致并发调用（如多线程 hash_ring_find）相互
+ * 破坏 MD5 状态，产生静默数据路由错误。 */
+static uint64_t _hash(void *data, size_t lens) {
+    digest_ctx md5;
     uint8_t digest[DG_BLOCK_SIZE];
-    digest_update(&ring->md5, data, lens);
-    digest_final(&ring->md5, (char *)digest);
-    digest_reset(&ring->md5);
+    digest_init(&md5, DG_MD5);
+    digest_update(&md5, data, lens);
+    digest_final(&md5, (char *)digest);
     return (uint32_t)(digest[3] << 24 | digest[2] << 16 | digest[1] << 8 | digest[0]);
 }
 /* Largest name we will place on the stack to avoid per-replica malloc/free.
@@ -85,7 +89,7 @@ static void _add_items(hash_ring_ctx *ring, hash_ring_node *node) {
         memcpy(name + node->lens, concat_buf, (size_t)concat_len);
         MALLOC(item, sizeof(hash_ring_item));
         item->node = node;
-        item->digest = _hash(ring, name, name_len);
+        item->digest = _hash(name, name_len);
         ring->items[ring->nitems + i] = item;
         if (heap) {
             FREE(name);
@@ -159,17 +163,18 @@ void hash_ring_remove(hash_ring_ctx *ring, void *name, size_t lens) {
             else {
                 prev->next = next;
             }
-            // Remove all items for this node and mark them as NULL
+            /* 原先：标记 NULL 后调用 qsort，O(n log n)。
+             * 优化：因 items 已有序，用单次 O(n) 原地压缩即可：
+             * 保留所有不属于被删节点的 item，紧凑排列，顺序不变。 */
+            uint32_t write = 0;
             for (uint32_t i = 0; i < ring->nitems; i++) {
                 if (ring->items[i]->node == cur->node) {
                     FREE(ring->items[i]);
-                    ring->items[i] = NULL;
+                } else {
+                    ring->items[write++] = ring->items[i];
                 }
             }
-            // By re-sorting, all the NULLs will be at the end of the array
-            // Then the numItems is reset and that memory is no longer used
-            qsort((void**)ring->items, ring->nitems, sizeof(hash_ring_item *), _item_sort);
-            ring->nitems -= cur->node->nreplicas;
+            ring->nitems = write;
             FREE(cur->node);
             FREE(cur);
             ring->nnodes--;
@@ -216,7 +221,7 @@ hash_ring_node *hash_ring_find(hash_ring_ctx *ring, void *key, size_t lens) {
         || 0 == lens) {
         return NULL;
     }
-    uint64_t digest = _hash(ring, key, lens);
+    uint64_t digest = _hash(key, lens);
     hash_ring_item *item = _find_next_highest_item(ring, digest);
     if (item == NULL) {
         return NULL;

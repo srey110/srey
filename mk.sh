@@ -73,10 +73,46 @@ MAKEFILEPATH=`pwd`
 LIBPATH="-L$MAKEFILEPATH/$RSTPATH"
 CC="gcc -std=gnu99"
 GCC="g++"
-ARCH="ar -rv"
+# macOS ar 不支持 -D（确定性模式），Linux/SunOS 支持
+if [ "$OSNAME" = "Darwin" ]
+then
+    ARCH="ar rcs"
+else
+    ARCH="ar rcsD"
+fi
 INCLUDEPATH=""
 OBJFILE=""
-CFLAGS="-Wall -O2"
+# ----------- DEBUG / RELEASE 编译模式 -----------
+# 用法:  DEBUG=1 sh mk.sh        => 调试版：-O0 -g3 + ASan/UBSan
+#        sh mk.sh                => 发布版：-O2 + LTO + 强化警告
+if [ "${DEBUG:-0}" = "1" ]
+then
+    CFLAGS="-Wall -Wextra -Wshadow -Wstrict-prototypes -Wold-style-definition"
+    CFLAGS=$CFLAGS" -Wpointer-arith -Werror=implicit-function-declaration"
+    CFLAGS=$CFLAGS" -O0 -g3 -fsanitize=address,undefined -fno-omit-frame-pointer"
+else
+    CFLAGS="-Wall -Wextra -Wshadow -Wstrict-prototypes -Wold-style-definition"
+    CFLAGS=$CFLAGS" -Wpointer-arith -Werror=implicit-function-declaration"
+    CFLAGS=$CFLAGS" -O2"
+    # LTO：GCC 需要 gcc-ar；Clang（macOS/Darwin）直接用 ar，
+    # 链接时透明处理 bitcode。SunOS/AIX 不启用 LTO。
+    if [ "$OSNAME" != "SunOS" ] && [ "$OSNAME" != "AIX" ]
+    then
+        CFLAGS=$CFLAGS" -flto"
+        if [ "$OSNAME" = "Darwin" ]
+        then
+            ARCH="ar rcs"
+        elif command -v gcc-ar >/dev/null 2>&1
+        then
+            ARCH="gcc-ar rcsD"
+        else
+            ARCH="ar rcsD"
+        fi
+    fi
+    # _FORTIFY_SOURCE=2 需要 -O2 以上才生效
+    CFLAGS=$CFLAGS" -D_FORTIFY_SOURCE=2"
+fi
+# ------------------------------------------------
 if [ "$1" = "x64" ] || [ "$1" = "x86" ]
 then
     if [ "$1" = "x64" ]
@@ -205,6 +241,7 @@ proname=$PROGRAMNAME
 cd $mkmaindir
 echo ---------------------Make program file---------------------------
 echo "$CC $CFLAGS $mkmaincpp $INCLUDEPATH $LIBPATH $INCLUDELIB -l$LIBNAME -o $proname $EXTRALIB"
+# LTO 需要在链接阶段也传递 -flto，CFLAGS 已包含，直接复用
 $CC $CFLAGS $mkmaincpp $INCLUDEPATH $LIBPATH $INCLUDELIB -l$LIBNAME -o $proname $EXTRALIB
 if [ "$?" != "0" ]
 then

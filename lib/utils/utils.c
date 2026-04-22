@@ -930,21 +930,45 @@ char *readall(const char *file, size_t *lens) {
     if (NULL == fp) {
         return NULL;
     }
-    fseek(fp, 0, SEEK_END);
-    *lens = ftell(fp);
+    if (0 != fseek(fp, 0, SEEK_END)) {
+        fclose(fp);
+        return NULL;
+    }
+    long sz = ftell(fp);
+    /* ftell 对管道/特殊文件返回 -1，文件大小 0 也视为无效 */
+    if (sz <= 0) {
+        fclose(fp);
+        return NULL;
+    }
     rewind(fp);
     char *buf;
-    MALLOC(buf, (*lens) + 1);
-    fread(buf, 1, (*lens), fp);
+    MALLOC(buf, (size_t)sz + 1);
+    size_t got = fread(buf, 1, (size_t)sz, fp);
     fclose(fp);
-    buf[*lens] = '\0';
+    if (got != (size_t)sz) {
+        /* 短读：文件在读取过程中被截断或发生 I/O 错误 */
+        FREE(buf);
+        return NULL;
+    }
+    buf[sz] = '\0';
+    *lens = (size_t)sz;
     return buf;
 }
 int32_t timeoffset(void) {
     time_t now = time(NULL);
-    //系统时间转换为GMT时间 再将GMT时间重新转换为系统时间
-    time_t gt = mktime(gmtime(&now));
-    return ((int32_t)(now - gt) + (localtime(&gt)->tm_isdst ? 3600 : 0)) / 60;
+    /* gmtime/localtime 返回静态缓冲区指针，多线程并发调用存在数据竞争。
+     * 改用 gmtime_r / localtime_r（POSIX）或 gmtime_s / localtime_s（Windows）。*/
+    struct tm gmt_tm, loc_tm;
+#ifdef OS_WIN
+    gmtime_s(&gmt_tm, &now);
+    time_t gt = mktime(&gmt_tm);
+    localtime_s(&loc_tm, &gt);
+#else
+    gmtime_r(&now, &gmt_tm);
+    time_t gt = mktime(&gmt_tm);
+    localtime_r(&gt, &loc_tm);
+#endif
+    return ((int32_t)(now - gt) + (loc_tm.tm_isdst ? 3600 : 0)) / 60;
 }
 uint64_t nowms(void) {
     struct timeval tv;
@@ -958,11 +982,23 @@ uint64_t nowsec(void) {
 }
 void sectostr(uint64_t sec, const char *fmt, char time[TIME_LENS]) {
     time_t t = (time_t)sec;
-    strftime(time, TIME_LENS - 1, fmt, localtime(&t));
+    struct tm loc_tm;
+#ifdef OS_WIN
+    localtime_s(&loc_tm, &t);
+#else
+    localtime_r(&t, &loc_tm);
+#endif
+    strftime(time, TIME_LENS - 1, fmt, &loc_tm);
 }
 void mstostr(uint64_t ms, const char *fmt, char time[TIME_LENS]) {
     time_t t = (time_t)(ms / 1000);
-    strftime(time, TIME_LENS - 1, fmt, localtime(&t));
+    struct tm loc_tm;
+#ifdef OS_WIN
+    localtime_s(&loc_tm, &t);
+#else
+    localtime_r(&t, &loc_tm);
+#endif
+    strftime(time, TIME_LENS - 1, fmt, &loc_tm);
     size_t uilen = strlen(time);
     SNPRINTF(time + uilen, TIME_LENS - uilen, " %03d", (int32_t)(ms % 1000));
 }
@@ -1117,9 +1153,30 @@ char* strreverse(char* str) {
     }
     return str;
 }
+/* xorshift64* — 周期 2^64-1，质量远优于 rand()，无全局锁，线程局部状态。
+ * 种子用线程 ID + 当前时间组合，保证各线程序列不同。 */
+static uint64_t _xorshift64(void) {
+#ifdef OS_WIN
+    static __declspec(thread) uint64_t _tls_rand = 0;
+#else
+    static __thread uint64_t _tls_rand = 0;
+#endif
+    if (0 == _tls_rand) {
+        /* 首次调用：用线程 ID × 时间戳初始化，避免种子为 0 */
+        _tls_rand = (uint64_t)threadid() ^ (nowms() * 6364136223846793005ULL + 1442695040888963407ULL);
+        if (0 == _tls_rand) _tls_rand = 1;
+    }
+    uint64_t x = _tls_rand;
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    _tls_rand = x;
+    return x;
+}
 int32_t randrange(int32_t min, int32_t max) {
     ASSERTAB(max > min, "rand range max must big than min.");
-    return min + rand() % (max - min + 1);
+    uint32_t range = (uint32_t)(max - min + 1);
+    return min + (int32_t)(_xorshift64() % range);
 }
 char *randstr(char *buf, size_t len) {
     static char characters[] = {
@@ -1210,23 +1267,38 @@ buf_ctx *split(const void *ptr, size_t plens, const void *sep, size_t seplens, s
     return buf;
 }
 char *_format_va(const char *fmt, va_list args) {
-    int32_t rtn;
-    size_t size = 256;
+    /* 绝大多数日志行短于 512 字节，先用栈缓冲尝试格式化，
+     * 成功则 strdup 后返回，完全避免 malloc。
+     * 仅当消息超长时才按实际长度 malloc 并重试。 */
+#define _FMT_STACK_SIZE 512
+    char stk[_FMT_STACK_SIZE];
+    va_list args2;
+    va_copy(args2, args);
+    int32_t rtn = vsnprintf(stk, _FMT_STACK_SIZE, fmt, args);
+    if (rtn < 0) {
+        va_end(args2);
+        return NULL;
+    }
+    if (rtn < _FMT_STACK_SIZE) {
+        va_end(args2);
+        /* 使用项目自带的 _malloc 保持与 FREE() 配对 */
+        char *pbuff;
+        MALLOC(pbuff, (size_t)rtn + 1);
+        memcpy(pbuff, stk, (size_t)rtn + 1);
+        return pbuff;
+    }
+    /* 栈缓冲不足，精确分配并重试 */
+    size_t size = (size_t)rtn + 1;
     char *pbuff;
     MALLOC(pbuff, size);
-    while (1) {
-        rtn = vsnprintf(pbuff, size, fmt, args);
-        if (rtn < 0) {
-            FREE(pbuff);
-            return NULL;
-        }
-        if (rtn >= 0
-            && rtn < (int32_t)size) {
-            return pbuff;
-        }
-        size = rtn + 1;
-        REALLOC(pbuff, pbuff, size);
+    rtn = vsnprintf(pbuff, size, fmt, args2);
+    va_end(args2);
+    if (rtn < 0) {
+        FREE(pbuff);
+        return NULL;
     }
+    return pbuff;
+#undef _FMT_STACK_SIZE
 }
 char *format_va(const char *fmt, ...) {
     va_list args;

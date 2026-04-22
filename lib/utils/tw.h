@@ -3,6 +3,8 @@
 
 #include "thread/thread.h"
 #include "thread/spinlock.h"
+#include "thread/mutex.h"
+#include "thread/cond.h"
 #include "utils/timer.h"
 #include "base/structs.h"
 
@@ -31,6 +33,10 @@ typedef struct tw_ctx {
     spin_ctx spin;
     pthread_t thtw;
     timer_ctx timer;
+    /* mutex+cond 用于精确睡眠：tw_add 写入后唤醒轮线程，
+     * 替代原先每 1ms 无条件 USLEEP(1000) 的忙等待。 */
+    mutex_ctx mu;
+    cond_ctx  cond;
     tw_slot_ctx reqadd;
     tw_slot_ctx tv1[TVR_SIZE];
     tw_slot_ctx tv2[TVN_SIZE];

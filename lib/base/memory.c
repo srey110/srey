@@ -30,11 +30,18 @@ void *_calloc(size_t count, size_t size) {
 }
 void *_realloc(void* oldptr, size_t size) {
 #if MEMORY_CHECK
-    ATOMIC64_ADD(&_nalloc, 1);
-    ATOMIC64_ADD(&_nfree, 1);
+    /* realloc(NULL, n)  等价于 malloc(n)  — 只计 alloc，不计 free
+     * realloc(p, n>0)   调整大小         — 净增减为 0，两者都不计
+     * realloc(p, 0)     等价于 free(p)   — 只计 free，不计 alloc     */
+    if (NULL == oldptr) {
+        ATOMIC64_ADD(&_nalloc, 1);
+    } else if (0 == size) {
+        ATOMIC64_ADD(&_nfree, 1);
+    }
+    /* else: resize in-place, net accounting change = 0 */
 #endif
     void *ptr = realloc(oldptr, size);
-    if (NULL == ptr) {
+    if (NULL == ptr && size > 0) {
         LOG_ERROR("realloc(%p, %zu) failed!", oldptr, size);
         exit(ERR_FAILED);
     }

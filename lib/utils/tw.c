@@ -16,6 +16,10 @@ static void _free_slot(tw_slot_ctx *slot, const size_t len) {
 }
 void tw_free(tw_ctx *ctx) {
     ctx->exit = 1;
+    /* 唤醒轮线程，让它检查 exit 标志并退出 */
+    mutex_lock(&ctx->mu);
+    cond_signal(&ctx->cond);
+    mutex_unlock(&ctx->mu);
     thread_join(ctx->thtw);
     _free_slot(ctx->tv1, TVR_SIZE);
     _free_slot(ctx->tv2, TVN_SIZE);
@@ -24,6 +28,8 @@ void tw_free(tw_ctx *ctx) {
     _free_slot(ctx->tv5, TVN_SIZE);
     _free_slot(&ctx->reqadd, 1);
     spin_free(&ctx->spin);
+    cond_free(&ctx->cond);
+    mutex_free(&ctx->mu);
 }
 static void _insert(tw_slot_ctx *slot, tw_node_ctx *node) {
     if (NULL == slot->head) {
@@ -44,6 +50,11 @@ void tw_add(tw_ctx *ctx, const uint32_t timeout, tw_cb _cb, free_cb _freecb, ud_
     spin_lock(&ctx->spin);
     _insert(&ctx->reqadd, node);
     spin_unlock(&ctx->spin);
+    /* 唤醒轮线程，让它立即调度新加入的定时器，
+     * 避免等到下一个自然超时才感知到新任务。 */
+    mutex_lock(&ctx->mu);
+    cond_signal(&ctx->cond);
+    mutex_unlock(&ctx->mu);
 }
 static tw_slot_ctx *_getslot(tw_ctx *ctx, tw_node_ctx *node) {
     tw_slot_ctx *slot;
@@ -105,10 +116,12 @@ static void _run(tw_ctx *ctx) {
 }
 static void _loop(void *arg) {
     uint64_t curtick;
+    uint32_t sleep_ms;
     tw_node_ctx *next, *node;
     tw_ctx *ctx = (tw_ctx *)arg;
     ctx->jiffies = timer_cur_ms(&ctx->timer);
     while (0 == ctx->exit) {
+        /* 1. 将外部通过 tw_add 提交的节点分发到对应槽位 */
         spin_lock(&ctx->spin);
         node = ctx->reqadd.head;
         while (NULL != node) {
@@ -119,11 +132,27 @@ static void _loop(void *arg) {
         }
         ctx->reqadd.head = ctx->reqadd.tail = NULL;
         spin_unlock(&ctx->spin);
+
+        /* 2. 处理所有已到期的 jiffies */
         curtick = timer_cur_ms(&ctx->timer);
         while (ctx->jiffies <= curtick) {
             _run(ctx);
         }
-        USLEEP(1000);
+
+        /* 3. 精确睡眠直到下一个 jiffy 到期，而非固定 1ms 空转。
+         *    sleep_ms = max(1, min(next_jiffy - now, 10))
+         *    上限 10ms 保证不会因时钟偏差或系统负载导致长时间错过到期。
+         *    tw_add / tw_free 会提前 cond_signal 唤醒。 */
+        curtick = timer_cur_ms(&ctx->timer);
+        sleep_ms = (ctx->jiffies > curtick) ? (uint32_t)(ctx->jiffies - curtick) : 1;
+        if (sleep_ms > 10) {
+            sleep_ms = 10;
+        }
+        mutex_lock(&ctx->mu);
+        if (0 == ctx->exit) {
+            cond_timedwait(&ctx->cond, &ctx->mu, sleep_ms);
+        }
+        mutex_unlock(&ctx->mu);
     }
     LOG_INFO("%s", "timewheel thread exited.");
 }
@@ -131,6 +160,8 @@ void tw_init(tw_ctx *ctx) {
     ctx->exit = 0;
     ctx->jiffies = 0;
     spin_init(&ctx->spin, SPIN_CNT_TIMEWHEEL);
+    mutex_init(&ctx->mu);
+    cond_init(&ctx->cond);
     timer_init(&ctx->timer);
     ctx->reqadd.head = ctx->reqadd.tail = NULL;
     ZERO(ctx->tv1, sizeof(ctx->tv1));
