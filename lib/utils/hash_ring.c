@@ -1,4 +1,4 @@
-#include "hash_ring.h"
+﻿#include "hash_ring.h"
 
 typedef struct hash_ring_list {
     hash_ring_node *node;

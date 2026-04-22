@@ -1,4 +1,4 @@
-#include "lbind/lpub.h"
+﻿#include "lbind/lpub.h"
 
 #define COPY_TYPE(lua, idx) (lua_isinteger(lua, idx) ? (int32_t)luaL_checkinteger(lua, idx) : 1)
 

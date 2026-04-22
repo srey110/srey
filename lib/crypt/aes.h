@@ -1,4 +1,4 @@
-#ifndef AES_H_
+﻿#ifndef AES_H_
 #define AES_H_
 
 #include "base/macro.h"

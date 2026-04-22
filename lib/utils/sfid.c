@@ -1,4 +1,4 @@
-#include "utils/sfid.h"
+﻿#include "utils/sfid.h"
 #include "utils/utils.h"
 
 #define DefMachineBitLen 10

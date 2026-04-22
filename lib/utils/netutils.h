@@ -1,4 +1,4 @@
-#ifndef NETUTILS_H_
+﻿#ifndef NETUTILS_H_
 #define NETUTILS_H_
 
 #include "base/macro.h"

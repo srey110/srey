@@ -1,4 +1,4 @@
-#include "lbind/lpub.h"
+﻿#include "lbind/lpub.h"
 
 static int32_t _lutils_log_setlv(lua_State *lua) {
     LOG_LEVEL lv = (LOG_LEVEL)luaL_checkinteger(lua, 1);

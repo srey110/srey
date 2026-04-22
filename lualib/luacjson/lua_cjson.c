@@ -1,4 +1,4 @@
-/* Lua CJSON - JSON support for Lua
+﻿/* Lua CJSON - JSON support for Lua
  *
  * Copyright (c) 2010-2012  Mark Pulford <mark@kyne.com.au>
  *

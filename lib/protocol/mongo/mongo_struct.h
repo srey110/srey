@@ -1,4 +1,4 @@
-#ifndef MONGO_STRUCT_H_
+﻿#ifndef MONGO_STRUCT_H_
 #define MONGO_STRUCT_H_
 
 #include "protocol/mongo/mongo_macro.h"

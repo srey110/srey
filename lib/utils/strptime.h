@@ -1,4 +1,4 @@
-#ifndef STRPTIME_H_
+﻿#ifndef STRPTIME_H_
 #define STRPTIME_H_
 
 #include "base/macro.h"

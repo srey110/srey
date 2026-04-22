@@ -1,4 +1,4 @@
-#ifndef pb_h
+﻿#ifndef pb_h
 #define pb_h
 
 #ifndef PB_NS_BEGIN

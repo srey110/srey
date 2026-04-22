@@ -1,4 +1,4 @@
-#ifndef TASK_MYSQL_H_
+﻿#ifndef TASK_MYSQL_H_
 #define TASK_MYSQL_H_
 
 #include "lib.h"

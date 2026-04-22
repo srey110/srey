@@ -1,4 +1,4 @@
-#ifndef TASK_SSL_H_
+﻿#ifndef TASK_SSL_H_
 #define TASK_SSL_H_
 
 #include "lib.h"

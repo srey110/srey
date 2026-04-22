@@ -1,4 +1,4 @@
-#include "protocol/pgsql/pgsql_parse.h"
+﻿#include "protocol/pgsql/pgsql_parse.h"
 
 //ErrorResponse NoticeResponse
 char *_pgpack_error_notice(binary_ctx *breader) {

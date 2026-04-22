@@ -1,4 +1,4 @@
-/*
+﻿/*
 Minimal asymmetric stackful cross-platform coroutine library in pure C.
 minicoro - v0.2.0 - 15/Nov/2023
 Eduardo Bart - edub4rt@gmail.com

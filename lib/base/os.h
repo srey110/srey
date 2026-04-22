@@ -1,4 +1,4 @@
-#ifndef OS_H_
+﻿#ifndef OS_H_
 #define OS_H_
 
 /*check system https://sourceforge.net/p/predef/wiki/OperatingSystems/ */

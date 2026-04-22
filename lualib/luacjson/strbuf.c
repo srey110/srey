@@ -1,4 +1,4 @@
-/* strbuf - String buffer routines
+﻿/* strbuf - String buffer routines
  *
  * Copyright (c) 2010-2012  Mark Pulford <mark@kyne.com.au>
  *

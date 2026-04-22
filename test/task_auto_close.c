@@ -1,4 +1,4 @@
-#include "task_auto_close.h"
+﻿#include "task_auto_close.h"
 
 static int32_t _prt = 0;
 static void _closing(task_ctx *task) {

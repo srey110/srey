@@ -1,4 +1,4 @@
-#include "crypt/des.h"
+﻿#include "crypt/des.h"
 #include "crypt/padding.h"
 
 #define BITNUM(a,b,c) (((a[(b)/8] >> (7 - (b%8))) & 0x01) << (c))

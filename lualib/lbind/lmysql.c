@@ -1,4 +1,4 @@
-#include "lbind/lpub.h"
+﻿#include "lbind/lpub.h"
 
 static int32_t _lmysql_bind_new(lua_State *lua) {
     mysql_bind_ctx *mbind = lua_newuserdata(lua, sizeof(mysql_bind_ctx));

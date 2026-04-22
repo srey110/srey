@@ -1,4 +1,4 @@
-#ifndef ERR_H_
+﻿#ifndef ERR_H_
 #define ERR_H_
 
 #define ERR_OK       0

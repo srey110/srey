@@ -1,4 +1,4 @@
-#ifndef MQTT_STRUCT_H_
+﻿#ifndef MQTT_STRUCT_H_
 #define MQTT_STRUCT_H_
 
 #include "event/event.h"

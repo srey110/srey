@@ -1,4 +1,4 @@
-#ifndef PGSQL_BIND_H_
+﻿#ifndef PGSQL_BIND_H_
 #define PGSQL_BIND_H_
 
 #include "protocol/pgsql/pgsql_struct.h"

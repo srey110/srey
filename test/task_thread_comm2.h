@@ -1,4 +1,4 @@
-#ifndef TASK_THREAD_COMM2_H_
+﻿#ifndef TASK_THREAD_COMM2_H_
 #define TASK_THREAD_COMM2_H_
 
 #include "lib.h"

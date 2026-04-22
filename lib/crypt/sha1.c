@@ -1,4 +1,4 @@
-#include "crypt/sha1.h"
+﻿#include "crypt/sha1.h"
 
 #define ROTLEFT(a, b) ((a << b) | (a >> (32 - b)))
 

@@ -1,4 +1,4 @@
-#include "protocol/pgsql/pgsql_bind.h"
+﻿#include "protocol/pgsql/pgsql_bind.h"
 
 void pgsql_bind_init(pgsql_bind_ctx *bind, uint16_t nparam) {
     bind->nparam = nparam;

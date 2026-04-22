@@ -1,4 +1,4 @@
-#include "crypt/md2.h"
+﻿#include "crypt/md2.h"
 
 static const uint8_t s[256] = {
     41, 46, 67, 201, 162, 216, 124, 1, 61, 54, 84, 161, 236, 240, 6,

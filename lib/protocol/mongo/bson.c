@@ -1,4 +1,4 @@
-#include "protocol/mongo/bson.h"
+﻿#include "protocol/mongo/bson.h"
 
 #define BSON_APPEND_CSTRING(str) binary_set_string(&bson->doc, str, 0)
 #define BSON_APPEND_KEY(type) \

@@ -1,4 +1,4 @@
-#ifndef BSON_H_
+﻿#ifndef BSON_H_
 #define BSON_H_
 
 #include "utils/binary.h"

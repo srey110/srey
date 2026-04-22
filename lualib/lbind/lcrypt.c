@@ -1,4 +1,4 @@
-#include "lbind/lpub.h"
+﻿#include "lbind/lpub.h"
 
 static int32_t _lcrypt_url_encode(lua_State *lua) {
     void *data;

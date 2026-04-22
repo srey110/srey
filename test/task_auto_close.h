@@ -1,4 +1,4 @@
-#ifndef TASK_AUTO_CLOSE_H_
+﻿#ifndef TASK_AUTO_CLOSE_H_
 #define TASK_AUTO_CLOSE_H_
 
 #include "lib.h"

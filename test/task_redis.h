@@ -1,4 +1,4 @@
-#ifndef TASK_REDIS_H_
+﻿#ifndef TASK_REDIS_H_
 #define TASK_REDIS_H_
 
 #include "lib.h"

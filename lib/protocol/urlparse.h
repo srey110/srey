@@ -1,4 +1,4 @@
-#ifndef URL_PARSE_H_
+﻿#ifndef URL_PARSE_H_
 #define URL_PARSE_H_
 
 #include "base/structs.h"

@@ -1,4 +1,4 @@
-#ifndef MACRO_WIN_H_
+﻿#ifndef MACRO_WIN_H_
 #define MACRO_WIN_H_
 
 #include "base/os.h"

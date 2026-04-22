@@ -1,4 +1,4 @@
-#ifndef BINARY_H_
+﻿#ifndef BINARY_H_
 #define BINARY_H_
 
 #include "base/structs.h"

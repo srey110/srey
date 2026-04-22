@@ -1,4 +1,4 @@
-#ifndef MD5_H_
+﻿#ifndef MD5_H_
 #define MD5_H_
 
 #include "base/macro.h"

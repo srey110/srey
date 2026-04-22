@@ -1,4 +1,4 @@
-#ifndef LOG_H_
+﻿#ifndef LOG_H_
 #define LOG_H_
 
 #include "base/macro.h"

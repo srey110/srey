@@ -1,4 +1,4 @@
-#ifndef TASK_RORO_NET_H_
+﻿#ifndef TASK_RORO_NET_H_
 #define TASK_RORO_NET_H_
 
 #include "lib.h"

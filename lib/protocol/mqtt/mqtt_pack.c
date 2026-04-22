@@ -1,4 +1,4 @@
-#include "protocol/mqtt/mqtt_pack.h"
+﻿#include "protocol/mqtt/mqtt_pack.h"
 
 static int32_t _mqtt_varlens_encode(uint32_t vlens, char buf[4]) {
     if (vlens >= 0x10000000) {

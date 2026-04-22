@@ -1,4 +1,4 @@
-#ifndef MYSQL_READER_H_
+﻿#ifndef MYSQL_READER_H_
 #define MYSQL_READER_H_
 
 #include "protocol/mysql/mysql.h"

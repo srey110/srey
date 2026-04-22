@@ -1,4 +1,4 @@
-#ifndef TASK_PGGSQL_H_
+﻿#ifndef TASK_PGGSQL_H_
 #define TASK_PGGSQL_H_
 
 #include "lib.h"

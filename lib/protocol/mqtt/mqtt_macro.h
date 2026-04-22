@@ -1,4 +1,4 @@
-#ifndef MQTT_MACRO_H_
+﻿#ifndef MQTT_MACRO_H_
 #define MQTT_MACRO_H_
 
 #include "base/macro.h"

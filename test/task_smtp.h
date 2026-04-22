@@ -1,4 +1,4 @@
-#ifndef TASK_SMTP_H_
+﻿#ifndef TASK_SMTP_H_
 #define TASK_SMTP_H_
 
 #include "lib.h"

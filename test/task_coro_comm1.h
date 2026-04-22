@@ -1,4 +1,4 @@
-#ifndef TASK_CORO_COMM1_H_
+﻿#ifndef TASK_CORO_COMM1_H_
 #define TASK_CORO_COMM1_H_
 
 #include "lib.h"

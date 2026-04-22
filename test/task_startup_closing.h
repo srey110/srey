@@ -1,4 +1,4 @@
-#ifndef TASK_STARTUP_CLOSING_H_
+﻿#ifndef TASK_STARTUP_CLOSING_H_
 #define TASK_STARTUP_CLOSING_H_
 
 #include "lib.h"

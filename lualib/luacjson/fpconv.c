@@ -1,4 +1,4 @@
-/* fpconv - Floating point conversion routines
+﻿/* fpconv - Floating point conversion routines
  *
  * Copyright (c) 2011-2012  Mark Pulford <mark@kyne.com.au>
  *

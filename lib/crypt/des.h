@@ -1,4 +1,4 @@
-#ifndef DES_H_
+﻿#ifndef DES_H_
 #define DES_H_
 
 #include "base/macro.h"

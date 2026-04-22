@@ -1,4 +1,4 @@
-#ifndef LTASK_H_
+﻿#ifndef LTASK_H_
 #define LTASK_H_
 
 #include "lbind/lpub.h"

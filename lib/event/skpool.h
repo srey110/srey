@@ -1,4 +1,4 @@
-#ifndef SOCK_POOL_H_
+﻿#ifndef SOCK_POOL_H_
 #define SOCK_POOL_H_
 
 #include "containers/queue.h"

@@ -1,4 +1,4 @@
-/*
+﻿/*
 ** LuaFileSystem
 ** File system manipulation library
 **

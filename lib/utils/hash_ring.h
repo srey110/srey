@@ -1,4 +1,4 @@
-#ifndef HASH_RING_H_
+﻿#ifndef HASH_RING_H_
 #define HASH_RING_H_
 
 #include "crypt/digest.h"

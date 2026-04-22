@@ -1,4 +1,4 @@
-#include "crypt/cipher.h"
+﻿#include "crypt/cipher.h"
 #include "crypt/padding.h"
 
 void cipher_init(cipher_ctx *cipher, engine_type engine, cipher_model model,

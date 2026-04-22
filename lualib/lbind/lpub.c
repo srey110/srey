@@ -1,4 +1,4 @@
-#include "lbind/lpub.h"
+﻿#include "lbind/lpub.h"
 
 void *global_userdata(lua_State *lua, const char *name) {
     if (LUA_TLIGHTUSERDATA != lua_getglobal(lua, name)) {

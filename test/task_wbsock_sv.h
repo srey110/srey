@@ -1,4 +1,4 @@
-#ifndef TASK_WBSOCK_H_
+﻿#ifndef TASK_WBSOCK_H_
 #define TASK_WBSOCK_H_
 
 #include "lib.h"

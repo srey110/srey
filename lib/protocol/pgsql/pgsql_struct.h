@@ -1,4 +1,4 @@
-#ifndef PGSQL_STRUCT_H_
+﻿#ifndef PGSQL_STRUCT_H_
 #define PGSQL_STRUCT_H_
 
 #include "srey/spub.h"

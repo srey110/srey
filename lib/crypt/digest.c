@@ -1,4 +1,4 @@
-#include "crypt/digest.h"
+﻿#include "crypt/digest.h"
 
 void digest_init(digest_ctx *digest, digest_type dtype) {
     switch (dtype) {

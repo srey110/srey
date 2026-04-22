@@ -1,4 +1,4 @@
-/* Lua CJSON floating point conversion routines */
+﻿/* Lua CJSON floating point conversion routines */
 
 /* Buffer required to store the largest string representation of a double.
  *
