@@ -1,4 +1,4 @@
-#include "crypt/cipher.h"
+ï»¿#include "crypt/cipher.h"
 #include "crypt/padding.h"
 
 void cipher_init(cipher_ctx *cipher, engine_type engine, cipher_model model,
@@ -15,7 +15,8 @@ void cipher_init(cipher_ctx *cipher, engine_type engine, cipher_model model,
             || OFB == cipher->model
             || CTR == cipher->model) {
             aes_init(cipher->cur_ctx, key, klens, keybits, 1);
-        } else {
+        }
+        else {
             aes_init(cipher->cur_ctx, key, klens, keybits, 0);
         }
         return;
@@ -28,7 +29,8 @@ void cipher_init(cipher_ctx *cipher, engine_type engine, cipher_model model,
         || OFB == cipher->model
         || CTR == cipher->model) {
         des_init(cipher->cur_ctx, key, klens, DES3 == engine, 1);
-    } else {
+    }
+    else {
         des_init(cipher->cur_ctx, key, klens, DES3 == engine, 0);
     }
 }
@@ -68,7 +70,7 @@ static const void *_process_data(cipher_ctx *cipher, const void *data, size_t le
     if (lens > cipher->block_lens) {
         return NULL;
     }
-    //½âÃÜ
+    //è§£å¯†
     if (!cipher->encrypt) {
         if (lens != cipher->block_lens) {
             if (ECB == cipher->model
@@ -82,7 +84,7 @@ static const void *_process_data(cipher_ctx *cipher, const void *data, size_t le
         *size = lens;
         return data;
     }
-    //¼ÓÃÜ ÎÞÌî³ä
+    //åŠ å¯† æ— å¡«å……
     if (NoPadding == cipher->padding) {
         if (lens != cipher->block_lens
             && (ECB == cipher->model || CBC == cipher->model)) {
@@ -91,7 +93,7 @@ static const void *_process_data(cipher_ctx *cipher, const void *data, size_t le
         *size = lens;
         return data;
     }
-    //Ìî³ä
+    //å¡«å……
     if (lens < cipher->block_lens) {
         _padding_data(cipher->padding, data, lens, cipher->pd_data, cipher->block_lens);
         *size = cipher->block_lens;
@@ -109,7 +111,7 @@ static void _inc_iv(uint8_t *iv, int32_t block_lens, int32_t counter_size) {
     int32_t nonce_idx = block_lens - counter_size;
     for (int32_t idx = block_lens - 1; idx >= nonce_idx; idx--) {
         iv[idx]++;
-        if ( 0 != iv[idx]
+        if (0 != iv[idx]
             || idx == nonce_idx) {
             break;
         }
@@ -136,7 +138,8 @@ static inline void *_cfb_model(cipher_ctx *cipher, const void *data, size_t lens
         void *en;
         if (cipher->encrypt) {
             en = (void *)cipher->_cipher(cipher->cur_ctx, cipher->xor_data);
-        } else {
+        }
+        else {
             en = (void *)cipher->_cipher(cipher->cur_ctx, data);
         }
         memcpy(cipher->cur_iv, en, cipher->block_lens);
@@ -210,7 +213,8 @@ size_t cipher_dofinal(cipher_ctx *cipher, const void *data, size_t lens, char *o
                 memcpy(output + size, buf, enlens);
                 size += enlens;
             }
-        } else {
+        }
+        else {
             size -= (uint8_t)output[size - 1];
         }
     }

@@ -1,4 +1,4 @@
-#include "crypt/crc.h"
+﻿#include "crypt/crc.h"
 
 static const uint16_t crc16_tab[256] = {
     0x0000, 0xC0C1, 0xC181, 0x0140, 0xC301, 0x03C0, 0x0280, 0xC241,

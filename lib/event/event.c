@@ -1,4 +1,4 @@
-#include "event/event.h"
+﻿#include "event/event.h"
 #include "utils/netutils.h"
 
 typedef enum ud_type {
@@ -61,15 +61,15 @@ SOCKET _udp(netaddr_ctx *addr) {
 #ifdef EV_IOCP
     DWORD bytes = 0;
     BOOL behavior = FALSE;
-    if (WSAIoctl(fd, 
-                 SIO_UDP_CONNRESET,
-                 &behavior, 
-                 sizeof(behavior),
-                 NULL,
-                 0, 
-                 &bytes,
-                 NULL, 
-                 NULL) < ERR_OK) {
+    if (WSAIoctl(fd,
+        SIO_UDP_CONNRESET,
+        &behavior,
+        sizeof(behavior),
+        NULL,
+        0,
+        &bytes,
+        NULL,
+        NULL) < ERR_OK) {
         CLOSE_SOCK(fd);
         LOG_ERROR("WSAIoctl(%d, SIO_UDP_CONNRESET...) failed. %s", (int32_t)fd, ERRORSTR(ERRNO));
         return INVALID_SOCK;
@@ -106,12 +106,12 @@ static int32_t _sock_read_normal(SOCKET fd, IOV_TYPE *iov, uint32_t niov, size_t
 #ifdef EV_IOCP 
     DWORD bytes, flags = 0;
     if (SOCKET_ERROR != WSARecv(fd,
-                                iov,
-                                niov,
-                                &bytes,
-                                &flags,
-                                NULL,
-                                NULL)) {
+        iov,
+        niov,
+        &bytes,
+        &flags,
+        NULL,
+        NULL)) {
         if (bytes > 0) {
             *readed = bytes;
             return ERR_OK;
@@ -180,7 +180,8 @@ static void _bufs_size_del(qu_off_buf_ctx *buf_s, size_t len) {
             FREE(buf->data);
             len -= buflen;
             qu_off_buf_pop(buf_s);
-        } else {
+        }
+        else {
             buf->offset += len;
             len = 0;
         }
@@ -191,12 +192,12 @@ static int32_t _sock_send_iov(SOCKET fd, IOV_TYPE *iov, uint32_t niov, size_t *s
 #ifdef EV_IOCP
     DWORD bytes;
     if (SOCKET_ERROR != WSASend(fd,
-                                iov, 
-                                niov, 
-                                &bytes,
-                                0, 
-                                NULL, 
-                                NULL)) {
+        iov,
+        niov,
+        &bytes,
+        0,
+        NULL,
+        NULL)) {
         *sended = bytes;
         return ERR_OK;
     }
@@ -227,7 +228,8 @@ static int32_t _sock_send_normal(SOCKET fd, qu_off_buf_ctx *buf_s, size_t *nsend
         if (ERR_OK == rtn) {
             *nsend += size;
             _bufs_size_del(buf_s, size);
-        } else {
+        }
+        else {
             break;
         }
     }
@@ -251,10 +253,12 @@ static int32_t _sock_send_ssl(SSL *ssl, qu_off_buf_ctx *buf_s, size_t *nsend) {
                 qu_off_buf_pop(buf_s);
                 FREE(buf->data);
                 continue;
-            } else {
+            }
+            else {
                 break;
             }
-        } else {
+        }
+        else {
             break;
         }
     }

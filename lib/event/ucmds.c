@@ -1,4 +1,4 @@
-#include "event/uev.h"
+﻿#include "event/uev.h"
 #include "containers/hashmap.h"
 
 #ifndef EV_IOCP
@@ -87,7 +87,8 @@ int32_t ev_send(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *data, size_t len, i
         MALLOC(buf, len);
         memcpy(buf, data, len);
         cmd.arg = (uint64_t)buf;
-    } else {
+    }
+    else {
         cmd.arg = (uint64_t)data;
     }
     _SEND_CMD(ctx, cmd);

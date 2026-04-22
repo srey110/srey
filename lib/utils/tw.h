@@ -1,4 +1,4 @@
-#ifndef TW_H_
+ï»¿#ifndef TW_H_
 #define TW_H_
 
 #include "thread/thread.h"
@@ -16,9 +16,9 @@
 typedef void(*tw_cb)(ud_cxt *ud);
 typedef struct tw_node_ctx {
     struct tw_node_ctx *next;
-    tw_cb _cb;//»Øµ÷º¯Êı
+    tw_cb _cb;//å›è°ƒå‡½æ•°
     free_cb _freecb;
-    ud_cxt ud;//ÓÃ»§Êı¾İ
+    ud_cxt ud;//ç”¨æˆ·æ•°æ®
     uint64_t expires;
 }tw_node_ctx;
 typedef struct tw_slot_ctx {
@@ -39,23 +39,23 @@ typedef struct tw_ctx {
     tw_slot_ctx tv5[TVN_SIZE];
 }tw_ctx;
 /// <summary>
-/// Ê±¼äÂÖ³õÊ¼»¯
+/// æ—¶é—´è½®åˆå§‹åŒ–
 /// </summary>
 /// <param name="ctx">tw_ctx</param>
 void tw_init(tw_ctx *ctx);
 /// <summary>
-/// Ê±¼äÂÖÊÍ·Å
+/// æ—¶é—´è½®é‡Šæ”¾
 /// </summary>
 /// <param name="ctx">tw_ctx</param>
 void tw_free(tw_ctx *ctx);
 /// <summary>
-/// Ìí¼Ó¼ÆÊ±ÈÎÎñ
+/// æ·»åŠ è®¡æ—¶ä»»åŠ¡
 /// </summary>
 /// <param name="ctx">tw_ctx</param>
-/// <param name="timeout">³¬Ê± ºÁÃë</param>
-/// <param name="_cb">³¬Ê±»Øµ÷º¯Êı</param>
-/// <param name="_freecb">²ÎÊıÊÍ·Åº¯Êı</param>
-/// <param name="ud">²ÎÊı</param>
+/// <param name="timeout">è¶…æ—¶ æ¯«ç§’</param>
+/// <param name="_cb">è¶…æ—¶å›è°ƒå‡½æ•°</param>
+/// <param name="_freecb">å‚æ•°é‡Šæ”¾å‡½æ•°</param>
+/// <param name="ud">å‚æ•°</param>
 void tw_add(tw_ctx *ctx, const uint32_t timeout, tw_cb _cb, free_cb _freecb, ud_cxt *ud);
 
 #endif//TW_H_

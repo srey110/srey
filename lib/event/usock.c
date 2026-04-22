@@ -1,4 +1,4 @@
-#include "event/uev.h"
+ï»¿#include "event/uev.h"
 #include "utils/buffer.h"
 #include "utils/netutils.h"
 #include "containers/hashmap.h"
@@ -118,7 +118,8 @@ void _reset_sk(sock_ctx *skctx, SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
 ud_cxt *_get_ud(sock_ctx *skctx) {
     if (SOCK_STREAM == skctx->type) {
         return &UPCAST(skctx, tcp_ctx, sock)->ud;
-    } else {
+    }
+    else {
         return &UPCAST(skctx, udp_ctx, sock)->ud;
     }
 }
@@ -127,7 +128,8 @@ int32_t _check_skid(sock_ctx *skctx, const uint64_t skid) {
         if (skid == UPCAST(skctx, tcp_ctx, sock)->skid) {
             return ERR_OK;
         }
-    } else {
+    }
+    else {
         if (skid == UPCAST(skctx, udp_ctx, sock)->skid) {
             return ERR_OK;
         }
@@ -142,7 +144,8 @@ void _disconnect(watcher_ctx *watcher, sock_ctx *skctx) {
         }
         BIT_SET(tcp->status, STATUS_ERROR);
         _sk_shutdown(skctx);
-    } else {
+    }
+    else {
         udp_ctx *udp = UPCAST(skctx, udp_ctx, sock);
         if (BIT_CHECK(udp->status, STATUS_ERROR)) {
             return;
@@ -207,15 +210,16 @@ static int32_t _ssl_exchange(watcher_ctx *watcher, tcp_ctx *tcp, struct evssl_ct
     }
     if (BIT_CHECK(tcp->status, STATUS_CLIENT)) {
         switch (evssl_tryconn(tcp->ssl)) {
-        case ERR_FAILED://´íÎó
+        case ERR_FAILED://é”™è¯¯
             return ERR_FAILED;
-        case 1://Íê³É
+        case 1://å®Œæˆ
             return _call_ssl_exchanged_cb(watcher->ev, tcp);
-        case ERR_OK://µÈ´ý¸ü¶àÊý¾Ý
+        case ERR_OK://ç­‰å¾…æ›´å¤šæ•°æ®
             BIT_SET(tcp->status, STATUS_AUTHSSL);
             break;
         }
-    } else {
+    }
+    else {
         BIT_SET(tcp->status, STATUS_AUTHSSL);
     }
     return ERR_OK;
@@ -241,13 +245,15 @@ void _try_ssl_exchange(watcher_ctx *watcher, sock_ctx *skctx, struct evssl_ctx *
     }
     if (client) {
         BIT_SET(tcp->status, STATUS_CLIENT);
-    } else {
+    }
+    else {
         BIT_REMOVE(tcp->status, STATUS_CLIENT);
     }
     if (BIT_CHECK(skctx->events, EVENT_WRITE)) {
         tcp->evssl = evssl;
         BIT_SET(tcp->status, STATUS_SSLEXCHANGE);
-    } else {
+    }
+    else {
         if (ERR_OK != _ssl_exchange(watcher, tcp, evssl)) {
             _disconnect(watcher, skctx);
             LOG_ERROR("ssl exchange error.");
@@ -319,17 +325,19 @@ static void _on_rw_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
         && !BIT_CHECK(tcp->status, STATUS_ERROR)) {
         if (BIT_CHECK(tcp->status, STATUS_CLIENT)) {
             rtn = evssl_tryconn(tcp->ssl);
-        } else {
+        }
+        else {
             rtn = evssl_tryacpt(tcp->ssl);
         }
         switch (rtn) {
-        case ERR_FAILED://´íÎó
+        case ERR_FAILED://é”™è¯¯
             BIT_SET(tcp->status, STATUS_ERROR);
             break;
-        case 1://Íê³É
+        case 1://å®Œæˆ
             if (ERR_OK == _call_ssl_exchanged_cb(watcher->ev, tcp)) {
                 BIT_REMOVE(tcp->status, STATUS_AUTHSSL);
-            } else {
+            }
+            else {
                 BIT_SET(tcp->status, STATUS_ERROR);
             }
 #ifdef READV_EINVAL
@@ -337,12 +345,13 @@ static void _on_rw_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
 #else
             break;
 #endif
-        case ERR_OK://µÈ´ý¸ü¶àÊý¾Ý
+        case ERR_OK://ç­‰å¾…æ›´å¤šæ•°æ®
 #ifdef MANUAL_ADD
             if (ERR_OK != _add_event(watcher, tcp->sock.fd, &tcp->sock.events, EVENT_READ, &tcp->sock)) {
                 BIT_SET(tcp->status, STATUS_ERROR);
                 break;
-            } else {
+            }
+            else {
                 return;
             }
 #else
@@ -371,7 +380,8 @@ void _add_write_inloop(watcher_ctx *watcher, sock_ctx *skctx, off_buf_ctx *buf) 
     if (SOCK_STREAM == skctx->type) {
         tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
         qu_off_buf_push(&tcp->buf_s, buf);
-    } else {
+    }
+    else {
         udp_ctx *udp = UPCAST(skctx, udp_ctx, sock);
         qu_off_buf_push(&udp->buf_s, buf);
     }
@@ -455,7 +465,7 @@ int32_t ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const u
 }
 void _add_conn_inloop(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx) {
     _add_fd(watcher, skctx);
-    if(ERR_OK != _add_event(watcher, fd, &skctx->events, EVENT_WRITE, skctx)) {
+    if (ERR_OK != _add_event(watcher, fd, &skctx->events, EVENT_WRITE, skctx)) {
         tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
         _call_conn_cb(watcher->ev, tcp, ERR_FAILED);
         skctx->ev_cb = _on_rw_cb;
@@ -482,7 +492,8 @@ static void _on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
         to = GET_PTR(watcher->ev->watcher, watcher->ev->nthreads, fd);
         if (to->index == watcher->index) {
             _add_acpfd_inloop(to, fd, acpt->lsn);
-        } else {
+        }
+        else {
             _cmd_add_acpfd(to, fd, acpt->lsn);
         }
     }
@@ -664,15 +675,17 @@ static void _init_msghdr(struct msghdr *msg, netaddr_ctx *addr, IOV_TYPE *iov, u
     msg->msg_iov = iov;
     msg->msg_iovlen = niov;
 }
-static int32_t _on_udp_rcb(watcher_ctx *watcher, udp_ctx *udp) { 
+static int32_t _on_udp_rcb(watcher_ctx *watcher, udp_ctx *udp) {
     int32_t rtn = (int32_t)recvmsg(udp->sock.fd, &udp->msg, 0);
     if (rtn > 0) {
         _call_recvfrom_cb(watcher->ev, udp, (size_t)rtn);
         rtn = ERR_OK;
-    } else {
+    }
+    else {
         if (0 == rtn) {
             rtn = ERR_FAILED;
-        } else {
+        }
+        else {
             if (ERR_RW_RETRIABLE(ERRNO)) {
                 rtn = ERR_OK;
             }
@@ -700,10 +713,12 @@ static int32_t _on_udp_wcb(watcher_ctx *watcher, udp_ctx *udp) {
         FREE(buf->data);
         if (rtn > 0) {
             rtn = ERR_OK;
-        } else {
+        }
+        else {
             if (0 == rtn) {
                 rtn = ERR_FAILED;
-            } else {
+            }
+            else {
                 if (ERR_RW_RETRIABLE(ERRNO)) {
                     rtn = ERR_OK;
                 }

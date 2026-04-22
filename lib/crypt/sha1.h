@@ -1,4 +1,4 @@
-#ifndef SHA1_H_
+﻿#ifndef SHA1_H_
 #define SHA1_H_
 
 #include "base/macro.h"

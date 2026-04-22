@@ -1,4 +1,4 @@
-#ifndef RWLOCK_H_
+ï»¿#ifndef RWLOCK_H_
 #define RWLOCK_H_
 
 #include "base/macro.h"
@@ -12,7 +12,7 @@ typedef struct rwlock_ctx {
 #endif
 }rwlock_ctx;
 /// <summary>
-/// ¶ÁĞ´Ëø³õÊ¼»¯
+/// è¯»å†™é”åˆå§‹åŒ–
 /// </summary>
 /// <param name="ctx">rwlock_ctx</param>
 static inline void rwlock_init(rwlock_ctx *ctx) {
@@ -25,7 +25,7 @@ static inline void rwlock_init(rwlock_ctx *ctx) {
 #endif
 };
 /// <summary>
-/// ¶ÁĞ´ËøÊÍ·Å
+/// è¯»å†™é”é‡Šæ”¾
 /// </summary>
 /// <param name="ctx">rwlock_ctx</param>
 static inline void rwlock_free(rwlock_ctx *ctx) {
@@ -35,7 +35,7 @@ static inline void rwlock_free(rwlock_ctx *ctx) {
 #endif
 };
 /// <summary>
-/// ¶ÁËø¶¨
+/// è¯»é”å®š
 /// </summary>
 /// <param name="ctx">rwlock_ctx</param>
 static inline void rwlock_rdlock(rwlock_ctx *ctx) {
@@ -46,10 +46,10 @@ static inline void rwlock_rdlock(rwlock_ctx *ctx) {
 #endif
 };
 /// <summary>
-/// ³¢ÊÔ¶ÁËø¶¨
+/// å°è¯•è¯»é”å®š
 /// </summary>
 /// <param name="ctx">rwlock_ctx</param>
-/// <returns>ERR_OK ³É¹¦</returns>
+/// <returns>ERR_OK æˆåŠŸ</returns>
 static inline int32_t rwlock_tryrdlock(rwlock_ctx *ctx) {
 #if defined(OS_WIN)
     return 0 != TryAcquireSRWLockShared(&ctx->rwlock) ? ERR_OK : ERR_FAILED;
@@ -58,7 +58,7 @@ static inline int32_t rwlock_tryrdlock(rwlock_ctx *ctx) {
 #endif
 };
 /// <summary>
-/// Ğ´Ëø¶¨
+/// å†™é”å®š
 /// </summary>
 /// <param name="ctx">rwlock_ctx</param>
 static inline void rwlock_wrlock(rwlock_ctx *ctx) {
@@ -70,10 +70,10 @@ static inline void rwlock_wrlock(rwlock_ctx *ctx) {
 #endif
 };
 /// <summary>
-/// ³¢ÊÔĞ´Ëø¶¨
+/// å°è¯•å†™é”å®š
 /// </summary>
 /// <param name="ctx">rwlock_ctx</param>
-/// <returns>ERR_OK ³É¹¦</returns>
+/// <returns>ERR_OK æˆåŠŸ</returns>
 static inline int32_t rwlock_trywrlock(rwlock_ctx *ctx) {
 #if defined(OS_WIN)
     if (0 != TryAcquireSRWLockExclusive(&ctx->rwlock)) {
@@ -86,7 +86,7 @@ static inline int32_t rwlock_trywrlock(rwlock_ctx *ctx) {
 #endif
 };
 /// <summary>
-/// ½âËø
+/// è§£é”
 /// </summary>
 /// <param name="ctx">rwlock_ctx</param>
 static inline void rwlock_unlock(rwlock_ctx *ctx) {
@@ -94,7 +94,8 @@ static inline void rwlock_unlock(rwlock_ctx *ctx) {
     if (0 != ctx->wlock) {
         ctx->wlock = 0;
         ReleaseSRWLockExclusive(&ctx->rwlock);
-    } else {
+    }
+    else {
         ReleaseSRWLockShared(&ctx->rwlock);
     }
 #else

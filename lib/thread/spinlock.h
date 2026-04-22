@@ -1,4 +1,4 @@
-#ifndef SPINLOCK_H_
+ï»¿#ifndef SPINLOCK_H_
 #define SPINLOCK_H_
 
 #include "base/macro.h"
@@ -11,10 +11,10 @@ typedef os_unfair_lock spin_ctx;
 typedef pthread_spinlock_t spin_ctx;
 #endif
 /// <summary>
-/// ×ÔĞıËø³õÊ¼»¯
+/// è‡ªæ—‹é”åˆå§‹åŒ–
 /// </summary>
 /// <param name="ctx">spin_ctx</param>
-/// <param name="spcnt">´ÎÊı</param>
+/// <param name="spcnt">æ¬¡æ•°</param>
 static inline void spin_init(spin_ctx *ctx, const uint32_t spcnt) {
 #if defined(OS_WIN)
     ASSERTAB(InitializeCriticalSectionAndSpinCount(ctx, spcnt), ERRORSTR(ERRNO));
@@ -25,7 +25,7 @@ static inline void spin_init(spin_ctx *ctx, const uint32_t spcnt) {
 #endif
 };
 /// <summary>
-/// ×ÔĞıËøÊÍ·Å
+/// è‡ªæ—‹é”é‡Šæ”¾
 /// </summary>
 /// <param name="ctx">spin_ctx</param>
 static inline void spin_free(spin_ctx *ctx) {
@@ -37,7 +37,7 @@ static inline void spin_free(spin_ctx *ctx) {
 #endif
 };
 /// <summary>
-/// Ëø¶¨
+/// é”å®š
 /// </summary>
 /// <param name="ctx">spin_ctx</param>
 static inline void spin_lock(spin_ctx *ctx) {
@@ -50,10 +50,10 @@ static inline void spin_lock(spin_ctx *ctx) {
 #endif
 };
 /// <summary>
-/// ³¢ÊÔËø¶¨
+/// å°è¯•é”å®š
 /// </summary>
 /// <param name="ctx">spin_ctx</param>
-/// <returns>ERR_OK ³É¹¦</returns>
+/// <returns>ERR_OK æˆåŠŸ</returns>
 static inline int32_t spin_trylock(spin_ctx *ctx) {
 #if defined(OS_WIN)
     return TRUE == TryEnterCriticalSection(ctx) ? ERR_OK : ERR_FAILED;
@@ -64,7 +64,7 @@ static inline int32_t spin_trylock(spin_ctx *ctx) {
 #endif
 };
 /// <summary>
-/// ½âËø
+/// è§£é”
 /// </summary>
 /// <param name="ctx">spin_ctx</param>
 static inline void spin_unlock(spin_ctx *ctx) {

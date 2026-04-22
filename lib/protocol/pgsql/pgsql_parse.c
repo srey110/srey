@@ -1,4 +1,4 @@
-#include "protocol/pgsql/pgsql_parse.h"
+ï»¿#include "protocol/pgsql/pgsql_parse.h"
 
 //ErrorResponse NoticeResponse
 char *_pgpack_error_notice(binary_ctx *breader) {
@@ -13,7 +13,8 @@ char *_pgpack_error_notice(binary_ctx *breader) {
         binary_set_string(&bwriter, ": ", 2);
         if (breader->size - breader->offset > 1) {//1 OPCODE
             binary_set_va(&bwriter, "%s\r\n", tmp);
-        } else {
+        }
+        else {
             binary_set_string(&bwriter, tmp, 0);
             break;
         }
@@ -130,7 +131,8 @@ static void _pgpack_data_row(pgpack_ctx *pgpack, binary_ctx *breader) {
         if (row->lens > 0) {
             row->val = breader->data + breader->offset;
             binary_get_skip(breader, row->lens);
-        } else {
+        }
+        else {
             row->val = NULL;
         }
     }
@@ -140,18 +142,18 @@ pgpack_ctx *_pgpack_parser(pgsql_ctx *pg, binary_ctx *breader, ud_cxt *ud, int32
     pgpack_ctx *pack = NULL;
     int8_t code = binary_get_int8(breader);
     binary_get_skip(breader, 4);
-    switch (code) {//N S A ËæÊ±¶¼ÓÐ¿ÉÄÜÊÕµ½
+    switch (code) {//N S A éšæ—¶éƒ½æœ‰å¯èƒ½æ”¶åˆ°
     case 'N'://NoticeResponse
         FREE(breader->data);
         break;
-    case 'S'://ParameterStatus ÔËÐÐÊ±²ÎÊý×´Ì¬±¨¸æ
+    case 'S'://ParameterStatus è¿è¡Œæ—¶å‚æ•°çŠ¶æ€æŠ¥å‘Š
         FREE(breader->data);
         break;
-    case 'A'://NotificationResponse  LISTENÃüÁî(¿ÉÒÔÓÃÀ´½øÐÐ¶àÓ¦ÓÃ¼äµÄÍ¨ÐÅ)
+    case 'A'://NotificationResponse  LISTENå‘½ä»¤(å¯ä»¥ç”¨æ¥è¿›è¡Œå¤šåº”ç”¨é—´çš„é€šä¿¡)
         pack = _pgpack_notification_response(breader);
         break;
 
-    case 'E'://ErrorResponse  ´íÎó
+    case 'E'://ErrorResponse  é”™è¯¯
         if (NULL != pg->pack) {
             _pgpack_free(pg->pack);
             pg->pack = NULL;

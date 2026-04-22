@@ -1,4 +1,4 @@
-#ifndef SARRAY_H_
+﻿#ifndef SARRAY_H_
 #define SARRAY_H_
 
 #include "base/structs.h"

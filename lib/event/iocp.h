@@ -1,4 +1,4 @@
-#ifndef IOCP_H_
+﻿#ifndef IOCP_H_
 #define IOCP_H_
 
 #include "event/event.h"
@@ -77,7 +77,7 @@ void _cmd_remove(watcher_ctx *watcher, SOCKET fd, uint64_t skid);
 void _on_cmd_stop(watcher_ctx *watcher, cmd_ctx *cmd);
 void _on_cmd_add(watcher_ctx *watcher, cmd_ctx *cmd);
 void _on_cmd_addacp(watcher_ctx *watcher, cmd_ctx *cmd);
-void _on_cmd_remove(watcher_ctx *watcher, cmd_ctx *cmd); 
+void _on_cmd_remove(watcher_ctx *watcher, cmd_ctx *cmd);
 void _on_cmd_ssl(watcher_ctx *watcher, cmd_ctx *cmd);
 void _on_cmd_send(watcher_ctx *watcher, cmd_ctx *cmd);
 void _on_cmd_disconn(watcher_ctx *watcher, cmd_ctx *cmd);

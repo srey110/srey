@@ -1,4 +1,4 @@
-#ifndef MACRO_H_
+ï»¿#ifndef MACRO_H_
 #define MACRO_H_
 
 #include "base/config.h"
@@ -24,7 +24,7 @@
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof(*(a)))
 #define EMPTYSTR(str) ((NULL == str) || (0 == strlen(str)))
 
-//sÏòÉÏ È¡n(n Îª2µÄ±¶Êı)µÄÕûÊı±¶
+//så‘ä¸Š å–n(n ä¸º2çš„å€æ•°)çš„æ•´æ•°å€
 #define ROUND_UP(s, n) (((s) + (n) - 1) & (~((n) - 1)))
 
 #define CONCAT2(a, b) a b
@@ -37,7 +37,7 @@
 #endif
 #define UPCAST(ptr, type, field) ((type *)(((char*)(ptr)) - offsetof(type, field)))
 
-//¶¯Ì¬±äÁ¿Ãû
+//åŠ¨æ€å˜é‡å
 #define __ANONYMOUS(type, name, line)  type  name##line
 #define _ANONYMOUS(type, line)  __ANONYMOUS(type, _anonymous, line)
 #define ANONYMOUS(type)  _ANONYMOUS(type, __LINE__)
@@ -70,7 +70,7 @@
     if (NULL != (ptr)) {\
         (*ptr) = (val);\
     }
-//ÈÕÖ¾¼¶±ğ
+//æ—¥å¿—çº§åˆ«
 typedef enum LOG_LEVEL {
     LOGLV_FATAL = 0,
     LOGLV_ERROR,

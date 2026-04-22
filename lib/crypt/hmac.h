@@ -1,4 +1,4 @@
-#ifndef HMAC_H_
+ï»¿#ifndef HMAC_H_
 #define HMAC_H_
 
 #include "crypt/digest.h"
@@ -10,35 +10,35 @@ typedef struct hmac_ctx {
     digest_ctx outside_init;
 }hmac_ctx;
 /// <summary>
-/// HMAC ³õÊ¼»¯
+/// HMAC åˆå§‹åŒ–
 /// </summary>
 /// <param name="hmac">hmac_ctx</param>
-/// <param name="dtype">ÕªÒªËã·¨</param>
-/// <param name="key">ÃÜÂë</param>
-/// <param name="klens">ÃÜÂë³¤¶È</param>
+/// <param name="dtype">æ‘˜è¦ç®—æ³•</param>
+/// <param name="key">å¯†ç </param>
+/// <param name="klens">å¯†ç é•¿åº¦</param>
 void hmac_init(hmac_ctx *hmac, digest_type dtype, const char *key, size_t klens);
 /// <summary>
-/// »ñÈ¡hash³¤¶È
+/// è·å–hashé•¿åº¦
 /// </summary>
 /// <param name="hmac">hmac_ctx</param>
-/// <returns>³¤¶È</returns>
+/// <returns>é•¿åº¦</returns>
 size_t hmac_size(hmac_ctx *hmac);
 /// <summary>
-/// ÌîÈëÊı¾İ
+/// å¡«å…¥æ•°æ®
 /// </summary>
 /// <param name="hmac">hmac_ctx</param>
-/// <param name="data">Êı¾İ</param>
-/// <param name="lens">Êı¾İ³¤¶È</param>
+/// <param name="data">æ•°æ®</param>
+/// <param name="lens">æ•°æ®é•¿åº¦</param>
 void hmac_update(hmac_ctx *hmac, const void *data, size_t lens);
 /// <summary>
-/// ¼ÆËãhash
+/// è®¡ç®—hash
 /// </summary>
 /// <param name="hmac">hmac_ctx</param>
 /// <param name="hash">hash, hash[DG_BLOCK_SIZE]</param>
-/// <returns>hash³¤¶È</returns>
+/// <returns>hashé•¿åº¦</returns>
 size_t hmac_final(hmac_ctx *hmac, char *hash);
 /// <summary>
-/// ÖØÖÃ,×¼±¸ĞÂÒ»ÂÖ¼ÆËã
+/// é‡ç½®,å‡†å¤‡æ–°ä¸€è½®è®¡ç®—
 /// </summary>
 /// <param name="hmac">hmac_ctx</param>
 void hmac_reset(hmac_ctx *hmac);

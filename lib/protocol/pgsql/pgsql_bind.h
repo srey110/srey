@@ -1,30 +1,30 @@
-#ifndef PGSQL_BIND_H_
+ï»¿#ifndef PGSQL_BIND_H_
 #define PGSQL_BIND_H_
 
 #include "protocol/pgsql/pgsql_struct.h"
 
 /// <summary>
-/// pgsql_bind_ctx³õÊ¼»¯
+/// pgsql_bind_ctxåˆå§‹åŒ–
 /// </summary>
 /// <param name="bind">pgsql_bind_ctx</param>
-/// <param name="nparam">²ÎÊıÊıÁ¿</param>
+/// <param name="nparam">å‚æ•°æ•°é‡</param>
 void pgsql_bind_init(pgsql_bind_ctx *bind, uint16_t nparam);
 /// <summary>
-/// pgsql_bind_ctxÊÍ·Å
+/// pgsql_bind_ctxé‡Šæ”¾
 /// </summary>
 /// <param name="bind">pgsql_bind_ctx</param>
 void pgsql_bind_free(pgsql_bind_ctx *bind);
 /// <summary>
-/// pgsql_bind_ctxÇå¿Õ
+/// pgsql_bind_ctxæ¸…ç©º
 /// </summary>
 /// <param name="bind">pgsql_bind_ctx</param>
 void pgsql_bind_clear(pgsql_bind_ctx *bind);
 /// <summary>
-/// °ó¶¨²ÎÊı
+/// ç»‘å®šå‚æ•°
 /// </summary>
 /// <param name="bind">pgsql_bind_ctx</param>
-/// <param name="value">Öµ</param>
-/// <param name="lens">Öµ³¤¶È</param>
+/// <param name="value">å€¼</param>
+/// <param name="lens">å€¼é•¿åº¦</param>
 /// <param name="format">pgpack_format</param>
 void pgsql_bind(pgsql_bind_ctx *bind, char *value, size_t lens, pgpack_format format);
 void pgsql_bind_bool(pgsql_bind_ctx *bind, int8_t value);

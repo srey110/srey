@@ -1,4 +1,4 @@
-#include "crypt/md5.h"
+﻿#include "crypt/md5.h"
 
 #define ROTLEFT(a,b) ((a << b) | (a >> (32-b)))
 #define F(x,y,z) ((x & y) | (~x & z))
@@ -120,7 +120,8 @@ void md5_final(md5_ctx *md5, char hash[MD5_BLOCK_SIZE]) {
         while (i < 56) {
             md5->data[i++] = 0x00;
         }
-    } else if (md5->datalen >= 56) {
+    }
+    else if (md5->datalen >= 56) {
         md5->data[i++] = 0x80;
         while (i < 64) {
             md5->data[i++] = 0x00;

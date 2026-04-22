@@ -1,4 +1,4 @@
-#include "protocol/mysql/mysql_reader.h"
+﻿#include "protocol/mysql/mysql_reader.h"
 #include "protocol/mysql/mysql_parse.h"
 
 mysql_reader_ctx *mysql_reader_init(mpack_ctx *mpack) {
@@ -89,10 +89,12 @@ int64_t mysql_reader_integer(mysql_reader_ctx *reader, const char *name, int32_t
             return 0;
         }
         return val;
-    } else {
+    }
+    else {
         if (sizeof(int8_t) == row->val.lens) {
             return ((char *)row->val.data)[0];
-        } else {
+        }
+        else {
             return unpack_integer(row->val.data, (int32_t)row->val.lens, 1, 1);
         }
     }
@@ -126,10 +128,12 @@ uint64_t mysql_reader_uinteger(mysql_reader_ctx *reader, const char *name, int32
             return 0;
         }
         return val;
-    } else {
+    }
+    else {
         if (sizeof(uint8_t) == row->val.lens) {
             return (uint8_t)(((char *)row->val.data)[0]);
-        } else {
+        }
+        else {
             return unpack_integer(row->val.data, (int32_t)row->val.lens, 1, 0);
         }
     }
@@ -159,10 +163,12 @@ double mysql_reader_double(mysql_reader_ctx *reader, const char *name, int32_t *
             return 0.0;
         }
         return val;
-    } else {
+    }
+    else {
         if (sizeof(double) == row->val.lens) {
             return unpack_double(row->val.data, 1);
-        } else {
+        }
+        else {
             return unpack_float(row->val.data, 1);
         }
     }
@@ -218,7 +224,8 @@ uint64_t mysql_reader_datetime(mysql_reader_ctx *reader, const char *name, int32
         memcpy(tmp, row->val.data, row->val.lens);
         tmp[row->val.lens] = '\0';
         return strtots(tmp, "%Y-%m-%d %H:%M:%S");
-    } else {
+    }
+    else {
         struct tm dt;
         ZERO(&dt, sizeof(struct tm));
         binary_ctx breader;
@@ -263,7 +270,8 @@ int32_t mysql_reader_time(mysql_reader_ctx *reader, const char *name, struct tm 
         time->tm_hour = val % 24;
         time->tm_min = strtol(end + 1, &end, 10);
         time->tm_sec = strtol(end + 1, &end, 10);
-    } else {
+    }
+    else {
         binary_ctx breader;
         binary_init(&breader, row->val.data, row->val.lens, 0);
         is_negative = (int32_t)binary_get_int8(&breader);

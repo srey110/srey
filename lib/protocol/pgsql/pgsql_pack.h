@@ -1,15 +1,15 @@
-#ifndef PGSQL_PACK_H_
+ï»¿#ifndef PGSQL_PACK_H_
 #define PGSQL_PACK_H_
 
 #include "utils/binary.h"
 #include "protocol/pgsql/pgsql_struct.h"
 
-//ÃüÁî´ò°ü¸¨Öúº¯Êı
+//å‘½ä»¤æ‰“åŒ…è¾…åŠ©å‡½æ•°
 void pgsql_pack_start(binary_ctx *bwriter, int8_t code);
 void pgsql_pack_end(binary_ctx *bwriter);
 size_t pgsql_pack_append_start(binary_ctx *bwriter, int8_t code);
 void pgsql_pack_append_end(binary_ctx *bwriter, size_t offset);
-//ÃüÁî´ò°ü
+//å‘½ä»¤æ‰“åŒ…
 void *pgsql_pack_terminate(size_t *size);
 void *pgsql_pack_query(const char *sql, size_t *size);
 void *pgsql_pack_stmt_prepare(const char *name, const char *sql, int16_t nparam, uint32_t *oids, size_t *size);

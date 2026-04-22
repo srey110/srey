@@ -1,4 +1,4 @@
-#include "crypt/hmac.h"
+﻿#include "crypt/hmac.h"
 
 #define HMAC_KEY_LENS 64
 
@@ -11,12 +11,14 @@ void hmac_init(hmac_ctx *hmac, digest_type dtype, const char *key, size_t klens)
     char key_temp[DG_BLOCK_SIZE], block_ipad[HMAC_KEY_LENS], block_opad[HMAC_KEY_LENS];
     if (HMAC_KEY_LENS == klens) {
         key_used = (char *)key;
-    } else {
+    }
+    else {
         if (klens > HMAC_KEY_LENS) {
             digest_update(&hmac->outside, key, klens);
             klens = digest_final(&hmac->outside, key_temp);
             key_used = key_temp;
-        } else {
+        }
+        else {
             key_used = (char *)key;
         }
         int32_t fill = HMAC_KEY_LENS - (int32_t)klens;

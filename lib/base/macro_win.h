@@ -1,4 +1,4 @@
-#ifndef MACRO_WIN_H_
+ï»¿#ifndef MACRO_WIN_H_
 #define MACRO_WIN_H_
 
 #include "base/os.h"
@@ -41,12 +41,12 @@
 static inline const char *_fmterror(DWORD error) {
     char *err = NULL;
     if (0 == FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-                            NULL,
-                            error,
-                            MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US),
-                            (LPTSTR)&err,
-                            0,
-                            NULL)) {
+        NULL,
+        error,
+        MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US),
+        (LPTSTR)&err,
+        0,
+        NULL)) {
         return "FormatMessageA error.";
     }
     static char errstr[4096];
@@ -61,11 +61,11 @@ static inline const char *_fmterror(DWORD error) {
 
 typedef uint32_t atomic_t;
 typedef uint64_t atomic64_t;
-//LONG InterlockedExchangeAdd(LONG volatile *Addend,LONG Value)  ·µ»Ø¾ÉÖµ
+//LONG InterlockedExchangeAdd(LONG volatile *Addend,LONG Value)  è¿”å›æ—§å€¼
 #define ATOMIC_ADD(ptr, val) InterlockedExchangeAdd(ptr, val)
-//LONG InterlockedExchange(LONG volatile *Target,LONG Value); ·µ»Ø¾ÉÖµ
+//LONG InterlockedExchange(LONG volatile *Target,LONG Value); è¿”å›æ—§å€¼
 #define ATOMIC_SET(ptr, val) InterlockedExchange(ptr, val)
-//±È½Ï*ptrÓëoldvalµÄÖµ£¬Èç¹ûÁ½ÕßÏàµÈ£¬Ôò½«newval¸üĞÂµ½*ptr²¢·µ»Ø²Ù×÷Ö®Ç°*ptrµÄÖµ ³É¹¦ ·µ»ØÖµµÈÓÚoldval
+//æ¯”è¾ƒ*pträ¸oldvalçš„å€¼ï¼Œå¦‚æœä¸¤è€…ç›¸ç­‰ï¼Œåˆ™å°†newvalæ›´æ–°åˆ°*ptrå¹¶è¿”å›æ“ä½œä¹‹å‰*ptrçš„å€¼ æˆåŠŸ è¿”å›å€¼ç­‰äºoldval
 //LONG InterlockedCompareExchange(LONG volatile *Destination, LONG ExChange, LONG Comperand);
 #define ATOMIC_CAS(ptr, oldval, newval) (InterlockedCompareExchange(ptr, newval, oldval) == oldval)
 #define ATOMIC64_ADD(ptr, val) InterlockedExchangeAdd64(ptr, val)

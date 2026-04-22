@@ -1,4 +1,4 @@
-#include "event/evssl.h"
+﻿#include "event/evssl.h"
 #if WITH_SSL
 #include "containers/sarray.h"
 #include "thread/rwlock.h"
@@ -171,7 +171,8 @@ int32_t evssl_register(name_t name, evssl_ctx *evssl) {
     if (NULL != _ssl_get(name)) {
         LOG_ERROR("ssl name %d repeat.", name);
         rtn = ERR_FAILED;
-    } else {
+    }
+    else {
         arr_certs_push_back(_arr_certs, &cert);
         rtn = ERR_OK;
     }
@@ -228,7 +229,8 @@ int32_t evssl_read(SSL *ssl, char *buf, size_t len, size_t *readed) {
         rtn = SSL_read(ssl, buf + *readed, (int32_t)(len - *readed));
         if (rtn > 0) {
             *readed += rtn;
-        } else {
+        }
+        else {
             if (0 == rtn) {
                 return ERR_FAILED;
             }
@@ -248,7 +250,8 @@ int32_t evssl_send(SSL *ssl, char *buf, size_t len, size_t *sended) {
         rtn = SSL_write(ssl, buf + *sended, (int32_t)(len - *sended));
         if (rtn > 0) {
             *sended += rtn;
-        } else {
+        }
+        else {
             if (SSL_ERROR_WANT_WRITE == SSL_get_error(ssl, rtn)) {
                 return ERR_OK;
             }
@@ -261,7 +264,8 @@ void evssl_shutdown(SSL *ssl, SOCKET fd) {
     if (NULL != ssl) {
         ERR_clear_error();
         SSL_shutdown(ssl);
-    } else {
+    }
+    else {
         shutdown(fd, SHUT_RD);
     }
 }

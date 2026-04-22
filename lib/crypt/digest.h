@@ -1,4 +1,4 @@
-#ifndef DIGEST_H_
+ï»¿#ifndef DIGEST_H_
 #define DIGEST_H_
 
 #include "crypt/md2.h"
@@ -37,33 +37,33 @@ typedef struct digest_ctx {
     }eng_ctx;
 }digest_ctx;
 /// <summary>
-/// ³õÊ¼»¯
+/// åˆå§‹åŒ–
 /// </summary>
 /// <param name="digest">digest_ctx</param>
-/// <param name="dtype">ÕªÒªËã·¨</param>
+/// <param name="dtype">æ‘˜è¦ç®—æ³•</param>
 void digest_init(digest_ctx *digest, digest_type dtype);
 /// <summary>
-/// »ñÈ¡hash³¤¶È
+/// è·å–hashé•¿åº¦
 /// </summary>
 /// <param name="digest">digest_ctx</param>
-/// <returns>³¤¶È</returns>
+/// <returns>é•¿åº¦</returns>
 size_t digest_size(digest_ctx *digest);
 /// <summary>
-/// ÌîÈëÊı¾İ
+/// å¡«å…¥æ•°æ®
 /// </summary>
 /// <param name="digest">digest_ctx</param>
-/// <param name="data">Êı¾İ</param>
-/// <param name="lens">Êı¾İ³¤¶È</param>
+/// <param name="data">æ•°æ®</param>
+/// <param name="lens">æ•°æ®é•¿åº¦</param>
 void digest_update(digest_ctx *digest, const void *data, size_t lens);
 /// <summary>
-/// ¼ÆËãhash
+/// è®¡ç®—hash
 /// </summary>
 /// <param name="digest">digest_ctx</param>
 /// <param name="hash">hash, hash[DG_BLOCK_SIZE]</param>
-/// <returns>³¤¶È</returns>
+/// <returns>é•¿åº¦</returns>
 size_t digest_final(digest_ctx *digest, char *hash);
 /// <summary>
-/// ÖØÖÃ,×¼±¸ĞÂÒ»ÂÖ¼ÆËã
+/// é‡ç½®,å‡†å¤‡æ–°ä¸€è½®è®¡ç®—
 /// </summary>
 /// <param name="digest">digest_ctx</param>
 void digest_reset(digest_ctx *digest);

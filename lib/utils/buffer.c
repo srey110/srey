@@ -1,4 +1,4 @@
-#include "utils/buffer.h"
+ï»¿#include "utils/buffer.h"
 #include "utils/utils.h"
 #include "utils/netutils.h"
 
@@ -6,7 +6,7 @@
 //|--------------|--------------|-----------|-----------|
 //|node          |buffer                                |
 typedef struct bufnode_ctx {
-    int32_t used;//ÊÇ·ñÕı³£±»Ê¹ÓÃ
+    int32_t used;//æ˜¯å¦æ­£å¸¸è¢«ä½¿ç”¨
     struct bufnode_ctx *next;
     char *buffer;
     free_cb _free;
@@ -26,7 +26,7 @@ typedef struct bufnode_ctx {
     ch->used = 1;\
     index++
 
-//ĞÂ½¨Ò»½Úµã
+//æ–°å»ºä¸€èŠ‚ç‚¹
 static bufnode_ctx *_node_new(const size_t size) {
     size_t total = ROUND_UP(size + sizeof(bufnode_ctx), sizeof(void *) < 8 ? 512 : ONEK);
     //size_t total = size + sizeof(bufnode_ctx);
@@ -44,18 +44,18 @@ static void _node_free(bufnode_ctx *node) {
     }
     FREE(node);
 }
-//Í¨¹ıµ÷ÕûÊÇ·ñ×ã¹»
+//é€šè¿‡è°ƒæ•´æ˜¯å¦è¶³å¤Ÿ
 static int32_t _should_realign(bufnode_ctx *node, const size_t lens) {
     return node->buffer_lens - node->off >= lens &&
         (node->off < node->buffer_lens / 2) &&
         (node->off <= MAX_REALIGN_IN_EXPAND);
 }
-//µ÷Õû
+//è°ƒæ•´
 static void _align(bufnode_ctx *node) {
     memmove(node->buffer, node->buffer + node->misalign, node->off);
     node->misalign = 0;
 }
-//ÊÍ·Åpnode¼°ºóÃæ½Úµã
+//é‡Šæ”¾pnodeåŠåé¢èŠ‚ç‚¹
 static void _free_all_node(bufnode_ctx *node) {
     bufnode_ctx *pnext;
     for (; NULL != node; node = pnext) {
@@ -63,7 +63,7 @@ static void _free_all_node(bufnode_ctx *node) {
         _node_free(node);
     }
 }
-//pnode ¼°ºóÃæ½ÚµãÊÇ·ñÎª¿Õ
+//pnode åŠåé¢èŠ‚ç‚¹æ˜¯å¦ä¸ºç©º
 static int32_t _node_all_empty(bufnode_ctx *node) {
     for (; NULL != node; node = node->next) {
         if (0 != node->off) {
@@ -72,10 +72,10 @@ static int32_t _node_all_empty(bufnode_ctx *node) {
     }
     return 1;
 }
-//ÊÍ·Å¿Õ½Úµã
+//é‡Šæ”¾ç©ºèŠ‚ç‚¹
 static bufnode_ctx **_free_trailing_empty_node(buffer_ctx *ctx) {
     bufnode_ctx **node = ctx->tail_with_data;
-    while (NULL != (*node) 
+    while (NULL != (*node)
         && (*node)->off != 0) {
         node = &(*node)->next;
     }
@@ -86,13 +86,14 @@ static bufnode_ctx **_free_trailing_empty_node(buffer_ctx *ctx) {
     }
     return node;
 }
-//²åÈë,»áÇåÀí¿Õ½Úµã
+//æ’å…¥,ä¼šæ¸…ç†ç©ºèŠ‚ç‚¹
 static void _node_insert(buffer_ctx *ctx, bufnode_ctx *node) {
     if (NULL == *ctx->tail_with_data) {
         ASSERTAB(ctx->tail_with_data == &ctx->head, "tail_with_data not equ head.");
         ASSERTAB(ctx->head == NULL, "head not NULL.");
         ctx->head = ctx->tail = node;
-    } else {
+    }
+    else {
         bufnode_ctx **last = _free_trailing_empty_node(ctx);
         *last = node;
         if (0 != node->off) {
@@ -102,7 +103,7 @@ static void _node_insert(buffer_ctx *ctx, bufnode_ctx *node) {
     }
     ctx->total_lens += node->off;
 }
-//ĞÂ½¨½Úµã²¢²åÈë
+//æ–°å»ºèŠ‚ç‚¹å¹¶æ’å…¥
 static bufnode_ctx *_node_insert_new(buffer_ctx *ctx, const size_t lens) {
     bufnode_ctx *pnode = _node_new(lens);
     _node_insert(ctx, pnode);
@@ -120,12 +121,12 @@ static void _last_with_data(buffer_ctx *ctx) {
         }
     }
 }
-//À©Õ¹¿Õ¼ä£¬±£Ö¤Á¬ĞøÄÚ´æ used Íâ²¿Éè¶¨
+//æ‰©å±•ç©ºé—´ï¼Œä¿è¯è¿ç»­å†…å­˜ used å¤–éƒ¨è®¾å®š
 static bufnode_ctx *_buffer_expand_single(buffer_ctx *ctx, const size_t lens) {
     bufnode_ctx *node, **last;
     last = ctx->tail_with_data;
-    //×îºóÒ»¸öÓĞÊı¾İµÄ½ÚµãÂúµÄ
-    if (NULL != *last 
+    //æœ€åä¸€ä¸ªæœ‰æ•°æ®çš„èŠ‚ç‚¹æ»¡çš„
+    if (NULL != *last
         && 0 == NODE_SPACE_LEN(*last)) {
         last = &(*last)->next;
     }
@@ -137,25 +138,26 @@ static bufnode_ctx *_buffer_expand_single(buffer_ctx *ctx, const size_t lens) {
         return node;
     }
     if (0 == node->off) {
-        //²åÈëĞÂµÄ£¬²¢É¾³ıpnode
+        //æ’å…¥æ–°çš„ï¼Œå¹¶åˆ é™¤pnode
         return _node_insert_new(ctx, lens);
     }
-    //µ÷Õû
+    //è°ƒæ•´
     if (_should_realign(node, lens)) {
         _align(node);
         return node;
     }
-    //¿ÕÏĞ¿Õ¼äĞ¡ÓÚ×Ü¿Õ¼äµÄ1/8 »òÕß ÒÑÓĞµÄÊı¾İÁ¿´óÓÚMAX_COPY_IN_EXPAND(4096)
-    if (NODE_SPACE_LEN(node) < node->buffer_lens / 8 
+    //ç©ºé—²ç©ºé—´å°äºæ€»ç©ºé—´çš„1/8 æˆ–è€… å·²æœ‰çš„æ•°æ®é‡å¤§äºMAX_COPY_IN_EXPAND(4096)
+    if (NODE_SPACE_LEN(node) < node->buffer_lens / 8
         || node->off > MAX_COPY_IN_EXPAND) {
-        if (NULL != node->next 
+        if (NULL != node->next
             && NODE_SPACE_LEN(node->next) >= lens) {
             return node->next;
-        } else {
+        }
+        else {
             return _node_insert_new(ctx, lens);
         }
     }
-    //Êı¾İÇ¨ÒÆ
+    //æ•°æ®è¿ç§»
     bufnode_ctx *tmp = _node_new(node->off + lens);
     tmp->off = node->off;
     memcpy(tmp->buffer, node->buffer + node->misalign, node->off);
@@ -179,8 +181,8 @@ static uint32_t _buffer_expand(buffer_ctx *ctx, const size_t lens, IOV_TYPE *iov
         RECOED_IOV(node, lens);
         return index;
     }
-    used = 0; //Ê¹ÓÃÁË¶àÉÙ¸ö½Úµã
-    avail = 0;//¿ÉÓÃ¿Õ¼ä
+    used = 0; //ä½¿ç”¨äº†å¤šå°‘ä¸ªèŠ‚ç‚¹
+    avail = 0;//å¯ç”¨ç©ºé—´
     for (node = *ctx->tail_with_data; NULL != node; node = node->next) {
         if (0 != node->off) {
             space = (size_t)NODE_SPACE_LEN(node);
@@ -190,7 +192,8 @@ static uint32_t _buffer_expand(buffer_ctx *ctx, const size_t lens, IOV_TYPE *iov
                 ++used;
                 RECOED_IOV(node, space);
             }
-        } else {
+        }
+        else {
             node->misalign = 0;
             avail += node->buffer_lens;
             ++used;
@@ -203,7 +206,7 @@ static uint32_t _buffer_expand(buffer_ctx *ctx, const size_t lens, IOV_TYPE *iov
             break;
         }
     }
-    //Ã»ÓĞ´ïµ½×î´ó½ÚµãÊı£¬¿Õ¼ä»¹²»¹»
+    //æ²¡æœ‰è¾¾åˆ°æœ€å¤§èŠ‚ç‚¹æ•°ï¼Œç©ºé—´è¿˜ä¸å¤Ÿ
     if (used < cnt) {
         remain = lens - avail;
         ASSERTAB(NULL == node, "pnode not equ NULL.");
@@ -213,22 +216,23 @@ static uint32_t _buffer_expand(buffer_ctx *ctx, const size_t lens, IOV_TYPE *iov
         RECOED_IOV(tmp, remain);
         return index;
     }
-    //ËùÓĞ½Úµã¶¼²»ÄÜ×°ÏÂ
+    //æ‰€æœ‰èŠ‚ç‚¹éƒ½ä¸èƒ½è£…ä¸‹
     index = 0;
     int32_t delall = 0;
     node = *ctx->tail_with_data;
-    if (0 == node->off) {//ÎŞÊı¾İ
+    if (0 == node->off) {//æ— æ•°æ®
         ASSERTAB(node == ctx->head, "head not equ pnode.");
         delall = 1;
         avail = 0;
-    } else {
+    }
+    else {
         avail = (size_t)NODE_SPACE_LEN(node);
         if (0 != avail) {
             RECOED_IOV(node, avail);
-        }        
+        }
         node = node->next;
     }
-    //ÊÍ·Å
+    //é‡Šæ”¾
     for (; NULL != node; node = next) {
         next = node->next;
         ASSERTAB(0 == node->off, "node not empty.");
@@ -241,18 +245,19 @@ static uint32_t _buffer_expand(buffer_ctx *ctx, const size_t lens, IOV_TYPE *iov
     if (delall) {
         ctx->head = ctx->tail = tmp;
         ctx->tail_with_data = &ctx->head;
-    } else {
+    }
+    else {
         (*ctx->tail_with_data)->next = tmp;
         ctx->tail = tmp;
     }
     return index;
 }
-//cnt _buffer_expand_iov ·µ»ØÊıÁ¿
+//cnt _buffer_expand_iov è¿”å›æ•°é‡
 static size_t _buffer_commit_expand(buffer_ctx *ctx, size_t lens, IOV_TYPE *iov, const uint32_t cnt) {
     if (0 == cnt) {
         return 0;
     }
-    //Ö»ÓĞÒ»¸ö
+    //åªæœ‰ä¸€ä¸ª
     if (1 == cnt
         && NULL != ctx->tail
         && iov[0].IOV_PTR_FIELD == (void *)NODE_SPACE_PTR(ctx->tail)) {
@@ -274,7 +279,7 @@ static size_t _buffer_commit_expand(buffer_ctx *ctx, size_t lens, IOV_TYPE *iov,
     if (0 == NODE_SPACE_LEN(*first)) {
         first = &(*first)->next;
     }
-    //¼ì²é
+    //æ£€æŸ¥
     node = *first;
     for (i = 0; i < cnt; ++i) {
         if (NULL == node) {
@@ -285,7 +290,7 @@ static size_t _buffer_commit_expand(buffer_ctx *ctx, size_t lens, IOV_TYPE *iov,
         }
         node = node->next;
     }
-    //Ìî³ä
+    //å¡«å……
     size_t added = 0;
     fill = first;
     for (i = 0; i < cnt; ++i) {
@@ -295,7 +300,8 @@ static size_t _buffer_commit_expand(buffer_ctx *ctx, size_t lens, IOV_TYPE *iov,
                 (*fill)->off += iov[i].IOV_LEN_FIELD;
                 added += iov[i].IOV_LEN_FIELD;
                 lens -= iov[i].IOV_LEN_FIELD;
-            } else {
+            }
+            else {
                 (*fill)->off += lens;
                 added += lens;
                 lens = 0;
@@ -345,7 +351,8 @@ int32_t buffer_append(buffer_ctx *ctx, void *data, const size_t lens) {
             memcpy(iov[i].IOV_PTR_FIELD, tmp + off, iov[i].IOV_LEN_FIELD);
             off += iov[i].IOV_LEN_FIELD;
             remain -= iov[i].IOV_LEN_FIELD;
-        } else {
+        }
+        else {
             memcpy(iov[i].IOV_PTR_FIELD, tmp + off, remain);
             iov[i].IOV_LEN_FIELD = (IOV_LEN_TYPE)remain;
             remain = 0;
@@ -387,7 +394,7 @@ static bufnode_ctx *_search_start(bufnode_ctx *node, size_t start, size_t *total
     while (NULL != node
         && 0 != node->off) {
         *totaloff += node->off;
-        //µ½´ï¿ªÊ¼Î»ÖÃµÄ½Úµã
+        //åˆ°è¾¾å¼€å§‹ä½ç½®çš„èŠ‚ç‚¹
         if (*totaloff > start) {
             return node;
         }
@@ -397,7 +404,7 @@ static bufnode_ctx *_search_start(bufnode_ctx *node, size_t start, size_t *total
 }
 size_t buffer_copyout(buffer_ctx *ctx, const size_t start, void *out, size_t lens) {
     ASSERTAB(0 == ctx->freeze_read, "read freezed");
-    if (start >= ctx->total_lens 
+    if (start >= ctx->total_lens
         || 0 == lens) {
         return 0;
     }
@@ -410,7 +417,8 @@ size_t buffer_copyout(buffer_ctx *ctx, const size_t start, void *out, size_t len
     size_t nread = lens;
     if (0 == start) {
         node = ctx->head;
-    } else {
+    }
+    else {
         size_t off = 0;
         node = _search_start(ctx->head, start, &off);
         off = node->off - (off - start);
@@ -421,7 +429,8 @@ size_t buffer_copyout(buffer_ctx *ctx, const size_t start, void *out, size_t len
                 data += remain;
                 lens -= remain;
                 node = node->next;
-            } else {
+            }
+            else {
                 memcpy(data, node->buffer + node->misalign + off, lens);
                 return nread;
             }
@@ -463,7 +472,8 @@ size_t buffer_drain(buffer_ctx *ctx, size_t lens) {
         }
         if (0 == node->used) {
             _node_free(node);
-        } else {
+        }
+        else {
             ASSERTAB(0 == remain, "logic error.");
             node->misalign += node->off;
             node->off = 0;
@@ -475,7 +485,8 @@ size_t buffer_drain(buffer_ctx *ctx, size_t lens) {
         ASSERTAB(remain <= node->off, "logic error.");
         node->misalign += remain;
         node->off -= remain;
-    } else {
+    }
+    else {
         ctx->head = ctx->tail = NULL;
         ctx->tail_with_data = &(ctx)->head;
     }
@@ -511,7 +522,8 @@ int32_t buffer_search(buffer_ctx *ctx, const int32_t ncs,
     }
     if (0 == end || end >= ctx->total_lens) {
         end = ctx->total_lens;
-    } else {
+    }
+    else {
         end++;
     }
     if (start + wlens > end) {
@@ -522,11 +534,12 @@ int32_t buffer_search(buffer_ctx *ctx, const int32_t ncs,
     if (0 == ncs) {
         chr = memchr;
         cmp = memcmp;
-    } else {
+    }
+    else {
         chr = memichr;
         cmp = _memicmp;
     }
-    //²éÕÒ¿ªÊ¼Î»ÖÃËùÔÚ½Úµã
+    //æŸ¥æ‰¾å¼€å§‹ä½ç½®æ‰€åœ¨èŠ‚ç‚¹
     size_t totaloff = 0;
     bufnode_ctx *node = _search_start(ctx->head, start, &totaloff);
     ASSERTAB(NULL != node && 0 != node->off, "can't search start node.");
@@ -555,7 +568,8 @@ int32_t buffer_search(buffer_ctx *ctx, const int32_t ncs,
                     totaloff += node->off;
                 }
             }
-        } else {
+        }
+        else {
             uioff = 0;
             node = node->next;
             if (NULL != node) {
@@ -579,7 +593,7 @@ uint32_t buffer_expand(buffer_ctx *ctx, const size_t lens, IOV_TYPE *iov, const 
     return _buffer_expand(ctx, lens, iov, cnt);
 }
 void buffer_commit_expand(buffer_ctx *ctx, size_t lens, IOV_TYPE *iov, const uint32_t cnt) {
-    ASSERTAB(1 == ctx->freeze_write, "write unfreezed");    
+    ASSERTAB(1 == ctx->freeze_write, "write unfreezed");
     ASSERTAB(lens == _buffer_commit_expand(ctx, lens, iov, cnt), "commit error.");
     ctx->freeze_write = 0;
 }
@@ -601,7 +615,8 @@ uint32_t buffer_get(buffer_ctx *ctx, size_t atmost, IOV_TYPE *iov, const uint32_
         if (atmost >= node->off) {
             iov[index].IOV_LEN_FIELD = (IOV_LEN_TYPE)node->off;
             atmost -= node->off;
-        } else {
+        }
+        else {
             iov[index].IOV_LEN_FIELD = (IOV_LEN_TYPE)atmost;
             atmost = 0;
         }

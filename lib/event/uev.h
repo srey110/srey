@@ -1,4 +1,4 @@
-#ifndef UEV_H_
+Ôªø#ifndef UEV_H_
 #define UEV_H_
 
 #include "event/event.h"
@@ -8,30 +8,30 @@
 #ifndef EV_IOCP
 
 #if defined(EV_EPOLL)
-    typedef struct epoll_event events_t;
+typedef struct epoll_event events_t;
 #elif defined(EV_KQUEUE)
-    typedef struct kevent events_t;
-    typedef struct kevent changes_t;
-    #define COMMIT_NCHANGES
+typedef struct kevent events_t;
+typedef struct kevent changes_t;
+#define COMMIT_NCHANGES
 #elif defined(EV_EVPORT)
-    typedef port_event_t events_t;
-    #define MANUAL_ADD
+typedef port_event_t events_t;
+#define MANUAL_ADD
 #elif defined(EV_POLLSET)
-    typedef struct pollfd events_t;
-    #define MANUAL_REMOVE
-    #define NO_UDATA
+typedef struct pollfd events_t;
+#define MANUAL_REMOVE
+#define NO_UDATA
 #elif defined(EV_DEVPOLL)
-    typedef struct pollfd events_t;
-    typedef struct pollfd changes_t;
-    #define MANUAL_REMOVE
-    #define COMMIT_NCHANGES
-    #define NO_UDATA
+typedef struct pollfd events_t;
+typedef struct pollfd changes_t;
+#define MANUAL_REMOVE
+#define COMMIT_NCHANGES
+#define NO_UDATA
 #endif
 
 struct conn_ctx;
 struct listener_ctx;
 typedef enum EVENTS {
-    EVENT_READ  = 0x01,
+    EVENT_READ = 0x01,
     EVENT_WRITE = 0x02,
 }EVENTS;
 typedef enum UEV_CMDS {
@@ -58,12 +58,12 @@ typedef struct cmd_ctx {
 typedef struct watcher_ctx {
     int32_t index;
     int32_t stop;
-    int32_t evfd; 
+    int32_t evfd;
     int32_t nevents;
     uint32_t npipes;
 #ifdef COMMIT_NCHANGES
-    int32_t nsize;//changes¥Û–°
-    int32_t nchanges;// ˝¡ø
+    int32_t nsize;//changesÂ§ßÂ∞è
+    int32_t nchanges;//Êï∞Èáè
     changes_t *changes;
 #endif
     events_t *events;

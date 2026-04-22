@@ -1,4 +1,4 @@
-#include "startup.h"
+ï»¿#include "startup.h"
 #include "cjson/cJSON.h"
 
 static FILE *logstream = NULL;
@@ -7,7 +7,7 @@ static cond_ctx condexit;
 static char *_config_read(void) {
     char config[PATH_LENS];
     SNPRINTF(config, sizeof(config), "%s%s%s%s%s",
-             procpath(), PATH_SEPARATORSTR, "configs", PATH_SEPARATORSTR, "config.json");
+        procpath(), PATH_SEPARATORSTR, "configs", PATH_SEPARATORSTR, "config.json");
     size_t lens;
     char *info = readall(config, &lens);
     if (NULL == info) {
@@ -32,7 +32,8 @@ static void _json_get_string(cJSON *json, const char *name, char *str, size_t le
         if (vlen < lens) {
             memcpy(str, val->valuestring, vlen);
             str[vlen] = '\0';
-        } else {
+        }
+        else {
             LOG_WARN("%s value too long.", name);
         }
     }
@@ -95,7 +96,7 @@ static void _config_init(config_ctx *config) {
     ZERO(config, sizeof(config_ctx));
     config->loglv = LOGLV_DEBUG;
     config->harborname = 100000,
-    config->harborport = 8080;
+        config->harborport = 8080;
     strcpy(config->harborip, "0.0.0.0");
     strcpy(config->dns, "8.8.8.8");
     ZERO(config->harborkey, sizeof(config->harborkey));
@@ -141,23 +142,23 @@ static int32_t service_hug(void) {
     return rtn;
 }
 #ifdef OS_WIN
-    //#include "vld.h"
-    #pragma comment(lib, "ws2_32.lib")
-    #pragma comment(lib, "lib.lib")
-    #if WITH_SSL
-        #ifdef ARCH_X64
-            #pragma comment(lib, "libcrypto_x64.lib")
-            #pragma comment(lib, "libssl_x64.lib")
-        #else
-            #pragma comment(lib, "libcrypto.lib")
-            #pragma comment(lib, "libssl.lib")
-        #endif
-    #endif
-    #if WITH_LUA
-        #pragma comment(lib, "lualib.lib")
-    #endif
-#define WINSV_STOP_TIMEOUT       30 * 1000      //windows ·þÎñÍ£Ö¹³¬Ê±Ê±¼ä
-#define WINSV_START_TIMEOUT      30 * 1000      //windows ·þÎñÆô¶¯³¬Ê±Ê±¼ä
+//#include "vld.h"
+#pragma comment(lib, "ws2_32.lib")
+#pragma comment(lib, "lib.lib")
+#if WITH_SSL
+#ifdef ARCH_X64
+#pragma comment(lib, "libcrypto_x64.lib")
+#pragma comment(lib, "libssl_x64.lib")
+#else
+#pragma comment(lib, "libcrypto.lib")
+#pragma comment(lib, "libssl.lib")
+#endif
+#endif
+#if WITH_LUA
+#pragma comment(lib, "lualib.lib")
+#endif
+#define WINSV_STOP_TIMEOUT       30 * 1000      //windows æœåŠ¡åœæ­¢è¶…æ—¶æ—¶é—´
+#define WINSV_START_TIMEOUT      30 * 1000      //windows æœåŠ¡å¯åŠ¨è¶…æ—¶æ—¶é—´
 
 typedef WINADVAPI BOOL(WINAPI *_csd_t)(SC_HANDLE, DWORD, LPCVOID);
 typedef int32_t(*_wsv_cb)(void);
@@ -279,18 +280,18 @@ static BOOL wsv_install(LPCTSTR name) {
     GetModuleFileName(NULL, propath, sizeof(propath));
     SNPRINTF(tmp, sizeof(tmp), "\"%s\" \"-r\" \"%s\"", propath, name);
     SC_HANDLE service = CreateService(scm,
-                                      name,
-                                      name,
-                                      SERVICE_ALL_ACCESS,
-                                      SERVICE_WIN32_OWN_PROCESS,// | SERVICE_INTERACTIVE_PROCESS(ÔÊÐí·þÎñÓÚ×ÀÃæ½»»¥),
-                                      SERVICE_AUTO_START,
-                                      SERVICE_ERROR_NORMAL,
-                                      tmp,
-                                      NULL,
-                                      NULL,
-                                      NULL,
-                                      NULL,
-                                      NULL);
+        name,
+        name,
+        SERVICE_ALL_ACCESS,
+        SERVICE_WIN32_OWN_PROCESS,// | SERVICE_INTERACTIVE_PROCESS(å…è®¸æœåŠ¡äºŽæ¡Œé¢äº¤äº’),
+        SERVICE_AUTO_START,
+        SERVICE_ERROR_NORMAL,
+        tmp,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        NULL);
 
     if (!service) {
         CloseServiceHandle(scm);
@@ -349,7 +350,7 @@ int main(int argc, char *argv[]) {
         _useage();
         return ERR_FAILED;
     }
-    //¹ÜÀíÔ±È¨ÏÞ
+    //ç®¡ç†å‘˜æƒé™
     if (0 == strcmp("-i", argv[1])) {
         if (wsv_isinstalled(argv[2])) {
             PRINT("service %s exited!", argv[2]);
@@ -358,11 +359,13 @@ int main(int argc, char *argv[]) {
         if (wsv_install(argv[2])) {
             PRINT("install service %s successfully!", argv[2]);
             return ERR_OK;
-        } else {
+        }
+        else {
             PRINT("install service %s error!", argv[2]);
             return ERR_FAILED;
         }
-    } else if (0 == strcmp("-u", argv[1])) {
+    }
+    else if (0 == strcmp("-u", argv[1])) {
         if (!wsv_isinstalled(argv[2])) {
             PRINT("uninstall service error.service %s not exited!", argv[2]);
             return ERR_FAILED;
@@ -370,23 +373,27 @@ int main(int argc, char *argv[]) {
         if (wsv_unInstall(argv[2])) {
             PRINT("uninstall service %s successfully!", argv[2]);
             return ERR_OK;
-        } else {
+        }
+        else {
             PRINT("uninstall service %s failed!", argv[2]);
             return ERR_FAILED;
         }
-    } else if (0 == strcmp("-r", argv[1])) {
+    }
+    else if (0 == strcmp("-r", argv[1])) {
         if (wsv_startservice(argv[2])) {
             return ERR_OK;
-        } else {
+        }
+        else {
             return ERR_FAILED;
         }
-    } else {
+    }
+    else {
         _useage();
         return ERR_FAILED;
     }
 #else
     if (argc > 1) {
-        if (0 == strcmp ("-d", argv[1])) {
+        if (0 == strcmp("-d", argv[1])) {
             return service_hug();
         }
         PRINT("UseAge:\"./srey\" or \"./srey -d\".");
@@ -400,9 +407,11 @@ int main(int argc, char *argv[]) {
         int32_t rtn = service_hug();
         remove(sh);
         return rtn;
-    } else if (pid > 0) {
+    }
+    else if (pid > 0) {
         return ERR_OK;
-    } else {
+    }
+    else {
         PRINT("fork process error!");
         return ERR_FAILED;
     }

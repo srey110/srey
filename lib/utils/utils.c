@@ -1,4 +1,4 @@
-#include "utils/utils.h"
+ï»¿#include "utils/utils.h"
 #include "utils/strptime.h"
 #include "base/structs.h"
 
@@ -28,7 +28,8 @@ static BOOL _GetImpersonationToken(HANDLE *handle) {
                 handle)) {
                 return FALSE;
             }
-        } else {
+        }
+        else {
             return FALSE;
         }
     }
@@ -47,7 +48,7 @@ static BOOL _EnablePrivilege(LPCTSTR priv, HANDLE handle, TOKEN_PRIVILEGES *priv
 static LONG __stdcall _MiniDump(struct _EXCEPTION_POINTERS *excep) {
     char acdmp[PATH_LENS];
     SNPRINTF(acdmp, sizeof(acdmp), "%s%s%lld_%d.dmp",
-             procpath(), PATH_SEPARATORSTR, nowsec(), (int32_t)ATOMIC_ADD(&_exindex, 1));
+        procpath(), PATH_SEPARATORSTR, nowsec(), (int32_t)ATOMIC_ADD(&_exindex, 1));
     HANDLE ptoken = NULL;
     if (!_GetImpersonationToken(&ptoken)) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
@@ -81,7 +82,8 @@ static LONG __stdcall _MiniDump(struct _EXCEPTION_POINTERS *excep) {
         NULL);
     if (bok) {
         lrtn = EXCEPTION_EXECUTE_HANDLER;
-    } else {
+    }
+    else {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
     }
     if (bprienabled) {
@@ -136,14 +138,14 @@ void sighandle(void(*cb)(int32_t, void *), void *data) {
 #ifdef OS_WIN
     (void)SetConsoleCtrlHandler((PHANDLER_ROUTINE)_sighandler, TRUE);
 #else
-    signal(SIGPIPE, SIG_IGN);//ÈôÄ³Ò»¶Ë¹Ø±ÕÁ¬½Ó£¬¶øÁíÒ»¶ËÈÔÈ»ÏòËüÐ´Êý¾Ý£¬µÚÒ»´ÎÐ´Êý¾Ýºó»áÊÕµ½RSTÏìÓ¦£¬´ËºóÔÙÐ´Êý¾Ý£¬ÄÚºË½«Ïò½ø³Ì·¢³öSIGPIPEÐÅºÅ
-    signal(SIGHUP, _sighandler);//ÖÕÖ¹¿ØÖÆÖÕ¶Ë»ò½ø³Ì
-    signal(SIGINT, _sighandler);//¼üÅÌ²úÉúµÄÖÐ¶Ï(Ctrl-C)
-    signal(SIGQUIT, _sighandler);//¼üÅÌ²úÉúµÄÍË³ö
-    signal(SIGABRT, _sighandler);//Òì³£ÖÐÖ¹
+    signal(SIGPIPE, SIG_IGN);//è‹¥æŸä¸€ç«¯å…³é—­è¿žæŽ¥ï¼Œè€Œå¦ä¸€ç«¯ä»ç„¶å‘å®ƒå†™æ•°æ®ï¼Œç¬¬ä¸€æ¬¡å†™æ•°æ®åŽä¼šæ”¶åˆ°RSTå“åº”ï¼Œæ­¤åŽå†å†™æ•°æ®ï¼Œå†…æ ¸å°†å‘è¿›ç¨‹å‘å‡ºSIGPIPEä¿¡å·
+    signal(SIGHUP, _sighandler);//ç»ˆæ­¢æŽ§åˆ¶ç»ˆç«¯æˆ–è¿›ç¨‹
+    signal(SIGINT, _sighandler);//é”®ç›˜äº§ç”Ÿçš„ä¸­æ–­(Ctrl-C)
+    signal(SIGQUIT, _sighandler);//é”®ç›˜äº§ç”Ÿçš„é€€å‡º
+    signal(SIGABRT, _sighandler);//å¼‚å¸¸ä¸­æ­¢
     signal(SIGTSTP, _sighandler);//ctrl+Z
-    signal(SIGKILL, _sighandler);//Á¢¼´½áÊø³ÌÐò
-    signal(SIGTERM, _sighandler);//½ø³ÌÖÕÖ¹
+    signal(SIGKILL, _sighandler);//ç«‹å³ç»“æŸç¨‹åº
+    signal(SIGTERM, _sighandler);//è¿›ç¨‹ç»ˆæ­¢
     signal(SIGUSR1, _sighandler);
     signal(SIGUSR2, _sighandler);
 #endif
@@ -735,7 +737,7 @@ const char *contenttype(const char *extension) {
         { NULL, NULL }
     };
     contenttype_ctx *conttype;
-    for (int32_t i = 0; ;i++) {
+    for (int32_t i = 0; ; i++) {
         conttype = &typegreg[i];
         if (NULL == conttype->extension) {
             break;
@@ -791,7 +793,7 @@ static int32_t _get_proc(pid_t pid, struct procsinfo *info) {
             if (SZOMB == pinfo[i].pi_state) {
                 continue;
             }
-            //pinfo[i].pi_comm ³ÌÐòÃû
+            //pinfo[i].pi_comm ç¨‹åºå
             if (pid == pinfo[i].pi_pid) {
                 memcpy(info, &pinfo[i], sizeof(struct procsinfo));
                 return ERR_OK;
@@ -881,7 +883,8 @@ static int32_t _get_procpath(char path[PATH_LENS]) {
         memcpy(path + (cur - path), cur + 2, len);
         len = cur - path + len;
         path[len] = 0;
-    } else {
+    }
+    else {
         len = strlen(path);
         if ('.' == path[len - 1]
             && PATH_SEPARATOR == path[len - 2]) {
@@ -939,7 +942,7 @@ char *readall(const char *file, size_t *lens) {
 }
 int32_t timeoffset(void) {
     time_t now = time(NULL);
-    //ÏµÍ³Ê±¼ä×ª»»ÎªGMTÊ±¼ä ÔÙ½«GMTÊ±¼äÖØÐÂ×ª»»ÎªÏµÍ³Ê±¼ä
+    //ç³»ç»Ÿæ—¶é—´è½¬æ¢ä¸ºGMTæ—¶é—´ å†å°†GMTæ—¶é—´é‡æ–°è½¬æ¢ä¸ºç³»ç»Ÿæ—¶é—´
     time_t gt = mktime(gmtime(&now));
     return ((int32_t)(now - gt) + (localtime(&gt)->tm_isdst ? 3600 : 0)) / 60;
 }
@@ -974,7 +977,8 @@ void fill_timespec(struct timespec *timeout, uint32_t ms) {
     if (ms >= 1000) {
         timeout->tv_sec = ms / 1000;
         timeout->tv_nsec = (long)(ms - timeout->tv_sec * 1000) * (1000 * 1000);
-    } else {
+    }
+    else {
         timeout->tv_sec = 0;
         timeout->tv_nsec = ms * (1000 * 1000);
     }
@@ -1010,10 +1014,12 @@ int32_t _memicmp(const void *ptr1, const void *ptr2, size_t lens) {
     }
     if (i == (int32_t)lens) {
         return 0;
-    } else {
+    }
+    else {
         if (*buf1 > *buf2) {
             return 1;
-        } else {
+        }
+        else {
             return -1;
         }
     }
@@ -1032,7 +1038,8 @@ void *memstr(int32_t ncs, const void *ptr, size_t plens, const void *what, size_
     if (0 == ncs) {
         chr = memchr;
         cmp = memcmp;
-    } else {
+    }
+    else {
         chr = memichr;
         cmp = _memicmp;
     }
@@ -1063,7 +1070,7 @@ void *skipempty(const void *ptr, size_t plens) {
     }
     return cur;
 }
-char *strupper(char *str){
+char *strupper(char *str) {
     if (NULL == str) {
         return NULL;
     }
@@ -1096,7 +1103,7 @@ char* strreverse(char* str) {
     }
     char* b = str;
     char* e = str;
-    while (*e) { 
+    while (*e) {
         ++e;
     }
     --e;
@@ -1175,14 +1182,15 @@ buf_ctx *split(const void *ptr, size_t plens, const void *sep, size_t seplens, s
             if (size > 0) {
                 buf[*n].data = (void *)cur;
                 buf[*n].lens = size;
-            } else {
+            }
+            else {
                 buf[*n].data = NULL;
                 buf[*n].lens = 0;
             }
             (*n)++;
             cur += (size + seplens);
             plens -= (size + seplens);
-            //ÒÔ·Ö¸ô·û½áÎ²
+            //ä»¥åˆ†éš”ç¬¦ç»“å°¾
             if (0 == plens) {
                 if (*n >= total) {
                     ++total;
@@ -1192,7 +1200,8 @@ buf_ctx *split(const void *ptr, size_t plens, const void *sep, size_t seplens, s
                 buf[*n].lens = 0;
                 (*n)++;
             }
-        } else {
+        }
+        else {
             buf[*n].data = (void *)cur;
             buf[*n].lens = plens;
             (*n)++;
@@ -1258,7 +1267,8 @@ int64_t unpack_integer(const char *buf, int32_t size, int32_t islittle, int32_t 
 static void _copy_with_endian(char *dest, const char *src, size_t size, int32_t islittle) {
     if (islittle == is_little()) {
         memcpy(dest, src, size);
-    } else {
+    }
+    else {
         dest += size - 1;
         while (0 != size--) {
             *(dest--) = *(src++);

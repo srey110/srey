@@ -1,9 +1,9 @@
-#ifndef MYSQL_PACK_H_
+ï»¿#ifndef MYSQL_PACK_H_
 #define MYSQL_PACK_H_
 
 #include "protocol/mysql/mysql_bind.h"
 
-//ÇëÇó°ü
+//è¯·æ±‚åŒ…
 void *mysql_pack_quit(mysql_ctx *mysql, size_t *size);
 void *mysql_pack_selectdb(mysql_ctx *mysql, const char *database, size_t *size);
 void *mysql_pack_ping(mysql_ctx *mysql, size_t *size);

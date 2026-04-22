@@ -1,4 +1,4 @@
-#ifndef AES_H_
+ï»¿#ifndef AES_H_
 #define AES_H_
 
 #include "base/macro.h"
@@ -11,20 +11,20 @@ typedef struct aes_ctx {
     uint32_t schedule[256 / 8 + 28];
 }aes_ctx;
 /// <summary>
-/// aes ³õÊ¼»¯
+/// aes åˆå§‹åŒ–
 /// </summary>
 /// <param name="aes">aes_ctx</param>
-/// <param name="key">ÃÜÂë</param>
-/// <param name="klens">ÃÜÂë³¤¶È, ²»×ã16 24 32 »áÌî³ä0</param>
+/// <param name="key">å¯†ç </param>
+/// <param name="klens">å¯†ç é•¿åº¦, ä¸è¶³16 24 32 ä¼šå¡«å……0</param>
 /// <param name="keybits">128 192 256</param>
-/// <param name="encrypt">1 ¼ÓÃÜ, 0 ½âÃÜ</param>
+/// <param name="encrypt">1 åŠ å¯†, 0 è§£å¯†</param>
 void aes_init(aes_ctx *aes, const char *key, size_t klens, int32_t keybits, int32_t encrypt);
 /// <summary>
-/// aes¼Ó½âÃÜ
+/// aesåŠ è§£å¯†
 /// </summary>
 /// <param name="aes">aes_ctx</param>
-/// <param name="data">´ı¼Ó½âÃÜÊı¾İ,³¤¶È:AES_BLOCK_SIZE</param>
-/// <returns>¼Ó½âÃÜºóµÄÊı¾İ,³¤¶È:AES_BLOCK_SIZE</returns>
+/// <param name="data">å¾…åŠ è§£å¯†æ•°æ®,é•¿åº¦:AES_BLOCK_SIZE</param>
+/// <returns>åŠ è§£å¯†åçš„æ•°æ®,é•¿åº¦:AES_BLOCK_SIZE</returns>
 char *aes_crypt(aes_ctx *aes, const void *data);
 
 #endif//AES_H_

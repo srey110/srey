@@ -1,4 +1,4 @@
-#include "crypt/des.h"
+﻿#include "crypt/des.h"
 #include "crypt/padding.h"
 
 #define BITNUM(a,b,c) (((a[(b)/8] >> (7 - (b%8))) & 0x01) << (c))
@@ -7,52 +7,52 @@
 #define SBOXBIT(a) (((a) & 0x20) | (((a) & 0x1f) >> 1) | (((a) & 0x01) << 4))
 
 static const uint8_t sbox1[64] = {
-	14,  4,  13,  1,   2, 15,  11,  8,   3, 10,   6, 12,   5,  9,   0,  7,
-	 0, 15,   7,  4,  14,  2,  13,  1,  10,  6,  12, 11,   9,  5,   3,  8,
-	 4,  1,  14,  8,  13,  6,   2, 11,  15, 12,   9,  7,   3, 10,   5,  0,
-	15, 12,   8,  2,   4,  9,   1,  7,   5, 11,   3, 14,  10,  0,   6, 13
+    14,  4,  13,  1,   2, 15,  11,  8,   3, 10,   6, 12,   5,  9,   0,  7,
+     0, 15,   7,  4,  14,  2,  13,  1,  10,  6,  12, 11,   9,  5,   3,  8,
+     4,  1,  14,  8,  13,  6,   2, 11,  15, 12,   9,  7,   3, 10,   5,  0,
+    15, 12,   8,  2,   4,  9,   1,  7,   5, 11,   3, 14,  10,  0,   6, 13
 };
 static const uint8_t sbox2[64] = {
-	15,  1,   8, 14,   6, 11,   3,  4,   9,  7,   2, 13,  12,  0,   5, 10,
-	 3, 13,   4,  7,  15,  2,   8, 14,  12,  0,   1, 10,   6,  9,  11,  5,
-	 0, 14,   7, 11,  10,  4,  13,  1,   5,  8,  12,  6,   9,  3,   2, 15,
-	13,  8,  10,  1,   3, 15,   4,  2,  11,  6,   7, 12,   0,  5,  14,  9
+    15,  1,   8, 14,   6, 11,   3,  4,   9,  7,   2, 13,  12,  0,   5, 10,
+     3, 13,   4,  7,  15,  2,   8, 14,  12,  0,   1, 10,   6,  9,  11,  5,
+     0, 14,   7, 11,  10,  4,  13,  1,   5,  8,  12,  6,   9,  3,   2, 15,
+    13,  8,  10,  1,   3, 15,   4,  2,  11,  6,   7, 12,   0,  5,  14,  9
 };
 static const uint8_t sbox3[64] = {
-	10,  0,   9, 14,   6,  3,  15,  5,   1, 13,  12,  7,  11,  4,   2,  8,
-	13,  7,   0,  9,   3,  4,   6, 10,   2,  8,   5, 14,  12, 11,  15,  1,
-	13,  6,   4,  9,   8, 15,   3,  0,  11,  1,   2, 12,   5, 10,  14,  7,
-	 1, 10,  13,  0,   6,  9,   8,  7,   4, 15,  14,  3,  11,  5,   2, 12
+    10,  0,   9, 14,   6,  3,  15,  5,   1, 13,  12,  7,  11,  4,   2,  8,
+    13,  7,   0,  9,   3,  4,   6, 10,   2,  8,   5, 14,  12, 11,  15,  1,
+    13,  6,   4,  9,   8, 15,   3,  0,  11,  1,   2, 12,   5, 10,  14,  7,
+     1, 10,  13,  0,   6,  9,   8,  7,   4, 15,  14,  3,  11,  5,   2, 12
 };
 static const uint8_t sbox4[64] = {
-	 7, 13,  14,  3,   0,  6,   9, 10,   1,  2,   8,  5,  11, 12,   4, 15,
-	13,  8,  11,  5,   6, 15,   0,  3,   4,  7,   2, 12,   1, 10,  14,  9,
-	10,  6,   9,  0,  12, 11,   7, 13,  15,  1,   3, 14,   5,  2,   8,  4,
-	 3, 15,   0,  6,  10,  1,  13,  8,   9,  4,   5, 11,  12,  7,   2, 14
+     7, 13,  14,  3,   0,  6,   9, 10,   1,  2,   8,  5,  11, 12,   4, 15,
+    13,  8,  11,  5,   6, 15,   0,  3,   4,  7,   2, 12,   1, 10,  14,  9,
+    10,  6,   9,  0,  12, 11,   7, 13,  15,  1,   3, 14,   5,  2,   8,  4,
+     3, 15,   0,  6,  10,  1,  13,  8,   9,  4,   5, 11,  12,  7,   2, 14
 };
 static const uint8_t sbox5[64] = {
-	 2, 12,   4,  1,   7, 10,  11,  6,   8,  5,   3, 15,  13,  0,  14,  9,
-	14, 11,   2, 12,   4,  7,  13,  1,   5,  0,  15, 10,   3,  9,   8,  6,
-	 4,  2,   1, 11,  10, 13,   7,  8,  15,  9,  12,  5,   6,  3,   0, 14,
-	11,  8,  12,  7,   1, 14,   2, 13,   6, 15,   0,  9,  10,  4,   5,  3
+     2, 12,   4,  1,   7, 10,  11,  6,   8,  5,   3, 15,  13,  0,  14,  9,
+    14, 11,   2, 12,   4,  7,  13,  1,   5,  0,  15, 10,   3,  9,   8,  6,
+     4,  2,   1, 11,  10, 13,   7,  8,  15,  9,  12,  5,   6,  3,   0, 14,
+    11,  8,  12,  7,   1, 14,   2, 13,   6, 15,   0,  9,  10,  4,   5,  3
 };
 static const uint8_t sbox6[64] = {
-	12,  1,  10, 15,   9,  2,   6,  8,   0, 13,   3,  4,  14,  7,   5, 11,
-	10, 15,   4,  2,   7, 12,   9,  5,   6,  1,  13, 14,   0, 11,   3,  8,
-	 9, 14,  15,  5,   2,  8,  12,  3,   7,  0,   4, 10,   1, 13,  11,  6,
-	 4,  3,   2, 12,   9,  5,  15, 10,  11, 14,   1,  7,   6,  0,   8, 13
+    12,  1,  10, 15,   9,  2,   6,  8,   0, 13,   3,  4,  14,  7,   5, 11,
+    10, 15,   4,  2,   7, 12,   9,  5,   6,  1,  13, 14,   0, 11,   3,  8,
+     9, 14,  15,  5,   2,  8,  12,  3,   7,  0,   4, 10,   1, 13,  11,  6,
+     4,  3,   2, 12,   9,  5,  15, 10,  11, 14,   1,  7,   6,  0,   8, 13
 };
 static const uint8_t sbox7[64] = {
-	 4, 11,   2, 14,  15,  0,   8, 13,   3, 12,   9,  7,   5, 10,   6,  1,
-	13,  0,  11,  7,   4,  9,   1, 10,  14,  3,   5, 12,   2, 15,   8,  6,
-	 1,  4,  11, 13,  12,  3,   7, 14,  10, 15,   6,  8,   0,  5,   9,  2,
-	 6, 11,  13,  8,   1,  4,  10,  7,   9,  5,   0, 15,  14,  2,   3, 12
+     4, 11,   2, 14,  15,  0,   8, 13,   3, 12,   9,  7,   5, 10,   6,  1,
+    13,  0,  11,  7,   4,  9,   1, 10,  14,  3,   5, 12,   2, 15,   8,  6,
+     1,  4,  11, 13,  12,  3,   7, 14,  10, 15,   6,  8,   0,  5,   9,  2,
+     6, 11,  13,  8,   1,  4,  10,  7,   9,  5,   0, 15,  14,  2,   3, 12
 };
 static const uint8_t sbox8[64] = {
-	13,  2,   8,  4,   6, 15,  11,  1,  10,  9,   3, 14,   5,  0,  12,  7,
-	 1, 15,  13,  8,  10,  3,   7,  4,  12,  5,   6, 11,   0, 14,   9,  2,
-	 7, 11,   4,  1,   9, 12,  14,  2,   0,  6,  10, 13,  15,  3,   5,  8,
-	 2,  1,  14,  7,   4, 10,   8, 13,  15, 12,   9,  0,   3,  5,   6, 11
+    13,  2,   8,  4,   6, 15,  11,  1,  10,  9,   3, 14,   5,  0,  12,  7,
+     1, 15,  13,  8,  10,  3,   7,  4,  12,  5,   6, 11,   0, 14,   9,  2,
+     7, 11,   4,  1,   9, 12,  14,  2,   0,  6,  10, 13,  15,  3,   5,  8,
+     2,  1,  14,  7,   4, 10,   8, 13,  15, 12,   9,  0,   3,  5,   6, 11
 };
 static void _ip(uint32_t *state, const uint8_t *data) {
     state[0] = BITNUM(data, 57, 31) | BITNUM(data, 49, 30) | BITNUM(data, 41, 29) | BITNUM(data, 33, 28) |
@@ -100,7 +100,7 @@ static void _invip(uint32_t *state, uint8_t *output) {
 }
 static uint32_t _transform(uint32_t state, const uint8_t *key) {
     uint32_t t1, t2;
-	uint8_t lrgstate[6];
+    uint8_t lrgstate[6];
     t1 = BITNUMINTL(state, 31, 0) | ((state & 0xf0000000) >> 1) | BITNUMINTL(state, 4, 5) |
         BITNUMINTL(state, 3, 6) | ((state & 0x0f000000) >> 3) | BITNUMINTL(state, 8, 11) |
         BITNUMINTL(state, 7, 12) | ((state & 0x00f00000) >> 5) | BITNUMINTL(state, 12, 17) |
@@ -115,14 +115,14 @@ static uint32_t _transform(uint32_t state, const uint8_t *key) {
     lrgstate[3] = (t2 >> 24) & 0x000000ff;
     lrgstate[4] = (t2 >> 16) & 0x000000ff;
     lrgstate[5] = (t2 >> 8) & 0x000000ff;
-	// Key XOR
-	lrgstate[0] ^= key[0];
-	lrgstate[1] ^= key[1];
-	lrgstate[2] ^= key[2];
-	lrgstate[3] ^= key[3];
-	lrgstate[4] ^= key[4];
-	lrgstate[5] ^= key[5];
-	// S-Box Permutation
+    // Key XOR
+    lrgstate[0] ^= key[0];
+    lrgstate[1] ^= key[1];
+    lrgstate[2] ^= key[2];
+    lrgstate[3] ^= key[3];
+    lrgstate[4] ^= key[4];
+    lrgstate[5] ^= key[5];
+    // S-Box Permutation
     state = (sbox1[SBOXBIT(lrgstate[0] >> 2)] << 28) |
         (sbox2[SBOXBIT(((lrgstate[0] & 0x03) << 4) | (lrgstate[1] >> 4))] << 24) |
         (sbox3[SBOXBIT(((lrgstate[1] & 0x0f) << 2) | (lrgstate[2] >> 6))] << 20) |
@@ -131,7 +131,7 @@ static uint32_t _transform(uint32_t state, const uint8_t *key) {
         (sbox6[SBOXBIT(((lrgstate[3] & 0x03) << 4) | (lrgstate[4] >> 4))] << 8) |
         (sbox7[SBOXBIT(((lrgstate[4] & 0x0f) << 2) | (lrgstate[5] >> 6))] << 4) |
         sbox8[SBOXBIT(lrgstate[5] & 0x3f)];
-	// P-Box Permutation
+    // P-Box Permutation
     state = BITNUMINTL(state, 15, 0) | BITNUMINTL(state, 6, 1) | BITNUMINTL(state, 19, 2) |
         BITNUMINTL(state, 20, 3) | BITNUMINTL(state, 28, 4) | BITNUMINTL(state, 11, 5) |
         BITNUMINTL(state, 27, 6) | BITNUMINTL(state, 16, 7) | BITNUMINTL(state, 0, 8) |
@@ -143,7 +143,7 @@ static uint32_t _transform(uint32_t state, const uint8_t *key) {
         BITNUMINTL(state, 18, 24) | BITNUMINTL(state, 12, 25) | BITNUMINTL(state, 29, 26) |
         BITNUMINTL(state, 5, 27) | BITNUMINTL(state, 21, 28) | BITNUMINTL(state, 10, 29) |
         BITNUMINTL(state, 3, 30) | BITNUMINTL(state, 24, 31);
-	return state;
+    return state;
 }
 static void _key_setup(const uint8_t *key, int32_t encrypt, uint8_t schedule[16 * 6]) {
     static const uint32_t key_rnd_shift[16] = { 1,1,2,2,2,2,2,2,1,2,2,2,2,2,2,1 };
@@ -179,12 +179,14 @@ void des_init(des_ctx *des, const char *key, size_t klens, int32_t des3, int32_t
             _key_setup(k, encrypt, des->schedule);
             _key_setup(k + 8, !encrypt, des->schedule + 16 * 6);
             _key_setup(k + 16, encrypt, des->schedule + 2 * 16 * 6);
-        } else {
+        }
+        else {
             _key_setup(k + 16, encrypt, des->schedule);
             _key_setup(k + 8, !encrypt, des->schedule + 16 * 6);
             _key_setup(k, encrypt, des->schedule + 2 * 16 * 6);
         }
-    } else {
+    }
+    else {
         uint8_t pdkey[8];
         uint8_t *k = _padding_key(key, klens, pdkey, 8);
         _key_setup(k, encrypt, des->schedule);
@@ -206,7 +208,8 @@ char *des_crypt(des_ctx *des, const void *data) {
         _crypt(des->schedule, (const uint8_t *)data, des->output);
         _crypt(des->schedule + 16 * 6, des->output, des->output);
         _crypt(des->schedule + 2 * 16 * 6, des->output, des->output);
-    } else {
+    }
+    else {
         _crypt(des->schedule, (const uint8_t *)data, des->output);
     }
     return (char *)des->output;

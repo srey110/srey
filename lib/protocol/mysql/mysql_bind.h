@@ -1,20 +1,20 @@
-#ifndef MYSQL_BIND_H_
+ï»¿#ifndef MYSQL_BIND_H_
 #define MYSQL_BIND_H_
 
 #include "protocol/mysql/mysql_struct.h"
 
 /// <summary>
-/// ²ÎÊı°ó¶¨ ³õÊ¼»¯
+/// å‚æ•°ç»‘å®š åˆå§‹åŒ–
 /// </summary>
 /// <param name="mbind">mysql_bind_ctx</param>
 void mysql_bind_init(mysql_bind_ctx *mbind);
 /// <summary>
-/// ²ÎÊı°ó¶¨ ÊÍ·Å
+/// å‚æ•°ç»‘å®š é‡Šæ”¾
 /// </summary>
 /// <param name="mbind">mysql_bind_ctx</param>
 void mysql_bind_free(mysql_bind_ctx *mbind);
 /// <summary>
-/// ²ÎÊı°ó¶¨ ÖØÖÃ
+/// å‚æ•°ç»‘å®š é‡ç½®
 /// </summary>
 /// <param name="mbind">mysql_bind_ctx</param>
 void mysql_bind_clear(mysql_bind_ctx *mbind);
@@ -22,7 +22,7 @@ void mysql_bind_clear(mysql_bind_ctx *mbind);
 /// MYSQL_TYPE_NULL
 /// </summary>
 /// <param name="mbind">mysql_bind_ctx</param>
-/// <param name="name">Ãû³Æ</param>
+/// <param name="name">åç§°</param>
 void mysql_bind_nil(mysql_bind_ctx *mbind, const char *name);
 /// <summary>
 /// MYSQL_TYPE_STRING MYSQL_TYPE_VARCHAR MYSQL_TYPE_VAR_STRING MYSQL_TYPE_ENUM MYSQL_TYPE_SET
@@ -30,42 +30,42 @@ void mysql_bind_nil(mysql_bind_ctx *mbind, const char *name);
 /// MYSQL_TYPE_GEOMETRY MYSQL_TYPE_BIT MYSQL_TYPE_DECIMAL MYSQL_TYPE_NEWDECIMAL MYSQL_TYPE_JSON
 /// </summary>
 /// <param name="mbind">mysql_bind_ctx</param>
-/// <param name="name">Ãû³Æ</param>
-/// <param name="value">Êı¾İ</param>
-/// <param name="lens">³¤¶È</param>
+/// <param name="name">åç§°</param>
+/// <param name="value">æ•°æ®</param>
+/// <param name="lens">é•¿åº¦</param>
 void mysql_bind_string(mysql_bind_ctx *mbind, const char *name, char *value, size_t lens);
 /// <summary>
 /// MYSQL_TYPE_TINY MYSQL_TYPE_SHORT MYSQL_TYPE_YEAR MYSQL_TYPE_LONG MYSQL_TYPE_LONGLONG
 /// </summary>
 /// <param name="mbind">mysql_bind_ctx</param>
-/// <param name="name">Ãû³Æ</param>
-/// <param name="value">Öµ</param>
+/// <param name="name">åç§°</param>
+/// <param name="value">å€¼</param>
 void mysql_bind_integer(mysql_bind_ctx *mbind, const char *name, int64_t value);
 void mysql_bind_uinteger(mysql_bind_ctx *mbind, const char *name, uint64_t value);
 /// <summary>
 /// MYSQL_TYPE_FLOAT MYSQL_TYPE_DOUBLE
 /// </summary>
 /// <param name="mbind">mysql_bind_ctx</param>
-/// <param name="name">Ãû³Æ</param>
-/// <param name="value">Öµ</param>
+/// <param name="name">åç§°</param>
+/// <param name="value">å€¼</param>
 void mysql_bind_double(mysql_bind_ctx *mbind, const char *name, double value);
 /// <summary>
 /// MYSQL_TYPE_DATE MYSQL_TYPE_DATETIME MYSQL_TYPE_TIMESTAMP
 /// </summary>
 /// <param name="mbind">mysql_bind_ctx</param>
-/// <param name="name">Ãû³Æ</param>
-/// <param name="ts">Ê±¼ä´Á</param>
+/// <param name="name">åç§°</param>
+/// <param name="ts">æ—¶é—´æˆ³</param>
 void mysql_bind_datetime(mysql_bind_ctx *mbind, const char *name, time_t ts);
 /// <summary>
 /// MYSQL_TYPE_TIME
 /// </summary>
 /// <param name="mbind">mysql_bind_ctx</param>
-/// <param name="name">Ãû³Æ</param>
-/// <param name="is_negative">1¸º 0 Õı</param>
-/// <param name="days">Ìì</param>
-/// <param name="hour">Ğ¡Ê±</param>
-/// <param name="minute">·Ö</param>
-/// <param name="second">Ãë</param>
+/// <param name="name">åç§°</param>
+/// <param name="is_negative">1è´Ÿ 0 æ­£</param>
+/// <param name="days">å¤©</param>
+/// <param name="hour">å°æ—¶</param>
+/// <param name="minute">åˆ†</param>
+/// <param name="second">ç§’</param>
 void mysql_bind_time(mysql_bind_ctx *mbind, const char *name,
     int8_t is_negative, int32_t days, int8_t hour, int8_t minute, int8_t second);
 

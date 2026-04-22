@@ -1,4 +1,4 @@
-#include "protocol/smtp/smtp.h"
+﻿#include "protocol/smtp/smtp.h"
 #include "utils/utils.h"
 #include "utils/binary.h"
 #include "srey/task.h"
@@ -90,7 +90,7 @@ static void _smtp_connected(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid
         BIT_SET(*status, PROT_MOREDATA);
         return;
     }
-    char code[SMTP_CODE_LENS + 1] = {0};
+    char code[SMTP_CODE_LENS + 1] = { 0 };
     ASSERTAB(SMTP_CODE_LENS == buffer_copyout(buf, 0, code, SMTP_CODE_LENS), "copy buffer failed.");
     if (0 != strcmp(code, "220")) {
         BIT_SET(*status, PROT_ERROR);

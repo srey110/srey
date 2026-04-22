@@ -1,10 +1,10 @@
-#ifndef BSON_H_
+ï»¿#ifndef BSON_H_
 #define BSON_H_
 
 #include "utils/binary.h"
 
-#define BSON_OID_LENS  12//ObjectId³¤¶È
-#define BSON_MAX_DEPTH 18//×î´óÇ¶Ì×²ãÊı
+#define BSON_OID_LENS  12//ObjectIdé•¿åº¦
+#define BSON_MAX_DEPTH 18//æœ€å¤§åµŒå¥—å±‚æ•°
 
 #define BSON_DOC(bson)  (bson)->doc.data
 #define BSON_DOC_LENS(bson)  (bson)->doc.offset
@@ -16,76 +16,76 @@
 //binary	::=	int32 subtype (byte*)
 //array ['red', 'blue'] encodes as the document {'0': 'red', '1': 'blue'}.
 typedef enum bson_type {
-    BSON_EOD = 0x00,//½áÎ²
+    BSON_EOD = 0x00,//ç»“å°¾
     BSON_DOUBLE = 0x01,//double              signed_byte(1) e_name double
-    BSON_UTF8 = 0x02,//×Ö·û´®                signed_byte(2) e_name string 
-    BSON_DOCUMENT = 0x03,//¶ÔÏó              signed_byte(3) e_name document
-    BSON_ARRAY = 0x04,//ÕóÁĞ                 signed_byte(4) e_name document
-    BSON_BINARY = 0x05,//¶ş½øÖÆÊı¾İ          signed_byte(5) e_name binary
+    BSON_UTF8 = 0x02,//å­—ç¬¦ä¸²                signed_byte(2) e_name string 
+    BSON_DOCUMENT = 0x03,//å¯¹è±¡              signed_byte(3) e_name document
+    BSON_ARRAY = 0x04,//é˜µåˆ—                 signed_byte(4) e_name document
+    BSON_BINARY = 0x05,//äºŒè¿›åˆ¶æ•°æ®          signed_byte(5) e_name binary
     BSON_OID = 0x07,//ObjectId               signed_byte(7) e_name (byte*12)
-    BSON_BOOL = 0x08,//²¼¶û                  signed_byte(8) e_name unsigned_byte(0/1)
+    BSON_BOOL = 0x08,//å¸ƒå°”                  signed_byte(8) e_name unsigned_byte(0/1)
     BSON_DATE = 0x09,//Date                  signed_byte(9) e_name int64  UTC datetime. int64 is UTC milliseconds since the Unix epoch
     BSON_NULL = 0x0A,//null                  signed_byte(10) e_name
-    BSON_REGEX = 0x0B,//ÕıÔò±í´ïÊ½           signed_byte(11) e_name cstring(regex pattern) cstring(regex options)
+    BSON_REGEX = 0x0B,//æ­£åˆ™è¡¨è¾¾å¼           signed_byte(11) e_name cstring(regex pattern) cstring(regex options)
     BSON_JSCODE = 0x0D,//JavaScript          signed_byte(13) e_name string
-    BSON_INT32 = 0x10,//32 Î»ÕûÊı            signed_byte(16) e_name int32
-    BSON_TIMESTAMP = 0x11,//Ê±¼ä´Á           signed_byte(17) e_name uint64 The first 4 bytes are an increment and the second 4 bytes are a timestamp.
-    BSON_INT64 = 0x12,//64 Î»ÕûĞÍ            signed_byte(18) e_name int64
+    BSON_INT32 = 0x10,//32 ä½æ•´æ•°            signed_byte(16) e_name int32
+    BSON_TIMESTAMP = 0x11,//æ—¶é—´æˆ³           signed_byte(17) e_name uint64 The first 4 bytes are an increment and the second 4 bytes are a timestamp.
+    BSON_INT64 = 0x12,//64 ä½æ•´å‹            signed_byte(18) e_name int64
     BSON_DECIMAL128 = 0x13,//Decimal128
     BSON_MAXKEY = 0x7F,//Max key             signed_byte(-1) e_name
     BSON_MINKEY = 0xFF,//Min key             signed_byte(127) e_name
 } bson_type;
 typedef enum bson_subtype {
-    BSON_SUBTYPE_BINARY = 0x00,//Í¨ÓÃ¶ş½øÖÆ×ÓÀàĞÍ
-    BSON_SUBTYPE_FUNCTION = 0x01,//º¯ÊıÊı¾İ
+    BSON_SUBTYPE_BINARY = 0x00,//é€šç”¨äºŒè¿›åˆ¶å­ç±»å‹
+    BSON_SUBTYPE_FUNCTION = 0x01,//å‡½æ•°æ•°æ®
     BSON_SUBTYPE_UUID = 0x04,//UUID
     BSON_SUBTYPE_MD5 = 0x05,//MD5
-    BSON_SUBTYPE_ENCRYPTED = 0x06,//¼ÓÃÜµÄ BSON Öµ
-    BSON_SUBTYPE_COMPRESSED = 0x07,//Ñ¹Ëõ
-    BSON_SUBTYPE_SENSITIVE = 0x08,//Ãô¸ĞÊı¾İ
-    BSON_SUBTYPE_VECTOR = 0x09,//ÏòÁ¿Êı¾İÊÇÓÉÏàÍ¬ÀàĞÍµÄÊı×Ö×é³ÉµÄÃÜ¼¯Êı×é
-    BSON_SUBTYPE_USER = 0x80,//×Ô¶¨ÒåÊı¾İ
+    BSON_SUBTYPE_ENCRYPTED = 0x06,//åŠ å¯†çš„ BSON å€¼
+    BSON_SUBTYPE_COMPRESSED = 0x07,//å‹ç¼©
+    BSON_SUBTYPE_SENSITIVE = 0x08,//æ•æ„Ÿæ•°æ®
+    BSON_SUBTYPE_VECTOR = 0x09,//å‘é‡æ•°æ®æ˜¯ç”±ç›¸åŒç±»å‹çš„æ•°å­—ç»„æˆçš„å¯†é›†æ•°ç»„
+    BSON_SUBTYPE_USER = 0x80,//è‡ªå®šä¹‰æ•°æ®
 } bson_subtype;
 
 typedef struct bson_ctx {
-    int32_t depth;//µ±Ç°²ã¼¶
+    int32_t depth;//å½“å‰å±‚çº§
     binary_ctx doc;
-    size_t offsets[BSON_MAX_DEPTH];//²ã¼¶¿ªÊ¼Î»ÖÃ
+    size_t offsets[BSON_MAX_DEPTH];//å±‚çº§å¼€å§‹ä½ç½®
 }bson_ctx;
 typedef struct bson_iter {
     bson_type type;
     bson_subtype subtype;
-    size_t doclens;//ÎÄµµ³¤¶È
-    size_t lens;//val³¤¶È
+    size_t doclens;//æ–‡æ¡£é•¿åº¦
+    size_t lens;//valé•¿åº¦
     const char *key;//key
-    char *val;//Öµ1
-    char *val2;//Öµ2
-    binary_ctx *doc;//bson_ctxÖĞµÄdoc
+    char *val;//å€¼1
+    char *val2;//å€¼2
+    binary_ctx *doc;//bson_ctxä¸­çš„doc
 } bson_iter;
 
-//³õÊ¼»¯oid empty bson
+//åˆå§‹åŒ–oid empty bson
 void bson_globle_init(void);
-//»ñÈ¡oid
+//è·å–oid
 void bson_oid(char iod[BSON_OID_LENS]);
-//·µ»Ø¿Õbson
+//è¿”å›ç©ºbson
 const char *bson_empty(size_t *lens);
-//³õÊ¼»¯
+//åˆå§‹åŒ–
 void bson_init(bson_ctx *bson, char *data, size_t lens);
-//¼ì²ébsonÊÇ·ñĞ´Íê
+//æ£€æŸ¥bsonæ˜¯å¦å†™å®Œ
 int32_t bson_complete(bson_ctx *bson);
-//ÀàĞÍ×ª×Ö·û´®
+//ç±»å‹è½¬å­—ç¬¦ä¸²
 const char *bson_type_tostring(bson_type type);
 const char *bson_subtype_tostring(bson_subtype type);
-//bson×ª»»³É×Ö·û´® ĞèÒªFREE
+//bsonè½¬æ¢æˆå­—ç¬¦ä¸² éœ€è¦FREE
 char *bson_tostring(bson_ctx *bson);
 char *bson_tostring2(char *data, size_t lens);
-//Æ´½Óbson(bsonÎ´Ğ´ÍêÇ°)
+//æ‹¼æ¥bson(bsonæœªå†™å®Œå‰)
 void bson_cat(bson_ctx *bson, char *doc);
-//¿ªÊ¼Ğ´Èë¶ÔÏó bson_append_end ½áÊøĞ´Èë
+//å¼€å§‹å†™å…¥å¯¹è±¡ bson_append_end ç»“æŸå†™å…¥
 void bson_append_document_begain(bson_ctx *bson, const char *key);
-//¿ªÊ¼Ğ´ÈëÊı×é bson_append_end ½áÊøĞ´Èë
+//å¼€å§‹å†™å…¥æ•°ç»„ bson_append_end ç»“æŸå†™å…¥
 void bson_append_array_begain(bson_ctx *bson, const char *key);
-//½áÊøĞ´Èë
+//ç»“æŸå†™å…¥
 void bson_append_end(bson_ctx *bson);
 void bson_append_double(bson_ctx *bson, const char *key, double val);
 void bson_append_utf8(bson_ctx *bson, const char *key, const char *val);
@@ -103,13 +103,13 @@ void bson_append_timestamp(bson_ctx *bson, const char *key, uint32_t ts, uint32_
 void bson_append_int64(bson_ctx *bson, const char *key, int64_t val);
 void bson_append_minkey(bson_ctx *bson, const char *key);
 void bson_append_maxkey(bson_ctx *bson, const char *key);
-//iterator³õÊ¼»¯
+//iteratoråˆå§‹åŒ–
 void bson_iter_init(bson_iter *iter, bson_ctx *bson);
-//ÖØÖÃµ½¿ªÊ¼Î»ÖÃ
+//é‡ç½®åˆ°å¼€å§‹ä½ç½®
 void bson_iter_reset(bson_iter *iter);
-//±éÀú trueÓĞÖµ
+//éå† trueæœ‰å€¼
 int32_t bson_iter_next(bson_iter *iter);
-//´Óiter´¦¿ªÊ¼²éÕÒ keys: key1.key2...   ERR_OK ÕÒµ½
+//ä»iterå¤„å¼€å§‹æŸ¥æ‰¾ keys: key1.key2...   ERR_OK æ‰¾åˆ°
 int32_t bson_iter_find(bson_iter *iter, const char *keys, bson_iter *result);
 double bson_iter_double(bson_iter *iter, int32_t *err);
 const char *bson_iter_utf8(bson_iter *iter, int32_t *err);

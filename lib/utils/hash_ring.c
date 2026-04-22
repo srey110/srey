@@ -1,4 +1,4 @@
-#include "hash_ring.h"
+﻿#include "hash_ring.h"
 
 typedef struct hash_ring_list {
     hash_ring_node *node;
@@ -19,9 +19,11 @@ static int32_t _item_sort(const void *a, const void *b) {
     }
     if (itema->digest < itemb->digest) {
         return -1;
-    } else if (itema->digest > itemb->digest) {
+    }
+    else if (itema->digest > itemb->digest) {
         return 1;
-    } else {
+    }
+    else {
         return 0;
     }
 }
@@ -34,7 +36,7 @@ void hash_ring_free(hash_ring_ctx *ring) {
         return;
     }
     hash_ring_list *tmp, *cur = ring->nodes;
-    while(NULL != cur) {
+    while (NULL != cur) {
         FREE(cur->node->name);
         FREE(cur->node);
         tmp = cur;
@@ -42,7 +44,7 @@ void hash_ring_free(hash_ring_ctx *ring) {
         FREE(tmp);
     }
     ring->nodes = NULL;
-    for(uint32_t i = 0; i < ring->nitems; i++) {
+    for (uint32_t i = 0; i < ring->nitems; i++) {
         FREE(ring->items[i]);
     }
     FREE(ring->items);
@@ -60,7 +62,7 @@ static void _add_items(hash_ring_ctx *ring, hash_ring_node *node) {
     int32_t concat_len;
     hash_ring_item *item;
     REALLOC(ring->items, ring->items, (sizeof(hash_ring_item *) * (ring->nitems + node->nreplicas)));
-    for(uint32_t i = 0; i < node->nreplicas; i++) {
+    for (uint32_t i = 0; i < node->nreplicas; i++) {
         concat_len = SNPRINTF(concat_buf, sizeof(concat_buf), "-%d", i);
         ASSERTAB(concat_len > 0, "out of memory.");
         MALLOC(name, (size_t)concat_len + node->lens);
@@ -122,15 +124,16 @@ void hash_ring_remove(hash_ring_ctx *ring, void *name, size_t lens) {
         return;
     }
     hash_ring_list *next, *prev = NULL, *cur = ring->nodes;
-    while(NULL != cur) {
-        if(cur->node->lens == lens
-           && 0 == memcmp(cur->node->name, name, lens)) {
+    while (NULL != cur) {
+        if (cur->node->lens == lens
+            && 0 == memcmp(cur->node->name, name, lens)) {
             // Node found, remove it
             next = cur->next;
             FREE(cur->node->name);
             if (prev == NULL) {
                 ring->nodes = next;
-            } else {
+            }
+            else {
                 prev->next = next;
             }
             // Remove all items for this node and mark them as NULL
@@ -160,22 +163,24 @@ static hash_ring_item *_find_next_highest_item(hash_ring_ctx *ring, uint64_t dig
     int32_t min = 0;
     int32_t max = ring->nitems - 1, midpointindex;
     hash_ring_item *item = NULL;
-    while(1) {
-        if(min > max) {
-            if(min == ring->nitems) {
+    while (1) {
+        if (min > max) {
+            if (min == ring->nitems) {
                 // Past the end of the ring, return the first item
                 return ring->items[0];
-            } else {
+            }
+            else {
                 // Return the next highest item
                 return ring->items[min];
             }
         }
         midpointindex = (min + max) / 2;
         item = ring->items[midpointindex];
-        if(item->digest > digest) {
+        if (item->digest > digest) {
             // Key is in the lower half
             max = midpointindex - 1;
-        } else if(item->digest <= digest) {
+        }
+        else if (item->digest <= digest) {
             // Key is in the upper half
             min = midpointindex + 1;
         }
@@ -190,9 +195,10 @@ hash_ring_node *hash_ring_find(hash_ring_ctx *ring, void *key, size_t lens) {
     }
     uint64_t digest = _hash(ring, key, lens);
     hash_ring_item *item = _find_next_highest_item(ring, digest);
-    if(item == NULL) {
+    if (item == NULL) {
         return NULL;
-    } else {
+    }
+    else {
         return item->node;
     }
 }

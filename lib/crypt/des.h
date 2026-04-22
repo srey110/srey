@@ -1,4 +1,4 @@
-#ifndef DES_H_
+ï»¿#ifndef DES_H_
 #define DES_H_
 
 #include "base/macro.h"
@@ -10,20 +10,20 @@ typedef struct des_ctx {
     uint8_t schedule[3 * 16 * 6];
 }des_ctx;
 /// <summary>
-/// des ³õÊ¼»¯
+/// des åˆå§‹åŒ–
 /// </summary>
 /// <param name="des">des_ctx</param>
-/// <param name="key">ÃÜÂë</param>
-/// <param name="klens">ÃÜÂë³¤¶È, ²»×ã8 3 * 8 »áÌî³ä0</param>
+/// <param name="key">å¯†ç </param>
+/// <param name="klens">å¯†ç é•¿åº¦, ä¸è¶³8 3 * 8 ä¼šå¡«å……0</param>
 /// <param name="des3">1 3des, 0 des</param>
-/// <param name="encrypt">1 ¼ÓÃÜ 0 ½âÃÜ</param>
+/// <param name="encrypt">1 åŠ å¯† 0 è§£å¯†</param>
 void des_init(des_ctx *des, const char *key, size_t klens, int32_t des3, int32_t encrypt);
 /// <summary>
-/// des¼Ó½âÃÜ
+/// desåŠ è§£å¯†
 /// </summary>
 /// <param name="des">aes_ctx</param>
-/// <param name="data">´ı¼Ó½âÃÜÊı¾İ,³¤¶È:DES_BLOCK_SIZE</param>
-/// <returns>¼Ó½âÃÜºóµÄÊı¾İ,³¤¶È:DES_BLOCK_SIZE</returns>
+/// <param name="data">å¾…åŠ è§£å¯†æ•°æ®,é•¿åº¦:DES_BLOCK_SIZE</param>
+/// <returns>åŠ è§£å¯†åçš„æ•°æ®,é•¿åº¦:DES_BLOCK_SIZE</returns>
 char *des_crypt(des_ctx *des, const void *data);
 
 #endif//DES_H_

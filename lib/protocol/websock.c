@@ -1,4 +1,4 @@
-#include "protocol/websock.h"
+ï»¿#include "protocol/websock.h"
 #include "protocol/prots.h"
 #include "protocol/http.h"
 #include "protocol/mqtt/mqtt.h"
@@ -24,7 +24,7 @@ typedef struct websock_pack_ctx {
 }websock_pack_ctx;
 typedef struct websock_ctx {
     int8_t slice;
-    pack_type secprot;//×ÓÐ­Òé
+    pack_type secprot;//å­åè®®
     buffer_ctx *buf;
     ud_cxt *ud;
     websock_pack_ctx *pack;
@@ -190,7 +190,8 @@ static int32_t _websock_handshake_server(ev_ctx *ev, SOCKET fd, uint64_t skid, i
     if (ERR_OK != _hs_push(fd, skid, client, ud, ERR_OK, secprot, lens)) {
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
-    } else {
+    }
+    else {
         return ERR_OK;
     }
 }
@@ -254,7 +255,7 @@ static int32_t _websock_handshake_client(SOCKET fd, uint64_t skid, int32_t clien
         _hs_push(fd, skid, client, ud, ERR_FAILED, NULL, 0);
         return ERR_FAILED;
     }
-    if (!buf_compare(&signstr->value, _hs_sign, strlen(_hs_sign))){
+    if (!buf_compare(&signstr->value, _hs_sign, strlen(_hs_sign))) {
         BIT_SET(*status, PROT_ERROR);
         _hs_push(fd, skid, client, ud, ERR_FAILED, NULL, 0);
         return ERR_FAILED;
@@ -276,7 +277,8 @@ static int32_t _websock_handshake_client(SOCKET fd, uint64_t skid, int32_t clien
     if (ERR_OK != _hs_push(fd, skid, client, ud, ERR_OK, secprot, lens)) {
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
-    } else {
+    }
+    else {
         ud->status = START;
         return ERR_OK;
     }
@@ -298,14 +300,15 @@ static void _websock_handshake(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t cli
     pack_type sectype = PACK_NONE;
     if (client) {
         rtn = _websock_handshake_client(fd, skid, client, ud, hpack, status, &sectype);
-    } else {
+    }
+    else {
         rtn = _websock_handshake_server(ev, fd, skid, client, ud, hpack, status, &sectype);
     }
     if (ERR_OK == rtn) {
         CALLOC(ud->context, 1, sizeof(websock_ctx));
         websock_ctx *ws = (websock_ctx *)ud->context;
         ws->secprot = sectype;
-        if (PACK_NONE != sectype) {//ÓÐ×ÓÐ­Òé
+        if (PACK_NONE != sectype) {//æœ‰å­åè®®
             MALLOC(ws->buf, sizeof(buffer_ctx));
             buffer_init(ws->buf);
             CALLOC(ws->ud, 1, sizeof(ud_cxt));
@@ -350,7 +353,7 @@ static websock_pack_ctx *_websock_sec_unpack(websock_ctx *ws, websock_pack_ctx *
         BIT_SET(*status, PROT_ERROR);
         break;
     }
-    //ÒÆ³ý±ê¼Ç,¿ÉÒÔ¼ÌÐøÑ­»·
+    //ç§»é™¤æ ‡è®°,å¯ä»¥ç»§ç»­å¾ªçŽ¯
     if (BIT_CHECK(*status, PROT_MOREDATA)) {
         BIT_REMOVE(*status, PROT_MOREDATA);
     }
@@ -366,7 +369,8 @@ static websock_pack_ctx *_websock_parse_data(buffer_ctx *buf, int32_t client, ud
     if (pack->remain > 0) {
         if (0 == pack->mask) {
             ASSERTAB(pack->dlens == buffer_copyout(buf, 0, pack->data, pack->dlens), "copy buffer failed.");
-        } else {
+        }
+        else {
             ASSERTAB(sizeof(pack->key) == buffer_copyout(buf, 0, pack->key, sizeof(pack->key)), "copy buffer failed.");
             ASSERTAB(pack->dlens == buffer_copyout(buf, sizeof(pack->key), pack->data, pack->dlens), "copy buffer failed.");
             for (size_t i = 0; i < pack->dlens; i++) {
@@ -375,8 +379,8 @@ static websock_pack_ctx *_websock_parse_data(buffer_ctx *buf, int32_t client, ud
         }
         ASSERTAB(pack->remain == buffer_drain(buf, pack->remain), "drain buffer failed.");
     }
-    //ÆðÊ¼Ö¡:FINÎª0,opcode·Ç0 ÖÐ¼äÖ¡:FINÎª0,opcodeÎª0 ½áÊøÖ¡:FINÎª1,opcodeÎª0
-    if (0 == pack->fin 
+    //èµ·å§‹å¸§:FINä¸º0,opcodeéž0 ä¸­é—´å¸§:FINä¸º0,opcodeä¸º0 ç»“æŸå¸§:FINä¸º1,opcodeä¸º0
+    if (0 == pack->fin
         && 0 != pack->prot) {
         if (0 != ws->slice) {
             BIT_SET(*status, PROT_ERROR);
@@ -384,10 +388,12 @@ static websock_pack_ctx *_websock_parse_data(buffer_ctx *buf, int32_t client, ud
         }
         ws->slice = 1;
         BIT_SET(*status, PROT_SLICE_START);
-    } else if (0 == pack->fin
+    }
+    else if (0 == pack->fin
         && 0 == pack->prot) {
         BIT_SET(*status, PROT_SLICE);
-    } else if (1 == pack->fin
+    }
+    else if (1 == pack->fin
         && 0 == pack->prot) {
         ws->slice = 0;
         BIT_SET(*status, PROT_SLICE_END);
@@ -397,17 +403,18 @@ static websock_pack_ctx *_websock_parse_data(buffer_ctx *buf, int32_t client, ud
     }
     ws->pack = NULL;
     ud->status = START;
-    if (PACK_NONE != ws->secprot//ÓÐ×ÓÐ­Òé
-        && pack->dlens > 0//ÅÅ³ý¿Õ°ü
+    if (PACK_NONE != ws->secprot//æœ‰å­åè®®
+        && pack->dlens > 0//æŽ’é™¤ç©ºåŒ…
         && (WS_CONTINUE == pack->prot
             || WS_TEXT == pack->prot
             || WS_BINARY == pack->prot)) {
         return _websock_sec_unpack(ws, pack, client, status);
-    } else {
+    }
+    else {
         return pack;
     }
 }
-static websock_pack_ctx *_websock_parse_pllens(buffer_ctx *buf, size_t blens, 
+static websock_pack_ctx *_websock_parse_pllens(buffer_ctx *buf, size_t blens,
     uint8_t mask, uint8_t payloadlen, int32_t *status) {
     websock_pack_ctx *pack = NULL;
     if (payloadlen <= 125) {
@@ -415,11 +422,13 @@ static websock_pack_ctx *_websock_parse_pllens(buffer_ctx *buf, size_t blens,
         pack->dlens = payloadlen;
         if (0 == mask) {
             pack->remain = payloadlen;
-        } else {
+        }
+        else {
             pack->remain = sizeof(pack->key) + payloadlen;
         }
         ASSERTAB(HEAD_LESN == buffer_drain(buf, HEAD_LESN), "drain buffer failed.");
-    } else if (126 == payloadlen) {
+    }
+    else if (126 == payloadlen) {
         uint16_t pllens;
         size_t atlest = HEAD_LESN + sizeof(pllens);
         if (blens < atlest) {
@@ -435,11 +444,13 @@ static websock_pack_ctx *_websock_parse_pllens(buffer_ctx *buf, size_t blens,
         pack->dlens = pllens;
         if (0 == mask) {
             pack->remain = pllens;
-        } else {
+        }
+        else {
             pack->remain = sizeof(pack->key) + pllens;
         }
         ASSERTAB(atlest == buffer_drain(buf, atlest), "drain buffer failed.");
-    } else if (127 == payloadlen) {
+    }
+    else if (127 == payloadlen) {
         uint64_t pllens;
         size_t atlest = HEAD_LESN + sizeof(pllens);
         if (blens < atlest) {
@@ -455,11 +466,13 @@ static websock_pack_ctx *_websock_parse_pllens(buffer_ctx *buf, size_t blens,
         pack->dlens = (size_t)pllens;
         if (0 == mask) {
             pack->remain = (size_t)pllens;
-        } else {
+        }
+        else {
             pack->remain = sizeof(pack->key) + (size_t)pllens;
         }
         ASSERTAB(atlest == buffer_drain(buf, atlest), "drain buffer failed.");
-    } else {
+    }
+    else {
         BIT_SET(*status, PROT_ERROR);
         return NULL;
     }
@@ -525,7 +538,8 @@ static size_t _websock_create_callens(char key[4], size_t dlens) {
     if (dlens >= 126) {
         if (dlens > 0xffff) {
             size += sizeof(uint64_t);
-        } else {
+        }
+        else {
             size += sizeof(uint16_t);
         }
     }
@@ -550,12 +564,14 @@ static void *_websock_create_pack(uint8_t fin, uint8_t prot, char key[4], void *
     size_t offset = HEAD_LESN;
     if (dlens <= 125) {
         BIT_SET(frame[1], dlens);
-    } else if (dlens <= 0xffff) {
+    }
+    else if (dlens <= 0xffff) {
         BIT_SET(frame[1], 126);
         uint16_t pllens = htons((u_short)dlens);
         memcpy(frame + offset, &pllens, sizeof(uint16_t));
         offset += sizeof(pllens);
-    } else {
+    }
+    else {
         BIT_SET(frame[1], 127);
         uint64_t pllens = htonll((uint64_t)dlens);
         memcpy(frame + offset, &pllens, sizeof(uint64_t));
@@ -571,7 +587,8 @@ static void *_websock_create_pack(uint8_t fin, uint8_t prot, char key[4], void *
                 tmp[i] = tmp[i] ^ key[i % 4];
             }
         }
-    } else {
+    }
+    else {
         if (NULL != data) {
             memcpy(frame + offset, data, dlens);
         }
@@ -581,42 +598,48 @@ static void *_websock_create_pack(uint8_t fin, uint8_t prot, char key[4], void *
 void *websock_pack_ping(int32_t mask, size_t *size) {
     if (0 == mask) {
         return _websock_create_pack(1, WS_PING, NULL, NULL, 0, size);
-    } else {
+    }
+    else {
         return _websock_create_pack(1, WS_PING, _mask_key, NULL, 0, size);
     }
 }
 void *websock_pack_pong(int32_t mask, size_t *size) {
     if (0 == mask) {
         return _websock_create_pack(1, WS_PONG, NULL, NULL, 0, size);
-    } else {
+    }
+    else {
         return _websock_create_pack(1, WS_PONG, _mask_key, NULL, 0, size);
     }
 }
 void *websock_pack_close(int32_t mask, size_t *size) {
     if (0 == mask) {
         return _websock_create_pack(1, WS_CLOSE, NULL, NULL, 0, size);
-    } else {
+    }
+    else {
         return _websock_create_pack(1, WS_CLOSE, _mask_key, NULL, 0, size);
     }
 }
 void *websock_pack_text(int32_t mask, int32_t fin, void *data, size_t dlens, size_t *size) {
     if (0 == mask) {
         return _websock_create_pack(fin, WS_TEXT, NULL, data, dlens, size);
-    } else {
+    }
+    else {
         return _websock_create_pack(fin, WS_TEXT, _mask_key, data, dlens, size);
     }
 }
 void *websock_pack_binary(int32_t mask, int32_t fin, void *data, size_t dlens, size_t *size) {
     if (0 == mask) {
         return _websock_create_pack(fin, WS_BINARY, NULL, data, dlens, size);
-    } else {
+    }
+    else {
         return _websock_create_pack(fin, WS_BINARY, _mask_key, data, dlens, size);
     }
 }
 void *websock_pack_continua(int32_t mask, int32_t fin, void *data, size_t dlens, size_t *size) {
     if (0 == mask) {
         return _websock_create_pack(fin, WS_CONTINUE, NULL, data, dlens, size);
-    } else {
+    }
+    else {
         return _websock_create_pack(fin, WS_CONTINUE, _mask_key, data, dlens, size);
     }
 }

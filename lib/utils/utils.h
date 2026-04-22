@@ -1,4 +1,4 @@
-#ifndef UTILS_H_
+ï»¿#ifndef UTILS_H_
 #define UTILS_H_
 
 #include "base/macro.h"
@@ -6,65 +6,65 @@
 typedef void *(*chr_func)(const void *, int32_t, size_t);
 typedef int32_t(*cmp_func)(const void *, const void *, size_t);
 /// <summary>
-/// »ñÈ¡Ò»×ÔÔöID
+/// è·å–ä¸€è‡ªå¢ID
 /// </summary>
 /// <returns>ID</returns>
 uint64_t createid(void);
 /// <summary>
-/// µ±Ç°Ïß³ÌID
+/// å½“å‰çº¿ç¨‹ID
 /// </summary>
-/// <returns>Ïß³ÌID</returns>
+/// <returns>çº¿ç¨‹ID</returns>
 uint64_t threadid(void);
 /// <summary>
-/// Æôcoredump socketÁ´½ÓÊıÏŞÖÆ
+/// å¯coredump socketé“¾æ¥æ•°é™åˆ¶
 /// </summary>
 void unlimit(void);
 /// <summary>
-/// ĞÅºÅ´¦Àí
+/// ä¿¡å·å¤„ç†
 /// </summary>
-/// <param name="cb">´¦Àíº¯Êı</param>
-/// <param name="data">²ÎÊı</param>
+/// <param name="cb">å¤„ç†å‡½æ•°</param>
+/// <param name="data">å‚æ•°</param>
 void sighandle(void(*cb)(int32_t, void *), void *data);
 /// <summary>
-/// cpuºËĞÄÊı
+/// cpuæ ¸å¿ƒæ•°
 /// </summary>
-/// <returns>ºËĞÄÊı</returns>
+/// <returns>æ ¸å¿ƒæ•°</returns>
 uint32_t procscnt(void);
 /// <summary>
-/// »ñÈ¡Content-Type
+/// è·å–Content-Type
 /// </summary>
-/// <param name="extension">À©Õ¹Ãû×Ö.xx</param>
+/// <param name="extension">æ‰©å±•åå­—.xx</param>
 /// <returns>Content-Type</returns>
 const char *contenttype(const char *extension);
 /// <summary>
-/// ÊÇ·ñÎªÎÄ¼ş
+/// æ˜¯å¦ä¸ºæ–‡ä»¶
 /// </summary>
-/// <param name="file">Â·¾¶</param>
-/// <returns>ERR_OK ÎÄ¼ş</returns>
+/// <param name="file">è·¯å¾„</param>
+/// <returns>ERR_OK æ–‡ä»¶</returns>
 int32_t isfile(const char *file);
 /// <summary>
-/// ÊÇ·ñÎªÎÄ¼ş¼Ğ
+/// æ˜¯å¦ä¸ºæ–‡ä»¶å¤¹
 /// </summary>
-/// <param name="file">Â·¾¶</param>
-/// <returns>ERR_OK ÎÄ¼ş</returns>
+/// <param name="file">è·¯å¾„</param>
+/// <returns>ERR_OK æ–‡ä»¶</returns>
 int32_t isdir(const char *path);
 /// <summary>
-/// ÎÄ¼ş´óĞ¡
+/// æ–‡ä»¶å¤§å°
 /// </summary>
-/// <param name="file">Â·¾¶</param>
-/// <returns>ÎÄ¼ş´óĞ¡, ERR_FAILED Ê§°Ü</returns>
+/// <param name="file">è·¯å¾„</param>
+/// <returns>æ–‡ä»¶å¤§å°, ERR_FAILED å¤±è´¥</returns>
 int64_t filesize(const char *file);
 /// <summary>
-/// µ±Ç°³ÌĞòËùÔÚÂ·¾¶
+/// å½“å‰ç¨‹åºæ‰€åœ¨è·¯å¾„
 /// </summary>
-/// <returns>Â·¾¶</returns>
+/// <returns>è·¯å¾„</returns>
 const char *procpath(void);
 /// <summary>
-/// ¶ÁÈ¡ÎÄ¼şÈ«²¿
+/// è¯»å–æ–‡ä»¶å…¨éƒ¨
 /// </summary>
-/// <param name="file">Â·¾¶</param>
-/// <param name="lens">ÎÄ¼ş´óĞ¡</param>
-/// <returns>ÎÄ¼şÄÚÈİ</returns>
+/// <param name="file">è·¯å¾„</param>
+/// <param name="lens">æ–‡ä»¶å¤§å°</param>
+/// <returns>æ–‡ä»¶å†…å®¹</returns>
 char *readall(const char *file, size_t *lens);
 /// <summary>
 /// timeofday
@@ -72,192 +72,192 @@ char *readall(const char *file, size_t *lens);
 /// <param name="tv">timeval</param>
 void timeofday(struct timeval *tv);
 /// <summary>
-/// ÓëUTCÊ±²î
+/// ä¸UTCæ—¶å·®
 /// </summary>
-/// <returns>·Ö</returns>
+/// <returns>åˆ†</returns>
 int32_t timeoffset(void);
 /// <summary>
-/// µ±Ç°Ê±¼ä´Á
+/// å½“å‰æ—¶é—´æˆ³
 /// </summary>
-/// <returns>ºÁÃë</returns>
+/// <returns>æ¯«ç§’</returns>
 uint64_t nowms(void);
 /// <summary>
-/// µ±Ç°Ê±¼ä´Á
+/// å½“å‰æ—¶é—´æˆ³
 /// </summary>
-/// <returns>Ãë</returns>
+/// <returns>ç§’</returns>
 uint64_t nowsec(void);
 /// <summary>
-/// ¸ñÊ½»¯Êä³öÊ±¼ä´Á
+/// æ ¼å¼åŒ–è¾“å‡ºæ—¶é—´æˆ³
 /// </summary>
-/// <param name="sec">Ãë</param>
-/// <param name="fmt">¸ñÊ½»¯ %Y-%m-%d %H:%M:%S</param>
-/// <param name="time">Ê±¼ä×Ö·û´®</param>
+/// <param name="sec">ç§’</param>
+/// <param name="fmt">æ ¼å¼åŒ– %Y-%m-%d %H:%M:%S</param>
+/// <param name="time">æ—¶é—´å­—ç¬¦ä¸²</param>
 void sectostr(uint64_t sec, const char *fmt, char time[TIME_LENS]);
 /// <summary>
-/// ¸ñÊ½»¯Êä³öÊ±¼ä´Á
+/// æ ¼å¼åŒ–è¾“å‡ºæ—¶é—´æˆ³
 /// </summary>
-/// <param name="ms">ºÁÃë</param>
-/// <param name="fmt">¸ñÊ½»¯ %Y-%m-%d %H:%M:%S</param>
-/// <param name="time">Ê±¼ä×Ö·û´®</param>
+/// <param name="ms">æ¯«ç§’</param>
+/// <param name="fmt">æ ¼å¼åŒ– %Y-%m-%d %H:%M:%S</param>
+/// <param name="time">æ—¶é—´å­—ç¬¦ä¸²</param>
 void mstostr(uint64_t ms, const char *fmt, char time[TIME_LENS]);
 /// <summary>
-/// ×Ö·û´®×ªÊ±¼ä´Á
+/// å­—ç¬¦ä¸²è½¬æ—¶é—´æˆ³
 /// </summary>
-/// <param name="time">Ê±¼ä×Ö·û´®</param>
-/// <param name="fmt">¸ñÊ½»¯</param>
-/// <returns>Ê±¼ä´Á</returns>
+/// <param name="time">æ—¶é—´å­—ç¬¦ä¸²</param>
+/// <param name="fmt">æ ¼å¼åŒ–</param>
+/// <returns>æ—¶é—´æˆ³</returns>
 uint64_t strtots(const char *time, const char *fmt);
 /// <summary>
-/// Ìî³ätimespec
+/// å¡«å……timespec
 /// </summary>
 /// <param name="timeout">struct timespec</param>
-/// <param name="ms">ºÁÃë</param>
+/// <param name="ms">æ¯«ç§’</param>
 void fill_timespec(struct timespec *timeout, uint32_t ms);
 /// <summary>
 /// hash
 /// </summary>
-/// <param name="buf">Òª¼ÆËãµÄÊı¾İ</param>
-/// <param name="len">Êı¾İ³¤¶È</param>
+/// <param name="buf">è¦è®¡ç®—çš„æ•°æ®</param>
+/// <param name="len">æ•°æ®é•¿åº¦</param>
 /// <returns>hash</returns>
 uint64_t hash(const char *buf, size_t len);
 /// <summary>
-/// ²éÕÒ×Ö·û£¬²»Çø·Ö´óĞ¡Ğ´
+/// æŸ¥æ‰¾å­—ç¬¦ï¼Œä¸åŒºåˆ†å¤§å°å†™
 /// </summary>
-/// <param name="ptr">Ô´×Ö·û</param>
-/// <param name="val">ĞèÒª²éÕÒµÄ×Ö·û</param>
-/// <param name="maxlen">×î¶àËÑË÷³¤¶È</param>
-/// <returns>void * ×Ö·û³öÏÖµÄÖ¸Õë, NULLÎŞ</returns>
+/// <param name="ptr">æºå­—ç¬¦</param>
+/// <param name="val">éœ€è¦æŸ¥æ‰¾çš„å­—ç¬¦</param>
+/// <param name="maxlen">æœ€å¤šæœç´¢é•¿åº¦</param>
+/// <returns>void * å­—ç¬¦å‡ºç°çš„æŒ‡é’ˆ, NULLæ— </returns>
 void *memichr(const void *ptr, int32_t val, size_t maxlen);
 /// <summary>
-/// ÄÚ´æ²éÕÒ
+/// å†…å­˜æŸ¥æ‰¾
 /// </summary>
-/// <param name="ncs">0 Çø·Ö´óĞ¡Ğ´</param>
-/// <param name="ptr">Ô´×Ö·û</param>
-/// <param name="plens">Ô´×Ö·û³¤¶È</param>
-/// <param name="what">Òª²éÕÒµÄ×Ö·û´®</param>
-/// <param name="wlen">what³¤¶È</param>
-/// <returns>void * ×Ö·û³öÏÖµÄÖ¸Õë, NULLÎŞ</returns>
+/// <param name="ncs">0 åŒºåˆ†å¤§å°å†™</param>
+/// <param name="ptr">æºå­—ç¬¦</param>
+/// <param name="plens">æºå­—ç¬¦é•¿åº¦</param>
+/// <param name="what">è¦æŸ¥æ‰¾çš„å­—ç¬¦ä¸²</param>
+/// <param name="wlen">whaté•¿åº¦</param>
+/// <returns>void * å­—ç¬¦å‡ºç°çš„æŒ‡é’ˆ, NULLæ— </returns>
 void *memstr(int32_t ncs, const void *ptr, size_t plens, const void *what, size_t wlen);
 /// <summary>
-/// Ìø¹ı¿Õ×Ö½Ú
+/// è·³è¿‡ç©ºå­—èŠ‚
 /// </summary>
-/// <param name="ptr">Ô´×Ö·û</param>
-/// <param name="plens">Ô´×Ö·û³¤¶È</param>
-/// <returns>void *, NULLÈ«Îª¿Õ</returns>
+/// <param name="ptr">æºå­—ç¬¦</param>
+/// <param name="plens">æºå­—ç¬¦é•¿åº¦</param>
+/// <returns>void *, NULLå…¨ä¸ºç©º</returns>
 void *skipempty(const void *ptr, size_t plens);
 /// <summary>
-/// ×ª´óĞ´
+/// è½¬å¤§å†™
 /// </summary>
-/// <param name="str">Ô´×Ö·û</param>
+/// <param name="str">æºå­—ç¬¦</param>
 /// <returns>char *</returns>
 char *strupper(char *str);
 /// <summary>
-/// ×ªĞ¡Ğ´
+/// è½¬å°å†™
 /// </summary>
-/// <param name="str">Ô´×Ö·û</param>
+/// <param name="str">æºå­—ç¬¦</param>
 /// <returns>char *</returns>
 char *strlower(char *str);
 /// <summary>
-/// ·´×ª
+/// åè½¬
 /// </summary>
-/// <param name="str">Ô´×Ö·û</param>
+/// <param name="str">æºå­—ç¬¦</param>
 /// <returns>char *</returns>
 char* strreverse(char* str);
 /// <summary>
-/// Ëæ»ú[min, max]
+/// éšæœº[min, max]
 /// </summary>
-/// <param name="min">×îĞ¡</param>
-/// <param name="max">×î´ó</param>
-/// <returns>Öµ</returns>
+/// <param name="min">æœ€å°</param>
+/// <param name="max">æœ€å¤§</param>
+/// <returns>å€¼</returns>
 int32_t randrange(int32_t min, int32_t max);
 /// <summary>
-/// Ëæ»ú×Ö·û´®
+/// éšæœºå­—ç¬¦ä¸²
 /// </summary>
 /// <param name="buf">buffer</param>
-/// <param name="len">Ëæ»ú³¤¶È</param>
+/// <param name="len">éšæœºé•¿åº¦</param>
 /// <returns>char *</returns>
 char *randstr(char *buf, size_t len);
 #define HEX_ENSIZE(s) (s * 2 + 1)
 /// <summary>
-/// ×ª16½øÖÆ
+/// è½¬16è¿›åˆ¶
 /// </summary>
-/// <param name="buf">Òª×ªµÄÊı¾İ</param>
-/// <param name="len">Êı¾İ³¤¶È</param>
-/// <param name="out">×ª»»ºóµÄÊı¾İ,³¤¶È:HEX_ENSIZE</param>
+/// <param name="buf">è¦è½¬çš„æ•°æ®</param>
+/// <param name="len">æ•°æ®é•¿åº¦</param>
+/// <param name="out">è½¬æ¢åçš„æ•°æ®,é•¿åº¦:HEX_ENSIZE</param>
 /// <returns>char *</returns>
 char *tohex(const void *buf, size_t len, char *out);
 /// <summary>
-/// ²ğ·Ö
+/// æ‹†åˆ†
 /// </summary>
-/// <param name="ptr">Òª²ğ·ÖµÄÊı¾İ</param>
-/// <param name="plens">Êı¾İ³¤¶È</param>
-/// <param name="sep">²ğ·Ö±ê¼Ç</param>
-/// <param name="seplens">²ğ·Ö±ê¼Ç³¤¶È</param>
-/// <param name="n">²ğ·ÖºóµÄ³¤¶È</param>
-/// <returns>buf_ctx *, ĞèÒªfree</returns>
+/// <param name="ptr">è¦æ‹†åˆ†çš„æ•°æ®</param>
+/// <param name="plens">æ•°æ®é•¿åº¦</param>
+/// <param name="sep">æ‹†åˆ†æ ‡è®°</param>
+/// <param name="seplens">æ‹†åˆ†æ ‡è®°é•¿åº¦</param>
+/// <param name="n">æ‹†åˆ†åçš„é•¿åº¦</param>
+/// <returns>buf_ctx *, éœ€è¦free</returns>
 struct buf_ctx *split(const void *ptr, size_t plens, const void *sep, size_t seplens, size_t *n);
 /// <summary>
-/// ±ä²Î
+/// å˜å‚
 /// </summary>
-/// <param name="fmt">¸ñÊ½»¯</param>
-/// <param name="args">±ä²Î</param>
-/// <returns>char * ĞèÒªfree</returns>
+/// <param name="fmt">æ ¼å¼åŒ–</param>
+/// <param name="args">å˜å‚</param>
+/// <returns>char * éœ€è¦free</returns>
 char *_format_va(const char *fmt, va_list args);
 /// <summary>
-/// ±ä²Î
+/// å˜å‚
 /// </summary>
-/// <param name="fmt">¸ñÊ½»¯</param>
-/// <param name="...">±ä²Î</param>
-/// <returns>char * ĞèÒªfree</returns>
+/// <param name="fmt">æ ¼å¼åŒ–</param>
+/// <param name="...">å˜å‚</param>
+/// <returns>char * éœ€è¦free</returns>
 char *format_va(const char *fmt, ...);
 /// <summary>
-/// ´óĞ¡¶ËÅĞ¶Ï
+/// å¤§å°ç«¯åˆ¤æ–­
 /// </summary>
-/// <returns>1 Ğ¡¶Ë, 0 ´ó¶Ë</returns>
+/// <returns>1 å°ç«¯, 0 å¤§ç«¯</returns>
 int32_t is_little(void);
 /// <summary>
-/// Êı×Ö×ª char*
+/// æ•°å­—è½¬ char*
 /// </summary>
 /// <param name="buf">buffer</param>
-/// <param name="val">Êı×Ö</param>
-/// <param name="size">×Ö½ÚÊı</param>
-/// <param name="islittle">ÊÇ·ñÎªĞ¡¶Ë</param>
+/// <param name="val">æ•°å­—</param>
+/// <param name="size">å­—èŠ‚æ•°</param>
+/// <param name="islittle">æ˜¯å¦ä¸ºå°ç«¯</param>
 void pack_integer(char *buf, uint64_t val, int32_t size, int32_t islittle);
 /// <summary>
-/// char* ×ªÊı×Ö
+/// char* è½¬æ•°å­—
 /// </summary>
-/// <param name="buf">Òª×ª»»µÄbuffer</param>
-/// <param name="size">×Ö½ÚÊı</param>
-/// <param name="islittle">ÊÇ·ñÎªĞ¡¶Ë</param>
-/// <param name="issigned">ÊÇ·ñÓĞ·ûºÅ</param>
-/// <returns>Êı×Ö</returns>
+/// <param name="buf">è¦è½¬æ¢çš„buffer</param>
+/// <param name="size">å­—èŠ‚æ•°</param>
+/// <param name="islittle">æ˜¯å¦ä¸ºå°ç«¯</param>
+/// <param name="issigned">æ˜¯å¦æœ‰ç¬¦å·</param>
+/// <returns>æ•°å­—</returns>
 int64_t unpack_integer(const char *buf, int32_t size, int32_t islittle, int32_t issigned);
 /// <summary>
-/// float×ª char*
+/// floatè½¬ char*
 /// </summary>
 /// <param name="buf">buffer</param>
-/// <param name="val">Öµ</param>
-/// <param name="islittle">ÊÇ·ñÎªĞ¡¶Ë</param>
+/// <param name="val">å€¼</param>
+/// <param name="islittle">æ˜¯å¦ä¸ºå°ç«¯</param>
 void pack_float(char *buf, float val, int32_t islittle);
 /// <summary>
-/// char* ×ªfloat
+/// char* è½¬float
 /// </summary>
-/// <param name="buf">Òª×ª»»µÄbuffer</param>
-/// <param name="islittle">ÊÇ·ñÎªĞ¡¶Ë</param>
+/// <param name="buf">è¦è½¬æ¢çš„buffer</param>
+/// <param name="islittle">æ˜¯å¦ä¸ºå°ç«¯</param>
 /// <returns>float</returns>
 float unpack_float(const char *buf, int32_t islittle);
 /// <summary>
-/// double×ª char*
+/// doubleè½¬ char*
 /// </summary>
 /// <param name="buf">buffer</param>
-/// <param name="val">Öµ</param>
-/// <param name="islittle">ÊÇ·ñÎªĞ¡¶Ë</param>
+/// <param name="val">å€¼</param>
+/// <param name="islittle">æ˜¯å¦ä¸ºå°ç«¯</param>
 void pack_double(char *buf, double val, int32_t islittle);
 /// <summary>
-/// char* ×ªdouble
+/// char* è½¬double
 /// </summary>
-/// <param name="buf">Òª×ª»»µÄbuffer</param>
-/// <param name="islittle">ÊÇ·ñÎªĞ¡¶Ë</param>
+/// <param name="buf">è¦è½¬æ¢çš„buffer</param>
+/// <param name="islittle">æ˜¯å¦ä¸ºå°ç«¯</param>
 /// <returns>double</returns>
 double unpack_double(const char *buf, int32_t islittle);
 #if !defined(OS_WIN) && !defined(OS_DARWIN) && !defined(OS_AIX)

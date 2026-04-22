@@ -1,4 +1,4 @@
-#include "crypt/padding.h"
+﻿#include "crypt/padding.h"
 #include "utils/utils.h"
 
 void _padding_data(padding_model padding, const void *data, size_t dlens, uint8_t *output, size_t reqlens) {
@@ -34,7 +34,8 @@ uint8_t *_padding_key(const char *key, size_t klens, uint8_t *pdkey, size_t reql
         memcpy(pdkey, key, klens);
         ZERO(pdkey + klens, reqlens - klens);
         return pdkey;
-    } else {
+    }
+    else {
         return (uint8_t *)key;
     }
 }

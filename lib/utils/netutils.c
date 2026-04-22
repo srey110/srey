@@ -1,4 +1,4 @@
-#include "utils/netutils.h"
+ï»¿#include "utils/netutils.h"
 #include "utils/netaddr.h"
 
 #define MSEC    1000
@@ -12,7 +12,8 @@ void sock_init(void) {
         WSADATA wsdata;
         WORD ver = MAKEWORD(2, 2);
         ASSERTAB(ERR_OK == WSAStartup(ver, &wsdata), ERRORSTR(ERRNO));
-    } else {
+    }
+    else {
         ATOMIC_ADD(&_init_sock_ref, 1);
     }
 #endif
@@ -27,7 +28,7 @@ void sock_clean(void) {
 int32_t sock_nread(SOCKET fd) {
 #if defined(OS_WIN)
     u_long nread = 0;
-    if (ioctlsocket(fd, FIONREAD, &nread) < ERR_OK)  {
+    if (ioctlsocket(fd, FIONREAD, &nread) < ERR_OK) {
         return ERR_FAILED;
     }
     return (int32_t)nread;
@@ -128,11 +129,11 @@ int32_t sock_reuseaddr(SOCKET fd) {
 int32_t sock_reuseport(SOCKET fd) {
 #ifdef SO_REUSEPORT
     int32_t flag = 1;
-   if (setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, (char *)&flag, (int32_t)sizeof(flag)) < ERR_OK) {
-       return ERR_FAILED;
-   }
+    if (setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, (char *)&flag, (int32_t)sizeof(flag)) < ERR_OK) {
+        return ERR_FAILED;
+    }
 #endif 
-   return ERR_OK;
+    return ERR_OK;
 }
 int32_t sock_keepalive(SOCKET fd, const int32_t delay, const int32_t intvl) {
     int32_t flag = 1;
@@ -155,15 +156,15 @@ int32_t sock_keepalive(SOCKET fd, const int32_t delay, const int32_t intvl) {
 #else
 #ifdef TCP_KEEPIDLE
     int32_t cnt = 3;
-    //¶à¾Ãºó·¢ËÍkeepalive Ãë
+    //å¤šä¹…åŽå‘é€keepalive ç§’
     if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, (char *)&delay, (int32_t)sizeof(delay)) < ERR_OK) {
         return ERR_FAILED;
     }
-    //Ê±¼ä¼ä¸ô
+    //æ—¶é—´é—´éš”
     if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, (char *)&intvl, (int32_t)sizeof(intvl)) < ERR_OK) {
         return ERR_FAILED;
     }
-    //ÖØÊÔ´ÎÊý
+    //é‡è¯•æ¬¡æ•°
     if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, (char *)&cnt, (int32_t)sizeof(cnt)) < ERR_OK) {
         return ERR_FAILED;
     }

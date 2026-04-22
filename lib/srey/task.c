@@ -1,4 +1,4 @@
-#include "srey/task.h"
+﻿#include "srey/task.h"
 #include "containers/hashmap.h"
 
 static void _map_task_set(struct hashmap *map, task_ctx *task) {
@@ -86,7 +86,8 @@ void _message_run(task_ctx *task, message_ctx *msg) {
     case MSG_TYPE_REQUEST:
         if (NULL != task->_request) {
             task->_request(task, msg->pktype, msg->sess, msg->src, msg->data, msg->size);
-        } else {
+        }
+        else {
             task_ctx *dtask = task_grab(task->loader, msg->src);
             if (NULL != dtask) {
                 const char *erro = "not register request callback function.";
@@ -123,7 +124,8 @@ task_ctx *task_new(loader_ctx *loader, name_t name, _task_dispatch_cb _dispatch,
     task->timeout_netread = 10 * 1000;
     if (NULL == _dispatch) {
         task->_task_dispatch = _message_dispatch;
-    } else {
+    }
+    else {
         task->_task_dispatch = _dispatch;
     }
     task->_arg_free = _argfree;
@@ -255,7 +257,8 @@ void task_request(task_ctx *dst, task_ctx *src, uint8_t reqtype, uint64_t sess, 
     if (NULL != src) {
         msg.src = src->name;
         msg.sess = sess;
-    } else {
+    }
+    else {
         msg.src = INVALID_TNAME;
         msg.sess = 0;
     }
@@ -265,7 +268,8 @@ void task_request(task_ctx *dst, task_ctx *src, uint8_t reqtype, uint64_t sess, 
         memcpy(req, data, size);
         req[size] = '\0';
         msg.data = req;
-    } else {
+    }
+    else {
         msg.data = data;
     }
     msg.size = size;
@@ -284,10 +288,12 @@ void task_response(task_ctx *dst, uint64_t sess, int32_t erro, void *data, size_
             memcpy(resp, data, size);
             resp[size] = '\0';
             msg.data = resp;
-        } else {
+        }
+        else {
             msg.data = data;
         }
-    } else {
+    }
+    else {
         msg.data = NULL;
     }
     _task_message_push(dst, &msg);
@@ -355,11 +361,14 @@ static void _net_recv(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, buff
             msg.sess = ud->sess;
             if (BIT_CHECK(status, PROT_SLICE_START)) {
                 msg.slice = PROT_SLICE_START;
-            } else if(BIT_CHECK(status, PROT_SLICE)) {
+            }
+            else if (BIT_CHECK(status, PROT_SLICE)) {
                 msg.slice = PROT_SLICE;
-            } else if(BIT_CHECK(status, PROT_SLICE_END)) {
+            }
+            else if (BIT_CHECK(status, PROT_SLICE_END)) {
                 msg.slice = PROT_SLICE_END;
-            } else {
+            }
+            else {
                 msg.slice = 0;
             }
             _task_message_push(task, &msg);
@@ -486,7 +495,7 @@ int32_t task_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl, 
     if (BIT_CHECK(netev, NETEV_SEND)) {
         cbs.s_cb = _net_send;
     }
-    if (NULL != evssl 
+    if (NULL != evssl
         || BIT_CHECK(netev, NETEV_AUTHSSL)) {
         cbs.exch_cb = _net_ssl_exchanged;
     }

@@ -1,4 +1,4 @@
-#include "event/event.h"
+ï»¿#include "event/event.h"
 #include "event/iocp.h"
 #include "event/skpool.h"
 #include "utils/buffer.h"
@@ -138,7 +138,8 @@ void _reset_sk(sock_ctx *skctx, SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
 ud_cxt *_get_ud(sock_ctx *skctx) {
     if (SOCK_STREAM == skctx->type) {
         return &UPCAST(skctx, overlap_tcp_ctx, ol_r)->ud;
-    } else {
+    }
+    else {
         return &UPCAST(skctx, overlap_udp_ctx, ol_r)->ud;
     }
 }
@@ -147,7 +148,8 @@ int32_t _check_skid(sock_ctx *skctx, const uint64_t skid) {
         if (skid == UPCAST(skctx, overlap_tcp_ctx, ol_r)->skid) {
             return ERR_OK;
         }
-    } else {
+    }
+    else {
         if (skid == UPCAST(skctx, overlap_udp_ctx, ol_r)->skid) {
             return ERR_OK;
         }
@@ -162,7 +164,8 @@ void _disconnect(sock_ctx *skctx) {
         }
         BIT_SET(tcp->status, STATUS_ERROR);
         _sk_shutdown(skctx);
-    } else {
+    }
+    else {
         overlap_udp_ctx *udp = UPCAST(skctx, overlap_udp_ctx, ol_r);
         if (BIT_CHECK(udp->status, STATUS_ERROR)) {
             return;
@@ -225,12 +228,12 @@ int32_t _post_recv(sock_ctx *skctx, DWORD  *bytes, DWORD  *flag, IOV_TYPE *wsabu
     *bytes = 0;
     ZERO(&skctx->overlapped, sizeof(skctx->overlapped));
     if (ERR_OK != WSARecv(skctx->fd,
-                          wsabuf,
-                          niov,
-                          bytes,
-                          flag,
-                          &skctx->overlapped,
-                          NULL)) {
+        wsabuf,
+        niov,
+        bytes,
+        flag,
+        &skctx->overlapped,
+        NULL)) {
         if (ERROR_IO_PENDING != ERRNO) {
             return ERR_FAILED;
         }
@@ -240,7 +243,8 @@ int32_t _post_recv(sock_ctx *skctx, DWORD  *bytes, DWORD  *flag, IOV_TYPE *wsabu
 static inline _close_tcp(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
     if (BIT_CHECK(oltcp->status, STATUS_SENDING)) {
         BIT_SET(oltcp->status, STATUS_REMOVE);
-    } else {
+    }
+    else {
         _call_close_cb(watcher->ev, oltcp);
         _remove_fd(watcher, oltcp->ol_r.fd);
         pool_push(&watcher->pool, &oltcp->ol_r);
@@ -271,25 +275,28 @@ static void _on_recv_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
         int32_t rtn;
         if (BIT_CHECK(oltcp->status, STATUS_CLIENT)) {
             rtn = evssl_tryconn(oltcp->ssl);
-        } else {
+        }
+        else {
             rtn = evssl_tryacpt(oltcp->ssl);
         }
         switch (rtn) {
-        case ERR_FAILED://´íÎó
+        case ERR_FAILED://é”™è¯¯
             BIT_SET(oltcp->status, STATUS_ERROR);
             break;
-        case 1://Íê³É
+        case 1://å®Œæˆ
             if (ERR_OK == _call_ssl_exchanged_cb(watcher->ev, oltcp)) {
                 BIT_REMOVE(oltcp->status, STATUS_AUTHSSL);
-            } else {
+            }
+            else {
                 BIT_SET(oltcp->status, STATUS_ERROR);
             }
             break;
-        case ERR_OK://µÈ´ý¸ü¶àÊý¾Ý
+        case ERR_OK://ç­‰å¾…æ›´å¤šæ•°æ®
             if (ERR_OK != _post_recv(&oltcp->ol_r, &oltcp->bytes_r, &oltcp->flag, &oltcp->wsabuf, 1)) {
                 BIT_SET(oltcp->status, STATUS_ERROR);
                 break;
-            } else {
+            }
+            else {
                 return;
             }
         }
@@ -309,15 +316,16 @@ static int32_t _ssl_exchange(watcher_ctx *watcher, overlap_tcp_ctx *oltcp, struc
     }
     if (BIT_CHECK(oltcp->status, STATUS_CLIENT)) {
         switch (evssl_tryconn(oltcp->ssl)) {
-        case ERR_FAILED://´íÎó
+        case ERR_FAILED://é”™è¯¯
             return ERR_FAILED;
-        case 1://Íê³É
+        case 1://å®Œæˆ
             return _call_ssl_exchanged_cb(watcher->ev, oltcp);
-        case ERR_OK://µÈ´ý¸ü¶àÊý¾Ý
+        case ERR_OK://ç­‰å¾…æ›´å¤šæ•°æ®
             BIT_SET(oltcp->status, STATUS_AUTHSSL);
             break;
         }
-    } else {
+    }
+    else {
         BIT_SET(oltcp->status, STATUS_AUTHSSL);
     }
     return ERR_OK;
@@ -343,13 +351,15 @@ void _try_ssl_exchange(watcher_ctx *watcher, sock_ctx *skctx, struct evssl_ctx *
     }
     if (client) {
         BIT_SET(oltcp->status, STATUS_CLIENT);
-    } else {
+    }
+    else {
         BIT_REMOVE(oltcp->status, STATUS_CLIENT);
     }
     if (BIT_CHECK(oltcp->status, STATUS_SENDING)) {
         oltcp->evssl = evssl;
         BIT_SET(oltcp->status, STATUS_SSLEXCHANGE);
-    } else {
+    }
+    else {
         if (ERR_OK != _ssl_exchange(watcher, oltcp, evssl)) {
             _disconnect(skctx);
             LOG_ERROR("ssl exchange error.");
@@ -362,12 +372,12 @@ static int32_t _post_send(overlap_tcp_ctx *oltcp) {
     oltcp->bytes_s = 0;
     ZERO(&oltcp->ol_s.overlapped, sizeof(oltcp->ol_s.overlapped));
     if (ERR_OK != WSASend(oltcp->ol_s.fd,
-                          &oltcp->wsabuf,
-                          1,
-                          &oltcp->bytes_s,
-                          0,
-                          &oltcp->ol_s.overlapped,
-                          NULL)) {
+        &oltcp->wsabuf,
+        1,
+        &oltcp->bytes_s,
+        0,
+        &oltcp->ol_s.overlapped,
+        NULL)) {
         if (ERROR_IO_PENDING != ERRNO) {
             return ERR_FAILED;
         }
@@ -381,7 +391,8 @@ static void _on_send_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
             _call_close_cb(watcher->ev, oltcp);
             _remove_fd(watcher, oltcp->ol_r.fd);
             pool_push(&watcher->pool, &oltcp->ol_r);
-        } else {
+        }
+        else {
             BIT_REMOVE(oltcp->status, STATUS_SENDING);
         }
         return;
@@ -435,7 +446,8 @@ static int32_t _trybind(SOCKET fd, int32_t family) {
     netaddr_ctx addr;
     if (AF_INET == family) {
         rtn = netaddr_set(&addr, "0.0.0.0", 0);
-    } else {
+    }
+    else {
         rtn = netaddr_set(&addr, "::", 0);
     }
     if (ERR_OK != rtn) {
@@ -452,12 +464,12 @@ static int32_t _post_connect(overlap_tcp_ctx *oltcp, netaddr_ctx *addr) {
     oltcp->bytes_r = 0;
     ZERO(&oltcp->ol_r.overlapped, sizeof(oltcp->ol_r.overlapped));
     if (!_exfuncs.connectex(oltcp->ol_r.fd,
-                            netaddr_addr(addr),
-                            netaddr_size(addr),
-                            NULL,
-                            0,
-                            &oltcp->bytes_r,
-                            &oltcp->ol_r.overlapped)) {
+        netaddr_addr(addr),
+        netaddr_size(addr),
+        NULL,
+        0,
+        &oltcp->bytes_r,
+        &oltcp->ol_r.overlapped)) {
         int32_t erro = ERRNO;
         if (ERROR_IO_PENDING != erro) {
             LOG_WARN("%s", ERRORSTR(erro));
@@ -557,13 +569,13 @@ static int32_t _post_accept(overlap_acpt_ctx *olacp) {
     olacp->overlap.fd = fd;
     ZERO(&olacp->overlap.overlapped, sizeof(olacp->overlap.overlapped));
     if (!_exfuncs.acceptex(olacp->lsn->fd,//Listen Socket
-                           olacp->overlap.fd,//Accept Socket
-                           &olacp->addr,
-                           0,
-                           sizeof(olacp->addr) / 2,
-                           sizeof(olacp->addr) / 2,
-                           &olacp->bytes,
-                           &olacp->overlap.overlapped)) {
+        olacp->overlap.fd,//Accept Socket
+        &olacp->addr,
+        0,
+        sizeof(olacp->addr) / 2,
+        sizeof(olacp->addr) / 2,
+        &olacp->bytes,
+        &olacp->overlap.overlapped)) {
         int32_t erro = ERRNO;
         if (ERROR_IO_PENDING != erro) {
             CLOSE_SOCK(olacp->overlap.fd);
@@ -591,11 +603,11 @@ static void _on_accept_cb(acceptex_ctx *acpctx, sock_ctx *skctx, DWORD bytes) {
         }
         return;
     }
-    if (ERR_OK != setsockopt(fd, 
-                             SOL_SOCKET, 
-                             SO_UPDATE_ACCEPT_CONTEXT, 
-                             (char *)&lsn->fd,
-                             (int32_t)sizeof(lsn->fd))
+    if (ERR_OK != setsockopt(fd,
+        SOL_SOCKET,
+        SO_UPDATE_ACCEPT_CONTEXT,
+        (char *)&lsn->fd,
+        (int32_t)sizeof(lsn->fd))
         || ERR_OK != _set_sockops(fd)
         || ERR_OK != sock_keepalive(fd, KEEPALIVE_TIME, KEEPALIVE_INTERVAL)) {
         CLOSE_SOCK(fd);
@@ -741,14 +753,14 @@ static int32_t _post_recv_from(overlap_udp_ctx *oludp) {
     ZERO(&oludp->ol_r.overlapped, sizeof(oludp->ol_r.overlapped));
     oludp->flag = oludp->bytes_r = 0;
     if (ERR_OK != WSARecvFrom(oludp->ol_r.fd,
-                              &oludp->wsabuf_r,
-                              1,
-                              &oludp->bytes_r,
-                              &oludp->flag,
-                              netaddr_addr(&oludp->addr),
-                              &oludp->addrlen,
-                              &oludp->ol_r.overlapped,
-                              NULL)) {
+        &oludp->wsabuf_r,
+        1,
+        &oludp->bytes_r,
+        &oludp->flag,
+        netaddr_addr(&oludp->addr),
+        &oludp->addrlen,
+        &oludp->ol_r.overlapped,
+        NULL)) {
         if (WSA_IO_PENDING != ERRNO) {
             return ERR_FAILED;
         }
@@ -758,7 +770,8 @@ static int32_t _post_recv_from(overlap_udp_ctx *oludp) {
 static void _on_udp_close_r(watcher_ctx *watcher, overlap_udp_ctx *oludp) {
     if (BIT_CHECK(oludp->status, STATUS_SENDING)) {
         BIT_SET(oludp->status, STATUS_REMOVE);
-    } else {
+    }
+    else {
         _remove_fd(watcher, oludp->ol_r.fd);
         _free_udp(&oludp->ol_r);
     }
@@ -771,7 +784,7 @@ static void _on_recvfrom_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) 
         return;
     }
     _call_recvfrom_cb(watcher->ev, oludp, (size_t)bytes);
-    if (BIT_CHECK(oludp->status, STATUS_ERROR)) {//¶à´¦ÀíÒ»¸öÊý¾Ý°ü
+    if (BIT_CHECK(oludp->status, STATUS_ERROR)) {//å¤šå¤„ç†ä¸€ä¸ªæ•°æ®åŒ…
         _on_udp_close_r(watcher, oludp);
         return;
     }
@@ -787,14 +800,14 @@ static int32_t _post_sendto(overlap_udp_ctx *oludp, off_buf_ctx *buf) {
     oludp->wsabuf_s.IOV_PTR_FIELD = (char *)buf->data + sizeof(netaddr_ctx);
     oludp->wsabuf_s.IOV_LEN_FIELD = (IOV_LEN_TYPE)buf->lens;
     if (ERR_OK != WSASendTo(oludp->ol_s.fd,
-                            &oludp->wsabuf_s,
-                            1,
-                            &oludp->bytes_s,
-                            0,
-                            netaddr_addr(addr),
-                            netaddr_size(addr),
-                            &oludp->ol_s.overlapped,
-                            NULL)) {
+        &oludp->wsabuf_s,
+        1,
+        &oludp->bytes_s,
+        0,
+        netaddr_addr(addr),
+        netaddr_size(addr),
+        &oludp->ol_s.overlapped,
+        NULL)) {
         if (ERROR_IO_PENDING != ERRNO) {
             return ERR_FAILED;
         }
@@ -802,14 +815,15 @@ static int32_t _post_sendto(overlap_udp_ctx *oludp, off_buf_ctx *buf) {
     return ERR_OK;
 }
 static void _on_sendto_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
-    overlap_udp_ctx *oludp = UPCAST(skctx, overlap_udp_ctx, ol_s); 
+    overlap_udp_ctx *oludp = UPCAST(skctx, overlap_udp_ctx, ol_s);
     void *data = oludp->wsabuf_s.IOV_PTR_FIELD - sizeof(netaddr_ctx);
     FREE(data);
     if (BIT_CHECK(oludp->status, STATUS_ERROR)) {
         if (BIT_CHECK(oludp->status, STATUS_REMOVE)) {
             _remove_fd(watcher, oludp->ol_r.fd);
             _free_udp(&oludp->ol_r);
-        } else {
+        }
+        else {
             BIT_REMOVE(oludp->status, STATUS_SENDING);
         }
         return;
@@ -870,7 +884,7 @@ void _free_udp(sock_ctx *skctx) {
     }
     FREE(oludp);
 }
-int32_t ev_udp(ev_ctx *ctx, const char *ip, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud, 
+int32_t ev_udp(ev_ctx *ctx, const char *ip, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud,
     SOCKET *fd, uint64_t *skid) {
     ASSERTAB(NULL != cbs->rf_cb, ERRSTR_NULLP);
     netaddr_ctx addr;

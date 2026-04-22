@@ -1,4 +1,4 @@
-#include "protocol/mqtt/mqtt_pack.h"
+ï»¿#include "protocol/mqtt/mqtt_pack.h"
 
 static int32_t _mqtt_varlens_encode(uint32_t vlens, char buf[4]) {
     if (vlens >= 0x10000000) {
@@ -19,26 +19,26 @@ static int32_t _mqtt_varlens_encode(uint32_t vlens, char buf[4]) {
 int32_t mqtt_props_fixnum(binary_ctx *props, mqtt_prop_flag flag, int32_t val) {
     binary_set_int8(props, (int8_t)flag);
     switch (flag) {
-    case PAYLOAD_FORMAT://0x01 ÔØºÉ¸ñÊ½ËµÃ÷	×Ö½Ú	PUBLISH, Will Properties
-    case REQPROBLEM_INFO://0x17 ÇëÇóÎÊÌâĞÅÏ¢	×Ö½Ú	CONNECT
-    case REQRESP_INFO://0x19 ÇëÇóÏìÓ¦ĞÅÏ¢	×Ö½Ú	CONNECT
-    case MAXIMUM_QOS://0x24 ×î´óQoS	×Ö½Ú	CONNACK
-    case RETAIN_AVAILABLE://0x25 ±£ÁôÊôĞÔ¿ÉÓÃĞÔ	×Ö½Ú	CONNACK
-    case WILDCARD_SUBSCRIPTION://0x28 Í¨Åä·û¶©ÔÄ¿ÉÓÃĞÔ	×Ö½Ú	CONNACK
-    case SUBSCRIPTIONID_AVAILABLE://0x29 ¶©ÔÄ±êÊ¶·û¿ÉÓÃĞÔ	×Ö½Ú	CONNACK
-    case SHARED_SUBSCRIPTION://0x2A ¹²Ïí¶©ÔÄ¿ÉÓÃĞÔ	×Ö½Ú	CONNACK
+    case PAYLOAD_FORMAT://0x01 è½½è·æ ¼å¼è¯´æ˜	å­—èŠ‚	PUBLISH, Will Properties
+    case REQPROBLEM_INFO://0x17 è¯·æ±‚é—®é¢˜ä¿¡æ¯	å­—èŠ‚	CONNECT
+    case REQRESP_INFO://0x19 è¯·æ±‚å“åº”ä¿¡æ¯	å­—èŠ‚	CONNECT
+    case MAXIMUM_QOS://0x24 æœ€å¤§QoS	å­—èŠ‚	CONNACK
+    case RETAIN_AVAILABLE://0x25 ä¿ç•™å±æ€§å¯ç”¨æ€§	å­—èŠ‚	CONNACK
+    case WILDCARD_SUBSCRIPTION://0x28 é€šé…ç¬¦è®¢é˜…å¯ç”¨æ€§	å­—èŠ‚	CONNACK
+    case SUBSCRIPTIONID_AVAILABLE://0x29 è®¢é˜…æ ‡è¯†ç¬¦å¯ç”¨æ€§	å­—èŠ‚	CONNACK
+    case SHARED_SUBSCRIPTION://0x2A å…±äº«è®¢é˜…å¯ç”¨æ€§	å­—èŠ‚	CONNACK
         binary_set_int8(props, (int8_t)val);
         break;
-    case SERVER_KEEPALIVE://0x13 ·şÎñ¶Ë±£»îÊ±¼ä	Ë«×Ö½ÚÕûÊı	CONNACK
-    case RECEIVE_MAXIMUM://0x21 ½ÓÊÕ×î´óÊıÁ¿	Ë«×Ö½ÚÕûÊı	CONNECT, CONNACK
-    case TOPICALIAS_MAXIMUM://0x22 Ö÷Ìâ±ğÃû×î´ó³¤¶È	Ë«×Ö½ÚÕûÊı	CONNECT, CONNACK
-    case TOPIC_ALIAS://0x23 Ö÷Ìâ±ğÃû	Ë«×Ö½ÚÕûÊı	PUBLISH
+    case SERVER_KEEPALIVE://0x13 æœåŠ¡ç«¯ä¿æ´»æ—¶é—´	åŒå­—èŠ‚æ•´æ•°	CONNACK
+    case RECEIVE_MAXIMUM://0x21 æ¥æ”¶æœ€å¤§æ•°é‡	åŒå­—èŠ‚æ•´æ•°	CONNECT, CONNACK
+    case TOPICALIAS_MAXIMUM://0x22 ä¸»é¢˜åˆ«åæœ€å¤§é•¿åº¦	åŒå­—èŠ‚æ•´æ•°	CONNECT, CONNACK
+    case TOPIC_ALIAS://0x23 ä¸»é¢˜åˆ«å	åŒå­—èŠ‚æ•´æ•°	PUBLISH
         binary_set_integer(props, val, 2, 0);
         break;
-    case MSG_EXPIRY://0x02 ÏûÏ¢¹ıÆÚÊ±¼ä	ËÄ×Ö½ÚÕûÊı	PUBLISH, Will Properties
-    case SESSION_EXPIRY://0x11 »á»°¹ıÆÚ¼ä¸ô	ËÄ×Ö½ÚÕûÊı	CONNECT, CONNACK, DISCONNECT
-    case WILLDELAY_INTERVAL://0x18 ÒÅÖöÑÓÊ±¼ä¸ô	ËÄ×Ö½ÚÕûÊı	Will Properties
-    case MAXIMUM_PACKETSIZE://0x27 ×î´ó±¨ÎÄ³¤¶È	ËÄ×Ö½ÚÕûÊı	CONNECT, CONNACK
+    case MSG_EXPIRY://0x02 æ¶ˆæ¯è¿‡æœŸæ—¶é—´	å››å­—èŠ‚æ•´æ•°	PUBLISH, Will Properties
+    case SESSION_EXPIRY://0x11 ä¼šè¯è¿‡æœŸé—´éš”	å››å­—èŠ‚æ•´æ•°	CONNECT, CONNACK, DISCONNECT
+    case WILLDELAY_INTERVAL://0x18 é—å˜±å»¶æ—¶é—´éš”	å››å­—èŠ‚æ•´æ•°	Will Properties
+    case MAXIMUM_PACKETSIZE://0x27 æœ€å¤§æŠ¥æ–‡é•¿åº¦	å››å­—èŠ‚æ•´æ•°	CONNECT, CONNACK
         binary_set_integer(props, val, 4, 0);
         break;
     default:
@@ -58,7 +58,7 @@ static int32_t _mqtt_props_varnum(binary_ctx *props, int32_t val) {
 int32_t mqtt_props_varnum(binary_ctx *props, mqtt_prop_flag flag, int32_t val) {
     binary_set_int8(props, (int8_t)flag);
     switch (flag) {
-    case SUBSCRIPTION_ID://0x0B ¶¨Òå±êÊ¶·û	±ä³¤×Ö½ÚÕûÊı	PUBLISH, SUBSCRIBE
+    case SUBSCRIPTION_ID://0x0B å®šä¹‰æ ‡è¯†ç¬¦	å˜é•¿å­—èŠ‚æ•´æ•°	PUBLISH, SUBSCRIBE
         _mqtt_props_varnum(props, val);
         break;
     default:
@@ -69,15 +69,15 @@ int32_t mqtt_props_varnum(binary_ctx *props, mqtt_prop_flag flag, int32_t val) {
 int32_t mqtt_props_binary(binary_ctx *props, mqtt_prop_flag flag, void *data, int32_t lens) {
     binary_set_int8(props, (int8_t)flag);
     switch (flag) {
-    case CORRELATION_DATA://0x09 Ïà¹ØÊı¾İ	¶ş½øÖÆÊı¾İ	PUBLISH, Will Properties
-    case AUTH_DATA://0x16 ÈÏÖ¤Êı¾İ	¶ş½øÖÆÊı¾İ	CONNECT, CONNACK, AUTH
-    case CONTENT_TYPE://0x03 ÄÚÈİÀàĞÍ	UTF-8±àÂë×Ö·û´®	PUBLISH, Will Properties
-    case RESP_TOPIC://0x08 ÏìÓ¦Ö÷Ìâ	UTF-8±àÂë×Ö·û´®	PUBLISH, Will Properties
-    case CLIENT_ID://0x12 ·ÖÅä¿Í»§±êÊ¶·û	UTF-8±àÂë×Ö·û´®	CONNACK
-    case AUTH_METHOD://0x15 ÈÏÖ¤·½·¨	UTF-8±àÂë×Ö·û´®	CONNECT, CONNACK, AUTH
-    case RESP_INFO://0x1A ÇëÇóĞÅÏ¢	UTF-8±àÂë×Ö·û´®	CONNACK
-    case SERVER_REFERENCE://0x1C ·şÎñ¶Ë²Î¿¼	UTF-8±àÂë×Ö·û´®	CONNACK, DISCONNECT
-    case REASON_STR://0x1F Ô­Òò×Ö·û´®	UTF-8±àÂë×Ö·û´®	CONNACK, PUBACK, PUBREC, PUBREL, PUBCOMP, SUBACK, UNSUBACK, DISCONNECT, AUTH
+    case CORRELATION_DATA://0x09 ç›¸å…³æ•°æ®	äºŒè¿›åˆ¶æ•°æ®	PUBLISH, Will Properties
+    case AUTH_DATA://0x16 è®¤è¯æ•°æ®	äºŒè¿›åˆ¶æ•°æ®	CONNECT, CONNACK, AUTH
+    case CONTENT_TYPE://0x03 å†…å®¹ç±»å‹	UTF-8ç¼–ç å­—ç¬¦ä¸²	PUBLISH, Will Properties
+    case RESP_TOPIC://0x08 å“åº”ä¸»é¢˜	UTF-8ç¼–ç å­—ç¬¦ä¸²	PUBLISH, Will Properties
+    case CLIENT_ID://0x12 åˆ†é…å®¢æˆ·æ ‡è¯†ç¬¦	UTF-8ç¼–ç å­—ç¬¦ä¸²	CONNACK
+    case AUTH_METHOD://0x15 è®¤è¯æ–¹æ³•	UTF-8ç¼–ç å­—ç¬¦ä¸²	CONNECT, CONNACK, AUTH
+    case RESP_INFO://0x1A è¯·æ±‚ä¿¡æ¯	UTF-8ç¼–ç å­—ç¬¦ä¸²	CONNACK
+    case SERVER_REFERENCE://0x1C æœåŠ¡ç«¯å‚è€ƒ	UTF-8ç¼–ç å­—ç¬¦ä¸²	CONNACK, DISCONNECT
+    case REASON_STR://0x1F åŸå› å­—ç¬¦ä¸²	UTF-8ç¼–ç å­—ç¬¦ä¸²	CONNACK, PUBACK, PUBREC, PUBREL, PUBCOMP, SUBACK, UNSUBACK, DISCONNECT, AUTH
         binary_set_integer(props, lens, 2, 0);
         binary_set_string(props, data, lens);
         break;
@@ -89,7 +89,7 @@ int32_t mqtt_props_binary(binary_ctx *props, mqtt_prop_flag flag, void *data, in
 int32_t mqtt_props_kv(binary_ctx *props, mqtt_prop_flag flag, void *key, size_t klens, void *val, size_t vlens) {
     binary_set_int8(props, (int8_t)flag);
     switch (flag) {
-    case USER_PROPERTY://0x26 ÓÃ»§ÊôĞÔ	UTF-8×Ö·û´®¶Ô	CONNECT, CONNACK, PUBLISH, Will Properties, PUBACK, PUBREC, PUBREL, PUBCOMP, SUBSCRIBE, SUBACK, UNSUBSCRIBE, UNSUBACK, DISCONNECT, AUTH
+    case USER_PROPERTY://0x26 ç”¨æˆ·å±æ€§	UTF-8å­—ç¬¦ä¸²å¯¹	CONNECT, CONNACK, PUBLISH, Will Properties, PUBACK, PUBREC, PUBREL, PUBCOMP, SUBSCRIBE, SUBACK, UNSUBSCRIBE, UNSUBACK, DISCONNECT, AUTH
         binary_set_integer(props, klens, 2, 0);
         binary_set_string(props, key, klens);
         binary_set_integer(props, vlens, 2, 0);
@@ -128,7 +128,8 @@ static int32_t _mqtt_props_varlens(mqtt_protversion version, binary_ctx *props, 
     int32_t occupy;
     if (NULL == props) {
         occupy = _mqtt_varlens_encode(0, vlens);
-    } else {
+    }
+    else {
         (*off) += (uint32_t)props->offset;
         occupy = _mqtt_varlens_encode((uint32_t)props->offset, vlens);
     }
@@ -142,8 +143,8 @@ char *mqtt_pack_connect(mqtt_protversion version, int8_t cleanstart, int16_t kee
     const char *user, char *password, size_t pwlens,
     const char *willtopic, char *willpayload, size_t wplens, int8_t willqos, int8_t willretain,
     binary_ctx *connprops, binary_ctx *willprops, size_t *lens) {
-    int8_t fixhead = (MQTT_CONNECT << 4);//¹Ì¶¨±¨Í·
-    //Á¬½Ó±êÖ¾
+    int8_t fixhead = (MQTT_CONNECT << 4);//å›ºå®šæŠ¥å¤´
+    //è¿æ¥æ ‡å¿—
     size_t ulens = 0;
     if (NULL != user) {
         ulens = strlen(user);
@@ -155,7 +156,7 @@ char *mqtt_pack_connect(mqtt_protversion version, int8_t cleanstart, int16_t kee
         wtlens = strlen(willtopic);
     }
     int8_t willflag = 0 == wtlens ? 0 : 1;
-    int8_t connflags = 0;//Á¬½Ó±êÖ¾
+    int8_t connflags = 0;//è¿æ¥æ ‡å¿—
     BIT_SETN(connflags, 1, cleanstart);//Clean Start
     BIT_SETN(connflags, 2, willflag);//Will Flag
     if (willflag) {
@@ -165,15 +166,15 @@ char *mqtt_pack_connect(mqtt_protversion version, int8_t cleanstart, int16_t kee
     }
     BIT_SETN(connflags, 6, passwordflag);//Password Flag
     BIT_SETN(connflags, 7, userflag);//User Name Flag
-    //¼ÆËãÊ£Óà³¤¶È
-    uint32_t total = 10;//Ğ­ÒéÃû(2+4) + Ğ­Òé°æ±¾(1) + Á¬½Ó±êÖ¾(1) + ±£³ÖÁ¬½Ó(2)
+    //è®¡ç®—å‰©ä½™é•¿åº¦
+    uint32_t total = 10;//åè®®å(2+4) + åè®®ç‰ˆæœ¬(1) + è¿æ¥æ ‡å¿—(1) + ä¿æŒè¿æ¥(2)
     char cpvlens[4];
     int32_t cpoccupy = _mqtt_props_varlens(version, connprops, cpvlens, &total);
     if (ERR_FAILED == cpoccupy) {
         return NULL;
     }
     size_t cidlens = strlen(clientid);
-    total += ((uint32_t)cidlens + 2);//¿Í»§±êÊ¶·û
+    total += ((uint32_t)cidlens + 2);//å®¢æˆ·æ ‡è¯†ç¬¦
     char wpvlens[4];
     int32_t wpoccupy = 0;
     if (willflag) {
@@ -181,95 +182,95 @@ char *mqtt_pack_connect(mqtt_protversion version, int8_t cleanstart, int16_t kee
         if (ERR_FAILED == wpoccupy) {
             return NULL;
         }
-        total += ((uint32_t)wtlens + 2);//ÒÅÖöÖ÷Ìâ
-        total += ((uint32_t)wplens + 2);//ÒÅÖöÔØºÉ
+        total += ((uint32_t)wtlens + 2);//é—å˜±ä¸»é¢˜
+        total += ((uint32_t)wplens + 2);//é—å˜±è½½è·
     }
     if (userflag) {
-        total += ((uint32_t)ulens + 2);//ÓÃ»§Ãû
+        total += ((uint32_t)ulens + 2);//ç”¨æˆ·å
     }
     if (passwordflag) {
-        total += ((uint32_t)pwlens + 2);//ÃÜÂë
+        total += ((uint32_t)pwlens + 2);//å¯†ç 
     }
-    //±àÂëÊ£Óà³¤¶È
+    //ç¼–ç å‰©ä½™é•¿åº¦
     char rmain[4];
     int32_t roccupy = _mqtt_varlens_encode(total, rmain);
     if (0 == roccupy) {
         return NULL;
     }
-    //´ò°ü
+    //æ‰“åŒ…
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
-    binary_set_int8(&bwriter, fixhead);//¹Ì¶¨±¨Í·
-    binary_set_string(&bwriter, rmain, roccupy);//Ê£Óà³¤¶È
-    binary_set_integer(&bwriter, 4, 2, 0);//Ğ­ÒéÃû³¤¶È
-    binary_set_string(&bwriter, "MQTT", 4);//Ğ­ÒéÃû
-    binary_set_int8(&bwriter, version);//Ğ­Òé°æ±¾
-    binary_set_int8(&bwriter, connflags);//Á¬½Ó±êÖ¾
-    binary_set_integer(&bwriter, keepalive, 2, 0);//±£³ÖÁ¬½Ó
+    binary_set_int8(&bwriter, fixhead);//å›ºå®šæŠ¥å¤´
+    binary_set_string(&bwriter, rmain, roccupy);//å‰©ä½™é•¿åº¦
+    binary_set_integer(&bwriter, 4, 2, 0);//åè®®åé•¿åº¦
+    binary_set_string(&bwriter, "MQTT", 4);//åè®®å
+    binary_set_int8(&bwriter, version);//åè®®ç‰ˆæœ¬
+    binary_set_int8(&bwriter, connflags);//è¿æ¥æ ‡å¿—
+    binary_set_integer(&bwriter, keepalive, 2, 0);//ä¿æŒè¿æ¥
     if (version >= MQTT_50) {
-        binary_set_string(&bwriter, cpvlens, cpoccupy);//ÊôĞÔ³¤¶È
+        binary_set_string(&bwriter, cpvlens, cpoccupy);//å±æ€§é•¿åº¦
         if (NULL != connprops
             && 0 != connprops->offset) {
-            binary_set_string(&bwriter, connprops->data, connprops->offset);//ÊôĞÔ
+            binary_set_string(&bwriter, connprops->data, connprops->offset);//å±æ€§
         }
     }
     binary_set_integer(&bwriter, cidlens, 2, 0);
-    binary_set_string(&bwriter, clientid, cidlens);//¿Í»§±êÊ¶·û
+    binary_set_string(&bwriter, clientid, cidlens);//å®¢æˆ·æ ‡è¯†ç¬¦
     if (willflag) {
         if (version >= MQTT_50) {
-            binary_set_string(&bwriter, wpvlens, wpoccupy);//ÊôĞÔ³¤¶È
+            binary_set_string(&bwriter, wpvlens, wpoccupy);//å±æ€§é•¿åº¦
             if (NULL != willprops
                 && 0 != willprops->offset) {
-                binary_set_string(&bwriter, willprops->data, willprops->offset);//ÊôĞÔ
+                binary_set_string(&bwriter, willprops->data, willprops->offset);//å±æ€§
             }
         }
         binary_set_integer(&bwriter, wtlens, 2, 0);
-        binary_set_string(&bwriter, willtopic, wtlens);//ÒÅÖöÖ÷Ìâ
+        binary_set_string(&bwriter, willtopic, wtlens);//é—å˜±ä¸»é¢˜
         binary_set_integer(&bwriter, wplens, 2, 0);
-        binary_set_string(&bwriter, willpayload, wplens);//ÒÅÖöÔØºÉ
+        binary_set_string(&bwriter, willpayload, wplens);//é—å˜±è½½è·
     }
     if (userflag) {
         binary_set_integer(&bwriter, ulens, 2, 0);
-        binary_set_string(&bwriter, user, ulens);//ÓÃ»§Ãû
+        binary_set_string(&bwriter, user, ulens);//ç”¨æˆ·å
     }
     if (passwordflag) {
         binary_set_integer(&bwriter, pwlens, 2, 0);
-        binary_set_string(&bwriter, password, pwlens);//ÃÜÂë 
+        binary_set_string(&bwriter, password, pwlens);//å¯†ç  
     }
     *lens = bwriter.offset;
     return bwriter.data;
 }
 char *mqtt_pack_connack(mqtt_protversion version, int8_t sesspresent, uint8_t reason, binary_ctx *props, size_t *lens) {
-    int8_t fixhead = (MQTT_CONNACK << 4);//¹Ì¶¨±¨Í·
-    int8_t caflag = 0;//Á¬½ÓÈ·ÈÏ±êÖ¾
+    int8_t fixhead = (MQTT_CONNACK << 4);//å›ºå®šæŠ¥å¤´
+    int8_t caflag = 0;//è¿æ¥ç¡®è®¤æ ‡å¿—
     if (sesspresent) {
         BIT_SETN(caflag, 0, 1);
     }
-    //¼ÆËãÊ£Óà³¤¶È
-    uint32_t total = 2;//Á¬½ÓÈ·ÈÏ±êÖ¾(1) + Á¬½ÓÔ­ÒòÂë(1)
+    //è®¡ç®—å‰©ä½™é•¿åº¦
+    uint32_t total = 2;//è¿æ¥ç¡®è®¤æ ‡å¿—(1) + è¿æ¥åŸå› ç (1)
     char pvlens[4];
     int32_t pvoccupy = _mqtt_props_varlens(version, props, pvlens, &total);
     if (ERR_FAILED == pvoccupy) {
         return NULL;
     }
-    //±àÂëÊ£Óà³¤¶È
+    //ç¼–ç å‰©ä½™é•¿åº¦
     char rmain[4];
     int32_t roccupy = _mqtt_varlens_encode(total, rmain);
     if (0 == roccupy) {
         return NULL;
     }
-    //´ò°ü
+    //æ‰“åŒ…
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
-    binary_set_int8(&bwriter, fixhead);//¹Ì¶¨±¨Í·
-    binary_set_string(&bwriter, rmain, roccupy);//Ê£Óà³¤¶È
-    binary_set_int8(&bwriter, caflag);//Á¬½ÓÈ·ÈÏ±êÖ¾
-    binary_set_uint8(&bwriter, reason);//Á¬½ÓÔ­ÒòÂë
-    if (version >= MQTT_50) {//ÊôĞÔ
-        binary_set_string(&bwriter, pvlens, pvoccupy);//ÊôĞÔ³¤¶È
+    binary_set_int8(&bwriter, fixhead);//å›ºå®šæŠ¥å¤´
+    binary_set_string(&bwriter, rmain, roccupy);//å‰©ä½™é•¿åº¦
+    binary_set_int8(&bwriter, caflag);//è¿æ¥ç¡®è®¤æ ‡å¿—
+    binary_set_uint8(&bwriter, reason);//è¿æ¥åŸå› ç 
+    if (version >= MQTT_50) {//å±æ€§
+        binary_set_string(&bwriter, pvlens, pvoccupy);//å±æ€§é•¿åº¦
         if (NULL != props
             && 0 != props->offset) {
-            binary_set_string(&bwriter, props->data, props->offset);//ÊôĞÔ
+            binary_set_string(&bwriter, props->data, props->offset);//å±æ€§
         }
     }
     *lens = bwriter.offset;
@@ -277,18 +278,18 @@ char *mqtt_pack_connack(mqtt_protversion version, int8_t sesspresent, uint8_t re
 }
 char *mqtt_pack_publish(mqtt_protversion version, int8_t retain, int8_t qos, int8_t dup,
     const char *topic, int16_t packid, char *payload, size_t pllens, binary_ctx *props, size_t *lens) {
-    int8_t fixhead = (MQTT_PUBLISH << 4);//¹Ì¶¨±¨Í·
-    //¹Ì¶¨±¨Í·±êÖ¾
-    BIT_SETN(fixhead, 0, retain);//±£Áô±êÖ¾
+    int8_t fixhead = (MQTT_PUBLISH << 4);//å›ºå®šæŠ¥å¤´
+    //å›ºå®šæŠ¥å¤´æ ‡å¿—
+    BIT_SETN(fixhead, 0, retain);//ä¿ç•™æ ‡å¿—
     BIT_SETN(fixhead, 1, (BIT_GETN(qos, 0)));
-    BIT_SETN(fixhead, 2, (BIT_GETN(qos, 1)));//·şÎñÖÊÁ¿µÈ¼¶
-    BIT_SETN(fixhead, 3, dup);//ÖØ·¢±êÖ¾
-    //¼ÆËãÊ£Óà³¤¶È
+    BIT_SETN(fixhead, 2, (BIT_GETN(qos, 1)));//æœåŠ¡è´¨é‡ç­‰çº§
+    BIT_SETN(fixhead, 3, dup);//é‡å‘æ ‡å¿—
+    //è®¡ç®—å‰©ä½™é•¿åº¦
     size_t tlens = strlen(topic);
-    uint32_t total = 2 + (uint32_t)tlens;//Ö÷ÌâÃû
+    uint32_t total = 2 + (uint32_t)tlens;//ä¸»é¢˜å
     if (1 == qos
-        || 2 == qos) {//Ö»ÓĞµ±QoSµÈ¼¶ÊÇ1»ò2Ê±£¬±¨ÎÄ±êÊ¶·û×Ö¶Î²ÅÄÜ³öÏÖÔÚ±¨ÎÄÖĞ
-        total += 2;//±¨ÎÄ±êÊ¶·û(2)
+        || 2 == qos) {//åªæœ‰å½“QoSç­‰çº§æ˜¯1æˆ–2æ—¶ï¼ŒæŠ¥æ–‡æ ‡è¯†ç¬¦å­—æ®µæ‰èƒ½å‡ºç°åœ¨æŠ¥æ–‡ä¸­
+        total += 2;//æŠ¥æ–‡æ ‡è¯†ç¬¦(2)
     }
     char pvlens[4];
     int32_t pvoccupy = _mqtt_props_varlens(version, props, pvlens, &total);
@@ -298,51 +299,53 @@ char *mqtt_pack_publish(mqtt_protversion version, int8_t retain, int8_t qos, int
     if (NULL != payload) {
         total += (uint32_t)pllens;
     }
-    //±àÂëÊ£Óà³¤¶È
+    //ç¼–ç å‰©ä½™é•¿åº¦
     char rmain[4];
     int32_t roccupy = _mqtt_varlens_encode(total, rmain);
     if (0 == roccupy) {
         return NULL;
     }
-    //´ò°ü
+    //æ‰“åŒ…
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
-    binary_set_int8(&bwriter, fixhead);//¹Ì¶¨±¨Í·
-    binary_set_string(&bwriter, rmain, roccupy);//Ê£Óà³¤¶È
+    binary_set_int8(&bwriter, fixhead);//å›ºå®šæŠ¥å¤´
+    binary_set_string(&bwriter, rmain, roccupy);//å‰©ä½™é•¿åº¦
     binary_set_integer(&bwriter, tlens, 2, 0);
-    binary_set_string(&bwriter, topic, tlens);//Ö÷ÌâÃû
+    binary_set_string(&bwriter, topic, tlens);//ä¸»é¢˜å
     if (1 == qos
         || 2 == qos) {
-        binary_set_integer(&bwriter, packid, 2, 0);//±¨ÎÄ±êÊ¶·û
+        binary_set_integer(&bwriter, packid, 2, 0);//æŠ¥æ–‡æ ‡è¯†ç¬¦
     }
-    if (version >= MQTT_50) {//ÊôĞÔ
-        binary_set_string(&bwriter, pvlens, pvoccupy);//ÊôĞÔ³¤¶È
+    if (version >= MQTT_50) {//å±æ€§
+        binary_set_string(&bwriter, pvlens, pvoccupy);//å±æ€§é•¿åº¦
         if (NULL != props
             && 0 != props->offset) {
-            binary_set_string(&bwriter, props->data, props->offset);//ÊôĞÔ
+            binary_set_string(&bwriter, props->data, props->offset);//å±æ€§
         }
     }
     if (NULL != payload
         && 0 != pllens) {
-        binary_set_string(&bwriter, payload, pllens);//ÔØºÉ
+        binary_set_string(&bwriter, payload, pllens);//è½½è·
     }
     *lens = bwriter.offset;
     return bwriter.data;
 }
 char *mqtt_pack_puback(mqtt_protversion version, int16_t packid, uint8_t reason, binary_ctx *props, size_t *lens) {
-    int8_t fixhead = (MQTT_PUBACK << 4);//¹Ì¶¨±¨Í·
-    //¼ÆËãÊ£Óà³¤¶È
+    int8_t fixhead = (MQTT_PUBACK << 4);//å›ºå®šæŠ¥å¤´
+    //è®¡ç®—å‰©ä½™é•¿åº¦
     uint32_t total;
     char pvlens[4];
     int32_t pvoccupy = 0;
     if (version < MQTT_50) {
-        total = 2;//±¨ÎÄ±êÊ¶·û(2)
-    } else {
+        total = 2;//æŠ¥æ–‡æ ‡è¯†ç¬¦(2)
+    }
+    else {
         if (0x00 == reason
             && (NULL == props || 0 == props->offset)) {
-            total = 2;//±¨ÎÄ±êÊ¶·û(2)
-        } else {
-            total = 2 + 1;//±¨ÎÄ±êÊ¶·û(2) + Ô­ÒòÂë(MQTT_50 1)
+            total = 2;//æŠ¥æ–‡æ ‡è¯†ç¬¦(2)
+        }
+        else {
+            total = 2 + 1;//æŠ¥æ–‡æ ‡è¯†ç¬¦(2) + åŸå› ç (MQTT_50 1)
             if (NULL != props
                 && 0 != props->offset) {
                 pvoccupy = _mqtt_props_varlens(version, props, pvlens, &total);
@@ -352,49 +355,51 @@ char *mqtt_pack_puback(mqtt_protversion version, int16_t packid, uint8_t reason,
             }
         }
     }
-    //±àÂëÊ£Óà³¤¶È
+    //ç¼–ç å‰©ä½™é•¿åº¦
     char rmain[4];
     int32_t roccupy = _mqtt_varlens_encode(total, rmain);
     if (0 == roccupy) {
         return NULL;
     }
-    //´ò°ü
+    //æ‰“åŒ…
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
-    binary_set_int8(&bwriter, fixhead);//¹Ì¶¨±¨Í·
-    binary_set_string(&bwriter, rmain, roccupy);//Ê£Óà³¤¶È
-    binary_set_integer(&bwriter, packid, 2, 0);//±¨ÎÄ±êÊ¶·û
+    binary_set_int8(&bwriter, fixhead);//å›ºå®šæŠ¥å¤´
+    binary_set_string(&bwriter, rmain, roccupy);//å‰©ä½™é•¿åº¦
+    binary_set_integer(&bwriter, packid, 2, 0);//æŠ¥æ–‡æ ‡è¯†ç¬¦
     if (2 == total) {
         *lens = bwriter.offset;
         return bwriter.data;
     }
     if (total >= 3) {
-        binary_set_uint8(&bwriter, reason);//Ô­ÒòÂë
+        binary_set_uint8(&bwriter, reason);//åŸå› ç 
     }
     if (total >= 4) {
-        binary_set_string(&bwriter, pvlens, pvoccupy);//ÊôĞÔ³¤¶È
+        binary_set_string(&bwriter, pvlens, pvoccupy);//å±æ€§é•¿åº¦
         if (NULL != props
             && 0 != props->offset) {
-            binary_set_string(&bwriter, props->data, props->offset);//ÊôĞÔ
+            binary_set_string(&bwriter, props->data, props->offset);//å±æ€§
         }
     }
     *lens = bwriter.offset;
     return bwriter.data;
-} 
+}
 char *mqtt_pack_pubrec(mqtt_protversion version, int16_t packid, uint8_t reason, binary_ctx *props, size_t *lens) {
-    int8_t fixhead = (MQTT_PUBREC << 4);//¹Ì¶¨±¨Í·
-    //¼ÆËãÊ£Óà³¤¶È
+    int8_t fixhead = (MQTT_PUBREC << 4);//å›ºå®šæŠ¥å¤´
+    //è®¡ç®—å‰©ä½™é•¿åº¦
     uint32_t total;
     char pvlens[4];
     int32_t pvoccupy = 0;
     if (version < MQTT_50) {
-        total = 2;//±¨ÎÄ±êÊ¶·û(2)
-    } else {
+        total = 2;//æŠ¥æ–‡æ ‡è¯†ç¬¦(2)
+    }
+    else {
         if (0x00 == reason
             && (NULL == props || 0 == props->offset)) {
-            total = 2;//±¨ÎÄ±êÊ¶·û(2)
-        } else {
-            total = 2 + 1;//±¨ÎÄ±êÊ¶·û(2) + Ô­ÒòÂë(MQTT_50 1)
+            total = 2;//æŠ¥æ–‡æ ‡è¯†ç¬¦(2)
+        }
+        else {
+            total = 2 + 1;//æŠ¥æ–‡æ ‡è¯†ç¬¦(2) + åŸå› ç (MQTT_50 1)
             if (NULL != props
                 && 0 != props->offset) {
                 pvoccupy = _mqtt_props_varlens(version, props, pvlens, &total);
@@ -404,50 +409,52 @@ char *mqtt_pack_pubrec(mqtt_protversion version, int16_t packid, uint8_t reason,
             }
         }
     }
-    //±àÂëÊ£Óà³¤¶È
+    //ç¼–ç å‰©ä½™é•¿åº¦
     char rmain[4];
     int32_t roccupy = _mqtt_varlens_encode(total, rmain);
     if (0 == roccupy) {
         return NULL;
     }
-    //´ò°ü
+    //æ‰“åŒ…
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
-    binary_set_int8(&bwriter, fixhead);//¹Ì¶¨±¨Í·
-    binary_set_string(&bwriter, rmain, roccupy);//Ê£Óà³¤¶È
-    binary_set_integer(&bwriter, packid, 2, 0);//±¨ÎÄ±êÊ¶·û
+    binary_set_int8(&bwriter, fixhead);//å›ºå®šæŠ¥å¤´
+    binary_set_string(&bwriter, rmain, roccupy);//å‰©ä½™é•¿åº¦
+    binary_set_integer(&bwriter, packid, 2, 0);//æŠ¥æ–‡æ ‡è¯†ç¬¦
     if (2 == total) {
         *lens = bwriter.offset;
         return bwriter.data;
     }
     if (total >= 3) {
-        binary_set_uint8(&bwriter, reason);//Ô­ÒòÂë
+        binary_set_uint8(&bwriter, reason);//åŸå› ç 
     }
     if (total >= 4) {
-        binary_set_string(&bwriter, pvlens, pvoccupy);//ÊôĞÔ³¤¶È
+        binary_set_string(&bwriter, pvlens, pvoccupy);//å±æ€§é•¿åº¦
         if (NULL != props
             && 0 != props->offset) {
-            binary_set_string(&bwriter, props->data, props->offset);//ÊôĞÔ
+            binary_set_string(&bwriter, props->data, props->offset);//å±æ€§
         }
     }
     *lens = bwriter.offset;
     return bwriter.data;
 }
 char *mqtt_pack_pubrel(mqtt_protversion version, int16_t packid, uint8_t reason, binary_ctx *props, size_t *lens) {
-    int8_t fixhead = (MQTT_PUBREL << 4);//¹Ì¶¨±¨Í·
-    BIT_SETN(fixhead, 1, 1);//µÚ3£¬2£¬1£¬0Î»ÊÇ±£ÁôÎ»£¬±ØĞë±»ÉèÖÃÎª0£¬0£¬1£¬0
-    //¼ÆËãÊ£Óà³¤¶È
+    int8_t fixhead = (MQTT_PUBREL << 4);//å›ºå®šæŠ¥å¤´
+    BIT_SETN(fixhead, 1, 1);//ç¬¬3ï¼Œ2ï¼Œ1ï¼Œ0ä½æ˜¯ä¿ç•™ä½ï¼Œå¿…é¡»è¢«è®¾ç½®ä¸º0ï¼Œ0ï¼Œ1ï¼Œ0
+    //è®¡ç®—å‰©ä½™é•¿åº¦
     uint32_t total;
     char pvlens[4];
     int32_t pvoccupy = 0;
     if (version < MQTT_50) {
-        total = 2;//±¨ÎÄ±êÊ¶·û(2)
-    } else {
+        total = 2;//æŠ¥æ–‡æ ‡è¯†ç¬¦(2)
+    }
+    else {
         if (0x00 == reason
             && (NULL == props || 0 == props->offset)) {
-            total = 2;//±¨ÎÄ±êÊ¶·û(2)
-        } else {
-            total = 2 + 1;//±¨ÎÄ±êÊ¶·û(2) + Ô­ÒòÂë(MQTT_50 1)
+            total = 2;//æŠ¥æ–‡æ ‡è¯†ç¬¦(2)
+        }
+        else {
+            total = 2 + 1;//æŠ¥æ–‡æ ‡è¯†ç¬¦(2) + åŸå› ç (MQTT_50 1)
             if (NULL != props
                 && 0 != props->offset) {
                 pvoccupy = _mqtt_props_varlens(version, props, pvlens, &total);
@@ -457,49 +464,51 @@ char *mqtt_pack_pubrel(mqtt_protversion version, int16_t packid, uint8_t reason,
             }
         }
     }
-    //±àÂëÊ£Óà³¤¶È
+    //ç¼–ç å‰©ä½™é•¿åº¦
     char rmain[4];
     int32_t roccupy = _mqtt_varlens_encode(total, rmain);
     if (0 == roccupy) {
         return NULL;
     }
-    //´ò°ü
+    //æ‰“åŒ…
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
-    binary_set_int8(&bwriter, fixhead);//¹Ì¶¨±¨Í·
-    binary_set_string(&bwriter, rmain, roccupy);//Ê£Óà³¤¶È
-    binary_set_integer(&bwriter, packid, 2, 0);//±¨ÎÄ±êÊ¶·û
+    binary_set_int8(&bwriter, fixhead);//å›ºå®šæŠ¥å¤´
+    binary_set_string(&bwriter, rmain, roccupy);//å‰©ä½™é•¿åº¦
+    binary_set_integer(&bwriter, packid, 2, 0);//æŠ¥æ–‡æ ‡è¯†ç¬¦
     if (2 == total) {
         *lens = bwriter.offset;
         return bwriter.data;
     }
     if (total >= 3) {
-        binary_set_uint8(&bwriter, reason);//Ô­ÒòÂë
+        binary_set_uint8(&bwriter, reason);//åŸå› ç 
     }
     if (total >= 4) {
-        binary_set_string(&bwriter, pvlens, pvoccupy);//ÊôĞÔ³¤¶È
+        binary_set_string(&bwriter, pvlens, pvoccupy);//å±æ€§é•¿åº¦
         if (NULL != props
             && 0 != props->offset) {
-            binary_set_string(&bwriter, props->data, props->offset);//ÊôĞÔ
+            binary_set_string(&bwriter, props->data, props->offset);//å±æ€§
         }
     }
     *lens = bwriter.offset;
     return bwriter.data;
 }
 char *mqtt_pack_pubcomp(mqtt_protversion version, int16_t packid, uint8_t reason, binary_ctx *props, size_t *lens) {
-    int8_t fixhead = (MQTT_PUBCOMP << 4);//¹Ì¶¨±¨Í·
-    //¼ÆËãÊ£Óà³¤¶È
+    int8_t fixhead = (MQTT_PUBCOMP << 4);//å›ºå®šæŠ¥å¤´
+    //è®¡ç®—å‰©ä½™é•¿åº¦
     uint32_t total;
     char pvlens[4];
     int32_t pvoccupy = 0;
     if (version < MQTT_50) {
-        total = 2;//±¨ÎÄ±êÊ¶·û(2)
-    } else {
+        total = 2;//æŠ¥æ–‡æ ‡è¯†ç¬¦(2)
+    }
+    else {
         if (0x00 == reason
             && (NULL == props || 0 == props->offset)) {
-            total = 2;//±¨ÎÄ±êÊ¶·û(2)
-        } else {
-            total = 2 + 1;//±¨ÎÄ±êÊ¶·û(2) + Ô­ÒòÂë(MQTT_50 1)
+            total = 2;//æŠ¥æ–‡æ ‡è¯†ç¬¦(2)
+        }
+        else {
+            total = 2 + 1;//æŠ¥æ–‡æ ‡è¯†ç¬¦(2) + åŸå› ç (MQTT_50 1)
             if (NULL != props
                 && 0 != props->offset) {
                 pvoccupy = _mqtt_props_varlens(version, props, pvlens, &total);
@@ -509,63 +518,63 @@ char *mqtt_pack_pubcomp(mqtt_protversion version, int16_t packid, uint8_t reason
             }
         }
     }
-    //±àÂëÊ£Óà³¤¶È
+    //ç¼–ç å‰©ä½™é•¿åº¦
     char rmain[4];
     int32_t roccupy = _mqtt_varlens_encode(total, rmain);
     if (0 == roccupy) {
         return NULL;
     }
-    //´ò°ü
+    //æ‰“åŒ…
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
-    binary_set_int8(&bwriter, fixhead);//¹Ì¶¨±¨Í·
-    binary_set_string(&bwriter, rmain, roccupy);//Ê£Óà³¤¶È
-    binary_set_integer(&bwriter, packid, 2, 0);//±¨ÎÄ±êÊ¶·û
+    binary_set_int8(&bwriter, fixhead);//å›ºå®šæŠ¥å¤´
+    binary_set_string(&bwriter, rmain, roccupy);//å‰©ä½™é•¿åº¦
+    binary_set_integer(&bwriter, packid, 2, 0);//æŠ¥æ–‡æ ‡è¯†ç¬¦
     if (2 == total) {
         *lens = bwriter.offset;
         return bwriter.data;
     }
     if (total >= 3) {
-        binary_set_uint8(&bwriter, reason);//Ô­ÒòÂë
+        binary_set_uint8(&bwriter, reason);//åŸå› ç 
     }
     if (total >= 4) {
-        binary_set_string(&bwriter, pvlens, pvoccupy);//ÊôĞÔ³¤¶È
+        binary_set_string(&bwriter, pvlens, pvoccupy);//å±æ€§é•¿åº¦
         if (NULL != props
             && 0 != props->offset) {
-            binary_set_string(&bwriter, props->data, props->offset);//ÊôĞÔ
+            binary_set_string(&bwriter, props->data, props->offset);//å±æ€§
         }
     }
     *lens = bwriter.offset;
     return bwriter.data;
 }
 char *mqtt_pack_subscribe(mqtt_protversion version, int16_t packid, binary_ctx *topics, binary_ctx *props, size_t *lens) {
-    int8_t fixhead = (MQTT_SUBSCRIBE << 4);//¹Ì¶¨±¨Í·
-    BIT_SETN(fixhead, 1, 1);//µÚ3£¬2£¬1£¬0Î»ÊÇ±£ÁôÎ»£¬±ØĞë±»ÉèÖÃÎª0£¬0£¬1£¬0
-    //¼ÆËãÊ£Óà³¤¶È
-    uint32_t total = 2;//±¨ÎÄ±êÊ¶·û(2)
+    int8_t fixhead = (MQTT_SUBSCRIBE << 4);//å›ºå®šæŠ¥å¤´
+    BIT_SETN(fixhead, 1, 1);//ç¬¬3ï¼Œ2ï¼Œ1ï¼Œ0ä½æ˜¯ä¿ç•™ä½ï¼Œå¿…é¡»è¢«è®¾ç½®ä¸º0ï¼Œ0ï¼Œ1ï¼Œ0
+    //è®¡ç®—å‰©ä½™é•¿åº¦
+    uint32_t total = 2;//æŠ¥æ–‡æ ‡è¯†ç¬¦(2)
     char pvlens[4];
     int32_t pvoccupy = _mqtt_props_varlens(version, props, pvlens, &total);
     if (ERR_FAILED == pvoccupy) {
         return NULL;
     }
     total += (uint32_t)topics->offset;
-    //±àÂëÊ£Óà³¤¶È
+    //ç¼–ç å‰©ä½™é•¿åº¦
     char rmain[4];
     int32_t roccupy = _mqtt_varlens_encode(total, rmain);
     if (0 == roccupy) {
         return NULL;
     }
-    //´ò°ü
+    //æ‰“åŒ…
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
-    binary_set_int8(&bwriter, fixhead);//¹Ì¶¨±¨Í·
-    binary_set_string(&bwriter, rmain, roccupy);//Ê£Óà³¤¶È
-    binary_set_integer(&bwriter, packid, 2, 0);//±¨ÎÄ±êÊ¶·û
+    binary_set_int8(&bwriter, fixhead);//å›ºå®šæŠ¥å¤´
+    binary_set_string(&bwriter, rmain, roccupy);//å‰©ä½™é•¿åº¦
+    binary_set_integer(&bwriter, packid, 2, 0);//æŠ¥æ–‡æ ‡è¯†ç¬¦
     if (version >= MQTT_50) {
-        binary_set_string(&bwriter, pvlens, pvoccupy);//ÊôĞÔ³¤¶È
+        binary_set_string(&bwriter, pvlens, pvoccupy);//å±æ€§é•¿åº¦
         if (NULL != props
             && 0 != props->offset) {
-            binary_set_string(&bwriter, props->data, props->offset);//ÊôĞÔ
+            binary_set_string(&bwriter, props->data, props->offset);//å±æ€§
         }
     }
     binary_set_string(&bwriter, topics->data, topics->offset);
@@ -573,32 +582,32 @@ char *mqtt_pack_subscribe(mqtt_protversion version, int16_t packid, binary_ctx *
     return bwriter.data;
 }
 char *mqtt_pack_suback(mqtt_protversion version, int16_t packid, uint8_t *reasons, size_t rslens, binary_ctx *props, size_t *lens) {
-    int8_t fixhead = (MQTT_SUBACK << 4);//¹Ì¶¨±¨Í·
-    //¼ÆËãÊ£Óà³¤¶È
-    uint32_t total = 2;//±¨ÎÄ±êÊ¶·û(2)
+    int8_t fixhead = (MQTT_SUBACK << 4);//å›ºå®šæŠ¥å¤´
+    //è®¡ç®—å‰©ä½™é•¿åº¦
+    uint32_t total = 2;//æŠ¥æ–‡æ ‡è¯†ç¬¦(2)
     char pvlens[4];
     int32_t pvoccupy = _mqtt_props_varlens(version, props, pvlens, &total);
     if (ERR_FAILED == pvoccupy) {
         return NULL;
     }
     total += (uint32_t)rslens;
-    //±àÂëÊ£Óà³¤¶È
+    //ç¼–ç å‰©ä½™é•¿åº¦
     char rmain[4];
     int32_t roccupy = _mqtt_varlens_encode(total, rmain);
     if (0 == roccupy) {
         return NULL;
     }
-    //´ò°ü
+    //æ‰“åŒ…
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
-    binary_set_int8(&bwriter, fixhead);//¹Ì¶¨±¨Í·
-    binary_set_string(&bwriter, rmain, roccupy);//Ê£Óà³¤¶È
-    binary_set_integer(&bwriter, packid, 2, 0);//±¨ÎÄ±êÊ¶·û
+    binary_set_int8(&bwriter, fixhead);//å›ºå®šæŠ¥å¤´
+    binary_set_string(&bwriter, rmain, roccupy);//å‰©ä½™é•¿åº¦
+    binary_set_integer(&bwriter, packid, 2, 0);//æŠ¥æ–‡æ ‡è¯†ç¬¦
     if (version >= MQTT_50) {
-        binary_set_string(&bwriter, pvlens, pvoccupy);//ÊôĞÔ³¤¶È
+        binary_set_string(&bwriter, pvlens, pvoccupy);//å±æ€§é•¿åº¦
         if (NULL != props
             && 0 != props->offset) {
-            binary_set_string(&bwriter, props->data, props->offset);//ÊôĞÔ
+            binary_set_string(&bwriter, props->data, props->offset);//å±æ€§
         }
     }
     binary_set_string(&bwriter, (const char *)reasons, rslens);
@@ -606,33 +615,33 @@ char *mqtt_pack_suback(mqtt_protversion version, int16_t packid, uint8_t *reason
     return bwriter.data;
 }
 char *mqtt_pack_unsubscribe(mqtt_protversion version, int16_t packid, binary_ctx *topics, binary_ctx *props, size_t *lens) {
-    int8_t fixhead = (MQTT_UNSUBSCRIBE << 4);//¹Ì¶¨±¨Í·
-    BIT_SETN(fixhead, 1, 1);//µÚ3£¬2£¬1£¬0Î»ÊÇ±£ÁôÎ»£¬±ØĞë±»ÉèÖÃÎª0£¬0£¬1£¬0
-    //¼ÆËãÊ£Óà³¤¶È
-    uint32_t total = 2;//±¨ÎÄ±êÊ¶·û(2)
+    int8_t fixhead = (MQTT_UNSUBSCRIBE << 4);//å›ºå®šæŠ¥å¤´
+    BIT_SETN(fixhead, 1, 1);//ç¬¬3ï¼Œ2ï¼Œ1ï¼Œ0ä½æ˜¯ä¿ç•™ä½ï¼Œå¿…é¡»è¢«è®¾ç½®ä¸º0ï¼Œ0ï¼Œ1ï¼Œ0
+    //è®¡ç®—å‰©ä½™é•¿åº¦
+    uint32_t total = 2;//æŠ¥æ–‡æ ‡è¯†ç¬¦(2)
     char pvlens[4];
     int32_t pvoccupy = _mqtt_props_varlens(version, props, pvlens, &total);
     if (ERR_FAILED == pvoccupy) {
         return NULL;
     }
     total += (uint32_t)topics->offset;
-    //±àÂëÊ£Óà³¤¶È
+    //ç¼–ç å‰©ä½™é•¿åº¦
     char rmain[4];
     int32_t roccupy = _mqtt_varlens_encode(total, rmain);
     if (0 == roccupy) {
         return NULL;
     }
-    //´ò°ü
+    //æ‰“åŒ…
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
-    binary_set_int8(&bwriter, fixhead);//¹Ì¶¨±¨Í·
-    binary_set_string(&bwriter, rmain, roccupy);//Ê£Óà³¤¶È
-    binary_set_integer(&bwriter, packid, 2, 0);//±¨ÎÄ±êÊ¶·û
+    binary_set_int8(&bwriter, fixhead);//å›ºå®šæŠ¥å¤´
+    binary_set_string(&bwriter, rmain, roccupy);//å‰©ä½™é•¿åº¦
+    binary_set_integer(&bwriter, packid, 2, 0);//æŠ¥æ–‡æ ‡è¯†ç¬¦
     if (version >= MQTT_50) {
-        binary_set_string(&bwriter, pvlens, pvoccupy);//ÊôĞÔ³¤¶È
+        binary_set_string(&bwriter, pvlens, pvoccupy);//å±æ€§é•¿åº¦
         if (NULL != props
             && 0 != props->offset) {
-            binary_set_string(&bwriter, props->data, props->offset);//ÊôĞÔ
+            binary_set_string(&bwriter, props->data, props->offset);//å±æ€§
         }
     }
     binary_set_string(&bwriter, topics->data, topics->offset);
@@ -640,9 +649,9 @@ char *mqtt_pack_unsubscribe(mqtt_protversion version, int16_t packid, binary_ctx
     return bwriter.data;
 }
 char *mqtt_pack_unsuback(mqtt_protversion version, int16_t packid, uint8_t *reasons, size_t rslens, binary_ctx *props, size_t *lens) {
-    int8_t fixhead = (MQTT_UNSUBACK << 4);//¹Ì¶¨±¨Í·
-    //¼ÆËãÊ£Óà³¤¶È
-    uint32_t total = 2;//±¨ÎÄ±êÊ¶·û(2)
+    int8_t fixhead = (MQTT_UNSUBACK << 4);//å›ºå®šæŠ¥å¤´
+    //è®¡ç®—å‰©ä½™é•¿åº¦
+    uint32_t total = 2;//æŠ¥æ–‡æ ‡è¯†ç¬¦(2)
     char pvlens[4];
     int32_t pvoccupy = _mqtt_props_varlens(version, props, pvlens, &total);
     if (ERR_FAILED == pvoccupy) {
@@ -651,23 +660,23 @@ char *mqtt_pack_unsuback(mqtt_protversion version, int16_t packid, uint8_t *reas
     if (version >= MQTT_50) {
         total += (uint32_t)rslens;
     }
-    //±àÂëÊ£Óà³¤¶È
+    //ç¼–ç å‰©ä½™é•¿åº¦
     char rmain[4];
     int32_t roccupy = _mqtt_varlens_encode(total, rmain);
     if (0 == roccupy) {
         return NULL;
     }
-    //´ò°ü
+    //æ‰“åŒ…
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
-    binary_set_int8(&bwriter, fixhead);//¹Ì¶¨±¨Í·
-    binary_set_string(&bwriter, rmain, roccupy);//Ê£Óà³¤¶È
-    binary_set_integer(&bwriter, packid, 2, 0);//±¨ÎÄ±êÊ¶·û
+    binary_set_int8(&bwriter, fixhead);//å›ºå®šæŠ¥å¤´
+    binary_set_string(&bwriter, rmain, roccupy);//å‰©ä½™é•¿åº¦
+    binary_set_integer(&bwriter, packid, 2, 0);//æŠ¥æ–‡æ ‡è¯†ç¬¦
     if (version >= MQTT_50) {
-        binary_set_string(&bwriter, pvlens, pvoccupy);//ÊôĞÔ³¤¶È
+        binary_set_string(&bwriter, pvlens, pvoccupy);//å±æ€§é•¿åº¦
         if (NULL != props
             && 0 != props->offset) {
-            binary_set_string(&bwriter, props->data, props->offset);//ÊôĞÔ
+            binary_set_string(&bwriter, props->data, props->offset);//å±æ€§
         }
         binary_set_string(&bwriter, (const char *)reasons, rslens);
     }
@@ -675,50 +684,52 @@ char *mqtt_pack_unsuback(mqtt_protversion version, int16_t packid, uint8_t *reas
     return bwriter.data;
 }
 char *mqtt_pack_ping(mqtt_protversion version, size_t *lens) {
-    int8_t fixhead = (MQTT_PINGREQ << 4);//¹Ì¶¨±¨Í·
-    //±àÂëÊ£Óà³¤¶È
+    int8_t fixhead = (MQTT_PINGREQ << 4);//å›ºå®šæŠ¥å¤´
+    //ç¼–ç å‰©ä½™é•¿åº¦
     char rmain[4];
     int32_t roccupy = _mqtt_varlens_encode(0, rmain);
     if (0 == roccupy) {
         return NULL;
     }
-    //´ò°ü
+    //æ‰“åŒ…
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
-    binary_set_int8(&bwriter, fixhead);//¹Ì¶¨±¨Í·
-    binary_set_string(&bwriter, rmain, roccupy);//Ê£Óà³¤¶È
+    binary_set_int8(&bwriter, fixhead);//å›ºå®šæŠ¥å¤´
+    binary_set_string(&bwriter, rmain, roccupy);//å‰©ä½™é•¿åº¦
     *lens = bwriter.offset;
     return bwriter.data;
 }
 char *mqtt_pack_pong(mqtt_protversion version, size_t *lens) {
-    int8_t fixhead = (MQTT_PINGRESP << 4);//¹Ì¶¨±¨Í·
-    //±àÂëÊ£Óà³¤¶È
+    int8_t fixhead = (MQTT_PINGRESP << 4);//å›ºå®šæŠ¥å¤´
+    //ç¼–ç å‰©ä½™é•¿åº¦
     char rmain[4];
     int32_t roccupy = _mqtt_varlens_encode(0, rmain);
     if (0 == roccupy) {
         return NULL;
     }
-    //´ò°ü
+    //æ‰“åŒ…
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
-    binary_set_int8(&bwriter, fixhead);//¹Ì¶¨±¨Í·
-    binary_set_string(&bwriter, rmain, roccupy);//Ê£Óà³¤¶È
+    binary_set_int8(&bwriter, fixhead);//å›ºå®šæŠ¥å¤´
+    binary_set_string(&bwriter, rmain, roccupy);//å‰©ä½™é•¿åº¦
     *lens = bwriter.offset;
     return bwriter.data;
 }
 char *mqtt_pack_disconnect(mqtt_protversion version, uint8_t reason, binary_ctx *props, size_t *lens) {
-    int8_t fixhead = (MQTT_DISCONNECT << 4);//¹Ì¶¨±¨Í·
-    //¼ÆËãÊ£Óà³¤¶È
+    int8_t fixhead = (MQTT_DISCONNECT << 4);//å›ºå®šæŠ¥å¤´
+    //è®¡ç®—å‰©ä½™é•¿åº¦
     uint32_t total;
     char pvlens[4];
     int32_t pvoccupy = 0;
     if (version < MQTT_50) {
         total = 0;
-    } else {
+    }
+    else {
         if (0x00 == reason
             && (NULL == props || 0 == props->offset)) {
             total = 0;
-        } else {
+        }
+        else {
             total = 1;
             if (NULL != props
                 && 0 != props->offset) {
@@ -729,29 +740,29 @@ char *mqtt_pack_disconnect(mqtt_protversion version, uint8_t reason, binary_ctx 
             }
         }
     }
-    //±àÂëÊ£Óà³¤¶È
+    //ç¼–ç å‰©ä½™é•¿åº¦
     char rmain[4];
     int32_t roccupy = _mqtt_varlens_encode(total, rmain);
     if (0 == roccupy) {
         return NULL;
     }
-    //´ò°ü
+    //æ‰“åŒ…
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
-    binary_set_int8(&bwriter, fixhead);//¹Ì¶¨±¨Í·
-    binary_set_string(&bwriter, rmain, roccupy);//Ê£Óà³¤¶È
+    binary_set_int8(&bwriter, fixhead);//å›ºå®šæŠ¥å¤´
+    binary_set_string(&bwriter, rmain, roccupy);//å‰©ä½™é•¿åº¦
     if (0 == total) {
         *lens = bwriter.offset;
         return bwriter.data;
     }
     if (total >= 1) {
-        binary_set_uint8(&bwriter, reason);//Ô­ÒòÂë
+        binary_set_uint8(&bwriter, reason);//åŸå› ç 
     }
     if (total >= 2) {
-        binary_set_string(&bwriter, pvlens, pvoccupy);//ÊôĞÔ³¤¶È
+        binary_set_string(&bwriter, pvlens, pvoccupy);//å±æ€§é•¿åº¦
         if (NULL != props
             && 0 != props->offset) {
-            binary_set_string(&bwriter, props->data, props->offset);//ÊôĞÔ
+            binary_set_string(&bwriter, props->data, props->offset);//å±æ€§
         }
     }
     *lens = bwriter.offset;
@@ -761,39 +772,40 @@ char *mqtt_pack_auth(mqtt_protversion version, uint8_t reason, binary_ctx *props
     if (version < MQTT_50) {
         return NULL;
     }
-    int8_t fixhead = (MQTT_AUTH << 4);//¹Ì¶¨±¨Í·
-    //¼ÆËãÊ£Óà³¤¶È
+    int8_t fixhead = (MQTT_AUTH << 4);//å›ºå®šæŠ¥å¤´
+    //è®¡ç®—å‰©ä½™é•¿åº¦
     uint32_t total;
     char pvlens[4];
     int32_t pvoccupy = 0;
-    //Èç¹ûÔ­ÒòÂëÎª0x00£¨³É¹¦£©²¢ÇÒÃ»ÓĞÊôĞÔ×Ö¶Î£¬Ôò¿ÉÒÔÊ¡ÂÔÔ­ÒòÂëºÍÊôĞÔ³¤¶È¡£ÕâÖÖÇé¿öÏÂ£¬AUTH±¨ÎÄÊ£Óà³¤¶ÈÎª0¡£
+    //å¦‚æœåŸå› ç ä¸º0x00ï¼ˆæˆåŠŸï¼‰å¹¶ä¸”æ²¡æœ‰å±æ€§å­—æ®µï¼Œåˆ™å¯ä»¥çœç•¥åŸå› ç å’Œå±æ€§é•¿åº¦ã€‚è¿™ç§æƒ…å†µä¸‹ï¼ŒAUTHæŠ¥æ–‡å‰©ä½™é•¿åº¦ä¸º0ã€‚
     if (0x00 == reason
         && (NULL == props || 0 == props->offset)) {
         total = 0;
-    } else {
-        total = 1;//Ô­ÒòÂë(1)
+    }
+    else {
+        total = 1;//åŸå› ç (1)
         pvoccupy = _mqtt_props_varlens(version, props, pvlens, &total);
         if (ERR_FAILED == pvoccupy) {
             return NULL;
         }
     }
-    //±àÂëÊ£Óà³¤¶È
+    //ç¼–ç å‰©ä½™é•¿åº¦
     char rmain[4];
     int32_t roccupy = _mqtt_varlens_encode(total, rmain);
     if (0 == roccupy) {
         return NULL;
     }
-    //´ò°ü
+    //æ‰“åŒ…
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
-    binary_set_int8(&bwriter, fixhead);//¹Ì¶¨±¨Í·
-    binary_set_string(&bwriter, rmain, roccupy);//Ê£Óà³¤¶È
+    binary_set_int8(&bwriter, fixhead);//å›ºå®šæŠ¥å¤´
+    binary_set_string(&bwriter, rmain, roccupy);//å‰©ä½™é•¿åº¦
     if (0 != total) {
-        binary_set_uint8(&bwriter, reason);//Ô­ÒòÂë
-        binary_set_string(&bwriter, pvlens, pvoccupy);//ÊôĞÔ³¤¶È
+        binary_set_uint8(&bwriter, reason);//åŸå› ç 
+        binary_set_string(&bwriter, pvlens, pvoccupy);//å±æ€§é•¿åº¦
         if (NULL != props
             && 0 != props->offset) {
-            binary_set_string(&bwriter, props->data, props->offset);//ÊôĞÔ
+            binary_set_string(&bwriter, props->data, props->offset);//å±æ€§
         }
     }
     *lens = bwriter.offset;

@@ -1,4 +1,4 @@
-#include "protocol/mysql/mysql_pack.h"
+﻿#include "protocol/mysql/mysql_pack.h"
 #include "protocol/mysql/mysql_utils.h"
 #include "protocol/mysql/mysql_parse.h"
 
@@ -109,7 +109,8 @@ void *mysql_pack_stmt_execute(mysql_stmt_ctx *stmt, mysql_bind_ctx *mbind, size_
             if (bind_flag) {
                 if (BIT_CHECK(stmt->mysql->client.caps, CLIENT_QUERY_ATTRIBUTES)) {
                     binary_set_string(&bwriter, mbind->type_name.data, mbind->type_name.offset); //parameter_type parameter_name
-                } else {
+                }
+                else {
                     binary_set_string(&bwriter, mbind->type.data, mbind->type.offset);//parameter_type
                 }
             }

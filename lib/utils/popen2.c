@@ -1,4 +1,4 @@
-#include "utils/popen2.h"
+ï»¿#include "utils/popen2.h"
 #include "utils/netutils.h"
 #include "utils/utils.h"
 
@@ -12,16 +12,16 @@ static int32_t _popen_pipe(HANDLE pipe[2]) {
     SNPRINTF(pname, sizeof(pname), "%s%"PRIu64, PIPE_PREFIX, createid());
     SECURITY_ATTRIBUTES sa;
     sa.nLength = sizeof(SECURITY_ATTRIBUTES);
-    sa.lpSecurityDescriptor = NULL;//Ê¹ÓÃÏµÍ³Ä¬ÈÏµÄ°²È«ÃèÊö·û 
-    sa.bInheritHandle = TRUE;//´´½¨µÄ½ø³Ì¼Ì³Ð¾ä±ú
-    HANDLE server = CreateNamedPipe(pname,//Î¨Ò»µÄ¹ÜµÀÃû³Æ
-                                    PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,//´ò¿ªÄ£Ê½
-                                    PIPE_TYPE_BYTE,//¹ÜµÀÄ£Ê½
-                                    1,//¿ÉÎª´Ë¹ÜµÀ´´½¨µÄ×î´óÊµÀýÊý
-                                    PIPE_OUTBUF_SIZE,//Êä³ö»º³åÇø±£ÁôµÄ×Ö½ÚÊý
-                                    PIPE_INBUF_SIZE,//ÊäÈë»º³åÇø±£ÁôµÄ×Ö½ÚÊý
-                                    0,//³¬Ê± ÎªÁã£¬ÔòÄ¬ÈÏ³¬Ê±Îª 50 ºÁÃë
-                                    &sa);
+    sa.lpSecurityDescriptor = NULL;//ä½¿ç”¨ç³»ç»Ÿé»˜è®¤çš„å®‰å…¨æè¿°ç¬¦ 
+    sa.bInheritHandle = TRUE;//åˆ›å»ºçš„è¿›ç¨‹ç»§æ‰¿å¥æŸ„
+    HANDLE server = CreateNamedPipe(pname,//å”¯ä¸€çš„ç®¡é“åç§°
+        PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,//æ‰“å¼€æ¨¡å¼
+        PIPE_TYPE_BYTE,//ç®¡é“æ¨¡å¼
+        1,//å¯ä¸ºæ­¤ç®¡é“åˆ›å»ºçš„æœ€å¤§å®žä¾‹æ•°
+        PIPE_OUTBUF_SIZE,//è¾“å‡ºç¼“å†²åŒºä¿ç•™çš„å­—èŠ‚æ•°
+        PIPE_INBUF_SIZE,//è¾“å…¥ç¼“å†²åŒºä¿ç•™çš„å­—èŠ‚æ•°
+        0,//è¶…æ—¶ ä¸ºé›¶ï¼Œåˆ™é»˜è®¤è¶…æ—¶ä¸º 50 æ¯«ç§’
+        &sa);
     if (INVALID_HANDLE_VALUE == server) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
@@ -45,12 +45,12 @@ static int32_t _popen_pipe(HANDLE pipe[2]) {
         }
     }
     HANDLE client = CreateFile(pname,
-                               GENERIC_READ | GENERIC_WRITE,
-                               0,
-                               NULL,
-                               OPEN_EXISTING,
-                               FILE_ATTRIBUTE_NORMAL,
-                               NULL);
+        GENERIC_READ | GENERIC_WRITE,
+        0,
+        NULL,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        NULL);
     if (INVALID_HANDLE_VALUE == client) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         CloseHandle(event);
@@ -92,22 +92,22 @@ int32_t popen_startup(popen_ctx *ctx, const char *cmd, const char *mode) {
     startup.dwFlags = STARTF_USESHOWWINDOW | STARTF_USESTDHANDLES;
     startup.wShowWindow = SW_HIDE;
     if (w) {
-        startup.hStdInput = ctx->pipe[0];//ÊäÈëÁ´½Ó¹ÜµÀ
+        startup.hStdInput = ctx->pipe[0];//è¾“å…¥é“¾æŽ¥ç®¡é“
     }
     if (r) {
-        startup.hStdError = ctx->pipe[0];//Êä³öÁ´½Ó¹ÜµÀ
+        startup.hStdError = ctx->pipe[0];//è¾“å‡ºé“¾æŽ¥ç®¡é“
         startup.hStdOutput = ctx->pipe[0];
     }
     if (!CreateProcess(NULL,
-                       TEXT((char *)cmd),
-                       NULL,
-                       NULL,
-                       TRUE,
-                       0,
-                       NULL,
-                       NULL,
-                       &startup,
-                       &ctx->process)) {
+        TEXT((char *)cmd),
+        NULL,
+        NULL,
+        TRUE,
+        0,
+        NULL,
+        NULL,
+        &startup,
+        &ctx->process)) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         popen_free(ctx);
         return ERR_FAILED;
@@ -138,14 +138,16 @@ int32_t popen_startup(popen_ctx *ctx, const char *cmd, const char *mode) {
         int32_t err = ERRNO;
         LOG_WARN("%s", ERRORSTR(err));
         exit(err);
-    } else if (pid > 0) {
+    }
+    else if (pid > 0) {
         ctx->pid = pid;
         if (r || w) {
             close(sock[0]);
             ctx->sock = sock[1];
         }
         return ERR_OK;
-    } else {
+    }
+    else {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         if (r || w) {
             close(sock[0]);
@@ -163,14 +165,14 @@ void popen_close(popen_ctx *ctx) {
         return;
     }
     DWORD exitcode;
-    if (!GetExitCodeProcess(ctx->process.hProcess, &exitcode)) {//»ñµÃÍË³öÂë
+    if (!GetExitCodeProcess(ctx->process.hProcess, &exitcode)) {//èŽ·å¾—é€€å‡ºç 
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         return;
     }
-    if (STILL_ACTIVE != exitcode) {//ÊÇ·ñ»¹ÔÚÔËÐÐ
+    if (STILL_ACTIVE != exitcode) {//æ˜¯å¦è¿˜åœ¨è¿è¡Œ
         return;
     }
-    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);//»ñµÃµ±Ç°ÔËÐÐ½ø³ÌµÄ¿ìÕÕ
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);//èŽ·å¾—å½“å‰è¿è¡Œè¿›ç¨‹çš„å¿«ç…§
     if (NULL == snapshot) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         TerminateProcess(ctx->process.hProcess, ERR_FAILED);
@@ -179,14 +181,15 @@ void popen_close(popen_ctx *ctx) {
     HANDLE pvchild;
     PROCESSENTRY32 proentry32;
     proentry32.dwSize = sizeof(PROCESSENTRY32);
-    BOOL ok = Process32First(snapshot, &proentry32);//»ñµÃµÚÒ»¸ö½ø³ÌµÄ¾ä±ú
+    BOOL ok = Process32First(snapshot, &proentry32);//èŽ·å¾—ç¬¬ä¸€ä¸ªè¿›ç¨‹çš„å¥æŸ„
     while (ok) {
         if (proentry32.th32ParentProcessID == ctx->process.dwProcessId) {
             pvchild = OpenProcess(PROCESS_ALL_ACCESS, FALSE, proentry32.th32ProcessID);
             if (NULL != pvchild) {
                 TerminateProcess(pvchild, ERR_FAILED);
                 CloseHandle(pvchild);
-            } else {
+            }
+            else {
                 LOG_ERROR("%s", ERRORSTR(ERRNO));
             }
         }
@@ -226,12 +229,12 @@ void popen_free(popen_ctx *ctx) {
 }
 #ifndef OS_WIN
 static int32_t _child_exited(popen_ctx *ctx, int wstatus) {
-    if (WIFEXITED(wstatus)) {//Õý³£½áÊø
+    if (WIFEXITED(wstatus)) {//æ­£å¸¸ç»“æŸ
         ctx->exited = 1;
         ctx->exitcode = WEXITSTATUS(wstatus);
         return ERR_OK;
     }
-    if (WIFSIGNALED(wstatus)) {//ÐÅºÅ¶øÖÕÖ¹
+    if (WIFSIGNALED(wstatus)) {//ä¿¡å·è€Œç»ˆæ­¢
         ctx->exited = 1;
         ctx->exitcode = ERR_FAILED;
         return ERR_OK;
@@ -256,7 +259,7 @@ static int32_t _sock_closed(int32_t sock) {
     if (0 == rtn) {
         return 0;
     }
-    if (rtn < 0){
+    if (rtn < 0) {
         return 1;
     }
     rtn = sock_nread(sock);
@@ -310,7 +313,7 @@ int32_t popen_exitcode(popen_ctx *ctx) {
         return ERR_FAILED;
     }
     DWORD dwcode;
-    if (!GetExitCodeProcess(ctx->process.hProcess, &dwcode)) {//»ñµÃÍË³öÂë
+    if (!GetExitCodeProcess(ctx->process.hProcess, &dwcode)) {//èŽ·å¾—é€€å‡ºç 
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
@@ -343,7 +346,7 @@ int32_t popen_read(popen_ctx *ctx, char *output, size_t lens) {
     if (0 == nread) {
         return 0;
     }
-    if (!ReadFile(ctx->pipe[1], output, (DWORD)lens, &nread, NULL)){
+    if (!ReadFile(ctx->pipe[1], output, (DWORD)lens, &nread, NULL)) {
         return ERR_FAILED;
     }
     return (int32_t)nread;

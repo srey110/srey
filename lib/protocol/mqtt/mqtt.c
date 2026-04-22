@@ -1,4 +1,4 @@
-#include "protocol/mqtt/mqtt.h"
+ï»¿#include "protocol/mqtt/mqtt.h"
 #include "protocol/prots.h"
 #include "utils/utils.h"
 
@@ -175,11 +175,11 @@ static mqtt_propertie *_mqtt_data_kv(buffer_ctx *buf, size_t *off) {
     propt->slens = num;
     return propt;
 }
-//ÊôĞÔ½âÎö
+//å±æ€§è§£æ
 static arr_propertie_ctx *_mqtt_properties(buffer_ctx *buf, int32_t *status, int32_t *total) {
     int32_t plens;
-    int32_t occupy = _mqtt_data_varnum(buf, &plens);//ÊôĞÔ³¤¶È
-    if (ERR_FAILED == occupy 
+    int32_t occupy = _mqtt_data_varnum(buf, &plens);//å±æ€§é•¿åº¦
+    if (ERR_FAILED == occupy
         || (size_t)plens > buffer_size(buf)) {
         BIT_SET(*status, PROT_ERROR);
         return NULL;
@@ -205,41 +205,41 @@ static arr_propertie_ctx *_mqtt_properties(buffer_ctx *buf, int32_t *status, int
         propt = NULL;
         flag = num;
         switch (flag) {
-        case PAYLOAD_FORMAT://0x01 ÔØºÉ¸ñÊ½ËµÃ÷	×Ö½Ú	PUBLISH, Will Properties
-        case REQPROBLEM_INFO://0x17 ÇëÇóÎÊÌâĞÅÏ¢	×Ö½Ú	CONNECT
-        case REQRESP_INFO://0x19 ÇëÇóÏìÓ¦ĞÅÏ¢	×Ö½Ú	CONNECT
-        case MAXIMUM_QOS://0x24 ×î´óQoS	×Ö½Ú	CONNACK
-        case RETAIN_AVAILABLE://0x25 ±£ÁôÊôĞÔ¿ÉÓÃĞÔ	×Ö½Ú	CONNACK
-        case WILDCARD_SUBSCRIPTION://0x28 Í¨Åä·û¶©ÔÄ¿ÉÓÃĞÔ	×Ö½Ú	CONNACK
-        case SUBSCRIPTIONID_AVAILABLE://0x29 ¶©ÔÄ±êÊ¶·û¿ÉÓÃĞÔ	×Ö½Ú	CONNACK
-        case SHARED_SUBSCRIPTION://0x2A ¹²Ïí¶©ÔÄ¿ÉÓÃĞÔ	×Ö½Ú	CONNACK
+        case PAYLOAD_FORMAT://0x01 è½½è·æ ¼å¼è¯´æ˜	å­—èŠ‚	PUBLISH, Will Properties
+        case REQPROBLEM_INFO://0x17 è¯·æ±‚é—®é¢˜ä¿¡æ¯	å­—èŠ‚	CONNECT
+        case REQRESP_INFO://0x19 è¯·æ±‚å“åº”ä¿¡æ¯	å­—èŠ‚	CONNECT
+        case MAXIMUM_QOS://0x24 æœ€å¤§QoS	å­—èŠ‚	CONNACK
+        case RETAIN_AVAILABLE://0x25 ä¿ç•™å±æ€§å¯ç”¨æ€§	å­—èŠ‚	CONNACK
+        case WILDCARD_SUBSCRIPTION://0x28 é€šé…ç¬¦è®¢é˜…å¯ç”¨æ€§	å­—èŠ‚	CONNACK
+        case SUBSCRIPTIONID_AVAILABLE://0x29 è®¢é˜…æ ‡è¯†ç¬¦å¯ç”¨æ€§	å­—èŠ‚	CONNACK
+        case SHARED_SUBSCRIPTION://0x2A å…±äº«è®¢é˜…å¯ç”¨æ€§	å­—èŠ‚	CONNACK
             if (ERR_OK == _mqtt_data_fixnum(buf, 1, &num)) {
                 CALLOC(propt, 1, sizeof(mqtt_propertie));
                 propt->nval = num;
                 off++;
             }
             break;
-        case SERVER_KEEPALIVE://0x13 ·şÎñ¶Ë±£»îÊ±¼ä	Ë«×Ö½ÚÕûÊı	CONNACK
-        case RECEIVE_MAXIMUM://0x21 ½ÓÊÕ×î´óÊıÁ¿	Ë«×Ö½ÚÕûÊı	CONNECT, CONNACK
-        case TOPICALIAS_MAXIMUM://0x22 Ö÷Ìâ±ğÃû×î´ó³¤¶È	Ë«×Ö½ÚÕûÊı	CONNECT, CONNACK
-        case TOPIC_ALIAS://0x23 Ö÷Ìâ±ğÃû	Ë«×Ö½ÚÕûÊı	PUBLISH
+        case SERVER_KEEPALIVE://0x13 æœåŠ¡ç«¯ä¿æ´»æ—¶é—´	åŒå­—èŠ‚æ•´æ•°	CONNACK
+        case RECEIVE_MAXIMUM://0x21 æ¥æ”¶æœ€å¤§æ•°é‡	åŒå­—èŠ‚æ•´æ•°	CONNECT, CONNACK
+        case TOPICALIAS_MAXIMUM://0x22 ä¸»é¢˜åˆ«åæœ€å¤§é•¿åº¦	åŒå­—èŠ‚æ•´æ•°	CONNECT, CONNACK
+        case TOPIC_ALIAS://0x23 ä¸»é¢˜åˆ«å	åŒå­—èŠ‚æ•´æ•°	PUBLISH
             if (ERR_OK == _mqtt_data_fixnum(buf, 2, &num)) {
                 CALLOC(propt, 1, sizeof(mqtt_propertie));
                 propt->nval = num;
                 off += 2;
             }
             break;
-        case MSG_EXPIRY://0x02 ÏûÏ¢¹ıÆÚÊ±¼ä	ËÄ×Ö½ÚÕûÊı	PUBLISH, Will Properties
-        case SESSION_EXPIRY://0x11 »á»°¹ıÆÚ¼ä¸ô	ËÄ×Ö½ÚÕûÊı	CONNECT, CONNACK, DISCONNECT
-        case WILLDELAY_INTERVAL://0x18 ÒÅÖöÑÓÊ±¼ä¸ô	ËÄ×Ö½ÚÕûÊı	Will Properties
-        case MAXIMUM_PACKETSIZE://0x27 ×î´ó±¨ÎÄ³¤¶È	ËÄ×Ö½ÚÕûÊı	CONNECT, CONNACK
+        case MSG_EXPIRY://0x02 æ¶ˆæ¯è¿‡æœŸæ—¶é—´	å››å­—èŠ‚æ•´æ•°	PUBLISH, Will Properties
+        case SESSION_EXPIRY://0x11 ä¼šè¯è¿‡æœŸé—´éš”	å››å­—èŠ‚æ•´æ•°	CONNECT, CONNACK, DISCONNECT
+        case WILLDELAY_INTERVAL://0x18 é—å˜±å»¶æ—¶é—´éš”	å››å­—èŠ‚æ•´æ•°	Will Properties
+        case MAXIMUM_PACKETSIZE://0x27 æœ€å¤§æŠ¥æ–‡é•¿åº¦	å››å­—èŠ‚æ•´æ•°	CONNECT, CONNACK
             if (ERR_OK == _mqtt_data_fixnum(buf, 4, &num)) {
                 CALLOC(propt, 1, sizeof(mqtt_propertie));
                 propt->nval = num;
                 off += 4;
             }
             break;
-        case SUBSCRIPTION_ID://0x0B ¶¨Òå±êÊ¶·û	±ä³¤×Ö½ÚÕûÊı	PUBLISH, SUBSCRIBE
+        case SUBSCRIPTION_ID://0x0B å®šä¹‰æ ‡è¯†ç¬¦	å˜é•¿å­—èŠ‚æ•´æ•°	PUBLISH, SUBSCRIBE
             occupy = _mqtt_data_varnum(buf, &num);
             if (ERR_FAILED != occupy) {
                 CALLOC(propt, 1, sizeof(mqtt_propertie));
@@ -247,18 +247,18 @@ static arr_propertie_ctx *_mqtt_properties(buffer_ctx *buf, int32_t *status, int
                 off += occupy;
             }
             break;
-        case CORRELATION_DATA://0x09 Ïà¹ØÊı¾İ	¶ş½øÖÆÊı¾İ	PUBLISH, Will Properties
-        case AUTH_DATA://0x16 ÈÏÖ¤Êı¾İ	¶ş½øÖÆÊı¾İ	CONNECT, CONNACK, AUTH
-        case CONTENT_TYPE://0x03 ÄÚÈİÀàĞÍ	UTF-8±àÂë×Ö·û´®	PUBLISH, Will Properties
-        case RESP_TOPIC://0x08 ÏìÓ¦Ö÷Ìâ	UTF-8±àÂë×Ö·û´®	PUBLISH, Will Properties
-        case CLIENT_ID://0x12 ·ÖÅä¿Í»§±êÊ¶·û	UTF-8±àÂë×Ö·û´®	CONNACK
-        case AUTH_METHOD://0x15 ÈÏÖ¤·½·¨	UTF-8±àÂë×Ö·û´®	CONNECT, CONNACK, AUTH
-        case RESP_INFO://0x1A ÇëÇóĞÅÏ¢	UTF-8±àÂë×Ö·û´®	CONNACK
-        case SERVER_REFERENCE://0x1C ·şÎñ¶Ë²Î¿¼	UTF-8±àÂë×Ö·û´®	CONNACK, DISCONNECT
-        case REASON_STR://0x1F Ô­Òò×Ö·û´®	UTF-8±àÂë×Ö·û´®	CONNACK, PUBACK, PUBREC, PUBREL, PUBCOMP, SUBACK, UNSUBACK, DISCONNECT, AUTH
+        case CORRELATION_DATA://0x09 ç›¸å…³æ•°æ®	äºŒè¿›åˆ¶æ•°æ®	PUBLISH, Will Properties
+        case AUTH_DATA://0x16 è®¤è¯æ•°æ®	äºŒè¿›åˆ¶æ•°æ®	CONNECT, CONNACK, AUTH
+        case CONTENT_TYPE://0x03 å†…å®¹ç±»å‹	UTF-8ç¼–ç å­—ç¬¦ä¸²	PUBLISH, Will Properties
+        case RESP_TOPIC://0x08 å“åº”ä¸»é¢˜	UTF-8ç¼–ç å­—ç¬¦ä¸²	PUBLISH, Will Properties
+        case CLIENT_ID://0x12 åˆ†é…å®¢æˆ·æ ‡è¯†ç¬¦	UTF-8ç¼–ç å­—ç¬¦ä¸²	CONNACK
+        case AUTH_METHOD://0x15 è®¤è¯æ–¹æ³•	UTF-8ç¼–ç å­—ç¬¦ä¸²	CONNECT, CONNACK, AUTH
+        case RESP_INFO://0x1A è¯·æ±‚ä¿¡æ¯	UTF-8ç¼–ç å­—ç¬¦ä¸²	CONNACK
+        case SERVER_REFERENCE://0x1C æœåŠ¡ç«¯å‚è€ƒ	UTF-8ç¼–ç å­—ç¬¦ä¸²	CONNACK, DISCONNECT
+        case REASON_STR://0x1F åŸå› å­—ç¬¦ä¸²	UTF-8ç¼–ç å­—ç¬¦ä¸²	CONNACK, PUBACK, PUBREC, PUBREL, PUBCOMP, SUBACK, UNSUBACK, DISCONNECT, AUTH
             propt = _mqtt_data_string(buf, &off);
             break;
-        case USER_PROPERTY://0x26 ÓÃ»§ÊôĞÔ	UTF-8×Ö·û´®¶Ô	CONNECT, CONNACK, PUBLISH, Will Properties, PUBACK, PUBREC, PUBREL, PUBCOMP, SUBSCRIBE, SUBACK, UNSUBSCRIBE, UNSUBACK, DISCONNECT, AUTH
+        case USER_PROPERTY://0x26 ç”¨æˆ·å±æ€§	UTF-8å­—ç¬¦ä¸²å¯¹	CONNECT, CONNACK, PUBLISH, Will Properties, PUBACK, PUBREC, PUBREL, PUBCOMP, SUBSCRIBE, SUBACK, UNSUBSCRIBE, UNSUBACK, DISCONNECT, AUTH
             propt = _mqtt_data_kv(buf, &off);
             break;
         }
@@ -279,20 +279,20 @@ static arr_propertie_ctx *_mqtt_properties(buffer_ctx *buf, int32_t *status, int
 }
 static int32_t _mqtt_check_prot(buffer_ctx *buf) {
     int32_t num;
-    if (ERR_OK != _mqtt_data_fixnum(buf, 2, &num)) {//Ğ­ÒéÃû³¤¶È
+    if (ERR_OK != _mqtt_data_fixnum(buf, 2, &num)) {//åè®®åé•¿åº¦
         return ERR_FAILED;
     }
     if (4 != num) {
         return ERR_FAILED;
     }
     char tmp[4];
-    if (num != buffer_remove(buf, tmp, num)) {//Ğ­ÒéÃû
+    if (num != buffer_remove(buf, tmp, num)) {//åè®®å
         return ERR_FAILED;
     }
     if (0 != _memicmp(tmp, "mqtt", num)) {
         return ERR_FAILED;
     }
-    if (1 != buffer_remove(buf, tmp, 1)) {//Ğ­Òé¼¶±ğ
+    if (1 != buffer_remove(buf, tmp, 1)) {//åè®®çº§åˆ«
         return ERR_FAILED;
     }
     if (MQTT_311 != tmp[0]
@@ -301,82 +301,82 @@ static int32_t _mqtt_check_prot(buffer_ctx *buf) {
     }
     return tmp[0];
 }
-//¿Í»§¶Ëµ½·şÎñ¶Ë  ¿Í»§¶ËÇëÇóÁ¬½Ó·şÎñ¶Ë
+//å®¢æˆ·ç«¯åˆ°æœåŠ¡ç«¯  å®¢æˆ·ç«¯è¯·æ±‚è¿æ¥æœåŠ¡ç«¯
 static int32_t _mqtt_connect(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
-    if (client 
+    if (client
         || 0 != pack->fixhead.flags) {
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
-    //¿É±ä±¨Í· Ğ­ÒéÃû£¨Protocol Name£©£¬Ğ­Òé¼¶±ğ£¨Protocol Level£©£¬Á¬½Ó±êÖ¾£¨Connect Flags£©£¬±£³ÖÁ¬½Ó£¨Keep Alive£©,
-    //ÊôĞÔ£¨Properties MQTT_50£©
+    //å¯å˜æŠ¥å¤´ åè®®åï¼ˆProtocol Nameï¼‰ï¼Œåè®®çº§åˆ«ï¼ˆProtocol Levelï¼‰ï¼Œè¿æ¥æ ‡å¿—ï¼ˆConnect Flagsï¼‰ï¼Œä¿æŒè¿æ¥ï¼ˆKeep Aliveï¼‰,
+    //å±æ€§ï¼ˆProperties MQTT_50ï¼‰
     mqtt_connect_varhead *vh;
     MALLOC(vh, sizeof(mqtt_connect_varhead));
     vh->properties = NULL;
     pack->varhead = vh;
     vh->version = _mqtt_check_prot(buf);
-    if (ERR_FAILED == vh->version) {//Ğ­ÒéÃû Ğ­Òé¼¶±ğ ¼ì²é
+    if (ERR_FAILED == vh->version) {//åè®®å åè®®çº§åˆ« æ£€æŸ¥
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
     pack->version = vh->version;
     int32_t num;
-    if (ERR_OK != _mqtt_data_fixnum(buf, 1, &num)) {//Á¬½Ó±êÖ¾
+    if (ERR_OK != _mqtt_data_fixnum(buf, 1, &num)) {//è¿æ¥æ ‡å¿—
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
-    if (0 != BIT_GETN(num, 0)) {//±£Áô±êÖ¾Î»
+    if (0 != BIT_GETN(num, 0)) {//ä¿ç•™æ ‡å¿—ä½
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
-    vh->cleanstart = BIT_GETN(num, 1);//ĞÂ¿ªÊ¼
-    vh->willflag = BIT_GETN(num, 2);//ÒÅÖö±êÖ¾
+    vh->cleanstart = BIT_GETN(num, 1);//æ–°å¼€å§‹
+    vh->willflag = BIT_GETN(num, 2);//é—å˜±æ ‡å¿—
     vh->willqos = BIT_GETN(num, 3);
-    vh->willqos |= (BIT_GETN(num, 4) << 1);//ÒÅÖö·şÎñÖÊÁ¿
-    vh->willretain = BIT_GETN(num, 5);//ÒÅÖö±£Áô±êÖ¾
-    if (0 == vh->willflag 
+    vh->willqos |= (BIT_GETN(num, 4) << 1);//é—å˜±æœåŠ¡è´¨é‡
+    vh->willretain = BIT_GETN(num, 5);//é—å˜±ä¿ç•™æ ‡å¿—
+    if (0 == vh->willflag
         && (0 != vh->willqos || 0 != vh->willretain)) {
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
-    vh->passwordflag = BIT_GETN(num, 6);//ÃÜÂë±êÖ¾
-    vh->userflag = BIT_GETN(num, 7);//ÓÃ»§Ãû±êÖ¾
-    if (ERR_OK != _mqtt_data_fixnum(buf, 2, &num)) {//±£³ÖÁ¬½Ó
+    vh->passwordflag = BIT_GETN(num, 6);//å¯†ç æ ‡å¿—
+    vh->userflag = BIT_GETN(num, 7);//ç”¨æˆ·åæ ‡å¿—
+    if (ERR_OK != _mqtt_data_fixnum(buf, 2, &num)) {//ä¿æŒè¿æ¥
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
     vh->keepalive = (uint16_t)num;
     if (vh->version >= MQTT_50) {
-        vh->properties = _mqtt_properties(buf, status, NULL);//ÊôĞÔ
+        vh->properties = _mqtt_properties(buf, status, NULL);//å±æ€§
         if (NULL == vh->properties
             && BIT_CHECK(*status, PROT_ERROR)) {
             return ERR_FAILED;
         }
     }
-    //ÔØºÉ ¿Í»§±êÊ¶·û£¨Client Identifier£©¡¢ÒÅÖöÊôĞÔ£¨Will Properties MQTT_50£©¡¢ÒÅÖöÖ÷Ìâ£¨Will Topic£©¡¢ÒÅÖöÔØºÉ£¨Will Payload£©¡¢
-    //ÓÃ»§Ãû£¨User Name£©¡¢ÃÜÂë£¨Password£©
+    //è½½è· å®¢æˆ·æ ‡è¯†ç¬¦ï¼ˆClient Identifierï¼‰ã€é—å˜±å±æ€§ï¼ˆWill Properties MQTT_50ï¼‰ã€é—å˜±ä¸»é¢˜ï¼ˆWill Topicï¼‰ã€é—å˜±è½½è·ï¼ˆWill Payloadï¼‰ã€
+    //ç”¨æˆ·åï¼ˆUser Nameï¼‰ã€å¯†ç ï¼ˆPasswordï¼‰
     mqtt_connect_payload *pl;
     CALLOC(pl, 1, sizeof(mqtt_connect_payload));
     pack->payload = pl;
-    pl->clientid = _mqtt_data_string2(buf, &num);//¿Í»§±êÊ¶·û
+    pl->clientid = _mqtt_data_string2(buf, &num);//å®¢æˆ·æ ‡è¯†ç¬¦
     if (NULL == pl->clientid) {
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
     if (vh->willflag) {
         if (vh->version >= MQTT_50) {
-            pl->properties = _mqtt_properties(buf, status, NULL);//ÊôĞÔ
+            pl->properties = _mqtt_properties(buf, status, NULL);//å±æ€§
             if (NULL == pl->properties
                 && BIT_CHECK(*status, PROT_ERROR)) {
                 return ERR_FAILED;
             }
         }
-        pl->willtopic = _mqtt_data_string2(buf, &num);//ÒÅÖöÖ÷Ìâ
+        pl->willtopic = _mqtt_data_string2(buf, &num);//é—å˜±ä¸»é¢˜
         if (NULL == pl->willtopic) {
             BIT_SET(*status, PROT_ERROR);
             return ERR_FAILED;
         }
-        pl->willpayload = _mqtt_data_string2(buf, &num);//ÒÅÖöÔØºÉ
+        pl->willpayload = _mqtt_data_string2(buf, &num);//é—å˜±è½½è·
         if (NULL == pl->willpayload) {
             BIT_SET(*status, PROT_ERROR);
             return ERR_FAILED;
@@ -405,35 +405,35 @@ static int32_t _mqtt_connect(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *bu
     ud->status = COMMAND;
     return ERR_OK;
 }
-//·şÎñ¶Ëµ½¿Í»§¶Ë  Á¬½Ó±¨ÎÄÈ·ÈÏ
+//æœåŠ¡ç«¯åˆ°å®¢æˆ·ç«¯  è¿æ¥æŠ¥æ–‡ç¡®è®¤
 static int32_t _mqtt_connack(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
-    if (!client 
+    if (!client
         || 0 != pack->fixhead.flags) {
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
-    //¿É±ä±¨Í· Á¬½ÓÈ·ÈÏ±êÖ¾£¨Connect Acknowledge Flags£©£¬Á¬½ÓÔ­ÒòÂë£¨Reason Code£©£¬ÊôĞÔ£¨Properties MQTT_50£©
+    //å¯å˜æŠ¥å¤´ è¿æ¥ç¡®è®¤æ ‡å¿—ï¼ˆConnect Acknowledge Flagsï¼‰ï¼Œè¿æ¥åŸå› ç ï¼ˆReason Codeï¼‰ï¼Œå±æ€§ï¼ˆProperties MQTT_50ï¼‰
     int32_t num;
-    if (ERR_OK != _mqtt_data_fixnum(buf, 1, &num)) {//Á¬½ÓÈ·ÈÏ±êÖ¾
+    if (ERR_OK != _mqtt_data_fixnum(buf, 1, &num)) {//è¿æ¥ç¡®è®¤æ ‡å¿—
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
-    if (0 != (num >> 1)) {//Î»7-1ÊÇ±£ÁôÎ»ÇÒ±ØĞëÉèÖÃÎª0
+    if (0 != (num >> 1)) {//ä½7-1æ˜¯ä¿ç•™ä½ä¸”å¿…é¡»è®¾ç½®ä¸º0
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
     mqtt_connack_varhead *vh;
     CALLOC(vh, 1, sizeof(mqtt_connack_varhead));
     pack->varhead = vh;
-    vh->sesspresent = BIT_GETN(num, 0);//»á»°´æÔÚ
-    if (ERR_OK != _mqtt_data_fixnum(buf, 1, &num)) {//Á¬½ÓÔ­ÒòÂë
+    vh->sesspresent = BIT_GETN(num, 0);//ä¼šè¯å­˜åœ¨
+    if (ERR_OK != _mqtt_data_fixnum(buf, 1, &num)) {//è¿æ¥åŸå› ç 
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
     vh->reason = (uint8_t)num;
     pack->version = ((mqtt_ctx *)ud->context)->version;
     if (pack->version >= MQTT_50) {
-        vh->properties = _mqtt_properties(buf, status, NULL);//ÊôĞÔ
+        vh->properties = _mqtt_properties(buf, status, NULL);//å±æ€§
         if (NULL == vh->properties
             && BIT_CHECK(*status, PROT_ERROR)) {
             return ERR_FAILED;
@@ -444,28 +444,28 @@ static int32_t _mqtt_connack(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *bu
     }
     return ERR_OK;
 }
-//Á½¸ö·½Ïò¶¼ÔÊĞí  ·¢²¼ÏûÏ¢
+//ä¸¤ä¸ªæ–¹å‘éƒ½å…è®¸  å‘å¸ƒæ¶ˆæ¯
 static int32_t _mqtt_publish(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
-    //¿É±ä±¨Í· Ö÷ÌâÃû£¨Topic Name£©£¬±¨ÎÄ±êÊ¶·û£¨Packet Identifier£©£¬ÊôĞÔ£¨Properties MQTT_50£©
+    //å¯å˜æŠ¥å¤´ ä¸»é¢˜åï¼ˆTopic Nameï¼‰ï¼ŒæŠ¥æ–‡æ ‡è¯†ç¬¦ï¼ˆPacket Identifierï¼‰ï¼Œå±æ€§ï¼ˆProperties MQTT_50ï¼‰
     int32_t num;
-    char *topic = _mqtt_data_string2(buf, &num);//Ö÷ÌâÃû
+    char *topic = _mqtt_data_string2(buf, &num);//ä¸»é¢˜å
     if (NULL == topic) {
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
-    int32_t off = (2 + num);//Ö÷ÌâÃû(2 + Ö÷ÌâÃû³¤¶È)
+    int32_t off = (2 + num);//ä¸»é¢˜å(2 + ä¸»é¢˜åé•¿åº¦)
     mqtt_publish_varhead *vh;
     CALLOC(vh, 1, sizeof(mqtt_publish_varhead));
     pack->varhead = vh;
     vh->topic = topic;
-    //½âÎö¹Ì¶¨±¨Í·±êÖ¾
+    //è§£æå›ºå®šæŠ¥å¤´æ ‡å¿—
     vh->retain = BIT_GETN(pack->fixhead.flags, 0);
     vh->qos = BIT_GETN(pack->fixhead.flags, 1);
     vh->qos |= (BIT_GETN(pack->fixhead.flags, 2) << 1);
     vh->dup = BIT_GETN(pack->fixhead.flags, 3);
-    if (1 == vh->qos 
-        || 2 == vh->qos) {//Ö»ÓĞµ±QoSµÈ¼¶ÊÇ1»ò2Ê±£¬±¨ÎÄ±êÊ¶·û×Ö¶Î²ÅÄÜ³öÏÖÔÚ±¨ÎÄÖĞ
-        if (ERR_OK != _mqtt_data_fixnum(buf, 2, &num)) {//±¨ÎÄ±êÊ¶·û
+    if (1 == vh->qos
+        || 2 == vh->qos) {//åªæœ‰å½“QoSç­‰çº§æ˜¯1æˆ–2æ—¶ï¼ŒæŠ¥æ–‡æ ‡è¯†ç¬¦å­—æ®µæ‰èƒ½å‡ºç°åœ¨æŠ¥æ–‡ä¸­
+        if (ERR_OK != _mqtt_data_fixnum(buf, 2, &num)) {//æŠ¥æ–‡æ ‡è¯†ç¬¦
             BIT_SET(*status, PROT_ERROR);
             return ERR_FAILED;
         }
@@ -474,14 +474,14 @@ static int32_t _mqtt_publish(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, i
     }
     pack->version = ((mqtt_ctx *)ud->context)->version;
     if (pack->version >= MQTT_50) {
-        vh->properties = _mqtt_properties(buf, status, &num);//ÊôĞÔ
+        vh->properties = _mqtt_properties(buf, status, &num);//å±æ€§
         if (NULL == vh->properties
             && BIT_CHECK(*status, PROT_ERROR)) {
             return ERR_FAILED;
         }
         off += num;
     }
-    //ÔØºÉ
+    //è½½è·
     int32_t remain = (int32_t)pack->fixhead.remaining_lens - off;
     if (remain < 0) {
         BIT_SET(*status, PROT_ERROR);
@@ -499,15 +499,15 @@ static int32_t _mqtt_publish(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, i
     }
     return ERR_OK;
 }
-//Á½¸ö·½Ïò¶¼ÔÊĞí  QoS 1ÏûÏ¢·¢²¼ÊÕµ½È·ÈÏ
+//ä¸¤ä¸ªæ–¹å‘éƒ½å…è®¸  QoS 1æ¶ˆæ¯å‘å¸ƒæ”¶åˆ°ç¡®è®¤
 static int32_t _mqtt_puback(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     if (0 != pack->fixhead.flags) {
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
-    //¿É±ä±¨Í· ±¨ÎÄ±êÊ¶·û£¬[Ô­ÒòÂë(MQTT_50)£¬ÊôĞÔ(MQTT_50)]
+    //å¯å˜æŠ¥å¤´ æŠ¥æ–‡æ ‡è¯†ç¬¦ï¼Œ[åŸå› ç (MQTT_50)ï¼Œå±æ€§(MQTT_50)]
     int32_t num;
-    if (ERR_OK != _mqtt_data_fixnum(buf, 2, &num)) {//±¨ÎÄ±êÊ¶·û
+    if (ERR_OK != _mqtt_data_fixnum(buf, 2, &num)) {//æŠ¥æ–‡æ ‡è¯†ç¬¦
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
@@ -517,18 +517,18 @@ static int32_t _mqtt_puback(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, in
     vh->packid = (int16_t)num;
     pack->version = ((mqtt_ctx *)ud->context)->version;
     if (pack->version < MQTT_50
-        || 2 == pack->fixhead.remaining_lens) {//Ê£Óà³¤¶ÈÎª2£¬Ôò±íÊ¾Ê¹ÓÃÔ­ÒòÂë0x00£¨³É¹¦£©
+        || 2 == pack->fixhead.remaining_lens) {//å‰©ä½™é•¿åº¦ä¸º2ï¼Œåˆ™è¡¨ç¤ºä½¿ç”¨åŸå› ç 0x00ï¼ˆæˆåŠŸï¼‰
         return ERR_OK;
     }
     if (pack->fixhead.remaining_lens >= 3) {
-        if (ERR_OK != _mqtt_data_fixnum(buf, 1, &num)) {//Ô­ÒòÂë
+        if (ERR_OK != _mqtt_data_fixnum(buf, 1, &num)) {//åŸå› ç 
             BIT_SET(*status, PROT_ERROR);
             return ERR_FAILED;
         }
         vh->reason = (uint8_t)num;
     }
     if (pack->fixhead.remaining_lens >= 4) {
-        vh->properties = _mqtt_properties(buf, status, NULL);//ÊôĞÔ
+        vh->properties = _mqtt_properties(buf, status, NULL);//å±æ€§
         if (NULL == vh->properties
             && BIT_CHECK(*status, PROT_ERROR)) {
             return ERR_FAILED;
@@ -536,15 +536,15 @@ static int32_t _mqtt_puback(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, in
     }
     return ERR_OK;
 }
-//Á½¸ö·½Ïò¶¼ÔÊĞí  ·¢²¼ÊÕµ½£¨±£Ö¤½»¸¶µÚÒ»²½£©
+//ä¸¤ä¸ªæ–¹å‘éƒ½å…è®¸  å‘å¸ƒæ”¶åˆ°ï¼ˆä¿è¯äº¤ä»˜ç¬¬ä¸€æ­¥ï¼‰
 static int32_t _mqtt_pubrec(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     if (0 != pack->fixhead.flags) {
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
-    //¿É±ä±¨Í· ±¨ÎÄ±êÊ¶·û£¬[Ô­ÒòÂë(MQTT_50)£¬ÊôĞÔ(MQTT_50)]
+    //å¯å˜æŠ¥å¤´ æŠ¥æ–‡æ ‡è¯†ç¬¦ï¼Œ[åŸå› ç (MQTT_50)ï¼Œå±æ€§(MQTT_50)]
     int32_t num;
-    if (ERR_OK != _mqtt_data_fixnum(buf, 2, &num)) {//±¨ÎÄ±êÊ¶·û
+    if (ERR_OK != _mqtt_data_fixnum(buf, 2, &num)) {//æŠ¥æ–‡æ ‡è¯†ç¬¦
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
@@ -554,18 +554,18 @@ static int32_t _mqtt_pubrec(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, in
     vh->packid = (int16_t)num;
     pack->version = ((mqtt_ctx *)ud->context)->version;
     if (pack->version < MQTT_50
-        || 2 == pack->fixhead.remaining_lens) {//Ê£Óà³¤¶ÈÎª2£¬Ôò±íÊ¾Ê¹ÓÃÔ­ÒòÂë0x00£¨³É¹¦
+        || 2 == pack->fixhead.remaining_lens) {//å‰©ä½™é•¿åº¦ä¸º2ï¼Œåˆ™è¡¨ç¤ºä½¿ç”¨åŸå› ç 0x00ï¼ˆæˆåŠŸ
         return ERR_OK;
     }
     if (pack->fixhead.remaining_lens >= 3) {
-        if (ERR_OK != _mqtt_data_fixnum(buf, 1, &num)) {//Ô­ÒòÂë
+        if (ERR_OK != _mqtt_data_fixnum(buf, 1, &num)) {//åŸå› ç 
             BIT_SET(*status, PROT_ERROR);
             return ERR_FAILED;
         }
         vh->reason = (uint8_t)num;
     }
     if (pack->fixhead.remaining_lens >= 4) {
-        vh->properties = _mqtt_properties(buf, status, NULL);//ÊôĞÔ
+        vh->properties = _mqtt_properties(buf, status, NULL);//å±æ€§
         if (NULL == vh->properties
             && BIT_CHECK(*status, PROT_ERROR)) {
             return ERR_FAILED;
@@ -573,15 +573,15 @@ static int32_t _mqtt_pubrec(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, in
     }
     return ERR_OK;
 }
-//Á½¸ö·½Ïò¶¼ÔÊĞí  ·¢²¼ÊÍ·Å£¨±£Ö¤½»¸¶µÚ¶ş²½£©
+//ä¸¤ä¸ªæ–¹å‘éƒ½å…è®¸  å‘å¸ƒé‡Šæ”¾ï¼ˆä¿è¯äº¤ä»˜ç¬¬äºŒæ­¥ï¼‰
 static int32_t _mqtt_pubrel(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
-    if (0x02 != pack->fixhead.flags) {//3£¬2£¬1£¬0Î»ÊÇ±£ÁôÎ»ÇÒ±ØĞë·Ö±ğÉèÖÃÎª0£¬0£¬1£¬0
+    if (0x02 != pack->fixhead.flags) {//3ï¼Œ2ï¼Œ1ï¼Œ0ä½æ˜¯ä¿ç•™ä½ä¸”å¿…é¡»åˆ†åˆ«è®¾ç½®ä¸º0ï¼Œ0ï¼Œ1ï¼Œ0
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
-    //¿É±ä±¨Í· ±¨ÎÄ±êÊ¶·û£¬[Ô­ÒòÂë(MQTT_50)£¬ÊôĞÔ(MQTT_50)]
+    //å¯å˜æŠ¥å¤´ æŠ¥æ–‡æ ‡è¯†ç¬¦ï¼Œ[åŸå› ç (MQTT_50)ï¼Œå±æ€§(MQTT_50)]
     int32_t num;
-    if (ERR_OK != _mqtt_data_fixnum(buf, 2, &num)) {//±¨ÎÄ±êÊ¶·û
+    if (ERR_OK != _mqtt_data_fixnum(buf, 2, &num)) {//æŠ¥æ–‡æ ‡è¯†ç¬¦
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
@@ -591,18 +591,18 @@ static int32_t _mqtt_pubrel(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, in
     vh->packid = (int16_t)num;
     pack->version = ((mqtt_ctx *)ud->context)->version;
     if (pack->version < MQTT_50
-        || 2 == pack->fixhead.remaining_lens) {//Ê£Óà³¤¶ÈÎª2£¬Ôò±íÊ¾Ê¹ÓÃÔ­ÒòÂë0x00 £¨³É¹¦£©
+        || 2 == pack->fixhead.remaining_lens) {//å‰©ä½™é•¿åº¦ä¸º2ï¼Œåˆ™è¡¨ç¤ºä½¿ç”¨åŸå› ç 0x00 ï¼ˆæˆåŠŸï¼‰
         return ERR_OK;
     }
     if (pack->fixhead.remaining_lens >= 3) {
-        if (ERR_OK != _mqtt_data_fixnum(buf, 1, &num)) {//Ô­ÒòÂë
+        if (ERR_OK != _mqtt_data_fixnum(buf, 1, &num)) {//åŸå› ç 
             BIT_SET(*status, PROT_ERROR);
             return ERR_FAILED;
         }
         vh->reason = (uint8_t)num;
     }
     if (pack->fixhead.remaining_lens >= 4) {
-        vh->properties = _mqtt_properties(buf, status, NULL);//ÊôĞÔ
+        vh->properties = _mqtt_properties(buf, status, NULL);//å±æ€§
         if (NULL == vh->properties
             && BIT_CHECK(*status, PROT_ERROR)) {
             return ERR_FAILED;
@@ -610,15 +610,15 @@ static int32_t _mqtt_pubrel(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, in
     }
     return ERR_OK;
 }
-//Á½¸ö·½Ïò¶¼ÔÊĞí  QoS 2ÏûÏ¢·¢²¼Íê³É£¨±£Ö¤½»»¥µÚÈı²½£©
+//ä¸¤ä¸ªæ–¹å‘éƒ½å…è®¸  QoS 2æ¶ˆæ¯å‘å¸ƒå®Œæˆï¼ˆä¿è¯äº¤äº’ç¬¬ä¸‰æ­¥ï¼‰
 static int32_t _mqtt_pubcomp(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     if (0 != pack->fixhead.flags) {
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
-    //¿É±ä±¨Í· ±¨ÎÄ±êÊ¶·û£¬[Ô­ÒòÂë(MQTT_50)£¬ÊôĞÔ(MQTT_50)]
+    //å¯å˜æŠ¥å¤´ æŠ¥æ–‡æ ‡è¯†ç¬¦ï¼Œ[åŸå› ç (MQTT_50)ï¼Œå±æ€§(MQTT_50)]
     int32_t num;
-    if (ERR_OK != _mqtt_data_fixnum(buf, 2, &num)) {//±¨ÎÄ±êÊ¶·û
+    if (ERR_OK != _mqtt_data_fixnum(buf, 2, &num)) {//æŠ¥æ–‡æ ‡è¯†ç¬¦
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
@@ -628,18 +628,18 @@ static int32_t _mqtt_pubcomp(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, i
     vh->packid = (int16_t)num;
     pack->version = ((mqtt_ctx *)ud->context)->version;
     if (pack->version < MQTT_50
-        || 2 == pack->fixhead.remaining_lens) {//Ê£Óà³¤¶ÈÎª2£¬Ôò±íÊ¾Ê¹ÓÃÔ­ÒòÂë0x00£¨³É¹¦£©
+        || 2 == pack->fixhead.remaining_lens) {//å‰©ä½™é•¿åº¦ä¸º2ï¼Œåˆ™è¡¨ç¤ºä½¿ç”¨åŸå› ç 0x00ï¼ˆæˆåŠŸï¼‰
         return ERR_OK;
     }
     if (pack->fixhead.remaining_lens >= 3) {
-        if (ERR_OK != _mqtt_data_fixnum(buf, 1, &num)) {//Ô­ÒòÂë
+        if (ERR_OK != _mqtt_data_fixnum(buf, 1, &num)) {//åŸå› ç 
             BIT_SET(*status, PROT_ERROR);
             return ERR_FAILED;
         }
         vh->reason = (uint8_t)num;
     }
     if (pack->fixhead.remaining_lens >= 4) {
-        vh->properties = _mqtt_properties(buf, status, NULL);//ÊôĞÔ
+        vh->properties = _mqtt_properties(buf, status, NULL);//å±æ€§
         if (NULL == vh->properties
             && BIT_CHECK(*status, PROT_ERROR)) {
             return ERR_FAILED;
@@ -647,16 +647,16 @@ static int32_t _mqtt_pubcomp(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, i
     }
     return ERR_OK;
 }
-//¿Í»§¶Ëµ½·şÎñ¶Ë  ¿Í»§¶Ë¶©ÔÄÇëÇó
+//å®¢æˆ·ç«¯åˆ°æœåŠ¡ç«¯  å®¢æˆ·ç«¯è®¢é˜…è¯·æ±‚
 static int32_t _mqtt_subscribe(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
-    if (client 
+    if (client
         || 0x02 != pack->fixhead.flags) {
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
-    //¿É±ä±¨Í· ±¨ÎÄ±êÊ¶·û£¬ÊôĞÔ(MQTT_50)
+    //å¯å˜æŠ¥å¤´ æŠ¥æ–‡æ ‡è¯†ç¬¦ï¼Œå±æ€§(MQTT_50)
     int32_t num;
-    if (ERR_OK != _mqtt_data_fixnum(buf, 2, &num)) {//±¨ÎÄ±êÊ¶·û
+    if (ERR_OK != _mqtt_data_fixnum(buf, 2, &num)) {//æŠ¥æ–‡æ ‡è¯†ç¬¦
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
@@ -667,16 +667,16 @@ static int32_t _mqtt_subscribe(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *
     num = 0;
     pack->version = ((mqtt_ctx *)ud->context)->version;
     if (pack->version >= MQTT_50) {
-        vh->properties = _mqtt_properties(buf, status, &num);//ÊôĞÔ
+        vh->properties = _mqtt_properties(buf, status, &num);//å±æ€§
         if (NULL == vh->properties
             && BIT_CHECK(*status, PROT_ERROR)) {
             return ERR_FAILED;
         }
     }
-    //ÔØºÉ
+    //è½½è·
     char *topic;
     int32_t off;
-    int32_t remain = (int32_t)pack->fixhead.remaining_lens - 2 - num;//Ê£Óà³¤¶È
+    int32_t remain = (int32_t)pack->fixhead.remaining_lens - 2 - num;//å‰©ä½™é•¿åº¦
     if (remain <= 0) {
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
@@ -687,13 +687,13 @@ static int32_t _mqtt_subscribe(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *
     pack->payload = pl;
     arr_subscribe_option_init(&pl->subop, 0);
     for (off = 0; off < remain;) {
-        topic = _mqtt_data_string2(buf, &num);//Ö÷Ìâ
+        topic = _mqtt_data_string2(buf, &num);//ä¸»é¢˜
         if (NULL == topic) {
             BIT_SET(*status, PROT_ERROR);
             return ERR_FAILED;
         }
         off += (2 + num);
-        if (ERR_OK != _mqtt_data_fixnum(buf, 1, &num)) {//¶©ÔÄÑ¡Ïî
+        if (ERR_OK != _mqtt_data_fixnum(buf, 1, &num)) {//è®¢é˜…é€‰é¡¹
             BIT_SET(*status, PROT_ERROR);
             FREE(topic);
             return ERR_FAILED;
@@ -701,7 +701,7 @@ static int32_t _mqtt_subscribe(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *
         off++;
         MALLOC(subop, sizeof(subscribe_option));
         subop->topic = topic;
-        subop->qos = BIT_GETN(num, 0);//¶©ÔÄÑ¡Ïî ½âÎö
+        subop->qos = BIT_GETN(num, 0);//è®¢é˜…é€‰é¡¹ è§£æ
         subop->qos |= (BIT_GETN(num, 1) << 1);
         if (pack->version >= MQTT_50) {
             subop->nl = BIT_GETN(num, 2);
@@ -717,15 +717,15 @@ static int32_t _mqtt_subscribe(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *
     }
     return ERR_OK;
 }
-//·şÎñ¶Ëµ½¿Í»§¶Ë  ¶©ÔÄÇëÇó±¨ÎÄÈ·ÈÏ
+//æœåŠ¡ç«¯åˆ°å®¢æˆ·ç«¯  è®¢é˜…è¯·æ±‚æŠ¥æ–‡ç¡®è®¤
 static int32_t _mqtt_suback(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     if (!client || 0 != pack->fixhead.flags) {
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
-    //¿É±ä±¨Í· ±¨ÎÄ±êÊ¶·û£¬ÊôĞÔ(MQTT_50)
+    //å¯å˜æŠ¥å¤´ æŠ¥æ–‡æ ‡è¯†ç¬¦ï¼Œå±æ€§(MQTT_50)
     int32_t num;
-    if (ERR_OK != _mqtt_data_fixnum(buf, 2, &num)) {//±¨ÎÄ±êÊ¶·û
+    if (ERR_OK != _mqtt_data_fixnum(buf, 2, &num)) {//æŠ¥æ–‡æ ‡è¯†ç¬¦
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
@@ -736,14 +736,14 @@ static int32_t _mqtt_suback(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf
     num = 0;
     pack->version = ((mqtt_ctx *)ud->context)->version;
     if (pack->version >= MQTT_50) {
-        vh->properties = _mqtt_properties(buf, status, &num);//ÊôĞÔ
+        vh->properties = _mqtt_properties(buf, status, &num);//å±æ€§
         if (NULL == vh->properties
             && BIT_CHECK(*status, PROT_ERROR)) {
             return ERR_FAILED;
         }
     }
-    //ÔØºÉ
-    num = (int32_t)pack->fixhead.remaining_lens - 2 - num;//¼ÆËãÊ£Óà³¤¶È
+    //è½½è·
+    num = (int32_t)pack->fixhead.remaining_lens - 2 - num;//è®¡ç®—å‰©ä½™é•¿åº¦
     if (num <= 0) {
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
@@ -752,22 +752,22 @@ static int32_t _mqtt_suback(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf
     CALLOC(pl, 1, sizeof(mqtt_suback_payload) + num);
     pack->payload = pl;
     pl->rlens = num;
-    if (num != buffer_remove(buf, pl->reasons, num)) {//Ô­ÒòÂëÁĞ±í
+    if (num != buffer_remove(buf, pl->reasons, num)) {//åŸå› ç åˆ—è¡¨
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
     return ERR_OK;
 }
-//¿Í»§¶Ëµ½·şÎñ¶Ë  ¿Í»§¶ËÈ¡Ïû¶©ÔÄÇëÇó
+//å®¢æˆ·ç«¯åˆ°æœåŠ¡ç«¯  å®¢æˆ·ç«¯å–æ¶ˆè®¢é˜…è¯·æ±‚
 static int32_t _mqtt_unsubscribe(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
-    if (client 
+    if (client
         || 0x02 != pack->fixhead.flags) {
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
-    //¿É±ä±¨Í· ±¨ÎÄ±êÊ¶·û£¬ÊôĞÔ(MQTT_50)
+    //å¯å˜æŠ¥å¤´ æŠ¥æ–‡æ ‡è¯†ç¬¦ï¼Œå±æ€§(MQTT_50)
     int32_t num;
-    if (ERR_OK != _mqtt_data_fixnum(buf, 2, &num)) {//±¨ÎÄ±êÊ¶·û
+    if (ERR_OK != _mqtt_data_fixnum(buf, 2, &num)) {//æŠ¥æ–‡æ ‡è¯†ç¬¦
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
@@ -778,16 +778,16 @@ static int32_t _mqtt_unsubscribe(mqtt_pack_ctx *pack, int32_t client, buffer_ctx
     num = 0;
     pack->version = ((mqtt_ctx *)ud->context)->version;
     if (pack->version >= MQTT_50) {
-        vh->properties = _mqtt_properties(buf, status, &num);//ÊôĞÔ
+        vh->properties = _mqtt_properties(buf, status, &num);//å±æ€§
         if (NULL == vh->properties
             && BIT_CHECK(*status, PROT_ERROR)) {
             return ERR_FAILED;
         }
     }
-    //ÔØºÉ
+    //è½½è·
     char *topic;
     int32_t off;
-    int32_t remain = (int32_t)pack->fixhead.remaining_lens - 2 - num;//Ê£Óà³¤¶È
+    int32_t remain = (int32_t)pack->fixhead.remaining_lens - 2 - num;//å‰©ä½™é•¿åº¦
     if (remain <= 0) {
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
@@ -797,7 +797,7 @@ static int32_t _mqtt_unsubscribe(mqtt_pack_ctx *pack, int32_t client, buffer_ctx
     pack->payload = pl;
     arr_ptr_init(&pl->topics, 0);
     for (off = 0; off < remain;) {
-        topic = _mqtt_data_string2(buf, &num);//Ö÷Ìâ
+        topic = _mqtt_data_string2(buf, &num);//ä¸»é¢˜
         if (NULL == topic) {
             BIT_SET(*status, PROT_ERROR);
             return ERR_FAILED;
@@ -811,16 +811,16 @@ static int32_t _mqtt_unsubscribe(mqtt_pack_ctx *pack, int32_t client, buffer_ctx
     }
     return ERR_OK;
 }
-//·şÎñ¶Ëµ½¿Í»§¶Ë  È¡Ïû¶©ÔÄÈ·ÈÏ
+//æœåŠ¡ç«¯åˆ°å®¢æˆ·ç«¯  å–æ¶ˆè®¢é˜…ç¡®è®¤
 static int32_t _mqtt_unsuback(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
-    if (!client 
+    if (!client
         || 0 != pack->fixhead.flags) {
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
-    //¿É±ä±¨Í· ±¨ÎÄ±êÊ¶·û£¬ÊôĞÔ(MQTT_50)
+    //å¯å˜æŠ¥å¤´ æŠ¥æ–‡æ ‡è¯†ç¬¦ï¼Œå±æ€§(MQTT_50)
     int32_t num;
-    if (ERR_OK != _mqtt_data_fixnum(buf, 2, &num)) {//±¨ÎÄ±êÊ¶·û
+    if (ERR_OK != _mqtt_data_fixnum(buf, 2, &num)) {//æŠ¥æ–‡æ ‡è¯†ç¬¦
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
@@ -832,13 +832,13 @@ static int32_t _mqtt_unsuback(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *b
     if (pack->version < MQTT_50) {
         return ERR_OK;
     }
-    vh->properties = _mqtt_properties(buf, status, &num);//ÊôĞÔ
+    vh->properties = _mqtt_properties(buf, status, &num);//å±æ€§
     if (NULL == vh->properties
         && BIT_CHECK(*status, PROT_ERROR)) {
         return ERR_FAILED;
     }
-    //ÔØºÉ
-    num = (int32_t)pack->fixhead.remaining_lens - 2 - num;//¼ÆËãÊ£Óà³¤¶È
+    //è½½è·
+    num = (int32_t)pack->fixhead.remaining_lens - 2 - num;//è®¡ç®—å‰©ä½™é•¿åº¦
     if (num <= 0) {
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
@@ -847,15 +847,15 @@ static int32_t _mqtt_unsuback(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *b
     CALLOC(pl, 1, sizeof(mqtt_unsuback_payload) + num);
     pack->payload = pl;
     pl->rlens = num;
-    if (num != buffer_remove(buf, pl->reasons, num)) {//Ô­ÒòÂëÁĞ±í
+    if (num != buffer_remove(buf, pl->reasons, num)) {//åŸå› ç åˆ—è¡¨
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
     return ERR_OK;
 }
-//¿Í»§¶Ëµ½·şÎñ¶Ë  ĞÄÌøÇëÇó
+//å®¢æˆ·ç«¯åˆ°æœåŠ¡ç«¯  å¿ƒè·³è¯·æ±‚
 static int32_t _mqtt_ping(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
-    if (client 
+    if (client
         || 0 != pack->fixhead.flags) {
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
@@ -863,9 +863,9 @@ static int32_t _mqtt_ping(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf, 
     pack->version = ((mqtt_ctx *)ud->context)->version;
     return ERR_OK;
 }
-//·şÎñ¶Ëµ½¿Í»§¶Ë  ĞÄÌøÏìÓ¦
+//æœåŠ¡ç«¯åˆ°å®¢æˆ·ç«¯  å¿ƒè·³å“åº”
 static int32_t _mqtt_pong(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
-    if (!client 
+    if (!client
         || 0 != pack->fixhead.flags) {
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
@@ -873,7 +873,7 @@ static int32_t _mqtt_pong(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf, 
     pack->version = ((mqtt_ctx *)ud->context)->version;
     return ERR_OK;
 }
-//Á½¸ö·½Ïò¶¼ÔÊĞí  ¶Ï¿ªÁ¬½ÓÍ¨Öª
+//ä¸¤ä¸ªæ–¹å‘éƒ½å…è®¸  æ–­å¼€è¿æ¥é€šçŸ¥
 static int32_t _mqtt_disconnect(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     if (0 != pack->fixhead.flags) {
         BIT_SET(*status, PROT_ERROR);
@@ -885,18 +885,18 @@ static int32_t _mqtt_disconnect(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud
     BIT_SET(*status, PROT_CLOSE);
     pack->version = ((mqtt_ctx *)ud->context)->version;
     if (pack->version < MQTT_50
-        || 0 == pack->fixhead.remaining_lens) {//Èç¹ûÊ£Óà³¤¶ÈĞ¡ÓÚ1£¬Ôò±íÊ¾Ê¹ÓÃÔ­ÒòÂë0x00£¨Õı³£¶Ï¿ª£©. Èç¹ûÊ£Óà³¤¶ÈĞ¡ÓÚ2£¬ÊôĞÔ³¤¶ÈÊ¹ÓÃ0¡£
+        || 0 == pack->fixhead.remaining_lens) {//å¦‚æœå‰©ä½™é•¿åº¦å°äº1ï¼Œåˆ™è¡¨ç¤ºä½¿ç”¨åŸå› ç 0x00ï¼ˆæ­£å¸¸æ–­å¼€ï¼‰. å¦‚æœå‰©ä½™é•¿åº¦å°äº2ï¼Œå±æ€§é•¿åº¦ä½¿ç”¨0ã€‚
         return ERR_OK;
     }
-    //¿É±ä±¨Í·
+    //å¯å˜æŠ¥å¤´
     int32_t num;
-    if (ERR_OK != _mqtt_data_fixnum(buf, 1, &num)) {//¶Ï¿ªÔ­ÒòÂë
+    if (ERR_OK != _mqtt_data_fixnum(buf, 1, &num)) {//æ–­å¼€åŸå› ç 
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
     vh->reason = (uint8_t)num;
     if (pack->fixhead.remaining_lens > 1) {
-        vh->properties = _mqtt_properties(buf, status, NULL);//ÊôĞÔ
+        vh->properties = _mqtt_properties(buf, status, NULL);//å±æ€§
         if (NULL == vh->properties
             && BIT_CHECK(*status, PROT_ERROR)) {
             return ERR_FAILED;
@@ -904,23 +904,23 @@ static int32_t _mqtt_disconnect(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud
     }
     return ERR_OK;
 }
-//Á½¸ö·½Ïò¶¼ÔÊĞí  ÈÏÖ¤ĞÅÏ¢½»»»
+//ä¸¤ä¸ªæ–¹å‘éƒ½å…è®¸  è®¤è¯ä¿¡æ¯äº¤æ¢
 static int32_t _mqtt_auth(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     if (0 != pack->fixhead.flags) {
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
     pack->version = ((mqtt_ctx *)ud->context)->version;
-    //Èç¹ûÔ­ÒòÂëÎª0x00£¨³É¹¦£©²¢ÇÒÃ»ÓĞÊôĞÔ×Ö¶Î£¬Ôò¿ÉÒÔÊ¡ÂÔÔ­ÒòÂëºÍÊôĞÔ³¤¶È¡£ÕâÖÖÇé¿öÏÂ£¬AUTH±¨ÎÄÊ£Óà³¤¶ÈÎª0¡£
+    //å¦‚æœåŸå› ç ä¸º0x00ï¼ˆæˆåŠŸï¼‰å¹¶ä¸”æ²¡æœ‰å±æ€§å­—æ®µï¼Œåˆ™å¯ä»¥çœç•¥åŸå› ç å’Œå±æ€§é•¿åº¦ã€‚è¿™ç§æƒ…å†µä¸‹ï¼ŒAUTHæŠ¥æ–‡å‰©ä½™é•¿åº¦ä¸º0ã€‚
     if (0 == pack->fixhead.remaining_lens) {
         mqtt_auth_varhead *vh;
         CALLOC(vh, 1, sizeof(mqtt_auth_varhead));
         pack->varhead = vh;
         return ERR_OK;
     }
-    //¿É±ä±¨Í·
+    //å¯å˜æŠ¥å¤´
     int32_t num;
-    if (ERR_OK != _mqtt_data_fixnum(buf, 1, &num)) {//ÈÏÖ¤Ô­ÒòÂë
+    if (ERR_OK != _mqtt_data_fixnum(buf, 1, &num)) {//è®¤è¯åŸå› ç 
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
@@ -928,7 +928,7 @@ static int32_t _mqtt_auth(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, int3
     CALLOC(vh, 1, sizeof(mqtt_auth_varhead));
     pack->varhead = vh;
     vh->reason = (uint8_t)num;
-    vh->properties = _mqtt_properties(buf, status, NULL);//ÊôĞÔ
+    vh->properties = _mqtt_properties(buf, status, NULL);//å±æ€§
     if (NULL == vh->properties
         && BIT_CHECK(*status, PROT_ERROR)) {
         return ERR_FAILED;
@@ -947,7 +947,8 @@ static int32_t _mqtt_init(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf, 
     case MQTT_AUTH:
         if (client) {
             rtn = _mqtt_auth(pack, buf, ud, status);
-        } else {
+        }
+        else {
             BIT_SET(*status, PROT_ERROR);
         }
         break;
@@ -1007,14 +1008,14 @@ static int32_t _mqtt_commands(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *b
 }
 mqtt_pack_ctx *mqtt_unpack(int32_t client, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     size_t blens = buffer_size(buf);
-    if (blens < 2) {//¹Ì¶¨Í·ÖÁÉÙ2×Ö½Ú
+    if (blens < 2) {//å›ºå®šå¤´è‡³å°‘2å­—èŠ‚
         BIT_SET(*status, PROT_MOREDATA);
         return NULL;
     }
     size_t remaining_lens;
-    int32_t roccupy = _mqtt_varlens_decode(buf, 1, blens, &remaining_lens);//·µ»ØÊ£Óà³¤¶ÈÕ¼ÓÃ×Ö½ÚÊı
+    int32_t roccupy = _mqtt_varlens_decode(buf, 1, blens, &remaining_lens);//è¿”å›å‰©ä½™é•¿åº¦å ç”¨å­—èŠ‚æ•°
     if (ERR_FAILED == roccupy) {
-        if (blens >= 5) {//Ê£Óà³¤¶È×î´ó4¸ö×Ö½Ú
+        if (blens >= 5) {//å‰©ä½™é•¿åº¦æœ€å¤§4ä¸ªå­—èŠ‚
             BIT_SET(*status, PROT_ERROR);
             return NULL;
         }
@@ -1059,228 +1060,228 @@ const char *mqtt_reason(mqtt_prot prot, int32_t code) {
     case 0x00:
         if (MQTT_CONNACK == prot || MQTT_PUBACK == prot || MQTT_PUBREC == prot || MQTT_PUBREL == prot
             || MQTT_PUBCOMP == prot || MQTT_UNSUBACK == prot || MQTT_AUTH == prot) {
-            return "Success";//³É¹¦
+            return "Success";//æˆåŠŸ
         }
         if (MQTT_DISCONNECT == prot) {
-            return "Normal disconnection";//Õı³£¶Ï¿ª
+            return "Normal disconnection";//æ­£å¸¸æ–­å¼€
         }
         if (MQTT_SUBACK == prot) {
-            return "Granted QoS 0";//ÊÚÈ¨µÄQoS 0
+            return "Granted QoS 0";//æˆæƒçš„QoS 0
         }
         break;
     case 0x01:
         if (MQTT_SUBACK == prot) {
-            return "Granted QoS 1";//ÊÚÈ¨µÄQoS 1
+            return "Granted QoS 1";//æˆæƒçš„QoS 1
         }
         break;
     case 0x02:
         if (MQTT_SUBACK == prot) {
-            return "Granted QoS 2";//ÊÚÈ¨µÄQoS 2
+            return "Granted QoS 2";//æˆæƒçš„QoS 2
         }
         break;
     case 0x04:
         if (MQTT_DISCONNECT == prot) {
-            return "Disconnect with Will Message";//°üº¬ÒÅÖöµÄ¶Ï¿ª
+            return "Disconnect with Will Message";//åŒ…å«é—å˜±çš„æ–­å¼€
         }
         break;
     case 0x10:
         if (MQTT_PUBACK == prot || MQTT_PUBREC == prot) {
-            return "No matching subscribers";//ÎŞÆ¥Åä¶©ÔÄ
+            return "No matching subscribers";//æ— åŒ¹é…è®¢é˜…
         }
         break;
     case 0x11:
         if (MQTT_UNSUBACK == prot) {
-            return "No subscription existed";//¶©ÔÄ²»´æÔÚ
+            return "No subscription existed";//è®¢é˜…ä¸å­˜åœ¨
         }
         break;
     case 0x18:
         if (MQTT_AUTH == prot) {
-            return "Continue authentication";//¼ÌĞøÈÏÖ¤
+            return "Continue authentication";//ç»§ç»­è®¤è¯
         }
         break;
     case 0x19:
         if (MQTT_AUTH == prot) {
-            return "Re-authenticate";//ÖØĞÂÈÏÖ¤
+            return "Re-authenticate";//é‡æ–°è®¤è¯
         }
         break;
     case 0x80:
         if (MQTT_CONNACK == prot || MQTT_PUBACK == prot || MQTT_PUBREC == prot
             || MQTT_SUBACK == prot || MQTT_UNSUBACK == prot || MQTT_DISCONNECT == prot) {
-            return "Unspecified error";//Î´Ö¸Ã÷µÄ´íÎó
+            return "Unspecified error";//æœªæŒ‡æ˜çš„é”™è¯¯
         }
         break;
     case 0x81:
         if (MQTT_CONNACK == prot || MQTT_DISCONNECT == prot) {
-            return "Malformed Packet";//ÎŞĞ§±¨ÎÄ
+            return "Malformed Packet";//æ— æ•ˆæŠ¥æ–‡
         }
         break;
     case 0x82:
         if (MQTT_CONNACK == prot || MQTT_DISCONNECT == prot) {
-            return "Protocol Error";//Ğ­Òé´íÎó
+            return "Protocol Error";//åè®®é”™è¯¯
         }
         break;
     case 0x83:
         if (MQTT_CONNACK == prot || MQTT_PUBACK == prot || MQTT_PUBREC == prot
             || MQTT_SUBACK == prot || MQTT_UNSUBACK == prot || MQTT_DISCONNECT == prot) {
-            return "Implementation specific error";//ÊµÏÖ´íÎó
+            return "Implementation specific error";//å®ç°é”™è¯¯
         }
         break;
     case 0x84:
         if (MQTT_CONNACK == prot) {
-            return "Unsupported Protocol Version";//Ğ­Òé°æ±¾²»Ö§³Ö
+            return "Unsupported Protocol Version";//åè®®ç‰ˆæœ¬ä¸æ”¯æŒ
         }
         break;
     case 0x85:
         if (MQTT_CONNACK == prot) {
-            return "Client Identifier not valid";//¿Í»§±êÊ¶·ûÎŞĞ§
+            return "Client Identifier not valid";//å®¢æˆ·æ ‡è¯†ç¬¦æ— æ•ˆ
         }
         break;
     case 0x86:
         if (MQTT_CONNACK == prot) {
-            return "Bad User Name or Password";//ÓÃ»§ÃûÃÜÂë´íÎó
+            return "Bad User Name or Password";//ç”¨æˆ·åå¯†ç é”™è¯¯
         }
         break;
     case 0x87:
         if (MQTT_CONNACK == prot || MQTT_PUBACK == prot || MQTT_PUBREC == prot
             || MQTT_SUBACK == prot || MQTT_UNSUBACK == prot || MQTT_DISCONNECT == prot) {
-            return "Not authorized";//Î´ÊÚÈ¨
+            return "Not authorized";//æœªæˆæƒ
         }
         break;
     case 0x88:
         if (MQTT_CONNACK == prot) {
-            return "Server unavailable";//·şÎñ¶Ë²»¿ÉÓÃ
+            return "Server unavailable";//æœåŠ¡ç«¯ä¸å¯ç”¨
         }
         break;
     case 0x89:
         if (MQTT_CONNACK == prot || MQTT_DISCONNECT == prot) {
-            return "Server busy";//·şÎñ¶ËÕıÃ¦
+            return "Server busy";//æœåŠ¡ç«¯æ­£å¿™
         }
         break;
     case 0x8A:
         if (MQTT_CONNACK == prot) {
-            return "Banned";//½ûÖ¹
+            return "Banned";//ç¦æ­¢
         }
         break;
     case 0x8B:
         if (MQTT_DISCONNECT == prot) {
-            return "Server shutting down";//·şÎñ¶Ë¹Ø±ÕÖĞ
+            return "Server shutting down";//æœåŠ¡ç«¯å…³é—­ä¸­
         }
         break;
     case 0x8C:
         if (MQTT_CONNACK == prot || MQTT_DISCONNECT == prot) {
-            return "Bad authentication method";//ÎŞĞ§µÄÈÏÖ¤·½·¨
+            return "Bad authentication method";//æ— æ•ˆçš„è®¤è¯æ–¹æ³•
         }
         break;
     case 0x8D:
         if (MQTT_DISCONNECT == prot) {
-            return "Keep Alive timeout";//±£»î³¬Ê±
+            return "Keep Alive timeout";//ä¿æ´»è¶…æ—¶
         }
         break;
     case 0x8E:
         if (MQTT_DISCONNECT == prot) {
-            return "Session taken over";//»á»°±»½Ó¹Ü
+            return "Session taken over";//ä¼šè¯è¢«æ¥ç®¡
         }
         break;
     case 0x8F:
         if (MQTT_SUBACK == prot || MQTT_UNSUBACK == prot || MQTT_DISCONNECT == prot) {
-            return "Topic Filter invalid";//Ö÷Ìâ¹ıÂËÆ÷ÎŞĞ§
+            return "Topic Filter invalid";//ä¸»é¢˜è¿‡æ»¤å™¨æ— æ•ˆ
         }
         break;
     case 0x90:
         if (MQTT_CONNACK == prot || MQTT_PUBACK == prot || MQTT_PUBREC == prot || MQTT_DISCONNECT == prot) {
-            return "Topic Name invalid";//Ö÷ÌâÃûÎŞĞ§
+            return "Topic Name invalid";//ä¸»é¢˜åæ— æ•ˆ
         }
         break;
     case 0x91:
         if (MQTT_PUBACK == prot || MQTT_PUBREC == prot || MQTT_SUBACK == prot || MQTT_UNSUBACK == prot) {
-            return "Packet Identifier in use";//±¨ÎÄ±êÊ¶·ûÒÑ±»Õ¼ÓÃ
+            return "Packet Identifier in use";//æŠ¥æ–‡æ ‡è¯†ç¬¦å·²è¢«å ç”¨
         }
         break;
     case 0x92:
         if (MQTT_PUBREL == prot || MQTT_PUBCOMP == prot) {
-            return "Packet Identifier not found";//±¨ÎÄ±êÊ¶·ûÎŞĞ§
+            return "Packet Identifier not found";//æŠ¥æ–‡æ ‡è¯†ç¬¦æ— æ•ˆ
         }
         break;
     case 0x93:
         if (MQTT_DISCONNECT == prot) {
-            return "Receive Maximum exceeded";//½ÓÊÕ³¬³ö×î´óÊıÁ¿
+            return "Receive Maximum exceeded";//æ¥æ”¶è¶…å‡ºæœ€å¤§æ•°é‡
         }
         break;
     case 0x94:
         if (MQTT_DISCONNECT == prot) {
-            return "Topic Alias invalid";//Ö÷Ìâ±ğÃûÎŞĞ§
+            return "Topic Alias invalid";//ä¸»é¢˜åˆ«åæ— æ•ˆ
         }
         break;
     case 0x95:
         if (MQTT_CONNACK == prot || MQTT_DISCONNECT == prot) {
-            return "Packet too large";//±¨ÎÄ¹ı³¤
+            return "Packet too large";//æŠ¥æ–‡è¿‡é•¿
         }
         break;
     case 0x96:
         if (MQTT_DISCONNECT == prot) {
-            return "Message rate too high";//ÏûÏ¢Ì«¹ıÆµ·±
+            return "Message rate too high";//æ¶ˆæ¯å¤ªè¿‡é¢‘ç¹
         }
         break;
     case 0x97:
         if (MQTT_CONNACK == prot || MQTT_PUBACK == prot || MQTT_PUBREC == prot
             || MQTT_SUBACK == prot || MQTT_DISCONNECT == prot) {
-            return "Quota exceeded";//³¬³öÅä¶î
+            return "Quota exceeded";//è¶…å‡ºé…é¢
         }
         break;
     case 0x98:
         if (MQTT_DISCONNECT == prot) {
-            return "Administrative action";//¹ÜÀíĞĞÎª
+            return "Administrative action";//ç®¡ç†è¡Œä¸º
         }
         break;
     case 0x99:
         if (MQTT_CONNACK == prot || MQTT_PUBACK == prot
             || MQTT_PUBREC == prot || MQTT_DISCONNECT == prot) {
-            return "Payload format invalid";//ÔØºÉ¸ñÊ½ÎŞĞ§
+            return "Payload format invalid";//è½½è·æ ¼å¼æ— æ•ˆ
         }
         break;
     case 0x9A:
         if (MQTT_CONNACK == prot || MQTT_DISCONNECT == prot) {
-            return "Retain not supported";//²»Ö§³Ö±£Áô
+            return "Retain not supported";//ä¸æ”¯æŒä¿ç•™
         }
         break;
     case 0x9B:
         if (MQTT_CONNACK == prot || MQTT_DISCONNECT == prot) {
-            return "QoS not supported";//²»Ö§³ÖµÄQoSµÈ¼¶
+            return "QoS not supported";//ä¸æ”¯æŒçš„QoSç­‰çº§
         }
         break;
     case 0x9C:
         if (MQTT_CONNACK == prot || MQTT_DISCONNECT == prot) {
-            return "Use another server";//(ÁÙÊ±)Ê¹ÓÃÆäËû·şÎñ¶Ë
+            return "Use another server";//(ä¸´æ—¶)ä½¿ç”¨å…¶ä»–æœåŠ¡ç«¯
         }
         break;
     case 0x9D:
         if (MQTT_CONNACK == prot || MQTT_DISCONNECT == prot) {
-            return "Server moved";//·şÎñ¶ËÒÑ(ÓÀ¾Ã)ÒÆ¶¯
+            return "Server moved";//æœåŠ¡ç«¯å·²(æ°¸ä¹…)ç§»åŠ¨
         }
         break;
     case 0x9E:
         if (MQTT_SUBACK == prot || MQTT_DISCONNECT == prot) {
-            return "Shared Subscriptions not supported";//²»Ö§³Ö¹²Ïí¶©ÔÄ
+            return "Shared Subscriptions not supported";//ä¸æ”¯æŒå…±äº«è®¢é˜…
         }
         break;
     case 0x9F:
         if (MQTT_CONNACK == prot || MQTT_DISCONNECT == prot) {
-            return "Connection rate exceeded";//³¬³öÁ¬½ÓËÙÂÊÏŞÖÆ
+            return "Connection rate exceeded";//è¶…å‡ºè¿æ¥é€Ÿç‡é™åˆ¶
         }
         break;
     case 0xA0:
         if (MQTT_DISCONNECT == prot) {
-            return "Maximum connect time";//×î´óÁ¬½ÓÊ±¼ä
+            return "Maximum connect time";//æœ€å¤§è¿æ¥æ—¶é—´
         }
         break;
     case 0xA1:
         if (MQTT_SUBACK == prot || MQTT_DISCONNECT == prot) {
-            return "Subscription Identifiers not supported";//²»Ö§³Ö¶©ÔÄ±êÊ¶·û
+            return "Subscription Identifiers not supported";//ä¸æ”¯æŒè®¢é˜…æ ‡è¯†ç¬¦
         }
         break;
     case 0xA2:
         if (MQTT_SUBACK == prot || MQTT_DISCONNECT == prot) {
-            return "Wildcard Subscriptions not supported";//²»Ö§³ÖÍ¨Åä·û¶©ÔÄ
+            return "Wildcard Subscriptions not supported";//ä¸æ”¯æŒé€šé…ç¬¦è®¢é˜…
         }
         break;
     }

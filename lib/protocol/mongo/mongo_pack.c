@@ -1,10 +1,10 @@
-#include "protocol/mongo/mongo_pack.h"
+ï»¿#include "protocol/mongo/mongo_pack.h"
 #include "protocol/mongo/bson.h"
 #include "utils/utils.h"
 #include "utils/binary.h"
 #include "crypt/scram.h"
 
-//ÊÂÎñºÍ²Ù×÷ https://www.mongodb.com/zh-cn/docs/manual/core/transactions-operations/#crud-operations
+//äº‹åŠ¡å’Œæ“ä½œ https://www.mongodb.com/zh-cn/docs/manual/core/transactions-operations/#crud-operations
 #define TRANSACTION_OPTIONS \
     if (NULL != mongo->session) {\
         bson_cat(&bson, mongo->session->options);\
@@ -21,12 +21,13 @@ static void *_mongo_pack_msg(mongo_ctx *mongo, int32_t kind, const char *docid, 
     binary_set_integer(&bwriter, mongo->flags, 4, 1);//flags
     if (0 == kind) {
         binary_set_int8(&bwriter, 0);//kind
-    } else {
+    }
+    else {
         binary_set_int8(&bwriter, 1);//kind
         binary_set_integer(&bwriter, 4 + strlen(docid) + 1 + dlens, 4, 1);
         binary_set_string(&bwriter, docid, 0);
     }
-    binary_set_string(&bwriter, docs, dlens);//ÕýÎÄ
+    binary_set_string(&bwriter, docs, dlens);//æ­£æ–‡
     *size = bwriter.offset;
     binary_offset(&bwriter, 0);
     binary_set_integer(&bwriter, *size, 4, 1);
@@ -57,7 +58,7 @@ void *mongo_pack_scram_client_first(mongo_ctx *mongo, const char *method, size_t
     FREE(first_message);
     bson_append_int32(&bson, "autoAuthorize", 1);
     bson_append_document_begain(&bson, "options");
-        bson_append_bool(&bson, "skipEmptyExchange", 1);
+    bson_append_bool(&bson, "skipEmptyExchange", 1);
     bson_append_end(&bson);//options
     bson_append_utf8(&bson, "$db", mongo->authdb);
     bson_append_end(&bson);
@@ -80,13 +81,13 @@ void *mongo_pack_scram_client_final(mongo_ctx *mongo, int32_t convid, char *clie
 void *mongo_pack_hello(mongo_ctx *mongo, char *options, size_t *size) {
     bson_ctx bson;
     bson_init(&bson, NULL, 0);
-    bson_append_int32(&bson, "hello", 1);//²»ÄÜÊÇÊÂÎñÖÐµÄµÚÒ»Ïî²Ù×÷
+    bson_append_int32(&bson, "hello", 1);//ä¸èƒ½æ˜¯äº‹åŠ¡ä¸­çš„ç¬¬ä¸€é¡¹æ“ä½œ
     bson_append_document_begain(&bson, "comment");
-        bson_append_utf8(&bson, "application", "srey");
-        bson_append_utf8(&bson, "os", OS_NAME);
+    bson_append_utf8(&bson, "application", "srey");
+    bson_append_utf8(&bson, "os", OS_NAME);
     bson_append_end(&bson);//comment
     TRANSACTION_OPTIONS
-    bson_cat(&bson, options);
+        bson_cat(&bson, options);
     bson_append_utf8(&bson, "$db", mongo->db);
     bson_append_end(&bson);
     void *data = _mongo_pack_msg(mongo, 0, NULL, bson.doc.data, bson.doc.offset, size);
@@ -120,7 +121,7 @@ void *mongo_pack_insert(mongo_ctx *mongo, char *docs, size_t dlens, char *option
     bson_append_utf8(&bson, "insert", mongo->collection);
     bson_append_array(&bson, "documents", docs, dlens);
     TRANSACTION_OPTIONS
-    bson_cat(&bson, options);
+        bson_cat(&bson, options);
     bson_append_utf8(&bson, "$db", mongo->db);
     bson_append_end(&bson);
     void *data = _mongo_pack_msg(mongo, 0, NULL, bson.doc.data, bson.doc.offset, size);
@@ -133,7 +134,7 @@ void *mongo_pack_update(mongo_ctx *mongo, char *updates, size_t ulens, char *opt
     bson_append_utf8(&bson, "update", mongo->collection);
     bson_append_array(&bson, "updates", updates, ulens);
     TRANSACTION_OPTIONS
-    bson_cat(&bson, options);
+        bson_cat(&bson, options);
     bson_append_utf8(&bson, "$db", mongo->db);
     bson_append_end(&bson);
     void *data = _mongo_pack_msg(mongo, 0, NULL, bson.doc.data, bson.doc.offset, size);
@@ -146,7 +147,7 @@ void *mongo_pack_delete(mongo_ctx *mongo, char *deletes, size_t dlens, char *opt
     bson_append_utf8(&bson, "delete", mongo->collection);
     bson_append_array(&bson, "deletes", deletes, dlens);
     TRANSACTION_OPTIONS
-    bson_cat(&bson, options);
+        bson_cat(&bson, options);
     bson_append_utf8(&bson, "$db", mongo->db);
     bson_append_end(&bson);
     void *data = _mongo_pack_msg(mongo, 0, NULL, bson.doc.data, bson.doc.offset, size);
@@ -160,7 +161,7 @@ void *mongo_pack_bulkwrite(mongo_ctx *mongo, char *ops, size_t olens, char *nsin
     bson_append_array(&bson, "ops", ops, olens);
     bson_append_array(&bson, "nsInfo", nsinfo, nlens);
     TRANSACTION_OPTIONS
-    bson_cat(&bson, options);
+        bson_cat(&bson, options);
     bson_append_utf8(&bson, "$db", mongo->db);
     bson_append_end(&bson);
     void *data = _mongo_pack_msg(mongo, 0, NULL, bson.doc.data, bson.doc.offset, size);
@@ -175,7 +176,7 @@ void *mongo_pack_find(mongo_ctx *mongo, char *filter, size_t flens, char *option
         bson_append_document(&bson, "filter", filter, flens);
     }
     TRANSACTION_OPTIONS
-    bson_cat(&bson, options);
+        bson_cat(&bson, options);
     bson_append_utf8(&bson, "$db", mongo->db);
     bson_append_end(&bson);
     void *data = _mongo_pack_msg(mongo, 0, NULL, bson.doc.data, bson.doc.offset, size);
@@ -190,7 +191,7 @@ void *mongo_pack_aggregate(mongo_ctx *mongo, char *pipeline, size_t pllens, char
     const char *cursor = bson_empty(size);
     bson_append_document(&bson, "cursor", (char *)cursor, *size);
     TRANSACTION_OPTIONS
-    bson_cat(&bson, options);
+        bson_cat(&bson, options);
     bson_append_utf8(&bson, "$db", mongo->db);
     bson_append_end(&bson);
     void *data = _mongo_pack_msg(mongo, 0, NULL, bson.doc.data, bson.doc.offset, size);
@@ -200,10 +201,10 @@ void *mongo_pack_aggregate(mongo_ctx *mongo, char *pipeline, size_t pllens, char
 void *mongo_pack_getmore(mongo_ctx *mongo, int64_t cursorid, char *options, size_t *size) {
     bson_ctx bson;
     bson_init(&bson, NULL, 0);
-    bson_append_int64(&bson, "getMore", cursorid);//ÊÂÎñÍâ²¿´´½¨µÄÓÎ±ê£¬ÎÞ·¨ÔÚÊÂÎñÄÚ²¿µ÷ÓÃ getMore
+    bson_append_int64(&bson, "getMore", cursorid);//äº‹åŠ¡å¤–éƒ¨åˆ›å»ºçš„æ¸¸æ ‡ï¼Œæ— æ³•åœ¨äº‹åŠ¡å†…éƒ¨è°ƒç”¨ getMore
     bson_append_utf8(&bson, "collection", mongo->collection);
     TRANSACTION_OPTIONS
-    bson_cat(&bson, options);
+        bson_cat(&bson, options);
     bson_append_utf8(&bson, "$db", mongo->db);
     bson_append_end(&bson);
     void *data = _mongo_pack_msg(mongo, 0, NULL, bson.doc.data, bson.doc.offset, size);
@@ -213,10 +214,10 @@ void *mongo_pack_getmore(mongo_ctx *mongo, int64_t cursorid, char *options, size
 void *mongo_pack_killcursors(mongo_ctx *mongo, char *cursorids, size_t cslens, char *options, size_t *size) {
     bson_ctx bson;
     bson_init(&bson, NULL, 0);
-    bson_append_utf8(&bson, "killCursors", mongo->collection);//²»ÄÜ½«killCursors ÃüÁîÖ¸¶¨ÎªACID ÊÂÎñÖÐµÄµÚÒ»¸ö²Ù×÷.killCursors ÃüÁî£¬·þÎñÆ÷»áÁ¢¼´Í£Ö¹Ö¸¶¨µÄÓÎ±ê¡£Ëü²»»áµÈ´ýACID ÊÂÎñÌá½»
+    bson_append_utf8(&bson, "killCursors", mongo->collection);//ä¸èƒ½å°†killCursors å‘½ä»¤æŒ‡å®šä¸ºACID äº‹åŠ¡ä¸­çš„ç¬¬ä¸€ä¸ªæ“ä½œ.killCursors å‘½ä»¤ï¼ŒæœåŠ¡å™¨ä¼šç«‹å³åœæ­¢æŒ‡å®šçš„æ¸¸æ ‡ã€‚å®ƒä¸ä¼šç­‰å¾…ACID äº‹åŠ¡æäº¤
     bson_append_array(&bson, "cursors", cursorids, cslens);
     TRANSACTION_OPTIONS
-    bson_cat(&bson, options);
+        bson_cat(&bson, options);
     bson_append_utf8(&bson, "$db", mongo->db);
     bson_append_end(&bson);
     void *data = _mongo_pack_msg(mongo, 0, NULL, bson.doc.data, bson.doc.offset, size);
@@ -232,7 +233,7 @@ void *mongo_pack_distinct(mongo_ctx *mongo, const char *key, char *query, size_t
         bson_append_document(&bson, "query", query, qlens);
     }
     TRANSACTION_OPTIONS
-    bson_cat(&bson, options);
+        bson_cat(&bson, options);
     bson_append_utf8(&bson, "$db", mongo->db);
     bson_append_end(&bson);
     void *data = _mongo_pack_msg(mongo, 0, NULL, bson.doc.data, bson.doc.offset, size);
@@ -248,16 +249,18 @@ void *mongo_pack_findandmodify(mongo_ctx *mongo, char *query, size_t qlens, int3
         bson_append_document(&bson, "query", query, qlens);
     }
     if (remove) {
-        bson_append_bool(&bson, "remove", 1);//Ä¬ÈÏÖµÎª false
-    } else {
+        bson_append_bool(&bson, "remove", 1);//é»˜è®¤å€¼ä¸º false
+    }
+    else {
         if (pipeline) {
             bson_append_array(&bson, "update", update, ulens);
-        } else {
+        }
+        else {
             bson_append_document(&bson, "update", update, ulens);
         }
     }
     TRANSACTION_OPTIONS
-    bson_cat(&bson, options);
+        bson_cat(&bson, options);
     bson_append_utf8(&bson, "$db", mongo->db);
     bson_append_end(&bson);
     void *data = _mongo_pack_msg(mongo, 0, NULL, bson.doc.data, bson.doc.offset, size);
@@ -272,7 +275,7 @@ void *mongo_pack_count(mongo_ctx *mongo, char *query, size_t qlens, char *option
         bson_append_document(&bson, "query", query, qlens);
     }
     TRANSACTION_OPTIONS
-    bson_cat(&bson, options);
+        bson_cat(&bson, options);
     bson_append_utf8(&bson, "$db", mongo->db);
     bson_append_end(&bson);
     void *data = _mongo_pack_msg(mongo, 0, NULL, bson.doc.data, bson.doc.offset, size);
@@ -285,7 +288,7 @@ void *mongo_pack_createindexes(mongo_ctx *mongo, char *indexes, size_t ilens, ch
     bson_append_utf8(&bson, "createIndexes", mongo->collection);
     bson_append_array(&bson, "indexes", indexes, ilens);
     TRANSACTION_OPTIONS
-    bson_cat(&bson, options);
+        bson_cat(&bson, options);
     bson_append_utf8(&bson, "$db", mongo->db);
     bson_append_end(&bson);
     void *data = _mongo_pack_msg(mongo, 0, NULL, bson.doc.data, bson.doc.offset, size);
@@ -319,9 +322,9 @@ void *mongo_pack_refreshsession(mongo_session *session, size_t *size) {
     bson_ctx bson;
     bson_init(&bson, NULL, 0);
     bson_append_array_begain(&bson, "refreshSessions");
-        bson_append_document_begain(&bson, "0");
-            bson_append_binary(&bson, "id", BSON_SUBTYPE_UUID, session->uuid, UUID_LENS);
-        bson_append_end(&bson);//0
+    bson_append_document_begain(&bson, "0");
+    bson_append_binary(&bson, "id", BSON_SUBTYPE_UUID, session->uuid, UUID_LENS);
+    bson_append_end(&bson);//0
     bson_append_end(&bson);//refreshSessions
     bson_append_utf8(&bson, "$db", mongo->db);
     bson_append_end(&bson);
@@ -334,9 +337,9 @@ void *mongo_pack_endsession(mongo_session *session, size_t *size) {
     bson_ctx bson;
     bson_init(&bson, NULL, 0);
     bson_append_array_begain(&bson, "endSessions");
-        bson_append_document_begain(&bson, "0");
-            bson_append_binary(&bson, "id", BSON_SUBTYPE_UUID, session->uuid, UUID_LENS);
-        bson_append_end(&bson);//0
+    bson_append_document_begain(&bson, "0");
+    bson_append_binary(&bson, "id", BSON_SUBTYPE_UUID, session->uuid, UUID_LENS);
+    bson_append_end(&bson);//0
     bson_append_end(&bson);//endSessions
     bson_append_utf8(&bson, "$db", mongo->db);
     bson_append_end(&bson);
@@ -348,7 +351,7 @@ char *mongo_transaction_options(mongo_session *session) {
     bson_ctx bson;
     bson_init(&bson, NULL, 0);
     bson_append_document_begain(&bson, "lsid");
-        bson_append_binary(&bson, "id", BSON_SUBTYPE_UUID, session->uuid, UUID_LENS);
+    bson_append_binary(&bson, "id", BSON_SUBTYPE_UUID, session->uuid, UUID_LENS);
     bson_append_end(&bson);//lsid
     bson_append_int64(&bson, "txnNumber", session->txnnumber);
     bson_append_bool(&bson, "autocommit", 0);
@@ -361,7 +364,7 @@ void *mongo_pack_committransaction(mongo_session *session, char *options, size_t
     bson_init(&bson, NULL, 0);
     bson_append_int32(&bson, "commitTransaction", 1);
     TRANSACTION_OPTIONS
-    bson_cat(&bson, options);
+        bson_cat(&bson, options);
     bson_append_utf8(&bson, "$db", mongo->db);
     bson_append_end(&bson);
     void *data = _mongo_pack_msg(mongo, 0, NULL, bson.doc.data, bson.doc.offset, size);
@@ -374,7 +377,7 @@ void *mongo_pack_aborttransaction(mongo_session *session, char *options, size_t 
     bson_init(&bson, NULL, 0);
     bson_append_int32(&bson, "abortTransaction", 1);
     TRANSACTION_OPTIONS
-    bson_cat(&bson, options);
+        bson_cat(&bson, options);
     bson_append_utf8(&bson, "$db", mongo->db);
     bson_append_end(&bson);
     void *data = _mongo_pack_msg(mongo, 0, NULL, bson.doc.data, bson.doc.offset, size);

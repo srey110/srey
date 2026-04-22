@@ -1,91 +1,91 @@
-#ifndef MQTT_STRUCT_H_
+ï»¿#ifndef MQTT_STRUCT_H_
 #define MQTT_STRUCT_H_
 
 #include "event/event.h"
 #include "protocol/mqtt/mqtt_macro.h"
 
-typedef struct mqtt_fixhead {//¹Ì¶¨Í·
-    uint8_t flags;//±êÖ¾
-    mqtt_prot prot;//¿ØÖÆ±¨ÎÄµÄÀàĞÍ
+typedef struct mqtt_fixhead {//å›ºå®šå¤´
+    uint8_t flags;//æ ‡å¿—
+    mqtt_prot prot;//æ§åˆ¶æŠ¥æ–‡çš„ç±»å‹
     size_t remaining_lens;
 }mqtt_fixhead;
-typedef struct mqtt_propertie {//ÊôĞÔ
-    mqtt_prop_flag flag;//±êÊ¶·û
-    int32_t nval;//Êı×ÖÖµ
-    size_t slens;//sval³¤¶È
-    size_t flens;//fval³¤¶È
-    char *sval;//µÚ¶şÖµ(ÓÃ»§ÊôĞÔÊ±Îªvalue)
-    char fval[0];//µÚÒ»Öµ(ÓÃ»§ÊôĞÔÊ±ÎªkeyÖµ)
+typedef struct mqtt_propertie {//å±æ€§
+    mqtt_prop_flag flag;//æ ‡è¯†ç¬¦
+    int32_t nval;//æ•°å­—å€¼
+    size_t slens;//svalé•¿åº¦
+    size_t flens;//fvalé•¿åº¦
+    char *sval;//ç¬¬äºŒå€¼(ç”¨æˆ·å±æ€§æ—¶ä¸ºvalue)
+    char fval[0];//ç¬¬ä¸€å€¼(ç”¨æˆ·å±æ€§æ—¶ä¸ºkeyå€¼)
 }mqtt_propertie;
 ARRAY_DECL(mqtt_propertie *, arr_propertie);
 typedef struct mqtt_connect_varhead {
-    int8_t version;//Ğ­Òé°æ±¾
-    int8_t cleanstart;//ĞÂ¿ªÊ¼  Á¬½ÓÊÇÒ»¸öĞÂµÄ»á»°»¹ÊÇÒ»¸öÒÑ´æÔÚµÄ»á»°µÄÑÓĞø 1:¶ªÆúÈÎºÎÒÑ´æÔÚµÄ»á»°£¬²¢¿ªÊ¼Ò»¸öĞÂµÄ»á»° 0:»Ö¸´»á»°
-    int8_t willflag;//ÒÅÖö±êÖ¾ 
-    int8_t willqos;//ÒÅÖö·şÎñÖÊÁ¿
-    int8_t willretain;//ÒÅÖö±£Áô±êÖ¾
-    int8_t passwordflag;//ÃÜÂë±êÖ¾
-    int8_t userflag;//ÓÃ»§Ãû±êÖ¾
-    uint16_t keepalive;//±£³ÖÁ¬½Ó Ãë
-    arr_propertie_ctx *properties;//ÊôĞÔ  5.0
+    int8_t version;//åè®®ç‰ˆæœ¬
+    int8_t cleanstart;//æ–°å¼€å§‹  è¿æ¥æ˜¯ä¸€ä¸ªæ–°çš„ä¼šè¯è¿˜æ˜¯ä¸€ä¸ªå·²å­˜åœ¨çš„ä¼šè¯çš„å»¶ç»­ 1:ä¸¢å¼ƒä»»ä½•å·²å­˜åœ¨çš„ä¼šè¯ï¼Œå¹¶å¼€å§‹ä¸€ä¸ªæ–°çš„ä¼šè¯ 0:æ¢å¤ä¼šè¯
+    int8_t willflag;//é—å˜±æ ‡å¿— 
+    int8_t willqos;//é—å˜±æœåŠ¡è´¨é‡
+    int8_t willretain;//é—å˜±ä¿ç•™æ ‡å¿—
+    int8_t passwordflag;//å¯†ç æ ‡å¿—
+    int8_t userflag;//ç”¨æˆ·åæ ‡å¿—
+    uint16_t keepalive;//ä¿æŒè¿æ¥ ç§’
+    arr_propertie_ctx *properties;//å±æ€§  5.0
 }mqtt_connect_varhead;
 typedef struct mqtt_connect_payload {
-    char *clientid;//¿Í»§±êÊ¶·û
-    arr_propertie_ctx *properties;//ÒÅÖöÊôĞÔ 5.0
-    char *willtopic;//ÒÅÖöÖ÷Ìâ
-    char *willpayload;//ÒÅÖöÔØºÉ
-    size_t wplens;//ÒÅÖöÔØºÉ³¤¶È
-    char *user;//ÓÃ»§Ãû
-    char *password;//ÃÜÂë
-    size_t pslens;//ÃÜÂë³¤¶È
+    char *clientid;//å®¢æˆ·æ ‡è¯†ç¬¦
+    arr_propertie_ctx *properties;//é—å˜±å±æ€§ 5.0
+    char *willtopic;//é—å˜±ä¸»é¢˜
+    char *willpayload;//é—å˜±è½½è·
+    size_t wplens;//é—å˜±è½½è·é•¿åº¦
+    char *user;//ç”¨æˆ·å
+    char *password;//å¯†ç 
+    size_t pslens;//å¯†ç é•¿åº¦
 }mqtt_connect_payload;
 typedef struct mqtt_connack_varhead {
-    int8_t sesspresent;//»á»°´æÔÚ
-    uint8_t reason;//Á¬½ÓÔ­ÒòÂë
-    arr_propertie_ctx *properties;//ÊôĞÔ  5.0
+    int8_t sesspresent;//ä¼šè¯å­˜åœ¨
+    uint8_t reason;//è¿æ¥åŸå› ç 
+    arr_propertie_ctx *properties;//å±æ€§  5.0
 }mqtt_connack_varhead;
-//PUBLISH±¨ÎÄµÄÔ¤ÆÚÏìÓ¦ QoS 0	ÎŞÏìÓ¦; QoS 1	PUBACK±¨ÎÄ; QoS 2	PUBREC±¨ÎÄ
+//PUBLISHæŠ¥æ–‡çš„é¢„æœŸå“åº” QoS 0	æ— å“åº”; QoS 1	PUBACKæŠ¥æ–‡; QoS 2	PUBRECæŠ¥æ–‡
 typedef struct mqtt_publish_varhead {
-    int8_t dup;//0:±íÊ¾ÕâÊÇ¿Í»§¶Ë»ò·şÎñ¶ËµÚÒ»´ÎÇëÇó·¢ËÍÕâ¸öPUBLISH±¨ÎÄ¡£1:±íÊ¾Õâ¿ÉÄÜÊÇÒ»¸öÔçÇ°±¨ÎÄÇëÇóµÄÖØ·¢¡£QoSÎª0µÄÏûÏ¢£¬DUP±êÖ¾±ØĞëÉèÖÃÎª0
-    int8_t qos;//·şÎñÖÊÁ¿µÈ¼¶ 0 ×î¶à·Ö·¢Ò»´Î 1 ÖÁÉÙ·Ö·¢Ò»´Î 2 Ö»·Ö·¢Ò»´Î
-    int8_t retain;//±£Áô±êÖ¾ 1:·şÎñ¶Ë±ØĞë´æ´¢´ËÏûÏ¢£¬²¢ÓÃÆäÌæ»»´Ë»°ÌâÏÂÈÎºÎÒÑ´æÔÚµÄÏûÏ¢
-    int16_t packid;//±¨ÎÄ±êÊ¶·û  Ö»ÓĞµ±QoSµÈ¼¶ÊÇ1»ò2Ê±²ÅÓĞ
-    char *topic;//Ö÷ÌâÃû
-    arr_propertie_ctx *properties;//ÊôĞÔ 5.0
+    int8_t dup;//0:è¡¨ç¤ºè¿™æ˜¯å®¢æˆ·ç«¯æˆ–æœåŠ¡ç«¯ç¬¬ä¸€æ¬¡è¯·æ±‚å‘é€è¿™ä¸ªPUBLISHæŠ¥æ–‡ã€‚1:è¡¨ç¤ºè¿™å¯èƒ½æ˜¯ä¸€ä¸ªæ—©å‰æŠ¥æ–‡è¯·æ±‚çš„é‡å‘ã€‚QoSä¸º0çš„æ¶ˆæ¯ï¼ŒDUPæ ‡å¿—å¿…é¡»è®¾ç½®ä¸º0
+    int8_t qos;//æœåŠ¡è´¨é‡ç­‰çº§ 0 æœ€å¤šåˆ†å‘ä¸€æ¬¡ 1 è‡³å°‘åˆ†å‘ä¸€æ¬¡ 2 åªåˆ†å‘ä¸€æ¬¡
+    int8_t retain;//ä¿ç•™æ ‡å¿— 1:æœåŠ¡ç«¯å¿…é¡»å­˜å‚¨æ­¤æ¶ˆæ¯ï¼Œå¹¶ç”¨å…¶æ›¿æ¢æ­¤è¯é¢˜ä¸‹ä»»ä½•å·²å­˜åœ¨çš„æ¶ˆæ¯
+    int16_t packid;//æŠ¥æ–‡æ ‡è¯†ç¬¦  åªæœ‰å½“QoSç­‰çº§æ˜¯1æˆ–2æ—¶æ‰æœ‰
+    char *topic;//ä¸»é¢˜å
+    arr_propertie_ctx *properties;//å±æ€§ 5.0
 }mqtt_publish_varhead;
 typedef struct mqtt_publish_payload {
-    int32_t lens;//³¤¶È
-    char content[0];//ÄÚÈİ
+    int32_t lens;//é•¿åº¦
+    char content[0];//å†…å®¹
 }mqtt_publish_payload;
 typedef struct mqtt_puback_varhead {
-    uint8_t reason;//Ô­ÒòÂë  5.0
-    int16_t packid;//±¨ÎÄ±êÊ¶·û
-    arr_propertie_ctx *properties;//ÊôĞÔ 5.0
+    uint8_t reason;//åŸå› ç   5.0
+    int16_t packid;//æŠ¥æ–‡æ ‡è¯†ç¬¦
+    arr_propertie_ctx *properties;//å±æ€§ 5.0
 }mqtt_puback_varhead;
 typedef struct mqtt_pubrec_varhead {
-    uint8_t reason;//Ô­ÒòÂë  5.0
-    int16_t packid;//±¨ÎÄ±êÊ¶·û
-    arr_propertie_ctx *properties;//ÊôĞÔ 5.0
+    uint8_t reason;//åŸå› ç   5.0
+    int16_t packid;//æŠ¥æ–‡æ ‡è¯†ç¬¦
+    arr_propertie_ctx *properties;//å±æ€§ 5.0
 }mqtt_pubrec_varhead;
 typedef struct mqtt_pubrel_varhead {
-    uint8_t reason;//Ô­ÒòÂë 5.0
-    int16_t packid;//±¨ÎÄ±êÊ¶·û
-    arr_propertie_ctx *properties;//ÊôĞÔ 5.0
+    uint8_t reason;//åŸå› ç  5.0
+    int16_t packid;//æŠ¥æ–‡æ ‡è¯†ç¬¦
+    arr_propertie_ctx *properties;//å±æ€§ 5.0
 }mqtt_pubrel_varhead;
 typedef struct mqtt_pubcomp_varhead {
-    uint8_t reason;//Ô­ÒòÂë 5.0
-    int16_t packid;//±¨ÎÄ±êÊ¶·û
-    arr_propertie_ctx *properties;//ÊôĞÔ 5.0
+    uint8_t reason;//åŸå› ç  5.0
+    int16_t packid;//æŠ¥æ–‡æ ‡è¯†ç¬¦
+    arr_propertie_ctx *properties;//å±æ€§ 5.0
 }mqtt_pubcomp_varhead;
 typedef struct mqtt_subscribe_varhead {
-    int16_t packid;//±¨ÎÄ±êÊ¶·û
-    arr_propertie_ctx *properties;//ÊôĞÔ 5.0
+    int16_t packid;//æŠ¥æ–‡æ ‡è¯†ç¬¦
+    arr_propertie_ctx *properties;//å±æ€§ 5.0
 }mqtt_subscribe_varhead;
 typedef struct subscribe_option {
-    int8_t qos;//×î´ó·şÎñÖÊÁ¿
-    int8_t nl;//·Ç±¾µØ(MQTT5.0)
-    int8_t rap;//·¢²¼±£Áô(MQTT5.0)
-    int8_t retain;//±£Áô²Ù×÷(MQTT5.0)
+    int8_t qos;//æœ€å¤§æœåŠ¡è´¨é‡
+    int8_t nl;//éæœ¬åœ°(MQTT5.0)
+    int8_t rap;//å‘å¸ƒä¿ç•™(MQTT5.0)
+    int8_t retain;//ä¿ç•™æ“ä½œ(MQTT5.0)
     char *topic;
 }subscribe_option;
 ARRAY_DECL(subscribe_option *, arr_subscribe_option);
@@ -93,47 +93,47 @@ typedef struct mqtt_subscribe_payload {
     arr_subscribe_option_ctx subop;
 }mqtt_subscribe_payload;
 typedef struct mqtt_suback_varhead {
-    int16_t packid;//±¨ÎÄ±êÊ¶·û
-    arr_propertie_ctx *properties;//ÊôĞÔ 5.0
+    int16_t packid;//æŠ¥æ–‡æ ‡è¯†ç¬¦
+    arr_propertie_ctx *properties;//å±æ€§ 5.0
 }mqtt_suback_varhead;
 typedef struct mqtt_suback_payload {
-    int32_t rlens;//Ô­ÒòÂë³¤¶È
-    uint8_t reasons[0];//Ô­ÒòÂëÁĞ±í
+    int32_t rlens;//åŸå› ç é•¿åº¦
+    uint8_t reasons[0];//åŸå› ç åˆ—è¡¨
 }mqtt_suback_payload;
 typedef struct mqtt_unsubscribe_varhead {
-    int16_t packid;//±¨ÎÄ±êÊ¶·û
-    arr_propertie_ctx *properties;//ÊôĞÔ 5.0
+    int16_t packid;//æŠ¥æ–‡æ ‡è¯†ç¬¦
+    arr_propertie_ctx *properties;//å±æ€§ 5.0
 }mqtt_unsubscribe_varhead;
 typedef struct mqtt_unsubscribe_payload {
-    arr_ptr_ctx topics;//Ö÷Ìâ¹ıÂËÆ÷
+    arr_ptr_ctx topics;//ä¸»é¢˜è¿‡æ»¤å™¨
 }mqtt_unsubscribe_payload;
 typedef struct mqtt_unsuback_varhead {
-    int16_t packid;//±¨ÎÄ±êÊ¶·û
-    arr_propertie_ctx *properties;//ÊôĞÔ 5.0
+    int16_t packid;//æŠ¥æ–‡æ ‡è¯†ç¬¦
+    arr_propertie_ctx *properties;//å±æ€§ 5.0
 }mqtt_unsuback_varhead;
 typedef struct mqtt_unsuback_payload { //5.0
-    int32_t rlens;//Ô­ÒòÂë³¤¶È
-    uint8_t reasons[0];//Ô­ÒòÂëÁĞ±í
+    int32_t rlens;//åŸå› ç é•¿åº¦
+    uint8_t reasons[0];//åŸå› ç åˆ—è¡¨
 }mqtt_unsuback_payload;
 typedef struct mqtt_disconnect_varhead {//5.0
-    uint8_t reason;//¶Ï¿ªÔ­ÒòÂë 5.0
-    arr_propertie_ctx *properties;//ÊôĞÔ 5.0
+    uint8_t reason;//æ–­å¼€åŸå› ç  5.0
+    arr_propertie_ctx *properties;//å±æ€§ 5.0
 }mqtt_disconnect_varhead;
 typedef struct mqtt_auth_varhead {//5.0
-    uint8_t reason;//ÈÏÖ¤Ô­ÒòÂë
-    arr_propertie_ctx *properties;//ÊôĞÔ 5.0
+    uint8_t reason;//è®¤è¯åŸå› ç 
+    arr_propertie_ctx *properties;//å±æ€§ 5.0
 }mqtt_auth_varhead;
 typedef struct mqtt_pack_ctx {
-    int8_t version;//Ğ­Òé°æ±¾
-    //¹Ì¶¨±¨Í·
+    int8_t version;//åè®®ç‰ˆæœ¬
+    //å›ºå®šæŠ¥å¤´
     mqtt_fixhead fixhead;
-    //¿É±ä±¨Í·
+    //å¯å˜æŠ¥å¤´
     void *varhead;
-    //ÔØºÉ
+    //è½½è·
     void *payload;
 }mqtt_pack_ctx;
 typedef struct mqtt_ctx {
-    int8_t version;//Ğ­Òé°æ±¾ mqtt_protoversion
+    int8_t version;//åè®®ç‰ˆæœ¬ mqtt_protoversion
 }mqtt_ctx;
 
 void _mqtt_propertie_free(arr_propertie_ctx *properties);

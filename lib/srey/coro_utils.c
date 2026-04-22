@@ -1,4 +1,4 @@
-#include "srey/coro_utils.h"
+﻿#include "srey/coro_utils.h"
 #include "srey/coro.h"
 #include "srey/task.h"
 #include "protocol/urlparse.h"
@@ -18,7 +18,8 @@ dns_ip *dns_lookup(task_ctx *task, const char *domain, int32_t ipv6, size_t *cnt
     const char *dnsip = dns_get_ip();
     if (ERR_OK == is_ipv6(dnsip)) {
         rtn = task_udp(task, "::", 0, &fd, &skid);
-    } else {
+    }
+    else {
         rtn = task_udp(task, "0.0.0.0", 0, &fd, &skid);
     }
     if (ERR_OK != rtn) {
@@ -68,13 +69,15 @@ SOCKET wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, c
         }
         memcpy(ip, ips[0].ip, strlen(ips[0].ip));
         FREE(ips);
-    } else {
+    }
+    else {
         memcpy(ip, host, strlen(host));
     }
     uint16_t port;
     if (url.port.lens > 0) {
         port = (uint16_t)strtol(url.port.data, NULL, 10);
-    } else {
+    }
+    else {
         port = NULL == evssl ? 80 : 443;
     }
     SOCKET fd;
@@ -199,7 +202,8 @@ int32_t smtp_connect(task_ctx *task, smtp_ctx *smtp) {
         if (NULL != msg) {
             LOG_WARN("%s", msg);
         }
-    } else {
+    }
+    else {
         coro_sync(task, smtp->fd, smtp->skid);
     }
     return err;
@@ -285,7 +289,8 @@ int32_t pgsql_connect(task_ctx *task, pgsql_ctx *pg) {
         if (NULL != err) {
             LOG_WARN("%s", err);
         }
-    } else {
+    }
+    else {
         coro_sync(task, pg->fd, pg->skid);
     }
     return code;
@@ -364,7 +369,8 @@ static int32_t _mongo_auth(mongo_ctx *mongo, const char *authmod) {
     if (ERR_OK != err) {
         if (NULL != mgpack) {
             mongo_set_error(mongo, bson_tostring2(mgpack->doc, mgpack->dlens), 0);
-        } else {
+        }
+        else {
             mongo_set_error(mongo, "authentication failed.", 1);
         }
     }

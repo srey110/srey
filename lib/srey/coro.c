@@ -1,4 +1,4 @@
-#include "srey/coro.h"
+ï»¿#include "srey/coro.h"
 #include "containers/hashmap.h"
 #include "utils/timer.h"
 #define MINICORO_IMPL
@@ -11,9 +11,9 @@ typedef struct coro_info {
 }coro_info;
 QUEUE_DECL(coro_info, qu_coinfo)
 typedef struct coro_sess {
-    int32_t disposable;//Ò»´ÎÐÔ
+    int32_t disposable;//ä¸€æ¬¡æ€§
     qu_coinfo_ctx *qucoinfo;
-    coro_info coinfo;//disposable trueÊ±ÓÃ
+    coro_info coinfo;//disposable trueæ—¶ç”¨
     uint64_t sess;
 }coro_sess;
 typedef struct coro_ctx {//task->arg
@@ -40,7 +40,8 @@ static void _map_cosess_set(task_ctx *task, int32_t disposable, mco_coro *coro, 
         cosess.sess = sess;
         if (ms > 0) {
             cosess.coinfo.timeout = timer_cur_ms(&coctx->timer) + ms;
-        } else {
+        }
+        else {
             cosess.coinfo.timeout = 0;
         }
         cosess.coinfo.co = coro;
@@ -52,7 +53,8 @@ static void _map_cosess_set(task_ctx *task, int32_t disposable, mco_coro *coro, 
     coro_info coinfo;
     if (ms > 0) {
         coinfo.timeout = timer_cur_ms(&coctx->timer) + ms;
-    } else {
+    }
+    else {
         coinfo.timeout = 0;
     }
     coinfo.co = coro;
@@ -62,7 +64,8 @@ static void _map_cosess_set(task_ctx *task, int32_t disposable, mco_coro *coro, 
     const coro_sess *cofind = hashmap_get(coctx->mapco, &key);
     if (NULL != cofind) {
         qu_coinfo_push(cofind->qucoinfo, &coinfo);
-    } else {
+    }
+    else {
         coro_sess cosess;
         cosess.disposable = disposable;
         cosess.sess = sess;
@@ -81,7 +84,7 @@ static int32_t _map_cosess_get(task_ctx *task, uint64_t sess, msg_type mtype, co
         return ERR_FAILED;
     }
     if (cofind->disposable) {
-        if (mtype != cofind->coinfo.mtype 
+        if (mtype != cofind->coinfo.mtype
             && MSG_TYPE_CLOSE != mtype) {
             return ERR_FAILED;
         }
@@ -121,7 +124,7 @@ static void _mco_cb(mco_coro *coro) {
         ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
         rtn = mco_pop(coro, &arg, sizeof(arg));
         ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
-        task_incref(arg.task);//±£Ö¤_message_runÀïyieldºó²»»á±»ÊÍ·Å
+        task_incref(arg.task);//ä¿è¯_message_runé‡ŒyieldåŽä¸ä¼šè¢«é‡Šæ”¾
         _message_run(arg.task, &arg.msg);
         qu_ptr_push(&((coro_ctx *)arg.task->arg)->qucopool, (void **)&coro);
         task_ungrab(arg.task);
@@ -136,8 +139,8 @@ static coro_ctx *_coro_ctx_init(void) {
     qu_ptr_init(&coctx->qucopool, 0);
     timer_init(&coctx->timer);
     coctx->mapco = hashmap_new_with_allocator(_malloc, _realloc, _free,
-                                              sizeof(coro_sess), ONEK, 0, 0,
-                                              _map_cosess_hash, _map_cosess_compare, NULL, NULL);
+        sizeof(coro_sess), ONEK, 0, 0,
+        _map_cosess_hash, _map_cosess_compare, NULL, NULL);
     return coctx;
 }
 static void _coro_ctx_free(void *arg) {
@@ -213,7 +216,8 @@ static void _connected_dispatch(task_dispatch_arg *arg) {
     mco_coro *coro = _get_mco(&cosess);
     if (NULL == coro) {
         _co_create(arg);
-    } else {
+    }
+    else {
         _co_resume(coro, arg);
     }
 }
@@ -226,7 +230,8 @@ static void _ssl_exchanged_dispatch(task_dispatch_arg *arg) {
     mco_coro *coro = _get_mco(&cosess);
     if (NULL == coro) {
         _co_create(arg);
-    } else {
+    }
+    else {
         _co_resume(coro, arg);
     }
 }
@@ -239,7 +244,8 @@ static void _handshaked_dispatch(task_dispatch_arg *arg) {
     mco_coro *coro = _get_mco(&cosess);
     if (NULL == coro) {
         _co_create(arg);
-    } else {
+    }
+    else {
         _co_resume(coro, arg);
     }
 }
@@ -257,7 +263,8 @@ static void _recved_dispatch(task_dispatch_arg *arg) {
     mco_coro *coro = _get_mco(&cosess);
     if (NULL == coro) {
         _co_create(arg);
-    } else {
+    }
+    else {
         _co_resume(coro, arg);
     }
 }
@@ -281,15 +288,17 @@ static void _recvfrom_dispatch(task_dispatch_arg *arg) {
     coro_sess cosess;
     if (ERR_OK != _map_cosess_get(arg->task, arg->msg.sess, (msg_type)arg->msg.mtype, &cosess)) {
         _co_create(arg);
-    } else {
+    }
+    else {
         _co_resume(_get_mco(&cosess), arg);
     }
 }
 static void _response_dispatch(task_dispatch_arg *arg) {
     coro_sess cosess;
     if (ERR_OK != _map_cosess_get(arg->task, arg->msg.sess, (msg_type)arg->msg.mtype, &cosess)) {
-        _co_create(arg); 
-    } else {
+        _co_create(arg);
+    }
+    else {
         _co_resume(_get_mco(&cosess), arg);
     }
 }
@@ -307,7 +316,8 @@ static void _timeout_monitor(task_ctx *task, uint64_t sess) {
         while (hashmap_iter(coctx->mapco, &iter, (void **)&cosess)) {
             if (cosess->disposable) {
                 coinfo = &cosess->coinfo;
-            } else {
+            }
+            else {
                 coinfo = qu_coinfo_peek(cosess->qucoinfo);
                 if (NULL == coinfo) {
                     continue;
@@ -320,7 +330,8 @@ static void _timeout_monitor(task_ctx *task, uint64_t sess) {
                 LOG_INFO("task %d message type %d session %"PRIu64" timeout.", task->name, coinfo->mtype, cosess->sess);
                 if (cosess->disposable) {
                     hashmap_delete(coctx->mapco, cosess);
-                } else {
+                }
+                else {
                     qu_coinfo_pop(cosess->qucoinfo);
                 }
                 _co_resume(coro, &arg);

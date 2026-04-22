@@ -1,4 +1,4 @@
-#ifndef THREAD_H_
+ï»¿#ifndef THREAD_H_
 #define THREAD_H_
 
 #include "base/macro.h"
@@ -7,14 +7,14 @@
 typedef HANDLE pthread_t;
 #endif
 /// <summary>
-/// ´´½¨Ïß³Ì
+/// åˆ›å»ºçº¿ç¨‹
 /// </summary>
-/// <param name="cb">»Øµ÷º¯Êı</param>
-/// <param name="udata">ÓÃ»§²ÎÊı</param>
+/// <param name="cb">å›è°ƒå‡½æ•°</param>
+/// <param name="udata">ç”¨æˆ·å‚æ•°</param>
 /// <returns>pthread_t</returns>
 pthread_t thread_creat(void(*cb)(void*), void *udata);
 /// <summary>
-/// µÈ´ıÏß³ÌÍË³ö
+/// ç­‰å¾…çº¿ç¨‹é€€å‡º
 /// </summary>
 /// <param name="th">pthread_t</param>
 void thread_join(pthread_t th);

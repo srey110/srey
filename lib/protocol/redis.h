@@ -1,4 +1,4 @@
-#ifndef REDIS_H_
+ï»¿#ifndef REDIS_H_
 #define REDIS_H_
 
 #include "utils/buffer.h"
@@ -20,13 +20,13 @@
 #define RESP_PUSHE   '>' //>  Pushes           RESP3  ><number-of-elements>\r\n<element-1>...<element-n>
 #define RESP_MAP     '%' //%  Maps             RESP3  %<number-of-entries>\r\n<key-1><value-1>...<key-n><value-n>
 #define RESP_ATTR    '|' //|  Attribute type   RESP3  like the Map type, but instead of the % first byte, the | byte is used.
-                                                    //however the client should not consider such a dictionary part of the reply, 
-                                                    //but just auxiliary data that is used in order to augment the reply.
+//however the client should not consider such a dictionary part of the reply, 
+//but just auxiliary data that is used in order to augment the reply.
 typedef struct redis_pack_ctx {
     int32_t prot;
     char venc[4]; //RESP_VERB  encoding
-    int64_t nelem;//¶àÉÙÌõÊı¾İ RESP_ARRAY RESP_SET RESP_PUSHE RESP_MAP  RESP_ATTR
-    int64_t len;//data ³¤¶È
+    int64_t nelem;//å¤šå°‘æ¡æ•°æ® RESP_ARRAY RESP_SET RESP_PUSHE RESP_MAP  RESP_ATTR
+    int64_t len;//data é•¿åº¦
     int64_t ival;//RESP_INTEGER RESP_BOOL RESP_BIGNUM 
     double dval;//RESP_DOUBLE
     struct redis_pack_ctx *next;
@@ -36,14 +36,14 @@ typedef struct redis_pack_ctx {
 void _redis_pkfree(redis_pack_ctx *pack);
 void _redis_udfree(ud_cxt *ud);
 /// <summary>
-/// ÇëÇó°ü
+/// è¯·æ±‚åŒ…
 /// </summary>
-/// <param name="size">ÇëÇó°ü³¤¶È</param>
-/// <param name="fmt">¸ñÊ½»¯ ²ÎÊıÒÔ¿Õ¸ñ·Ö¸î, %b:binary - size_t %%:%  C format</param>
-/// <param name="...">±ä²Î</param>
-/// <returns>ÇëÇó°ü</returns>
+/// <param name="size">è¯·æ±‚åŒ…é•¿åº¦</param>
+/// <param name="fmt">æ ¼å¼åŒ– å‚æ•°ä»¥ç©ºæ ¼åˆ†å‰², %b:binary - size_t %%:%  C format</param>
+/// <param name="...">å˜å‚</param>
+/// <returns>è¯·æ±‚åŒ…</returns>
 char *redis_pack(size_t *size, const char *fmt, ...);
-//½â°ü
+//è§£åŒ…
 redis_pack_ctx *redis_unpack(buffer_ctx *buf, ud_cxt *ud, int32_t *status);
 
 #endif//REDIS_H_

@@ -1,8 +1,8 @@
-#include "protocol/custz_head.h"
+ï»¿#include "protocol/custz_head.h"
 #include "protocol/prots.h"
 #include "utils/utils.h"
 
-#define CUSTZ_FIXED_LENS 4 //¹Ì¶¨Í·³¤¶È
+#define CUSTZ_FIXED_LENS 4 //å›ºå®šå¤´é•¿åº¦
 
 int32_t _custz_decode_fixed(buffer_ctx *buf, size_t *hlens, size_t *size, int32_t *status) {
     if (buffer_size(buf) < CUSTZ_FIXED_LENS) {
@@ -24,7 +24,7 @@ char *_custz_encode_fixed(size_t dlens, size_t *hlens, size_t *size) {
     return pack;
 }
 int32_t _custz_decode_flag(buffer_ctx *buf, size_t *hlens, size_t *size, int32_t *status) {
-    if (buffer_size(buf) < 1){
+    if (buffer_size(buf) < 1) {
         BIT_SET(*status, PROT_MOREDATA);
         return ERR_FAILED;
     }
@@ -32,7 +32,8 @@ int32_t _custz_decode_flag(buffer_ctx *buf, size_t *hlens, size_t *size, int32_t
     *hlens = sizeof(flag);
     if (flag <= 0xfc) {
         *size = flag;
-    } else if (0xfd == flag) {
+    }
+    else if (0xfd == flag) {
         char buf16[sizeof(uint16_t)];
         *hlens += sizeof(buf16);
         if (*hlens > buffer_size(buf)) {
@@ -41,7 +42,8 @@ int32_t _custz_decode_flag(buffer_ctx *buf, size_t *hlens, size_t *size, int32_t
         }
         ASSERTAB(sizeof(buf16) == buffer_copyout(buf, sizeof(flag), buf16, sizeof(buf16)), "copy buffer error.");
         *size = (size_t)unpack_integer(buf16, sizeof(buf16), 0, 0);
-    } else if (0xfe == flag) {
+    }
+    else if (0xfe == flag) {
         char buf32[sizeof(uint32_t)];
         *hlens += sizeof(buf32);
         if (*hlens > buffer_size(buf)) {
@@ -50,7 +52,8 @@ int32_t _custz_decode_flag(buffer_ctx *buf, size_t *hlens, size_t *size, int32_t
         }
         ASSERTAB(sizeof(buf32) == buffer_copyout(buf, sizeof(flag), buf32, sizeof(buf32)), "copy buffer error.");
         *size = (size_t)unpack_integer(buf32, sizeof(buf32), 0, 0);
-    } else {
+    }
+    else {
         char buf64[sizeof(uint64_t)];
         *hlens += sizeof(buf64);
         if (*hlens > buffer_size(buf)) {
@@ -69,19 +72,22 @@ char *_custz_encode_flag(size_t dlens, size_t *hlens, size_t *size) {
         *size = *hlens + dlens;
         MALLOC(pack, *size);
         pack[0] = (uint8_t)dlens;
-    } else if (dlens > 0xfc && dlens <= USHRT_MAX) {
+    }
+    else if (dlens > 0xfc && dlens <= USHRT_MAX) {
         *hlens += sizeof(uint16_t);
         *size = *hlens + dlens;
         MALLOC(pack, *size);
         pack[0] = 0xfd;
         pack_integer(pack + sizeof(uint8_t), dlens, sizeof(uint16_t), 0);
-    } else if (dlens > USHRT_MAX && dlens <= UINT_MAX) {
+    }
+    else if (dlens > USHRT_MAX && dlens <= UINT_MAX) {
         *hlens += sizeof(uint32_t);
         *size = *hlens + dlens;
         MALLOC(pack, *size);
         pack[0] = 0xfe;
         pack_integer(pack + sizeof(uint8_t), dlens, sizeof(uint32_t), 0);
-    } else {
+    }
+    else {
         *hlens += sizeof(uint64_t);
         *size = *hlens + dlens;
         MALLOC(pack, *size);
@@ -109,7 +115,8 @@ int32_t _custz_decode_variable(buffer_ctx *buf, size_t *hlens, size_t *size, int
     }
     if (buffer_size(buf) >= 8) {
         BIT_SET(*status, PROT_ERROR);
-    } else {
+    }
+    else {
         BIT_SET(*status, PROT_MOREDATA);
     }
     return ERR_FAILED;

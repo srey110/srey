@@ -1,4 +1,4 @@
-#include "utils/log.h"
+﻿#include "utils/log.h"
 #include "utils/utils.h"
 
 #define  LOG_FMT "[%s][%s]%s\n"
@@ -77,7 +77,8 @@ static void _slog(int32_t lv, const char *fmt, va_list args) {
             break;
         }
 #endif
-    } else {
+    }
+    else {
         fprintf(_handle, LOG_FMT, time, _lvstr(lv), out);
         if (LOGLV_FATAL == lv) {
             fflush(_handle);

@@ -1,4 +1,4 @@
-#ifndef POPEN2_H_
+ï»¿#ifndef POPEN2_H_
 #define POPEN2_H_
 
 #include "base/macro.h"
@@ -15,51 +15,51 @@ typedef struct popen_ctx {
 #endif
 }popen_ctx;
 /// <summary>
-/// Ö´ĞĞÃüÁî
+/// æ‰§è¡Œå‘½ä»¤
 /// </summary>
 /// <param name="ctx">popen_ctx</param>
-/// <param name="cmd">ÃüÁî</param>
-/// <param name="mode">r¶Á wĞ´</param>
-/// <returns>ERR_OK ³É¹¦</returns>
+/// <param name="cmd">å‘½ä»¤</param>
+/// <param name="mode">rè¯» wå†™</param>
+/// <returns>ERR_OK æˆåŠŸ</returns>
 int32_t popen_startup(popen_ctx *ctx, const char *cmd, const char *mode);
 /// <summary>
-/// ¹Ø±Õ½ø³Ì
+/// å…³é—­è¿›ç¨‹
 /// </summary>
 /// <param name="ctx">popen_ctx</param>
 void popen_close(popen_ctx *ctx);
 /// <summary>
-/// ÊÍ·Å
+/// é‡Šæ”¾
 /// </summary>
 /// <param name="ctx">popen_ctx</param>
 void popen_free(popen_ctx *ctx);
 /// <summary>
-/// µÈ´ıÖ´ĞĞÍê³É
+/// ç­‰å¾…æ‰§è¡Œå®Œæˆ
 /// </summary>
 /// <param name="ctx">popen_ctx</param>
-/// <param name="ms">³¬Ê± ºÁÃë</param>
-/// <returns>ERR_OK ³É¹¦</returns>
+/// <param name="ms">è¶…æ—¶ æ¯«ç§’</param>
+/// <returns>ERR_OK æˆåŠŸ</returns>
 int32_t popen_waitexit(popen_ctx *ctx, uint32_t ms);
 /// <summary>
-/// »ñÈ¡ÍË³öÂë ·Çwindows ²»Ò»¶¨ÄÜÈ¡µ½
+/// è·å–é€€å‡ºç  éwindows ä¸ä¸€å®šèƒ½å–åˆ°
 /// </summary>
 /// <param name="ctx">popen_ctx</param>
-/// <returns>ÍË³öÂë</returns>
+/// <returns>é€€å‡ºç </returns>
 int32_t popen_exitcode(popen_ctx *ctx);
 /// <summary>
-/// »ñÈ¡ÃüÁîµÄÊä³ö r
+/// è·å–å‘½ä»¤çš„è¾“å‡º r
 /// </summary>
 /// <param name="ctx">popen_ctx</param>
-/// <param name="output">Êä³ö</param>
-/// <param name="lens">³¤¶È</param>
-/// <returns>¶Áµ½µÄ×Ö½ÚÊı, ERR_FAILED Ê§°Ü</returns>
+/// <param name="output">è¾“å‡º</param>
+/// <param name="lens">é•¿åº¦</param>
+/// <returns>è¯»åˆ°çš„å­—èŠ‚æ•°, ERR_FAILED å¤±è´¥</returns>
 int32_t popen_read(popen_ctx *ctx, char *output, size_t lens);
 /// <summary>
-/// Ğ´Èë,\n½áÊø ²Å»áÖ´ĞĞ w
+/// å†™å…¥,\nç»“æŸ æ‰ä¼šæ‰§è¡Œ w
 /// </summary>
 /// <param name="ctx">popen_ctx</param>
-/// <param name="input">ÊäÈë</param>
-/// <param name="lens">³¤¶È</param>
-/// <returns>Ğ´ÈëµÄ×Ö½ÚÊı, ERR_FAILED Ê§°Ü</returns>
+/// <param name="input">è¾“å…¥</param>
+/// <param name="lens">é•¿åº¦</param>
+/// <returns>å†™å…¥çš„å­—èŠ‚æ•°, ERR_FAILED å¤±è´¥</returns>
 int32_t popen_write(popen_ctx *ctx, const char *input, size_t lens);
 
 #endif//POPEN2_H_

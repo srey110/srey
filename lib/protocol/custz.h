@@ -1,16 +1,16 @@
-#ifndef CUSTOMIZE_H_
+ï»¿#ifndef CUSTOMIZE_H_
 #define CUSTOMIZE_H_
 
 #include "utils/buffer.h"
 
-//½â°ü
+//è§£åŒ…
 void *custz_unpack(uint8_t pktype, buffer_ctx *buf, size_t *size, int32_t *status);
 /// <summary>
-/// ×é°ü
+/// ç»„åŒ…
 /// </summary>
-/// <param name="data">Êı¾İ</param>
-/// <param name="lens">Êı¾İ³¤¶È</param>
-/// <param name="size">×é°üºóµÄÊı¾İ³¤¶È</param>
+/// <param name="data">æ•°æ®</param>
+/// <param name="lens">æ•°æ®é•¿åº¦</param>
+/// <param name="size">ç»„åŒ…åçš„æ•°æ®é•¿åº¦</param>
 /// <returns>void *</returns>
 void *custz_pack(uint8_t pktype, void *data, size_t lens, size_t *size);
 

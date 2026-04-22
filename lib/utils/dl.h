@@ -1,9 +1,9 @@
-#ifndef DYNALIB_H_
+ï»¿#ifndef DYNALIB_H_
 #define DYNALIB_H_
 
 #include "base/macro.h"
 
-//dll so ²Ù×÷
+//dll so æ“ä½œ
 typedef struct dl_ctx {
 #ifdef OS_WIN
     HMODULE handle;
@@ -16,11 +16,11 @@ typedef struct dl_ctx {
 #endif
 }dl_ctx;
 /// <summary>
-/// ¼ÓÔØ¶¯Ì¬¿â
+/// åŠ è½½åŠ¨æ€åº“
 /// </summary>
 /// <param name="ctx">dl_ctx</param>
-/// <param name="lib">¿âÎÄ¼ş</param>
-/// <returns>ERR_OK ³É¹¦</returns>
+/// <param name="lib">åº“æ–‡ä»¶</param>
+/// <returns>ERR_OK æˆåŠŸ</returns>
 static inline int32_t dl_init(dl_ctx *ctx, const char *lib) {
 #ifdef OS_WIN
     ctx->handle = LoadLibrary(lib);
@@ -34,7 +34,7 @@ static inline int32_t dl_init(dl_ctx *ctx, const char *lib) {
     return NULL == ctx->handle ? ERR_FAILED : ERR_OK;
 }
 /// <summary>
-/// ÊÍ·Å¶¯Ì¬¿â
+/// é‡Šæ”¾åŠ¨æ€åº“
 /// </summary>
 /// <param name="ctx">dl_ctx</param>
 static inline void dl_free(dl_ctx *ctx) {
@@ -52,10 +52,10 @@ static inline void dl_free(dl_ctx *ctx) {
 #endif
 }
 /// <summary>
-/// »ñÈ¡º¯ÊıµØÖ·
+/// è·å–å‡½æ•°åœ°å€
 /// </summary>
 /// <param name="ctx">dl_ctx</param>
-/// <param name="sym">º¯Êı</param>
+/// <param name="sym">å‡½æ•°</param>
 /// <returns>void *</returns>
 static inline void *dl_sym(dl_ctx *ctx, const char *sym) {
 #ifdef OS_WIN

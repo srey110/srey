@@ -1,12 +1,12 @@
-#ifndef HASH_RING_H_
+ï»¿#ifndef HASH_RING_H_
 #define HASH_RING_H_
 
 #include "crypt/digest.h"
 
 typedef struct hash_ring_node {
-    uint32_t nreplicas;//½ÚµãÊı
-    void *name;//½ÚµãÃû
-    size_t lens;//name ³¤¶È
+    uint32_t nreplicas;//èŠ‚ç‚¹æ•°
+    void *name;//èŠ‚ç‚¹å
+    size_t lens;//name é•¿åº¦
 } hash_ring_node;
 typedef struct hash_ring_ctx {
     uint32_t nnodes;
@@ -17,41 +17,41 @@ typedef struct hash_ring_ctx {
 } hash_ring_ctx;
 
 /// <summary>
-/// ³õÊ¼»¯
+/// åˆå§‹åŒ–
 /// </summary>
 /// <param name="ring">hash_ring_ctx</param>
 void hash_ring_init(hash_ring_ctx *ring);
 /// <summary>
-/// ÊÍ·Å
+/// é‡Šæ”¾
 /// </summary>
 /// <param name="ring">hash_ring_ctx</param>
 void hash_ring_free(hash_ring_ctx *ring);
 /// <summary>
-/// Ìí¼Ó½Úµã
+/// æ·»åŠ èŠ‚ç‚¹
 /// </summary>
 /// <param name="ring">hash_ring_ctx</param>
-/// <param name="name">½ÚµãÃû</param>
-/// <param name="lens">name³¤¶È</param>
-/// <param name="nreplicas">½ÚµãÊı</param>
-/// <returns>ERR_OK ³É¹¦ </returns>
+/// <param name="name">èŠ‚ç‚¹å</param>
+/// <param name="lens">nameé•¿åº¦</param>
+/// <param name="nreplicas">èŠ‚ç‚¹æ•°</param>
+/// <returns>ERR_OK æˆåŠŸ </returns>
 int32_t hash_ring_add(hash_ring_ctx *ring, void *name, size_t lens, uint32_t nreplicas);
 /// <summary>
-/// ÒÆ³ıÒÑ¾­Ìí¼ÓµÄ½Úµã
+/// ç§»é™¤å·²ç»æ·»åŠ çš„èŠ‚ç‚¹
 /// </summary>
 /// <param name="ring">hash_ring_ctx</param>
-/// <param name="name">½ÚµãÃû</param>
-/// <param name="lens">name³¤¶È</param>
+/// <param name="name">èŠ‚ç‚¹å</param>
+/// <param name="lens">nameé•¿åº¦</param>
 void hash_ring_remove(hash_ring_ctx *ring, void *name, size_t lens);
 /// <summary>
-/// ²éÕÒkey¶ÔÓ¦µÄ½Úµã
+/// æŸ¥æ‰¾keyå¯¹åº”çš„èŠ‚ç‚¹
 /// </summary>
 /// <param name="ring">hash_ring_ctx</param>
-/// <param name="key">½ÚµãÃû</param>
-/// <param name="lens">key³¤¶È</param>
+/// <param name="key">èŠ‚ç‚¹å</param>
+/// <param name="lens">keyé•¿åº¦</param>
 /// <returns>hash_ring_node</returns>
 hash_ring_node *hash_ring_find(hash_ring_ctx *ring, void *key, size_t lens);
 /// <summary>
-/// ´òÓ¡
+/// æ‰“å°
 /// </summary>
 /// <param name="ring">hash_ring_ctx</param>
 void hash_ring_print(hash_ring_ctx *ring);

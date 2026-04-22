@@ -1,30 +1,30 @@
-#ifndef HARBOR_H_
+ï»¿#ifndef HARBOR_H_
 #define HARBOR_H_
 
 #include "srey/coro.h"
 
 /// <summary>
-/// Æô¶¯harbor,·şÎñÆ÷¼äÍ¨ĞÅ
+/// å¯åŠ¨harbor,æœåŠ¡å™¨é—´é€šä¿¡
 /// </summary>
 /// <param name="loader">loader_ctx</param>
-/// <param name="tname">ÈÎÎñÃû</param>
-/// <param name="ssl">evssl_ctx Ãû³Æ</param>
+/// <param name="tname">ä»»åŠ¡å</param>
+/// <param name="ssl">evssl_ctx åç§°</param>
 /// <param name="ip">IP</param>
-/// <param name="port">¶Ë¿Ú</param>
-/// <param name="key">ÃÜÔ¿</param>
-/// <returns>ERR_OK ³É¹¦</returns>
+/// <param name="port">ç«¯å£</param>
+/// <param name="key">å¯†é’¥</param>
+/// <returns>ERR_OK æˆåŠŸ</returns>
 int32_t harbor_start(loader_ctx *loader, name_t tname, name_t ssl, const char *ip, uint16_t port, const char *key);
 /// <summary>
-/// ·şÎñÆ÷¼äÍ¨ĞÅÇëÇó°ü
+/// æœåŠ¡å™¨é—´é€šä¿¡è¯·æ±‚åŒ…
 /// </summary>
-/// <param name="task">Ä¿±êÈÎÎñÃû</param>
-/// <param name="call">1 Ö´ĞĞcall 0 Ö´ĞĞrequest</param>
-/// <param name="reqtype">ÇëÇóÀàĞÍ</param>
-/// <param name="key">ÃÜÔ¿</param>
-/// <param name="data">Êı¾İ</param>
-/// <param name="size">Êı¾İ³¤¶È</param>
-/// <param name="lens">ÇëÇó°ü³¤¶È</param>
-/// <returns>ÇëÇó°ü</returns>
+/// <param name="task">ç›®æ ‡ä»»åŠ¡å</param>
+/// <param name="call">1 æ‰§è¡Œcall 0 æ‰§è¡Œrequest</param>
+/// <param name="reqtype">è¯·æ±‚ç±»å‹</param>
+/// <param name="key">å¯†é’¥</param>
+/// <param name="data">æ•°æ®</param>
+/// <param name="size">æ•°æ®é•¿åº¦</param>
+/// <param name="lens">è¯·æ±‚åŒ…é•¿åº¦</param>
+/// <returns>è¯·æ±‚åŒ…</returns>
 void *harbor_pack(name_t task, int32_t call, uint8_t reqtype, const char *key, void *data, size_t size, size_t *lens);
 
 #endif//HARBOR_H_

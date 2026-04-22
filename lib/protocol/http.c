@@ -1,10 +1,10 @@
-#include "protocol/http.h"
+﻿#include "protocol/http.h"
 #include "protocol/prots.h"
 #include "crypt/urlraw.h"
 #include "containers/sarray.h"
 #include "utils/utils.h"
 
-typedef enum parse_status{
+typedef enum parse_status {
     INIT = 0,
     CONTENT,
     CHUNKED
@@ -42,7 +42,7 @@ static void _check_fileld(http_pack_ctx *pack, http_header_ctx *field, int32_t *
         }
         break;
     case 't':
-        if (ERR_OK == _http_check_keyval(field, "transfer-encoding", "chunked")){
+        if (ERR_OK == _http_check_keyval(field, "transfer-encoding", "chunked")) {
             *transfer = CHUNKED;
             pack->data.lens = 0;
             pack->chunked = 1;
@@ -135,18 +135,20 @@ static http_pack_ctx *_http_content(buffer_ctx *buf, ud_cxt *ud, int32_t *status
         ud->status = INIT;
         ud->context = NULL;
         return pack;
-    } else {
+    }
+    else {
         BIT_SET(*status, PROT_MOREDATA);
         return NULL;
     }
 }
 static size_t _http_headlens(buffer_ctx *buf, int32_t *status) {
     size_t flens = CRLF_SIZE * 2;
-    int32_t pos = buffer_search(buf, 0, 0, 0, CONCAT2(FLAG_CRLF,FLAG_CRLF), flens);
+    int32_t pos = buffer_search(buf, 0, 0, 0, CONCAT2(FLAG_CRLF, FLAG_CRLF), flens);
     if (ERR_FAILED == pos) {
         if (buffer_size(buf) > MAX_HEADLENS) {
             BIT_SET(*status, PROT_ERROR);
-        } else {
+        }
+        else {
             BIT_SET(*status, PROT_MOREDATA);
         }
         return 0;
@@ -192,12 +194,14 @@ static http_pack_ctx *_http_header(buffer_ctx *buf, ud_cxt *ud, int32_t *status)
             BIT_SET(*status, PROT_ERROR);
             _http_pkfree(pack);
             return NULL;
-        } else {
+        }
+        else {
             ud->context = pack;
             ud->status = transfer;
             return _http_content(buf, ud, status);
         }
-    } else {
+    }
+    else {
         if (1 == pack->chunked) {
             BIT_SET(*status, PROT_SLICE_START);
         }
@@ -249,7 +253,8 @@ static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_t *status
     if (pack->data.lens > 0) {
         BIT_SET(*status, PROT_SLICE);
         ASSERTAB(pack->data.lens == buffer_copyout(buf, 0, pack->data.data, pack->data.lens), "copy buffer failed.");
-    } else {
+    }
+    else {
         BIT_SET(*status, PROT_SLICE_END);
         ud->status = INIT;
     }
@@ -384,12 +389,13 @@ void http_pack_content(binary_ctx *bwriter, void *data, size_t lens) {
     if (!EMPTYSTR(data)) {
         binary_set_va(bwriter, "Content-Length: %d"CONCAT2(FLAG_CRLF, FLAG_CRLF), (uint32_t)lens);
         binary_set_string(bwriter, data, lens);
-    } else {
+    }
+    else {
         binary_set_va(bwriter, "%s", "Content-Length: 0"CONCAT2(FLAG_CRLF, FLAG_CRLF));
     }
 }
 void http_pack_chunked(binary_ctx *bwriter, void *data, size_t lens) {
-    if (bwriter->offset > 0){
+    if (bwriter->offset > 0) {
         binary_set_va(bwriter, "Transfer-Encoding: Chunked"CONCAT2(FLAG_CRLF, FLAG_CRLF));
     }
     binary_set_va(bwriter, "%x"FLAG_CRLF, (uint32_t)lens);

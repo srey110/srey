@@ -1,4 +1,4 @@
-#include "utils/sfid.h"
+﻿#include "utils/sfid.h"
 #include "utils/utils.h"
 
 #define DefMachineBitLen 10
@@ -32,22 +32,25 @@ uint64_t sfid_id(sfid_ctx *ctx) {
         curms = nowms() - ctx->customepoch;
         if (curms < ctx->lasttimestamp) {
             continue;
-        } else if (curms == ctx->lasttimestamp) {
+        }
+        else if (curms == ctx->lasttimestamp) {
             if (ctx->sequence >= ctx->sequencemask) {
                 continue;
-            } else {
+            }
+            else {
                 ctx->sequence++;
                 break;
             }
-        } else {
+        }
+        else {
             ctx->sequence = 0;
             ctx->lasttimestamp = curms;
             break;
         }
     }
     id = (ctx->lasttimestamp << ctx->timestampshift) |
-         ((uint64_t)ctx->machineid << ctx->machineidshift) |
-         (ctx->sequence & ctx->sequencemask);
+        ((uint64_t)ctx->machineid << ctx->machineidshift) |
+        (ctx->sequence & ctx->sequencemask);
     return id;
 }
 void sfid_decode(sfid_ctx *ctx, uint64_t id, uint64_t *timestamp, int32_t *machineid, int32_t *sequence) {

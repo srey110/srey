@@ -1,4 +1,4 @@
-#include "utils/binary.h"
+﻿#include "utils/binary.h"
 
 #define BINARY_INCREASE 256
 
@@ -6,17 +6,20 @@ void binary_init(binary_ctx *ctx, char *buf, size_t lens, size_t inc) {
     ctx->offset = 0;
     if (0 == inc) {
         ctx->inc = BINARY_INCREASE;
-    } else {
+    }
+    else {
         ctx->inc = ROUND_UP(inc, 2);
     }
     if (NULL == buf) {
         if (0 == lens) {
             ctx->size = ctx->inc;
-        } else {
+        }
+        else {
             ctx->size = ROUND_UP(lens, ctx->inc);
         }
         MALLOC(ctx->data, ctx->size);
-    } else {
+    }
+    else {
         ctx->size = lens;
         ctx->data = buf;
     }
@@ -163,7 +166,8 @@ char *binary_get_string(binary_ctx *ctx, size_t lens) {
         size_t slen = strlen(val) + 1;
         size_t remain = ctx->size - ctx->offset;
         ctx->offset += (slen > remain ? remain : slen);
-    } else {
+    }
+    else {
         ASSERTAB(ctx->offset + lens <= ctx->size, "out of memory.");
         ctx->offset += lens;
     }

@@ -1,4 +1,4 @@
-#include "protocol/smtp/mail.h"
+﻿#include "protocol/smtp/mail.h"
 #include "crypt/base64.h"
 #include "utils/utils.h"
 #include "utils/binary.h"
@@ -18,7 +18,7 @@ void mail_free(mail_ctx *mail) {
     FREE(mail->subject);
     FREE(mail->msg);
     FREE(mail->html)
-    arr_mail_addr_free(&mail->addrs);
+        arr_mail_addr_free(&mail->addrs);
     _mail_attach_free(&mail->attach);
     arr_mail_attach_free(&mail->attach);
 }
@@ -44,7 +44,8 @@ void mail_html(mail_ctx *mail, const char *html, size_t lens) {
 static void _mail_addr(mail_addr *addr, const char *name, const char *email) {
     if (EMPTYSTR(name)) {
         addr->name[0] = '\0';
-    } else {
+    }
+    else {
         strcpy(addr->name, name);
     }
     strcpy(addr->addr, email);
@@ -72,7 +73,8 @@ void mail_attach_add(mail_ctx *mail, const char *file) {
     char *ex = strrchr(att.file, '.');
     if (NULL == ex) {
         att.extension[0] = '\0';
-    } else {
+    }
+    else {
         strcpy(att.extension, ex);
     }
     size_t b64lens = B64EN_SIZE(flens);
@@ -135,10 +137,11 @@ static void _smtp_pack_addr(mail_ctx *mail, binary_ctx *bwriter, mail_addr_type 
             continue;
         }
         index++;
-        if (count > 1 
+        if (count > 1
             && index < count) {
             binary_set_va(bwriter, "%s,\r\n ", addr->addr);//must add a space after the comma
-        } else {
+        }
+        else {
             binary_set_va(bwriter, "%s\r\n", addr->addr);
         }
         if (index >= count) {
@@ -151,12 +154,14 @@ char *mail_pack(mail_ctx *mail) {
     binary_init(&bwriter, NULL, ONEK, ONEK);
     if (0 != strlen(mail->from.name)) {
         binary_set_va(&bwriter, "From: %s (%s) \r\n", mail->from.addr, mail->from.name);
-    } else {
+    }
+    else {
         binary_set_va(&bwriter, "From: %s\r\n", mail->from.addr);
     }
     if (mail->reply) {
         binary_set_va(&bwriter, "Reply-To: %s\r\n", mail->from.addr);
-    } else {
+    }
+    else {
         binary_set_va(&bwriter, "No-Reply: %s\r\n", mail->from.addr);
     }
     _smtp_pack_addr(mail, &bwriter, TO);
@@ -182,7 +187,8 @@ char *mail_pack(mail_ctx *mail) {
                 binary_set_string(&bwriter, mail->msg, strlen(mail->msg));
             }
             binary_set_va(&bwriter, "\r\n\r\n--%s\r\n", boundary);
-        } else {
+        }
+        else {
             //make it multipart/alternative as we have html
             const char *innerboundary = "inner_jfd_0078hj_0_8_part_tp";
             binary_set_va(&bwriter, "Content-Type: multipart/alternative;\r\n\tboundary=\"%s\"\r\n", innerboundary);
@@ -201,7 +207,8 @@ char *mail_pack(mail_ctx *mail) {
             //end the boundaries if there are no attachments
             if (0 == nattach) {
                 binary_set_va(&bwriter, "\r\n--%s--\r\n", boundary);
-            } else {
+            }
+            else {
                 binary_set_va(&bwriter, "\r\n--%s\r\n", boundary);
             }
         }
@@ -213,13 +220,15 @@ char *mail_pack(mail_ctx *mail) {
             binary_set_va(&bwriter, "%s", "Content-Transfer-Encoding: base64\r\n");
             binary_set_va(&bwriter, "Content-Disposition: attachment; filename=\"%s\"\r\n\r\n", att->file);
             binary_set_string(&bwriter, att->content, strlen(att->content));
-            if (i + 1  == nattach) {
+            if (i + 1 == nattach) {
                 binary_set_va(&bwriter, "\r\n\r\n--%s--\r\n", boundary);
-            } else {
+            }
+            else {
                 binary_set_va(&bwriter, "\r\n\r\n--%s\r\n", boundary);
             }
         }
-    } else {
+    }
+    else {
         binary_set_string(&bwriter, mail->msg, strlen(mail->msg));
     }
     binary_set_string(&bwriter, "\r\n.\r\n", 0);

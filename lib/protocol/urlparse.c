@@ -1,4 +1,4 @@
-#include "protocol/urlparse.h"
+﻿#include "protocol/urlparse.h"
 #include "utils/utils.h"
 
 static char *_scheme(buf_ctx *scheme, char *cur, size_t lens) {
@@ -31,11 +31,12 @@ static char *_parse_two(buf_ctx *buf1, buf_ctx *buf2, char *cur, char what, size
         if ('/' == what) {
             _split(buf1, buf2, cur, lens);
             return cur + lens;
-        } else {
+        }
+        else {
             return cur;
         }
     }
-    if (pos == cur){
+    if (pos == cur) {
         return pos + 1;
     }
     _split(buf1, buf2, cur, pos - cur);
@@ -49,7 +50,8 @@ static char *_path(buf_ctx *path, char *cur, size_t lens) {
             path->data = cur;
             path->lens = lens;
             return cur + lens;
-        } else {
+        }
+        else {
             if (pos != cur) {
                 path->data = cur;
                 path->lens = pos - cur;
@@ -104,7 +106,7 @@ static void _param(url_param *param, char *cur, size_t lens) {
             break;
         }
         pos = memchr(cur, '&', rmain);
-        if (NULL == pos){
+        if (NULL == pos) {
             tmp->val.data = cur;
             tmp->val.lens = rmain;
             break;
@@ -122,7 +124,7 @@ void url_parse(url_ctx *ctx, char *url, size_t lens) {
     size_t remain = lens;
     char *cur = _scheme(&ctx->scheme, url, remain);
     remain = lens - (cur - url);
-    if (0 == remain){
+    if (0 == remain) {
         return;
     }
     cur = _parse_two(&ctx->user, &ctx->psw, cur, '@', remain);

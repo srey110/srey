@@ -1,43 +1,43 @@
-#ifndef SFID_H_
+ï»¿#ifndef SFID_H_
 #define SFID_H_
 
 #include "base/macro.h"
 
 typedef struct sfid_ctx {
-    int32_t machinebitlen;//»úÆ÷idÎ»Êı
-    int32_t sequencebitlen;//×ÔÔöĞòÁĞÎ»Êı
+    int32_t machinebitlen;//æœºå™¨idä½æ•°
+    int32_t sequencebitlen;//è‡ªå¢åºåˆ—ä½æ•°
     int32_t timestampshift;
     int32_t machineidshift;
-    int32_t sequence;//×ÔÔöĞòÁĞ
-    int32_t machineid;//»úÆ÷Id
+    int32_t sequence;//è‡ªå¢åºåˆ—
+    int32_t machineid;//æœºå™¨Id
     int32_t sequencemask;
     uint64_t customepoch;
     uint64_t lasttimestamp;
 }sfid_ctx;
 /// <summary>
-/// snowflake id ³õÊ¼»¯
+/// snowflake id åˆå§‹åŒ–
 /// </summary>
 /// <param name="ctx">sfid_ctx</param>
-/// <param name="machineid">»úÆ÷ID</param>
-/// <param name="machinebitlen">»úÆ÷IDÎ»Êı, 0 Ä¬ÈÏ10</param>
-/// <param name="sequencebitlen">×ÔÔöĞòÁĞÎ»Êı, 0 Ä¬ÈÏ12</param>
-/// <param name="customepoch">¹Ì¶¨¼õÉÙ, 0 Ä¬ÈÏ</param>
-/// <returns>NULLÊ§°Ü</returns>
+/// <param name="machineid">æœºå™¨ID</param>
+/// <param name="machinebitlen">æœºå™¨IDä½æ•°, 0 é»˜è®¤10</param>
+/// <param name="sequencebitlen">è‡ªå¢åºåˆ—ä½æ•°, 0 é»˜è®¤12</param>
+/// <param name="customepoch">å›ºå®šå‡å°‘, 0 é»˜è®¤</param>
+/// <returns>NULLå¤±è´¥</returns>
 sfid_ctx *sfid_init(sfid_ctx *ctx, int32_t machineid, int32_t machinebitlen, int32_t sequencebitlen, uint64_t customepoch);
 /// <summary>
-/// »ñÈ¡ID
+/// è·å–ID
 /// </summary>
 /// <param name="ctx">sfid_ctx</param>
 /// <returns>snowflake id</returns>
 uint64_t sfid_id(sfid_ctx *ctx);
 /// <summary>
-/// Í¨¹ıID½âÎö³ö Ê±¼ä´Á »úÆ÷ID ×ÔÔöĞòÁĞ
+/// é€šè¿‡IDè§£æå‡º æ—¶é—´æˆ³ æœºå™¨ID è‡ªå¢åºåˆ—
 /// </summary>
 /// <param name="ctx">sfid_ctx</param>
 /// <param name="id">snowflake id</param>
-/// <param name="timestamp">Ê±¼ä´Á ºÁÃë</param>
-/// <param name="machineid">»úÆ÷ID</param>
-/// <param name="sequence">×ÔÔöĞòÁĞ</param>
+/// <param name="timestamp">æ—¶é—´æˆ³ æ¯«ç§’</param>
+/// <param name="machineid">æœºå™¨ID</param>
+/// <param name="sequence">è‡ªå¢åºåˆ—</param>
 void sfid_decode(sfid_ctx *ctx, uint64_t id, uint64_t *timestamp, int32_t *machineid, int32_t *sequence);
 
 #endif

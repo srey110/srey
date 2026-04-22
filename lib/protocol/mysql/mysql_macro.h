@@ -1,4 +1,4 @@
-#ifndef MYSQL_MACRO_H_
+ï»¿#ifndef MYSQL_MACRO_H_
 #define MYSQL_MACRO_H_
 
 #define INT3_MAX                  0xFFFFFF
@@ -26,22 +26,22 @@
 #define MYSQL_NATIVE_PASSWORLD     "mysql_native_password"
 
 //Capabilities Flags
-#define CLIENT_LONG_PASSWORD                  1 //¾ÉÃÜÂë²å¼ş
+#define CLIENT_LONG_PASSWORD                  1 //æ—§å¯†ç æ’ä»¶
 #define CLIENT_LONG_FLAG                      4 //Get all column flags
-#define CLIENT_CONNECT_WITH_DB                8 //ÊÇ·ñ´øÓĞ dbname
-#define CLIENT_IGNORE_SPACE                   256 //ÊÇ·ñºöÂÔ À¨ºÅ( Ç°ÃæµÄ¿Õ¸ñ
+#define CLIENT_CONNECT_WITH_DB                8 //æ˜¯å¦å¸¦æœ‰ dbname
+#define CLIENT_IGNORE_SPACE                   256 //æ˜¯å¦å¿½ç•¥ æ‹¬å·( å‰é¢çš„ç©ºæ ¼
 #define CLIENT_PROTOCOL_41                    512 //New 4.1 protocol. 
-#define CLIENT_INTERACTIVE                    1024 //ÊÇ·ñÎª½»»¥Ê½ÖÕ¶Ë
-#define CLIENT_SSL                            2048 //ÊÇ·ñÖ§³ÖSSL
+#define CLIENT_INTERACTIVE                    1024 //æ˜¯å¦ä¸ºäº¤äº’å¼ç»ˆç«¯
+#define CLIENT_SSL                            2048 //æ˜¯å¦æ”¯æŒSSL
 #define CLIENT_RESERVED2                      32768 //DEPRECATED: Old flag for 4.1 authentication \ CLIENT_SECURE_CONNECTION
-#define CLIENT_MULTI_STATEMENTS               (1UL << 16) //ÊÇ·ñÖ§³Ömulti-stmt.  COM_QUERY/COM_STMT_PREPAREÖĞ¶àÌõÓï¾ä
+#define CLIENT_MULTI_STATEMENTS               (1UL << 16) //æ˜¯å¦æ”¯æŒmulti-stmt.  COM_QUERY/COM_STMT_PREPAREä¸­å¤šæ¡è¯­å¥
 #define CLIENT_MULTI_RESULTS                  (1UL << 17) //multi-results
 #define CLIENT_PS_MULTI_RESULTS               (1UL << 18) //Multi-results and OUT parameters in PS-protocol.
-#define CLIENT_PLUGIN_AUTH                    (1UL << 19) //ÊÇ·ñÖ§³ÖÃÜÂë²å¼ş 
+#define CLIENT_PLUGIN_AUTH                    (1UL << 19) //æ˜¯å¦æ”¯æŒå¯†ç æ’ä»¶ 
 #define CLIENT_CONNECT_ATTRS                  (1UL << 20) //client supports connection attributes
-#define CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA (1UL << 21) //ÃÜÂëÈÏÖ¤°üÄÜ·ñ´óÓÚ255×Ö½Ú
-#define CLIENT_CAN_HANDLE_EXPIRED_PASSWORDS   (1UL << 22) //²»¹Ø±ÕÃÜÂë¹ıÆÚµÄÁ¬½Ó
-#define CLIENT_QUERY_ATTRIBUTES               (1UL << 27) //Ö§³ÖCOM_QUERY/COM_STMT_EXECUTEÖĞµÄ¿ÉÑ¡²ÎÊı
+#define CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA (1UL << 21) //å¯†ç è®¤è¯åŒ…èƒ½å¦å¤§äº255å­—èŠ‚
+#define CLIENT_CAN_HANDLE_EXPIRED_PASSWORDS   (1UL << 22) //ä¸å…³é—­å¯†ç è¿‡æœŸçš„è¿æ¥
+#define CLIENT_QUERY_ATTRIBUTES               (1UL << 27) //æ”¯æŒCOM_QUERY/COM_STMT_EXECUTEä¸­çš„å¯é€‰å‚æ•°
 
 typedef enum mpack_type {
     MPACK_OK = 0x00,

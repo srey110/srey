@@ -1,4 +1,4 @@
-#include "srey/loader.h"
+ï»¿#include "srey/loader.h"
 #include "containers/hashmap.h"
 #include "srey/task.h"
 
@@ -107,7 +107,7 @@ static void _task_run(loader_ctx *loader, worker_ctx *worker,
     if (0 == n) {
         n = 1;
     }
-    //Ö´ÐÐ
+    //æ‰§è¡Œ
     version->name = runarg->task->name;
     for (uint32_t i = 0; i < n; i++) {
         if (ERR_OK != _task_message_pop(runarg->task, &runarg->msg)) {
@@ -118,7 +118,7 @@ static void _task_run(loader_ctx *loader, worker_ctx *worker,
         runarg->task->_task_dispatch(runarg);
         version->msgtype = MSG_TYPE_NONE;
     }
-    //¼Ó»Ø¶ÓÁÐ
+    //åŠ å›žé˜Ÿåˆ—
     int32_t add = 1;
     spin_lock(&runarg->task->lckmsg);
     if (0 == qu_message_size(&runarg->task->qumsg)) {
@@ -128,7 +128,8 @@ static void _task_run(loader_ctx *loader, worker_ctx *worker,
     spin_unlock(&runarg->task->lckmsg);
     if (0 != add) {
         _worker_wakeup(loader, &runarg->task->name);
-    } else {
+    }
+    else {
         runarg->task->overload = ONEK;
     }
 }
@@ -139,7 +140,7 @@ static void _worker_loop(void *arg) {
     worker_version *version = &loader->monitor.version[worker->index];
     task_dispatch_arg runarg;
     while (0 == loader->stop) {
-        //´Ó¶ÓÁÐÈ¡Ò»ÈÎÎñ
+        //ä»Žé˜Ÿåˆ—å–ä¸€ä»»åŠ¡
         name = _task_name_get(loader, worker);
         if (INVALID_TNAME != name) {
             runarg.task = task_grab(loader, name);
@@ -158,7 +159,7 @@ static void _worker_loop(void *arg) {
     }
     LOG_INFO("worker thread %d exited.", worker->index);
 }
-//¼ì²éËÀÑ­»·
+//æ£€æŸ¥æ­»å¾ªçŽ¯
 static void _monitor_check(loader_ctx *loader) {
     worker_version *version;
     for (uint16_t i = 0; i < loader->nworker; i++) {
@@ -167,7 +168,8 @@ static void _monitor_check(loader_ctx *loader) {
             && MSG_TYPE_NONE != version->msgtype) {
             LOG_WARN("task: %d message type: %d, maybe in an endless loop.",
                 version->name, version->msgtype);
-        } else {
+        }
+        else {
             version->ckver = version->ver;
         }
     }
@@ -197,8 +199,8 @@ loader_ctx *loader_init(uint16_t nnet, uint16_t nworker) {
     CALLOC(loader->monitor.version, 1, sizeof(worker_version) * loader->nworker);
     rwlock_init(&loader->lckmaptasks);
     loader->maptasks = hashmap_new_with_allocator(_malloc, _realloc, _free,
-                                                  sizeof(name_t *), ONEK, 0, 0,
-                                                  _map_task_hash, _map_task_compare, _map_task_free, NULL);
+        sizeof(name_t *), ONEK, 0, 0,
+        _map_task_hash, _map_task_compare, _map_task_free, NULL);
     loader->monitor.thread_monitor = thread_creat(_monitor_loop, loader);
     int32_t weights[] = { -1, 0, 0, 1, 2, 3 };
     worker_ctx *worker;

@@ -1,4 +1,4 @@
-#ifndef SCRAM_H_
+ï»¿#ifndef SCRAM_H_
 #define SCRAM_H_
 
 #include "utils/binary.h"
@@ -15,12 +15,12 @@ typedef enum scram_status {
     SCRAM_REMOTE_FINAL
 }scram_status;
 typedef struct scram_ctx {
-    int32_t client;//ÊÇ·ñÎª·¢Æð¶Ë
+    int32_t client;//æ˜¯å¦ä¸ºå‘èµ·ç«¯
     scram_status status;
     digest_type dtype;
-    int32_t saltlen;//salt³¤¶È
-    int32_t	iter;//ÂÖÊý
-    int32_t hslens;//hashÊý¾Ý³¤¶È
+    int32_t saltlen;//salté•¿åº¦
+    int32_t	iter;//è½®æ•°
+    int32_t hslens;//hashæ•°æ®é•¿åº¦
     char *local_first_message;//client n=,r=  server r=,s=,i=
     char *remote_first_message;//client r=,s=,i=  server n=,r=
     char *final_message_without_proof;//c=biws,r=
@@ -34,7 +34,7 @@ typedef struct scram_ctx {
 /*
 client                                      server
 SCRAM_INIT->SCRAM_LOCAL_FIRST               SCRAM_INIT->SCRAM_REMOTE_FIRST
-scram_first_message                     ->  scram_parse_first_message                 n,,n=,r= 
+scram_first_message                     ->  scram_parse_first_message                 n,,n=,r=
 
 SCRAM_LOCAL_FIRST->SCRAM_REMOTE_FIRST       SCRAM_REMOTE_FIRST->SCRAM_LOCAL_FIRST
 scram_parse_first_message               <-  scram_first_message                       r=,s=,i=

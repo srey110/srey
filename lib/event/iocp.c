@@ -1,4 +1,4 @@
-#include "event/iocp.h"
+﻿#include "event/iocp.h"
 #include "containers/hashmap.h"
 #include "utils/netutils.h"
 #include "utils/timer.h"
@@ -19,14 +19,14 @@ static void *_exfunc(SOCKET fd, GUID  *guid) {
     void *func = NULL;
     DWORD bytes = 0;
     int32_t rtn = WSAIoctl(fd,
-                           SIO_GET_EXTENSION_FUNCTION_POINTER,
-                           guid,
-                           sizeof(GUID),
-                           &func,
-                           sizeof(func),
-                           &bytes,
-                           NULL,
-                           NULL);
+        SIO_GET_EXTENSION_FUNCTION_POINTER,
+        guid,
+        sizeof(GUID),
+        &func,
+        sizeof(func),
+        &bytes,
+        NULL,
+        NULL);
     ASSERTAB(rtn != SOCKET_ERROR, ERRORSTR(ERRNO));
     return func;
 }
@@ -102,11 +102,11 @@ static void _loop_event(void *arg) {
     timer_start(&timer);
     while (0 == watcher->stop) {
         if (GetQueuedCompletionStatusEx(watcher->iocp,
-                                        overlappeds,
-                                        nevent,
-                                        &count,
-                                        EVENT_WAIT_TIMEOUT,
-                                        FALSE)) {
+            overlappeds,
+            nevent,
+            &count,
+            EVENT_WAIT_TIMEOUT,
+            FALSE)) {
             for (i = 0; i < count; i++) {
                 overlap = overlappeds[i].lpOverlapped;
                 if (NULL == overlap) {
@@ -121,7 +121,8 @@ static void _loop_event(void *arg) {
                 nevent *= 2;
                 MALLOC(overlappeds, sizeof(OVERLAPPED_ENTRY) * nevent);
             }
-        } else if (WAIT_TIMEOUT != (err = ERRNO)) {
+        }
+        else if (WAIT_TIMEOUT != (err = ERRNO)) {
             LOG_ERROR("%s", ERRORSTR(err));
         }
         _pool_shrink(watcher, &timer);
@@ -141,11 +142,11 @@ static void _loop_acpex(void *arg) {
     MALLOC(overlappeds, sizeof(OVERLAPPED_ENTRY) * nevent);
     while (0 == acpex->stop) {
         if (GetQueuedCompletionStatusEx(acpex->iocp,
-                                        overlappeds,
-                                        nevent,
-                                        &count,
-                                        EVENT_WAIT_TIMEOUT,
-                                        FALSE)) {
+            overlappeds,
+            nevent,
+            &count,
+            EVENT_WAIT_TIMEOUT,
+            FALSE)) {
             for (i = 0; i < count; i++) {
                 overlap = overlappeds[i].lpOverlapped;
                 if (NULL == overlap) {
@@ -160,7 +161,8 @@ static void _loop_acpex(void *arg) {
                 nevent *= 2;
                 MALLOC(overlappeds, sizeof(OVERLAPPED_ENTRY) * nevent);
             }
-        } else if (WAIT_TIMEOUT != (err = ERRNO)) {
+        }
+        else if (WAIT_TIMEOUT != (err = ERRNO)) {
             LOG_ERROR("%s", ERRORSTR(err));
         }
     }
@@ -180,14 +182,15 @@ static void _loop_event(void *arg) {
     timer_start(&timer);
     while (0 == watcher->stop) {
         GetQueuedCompletionStatus(watcher->iocp,
-                                  &bytes,
-                                  &key,
-                                  &overlap,
-                                  EVENT_WAIT_TIMEOUT);
+            &bytes,
+            &key,
+            &overlap,
+            EVENT_WAIT_TIMEOUT);
         if (NULL != overlap) {
             sock = UPCAST(overlap, sock_ctx, overlapped);
             sock->ev_cb(watcher, sock, bytes);
-        } else if (WAIT_TIMEOUT != (err = ERRNO)) {
+        }
+        else if (WAIT_TIMEOUT != (err = ERRNO)) {
             LOG_ERROR("%s", ERRORSTR(err));
         }
         _pool_shrink(watcher, &timer);
@@ -203,14 +206,15 @@ static void _loop_acpex(void *arg) {
     OVERLAPPED *overlap;
     while (0 == acpex->stop) {
         GetQueuedCompletionStatus(acpex->iocp,
-                                  &bytes,
-                                  &key,
-                                  &overlap,
-                                  EVENT_WAIT_TIMEOUT);
+            &bytes,
+            &key,
+            &overlap,
+            EVENT_WAIT_TIMEOUT);
         if (NULL != overlap) {
             sock = UPCAST(overlap, sock_ctx, overlapped);
             sock->ev_cb(acpex, sock, bytes);
-        } else if (WAIT_TIMEOUT != (err = ERRNO)) {
+        }
+        else if (WAIT_TIMEOUT != (err = ERRNO)) {
             LOG_ERROR("%s", ERRORSTR(err));
         }
     }
@@ -221,7 +225,8 @@ static void _free_element(void *item) {
     sock_ctx *sock = *((sock_ctx **)item);
     if (SOCK_STREAM == sock->type) {
         _free_sk(sock);
-    } else {
+    }
+    else {
         _free_udp(sock);
     }
 }
@@ -260,8 +265,8 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads) {
         ASSERTAB(NULL != watcher->iocp, ERRORSTR(ERRNO));
         watcher->ev = ctx;
         watcher->element = hashmap_new_with_allocator(_malloc, _realloc, _free,
-                                                      sizeof(sock_ctx *), ONEK * 2, 0, 0, 
-                                                      _map_hash, _map_compare, _free_element, NULL);
+            sizeof(sock_ctx *), ONEK * 2, 0, 0,
+            _map_hash, _map_compare, _free_element, NULL);
         pool_init(&watcher->pool, ONEK);
         _init_cmd(watcher);
         watcher->thevent = thread_creat(_loop_event, watcher);
@@ -299,7 +304,8 @@ static void _free_cmd(watcher_ctx *watcher) {
                 skctx = (sock_ctx *)cmd->arg;
                 if (SOCK_STREAM == skctx->type) {
                     _free_sk(skctx);
-                } else {
+                }
+                else {
                     _free_udp(skctx);
                 }
                 break;

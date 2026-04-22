@@ -1,4 +1,4 @@
-#ifndef PGSQL_H_
+ï»¿#ifndef PGSQL_H_
 #define PGSQL_H_
 
 #include "protocol/pgsql/pgsql_pack.h"
@@ -12,49 +12,49 @@ int32_t _pgsql_ssl_exchanged(ev_ctx *ev, ud_cxt *ud);
 int32_t _pgsql_may_resume(void *data);
 void *pgsql_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status);
 /// <summary>
-/// pgsql²ÎÊı³õÊ¼»¯
+/// pgsqlå‚æ•°åˆå§‹åŒ–
 /// </summary>
 /// <param name="pg">pgsql_ctx</param>
 /// <param name="ip">IP</param>
-/// <param name="port">¶Ë¿Ú 0:5432</param>
+/// <param name="port">ç«¯å£ 0:5432</param>
 /// <param name="evssl">evssl_ctx</param>
-/// <param name="user">ÓÃ»§Ãû</param>
-/// <param name="password">ÃÜÂë</param>
-/// <param name="database">Êı¾İ¿âÃû</param>
-/// <returns>ERR_OK ³É¹¦</returns>
+/// <param name="user">ç”¨æˆ·å</param>
+/// <param name="password">å¯†ç </param>
+/// <param name="database">æ•°æ®åº“å</param>
+/// <returns>ERR_OK æˆåŠŸ</returns>
 int32_t pgsql_init(pgsql_ctx *pg, const char *ip, uint16_t port, struct evssl_ctx *evssl,
     const char *user, const char *password, const char *database);
 /// <summary>
-/// Á´½ÓÊı¾İ¿â
+/// é“¾æ¥æ•°æ®åº“
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="pg">pgsql_ctx</param>
-/// <returns>ERR_OK ÇëÇó³É¹¦</returns>
+/// <returns>ERR_OK è¯·æ±‚æˆåŠŸ</returns>
 int32_t pgsql_try_connect(task_ctx *task, pgsql_ctx *pg);
 /// <summary>
-/// ÉèÖÃÓÃ»§Ãû ÃÜÂë
+/// è®¾ç½®ç”¨æˆ·å å¯†ç 
 /// </summary>
 /// <param name="pg">pgsql_ctx</param>
-/// <param name="user">ÓÃ»§Ãû</param>
-/// <param name="password">ÃÜÂë</param>
+/// <param name="user">ç”¨æˆ·å</param>
+/// <param name="password">å¯†ç </param>
 void pgsql_set_userpwd(pgsql_ctx *pg, const char *user, const char *password);
 /// <summary>
-/// ÉèÖÃÊı¾İ¿âÃû
+/// è®¾ç½®æ•°æ®åº“å
 /// </summary>
 /// <param name="pg">pgsql_ctx</param>
-/// <param name="database">Êı¾İ¿âÃû</param>
+/// <param name="database">æ•°æ®åº“å</param>
 void pgsql_set_db(pgsql_ctx *pg, const char *database);
 /// <summary>
-/// »ñÈ¡Êı¾İ¿âÃû
+/// è·å–æ•°æ®åº“å
 /// </summary>
 /// <param name="pg">pgsql_ctx</param>
-/// <returns>Êı¾İ¿âÃû</returns>
+/// <returns>æ•°æ®åº“å</returns>
 const char *pgsql_get_db(pgsql_ctx *pg);
 /// <summary>
-/// ÃüÁîÖ´ĞĞÓ°ÏìµÄĞĞÊı
+/// å‘½ä»¤æ‰§è¡Œå½±å“çš„è¡Œæ•°
 /// </summary>
 /// <param name="pgpack">pgpack_ctx</param>
-/// <returns>ĞĞÊı</returns>
+/// <returns>è¡Œæ•°</returns>
 int32_t pgsql_affected_rows(pgpack_ctx *pgpack);
 
 #endif//PGSQL_H_

@@ -1,4 +1,4 @@
-#ifndef PADDING_H_
+ï»¿#ifndef PADDING_H_
 #define PADDING_H_
 
 #include "base/macro.h"
@@ -11,22 +11,22 @@ typedef enum padding_model {
     ANSIX923
 }padding_model;
 /// <summary>
-/// Êı¾İÌî³ä
+/// æ•°æ®å¡«å……
 /// </summary>
-/// <param name="padding">Ìî³äÄ£Ê½</param>
-/// <param name="data">ĞèÒªÌî³äµÄÊı¾İ</param>
-/// <param name="dlens">Êı¾İ³¤¶È</param>
-/// <param name="output">Êä³öÌî³äºóµÄÊı¾İ</param>
-/// <param name="reqlens">ÒªÇóµÄÊı¾İ³¤¶È</param>
+/// <param name="padding">å¡«å……æ¨¡å¼</param>
+/// <param name="data">éœ€è¦å¡«å……çš„æ•°æ®</param>
+/// <param name="dlens">æ•°æ®é•¿åº¦</param>
+/// <param name="output">è¾“å‡ºå¡«å……åçš„æ•°æ®</param>
+/// <param name="reqlens">è¦æ±‚çš„æ•°æ®é•¿åº¦</param>
 void _padding_data(padding_model padding, const void *data, size_t dlens, uint8_t *output, size_t reqlens);
 /// <summary>
-/// ÃÜÂëÌî³ä
+/// å¯†ç å¡«å……
 /// </summary>
-/// <param name="key">ÃÜÂë</param>
-/// <param name="klens">ÃÜÂë³¤¶È</param>
-/// <param name="pdkey">´¢´æÌî³äµÄÃÜÂë</param>
-/// <param name="reqlens">ÒªÇóµÄÃÜÂë³¤¶È</param>
-/// <returns>Ìî³äºóµÄÃÜÂë</returns>
+/// <param name="key">å¯†ç </param>
+/// <param name="klens">å¯†ç é•¿åº¦</param>
+/// <param name="pdkey">å‚¨å­˜å¡«å……çš„å¯†ç </param>
+/// <param name="reqlens">è¦æ±‚çš„å¯†ç é•¿åº¦</param>
+/// <returns>å¡«å……åçš„å¯†ç </returns>
 uint8_t *_padding_key(const char *key, size_t klens, uint8_t *pdkey, size_t reqlens);
 
 #endif//PADDING_H_

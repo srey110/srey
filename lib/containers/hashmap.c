@@ -1,4 +1,4 @@
-// Copyright 2020 Joshua J Baker. All rights reserved.
+﻿// Copyright 2020 Joshua J Baker. All rights reserved.
 // Use of this source code is governed by an MIT-style
 // license that can be found in the LICENSE file.
 
@@ -24,33 +24,33 @@
 
 static void *(*__malloc)(size_t) = NULL;
 static void *(*__realloc)(void *, size_t) = NULL;
-static void (*__free)(void *) = NULL;
+static void(*__free)(void *) = NULL;
 
 // hashmap_set_allocator allows for configuring a custom allocator for
 // all hashmap library operations. This function, if needed, should be called
 // only once at startup and a prior to calling hashmap_new().
-void hashmap_set_allocator(void *(*malloc)(size_t), void (*free)(void*)) {
+void hashmap_set_allocator(void *(*malloc)(size_t), void(*free)(void*)) {
     __malloc = malloc;
     __free = free;
 }
 
 struct bucket {
-    uint64_t hash:48;
-    uint64_t dib:16;
+    uint64_t hash : 48;
+    uint64_t dib : 16;
 };
 
 // hashmap is an open addressed hash map using robinhood hashing.
 struct hashmap {
     void *(*malloc)(size_t);
     void *(*realloc)(void *, size_t);
-    void (*free)(void *);
+    void(*free)(void *);
     size_t elsize;
     size_t cap;
     uint64_t seed0;
     uint64_t seed1;
-    uint64_t (*hash)(const void *item, uint64_t seed0, uint64_t seed1);
-    int (*compare)(const void *a, const void *b, void *udata);
-    void (*elfree)(void *item);
+    uint64_t(*hash)(const void *item, uint64_t seed0, uint64_t seed1);
+    int(*compare)(const void *a, const void *b, void *udata);
+    void(*elfree)(void *item);
     void *udata;
     size_t bucketsz;
     size_t nbuckets;
@@ -72,10 +72,10 @@ void hashmap_set_grow_by_power(struct hashmap *map, size_t power) {
 
 static double clamp_load_factor(double factor, double default_factor) {
     // Check for NaN and clamp between 50% and 90%
-    return factor != factor ? default_factor : 
-           factor < 0.50 ? 0.50 : 
-           factor > 0.95 ? 0.95 : 
-           factor;
+    return factor != factor ? default_factor :
+        factor < 0.50 ? 0.50 :
+        factor > 0.95 ? 0.95 :
+        factor;
 }
 
 void hashmap_set_load_factor(struct hashmap *map, double factor) {
@@ -85,7 +85,7 @@ void hashmap_set_load_factor(struct hashmap *map, double factor) {
 }
 
 static struct bucket *bucket_at0(void *buckets, size_t bucketsz, size_t i) {
-    return (struct bucket*)(((char*)buckets)+(bucketsz*i));
+    return (struct bucket*)(((char*)buckets) + (bucketsz*i));
 }
 
 static struct bucket *bucket_at(const struct hashmap *map, size_t index) {
@@ -93,7 +93,7 @@ static struct bucket *bucket_at(const struct hashmap *map, size_t index) {
 }
 
 static void *bucket_item(struct bucket *entry) {
-    return ((char*)entry)+sizeof(struct bucket);
+    return ((char*)entry) + sizeof(struct bucket);
 }
 
 static uint64_t clip_hash(uint64_t hash) {
@@ -107,12 +107,12 @@ static uint64_t get_hash(const struct hashmap *map, const void *key) {
 
 // hashmap_new_with_allocator returns a new hash map using a custom allocator.
 // See hashmap_new for more information information
-struct hashmap *hashmap_new_with_allocator(void *(*_malloc)(size_t), 
-    void *(*_realloc)(void*, size_t), void (*_free)(void*),
+struct hashmap *hashmap_new_with_allocator(void *(*_malloc)(size_t),
+    void *(*_realloc)(void*, size_t), void(*_free)(void*),
     size_t elsize, size_t cap, uint64_t seed0, uint64_t seed1,
-    uint64_t (*hash)(const void *item, uint64_t seed0, uint64_t seed1),
-    int (*compare)(const void *a, const void *b, void *udata),
-    void (*elfree)(void *item),
+    uint64_t(*hash)(const void *item, uint64_t seed0, uint64_t seed1),
+    int(*compare)(const void *a, const void *b, void *udata),
+    void(*elfree)(void *item),
     void *udata)
 {
     _malloc = _malloc ? _malloc : __malloc ? __malloc : malloc;
@@ -121,18 +121,19 @@ struct hashmap *hashmap_new_with_allocator(void *(*_malloc)(size_t),
     size_t ncap = 16;
     if (cap < ncap) {
         cap = ncap;
-    } else {
+    }
+    else {
         while (ncap < cap) {
             ncap *= 2;
         }
         cap = ncap;
     }
     size_t bucketsz = sizeof(struct bucket) + elsize;
-    while (bucketsz & (sizeof(uintptr_t)-1)) {
+    while (bucketsz & (sizeof(uintptr_t) - 1)) {
         bucketsz++;
     }
     // hashmap + spare + edata
-    size_t size = sizeof(struct hashmap)+bucketsz*2;
+    size_t size = sizeof(struct hashmap) + bucketsz * 2;
     struct hashmap *map = _malloc(size);
     if (!map) {
         return NULL;
@@ -146,11 +147,11 @@ struct hashmap *hashmap_new_with_allocator(void *(*_malloc)(size_t),
     map->compare = compare;
     map->elfree = elfree;
     map->udata = udata;
-    map->spare = ((char*)map)+sizeof(struct hashmap);
-    map->edata = (char*)map->spare+bucketsz;
+    map->spare = ((char*)map) + sizeof(struct hashmap);
+    map->edata = (char*)map->spare + bucketsz;
     map->cap = cap;
     map->nbuckets = cap;
-    map->mask = map->nbuckets-1;
+    map->mask = map->nbuckets - 1;
     map->buckets = _malloc(map->bucketsz*map->nbuckets);
     if (!map->buckets) {
         _free(map);
@@ -164,7 +165,7 @@ struct hashmap *hashmap_new_with_allocator(void *(*_malloc)(size_t),
     map->malloc = _malloc;
     map->realloc = _realloc;
     map->free = _free;
-    return map;  
+    return map;
 }
 
 // hashmap_new returns a new hash map. 
@@ -184,14 +185,14 @@ struct hashmap *hashmap_new_with_allocator(void *(*_malloc)(size_t),
 // The hashmap must be freed with hashmap_free(). 
 // Param `elfree` is a function that frees a specific item. This should be NULL
 // unless you're storing some kind of reference data in the hash.
-struct hashmap *hashmap_new(size_t elsize, size_t cap, uint64_t seed0, 
+struct hashmap *hashmap_new(size_t elsize, size_t cap, uint64_t seed0,
     uint64_t seed1,
-    uint64_t (*hash)(const void *item, uint64_t seed0, uint64_t seed1),
-    int (*compare)(const void *a, const void *b, void *udata),
-    void (*elfree)(void *item),
+    uint64_t(*hash)(const void *item, uint64_t seed0, uint64_t seed1),
+    int(*compare)(const void *a, const void *b, void *udata),
+    void(*elfree)(void *item),
     void *udata)
 {
-    return hashmap_new_with_allocator(NULL, NULL, NULL, elsize, cap, seed0, 
+    return hashmap_new_with_allocator(NULL, NULL, NULL, elsize, cap, seed0,
         seed1, hash, compare, elfree, udata);
 }
 
@@ -215,7 +216,8 @@ void hashmap_clear(struct hashmap *map, bool update_cap) {
     free_elements(map);
     if (update_cap) {
         map->cap = map->nbuckets;
-    } else if (map->nbuckets != map->cap) {
+    }
+    else if (map->nbuckets != map->cap) {
         void *new_buckets = map->malloc(map->bucketsz*map->cap);
         if (new_buckets) {
             map->free(map->buckets);
@@ -224,14 +226,14 @@ void hashmap_clear(struct hashmap *map, bool update_cap) {
         map->nbuckets = map->cap;
     }
     memset(map->buckets, 0, map->bucketsz*map->nbuckets);
-    map->mask = map->nbuckets-1;
-    map->growat = map->nbuckets * (map->loadfactor / 100.0) ;
+    map->mask = map->nbuckets - 1;
+    map->growat = map->nbuckets * (map->loadfactor / 100.0);
     map->shrinkat = map->nbuckets * SHRINK_AT;
 }
 
 static bool resize0(struct hashmap *map, size_t new_cap) {
-    struct hashmap *map2 = hashmap_new_with_allocator(map->malloc, map->realloc, 
-        map->free, map->elsize, new_cap, map->seed0, map->seed1, map->hash, 
+    struct hashmap *map2 = hashmap_new_with_allocator(map->malloc, map->realloc,
+        map->free, map->elsize, new_cap, map->seed0, map->seed1, map->hash,
         map->compare, map->elfree, map->udata);
     if (!map2) return false;
     for (size_t i = 0; i < map->nbuckets; i++) {
@@ -241,7 +243,7 @@ static bool resize0(struct hashmap *map, size_t new_cap) {
         }
         entry->dib = 1;
         size_t j = entry->hash & map2->mask;
-        while(1) {
+        while (1) {
             struct bucket *bucket = bucket_at(map2, j);
             if (bucket->dib == 0) {
                 memcpy(bucket, entry, map->bucketsz);
@@ -279,7 +281,7 @@ const void *hashmap_set_with_hash(struct hashmap *map, const void *item,
     hash = clip_hash(hash);
     map->oom = false;
     if (map->count >= map->growat) {
-        if (!resize(map, map->nbuckets*(1<<map->growpower))) {
+        if (!resize(map, map->nbuckets*(1 << map->growpower))) {
             map->oom = true;
             return NULL;
         }
@@ -293,7 +295,7 @@ const void *hashmap_set_with_hash(struct hashmap *map, const void *item,
 
     void *bitem;
     size_t i = entry->hash & map->mask;
-    while(1) {
+    while (1) {
         struct bucket *bucket = bucket_at(map, i);
         if (bucket->dib == 0) {
             memcpy(bucket, entry, map->bucketsz);
@@ -335,7 +337,7 @@ const void *hashmap_get_with_hash(const struct hashmap *map, const void *key,
 {
     hash = clip_hash(hash);
     size_t i = hash & map->mask;
-    while(1) {
+    while (1) {
         struct bucket *bucket = bucket_at(map, i);
         if (!bucket->dib) return NULL;
         if (bucket->hash == hash) {
@@ -375,7 +377,7 @@ const void *hashmap_delete_with_hash(struct hashmap *map, const void *key,
     hash = clip_hash(hash);
     map->oom = false;
     size_t i = hash & map->mask;
-    while(1) {
+    while (1) {
         struct bucket *bucket = bucket_at(map, i);
         if (!bucket->dib) {
             return NULL;
@@ -386,7 +388,7 @@ const void *hashmap_delete_with_hash(struct hashmap *map, const void *key,
         {
             memcpy(map->spare, bitem, map->elsize);
             bucket->dib = 0;
-            while(1) {
+            while (1) {
                 struct bucket *prev = bucket;
                 i = (i + 1) & map->mask;
                 bucket = bucket_at(map, i);
@@ -402,7 +404,7 @@ const void *hashmap_delete_with_hash(struct hashmap *map, const void *key,
                 // Ignore the return value. It's ok for the resize operation to
                 // fail to allocate enough memory because a shrink operation
                 // does not change the integrity of the data.
-                resize(map, map->nbuckets/2);
+                resize(map, map->nbuckets / 2);
             }
             return map->spare;
         }
@@ -440,8 +442,8 @@ bool hashmap_oom(struct hashmap *map) {
 // hashmap_scan iterates over all items in the hash map
 // Param `iter` can return false to stop iteration early.
 // Returns false if the iteration has been stopped early.
-bool hashmap_scan(struct hashmap *map, 
-    bool (*iter)(const void *item, void *udata), void *udata)
+bool hashmap_scan(struct hashmap *map,
+    bool(*iter)(const void *item, void *udata), void *udata)
 {
     for (size_t i = 0; i < map->nbuckets; i++) {
         struct bucket *bucket = bucket_at(map, i);
@@ -500,7 +502,7 @@ bool hashmap_iter(struct hashmap *map, size_t *i, void **item) {
 // default: SipHash-2-4
 //-----------------------------------------------------------------------------
 static uint64_t SIP64(const uint8_t *in, const size_t inlen, uint64_t seed0,
-    uint64_t seed1) 
+    uint64_t seed1)
 {
 #define U8TO64_LE(p) \
     {  (((uint64_t)((p)[0])) | ((uint64_t)((p)[1]) << 8) | \
@@ -576,54 +578,54 @@ static uint64_t MM86128(const void *key, const int len, uint32_t seed) {
     uint32_t h2 = seed;
     uint32_t h3 = seed;
     uint32_t h4 = seed;
-    uint32_t c1 = 0x239b961b; 
+    uint32_t c1 = 0x239b961b;
     uint32_t c2 = 0xab0e9789;
-    uint32_t c3 = 0x38b34ae5; 
+    uint32_t c3 = 0x38b34ae5;
     uint32_t c4 = 0xa1e38b93;
-    const uint32_t * blocks = (const uint32_t *)(data + nblocks*16);
+    const uint32_t * blocks = (const uint32_t *)(data + nblocks * 16);
     for (int i = -nblocks; i; i++) {
-        uint32_t k1 = blocks[i*4+0];
-        uint32_t k2 = blocks[i*4+1];
-        uint32_t k3 = blocks[i*4+2];
-        uint32_t k4 = blocks[i*4+3];
-        k1 *= c1; k1  = ROTL32(k1,15); k1 *= c2; h1 ^= k1;
-        h1 = ROTL32(h1,19); h1 += h2; h1 = h1*5+0x561ccd1b;
-        k2 *= c2; k2  = ROTL32(k2,16); k2 *= c3; h2 ^= k2;
-        h2 = ROTL32(h2,17); h2 += h3; h2 = h2*5+0x0bcaa747;
-        k3 *= c3; k3  = ROTL32(k3,17); k3 *= c4; h3 ^= k3;
-        h3 = ROTL32(h3,15); h3 += h4; h3 = h3*5+0x96cd1c35;
-        k4 *= c4; k4  = ROTL32(k4,18); k4 *= c1; h4 ^= k4;
-        h4 = ROTL32(h4,13); h4 += h1; h4 = h4*5+0x32ac3b17;
+        uint32_t k1 = blocks[i * 4 + 0];
+        uint32_t k2 = blocks[i * 4 + 1];
+        uint32_t k3 = blocks[i * 4 + 2];
+        uint32_t k4 = blocks[i * 4 + 3];
+        k1 *= c1; k1 = ROTL32(k1, 15); k1 *= c2; h1 ^= k1;
+        h1 = ROTL32(h1, 19); h1 += h2; h1 = h1 * 5 + 0x561ccd1b;
+        k2 *= c2; k2 = ROTL32(k2, 16); k2 *= c3; h2 ^= k2;
+        h2 = ROTL32(h2, 17); h2 += h3; h2 = h2 * 5 + 0x0bcaa747;
+        k3 *= c3; k3 = ROTL32(k3, 17); k3 *= c4; h3 ^= k3;
+        h3 = ROTL32(h3, 15); h3 += h4; h3 = h3 * 5 + 0x96cd1c35;
+        k4 *= c4; k4 = ROTL32(k4, 18); k4 *= c1; h4 ^= k4;
+        h4 = ROTL32(h4, 13); h4 += h1; h4 = h4 * 5 + 0x32ac3b17;
     }
-    const uint8_t * tail = (const uint8_t*)(data + nblocks*16);
+    const uint8_t * tail = (const uint8_t*)(data + nblocks * 16);
     uint32_t k1 = 0;
     uint32_t k2 = 0;
     uint32_t k3 = 0;
     uint32_t k4 = 0;
-    switch(len & 15) {
+    switch (len & 15) {
     case 15: k4 ^= tail[14] << 16; /* fall through */
     case 14: k4 ^= tail[13] << 8; /* fall through */
     case 13: k4 ^= tail[12] << 0;
-             k4 *= c4; k4  = ROTL32(k4,18); k4 *= c1; h4 ^= k4;
-             /* fall through */
+        k4 *= c4; k4 = ROTL32(k4, 18); k4 *= c1; h4 ^= k4;
+        /* fall through */
     case 12: k3 ^= tail[11] << 24; /* fall through */
     case 11: k3 ^= tail[10] << 16; /* fall through */
-    case 10: k3 ^= tail[ 9] << 8; /* fall through */
-    case  9: k3 ^= tail[ 8] << 0;
-             k3 *= c3; k3  = ROTL32(k3,17); k3 *= c4; h3 ^= k3;
-             /* fall through */
-    case  8: k2 ^= tail[ 7] << 24; /* fall through */
-    case  7: k2 ^= tail[ 6] << 16; /* fall through */
-    case  6: k2 ^= tail[ 5] << 8; /* fall through */
-    case  5: k2 ^= tail[ 4] << 0;
-             k2 *= c2; k2  = ROTL32(k2,16); k2 *= c3; h2 ^= k2;
-             /* fall through */
-    case  4: k1 ^= tail[ 3] << 24; /* fall through */
-    case  3: k1 ^= tail[ 2] << 16; /* fall through */
-    case  2: k1 ^= tail[ 1] << 8; /* fall through */
-    case  1: k1 ^= tail[ 0] << 0;
-             k1 *= c1; k1  = ROTL32(k1,15); k1 *= c2; h1 ^= k1;
-             /* fall through */
+    case 10: k3 ^= tail[9] << 8; /* fall through */
+    case  9: k3 ^= tail[8] << 0;
+        k3 *= c3; k3 = ROTL32(k3, 17); k3 *= c4; h3 ^= k3;
+        /* fall through */
+    case  8: k2 ^= tail[7] << 24; /* fall through */
+    case  7: k2 ^= tail[6] << 16; /* fall through */
+    case  6: k2 ^= tail[5] << 8; /* fall through */
+    case  5: k2 ^= tail[4] << 0;
+        k2 *= c2; k2 = ROTL32(k2, 16); k2 *= c3; h2 ^= k2;
+        /* fall through */
+    case  4: k1 ^= tail[3] << 24; /* fall through */
+    case  3: k1 ^= tail[2] << 16; /* fall through */
+    case  2: k1 ^= tail[1] << 8; /* fall through */
+    case  1: k1 ^= tail[0] << 0;
+        k1 *= c1; k1 = ROTL32(k1, 15); k1 *= c2; h1 ^= k1;
+        /* fall through */
     };
     h1 ^= len; h2 ^= len; h3 ^= len; h4 ^= len;
     h1 += h2; h1 += h3; h1 += h4;
@@ -631,7 +633,7 @@ static uint64_t MM86128(const void *key, const int len, uint32_t seed) {
     FMIX32(h1); FMIX32(h2); FMIX32(h3); FMIX32(h4);
     h1 += h2; h1 += h3; h1 += h4;
     h2 += h1; h3 += h1; h4 += h1;
-    return (((uint64_t)h2)<<32)|h1;
+    return (((uint64_t)h2) << 32) | h1;
 }
 
 //-----------------------------------------------------------------------------
@@ -697,7 +699,7 @@ static uint64_t xxh3(const void* data, size_t len, uint64_t seed) {
             p += 32;
         } while (p <= limit);
 
-        h64 = XXH_rotl64(v1, 1) + XXH_rotl64(v2, 7) + XXH_rotl64(v3, 12) + 
+        h64 = XXH_rotl64(v1, 1) + XXH_rotl64(v2, 7) + XXH_rotl64(v3, 12) +
             XXH_rotl64(v4, 18);
 
         v1 *= XXH_PRIME_2;
@@ -780,7 +782,7 @@ uint64_t hashmap_xxhash3(const void *data, size_t len, uint64_t seed0,
     uint64_t seed1)
 {
     (void)seed1;
-    return xxh3(data, len ,seed0);
+    return xxh3(data, len, seed0);
 }
 
 //==============================================================================
@@ -825,21 +827,21 @@ static uintptr_t total_allocs = 0;
 static uintptr_t total_mem = 0;
 
 static void *xmalloc(size_t size) {
-    if (rand_alloc_fail && rand()%rand_alloc_fail_odds == 0) {
+    if (rand_alloc_fail && rand() % rand_alloc_fail_odds == 0) {
         return NULL;
     }
-    void *mem = malloc(sizeof(uintptr_t)+size);
+    void *mem = malloc(sizeof(uintptr_t) + size);
     assert(mem);
     *(uintptr_t*)mem = size;
     total_allocs++;
     total_mem += size;
-    return (char*)mem+sizeof(uintptr_t);
+    return (char*)mem + sizeof(uintptr_t);
 }
 
 static void xfree(void *ptr) {
     if (ptr) {
-        total_mem -= *(uintptr_t*)((char*)ptr-sizeof(uintptr_t));
-        free((char*)ptr-sizeof(uintptr_t));
+        total_mem -= *(uintptr_t*)((char*)ptr - sizeof(uintptr_t));
+        free((char*)ptr - sizeof(uintptr_t));
         total_allocs--;
     }
 }
@@ -886,8 +888,8 @@ static void free_str(void *item) {
 }
 
 static void all(void) {
-    int seed = getenv("SEED")?atoi(getenv("SEED")):time(NULL);
-    int N = getenv("N")?atoi(getenv("N")):2000;
+    int seed = getenv("SEED") ? atoi(getenv("SEED")) : time(NULL);
+    int N = getenv("N") ? atoi(getenv("N")) : 2000;
     printf("seed=%d, count=%d, item_size=%zu\n", seed, N, sizeof(int));
     srand(seed);
 
@@ -906,8 +908,9 @@ static void all(void) {
 
     struct hashmap *map;
 
-    while (!(map = hashmap_new(sizeof(int), 0, seed, seed, 
-                               hash_int, compare_ints_udata, NULL, NULL))) {}
+    while (!(map = hashmap_new(sizeof(int), 0, seed, seed,
+        hash_int, compare_ints_udata, NULL, NULL))) {
+    }
     shuffle(vals, N, sizeof(int));
     for (int i = 0; i < N; i++) {
         // // printf("== %d ==\n", vals[i]);
@@ -923,7 +926,7 @@ static void all(void) {
                 break;
             }
         }
-        
+
         for (int j = 0; j < i; j++) {
             v = hashmap_get(map, &vals[j]);
             assert(v && *v == vals[j]);
@@ -933,7 +936,8 @@ static void all(void) {
             if (!v) {
                 assert(hashmap_oom(map));
                 continue;
-            } else {
+            }
+            else {
                 assert(!hashmap_oom(map));
                 assert(v && *v == vals[i]);
                 break;
@@ -946,7 +950,7 @@ static void all(void) {
         assert(!hashmap_get(map, &vals[i]));
         assert(!hashmap_delete(map, &vals[i]));
         assert(!hashmap_set(map, &vals[i]));
-        assert(map->count == (size_t)(i+1));
+        assert(map->count == (size_t)(i + 1));
         assert(map->count == hashmap_count(map));
         assert(map->count == deepcount(map));
     }
@@ -959,8 +963,8 @@ static void all(void) {
     // Test hashmap_iter. This does the same as hashmap_scan above.
     size_t iter = 0;
     void *iter_val;
-    while (hashmap_iter (map, &iter, &iter_val)) {
-        assert (iter_ints(iter_val, &vals2));
+    while (hashmap_iter(map, &iter, &iter_val)) {
+        assert(iter_ints(iter_val, &vals2));
     }
     for (int i = 0; i < N; i++) {
         assert(vals2[i] == 1);
@@ -973,10 +977,10 @@ static void all(void) {
         v = hashmap_delete(map, &vals[i]);
         assert(v && *v == vals[i]);
         assert(!hashmap_get(map, &vals[i]));
-        assert(map->count == (size_t)(N-i-1));
+        assert(map->count == (size_t)(N - i - 1));
         assert(map->count == hashmap_count(map));
         assert(map->count == deepcount(map));
-        for (int j = N-1; j > i; j--) {
+        for (int j = N - 1; j > i; j--) {
             v = hashmap_get(map, &vals[j]);
             assert(v && *v == vals[j]);
         }
@@ -1017,13 +1021,13 @@ static void all(void) {
 
 
     while (!(map = hashmap_new(sizeof(char*), 0, seed, seed,
-                               hash_str, compare_strs, free_str, NULL)));
+        hash_str, compare_strs, free_str, NULL)));
 
     for (int i = 0; i < N; i++) {
         char *str;
         while (!(str = xmalloc(16)));
         snprintf(str, 16, "s%i", i);
-        while(!hashmap_set(map, &str));
+        while (!hashmap_set(map, &str));
     }
 
     hashmap_clear(map, false);
@@ -1033,7 +1037,7 @@ static void all(void) {
         char *str;
         while (!(str = xmalloc(16)));
         snprintf(str, 16, "s%i", i);
-        while(!hashmap_set(map, &str));
+        while (!hashmap_set(map, &str));
     }
 
     hashmap_free(map);
@@ -1078,8 +1082,8 @@ static void all(void) {
 }}
 
 static void benchmarks(void) {
-    int seed = getenv("SEED")?atoi(getenv("SEED")):time(NULL);
-    int N = getenv("N")?atoi(getenv("N")):5000000;
+    int seed = getenv("SEED") ? atoi(getenv("SEED")) : time(NULL);
+    int N = getenv("N") ? atoi(getenv("N")) : 5000000;
     printf("seed=%d, count=%d, item_size=%zu\n", seed, N, sizeof(int));
     srand(seed);
 
@@ -1094,44 +1098,44 @@ static void benchmarks(void) {
     struct hashmap *map;
     shuffle(vals, N, sizeof(int));
 
-    map = hashmap_new(sizeof(int), 0, seed, seed, hash_int, compare_ints_udata, 
-                      NULL, NULL);
+    map = hashmap_new(sizeof(int), 0, seed, seed, hash_int, compare_ints_udata,
+        NULL, NULL);
     bench("set", N, {
         const int *v = hashmap_set(map, &vals[i]);
         assert(!v);
     })
-    shuffle(vals, N, sizeof(int));
+        shuffle(vals, N, sizeof(int));
     bench("get", N, {
         const int *v = hashmap_get(map, &vals[i]);
         assert(v && *v == vals[i]);
     })
-    shuffle(vals, N, sizeof(int));
+        shuffle(vals, N, sizeof(int));
     bench("delete", N, {
         const int *v = hashmap_delete(map, &vals[i]);
         assert(v && *v == vals[i]);
     })
-    hashmap_free(map);
+        hashmap_free(map);
 
-    map = hashmap_new(sizeof(int), N, seed, seed, hash_int, compare_ints_udata, 
-                      NULL, NULL);
+    map = hashmap_new(sizeof(int), N, seed, seed, hash_int, compare_ints_udata,
+        NULL, NULL);
     bench("set (cap)", N, {
         const int *v = hashmap_set(map, &vals[i]);
         assert(!v);
     })
-    shuffle(vals, N, sizeof(int));
+        shuffle(vals, N, sizeof(int));
     bench("get (cap)", N, {
         const int *v = hashmap_get(map, &vals[i]);
         assert(v && *v == vals[i]);
     })
-    shuffle(vals, N, sizeof(int));
-    bench("delete (cap)" , N, {
+        shuffle(vals, N, sizeof(int));
+    bench("delete (cap)", N, {
         const int *v = hashmap_delete(map, &vals[i]);
         assert(v && *v == vals[i]);
     })
 
-    hashmap_free(map);
+        hashmap_free(map);
 
-    
+
     xfree(vals);
 
     if (total_allocs != 0) {
@@ -1146,7 +1150,8 @@ int main(void) {
     if (getenv("BENCH")) {
         printf("Running hashmap.c benchmarks...\n");
         benchmarks();
-    } else {
+    }
+    else {
         printf("Running hashmap.c tests...\n");
         all();
         printf("PASSED\n");

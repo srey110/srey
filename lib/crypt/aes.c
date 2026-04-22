@@ -1,4 +1,4 @@
-#include "crypt/aes.h"
+﻿#include "crypt/aes.h"
 #include "crypt/padding.h"
 
 #define FULL_UNROLL
@@ -689,11 +689,11 @@ static int32_t _key_setup_encrypt(const uint8_t *key, int32_t keybits, uint32_t 
         for (;;) {
             temp = rk[3];
             rk[4] = rk[0] ^
-                    (te4[(temp >> 16) & 0xff] & 0xff000000) ^
-                    (te4[(temp >> 8) & 0xff] & 0x00ff0000) ^
-                    (te4[(temp) & 0xff] & 0x0000ff00) ^
-                    (te4[(temp >> 24)] & 0x000000ff) ^
-                    rcon[i];
+                (te4[(temp >> 16) & 0xff] & 0xff000000) ^
+                (te4[(temp >> 8) & 0xff] & 0x00ff0000) ^
+                (te4[(temp) & 0xff] & 0x0000ff00) ^
+                (te4[(temp >> 24)] & 0x000000ff) ^
+                rcon[i];
             rk[5] = rk[1] ^ rk[4];
             rk[6] = rk[2] ^ rk[5];
             rk[7] = rk[3] ^ rk[6];
@@ -709,11 +709,11 @@ static int32_t _key_setup_encrypt(const uint8_t *key, int32_t keybits, uint32_t 
         for (;;) {
             temp = rk[5];
             rk[6] = rk[0] ^
-                    (te4[(temp >> 16) & 0xff] & 0xff000000) ^
-                    (te4[(temp >> 8) & 0xff] & 0x00ff0000) ^
-                    (te4[(temp) & 0xff] & 0x0000ff00) ^
-                    (te4[(temp >> 24)] & 0x000000ff) ^
-                    rcon[i];
+                (te4[(temp >> 16) & 0xff] & 0xff000000) ^
+                (te4[(temp >> 8) & 0xff] & 0x00ff0000) ^
+                (te4[(temp) & 0xff] & 0x0000ff00) ^
+                (te4[(temp >> 24)] & 0x000000ff) ^
+                rcon[i];
             rk[7] = rk[1] ^ rk[6];
             rk[8] = rk[2] ^ rk[7];
             rk[9] = rk[3] ^ rk[8];
@@ -731,11 +731,11 @@ static int32_t _key_setup_encrypt(const uint8_t *key, int32_t keybits, uint32_t 
         for (;;) {
             temp = rk[7];
             rk[8] = rk[0] ^
-                    (te4[(temp >> 16) & 0xff] & 0xff000000) ^
-                    (te4[(temp >> 8) & 0xff] & 0x00ff0000) ^
-                    (te4[(temp) & 0xff] & 0x0000ff00) ^
-                    (te4[(temp >> 24)] & 0x000000ff) ^
-                    rcon[i];
+                (te4[(temp >> 16) & 0xff] & 0xff000000) ^
+                (te4[(temp >> 8) & 0xff] & 0x00ff0000) ^
+                (te4[(temp) & 0xff] & 0x0000ff00) ^
+                (te4[(temp >> 24)] & 0x000000ff) ^
+                rcon[i];
             rk[9] = rk[1] ^ rk[8];
             rk[10] = rk[2] ^ rk[9];
             rk[11] = rk[3] ^ rk[10];
@@ -744,10 +744,10 @@ static int32_t _key_setup_encrypt(const uint8_t *key, int32_t keybits, uint32_t 
             }
             temp = rk[11];
             rk[12] = rk[4] ^
-                    (te4[(temp >> 24)] & 0xff000000) ^
-                    (te4[(temp >> 16) & 0xff] & 0x00ff0000) ^
-                    (te4[(temp >> 8) & 0xff] & 0x0000ff00) ^
-                    (te4[(temp) & 0xff] & 0x000000ff);
+                (te4[(temp >> 24)] & 0xff000000) ^
+                (te4[(temp >> 16) & 0xff] & 0x00ff0000) ^
+                (te4[(temp >> 8) & 0xff] & 0x0000ff00) ^
+                (te4[(temp) & 0xff] & 0x000000ff);
             rk[13] = rk[5] ^ rk[12];
             rk[14] = rk[6] ^ rk[13];
             rk[15] = rk[7] ^ rk[14];
@@ -769,21 +769,21 @@ static int32_t _key_setup_decrypt(const uint8_t *key, int32_t keybits, uint32_t 
     for (i = 1; i < nrounds; i++) {
         rk += 4;
         rk[0] = td0[te4[(rk[0] >> 24)] & 0xff] ^
-                td1[te4[(rk[0] >> 16) & 0xff] & 0xff] ^
-                td2[te4[(rk[0] >> 8) & 0xff] & 0xff] ^
-                td3[te4[(rk[0]) & 0xff] & 0xff];
+            td1[te4[(rk[0] >> 16) & 0xff] & 0xff] ^
+            td2[te4[(rk[0] >> 8) & 0xff] & 0xff] ^
+            td3[te4[(rk[0]) & 0xff] & 0xff];
         rk[1] = td0[te4[(rk[1] >> 24)] & 0xff] ^
-                td1[te4[(rk[1] >> 16) & 0xff] & 0xff] ^
-                td2[te4[(rk[1] >> 8) & 0xff] & 0xff] ^
-                td3[te4[(rk[1]) & 0xff] & 0xff];
+            td1[te4[(rk[1] >> 16) & 0xff] & 0xff] ^
+            td2[te4[(rk[1] >> 8) & 0xff] & 0xff] ^
+            td3[te4[(rk[1]) & 0xff] & 0xff];
         rk[2] = td0[te4[(rk[2] >> 24)] & 0xff] ^
-                td1[te4[(rk[2] >> 16) & 0xff] & 0xff] ^
-                td2[te4[(rk[2] >> 8) & 0xff] & 0xff] ^
-                td3[te4[(rk[2]) & 0xff] & 0xff];
+            td1[te4[(rk[2] >> 16) & 0xff] & 0xff] ^
+            td2[te4[(rk[2] >> 8) & 0xff] & 0xff] ^
+            td3[te4[(rk[2]) & 0xff] & 0xff];
         rk[3] = td0[te4[(rk[3] >> 24)] & 0xff] ^
-                td1[te4[(rk[3] >> 16) & 0xff] & 0xff] ^
-                td2[te4[(rk[3] >> 8) & 0xff] & 0xff] ^
-                td3[te4[(rk[3]) & 0xff] & 0xff];
+            td1[te4[(rk[3] >> 16) & 0xff] & 0xff] ^
+            td2[te4[(rk[3] >> 8) & 0xff] & 0xff] ^
+            td3[te4[(rk[3]) & 0xff] & 0xff];
     }
     return nrounds;
 }
@@ -871,74 +871,74 @@ static void _encrypt(const uint32_t *rk, int32_t nrounds, const uint8_t *plainte
     r = nrounds >> 1;
     for (;;) {
         t0 = te0[(s0 >> 24)] ^
-             te1[(s1 >> 16) & 0xff] ^
-             te2[(s2 >> 8) & 0xff] ^
-             te3[(s3) & 0xff] ^
-             rk[4];
+            te1[(s1 >> 16) & 0xff] ^
+            te2[(s2 >> 8) & 0xff] ^
+            te3[(s3) & 0xff] ^
+            rk[4];
         t1 = te0[(s1 >> 24)] ^
-             te1[(s2 >> 16) & 0xff] ^
-             te2[(s3 >> 8) & 0xff] ^
-             te3[(s0) & 0xff] ^
-             rk[5];
+            te1[(s2 >> 16) & 0xff] ^
+            te2[(s3 >> 8) & 0xff] ^
+            te3[(s0) & 0xff] ^
+            rk[5];
         t2 = te0[(s2 >> 24)] ^
-             te1[(s3 >> 16) & 0xff] ^
-             te2[(s0 >> 8) & 0xff] ^
-             te3[(s1) & 0xff] ^
-             rk[6];
+            te1[(s3 >> 16) & 0xff] ^
+            te2[(s0 >> 8) & 0xff] ^
+            te3[(s1) & 0xff] ^
+            rk[6];
         t3 = te0[(s3 >> 24)] ^
-             te1[(s0 >> 16) & 0xff] ^
-             te2[(s1 >> 8) & 0xff] ^
-             te3[(s2) & 0xff] ^
-             rk[7];
+            te1[(s0 >> 16) & 0xff] ^
+            te2[(s1 >> 8) & 0xff] ^
+            te3[(s2) & 0xff] ^
+            rk[7];
         rk += 8;
         if (0 == --r) {
             break;
         }
         s0 = te0[(t0 >> 24)] ^
-             te1[(t1 >> 16) & 0xff] ^
-             te2[(t2 >> 8) & 0xff] ^
-             te3[(t3) & 0xff] ^
-             rk[0];
+            te1[(t1 >> 16) & 0xff] ^
+            te2[(t2 >> 8) & 0xff] ^
+            te3[(t3) & 0xff] ^
+            rk[0];
         s1 = te0[(t1 >> 24)] ^
-             te1[(t2 >> 16) & 0xff] ^
-             te2[(t3 >> 8) & 0xff] ^
-             te3[(t0) & 0xff] ^
-             rk[1];
+            te1[(t2 >> 16) & 0xff] ^
+            te2[(t3 >> 8) & 0xff] ^
+            te3[(t0) & 0xff] ^
+            rk[1];
         s2 = te0[(t2 >> 24)] ^
-             te1[(t3 >> 16) & 0xff] ^
-             te2[(t0 >> 8) & 0xff] ^
-             te3[(t1) & 0xff] ^
-             rk[2];
+            te1[(t3 >> 16) & 0xff] ^
+            te2[(t0 >> 8) & 0xff] ^
+            te3[(t1) & 0xff] ^
+            rk[2];
         s3 = te0[(t3 >> 24)] ^
-             te1[(t0 >> 16) & 0xff] ^
-             te2[(t1 >> 8) & 0xff] ^
-             te3[(t2) & 0xff] ^
-             rk[3];
+            te1[(t0 >> 16) & 0xff] ^
+            te2[(t1 >> 8) & 0xff] ^
+            te3[(t2) & 0xff] ^
+            rk[3];
     }
 #endif
     s0 = (te4[(t0 >> 24)] & 0xff000000) ^
-         (te4[(t1 >> 16) & 0xff] & 0x00ff0000) ^
-         (te4[(t2 >> 8) & 0xff] & 0x0000ff00) ^
-         (te4[(t3) & 0xff] & 0x000000ff) ^
-         rk[0];
+        (te4[(t1 >> 16) & 0xff] & 0x00ff0000) ^
+        (te4[(t2 >> 8) & 0xff] & 0x0000ff00) ^
+        (te4[(t3) & 0xff] & 0x000000ff) ^
+        rk[0];
     PUTU32(ciphertext, s0);
     s1 = (te4[(t1 >> 24)] & 0xff000000) ^
-         (te4[(t2 >> 16) & 0xff] & 0x00ff0000) ^
-         (te4[(t3 >> 8) & 0xff] & 0x0000ff00) ^
-         (te4[(t0) & 0xff] & 0x000000ff) ^
-         rk[1];
+        (te4[(t2 >> 16) & 0xff] & 0x00ff0000) ^
+        (te4[(t3 >> 8) & 0xff] & 0x0000ff00) ^
+        (te4[(t0) & 0xff] & 0x000000ff) ^
+        rk[1];
     PUTU32(ciphertext + 4, s1);
     s2 = (te4[(t2 >> 24)] & 0xff000000) ^
-         (te4[(t3 >> 16) & 0xff] & 0x00ff0000) ^
-         (te4[(t0 >> 8) & 0xff] & 0x0000ff00) ^
-         (te4[(t1) & 0xff] & 0x000000ff) ^
-         rk[2];
+        (te4[(t3 >> 16) & 0xff] & 0x00ff0000) ^
+        (te4[(t0 >> 8) & 0xff] & 0x0000ff00) ^
+        (te4[(t1) & 0xff] & 0x000000ff) ^
+        rk[2];
     PUTU32(ciphertext + 8, s2);
     s3 = (te4[(t3 >> 24)] & 0xff000000) ^
-         (te4[(t0 >> 16) & 0xff] & 0x00ff0000) ^
-         (te4[(t1 >> 8) & 0xff] & 0x0000ff00) ^
-         (te4[(t2) & 0xff] & 0x000000ff) ^
-         rk[3];
+        (te4[(t0 >> 16) & 0xff] & 0x00ff0000) ^
+        (te4[(t1 >> 8) & 0xff] & 0x0000ff00) ^
+        (te4[(t2) & 0xff] & 0x000000ff) ^
+        rk[3];
     PUTU32(ciphertext + 12, s3);
 }
 static void _decrypt(const uint32_t *rk, int32_t nrounds, const uint8_t *ciphertext, uint8_t plaintext[16]) {
@@ -1025,74 +1025,74 @@ static void _decrypt(const uint32_t *rk, int32_t nrounds, const uint8_t *ciphert
     r = nrounds >> 1;
     for (;;) {
         t0 = td0[(s0 >> 24)] ^
-             td1[(s3 >> 16) & 0xff] ^
-             td2[(s2 >> 8) & 0xff] ^
-             td3[(s1) & 0xff] ^
-             rk[4];
+            td1[(s3 >> 16) & 0xff] ^
+            td2[(s2 >> 8) & 0xff] ^
+            td3[(s1) & 0xff] ^
+            rk[4];
         t1 = td0[(s1 >> 24)] ^
-             td1[(s0 >> 16) & 0xff] ^
-             td2[(s3 >> 8) & 0xff] ^
-             td3[(s2) & 0xff] ^
-             rk[5];
+            td1[(s0 >> 16) & 0xff] ^
+            td2[(s3 >> 8) & 0xff] ^
+            td3[(s2) & 0xff] ^
+            rk[5];
         t2 = td0[(s2 >> 24)] ^
-             td1[(s1 >> 16) & 0xff] ^
-             td2[(s0 >> 8) & 0xff] ^
-             td3[(s3) & 0xff] ^
-             rk[6];
+            td1[(s1 >> 16) & 0xff] ^
+            td2[(s0 >> 8) & 0xff] ^
+            td3[(s3) & 0xff] ^
+            rk[6];
         t3 = td0[(s3 >> 24)] ^
-             td1[(s2 >> 16) & 0xff] ^
-             td2[(s1 >> 8) & 0xff] ^
-             td3[(s0) & 0xff] ^
-             rk[7];
+            td1[(s2 >> 16) & 0xff] ^
+            td2[(s1 >> 8) & 0xff] ^
+            td3[(s0) & 0xff] ^
+            rk[7];
         rk += 8;
         if (0 == --r) {
             break;
         }
         s0 = td0[(t0 >> 24)] ^
-             td1[(t3 >> 16) & 0xff] ^
-             td2[(t2 >> 8) & 0xff] ^
-             td3[(t1) & 0xff] ^
-             rk[0];
+            td1[(t3 >> 16) & 0xff] ^
+            td2[(t2 >> 8) & 0xff] ^
+            td3[(t1) & 0xff] ^
+            rk[0];
         s1 = td0[(t1 >> 24)] ^
-             td1[(t0 >> 16) & 0xff] ^
-             td2[(t3 >> 8) & 0xff] ^
-             td3[(t2) & 0xff] ^
-             rk[1];
+            td1[(t0 >> 16) & 0xff] ^
+            td2[(t3 >> 8) & 0xff] ^
+            td3[(t2) & 0xff] ^
+            rk[1];
         s2 = td0[(t2 >> 24)] ^
-             td1[(t1 >> 16) & 0xff] ^
-             td2[(t0 >> 8) & 0xff] ^
-             td3[(t3) & 0xff] ^
-             rk[2];
+            td1[(t1 >> 16) & 0xff] ^
+            td2[(t0 >> 8) & 0xff] ^
+            td3[(t3) & 0xff] ^
+            rk[2];
         s3 = td0[(t3 >> 24)] ^
-             td1[(t2 >> 16) & 0xff] ^
-             td2[(t1 >> 8) & 0xff] ^
-             td3[(t0) & 0xff] ^
-             rk[3];
+            td1[(t2 >> 16) & 0xff] ^
+            td2[(t1 >> 8) & 0xff] ^
+            td3[(t0) & 0xff] ^
+            rk[3];
     }
 #endif
     s0 = (td4[(t0 >> 24)] & 0xff000000) ^
-         (td4[(t3 >> 16) & 0xff] & 0x00ff0000) ^
-         (td4[(t2 >> 8) & 0xff] & 0x0000ff00) ^
-         (td4[(t1) & 0xff] & 0x000000ff) ^
-         rk[0];
+        (td4[(t3 >> 16) & 0xff] & 0x00ff0000) ^
+        (td4[(t2 >> 8) & 0xff] & 0x0000ff00) ^
+        (td4[(t1) & 0xff] & 0x000000ff) ^
+        rk[0];
     PUTU32(plaintext, s0);
     s1 = (td4[(t1 >> 24)] & 0xff000000) ^
-         (td4[(t0 >> 16) & 0xff] & 0x00ff0000) ^
-         (td4[(t3 >> 8) & 0xff] & 0x0000ff00) ^
-         (td4[(t2) & 0xff] & 0x000000ff) ^
-         rk[1];
+        (td4[(t0 >> 16) & 0xff] & 0x00ff0000) ^
+        (td4[(t3 >> 8) & 0xff] & 0x0000ff00) ^
+        (td4[(t2) & 0xff] & 0x000000ff) ^
+        rk[1];
     PUTU32(plaintext + 4, s1);
     s2 = (td4[(t2 >> 24)] & 0xff000000) ^
-         (td4[(t1 >> 16) & 0xff] & 0x00ff0000) ^
-         (td4[(t0 >> 8) & 0xff] & 0x0000ff00) ^
-         (td4[(t3) & 0xff] & 0x000000ff) ^
-         rk[2];
+        (td4[(t1 >> 16) & 0xff] & 0x00ff0000) ^
+        (td4[(t0 >> 8) & 0xff] & 0x0000ff00) ^
+        (td4[(t3) & 0xff] & 0x000000ff) ^
+        rk[2];
     PUTU32(plaintext + 8, s2);
     s3 = (td4[(t3 >> 24)] & 0xff000000) ^
-         (td4[(t2 >> 16) & 0xff] & 0x00ff0000) ^
-         (td4[(t1 >> 8) & 0xff] & 0x0000ff00) ^
-         (td4[(t0) & 0xff] & 0x000000ff) ^
-         rk[3];
+        (td4[(t2 >> 16) & 0xff] & 0x00ff0000) ^
+        (td4[(t1 >> 8) & 0xff] & 0x0000ff00) ^
+        (td4[(t0) & 0xff] & 0x000000ff) ^
+        rk[3];
     PUTU32(plaintext + 12, s3);
 }
 void aes_init(aes_ctx *aes, const char *key, size_t klens, int32_t keybits, int32_t encrypt) {
@@ -1115,14 +1115,16 @@ void aes_init(aes_ctx *aes, const char *key, size_t klens, int32_t keybits, int3
     aes->encrypt = encrypt;
     if (aes->encrypt) {
         aes->nrounds = _key_setup_encrypt(k, keybits, aes->schedule);
-    } else {
+    }
+    else {
         aes->nrounds = _key_setup_decrypt(k, keybits, aes->schedule);
     }
 }
 char *aes_crypt(aes_ctx *aes, const void *data) {
     if (aes->encrypt) {
         _encrypt(aes->schedule, aes->nrounds, (const uint8_t *)data, aes->output);
-    } else {
+    }
+    else {
         _decrypt(aes->schedule, aes->nrounds, (const uint8_t *)data, aes->output);
     }
     return (char *)aes->output;

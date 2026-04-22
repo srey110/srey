@@ -1,4 +1,4 @@
-#include "protocol/redis.h"
+ï»¿#include "protocol/redis.h"
 #include "protocol/prots.h"
 #include "utils/binary.h"
 
@@ -102,7 +102,7 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
             break;
         }
         default: {
-            //Ìø¹ýÇ°×º
+            //è·³è¿‡å‰ç¼€
             while ('\0' != *f && NULL != strchr("#0-+ ", *f)) f++;
             while ('\0' != *f && isdigit((int)*f)) f++;
             if ('.' == *f) {
@@ -133,7 +133,8 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
                 if ('\0' != *f && NULL != strchr(FMT_INTEGER_FLAG, *f)) {
                     FMT_TYPE(int);
                     f++;
-                } else {
+                }
+                else {
                     binary_set_string(&fbuf, p + 1, (size_t)(f - p) - 1);
                 }
                 break;
@@ -143,7 +144,8 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
                 if ('\0' != *f && NULL != strchr(FMT_INTEGER_FLAG, *f)) {
                     FMT_TYPE(int);
                     f++;
-                } else {
+                }
+                else {
                     binary_set_string(&fbuf, p + 1, (size_t)(f - p) - 1);
                 }
                 break;
@@ -153,7 +155,8 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
                 if ('\0' != *f && NULL != strchr(FMT_INTEGER_FLAG, *f)) {
                     FMT_TYPE(long long);
                     f++;
-                } else {
+                }
+                else {
                     binary_set_string(&fbuf, p + 1, (size_t)(f - p) - 1);
                 }
                 break;
@@ -163,7 +166,8 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
                 if ('\0' != *f && NULL != strchr(FMT_INTEGER_FLAG, *f)) {
                     FMT_TYPE(long);
                     f++;
-                } else {
+                }
+                else {
                     binary_set_string(&fbuf, p + 1, (size_t)(f - p) - 1);
                 }
                 break;
@@ -210,7 +214,8 @@ static reader_ctx *_create_reader(ud_cxt *ud) {
 static inline void _add_node(reader_ctx *rd, redis_pack_ctx *pk) {
     if (NULL == rd->head) {
         rd->head = rd->tail = pk;
-    } else {
+    }
+    else {
         rd->tail->next = pk;
         rd->tail = pk;
     }
@@ -226,9 +231,9 @@ static int32_t _reader_line(reader_ctx *rd, int32_t prot, buffer_ctx *buf, int32
         return ERR_FAILED;
     }
     redis_pack_ctx *pk;
-    CALLOC(pk, 1, sizeof(redis_pack_ctx) + pos);//Ç°Ãæ»¹ÓÐ1¸ötype×Ö½Ú
+    CALLOC(pk, 1, sizeof(redis_pack_ctx) + pos);//å‰é¢è¿˜æœ‰1ä¸ªtypeå­—èŠ‚
     pk->prot = prot;
-    pk->len = pos - 1;//pos ÖÁÉÙÎª1
+    pk->len = pos - 1;//pos è‡³å°‘ä¸º1
     switch (prot) {
     case RESP_STRING:
     case RESP_ERROR:
@@ -238,7 +243,8 @@ static int32_t _reader_line(reader_ctx *rd, int32_t prot, buffer_ctx *buf, int32
     case RESP_BIGNUM:
         if (0 == pk->len) {
             BIT_SET(*status, PROT_ERROR);
-        } else {
+        }
+        else {
             buffer_copyout(buf, 1, pk->data, (size_t)pk->len);
             char *end;
             pk->ival = strtoll(pk->data, &end, 10);
@@ -274,12 +280,15 @@ static int32_t _reader_line(reader_ctx *rd, int32_t prot, buffer_ctx *buf, int32
         buffer_copyout(buf, 1, pk->data, (size_t)pk->len);
         if (3 == pk->len && 0 == _memicmp(pk->data, "inf", (size_t)pk->len)) {
             pk->dval = INFINITY;
-        } else if (4 == pk->len && 0 == _memicmp(pk->data, "-inf", (size_t)pk->len)) {
+        }
+        else if (4 == pk->len && 0 == _memicmp(pk->data, "-inf", (size_t)pk->len)) {
             pk->dval = -INFINITY;
-        } else if ((3 == pk->len && 0 == _memicmp(pk->data, "nan", (size_t)pk->len))
-                   ||(4 == pk->len && 0 == _memicmp(pk->data, "-nan", (size_t)pk->len))) {
+        }
+        else if ((3 == pk->len && 0 == _memicmp(pk->data, "nan", (size_t)pk->len))
+            || (4 == pk->len && 0 == _memicmp(pk->data, "-nan", (size_t)pk->len))) {
             pk->dval = NAN;
-        } else {
+        }
+        else {
             char *end;
             pk->dval = strtod(pk->data, &end);
             if (end != pk->data + pk->len

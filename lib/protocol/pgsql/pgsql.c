@@ -1,4 +1,4 @@
-#include "protocol/pgsql/pgsql.h"
+ï»¿#include "protocol/pgsql/pgsql.h"
 #include "protocol/pgsql/pgsql_parse.h"
 #include "crypt/scram.h"
 #include "srey/task.h"
@@ -45,7 +45,7 @@ int32_t _pgsql_may_resume(void *data) {
     }
     return ERR_OK;
 }
-//ÇëÇóÊÇ·ñssl¼ÓÃÜ
+//è¯·æ±‚æ˜¯å¦sslåŠ å¯†
 int32_t _pgsql_on_connected(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud, int32_t err) {
     if (ERR_OK != err) {
         return err;
@@ -55,7 +55,7 @@ int32_t _pgsql_on_connected(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud, in
     pack_integer(buf + 4, 80877103, 4, 0);
     return ev_send(ev, fd, skid, buf, sizeof(buf), 1);
 }
-//Startup ÏûÏ¢
+//Startup æ¶ˆæ¯
 static int32_t _pgsql_startup(ev_ctx *ev, ud_cxt *ud) {
     pgsql_ctx *pg = (pgsql_ctx *)ud->context;
     binary_ctx bwriter;
@@ -76,7 +76,7 @@ static int32_t _pgsql_startup(ev_ctx *ev, ud_cxt *ud) {
     ud->status = AUTH;
     return ev_send(ev, pg->fd, pg->skid, bwriter.data, size, 0);
 }
-//ÇëÇóÊÇ·ñssl¼ÓÃÜ ·µ»Ø
+//è¯·æ±‚æ˜¯å¦sslåŠ å¯† è¿”å›ž
 static void _pgsql_ssl_response(pgsql_ctx *pg, ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     if (1 > buffer_size(buf)) {
         BIT_SET(*status, PROT_MOREDATA);
@@ -90,13 +90,14 @@ static void _pgsql_ssl_response(pgsql_ctx *pg, ev_ctx *ev, buffer_ctx *buf, ud_c
             if (ERR_OK != ev_ssl(ev, pg->fd, pg->skid, 1, pg->evssl)) {
                 BIT_SET(*status, PROT_ERROR);
             }
-        } else {
+        }
+        else {
             BIT_SET(*status, PROT_ERROR);
             LOG_WARN("ssl not set.");
         }
         break;
     case 'N':
-        if (ERR_OK != _pgsql_startup(ev, ud)) {//·¢ËÍ StartupÏûÏ¢
+        if (ERR_OK != _pgsql_startup(ev, ud)) {//å‘é€ Startupæ¶ˆæ¯
             BIT_SET(*status, PROT_ERROR);
         }
         break;
@@ -105,11 +106,11 @@ static void _pgsql_ssl_response(pgsql_ctx *pg, ev_ctx *ev, buffer_ctx *buf, ud_c
         break;
     }
 }
-//sslÎÕÊÖÍê³É·¢ËÍ StartupÏûÏ¢
+//sslæ¡æ‰‹å®Œæˆå‘é€ Startupæ¶ˆæ¯
 int32_t _pgsql_ssl_exchanged(ev_ctx *ev, ud_cxt *ud) {
     return _pgsql_startup(ev, ud);
 }
-//»ñÈ¡Ò»¸öÍêÕûµÄÊý¾Ý°ü
+//èŽ·å–ä¸€ä¸ªå®Œæ•´çš„æ•°æ®åŒ…
 static char *_pgsql_payload(buffer_ctx *buf, int32_t *lens, int32_t *status) {
     size_t blens = buffer_size(buf);
     if (5 > blens) {
@@ -128,7 +129,7 @@ static char *_pgsql_payload(buffer_ctx *buf, int32_t *lens, int32_t *status) {
     ASSERTAB(total == buffer_remove(buf, pack, total), "copy buffer failed.");
     return pack;
 }
-//È¡µÃÖ§³ÖµÄÈÏÖ¤·½·¨
+//å–å¾—æ”¯æŒçš„è®¤è¯æ–¹æ³•
 static char *_pgsql_get_authmod(pgsql_ctx *pg, binary_ctx *breader) {
     char *mod;
     size_t i;
@@ -146,7 +147,7 @@ static char *_pgsql_get_authmod(pgsql_ctx *pg, binary_ctx *breader) {
     }
     return NULL;
 }
-//password·½Ê½ÈÏÖ¤ GSSResponse 
+//passwordæ–¹å¼è®¤è¯ GSSResponse 
 static int32_t _pgsql_password_auth(pgsql_ctx *pg, ev_ctx *ev, ud_cxt *ud) {
     binary_ctx bwriter;
     pgsql_pack_start(&bwriter, 'p');
@@ -154,7 +155,7 @@ static int32_t _pgsql_password_auth(pgsql_ctx *pg, ev_ctx *ev, ud_cxt *ud) {
     pgsql_pack_end(&bwriter);
     return ev_send(ev, pg->fd, pg->skid, bwriter.data, bwriter.offset, 0);
 }
-//scram-sha-256 µÚÒ»²½
+//scram-sha-256 ç¬¬ä¸€æ­¥
 static int32_t _pgsql_scram_client_first(pgsql_ctx *pg, ev_ctx *ev, ud_cxt *ud, const char *mod) {
     pg->scram = scram_init(mod, 1);
     if (NULL == pg->scram) {
@@ -171,37 +172,37 @@ static int32_t _pgsql_scram_client_first(pgsql_ctx *pg, ev_ctx *ev, ud_cxt *ud, 
     pgsql_pack_end(&bwriter);
     return ev_send(ev, pg->fd, pg->skid, bwriter.data, bwriter.offset, 0);
 }
-//scram-sha-256 µÚ¶þ²½
+//scram-sha-256 ç¬¬äºŒæ­¥
 static int32_t _pgsql_scram_client_final(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *breader, ud_cxt *ud) {
-   if (ERR_OK != scram_parse_first_message(pg->scram,
-       breader->data + breader->offset, breader->size - breader->offset)) {
-       return ERR_FAILED;
-   }
-   scram_set_pwd(pg->scram, pg->password);
-   char *final_message = scram_final_message(pg->scram);
-   if (NULL == final_message) {
-       return ERR_FAILED;
-   }
-   binary_ctx bwriter;
-   pgsql_pack_start(&bwriter, 'p');
-   binary_set_string(&bwriter, final_message, strlen(final_message));
-   FREE(final_message);
-   pgsql_pack_end(&bwriter);
-   return ev_send(ev, pg->fd, pg->skid, bwriter.data, bwriter.offset, 0);
+    if (ERR_OK != scram_parse_first_message(pg->scram,
+        breader->data + breader->offset, breader->size - breader->offset)) {
+        return ERR_FAILED;
+    }
+    scram_set_pwd(pg->scram, pg->password);
+    char *final_message = scram_final_message(pg->scram);
+    if (NULL == final_message) {
+        return ERR_FAILED;
+    }
+    binary_ctx bwriter;
+    pgsql_pack_start(&bwriter, 'p');
+    binary_set_string(&bwriter, final_message, strlen(final_message));
+    FREE(final_message);
+    pgsql_pack_end(&bwriter);
+    return ev_send(ev, pg->fd, pg->skid, bwriter.data, bwriter.offset, 0);
 }
 static void _pgsql_auth_process(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *breader, ud_cxt *ud, int32_t *status) {
     int32_t code = (int32_t)binary_get_integer(breader, 4, 0);
     switch (code) {
-    case 0x00://ÈÏÖ¤³É¹¦ AuthenticationOk 
+    case 0x00://è®¤è¯æˆåŠŸ AuthenticationOk 
         scram_free(pg->scram);
         pg->scram = NULL;
         break;
-    case 0x03://Ã÷ÎÄÃÜÂë AuthenticationCleartextPassword 
+    case 0x03://æ˜Žæ–‡å¯†ç  AuthenticationCleartextPassword 
         if (ERR_OK != _pgsql_password_auth(pg, ev, ud)) {
             BIT_SET(*status, PROT_ERROR);
         }
         break;
-    case 0x0a: {//SASLÉí·ÝÑéÖ¤ AuthenticationSASL
+    case 0x0a: {//SASLèº«ä»½éªŒè¯ AuthenticationSASL
         const char *mod = _pgsql_get_authmod(pg, breader);
         if (NULL == mod) {
             BIT_SET(*status, PROT_ERROR);
@@ -237,7 +238,7 @@ static void _pgsql_auth_response(pgsql_ctx *pg, ev_ctx *ev, buffer_ctx *buf, ud_
         return;
     }
     binary_ctx breader;
-    binary_init(&breader, pack, lens + 1, 0);//1 ²Ù×÷Âë
+    binary_init(&breader, pack, lens + 1, 0);//1 æ“ä½œç 
     binary_get_skip(&breader, 5);
     switch (pack[0]) {// R/R/S/.../K/Z
     case 'E': {
@@ -249,9 +250,9 @@ static void _pgsql_auth_response(pgsql_ctx *pg, ev_ctx *ev, buffer_ctx *buf, ud_
     case 'R':
         _pgsql_auth_process(pg, ev, &breader, ud, status);
         break;
-    case 'S'://ParameterStatus ÔËÐÐÊ±²ÎÊý×´Ì¬±¨¸æ
+    case 'S'://ParameterStatus è¿è¡Œæ—¶å‚æ•°çŠ¶æ€æŠ¥å‘Š
         break;
-    case 'K'://BackendKeyData È¡Ïû¼üÊý¾Ý
+    case 'K'://BackendKeyData å–æ¶ˆé”®æ•°æ®
         pg->pid = (int32_t)binary_get_integer(&breader, 4, 0);
         pg->key = (uint32_t)binary_get_integer(&breader, 4, 0);
         break;
@@ -273,7 +274,7 @@ static pgpack_ctx *_pgsql_command_response(pgsql_ctx *pg, buffer_ctx *buf, ud_cx
         return NULL;
     }
     binary_ctx breader;
-    binary_init(&breader, payload, lens + 1, 0);//1 ²Ù×÷Âë
+    binary_init(&breader, payload, lens + 1, 0);//1 æ“ä½œç 
     return _pgpack_parser(pg, &breader, ud, status);
 }
 void *pgsql_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
@@ -333,7 +334,7 @@ int32_t pgsql_affected_rows(pgpack_ctx *pgpack) {
     }
     int32_t space = 1;
     for (size_t i = lens - 1; i >= 0; i--) {
-        if (space){
+        if (space) {
             if (' ' != pgpack->complete[i]) {
                 space = 0;
             }

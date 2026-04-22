@@ -1,4 +1,4 @@
-#ifndef PGSQL_MACRO_H_
+﻿#ifndef PGSQL_MACRO_H_
 #define PGSQL_MACRO_H_
 
 typedef enum pgpack_type {

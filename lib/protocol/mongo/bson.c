@@ -1,4 +1,4 @@
-#include "protocol/mongo/bson.h"
+ï»¿#include "protocol/mongo/bson.h"
 
 #define BSON_APPEND_CSTRING(str) binary_set_string(&bson->doc, str, 0)
 #define BSON_APPEND_KEY(type) \
@@ -8,7 +8,7 @@
     binary_set_integer(&bson->doc, strlen(str) + 1, 4, 1);\
     binary_set_string(&bson->doc, str, 0)
 
-static char _bson_empty[5] = {0};
+static char _bson_empty[5] = { 0 };
 static uint8_t _oid_header[5];
 static atomic_t _oid_counter = 0;
 
@@ -135,7 +135,8 @@ void bson_append_bool(bson_ctx *bson, const char *key, int8_t b) {
     BSON_APPEND_KEY(BSON_BOOL);
     if (b) {
         binary_set_int8(&bson->doc, 1);
-    } else {
+    }
+    else {
         binary_set_int8(&bson->doc, 0);
     }
 }
@@ -306,7 +307,7 @@ int32_t bson_iter_find(bson_iter *iter, const char *keys, bson_iter *result) {
         if (ERR_OK != rtn) {
             break;
         }
-        if (i == n - 1) {//×îºóÒ»²ã
+        if (i == n - 1) {//æœ€åŽä¸€å±‚
             break;
         }
         if (BSON_DOCUMENT != result->type
@@ -415,7 +416,7 @@ int64_t bson_iter_int64(bson_iter *iter, int32_t *err) {
 }
 const char *bson_type_tostring(bson_type type) {
     switch (type) {
-    case BSON_DOUBLE: 
+    case BSON_DOUBLE:
         return "double";
     case BSON_UTF8:
         return "string";
@@ -512,14 +513,16 @@ static void _bson_dump(bson_ctx *bson, int32_t index, binary_ctx *str) {
             binary_init(&strchild, NULL, 0, 0);
             if (BSON_DOCUMENT == iter.type) {
                 binary_set_string(&strchild, "{\r\n", 3);
-            } else {
+            }
+            else {
                 binary_set_string(&strchild, "[\r\n", 3);
             }
             _bson_dump(&child, index + 1, &strchild);
             binary_set_fill(&strchild, ' ', index * 4);
             if (BSON_DOCUMENT == iter.type) {
                 binary_set_string(&strchild, "}", 1);
-            } else {
+            }
+            else {
                 binary_set_string(&strchild, "]", 1);
             }
             binary_set_string(str, strchild.data, strchild.offset);
@@ -552,7 +555,8 @@ static void _bson_dump(bson_ctx *bson, int32_t index, binary_ctx *str) {
             int32_t val = bson_iter_bool(&iter, NULL);
             if (val) {
                 binary_set_string(str, "true", strlen("true"));
-            } else {
+            }
+            else {
                 binary_set_string(str, "false", strlen("false"));
             }
             break;

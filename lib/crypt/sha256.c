@@ -1,4 +1,4 @@
-#include "crypt/sha256.h"
+﻿#include "crypt/sha256.h"
 
 #define ROTLEFT(a,b) (((a) << (b)) | ((a) >> (32-(b))))
 #define ROTRIGHT(a,b) (((a) >> (b)) | ((a) << (32-(b))))
@@ -89,7 +89,8 @@ void sha256_final(sha256_ctx *sha256, char hash[SHA256_BLOCK_SIZE]) {
         while (i < 56) {
             sha256->data[i++] = 0x00;
         }
-    } else {
+    }
+    else {
         sha256->data[i++] = 0x80;
         while (i < 64) {
             sha256->data[i++] = 0x00;

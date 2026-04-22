@@ -1,4 +1,4 @@
-#include "protocol/pgsql/pgsql_bind.h"
+ï»¿#include "protocol/pgsql/pgsql_bind.h"
 
 void pgsql_bind_init(pgsql_bind_ctx *bind, uint16_t nparam) {
     bind->nparam = nparam;
@@ -6,9 +6,9 @@ void pgsql_bind_init(pgsql_bind_ctx *bind, uint16_t nparam) {
         return;
     }
     binary_init(&bind->format, NULL, 0, 0);
-    binary_set_integer(&bind->format, bind->nparam, 2, 0);//²ÎÊı¸ñÊ½´úÂëÊıÁ¿
+    binary_set_integer(&bind->format, bind->nparam, 2, 0);//å‚æ•°æ ¼å¼ä»£ç æ•°é‡
     binary_init(&bind->values, NULL, 0, 0);
-    binary_set_integer(&bind->values, bind->nparam, 2, 0);//²ÎÊıÖµÊıÁ¿
+    binary_set_integer(&bind->values, bind->nparam, 2, 0);//å‚æ•°å€¼æ•°é‡
 }
 void pgsql_bind_free(pgsql_bind_ctx *bind) {
     if (0 == bind->nparam) {
@@ -28,10 +28,10 @@ void pgsql_bind(pgsql_bind_ctx *bind, char *value, size_t lens, pgpack_format fo
     if (0 == bind->nparam) {
         return;
     }
-    binary_set_integer(&bind->format, format, 2, 0);//²ÎÊı¸ñÊ½´úÂë
-    binary_set_integer(&bind->values, lens, 4, 0);//²ÎÊıÖµµÄ³¤¶È
+    binary_set_integer(&bind->format, format, 2, 0);//å‚æ•°æ ¼å¼ä»£ç 
+    binary_set_integer(&bind->values, lens, 4, 0);//å‚æ•°å€¼çš„é•¿åº¦
     if (lens > 0) {
-        binary_set_string(&bind->values, value, lens);//²ÎÊıµÄÖµ
+        binary_set_string(&bind->values, value, lens);//å‚æ•°çš„å€¼
     }
 }
 void pgsql_bind_bool(pgsql_bind_ctx *bind, int8_t value) {

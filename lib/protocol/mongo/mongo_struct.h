@@ -1,24 +1,24 @@
-#ifndef MONGO_STRUCT_H_
+ï»¿#ifndef MONGO_STRUCT_H_
 #define MONGO_STRUCT_H_
 
 #include "protocol/mongo/mongo_macro.h"
 
 typedef struct mgopack_ctx {
-    int8_t kind;//0 ÕıÎÄ 1 ÎÄµµĞòÁĞ
+    int8_t kind;//0 æ­£æ–‡ 1 æ–‡æ¡£åºåˆ—
     uint32_t total; // total message size, including this
     int32_t reqid;//id for this message
     int32_t respto;//requestID from the original request(used in responses from the database)
     int32_t prot;//message
-    uint32_t klens;//kind == 1 Ê±ÓĞ
+    uint32_t klens;//kind == 1 æ—¶æœ‰
     uint32_t flags;//message flags
-    uint32_t dlens;//doc³¤¶È
-    char *docid;//ÎÄµµĞòÁĞ±êÊ¶·û kind == 1 Ê±ÓĞ
+    uint32_t dlens;//docé•¿åº¦
+    char *docid;//æ–‡æ¡£åºåˆ—æ ‡è¯†ç¬¦ kind == 1 æ—¶æœ‰
     char *doc;
     char *payload;
 }mgopack_ctx;
 
 typedef struct mongo_session {
-    int32_t timeoutmin;//»á»°µÄ³¬Ê±Ê±¼ä
+    int32_t timeoutmin;//ä¼šè¯çš„è¶…æ—¶æ—¶é—´
     int32_t txnnumber;
     struct mongo_ctx *mongo;
     char *options;

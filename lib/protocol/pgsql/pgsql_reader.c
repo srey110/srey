@@ -1,4 +1,4 @@
-#include "protocol/pgsql/pgsql_reader.h"
+﻿#include "protocol/pgsql/pgsql_reader.h"
 #include "protocol/pgsql/pgsql_parse.h"
 
 pgsql_reader_ctx *pgsql_reader_init(pgpack_ctx *pgpack, pgpack_format format) {
@@ -157,7 +157,8 @@ double pgsql_reader_double(pgsql_reader_ctx *reader, const char *name, int32_t *
     }
     if (sizeof(double) == row->lens) {
         return unpack_double(row->val, 0);
-    } else {
+    }
+    else {
         return unpack_float(row->val, 0);
     }
 }

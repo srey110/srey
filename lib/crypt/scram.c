@@ -1,14 +1,17 @@
-#include "crypt/scram.h"
+ï»¿#include "crypt/scram.h"
 
 scram_ctx *scram_init(const char *method, int32_t client) {
     digest_type type;
     if (0 == strcmp(method, "SCRAM-SHA-1")) {
         type = DG_SHA1;
-    } else if (0 == strcmp(method, "SCRAM-SHA-256")) {
+    }
+    else if (0 == strcmp(method, "SCRAM-SHA-256")) {
         type = DG_SHA256;
-    } else if (0 == strcmp(method, "SCRAM-SHA-512")) {
+    }
+    else if (0 == strcmp(method, "SCRAM-SHA-512")) {
         type = DG_SHA512;
-    }  else {
+    }
+    else {
         LOG_WARN("unsupported verification methods.");
         return NULL;
     }
@@ -107,8 +110,8 @@ static char *_scram_attr_search(char *msg, size_t mlens, const char *attr, size_
         if (NULL == pos) {
             return NULL;
         }
-        if (pos == msg//Ê××Ö·û
-            || ',' == (pos - 1)[0]) {//·ÇÊ××Ö·û ¼ì²éÇ°Ò»×Ö·û
+        if (pos == msg//é¦–å­—ç¬¦
+            || ',' == (pos - 1)[0]) {//éé¦–å­—ç¬¦ æ£€æŸ¥å‰ä¸€å­—ç¬¦
             return pos;
         }
         pos++;
@@ -123,13 +126,14 @@ static char *_scram_attr_value(char *msg, size_t mlens, const char *attr, size_t
     char *pos = _scram_attr_search(msg, mlens, attr, lens);
     if (NULL == pos) {
         return NULL;
-    }    
+    }
     char *val = pos + strlen(attr);
     size_t off = val - msg;
     pos = memstr(0, val, mlens - off, ",", 1);
     if (NULL == pos) {
         *lens = mlens - off;
-    } else {
+    }
+    else {
         *lens = pos - val;
     }
     return val;
@@ -175,7 +179,8 @@ static void _scram_whole(scram_ctx *scram, char key[DG_BLOCK_SIZE], char result[
         hmac_update(&hmac, scram->remote_first_message, strlen(scram->remote_first_message));//r=,s=,i=
         hmac_update(&hmac, ",", 1);
         hmac_update(&hmac, scram->final_message_without_proof, strlen(scram->final_message_without_proof));//c=biws,r=
-    } else {
+    }
+    else {
         hmac_update(&hmac, scram->remote_first_message, strlen(scram->remote_first_message));//n=,r=
         hmac_update(&hmac, ",", 1);
         hmac_update(&hmac, scram->local_first_message, strlen(scram->local_first_message));//r=,s=,i=
@@ -214,16 +219,18 @@ static char *_scram_client_first_message(scram_ctx *scram) {
     randstr(nonce, SCRAM_NONCE_LEN);
     bs64_encode(nonce, SCRAM_NONCE_LEN, scram->local_nonce);
     char *buf;
-    if (EMPTYSTR(scram->user)){
+    if (EMPTYSTR(scram->user)) {
         buf = format_va("n,,n=,r=%s", scram->local_nonce);
-    } else {
+    }
+    else {
         size_t ulens = strlen(scram->user);
         if (NULL != memchr(scram->user, ',', ulens)
             || NULL != memchr(scram->user, '=', ulens)) {
             char *filter = _scram_username_filter(scram->user);
             buf = format_va("n,,n=%s,r=%s", filter, scram->local_nonce);
             FREE(filter);
-        } else {
+        }
+        else {
             buf = format_va("n,,n=%s,r=%s", scram->user, scram->local_nonce);
         }
     }
@@ -247,7 +254,8 @@ static int32_t _scram_parse_client_first_message(scram_ctx *scram, char *msg, si
         user = _scram_username_recover(user, lens);
         strcpy(scram->user, user);
         FREE(user);
-    } else {
+    }
+    else {
         memcpy(scram->user, user, lens);
         scram->user[lens] = '\0';
     }

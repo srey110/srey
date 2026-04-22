@@ -1,4 +1,4 @@
-#ifndef TASK_H_
+ï»¿#ifndef TASK_H_
 #define TASK_H_
 
 #include "srey/spub.h"
@@ -10,114 +10,114 @@ typedef enum task_netev {
     NETEV_SEND = 0x04
 }task_netev;
 /// <summary>
-/// ĞÂ½¨ÈÎÎñ
+/// æ–°å»ºä»»åŠ¡
 /// </summary>
 /// <param name="loader">loader_ctx</param>
-/// <param name="name">ÈÎÎñÃû</param>
-/// <param name="_dispatch">ÏûÏ¢·Ö·¢º¯Êı, NULLÄ¬ÈÏ·Ö·¢º¯Êı</param>
-/// <param name="_argfree">ÓÃ»§²ÎÊıÊÍ·Åº¯Êı</param>
-/// <param name="arg">ÓÃ»§²ÎÊı</param>
+/// <param name="name">ä»»åŠ¡å</param>
+/// <param name="_dispatch">æ¶ˆæ¯åˆ†å‘å‡½æ•°, NULLé»˜è®¤åˆ†å‘å‡½æ•°</param>
+/// <param name="_argfree">ç”¨æˆ·å‚æ•°é‡Šæ”¾å‡½æ•°</param>
+/// <param name="arg">ç”¨æˆ·å‚æ•°</param>
 /// <returns>task_ctx</returns>
 task_ctx *task_new(loader_ctx *loader, name_t name, _task_dispatch_cb _dispatch, free_cb _argfree, void *arg);
 /// <summary>
-/// ÈÎÎñÊÍ·Å
+/// ä»»åŠ¡é‡Šæ”¾
 /// </summary>
 /// <param name="task">task_ctx</param>
 void task_free(task_ctx *task);
 /// <summary>
-/// ÈÎÎñ×¢²á
+/// ä»»åŠ¡æ³¨å†Œ
 /// </summary>
 /// <param name="task">task_ctx</param>
-/// <param name="_startup">ÈÎÎñ³õÊ¼»¯»Øµ÷º¯Êı</param>
-/// <param name="_closing">ÈÎÎñÊÍ·Å»Øµ÷º¯Êı</param>
-/// <returns>ERR_OK ³É¹¦</returns>
+/// <param name="_startup">ä»»åŠ¡åˆå§‹åŒ–å›è°ƒå‡½æ•°</param>
+/// <param name="_closing">ä»»åŠ¡é‡Šæ”¾å›è°ƒå‡½æ•°</param>
+/// <returns>ERR_OK æˆåŠŸ</returns>
 int32_t task_register(task_ctx *task, _task_startup_cb _startup, _task_closing_cb _closing);
 /// <summary>
-/// ÈÎÎñ¹Ø±Õ MSG_TYPE_CLOSING
+/// ä»»åŠ¡å…³é—­ MSG_TYPE_CLOSING
 /// </summary>
 /// <param name="task">task_ctx</param>
 void task_close(task_ctx *task);
 /// <summary>
-/// »ñÈ¡ÈÎÎñ,²¢Ê¹ÒıÓÃ¼ÓÒ»
+/// è·å–ä»»åŠ¡,å¹¶ä½¿å¼•ç”¨åŠ ä¸€
 /// </summary>
 /// <param name="loader">loader_ctx</param>
-/// <param name="name">ÈÎÎñÃû</param>
-/// <returns>task_ctx NULLÎ´ÕÒµ½ÈÎÎñ</returns>
+/// <param name="name">ä»»åŠ¡å</param>
+/// <returns>task_ctx NULLæœªæ‰¾åˆ°ä»»åŠ¡</returns>
 task_ctx *task_grab(loader_ctx *loader, name_t name);
 /// <summary>
-/// ÈÎÎñÒıÓÃ¼ÓÒ»
+/// ä»»åŠ¡å¼•ç”¨åŠ ä¸€
 /// </summary>
 /// <param name="task">task_ctx</param>
 void task_incref(task_ctx *task);
 /// <summary>
-/// ÊÍ·Åtask_grab»ñÈ¡µÄÈÎÎñ,²¢Ê¹ÒıÓÃ¼õÒ». Óë task_grab task_incref Åä¶Ô
+/// é‡Šæ”¾task_grabè·å–çš„ä»»åŠ¡,å¹¶ä½¿å¼•ç”¨å‡ä¸€. ä¸ task_grab task_incref é…å¯¹
 /// </summary>
 /// <param name="task">task_ctx</param>
 void task_ungrab(task_ctx *task);
 /// <summary>
-/// ³¬Ê±
+/// è¶…æ—¶
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="sess">session</param>
-/// <param name="ms">ºÁÃë</param>
-/// <param name="_timeout">³¬Ê±»Øµ÷º¯Êı</param>
+/// <param name="ms">æ¯«ç§’</param>
+/// <param name="_timeout">è¶…æ—¶å›è°ƒå‡½æ•°</param>
 void task_timeout(task_ctx *task, uint64_t sess, uint32_t ms, _timeout_cb _timeout);
 /// <summary>
-/// ÈÎÎñ¼äÍ¨ĞÅ,ÇëÇó
+/// ä»»åŠ¡é—´é€šä¿¡,è¯·æ±‚
 /// </summary>
-/// <param name="dst">Ä¿±êÈÎÎñ</param>
-/// <param name="src">·¢ÆğÕß</param>
-/// <param name="reqtype">ÇëÇóÀàĞÍ</param>
+/// <param name="dst">ç›®æ ‡ä»»åŠ¡</param>
+/// <param name="src">å‘èµ·è€…</param>
+/// <param name="reqtype">è¯·æ±‚ç±»å‹</param>
 /// <param name="sess">session</param>
-/// <param name="data">Êı¾İ</param>
-/// <param name="size">Êı¾İ³¤¶È</param>
-/// <param name="copy">1 ¿½±´ 0²»¿½±´</param>
+/// <param name="data">æ•°æ®</param>
+/// <param name="size">æ•°æ®é•¿åº¦</param>
+/// <param name="copy">1 æ‹·è´ 0ä¸æ‹·è´</param>
 void task_request(task_ctx *dst, task_ctx *src, uint8_t reqtype, uint64_t sess, void *data, size_t size, int32_t copy);
 /// <summary>
-/// ÈÎÎñ¼äÍ¨ĞÅ,·µ»Ø
+/// ä»»åŠ¡é—´é€šä¿¡,è¿”å›
 /// </summary>
-/// <param name="dst">Ä¿±êÈÎÎñ</param>
+/// <param name="dst">ç›®æ ‡ä»»åŠ¡</param>
 /// <param name="sess">session</param>
-/// <param name="erro">´íÎóÂë</param>
-/// <param name="data">Êı¾İ</param>
-/// <param name="size">Êı¾İ³¤¶È</param>
-/// <param name="copy">1 ¿½±´ 0²»¿½±´</param>
+/// <param name="erro">é”™è¯¯ç </param>
+/// <param name="data">æ•°æ®</param>
+/// <param name="size">æ•°æ®é•¿åº¦</param>
+/// <param name="copy">1 æ‹·è´ 0ä¸æ‹·è´</param>
 void task_response(task_ctx *dst, uint64_t sess, int32_t erro, void *data, size_t size, int32_t copy);
 /// <summary>
-/// ÈÎÎñ¼äÍ¨ĞÅ,ÎŞ·µ»Ø
+/// ä»»åŠ¡é—´é€šä¿¡,æ— è¿”å›
 /// </summary>
-/// <param name="dst">Ä¿±êÈÎÎñ</param>
-/// <param name="reqtype">ÇëÇóÀàĞÍ</param>
-/// <param name="data">Êı¾İ</param>
-/// <param name="size">Êı¾İ³¤¶È</param>
-/// <param name="copy">1 ¿½±´ 0²»¿½±´</param>
+/// <param name="dst">ç›®æ ‡ä»»åŠ¡</param>
+/// <param name="reqtype">è¯·æ±‚ç±»å‹</param>
+/// <param name="data">æ•°æ®</param>
+/// <param name="size">æ•°æ®é•¿åº¦</param>
+/// <param name="copy">1 æ‹·è´ 0ä¸æ‹·è´</param>
 void task_call(task_ctx *dst, uint8_t reqtype, void *data, size_t size, int32_t copy);
 /// <summary>
-/// ¼àÌı
+/// ç›‘å¬
 /// </summary>
 /// <param name="task">task_ctx</param>
-/// <param name="pktype">°üÀàĞÍ</param>
+/// <param name="pktype">åŒ…ç±»å‹</param>
 /// <param name="evssl">evssl_ctx</param>
 /// <param name="ip">IP</param>
-/// <param name="port">¶Ë¿Ú</param>
-/// <param name="id">¼àÌıID</param>
+/// <param name="port">ç«¯å£</param>
+/// <param name="id">ç›‘å¬ID</param>
 /// <param name="netev">task_netev</param>
-/// <returns>ERR_OK ³É¹¦</returns>
+/// <returns>ERR_OK æˆåŠŸ</returns>
 int32_t task_listen(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
     const char *ip, uint16_t port, uint64_t *id, int32_t netev);
 /// <summary>
-/// Á´½Ó
+/// é“¾æ¥
 /// </summary>
 /// <param name="task">task_ctx</param>
-/// <param name="pktype">°üÀàĞÍ</param>
+/// <param name="pktype">åŒ…ç±»å‹</param>
 /// <param name="evssl">evssl_ctx</param>
 /// <param name="ip">IP</param>
-/// <param name="port">¶Ë¿Ú</param>
+/// <param name="port">ç«¯å£</param>
 /// <param name="netev">task_netev</param>
 /// <param name="extra">ud_cxt extra</param>
 /// <param name="fd">SOCKET</param>
-/// <param name="skid">Á´½ÓID</param>
-/// <returns>ERR_OK ³É¹¦</returns>
+/// <param name="skid">é“¾æ¥ID</param>
+/// <returns>ERR_OK æˆåŠŸ</returns>
 int32_t task_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl, const char *ip, uint16_t port, int32_t netev, void *extra,
     SOCKET *fd, uint64_t *skid);
 /// <summary>
@@ -125,48 +125,48 @@ int32_t task_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl, 
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="ip">IP</param>
-/// <param name="port">¶Ë¿Ú</param>
+/// <param name="port">ç«¯å£</param>
 /// <param name="fd">SOCKET</param>
-/// <param name="skid">Á´½ÓID</param>
-/// <returns>ERR_OK ³É¹¦</returns>
+/// <param name="skid">é“¾æ¥ID</param>
+/// <returns>ERR_OK æˆåŠŸ</returns>
 int32_t task_udp(task_ctx *task, const char *ip, uint16_t port, SOCKET *fd, uint64_t *skid);
 /// <summary>
-/// ÉèÖÃtask_request³¬Ê±Ê±¼ä
+/// è®¾ç½®task_requestè¶…æ—¶æ—¶é—´
 /// </summary>
 /// <param name="task">task_ctx</param>
-/// <param name="ms">ºÁÃë</param>
+/// <param name="ms">æ¯«ç§’</param>
 void task_set_request_timeout(task_ctx *task, uint32_t ms);
 /// <summary>
-/// »ñÈ¡task_request³¬Ê±Ê±¼ä
+/// è·å–task_requestè¶…æ—¶æ—¶é—´
 /// </summary>
 /// <param name="task">task_ctx</param>
-/// <returns>ºÁÃë</returns>
+/// <returns>æ¯«ç§’</returns>
 uint32_t task_get_request_timeout(task_ctx *task);
 /// <summary>
-/// ÉèÖÃtask_connect³¬Ê±Ê±¼ä
+/// è®¾ç½®task_connectè¶…æ—¶æ—¶é—´
 /// </summary>
 /// <param name="task">task_ctx</param>
-/// <param name="ms">ºÁÃë</param>
+/// <param name="ms">æ¯«ç§’</param>
 void task_set_connect_timeout(task_ctx *task, uint32_t ms);
 /// <summary>
-/// »ñÈ¡task_connect³¬Ê±Ê±¼ä
+/// è·å–task_connectè¶…æ—¶æ—¶é—´
 /// </summary>
 /// <param name="task">task_ctx</param>
-/// <returns>ºÁÃë</returns>
+/// <returns>æ¯«ç§’</returns>
 uint32_t task_get_connect_timeout(task_ctx *task);
 /// <summary>
-/// ÉèÖÃÍøÂç¶ÁÈ¡³¬Ê±Ê±¼ä
+/// è®¾ç½®ç½‘ç»œè¯»å–è¶…æ—¶æ—¶é—´
 /// </summary>
 /// <param name="task">task_ctx</param>
-/// <param name="ms">ºÁÃë</param>
+/// <param name="ms">æ¯«ç§’</param>
 void task_set_netread_timeout(task_ctx *task, uint32_t ms);
 /// <summary>
-/// »ñÈ¡ÍøÂç¶ÁÈ¡³¬Ê±Ê±¼ä
+/// è·å–ç½‘ç»œè¯»å–è¶…æ—¶æ—¶é—´
 /// </summary>
 /// <param name="task">task_ctx</param>
-/// <returns>ºÁÃë</returns>
+/// <returns>æ¯«ç§’</returns>
 uint32_t task_get_netread_timeout(task_ctx *task);
-//×¢²áÏûÏ¢´¦Àíº¯Êı
+//æ³¨å†Œæ¶ˆæ¯å¤„ç†å‡½æ•°
 void task_accepted(task_ctx *task, _net_accept_cb _accept);
 void task_recved(task_ctx *task, _net_recv_cb _recv);
 void task_sended(task_ctx *task, _net_send_cb _send);

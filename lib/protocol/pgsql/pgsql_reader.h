@@ -1,40 +1,40 @@
-#ifndef PGSQL_READER_H_
+ï»¿#ifndef PGSQL_READER_H_
 #define PGSQL_READER_H_
 
 #include "protocol/pgsql/pgsql_struct.h"
 
 /// <summary>
-/// pgsql_reader_ctx ³õÊ¼»¯
+/// pgsql_reader_ctx åˆå§‹åŒ–
 /// </summary>
 /// <param name="pgpack">pgpack_ctx</param>
 /// <param name="format">pgpack_format</param>
-/// <returns>pgsql_reader_ctx NULL Ê§°Ü</returns>
+/// <returns>pgsql_reader_ctx NULL å¤±è´¥</returns>
 pgsql_reader_ctx *pgsql_reader_init(pgpack_ctx *pgpack, pgpack_format format);
 /// <summary>
-/// pgsql_reader_ctx ÊÍ·Å
+/// pgsql_reader_ctx é‡Šæ”¾
 /// </summary>
 /// <param name="reader">pgsql_reader_ctx</param>
 void pgsql_reader_free(pgsql_reader_ctx *reader);
 /// <summary>
-/// Êı¾İĞĞÊı
+/// æ•°æ®è¡Œæ•°
 /// </summary>
 /// <param name="reader">pgsql_reader_ctx</param>
-/// <returns>ĞĞÊı</returns>
+/// <returns>è¡Œæ•°</returns>
 size_t pgsql_reader_size(pgsql_reader_ctx *reader);
 /// <summary>
-/// ÒÆµ½µÚ¼¸ÌõÊı¾İ
+/// ç§»åˆ°ç¬¬å‡ æ¡æ•°æ®
 /// </summary>
 /// <param name="reader">pgsql_reader_ctx</param>
-/// <param name="pos">ÌõÊı</param>
+/// <param name="pos">æ¡æ•°</param>
 void pgsql_reader_seek(pgsql_reader_ctx *reader, size_t pos);
 /// <summary>
-/// ÊÇ·ñÓĞÊı¾İ
+/// æ˜¯å¦æœ‰æ•°æ®
 /// </summary>
 /// <param name="reader">pgsql_reader_ctx</param>
-/// <returns>1 ÎŞÊı¾İ 0 ÓĞÊı¾İ</returns>
+/// <returns>1 æ— æ•°æ® 0 æœ‰æ•°æ®</returns>
 int32_t pgsql_reader_eof(pgsql_reader_ctx *reader);
 /// <summary>
-/// ÏÂÒ»ÌõÊı¾İ
+/// ä¸‹ä¸€æ¡æ•°æ®
 /// </summary>
 /// <param name="reader">pgsql_reader_ctx</param>
 void pgsql_reader_next(pgsql_reader_ctx *reader);

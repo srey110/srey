@@ -1,4 +1,4 @@
-#include "crypt/md4.h"
+﻿#include "crypt/md4.h"
 
 #define S11 3
 #define S12 7
@@ -113,7 +113,8 @@ void md4_update(md4_ctx *md4, const void *data, size_t lens) {
             _transform(md4, &p[i]);
         }
         index = 0;
-    } else {
+    }
+    else {
         i = 0;
     }
     memcpy(&md4->data[index], &p[i], lens - i);

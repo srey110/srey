@@ -1,4 +1,4 @@
-#ifndef MD4_H_
+﻿#ifndef MD4_H_
 #define MD4_H_
 
 #include "base/macro.h"

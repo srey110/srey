@@ -1,13 +1,13 @@
-#include "utils/chan.h"
+ï»¿#include "utils/chan.h"
 //https://github.com/tylertreat/chan/tree/master
 QUEUE_DECL(buf_ctx, qu_buf);
 struct chan_ctx {
-    int32_t buffered;//ÊÇ·ñ´ø»º´æ
-    int32_t closed;//ÊÇ·ñ¹Ø±Õ
+    int32_t buffered;//æ˜¯å¦å¸¦ç¼“å­˜
+    int32_t closed;//æ˜¯å¦å…³é—­
     int32_t r_waiting;
     int32_t w_waiting;
-    buf_ctx data;//²»´ø»º´æµÄÊı¾İ
-    qu_buf_ctx qudata;//´ø»º´æµÄÊı¾İ
+    buf_ctx data;//ä¸å¸¦ç¼“å­˜çš„æ•°æ®
+    qu_buf_ctx qudata;//å¸¦ç¼“å­˜çš„æ•°æ®
     mutex_ctx r_mu;
     mutex_ctx w_mu;
     mutex_ctx m_mu;
@@ -21,7 +21,8 @@ chan_ctx *chan_init(uint32_t capacity) {
     if (capacity > 0) {
         chan->buffered = 1;
         qu_buf_init(&chan->qudata, capacity);
-    } else {
+    }
+    else {
         chan->buffered = 0;
         mutex_init(&chan->r_mu);
         mutex_init(&chan->w_mu);
@@ -37,7 +38,8 @@ chan_ctx *chan_init(uint32_t capacity) {
 void chan_free(chan_ctx *chan) {
     if (chan->buffered) {
         qu_buf_free(&chan->qudata);
-    } else {
+    }
+    else {
         mutex_free(&chan->r_mu);
         mutex_free(&chan->w_mu);
     }
@@ -162,7 +164,8 @@ int32_t chan_send(chan_ctx *chan, void *data, size_t lens, int32_t copy) {
         memcpy(msg, data, lens);
         msg[lens] = '\0';
         buf.data = msg;
-    } else {
+    }
+    else {
         buf.data = data;
     }
     int32_t rtn = chan->buffered ? _buffered_chan_send(chan, &buf) : _unbuffered_chan_send(chan, &buf);
@@ -202,7 +205,8 @@ int32_t chan_can_send(chan_ctx *chan) {
         mutex_lock(&chan->m_mu);
         send = qu_buf_size(&chan->qudata) < qu_buf_maxsize(&chan->qudata);
         mutex_unlock(&chan->m_mu);
-    } else {
+    }
+    else {
         //Can send if unbuffered channel has receiver.
         mutex_lock(&chan->m_mu);
         send = chan->r_waiting > 0;
