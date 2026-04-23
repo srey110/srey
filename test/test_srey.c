@@ -209,7 +209,7 @@ static void _tcp_cl_recv(task_ctx *task, SOCKET fd, uint64_t skid,
 
 /* 客户端：发起连接 */
 static void _tcp_cl_startup(task_ctx *task) {
-    SOCKET fd = INVALID_SOCKET;
+    SOCKET fd = INVALID_SOCK;
     uint64_t skid = 0;
     int32_t rtn = task_connect(task, PACK_CUSTZ_FIXED, NULL,
                                "127.0.0.1", _TCP_PORT,
