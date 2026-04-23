@@ -55,7 +55,8 @@ static void _to_timeout(task_ctx *task, uint64_t sess) {
 }
 
 static void _to_startup(task_ctx *task) {
-    task_timeout(task, 1, 100, _to_timeout); /* 100 ms */
+    /* 提供回调时 sess 必须为 0，参见 task_timeout 断言 */
+    task_timeout(task, 0, 100, _to_timeout); /* 100 ms */
 }
 
 static int _test_timeout(loader_ctx *loader) {
@@ -173,11 +174,11 @@ static void _tcp_sv_recv(task_ctx *task, SOCKET fd, uint64_t skid,
     }
 }
 
-/* 服务端：注册监听 */
+/* 服务端：注册监听；NETEV_ACCEPT 确保 prots_accepted 被调用以初始化协议解析 */
 static void _tcp_sv_startup(task_ctx *task) {
     uint64_t id = 0;
     task_listen(task, PACK_CUSTZ_FIXED, NULL,
-                "127.0.0.1", _TCP_PORT, &id, NETEV_NONE);
+                "127.0.0.1", _TCP_PORT, &id, NETEV_ACCEPT);
 }
 
 /* 客户端：连接成功后发送测试消息 */
