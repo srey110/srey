@@ -94,8 +94,7 @@ static inline void rwlock_unlock(rwlock_ctx *ctx) {
     if (0 != ctx->wlock) {
         ctx->wlock = 0;
         ReleaseSRWLockExclusive(&ctx->rwlock);
-    }
-    else {
+    } else {
         ReleaseSRWLockShared(&ctx->rwlock);
     }
 #else

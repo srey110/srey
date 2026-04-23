@@ -117,8 +117,7 @@ static TString *loadStringN (LoadState *S, Proto *p) {
     char buff[LUAI_MAXSHORTLEN];
     loadVector(S, buff, size);  /* load string into buffer */
     ts = luaS_newlstr(L, buff, size);  /* create string */
-  }
-  else {  /* long string */
+  } else {  /* long string */
     ts = luaS_createlngstrobj(L, size);  /* create string */
     setsvalue2s(L, L->top.p, ts);  /* anchor it ('loadVector' can GC) */
     luaD_inctop(L);

@@ -728,8 +728,7 @@ static uint64_t xxh3(const void* data, size_t len, uint64_t seed) {
         v4 *= XXH_PRIME_1;
         h64 ^= v4;
         h64 = h64 * XXH_PRIME_1 + XXH_PRIME_4;
-    }
-    else {
+    } else {
         h64 = seed + XXH_PRIME_5;
     }
 

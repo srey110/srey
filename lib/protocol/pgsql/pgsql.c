@@ -90,8 +90,7 @@ static void _pgsql_ssl_response(pgsql_ctx *pg, ev_ctx *ev, buffer_ctx *buf, ud_c
             if (ERR_OK != ev_ssl(ev, pg->fd, pg->skid, 1, pg->evssl)) {
                 BIT_SET(*status, PROT_ERROR);
             }
-        }
-        else {
+        } else {
             BIT_SET(*status, PROT_ERROR);
             LOG_WARN("ssl not set.");
         }

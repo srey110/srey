@@ -32,17 +32,14 @@ uint64_t sfid_id(sfid_ctx *ctx) {
         curms = nowms() - ctx->customepoch;
         if (curms < ctx->lasttimestamp) {
             continue;
-        }
-        else if (curms == ctx->lasttimestamp) {
+        } else if (curms == ctx->lasttimestamp) {
             if (ctx->sequence >= ctx->sequencemask) {
                 continue;
-            }
-            else {
+            } else {
                 ctx->sequence++;
                 break;
             }
-        }
-        else {
+        } else {
             ctx->sequence = 0;
             ctx->lasttimestamp = curms;
             break;

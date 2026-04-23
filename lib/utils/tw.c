@@ -61,20 +61,15 @@ static tw_slot_ctx *_getslot(tw_ctx *ctx, tw_node_ctx *node) {
     uint32_t idx = (uint32_t)(node->expires - ctx->jiffies);
     if ((int32_t)idx < 0) {
         slot = &ctx->tv1[(ctx->jiffies & TVR_MASK)];
-    }
-    else if (idx < TVR_SIZE) {
+    } else if (idx < TVR_SIZE) {
         slot = &ctx->tv1[(node->expires & TVR_MASK)];
-    }
-    else if (idx < 1 << (TVR_BITS + TVN_BITS)) {
+    } else if (idx < 1 << (TVR_BITS + TVN_BITS)) {
         slot = &ctx->tv2[((node->expires >> TVR_BITS) & TVN_MASK)];
-    }
-    else if (idx < 1 << (TVR_BITS + 2 * TVN_BITS)) {
+    } else if (idx < 1 << (TVR_BITS + 2 * TVN_BITS)) {
         slot = &ctx->tv3[((node->expires >> (TVR_BITS + TVN_BITS)) & TVN_MASK)];
-    }
-    else if (idx < 1 << (TVR_BITS + 3 * TVN_BITS)) {
+    } else if (idx < 1 << (TVR_BITS + 3 * TVN_BITS)) {
         slot = &ctx->tv4[((node->expires >> (TVR_BITS + 2 * TVN_BITS)) & TVN_MASK)];
-    }
-    else {
+    } else {
         if (idx > 0xffffffffUL) {
             idx = 0xffffffffUL;
             node->expires = idx + ctx->jiffies;

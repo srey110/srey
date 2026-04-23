@@ -195,8 +195,7 @@ static int byteoffset (lua_State *L) {
   if (n == 0) {
     /* find beginning of current byte sequence */
     while (posi > 0 && iscontp(s + posi)) posi--;
-  }
-  else {
+  } else {
     if (iscontp(s + posi))
       return luaL_error(L, "initial position is a continuation byte");
     if (n < 0) {
@@ -206,8 +205,7 @@ static int byteoffset (lua_State *L) {
          } while (posi > 0 && iscontp(s + posi));
          n++;
        }
-     }
-     else {
+     } else {
        n--;  /* do not move for 1st character */
        while (n > 0 && posi < (lua_Integer)len) {
          do {  /* find beginning of next character */

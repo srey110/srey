@@ -66,8 +66,7 @@ void _on_cmd_remove(watcher_ctx *watcher, cmd_ctx *cmd) {
     _remove_fd(watcher, cmd->fd);
     if (SOCK_STREAM == skctx->type) {
         pool_push(&watcher->pool, skctx);
-    }
-    else {
+    } else {
         _free_udp(skctx);
     }
 }
@@ -111,8 +110,7 @@ int32_t ev_send(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *data, size_t len, i
         MALLOC(buf, len);
         memcpy(buf, data, len);
         cmd.arg = (uint64_t)buf;
-    }
-    else {
+    } else {
         cmd.arg = (uint64_t)data;
     }
     _SEND_CMD(ctx, cmd);
@@ -161,8 +159,7 @@ void _on_cmd_send(watcher_ctx *watcher, cmd_ctx *cmd) {
     buf.offset = 0;
     if (SOCK_STREAM == skctx->type) {
         _add_bufs_trypost(skctx, &buf);
-    }
-    else {
+    } else {
         _add_bufs_trysendto(skctx, &buf);
     }
 }

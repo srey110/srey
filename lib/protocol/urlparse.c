@@ -31,8 +31,7 @@ static char *_parse_two(buf_ctx *buf1, buf_ctx *buf2, char *cur, char what, size
         if ('/' == what) {
             _split(buf1, buf2, cur, lens);
             return cur + lens;
-        }
-        else {
+        } else {
             return cur;
         }
     }
@@ -50,8 +49,7 @@ static char *_path(buf_ctx *path, char *cur, size_t lens) {
             path->data = cur;
             path->lens = lens;
             return cur + lens;
-        }
-        else {
+        } else {
             if (pos != cur) {
                 path->data = cur;
                 path->lens = pos - cur;

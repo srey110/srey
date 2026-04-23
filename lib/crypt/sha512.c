@@ -103,8 +103,7 @@ static void _transform(sha512_ctx *sha512, const uint64_t *data) {
             REVERSE64(*data++, w512[j]);
             /* Apply the SHA-512 compression function to update a..h */
             t1 = h + Sigma1_512(e) + Ch(e, f, g) + k512[j] + w512[j];
-        }
-        else {
+        } else {
             t1 = h + Sigma1_512(e) + Ch(e, f, g) + k512[j] + (w512[j] = *data++);
         }
         t2 = Sigma0_512(a) + Maj(a, b, c);
@@ -156,8 +155,7 @@ void sha512_update(sha512_ctx *sha512, const void *data, size_t lens) {
             lens -= freespace;
             p += freespace;
             _transform(sha512, (uint64_t *)sha512->data);
-        }
-        else {
+        } else {
             memcpy(&sha512->data[usedspace], p, lens);
             ADDINC128(sha512->bitlen, lens << 3);
             usedspace = freespace = 0;
@@ -185,16 +183,14 @@ static void _last(sha512_ctx *sha512) {
         sha512->data[usedspace++] = 0x80;
         if (usedspace <= SHA512_SHORT_BLOCK_LENGTH) {
             ZERO(&sha512->data[usedspace], SHA512_SHORT_BLOCK_LENGTH - usedspace);
-        }
-        else {
+        } else {
             if (usedspace < SHA512_BLOCK_LENGTH) {
                 ZERO(&sha512->data[usedspace], SHA512_BLOCK_LENGTH - usedspace);
             }
             _transform(sha512, (uint64_t*)sha512->data);
             ZERO(sha512->data, SHA512_BLOCK_LENGTH - 2);
         }
-    }
-    else {
+    } else {
         ZERO(sha512->data, SHA512_SHORT_BLOCK_LENGTH);
         *sha512->data = 0x80;
     }
@@ -212,8 +208,7 @@ void sha512_final(sha512_ctx *sha512, char hash[SHA512_BLOCK_SIZE]) {
             REVERSE64(sha512->state[j], sha512->state[j]);
             *d++ = sha512->state[j];
         }
-    }
-    else {
+    } else {
         memcpy(d, sha512->state, SHA512_BLOCK_SIZE);
     }
     ZERO(sha512, sizeof(sha512_ctx));

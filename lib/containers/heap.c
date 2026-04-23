@@ -13,11 +13,9 @@ static void _heap_swap(heap_ctx *heap, heap_node *parent, heap_node *child) {
     heap_node *sibling = NULL;
     if (NULL == pparent) {
         heap->root = child;
-    }
-    else if (pparent->left == parent) {
+    } else if (pparent->left == parent) {
         pparent->left = child;
-    }
-    else if (pparent->right == parent) {
+    } else if (pparent->right == parent) {
         pparent->right = child;
     }
     if (lchild) {
@@ -31,8 +29,7 @@ static void _heap_swap(heap_ctx *heap, heap_node *parent, heap_node *child) {
         sibling = parent->right;
         child->left = parent;
         child->right = sibling;
-    }
-    else {
+    } else {
         sibling = parent->left;
         child->left = sibling;
         child->right = parent;
@@ -68,11 +65,9 @@ void heap_insert(heap_ctx *heap, heap_node *node) {
     node->parent = parent;
     if (NULL == parent) {
         heap->root = node;
-    }
-    else if (path & 1) {
+    } else if (path & 1) {
         parent->right = node;
-    }
-    else {
+    } else {
         parent->left = node;
     }
     // sift up
@@ -86,11 +81,9 @@ void heap_insert(heap_ctx *heap, heap_node *node) {
 static void _heap_replace(heap_ctx *heap, heap_node *s, heap_node *r) {
     if (NULL == s->parent) {
         heap->root = r;
-    }
-    else if (s->parent->left == s) {
+    } else if (s->parent->left == s) {
         s->parent->left = r;
-    }
-    else if (s->parent->right == s) {
+    } else if (s->parent->right == s) {
         s->parent->right = r;
     }
     if (s->left) {
@@ -125,12 +118,10 @@ void heap_remove(heap_ctx *heap, heap_node *node) {
     heap_node *last = NULL;
     if (NULL == parent) {
         return;
-    }
-    else if (path & 1) {
+    } else if (path & 1) {
         last = parent->right;
         parent->right = NULL;
-    }
-    else {
+    } else {
         last = parent->left;
         parent->left = NULL;
     }

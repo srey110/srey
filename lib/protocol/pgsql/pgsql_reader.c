@@ -157,8 +157,7 @@ double pgsql_reader_double(pgsql_reader_ctx *reader, const char *name, int32_t *
     }
     if (sizeof(double) == row->lens) {
         return unpack_double(row->val, 0);
-    }
-    else {
+    } else {
         return unpack_float(row->val, 0);
     }
 }

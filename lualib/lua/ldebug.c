@@ -64,8 +64,7 @@ static int getbaseline (const Proto *f, int pc, int *basepc) {
   if (f->sizeabslineinfo == 0 || pc < f->abslineinfo[0].pc) {
     *basepc = -1;  /* start from the beginning */
     return f->linedefined;
-  }
-  else {
+  } else {
     int i = cast_uint(pc) / MAXIWTHABS - 1;  /* get an estimate */
     /* estimate must be a lower bound of the correct base */
     lua_assert(i < 0 ||
@@ -170,8 +169,7 @@ LUA_API int lua_getstack (lua_State *L, int level, lua_Debug *ar) {
   if (level == 0 && ci != &L->base_ci) {  /* level found? */
     status = 1;
     ar->i_ci = ci;
-  }
-  else status = 0;  /* no such level */
+  } else status = 0;  /* no such level */
   lua_unlock(L);
   return status;
 }
@@ -210,8 +208,7 @@ const char *luaG_findlocal (lua_State *L, CallInfo *ci, int n, StkId *pos) {
     if (limit - base >= n && n > 0) {  /* is 'n' inside 'ci' stack? */
       /* generic name for any valid slot */
       name = isLua(ci) ? "(temporary)" : "(C temporary)";
-    }
-    else
+    } else
       return NULL;  /* no name */
   }
   if (pos)
@@ -228,8 +225,7 @@ LUA_API const char *lua_getlocal (lua_State *L, const lua_Debug *ar, int n) {
       name = NULL;
     else  /* consider live variables at function start (parameters) */
       name = luaF_getlocalname(clLvalue(s2v(L->top.p - 1))->p, n, 0);
-  }
-  else {  /* active function; get information through 'ar' */
+  } else {  /* active function; get information through 'ar' */
     StkId pos = NULL;  /* to avoid warnings */
     name = luaG_findlocal(L, ar->i_ci, n, &pos);
     if (name) {
@@ -263,14 +259,12 @@ static void funcinfo (lua_Debug *ar, Closure *cl) {
     ar->linedefined = -1;
     ar->lastlinedefined = -1;
     ar->what = "C";
-  }
-  else {
+  } else {
     const Proto *p = cl->l.p;
     if (p->source) {
       ar->source = getstr(p->source);
       ar->srclen = tsslen(p->source);
-    }
-    else {
+    } else {
       ar->source = "=?";
       ar->srclen = LL("=?");
     }
@@ -294,8 +288,7 @@ static void collectvalidlines (lua_State *L, Closure *f) {
   if (!LuaClosure(f)) {
     setnilvalue(s2v(L->top.p));
     api_incr_top(L);
-  }
-  else {
+  } else {
     const Proto *p = f->l.p;
     int currentline = p->linedefined;
     Table *t = luaH_new(L);  /* new table to store active lines */
@@ -347,8 +340,7 @@ static int auxgetinfo (lua_State *L, const char *what, lua_Debug *ar,
         if (!LuaClosure(f)) {
           ar->isvararg = 1;
           ar->nparams = 0;
-        }
-        else {
+        } else {
           ar->isvararg = f->l.p->is_vararg;
           ar->nparams = f->l.p->numparams;
         }
@@ -397,8 +389,7 @@ LUA_API int lua_getinfo (lua_State *L, const char *what, lua_Debug *ar) {
     api_check(L, ttisfunction(func), "function expected");
     what++;  /* skip the '>' */
     L->top.p--;  /* pop function */
-  }
-  else {
+  } else {
     ci = ar->i_ci;
     func = s2v(ci->func.p);
     lua_assert(ttisfunction(func));
@@ -487,8 +478,7 @@ static const char *kname (const Proto *p, int index, const char **name) {
   if (ttisstring(kvalue)) {
     *name = getstr(tsvalue(kvalue));
     return "constant";
-  }
-  else {
+  } else {
     *name = "?";
     return NULL;
   }
@@ -666,12 +656,10 @@ static const char *funcnamefromcall (lua_State *L, CallInfo *ci,
   if (ci->callstatus & CIST_HOOKED) {  /* was it called inside a hook? */
     *name = "?";
     return "hook";
-  }
-  else if (ci->callstatus & CIST_FIN) {  /* was it called as a finalizer? */
+  } else if (ci->callstatus & CIST_FIN) {  /* was it called as a finalizer? */
     *name = "__gc";
     return "metamethod";  /* report it as such */
-  }
-  else if (isLua(ci))
+  } else if (isLua(ci))
     return funcnamefromcode(L, ci_func(ci)->p, currentpc(ci), name);
   else
     return NULL;

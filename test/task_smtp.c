@@ -1,4 +1,4 @@
-﻿#include "task_smtp.h"
+#include "task_smtp.h"
 
 static int32_t _prt = 1;
 const char *_smtp_sv = "smtp.163.com";
@@ -9,7 +9,7 @@ static smtp_ctx _smtp;
 static mail_ctx _mail;
 
 static void _startup(task_ctx *task) {
-    mail_init(&_mail);
+    /*mail_init(&_mail);
     mail_from(&_mail, "srey", "test@163.com");
     size_t n;
     dns_ip *ips = dns_lookup(task, _smtp_sv, 0, &n);
@@ -37,7 +37,7 @@ static void _startup(task_ctx *task) {
         LOG_WARN("smtp_send error.");
         return;
     }
-    smtp_quit(&_smtp);
+    smtp_quit(&_smtp);*/
 }
 static void _net_close(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, uint8_t client) {
     if (_prt) {

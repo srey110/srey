@@ -96,8 +96,7 @@ static int testnext (LexState *ls, int c) {
   if (ls->t.token == c) {
     luaX_next(ls);
     return 1;
-  }
-  else return 0;
+  } else return 0;
 }
 
 
@@ -369,8 +368,7 @@ static int newupvalue (FuncState *fs, TString *name, expdesc *v) {
     up->idx = v->u.var.ridx;
     up->kind = getlocalvardesc(prev, v->u.var.vidx)->vd.kind;
     lua_assert(eqstr(name, getlocalvardesc(prev, v->u.var.vidx)->vd.name));
-  }
-  else {
+  } else {
     up->instack = 0;
     up->idx = cast_byte(v->u.info);
     up->kind = prev->f->upvalues[v->u.info].kind;
@@ -440,8 +438,7 @@ static void singlevaraux (FuncState *fs, TString *n, expdesc *var, int base) {
     if (v >= 0) {  /* found? */
       if (v == VLOCAL && !base)
         markupval(fs, var->u.var.vidx);  /* local will be used as an upval */
-    }
-    else {  /* not found as local at current level; try upvalues */
+    } else {  /* not found as local at current level; try upvalues */
       int idx = searchupvalue(fs, n);  /* try existing upvalues */
       if (idx < 0) {  /* not found? */
         singlevaraux(fs->prev, n, var, 0);  /* try upper levels */
@@ -487,8 +484,7 @@ static void adjust_assign (LexState *ls, int nvars, int nexps, expdesc *e) {
     if (extra < 0)
       extra = 0;
     luaK_setreturns(fs, e, extra);  /* last exp. provides the difference */
-  }
-  else {
+  } else {
     if (e->k != VVOID)  /* at least one expression? */
       luaK_exp2nextreg(fs, e);  /* close last expression */
     if (needed > 0)  /* missing values? */
@@ -590,8 +586,7 @@ static int solvegotos (LexState *ls, Labeldesc *lb) {
     if (eqstr(gl->arr[i].name, lb->name)) {
       needsclose |= gl->arr[i].close;
       solvegoto(ls, i, lb);  /* will remove 'i' from the list */
-    }
-    else
+    } else
       i++;
   }
   return needsclose;
@@ -660,8 +655,7 @@ static l_noret undefgoto (LexState *ls, Labeldesc *gt) {
   if (eqstr(gt->name, luaS_newliteral(ls->L, "break"))) {
     msg = "break outside loop at line %d";
     msg = luaO_pushfstring(ls->L, msg, gt->line);
-  }
-  else {
+  } else {
     msg = "no visible label '%s' for <goto> at line %d";
     msg = luaO_pushfstring(ls->L, msg, getstr(gt->name), gt->line);
   }
@@ -882,8 +876,7 @@ static void lastlistfield (FuncState *fs, ConsControl *cc) {
     luaK_setmultret(fs, &cc->v);
     luaK_setlist(fs, cc->t->u.info, cc->na, LUA_MULTRET);
     cc->na--;  /* do not count last expression (unknown number of elements) */
-  }
-  else {
+  } else {
     if (cc->v.k != VVOID)
       luaK_exp2nextreg(fs, &cc->v);
     luaK_setlist(fs, cc->t->u.info, cc->na, cc->tostore);
@@ -1266,8 +1259,7 @@ static BinOpr subexpr (LexState *ls, expdesc *v, int limit) {
     luaX_next(ls);  /* skip operator */
     subexpr(ls, v, UNARY_PRIORITY);
     luaK_prefix(ls->fs, uop, v, line);
-  }
-  else simpleexp(ls, v);
+  } else simpleexp(ls, v);
   /* expand while operators have priorities higher than 'limit' */
   op = getbinopr(ls->t.token);
   while (op != OPR_NOBINOPR && priority[op].left > limit) {
@@ -1339,8 +1331,7 @@ static void check_conflict (LexState *ls, struct LHS_assign *lh, expdesc *v) {
           lh->v.k = VINDEXSTR;
           lh->v.u.ind.t = extra;  /* assignment will use safe copy */
         }
-      }
-      else {  /* table is a register */
+      } else {  /* table is a register */
         if (v->k == VLOCAL && lh->v.u.ind.t == v->u.var.ridx) {
           conflict = 1;  /* table is the local being assigned now */
           lh->v.u.ind.t = extra;  /* assignment will use safe copy */
@@ -1384,8 +1375,7 @@ static void restassign (LexState *ls, struct LHS_assign *lh, int nvars) {
     enterlevel(ls);  /* control recursion depth */
     restassign(ls, &nv, nvars+1);
     leavelevel(ls);
-  }
-  else {  /* restassign -> '=' explist */
+  } else {  /* restassign -> '=' explist */
     int nexps;
     checknext(ls, '=');
     nexps = explist(ls, &e);
@@ -1653,11 +1643,9 @@ static void test_then_block (LexState *ls, int *escapelist) {
     if (block_follow(ls, 0)) {  /* jump is the entire block? */
       leaveblock(fs);
       return;  /* and that is it */
-    }
-    else  /* must skip over 'then' part if condition is false */
+    } else  /* must skip over 'then' part if condition is false */
       jf = luaK_jump(fs);
-  }
-  else {  /* regular case (not a break) */
+  } else {  /* regular case (not a break) */
     luaK_goiftrue(ls->fs, &v);  /* skip over block if condition is false */
     enterblock(fs, &bl, 0);
     jf = v.f;
@@ -1755,8 +1743,7 @@ static void localstat (LexState *ls) {
     var->vd.kind = RDKCTC;  /* variable is a compile-time constant */
     adjustlocalvars(ls, nvars - 1);  /* exclude last variable */
     fs->nactvar++;  /* but count it */
-  }
-  else {
+  } else {
     adjust_assign(ls, nvars, nexps, &e);
     adjustlocalvars(ls, nvars);
   }
@@ -1799,8 +1786,7 @@ static void exprstat (LexState *ls) {
   if (ls->t.token == '=' || ls->t.token == ',') { /* stat -> assignment ? */
     v.prev = NULL;
     restassign(ls, &v, 1);
-  }
-  else {  /* stat -> func */
+  } else {  /* stat -> func */
     Instruction *inst;
     check_condition(ls, v.v.k == VCALL, "syntax error");
     inst = &getinstruction(fs, &v.v);
@@ -1826,8 +1812,7 @@ static void retstat (LexState *ls) {
         lua_assert(GETARG_A(getinstruction(fs,&e)) == luaY_nvarstack(fs));
       }
       nret = LUA_MULTRET;  /* return all values */
-    }
-    else {
+    } else {
       if (nret == 1)  /* only one single value? */
         first = luaK_exp2anyreg(fs, &e);  /* can use original slot */
       else {  /* values must go to the top of the stack */

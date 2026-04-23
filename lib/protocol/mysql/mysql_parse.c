@@ -62,8 +62,7 @@ void _mpack_err(mysql_ctx *mysql, binary_ctx *breader, mpack_err *err) {
         size_t lens = err->error_msg.lens <= sizeof(mysql->error_msg) - 1 ? err->error_msg.lens : sizeof(mysql->error_msg) - 1;
         memcpy(mysql->error_msg, err->error_msg.data, lens);
         mysql->error_msg[lens] = '\0';
-    }
-    else {
+    } else {
         mysql->error_msg[0] = '\0';
     }
 }
@@ -80,8 +79,7 @@ static mpack_ctx *_selectdb_response(mysql_ctx *mysql, binary_ctx *breader) {
         mpack->pack_type = MPACK_OK;
         MALLOC(mpack->pack, sizeof(mpack_ok));
         _mpack_ok(mysql, breader, mpack->pack);
-    }
-    else {
+    } else {
         mpack->pack_type = MPACK_ERR;
         MALLOC(mpack->pack, sizeof(mpack_err));
         _mpack_err(mysql, breader, mpack->pack);
@@ -244,8 +242,7 @@ static mpack_ctx *_mpack_reader_rows(mysql_ctx *mysql, buffer_ctx *buf, binary_c
         }
         if (MPACK_QUERY == mysql->mpack->pack_type) {
             _mpack_parse_text_row(reader, breader);
-        }
-        else {
+        } else {
             if (0x00 != first) {
                 BIT_SET(*status, PROT_ERROR);
                 return NULL;
@@ -371,8 +368,7 @@ static mpack_ctx *_query_response(mysql_ctx *mysql, buffer_ctx *buf, binary_ctx 
             mpack = _mpack_reader(mysql, buf, breader, status);
             break;
         }
-    }
-    else {
+    } else {
         mpack = _mpack_reader(mysql, buf, breader, status);
     }
     return mpack;
@@ -394,15 +390,13 @@ static mpack_ctx *_mpack_stmt(mysql_ctx *mysql, buffer_ctx *buf, binary_ctx *bre
                         return NULL;
                     }
                     continue;
-                }
-                else {
+                } else {
                     mpack_ctx *mpack = mysql->mpack;
                     mysql->mpack = NULL;
                     mysql->cur_cmd = 0;
                     return mpack;
                 }
-            }
-            else {
+            } else {
                 mpack_ctx *mpack = mysql->mpack;
                 mysql->mpack = NULL;
                 mysql->cur_cmd = 0;
@@ -411,8 +405,7 @@ static mpack_ctx *_mpack_stmt(mysql_ctx *mysql, buffer_ctx *buf, binary_ctx *bre
         }
         if (STMT_PREPARE_PARAMS == mysql->parse_status) {
             _mpack_parse_field(breader, &stmt->params[stmt->index]);
-        }
-        else {
+        } else {
             _mpack_parse_field(breader, &stmt->fields[stmt->index]);
         }
         FREE(breader->data);
@@ -483,8 +476,7 @@ static mpack_ctx *_prepare_response(mysql_ctx *mysql, buffer_ctx *buf, binary_ct
             return NULL;
         }
         return _mpack_stmt(mysql, buf, breader, status);
-    }
-    else {
+    } else {
         return _mpack_stmt(mysql, buf, breader, status);
     }
 }
@@ -518,8 +510,7 @@ static mpack_ctx *_execute_response(mysql_ctx *mysql, buffer_ctx *buf, binary_ct
             mpack = _mpack_reader(mysql, buf, breader, status);
             break;
         }
-    }
-    else {
+    } else {
         mpack = _mpack_reader(mysql, buf, breader, status);
     }
     return mpack;
@@ -530,8 +521,7 @@ static mpack_ctx *_reset_response(mysql_ctx *mysql, buffer_ctx *buf, binary_ctx 
         mpack->pack_type = MPACK_OK;
         MALLOC(mpack->pack, sizeof(mpack_ok));
         _mpack_ok(mysql, breader, mpack->pack);
-    }
-    else {
+    } else {
         mpack->pack_type = MPACK_ERR;
         MALLOC(mpack->pack, sizeof(mpack_err));
         _mpack_err(mysql, breader, mpack->pack);

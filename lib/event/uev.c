@@ -188,8 +188,7 @@ void _del_event(watcher_ctx *watcher, SOCKET fd, int32_t *events, int32_t ev, vo
 #endif
     if (0 == (*events)) {
         (void)epoll_ctl(watcher->evfd, EPOLL_CTL_DEL, fd, &epev);
-    }
-    else {
+    } else {
         if (BIT_CHECK((*events), EVENT_READ)) {
             BIT_SET(epev.events, EPOLLIN);
         }
@@ -222,8 +221,7 @@ void _del_event(watcher_ctx *watcher, SOCKET fd, int32_t *events, int32_t ev, vo
     BIT_REMOVE((*events), ev);
     if (0 == (*events)) {
         (void)port_dissociate(watcher->evfd, PORT_SOURCE_FD, fd);
-    }
-    else {
+    } else {
         ev = 0;
         if (BIT_CHECK((*events), EVENT_READ)) {
             BIT_SET(ev, POLLIN);
@@ -241,8 +239,7 @@ void _del_event(watcher_ctx *watcher, SOCKET fd, int32_t *events, int32_t ev, vo
         ctl.events = 0;
         ctl.fd = fd;
         (void)pollset_ctl(watcher->evfd, &ctl, 1);
-    }
-    else {
+    } else {
         struct poll_ctl ctl;
         ctl.cmd = PS_MOD;
         ctl.fd = fd;
@@ -284,8 +281,7 @@ static int32_t _parse_event(events_t *ev, SOCKET *fd, void **arg) {
 #if defined(EV_EPOLL)
     if (BIT_CHECK(ev->events, (EPOLLHUP | EPOLLERR))) {
         BIT_SET(rtn, (EVENT_READ | EVENT_WRITE));
-    }
-    else {
+    } else {
         if (BIT_CHECK(ev->events, EPOLLIN)) {
             BIT_SET(rtn, EVENT_READ);
         }
@@ -305,8 +301,7 @@ static int32_t _parse_event(events_t *ev, SOCKET *fd, void **arg) {
 #elif defined(EV_EVPORT)
     if (BIT_CHECK(ev->portev_events, (POLLERR | POLLHUP))) {
         BIT_SET(rtn, (EVENT_READ | EVENT_WRITE));
-    }
-    else {
+    } else {
         if (BIT_CHECK(ev->portev_events, POLLIN)) {
             BIT_SET(rtn, EVENT_READ);
         }
@@ -318,8 +313,7 @@ static int32_t _parse_event(events_t *ev, SOCKET *fd, void **arg) {
 #elif defined(EV_POLLSET)
     if (BIT_CHECK(ev->revents, (POLLERR | POLLHUP))) {
         BIT_SET(rtn, (EVENT_READ | EVENT_WRITE));
-    }
-    else {
+    } else {
         if (BIT_CHECK(ev->revents, POLLIN)) {
             BIT_SET(rtn, EVENT_READ);
         }
@@ -331,8 +325,7 @@ static int32_t _parse_event(events_t *ev, SOCKET *fd, void **arg) {
 #elif defined(EV_DEVPOLL)
     if (BIT_CHECK(ev->revents, (POLLERR | POLLHUP))) {
         BIT_SET(rtn, (EVENT_READ | EVENT_WRITE));
-    }
-    else {
+    } else {
         if (BIT_CHECK(ev->revents, POLLIN)) {
             BIT_SET(rtn, EVENT_READ);
         }

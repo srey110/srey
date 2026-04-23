@@ -10,14 +10,11 @@ int32_t mongo_parse_auth_response(mgopack_ctx *mgopack, int32_t *convid, int32_t
     while (bson_iter_next(&iter)) {
         if (0 == strcmp(iter.key, "conversationId")) {
             *convid = bson_iter_int32(&iter, NULL);
-        }
-        else if (0 == strcmp(iter.key, "done")) {
+        } else if (0 == strcmp(iter.key, "done")) {
             *done = bson_iter_bool(&iter, NULL);
-        }
-        else if (0 == strcmp(iter.key, "ok")) {
+        } else if (0 == strcmp(iter.key, "ok")) {
             ok = (int32_t)bson_iter_double(&iter, NULL);
-        }
-        else if (0 == strcmp(iter.key, "payload")) {
+        } else if (0 == strcmp(iter.key, "payload")) {
             *payload = bson_iter_binary(&iter, NULL, plens, NULL);
         }
     }
@@ -48,24 +45,19 @@ int32_t mongo_parse_check_error(mongo_ctx *mongo, mgopack_ctx *mgpack) {
             if (!ok) {
                 break;
             }
-        }
-        else if (0 == strcmp(iter.key, "n")) {
+        } else if (0 == strcmp(iter.key, "n")) {
             count++;
             n = bson_iter_int32(&iter, NULL);
-        }
-        else if (0 == strcmp(iter.key, "writeErrors")) {
+        } else if (0 == strcmp(iter.key, "writeErrors")) {
             count++;
             writeerrors = 1;
-        }
-        else if (0 == strcmp(iter.key, "writeConcernError")) {
+        } else if (0 == strcmp(iter.key, "writeConcernError")) {
             count++;
             writeconcernerror = 1;
-        }
-        else if (0 == strcmp(iter.key, "errmsg")) {
+        } else if (0 == strcmp(iter.key, "errmsg")) {
             count++;
             errmsg = 1;
-        }
-        else if (0 == strcmp(iter.key, "nErrors")) {
+        } else if (0 == strcmp(iter.key, "nErrors")) {
             count++;
             nerrors = bson_iter_int32(&iter, NULL);
         }
@@ -91,11 +83,9 @@ int32_t mongo_parse_startsession(mongo_ctx *mongo, mgopack_ctx *mgpack, char uid
             if (!ok) {
                 break;
             }
-        }
-        else if (0 == strcmp(iter.key, "timeoutMinutes")) {
+        } else if (0 == strcmp(iter.key, "timeoutMinutes")) {
             *timeout = bson_iter_int32(&iter, NULL);
-        }
-        else if (0 == strcmp(iter.key, "id")) {
+        } else if (0 == strcmp(iter.key, "id")) {
             if (BSON_DOCUMENT != iter.type) {
                 return ERR_FAILED;
             }

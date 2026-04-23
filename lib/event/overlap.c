@@ -138,8 +138,7 @@ void _reset_sk(sock_ctx *skctx, SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
 ud_cxt *_get_ud(sock_ctx *skctx) {
     if (SOCK_STREAM == skctx->type) {
         return &UPCAST(skctx, overlap_tcp_ctx, ol_r)->ud;
-    }
-    else {
+    } else {
         return &UPCAST(skctx, overlap_udp_ctx, ol_r)->ud;
     }
 }
@@ -148,8 +147,7 @@ int32_t _check_skid(sock_ctx *skctx, const uint64_t skid) {
         if (skid == UPCAST(skctx, overlap_tcp_ctx, ol_r)->skid) {
             return ERR_OK;
         }
-    }
-    else {
+    } else {
         if (skid == UPCAST(skctx, overlap_udp_ctx, ol_r)->skid) {
             return ERR_OK;
         }
@@ -164,8 +162,7 @@ void _disconnect(sock_ctx *skctx) {
         }
         BIT_SET(tcp->status, STATUS_ERROR);
         _sk_shutdown(skctx);
-    }
-    else {
+    } else {
         overlap_udp_ctx *udp = UPCAST(skctx, overlap_udp_ctx, ol_r);
         if (BIT_CHECK(udp->status, STATUS_ERROR)) {
             return;
@@ -243,8 +240,7 @@ int32_t _post_recv(sock_ctx *skctx, DWORD  *bytes, DWORD  *flag, IOV_TYPE *wsabu
 static inline _close_tcp(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
     if (BIT_CHECK(oltcp->status, STATUS_SENDING)) {
         BIT_SET(oltcp->status, STATUS_REMOVE);
-    }
-    else {
+    } else {
         _call_close_cb(watcher->ev, oltcp);
         _remove_fd(watcher, oltcp->ol_r.fd);
         pool_push(&watcher->pool, &oltcp->ol_r);
@@ -275,8 +271,7 @@ static void _on_recv_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
         int32_t rtn;
         if (BIT_CHECK(oltcp->status, STATUS_CLIENT)) {
             rtn = evssl_tryconn(oltcp->ssl);
-        }
-        else {
+        } else {
             rtn = evssl_tryacpt(oltcp->ssl);
         }
         switch (rtn) {
@@ -286,8 +281,7 @@ static void _on_recv_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
         case 1://完成
             if (ERR_OK == _call_ssl_exchanged_cb(watcher->ev, oltcp)) {
                 BIT_REMOVE(oltcp->status, STATUS_AUTHSSL);
-            }
-            else {
+            } else {
                 BIT_SET(oltcp->status, STATUS_ERROR);
             }
             break;
@@ -295,8 +289,7 @@ static void _on_recv_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
             if (ERR_OK != _post_recv(&oltcp->ol_r, &oltcp->bytes_r, &oltcp->flag, &oltcp->wsabuf, 1)) {
                 BIT_SET(oltcp->status, STATUS_ERROR);
                 break;
-            }
-            else {
+            } else {
                 return;
             }
         }
@@ -324,8 +317,7 @@ static int32_t _ssl_exchange(watcher_ctx *watcher, overlap_tcp_ctx *oltcp, struc
             BIT_SET(oltcp->status, STATUS_AUTHSSL);
             break;
         }
-    }
-    else {
+    } else {
         BIT_SET(oltcp->status, STATUS_AUTHSSL);
     }
     return ERR_OK;
@@ -351,15 +343,13 @@ void _try_ssl_exchange(watcher_ctx *watcher, sock_ctx *skctx, struct evssl_ctx *
     }
     if (client) {
         BIT_SET(oltcp->status, STATUS_CLIENT);
-    }
-    else {
+    } else {
         BIT_REMOVE(oltcp->status, STATUS_CLIENT);
     }
     if (BIT_CHECK(oltcp->status, STATUS_SENDING)) {
         oltcp->evssl = evssl;
         BIT_SET(oltcp->status, STATUS_SSLEXCHANGE);
-    }
-    else {
+    } else {
         if (ERR_OK != _ssl_exchange(watcher, oltcp, evssl)) {
             _disconnect(skctx);
             LOG_ERROR("ssl exchange error.");
@@ -391,8 +381,7 @@ static void _on_send_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
             _call_close_cb(watcher->ev, oltcp);
             _remove_fd(watcher, oltcp->ol_r.fd);
             pool_push(&watcher->pool, &oltcp->ol_r);
-        }
-        else {
+        } else {
             BIT_REMOVE(oltcp->status, STATUS_SENDING);
         }
         return;
@@ -446,8 +435,7 @@ static int32_t _trybind(SOCKET fd, int32_t family) {
     netaddr_ctx addr;
     if (AF_INET == family) {
         rtn = netaddr_set(&addr, "0.0.0.0", 0);
-    }
-    else {
+    } else {
         rtn = netaddr_set(&addr, "::", 0);
     }
     if (ERR_OK != rtn) {
@@ -770,8 +758,7 @@ static int32_t _post_recv_from(overlap_udp_ctx *oludp) {
 static void _on_udp_close_r(watcher_ctx *watcher, overlap_udp_ctx *oludp) {
     if (BIT_CHECK(oludp->status, STATUS_SENDING)) {
         BIT_SET(oludp->status, STATUS_REMOVE);
-    }
-    else {
+    } else {
         _remove_fd(watcher, oludp->ol_r.fd);
         _free_udp(&oludp->ol_r);
     }
@@ -822,8 +809,7 @@ static void _on_sendto_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
         if (BIT_CHECK(oludp->status, STATUS_REMOVE)) {
             _remove_fd(watcher, oludp->ol_r.fd);
             _free_udp(&oludp->ol_r);
-        }
-        else {
+        } else {
             BIT_REMOVE(oludp->status, STATUS_SENDING);
         }
         return;

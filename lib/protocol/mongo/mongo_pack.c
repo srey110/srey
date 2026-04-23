@@ -21,8 +21,7 @@ static void *_mongo_pack_msg(mongo_ctx *mongo, int32_t kind, const char *docid, 
     binary_set_integer(&bwriter, mongo->flags, 4, 1);//flags
     if (0 == kind) {
         binary_set_int8(&bwriter, 0);//kind
-    }
-    else {
+    } else {
         binary_set_int8(&bwriter, 1);//kind
         binary_set_integer(&bwriter, 4 + strlen(docid) + 1 + dlens, 4, 1);
         binary_set_string(&bwriter, docid, 0);
@@ -250,12 +249,10 @@ void *mongo_pack_findandmodify(mongo_ctx *mongo, char *query, size_t qlens, int3
     }
     if (remove) {
         bson_append_bool(&bson, "remove", 1);//默认值为 false
-    }
-    else {
+    } else {
         if (pipeline) {
             bson_append_array(&bson, "update", update, ulens);
-        }
-        else {
+        } else {
             bson_append_document(&bson, "update", update, ulens);
         }
     }

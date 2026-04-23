@@ -1115,16 +1115,14 @@ void aes_init(aes_ctx *aes, const char *key, size_t klens, int32_t keybits, int3
     aes->encrypt = encrypt;
     if (aes->encrypt) {
         aes->nrounds = _key_setup_encrypt(k, keybits, aes->schedule);
-    }
-    else {
+    } else {
         aes->nrounds = _key_setup_decrypt(k, keybits, aes->schedule);
     }
 }
 char *aes_crypt(aes_ctx *aes, const void *data) {
     if (aes->encrypt) {
         _encrypt(aes->schedule, aes->nrounds, (const uint8_t *)data, aes->output);
-    }
-    else {
+    } else {
         _decrypt(aes->schedule, aes->nrounds, (const uint8_t *)data, aes->output);
     }
     return (char *)aes->output;

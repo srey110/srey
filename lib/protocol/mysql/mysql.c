@@ -64,119 +64,81 @@ void _mysql_closed(ud_cxt *ud) {
 static uint8_t _mysql_charset(const char *charset) {
     if (0 == strcmp("big5", charset)) {
         return 1;
-    }
-    else if (0 == strcmp("dec8", charset)) {
+    } else if (0 == strcmp("dec8", charset)) {
         return 3;
-    }
-    else if (0 == strcmp("cp850", charset)) {
+    } else if (0 == strcmp("cp850", charset)) {
         return 4;
-    }
-    else if (0 == strcmp("hp8", charset)) {
+    } else if (0 == strcmp("hp8", charset)) {
         return 6;
-    }
-    else if (0 == strcmp("koi8r", charset)) {
+    } else if (0 == strcmp("koi8r", charset)) {
         return 7;
-    }
-    else if (0 == strcmp("latin1", charset)) {
+    } else if (0 == strcmp("latin1", charset)) {
         return 8;
-    }
-    else if (0 == strcmp("latin2", charset)) {
+    } else if (0 == strcmp("latin2", charset)) {
         return 9;
-    }
-    else if (0 == strcmp("swe7", charset)) {
+    } else if (0 == strcmp("swe7", charset)) {
         return 10;
-    }
-    else if (0 == strcmp("ascii", charset)) {
+    } else if (0 == strcmp("ascii", charset)) {
         return 11;
-    }
-    else if (0 == strcmp("ujis", charset)) {
+    } else if (0 == strcmp("ujis", charset)) {
         return 12;
-    }
-    else if (0 == strcmp("sjis", charset)) {
+    } else if (0 == strcmp("sjis", charset)) {
         return 13;
-    }
-    else if (0 == strcmp("hebrew", charset)) {
+    } else if (0 == strcmp("hebrew", charset)) {
         return 16;
-    }
-    else if (0 == strcmp("tis620", charset)) {
+    } else if (0 == strcmp("tis620", charset)) {
         return 18;
-    }
-    else if (0 == strcmp("euckr", charset)) {
+    } else if (0 == strcmp("euckr", charset)) {
         return 19;
-    }
-    else if (0 == strcmp("koi8u", charset)) {
+    } else if (0 == strcmp("koi8u", charset)) {
         return 22;
-    }
-    else if (0 == strcmp("gb2312", charset)) {
+    } else if (0 == strcmp("gb2312", charset)) {
         return 24;
-    }
-    else if (0 == strcmp("greek", charset)) {
+    } else if (0 == strcmp("greek", charset)) {
         return 25;
-    }
-    else if (0 == strcmp("cp1250", charset)) {
+    } else if (0 == strcmp("cp1250", charset)) {
         return 26;
-    }
-    else if (0 == strcmp("gbk", charset)) {
+    } else if (0 == strcmp("gbk", charset)) {
         return 28;
-    }
-    else if (0 == strcmp("latin5", charset)) {
+    } else if (0 == strcmp("latin5", charset)) {
         return 30;
-    }
-    else if (0 == strcmp("armscii8", charset)) {
+    } else if (0 == strcmp("armscii8", charset)) {
         return 32;
-    }
-    else if (0 == strcmp("utf8", charset)) {
+    } else if (0 == strcmp("utf8", charset)) {
         return 33;
-    }
-    else if (0 == strcmp("cp866", charset)) {
+    } else if (0 == strcmp("cp866", charset)) {
         return 36;
-    }
-    else if (0 == strcmp("keybcs2", charset)) {
+    } else if (0 == strcmp("keybcs2", charset)) {
         return 37;
-    }
-    else if (0 == strcmp("macce", charset)) {
+    } else if (0 == strcmp("macce", charset)) {
         return 38;
-    }
-    else if (0 == strcmp("macroman", charset)) {
+    } else if (0 == strcmp("macroman", charset)) {
         return 39;
-    }
-    else if (0 == strcmp("cp852", charset)) {
+    } else if (0 == strcmp("cp852", charset)) {
         return 40;
-    }
-    else if (0 == strcmp("latin7", charset)) {
+    } else if (0 == strcmp("latin7", charset)) {
         return 41;
-    }
-    else if (0 == strcmp("utf8mb4", charset)) {
+    } else if (0 == strcmp("utf8mb4", charset)) {
         return 45;
-    }
-    else if (0 == strcmp("cp1251", charset)) {
+    } else if (0 == strcmp("cp1251", charset)) {
         return 51;
-    }
-    else if (0 == strcmp("utf16le", charset)) {
+    } else if (0 == strcmp("utf16le", charset)) {
         return 56;
-    }
-    else if (0 == strcmp("cp1256", charset)) {
+    } else if (0 == strcmp("cp1256", charset)) {
         return 57;
-    }
-    else if (0 == strcmp("cp1257", charset)) {
+    } else if (0 == strcmp("cp1257", charset)) {
         return 59;
-    }
-    else if (0 == strcmp("binary", charset)) {
+    } else if (0 == strcmp("binary", charset)) {
         return 63;
-    }
-    else if (0 == strcmp("geostd8", charset)) {
+    } else if (0 == strcmp("geostd8", charset)) {
         return 92;
-    }
-    else if (0 == strcmp("cp932", charset)) {
+    } else if (0 == strcmp("cp932", charset)) {
         return 95;
-    }
-    else if (0 == strcmp("eucjpms", charset)) {
+    } else if (0 == strcmp("eucjpms", charset)) {
         return 97;
-    }
-    else if (0 == strcmp("gb18030", charset)) {
+    } else if (0 == strcmp("gb18030", charset)) {
         return 248;
-    }
-    else {
+    } else {
         return 0;
     }
 }
@@ -248,20 +210,17 @@ static int32_t _mysql_auth_response(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
         if (BIT_CHECK(mysql->client.caps, CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA)) {
             _mysql_set_lenenc(&bwriter, sizeof(sign));
             binary_set_string(&bwriter, sign, sizeof(sign));//auth_response
-        }
-        else {
+        } else {
             binary_set_uint8(&bwriter, (uint8_t)sizeof(sign));
             binary_set_string(&bwriter, sign, sizeof(sign));//auth_response
         }
-    }
-    else {
+    } else {
         char sign[SHA1_BLOCK_SIZE];
         _mysql_native_sign(mysql, sign);
         if (BIT_CHECK(mysql->client.caps, CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA)) {
             _mysql_set_lenenc(&bwriter, sizeof(sign));
             binary_set_string(&bwriter, sign, sizeof(sign));//auth_response
-        }
-        else {
+        } else {
             binary_set_uint8(&bwriter, (uint8_t)sizeof(sign));
             binary_set_string(&bwriter, sign, sizeof(sign));//auth_response
         }
@@ -372,8 +331,7 @@ static void _mysql_auth_request(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t
         if (ERR_OK != _mysql_ssl_exchange(mysql, ev, ud)) {
             BIT_SET(*status, PROT_ERROR);
         }
-    }
-    else {
+    } else {
         if (ERR_OK != _mysql_auth_response(mysql, ev, ud)) {
             BIT_SET(*status, PROT_ERROR);
         }
@@ -504,8 +462,7 @@ static int32_t _mysql_auth_switch_response(mysql_ctx *mysql, ev_ctx *ev, mpack_a
         char sign[SHA256_BLOCK_SIZE];
         _mysql_caching_sha2_sign(mysql, sign);
         binary_set_string(&bwriter, sign, sizeof(sign));
-    }
-    else {
+    } else {
         char sign[SHA1_BLOCK_SIZE];
         _mysql_native_sign(mysql, sign);
         binary_set_string(&bwriter, sign, sizeof(sign));
@@ -554,8 +511,7 @@ static void _mysql_caching_sha2(mysql_ctx *mysql, ev_ctx *ev, binary_ctx *breade
                 if (ERR_OK != _mysql_password_send(mysql, ev)) {
                     BIT_SET(*status, PROT_ERROR);
                 }
-            }
-            else {
+            } else {
                 if (ERR_OK != _mysql_public_key(mysql, ev)) {
                     BIT_SET(*status, PROT_ERROR);
                 }

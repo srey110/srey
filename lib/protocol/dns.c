@@ -61,8 +61,7 @@ size_t dns_request_pack(char *buf, const char *domain, int32_t ipv6) {
     dns_question *qinfo = (dns_question*)&buf[sizeof(dns_head) + qlens];
     if (0 == ipv6) {
         qinfo->qtype = htons(DNS_A);
-    }
-    else {
+    } else {
         qinfo->qtype = htons(DNS_AAAA);
     }
     qinfo->qclass = htons(1);
@@ -77,8 +76,7 @@ static void _decode_domain(unsigned char *name, unsigned char *reader, unsigned 
             offset = (*reader) * 256 + *(reader + 1) - 49152;
             reader = buffer + offset - 1;
             jumped = 1;
-        }
-        else {
+        } else {
             name[p++] = *reader;
         }
         reader = reader + 1;
@@ -121,13 +119,11 @@ static char *_dns_parse_data(char *buf, char *reader, uint16_t n, dns_ip *dnsips
             tmp = &dnsips[*index];
             (*index)++;
             inet_ntop(AF_INET, reader, tmp->ip, sizeof(tmp->ip));
-        }
-        else if (DNS_AAAA == rtype) {
+        } else if (DNS_AAAA == rtype) {
             tmp = &dnsips[*index];
             (*index)++;
             inet_ntop(AF_INET6, reader, tmp->ip, sizeof(tmp->ip));
-        }
-        else {
+        } else {
             //_decode_domain((unsigned char *)domain, (unsigned char *)reader, (unsigned char *)buf, &cnt);
             //reader += cnt;
         }

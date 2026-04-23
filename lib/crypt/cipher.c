@@ -15,8 +15,7 @@ void cipher_init(cipher_ctx *cipher, engine_type engine, cipher_model model,
             || OFB == cipher->model
             || CTR == cipher->model) {
             aes_init(cipher->cur_ctx, key, klens, keybits, 1);
-        }
-        else {
+        } else {
             aes_init(cipher->cur_ctx, key, klens, keybits, 0);
         }
         return;
@@ -29,8 +28,7 @@ void cipher_init(cipher_ctx *cipher, engine_type engine, cipher_model model,
         || OFB == cipher->model
         || CTR == cipher->model) {
         des_init(cipher->cur_ctx, key, klens, DES3 == engine, 1);
-    }
-    else {
+    } else {
         des_init(cipher->cur_ctx, key, klens, DES3 == engine, 0);
     }
 }
@@ -138,8 +136,7 @@ static inline void *_cfb_model(cipher_ctx *cipher, const void *data, size_t lens
         void *en;
         if (cipher->encrypt) {
             en = (void *)cipher->_cipher(cipher->cur_ctx, cipher->xor_data);
-        }
-        else {
+        } else {
             en = (void *)cipher->_cipher(cipher->cur_ctx, data);
         }
         memcpy(cipher->cur_iv, en, cipher->block_lens);
@@ -213,8 +210,7 @@ size_t cipher_dofinal(cipher_ctx *cipher, const void *data, size_t lens, char *o
                 memcpy(output + size, buf, enlens);
                 size += enlens;
             }
-        }
-        else {
+        } else {
             size -= (uint8_t)output[size - 1];
         }
     }

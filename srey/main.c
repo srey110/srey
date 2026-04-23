@@ -32,8 +32,7 @@ static void _json_get_string(cJSON *json, const char *name, char *str, size_t le
         if (vlen < lens) {
             memcpy(str, val->valuestring, vlen);
             str[vlen] = '\0';
-        }
-        else {
+        } else {
             LOG_WARN("%s value too long.", name);
         }
     }
@@ -359,13 +358,11 @@ int main(int argc, char *argv[]) {
         if (wsv_install(argv[2])) {
             PRINT("install service %s successfully!", argv[2]);
             return ERR_OK;
-        }
-        else {
+        } else {
             PRINT("install service %s error!", argv[2]);
             return ERR_FAILED;
         }
-    }
-    else if (0 == strcmp("-u", argv[1])) {
+    } else if (0 == strcmp("-u", argv[1])) {
         if (!wsv_isinstalled(argv[2])) {
             PRINT("uninstall service error.service %s not exited!", argv[2]);
             return ERR_FAILED;
@@ -373,21 +370,17 @@ int main(int argc, char *argv[]) {
         if (wsv_unInstall(argv[2])) {
             PRINT("uninstall service %s successfully!", argv[2]);
             return ERR_OK;
-        }
-        else {
+        } else {
             PRINT("uninstall service %s failed!", argv[2]);
             return ERR_FAILED;
         }
-    }
-    else if (0 == strcmp("-r", argv[1])) {
+    } else if (0 == strcmp("-r", argv[1])) {
         if (wsv_startservice(argv[2])) {
             return ERR_OK;
-        }
-        else {
+        } else {
             return ERR_FAILED;
         }
-    }
-    else {
+    } else {
         _useage();
         return ERR_FAILED;
     }
@@ -407,11 +400,9 @@ int main(int argc, char *argv[]) {
         int32_t rtn = service_hug();
         remove(sh);
         return rtn;
-    }
-    else if (pid > 0) {
+    } else if (pid > 0) {
         return ERR_OK;
-    }
-    else {
+    } else {
         PRINT("fork process error!");
         return ERR_FAILED;
     }

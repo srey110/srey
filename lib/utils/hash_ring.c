@@ -20,11 +20,9 @@ static int32_t _item_sort(const void *a, const void *b) {
     }
     if (itema->digest < itemb->digest) {
         return -1;
-    }
-    else if (itema->digest > itemb->digest) {
+    } else if (itema->digest > itemb->digest) {
         return 1;
-    }
-    else {
+    } else {
         return 0;
     }
 }
@@ -159,8 +157,7 @@ void hash_ring_remove(hash_ring_ctx *ring, void *name, size_t lens) {
             FREE(cur->node->name);
             if (prev == NULL) {
                 ring->nodes = next;
-            }
-            else {
+            } else {
                 prev->next = next;
             }
             /* 原先：标记 NULL 后调用 qsort，O(n log n)。
@@ -196,8 +193,7 @@ static hash_ring_item *_find_next_highest_item(hash_ring_ctx *ring, uint64_t dig
             if (min == ring->nitems) {
                 // Past the end of the ring, return the first item
                 return ring->items[0];
-            }
-            else {
+            } else {
                 // Return the next highest item
                 return ring->items[min];
             }
@@ -207,8 +203,7 @@ static hash_ring_item *_find_next_highest_item(hash_ring_ctx *ring, uint64_t dig
         if (item->digest > digest) {
             // Key is in the lower half
             max = midpointindex - 1;
-        }
-        else if (item->digest <= digest) {
+        } else if (item->digest <= digest) {
             // Key is in the upper half
             min = midpointindex + 1;
         }
@@ -225,8 +220,7 @@ hash_ring_node *hash_ring_find(hash_ring_ctx *ring, void *key, size_t lens) {
     hash_ring_item *item = _find_next_highest_item(ring, digest);
     if (item == NULL) {
         return NULL;
-    }
-    else {
+    } else {
         return item->node;
     }
 }

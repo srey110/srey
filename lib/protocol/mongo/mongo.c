@@ -64,8 +64,7 @@ static int32_t _mongo_server_first_message(ev_ctx *ev, mongo_ctx *mongo, mgopack
         _mongo_format_pwd(mongo, fmtpwd);
         scram_set_pwd(mongo->scram, fmtpwd);
         client_final = scram_final_message(mongo->scram);
-    }
-    else {
+    } else {
         scram_set_pwd(mongo->scram, mongo->password);
         client_final = scram_final_message(mongo->scram);
     }
@@ -98,8 +97,7 @@ static void _mongo_scram_auth(ev_ctx *ev, mgopack_ctx *mgopack, ud_cxt *ud) {
             _hs_push(mongo->fd, mongo->skid, 1, ud, rtn, mgopack, 0);
             scram_free(mongo->scram);
             mongo->scram = NULL;
-        }
-        else {
+        } else {
             _mongo_pkfree(mgopack);
         }
         break;
@@ -108,8 +106,7 @@ static void _mongo_scram_auth(ev_ctx *ev, mgopack_ctx *mgopack, ud_cxt *ud) {
         rtn = _mongo_server_final_message(ev, mongo, mgopack);
         if (ERR_OK != rtn) {
             _hs_push(mongo->fd, mongo->skid, 1, ud, rtn, mgopack, 0);
-        }
-        else {
+        } else {
             _hs_push(mongo->fd, mongo->skid, 1, ud, rtn, NULL, 0);
             _mongo_pkfree(mgopack);
         }
@@ -196,8 +193,7 @@ void mongo_init(mongo_ctx *mongo, const char *ip, uint16_t port, struct evssl_ct
     mongo->evssl = evssl;
     if (EMPTYSTR(db)) {
         strcpy(mongo->db, "admin");
-    }
-    else {
+    } else {
         strcpy(mongo->db, db);
     }
 }
@@ -226,8 +222,7 @@ void mongo_set_error(mongo_ctx *mongo, const char *err, int32_t copy) {
     if (copy) {
         MALLOC(mongo->error, strlen(err) + 1);
         strcpy(mongo->error, err);
-    }
-    else {
+    } else {
         mongo->error = (char *)err;
     }
 }

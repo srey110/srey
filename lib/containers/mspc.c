@@ -15,34 +15,28 @@ static uint32_t _pow2_ceil(uint32_t n) {
     n |= n >> 16;
     return n + 1;
 }
-
 void mspc_init(mspc_ctx *q, uint32_t capacity) {
     ASSERTAB(NULL != q, ERRSTR_NULLP);
     capacity = (0 == capacity) ? MSPC_DEFAULT_CAP : _pow2_ceil(capacity);
     ASSERTAB(capacity >= 2, ERRSTR_INVPARAM);
-
     q->capacity = capacity;
     q->mask     = capacity - 1;
     q->enq.v    = 0;
     q->deq.v    = 0;
-
     MALLOC(q->cells, sizeof(mspc_cell) * capacity);
     ASSERTAB(NULL != q->cells, "mspc_init: malloc failed.");
-
     /* 初始化每个槽位的序列号为其下标，表示"可入队"状态 */
     for (uint32_t i = 0; i < capacity; i++) {
         q->cells[i].sequence = i;
         q->cells[i].data     = NULL;
     }
 }
-
 void mspc_free(mspc_ctx *q) {
     if (NULL == q) {
         return;
     }
     FREE(q->cells);
 }
-
 /*
  * 入队核心逻辑（Vyukov MPMC 序列号算法）：
  *
@@ -60,15 +54,12 @@ int32_t mspc_push(mspc_ctx *q, void *data) {
     mspc_cell *cell;
     uint32_t   pos;
     int32_t    diff;
-
     ASSERTAB(NULL != q,    ERRSTR_NULLP);
     ASSERTAB(NULL != data, ERRSTR_INVPARAM);
-
     pos = ATOMIC_GET(&q->enq.v);
     for (;;) {
         cell = &q->cells[pos & q->mask];
         diff = (int32_t)(ATOMIC_GET(&cell->sequence) - pos);
-
         if (0 == diff) {
             /* 槽位空闲，尝试原子抢占 enq_pos */
             if (ATOMIC_CAS(&q->enq.v, pos, pos + 1)) {
@@ -85,13 +76,11 @@ int32_t mspc_push(mspc_ctx *q, void *data) {
         }
         CPU_PAUSE();
     }
-
     /* 已独占该槽位，写入数据并发布（sequence = pos+1 通知消费者） */
     cell->data = data;
     ATOMIC_SET(&cell->sequence, pos + 1);
     return ERR_OK;
 }
-
 /*
  * 出队核心逻辑：
  *
@@ -105,14 +94,11 @@ void *mspc_pop(mspc_ctx *q) {
     uint32_t   pos;
     int32_t    diff;
     void      *data;
-
     ASSERTAB(NULL != q, ERRSTR_NULLP);
-
     pos = ATOMIC_GET(&q->deq.v);
     for (;;) {
         cell = &q->cells[pos & q->mask];
         diff = (int32_t)(ATOMIC_GET(&cell->sequence) - (pos + 1));
-
         if (0 == diff) {
             /* 槽位有数据，尝试原子抢占 deq_pos */
             if (ATOMIC_CAS(&q->deq.v, pos, pos + 1)) {
@@ -129,14 +115,12 @@ void *mspc_pop(mspc_ctx *q) {
         }
         CPU_PAUSE();
     }
-
     /* 已独占该槽位，读取数据并释放槽位（sequence = pos+capacity 通知生产者下一轮可用） */
     data       = cell->data;
     cell->data = NULL;
     ATOMIC_SET(&cell->sequence, pos + q->capacity);
     return data;
 }
-
 /*
  * 返回当前队列元素数量的近似值。
  * 并发场景下 enq_pos 与 deq_pos 分两次读取，结果仅供参考。

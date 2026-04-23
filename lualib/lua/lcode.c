@@ -357,8 +357,7 @@ static void removelastlineinfo (FuncState *fs) {
   if (f->lineinfo[pc] != ABSLINEINFO) {  /* relative line info? */
     fs->previousline -= f->lineinfo[pc];  /* correct last line saved */
     fs->iwthabs--;  /* undo previous increment */
-  }
-  else {  /* absolute line information */
+  } else {  /* absolute line information */
     lua_assert(f->abslineinfo[fs->nabslineinfo - 1].pc == pc);
     fs->nabslineinfo--;  /* remove it */
     fs->iwthabs = MAXIWTHABS + 1;  /* force next line info to be absolute */
@@ -504,8 +503,7 @@ static void freeregs (FuncState *fs, int r1, int r2) {
   if (r1 > r2) {
     freereg(fs, r1);
     freereg(fs, r2);
-  }
-  else {
+  } else {
     freereg(fs, r2);
     freereg(fs, r1);
   }
@@ -758,8 +756,7 @@ void luaK_setoneret (FuncState *fs, expdesc *e) {
     lua_assert(GETARG_C(getinstruction(fs, e)) == 2);
     e->k = VNONRELOC;  /* result has fixed position */
     e->u.info = GETARG_A(getinstruction(fs, e));
-  }
-  else if (e->k == VVARARG) {
+  } else if (e->k == VVARARG) {
     SETARG_C(getinstruction(fs, e), 2);
     e->k = VRELOC;  /* can relocate its simple result */
   }
@@ -1265,8 +1262,7 @@ static int isSCnumber (expdesc *e, int *pi, int *isfloat) {
   if (!hasjumps(e) && fitsC(i)) {
     *pi = int2sC(cast_int(i));
     return 1;
-  }
-  else
+  } else
     return 0;
 }
 
@@ -1290,19 +1286,16 @@ void luaK_indexed (FuncState *fs, expdesc *t, expdesc *k) {
     t->u.ind.t = temp;  /* (can't do a direct assignment; values overlap) */
     t->u.ind.idx = k->u.info;  /* literal short string */
     t->k = VINDEXUP;
-  }
-  else {
+  } else {
     /* register index of the table */
     t->u.ind.t = (t->k == VLOCAL) ? t->u.var.ridx: t->u.info;
     if (isKstr(fs, k)) {
       t->u.ind.idx = k->u.info;  /* literal short string */
       t->k = VINDEXSTR;
-    }
-    else if (isCint(k)) {
+    } else if (isCint(k)) {
       t->u.ind.idx = cast_int(k->u.ival);  /* int. constant in proper range */
       t->k = VINDEXI;
-    }
-    else {
+    } else {
       t->u.ind.idx = luaK_exp2anyreg(fs, k);  /* register */
       t->k = VINDEXED;
     }
@@ -1343,8 +1336,7 @@ static int constfolding (FuncState *fs, int op, expdesc *e1,
   if (ttisinteger(&res)) {
     e1->k = VKINT;
     e1->u.ival = ivalue(&res);
-  }
-  else {  /* folds neither NaN nor 0.0 (to avoid problems with -0.0) */
+  } else {  /* folds neither NaN nor 0.0 (to avoid problems with -0.0) */
     lua_Number n = fltvalue(&res);
     if (luai_numisnan(n) || n == 0)
       return 0;
@@ -1560,14 +1552,12 @@ static void codeorder (FuncState *fs, BinOpr opr, expdesc *e1, expdesc *e2) {
     r1 = luaK_exp2anyreg(fs, e1);
     r2 = im;
     op = binopr2op(opr, OPR_LT, OP_LTI);
-  }
-  else if (isSCnumber(e1, &im, &isfloat)) {
+  } else if (isSCnumber(e1, &im, &isfloat)) {
     /* transform (A < B) to (B > A) and (A <= B) to (B >= A) */
     r1 = luaK_exp2anyreg(fs, e2);
     r2 = im;
     op = binopr2op(opr, OPR_LT, OP_GTI);
-  }
-  else {  /* regular case, compare two registers */
+  } else {  /* regular case, compare two registers */
     r1 = luaK_exp2anyreg(fs, e1);
     r2 = luaK_exp2anyreg(fs, e2);
     op = binopr2op(opr, OPR_LT, OP_LT);
@@ -1595,12 +1585,10 @@ static void codeeq (FuncState *fs, BinOpr opr, expdesc *e1, expdesc *e2) {
   if (isSCnumber(e2, &im, &isfloat)) {
     op = OP_EQI;
     r2 = im;  /* immediate operand */
-  }
-  else if (exp2RK(fs, e2)) {  /* 2nd expression is constant? */
+  } else if (exp2RK(fs, e2)) {  /* 2nd expression is constant? */
     op = OP_EQK;
     r2 = e2->u.info;  /* constant index */
-  }
-  else {
+  } else {
     op = OP_EQ;  /* will compare two registers */
     r2 = luaK_exp2anyreg(fs, e2);
   }
@@ -1691,8 +1679,7 @@ static void codeconcat (FuncState *fs, expdesc *e1, expdesc *e2, int line) {
     freeexp(fs, e2);
     SETARG_A(*ie2, e1->u.info);  /* correct first element ('e1') */
     SETARG_B(*ie2, n + 1);  /* will concatenate one more element */
-  }
-  else {  /* 'e2' is not a concatenation */
+  } else {  /* 'e2' is not a concatenation */
     luaK_codeABC(fs, OP_CONCAT, e1->u.info, 2, 0);  /* new concat opcode */
     freeexp(fs, e2);
     luaK_fixline(fs, line);
@@ -1747,11 +1734,9 @@ void luaK_posfix (FuncState *fs, BinOpr opr,
       if (isSCint(e1)) {
         swapexps(e1, e2);
         codebini(fs, OP_SHLI, e1, e2, 1, line, TM_SHL);  /* I << r2 */
-      }
-      else if (finishbinexpneg(fs, e1, e2, OP_SHRI, line, TM_SHL)) {
+      } else if (finishbinexpneg(fs, e1, e2, OP_SHRI, line, TM_SHL)) {
         /* coded as (r1 >> -I) */;
-      }
-      else  /* regular case (two registers) */
+      } else  /* regular case (two registers) */
        codebinexpval(fs, opr, e1, e2, line);
       break;
     }

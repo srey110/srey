@@ -58,8 +58,7 @@ static int findfield (lua_State *L, int objidx, int level) {
       if (lua_rawequal(L, objidx, -1)) {  /* found object? */
         lua_pop(L, 1);  /* remove value (but keep name) */
         return 1;
-      }
-      else if (findfield(L, objidx, level - 1)) {  /* try recursively */
+      } else if (findfield(L, objidx, level - 1)) {  /* try recursively */
         /* stack: lib_name, lib_table, field_name (top) */
         lua_pushliteral(L, ".");  /* place '.' between the two names */
         lua_replace(L, -3);  /* (in the slot occupied by table) */
@@ -90,8 +89,7 @@ static int pushglobalfuncname (lua_State *L, lua_Debug *ar) {
     lua_copy(L, -1, top + 1);  /* copy name to proper place */
     lua_settop(L, top + 1);  /* remove table "loaded" and name copy */
     return 1;
-  }
-  else {
+  } else {
     lua_settop(L, top);  /* remove function and global table */
     return 0;
   }
@@ -102,8 +100,7 @@ static void pushfuncname (lua_State *L, lua_Debug *ar) {
   if (pushglobalfuncname(L, ar)) {  /* try first a global name */
     lua_pushfstring(L, "function '%s'", lua_tostring(L, -1));
     lua_remove(L, -2);  /* remove name */
-  }
-  else if (*ar->namewhat != '\0')  /* is there a name from code? */
+  } else if (*ar->namewhat != '\0')  /* is there a name from code? */
     lua_pushfstring(L, "%s '%s'", ar->namewhat, ar->name);  /* use it */
   else if (*ar->what == 'm')  /* main? */
       lua_pushliteral(L, "main chunk");
@@ -147,8 +144,7 @@ LUALIB_API void luaL_traceback (lua_State *L, lua_State *L1,
       lua_pushfstring(L, "\n\t...\t(skipping %d levels)", n);
       luaL_addvalue(&b);  /* add warning about skip */
       level += n;  /* and skip to last levels */
-    }
-    else {
+    } else {
       lua_getinfo(L1, "Slnt", &ar);
       if (ar.currentline <= 0)
         lua_pushfstring(L, "\n\t%s: in ", ar.short_src);
@@ -248,8 +244,7 @@ LUALIB_API int luaL_fileresult (lua_State *L, int stat, const char *fname) {
   if (stat) {
     lua_pushboolean(L, 1);
     return 1;
-  }
-  else {
+  } else {
     const char *msg;
     luaL_pushfail(L);
     msg = (en != 0) ? strerror(en) : "(no extra info)";
@@ -415,8 +410,7 @@ LUALIB_API const char *luaL_optlstring (lua_State *L, int arg,
     if (len)
       *len = (def ? strlen(def) : 0);
     return def;
-  }
-  else return luaL_checklstring(L, arg, len);
+  } else return luaL_checklstring(L, arg, len);
 }
 
 
@@ -672,8 +666,7 @@ LUALIB_API int luaL_ref (lua_State *L, int t) {
     ref = 0;  /* list is empty */
     lua_pushinteger(L, 0);  /* initialize as an empty list */
     lua_rawseti(L, t, freelist);  /* ref = t[freelist] = 0 */
-  }
-  else {  /* already initialized */
+  } else {  /* already initialized */
     lua_assert(lua_isinteger(L, -1));
     ref = (int)lua_tointeger(L, -1);  /* ref = t[freelist] */
   }
@@ -681,8 +674,7 @@ LUALIB_API int luaL_ref (lua_State *L, int t) {
   if (ref != 0) {  /* any free element? */
     lua_rawgeti(L, t, ref);  /* remove it from list */
     lua_rawseti(L, t, freelist);  /* (t[freelist] = t[ref]) */
-  }
-  else  /* no free elements */
+  } else  /* no free elements */
     ref = (int)lua_rawlen(L, t) + 1;  /* get a new reference */
   lua_rawseti(L, t, ref);
   return ref;
@@ -722,8 +714,7 @@ static const char *getF (lua_State *L, void *ud, size_t *size) {
   if (lf->n > 0) {  /* are there pre-read characters to be read? */
     *size = lf->n;  /* return them (chars already in buffer) */
     lf->n = 0;  /* no more pre-read characters */
-  }
-  else {  /* read a block from file */
+  } else {  /* read a block from file */
     /* 'fread' can return > 0 *and* set the EOF flag. If next call to
        'getF' called 'fread', it might still wait for user input.
        The next check avoids this problem. */
@@ -776,8 +767,7 @@ static int skipcomment (FILE *f, int *cp) {
     } while (c != EOF && c != '\n');
     *cp = getc(f);  /* next character after comment, if present */
     return 1;  /* there was a comment */
-  }
-  else return 0;  /* no comment */
+  } else return 0;  /* no comment */
 }
 
 
@@ -790,8 +780,7 @@ LUALIB_API int luaL_loadfilex (lua_State *L, const char *filename,
   if (filename == NULL) {
     lua_pushliteral(L, "=stdin");
     lf.f = stdin;
-  }
-  else {
+  } else {
     lua_pushfstring(L, "@%s", filename);
     errno = 0;
     lf.f = fopen(filename, "r");
@@ -900,8 +889,7 @@ LUALIB_API const char *luaL_tolstring (lua_State *L, int idx, size_t *len) {
   if (luaL_callmeta(L, idx, "__tostring")) {  /* metafield? */
     if (!lua_isstring(L, -1))
       luaL_error(L, "'__tostring' must return a string");
-  }
-  else {
+  } else {
     switch (lua_type(L, idx)) {
       case LUA_TNUMBER: {
         if (lua_isinteger(L, idx))
@@ -1028,8 +1016,7 @@ static void *l_alloc (void *ud, void *ptr, size_t osize, size_t nsize) {
   if (nsize == 0) {
     free(ptr);
     return NULL;
-  }
-  else
+  } else
     return realloc(ptr, nsize);
 }
 

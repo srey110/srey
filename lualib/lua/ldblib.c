@@ -95,8 +95,7 @@ static lua_State *getthread (lua_State *L, int *arg) {
   if (lua_isthread(L, 1)) {
     *arg = 1;
     return lua_tothread(L, 1);
-  }
-  else {
+  } else {
     *arg = 0;
     return L;  /* function will operate over current thread */
   }
@@ -157,8 +156,7 @@ static int db_getinfo (lua_State *L) {
     options = lua_pushfstring(L, ">%s", options);  /* add '>' to 'options' */
     lua_pushvalue(L, arg + 1);  /* move function to 'L1' stack */
     lua_xmove(L, L1, 1);
-  }
-  else {  /* stack level */
+  } else {  /* stack level */
     if (!lua_getstack(L1, (int)luaL_checkinteger(L, arg + 1), &ar)) {
       luaL_pushfail(L);  /* level out of range */
       return 1;
@@ -208,8 +206,7 @@ static int db_getlocal (lua_State *L) {
     lua_pushvalue(L, arg + 1);  /* push function */
     lua_pushstring(L, lua_getlocal(L, NULL, nvar));  /* push local name */
     return 1;  /* return only name (there is no value) */
-  }
-  else {  /* stack-level argument */
+  } else {  /* stack-level argument */
     lua_Debug ar;
     const char *name;
     int level = (int)luaL_checkinteger(L, arg + 1);
@@ -222,8 +219,7 @@ static int db_getlocal (lua_State *L) {
       lua_pushstring(L, name);  /* push name */
       lua_rotate(L, -2, 1);  /* re-order */
       return 2;
-    }
-    else {
+    } else {
       luaL_pushfail(L);  /* no name (nor value) */
       return 1;
     }
@@ -369,8 +365,7 @@ static int db_sethook (lua_State *L) {
   if (lua_isnoneornil(L, arg+1)) {  /* no hook? */
     lua_settop(L, arg+1);
     func = NULL; mask = 0; count = 0;  /* turn off hooks */
-  }
-  else {
+  } else {
     const char *smask = luaL_checkstring(L, arg+2);
     luaL_checktype(L, arg+1, LUA_TFUNCTION);
     count = (int)luaL_optinteger(L, arg + 3, 0);
@@ -401,8 +396,7 @@ static int db_gethook (lua_State *L) {
   if (hook == NULL) {  /* no hook? */
     luaL_pushfail(L);
     return 1;
-  }
-  else if (hook != hookf)  /* external hook? */
+  } else if (hook != hookf)  /* external hook? */
     lua_pushliteral(L, "external hook");
   else {  /* hook table must exist */
     lua_getfield(L, LUA_REGISTRYINDEX, HOOKKEY);

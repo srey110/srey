@@ -138,16 +138,14 @@ int32_t popen_startup(popen_ctx *ctx, const char *cmd, const char *mode) {
         int32_t err = ERRNO;
         LOG_WARN("%s", ERRORSTR(err));
         exit(err);
-    }
-    else if (pid > 0) {
+    } else if (pid > 0) {
         ctx->pid = pid;
         if (r || w) {
             close(sock[0]);
             ctx->sock = sock[1];
         }
         return ERR_OK;
-    }
-    else {
+    } else {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         if (r || w) {
             close(sock[0]);
@@ -188,8 +186,7 @@ void popen_close(popen_ctx *ctx) {
             if (NULL != pvchild) {
                 TerminateProcess(pvchild, ERR_FAILED);
                 CloseHandle(pvchild);
-            }
-            else {
+            } else {
                 LOG_ERROR("%s", ERRORSTR(ERRNO));
             }
         }

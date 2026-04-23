@@ -85,8 +85,7 @@ const char *luaX_token2str (LexState *ls, int token) {
       return luaO_pushfstring(ls->L, "'%c'", token);
     else  /* control character */
       return luaO_pushfstring(ls->L, "'<\\%d>'", token);
-  }
-  else {
+  } else {
     const char *s = luaX_tokens[token - FIRST_RESERVED];
     if (token < TK_EOS)  /* fixed format (symbols and reserved words)? */
       return luaO_pushfstring(ls->L, "'%s'", s);
@@ -192,8 +191,7 @@ static int check_next1 (LexState *ls, int c) {
   if (ls->current == c) {
     next(ls);
     return 1;
-  }
-  else return 0;
+  } else return 0;
 }
 
 
@@ -206,8 +204,7 @@ static int check_next2 (LexState *ls, const char *set) {
   if (ls->current == set[0] || ls->current == set[1]) {
     save_and_next(ls);
     return 1;
-  }
-  else return 0;
+  } else return 0;
 }
 
 
@@ -247,8 +244,7 @@ static int read_numeral (LexState *ls, SemInfo *seminfo) {
   if (ttisinteger(&obj)) {
     seminfo->i = ivalue(&obj);
     return TK_INT;
-  }
-  else {
+  } else {
     lua_assert(ttisfloat(&obj));
     seminfo->r = fltvalue(&obj);
     return TK_FLT;
@@ -478,8 +474,7 @@ static int llex (LexState *ls, SemInfo *seminfo) {
         if (sep >= 2) {
           read_long_string(ls, seminfo, sep);
           return TK_STRING;
-        }
-        else if (sep == 0)  /* '[=...' missing second bracket? */
+        } else if (sep == 0)  /* '[=...' missing second bracket? */
           lexerror(ls, "invalid long string delimiter", TK_STRING);
         return '[';
       }
@@ -525,8 +520,7 @@ static int llex (LexState *ls, SemInfo *seminfo) {
           if (check_next1(ls, '.'))
             return TK_DOTS;   /* '...' */
           else return TK_CONCAT;   /* '..' */
-        }
-        else if (!lisdigit(ls->current)) return '.';
+        } else if (!lisdigit(ls->current)) return '.';
         else return read_numeral(ls, seminfo);
       }
       case '0': case '1': case '2': case '3': case '4':
@@ -550,8 +544,7 @@ static int llex (LexState *ls, SemInfo *seminfo) {
           else {
             return TK_NAME;
           }
-        }
-        else {  /* single-char tokens ('+', '*', '%', '{', '}', ...) */
+        } else {  /* single-char tokens ('+', '*', '%', '{', '}', ...) */
           int c = ls->current;
           next(ls);
           return c;
@@ -567,8 +560,7 @@ void luaX_next (LexState *ls) {
   if (ls->lookahead.token != TK_EOS) {  /* is there a look-ahead token? */
     ls->t = ls->lookahead;  /* use this one */
     ls->lookahead.token = TK_EOS;  /* and discharge it */
-  }
-  else
+  } else
     ls->t.token = llex(ls, &ls->t.seminfo);  /* read next token */
 }
 

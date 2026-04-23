@@ -135,8 +135,7 @@ void bson_append_bool(bson_ctx *bson, const char *key, int8_t b) {
     BSON_APPEND_KEY(BSON_BOOL);
     if (b) {
         binary_set_int8(&bson->doc, 1);
-    }
-    else {
+    } else {
         binary_set_int8(&bson->doc, 0);
     }
 }
@@ -513,16 +512,14 @@ static void _bson_dump(bson_ctx *bson, int32_t index, binary_ctx *str) {
             binary_init(&strchild, NULL, 0, 0);
             if (BSON_DOCUMENT == iter.type) {
                 binary_set_string(&strchild, "{\r\n", 3);
-            }
-            else {
+            } else {
                 binary_set_string(&strchild, "[\r\n", 3);
             }
             _bson_dump(&child, index + 1, &strchild);
             binary_set_fill(&strchild, ' ', index * 4);
             if (BSON_DOCUMENT == iter.type) {
                 binary_set_string(&strchild, "}", 1);
-            }
-            else {
+            } else {
                 binary_set_string(&strchild, "]", 1);
             }
             binary_set_string(str, strchild.data, strchild.offset);
@@ -555,8 +552,7 @@ static void _bson_dump(bson_ctx *bson, int32_t index, binary_ctx *str) {
             int32_t val = bson_iter_bool(&iter, NULL);
             if (val) {
                 binary_set_string(str, "true", strlen("true"));
-            }
-            else {
+            } else {
                 binary_set_string(str, "false", strlen("false"));
             }
             break;

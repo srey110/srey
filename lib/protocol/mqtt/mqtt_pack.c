@@ -128,8 +128,7 @@ static int32_t _mqtt_props_varlens(mqtt_protversion version, binary_ctx *props, 
     int32_t occupy;
     if (NULL == props) {
         occupy = _mqtt_varlens_encode(0, vlens);
-    }
-    else {
+    } else {
         (*off) += (uint32_t)props->offset;
         occupy = _mqtt_varlens_encode((uint32_t)props->offset, vlens);
     }
@@ -338,13 +337,11 @@ char *mqtt_pack_puback(mqtt_protversion version, int16_t packid, uint8_t reason,
     int32_t pvoccupy = 0;
     if (version < MQTT_50) {
         total = 2;//报文标识符(2)
-    }
-    else {
+    } else {
         if (0x00 == reason
             && (NULL == props || 0 == props->offset)) {
             total = 2;//报文标识符(2)
-        }
-        else {
+        } else {
             total = 2 + 1;//报文标识符(2) + 原因码(MQTT_50 1)
             if (NULL != props
                 && 0 != props->offset) {
@@ -392,13 +389,11 @@ char *mqtt_pack_pubrec(mqtt_protversion version, int16_t packid, uint8_t reason,
     int32_t pvoccupy = 0;
     if (version < MQTT_50) {
         total = 2;//报文标识符(2)
-    }
-    else {
+    } else {
         if (0x00 == reason
             && (NULL == props || 0 == props->offset)) {
             total = 2;//报文标识符(2)
-        }
-        else {
+        } else {
             total = 2 + 1;//报文标识符(2) + 原因码(MQTT_50 1)
             if (NULL != props
                 && 0 != props->offset) {
@@ -447,13 +442,11 @@ char *mqtt_pack_pubrel(mqtt_protversion version, int16_t packid, uint8_t reason,
     int32_t pvoccupy = 0;
     if (version < MQTT_50) {
         total = 2;//报文标识符(2)
-    }
-    else {
+    } else {
         if (0x00 == reason
             && (NULL == props || 0 == props->offset)) {
             total = 2;//报文标识符(2)
-        }
-        else {
+        } else {
             total = 2 + 1;//报文标识符(2) + 原因码(MQTT_50 1)
             if (NULL != props
                 && 0 != props->offset) {
@@ -501,13 +494,11 @@ char *mqtt_pack_pubcomp(mqtt_protversion version, int16_t packid, uint8_t reason
     int32_t pvoccupy = 0;
     if (version < MQTT_50) {
         total = 2;//报文标识符(2)
-    }
-    else {
+    } else {
         if (0x00 == reason
             && (NULL == props || 0 == props->offset)) {
             total = 2;//报文标识符(2)
-        }
-        else {
+        } else {
             total = 2 + 1;//报文标识符(2) + 原因码(MQTT_50 1)
             if (NULL != props
                 && 0 != props->offset) {
@@ -723,13 +714,11 @@ char *mqtt_pack_disconnect(mqtt_protversion version, uint8_t reason, binary_ctx 
     int32_t pvoccupy = 0;
     if (version < MQTT_50) {
         total = 0;
-    }
-    else {
+    } else {
         if (0x00 == reason
             && (NULL == props || 0 == props->offset)) {
             total = 0;
-        }
-        else {
+        } else {
             total = 1;
             if (NULL != props
                 && 0 != props->offset) {
@@ -781,8 +770,7 @@ char *mqtt_pack_auth(mqtt_protversion version, uint8_t reason, binary_ctx *props
     if (0x00 == reason
         && (NULL == props || 0 == props->offset)) {
         total = 0;
-    }
-    else {
+    } else {
         total = 1;//原因码(1)
         pvoccupy = _mqtt_props_varlens(version, props, pvlens, &total);
         if (ERR_FAILED == pvoccupy) {

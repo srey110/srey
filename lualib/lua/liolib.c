@@ -394,8 +394,7 @@ static int io_lines (lua_State *L) {
     lua_replace(L, 1);  /* put it at index 1 */
     tofile(L);  /* check that it's a valid file handle */
     toclose = 0;  /* do not close it after iteration */
-  }
-  else {  /* open a new file */
+  } else {  /* open a new file */
     const char *filename = luaL_checkstring(L, 1);
     opencheck(L, filename, "r");
     lua_replace(L, 1);  /* put file at index 1 */
@@ -407,8 +406,7 @@ static int io_lines (lua_State *L) {
     lua_pushnil(L);  /* control */
     lua_pushvalue(L, 1);  /* file is the to-be-closed variable (4th result) */
     return 4;
-  }
-  else
+  } else
     return 1;
 }
 
@@ -442,8 +440,7 @@ static int nextc (RN *rn) {
   if (l_unlikely(rn->n >= L_MAXLENNUM)) {  /* buffer overflow? */
     rn->buff[0] = '\0';  /* invalidate result */
     return 0;  /* fail */
-  }
-  else {
+  } else {
     rn->buff[rn->n++] = rn->c;  /* save current char */
     rn->c = l_getc(rn->f);  /* read next one */
     return 1;
@@ -574,8 +571,7 @@ static int g_read (lua_State *L, FILE *f, int first) {
   if (nargs == 0) {  /* no arguments? */
     success = read_line(L, f, 1);
     n = first + 1;  /* to return 1 result */
-  }
-  else {
+  } else {
     /* ensure stack space for all results and for auxlib's buffer */
     luaL_checkstack(L, nargs+LUA_MINSTACK, "too many arguments");
     success = 1;
@@ -583,8 +579,7 @@ static int g_read (lua_State *L, FILE *f, int first) {
       if (lua_type(L, n) == LUA_TNUMBER) {
         size_t l = (size_t)luaL_checkinteger(L, n);
         success = (l == 0) ? test_eof(L, f) : read_chars(L, f, l);
-      }
-      else {
+      } else {
         const char *p = luaL_checkstring(L, n);
         if (*p == '*') p++;  /* skip optional '*' (for compatibility) */
         switch (*p) {
@@ -674,8 +669,7 @@ static int g_write (lua_State *L, FILE *f, int arg) {
                 : fprintf(f, LUA_NUMBER_FMT,
                              (LUAI_UACNUMBER)lua_tonumber(L, arg));
       status = status && (len > 0);
-    }
-    else {
+    } else {
       size_t l;
       const char *s = luaL_checklstring(L, arg, &l);
       status = status && (fwrite(s, sizeof(char), l, f) == l);

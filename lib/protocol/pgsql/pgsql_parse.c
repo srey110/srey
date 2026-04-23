@@ -13,8 +13,7 @@ char *_pgpack_error_notice(binary_ctx *breader) {
         binary_set_string(&bwriter, ": ", 2);
         if (breader->size - breader->offset > 1) {//1 OPCODE
             binary_set_va(&bwriter, "%s\r\n", tmp);
-        }
-        else {
+        } else {
             binary_set_string(&bwriter, tmp, 0);
             break;
         }
@@ -131,8 +130,7 @@ static void _pgpack_data_row(pgpack_ctx *pgpack, binary_ctx *breader) {
         if (row->lens > 0) {
             row->val = breader->data + breader->offset;
             binary_get_skip(breader, row->lens);
-        }
-        else {
+        } else {
             row->val = NULL;
         }
     }

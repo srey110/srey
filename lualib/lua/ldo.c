@@ -112,16 +112,14 @@ l_noret luaD_throw (lua_State *L, int errcode) {
   if (L->errorJmp) {  /* thread has an error handler? */
     L->errorJmp->status = errcode;  /* set status */
     LUAI_THROW(L, L->errorJmp);  /* jump to it */
-  }
-  else {  /* thread has no error handler */
+  } else {  /* thread has no error handler */
     global_State *g = G(L);
     errcode = luaE_resetthread(L, errcode);  /* close all upvalues */
     L->status = errcode;
     if (g->mainthread->errorJmp) {  /* main thread has a handler? */
       setobjs2s(L, g->mainthread->top.p++, L->top.p - 1);  /* copy error obj. */
       luaD_throw(g->mainthread, errcode);  /* re-throw in main thread */
-    }
-    else {  /* no handler at all; abort */
+    } else {  /* no handler at all; abort */
       if (g->panic) {  /* panic function? */
         lua_unlock(L);
         g->panic(L);  /* call panic function (last chance to jump out) */
@@ -256,8 +254,7 @@ int luaD_growstack (lua_State *L, int n, int raiseerror) {
     if (raiseerror)
       luaD_errerr(L);  /* error inside message handler */
     return 0;  /* if not 'raiseerror', just signal it */
-  }
-  else if (n < LUAI_MAXSTACK) {  /* avoids arithmetic overflows */
+  } else if (n < LUAI_MAXSTACK) {  /* avoids arithmetic overflows */
     int newsize = 2 * size;  /* tentative new size */
     int needed = cast_int(L->top.p - L->stack.p) + n;
     if (newsize > LUAI_MAXSTACK)  /* cannot cross the limit */
@@ -312,8 +309,7 @@ void luaD_shrinkstack (lua_State *L) {
   if (inuse <= LUAI_MAXSTACK && stacksize(L) > max) {
     int nsize = (inuse > LUAI_MAXSTACK / 2) ? LUAI_MAXSTACK : inuse * 2;
     luaD_reallocstack(L, nsize, 0);  /* ok if that fails */
-  }
-  else  /* don't change stack */
+  } else  /* don't change stack */
     condmovestack(L,{},{});  /* (change only for debugging) */
   luaE_shrinkCI(L);  /* shrink CI list */
 }
@@ -718,8 +714,7 @@ static void finishCcall (lua_State *L, CallInfo *ci) {
     lua_assert(hastocloseCfunc(ci->nresults));
     n = ci->u2.nres;  /* just redo 'luaD_poscall' */
     /* don't need to reset CIST_CLSRET, as it will be set again anyway */
-  }
-  else {
+  } else {
     int status = LUA_YIELD;  /* default if there were no errors */
     /* must have a continuation and must be able to call it */
     lua_assert(ci->u.c.k != NULL && yieldable(L));
@@ -805,8 +800,7 @@ static void resume (lua_State *L, void *ud) {
       ci->u.l.savedpc--;
       L->top.p = firstArg;  /* discard arguments */
       luaV_execute(L, ci);  /* just continue running Lua code */
-    }
-    else {  /* 'common' yield */
+    } else {  /* 'common' yield */
       if (ci->u.c.k != NULL) {  /* does it have a continuation function? */
         lua_unlock(L);
         n = (*ci->u.c.k)(L, LUA_YIELD, ci->u.c.ctx); /* call continuation */
@@ -848,8 +842,7 @@ LUA_API int lua_resume (lua_State *L, lua_State *from, int nargs,
       return resume_error(L, "cannot resume non-suspended coroutine", nargs);
     else if (L->top.p - (L->ci->func.p + 1) == nargs)  /* no function? */
       return resume_error(L, "cannot resume dead coroutine", nargs);
-  }
-  else if (L->status != LUA_YIELD)  /* ended with errors? */
+  } else if (L->status != LUA_YIELD)  /* ended with errors? */
     return resume_error(L, "cannot resume dead coroutine", nargs);
   L->nCcalls = (from) ? getCcalls(from) : 0;
   if (getCcalls(L) >= LUAI_MAXCCALLS)
@@ -898,8 +891,7 @@ LUA_API int lua_yieldk (lua_State *L, int nresults, lua_KContext ctx,
     lua_assert(!isLuacode(ci));
     api_check(L, nresults == 0, "hooks cannot yield values");
     api_check(L, k == NULL, "hooks cannot continue after yielding");
-  }
-  else {
+  } else {
     if ((ci->u.c.k = k) != NULL)  /* is there a continuation? */
       ci->u.c.ctx = ctx;  /* save context */
     luaD_throw(L, LUA_YIELD);
@@ -1003,8 +995,7 @@ static void f_parser (lua_State *L, void *ud) {
   if (c == LUA_SIGNATURE[0]) {
     checkmode(L, p->mode, "binary");
     cl = luaU_undump(L, p->z, p->name);
-  }
-  else {
+  } else {
     checkmode(L, p->mode, "text");
     cl = luaY_parser(L, p->z, &p->buff, &p->dyd, p->name, c);
   }

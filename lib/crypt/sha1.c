@@ -87,8 +87,7 @@ void sha1_final(sha1_ctx *sha1, char hash[SHA1_BLOCK_SIZE]) {
         while (i < 56) {
             sha1->data[i++] = 0x00;
         }
-    }
-    else {
+    } else {
         sha1->data[i++] = 0x80;
         while (i < 64) {
             sha1->data[i++] = 0x00;

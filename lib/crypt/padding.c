@@ -34,8 +34,7 @@ uint8_t *_padding_key(const char *key, size_t klens, uint8_t *pdkey, size_t reql
         memcpy(pdkey, key, klens);
         ZERO(pdkey + klens, reqlens - klens);
         return pdkey;
-    }
-    else {
+    } else {
         return (uint8_t *)key;
     }
 }

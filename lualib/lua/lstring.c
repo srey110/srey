@@ -93,8 +93,7 @@ void luaS_resize (lua_State *L, int nsize) {
     if (nsize < osize)  /* was it shrinking table? */
       tablerehash(tb->hash, nsize, osize);  /* restore to original size */
     /* leave table as it was */
-  }
-  else {  /* allocation succeeded */
+  } else {  /* allocation succeeded */
     tb->hash = newvect;
     tb->size = nsize;
     if (nsize > osize)

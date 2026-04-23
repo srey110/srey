@@ -135,8 +135,7 @@ static int l_hashfloat (lua_Number n) {
   if (!lua_numbertointeger(n, &ni)) {  /* is 'n' inf/-inf/NaN? */
     lua_assert(luai_numisnan(n) || l_mathop(fabs)(n) == cast_num(HUGE_VAL));
     return 0;
-  }
-  else {  /* normal case */
+  } else {  /* normal case */
     unsigned int u = cast_uint(i) + cast_uint(ni);
     return cast_int(u <= cast_uint(INT_MAX) ? u : ~u);
   }
@@ -415,8 +414,7 @@ static int countint (lua_Integer key, unsigned int *nums) {
   if (k != 0) {  /* is 'key' an appropriate array index? */
     nums[luaO_ceillog2(k)]++;  /* count as such */
     return 1;
-  }
-  else
+  } else
     return 0;
 }
 
@@ -482,8 +480,7 @@ static void setnodevector (lua_State *L, Table *t, unsigned int size) {
     t->node = cast(Node *, dummynode);  /* use common 'dummynode' */
     t->lsizenode = 0;
     t->lastfree = NULL;  /* signal that it is using dummy node */
-  }
-  else {
+  } else {
     int i;
     int lsize = luaO_ceillog2(size);
     if (lsize > MAXHBITS || (1u << lsize) > MAXHSIZE)
@@ -674,8 +671,7 @@ static void luaH_newkey (lua_State *L, Table *t, const TValue *key,
     if (luaV_flttointeger(f, &k, F2Ieq)) {  /* does key fit in an integer? */
       setivalue(&aux, k);
       key = &aux;  /* insert it as an integer */
-    }
-    else if (l_unlikely(luai_numisnan(f)))
+    } else if (l_unlikely(luai_numisnan(f)))
       luaG_runerror(L, "table index is NaN");
   }
   if (ttisnil(value))
@@ -703,8 +699,7 @@ static void luaH_newkey (lua_State *L, Table *t, const TValue *key,
         gnext(mp) = 0;  /* now 'mp' is free */
       }
       setempty(gval(mp));
-    }
-    else {  /* colliding node is in its own main position */
+    } else {  /* colliding node is in its own main position */
       /* new node will go into free position */
       if (gnext(mp) != 0)
         gnext(f) = cast_int((mp + gnext(mp)) - f);  /* chain new position */
@@ -750,8 +745,7 @@ const TValue *luaH_getint (Table *t, lua_Integer key) {
            (((l_castS2U(key) - 1u) & ~(alimit - 1u)) < alimit)) {
     t->alimit = cast_uint(key);  /* probably '#t' is here now */
     return &t->array[key - 1];
-  }
-  else {  /* key is not in the array part; check the hash */
+  } else {  /* key is not in the array part; check the hash */
     Node *n = hashint(t, key);
     for (;;) {  /* check whether 'key' is somewhere in the chain */
       if (keyisinteger(n) && keyival(n) == key)
@@ -848,8 +842,7 @@ void luaH_setint (lua_State *L, Table *t, lua_Integer key, TValue *value) {
     TValue k;
     setivalue(&k, key);
     luaH_newkey(L, t, &k, value);
-  }
-  else
+  } else
     setobj2t(L, cast(TValue *, p), value);
 }
 
@@ -946,8 +939,7 @@ lua_Unsigned luaH_getn (Table *t) {
         setnorealasize(t);  /* now 'alimit' is not the real size */
       }
       return limit - 1;
-    }
-    else {  /* must search for a boundary in [0, limit] */
+    } else {  /* must search for a boundary in [0, limit] */
       unsigned int boundary = binsearch(t->array, 0, limit);
       /* can this boundary represent the real size of the array? */
       if (ispow2realasize(t) && boundary > luaH_realasize(t) / 2) {

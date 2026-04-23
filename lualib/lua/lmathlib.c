@@ -31,8 +31,7 @@ static int math_abs (lua_State *L) {
     lua_Integer n = lua_tointeger(L, 1);
     if (n < 0) n = (lua_Integer)(0u - (lua_Unsigned)n);
     lua_pushinteger(L, n);
-  }
-  else
+  } else
     lua_pushnumber(L, l_mathop(fabs)(luaL_checknumber(L, 1)));
   return 1;
 }
@@ -120,11 +119,9 @@ static int math_fmod (lua_State *L) {
     if ((lua_Unsigned)d + 1u <= 1u) {  /* special cases: -1 or 0 */
       luaL_argcheck(L, d != 0, 2, "zero");
       lua_pushinteger(L, 0);  /* avoid overflow with 0x80000... / -1 */
-    }
-    else
+    } else
       lua_pushinteger(L, lua_tointeger(L, 1) % d);
-  }
-  else
+  } else
     lua_pushnumber(L, l_mathop(fmod)(luaL_checknumber(L, 1),
                                      luaL_checknumber(L, 2)));
   return 1;
@@ -140,8 +137,7 @@ static int math_modf (lua_State *L) {
   if (lua_isinteger(L ,1)) {
     lua_settop(L, 1);  /* number is its own integer part */
     lua_pushnumber(L, 0);  /* no fractional part */
-  }
-  else {
+  } else {
     lua_Number n = luaL_checknumber(L, 1);
     /* integer part (rounds toward zero) */
     lua_Number ip = (n < 0) ? l_mathop(ceil)(n) : l_mathop(floor)(n);
@@ -636,8 +632,7 @@ static int math_randomseed (lua_State *L) {
   RanState *state = (RanState *)lua_touserdata(L, lua_upvalueindex(1));
   if (lua_isnone(L, 1)) {
     randseed(L, state);
-  }
-  else {
+  } else {
     lua_Integer n1 = luaL_checkinteger(L, 1);
     lua_Integer n2 = luaL_optinteger(L, 2, 0);
     setseed(L, state->s, n1, n2);

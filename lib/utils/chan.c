@@ -21,8 +21,7 @@ chan_ctx *chan_init(uint32_t capacity) {
     if (capacity > 0) {
         chan->buffered = 1;
         qu_buf_init(&chan->qudata, capacity);
-    }
-    else {
+    } else {
         chan->buffered = 0;
         mutex_init(&chan->r_mu);
         mutex_init(&chan->w_mu);
@@ -38,8 +37,7 @@ chan_ctx *chan_init(uint32_t capacity) {
 void chan_free(chan_ctx *chan) {
     if (chan->buffered) {
         qu_buf_free(&chan->qudata);
-    }
-    else {
+    } else {
         mutex_free(&chan->r_mu);
         mutex_free(&chan->w_mu);
     }
@@ -161,8 +159,7 @@ int32_t chan_send(chan_ctx *chan, void *data, size_t lens, int32_t copy) {
         memcpy(msg, data, lens);
         msg[lens] = '\0';
         buf.data = msg;
-    }
-    else {
+    } else {
         buf.data = data;
     }
     int32_t rtn = chan->buffered ? _buffered_chan_send(chan, &buf) : _unbuffered_chan_send(chan, &buf);

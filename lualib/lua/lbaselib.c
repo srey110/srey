@@ -83,8 +83,7 @@ static int luaB_tonumber (lua_State *L) {
     if (lua_type(L, 1) == LUA_TNUMBER) {  /* already a number? */
       lua_settop(L, 1);  /* yes; return it */
       return 1;
-    }
-    else {
+    } else {
       size_t l;
       const char *s = lua_tolstring(L, 1, &l);
       if (s != NULL && lua_stringtonumber(L, s) == l + 1)
@@ -92,8 +91,7 @@ static int luaB_tonumber (lua_State *L) {
       /* else not a number */
       luaL_checkany(L, 1);  /* (but there must be some parameter) */
     }
-  }
-  else {
+  } else {
     size_t l;
     const char *s;
     lua_Integer n = 0;  /* to avoid warnings */
@@ -287,8 +285,7 @@ static int luaB_pairs (lua_State *L) {
     lua_pushcfunction(L, luaB_next);  /* will return generator, */
     lua_pushvalue(L, 1);  /* state, */
     lua_pushnil(L);  /* and initial value */
-  }
-  else {
+  } else {
     lua_pushvalue(L, 1);  /* argument 'self' to metamethod */
     lua_callk(L, 1, 3, 0, pairscont);  /* get 3 values from metamethod */
   }
@@ -328,8 +325,7 @@ static int load_aux (lua_State *L, int status, int envidx) {
         lua_pop(L, 1);  /* remove 'env' if not used by previous call */
     }
     return 1;
-  }
-  else {  /* error (message is on top of the stack) */
+  } else {  /* error (message is on top of the stack) */
     luaL_pushfail(L);
     lua_insert(L, -2);  /* put before error message */
     return 2;  /* return fail plus error message */
@@ -376,8 +372,7 @@ static const char *generic_reader (lua_State *L, void *ud, size_t *size) {
     lua_pop(L, 1);  /* pop result */
     *size = 0;
     return NULL;
-  }
-  else if (l_unlikely(!lua_isstring(L, -1)))
+  } else if (l_unlikely(!lua_isstring(L, -1)))
     luaL_error(L, "reader function must return a string");
   lua_replace(L, RESERVEDSLOT);  /* save string in reserved slot */
   return lua_tolstring(L, RESERVEDSLOT, size);
@@ -393,8 +388,7 @@ static int luaB_load (lua_State *L) {
   if (s != NULL) {  /* loading a string? */
     const char *chunkname = luaL_optstring(L, 2, s);
     status = luaL_loadbufferx(L, s, l, chunkname, mode);
-  }
-  else {  /* loading from a reader function */
+  } else {  /* loading from a reader function */
     const char *chunkname = luaL_optstring(L, 2, "=(load)");
     luaL_checktype(L, 1, LUA_TFUNCTION);
     lua_settop(L, RESERVEDSLOT);  /* create reserved slot */
@@ -440,8 +434,7 @@ static int luaB_select (lua_State *L) {
   if (lua_type(L, 1) == LUA_TSTRING && *lua_tostring(L, 1) == '#') {
     lua_pushinteger(L, n-1);
     return 1;
-  }
-  else {
+  } else {
     lua_Integer i = luaL_checkinteger(L, 1);
     if (i < 0) i = n + i;
     else if (i > n) i = n;
@@ -463,8 +456,7 @@ static int finishpcall (lua_State *L, int status, lua_KContext extra) {
     lua_pushboolean(L, 0);  /* first result (false) */
     lua_pushvalue(L, -2);  /* error message */
     return 2;  /* return false, msg */
-  }
-  else
+  } else
     return lua_gettop(L) - (int)extra;  /* return all results */
 }
 

@@ -126,8 +126,7 @@ static void _loop_event(void *arg) {
                 nevent *= 2;
                 MALLOC(overlappeds, sizeof(OVERLAPPED_ENTRY) * nevent);
             }
-        }
-        else if (WAIT_TIMEOUT != (err = ERRNO)) {
+        } else if (WAIT_TIMEOUT != (err = ERRNO)) {
             LOG_ERROR("%s", ERRORSTR(err));
         }
         _pool_shrink(watcher, &timer, &shrink_cnt);
@@ -166,8 +165,7 @@ static void _loop_acpex(void *arg) {
                 nevent *= 2;
                 MALLOC(overlappeds, sizeof(OVERLAPPED_ENTRY) * nevent);
             }
-        }
-        else if (WAIT_TIMEOUT != (err = ERRNO)) {
+        } else if (WAIT_TIMEOUT != (err = ERRNO)) {
             LOG_ERROR("%s", ERRORSTR(err));
         }
     }
@@ -195,8 +193,7 @@ static void _loop_event(void *arg) {
         if (NULL != overlap) {
             sock = UPCAST(overlap, sock_ctx, overlapped);
             sock->ev_cb(watcher, sock, bytes);
-        }
-        else if (WAIT_TIMEOUT != (err = ERRNO)) {
+        } else if (WAIT_TIMEOUT != (err = ERRNO)) {
             LOG_ERROR("%s", ERRORSTR(err));
         }
         _pool_shrink(watcher, &timer, &shrink_cnt);
@@ -219,8 +216,7 @@ static void _loop_acpex(void *arg) {
         if (NULL != overlap) {
             sock = UPCAST(overlap, sock_ctx, overlapped);
             sock->ev_cb(acpex, sock, bytes);
-        }
-        else if (WAIT_TIMEOUT != (err = ERRNO)) {
+        } else if (WAIT_TIMEOUT != (err = ERRNO)) {
             LOG_ERROR("%s", ERRORSTR(err));
         }
     }
@@ -231,8 +227,7 @@ static void _free_element(void *item) {
     sock_ctx *sock = *((sock_ctx **)item);
     if (SOCK_STREAM == sock->type) {
         _free_sk(sock);
-    }
-    else {
+    } else {
         _free_udp(sock);
     }
 }
@@ -310,8 +305,7 @@ static void _free_cmd(watcher_ctx *watcher) {
                 skctx = (sock_ctx *)cmd->arg;
                 if (SOCK_STREAM == skctx->type) {
                     _free_sk(skctx);
-                }
-                else {
+                } else {
                     _free_udp(skctx);
                 }
                 break;

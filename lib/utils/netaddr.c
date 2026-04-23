@@ -22,8 +22,7 @@ int32_t netaddr_set(netaddr_ctx *ctx, const char *ip, const uint16_t port) {
             return ERR_FAILED;
         }
         ctx->ipv4.sin_port = htons(port);
-    }
-    else {
+    } else {
         ctx->addr.sa_family = AF_INET6;
         if (1 != inet_pton(AF_INET6, ip, &ctx->ipv6.sin6_addr.s6_addr)) {
             return ERR_FAILED;
@@ -60,8 +59,7 @@ int32_t netaddr_ip(netaddr_ctx *ctx, char ip[IP_LENS]) {
         if (NULL == inet_ntop(AF_INET, &ctx->ipv4.sin_addr, ip, IP_LENS)) {
             return ERR_FAILED;
         }
-    }
-    else {
+    } else {
         if (NULL == inet_ntop(AF_INET6, &ctx->ipv6.sin6_addr, ip, IP_LENS)) {
             return ERR_FAILED;
         }

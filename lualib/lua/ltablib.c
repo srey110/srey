@@ -51,8 +51,7 @@ static void checktab (lua_State *L, int arg, int what) {
         (!(what & TAB_W) || checkfield(L, "__newindex", ++n)) &&
         (!(what & TAB_L) || checkfield(L, "__len", ++n))) {
       lua_pop(L, n);  /* pop metatable and tested metamethods */
-    }
-    else
+    } else
       luaL_checktype(L, arg, LUA_TTABLE);  /* force an error */
   }
 }
@@ -131,8 +130,7 @@ static int tmove (lua_State *L) {
         lua_geti(L, 1, f + i);
         lua_seti(L, tt, t + i);
       }
-    }
-    else {
+    } else {
       for (i = n - 1; i >= 0; i--) {
         lua_geti(L, 1, f + i);
         lua_seti(L, tt, t + i);
@@ -384,8 +382,7 @@ static void auxsort (lua_State *L, IdxT lo, IdxT up,
       auxsort(L, lo, p - 1, rnd);  /* call recursively for lower interval */
       n = p - lo;  /* size of smaller interval */
       lo = p + 1;  /* tail call for [p + 1 .. up] (upper interval) */
-    }
-    else {
+    } else {
       auxsort(L, p + 1, up, rnd);  /* call recursively for upper interval */
       n = up - p;  /* size of smaller interval */
       up = p - 1;  /* tail call for [lo .. p - 1]  (lower interval) */

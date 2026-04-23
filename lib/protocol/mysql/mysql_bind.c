@@ -40,8 +40,7 @@ static void _mysql_bind_type_name(mysql_bind_ctx *mbind, mysql_field_types type,
     binary_set_integer(&mbind->type_name, type, 2, 1);
     if (NULL == name) {
         _mysql_set_lenenc(&mbind->type_name, 0);
-    }
-    else {
+    } else {
         size_t lens = strlen(name);
         _mysql_set_lenenc(&mbind->type_name, lens);
         if (lens > 0) {
@@ -56,8 +55,7 @@ void mysql_bind_nil(mysql_bind_ctx *mbind, const char *name) {
 void mysql_bind_string(mysql_bind_ctx *mbind, const char *name, char *value, size_t lens) {
     if (NULL == value) {
         mysql_bind_nil(mbind, name);
-    }
-    else {
+    } else {
         _mysql_bind_bitmap(mbind, 0);
         _mysql_bind_type_name(mbind, MYSQL_TYPE_STRING, name, 0);
         _mysql_set_lenenc(&mbind->value, lens);

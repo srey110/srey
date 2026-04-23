@@ -46,8 +46,7 @@ static void _show_print(mysql_reader_ctx *reader) {
     i32 = (int32_t)mysql_reader_integer(reader, "t_int32", &err);
     if (1 == err) {
         printf("nil   ");
-    }
-    else {
+    } else {
         printf("%d   ", i32);
     }
     ui64 = mysql_reader_uinteger(reader, "t_int64", &err);

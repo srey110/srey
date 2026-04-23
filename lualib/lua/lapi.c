@@ -64,13 +64,11 @@ static TValue *index2value (lua_State *L, int idx) {
     api_check(L, idx <= ci->top.p - (ci->func.p + 1), "unacceptable index");
     if (o >= L->top.p) return &G(L)->nilvalue;
     else return s2v(o);
-  }
-  else if (!ispseudo(idx)) {  /* negative index */
+  } else if (!ispseudo(idx)) {  /* negative index */
     api_check(L, idx != 0 && -idx <= L->top.p - (ci->func.p + 1),
                  "invalid index");
     return s2v(L->top.p + idx);
-  }
-  else if (idx == LUA_REGISTRYINDEX)
+  } else if (idx == LUA_REGISTRYINDEX)
     return &G(L)->l_registry;
   else {  /* upvalues */
     idx = LUA_REGISTRYINDEX - idx;
@@ -79,8 +77,7 @@ static TValue *index2value (lua_State *L, int idx) {
       CClosure *func = clCvalue(s2v(ci->func.p));
       return (idx <= func->nupvalues) ? &func->upvalue[idx-1]
                                       : &G(L)->nilvalue;
-    }
-    else {  /* light C function or Lua function (through a hook)?) */
+    } else {  /* light C function or Lua function (through a hook)?) */
       api_check(L, ttislcf(s2v(ci->func.p)), "caller not a C function");
       return &G(L)->nilvalue;  /* no upvalues */
     }
@@ -98,8 +95,7 @@ l_sinline StkId index2stack (lua_State *L, int idx) {
     StkId o = ci->func.p + idx;
     api_check(L, o < L->top.p, "invalid index");
     return o;
-  }
-  else {    /* non-positive index */
+  } else {    /* non-positive index */
     api_check(L, idx != 0 && -idx <= L->top.p - (ci->func.p + 1),
                  "invalid index");
     api_check(L, !ispseudo(idx), "invalid index");
@@ -190,8 +186,7 @@ LUA_API void lua_settop (lua_State *L, int idx) {
     diff = ((func + 1) + idx) - L->top.p;
     for (; diff > 0; diff--)
       setnilvalue(s2v(L->top.p++));  /* clear new slots */
-  }
-  else {
+  } else {
     api_check(L, -(idx+1) <= (L->top.p - (func + 1)), "invalid new top");
     diff = idx + 1;  /* will "subtract" index (as it is negative) */
   }
@@ -581,8 +576,7 @@ LUA_API void lua_pushcclosure (lua_State *L, lua_CFunction fn, int n) {
   if (n == 0) {
     setfvalue(s2v(L->top.p), fn);
     api_incr_top(L);
-  }
-  else {
+  } else {
     CClosure *cl;
     api_checknelems(L, n);
     api_check(L, n <= MAXUPVAL, "upvalue index too large");
@@ -642,8 +636,7 @@ l_sinline int auxgetstr (lua_State *L, const TValue *t, const char *k) {
   if (luaV_fastget(L, t, str, slot, luaH_getstr)) {
     setobj2s(L, L->top.p, slot);
     api_incr_top(L);
-  }
-  else {
+  } else {
     setsvalue2s(L, L->top.p, str);
     api_incr_top(L);
     luaV_finishget(L, t, s2v(L->top.p - 1), L->top.p - 1, slot);
@@ -678,8 +671,7 @@ LUA_API int lua_gettable (lua_State *L, int idx) {
   t = index2value(L, idx);
   if (luaV_fastget(L, t, s2v(L->top.p - 1), slot, luaH_get)) {
     setobj2s(L, L->top.p - 1, slot);
-  }
-  else
+  } else
     luaV_finishget(L, t, s2v(L->top.p - 1), L->top.p - 1, slot);
   lua_unlock(L);
   return ttype(s2v(L->top.p - 1));
@@ -699,8 +691,7 @@ LUA_API int lua_geti (lua_State *L, int idx, lua_Integer n) {
   t = index2value(L, idx);
   if (luaV_fastgeti(L, t, n, slot)) {
     setobj2s(L, L->top.p, slot);
-  }
-  else {
+  } else {
     TValue aux;
     setivalue(&aux, n);
     luaV_finishget(L, t, &aux, L->top.p, slot);
@@ -808,8 +799,7 @@ LUA_API int lua_getiuservalue (lua_State *L, int idx, int n) {
   if (n <= 0 || n > uvalue(o)->nuvalue) {
     setnilvalue(s2v(L->top.p));
     t = LUA_TNONE;
-  }
-  else {
+  } else {
     setobj2s(L, L->top.p, &uvalue(o)->uv[n - 1].uv);
     t = ttype(s2v(L->top.p));
   }
@@ -833,8 +823,7 @@ static void auxsetstr (lua_State *L, const TValue *t, const char *k) {
   if (luaV_fastget(L, t, str, slot, luaH_getstr)) {
     luaV_finishfastset(L, t, slot, s2v(L->top.p - 1));
     L->top.p--;  /* pop value */
-  }
-  else {
+  } else {
     setsvalue2s(L, L->top.p, str);  /* push 'str' (to make it a TValue) */
     api_incr_top(L);
     luaV_finishset(L, t, s2v(L->top.p - 1), s2v(L->top.p - 2), slot);
@@ -860,8 +849,7 @@ LUA_API void lua_settable (lua_State *L, int idx) {
   t = index2value(L, idx);
   if (luaV_fastget(L, t, s2v(L->top.p - 2), slot, luaH_get)) {
     luaV_finishfastset(L, t, slot, s2v(L->top.p - 1));
-  }
-  else
+  } else
     luaV_finishset(L, t, s2v(L->top.p - 2), s2v(L->top.p - 1), slot);
   L->top.p -= 2;  /* pop index and value */
   lua_unlock(L);
@@ -882,8 +870,7 @@ LUA_API void lua_seti (lua_State *L, int idx, lua_Integer n) {
   t = index2value(L, idx);
   if (luaV_fastgeti(L, t, n, slot)) {
     luaV_finishfastset(L, t, slot, s2v(L->top.p - 1));
-  }
-  else {
+  } else {
     TValue aux;
     setivalue(&aux, n);
     luaV_finishset(L, t, &aux, s2v(L->top.p - 1), slot);
@@ -1015,8 +1002,7 @@ LUA_API void lua_callk (lua_State *L, int nargs, int nresults,
     L->ci->u.c.k = k;  /* save continuation */
     L->ci->u.c.ctx = ctx;  /* save context */
     luaD_call(L, func, nresults);  /* do the call */
-  }
-  else  /* no continuation or no yieldable */
+  } else  /* no continuation or no yieldable */
     luaD_callnoyield(L, func, nresults);  /* just do the call */
   adjustresults(L, nresults);
   lua_unlock(L);
@@ -1062,8 +1048,7 @@ LUA_API int lua_pcallk (lua_State *L, int nargs, int nresults, int errfunc,
   if (k == NULL || !yieldable(L)) {  /* no continuation or no yieldable? */
     c.nresults = nresults;  /* do a 'conventional' protected call */
     status = luaD_pcall(L, f_call, &c, savestack(L, c.func), func);
-  }
-  else {  /* prepare continuation (call is already protected by 'resume') */
+  } else {  /* prepare continuation (call is already protected by 'resume') */
     CallInfo *ci = L->ci;
     ci->u.c.k = k;  /* save continuation */
     ci->u.c.ctx = ctx;  /* save context */
@@ -1169,8 +1154,7 @@ LUA_API int lua_gc (lua_State *L, int what, ...) {
       if (data == 0) {
         luaE_setdebt(g, 0);  /* do a basic step */
         luaC_step(L);
-      }
-      else {  /* add 'data' to total debt */
+      } else {  /* add 'data' to total debt */
         debt = cast(l_mem, data) * 1024 + g->GCdebt;
         luaE_setdebt(g, debt);
         luaC_checkGC(L);
@@ -1259,8 +1243,7 @@ LUA_API int lua_next (lua_State *L, int idx) {
   more = luaH_next(L, t, L->top.p - 1);
   if (more) {
     api_incr_top(L);
-  }
-  else  /* no more elements */
+  } else  /* no more elements */
     L->top.p -= 1;  /* remove key */
   lua_unlock(L);
   return more;

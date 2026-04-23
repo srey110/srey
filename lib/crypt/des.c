@@ -179,14 +179,12 @@ void des_init(des_ctx *des, const char *key, size_t klens, int32_t des3, int32_t
             _key_setup(k, encrypt, des->schedule);
             _key_setup(k + 8, !encrypt, des->schedule + 16 * 6);
             _key_setup(k + 16, encrypt, des->schedule + 2 * 16 * 6);
-        }
-        else {
+        } else {
             _key_setup(k + 16, encrypt, des->schedule);
             _key_setup(k + 8, !encrypt, des->schedule + 16 * 6);
             _key_setup(k, encrypt, des->schedule + 2 * 16 * 6);
         }
-    }
-    else {
+    } else {
         uint8_t pdkey[8];
         uint8_t *k = _padding_key(key, klens, pdkey, 8);
         _key_setup(k, encrypt, des->schedule);
@@ -208,8 +206,7 @@ char *des_crypt(des_ctx *des, const void *data) {
         _crypt(des->schedule, (const uint8_t *)data, des->output);
         _crypt(des->schedule + 16 * 6, des->output, des->output);
         _crypt(des->schedule + 2 * 16 * 6, des->output, des->output);
-    }
-    else {
+    } else {
         _crypt(des->schedule, (const uint8_t *)data, des->output);
     }
     return (char *)des->output;

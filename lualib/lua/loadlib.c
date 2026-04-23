@@ -388,8 +388,7 @@ static int lookforfunc (lua_State *L, const char *path, const char *sym) {
   if (*sym == '*') {  /* loading only library (no function)? */
     lua_pushboolean(L, 1);  /* return 'true' */
     return 0;  /* no errors */
-  }
-  else {
+  } else {
     lua_CFunction f = lsys_sym(L, reg, sym);
     if (f == NULL)
       return ERRFUNC;  /* unable to find function */
@@ -526,8 +525,7 @@ static int checkload (lua_State *L, int stat, const char *filename) {
   if (l_likely(stat)) {  /* module loaded successfully? */
     lua_pushstring(L, filename);  /* will be 2nd argument to module */
     return 2;  /* return open function and file name */
-  }
-  else
+  } else
     return luaL_error(L, "error loading module '%s' from file '%s':\n\t%s",
                           lua_tostring(L, 1), filename, lua_tostring(L, -1));
 }
@@ -604,8 +602,7 @@ static int searcher_preload (lua_State *L) {
   if (lua_getfield(L, -1, name) == LUA_TNIL) {  /* not found? */
     lua_pushfstring(L, "no field package.preload['%s']", name);
     return 1;
-  }
-  else {
+  } else {
     lua_pushliteral(L, ":preload:");
     return 2;
   }
@@ -636,8 +633,7 @@ static void findloader (lua_State *L, const char *name) {
     else if (lua_isstring(L, -2)) {  /* searcher returned error message? */
       lua_pop(L, 1);  /* remove extra return */
       luaL_addvalue(&msg);  /* concatenate error message */
-    }
-    else {  /* no error message */
+    } else {  /* no error message */
       lua_pop(L, 2);  /* remove both returns */
       luaL_buffsub(&msg, 2);  /* remove prefix */
     }

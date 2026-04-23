@@ -28,8 +28,7 @@ static BOOL _GetImpersonationToken(HANDLE *handle) {
                 handle)) {
                 return FALSE;
             }
-        }
-        else {
+        } else {
             return FALSE;
         }
     }
@@ -82,8 +81,7 @@ static LONG __stdcall _MiniDump(struct _EXCEPTION_POINTERS *excep) {
         NULL);
     if (bok) {
         lrtn = EXCEPTION_EXECUTE_HANDLER;
-    }
-    else {
+    } else {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
     }
     if (bprienabled) {
@@ -883,8 +881,7 @@ static int32_t _get_procpath(char path[PATH_LENS]) {
         memcpy(path + (cur - path), cur + 2, len);
         len = cur - path + len;
         path[len] = 0;
-    }
-    else {
+    } else {
         len = strlen(path);
         if ('.' == path[len - 1]
             && PATH_SEPARATOR == path[len - 2]) {
@@ -1013,8 +1010,7 @@ void fill_timespec(struct timespec *timeout, uint32_t ms) {
     if (ms >= 1000) {
         timeout->tv_sec = ms / 1000;
         timeout->tv_nsec = (long)(ms - timeout->tv_sec * 1000) * (1000 * 1000);
-    }
-    else {
+    } else {
         timeout->tv_sec = 0;
         timeout->tv_nsec = ms * (1000 * 1000);
     }
@@ -1050,12 +1046,10 @@ int32_t _memicmp(const void *ptr1, const void *ptr2, size_t lens) {
     }
     if (i == (int32_t)lens) {
         return 0;
-    }
-    else {
+    } else {
         if (*buf1 > *buf2) {
             return 1;
-        }
-        else {
+        } else {
             return -1;
         }
     }
@@ -1074,8 +1068,7 @@ void *memstr(int32_t ncs, const void *ptr, size_t plens, const void *what, size_
     if (0 == ncs) {
         chr = memchr;
         cmp = memcmp;
-    }
-    else {
+    } else {
         chr = memichr;
         cmp = _memicmp;
     }
@@ -1239,8 +1232,7 @@ buf_ctx *split(const void *ptr, size_t plens, const void *sep, size_t seplens, s
             if (size > 0) {
                 buf[*n].data = (void *)cur;
                 buf[*n].lens = size;
-            }
-            else {
+            } else {
                 buf[*n].data = NULL;
                 buf[*n].lens = 0;
             }
@@ -1257,8 +1249,7 @@ buf_ctx *split(const void *ptr, size_t plens, const void *sep, size_t seplens, s
                 buf[*n].lens = 0;
                 (*n)++;
             }
-        }
-        else {
+        } else {
             buf[*n].data = (void *)cur;
             buf[*n].lens = plens;
             (*n)++;
@@ -1339,8 +1330,7 @@ int64_t unpack_integer(const char *buf, int32_t size, int32_t islittle, int32_t 
 static void _copy_with_endian(char *dest, const char *src, size_t size, int32_t islittle) {
     if (islittle == is_little()) {
         memcpy(dest, src, size);
-    }
-    else {
+    } else {
         dest += size - 1;
         while (0 != size--) {
             *(dest--) = *(src++);

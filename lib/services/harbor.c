@@ -23,8 +23,7 @@ static void _harbor_response(task_ctx *harbor, SOCKET fd, uint64_t skid, char *r
         && lens > 0) {
         http_pack_head(&bwriter, "Content-Type", "application/octet-stream");
         http_pack_content(&bwriter, respdata, lens);
-    }
-    else {
+    } else {
         http_pack_head(&bwriter, "Content-Type", "text/plain");
         const char *erro = http_code_status(code);
         http_pack_content(&bwriter, (void *)erro, strlen(erro));
@@ -121,8 +120,7 @@ static void _harbor_net_recv(task_ctx *harbor, SOCKET fd, uint64_t skid, uint8_t
         task_call(to, type, reqdata, lens, 1);
         task_ungrab(to);
         _harbor_response(harbor, fd, skid, NULL, 0, 200);
-    }
-    else if (buf_icompare(&url.path, "request", strlen("request"))) {
+    } else if (buf_icompare(&url.path, "request", strlen("request"))) {
         task_ctx *to = task_grab(harbor->loader, dst);
         if (NULL == to) {
             _harbor_response(harbor, fd, skid, NULL, 0, 404);
@@ -133,12 +131,10 @@ static void _harbor_net_recv(task_ctx *harbor, SOCKET fd, uint64_t skid, uint8_t
         task_ungrab(to);
         if (ERR_OK != err) {
             _harbor_response(harbor, fd, skid, rtn, lens, 400);
-        }
-        else {
+        } else {
             _harbor_response(harbor, fd, skid, rtn, lens, 200);
         }
-    }
-    else {
+    } else {
         ev_close(&harbor->loader->netev, fd, skid);
     }
 }
@@ -207,8 +203,7 @@ void *harbor_pack(name_t task, int32_t call, uint8_t reqtype, const char *key, v
     char url[512];
     if (0 != call) {
         SNPRINTF(url, sizeof(url), "/call?dst=%d&type=%d", task, reqtype);
-    }
-    else {
+    } else {
         SNPRINTF(url, sizeof(url), "/request?dst=%d&type=%d", task, reqtype);
     }
     binary_ctx bwriter;

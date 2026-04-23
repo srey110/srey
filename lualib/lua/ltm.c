@@ -63,8 +63,7 @@ const TValue *luaT_gettm (Table *events, TMS event, TString *ename) {
   if (notm(tm)) {  /* no tag method? */
     events->flags |= cast_byte(1u<<event);  /* cache this fact */
     return NULL;
-  }
-  else return tm;
+  } else return tm;
 }
 
 
@@ -223,13 +222,11 @@ int luaT_callorderiTM (lua_State *L, const TValue *p1, int v2,
   TValue aux; const TValue *p2;
   if (isfloat) {
     setfltvalue(&aux, cast_num(v2));
-  }
-  else
+  } else
     setivalue(&aux, v2);
   if (flip) {  /* arguments were exchanged? */
     p2 = p1; p1 = &aux;  /* correct them */
-  }
-  else
+  } else
     p2 = &aux;
   return luaT_callorderTM(L, p1, p2, event);
 }

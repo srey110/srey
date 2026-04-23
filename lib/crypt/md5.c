@@ -120,8 +120,7 @@ void md5_final(md5_ctx *md5, char hash[MD5_BLOCK_SIZE]) {
         while (i < 56) {
             md5->data[i++] = 0x00;
         }
-    }
-    else if (md5->datalen >= 56) {
+    } else if (md5->datalen >= 56) {
         md5->data[i++] = 0x80;
         while (i < 64) {
             md5->data[i++] = 0x00;

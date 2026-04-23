@@ -96,28 +96,24 @@ int luaO_rawarith (lua_State *L, int op, const TValue *p1, const TValue *p2,
       if (tointegerns(p1, &i1) && tointegerns(p2, &i2)) {
         setivalue(res, intarith(L, op, i1, i2));
         return 1;
-      }
-      else return 0;  /* fail */
+      } else return 0;  /* fail */
     }
     case LUA_OPDIV: case LUA_OPPOW: {  /* operate only on floats */
       lua_Number n1; lua_Number n2;
       if (tonumberns(p1, n1) && tonumberns(p2, n2)) {
         setfltvalue(res, numarith(L, op, n1, n2));
         return 1;
-      }
-      else return 0;  /* fail */
+      } else return 0;  /* fail */
     }
     default: {  /* other operations */
       lua_Number n1; lua_Number n2;
       if (ttisinteger(p1) && ttisinteger(p2)) {
         setivalue(res, intarith(L, op, ivalue(p1), ivalue(p2)));
         return 1;
-      }
-      else if (tonumberns(p1, n1) && tonumberns(p2, n2)) {
+      } else if (tonumberns(p1, n1) && tonumberns(p2, n2)) {
         setfltvalue(res, numarith(L, op, n1, n2));
         return 1;
-      }
-      else return 0;  /* fail */
+      } else return 0;  /* fail */
     }
   }
 }
@@ -139,8 +135,7 @@ int luaO_hexavalue (int c) {
 
 
 static int isneg (const char **s) {
-  if (**s == '-') { (*s)++; return 1; }
-  else if (**s == '+') (*s)++;
+  if (**s == '-') { (*s)++; return 1; } else if (**s == '+') (*s)++;
   return 0;
 }
 
@@ -179,16 +174,14 @@ static lua_Number lua_strx2number (const char *s, char **endptr) {
     if (*s == dot) {
       if (hasdot) break;  /* second dot? stop loop */
       else hasdot = 1;
-    }
-    else if (lisxdigit(cast_uchar(*s))) {
+    } else if (lisxdigit(cast_uchar(*s))) {
       if (sigdig == 0 && *s == '0')  /* non-significant digit (zero)? */
         nosigdig++;
       else if (++sigdig <= MAXSIGDIG)  /* can read it without overflow? */
           r = (r * l_mathop(16.0)) + luaO_hexavalue(*s);
       else e++; /* too many digits; ignore, but still count for exponent */
       if (hasdot) e--;  /* decimal digit? correct exponent */
-    }
-    else break;  /* neither a dot nor a digit */
+    } else break;  /* neither a dot nor a digit */
   }
   if (nosigdig + sigdig == 0)  /* no digits? */
     return l_mathop(0.0);  /* invalid format */
@@ -286,8 +279,7 @@ static const char *l_str2int (const char *s, lua_Integer *result) {
       a = a * 16 + luaO_hexavalue(*s);
       empty = 0;
     }
-  }
-  else {  /* decimal */
+  } else {  /* decimal */
     for (; lisdigit(cast_uchar(*s)); s++) {
       int d = *s - '0';
       if (a >= MAXBY10 && (a > MAXBY10 || d > MAXLASTD + neg))  /* overflow? */
@@ -310,11 +302,9 @@ size_t luaO_str2num (const char *s, TValue *o) {
   const char *e;
   if ((e = l_str2int(s, &i)) != NULL) {  /* try as an integer */
     setivalue(o, i);
-  }
-  else if ((e = l_str2d(s, &n)) != NULL) {  /* else try as a float */
+  } else if ((e = l_str2d(s, &n)) != NULL) {  /* else try as a float */
     setfltvalue(o, n);
-  }
-  else
+  } else
     return 0;  /* conversion failed */
   return (e - s) + 1;  /* success; return string size */
 }
@@ -455,8 +445,7 @@ static void addstr2buff (BuffFS *buff, const char *str, size_t slen) {
     char *bf = getbuff(buff, cast_int(slen));
     memcpy(bf, str, slen);  /* add string to buffer */
     addsize(buff, cast_int(slen));
-  }
-  else {  /* string larger than buffer */
+  } else {  /* string larger than buffer */
     clearbuff(buff);  /* string comes after buffer's content */
     pushstr(buff, str, slen);  /* push string */
   }
@@ -573,8 +562,7 @@ void luaO_chunkid (char *out, const char *source, size_t srclen) {
       addstr(out, source + 1, bufflen - 1);
       *out = '\0';
     }
-  }
-  else if (*source == '@') {  /* file name */
+  } else if (*source == '@') {  /* file name */
     if (srclen <= bufflen)  /* small enough? */
       memcpy(out, source + 1, srclen * sizeof(char));
     else {  /* add '...' before rest of name */
@@ -582,15 +570,13 @@ void luaO_chunkid (char *out, const char *source, size_t srclen) {
       bufflen -= LL(RETS);
       memcpy(out, source + 1 + srclen - bufflen, bufflen * sizeof(char));
     }
-  }
-  else {  /* string; format as [string "source"] */
+  } else {  /* string; format as [string "source"] */
     const char *nl = strchr(source, '\n');  /* find first new line (if any) */
     addstr(out, PRE, LL(PRE));  /* add prefix */
     bufflen -= LL(PRE RETS POS) + 1;  /* save space for prefix+suffix+'\0' */
     if (srclen < bufflen && nl == NULL) {  /* small one-line source? */
       addstr(out, source, srclen);  /* keep it */
-    }
-    else {
+    } else {
       if (nl != NULL) srclen = nl - source;  /* stop at first newline */
       if (srclen > bufflen) srclen = bufflen;
       addstr(out, source, srclen);

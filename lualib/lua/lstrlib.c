@@ -265,8 +265,7 @@ static int tonum (lua_State *L, int arg) {
   if (lua_type(L, arg) == LUA_TNUMBER) {  /* already a number? */
     lua_pushvalue(L, arg);
     return 1;
-  }
-  else {  /* check whether it is a numerical string */
+  } else {  /* check whether it is a numerical string */
     size_t len;
     const char *s = lua_tolstring(L, arg, &len);
     return (s != NULL && lua_stringtonumber(L, s) == len + 1);
@@ -455,13 +454,11 @@ static int matchbracketclass (int c, const char *p, const char *ec) {
       p++;
       if (match_class(c, uchar(*p)))
         return sig;
-    }
-    else if ((*(p+1) == '-') && (p+2 < ec)) {
+    } else if ((*(p+1) == '-') && (p+2 < ec)) {
       p+=2;
       if (uchar(*(p-2)) <= c && c <= uchar(*p))
         return sig;
-    }
-    else if (uchar(*p) == c) return sig;
+    } else if (uchar(*p) == c) return sig;
   }
   return !sig;
 }
@@ -495,8 +492,7 @@ static const char *matchbalance (MatchState *ms, const char *s,
     while (++s < ms->src_end) {
       if (*s == e) {
         if (--cont == 0) return s+1;
-      }
-      else if (*s == b) cont++;
+      } else if (*s == b) cont++;
     }
   }
   return NULL;  /* string ends out of balance */
@@ -632,11 +628,9 @@ static const char *match (MatchState *ms, const char *s, const char *p) {
         if (!singlematch(ms, s, p, ep)) {
           if (*ep == '*' || *ep == '?' || *ep == '-') {  /* accept empty? */
             p = ep + 1; goto init;  /* return match(ms, s, ep + 1); */
-          }
-          else  /* '+' or no suffix */
+          } else  /* '+' or no suffix */
             s = NULL;  /* fail */
-        }
-        else {  /* matched once */
+        } else {  /* matched once */
           switch (*ep) {  /* handle optional suffix */
             case '?': {  /* optional */
               const char *res;
@@ -706,8 +700,7 @@ static size_t get_onecapture (MatchState *ms, int i, const char *s,
       luaL_error(ms->L, "invalid capture index %%%d", i + 1);
     *cap = s;
     return e - s;
-  }
-  else {
+  } else {
     ptrdiff_t capl = ms->capture[i].len;
     *cap = ms->capture[i].init;
     if (l_unlikely(capl == CAP_UNFINISHED))
@@ -788,8 +781,7 @@ static int str_find_aux (lua_State *L, int find) {
       lua_pushinteger(L, (s2 - s) + lp);
       return 2;
     }
-  }
-  else {
+  } else {
     MatchState ms;
     const char *s1 = s + init;
     int anchor = (*p == '^');
@@ -805,8 +797,7 @@ static int str_find_aux (lua_State *L, int find) {
           lua_pushinteger(L, (s1 - s) + 1);  /* start */
           lua_pushinteger(L, res - s);   /* end */
           return push_captures(&ms, NULL, 0) + 2;
-        }
-        else
+        } else
           return push_captures(&ms, s1, res);
       }
     } while (s1++ < ms.src_end && !anchor);
@@ -888,8 +879,7 @@ static void add_s (MatchState *ms, luaL_Buffer *b, const char *s,
         luaL_addvalue(b);  /* add position to accumulated result */
       else
         luaL_addlstring(b, cap, resl);
-    }
-    else
+    } else
       luaL_error(L, "invalid use of '%c' in replacement string", L_ESC);
     l -= p + 1 - news;
     news = p + 1;
@@ -928,8 +918,7 @@ static int add_value (MatchState *ms, luaL_Buffer *b, const char *s,
     lua_pop(L, 1);  /* remove value */
     luaL_addlstring(b, s, e - s);  /* keep original text */
     return 0;  /* no changes */
-  }
-  else if (l_unlikely(!lua_isstring(L, -1)))
+  } else if (l_unlikely(!lua_isstring(L, -1)))
     return luaL_error(L, "invalid replacement value (a %s)",
                          luaL_typename(L, -1));
   else {
@@ -966,8 +955,7 @@ static int str_gsub (lua_State *L) {
       n++;
       changed = add_value(&ms, &b, src, e, tr) | changed;
       src = lastmatch = e;
-    }
-    else if (src < ms.src_end)  /* otherwise, skip one character */
+    } else if (src < ms.src_end)  /* otherwise, skip one character */
       luaL_addchar(&b, *src++);
     else break;  /* end of subject */
     if (anchor) break;
@@ -1028,8 +1016,7 @@ static int num2straux (char *buff, int sz, lua_Number x) {
   else if (x == 0) {  /* can be -0... */
     /* create "0" or "-0" followed by exponent */
     return l_sprintf(buff, sz, LUA_NUMBER_FMT "x0p+0", (LUAI_UACNUMBER)x);
-  }
-  else {
+  } else {
     int e;
     lua_Number m = l_mathop(frexp)(x, &e);  /* 'x' fraction and exponent */
     int n = 0;  /* character count */
@@ -1060,8 +1047,7 @@ static int lua_number2strx (lua_State *L, char *buff, int sz,
     int i;
     for (i = 0; i < n; i++)
       buff[i] = toupper(uchar(buff[i]));
-  }
-  else if (l_unlikely(fmt[SIZELENMOD] != 'a'))
+  } else if (l_unlikely(fmt[SIZELENMOD] != 'a'))
     return luaL_error(L, "modifiers for format '%%a'/'%%A' not implemented");
   return n;
 }
@@ -1125,16 +1111,14 @@ static void addquoted (luaL_Buffer *b, const char *s, size_t len) {
     if (*s == '"' || *s == '\\' || *s == '\n') {
       luaL_addchar(b, '\\');
       luaL_addchar(b, *s);
-    }
-    else if (iscntrl(uchar(*s))) {
+    } else if (iscntrl(uchar(*s))) {
       char buff[10];
       if (!isdigit(uchar(*(s+1))))
         l_sprintf(buff, sizeof(buff), "\\%d", (int)uchar(*s));
       else
         l_sprintf(buff, sizeof(buff), "\\%03d", (int)uchar(*s));
       luaL_addstring(b, buff);
-    }
-    else
+    } else
       luaL_addchar(b, *s);
     s++;
   }
@@ -1357,8 +1341,7 @@ static int str_format (lua_State *L) {
             if (strchr(form, '.') == NULL && l >= 100) {
               /* no precision and string is too long to be formatted */
               luaL_addvalue(&b);  /* keep entire string */
-            }
-            else {  /* format the string into 'buff' */
+            } else {  /* format the string into 'buff' */
               nb = l_sprintf(buff, maxitem, form, s);
               lua_pop(L, 1);  /* remove result from 'luaL_tolstring' */
             }
@@ -1739,8 +1722,7 @@ static lua_Integer unpackint (lua_State *L, const char *str,
       lua_Unsigned mask = (lua_Unsigned)1 << (size*NB - 1);
       res = ((res ^ mask) - mask);  /* do sign extension */
     }
-  }
-  else if (size > SZINT) {  /* must check unread bytes */
+  } else if (size > SZINT) {  /* must check unread bytes */
     int mask = (!issigned || (lua_Integer)res >= 0) ? 0 : MC;
     for (i = limit; i < size; i++) {
       if (l_unlikely((unsigned char)str[islittle ? i : size - 1 - i] != mask))

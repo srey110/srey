@@ -11,8 +11,7 @@ char *url_encode(const char *data, const size_t lens, char *out) {
         c = *from++;
         if (c == ' ') {
             *to++ = '+';
-        }
-        else if ((c < '0' && c != '-' && c != '.') ||
+        } else if ((c < '0' && c != '-' && c != '.') ||
             (c < 'A' && c > '9') ||
             (c > 'Z' && c < 'a' && c != '_') ||
             (c > 'z')) {
@@ -20,8 +19,7 @@ char *url_encode(const char *data, const size_t lens, char *out) {
             to[1] = hexchars[c >> 4];
             to[2] = hexchars[c & 15];
             to += 3;
-        }
-        else {
+        } else {
             *to++ = c;
         }
     }
@@ -48,16 +46,14 @@ size_t url_decode(char *data, size_t lens) {
     while (lens--) {
         if (*p == '+') {
             *dest = ' ';
-        }
-        else if (*p == '%'
+        } else if (*p == '%'
             && lens >= 2
             && isxdigit((int) *(p + 1))
             && isxdigit((int) *(p + 2))) {
             *dest = (char)_htoi(p + 1);
             p += 2;
             lens -= 2;
-        }
-        else {
+        } else {
             *dest = *p;
         }
         p++;

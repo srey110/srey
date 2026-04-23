@@ -43,8 +43,7 @@ void *pgsql_pack_stmt_prepare(const char *name, const char *sql, int16_t nparam,
     pgsql_pack_start(&bwriter, 'P');//Parse Byte1('P') Int32 String String Int16 [Int32]
     if (!EMPTYSTR(name)) {
         binary_set_string(&bwriter, name, 0);//目标准备语句的名称
-    }
-    else {
+    } else {
         binary_set_int8(&bwriter, 0);
     }
     binary_set_string(&bwriter, sql, 0);//要解析的查询字符串
@@ -54,8 +53,7 @@ void *pgsql_pack_stmt_prepare(const char *name, const char *sql, int16_t nparam,
         for (int16_t i = 0; i < nparam; i++) {
             binary_set_integer(&bwriter, oids[i], 4, 0);//数据类型的对象ID
         }
-    }
-    else {
+    } else {
         binary_set_integer(&bwriter, 0, 2, 0);
     }
     pgsql_pack_end(&bwriter);
@@ -73,8 +71,7 @@ void *pgsql_pack_stmt_execute(const char *name, pgsql_bind_ctx *bind, pgpack_for
         || 0 == bind->nparam) {
         binary_set_integer(&bwriter, 0, 2, 0);//参数格式代码的数量
         binary_set_integer(&bwriter, 0, 2, 0);//参数格式代码
-    }
-    else {
+    } else {
         binary_set_string(&bwriter, bind->format.data, bind->format.offset);
         binary_set_string(&bwriter, bind->values.data, bind->values.offset);
     }
