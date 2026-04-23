@@ -3,7 +3,9 @@
 
 #include "CuTest.h"
 
-void test_base(CuSuite* suite);
+/// <summary>
+/// 注册 base 测试套件：内存宏、原子操作
+/// </summary>
+void test_base(CuSuite *suite);
 
-#endif
-
+#endif//TEST_BASE_H_

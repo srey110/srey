@@ -1,10 +1,10 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
     <Filter Include="CuTest">
       <UniqueIdentifier>{3239bf22-0598-4920-b3f1-bbf4cd376d49}</UniqueIdentifier>
     </Filter>
-    <Filter Include="tasks">
+    <Filter Include="tests">
       <UniqueIdentifier>{8daf7e76-0d29-4779-b979-6cb4c3ef6388}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
@@ -13,140 +13,52 @@
       <Filter>CuTest</Filter>
     </ClCompile>
     <ClCompile Include="main.c" />
-    <ClCompile Include="test_base.c" />
-    <ClCompile Include="test_utils.c" />
-    <ClCompile Include="task_timeout.c">
-      <Filter>tasks</Filter>
+    <ClCompile Include="test_base.c">
+      <Filter>tests</Filter>
     </ClCompile>
-    <ClCompile Include="task_tcp.c">
-      <Filter>tasks</Filter>
+    <ClCompile Include="test_containers.c">
+      <Filter>tests</Filter>
     </ClCompile>
-    <ClCompile Include="task_udp.c">
-      <Filter>tasks</Filter>
+    <ClCompile Include="test_crypt.c">
+      <Filter>tests</Filter>
     </ClCompile>
-    <ClCompile Include="task_thread_comm1.c">
-      <Filter>tasks</Filter>
+    <ClCompile Include="test_utils.c">
+      <Filter>tests</Filter>
     </ClCompile>
-    <ClCompile Include="task_thread_comm2.c">
-      <Filter>tasks</Filter>
+    <ClCompile Include="test_thread.c">
+      <Filter>tests</Filter>
     </ClCompile>
-    <ClCompile Include="task_ssl.c">
-      <Filter>tasks</Filter>
+    <ClCompile Include="test_protocol.c">
+      <Filter>tests</Filter>
     </ClCompile>
-    <ClCompile Include="task_startup_closing.c">
-      <Filter>tasks</Filter>
-    </ClCompile>
-    <ClCompile Include="task_auto_close.c">
-      <Filter>tasks</Filter>
-    </ClCompile>
-    <ClCompile Include="task_wbsock_sv.c">
-      <Filter>tasks</Filter>
-    </ClCompile>
-    <ClCompile Include="task_http_sv.c">
-      <Filter>tasks</Filter>
-    </ClCompile>
-    <ClCompile Include="task_smtp.c">
-      <Filter>tasks</Filter>
-    </ClCompile>
-    <ClCompile Include="task_mqttsv.c">
-      <Filter>tasks</Filter>
-    </ClCompile>
-    <ClCompile Include="task_mqttclient.c">
-      <Filter>tasks</Filter>
-    </ClCompile>
-    <ClCompile Include="task_coro_comm1.c">
-      <Filter>tasks</Filter>
-    </ClCompile>
-    <ClCompile Include="task_coro_net.c">
-      <Filter>tasks</Filter>
-    </ClCompile>
-    <ClCompile Include="task_coro_timeout.c">
-      <Filter>tasks</Filter>
-    </ClCompile>
-    <ClCompile Include="task_coro_utils.c">
-      <Filter>tasks</Filter>
-    </ClCompile>
-    <ClCompile Include="task_mongo.c">
-      <Filter>tasks</Filter>
-    </ClCompile>
-    <ClCompile Include="task_mysql.c">
-      <Filter>tasks</Filter>
-    </ClCompile>
-    <ClCompile Include="task_pgsql.c">
-      <Filter>tasks</Filter>
-    </ClCompile>
-    <ClCompile Include="task_redis.c">
-      <Filter>tasks</Filter>
+    <ClCompile Include="test_srey.c">
+      <Filter>tests</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="CuTest.h">
       <Filter>CuTest</Filter>
     </ClInclude>
-    <ClInclude Include="test_base.h" />
-    <ClInclude Include="test_utils.h" />
-    <ClInclude Include="task_timeout.h">
-      <Filter>tasks</Filter>
+    <ClInclude Include="test_base.h">
+      <Filter>tests</Filter>
     </ClInclude>
-    <ClInclude Include="task_tcp.h">
-      <Filter>tasks</Filter>
+    <ClInclude Include="test_containers.h">
+      <Filter>tests</Filter>
     </ClInclude>
-    <ClInclude Include="task_udp.h">
-      <Filter>tasks</Filter>
+    <ClInclude Include="test_crypt.h">
+      <Filter>tests</Filter>
     </ClInclude>
-    <ClInclude Include="task_thread_comm1.h">
-      <Filter>tasks</Filter>
+    <ClInclude Include="test_utils.h">
+      <Filter>tests</Filter>
     </ClInclude>
-    <ClInclude Include="task_thread_comm2.h">
-      <Filter>tasks</Filter>
+    <ClInclude Include="test_thread.h">
+      <Filter>tests</Filter>
     </ClInclude>
-    <ClInclude Include="task_ssl.h">
-      <Filter>tasks</Filter>
+    <ClInclude Include="test_protocol.h">
+      <Filter>tests</Filter>
     </ClInclude>
-    <ClInclude Include="task_startup_closing.h">
-      <Filter>tasks</Filter>
-    </ClInclude>
-    <ClInclude Include="task_auto_close.h">
-      <Filter>tasks</Filter>
-    </ClInclude>
-    <ClInclude Include="task_wbsock_sv.h">
-      <Filter>tasks</Filter>
-    </ClInclude>
-    <ClInclude Include="task_http_sv.h">
-      <Filter>tasks</Filter>
-    </ClInclude>
-    <ClInclude Include="task_smtp.h">
-      <Filter>tasks</Filter>
-    </ClInclude>
-    <ClInclude Include="task_mqttsv.h">
-      <Filter>tasks</Filter>
-    </ClInclude>
-    <ClInclude Include="task_mqttclient.h">
-      <Filter>tasks</Filter>
-    </ClInclude>
-    <ClInclude Include="task_coro_comm1.h">
-      <Filter>tasks</Filter>
-    </ClInclude>
-    <ClInclude Include="task_coro_net.h">
-      <Filter>tasks</Filter>
-    </ClInclude>
-    <ClInclude Include="task_coro_timeout.h">
-      <Filter>tasks</Filter>
-    </ClInclude>
-    <ClInclude Include="task_coro_utils.h">
-      <Filter>tasks</Filter>
-    </ClInclude>
-    <ClInclude Include="task_mongo.h">
-      <Filter>tasks</Filter>
-    </ClInclude>
-    <ClInclude Include="task_mysql.h">
-      <Filter>tasks</Filter>
-    </ClInclude>
-    <ClInclude Include="task_pgsql.h">
-      <Filter>tasks</Filter>
-    </ClInclude>
-    <ClInclude Include="task_redis.h">
-      <Filter>tasks</Filter>
+    <ClInclude Include="test_srey.h">
+      <Filter>tests</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

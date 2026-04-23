@@ -24,7 +24,7 @@ typedef struct websock_pack_ctx {
 }websock_pack_ctx;
 typedef struct websock_ctx {
     int8_t slice;
-    pack_type secprot;//��Э��
+    pack_type secprot;//加密协议
     buffer_ctx *buf;
     ud_cxt *ud;
     websock_pack_ctx *pack;
@@ -303,7 +303,7 @@ static void _websock_handshake(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t cli
         CALLOC(ud->context, 1, sizeof(websock_ctx));
         websock_ctx *ws = (websock_ctx *)ud->context;
         ws->secprot = sectype;
-        if (PACK_NONE != sectype) {//����Э��
+        if (PACK_NONE != sectype) {//加密协议
             MALLOC(ws->buf, sizeof(buffer_ctx));
             buffer_init(ws->buf);
             CALLOC(ws->ud, 1, sizeof(ud_cxt));
@@ -348,7 +348,7 @@ static websock_pack_ctx *_websock_sec_unpack(websock_ctx *ws, websock_pack_ctx *
         BIT_SET(*status, PROT_ERROR);
         break;
     }
-    //�Ƴ����,���Լ���ѭ��
+    //移除数据,自己加了循环
     if (BIT_CHECK(*status, PROT_MOREDATA)) {
         BIT_REMOVE(*status, PROT_MOREDATA);
     }
@@ -390,7 +390,7 @@ static websock_pack_ctx *_websock_parse_data(buffer_ctx *buf, int32_t client, ud
         }
         ASSERTAB(pack->remain == buffer_drain(buf, pack->remain), "drain buffer failed.");
     }
-    //��ʼ֡:FINΪ0,opcode��0 �м�֡:FINΪ0,opcodeΪ0 ����֡:FINΪ1,opcodeΪ0
+    //起始帧:FIN为0,opcode非0 中间帧:FIN为0,opcode为0 结束帧:FIN为1,opcode为0
     if (0 == pack->fin 
         && 0 != pack->prot) {
         if (0 != ws->slice) {
@@ -412,8 +412,8 @@ static websock_pack_ctx *_websock_parse_data(buffer_ctx *buf, int32_t client, ud
     }
     ws->pack = NULL;
     ud->status = START;
-    if (PACK_NONE != ws->secprot//����Э��
-        && pack->dlens > 0//�ų��հ�
+    if (PACK_NONE != ws->secprot//加密协议
+        && pack->dlens > 0//排除空包
         && (WS_CONTINUE == pack->prot
             || WS_TEXT == pack->prot
             || WS_BINARY == pack->prot)) {

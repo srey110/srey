@@ -63,11 +63,11 @@ static inline const char *_fmterror(DWORD error) {
 
 typedef uint32_t atomic_t;
 typedef uint64_t atomic64_t;
-//LONG InterlockedExchangeAdd(LONG volatile *Addend,LONG Value)  ���ؾ�ֵ
+//LONG InterlockedExchangeAdd(LONG volatile *Addend,LONG Value)  返回旧值
 #define ATOMIC_ADD(ptr, val) InterlockedExchangeAdd(ptr, val)
-//LONG InterlockedExchange(LONG volatile *Target,LONG Value); ���ؾ�ֵ
+//LONG InterlockedExchange(LONG volatile *Target,LONG Value); 返回旧值
 #define ATOMIC_SET(ptr, val) InterlockedExchange(ptr, val)
-//�Ƚ�*ptr��oldval��ֵ�����������ȣ���newval���µ�*ptr�����ز���֮ǰ*ptr��ֵ �ɹ� ����ֵ����oldval
+//比较*ptr与oldval的值，如果两者相等，将newval更新到*ptr，返回操作之前*ptr的值 成功 返回值等于oldval
 //LONG InterlockedCompareExchange(LONG volatile *Destination, LONG ExChange, LONG Comperand);
 #define ATOMIC_CAS(ptr, oldval, newval) (InterlockedCompareExchange(ptr, newval, oldval) == oldval)
 #define ATOMIC64_ADD(ptr, val) InterlockedExchangeAdd64(ptr, val)

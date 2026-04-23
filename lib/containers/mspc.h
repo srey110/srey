@@ -1,4 +1,4 @@
-#ifndef MSPC_H_
+﻿#ifndef MSPC_H_
 #define MSPC_H_
 
 #include "base/macro.h"
@@ -48,27 +48,35 @@ typedef struct mspc_ctx {
     mspc_aln_t  enq;      /* 入队位置计数器，独占缓存行 */
     mspc_aln_t  deq;      /* 出队位置计数器，独占缓存行 */
 } mspc_ctx;
-/*
- * 初始化队列。
- * capacity：期望容量，0 则使用 MSPC_DEFAULT_CAP，非 2 的幂自动向上取整。
- */
+/// <summary>
+/// 初始化队列
+/// </summary>
+/// <param name="q">mspc_ctx</param>
+/// <param name="capacity">期望容量，0 则使用默认值，非 2 的幂自动向上取整</param>
 void mspc_init(mspc_ctx *q, uint32_t capacity);
-/* 释放队列内部内存（不释放 q 本身）。*/
+/// <summary>
+/// 释放队列内部内存，不释放 q 本身
+/// </summary>
+/// <param name="q">mspc_ctx</param>
 void mspc_free(mspc_ctx *q);
-/*
- * 入队。
- * 成功返回 ERR_OK；队列已满返回 ERR_FAILED（非阻塞）。
- * data 不得为 NULL（NULL 被内部用作"空槽"标识）。
- */
+/// <summary>
+/// 入队，非阻塞
+/// </summary>
+/// <param name="q">mspc_ctx</param>
+/// <param name="data">数据指针，不得为 NULL</param>
+/// <returns>ERR_OK 成功，ERR_FAILED 队列已满</returns>
 int32_t mspc_push(mspc_ctx *q, void *data);
-/*
- * 出队。
- * 成功返回数据指针；队列为空返回 NULL（非阻塞）。
- */
+/// <summary>
+/// 出队，非阻塞
+/// </summary>
+/// <param name="q">mspc_ctx</param>
+/// <returns>数据指针，队列为空返回 NULL</returns>
 void* mspc_pop(mspc_ctx *q);
-/*
- * 返回当前队列中元素数量的近似值（并发下不精确）。
- */
+/// <summary>
+/// 返回当前队列元素数量的近似值，并发下不精确
+/// </summary>
+/// <param name="q">mspc_ctx</param>
+/// <returns>元素数量</returns>
 uint32_t mspc_size(mspc_ctx *q);
 
 #endif//MSPC_H_

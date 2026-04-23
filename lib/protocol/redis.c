@@ -119,7 +119,7 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
             break;
         }
         default: {
-            //����ǰ׺
+            //添加前缀
             while ('\0' != *f && NULL != strchr("#0-+ ", *f)) f++;
             while ('\0' != *f && isdigit((int)*f)) f++;
             if ('.' == *f) {
@@ -241,9 +241,9 @@ static int32_t _reader_line(reader_ctx *rd, int32_t prot, buffer_ctx *buf, int32
         return ERR_FAILED;
     }
     redis_pack_ctx *pk;
-    CALLOC(pk, 1, sizeof(redis_pack_ctx) + pos);//ǰ�滹��1��type�ֽ�
+    CALLOC(pk, 1, sizeof(redis_pack_ctx) + pos);//前面还有1个type字节
     pk->prot = prot;
-    pk->len = pos - 1;//pos ����Ϊ1
+    pk->len = pos - 1;//pos 起始为1
     switch (prot) {
     case RESP_STRING:
     case RESP_ERROR:

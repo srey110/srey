@@ -1,4 +1,4 @@
-#include "containers/mspc.h"
+﻿#include "containers/mspc.h"
 
 #define MSPC_DEFAULT_CAP  1024
 

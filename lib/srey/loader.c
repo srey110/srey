@@ -154,7 +154,7 @@ static void _worker_loop(void *arg) {
     worker_version *version = &loader->monitor.version[worker->index];
     task_dispatch_arg runarg;
     while (0 == loader->stop) {
-        //�Ӷ���ȡһ����
+        //从队列取一任务
         name = _task_name_get(loader, worker);
         if (INVALID_TNAME != name) {
             runarg.task = task_grab(loader, name);
@@ -182,7 +182,7 @@ static void _worker_loop(void *arg) {
     }
     LOG_INFO("worker thread %d exited.", worker->index);
 }
-//�����ѭ��
+//监控循环
 static void _monitor_check(loader_ctx *loader) {
     worker_version *version;
     for (uint16_t i = 0; i < loader->nworker; i++) {

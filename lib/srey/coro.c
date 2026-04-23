@@ -176,7 +176,7 @@ static void _mco_cb(mco_coro *coro) {
         rtn = mco_pop(coro, &argp, sizeof(argp));
         ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
         task_dispatch_arg arg = *argp;             /* one copy, on coroutine stack */
-        task_incref(arg.task);//��֤_message_run��yield�󲻻ᱻ�ͷ�
+        task_incref(arg.task);//保证_message_run在yield后不会被释放
         _message_run(arg.task, &arg.msg);
         qu_ptr_push(&((coro_ctx *)arg.task->arg)->qucopool, (void **)&coro);
         task_ungrab(arg.task);

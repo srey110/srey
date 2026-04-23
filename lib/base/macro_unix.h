@@ -118,7 +118,7 @@
         } while (!__sync_bool_compare_and_swap(ptr, oldval, value));
         return oldval;
     };
-    //type __sync_fetch_and_add (type *ptr, type value, ...)//���ؾ�ֵ
+    //type __sync_fetch_and_add (type *ptr, type value, ...)//返回旧值
     #define ATOMIC_ADD(ptr, val) __sync_fetch_and_add(ptr, val)
     #define ATOMIC_SET(ptr, val) _fetchandset(ptr, val)
     //bool __sync_bool_compare_and_swap (type *ptr, type oldval type newval);
