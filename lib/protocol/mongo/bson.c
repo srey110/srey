@@ -2,7 +2,7 @@
 
 #define BSON_APPEND_CSTRING(str) binary_set_string(&bson->doc, str, 0)
 #define BSON_APPEND_KEY(type) \
-    binary_set_int8(&bson->doc, type);\
+    binary_set_int8(&bson->doc, (int8_t)type);\
     BSON_APPEND_CSTRING(key)
 #define BSON_APPEND_STRING(str)\
     binary_set_integer(&bson->doc, strlen(str) + 1, 4, 1);\
@@ -18,7 +18,7 @@ static void _bson_oid_init(void) {
     char hostname[HOST_LENS];
     if (0 == gethostname(hostname, sizeof(hostname))) {
         int32_t i;
-        for (i = 0; i < sizeof(hostname) && hostname[i]; i++) {
+        for (i = 0; i < (int32_t)sizeof(hostname) && hostname[i]; i++) {
             h = h ^ ((h << 5) + (h >> 2) + hostname[i]);
         }
         h ^= i;

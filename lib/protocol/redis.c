@@ -311,7 +311,7 @@ static int32_t _reader_line(reader_ctx *rd, int32_t prot, buffer_ctx *buf, int32
         return ERR_FAILED;
     }
     int32_t del = pos + CRLF_SIZE;
-    ASSERTAB(del == buffer_drain(buf, del), "drain buffer failed.");
+    ASSERTAB(del == (int32_t)buffer_drain(buf, del), "drain buffer failed.");
     _add_node(rd, pk);
     return ERR_OK;
 }

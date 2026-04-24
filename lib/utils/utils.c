@@ -1094,7 +1094,7 @@ void *skipempty(const void *ptr, size_t plens) {
         && (size_t)(cur - (char *)ptr) < plens) {
         cur++;
     }
-    if (cur - (char *)ptr == plens) {
+    if ((size_t)(cur - (char *)ptr) == plens) {
         return NULL;
     }
     return cur;
@@ -1314,12 +1314,12 @@ void pack_integer(char *buf, uint64_t val, int32_t size, int32_t islittle) {
 }
 int64_t unpack_integer(const char *buf, int32_t size, int32_t islittle, int32_t issigned) {
     uint64_t rtn = 0;
-    int32_t limit = (size <= sizeof(uint64_t)) ? size : sizeof(uint64_t);
+    int32_t limit = (size <= (int32_t)sizeof(uint64_t)) ? size : (int32_t)sizeof(uint64_t);
     for (int32_t i = limit - 1; i >= 0; i--) {
         rtn <<= CHAR_BIT;
         rtn |= (uint64_t)(uint8_t)buf[islittle ? i : size - 1 - i];
     }
-    if (size < sizeof(uint64_t)) {
+    if (size < (int32_t)sizeof(uint64_t)) {
         if (issigned) {
             uint64_t mask = 1llu << (size * CHAR_BIT - 1);
             rtn = ((rtn ^ mask) - mask);

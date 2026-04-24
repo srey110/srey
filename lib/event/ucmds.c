@@ -15,6 +15,7 @@ sock_ctx *_map_get(watcher_ctx *watcher, SOCKET fd) {
     return NULL == tmp ? NULL : *tmp;
 }
 void _on_cmd_stop(watcher_ctx *watcher, cmd_ctx *cmd) {
+    (void)cmd;
     watcher->stop = 1;
 }
 void _cmd_listen(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx) {
@@ -59,6 +60,11 @@ int32_t ev_ssl(ev_ctx *ctx, SOCKET fd, uint64_t skid, int32_t client, struct evs
     cmd.len = (size_t)client;
     cmd.arg = (uint64_t)evssl;
     _SEND_CMD(ctx, cmd);
+#else
+    (void)ctx;
+    (void)skid;
+    (void)client;
+    (void)evssl;
 #endif
     return ERR_OK;
 }

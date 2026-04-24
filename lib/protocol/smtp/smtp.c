@@ -62,25 +62,25 @@ int32_t smtp_check_code(char *pack, const char *code) {
 int32_t smtp_check_ok(char *pack) {
     return smtp_check_code(pack, SMTP_OK);
 }
-char *smtp_pack_reset(smtp_ctx *smtp) {
+char *smtp_pack_reset(void) {
     return format_va("RSET%s", FLAG_CRLF);
 }
-char *smtp_pack_quit(smtp_ctx *smtp) {
+char *smtp_pack_quit(void) {
     return format_va("QUIT%s", FLAG_CRLF);
 }
-char *smtp_pack_ping(smtp_ctx *smtp) {
+char *smtp_pack_ping(void) {
     return format_va("NOOP%s", FLAG_CRLF);
 }
-char *smtp_pack_from(smtp_ctx *smtp, const char *from) {
+char *smtp_pack_from(const char *from) {
     return format_va("MAIL FROM:<%s>%s", from, FLAG_CRLF);
 }
-char *smtp_pack_rcpt(smtp_ctx *smtp, const char *rcpt) {
+char *smtp_pack_rcpt(const char *rcpt) {
     return format_va("RCPT TO:<%s>%s", rcpt, FLAG_CRLF);
 }
-char *smtp_pack_data(smtp_ctx *smtp) {
+char *smtp_pack_data(void) {
     return format_va("DATA%s", FLAG_CRLF);
 }
-static void _smtp_connected(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
+static void _smtp_connected(ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     size_t blens = buffer_size(buf);
     if (blens < SMTP_CODE_LENS + CRLF_SIZE) {
         BIT_SET(*status, PROT_MOREDATA);
@@ -253,7 +253,7 @@ static void _smtp_auth(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buf
         break;
     }
 }
-static void _smtp_auth_check(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
+static void _smtp_auth_check(SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     size_t blens = buffer_size(buf);
     if (blens < SMTP_CODE_LENS + CRLF_SIZE) {
         BIT_SET(*status, PROT_MOREDATA);
@@ -277,7 +277,7 @@ static void _smtp_auth_check(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t ski
     _hs_push(fd, skid, 1, ud, ERR_OK, NULL, 0);
     ud->status = COMMAND;
 }
-static char *_smtp_command(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status) {
+static char *_smtp_command(buffer_ctx *buf, size_t *size, int32_t *status) {
     size_t blens = buffer_size(buf);
     if (blens < SMTP_CODE_LENS + CRLF_SIZE) {
         BIT_SET(*status, PROT_MOREDATA);
@@ -299,7 +299,7 @@ void *smtp_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt 
     void *pack = NULL;
     switch (ud->status) {
     case INIT:
-        _smtp_connected(smtp, ev, fd, skid, buf, ud, status);
+        _smtp_connected(ev, fd, skid, buf, ud, status);
         break;
     case EHLO:
         _smtp_ehlo(smtp, ev, fd, skid, buf, ud, status);
@@ -308,10 +308,10 @@ void *smtp_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt 
         _smtp_auth(smtp, ev, fd, skid, buf, ud, status);
         break;
     case AUTH_CHECK:
-        _smtp_auth_check(smtp, ev, fd, skid, buf, ud, status);
+        _smtp_auth_check(fd, skid, buf, ud, status);
         break;
     case COMMAND:
-        pack = _smtp_command(smtp, ev, fd, skid, buf, ud, size, status);
+        pack = _smtp_command(buf, size, status);
         break;
     }
     return pack;

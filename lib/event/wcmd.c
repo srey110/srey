@@ -29,6 +29,7 @@ void _send_cmd(watcher_ctx *watcher, uint32_t index, cmd_ctx *cmd) {
     }
 }
 void _on_cmd_stop(watcher_ctx *watcher, cmd_ctx *cmd) {
+    (void)cmd;
     watcher->stop = 1;
 }
 void _cmd_add(watcher_ctx *watcher, sock_ctx *skctx, SOCKET fd) {
@@ -82,6 +83,10 @@ int32_t ev_ssl(ev_ctx *ctx, SOCKET fd, uint64_t skid, int32_t client, struct evs
     cmd.len = (size_t)client;
     cmd.arg = (uint64_t)evssl;
     _SEND_CMD(ctx, cmd);
+#else
+    (void)ctx;
+    (void)client;
+    (void)evssl;
 #endif
     return ERR_OK;
 }

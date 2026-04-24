@@ -185,8 +185,8 @@ static hash_ring_item *_find_next_highest_item(hash_ring_ctx *ring, uint64_t dig
     if (0 == ring->nitems) {
         return NULL;
     }
-    int32_t min = 0;
-    int32_t max = ring->nitems - 1, midpointindex;
+    uint32_t min = 0;
+    uint32_t max = ring->nitems - 1, midpointindex;
     hash_ring_item *item = NULL;
     while (1) {
         if (min > max) {

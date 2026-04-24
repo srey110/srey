@@ -15,7 +15,7 @@ typedef struct url_ctx {
     buf_ctx psw;
     buf_ctx host;
     buf_ctx port;
-    buf_ctx path;
+    buf_ctx path;//不含前导 /
     buf_ctx anchor;
     url_param param[MAX_NPARAM];
 }url_ctx;

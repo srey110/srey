@@ -5,9 +5,12 @@
 loader_ctx *g_loader;
 
 static uint64_t _map_task_hash(const void *item, uint64_t seed0, uint64_t seed1) {
+    (void)seed0;
+    (void)seed1;
     return hash((const char *)(*(name_t **)item), sizeof(name_t));
 }
 static int _map_task_compare(const void *a, const void *b, void *ud) {
+    (void)ud;
     return *(*(name_t **)a) - *(*(name_t **)b);
 }
 static void _map_task_free(void *item) {
@@ -249,6 +252,7 @@ static bool _closing_push(const void *item, void *udata) {
     return true;
 }
 static bool _closing_timeout(const void *item, void *udata) {
+    (void)udata;
     task_ctx *task = UPCAST(*((name_t **)item), task_ctx, name);
     LOG_WARN("task %d close timeout, ref %d.", task->name, task->ref);
     return true;

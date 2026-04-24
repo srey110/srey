@@ -413,6 +413,11 @@ static int32_t _mysql_sha2_rsa(binary_ctx *bwriter, char *pubkey, size_t klens, 
     EVP_PKEY_CTX_free(evpctx);
     return ERR_OK;
 #else
+    (void)bwriter;
+    (void)pubkey;
+    (void)klens;
+    (void)xorpsw;
+    (void)xlens;
     return ERR_FAILED;
 #endif
 }
@@ -565,7 +570,7 @@ static void _mysql_auth_process(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t
     }
     FREE(payload);
 }
-static mpack_ctx *_mysql_command_process(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
+static mpack_ctx *_mysql_command_process(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     size_t payload_lens;
     mysql_ctx *mysql = ud->context;
     char *payload = _mysql_payload(mysql, buf, &payload_lens, status);
@@ -590,7 +595,7 @@ void *mysql_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
         _mysql_auth_process(ev, buf, ud, status);
         break;
     case COMMAND:
-        pack = _mysql_command_process(ev, buf, ud, status);
+        pack = _mysql_command_process(buf, ud, status);
         break;
     default:
         BIT_SET(*status, PROT_ERROR);

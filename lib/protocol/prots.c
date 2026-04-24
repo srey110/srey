@@ -123,6 +123,10 @@ void prots_closed(ud_cxt *ud) {
     }
 }
 int32_t prots_accepted(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud) {
+    (void)ev;
+    (void)fd;
+    (void)skid;
+    (void)ud;
     return ERR_OK;
 }
 int32_t prots_connected(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud, int32_t err) {
@@ -135,6 +139,9 @@ int32_t prots_connected(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud, int32_
     return err;
 }
 int32_t prots_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud) {
+    (void)fd;
+    (void)skid;
+    (void)client;
     switch (ud->pktype) {
     case PACK_MYSQL:
         return _mysql_ssl_exchanged(ev, ud);
@@ -146,6 +153,7 @@ int32_t prots_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client
     return ERR_OK;
 }
 static void *_unpack_default(buffer_ctx *buf, size_t *size, ud_cxt *ud) {
+    (void)ud;
     size_t lens = buffer_size(buf);
     if (0 == lens) {
         return NULL;

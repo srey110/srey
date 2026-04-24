@@ -14,9 +14,12 @@ typedef struct pip_ctx {
 }pip_ctx;
 
 static uint64_t _map_hash(const void *item, uint64_t seed0, uint64_t seed1) {
+    (void)seed0;
+    (void)seed1;
     return hash((const char *)&((*(const sock_ctx **)item)->fd), sizeof(SOCKET));
 }
 static int _map_compare(const void *a, const void *b, void *ud) {
+    (void)ud;
     return (int)((*(const sock_ctx **)a)->fd - (*(const sock_ctx **)b)->fd);
 }
 void _send_cmd(watcher_ctx *watcher, uint32_t index, cmd_ctx *cmd) {
@@ -52,6 +55,8 @@ static void _cmd_loop(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
     if (0 == watcher->stop) {
         ASSERTAB(ERR_OK == _add_event(watcher, skctx->fd, &skctx->events, ev, skctx), ERRORSTR(ERRNO));
     }
+#else
+    (void)ev;
 #endif
 }
 static void _init_callback(void) {
@@ -278,6 +283,8 @@ void _del_event(watcher_ctx *watcher, SOCKET fd, int32_t *events, int32_t ev, vo
 }
 static int32_t _parse_event(events_t *ev, SOCKET *fd, void **arg) {
     int32_t rtn = 0;
+    *fd = INVALID_SOCK;
+    *arg = NULL;
 #if defined(EV_EPOLL)
     if (BIT_CHECK(ev->events, (EPOLLHUP | EPOLLERR))) {
         BIT_SET(rtn, (EVENT_READ | EVENT_WRITE));

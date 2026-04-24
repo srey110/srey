@@ -539,7 +539,7 @@ char *mqtt_pack_pubcomp(mqtt_protversion version, int16_t packid, uint8_t reason
     return bwriter.data;
 }
 char *mqtt_pack_subscribe(mqtt_protversion version, int16_t packid, binary_ctx *topics, binary_ctx *props, size_t *lens) {
-    int8_t fixhead = (MQTT_SUBSCRIBE << 4);//固定报头
+    int8_t fixhead = (int8_t)(MQTT_SUBSCRIBE << 4);//固定报头
     BIT_SETN(fixhead, 1, 1);//第3，2，1，0位是保留位，必须被设置为0，0，1，0
     //计算剩余长度
     uint32_t total = 2;//报文标识符(2)
@@ -573,7 +573,7 @@ char *mqtt_pack_subscribe(mqtt_protversion version, int16_t packid, binary_ctx *
     return bwriter.data;
 }
 char *mqtt_pack_suback(mqtt_protversion version, int16_t packid, uint8_t *reasons, size_t rslens, binary_ctx *props, size_t *lens) {
-    int8_t fixhead = (MQTT_SUBACK << 4);//固定报头
+    int8_t fixhead = (int8_t)(MQTT_SUBACK << 4);//固定报头
     //计算剩余长度
     uint32_t total = 2;//报文标识符(2)
     char pvlens[4];
@@ -606,7 +606,7 @@ char *mqtt_pack_suback(mqtt_protversion version, int16_t packid, uint8_t *reason
     return bwriter.data;
 }
 char *mqtt_pack_unsubscribe(mqtt_protversion version, int16_t packid, binary_ctx *topics, binary_ctx *props, size_t *lens) {
-    int8_t fixhead = (MQTT_UNSUBSCRIBE << 4);//固定报头
+    int8_t fixhead = (int8_t)(MQTT_UNSUBSCRIBE << 4);//固定报头
     BIT_SETN(fixhead, 1, 1);//第3，2，1，0位是保留位，必须被设置为0，0，1，0
     //计算剩余长度
     uint32_t total = 2;//报文标识符(2)
@@ -640,7 +640,7 @@ char *mqtt_pack_unsubscribe(mqtt_protversion version, int16_t packid, binary_ctx
     return bwriter.data;
 }
 char *mqtt_pack_unsuback(mqtt_protversion version, int16_t packid, uint8_t *reasons, size_t rslens, binary_ctx *props, size_t *lens) {
-    int8_t fixhead = (MQTT_UNSUBACK << 4);//固定报头
+    int8_t fixhead = (int8_t)(MQTT_UNSUBACK << 4);//固定报头
     //计算剩余长度
     uint32_t total = 2;//报文标识符(2)
     char pvlens[4];
@@ -674,8 +674,8 @@ char *mqtt_pack_unsuback(mqtt_protversion version, int16_t packid, uint8_t *reas
     *lens = bwriter.offset;
     return bwriter.data;
 }
-char *mqtt_pack_ping(mqtt_protversion version, size_t *lens) {
-    int8_t fixhead = (MQTT_PINGREQ << 4);//固定报头
+char *mqtt_pack_ping(size_t *lens) {
+    int8_t fixhead = (int8_t)(MQTT_PINGREQ << 4);//固定报头
     //编码剩余长度
     char rmain[4];
     int32_t roccupy = _mqtt_varlens_encode(0, rmain);
@@ -690,8 +690,8 @@ char *mqtt_pack_ping(mqtt_protversion version, size_t *lens) {
     *lens = bwriter.offset;
     return bwriter.data;
 }
-char *mqtt_pack_pong(mqtt_protversion version, size_t *lens) {
-    int8_t fixhead = (MQTT_PINGRESP << 4);//固定报头
+char *mqtt_pack_pong(size_t *lens) {
+    int8_t fixhead = (int8_t)(MQTT_PINGRESP << 4);//固定报头
     //编码剩余长度
     char rmain[4];
     int32_t roccupy = _mqtt_varlens_encode(0, rmain);
@@ -707,7 +707,7 @@ char *mqtt_pack_pong(mqtt_protversion version, size_t *lens) {
     return bwriter.data;
 }
 char *mqtt_pack_disconnect(mqtt_protversion version, uint8_t reason, binary_ctx *props, size_t *lens) {
-    int8_t fixhead = (MQTT_DISCONNECT << 4);//固定报头
+    int8_t fixhead = (int8_t)(MQTT_DISCONNECT << 4);//固定报头
     //计算剩余长度
     uint32_t total;
     char pvlens[4];
@@ -761,7 +761,7 @@ char *mqtt_pack_auth(mqtt_protversion version, uint8_t reason, binary_ctx *props
     if (version < MQTT_50) {
         return NULL;
     }
-    int8_t fixhead = (MQTT_AUTH << 4);//固定报头
+    int8_t fixhead = (int8_t)(MQTT_AUTH << 4);//固定报头
     //计算剩余长度
     uint32_t total;
     char pvlens[4];

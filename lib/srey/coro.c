@@ -45,9 +45,12 @@ static int _timeout_cmp(const heap_node *lhs, const heap_node *rhs) {
 }
 
 static uint64_t _map_cosess_hash(const void *item, uint64_t seed0, uint64_t seed1) {
+    (void)seed0;
+    (void)seed1;
     return hash((const char *)&(((coro_sess *)item)->sess), sizeof(((coro_sess *)item)->sess));
 }
 static int _map_cosess_compare(const void *a, const void *b, void *ud) {
+    (void)ud;
     return (int)(((coro_sess *)a)->sess - ((coro_sess *)b)->sess);
 }
 /* 若 ms > 0，创建 timeout_entry 并插入超时堆，返回指针；否则返回 NULL */
@@ -379,6 +382,7 @@ static void _response_dispatch(task_dispatch_arg *arg) {
     }
 }
 static void _timeout_monitor(task_ctx *task, uint64_t sess) {
+    (void)sess;
     coro_ctx *coctx = task->arg;
     /* 只有存在挂起协程且堆非空才需要检查 */
     if (coctx->nyield > 0 && NULL != coctx->timeout_heap.root) {

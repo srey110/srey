@@ -538,6 +538,8 @@ int32_t ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const u
     *skid = oltcp->skid;
 #if WITH_SSL
     oltcp->evssl = evssl;
+#else
+    (void)evssl;
 #endif
     _cmd_add(watcher, skctx, *fd);
     if (ERR_OK != _post_connect(oltcp, &addr)) {
@@ -683,6 +685,8 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
     COPY_UD(lsn->ud, ud);
 #if WITH_SSL
     lsn->evssl = evssl;
+#else
+    (void)evssl;
 #endif
     if (ERR_OK != _acceptex(ctx, lsn)) {
         CLOSE_SOCK(fd);

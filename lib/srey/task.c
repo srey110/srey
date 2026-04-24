@@ -18,11 +18,13 @@ static task_ctx *_map_task_get(struct hashmap *map, name_t name) {
     return UPCAST(*ptr, task_ctx, name);
 }
 static void _handle_startup(task_ctx *task, message_ctx *msg) {
+    (void)msg;
     if (NULL != task->_task_startup) {
         task->_task_startup(task);
     }
 }
 static void _handle_closing(task_ctx *task, message_ctx *msg) {
+    (void)msg;
     if (NULL != task->_task_closing) {
         task->_task_closing(task);
     }
@@ -430,6 +432,7 @@ static int32_t _net_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t 
     return rtn;
 }
 static void _net_close(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud) {
+    (void)ev;
     task_ctx *task = task_grab(ud->loader, ud->name);
     if (NULL == task) {
         return;

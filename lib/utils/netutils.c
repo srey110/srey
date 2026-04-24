@@ -169,6 +169,7 @@ int32_t sock_keepalive(SOCKET fd, const int32_t delay, const int32_t intvl) {
     }
 #endif
 #if defined(TCP_KEEPALIVE) && !defined(OS_SUN)
+    (void)intvl;
     if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPALIVE, (char *)&delay, (int32_t)sizeof(delay)) < ERR_OK) {
         return ERR_FAILED;
     }

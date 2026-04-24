@@ -81,9 +81,9 @@ int32_t pgsql_reader_bool(pgsql_reader_ctx *reader, const char *name, int32_t *e
     }
     if (FORMAT_TEXT == reader->format) {
         static const char *_pgsql_true[] = { "t", "true", "y", "yes", "on", "1" };
-        size_t n = ARRAY_SIZE(_pgsql_true);
+        int32_t n = (int32_t)ARRAY_SIZE(_pgsql_true);
         for (int32_t i = 0; i < n; i++) {
-            if (strlen(_pgsql_true[i]) == row->lens
+            if ((int32_t)strlen(_pgsql_true[i]) == row->lens
                 && 0 == _memicmp(row->val, _pgsql_true[i], row->lens)) {
                 return 1;
             }

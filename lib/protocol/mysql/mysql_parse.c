@@ -515,7 +515,7 @@ static mpack_ctx *_execute_response(mysql_ctx *mysql, buffer_ctx *buf, binary_ct
     }
     return mpack;
 }
-static mpack_ctx *_reset_response(mysql_ctx *mysql, buffer_ctx *buf, binary_ctx *breader, int32_t *status) {
+static mpack_ctx *_reset_response(mysql_ctx *mysql, binary_ctx *breader) {
     mpack_ctx *mpack = _mpack_new(mysql, breader->data);
     if (MYSQL_OK == binary_get_uint8(breader)) {
         mpack->pack_type = MPACK_OK;
@@ -552,7 +552,7 @@ mpack_ctx *_mpack_parser(mysql_ctx *mysql, buffer_ctx *buf, binary_ctx *breader,
         mpack = _execute_response(mysql, buf, breader, status);
         break;
     case MYSQL_STMT_RESET:
-        mpack = _reset_response(mysql, buf, breader, status);
+        mpack = _reset_response(mysql, breader);
         break;
     default:
         FREE(breader->data);

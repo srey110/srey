@@ -98,7 +98,7 @@ static char *_scram_username_recover(const char *user, size_t ulens) {
     binary_set_int8(&bwriter, 0);
     return bwriter.data;
 }
-static char *_scram_attr_search(char *msg, size_t mlens, const char *attr, size_t *lens) {
+static char *_scram_attr_search(char *msg, size_t mlens, const char *attr) {
     char *pos = msg;
     size_t remain = mlens;
     size_t wlens = strlen(attr);
@@ -120,7 +120,7 @@ static char *_scram_attr_search(char *msg, size_t mlens, const char *attr, size_
     return NULL;
 }
 static char *_scram_attr_value(char *msg, size_t mlens, const char *attr, size_t *lens) {
-    char *pos = _scram_attr_search(msg, mlens, attr, lens);
+    char *pos = _scram_attr_search(msg, mlens, attr);
     if (NULL == pos) {
         return NULL;
     }

@@ -253,6 +253,11 @@ void _try_ssl_exchange(watcher_ctx *watcher, sock_ctx *skctx, struct evssl_ctx *
             LOG_ERROR("ssl exchange error.");
         }
     }
+#else
+    (void)watcher;
+    (void)skctx;
+    (void)evssl;
+    (void)client;
 #endif
 }
 //rw
@@ -381,6 +386,7 @@ void _add_write_inloop(watcher_ctx *watcher, sock_ctx *skctx, off_buf_ctx *buf) 
 }
 //connect
 static void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
+    (void)ev;
     tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
     tcp->sock.ev_cb = _on_rw_cb;
     _del_event(watcher, tcp->sock.fd, &tcp->sock.events, tcp->sock.events, skctx);
@@ -449,6 +455,8 @@ int32_t ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const u
     *skid = tcp->skid;
 #if WITH_SSL
     tcp->evssl = evssl;
+#else
+    (void)evssl;
 #endif
     _cmd_connect(ctx, *fd, skctx);
     return ERR_OK;
@@ -465,6 +473,7 @@ void _add_conn_inloop(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx) {
 }
 //listen
 static void _on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
+    (void)ev;
     lsnsock_ctx *acpt = UPCAST(skctx, lsnsock_ctx, sock);
 #ifndef SO_REUSEPORT
     if (ERR_OK != spin_trylock(&acpt->lsn->spin)) {
@@ -557,6 +566,8 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
     COPY_UD(lsn->ud, ud);
 #if WITH_SSL
     lsn->evssl = evssl;
+#else
+    (void)evssl;
 #endif
 #ifndef SO_REUSEPORT
     spin_init(&lsn->spin, SPIN_CNT_LSN);

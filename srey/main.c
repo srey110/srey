@@ -126,6 +126,7 @@ static int32_t service_init(void) {
     return ERR_OK;
 }
 static void _on_sigcb(int32_t sig, void *arg) {
+    (void)arg;
     LOG_INFO("catch sign: %d", sig);
     cond_signal(&condexit);
 }

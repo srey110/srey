@@ -52,41 +52,35 @@ int32_t smtp_check_ok(char *pack);
 /// <summary>
 /// RSET命令数据包
 /// </summary>
-/// <param name="smtp">smtp_ctx</param>
 /// <returns>数据包</returns>
-char *smtp_pack_reset(smtp_ctx *smtp);
+char *smtp_pack_reset(void);
 /// <summary>
 /// QUIT命令数据包
 /// </summary>
-/// <param name="smtp">smtp_ctx</param>
 /// <returns>数据包</returns>
-char *smtp_pack_quit(smtp_ctx *smtp);
+char *smtp_pack_quit(void);
 /// <summary>
 /// NOOP命令数据包
 /// </summary>
-/// <param name="smtp">smtp_ctx</param>
 /// <returns>数据包</returns>
-char *smtp_pack_ping(smtp_ctx *smtp);
+char *smtp_pack_ping(void);
 /// <summary>
 /// MAIL FROM 命令数据包
 /// </summary>
-/// <param name="smtp">smtp_ctx</param>
 /// <param name="from">发件人地址 test@163.com</param>
 /// <returns>数据包</returns>
-char *smtp_pack_from(smtp_ctx *smtp, const char *from);
+char *smtp_pack_from(const char *from);
 /// <summary>
 /// RCPT TO 命令数据包
 /// </summary>
-/// <param name="smtp">smtp_ctx</param>
 /// <param name="from">收件人地址 test@163.com</param>
 /// <returns>数据包</returns>
-char *smtp_pack_rcpt(smtp_ctx *smtp, const char *rcpt);
+char *smtp_pack_rcpt(const char *rcpt);
 /// <summary>
 /// DATA 命令数据包
 /// </summary>
-/// <param name="smtp">smtp_ctx</param>
 /// <returns>数据包</returns>
-char *smtp_pack_data(smtp_ctx *smtp);
+char *smtp_pack_data(void);
 
 void *smtp_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status);
 

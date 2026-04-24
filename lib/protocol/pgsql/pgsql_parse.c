@@ -137,6 +137,8 @@ static void _pgpack_data_row(pgpack_ctx *pgpack, binary_ctx *breader) {
     arr_ptr_push_back(&reader->arr_rows, (void **)&rows);
 }
 pgpack_ctx *_pgpack_parser(pgsql_ctx *pg, binary_ctx *breader, ud_cxt *ud, int32_t *status) {
+    (void)ud;
+    (void)status;
     pgpack_ctx *pack = NULL;
     int8_t code = binary_get_int8(breader);
     binary_get_skip(breader, 4);

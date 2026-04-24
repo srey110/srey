@@ -76,6 +76,10 @@ static int32_t _check_sign(struct http_pack_ctx *pack, buf_ctx *url, char *reqda
 }
 static void _harbor_net_recv(task_ctx *harbor, SOCKET fd, uint64_t skid, uint8_t pktype,
     uint8_t client, uint8_t slice, void *data, size_t size) {
+    (void)pktype;
+    (void)client;
+    (void)slice;
+    (void)size;
     size_t lens;
     char *reqdata = http_data(data, &lens);
     if (NULL == reqdata
@@ -145,6 +149,7 @@ static void _harbor_startup(task_ctx *harbor) {
     }
 }
 static void _harbor_closing(task_ctx *harbor) {
+    (void)harbor;
     if (0 != _harbor.lsnid) {
         ev_unlisten(&harbor->loader->netev, _harbor.lsnid);
         _harbor.lsnid = 0;
@@ -162,6 +167,8 @@ int32_t harbor_start(loader_ctx *loader, name_t tname, name_t ssl, const char *i
     _harbor.port = port;
 #if WITH_SSL
     _harbor.ssl = evssl_qury(ssl);
+#else
+    (void)ssl;
 #endif
     _harbor.lsnid = 0;
     hmac_init(&_harbor.hmac, DG_SHA256, key, klens);

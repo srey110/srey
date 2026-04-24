@@ -110,7 +110,7 @@ static int32_t _mqtt_data_varnum(buffer_ctx *buf, int32_t *num) {
     if (ERR_FAILED == occupy) {
         return ERR_FAILED;
     }
-    ASSERTAB(occupy == buffer_drain(buf, occupy), "drain buffer failed.");
+    ASSERTAB(occupy == (int32_t)buffer_drain(buf, occupy), "drain buffer failed.");
     *num = (int32_t)val;
     return occupy;
 }
@@ -122,7 +122,7 @@ static mqtt_propertie *_mqtt_data_string(buffer_ctx *buf, size_t *off) {
     (*off) += 2;
     mqtt_propertie *propt;
     CALLOC(propt, 1, sizeof(mqtt_propertie) + num + 1);
-    if (num != buffer_remove(buf, propt->fval, num)) {
+    if (num != (int32_t)buffer_remove(buf, propt->fval, num)) {
         FREE(propt);
         return NULL;
     }
@@ -136,7 +136,7 @@ static char *_mqtt_data_string2(buffer_ctx *buf, int32_t *num) {
     }
     char *rtn;
     MALLOC(rtn, (*num) + 1);
-    if ((*num) != buffer_remove(buf, rtn, (*num))) {
+    if ((*num) != (int32_t)buffer_remove(buf, rtn, (*num))) {
         FREE(rtn);
         return NULL;
     }
@@ -152,7 +152,7 @@ static mqtt_propertie *_mqtt_data_kv(buffer_ctx *buf, size_t *off) {
     (*off) += 2;
     mqtt_propertie *propt;
     CALLOC(propt, 1, sizeof(mqtt_propertie) + num + 1);
-    if (num != buffer_remove(buf, propt->fval, (size_t)num)) {
+    if (num != (int32_t)buffer_remove(buf, propt->fval, (size_t)num)) {
         FREE(propt);
         return NULL;
     }
@@ -165,7 +165,7 @@ static mqtt_propertie *_mqtt_data_kv(buffer_ctx *buf, size_t *off) {
     }
     (*off) += 2;
     MALLOC(propt->sval, num + 1);
-    if (num != buffer_remove(buf, propt->sval, (size_t)num)) {
+    if (num != (int32_t)buffer_remove(buf, propt->sval, (size_t)num)) {
         FREE(propt->sval);
         FREE(propt);
         return NULL;
@@ -270,7 +270,7 @@ static arr_propertie_ctx *_mqtt_properties(buffer_ctx *buf, int32_t *status, int
         propt->flag = flag;
         arr_propertie_push_back(arrpropts, &propt);
     }
-    if (off != plens) {
+    if ((int32_t)off != plens) {
         BIT_SET(*status, PROT_ERROR);
         _mqtt_propertie_free(arrpropts);
         return NULL;
@@ -286,7 +286,7 @@ static int32_t _mqtt_check_prot(buffer_ctx *buf) {
         return ERR_FAILED;
     }
     char tmp[4];
-    if (num != buffer_remove(buf, tmp, num)) {//协议名
+    if (num != (int32_t)buffer_remove(buf, tmp, num)) {//协议名
         return ERR_FAILED;
     }
     if (0 != _memicmp(tmp, "mqtt", num)) {
@@ -493,7 +493,7 @@ static int32_t _mqtt_publish(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, i
     if (0 == remain) {
         return ERR_OK;
     }
-    if (remain != buffer_remove(buf, pl->content, remain)) {
+    if (remain != (int32_t)buffer_remove(buf, pl->content, remain)) {
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
@@ -752,7 +752,7 @@ static int32_t _mqtt_suback(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf
     CALLOC(pl, 1, sizeof(mqtt_suback_payload) + num);
     pack->payload = pl;
     pl->rlens = num;
-    if (num != buffer_remove(buf, pl->reasons, num)) {//原因码列表
+    if (num != (int32_t)buffer_remove(buf, pl->reasons, num)) {//原因码列表
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
@@ -847,14 +847,14 @@ static int32_t _mqtt_unsuback(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *b
     CALLOC(pl, 1, sizeof(mqtt_unsuback_payload) + num);
     pack->payload = pl;
     pl->rlens = num;
-    if (num != buffer_remove(buf, pl->reasons, num)) {//原因码列表
+    if (num != (int32_t)buffer_remove(buf, pl->reasons, num)) {//原因码列表
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
     return ERR_OK;
 }
 //客户端到服务端  心跳请求
-static int32_t _mqtt_ping(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
+static int32_t _mqtt_ping(mqtt_pack_ctx *pack, int32_t client, ud_cxt *ud, int32_t *status) {
     if (client
         || 0 != pack->fixhead.flags) {
         BIT_SET(*status, PROT_ERROR);
@@ -864,7 +864,7 @@ static int32_t _mqtt_ping(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf, 
     return ERR_OK;
 }
 //服务端到客户端  心跳响应
-static int32_t _mqtt_pong(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
+static int32_t _mqtt_pong(mqtt_pack_ctx *pack, int32_t client, ud_cxt *ud, int32_t *status) {
     if (!client
         || 0 != pack->fixhead.flags) {
         BIT_SET(*status, PROT_ERROR);
@@ -988,10 +988,10 @@ static int32_t _mqtt_commands(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *b
         rtn = _mqtt_unsuback(pack, client, buf, ud, status);
         break;
     case MQTT_PINGREQ:
-        rtn = _mqtt_ping(pack, client, buf, ud, status);
+        rtn = _mqtt_ping(pack, client, ud, status);
         break;
     case MQTT_PINGRESP:
-        rtn = _mqtt_pong(pack, client, buf, ud, status);
+        rtn = _mqtt_pong(pack, client, ud, status);
         break;
     case MQTT_DISCONNECT:
         rtn = _mqtt_disconnect(pack, buf, ud, status);

@@ -205,7 +205,7 @@ int32_t smtp_connect(task_ctx *task, smtp_ctx *smtp) {
     return err;
 }
 static void _smtp_quit(smtp_ctx *smtp) {
-    char *cmd = smtp_pack_quit(smtp);
+    char *cmd = smtp_pack_quit();
     char *pack = coro_send(smtp->task, smtp->fd, smtp->skid, cmd, strlen(cmd), NULL, 0);
     if (NULL == pack) {
         return;
@@ -217,7 +217,7 @@ void smtp_quit(smtp_ctx *smtp) {
     ev_close(&smtp->task->loader->netev, smtp->fd, smtp->skid);
 }
 static int32_t _smtp_ping(smtp_ctx *smtp) {
-    char *cmd = smtp_pack_ping(smtp);
+    char *cmd = smtp_pack_ping();
     char *pack = coro_send(smtp->task, smtp->fd, smtp->skid, cmd, strlen(cmd), NULL, 0);
     if (NULL == pack) {
         return ERR_FAILED;
@@ -231,7 +231,7 @@ int32_t smtp_ping(smtp_ctx *smtp) {
     return ERR_OK;
 }
 static int32_t _smtp_send(smtp_ctx *smtp, mail_ctx *mail) {
-    char *cmd = smtp_pack_from(smtp, mail->from.addr);
+    char *cmd = smtp_pack_from(mail->from.addr);
     char *pack = coro_send(smtp->task, smtp->fd, smtp->skid, cmd, strlen(cmd), NULL, 0);
     if (NULL == pack
         || ERR_OK != smtp_check_ok(pack)) {
@@ -239,14 +239,14 @@ static int32_t _smtp_send(smtp_ctx *smtp, mail_ctx *mail) {
     }
     uint32_t naddr = arr_mail_addr_size(&mail->addrs);
     for (uint32_t i = 0; i < naddr; i++) {
-        cmd = smtp_pack_rcpt(smtp, arr_mail_addr_at(&mail->addrs, i)->addr);
+        cmd = smtp_pack_rcpt(arr_mail_addr_at(&mail->addrs, i)->addr);
         pack = coro_send(smtp->task, smtp->fd, smtp->skid, cmd, strlen(cmd), NULL, 0);
         if (NULL == pack
             || ERR_OK != smtp_check_ok(pack)) {
             return ERR_FAILED;
         }
     }
-    cmd = smtp_pack_data(smtp);
+    cmd = smtp_pack_data();
     pack = coro_send(smtp->task, smtp->fd, smtp->skid, cmd, strlen(cmd), NULL, 0);
     if (NULL == pack) {
         return ERR_FAILED;
@@ -263,7 +263,7 @@ static int32_t _smtp_send(smtp_ctx *smtp, mail_ctx *mail) {
     return ERR_OK;
 }
 static int32_t _smtp_reset(smtp_ctx *smtp) {
-    char *cmd = smtp_pack_reset(smtp);
+    char *cmd = smtp_pack_reset();
     char *pack = coro_send(smtp->task, smtp->fd, smtp->skid, cmd, strlen(cmd), NULL, 0);
     if (NULL == pack) {
         return ERR_FAILED;

@@ -19,8 +19,10 @@ static inline void spin_init(spin_ctx *ctx, const uint32_t spcnt) {
 #if defined(OS_WIN)
     ASSERTAB(InitializeCriticalSectionAndSpinCount(ctx, spcnt), ERRORSTR(ERRNO));
 #elif defined(OS_DARWIN)
+    (void)spcnt;
     *ctx = OS_UNFAIR_LOCK_INIT;
 #else
+    (void)spcnt;
     ASSERTAB(ERR_OK == pthread_spin_init(ctx, PTHREAD_PROCESS_PRIVATE), ERRORSTR(ERRNO));
 #endif
 };
@@ -32,6 +34,7 @@ static inline void spin_free(spin_ctx *ctx) {
 #if defined(OS_WIN)
     DeleteCriticalSection(ctx);
 #elif defined(OS_DARWIN)
+    (void)ctx;
 #else
     (void)pthread_spin_destroy(ctx);
 #endif

@@ -204,17 +204,15 @@ char *mqtt_pack_unsuback(mqtt_protversion version, int16_t packid, uint8_t *reas
 /// <summary>
 /// PING
 /// </summary>
-/// <param name="version">mqtt_protversion</param>
 /// <param name="lens">组包后的数据长度</param>
 /// <returns>char * 数据包</returns>
-char *mqtt_pack_ping(mqtt_protversion version, size_t *lens);
+char *mqtt_pack_ping(size_t *lens);
 /// <summary>
 /// PONG
 /// </summary>
-/// <param name="version">mqtt_protversion</param>
 /// <param name="lens">组包后的数据长度</param>
 /// <returns>char * 数据包</returns>
-char *mqtt_pack_pong(mqtt_protversion version, size_t *lens);
+char *mqtt_pack_pong(size_t *lens);
 /// <summary>
 /// 断开通知
 /// </summary>

@@ -137,6 +137,7 @@ int32_t _sock_read(SOCKET fd, IOV_TYPE *iov, uint32_t niov, void *arg, size_t *r
     (void)niov;
     return _sock_read_ssl((SSL *)arg, iov, readed);
 #else
+    (void)arg;
     return _sock_read_normal(fd, iov, niov, readed);
 #endif
 }
@@ -260,6 +261,7 @@ int32_t _sock_send(SOCKET fd, qu_off_buf_ctx *buf_s, size_t *nsend, void *arg) {
     }
     return _sock_send_ssl((SSL *)arg, buf_s, nsend);
 #else
+    (void)arg;
     return _sock_send_normal(fd, buf_s, nsend);
 #endif
 }

@@ -47,6 +47,7 @@ int32_t _pgsql_may_resume(void *data) {
 }
 //请求是否ssl加密
 int32_t _pgsql_on_connected(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud, int32_t err) {
+    (void)ud;
     if (ERR_OK != err) {
         return err;
     }
@@ -116,7 +117,7 @@ static char *_pgsql_payload(buffer_ctx *buf, int32_t *lens, int32_t *status) {
         BIT_SET(*status, PROT_MOREDATA);
         return NULL;
     }
-    ASSERTAB(sizeof(*lens) == buffer_copyout(buf, 1, lens, sizeof(*lens)), "copy buffer failed.");
+    ASSERTAB((size_t)sizeof(*lens) == buffer_copyout(buf, 1, lens, sizeof(*lens)), "copy buffer failed.");
     *lens = (int32_t)unpack_integer((const char*)lens, 4, 0, 0);
     int32_t total = (*lens) + 1;
     if ((size_t)total > blens) {
@@ -125,11 +126,11 @@ static char *_pgsql_payload(buffer_ctx *buf, int32_t *lens, int32_t *status) {
     }
     char *pack;
     MALLOC(pack, total);
-    ASSERTAB(total == buffer_remove(buf, pack, total), "copy buffer failed.");
+    ASSERTAB(total == (int32_t)buffer_remove(buf, pack, total), "copy buffer failed.");
     return pack;
 }
 //取得支持的认证方法
-static char *_pgsql_get_authmod(pgsql_ctx *pg, binary_ctx *breader) {
+static char *_pgsql_get_authmod(binary_ctx *breader) {
     char *mod;
     size_t i;
     size_t remain = breader->size - breader->offset;
@@ -147,7 +148,7 @@ static char *_pgsql_get_authmod(pgsql_ctx *pg, binary_ctx *breader) {
     return NULL;
 }
 //password方式认证 GSSResponse 
-static int32_t _pgsql_password_auth(pgsql_ctx *pg, ev_ctx *ev, ud_cxt *ud) {
+static int32_t _pgsql_password_auth(pgsql_ctx *pg, ev_ctx *ev) {
     binary_ctx bwriter;
     pgsql_pack_start(&bwriter, 'p');
     binary_set_string(&bwriter, pg->password, 0);
@@ -155,7 +156,7 @@ static int32_t _pgsql_password_auth(pgsql_ctx *pg, ev_ctx *ev, ud_cxt *ud) {
     return ev_send(ev, pg->fd, pg->skid, bwriter.data, bwriter.offset, 0);
 }
 //scram-sha-256 第一步
-static int32_t _pgsql_scram_client_first(pgsql_ctx *pg, ev_ctx *ev, ud_cxt *ud, const char *mod) {
+static int32_t _pgsql_scram_client_first(pgsql_ctx *pg, ev_ctx *ev, const char *mod) {
     pg->scram = scram_init(mod, 1);
     if (NULL == pg->scram) {
         return ERR_FAILED;
@@ -172,7 +173,7 @@ static int32_t _pgsql_scram_client_first(pgsql_ctx *pg, ev_ctx *ev, ud_cxt *ud, 
     return ev_send(ev, pg->fd, pg->skid, bwriter.data, bwriter.offset, 0);
 }
 //scram-sha-256 第二步
-static int32_t _pgsql_scram_client_final(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *breader, ud_cxt *ud) {
+static int32_t _pgsql_scram_client_final(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *breader) {
     if (ERR_OK != scram_parse_first_message(pg->scram,
         breader->data + breader->offset, breader->size - breader->offset)) {
         return ERR_FAILED;
@@ -189,7 +190,7 @@ static int32_t _pgsql_scram_client_final(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *
     pgsql_pack_end(&bwriter);
     return ev_send(ev, pg->fd, pg->skid, bwriter.data, bwriter.offset, 0);
 }
-static void _pgsql_auth_process(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *breader, ud_cxt *ud, int32_t *status) {
+static void _pgsql_auth_process(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *breader, int32_t *status) {
     int32_t code = (int32_t)binary_get_integer(breader, 4, 0);
     switch (code) {
     case 0x00://认证成功 AuthenticationOk 
@@ -197,23 +198,23 @@ static void _pgsql_auth_process(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *breader, 
         pg->scram = NULL;
         break;
     case 0x03://明文密码 AuthenticationCleartextPassword 
-        if (ERR_OK != _pgsql_password_auth(pg, ev, ud)) {
+        if (ERR_OK != _pgsql_password_auth(pg, ev)) {
             BIT_SET(*status, PROT_ERROR);
         }
         break;
     case 0x0a: {//SASL身份验证 AuthenticationSASL
-        const char *mod = _pgsql_get_authmod(pg, breader);
+        const char *mod = _pgsql_get_authmod(breader);
         if (NULL == mod) {
             BIT_SET(*status, PROT_ERROR);
             LOG_WARN("unsupported verification methods.");
             break;
         }
-        if (ERR_OK != _pgsql_scram_client_first(pg, ev, ud, mod)) {
+        if (ERR_OK != _pgsql_scram_client_first(pg, ev, mod)) {
             BIT_SET(*status, PROT_ERROR);
         }
         break;
     case 0x0b://AuthenticationSASLContinue
-        if (ERR_OK != _pgsql_scram_client_final(pg, ev, breader, ud)) {
+        if (ERR_OK != _pgsql_scram_client_final(pg, ev, breader)) {
             BIT_SET(*status, PROT_ERROR);
         }
         break;
@@ -247,7 +248,7 @@ static void _pgsql_auth_response(pgsql_ctx *pg, ev_ctx *ev, buffer_ctx *buf, ud_
         break;
     }
     case 'R':
-        _pgsql_auth_process(pg, ev, &breader, ud, status);
+        _pgsql_auth_process(pg, ev, &breader, status);
         break;
     case 'S'://ParameterStatus 运行时参数状态报告
         break;

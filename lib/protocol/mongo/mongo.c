@@ -75,7 +75,7 @@ static int32_t _mongo_server_first_message(ev_ctx *ev, mongo_ctx *mongo, mgopack
     FREE(client_final);
     return ev_send(ev, mongo->fd, mongo->skid, data, size, 0);
 }
-static int32_t _mongo_server_final_message(ev_ctx *ev, mongo_ctx *mongo, mgopack_ctx *mgopack) {
+static int32_t _mongo_server_final_message(mongo_ctx *mongo, mgopack_ctx *mgopack) {
     size_t plens;
     int32_t convid, done;
     char *payload;
@@ -103,7 +103,7 @@ static void _mongo_scram_auth(ev_ctx *ev, mgopack_ctx *mgopack, ud_cxt *ud) {
         break;
     case SCRAM_LOCAL_FINAL:
         ud->status = COMMAND;
-        rtn = _mongo_server_final_message(ev, mongo, mgopack);
+        rtn = _mongo_server_final_message(mongo, mgopack);
         if (ERR_OK != rtn) {
             _hs_push(mongo->fd, mongo->skid, 1, ud, rtn, mgopack, 0);
         } else {

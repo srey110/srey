@@ -211,11 +211,11 @@ static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_t *status
             return NULL;
         }
         char lensbuf[16] = { 0 };
-        if (pos >= sizeof(lensbuf)) {
+        if (pos >= (int32_t)sizeof(lensbuf)) {
             BIT_SET(*status, PROT_ERROR);
             return NULL;
         }
-        ASSERTAB(pos == buffer_copyout(buf, 0, lensbuf, pos), "copy buffer failed.");
+        ASSERTAB(pos == (int32_t)buffer_copyout(buf, 0, lensbuf, pos), "copy buffer failed.");
         size_t dlens = strtol(lensbuf, NULL, 16);
         if (PACK_TOO_LONG(dlens)) {
             BIT_SET(*status, PROT_ERROR);

@@ -74,7 +74,7 @@ static inline void atype##_add(atype##_ctx *p, type *elem, int32_t pos) {\
     if (p->size == p->maxsize) {\
         atype##_double_resize(p);\
     }\
-    if (pos < p->size) {\
+    if (pos < (int32_t)p->size) {\
         memmove(p->ptr + pos+1, p->ptr + pos, sizeof(type) * (p->size - pos));\
     }\
     p->ptr[pos] = *elem;\
@@ -86,7 +86,7 @@ static inline void atype##_del(atype##_ctx *p, int32_t pos) {\
     }\
     ASSERTAB(pos >= 0 && (uint32_t)pos < p->size, "pos error.");\
     p->size--;\
-    if (pos < p->size) {\
+    if (pos < (int32_t)p->size) {\
         memmove(p->ptr + pos, p->ptr + pos+1, sizeof(type) * (p->size - pos));\
     }\
 };\
@@ -96,7 +96,7 @@ static inline void atype##_del_nomove(atype##_ctx *p, int32_t pos) {\
     }\
     ASSERTAB(pos >= 0 && (uint32_t)pos < p->size, "pos error.");\
     p->size--;\
-    if (pos < p->size) {\
+    if (pos < (int32_t)p->size) {\
         p->ptr[pos] = p->ptr[p->size];\
     }\
 };\
