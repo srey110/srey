@@ -126,7 +126,7 @@ static void test_digest(CuTest *tc) {
     digest_update(&dg, "abc", 3);
     hlen = digest_final(&dg, hash);
     _to_hex(hash, hlen, hex);
-    CuAssertStrEquals(tc, "ba7816bf8f01cfea414140de5dae2ec73b00361bbef0469348423f656b6dbed", hex);
+    CuAssertStrEquals(tc, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", hex);
 
     /* SHA512("abc") */
     digest_init(&dg, DG_SHA512);

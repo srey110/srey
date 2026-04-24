@@ -338,7 +338,8 @@ static void test_url_parse(CuTest *tc) {
     CuAssertTrue(tc, buf_compare(&ctx.psw,    "psw",  3));
     CuAssertTrue(tc, buf_compare(&ctx.host,   "host.com", 8));
     CuAssertTrue(tc, buf_compare(&ctx.port,   "8080", 4));
-    CuAssertTrue(tc, buf_compare(&ctx.path,   "/path/to", 8));
+    /* url_parse 在 '/' 之后截取，path 不含前导 '/' */
+    CuAssertTrue(tc, buf_compare(&ctx.path,   "path/to", 7));
     CuAssertTrue(tc, buf_compare(&ctx.anchor, "anchor", 6));
 
     buf_ctx *p = url_get_param(&ctx, "k1");

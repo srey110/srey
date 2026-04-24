@@ -51,6 +51,8 @@ static int _sync_wait(int ms) {
  * ======================================================================= */
 
 static void _to_timeout(task_ctx *task, uint64_t sess) {
+    (void)task;
+    (void)sess;
     _sync_signal(1);
 }
 
@@ -94,6 +96,7 @@ static name_t _rr_client = 2003;
 static void _rr_server_request(task_ctx *task, uint8_t reqtype,
                                uint64_t sess, name_t src,
                                void *data, size_t size) {
+    (void)reqtype;
     task_ctx *caller = task_grab(task->loader, src);
     if (NULL != caller) {
         task_response(caller, sess, ERR_OK, data, size, 1);
@@ -104,6 +107,8 @@ static void _rr_server_request(task_ctx *task, uint8_t reqtype,
 /* 客户端：验证响应内容，通知主线程 */
 static void _rr_client_response(task_ctx *task, uint64_t sess,
                                 int32_t error, void *data, size_t size) {
+    (void)task;
+    (void)sess;
     int ok = (ERR_OK == error)
           && (size == strlen(_RR_MSG))
           && (0 == memcmp(data, _RR_MSG, size));
@@ -167,6 +172,9 @@ static int _test_request_response(loader_ctx *loader) {
 static void _tcp_sv_recv(task_ctx *task, SOCKET fd, uint64_t skid,
                          uint8_t pktype, uint8_t client, uint8_t slice,
                          void *data, size_t size) {
+    (void)pktype;
+    (void)client;
+    (void)slice;
     size_t pksize = 0;
     void *echo = custz_pack(PACK_CUSTZ_FIXED, data, size, &pksize);
     if (NULL != echo) {
@@ -184,6 +192,7 @@ static void _tcp_sv_startup(task_ctx *task) {
 /* 客户端：连接成功后发送测试消息 */
 static void _tcp_cl_connect(task_ctx *task, SOCKET fd, uint64_t skid,
                             uint8_t pktype, int32_t erro) {
+    (void)pktype;
     if (ERR_OK != erro) {
         _sync_signal(0); /* 连接失败 */
         return;
@@ -202,6 +211,9 @@ static void _tcp_cl_connect(task_ctx *task, SOCKET fd, uint64_t skid,
 static void _tcp_cl_recv(task_ctx *task, SOCKET fd, uint64_t skid,
                          uint8_t pktype, uint8_t client, uint8_t slice,
                          void *data, size_t size) {
+    (void)pktype;
+    (void)client;
+    (void)slice;
     int ok = (size == strlen(_TCP_MSG))
           && (0 == memcmp(data, _TCP_MSG, size));
     ev_close(&task->loader->netev, fd, skid);

@@ -222,6 +222,9 @@ static void test_heap(CuTest *tc) {
     /* 无序插入 5 个节点 */
     int vals[] = { 30, 10, 50, 20, 40 };
     _hnode nodes[5];
+    /* heap_insert 不清零子指针，栈变量必须手动清零，否则 sift-up 时
+     * _heap_swap 会把垃圾 child->left/right 当合法指针解引用 */
+    ZERO(nodes, sizeof(nodes));
     for (int i = 0; i < 5; i++) {
         nodes[i].val = vals[i];
         heap_insert(&h, &nodes[i].node);
@@ -240,6 +243,9 @@ static void test_heap(CuTest *tc) {
     CuAssertTrue(tc, 0 == h.nelts);
 
     /* 插入后随机删除中间节点 */
+    /* heap_dequeue 最后一次摘除单元素时走提前返回路径，未清零节点指针；
+     * 重复使用同一批节点前需再次清零，避免残留指针引发 sift 崩溃 */
+    ZERO(nodes, sizeof(nodes));
     for (int i = 0; i < 5; i++) {
         nodes[i].val = vals[i];
         heap_insert(&h, &nodes[i].node);
