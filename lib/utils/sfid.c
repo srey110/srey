@@ -1,9 +1,9 @@
 ﻿#include "utils/sfid.h"
 #include "utils/utils.h"
 
-#define DefMachineBitLen 10
-#define DefSequenceBitLen 12
-#define DefCustomEpoch 1704067200000llu
+#define DefMachineBitLen 10      //机器 ID 默认位数
+#define DefSequenceBitLen 12     //自增序列默认位数
+#define DefCustomEpoch 1704067200000llu //默认自定义纪元（2024-01-01 00:00:00 UTC 毫秒时间戳）
 
 sfid_ctx *sfid_init(sfid_ctx *ctx, int32_t machineid, int32_t machinebitlen, int32_t sequencebitlen, uint64_t customepoch) {
     ctx->machineid = machineid;

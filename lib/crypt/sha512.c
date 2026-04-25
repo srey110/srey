@@ -1,27 +1,27 @@
 ﻿#include "crypt/sha512.h"
 #include "utils/utils.h"
 
-#define SHA512_BLOCK_LENGTH 128
-#define SHA512_SHORT_BLOCK_LENGTH (SHA512_BLOCK_LENGTH - 16)
-#define SHA512_DIGEST_STRING_LENGTH (SHA512_DIGEST_LENGTH * 2 + 1)
-#define REVERSE64(w,x) { uint64_t tmp = (w); \
+#define SHA512_BLOCK_LENGTH 128                                                        // SHA-512 输入块长度（字节）
+#define SHA512_SHORT_BLOCK_LENGTH (SHA512_BLOCK_LENGTH - 16)                          // 末尾块长度阈值（留出 128 位存放长度）
+#define SHA512_DIGEST_STRING_LENGTH (SHA512_DIGEST_LENGTH * 2 + 1)                    // 摘要十六进制字符串长度
+#define REVERSE64(w,x) { uint64_t tmp = (w); \                                        // 64 位大端/小端字节序互转
     tmp = (tmp >> 32) | (tmp << 32); \
     tmp = ((tmp & 0xff00ff00ff00ff00ULL) >> 8) | \
            ((tmp & 0x00ff00ff00ff00ffULL) << 8); \
     (x) = ((tmp & 0xffff0000ffff0000ULL) >> 16) | \
           ((tmp & 0x0000ffff0000ffffULL) << 16); }
-#define ADDINC128(w,n) { (w)[0] += (uint64_t)(n); \
+#define ADDINC128(w,n) { (w)[0] += (uint64_t)(n); \                                   // 128 位计数器加法
     if ((w)[0] < (n)) { \
         (w)[1]++; \
     } }
-#define R(b,x) ((x) >> (b))
-#define S64(b,x) (((x) >> (b)) | ((x) << (64 - (b))))
-#define Ch(x,y,z) (((x) & (y)) ^ ((~(x)) & (z)))
-#define Maj(x,y,z) (((x) & (y)) ^ ((x) & (z)) ^ ((y) & (z)))
-#define Sigma0_512(x) (S64(28, (x)) ^ S64(34, (x)) ^ S64(39, (x)))
-#define Sigma1_512(x) (S64(14, (x)) ^ S64(18, (x)) ^ S64(41, (x)))
-#define sigma0_512(x) (S64( 1, (x)) ^ S64( 8, (x)) ^ R( 7,   (x)))
-#define sigma1_512(x) (S64(19, (x)) ^ S64(61, (x)) ^ R( 6,   (x)))
+#define R(b,x) ((x) >> (b))                                                           // 逻辑右移
+#define S64(b,x) (((x) >> (b)) | ((x) << (64 - (b))))                                // 64 位循环右移
+#define Ch(x,y,z) (((x) & (y)) ^ ((~(x)) & (z)))                                     // 选择函数
+#define Maj(x,y,z) (((x) & (y)) ^ ((x) & (z)) ^ ((y) & (z)))                        // 多数函数
+#define Sigma0_512(x) (S64(28, (x)) ^ S64(34, (x)) ^ S64(39, (x)))                   // 大 Σ0 函数
+#define Sigma1_512(x) (S64(14, (x)) ^ S64(18, (x)) ^ S64(41, (x)))                   // 大 Σ1 函数
+#define sigma0_512(x) (S64( 1, (x)) ^ S64( 8, (x)) ^ R( 7,   (x)))                   // 小 σ0 函数
+#define sigma1_512(x) (S64(19, (x)) ^ S64(61, (x)) ^ R( 6,   (x)))                   // 小 σ1 函数
 
 static const uint64_t k512[80] = {
     0x428a2f98d728ae22ULL, 0x7137449123ef65cdULL,
@@ -84,6 +84,7 @@ void sha512_init(sha512_ctx *sha512) {
     ZERO(sha512->data, SHA512_BLOCK_LENGTH);
     sha512->bitlen[0] = sha512->bitlen[1] = 0;
 }
+// SHA-512 核心变换：对 128 字节块执行 80 轮操作并更新状态
 static void _transform(sha512_ctx *sha512, const uint64_t *data) {
     uint64_t a, b, c, d, e, f, g, h, s0, s1;
     uint64_t t1, t2, *w512 = (uint64_t *)sha512->data;
@@ -99,9 +100,9 @@ static void _transform(sha512_ctx *sha512, const uint64_t *data) {
     j = 0;
     do {
         if (is_little()) {
-            /* Convert TO host byte order */
+            // 小端系统：将输入数据转换为主机字节序
             REVERSE64(*data++, w512[j]);
-            /* Apply the SHA-512 compression function to update a..h */
+            // 执行 SHA-512 压缩函数更新 a~h
             t1 = h + Sigma1_512(e) + Ch(e, f, g) + k512[j] + w512[j];
         } else {
             t1 = h + Sigma1_512(e) + Ch(e, f, g) + k512[j] + (w512[j] = *data++);
@@ -173,6 +174,7 @@ void sha512_update(sha512_ctx *sha512, const void *data, size_t lens) {
         ADDINC128(sha512->bitlen, lens << 3);
     }
 }
+// 处理末尾块：填充消息并附加总长度，然后执行最后一次变换
 static void _last(sha512_ctx *sha512) {
     size_t usedspace = (sha512->bitlen[0] >> 3) % SHA512_BLOCK_LENGTH;
     if (is_little()) {

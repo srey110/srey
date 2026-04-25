@@ -9,15 +9,15 @@
 #define SMTP_CODE_LENS 3
 
 typedef enum smtp_authtype {
-    LOGIN = 1,
-    PLAIN
+    LOGIN = 1, //AUTH LOGIN 认证方式（逐字段 Base64 编码）
+    PLAIN      //AUTH PLAIN 认证方式（整体 Base64 编码）
 }smtp_authtype;
 typedef enum parse_status {
-    INIT = 0,
-    EHLO,
-    AUTH,
-    AUTH_CHECK,
-    COMMAND,
+    INIT = 0,  //初始连接，等待服务端 220 响应
+    EHLO,      //已发送 EHLO，等待服务端能力列表响应
+    AUTH,      //已发送 AUTH 命令，等待服务端 334 挑战
+    AUTH_CHECK,//已发送认证凭据，等待服务端 235 成功响应
+    COMMAND,   //握手完成，正常命令交互阶段
 }parse_status;
 static char _smtp_host[HOST_LENS] = { 0 };
 static _handshaked_push _hs_push;
@@ -80,6 +80,7 @@ char *smtp_pack_rcpt(const char *rcpt) {
 char *smtp_pack_data(void) {
     return format_va("DATA%s", FLAG_CRLF);
 }
+// INIT 阶段：等待服务端 220 欢迎行，收到后发送 EHLO 命令并切换到 EHLO 状态
 static void _smtp_connected(ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     size_t blens = buffer_size(buf);
     if (blens < SMTP_CODE_LENS + CRLF_SIZE) {
@@ -103,6 +104,7 @@ static void _smtp_connected(ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *bu
         BIT_SET(*status, PROT_ERROR);
     }
 }
+// 从 EHLO 响应中解析服务端支持的认证类型，优先返回 PLAIN，其次 LOGIN
 static int32_t _smtp_get_authtype(buffer_ctx *buf) {
     const char *authtype = "250-AUTH";
     size_t atlens = strlen(authtype);
@@ -125,6 +127,7 @@ static int32_t _smtp_get_authtype(buffer_ctx *buf) {
     }
     return ERR_FAILED;
 }
+// EHLO 阶段：等待服务端 250 响应，解析认证类型并发送 AUTH 命令，切换到 AUTH 状态
 static void _smtp_ehlo(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     size_t blens = buffer_size(buf);
     if (blens < SMTP_CODE_LENS + CRLF_SIZE) {
@@ -161,6 +164,7 @@ static void _smtp_ehlo(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buf
         BIT_SET(*status, PROT_ERROR);
     }
 }
+// 对字符串进行 Base64 编码并追加 CRLF，构造 AUTH LOGIN 认证命令行
 static char *_smtp_loin_cmd(const char *up) {
     size_t lens = strlen(up);
     char *b64;
@@ -170,6 +174,7 @@ static char *_smtp_loin_cmd(const char *up) {
     FREE(b64);
     return cmd;
 }
+// AUTH LOGIN 认证阶段：解析服务端 334 挑战，按 "Username:"/"Password:" 顺序发送 Base64 凭据
 static void _smtp_loin(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     char code[SMTP_CODE_LENS + 1] = { 0 };
     ASSERTAB(SMTP_CODE_LENS == buffer_copyout(buf, 0, code, SMTP_CODE_LENS), "copy buffer failed.");
@@ -208,6 +213,7 @@ static void _smtp_loin(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buf
     BIT_SET(*status, PROT_ERROR);
     FREE(flag);
 }
+// AUTH PLAIN 认证阶段：构造 "\0user\0password" 格式并 Base64 编码后发送，切换到 AUTH_CHECK 状态
 static void _smtp_plain(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     char code[SMTP_CODE_LENS + 1] = { 0 };
     ASSERTAB(SMTP_CODE_LENS == buffer_copyout(buf, 0, code, SMTP_CODE_LENS), "copy buffer failed.");
@@ -234,6 +240,7 @@ static void _smtp_plain(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, bu
         BIT_SET(*status, PROT_ERROR);
     }
 }
+// AUTH 阶段：等待完整的服务端挑战行，根据认证类型分发到 LOGIN 或 PLAIN 处理函数
 static void _smtp_auth(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     size_t blens = buffer_size(buf);
     if (blens < SMTP_CODE_LENS + CRLF_SIZE) {
@@ -253,6 +260,7 @@ static void _smtp_auth(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buf
         break;
     }
 }
+// AUTH_CHECK 阶段：等待服务端 235 认证成功响应，成功后切换到 COMMAND 状态并触发握手完成回调
 static void _smtp_auth_check(SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     size_t blens = buffer_size(buf);
     if (blens < SMTP_CODE_LENS + CRLF_SIZE) {
@@ -277,6 +285,7 @@ static void _smtp_auth_check(SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt *
     _hs_push(fd, skid, 1, ud, ERR_OK, NULL, 0);
     ud->status = COMMAND;
 }
+// COMMAND 阶段：等待完整的服务端响应行，提取内容（不含 CRLF）返回给调用者
 static char *_smtp_command(buffer_ctx *buf, size_t *size, int32_t *status) {
     size_t blens = buffer_size(buf);
     if (blens < SMTP_CODE_LENS + CRLF_SIZE) {

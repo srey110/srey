@@ -13,5 +13,12 @@ void log_init(FILE *file);
 /// </summary>
 /// <param name="lv">LOG_LEVEL</param>
 void log_setlv(LOG_LEVEL lv);
+/// <summary>
+/// 输出一条日志，低于当前日志级别时直接忽略
+/// </summary>
+/// <param name="lv">日志级别</param>
+/// <param name="fmt">格式化字符串</param>
+/// <param name="...">变参</param>
+void slog(int32_t lv, const char *fmt, ...);
 
 #endif//LOG_H_

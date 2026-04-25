@@ -3,7 +3,13 @@
 
 #include "base/macro.h"
 
+/// <summary>
+/// 初始化 socket 环境（Windows 下调用 WSAStartup）
+/// </summary>
 void sock_init(void);
+/// <summary>
+/// 清理 socket 环境（Windows 下调用 WSACleanup）
+/// </summary>
 void sock_clean(void);
 /// <summary>
 /// 获取socket可读长度

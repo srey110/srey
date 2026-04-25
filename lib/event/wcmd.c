@@ -3,10 +3,12 @@
 
 #ifdef EV_IOCP
 
+// 根据fd计算目标watcher和命令通道编号并发送命令的便利宏（IOCP版）
 #define _SEND_CMD(ev, cmd)\
     watcher_ctx *watcher = GET_PTR((ev)->watcher, (ev)->nthreads, cmd.fd);\
     _send_cmd(watcher, GET_POS(cmd.fd, watcher->ncmd), &cmd)
 
+// 根据fd从watcher的hashmap中查找sock_ctx
 static sock_ctx *_map_get(watcher_ctx *watcher, SOCKET fd) {
     sock_ctx key;
     key.fd = fd;

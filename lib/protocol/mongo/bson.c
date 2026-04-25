@@ -12,6 +12,7 @@ static char _bson_empty[5] = { 0 };
 static uint8_t _oid_header[5];
 static atomic_t _oid_counter = 0;
 
+// 初始化 OID 头部：由主机名哈希（3字节）和 PID（2字节）组成，并设置计数器初始值
 static void _bson_oid_init(void) {
     int32_t pid = GETPID();
     uint32_t h = 0;
@@ -30,6 +31,7 @@ static void _bson_oid_init(void) {
     _oid_header[4] = (pid >> 8) & 0xff;
     _oid_counter = randrange(10000, 20000);
 }
+// 初始化静态空 BSON 文档（长度为5：4字节长度 + 1字节 EOD）
 static void _bson_empty_init(void) {
     pack_integer(_bson_empty, 5, 4, 1);
 }
@@ -53,6 +55,7 @@ const char *bson_empty(size_t *lens) {
     SET_PTR(lens, 5);
     return _bson_empty;
 }
+// 开始一个新的嵌套层级：增加层级计数，记录当前偏移，预留4字节用于回填长度
 static inline void _bson_append_start(bson_ctx *bson) {
     bson->depth++;
     ASSERTAB(bson->depth <= BSON_MAX_DEPTH, "too much depth.");
@@ -187,6 +190,7 @@ void bson_iter_init(bson_iter *iter, bson_ctx *bson) {
     iter->doc = &bson->doc;
     iter->doclens = binary_get_integer(iter->doc, 4, 1);
 }
+// 清空迭代器的当前字段信息（类型、长度、key、val 等）
 static void _bson_iter_clear(bson_iter *iter) {
     iter->subtype = 0;
     iter->lens = 0;
@@ -271,6 +275,7 @@ int32_t bson_iter_next(bson_iter *iter) {
     }
     return more;
 }
+// 在当前层级查找指定 key，找到时将 result 设为当前 iter
 static int32_t _bson_iter_find(bson_iter *iter, const char *key, size_t klens, bson_iter *result) {
     while (bson_iter_next(iter)) {
         if (klens == strlen(iter->key)
@@ -321,6 +326,7 @@ int32_t bson_iter_find(bson_iter *iter, const char *keys, bson_iter *result) {
     binary_offset(iter->doc, offset);
     return rtn;
 }
+// 检查迭代器当前字段类型是否与期望类型一致，不一致时设置 err
 static int32_t _bson_iter_check(bson_iter *iter, bson_type type, int32_t *err) {
     if (type != iter->type) {
         SET_PTR(err, ERR_FAILED);
@@ -477,6 +483,7 @@ const char *bson_subtype_tostring(bson_subtype type) {
         return "unknown";
     }
 }
+// 递归将 BSON 文档格式化为带缩进的可读字符串，追加到 str 中
 static void _bson_dump(bson_ctx *bson, int32_t index, binary_ctx *str) {
     bson_iter iter;
     bson_iter_init(&iter, bson);

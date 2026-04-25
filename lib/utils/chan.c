@@ -59,6 +59,7 @@ int32_t chan_is_closed(chan_ctx *chan) {
     /* closed 是 atomic_t：直接原子读，无需持锁 */
     return (int32_t)ATOMIC_GET(&chan->closed);
 }
+// 缓存模式下发送数据，队列满时阻塞等待，chan 关闭时返回失败
 static int32_t _buffered_chan_send(chan_ctx *chan, buf_ctx *buf) {
     mutex_lock(&chan->m_mu);
     while (qu_buf_size(&chan->qudata) == qu_buf_maxsize(&chan->qudata)) {
@@ -66,7 +67,7 @@ static int32_t _buffered_chan_send(chan_ctx *chan, buf_ctx *buf) {
             mutex_unlock(&chan->m_mu);
             return ERR_FAILED;
         }
-        //Block until something is removed.
+        //阻塞直到有元素被取走
         ATOMIC_ADD(&chan->w_waiting, 1);
         cond_wait(&chan->w_cond, &chan->m_mu);
         ATOMIC_ADD(&chan->w_waiting, (atomic_t)-1);
@@ -77,12 +78,13 @@ static int32_t _buffered_chan_send(chan_ctx *chan, buf_ctx *buf) {
     }
     qu_buf_push(&chan->qudata, buf);
     if (ATOMIC_GET(&chan->r_waiting) > 0) {
-        //Signal waiting reader.
+        //唤醒等待接收的线程
         cond_signal(&chan->r_cond);
     }
     mutex_unlock(&chan->m_mu);
     return ERR_OK;
 }
+// 缓存模式下接收数据，队列空时阻塞等待，chan 关闭时返回 NULL
 static void *_buffered_chan_recv(chan_ctx *chan, size_t *lens) {
     mutex_lock(&chan->m_mu);
     while (0 == qu_buf_size(&chan->qudata)) {
@@ -90,20 +92,21 @@ static void *_buffered_chan_recv(chan_ctx *chan, size_t *lens) {
             mutex_unlock(&chan->m_mu);
             return NULL;
         }
-        //Block until something is added.
+        //阻塞直到有元素被放入
         ATOMIC_ADD(&chan->r_waiting, 1);
         cond_wait(&chan->r_cond, &chan->m_mu);
         ATOMIC_ADD(&chan->r_waiting, (atomic_t)-1);
     }
     buf_ctx *msg = qu_buf_pop(&chan->qudata);
     if (ATOMIC_GET(&chan->w_waiting) > 0) {
-        //Signal waiting writer.
+        //唤醒等待发送的线程
         cond_signal(&chan->w_cond);
     }
     mutex_unlock(&chan->m_mu);
     *lens = msg->lens;
     return msg->data;
 }
+// 非缓存模式下发送数据，等待接收方取走后返回，chan 关闭时返回失败
 static int32_t _unbuffered_chan_send(chan_ctx *chan, buf_ctx *buf) {
     mutex_lock(&chan->w_mu);
     mutex_lock(&chan->m_mu);
@@ -115,7 +118,7 @@ static int32_t _unbuffered_chan_send(chan_ctx *chan, buf_ctx *buf) {
     chan->data = *buf;
     ATOMIC_ADD(&chan->w_waiting, 1);
     if (ATOMIC_GET(&chan->r_waiting) > 0) {
-        //Signal waiting reader.
+        //唤醒等待接收的线程
         cond_signal(&chan->r_cond);
     }
     cond_wait(&chan->w_cond, &chan->m_mu);
@@ -123,12 +126,13 @@ static int32_t _unbuffered_chan_send(chan_ctx *chan, buf_ctx *buf) {
     mutex_unlock(&chan->w_mu);
     return ERR_OK;
 }
+// 非缓存模式下接收数据，等待发送方放入后返回，chan 关闭时返回 NULL
 static void *_unbuffered_chan_recv(chan_ctx *chan, size_t *lens) {
     mutex_lock(&chan->r_mu);
     mutex_lock(&chan->m_mu);
     while (!ATOMIC_GET(&chan->closed)
         && !ATOMIC_GET(&chan->w_waiting)) {
-        // Block until writer has set chan->data.
+        //阻塞直到发送方设置 chan->data
         ATOMIC_ADD(&chan->r_waiting, 1);
         cond_wait(&chan->r_cond, &chan->m_mu);
         ATOMIC_ADD(&chan->r_waiting, (atomic_t)-1);
@@ -141,7 +145,7 @@ static void *_unbuffered_chan_recv(chan_ctx *chan, size_t *lens) {
     void *msg = chan->data.data;
     *lens = chan->data.lens;
     ATOMIC_ADD(&chan->w_waiting, (atomic_t)-1);
-    //Signal waiting writer.
+    //唤醒等待发送的线程
     cond_signal(&chan->w_cond);
     mutex_unlock(&chan->m_mu);
     mutex_unlock(&chan->r_mu);

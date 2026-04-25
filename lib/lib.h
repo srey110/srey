@@ -57,6 +57,6 @@
 #include "srey/coro_utils.h"
 #include "services/harbor.h"
 
-extern loader_ctx *g_loader;
+extern loader_ctx *g_loader; // 全局 loader 实例，由框架初始化后对所有模块可见
 
 #endif //LIB_H_

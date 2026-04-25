@@ -3,11 +3,12 @@
 
 #include "srey/spub.h"
 
+// 网络事件标志位（可按位组合）
 typedef enum task_netev {
-    NETEV_NONE = 0x00,
-    NETEV_ACCEPT = 0x01,
-    NETEV_AUTHSSL = 0x02,
-    NETEV_SEND = 0x04
+    NETEV_NONE   = 0x00, // 无额外事件
+    NETEV_ACCEPT = 0x01, // 触发新连接接受回调
+    NETEV_AUTHSSL= 0x02, // 触发 SSL 交换完成回调
+    NETEV_SEND   = 0x04  // 触发数据发送完成回调
 }task_netev;
 /// <summary>
 /// 新建任务
@@ -166,16 +167,65 @@ void task_set_netread_timeout(task_ctx *task, uint32_t ms);
 /// <param name="task">task_ctx</param>
 /// <returns>毫秒</returns>
 uint32_t task_get_netread_timeout(task_ctx *task);
-//注册消息处理函数
+/// <summary>
+/// 注册新连接接受回调函数
+/// </summary>
+/// <param name="task">task_ctx</param>
+/// <param name="_accept">_net_accept_cb 回调函数</param>
 void task_accepted(task_ctx *task, _net_accept_cb _accept);
+/// <summary>
+/// 注册数据接收回调函数
+/// </summary>
+/// <param name="task">task_ctx</param>
+/// <param name="_recv">_net_recv_cb 回调函数</param>
 void task_recved(task_ctx *task, _net_recv_cb _recv);
+/// <summary>
+/// 注册数据发送完成回调函数
+/// </summary>
+/// <param name="task">task_ctx</param>
+/// <param name="_send">_net_send_cb 回调函数</param>
 void task_sended(task_ctx *task, _net_send_cb _send);
+/// <summary>
+/// 注册连接建立回调函数
+/// </summary>
+/// <param name="task">task_ctx</param>
+/// <param name="_connect">_net_connect_cb 回调函数</param>
 void task_connected(task_ctx *task, _net_connect_cb _connect);
+/// <summary>
+/// 注册 SSL 交换完成回调函数
+/// </summary>
+/// <param name="task">task_ctx</param>
+/// <param name="_exchanged">_net_ssl_exchanged_cb 回调函数</param>
 void task_ssl_exchanged(task_ctx *task, _net_ssl_exchanged_cb _exchanged);
+/// <summary>
+/// 注册应用层握手完成回调函数
+/// </summary>
+/// <param name="task">task_ctx</param>
+/// <param name="_handshake">_net_handshake_cb 回调函数</param>
 void task_handshaked(task_ctx *task, _net_handshake_cb _handshake);
+/// <summary>
+/// 注册连接关闭回调函数
+/// </summary>
+/// <param name="task">task_ctx</param>
+/// <param name="_close">_net_close_cb 回调函数</param>
 void task_closed(task_ctx *task, _net_close_cb _close);
+/// <summary>
+/// 注册 UDP 数据接收回调函数
+/// </summary>
+/// <param name="task">task_ctx</param>
+/// <param name="_recvfrom">_net_recvfrom_cb 回调函数</param>
 void task_recvedfrom(task_ctx *task, _net_recvfrom_cb _recvfrom);
+/// <summary>
+/// 注册任务间请求回调函数
+/// </summary>
+/// <param name="task">task_ctx</param>
+/// <param name="_request">_request_cb 回调函数</param>
 void task_requested(task_ctx *task, _request_cb _request);
+/// <summary>
+/// 注册任务间响应回调函数
+/// </summary>
+/// <param name="task">task_ctx</param>
+/// <param name="_response">_response_cb 回调函数</param>
 void task_responsed(task_ctx *task, _response_cb _response);
 
 #endif//TASK_H_

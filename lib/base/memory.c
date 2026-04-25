@@ -2,8 +2,8 @@
 #include "base/macro.h"
 
 #if MEMORY_CHECK
-static atomic64_t _nalloc = 0;
-static atomic64_t _nfree = 0;
+static atomic64_t _nalloc = 0; // 累计分配次数（原子计数）
+static atomic64_t _nfree  = 0; // 累计释放次数（原子计数）
 #endif
 
 void *_malloc(size_t size) {

@@ -20,6 +20,7 @@ static const uint8_t s[256] = {
     166, 119, 114, 248, 235, 117, 75, 10, 49, 68, 80, 180, 143, 237,
     31, 26, 219, 153, 141, 51, 159, 17, 131, 20
 };
+// MD2 核心变换：更新 state 和 checksum
 static void _transform(md2_ctx *md2, const uint8_t *data) {
     int32_t j, k, t;
     for (j = 0; j < 16; ++j) {

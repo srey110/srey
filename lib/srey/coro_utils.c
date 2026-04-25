@@ -144,6 +144,7 @@ int32_t mysql_selectdb(mysql_ctx *mysql, const char *database) {
     }
     return MPACK_OK == mpack->pack_type ? ERR_OK : ERR_FAILED;
 }
+// 向 MySQL 服务器发送 ping 包并等待响应，失败返回 ERR_FAILED
 static int32_t _mysql_ping(mysql_ctx *mysql) {
     size_t size;
     void *ping = mysql_pack_ping(mysql, &size);
@@ -204,6 +205,7 @@ int32_t smtp_connect(task_ctx *task, smtp_ctx *smtp) {
     }
     return err;
 }
+// 发送 SMTP QUIT 命令并等待响应（不关闭 socket）
 static void _smtp_quit(smtp_ctx *smtp) {
     char *cmd = smtp_pack_quit();
     char *pack = coro_send(smtp->task, smtp->fd, smtp->skid, cmd, strlen(cmd), NULL, 0);
@@ -216,6 +218,7 @@ void smtp_quit(smtp_ctx *smtp) {
     _smtp_quit(smtp);
     ev_close(&smtp->task->loader->netev, smtp->fd, smtp->skid);
 }
+// 发送 SMTP NOOP 命令检测连接是否存活，失败返回 ERR_FAILED
 static int32_t _smtp_ping(smtp_ctx *smtp) {
     char *cmd = smtp_pack_ping();
     char *pack = coro_send(smtp->task, smtp->fd, smtp->skid, cmd, strlen(cmd), NULL, 0);
@@ -230,6 +233,7 @@ int32_t smtp_ping(smtp_ctx *smtp) {
     }
     return ERR_OK;
 }
+// 执行 SMTP 邮件发送流程（MAIL FROM → RCPT TO → DATA → 正文）
 static int32_t _smtp_send(smtp_ctx *smtp, mail_ctx *mail) {
     char *cmd = smtp_pack_from(mail->from.addr);
     char *pack = coro_send(smtp->task, smtp->fd, smtp->skid, cmd, strlen(cmd), NULL, 0);
@@ -262,6 +266,7 @@ static int32_t _smtp_send(smtp_ctx *smtp, mail_ctx *mail) {
     }
     return ERR_OK;
 }
+// 发送 SMTP RSET 命令重置会话状态（不关闭连接）
 static int32_t _smtp_reset(smtp_ctx *smtp) {
     char *cmd = smtp_pack_reset();
     char *pack = coro_send(smtp->task, smtp->fd, smtp->skid, cmd, strlen(cmd), NULL, 0);
@@ -347,6 +352,7 @@ int32_t mongo_connect(task_ctx *task, mongo_ctx *mongo) {
     }
     return rtn;
 }
+// 执行 MongoDB SCRAM 认证流程（发送 client-first 消息并等待握手结果）
 static int32_t _mongo_auth(mongo_ctx *mongo, const char *authmod) {
     size_t lens;
     void *client_first = mongo_pack_scram_client_first(mongo, authmod, &lens);
@@ -410,6 +416,7 @@ int32_t mongo_ping(mongo_ctx *mongo) {
     }
     return ERR_OK;
 }
+// MongoDB 统一发送函数：设置了 MORETOCOME 标志时仅发送不等待响应，否则同步等待响应
 static inline int32_t _mongo_send(mongo_ctx *mongo, const char *cmdname, void *pack, size_t lens, mgopack_ctx **mgopack) {
     if (mongo_check_flag(mongo, MORETOCOME)) {
         if (ERR_OK != ev_send(&mongo->task->loader->netev, mongo->fd, mongo->skid, pack, lens, 0)) {

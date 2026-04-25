@@ -1,18 +1,20 @@
-﻿#include "protocol/pgsql/pgsql.h"
+#include "protocol/pgsql/pgsql.h"
 #include "protocol/pgsql/pgsql_parse.h"
 #include "crypt/scram.h"
 #include "srey/task.h"
 #include "utils/utils.h"
 
 //https://www.postgresql.org/docs/18/protocol-flow.html
+
+// 连接状态枚举
 typedef enum parse_status {
-    INIT = 0,
-    AUTH,
-    COMMAND
+    INIT = 0,   // 初始状态，等待 SSL 协商响应
+    AUTH,       // 认证阶段，等待认证消息
+    COMMAND     // 命令阶段，正常收发命令
 }parse_status;
 
-static const char *_pgsql_scram_mod[] = { "SCRAM-SHA-256" };
-static _handshaked_push _hs_push;
+static const char *_pgsql_scram_mod[] = { "SCRAM-SHA-256" }; // 支持的 SASL 认证方法列表
+static _handshaked_push _hs_push;                             // 握手完成推送回调函数指针
 
 void _pgsql_init(void *hspush) {
     _hs_push = hspush;
@@ -40,44 +42,45 @@ int32_t _pgsql_may_resume(void *data) {
         return ERR_OK;
     }
     pgpack_ctx *pgpack = data;
+    // 通知消息由上层异步处理，不允许当前协程立即恢复
     if (PGPACK_NOTIFICATION == pgpack->type) {
         return ERR_FAILED;
     }
     return ERR_OK;
 }
-//请求是否ssl加密
+// 连接建立后请求是否启用 SSL 加密
 int32_t _pgsql_on_connected(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud, int32_t err) {
     (void)ud;
     if (ERR_OK != err) {
         return err;
     }
     char buf[8];
-    pack_integer(buf, 8, 4, 0);
-    pack_integer(buf + 4, 80877103, 4, 0);
+    pack_integer(buf, 8, 4, 0);         // 消息总长度 = 8
+    pack_integer(buf + 4, 80877103, 4, 0); // SSLRequest 魔数
     return ev_send(ev, fd, skid, buf, sizeof(buf), 1);
 }
-//Startup 消息
+// 发送 Startup 消息，包含用户名、数据库名等启动参数
 static int32_t _pgsql_startup(ev_ctx *ev, ud_cxt *ud) {
     pgsql_ctx *pg = (pgsql_ctx *)ud->context;
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
-    binary_set_skip(&bwriter, 4);
-    binary_set_integer(&bwriter, 3, 2, 0);//major version
-    binary_set_integer(&bwriter, 0, 2, 0);//minor version
+    binary_set_skip(&bwriter, 4);                           // 预留长度字段
+    binary_set_integer(&bwriter, 3, 2, 0);                  // 协议主版本号 3
+    binary_set_integer(&bwriter, 0, 2, 0);                  // 协议次版本号 0
     binary_set_string(&bwriter, "user", 0);
     binary_set_string(&bwriter, pg->user, 0);
     binary_set_string(&bwriter, "database", 0);
     binary_set_string(&bwriter, pg->database, 0);
     binary_set_string(&bwriter, "application_name", 0);
     binary_set_string(&bwriter, "srey", 0);
-    binary_set_int8(&bwriter, 0);
+    binary_set_int8(&bwriter, 0);                           // 参数列表结束标志
     size_t size = bwriter.offset;
     binary_offset(&bwriter, 0);
-    binary_set_integer(&bwriter, size, 4, 0);
+    binary_set_integer(&bwriter, size, 4, 0);               // 回填消息总长度
     ud->status = AUTH;
     return ev_send(ev, pg->fd, pg->skid, bwriter.data, size, 0);
 }
-//请求是否ssl加密 返回
+// 处理服务端 SSL 响应：'S' 升级为 SSL，'N' 直接发送 Startup 消息
 static void _pgsql_ssl_response(pgsql_ctx *pg, ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     if (1 > buffer_size(buf)) {
         BIT_SET(*status, PROT_MOREDATA);
@@ -87,6 +90,7 @@ static void _pgsql_ssl_response(pgsql_ctx *pg, ev_ctx *ev, buffer_ctx *buf, ud_c
     ASSERTAB(sizeof(ssl) == buffer_remove(buf, ssl, sizeof(ssl)), "copy buffer failed.");
     switch (ssl[0]) {
     case 'S':
+        // 服务端支持 SSL，升级连接
         if (NULL != pg->evssl) {
             if (ERR_OK != ev_ssl(ev, pg->fd, pg->skid, 1, pg->evssl)) {
                 BIT_SET(*status, PROT_ERROR);
@@ -97,7 +101,8 @@ static void _pgsql_ssl_response(pgsql_ctx *pg, ev_ctx *ev, buffer_ctx *buf, ud_c
         }
         break;
     case 'N':
-        if (ERR_OK != _pgsql_startup(ev, ud)) {//发送 Startup消息
+        // 服务端不支持 SSL，直接发送 Startup 消息
+        if (ERR_OK != _pgsql_startup(ev, ud)) {
             BIT_SET(*status, PROT_ERROR);
         }
         break;
@@ -106,20 +111,21 @@ static void _pgsql_ssl_response(pgsql_ctx *pg, ev_ctx *ev, buffer_ctx *buf, ud_c
         break;
     }
 }
-//ssl握手完成发送 Startup消息
+// SSL 握手完成后发送 Startup 消息
 int32_t _pgsql_ssl_exchanged(ev_ctx *ev, ud_cxt *ud) {
     return _pgsql_startup(ev, ud);
 }
-//获取一个完整的数据包
+// 从接收缓冲区读取一个完整的 pgsql 消息（含类型码+长度+数据），返回堆上的数据指针
 static char *_pgsql_payload(buffer_ctx *buf, int32_t *lens, int32_t *status) {
     size_t blens = buffer_size(buf);
     if (5 > blens) {
+        // 数据不足一个完整消息头（1字节类型码 + 4字节长度）
         BIT_SET(*status, PROT_MOREDATA);
         return NULL;
     }
     ASSERTAB((size_t)sizeof(*lens) == buffer_copyout(buf, 1, lens, sizeof(*lens)), "copy buffer failed.");
     *lens = (int32_t)unpack_integer((const char*)lens, 4, 0, 0);
-    int32_t total = (*lens) + 1;
+    int32_t total = (*lens) + 1; // 消息总长度 = 类型码(1) + 消息体(lens)
     if ((size_t)total > blens) {
         BIT_SET(*status, PROT_MOREDATA);
         return NULL;
@@ -129,7 +135,7 @@ static char *_pgsql_payload(buffer_ctx *buf, int32_t *lens, int32_t *status) {
     ASSERTAB(total == (int32_t)buffer_remove(buf, pack, total), "copy buffer failed.");
     return pack;
 }
-//取得支持的认证方法
+// 从 SASL 方法列表中查找本端支持的认证方法（当前仅支持 SCRAM-SHA-256）
 static char *_pgsql_get_authmod(binary_ctx *breader) {
     char *mod;
     size_t i;
@@ -147,7 +153,7 @@ static char *_pgsql_get_authmod(binary_ctx *breader) {
     }
     return NULL;
 }
-//password方式认证 GSSResponse 
+// 明文密码认证（AuthenticationCleartextPassword / GSSResponse）
 static int32_t _pgsql_password_auth(pgsql_ctx *pg, ev_ctx *ev) {
     binary_ctx bwriter;
     pgsql_pack_start(&bwriter, 'p');
@@ -155,7 +161,7 @@ static int32_t _pgsql_password_auth(pgsql_ctx *pg, ev_ctx *ev) {
     pgsql_pack_end(&bwriter);
     return ev_send(ev, pg->fd, pg->skid, bwriter.data, bwriter.offset, 0);
 }
-//scram-sha-256 第一步
+// SCRAM-SHA-256 第一步：发送 client-first-message
 static int32_t _pgsql_scram_client_first(pgsql_ctx *pg, ev_ctx *ev, const char *mod) {
     pg->scram = scram_init(mod, 1);
     if (NULL == pg->scram) {
@@ -164,15 +170,15 @@ static int32_t _pgsql_scram_client_first(pgsql_ctx *pg, ev_ctx *ev, const char *
     char *first_message = scram_first_message(pg->scram);
     binary_ctx bwriter;
     pgsql_pack_start(&bwriter, 'p');
-    binary_set_string(&bwriter, mod, 0);
+    binary_set_string(&bwriter, mod, 0);                    // 所选 SASL 机制名称
     size_t fmlens = strlen(first_message);
-    binary_set_integer(&bwriter, fmlens, 4, 0);
+    binary_set_integer(&bwriter, fmlens, 4, 0);             // client-first-message 长度
     binary_set_string(&bwriter, first_message, fmlens);
     FREE(first_message);
     pgsql_pack_end(&bwriter);
     return ev_send(ev, pg->fd, pg->skid, bwriter.data, bwriter.offset, 0);
 }
-//scram-sha-256 第二步
+// SCRAM-SHA-256 第二步：解析 server-first-message 并发送 client-final-message
 static int32_t _pgsql_scram_client_final(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *breader) {
     if (ERR_OK != scram_parse_first_message(pg->scram,
         breader->data + breader->offset, breader->size - breader->offset)) {
@@ -190,19 +196,20 @@ static int32_t _pgsql_scram_client_final(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *
     pgsql_pack_end(&bwriter);
     return ev_send(ev, pg->fd, pg->skid, bwriter.data, bwriter.offset, 0);
 }
+// 根据认证类型码分派具体的认证处理逻辑
 static void _pgsql_auth_process(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *breader, int32_t *status) {
     int32_t code = (int32_t)binary_get_integer(breader, 4, 0);
     switch (code) {
-    case 0x00://认证成功 AuthenticationOk 
+    case 0x00: // AuthenticationOk：认证成功，释放 SCRAM 上下文
         scram_free(pg->scram);
         pg->scram = NULL;
         break;
-    case 0x03://明文密码 AuthenticationCleartextPassword 
+    case 0x03: // AuthenticationCleartextPassword：明文密码认证
         if (ERR_OK != _pgsql_password_auth(pg, ev)) {
             BIT_SET(*status, PROT_ERROR);
         }
         break;
-    case 0x0a: {//SASL身份验证 AuthenticationSASL
+    case 0x0a: { // AuthenticationSASL：SASL 认证，选择方法并发送 client-first-message
         const char *mod = _pgsql_get_authmod(breader);
         if (NULL == mod) {
             BIT_SET(*status, PROT_ERROR);
@@ -213,12 +220,12 @@ static void _pgsql_auth_process(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *breader, 
             BIT_SET(*status, PROT_ERROR);
         }
         break;
-    case 0x0b://AuthenticationSASLContinue
+    case 0x0b: // AuthenticationSASLContinue：收到 server-first-message，发送 client-final-message
         if (ERR_OK != _pgsql_scram_client_final(pg, ev, breader)) {
             BIT_SET(*status, PROT_ERROR);
         }
         break;
-    case 0x0c://AuthenticationSASLFinal 
+    case 0x0c: // AuthenticationSASLFinal：验证 server-final-message 签名
         if (ERR_OK != scram_check_final_message(pg->scram,
             breader->data + breader->offset, breader->size - breader->offset)) {
             BIT_SET(*status, PROT_ERROR);
@@ -231,6 +238,7 @@ static void _pgsql_auth_process(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *breader, 
         break;
     }
 }
+// 处理认证阶段收到的服务端消息（R/S/K/Z/E）
 static void _pgsql_auth_response(pgsql_ctx *pg, ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     int32_t lens;
     char *pack = _pgsql_payload(buf, &lens, status);
@@ -238,25 +246,25 @@ static void _pgsql_auth_response(pgsql_ctx *pg, ev_ctx *ev, buffer_ctx *buf, ud_
         return;
     }
     binary_ctx breader;
-    binary_init(&breader, pack, lens + 1, 0);//1 操作码
-    binary_get_skip(&breader, 5);
-    switch (pack[0]) {// R/R/S/.../K/Z
-    case 'E': {
+    binary_init(&breader, pack, lens + 1, 0); // +1 为类型码字节
+    binary_get_skip(&breader, 5);             // 跳过类型码(1) + 长度(4)
+    switch (pack[0]) {
+    case 'E': { // ErrorResponse：认证失败，推送错误消息
         char *err = _pgpack_error_notice(&breader);
         _hs_push(pg->fd, pg->skid, 1, ud, ERR_FAILED, err, strlen(err));
         BIT_SET(*status, PROT_ERROR);
         break;
     }
-    case 'R':
+    case 'R': // Authentication：认证请求，分派处理
         _pgsql_auth_process(pg, ev, &breader, status);
         break;
-    case 'S'://ParameterStatus 运行时参数状态报告
+    case 'S': // ParameterStatus：运行时参数状态报告，忽略
         break;
-    case 'K'://BackendKeyData 取消键数据
+    case 'K': // BackendKeyData：记录后端进程 ID 和取消密钥
         pg->pid = (int32_t)binary_get_integer(&breader, 4, 0);
         pg->key = (uint32_t)binary_get_integer(&breader, 4, 0);
         break;
-    case 'Z'://ReadyForQuery
+    case 'Z': // ReadyForQuery：认证完成，服务端就绪，推送成功通知
         pg->readyforquery = binary_get_int8(&breader);
         ud->status = COMMAND;
         _hs_push(pg->fd, pg->skid, 1, ud, ERR_OK, NULL, 0);
@@ -267,6 +275,7 @@ static void _pgsql_auth_response(pgsql_ctx *pg, ev_ctx *ev, buffer_ctx *buf, ud_
     }
     FREE(pack);
 }
+// 处理命令阶段收到的服务端消息，返回在 ReadyForQuery 时累积完成的 pgpack_ctx
 static pgpack_ctx *_pgsql_command_response(pgsql_ctx *pg, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     int32_t lens;
     char *payload = _pgsql_payload(buf, &lens, status);
@@ -274,20 +283,20 @@ static pgpack_ctx *_pgsql_command_response(pgsql_ctx *pg, buffer_ctx *buf, ud_cx
         return NULL;
     }
     binary_ctx breader;
-    binary_init(&breader, payload, lens + 1, 0);//1 操作码
+    binary_init(&breader, payload, lens + 1, 0); // +1 为类型码字节
     return _pgpack_parser(pg, &breader, ud, status);
 }
 void *pgsql_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     pgsql_ctx *pg = (pgsql_ctx *)ud->context;
     pgpack_ctx *pack = NULL;
     switch (ud->status) {
-    case INIT:
+    case INIT:    // 等待 SSL 协商响应
         _pgsql_ssl_response(pg, ev, buf, ud, status);
         break;
-    case AUTH:
+    case AUTH:    // 认证阶段消息处理
         _pgsql_auth_response(pg, ev, buf, ud, status);
         break;
-    case COMMAND:
+    case COMMAND: // 命令阶段消息处理
         pack = _pgsql_command_response(pg, buf, ud, status);
         break;
     default:
@@ -332,6 +341,7 @@ int32_t pgsql_affected_rows(pgpack_ctx *pgpack) {
     if (0 == lens) {
         return 0;
     }
+    // 从命令完成标签末尾反向找最后一个空格，取其后的数字字符串
     int32_t space = 1;
     for (size_t i = lens - 1; i >= 0; i--) {
         if (space) {

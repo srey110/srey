@@ -6,20 +6,20 @@
 //|--------------|--------------|-----------|-----------|
 //|node          |buffer                                |
 typedef struct bufnode_ctx {
-    int32_t used;//是否被外部使用
+    int32_t used;           //是否被分散读写操作锁定（非零时不可释放）
     struct bufnode_ctx *next;
-    char *buffer;
-    free_cb _free;
-    size_t buffer_lens;
-    size_t misalign;
-    size_t off;
+    char *buffer;           //实际数据缓冲区指针
+    free_cb _free;          //外部数据的释放函数（零拷贝时使用）
+    size_t buffer_lens;     //buffer 总容量
+    size_t misalign;        //已读取（消耗）的字节数（左偏移）
+    size_t off;             //已写入的有效数据长度
 }bufnode_ctx;
 
-#define MAX_COPY_IN_EXPAND       4096
-#define MAX_REALIGN_IN_EXPAND    2048
-#define FIRST_FORMAT_IN_EXPAND   256
-#define NODE_SPACE_PTR(ch) ((ch)->buffer + (ch)->misalign + (ch)->off)
-#define NODE_SPACE_LEN(ch) ((ch)->buffer_lens - ((ch)->misalign + (ch)->off))
+#define MAX_COPY_IN_EXPAND       4096 //节点数据量超过此值时不做数据迁移，直接新建节点
+#define MAX_REALIGN_IN_EXPAND    2048 //节点 off 不超过此值时允许通过对齐操作复用空间
+#define FIRST_FORMAT_IN_EXPAND   256  //格式化写入时首次预分配的空间大小
+#define NODE_SPACE_PTR(ch) ((ch)->buffer + (ch)->misalign + (ch)->off)  //节点空闲区起始指针
+#define NODE_SPACE_LEN(ch) ((ch)->buffer_lens - ((ch)->misalign + (ch)->off)) //节点空闲区长度
 #define RECOED_IOV(ch, lens) \
     iov[index].IOV_PTR_FIELD = NODE_SPACE_PTR(ch);\
     iov[index].IOV_LEN_FIELD = (IOV_LEN_TYPE)lens;\
@@ -108,6 +108,7 @@ static bufnode_ctx *_node_insert_new(buffer_ctx *ctx, const size_t lens) {
     _node_insert(ctx, pnode);
     return pnode;
 }
+// 更新 tail_with_data 指针，使其指向最后一个有数据的节点
 static void _last_with_data(buffer_ctx *ctx) {
     bufnode_ctx **node = ctx->tail_with_data;
     if (NULL == *node) {
@@ -335,9 +336,8 @@ int32_t buffer_append(buffer_ctx *ctx, void *data, const size_t lens) {
         || NULL == data) {
         return ERR_OK;
     }
-    /* Fast path: tail node already has data (tail_with_data invariant holds),
-     * is not pinned by a scatter-gather operation, and has enough contiguous
-     * free space — skip expand/commit entirely. */
+    /* 快速路径：尾节点已有数据且未被分散读写锁定，剩余空间足够直接写入，
+     * 跳过 expand/commit 流程，减少开销。 */
     bufnode_ctx *tail = ctx->tail;
     if (NULL != tail
         && 0 != tail->off
@@ -348,7 +348,7 @@ int32_t buffer_append(buffer_ctx *ctx, void *data, const size_t lens) {
         ctx->total_lens   += lens;
         return ERR_OK;
     }
-    /* Slow path: full expand + commit. */
+    /* 慢速路径：走完整的 expand + commit 流程 */
     char *tmp = (char*)data;
     IOV_TYPE iov[MAX_EXPAND_NIOV];
     size_t remain = lens;
@@ -397,6 +397,7 @@ int32_t buffer_appendv(buffer_ctx *ctx, const char *fmt, ...) {
     va_end(va);
     return ERR_OK;
 }
+// 从链表头开始线性遍历，找到包含 start 偏移量的节点
 static bufnode_ctx *_search_start(bufnode_ctx *node, size_t start, size_t *totaloff) {
     while (NULL != node
         && 0 != node->off) {
@@ -485,8 +486,7 @@ size_t buffer_drain(buffer_ctx *ctx, size_t lens) {
     if (lens > oldlen) {
         lens = oldlen;
     }
-    /* Save hint before the drain loop frees nodes; we'll restore it if the
-     * hint node survives, or clear it if the node was freed. */
+    /* 在 drain 循环释放节点前保存游标，drain 后再恢复（节点存活）或清零（节点已释放）。 */
     bufnode_ctx *saved_hint     = ctx->hint_node;
     size_t       saved_hint_off = ctx->hint_base_off;
     ctx->hint_node     = NULL;
@@ -520,11 +520,11 @@ size_t buffer_drain(buffer_ctx *ctx, size_t lens) {
         ctx->head = ctx->tail = NULL;
         ctx->tail_with_data = &(ctx)->head;
     }
-    /* Restore hint when the cached node survived the drain:
-     *   saved_hint_off >= lens  → node was not touched; shift offset by lens.
-     *   ctx->head == saved_hint → drain stopped inside the hint node (it is
-     *                             now the new head); reset base offset to 0.
-     * Any other case means the node was freed; hint stays NULL/0. */
+    /* 恢复搜索游标：
+     *   saved_hint_off >= lens  → 游标节点未被释放，基偏移减去 lens 即可。
+     *   ctx->head == saved_hint → drain 停在游标节点内部（已成为新 head），
+     *                             将基偏移重置为 0。
+     *   其他情况表示游标节点已被释放，游标保持 NULL/0。 */
     if (NULL != saved_hint) {
         if (saved_hint_off >= lens) {
             ctx->hint_node     = saved_hint;
@@ -543,6 +543,7 @@ size_t buffer_remove(buffer_ctx *ctx, void *out, size_t lens) {
     }
     return rtn;
 }
+// 跨节点比较数据，从 node 的 off 偏移处与 what 比较 wlen 字节
 static int32_t _search_memcmp(bufnode_ctx *node, cmp_func cmp, size_t off, char *what, size_t wlen) {
     size_t ncomp;
     while (wlen > 0

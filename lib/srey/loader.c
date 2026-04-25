@@ -2,20 +2,24 @@
 #include "containers/hashmap.h"
 #include "srey/task.h"
 
-loader_ctx *g_loader;
+loader_ctx *g_loader; // 全局 loader 单例，由 loader_init 创建
 
+// 计算任务名在哈希表中的哈希值
 static uint64_t _map_task_hash(const void *item, uint64_t seed0, uint64_t seed1) {
     (void)seed0;
     (void)seed1;
     return hash((const char *)(*(name_t **)item), sizeof(name_t));
 }
+// 比较两个任务名（用于哈希表碰撞解决）
 static int _map_task_compare(const void *a, const void *b, void *ud) {
     (void)ud;
     return *(*(name_t **)a) - *(*(name_t **)b);
 }
+// 哈希表元素析构回调：通过任务名指针反推 task_ctx 并释放
 static void _map_task_free(void *item) {
     task_free(UPCAST(*((name_t **)item), task_ctx, name));
 }
+// 找出积压任务最多的 worker 索引，用于任务窃取；队列全空时返回 -1
 static int32_t _max_task_index(loader_ctx *loader) {
     uint16_t index = 0;
     uint32_t max = mspc_size(&loader->worker[0].qutasks);
@@ -29,6 +33,7 @@ static int32_t _max_task_index(loader_ctx *loader) {
     }
     return 0 == max ? -1 : (int32_t)index;
 }
+// 唤醒所有处于等待状态的工作线程（用于 loader_free 时通知退出）
 static void _worker_wakeup_all(loader_ctx *loader) {
     worker_ctx *worker;
     for (uint16_t i = 0; i < loader->nworker; i++) {
@@ -40,42 +45,45 @@ static void _worker_wakeup_all(loader_ctx *loader) {
         }
     }
 }
+// 将任务名投递到某个工作线程队列并在必要时唤醒该线程
 static void _worker_wakeup(loader_ctx *loader, name_t *task) {
-    /* nworker==1 fast path: skip atomic round-robin */
+    // 单工作线程时跳过原子轮询直接选第 0 个
     worker_ctx *worker = (1 == loader->nworker)
         ? &loader->worker[0]
         : &loader->worker[ATOMIC64_ADD(&loader->index, 1) % loader->nworker];
-    /* 无锁入队；队列满时自旋等待（正常负载下极少发生）*/
+    // 无锁入队；队列满时自旋等待（正常负载下极少发生）
     while (ERR_FAILED == mspc_push(&worker->qutasks, (void *)(uintptr_t)*task)) {
         CPU_PAUSE();
     }
-    /* Fast path: skip mutex when no worker is sleeping */
+    // 快速路径：无工作线程休眠时跳过 mutex
     if (ATOMIC_GET(&worker->waiting) > 0) {
         mutex_lock(&worker->mutex);
         cond_signal(&worker->cond);
         mutex_unlock(&worker->mutex);
     }
 }
+// 将消息推入任务的无锁消息队列并在必要时唤醒工作线程
 void _task_message_push(task_ctx *task, message_ctx *msg) {
-    /* 堆分配 message_ctx 包装体，由消费方负责释放 */
+    // 堆分配 message_ctx 包装体，由消费方负责释放
     message_ctx *pmsg;
     MALLOC(pmsg, sizeof(message_ctx));
     *pmsg = *msg;
-    /* 无锁入队；队列满时自旋等待 */
+    // 无锁入队；队列满时自旋等待
     while (ERR_FAILED == mspc_push(&task->qumsg, pmsg)) {
         CPU_PAUSE();
     }
-    /* CAS 0→1：只有首个生产者负责调度，避免重复唤醒 */
+    // CAS 0→1：只有首个生产者负责调度，避免重复唤醒
     if (ATOMIC_CAS(&task->global, 0, 1)) {
         _worker_wakeup(task->loader, &task->name);
     }
 }
+// 从本地队列或其他 worker 队列（工作窃取）取出下一个待处理任务名
 static name_t _task_name_get(loader_ctx *loader, worker_ctx *worker) {
     void *p = mspc_pop(&worker->qutasks);
     if (NULL != p) {
         return (name_t)(uintptr_t)p;
     }
-    /* 本地队列为空：尝试从积压最多的 worker 偷一个任务 */
+    // 本地队列为空：尝试从积压最多的 worker 偷一个任务
     int32_t index = _max_task_index(loader);
     if (-1 != index) {
         p = mspc_pop(&loader->worker[index].qutasks);
@@ -85,8 +93,9 @@ static name_t _task_name_get(loader_ctx *loader, worker_ctx *worker) {
     }
     return INVALID_TNAME;
 }
-/* 无锁批量 pop：单次最多取出的消息条数（栈上数组上限）*/
+// 单次批量 pop 消息的最大条数（栈上数组上限）
 #define TASK_MSG_BATCH  64
+// 从任务消息队列批量取出消息并依次分发，处理完成后重调度或清除调度标志
 static void _task_run(loader_ctx *loader, worker_ctx *worker,
     worker_version *version, task_dispatch_arg *runarg) {
     task_ctx *task = runarg->task;
@@ -99,7 +108,7 @@ static void _task_run(loader_ctx *loader, worker_ctx *worker,
     if (0 == n) {
         n = 1;
     }
-    /* 无锁批量 pop：逐条取出后复制到栈上数组，立即释放堆包装体，再批量 dispatch */
+    // 无锁批量 pop：逐条取出后复制到栈上数组，立即释放堆包装体，再批量 dispatch
     message_ctx *ptrs[TASK_MSG_BATCH];
     message_ctx  batch[TASK_MSG_BATCH];
     uint32_t want, got, i;
@@ -133,14 +142,12 @@ static void _task_run(loader_ctx *loader, worker_ctx *worker,
         }
         processed += got;
         if (got < want) {
-            break; /* 队列已耗尽，提前退出 */
+            break; // 队列已耗尽，提前退出
         }
     }
-    /*
-     * 无锁重调度：先将 global CAS 1→0（取消调度），再检查队列是否仍有消息。
-     * 若有：尝试 CAS 0→1 重新调度；若 CAS 失败说明某生产者已抢先调度。
-     * 这两步均为 seq_cst 原子操作，保证不丢消息。
-     */
+    // 无锁重调度：先将 global CAS 1→0（取消调度），再检查队列是否仍有消息。
+    // 若有：尝试 CAS 0→1 重新调度；若 CAS 失败说明某生产者已抢先调度。
+    // 两步均为 seq_cst 原子操作，保证不丢消息。
     ATOMIC_CAS(&task->global, 1, 0);
     if (mspc_size(&task->qumsg) > 0) {
         if (ATOMIC_CAS(&task->global, 0, 1)) {
@@ -150,6 +157,7 @@ static void _task_run(loader_ctx *loader, worker_ctx *worker,
         task->overload = ONEK;
     }
 }
+// 工作线程主循环：持续从队列取任务并分发消息，队列空时阻塞等待唤醒
 static void _worker_loop(void *arg) {
     name_t name;
     worker_ctx *worker = (worker_ctx *)arg;
@@ -157,7 +165,7 @@ static void _worker_loop(void *arg) {
     worker_version *version = &loader->monitor.version[worker->index];
     task_dispatch_arg runarg;
     while (0 == loader->stop) {
-        //从队列取一任务
+        // 从队列取一任务
         name = _task_name_get(loader, worker);
         if (INVALID_TNAME != name) {
             runarg.task = task_grab(loader, name);
@@ -170,10 +178,10 @@ static void _worker_loop(void *arg) {
         }
         mutex_lock(&worker->mutex);
         ATOMIC_ADD(&worker->waiting, 1);
-        /* Re-check local queue under mutex to close the lost-wakeup window:
-         * a push may have landed between _task_name_get returning empty and
-         * our ATOMIC_ADD above; the pusher saw waiting==0 and skipped signal.
-         * mspc_size 本身是无锁读，不需要额外锁保护。*/
+        // 在 mutex 下二次检查队列，防止丢失唤醒：
+        // 若在 _task_name_get 返回空到 ATOMIC_ADD 之间有生产者入队，
+        // 生产者看到 waiting==0 会跳过 signal，这里再检查一次补漏。
+        // mspc_size 是无锁读，不需要额外锁保护。
         if (mspc_size(&worker->qutasks) > 0) {
             ATOMIC_ADD(&worker->waiting, (atomic_t)-1);
             mutex_unlock(&worker->mutex);
@@ -185,7 +193,7 @@ static void _worker_loop(void *arg) {
     }
     LOG_INFO("worker thread %d exited.", worker->index);
 }
-//监控循环
+// 检查各工作线程是否卡死（消息版本号未变化且仍有消息在处理）
 static void _monitor_check(loader_ctx *loader) {
     worker_version *version;
     for (uint16_t i = 0; i < loader->nworker; i++) {
@@ -199,6 +207,7 @@ static void _monitor_check(loader_ctx *loader) {
         }
     }
 }
+// 监控线程主循环：每 5 秒调用 _monitor_check 检测卡死的工作线程
 static void _monitor_loop(void *arg) {
     loader_ctx *loader = (loader_ctx *)arg;
     uint64_t time = 0;
@@ -244,6 +253,7 @@ loader_ctx *loader_init(uint16_t nnet, uint16_t nworker) {
     ev_init(&loader->netev, nnet);
     return loader;
 }
+// hashmap_scan 回调：向每个任务推送 MSG_TYPE_CLOSING 消息（仅推一次）
 static bool _closing_push(const void *item, void *udata) {
     task_ctx *task = UPCAST(*((name_t **)item), task_ctx, name);
     if (ATOMIC_CAS(&task->closing, 0, 1)) {
@@ -251,12 +261,14 @@ static bool _closing_push(const void *item, void *udata) {
     }
     return true;
 }
+// hashmap_scan 回调：打印仍未退出的任务警告（关闭超时时使用）
 static bool _closing_timeout(const void *item, void *udata) {
     (void)udata;
     task_ctx *task = UPCAST(*((name_t **)item), task_ctx, name);
     LOG_WARN("task %d close timeout, ref %d.", task->name, task->ref);
     return true;
 }
+// 广播关闭消息给所有任务，并等待所有任务退出（最长 15 秒超时告警）
 static void _task_closing(loader_ctx *loader) {
     message_ctx closing;
     closing.mtype = MSG_TYPE_CLOSING;

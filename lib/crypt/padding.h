@@ -4,11 +4,11 @@
 #include "base/macro.h"
 
 typedef enum padding_model {
-    NoPadding = 0x00,
-    ZeroPadding,
-    PKCS57,
-    ISO10126,
-    ANSIX923
+    NoPadding = 0x00, // 不填充
+    ZeroPadding,      // 零字节填充
+    PKCS57,           // PKCS#7 填充（填充字节值等于填充长度）
+    ISO10126,         // ISO 10126 填充（随机字节 + 末尾填充长度）
+    ANSIX923          // ANSI X.923 填充（零字节 + 末尾填充长度）
 }padding_model;
 /// <summary>
 /// 数据填充

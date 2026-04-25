@@ -4,6 +4,7 @@ void heap_init(heap_ctx *heap, _heap_compare _compare) {
     ZERO(heap, sizeof(heap_ctx));
     heap->_compare = _compare;
 }
+// 交换父子节点位置，维护堆的结构性质（内部使用）
 static void _heap_swap(heap_ctx *heap, heap_node *parent, heap_node *child) {
     ASSERTAB(child->parent == parent
         && (parent->left == child || parent->right == child), ERRSTR_INVPARAM);
@@ -41,6 +42,7 @@ static void _heap_swap(heap_ctx *heap, heap_node *parent, heap_node *child) {
     parent->left = lchild;
     parent->right = rchild;
 }
+// 计算第 nelts 个节点的路径编码和深度，用于定位完全二叉树末尾节点（内部使用）
 static inline void _heap_path(int32_t nelts, int32_t *path, int32_t *depth) {
     *path = 0;
     *depth = 0;
@@ -78,6 +80,7 @@ void heap_insert(heap_ctx *heap, heap_node *node) {
         }
     }
 }
+// 用节点 r 替换节点 s 在堆中的位置（内部使用，r 可为 NULL 表示直接删除）
 static void _heap_replace(heap_ctx *heap, heap_node *s, heap_node *r) {
     if (NULL == s->parent) {
         heap->root = r;

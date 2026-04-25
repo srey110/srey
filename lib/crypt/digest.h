@@ -22,11 +22,11 @@ typedef enum digest_type {
     DG_SHA512
 }digest_type;
 typedef struct digest_ctx {
-    size_t block_lens;
-    void *cur_ctx;
-    _init_cb _init;
-    _update_cb _update;
-    _final_cb _final;
+    size_t block_lens;      // 当前摘要算法的输出长度（字节）
+    void *cur_ctx;          // 指向当前算法上下文
+    _init_cb _init;         // 初始化回调
+    _update_cb _update;     // 数据输入回调
+    _final_cb _final;       // 结果输出回调
     union {
         md2_ctx md2;
         md4_ctx md4;
@@ -34,7 +34,7 @@ typedef struct digest_ctx {
         sha1_ctx sha1;
         sha256_ctx sha256;
         sha512_ctx sha512;
-    }eng_ctx;
+    }eng_ctx;               // 各算法上下文联合体
 }digest_ctx;
 /// <summary>
 /// 初始化

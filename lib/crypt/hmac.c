@@ -1,6 +1,6 @@
 ﻿#include "crypt/hmac.h"
 
-#define HMAC_KEY_LENS 64
+#define HMAC_KEY_LENS 64 // HMAC 标准密钥块长度（字节）
 
 void hmac_init(hmac_ctx *hmac, digest_type dtype, const char *key, size_t klens) {
     digest_init(&hmac->inside, dtype);

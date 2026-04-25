@@ -9,6 +9,7 @@ void mail_init(mail_ctx *mail) {
     arr_mail_addr_init(&mail->addrs, 0);
     arr_mail_attach_init(&mail->attach, 0);
 }
+// 释放附件列表中每个附件的 content 缓冲区（不释放数组本身）
 static void _mail_attach_free(arr_mail_attach_ctx *attach) {
     for (uint32_t i = 0; i < arr_mail_attach_size(attach); i++) {
         FREE(arr_mail_attach_at(attach, i)->content);
@@ -41,6 +42,7 @@ void mail_html(mail_ctx *mail, const char *html, size_t lens) {
     MALLOC(mail->html, b64lens);
     bs64_encode(html, lens, mail->html);
 }
+// 填充 mail_addr 结构：设置显示名称和邮箱地址，name 为 NULL 或空时清空 name 字段
 static void _mail_addr(mail_addr *addr, const char *name, const char *email) {
     if (EMPTYSTR(name)) {
         addr->name[0] = '\0';
@@ -100,6 +102,7 @@ void mail_clear(mail_ctx *mail) {
     mail_addrs_clear(mail);
     mail_attach_clear(mail);
 }
+// 统计指定类型（TO/CC/BCC）的地址数量
 static uint32_t _smtp_addr_count(mail_ctx *mail, mail_addr_type type) {
     uint32_t count = 0;
     for (uint32_t i = 0; i < arr_mail_addr_size(&mail->addrs); i++) {
@@ -109,6 +112,7 @@ static uint32_t _smtp_addr_count(mail_ctx *mail, mail_addr_type type) {
     }
     return count;
 }
+// 将指定类型的地址列表写入 MIME 头部（To:/Cc:/Bcc: 行）
 static void _smtp_pack_addr(mail_ctx *mail, binary_ctx *bwriter, mail_addr_type type) {
     uint32_t count = _smtp_addr_count(mail, type);
     if (0 == count) {

@@ -1,5 +1,6 @@
 ﻿#include "protocol/mqtt/mqtt_pack.h"
 
+// 将整数编码为 MQTT 可变长度格式，返回编码字节数（1-4），超出范围返回 0
 static int32_t _mqtt_varlens_encode(uint32_t vlens, char buf[4]) {
     if (vlens >= 0x10000000) {
         return 0;
@@ -46,6 +47,7 @@ int32_t mqtt_props_fixnum(binary_ctx *props, mqtt_prop_flag flag, int32_t val) {
     }
     return ERR_OK;
 }
+// 将可变长度整数属性值写入属性缓冲区
 static int32_t _mqtt_props_varnum(binary_ctx *props, int32_t val) {
     char buf[4];
     int32_t lens = _mqtt_varlens_encode((uint32_t)val, buf);
@@ -121,6 +123,7 @@ void mqtt_topics_unsubscribe(binary_ctx *topics, const char *topic) {
     binary_set_integer(topics, tlens, 2, 0);
     binary_set_string(topics, topic, tlens);
 }
+// 计算并编码属性段长度（MQTT5.0），返回属性长度字段占用字节数；非5.0版本返回0
 static int32_t _mqtt_props_varlens(mqtt_protversion version, binary_ctx *props, char vlens[4], uint32_t *off) {
     if (version < MQTT_50) {
         return 0;

@@ -1,4 +1,4 @@
-﻿#include "protocol/mysql/mysql.h"
+#include "protocol/mysql/mysql.h"
 #include "protocol/mysql/mysql_parse.h"
 #include "protocol/mysql/mysql_utils.h"
 #include "protocol/mysql/mysql_pack.h"
@@ -12,25 +12,33 @@
 #endif
 
 //https://dev.mysql.com/doc/dev/mysql-server/latest/PAGE_PROTOCOL.html
+// 客户端能力标志位组合：涵盖协议 4.1、多结果集、插件认证、连接属性等必要能力
 #define CLIENT_CAPS\
     (CLIENT_LONG_PASSWORD | CLIENT_LONG_FLAG | CLIENT_PROTOCOL_41 | CLIENT_INTERACTIVE | CLIENT_RESERVED2 |\
     CLIENT_MULTI_STATEMENTS | CLIENT_MULTI_RESULTS | CLIENT_PS_MULTI_RESULTS | CLIENT_PLUGIN_AUTH | CLIENT_CONNECT_ATTRS |\
     CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA | CLIENT_CAN_HANDLE_EXPIRED_PASSWORDS | CLIENT_QUERY_ATTRIBUTES)
 
+// 连接解析状态枚举
 typedef enum parse_status {
-    INIT = 0,
-    SSL_EXCHANGE,
-    AUTH_PROCESS,
-    COMMAND
+    INIT = 0,       // 初始状态，等待服务器握手包
+    SSL_EXCHANGE,   // SSL 握手交换中
+    AUTH_PROCESS,   // 认证响应处理中
+    COMMAND         // 命令交互阶段
 }parse_status;
+
+// 认证插件切换请求数据
 typedef struct mpack_auth_switch {
-    char *plugin;//name of the client authentication plugin to switch to
-    buf_ctx provided;//Initial authentication data for that client plugin
+    char *plugin;       // 切换目标认证插件名称
+    buf_ctx provided;   // 插件提供的初始认证数据
 }mpack_auth_switch;
+
+// 连接属性键值对
 typedef struct connect_attr {
     const char *key;
     const char *val;
 }connect_attr;
+
+// 握手完成后的推送回调函数指针
 static _handshaked_push _hs_push;
 
 void _mysql_init(void *hspush) {
@@ -61,6 +69,8 @@ void _mysql_udfree(ud_cxt *ud) {
 void _mysql_closed(ud_cxt *ud) {
     _mysql_udfree(ud);
 }
+
+// 将字符集名称转换为 MySQL 协议中的字符集 ID
 static uint8_t _mysql_charset(const char *charset) {
     if (0 == strcmp("big5", charset)) {
         return 1;
@@ -142,6 +152,8 @@ static uint8_t _mysql_charset(const char *charset) {
         return 0;
     }
 }
+
+// 使用 mysql_native_password 算法计算认证签名（SHA1 双重哈希后与盐值异或）
 static void _mysql_native_sign(mysql_ctx *mysql, char sh1[SHA1_BLOCK_SIZE]) {
     char shpsw[SHA1_BLOCK_SIZE];
     char shscr[SHA1_BLOCK_SIZE];
@@ -160,6 +172,8 @@ static void _mysql_native_sign(mysql_ctx *mysql, char sh1[SHA1_BLOCK_SIZE]) {
         sh1[i] = shpsw[i] ^ shscr[i];
     }
 }
+
+// 使用 caching_sha2_password 算法计算认证签名（SHA256 双重哈希后与盐值异或）
 static void _mysql_caching_sha2_sign(mysql_ctx *mysql, char sh2[SHA256_BLOCK_SIZE]) {
     char shpsw[SHA256_BLOCK_SIZE];
     char shscr[SHA256_BLOCK_SIZE];
@@ -178,6 +192,8 @@ static void _mysql_caching_sha2_sign(mysql_ctx *mysql, char sh2[SHA256_BLOCK_SIZ
         sh2[i] = shpsw[i] ^ shscr[i];
     }
 }
+
+// 将连接属性（application、os 等）写入二进制缓冲区
 static void _mysql_connect_attrs(binary_ctx *battrs) {
     static connect_attr attrs[] = {
         { "application", "srey" },
@@ -193,6 +209,8 @@ static void _mysql_connect_attrs(binary_ctx *battrs) {
         binary_set_string(battrs, attrs[i].val, lens);
     }
 }
+
+// 发送客户端认证响应包（HandshakeResponse），包含用户名、密码签名、连接属性等
 static int32_t _mysql_auth_response(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
     mysql->id++;
     binary_ctx bwriter;
@@ -243,6 +261,8 @@ static int32_t _mysql_auth_response(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
     ud->status = AUTH_PROCESS;
     return ev_send(ev, mysql->client.fd, mysql->client.skid, bwriter.data, bwriter.offset, 0);
 }
+
+// 发送 SSL 握手请求包（SSLRequest），触发后续 SSL 升级
 static int32_t _mysql_ssl_exchange(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
     mysql->id++;
     binary_ctx bwriter;
@@ -264,6 +284,8 @@ static int32_t _mysql_ssl_exchange(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
 int32_t _mysql_ssl_exchanged(ev_ctx *ev, ud_cxt *ud) {
     return _mysql_auth_response(ud->context, ev, ud);
 }
+
+// 解析服务器初始握手包（Initial Handshake Packet），提取版本、盐值、能力标志等，并发送认证响应
 static void _mysql_auth_request(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     size_t payload_lens;
     mysql_ctx *mysql = ud->context;
@@ -338,6 +360,8 @@ static void _mysql_auth_request(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t
     }
     FREE(payload);
 }
+
+// 向服务器请求公钥（用于 caching_sha2 完整认证流程中的 RSA 加密）
 static int32_t _mysql_public_key(mysql_ctx *mysql, ev_ctx *ev) {
     mysql->id++;
     binary_ctx bwriter;
@@ -347,6 +371,8 @@ static int32_t _mysql_public_key(mysql_ctx *mysql, ev_ctx *ev) {
     binary_set_uint8(&bwriter, 0x02);
     return ev_send(ev, mysql->client.fd, mysql->client.skid, bwriter.data, bwriter.offset, 0);
 }
+
+// 将密码与服务器盐值进行逐字节异或，返回异或后的数据（调用方负责释放）
 static char *_mysql_password_xor_salt(mysql_ctx *mysql, size_t *lens) {
     size_t plens = strlen(mysql->client.password);
     *lens = plens + 1;
@@ -360,6 +386,7 @@ static char *_mysql_password_xor_salt(mysql_ctx *mysql, size_t *lens) {
     return xorpsw;
 }
 #if WITH_SSL
+// 初始化 RSA 公钥加密上下文（OAEP 填充模式），返回 EVP_PKEY_CTX，失败返回 NULL
 static EVP_PKEY_CTX *_mysql_encrypt_init(char *pubkey, size_t klens) {
     BIO *bio = BIO_new(BIO_s_mem());
     if (NULL == bio) {
@@ -387,6 +414,8 @@ static EVP_PKEY_CTX *_mysql_encrypt_init(char *pubkey, size_t klens) {
     return evpctx;
 }
 #endif
+
+// 使用服务器公钥对异或后的密码进行 RSA-OAEP 分块加密，将密文写入 bwriter
 static int32_t _mysql_sha2_rsa(binary_ctx *bwriter, char *pubkey, size_t klens, char *xorpsw, size_t xlens) {
 #if WITH_SSL
     EVP_PKEY_CTX *evpctx = _mysql_encrypt_init(pubkey, klens);
@@ -421,6 +450,8 @@ static int32_t _mysql_sha2_rsa(binary_ctx *bwriter, char *pubkey, size_t klens, 
     return ERR_FAILED;
 #endif
 }
+
+// 执行 caching_sha2 完整认证：将 RSA 加密后的密码包发送给服务器
 static int32_t _mysql_full_auth(mysql_ctx *mysql, ev_ctx *ev, char *pubkey, size_t klens) {
     mysql->id++;
     binary_ctx bwriter;
@@ -439,6 +470,8 @@ static int32_t _mysql_full_auth(mysql_ctx *mysql, ev_ctx *ev, char *pubkey, size
     _set_payload_lens(&bwriter);
     return ev_send(ev, mysql->client.fd, mysql->client.skid, bwriter.data, bwriter.offset, 0);
 }
+
+// 在 SSL 已建立的情况下，直接明文发送密码给服务器（caching_sha2 完整认证 SSL 路径）
 static int32_t _mysql_password_send(mysql_ctx *mysql, ev_ctx *ev) {
     mysql->id++;
     binary_ctx bwriter;
@@ -449,6 +482,8 @@ static int32_t _mysql_password_send(mysql_ctx *mysql, ev_ctx *ev) {
     _set_payload_lens(&bwriter);
     return ev_send(ev, mysql->client.fd, mysql->client.skid, bwriter.data, bwriter.offset, 0);
 }
+
+// 处理服务器发起的认证插件切换请求，重新计算签名并发送响应
 static int32_t _mysql_auth_switch_response(mysql_ctx *mysql, ev_ctx *ev, mpack_auth_switch *auswitch) {
     if (strlen(auswitch->plugin) >= sizeof(mysql->server.plugin)
         || auswitch->provided.lens < sizeof(mysql->server.salt)
@@ -475,6 +510,8 @@ static int32_t _mysql_auth_switch_response(mysql_ctx *mysql, ev_ctx *ev, mpack_a
     _set_payload_lens(&bwriter);
     return ev_send(ev, mysql->client.fd, mysql->client.skid, bwriter.data, bwriter.offset, 0);
 }
+
+// 认证成功：通知上层握手完成，切换到命令阶段
 static void _mysql_auth_ok(mysql_ctx *mysql, ud_cxt *ud, int32_t *status) {
     if (ERR_OK != _hs_push(mysql->client.fd, mysql->client.skid, 1, ud, ERR_OK, NULL, 0)) {
         BIT_SET(*status, PROT_ERROR);
@@ -482,11 +519,15 @@ static void _mysql_auth_ok(mysql_ctx *mysql, ud_cxt *ud, int32_t *status) {
     }
     ud->status = COMMAND;
 }
+
+// 认证失败：解析错误包并设置协议错误标志
 static void _mysql_auth_err(mysql_ctx *mysql, binary_ctx *breader, int32_t *status) {
     mpack_err err;
     _mpack_err(mysql, breader, &err);
     BIT_SET(*status, PROT_ERROR);
 }
+
+// 处理服务器发来的认证插件切换包（Auth Switch Request）
 static void _mysql_auth_switch(mysql_ctx *mysql, ev_ctx *ev, binary_ctx *breader, int32_t *status) {
     if (BIT_CHECK(mysql->client.caps, CLIENT_PLUGIN_AUTH)) {
         mpack_auth_switch auswitch;
@@ -506,6 +547,8 @@ static void _mysql_auth_switch(mysql_ctx *mysql, ev_ctx *ev, binary_ctx *breader
     BIT_SET(*status, PROT_ERROR);
     LOG_ERROR("mysql auth failed.");
 }
+
+// 处理 caching_sha2_password 认证的中间响应（快速认证、完整认证或公钥响应）
 static void _mysql_caching_sha2(mysql_ctx *mysql, ev_ctx *ev, binary_ctx *breader, int32_t *status) {
     if (2 == breader->size) {
         switch (binary_get_uint8(breader)) {
@@ -541,6 +584,8 @@ static void _mysql_caching_sha2(mysql_ctx *mysql, ev_ctx *ev, binary_ctx *breade
     BIT_SET(*status, PROT_ERROR);
     LOG_ERROR("unknow command.");
 }
+
+// 认证阶段数据处理：根据服务器响应类型分发到 OK/ERR/认证切换/SHA2 处理函数
 static void _mysql_auth_process(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     size_t payload_lens;
     mysql_ctx *mysql = ud->context;
@@ -570,6 +615,8 @@ static void _mysql_auth_process(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t
     }
     FREE(payload);
 }
+
+// 命令阶段数据处理：读取 payload 后交由 _mpack_parser 解析响应包
 static mpack_ctx *_mysql_command_process(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     size_t payload_lens;
     mysql_ctx *mysql = ud->context;

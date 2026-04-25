@@ -8,20 +8,23 @@
     unsigned long err = ERR_get_error();\
     LOG_WARN("errno: %lu, %s", err, ERR_error_string(err, NULL))
 
+// SSL上下文封装结构
 struct evssl_ctx {
-    SSL_CTX *ssl;
+    SSL_CTX *ssl; // OpenSSL上下文
 };
+// SSL证书注册条目（名称 -> evssl_ctx 映射）
 typedef struct certs_ctx {
-    name_t name;
-    struct evssl_ctx *ssl;
+    name_t name;            // 注册名称
+    struct evssl_ctx *ssl;  // 对应的evssl_ctx
 }certs_ctx;
 ARRAY_DECL(certs_ctx, arr_certs);
 
-static arr_certs_ctx *_arr_certs = NULL;
-static rwlock_ctx *_rwlck_certs = NULL;
+static arr_certs_ctx *_arr_certs = NULL;   // 全局证书注册池
+static rwlock_ctx *_rwlck_certs = NULL;    // 保护证书池的读写锁
 
+// 设置SSL_CTX的通用选项：忽略意外EOF、不验证对端、自动重试
 static void _ssl_options(evssl_ctx *evssl) {
-    SSL_CTX_set_options(evssl->ssl, SSL_OP_IGNORE_UNEXPECTED_EOF);//error:0A000126:SSL routines::unexpected eof while reading
+    SSL_CTX_set_options(evssl->ssl, SSL_OP_IGNORE_UNEXPECTED_EOF); // 忽略: error:0A000126:SSL routines::unexpected eof while reading
     SSL_CTX_set_verify(evssl->ssl, SSL_VERIFY_NONE, NULL);
     SSL_CTX_set_mode(evssl->ssl, SSL_MODE_AUTO_RETRY);
 }
@@ -31,6 +34,7 @@ void evssl_init(void) {
     SSL_load_error_strings();
     ERR_load_crypto_strings();
 }
+// 分配并初始化一个新的evssl_ctx（使用SSLv23_method，安全级别设0）
 static evssl_ctx *_new_evssl(void) {
     evssl_ctx *evssl;
     MALLOC(evssl, sizeof(evssl_ctx));
@@ -147,6 +151,7 @@ void evssl_pool_free(void) {
     FREE(_arr_certs);
     FREE(_rwlck_certs);
 }
+// 在证书池中按名称查找certs_ctx（调用前须持有读锁）
 static certs_ctx *_ssl_get(name_t name) {
     certs_ctx *cert;
     uint32_t n = arr_certs_size(_arr_certs);

@@ -5,9 +5,9 @@
 #include "protocol/mqtt/mqtt_macro.h"
 
 typedef struct mqtt_fixhead {//固定头
-    uint8_t flags;//标志
-    mqtt_prot prot;//控制报文的类型
-    size_t remaining_lens;
+    uint8_t flags;           //固定头标志位
+    mqtt_prot prot;          //控制报文的类型
+    size_t remaining_lens;   //剩余长度（不含固定头）
 }mqtt_fixhead;
 typedef struct mqtt_propertie {//属性
     mqtt_prop_flag flag;//标识符
@@ -124,7 +124,7 @@ typedef struct mqtt_auth_varhead {//5.0
     arr_propertie_ctx *properties;//属性 5.0
 }mqtt_auth_varhead;
 typedef struct mqtt_pack_ctx {
-    int8_t version;//协议版本
+    int8_t version;      //协议版本
     //固定报头
     mqtt_fixhead fixhead;
     //可变报头
@@ -133,28 +133,48 @@ typedef struct mqtt_pack_ctx {
     void *payload;
 }mqtt_pack_ctx;
 typedef struct mqtt_ctx {
-    int8_t version;//协议版本 mqtt_protoversion
+    int8_t version;//协议版本 mqtt_protversion
 }mqtt_ctx;
 
+// 释放属性数组及其元素
 void _mqtt_propertie_free(arr_propertie_ctx *properties);
+// 释放 CONNECT 可变报头
 void _mqtt_connect_varhead_free(void *data);
+// 释放 CONNECT 载荷
 void _mqtt_connect_payload_free(void *data);
+// 释放 CONNACK 可变报头
 void _mqtt_connack_varhead_free(void *data);
+// 释放 PUBLISH 可变报头
 void _mqtt_publish_varhead_free(void *data);
+// 释放 PUBLISH 载荷
 void _mqtt_publish_payload_free(void *data);
+// 释放 PUBACK 可变报头
 void _mqtt_puback_varhead_free(void *data);
+// 释放 PUBREC 可变报头
 void _mqtt_pubrec_varhead_free(void *data);
+// 释放 PUBREL 可变报头
 void _mqtt_pubrel_varhead_free(void *data);
+// 释放 PUBCOMP 可变报头
 void _mqtt_pubcomp_varhead_free(void *data);
+// 释放 SUBSCRIBE 可变报头
 void _mqtt_subscribe_varhead_free(void *data);
+// 释放 SUBSCRIBE 载荷（含主题列表）
 void _mqtt_subscribe_payload_free(void *data);
+// 释放 SUBACK 可变报头
 void _mqtt_suback_varhead_free(void *data);
+// 释放 SUBACK 载荷
 void _mqtt_suback_payload_free(void *data);
+// 释放 UNSUBSCRIBE 可变报头
 void _mqtt_unsubscribe_varhead_free(void *data);
+// 释放 UNSUBSCRIBE 载荷（含主题列表）
 void _mqtt_unsubscribe_payload_free(void *data);
+// 释放 UNSUBACK 可变报头
 void _mqtt_unsuback_varhead_free(void *data);
+// 释放 UNSUBACK 载荷
 void _mqtt_unsuback_payload_free(void *data);
+// 释放 DISCONNECT 可变报头
 void _mqtt_disconnect_varhead_free(void *data);
+// 释放 AUTH 可变报头
 void _mqtt_auth_varhead_free(void *data);
 
 #endif//MQTT_STRUCT_H_

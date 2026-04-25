@@ -24,6 +24,7 @@ void binary_init(binary_ctx *ctx, char *buf, size_t lens, size_t inc) {
 void binary_offset(binary_ctx *ctx, size_t off) {
     ctx->offset = off;
 }
+// 扩展缓冲区，确保有足够空间写入 size 字节
 static inline void _binary_expand(binary_ctx *ctx, size_t size) {
     size += ctx->offset + 1;
     if (size > ctx->size) {
@@ -91,6 +92,7 @@ void binary_set_skip(binary_ctx *ctx, size_t lens) {
     _binary_expand(ctx, lens);
     ctx->offset += lens;
 }
+// 使用 va_list 格式化字符串写入缓冲区，自动扩容
 static void _binary_va(binary_ctx *ctx, const char *fmt, va_list args) {
     if (0 == ctx->size - ctx->offset) {
         _binary_expand(ctx, ctx->inc - 1);

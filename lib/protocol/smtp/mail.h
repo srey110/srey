@@ -4,30 +4,30 @@
 #include "containers/sarray.h"
 
 typedef enum mail_addr_type {
-    TO = 0x01,
-    CC,
-    BCC
+    TO = 0x01, //收件人
+    CC,        //抄送
+    BCC        //密送
 }mail_addr_type;
 typedef struct mail_addr {
-    mail_addr_type addr_type;
-    char name[64];
-    char addr[256];
+    mail_addr_type addr_type; //地址类型（收件/抄送/密送）
+    char name[64];            //显示名称
+    char addr[256];           //邮箱地址
 }mail_addr;
 ARRAY_DECL(mail_addr, arr_mail_addr);
 typedef struct mail_attach {
-    char *content;
-    char extension[32];
-    char file[PATH_LENS];
+    char *content;          //附件内容（Base64 编码后的数据）
+    char extension[32];     //文件扩展名（含点号，如 ".pdf"）
+    char file[PATH_LENS];   //文件名（不含目录）
 }mail_attach;
 ARRAY_DECL(mail_attach, arr_mail_attach);
 typedef struct mail_ctx {
-    int32_t reply;
-    char *subject;
-    char *msg;
-    char *html;
-    mail_addr from;
-    arr_mail_addr_ctx addrs;
-    arr_mail_attach_ctx attach;
+    int32_t reply;            //是否要求回复：1 回复（默认），0 不回复
+    char *subject;            //邮件主题
+    char *msg;                //纯文本正文
+    char *html;               //HTML 正文（Base64 编码）
+    mail_addr from;           //发件人
+    arr_mail_addr_ctx addrs;  //收件/抄送/密送地址列表
+    arr_mail_attach_ctx attach;//附件列表
 }mail_ctx;
 
 /// <summary>

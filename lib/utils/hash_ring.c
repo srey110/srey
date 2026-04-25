@@ -2,14 +2,15 @@
 #include "crypt/digest.h"
 
 typedef struct hash_ring_list {
-    hash_ring_node *node;
-    struct hash_ring_list *next;
+    hash_ring_node *node;           //指向真实节点数据
+    struct hash_ring_list *next;    //链表下一项
 } hash_ring_list;
 typedef struct hash_ring_item {
-    hash_ring_node *node;
-    uint64_t digest;
+    hash_ring_node *node;   //所属真实节点
+    uint64_t digest;        //该虚拟节点的哈希值
 } hash_ring_item;
 
+// qsort 比较函数，按 digest 值升序排列哈希环节点
 static int32_t _item_sort(const void *a, const void *b) {
     hash_ring_item *itema = *(hash_ring_item**)a, *itemb = *(hash_ring_item**)b;
     if (NULL == itema) {
@@ -47,9 +48,8 @@ void hash_ring_free(hash_ring_ctx *ring) {
     }
     FREE(ring->items);
 }
-/* _hash 使用栈上局部 digest_ctx，每次调用完全独立，线程安全。
- * 原先复用 ring->md5 会导致并发调用（如多线程 hash_ring_find）相互
- * 破坏 MD5 状态，产生静默数据路由错误。 */
+/* 计算数据的 MD5 哈希并取前 4 字节作为哈希值（小端）。
+ * 使用栈上局部 digest_ctx，每次调用完全独立，线程安全。 */
 static uint64_t _hash(void *data, size_t lens) {
     digest_ctx md5;
     uint8_t digest[DG_BLOCK_SIZE];
@@ -58,11 +58,12 @@ static uint64_t _hash(void *data, size_t lens) {
     digest_final(&md5, (char *)digest);
     return (uint32_t)(digest[3] << 24 | digest[2] << 16 | digest[1] << 8 | digest[0]);
 }
-/* Largest name we will place on the stack to avoid per-replica malloc/free.
- * Node names are typically short host:port strings; 512 bytes covers all
- * realistic cases. Larger names fall back to a single heap allocation. */
+/* 栈上分配的最大名称长度，避免每个副本都堆分配。
+ * 节点名通常为 host:port 短字符串，512 字节可覆盖绝大多数场景，
+ * 超出时回退为单次堆分配。 */
 #define NAME_STACK_LEN  512
 
+// 为节点生成所有虚拟副本（replica）并添加到 items 数组
 static void _add_items(hash_ring_ctx *ring, hash_ring_node *node) {
     char concat_buf[16];
     int32_t concat_len;
@@ -95,6 +96,7 @@ static void _add_items(hash_ring_ctx *ring, hash_ring_node *node) {
     }
     ring->nitems += node->nreplicas;
 }
+// 在节点链表中按名称查找节点，返回 NULL 表示不存在
 static hash_ring_node *_get_node(hash_ring_ctx *ring, void *name, size_t lens) {
     hash_ring_list *cur = ring->nodes;
     while (NULL != cur) {
@@ -152,7 +154,7 @@ void hash_ring_remove(hash_ring_ctx *ring, void *name, size_t lens) {
     while (NULL != cur) {
         if (cur->node->lens == lens
             && 0 == memcmp(cur->node->name, name, lens)) {
-            // Node found, remove it
+            // 找到目标节点，将其移除
             next = cur->next;
             FREE(cur->node->name);
             if (prev == NULL) {
@@ -181,6 +183,7 @@ void hash_ring_remove(hash_ring_ctx *ring, void *name, size_t lens) {
         cur = prev->next;
     }
 }
+// 二分查找大于等于 digest 的第一个节点；超出末尾则环绕返回第一个节点
 static hash_ring_item *_find_next_highest_item(hash_ring_ctx *ring, uint64_t digest) {
     if (0 == ring->nitems) {
         return NULL;
@@ -191,20 +194,20 @@ static hash_ring_item *_find_next_highest_item(hash_ring_ctx *ring, uint64_t dig
     while (1) {
         if (min > max) {
             if (min == ring->nitems) {
-                // Past the end of the ring, return the first item
+                // 超出环末尾，环绕返回第一个节点
                 return ring->items[0];
             } else {
-                // Return the next highest item
+                // 返回下一个最大哈希值对应的节点
                 return ring->items[min];
             }
         }
         midpointindex = (min + max) / 2;
         item = ring->items[midpointindex];
         if (item->digest > digest) {
-            // Key is in the lower half
+            // key 在左半区间
             max = midpointindex - 1;
         } else if (item->digest <= digest) {
-            // Key is in the upper half
+            // key 在右半区间
             min = midpointindex + 1;
         }
     }

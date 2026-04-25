@@ -5,13 +5,13 @@
 
 typedef struct popen_ctx {
 #ifdef OS_WIN
-    HANDLE pipe[2];
-    PROCESS_INFORMATION process;
+    HANDLE pipe[2];              //命名管道句柄对：[0] 服务端（子进程端），[1] 客户端（父进程端）
+    PROCESS_INFORMATION process; //子进程信息
 #else
-    int32_t exited;
-    int32_t exitcode;
-    SOCKET sock;
-    pid_t pid;
+    int32_t exited;   //子进程是否已退出
+    int32_t exitcode; //子进程退出码
+    SOCKET sock;      //与子进程通信的套接字（父进程端）
+    pid_t pid;        //子进程 PID
 #endif
 }popen_ctx;
 /// <summary>

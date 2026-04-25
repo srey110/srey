@@ -3,13 +3,25 @@
 
 #include "base/structs.h"
 
-#define ARRAY_INIT_SIZE      16
+#define ARRAY_INIT_SIZE      16  // 动态数组默认初始容量
 
+/*
+ * ARRAY_DECL(type, atype) —— 泛型动态数组声明宏
+ *
+ * 根据元素类型 type 和数组类型名 atype，生成完整的动态数组结构体
+ * 及以下内联操作函数：
+ *   atype_init / atype_clear / atype_free
+ *   atype_size / atype_maxsize / atype_empty
+ *   atype_resize / atype_double_resize
+ *   atype_at / atype_front / atype_back
+ *   atype_push_back / atype_pop_back
+ *   atype_add / atype_del / atype_del_nomove / atype_swap
+ */
 #define ARRAY_DECL(type, atype) \
-typedef struct atype {      \
-    type   *ptr;    \
-    uint32_t  size;   \
-    uint32_t  maxsize;\
+typedef struct atype {    \
+    type    *ptr;         /* 数据存储数组 */ \
+    uint32_t size;        /* 当前元素数量 */ \
+    uint32_t maxsize;     /* 当前分配容量 */ \
 }atype##_ctx;\
 static inline void atype##_init(atype##_ctx *p, uint32_t maxsize) {\
     p->size = 0;\
@@ -112,6 +124,7 @@ static inline void atype##_swap(atype##_ctx *p, int32_t pos1, int32_t pos2) {\
     p->ptr[pos2] = tmp;\
 };\
 
+// 预定义：指针类型动态数组（元素为 void *）
 ARRAY_DECL(void *, arr_ptr);
 
 #endif//SARRAY_H_

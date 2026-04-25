@@ -18,6 +18,7 @@ void prots_init(_handshaked_push hspush) {
 }
 void prots_free(void) {
 }
+// 设置子协议 ud_cxt 的额外上下文数据（目前仅 WebSocket 子协议需要）
 void _set_secextra(ud_cxt *ud, void *val) {
     switch (ud->pktype) {
     case PACK_WEBSOCK:
@@ -152,6 +153,7 @@ int32_t prots_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client
     }
     return ERR_OK;
 }
+// 默认解包：将缓冲区所有数据一次性取出，适用于 PACK_NONE（透传）场景
 static void *_unpack_default(buffer_ctx *buf, size_t *size, ud_cxt *ud) {
     (void)ud;
     size_t lens = buffer_size(buf);

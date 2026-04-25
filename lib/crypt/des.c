@@ -54,6 +54,7 @@ static const uint8_t sbox8[64] = {
      7, 11,   4,  1,   9, 12,  14,  2,   0,  6,  10, 13,  15,  3,   5,  8,
      2,  1,  14,  7,   4, 10,   8, 13,  15, 12,   9,  0,   3,  5,   6, 11
 };
+// 初始置换（IP），将 64 位数据按 IP 矩阵重排为两个 32 位半块
 static void _ip(uint32_t *state, const uint8_t *data) {
     state[0] = BITNUM(data, 57, 31) | BITNUM(data, 49, 30) | BITNUM(data, 41, 29) | BITNUM(data, 33, 28) |
         BITNUM(data, 25, 27) | BITNUM(data, 17, 26) | BITNUM(data, 9, 25) | BITNUM(data, 1, 24) |
@@ -72,6 +73,7 @@ static void _ip(uint32_t *state, const uint8_t *data) {
         BITNUM(data, 62, 7) | BITNUM(data, 54, 6) | BITNUM(data, 46, 5) | BITNUM(data, 38, 4) |
         BITNUM(data, 30, 3) | BITNUM(data, 22, 2) | BITNUM(data, 14, 1) | BITNUM(data, 6, 0);
 }
+// 逆初始置换（IP^-1），将两个 32 位半块还原为 64 位输出
 static void _invip(uint32_t *state, uint8_t *output) {
     output[0] = BITNUMINTR(state[1], 7, 7) | BITNUMINTR(state[0], 7, 6) | BITNUMINTR(state[1], 15, 5) |
         BITNUMINTR(state[0], 15, 4) | BITNUMINTR(state[1], 23, 3) | BITNUMINTR(state[0], 23, 2) |
@@ -98,6 +100,7 @@ static void _invip(uint32_t *state, uint8_t *output) {
         BITNUMINTR(state[0], 8, 4) | BITNUMINTR(state[1], 16, 3) | BITNUMINTR(state[0], 16, 2) |
         BITNUMINTR(state[1], 24, 1) | BITNUMINTR(state[0], 24, 0);
 }
+// Feistel 函数 F：扩展置换 + 密钥异或 + S 盒替换 + P 盒置换
 static uint32_t _transform(uint32_t state, const uint8_t *key) {
     uint32_t t1, t2;
     uint8_t lrgstate[6];
@@ -115,14 +118,14 @@ static uint32_t _transform(uint32_t state, const uint8_t *key) {
     lrgstate[3] = (t2 >> 24) & 0x000000ff;
     lrgstate[4] = (t2 >> 16) & 0x000000ff;
     lrgstate[5] = (t2 >> 8) & 0x000000ff;
-    // Key XOR
+    // 与子密钥异或
     lrgstate[0] ^= key[0];
     lrgstate[1] ^= key[1];
     lrgstate[2] ^= key[2];
     lrgstate[3] ^= key[3];
     lrgstate[4] ^= key[4];
     lrgstate[5] ^= key[5];
-    // S-Box Permutation
+    // S 盒替换
     state = (sbox1[SBOXBIT(lrgstate[0] >> 2)] << 28) |
         (sbox2[SBOXBIT(((lrgstate[0] & 0x03) << 4) | (lrgstate[1] >> 4))] << 24) |
         (sbox3[SBOXBIT(((lrgstate[1] & 0x0f) << 2) | (lrgstate[2] >> 6))] << 20) |
@@ -131,7 +134,7 @@ static uint32_t _transform(uint32_t state, const uint8_t *key) {
         (sbox6[SBOXBIT(((lrgstate[3] & 0x03) << 4) | (lrgstate[4] >> 4))] << 8) |
         (sbox7[SBOXBIT(((lrgstate[4] & 0x0f) << 2) | (lrgstate[5] >> 6))] << 4) |
         sbox8[SBOXBIT(lrgstate[5] & 0x3f)];
-    // P-Box Permutation
+    // P 盒置换
     state = BITNUMINTL(state, 15, 0) | BITNUMINTL(state, 6, 1) | BITNUMINTL(state, 19, 2) |
         BITNUMINTL(state, 20, 3) | BITNUMINTL(state, 28, 4) | BITNUMINTL(state, 11, 5) |
         BITNUMINTL(state, 27, 6) | BITNUMINTL(state, 16, 7) | BITNUMINTL(state, 0, 8) |
@@ -145,6 +148,7 @@ static uint32_t _transform(uint32_t state, const uint8_t *key) {
         BITNUMINTL(state, 3, 30) | BITNUMINTL(state, 24, 31);
     return state;
 }
+// 密钥扩展：将 8 字节密钥展开为 16 轮子密钥（每轮 6 字节）
 static void _key_setup(const uint8_t *key, int32_t encrypt, uint8_t schedule[16 * 6]) {
     static const uint32_t key_rnd_shift[16] = { 1,1,2,2,2,2,2,2,1,2,2,2,2,2,2,1 };
     static const uint32_t key_perm_c[28] = { 56,48,40,32,24,16,8,0,57,49,41,33,25,17,9,1,58,50,42,34,26,18,10,2,59,51,43,35 };
@@ -190,6 +194,7 @@ void des_init(des_ctx *des, const char *key, size_t klens, int32_t des3, int32_t
         _key_setup(k, encrypt, des->schedule);
     }
 }
+// 执行单次 DES 加解密，内部进行 16 轮 Feistel 运算
 static void _crypt(uint8_t *schedule, const uint8_t *input, uint8_t output[DES_BLOCK_SIZE]) {
     uint32_t state[2], idx, t;
     _ip(state, input);

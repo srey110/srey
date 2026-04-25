@@ -10,6 +10,7 @@
         bson_cat(&bson, mongo->session->options);\
     }
 
+// 构造 OP_MSG 原始数据包：填充消息头、flags、Section 和正文，并回填总长度
 static void *_mongo_pack_msg(mongo_ctx *mongo, int32_t kind, const char *docid, char *docs, size_t dlens, size_t *size) {
     mongo->reqid++;
     binary_ctx bwriter;

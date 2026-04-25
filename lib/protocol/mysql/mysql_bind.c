@@ -1,4 +1,4 @@
-﻿#include "protocol/mysql/mysql_bind.h"
+#include "protocol/mysql/mysql_bind.h"
 #include "protocol/mysql/mysql_utils.h"
 
 void mysql_bind_init(mysql_bind_ctx *mbind) {
@@ -21,6 +21,8 @@ void mysql_bind_clear(mysql_bind_ctx *mbind) {
     binary_offset(&mbind->type_name, 0);
     binary_offset(&mbind->value, 0);
 }
+
+// 更新 NULL 位图：每 8 个参数共用一个字节，nil 为 1 时将对应位置 1
 static void _mysql_bind_bitmap(mysql_bind_ctx *mbind, int32_t nil) {
     int32_t index = mbind->count % 8;
     if (0 == index) {
@@ -32,9 +34,11 @@ static void _mysql_bind_bitmap(mysql_bind_ctx *mbind, int32_t nil) {
     }
     ++mbind->count;
 }
+
+// 向类型缓冲区和类型+名称缓冲区中写入字段类型及参数名称
 static void _mysql_bind_type_name(mysql_bind_ctx *mbind, mysql_field_types type, const char *name, int32_t is_unsigned) {
     if (is_unsigned) {
-        type |= 0x8000;
+        type |= 0x8000; // 无符号标志位（高位置 1）
     }
     binary_set_integer(&mbind->type, type, 2, 1);
     binary_set_integer(&mbind->type_name, type, 2, 1);
@@ -66,6 +70,7 @@ void mysql_bind_string(mysql_bind_ctx *mbind, const char *name, char *value, siz
 }
 void mysql_bind_integer(mysql_bind_ctx *mbind, const char *name, int64_t value) {
     _mysql_bind_bitmap(mbind, 0);
+    // 根据值范围自动选择最小的整数类型以节省传输空间
     if (value >= SCHAR_MIN && value <= SCHAR_MAX) {
         _mysql_bind_type_name(mbind, MYSQL_TYPE_TINY, name, 0);
         binary_set_int8(&mbind->value, (int8_t)value);
@@ -86,6 +91,7 @@ void mysql_bind_integer(mysql_bind_ctx *mbind, const char *name, int64_t value) 
 }
 void mysql_bind_uinteger(mysql_bind_ctx *mbind, const char *name, uint64_t value) {
     _mysql_bind_bitmap(mbind, 0);
+    // 根据值范围自动选择最小的无符号整数类型以节省传输空间
     if (value <= UCHAR_MAX) {
         _mysql_bind_type_name(mbind, MYSQL_TYPE_TINY, name, 1);
         binary_set_uint8(&mbind->value, (uint8_t)value);
@@ -106,6 +112,7 @@ void mysql_bind_uinteger(mysql_bind_ctx *mbind, const char *name, uint64_t value
 }
 void mysql_bind_double(mysql_bind_ctx *mbind, const char *name, double value) {
     _mysql_bind_bitmap(mbind, 0);
+    // 若值在 float 范围内则使用单精度以节省传输空间
     if (value >= FLT_MIN && value <= FLT_MAX) {
         _mysql_bind_type_name(mbind, MYSQL_TYPE_FLOAT, name, 0);
         binary_set_float(&mbind->value, (float)value, 1);
@@ -118,6 +125,7 @@ void mysql_bind_datetime(mysql_bind_ctx *mbind, const char *name, time_t ts) {
     _mysql_bind_bitmap(mbind, 0);
     _mysql_bind_type_name(mbind, MYSQL_TYPE_DATETIME, name, 0);
     struct tm *dt = localtime(&ts);
+    // 时间部分全为 0 时只写日期（4 字节），否则写完整日期时间（7 字节）
     if (0 == dt->tm_hour && 0 == dt->tm_min && 0 == dt->tm_sec) {
         binary_set_int8(&mbind->value, 4);
         binary_set_integer(&mbind->value, dt->tm_year + 1900, 2, 1);
@@ -137,6 +145,7 @@ void mysql_bind_time(mysql_bind_ctx *mbind, const char *name,
     int8_t is_negative, int32_t days, int8_t hour, int8_t minute, int8_t second) {
     _mysql_bind_bitmap(mbind, 0);
     _mysql_bind_type_name(mbind, MYSQL_TYPE_TIME, name, 0);
+    // 全零时写长度 0（零值时间简化编码）
     if (0 == days && 0 == hour && 0 == minute && 0 == second) {
         binary_set_int8(&mbind->value, 0);
         return;

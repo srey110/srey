@@ -1,7 +1,7 @@
 ﻿#ifndef OS_H_
 #define OS_H_
 
-/*check system https://sourceforge.net/p/predef/wiki/OperatingSystems/ */
+/* 操作系统检测宏，参考 https://sourceforge.net/p/predef/wiki/OperatingSystems/ */
 #if defined(_WIN32) || defined(_WIN64)
     #define OS_WIN
     #define OS_NAME "Windows"
@@ -43,7 +43,7 @@
 #elif defined(_AIX) || defined(__HOS_AIX__)
     #define OS_AIX
     #define OS_NAME "AIX"
-    #define READV_EINVAL//readv 有些系统没有数据会返回EINVAL(22)错误
+    #define READV_EINVAL // 某些 AIX 系统上 readv 无数据时会返回 EINVAL(22) 错误
 #else
     #error "Unsupported operating system platform!"
 #endif
@@ -73,7 +73,7 @@
     #define EV_NAME "DEVPOLL"
 #endif
 
-/*check version x64 x86*/
+/* 检测 CPU 架构：x64/x86/ARM/ARM64/PPC */
 #if defined(OS_WIN)
     #if defined(_WIN64)
         #define ARCH_X64

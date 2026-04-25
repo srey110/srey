@@ -1,6 +1,6 @@
 ﻿#include "crypt/base64.h"
 
-/* BASE 64 encode table */
+// Base64 编码字符表
 static const char b64en[] = {
     'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H',
     'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P',
@@ -11,7 +11,7 @@ static const char b64en[] = {
     'w', 'x', 'y', 'z', '0', '1', '2', '3',
     '4', '5', '6', '7', '8', '9', '+', '/',
 };
-/* ASCII order for BASE 64 decode, -1 in unused character */
+// Base64 解码字符表（按 ASCII 顺序排列，未使用位填 -1）
 static const char b64de[] = {
     62,  -1,  -1,  -1,  63,  52,  53,  54,
     55,  56,  57,  58,  59,  60,  61,  -1,
@@ -27,14 +27,14 @@ static const char b64de[] = {
 size_t bs64_encode(const void *data, const size_t lens, char *out) {
     const unsigned char *p = (const unsigned char *)data;
     size_t i = 0, j = 0;
-    /* Main loop: consume 3 input bytes → emit 4 Base64 chars; no modulo. */
+    // 主循环：每次消耗 3 字节输入，输出 4 个 Base64 字符
     for (; i + 3 <= lens; i += 3) {
         out[j++] = b64en[(p[i]     >> 2) & 0x3F];
         out[j++] = b64en[((p[i]     & 0x03) << 4) | ((p[i + 1] >> 4) & 0x0F)];
         out[j++] = b64en[((p[i + 1] & 0x0F) << 2) | ((p[i + 2] >> 6) & 0x03)];
         out[j++] = b64en[  p[i + 2] & 0x3F];
     }
-    /* Tail: 0, 1 or 2 remaining bytes with '=' padding. */
+    // 尾部处理：剩余 0、1 或 2 字节，补充 '=' 填充
     switch (lens - i) {
     case 1:
         out[j++] = b64en[(p[i] >> 2) & 0x3F];

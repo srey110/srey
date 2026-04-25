@@ -3,11 +3,11 @@
 
 #include "base/macro.h"
 
-#define DES_BLOCK_SIZE 8
+#define DES_BLOCK_SIZE 8 // DES 分组大小（字节）
 typedef struct des_ctx {
-    int32_t des3;
-    uint8_t output[DES_BLOCK_SIZE];
-    uint8_t schedule[3 * 16 * 6];
+    int32_t des3;                   // 1 为 3DES，0 为标准 DES
+    uint8_t output[DES_BLOCK_SIZE]; // 加解密结果缓冲区
+    uint8_t schedule[3 * 16 * 6];  // 轮密钥调度表（3DES 包含三组）
 }des_ctx;
 /// <summary>
 /// des 初始化
@@ -21,7 +21,7 @@ void des_init(des_ctx *des, const char *key, size_t klens, int32_t des3, int32_t
 /// <summary>
 /// des加解密
 /// </summary>
-/// <param name="des">aes_ctx</param>
+/// <param name="des">des_ctx</param>
 /// <param name="data">待加解密数据,长度:DES_BLOCK_SIZE</param>
 /// <returns>加解密后的数据,长度:DES_BLOCK_SIZE</returns>
 char *des_crypt(des_ctx *des, const void *data);

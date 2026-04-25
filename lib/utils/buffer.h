@@ -22,14 +22,14 @@
 #define MAX_EXPAND_NIOV          4
 
 typedef struct buffer_ctx {
-    volatile int32_t freeze_read;
-    volatile int32_t freeze_write;
-    struct bufnode_ctx *head;
-    struct bufnode_ctx *tail;
-    struct bufnode_ctx **tail_with_data;
-    size_t total_lens;//缓存总长度
-    struct bufnode_ctx *hint_node;    // 搜索游标：上次命中的节点
-    size_t             hint_base_off; // 该节点之前所有节点的累计字节数
+    volatile int32_t freeze_read;  //读冻结标志：非零时禁止并发读操作
+    volatile int32_t freeze_write; //写冻结标志：非零时禁止并发写操作
+    struct bufnode_ctx *head;      //节点链表头
+    struct bufnode_ctx *tail;      //节点链表尾
+    struct bufnode_ctx **tail_with_data; //指向最后一个有数据节点的指针的指针
+    size_t total_lens;             //缓存中当前数据总长度
+    struct bufnode_ctx *hint_node;    //搜索游标：上次命中的节点
+    size_t             hint_base_off; //游标节点之前所有节点的累计字节偏移
 }buffer_ctx;
 /// <summary>
 /// 分散内存初始化

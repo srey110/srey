@@ -1,126 +1,130 @@
-﻿#ifndef PGSQL_MACRO_H_
+#ifndef PGSQL_MACRO_H_
 #define PGSQL_MACRO_H_
 
+// 数据包类型
 typedef enum pgpack_type {
-    PGPACK_OK = 0x00,
-    PGPACK_ERR,//ErrorResponse
-    PGPACK_NOTIFICATION//NotificationResponse
+    PGPACK_OK = 0x00,           // 命令执行成功
+    PGPACK_ERR,                 // ErrorResponse：服务端返回错误
+    PGPACK_NOTIFICATION         // NotificationResponse：异步通知
 }pgpack_type;
 
+// 数据格式
 typedef enum pgpack_format {
-    FORMAT_TEXT = 0,
-    FORMAT_BINARY
+    FORMAT_TEXT = 0,            // 文本格式
+    FORMAT_BINARY               // 二进制格式
 }pgpack_format;
 
-//OID
-#define BOOLOID 16
-#define BYTEAOID 17
-#define CHAROID 18
-#define NAMEOID 19
-#define INT8OID 20
-#define INT2OID 21
-#define INT2VECTOROID 22
-#define INT4OID 23
-#define REGPROCOID 24
-#define TEXTOID 25
-#define OIDOID 26
-#define TIDOID 27
-#define XIDOID 28
-#define CIDOID 29
-#define OIDVECTOROID 30
-#define JSONOID 114
-#define XMLOID 142
-#define PG_NODE_TREEOID 194
-#define PG_NDISTINCTOID 3361
-#define PG_DEPENDENCIESOID 3402
-#define PG_MCV_LISTOID 5017
-#define PG_DDL_COMMANDOID 32
-#define XID8OID 5069
-#define POINTOID 600
-#define LSEGOID 601
-#define PATHOID 602
-#define BOXOID 603
-#define POLYGONOID 604
-#define LINEOID 628
-#define FLOAT4OID 700
-#define FLOAT8OID 701
-#define UNKNOWNOID 705
-#define CIRCLEOID 718
-#define MONEYOID 790
-#define MACADDROID 829
-#define INETOID 869
-#define CIDROID 650
-#define MACADDR8OID 774
-#define ACLITEMOID 1033
-#define BPCHAROID 1042
-#define VARCHAROID 1043
-#define DATEOID 1082
-#define TIMEOID 1083
-#define TIMESTAMPOID 1114
-#define TIMESTAMPTZOID 1184
-#define INTERVALOID 1186
-#define TIMETZOID 1266
-#define BITOID 1560
-#define VARBITOID 1562
-#define NUMERICOID 1700
-#define REFCURSOROID 1790
-#define REGPROCEDUREOID 2202
-#define REGOPEROID 2203
-#define REGOPERATOROID 2204
-#define REGCLASSOID 2205
-#define REGCOLLATIONOID 4191
-#define REGTYPEOID 2206
-#define REGROLEOID 4096
-#define REGNAMESPACEOID 4089
-#define UUIDOID 2950
-#define PG_LSNOID 3220
-#define TSVECTOROID 3614
-#define GTSVECTOROID 3642
-#define TSQUERYOID 3615
-#define REGCONFIGOID 3734
-#define REGDICTIONARYOID 3769
-#define JSONBOID 3802
-#define JSONPATHOID 4072
-#define TXID_SNAPSHOTOID 2970
-#define PG_SNAPSHOTOID 5038
-#define INT4RANGEOID 3904
-#define NUMRANGEOID 3906
-#define TSRANGEOID 3908
-#define TSTZRANGEOID 3910
-#define DATERANGEOID 3912
-#define INT8RANGEOID 3926
-#define INT4MULTIRANGEOID 4451
-#define NUMMULTIRANGEOID 4532
-#define TSMULTIRANGEOID 4533
-#define TSTZMULTIRANGEOID 4534
-#define DATEMULTIRANGEOID 4535
-#define INT8MULTIRANGEOID 4536
-#define RECORDOID 2249
-#define RECORDARRAYOID 2287
-#define CSTRINGOID 2275
-#define ANYOID 2276
-#define ANYARRAYOID 2277
-#define VOIDOID 2278
-#define TRIGGEROID 2279
-#define EVENT_TRIGGEROID 3838
-#define LANGUAGE_HANDLEROID 2280
-#define INTERNALOID 2281
-#define ANYELEMENTOID 2283
-#define ANYNONARRAYOID 2776
-#define ANYENUMOID 3500
-#define FDW_HANDLEROID 3115
-#define INDEX_AM_HANDLEROID 325
-#define TSM_HANDLEROID 3310
-#define TABLE_AM_HANDLEROID 269
-#define ANYRANGEOID 3831
-#define ANYCOMPATIBLEOID 5077
-#define ANYCOMPATIBLEARRAYOID 5078
-#define ANYCOMPATIBLENONARRAYOID 5079
-#define ANYCOMPATIBLERANGEOID 5080
-#define ANYMULTIRANGEOID 4537
-#define ANYCOMPATIBLEMULTIRANGEOID 4538
-#define PG_BRIN_BLOOM_SUMMARYOID 4600
-#define PG_BRIN_MINMAX_MULTI_SUMMARYOID 4601
+// PostgreSQL 内置类型 OID 常量
+#define BOOLOID 16              // bool
+#define BYTEAOID 17             // bytea
+#define CHAROID 18              // char
+#define NAMEOID 19              // name
+#define INT8OID 20              // int8
+#define INT2OID 21              // int2
+#define INT2VECTOROID 22        // int2vector
+#define INT4OID 23              // int4
+#define REGPROCOID 24           // regproc
+#define TEXTOID 25              // text
+#define OIDOID 26               // oid
+#define TIDOID 27               // tid
+#define XIDOID 28               // xid
+#define CIDOID 29               // cid
+#define OIDVECTOROID 30         // oidvector
+#define JSONOID 114             // json
+#define XMLOID 142              // xml
+#define PG_NODE_TREEOID 194     // pg_node_tree
+#define PG_NDISTINCTOID 3361    // pg_ndistinct
+#define PG_DEPENDENCIESOID 3402 // pg_dependencies
+#define PG_MCV_LISTOID 5017     // pg_mcv_list
+#define PG_DDL_COMMANDOID 32    // pg_ddl_command
+#define XID8OID 5069            // xid8
+#define POINTOID 600            // point
+#define LSEGOID 601             // lseg
+#define PATHOID 602             // path
+#define BOXOID 603              // box
+#define POLYGONOID 604          // polygon
+#define LINEOID 628             // line
+#define FLOAT4OID 700           // float4
+#define FLOAT8OID 701           // float8
+#define UNKNOWNOID 705          // unknown
+#define CIRCLEOID 718           // circle
+#define MONEYOID 790            // money
+#define MACADDROID 829          // macaddr
+#define INETOID 869             // inet
+#define CIDROID 650             // cidr
+#define MACADDR8OID 774         // macaddr8
+#define ACLITEMOID 1033         // aclitem
+#define BPCHAROID 1042          // bpchar（定长字符串）
+#define VARCHAROID 1043         // varchar（变长字符串）
+#define DATEOID 1082            // date
+#define TIMEOID 1083            // time
+#define TIMESTAMPOID 1114       // timestamp
+#define TIMESTAMPTZOID 1184     // timestamptz（带时区时间戳）
+#define INTERVALOID 1186        // interval
+#define TIMETZOID 1266          // timetz（带时区时间）
+#define BITOID 1560             // bit
+#define VARBITOID 1562          // varbit
+#define NUMERICOID 1700         // numeric
+#define REFCURSOROID 1790       // refcursor
+#define REGPROCEDUREOID 2202    // regprocedure
+#define REGOPEROID 2203         // regoper
+#define REGOPERATOROID 2204     // regoperator
+#define REGCLASSOID 2205        // regclass
+#define REGCOLLATIONOID 4191    // regcollation
+#define REGTYPEOID 2206         // regtype
+#define REGROLEOID 4096         // regrole
+#define REGNAMESPACEOID 4089    // regnamespace
+#define UUIDOID 2950            // uuid
+#define PG_LSNOID 3220          // pg_lsn（日志序列号）
+#define TSVECTOROID 3614        // tsvector（全文搜索向量）
+#define GTSVECTOROID 3642       // gtsvector
+#define TSQUERYOID 3615         // tsquery（全文搜索查询）
+#define REGCONFIGOID 3734       // regconfig
+#define REGDICTIONARYOID 3769   // regdictionary
+#define JSONBOID 3802           // jsonb
+#define JSONPATHOID 4072        // jsonpath
+#define TXID_SNAPSHOTOID 2970   // txid_snapshot
+#define PG_SNAPSHOTOID 5038     // pg_snapshot
+#define INT4RANGEOID 3904       // int4range
+#define NUMRANGEOID 3906        // numrange
+#define TSRANGEOID 3908         // tsrange
+#define TSTZRANGEOID 3910       // tstzrange
+#define DATERANGEOID 3912       // daterange
+#define INT8RANGEOID 3926       // int8range
+#define INT4MULTIRANGEOID 4451  // int4multirange
+#define NUMMULTIRANGEOID 4532   // nummultirange
+#define TSMULTIRANGEOID 4533    // tsmultirange
+#define TSTZMULTIRANGEOID 4534  // tstzmultirange
+#define DATEMULTIRANGEOID 4535  // datemultirange
+#define INT8MULTIRANGEOID 4536  // int8multirange
+#define RECORDOID 2249          // record
+#define RECORDARRAYOID 2287     // record 数组
+#define CSTRINGOID 2275         // cstring
+#define ANYOID 2276             // any
+#define ANYARRAYOID 2277        // anyarray
+#define VOIDOID 2278            // void
+#define TRIGGEROID 2279         // trigger
+#define EVENT_TRIGGEROID 3838   // event_trigger
+#define LANGUAGE_HANDLEROID 2280    // language_handler
+#define INTERNALOID 2281        // internal
+#define ANYELEMENTOID 2283      // anyelement
+#define ANYNONARRAYOID 2776     // anynonarray
+#define ANYENUMOID 3500         // anyenum
+#define FDW_HANDLEROID 3115     // fdw_handler
+#define INDEX_AM_HANDLEROID 325 // index_am_handler
+#define TSM_HANDLEROID 3310     // tsm_handler
+#define TABLE_AM_HANDLEROID 269 // table_am_handler
+#define ANYRANGEOID 3831        // anyrange
+#define ANYCOMPATIBLEOID 5077   // anycompatible
+#define ANYCOMPATIBLEARRAYOID 5078      // anycompatiblearray
+#define ANYCOMPATIBLENONARRAYOID 5079   // anycompatiblenonarray
+#define ANYCOMPATIBLERANGEOID 5080      // anycompatiblerange
+#define ANYMULTIRANGEOID 4537           // anymultirange
+#define ANYCOMPATIBLEMULTIRANGEOID 4538 // anycompatiblemultirange
+#define PG_BRIN_BLOOM_SUMMARYOID 4600           // pg_brin_bloom_summary
+#define PG_BRIN_MINMAX_MULTI_SUMMARYOID 4601    // pg_brin_minmax_multi_summary
+
+// 以下为数组类型 OID
 #define BOOLARRAYOID 1000
 #define BYTEAARRAYOID 1001
 #define CHARARRAYOID 1002

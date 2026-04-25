@@ -1,5 +1,6 @@
 ﻿#include "protocol/mqtt/mqtt_struct.h"
 
+// 释放属性数组及每个属性条目（含 sval）
 void _mqtt_propertie_free(arr_propertie_ctx *properties) {
     if (NULL == properties) {
         return;

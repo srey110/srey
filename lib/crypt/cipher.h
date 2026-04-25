@@ -22,20 +22,20 @@ typedef enum cipher_model {
     CTR
 }cipher_model;
 typedef struct cipher_ctx {
-    int32_t encrypt;
-    cipher_model model;
-    padding_model padding;
-    size_t block_lens;
-    void *cur_ctx;
-    _cipher_cb _cipher;
-    uint8_t iv[CIPHER_BLOCK_SIZE];
-    uint8_t cur_iv[CIPHER_BLOCK_SIZE];
-    uint8_t pd_data[CIPHER_BLOCK_SIZE];
-    uint8_t xor_data[CIPHER_BLOCK_SIZE];
+    int32_t encrypt;                    // 1 加密，0 解密
+    cipher_model model;                 // 加解密模式
+    padding_model padding;              // 填充模式
+    size_t block_lens;                  // 分组长度（字节）
+    void *cur_ctx;                      // 指向当前引擎上下文（aes 或 des）
+    _cipher_cb _cipher;                 // 当前引擎的加解密回调
+    uint8_t iv[CIPHER_BLOCK_SIZE];      // 初始 IV
+    uint8_t cur_iv[CIPHER_BLOCK_SIZE];  // 当前 IV（每次分组后更新）
+    uint8_t pd_data[CIPHER_BLOCK_SIZE]; // 填充数据缓冲区
+    uint8_t xor_data[CIPHER_BLOCK_SIZE];// 异或中间结果缓冲区
     union {
         aes_ctx aes;
         des_ctx des;
-    }eng_ctx;
+    }eng_ctx;                           // 引擎上下文联合体
 }cipher_ctx;
 /// <summary>
 /// 加解密初始化

@@ -64,6 +64,7 @@ void cipher_reset(cipher_ctx *cipher) {
         memcpy(cipher->cur_iv, cipher->iv, cipher->block_lens);
     }
 }
+// 预处理待加解密数据：校验长度合法性，必要时执行填充，返回实际处理指针
 static const void *_process_data(cipher_ctx *cipher, const void *data, size_t lens, size_t *size) {
     if (lens > cipher->block_lens) {
         return NULL;
@@ -100,11 +101,13 @@ static const void *_process_data(cipher_ctx *cipher, const void *data, size_t le
     *size = lens;
     return data;
 }
+// 将 data 与 xorbuf 按字节异或，结果存入 cipher->xor_data
 static void _xor_data(cipher_ctx *cipher, const uint8_t *data, const uint8_t *xorbuf, size_t lens) {
     for (size_t i = 0; i < lens; i++) {
         cipher->xor_data[i] = data[i] ^ xorbuf[i];
     }
 }
+// CTR 模式下自增 IV 计数器，counter_size 为计数器字节数
 static void _inc_iv(uint8_t *iv, int32_t block_lens, int32_t counter_size) {
     int32_t nonce_idx = block_lens - counter_size;
     for (int32_t idx = block_lens - 1; idx >= nonce_idx; idx--) {
@@ -115,9 +118,11 @@ static void _inc_iv(uint8_t *iv, int32_t block_lens, int32_t counter_size) {
         }
     }
 }
+// ECB 模式：直接对数据块进行加解密
 static inline void *_ecb_model(cipher_ctx *cipher, const void *data) {
     return (void *)cipher->_cipher(cipher->cur_ctx, data);
 }
+// CBC 模式：加密时先与 IV 异或再加密，解密时先解密再与 IV 异或
 static inline void *_cbc_model(cipher_ctx *cipher, const void *data) {
     if (cipher->encrypt) {
         _xor_data(cipher, data, cipher->cur_iv, cipher->block_lens);
@@ -130,6 +135,7 @@ static inline void *_cbc_model(cipher_ctx *cipher, const void *data) {
     memcpy(cipher->cur_iv, data, cipher->block_lens);
     return (void *)cipher->xor_data;
 }
+// CFB 模式：将数据与加密后的 IV 异或，并更新 IV
 static inline void *_cfb_model(cipher_ctx *cipher, const void *data, size_t lens) {
     _xor_data(cipher, data, cipher->cur_iv, lens);
     if (lens == cipher->block_lens) {
@@ -143,6 +149,7 @@ static inline void *_cfb_model(cipher_ctx *cipher, const void *data, size_t lens
     }
     return (void *)cipher->xor_data;
 }
+// OFB 模式：将数据与加密后的 IV 异或，加解密共用同一逻辑
 static inline void *_ofb_model(cipher_ctx *cipher, const void *data, size_t lens) {
     _xor_data(cipher, data, cipher->cur_iv, lens);
     if (lens == cipher->block_lens) {
@@ -151,6 +158,7 @@ static inline void *_ofb_model(cipher_ctx *cipher, const void *data, size_t lens
     }
     return (void *)cipher->xor_data;
 }
+// CTR 模式：加密计数器后与数据异或，并自增计数器
 static inline void *_ctr_model(cipher_ctx *cipher, const void *data, size_t lens) {
     void *en = (void *)cipher->_cipher(cipher->cur_ctx, cipher->cur_iv);
     _xor_data(cipher, data, en, lens);

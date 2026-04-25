@@ -9,14 +9,15 @@
 static atomic_t _exindex = 0;
 #endif
 
-#define _MC ((1 << CHAR_BIT) - 1) //0xff
-static void *_ud;
-static void(*_sig_cb)(int32_t, void *);
-static atomic64_t _ids = 1;
-static char _path[PATH_LENS] = { 0 };
-static atomic_t _path_once = 0;
+#define _MC ((1 << CHAR_BIT) - 1) //字节掩码（0xff），用于逐字节提取整数
+static void *_ud;                              //信号处理回调的用户数据
+static void(*_sig_cb)(int32_t, void *);       //用户注册的信号处理回调函数
+static atomic64_t _ids = 1;                   //全局自增 ID 原子计数器
+static char _path[PATH_LENS] = { 0 };         //程序所在目录路径缓存
+static atomic_t _path_once = 0;               //路径只初始化一次的原子标志
 
 #ifdef OS_WIN
+// 获取当前线程或进程的令牌句柄，用于后续权限操作
 static BOOL _GetImpersonationToken(HANDLE *handle) {
     if (!OpenThreadToken(GetCurrentThread(),
         TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES,
@@ -34,6 +35,7 @@ static BOOL _GetImpersonationToken(HANDLE *handle) {
     }
     return TRUE;
 }
+// 为指定令牌启用特定权限，并保存原有权限以便恢复
 static BOOL _EnablePrivilege(LPCTSTR priv, HANDLE handle, TOKEN_PRIVILEGES *privold) {
     TOKEN_PRIVILEGES tpriv;
     tpriv.PrivilegeCount = 1;
@@ -44,6 +46,7 @@ static BOOL _EnablePrivilege(LPCTSTR priv, HANDLE handle, TOKEN_PRIVILEGES *priv
     DWORD dsize = sizeof(TOKEN_PRIVILEGES);
     return AdjustTokenPrivileges(handle, FALSE, &tpriv, dsize, privold, &dsize);
 }
+// Windows 结构化异常处理函数，捕获崩溃时生成 MiniDump 文件
 static LONG __stdcall _MiniDump(struct _EXCEPTION_POINTERS *excep) {
     char acdmp[PATH_LENS];
     SNPRINTF(acdmp, sizeof(acdmp), "%s%s%lld_%d.dmp",
@@ -113,6 +116,7 @@ void unlimit(void) {
 #endif
 }
 #ifdef OS_WIN
+// Windows 控制台事件处理回调，将控制台信号转发给用户注册的处理函数
 static BOOL WINAPI _sighandler(DWORD dsig) {
     switch (dsig) {
     case CTRL_C_EVENT:
@@ -126,6 +130,7 @@ static BOOL WINAPI _sighandler(DWORD dsig) {
     return TRUE;
 }
 #else
+// POSIX 信号处理回调，将系统信号转发给用户注册的处理函数
 static void _sighandler(int32_t isig) {
     _sig_cb(isig, _ud);
 }
@@ -136,14 +141,14 @@ void sighandle(void(*cb)(int32_t, void *), void *data) {
 #ifdef OS_WIN
     (void)SetConsoleCtrlHandler((PHANDLER_ROUTINE)_sighandler, TRUE);
 #else
-    signal(SIGPIPE, SIG_IGN);//若某一端关闭连接，而另一端仍然向它写数据，第一次写数据后会收到RST响应，此后再写数据，内核将向进程发出SIGPIPE信号
-    signal(SIGHUP, _sighandler);//终止控制终端或进程
-    signal(SIGINT, _sighandler);//键盘产生的中断(Ctrl-C)
-    signal(SIGQUIT, _sighandler);//键盘产生的退出
-    signal(SIGABRT, _sighandler);//异常中止
-    signal(SIGTSTP, _sighandler);//ctrl+Z
-    signal(SIGKILL, _sighandler);//立即结束程序
-    signal(SIGTERM, _sighandler);//进程终止
+    signal(SIGPIPE, SIG_IGN);//忽略 SIGPIPE：对端关闭后继续写入不会导致进程崩溃
+    signal(SIGHUP, _sighandler);//终端断开或控制进程退出
+    signal(SIGINT, _sighandler);//键盘中断（Ctrl-C）
+    signal(SIGQUIT, _sighandler);//键盘退出（Ctrl-\）
+    signal(SIGABRT, _sighandler);//异常中止（abort）
+    signal(SIGTSTP, _sighandler);//终端暂停（Ctrl-Z）
+    signal(SIGKILL, _sighandler);//立即终止进程（不可忽略）
+    signal(SIGTERM, _sighandler);//正常终止进程
     signal(SIGUSR1, _sighandler);
     signal(SIGUSR2, _sighandler);
 #endif
@@ -782,6 +787,7 @@ int64_t filesize(const char *file) {
     return st.st_size;
 }
 #ifdef OS_AIX
+// AIX 平台：通过 getprocs 遍历进程列表，查找指定 pid 的进程信息
 static int32_t _get_proc(pid_t pid, struct procsinfo *info) {
     int32_t i, cnt;
     pid_t index = 0;
@@ -791,7 +797,7 @@ static int32_t _get_proc(pid_t pid, struct procsinfo *info) {
             if (SZOMB == pinfo[i].pi_state) {
                 continue;
             }
-            //pinfo[i].pi_comm 程序名
+            //pinfo[i].pi_comm 为程序名称
             if (pid == pinfo[i].pi_pid) {
                 memcpy(info, &pinfo[i], sizeof(struct procsinfo));
                 return ERR_OK;
@@ -800,6 +806,7 @@ static int32_t _get_proc(pid_t pid, struct procsinfo *info) {
     }
     return ERR_FAILED;
 }
+// AIX 平台：获取指定 pid 进程的可执行文件完整路径
 static int32_t _get_proc_fullpath(pid_t pid, char path[PATH_LENS]) {
     struct procsinfo pinfo;
     if (ERR_OK != _get_proc(pid, &pinfo)) {
@@ -807,8 +814,7 @@ static int32_t _get_proc_fullpath(pid_t pid, char path[PATH_LENS]) {
         return ERR_FAILED;
     }
     char args[ONEK];
-    //args consists of a succession of strings, each terminated with a null character (ascii `\0'). 
-    //Hence, two consecutive NULLs indicate the end of the list.
+    //args 由连续以 '\0' 结尾的字符串组成，两个连续 NULL 表示列表结束
     if (ERR_OK != getargs(&pinfo, sizeof(struct procsinfo), args, sizeof(args))) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
@@ -820,6 +826,7 @@ static int32_t _get_proc_fullpath(pid_t pid, char path[PATH_LENS]) {
     return ERR_OK;
 }
 #endif
+// 跨平台获取当前可执行文件所在目录路径（末尾不含斜杠）
 static int32_t _get_procpath(char path[PATH_LENS]) {
 #ifndef OS_AIX
     size_t len = PATH_LENS;
@@ -906,10 +913,10 @@ const char *procpath(void) {
 void timeofday(struct timeval *tv) {
 #if defined(OS_WIN)
 #define U64_LITERAL(n) n##ui64
-#define EPOCH_BIAS U64_LITERAL(116444736000000000)
-#define UNITS_PER_SEC U64_LITERAL(10000000)
-#define USEC_PER_SEC U64_LITERAL(1000000)
-#define UNITS_PER_USEC U64_LITERAL(10)
+#define EPOCH_BIAS U64_LITERAL(116444736000000000) //Windows FILETIME 纪元与 Unix 纪元的差值（100ns 单位）
+#define UNITS_PER_SEC U64_LITERAL(10000000)        //每秒的 100ns 单位数
+#define USEC_PER_SEC U64_LITERAL(1000000)          //每秒的微秒数
+#define UNITS_PER_USEC U64_LITERAL(10)             //每微秒的 100ns 单位数
     union {
         FILETIME ft_ft;
         uint64_t ft_64;
@@ -1034,6 +1041,7 @@ void *memichr(const void *ptr, int32_t val, size_t maxlen) {
     return NULL;
 }
 #ifndef OS_WIN
+// 不区分大小写的内存比较（Windows 下由系统提供，非 Windows 手动实现）
 int32_t _memicmp(const void *ptr1, const void *ptr2, size_t lens) {
     int32_t i = 0;
     char *buf1 = (char *)ptr1;
@@ -1146,8 +1154,7 @@ char* strreverse(char* str) {
     }
     return str;
 }
-/* xorshift64* — 周期 2^64-1，质量远优于 rand()，无全局锁，线程局部状态。
- * 种子用线程 ID + 当前时间组合，保证各线程序列不同。 */
+// xorshift64* 伪随机数生成器，线程局部状态，首次调用自动用线程ID+时间戳初始化种子
 static uint64_t _xorshift64(void) {
 #ifdef OS_WIN
     static __declspec(thread) uint64_t _tls_rand = 0;
@@ -1155,7 +1162,7 @@ static uint64_t _xorshift64(void) {
     static __thread uint64_t _tls_rand = 0;
 #endif
     if (0 == _tls_rand) {
-        /* 首次调用：用线程 ID × 时间戳初始化，避免种子为 0 */
+        /* 首次调用：用线程 ID 与时间戳组合初始化种子，避免种子为 0 */
         _tls_rand = (uint64_t)threadid() ^ (nowms() * 6364136223846793005ULL + 1442695040888963407ULL);
         if (0 == _tls_rand){
             _tls_rand = 1;
@@ -1241,7 +1248,7 @@ buf_ctx *split(const void *ptr, size_t plens, const void *sep, size_t seplens, s
             (*n)++;
             cur += (size + seplens);
             plens -= (size + seplens);
-            //以分隔符结尾
+            //字符串以分隔符结尾，补一个空段
             if (0 == plens) {
                 if (*n >= total) {
                     ++total;
@@ -1260,9 +1267,8 @@ buf_ctx *split(const void *ptr, size_t plens, const void *sep, size_t seplens, s
     return buf;
 }
 char *_format_va(const char *fmt, va_list args) {
-    /* 绝大多数日志行短于 512 字节，先用栈缓冲尝试格式化，
-     * 成功则 strdup 后返回，完全避免 malloc。
-     * 仅当消息超长时才按实际长度 malloc 并重试。 */
+    /* 先用栈缓冲尝试格式化（绝大多数场景够用），成功则直接复制返回，避免堆分配；
+     * 仅当字符串超过栈缓冲大小时，才按实际长度堆分配并重试。 */
     #define _FMT_STACK_SIZE 512
     char stk[_FMT_STACK_SIZE];
     va_list args2;
@@ -1274,13 +1280,13 @@ char *_format_va(const char *fmt, va_list args) {
     }
     if (rtn < _FMT_STACK_SIZE) {
         va_end(args2);
-        /* 使用项目自带的 _malloc 保持与 FREE() 配对 */
+        /* 使用项目自带的 MALLOC 以与 FREE() 配对 */
         char *pbuff;
         MALLOC(pbuff, (size_t)rtn + 1);
         memcpy(pbuff, stk, (size_t)rtn + 1);
         return pbuff;
     }
-    /* 栈缓冲不足，精确分配并重试 */
+    /* 栈缓冲不足，按实际长度堆分配后重试 */
     size_t size = (size_t)rtn + 1;
     char *pbuff;
     MALLOC(pbuff, size);
@@ -1302,7 +1308,7 @@ char *format_va(const char *fmt, ...) {
 }
 static const union {
     int32_t dummy;
-    int8_t little;  /* true if machine is little endian */
+    int8_t little;  /* 若为小端机器则为 1 */
 } nativeendian = { 1 };
 int32_t is_little(void) {
     return nativeendian.little;
@@ -1329,6 +1335,7 @@ int64_t unpack_integer(const char *buf, int32_t size, int32_t islittle, int32_t 
     }
     return (int64_t)rtn;
 }
+// 按指定字节序将 src 的 size 字节复制到 dest，自动处理大小端转换
 static void _copy_with_endian(char *dest, const char *src, size_t size, int32_t islittle) {
     if (islittle == is_little()) {
         memcpy(dest, src, size);

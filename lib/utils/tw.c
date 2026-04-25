@@ -1,5 +1,6 @@
 ﻿#include "utils/tw.h"
 
+// 释放时间轮槽位数组中所有节点，并调用各节点的 _freecb 释放用户数据
 static void _free_slot(tw_slot_ctx *slot, const size_t len) {
     tw_node_ctx *pnode, *pdel;
     for (size_t i = 0; i < len; i++) {
@@ -31,6 +32,7 @@ void tw_free(tw_ctx *ctx) {
     cond_free(&ctx->cond);
     mutex_free(&ctx->mu);
 }
+// 将节点追加到指定槽位的链表尾部
 static void _insert(tw_slot_ctx *slot, tw_node_ctx *node) {
     if (NULL == slot->head) {
         slot->head = slot->tail = node;
@@ -56,6 +58,7 @@ void tw_add(tw_ctx *ctx, const uint32_t timeout, tw_cb _cb, free_cb _freecb, ud_
     cond_signal(&ctx->cond);
     mutex_unlock(&ctx->mu);
 }
+// 根据节点的到期时间计算应放入 tv1～tv5 中的哪个槽位
 static tw_slot_ctx *_getslot(tw_ctx *ctx, tw_node_ctx *node) {
     tw_slot_ctx *slot;
     uint32_t idx = (uint32_t)(node->expires - ctx->jiffies);
@@ -78,6 +81,7 @@ static tw_slot_ctx *_getslot(tw_ctx *ctx, tw_node_ctx *node) {
     }
     return slot;
 }
+// 将高精度槽位中的节点重新分配到低精度槽位（时间轮进位）
 static uint32_t _cascade(tw_ctx *ctx, tw_slot_ctx *slot, const uint32_t index) {
     tw_node_ctx *pnext, *pnode = slot[index].head;
     while (NULL != pnode) {
@@ -89,6 +93,7 @@ static uint32_t _cascade(tw_ctx *ctx, tw_slot_ctx *slot, const uint32_t index) {
     slot[index].head = slot[index].tail = NULL;
     return index;
 }
+// 推进一个 jiffie：先做进位 cascade，再执行当前槽位所有到期节点的回调
 static void _run(tw_ctx *ctx) {
     //调整
     uint32_t ulidx = (uint32_t)(ctx->jiffies & TVR_MASK);
@@ -109,6 +114,7 @@ static void _run(tw_ctx *ctx) {
     }
     ctx->tv1[ulidx].head = ctx->tv1[ulidx].tail = NULL;
 }
+// 时间轮工作线程入口：分发新任务、推进 jiffies、精确睡眠等待下一个到期
 static void _loop(void *arg) {
     uint64_t curtick;
     uint32_t sleep_ms;

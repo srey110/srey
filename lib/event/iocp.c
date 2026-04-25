@@ -5,19 +5,22 @@
 
 #ifdef EV_IOCP
 
-exfuncs_ctx _exfuncs;
-static atomic_t _init_once = 0;
-static void(*cmd_cbs[CMD_TOTAL])(watcher_ctx *watcher, cmd_ctx *cmd);
+exfuncs_ctx _exfuncs;                                           // 全局扩展函数指针（AcceptEx/ConnectEx）
+static atomic_t _init_once = 0;                                 // 保证扩展函数只初始化一次
+static void(*cmd_cbs[CMD_TOTAL])(watcher_ctx *watcher, cmd_ctx *cmd); // 命令回调函数表
 
+// hashmap哈希函数：以fd作为key计算哈希值
 static uint64_t _map_hash(const void *item, uint64_t seed0, uint64_t seed1) {
     (void)seed0;
     (void)seed1;
     return hash((const char *)&((*(const sock_ctx **)item)->fd), sizeof(SOCKET));
 }
+// hashmap比较函数：比较两个sock_ctx的fd
 static int _map_compare(const void *a, const void *b, void *ud) {
     (void)ud;
     return (int)((*(const sock_ctx **)a)->fd - (*(const sock_ctx **)b)->fd);
 }
+// 通过WSAIoctl获取指定GUID的Windows扩展函数指针
 static void *_exfunc(SOCKET fd, GUID  *guid) {
     void *func = NULL;
     DWORD bytes = 0;
@@ -33,6 +36,7 @@ static void *_exfunc(SOCKET fd, GUID  *guid) {
     ASSERTAB(rtn != SOCKET_ERROR, ERRORSTR(ERRNO));
     return func;
 }
+// 初始化命令回调函数表
 static void _init_callback(void) {
     cmd_cbs[CMD_STOP] = _on_cmd_stop;
     cmd_cbs[CMD_DISCONN] = _on_cmd_disconn;
@@ -43,6 +47,7 @@ static void _init_callback(void) {
     cmd_cbs[CMD_SETUD] = _on_cmd_setud;
     cmd_cbs[CMD_SSL] = _on_cmd_ssl;
 }
+// 懒加载初始化AcceptEx/ConnectEx等扩展函数（全进程只执行一次）
 static void _init_funcs(ev_ctx *ctx) {
     if (ATOMIC_CAS(&_init_once, 0, 1)) {
         SOCKET fd = WSASocket(AF_INET, SOCK_STREAM, 0, NULL, 0, 0);
@@ -61,6 +66,7 @@ int32_t _join_iocp(watcher_ctx *watcher, SOCKET fd) {
     }
     return ERR_OK;
 }
+// 命令管道可读事件回调：从管道读取触发信号后批量处理命令队列
 static void _on_cmd(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
     cmd_ctx cmd;
     int32_t i, nread;
@@ -82,6 +88,7 @@ static void _on_cmd(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
         ASSERTAB(ERR_OK == _post_recv(&olcmd->ol_r, &olcmd->bytes, &olcmd->flag, &olcmd->wsabuf, 1), ERRORSTR(ERRNO));
     }
 }
+// 定期收缩对象池（每SHRINK_IDLE_CNT轮检查一次时钟，避免频繁syscall）
 static void _pool_shrink(watcher_ctx *watcher, timer_ctx *timer, uint32_t *cnt) {
     if (++(*cnt) < SHRINK_IDLE_CNT) {
         return;
@@ -94,6 +101,7 @@ static void _pool_shrink(watcher_ctx *watcher, timer_ctx *timer, uint32_t *cnt) 
     pool_shrink(&watcher->pool, hashmap_count(watcher->element) / 2);
 }
 #if (_WIN32_WINNT >= 0x0600)
+// 事件循环主函数（Vista+，使用GetQueuedCompletionStatusEx批量获取事件）
 static void _loop_event(void *arg) {
     watcher_ctx *watcher = (watcher_ctx *)arg;
     int32_t err;
@@ -137,6 +145,7 @@ static void _loop_event(void *arg) {
     LOG_INFO("net event thread %d exited.", watcher->index);
     FREE(overlappeds);
 }
+// AcceptEx专用线程事件循环（Vista+，批量处理accept完成事件）
 static void _loop_acpex(void *arg) {
     acceptex_ctx *acpex = (acceptex_ctx *)arg;
     int32_t err;
@@ -176,6 +185,7 @@ static void _loop_acpex(void *arg) {
     FREE(overlappeds);
 }
 #else
+// 事件循环主函数（XP兼容，使用GetQueuedCompletionStatus单个获取事件）
 static void _loop_event(void *arg) {
     watcher_ctx *watcher = (watcher_ctx *)arg;
     DWORD bytes;
@@ -203,6 +213,7 @@ static void _loop_event(void *arg) {
     }
     LOG_INFO("net event thread %d exited.", watcher->index);
 }
+// AcceptEx专用线程事件循环（XP兼容）
 static void _loop_acpex(void *arg) {
     acceptex_ctx *acpex = (acceptex_ctx *)arg;
     DWORD bytes;
@@ -226,6 +237,7 @@ static void _loop_acpex(void *arg) {
     LOG_INFO("accept thread %d exited.", acpex->index);
 }
 #endif
+// hashmap元素释放回调：根据socket类型选择释放函数
 static void _free_element(void *item) {
     sock_ctx *sock = *((sock_ctx **)item);
     if (SOCK_STREAM == sock->type) {
@@ -234,6 +246,7 @@ static void _free_element(void *item) {
         _free_udp(sock);
     }
 }
+// 初始化watcher的命令通道（sock_pair + IOCP注册 + 提交首次WSARecv）
 static void _init_cmd(watcher_ctx *watcher) {
     SOCKET pair[2];
     overlap_cmd_ctx *olcmd;
@@ -291,6 +304,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads) {
     }
     LOG_INFO("event: %s", EV_NAME);
 }
+// 释放watcher的命令通道（排空队列中未处理的命令，释放内存，关闭socket对）
 static void _free_cmd(watcher_ctx *watcher) {
     cmd_ctx *cmd;
     void *data;
@@ -324,18 +338,18 @@ static void _free_cmd(watcher_ctx *watcher) {
     FREE(watcher->cmd);
 }
 void ev_free(ev_ctx *ctx) {
-    //stop free accept
+    // 先停止AcceptEx线程，再释放listener，最后停止并释放watcher
     uint32_t i;
     for (i = 0; i < ctx->nacpex; i++) {
         ctx->acpex[i].stop = 1;
-        (void)PostQueuedCompletionStatus(ctx->acpex[i].iocp, 0, ((ULONG_PTR)-1), NULL);
+        (void)PostQueuedCompletionStatus(ctx->acpex[i].iocp, 0, ((ULONG_PTR)-1), NULL); // 投递空包唤醒线程
     }
     for (i = 0; i < ctx->nacpex; i++) {
         thread_join(ctx->acpex[i].thacp);
     }
-    (void)CloseHandle(ctx->acpex[0].iocp);
+    (void)CloseHandle(ctx->acpex[0].iocp); // 所有acceptex_ctx共用同一个iocp，只需关闭一次
     FREE(ctx->acpex);
-    //free listener
+    // 释放所有监听器
     struct listener_ctx **lsn;
     uint32_t nlsn = arr_ptr_size(&ctx->arrlsn);
     for (i = 0; i < nlsn; i++) {
@@ -343,7 +357,7 @@ void ev_free(ev_ctx *ctx) {
         _freelsn(*lsn);
     }
     arr_ptr_free(&ctx->arrlsn);
-    //stop free watcher
+    // 停止并释放所有watcher
     cmd_ctx cmd;
     cmd.cmd = CMD_STOP;
     watcher_ctx *watcher;

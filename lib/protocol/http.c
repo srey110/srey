@@ -5,25 +5,25 @@
 #include "utils/utils.h"
 
 typedef enum parse_status{
-    INIT = 0,
-    CONTENT,
-    CHUNKED
+    INIT = 0,   // 初始状态，等待头部
+    CONTENT,    // 已解析头部，等待 Content-Length 指定的数据体
+    CHUNKED     // 分块传输模式
 }parse_status;
 ARRAY_DECL(http_header_ctx, arr_header);
 typedef struct http_pack_ctx {
-    int32_t chunked;
-    buf_ctx head;
-    buf_ctx data;
-    buf_ctx status[3];
-    arr_header_ctx header;
+    int32_t chunked;          // 0=非 chunked，1=chunked 起始包，2=chunked 数据包
+    buf_ctx head;             // 原始头部数据（含第一行和所有字段）
+    buf_ctx data;             // 数据体
+    buf_ctx status[3];        // 第一行拆分：status[0]=方法/版本，status[1]=状态码/路径，status[2]=描述/版本
+    arr_header_ctx header;    // 所有头部字段列表
 }http_pack_ctx;
 
-#define MAX_HEADLENS ONEK * 4
-#define HEAD_REMAIN (pack->head.lens - (head - (char *)pack->head.data))
+#define MAX_HEADLENS ONEK * 4 // HTTP 头部最大允许长度（4 KB）
+#define HEAD_REMAIN (pack->head.lens - (head - (char *)pack->head.data)) // 头部缓冲区剩余字节数
 
+// 检查头部字段是否为 Content-Length 或 Transfer-Encoding: chunked，更新传输方式
 static void _check_fileld(http_pack_ctx *pack, http_header_ctx *field, int32_t *transfer) {
-    /* Length check (O(1)) in buf_icompare is a perfect discriminator — no
-     * first-char switch needed.  All key lengths here are distinct. */
+    /* buf_icompare 内部先做长度比较（O(1)），各键长度均不同，无需首字符 switch */
     if (ERR_OK == _http_check_keyval(field,
                                      "content-length", sizeof("content-length") - 1,
                                      NULL, 0)) {
@@ -37,6 +37,7 @@ static void _check_fileld(http_pack_ctx *pack, http_header_ctx *field, int32_t *
         pack->chunked = 1;
     }
 }
+// 解析 HTTP 第一行（请求行或状态行），填充 pack->status[0..2]，返回指向第一个头部字段的指针
 static char *_http_parse_status(http_pack_ctx *pack) {
     char *head = pack->head.data;
     head = skipempty(head, pack->head.lens);
@@ -71,6 +72,7 @@ static char *_http_parse_status(http_pack_ctx *pack) {
     pack->status[2].lens = pos - head;
     return pos + CRLF_SIZE;
 }
+// 解析全部头部字段，检测 Content-Length/Transfer-Encoding，将字段存入 pack->header
 static int32_t _http_parse_head(http_pack_ctx *pack, int32_t *transfer) {
     char *head = _http_parse_status(pack);
     if (NULL == head) {
@@ -112,6 +114,7 @@ static int32_t _http_parse_head(http_pack_ctx *pack, int32_t *transfer) {
     }
     return ERR_OK;
 }
+// 等待并读取 Content-Length 模式下的数据体，数据完整后重置 ud 状态
 static http_pack_ctx *_http_content(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     http_pack_ctx *pack = ud->context;
     if (buffer_size(buf) >= pack->data.lens) {
@@ -125,6 +128,7 @@ static http_pack_ctx *_http_content(buffer_ctx *buf, ud_cxt *ud, int32_t *status
         return NULL;
     }
 }
+// 在缓冲区中搜索 \r\n\r\n，返回头部总长度（含结束 CRLF），未找到则设置状态标志
 static size_t _http_headlens(buffer_ctx *buf, int32_t *status) {
     size_t flens = CRLF_SIZE * 2;
     int32_t pos = buffer_search(buf, 0, 0, 0, CONCAT2(FLAG_CRLF,FLAG_CRLF), flens);
@@ -143,6 +147,7 @@ static size_t _http_headlens(buffer_ctx *buf, int32_t *status) {
     }
     return hlens;
 }
+// 分配 http_pack_ctx 结构体，头部数据紧随其后（连续内存），初始化头部字段数组
 static http_pack_ctx *_http_headpack(size_t lens) {
     char *pack;
     CALLOC(pack, 1, sizeof(http_pack_ctx) + lens);
@@ -166,6 +171,7 @@ http_pack_ctx *_http_parsehead(buffer_ctx *buf, int32_t *transfer, int32_t *stat
     }
     return pack;
 }
+// 解析 HTTP 头部后根据传输方式决定：直接返回（无数据体/chunked）或进入数据体读取
 static http_pack_ctx *_http_header(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     int32_t transfer;
     http_pack_ctx *pack = _http_parsehead(buf, &transfer, status);
@@ -190,6 +196,7 @@ static http_pack_ctx *_http_header(buffer_ctx *buf, ud_cxt *ud, int32_t *status)
         return pack;
     }
 }
+// 分配 chunked 数据包结构体，lens>0 时数据紧随其后，chunked 字段固定设为 2
 static http_pack_ctx *_http_chunkedpack(size_t lens) {
     char *pack;
     CALLOC(pack, 1, sizeof(http_pack_ctx) + lens);
@@ -201,6 +208,7 @@ static http_pack_ctx *_http_chunkedpack(size_t lens) {
     pctx->chunked = 2;
     return pctx;
 }
+// 解析 chunked 编码的数据块：先读取长度行，再读取对应数据，长度为 0 表示结束
 static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     size_t drain;
     http_pack_ctx *pack = ud->context;

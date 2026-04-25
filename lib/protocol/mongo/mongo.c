@@ -36,6 +36,7 @@ void _mongo_udfree(ud_cxt *ud) {
 void _mongo_closed(ud_cxt *ud) {
     _mongo_udfree(ud);
 }
+// 格式化 SCRAM-SHA-1 密码：对 "user:mongo:password" 计算 MD5 后转十六进制小写
 static void _mongo_format_pwd(mongo_ctx *mongo, char fmtpwd[HEX_ENSIZE(MD5_BLOCK_SIZE)]) {
     char *buf = format_va("%s:mongo:%s", mongo->user, mongo->password);
     char hs[MD5_BLOCK_SIZE];
@@ -47,6 +48,7 @@ static void _mongo_format_pwd(mongo_ctx *mongo, char fmtpwd[HEX_ENSIZE(MD5_BLOCK
     tohex(hs, sizeof(hs), fmtpwd);
     strlower(fmtpwd);
 }
+// 处理 SCRAM 服务端第一消息：解析服务端 nonce/salt/迭代次数，构造并发送客户端 final 消息
 static int32_t _mongo_server_first_message(ev_ctx *ev, mongo_ctx *mongo, mgopack_ctx *mgopack) {
     size_t size;
     int32_t convid, done;
@@ -75,6 +77,7 @@ static int32_t _mongo_server_first_message(ev_ctx *ev, mongo_ctx *mongo, mgopack
     FREE(client_final);
     return ev_send(ev, mongo->fd, mongo->skid, data, size, 0);
 }
+// 处理 SCRAM 服务端最终消息：验证服务端签名，确认认证完成
 static int32_t _mongo_server_final_message(mongo_ctx *mongo, mgopack_ctx *mgopack) {
     size_t plens;
     int32_t convid, done;
@@ -86,6 +89,7 @@ static int32_t _mongo_server_final_message(mongo_ctx *mongo, mgopack_ctx *mgopac
     }
     return scram_check_final_message(mongo->scram, payload, plens);
 }
+// SCRAM 认证状态机：根据 scram->status 分发处理服务端第一/最终消息
 static void _mongo_scram_auth(ev_ctx *ev, mgopack_ctx *mgopack, ud_cxt *ud) {
     int32_t rtn;
     mongo_ctx *mongo = ud->context;

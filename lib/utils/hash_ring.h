@@ -9,10 +9,10 @@ typedef struct hash_ring_node {
     size_t lens;//name 长度
 } hash_ring_node;
 typedef struct hash_ring_ctx {
-    uint32_t nnodes;
-    uint32_t nitems;
-    struct hash_ring_list *nodes;
-    struct hash_ring_item **items;
+    uint32_t nnodes;            //真实节点数量
+    uint32_t nitems;            //虚拟节点（副本）总数
+    struct hash_ring_list *nodes; //真实节点链表
+    struct hash_ring_item **items;//按 digest 排序的虚拟节点数组
 } hash_ring_ctx;
 
 /// <summary>

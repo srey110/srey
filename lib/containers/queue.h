@@ -3,14 +3,24 @@
 
 #include "base/macro.h"
 
-#define QUEUE_INIT_SIZE 32
+#define QUEUE_INIT_SIZE 32 // 循环队列默认初始容量
 
+/*
+ * QUEUE_DECL(type, qtype) —— 泛型循环队列声明宏
+ *
+ * 根据元素类型 type 和队列类型名 qtype，生成完整的循环队列结构体
+ * 及以下内联操作函数：
+ *   qtype_init / qtype_clear / qtype_free
+ *   qtype_size / qtype_maxsize / qtype_empty
+ *   qtype_resize / qtype_push / qtype_pop
+ *   qtype_peek / qtype_at
+ */
 #define QUEUE_DECL(type, qtype) \
 typedef struct qtype { \
-    uint32_t offset; \
-    uint32_t size; \
-    uint32_t maxsize; \
-    type   *ptr; \
+    uint32_t offset;  /* 队列头部偏移（循环起始位置）*/ \
+    uint32_t size;    /* 当前元素数量 */ \
+    uint32_t maxsize; /* 当前分配容量 */ \
+    type    *ptr;     /* 数据存储数组 */ \
 }qtype##_ctx; \
 static inline void qtype##_init(qtype##_ctx *p, uint32_t maxsize) {\
     p->size = p->offset = 0;\
@@ -80,6 +90,7 @@ static inline type *qtype##_at(qtype##_ctx *p, uint32_t pos) {\
     }\
 };\
 
+// 预定义：指针类型循环队列（元素为 void *）
 QUEUE_DECL(void *, qu_ptr);
 
 #endif//QUEUE_H_

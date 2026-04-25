@@ -3,12 +3,12 @@
 
 #include "base/macro.h"
 
-#define AES_BLOCK_SIZE 16
+#define AES_BLOCK_SIZE 16 // AES 分组大小（字节）
 typedef struct aes_ctx {
-    int32_t encrypt;
-    int32_t nrounds;
-    uint8_t output[AES_BLOCK_SIZE];
-    uint32_t schedule[256 / 8 + 28];
+    int32_t encrypt;                    // 1 加密，0 解密
+    int32_t nrounds;                    // 加密轮数，由密钥长度决定
+    uint8_t output[AES_BLOCK_SIZE];     // 加解密结果缓冲区
+    uint32_t schedule[256 / 8 + 28];   // 轮密钥调度表
 }aes_ctx;
 /// <summary>
 /// aes 初始化

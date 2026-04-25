@@ -1,10 +1,12 @@
 ﻿#include "thread/thread.h"
 
+// 线程启动参数封装，传递用户回调和数据给线程入口函数
 typedef struct th_ctx {
-    void *udata;
-    void(*th_cb)(void*);
+    void  *udata;         // 用户自定义参数
+    void (*th_cb)(void*); // 用户线程回调函数
 }th_ctx;
 
+// 线程入口函数（内部使用）：调用用户回调后释放 th_ctx
 #if defined(OS_WIN)
 static uint32_t __stdcall _thread_cb(void *arg) {
 #else

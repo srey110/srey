@@ -56,7 +56,7 @@ void scram_set_iter(scram_ctx *scram, int32_t iter) {
 const char *scram_get_user(scram_ctx *scram) {
     return scram->user;
 }
-//RFC 5802 specifies that ',' and '=' and encoded as '=2C' and '=3D'
+// 对用户名进行转义（RFC 5802 规定 ',' 编码为 '=2C'，'=' 编码为 '=3D'）
 static char *_scram_username_filter(const char *user) {
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
@@ -74,6 +74,7 @@ static char *_scram_username_filter(const char *user) {
     binary_set_int8(&bwriter, 0);
     return bwriter.data;
 }
+// 还原经 RFC 5802 转义的用户名（'=2C' 还原为 ','，'=3D' 还原为 '='）
 static char *_scram_username_recover(const char *user, size_t ulens) {
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
@@ -98,6 +99,7 @@ static char *_scram_username_recover(const char *user, size_t ulens) {
     binary_set_int8(&bwriter, 0);
     return bwriter.data;
 }
+// 在 SCRAM 消息中查找指定属性的起始位置（必须位于消息开头或逗号之后）
 static char *_scram_attr_search(char *msg, size_t mlens, const char *attr) {
     char *pos = msg;
     size_t remain = mlens;
@@ -107,8 +109,8 @@ static char *_scram_attr_search(char *msg, size_t mlens, const char *attr) {
         if (NULL == pos) {
             return NULL;
         }
-        if (pos == msg//首字符
-            || ',' == (pos - 1)[0]) {//非首字符 检查前一字符
+        if (pos == msg // 位于消息首字符
+            || ',' == (pos - 1)[0]) { // 非首字符：检查前一字符是否为逗号
             return pos;
         }
         pos++;
@@ -119,6 +121,7 @@ static char *_scram_attr_search(char *msg, size_t mlens, const char *attr) {
     }
     return NULL;
 }
+// 提取 SCRAM 消息中指定属性的值，通过 lens 返回值长度
 static char *_scram_attr_value(char *msg, size_t mlens, const char *attr, size_t *lens) {
     char *pos = _scram_attr_search(msg, mlens, attr);
     if (NULL == pos) {
@@ -134,6 +137,7 @@ static char *_scram_attr_value(char *msg, size_t mlens, const char *attr, size_t
     }
     return val;
 }
+// 计算 SaltedPassword = PBKDF2(password, salt, iter)（使用 HMAC 迭代实现）
 static void _scram_salt_password(scram_ctx *scram, const char *password) {
     char hash[DG_BLOCK_SIZE];
     hmac_ctx hmac;
@@ -154,18 +158,21 @@ static void _scram_salt_password(scram_ctx *scram, const char *password) {
         }
     }
 }
+// 计算 HMAC(SaltedPassword, key)，用于派生 ClientKey 或 ServerKey
 static void _scram_key(scram_ctx *scram, const char *key, char result[DG_BLOCK_SIZE]) {
     hmac_ctx hmac;
     hmac_init(&hmac, scram->dtype, scram->saltedpwd, scram->hslens);
     hmac_update(&hmac, key, strlen(key));
     hmac_final(&hmac, result);
 }
+// 计算 H(ClientKey)，即对 ClientKey 做摘要，得到 StoredKey
 static void _scram_h(scram_ctx *scram, char client_key[DG_BLOCK_SIZE], char result[DG_BLOCK_SIZE]) {
     digest_ctx digest;
     digest_init(&digest, scram->dtype);
     digest_update(&digest, client_key, scram->hslens);
     digest_final(&digest, result);
 }
+// 计算 HMAC(key, AuthMessage)：key 为 StoredKey 或 ServerKey，AuthMessage 为三段消息拼接
 static void _scram_whole(scram_ctx *scram, char key[DG_BLOCK_SIZE], char result[DG_BLOCK_SIZE]) {
     hmac_ctx hmac;
     hmac_init(&hmac, scram->dtype, key, scram->hslens);
@@ -184,6 +191,7 @@ static void _scram_whole(scram_ctx *scram, char key[DG_BLOCK_SIZE], char result[
     }
     hmac_final(&hmac, result);
 }
+// 计算客户端证明（ClientProof = ClientKey XOR HMAC(StoredKey, AuthMessage)），base64 编码后写入 result
 static void _scram_challenge_clientkey(scram_ctx *scram, char result[B64EN_SIZE(DG_BLOCK_SIZE)]) {
     _scram_salt_password(scram, scram->pwd);
     char clientkey[DG_BLOCK_SIZE];
@@ -198,6 +206,7 @@ static void _scram_challenge_clientkey(scram_ctx *scram, char result[B64EN_SIZE(
     }
     bs64_encode(proof, scram->hslens, result);
 }
+// 计算服务端签名（ServerSignature = HMAC(ServerKey, AuthMessage)），base64 编码后写入 result
 static void _scram_challenge_serverkey(scram_ctx *scram, char result[B64EN_SIZE(DG_BLOCK_SIZE)]) {
     char serverkey[DG_BLOCK_SIZE];
     _scram_key(scram, "Server Key", serverkey);
@@ -205,7 +214,7 @@ static void _scram_challenge_serverkey(scram_ctx *scram, char result[B64EN_SIZE(
     _scram_whole(scram, serverkey, whole);
     bs64_encode(whole, scram->hslens, result);
 }
-//client send n,,n=,r=
+// 客户端生成第一条消息（格式：n,,n=<user>,r=<nonce>）
 static char *_scram_client_first_message(scram_ctx *scram) {
     if (SCRAM_INIT != scram->status) {
         return NULL;
@@ -232,7 +241,7 @@ static char *_scram_client_first_message(scram_ctx *scram) {
     scram->status = SCRAM_LOCAL_FIRST;
     return buf;
 }
-//server parse n,,n=,r=
+// 服务端解析客户端第一条消息（提取用户名和 nonce）
 static int32_t _scram_parse_client_first_message(scram_ctx *scram, char *msg, size_t mlens) {
     if (SCRAM_INIT != scram->status) {
         return ERR_FAILED;
@@ -263,7 +272,7 @@ static int32_t _scram_parse_client_first_message(scram_ctx *scram, char *msg, si
     scram->status = SCRAM_REMOTE_FIRST;
     return ERR_OK;
 }
-//server send r=,s=,i=
+// 服务端生成第一条消息（格式：r=<client_nonce+server_nonce>,s=<salt_base64>,i=<iter>）
 static char *_scram_server_first_message(scram_ctx *scram) {
     if (SCRAM_REMOTE_FIRST != scram->status) {
         return NULL;
@@ -281,7 +290,7 @@ static char *_scram_server_first_message(scram_ctx *scram) {
     scram->status = SCRAM_LOCAL_FIRST;
     return buf;
 }
-//client parse r=,s=,i=
+// 客户端解析服务端第一条消息（提取 nonce、salt 和迭代轮数）
 static int32_t _scram_parse_server_first_message(scram_ctx *scram, char *msg, size_t mlens) {
     if (SCRAM_LOCAL_FIRST != scram->status) {
         return ERR_FAILED;
@@ -329,7 +338,7 @@ int32_t scram_parse_first_message(scram_ctx *scram, char *msg, size_t mlens) {
     return scram->client ?
         _scram_parse_server_first_message(scram, msg, mlens) : _scram_parse_client_first_message(scram, msg, mlens);
 }
-//client send c=biws,r=,p=
+// 客户端生成最终消息（格式：c=biws,r=<nonce>,p=<ClientProof_base64>）
 static char *_scram_client_final_message(scram_ctx *scram) {
     if (SCRAM_REMOTE_FIRST != scram->status) {
         return NULL;
@@ -340,7 +349,7 @@ static char *_scram_client_final_message(scram_ctx *scram) {
     scram->status = SCRAM_LOCAL_FINAL;
     return format_va("%s,p=%s", scram->final_message_without_proof, proof);
 }
-//server parse c=biws,r=,p=
+// 服务端验证客户端最终消息（校验 c=biws、nonce 和客户端证明）
 static int32_t _scram_server_check_final_message(scram_ctx *scram, char *msg, size_t mlens) {
     if (SCRAM_LOCAL_FIRST != scram->status) {
         return ERR_FAILED;
@@ -378,7 +387,7 @@ static int32_t _scram_server_check_final_message(scram_ctx *scram, char *msg, si
     scram->status = SCRAM_REMOTE_FINAL;
     return ERR_OK;
 }
-//server send [e=] v=
+// 服务端生成最终消息（格式：v=<ServerSignature_base64>）
 static char *_scram_server_final_message(scram_ctx *scram) {
     if (SCRAM_REMOTE_FINAL != scram->status) {
         return NULL;
@@ -388,7 +397,7 @@ static char *_scram_server_final_message(scram_ctx *scram) {
     scram->status = SCRAM_LOCAL_FINAL;
     return format_va("v=%s", proof);
 }
-//client parse [e=] v= 
+// 客户端验证服务端最终消息（检查错误字段，校验服务端签名）
 static int32_t _scram_client_check_final_message(scram_ctx *scram, char *msg, size_t mlens) {
     if (SCRAM_LOCAL_FINAL != scram->status) {
         return ERR_FAILED;

@@ -4,16 +4,18 @@
 #include "utils/binary.h"
 #include "crypt/hmac.h"
 
+// harbor全局上下文（单例，监听信息+HMAC签名上下文）
 typedef struct harbor_ctx {
-    uint16_t port;
-    struct evssl_ctx *ssl;
-    uint64_t lsnid;
-    hmac_ctx hmac;
-    char ip[IP_LENS];
+    uint16_t port;          // 监听端口
+    struct evssl_ctx *ssl;  // SSL上下文（NULL表示不使用SSL）
+    uint64_t lsnid;         // 监听ID（ev_unlisten使用）
+    hmac_ctx hmac;          // HMAC签名上下文（用于验证请求合法性）
+    char ip[IP_LENS];       // 监听IP
 }harbor_ctx;
 
-static harbor_ctx _harbor;
+static harbor_ctx _harbor; // harbor全局实例
 
+// 构造并发送HTTP响应（有数据时Content-Type为octet-stream，否则为text/plain状态文本）
 static void _harbor_response(task_ctx *harbor, SOCKET fd, uint64_t skid, char *respdata, size_t lens, int32_t code) {
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
@@ -30,6 +32,7 @@ static void _harbor_response(task_ctx *harbor, SOCKET fd, uint64_t skid, char *r
     }
     ev_send(&harbor->loader->netev, fd, skid, bwriter.data, bwriter.offset, 0);
 }
+// 验证请求签名：检查X-Timestamp时间窗口（5分钟内）及Authorization HMAC-SHA256签名
 static int32_t _check_sign(struct http_pack_ctx *pack, buf_ctx *url, char *reqdata, size_t reqlens) {
     size_t tlens = 0;
     char *tbuf = http_header(pack, "X-Timestamp", &tlens);
@@ -74,6 +77,7 @@ static int32_t _check_sign(struct http_pack_ctx *pack, buf_ctx *url, char *reqda
     }
     return ERR_OK;
 }
+// harbor HTTP接收回调：解析HTTP请求，验证签名，路由到call或request处理
 static void _harbor_net_recv(task_ctx *harbor, SOCKET fd, uint64_t skid, uint8_t pktype,
     uint8_t client, uint8_t slice, void *data, size_t size) {
     (void)pktype;
@@ -142,12 +146,14 @@ static void _harbor_net_recv(task_ctx *harbor, SOCKET fd, uint64_t skid, uint8_t
         ev_close(&harbor->loader->netev, fd, skid);
     }
 }
+// harbor任务启动回调：注册接收函数并开始监听
 static void _harbor_startup(task_ctx *harbor) {
     task_recved(harbor, _harbor_net_recv);
     if (ERR_OK != task_listen(harbor, PACK_HTTP, _harbor.ssl, _harbor.ip, _harbor.port, &_harbor.lsnid, 0)) {
         LOG_ERROR("task_listen %s:%d error", _harbor.ip, _harbor.port);
     }
 }
+// harbor任务关闭回调：取消监听
 static void _harbor_closing(task_ctx *harbor) {
     (void)harbor;
     if (0 != _harbor.lsnid) {
@@ -178,6 +184,7 @@ int32_t harbor_start(loader_ctx *loader, name_t tname, name_t ssl, const char *i
     }
     return ERR_OK;
 }
+// 为HTTP请求头添加X-Timestamp和Authorization签名（HMAC-SHA256，签名内容=url+data+timestamp）
 static void _harbor_sign(binary_ctx *bwriter, const char *key, const char *url, void *data, size_t size) {
     size_t klens = strlen(key);
     if (0 == klens) {

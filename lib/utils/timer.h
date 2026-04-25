@@ -5,13 +5,13 @@
 
 typedef struct timer_ctx {
 #if defined(OS_WIN)
-    double interval;
-#elif defined(OS_DARWIN) 
-    double interval;
-    uint64_t(*timefunc)(void);
+    double interval;              //QueryPerformanceCounter 每计数对应的纳秒数
+#elif defined(OS_DARWIN)
+    double interval;              //mach_timebase 换算比例（numer/denom）
+    uint64_t(*timefunc)(void);    //实际使用的时间函数（优先 mach_continuous_time）
 #else
 #endif
-    uint64_t starttick;
+    uint64_t starttick;           //计时起始时刻（纳秒）
 }timer_ctx;
 /// <summary>
 /// 初始化计时器

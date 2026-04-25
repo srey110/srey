@@ -6,36 +6,39 @@
 #include "crypt/digest.h"
 #include "utils/utils.h"
 
+// WebSocket 帧解析状态
 typedef enum parse_status {
-    INIT = 0,
-    START,
-    DATA
+    INIT = 0,  // 初始状态，等待 HTTP 握手
+    START,     // 握手完成，等待 WebSocket 帧头
+    DATA       // 已解析帧头，等待帧数据
 }parse_status;
+// WebSocket 数据包上下文
 typedef struct websock_pack_ctx {
-    int8_t fin;
-    int8_t prot;
-    int8_t mask;
-    pack_type secprot;
-    void *secpack;
-    char key[4];
-    size_t remain;
-    size_t dlens;
-    char data[0];
+    int8_t fin;          // FIN 位：1=完整帧或最后一帧，0=分片中间帧
+    int8_t prot;         // 操作码（ws_prot 枚举值）
+    int8_t mask;         // 是否使用掩码（客户端发送时为 1）
+    pack_type secprot;   // 子协议类型（如 PACK_MQTT）
+    void *secpack;       // 子协议解包结果
+    char key[4];         // 掩码密钥（mask=1 时有效）
+    size_t remain;       // 帧数据段在缓冲区中的剩余待读字节数
+    size_t dlens;        // 数据体长度（不含掩码键）
+    char data[0];        // 数据体（柔性数组）
 }websock_pack_ctx;
+// WebSocket 连接上下文（每个连接持有一个）
 typedef struct websock_ctx {
-    int8_t slice;
-    pack_type secprot;//加密协议
-    buffer_ctx *buf;
-    ud_cxt *ud;
-    websock_pack_ctx *pack;
+    int8_t slice;          // 是否处于分片接收状态（1=是）
+    pack_type secprot;     // 子协议类型
+    buffer_ctx *buf;       // 子协议数据缓冲区
+    ud_cxt *ud;            // 子协议的 ud_cxt（用于子协议解包）
+    websock_pack_ctx *pack; // 当前正在解析的帧（DATA 状态下有效）
 }websock_ctx;
 
-#define HEAD_LESN    2
-#define SIGNKEY "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-static char _mask_key[4 + 1] = { 0 };
-static char _hs_key[B64EN_SIZE(8)] = { 0 };
-static char _hs_sign[B64EN_SIZE(SHA1_BLOCK_SIZE)] = { 0 };
-static _handshaked_push _hs_push;
+#define HEAD_LESN    2 // WebSocket 帧最小头部长度（字节）
+#define SIGNKEY "258EAFA5-E914-47DA-95CA-C5AB0DC85B11" // WebSocket 握手固定密钥后缀（RFC 6455）
+static char _mask_key[4 + 1] = { 0 };                 // 客户端掩码密钥（固定随机值）
+static char _hs_key[B64EN_SIZE(8)] = { 0 };            // 握手请求中的 Sec-WebSocket-Key（base64 编码）
+static char _hs_sign[B64EN_SIZE(SHA1_BLOCK_SIZE)] = { 0 }; // 预计算的握手签名（用于客户端验证响应）
+static _handshaked_push _hs_push;                      // 握手完成后的推送回调
 
 void _websock_pkfree(void *data) {
     if (NULL == data) {
@@ -72,9 +75,8 @@ void _websock_secextra(ud_cxt *ud, void *val) {
     }
     ws->ud->context = val;
 }
-/* Compare the Sec-WebSocket-Protocol value directly against known protocol
- * names using the raw (non-NUL-terminated) pointer from the HTTP parser.
- * Both length and content must match — no malloc required for comparison. */
+/* 直接用 HTTP 解析器返回的原始指针（非 NUL 结尾）比对已知子协议名称，
+ * 长度和内容均须匹配，无需额外内存分配。 */
 static int32_t _websock_sec_prot(const char *data, size_t lens, pack_type *sectype) {
     if (lens == sizeof("mqtt") - 1
         && 0 == _memicmp(data, "mqtt", sizeof("mqtt") - 1)) {
@@ -83,6 +85,7 @@ static int32_t _websock_sec_prot(const char *data, size_t lens, pack_type *secty
     }
     return ERR_FAILED;
 }
+// 服务端侧握手校验：验证 GET 请求中的 Connection/Upgrade/Sec-WebSocket-Version/Key 字段
 static http_header_ctx *_websock_handshake_svcheck(struct http_pack_ctx *hpack) {
     buf_ctx *status = http_status(hpack);
     if (!buf_icompare(&status[0], "get", sizeof("get") - 1)) {
@@ -94,8 +97,7 @@ static http_header_ctx *_websock_handshake_svcheck(struct http_pack_ctx *hpack) 
     uint32_t cnt = http_nheader(hpack);
     for (uint32_t i = 0; i < cnt; i++) {
         head = http_header_at(hpack, i);
-        /* buf_icompare checks length first (O(1)); no first-char switch needed.
-         * All key lengths differ so the length check is a perfect discriminator. */
+        /* buf_icompare 先做长度比较（O(1)），各键长度均不同，无需首字符 switch。 */
         if (0 == conn
             && ERR_OK == _http_check_keyval(head,
                                             "connection", sizeof("connection") - 1,
@@ -134,9 +136,10 @@ static http_header_ctx *_websock_handshake_svcheck(struct http_pack_ctx *hpack) 
     }
     return sign;
 }
+// 计算 WebSocket 握手签名：将 key 与固定字符串拼接后 SHA1 哈希再 base64 编码
 static void _websock_sign(char *key, size_t klens, char b64[B64EN_SIZE(SHA1_BLOCK_SIZE)]) {
-    /* SIGNKEY is 36 bytes; WebSocket keys are 24-byte base64 strings.
-     * 128 bytes is comfortably more than enough — no heap allocation needed. */
+    /* SIGNKEY 为 36 字节；WebSocket key 是 24 字节的 base64 字符串。
+     * 128 字节栈空间完全足够，无需堆分配。 */
     char signstr[128];
     const size_t slens = sizeof(SIGNKEY) - 1;
     const size_t lens  = klens + slens;
@@ -150,6 +153,7 @@ static void _websock_sign(char *key, size_t klens, char b64[B64EN_SIZE(SHA1_BLOC
     digest_final(&digest, sha1str);
     bs64_encode(sha1str, sizeof(sha1str), b64);
 }
+// 服务端握手处理：发送 101 响应并通知上层握手成功（或失败）
 static int32_t _websock_handshake_server(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
     ud_cxt *ud, struct http_pack_ctx *hpack, int32_t *status, pack_type *sectype) {
     http_header_ctx *signstr = _websock_handshake_svcheck(hpack);
@@ -163,8 +167,8 @@ static int32_t _websock_handshake_server(ev_ctx *ev, SOCKET fd, uint64_t skid, i
     char *secprot = NULL;
     if (NULL != sechead
         && 0 != lens) {
-        /* Compare against the raw (non-NUL-terminated) header value first;
-         * only allocate the persistent copy if the protocol is supported. */
+        /* 先直接比较原始头部值（非 NUL 结尾指针），
+         * 仅在协议被支持时才分配持久化副本。 */
         if (ERR_OK != _websock_sec_prot(sechead, lens, sectype)) {
             _hs_push(fd, skid, client, ud, ERR_FAILED, NULL, 0);
             return ERR_FAILED;
@@ -197,6 +201,7 @@ static int32_t _websock_handshake_server(ev_ctx *ev, SOCKET fd, uint64_t skid, i
         return ERR_OK;
     }
 }
+// 客户端侧握手状态行校验：确认响应状态码为 101
 static int32_t _websock_handshake_clientckstatus(struct http_pack_ctx *hpack) {
     buf_ctx *status = http_status(hpack);
     if (!buf_compare(&status[1], "101", strlen("101"))) {
@@ -204,6 +209,7 @@ static int32_t _websock_handshake_clientckstatus(struct http_pack_ctx *hpack) {
     }
     return ERR_OK;
 }
+// 客户端侧握手头部校验：验证 Connection/Upgrade/Sec-WebSocket-Accept 字段
 static http_header_ctx *websock_client_checkhs(struct http_pack_ctx *hpack) {
     if (ERR_OK != _websock_handshake_clientckstatus(hpack)) {
         return NULL;
@@ -245,6 +251,7 @@ static http_header_ctx *websock_client_checkhs(struct http_pack_ctx *hpack) {
     }
     return sign;
 }
+// 客户端握手处理：验证服务端响应的 Accept 签名并通知上层握手成功（或失败）
 static int32_t _websock_handshake_client(SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud,
     struct http_pack_ctx *hpack, int32_t *status, pack_type *sectype) {
     http_header_ctx *signstr = websock_client_checkhs(hpack);
@@ -279,6 +286,7 @@ static int32_t _websock_handshake_client(SOCKET fd, uint64_t skid, int32_t clien
         return ERR_OK;
     }
 }
+// WebSocket 握手入口：解析 HTTP 头部后根据 client 标志分发到服务端或客户端握手处理
 static void _websock_handshake(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     int32_t transfer;
@@ -314,10 +322,12 @@ static void _websock_handshake(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t cli
     }
     _http_pkfree(hpack);
 }
+// 释放以 websock_pack_ctx 为容器的 MQTT 数据包（通过 UPCAST 找到结构体头部）
 static void _websock_mqtt_buffree(void *buf) {
     websock_pack_ctx *pack = UPCAST(buf, websock_pack_ctx, data);
     _websock_pkfree(pack);
 }
+// 将 WebSocket 帧数据交给 MQTT 子协议解包，返回包含 MQTT 包的 websock_pack_ctx
 static websock_pack_ctx *_websock_sec_mqtt(websock_ctx *ws, websock_pack_ctx *pack, int32_t client, int32_t *status) {
     if (WS_BINARY != pack->prot
         && WS_CONTINUE != pack->prot) {
@@ -338,6 +348,7 @@ static websock_pack_ctx *_websock_sec_mqtt(websock_ctx *ws, websock_pack_ctx *pa
     rtn->secpack = mpack;
     return rtn;
 }
+// 子协议统一解包入口，将 WebSocket 帧数据转发给对应子协议处理
 static websock_pack_ctx *_websock_sec_unpack(websock_ctx *ws, websock_pack_ctx *pack, int32_t client, int32_t *status) {
     websock_pack_ctx *rtn = NULL;
     switch (ws->secprot) {
@@ -348,12 +359,13 @@ static websock_pack_ctx *_websock_sec_unpack(websock_ctx *ws, websock_pack_ctx *
         BIT_SET(*status, PROT_ERROR);
         break;
     }
-    //移除数据,自己加了循环
+    // 子协议解包循环由外层调用方负责，移除 MOREDATA 标志避免外层误判
     if (BIT_CHECK(*status, PROT_MOREDATA)) {
         BIT_REMOVE(*status, PROT_MOREDATA);
     }
     return rtn;
 }
+// 读取 WebSocket 帧数据体（含掩码解码），设置分片状态标志，按需交子协议处理
 static websock_pack_ctx *_websock_parse_data(buffer_ctx *buf, int32_t client, ud_cxt *ud, int32_t *status) {
     websock_ctx *ws = (websock_ctx *)ud->context;
     websock_pack_ctx *pack = ws->pack;
@@ -367,10 +379,9 @@ static websock_pack_ctx *_websock_parse_data(buffer_ctx *buf, int32_t client, ud
         } else {
             ASSERTAB(sizeof(pack->key) == buffer_copyout(buf, 0, pack->key, sizeof(pack->key)), "copy buffer failed.");
             ASSERTAB(pack->dlens == buffer_copyout(buf, sizeof(pack->key), pack->data, pack->dlens), "copy buffer failed.");
-            /* Unmask: expand the 4-byte key to 64 bits and XOR 8 bytes at a
-             * time using memcpy for safe unaligned access. The tail (0-7 bytes)
-             * is handled byte-by-byte. Endian-safe: memcpy preserves byte order
-             * so the 8-byte block XOR is equivalent to the original per-byte XOR. */
+            /* 解掩码：将 4 字节密钥扩展为 64 位，每次用 memcpy 安全地 XOR 8 字节
+             * （避免非对齐访问），剩余 0-7 字节逐字节处理。
+             * 端序安全：memcpy 保留字节顺序，8 字节块 XOR 等价于原始逐字节 XOR。 */
             uint32_t key32;
             uint64_t key64;
             size_t i = 0;
@@ -388,7 +399,7 @@ static websock_pack_ctx *_websock_parse_data(buffer_ctx *buf, int32_t client, ud
         }
         ASSERTAB(pack->remain == buffer_drain(buf, pack->remain), "drain buffer failed.");
     }
-    //起始帧:FIN为0,opcode非0 中间帧:FIN为0,opcode为0 结束帧:FIN为1,opcode为0
+    // 分片帧判断：起始帧 FIN=0 且 opcode≠0；中间帧 FIN=0 且 opcode=0；结束帧 FIN=1 且 opcode=0
     if (0 == pack->fin 
         && 0 != pack->prot) {
         if (0 != ws->slice) {
@@ -410,8 +421,8 @@ static websock_pack_ctx *_websock_parse_data(buffer_ctx *buf, int32_t client, ud
     }
     ws->pack = NULL;
     ud->status = START;
-    if (PACK_NONE != ws->secprot//加密协议
-        && pack->dlens > 0//排除空包
+    if (PACK_NONE != ws->secprot // 存在子协议
+        && pack->dlens > 0      // 排除空包
         && (WS_CONTINUE == pack->prot
             || WS_TEXT == pack->prot
             || WS_BINARY == pack->prot)) {
@@ -420,7 +431,8 @@ static websock_pack_ctx *_websock_parse_data(buffer_ctx *buf, int32_t client, ud
         return pack;
     }
 }
-static websock_pack_ctx *_websock_parse_pllens(buffer_ctx *buf, size_t blens, 
+// 根据 payloadlen 字段（7位）解析真实数据长度并分配 websock_pack_ctx
+static websock_pack_ctx *_websock_parse_pllens(buffer_ctx *buf, size_t blens,
     uint8_t mask, uint8_t payloadlen, int32_t *status) {
     websock_pack_ctx *pack = NULL;
     if (payloadlen <= 125) {
@@ -478,6 +490,7 @@ static websock_pack_ctx *_websock_parse_pllens(buffer_ctx *buf, size_t blens,
     }
     return pack;
 }
+// 解析 WebSocket 帧头（FIN/RSV/opcode/MASK/payloadlen），校验 RSV 位和掩码要求
 static websock_pack_ctx *_websock_parse_head(buffer_ctx *buf, int32_t client, ud_cxt *ud, int32_t *status) {
     size_t blens = buffer_size(buf);
     if (blens < HEAD_LESN) {
@@ -533,6 +546,7 @@ websock_pack_ctx *websock_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t c
     }
     return pack;
 }
+// 计算 WebSocket 帧总长度（头部 + 可选扩展长度字段 + 可选掩码 + 数据体）
 static size_t _websock_create_callens(char key[4], size_t dlens) {
     size_t size = HEAD_LESN + dlens;
     if (dlens >= 126) {
@@ -547,6 +561,7 @@ static size_t _websock_create_callens(char key[4], size_t dlens) {
     }
     return size;
 }
+// 构造 WebSocket 帧：写入头部（含扩展长度和掩码），有掩码时对数据进行 XOR 加密
 static void *_websock_create_pack(uint8_t fin, uint8_t prot, char key[4], void *data, size_t dlens, size_t *size) {
     *size = _websock_create_callens(key, dlens);
     char *frame;

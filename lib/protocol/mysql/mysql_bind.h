@@ -41,6 +41,13 @@ void mysql_bind_string(mysql_bind_ctx *mbind, const char *name, char *value, siz
 /// <param name="name">名称</param>
 /// <param name="value">值</param>
 void mysql_bind_integer(mysql_bind_ctx *mbind, const char *name, int64_t value);
+/// <summary>
+/// 绑定无符号整数参数（自动选择 TINYINT/SMALLINT/INT/BIGINT）
+/// 对应类型：MYSQL_TYPE_TINY MYSQL_TYPE_SHORT MYSQL_TYPE_YEAR MYSQL_TYPE_LONG MYSQL_TYPE_LONGLONG
+/// </summary>
+/// <param name="mbind">mysql_bind_ctx</param>
+/// <param name="name">参数名称</param>
+/// <param name="value">无符号整数值</param>
 void mysql_bind_uinteger(mysql_bind_ctx *mbind, const char *name, uint64_t value);
 /// <summary>
 /// MYSQL_TYPE_FLOAT MYSQL_TYPE_DOUBLE

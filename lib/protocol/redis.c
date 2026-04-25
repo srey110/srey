@@ -3,21 +3,23 @@
 #include "utils/binary.h"
 #include "containers/sarray.h"
 
-/* Flat array of redis_pack_ctx pointers accumulated during parsing.
- * Replaces the head/tail linked-list in reader_ctx: array appends are
- * cache-friendly and avoid pointer-chasing during accumulation. */
+/* 解析过程中积累的 redis_pack_ctx 指针数组。
+ * 替代 reader_ctx 中的头尾链表：数组追加对缓存更友好，
+ * 且在积累阶段避免了指针追踪开销。 */
 ARRAY_DECL(redis_pack_ctx *, arr_rpk)
 
-/* Maximum bytes needed for the RESP array-count header "*n\r\n".
- * Even "*999999\r\n" is only 10 bytes; 32 gives a comfortable margin. */
+/* RESP 数组计数头 "*n\r\n" 所需的最大字节数。
+ * 即使 "*999999\r\n" 也只有 10 字节；32 字节预留足够裕量。 */
 #define MAX_HEADER_RESERVE  32
 
+// 解包上下文，保存当前响应的所有节点和待解析元素计数
 typedef struct reader_ctx {
-    arr_rpk_ctx arr;
-    int64_t nelem;
+    arr_rpk_ctx arr;  // 已解析节点的指针数组
+    int64_t nelem;    // 还需解析的元素数（初始为 1，聚合类型会累加）
 }reader_ctx;
 
-#define FMT_INTEGER_FLAG  "diouxX"
+#define FMT_INTEGER_FLAG  "diouxX" // 整型格式字符集
+// 提取 [p, f] 范围的格式说明符，格式化并追加到 fbuf
 #define FMT_TYPE(type)\
     lens = (size_t)(f - p) + 1;\
     memcpy(_fmt, p, lens);\
@@ -28,6 +30,7 @@ void _redis_pkfree(redis_pack_ctx *pack) {
     if (NULL == pack) {
         return;
     }
+    // 遍历链表逐节点释放
     redis_pack_ctx *next;
     do {
         next = pack->next;
@@ -40,8 +43,8 @@ void _redis_udfree(ud_cxt *ud) {
         return;
     }
     reader_ctx *rd = ud->context;
-    /* Nodes are tracked in the flat array; ->next is only wired up when a
-     * complete response is handed to the caller.  Free each node directly. */
+    /* 节点由扁平数组追踪；->next 仅在完整响应交给调用方时才串联。
+     * 因此直接逐元素释放，无需走链表。 */
     for (uint32_t i = 0; i < arr_rpk_size(&rd->arr); i++) {
         FREE(*arr_rpk_at(&rd->arr, i));
     }
@@ -49,6 +52,7 @@ void _redis_udfree(ud_cxt *ud) {
     FREE(rd);
     ud->context = NULL;
 }
+// 将 fbuf 中已积累的文本作为一个 RESP Bulk String 追加到 sdsbuf，并重置 fbuf 偏移，n 自增
 static inline void _create_sds(binary_ctx *fbuf, binary_ctx *sdsbuf, size_t *n) {
     if (0 == fbuf->offset) {
         return;
@@ -59,13 +63,14 @@ static inline void _create_sds(binary_ctx *fbuf, binary_ctx *sdsbuf, size_t *n) 
     binary_offset(fbuf, 0);
     (*n)++;
 }
+// redis_pack 的内部实现，解析格式字符串并将各参数编码为 RESP Bulk String 序列
 static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
     size_t lens, n = 0;
     binary_ctx fbuf, sdsbuf;
     binary_init(&fbuf, NULL, 0, 0);
     binary_init(&sdsbuf, NULL, 0, 0);
-    /* Reserve MAX_HEADER_RESERVE bytes at the front for the "*n\r\n" header
-     * that we can only write after scanning all arguments to determine n. */
+    /* 在 sdsbuf 头部预留 MAX_HEADER_RESERVE 字节，用于回填 "*n\r\n" 头部；
+     * 只有扫描完所有参数确定 n 之后才能写入该头部。 */
     binary_set_skip(&sdsbuf, MAX_HEADER_RESERVE);
     char *p;
     char _fmt[64];
@@ -119,7 +124,7 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
             break;
         }
         default: {
-            //添加前缀
+            // 跳过格式标志位（#、0、-、+、空格）
             while ('\0' != *f && NULL != strchr("#0-+ ", *f)) f++;
             while ('\0' != *f && isdigit((int)*f)) f++;
             if ('.' == *f) {
@@ -194,9 +199,9 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
         }
     }
     _create_sds(&fbuf, &sdsbuf, &n);
-    /* Format the RESP array-count header and back-fill it into the reserved
-     * slot at the start of sdsbuf.  memmove shifts the bulk-string body left
-     * to eliminate the padding gap, avoiding a separate output allocation. */
+    /* 格式化 RESP 数组计数头并回填到 sdsbuf 头部预留槽中。
+     * memmove 将 Bulk String 主体向左移动以消除填充间隙，
+     * 避免额外的输出内存分配。 */
     int hlen_int = SNPRINTF(_fmt, sizeof(_fmt), "*%d"FLAG_CRLF, (int32_t)n);
     size_t hlens     = (size_t)hlen_int;
     size_t body_size = sdsbuf.offset - MAX_HEADER_RESERVE;
@@ -207,9 +212,9 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
     /* *size < MAX_HEADER_RESERVE + body_size == sdsbuf.offset <= sdsbuf.size */
     sdsbuf.data[*size] = '\0';
     FREE(fbuf.data);
-    return sdsbuf.data;   /* caller owns this allocation */
+    return sdsbuf.data; // 调用方负责释放此内存
 }
-//%b:binary - size_t %%:%  C format
+// redis_pack 的公开入口，负责初始化 va_list 后委托给 _redis_pack
 char *redis_pack(size_t *size, const char *fmt, ...) {
     va_list args;
     va_start(args, fmt);
@@ -217,23 +222,25 @@ char *redis_pack(size_t *size, const char *fmt, ...) {
     va_end(args);
     return buf;
 }
+// 获取或创建 ud_cxt 关联的解包上下文（首次调用时分配并初始化）
 static reader_ctx *_create_reader(ud_cxt *ud) {
     if (NULL == ud->context) {
         reader_ctx *rd;
         MALLOC(rd, sizeof(reader_ctx));
         arr_rpk_init(&rd->arr, 0);
-        rd->nelem = 1;
+        rd->nelem = 1; // 初始期望解析 1 个顶层元素
         ud->context = rd;
     }
     return ud->context;
 }
+// 将已解析节点追加到数组，并递减待解析计数（属性类型 RESP_ATTR 不计入计数）
 static inline void _add_node(reader_ctx *rd, redis_pack_ctx *pk) {
     arr_rpk_push_back(&rd->arr, &pk);
     if (RESP_ATTR != pk->prot) {
         rd->nelem--;
     }
 }
-//<type><data>\r\n
+// 解析单行类型（简单字符串/错误/整数/空值/布尔/浮点/大整数）：格式 <type><data>\r\n
 static int32_t _reader_line(reader_ctx *rd, int32_t prot, buffer_ctx *buf, int32_t *status) {
     int32_t pos = buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE);
     if (ERR_FAILED == pos) {
@@ -315,7 +322,7 @@ static int32_t _reader_line(reader_ctx *rd, int32_t prot, buffer_ctx *buf, int32
     _add_node(rd, pk);
     return ERR_OK;
 }
-//<type><length>\r\n<data>\r\n   <type>-1\r\n NUll
+// 解析批量字符串类型（Bulk String/Error/Verbatim）：格式 <type><length>\r\n<data>\r\n，长度为 -1 表示 Null
 static int32_t _reader_bulk(reader_ctx *rd, int32_t prot, buffer_ctx *buf, int32_t *status) {
     int32_t pos = buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE);
     if (ERR_FAILED == pos) {
@@ -391,7 +398,7 @@ static int32_t _reader_bulk(reader_ctx *rd, int32_t prot, buffer_ctx *buf, int32
     _add_node(rd, pk);
     return ERR_OK;
 }
-//<type><number-of-elements>\r\n<element-1>\r\n...<element-n>\r\n
+// 解析聚合类型（数组/集合/推送/映射/属性）：格式 <type><number-of-elements>\r\n<element-1>...<element-n>
 static int32_t _reader_agg(reader_ctx *rd, int32_t prot, buffer_ctx *buf, int32_t *status) {
     int32_t pos = buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE);
     if (ERR_FAILED == pos) {

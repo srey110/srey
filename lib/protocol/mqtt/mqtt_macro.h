@@ -3,9 +3,9 @@
 
 #include "base/macro.h"
 
-typedef enum mqtt_protversion {//版本
-    MQTT_311 = 0x04,
-    MQTT_50 = 0x05
+typedef enum mqtt_protversion {//协议版本
+    MQTT_311 = 0x04, //MQTT 3.1.1
+    MQTT_50 = 0x05   //MQTT 5.0
 }mqtt_protversion;
 typedef enum mqtt_prop_flag {
     PAYLOAD_FORMAT = 0x01,//载荷格式说明	字节	PUBLISH, Will Properties

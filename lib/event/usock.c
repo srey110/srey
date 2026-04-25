@@ -5,52 +5,56 @@
 
 #ifndef EV_IOCP
 
+// 监听socket与所属监听器的绑定（SO_REUSEPORT时每个watcher有独立fd）
 typedef struct lsnsock_ctx {
-    sock_ctx sock;
-    struct listener_ctx *lsn;
+    sock_ctx sock;          // 监听socket的事件上下文
+    struct listener_ctx *lsn; // 所属监听器
 }lsnsock_ctx;
+// Unix平台监听器上下文
 typedef struct listener_ctx {
-    int32_t nlsn;
-    int32_t remove;
-    atomic_t ref;
-    lsnsock_ctx *lsnsock;
+    int32_t nlsn;           // 监听socket数量（等于nthreads，SO_REUSEPORT时每线程一个）
+    int32_t remove;         // 标记为待移除（ev_unlisten后设置）
+    atomic_t ref;           // 引用计数（等于nlsn，每个_remove_lsn减1）
+    lsnsock_ctx *lsnsock;   // 监听socket数组
 #if WITH_SSL
-    evssl_ctx *evssl;
+    evssl_ctx *evssl;       // SSL上下文（NULL表示不使用SSL）
 #endif
-    cbs_ctx cbs;
-    ud_cxt ud;
+    cbs_ctx cbs;            // 回调函数集合
+    ud_cxt ud;              // 用户数据模板
 #ifndef SO_REUSEPORT
-    spin_ctx spin;
+    spin_ctx spin;          // 无SO_REUSEPORT时用于保护accept调用的自旋锁
 #endif
-    uint64_t id;
+    uint64_t id;            // 监听器唯一ID
 }listener_ctx;
+// Unix平台TCP连接上下文
 typedef struct tcp_ctx {
-    sock_ctx sock;
-    int32_t status;
+    sock_ctx sock;          // 基础事件上下文（含fd/events/ev_cb）
+    int32_t status;         // 连接状态标志位（sock_status组合）
 #if WITH_SSL
-    SSL *ssl;
-    struct evssl_ctx *evssl;
+    SSL *ssl;               // SSL会话（NULL表示普通TCP）
+    struct evssl_ctx *evssl; // 待升级的SSL上下文（发送完毕后升级）
 #endif
-    uint64_t skid;
-    buffer_ctx buf_r;
-    qu_off_buf_ctx buf_s;
-    cbs_ctx cbs;
-    ud_cxt ud;
+    uint64_t skid;          // 连接唯一ID
+    buffer_ctx buf_r;       // 接收缓冲区
+    qu_off_buf_ctx buf_s;   // 发送队列
+    cbs_ctx cbs;            // 回调函数集合
+    ud_cxt ud;              // 用户数据
 }tcp_ctx;
+// Unix平台UDP上下文
 typedef struct udp_ctx {
-    sock_ctx sock;
-    int32_t status;
-    uint64_t skid;
-    cbs_ctx cbs;
-    IOV_TYPE buf_r;
-    struct msghdr msg;
-    qu_off_buf_ctx buf_s;
-    netaddr_ctx addr;
-    ud_cxt ud;
-    char buf[MAX_RECVFROM_SIZE];
+    sock_ctx sock;              // 基础事件上下文
+    int32_t status;             // 状态标志位
+    uint64_t skid;              // 连接唯一ID
+    cbs_ctx cbs;                // 回调函数集合
+    IOV_TYPE buf_r;             // 接收缓冲区描述符（指向buf）
+    struct msghdr msg;          // recvmsg使用的消息头（含地址和iov）
+    qu_off_buf_ctx buf_s;       // 发送队列
+    netaddr_ctx addr;           // 接收到的对端地址（recvmsg填充）
+    ud_cxt ud;                  // 用户数据
+    char buf[MAX_RECVFROM_SIZE]; // 固定接收缓冲区
 }udp_ctx;
 
-static void _on_rw_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev);
+static void _on_rw_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev); // 前向声明：TCP读写事件回调
 
 void _sk_shutdown(sock_ctx *skctx) {
 #if WITH_SSL
@@ -160,46 +164,54 @@ static void *_remove_fd(watcher_ctx *watcher, SOCKET fd) {
     sock_ctx *pkey = &key;
     return (void *)hashmap_delete(watcher->element, &pkey);
 }
+// 调用accept回调，返回值非ERR_OK则拒绝连接
 static inline int32_t _call_acp_cb(ev_ctx *ev, tcp_ctx *tcp) {
     if (NULL != tcp->cbs.acp_cb) {
         return tcp->cbs.acp_cb(ev, tcp->sock.fd, tcp->skid, &tcp->ud);
     }
     return ERR_OK;
 }
+// 调用connect回调，返回值非ERR_OK则断开连接
 static inline int32_t _call_conn_cb(ev_ctx *ev, tcp_ctx *tcp, int32_t err) {
     if (NULL != tcp->cbs.conn_cb) {
         return tcp->cbs.conn_cb(ev, tcp->sock.fd, tcp->skid, err, &tcp->ud);
     }
     return ERR_OK;
 }
+// 调用SSL握手完成回调，返回值非ERR_OK则断开连接
 static inline int32_t _call_ssl_exchanged_cb(ev_ctx *ev, tcp_ctx *tcp) {
     if (NULL != tcp->cbs.exch_cb) {
         return tcp->cbs.exch_cb(ev, tcp->sock.fd, tcp->skid, BIT_CHECK(tcp->status, STATUS_CLIENT), &tcp->ud);
     }
     return ERR_OK;
 }
+// 调用数据接收回调（nread > 0 才触发）
 static inline void _call_recv_cb(ev_ctx *ev, tcp_ctx *tcp, size_t nread) {
     if (nread > 0) {
         tcp->cbs.r_cb(ev, tcp->sock.fd, tcp->skid, BIT_CHECK(tcp->status, STATUS_CLIENT), &tcp->buf_r, nread, &tcp->ud);
     }
 }
+// 调用发送完成回调（nsend > 0 且有s_cb 才触发）
 static inline void _call_send_cb(ev_ctx *ev, tcp_ctx *tcp, size_t nsend) {
     if (NULL != tcp->cbs.s_cb
         && nsend > 0) {
         tcp->cbs.s_cb(ev, tcp->sock.fd, tcp->skid, BIT_CHECK(tcp->status, STATUS_CLIENT), nsend, &tcp->ud);
     }
 }
+// 调用连接关闭回调
 static inline void _call_close_cb(ev_ctx *ev, tcp_ctx *tcp) {
     if (NULL != tcp->cbs.c_cb) {
         tcp->cbs.c_cb(ev, tcp->sock.fd, tcp->skid, BIT_CHECK(tcp->status, STATUS_CLIENT), &tcp->ud);
     }
 }
+// 调用UDP接收回调（nread > 0 才触发）
 static inline void _call_recvfrom_cb(ev_ctx *ev, udp_ctx *udp, size_t nread) {
     if (nread > 0) {
         udp->cbs.rf_cb(ev, udp->sock.fd, udp->skid, udp->buf_r.IOV_PTR_FIELD, nread, &udp->addr, &udp->ud);
     }
 }
 #if WITH_SSL
+// 在事件循环内启动SSL握手：设置SSL fd并根据角色调用connect/accept
 static int32_t _ssl_exchange(watcher_ctx *watcher, tcp_ctx *tcp, struct evssl_ctx *evssl) {
     tcp->ssl = evssl_setfd(evssl, tcp->sock.fd);
     if (NULL == tcp->ssl) {
@@ -260,7 +272,7 @@ void _try_ssl_exchange(watcher_ctx *watcher, sock_ctx *skctx, struct evssl_ctx *
     (void)client;
 #endif
 }
-//rw
+// 从socket读取数据到接收缓冲区并触发recv回调，MANUAL_ADD时需重新注册读事件
 static int32_t _tcp_recv(watcher_ctx *watcher, tcp_ctx *tcp) {
     size_t nread;
 #if WITH_SSL
@@ -276,6 +288,7 @@ static int32_t _tcp_recv(watcher_ctx *watcher, tcp_ctx *tcp) {
 #endif
     return rtn;
 }
+// 发送队列中的数据，队列空后删除写事件（可选SSL升级），MANUAL_ADD时重注册写事件
 static int32_t _tcp_send(watcher_ctx *watcher, tcp_ctx *tcp) {
     size_t nsend;
 #if WITH_SSL
@@ -305,6 +318,7 @@ static int32_t _tcp_send(watcher_ctx *watcher, tcp_ctx *tcp) {
 #endif
     return rtn;
 }
+// 关闭TCP连接：触发关闭回调，从hashmap移除，回收到对象池
 static inline void _close_tcp(watcher_ctx *watcher, tcp_ctx *tcp) {
     _call_close_cb(watcher->ev, tcp);
 #ifdef MANUAL_REMOVE
@@ -313,6 +327,7 @@ static inline void _close_tcp(watcher_ctx *watcher, tcp_ctx *tcp) {
     _remove_fd(watcher, tcp->sock.fd);
     pool_push(&watcher->pool, &tcp->sock);
 }
+// TCP读写事件统一回调：处理SSL握手、读、写，任意失败则关闭连接
 static void _on_rw_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
     int32_t rtn;
     int32_t evread = BIT_CHECK(ev, EVENT_READ);
@@ -384,7 +399,7 @@ void _add_write_inloop(watcher_ctx *watcher, sock_ctx *skctx, off_buf_ctx *buf) 
         _add_event(watcher, skctx->fd, &skctx->events, EVENT_WRITE, skctx);
     }
 }
-//connect
+// connect完成事件回调：检查连接结果，切换为读写回调，触发conn回调
 static void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
     (void)ev;
     tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
@@ -471,7 +486,7 @@ void _add_conn_inloop(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx) {
         pool_push(&watcher->pool, skctx);
     }
 }
-//listen
+// 监听socket可读事件回调：循环accept新连接并分发给对应watcher
 static void _on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
     (void)ev;
     lsnsock_ctx *acpt = UPCAST(skctx, lsnsock_ctx, sock);
@@ -527,6 +542,7 @@ void _add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) {
     }
 #endif
 }
+// 关闭监听socket（无SO_REUSEPORT只关闭第一个，否则关闭所有cnt个）
 static void _close_lsnsock(listener_ctx *lsn, int32_t cnt) {
 #ifndef SO_REUSEPORT
     CLOSE_SOCK(lsn->lsnsock[0].sock.fd);
@@ -624,6 +640,7 @@ void _freelsn(listener_ctx *lsn) {
     FREE(lsn->lsnsock);
     FREE(lsn);
 }
+// 根据id从arrlsn中查找并移除listener_ctx（加自旋锁保护）
 static listener_ctx * _get_listener(ev_ctx *ctx, uint64_t id) {
     listener_ctx *lsn = NULL;
     listener_ctx **tmp;
@@ -667,7 +684,7 @@ void _remove_lsn(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) {
         _freelsn(lsn);
     }
 }
-//UDP
+// 初始化msghdr结构体（用于recvmsg/sendmsg的地址和iov绑定）
 static void _init_msghdr(struct msghdr *msg, netaddr_ctx *addr, IOV_TYPE *iov, uint32_t niov) {
     ZERO(msg, sizeof(struct msghdr));
     msg->msg_name = netaddr_addr(addr);
@@ -675,6 +692,7 @@ static void _init_msghdr(struct msghdr *msg, netaddr_ctx *addr, IOV_TYPE *iov, u
     msg->msg_iov = iov;
     msg->msg_iovlen = niov;
 }
+// UDP接收处理：recvmsg读取一个数据包并触发recvfrom回调
 static int32_t _on_udp_rcb(watcher_ctx *watcher, udp_ctx *udp) {
     int32_t rtn = (int32_t)recvmsg(udp->sock.fd, &udp->msg, 0);
     if (rtn > 0) {
@@ -696,6 +714,7 @@ static int32_t _on_udp_rcb(watcher_ctx *watcher, udp_ctx *udp) {
 #endif
     return rtn;
 }
+// UDP发送处理：循环sendmsg发送队列中所有数据包，队列空后删除写事件
 static int32_t _on_udp_wcb(watcher_ctx *watcher, udp_ctx *udp) {
     IOV_TYPE iov;
     off_buf_ctx *buf;
@@ -734,6 +753,7 @@ static int32_t _on_udp_wcb(watcher_ctx *watcher, udp_ctx *udp) {
 #endif
     return rtn;
 }
+// UDP读写事件统一回调：STATUS_ERROR时直接释放，否则分别处理读写事件
 static void _on_udp_rw(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
     udp_ctx *udp = UPCAST(skctx, udp_ctx, sock);
     if (BIT_CHECK(udp->status, STATUS_ERROR)) {
@@ -760,6 +780,7 @@ static void _on_udp_rw(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
         _free_udp(skctx);
     }
 }
+// 分配并初始化UDP上下文
 static sock_ctx *_new_udp(SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
     udp_ctx *udp;
     MALLOC(udp, sizeof(udp_ctx));

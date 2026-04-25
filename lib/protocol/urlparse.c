@@ -1,6 +1,7 @@
 ﻿#include "protocol/urlparse.h"
 #include "utils/utils.h"
 
+// 解析协议类型（scheme），找到 "://" 分隔符，返回其后的指针；未找到则原样返回
 static char *_scheme(buf_ctx *scheme, char *cur, size_t lens) {
     char *pos = memstr(1, cur, lens, "://", 3);
     if (NULL == pos) {
@@ -10,6 +11,7 @@ static char *_scheme(buf_ctx *scheme, char *cur, size_t lens) {
     scheme->lens = pos - cur;
     return pos + 3;
 }
+// 以冒号为分隔符将当前段拆分为两部分（如 host:port 或 user:password）
 static void _split(buf_ctx *buf1, buf_ctx *buf2, char *cur, size_t lens) {
     char *pos = memchr(cur, ':', lens);
     if (NULL == pos) {
@@ -25,10 +27,12 @@ static void _split(buf_ctx *buf1, buf_ctx *buf2, char *cur, size_t lens) {
         buf2->lens = size;
     }
 }
+// 以 what 字符为界解析两段字段（buf1:buf2），返回指向 what 之后的指针
 static char *_parse_two(buf_ctx *buf1, buf_ctx *buf2, char *cur, char what, size_t lens) {
     char *pos = memchr(cur, what, lens);
     if (NULL == pos) {
         if ('/' == what) {
+            // 未找到 '/'，整段作为 host:port
             _split(buf1, buf2, cur, lens);
             return cur + lens;
         } else {
@@ -41,6 +45,7 @@ static char *_parse_two(buf_ctx *buf1, buf_ctx *buf2, char *cur, char what, size
     _split(buf1, buf2, cur, pos - cur);
     return pos + 1;
 }
+// 解析路径部分（直到 '?' 或 '#'），返回指向下一段（查询或片段）的指针
 static char *_path(buf_ctx *path, char *cur, size_t lens) {
     char *pos = memchr(cur, '?', lens);
     if (NULL == pos) {
@@ -54,7 +59,7 @@ static char *_path(buf_ctx *path, char *cur, size_t lens) {
                 path->data = cur;
                 path->lens = pos - cur;
             }
-            return pos;
+            return pos; // 返回指向 '#' 的指针，由调用方处理片段
         }
     }
     if (pos == cur) {
@@ -64,6 +69,7 @@ static char *_path(buf_ctx *path, char *cur, size_t lens) {
     path->lens = pos - cur;
     return pos + 1;
 }
+// 从当前段中提取锚点（# 之后的部分），返回锚点之前的查询参数段长度
 static size_t _anchor(buf_ctx *anchor, char *cur, size_t lens) {
     char *pos = memchr(cur, '#', lens);
     if (NULL == pos) {
@@ -85,6 +91,7 @@ static size_t _anchor(buf_ctx *anchor, char *cur, size_t lens) {
     }
     return pos - cur;
 }
+// 解析查询字符串中的 key=value 参数对，以 '&' 分隔，最多解析 MAX_NPARAM 个
 static void _param(url_param *param, char *cur, size_t lens) {
     char *pos;
     char *start = cur;
@@ -105,6 +112,7 @@ static void _param(url_param *param, char *cur, size_t lens) {
         }
         pos = memchr(cur, '&', rmain);
         if (NULL == pos) {
+            // 最后一个参数
             tmp->val.data = cur;
             tmp->val.lens = rmain;
             break;

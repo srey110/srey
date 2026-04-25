@@ -1,13 +1,14 @@
 ﻿#include "event/event.h"
 #include "utils/netutils.h"
 
+// ud_cxt 字段设置类型枚举
 typedef enum ud_type {
-    UD_PKTYPE = 0x00,
-    UD_STATUS,
-    UD_NAME,
-    UD_SESS,
-    UD_CONTEXT,
-    UD_SECCONTEXT
+    UD_PKTYPE = 0x00, // 数据包类型
+    UD_STATUS,        // 状态
+    UD_NAME,          // 任务名
+    UD_SESS,          // session
+    UD_CONTEXT,       // 用户自定义数据指针
+    UD_SECCONTEXT     // 子协议（如websocket）用户数据指针
 }ud_type;
 
 void _bufs_clear(qu_off_buf_ctx *bufs) {
@@ -85,13 +86,12 @@ SOCKET _udp(netaddr_ctx *addr) {
     return fd;
 }
 #if WITH_SSL
-/* SSL does not support scatter I/O: always read into a single contiguous segment.
- * One SSL_read call consumes at most one TLS record; the outer buffer_from_sock
- * loop re-invokes us until the socket is drained. */
+// SSL不支持scatter I/O，每次只能读一个TLS记录，外层循环驱动重复调用直到socket耗尽
 static inline int32_t _sock_read_ssl(SSL *ssl, IOV_TYPE *iov, size_t *nread) {
     return evssl_read(ssl, iov[0].IOV_PTR_FIELD, (size_t)iov[0].IOV_LEN_FIELD, nread);
 }
 #endif
+// 从socket普通读取（使用readv/WSARecv）
 static int32_t _sock_read_normal(SOCKET fd, IOV_TYPE *iov, uint32_t niov, size_t *readed) {
 #ifdef EV_IOCP 
     DWORD bytes, flags = 0;
@@ -141,6 +141,7 @@ int32_t _sock_read(SOCKET fd, IOV_TYPE *iov, uint32_t niov, void *arg, size_t *r
     return _sock_read_normal(fd, iov, niov, readed);
 #endif
 }
+// 将发送队列中的前N个缓冲区填充到iov数组，返回实际填充数量（最多MAX_SEND_NIOV，总大小不超过MAX_SEND_SIZE）
 static uint32_t _bufs_fill_iov(qu_off_buf_ctx *buf_s, size_t nbuf,
                                 IOV_TYPE iov[MAX_SEND_NIOV],
                                 off_buf_ctx *sndbuf[MAX_SEND_NIOV]) {
@@ -163,6 +164,7 @@ static uint32_t _bufs_fill_iov(qu_off_buf_ctx *buf_s, size_t nbuf,
     }
     return cnt;
 }
+// 根据实际发送字节数sent，从发送队列头部消费已完成的缓冲区，更新offset或弹出并释放
 static void _bufs_apply_sent(qu_off_buf_ctx *buf_s, off_buf_ctx *sndbuf[MAX_SEND_NIOV],
                               uint32_t niov, size_t sent) {
     for (uint32_t i = 0; i < niov && sent > 0; i++) {
@@ -178,6 +180,7 @@ static void _bufs_apply_sent(qu_off_buf_ctx *buf_s, off_buf_ctx *sndbuf[MAX_SEND
         }
     }
 }
+// 调用writev/WSASend发送iov数组中的数据，返回ERR_OK并更新sended
 static int32_t _sock_send_iov(SOCKET fd, IOV_TYPE *iov, uint32_t niov, size_t *sended) {
     *sended = 0;
 #ifdef EV_IOCP
@@ -208,6 +211,7 @@ static int32_t _sock_send_iov(SOCKET fd, IOV_TYPE *iov, uint32_t niov, size_t *s
     return ERR_OK;
 #endif
 }
+// 循环发送队列中所有普通（非SSL）数据，直到队列空或发生错误
 static int32_t _sock_send_normal(SOCKET fd, qu_off_buf_ctx *buf_s, size_t *nsend) {
     int32_t rtn = ERR_OK;
     size_t nbuf, sended;
@@ -227,6 +231,7 @@ static int32_t _sock_send_normal(SOCKET fd, qu_off_buf_ctx *buf_s, size_t *nsend
     return rtn;
 }
 #if WITH_SSL
+// 通过SSL逐条发送队列中的数据（SSL_write每次只能发一条记录）
 static int32_t _sock_send_ssl(SSL *ssl, qu_off_buf_ctx *buf_s, size_t *nsend) {
     int32_t rtn = ERR_OK;
     size_t sended;

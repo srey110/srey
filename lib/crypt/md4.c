@@ -12,15 +12,15 @@
 #define S32 9
 #define S33 11
 #define S34 15
-#define F(x, y, z) (((x) & (y)) | ((~x) & (z)))
-#define G(x, y, z) (((x) & (y)) | ((x) & (z)) | ((y) & (z)))
-#define H(x, y, z) ((x) ^ (y) ^ (z))
-#define ROTATE_LEFT(x, n) (((x) << (n)) | ((x) >> (32-(n))))
-#define FF(a, b, c, d, x, s) { (a) += F ((b), (c), (d)) + (x); \
+#define F(x, y, z) (((x) & (y)) | ((~x) & (z)))           // 轮函数 F：选择函数
+#define G(x, y, z) (((x) & (y)) | ((x) & (z)) | ((y) & (z))) // 轮函数 G：多数函数
+#define H(x, y, z) ((x) ^ (y) ^ (z))                       // 轮函数 H：奇偶函数
+#define ROTATE_LEFT(x, n) (((x) << (n)) | ((x) >> (32-(n)))) // 循环左移
+#define FF(a, b, c, d, x, s) { (a) += F ((b), (c), (d)) + (x); \        // 第一轮操作
                                (a) = ROTATE_LEFT ((a), (s)); }
-#define GG(a, b, c, d, x, s) { (a) += G ((b), (c), (d)) + (x) + (uint32_t)0x5a827999; \
+#define GG(a, b, c, d, x, s) { (a) += G ((b), (c), (d)) + (x) + (uint32_t)0x5a827999; \ // 第二轮操作
                                (a) = ROTATE_LEFT ((a), (s)); }
-#define HH(a, b, c, d, x, s) { (a) += H ((b), (c), (d)) + (x) + (uint32_t)0x6ed9eba1; \
+#define HH(a, b, c, d, x, s) { (a) += H ((b), (c), (d)) + (x) + (uint32_t)0x6ed9eba1; \ // 第三轮操作
                                (a) = ROTATE_LEFT ((a), (s)); }
 
 static const uint8_t pd[64] = {
@@ -28,12 +28,13 @@ static const uint8_t pd[64] = {
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 };
+// MD4 核心变换：对 64 字节块执行三轮操作并更新状态
 static void _transform(md4_ctx *md4, const uint8_t *data) {
     uint32_t i, j, a = md4->state[0], b = md4->state[1], c = md4->state[2], d = md4->state[3], x[16];
     for (i = 0, j = 0; j < 64; i++, j += 4) {
         x[i] = ((uint32_t)data[j]) | (((uint32_t)data[j + 1]) << 8) | (((uint32_t)data[j + 2]) << 16) | (((uint32_t)data[j + 3]) << 24);
     }
-    /* Round 1 */
+    // 第一轮：使用 F 函数
     FF(a, b, c, d, x[0], S11); /* 1 */
     FF(d, a, b, c, x[1], S12); /* 2 */
     FF(c, d, a, b, x[2], S13); /* 3 */
@@ -50,7 +51,7 @@ static void _transform(md4_ctx *md4, const uint8_t *data) {
     FF(d, a, b, c, x[13], S12); /* 14 */
     FF(c, d, a, b, x[14], S13); /* 15 */
     FF(b, c, d, a, x[15], S14); /* 16 */
-    /* Round 2 */
+    // 第二轮：使用 G 函数
     GG(a, b, c, d, x[0], S21); /* 17 */
     GG(d, a, b, c, x[4], S22); /* 18 */
     GG(c, d, a, b, x[8], S23); /* 19 */
@@ -67,7 +68,7 @@ static void _transform(md4_ctx *md4, const uint8_t *data) {
     GG(d, a, b, c, x[7], S22); /* 30 */
     GG(c, d, a, b, x[11], S23); /* 31 */
     GG(b, c, d, a, x[15], S24); /* 32 */
-    /* Round 3 */
+    // 第三轮：使用 H 函数
     HH(a, b, c, d, x[0], S31); /* 33 */
     HH(d, a, b, c, x[8], S32); /* 34 */
     HH(c, d, a, b, x[4], S33); /* 35 */
@@ -118,6 +119,7 @@ void md4_update(md4_ctx *md4, const void *data, size_t lens) {
     }
     memcpy(&md4->data[index], &p[i], lens - i);
 }
+// 将 uint32 数组按小端序编码为字节数组
 static void _encode(const uint32_t *data, uint32_t lens, uint8_t *out) {
     uint32_t i, j;
     for (i = 0, j = 0; j < lens; i++, j += 4) {

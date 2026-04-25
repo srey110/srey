@@ -6,30 +6,28 @@
 
 #ifndef EV_IOCP
 
-static atomic_t _init_once = 0;
-static void(*cmd_cbs[CMD_TOTAL])(watcher_ctx *watcher, cmd_ctx *cmd);
+static atomic_t _init_once = 0;                                       // 保证命令回调表只初始化一次
+static void(*cmd_cbs[CMD_TOTAL])(watcher_ctx *watcher, cmd_ctx *cmd); // 命令回调函数表
+// 命令管道上下文：一对匿名管道 + 读端的sock_ctx（注册到事件循环）
 typedef struct pip_ctx {
-    int32_t pipes[2];
-    sock_ctx skpip;
+    int32_t pipes[2]; // pipes[0] 读端，pipes[1] 写端
+    sock_ctx skpip;   // 读端的sock_ctx（ev_cb = _cmd_loop）
 }pip_ctx;
 
+// hashmap哈希函数：以fd作为key计算哈希值
 static uint64_t _map_hash(const void *item, uint64_t seed0, uint64_t seed1) {
     (void)seed0;
     (void)seed1;
     return hash((const char *)&((*(const sock_ctx **)item)->fd), sizeof(SOCKET));
 }
+// hashmap比较函数：比较两个sock_ctx的fd
 static int _map_compare(const void *a, const void *b, void *ud) {
     (void)ud;
     return (int)((*(const sock_ctx **)a)->fd - (*(const sock_ctx **)b)->fd);
 }
+// 向指定管道发送命令（原子写，EAGAIN时sched_yield重试，其他错误断言失败）
+// sizeof(cmd_ctx) < PIPE_BUF 保证POSIX下的原子性，即使多个生产者共享同一管道
 void _send_cmd(watcher_ctx *watcher, uint32_t index, cmd_ctx *cmd) {
-    /* sizeof(cmd_ctx) < PIPE_BUF: each write is atomic under POSIX even with
-     * concurrent producers sharing one pipe.  The write end is O_NONBLOCK so
-     * we never stall the calling thread indefinitely.  On EAGAIN (pipe
-     * temporarily full) or EINTR we call sched_yield() to cooperatively hand
-     * the CPU to the watcher thread so it can drain the pipe, then retry.
-     * On any other error the assertion fires – that would be a programming
-     * error (e.g. bad fd), not a transient condition. */
     int32_t erro;
     while (0 == watcher->stop
         && ERR_FAILED == write(watcher->pipes[index].pipes[1], cmd, sizeof(cmd_ctx))) {
@@ -38,6 +36,7 @@ void _send_cmd(watcher_ctx *watcher, uint32_t index, cmd_ctx *cmd) {
         sched_yield();
     };
 }
+// 命令管道可读事件回调：批量读取并处理所有待处理命令
 static void _cmd_loop(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
     int32_t i, cnt, nread;
     cmd_ctx cmds[CMD_MAX_NREAD];
@@ -59,6 +58,7 @@ static void _cmd_loop(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
     (void)ev;
 #endif
 }
+// 初始化命令回调函数表
 static void _init_callback(void) {
     cmd_cbs[CMD_STOP] = _on_cmd_stop;
     cmd_cbs[CMD_DISCONN] = _on_cmd_disconn;
@@ -71,6 +71,7 @@ static void _init_callback(void) {
     cmd_cbs[CMD_SETUD] = _on_cmd_setud;
     cmd_cbs[CMD_SSL] = _on_cmd_ssl;
 }
+// 将所有命令管道读端注册到事件循环（读事件触发_cmd_loop）
 static void _init_cmd(watcher_ctx *watcher) {
     sock_ctx *skctx;
     for (uint32_t i = 0; i < watcher->npipes; i++) {
@@ -84,6 +85,7 @@ static void _init_cmd(watcher_ctx *watcher) {
     }
 }
 #ifdef COMMIT_NCHANGES
+// 检查changes数组是否已满，满时扩容（kqueue）或批量提交（devpoll）
 static void _check_changes(watcher_ctx *watcher) {
     if (watcher->nchanges >= watcher->nsize) {
 #if defined(EV_KQUEUE)
@@ -281,6 +283,7 @@ void _del_event(watcher_ctx *watcher, SOCKET fd, int32_t *events, int32_t ev, vo
     }
 #endif
 }
+// 解析平台事件结构体，提取事件类型掩码、fd和用户数据指针
 static int32_t _parse_event(events_t *ev, SOCKET *fd, void **arg) {
     int32_t rtn = 0;
     *fd = INVALID_SOCK;
@@ -344,9 +347,8 @@ static int32_t _parse_event(events_t *ev, SOCKET *fd, void **arg) {
 #endif
     return rtn;
 }
+// 定期收缩对象池（每SHRINK_IDLE_CNT次检查一次时钟，避免高负载时频繁syscall）
 static void _pool_shrink(watcher_ctx *watcher, timer_ctx *timer, uint32_t *cnt) {
-    /* Skip the clock_gettime syscall on most iterations; only sample the clock
-     * every SHRINK_IDLE_CNT loops to amortise its cost during high-traffic bursts. */
     if (++(*cnt) < SHRINK_IDLE_CNT) {
         return;
     }
@@ -357,6 +359,7 @@ static void _pool_shrink(watcher_ctx *watcher, timer_ctx *timer, uint32_t *cnt) 
     timer_start(timer);
     pool_shrink(&watcher->pool, hashmap_count(watcher->element) / 2);
 }
+// 事件循环主函数（Unix平台：epoll/kqueue/evport/pollset/devpoll）
 static void _loop_event(void *arg) {
     watcher_ctx *watcher = (watcher_ctx *)arg;
 #if defined(EV_EPOLL) || defined(EV_POLLSET) || defined(EV_DEVPOLL)
@@ -430,6 +433,7 @@ static void _loop_event(void *arg) {
     }
     LOG_INFO("net event thread %d exited.", watcher->index);
 }
+// hashmap元素释放回调：根据socket类型选择释放函数（管道fd type=0不释放）
 static void _free_element(void *item) {
     sock_ctx *sock = *((sock_ctx **)item);
     if (SOCK_STREAM == sock->type) {
@@ -440,6 +444,7 @@ static void _free_element(void *item) {
         _free_udp(sock);
     }
 }
+// 根据编译宏创建对应平台的事件fd（epoll_create1/kqueue/port_create等）
 static int32_t _init_evfd(void) {
     int32_t evfd = INVALID_FD;
 #if defined(EV_EPOLL)
@@ -456,16 +461,14 @@ static int32_t _init_evfd(void) {
     ASSERTAB(INVALID_FD != evfd, ERRORSTR(ERRNO));
     return evfd;
 }
+// 创建npipes对匿名管道，读写两端均设为非阻塞
 static struct pip_ctx *_new_pips(uint32_t npipes) {
     pip_ctx *pips;
     MALLOC(pips, sizeof(pip_ctx) * npipes);
     for (uint32_t i = 0; i < npipes; i++) {
         ASSERTAB(ERR_OK == pipe(pips[i].pipes), ERRORSTR(ERRNO));
-        /* Read end: non-blocking so _cmd_loop can drain with a read-until-EAGAIN
-         * loop without stalling the event thread.
-         * Write end: also non-blocking so _send_cmd never blocks indefinitely
-         * when the pipe buffer is temporarily full; callers retry with
-         * sched_yield() to allow the watcher to drain the pipe. */
+        // 读端非阻塞：_cmd_loop可用read-until-EAGAIN循环排空，不阻塞事件线程
+        // 写端非阻塞：_send_cmd不会永久阻塞，管道满时sched_yield重试
         ASSERTAB(ERR_OK == sock_nonblock(pips[i].pipes[0]), ERRORSTR(ERRNO));
         ASSERTAB(ERR_OK == sock_nonblock(pips[i].pipes[1]), ERRORSTR(ERRNO));
     }
@@ -493,11 +496,8 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads) {
         watcher->nevents = INIT_EVENTS_CNT;
         MALLOC(watcher->events, sizeof(events_t) * watcher->nevents);
         watcher->evfd = _init_evfd();
-        /* One pipe per watcher is sufficient: sizeof(cmd_ctx) < PIPE_BUF, so
-         * POSIX guarantees each write is atomic even with multiple concurrent
-         * producers.  Previously nthreads*2 pipes were used to reduce write
-         * contention, but that contention never materialises in practice and
-         * the extra fd pairs waste kernel resources. */
+        // 每个watcher只需一个管道：sizeof(cmd_ctx) < PIPE_BUF 保证POSIX原子写
+        // 之前使用nthreads*2个管道减少竞争，但实测竞争不明显，多余fd浪费内核资源
         watcher->npipes = 1;
         watcher->pipes = _new_pips(watcher->npipes);
         watcher->element = hashmap_new_with_allocator(_malloc, _realloc, _free,
@@ -513,6 +513,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads) {
     LOG_INFO("event: %s, SO_REUSEPORT: false.", EV_NAME);
 #endif
 }
+// 排空管道中未处理的命令并关闭管道fd（释放watcher前调用）
 static void _free_pips(watcher_ctx *watcher) {
     void *data;
     sock_ctx *skctx;

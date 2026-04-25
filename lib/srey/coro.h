@@ -3,8 +3,26 @@
 
 #include "srey/task.h"
 
+/// <summary>
+/// 初始化协程描述符，设置协程栈大小
+/// </summary>
+/// <param name="stack_size">协程栈大小（字节），0 使用默认值</param>
 void coro_desc_init(size_t stack_size);
+/// <summary>
+/// 注册协程任务
+/// </summary>
+/// <param name="loader">loader_ctx</param>
+/// <param name="name">任务名</param>
+/// <param name="_startup">任务初始化回调函数</param>
+/// <param name="_closing">任务释放回调函数</param>
+/// <returns>task_ctx，失败返回 NULL</returns>
 task_ctx *coro_task_register(loader_ctx *loader, name_t name, _task_startup_cb _startup, _task_closing_cb _closing);
+/// <summary>
+/// 将 UDP socket 的 session 与 skid 绑定，使收到的数据包能路由到当前协程
+/// </summary>
+/// <param name="task">task_ctx</param>
+/// <param name="fd">socket 句柄</param>
+/// <param name="skid">链接ID</param>
 void coro_sync(task_ctx *task, SOCKET fd, uint64_t skid);
 /// <summary>
 /// 休眠

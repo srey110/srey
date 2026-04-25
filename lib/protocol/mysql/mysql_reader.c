@@ -1,4 +1,4 @@
-﻿#include "protocol/mysql/mysql_reader.h"
+#include "protocol/mysql/mysql_reader.h"
 #include "protocol/mysql/mysql_parse.h"
 
 mysql_reader_ctx *mysql_reader_init(mpack_ctx *mpack) {
@@ -7,6 +7,7 @@ mysql_reader_ctx *mysql_reader_init(mpack_ctx *mpack) {
         return NULL;
     }
     mysql_reader_ctx *reader = mpack->pack;
+    // 将所有权从 mpack 转移给调用方，避免重复释放
     mpack->pack = NULL;
     mpack->_free_mpack = NULL;
     return reader;
@@ -32,6 +33,8 @@ void mysql_reader_next(mysql_reader_ctx *reader) {
         reader->index++;
     }
 }
+
+// 根据字段名在列描述数组中查找对应字段，返回字段指针并输出列索引
 static mpack_field *_mysql_reader_field(mysql_reader_ctx *reader, const char *name, int32_t *pos) {
     for (int32_t i = 0; i < reader->field_count; i++) {
         if (0 == strcmp(reader->fields[i].name, name)) {
@@ -41,6 +44,8 @@ static mpack_field *_mysql_reader_field(mysql_reader_ctx *reader, const char *na
     }
     return NULL;
 }
+
+// 根据字段名获取当前行中对应的 mpack_row，同时输出字段描述指针；NULL 字段或越界时设置 err
 static mpack_row *_mysql_reader_row(mysql_reader_ctx *reader, const char *name, mpack_field **field, int32_t *err) {
     if (reader->index >= (int32_t)arr_ptr_size(&reader->arr_rows)) {
         SET_PTR(err, ERR_FAILED);
@@ -54,7 +59,7 @@ static mpack_row *_mysql_reader_row(mysql_reader_ctx *reader, const char *name, 
     }
     mpack_row *row = *(mpack_row **)(arr_ptr_at(&reader->arr_rows, (uint32_t)reader->index));
     if (row[pos].nil) {
-        SET_PTR(err, 1);
+        SET_PTR(err, 1); // 1 表示该字段值为 NULL
         return NULL;
     }
     *field = column;
@@ -78,6 +83,7 @@ int64_t mysql_reader_integer(mysql_reader_ctx *reader, const char *name, int32_t
         return 0;
     }
     if (MPACK_QUERY == reader->pack_type) {
+        // 文本协议：字段值为字符串，需转换为整数
         char tmp[64];
         memcpy(tmp, row->val.data, row->val.lens);
         tmp[row->val.lens] = '\0';
@@ -90,6 +96,7 @@ int64_t mysql_reader_integer(mysql_reader_ctx *reader, const char *name, int32_t
         }
         return val;
     } else {
+        // 二进制协议：字段值为原始二进制整数
         if (sizeof(int8_t) == row->val.lens) {
             return ((char *)row->val.data)[0];
         } else {
@@ -115,6 +122,7 @@ uint64_t mysql_reader_uinteger(mysql_reader_ctx *reader, const char *name, int32
         return 0;
     }
     if (MPACK_QUERY == reader->pack_type) {
+        // 文本协议：字段值为字符串，需转换为无符号整数
         char tmp[64];
         memcpy(tmp, row->val.data, row->val.lens);
         tmp[row->val.lens] = '\0';
@@ -127,6 +135,7 @@ uint64_t mysql_reader_uinteger(mysql_reader_ctx *reader, const char *name, int32
         }
         return val;
     } else {
+        // 二进制协议：字段值为原始二进制无符号整数
         if (sizeof(uint8_t) == row->val.lens) {
             return (uint8_t)(((char *)row->val.data)[0]);
         } else {
@@ -148,6 +157,7 @@ double mysql_reader_double(mysql_reader_ctx *reader, const char *name, int32_t *
         return 0.0;
     }
     if (MPACK_QUERY == reader->pack_type) {
+        // 文本协议：字段值为字符串，需转换为浮点数
         char tmp[128];
         memcpy(tmp, row->val.data, row->val.lens);
         tmp[row->val.lens] = '\0';
@@ -160,6 +170,7 @@ double mysql_reader_double(mysql_reader_ctx *reader, const char *name, int32_t *
         }
         return val;
     } else {
+        // 二进制协议：按长度区分 double 和 float
         if (sizeof(double) == row->val.lens) {
             return unpack_double(row->val.data, 1);
         } else {
@@ -214,11 +225,13 @@ uint64_t mysql_reader_datetime(mysql_reader_ctx *reader, const char *name, int32
         return 0;
     }
     if (MPACK_QUERY == reader->pack_type) {
+        // 文本协议：按 "YYYY-MM-DD HH:MM:SS" 格式解析字符串为时间戳
         char tmp[64];
         memcpy(tmp, row->val.data, row->val.lens);
         tmp[row->val.lens] = '\0';
         return strtots(tmp, "%Y-%m-%d %H:%M:%S");
     } else {
+        // 二进制协议：按字节顺序解析年月日时分秒
         struct tm dt;
         ZERO(&dt, sizeof(struct tm));
         binary_ctx breader;
@@ -250,6 +263,7 @@ int32_t mysql_reader_time(mysql_reader_ctx *reader, const char *name, struct tm 
     }
     int32_t is_negative = 0;
     if (MPACK_QUERY == reader->pack_type) {
+        // 文本协议：按 "HH:MM:SS" 或 "-HHH:MM:SS" 格式解析时间字符串
         char tmp[64];
         memcpy(tmp, row->val.data, row->val.lens);
         tmp[row->val.lens] = '\0';
@@ -259,11 +273,12 @@ int32_t mysql_reader_time(mysql_reader_ctx *reader, const char *name, struct tm 
             is_negative = 1;
             val *= -1;
         }
-        time->tm_mday = val / 24;
-        time->tm_hour = val % 24;
+        time->tm_mday = val / 24;   // 天数部分
+        time->tm_hour = val % 24;   // 小时部分
         time->tm_min = strtol(end + 1, &end, 10);
         time->tm_sec = strtol(end + 1, &end, 10);
     } else {
+        // 二进制协议：按字节顺序解析负号、天、时、分、秒
         binary_ctx breader;
         binary_init(&breader, row->val.data, row->val.lens, 0);
         is_negative = (int32_t)binary_get_int8(&breader);

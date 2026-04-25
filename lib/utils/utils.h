@@ -3,8 +3,8 @@
 
 #include "base/macro.h"
 
-typedef void *(*chr_func)(const void *, int32_t, size_t);
-typedef int32_t(*cmp_func)(const void *, const void *, size_t);
+typedef void *(*chr_func)(const void *, int32_t, size_t);   //字符查找函数类型（类似 memchr）
+typedef int32_t(*cmp_func)(const void *, const void *, size_t); //内存比较函数类型（类似 memcmp）
 /// <summary>
 /// 获取一自增ID
 /// </summary>
@@ -261,7 +261,17 @@ void pack_double(char *buf, double val, int32_t islittle);
 /// <returns>double</returns>
 double unpack_double(const char *buf, int32_t islittle);
 #if !defined(OS_WIN) && !defined(OS_DARWIN) && !defined(OS_AIX)
+/// <summary>
+/// 64 位网络字节序转主机字节序
+/// </summary>
+/// <param name="val">网络字节序值</param>
+/// <returns>主机字节序值</returns>
 uint64_t ntohll(uint64_t val);
+/// <summary>
+/// 64 位主机字节序转网络字节序
+/// </summary>
+/// <param name="val">主机字节序值</param>
+/// <returns>网络字节序值</returns>
 uint64_t htonll(uint64_t val);
 #endif
 

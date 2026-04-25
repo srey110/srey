@@ -1,17 +1,18 @@
 ﻿#include "crypt/aes.h"
 #include "crypt/padding.h"
 
-#define FULL_UNROLL
-#define KEYLENGTH(keybits) ((keybits) / 8)
-#define GETU32(plaintext) (((uint32_t)(plaintext)[0] << 24) ^ \
+#define FULL_UNROLL                                                    // 启用循环完全展开以提升性能
+#define KEYLENGTH(keybits) ((keybits) / 8)                            // 将密钥位数转换为字节数
+#define GETU32(plaintext) (((uint32_t)(plaintext)[0] << 24) ^ \       // 从字节数组大端读取 uint32
                             ((uint32_t)(plaintext)[1] << 16) ^ \
                             ((uint32_t)(plaintext)[2] <<  8) ^ \
                             ((uint32_t)(plaintext)[3]))
-#define PUTU32(ciphertext, st) { (ciphertext)[0] = (uint8_t)((st) >> 24); \
+#define PUTU32(ciphertext, st) { (ciphertext)[0] = (uint8_t)((st) >> 24); \ // 将 uint32 大端写入字节数组
                                  (ciphertext)[1] = (uint8_t)((st) >> 16); \
                                  (ciphertext)[2] = (uint8_t)((st) >>  8); \
                                  (ciphertext)[3] = (uint8_t)(st); }
 
+// AES 加密正向查找表 te0~te3（SubBytes + ShiftRows + MixColumns 组合）
 static const uint32_t te0[256] = {
     0xc66363a5U, 0xf87c7c84U, 0xee777799U, 0xf67b7b8dU,
     0xfff2f20dU, 0xd66b6bbdU, 0xde6f6fb1U, 0x91c5c554U,
@@ -342,6 +343,7 @@ static const uint32_t te4[256] = {
     0x41414141U, 0x99999999U, 0x2d2d2d2dU, 0x0f0f0f0fU,
     0xb0b0b0b0U, 0x54545454U, 0xbbbbbbbbU, 0x16161616U,
 };
+// AES 解密逆向查找表 td0~td3（InvSubBytes + InvShiftRows + InvMixColumns 组合）
 static const uint32_t td0[256] = {
     0x51f4a750U, 0x7e416553U, 0x1a17a4c3U, 0x3a275e96U,
     0x3bab6bcbU, 0x1f9d45f1U, 0xacfa58abU, 0x4be30393U,
@@ -672,12 +674,13 @@ static const uint32_t td4[256] = {
     0xe1e1e1e1U, 0x69696969U, 0x14141414U, 0x63636363U,
     0x55555555U, 0x21212121U, 0x0c0c0c0cU, 0x7d7d7d7dU,
 };
+// 轮常量表，用于密钥扩展（128位最多使用10个值）
 static const uint32_t rcon[] = {
     0x01000000, 0x02000000, 0x04000000, 0x08000000,
     0x10000000, 0x20000000, 0x40000000, 0x80000000,
     0x1B000000, 0x36000000,
-    /* for 128-bit blocks, Rijndael never uses more than 10 rcon values */
 };
+// 加密密钥扩展，生成轮密钥调度表，返回轮数
 static int32_t _key_setup_encrypt(const uint8_t *key, int32_t keybits, uint32_t *rk) {
     int32_t i = 0;
     uint32_t temp;
@@ -756,6 +759,7 @@ static int32_t _key_setup_encrypt(const uint8_t *key, int32_t keybits, uint32_t 
     }
     return 0;
 }
+// 解密密钥扩展，基于加密调度表逆序并应用 InvMixColumns，返回轮数
 static int32_t _key_setup_decrypt(const uint8_t *key, int32_t keybits, uint32_t *rk) {
     uint32_t temp;
     int32_t nrounds, i, j;
@@ -787,6 +791,7 @@ static int32_t _key_setup_decrypt(const uint8_t *key, int32_t keybits, uint32_t 
     }
     return nrounds;
 }
+// AES 核心加密，将 16 字节明文加密为密文
 static void _encrypt(const uint32_t *rk, int32_t nrounds, const uint8_t *plaintext, uint8_t ciphertext[16]) {
     uint32_t s0, s1, s2, s3, t0, t1, t2, t3;
 #ifndef FULL_UNROLL
@@ -797,69 +802,69 @@ static void _encrypt(const uint32_t *rk, int32_t nrounds, const uint8_t *plainte
     s2 = GETU32(plaintext + 8) ^ rk[2];
     s3 = GETU32(plaintext + 12) ^ rk[3];
 #ifdef FULL_UNROLL
-    /* round 1: */
+    // 第 1 轮:
     t0 = te0[s0 >> 24] ^ te1[(s1 >> 16) & 0xff] ^ te2[(s2 >> 8) & 0xff] ^ te3[s3 & 0xff] ^ rk[4];
     t1 = te0[s1 >> 24] ^ te1[(s2 >> 16) & 0xff] ^ te2[(s3 >> 8) & 0xff] ^ te3[s0 & 0xff] ^ rk[5];
     t2 = te0[s2 >> 24] ^ te1[(s3 >> 16) & 0xff] ^ te2[(s0 >> 8) & 0xff] ^ te3[s1 & 0xff] ^ rk[6];
     t3 = te0[s3 >> 24] ^ te1[(s0 >> 16) & 0xff] ^ te2[(s1 >> 8) & 0xff] ^ te3[s2 & 0xff] ^ rk[7];
-    /* round 2: */
+    // 第 2 轮:
     s0 = te0[t0 >> 24] ^ te1[(t1 >> 16) & 0xff] ^ te2[(t2 >> 8) & 0xff] ^ te3[t3 & 0xff] ^ rk[8];
     s1 = te0[t1 >> 24] ^ te1[(t2 >> 16) & 0xff] ^ te2[(t3 >> 8) & 0xff] ^ te3[t0 & 0xff] ^ rk[9];
     s2 = te0[t2 >> 24] ^ te1[(t3 >> 16) & 0xff] ^ te2[(t0 >> 8) & 0xff] ^ te3[t1 & 0xff] ^ rk[10];
     s3 = te0[t3 >> 24] ^ te1[(t0 >> 16) & 0xff] ^ te2[(t1 >> 8) & 0xff] ^ te3[t2 & 0xff] ^ rk[11];
-    /* round 3: */
+    // 第 3 轮:
     t0 = te0[s0 >> 24] ^ te1[(s1 >> 16) & 0xff] ^ te2[(s2 >> 8) & 0xff] ^ te3[s3 & 0xff] ^ rk[12];
     t1 = te0[s1 >> 24] ^ te1[(s2 >> 16) & 0xff] ^ te2[(s3 >> 8) & 0xff] ^ te3[s0 & 0xff] ^ rk[13];
     t2 = te0[s2 >> 24] ^ te1[(s3 >> 16) & 0xff] ^ te2[(s0 >> 8) & 0xff] ^ te3[s1 & 0xff] ^ rk[14];
     t3 = te0[s3 >> 24] ^ te1[(s0 >> 16) & 0xff] ^ te2[(s1 >> 8) & 0xff] ^ te3[s2 & 0xff] ^ rk[15];
-    /* round 4: */
+    // 第 4 轮:
     s0 = te0[t0 >> 24] ^ te1[(t1 >> 16) & 0xff] ^ te2[(t2 >> 8) & 0xff] ^ te3[t3 & 0xff] ^ rk[16];
     s1 = te0[t1 >> 24] ^ te1[(t2 >> 16) & 0xff] ^ te2[(t3 >> 8) & 0xff] ^ te3[t0 & 0xff] ^ rk[17];
     s2 = te0[t2 >> 24] ^ te1[(t3 >> 16) & 0xff] ^ te2[(t0 >> 8) & 0xff] ^ te3[t1 & 0xff] ^ rk[18];
     s3 = te0[t3 >> 24] ^ te1[(t0 >> 16) & 0xff] ^ te2[(t1 >> 8) & 0xff] ^ te3[t2 & 0xff] ^ rk[19];
-    /* round 5: */
+    // 第 5 轮:
     t0 = te0[s0 >> 24] ^ te1[(s1 >> 16) & 0xff] ^ te2[(s2 >> 8) & 0xff] ^ te3[s3 & 0xff] ^ rk[20];
     t1 = te0[s1 >> 24] ^ te1[(s2 >> 16) & 0xff] ^ te2[(s3 >> 8) & 0xff] ^ te3[s0 & 0xff] ^ rk[21];
     t2 = te0[s2 >> 24] ^ te1[(s3 >> 16) & 0xff] ^ te2[(s0 >> 8) & 0xff] ^ te3[s1 & 0xff] ^ rk[22];
     t3 = te0[s3 >> 24] ^ te1[(s0 >> 16) & 0xff] ^ te2[(s1 >> 8) & 0xff] ^ te3[s2 & 0xff] ^ rk[23];
-    /* round 6: */
+    // 第 6 轮:
     s0 = te0[t0 >> 24] ^ te1[(t1 >> 16) & 0xff] ^ te2[(t2 >> 8) & 0xff] ^ te3[t3 & 0xff] ^ rk[24];
     s1 = te0[t1 >> 24] ^ te1[(t2 >> 16) & 0xff] ^ te2[(t3 >> 8) & 0xff] ^ te3[t0 & 0xff] ^ rk[25];
     s2 = te0[t2 >> 24] ^ te1[(t3 >> 16) & 0xff] ^ te2[(t0 >> 8) & 0xff] ^ te3[t1 & 0xff] ^ rk[26];
     s3 = te0[t3 >> 24] ^ te1[(t0 >> 16) & 0xff] ^ te2[(t1 >> 8) & 0xff] ^ te3[t2 & 0xff] ^ rk[27];
-    /* round 7: */
+    // 第 7 轮:
     t0 = te0[s0 >> 24] ^ te1[(s1 >> 16) & 0xff] ^ te2[(s2 >> 8) & 0xff] ^ te3[s3 & 0xff] ^ rk[28];
     t1 = te0[s1 >> 24] ^ te1[(s2 >> 16) & 0xff] ^ te2[(s3 >> 8) & 0xff] ^ te3[s0 & 0xff] ^ rk[29];
     t2 = te0[s2 >> 24] ^ te1[(s3 >> 16) & 0xff] ^ te2[(s0 >> 8) & 0xff] ^ te3[s1 & 0xff] ^ rk[30];
     t3 = te0[s3 >> 24] ^ te1[(s0 >> 16) & 0xff] ^ te2[(s1 >> 8) & 0xff] ^ te3[s2 & 0xff] ^ rk[31];
-    /* round 8: */
+    // 第 8 轮:
     s0 = te0[t0 >> 24] ^ te1[(t1 >> 16) & 0xff] ^ te2[(t2 >> 8) & 0xff] ^ te3[t3 & 0xff] ^ rk[32];
     s1 = te0[t1 >> 24] ^ te1[(t2 >> 16) & 0xff] ^ te2[(t3 >> 8) & 0xff] ^ te3[t0 & 0xff] ^ rk[33];
     s2 = te0[t2 >> 24] ^ te1[(t3 >> 16) & 0xff] ^ te2[(t0 >> 8) & 0xff] ^ te3[t1 & 0xff] ^ rk[34];
     s3 = te0[t3 >> 24] ^ te1[(t0 >> 16) & 0xff] ^ te2[(t1 >> 8) & 0xff] ^ te3[t2 & 0xff] ^ rk[35];
-    /* round 9: */
+    // 第 9 轮:
     t0 = te0[s0 >> 24] ^ te1[(s1 >> 16) & 0xff] ^ te2[(s2 >> 8) & 0xff] ^ te3[s3 & 0xff] ^ rk[36];
     t1 = te0[s1 >> 24] ^ te1[(s2 >> 16) & 0xff] ^ te2[(s3 >> 8) & 0xff] ^ te3[s0 & 0xff] ^ rk[37];
     t2 = te0[s2 >> 24] ^ te1[(s3 >> 16) & 0xff] ^ te2[(s0 >> 8) & 0xff] ^ te3[s1 & 0xff] ^ rk[38];
     t3 = te0[s3 >> 24] ^ te1[(s0 >> 16) & 0xff] ^ te2[(s1 >> 8) & 0xff] ^ te3[s2 & 0xff] ^ rk[39];
     if (nrounds > 10) {
-        /* round 10: */
+        // 第 10 轮:
         s0 = te0[t0 >> 24] ^ te1[(t1 >> 16) & 0xff] ^ te2[(t2 >> 8) & 0xff] ^ te3[t3 & 0xff] ^ rk[40];
         s1 = te0[t1 >> 24] ^ te1[(t2 >> 16) & 0xff] ^ te2[(t3 >> 8) & 0xff] ^ te3[t0 & 0xff] ^ rk[41];
         s2 = te0[t2 >> 24] ^ te1[(t3 >> 16) & 0xff] ^ te2[(t0 >> 8) & 0xff] ^ te3[t1 & 0xff] ^ rk[42];
         s3 = te0[t3 >> 24] ^ te1[(t0 >> 16) & 0xff] ^ te2[(t1 >> 8) & 0xff] ^ te3[t2 & 0xff] ^ rk[43];
-        /* round 11: */
+        // 第 11 轮:
         t0 = te0[s0 >> 24] ^ te1[(s1 >> 16) & 0xff] ^ te2[(s2 >> 8) & 0xff] ^ te3[s3 & 0xff] ^ rk[44];
         t1 = te0[s1 >> 24] ^ te1[(s2 >> 16) & 0xff] ^ te2[(s3 >> 8) & 0xff] ^ te3[s0 & 0xff] ^ rk[45];
         t2 = te0[s2 >> 24] ^ te1[(s3 >> 16) & 0xff] ^ te2[(s0 >> 8) & 0xff] ^ te3[s1 & 0xff] ^ rk[46];
         t3 = te0[s3 >> 24] ^ te1[(s0 >> 16) & 0xff] ^ te2[(s1 >> 8) & 0xff] ^ te3[s2 & 0xff] ^ rk[47];
         if (nrounds > 12) {
-            /* round 12: */
+            // 第 12 轮:
             s0 = te0[t0 >> 24] ^ te1[(t1 >> 16) & 0xff] ^ te2[(t2 >> 8) & 0xff] ^ te3[t3 & 0xff] ^ rk[48];
             s1 = te0[t1 >> 24] ^ te1[(t2 >> 16) & 0xff] ^ te2[(t3 >> 8) & 0xff] ^ te3[t0 & 0xff] ^ rk[49];
             s2 = te0[t2 >> 24] ^ te1[(t3 >> 16) & 0xff] ^ te2[(t0 >> 8) & 0xff] ^ te3[t1 & 0xff] ^ rk[50];
             s3 = te0[t3 >> 24] ^ te1[(t0 >> 16) & 0xff] ^ te2[(t1 >> 8) & 0xff] ^ te3[t2 & 0xff] ^ rk[51];
-            /* round 13: */
+            // 第 13 轮:
             t0 = te0[s0 >> 24] ^ te1[(s1 >> 16) & 0xff] ^ te2[(s2 >> 8) & 0xff] ^ te3[s3 & 0xff] ^ rk[52];
             t1 = te0[s1 >> 24] ^ te1[(s2 >> 16) & 0xff] ^ te2[(s3 >> 8) & 0xff] ^ te3[s0 & 0xff] ^ rk[53];
             t2 = te0[s2 >> 24] ^ te1[(s3 >> 16) & 0xff] ^ te2[(s0 >> 8) & 0xff] ^ te3[s1 & 0xff] ^ rk[54];
@@ -941,6 +946,7 @@ static void _encrypt(const uint32_t *rk, int32_t nrounds, const uint8_t *plainte
         rk[3];
     PUTU32(ciphertext + 12, s3);
 }
+// AES 核心解密，将 16 字节密文解密为明文
 static void _decrypt(const uint32_t *rk, int32_t nrounds, const uint8_t *ciphertext, uint8_t plaintext[16]) {
     uint32_t s0, s1, s2, s3, t0, t1, t2, t3;
 #ifndef FULL_UNROLL
@@ -951,69 +957,69 @@ static void _decrypt(const uint32_t *rk, int32_t nrounds, const uint8_t *ciphert
     s2 = GETU32(ciphertext + 8) ^ rk[2];
     s3 = GETU32(ciphertext + 12) ^ rk[3];
 #ifdef FULL_UNROLL
-    /* round 1: */
+    // 第 1 轮:
     t0 = td0[s0 >> 24] ^ td1[(s3 >> 16) & 0xff] ^ td2[(s2 >> 8) & 0xff] ^ td3[s1 & 0xff] ^ rk[4];
     t1 = td0[s1 >> 24] ^ td1[(s0 >> 16) & 0xff] ^ td2[(s3 >> 8) & 0xff] ^ td3[s2 & 0xff] ^ rk[5];
     t2 = td0[s2 >> 24] ^ td1[(s1 >> 16) & 0xff] ^ td2[(s0 >> 8) & 0xff] ^ td3[s3 & 0xff] ^ rk[6];
     t3 = td0[s3 >> 24] ^ td1[(s2 >> 16) & 0xff] ^ td2[(s1 >> 8) & 0xff] ^ td3[s0 & 0xff] ^ rk[7];
-    /* round 2: */
+    // 第 2 轮:
     s0 = td0[t0 >> 24] ^ td1[(t3 >> 16) & 0xff] ^ td2[(t2 >> 8) & 0xff] ^ td3[t1 & 0xff] ^ rk[8];
     s1 = td0[t1 >> 24] ^ td1[(t0 >> 16) & 0xff] ^ td2[(t3 >> 8) & 0xff] ^ td3[t2 & 0xff] ^ rk[9];
     s2 = td0[t2 >> 24] ^ td1[(t1 >> 16) & 0xff] ^ td2[(t0 >> 8) & 0xff] ^ td3[t3 & 0xff] ^ rk[10];
     s3 = td0[t3 >> 24] ^ td1[(t2 >> 16) & 0xff] ^ td2[(t1 >> 8) & 0xff] ^ td3[t0 & 0xff] ^ rk[11];
-    /* round 3: */
+    // 第 3 轮:
     t0 = td0[s0 >> 24] ^ td1[(s3 >> 16) & 0xff] ^ td2[(s2 >> 8) & 0xff] ^ td3[s1 & 0xff] ^ rk[12];
     t1 = td0[s1 >> 24] ^ td1[(s0 >> 16) & 0xff] ^ td2[(s3 >> 8) & 0xff] ^ td3[s2 & 0xff] ^ rk[13];
     t2 = td0[s2 >> 24] ^ td1[(s1 >> 16) & 0xff] ^ td2[(s0 >> 8) & 0xff] ^ td3[s3 & 0xff] ^ rk[14];
     t3 = td0[s3 >> 24] ^ td1[(s2 >> 16) & 0xff] ^ td2[(s1 >> 8) & 0xff] ^ td3[s0 & 0xff] ^ rk[15];
-    /* round 4: */
+    // 第 4 轮:
     s0 = td0[t0 >> 24] ^ td1[(t3 >> 16) & 0xff] ^ td2[(t2 >> 8) & 0xff] ^ td3[t1 & 0xff] ^ rk[16];
     s1 = td0[t1 >> 24] ^ td1[(t0 >> 16) & 0xff] ^ td2[(t3 >> 8) & 0xff] ^ td3[t2 & 0xff] ^ rk[17];
     s2 = td0[t2 >> 24] ^ td1[(t1 >> 16) & 0xff] ^ td2[(t0 >> 8) & 0xff] ^ td3[t3 & 0xff] ^ rk[18];
     s3 = td0[t3 >> 24] ^ td1[(t2 >> 16) & 0xff] ^ td2[(t1 >> 8) & 0xff] ^ td3[t0 & 0xff] ^ rk[19];
-    /* round 5: */
+    // 第 5 轮:
     t0 = td0[s0 >> 24] ^ td1[(s3 >> 16) & 0xff] ^ td2[(s2 >> 8) & 0xff] ^ td3[s1 & 0xff] ^ rk[20];
     t1 = td0[s1 >> 24] ^ td1[(s0 >> 16) & 0xff] ^ td2[(s3 >> 8) & 0xff] ^ td3[s2 & 0xff] ^ rk[21];
     t2 = td0[s2 >> 24] ^ td1[(s1 >> 16) & 0xff] ^ td2[(s0 >> 8) & 0xff] ^ td3[s3 & 0xff] ^ rk[22];
     t3 = td0[s3 >> 24] ^ td1[(s2 >> 16) & 0xff] ^ td2[(s1 >> 8) & 0xff] ^ td3[s0 & 0xff] ^ rk[23];
-    /* round 6: */
+    // 第 6 轮:
     s0 = td0[t0 >> 24] ^ td1[(t3 >> 16) & 0xff] ^ td2[(t2 >> 8) & 0xff] ^ td3[t1 & 0xff] ^ rk[24];
     s1 = td0[t1 >> 24] ^ td1[(t0 >> 16) & 0xff] ^ td2[(t3 >> 8) & 0xff] ^ td3[t2 & 0xff] ^ rk[25];
     s2 = td0[t2 >> 24] ^ td1[(t1 >> 16) & 0xff] ^ td2[(t0 >> 8) & 0xff] ^ td3[t3 & 0xff] ^ rk[26];
     s3 = td0[t3 >> 24] ^ td1[(t2 >> 16) & 0xff] ^ td2[(t1 >> 8) & 0xff] ^ td3[t0 & 0xff] ^ rk[27];
-    /* round 7: */
+    // 第 7 轮:
     t0 = td0[s0 >> 24] ^ td1[(s3 >> 16) & 0xff] ^ td2[(s2 >> 8) & 0xff] ^ td3[s1 & 0xff] ^ rk[28];
     t1 = td0[s1 >> 24] ^ td1[(s0 >> 16) & 0xff] ^ td2[(s3 >> 8) & 0xff] ^ td3[s2 & 0xff] ^ rk[29];
     t2 = td0[s2 >> 24] ^ td1[(s1 >> 16) & 0xff] ^ td2[(s0 >> 8) & 0xff] ^ td3[s3 & 0xff] ^ rk[30];
     t3 = td0[s3 >> 24] ^ td1[(s2 >> 16) & 0xff] ^ td2[(s1 >> 8) & 0xff] ^ td3[s0 & 0xff] ^ rk[31];
-    /* round 8: */
+    // 第 8 轮:
     s0 = td0[t0 >> 24] ^ td1[(t3 >> 16) & 0xff] ^ td2[(t2 >> 8) & 0xff] ^ td3[t1 & 0xff] ^ rk[32];
     s1 = td0[t1 >> 24] ^ td1[(t0 >> 16) & 0xff] ^ td2[(t3 >> 8) & 0xff] ^ td3[t2 & 0xff] ^ rk[33];
     s2 = td0[t2 >> 24] ^ td1[(t1 >> 16) & 0xff] ^ td2[(t0 >> 8) & 0xff] ^ td3[t3 & 0xff] ^ rk[34];
     s3 = td0[t3 >> 24] ^ td1[(t2 >> 16) & 0xff] ^ td2[(t1 >> 8) & 0xff] ^ td3[t0 & 0xff] ^ rk[35];
-    /* round 9: */
+    // 第 9 轮:
     t0 = td0[s0 >> 24] ^ td1[(s3 >> 16) & 0xff] ^ td2[(s2 >> 8) & 0xff] ^ td3[s1 & 0xff] ^ rk[36];
     t1 = td0[s1 >> 24] ^ td1[(s0 >> 16) & 0xff] ^ td2[(s3 >> 8) & 0xff] ^ td3[s2 & 0xff] ^ rk[37];
     t2 = td0[s2 >> 24] ^ td1[(s1 >> 16) & 0xff] ^ td2[(s0 >> 8) & 0xff] ^ td3[s3 & 0xff] ^ rk[38];
     t3 = td0[s3 >> 24] ^ td1[(s2 >> 16) & 0xff] ^ td2[(s1 >> 8) & 0xff] ^ td3[s0 & 0xff] ^ rk[39];
     if (nrounds > 10) {
-        /* round 10: */
+        // 第 10 轮:
         s0 = td0[t0 >> 24] ^ td1[(t3 >> 16) & 0xff] ^ td2[(t2 >> 8) & 0xff] ^ td3[t1 & 0xff] ^ rk[40];
         s1 = td0[t1 >> 24] ^ td1[(t0 >> 16) & 0xff] ^ td2[(t3 >> 8) & 0xff] ^ td3[t2 & 0xff] ^ rk[41];
         s2 = td0[t2 >> 24] ^ td1[(t1 >> 16) & 0xff] ^ td2[(t0 >> 8) & 0xff] ^ td3[t3 & 0xff] ^ rk[42];
         s3 = td0[t3 >> 24] ^ td1[(t2 >> 16) & 0xff] ^ td2[(t1 >> 8) & 0xff] ^ td3[t0 & 0xff] ^ rk[43];
-        /* round 11: */
+        // 第 11 轮:
         t0 = td0[s0 >> 24] ^ td1[(s3 >> 16) & 0xff] ^ td2[(s2 >> 8) & 0xff] ^ td3[s1 & 0xff] ^ rk[44];
         t1 = td0[s1 >> 24] ^ td1[(s0 >> 16) & 0xff] ^ td2[(s3 >> 8) & 0xff] ^ td3[s2 & 0xff] ^ rk[45];
         t2 = td0[s2 >> 24] ^ td1[(s1 >> 16) & 0xff] ^ td2[(s0 >> 8) & 0xff] ^ td3[s3 & 0xff] ^ rk[46];
         t3 = td0[s3 >> 24] ^ td1[(s2 >> 16) & 0xff] ^ td2[(s1 >> 8) & 0xff] ^ td3[s0 & 0xff] ^ rk[47];
         if (nrounds > 12) {
-            /* round 12: */
+            // 第 12 轮:
             s0 = td0[t0 >> 24] ^ td1[(t3 >> 16) & 0xff] ^ td2[(t2 >> 8) & 0xff] ^ td3[t1 & 0xff] ^ rk[48];
             s1 = td0[t1 >> 24] ^ td1[(t0 >> 16) & 0xff] ^ td2[(t3 >> 8) & 0xff] ^ td3[t2 & 0xff] ^ rk[49];
             s2 = td0[t2 >> 24] ^ td1[(t1 >> 16) & 0xff] ^ td2[(t0 >> 8) & 0xff] ^ td3[t3 & 0xff] ^ rk[50];
             s3 = td0[t3 >> 24] ^ td1[(t2 >> 16) & 0xff] ^ td2[(t1 >> 8) & 0xff] ^ td3[t0 & 0xff] ^ rk[51];
-            /* round 13: */
+            // 第 13 轮:
             t0 = td0[s0 >> 24] ^ td1[(s3 >> 16) & 0xff] ^ td2[(s2 >> 8) & 0xff] ^ td3[s1 & 0xff] ^ rk[52];
             t1 = td0[s1 >> 24] ^ td1[(s0 >> 16) & 0xff] ^ td2[(s3 >> 8) & 0xff] ^ td3[s2 & 0xff] ^ rk[53];
             t2 = td0[s2 >> 24] ^ td1[(s1 >> 16) & 0xff] ^ td2[(s0 >> 8) & 0xff] ^ td3[s3 & 0xff] ^ rk[54];

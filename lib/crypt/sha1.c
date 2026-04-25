@@ -2,6 +2,7 @@
 
 #define ROTLEFT(a, b) ((a << b) | (a >> (32 - b)))
 
+// SHA-1 核心变换：对 64 字节块执行 80 轮操作并更新状态
 static void _transform(sha1_ctx *sha1, const uint8_t *data) {
     uint32_t a, b, c, d, e, i, j, t, m[80];
     for (i = 0, j = 0; i < 16; ++i, j += 4) {

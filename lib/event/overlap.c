@@ -7,65 +7,69 @@
 
 #ifdef EV_IOCP
 
-#define MAX_ACCEPTEX_CNT    128
+#define MAX_ACCEPTEX_CNT    128  // 每个监听socket同时挂起的AcceptEx数量
 
+// AcceptEx单个挂起操作的上下文
 typedef struct overlap_acpt_ctx {
-    sock_ctx overlap;
-    struct listener_ctx *lsn;
-    DWORD bytes;
-    char addr[sizeof(struct sockaddr_storage)];
+    sock_ctx overlap;                           // 嵌入sock_ctx，供IOCP回调使用
+    struct listener_ctx *lsn;                   // 所属监听器
+    DWORD bytes;                                // AcceptEx接收到的字节数
+    char addr[sizeof(struct sockaddr_storage)]; // 存储本地/对端地址的缓冲区
 }overlap_acpt_ctx;
+// IOCP监听器上下文
 typedef struct listener_ctx {
-    int32_t family;
-    int32_t remove;
-    atomic_t ref;
-    SOCKET fd;
+    int32_t family;                                 // 地址族（AF_INET/AF_INET6）
+    int32_t remove;                                 // 标记为待移除（ev_unlisten后设置）
+    atomic_t ref;                                   // 引用计数（等于挂起的AcceptEx数量）
+    SOCKET fd;                                      // 监听socket句柄
 #if WITH_SSL
-    evssl_ctx *evssl;
+    evssl_ctx *evssl;                               // SSL上下文（NULL表示不使用SSL）
 #endif
-    cbs_ctx cbs;
-    ud_cxt ud;
-    uint64_t id;
-    overlap_acpt_ctx overlap_acpt[MAX_ACCEPTEX_CNT];
+    cbs_ctx cbs;                                    // 回调函数集合
+    ud_cxt ud;                                      // 用户数据模板（每个accept连接复制一份）
+    uint64_t id;                                    // 监听器唯一ID（ev_unlisten使用）
+    overlap_acpt_ctx overlap_acpt[MAX_ACCEPTEX_CNT]; // 预挂起的AcceptEx数组
 }listener_ctx;
+// IOCP TCP连接上下文（读写各用一个sock_ctx / OVERLAPPED）
 typedef struct overlap_tcp_ctx {
-    sock_ctx ol_r;
-    sock_ctx ol_s;
-    int32_t status;
-    DWORD bytes_r;
-    DWORD bytes_s;
-    DWORD flag;
+    sock_ctx ol_r;          // 读操作的OVERLAPPED上下文
+    sock_ctx ol_s;          // 写操作的OVERLAPPED上下文
+    int32_t status;         // 连接状态标志位（sock_status组合）
+    DWORD bytes_r;          // WSARecv接收字节数
+    DWORD bytes_s;          // WSASend发送字节数
+    DWORD flag;             // WSARecv标志
 #if WITH_SSL
-    SSL *ssl;
-    struct evssl_ctx *evssl;
+    SSL *ssl;               // SSL会话（NULL表示普通TCP）
+    struct evssl_ctx *evssl; // 待升级的SSL上下文（发送完毕后升级）
 #endif
-    uint64_t skid;
-    IOV_TYPE wsabuf;
-    buffer_ctx buf_r;
-    qu_off_buf_ctx buf_s;
-    cbs_ctx cbs;
-    ud_cxt ud;
+    uint64_t skid;          // 连接唯一ID
+    IOV_TYPE wsabuf;        // WSARecv缓冲区描述符
+    buffer_ctx buf_r;       // 接收缓冲区
+    qu_off_buf_ctx buf_s;   // 发送队列
+    cbs_ctx cbs;            // 回调函数集合
+    ud_cxt ud;              // 用户数据
 }overlap_tcp_ctx;
+// IOCP UDP连接上下文
 typedef struct overlap_udp_ctx {
-    sock_ctx ol_r;
-    sock_ctx ol_s;
-    int32_t addrlen;
-    int32_t status;
-    DWORD bytes_r;
-    DWORD bytes_s;
-    DWORD flag;
-    uint64_t skid;
-    cbs_ctx cbs;
-    IOV_TYPE wsabuf_s;
-    IOV_TYPE wsabuf_r;
-    qu_off_buf_ctx buf_s;
-    netaddr_ctx addr;
-    ud_cxt ud;
-    char buf[MAX_RECVFROM_SIZE];
+    sock_ctx ol_r;          // 接收操作的OVERLAPPED上下文
+    sock_ctx ol_s;          // 发送操作的OVERLAPPED上下文
+    int32_t addrlen;        // netaddr_ctx中地址结构的长度
+    int32_t status;         // 状态标志位
+    DWORD bytes_r;          // 接收字节数
+    DWORD bytes_s;          // 发送字节数
+    DWORD flag;             // WSARecvFrom标志
+    uint64_t skid;          // 连接唯一ID
+    cbs_ctx cbs;            // 回调函数集合
+    IOV_TYPE wsabuf_s;      // 发送缓冲区描述符
+    IOV_TYPE wsabuf_r;      // 接收缓冲区描述符（指向buf）
+    qu_off_buf_ctx buf_s;   // 发送队列
+    netaddr_ctx addr;       // 接收到的对端地址（WSARecvFrom填充）
+    ud_cxt ud;              // 用户数据
+    char buf[MAX_RECVFROM_SIZE]; // 固定接收缓冲区
 }overlap_udp_ctx;
 
-static void _on_recv_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes);
-static void _on_send_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes);
+static void _on_recv_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes); // 前向声明：TCP接收完成回调
+static void _on_send_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes); // 前向声明：TCP发送完成回调
 
 void _sk_shutdown(sock_ctx *skctx) {
 #if WITH_SSL
@@ -180,46 +184,53 @@ void _remove_fd(watcher_ctx *watcher, SOCKET fd) {
     sock_ctx *pkey = &key;
     hashmap_delete(watcher->element, &pkey);
 }
+// 调用accept回调，返回值非ERR_OK则拒绝连接
 static inline int32_t _call_acp_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp) {
     if (NULL != oltcp->cbs.acp_cb) {
         return oltcp->cbs.acp_cb(ev, oltcp->ol_r.fd, oltcp->skid, &oltcp->ud);
     }
     return ERR_OK;
 }
+// 调用connect回调，返回值非ERR_OK则断开连接
 static inline int32_t _call_conn_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp, int32_t err) {
     if (NULL != oltcp->cbs.conn_cb) {
         return oltcp->cbs.conn_cb(ev, oltcp->ol_r.fd, oltcp->skid, err, &oltcp->ud);
     }
     return ERR_OK;
 }
+// 调用SSL握手完成回调，返回值非ERR_OK则断开连接
 static inline int32_t _call_ssl_exchanged_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp) {
     if (NULL != oltcp->cbs.exch_cb) {
         return oltcp->cbs.exch_cb(ev, oltcp->ol_r.fd, oltcp->skid, BIT_CHECK(oltcp->status, STATUS_CLIENT), &oltcp->ud);
     }
     return ERR_OK;
 }
+// 调用数据接收回调（nread > 0 才触发）
 static inline void _call_recv_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp, size_t nread) {
     if (nread > 0) {
         oltcp->cbs.r_cb(ev, oltcp->ol_r.fd, oltcp->skid, BIT_CHECK(oltcp->status, STATUS_CLIENT), &oltcp->buf_r, nread, &oltcp->ud);
     }
 }
+// 调用发送完成回调（nsend > 0 且有s_cb 才触发）
 static inline void _call_send_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp, size_t nsend) {
     if (NULL != oltcp->cbs.s_cb
         && nsend > 0) {
         oltcp->cbs.s_cb(ev, oltcp->ol_s.fd, oltcp->skid, BIT_CHECK(oltcp->status, STATUS_CLIENT), nsend, &oltcp->ud);
     }
 }
+// 调用连接关闭回调
 static inline void _call_close_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp) {
     if (NULL != oltcp->cbs.c_cb) {
         oltcp->cbs.c_cb(ev, oltcp->ol_r.fd, oltcp->skid, BIT_CHECK(oltcp->status, STATUS_CLIENT), &oltcp->ud);
     }
 }
+// 调用UDP接收回调（nread > 0 才触发）
 static inline void _call_recvfrom_cb(ev_ctx *ev, overlap_udp_ctx *oludp, size_t nread) {
     if (nread > 0) {
         oludp->cbs.rf_cb(ev, oludp->ol_r.fd, oludp->skid, oludp->wsabuf_r.buf, nread, &oludp->addr, &oludp->ud);
     }
 }
-//recv
+// 提交WSARecv异步接收请求（用于TCP和命令管道）
 int32_t _post_recv(sock_ctx *skctx, DWORD  *bytes, DWORD  *flag, IOV_TYPE *wsabuf, DWORD niov) {
     *flag = 0;
     *bytes = 0;
@@ -237,6 +248,7 @@ int32_t _post_recv(sock_ctx *skctx, DWORD  *bytes, DWORD  *flag, IOV_TYPE *wsabu
     }
     return ERR_OK;
 }
+// 关闭TCP连接：若正在发送则标记延迟关闭，否则立即执行关闭回调并回收到对象池
 static inline _close_tcp(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
     if (BIT_CHECK(oltcp->status, STATUS_SENDING)) {
         BIT_SET(oltcp->status, STATUS_REMOVE);
@@ -246,6 +258,7 @@ static inline _close_tcp(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
         pool_push(&watcher->pool, &oltcp->ol_r);
     }
 }
+// 从socket读取数据到接收缓冲区并触发recv回调，成功后重新提交WSARecv
 static inline void _tcp_recv(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
     size_t nread;
 #if WITH_SSL
@@ -262,6 +275,7 @@ static inline void _tcp_recv(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
         _close_tcp(watcher, oltcp);
     }
 }
+// IOCP TCP接收完成回调：处理SSL握手或普通数据接收
 static void _on_recv_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
     overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
 #if WITH_SSL
@@ -302,6 +316,7 @@ static void _on_recv_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
     _tcp_recv(watcher, oltcp);
 }
 #if WITH_SSL
+// 在事件循环内启动SSL握手：设置SSL fd并根据角色调用connect/accept，客户端可能立即完成
 static int32_t _ssl_exchange(watcher_ctx *watcher, overlap_tcp_ctx *oltcp, struct evssl_ctx *evssl) {
     oltcp->ssl = evssl_setfd(evssl, oltcp->ol_r.fd);
     if (NULL == oltcp->ssl) {
@@ -357,7 +372,7 @@ void _try_ssl_exchange(watcher_ctx *watcher, sock_ctx *skctx, struct evssl_ctx *
     }
 #endif
 }
-//send
+// 提交WSASend异步发送请求（单个缓冲区，由发送队列头部决定内容）
 static int32_t _post_send(overlap_tcp_ctx *oltcp) {
     oltcp->bytes_s = 0;
     ZERO(&oltcp->ol_s.overlapped, sizeof(oltcp->ol_s.overlapped));
@@ -374,6 +389,7 @@ static int32_t _post_send(overlap_tcp_ctx *oltcp) {
     }
     return ERR_OK;
 }
+// IOCP TCP发送完成回调：消费发送队列，处理SSL升级，触发send回调
 static void _on_send_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
     overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_s);
     if (BIT_CHECK(oltcp->status, STATUS_ERROR)) {
@@ -429,7 +445,7 @@ void _add_bufs_trypost(sock_ctx *skctx, off_buf_ctx *buf) {
         BIT_REMOVE(oltcp->status, STATUS_SENDING);
     }
 }
-//connect
+// 将socket绑定到通配地址（ConnectEx要求socket必须先bind）
 static int32_t _trybind(SOCKET fd, int32_t family) {
     int32_t rtn;
     netaddr_ctx addr;
@@ -448,6 +464,7 @@ static int32_t _trybind(SOCKET fd, int32_t family) {
     }
     return ERR_OK;
 }
+// 提交ConnectEx异步连接请求
 static int32_t _post_connect(overlap_tcp_ctx *oltcp, netaddr_ctx *addr) {
     oltcp->bytes_r = 0;
     ZERO(&oltcp->ol_r.overlapped, sizeof(oltcp->ol_r.overlapped));
@@ -466,6 +483,7 @@ static int32_t _post_connect(overlap_tcp_ctx *oltcp, netaddr_ctx *addr) {
     }
     return ERR_OK;
 }
+// ConnectEx完成回调：切换为读回调并提交WSARecv，触发conn回调，可选启动SSL
 static void _on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
     skctx->ev_cb = _on_recv_cb;
     overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
@@ -548,7 +566,7 @@ int32_t ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const u
     }
     return ERR_OK;
 }
-//listen
+// 提交一个AcceptEx异步接受请求（创建新socket并挂起等待连接）
 static int32_t _post_accept(overlap_acpt_ctx *olacp) {
     SOCKET fd = _create_sock(SOCK_STREAM, olacp->lsn->family);
     if (INVALID_SOCK == fd) {
@@ -575,6 +593,7 @@ static int32_t _post_accept(overlap_acpt_ctx *olacp) {
     }
     return ERR_OK;
 }
+// AcceptEx完成回调：重新提交AcceptEx、设置socket选项、将新fd发送给对应watcher
 static void _on_accept_cb(acceptex_ctx *acpctx, sock_ctx *skctx, DWORD bytes) {
     overlap_acpt_ctx *olacp = UPCAST(skctx, overlap_acpt_ctx, overlap);
     listener_ctx *lsn = olacp->lsn;
@@ -632,11 +651,13 @@ void _add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) {
     }
 #endif
 }
+// 关闭前cnt个AcceptEx挂起的socket（取消未完成的AcceptEx操作）
 static void _free_acceptex(listener_ctx *lsn, int32_t cnt) {
     for (int32_t i = 0; i < cnt; i++) {
         CLOSE_SOCK(lsn->overlap_acpt[i].overlap.fd);
     }
 }
+// 将监听socket关联到AcceptEx IOCP并预挂MAX_ACCEPTEX_CNT个AcceptEx操作
 static int32_t _acceptex(ev_ctx *ev, listener_ctx *lsn) {
     if (NULL == CreateIoCompletionPort((HANDLE)lsn->fd, ev->acpex[0].iocp, 0, ev->nacpex)) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
@@ -710,6 +731,7 @@ void _freelsn(listener_ctx *lsn) {
     CLOSE_SOCK(lsn->fd);
     FREE(lsn);
 }
+// 根据id从arrlsn中查找并移除listener_ctx（加自旋锁保护）
 static listener_ctx * _get_listener(ev_ctx *ctx, uint64_t id) {
     listener_ctx *lsn = NULL;
     listener_ctx **tmp;
@@ -740,7 +762,7 @@ void ev_unlisten(ev_ctx *ctx, uint64_t id) {
         SOCK_CLOSE(lsn->overlap_acpt[i].overlap.fd);
     }
 }
-//UDP
+// 提交WSARecvFrom异步UDP接收请求
 static int32_t _post_recv_from(overlap_udp_ctx *oludp) {
     ZERO(&oludp->ol_r.overlapped, sizeof(oludp->ol_r.overlapped));
     oludp->flag = oludp->bytes_r = 0;
@@ -759,6 +781,7 @@ static int32_t _post_recv_from(overlap_udp_ctx *oludp) {
     }
     return ERR_OK;
 }
+// 处理UDP接收侧关闭：若正在发送则标记延迟，否则直接移除并释放
 static void _on_udp_close_r(watcher_ctx *watcher, overlap_udp_ctx *oludp) {
     if (BIT_CHECK(oludp->status, STATUS_SENDING)) {
         BIT_SET(oludp->status, STATUS_REMOVE);
@@ -767,6 +790,7 @@ static void _on_udp_close_r(watcher_ctx *watcher, overlap_udp_ctx *oludp) {
         _free_udp(&oludp->ol_r);
     }
 }
+// WSARecvFrom完成回调：触发recvfrom回调并重新提交接收
 static void _on_recvfrom_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
     overlap_udp_ctx *oludp = UPCAST(skctx, overlap_udp_ctx, ol_r);
     if (0 == bytes) {
@@ -784,6 +808,7 @@ static void _on_recvfrom_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) 
         _on_udp_close_r(watcher, oludp);
     }
 }
+// 提交WSASendTo异步UDP发送请求（buf中包含netaddr_ctx + 数据）
 static int32_t _post_sendto(overlap_udp_ctx *oludp, off_buf_ctx *buf) {
     ZERO(&oludp->ol_s.overlapped, sizeof(oludp->ol_s.overlapped));
     oludp->bytes_s = 0;
@@ -805,6 +830,7 @@ static int32_t _post_sendto(overlap_udp_ctx *oludp, off_buf_ctx *buf) {
     }
     return ERR_OK;
 }
+// WSASendTo完成回调：释放当前缓冲区，继续发送队列中下一条或清除发送标志
 static void _on_sendto_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
     overlap_udp_ctx *oludp = UPCAST(skctx, overlap_udp_ctx, ol_s);
     void *data = oludp->wsabuf_s.IOV_PTR_FIELD - sizeof(netaddr_ctx);
@@ -844,6 +870,7 @@ void _add_bufs_trysendto(sock_ctx *skctx, off_buf_ctx *buf) {
         BIT_REMOVE(oludp->status, STATUS_SENDING);
     }
 }
+// 分配并初始化UDP上下文（不使用对象池，因UDP不常关闭/新建）
 static sock_ctx *_new_udp(SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
     overlap_udp_ctx *oludp;
     MALLOC(oludp, sizeof(overlap_udp_ctx));

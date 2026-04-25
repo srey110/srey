@@ -1,10 +1,10 @@
 ﻿#include "utils/netutils.h"
 #include "utils/netaddr.h"
 
-#define MSEC    1000
+#define MSEC    1000  //毫秒与秒的换算系数
 
 #ifdef OS_WIN
-static atomic_t _init_sock_ref = 0;
+static atomic_t _init_sock_ref = 0; //WSAStartup 引用计数，用于配对调用 WSACleanup
 #endif
 void sock_init(void) {
 #ifdef OS_WIN
@@ -155,15 +155,15 @@ int32_t sock_keepalive(SOCKET fd, const int32_t delay, const int32_t intvl) {
 #else
 #ifdef TCP_KEEPIDLE
     int32_t cnt = 3;
-    //多久后发送keepalive 秒
+    //首次发送 keepalive 前的空闲等待秒数
     if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, (char *)&delay, (int32_t)sizeof(delay)) < ERR_OK) {
         return ERR_FAILED;
     }
-    //时间间隔
+    //keepalive 探测包发送间隔秒数
     if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, (char *)&intvl, (int32_t)sizeof(intvl)) < ERR_OK) {
         return ERR_FAILED;
     }
-    //重试次数
+    //keepalive 最大重试次数
     if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, (char *)&cnt, (int32_t)sizeof(cnt)) < ERR_OK) {
         return ERR_FAILED;
     }
@@ -184,6 +184,7 @@ int32_t sock_linger(SOCKET fd) {
     }
     return ERR_OK;
 }
+// 在本地回环地址上创建并监听一个临时 TCP 套接字，供 sock_pair 使用
 static SOCKET _sock_listen(void) {
     netaddr_ctx addr;
     if (ERR_OK != netaddr_set(&addr, "127.0.0.1", 0)) {
@@ -203,6 +204,7 @@ static SOCKET _sock_listen(void) {
     }
     return fd;
 }
+// 连接到指定地址，返回连接成功的套接字，供 sock_pair 使用
 static SOCKET _sockcnt(union netaddr_ctx *paddr) {
     SOCKET fd = socket(AF_INET, SOCK_STREAM, 0);
     if (INVALID_SOCK == fd) {

@@ -3,10 +3,12 @@
 
 #ifndef EV_IOCP
 
+// 根据fd计算目标watcher和pipe编号并发送命令的便利宏
 #define _SEND_CMD(ev, cmd)\
     watcher_ctx *watcher = GET_PTR((ev)->watcher, (ev)->nthreads, cmd.fd);\
     _send_cmd(watcher, GET_POS(cmd.fd, watcher->npipes), &cmd)
 
+// 根据fd从watcher的hashmap中查找sock_ctx
 sock_ctx *_map_get(watcher_ctx *watcher, SOCKET fd) {
     sock_ctx key;
     key.fd = fd;

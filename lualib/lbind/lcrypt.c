@@ -1,5 +1,6 @@
-﻿#include "lbind/lpub.h"
+#include "lbind/lpub.h"
 
+// Lua 绑定：对数据进行 URL 编码，返回编码后的字符串
 static int32_t _lcrypt_url_encode(lua_State *lua) {
     void *data;
     size_t size;
@@ -16,6 +17,8 @@ static int32_t _lcrypt_url_encode(lua_State *lua) {
     FREE(out);
     return 1;
 }
+
+// Lua 绑定：对 URL 编码的数据进行解码，返回解码后的字符串
 static int32_t _lcrypt_url_decode(lua_State *lua) {
     void *data;
     size_t size;
@@ -33,6 +36,8 @@ static int32_t _lcrypt_url_decode(lua_State *lua) {
     FREE(out);
     return 1;
 }
+
+// Lua 绑定：解析 URL 字符串，返回包含 scheme/user/psw/host/port/path/anchor/param 的 table
 static int32_t _lcrypt_url_parse(lua_State *lua) {
     void *data;
     size_t size;
@@ -80,6 +85,7 @@ static int32_t _lcrypt_url_parse(lua_State *lua) {
         lua_pushlstring(lua, url.anchor.data, url.anchor.lens);
         lua_settable(lua, -3);
     }
+    // 将 query 参数列表打包为 key->value 的子 table
     lua_pushstring(lua, "param");
     lua_createtable(lua, 0, MAX_NPARAM);
     url_param *param;
@@ -99,6 +105,7 @@ static int32_t _lcrypt_url_parse(lua_State *lua) {
     lua_settable(lua, -3);
     return 1;
 }
+
 //srey.url
 LUAMOD_API int luaopen_url(lua_State *lua) {
     luaL_Reg reg[] = {
@@ -110,6 +117,8 @@ LUAMOD_API int luaopen_url(lua_State *lua) {
     luaL_newlib(lua, reg);
     return 1;
 }
+
+// Lua 绑定：对数据进行 Base64 编码，返回编码后的字符串
 static int32_t _lcrypt_bs64_encode(lua_State *lua) {
     void *data;
     size_t size;
@@ -127,6 +136,8 @@ static int32_t _lcrypt_bs64_encode(lua_State *lua) {
     FREE(out);
     return 1;
 }
+
+// Lua 绑定：对 Base64 编码数据进行解码，返回原始二进制字符串
 static int32_t _lcrypt_bs64_decode(lua_State *lua) {
     void *data;
     size_t size;
@@ -144,6 +155,7 @@ static int32_t _lcrypt_bs64_decode(lua_State *lua) {
     FREE(out);
     return 1;
 }
+
 //srey.base64
 LUAMOD_API int luaopen_base64(lua_State *lua) {
     luaL_Reg reg[] = {
@@ -154,6 +166,8 @@ LUAMOD_API int luaopen_base64(lua_State *lua) {
     luaL_newlib(lua, reg);
     return 1;
 }
+
+// Lua 绑定：计算数据的 CRC16 校验值，返回整数
 static int32_t _lcrypt_crc16(lua_State *lua) {
     void *data;
     size_t size;
@@ -167,6 +181,8 @@ static int32_t _lcrypt_crc16(lua_State *lua) {
     lua_pushinteger(lua, crc);
     return 1;
 }
+
+// Lua 绑定：计算数据的 CRC32 校验值，返回整数
 static int32_t _lcrypt_crc32(lua_State *lua) {
     void *data;
     size_t size;
@@ -180,6 +196,7 @@ static int32_t _lcrypt_crc32(lua_State *lua) {
     lua_pushinteger(lua, crc);
     return 1;
 }
+
 //srey.crc
 LUAMOD_API int luaopen_crc(lua_State *lua) {
     luaL_Reg reg[] = {
@@ -190,6 +207,8 @@ LUAMOD_API int luaopen_crc(lua_State *lua) {
     luaL_newlib(lua, reg);
     return 1;
 }
+
+// Lua 绑定：创建摘要（Hash）上下文，dtype 为算法类型（如 MD5/SHA256 等）
 static int32_t _lcrypt_digest_new(lua_State *lua) {
     int32_t dtype = (int32_t)luaL_checkinteger(lua, 1);
     digest_ctx *digest = lua_newuserdata(lua, sizeof(digest_ctx));
@@ -197,16 +216,22 @@ static int32_t _lcrypt_digest_new(lua_State *lua) {
     ASSOC_MTABLE(lua, "_digest_ctx");
     return 1;
 }
+
+// Lua 绑定：返回当前摘要算法的输出长度（字节数）
 static int32_t _lcrypt_digest_size(lua_State *lua) {
     digest_ctx *digest = lua_touserdata(lua, 1);
     lua_pushinteger(lua, digest_size(digest));
     return 1;
 }
+
+// Lua 绑定：重置摘要上下文，可重新开始计算
 static int32_t _lcrypt_digest_reset(lua_State *lua) {
     digest_ctx *digest = lua_touserdata(lua, 1);
     digest_reset(digest);
     return 0;
 }
+
+// Lua 绑定：向摘要上下文追加数据
 static int32_t _lcrypt_digest_update(lua_State *lua) {
     digest_ctx *digest = lua_touserdata(lua, 1);
     void *data;
@@ -220,6 +245,8 @@ static int32_t _lcrypt_digest_update(lua_State *lua) {
     digest_update(digest, data, size);
     return 0;
 }
+
+// Lua 绑定：完成摘要计算，返回原始二进制摘要字符串
 static int32_t _lcrypt_digest_final(lua_State *lua) {
     digest_ctx *digest = lua_touserdata(lua, 1);
     char out[DG_BLOCK_SIZE];
@@ -227,6 +254,7 @@ static int32_t _lcrypt_digest_final(lua_State *lua) {
     lua_pushlstring(lua, out, lens);
     return 1;
 }
+
 //srey.digest
 LUAMOD_API int luaopen_digest(lua_State *lua) {
     luaL_Reg reg_new[] = {
@@ -243,6 +271,8 @@ LUAMOD_API int luaopen_digest(lua_State *lua) {
     REG_MTABLE(lua, "_digest_ctx", reg_new, reg_func);
     return 1;
 }
+
+// Lua 绑定：创建 HMAC 上下文，dtype 为底层 Hash 算法类型，key 为密钥
 static int32_t _lcrypt_hmac_new(lua_State *lua) {
     size_t lens;
     int32_t dtype = (int32_t)luaL_checkinteger(lua, 1);
@@ -252,16 +282,22 @@ static int32_t _lcrypt_hmac_new(lua_State *lua) {
     ASSOC_MTABLE(lua, "_hmac_ctx");
     return 1;
 }
+
+// Lua 绑定：返回 HMAC 输出长度（字节数）
 static int32_t _lcrypt_hmac_size(lua_State *lua) {
     hmac_ctx *hmac = lua_touserdata(lua, 1);
     lua_pushinteger(lua, hmac_size(hmac));
     return 1;
 }
+
+// Lua 绑定：重置 HMAC 上下文，可重新开始计算
 static int32_t _lcrypt_hmac_reset(lua_State *lua) {
     hmac_ctx *hmac = lua_touserdata(lua, 1);
     hmac_reset(hmac);
     return 0;
 }
+
+// Lua 绑定：向 HMAC 上下文追加数据
 static int32_t _lcrypt_hmac_update(lua_State *lua) {
     hmac_ctx *hmac = lua_touserdata(lua, 1);
     void *data;
@@ -275,6 +311,8 @@ static int32_t _lcrypt_hmac_update(lua_State *lua) {
     hmac_update(hmac, data, size);
     return 0;
 }
+
+// Lua 绑定：完成 HMAC 计算，返回原始二进制结果字符串
 static int32_t _lcrypt_hmac_final(lua_State *lua) {
     hmac_ctx *hmac = lua_touserdata(lua, 1);
     char out[DG_BLOCK_SIZE];
@@ -282,6 +320,7 @@ static int32_t _lcrypt_hmac_final(lua_State *lua) {
     lua_pushlstring(lua, out, lens);
     return 1;
 }
+
 //srey.hmac
 LUAMOD_API int luaopen_hmac(lua_State *lua) {
     luaL_Reg reg_new[] = {
@@ -298,7 +337,9 @@ LUAMOD_API int luaopen_hmac(lua_State *lua) {
     REG_MTABLE(lua, "_hmac_ctx", reg_new, reg_func);
     return 1;
 }
+
 //srey.cipher
+// Lua 绑定：创建对称加解密上下文；engine 为算法引擎，model 为工作模式，keybits 为密钥位数，encrypt 为 1 加密/0 解密
 static int32_t _lcrypt_cipher_new(lua_State *lua) {
     size_t lens;
     int32_t engine = (int32_t)luaL_checkinteger(lua, 1);
@@ -311,17 +352,23 @@ static int32_t _lcrypt_cipher_new(lua_State *lua) {
     ASSOC_MTABLE(lua, "_cipher_ctx");
     return 1;
 }
+
+// Lua 绑定：返回加解密分块大小（字节数）
 static int32_t _lcrypt_cipher_size(lua_State *lua) {
     cipher_ctx *cipher = lua_touserdata(lua, 1);
     lua_pushinteger(lua, cipher_size(cipher));
     return 1;
 }
+
+// Lua 绑定：设置填充模式
 static int32_t _lcrypt_cipher_padding(lua_State *lua) {
     cipher_ctx *cipher = lua_touserdata(lua, 1);
     int32_t padding = (int32_t)luaL_checkinteger(lua, 2);
     cipher_padding(cipher, padding);
     return 0;
 }
+
+// Lua 绑定：设置初始化向量（IV）
 static int32_t _lcrypt_cipher_iv(lua_State *lua) {
     cipher_ctx *cipher = lua_touserdata(lua, 1);
     size_t lens;
@@ -329,11 +376,15 @@ static int32_t _lcrypt_cipher_iv(lua_State *lua) {
     cipher_iv(cipher, iv, lens);
     return 0;
 }
+
+// Lua 绑定：重置加解密上下文状态，可重新使用
 static int32_t _lcrypt_cipher_reset(lua_State *lua) {
     cipher_ctx *cipher = lua_touserdata(lua, 1);
     cipher_reset(cipher);
     return 0;
 }
+
+// Lua 绑定：对整块数据进行加解密（不做最终 padding 处理），返回结果字符串
 static int32_t _lcrypt_cipher_block(lua_State *lua) {
     cipher_ctx *cipher = lua_touserdata(lua, 1);
     void *data;
@@ -348,6 +399,8 @@ static int32_t _lcrypt_cipher_block(lua_State *lua) {
     lua_pushlstring(lua, (const char *)data, size);
     return 1;
 }
+
+// Lua 绑定：完成加解密并处理最终 padding，返回结果字符串
 static int32_t _lcrypt_cipher_dofinal(lua_State *lua) {
     cipher_ctx *cipher = lua_touserdata(lua, 1);
     void *data;
@@ -365,6 +418,7 @@ static int32_t _lcrypt_cipher_dofinal(lua_State *lua) {
     FREE(out);
     return 1;
 }
+
 LUAMOD_API int luaopen_cipher(lua_State *lua) {
     luaL_Reg reg_new[] = {
         { "new", _lcrypt_cipher_new },

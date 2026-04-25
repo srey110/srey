@@ -4,15 +4,15 @@
 #include "base/macro.h"
 
 typedef struct sfid_ctx {
-    int32_t machinebitlen;//机器id位数
-    int32_t sequencebitlen;//自增序列位数
-    int32_t timestampshift;
-    int32_t machineidshift;
-    int32_t sequence;//自增序列
-    int32_t machineid;//机器Id
-    int32_t sequencemask;
-    uint64_t customepoch;
-    uint64_t lasttimestamp;
+    int32_t machinebitlen;   //机器 ID 占用的位数
+    int32_t sequencebitlen;  //自增序列占用的位数
+    int32_t timestampshift;  //时间戳左移位数（= machinebitlen + sequencebitlen）
+    int32_t machineidshift;  //机器 ID 左移位数（= sequencebitlen）
+    int32_t sequence;        //当前自增序列值
+    int32_t machineid;       //机器 ID
+    int32_t sequencemask;    //自增序列掩码（用于回绕检测）
+    uint64_t customepoch;    //自定义纪元时间戳（毫秒），ID 中的时间戳相对于此值
+    uint64_t lasttimestamp;  //上次生成 ID 时的时间戳（相对于 customepoch 的毫秒数）
 }sfid_ctx;
 /// <summary>
 /// snowflake id 初始化

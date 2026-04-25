@@ -7,20 +7,21 @@
 #define PIPE_OUTBUF_SIZE ONEK * 64
 #define PIPE_PREFIX      "\\\\.\\pipe\\LOCAL\\srey_pipe_"
 
+// Windows 下创建命名管道对，供子进程与父进程通信
 static int32_t _popen_pipe(HANDLE pipe[2]) {
     char pname[256];
     SNPRINTF(pname, sizeof(pname), "%s%"PRIu64, PIPE_PREFIX, createid());
     SECURITY_ATTRIBUTES sa;
     sa.nLength = sizeof(SECURITY_ATTRIBUTES);
-    sa.lpSecurityDescriptor = NULL;//使用系统默认的安全描述符 
-    sa.bInheritHandle = TRUE;//创建的进程继承句柄
-    HANDLE server = CreateNamedPipe(pname,//唯一的管道名称
-        PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,//打开模式
-        PIPE_TYPE_BYTE,//管道模式
-        1,//可为此管道创建的最大实例数
-        PIPE_OUTBUF_SIZE,//输出缓冲区保留的字节数
-        PIPE_INBUF_SIZE,//输入缓冲区保留的字节数
-        0,//超时 为零，则默认超时为 50 毫秒
+    sa.lpSecurityDescriptor = NULL;//使用系统默认安全描述符
+    sa.bInheritHandle = TRUE;//允许子进程继承句柄
+    HANDLE server = CreateNamedPipe(pname,//全局唯一的管道名称
+        PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,//双向异步打开模式
+        PIPE_TYPE_BYTE,//字节流管道模式
+        1,//该管道名称的最大实例数
+        PIPE_OUTBUF_SIZE,//输出缓冲区大小（字节）
+        PIPE_INBUF_SIZE,//输入缓冲区大小（字节）
+        0,//超时为零，即使用默认 50 毫秒超时
         &sa);
     if (INVALID_HANDLE_VALUE == server) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
@@ -92,11 +93,11 @@ int32_t popen_startup(popen_ctx *ctx, const char *cmd, const char *mode) {
     startup.dwFlags = STARTF_USESHOWWINDOW | STARTF_USESTDHANDLES;
     startup.wShowWindow = SW_HIDE;
     if (w) {
-        startup.hStdInput = ctx->pipe[0];//输入链接管道
+        startup.hStdInput = ctx->pipe[0];//子进程标准输入重定向到管道
     }
     if (r) {
-        startup.hStdError = ctx->pipe[0];//输出链接管道
-        startup.hStdOutput = ctx->pipe[0];
+        startup.hStdError = ctx->pipe[0];//子进程标准错误重定向到管道
+        startup.hStdOutput = ctx->pipe[0];//子进程标准输出重定向到管道
     }
     if (!CreateProcess(NULL,
         TEXT((char *)cmd),
@@ -163,14 +164,14 @@ void popen_close(popen_ctx *ctx) {
         return;
     }
     DWORD exitcode;
-    if (!GetExitCodeProcess(ctx->process.hProcess, &exitcode)) {//获得退出码
+    if (!GetExitCodeProcess(ctx->process.hProcess, &exitcode)) {//获取进程退出码
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         return;
     }
-    if (STILL_ACTIVE != exitcode) {//是否还在运行
+    if (STILL_ACTIVE != exitcode) {//进程已经退出则直接返回
         return;
     }
-    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);//获得当前运行进程的快照
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);//获取当前系统进程快照
     if (NULL == snapshot) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         TerminateProcess(ctx->process.hProcess, ERR_FAILED);
@@ -179,7 +180,7 @@ void popen_close(popen_ctx *ctx) {
     HANDLE pvchild;
     PROCESSENTRY32 proentry32;
     proentry32.dwSize = sizeof(PROCESSENTRY32);
-    BOOL ok = Process32First(snapshot, &proentry32);//获得第一个进程的句柄
+    BOOL ok = Process32First(snapshot, &proentry32);//枚举第一个进程
     while (ok) {
         if (proentry32.th32ParentProcessID == ctx->process.dwProcessId) {
             pvchild = OpenProcess(PROCESS_ALL_ACCESS, FALSE, proentry32.th32ProcessID);
@@ -225,6 +226,7 @@ void popen_free(popen_ctx *ctx) {
 #endif
 }
 #ifndef OS_WIN
+// 解析 waitpid 返回的 wstatus，判断子进程是否已退出并记录退出码
 static int32_t _child_exited(popen_ctx *ctx, int wstatus) {
     if (WIFEXITED(wstatus)) {//正常结束
         ctx->exited = 1;
@@ -245,6 +247,7 @@ static int32_t _child_exited(popen_ctx *ctx, int wstatus) {
 #endif
     return ERR_FAILED;
 }
+// 非阻塞检查套接字是否已关闭（对端断开），返回 1 表示已关闭
 static int32_t _sock_closed(int32_t sock) {
     fd_set rfd;
     FD_ZERO(&rfd);

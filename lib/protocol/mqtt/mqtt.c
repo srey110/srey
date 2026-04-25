@@ -77,6 +77,7 @@ void _mqtt_udfree(ud_cxt *ud) {
     FREE(mq);
     ud->context = NULL;
 }
+// 解码可变长度整数，返回占用字节数，失败返回 ERR_FAILED
 static int32_t _mqtt_varlens_decode(buffer_ctx *buf, size_t off, size_t blens, size_t *rlens) {
     *rlens = 0;
     char c;
@@ -91,6 +92,7 @@ static int32_t _mqtt_varlens_decode(buffer_ctx *buf, size_t off, size_t blens, s
     }
     return ERR_FAILED;
 }
+// 从缓冲区读取固定长度整数（1/2/4字节），存入 num
 static int32_t _mqtt_data_fixnum(buffer_ctx *buf, size_t lens, int32_t *num) {
     char tmp[4];
     ASSERTAB(lens <= sizeof(tmp), "too long.");
@@ -104,6 +106,7 @@ static int32_t _mqtt_data_fixnum(buffer_ctx *buf, size_t lens, int32_t *num) {
     *num = (int32_t)unpack_integer(tmp, (int32_t)lens, 0, 0);
     return ERR_OK;
 }
+// 从缓冲区读取可变长度整数，返回占用字节数，失败返回 ERR_FAILED
 static int32_t _mqtt_data_varnum(buffer_ctx *buf, int32_t *num) {
     size_t val;
     int32_t occupy = _mqtt_varlens_decode(buf, 0, buffer_size(buf), &val);
@@ -114,6 +117,7 @@ static int32_t _mqtt_data_varnum(buffer_ctx *buf, int32_t *num) {
     *num = (int32_t)val;
     return occupy;
 }
+// 从缓冲区读取 UTF-8 字符串，构建 mqtt_propertie（fval 存储字符串）
 static mqtt_propertie *_mqtt_data_string(buffer_ctx *buf, size_t *off) {
     int32_t num;
     if (ERR_OK != _mqtt_data_fixnum(buf, 2, &num)) {
@@ -130,6 +134,7 @@ static mqtt_propertie *_mqtt_data_string(buffer_ctx *buf, size_t *off) {
     propt->flens = num;
     return propt;
 }
+// 从缓冲区读取 UTF-8 字符串，返回堆分配的 C 字符串（需调用者释放）
 static char *_mqtt_data_string2(buffer_ctx *buf, int32_t *num) {
     if (ERR_OK != _mqtt_data_fixnum(buf, 2, num)) {
         return NULL;
@@ -143,6 +148,7 @@ static char *_mqtt_data_string2(buffer_ctx *buf, int32_t *num) {
     rtn[(*num)] = '\0';
     return rtn;
 }
+// 从缓冲区读取键值对字符串（用户属性），fval 存储 key，sval 存储 value
 static mqtt_propertie *_mqtt_data_kv(buffer_ctx *buf, size_t *off) {
     //key
     int32_t num;
@@ -277,6 +283,7 @@ static arr_propertie_ctx *_mqtt_properties(buffer_ctx *buf, int32_t *status, int
     }
     return arrpropts;
 }
+// 验证 CONNECT 报文中的协议名和协议版本，成功返回版本号，失败返回 ERR_FAILED
 static int32_t _mqtt_check_prot(buffer_ctx *buf) {
     int32_t num;
     if (ERR_OK != _mqtt_data_fixnum(buf, 2, &num)) {//协议名长度
@@ -935,6 +942,7 @@ static int32_t _mqtt_auth(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, int3
     }
     return ERR_OK;
 }
+// 连接握手阶段分发：处理 CONNECT / CONNACK / AUTH 报文
 static int32_t _mqtt_init(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     int32_t rtn = ERR_FAILED;
     switch (pack->fixhead.prot) {
@@ -957,6 +965,7 @@ static int32_t _mqtt_init(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf, 
     }
     return rtn;
 }
+// 命令阶段分发：处理 PUBLISH / PUB* / SUBSCRIBE / UNSUBSCRIBE / PING / DISCONNECT / AUTH 报文
 static int32_t _mqtt_commands(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     int32_t rtn = ERR_FAILED;
     switch (pack->fixhead.prot) {

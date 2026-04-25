@@ -1,4 +1,4 @@
-﻿#include "protocol/pgsql/pgsql_bind.h"
+#include "protocol/pgsql/pgsql_bind.h"
 
 void pgsql_bind_init(pgsql_bind_ctx *bind, uint16_t nparam) {
     bind->nparam = nparam;
@@ -6,9 +6,9 @@ void pgsql_bind_init(pgsql_bind_ctx *bind, uint16_t nparam) {
         return;
     }
     binary_init(&bind->format, NULL, 0, 0);
-    binary_set_integer(&bind->format, bind->nparam, 2, 0);//参数格式代码数量
+    binary_set_integer(&bind->format, bind->nparam, 2, 0); // 写入参数格式代码数量
     binary_init(&bind->values, NULL, 0, 0);
-    binary_set_integer(&bind->values, bind->nparam, 2, 0);//参数值数量
+    binary_set_integer(&bind->values, bind->nparam, 2, 0); // 写入参数值数量
 }
 void pgsql_bind_free(pgsql_bind_ctx *bind) {
     if (0 == bind->nparam) {
@@ -21,6 +21,7 @@ void pgsql_bind_clear(pgsql_bind_ctx *bind) {
     if (0 == bind->nparam) {
         return;
     }
+    // 回退到数量字段之后，保留头部的参数数量，清空已绑定的格式码和值
     binary_offset(&bind->format, 2);
     binary_offset(&bind->values, 2);
 }
@@ -28,10 +29,10 @@ void pgsql_bind(pgsql_bind_ctx *bind, char *value, size_t lens, pgpack_format fo
     if (0 == bind->nparam) {
         return;
     }
-    binary_set_integer(&bind->format, format, 2, 0);//参数格式代码
-    binary_set_integer(&bind->values, lens, 4, 0);//参数值的长度
+    binary_set_integer(&bind->format, format, 2, 0); // 追加该参数的格式代码
+    binary_set_integer(&bind->values, lens, 4, 0);   // 追加该参数值的字节长度
     if (lens > 0) {
-        binary_set_string(&bind->values, value, lens);//参数的值
+        binary_set_string(&bind->values, value, lens); // 追加参数值数据
     }
 }
 void pgsql_bind_bool(pgsql_bind_ctx *bind, int8_t value) {
@@ -39,22 +40,22 @@ void pgsql_bind_bool(pgsql_bind_ctx *bind, int8_t value) {
     pgsql_bind(bind, b, 1, FORMAT_BINARY);
 }
 void pgsql_bind_int16(pgsql_bind_ctx *bind, int16_t value) {
-    pack_integer((char *)&value, value, sizeof(value), 0);
+    pack_integer((char *)&value, value, sizeof(value), 0); // 转为大端序
     pgsql_bind(bind, (char *)&value, sizeof(value), FORMAT_BINARY);
 }
 void pgsql_bind_int32(pgsql_bind_ctx *bind, int32_t value) {
-    pack_integer((char *)&value, value, sizeof(value), 0);
+    pack_integer((char *)&value, value, sizeof(value), 0); // 转为大端序
     pgsql_bind(bind, (char *)&value, sizeof(value), FORMAT_BINARY);
 }
 void pgsql_bind_int64(pgsql_bind_ctx *bind, int64_t value) {
-    pack_integer((char *)&value, value, sizeof(value), 0);
+    pack_integer((char *)&value, value, sizeof(value), 0); // 转为大端序
     pgsql_bind(bind, (char *)&value, sizeof(value), FORMAT_BINARY);
 }
 void pgsql_bind_float(pgsql_bind_ctx *bind, float value) {
-    pack_float((char *)&value, value, 0);
+    pack_float((char *)&value, value, 0); // 转为大端序
     pgsql_bind(bind, (char *)&value, sizeof(value), FORMAT_BINARY);
 }
 void pgsql_bind_double(pgsql_bind_ctx *bind, double value) {
-    pack_double((char *)&value, value, 0);
+    pack_double((char *)&value, value, 0); // 转为大端序
     pgsql_bind(bind, (char *)&value, sizeof(value), FORMAT_BINARY);
 }

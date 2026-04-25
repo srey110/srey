@@ -11,9 +11,11 @@ typedef struct http_header_ctx {
 }http_header_ctx;
 struct http_pack_ctx;
 
+// 释放 http_pack_ctx 结构体及其内部资源
 void _http_pkfree(struct http_pack_ctx *pack);
+// 释放与 ud_cxt 关联的 http 上下文资源
 void _http_udfree(ud_cxt *ud);
-//http解包
+// http 解包：从缓冲区中解析完整 HTTP 报文（头部+内容/chunked）
 struct http_pack_ctx *http_unpack(buffer_ctx *buf, ud_cxt *ud, int32_t *status);
 /// <summary>
 /// 获取状态码对应描述
@@ -61,11 +63,11 @@ void http_pack_content(binary_ctx *bwriter, void *data, size_t lens);
 /// <param name="lens">长度</param>
 void http_pack_chunked(binary_ctx *bwriter, void *data, size_t lens);
 
+// 解析 HTTP 头部，返回解析后的 http_pack_ctx，transfer 输出传输方式（0/CONTENT/CHUNKED）
 struct http_pack_ctx *_http_parsehead(buffer_ctx *buf, int32_t *transfer, int32_t *status);
-/* Check that a parsed header's key matches <key> (case-insensitive, length klen)
- * and, when val != NULL, that the value contains <val> (length vlen).
- * Accepting explicit lengths lets callers use sizeof(literal)-1 (compile-time
- * constant) and enables inlining since the function is tiny. */
+/* 检查已解析头部字段的键是否大小写不敏感匹配 key（长度 klen），
+ * 若 val 非 NULL，还需检查值中是否包含 val（长度 vlen）。
+ * 传入显式长度以便调用方使用编译期常量（sizeof(literal)-1），函数足够小可内联。 */
 static inline int32_t _http_check_keyval(http_header_ctx *head,
                                           const char *key, size_t klen,
                                           const char *val, size_t vlen) {
