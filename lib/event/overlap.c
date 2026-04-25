@@ -315,7 +315,6 @@ static void _on_recv_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
     }
     _tcp_recv(watcher, oltcp);
 }
-
 #if WITH_SSL
 // 在事件循环内启动SSL握手：设置SSL fd并根据角色调用connect/accept，客户端可能立即完成
 static int32_t _ssl_exchange(watcher_ctx *watcher, overlap_tcp_ctx *oltcp, struct evssl_ctx *evssl) {
@@ -338,7 +337,6 @@ static int32_t _ssl_exchange(watcher_ctx *watcher, overlap_tcp_ctx *oltcp, struc
     }
     return ERR_OK;
 }
-
 #endif
 void _try_ssl_exchange(watcher_ctx *watcher, sock_ctx *skctx, struct evssl_ctx *evssl, int32_t client) {
 #if WITH_SSL

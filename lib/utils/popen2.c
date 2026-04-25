@@ -69,7 +69,6 @@ static int32_t _popen_pipe(HANDLE pipe[2]) {
     pipe[1] = client;
     return ERR_OK;
 }
-
 #endif
 
 int32_t popen_startup(popen_ctx *ctx, const char *cmd, const char *mode) {
@@ -226,7 +225,6 @@ void popen_free(popen_ctx *ctx) {
     }
 #endif
 }
-
 #ifndef OS_WIN
 // 解析 waitpid 返回的 wstatus，判断子进程是否已退出并记录退出码
 static int32_t _child_exited(popen_ctx *ctx, int wstatus) {
@@ -267,7 +265,6 @@ static int32_t _sock_closed(int32_t sock) {
     rtn = sock_nread(sock);
     return rtn <= 0;
 }
-
 #endif
 int32_t popen_waitexit(popen_ctx *ctx, uint32_t ms) {
 #ifdef OS_WIN
