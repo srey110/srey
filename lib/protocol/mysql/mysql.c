@@ -376,6 +376,7 @@ static char *_mysql_password_xor_salt(mysql_ctx *mysql, size_t *lens) {
     }
     return xorpsw;
 }
+
 #if WITH_SSL
 // 初始化 RSA 公钥加密上下文（OAEP 填充模式），返回 EVP_PKEY_CTX，失败返回 NULL
 static EVP_PKEY_CTX *_mysql_encrypt_init(char *pubkey, size_t klens) {
@@ -404,6 +405,7 @@ static EVP_PKEY_CTX *_mysql_encrypt_init(char *pubkey, size_t klens) {
     }
     return evpctx;
 }
+
 #endif
 
 // 使用服务器公钥对异或后的密码进行 RSA-OAEP 分块加密，将密文写入 bwriter

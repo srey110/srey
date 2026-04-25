@@ -270,4 +270,5 @@ void evssl_shutdown(SSL *ssl, SOCKET fd) {
         shutdown(fd, SHUT_RD);
     }
 }
+
 #endif//WITH_SSL

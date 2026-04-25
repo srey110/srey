@@ -84,6 +84,7 @@ static void _init_cmd(watcher_ctx *watcher) {
         ASSERTAB(ERR_OK == _add_event(watcher, skctx->fd, &skctx->events, EVENT_READ, skctx), ERRORSTR(ERRNO));
     }
 }
+
 #ifdef COMMIT_NCHANGES
 // 检查changes数组是否已满，满时扩容（kqueue）或批量提交（devpoll）
 static void _check_changes(watcher_ctx *watcher) {
@@ -99,6 +100,7 @@ static void _check_changes(watcher_ctx *watcher) {
 #endif
     }
 }
+
 #endif
 int32_t _add_event(watcher_ctx *watcher, SOCKET fd, int32_t *events, int32_t ev, void *arg) {
 #if defined(EV_EPOLL)
@@ -587,4 +589,5 @@ void ev_free(ev_ctx *ctx) {
     arr_ptr_free(&ctx->arrlsn);
     spin_free(&ctx->spin);
 }
+
 #endif//EV_IOCP

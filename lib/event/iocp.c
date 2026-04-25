@@ -100,6 +100,7 @@ static void _pool_shrink(watcher_ctx *watcher, timer_ctx *timer, uint32_t *cnt) 
     timer_start(timer);
     pool_shrink(&watcher->pool, hashmap_count(watcher->element) / 2);
 }
+
 #if (_WIN32_WINNT >= 0x0600)
 // 事件循环主函数（Vista+，使用GetQueuedCompletionStatusEx批量获取事件）
 static void _loop_event(void *arg) {
@@ -184,6 +185,7 @@ static void _loop_acpex(void *arg) {
     LOG_INFO("accept thread %d exited.", acpex->index);
     FREE(overlappeds);
 }
+
 #else
 // 事件循环主函数（XP兼容，使用GetQueuedCompletionStatus单个获取事件）
 static void _loop_event(void *arg) {
@@ -236,6 +238,7 @@ static void _loop_acpex(void *arg) {
     }
     LOG_INFO("accept thread %d exited.", acpex->index);
 }
+
 #endif
 // hashmap元素释放回调：根据socket类型选择释放函数
 static void _free_element(void *item) {
@@ -376,4 +379,5 @@ void ev_free(ev_ctx *ctx) {
     FREE(ctx->watcher);
     spin_free(&ctx->spin);
 }
+
 #endif//EV_IOCP

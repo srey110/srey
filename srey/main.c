@@ -153,6 +153,7 @@ static int32_t service_hug(void) {
     }
     return rtn;
 }
+
 #ifdef OS_WIN
 //#include "vld.h"
 #pragma comment(lib, "ws2_32.lib")
@@ -351,6 +352,7 @@ static void _useage(void) {
     PRINT("srey -u \"service name\" uninstall service;");
     PRINT("srey -r \"service name\" run service.");
 }
+
 #else
 // 在进程目录下生成 stop.sh 脚本，内容为向自身发送 SIGUSR1 信号
 static void _stop_sh(const char *sh) {
@@ -366,6 +368,7 @@ static void _stop_sh(const char *sh) {
     fclose(file);
     chmod(sh, 755);
 }
+
 #endif
 int main(int argc, char *argv[]) {
 #ifdef OS_WIN

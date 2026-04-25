@@ -94,6 +94,7 @@ static LONG __stdcall _MiniDump(struct _EXCEPTION_POINTERS *excep) {
     TerminateProcess(GetCurrentProcess(), 0);
     return lrtn;
 }
+
 #endif
 void unlimit(void) {
 #ifdef OS_WIN
@@ -115,6 +116,7 @@ void unlimit(void) {
     }
 #endif
 }
+
 #ifdef OS_WIN
 // Windows 控制台事件处理回调，将控制台信号转发给用户注册的处理函数
 static BOOL WINAPI _sighandler(DWORD dsig) {
@@ -129,11 +131,13 @@ static BOOL WINAPI _sighandler(DWORD dsig) {
     }
     return TRUE;
 }
+
 #else
 // POSIX 信号处理回调，将系统信号转发给用户注册的处理函数
 static void _sighandler(int32_t isig) {
     _sig_cb(isig, _ud);
 }
+
 #endif
 void sighandle(void(*cb)(int32_t, void *), void *data) {
     _ud = data;
@@ -786,6 +790,7 @@ int64_t filesize(const char *file) {
     }
     return st.st_size;
 }
+
 #ifdef OS_AIX
 // AIX 平台：通过 getprocs 遍历进程列表，查找指定 pid 的进程信息
 static int32_t _get_proc(pid_t pid, struct procsinfo *info) {
@@ -825,6 +830,7 @@ static int32_t _get_proc_fullpath(pid_t pid, char path[PATH_LENS]) {
     }
     return ERR_OK;
 }
+
 #endif
 // 跨平台获取当前可执行文件所在目录路径（末尾不含斜杠）
 static int32_t _get_procpath(char path[PATH_LENS]) {
@@ -1040,6 +1046,7 @@ void *memichr(const void *ptr, int32_t val, size_t maxlen) {
     }
     return NULL;
 }
+
 #ifndef OS_WIN
 // 不区分大小写的内存比较（Windows 下由系统提供，非 Windows 手动实现）
 int32_t _memicmp(const void *ptr1, const void *ptr2, size_t lens) {
@@ -1062,6 +1069,7 @@ int32_t _memicmp(const void *ptr1, const void *ptr2, size_t lens) {
         }
     }
 }
+
 #endif
 void *memstr(int32_t ncs, const void *ptr, size_t plens, const void *what, size_t wlen) {
     if (NULL == ptr
@@ -1362,6 +1370,7 @@ double unpack_double(const char *buf, int32_t islittle) {
     _copy_with_endian((char *)&rtn, buf, sizeof(rtn), islittle);
     return rtn;
 }
+
 #if !defined(OS_WIN) && !defined(OS_DARWIN) && !defined(OS_AIX)
 uint64_t ntohll(uint64_t val) {
     if (!is_little()) {
@@ -1379,4 +1388,5 @@ uint64_t htonll(uint64_t val) {
     pack_integer((char *)&rtn, val, (int32_t)sizeof(uint64_t), 0);
     return rtn;
 }
+
 #endif

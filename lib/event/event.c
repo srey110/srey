@@ -85,11 +85,13 @@ SOCKET _udp(netaddr_ctx *addr) {
     }
     return fd;
 }
+
 #if WITH_SSL
 // SSL不支持scatter I/O，每次只能读一个TLS记录，外层循环驱动重复调用直到socket耗尽
 static inline int32_t _sock_read_ssl(SSL *ssl, IOV_TYPE *iov, size_t *nread) {
     return evssl_read(ssl, iov[0].IOV_PTR_FIELD, (size_t)iov[0].IOV_LEN_FIELD, nread);
 }
+
 #endif
 // 从socket普通读取（使用readv/WSARecv）
 static int32_t _sock_read_normal(SOCKET fd, IOV_TYPE *iov, uint32_t niov, size_t *readed) {
@@ -230,6 +232,7 @@ static int32_t _sock_send_normal(SOCKET fd, qu_off_buf_ctx *buf_s, size_t *nsend
     }
     return rtn;
 }
+
 #if WITH_SSL
 // 通过SSL逐条发送队列中的数据（SSL_write每次只能发一条记录）
 static int32_t _sock_send_ssl(SSL *ssl, qu_off_buf_ctx *buf_s, size_t *nsend) {
@@ -258,6 +261,7 @@ static int32_t _sock_send_ssl(SSL *ssl, qu_off_buf_ctx *buf_s, size_t *nsend) {
     }
     return rtn;
 }
+
 #endif
 int32_t _sock_send(SOCKET fd, qu_off_buf_ctx *buf_s, size_t *nsend, void *arg) {
     *nsend = 0;
