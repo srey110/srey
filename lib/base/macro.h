@@ -33,7 +33,7 @@
 #define PRINT(fmt, ...) printf(CONCAT3("[%s %s %d] ", fmt, "\n"),  __FILENAME__(__FILE__), __FUNCTION__, __LINE__, ##__VA_ARGS__)
 
 #ifndef offsetof
-#define offsetof(type, field) ((size_t)(&((type *)0)->field))
+    #define offsetof(type, field) ((size_t)(&((type *)0)->field))
 #endif
 #define UPCAST(ptr, type, field) ((type *)(((char*)(ptr)) - offsetof(type, field)))
 

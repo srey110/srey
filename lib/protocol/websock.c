@@ -371,21 +371,19 @@ static websock_pack_ctx *_websock_parse_data(buffer_ctx *buf, int32_t client, ud
              * time using memcpy for safe unaligned access. The tail (0-7 bytes)
              * is handled byte-by-byte. Endian-safe: memcpy preserves byte order
              * so the 8-byte block XOR is equivalent to the original per-byte XOR. */
-            {
-                uint32_t key32;
-                uint64_t key64;
-                size_t i = 0;
-                memcpy(&key32, pack->key, 4);
-                key64 = (uint64_t)key32 | ((uint64_t)key32 << 32);
-                for (; i + 8 <= pack->dlens; i += 8) {
-                    uint64_t block;
-                    memcpy(&block, pack->data + i, 8);
-                    block ^= key64;
-                    memcpy(pack->data + i, &block, 8);
-                }
-                for (; i < pack->dlens; i++) {
-                    pack->data[i] ^= pack->key[i & 3];
-                }
+            uint32_t key32;
+            uint64_t key64;
+            size_t i = 0;
+            memcpy(&key32, pack->key, 4);
+            key64 = (uint64_t)key32 | ((uint64_t)key32 << 32);
+            for (; i + 8 <= pack->dlens; i += 8) {
+                uint64_t block;
+                memcpy(&block, pack->data + i, 8);
+                block ^= key64;
+                memcpy(pack->data + i, &block, 8);
+            }
+            for (; i < pack->dlens; i++) {
+                pack->data[i] ^= pack->key[i & 3];
             }
         }
         ASSERTAB(pack->remain == buffer_drain(buf, pack->remain), "drain buffer failed.");
@@ -582,21 +580,19 @@ static void *_websock_create_pack(uint8_t fin, uint8_t prot, char key[4], void *
         if (NULL != data) {
             memcpy(frame + offset, data, dlens);
             char *tmp = frame + offset;
-            {
-                uint32_t key32;
-                uint64_t key64;
-                size_t i = 0;
-                memcpy(&key32, key, 4);
-                key64 = (uint64_t)key32 | ((uint64_t)key32 << 32);
-                for (; i + 8 <= dlens; i += 8) {
-                    uint64_t block;
-                    memcpy(&block, tmp + i, 8);
-                    block ^= key64;
-                    memcpy(tmp + i, &block, 8);
-                }
-                for (; i < dlens; i++) {
-                    tmp[i] ^= key[i & 3];
-                }
+            uint32_t key32;
+            uint64_t key64;
+            size_t i = 0;
+            memcpy(&key32, key, 4);
+            key64 = (uint64_t)key32 | ((uint64_t)key32 << 32);
+            for (; i + 8 <= dlens; i += 8) {
+                uint64_t block;
+                memcpy(&block, tmp + i, 8);
+                block ^= key64;
+                memcpy(tmp + i, &block, 8);
+            }
+            for (; i < dlens; i++) {
+                tmp[i] ^= key[i & 3];
             }
         }
     } else {

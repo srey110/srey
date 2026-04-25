@@ -88,7 +88,7 @@ SOCKET _udp(netaddr_ctx *addr) {
 /* SSL does not support scatter I/O: always read into a single contiguous segment.
  * One SSL_read call consumes at most one TLS record; the outer buffer_from_sock
  * loop re-invokes us until the socket is drained. */
-static int32_t _sock_read_ssl(SSL *ssl, IOV_TYPE *iov, size_t *nread) {
+static inline int32_t _sock_read_ssl(SSL *ssl, IOV_TYPE *iov, size_t *nread) {
     return evssl_read(ssl, iov[0].IOV_PTR_FIELD, (size_t)iov[0].IOV_LEN_FIELD, nread);
 }
 #endif
@@ -141,16 +141,17 @@ int32_t _sock_read(SOCKET fd, IOV_TYPE *iov, uint32_t niov, void *arg, size_t *r
     return _sock_read_normal(fd, iov, niov, readed);
 #endif
 }
-static uint32_t _bufs_fill_iov(qu_off_buf_ctx *buf_s, size_t bufsize,
+static uint32_t _bufs_fill_iov(qu_off_buf_ctx *buf_s, size_t nbuf,
                                 IOV_TYPE iov[MAX_SEND_NIOV],
                                 off_buf_ctx *sndbuf[MAX_SEND_NIOV]) {
-    if (bufsize > MAX_SEND_NIOV) {
-        bufsize = MAX_SEND_NIOV;
+    if (nbuf > MAX_SEND_NIOV) {
+        nbuf = MAX_SEND_NIOV;
     }
     size_t total = 0;
     uint32_t cnt = 0;
-    for (uint32_t i = 0; i < (uint32_t)bufsize; i++) {
-        off_buf_ctx *buf = qu_off_buf_at(buf_s, i);
+    off_buf_ctx *buf;
+    for (uint32_t i = 0; i < (uint32_t)nbuf; i++) {
+        buf = qu_off_buf_at(buf_s, i);
         iov[i].IOV_PTR_FIELD = ((char *)buf->data) + buf->offset;
         iov[i].IOV_LEN_FIELD = (IOV_LEN_TYPE)(buf->lens - buf->offset);
         sndbuf[i] = buf;
@@ -209,12 +210,12 @@ static int32_t _sock_send_iov(SOCKET fd, IOV_TYPE *iov, uint32_t niov, size_t *s
 }
 static int32_t _sock_send_normal(SOCKET fd, qu_off_buf_ctx *buf_s, size_t *nsend) {
     int32_t rtn = ERR_OK;
-    size_t size, sended;
+    size_t nbuf, sended;
     uint32_t niov;
     IOV_TYPE iov[MAX_SEND_NIOV];
     off_buf_ctx *sndbuf[MAX_SEND_NIOV];
-    while (0 != (size = qu_off_buf_size(buf_s))) {
-        niov = _bufs_fill_iov(buf_s, size, iov, sndbuf);
+    while (0 != (nbuf = qu_off_buf_size(buf_s))) {
+        niov = _bufs_fill_iov(buf_s, nbuf, iov, sndbuf);
         rtn = _sock_send_iov(fd, iov, niov, &sended);
         if (ERR_OK == rtn) {
             *nsend += sended;

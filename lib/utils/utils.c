@@ -1157,7 +1157,9 @@ static uint64_t _xorshift64(void) {
     if (0 == _tls_rand) {
         /* 首次调用：用线程 ID × 时间戳初始化，避免种子为 0 */
         _tls_rand = (uint64_t)threadid() ^ (nowms() * 6364136223846793005ULL + 1442695040888963407ULL);
-        if (0 == _tls_rand) _tls_rand = 1;
+        if (0 == _tls_rand){
+            _tls_rand = 1;
+        }
     }
     uint64_t x = _tls_rand;
     x ^= x << 13;
@@ -1261,7 +1263,7 @@ char *_format_va(const char *fmt, va_list args) {
     /* 绝大多数日志行短于 512 字节，先用栈缓冲尝试格式化，
      * 成功则 strdup 后返回，完全避免 malloc。
      * 仅当消息超长时才按实际长度 malloc 并重试。 */
-#define _FMT_STACK_SIZE 512
+    #define _FMT_STACK_SIZE 512
     char stk[_FMT_STACK_SIZE];
     va_list args2;
     va_copy(args2, args);

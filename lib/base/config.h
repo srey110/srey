@@ -5,7 +5,7 @@
 //是否启用内存检测
 #define MEMORY_CHECK        1
 //是否启用SSL
-#define WITH_SSL            0
+#define WITH_SSL            1
 //是否启用LUA
 #define WITH_LUA            1
 
@@ -35,7 +35,7 @@
 #define SPIN_CNT_LSN        32
 
 #ifdef EV_EPOLL
-#define TRIGGER_ET          1
+    #define TRIGGER_ET          1
 #endif
 
 #define PACK_TOO_LONG(size) (0 != MAX_PACK_SIZE && (uint64_t)size >= MAX_PACK_SIZE)

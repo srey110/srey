@@ -38,13 +38,13 @@
 #define MSLEEP(ms) usleep(ms * 1000)
 /* CPU pause hint for spin-wait loops: reduces power and pipeline pressure */
 #if defined(ARCH_X86) || defined(ARCH_X64)
-#  define CPU_PAUSE() __asm__ volatile("pause" ::: "memory")
+    #define CPU_PAUSE() __asm__ volatile("pause" ::: "memory")
 #elif defined(ARCH_ARM) || defined(ARCH_ARM64)
-#  define CPU_PAUSE() __asm__ volatile("yield" ::: "memory")
+    #define CPU_PAUSE() __asm__ volatile("yield" ::: "memory")
 #elif defined(ARCH_PPC)
-#  define CPU_PAUSE() __asm__ volatile("or 27,27,27" ::: "memory")
+    #define CPU_PAUSE() __asm__ volatile("or 27,27,27" ::: "memory")
 #else
-#  define CPU_PAUSE() sched_yield()
+    #define CPU_PAUSE() sched_yield()
 #endif
 #define TIMEB timeb
 #define FTIME ftime

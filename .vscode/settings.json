@@ -1,0 +1,9 @@
+{
+    "files.exclude": {
+        "bin": true,
+        "lib": true,
+        "lualib": true,
+        "srey": true,
+        "test": true
+    }
+}
