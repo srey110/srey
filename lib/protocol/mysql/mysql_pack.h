@@ -10,7 +10,6 @@
 /// <param name="size">输出包大小（字节）</param>
 /// <returns>请求包数据，调用方负责释放</returns>
 void *mysql_pack_quit(mysql_ctx *mysql, size_t *size);
-
 /// <summary>
 /// 构造 COM_INIT_DB 请求包（切换数据库）
 /// </summary>
@@ -19,7 +18,6 @@ void *mysql_pack_quit(mysql_ctx *mysql, size_t *size);
 /// <param name="size">输出包大小（字节）</param>
 /// <returns>请求包数据，调用方负责释放</returns>
 void *mysql_pack_selectdb(mysql_ctx *mysql, const char *database, size_t *size);
-
 /// <summary>
 /// 构造 COM_PING 请求包（检测连接是否存活）
 /// </summary>
@@ -27,7 +25,6 @@ void *mysql_pack_selectdb(mysql_ctx *mysql, const char *database, size_t *size);
 /// <param name="size">输出包大小（字节）</param>
 /// <returns>请求包数据，调用方负责释放</returns>
 void *mysql_pack_ping(mysql_ctx *mysql, size_t *size);
-
 /// <summary>
 /// 构造 COM_QUERY 请求包（执行 SQL 语句）
 /// </summary>
@@ -37,7 +34,6 @@ void *mysql_pack_ping(mysql_ctx *mysql, size_t *size);
 /// <param name="size">输出包大小（字节）</param>
 /// <returns>请求包数据，调用方负责释放</returns>
 void *mysql_pack_query(mysql_ctx *mysql, const char *sql, mysql_bind_ctx *mbind, size_t *size);
-
 /// <summary>
 /// 构造 COM_STMT_PREPARE 请求包（预处理语句准备）
 /// </summary>
@@ -46,7 +42,6 @@ void *mysql_pack_query(mysql_ctx *mysql, const char *sql, mysql_bind_ctx *mbind,
 /// <param name="size">输出包大小（字节）</param>
 /// <returns>请求包数据，调用方负责释放</returns>
 void *mysql_pack_stmt_prepare(mysql_ctx *mysql, const char *sql, size_t *size);
-
 /// <summary>
 /// 构造 COM_STMT_EXECUTE 请求包（预处理语句执行）
 /// </summary>
@@ -55,7 +50,6 @@ void *mysql_pack_stmt_prepare(mysql_ctx *mysql, const char *sql, size_t *size);
 /// <param name="size">输出包大小（字节）</param>
 /// <returns>请求包数据，调用方负责释放</returns>
 void *mysql_pack_stmt_execute(mysql_stmt_ctx *stmt, mysql_bind_ctx *mbind, size_t *size);
-
 /// <summary>
 /// 构造 COM_STMT_RESET 请求包（重置预处理语句状态）
 /// </summary>
@@ -63,7 +57,6 @@ void *mysql_pack_stmt_execute(mysql_stmt_ctx *stmt, mysql_bind_ctx *mbind, size_
 /// <param name="size">输出包大小（字节）</param>
 /// <returns>请求包数据，调用方负责释放</returns>
 void *mysql_pack_stmt_reset(mysql_stmt_ctx *stmt, size_t *size);
-
 /// <summary>
 /// 构造 COM_STMT_CLOSE 请求包并释放语句资源
 /// </summary>

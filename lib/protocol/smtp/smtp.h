@@ -84,7 +84,6 @@ char *smtp_pack_rcpt(const char *rcpt);
 /// </summary>
 /// <returns>数据包</returns>
 char *smtp_pack_data(void);
-
 /// <summary>
 /// SMTP 协议解包入口：根据当前握手状态（INIT/EHLO/AUTH/AUTH_CHECK/COMMAND）分发处理，
 /// COMMAND 状态下返回响应数据包，其余状态内部驱动握手流程

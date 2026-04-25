@@ -16,7 +16,6 @@ void _mysql_closed(ud_cxt *ud);
 int32_t _mysql_ssl_exchanged(ev_ctx *ev, ud_cxt *ud);
 // 内部函数：MySQL 数据解包（验证阶段和命令阶段统一入口）
 void *mysql_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status);
-
 /// <summary>
 /// MySQL 参数初始化
 /// </summary>
@@ -32,7 +31,6 @@ void *mysql_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status);
 /// <returns>ERR_OK 成功，ERR_FAILED 失败</returns>
 int32_t mysql_init(mysql_ctx *mysql, const char *ip, uint16_t port, struct evssl_ctx *evssl,
     const char *user, const char *password, const char *database, const char *charset, uint32_t maxpk);
-
 /// <summary>
 /// 发起数据库连接请求
 /// </summary>
@@ -40,14 +38,12 @@ int32_t mysql_init(mysql_ctx *mysql, const char *ip, uint16_t port, struct evssl
 /// <param name="mysql">mysql_ctx</param>
 /// <returns>ERR_OK 请求发起成功</returns>
 int32_t mysql_try_connect(task_ctx *task, mysql_ctx *mysql);
-
 /// <summary>
 /// 获取服务器版本信息
 /// </summary>
 /// <param name="mysql">mysql_ctx</param>
 /// <returns>服务器版本字符串</returns>
 const char *mysql_version(mysql_ctx *mysql);
-
 /// <summary>
 /// 获取最近一次操作的错误信息
 /// </summary>
@@ -55,27 +51,23 @@ const char *mysql_version(mysql_ctx *mysql);
 /// <param name="code">输出错误码，NULL 表示不获取</param>
 /// <returns>错误信息字符串</returns>
 const char *mysql_erro(mysql_ctx *mysql, int32_t *code);
-
 /// <summary>
 /// 清除错误信息
 /// </summary>
 /// <param name="mysql">mysql_ctx</param>
 void mysql_erro_clear(mysql_ctx *mysql);
-
 /// <summary>
 /// 获取最近一次 INSERT 操作的自增 ID
 /// </summary>
 /// <param name="mysql">mysql_ctx</param>
 /// <returns>自增 ID 值</returns>
 int64_t mysql_last_id(mysql_ctx *mysql);
-
 /// <summary>
 /// 获取最近一次操作影响的行数
 /// </summary>
 /// <param name="mysql">mysql_ctx</param>
 /// <returns>影响的行数</returns>
 int64_t mysql_affected_rows(mysql_ctx *mysql);
-
 /// <summary>
 /// 关闭预处理语句并释放相关资源
 /// </summary>

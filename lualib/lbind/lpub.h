@@ -31,7 +31,6 @@
 /// <param name="name">全局变量名</param>
 /// <returns>成功返回指针；变量不存在或类型不匹配时返回 NULL</returns>
 void *global_userdata(lua_State *lua, const char *name);
-
 /// <summary>
 /// 从 Lua 全局变量中读取字符串值
 /// </summary>

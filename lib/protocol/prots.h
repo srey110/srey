@@ -31,7 +31,6 @@ typedef enum prot_status {
 }prot_status;
 // 握手完成后的推送回调函数类型
 typedef int32_t(*_handshaked_push)(SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud, int32_t erro, void *data, size_t lens);
-
 /// <summary>
 /// 初始化协议模块，注册握手完成推送回调
 /// </summary>

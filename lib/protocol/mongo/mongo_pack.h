@@ -21,7 +21,6 @@ void *mongo_pack_scram_client_first(mongo_ctx *mongo, const char *method, size_t
 /// <param name="size">输出数据包长度</param>
 /// <returns>数据包指针，需调用者释放</returns>
 void *mongo_pack_scram_client_final(mongo_ctx *mongo, int32_t convid, char *client_final, size_t *size);
-
 /// <summary>
 /// 构造 hello 握手命令请求包（用于建立连接后的能力协商）
 /// </summary>
@@ -37,7 +36,6 @@ void *mongo_pack_hello(mongo_ctx *mongo, char *options, size_t *size);
 /// <param name="size">输出数据包长度</param>
 /// <returns>数据包指针，需调用者释放</returns>
 void *mongo_pack_ping(mongo_ctx *mongo, size_t *size);
-
 /// <summary>
 /// 构造 drop 命令请求包（删除当前集合）
 /// </summary>
@@ -163,7 +161,6 @@ void *mongo_pack_findandmodify(mongo_ctx *mongo, char *query, size_t qlens, int3
 /// <param name="size">输出数据包长度</param>
 /// <returns>数据包指针，需调用者释放</returns>
 void *mongo_pack_count(mongo_ctx *mongo, char *query, size_t qlens, char *options, size_t *size);
-
 /// <summary>
 /// 构造 createIndexes 命令请求包（创建索引）
 /// </summary>
@@ -184,7 +181,6 @@ void *mongo_pack_createindexes(mongo_ctx *mongo, char *indexes, size_t ilens, ch
 /// <param name="size">输出数据包长度</param>
 /// <returns>数据包指针，需调用者释放</returns>
 void *mongo_pack_dropindexes(mongo_ctx *mongo, char *indexes, size_t ilens, char *options, size_t *size);
-
 /// <summary>
 /// 构造 startSession 命令请求包（开启服务端会话）
 /// </summary>
