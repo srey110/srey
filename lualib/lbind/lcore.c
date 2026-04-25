@@ -11,7 +11,6 @@ static int32_t _lcore_timeout(lua_State *lua) {
     task_timeout(task, sess, time, NULL);
     return 0;
 }
-
 // Lua 绑定：向目标 task 发送单向调用消息（无响应），data 可为字符串或 userdata
 static int32_t _lcore_call(lua_State *lua) {
     task_ctx *dst = lua_touserdata(lua, 1);
@@ -28,7 +27,6 @@ static int32_t _lcore_call(lua_State *lua) {
     task_call(dst, reqtype, data, size, copy);
     return 0;
 }
-
 // Lua 绑定：向目标 task 发送请求消息，携带 sess 会话 id 以便对方响应
 static int32_t _lcore_request(lua_State *lua) {
     task_ctx *dst = lua_touserdata(lua, 1);
@@ -47,7 +45,6 @@ static int32_t _lcore_request(lua_State *lua) {
     task_request(dst, src, reqtype, sess, data, size, copy);
     return 0;
 }
-
 // Lua 绑定：向请求方 task 回复响应消息，携带错误码 erro 及可选数据
 static int32_t _lcore_response(lua_State *lua) {
     task_ctx *dst = lua_touserdata(lua, 1);
@@ -72,7 +69,6 @@ static int32_t _lcore_response(lua_State *lua) {
     task_response(dst, sess, erro, data, size, copy);
     return 0;
 }
-
 // Lua 绑定：在当前 task 上监听 TCP/UDP 端口，返回监听 id 或 -1（失败）
 static int32_t _lcore_listen(lua_State *lua) {
     pack_type pktype = (pack_type)luaL_checkinteger(lua, 1);
@@ -92,14 +88,12 @@ static int32_t _lcore_listen(lua_State *lua) {
     }
     return 1;
 }
-
 // Lua 绑定：取消指定监听 id 的监听
 static int32_t _lcore_unlisten(lua_State *lua) {
     uint64_t id = (uint64_t)luaL_checkinteger(lua, 1);
     ev_unlisten(&g_loader->netev, id);
     return 0;
 }
-
 // Lua 绑定：发起 TCP 连接，成功返回 fd 和 skid，失败返回 INVALID_SOCK
 static int32_t _lcore_connect(lua_State *lua) {
     pack_type pktype = (pack_type)luaL_checkinteger(lua, 1);
@@ -121,7 +115,6 @@ static int32_t _lcore_connect(lua_State *lua) {
     lua_pushinteger(lua, skid);
     return 2;
 }
-
 // Lua 绑定：对已有连接进行 SSL 升级握手，成功返回 true，失败返回 false
 static int32_t _lcore_ssl_exchange(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
@@ -136,7 +129,6 @@ static int32_t _lcore_ssl_exchange(lua_State *lua) {
     }
     return 1;
 }
-
 // Lua 绑定：创建 UDP 套接字并绑定地址，成功返回 fd 和 skid，失败返回 INVALID_SOCK
 static int32_t _lcore_udp(lua_State *lua) {
     const char *ip = luaL_checkstring(lua, 1);
@@ -152,7 +144,6 @@ static int32_t _lcore_udp(lua_State *lua) {
     lua_pushinteger(lua, skid);
     return 2;
 }
-
 // Lua 绑定：向指定 fd/skid 发送 TCP 数据，成功返回 true，失败返回 false
 static int32_t _lcore_send(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
@@ -173,7 +164,6 @@ static int32_t _lcore_send(lua_State *lua) {
     }
     return 1;
 }
-
 // Lua 绑定：向指定 ip:port 发送 UDP 数据，成功返回 true，失败返回 false
 static int32_t _lcore_sendto(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
@@ -196,7 +186,6 @@ static int32_t _lcore_sendto(lua_State *lua) {
     }
     return 1;
 }
-
 // Lua 绑定：主动关闭指定 fd/skid 的网络连接
 static int32_t _lcore_close(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
@@ -204,7 +193,6 @@ static int32_t _lcore_close(lua_State *lua) {
     ev_close(&g_loader->netev, fd, skid);
     return 0;
 }
-
 // Lua 绑定：动态修改指定连接的封包类型（pktype）
 static int32_t _lcore_pack_type(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
@@ -213,7 +201,6 @@ static int32_t _lcore_pack_type(lua_State *lua) {
     ev_ud_pktype(&g_loader->netev, fd, skid, pktype);
     return 0;
 }
-
 // Lua 绑定：设置指定连接的用户自定义状态值
 static int32_t _lcore_status(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
@@ -222,7 +209,6 @@ static int32_t _lcore_status(lua_State *lua) {
     ev_ud_status(&g_loader->netev, fd, skid, status);
     return 0;
 }
-
 // Lua 绑定：将指定连接绑定到目标 task（消息将投递到对应 task）
 static int32_t _lcore_bind_task(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
@@ -231,7 +217,6 @@ static int32_t _lcore_bind_task(lua_State *lua) {
     ev_ud_name(&g_loader->netev, fd, skid, name);
     return 0;
 }
-
 // Lua 绑定：为指定连接设置会话 id（sess），用于关联请求与响应
 static int32_t _lcore_session(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
@@ -240,7 +225,6 @@ static int32_t _lcore_session(lua_State *lua) {
     ev_ud_sess(&g_loader->netev, fd, skid, sess);
     return 0;
 }
-
 // Lua 绑定：检查指定封包是否允许恢复（协议层分片重组判断），返回 true/false
 static int32_t _lcore_may_resume(lua_State *lua) {
     pack_type pktype = (pack_type)luaL_checkinteger(lua, 1);
@@ -252,7 +236,6 @@ static int32_t _lcore_may_resume(lua_State *lua) {
     }
     return 1;
 }
-
 // Lua 绑定：加载 PEM/DER 格式的 CA、证书和私钥，注册 SSL 上下文，返回 ssl 指针或 nil
 static int32_t _lcore_cert_register(lua_State *lua) {
 #if WITH_SSL
@@ -299,7 +282,6 @@ static int32_t _lcore_cert_register(lua_State *lua) {
 #endif
     return 1;
 }
-
 // Lua 绑定：加载 PKCS12 格式证书文件，注册 SSL 上下文，返回 ssl 指针或 nil
 static int32_t _lcore_p12_register(lua_State *lua) {
 #if WITH_SSL
@@ -328,7 +310,6 @@ static int32_t _lcore_p12_register(lua_State *lua) {
 #endif
     return 1;
 }
-
 // Lua 绑定：按 name 查询已注册的 SSL 上下文，返回 ssl 指针或 nil
 static int32_t _lcore_ssl_qury(lua_State *lua) {
 #if WITH_SSL
@@ -344,7 +325,6 @@ static int32_t _lcore_ssl_qury(lua_State *lua) {
 #endif
     return 1;
 }
-
 //srey.core
 LUAMOD_API int luaopen_core(lua_State *lua) {
     luaL_Reg reg[] = {

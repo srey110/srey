@@ -47,7 +47,6 @@ static mco_desc _coro_desc; // 全局协程描述符，由 coro_desc_init 初始
 static int _timeout_cmp(const heap_node *lhs, const heap_node *rhs) {
     return _TE_FROM_HNODE(lhs)->timeout < _TE_FROM_HNODE(rhs)->timeout;
 }
-
 // 计算 coro_sess 在哈希表中的哈希值（基于 sess 字段）
 static uint64_t _map_cosess_hash(const void *item, uint64_t seed0, uint64_t seed1) {
     (void)seed0;

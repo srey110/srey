@@ -33,7 +33,6 @@ void mysql_reader_next(mysql_reader_ctx *reader) {
         reader->index++;
     }
 }
-
 // 根据字段名在列描述数组中查找对应字段，返回字段指针并输出列索引
 static mpack_field *_mysql_reader_field(mysql_reader_ctx *reader, const char *name, int32_t *pos) {
     for (int32_t i = 0; i < reader->field_count; i++) {
@@ -44,7 +43,6 @@ static mpack_field *_mysql_reader_field(mysql_reader_ctx *reader, const char *na
     }
     return NULL;
 }
-
 // 根据字段名获取当前行中对应的 mpack_row，同时输出字段描述指针；NULL 字段或越界时设置 err
 static mpack_row *_mysql_reader_row(mysql_reader_ctx *reader, const char *name, mpack_field **field, int32_t *err) {
     if (reader->index >= (int32_t)arr_ptr_size(&reader->arr_rows)) {

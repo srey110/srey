@@ -836,5 +836,4 @@ void _add_udp_inloop(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx) {
         return;
     }
 }
-
 #endif//EV_IOCP

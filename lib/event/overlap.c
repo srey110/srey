@@ -930,5 +930,4 @@ int32_t ev_udp(ev_ctx *ctx, const char *ip, const uint16_t port, cbs_ctx *cbs, u
     }
     return ERR_OK;
 }
-
 #endif

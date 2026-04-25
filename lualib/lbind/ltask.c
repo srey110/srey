@@ -47,7 +47,6 @@ static void _ltask_setpath(lua_State *lua, const char *name, const char *exname)
     lua_setfield(lua, -3, name);
     lua_pop(lua, 2);
 }
-
 // 创建并初始化一个新的 Lua 虚拟机，设置路径、全局变量及当前 task 指针
 static lua_State *_ltask_luainit(task_ctx *task) {
     lua_State *lua = luaL_newstate();
@@ -68,13 +67,11 @@ static lua_State *_ltask_luainit(task_ctx *task) {
     }
     return lua;
 }
-
 // 将脚本名称格式化为完整的 .lua 文件路径，存入 path
 static inline void _ltask_fmtfile(const char *file, char *path) {
     ZERO(path, PATH_LENS);
     SNPRINTF(path, PATH_LENS, "%s%s.lua", luapath, file);
 }
-
 // 搜索脚本文件：先按原名查找，再将 '.' 替换为路径分隔符后重试
 static int32_t _ltask_searchfile(const char *file, char *path) {
     _ltask_fmtfile(file, path);
@@ -95,7 +92,6 @@ static int32_t _ltask_searchfile(const char *file, char *path) {
     }
     return ERR_FAILED;
 }
-
 // 搜索并执行指定 Lua 脚本文件，执行失败时记录错误日志
 static int32_t _ltask_dofile(lua_State *lua, const char *file) {
     char path[PATH_LENS];
@@ -109,7 +105,6 @@ static int32_t _ltask_dofile(lua_State *lua, const char *file) {
     }
     return ERR_OK;
 }
-
 // 对外接口：初始化 Lua 并执行 startup.lua，完成后关闭虚拟机
 int32_t ltask_startup(const char *script) {
     LOG_INFO(LUA_RELEASE);
@@ -123,7 +118,6 @@ int32_t ltask_startup(const char *script) {
     lua_close(lua);
     return rtn;
 }
-
 // 初始化 ltask_ctx：创建 Lua 虚拟机、执行脚本、引用消息分发函数
 static int32_t _ltask_init(task_ctx *task, ltask_ctx *ltask, const char *file) {
     lua_State *lua = _ltask_luainit(task);
@@ -144,7 +138,6 @@ static int32_t _ltask_init(task_ctx *task, ltask_ctx *ltask, const char *file) {
     ltask->ref = luaL_ref(ltask->lua, LUA_REGISTRYINDEX);
     return ERR_OK;
 }
-
 // task 参数释放回调：关闭 Lua 虚拟机并释放 ltask_ctx 内存
 static void _ltask_arg_free(void *arg) {
     ltask_ctx *ltask = arg;
@@ -153,7 +146,6 @@ static void _ltask_arg_free(void *arg) {
     }
     FREE(ltask);
 }
-
 // Lua 回调：清理消息 table 中的 C 内存（作为 __gc 元方法使用）
 static int32_t _msg_clean(lua_State *lua) {
     ASSERTAB(LUA_TTABLE == lua_type(lua, 1), "_msg_clean type error.");
@@ -190,7 +182,6 @@ static int32_t _msg_clean(lua_State *lua) {
     }
     return 0;
 }
-
 // 将 C 层 message_ctx 打包为 Lua table，按 mtype 类型填充对应字段
 static void _ltask_pack_msg(lua_State *lua, message_ctx *msg) {
     lua_createtable(lua, 0, 11);
@@ -278,7 +269,6 @@ static void _ltask_pack_msg(lua_State *lua, message_ctx *msg) {
         break;
     }
 }
-
 // task 消息分发回调：从注册表取消息分发函数，打包消息后调用 Lua
 static void _ltask_run(task_dispatch_arg *arg) {
     ltask_ctx *ltask = arg->task->arg;
@@ -289,7 +279,6 @@ static void _ltask_run(task_dispatch_arg *arg) {
         lua_pop(ltask->lua, 1);
     }
 }
-
 // Lua 绑定：注册一个新 task，返回 task 指针（lightuserdata）或 nil
 static int32_t _ltask_register(lua_State *lua) {
     const char *file = luaL_checkstring(lua, 1);
@@ -320,7 +309,6 @@ static int32_t _ltask_register(lua_State *lua) {
     }
     return 1;
 }
-
 // Lua 绑定：关闭指定 task；参数为 nil 时关闭当前 task
 static int32_t _ltask_close(lua_State *lua) {
     task_ctx *task;
@@ -337,7 +325,6 @@ static int32_t _ltask_close(lua_State *lua) {
     task_close(task);
     return 0;
 }
-
 // Lua 绑定：按 name 查找并持有 task（引用计数 +1），返回 task 指针或 nil
 static int32_t _ltask_grab(lua_State *lua) {
     name_t name = (name_t)luaL_checkinteger(lua, 1);
@@ -349,21 +336,18 @@ static int32_t _ltask_grab(lua_State *lua) {
     }
     return 1;
 }
-
 // Lua 绑定：增加 task 引用计数
 static int32_t _ltask_incref(lua_State *lua) {
     task_ctx *task = lua_touserdata(lua, 1);
     task_incref(task);
     return 0;
 }
-
 // Lua 绑定：释放 task_grab 持有的 task 引用（引用计数 -1）
 static int32_t _ltask_ungrab(lua_State *lua) {
     task_ctx *task = lua_touserdata(lua, 1);
     task_ungrab(task);
     return 0;
 }
-
 // Lua 绑定：获取 task 的 name 标识；参数为 nil 时取当前 task
 static int32_t _ltask_name(lua_State *lua) {
     task_ctx *task;
@@ -380,7 +364,6 @@ static int32_t _ltask_name(lua_State *lua) {
     lua_pushinteger(lua, task->name);
     return 1;
 }
-
 // Lua 绑定：返回当前 task 计时器已运行的毫秒数
 static int32_t _ltask_timer_ms(lua_State *lua) {
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
@@ -391,7 +374,6 @@ static int32_t _ltask_timer_ms(lua_State *lua) {
     lua_pushinteger(lua, timer_cur_ms(&ltask->timer));
     return 1;
 }
-
 // Lua 绑定：设置当前 task 的请求超时时间（毫秒）
 static int32_t _ltask_set_request_timeout(lua_State *lua) {
     uint32_t ms = (uint32_t)luaL_checkinteger(lua, 1);
@@ -402,7 +384,6 @@ static int32_t _ltask_set_request_timeout(lua_State *lua) {
     task_set_request_timeout(task, ms);
     return 0;
 }
-
 // Lua 绑定：获取当前 task 的请求超时时间（毫秒）
 static int32_t _ltask_get_request_timeout(lua_State *lua) {
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
@@ -412,7 +393,6 @@ static int32_t _ltask_get_request_timeout(lua_State *lua) {
     lua_pushinteger(lua, task_get_request_timeout(task));
     return 1;
 }
-
 // Lua 绑定：设置当前 task 的连接超时时间（毫秒）
 static int32_t _ltask_set_connect_timeout(lua_State *lua) {
     uint32_t ms = (uint32_t)luaL_checkinteger(lua, 1);
@@ -423,7 +403,6 @@ static int32_t _ltask_set_connect_timeout(lua_State *lua) {
     task_set_connect_timeout(task, ms);
     return 0;
 }
-
 // Lua 绑定：获取当前 task 的连接超时时间（毫秒）
 static int32_t _ltask_get_connect_timeout(lua_State *lua) {
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
@@ -433,7 +412,6 @@ static int32_t _ltask_get_connect_timeout(lua_State *lua) {
     lua_pushinteger(lua, task_get_connect_timeout(task));
     return 1;
 }
-
 // Lua 绑定：设置当前 task 的网络读取超时时间（毫秒）
 static int32_t _ltask_set_netread_timeout(lua_State *lua) {
     uint32_t ms = (uint32_t)luaL_checkinteger(lua, 1);
@@ -444,7 +422,6 @@ static int32_t _ltask_set_netread_timeout(lua_State *lua) {
     task_set_netread_timeout(task, ms);
     return 0;
 }
-
 // Lua 绑定：获取当前 task 的网络读取超时时间（毫秒）
 static int32_t _ltask_get_netread_timeout(lua_State *lua) {
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
@@ -454,7 +431,6 @@ static int32_t _ltask_get_netread_timeout(lua_State *lua) {
     lua_pushinteger(lua, task_get_netread_timeout(task));
     return 1;
 }
-
 //srey.task
 LUAMOD_API int luaopen_task(lua_State *lua) {
     luaL_Reg reg[] = {

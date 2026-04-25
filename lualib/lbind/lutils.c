@@ -6,7 +6,6 @@ static int32_t _lutils_log_setlv(lua_State *lua) {
     log_setlv(lv);
     return 0;
 }
-
 // Lua 绑定：输出一条日志，携带调用文件名、行号和 task 名称（若存在）
 static int32_t _lutils_log(lua_State *lua) {
     LOG_LEVEL lv = (LOG_LEVEL)luaL_checkinteger(lua, 1);
@@ -21,7 +20,6 @@ static int32_t _lutils_log(lua_State *lua) {
     }
     return 0;
 }
-
 // Lua 绑定：将 C userdata 指针按指定长度转换为 Lua 字符串；data 为 NULL 时返回 nil
 static int32_t _lutils_ud_str(lua_State *lua) {
     void *data = lua_touserdata(lua, 1);
@@ -33,7 +31,6 @@ static int32_t _lutils_ud_str(lua_State *lua) {
     lua_pushlstring(lua, data, size);
     return 1;
 }
-
 // Lua 绑定：将二进制数据编码为十六进制字符串
 static int32_t _lutils_hex(lua_State *lua) {
     void *data;
@@ -51,13 +48,11 @@ static int32_t _lutils_hex(lua_State *lua) {
     FREE(out);
     return 1;
 }
-
 // Lua 绑定：生成全局唯一 id（基于 createid 实现）
 static int32_t _lutils_id(lua_State *lua) {
     lua_pushinteger(lua, createid());
     return 1;
 }
-
 // Lua 绑定：获取指定 fd 对端的 IP 地址和端口号；fd 无效或获取失败返回 nil
 static int32_t _lutils_remote_addr(lua_State *lua) {
     netaddr_ctx addr;
@@ -80,7 +75,6 @@ static int32_t _lutils_remote_addr(lua_State *lua) {
     lua_pushinteger(lua, port);
     return 2;
 }
-
 //srey.utils
 LUAMOD_API int luaopen_utils(lua_State *lua) {
     luaL_Reg reg[] = {
@@ -95,7 +89,6 @@ LUAMOD_API int luaopen_utils(lua_State *lua) {
     luaL_newlib(lua, reg);
     return 1;
 }
-
 // Lua 绑定：创建一致性哈希环上下文
 static int32_t _lhash_ring_new(lua_State *lua) {
     hash_ring_ctx *ring = lua_newuserdata(lua, sizeof(hash_ring_ctx));
@@ -103,14 +96,12 @@ static int32_t _lhash_ring_new(lua_State *lua) {
     ASSOC_MTABLE(lua, "_hash_ring_ctx");
     return 1;
 }
-
 // Lua 绑定（__gc）：释放哈希环内部资源
 static int32_t _lhash_ring_free(lua_State *lua) {
     hash_ring_ctx *ring = lua_touserdata(lua, 1);
     hash_ring_free(ring);
     return 0;
 }
-
 // Lua 绑定：向哈希环添加节点，nreplicas 为虚拟节点数；成功返回 true，失败返回 false
 static int32_t _lhash_ring_add(lua_State *lua) {
     hash_ring_ctx *ring = lua_touserdata(lua, 1);
@@ -130,7 +121,6 @@ static int32_t _lhash_ring_add(lua_State *lua) {
     }
     return 1;
 }
-
 // Lua 绑定：从哈希环中移除指定节点（及其虚拟节点）
 static int32_t _lhash_ring_remove(lua_State *lua) {
     hash_ring_ctx *ring = lua_touserdata(lua, 1);
@@ -145,7 +135,6 @@ static int32_t _lhash_ring_remove(lua_State *lua) {
     hash_ring_remove(ring, name, lens);
     return 0;
 }
-
 // Lua 绑定：按 key 在哈希环上查找最近节点，返回节点名称字符串；无节点时返回 nil
 static int32_t _lhash_ring_find(lua_State *lua) {
     hash_ring_ctx *ring = lua_touserdata(lua, 1);
@@ -165,14 +154,12 @@ static int32_t _lhash_ring_find(lua_State *lua) {
     }
     return 1;
 }
-
 // Lua 绑定：将哈希环所有节点信息打印到日志（调试用途）
 static int32_t _lhash_ring_print(lua_State *lua) {
     hash_ring_ctx *ring = lua_touserdata(lua, 1);
     hash_ring_print(ring);
     return 0;
 }
-
 //srey.hashring
 LUAMOD_API int luaopen_hashring(lua_State *lua) {
     luaL_Reg reg_new[] = {

@@ -7,21 +7,18 @@ static int32_t _lmysql_bind_new(lua_State *lua) {
     ASSOC_MTABLE(lua, "_mysql_bind_ctx");
     return 1;
 }
-
 // Lua 绑定（__gc）：释放绑定上下文内部资源
 static int32_t _lmysql_bind_free(lua_State *lua) {
     mysql_bind_ctx *mbind = lua_touserdata(lua, 1);
     mysql_bind_free(mbind);
     return 0;
 }
-
 // Lua 绑定：清空所有已绑定参数，可复用上下文
 static int32_t _lmysql_bind_clear(lua_State *lua) {
     mysql_bind_ctx *mbind = lua_touserdata(lua, 1);
     mysql_bind_clear(mbind);
     return 0;
 }
-
 // Lua 绑定：绑定一个 NULL 参数；name 为具名参数名（可选）
 static int32_t _lmysql_bind_nil(lua_State *lua) {
     mysql_bind_ctx *mbind = lua_touserdata(lua, 1);
@@ -32,7 +29,6 @@ static int32_t _lmysql_bind_nil(lua_State *lua) {
     mysql_bind_nil(mbind, name);
     return 0;
 }
-
 // Lua 绑定：绑定字符串参数；data 为 nil 时自动转为 NULL 绑定
 static int32_t _lmysql_bind_string(lua_State *lua) {
     mysql_bind_ctx *mbind = lua_touserdata(lua, 1);
@@ -60,7 +56,6 @@ static int32_t _lmysql_bind_string(lua_State *lua) {
     }
     return 0;
 }
-
 // Lua 绑定：绑定整数参数；非数字/布尔类型时自动转为 NULL 绑定
 static int32_t _lmysql_bind_integer(lua_State *lua) {
     mysql_bind_ctx *mbind = lua_touserdata(lua, 1);
@@ -78,7 +73,6 @@ static int32_t _lmysql_bind_integer(lua_State *lua) {
     mysql_bind_integer(mbind, name, val);
     return 0;
 }
-
 // Lua 绑定：绑定浮点数参数；非数字类型时自动转为 NULL 绑定
 static int32_t _lmysql_bind_double(lua_State *lua) {
     mysql_bind_ctx *mbind = lua_touserdata(lua, 1);
@@ -95,7 +89,6 @@ static int32_t _lmysql_bind_double(lua_State *lua) {
     mysql_bind_double(mbind, name, val);
     return 0;
 }
-
 // Lua 绑定：绑定 DATETIME 参数，ts 为 Unix 时间戳（秒）；非数字时转为 NULL
 static int32_t _lmysql_bind_datetime(lua_State *lua) {
     mysql_bind_ctx *mbind = lua_touserdata(lua, 1);
@@ -112,7 +105,6 @@ static int32_t _lmysql_bind_datetime(lua_State *lua) {
     mysql_bind_datetime(mbind, name, ts);
     return 0;
 }
-
 // Lua 绑定：绑定 TIME 参数，支持负值时间段；参数为 is_negative/days/hour/minute/second
 static int32_t _lmysql_bind_time(lua_State *lua) {
     mysql_bind_ctx *mbind = lua_touserdata(lua, 1);
@@ -128,7 +120,6 @@ static int32_t _lmysql_bind_time(lua_State *lua) {
     mysql_bind_time(mbind, name, is_negative, days, hour, minute, second);
     return 0;
 }
-
 //mysql.bind
 LUAMOD_API int luaopen_mysql_bind(lua_State *lua) {
     luaL_Reg reg_new[] = {
@@ -149,7 +140,6 @@ LUAMOD_API int luaopen_mysql_bind(lua_State *lua) {
     REG_MTABLE(lua, "_mysql_bind_ctx", reg_new, reg_func);
     return 1;
 }
-
 // Lua 绑定：从 mpack 数据包中创建结果集读取器，失败返回 nil
 static int32_t _lmysql_reader_new(lua_State *lua) {
     mpack_ctx *mpack = lua_touserdata(lua, 1);
@@ -163,21 +153,18 @@ static int32_t _lmysql_reader_new(lua_State *lua) {
     ASSOC_MTABLE(lua, "_mysql_reader_ctx");
     return 1;
 }
-
 // Lua 绑定（__gc）：释放结果集读取器资源
 static int32_t _lmysql_reader_free(lua_State *lua) {
     mysql_reader_ctx **reader = lua_touserdata(lua, 1);
     mysql_reader_free(*reader);
     return 0;
 }
-
 // Lua 绑定：返回结果集总行数
 static int32_t _lmysql_reader_size(lua_State *lua) {
     mysql_reader_ctx **reader = lua_touserdata(lua, 1);
     lua_pushinteger(lua, mysql_reader_size(*reader));
     return 1;
 }
-
 // Lua 绑定：定位到指定行位置
 static int32_t _lmysql_reader_seek(lua_State *lua) {
     mysql_reader_ctx **reader = lua_touserdata(lua, 1);
@@ -185,21 +172,18 @@ static int32_t _lmysql_reader_seek(lua_State *lua) {
     mysql_reader_seek(*reader, pos);
     return 0;
 }
-
 // Lua 绑定：判断是否已到达结果集末尾，返回布尔值
 static int32_t _lmysql_reader_eof(lua_State *lua) {
     mysql_reader_ctx **reader = lua_touserdata(lua, 1);
     lua_pushboolean(lua, mysql_reader_eof(*reader));
     return 1;
 }
-
 // Lua 绑定：移动到下一行
 static int32_t _lmysql_reader_next(lua_State *lua) {
     mysql_reader_ctx **reader = lua_touserdata(lua, 1);
     mysql_reader_next(*reader);
     return 0;
 }
-
 // Lua 绑定：读取当前行指定字段的整数值；成功返回 true + 整数，字段为 NULL 返回 true，失败返回 false
 static int32_t _lmysql_reader_integer(lua_State *lua) {
     mysql_reader_ctx **reader = lua_touserdata(lua, 1);
@@ -219,7 +203,6 @@ static int32_t _lmysql_reader_integer(lua_State *lua) {
     lua_pushboolean(lua, 0);
     return 1;
 }
-
 // Lua 绑定：读取当前行指定字段的浮点数值；成功返回 true + 浮点数，字段为 NULL 返回 true，失败返回 false
 static int32_t _lmysql_reader_double(lua_State *lua) {
     mysql_reader_ctx **reader = lua_touserdata(lua, 1);
@@ -239,7 +222,6 @@ static int32_t _lmysql_reader_double(lua_State *lua) {
     lua_pushboolean(lua, 0);
     return 1;
 }
-
 // Lua 绑定：读取当前行指定字段的字符串值；成功返回 true + userdata + 长度，字段为 NULL 返回 true，失败返回 false
 static int32_t _lmysql_reader_string(lua_State *lua) {
     mysql_reader_ctx **reader = lua_touserdata(lua, 1);
@@ -261,7 +243,6 @@ static int32_t _lmysql_reader_string(lua_State *lua) {
     lua_pushboolean(lua, 0);
     return 1;
 }
-
 // Lua 绑定：读取当前行指定字段的 DATETIME 值（转换为 Unix 时间戳）；
 // 成功返回 true + 整数，字段为 NULL 返回 true，失败返回 false
 static int32_t _lmysql_reader_datetime(lua_State *lua) {
@@ -282,7 +263,6 @@ static int32_t _lmysql_reader_datetime(lua_State *lua) {
     lua_pushboolean(lua, 0);
     return 1;
 }
-
 // Lua 绑定：读取当前行指定字段的 TIME 值；
 // 成功返回 true + is_negative + days + hour + min + sec，字段为 NULL 返回 true，失败返回 false
 static int32_t _lmysql_reader_time(lua_State *lua) {
@@ -308,7 +288,6 @@ static int32_t _lmysql_reader_time(lua_State *lua) {
     lua_pushboolean(lua, 0);
     return 1;
 }
-
 //mysql.reader
 LUAMOD_API int luaopen_mysql_reader(lua_State *lua) {
     luaL_Reg reg_new[] = {
@@ -331,7 +310,6 @@ LUAMOD_API int luaopen_mysql_reader(lua_State *lua) {
     REG_MTABLE(lua, "_mysql_reader_ctx", reg_new, reg_func);
     return 1;
 }
-
 // Lua 绑定：从 mpack 数据包中创建预处理语句上下文，失败返回 nil
 static int32_t _lmysql_stmt_new(lua_State *lua) {
     mpack_ctx *mpack = lua_touserdata(lua, 1);
@@ -345,14 +323,12 @@ static int32_t _lmysql_stmt_new(lua_State *lua) {
     ASSOC_MTABLE(lua, "_mysql_stmt_ctx");
     return 1;
 }
-
 // Lua 绑定（__gc）：关闭预处理语句并释放资源
 static int32_t _lmysql_stmt_free(lua_State *lua) {
     mysql_stmt_ctx **stmt = lua_touserdata(lua, 1);
     mysql_stmt_close(*stmt);
     return 0;
 }
-
 // Lua 绑定：打包预处理语句执行请求，可附带参数绑定上下文；返回数据指针和长度
 static int32_t _lmysql_pack_stmt_execute(lua_State *lua) {
     mysql_stmt_ctx **stmt = lua_touserdata(lua, 1);
@@ -366,7 +342,6 @@ static int32_t _lmysql_pack_stmt_execute(lua_State *lua) {
     lua_pushinteger(lua, size);
     return 2;
 }
-
 // Lua 绑定：打包预处理语句重置请求；返回数据指针和长度
 static int32_t _lmysql_pack_stmt_reset(lua_State *lua) {
     mysql_stmt_ctx **stmt = lua_touserdata(lua, 1);
@@ -376,7 +351,6 @@ static int32_t _lmysql_pack_stmt_reset(lua_State *lua) {
     lua_pushinteger(lua, size);
     return 2;
 }
-
 // Lua 绑定：获取预处理语句所属连接的 fd 和 skid
 static int32_t _lmysql_stmt_sock_id(lua_State *lua) {
     mysql_stmt_ctx **stmt = lua_touserdata(lua, 1);
@@ -384,7 +358,6 @@ static int32_t _lmysql_stmt_sock_id(lua_State *lua) {
     lua_pushinteger(lua, (*stmt)->mysql->client.skid);
     return 2;
 }
-
 //mysql.stmt
 LUAMOD_API int luaopen_mysql_stmt(lua_State *lua) {
     luaL_Reg reg_new[] = {
@@ -401,7 +374,6 @@ LUAMOD_API int luaopen_mysql_stmt(lua_State *lua) {
     REG_MTABLE(lua, "_mysql_stmt_ctx", reg_new, reg_func);
     return 1;
 }
-
 // Lua 绑定：打包 COM_INIT_DB（切换数据库）命令；返回数据指针和长度
 static int32_t _lmysql_pack_selectdb(lua_State *lua) {
     mysql_ctx *mysql = lua_touserdata(lua, 1);
@@ -412,7 +384,6 @@ static int32_t _lmysql_pack_selectdb(lua_State *lua) {
     lua_pushinteger(lua, size);
     return 2;
 }
-
 // Lua 绑定：打包 COM_PING 心跳命令；返回数据指针和长度
 static int32_t _lmysql_pack_ping(lua_State *lua) {
     mysql_ctx *mysql = lua_touserdata(lua, 1);
@@ -422,7 +393,6 @@ static int32_t _lmysql_pack_ping(lua_State *lua) {
     lua_pushinteger(lua, size);
     return 2;
 }
-
 // Lua 绑定：打包查询命令（支持参数化绑定）；返回数据指针和长度
 static int32_t _lmysql_pack_query(lua_State *lua) {
     mysql_ctx *mysql = lua_touserdata(lua, 1);
@@ -437,7 +407,6 @@ static int32_t _lmysql_pack_query(lua_State *lua) {
     lua_pushinteger(lua, size);
     return 2;
 }
-
 // Lua 绑定：打包 COM_QUIT 断连命令；返回数据指针和长度
 static int32_t _lmysql_pack_quit(lua_State *lua) {
     mysql_ctx *mysql = lua_touserdata(lua, 1);
@@ -447,7 +416,6 @@ static int32_t _lmysql_pack_quit(lua_State *lua) {
     lua_pushinteger(lua, size);
     return 2;
 }
-
 // Lua 绑定：打包预处理语句准备命令；返回数据指针和长度
 static int32_t _lmysql_pack_stmt_prepare(lua_State *lua) {
     mysql_ctx *mysql = lua_touserdata(lua, 1);
@@ -458,7 +426,6 @@ static int32_t _lmysql_pack_stmt_prepare(lua_State *lua) {
     lua_pushinteger(lua, size);
     return 2;
 }
-
 // Lua 绑定：创建 MySQL 客户端上下文，初始化连接参数（不立即建立连接）
 static int32_t _lmysql_new(lua_State *lua) {
     const char *ip = luaL_checkstring(lua, 1);
@@ -477,14 +444,12 @@ static int32_t _lmysql_new(lua_State *lua) {
     ASSOC_MTABLE(lua, "_mysql_ctx");
     return 1;
 }
-
 // Lua 绑定：获取 mpack 数据包的封包类型
 static int32_t _lmysql_pack_type(lua_State *lua) {
     mpack_ctx *mpack = lua_touserdata(lua, 1);
     lua_pushinteger(lua, mpack->pack_type);
     return 1;
 }
-
 // Lua 绑定（__gc）：发送 QUIT 命令并清理连接上下文绑定
 static int32_t _lmysql_free(lua_State *lua) {
     mysql_ctx *mysql = lua_touserdata(lua, 1);
@@ -496,7 +461,6 @@ static int32_t _lmysql_free(lua_State *lua) {
     }
     return 0;
 }
-
 // Lua 绑定：尝试建立 MySQL 连接（异步），成功返回 true，失败返回 false
 static int32_t _lmysql_try_connect(lua_State *lua) {
     mysql_ctx *mysql = lua_touserdata(lua, 1);
@@ -509,14 +473,12 @@ static int32_t _lmysql_try_connect(lua_State *lua) {
     }
     return 1;
 }
-
 // Lua 绑定：返回 MySQL 服务端版本字符串
 static int32_t _lmysql_version(lua_State *lua) {
     mysql_ctx *mysql = lua_touserdata(lua, 1);
     lua_pushstring(lua, mysql_version(mysql));
     return 1;
 }
-
 // Lua 绑定：返回最近一次错误信息字符串，并清除错误状态
 static int32_t _lmysql_erro(lua_State *lua) {
     mysql_ctx *mysql = lua_touserdata(lua, 1);
@@ -524,7 +486,6 @@ static int32_t _lmysql_erro(lua_State *lua) {
     mysql_erro_clear(mysql);
     return 1;
 }
-
 // Lua 绑定：返回当前连接的 fd 和 skid
 static int32_t _lmysql_sock_id(lua_State *lua) {
     mysql_ctx *mysql = lua_touserdata(lua, 1);
@@ -532,21 +493,18 @@ static int32_t _lmysql_sock_id(lua_State *lua) {
     lua_pushinteger(lua, mysql->client.skid);
     return 2;
 }
-
 // Lua 绑定：返回最后一次 INSERT 操作生成的自增 id
 static int32_t _lmysql_last_id(lua_State *lua) {
     mysql_ctx *mysql = lua_touserdata(lua, 1);
     lua_pushinteger(lua, mysql_last_id(mysql));
     return 1;
 }
-
 // Lua 绑定：返回最后一次 UPDATE/DELETE/INSERT 操作影响的行数
 static int32_t _lmysql_affectd_rows(lua_State *lua) {
     mysql_ctx *mysql = lua_touserdata(lua, 1);
     lua_pushinteger(lua, mysql_affected_rows(mysql));
     return 1;
 }
-
 //mysql
 LUAMOD_API int luaopen_mysql(lua_State *lua) {
     luaL_Reg reg_new[] = {

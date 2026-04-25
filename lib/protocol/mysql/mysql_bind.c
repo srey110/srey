@@ -21,7 +21,6 @@ void mysql_bind_clear(mysql_bind_ctx *mbind) {
     binary_offset(&mbind->type_name, 0);
     binary_offset(&mbind->value, 0);
 }
-
 // 更新 NULL 位图：每 8 个参数共用一个字节，nil 为 1 时将对应位置 1
 static void _mysql_bind_bitmap(mysql_bind_ctx *mbind, int32_t nil) {
     int32_t index = mbind->count % 8;
@@ -34,7 +33,6 @@ static void _mysql_bind_bitmap(mysql_bind_ctx *mbind, int32_t nil) {
     }
     ++mbind->count;
 }
-
 // 向类型缓冲区和类型+名称缓冲区中写入字段类型及参数名称
 static void _mysql_bind_type_name(mysql_bind_ctx *mbind, mysql_field_types type, const char *name, int32_t is_unsigned) {
     if (is_unsigned) {

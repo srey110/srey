@@ -587,5 +587,4 @@ void ev_free(ev_ctx *ctx) {
     arr_ptr_free(&ctx->arrlsn);
     spin_free(&ctx->spin);
 }
-
 #endif//EV_IOCP

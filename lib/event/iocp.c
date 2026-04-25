@@ -376,5 +376,4 @@ void ev_free(ev_ctx *ctx) {
     FREE(ctx->watcher);
     spin_free(&ctx->spin);
 }
-
 #endif//EV_IOCP
