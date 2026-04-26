@@ -50,8 +50,6 @@ extern "C" {
     const void *hashmap_set_with_hash(struct hashmap *map, const void *item, uint64_t hash);
     void hashmap_set_grow_by_power(struct hashmap *map, size_t power);
     void hashmap_set_load_factor(struct hashmap *map, double load_factor);
-
-
     // DEPRECATED: use `hashmap_new_with_allocator`
     void hashmap_set_allocator(void *(*malloc)(size_t), void(*free)(void*));
 

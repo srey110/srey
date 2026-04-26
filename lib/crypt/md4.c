@@ -16,11 +16,14 @@
 #define G(x, y, z) (((x) & (y)) | ((x) & (z)) | ((y) & (z))) // 轮函数 G：多数函数
 #define H(x, y, z) ((x) ^ (y) ^ (z))                       // 轮函数 H：奇偶函数
 #define ROTATE_LEFT(x, n) (((x) << (n)) | ((x) >> (32-(n)))) // 循环左移
-#define FF(a, b, c, d, x, s) { (a) += F ((b), (c), (d)) + (x); \        // 第一轮操作
+// 第一轮操作
+#define FF(a, b, c, d, x, s) { (a) += F ((b), (c), (d)) + (x); \
                                (a) = ROTATE_LEFT ((a), (s)); }
-#define GG(a, b, c, d, x, s) { (a) += G ((b), (c), (d)) + (x) + (uint32_t)0x5a827999; \ // 第二轮操作
+// 第二轮操作
+#define GG(a, b, c, d, x, s) { (a) += G ((b), (c), (d)) + (x) + (uint32_t)0x5a827999; \
                                (a) = ROTATE_LEFT ((a), (s)); }
-#define HH(a, b, c, d, x, s) { (a) += H ((b), (c), (d)) + (x) + (uint32_t)0x6ed9eba1; \ // 第三轮操作
+// 第三轮操作
+#define HH(a, b, c, d, x, s) { (a) += H ((b), (c), (d)) + (x) + (uint32_t)0x6ed9eba1; \
                                (a) = ROTATE_LEFT ((a), (s)); }
 
 static const uint8_t pd[64] = {

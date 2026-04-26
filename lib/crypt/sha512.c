@@ -4,13 +4,15 @@
 #define SHA512_BLOCK_LENGTH 128                                                        // SHA-512 输入块长度（字节）
 #define SHA512_SHORT_BLOCK_LENGTH (SHA512_BLOCK_LENGTH - 16)                          // 末尾块长度阈值（留出 128 位存放长度）
 #define SHA512_DIGEST_STRING_LENGTH (SHA512_DIGEST_LENGTH * 2 + 1)                    // 摘要十六进制字符串长度
-#define REVERSE64(w,x) { uint64_t tmp = (w); \                                        // 64 位大端/小端字节序互转
+// 64 位大端/小端字节序互转
+#define REVERSE64(w,x) { uint64_t tmp = (w); \
     tmp = (tmp >> 32) | (tmp << 32); \
     tmp = ((tmp & 0xff00ff00ff00ff00ULL) >> 8) | \
            ((tmp & 0x00ff00ff00ff00ffULL) << 8); \
     (x) = ((tmp & 0xffff0000ffff0000ULL) >> 16) | \
           ((tmp & 0x0000ffff0000ffffULL) << 16); }
-#define ADDINC128(w,n) { (w)[0] += (uint64_t)(n); \                                   // 128 位计数器加法
+// 128 位计数器加法
+#define ADDINC128(w,n) { (w)[0] += (uint64_t)(n); \
     if ((w)[0] < (n)) { \
         (w)[1]++; \
     } }

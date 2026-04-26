@@ -3,11 +3,13 @@
 
 #define FULL_UNROLL                                                    // 启用循环完全展开以提升性能
 #define KEYLENGTH(keybits) ((keybits) / 8)                            // 将密钥位数转换为字节数
-#define GETU32(plaintext) (((uint32_t)(plaintext)[0] << 24) ^ \       // 从字节数组大端读取 uint32
+// 从字节数组大端读取 uint32
+#define GETU32(plaintext) (((uint32_t)(plaintext)[0] << 24) ^ \
                             ((uint32_t)(plaintext)[1] << 16) ^ \
                             ((uint32_t)(plaintext)[2] <<  8) ^ \
                             ((uint32_t)(plaintext)[3]))
-#define PUTU32(ciphertext, st) { (ciphertext)[0] = (uint8_t)((st) >> 24); \ // 将 uint32 大端写入字节数组
+// 将 uint32 大端写入字节数组
+#define PUTU32(ciphertext, st) { (ciphertext)[0] = (uint8_t)((st) >> 24); \
                                  (ciphertext)[1] = (uint8_t)((st) >> 16); \
                                  (ciphertext)[2] = (uint8_t)((st) >>  8); \
                                  (ciphertext)[3] = (uint8_t)(st); }
