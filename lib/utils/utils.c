@@ -880,6 +880,9 @@ static int32_t _get_procpath(char path[PATH_LENS]) {
 #error "not support."
 #endif
     char* cur = strrchr(path, PATH_SEPARATOR);
+    if (NULL == cur) {
+        return ERR_FAILED;
+    }
     *cur = 0;
 #if defined(OS_DARWIN)
     cur = strstr(path, "./");
