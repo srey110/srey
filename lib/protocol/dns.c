@@ -31,7 +31,7 @@ static char _dns_ip[IP_LENS]; // 全局 DNS 服务器 IP 地址
 
 void dns_set_ip(const char *ip) {
     ZERO(_dns_ip, sizeof(_dns_ip));
-    memcpy(_dns_ip, ip, strlen(ip));
+    strncpy(_dns_ip, ip, sizeof(_dns_ip) - 1);
 }
 const char *dns_get_ip(void) {
     return _dns_ip;
