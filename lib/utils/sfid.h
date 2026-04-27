@@ -18,11 +18,28 @@ typedef struct sfid_ctx {
 /// snowflake id 初始化
 /// </summary>
 /// <param name="ctx">sfid_ctx</param>
-/// <param name="machineid">机器ID</param>
-/// <param name="machinebitlen">机器ID位数, 0 默认10</param>
-/// <param name="sequencebitlen">自增序列位数, 0 默认12</param>
-/// <param name="customepoch">固定减少, 0 默认</param>
-/// <returns>NULL失败</returns>
+/// <param name="machineid">
+///   机器ID，范围 [0, 2^machinebitlen - 1]。
+///   默认 machinebitlen=10 时最大值为 1023。
+/// </param>
+/// <param name="machinebitlen">
+///   机器ID占用位数，0 使用默认值 10。
+///   合理范围 [1, 20]；machinebitlen + sequencebitlen 必须等于 22。
+///   位数越大可支持的机器节点越多（2^machinebitlen 台），
+///   但同一毫秒内可生成的 ID 数（2^sequencebitlen）相应减少。
+/// </param>
+/// <param name="sequencebitlen">
+///   自增序列占用位数，0 使用默认值 12。
+///   合理范围 [2, 21]；machinebitlen + sequencebitlen 必须等于 22。
+///   位数越大每毫秒可生成的 ID 越多（2^sequencebitlen 个/ms），
+///   建议不低于 7（即 128 个/ms）以保证足够吞吐量。
+/// </param>
+/// <param name="customepoch">
+///   自定义纪元时间戳（毫秒），ID 中的时间戳字段相对于此值计算，
+///   可延长可用年限。0 使用默认值（2024-01-01 00:00:00 UTC）。
+///   必须小于当前时间，否则返回 NULL。
+/// </param>
+/// <returns>成功返回 ctx，参数非法返回 NULL</returns>
 sfid_ctx *sfid_init(sfid_ctx *ctx, int32_t machineid, int32_t machinebitlen, int32_t sequencebitlen, uint64_t customepoch);
 /// <summary>
 /// 获取ID

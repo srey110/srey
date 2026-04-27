@@ -640,6 +640,14 @@ void _freelsn(listener_ctx *lsn) {
     FREE(lsn->lsnsock);
     FREE(lsn);
 }
+// 在排空管道（_free_pips）时处理未执行的 CMD_UNLSN：
+// 关闭对应 fd，递减引用计数，最后一个 watcher 处理时释放 lsn
+void _drain_unlsn(SOCKET fd, struct listener_ctx *lsn) {
+    CLOSE_SOCK(fd);
+    if (1 == ATOMIC_ADD(&lsn->ref, -1)) {
+        _freelsn(lsn);
+    }
+}
 // 根据id从arrlsn中查找并移除listener_ctx（加自旋锁保护）
 static listener_ctx * _get_listener(ev_ctx *ctx, uint64_t id) {
     listener_ctx *lsn = NULL;

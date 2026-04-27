@@ -8,10 +8,11 @@ void timer_init(timer_ctx *ctx) {
     LARGE_INTEGER freq;
     ASSERTAB(QueryPerformanceFrequency(&freq), ERRORSTR(ERRNO));
     ctx->interval = 1.0 / freq.QuadPart;
-#elif defined(OS_DARWIN) 
+#elif defined(OS_DARWIN)
     mach_timebase_info_data_t timebase;
     ASSERTAB(KERN_SUCCESS == mach_timebase_info(&timebase), ERRORSTR(ERRNO));
-    ctx->interval = (double)timebase.numer / (double)timebase.denom;
+    ctx->numer = timebase.numer;
+    ctx->denom = timebase.denom;
     ctx->timefunc = (uint64_t(*)(void)) dlsym(RTLD_DEFAULT, "mach_continuous_time");
     if (NULL == ctx->timefunc) {
         ctx->timefunc = mach_absolute_time;
@@ -32,7 +33,7 @@ uint64_t timer_cur(timer_ctx *ctx) {
 #elif defined(OS_SUN)
     return gethrtime();
 #elif defined(OS_DARWIN)
-    return (uint64_t)(ctx->timefunc() * ctx->interval);
+    return ctx->timefunc() * ctx->numer / ctx->denom;
 #else
     struct timespec ts;
 #if defined(OS_HPUX)

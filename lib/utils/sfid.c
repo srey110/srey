@@ -10,18 +10,19 @@ sfid_ctx *sfid_init(sfid_ctx *ctx, int32_t machineid, int32_t machinebitlen, int
     ctx->machinebitlen = 0 == machinebitlen ? DefMachineBitLen : machinebitlen;
     ctx->sequencebitlen = 0 == sequencebitlen ? DefSequenceBitLen : sequencebitlen;
     ctx->customepoch = 0 == customepoch ? DefCustomEpoch : customepoch;
-    int32_t maxmachineid = (1 << ctx->machinebitlen) - 1;
     uint64_t curms = nowms();
-    if (ctx->sequencebitlen < 1
+    // 先做范围校验，再计算派生值，避免位移溢出
+    if (ctx->machinebitlen < 1
+        || ctx->sequencebitlen < 1
         || ctx->machinebitlen + ctx->sequencebitlen > 22
         || ctx->machineid < 0
-        || ctx->machineid > maxmachineid
+        || ctx->machineid > (int32_t)((1u << ctx->machinebitlen) - 1)
         || ctx->customepoch >= curms) {
         return NULL;
     }
     ctx->lasttimestamp = curms - ctx->customepoch;
     ctx->sequence = 0;
-    ctx->sequencemask = (1 << ctx->sequencebitlen) - 1;
+    ctx->sequencemask = (1u << ctx->sequencebitlen) - 1;
     ctx->timestampshift = ctx->machinebitlen + ctx->sequencebitlen;
     ctx->machineidshift = ctx->sequencebitlen;
     return ctx;
@@ -34,6 +35,7 @@ uint64_t sfid_id(sfid_ctx *ctx) {
             continue;
         } else if (curms == ctx->lasttimestamp) {
             if (ctx->sequence >= ctx->sequencemask) {
+                MSLEEP(1); // 序列号耗尽，等待下一毫秒，避免 busy loop 烧 CPU
                 continue;
             } else {
                 ctx->sequence++;

@@ -50,11 +50,12 @@ static int32_t _lprot_dns_pack(lua_State *lua) {
     lua_pushlstring(lua, buf, lens);
     return 1;
 }
-// Lua 绑定：解析 DNS 响应包，返回 IP 字符串数组 table，失败返回 nil
+// Lua 绑定：解析 DNS 响应包，pack 为数据指针，packlen 为包长度，返回 IP 字符串数组 table，失败返回 nil
 static int32_t _lprot_dns_unpack(lua_State *lua) {
     void *pack = lua_touserdata(lua, 1);
+    size_t packlen = (size_t)luaL_checkinteger(lua, 2);
     size_t n;
-    dns_ip *ips = dns_parse_pack(pack, &n);
+    dns_ip *ips = dns_parse_pack(pack, packlen, &n);
     if (NULL == ips) {
         lua_pushnil(lua);
         return 1;

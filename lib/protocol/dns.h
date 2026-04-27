@@ -18,9 +18,10 @@ size_t dns_request_pack(char *buf, const char *domain, int32_t ipv6);
 /// 解析dns返回数据
 /// </summary>
 /// <param name="buf">dns 返回数据包</param>
-/// <param name="cnt">长度</param>
+/// <param name="buflen">数据包长度</param>
+/// <param name="cnt">解析到的 IP 数量</param>
 /// <returns>dns_ip 需要FREE</returns>
-dns_ip *dns_parse_pack(char *buf, size_t *cnt);
+dns_ip *dns_parse_pack(char *buf, size_t buflen, size_t *cnt);
 /// <summary>
 /// 设置dns服务器IP
 /// </summary>

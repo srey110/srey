@@ -540,6 +540,14 @@ static void _free_pips(watcher_ctx *watcher) {
                     skctx = (sock_ctx *)cmds[j].arg;
                     _free_udp(skctx);
                     break;
+                case CMD_UNLSN:
+                    // lsn 已从 arrlsn 移除，唯一释放路径是 ref 归零后 _freelsn
+                    _drain_unlsn(cmds[j].fd, (struct listener_ctx *)cmds[j].arg);
+                    break;
+                case CMD_ADDACP:
+                    // fd 是 accept 到的连接，未能加入事件循环，需关闭以防 fd 泄漏
+                    CLOSE_SOCK(cmds[j].fd);
+                    break;
                 default:
                     break;
                 }

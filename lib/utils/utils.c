@@ -836,23 +836,31 @@ static int32_t _get_procpath(char path[PATH_LENS]) {
         return ERR_FAILED;
     }
 #elif defined(OS_LINUX)
-    if (0 > readlink("/proc/self/exe", path, len - 1)) {
+    ssize_t rlen = readlink("/proc/self/exe", path, len - 1);
+    if (0 > rlen) {
         return ERR_FAILED;
     }
+    path[rlen] = '\0';
 #elif defined(OS_NBSD)
-    if (0 > readlink("/proc/curproc/exe", path, len - 1)) {
+    ssize_t rlen = readlink("/proc/curproc/exe", path, len - 1);
+    if (0 > rlen) {
         return ERR_FAILED;
     }
+    path[rlen] = '\0';
 #elif defined(OS_DFBSD)
-    if (0 > readlink("/proc/curproc/file", path, len - 1)) {
+    ssize_t rlen = readlink("/proc/curproc/file", path, len - 1);
+    if (0 > rlen) {
         return ERR_FAILED;
     }
-#elif defined(OS_SUN)  
+    path[rlen] = '\0';
+#elif defined(OS_SUN)
     char in[64];
     SNPRINTF(in, sizeof(in), "/proc/%d/path/a.out", (int32_t)GETPID());
-    if (0 > readlink(in, path, len - 1)) {
+    ssize_t rlen = readlink(in, path, len - 1);
+    if (0 > rlen) {
         return ERR_FAILED;
     }
+    path[rlen] = '\0';
 #elif defined(OS_DARWIN)
     uint32_t umaclens = len;
     if (0 != _NSGetExecutablePath(path, &umaclens)) {
@@ -888,12 +896,13 @@ static int32_t _get_procpath(char path[PATH_LENS]) {
     cur = strstr(path, "./");
     if (NULL != cur) {
         len = strlen(cur + 2);
-        memcpy(path + (cur - path), cur + 2, len);
+        memmove(path + (cur - path), cur + 2, len);
         len = cur - path + len;
         path[len] = 0;
     } else {
         len = strlen(path);
-        if ('.' == path[len - 1]
+        if (len >= 2
+            && '.' == path[len - 1]
             && PATH_SEPARATOR == path[len - 2]) {
             path[len - 2] = 0;
         }
@@ -901,7 +910,7 @@ static int32_t _get_procpath(char path[PATH_LENS]) {
     if (PATH_SEPARATOR == path[0]
         && PATH_SEPARATOR == path[1]) {
         len = strlen(path);
-        memcpy(path, path + 1, len - 1);
+        memmove(path, path + 1, len - 1);
         path[len - 1] = 0;
     }
 #endif

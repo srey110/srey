@@ -16,10 +16,10 @@ function nslookup(domain, ipv6)
         return nil
     end
     local req = dns.pack(domain, ipv6 and 1 or 0)
-    local resp, _ = srey.syn_sendto(fd, skid, dns_ip, 53, req, #req)
+    local resp, resplens = srey.syn_sendto(fd, skid, dns_ip, 53, req, #req)
     srey.close(fd, skid)
     if not resp then
         return nil
     end
-    return dns.unpack(resp)
+    return dns.unpack(resp, resplens)
 end

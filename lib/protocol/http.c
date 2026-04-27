@@ -28,7 +28,11 @@ static void _check_fileld(http_pack_ctx *pack, http_header_ctx *field, int32_t *
                                      "content-length", sizeof("content-length") - 1,
                                      NULL, 0)) {
         *transfer = CONTENT;
-        pack->data.lens = strtol(field->value.data, NULL, 10);
+        char _lenbuf[24];
+        size_t _cplen = field->value.lens < sizeof(_lenbuf) - 1 ? field->value.lens : sizeof(_lenbuf) - 1;
+        memcpy(_lenbuf, field->value.data, _cplen);
+        _lenbuf[_cplen] = '\0';
+        pack->data.lens = (size_t)strtoul(_lenbuf, NULL, 10);
     } else if (ERR_OK == _http_check_keyval(field,
                                             "transfer-encoding", sizeof("transfer-encoding") - 1,
                                             "chunked", sizeof("chunked") - 1)) {

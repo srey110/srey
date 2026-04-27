@@ -155,6 +155,8 @@ void _free_udp(sock_ctx *skctx);
 void _disconnect(watcher_ctx *watcher, sock_ctx *skctx);
 // 释放listener_ctx
 void _freelsn(struct listener_ctx *lsn);
+// 排空管道时处理未执行的 CMD_UNLSN：关闭 fd，引用归零后释放 lsn
+void _drain_unlsn(SOCKET fd, struct listener_ctx *lsn);
 // 获取sock_ctx对应的ud_cxt指针
 ud_cxt *_get_ud(sock_ctx *skctx);
 // 校验skid是否与当前连接匹配（防止fd复用误操作）

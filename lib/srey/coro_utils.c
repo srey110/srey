@@ -32,7 +32,7 @@ dns_ip *dns_lookup(task_ctx *task, const char *domain, int32_t ipv6, size_t *cnt
     if (NULL == resp) {
         return NULL;
     }
-    return dns_parse_pack(resp, cnt);
+    return dns_parse_pack(resp, lens, cnt);
 }
 SOCKET wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, const char *secprot, uint64_t *skid, int32_t netev) {
     url_ctx url;

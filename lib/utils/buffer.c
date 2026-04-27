@@ -548,6 +548,9 @@ static int32_t _search_memcmp(bufnode_ctx *node, cmp_func cmp, size_t off, char 
     size_t ncomp;
     while (wlen > 0
         && NULL != node) {
+        if (off >= node->off) {
+            return ERR_FAILED;
+        }
         ncomp = wlen + off > node->off ? node->off - off : wlen;
         if (0 != cmp(node->buffer + node->misalign + off, what, ncomp)) {
             return ERR_FAILED;

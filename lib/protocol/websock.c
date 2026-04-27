@@ -137,13 +137,16 @@ static http_header_ctx *_websock_handshake_svcheck(struct http_pack_ctx *hpack) 
     return sign;
 }
 // 计算 WebSocket 握手签名：将 key 与固定字符串拼接后 SHA1 哈希再 base64 编码
-static void _websock_sign(char *key, size_t klens, char b64[B64EN_SIZE(SHA1_BLOCK_SIZE)]) {
+// 返回 ERR_FAILED 表示 key 过长（非法报文）
+static int32_t _websock_sign(char *key, size_t klens, char b64[B64EN_SIZE(SHA1_BLOCK_SIZE)]) {
     /* SIGNKEY 为 36 字节；WebSocket key 是 24 字节的 base64 字符串。
      * 128 字节栈空间完全足够，无需堆分配。 */
     char signstr[128];
     const size_t slens = sizeof(SIGNKEY) - 1;
     const size_t lens  = klens + slens;
-    ASSERTAB(lens < sizeof(signstr), "websocket sign key too long.");
+    if (lens >= sizeof(signstr)) {
+        return ERR_FAILED;
+    }
     memcpy(signstr, key, klens);
     memcpy(signstr + klens, SIGNKEY, slens);
     char sha1str[SHA1_BLOCK_SIZE];
@@ -152,6 +155,7 @@ static void _websock_sign(char *key, size_t klens, char b64[B64EN_SIZE(SHA1_BLOC
     digest_update(&digest, signstr, lens);
     digest_final(&digest, sha1str);
     bs64_encode(sha1str, sizeof(sha1str), b64);
+    return ERR_OK;
 }
 // 服务端握手处理：发送 101 响应并通知上层握手成功（或失败）
 static int32_t _websock_handshake_server(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
@@ -183,7 +187,11 @@ static int32_t _websock_handshake_server(ev_ctx *ev, SOCKET fd, uint64_t skid, i
     http_pack_head(&bwriter, "Upgrade", "websocket");
     http_pack_head(&bwriter, "Connection", "Upgrade");
     char b64[B64EN_SIZE(SHA1_BLOCK_SIZE)];
-    _websock_sign(signstr->value.data, signstr->value.lens, b64);
+    if (ERR_OK != _websock_sign(signstr->value.data, signstr->value.lens, b64)) {
+        FREE(secprot);
+        BIT_SET(*status, PROT_ERROR);
+        return ERR_FAILED;
+    }
     http_pack_head(&bwriter, "Sec-WebSocket-Accept", b64);
     if (NULL != secprot) {
         http_pack_head(&bwriter, "Sec-WebSocket-Protocol", secprot);
@@ -476,6 +484,11 @@ static websock_pack_ctx *_websock_parse_pllens(buffer_ctx *buf, size_t blens,
             BIT_SET(*status, PROT_ERROR);
             return NULL;
         }
+        // 防止 64-bit 长度在 32-bit 平台截断为 size_t 导致分配不足
+        if (pllens > (uint64_t)SIZE_MAX) {
+            BIT_SET(*status, PROT_ERROR);
+            return NULL;
+        }
         MALLOC(pack, sizeof(websock_pack_ctx) + (size_t)pllens);
         pack->dlens = (size_t)pllens;
         if (0 == mask) {
@@ -699,5 +712,5 @@ void _websock_init(void *hspush) {
     char key[8 + 1];
     randstr(key, sizeof(key) - 1);
     bs64_encode(key, sizeof(key) - 1, _hs_key);
-    _websock_sign(_hs_key, strlen(_hs_key), _hs_sign);
+    ASSERTAB(ERR_OK == _websock_sign(_hs_key, strlen(_hs_key), _hs_sign), "websocket sign key too long.");
 }
