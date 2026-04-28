@@ -345,7 +345,10 @@ local function _response_dispatch(msg)
         WARN("can't find session %s.", tostring(msg.sess))
         return
     end
-    _coro_resume(_coro_info(corosess).coro, msg)
+    local coroinfo = _coro_info(corosess)
+    if coroinfo then
+        _coro_resume(coroinfo.coro, msg)
+    end
 end
 
 function srey.sock_session(fd, skid, sess)

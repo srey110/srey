@@ -37,7 +37,7 @@ end
 --ws://host:port
 function wbsk.connect(ws, sslname, secprot, netev)
     local url = srey_url.parse(ws)
-    if "ws" ~= url.scheme or not url.host then
+    if ("ws" ~= url.scheme and "wss" ~= url.scheme) or not url.host then
         return INVALID_SOCK
     end
     local ip = url.host
