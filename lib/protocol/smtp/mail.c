@@ -47,9 +47,11 @@ static void _mail_addr(mail_addr *addr, const char *name, const char *email) {
     if (EMPTYSTR(name)) {
         addr->name[0] = '\0';
     } else {
-        strcpy(addr->name, name);
+        strncpy(addr->name, name, sizeof(addr->name) - 1);
+        addr->name[sizeof(addr->name) - 1] = '\0';
     }
-    strcpy(addr->addr, email);
+    strncpy(addr->addr, email, sizeof(addr->addr) - 1);
+    addr->addr[sizeof(addr->addr) - 1] = '\0';
 }
 void mail_from(mail_ctx *mail, const char *name, const char *email) {
     _mail_addr(&mail->from, name, email);
@@ -70,12 +72,14 @@ void mail_attach_add(mail_ctx *mail, const char *file) {
         return;
     }
     mail_attach att;
-    strcpy(att.file, __FILENAME__(file));
+    strncpy(att.file, __FILENAME__(file), sizeof(att.file) - 1);
+    att.file[sizeof(att.file) - 1] = '\0';
     char *ex = strrchr(att.file, '.');
     if (NULL == ex) {
         att.extension[0] = '\0';
     } else {
-        strcpy(att.extension, ex);
+        strncpy(att.extension, ex, sizeof(att.extension) - 1);
+        att.extension[sizeof(att.extension) - 1] = '\0';
     }
     size_t b64lens = B64EN_SIZE(flens);
     MALLOC(att.content, b64lens);

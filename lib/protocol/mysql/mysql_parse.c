@@ -279,32 +279,43 @@ static mpack_ctx *_mpack_reader_rows(mysql_ctx *mysql, buffer_ctx *buf, binary_c
 // 解析单个列字段描述包（Column Definition），填充 mpack_field 结构体
 static void _mpack_parse_field(binary_ctx *breader, mpack_field *field) {
     char *val;
+    size_t cplen;
     uint64_t lens = _mysql_get_lenenc(breader);
     binary_get_skip(breader, (size_t)lens);//catalog（跳过 catalog 字段）
     lens = _mysql_get_lenenc(breader);
     if (lens > 0) {
         val = binary_get_string(breader, (size_t)lens);
-        memcpy(field->schema, val, (size_t)lens);
+        cplen = lens < sizeof(field->schema) ? (size_t)lens : sizeof(field->schema) - 1;
+        memcpy(field->schema, val, cplen);
+        field->schema[cplen] = '\0';
     }
     lens = _mysql_get_lenenc(breader);
     if (lens > 0) {
         val = binary_get_string(breader, (size_t)lens);
-        memcpy(field->table, val, (size_t)lens);
+        cplen = lens < sizeof(field->table) ? (size_t)lens : sizeof(field->table) - 1;
+        memcpy(field->table, val, cplen);
+        field->table[cplen] = '\0';
     }
     lens = _mysql_get_lenenc(breader);
     if (lens > 0) {
         val = binary_get_string(breader, (size_t)lens);
-        memcpy(field->org_table, val, (size_t)lens);
+        cplen = lens < sizeof(field->org_table) ? (size_t)lens : sizeof(field->org_table) - 1;
+        memcpy(field->org_table, val, cplen);
+        field->org_table[cplen] = '\0';
     }
     lens = _mysql_get_lenenc(breader);
     if (lens > 0) {
         val = binary_get_string(breader, (size_t)lens);
-        memcpy(field->name, val, (size_t)lens);
+        cplen = lens < sizeof(field->name) ? (size_t)lens : sizeof(field->name) - 1;
+        memcpy(field->name, val, cplen);
+        field->name[cplen] = '\0';
     }
     lens = _mysql_get_lenenc(breader);
     if (lens > 0) {
         val = binary_get_string(breader, (size_t)lens);
-        memcpy(field->org_name, val, (size_t)lens);
+        cplen = lens < sizeof(field->org_name) ? (size_t)lens : sizeof(field->org_name) - 1;
+        memcpy(field->org_name, val, cplen);
+        field->org_name[cplen] = '\0';
     }
     _mysql_get_lenenc(breader);//length of fixed length fields（跳过固定长度字段的长度标志）
     field->character = (int16_t)binary_get_integer(breader, 2, 1);

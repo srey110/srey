@@ -99,14 +99,16 @@ static void _binary_va(binary_ctx *ctx, const char *fmt, va_list args) {
     }
     int32_t rtn;
     size_t size;
+    va_list tmp;
     while (1) {
         size = ctx->size - ctx->offset;
-        rtn = vsnprintf(ctx->data + ctx->offset, size, fmt, args);
+        va_copy(tmp, args);
+        rtn = vsnprintf(ctx->data + ctx->offset, size, fmt, tmp);
+        va_end(tmp);
         if (rtn < 0) {
             break;
         }
-        if (rtn >= 0
-            && rtn < (int32_t)size) {
+        if (rtn < (int32_t)size) {
             ctx->offset += rtn;
             break;
         }
@@ -162,9 +164,9 @@ double binary_get_double(binary_ctx *ctx, int32_t islittle) {
 char *binary_get_string(binary_ctx *ctx, size_t lens) {
     char *val = ctx->data + ctx->offset;
     if (0 == lens) {
-        size_t slen = strlen(val) + 1;
         size_t remain = ctx->size - ctx->offset;
-        ctx->offset += (slen > remain ? remain : slen);
+        size_t slen = strnlen(val, remain);
+        ctx->offset += (slen < remain ? slen + 1 : remain);
     } else {
         ASSERTAB(ctx->offset + lens <= ctx->size, "out of memory.");
         ctx->offset += lens;

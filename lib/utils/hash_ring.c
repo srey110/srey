@@ -188,12 +188,13 @@ static hash_ring_item *_find_next_highest_item(hash_ring_ctx *ring, uint64_t dig
     if (0 == ring->nitems) {
         return NULL;
     }
-    uint32_t min = 0;
-    uint32_t max = ring->nitems - 1, midpointindex;
+    int32_t min = 0;
+    int32_t max = (int32_t)ring->nitems - 1;
+    int32_t midpointindex;
     hash_ring_item *item = NULL;
     while (1) {
         if (min > max) {
-            if (min == ring->nitems) {
+            if (min == (int32_t)ring->nitems) {
                 // 超出环末尾，环绕返回第一个节点
                 return ring->items[0];
             } else {
@@ -205,7 +206,7 @@ static hash_ring_item *_find_next_highest_item(hash_ring_ctx *ring, uint64_t dig
         item = ring->items[midpointindex];
         if (item->digest > digest) {
             // key 在左半区间
-            max = midpointindex - 1;
+            max = midpointindex - 1;  // int32_t 可降至 -1，不再下溢
         } else if (item->digest <= digest) {
             // key 在右半区间
             min = midpointindex + 1;

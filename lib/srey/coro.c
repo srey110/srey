@@ -56,7 +56,9 @@ static uint64_t _map_cosess_hash(const void *item, uint64_t seed0, uint64_t seed
 // 比较两个 coro_sess 节点（按 sess 升序）
 static int _map_cosess_compare(const void *a, const void *b, void *ud) {
     (void)ud;
-    return (int)(((coro_sess *)a)->sess - ((coro_sess *)b)->sess);
+    uint64_t sa = ((const coro_sess *)a)->sess;
+    uint64_t sb = ((const coro_sess *)b)->sess;
+    return (sa < sb) ? -1 : (sa > sb) ? 1 : 0;
 }
 // 创建 timeout_entry 并插入超时堆，返回堆节点指针（用于后续删除）
 static timeout_entry *_te_insert(coro_ctx *coctx, uint64_t timeout, uint64_t sess) {
@@ -359,12 +361,20 @@ static void _closed_dispatch(task_dispatch_arg *arg) {
     coro_sess *cosess = _map_cosess_get(coctx, arg->msg.skid, (msg_type)arg->msg.mtype);
     if (NULL != cosess) {
         mco_coro *coro;
-        /* Drain all waiting coroutines BEFORE deleting from hashmap (pointer stays valid) */
-        while (NULL != (coro = _get_mco(arg->task, cosess))) {
-            _co_resume(coro, arg);
-        }
-        if (!cosess->disposable) {
-            qu_coinfo_free(&cosess->qucoinfo); /* free the inline queue's internal ptr array */
+        if (cosess->disposable) {
+            /* disposable 只有一个协程，_get_mco 不消耗节点，不能循环 */
+            coro = _get_mco(arg->task, cosess);
+            if (NULL != coro) {
+                _co_resume(coro, arg);
+                arg->msg.data = NULL; /* _co_resume 已清理，置 NULL 防后续重复释放 */
+            }
+        } else {
+            /* non-disposable：排空队列，每次 resume 后置 NULL 防重复释放 */
+            while (NULL != (coro = _get_mco(arg->task, cosess))) {
+                _co_resume(coro, arg);
+                arg->msg.data = NULL;
+            }
+            qu_coinfo_free(&cosess->qucoinfo);
         }
         _map_cosess_delete(coctx, arg->msg.skid);
     }

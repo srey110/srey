@@ -4,6 +4,8 @@
 #include "crypt/scram.h"
 #include "protocol/prots.h"
 
+#define MONGO_MAX_PACK_SIZE (64 * 1024 * 1024)  // MongoDB 单包上限 64MB
+
 typedef enum parse_status {
     COMMAND = 0,
     AUTH
@@ -130,6 +132,10 @@ void *mongo_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     uint32_t total;
     ASSERTAB(sizeof(total) == buffer_copyout(buf, 0, &total, sizeof(total)), "copy buffer failed.");
     total = (uint32_t)unpack_integer((const char *)&total, sizeof(total), 1, 0);
+    if (total < 16 || total > MONGO_MAX_PACK_SIZE) {
+        BIT_SET(*status, PROT_ERROR);
+        return NULL;
+    }
     if (blens < (size_t)total) {
         BIT_SET(*status, PROT_MOREDATA);
         return NULL;
@@ -192,28 +198,35 @@ void mongo_init(mongo_ctx *mongo, const char *ip, uint16_t port, struct evssl_ct
     ZERO(mongo, sizeof(mongo_ctx));
     mongo->reqid = 1;
     mongo->fd = INVALID_SOCK;
-    strcpy(mongo->ip, ip);
+    strncpy(mongo->ip, ip, sizeof(mongo->ip) - 1);
+    mongo->ip[sizeof(mongo->ip) - 1] = '\0';
     mongo->port = 0 == port ? 27017 : port;
     mongo->evssl = evssl;
     if (EMPTYSTR(db)) {
         strcpy(mongo->db, "admin");
     } else {
-        strcpy(mongo->db, db);
+        strncpy(mongo->db, db, sizeof(mongo->db) - 1);
+        mongo->db[sizeof(mongo->db) - 1] = '\0';
     }
 }
 void mongo_db(mongo_ctx *mongo, const char *db) {
-    strcpy(mongo->db, db);
+    strncpy(mongo->db, db, sizeof(mongo->db) - 1);
+    mongo->db[sizeof(mongo->db) - 1] = '\0';
     mongo->collection[0] = '\0';
 }
 void mongo_authdb(mongo_ctx *mongo, const char *db) {
-    strcpy(mongo->authdb, db);
+    strncpy(mongo->authdb, db, sizeof(mongo->authdb) - 1);
+    mongo->authdb[sizeof(mongo->authdb) - 1] = '\0';
 }
 void mongo_collection(mongo_ctx *mongo, const char *collection) {
-    strcpy(mongo->collection, collection);
+    strncpy(mongo->collection, collection, sizeof(mongo->collection) - 1);
+    mongo->collection[sizeof(mongo->collection) - 1] = '\0';
 }
 void mongo_user_pwd(mongo_ctx *mongo, const char *user, const char *pwd) {
-    strcpy(mongo->user, user);
-    strcpy(mongo->password, pwd);
+    strncpy(mongo->user, user, sizeof(mongo->user) - 1);
+    mongo->user[sizeof(mongo->user) - 1] = '\0';
+    strncpy(mongo->password, pwd, sizeof(mongo->password) - 1);
+    mongo->password[sizeof(mongo->password) - 1] = '\0';
 }
 const char *mongo_error(mongo_ctx *mongo) {
     return mongo->error;

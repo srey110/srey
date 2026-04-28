@@ -374,17 +374,19 @@ int32_t buffer_appendv(buffer_ctx *ctx, const char *fmt, ...) {
     int32_t rtn, size;
     bufnode_ctx *node = _buffer_expand_single(ctx, FIRST_FORMAT_IN_EXPAND);
     node->used = 1;
+    va_list tmp;
     va_start(va, fmt);
     while (1) {
         size = (int32_t)NODE_SPACE_LEN(node);
-        rtn = vsnprintf(NODE_SPACE_PTR(node), (size_t)size, fmt, va);
+        va_copy(tmp, va);
+        rtn = vsnprintf(NODE_SPACE_PTR(node), (size_t)size, fmt, tmp);
+        va_end(tmp);
         if (rtn < 0) {
             node->used = 0;
             va_end(va);
             return ERR_FAILED;
         }
-        if (rtn >= 0
-            && rtn < size) {
+        if (rtn < size) {
             node->used = 0;
             node->off += rtn;
             ctx->total_lens += rtn;

@@ -116,10 +116,16 @@ evssl_ctx *evssl_p12_new(const char *p12, const char *pwd) {
     }
     if (1 != SSL_CTX_use_cert_and_key(evssl->ssl, cert, key, ca, 0)) {
         SSLCTX_ERRO();
+        X509_free(cert);
+        EVP_PKEY_free(key);
+        sk_X509_pop_free(ca, X509_free);
         PKCS12_free(pk12);
         evssl_free(evssl);
         return NULL;
     }
+    X509_free(cert);
+    EVP_PKEY_free(key);
+    sk_X509_pop_free(ca, X509_free);
     PKCS12_free(pk12);
     _ssl_options(evssl);
     return evssl;

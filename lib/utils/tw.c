@@ -61,21 +61,27 @@ void tw_add(tw_ctx *ctx, const uint32_t timeout, tw_cb _cb, free_cb _freecb, ud_
 // 根据节点的到期时间计算应放入 tv1～tv5 中的哪个槽位
 static tw_slot_ctx *_getslot(tw_ctx *ctx, tw_node_ctx *node) {
     tw_slot_ctx *slot;
-    uint32_t idx = (uint32_t)(node->expires - ctx->jiffies);
-    if ((int32_t)idx < 0) {
-        slot = &ctx->tv1[(ctx->jiffies & TVR_MASK)];
-    } else if (idx < TVR_SIZE) {
+    if (node->expires <= ctx->jiffies) {
+        // 已过期：放入当前 jiffies 对应的 tv1 槽，下一次 _run 立即触发
+        return &ctx->tv1[(ctx->jiffies & TVR_MASK)];
+    }
+    uint64_t idx = node->expires - ctx->jiffies;
+    if (idx < TVR_SIZE) {
+        // tv1：超时在 [1, 255] ms 内，直接按到期时间低 8 位定槽
         slot = &ctx->tv1[(node->expires & TVR_MASK)];
-    } else if (idx < 1 << (TVR_BITS + TVN_BITS)) {
+    } else if (idx < 1UL << (TVR_BITS + TVN_BITS)) {
+        // tv2：超时在 [256, 16383] ms 内，取到期时间第 8~13 位定槽
         slot = &ctx->tv2[((node->expires >> TVR_BITS) & TVN_MASK)];
-    } else if (idx < 1 << (TVR_BITS + 2 * TVN_BITS)) {
+    } else if (idx < 1UL << (TVR_BITS + 2 * TVN_BITS)) {
+        // tv3：超时在 [16384, 1048575] ms (~17 min) 内，取到期时间第 14~19 位定槽
         slot = &ctx->tv3[((node->expires >> (TVR_BITS + TVN_BITS)) & TVN_MASK)];
-    } else if (idx < 1 << (TVR_BITS + 3 * TVN_BITS)) {
+    } else if (idx < 1UL << (TVR_BITS + 3 * TVN_BITS)) {
+        // tv4：超时在 [1048576, 67108863] ms (~18.6 h) 内，取到期时间第 20~25 位定槽
         slot = &ctx->tv4[((node->expires >> (TVR_BITS + 2 * TVN_BITS)) & TVN_MASK)];
     } else {
+        // tv5：超时在 [67108864, 0xffffffff] ms (~49.7 d) 内，超出上限则截断到最大值
         if (idx > 0xffffffffUL) {
-            idx = 0xffffffffUL;
-            node->expires = idx + ctx->jiffies;
+            node->expires = ctx->jiffies + 0xffffffffUL;
         }
         slot = &ctx->tv5[((node->expires >> (TVR_BITS + 3 * TVN_BITS)) & TVN_MASK)];
     }
@@ -133,13 +139,11 @@ static void _loop(void *arg) {
         }
         ctx->reqadd.head = ctx->reqadd.tail = NULL;
         spin_unlock(&ctx->spin);
-
         /* 2. 处理所有已到期的 jiffies */
         curtick = timer_cur_ms(&ctx->timer);
         while (ctx->jiffies <= curtick) {
             _run(ctx);
         }
-
         /* 3. 精确睡眠直到下一个 jiffy 到期，而非固定 1ms 空转。
          *    sleep_ms = max(1, min(next_jiffy - now, 10))
          *    上限 10ms 保证不会因时钟偏差或系统负载导致长时间错过到期。

@@ -316,7 +316,7 @@ int32_t pgsql_init(pgsql_ctx *pg, const char *ip, uint16_t port, struct evssl_ct
     strcpy(pg->ip, ip);
     strcpy(pg->user, user);
     strcpy(pg->password, password);
-    strcpy(pg->database, database);
+    strcpy(pg->database, NULL != database ? database : "");
     pg->port = 0 == port ? 5432 : port;
     pg->fd = INVALID_SOCK;
     pg->evssl = evssl;
@@ -343,7 +343,7 @@ int32_t pgsql_affected_rows(pgpack_ctx *pgpack) {
     }
     // 从命令完成标签末尾反向找最后一个空格，取其后的数字字符串
     int32_t space = 1;
-    for (size_t i = lens - 1; i >= 0; i--) {
+    for (int32_t i = (int32_t)lens - 1; i >= 0; i--) {
         if (space) {
             if (' ' != pgpack->complete[i]) {
                 space = 0;

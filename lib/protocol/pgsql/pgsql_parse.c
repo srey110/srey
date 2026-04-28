@@ -98,14 +98,17 @@ static pgsql_reader_ctx *_pgpack_reader_init(pgpack_ctx *pgpack) {
 static void _pgpack_row_description(pgpack_ctx *pgpack, binary_ctx *breader) {
     pgsql_reader_ctx *reader = _pgpack_reader_init(pgpack);
     reader->field_count = (int16_t)binary_get_integer(breader, 2, 0);
-    if (0 == reader->field_count) {
+    if (reader->field_count <= 0) {
         return;
     }
-    MALLOC(reader->fields, sizeof(pgpack_field) * reader->field_count);
+    MALLOC(reader->fields, sizeof(pgpack_field) * (size_t)reader->field_count);
+    char *fname;
     pgpack_field *field;
     for (int16_t i = 0; i < reader->field_count; i++) {
         field = &reader->fields[i];
-        strcpy(field->name, binary_get_string(breader, 0));
+        fname = binary_get_string(breader, 0);
+        strncpy(field->name, fname, sizeof(field->name) - 1);
+        field->name[sizeof(field->name) - 1] = '\0';
         field->table_oid = (int32_t)binary_get_integer(breader, 4, 0);
         field->index = (int16_t)binary_get_integer(breader, 2, 0);
         field->type_oid = (int32_t)binary_get_integer(breader, 4, 0);
@@ -117,7 +120,7 @@ static void _pgpack_row_description(pgpack_ctx *pgpack, binary_ctx *breader) {
 // 解析 DataRow（'D'），将列值追加到 reader 的行数组中（接管 breader->data 所有权）
 static void _pgpack_data_row(pgpack_ctx *pgpack, binary_ctx *breader) {
     int16_t ncolumn = (int16_t)binary_get_integer(breader, 2, 0);
-    if (0 == ncolumn) {
+    if (ncolumn <= 0) {
         FREE(breader->data);
         return;
     }
@@ -127,7 +130,7 @@ static void _pgpack_data_row(pgpack_ctx *pgpack, binary_ctx *breader) {
     }
     pgpack_row *row;
     pgpack_row *rows;
-    MALLOC(rows, sizeof(pgpack_row) * ncolumn);
+    MALLOC(rows, sizeof(pgpack_row) * (size_t)ncolumn);
     rows->payload = breader->data; // 首列持有原始消息缓冲区所有权
     for (int16_t i = 0; i < ncolumn; i++) {
         row = &rows[i];
@@ -203,7 +206,8 @@ pgpack_ctx *_pgpack_parser(pgsql_ctx *pg, binary_ctx *breader, ud_cxt *ud, int32
         _pgpack_init(pg, PGPACK_OK);
         char *complete = binary_get_string(breader, 0);
         if (!EMPTYSTR(complete)) {
-            strcpy(pg->pack->complete, complete);
+            strncpy(pg->pack->complete, complete, sizeof(pg->pack->complete) - 1);
+            pg->pack->complete[sizeof(pg->pack->complete) - 1] = '\0';
         }
         FREE(breader->data);
         break;

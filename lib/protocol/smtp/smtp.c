@@ -41,12 +41,15 @@ void _smtp_closed(ud_cxt *ud) {
 }
 void smtp_init(smtp_ctx *smtp, const char *ip, uint16_t port, struct evssl_ctx *evssl, const char *user, const char *psw) {
     ZERO(smtp, sizeof(smtp_ctx));
-    memcpy(smtp->ip, ip, strlen(ip));
+    strncpy(smtp->ip, ip, sizeof(smtp->ip) - 1);
+    smtp->ip[sizeof(smtp->ip) - 1] = '\0';
     smtp->port = port;
     smtp->evssl = evssl;
     smtp->fd = INVALID_SOCK;
-    memcpy(smtp->user, user, strlen(user));
-    memcpy(smtp->psw, psw, strlen(psw));
+    strncpy(smtp->user, user, sizeof(smtp->user) - 1);
+    smtp->user[sizeof(smtp->user) - 1] = '\0';
+    strncpy(smtp->psw, psw, sizeof(smtp->psw) - 1);
+    smtp->psw[sizeof(smtp->psw) - 1] = '\0';
 }
 int32_t smtp_try_connect(task_ctx *task, smtp_ctx *smtp) {
     smtp->task = task;
