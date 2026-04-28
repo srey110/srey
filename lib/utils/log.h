@@ -9,6 +9,10 @@
 /// <param name="file">输出句柄</param>
 void log_init(FILE *file);
 /// <summary>
+/// 停止日志 I/O 线程，刷新并释放资源
+/// </summary>
+void log_free(void);
+/// <summary>
 /// 设置日志级别
 /// </summary>
 /// <param name="lv">LOG_LEVEL</param>

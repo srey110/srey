@@ -47,7 +47,8 @@ int main(int argc, char *argv[]) {
 
     _memcheck();
     sock_clean();
-
+    log_free();
+    
     /* 任一层有失败则返回非零，便于 CI 捕获 */
     return (unit_failed > 0 || intg_failed > 0) ? 1 : 0;
 }

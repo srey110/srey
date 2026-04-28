@@ -91,6 +91,7 @@ static int32_t service_exit(void) {
     loader_free(g_loader);
     mutex_free(&muexit);
     cond_free(&condexit);
+    log_free();
     _memcheck();
     if (NULL != logstream) {
         fclose(logstream);
