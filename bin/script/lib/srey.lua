@@ -267,8 +267,10 @@ local function _timeout_dispatch(msg)
     end
     if coroinfo.func then
         _coro_run(_coro_cb, coroinfo.func, tunpack(coroinfo.args))
-    else
+    elseif coroinfo.coro then
         _coro_resume(coroinfo.coro, msg)
+    else
+        WARN("coroinfo has neither func nor coro, sess %s.", tostring(msg.sess))
     end
 end
 

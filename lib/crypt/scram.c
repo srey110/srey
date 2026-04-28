@@ -33,10 +33,12 @@ void scram_set_user(scram_ctx *scram, const char *user) {
     if (!scram->client) {
         return;
     }
-    strcpy(scram->user, user);
+    strncpy(scram->user, user, sizeof(scram->user) - 1);
+    scram->user[sizeof(scram->user) - 1] = '\0';
 }
 void scram_set_pwd(scram_ctx *scram, const char *pwd) {
-    strcpy(scram->pwd, pwd);
+    strncpy(scram->pwd, pwd, sizeof(scram->pwd) - 1);
+    scram->pwd[sizeof(scram->pwd) - 1] = '\0';
 }
 void scram_set_salt(scram_ctx *scram, char *salt, size_t lens) {
     if (scram->client) {
@@ -115,7 +117,7 @@ static char *_scram_attr_search(char *msg, size_t mlens, const char *attr) {
         }
         pos++;
         remain = mlens - (pos - msg);
-        if (remain <= 0) {
+        if (0 == remain) {
             return NULL;
         }
     }
@@ -254,9 +256,16 @@ static int32_t _scram_parse_client_first_message(scram_ctx *scram, char *msg, si
     if (NULL != memstr(0, user, lens, "=2C", 3)
         || NULL != memstr(0, user, lens, "=3D", 3)) {
         user = _scram_username_recover(user, lens);
+        if (strlen(user) >= sizeof(scram->user)) {
+            FREE(user);
+            return ERR_FAILED;
+        }
         strcpy(scram->user, user);
         FREE(user);
     } else {
+        if (lens >= sizeof(scram->user)) {
+            return ERR_FAILED;
+        }
         memcpy(scram->user, user, lens);
         scram->user[lens] = '\0';
     }

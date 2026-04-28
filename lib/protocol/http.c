@@ -228,7 +228,12 @@ static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_t *status
             return NULL;
         }
         ASSERTAB(pos == (int32_t)buffer_copyout(buf, 0, lensbuf, pos), "copy buffer failed.");
-        size_t dlens = strtol(lensbuf, NULL, 16);
+        char *_endptr;
+        size_t dlens = (size_t)strtoul(lensbuf, &_endptr, 16);
+        if (_endptr == lensbuf) {
+            BIT_SET(*status, PROT_ERROR);
+            return NULL;
+        }
         if (PACK_TOO_LONG(dlens)) {
             BIT_SET(*status, PROT_ERROR);
             return NULL;

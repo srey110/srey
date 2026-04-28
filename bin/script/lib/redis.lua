@@ -13,7 +13,7 @@ function redis.connect(ip, port, sslname, psw, netev)
     end
     local auth = redis.pack("AUTH", psw)
     local rtn, _ = srey.syn_send(fd, skid, auth, #auth, 1)
-    if not rtn or "OK" ~= redis.unpack(rtn) then
+    if not rtn or #rtn == 0 or "OK" ~= redis.unpack(rtn) then
         srey.close(fd, skid)
         return INVALID_SOCK
     end

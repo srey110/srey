@@ -18,8 +18,8 @@ static void _mail_attach_free(arr_mail_attach_ctx *attach) {
 void mail_free(mail_ctx *mail) {
     FREE(mail->subject);
     FREE(mail->msg);
-    FREE(mail->html)
-        arr_mail_addr_free(&mail->addrs);
+    FREE(mail->html);
+    arr_mail_addr_free(&mail->addrs);
     _mail_attach_free(&mail->attach);
     arr_mail_attach_free(&mail->attach);
 }
@@ -228,7 +228,9 @@ char *mail_pack(mail_ctx *mail) {
             }
         }
     } else {
-        binary_set_string(&bwriter, mail->msg, strlen(mail->msg));
+        if (!EMPTYSTR(mail->msg)) {
+            binary_set_string(&bwriter, mail->msg, strlen(mail->msg));
+        }
     }
     binary_set_string(&bwriter, "\r\n.\r\n", 0);
     return bwriter.data;
