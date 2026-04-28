@@ -72,28 +72,39 @@ local function _timeout()
     local reader = mctx:query(sql)
     if not reader then
         printd(mctx:erro())
+        return
     end
     print_reader(reader)
 
     local stmt = mctx:prepare("select * from test_bind")
     if not stmt then
         printd(mctx:erro())
+        return
     end
     reader = stmt:execute()
+    if not reader then
+        printd(mctx:erro())
+        return
+    end
     print_reader(reader)
 
     stmt = mctx:prepare("select * from test_bind where t_int8=?")
     if not stmt then
         printd(mctx:erro())
+        return
     end
     bind:clear()
     bind:integer("t_int8", 2);
     reader = stmt:execute(bind)
+    if not reader then
+        printd(mctx:erro())
+        return
+    end
     print_reader(reader)
 
     sql = "delete from test_bind"
     rtn = mctx:query(sql)
-    if not reader then
+    if not rtn then
         printd(mctx:erro())
     end
     print("affectd rows:"..mctx:affectd_rows())

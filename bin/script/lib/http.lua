@@ -58,7 +58,9 @@ local function _http_send(rsp, fd, skid, msg, ckfunc)
                 return
             end
             hdata, hsize = http.data(data)
-            ckfunc(fin, hdata, hsize)
+            if ckfunc then
+                ckfunc(fin, hdata, hsize)
+            end
             if hsize then
                 pack.cksize = pack.cksize + hsize
             end
