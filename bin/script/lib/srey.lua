@@ -749,6 +749,9 @@ local function _coro_timeout()
         local coroinfo
         for _, sess in ipairs(timeout) do
             corosess = coro_sess[sess]
+            if not corosess then
+                goto continue
+            end
             if corosess.disposable then
                 coro_sess[sess] = nil
             end
@@ -761,6 +764,7 @@ local function _coro_timeout()
                 _coro_resume(coroinfo.coro, msg)
                 WARN("resume timeout session %s.", tostring(sess))
             end
+            ::continue::
         end
     end
     srey.timeout(3 * 1000, _coro_timeout)
