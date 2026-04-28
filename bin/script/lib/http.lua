@@ -49,6 +49,9 @@ local function _http_send(rsp, fd, skid, msg, ckfunc)
     end
     pack = http.unpack(pack)
     if 1 == pack.chunked then
+        if not ckfunc then
+            return pack
+        end
         pack.cksize = 0
         pack.fin = false
         local ok, data, hdata, hsize, fin
@@ -58,9 +61,7 @@ local function _http_send(rsp, fd, skid, msg, ckfunc)
                 return
             end
             hdata, hsize = http.data(data)
-            if ckfunc then
-                ckfunc(fin, hdata, hsize)
-            end
+            ckfunc(fin, hdata, hsize)
             if hsize then
                 pack.cksize = pack.cksize + hsize
             end
