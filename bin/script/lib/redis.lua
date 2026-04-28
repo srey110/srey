@@ -1,7 +1,9 @@
 local srey = require("lib.srey")
 local srey_redis = require("srey.redis")
-local table = table
-local redis = {}
+local table   = table
+local tremove = table.remove
+local redis   = {}
+local mark_pool = {}
 
 function redis.connect(ip, port, sslname, psw, netev)
     local fd, skid = srey.connect(PACK_TYPE.REDIS, sslname, ip, port, netev)
@@ -61,29 +63,29 @@ local function _update_mark(mark)
         if mk.nelem > 0 then
             break
         end
-        table.remove(mark, #mark)
+        mark[#mark] = nil          -- 弹出栈顶
         attr = _is_attr(mk.agg)
         mk.agg.resp_nelem = nil
-        mk.agg.resp_type = nil
+        mk.agg.resp_type  = nil
+        -- 清空字段后归还到池，供下次 _add_mark 复用
+        mk.status = nil
+        mk.nelem  = nil
+        mk.key    = nil
+        mk.agg    = nil
+        mark_pool[#mark_pool + 1] = mk
         if attr then
             break
         end
     end
 end
 local function _add_mark(mark, val)
-    local nelem
-    if _is_map(val) then
-        nelem = val.resp_nelem * 2
-    else
-        nelem = val.resp_nelem
-    end
-    table.insert(mark,
-    {
-        status = 0,
-        nelem = nelem,
-        key = nil,
-        agg = val
-    })
+    local nelem = _is_map(val) and val.resp_nelem * 2 or val.resp_nelem
+    local mk = tremove(mark_pool) or {}
+    mk.status = 0
+    mk.nelem  = nelem
+    mk.key    = nil
+    mk.agg    = val
+    mark[#mark + 1] = mk
 end
 local function _single_node(pk)
     local val = redis.value(pk)

@@ -102,7 +102,9 @@ local function _http_msg(rsp, fd, skid, status, headers, ckfunc, info, ...)
                 table.insert(msg, "\r\n")
                 smsg = table.concat(msg)
                 srey.send(fd, skid, smsg, #smsg, 1)
-                msg = {}
+                for i = #msg, 1, -1 do
+                     msg[i] = nil
+                end
             else
                 table.insert(msg, "0\r\n\r\n")
                 return _http_send(rsp, fd, skid, msg, ckfunc)

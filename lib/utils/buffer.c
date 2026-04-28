@@ -348,6 +348,19 @@ int32_t buffer_append(buffer_ctx *ctx, void *data, const size_t lens) {
         ctx->total_lens   += lens;
         return ERR_OK;
     }
+    /* 对齐恢复路径：快路径因空间不足失败，但 tail 有 misalign 可回收。
+     * _align 将已有数据前移（misalign→0），使空闲区连续，再做单次 memcpy，
+     * 避免进入 _buffer_expand 的跨节点分散写流程。 */
+    if (NULL != tail
+        && 0 == tail->used
+        && tail->misalign > 0
+        && _should_realign(tail, lens)) {
+        _align(tail);
+        memcpy(NODE_SPACE_PTR(tail), data, lens);
+        tail->off       += lens;
+        ctx->total_lens += lens;
+        return ERR_OK;
+    }
     /* 慢速路径：走完整的 expand + commit 流程 */
     char *tmp = (char*)data;
     IOV_TYPE iov[MAX_EXPAND_NIOV];

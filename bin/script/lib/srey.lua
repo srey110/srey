@@ -15,12 +15,14 @@ local coroutine_resume = coroutine.resume
 local cur_task = _curtask
 local TASK_NAME = TASK_NAME
 local SSL_NAME = SSL_NAME
+local CORO_POOL_MAX = 128
 local coro_running = nil
 local coro_sess = {}
 local func_cbs = {}
 local srey = {}
 local nyield = 0
-local coro_pool = setmetatable({}, { __mode = "kv" })
+local coro_pool     = {}
+local coroinfo_pool = {}
 local MSG_TYPE = {
     STARTUP    = 0x01,
     CLOSING    = 0x02,
@@ -42,6 +44,18 @@ local SLICE_TYPE = {
     END   = 0x04,
 }
 
+local function _coroinfo_acquire()
+    return tremove(coroinfo_pool) or {}
+end
+local function _coroinfo_release(ci)
+    ci.timeout = nil
+    ci.coro    = nil
+    ci.mtype   = nil
+    ci.func    = nil
+    ci.args    = nil
+    coroinfo_pool[#coroinfo_pool + 1] = ci
+end
+
 function srey.xpcall(func, ...)
     local function _error(err)
         ERROR("%s\n%s.", err, debug.traceback())
@@ -57,20 +71,39 @@ function srey.dostring(str)
     return srey.xpcall(func)
 end
 
+-- 从协程池取一个空闲协程并绑定新任务函数 func，池为空时新建。
+-- 协程生命周期：
+--   1. 首次创建：以 func 为入口启动，执行完毕后进入复用循环。
+--   2. 复用循环：
+--      a. 将 func 置 nil（断开对上一个任务闭包的引用，便于 GC）。
+--      b. 若池未满，将自身压入 coro_pool，然后 yield 让出控制权，
+--         等待下一次被 coroutine_resume(coro, newFunc) 唤醒。
+--      c. 被唤醒后收到 newFunc，再次 yield 等待调用方传入实参 (...)，
+--         收到实参后执行 newFunc(...)，执行完毕回到步骤 a。
+--      d. 若池已满（>= CORO_POOL_MAX），break 退出循环，协程自然结束，
+--         由 GC 回收，避免池无界增长导致大量协程栈长期占用内存。
+-- 复用路径（池命中）：
+--   直接 coroutine_resume(coro, func) 将 func 注入已在 yield 等待的协程，
+--   协程收到 func 后再次 yield 等待实参，调用方拿到 coro 后继续传参。
 local function _coro_create(func)
     local coro = tremove(coro_pool)
     if not coro then
+        -- 池为空，新建协程；协程体捕获 func/coro 两个 upvalue
         coro = coroutine_create(
             function(...)
-                func(...)
+                func(...)           -- 执行首次传入的任务
                 while true do
-                    func = nil
-                    coro_pool[#coro_pool + 1] = coro
-                    func = coroutine_yield()
-                    func(coroutine_yield())
+                    func = nil      -- 释放上一个任务的引用
+                    if #coro_pool >= CORO_POOL_MAX then
+                        break       -- 池满，协程退出，交 GC 回收
+                    end
+                    coro_pool[#coro_pool + 1] = coro  -- 归还到池
+                    func = coroutine_yield()           -- 等待下一个任务函数
+                    func(coroutine_yield())            -- 等待实参后执行
                 end
             end)
     else
+        -- 池命中：将新 func 注入正在 yield 处等待的协程
         coroutine_resume(coro, func)
     end
     return coro
@@ -175,13 +208,12 @@ local function _set_coro_sess(disposable, coro, sess, mtype, ms, func, ...)
     if ms > 0 then
         timeout = srey.timer_ms() + ms
     end
-    local coroinfo = {
-        timeout = timeout,
-        coro = coro,
-        mtype = mtype,
-        func = func,
-        args = {...}
-    }
+    local coroinfo = _coroinfo_acquire()
+    coroinfo.timeout = timeout
+    coroinfo.coro    = coro
+    coroinfo.mtype   = mtype
+    coroinfo.func    = func
+    coroinfo.args    = func and {...} or nil
     if disposable then
         assert(not coro_sess[sess], "repeat session")
         coro_sess[sess] = {
@@ -266,11 +298,16 @@ local function _timeout_dispatch(msg)
         return
     end
     if coroinfo.func then
-        _coro_run(_coro_cb, coroinfo.func, tunpack(coroinfo.args))
+        local func, args = coroinfo.func, coroinfo.args
+        _coroinfo_release(coroinfo)
+        _coro_run(_coro_cb, func, tunpack(args))
     elseif coroinfo.coro then
-        _coro_resume(coroinfo.coro, msg)
+        local coro = coroinfo.coro
+        _coroinfo_release(coroinfo)
+        _coro_resume(coro, msg)
     else
         WARN("coroinfo has neither func nor coro, sess %s.", tostring(msg.sess))
+        _coroinfo_release(coroinfo)
     end
 end
 
@@ -349,7 +386,9 @@ local function _response_dispatch(msg)
     end
     local coroinfo = _coro_info(corosess)
     if coroinfo then
-        _coro_resume(coroinfo.coro, msg)
+        local coro = coroinfo.coro
+        _coroinfo_release(coroinfo)
+        _coro_resume(coro, msg)
     end
 end
 
@@ -439,7 +478,9 @@ local function _net_connect_dispatch(msg)
     else
         local coroinfo = _coro_info(corosess)
         if coroinfo then
-            _coro_resume(coroinfo.coro, msg)
+            local coro = coroinfo.coro
+            _coroinfo_release(coroinfo)
+            _coro_resume(coro, msg)
         else
             if func then
                 _coro_run(_coro_cb, func, msg.pktype, msg.fd, msg.skid, msg.erro)
@@ -492,7 +533,9 @@ local function _net_ssl_exchanged_dispatch(msg)
     else
         local coroinfo = _coro_info(corosess)
         if coroinfo then
-            _coro_resume(coroinfo.coro, msg)
+            local coro = coroinfo.coro
+            _coroinfo_release(coroinfo)
+            _coro_resume(coro, msg)
         else
             if func then
                 _coro_run(_coro_cb, func, msg.pktype, msg.fd, msg.skid, msg.client)
@@ -529,7 +572,9 @@ local function _net_handshaked_dispatch(msg)
     else
         local coroinfo = _coro_info(corosess)
         if coroinfo then
-            _coro_resume(coroinfo.coro, msg)
+            local coro = coroinfo.coro
+            _coroinfo_release(coroinfo)
+            _coro_resume(coro, msg)
         else
             if func then
                 _coro_run(_coro_cb, func, msg.pktype, msg.fd, msg.skid, msg.client, msg.erro, msg.data, msg.size)
@@ -628,7 +673,9 @@ local function _net_recv_dispatch(msg)
     end
     local coroinfo = _coro_info(corosess)
     if coroinfo then
-        _coro_resume(coroinfo.coro, msg)
+        local coro = coroinfo.coro
+        _coroinfo_release(coroinfo)
+        _coro_resume(coro, msg)
     else
         if func then
             _coro_run(_coro_cb, func, msg.pktype, msg.fd, msg.skid, msg.client, msg.slice, msg.data, msg.size)
@@ -658,13 +705,15 @@ local function _net_close_dispatch(msg)
     local func = func_cbs[MSG_TYPE.CLOSE]
     local corosess = _get_coro_sess(msg.skid, MSG_TYPE.CLOSE)
     if corosess then
-        local coroinfo
+        local coroinfo, coro
         while true do
             coroinfo = _coro_info(corosess)
             if not coroinfo then
                 break
             end
-            _coro_resume(coroinfo.coro, msg)
+            coro = coroinfo.coro
+            _coroinfo_release(coroinfo)
+            _coro_resume(coro, msg)
         end
     end
     if func then
@@ -722,7 +771,9 @@ local function _net_recvfrom_dispatch(msg)
     end
     local coroinfo = _coro_info(corosess)
     if coroinfo then
-        _coro_resume(coroinfo.coro, msg)
+        local coro = coroinfo.coro
+        _coroinfo_release(coroinfo)
+        _coro_resume(coro, msg)
     else
         if func then
             _coro_run(_coro_cb, func, msg.fd, msg.skid, msg.ip, msg.port, msg.udata, msg.size)
@@ -759,11 +810,13 @@ local function _coro_timeout()
             end
             coroinfo = _coro_info(corosess)
             if coroinfo then
+                local coro = coroinfo.coro
+                _coroinfo_release(coroinfo)
                 local msg = {
                     mtype = MSG_TYPE.TIMEOUT,
                     sess = sess
                 }
-                _coro_resume(coroinfo.coro, msg)
+                _coro_resume(coro, msg)
                 WARN("resume timeout session %s.", tostring(sess))
             end
             ::continue::

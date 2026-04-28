@@ -55,13 +55,16 @@ function table_nullorempty(tb)
     end
     return true
 end
+local _RANDSTR_CHARS = {
+    "0","1","2","3","4","5","6","7","8","9",
+    "a","b","c","d","e","f","g","h","i","j","k","l","m","n","o","p","q","r","s","t","u","v","w","x","y","z",
+    "A","B","C","D","E","F","G","H","I","J","K","L","M","N","O","P","Q","R","S","T","U","V","W","X","Y","Z"
+}
+local _RANDSTR_LEN = #_RANDSTR_CHARS
 function randstr(cnt)
-    local char = {"0","1","2","3","4","5","6","7","8","9",
-                  "a","b","c","d","e","f","g","h","i","j","k","l","m","n","o","p","q","r","s","t","u","v","w","x","y","z",
-                  "A","B","C","D","E","F","G","H","I","J","K","L","M","N","O","P","Q","R","S","T","U","V","W","X","Y","Z"}
     local rtn = {}
-    for i =1, cnt do
-        table.insert(rtn, char[math.random(#char)])
+    for i = 1, cnt do
+        rtn[i] = _RANDSTR_CHARS[math.random(_RANDSTR_LEN)]
     end
     return table.concat(rtn)
 end
@@ -103,13 +106,19 @@ function dump(obj, offset)
     end
     local isArray = function(arr)
         local count = 0
-        for k, v in pairs(arr) do
-            count = count + 1
-        end
-        for i = 1, count do
-            if arr[i] == nil then
+        local max   = 0
+        for k, _ in pairs(arr) do
+            if type(k) ~= "number" or k < 1 or k ~= math.floor(k) then
                 return false
             end
+            count = count + 1
+            if k > max then
+                 max = k
+            end
+        end
+        -- count 个不同正整数均 ≤ max，且 count == max，由鸽巢原理可知恰好是 {1..max}，无空洞
+        if count ~= max then
+            return false
         end
         return true, count
     end
