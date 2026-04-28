@@ -1,6 +1,7 @@
 ﻿#include "containers/mspc.h"
 
 #define MSPC_DEFAULT_CAP  1024
+#define MSPC_SPIN_MAX     64
 
 /* 将 n 向上取整到最近的 2 的幂；n 已经是 2 的幂则原值返回 */
 static uint32_t _pow2_ceil(uint32_t n) {
@@ -54,6 +55,7 @@ int32_t mspc_push(mspc_ctx *q, void *data) {
     mspc_cell *cell;
     uint32_t   pos;
     int32_t    diff;
+    uint32_t   spins = 0;
     ASSERTAB(NULL != q,    ERRSTR_NULLP);
     ASSERTAB(NULL != data, ERRSTR_INVPARAM);
     pos = ATOMIC_GET(&q->enq.v);
@@ -75,6 +77,10 @@ int32_t mspc_push(mspc_ctx *q, void *data) {
             pos = ATOMIC_GET(&q->enq.v);
         }
         CPU_PAUSE();
+        if (++spins >= MSPC_SPIN_MAX) {
+            spins = 0;
+            THREAD_YIELD();
+        }
     }
     /* 已独占该槽位，写入数据并发布（sequence = pos+1 通知消费者） */
     cell->data = data;
@@ -94,6 +100,7 @@ void *mspc_pop(mspc_ctx *q) {
     uint32_t   pos;
     int32_t    diff;
     void      *data;
+    uint32_t   spins = 0;
     ASSERTAB(NULL != q, ERRSTR_NULLP);
     pos = ATOMIC_GET(&q->deq.v);
     for (;;) {
@@ -114,6 +121,10 @@ void *mspc_pop(mspc_ctx *q) {
             pos = ATOMIC_GET(&q->deq.v);
         }
         CPU_PAUSE();
+        if (++spins >= MSPC_SPIN_MAX) {
+            spins = 0;
+            THREAD_YIELD();
+        }
     }
     /* 已独占该槽位，读取数据并释放槽位（sequence = pos+capacity 通知生产者下一轮可用） */
     data       = cell->data;

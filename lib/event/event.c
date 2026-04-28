@@ -38,9 +38,13 @@ SOCKET _listen(netaddr_ctx *addr) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         return INVALID_SOCK;
     }
-    sock_reuseaddr(fd);
-    sock_reuseport(fd);
-    sock_nonblock(fd);
+    if (ERR_OK != sock_reuseaddr(fd)
+        || ERR_OK != sock_reuseport(fd)
+        || ERR_OK != sock_nonblock(fd)) {
+        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        CLOSE_SOCK(fd);
+        return INVALID_SOCK;
+    }
     if (ERR_OK != bind(fd, netaddr_addr(addr), netaddr_size(addr))) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         CLOSE_SOCK(fd);
@@ -76,8 +80,12 @@ SOCKET _udp(netaddr_ctx *addr) {
         return INVALID_SOCK;
     }
 #endif
-    sock_reuseaddr(fd);
-    sock_nonblock(fd);
+    if (ERR_OK != sock_reuseaddr(fd)
+        || ERR_OK != sock_nonblock(fd)) {
+        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        CLOSE_SOCK(fd);
+        return INVALID_SOCK;
+    }
     if (ERR_OK != bind(fd, netaddr_addr(addr), netaddr_size(addr))) {
         CLOSE_SOCK(fd);
         LOG_ERROR("%s", ERRORSTR(ERRNO));

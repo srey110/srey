@@ -42,9 +42,10 @@ char *_mysql_payload(mysql_ctx *mysql, buffer_ctx *buf, size_t *payload_lens, in
     return payload;
 }
 void _mpack_ok(mysql_ctx *mysql, binary_ctx *breader, mpack_ok *ok) {
-    uint64_t size = _mysql_get_lenenc(breader);
+    int32_t _rtn;
+    uint64_t size = _mysql_get_lenenc(breader, &_rtn);
     ok->affected_rows = (int64_t)size;
-    size = _mysql_get_lenenc(breader);
+    size = _mysql_get_lenenc(breader, &_rtn);
     ok->last_insert_id = (int64_t)size;
     ok->status_flags = (int16_t)binary_get_integer(breader, 2, 1);
     ok->warnings = (int16_t)binary_get_integer(breader, 2, 1);
@@ -117,11 +118,12 @@ void _mpack_reader_free(void *pack) {
 }
 // 初始化结果集读取器并挂载到 mysql->mpack，准备接收列字段描述
 static void _mpack_reader_new(mysql_ctx *mysql, binary_ctx *breader, mpack_type pktype) {
+    int32_t _rtn;
     mysql->mpack = _mpack_new(mysql, NULL);
     mysql_reader_ctx *reader;
     CALLOC(reader, 1, sizeof(mysql_reader_ctx));
     reader->pack_type = pktype;
-    reader->field_count = (int32_t)_mysql_get_lenenc(breader);//column_count
+    reader->field_count = (int32_t)_mysql_get_lenenc(breader, &_rtn);//column_count
     if (reader->field_count > 0) {
         CALLOC(reader->fields, 1, sizeof(mpack_field) * (size_t)reader->field_count);
     }
@@ -153,6 +155,7 @@ static int32_t _mpack_check_final(binary_ctx *breader, int32_t *status) {
 }
 // 解析文本协议（COM_QUERY）结果集中的一行数据，字段值以 lenenc 字符串存储
 static void _mpack_parse_text_row(mysql_reader_ctx *reader, binary_ctx *breader) {
+    int32_t _rtn;
     mpack_row *row;
     CALLOC(row, 1, sizeof(mpack_row) * (size_t)reader->field_count);
     row->payload = breader->data;
@@ -162,7 +165,7 @@ static void _mpack_parse_text_row(mysql_reader_ctx *reader, binary_ctx *breader)
             binary_get_skip(breader, 1);
             continue;
         }
-        row[i].val.lens = (size_t)_mysql_get_lenenc(breader);
+        row[i].val.lens = (size_t)_mysql_get_lenenc(breader, &_rtn);
         if (row[i].val.lens > 0) {
             row[i].val.data = binary_get_string(breader, row[i].val.lens);
         }
@@ -172,6 +175,7 @@ static void _mpack_parse_text_row(mysql_reader_ctx *reader, binary_ctx *breader)
 // 解析二进制协议（COM_STMT_EXECUTE）结果集中的一行数据，字段值按类型固定或 lenenc 长度读取
 static int32_t _mpack_parse_binary_row(mysql_reader_ctx *reader, binary_ctx *breader) {
     int32_t off;
+    int32_t _rtn;
     mpack_row *row;
     CALLOC(row, 1, sizeof(mpack_row) * (size_t)reader->field_count);
     row->payload = breader->data;
@@ -226,7 +230,11 @@ static int32_t _mpack_parse_binary_row(mysql_reader_ctx *reader, binary_ctx *bre
         case MYSQL_TYPE_NEWDECIMAL:
         case MYSQL_TYPE_JSON:
             // 字符串/BLOB 类型以 lenenc 长度编码
-            row[i].val.lens = (size_t)_mysql_get_lenenc(breader);
+            row[i].val.lens = (size_t)_mysql_get_lenenc(breader, &_rtn);
+            if (ERR_OK != _rtn) {
+                FREE(row);
+                return ERR_FAILED;
+            }
             break;
         default:
             LOG_WARN("unknow data type %d.", (int32_t)reader->fields[i].type);
@@ -278,46 +286,47 @@ static mpack_ctx *_mpack_reader_rows(mysql_ctx *mysql, buffer_ctx *buf, binary_c
 }
 // 解析单个列字段描述包（Column Definition），填充 mpack_field 结构体
 static void _mpack_parse_field(binary_ctx *breader, mpack_field *field) {
+    int32_t _rtn;
     char *val;
     size_t cplen;
-    uint64_t lens = _mysql_get_lenenc(breader);
+    uint64_t lens = _mysql_get_lenenc(breader, &_rtn);
     binary_get_skip(breader, (size_t)lens);//catalog（跳过 catalog 字段）
-    lens = _mysql_get_lenenc(breader);
+    lens = _mysql_get_lenenc(breader, &_rtn);
     if (lens > 0) {
         val = binary_get_string(breader, (size_t)lens);
         cplen = lens < sizeof(field->schema) ? (size_t)lens : sizeof(field->schema) - 1;
         memcpy(field->schema, val, cplen);
         field->schema[cplen] = '\0';
     }
-    lens = _mysql_get_lenenc(breader);
+    lens = _mysql_get_lenenc(breader, &_rtn);
     if (lens > 0) {
         val = binary_get_string(breader, (size_t)lens);
         cplen = lens < sizeof(field->table) ? (size_t)lens : sizeof(field->table) - 1;
         memcpy(field->table, val, cplen);
         field->table[cplen] = '\0';
     }
-    lens = _mysql_get_lenenc(breader);
+    lens = _mysql_get_lenenc(breader, &_rtn);
     if (lens > 0) {
         val = binary_get_string(breader, (size_t)lens);
         cplen = lens < sizeof(field->org_table) ? (size_t)lens : sizeof(field->org_table) - 1;
         memcpy(field->org_table, val, cplen);
         field->org_table[cplen] = '\0';
     }
-    lens = _mysql_get_lenenc(breader);
+    lens = _mysql_get_lenenc(breader, &_rtn);
     if (lens > 0) {
         val = binary_get_string(breader, (size_t)lens);
         cplen = lens < sizeof(field->name) ? (size_t)lens : sizeof(field->name) - 1;
         memcpy(field->name, val, cplen);
         field->name[cplen] = '\0';
     }
-    lens = _mysql_get_lenenc(breader);
+    lens = _mysql_get_lenenc(breader, &_rtn);
     if (lens > 0) {
         val = binary_get_string(breader, (size_t)lens);
         cplen = lens < sizeof(field->org_name) ? (size_t)lens : sizeof(field->org_name) - 1;
         memcpy(field->org_name, val, cplen);
         field->org_name[cplen] = '\0';
     }
-    _mysql_get_lenenc(breader);//length of fixed length fields（跳过固定长度字段的长度标志）
+    _mysql_get_lenenc(breader, &_rtn);//length of fixed length fields（跳过固定长度字段的长度标志）
     field->character = (int16_t)binary_get_integer(breader, 2, 1);
     field->field_lens = (int32_t)binary_get_integer(breader, 4, 1);
     field->type = binary_get_uint8(breader);

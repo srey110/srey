@@ -112,6 +112,7 @@ static void _loop_event(void *arg) {
     uint32_t shrink_cnt = 0;
     timer_ctx timer;
     LPOVERLAPPED overlap;
+    LPOVERLAPPED_ENTRY tmp;
     LPOVERLAPPED_ENTRY overlappeds;
     MALLOC(overlappeds, sizeof(OVERLAPPED_ENTRY) * nevent);
     timer_init(&timer);
@@ -133,9 +134,10 @@ static void _loop_event(void *arg) {
             }
             if (0 == watcher->stop
                 && count == nevent) {
+                MALLOC(tmp, sizeof(OVERLAPPED_ENTRY) * nevent * 2);
                 FREE(overlappeds);
+                overlappeds = tmp;
                 nevent *= 2;
-                MALLOC(overlappeds, sizeof(OVERLAPPED_ENTRY) * nevent);
             }
         } else if (WAIT_TIMEOUT != (err = ERRNO)) {
             LOG_ERROR("%s", ERRORSTR(err));
@@ -154,6 +156,7 @@ static void _loop_acpex(void *arg) {
     ULONG nevent = INIT_EVENTS_CNT;
     sock_ctx *sock;
     LPOVERLAPPED overlap;
+    LPOVERLAPPED_ENTRY tmp;
     LPOVERLAPPED_ENTRY overlappeds;
     MALLOC(overlappeds, sizeof(OVERLAPPED_ENTRY) * nevent);
     while (0 == acpex->stop) {
@@ -173,9 +176,10 @@ static void _loop_acpex(void *arg) {
             }
             if (0 == acpex->stop
                 && count == nevent) {
+                MALLOC(tmp, sizeof(OVERLAPPED_ENTRY) * nevent * 2);
                 FREE(overlappeds);
+                overlappeds = tmp;
                 nevent *= 2;
-                MALLOC(overlappeds, sizeof(OVERLAPPED_ENTRY) * nevent);
             }
         } else if (WAIT_TIMEOUT != (err = ERRNO)) {
             LOG_ERROR("%s", ERRORSTR(err));
@@ -342,7 +346,10 @@ void ev_free(ev_ctx *ctx) {
     uint32_t i;
     for (i = 0; i < ctx->nacpex; i++) {
         ctx->acpex[i].stop = 1;
-        (void)PostQueuedCompletionStatus(ctx->acpex[i].iocp, 0, ((ULONG_PTR)-1), NULL); // 投递空包唤醒线程
+        // 投递空包唤醒线程；失败时线程会在 EVENT_WAIT_TIMEOUT 后自行检测 stop 退出
+        if (!PostQueuedCompletionStatus(ctx->acpex[i].iocp, 0, ((ULONG_PTR)-1), NULL)) {
+            LOG_ERROR("PostQueuedCompletionStatus failed: %s", ERRORSTR(ERRNO));
+        }
     }
     for (i = 0; i < ctx->nacpex; i++) {
         thread_join(ctx->acpex[i].thacp);

@@ -28,13 +28,17 @@ void mail_reply(mail_ctx *mail, int32_t reply) {
 }
 void mail_subject(mail_ctx *mail, const char *subject) {
     FREE(mail->subject);
-    MALLOC(mail->subject, strlen(subject) + 1);
-    strcpy(mail->subject, subject);
+    size_t lens = strlen(subject);
+    MALLOC(mail->subject, lens + 1);
+    memcpy(mail->subject, subject, lens);
+    mail->subject[lens] = '\0';
 }
 void mail_msg(mail_ctx *mail, const char *msg) {
     FREE(mail->msg);
-    MALLOC(mail->msg, strlen(msg) + 1);
-    strcpy(mail->msg, msg);
+    size_t lens = strlen(msg);
+    MALLOC(mail->msg, lens + 1);
+    memcpy(mail->msg, msg, lens);
+    mail->msg[lens] = '\0';
 }
 void mail_html(mail_ctx *mail, const char *html, size_t lens) {
     FREE(mail->html);

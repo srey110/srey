@@ -598,7 +598,7 @@ static void _on_accept_cb(acceptex_ctx *acpctx, sock_ctx *skctx, DWORD bytes) {
     overlap_acpt_ctx *olacp = UPCAST(skctx, overlap_acpt_ctx, overlap);
     listener_ctx *lsn = olacp->lsn;
     if (0 != lsn->remove) {
-        if (1 == ATOMIC_ADD(&lsn->ref, -1)) {
+        if (0 == InterlockedDecrement((LONG *)&lsn->ref)) {
             _freelsn(lsn);
         }
         return;
@@ -606,7 +606,7 @@ static void _on_accept_cb(acceptex_ctx *acpctx, sock_ctx *skctx, DWORD bytes) {
     SOCKET fd = olacp->overlap.fd;
     if (ERR_OK != _post_accept(olacp)) {
         CLOSE_SOCK(fd);
-        if (1 == ATOMIC_ADD(&lsn->ref, -1)
+        if (0 == InterlockedDecrement((LONG *)&lsn->ref)
             && 0 != lsn->remove) {
             _freelsn(lsn);
         }

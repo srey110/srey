@@ -15,7 +15,8 @@ function redis.connect(ip, port, sslname, psw, netev)
     end
     local auth = redis.pack("AUTH", psw)
     local rtn, _ = srey.syn_send(fd, skid, auth, #auth, 1)
-    if not rtn or #rtn == 0 or "OK" ~= redis.unpack(rtn) then
+    local result = (rtn and #rtn > 0) and redis.unpack(rtn) or nil
+    if "OK" ~= result then
         srey.close(fd, skid)
         return INVALID_SOCK
     end
@@ -39,9 +40,15 @@ function redis.next(pk)
 end
 
 local function _is_map(val)
+    if "table" ~= type(val) then
+        return false
+    end
     return "map" == val.resp_type or "attr" == val.resp_type
 end
 local function _is_attr(val)
+    if "table" ~= type(val) then
+        return false
+    end
     return "attr" == val.resp_type
 end
 local function _is_agg(val)

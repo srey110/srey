@@ -238,8 +238,10 @@ static char *_scram_client_first_message(scram_ctx *scram) {
             buf = format_va("n,,n=%s,r=%s", scram->user, scram->local_nonce);
         }
     }
-    MALLOC(scram->local_first_message, strlen(buf) - 2);//n=,r=
-    strcpy(scram->local_first_message, buf + 3);
+    size_t buflen = strlen(buf);
+    MALLOC(scram->local_first_message, buflen - 2);//n=,r=
+    memcpy(scram->local_first_message, buf + 3, buflen - 3);
+    scram->local_first_message[buflen - 3] = '\0';
     scram->status = SCRAM_LOCAL_FIRST;
     return buf;
 }
@@ -260,7 +262,9 @@ static int32_t _scram_parse_client_first_message(scram_ctx *scram, char *msg, si
             FREE(user);
             return ERR_FAILED;
         }
-        strcpy(scram->user, user);
+        size_t ulen = strlen(user);
+        memcpy(scram->user, user, ulen);
+        scram->user[ulen] = '\0';
         FREE(user);
     } else {
         if (lens >= sizeof(scram->user)) {
@@ -277,7 +281,8 @@ static int32_t _scram_parse_client_first_message(scram_ctx *scram, char *msg, si
     memcpy(scram->remote_nonce, nonce, lens);
     scram->remote_nonce[lens] = '\0';
     MALLOC(scram->remote_first_message, mlens - 2);//n=,r=
-    strcpy(scram->remote_first_message, msg + 3);
+    memcpy(scram->remote_first_message, msg + 3, mlens - 3);
+    scram->remote_first_message[mlens - 3] = '\0';
     scram->status = SCRAM_REMOTE_FIRST;
     return ERR_OK;
 }
@@ -294,8 +299,10 @@ static char *_scram_server_first_message(scram_ctx *scram) {
     bs64_encode(scram->salt, scram->saltlen, salt);
     char *buf = format_va("r=%s%s,s=%s,i=%d", scram->remote_nonce, scram->local_nonce, salt, scram->iter);
     FREE(salt);
-    MALLOC(scram->local_first_message, strlen(buf) + 1);
-    strcpy(scram->local_first_message, buf);
+    size_t buflen = strlen(buf);
+    MALLOC(scram->local_first_message, buflen + 1);
+    memcpy(scram->local_first_message, buf, buflen);
+    scram->local_first_message[buflen] = '\0';
     scram->status = SCRAM_LOCAL_FIRST;
     return buf;
 }

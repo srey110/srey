@@ -23,7 +23,8 @@ void _mysql_set_lenenc(binary_ctx *bwriter, size_t integer) {
 }
 // 从缓冲区读取 MySQL lenenc 格式的整数：
 // 首字节 <= 0xfa 直接返回；0xfc 读 2 字节；0xfd 读 3 字节；0xfe 读 8 字节
-uint64_t _mysql_get_lenenc(binary_ctx *breader) {
+uint64_t _mysql_get_lenenc(binary_ctx *breader, int32_t *err) {
+    *err = ERR_OK;
     uint8_t flag = binary_get_uint8(breader);
     if (flag <= 0xfa) {
         return flag;
@@ -38,6 +39,7 @@ uint64_t _mysql_get_lenenc(binary_ctx *breader) {
         return binary_get_uinteger(breader, 8, 1);
     }
     LOG_ERROR("unknow int<lenenc>, %d.", (int32_t)flag);
+    *err = ERR_FAILED;
     return 0;
 }
 // 将 bwriter 中偏移 0-2 字节回填为实际 payload 长度（总长度减去 4 字节包头）

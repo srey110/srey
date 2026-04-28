@@ -151,6 +151,7 @@
     #include <sys/wait.h>
     #include <sys/ioctl.h>
     #include <sys/poll.h>
+    #include <sched.h>
     #ifndef OS_AIX
         #include <sys/syscall.h>
     #endif    

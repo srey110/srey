@@ -78,7 +78,7 @@ local function _http_msg(rsp, fd, skid, status, headers, ckfunc, info, ...)
     table.insert(msg, status)
     if nil ~= headers then
         for key, val in pairs(headers) do
-            table.insert(msg, string.format("%s: %s\r\n", key, val))
+            table.insert(msg, string.format("%s: %s\r\n", key, tostring(val)))
         end
     end
     local msgtype = type(info)
@@ -97,6 +97,10 @@ local function _http_msg(rsp, fd, skid, status, headers, ckfunc, info, ...)
         while true do
             rtn, size = info(...)
             if rtn then
+                if "string" ~= type(rtn) then
+                    ERROR("chunked function must return string, got %s.", type(rtn))
+                    return
+                end
                 table.insert(msg, string.format("%x\r\n", size or #rtn))
                 table.insert(msg, rtn)
                 table.insert(msg, "\r\n")

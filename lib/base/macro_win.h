@@ -25,13 +25,18 @@
         LARGE_INTEGER ft;\
         ft.QuadPart = -(10 * (__int64)us);\
         HANDLE timer = CreateWaitableTimer(NULL, TRUE, NULL);\
-        SetWaitableTimer(timer, &ft, 0, NULL, NULL, 0);\
-        WaitForSingleObject(timer, INFINITE);\
-        CloseHandle(timer);\
+        if (NULL != timer) {\
+            if (SetWaitableTimer(timer, &ft, 0, NULL, NULL, 0)) {\
+                WaitForSingleObject(timer, INFINITE);\
+            }\
+            CloseHandle(timer);\
+        }\
     }while(0)
 #define MSLEEP(ms) Sleep(ms)       // 毫秒级睡眠
 // 自旋等待 CPU 暂停提示（Windows）
 #define CPU_PAUSE() YieldProcessor()
+// OS 级线程让出，用于自旋超限后的兜底退避
+#define THREAD_YIELD() SwitchToThread()
 #define TIMEB  _timeb              // 时间结构体类型
 #define FTIME  _ftime              // 获取当前时间（毫秒精度）
 #define ACCESS _access             // 检查文件访问权限

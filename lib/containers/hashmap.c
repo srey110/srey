@@ -64,6 +64,7 @@ struct hashmap {
     void *buckets;
     void *spare;
     void *edata;
+    size_t version;
 };
 
 void hashmap_set_grow_by_power(struct hashmap *map, size_t power) {
@@ -113,8 +114,7 @@ struct hashmap *hashmap_new_with_allocator(void *(*_malloc)(size_t),
     uint64_t (*hash)(const void *item, uint64_t seed0, uint64_t seed1),
     int (*compare)(const void *a, const void *b, void *udata),
     void (*elfree)(void *item),
-    void *udata)
-{
+    void *udata) {
     _malloc = _malloc ? _malloc : __malloc ? __malloc : malloc;
     _realloc = _realloc ? _realloc : __realloc ? __realloc : realloc;
     _free = _free ? _free : __free ? __free : free;
@@ -189,8 +189,7 @@ struct hashmap *hashmap_new(size_t elsize, size_t cap, uint64_t seed0,
     uint64_t (*hash)(const void *item, uint64_t seed0, uint64_t seed1),
     int (*compare)(const void *a, const void *b, void *udata),
     void (*elfree)(void *item),
-    void *udata)
-{
+    void *udata) {
     return hashmap_new_with_allocator(NULL, NULL, NULL, elsize, cap, seed0, 
         seed1, hash, compare, elfree, udata);
 }
@@ -227,6 +226,7 @@ void hashmap_clear(struct hashmap *map, bool update_cap) {
     map->mask = map->nbuckets-1;
     map->growat = (map->nbuckets * map->loadfactor) / 100;
     map->shrinkat = (map->nbuckets * (size_t)(SHRINK_AT * 100)) / 100;
+    map->version++;
 }
 
 static bool resize0(struct hashmap *map, size_t new_cap) {
@@ -263,6 +263,7 @@ static bool resize0(struct hashmap *map, size_t new_cap) {
     map->growat = map2->growat;
     map->shrinkat = map2->shrinkat;
     map->free(map2);
+    map->version++;
     return true;
 }
 
@@ -274,11 +275,14 @@ static bool resize(struct hashmap *map, size_t new_cap) {
 // own hash. The 'hash' callback provided to the hashmap_new function
 // will not be called
 const void *hashmap_set_with_hash(struct hashmap *map, const void *item,
-    uint64_t hash)
-{
+    uint64_t hash) {
     hash = clip_hash(hash);
     map->oom = false;
     if (map->count >= map->growat) {
+        if (map->nbuckets > (SIZE_MAX >> map->growpower)) {
+            map->oom = true;
+            return NULL;
+        }
         size_t new_cap = map->nbuckets << map->growpower;
         if (new_cap <= map->nbuckets) {
             map->oom = true;
@@ -336,8 +340,7 @@ const void *hashmap_set(struct hashmap *map, const void *item) {
 // own hash. The 'hash' callback provided to the hashmap_new function
 // will not be called
 const void *hashmap_get_with_hash(const struct hashmap *map, const void *key,
-    uint64_t hash)
-{
+    uint64_t hash) {
     hash = clip_hash(hash);
     size_t i = hash & map->mask;
     while(1) {
@@ -375,8 +378,7 @@ const void *hashmap_probe(struct hashmap *map, uint64_t position) {
 // own hash. The 'hash' callback provided to the hashmap_new function
 // will not be called
 const void *hashmap_delete_with_hash(struct hashmap *map, const void *key,
-    uint64_t hash)
-{
+    uint64_t hash) {
     hash = clip_hash(hash);
     map->oom = false;
     size_t i = hash & map->mask;
@@ -403,6 +405,7 @@ const void *hashmap_delete_with_hash(struct hashmap *map, const void *key,
                 prev->dib--;
             }
             map->count--;
+            map->version++;
             if (map->nbuckets > map->cap && map->count <= map->shrinkat) {
                 // Ignore the return value. It's ok for the resize operation to
                 // fail to allocate enough memory because a shrink operation
@@ -446,8 +449,7 @@ bool hashmap_oom(struct hashmap *map) {
 // Param `iter` can return false to stop iteration early.
 // Returns false if the iteration has been stopped early.
 bool hashmap_scan(struct hashmap *map, 
-    bool (*iter)(const void *item, void *udata), void *udata)
-{
+    bool (*iter)(const void *item, void *udata), void *udata) {
     for (size_t i = 0; i < map->nbuckets; i++) {
         struct bucket *bucket = bucket_at(map, i);
         if (bucket->dib && !iter(bucket_item(bucket), udata)) {
@@ -476,6 +478,25 @@ bool hashmap_scan(struct hashmap *map,
 // The function returns true if an item was retrieved; false if the end of the
 // iteration has been reached.
 bool hashmap_iter(struct hashmap *map, size_t *i, void **item) {
+#if SIZE_MAX == UINT64_MAX
+    uint32_t ver = (uint32_t)map->version;
+    if (*i == 0) {
+        *i = (size_t)ver << 32;
+    } else if ((uint32_t)(*i >> 32) != ver) {
+        fprintf(stderr, "hashmap modified during iteration, iterator invalidated.");
+        return false;
+    }
+    size_t idx = (uint32_t)*i;
+    struct bucket *bucket;
+    do {
+        if (idx >= map->nbuckets) return false;
+        bucket = bucket_at(map, idx);
+        idx++;
+    } while (!bucket->dib);
+    *i = ((size_t)ver << 32) | idx;
+    *item = bucket_item(bucket);
+    return true;
+#else
     struct bucket *bucket;
     do {
         if (*i >= map->nbuckets) return false;
@@ -484,6 +505,7 @@ bool hashmap_iter(struct hashmap *map, size_t *i, void **item) {
     } while (!bucket->dib);
     *item = bucket_item(bucket);
     return true;
+#endif
 }
 
 
@@ -505,8 +527,7 @@ bool hashmap_iter(struct hashmap *map, size_t *i, void **item) {
 // default: SipHash-2-4
 //-----------------------------------------------------------------------------
 static uint64_t SIP64(const uint8_t *in, const size_t inlen, uint64_t seed0,
-    uint64_t seed1) 
-{
+    uint64_t seed1) {
 #define U8TO64_LE(p) \
     {  (((uint64_t)((p)[0])) | ((uint64_t)((p)[1]) << 8) | \
         ((uint64_t)((p)[2]) << 16) | ((uint64_t)((p)[3]) << 24) | \
@@ -767,22 +788,19 @@ static uint64_t xxh3(const void* data, size_t len, uint64_t seed) {
 
 // hashmap_sip returns a hash value for `data` using SipHash-2-4.
 uint64_t hashmap_sip(const void *data, size_t len, uint64_t seed0,
-    uint64_t seed1)
-{
+    uint64_t seed1) {
     return SIP64((uint8_t*)data, len, seed0, seed1);
 }
 
 // hashmap_murmur returns a hash value for `data` using Murmur3_86_128.
 uint64_t hashmap_murmur(const void *data, size_t len, uint64_t seed0,
-    uint64_t seed1)
-{
+    uint64_t seed1) {
     (void)seed1;
     return MM86128(data, len, seed0);
 }
 
 uint64_t hashmap_xxhash3(const void *data, size_t len, uint64_t seed0,
-    uint64_t seed1)
-{
+    uint64_t seed1) {
     (void)seed1;
     return xxh3(data, len ,seed0);
 }

@@ -99,6 +99,9 @@ local function _coro_create(func)
                     end
                     coro_pool[#coro_pool + 1] = coro  -- 归还到池
                     func = coroutine_yield()           -- 等待下一个任务函数
+                    if not func then                   -- nil 守卫：防止调用方传入 nil
+                        break
+                    end
                     func(coroutine_yield())            -- 等待实参后执行
                 end
             end)

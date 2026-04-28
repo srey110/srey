@@ -36,6 +36,8 @@
 #define FSTAT    stat           // 获取文件状态
 #define USLEEP(us) usleep(us)   // 微秒级睡眠
 #define MSLEEP(ms) usleep(ms * 1000) // 毫秒级睡眠
+// OS 级线程让出，用于自旋超限后的兜底退避
+#define THREAD_YIELD() sched_yield()
 /* 自旋等待 CPU 暂停提示，降低功耗并减少流水线压力 */
 #if defined(ARCH_X86) || defined(ARCH_X64)
     #define CPU_PAUSE() __asm__ volatile("pause" ::: "memory")     // x86/x64 平台：使用 pause 指令
