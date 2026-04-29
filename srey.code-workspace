@@ -28,7 +28,11 @@
 			"${workspaceFolder:lib}",
 			"${workspaceFolder:lib}/**",
 			"${workspaceFolder:lualib}",
-			"${workspaceFolder:lualib}/**"
+			"${workspaceFolder:lualib}/**",
+			"${workspaceFolder:srey}",
+			"${workspaceFolder:srey}/**",
+			"${workspaceFolder:test}",
+			"${workspaceFolder:test}/**"
 		]
 	}
 }

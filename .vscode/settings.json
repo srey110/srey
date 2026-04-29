@@ -4,6 +4,21 @@
         "lib": true,
         "lualib": true,
         "srey": true,
-        "test": true
+        "test": true,
+        "build": true,
+        "**/.svn": true,
+        "**/.vs": true,
+        "**/.git": true,
+        "**/.claude": true,
+        "**/*.sln": true,
+        "**/*.vcxproj": true,
+        "**/*.filters": true
+    },
+    "search.exclude": {        
+        "build/": true,
+        "**/.svn": true,
+        "**/.vs": true,
+        "**/.git": true,
+        "**/.claude": true
     }
 }
