@@ -82,7 +82,7 @@ typedef struct monitor_ctx {
 // 工作线程上下文
 typedef struct worker_ctx {
     uint16_t index;        // 工作线程索引
-    int32_t weight;        // 批处理权重（-1=单条 0=全量 >0=按比例）
+    int32_t weight;        // 权重
     atomic_t waiting;      // 当前是否在休眠等待（原子维护，快速路径无锁读）
     loader_ctx *loader;    // 所属 loader
     pthread_t thread_worker; // 工作线程句柄

@@ -464,53 +464,37 @@ static void _timeout_monitor(task_ctx *task, uint64_t sess) {
     task_timeout(task, 0, 3 * 1000, _timeout_monitor);
 }
 // 协程任务的消息分发总入口，根据消息类型路由到对应的处理函数
+static void _startup_dispatch(task_dispatch_arg *arg) {
+    task_timeout(arg->task, 0, 3 * 1000, _timeout_monitor);
+    _co_create(arg);
+}
+static void _closing_dispatch(task_dispatch_arg *arg) {
+    _co_create(arg);
+    if (((coro_ctx *)arg->task->arg)->nyield > 0) {
+        LOG_WARN("task %d yield %d.", arg->task->name, ((coro_ctx *)arg->task->arg)->nyield);
+    }
+}
+typedef void (*_coro_msg_handler_t)(task_dispatch_arg *arg);
+static const _coro_msg_handler_t _coro_msg_handlers[MSG_TYPE_ALL] = {
+    [MSG_TYPE_STARTUP]      = _startup_dispatch,
+    [MSG_TYPE_CLOSING]      = _closing_dispatch,
+    [MSG_TYPE_TIMEOUT]      = _timeout_dispatch,
+    [MSG_TYPE_ACCEPT]       = _co_create,
+    [MSG_TYPE_CONNECT]      = _connected_dispatch,
+    [MSG_TYPE_SSLEXCHANGED] = _ssl_exchanged_dispatch,
+    [MSG_TYPE_HANDSHAKED]   = _handshaked_dispatch,
+    [MSG_TYPE_RECV]         = _recved_dispatch,
+    [MSG_TYPE_SEND]         = _co_create,
+    [MSG_TYPE_CLOSE]        = _closed_dispatch,
+    [MSG_TYPE_RECVFROM]     = _recvfrom_dispatch,
+    [MSG_TYPE_REQUEST]      = _co_create,
+    [MSG_TYPE_RESPONSE]     = _response_dispatch,
+};
 static void _message_dispatch(task_dispatch_arg *arg) {
-    switch (arg->msg.mtype) {
-    case MSG_TYPE_STARTUP:
-        task_timeout(arg->task, 0, 3 * 1000, _timeout_monitor);
-        _co_create(arg);
-        break;
-    case MSG_TYPE_CLOSING:
-        _co_create(arg);
-        if (((coro_ctx *)arg->task->arg)->nyield > 0) {
-            LOG_WARN("task %d yield %d.", arg->task->name, ((coro_ctx *)arg->task->arg)->nyield);
-        }
-        break;
-    case MSG_TYPE_TIMEOUT:
-        _timeout_dispatch(arg);
-        break;
-    case MSG_TYPE_ACCEPT:
-        _co_create(arg);
-        break;
-    case MSG_TYPE_CONNECT:
-        _connected_dispatch(arg);
-        break;
-    case MSG_TYPE_SSLEXCHANGED:
-        _ssl_exchanged_dispatch(arg);
-        break;
-    case MSG_TYPE_HANDSHAKED:
-        _handshaked_dispatch(arg);
-        break;
-    case MSG_TYPE_RECV:
-        _recved_dispatch(arg);
-        break;
-    case MSG_TYPE_SEND:
-        _co_create(arg);
-        break;
-    case MSG_TYPE_CLOSE:
-        _closed_dispatch(arg);
-        break;
-    case MSG_TYPE_RECVFROM:
-        _recvfrom_dispatch(arg);
-        break;
-    case MSG_TYPE_REQUEST:
-        _co_create(arg);
-        break;
-    case MSG_TYPE_RESPONSE:
-        _response_dispatch(arg);
-        break;
-    default:
-        break;
+    if (arg->msg.mtype > MSG_TYPE_NONE
+        && arg->msg.mtype < MSG_TYPE_ALL
+        && NULL != _coro_msg_handlers[arg->msg.mtype]) {
+        _coro_msg_handlers[arg->msg.mtype](arg);
     }
 }
 task_ctx *coro_task_register(loader_ctx *loader, name_t name, _task_startup_cb _startup, _task_closing_cb _closing) {

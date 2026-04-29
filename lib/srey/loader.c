@@ -107,7 +107,7 @@ static void _task_run(loader_ctx *loader, worker_ctx *worker,
     } else {
         task->overloaded = 0;
     }
-    uint32_t n = worker->weight >= 0 ? (lens >> worker->weight) : 1;
+    uint32_t n = lens >> worker->weight;
     if (0 == n) {
         n = 1;
     }
@@ -216,13 +216,23 @@ loader_ctx *loader_init(uint16_t nnet, uint16_t nworker, uint32_t twcap) {
                                                   sizeof(name_t *), ONEK, 0, 0,
                                                   _map_task_hash, _map_task_compare, _map_task_free, NULL);
     loader->monitor.thread_monitor = thread_creat(_monitor_loop, loader);
-    int32_t weights[] = { -1, 0, 0, 1, 2, 3 };
+    // 每轮处理消息数 = lens >> weight（即 lens / 2^weight），等比递减：
+    //   weight=0: 全量（仅单 worker 时使用，无需节流）
+    //   weight=1: lens/2  — 高吞吐
+    //   weight=2: lens/4
+    //   weight=3: lens/8
+    //   weight=4: lens/16 — 高公平，callback 较慢时避免长时间占用 worker
+    // nworker>1 时从 weight=1 起步，防止 weight=0 在 callback 较慢时造成秒级阻塞；
+    // 超出数组长度的 worker 一律使用最后一档（最保守）。
+    int32_t weights[] = { 1, 2, 3, 4 };
     worker_ctx *worker;
-    uint16_t n = ARRAY_SIZE(weights);
+    uint16_t widx;
+    uint16_t wn = ARRAY_SIZE(weights);
     for (uint16_t i = 0; i < loader->nworker; i++) {
         worker = &loader->worker[i];
         worker->index = i;
-        worker->weight = weights[i % n];
+        widx = (loader->nworker > 1) ? (i < wn ? i : wn - 1) : 0;
+        worker->weight = weights[widx];
         worker->loader = loader;
         mpmc_init(&worker->qutasks, ONEK);
         mutex_init(&worker->mutex);

@@ -266,7 +266,7 @@ static void _init_cmd(watcher_ctx *watcher) {
         olcmd->ol_r.fd = pair[0];
         olcmd->ol_r.type = 0;
         olcmd->fd = pair[1];
-        qu_cmd_init(&olcmd->qu, ONEK);
+        qu_cmd_init(&olcmd->qu, 128);
         spin_init(&olcmd->spin, SPIN_CNT_CMD);
         olcmd->wsabuf.IOV_PTR_FIELD = NULL;
         olcmd->wsabuf.IOV_LEN_FIELD = 0;

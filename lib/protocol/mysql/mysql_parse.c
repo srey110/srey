@@ -127,7 +127,7 @@ static void _mpack_reader_new(mysql_ctx *mysql, binary_ctx *breader, mpack_type 
     if (reader->field_count > 0) {
         CALLOC(reader->fields, 1, sizeof(mpack_field) * (size_t)reader->field_count);
     }
-    arr_ptr_init(&reader->arr_rows, ONEK);
+    arr_ptr_init(&reader->arr_rows, 64);
     mysql->mpack->pack = reader;
     mysql->mpack->_free_mpack = _mpack_reader_free;
     mysql->mpack->pack_type = pktype;
