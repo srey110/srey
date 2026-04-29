@@ -276,7 +276,7 @@ static void _init_cmd(watcher_ctx *watcher) {
 }
 void ev_init(ev_ctx *ctx, uint32_t nthreads) {
     ctx->nthreads = (0 == nthreads ? procscnt() : nthreads);
-    ctx->nacpex = ctx->nthreads > 1 ? ctx->nthreads / 2 : 1;
+    ctx->nacpex = ctx->nthreads > 3 ? 2 : 1;
     _init_funcs(ctx);
     MALLOC(ctx->watcher, sizeof(watcher_ctx) * ctx->nthreads);
     watcher_ctx *watcher;
@@ -285,7 +285,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads) {
         watcher = &ctx->watcher[i];
         watcher->index = i;
         watcher->stop = 0;
-        watcher->ncmd = ctx->nthreads * 2;
+        watcher->ncmd = ctx->nthreads;
         watcher->iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 1);
         ASSERTAB(NULL != watcher->iocp, ERRORSTR(ERRNO));
         watcher->ev = ctx;

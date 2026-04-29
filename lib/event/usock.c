@@ -21,9 +21,6 @@ typedef struct listener_ctx {
 #endif
     cbs_ctx cbs;            // 回调函数集合
     ud_cxt ud;              // 用户数据模板
-#ifndef SO_REUSEPORT
-    spin_ctx spin;          // 无SO_REUSEPORT时用于保护accept调用的自旋锁
-#endif
     uint64_t id;            // 监听器唯一ID
 }listener_ctx;
 // Unix平台TCP连接上下文
@@ -490,11 +487,6 @@ void _add_conn_inloop(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx) {
 static void _on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
     (void)ev;
     lsnsock_ctx *acpt = UPCAST(skctx, lsnsock_ctx, sock);
-#ifndef SO_REUSEPORT
-    if (ERR_OK != spin_trylock(&acpt->lsn->spin)) {
-        return;
-    }
-#endif
     SOCKET fd;
     watcher_ctx *to;
     while (INVALID_SOCK != (fd = accept(acpt->sock.fd, NULL, NULL))) {
@@ -510,9 +502,6 @@ static void _on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
             _cmd_add_acpfd(to, fd, acpt->lsn);
         }
     }
-#ifndef SO_REUSEPORT
-    spin_unlock(&acpt->lsn->spin);
-#endif
 #ifdef MANUAL_ADD
     if (ERR_OK != _add_event(watcher, acpt->sock.fd, &acpt->sock.events, ev, &acpt->sock)) {
         _remove_fd(watcher, acpt->sock.fd);
@@ -575,7 +564,11 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
 #endif
     listener_ctx *lsn;
     MALLOC(lsn, sizeof(listener_ctx));
+#ifndef SO_REUSEPORT
+    lsn->nlsn = 1;
+#else
     lsn->nlsn = ctx->nthreads;
+#endif
     lsn->ref = 0;
     lsn->remove = 0;
     lsn->cbs = *cbs;
@@ -584,9 +577,6 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
     lsn->evssl = evssl;
 #else
     (void)evssl;
-#endif
-#ifndef SO_REUSEPORT
-    spin_init(&lsn->spin, SPIN_CNT_LSN);
 #endif
     MALLOC(lsn->lsnsock, sizeof(lsnsock_ctx) * lsn->nlsn);
     int32_t i;
@@ -634,9 +624,6 @@ void _freelsn(listener_ctx *lsn) {
     if (0 == lsn->remove) {
         _close_lsnsock(lsn, lsn->nlsn);
     }
-#ifndef SO_REUSEPORT
-    spin_free(&lsn->spin);
-#endif
     FREE(lsn->lsnsock);
     FREE(lsn);
 }
