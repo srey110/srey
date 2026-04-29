@@ -58,7 +58,7 @@ static inline const char *_fmterror(DWORD error) {
                             NULL)) {
         return "FormatMessageA error.";
     }
-    static char errstr[4096];
+    static __declspec(thread) char errstr[4096]; // 线程局部存储，避免多线程竞争
     size_t ilens = strlen(err);
     ilens = ilens >= sizeof(errstr) ? sizeof(errstr) - 1 : ilens;
     memcpy(errstr, err, ilens);

@@ -277,7 +277,7 @@ static int _test_tcp_loopback(loader_ctx *loader) {
 int test_srey(void) {
     printf("\n--- srey 集成测试 ---\n");
 
-    loader_ctx *loader = loader_init(1, 2);
+    loader_ctx *loader = loader_init(1, 2, 0);
     if (NULL == loader) {
         printf("[test_srey] loader_init 失败\n");
         return 1;

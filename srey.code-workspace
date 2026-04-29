@@ -10,6 +10,9 @@
 			"path": "bin/script"
 		},
 		{
+			"path": "bin/configs"
+		},
+		{
 			"path": "srey"
 		},
 		{

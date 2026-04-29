@@ -113,7 +113,10 @@ local function _coro_create(func)
 end
 local function _coro_resume(coro, ...)
     coro_running = coro
-    coroutine_resume(coro_running, ...)
+    local ok, err = coroutine_resume(coro_running, ...)
+    if not ok then
+        ERROR("coroutine error: %s", tostring(err))
+    end
 end
 local function _coro_run(func, ...)
     _coro_resume(_coro_create(func), ...)
@@ -717,6 +720,9 @@ local function _net_close_dispatch(msg)
             coro = coroinfo.coro
             _coroinfo_release(coroinfo)
             _coro_resume(coro, msg)
+            if corosess.disposable then
+                break
+            end
         end
     end
     if func then
@@ -789,16 +795,18 @@ local function _coro_timeout()
         local now = srey.timer_ms()
         local timeout = {}
         for sess, corosess in pairs(coro_sess) do
-            local coroinfo
             if corosess.disposable then
-                coroinfo = corosess.coroinfo
-            else
-                if #corosess.coroinfo > 0 then
-                    coroinfo = corosess.coroinfo[1]
+                local coroinfo = corosess.coroinfo
+                if coroinfo.timeout > 0 and now >= coroinfo.timeout then
+                    timeout[#timeout + 1] = sess
                 end
-            end
-            if coroinfo and coroinfo.timeout > 0 and now >= coroinfo.timeout then
-                timeout[#timeout + 1] = sess
+            else
+                for i = 1, #corosess.coroinfo do
+                    if corosess.coroinfo[i].timeout > 0 and now >= corosess.coroinfo[i].timeout then
+                        timeout[#timeout + 1] = sess
+                        break
+                    end
+                end
             end
         end
         local corosess
@@ -808,19 +816,33 @@ local function _coro_timeout()
             if not corosess then
                 goto continue
             end
+            local msg = {
+                mtype = MSG_TYPE.TIMEOUT,
+                sess = sess
+            }
             if corosess.disposable then
                 coro_sess[sess] = nil
-            end
-            coroinfo = _coro_info(corosess)
-            if coroinfo then
-                local coro = coroinfo.coro
-                _coroinfo_release(coroinfo)
-                local msg = {
-                    mtype = MSG_TYPE.TIMEOUT,
-                    sess = sess
-                }
-                _coro_resume(coro, msg)
-                WARN("resume timeout session %s.", tostring(sess))
+                coroinfo = _coro_info(corosess)
+                if coroinfo then
+                    local coro = coroinfo.coro
+                    _coroinfo_release(coroinfo)
+                    _coro_resume(coro, msg)
+                    WARN("resume timeout session %s.", tostring(sess))
+                end
+            else
+                local i = 1
+                while i <= #corosess.coroinfo do
+                    coroinfo = corosess.coroinfo[i]
+                    if coroinfo.timeout > 0 and now >= coroinfo.timeout then
+                        table.remove(corosess.coroinfo, i)
+                        local coro = coroinfo.coro
+                        _coroinfo_release(coroinfo)
+                        _coro_resume(coro, msg)
+                        WARN("resume timeout session %s.", tostring(sess))
+                    else
+                        i = i + 1
+                    end
+                end
             end
             ::continue::
         end

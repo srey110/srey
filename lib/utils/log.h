@@ -7,7 +7,8 @@
 /// 日志初始化
 /// </summary>
 /// <param name="file">输出句柄</param>
-void log_init(FILE *file);
+/// <param name="capacity">日志队列长度</param>
+void log_init(FILE *file, uint32_t capacity);
 /// <summary>
 /// 停止日志 I/O 线程，刷新并释放资源
 /// </summary>

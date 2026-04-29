@@ -1,7 +1,9 @@
 {
     "nnet": 2,
     "nworker": 8,
+    "twqueuelens": 4096,
     "loglv": 4,
+    "logqueuelens": 4096,
     "dns": "8.8.8.8",
     "script": "script",
     "stacksize": 0,

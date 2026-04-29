@@ -13,6 +13,8 @@ typedef struct config_ctx {
     uint16_t nworker;          // 工作线程数，0 表示使用 CPU 核心数
     uint16_t harborport;       // harbor 监听端口
     uint32_t stacksize;        // 协程栈大小（字节），0 使用默认值
+    uint32_t twqueuelens;      // 时间轮队列大小 0 使用默认值 4096
+    uint32_t logqueuelens;     // 日志队列大小 0 使用默认值 4096
     name_t   harborname;       // harbor 任务名
     name_t   harborssl;        // harbor SSL 任务名（0 表示不启用 SSL）
     char dns[IP_LENS];         // DNS 服务器地址

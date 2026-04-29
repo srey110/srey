@@ -60,6 +60,8 @@ static void _parse_config(config_ctx *cnf) {
     cnf->nworker = (uint16_t)_json_get_number(json, "nworker");
     cnf->loglv = (uint8_t)_json_get_number(json, "loglv");
     cnf->stacksize = (uint32_t)_json_get_number(json, "stacksize");
+    cnf->twqueuelens = (uint32_t)_json_get_number(json, "twqueuelens");
+    cnf->logqueuelens = (uint32_t)_json_get_number(json, "logqueuelens");
     _json_get_string(json, "dns", cnf->dns, sizeof(cnf->dns));
     _json_get_string(json, "script", cnf->script, sizeof(cnf->script));
     cnf->harborname = (name_t)_json_get_number(json, "harborname");
@@ -70,12 +72,12 @@ static void _parse_config(config_ctx *cnf) {
     cJSON_Delete(json);
 }
 // 在进程目录下创建 logs 目录并打开以当前时间命名的日志文件
-static void _open_log(void) {
+static void _open_log(uint32_t capacity) {
     char logfile[PATH_LENS];
     SNPRINTF(logfile, sizeof(logfile), "%s%s%s%s", procpath(), PATH_SEPARATORSTR, "logs", PATH_SEPARATORSTR);
     if (ERR_OK != ACCESS(logfile, 0)) {
         if (ERR_OK != MKDIR(logfile)) {
-            log_init(NULL);
+            log_init(NULL, capacity);
             return;
         }
     }
@@ -84,7 +86,7 @@ static void _open_log(void) {
     sectostr(nowsec(), "%Y-%m-%d %H-%M-%S", time);
     SNPRINTF((char*)logfile + lens, sizeof(logfile) - lens, "%s%s", time, ".log");
     logstream = fopen(logfile, "a");
-    log_init(logstream);
+    log_init(logstream, capacity);
 }
 // 释放所有资源并退出服务（loader、互斥锁、条件变量、日志、socket）
 static int32_t service_exit(void) {
@@ -125,11 +127,11 @@ static int32_t service_init(void) {
     coro_desc_init(config.stacksize);
     dns_set_ip(config.dns);
     log_setlv((LOG_LEVEL)config.loglv);
-    _open_log();
+    _open_log(config.logqueuelens);
     unlimit();
     mutex_init(&muexit);
     cond_init(&condexit);
-    g_loader = loader_init(config.nnet, config.nworker);
+    g_loader = loader_init(config.nnet, config.nworker, config.twqueuelens);
     if (ERR_OK != task_startup(g_loader, &config)) {
         service_exit();
         return ERR_FAILED;

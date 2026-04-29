@@ -327,10 +327,19 @@ int32_t pgsql_try_connect(task_ctx *task, pgsql_ctx *pg) {
     return task_connect(task, PACK_PGSQL, NULL, pg->ip, pg->port, NETEV_AUTHSSL, pg, &pg->fd, &pg->skid);
 }
 void pgsql_set_userpwd(pgsql_ctx *pg, const char *user, const char *password) {
+    if (strlen(user) > sizeof(pg->user) - 1
+        || strlen(password) > sizeof(pg->password) - 1) {
+        LOG_ERROR("%s", "user or password too long.");
+        return;
+    }
     strcpy(pg->user, user);
     strcpy(pg->password, password);
 }
 void pgsql_set_db(pgsql_ctx *pg, const char *database) {
+    if (strlen(database) > sizeof(pg->database) - 1) {
+        LOG_ERROR("%s", "database name too long.");
+        return;
+    }
     strcpy(pg->database, database);
 }
 const char *pgsql_get_db(pgsql_ctx *pg) {

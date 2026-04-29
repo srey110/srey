@@ -50,7 +50,7 @@ static int32_t _check_sign(struct http_pack_ctx *pack, buf_ctx *url, char *reqda
     }
     uint64_t tms = (uint64_t)atoll(tbuf);
     uint64_t tnow = nowsec();
-    int32_t diff = tnow >= tms ? (int32_t)(tnow - tms) : (int32_t)(tms - tnow);
+    uint64_t diff = tnow >= tms ? (tnow - tms) : (tms - tnow);
     if (diff >= 5 * 60) {
         LOG_WARN("timestamp error.");
         return ERR_FAILED;
@@ -198,7 +198,7 @@ static void _harbor_sign(binary_ctx *bwriter, const char *key, const char *url, 
     char *sbuf;
     MALLOC(sbuf, lens);
     memcpy(sbuf, url, ulens);
-    if (!EMPTYSTR(data)) {
+    if (0 != size) {
         memcpy(sbuf + ulens, data, size);
     }
     memcpy(sbuf + ulens + size, tms, tslens);

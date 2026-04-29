@@ -118,7 +118,7 @@ static void _log_io_thread(void *arg) {
         }
     }
 }
-void log_init(FILE *file) {
+void log_init(FILE *file, uint32_t capacity) {
     _handle = file;
 #ifdef OS_WIN
     if (NULL == _handle) {
@@ -126,7 +126,7 @@ void log_init(FILE *file) {
         GetConsoleScreenBufferInfo(_console, &_def_console);
     }
 #endif
-    mspc_init(&_mspc, LOG_QUEUE_CAP);
+    mspc_init(&_mspc, 0 == capacity ? 4 * ONEK : capacity);
     mutex_init(&_mtx);
     cond_init(&_cond);
     ATOMIC_SET(&_running, 1); 

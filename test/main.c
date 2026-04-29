@@ -19,7 +19,7 @@ int main(int argc, char *argv[]) {
     /* 基础初始化 */
     sock_init();
     unlimit();
-    log_init(NULL);
+    log_init(NULL, 0);
 
     /* ── 层 1：纯内存单元测试套件 ── */
     CuString *output = CuStringNew();

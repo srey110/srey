@@ -18,7 +18,9 @@ static uint64_t _map_hash(const void *item, uint64_t seed0, uint64_t seed1) {
 // hashmap比较函数：比较两个sock_ctx的fd
 static int _map_compare(const void *a, const void *b, void *ud) {
     (void)ud;
-    return (int)((*(const sock_ctx **)a)->fd - (*(const sock_ctx **)b)->fd);
+    SOCKET fa = (*(const sock_ctx **)a)->fd;
+    SOCKET fb = (*(const sock_ctx **)b)->fd;
+    return (fa < fb) ? -1 : (fa > fb) ? 1 : 0; // 三路比较，避免 UINT_PTR 相减截断为 int 溢出
 }
 // 通过WSAIoctl获取指定GUID的Windows扩展函数指针
 static void *_exfunc(SOCKET fd, GUID  *guid) {

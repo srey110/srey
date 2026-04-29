@@ -1,5 +1,7 @@
 ﻿#include "utils/tw.h"
 
+#define TW_NODE_POOL_MAX    4096    // 节点池上限：超出后直接释放，避免无界增长
+
 // 从节点池无锁出队；池为空时退化为 MALLOC
 static tw_node_ctx *_node_alloc(tw_ctx *ctx) {
     tw_node_ctx *node = (tw_node_ctx *)mspc_pop(&ctx->node_pool);
@@ -50,6 +52,17 @@ void tw_free(tw_ctx *ctx) {
         FREE(node);
     }
     mspc_free(&ctx->reqadd);
+    /* 排空备用链表并释放节点（先排空再销毁锁） */
+    tw_node_ctx *fb = ctx->fallback_head;
+    while (NULL != fb) {
+        tw_node_ctx *next = fb->next;
+        if (NULL != fb->_freecb) {
+            fb->_freecb(&fb->ud);
+        }
+        FREE(fb);
+        fb = next;
+    }
+    spin_free(&ctx->fallback_spin);
     /* 排空节点池并释放 */
     while (NULL != (node = (tw_node_ctx *)mspc_pop(&ctx->node_pool))) {
         FREE(node);
@@ -75,12 +88,16 @@ void tw_add(tw_ctx *ctx, const uint32_t timeout, tw_cb _cb, free_cb _freecb, ud_
     node->_freecb = _freecb;
     node->next = NULL;
     if (ERR_OK != mspc_push(&ctx->reqadd, node)) {
-        /* 队列满（容量 TW_REQADD_CAP）：释放用户数据后归还节点，不挂起调用方 */
-        LOG_ERROR("%s", "tw_add: reqadd queue full, timer dropped.");
-        if (NULL != node->_freecb) {
-            node->_freecb(&node->ud);
+        /* mspc 队列满：追加到备用链表（由 fallback_spin 保护），保证节点不丢失。
+         * mspc 满说明之前已触发过 cond_signal，tw 线程必然已被唤醒，无需重复通知。 */
+        spin_lock(&ctx->fallback_spin);
+        if (NULL != ctx->fallback_tail) {
+            ctx->fallback_tail->next = node;
+        } else {
+            ctx->fallback_head = node;
         }
-        _node_release(ctx, node);
+        ctx->fallback_tail = node;
+        spin_unlock(&ctx->fallback_spin);
         return;
     }
     /* 仅当标志由 0→1 时（首批新任务）才唤醒轮线程，批量入队后续节点不重复 signal */
@@ -160,13 +177,24 @@ static void _loop(void *arg) {
     tw_ctx *ctx = (tw_ctx *)arg;
     ctx->jiffies = timer_cur_ms(&ctx->timer);
     while (0 == ctx->exit) {
-        /* 1. 将外部通过 tw_add 提交的节点分发到对应槽位（无锁出队）
-         *    先排空，再清标志，再二次排空：避免清标志与生产者入队之间的竞态导致漏唤醒 */
+        /*  将外部通过 tw_add 提交的节点分发到对应槽位（无锁出队）tw_add已设置 node->next = NULL 
+         *  先排空，再清标志，再二次排空：避免清标志与生产者入队之间的竞态导致漏唤醒 */
         while (NULL != (node = (tw_node_ctx *)mspc_pop(&ctx->reqadd))) {
             _insert(_getslot(ctx, node), node);
         }
         ATOMIC_SET(&ctx->reqadd_pending, 0);
         while (NULL != (node = (tw_node_ctx *)mspc_pop(&ctx->reqadd))) {
+            _insert(_getslot(ctx, node), node);
+        }
+        /* 排空备用链表（mspc 满时的兜底节点），整批偷走后在锁外处理 */
+        spin_lock(&ctx->fallback_spin);
+        tw_node_ctx *fb = ctx->fallback_head;
+        ctx->fallback_head = ctx->fallback_tail = NULL;
+        spin_unlock(&ctx->fallback_spin);
+        while (NULL != fb) {
+            node = fb;
+            fb = fb->next;
+            node->next = NULL;
             _insert(_getslot(ctx, node), node);
         }
         /* 2. 处理所有已到期的 jiffies */
@@ -191,14 +219,16 @@ static void _loop(void *arg) {
     }
     LOG_INFO("%s", "timewheel thread exited.");
 }
-void tw_init(tw_ctx *ctx) {
+void tw_init(tw_ctx *ctx, uint32_t capacity) {
     ctx->exit = 0;
     ctx->jiffies = 0;
     ATOMIC_SET(&ctx->reqadd_pending, 0);
+    ctx->fallback_head = ctx->fallback_tail = NULL;
+    spin_init(&ctx->fallback_spin, SPIN_CNT_TIMEWHEEL);
     mutex_init(&ctx->mu);
     cond_init(&ctx->cond);
     timer_init(&ctx->timer);
-    mspc_init(&ctx->reqadd, TW_REQADD_CAP);
+    mspc_init(&ctx->reqadd, 0 == capacity ? 4 * ONEK : capacity);
     mspc_init(&ctx->node_pool, TW_NODE_POOL_MAX);
     ZERO(ctx->tv1, sizeof(ctx->tv1));
     ZERO(ctx->tv2, sizeof(ctx->tv2));

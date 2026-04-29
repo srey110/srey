@@ -295,6 +295,12 @@ static void _mysql_auth_request(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t
         return;
     }
     char *val = binary_get_string(&breader, 0);//server version
+    if (strlen(val) > sizeof(mysql->version) - 1) {
+        BIT_SET(*status, PROT_ERROR);
+        FREE(payload);
+        LOG_ERROR("server version string too long.");
+        return;
+    }
     strcpy(mysql->version, val);
     binary_get_skip(&breader, 4);//thread id
     val = binary_get_string(&breader, 8);//auth-plugin-data-part-1

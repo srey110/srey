@@ -85,6 +85,7 @@ SOCKET wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, c
     char *reqpack = websock_pack_handshake(host, secprot);
     FREE(host);
     if (ERR_OK != ev_send(&task->loader->netev, fd, *skid, reqpack, strlen(reqpack), 0)) {
+        ev_close(&task->loader->netev, fd, *skid);
         return INVALID_SOCK;
     }
     int32_t err;

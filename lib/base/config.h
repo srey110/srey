@@ -28,12 +28,8 @@
 #define TIMER_ACCURACY      1000000 // 定时器精度（纳秒，1ms）
 // 各模块自旋锁的自旋次数
 #define SPIN_CNT_TIMEWHEEL  32      // 时间轮自旋锁次数
-#define SPIN_CNT_LOADER     32      // loader 自旋锁次数
-#define SPIN_CNT_TASKMSG    32      // task 消息队列自旋锁次数
 #define SPIN_CNT_CMD        32      // 命令管道自旋锁次数
 #define SPIN_CNT_LSN        32      // 监听器自旋锁次数
-#define TW_NODE_POOL_MAX    4096    // 节点池上限：超出后直接释放，避免无界增长
-#define LOG_QUEUE_CAP       4096    // 日志队列最大长度
 
 #ifdef EV_EPOLL
     #define TRIGGER_ET          1   // epoll 使用边缘触发模式
