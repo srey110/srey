@@ -22,10 +22,10 @@ static void _map_task_free(void *item) {
 // 找出积压任务最多的 worker 索引，用于任务窃取；队列全空时返回 -1
 static int32_t _max_task_index(loader_ctx *loader) {
     uint16_t index = 0;
-    uint32_t max = mspc_size(&loader->worker[0].qutasks);
+    uint32_t max = mpmc_size(&loader->worker[0].qutasks);
     uint32_t count;
     for (uint16_t i = 1; i < loader->nworker; i++) {
-        count = mspc_size(&loader->worker[i].qutasks);
+        count = mpmc_size(&loader->worker[i].qutasks);
         if (count > max) {
             index = i;
             max = count;
@@ -52,7 +52,7 @@ static void _worker_wakeup(loader_ctx *loader, name_t *task) {
         ? &loader->worker[0]
         : &loader->worker[ATOMIC64_ADD(&loader->index, 1) % loader->nworker];
     // 无锁入队；队列满时自旋等待（正常负载下极少发生）
-    while (ERR_FAILED == mspc_push(&worker->qutasks, (void *)(uintptr_t)*task)) {
+    while (ERR_FAILED == mpmc_push(&worker->qutasks, (void *)(uintptr_t)*task)) {
         CPU_PAUSE();
     }
     // 快速路径：无工作线程休眠时跳过 mutex
@@ -69,7 +69,7 @@ void _task_message_push(task_ctx *task, message_ctx *msg) {
     MALLOC(pmsg, sizeof(message_ctx));
     *pmsg = *msg;
     // 无锁入队；队列满时自旋等待
-    while (ERR_FAILED == mspc_push(&task->qumsg, pmsg)) {
+    while (ERR_FAILED == mpmc_push(&task->qumsg, pmsg)) {
         CPU_PAUSE();
     }
     // CAS 0→1：只有首个生产者负责调度，避免重复唤醒
@@ -79,14 +79,14 @@ void _task_message_push(task_ctx *task, message_ctx *msg) {
 }
 // 从本地队列或其他 worker 队列（工作窃取）取出下一个待处理任务名
 static name_t _task_name_get(loader_ctx *loader, worker_ctx *worker) {
-    void *p = mspc_pop(&worker->qutasks);
+    void *p = mpmc_pop(&worker->qutasks);
     if (NULL != p) {
         return (name_t)(uintptr_t)p;
     }
     // 本地队列为空：尝试从积压最多的 worker 偷一个任务
     int32_t index = _max_task_index(loader);
     if (-1 != index) {
-        p = mspc_pop(&loader->worker[index].qutasks);
+        p = mpmc_pop(&loader->worker[index].qutasks);
         if (NULL != p) {
             return (name_t)(uintptr_t)p;
         }
@@ -99,7 +99,7 @@ static name_t _task_name_get(loader_ctx *loader, worker_ctx *worker) {
 static void _task_run(loader_ctx *loader, worker_ctx *worker,
     worker_version *version, task_dispatch_arg *runarg) {
     task_ctx *task = runarg->task;
-    uint32_t lens = mspc_size(&task->qumsg);
+    uint32_t lens = mpmc_size(&task->qumsg);
     if (lens > task->overload) {
         task->overload *= 2;
         LOG_WARN("task %d may overload, message queue length %d.", task->name, lens);
@@ -121,7 +121,7 @@ static void _task_run(loader_ctx *loader, worker_ctx *worker,
         }
         got = 0;
         while (got < want) {
-            message_ctx *p = (message_ctx *)mspc_pop(&task->qumsg);
+            message_ctx *p = (message_ctx *)mpmc_pop(&task->qumsg);
             if (NULL == p) {
                 break;
             }
@@ -149,7 +149,7 @@ static void _task_run(loader_ctx *loader, worker_ctx *worker,
     // 若有：尝试 CAS 0→1 重新调度；若 CAS 失败说明某生产者已抢先调度。
     // 两步均为 seq_cst 原子操作，保证不丢消息。
     ATOMIC_CAS(&task->global, 1, 0);
-    if (mspc_size(&task->qumsg) > 0) {
+    if (mpmc_size(&task->qumsg) > 0) {
         if (ATOMIC_CAS(&task->global, 0, 1)) {
             _worker_wakeup(loader, &task->name);
         }
@@ -181,8 +181,8 @@ static void _worker_loop(void *arg) {
         // 在 mutex 下二次检查队列，防止丢失唤醒：
         // 若在 _task_name_get 返回空到 ATOMIC_ADD 之间有生产者入队，
         // 生产者看到 waiting==0 会跳过 signal，这里再检查一次补漏。
-        // mspc_size 是无锁读，不需要额外锁保护。
-        if (mspc_size(&worker->qutasks) > 0) {
+        // mpmc_size 是无锁读，不需要额外锁保护。
+        if (mpmc_size(&worker->qutasks) > 0) {
             ATOMIC_ADD(&worker->waiting, (atomic_t)-1);
             mutex_unlock(&worker->mutex);
             continue;
@@ -244,7 +244,7 @@ loader_ctx *loader_init(uint16_t nnet, uint16_t nworker, uint32_t twcap) {
         worker->index = i;
         worker->weight = weights[i % n];
         worker->loader = loader;
-        mspc_init(&worker->qutasks, ONEK);
+        mpmc_init(&worker->qutasks, ONEK);
         mutex_init(&worker->mutex);
         cond_init(&worker->cond);
         worker->thread_worker = thread_creat(_worker_loop, worker);
@@ -308,7 +308,7 @@ void loader_free(loader_ctx *loader) {
     tw_free(&loader->tw);
     for (uint16_t i = 0; i < loader->nworker; i++) {
         worker = &loader->worker[i];
-        mspc_free(&worker->qutasks);
+        mpmc_free(&worker->qutasks);
         mutex_free(&worker->mutex);
         cond_free(&worker->cond);
     }

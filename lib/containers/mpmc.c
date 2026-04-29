@@ -1,7 +1,7 @@
-﻿#include "containers/mspc.h"
+﻿#include "containers/mpmc.h"
 
-#define MSPC_DEFAULT_CAP  1024
-#define MSPC_SPIN_MAX     64
+#define MPMC_DEFAULT_CAP  1024
+#define MPMC_SPIN_MAX     64
 
 /* 将 n 向上取整到最近的 2 的幂；n 已经是 2 的幂则原值返回 */
 static uint32_t _pow2_ceil(uint32_t n) {
@@ -16,23 +16,23 @@ static uint32_t _pow2_ceil(uint32_t n) {
     n |= n >> 16;
     return n + 1;
 }
-void mspc_init(mspc_ctx *q, uint32_t capacity) {
+void mpmc_init(mpmc_ctx *q, uint32_t capacity) {
     ASSERTAB(NULL != q, ERRSTR_NULLP);
-    capacity = (0 == capacity) ? MSPC_DEFAULT_CAP : _pow2_ceil(capacity);
+    capacity = (0 == capacity) ? MPMC_DEFAULT_CAP : _pow2_ceil(capacity);
     ASSERTAB(capacity >= 2, ERRSTR_INVPARAM);
     q->capacity = capacity;
     q->mask     = capacity - 1;
     q->enq.v    = 0;
     q->deq.v    = 0;
-    MALLOC(q->cells, sizeof(mspc_cell) * capacity);
-    ASSERTAB(NULL != q->cells, "mspc_init: malloc failed.");
+    MALLOC(q->cells, sizeof(mpmc_cell) * capacity);
+    ASSERTAB(NULL != q->cells, "mpmc_init: malloc failed.");
     /* 初始化每个槽位的序列号为其下标，表示"可入队"状态 */
     for (uint32_t i = 0; i < capacity; i++) {
         q->cells[i].sequence = i;
         q->cells[i].data     = NULL;
     }
 }
-void mspc_free(mspc_ctx *q) {
+void mpmc_free(mpmc_ctx *q) {
     if (NULL == q) {
         return;
     }
@@ -51,8 +51,8 @@ void mspc_free(mspc_ctx *q) {
  *     diff  < 0  → 槽位尚未被消费（队列已满），返回 ERR_FAILED
  *     diff  > 0  → enq_pos 已被其他生产者推进，重新加载 pos 重试
  */
-int32_t mspc_push(mspc_ctx *q, void *data) {
-    mspc_cell *cell;
+int32_t mpmc_push(mpmc_ctx *q, void *data) {
+    mpmc_cell *cell;
     uint32_t   pos;
     int32_t    diff;
     uint32_t   spins = 0;
@@ -77,7 +77,7 @@ int32_t mspc_push(mspc_ctx *q, void *data) {
             pos = ATOMIC_GET(&q->enq.v);
         }
         CPU_PAUSE();
-        if (++spins >= MSPC_SPIN_MAX) {
+        if (++spins >= MPMC_SPIN_MAX) {
             spins = 0;
             THREAD_YIELD();
         }
@@ -95,8 +95,8 @@ int32_t mspc_push(mspc_ctx *q, void *data) {
  *     diff  < 0  → 生产者尚未写入（队列为空），返回 NULL
  *     diff  > 0  → deq_pos 已被其他消费者推进，重新加载 pos 重试
  */
-void *mspc_pop(mspc_ctx *q) {
-    mspc_cell *cell;
+void *mpmc_pop(mpmc_ctx *q) {
+    mpmc_cell *cell;
     uint32_t   pos;
     int32_t    diff;
     void      *data;
@@ -121,7 +121,7 @@ void *mspc_pop(mspc_ctx *q) {
             pos = ATOMIC_GET(&q->deq.v);
         }
         CPU_PAUSE();
-        if (++spins >= MSPC_SPIN_MAX) {
+        if (++spins >= MPMC_SPIN_MAX) {
             spins = 0;
             THREAD_YIELD();
         }
@@ -137,7 +137,7 @@ void *mspc_pop(mspc_ctx *q) {
  * 并发场景下 enq_pos 与 deq_pos 分两次读取，结果仅供参考。
  * 无符号减法天然处理 uint32_t 绕回情形。
  */
-uint32_t mspc_size(mspc_ctx *q) {
+uint32_t mpmc_size(mpmc_ctx *q) {
     uint32_t enq = ATOMIC_GET(&q->enq.v);
     uint32_t deq = ATOMIC_GET(&q->deq.v);
     return enq - deq;

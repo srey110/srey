@@ -2,68 +2,68 @@
 #include "lib.h"
 
 /* =======================================================================
- * mspc —— 无锁 MPMC 有界队列
+ * mpmc —— 无锁 MPMC 有界队列
  * ======================================================================= */
 
 /* 单线程：基本入队出队、FIFO 顺序 */
-static void test_mspc_basic(CuTest *tc) {
-    mspc_ctx q;
-    mspc_init(&q, 0);                   /* 0 → 默认容量 1024 */
+static void test_mpmc_basic(CuTest *tc) {
+    mpmc_ctx q;
+    mpmc_init(&q, 0);                   /* 0 → 默认容量 1024 */
 
     CuAssertTrue(tc, 1024 == q.capacity);
-    CuAssertTrue(tc, 0 == mspc_size(&q));
-    CuAssertTrue(tc, NULL == mspc_pop(&q));  /* 空队列出队返回 NULL */
+    CuAssertTrue(tc, 0 == mpmc_size(&q));
+    CuAssertTrue(tc, NULL == mpmc_pop(&q));  /* 空队列出队返回 NULL */
 
     /* 入队 10 个元素（整数值转为指针，避免堆分配）*/
     for (uintptr_t i = 1; i <= 10; i++) {
-        CuAssertTrue(tc, ERR_OK == mspc_push(&q, (void *)i));
+        CuAssertTrue(tc, ERR_OK == mpmc_push(&q, (void *)i));
     }
-    CuAssertTrue(tc, 10 == mspc_size(&q));
+    CuAssertTrue(tc, 10 == mpmc_size(&q));
 
     /* FIFO 顺序验证 */
     for (uintptr_t i = 1; i <= 10; i++) {
-        CuAssertTrue(tc, (void *)i == mspc_pop(&q));
+        CuAssertTrue(tc, (void *)i == mpmc_pop(&q));
     }
-    CuAssertTrue(tc, 0 == mspc_size(&q));
-    CuAssertTrue(tc, NULL == mspc_pop(&q));
-    mspc_free(&q);
+    CuAssertTrue(tc, 0 == mpmc_size(&q));
+    CuAssertTrue(tc, NULL == mpmc_pop(&q));
+    mpmc_free(&q);
 }
 
 /* 边界：队列填满后拒绝入队；非 2 的幂容量自动向上对齐 */
-static void test_mspc_boundary(CuTest *tc) {
-    mspc_ctx q;
+static void test_mpmc_boundary(CuTest *tc) {
+    mpmc_ctx q;
 
     /* 容量 4，填满后 push 返回 ERR_FAILED */
-    mspc_init(&q, 4);
+    mpmc_init(&q, 4);
     CuAssertTrue(tc, 4 == q.capacity);
     for (uintptr_t i = 1; i <= 4; i++) {
-        CuAssertTrue(tc, ERR_OK == mspc_push(&q, (void *)i));
+        CuAssertTrue(tc, ERR_OK == mpmc_push(&q, (void *)i));
     }
-    CuAssertTrue(tc, ERR_FAILED == mspc_push(&q, (void *)5));
+    CuAssertTrue(tc, ERR_FAILED == mpmc_push(&q, (void *)5));
 
     /* 消费 2 个后可再入队 2 个 */
-    CuAssertTrue(tc, (void *)1 == mspc_pop(&q));
-    CuAssertTrue(tc, (void *)2 == mspc_pop(&q));
-    CuAssertTrue(tc, ERR_OK == mspc_push(&q, (void *)5));
-    CuAssertTrue(tc, ERR_OK == mspc_push(&q, (void *)6));
-    CuAssertTrue(tc, ERR_FAILED == mspc_push(&q, (void *)7));
+    CuAssertTrue(tc, (void *)1 == mpmc_pop(&q));
+    CuAssertTrue(tc, (void *)2 == mpmc_pop(&q));
+    CuAssertTrue(tc, ERR_OK == mpmc_push(&q, (void *)5));
+    CuAssertTrue(tc, ERR_OK == mpmc_push(&q, (void *)6));
+    CuAssertTrue(tc, ERR_FAILED == mpmc_push(&q, (void *)7));
 
     /* 出队顺序 */
-    CuAssertTrue(tc, (void *)3 == mspc_pop(&q));
-    CuAssertTrue(tc, (void *)4 == mspc_pop(&q));
-    CuAssertTrue(tc, (void *)5 == mspc_pop(&q));
-    CuAssertTrue(tc, (void *)6 == mspc_pop(&q));
-    CuAssertTrue(tc, NULL == mspc_pop(&q));
-    mspc_free(&q);
+    CuAssertTrue(tc, (void *)3 == mpmc_pop(&q));
+    CuAssertTrue(tc, (void *)4 == mpmc_pop(&q));
+    CuAssertTrue(tc, (void *)5 == mpmc_pop(&q));
+    CuAssertTrue(tc, (void *)6 == mpmc_pop(&q));
+    CuAssertTrue(tc, NULL == mpmc_pop(&q));
+    mpmc_free(&q);
 
     /* 容量 5（非 2 的幂）→ 自动对齐为 8 */
-    mspc_init(&q, 5);
+    mpmc_init(&q, 5);
     CuAssertTrue(tc, 8 == q.capacity);
     for (uintptr_t i = 1; i <= 8; i++) {
-        CuAssertTrue(tc, ERR_OK == mspc_push(&q, (void *)i));
+        CuAssertTrue(tc, ERR_OK == mpmc_push(&q, (void *)i));
     }
-    CuAssertTrue(tc, ERR_FAILED == mspc_push(&q, (void *)9));
-    mspc_free(&q);
+    CuAssertTrue(tc, ERR_FAILED == mpmc_push(&q, (void *)9));
+    mpmc_free(&q);
 }
 
 /* 并发：4 生产者 × 4 消费者，验证无丢失、无重复 */
@@ -72,14 +72,14 @@ static void test_mspc_boundary(CuTest *tc) {
 #define _ITEMS_EACH  50000
 #define _TOTAL       (_PROD_CNT * _ITEMS_EACH)
 
-typedef struct { mspc_ctx *q; int id; } _prod_arg;
+typedef struct { mpmc_ctx *q; int id; } _prod_arg;
 
 static void _producer(void *arg) {
     _prod_arg *a = (_prod_arg *)arg;
     uintptr_t start = (uintptr_t)a->id * _ITEMS_EACH + 1;
     uintptr_t end   = start + _ITEMS_EACH;
     for (uintptr_t v = start; v < end; v++) {
-        while (ERR_OK != mspc_push(a->q, (void *)v)) {
+        while (ERR_OK != mpmc_push(a->q, (void *)v)) {
             CPU_PAUSE();
         }
     }
@@ -89,9 +89,9 @@ static atomic_t   _consumed;
 static atomic64_t _sum;
 
 static void _consumer(void *arg) {
-    mspc_ctx *q = (mspc_ctx *)arg;
+    mpmc_ctx *q = (mpmc_ctx *)arg;
     for (;;) {
-        void *p = mspc_pop(q);
+        void *p = mpmc_pop(q);
         if (NULL != p) {
             uint32_t prev = ATOMIC_ADD(&_consumed, 1);
             ATOMIC64_ADD(&_sum, (uintptr_t)p);
@@ -107,9 +107,9 @@ static void _consumer(void *arg) {
     }
 }
 
-static void test_mspc_concurrent(CuTest *tc) {
-    mspc_ctx q;
-    mspc_init(&q, 1024);
+static void test_mpmc_concurrent(CuTest *tc) {
+    mpmc_ctx q;
+    mpmc_init(&q, 1024);
 
     _consumed = 0;
     _sum      = 0;
@@ -136,7 +136,7 @@ static void test_mspc_concurrent(CuTest *tc) {
 
     CuAssertTrue(tc, (uint32_t)_TOTAL == ATOMIC_GET(&_consumed));
     CuAssertTrue(tc, expected == (int64_t)ATOMIC64_GET(&_sum));
-    mspc_free(&q);
+    mpmc_free(&q);
 }
 
 /* =======================================================================
@@ -366,9 +366,9 @@ static void test_sarray(CuTest *tc) {
 /* ======================================================================= */
 
 void test_containers(CuSuite *suite) {
-    SUITE_ADD_TEST(suite, test_mspc_basic);
-    SUITE_ADD_TEST(suite, test_mspc_boundary);
-    SUITE_ADD_TEST(suite, test_mspc_concurrent);
+    SUITE_ADD_TEST(suite, test_mpmc_basic);
+    SUITE_ADD_TEST(suite, test_mpmc_boundary);
+    SUITE_ADD_TEST(suite, test_mpmc_concurrent);
     SUITE_ADD_TEST(suite, test_hashmap);
     SUITE_ADD_TEST(suite, test_heap);
     SUITE_ADD_TEST(suite, test_queue);

@@ -68,22 +68,24 @@ int32_t _join_iocp(watcher_ctx *watcher, SOCKET fd) {
     }
     return ERR_OK;
 }
-// 命令管道可读事件回调：从管道读取触发信号后批量处理命令队列
+// 命令管道可读事件回调：批量窃取队列后无锁处理
 static void _on_cmd(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
-    cmd_ctx cmd;
     int32_t i, nread;
     char cmdbuf[CMD_MAX_NREAD];
+    cmd_ctx local[CMD_MAX_NREAD];
     overlap_cmd_ctx *olcmd = UPCAST(skctx, overlap_cmd_ctx, ol_r);
     for (;;) {
         nread = recv(olcmd->ol_r.fd, cmdbuf, sizeof(cmdbuf), 0);
         if (nread <= 0) {
             break;
         }
+        spin_lock(&olcmd->spin);
         for (i = 0; i < nread; i++) {
-            spin_lock(&olcmd->spin);
-            cmd = *qu_cmd_pop(&olcmd->qu);
-            spin_unlock(&olcmd->spin);
-            cmd_cbs[cmd.cmd](watcher, &cmd);
+            local[i] = *qu_cmd_pop(&olcmd->qu);
+        }
+        spin_unlock(&olcmd->spin);
+        for (i = 0; i < nread; i++) {
+            cmd_cbs[local[i].cmd](watcher, &local[i]);
         }
     }
     if (0 == watcher->stop) {

@@ -26,7 +26,7 @@ int main(int argc, char *argv[]) {
     CuSuite  *suite  = CuSuiteNew();
 
     test_base(suite);        /* 内存宏、原子操作 */
-    test_containers(suite);  /* mspc、hashmap、heap、queue、sarray */
+    test_containers(suite);  /* mpmc、hashmap、heap、queue、sarray */
     test_crypt(suite);       /* base64、crc、digest、hmac、urlraw、xor */
     test_utils(suite);       /* pack/unpack、binary、buffer、sfid、hash_ring、netaddr */
     test_thread(suite);      /* mutex、spinlock、rwlock、cond、thread */

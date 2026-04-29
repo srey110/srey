@@ -4,7 +4,7 @@
 
 // 从节点池无锁出队；池为空时退化为 MALLOC
 static tw_node_ctx *_node_alloc(tw_ctx *ctx) {
-    tw_node_ctx *node = (tw_node_ctx *)mspc_pop(&ctx->node_pool);
+    tw_node_ctx *node = (tw_node_ctx *)mpmc_pop(&ctx->node_pool);
     if (NULL == node) {
         MALLOC(node, sizeof(tw_node_ctx));
     }
@@ -12,7 +12,7 @@ static tw_node_ctx *_node_alloc(tw_ctx *ctx) {
 }
 // 将节点无锁归还到池；池满时直接 FREE
 static void _node_release(tw_ctx *ctx, tw_node_ctx *node) {
-    if (ERR_OK != mspc_push(&ctx->node_pool, node)) {
+    if (ERR_OK != mpmc_push(&ctx->node_pool, node)) {
         FREE(node);
     }
 }
@@ -45,13 +45,13 @@ void tw_free(tw_ctx *ctx) {
     _free_slot(ctx->tv5, TVN_SIZE);
     /* 排空 reqadd 无锁队列并释放节点 */
     tw_node_ctx *node;
-    while (NULL != (node = (tw_node_ctx *)mspc_pop(&ctx->reqadd))) {
+    while (NULL != (node = (tw_node_ctx *)mpmc_pop(&ctx->reqadd))) {
         if (NULL != node->_freecb) {
             node->_freecb(&node->ud);
         }
         FREE(node);
     }
-    mspc_free(&ctx->reqadd);
+    mpmc_free(&ctx->reqadd);
     /* 排空备用链表并释放节点（先排空再销毁锁） */
     tw_node_ctx *fb = ctx->fallback_head;
     while (NULL != fb) {
@@ -64,10 +64,10 @@ void tw_free(tw_ctx *ctx) {
     }
     spin_free(&ctx->fallback_spin);
     /* 排空节点池并释放 */
-    while (NULL != (node = (tw_node_ctx *)mspc_pop(&ctx->node_pool))) {
+    while (NULL != (node = (tw_node_ctx *)mpmc_pop(&ctx->node_pool))) {
         FREE(node);
     }
-    mspc_free(&ctx->node_pool);
+    mpmc_free(&ctx->node_pool);
     cond_free(&ctx->cond);
     mutex_free(&ctx->mu);
 }
@@ -87,9 +87,9 @@ void tw_add(tw_ctx *ctx, const uint32_t timeout, tw_cb _cb, free_cb _freecb, ud_
     node->_cb = _cb;
     node->_freecb = _freecb;
     node->next = NULL;
-    if (ERR_OK != mspc_push(&ctx->reqadd, node)) {
-        /* mspc 队列满：追加到备用链表（由 fallback_spin 保护），保证节点不丢失。
-         * mspc 满说明之前已触发过 cond_signal，tw 线程必然已被唤醒，无需重复通知。 */
+    if (ERR_OK != mpmc_push(&ctx->reqadd, node)) {
+        /* mpmc 队列满：追加到备用链表（由 fallback_spin 保护），保证节点不丢失。
+         * mpmc 满说明之前已触发过 cond_signal，tw 线程必然已被唤醒，无需重复通知。 */
         spin_lock(&ctx->fallback_spin);
         if (NULL != ctx->fallback_tail) {
             ctx->fallback_tail->next = node;
@@ -179,14 +179,14 @@ static void _loop(void *arg) {
     while (0 == ctx->exit) {
         /*  将外部通过 tw_add 提交的节点分发到对应槽位（无锁出队）tw_add已设置 node->next = NULL 
          *  先排空，再清标志，再二次排空：避免清标志与生产者入队之间的竞态导致漏唤醒 */
-        while (NULL != (node = (tw_node_ctx *)mspc_pop(&ctx->reqadd))) {
+        while (NULL != (node = (tw_node_ctx *)mpmc_pop(&ctx->reqadd))) {
             _insert(_getslot(ctx, node), node);
         }
         ATOMIC_SET(&ctx->reqadd_pending, 0);
-        while (NULL != (node = (tw_node_ctx *)mspc_pop(&ctx->reqadd))) {
+        while (NULL != (node = (tw_node_ctx *)mpmc_pop(&ctx->reqadd))) {
             _insert(_getslot(ctx, node), node);
         }
-        /* 排空备用链表（mspc 满时的兜底节点），整批偷走后在锁外处理 */
+        /* 排空备用链表（mpmc 满时的兜底节点），整批偷走后在锁外处理 */
         spin_lock(&ctx->fallback_spin);
         tw_node_ctx *fb = ctx->fallback_head;
         ctx->fallback_head = ctx->fallback_tail = NULL;
@@ -228,8 +228,8 @@ void tw_init(tw_ctx *ctx, uint32_t capacity) {
     mutex_init(&ctx->mu);
     cond_init(&ctx->cond);
     timer_init(&ctx->timer);
-    mspc_init(&ctx->reqadd, 0 == capacity ? 4 * ONEK : capacity);
-    mspc_init(&ctx->node_pool, TW_NODE_POOL_MAX);
+    mpmc_init(&ctx->reqadd, 0 == capacity ? 4 * ONEK : capacity);
+    mpmc_init(&ctx->node_pool, TW_NODE_POOL_MAX);
     ZERO(ctx->tv1, sizeof(ctx->tv1));
     ZERO(ctx->tv2, sizeof(ctx->tv2));
     ZERO(ctx->tv3, sizeof(ctx->tv3));

@@ -2,7 +2,7 @@
 #include "utils/utils.h"
 #include "thread/cond.h"
 #include "thread/thread.h"
-#include "containers/mspc.h"
+#include "containers/mpmc.h"
 
 #define LOG_FMT "[%s][%s]%s\n"
 
@@ -17,7 +17,7 @@ static int32_t    _log_lv  = LOGLV_DEBUG;
 static atomic_t   _running = 0; /* atomic 保证跨平台内存可见 */
 static atomic_t   _sleeping = 0;
 static pthread_t  _th;
-static mspc_ctx   _mspc;
+static mpmc_ctx   _mpmc;
 static mutex_ctx  _mtx;
 static cond_ctx   _cond;
 #ifdef OS_WIN
@@ -87,7 +87,7 @@ static void _write_item(const log_item *item) {
 }
 static void _drain(void) {
     log_item *item;
-    while (NULL != (item = (log_item *)mspc_pop(&_mspc))) {
+    while (NULL != (item = (log_item *)mpmc_pop(&_mpmc))) {
         _write_item(item);
         FREE(item->msg);
         FREE(item);
@@ -98,7 +98,7 @@ static void _log_io_thread(void *arg) {
     int32_t should_exit;
     for (;;) {
         mutex_lock(&_mtx);
-        while (0 == mspc_size(&_mspc) && ATOMIC_GET(&_running)) {
+        while (0 == mpmc_size(&_mpmc) && ATOMIC_GET(&_running)) {
             ATOMIC_SET(&_sleeping, 1);
             cond_wait(&_cond, &_mtx);
             ATOMIC_SET(&_sleeping, 0);
@@ -106,10 +106,10 @@ static void _log_io_thread(void *arg) {
         should_exit = !ATOMIC_GET(&_running);
         mutex_unlock(&_mtx);
         _drain();
-        /* mspc_push 分两步：CAS 抢 enq_pos（size++）→ ATOMIC_SET 发布 sequence。
-         * 两步之间 mspc_size>0 但 mspc_pop 返回 NULL。
+        /* mpmc_push 分两步：CAS 抢 enq_pos（size++）→ ATOMIC_SET 发布 sequence。
+         * 两步之间 mpmc_size>0 但 mpmc_pop 返回 NULL。
          * 用 CPU_PAUSE 等发布完成，避免反复 mutex_lock/unlock 空转。 */
-        while (mspc_size(&_mspc) > 0) {
+        while (mpmc_size(&_mpmc) > 0) {
             CPU_PAUSE();
             _drain();
         }
@@ -126,7 +126,7 @@ void log_init(FILE *file, uint32_t capacity) {
         GetConsoleScreenBufferInfo(_console, &_def_console);
     }
 #endif
-    mspc_init(&_mspc, 0 == capacity ? 4 * ONEK : capacity);
+    mpmc_init(&_mpmc, 0 == capacity ? 4 * ONEK : capacity);
     mutex_init(&_mtx);
     cond_init(&_cond);
     ATOMIC_SET(&_running, 1); 
@@ -139,7 +139,7 @@ void log_free(void) {
     mutex_unlock(&_mtx);
     thread_join(_th);
     _drain();
-    mspc_free(&_mspc);
+    mpmc_free(&_mpmc);
     mutex_free(&_mtx);
     cond_free(&_cond);
 }
@@ -158,9 +158,9 @@ void slog(int32_t lv, const char *fmt, ...) {
     va_start(args, fmt);
     item->msg = _format_va(fmt, args);
     va_end(args);
-    if (ERR_OK != mspc_push(&_mspc, item)) {
+    if (ERR_OK != mpmc_push(&_mpmc, item)) {
         /* 写 stderr：避免与 I/O 线程竞争 _handle，也避免写错目标 */
-        fprintf(stderr, "mspc queue full, drop log:"LOG_FMT,
+        fprintf(stderr, "mpmc queue full, drop log:"LOG_FMT,
                 item->time, _lvstr(item->lv), item->msg);
         FREE(item->msg);
         FREE(item);

@@ -7,7 +7,7 @@
 #include "thread/spinlock.h"
 #include "utils/timer.h"
 #include "base/structs.h"
-#include "containers/mspc.h"
+#include "containers/mpmc.h"
 
 #define TVN_BITS (6)                                                   //高精度轮（tv2~tv5）每级位数
 #define TVR_BITS (8)                                                   //最低精度轮（tv1）位数
@@ -35,12 +35,12 @@ typedef struct tw_ctx {
     timer_ctx timer;        //高精度计时器
     mutex_ctx mu;
     cond_ctx  cond;
-    mspc_ctx    reqadd;          //外部新增请求暂存队列（无锁 MPMC，容量 TW_REQADD_CAP）
+    mpmc_ctx    reqadd;          //外部新增请求暂存队列（无锁 MPMC，容量 TW_REQADD_CAP）
     atomic_t    reqadd_pending;  //入队脏标志：0 已感知，1 有待处理节点；仅在 0→1 时才唤醒轮线程
-    mspc_ctx    node_pool;       //空闲节点复用池（无锁 MPMC，容量 TW_NODE_POOL_MAX）
+    mpmc_ctx    node_pool;       //空闲节点复用池（无锁 MPMC，容量 TW_NODE_POOL_MAX）
     spin_ctx     fallback_spin;  //保护备用链表的自旋锁
-    tw_node_ctx *fallback_head;  //备用链表头（mspc 满时兜底）
-    tw_node_ctx *fallback_tail;  //备用链表尾（mspc 满时兜底）
+    tw_node_ctx *fallback_head;  //备用链表头（mpmc 满时兜底）
+    tw_node_ctx *fallback_tail;  //备用链表尾（mpmc 满时兜底）
     tw_slot_ctx tv1[TVR_SIZE];  //最低精度轮（精度 1ms，范围 256ms）
     tw_slot_ctx tv2[TVN_SIZE];  //第 2 级精度轮
     tw_slot_ctx tv3[TVN_SIZE];  //第 3 级精度轮

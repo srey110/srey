@@ -5,7 +5,7 @@
 #include "event/event.h"
 #include "containers/sarray.h"
 #include "containers/queue.h"
-#include "containers/mspc.h"
+#include "containers/mpmc.h"
 #include "thread/rwlock.h"
 #include "thread/spinlock.h"
 #include "thread/mutex.h"
@@ -86,7 +86,7 @@ typedef struct worker_ctx {
     atomic_t waiting;      // 当前是否在休眠等待（原子维护，快速路径无锁读）
     loader_ctx *loader;    // 所属 loader
     pthread_t thread_worker; // 工作线程句柄
-    mspc_ctx qutasks;      // 无锁任务名队列（替代原 spinlock + qu_task）
+    mpmc_ctx qutasks;      // 无锁任务名队列（替代原 spinlock + qu_task）
     mutex_ctx mutex;       // 配合条件变量使用的互斥锁
     cond_ctx cond;         // 工作线程休眠/唤醒条件变量
 }worker_ctx;
@@ -129,7 +129,7 @@ struct task_ctx {
     _request_cb _request;                // 任务请求回调
     _response_cb _response;              // 任务响应回调
     _net_ssl_exchanged_cb _ssl_exchanged; // SSL 交换完成回调
-    mspc_ctx qumsg;            // 无锁消息队列（替代原 spinlock + qu_message）
+    mpmc_ctx qumsg;            // 无锁消息队列（替代原 spinlock + qu_message）
 };
 // 消息分发时传递给 _task_dispatch 的参数包
 struct task_dispatch_arg {

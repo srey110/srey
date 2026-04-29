@@ -10,7 +10,6 @@
         "**/.vs": true,
         "**/.git": true,
         "**/.claude": true,
-        "**/*.sln": true,
         "**/*.vcxproj": true,
         "**/*.filters": true
     },

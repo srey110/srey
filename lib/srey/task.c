@@ -165,7 +165,7 @@ task_ctx *task_new(loader_ctx *loader, name_t name, _task_dispatch_cb _dispatch,
     }
     task->_arg_free = _argfree;
     task->arg = arg;
-    mspc_init(&task->qumsg, ONEK);
+    mpmc_init(&task->qumsg, ONEK);
     task->overload = ONEK;
     return task;
 }
@@ -175,11 +175,11 @@ void task_free(task_ctx *task) {
         task->_arg_free(task->arg);
     }
     message_ctx *msg;
-    while (NULL != (msg = (message_ctx *)mspc_pop(&task->qumsg))) {
+    while (NULL != (msg = (message_ctx *)mpmc_pop(&task->qumsg))) {
         _message_clean(msg->mtype, msg->pktype, msg->data);
         FREE(msg);
     }
-    mspc_free(&task->qumsg);
+    mpmc_free(&task->qumsg);
     FREE(task);
 }
 int32_t task_register(task_ctx *task, _task_startup_cb _startup, _task_closing_cb _closing) {
