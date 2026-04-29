@@ -78,5 +78,11 @@ void* mpmc_pop(mpmc_ctx *q);
 /// <param name="q">mpmc_ctx</param>
 /// <returns>元素数量</returns>
 uint32_t mpmc_size(mpmc_ctx *q);
+/// <summary>
+/// 返回队列最大容量
+/// </summary>
+/// <param name="q">mpmc_ctx</param>
+/// <returns>最大容量</returns>
+static inline uint32_t mpmc_capacity(const mpmc_ctx *q) { return q->capacity; }
 
 #endif//MPMC_H_

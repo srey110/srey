@@ -501,7 +501,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads) {
         watcher->npipes = 1;
         watcher->pipes = _new_pips(watcher->npipes);
         watcher->element = hashmap_new_with_allocator(_malloc, _realloc, _free,
-            sizeof(sock_ctx *), ONEK * 2, 0, 0,
+            sizeof(sock_ctx *), ONEK, 0, 0,
             _map_hash, _map_compare, _free_element, NULL);
         pool_init(&watcher->pool, ONEK);
         _init_cmd(watcher);

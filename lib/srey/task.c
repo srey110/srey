@@ -165,8 +165,9 @@ task_ctx *task_new(loader_ctx *loader, name_t name, _task_dispatch_cb _dispatch,
     }
     task->_arg_free = _argfree;
     task->arg = arg;
-    mpmc_init(&task->qumsg, ONEK);
-    task->overload = ONEK;
+    mpmc_init(&task->qumsg, 4 * ONEK);
+    task->overload = mpmc_capacity(&task->qumsg) * 8 / 10;
+    task->overloaded = 0;
     return task;
 }
 void task_free(task_ctx *task) {

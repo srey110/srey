@@ -94,56 +94,38 @@ static name_t _task_name_get(loader_ctx *loader, worker_ctx *worker) {
     return INVALID_TNAME;
 }
 // 单次批量 pop 消息的最大条数（栈上数组上限）
-#define TASK_MSG_BATCH  64
 // 从任务消息队列批量取出消息并依次分发，处理完成后重调度或清除调度标志
 static void _task_run(loader_ctx *loader, worker_ctx *worker,
     worker_version *version, task_dispatch_arg *runarg) {
     task_ctx *task = runarg->task;
     uint32_t lens = mpmc_size(&task->qumsg);
     if (lens > task->overload) {
-        task->overload *= 2;
-        LOG_WARN("task %d may overload, message queue length %d.", task->name, lens);
+        if (!task->overloaded) {
+            task->overloaded = 1;
+            LOG_WARN("task %d may overload, message queue length %d.", task->name, lens);
+        }
+    } else {
+        task->overloaded = 0;
     }
     uint32_t n = worker->weight >= 0 ? (lens >> worker->weight) : 1;
     if (0 == n) {
         n = 1;
     }
-    // 无锁批量 pop：逐条取出后复制到栈上数组，立即释放堆包装体，再批量 dispatch
-    message_ctx *ptrs[TASK_MSG_BATCH];
-    message_ctx  batch[TASK_MSG_BATCH];
-    uint32_t want, got, i;
+    message_ctx *p;
     uint32_t processed = 0;
     version->name = task->name;
     while (processed < n) {
-        want = n - processed;
-        if (want > TASK_MSG_BATCH) {
-            want = TASK_MSG_BATCH;
-        }
-        got = 0;
-        while (got < want) {
-            message_ctx *p = (message_ctx *)mpmc_pop(&task->qumsg);
-            if (NULL == p) {
-                break;
-            }
-            ptrs[got] = p;
-            batch[got] = *p;
-            got++;
-        }
-        if (0 == got) {
+        p = (message_ctx *)mpmc_pop(&task->qumsg);
+        if (NULL == p) {
             break;
         }
-        for (i = 0; i < got; i++) {
-            FREE(ptrs[i]);
-            runarg->msg = batch[i];
-            ++version->ver;
-            version->msgtype = runarg->msg.mtype;
-            task->_task_dispatch(runarg);
-            version->msgtype = MSG_TYPE_NONE;
-        }
-        processed += got;
-        if (got < want) {
-            break; // 队列已耗尽，提前退出
-        }
+        runarg->msg = *p;
+        FREE(p);
+        ++version->ver;
+        version->msgtype = runarg->msg.mtype;
+        task->_task_dispatch(runarg);
+        version->msgtype = MSG_TYPE_NONE;
+        processed++;
     }
     // 无锁重调度：先将 global CAS 1→0（取消调度），再检查队列是否仍有消息。
     // 若有：尝试 CAS 0→1 重新调度；若 CAS 失败说明某生产者已抢先调度。
@@ -153,8 +135,6 @@ static void _task_run(loader_ctx *loader, worker_ctx *worker,
         if (ATOMIC_CAS(&task->global, 0, 1)) {
             _worker_wakeup(loader, &task->name);
         }
-    } else {
-        task->overload = ONEK;
     }
 }
 // 工作线程主循环：持续从队列取任务并分发消息，队列空时阻塞等待唤醒

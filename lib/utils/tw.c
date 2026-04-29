@@ -1,6 +1,6 @@
 ﻿#include "utils/tw.h"
 
-#define TW_NODE_POOL_MAX    4096    // 节点池上限：超出后直接释放，避免无界增长
+#define TW_NODE_POOL_MAX    4 * ONEK    // 节点池上限：超出后直接释放，避免无界增长
 
 // 从节点池无锁出队；池为空时退化为 MALLOC
 static tw_node_ctx *_node_alloc(tw_ctx *ctx) {

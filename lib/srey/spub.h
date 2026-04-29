@@ -107,7 +107,8 @@ struct loader_ctx {
 struct task_ctx {
     atomic_t global;           // 0=未调度 1=已调度/运行中（无锁调度标志）
     name_t name;               // 任务唯一名称
-    uint32_t overload;         // 消息队列积压告警阈值（动态翻倍）
+    uint32_t overload;         // 消息队列积压告警阈值
+    int32_t  overloaded;       // 过载标记：1=已告警，0=正常（避免重复打印）
     atomic_t closing;          // 是否已发送关闭消息（防重复）
     atomic_t ref;              // 引用计数
     uint32_t timeout_request;  // task_request 超时时间（毫秒）
