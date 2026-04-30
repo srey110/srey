@@ -1,4 +1,4 @@
-#include "lbind/lpub.h"
+﻿#include "lbind/lpub.h"
 
 // Lua 绑定：对数据进行 URL 编码，返回编码后的字符串
 static int32_t _lcrypt_url_encode(lua_State *lua) {

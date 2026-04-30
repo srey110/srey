@@ -1,4 +1,4 @@
-#include "protocol/mysql/mysql_utils.h"
+﻿#include "protocol/mysql/mysql_utils.h"
 #include "protocol/mysql/mysql_macro.h"
 
 // 将整数以 MySQL lenenc（长度编码整数）格式写入缓冲区：

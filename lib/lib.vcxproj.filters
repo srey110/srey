@@ -349,6 +349,9 @@
     <ClInclude Include="protocol\mongo\mongo_parse.h">
       <Filter>protocol\mongo</Filter>
     </ClInclude>
+    <ClInclude Include="containers\mpmc.h">
+      <Filter>containers</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="event\event.c">
@@ -575,6 +578,9 @@
     </ClCompile>
     <ClCompile Include="protocol\mongo\mongo_parse.c">
       <Filter>protocol\mongo</Filter>
+    </ClCompile>
+    <ClCompile Include="containers\mpmc.c">
+      <Filter>containers</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

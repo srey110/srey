@@ -1,4 +1,4 @@
-#ifndef PGSQL_H_
+﻿#ifndef PGSQL_H_
 #define PGSQL_H_
 
 #include "protocol/pgsql/pgsql_pack.h"

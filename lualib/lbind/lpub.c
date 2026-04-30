@@ -1,4 +1,4 @@
-#include "lbind/lpub.h"
+﻿#include "lbind/lpub.h"
 
 // 从 Lua 全局变量表中取轻量用户数据，类型不符则弹栈返回 NULL
 void *global_userdata(lua_State *lua, const char *name) {

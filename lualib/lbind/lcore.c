@@ -1,4 +1,4 @@
-#include "lbind/lpub.h"
+﻿#include "lbind/lpub.h"
 
 // 辅助宏：若栈上指定位置为整数则取其值，否则默认为 1（复制语义）
 #define COPY_TYPE(lua, idx) (lua_isinteger(lua, idx) ? (int32_t)luaL_checkinteger(lua, idx) : 1)

@@ -1,4 +1,4 @@
-#ifndef MYSQL_MACRO_H_
+﻿#ifndef MYSQL_MACRO_H_
 #define MYSQL_MACRO_H_
 
 #define INT3_MAX                  0xFFFFFF          // 3字节无符号整数最大值

@@ -1,4 +1,4 @@
-#include "lbind/lpub.h"
+﻿#include "lbind/lpub.h"
 
 // Lua 绑定：创建 MySQL 参数绑定上下文（用于预处理语句或查询参数化）
 static int32_t _lmysql_bind_new(lua_State *lua) {

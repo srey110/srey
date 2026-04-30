@@ -20,13 +20,13 @@
  * 用法示例：
  *   mpmc_ctx q;
  *   mpmc_init(&q, 1024);
- *   mpmc_push(&q, ptr);        /* 阻塞：队列满时自旋等待 */
- *   mpmc_trypush(&q, ptr);    /* 非阻塞：队列满时返回 ERR_FAILED */
+ *   mpmc_push(&q, ptr);
+ *   mpmc_trypush(&q, ptr);
  *   void *p = mpmc_pop(&q);
  *   mpmc_free(&q);
  */
 
-/* 单个槽位：序列号 + 数据指针 */
+ /* 单个槽位：序列号 + 数据指针 */
 typedef struct mpmc_cell {
     atomic_t  sequence;
     void     *data;

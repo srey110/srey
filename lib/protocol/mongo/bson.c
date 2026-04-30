@@ -188,7 +188,7 @@ void bson_append_maxkey(bson_ctx *bson, const char *key) {
 }
 void bson_iter_init(bson_iter *iter, bson_ctx *bson) {
     iter->doc = &bson->doc;
-    iter->doclens = binary_get_integer(iter->doc, 4, 1);
+    iter->doclens = (size_t)binary_get_integer(iter->doc, 4, 1);
 }
 // 清空迭代器的当前字段信息（类型、长度、key、val 等）
 static void _bson_iter_clear(bson_iter *iter) {
@@ -218,20 +218,20 @@ int32_t bson_iter_next(bson_iter *iter) {
     case BSON_UTF8://e_name string
     case BSON_JSCODE://e_name string
         iter->key = binary_get_string(iter->doc, 0);
-        iter->lens = binary_get_integer(iter->doc, 4, 1) - 1;
+        iter->lens = (size_t)binary_get_integer(iter->doc, 4, 1) - 1;
         iter->val = binary_get_string(iter->doc, iter->lens + 1);
         break;
     case BSON_DOCUMENT://e_name document
     case BSON_ARRAY://e_name document
         iter->key = binary_get_string(iter->doc, 0);
         off = iter->doc->offset;
-        iter->lens = binary_get_integer(iter->doc, 4, 1);
+        iter->lens = (size_t)binary_get_integer(iter->doc, 4, 1);
         binary_offset(iter->doc, off);
         iter->val = binary_get_string(iter->doc, iter->lens);
         break;
     case BSON_BINARY://e_name binary
         iter->key = binary_get_string(iter->doc, 0);
-        iter->lens = binary_get_integer(iter->doc, 4, 1);
+        iter->lens = (size_t)binary_get_integer(iter->doc, 4, 1);
         iter->subtype = binary_get_int8(iter->doc);
         iter->val = binary_get_string(iter->doc, iter->lens);
         break;

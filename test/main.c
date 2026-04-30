@@ -1,4 +1,4 @@
-#include "test_base.h"
+﻿#include "test_base.h"
 #include "test_containers.h"
 #include "test_crypt.h"
 #include "test_utils.h"
@@ -10,6 +10,15 @@
 #ifdef OS_WIN
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "lib.lib")
+#if WITH_SSL
+#ifdef ARCH_X64
+#pragma comment(lib, "libcrypto_x64.lib")
+#pragma comment(lib, "libssl_x64.lib")
+#else
+#pragma comment(lib, "libcrypto.lib")
+#pragma comment(lib, "libssl.lib")
+#endif
+#endif
 #endif
 
 int main(int argc, char *argv[]) {
