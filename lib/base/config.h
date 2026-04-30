@@ -2,6 +2,7 @@
 #define CONFIG_H_
 
 #include "base/os.h"
+
 //是否启用内存检测
 #define MEMORY_CHECK        1
 //是否启用SSL
