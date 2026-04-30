@@ -51,10 +51,8 @@ static void _worker_wakeup(loader_ctx *loader, name_t *task) {
     worker_ctx *worker = (1 == loader->nworker)
         ? &loader->worker[0]
         : &loader->worker[ATOMIC64_ADD(&loader->index, 1) % loader->nworker];
-    // 无锁入队；队列满时自旋等待（正常负载下极少发生）
-    while (ERR_FAILED == mpmc_push(&worker->qutasks, (void *)(uintptr_t)*task)) {
-        CPU_PAUSE();
-    }
+    // 阻塞入队；队列满时自旋等待（正常负载下极少发生）
+    mpmc_push(&worker->qutasks, (void *)(uintptr_t)*task);
     // 快速路径：无工作线程休眠时跳过 mutex
     if (ATOMIC_GET(&worker->waiting) > 0) {
         mutex_lock(&worker->mutex);
@@ -68,10 +66,8 @@ void _task_message_push(task_ctx *task, message_ctx *msg) {
     message_ctx *pmsg;
     MALLOC(pmsg, sizeof(message_ctx));
     *pmsg = *msg;
-    // 无锁入队；队列满时自旋等待
-    while (ERR_FAILED == mpmc_push(&task->qumsg, pmsg)) {
-        CPU_PAUSE();
-    }
+    // 阻塞入队；队列满时自旋等待
+    mpmc_push(&task->qumsg, pmsg);
     // CAS 0→1：只有首个生产者负责调度，避免重复唤醒
     if (ATOMIC_CAS(&task->global, 0, 1)) {
         _worker_wakeup(task->loader, &task->name);

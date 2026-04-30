@@ -16,7 +16,7 @@ static void test_mpmc_basic(CuTest *tc) {
 
     /* 入队 10 个元素（整数值转为指针，避免堆分配）*/
     for (uintptr_t i = 1; i <= 10; i++) {
-        CuAssertTrue(tc, ERR_OK == mpmc_push(&q, (void *)i));
+        CuAssertTrue(tc, ERR_OK == mpmc_trypush(&q, (void *)i));
     }
     CuAssertTrue(tc, 10 == mpmc_size(&q));
 
@@ -37,16 +37,16 @@ static void test_mpmc_boundary(CuTest *tc) {
     mpmc_init(&q, 4);
     CuAssertTrue(tc, 4 == q.capacity);
     for (uintptr_t i = 1; i <= 4; i++) {
-        CuAssertTrue(tc, ERR_OK == mpmc_push(&q, (void *)i));
+        CuAssertTrue(tc, ERR_OK == mpmc_trypush(&q, (void *)i));
     }
-    CuAssertTrue(tc, ERR_FAILED == mpmc_push(&q, (void *)5));
+    CuAssertTrue(tc, ERR_FAILED == mpmc_trypush(&q, (void *)5));
 
     /* 消费 2 个后可再入队 2 个 */
     CuAssertTrue(tc, (void *)1 == mpmc_pop(&q));
     CuAssertTrue(tc, (void *)2 == mpmc_pop(&q));
-    CuAssertTrue(tc, ERR_OK == mpmc_push(&q, (void *)5));
-    CuAssertTrue(tc, ERR_OK == mpmc_push(&q, (void *)6));
-    CuAssertTrue(tc, ERR_FAILED == mpmc_push(&q, (void *)7));
+    CuAssertTrue(tc, ERR_OK == mpmc_trypush(&q, (void *)5));
+    CuAssertTrue(tc, ERR_OK == mpmc_trypush(&q, (void *)6));
+    CuAssertTrue(tc, ERR_FAILED == mpmc_trypush(&q, (void *)7));
 
     /* 出队顺序 */
     CuAssertTrue(tc, (void *)3 == mpmc_pop(&q));
@@ -60,9 +60,9 @@ static void test_mpmc_boundary(CuTest *tc) {
     mpmc_init(&q, 5);
     CuAssertTrue(tc, 8 == q.capacity);
     for (uintptr_t i = 1; i <= 8; i++) {
-        CuAssertTrue(tc, ERR_OK == mpmc_push(&q, (void *)i));
+        CuAssertTrue(tc, ERR_OK == mpmc_trypush(&q, (void *)i));
     }
-    CuAssertTrue(tc, ERR_FAILED == mpmc_push(&q, (void *)9));
+    CuAssertTrue(tc, ERR_FAILED == mpmc_trypush(&q, (void *)9));
     mpmc_free(&q);
 }
 
@@ -79,9 +79,7 @@ static void _producer(void *arg) {
     uintptr_t start = (uintptr_t)a->id * _ITEMS_EACH + 1;
     uintptr_t end   = start + _ITEMS_EACH;
     for (uintptr_t v = start; v < end; v++) {
-        while (ERR_OK != mpmc_push(a->q, (void *)v)) {
-            CPU_PAUSE();
-        }
+        mpmc_push(a->q, (void *)v);
     }
 }
 

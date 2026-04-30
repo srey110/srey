@@ -13,14 +13,15 @@
  *
  * 特性：
  *   - 真正无锁，所有操作均为 wait-free（有界容量下）
- *   - 容量固定，初始化后不扩容，满时 mpmc_push 返回 ERR_FAILED
+ *   - 容量固定，初始化后不扩容，满时 mpmc_trypush 返回 ERR_FAILED，mpmc_push 自旋等待
  *   - 容量必须为 2 的幂，若传入非幂次将自动向上对齐
  *   - enq_pos / deq_pos 各占独立缓存行，消除伪共享
  *
  * 用法示例：
  *   mpmc_ctx q;
  *   mpmc_init(&q, 1024);
- *   mpmc_push(&q, ptr);
+ *   mpmc_push(&q, ptr);        /* 阻塞：队列满时自旋等待 */
+ *   mpmc_trypush(&q, ptr);    /* 非阻塞：队列满时返回 ERR_FAILED */
  *   void *p = mpmc_pop(&q);
  *   mpmc_free(&q);
  */
@@ -60,12 +61,18 @@ void mpmc_init(mpmc_ctx *q, uint32_t capacity);
 /// <param name="q">mpmc_ctx</param>
 void mpmc_free(mpmc_ctx *q);
 /// <summary>
-/// 入队，非阻塞
+/// 阻塞入队：队列满时自旋等待直到成功
+/// </summary>
+/// <param name="q">mpmc_ctx</param>
+/// <param name="data">数据指针，不得为 NULL</param>
+void mpmc_push(mpmc_ctx *q, void *data);
+/// <summary>
+/// 非阻塞入队：队列满时立即返回 ERR_FAILED
 /// </summary>
 /// <param name="q">mpmc_ctx</param>
 /// <param name="data">数据指针，不得为 NULL</param>
 /// <returns>ERR_OK 成功，ERR_FAILED 队列已满</returns>
-int32_t mpmc_push(mpmc_ctx *q, void *data);
+int32_t mpmc_trypush(mpmc_ctx *q, void *data);
 /// <summary>
 /// 出队，非阻塞
 /// </summary>

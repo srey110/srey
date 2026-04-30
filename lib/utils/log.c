@@ -158,7 +158,7 @@ void slog(int32_t lv, const char *fmt, ...) {
     va_start(args, fmt);
     item->msg = _format_va(fmt, args);
     va_end(args);
-    if (ERR_OK != mpmc_push(&_mpmc, item)) {
+    if (ERR_OK != mpmc_trypush(&_mpmc, item)) {
         /* 写 stderr：避免与 I/O 线程竞争 _handle，也避免写错目标 */
         fprintf(stderr, "mpmc queue full, drop log:"LOG_FMT,
                 item->time, _lvstr(item->lv), item->msg);

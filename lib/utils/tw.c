@@ -12,7 +12,7 @@ static tw_node_ctx *_node_alloc(tw_ctx *ctx) {
 }
 // 将节点无锁归还到池；池满时直接 FREE
 static void _node_release(tw_ctx *ctx, tw_node_ctx *node) {
-    if (ERR_OK != mpmc_push(&ctx->node_pool, node)) {
+    if (ERR_OK != mpmc_trypush(&ctx->node_pool, node)) {
         FREE(node);
     }
 }
@@ -87,7 +87,7 @@ void tw_add(tw_ctx *ctx, const uint32_t timeout, tw_cb _cb, free_cb _freecb, ud_
     node->_cb = _cb;
     node->_freecb = _freecb;
     node->next = NULL;
-    if (ERR_OK != mpmc_push(&ctx->reqadd, node)) {
+    if (ERR_OK != mpmc_trypush(&ctx->reqadd, node)) {
         /* mpmc 队列满：追加到备用链表（由 fallback_spin 保护），保证节点不丢失。
          * mpmc 满说明之前已触发过 cond_signal，tw 线程必然已被唤醒，无需重复通知。 */
         spin_lock(&ctx->fallback_spin);

@@ -48,16 +48,17 @@ void mpmc_free(mpmc_ctx *q) {
  *
  *   signed diff = (int32_t)(sequence - pos)：
  *     diff == 0  → 本轮可入队，尝试 CAS 抢占 enq_pos
- *     diff  < 0  → 槽位尚未被消费（队列已满），返回 ERR_FAILED
+ *     diff  < 0  → 槽位尚未被消费（队列已满）
  *     diff  > 0  → enq_pos 已被其他生产者推进，重新加载 pos 重试
  */
-int32_t mpmc_push(mpmc_ctx *q, void *data) {
+
+/* 非阻塞入队：队列满时立即返回 ERR_FAILED */
+int32_t mpmc_trypush(mpmc_ctx *q, void *data) {
+    ASSERTAB(NULL != q,    ERRSTR_NULLP);
+    ASSERTAB(NULL != data, ERRSTR_INVPARAM);
     mpmc_cell *cell;
     uint32_t   pos;
     int32_t    diff;
-    uint32_t   spins = 0;
-    ASSERTAB(NULL != q,    ERRSTR_NULLP);
-    ASSERTAB(NULL != data, ERRSTR_INVPARAM);
     pos = ATOMIC_GET(&q->enq.v);
     for (;;) {
         cell = &q->cells[pos & q->mask];
@@ -70,22 +71,30 @@ int32_t mpmc_push(mpmc_ctx *q, void *data) {
             /* CAS 失败说明其他生产者已抢先，重新加载 */
             pos = ATOMIC_GET(&q->enq.v);
         } else if (diff < 0) {
-            /* 队列已满 */
+            /* 队列已满，立即返回 */
             return ERR_FAILED;
         } else {
             /* enq_pos 已过时，重新加载后重试 */
             pos = ATOMIC_GET(&q->enq.v);
         }
+        /* CAS 竞争或 pos 过期时短暂让出总线再重试，不 yield（由调用方决策） */
+        CPU_PAUSE();
+    }
+    /* 已独占该槽位，写入数据并发布（sequence = pos+1 通知消费者） */
+    cell->data = data;
+    ATOMIC_SET(&cell->sequence, pos + 1);
+    return ERR_OK;
+}
+/* 阻塞入队：队列满时自旋等待直到成功；长时间满则 yield 退让 */
+void mpmc_push(mpmc_ctx *q, void *data) {
+    uint32_t spins = 0;
+    while (ERR_OK != mpmc_trypush(q, data)) {
         CPU_PAUSE();
         if (++spins >= MPMC_SPIN_MAX) {
             spins = 0;
             THREAD_YIELD();
         }
     }
-    /* 已独占该槽位，写入数据并发布（sequence = pos+1 通知消费者） */
-    cell->data = data;
-    ATOMIC_SET(&cell->sequence, pos + 1);
-    return ERR_OK;
 }
 /*
  * 出队核心逻辑：
@@ -96,12 +105,11 @@ int32_t mpmc_push(mpmc_ctx *q, void *data) {
  *     diff  > 0  → deq_pos 已被其他消费者推进，重新加载 pos 重试
  */
 void *mpmc_pop(mpmc_ctx *q) {
+    ASSERTAB(NULL != q, ERRSTR_NULLP);
     mpmc_cell *cell;
     uint32_t   pos;
     int32_t    diff;
     void      *data;
-    uint32_t   spins = 0;
-    ASSERTAB(NULL != q, ERRSTR_NULLP);
     pos = ATOMIC_GET(&q->deq.v);
     for (;;) {
         cell = &q->cells[pos & q->mask];
@@ -114,17 +122,14 @@ void *mpmc_pop(mpmc_ctx *q) {
             /* CAS 失败说明其他消费者已抢先，重新加载 */
             pos = ATOMIC_GET(&q->deq.v);
         } else if (diff < 0) {
-            /* 队列为空 */
+            /* 队列为空，立即返回 */
             return NULL;
         } else {
             /* deq_pos 已过时，重新加载后重试 */
             pos = ATOMIC_GET(&q->deq.v);
         }
+        /* CAS 竞争或 pos 过期时短暂让出总线再重试，不 yield（由调用方决策） */
         CPU_PAUSE();
-        if (++spins >= MPMC_SPIN_MAX) {
-            spins = 0;
-            THREAD_YIELD();
-        }
     }
     /* 已独占该槽位，读取数据并释放槽位（sequence = pos+capacity 通知生产者下一轮可用） */
     data       = cell->data;
