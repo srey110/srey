@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>Srey Debug Console</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{--bg:#0f0f17;--panel:#16161e;--brd:#2a2a3a;--txt:#c0caf5;--dim:#565f89;
+  --blue:#7aa2f7;--green:#9ece6a;--red:#f7768e;--ora:#ff9e64}
+body{background:var(--bg);color:var(--txt);font-family:Consolas,Monaco,monospace;
+  font-size:13px;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+.hdr{background:var(--panel);border-bottom:1px solid var(--brd);padding:6px 14px;
+  display:flex;align-items:center;gap:10px;flex-shrink:0}
+.htitle{color:var(--blue);font-weight:bold}
+.haddr{color:var(--dim);font-size:11px}
+.bar{background:var(--panel);border-bottom:1px solid var(--brd);padding:5px 14px;
+  display:flex;align-items:center;gap:6px;flex-shrink:0}
+label{color:var(--dim);font-size:11px}
+input{background:#1a1a27;border:1px solid var(--brd);color:var(--txt);
+  padding:3px 8px;border-radius:3px;font:inherit;font-size:12px;width:220px}
+input:focus{outline:1px solid var(--blue)}
+select{background:#1a1a27;border:1px solid var(--brd);color:var(--txt);
+  padding:3px 6px;border-radius:3px;font:inherit;font-size:12px;cursor:pointer;width:50px}
+select:focus{outline:1px solid var(--blue)}
+input::placeholder{color:var(--dim)}
+#tk{color:var(--dim)}
+#tk.typed{color:var(--blue);font-weight:bold}
+button{background:#1a1a27;border:1px solid var(--brd);color:var(--txt);
+  padding:4px 10px;border-radius:3px;font:inherit;font-size:12px;cursor:pointer;transition:background .1s}
+button:hover{background:#23233a}
+.prim{background:var(--blue)!important;border-color:var(--blue)!important;color:#0f0f17;font-weight:bold}
+.prim:hover{background:#89b4ff!important}
+.main{flex:1;display:flex;overflow:hidden}
+.side{flex:1;background:var(--panel);border-right:1px solid var(--brd);
+  display:flex;flex-direction:column;overflow-y:auto;flex-shrink:0}
+.sec{padding:10px 12px;border-bottom:1px solid var(--brd)}
+.sec:last-child{border-bottom:none}
+.stl{color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.6px;margin-bottom:7px}
+.lvg{display:grid;grid-template-columns:1fr 1fr;gap:4px}
+.lv{background:#1a1a27;border:1px solid var(--brd);color:var(--txt);padding:4px 0;
+  border-radius:3px;font:inherit;font-size:11px;cursor:pointer;text-align:center}
+.lv:hover{background:#23233a}
+.lv.on{background:var(--ora);border-color:var(--ora);color:#0f0f17;font-weight:bold}
+textarea{background:#1a1a27;border:1px solid var(--brd);color:var(--txt);
+  padding:6px 8px;border-radius:3px;font:inherit;font-size:12px;
+  resize:vertical;width:100%;min-height:180px;line-height:1.45}
+textarea:focus{outline:1px solid var(--blue)}
+.snip{display:block;width:100%;text-align:left;padding:3px 8px;
+  background:none;border:none;color:var(--dim);font:inherit;font-size:11px;cursor:pointer;border-radius:2px}
+.snip:hover{background:#1a1a27;color:var(--txt)}
+.ow{flex:2;display:flex;flex-direction:column;overflow:hidden}
+.oh{background:var(--panel);border-bottom:1px solid var(--brd);padding:4px 12px;
+  display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
+.oh>span{color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.6px}
+#out{flex:1;overflow-y:auto;padding:8px 12px;display:flex;flex-direction:column;gap:6px}
+.ent{border-left:2px solid var(--brd);padding:3px 0 3px 9px}
+.ent.ok{border-left-color:var(--green)}
+.ent.er{border-left-color:var(--red)}
+.ereq{color:var(--blue);font-size:11px;display:flex;justify-content:space-between}
+.ets{color:var(--dim);font-size:10px}
+.ebody{color:var(--txt);white-space:pre-wrap;word-break:break-all;margin-top:2px;font-size:12px}
+::-webkit-scrollbar{width:5px}
+::-webkit-scrollbar-track{background:var(--bg)}
+::-webkit-scrollbar-thumb{background:var(--brd);border-radius:3px}
+.warn-banner{background:#3b1d1d;border-bottom:1px solid var(--red);color:var(--red);
+  padding:5px 14px;font-size:12px;flex-shrink:0;display:none}
+</style>
+</head>
+<body>
+<div class="warn-banner" id="wb">&#9888; 警告：调试控制台已暴露在非本机地址，请勿在生产环境使用</div>
+<div class="hdr">
+  <span class="htitle">&#9633; Srey Debug Console</span>
+  <span class="haddr" id="adr"></span>
+</div>
+<div class="bar">
+  <label>Task</label>
+  <select id="tksel" title="选择"><option value="">▾</option></select>
+  <input id="tk" type="text" placeholder="TASK_NAME Key 值" autocomplete="off"/>
+  <button onclick="G()">Help</button>
+  <button onclick="M()">Mem</button>
+  <button onclick="C()">GC</button>
+  <button onclick="S()">Stat</button>
+  <button onclick="Y()">Coros</button>
+</div>
+<div class="main">
+  <div class="side">
+    <div class="sec">
+      <div class="stl">Runtime</div>
+      <div style="display:flex;gap:5px">
+        <button style="flex:1" onclick="A()">Alive</button>
+        <button style="flex:1" onclick="W()">CMem</button>
+      </div>
+    </div>
+    <div class="sec">
+      <div class="stl">Log Level</div>
+      <div class="lvg" id="lvg">
+        <div class="lv" onclick="L(0)">0 FATAL</div>
+        <div class="lv" onclick="L(1)">1 ERROR</div>
+        <div class="lv" onclick="L(2)">2 WARN</div>
+        <div class="lv" onclick="L(3)">3 INFO</div>
+        <div class="lv" style="grid-column:span 2" onclick="L(4)">4 DEBUG</div>
+      </div>
+    </div>
+    <div class="sec">
+      <div class="stl">Inject / Hotfix <span style="font-size:9px;font-weight:normal;text-transform:none;letter-spacing:0">(Ctrl+Enter / Ctrl+Shift+Enter)</span></div>
+      <input id="hm" type="text" placeholder="hotfix module name (e.g. game.player), inject 无需填" style="width:100%;margin-bottom:5px" autocomplete="off"/>
+      <textarea id="cd" placeholder="inject: print(#_U.coro_pool)  |  hotfix: function M.foo() ... end"></textarea>
+      <div style="display:flex;gap:5px;margin-top:5px">
+        <button class="prim" style="flex:1" onclick="I()">&#9654; Inject</button>
+        <button class="prim" style="flex:1" onclick="H()">&#9654; Hotfix</button>
+        <button onclick="document.getElementById('fi').click()">&#128194; Open</button>
+        <button onclick="document.getElementById('cd').value=''">&#10005;</button>
+      </div>
+      <input id="fi" type="file" style="display:none"
+        onchange="var r=new FileReader();r.onload=function(e){document.getElementById('cd').value=e.target.result};r.readAsText(this.files[0]);this.value=''"/>
+    </div>
+    <div class="sec">
+      <div class="stl">Snippets</div>
+      <button class="snip" onclick="setSnip(0)">coro pool size</button>
+      <button class="snip" onclick="setSnip(1)">active sessions</button>
+      <button class="snip" onclick="setSnip(2)">GC count (KB)</button>
+      <button class="snip" onclick="setSnip(3)">list globals</button>
+    </div>
+  </div>
+  <div class="ow">
+    <div class="oh">
+      <span>Output</span>
+      <button style="font-size:10px;padding:2px 8px" onclick="document.getElementById('out').innerHTML=''">Clear</button>
+    </div>
+    <div id="out"></div>
+  </div>
+</div>
+<script>
+var snips=[
+  'print(#_U.coro_pool)',
+  'for k in pairs(_U.coro_sess) do print(k) end',
+  'print(collectgarbage("count"))',
+  'for k,v in pairs(_G) do print(k, type(v)) end'
+];
+function setSnip(i){document.getElementById('cd').value=snips[i]}
+var NTH={};  // name → handle 映射，由 /__alive 填充
+var tk=function(){
+  var v=document.getElementById('tk').value.trim();
+  if(!v){log(false,'','请选择任务');return null;}
+  var h=NTH[v];
+  if(h===undefined){log(false,'','未知任务: '+v);return null;}
+  return h;  // 返回 handle，命令 URL 用 handle 发起
+};
+var ts=function(){return new Date().toLocaleTimeString('zh-CN',{hour12:false})};
+var esc=function(v){return String(v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')};
+function log(ok,req,body){
+  var o=document.getElementById('out'),d=document.createElement('div');
+  d.className='ent '+(ok?'ok':'er');
+  d.innerHTML='<div class="ereq"><span>'+esc(req)+'</span><span class="ets">'+ts()+'</span></div>'
+    +'<pre class="ebody">'+esc((body||'').trimEnd())+'</pre>';
+  o.appendChild(d);o.scrollTop=o.scrollHeight;
+}
+async function get(p){
+  try{var r=await fetch(p);log(r.ok,'GET '+p,await r.text())}
+  catch(e){log(false,'GET '+p,e.message)}
+}
+async function post(p,b){
+  try{var r=await fetch(p,{method:'POST',body:b});log(r.ok,'POST '+p,await r.text())}
+  catch(e){log(false,'POST '+p,e.message)}
+}
+function G(){var t=tk();if(t!==null)get('/'+t+'/help')}
+function M(){var t=tk();if(t!==null)get('/'+t+'/mem')}
+function C(){var t=tk();if(t!==null)get('/'+t+'/gc')}
+function S(){var t=tk();if(t!==null)get('/'+t+'/stat')}
+function Y(){var t=tk();if(t!==null)get('/'+t+'/coros')}
+function A(){get('/__alive')}
+function W(){get('/__cmem')}
+function L(lv){
+  var t=tk();if(t===null)return;
+  document.querySelectorAll('#lvg .lv').forEach(function(b,i){b.classList.toggle('on',i===lv)});
+  get('/'+t+'/loglv/'+lv);
+}
+function I(){var t=tk();if(t===null)return;var c=document.getElementById('cd').value;if(c.trim())post('/'+t+'/inject',c)}
+function H(){
+  var t=tk();if(t===null)return;
+  var m=document.getElementById('hm').value.trim();
+  if(!m){log(false,'','Hotfix 需要填模块名');return}
+  var c=document.getElementById('cd').value;
+  if(c.trim())post('/'+t+'/hotfix/'+encodeURIComponent(m),c);
+}
+document.getElementById('cd').addEventListener('keydown',function(e){
+  if(e.ctrlKey&&e.shiftKey&&e.key==='Enter'){e.preventDefault();H()}
+  else if(e.ctrlKey&&e.key==='Enter'){e.preventDefault();I()}
+});
+document.getElementById('adr').textContent=location.host;
+var h=location.hostname;
+if(h!==''&&h!=='127.0.0.1'&&h!=='localhost'&&h!=='::1')
+  document.getElementById('wb').style.display='block';
+var tkEl=document.getElementById('tk');
+tkEl.addEventListener('input',function(){
+  tkEl.classList.toggle('typed',tkEl.value.trim()!='');
+});
+// select 选中后填入 input，再把 select 复位以便后续可重复打开下拉
+document.getElementById('tksel').addEventListener('change',function(){
+  if(!this.value)return;
+  tkEl.value=this.value;
+  tkEl.classList.add('typed');
+  this.selectedIndex=0;
+});
+// All 选项前端固定加在最前（广播 handle=0）；再拉 /__alive（每行 "handle\tname"）填入下拉，建 name→handle 映射
+var sel=document.getElementById('tksel');
+NTH['All']='0';
+var allOpt=document.createElement('option');allOpt.value='All';allOpt.textContent='All';sel.appendChild(allOpt);
+fetch('/__alive').then(function(r){return r.ok?r.text():''}).then(function(txt){
+  txt.split('\n').forEach(function(line){
+    if(!line)return;
+    var i=line.indexOf('\t');if(i<0)return;
+    var handle=line.slice(0,i),name=line.slice(i+1);
+    if(name==='')return;  // 匿名 task 无名，不进下拉
+    NTH[name]=handle;
+    var o=document.createElement('option');o.value=name;o.textContent=name;sel.appendChild(o);
+  });
+}).catch(function(){});
+</script>
+</body>
+</html>

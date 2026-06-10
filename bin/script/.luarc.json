@@ -1,0 +1,29 @@
+{
+    "$schema": "https://raw.githubusercontent.com/sumneko/vscode-lua/master/setting/schema.json",
+    "runtime.version": "Lua 5.4",
+    "runtime.path": [
+        "?.lua",
+        "?/init.lua",
+        "meta/?.lua"
+    ],
+    "workspace.checkThirdParty": false,
+    "diagnostics.globals": [
+        "PACK_TYPE",
+        "LOG_LEVEL",
+        "NETEV_NONE",
+        "INVALID_SOCK",
+        "MSG_TYPE_STARTUP",
+        "MSG_TYPE_CLOSING",
+        "MSG_TYPE_TIMEOUT",
+        "MSG_TYPE_ACCEPT",
+        "MSG_TYPE_RECV",
+        "MSG_TYPE_SEND",
+        "MSG_TYPE_CLOSE",
+        "MSG_TYPE_CONNECT",
+        "MSG_TYPE_SSLEXCHANGED",
+        "MSG_TYPE_HANDSHAKED",
+        "MSG_TYPE_RECVFROM",
+        "MSG_TYPE_REQUEST",
+        "MSG_TYPE_RESPONSE"
+    ]
+}

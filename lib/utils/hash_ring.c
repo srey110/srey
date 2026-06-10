@@ -1,0 +1,258 @@
+﻿#include "hash_ring.h"
+#include "crypt/digest.h"
+
+/* 栈上分配的最大名称长度，避免每个副本都堆分配。
+ * 节点名通常为 host:port 短字符串，512 字节可覆盖绝大多数场景，
+ * 超出时回退为单次堆分配。 */
+#define NAME_STACK_LEN  512
+
+typedef struct hash_ring_list {
+    hash_ring_node *node;           //指向真实节点数据
+    struct hash_ring_list *next;    //链表下一项
+} hash_ring_list;
+typedef struct hash_ring_item {
+    hash_ring_node *node;   //所属真实节点
+    uint64_t digest;        //该虚拟节点的哈希值
+} hash_ring_item;
+
+// qsort 比较函数，按 digest 值升序排列哈希环节点
+static int32_t _hash_ring_sort(const void *a, const void *b) {
+    hash_ring_item *itema = *(hash_ring_item**)a, *itemb = *(hash_ring_item**)b;
+    if (itema->digest < itemb->digest) {
+        return -1;
+    } else if (itema->digest > itemb->digest) {
+        return 1;
+    } else {
+        return 0;
+    }
+}
+void hash_ring_init(hash_ring_ctx *ring) {
+    ZERO(ring, sizeof(hash_ring_ctx));
+}
+void hash_ring_free(hash_ring_ctx *ring) {
+    if (NULL == ring) {
+        return;
+    }
+    hash_ring_list *tmp, *cur = ring->nodes;
+    while (NULL != cur) {
+        FREE(cur->node->name);
+        FREE(cur->node);
+        tmp = cur;
+        cur = tmp->next;
+        FREE(tmp);
+    }
+    ring->nodes = NULL;
+    for (uint32_t i = 0; i < ring->nitems; i++) {
+        FREE(ring->items[i]);
+    }
+    FREE(ring->items);
+}
+/* 计算数据的 MD5 哈希并取前 4 字节作为哈希值（小端）。
+ * 使用栈上局部 digest_ctx，每次调用完全独立，线程安全。 */
+static uint64_t _hash_ring_hash(void *data, size_t lens) {
+    digest_ctx md5;
+    uint8_t digest[DG_BLOCK_SIZE];
+    digest_init(&md5, DG_MD5);
+    digest_update(&md5, data, lens);
+    digest_final(&md5, (char *)digest);
+    //逐项 cast 到 uint32_t 再位移，避免 (int)0xFF << 24 = 0xFF000000 超过 INT32_MAX 触发 C99 §6.5.7 UB
+    return ((uint32_t)digest[3] << 24) | ((uint32_t)digest[2] << 16) | ((uint32_t)digest[1] << 8) | (uint32_t)digest[0];
+}
+// 为节点生成所有虚拟副本（replica）并添加到 items 数组
+static void _hash_ring_add_items(hash_ring_ctx *ring, hash_ring_node *node) {
+    char concat_buf[16];
+    int32_t concat_len;
+    hash_ring_item *item;
+    char  name_stack[NAME_STACK_LEN];
+    char *name;
+    size_t name_len;
+    int32_t heap;
+    ASSERTAB(ring->nitems <= UINT32_MAX - node->nreplicas, "hash ring capacity overflow.");
+    REALLOC(ring->items, ring->items, sizeof(hash_ring_item *) * ((size_t)ring->nitems + node->nreplicas));
+    for (uint32_t i = 0; i < node->nreplicas; i++) {
+        concat_len = SNPRINTF(concat_buf, sizeof(concat_buf), "-%d", i);
+        ASSERTAB(concat_len > 0, "snprintf failed.");
+        name_len = node->lens + (size_t)concat_len;
+        if (name_len <= NAME_STACK_LEN) {
+            name = name_stack;
+            heap = 0;
+        } else {
+            MALLOC(name, name_len);
+            heap = 1;
+        }
+        memcpy(name, node->name, node->lens);
+        memcpy(name + node->lens, concat_buf, (size_t)concat_len);
+        MALLOC(item, sizeof(hash_ring_item));
+        item->node = node;
+        item->digest = _hash_ring_hash(name, name_len);
+        ring->items[ring->nitems + i] = item;
+        if (heap) {
+            FREE(name);
+        }
+    }
+    ring->nitems += node->nreplicas;
+}
+// 在节点链表中按名称查找节点，返回 NULL 表示不存在
+static hash_ring_node *_hash_ring_get_node(hash_ring_ctx *ring, void *name, size_t lens) {
+    hash_ring_list *cur = ring->nodes;
+    while (NULL != cur) {
+        if (cur->node->lens == lens
+            && 0 == memcmp(cur->node->name, name, lens)) {
+            return cur->node;
+        }
+        cur = cur->next;
+    }
+    return NULL;
+}
+void hash_ring_sort(hash_ring_ctx *ring) {
+    qsort((void **)ring->items, ring->nitems, sizeof(hash_ring_item *), _hash_ring_sort);
+}
+int32_t hash_ring_add_nosort(hash_ring_ctx *ring, void *name, size_t lens, uint32_t nreplicas) {
+    if (NULL == ring
+        || NULL == name
+        || 0 == lens
+        || 0 == nreplicas) {
+        return ERR_FAILED;
+    }
+    if (NULL != _hash_ring_get_node(ring, name, lens)) {
+        return ERR_FAILED;
+    }
+    hash_ring_node *node;
+    MALLOC(node, sizeof(hash_ring_node));
+    MALLOC(node->name, lens);
+    memcpy(node->name, name, lens);
+    node->lens = lens;
+    node->nreplicas = nreplicas;
+    hash_ring_list *cur;
+    MALLOC(cur, sizeof(hash_ring_list));
+    cur->node = node;
+    hash_ring_list *tmp = ring->nodes;
+    ring->nodes = cur;
+    ring->nodes->next = tmp;
+    ring->nnodes++;
+    _hash_ring_add_items(ring, node);
+    return ERR_OK;
+}
+int32_t hash_ring_add(hash_ring_ctx *ring, void *name, size_t lens, uint32_t nreplicas) {
+    int32_t rtn = hash_ring_add_nosort(ring, name, lens, nreplicas);
+    if (ERR_OK == rtn) {
+        hash_ring_sort(ring);
+    }
+    return rtn;
+}
+void hash_ring_remove(hash_ring_ctx *ring, void *name, size_t lens) {
+    if (NULL == ring
+        || NULL == name
+        || 0 == lens) {
+        return;
+    }
+    hash_ring_list *next, *prev = NULL, *cur = ring->nodes;
+    while (NULL != cur) {
+        if (cur->node->lens == lens
+            && 0 == memcmp(cur->node->name, name, lens)) {
+            // 找到目标节点，将其移除
+            next = cur->next;
+            FREE(cur->node->name);
+            if (prev == NULL) {
+                ring->nodes = next;
+            } else {
+                prev->next = next;
+            }
+            /* 原先：标记 NULL 后调用 qsort，O(n log n)。
+             * 优化：因 items 已有序，用单次 O(n) 原地压缩即可：
+             * 保留所有不属于被删节点的 item，紧凑排列，顺序不变。 */
+            uint32_t write = 0;
+            for (uint32_t i = 0; i < ring->nitems; i++) {
+                if (ring->items[i]->node == cur->node) {
+                    FREE(ring->items[i]);
+                } else {
+                    ring->items[write++] = ring->items[i];
+                }
+            }
+            ring->nitems = write;
+            FREE(cur->node);
+            FREE(cur);
+            ring->nnodes--;
+            return;
+        }
+        prev = cur;
+        cur = prev->next;
+    }
+}
+// 二分查找大于等于 digest 的第一个节点；超出末尾则环绕返回第一个节点
+static hash_ring_item *_hash_ring_find_next_highest_item(hash_ring_ctx *ring, uint64_t digest) {
+    if (0 == ring->nitems) {
+        return NULL;
+    }
+    int32_t min = 0;
+    int32_t max = (int32_t)ring->nitems - 1;
+    int32_t midpointindex;
+    hash_ring_item *item = NULL;
+    while (1) {
+        if (min > max) {
+            if (min == (int32_t)ring->nitems) {
+                // 超出环末尾，环绕返回第一个节点
+                return ring->items[0];
+            } else {
+                // 返回下一个最大哈希值对应的节点
+                return ring->items[min];
+            }
+        }
+        midpointindex = min + (max - min) / 2;
+        item = ring->items[midpointindex];
+        if (item->digest > digest) {
+            // key 在左半区间
+            max = midpointindex - 1;  // int32_t 可降至 -1，不再下溢
+        } else if (item->digest <= digest) {
+            // key 在右半区间
+            min = midpointindex + 1;
+        }
+    }
+    return NULL;
+}
+hash_ring_node *hash_ring_find(hash_ring_ctx *ring, void *key, size_t lens) {
+    if (NULL == ring
+        || NULL == key
+        || 0 == lens) {
+        return NULL;
+    }
+    uint64_t digest = _hash_ring_hash(key, lens);
+    hash_ring_item *item = _hash_ring_find_next_highest_item(ring, digest);
+    if (item == NULL) {
+        return NULL;
+    } else {
+        return item->node;
+    }
+}
+void hash_ring_print(hash_ring_ctx *ring) {
+    uint32_t x, y;
+    printf("----------------------------------------\n");
+    printf("hash_ring\n\n");
+    printf("Nodes: \n\n");
+    hash_ring_list *cur = ring->nodes;
+    x = 0;
+    uint8_t *name;
+    while (cur != NULL) {
+        printf("%d: ", x);
+        name = cur->node->name;
+        for (y = 0; y < cur->node->lens; y++) {
+            printf("%c", name[y]);
+        }
+        printf("\n");
+        cur = cur->next;
+        x++;
+    }
+    printf("\n");
+    printf("Items (%d): \n\n", ring->nitems);
+    for (x = 0; x < ring->nitems; x++) {
+        hash_ring_item *item = ring->items[x];
+        printf("%" PRIu64 " : ", item->digest);
+        name = item->node->name;
+        for (y = 0; y < item->node->lens; y++) {
+            printf("%c", name[y]);
+        }
+        printf("\n");
+    }
+    printf("\n");
+    printf("----------------------------------------\n");
+}

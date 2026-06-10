@@ -1,0 +1,41 @@
+{
+	"folders": [
+		{
+			"path": "lib"
+		},
+		{
+			"path": "lualib"
+		},
+		{
+			"path": "bin/script"
+		},
+		{
+			"path": "bin/py_assist"
+		},
+		{
+			"path": "bin/configs"
+		},
+		{
+			"path": "srey"
+		},
+		{
+			"path": "test"
+		},
+		{
+			"path": ".",
+			"name": "srey [root]"
+		}
+	],
+	"settings": {
+		"C_Cpp.default.includePath": [
+			"${workspaceFolder:lib}",
+			"${workspaceFolder:lib}/**",
+			"${workspaceFolder:lualib}",
+			"${workspaceFolder:lualib}/**",
+			"${workspaceFolder:srey}",
+			"${workspaceFolder:srey}/**",
+			"${workspaceFolder:test}",
+			"${workspaceFolder:test}/**"
+		]
+	}
+}

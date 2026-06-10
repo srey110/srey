@@ -1,0 +1,252 @@
+================================================================
+srey 测试环境（Docker）配置与使用说明
+================================================================
+
+本说明用于在 macOS / Linux / Windows 三种系统上一键拉起 srey 项目
+所有集成测试所需的后端服务（MySQL / PostgreSQL / Redis / MongoDB /
+EMQX MQTT broker），并跑通 ./bin/test 与 ./bin/srey 两套测试。
+
+所有服务、端口、账号、库名均与项目内 test/ 和 bin/script/test/ 下
+的测试代码硬编码值一致，docker compose 起来后无需改任何配置即可
+直接跑测试。
+
+----------------------------------------------------------------
+一、服务端口与凭据总览
+----------------------------------------------------------------
+
+服务         主机端口   用户        密码          库 / 备注
+─────────── ────────── ────────── ──────────── ─────────────────────
+MySQL        3306       admin      12345678      test / test1
+                                                 自动建表 test_bind
+                                                 自动安装组件
+                                                 component_query_attributes
+PostgreSQL   5432       admin      12345678      test
+Redis        6379       —          —             无密码
+MongoDB      27017      admin      12345678      test
+                                                 authdb=admin
+                                                 SCRAM-SHA-256
+EMQX (MQTT)  1884:1883  匿名通过   —             映射到主机 1884，
+                                                 避开 C 端 task_mqtt_server
+                                                 占用的 1883
+EMQX Dashboard 18083    admin      public        http://localhost:18083
+
+
+容器名前缀：srey-（srey-mysql / srey-pgsql / srey-redis / srey-mongo /
+                  srey-emqx）
+
+数据卷（持久化，删除前数据保留）：
+  mysql_data / pgsql_data / redis_data / mongo_data / emqx_data / emqx_log
+
+
+----------------------------------------------------------------
+二、macOS 安装
+----------------------------------------------------------------
+
+推荐 OrbStack（轻量、启动快，兼容 docker / docker compose 命令）。
+
+  1) 安装 Homebrew（如已有跳过）
+     /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+  2) 安装 OrbStack
+     brew install --cask orbstack
+
+  3) 首次启动 GUI（注入 docker CLI 到 PATH）
+     open -a OrbStack
+     # 等托盘图标出现后，新开终端窗口
+     docker --version          # 应正常输出版本
+
+  如果 docker 命令仍找不到：
+     echo 'export PATH="$HOME/.orbstack/bin:$PATH"' >> ~/.zshrc
+     source ~/.zshrc
+
+  替代方案：Docker Desktop
+     brew install --cask docker
+     # 装完后到 /Applications/Docker.app 启动一次，等托盘图标变绿
+
+
+----------------------------------------------------------------
+三、Linux 安装（Ubuntu/Debian 示例）
+----------------------------------------------------------------
+
+  1) 安装 Docker Engine + Compose plugin
+     sudo apt update
+     sudo apt install -y docker.io docker-compose-plugin
+
+  2) 把当前用户加进 docker 组（避免每次 sudo）
+     sudo usermod -aG docker $USER
+     # 重新登录终端使生效
+
+  3) 启动服务并开机自启
+     sudo systemctl enable --now docker
+
+  4) 验证
+     docker --version
+     docker compose version
+
+
+----------------------------------------------------------------
+四、Windows 安装
+----------------------------------------------------------------
+
+【方式 A：Docker Desktop（最常用）】
+
+  1) 启用 WSL2（管理员 PowerShell）
+     wsl --install
+     # 完成后重启系统
+
+  2) 下载 Docker Desktop for Windows
+     https://www.docker.com/products/docker-desktop/
+     双击 Docker Desktop Installer.exe 安装
+
+  3) 启动 Docker Desktop（首次会引导启用 WSL2 后端）
+     完成后任务栏右下角应有鲸鱼图标
+
+  4) 在 PowerShell 或 cmd 中验证
+     docker --version
+     docker compose version
+
+【方式 B：WSL2 + Docker Engine（更轻量）】
+
+  1) wsl --install -d Ubuntu          # 安装 Ubuntu 子系统
+  2) 进入 Ubuntu 终端后按"三、Linux 安装"步骤操作
+  3) Windows 主机访问 localhost:3306 等端口可直接访问
+
+
+----------------------------------------------------------------
+五、启动 / 停止 / 清理
+----------------------------------------------------------------
+
+进入项目根目录（srey/）后：
+
+  启动全部服务（后台）：
+    docker compose up -d
+    docker compose up -d --wait      # 阻塞到全部 healthy
+
+  查看状态：
+    docker compose ps                # 5 个 service 应均显示 healthy
+
+  看某个服务日志：
+    docker compose logs -f mysql     # 替换为 postgres / redis / mongo / emqx
+
+  停止（保留数据）：
+    docker compose down
+
+  彻底清理（删数据卷）：
+    docker compose down -v
+
+  单独重启一个服务：
+    docker compose restart mongo
+
+
+----------------------------------------------------------------
+六、运行测试
+----------------------------------------------------------------
+
+  6.1 编译 srey（首次或源码改动后）
+
+      macOS / Linux：
+        sh mk.sh                       # 发布版
+        DEBUG=1 sh mk.sh               # 调试版（ASan + UBSan）
+        sh mk.sh test                  # 编译 test 套件
+
+      或用 CMake（带 SSL）：
+        cmake -S . -B build -DWITH_LUA=ON -DWITH_SSL=ON \
+              -DOPENSSL_ROOT_DIR=/opt/homebrew/opt/openssl@3
+        cmake --build build
+
+      Windows：
+        用 srey.sln（VS2015+）打开，选 Release|x64 → 生成 → 生成解决方案
+
+  6.2 跑 C 集成测试
+
+      docker compose up -d --wait
+      ./bin/test
+
+      期望日志末尾：
+        auto close count: √ (N)
+        mqtt_test1: √        # 连 docker EMQX 1884 v3.1.1
+        mqtt_test2: √        # 连 docker EMQX 1884 v5.0
+        mqtt_test3: √        # 连进程内 task_mqtt_server 1883 v3.1.1
+        mqtt_test4: √        # 连进程内 task_mqtt_server 1883 v5.0
+        mysql_test: √
+        pgsql_test: √
+        redis_test: √
+        mongo_test: √
+        timeout_test1/2/3: √
+
+  6.3 跑 Lua 集成测试
+
+      docker compose up -d --wait
+      ./bin/srey                       # 加 -d 后台运行
+
+      关注以下任务输出：
+        mqtt_server listening on 11883
+        mqtt_client 127.0.0.1:1884 v4 tested.
+        mqtt_client 127.0.0.1:1884 v5 tested.
+        mqtt_client 127.0.0.1:11883 v4 tested.
+        mqtt_client 127.0.0.1:11883 v5 tested.
+        mysql tested.
+        pgsql tested.
+        redis tested.
+        mongo tested.
+        其他存量任务（comm1/websockd/syn/harbor/httpd/timeout/...）...
+
+      Ctrl+C 退出，期望末尾：
+        memory check => not free: 0
+
+
+----------------------------------------------------------------
+七、常见问题与排查
+----------------------------------------------------------------
+
+Q1. docker compose ps 显示某服务 unhealthy / restarting？
+    docker compose logs <服务名>  看错误。
+    常见：端口被占用、首次拉镜像超时、磁盘空间不足。
+
+Q2. mysql_test 报 _mysql_sha2_rsa error？
+    需要确认 mysql 容器以 caching_sha2_password 启动，且
+    docker/mysql-init.sql 安装了 component_query_attributes。
+    重建数据卷生效：
+        docker compose down -v && docker compose up -d --wait
+
+Q3. mongo_test 报 "Transaction numbers are only allowed on a replica set"？
+    standalone mongo 不支持多文档事务。当前测试已跳过 _txn_flow，
+    如需测事务，需把 mongo 容器改为副本集启动并 rs.initiate()
+    （docker-compose.yml 里 mongo 服务 command 加 --replSet rs0）。
+
+Q4. mqtt_test1/2 (C 端) 或 mqtt_client1/2 (Lua 端) 失败？
+    1884 端口未通：docker compose ps 检查 emqx 是否 healthy。
+    任意客户端检测：
+        nc -vz 127.0.0.1 1884
+    （Windows PowerShell：Test-NetConnection 127.0.0.1 -Port 1884）
+
+Q5. 端口冲突（3306/5432/6379/27017/1884/18083 已被本机其他进程占用）？
+    停掉占用方，或改 docker-compose.yml 里 ports 映射：
+        ports:
+          - "13306:3306"   # 主机端口改成 13306
+    同时同步修改测试代码里的目标端口。
+
+Q6. Windows 路径 / 行尾问题？
+    本仓库 .c/.h 文件统一 UTF-8 BOM、LF。建议 git config core.autocrlf=false。
+    docker volume 内部 init.sql 使用 LF 即可。
+
+Q7. 拉镜像速度慢？
+    国内可在 OrbStack / Docker Desktop 设置里加 Registry mirror，
+    如 https://docker.m.daocloud.io，再重启 docker 服务。
+
+Q8. mqtt_server 11883 端口和别人冲突？
+    改 bin/script/startup.lua 中：
+        task.register("test.mqtt_server", TASK_NAME.mqtt_server, "11883")
+    把 11883 改成空闲端口，同时把 mqtt_client3/4 参数里的 11883 改成对应值。
+
+
+----------------------------------------------------------------
+八、卸载
+----------------------------------------------------------------
+
+  docker compose down -v          # 删容器 + 数据卷
+  docker image rm mysql:8.4 postgres:16 redis:7-alpine \
+                  mongo:7 emqx/emqx:5.8   # 删镜像
+  brew uninstall --cask orbstack          # macOS 卸载 OrbStack
+
+================================================================

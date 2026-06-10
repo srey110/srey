@@ -1,0 +1,118 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="CuTest">
+      <UniqueIdentifier>{3239bf22-0598-4920-b3f1-bbf4cd376d49}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="CuTest.c">
+      <Filter>CuTest</Filter>
+    </ClCompile>
+    <ClCompile Include="main.c" />
+    <ClCompile Include="task_mysql.c" />
+    <ClCompile Include="task_pgsql.c" />
+    <ClCompile Include="task_redis.c" />
+    <ClCompile Include="task_mongo.c" />
+    <ClCompile Include="bench_evcmd.c" />
+    <ClCompile Include="bench_lbytecache.c" />
+    <ClCompile Include="bench_mpq.c" />
+    <ClCompile Include="bench_rwlock.c" />
+    <ClCompile Include="task_auto_close.c" />
+    <ClCompile Include="task_close_graceful.c" />
+    <ClCompile Include="task_coro_extra.c" />
+    <ClCompile Include="task_dc_client.c" />
+    <ClCompile Include="task_fork.c" />
+    <ClCompile Include="task_http_server.c" />
+    <ClCompile Include="task_listen_churn.c" />
+    <ClCompile Include="task_listen_unlisten_race.c" />
+    <ClCompile Include="task_mqtt_client.c" />
+    <ClCompile Include="task_mqtt_server.c" />
+    <ClCompile Include="task_multi_call.c" />
+    <ClCompile Include="task_multicast.c" />
+    <ClCompile Include="task_priority.c" />
+    <ClCompile Include="task_router.c" />
+    <ClCompile Include="task_rpc.c" />
+    <ClCompile Include="task_sc_client.c" />
+    <ClCompile Include="task_sendbuf_warn.c" />
+    <ClCompile Include="task_serial.c" />
+    <ClCompile Include="task_smtp.c" />
+    <ClCompile Include="task_tcp_server.c" />
+    <ClCompile Include="task_timeout.c" />
+    <ClCompile Include="task_udp_multicast.c" />
+    <ClCompile Include="task_udp_server.c" />
+    <ClCompile Include="task_ws_server.c" />
+    <ClCompile Include="test_base.c" />
+    <ClCompile Include="test_bson.c" />
+    <ClCompile Include="test_containers.c" />
+    <ClCompile Include="test_crypt.c" />
+    <ClCompile Include="test_hashset.c" />
+    <ClCompile Include="test_mongo_pack.c" />
+    <ClCompile Include="test_mqtt_pack.c" />
+    <ClCompile Include="test_mysql_pack.c" />
+    <ClCompile Include="test_mysql_parse.c" />
+    <ClCompile Include="test_path_trie.c" />
+    <ClCompile Include="test_pgsql_pack.c" />
+    <ClCompile Include="test_pgsql_parse.c" />
+    <ClCompile Include="test_protocol.c" />
+    <ClCompile Include="test_seri.c" />
+    <ClCompile Include="test_stm.c" />
+    <ClCompile Include="test_thread.c" />
+    <ClCompile Include="test_utils.c" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="CuTest.h">
+      <Filter>CuTest</Filter>
+    </ClInclude>
+    <ClInclude Include="task_mysql.h" />
+    <ClInclude Include="task_pgsql.h" />
+    <ClInclude Include="task_redis.h" />
+    <ClInclude Include="task_mongo.h" />
+    <ClInclude Include="bench_evcmd.h" />
+    <ClInclude Include="bench_lbytecache.h" />
+    <ClInclude Include="bench_mpq.h" />
+    <ClInclude Include="bench_rwlock.h" />
+    <ClInclude Include="task_auto_close.h" />
+    <ClInclude Include="task_close_graceful.h" />
+    <ClInclude Include="task_coro_extra.h" />
+    <ClInclude Include="task_dc_client.h" />
+    <ClInclude Include="task_fork.h" />
+    <ClInclude Include="task_http_server.h" />
+    <ClInclude Include="task_listen_churn.h" />
+    <ClInclude Include="task_listen_unlisten_race.h" />
+    <ClInclude Include="task_mqtt_client.h" />
+    <ClInclude Include="task_mqtt_server.h" />
+    <ClInclude Include="task_multi_call.h" />
+    <ClInclude Include="task_multicast.h" />
+    <ClInclude Include="task_priority.h" />
+    <ClInclude Include="task_pub.h" />
+    <ClInclude Include="task_router.h" />
+    <ClInclude Include="task_rpc.h" />
+    <ClInclude Include="task_sc_client.h" />
+    <ClInclude Include="task_sendbuf_warn.h" />
+    <ClInclude Include="task_serial.h" />
+    <ClInclude Include="task_smtp.h" />
+    <ClInclude Include="task_tcp_server.h" />
+    <ClInclude Include="task_timeout.h" />
+    <ClInclude Include="task_udp_multicast.h" />
+    <ClInclude Include="task_udp_server.h" />
+    <ClInclude Include="task_ws_server.h" />
+    <ClInclude Include="test_base.h" />
+    <ClInclude Include="test_bson.h" />
+    <ClInclude Include="test_containers.h" />
+    <ClInclude Include="test_crypt.h" />
+    <ClInclude Include="test_hashset.h" />
+    <ClInclude Include="test_mongo_pack.h" />
+    <ClInclude Include="test_mqtt_pack.h" />
+    <ClInclude Include="test_mysql_pack.h" />
+    <ClInclude Include="test_mysql_parse.h" />
+    <ClInclude Include="test_path_trie.h" />
+    <ClInclude Include="test_pgsql_pack.h" />
+    <ClInclude Include="test_pgsql_parse.h" />
+    <ClInclude Include="test_protocol.h" />
+    <ClInclude Include="test_seri.h" />
+    <ClInclude Include="test_stm.h" />
+    <ClInclude Include="test_thread.h" />
+    <ClInclude Include="test_utils.h" />
+  </ItemGroup>
+</Project>

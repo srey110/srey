@@ -1,0 +1,419 @@
+﻿#include "utils/popen2.h"
+#include "utils/netutils.h"
+#include "utils/utils.h"
+
+#ifdef OS_WIN
+#define PIPE_INBUF_SIZE  ONEK * 16
+#define PIPE_OUTBUF_SIZE ONEK * 64
+#define PIPE_PREFIX      "\\\\.\\pipe\\LOCAL\\srey_pipe_"
+
+// Windows 下创建命名管道对，供子进程与父进程通信
+static int32_t _popen_pipe(HANDLE pipe[2]) {
+    char pname[256];
+    SNPRINTF(pname, sizeof(pname), "%s%"PRIu64, PIPE_PREFIX, createid());
+    SECURITY_ATTRIBUTES sa;
+    sa.nLength = sizeof(SECURITY_ATTRIBUTES);
+    sa.lpSecurityDescriptor = NULL;//使用系统默认安全描述符
+    sa.bInheritHandle = TRUE;//允许子进程继承句柄
+    HANDLE server = CreateNamedPipe(pname,//全局唯一的管道名称
+                                    PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,//双向异步打开模式
+                                    PIPE_TYPE_BYTE,//字节流管道模式
+                                    1,//该管道名称的最大实例数
+                                    PIPE_OUTBUF_SIZE,//输出缓冲区大小（字节）
+                                    PIPE_INBUF_SIZE,//输入缓冲区大小（字节）
+                                    0,//超时为零，即使用默认 50 毫秒超时
+                                    &sa);
+    if (INVALID_HANDLE_VALUE == server) {
+        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        return ERR_FAILED;
+    }
+    HANDLE event = CreateEvent(NULL, TRUE, FALSE, NULL);
+    if (NULL == event) {
+        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        CloseHandle(server);
+        return ERR_FAILED;
+    }
+    OVERLAPPED ovlpd = {0};
+    ovlpd.hEvent = event;
+    if (!ConnectNamedPipe(server, &ovlpd)) {
+        int32_t err = GetLastError();
+        if (ERROR_PIPE_CONNECTED == err) {
+            SetEvent(event);
+        } else if (ERROR_IO_PENDING != err) {
+            LOG_ERROR("%s", ERRORSTR(err));
+            CloseHandle(event);
+            CloseHandle(server);
+            return ERR_FAILED;
+        }
+    }
+    HANDLE client = CreateFile(pname,
+                               GENERIC_READ | GENERIC_WRITE,
+                               0,
+                               NULL,
+                               OPEN_EXISTING,
+                               FILE_ATTRIBUTE_NORMAL,
+                               NULL);
+    if (INVALID_HANDLE_VALUE == client) {
+        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        CloseHandle(event);
+        CloseHandle(server);
+        return ERR_FAILED;
+    }
+    if (WAIT_FAILED == WaitForSingleObject(event, INFINITE)) {
+        CloseHandle(event);
+        CloseHandle(server);
+        CloseHandle(client);
+        return ERR_FAILED;
+    }
+    CloseHandle(event);
+    pipe[0] = server;
+    pipe[1] = client;
+    return ERR_OK;
+}
+#endif
+int32_t popen_startup(popen_ctx *ctx, const char *cmd, const char *mode) {
+    // 必须在所有失败路径之前 ZERO,失败时调用方走 popen_free/popen_close 兜底能读到 NULL/INVALID 终止
+    ZERO(ctx, sizeof(popen_ctx));
+    if (EMPTYSTR(cmd)) {
+        return ERR_FAILED;
+    }
+    int32_t r = 0, w = 0;
+    if (NULL != mode) {
+        r = NULL != strchr(mode, 'r');
+        w = NULL != strchr(mode, 'w');
+    }
+#ifdef OS_WIN
+    if (r || w) {
+        if (ERR_OK != _popen_pipe(ctx->pipe)) {
+            return ERR_FAILED;
+        }
+    }
+    STARTUPINFO startup = {0};
+    startup.cb = sizeof(STARTUPINFO);
+    startup.dwFlags = STARTF_USESHOWWINDOW | STARTF_USESTDHANDLES;
+    startup.wShowWindow = SW_HIDE;
+    if (w) {
+        startup.hStdInput = ctx->pipe[0];//子进程标准输入重定向到管道
+    }
+    if (r) {
+        startup.hStdError = ctx->pipe[0];//子进程标准错误重定向到管道
+        startup.hStdOutput = ctx->pipe[0];//子进程标准输出重定向到管道
+    }
+    if (!CreateProcess(NULL,
+                      TEXT((char *)cmd),
+                      NULL,
+                      NULL,
+                      TRUE,
+                      0,
+                      NULL,
+                      NULL,
+                      &startup,
+                      &ctx->process)) {
+        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        popen_free(ctx);
+        return ERR_FAILED;
+    }
+#else
+    SOCKET sock[2];
+    ctx->sock = INVALID_SOCK;
+    if (r || w) {
+        if (ERR_FAILED == socketpair(AF_UNIX, SOCK_STREAM, 0, sock)) {
+            LOG_ERROR("%s", ERRORSTR(ERRNO));
+            return ERR_FAILED;
+        }
+    }
+    pid_t pid = fork();
+    if (0 == pid) {
+        if (w) {
+            dup2(sock[0], STDIN_FILENO);
+        }
+        if (r) {
+            dup2(sock[0], STDOUT_FILENO);
+            dup2(sock[0], STDERR_FILENO);
+        }
+        if (r || w) {
+            close(sock[0]);
+            close(sock[1]);
+        }
+        execl("/bin/sh", "sh", "-c", cmd, NULL);
+        //fork 后子进程严格只能调 async-signal-safe 函数；log 走 fsqu+malloc+cond 不安全，
+        //且子进程未继承日志消费线程，入队消息无人消费；exit() 会 fflush 父子共享的 stdio buffer。
+        //改用 write + _exit（均 async-signal-safe），约定退出码 127 表示 exec 失败（shell 惯例）。
+        const char prefix[] = "popen execl failed: ";
+        (void)!write(STDERR_FILENO, prefix, sizeof(prefix) - 1);
+        (void)!write(STDERR_FILENO, cmd, strlen(cmd));
+        (void)!write(STDERR_FILENO, "\n", 1);
+        _exit(127);
+    } else if (pid > 0) {
+        ctx->pid = pid;
+        if (r || w) {
+            close(sock[0]);
+            ctx->sock = sock[1];
+        }
+        return ERR_OK;
+    } else {
+        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        if (r || w) {
+            close(sock[0]);
+            close(sock[1]);
+        }
+        return ERR_FAILED;
+    }
+#endif
+    return ERR_OK;
+}
+void popen_close(popen_ctx *ctx) {
+#ifdef OS_WIN
+    if (NULL == ctx->process.hProcess
+        || 0 == ctx->process.dwProcessId) {
+        return;
+    }
+    DWORD exitcode;
+    if (!GetExitCodeProcess(ctx->process.hProcess, &exitcode)) {//获取进程退出码
+        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        return;
+    }
+    if (STILL_ACTIVE != exitcode) {//进程已经退出则直接返回
+        return;
+    }
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);//获取当前系统进程快照
+    if (NULL == snapshot) {
+        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        TerminateProcess(ctx->process.hProcess, ERR_FAILED);
+        return;
+    }
+    HANDLE pvchild;
+    PROCESSENTRY32 proentry32;
+    proentry32.dwSize = sizeof(PROCESSENTRY32);
+    BOOL ok = Process32First(snapshot, &proentry32);//枚举第一个进程
+    while (ok) {
+        if (proentry32.th32ParentProcessID == ctx->process.dwProcessId) {
+            pvchild = OpenProcess(PROCESS_ALL_ACCESS, FALSE, proentry32.th32ProcessID);
+            if (NULL != pvchild) {
+                TerminateProcess(pvchild, ERR_FAILED);
+                CloseHandle(pvchild);
+            } else {
+                LOG_ERROR("%s", ERRORSTR(ERRNO));
+            }
+        }
+        ok = Process32Next(snapshot, &proentry32);
+    }
+    TerminateProcess(ctx->process.hProcess, ERR_FAILED);
+    CloseHandle(snapshot);
+#else
+    if (0 != ctx->pid && !ctx->exited) {
+        kill(ctx->pid, SIGKILL);
+        // SIGKILL 后必须 waitpid 收尸，否则进程残留为 <defunct> 直至父进程退出
+        int wstatus;
+        while (-1 == waitpid(ctx->pid, &wstatus, 0) && EINTR == errno) {
+        }
+        ctx->exited = 1;
+        ctx->exitcode = ERR_FAILED;
+    }
+#endif
+}
+void popen_free(popen_ctx *ctx) {
+#ifdef OS_WIN
+    if (NULL != ctx->process.hProcess) {
+        CloseHandle(ctx->process.hProcess);
+    }
+    if (NULL != ctx->process.hThread) {
+        CloseHandle(ctx->process.hThread);
+    }
+    if (NULL != ctx->pipe[0]) {
+        CloseHandle(ctx->pipe[0]);
+    }
+    if (NULL != ctx->pipe[1]) {
+        CloseHandle(ctx->pipe[1]);
+    }
+#else
+    if (INVALID_SOCK != ctx->sock) {
+        shutdown(ctx->sock, SHUT_RD);
+        close(ctx->sock);
+    }
+#endif
+}
+#ifndef OS_WIN
+// 解析 waitpid 返回的 wstatus，判断子进程是否已退出并记录退出码
+static int32_t _popen_child_exited(popen_ctx *ctx, int wstatus) {
+    if (WIFEXITED(wstatus)) {//正常结束
+        ctx->exited = 1;
+        ctx->exitcode = WEXITSTATUS(wstatus);
+        return ERR_OK;
+    }
+    if (WIFSIGNALED(wstatus)) {//信号而终止
+        ctx->exited = 1;
+        ctx->exitcode = ERR_FAILED;
+        return ERR_OK;
+    }
+#ifdef WCOREDUMP
+    if (WCOREDUMP(wstatus)) {//core dump
+        ctx->exited = 1;
+        ctx->exitcode = ERR_FAILED;
+        return ERR_OK;
+    }
+#endif
+    return ERR_FAILED;
+}
+// 非阻塞检查套接字是否已关闭（对端断开），返回 1 表示已关闭
+static int32_t _popen_sock_closed(int32_t sock) {
+    struct pollfd pfd;
+    pfd.fd = sock;
+    pfd.events = POLLIN;
+    pfd.revents = 0;
+    int32_t rtn = poll(&pfd, 1, 0);
+    if (0 == rtn) {
+        return 0;
+    }
+    if (rtn < 0) {
+        // EINTR 等可重试错误不应判为关闭，仅返回未就绪
+        if (EINTR == errno) {
+            return 0;
+        }
+        return 1;
+    }
+    rtn = sock_nread(sock);
+    return rtn <= 0;
+}
+#endif
+int32_t popen_waitexit(popen_ctx *ctx, uint32_t ms) {
+#ifdef OS_WIN
+    if (NULL == ctx->process.hProcess) {
+        return ERR_OK;
+    }
+    if (WAIT_TIMEOUT == WaitForSingleObject(ctx->process.hProcess, (DWORD)ms)) {
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+#else
+    if (0 == ctx->pid || ctx->exited) {
+        return ERR_OK;
+    }
+    if (INVALID_SOCK != ctx->sock
+        && _popen_sock_closed(ctx->sock)) {
+        int wstatus;
+        pid_t rtn = waitpid(ctx->pid, &wstatus, WNOHANG);
+        if (ctx->pid == rtn) {
+            _popen_child_exited(ctx, wstatus);
+            return ERR_OK;
+        }
+    }
+    pid_t rtn;
+    int wstatus;
+    uint64_t startms = nowms();
+    uint32_t sleep_ms = 1;
+    uint64_t elapsed;
+    uint32_t remaining, s;
+    for (;;) {
+        rtn = waitpid(ctx->pid, &wstatus, WNOHANG);
+        if (ERR_FAILED == rtn) {
+            LOG_ERROR("%s", ERRORSTR(ERRNO));
+            return ERR_FAILED;
+        }
+        if (ctx->pid == rtn) {
+            if (ERR_OK == _popen_child_exited(ctx, wstatus)) {
+                return ERR_OK;
+            }
+        }
+        elapsed = nowms() - startms;
+        if (elapsed >= ms) {
+            return ERR_FAILED;
+        }
+        // 指数退避：1, 2, 4, 8, 16, 32ms 封顶；最后一次 sleep 不超剩余时间。
+        remaining = (uint32_t)(ms - elapsed);
+        s = sleep_ms < remaining ? sleep_ms : remaining;
+        MSLEEP(s);
+        if (sleep_ms < 32) {
+            sleep_ms *= 2;
+        }
+    }
+#endif
+}
+int32_t popen_exitcode(popen_ctx *ctx) {
+#ifdef OS_WIN
+    if (NULL == ctx->process.hProcess) {
+        return ERR_FAILED;
+    }
+    DWORD dwcode;
+    if (!GetExitCodeProcess(ctx->process.hProcess, &dwcode)) {//获得退出码
+        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        return ERR_FAILED;
+    }
+    return (int32_t)dwcode;
+#else
+    if (0 == ctx->pid) {
+        return ERR_FAILED;
+    }
+    if (ctx->exited) {
+        return ctx->exitcode;
+    }
+    int wstatus = 0;
+    if (ctx->pid == waitpid(ctx->pid, &wstatus, WNOHANG)) {
+        if (ERR_OK == _popen_child_exited(ctx, wstatus)) {
+            return ctx->exitcode;
+        }
+    }
+    return ERR_FAILED;
+#endif
+}
+int32_t popen_read(popen_ctx *ctx, char *output, size_t lens) {
+#ifdef OS_WIN
+    if (NULL == ctx->pipe[1]) {
+        return ERR_FAILED;
+    }
+    DWORD nread;
+    if (!PeekNamedPipe(ctx->pipe[1], NULL, 0, NULL, &nread, NULL)) {
+        return ERR_FAILED;
+    }
+    if (0 == nread) {
+        return 0;
+    }
+    if (!ReadFile(ctx->pipe[1], output, (DWORD)lens, &nread, NULL)) {
+        return ERR_FAILED;
+    }
+    return (int32_t)nread;
+#else
+    if (INVALID_SOCK == ctx->sock) {
+        return ERR_FAILED;
+    }
+    int32_t nread = sock_nread(ctx->sock);
+    if (ERR_FAILED == nread) {
+        return ERR_FAILED;
+    }
+    if (0 == nread) {
+        return 0;
+    }
+    ssize_t rn;
+    do {
+        rn = read(ctx->sock, output, lens);
+    } while (-1 == rn && EINTR == errno);
+    if (-1 == rn) {
+        return ERR_FAILED;
+    }
+    return (int32_t)rn;
+#endif
+}
+int32_t popen_write(popen_ctx *ctx, const char *input, size_t lens) {
+#ifdef OS_WIN
+    if (NULL == ctx->pipe[1]) {
+        return ERR_FAILED;
+    }
+    DWORD nwrite;
+    if (!WriteFile(ctx->pipe[1], input, (DWORD)lens, &nwrite, NULL)) {
+        return ERR_FAILED;
+    }
+    return (int32_t)nwrite;
+#else
+    if (INVALID_SOCK == ctx->sock) {
+        return ERR_FAILED;
+    }
+    ssize_t nwrite;
+    do {
+        nwrite = write(ctx->sock, input, lens);
+    } while (-1 == nwrite && EINTR == errno);
+    if (-1 == nwrite) {
+        return ERR_FAILED;
+    }
+    return (int32_t)nwrite;
+#endif
+}

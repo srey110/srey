@@ -1,0 +1,218 @@
+﻿#include "utils/chan.h"
+
+struct chan_ctx {
+    int32_t  buffered;   /* 是否带缓存（只写一次，无需原子） */
+    atomic_t closed;     /* 关闭标志：原子读，允许无锁轮询 */
+    atomic_t r_waiting;  /* 等待接收的线程数：原子读，允许无锁探测 */
+    atomic_t w_waiting;  /* 等待发送的线程数：原子读，允许无锁探测 */
+    buf_ctx data;        /* 无缓存模式：当前传递的数据 */
+    queue_ctx qudata;    /* 缓存模式：队列（元素 buf_ctx） */
+    mutex_ctx r_mu;
+    mutex_ctx w_mu;
+    mutex_ctx m_mu;
+    cond_ctx r_cond;
+    cond_ctx w_cond;
+};
+
+chan_ctx *chan_init(uint32_t capacity) {
+    chan_ctx *chan;
+    CALLOC(chan, 1, sizeof(chan_ctx));
+    if (capacity > 0) {
+        chan->buffered = 1;
+        queue_init(&chan->qudata, sizeof(buf_ctx), capacity);
+    } else {
+        chan->buffered = 0;
+        mutex_init(&chan->r_mu);
+        mutex_init(&chan->w_mu);
+    }
+    mutex_init(&chan->m_mu);
+    cond_init(&chan->r_cond);
+    cond_init(&chan->w_cond);
+    ATOMIC_SET(&chan->closed, 0);
+    ATOMIC_SET(&chan->r_waiting, 0);
+    ATOMIC_SET(&chan->w_waiting, 0);
+    return chan;
+}
+void chan_free(chan_ctx *chan) {
+    if (chan->buffered) {
+        queue_free(&chan->qudata);
+    } else {
+        mutex_free(&chan->r_mu);
+        mutex_free(&chan->w_mu);
+    }
+    mutex_free(&chan->m_mu);
+    cond_free(&chan->r_cond);
+    cond_free(&chan->w_cond);
+    FREE(chan);
+}
+void chan_close(chan_ctx *chan) {
+    mutex_lock(&chan->m_mu);
+    if (!ATOMIC_GET(&chan->closed)) {
+        ATOMIC_SET(&chan->closed, 1);
+        cond_broadcast(&chan->r_cond);
+        cond_broadcast(&chan->w_cond);
+    }
+    mutex_unlock(&chan->m_mu);
+}
+int32_t chan_is_closed(chan_ctx *chan) {
+    /* closed 是 atomic_t：直接原子读，无需持锁 */
+    return (int32_t)ATOMIC_GET(&chan->closed);
+}
+// 缓存模式下发送数据，队列满时阻塞等待，chan 关闭时返回失败
+static int32_t _buffered_chan_send(chan_ctx *chan, buf_ctx *buf) {
+    mutex_lock(&chan->m_mu);
+    while (queue_size(&chan->qudata) == queue_maxsize(&chan->qudata)) {
+        if (ATOMIC_GET(&chan->closed)) {
+            mutex_unlock(&chan->m_mu);
+            return ERR_FAILED;
+        }
+        //阻塞直到有元素被取走
+        ATOMIC_ADD(&chan->w_waiting, 1);
+        cond_wait(&chan->w_cond, &chan->m_mu);
+        ATOMIC_ADD(&chan->w_waiting, -1);
+    }
+    if (ATOMIC_GET(&chan->closed)) {
+        mutex_unlock(&chan->m_mu);
+        return ERR_FAILED;
+    }
+    queue_push(&chan->qudata, buf);
+    if (ATOMIC_GET(&chan->r_waiting) > 0) {
+        //唤醒等待接收的线程
+        cond_signal(&chan->r_cond);
+    }
+    mutex_unlock(&chan->m_mu);
+    return ERR_OK;
+}
+// 缓存模式下接收数据，队列空时阻塞等待，chan 关闭时返回 NULL
+static void *_buffered_chan_recv(chan_ctx *chan, size_t *lens) {
+    mutex_lock(&chan->m_mu);
+    while (0 == queue_size(&chan->qudata)) {
+        if (ATOMIC_GET(&chan->closed)) {
+            mutex_unlock(&chan->m_mu);
+            return NULL;
+        }
+        //阻塞直到有元素被放入
+        ATOMIC_ADD(&chan->r_waiting, 1);
+        cond_wait(&chan->r_cond, &chan->m_mu);
+        ATOMIC_ADD(&chan->r_waiting, -1);
+    }
+    buf_ctx *msg = queue_pop(&chan->qudata);
+    void *data = msg->data;
+    *lens = msg->lens;
+    if (ATOMIC_GET(&chan->w_waiting) > 0) {
+        //唤醒等待发送的线程
+        cond_signal(&chan->w_cond);
+    }
+    mutex_unlock(&chan->m_mu);
+    return data;
+}
+// 非缓存模式下发送数据，等待接收方取走后返回，chan 关闭时返回失败
+static int32_t _unbuffered_chan_send(chan_ctx *chan, buf_ctx *buf) {
+    mutex_lock(&chan->w_mu);
+    mutex_lock(&chan->m_mu);
+    if (ATOMIC_GET(&chan->closed)) {
+        mutex_unlock(&chan->m_mu);
+        mutex_unlock(&chan->w_mu);
+        return ERR_FAILED;
+    }
+    chan->data = *buf;
+    ATOMIC_ADD(&chan->w_waiting, 1);
+    if (ATOMIC_GET(&chan->r_waiting) > 0) {
+        //唤醒等待接收的线程
+        cond_signal(&chan->r_cond);
+    }
+    cond_wait(&chan->w_cond, &chan->m_mu);
+    while (ATOMIC_GET(&chan->w_waiting) > 0) {
+        if (ATOMIC_GET(&chan->closed)) {
+            ATOMIC_ADD(&chan->w_waiting, -1);
+            mutex_unlock(&chan->m_mu);
+            mutex_unlock(&chan->w_mu);
+            return ERR_FAILED;
+        }
+        cond_wait(&chan->w_cond, &chan->m_mu);
+    }
+    mutex_unlock(&chan->m_mu);
+    mutex_unlock(&chan->w_mu);
+    return ERR_OK;
+}
+// 非缓存模式下接收数据，等待发送方放入后返回，chan 关闭时返回 NULL
+static void *_unbuffered_chan_recv(chan_ctx *chan, size_t *lens) {
+    mutex_lock(&chan->r_mu);
+    mutex_lock(&chan->m_mu);
+    while (!ATOMIC_GET(&chan->closed)
+        && !ATOMIC_GET(&chan->w_waiting)) {
+        //阻塞直到发送方设置 chan->data
+        ATOMIC_ADD(&chan->r_waiting, 1);
+        cond_wait(&chan->r_cond, &chan->m_mu);
+        ATOMIC_ADD(&chan->r_waiting, -1);
+    }
+    if (ATOMIC_GET(&chan->closed)) {
+        mutex_unlock(&chan->m_mu);
+        mutex_unlock(&chan->r_mu);
+        return NULL;
+    }
+    void *msg = chan->data.data;
+    *lens = chan->data.lens;
+    ATOMIC_ADD(&chan->w_waiting, -1);
+    //唤醒等待发送的线程
+    cond_signal(&chan->w_cond);
+    mutex_unlock(&chan->m_mu);
+    mutex_unlock(&chan->r_mu);
+    return msg;
+}
+int32_t chan_send(chan_ctx *chan, void *data, size_t lens, int32_t copy) {
+    if (ATOMIC_GET(&chan->closed)) {
+        return ERR_FAILED;
+    }
+    buf_ctx buf;
+    buf.lens = lens;
+    if (copy) {
+        char *msg;
+        MALLOC(msg, lens + 1);
+        if (lens > 0) {
+            memcpy(msg, data, lens);
+        }
+        msg[lens] = '\0';
+        buf.data = msg;
+    } else {
+        buf.data = data;
+    }
+    int32_t rtn = chan->buffered ? _buffered_chan_send(chan, &buf) : _unbuffered_chan_send(chan, &buf);
+    if (ERR_OK != rtn) {
+        if (copy) {
+            FREE(buf.data);
+        }
+    }
+    return rtn;
+}
+void *chan_recv(chan_ctx *chan, size_t *lens) {
+    return chan->buffered ? _buffered_chan_recv(chan, lens) : _unbuffered_chan_recv(chan, lens);
+}
+uint32_t chan_size(chan_ctx *chan) {
+    uint32_t size = 0;
+    if (chan->buffered) {
+        mutex_lock(&chan->m_mu);
+        size = queue_size(&chan->qudata);
+        mutex_unlock(&chan->m_mu);
+    }
+    return size;
+}
+int32_t chan_can_recv(chan_ctx *chan) {
+    if (chan->buffered) {
+        return chan_size(chan) > 0;
+    }
+    /* w_waiting 是 atomic_t，无锁读：有发送者等待即可接收 */
+    return ATOMIC_GET(&chan->w_waiting) > 0;
+}
+int32_t chan_can_send(chan_ctx *chan) {
+    if (chan->buffered) {
+        /* 缓存队列大小需要持锁才能一致读 */
+        int32_t send;
+        mutex_lock(&chan->m_mu);
+        send = queue_size(&chan->qudata) < queue_maxsize(&chan->qudata);
+        mutex_unlock(&chan->m_mu);
+        return send;
+    }
+    /* r_waiting 是 atomic_t，无锁读：有接收者等待才可发送 */
+    return ATOMIC_GET(&chan->r_waiting) > 0;
+}

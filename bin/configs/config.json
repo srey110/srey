@@ -1,0 +1,30 @@
+{
+    "serviceid": 1,
+    "nnet": 2,
+    "nworker": 8,
+    "twqueuelens": 4096,
+    "loglv": 4,
+    "logqueuelens": 4096,
+    "dns": "8.8.8.8",
+    "script": "script",
+    "stacksize": 0,
+    "debug": {
+        "name": "debug",
+        "ip": "127.0.0.1",
+        "port": 16000
+    },
+    "harbor": {
+        "name": "harbor",
+        "ssl": "",
+        "ip": "0.0.0.0",
+        "port": 8080,
+        "key": "p1KaLmIg2kB7fZp5Tm1qbi6dss92C31aPGJK9Lvk7DMPDONXrwD2yVLZrHBio74s"
+    },
+    "datacenter": {
+        "name": "datacenter"
+    },
+    "subcenter": {
+        "name": "subcenter",
+        "rule": "def"
+    }
+}

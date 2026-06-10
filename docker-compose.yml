@@ -1,0 +1,104 @@
+# 本地开发用后端服务编排。
+# 用法：
+#   docker compose up -d                 # 全部启动
+#   docker compose ps                    # 查看状态
+#   docker compose logs -f mysql         # 看某个服务日志
+#   docker compose down                  # 停止（保留数据卷）
+#   docker compose down -v               # 停止并删除数据卷
+#
+# 凭据/端口与 bin/script/test/mysql.lua、test/task_mqtt_client.c 等测试代码一致。
+
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: srey-mysql
+    restart: unless-stopped
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: test
+      MYSQL_USER: admin
+      MYSQL_PASSWORD: "12345678"
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./docker/mysql-init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot"]
+      interval: 5s
+      retries: 20
+
+  postgres:
+    image: postgres:16
+    container_name: srey-pgsql
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: "12345678"
+      POSTGRES_DB: test
+    volumes:
+      - pgsql_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d test"]
+      interval: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    container_name: srey-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 20
+
+  mongo:
+    image: mongo:7
+    container_name: srey-mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: "12345678"
+      MONGO_INITDB_DATABASE: test
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "-u", "admin", "-p", "12345678",
+             "--authenticationDatabase", "admin", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      retries: 20
+
+  emqx:
+    # MQTT broker；映射到主机 1884，避开 C 端 task_mqtt_server 占用的 1883
+    image: emqx/emqx:5.8
+    container_name: srey-emqx
+    restart: unless-stopped
+    ports:
+      - "1884:1883"       # MQTT
+      - "18083:18083"     # Dashboard (admin / public)
+    # EMQX 5.x 未配置 authenticator 时默认允许匿名，客户端任何 user/password 都接受
+    volumes:
+      - emqx_data:/opt/emqx/data
+      - emqx_log:/opt/emqx/log
+    healthcheck:
+      test: ["CMD", "/opt/emqx/bin/emqx", "ctl", "status"]
+      interval: 5s
+      retries: 20
+
+volumes:
+  mysql_data:
+  pgsql_data:
+  redis_data:
+  mongo_data:
+  emqx_data:
+  emqx_log:

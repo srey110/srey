@@ -1,0 +1,697 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="base">
+      <UniqueIdentifier>{361ca8e0-bf69-4d1a-97ca-eccfd9c162ff}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="utils">
+      <UniqueIdentifier>{8915a949-0c9d-4ddc-8950-8c0342a0f5e0}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="serial">
+      <UniqueIdentifier>{8d765283-d30c-4a65-844d-67f081513c37}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="thread">
+      <UniqueIdentifier>{fdd12c60-2ba2-4b60-b4c8-135cb0f4f80d}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="event">
+      <UniqueIdentifier>{592350de-6276-4356-a720-a8d95c38cf56}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="event\win">
+      <UniqueIdentifier>{50004071-3dc4-4bc2-a125-87a1c7a65d71}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="event\unix">
+      <UniqueIdentifier>{942da95e-2cdb-4ff7-ab71-5d496e592712}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="srey">
+      <UniqueIdentifier>{2f052cf0-39f4-455f-94ec-2d469dcab809}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="containers">
+      <UniqueIdentifier>{cd829b77-70f0-407b-99ba-befdb960c7e6}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="protocol">
+      <UniqueIdentifier>{6de5de1a-091e-4521-8005-38cdba96ae3e}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="protocol\mysql">
+      <UniqueIdentifier>{e34dfc93-e61e-4ef5-9535-626e0915b907}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="crypt">
+      <UniqueIdentifier>{b8309848-77b2-4ec6-9bc0-a234857c1244}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="crypt\digest">
+      <UniqueIdentifier>{942b76b8-c459-477b-b450-5ecdf7cd0dce}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="crypt\cipher">
+      <UniqueIdentifier>{e480e006-68f9-4290-b6d2-aaf21a931981}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="srey\minicoro">
+      <UniqueIdentifier>{cdeff177-3099-41e3-8e26-1fa06cab4c8a}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="protocol\mqtt">
+      <UniqueIdentifier>{d19d0b55-3181-4773-b35f-3ffaad64b1d1}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="protocol\mongo">
+      <UniqueIdentifier>{ba178282-ff74-4f66-9a43-917a17232393}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="protocol\pgsql">
+      <UniqueIdentifier>{76629710-3d94-484d-a390-d5e686d9cb73}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="protocol\smtp">
+      <UniqueIdentifier>{f41d9e5d-747c-42d2-a196-ba323c83600d}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="services">
+      <UniqueIdentifier>{344f0683-5bdd-4176-8639-737a642e32ad}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="path">
+      <UniqueIdentifier>{a4cda5b9-94d3-4f7f-bd16-21b0c84c3ee9}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="lib.h" />
+    <ClInclude Include="event\cmds.h">
+      <Filter>event</Filter>
+    </ClInclude>
+    <ClInclude Include="event\event.h">
+      <Filter>event</Filter>
+    </ClInclude>
+    <ClInclude Include="event\iocp.h">
+      <Filter>event\win</Filter>
+    </ClInclude>
+    <ClInclude Include="event\evpub.h">
+      <Filter>event</Filter>
+    </ClInclude>
+    <ClInclude Include="event\uev.h">
+      <Filter>event\unix</Filter>
+    </ClInclude>
+    <ClInclude Include="event\skpool.h">
+      <Filter>event</Filter>
+    </ClInclude>
+    <ClInclude Include="event\evssl.h">
+      <Filter>event</Filter>
+    </ClInclude>
+    <ClInclude Include="thread\cond.h">
+      <Filter>thread</Filter>
+    </ClInclude>
+    <ClInclude Include="thread\mutex.h">
+      <Filter>thread</Filter>
+    </ClInclude>
+    <ClInclude Include="thread\rwlock.h">
+      <Filter>thread</Filter>
+    </ClInclude>
+    <ClInclude Include="thread\rwlock_distr.h">
+      <Filter>thread</Filter>
+    </ClInclude>
+    <ClInclude Include="thread\spinlock.h">
+      <Filter>thread</Filter>
+    </ClInclude>
+    <ClInclude Include="thread\thread.h">
+      <Filter>thread</Filter>
+    </ClInclude>
+    <ClInclude Include="srey\task.h">
+      <Filter>srey</Filter>
+    </ClInclude>
+    <ClInclude Include="srey\debug_request.h">
+      <Filter>srey</Filter>
+    </ClInclude>
+    <ClInclude Include="srey\spub.h">
+      <Filter>srey</Filter>
+    </ClInclude>
+    <ClInclude Include="containers\hashmap.h">
+      <Filter>containers</Filter>
+    </ClInclude>
+    <ClInclude Include="containers\hashset.h">
+      <Filter>containers</Filter>
+    </ClInclude>
+    <ClInclude Include="path\path_trie.h">
+      <Filter>path</Filter>
+    </ClInclude>
+    <ClInclude Include="path\path_rules.h">
+      <Filter>path</Filter>
+    </ClInclude>
+    <ClInclude Include="containers\queue.h">
+      <Filter>containers</Filter>
+    </ClInclude>
+    <ClInclude Include="containers\sarray.h">
+      <Filter>containers</Filter>
+    </ClInclude>
+    <ClInclude Include="base\config.h">
+      <Filter>base</Filter>
+    </ClInclude>
+    <ClInclude Include="base\macro.h">
+      <Filter>base</Filter>
+    </ClInclude>
+    <ClInclude Include="base\macro_unix.h">
+      <Filter>base</Filter>
+    </ClInclude>
+    <ClInclude Include="base\macro_win.h">
+      <Filter>base</Filter>
+    </ClInclude>
+    <ClInclude Include="base\memory.h">
+      <Filter>base</Filter>
+    </ClInclude>
+    <ClInclude Include="base\os.h">
+      <Filter>base</Filter>
+    </ClInclude>
+    <ClInclude Include="base\structs.h">
+      <Filter>base</Filter>
+    </ClInclude>
+    <ClInclude Include="utils\binary.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="utils\buffer.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="utils\log.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="utils\stm.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="utils\tda.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="utils\varint.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="utils\netaddr.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="utils\netutils.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="utils\router.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="serial\seri.h">
+      <Filter>serial</Filter>
+    </ClInclude>
+    <ClInclude Include="utils\sfid.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="utils\strptime.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="utils\timer.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="utils\tw.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="utils\utils.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\mysql\mysql.h">
+      <Filter>protocol\mysql</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\mysql\mysql_bind.h">
+      <Filter>protocol\mysql</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\mysql\mysql_macro.h">
+      <Filter>protocol\mysql</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\mysql\mysql_pack.h">
+      <Filter>protocol\mysql</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\mysql\mysql_parse.h">
+      <Filter>protocol\mysql</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\mysql\mysql_reader.h">
+      <Filter>protocol\mysql</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\mysql\mysql_struct.h">
+      <Filter>protocol\mysql</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\mysql\mysql_utils.h">
+      <Filter>protocol\mysql</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\custz.h">
+      <Filter>protocol</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\dns.h">
+      <Filter>protocol</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\http.h">
+      <Filter>protocol</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\redis.h">
+      <Filter>protocol</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\urlparse.h">
+      <Filter>protocol</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\websock.h">
+      <Filter>protocol</Filter>
+    </ClInclude>
+    <ClInclude Include="crypt\base64.h">
+      <Filter>crypt</Filter>
+    </ClInclude>
+    <ClInclude Include="crypt\crc.h">
+      <Filter>crypt</Filter>
+    </ClInclude>
+    <ClInclude Include="crypt\urlraw.h">
+      <Filter>crypt</Filter>
+    </ClInclude>
+    <ClInclude Include="crypt\xor.h">
+      <Filter>crypt</Filter>
+    </ClInclude>
+    <ClInclude Include="crypt\md2.h">
+      <Filter>crypt\digest</Filter>
+    </ClInclude>
+    <ClInclude Include="crypt\md4.h">
+      <Filter>crypt\digest</Filter>
+    </ClInclude>
+    <ClInclude Include="crypt\md5.h">
+      <Filter>crypt\digest</Filter>
+    </ClInclude>
+    <ClInclude Include="crypt\sha1.h">
+      <Filter>crypt\digest</Filter>
+    </ClInclude>
+    <ClInclude Include="crypt\sha256.h">
+      <Filter>crypt\digest</Filter>
+    </ClInclude>
+    <ClInclude Include="crypt\sha512.h">
+      <Filter>crypt\digest</Filter>
+    </ClInclude>
+    <ClInclude Include="crypt\aes.h">
+      <Filter>crypt\cipher</Filter>
+    </ClInclude>
+    <ClInclude Include="crypt\des.h">
+      <Filter>crypt\cipher</Filter>
+    </ClInclude>
+    <ClInclude Include="crypt\padding.h">
+      <Filter>crypt\cipher</Filter>
+    </ClInclude>
+    <ClInclude Include="crypt\cipher.h">
+      <Filter>crypt</Filter>
+    </ClInclude>
+    <ClInclude Include="crypt\digest.h">
+      <Filter>crypt</Filter>
+    </ClInclude>
+    <ClInclude Include="crypt\hmac.h">
+      <Filter>crypt</Filter>
+    </ClInclude>
+    <ClInclude Include="utils\dl.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="utils\popen2.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="srey\loader.h">
+      <Filter>srey</Filter>
+    </ClInclude>
+    <ClInclude Include="srey\minicoro.h">
+      <Filter>srey\minicoro</Filter>
+    </ClInclude>
+    <ClInclude Include="utils\hash_ring.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="utils\hug.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="utils\load_trend.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="containers\heap.h">
+      <Filter>containers</Filter>
+    </ClInclude>
+    <ClInclude Include="base\err.h">
+      <Filter>base</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\custz_head.h">
+      <Filter>protocol</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\mqtt\mqtt.h">
+      <Filter>protocol\mqtt</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\mqtt\mqtt_macro.h">
+      <Filter>protocol\mqtt</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\mqtt\mqtt_struct.h">
+      <Filter>protocol\mqtt</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\mqtt\mqtt_pack.h">
+      <Filter>protocol\mqtt</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\prots.h">
+      <Filter>protocol</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\pgsql\pgsql.h">
+      <Filter>protocol\pgsql</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\pgsql\pgsql_struct.h">
+      <Filter>protocol\pgsql</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\mongo\mongo.h">
+      <Filter>protocol\mongo</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\smtp\smtp.h">
+      <Filter>protocol\smtp</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\smtp\mail.h">
+      <Filter>protocol\smtp</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\pgsql\pgsql_pack.h">
+      <Filter>protocol\pgsql</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\pgsql\pgsql_parse.h">
+      <Filter>protocol\pgsql</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\pgsql\pgsql_macro.h">
+      <Filter>protocol\pgsql</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\pgsql\pgsql_reader.h">
+      <Filter>protocol\pgsql</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\pgsql\pgsql_bind.h">
+      <Filter>protocol\pgsql</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\mongo\mongo_macro.h">
+      <Filter>protocol\mongo</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\mongo\mongo_struct.h">
+      <Filter>protocol\mongo</Filter>
+    </ClInclude>
+    <ClInclude Include="crypt\scram.h">
+      <Filter>crypt</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\mongo\mongo_pack.h">
+      <Filter>protocol\mongo</Filter>
+    </ClInclude>
+    <ClInclude Include="serial\bson.h">
+      <Filter>serial</Filter>
+    </ClInclude>
+    <ClInclude Include="srey\coro_utils.h">
+      <Filter>srey</Filter>
+    </ClInclude>
+    <ClInclude Include="srey\coro.h">
+      <Filter>srey</Filter>
+    </ClInclude>
+    <ClInclude Include="services\datacenter.h">
+      <Filter>services</Filter>
+    </ClInclude>
+    <ClInclude Include="services\debug_console.h">
+      <Filter>services</Filter>
+    </ClInclude>
+    <ClInclude Include="services\harbor.h">
+      <Filter>services</Filter>
+    </ClInclude>
+    <ClInclude Include="services\subcenter.h">
+      <Filter>services</Filter>
+    </ClInclude>
+    <ClInclude Include="utils\chan.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\mongo\mongo_parse.h">
+      <Filter>protocol\mongo</Filter>
+    </ClInclude>
+    <ClInclude Include="containers\mpq.h">
+      <Filter>containers</Filter>
+    </ClInclude>
+    <ClInclude Include="containers\spsc.h">
+      <Filter>containers</Filter>
+    </ClInclude>
+    <ClInclude Include="containers\fsqu.h">
+      <Filter>containers</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="event\evpub.c">
+      <Filter>event</Filter>
+    </ClCompile>
+    <ClCompile Include="event\iocp.c">
+      <Filter>event\win</Filter>
+    </ClCompile>
+    <ClCompile Include="event\overlap.c">
+      <Filter>event\win</Filter>
+    </ClCompile>
+    <ClCompile Include="event\uev.c">
+      <Filter>event\unix</Filter>
+    </ClCompile>
+    <ClCompile Include="event\usock.c">
+      <Filter>event\unix</Filter>
+    </ClCompile>
+    <ClCompile Include="event\cmds.c">
+      <Filter>event</Filter>
+    </ClCompile>
+    <ClCompile Include="event\evssl.c">
+      <Filter>event</Filter>
+    </ClCompile>
+    <ClCompile Include="thread\rwlock_distr.c">
+      <Filter>thread</Filter>
+    </ClCompile>
+    <ClCompile Include="thread\thread.c">
+      <Filter>thread</Filter>
+    </ClCompile>
+    <ClCompile Include="srey\task.c">
+      <Filter>srey</Filter>
+    </ClCompile>
+    <ClCompile Include="srey\debug_request.c">
+      <Filter>srey</Filter>
+    </ClCompile>
+    <ClCompile Include="containers\hashmap.c">
+      <Filter>containers</Filter>
+    </ClCompile>
+    <ClCompile Include="containers\hashset.c">
+      <Filter>containers</Filter>
+    </ClCompile>
+    <ClCompile Include="path\path_trie.c">
+      <Filter>path</Filter>
+    </ClCompile>
+    <ClCompile Include="path\path_rules.c">
+      <Filter>path</Filter>
+    </ClCompile>
+    <ClCompile Include="base\memory.c">
+      <Filter>base</Filter>
+    </ClCompile>
+    <ClCompile Include="utils\buffer.c">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="utils\log.c">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="utils\stm.c">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="utils\tda.c">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="utils\varint.c">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="utils\netaddr.c">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="utils\netutils.c">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="utils\router.c">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="serial\seri.c">
+      <Filter>serial</Filter>
+    </ClCompile>
+    <ClCompile Include="utils\sfid.c">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="utils\strptime.c">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="utils\timer.c">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="utils\tw.c">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="utils\utils.c">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\mysql\mysql.c">
+      <Filter>protocol\mysql</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\mysql\mysql_bind.c">
+      <Filter>protocol\mysql</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\mysql\mysql_pack.c">
+      <Filter>protocol\mysql</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\mysql\mysql_parse.c">
+      <Filter>protocol\mysql</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\mysql\mysql_reader.c">
+      <Filter>protocol\mysql</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\mysql\mysql_utils.c">
+      <Filter>protocol\mysql</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\custz.c">
+      <Filter>protocol</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\dns.c">
+      <Filter>protocol</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\http.c">
+      <Filter>protocol</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\redis.c">
+      <Filter>protocol</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\urlparse.c">
+      <Filter>protocol</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\websock.c">
+      <Filter>protocol</Filter>
+    </ClCompile>
+    <ClCompile Include="crypt\base64.c">
+      <Filter>crypt</Filter>
+    </ClCompile>
+    <ClCompile Include="crypt\crc.c">
+      <Filter>crypt</Filter>
+    </ClCompile>
+    <ClCompile Include="crypt\urlraw.c">
+      <Filter>crypt</Filter>
+    </ClCompile>
+    <ClCompile Include="crypt\xor.c">
+      <Filter>crypt</Filter>
+    </ClCompile>
+    <ClCompile Include="crypt\md2.c">
+      <Filter>crypt\digest</Filter>
+    </ClCompile>
+    <ClCompile Include="crypt\md4.c">
+      <Filter>crypt\digest</Filter>
+    </ClCompile>
+    <ClCompile Include="crypt\md5.c">
+      <Filter>crypt\digest</Filter>
+    </ClCompile>
+    <ClCompile Include="crypt\sha1.c">
+      <Filter>crypt\digest</Filter>
+    </ClCompile>
+    <ClCompile Include="crypt\sha256.c">
+      <Filter>crypt\digest</Filter>
+    </ClCompile>
+    <ClCompile Include="crypt\sha512.c">
+      <Filter>crypt\digest</Filter>
+    </ClCompile>
+    <ClCompile Include="crypt\aes.c">
+      <Filter>crypt\cipher</Filter>
+    </ClCompile>
+    <ClCompile Include="crypt\des.c">
+      <Filter>crypt\cipher</Filter>
+    </ClCompile>
+    <ClCompile Include="crypt\padding.c">
+      <Filter>crypt\cipher</Filter>
+    </ClCompile>
+    <ClCompile Include="crypt\cipher.c">
+      <Filter>crypt</Filter>
+    </ClCompile>
+    <ClCompile Include="crypt\digest.c">
+      <Filter>crypt</Filter>
+    </ClCompile>
+    <ClCompile Include="crypt\hmac.c">
+      <Filter>crypt</Filter>
+    </ClCompile>
+    <ClCompile Include="utils\binary.c">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="utils\popen2.c">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="srey\loader.c">
+      <Filter>srey</Filter>
+    </ClCompile>
+    <ClCompile Include="utils\hash_ring.c">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="utils\hug.c">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="containers\heap.c">
+      <Filter>containers</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\custz_head.c">
+      <Filter>protocol</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\mqtt\mqtt.c">
+      <Filter>protocol\mqtt</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\mqtt\mqtt_struct.c">
+      <Filter>protocol\mqtt</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\mqtt\mqtt_pack.c">
+      <Filter>protocol\mqtt</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\prots.c">
+      <Filter>protocol</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\pgsql\pgsql.c">
+      <Filter>protocol\pgsql</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\mongo\mongo.c">
+      <Filter>protocol\mongo</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\smtp\smtp.c">
+      <Filter>protocol\smtp</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\smtp\mail.c">
+      <Filter>protocol\smtp</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\pgsql\pgsql_pack.c">
+      <Filter>protocol\pgsql</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\pgsql\pgsql_parse.c">
+      <Filter>protocol\pgsql</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\pgsql\pgsql_reader.c">
+      <Filter>protocol\pgsql</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\pgsql\pgsql_bind.c">
+      <Filter>protocol\pgsql</Filter>
+    </ClCompile>
+    <ClCompile Include="crypt\scram.c">
+      <Filter>crypt</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\mongo\mongo_pack.c">
+      <Filter>protocol\mongo</Filter>
+    </ClCompile>
+    <ClCompile Include="serial\bson.c">
+      <Filter>serial</Filter>
+    </ClCompile>
+    <ClCompile Include="srey\coro_utils.c">
+      <Filter>srey</Filter>
+    </ClCompile>
+    <ClCompile Include="srey\coro.c">
+      <Filter>srey</Filter>
+    </ClCompile>
+    <ClCompile Include="services\datacenter.c">
+      <Filter>services</Filter>
+    </ClCompile>
+    <ClCompile Include="services\debug_console.c">
+      <Filter>services</Filter>
+    </ClCompile>
+    <ClCompile Include="services\harbor.c">
+      <Filter>services</Filter>
+    </ClCompile>
+    <ClCompile Include="services\subcenter.c">
+      <Filter>services</Filter>
+    </ClCompile>
+    <ClCompile Include="utils\chan.c">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\mongo\mongo_parse.c">
+      <Filter>protocol\mongo</Filter>
+    </ClCompile>
+    <ClCompile Include="containers\mpq.c">
+      <Filter>containers</Filter>
+    </ClCompile>
+    <ClCompile Include="containers\spsc.c">
+      <Filter>containers</Filter>
+    </ClCompile>
+    <ClCompile Include="containers\sarray.c">
+      <Filter>containers</Filter>
+    </ClCompile>
+    <ClCompile Include="containers\queue.c">
+      <Filter>containers</Filter>
+    </ClCompile>
+    <ClCompile Include="containers\fsqu.c">
+      <Filter>containers</Filter>
+    </ClCompile>
+  </ItemGroup>
+</Project>
