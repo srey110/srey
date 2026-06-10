@@ -283,7 +283,6 @@ void router_dispatch(router_ctx *r, task_ctx *task,
 /// </summary>
 /// <param name="ctx">router_req</param>
 void router_next(router_req *ctx);
-// ── ctx 响应辅助 ──────────────────────────────────────────────────────────
 /// <summary>
 /// 取请求头; 大小写不敏感匹配
 /// </summary>

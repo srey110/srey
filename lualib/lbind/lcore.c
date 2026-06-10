@@ -4,8 +4,8 @@
 #define COPY_TYPE(lua, idx) (lua_isinteger(lua, idx) ? (int32_t)luaL_checkinteger(lua, idx) : 1)
 
 typedef struct _task_list_arg {
-    lua_State *lua;
     int32_t n;
+    lua_State *lua;
 }_task_list_arg;
 
 /// <summary>

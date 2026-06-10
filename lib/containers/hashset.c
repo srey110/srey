@@ -66,7 +66,6 @@ int32_t hashset_contains(const hashset *s, const void *item) {
 const void *hashset_remove(hashset *s, const void *item) {
     return hashmap_delete(s->map, item);
 }
-// scan 适配:hashmap_scan 要求 bool 回调,转发到用户的 int32_t 回调
 static bool _hashset_scan_trampoline(const void *item, void *udata) {
     _hs_scan_ctx *c = (_hs_scan_ctx *)udata;
     return 0 != c->iter(item, c->udata);

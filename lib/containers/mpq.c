@@ -4,7 +4,7 @@
 #define MPQ_DEFAULT_CAP  1024
 #define MPQ_SPIN_MAX     64
 
-//按 pos 取槽位地址：基址 + (pos & mask) * stride（柔性数组下不能用下标索引）
+//按 pos 取槽位地址：基址 + (pos & mask) * stride
 static inline mpq_cell *_mpq_cell_at(mpq_ctx *q, uint32_t pos) {
     return (mpq_cell *)(q->cells + (size_t)(pos & q->mask) * q->stride);
 }

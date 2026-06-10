@@ -15,10 +15,10 @@ typedef enum scram_status {
     SCRAM_REMOTE_FINAL    // 已发送/接收对端最终消息（认证完成）
 }scram_status;
 typedef struct scram_ctx {
-    int32_t client;                         // 1 为客户端，0 为服务端
-    int32_t cbind;                          // 1 为 PLUS 变体（需要 channel binding），0 为标准
     scram_status status;                    // 当前握手状态
     digest_type dtype;                      // 摘要算法类型
+    int32_t client;                         // 1 为客户端，0 为服务端
+    int32_t cbind;                          // 1 为 PLUS 变体（需要 channel binding），0 为标准
     int32_t saltlen;                        // salt 长度（字节）
     int32_t iter;                           // 迭代轮数
     int32_t hslens;                         // 摘要输出长度（字节）

@@ -4,7 +4,7 @@ void heap_init(heap_ctx *heap, _heap_compare _compare) {
     ZERO(heap, sizeof(heap_ctx));
     heap->_compare = _compare;
 }
-// 交换父子节点位置，维护堆的结构性质（内部使用）
+// 交换父子节点位置，维护堆的结构性质
 static void _heap_swap(heap_ctx *heap, heap_node *parent, heap_node *child) {
     ASSERTAB(child->parent == parent
              && (parent->left == child || parent->right == child), ERRSTR_INVPARAM);

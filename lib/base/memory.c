@@ -22,9 +22,9 @@ static atomic64_t _nfree  = 0; // 累计释放次数（原子计数）
 #define MEM_TRK_FRAMES 32    // 单条记录最大栈帧数
 // 活动分配记录：ptr -> 调用栈，按 ptr 哈希链式存储
 typedef struct mem_trk_ctx {
+    int32_t frames;
     void *ptr;
     struct mem_trk_ctx *next;
-    int32_t frames;
     void *stack[MEM_TRK_FRAMES];
 }mem_trk_ctx;
 static mem_trk_ctx *_trk_bucket[MEM_TRK_BUCKET];

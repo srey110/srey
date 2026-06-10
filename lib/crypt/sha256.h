@@ -7,8 +7,8 @@
 
 typedef struct {
     uint32_t datalen;   // 当前缓冲区中的字节数
-    uint64_t bitlen;    // 已处理的总位数
     uint32_t state[8];  // 摘要状态（a~h 八个字）
+    uint64_t bitlen;    // 已处理的总位数
     uint8_t data[64];   // 输入缓冲区
 } sha256_ctx;
 

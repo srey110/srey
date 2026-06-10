@@ -31,8 +31,8 @@ struct path_trie {
 };
 // 段视图(不修改输入字符串)
 typedef struct seg_view {
-    const char *p;    // 段起始指针(指向输入串,不复制)
     size_t len;       // 段字节长度
+    const char *p;    // 段起始指针(指向输入串,不复制)
 }seg_view;
 
 // children hashmap 存储 path_node*(by-value 存指针),hash/cmp 通过解引用读 seg

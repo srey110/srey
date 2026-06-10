@@ -20,20 +20,30 @@ typedef struct task_ctx task_ctx;
 typedef struct message_ctx message_ctx;
 typedef struct task_dispatch_arg task_dispatch_arg;
 
-typedef void(*_task_dispatch_cb)(task_dispatch_arg *arg);           // 消息分发回调
-typedef void(*_task_startup_cb)(task_ctx *task);                    // 任务启动回调
-typedef void(*_task_closing_cb)(task_ctx *task);                    // 任务关闭回调
-typedef void(*_timeout_cb)(task_ctx *task, uint64_t sess);          // 超时回调
-typedef void(*_request_cb)(task_ctx *task, uint8_t reqtype, uint64_t sess, name_t src, void *data, size_t size); // 任务请求回调
-typedef void(*_response_cb)(task_ctx *task, uint64_t sess, int32_t error, void *data, size_t size);              // 任务响应回调
-typedef void(*_net_accept_cb)(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype);                         // 新连接接受回调
-typedef void(*_net_recv_cb)(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, uint8_t client, uint8_t slice, void *data, size_t size); // 数据接收回调
-typedef void(*_net_send_cb)(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, uint8_t client, size_t size);  // 数据发送完成回调
-typedef void(*_net_connect_cb)(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, int32_t erro);              // 连接建立回调
-typedef void(*_net_ssl_exchanged_cb)(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, uint8_t client);      // SSL 交换完成回调
-typedef void(*_net_handshake_cb)(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, uint8_t client, int32_t erro, void *data, size_t lens); // 应用层握手完成回调
-typedef void(*_net_close_cb)(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, uint8_t client);              // 连接关闭回调
-typedef void(*_net_recvfrom_cb)(task_ctx *task, SOCKET fd, uint64_t skid, char ip[IP_LENS], uint16_t port, void *data, size_t size); // UDP 数据接收回调
+typedef void(*_task_dispatch_cb)(task_dispatch_arg *arg);// 消息分发回调
+typedef void(*_task_startup_cb)(task_ctx *task);// 任务启动回调
+typedef void(*_task_closing_cb)(task_ctx *task);// 任务关闭回调
+typedef void(*_timeout_cb)(task_ctx *task, uint64_t sess);// 超时回调
+typedef void(*_request_cb)(task_ctx *task, uint8_t reqtype, uint64_t sess,
+                           name_t src, void *data, size_t size);// 任务请求回调
+typedef void(*_response_cb)(task_ctx *task, uint64_t sess,
+                            int32_t error, void *data, size_t size);// 任务响应回调
+typedef void(*_net_accept_cb)(task_ctx *task, SOCKET fd, uint64_t skid,
+                              uint8_t pktype);// 新连接接受回调
+typedef void(*_net_recv_cb)(task_ctx *task, SOCKET fd, uint64_t skid,
+                            uint8_t pktype, uint8_t client, uint8_t slice, void *data, size_t size); // 数据接收回调
+typedef void(*_net_send_cb)(task_ctx *task, SOCKET fd, uint64_t skid,
+                            uint8_t pktype, uint8_t client, size_t size);// 数据发送完成回调
+typedef void(*_net_connect_cb)(task_ctx *task, SOCKET fd, uint64_t skid,
+                               uint8_t pktype, int32_t erro);// 连接建立回调
+typedef void(*_net_ssl_exchanged_cb)(task_ctx *task, SOCKET fd, uint64_t skid,
+                                     uint8_t pktype, uint8_t client);// SSL 交换完成回调
+typedef void(*_net_handshake_cb)(task_ctx *task, SOCKET fd, uint64_t skid,
+                                 uint8_t pktype, uint8_t client, int32_t erro, void *data, size_t lens);// 应用层握手完成回调
+typedef void(*_net_close_cb)(task_ctx *task, SOCKET fd, uint64_t skid,
+                             uint8_t pktype, uint8_t client);// 连接关闭回调
+typedef void(*_net_recvfrom_cb)(task_ctx *task, SOCKET fd, uint64_t skid,
+                                char ip[IP_LENS], uint16_t port, void *data, size_t size);// UDP 数据接收回调
 
 // 任务间消息类型枚举
 typedef enum msg_type {
@@ -74,9 +84,9 @@ struct message_ctx {
     uint8_t slice;  // 分片类型（slice_type）
     uint8_t client; // 1 表示客户端连接，0 表示服务端连接
     int32_t erro;   // 错误码
-    name_t src;     // 发送方任务名
     SOCKET fd;      // socket 句柄
     size_t size;    // 数据长度
+    name_t src;     // 发送方任务名
     uint64_t skid;  // 连接 ID
     uint64_t sess;  // 会话 ID（用于请求/响应匹配）
     void *data;     // 消息数据指针
@@ -116,9 +126,9 @@ typedef struct name_handle_entry {
 }name_handle_entry;
 // 任务调度器全局上下文
 struct loader_ctx {
+    uint16_t nworker;          // 工作线程数量
     atomic_t stop;             // 非 0 表示调度器应停止
     atomic_t closing;          // 非 0 表示正在广播关闭消息，新注册 task 须立即关闭
-    uint16_t nworker;          // 工作线程数量
     atomic64_t index;          // 轮询工作线程的原子计数器
     worker_ctx *worker;        // 工作线程数组
     struct hashmap *maptasks;  // 句柄 → task_ctx 的哈希映射
@@ -145,8 +155,8 @@ struct task_ctx {
     name_t handle;             // 任务唯一句柄（createid 生成的数字 ID）
     char *name;             // 注册时的字符串名；匿名 task 为 NULL，task 持有，task_free 时释放
     void *arg;                 // 用户自定义数据
-    free_cb _arg_free;         // 用户数据释放回调
     loader_ctx *loader;        // 所属 loader
+    free_cb _arg_free;         // 用户数据释放回调
     _task_dispatch_cb _task_dispatch;    // 消息分发函数
     _task_startup_cb _task_startup;      // 启动回调
     _task_closing_cb _task_closing;      // 关闭回调

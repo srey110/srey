@@ -10,8 +10,8 @@
 
 typedef struct {
     int32_t lv;
-    char    time[TIME_LENS];
     char   *msg;                       // 指向 inline_buf 或独立 heap 分配
+    char    time[TIME_LENS];
     char    inline_buf[LOG_INLINE_SIZE]; // 短消息内嵌，避免 _format_va 第二次 malloc
 } log_item;
 

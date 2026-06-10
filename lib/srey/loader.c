@@ -427,7 +427,6 @@ static void _loader_task_closing(loader_ctx *loader) {
         time += 50;
     }
 }
-// 适配 hashmap_scan(bool) 回调到用户 task_each_cb(name, handle, arg)
 static bool _loader_task_each_scan(const void *item, void *udata) {
     _task_each_arg *w = (_task_each_arg *)udata;
     task_ctx *task = UPCAST(*((name_t **)item), task_ctx, handle);

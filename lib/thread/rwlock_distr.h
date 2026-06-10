@@ -14,6 +14,7 @@
 // N 通常 ≤ 4,开销几十 ns,远低于 fallback rwlock 的 cache 弹跳成本。
 // 单线程可同时注册的 rwlock_distr_ctx 上限;扩大需评估线性扫描开销
 #define RWLOCK_DISTR_MAX_TLS  4
+
 // CPU cache line 大小,用于消除并发结构 false sharing
 // 主流 x86_64 / ARM64 = 64;Apple Silicon / IBM POWER = 128;IBM z = 256;老 ARMv6 及以下 = 32
 #if defined(__APPLE__) && defined(__aarch64__)

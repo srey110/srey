@@ -386,7 +386,7 @@ static void _coro_handle_timeout(task_dispatch_arg *arg) {
     _coro_mco_resume(coro, arg);
 }
 // non-disposable 唤醒(skid 作 key):cosess 或 _coro_get_mco 队列空时新建协程,不删 sess。
-static void _coro_handle_normal_non_disposable(task_dispatch_arg *arg) {
+static void _coro_handle_non_disposable(task_dispatch_arg *arg) {
     coro_ctx *coctx = arg->task->arg;
     coro_sess *cosess = _coro_cosess_get(coctx, arg->msg.skid, (msg_type)arg->msg.mtype);
     if (NULL == cosess) {
@@ -401,7 +401,7 @@ static void _coro_handle_normal_non_disposable(task_dispatch_arg *arg) {
     }
 }
 // disposable 唤醒(sess 作 key):由 _coro_wait disposable=1 注册,_coro_get_mco 不会 NULL;唤醒后删 sess。
-static void _coro_handle_normal_disposable(task_dispatch_arg *arg) {
+static void _coro_handle_disposable(task_dispatch_arg *arg) {
     coro_ctx *coctx = arg->task->arg;
     coro_sess *cosess = _coro_cosess_get(coctx, arg->msg.sess, (msg_type)arg->msg.mtype);
     if (NULL == cosess) {
@@ -485,7 +485,7 @@ static void _coro_handle_recvfrom(task_dispatch_arg *arg) {
         _coro_mco_create(arg);
         return;
     }
-    _coro_handle_normal_disposable(arg);
+    _coro_handle_disposable(arg);
 }
 // 定期（每 1 秒）扫描超时堆，唤醒所有已到期的挂起协程并注入超时消息
 static void _coro_timeout_monitor(task_ctx *task, uint64_t sess) {
@@ -574,15 +574,15 @@ static const _coro_msg_handler_t _coro_msg_handlers[MSG_TYPE_ALL] = {
     [MSG_TYPE_CLOSING]      = _coro_handle_closing,
     [MSG_TYPE_TIMEOUT]      = _coro_handle_timeout,
     [MSG_TYPE_ACCEPT]       = _coro_mco_create,
-    [MSG_TYPE_CONNECT]      = _coro_handle_normal_non_disposable, // 连接建立
-    [MSG_TYPE_SSLEXCHANGED] = _coro_handle_normal_non_disposable, // SSL 握手
-    [MSG_TYPE_HANDSHAKED]   = _coro_handle_normal_non_disposable, // 应用层握手
+    [MSG_TYPE_CONNECT]      = _coro_handle_non_disposable, // 连接建立
+    [MSG_TYPE_SSLEXCHANGED] = _coro_handle_non_disposable, // SSL 握手
+    [MSG_TYPE_HANDSHAKED]   = _coro_handle_non_disposable, // 应用层握手
     [MSG_TYPE_RECV]         = _coro_handle_recved,
     [MSG_TYPE_SEND]         = _coro_mco_create,
     [MSG_TYPE_CLOSE]        = _coro_handle_closed,
     [MSG_TYPE_RECVFROM]     = _coro_handle_recvfrom,
     [MSG_TYPE_REQUEST]      = _coro_mco_create,
-    [MSG_TYPE_RESPONSE]     = _coro_handle_normal_disposable,    // 跨 task 响应
+    [MSG_TYPE_RESPONSE]     = _coro_handle_disposable,    // 跨 task 响应
     // fork 与 REQUEST 同模式：每条 fork 消息总是新建协程，无 sess 唤醒路径
     [MSG_TYPE_FORK]         = _coro_mco_create,
 };
@@ -627,7 +627,7 @@ static inline message_ctx *_coro_wait(task_ctx *task, int32_t disposable, uint64
     message_ctx *msg;
     rtn = mco_pop(coctx->curco, &msg, sizeof(msg));
     ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
-    /* 框架不变式：所有消息类型均保证 msg.sess 与注册 key 一致
+    /* 所有消息类型均保证 msg.sess 与注册 key 一致
      * （CONNECT/SSL/CLOSE 系 skid，TIMEOUT 系 te->sess，RESPONSE/RECV 系传入 sess），
      * dispatch 函数以相同 key 查找协程后调用 _co_resume；若此断言触发，说明 dispatch 逻辑有 bug。*/
     ASSERTAB(sess == msg->sess, "different session");

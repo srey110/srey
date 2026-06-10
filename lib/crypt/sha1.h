@@ -7,9 +7,9 @@
 
 typedef struct {
     uint32_t datalen;   // 当前缓冲区中的字节数
-    uint64_t bitlen;    // 已处理的总位数
     uint32_t state[5];  // 摘要状态（H0~H4）
     uint32_t k[4];      // 四轮常量
+    uint64_t bitlen;    // 已处理的总位数
     uint8_t data[64];   // 输入缓冲区
 } sha1_ctx;
 

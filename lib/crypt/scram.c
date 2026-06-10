@@ -81,7 +81,6 @@ void scram_set_user(scram_ctx *scram, const char *user) {
 int32_t scram_set_pwd(scram_ctx *scram, const char *pwd) {
     size_t plen = strlen(pwd);
     if (plen >= sizeof(scram->pwd)) {
-        // 截断会导致 PBKDF2 派生值与对端不一致 → silent 认证失败,运维难定位;改为显式拒绝
         LOG_ERROR("scram password too long (%zu >= %zu), rejected.", plen, sizeof(scram->pwd));
         return ERR_FAILED;
     }

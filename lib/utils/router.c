@@ -57,7 +57,6 @@ struct router_ctx {
     named_mw *named;
 };
 
-// ── 动态数组辅助 ────────────────────────────────────────────────────────────
 // 对存放 router_entry / router_cb / named_mw 三种结构体 (含指针成员) 的数组
 // 这里直接 REALLOC 几何扩容, 由调用方自己写 [size++] 入位置
 static void _router_grow(void **arr, int32_t *cap, int32_t need, size_t elem_size) {
@@ -72,7 +71,6 @@ static void _router_grow(void **arr, int32_t *cap, int32_t need, size_t elem_siz
     REALLOC(*arr, *arr, (size_t)newcap * elem_size);
     *cap = newcap;
 }
-// ── 路径解析 / 匹配 ────────────────────────────────────────────────────────
 // 解析单段, 写入 out; 成功 ERR_OK, 失败 out->str 保持 NULL
 // src 不要求以 \0 结尾, 仅按 len 读取
 static int32_t _router_parse_seg(const char *src, size_t len, router_seg *out) {
@@ -274,7 +272,6 @@ static router_method _router_method_str_to_mask(const char *m, size_t n) {
     if (7 == n && 0 == memcmp(m, "OPTIONS", 7))return ROUTER_M_OPTIONS;
     return 0;
 }
-// ── 路由器 / 中间件 ────────────────────────────────────────────────────────
 router_ctx *router_new(void) {
     router_ctx *r;
     MALLOC(r, sizeof(router_ctx));
@@ -346,7 +343,6 @@ void router_use_fn(router_ctx *r, router_cb fn) {
     _router_grow((void **)&r->global_mw, &r->global_mw_cap, r->global_mw_n + 1, sizeof(router_cb));
     r->global_mw[r->global_mw_n++] = fn;
 }
-// ── 分组 ──────────────────────────────────────────────────────────────────
 // group 是纯栈对象, 字段全部按值/指针存; 嵌套靠 parent 指针链向上找祖先节点。
 // 调用方必须保证 prefix / mw_names 在所有 router_* 注册调用期间生命周期有效
 // (一般用字符串字面量 / 静态数组即可)
@@ -408,7 +404,6 @@ static int32_t _router_group_collect_mws(const router_group *g, char **out) {
     }
     return k + g->mw_names_n;
 }
-// ── 路由注册 ──────────────────────────────────────────────────────────────
 router_entry *router_add(router_ctx *r, const router_group *g,
                          router_method method, const char *path,
                          router_cb h,
@@ -498,7 +493,7 @@ DEF_ROUTE_FN(head,    ROUTER_M_HEAD)
 DEF_ROUTE_FN(options, ROUTER_M_OPTIONS)
 DEF_ROUTE_FN(any,     ROUTER_M_ANY)
 #undef DEF_ROUTE_FN
-// ── 中间件链推进 ──────────────────────────────────────────────────────────
+
 // 中间件需主动调本函数推进链路; 不调即截断, 后续 mw / handler 不执行。
 // 因为是同步递归调用栈, 中间件可在 router_next 返回后做后置处理 (打日志 / 统计耗时)
 void router_next(router_req *ctx) {
@@ -508,7 +503,6 @@ void router_next(router_req *ctx) {
     int32_t i = ctx->chain_i++;
     ctx->chain[i](ctx);
 }
-// ── ctx 访问辅助 ──────────────────────────────────────────────────────────
 char *router_req_header(router_req *ctx, const char *key, size_t *lens) {
     // 先把 lens 清 0, http_header 未找到时不写 lens, 调用方读到旧值会误判
     *lens = 0;
@@ -540,7 +534,6 @@ const char *router_req_query(router_req *ctx, const char *key, size_t *lens) {
 void *router_req_body(router_req *ctx, size_t *lens) {
     return http_data(ctx->pack, lens);
 }
-// ── 响应辅助 ──────────────────────────────────────────────────────────────
 // 组装完整 HTTP 响应并通过 ev_send 推出去; 自动写 Content-Length, content_type 非 NULL 时
 // 自动写 Content-Type, extra 由调用方追加 (不可重复 CL / CT / Transfer-Encoding)
 // bw 内部托管 (binary_init(NULL,...) 模式), ev_send copy=0 转移 bw.data 所有权给框架,
@@ -607,7 +600,6 @@ static void _router_send_simple(router_req *ctx, int32_t code, const char *body)
     ev_send(&ctx->task->loader->netev, ctx->fd, ctx->skid, bw.data, bw.offset, 0);
     ctx->responded = 1;
 }
-// ── dispatch ──────────────────────────────────────────────────────────────
 // 派发流程: 解方法 → URL parse → 线性扫表 → 拼 chain → 推进 → 兜底 500
 void router_dispatch(router_ctx *r, task_ctx *task,
                      SOCKET fd, uint64_t skid,

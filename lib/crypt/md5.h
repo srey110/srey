@@ -7,8 +7,8 @@
 
 typedef struct md5_ctx {
     uint32_t datalen;   // 当前缓冲区中的字节数
-    uint64_t bitlen;    // 已处理的总位数
     uint32_t state[4];  // 摘要状态（A、B、C、D 四个字）
+    uint64_t bitlen;    // 已处理的总位数
     uint8_t data[64];   // 输入缓冲区
 } md5_ctx;
 
