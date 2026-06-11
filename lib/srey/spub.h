@@ -149,9 +149,9 @@ struct task_ctx {
     atomic_t closing;          // 是否已发送关闭消息（防重复）
     atomic_t ref;              // 引用计数
     atomic_t priority;         // 调度优先级：值越大单轮消费消息越多，0=默认与历史一致；详见 task_set_priority
-    uint32_t timeout_request;  // task_request 超时时间（毫秒）
-    uint32_t timeout_connect;  // task_connect 超时时间（毫秒）
-    uint32_t timeout_netread;  // 网络读取超时时间（毫秒）
+    atomic_t timeout_request;  // task_request 超时时间（毫秒）
+    atomic_t timeout_connect;  // task_connect 超时时间（毫秒）
+    atomic_t timeout_netread;  // 网络读取超时时间（毫秒）
     name_t handle;             // 任务唯一句柄（createid 生成的数字 ID）
     char *name;             // 注册时的字符串名；匿名 task 为 NULL，task 持有，task_free 时释放
     void *arg;                 // 用户自定义数据

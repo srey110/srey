@@ -93,7 +93,9 @@ int32_t dc_del(task_ctx *task, name_t dc_name, uint64_t sess, const char *key);
 int32_t dc_get(task_ctx *task, name_t dc_name, uint64_t sess, const char *key);
 /// <summary>
 /// 读 KV;不命中时 DataCenter 仍挂 pending,响应到达时机由 set 触发(业务自管超时,framework 不提供
-/// 自动唤醒,因非协程版 sess 不在 coro_sess 表中)。sess=0 fire-and-forget;sess!=0 业务在 _response 收 val。
+/// 自动唤醒,因非协程版 sess 不在 coro_sess 表中)。挂起的 waiter 超过本 task 的 request_timeout 后即视为
+/// 过期:此后的 set 不再唤醒它,并由 DataCenter 回收;需更久请调高本 task 的 request_timeout。
+/// sess=0 fire-and-forget;sess!=0 业务在 _response 收 val。
 /// </summary>
 /// <param name="task">当前 task(sess!=0 时的 response 目标)</param>
 /// <param name="dc_name">DataCenter task name</param>

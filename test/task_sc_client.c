@@ -472,6 +472,113 @@ static int32_t _test_wildcard_dead_sub_cleanup(task_ctx *task) {
     return ERR_FAILED;
 }
 
+// 辅助"死共享成员":共享订阅 "tsw/m" 组 "sg1" 后即返回,由主 task task_close 销毁(不 unsubscribe)
+static void _dead_shared_sub_startup(task_ctx *task) {
+    coro_sc_subscribe_shared(task, _sc_name, "tsw/m", "sg1");
+}
+// 辅助"死共享成员"2:共享订阅 "tsw/k" 组 "sg2"(与主 task 同组,作将死的另一成员)
+static void _dead_shared_sub2_startup(task_ctx *task) {
+    coro_sc_subscribe_shared(task, _sc_name, "tsw/k", "sg2");
+}
+// 子段 17:共享订阅成员死亡后 publish → 死成员剔除 + 空组删除 + 空节点回收(F-SC-1)
+static int32_t _test_shared_dead_member_cleanup(task_ctx *task) {
+    int32_t poll;
+    size_t lsize;
+    void *ldata;
+    task_ctx *probe;
+    task_ctx *b = coro_task_register(task->loader, "sc_dead_shared", 0, _dead_shared_sub_startup, NULL, NULL, NULL);
+    if (NULL == b) {
+        LOG_ERROR("shared_dead_cleanup: register helper failed");
+        return ERR_FAILED;
+    }
+    name_t bname = task_find_name(task->loader, "sc_dead_shared");
+    // 等 B 共享订阅成功("tsw/m" 出现)
+    for (poll = 0; poll < 40; poll++) {
+        lsize = 0;
+        ldata = coro_sc_topics(task, _sc_name, &lsize);
+        if (_topics_contains(ldata, lsize, "tsw/m")) {
+            break;
+        }
+        coro_sleep(task, 50);
+    }
+    if (poll >= 40) {
+        LOG_ERROR("shared_dead_cleanup: helper subscribe 'tsw/m' not observed");
+        return ERR_FAILED;
+    }
+    // 关闭 B,轮询等其真正销毁
+    task_close(b);
+    for (poll = 0; poll < 40; poll++) {
+        probe = task_grab(task->loader, bname);
+        if (NULL == probe) {
+            break;
+        }
+        task_ungrab(probe);
+        coro_sleep(task, 50);
+    }
+    if (poll >= 40) {
+        LOG_ERROR("shared_dead_cleanup: helper not destroyed");
+        return ERR_FAILED;
+    }
+    // publish 命中 "tsw/m":pick 发现唯一成员死 → 剔除 → 空组删 → 空节点回收;轮询等 "tsw/m" 消失
+    coro_sc_publish(task, _sc_name, "tsw/m", "p", 1);
+    for (poll = 0; poll < 40; poll++) {
+        lsize = 0;
+        ldata = coro_sc_topics(task, _sc_name, &lsize);
+        if (!_topics_contains(ldata, lsize, "tsw/m")) {
+            return ERR_OK;
+        }
+        coro_sleep(task, 50);
+    }
+    LOG_ERROR("shared_dead_cleanup: 'tsw/m' not reclaimed after dead member + publish");
+    return ERR_FAILED;
+}
+// 子段 18:组内一死一活 → publish 仍投到活成员,不丢(F-SC-1 方案 B 零漏投)
+static int32_t _test_shared_dead_skip_deliver(task_ctx *task) {
+    int32_t poll;
+    task_ctx *probe;
+    // 主 task 作为活成员加入组 sg2
+    if (ERR_OK != coro_sc_subscribe_shared(task, _sc_name, "tsw/k", "sg2")) {
+        LOG_ERROR("shared_skip: main subscribe_shared failed");
+        return ERR_FAILED;
+    }
+    // 辅助 task 作为(将死的)另一成员加入同组,等其订上
+    task_ctx *b = coro_task_register(task->loader, "sc_dead_shared2", 0, _dead_shared_sub2_startup, NULL, NULL, NULL);
+    if (NULL == b) {
+        coro_sc_unsubscribe_shared(task, _sc_name, "tsw/k", "sg2");
+        LOG_ERROR("shared_skip: register helper failed");
+        return ERR_FAILED;
+    }
+    name_t bname = task_find_name(task->loader, "sc_dead_shared2");
+    coro_sleep(task, 150);
+    // 关闭辅助,轮询等其真正销毁(组内只剩主 task 这个活成员)
+    task_close(b);
+    for (poll = 0; poll < 40; poll++) {
+        probe = task_grab(task->loader, bname);
+        if (NULL == probe) {
+            break;
+        }
+        task_ungrab(probe);
+        coro_sleep(task, 50);
+    }
+    if (poll >= 40) {
+        coro_sc_unsubscribe_shared(task, _sc_name, "tsw/k", "sg2");
+        LOG_ERROR("shared_skip: helper not destroyed");
+        return ERR_FAILED;
+    }
+    // 连发 3 条:pick 跳过死成员选活的(主 task),3 条应全部收到(修复前 cursor 压到死成员的那轮会丢)
+    _reset_recv();
+    coro_sc_publish(task, _sc_name, "tsw/k", "a", 1);
+    coro_sc_publish(task, _sc_name, "tsw/k", "b", 1);
+    coro_sc_publish(task, _sc_name, "tsw/k", "c", 1);
+    int32_t got = _wait_recv(task, 3);
+    coro_sc_unsubscribe_shared(task, _sc_name, "tsw/k", "sg2");
+    if (!got) {
+        LOG_ERROR("shared_skip: live member missed shared delivery (expect 3)");
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+
 static void _startup(task_ctx *task) {
     task_sc_client_args *arg = (task_sc_client_args *)coro_get_arg(task);
     _sc_name = task_find_name(task->loader, arg->sc_name);
@@ -493,9 +600,11 @@ static void _startup(task_ctx *task) {
     if (ERR_OK != _test_retained_topics_list(task))  { return; }
     if (ERR_OK != _test_shared_basic(task))          { return; }
     if (ERR_OK != _test_wildcard_dead_sub_cleanup(task)) { return; }
+    if (ERR_OK != _test_shared_dead_member_cleanup(task)) { return; }
+    if (ERR_OK != _test_shared_dead_skip_deliver(task)) { return; }
 
     *(arg->ok) = 1;
-    LOG_INFO("sc_client tested: 16/16 subtests passed.");
+    LOG_INFO("sc_client tested: 18/18 subtests passed.");
 }
 
 void task_sc_client_start(loader_ctx *loader, const char *base_name, const char *sc_name, int32_t *ok) {

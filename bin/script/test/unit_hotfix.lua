@@ -183,5 +183,31 @@ runner.run("hotfix", function(t)
         t:eq(3001, package.loaded.hotfix_unit_mod.bump(), "路径 A bump")
         t:eq("h:1", package.loaded.hotfix_unit_mod.handle(), "路径 B handle 看到同一 counter")
     end
+
+    -- ── 子段 12:路径 B 写 counter 后 chunk 抛错 → apply false 且 counter 已回滚(F-HF-1) ───
+    do
+        local mod = _setup_module()
+        t:eq(1, mod.bump(), "bump 初始 1")   -- counter=1
+        -- patch 裸写 counter(path-B 立即改原 UpVal)后抛错
+        local patch = [[
+            counter = 999
+            error("boom after write")
+        ]]
+        local ok, err = hotfix.apply("hotfix_unit_mod", patch)
+        t:eq(false, ok, "apply 执行错返回 false")
+        t:check(err and nil ~= err:find("boom"), "err 含 'boom'")
+        -- counter 应已回滚到 1;若未回滚则为 999,下方 bump 返回 1000
+        t:eq(2, mod.bump(), "counter 回滚:1 + 1 = 2(未回滚则为 1000)")
+    end
+
+    -- ── 子段 13:patch 仅裸写 counter 无函数替换 → "no matching" 失败同样回滚(F-HF-1) ───
+    do
+        local mod = _setup_module()
+        t:eq(1, mod.bump(), "bump 初始 1")   -- counter=1
+        local ok, err = hotfix.apply("hotfix_unit_mod", "counter = 777")
+        t:eq(false, ok, "纯状态写 patch 无函数替换返回 false")
+        t:check(err and nil ~= err:find("no matching"), "err 含 'no matching'")
+        t:eq(2, mod.bump(), "counter 回滚:1 + 1 = 2(未回滚则为 778)")
+    end
 end)
 end)

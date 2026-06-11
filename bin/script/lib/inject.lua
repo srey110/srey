@@ -47,7 +47,7 @@ local function _inject(source, filename)
         end,
         _U = u,
     }, { __index = _G })
-    local chunk, err = load(source, filename or "=(inject)", "bt", env)
+    local chunk, err = load(source, filename or "=(inject)", "t", env)
     if not chunk then
         return false, { err }
     end

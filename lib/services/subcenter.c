@@ -38,9 +38,9 @@ typedef struct sc_publisher_meta {
 }sc_publisher_meta;
 // 共享订阅组(挂 sc_topic_data.shared_groups hashmap)
 typedef struct sc_shared_group {
+    size_t cursor;        // 轮询游标
     char *group;          // strdup,作为 hashmap key
     array_ctx members;    // 元素 name_t
-    size_t cursor;        // 轮询游标
 }sc_shared_group;
 // 订阅节点 payload(挂 path_trie 节点)
 // 字段按内存对齐(指针/结构体 8B,然后小整型)
@@ -52,12 +52,12 @@ typedef struct sc_topic_data {
 // 独立 retained 条目(挂 sc_ctx.retained_index hashmap)
 // 字段按内存对齐
 typedef struct sc_retained_entry {
-    char *topic;                     // strdup,作为 hashmap key
-    void *retained;                  // 保留消息 payload(MALLOC)
-    void *retained_meta;             // publish_retained 时 meta 快照
     size_t retained_size;            // payload 字节数
     size_t retained_meta_size;       // meta 字节数
     name_t retained_publisher;       // 发布者 task 句柄
+    char *topic;                     // strdup,作为 hashmap key
+    void *retained;                  // 保留消息 payload(MALLOC)
+    void *retained_meta;             // publish_retained 时 meta 快照
 }sc_retained_entry;
 // subcenter task 上下文
 typedef struct sc_ctx {
@@ -70,25 +70,18 @@ typedef struct sc_ctx {
 }sc_ctx;
 // path_match 的 visit:收集订阅者
 typedef struct sc_collect_ctx {
-    sc_ctx *ctx;                  // subcenter 上下文
-    array_ctx *shared_picks;      // 临时存储共享组挑选(元素 name_t)
     int32_t failed;               // 内存分配失败标志
-}sc_collect_ctx;
-// hashset_iter 回调:把 name_t 收集到 dsts 数组
-typedef struct sc_resolve_ctx {
+    int32_t shared_emptied;       // 有共享组在 pick 时被清空 → 触发清理 pass
     sc_ctx *ctx;                  // subcenter 上下文
-    task_ctx **dsts;              // 解析出的目标 task 数组(已 grab)
-    int32_t cap;                  // dsts 容量
-    int32_t cnt;                  // dsts 当前数量
-    array_ctx *prune_normal;      // 收集 task_grab 失败的 name(用于懒清理 normal_subs,元素 name_t)
-}sc_resolve_ctx;
+    array_ctx *shared_dsts;       // 共享组挑选结果(元素 task_ctx*,已 grab,投递后 ungrab)
+}sc_collect_ctx;
 // QUERY_RETAINED 遍历 retained_index 的上下文:pattern 过滤,匹配项拼进 bw,超 BURST_MAX 截断
 typedef struct sc_qr_ctx {
+    int32_t pushed;            // 已写入条数(< SC_QUERY_RETAINED_BURST_MAX)
+    int32_t truncated;         // 超上限截断标志
     binary_ctx *bw;            // 输出 wire 缓冲
     const path_rules *rules;   // topic 规则(path_matches_pattern 用)
     const char *pattern;       // 查询模式
-    int32_t pushed;            // 已写入条数(< SC_QUERY_RETAINED_BURST_MAX)
-    int32_t truncated;         // 超上限截断标志
 }sc_qr_ctx;
 // path_match prune visit:从命中节点(含通配)移除死订阅;删后变空节点的 pattern 收入 empty_nodes,
 // 待 path_match 返回后统一 path_remove(DFS 遍历 trie 时不可删节点)
@@ -96,6 +89,11 @@ typedef struct sc_prune_ctx {
     array_ctx *prune;        // 死订阅 name 列表
     array_ctx *empty_nodes;  // 删后变空节点的 pattern(char*),待 path_remove
 }sc_prune_ctx;
+// _sc_prune_visit 内层(shared_groups scan):从单个共享组移除死成员,组变空收集 group 名待删
+typedef struct sc_sg_prune_ctx {
+    array_ctx *prune;        // 死订阅 name 列表(与 normal 共用)
+    array_ctx *empty_groups; // 删空后待移除的 group 名(char*,指向 sc_shared_group.group)
+}sc_sg_prune_ctx;
 
 // publisher_meta hashmap
 static uint64_t _sc_pm_hash(const void *item, uint64_t s0, uint64_t s1) {
@@ -288,14 +286,6 @@ int32_t sc_parse_deliver(const void *data, size_t size, sc_deliver *out) {
     }
     out->payload = out->plen > 0 ? p + off : NULL;
     return ERR_OK;
-}
-// 共享订阅轮询挑一个成员;空组返 INVALID_TNAME
-static name_t _sc_shared_pick(sc_shared_group *g) {
-    if (0 == g->members.size) {
-        return INVALID_TNAME;
-    }
-    g->cursor = (g->cursor + 1) % g->members.size;
-    return ((name_t *)g->members.ptr)[g->cursor];
 }
 // 在 array_ctx 中线性查找 name,找到返回索引,否则返 -1
 static int32_t _sc_name_find(array_ctx *arr, name_t n) {
@@ -522,18 +512,34 @@ static void _sc_update_retained(sc_ctx *ctx, name_t src, const char *topic,
         }
     }
 }
-// hashmap_scan 回调(shared_groups):每个共享组轮询挑 1 个 name push 到 shared_picks
+// 从 cursor 起轮询挑一个活成员;死成员当场从 members 剔除,返回首个活成员(grab 保留,投递后由调用方 ungrab);
+// 组内全死(members 清空)返 NULL。每轮非返回即剔一员,至多 members.size 次,必终止
+static task_ctx *_sc_shared_pick_live(sc_ctx *ctx, sc_shared_group *g) {
+    while (g->members.size > 0) {
+        g->cursor = (g->cursor + 1) % g->members.size;
+        name_t cand = ((name_t *)g->members.ptr)[g->cursor];
+        task_ctx *t = task_grab(ctx->loader, cand);
+        if (NULL != t) {
+            return t;
+        }
+        array_del_nomove(&g->members, (int32_t)g->cursor);
+    }
+    return NULL;
+}
+// hashmap_scan 回调(shared_groups):每组挑首个活成员并 grab push 到 shared_dsts;组全死则标记待清理
 static bool _sc_sg_pick_iter(const void *item, void *udata) {
     sc_collect_ctx *cc = (sc_collect_ctx *)udata;
     sc_shared_group *g = (sc_shared_group *)item;
-    name_t pick = _sc_shared_pick((sc_shared_group *)g);
-    if (INVALID_TNAME != pick) {
-        array_push_back(cc->shared_picks, &pick);
+    task_ctx *picked = _sc_shared_pick_live(cc->ctx, g);
+    if (NULL != picked) {
+        array_push_back(cc->shared_dsts, &picked);
+    } else {
+        cc->shared_emptied = 1;
     }
     return true;
 }
 // path_match visit 回调:normal_subs 全收到 publish_dedup hashset 去重,
-// shared_groups 每个组挑 1 个 push 到 shared_picks 数组(组间允许重复)
+// shared_groups 每个组挑首个活成员 grab 进 shared_dsts(组间允许重复)
 static void _sc_collect_visit(void *payload, void *udata) {
     sc_collect_ctx *cc = (sc_collect_ctx *)udata;
     sc_topic_data *d = (sc_topic_data *)payload;
@@ -546,7 +552,7 @@ static void _sc_collect_visit(void *payload, void *udata) {
             return;
         }
     }
-    // 共享订阅:每组挑一个 push 到 sarray(允许重复:不同 group 之间不去重)
+    // 共享订阅:每组挑首个活成员(死成员当场剔除),允许重复:不同 group 之间不去重
     if (NULL != d->shared_groups) {
         hashmap_scan(d->shared_groups, _sc_sg_pick_iter, cc);
     }
@@ -569,6 +575,24 @@ static int32_t _sc_resolve_one(sc_ctx *ctx, name_t n, task_ctx **dsts, int32_t c
     (*cnt)++;
     return ERR_OK;
 }
+// hashmap_scan 回调(shared_groups):从组移除 prune 中的死成员;组变空收集 group 名待删
+static bool _sc_sg_prune_member_iter(const void *item, void *udata) {
+    sc_shared_group *g = (sc_shared_group *)item;
+    sc_sg_prune_ctx *sp = (sc_sg_prune_ctx *)udata;
+    name_t *pn = (name_t *)sp->prune->ptr;
+    int32_t idx;
+    uint32_t i;
+    for (i = 0; i < sp->prune->size; i++) {
+        idx = _sc_name_find(&g->members, pn[i]);
+        if (idx >= 0) {
+            array_del_nomove(&g->members, idx);
+        }
+    }
+    if (0 == g->members.size) {
+        array_push_back(sp->empty_groups, &g->group);
+    }
+    return true;
+}
 static void _sc_prune_visit(void *payload, void *udata) {
     sc_topic_data *d = (sc_topic_data *)payload;
     sc_prune_ctx *pc = (sc_prune_ctx *)udata;
@@ -576,6 +600,30 @@ static void _sc_prune_visit(void *payload, void *udata) {
     uint32_t i;
     for (i = 0; i < pc->prune->size; i++) {
         (void)_sc_normal_subs_remove(&d->normal_subs, pn[i]);
+    }
+    // 共享组:移除 prune 中的死成员,删空组,shared_groups 空则释放
+    if (NULL != d->shared_groups) {
+        array_ctx empty_groups;
+        array_init(&empty_groups, sizeof(char *), 0);
+        sc_sg_prune_ctx sp;
+        sp.prune = pc->prune;
+        sp.empty_groups = &empty_groups;
+        hashmap_scan(d->shared_groups, _sc_sg_prune_member_iter, &sp);
+        char **gnames = (char **)empty_groups.ptr;
+        sc_shared_group qg;
+        sc_shared_group *removed;
+        for (i = 0; i < empty_groups.size; i++) {
+            qg.group = gnames[i];
+            removed = (sc_shared_group *)hashmap_delete(d->shared_groups, &qg);
+            if (NULL != removed) {
+                _sc_sg_free(removed);
+            }
+        }
+        array_free(&empty_groups);
+        if (0 == hashmap_count(d->shared_groups)) {
+            hashmap_free(d->shared_groups);
+            d->shared_groups = NULL;
+        }
     }
     if (0 == d->normal_subs.size
         && (NULL == d->shared_groups || 0 == hashmap_count(d->shared_groups))) {
@@ -591,32 +639,34 @@ static void _sc_publish_deliver(sc_ctx *ctx, name_t src, const char *topic,
     sc_publisher_meta *pm = (sc_publisher_meta *)hashmap_get(ctx->publisher_meta, &qm);
     const void *meta = (NULL != pm) ? pm->meta : NULL;
     uint16_t mlen = (NULL != pm) ? (uint16_t)pm->size : 0;
-    // 收集订阅者
+    // 收集订阅者:normal 进 dedup hashset 去重;shared 每组挑首个活成员并 grab,死成员当场剔除
     hashset_clear(ctx->publish_dedup, 0);
-    array_ctx shared_picks;
-    array_init(&shared_picks, sizeof(name_t), 0);
+    array_ctx shared_dsts;
+    array_init(&shared_dsts, sizeof(task_ctx *), 0);
     sc_collect_ctx cc;
     cc.ctx = ctx;
-    cc.shared_picks = &shared_picks;
+    cc.shared_dsts = &shared_dsts;
     cc.failed = 0;
+    cc.shared_emptied = 0;
     path_match(ctx->topics, topic, _sc_collect_visit, &cc);
+    uint32_t i;
     if (cc.failed) {
-        array_free(&shared_picks);
+        // collect 中途失败:已 grab 的共享目标需 ungrab
+        task_ctx **sp = (task_ctx **)shared_dsts.ptr;
+        for (i = 0; i < shared_dsts.size; i++) {
+            task_ungrab(sp[i]);
+        }
+        array_free(&shared_dsts);
         return;
     }
     size_t n_normal = hashset_count(ctx->publish_dedup);
-    size_t n_shared = shared_picks.size;
-    if (0 == n_normal && 0 == n_shared) {
-        array_free(&shared_picks);
+    if (0 == n_normal && 0 == shared_dsts.size && 0 == cc.shared_emptied) {
+        array_free(&shared_dsts);
         return;
     }
-    // 普通组(kind=0)与共享组(kind=1)分开 resolve、分开投递,接收方据 kind 路由到对应 handler
+    // 普通组(kind=0)dedup 后逐个 grab,死订阅收入 prune_normal 懒清理(共享已在 collect 内挑活并剔死)
     task_ctx **normal_dsts = NULL;
-    task_ctx **shared_dsts = NULL;
     int32_t normal_cnt = 0;
-    int32_t shared_cnt = 0;
-    uint32_t i;
-    // 懒清理:收集 task_grab 失败的 normal_subs 名字(后续从订阅列表移除)
     array_ctx prune_normal;
     array_init(&prune_normal, sizeof(name_t), 0);
     if (n_normal > 0) {
@@ -627,16 +677,9 @@ static void _sc_publish_deliver(sc_ctx *ctx, name_t src, const char *topic,
             _sc_resolve_one(ctx, *(name_t *)item, normal_dsts, (int32_t)n_normal, &normal_cnt, &prune_normal);
         }
     }
-    if (n_shared > 0) {
-        MALLOC(shared_dsts, sizeof(task_ctx *) * n_shared);
-        name_t *picks = (name_t *)shared_picks.ptr;
-        for (i = 0; i < shared_picks.size; i++) {
-            _sc_resolve_one(ctx, picks[i], shared_dsts, (int32_t)n_shared, &shared_cnt, NULL);
-        }
-    }
-    // 懒清理失效 normal_subs:死订阅挂在命中的通配/字面节点上,path_get 只能取字面节点会漏通配,
-    // 改用 path_match 遍历所有命中节点逐一移除;删后变空的节点在 path_match 返回后统一 path_remove
-    if (prune_normal.size > 0) {
+    // 懒清理:死 normal 订阅 + collect 清空的共享组 + 随之变空的节点。死订阅/空组挂在命中的通配
+    // /字面节点上,用 path_match 遍历所有命中节点统一处理;变空节点在返回后 path_remove
+    if (prune_normal.size > 0 || 0 != cc.shared_emptied) {
         array_ctx empty_nodes;
         array_init(&empty_nodes, sizeof(char *), 0);
         sc_prune_ctx pc;
@@ -644,8 +687,9 @@ static void _sc_publish_deliver(sc_ctx *ctx, name_t src, const char *topic,
         pc.empty_nodes = &empty_nodes;
         path_match(ctx->topics, topic, _sc_prune_visit, &pc);
         char **paths = (char **)empty_nodes.ptr;
+        void *removed;
         for (i = 0; i < empty_nodes.size; i++) {
-            void *removed = path_remove(ctx->topics, paths[i]);
+            removed = path_remove(ctx->topics, paths[i]);
             if (NULL != removed) {
                 _sc_topic_data_free(removed);
             }
@@ -653,19 +697,15 @@ static void _sc_publish_deliver(sc_ctx *ctx, name_t src, const char *topic,
         array_free(&empty_nodes);
     }
     array_free(&prune_normal);
-    array_free(&shared_picks);
-    // 两组各自打 kind、投递、ungrab、释放(task_multi_call copy=0 转移 buffer 所有权)
-    task_ctx **groups[2] = { normal_dsts, shared_dsts };
-    int32_t counts[2] = { normal_cnt, shared_cnt };
+    // 两组各自打 kind、投递、ungrab(task_multi_call copy=0 转移 buffer 所有权)
+    task_ctx **groups[2] = { normal_dsts, (task_ctx **)shared_dsts.ptr };
+    int32_t counts[2] = { normal_cnt, (int32_t)shared_dsts.size };
     uint8_t kinds[2] = { SC_DELIVER_NORMAL, SC_DELIVER_SHARED };
     size_t deliver_size;
     char *deliver_buf;
     int32_t g;
     int32_t k;
     for (g = 0; g < 2; g++) {
-        if (NULL == groups[g]) {
-            continue;
-        }
         if (counts[g] > 0) {
             deliver_size = 0;
             deliver_buf = _sc_pack_deliver(kinds[g], src, meta, mlen, topic, payload, plen, &deliver_size);
@@ -674,8 +714,9 @@ static void _sc_publish_deliver(sc_ctx *ctx, name_t src, const char *topic,
                 task_ungrab(groups[g][k]);
             }
         }
-        FREE(groups[g]);
     }
+    FREE(normal_dsts);
+    array_free(&shared_dsts);
 }
 // handler:PUB(retained=0)/ PUB_RETAINED(retained=1)。
 // retained 路径:先 _sc_update_retained 更新槽位;plen=0 时清空后直接返,不 deliver。

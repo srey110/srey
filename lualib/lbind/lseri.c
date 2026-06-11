@@ -3,7 +3,7 @@
 #define SERI_PACK_MAX_DEPTH 32
 
 static int32_t _lseri_pack_one(lua_State *lua, binary_ctx *bw, int32_t idx, int32_t depth);
-static void _lseri_push_item(lua_State *lua, seri_iter *iter, const seri_item *item);
+static void _lseri_push_item(lua_State *lua, seri_iter *iter, const seri_item *item, int32_t depth);
 
 // 递归 pack 一个 table：先数组段，再 hash 段（跳过已在数组段的整数 key），尾随 array_end
 static int32_t _lseri_pack_table(lua_State *lua, binary_ctx *bw, int32_t idx, int32_t depth) {
@@ -115,21 +115,27 @@ static int32_t _lseri_pack(lua_State *lua) {
     binary_free(&bw);
     LPUB_RET_LUD(lua, buf, (lua_Integer)size);
 }
-static void _lseri_unpack_one(lua_State *lua, seri_iter *iter) {
+static void _lseri_unpack_one(lua_State *lua, seri_iter *iter, int32_t depth) {
     seri_item item;
     int32_t rc = seri_iter_next(iter, &item);
     if (1 != rc) {
         luaL_error(lua, "seri unpack: malformed stream");
     }
-    _lseri_push_item(lua, iter, &item);
+    _lseri_push_item(lua, iter, &item, depth);
 }
 // 递归 unpack 一个 table：先数组段，再 hash 段直到 SERI_ITEM_NIL 终止
-static void _lseri_unpack_table(lua_State *lua, seri_iter *iter, uint32_t array_n) {
+static void _lseri_unpack_table(lua_State *lua, seri_iter *iter, uint32_t array_n, int32_t depth) {
+    if (depth > SERI_PACK_MAX_DEPTH) {
+        luaL_error(lua, "seri unpack: table nested too deep (>%d)", SERI_PACK_MAX_DEPTH);
+    }
     luaL_checkstack(lua, LUA_MINSTACK, NULL);
-    lua_createtable(lua, (int32_t)array_n, 0);
+    // array_n 来自不可信流,预分配上限卡在剩余字节数(每元素 ≥1 字节 tag),防恶意流以极小数据撑爆预分配
+    size_t remain = iter->len - iter->offset;
+    uint32_t prealloc = ((size_t)array_n <= remain) ? array_n : (uint32_t)remain;
+    lua_createtable(lua, (int32_t)prealloc, 0);
     uint32_t i;
     for (i = 1; i <= array_n; i++) {
-        _lseri_unpack_one(lua, iter);
+        _lseri_unpack_one(lua, iter, depth);
         lua_rawseti(lua, -2, (lua_Integer)i);
     }
     seri_item item;
@@ -142,12 +148,12 @@ static void _lseri_unpack_table(lua_State *lua, seri_iter *iter, uint32_t array_
         if (SERI_ITEM_NIL == item.type) {
             return;
         }
-        _lseri_push_item(lua, iter, &item);
-        _lseri_unpack_one(lua, iter);
+        _lseri_push_item(lua, iter, &item, depth);
+        _lseri_unpack_one(lua, iter, depth);
         lua_rawset(lua, -3);
     }
 }
-static void _lseri_push_item(lua_State *lua, seri_iter *iter, const seri_item *item) {
+static void _lseri_push_item(lua_State *lua, seri_iter *iter, const seri_item *item, int32_t depth) {
     switch (item->type) {
     case SERI_ITEM_NIL:
         lua_pushnil(lua);
@@ -168,7 +174,7 @@ static void _lseri_push_item(lua_State *lua, seri_iter *iter, const seri_item *i
         lua_pushlightuserdata(lua, item->v.ud);
         break;
     case SERI_ITEM_ARRAY_BEGIN:
-        _lseri_unpack_table(lua, iter, item->v.array_n);
+        _lseri_unpack_table(lua, iter, item->v.array_n, depth + 1);
         break;
     default:
         luaL_error(lua, "seri unpack: invalid item type %d", (int32_t)item->type);
@@ -212,7 +218,8 @@ static int32_t _lseri_unpack(lua_State *lua) {
         if (rc < 0) {
             return luaL_error(lua, "seri unpack: malformed stream");
         }
-        _lseri_push_item(lua, &iter, &item);
+        luaL_checkstack(lua, 1, NULL);
+        _lseri_push_item(lua, &iter, &item, 0);
     }
     return lua_gettop(lua) - base;
 }

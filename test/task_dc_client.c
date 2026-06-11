@@ -20,6 +20,17 @@ static void _multi_waiter(task_ctx *task, void *arg) {
         ATOMIC_ADD(&_multi_waiter_received, 1);
     }
 }
+// F-DC-2 幽灵响应捕获器:coro_dc_* 的响应由 coro_sess 匹配后直接 resume 协程,不经此回调;
+// 只有 coro_sess 已不存在的迟到响应(陈旧 waiter 被唤醒)才进这里,故计数即"幽灵"次数
+static atomic_t _ghost_resp;
+static void _on_ghost_response(task_ctx *task, uint64_t sess, int32_t error, void *data, size_t size) {
+    (void)task;
+    (void)sess;
+    (void)error;
+    (void)data;
+    (void)size;
+    ATOMIC_ADD(&_ghost_resp, 1);
+}
 
 // 子段 1:set + get 同步 round-trip
 static int32_t _test_set_get(task_ctx *task) {
@@ -218,9 +229,32 @@ static int32_t _test_key_too_long(task_ctx *task) {
     return ERR_OK;
 }
 
+// 子段 10:waiter 超时过期后,迟到 set 不再唤醒它(不产生幽灵响应,F-DC-2)
+static int32_t _test_late_set_no_ghost(task_ctx *task) {
+    size_t sz;
+    uint32_t old_to = task_get_request_timeout(task);
+    task_set_request_timeout(task, 200);
+    void *val = coro_dc_wait(task, _dc_name, "k_ghost", &sz);  // 未命中挂 waiter(deadline=入队+200ms),超时返 NULL
+    task_set_request_timeout(task, old_to);
+    if (NULL != val) {
+        LOG_ERROR("late_set_no_ghost: expect NULL on timeout");
+        return ERR_FAILED;
+    }
+    coro_sleep(task, 600);          // 睡过 waiter 的 200ms deadline,确保其已过期
+    ATOMIC_SET(&_ghost_resp, 0);
+    coro_dc_set(task, _dc_name, "k_ghost", "late", 4);   // 迟到 set:过期 waiter 应被跳过,不唤醒
+    coro_sleep(task, 200);          // 给可能的幽灵响应到达时间
+    if (0 != ATOMIC_GET(&_ghost_resp)) {
+        LOG_ERROR("late_set_no_ghost: stale waiter woken, ghost resp=%d", (int32_t)ATOMIC_GET(&_ghost_resp));
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+
 static void _startup(task_ctx *task) {
     task_dc_client_args *arg = (task_dc_client_args *)coro_get_arg(task);
     _dc_name = task_find_name(task->loader, arg->dc_name);
+    task_responsed(task, _on_ghost_response);   // 注册幽灵响应捕获器(F-DC-2)
 
     if (ERR_OK != _test_set_get(task))             { return; }
     if (ERR_OK != _test_wait_hit(task))            { return; }
@@ -231,9 +265,10 @@ static void _startup(task_ctx *task) {
     if (ERR_OK != _test_list_keys(task))           { return; }
     if (ERR_OK != _test_set_null(task))            { return; }
     if (ERR_OK != _test_key_too_long(task))        { return; }
+    if (ERR_OK != _test_late_set_no_ghost(task))   { return; }
 
     *(arg->ok) = 1;
-    LOG_INFO("dc_client tested: 9/9 subtests passed.");
+    LOG_INFO("dc_client tested: 10/10 subtests passed.");
 }
 
 void task_dc_client_start(loader_ctx *loader, const char *base_name, const char *dc_name, int32_t *ok) {

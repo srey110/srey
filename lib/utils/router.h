@@ -242,7 +242,7 @@ void router_group_nest(const router_group *parent, router_group *g, const char *
 /// <param name="h">handler</param>
 /// <param name="mws">路由级中间件名数组, 可为 NULL</param>
 /// <param name="mws_n">mws 数量</param>
-/// <returns>路由条目, NULL 表示失败 (路径参数超限 / OOM)</returns>
+/// <returns>路由条目, NULL 表示失败 (路径参数超限 / OOM); 返回指针仅即时有效, 下次 router_* 注册可能 realloc 路由表使其失效, 不可长期持有</returns>
 router_entry *router_add(router_ctx *r, const router_group *g,
                          router_method method, const char *path,
                          router_cb h,

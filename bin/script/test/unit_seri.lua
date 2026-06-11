@@ -134,5 +134,34 @@ runner.run("seri", function(t)
         t:check(type(err) == "string" and err:find("unsupported"),
             "pack function error message")
     end
+
+    -- 12. 大量顶层值 round-trip（顶层 unpack 逐项 checkstack，超 LUA_MINSTACK 不溢出）
+    do
+        local args = {}
+        local i
+        for i = 1, 300 do
+            args[i] = i
+        end
+        buf, size = seri.pack(table.unpack(args))
+        local rets = { seri.unpack(buf, size) }
+        utils.ud_free(buf)
+        t:eq(300, #rets,     "many top-level values count")
+        t:eq(1,   rets[1],   "many top-level [1]")
+        t:eq(300, rets[300], "many top-level [300]")
+    end
+
+    -- 13. 顶层多 nil 裸字节流不溢出栈（每个 \0 字节 = 一个 SERI_ITEM_NIL）
+    do
+        local cnt = select("#", seri.unpack(string.rep("\0", 300)))
+        t:eq(300, cnt, "many top-level nils count")
+    end
+
+    -- 14. 恶意流谎报超大 array_n：不预分配天量内存，读到流尾即报 malformed（F-SERI-2）
+    do
+        -- 0xFE=ARRAY+escape，0x22=NUMBER DWORD，后随 u32 小端 0x10000000(2.68 亿) 声称的数组长度，但无元素数据
+        local bad = string.char(0xFE, 0x22, 0x00, 0x00, 0x00, 0x10)
+        local ok = pcall(seri.unpack, bad)
+        t:check(not ok, "malicious huge array_n rejected as malformed")
+    end
 end)
 end)

@@ -1,9 +1,14 @@
 ﻿#include "services/datacenter.h"
 #include "srey/task.h"
 #include "containers/hashmap.h"
+#include "containers/sarray.h"
 #include "utils/binary.h"
+#include "utils/timer.h"
 #include "utils/utils.h"
 #include "base/macro.h"
+
+// pending waiter 清理节流:每个 WAIT 入口最多每 DC_SWEEP_THROTTLE_MS 触发一次 sweep
+#define DC_SWEEP_THROTTLE_MS 5000
 
 // 子命令操作码:payload 首字节,跟随特定子命令格式的剩余字节
 // payload 布局:
@@ -25,8 +30,14 @@ typedef struct dc_entry {
 typedef struct dc_waiter {
     name_t src;              // 请求方 task 句柄
     uint64_t sess;           // 会话 id(task_response 唤醒用)
+    uint64_t deadline_ms;    // 绝对过期毫秒(timer 基准);0=请求方无限等待,永不驱逐
     struct dc_waiter *next;  // 同 key FIFO 链表 next
 } dc_waiter;
+// sweep 上下文:收集变空的 pending key,scan 结束后统一 hashmap_delete(scan 中不可改 map 结构)
+typedef struct dc_sweep_ctx {
+    uint64_t now_ms;
+    array_ctx *empty_keys;  // char* 列表,元素指向 dc_pending.key(scan 后、删除前有效)
+} dc_sweep_ctx;
 // 单个 key 的 waiter FIFO 队列
 typedef struct dc_pending {
     char *key;          // strdup,作为 hashmap key
@@ -35,9 +46,11 @@ typedef struct dc_pending {
 } dc_pending;
 // DataCenter task 的 arg 上下文
 typedef struct dc_ctx {
+    uint64_t last_sweep_ms;   // 上次 sweep 时刻(节流用)
     loader_ctx *loader;       // 所属 loader
     struct hashmap *kv;       // 元素 sizeof(dc_entry),by-value 存
     struct hashmap *pending;  // 元素 sizeof(dc_pending),by-value 存
+    timer_ctx timer;          // 单调时钟,提供 waiter 过期判定的 now
 } dc_ctx;
 
 // ── hashmap hash / compare / free 回调 ─────────────────────────────────────
@@ -71,9 +84,9 @@ static void _dc_pending_free(void *item) {
     FREE(p->key);
     // waiter 链表由调用方在 take 时摘走;走到这里说明 hashmap_free/clear 强制清理,
     // 此时 waiter 协程已无人唤醒(loader 关闭),释放节点不发 response
-    dc_waiter *w = p->head;
+    dc_waiter *next, *w = p->head;
     while (w) {
-        dc_waiter *next = w->next;
+        next = w->next;
         FREE(w);
         w = next;
     }
@@ -220,12 +233,18 @@ static void _dc_handle_set(dc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *b
     }
     // 3. 摘下 pending[key] 并唤醒所有 waiter(waiter 来自其它协程的 wait,有独立 src/sess,不受本请求 src 影响)
     dc_waiter *w = _dc_pending_take(ctx, keybuf);
+    uint64_t now_ms = (NULL != w) ? timer_cur_ms(&ctx->timer) : 0;
+    task_ctx *wt;
+    dc_waiter *next;
     while (w) {
-        dc_waiter *next = w->next;
-        task_ctx *wt = task_grab(ctx->loader, w->src);
-        if (wt) {
-            task_response(wt, w->sess, ERR_OK, val, vsize, 1);  // copy=1
-            task_ungrab(wt);
+        next = w->next;
+        // 跳过已过期 waiter:请求方早已超时放弃,唤醒只会在其 task 触发幽灵响应;deadline_ms==0 为无限等照常唤醒
+        if (0 == w->deadline_ms || now_ms < w->deadline_ms) {
+            wt = task_grab(ctx->loader, w->src);
+            if (wt) {
+                task_response(wt, w->sess, ERR_OK, val, vsize, 1);  // copy=1
+                task_ungrab(wt);
+            }
         }
         FREE(w);
         w = next;
@@ -252,8 +271,63 @@ static void _dc_handle_get(dc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *b
         task_ungrab(src_task);
     }
 }
+// 单节点 sweep:摘除已过期 waiter,静默 FREE 不发 response(请求方早已超时,发了即唤醒死 session)
+static bool _dc_pending_sweep_iter(const void *item, void *udata) {
+    dc_pending *p = (dc_pending *)item;
+    dc_sweep_ctx *sc = (dc_sweep_ctx *)udata;
+    // deadline 跨请求方非单调,需全链表遍历 + prev 中段摘除
+    dc_waiter *next, *prev = NULL, *w = p->head;
+    while (w) {
+        next = w->next;
+        if (0 != w->deadline_ms && sc->now_ms >= w->deadline_ms) {
+            if (NULL == prev) {
+                p->head = next;
+            } else {
+                prev->next = next;
+            }
+            if (p->tail == w) {
+                p->tail = prev;
+            }
+            FREE(w);
+        } else {
+            prev = w;
+        }
+        w = next;
+    }
+    if (NULL == p->head) {
+        array_push_back(sc->empty_keys, &p->key);
+    }
+    return true;
+}
+// 驱逐所有 key 上已过期的 waiter,空节点随后从 pending 删除
+static void _dc_pending_sweep(dc_ctx *ctx, uint64_t now_ms) {
+    array_ctx empty_keys;
+    array_init(&empty_keys, sizeof(char *), 0);
+    dc_sweep_ctx sc;
+    sc.now_ms = now_ms;
+    sc.empty_keys = &empty_keys;
+    hashmap_scan(ctx->pending, _dc_pending_sweep_iter, &sc);
+    char **keys = (char **)empty_keys.ptr;
+    uint32_t i;
+    dc_pending query;
+    dc_pending *removed;
+    for (i = 0; i < empty_keys.size; i++) {
+        query.key = keys[i];
+        removed = (dc_pending *)hashmap_delete(ctx->pending, &query);
+        if (NULL != removed) {
+            _dc_pending_free(removed);  // head 已空,仅 FREE(key)
+        }
+    }
+    array_free(&empty_keys);
+}
 // WAIT body 格式:| u16 klen | key |;命中立即返回,未命中挂 pending
 static void _dc_handle_wait(dc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *br) {
+    // 入口处节流驱逐超期残留 waiter;放在命中判断之前,命中的 WAIT 也能触发清理
+    uint64_t now_ms = timer_cur_ms(&ctx->timer);
+    if (now_ms - ctx->last_sweep_ms >= DC_SWEEP_THROTTLE_MS) {
+        ctx->last_sweep_ms = now_ms;
+        _dc_pending_sweep(ctx, now_ms);
+    }
     if (INVALID_TNAME == src) {
         return;  // fire-and-forget:命中也无人接,未命中也不能挂 pending(永远无法唤醒,内存泄漏)
     }
@@ -273,10 +347,18 @@ static void _dc_handle_wait(dc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *
         return;
     }
     // 未命中:塞入 pending,不发 response → src 业务协程继续 yield,超时由其自身 coro_request 超时机制兜底
+    task_ctx *src_task = task_grab(ctx->loader, src);
+    if (NULL == src_task) {
+        return;  // src 已不存在,挂 waiter 也无法唤醒
+    }
+    uint32_t timeout_ms = task_get_request_timeout(src_task);
+    task_ungrab(src_task);
     dc_waiter *w;
     MALLOC(w, sizeof(dc_waiter));
     w->src = src;
     w->sess = sess;
+    // timeout_ms==0(请求方无限等待)→ deadline 0 哨兵永不驱逐;否则 src 自身超时点即过期(SET 不再唤醒、sweep 回收)
+    w->deadline_ms = (timeout_ms > 0) ? (timer_cur_ms(&ctx->timer) + (uint64_t)timeout_ms) : 0;
     w->next = NULL;
     _dc_pending_push(ctx, keybuf, w);
 }
@@ -398,6 +480,7 @@ int32_t dc_start(loader_ctx *loader, const char *name) {
     dc_ctx *ctx;
     CALLOC(ctx, 1, sizeof(dc_ctx));
     ctx->loader = loader;
+    timer_init(&ctx->timer);
     ctx->kv = hashmap_new_with_allocator(_malloc, _realloc, _free,
                                          sizeof(dc_entry), ONEK, 0, 0,
                                          _dc_kv_hash, _dc_kv_compare, _dc_kv_free, NULL);

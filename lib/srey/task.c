@@ -739,22 +739,22 @@ int32_t task_get_priority(task_ctx *task) {
     return (int32_t)ATOMIC_GET(&task->priority);
 }
 void task_set_request_timeout(task_ctx *task, uint32_t ms) {
-    task->timeout_request = ms;
+    ATOMIC_SET(&task->timeout_request, ms);
 }
 uint32_t task_get_request_timeout(task_ctx *task) {
-    return task->timeout_request;
+    return (uint32_t)ATOMIC_GET(&task->timeout_request);
 }
 void task_set_connect_timeout(task_ctx *task, uint32_t ms) {
-    task->timeout_connect = ms;
+    ATOMIC_SET(&task->timeout_connect, ms);
 }
 uint32_t task_get_connect_timeout(task_ctx *task) {
-    return task->timeout_connect;
+    return (uint32_t)ATOMIC_GET(&task->timeout_connect);
 }
 void task_set_netread_timeout(task_ctx *task, uint32_t ms) {
-    task->timeout_netread = ms;
+    ATOMIC_SET(&task->timeout_netread, ms);
 }
 uint32_t task_get_netread_timeout(task_ctx *task) {
-    return task->timeout_netread;
+    return (uint32_t)ATOMIC_GET(&task->timeout_netread);
 }
 void task_stat(task_ctx *task, uint64_t nmsg[MSG_TYPE_ALL], uint64_t dispatch_cpu_ns[MSG_TYPE_ALL]) {
 #if ENABLE_DISPATCH_STAT

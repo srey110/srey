@@ -55,7 +55,8 @@ local function _collect_upvalues(mod)
     return map
 end
 
----对 module 应用 hotfix patch;成功后下次调用走新版,upvalue 状态保留
+---对 module 应用 hotfix patch;成功后下次调用走新版,upvalue 状态保留。
+---失败时回滚 path-B 在执行期写入原 module 的 upvalue(函数替换本就只在成功后进行),原 module 不被半改污染
 ---@param module_name string 已加载的 module 名(package.loaded 中的 key)
 ---@param patch_source string patch Lua 源码;用 `function M.xxx() end` 声明替换函数
 ---@return boolean ok 成功 true / 失败 false
@@ -70,6 +71,13 @@ function M.apply(module_name, patch_source)
     local patch_M = setmetatable({}, {__index = mod})
     -- 收集 mod 所有 closure 的 upvalue 索引,供 patch_env metatable 转发(路径 B)
     local upmap = _collect_upvalues(mod)
+    -- path-B 写入原 module UpVal 的撤销日志:k → {entry, orig};任一失败路径逐一回滚,避免半改污染
+    local dirty = {}
+    local function _rollback_dirty()
+        for _, d in pairs(dirty) do
+            debug.setupvalue(d.entry.fn, d.entry.idx, d.orig)
+        end
+    end
     -- patch_env:M 注入 patch_M;裸标识符读写经 metatable 转发到原 UpVal(命中 upmap)
     -- 或退化到 _G(未命中,如 print/pairs 等);patch_env 自身字段(rawset 写入)优先
     local env = {M = patch_M}
@@ -85,6 +93,11 @@ function M.apply(module_name, patch_source)
         __newindex = function(t, k, v)
             local entry = upmap[k]
             if entry then
+                if nil == dirty[k] then
+                    -- 首次写入前记录原值供失败回滚(orig 可能为 nil,包一层 table 以区分"未记录")
+                    local _, orig = debug.getupvalue(entry.fn, entry.idx)
+                    dirty[k] = {entry = entry, orig = orig}
+                end
                 debug.setupvalue(entry.fn, entry.idx, v)
                 return
             end
@@ -97,6 +110,7 @@ function M.apply(module_name, patch_source)
     end
     local ok, exec_err = pcall(chunk)
     if not ok then
+        _rollback_dirty()
         return false, "exec: " .. tostring(exec_err)
     end
     -- 遍历 patch_M:同名 function 嫁接 upvalue 后写回 mod;只替换已有函数,不新增不删除
@@ -110,6 +124,7 @@ function M.apply(module_name, patch_source)
         end
     end
     if 0 == replaced then
+        _rollback_dirty()
         return false, "no matching function replaced"
     end
     return true, string.format("%d function(s) replaced", replaced)
