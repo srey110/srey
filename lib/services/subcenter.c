@@ -46,6 +46,7 @@ typedef struct sc_shared_group {
 // 字段按内存对齐(指针/结构体 8B,然后小整型)
 typedef struct sc_topic_data {
     struct hashmap *shared_groups;   // group_name → sc_shared_group(延迟创建)
+    char *pattern;                   // 订阅 topic(strdup);删空通配节点时 path_remove 用
     array_ctx normal_subs;           // 元素 name_t
 }sc_topic_data;
 // 独立 retained 条目(挂 sc_ctx.retained_index hashmap)
@@ -89,6 +90,12 @@ typedef struct sc_qr_ctx {
     int32_t pushed;            // 已写入条数(< SC_QUERY_RETAINED_BURST_MAX)
     int32_t truncated;         // 超上限截断标志
 }sc_qr_ctx;
+// path_match prune visit:从命中节点(含通配)移除死订阅;删后变空节点的 pattern 收入 empty_nodes,
+// 待 path_match 返回后统一 path_remove(DFS 遍历 trie 时不可删节点)
+typedef struct sc_prune_ctx {
+    array_ctx *prune;        // 死订阅 name 列表
+    array_ctx *empty_nodes;  // 删后变空节点的 pattern(char*),待 path_remove
+}sc_prune_ctx;
 
 // publisher_meta hashmap
 static uint64_t _sc_pm_hash(const void *item, uint64_t s0, uint64_t s1) {
@@ -145,9 +152,12 @@ static int _sc_name_cmp(const void *a, const void *b, void *ud) {
     return (na > nb) - (na < nb);
 }
 // sc_topic_data alloc / free
-static sc_topic_data *_sc_alloc_topic_data(void) {
+static sc_topic_data *_sc_alloc_topic_data(const char *pattern) {
     sc_topic_data *d;
     CALLOC(d, 1, sizeof(sc_topic_data));
+    size_t plen = strlen(pattern);
+    MALLOC(d->pattern, plen + 1);
+    safe_fill_str(d->pattern, plen + 1, pattern);
     array_init(&d->normal_subs, sizeof(name_t), 0);
     return d;
 }
@@ -157,6 +167,7 @@ static void _sc_topic_data_free(void *p) {
     if (NULL != d->shared_groups) {
         hashmap_free(d->shared_groups);
     }
+    FREE(d->pattern);
     FREE(d);
 }
 // 失败响应:统一回 ERR_FAILED
@@ -333,7 +344,7 @@ static void _sc_handle_sub(sc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *b
     // 这里 get 失败时再独立 alloc + insert,避免重复订阅泄漏 sc_topic_data
     sc_topic_data *d = (sc_topic_data *)path_get(ctx->topics, topic);
     if (NULL == d) {
-        d = _sc_alloc_topic_data();
+        d = _sc_alloc_topic_data(topic);
         if (ERR_OK != path_insert(ctx->topics, topic, d)) {
             _sc_topic_data_free(d);
             _sc_resp_failed(ctx, src, sess);
@@ -558,6 +569,19 @@ static int32_t _sc_resolve_one(sc_ctx *ctx, name_t n, task_ctx **dsts, int32_t c
     (*cnt)++;
     return ERR_OK;
 }
+static void _sc_prune_visit(void *payload, void *udata) {
+    sc_topic_data *d = (sc_topic_data *)payload;
+    sc_prune_ctx *pc = (sc_prune_ctx *)udata;
+    name_t *pn = (name_t *)pc->prune->ptr;
+    uint32_t i;
+    for (i = 0; i < pc->prune->size; i++) {
+        (void)_sc_normal_subs_remove(&d->normal_subs, pn[i]);
+    }
+    if (0 == d->normal_subs.size
+        && (NULL == d->shared_groups || 0 == hashmap_count(d->shared_groups))) {
+        array_push_back(pc->empty_nodes, &d->pattern);
+    }
+}
 // publish 投递:fire-and-forget 投递到所有匹配订阅者
 static void _sc_publish_deliver(sc_ctx *ctx, name_t src, const char *topic,
                                 const void *payload, uint32_t plen) {
@@ -610,16 +634,23 @@ static void _sc_publish_deliver(sc_ctx *ctx, name_t src, const char *topic,
             _sc_resolve_one(ctx, picks[i], shared_dsts, (int32_t)n_shared, &shared_cnt, NULL);
         }
     }
-    // 懒清理失效 normal_subs(在 path_trie 中查目标 topic 数据)
+    // 懒清理失效 normal_subs:死订阅挂在命中的通配/字面节点上,path_get 只能取字面节点会漏通配,
+    // 改用 path_match 遍历所有命中节点逐一移除;删后变空的节点在 path_match 返回后统一 path_remove
     if (prune_normal.size > 0) {
-        sc_topic_data *d = (sc_topic_data *)path_get(ctx->topics, topic);
-        if (NULL != d) {
-            name_t *prune = (name_t *)prune_normal.ptr;
-            for (i = 0; i < prune_normal.size; i++) {
-                (void)_sc_normal_subs_remove(&d->normal_subs, prune[i]);
+        array_ctx empty_nodes;
+        array_init(&empty_nodes, sizeof(char *), 0);
+        sc_prune_ctx pc;
+        pc.prune = &prune_normal;
+        pc.empty_nodes = &empty_nodes;
+        path_match(ctx->topics, topic, _sc_prune_visit, &pc);
+        char **paths = (char **)empty_nodes.ptr;
+        for (i = 0; i < empty_nodes.size; i++) {
+            void *removed = path_remove(ctx->topics, paths[i]);
+            if (NULL != removed) {
+                _sc_topic_data_free(removed);
             }
-            _sc_try_remove_empty_topic(ctx, topic, d);
         }
+        array_free(&empty_nodes);
     }
     array_free(&prune_normal);
     array_free(&shared_picks);

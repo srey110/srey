@@ -279,7 +279,7 @@ static void _ltask_arg_free(void *arg) {
 // Lua 回调：清理消息 table 中的 C 内存（作为 __gc 元方法使用）
 static int32_t _msg_clean(lua_State *lua) {
     ASSERTAB(LUA_TTABLE == lua_type(lua, 1), "_msg_clean type error.");
-    message_ctx tmp = {0};
+    message_ctx tmp = { 0 };
     lua_getfield(lua, 1, "mtype");
     tmp.mtype = (uint8_t)lua_tointeger(lua, -1);
     lua_pop(lua, 1);

@@ -38,9 +38,9 @@ void mqtt_topics_unsubscribe(binary_ctx *topics, const char *topic);
 /// 连接请求
 /// </summary>
 /// <param name="version">mqtt_protversion</param>
-/// <param name="cleanstart">新开始 表明此次连接是一个新的会话还是一个已存在的会话的延续</param>
+/// <param name="cleanstart">新开始 表明此次连接是一个新的会话还是一个已存在的会话的延续；MQTT 3.1.1 下若 clientid 为零长度，此值必须为 1</param>
 /// <param name="keepalive">保持连接</param>
-/// <param name="clientid">唯一的客户标识符 UTF-8字符串</param>
+/// <param name="clientid">唯一的客户标识符 UTF-8字符串；NULL 或空串均按零长度处理（服务端在 CONNACK 分配 ID）。MQTT 3.1.1 零长度时必须 cleanstart=1，否则返回 NULL</param>
 /// <param name="user">用户名  UTF-8字符串</param>
 /// <param name="password">密码 二进制数据</param>
 /// <param name="pwlens">密码长度</param>
@@ -57,7 +57,7 @@ void mqtt_topics_unsubscribe(binary_ctx *topics, const char *topic);
 /// WILLDELAY_INTERVAL(0x18) PAYLOAD_FORMAT(0x01) MSG_EXPIRY(0x02) CONTENT_TYPE(0x03) RESP_TOPIC(0x08) CORRELATION_DATA(0x09) USER_PROPERTY(0x26)
 /// </param>
 /// <param name="lens">组包后的数据长度</param>
-/// <returns>char * 数据包</returns>
+/// <returns>char * 数据包；失败返回 NULL（MQTT 3.1.1 零长度 clientid 配 cleanstart=0、或编码失败）</returns>
 char *mqtt_pack_connect(mqtt_protversion version, int8_t cleanstart, int16_t keepalive, const char *clientid,
     const char *user, char *password, size_t pwlens,
     const char *willtopic, char *willpayload, size_t wplens, int8_t willqos, int8_t willretain,

@@ -13,6 +13,8 @@ local OP_GET  = "\x02"
 local OP_WAIT = "\x03"
 local OP_DEL  = "\x04"
 local OP_LIST = "\x05"
+-- key 长度上限,与c侧datacenter DC_KEY_MAX 对齐(服务端 keybuf[512] 含 NUL 终止,拒绝 >= 512)
+local DC_KEY_MAX = 512
 
 local dc_client = {}
 
@@ -22,8 +24,8 @@ local dc_client = {}
 ---@param val string? value 数据;nil 或空串等价软清空
 ---@return integer erro ERR_OK 成功;ERR_FAILED key 非法/datacenter 不可达/超时
 function dc_client.set(dc_name, key, val)
-    if not key or "" == key then
-        WARN("dc set key empty.")
+    if not key or "" == key or #key >= DC_KEY_MAX then
+        WARN("dc set key invalid (empty or too long).")
         return ERR_FAILED
     end
     -- string.pack(">s2", key):u16 klen 网络序 + key 字节
@@ -41,8 +43,8 @@ end
 ---@param key string key 字符串(非空)
 ---@return string? val 值字符串;key 不存在/超时返回 nil
 function dc_client.get(dc_name, key)
-    if not key or "" == key then
-        WARN("dc get key empty.")
+    if not key or "" == key or #key >= DC_KEY_MAX then
+        WARN("dc get key invalid (empty or too long).")
         return nil
     end
     local payload = OP_GET .. string.pack(">s2", key)
@@ -58,8 +60,8 @@ end
 ---@param key string key 字符串(非空)
 ---@return string? val 值字符串;超时返回 nil
 function dc_client.wait(dc_name, key)
-    if not key or "" == key then
-        WARN("dc wait key empty.")
+    if not key or "" == key or #key >= DC_KEY_MAX then
+        WARN("dc wait key invalid (empty or too long).")
         return nil
     end
     local payload = OP_WAIT .. string.pack(">s2", key)
@@ -75,8 +77,8 @@ end
 ---@param key string key 字符串(非空)
 ---@return integer erro ERR_OK 成功(key 不存在也返 OK);ERR_FAILED key 非法/超时
 function dc_client.del(dc_name, key)
-    if not key or "" == key then
-        WARN("dc del key empty.")
+    if not key or "" == key or #key >= DC_KEY_MAX then
+        WARN("dc del key invalid (empty or too long).")
         return ERR_FAILED
     end
     local payload = OP_DEL .. string.pack(">s2", key)

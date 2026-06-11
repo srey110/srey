@@ -277,7 +277,7 @@ uint64_t mysql_reader_datetime(mysql_reader_ctx *reader, const char *name, int32
         return ts;
     } else {
         // 二进制协议：长度前缀 0=零值 4=仅日期 7=日期+时间 11=含微秒
-        struct tm dt = {0};
+        struct tm dt = { 0 };
         binary_ctx breader;
         binary_init(&breader, row->val.data, row->val.lens, 0);
         if (row->val.lens >= 4) {

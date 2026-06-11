@@ -173,6 +173,8 @@ static void _server_startup(task_ctx *task) {
     router_get(r, NULL, "/user/{id}",    _h_user,        NULL, 0);
     router_get(r, NULL, "/file/{path?}", _h_file,        NULL, 0);
     router_get(r, NULL, "/static/*",     _h_static,      NULL, 0);
+    // 参数段 + 末尾通配: 命中后通配前的 {id} 必须仍对 handler 可见
+    router_get(r, NULL, "/asset/{id}/*", _h_user,        NULL, 0);
     router_get(r, NULL, "/query",        _h_query,       NULL, 0);
     router_post(r, NULL, "/admin/stats",  _h_admin_stats, NULL, 0);
     router_get(r, NULL, "/forget",       _h_forget,      NULL, 0);
@@ -266,6 +268,21 @@ static int32_t _do_req(task_ctx *task, uint16_t port,
                  method, url, expect_code, (int32_t)st[1].lens, (char *)st[1].data);
         goto done;
     }
+    // 响应头里 Content-Length 必须唯一 (router 曾手写一次 + http_pack_content 再写一次)
+    uint32_t nheader = http_nheader(resp);
+    int32_t clcnt = 0;
+    uint32_t hi;
+    http_header_ctx *hd;
+    for (hi = 0; hi < nheader; hi++) {
+        hd = http_header_at(resp, hi);
+        if (buf_compare(&hd->key, "Content-Length", sizeof("Content-Length") - 1)) {
+            clcnt++;
+        }
+    }
+    if (1 != clcnt) {
+        LOG_WARN("router test: %s %s expected 1 Content-Length header, got %d.", method, url, clcnt);
+        goto done;
+    }
     if (NULL != expect_body) {
         size_t dlen;
         void *body = http_data(resp, &dlen);
@@ -282,7 +299,7 @@ done:
     return rtn;
 }
 
-// 18 项断言依次跑, 任一失败都 bad 置位; 全部通过返 ERR_OK
+// 19 项断言依次跑, 任一失败都 bad 置位; 全部通过返 ERR_OK
 // 每次 _do_req 之间插 task_isclosing 早返, SIGINT 时尽快收尾
 // bad 用位掩码记录, 单次跑不会复用, 但若失败时 LOG_WARN 输出可看到哪几位出错
 static int32_t _run_all(task_ctx *task, uint16_t port) {
@@ -357,6 +374,9 @@ static int32_t _run_all(task_ctx *task, uint16_t port) {
     if (task_isclosing(task)) return ERR_FAILED;
     // [17] 65 段请求:截断到 64 段后不得误命中 64 段路由(overflow → 404)
     if (ERR_OK != _do_req(task, port, "GET", p65, NULL, NULL, 404, NULL)) bad |= (1 << 17);
+    if (task_isclosing(task)) return ERR_FAILED;
+    // [18] 参数段 + 末尾通配: /asset/{id}/* 命中后 {id} 仍可取 (通配不吞掉 params_n)
+    if (ERR_OK != _do_req(task, port, "GET", "/asset/42/x", NULL, NULL, 200, "42")) bad |= (1 << 18);
 
     return 0 == bad ? ERR_OK : ERR_FAILED;
 }

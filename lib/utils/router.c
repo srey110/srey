@@ -212,6 +212,7 @@ static int32_t _router_match_path(const router_seg *rsegs, int32_t rn,
         const router_seg *seg = &rsegs[ri];
         if (ROUTER_SEG_WILD == seg->t) {
             // '*' 一旦出现, 后续请求段任意, 直接匹配成功
+            ctx->params_n = pn;
             return 1;
         } else if (ROUTER_SEG_LIT == seg->t) {
             // 字面量必须长度相同且内容全等
@@ -547,9 +548,6 @@ static void _router_send_resp(router_req *ctx, int32_t code, const char *content
     if (NULL != content_type) {
         http_pack_head(&bw, "Content-Type", content_type);
     }
-    char clbuf[32];
-    SNPRINTF(clbuf, sizeof(clbuf), "%zu", body_len);
-    http_pack_head(&bw, "Content-Length", clbuf);
     // extra 的 key/value 是 buf_ctx (不以 \0 结尾), http_pack_head 要 C 串, 复制 + 加 \0
     char k[128];
     char v[256];
@@ -593,9 +591,6 @@ static void _router_send_simple(router_req *ctx, int32_t code, const char *body)
     http_pack_resp(&bw, code);
     http_pack_head(&bw, "Content-Type", "text/plain; charset=utf-8");
     size_t blen = NULL == body ? 0 : strlen(body);
-    char clbuf[32];
-    SNPRINTF(clbuf, sizeof(clbuf), "%zu", blen);
-    http_pack_head(&bw, "Content-Length", clbuf);
     http_pack_content(&bw, (void *)(NULL == body ? "" : body), blen);
     ev_send(&ctx->task->loader->netev, ctx->fd, ctx->skid, bw.data, bw.offset, 0);
     ctx->responded = 1;
@@ -615,7 +610,7 @@ void router_dispatch(router_ctx *r, task_ctx *task,
     router_method m = _router_method_str_to_mask(st[0].data, st[0].lens);
     if (0 == m) {
         // 方法不在我们已知列表 → 405; 因为 ctx 尚未完整初始化, 用临时 ctx 仅承载发响应必需字段
-        router_req tmpctx = {0};
+        router_req tmpctx = { 0 };
         tmpctx.task = task;
         tmpctx.fd = fd;
         tmpctx.skid = skid;
@@ -624,7 +619,7 @@ void router_dispatch(router_ctx *r, task_ctx *task,
         return;
     }
     // 解析 URL: path 用于段匹配, query 落 ctx->url_storage 供 router_req_query 取
-    router_req ctx = {0};
+    router_req ctx = { 0 };
     ctx.task = task;
     ctx.fd = fd;
     ctx.skid = skid;

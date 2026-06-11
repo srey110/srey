@@ -618,30 +618,27 @@ static void _olp_on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD byte
 int32_t ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud,
     SOCKET *fd, uint64_t *skid) {
     ASSERTAB(NULL != cbs && NULL != cbs->r_cb, ERRSTR_NULLP);
-    netaddr_ctx addr;
-    if (ERR_OK != netaddr_set(&addr, ip, port)) {
+    netaddr_ctx *addr;
+    MALLOC(addr, sizeof(netaddr_ctx));
+    if (ERR_OK != netaddr_set(addr, ip, port)) {
         LOG_ERROR("netaddr_set %s:%d, %s", ip, port, ERRORSTR(ERRNO));
         UD_FREE(cbs->ud_free, ud);
+        FREE(addr);
         return ERR_FAILED;
     }
-    *fd = _evpub_create_sock(SOCK_STREAM, netaddr_family(&addr));
+    *fd = _evpub_create_sock(SOCK_STREAM, netaddr_family(addr));
     if (INVALID_SOCK == *fd) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         UD_FREE(cbs->ud_free, ud);
+        FREE(addr);
         return ERR_FAILED;
     }
     sock_reuseaddr(*fd);
     _evpub_nodelay_nonblock(*fd);
-    if (ERR_OK != _olp_trybind(*fd, netaddr_family(&addr))) {
+    if (ERR_OK != _olp_trybind(*fd, netaddr_family(addr))) {
         CLOSE_SOCK((*fd));
         UD_FREE(cbs->ud_free, ud);
-        return ERR_FAILED;
-    }
-    watcher_ctx *watcher = GET_PTR(ctx->watcher, ctx->nthreads, (*fd));
-    if (ERR_OK != _iocp_join(watcher, *fd)) {
-        LOG_ERROR("%s", ERRORSTR(ERRNO));
-        CLOSE_SOCK((*fd));
-        UD_FREE(cbs->ud_free, ud);
+        FREE(addr);
         return ERR_FAILED;
     }
     sock_ctx *skctx = _new_sk(*fd, cbs, ud);
@@ -654,12 +651,23 @@ int32_t ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const u
 #else
     (void)evssl;
 #endif
-    _cmd_add(watcher, skctx);
-    if (ERR_OK != _olp_post_connect(oltcp, &addr)) {
-        _cmd_remove(watcher, *fd, *skid);
-        return ERR_FAILED;
-    }
+    _cmd_connect(ctx, skctx, addr);
     return ERR_OK;
+}
+void _iocp_add_conn_inloop(watcher_ctx *watcher, struct sock_ctx *skctx, netaddr_ctx *addr) {
+    overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
+    if (ERR_OK != _iocp_join(watcher, skctx->fd)) {
+        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        _olp_call_conn_cb(watcher->ev, oltcp, ERR_FAILED);
+        pool_push(&watcher->pool, &oltcp->ol_r);
+        return;
+    }
+    _evpub_sockel_add(watcher, skctx);
+    if (ERR_OK != _olp_post_connect(oltcp, addr)) {
+        _olp_call_conn_cb(watcher->ev, oltcp, ERR_FAILED);
+        _evpub_sockel_remove(watcher, oltcp->ol_r.fd);
+        pool_push(&watcher->pool, &oltcp->ol_r);
+    }
 }
 // 提交一个AcceptEx异步接受请求（创建新socket并挂起等待连接）
 static int32_t _olp_post_accept(overlap_acpt_ctx *olacp) {
@@ -917,17 +925,20 @@ static void _olp_on_udp_close_r(watcher_ctx *watcher, overlap_udp_ctx *oludp) {
 // WSARecvFrom完成回调：触发recvfrom回调并重新提交接收
 static void _olp_on_recvfrom_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
     overlap_udp_ctx *oludp = UPCAST(skctx, overlap_udp_ctx, ol_r);
-    // 0 字节 datagram 是合法 UDP 报文（UDP 无连接，bytes==0 不代表对端关闭），
-    // 仅 OVERLAPPED.Internal 报错才视为真错误；0 字节由 _olp_call_recvfrom_cb 过滤不向上抛
-    if (0 != oludp->ol_r.overlapped.Internal) {
-        BIT_SET(oludp->status, STATUS_ERROR);
+    if (BIT_CHECK(oludp->status, STATUS_ERROR)) {
         _olp_on_udp_close_r(watcher, oludp);
         return;
     }
-    _olp_call_recvfrom_cb(watcher->ev, oludp, (size_t)bytes);
-    if (BIT_CHECK(oludp->status, STATUS_ERROR)) {//多处理一个数据包
-        _olp_on_udp_close_r(watcher, oludp);
-        return;
+    if (0 != oludp->ol_r.overlapped.Internal) {
+        // 超大 datagram WSAEMSGSIZE 截断等软错误：告警丢弃，不关 socket，重新提交接收（与 POSIX UDP 对齐）
+        LOG_WARN("UDP recvfrom error on fd %d, dropped (socket kept).", (int32_t)oludp->ol_r.fd);
+    } else {
+        _olp_call_recvfrom_cb(watcher->ev, oludp, (size_t)bytes);
+        //防止_olp_call_recvfrom_cb 里面关掉
+        if (BIT_CHECK(oludp->status, STATUS_ERROR)) {
+            _olp_on_udp_close_r(watcher, oludp);
+            return;
+        }
     }
     if (ERR_OK != _olp_post_recv_from(oludp)) {
         BIT_SET(oludp->status, STATUS_ERROR);
@@ -982,7 +993,7 @@ static void _olp_on_sendto_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes
     off_buf_ctx *sendbuf = queue_pop(&oludp->buf_s);
     oludp->wb_size -= sendbuf->lens;
     if (ERR_OK != _olp_post_sendto(oludp, sendbuf)) {
-        FREE(sendbuf->data);
+        _evpub_off_buf_release(sendbuf);
         BIT_REMOVE(oludp->status, STATUS_SENDING);
         _iocp_disconnect(&oludp->ol_r, 1);
     }
@@ -1011,7 +1022,7 @@ void _iocp_add_bufs_trysendto(sock_ctx *skctx, off_buf_ctx *buf) {
     off_buf_ctx *sendbuf = queue_pop(&oludp->buf_s);
     oludp->wb_size -= sendbuf->lens;
     if (ERR_OK != _olp_post_sendto(oludp, sendbuf)) {
-        FREE(sendbuf->data);
+        _evpub_off_buf_release(sendbuf);
         BIT_REMOVE(oludp->status, STATUS_SENDING);
         _iocp_disconnect(&oludp->ol_r, 1);
     }
@@ -1062,22 +1073,36 @@ int32_t ev_udp(ev_ctx *ctx, const char *ip, const uint16_t port, cbs_ctx *cbs, u
         UD_FREE(cbs->ud_free, ud);
         return ERR_FAILED;
     }
-    watcher_ctx *watcher = GET_PTR(ctx->watcher, ctx->nthreads, (*fd));
-    if (ERR_OK != _iocp_join(watcher, *fd)) {
-        LOG_ERROR("%s", ERRORSTR(ERRNO));
-        CLOSE_SOCK((*fd));
-        UD_FREE(cbs->ud_free, ud);
-        return ERR_FAILED;
-    }
     sock_ctx *skctx = _olp_new_udp(*fd, cbs, ud);
     overlap_udp_ctx *udp = UPCAST(skctx, overlap_udp_ctx, ol_r);
     *skid = udp->skid;
-    _cmd_add(watcher, skctx);
-    if (ERR_OK != _olp_post_recv_from(udp)) {
-        _cmd_remove(watcher, *fd, *skid);
-        return ERR_FAILED;
-    }
+    _cmd_add(GET_PTR(ctx->watcher, ctx->nthreads, (*fd)), skctx);
     return ERR_OK;
+}
+void _iocp_add_fd_inloop(watcher_ctx *watcher, sock_ctx *skctx) {
+    if (ERR_OK != _iocp_join(watcher, skctx->fd)) {
+        LOG_ERROR("%s", ERRORSTR(ERRNO));
+        if (SOCK_STREAM == skctx->type) {
+            pool_push(&watcher->pool, skctx);
+        } else {
+            _iocp_free_udp(skctx);
+        }
+        return;
+    }
+    _evpub_sockel_add(watcher, skctx);
+    if (SOCK_STREAM == skctx->type) {
+        overlap_tcp_ctx *tcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
+        if (ERR_OK != _iocp_post_recv(&tcp->ol_r, &tcp->bytes_r, &tcp->flag, &tcp->wsabuf, 1)) {
+            _evpub_sockel_remove(watcher, skctx->fd);
+            pool_push(&watcher->pool, skctx);
+        }
+    } else {
+        overlap_udp_ctx *udp = UPCAST(skctx, overlap_udp_ctx, ol_r);
+        if (ERR_OK != _olp_post_recv_from(udp)) {
+            _evpub_sockel_remove(watcher, skctx->fd);
+            _iocp_free_udp(skctx);
+        }
+    }
 }
 
 #endif

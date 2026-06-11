@@ -61,10 +61,8 @@ static void _uev_cmd_loop(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
 static void _uev_init_callback(void) {
     cmd_cbs[CMD_STOP]    = _on_cmd_stop;
     cmd_cbs[CMD_DISCONN] = _on_cmd_disconn;
-    cmd_cbs[CMD_LSN]     = _on_cmd_lsn;
-    cmd_cbs[CMD_UNLSN]   = _on_cmd_unlsn;
-    cmd_cbs[CMD_CONN]    = _on_cmd_conn;
     cmd_cbs[CMD_ADDACP]  = _on_cmd_addacp;
+    cmd_cbs[CMD_CONN]    = _on_cmd_conn;
     cmd_cbs[CMD_ADD]     = _on_cmd_add;
     cmd_cbs[CMD_SEND]    = _on_cmd_send;
     cmd_cbs[CMD_SEND_MULTI] = _on_cmd_send_multi;
@@ -72,6 +70,8 @@ static void _uev_init_callback(void) {
     cmd_cbs[CMD_UDP_OPT] = _on_cmd_udp_opt;
     cmd_cbs[CMD_SETUD]   = _on_cmd_setud;
     cmd_cbs[CMD_SSL]     = _on_cmd_ssl;
+    cmd_cbs[CMD_LSN]     = _on_cmd_lsn;
+    cmd_cbs[CMD_UNLSN]   = _on_cmd_unlsn;
     cmd_cbs[CMD_LSN_UNREF] = _on_cmd_lsn_unref;
 }
 // 将命令管道读端注册到事件循环（读事件触发_uev_cmd_loop）
@@ -102,7 +102,7 @@ static void _uev_check_changes(watcher_ctx *watcher) {
 #endif
 int32_t _uev_add_event(watcher_ctx *watcher, SOCKET fd, int32_t *events, int32_t ev, void *arg) {
 #if defined(EV_EPOLL)
-    events_t epev = {0};
+    events_t epev = { 0 };
     epev.data.ptr = arg;
     BIT_SET(ev, (*events));
     if (BIT_CHECK(ev, EVENT_READ)) {
@@ -186,7 +186,7 @@ int32_t _uev_add_event(watcher_ctx *watcher, SOCKET fd, int32_t *events, int32_t
 }
 void _uev_del_event(watcher_ctx *watcher, SOCKET fd, int32_t *events, int32_t ev, void *arg) {
 #if defined(EV_EPOLL)
-    events_t epev = {0};
+    events_t epev = { 0 };
     epev.data.ptr = arg;
     BIT_REMOVE((*events), ev);
     if (0 == (*events)) {
@@ -586,7 +586,11 @@ static void _uev_free_pipe(watcher_ctx *watcher) {
                 break;
             case CMD_ADD:
                 skctx = (sock_ctx *)cmds[j].arg;
-                _uev_free_udp(skctx);
+                if (SOCK_STREAM == skctx->type) {
+                    _free_sk(skctx);
+                } else {
+                    _uev_free_udp(skctx);
+                }
                 break;
             case CMD_UNLSN:
                 // CMD_UNLSN：减 _cmd_listen 时建立的每 watcher 监听占位 ref

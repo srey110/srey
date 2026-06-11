@@ -18,6 +18,10 @@ runner.run("crypt", function(t)
         t:check(not enc:find(" ", 1, true), "url encode no space")
         t:check(enc:find("%%", 1) ~= nil, "url encode has %")
         t:eq(raw, url.decode(enc), "url round-trip")
+        -- 1024 字节无转义串恰好命中 LUAL_BUFFERSIZE 边界；url_decode 在 data[lens] 写 '\0'，
+        -- binding 缓冲须 size+1，否则越界 1 字节(ASan 下暴露)
+        local big = string.rep("a", 1024)
+        t:eq(big, url.decode(big), "url.decode 1024B no-escape")
     end
     do
         -- URL parse：解析 scheme/host/port/path/param

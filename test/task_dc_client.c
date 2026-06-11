@@ -196,6 +196,28 @@ static int32_t _test_set_null(task_ctx *task) {
     return ERR_OK;
 }
 
+// 子段 9:超长 key 早返 — client helper 校验 key 长度 >= DC_KEY_MAX 时不下发(mirror unit_dc_client.lua)
+static int32_t _test_key_too_long(task_ctx *task) {
+    // DC_KEY_MAX 字节 key(达到上限),helper 应早返不下发到 datacenter
+    char long_key[DC_KEY_MAX + 1];
+    memset(long_key, 'k', DC_KEY_MAX);
+    long_key[DC_KEY_MAX] = '\0';
+    if (ERR_FAILED != coro_dc_set(task, _dc_name, long_key, "v", 1)) {
+        LOG_ERROR("dc set long key: expect ERR_FAILED");
+        return ERR_FAILED;
+    }
+    size_t sz;
+    if (NULL != coro_dc_get(task, _dc_name, long_key, &sz)) {
+        LOG_ERROR("dc get long key: expect NULL");
+        return ERR_FAILED;
+    }
+    if (ERR_FAILED != coro_dc_del(task, _dc_name, long_key)) {
+        LOG_ERROR("dc del long key: expect ERR_FAILED");
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+
 static void _startup(task_ctx *task) {
     task_dc_client_args *arg = (task_dc_client_args *)coro_get_arg(task);
     _dc_name = task_find_name(task->loader, arg->dc_name);
@@ -208,9 +230,10 @@ static void _startup(task_ctx *task) {
     if (ERR_OK != _test_delete(task))              { return; }
     if (ERR_OK != _test_list_keys(task))           { return; }
     if (ERR_OK != _test_set_null(task))            { return; }
+    if (ERR_OK != _test_key_too_long(task))        { return; }
 
     *(arg->ok) = 1;
-    LOG_INFO("dc_client tested: 8/8 subtests passed.");
+    LOG_INFO("dc_client tested: 9/9 subtests passed.");
 }
 
 void task_dc_client_start(loader_ctx *loader, const char *base_name, const char *dc_name, int32_t *ok) {

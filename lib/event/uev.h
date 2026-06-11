@@ -96,19 +96,19 @@ int32_t _uev_add_event(watcher_ctx *watcher, SOCKET fd, int32_t *events, int32_t
 void _uev_del_event(watcher_ctx *watcher, SOCKET fd, int32_t *events, int32_t ev, void *arg);
 
 // 在事件循环内完成监听socket的注册
-void _uev_add_lsn_inloop(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx);
+void _uev_add_lsn_inloop(watcher_ctx *watcher, sock_ctx *skctx);
 // 在事件循环内取消监听，引用计数归零后释放listener_ctx
 void _uev_remove_lsn(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn);
 // 尝试对已有连接启动SSL握手（支持延迟到发送完毕）
 void _uev_try_ssl_exchange(watcher_ctx *watcher, sock_ctx *skctx, struct evssl_ctx *evssl, int32_t client);
 // 在事件循环内将连接中的fd注册可写事件（等待connect完成）
-void _uev_add_conn_inloop(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx);
+void _uev_add_conn_inloop(watcher_ctx *watcher, sock_ctx *skctx);
 // 在事件循环内将accept到的fd完成初始化并注册读事件
 void _uev_add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn);
 // 将数据加入发送队列，并确保注册写事件
 void _uev_add_write_inloop(watcher_ctx *watcher, sock_ctx *skctx, off_buf_ctx *buf);
-// 在事件循环内将UDP socket注册读事件
-void _uev_add_udp_inloop(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx);
+// 在事件循环内将socket注册读事件（TCP/UDP通用）
+void _uev_add_fd_inloop(watcher_ctx *watcher, sock_ctx *skctx);
 
 // shutdown socket读端（触发关闭流程）
 void _uev_sk_shutdown(sock_ctx *skctx);

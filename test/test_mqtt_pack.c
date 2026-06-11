@@ -857,8 +857,55 @@ static void test_mqtt_malformed_reject(CuTest *tc) {
 
 /* ======================================================================= */
 
+/* 空 clientid 的 CONNECT —— binary_set_string 的 lens==0 重载曾多写 1 个 NUL，
+ * 使 remaining length 与实际 body 字节不符、解包后 buffer 残留 1 字节导致后续帧错位 */
+static void test_mqtt_connect_empty_clientid(CuTest *tc) {
+    size_t lens = 0;
+    char *pack = mqtt_pack_connect(MQTT_311, 1, 60,
+        "" /*空 clientid，MQTT 3.1.1 §3.1.3.1 合法*/, NULL, NULL, 0,
+        NULL, NULL, 0, 0, 0,
+        NULL, NULL, &lens);
+    CuAssertPtrNotNull(tc, pack);
+    /* 可变头 10 + clientid(长度前缀 2 + 体 0) = remaining 12；总字节 1+1+12=14，修复前多写 NUL 会得 15 */
+    CuAssertIntEquals(tc, 12, (uint8_t)pack[1]);
+    CuAssertIntEquals(tc, 14, (int32_t)lens);
+
+    buffer_ctx buf;
+    _mq_to_buf(&buf, pack, lens);
+    ud_cxt ud;
+    ZERO(&ud, sizeof(ud));
+    ud.status = _MQ_INIT;
+    int32_t status = PROT_INIT;
+    mqtt_pack_ctx *p = mqtt_unpack(0 /*server*/, &buf, &ud, &status);
+    CuAssertPtrNotNull(tc, p);
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    /* 解包完整消费整个包，无残留（修复前残留 1 个 NUL）*/
+    CuAssertIntEquals(tc, 0, (int32_t)buffer_size(&buf));
+    _mqtt_pkfree(p);
+    _mqtt_udfree(&ud);
+    buffer_free(&buf);
+
+    /* MQTT 3.1.1 [MQTT-3.1.3-7]：空 clientid + cleanstart=0 是禁止组合，必须被拒（返回 NULL）*/
+    size_t rejlens = 0;
+    char *rej = mqtt_pack_connect(MQTT_311, 0 /*cleanstart=0*/, 60,
+        "", NULL, NULL, 0,
+        NULL, NULL, 0, 0, 0,
+        NULL, NULL, &rejlens);
+    CuAssertTrue(tc, NULL == rej);
+
+    /* NULL clientid 等价于零长度：cleanstart=1 时正常打包(cidlens=0)，全程不解引用 NULL */
+    size_t nlens = 0;
+    char *npack = mqtt_pack_connect(MQTT_311, 1, 60,
+        NULL, NULL, NULL, 0,
+        NULL, NULL, 0, 0, 0,
+        NULL, NULL, &nlens);
+    CuAssertPtrNotNull(tc, npack);
+    CuAssertIntEquals(tc, 14, (int32_t)nlens);
+    FREE(npack);
+}
 void test_mqtt_pack(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mqtt_connect_311);
+    SUITE_ADD_TEST(suite, test_mqtt_connect_empty_clientid);
     SUITE_ADD_TEST(suite, test_mqtt_connect_50_full);
     SUITE_ADD_TEST(suite, test_mqtt_connack);
     SUITE_ADD_TEST(suite, test_mqtt_acks);

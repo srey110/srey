@@ -95,9 +95,12 @@ local _RANDSTR_LEN = #_RANDSTR_CHARS
 
 ---生成指定长度的随机字母数字字符串（字符集 0-9 / a-z / A-Z），由 srey.utils.csprng_rand 提供 CSPRNG
 ---@param cnt integer 字符串长度
----@return string str 随机字符串
+---@return string? str 随机字符串；CSPRNG 失败（熵未就绪等）返回 nil
 function randstr(cnt)
     local bytes = utils.csprng_rand(cnt)
+    if not bytes then
+        return nil
+    end
     local rtn = {}
     for i = 1, cnt do
         rtn[i] = _RANDSTR_CHARS[(string.byte(bytes, i) % _RANDSTR_LEN) + 1]

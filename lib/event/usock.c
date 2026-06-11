@@ -599,16 +599,16 @@ int32_t ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const u
 #else
     (void)evssl;
 #endif
-    _cmd_connect(ctx, *fd, skctx);
+    _cmd_connect(ctx, skctx, NULL);
     return ERR_OK;
 }
-void _uev_add_conn_inloop(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx) {
+void _uev_add_conn_inloop(watcher_ctx *watcher, sock_ctx *skctx) {
     _evpub_sockel_add(watcher, skctx);
-    if (ERR_OK != _uev_add_event(watcher, fd, &skctx->events, EVENT_WRITE, skctx)) {
+    if (ERR_OK != _uev_add_event(watcher, skctx->fd, &skctx->events, EVENT_WRITE, skctx)) {
         tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
         _usk_call_conn_cb(watcher->ev, tcp, ERR_FAILED);
         skctx->ev_cb = _usk_on_rw_cb;
-        _evpub_sockel_remove(watcher, fd);
+        _evpub_sockel_remove(watcher, skctx->fd);
         pool_push(&watcher->pool, skctx);
     }
 }
@@ -747,16 +747,16 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
     array_push_back(&ctx->arrlsn, &lsn);
     spin_unlock(&ctx->spin);
     for (i = 0; i < lsn->nlsn; i++) {
-        _cmd_listen(&ctx->watcher[i], lsn->lsnsock[i].sock.fd, &lsn->lsnsock[i].sock);
+        _cmd_listen(&ctx->watcher[i], &lsn->lsnsock[i].sock);
     }
     SET_PTR(id, lsn->id);
     return ERR_OK;
 }
-void _uev_add_lsn_inloop(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx) {
+void _uev_add_lsn_inloop(watcher_ctx *watcher, sock_ctx *skctx) {
     _evpub_sockel_add(watcher, skctx);
-    if (ERR_OK != _uev_add_event(watcher, fd, &skctx->events, EVENT_READ, skctx)) {
+    if (ERR_OK != _uev_add_event(watcher, skctx->fd, &skctx->events, EVENT_READ, skctx)) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
-        _evpub_sockel_remove(watcher, fd);
+        _evpub_sockel_remove(watcher, skctx->fd);
     }
 }
 void _uev_freelsn(listener_ctx *lsn) {
@@ -896,6 +896,12 @@ static int32_t _usk_on_udp_rcb(watcher_ctx *watcher, udp_ctx *udp) {
         udp->msg.msg_namelen = netaddr_size(&udp->addr);
         rtn = (int32_t)recvmsg(udp->sock.fd, &udp->msg, 0);
         if (rtn >= 0) {
+            if (udp->msg.msg_flags & MSG_TRUNC) {
+                // datagram 超过 MAX_RECVFROM_SIZE 被截断：残缺数据不上抛，告警丢弃后继续收（不关 socket）
+                LOG_WARN("UDP datagram truncated on fd %d (exceeds %d bytes), dropped.",
+                         (int32_t)udp->sock.fd, MAX_RECVFROM_SIZE);
+                continue;
+            }
             // 0 字节是合法 UDP datagram 不视为对端关闭；由 _usk_call_recvfrom_cb 过滤不向上抛
             _usk_call_recvfrom_cb(watcher->ev, udp, (size_t)rtn);
             continue;
@@ -1035,12 +1041,16 @@ int32_t ev_udp(ev_ctx *ctx, const char *ip, const uint16_t port, cbs_ctx *cbs, u
     _cmd_add(GET_PTR(ctx->watcher, ctx->nthreads, *fd), skctx);
     return ERR_OK;
 }
-void _uev_add_udp_inloop(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx) {
+void _uev_add_fd_inloop(watcher_ctx *watcher, sock_ctx *skctx) {
     _evpub_sockel_add(watcher, skctx);
-    if (ERR_OK != _uev_add_event(watcher, fd, &skctx->events, EVENT_READ, skctx)) {
+    if (ERR_OK != _uev_add_event(watcher, skctx->fd, &skctx->events, EVENT_READ, skctx)) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
-        _evpub_sockel_remove(watcher, fd);
-        _uev_free_udp(skctx);
+        _evpub_sockel_remove(watcher, skctx->fd);
+        if (SOCK_STREAM == skctx->type) {
+            pool_push(&watcher->pool, skctx);
+        } else {
+            _uev_free_udp(skctx);
+        }
         return;
     }
 }

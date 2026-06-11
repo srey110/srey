@@ -125,6 +125,7 @@ static int32_t _lbson_append_doc(lua_State *lua) {
     if (LUA_TSTRING == lua_type(lua, 3)) {
         doc = (char *)luaL_checklstring(lua, 3, &lens);
     } else {
+        LUACHECK_LUDATA(lua, 3);
         doc = lua_touserdata(lua, 3);
         lens = (size_t)luaL_checkinteger(lua, 4);
     }
@@ -147,6 +148,7 @@ static int32_t _lbson_append_arr(lua_State *lua) {
     if (LUA_TSTRING == lua_type(lua, 3)) {
         doc = (char *)luaL_checklstring(lua, 3, &lens);
     } else {
+        LUACHECK_LUDATA(lua, 3);
         doc = lua_touserdata(lua, 3);
         lens = (size_t)luaL_checkinteger(lua, 4);
     }
@@ -171,6 +173,7 @@ static int32_t _lbson_binary(lua_State *lua) {
     if (LUA_TSTRING == lua_type(lua, 4)) {
         data = (char *)luaL_checklstring(lua, 4, &lens);
     } else {
+        LUACHECK_LUDATA(lua, 4);
         data = lua_touserdata(lua, 4);
         lens = (size_t)luaL_checkinteger(lua, 5);
     }

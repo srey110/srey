@@ -33,7 +33,7 @@ static int32_t _popen_pipe(HANDLE pipe[2]) {
         CloseHandle(server);
         return ERR_FAILED;
     }
-    OVERLAPPED ovlpd = {0};
+    OVERLAPPED ovlpd = { 0 };
     ovlpd.hEvent = event;
     if (!ConnectNamedPipe(server, &ovlpd)) {
         int32_t err = GetLastError();
@@ -88,7 +88,7 @@ int32_t popen_startup(popen_ctx *ctx, const char *cmd, const char *mode) {
             return ERR_FAILED;
         }
     }
-    STARTUPINFO startup = {0};
+    STARTUPINFO startup = { 0 };
     startup.cb = sizeof(STARTUPINFO);
     startup.dwFlags = STARTF_USESHOWWINDOW | STARTF_USESTDHANDLES;
     startup.wShowWindow = SW_HIDE;

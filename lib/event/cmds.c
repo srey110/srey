@@ -62,7 +62,7 @@ void _send_cmd(watcher_ctx *watcher, cmd_ctx *cmd) {
 #endif//EV_IOCP
 }
 void _cmd_add_acpfd(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn) {
-    cmd_ctx cmd = {0};
+    cmd_ctx cmd = { 0 };
     cmd.cmd = CMD_ADDACP;
     cmd.fd = fd;
     cmd.arg = (uint64_t)lsn;
@@ -78,8 +78,25 @@ void _on_cmd_addacp(watcher_ctx *watcher, cmd_ctx *cmd) {
     _uev_qtn_freelsn(watcher, lsn);
 #endif
 }
+void _cmd_connect(ev_ctx *ctx, struct sock_ctx *skctx, void *arg) {
+    cmd_ctx cmd = { 0 };
+    cmd.cmd = CMD_CONN;
+    cmd.fd = skctx->fd;
+    cmd.arg = (uint64_t)skctx;
+    cmd.skid = (uint64_t)arg;
+    _SEND_CMD(ctx, cmd);
+}
+void _on_cmd_conn(watcher_ctx *watcher, cmd_ctx *cmd) {
+#ifdef EV_IOCP
+    netaddr_ctx *addr = (netaddr_ctx *)cmd->skid;
+    _iocp_add_conn_inloop(watcher, (sock_ctx *)cmd->arg, addr);
+    FREE(addr);
+#else
+    _uev_add_conn_inloop(watcher, (sock_ctx *)cmd->arg);
+#endif
+}
 void _cmd_add(watcher_ctx *watcher, sock_ctx *skctx) {
-    cmd_ctx cmd = {0};
+    cmd_ctx cmd = { 0 };
     cmd.cmd = CMD_ADD;
     cmd.arg = (uint64_t)skctx;
     _send_cmd(watcher, &cmd);
@@ -87,55 +104,23 @@ void _cmd_add(watcher_ctx *watcher, sock_ctx *skctx) {
 void _on_cmd_add(watcher_ctx *watcher, cmd_ctx *cmd) {
     sock_ctx *skctx = (sock_ctx *)cmd->arg;
 #ifdef EV_IOCP
-    _evpub_sockel_add(watcher, skctx);
+    _iocp_add_fd_inloop(watcher, skctx);
 #else
-    _uev_add_udp_inloop(watcher, skctx->fd, skctx);
+    _uev_add_fd_inloop(watcher, skctx);
 #endif
 }
-#ifdef EV_IOCP
-void _cmd_remove(watcher_ctx *watcher, SOCKET fd, uint64_t skid) {
-    cmd_ctx cmd = {0};
-    cmd.cmd = CMD_REMOVE;
-    cmd.fd = fd;
-    cmd.skid = skid;
-    _send_cmd(watcher, &cmd);
-}
-void _on_cmd_remove(watcher_ctx *watcher, cmd_ctx *cmd) {
-    sock_ctx *skctx = _evpub_sockel_get(watcher, cmd->fd);
-    if (NULL == skctx
-        || ERR_OK != _CHECK_SKID(skctx, cmd->skid)) {
-        return;
-    }
-    _evpub_sockel_remove(watcher, cmd->fd);
-    if (SOCK_STREAM == skctx->type) {
-        pool_push(&watcher->pool, skctx);
-    } else {
-        _iocp_free_udp(skctx);
-    }
-}
-#else
-void _cmd_connect(ev_ctx *ctx, SOCKET fd, sock_ctx *skctx) {
-    cmd_ctx cmd = {0};
-    cmd.cmd = CMD_CONN;
-    cmd.fd = fd;
-    cmd.arg = (uint64_t)skctx;
-    _SEND_CMD(ctx, cmd);
-}
-void _on_cmd_conn(watcher_ctx *watcher, cmd_ctx *cmd) {
-    _uev_add_conn_inloop(watcher, cmd->fd, (sock_ctx *)cmd->arg);
-}
-void _cmd_listen(watcher_ctx *watcher, SOCKET fd, sock_ctx *skctx) {
-    cmd_ctx cmd = {0};
+#ifndef EV_IOCP
+void _cmd_listen(watcher_ctx *watcher, sock_ctx *skctx) {
+    cmd_ctx cmd = { 0 };
     cmd.cmd = CMD_LSN;
-    cmd.fd = fd;
     cmd.arg = (uint64_t)skctx;
     _send_cmd(watcher, &cmd);
 }
 void _on_cmd_lsn(watcher_ctx *watcher, cmd_ctx *cmd) {
-    _uev_add_lsn_inloop(watcher, cmd->fd, (sock_ctx *)cmd->arg);
+    _uev_add_lsn_inloop(watcher, (sock_ctx *)cmd->arg);
 }
 void _cmd_unlisten(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn) {
-    cmd_ctx cmd = {0};
+    cmd_ctx cmd = { 0 };
     cmd.cmd = CMD_UNLSN;
     cmd.fd = fd;
     cmd.arg = (uint64_t)lsn;
@@ -145,7 +130,7 @@ void _on_cmd_unlsn(watcher_ctx *watcher, cmd_ctx *cmd) {
     _uev_remove_lsn(watcher, cmd->fd, (struct listener_ctx *)cmd->arg);
 }
 void _cmd_lsn_unref(watcher_ctx *watcher, struct listener_ctx *lsn) {
-    cmd_ctx cmd = {0};
+    cmd_ctx cmd = { 0 };
     cmd.cmd = CMD_LSN_UNREF;
     cmd.arg = (uint64_t)lsn;
     // cmd 不关联 fd, 任 watcher 接收即可
@@ -163,7 +148,7 @@ void ev_close(ev_ctx *ctx, SOCKET fd, uint64_t skid, int32_t immed) {
     if (INVALID_SOCK == fd) {
         return;
     }
-    cmd_ctx cmd = {0};
+    cmd_ctx cmd = { 0 };
     cmd.cmd = CMD_DISCONN;
     cmd.fd = fd;
     cmd.skid = skid;
@@ -478,7 +463,7 @@ void _on_cmd_udp_opt(watcher_ctx *watcher, cmd_ctx *cmd) {
     case UDP_OPT_JOIN:
     case UDP_OPT_LEAVE:
         if (AF_INET == family) {
-            struct ip_mreq mreq = {0};
+            struct ip_mreq mreq = { 0 };
             if (1 != inet_pton(AF_INET, arg->group_ip, &mreq.imr_multiaddr)) {
                 LOG_ERROR("inet_pton(IPv4 %s) failed.", arg->group_ip);
                 break;
@@ -493,7 +478,7 @@ void _on_cmd_udp_opt(watcher_ctx *watcher, cmd_ctx *cmd) {
             int32_t opt = (UDP_OPT_JOIN == arg->op) ? IP_ADD_MEMBERSHIP : IP_DROP_MEMBERSHIP;
             rtn = setsockopt(cmd->fd, IPPROTO_IP, opt, (const char *)&mreq, sizeof(mreq));
         } else if (AF_INET6 == family) {
-            struct ipv6_mreq mreq = {0};
+            struct ipv6_mreq mreq = { 0 };
             if (1 != inet_pton(AF_INET6, arg->group_ip, &mreq.ipv6mr_multiaddr)) {
                 LOG_ERROR("inet_pton(IPv6 %s) failed.", arg->group_ip);
                 break;

@@ -8,6 +8,7 @@ typedef enum EV_CMDS {
     CMD_STOP = 0x00,  // [ev_free → _on_cmd_stop] 停止事件循环
     CMD_DISCONN,      // [ev_close → _on_cmd_disconn] 断开连接
     CMD_ADDACP,       // [_cmd_add_acpfd → _on_cmd_addacp] 将accept到的fd加入事件循环
+    CMD_CONN,         // [_cmd_connect → _on_cmd_conn] 添加连接中的socket
     CMD_ADD,          // [_cmd_add → _on_cmd_add] 添加socket
     CMD_SEND,         // [ev_send → _on_cmd_send] 发送TCP数据（裸 payload）
     CMD_SEND_MULTI,   // [ev_send_multi → _on_cmd_send_multi] 多播发送 TCP 数据：cmd.arg = shared_data* 共享 pack 指针(N 个 fd 共享同一份 data,各 buf 释放时 ref--)
@@ -15,15 +16,10 @@ typedef enum EV_CMDS {
     CMD_UDP_OPT,      // [ev_udp_* → _on_cmd_udp_opt] UDP 多播 setsockopt：cmd.arg = udp_opt_arg* 参数包(JOIN/LEAVE/TTL/LOOP)
     CMD_SETUD,        // [ev_ud_* → _on_cmd_setud] 设置ud_cxt字段
     CMD_SSL,          // [ev_ssl → _on_cmd_ssl] 切换为SSL连接
-#ifdef EV_IOCP
-    CMD_REMOVE,       // [_cmd_remove → _on_cmd_remove] 从hashmap移除socket
-#else
+#ifndef EV_IOCP
     CMD_LSN,          // [_cmd_listen → _on_cmd_lsn] 添加监听socket
     CMD_UNLSN,        // [_cmd_unlisten → _on_cmd_unlsn] 取消监听
-    CMD_LSN_UNREF,    // [_cmd_lsn_unref → _on_cmd_lsn_unref] ev_unlisten 末尾减占位 ref: 由 worker 在 _uev_cmd_loop 内执行
-                      // 归零时入 watcher->qtn 隔离队列，避免主线程立即 FREE 跟 worker
-                      // 在 _uev_loop_event 内迭代 events[] 数组的同步竞态
-    CMD_CONN,         // [_cmd_connect → _on_cmd_conn] 添加连接中的socket
+    CMD_LSN_UNREF,    // [_cmd_lsn_unref → _on_cmd_lsn_unref] ev_unlisten 末尾减占位 ref
 #endif
 
     CMD_TOTAL,        // 命令总数（用于数组大小）
@@ -43,22 +39,17 @@ void _send_cmd(struct watcher_ctx *watcher, cmd_ctx *cmd);
 void _cmd_add_acpfd(struct watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn);
 // CMD_ADDACP命令处理：完成 accept fd 的初始化
 void _on_cmd_addacp(struct watcher_ctx *watcher, cmd_ctx *cmd);
+// 发送CMD_CONN命令，将连接中的sock_ctx交给对应watcher处理
+void _cmd_connect(ev_ctx *ctx, struct sock_ctx *skctx, void *arg);
+// CMD_CONN命令处理：在事件循环内注册连接中的socket
+void _on_cmd_conn(struct watcher_ctx *watcher, cmd_ctx *cmd);
 // 发送CMD_ADD命令
 void _cmd_add(struct watcher_ctx *watcher, struct sock_ctx *skctx);
 // CMD_ADD命令处理：添加 socket
 void _on_cmd_add(struct watcher_ctx *watcher, cmd_ctx *cmd);
-#ifdef EV_IOCP
-// 发送CMD_REMOVE命令，从watcher中移除fd
-void _cmd_remove(struct watcher_ctx *watcher, SOCKET fd, uint64_t skid);
-// CMD_REMOVE命令处理：从hashmap移除fd并回收到对象池
-void _on_cmd_remove(struct watcher_ctx *watcher, cmd_ctx *cmd);
-#else
-// 发送CMD_CONN命令，将连接中的sock_ctx交给对应watcher处理
-void _cmd_connect(ev_ctx *ctx, SOCKET fd, struct sock_ctx *skctx);
-// CMD_CONN命令处理：在事件循环内注册连接中的socket
-void _on_cmd_conn(struct watcher_ctx *watcher, cmd_ctx *cmd);
+#ifndef EV_IOCP
 // 发送CMD_LSN命令，通知watcher注册监听socket
-void _cmd_listen(struct watcher_ctx *watcher, SOCKET fd, struct sock_ctx *skctx);
+void _cmd_listen(struct watcher_ctx *watcher, struct sock_ctx *skctx);
 // CMD_LSN命令处理：在事件循环内完成监听注册
 void _on_cmd_lsn(struct watcher_ctx *watcher, cmd_ctx *cmd);
 // 发送CMD_UNLSN命令，通知watcher取消监听

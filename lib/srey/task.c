@@ -226,7 +226,7 @@ void task_free(task_ctx *task) {
 int32_t task_register(task_ctx *task, _task_startup_cb _startup, _task_closing_cb _closing) {
     task->_task_startup = _startup;
     task->_task_closing = _closing;
-    message_ctx startup = {0};
+    message_ctx startup = { 0 };
     startup.mtype = MSG_TYPE_STARTUP;
     rwlock_distr_wrlock(&task->loader->lckmaptasks);
     // 字符串名重名拒绝（句柄由 createid 保证唯一，maptasks 由 _task_map_set 的断言兜底）
@@ -244,7 +244,7 @@ int32_t task_register(task_ctx *task, _task_startup_cb _startup, _task_closing_c
     // loader 正在广播关闭时（closing=1），此 task 晚于广播注册，
     // 不会收到全局 CLOSING，须在此立即补发，确保 task 能正常退出
     if (ATOMIC_GET(&task->loader->closing)) {
-        message_ctx closing = {0};
+        message_ctx closing = { 0 };
         closing.mtype = MSG_TYPE_CLOSING;
         ATOMIC_SET(&task->closing, 1);
         _task_message_push(task, &closing);
@@ -254,7 +254,7 @@ int32_t task_register(task_ctx *task, _task_startup_cb _startup, _task_closing_c
 }
 void task_close(task_ctx *task) {
     if (ATOMIC_CAS(&task->closing, 0, 1)) {
-        message_ctx closing = {0};
+        message_ctx closing = { 0 };
         closing.mtype = MSG_TYPE_CLOSING;
         _task_message_push(task, &closing);
     }
@@ -364,7 +364,7 @@ static void _task_message_timeout_push(ud_cxt *ud) {
     if (NULL == task) {
         return;
     }
-    message_ctx msg = {0};
+    message_ctx msg = { 0 };
     msg.mtype = MSG_TYPE_TIMEOUT;
     msg.sess = ud->sess;
     msg.data = ud->context;
@@ -373,7 +373,7 @@ static void _task_message_timeout_push(ud_cxt *ud) {
 }
 void task_timeout(task_ctx *task, uint64_t sess, uint32_t ms, _timeout_cb _timeout) {
     ASSERTAB((NULL == _timeout && 0 != sess) || (NULL != _timeout && 0 == sess), "parameter error");
-    ud_cxt ud = {0};
+    ud_cxt ud = { 0 };
     ud.handle = task->handle;
     ud.loader = task->loader;
     ud.sess = sess;
@@ -382,7 +382,7 @@ void task_timeout(task_ctx *task, uint64_t sess, uint32_t ms, _timeout_cb _timeo
 }
 void task_request(task_ctx *dst, task_ctx *src, uint8_t reqtype, uint64_t sess, void *data, size_t size, int32_t copy) {
     ASSERTAB((NULL != src && 0 != sess) || (NULL == src && 0 == sess), "parameter error");
-    message_ctx msg = {0};
+    message_ctx msg = { 0 };
     msg.mtype = MSG_TYPE_REQUEST;
     msg.pktype = reqtype;
     if (NULL != src) {
@@ -404,7 +404,7 @@ void task_request(task_ctx *dst, task_ctx *src, uint8_t reqtype, uint64_t sess, 
     _task_message_push(dst, &msg);
 }
 void task_response(task_ctx *dst, uint64_t sess, int32_t erro, void *data, size_t size, int32_t copy) {
-    message_ctx msg = {0};
+    message_ctx msg = { 0 };
     msg.mtype = MSG_TYPE_RESPONSE;
     msg.sess = sess;
     msg.erro = erro;
@@ -458,7 +458,7 @@ int32_t task_multi_request(task_ctx *dsts[], int32_t n, task_ctx *src, uint8_t r
     }
     ATOMIC_SET(&shared->ref, valid);
     // 投递 N 条 message：共用 shared，_message_clean 走 shared 分支 ref-- 归 0 才 FREE
-    message_ctx msg = {0};
+    message_ctx msg = { 0 };
     msg.mtype = MSG_TYPE_REQUEST;
     msg.pktype = reqtype;
     if (NULL != src) {
@@ -489,7 +489,7 @@ static int32_t _task_net_accept(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud
     }
     int32_t rtn = prots_accepted(ev, fd, skid, ud);
     if (ERR_OK == rtn) {
-        message_ctx msg = {0};
+        message_ctx msg = { 0 };
         msg.mtype = MSG_TYPE_ACCEPT;
         msg.pktype = ud->pktype;
         msg.fd = fd;
@@ -502,14 +502,14 @@ static int32_t _task_net_accept(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud
 int32_t _message_handshaked_push(SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud, int32_t erro, void *data, size_t lens) {
     task_ctx *task = task_grab(ud->loader, ud->handle);
     if (NULL == task) {
-        message_ctx tmp = {0};
+        message_ctx tmp = { 0 };
         tmp.mtype = MSG_TYPE_HANDSHAKED;
         tmp.pktype = ud->pktype;
         tmp.data = data;
         _message_clean(&tmp);
         return ERR_FAILED;
     }
-    message_ctx msg = {0};
+    message_ctx msg = { 0 };
     msg.mtype = MSG_TYPE_HANDSHAKED;
     msg.pktype = ud->pktype;
     msg.fd = fd;
@@ -530,7 +530,7 @@ static void _task_net_recv(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
         ev_close(ev, fd, skid, 1);
         return;
     }
-    message_ctx msg = {0};
+    message_ctx msg = { 0 };
     msg.mtype = MSG_TYPE_RECV;
     msg.pktype = ud->pktype;
     msg.fd = fd;
@@ -582,7 +582,7 @@ static void _task_net_send(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
         ev_close(ev, fd, skid, 1);
         return;
     }
-    message_ctx msg = {0};
+    message_ctx msg = { 0 };
     msg.mtype = MSG_TYPE_SEND;
     msg.pktype = ud->pktype;
     msg.fd = fd;
@@ -600,7 +600,7 @@ static int32_t _task_net_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int
     }
     int32_t rtn = prots_ssl_exchanged(ev, fd, skid, client, ud, ssl);
     if (ERR_OK == rtn) {
-        message_ctx msg = {0};
+        message_ctx msg = { 0 };
         msg.mtype = MSG_TYPE_SSLEXCHANGED;
         msg.pktype = ud->pktype;
         msg.fd = fd;
@@ -619,7 +619,7 @@ static void _task_net_close(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client
     if (NULL == task) {
         return;
     }
-    message_ctx msg = {0};
+    message_ctx msg = { 0 };
     msg.mtype = MSG_TYPE_CLOSE;
     msg.pktype = ud->pktype;
     msg.fd = fd;
@@ -632,11 +632,11 @@ static void _task_net_close(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client
 }
 int32_t task_listen(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
     const char *ip, uint16_t port, uint64_t *id, int32_t netev) {
-    ud_cxt ud = {0};
+    ud_cxt ud = { 0 };
     ud.pktype = pktype;
     ud.handle = task->handle;
     ud.loader = task->loader;
-    cbs_ctx cbs = {0};
+    cbs_ctx cbs = { 0 };
     if (BIT_CHECK(netev, NETEV_ACCEPT)) {
         cbs.acp_cb = _task_net_accept;
     }
@@ -662,7 +662,7 @@ static int32_t _task_net_connect(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t e
     if (ERR_OK != rtn) {
         err = rtn;
     }
-    message_ctx msg = {0};
+    message_ctx msg = { 0 };
     msg.mtype = MSG_TYPE_CONNECT;
     msg.pktype = ud->pktype;
     msg.fd = fd;
@@ -675,12 +675,12 @@ static int32_t _task_net_connect(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t e
 }
 int32_t task_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl, const char *ip, uint16_t port, int32_t netev, void *extra,
     SOCKET *fd, uint64_t *skid) {
-    ud_cxt ud = {0};
+    ud_cxt ud = { 0 };
     ud.pktype = pktype;
     ud.handle = task->handle;
     ud.loader = task->loader;
     ud.context = extra;
-    cbs_ctx cbs = {0};
+    cbs_ctx cbs = { 0 };
     if (BIT_CHECK(netev, NETEV_SEND)) {
         cbs.s_cb = _task_net_send;
     }
@@ -701,7 +701,7 @@ static void _task_net_recvfrom(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, 
         ev_close(ev, fd, skid, 1);
         return;
     }
-    message_ctx msg = {0};
+    message_ctx msg = { 0 };
     msg.mtype = MSG_TYPE_RECVFROM;
     msg.pktype = PACK_NONE; // UDP 路径透传原始数据，避免 _message_clean→prots_pkfree 进入特定协议释放路径
     msg.fd = fd;
@@ -718,10 +718,10 @@ static void _task_net_recvfrom(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, 
     task_ungrab(task);
 }
 int32_t task_udp(task_ctx *task, const char *ip, uint16_t port, SOCKET *fd, uint64_t *skid) {
-    ud_cxt ud = {0};
+    ud_cxt ud = { 0 };
     ud.handle = task->handle;
     ud.loader = task->loader;
-    cbs_ctx cbs = {0};
+    cbs_ctx cbs = { 0 };
     cbs.rf_cb = _task_net_recvfrom;
     cbs.ud_free = prots_udfree;
     return ev_udp(&task->loader->netev, ip, port, &cbs, &ud, fd, skid);

@@ -3,6 +3,9 @@
 
 #include "srey/coro.h"
 
+// key 最大长度上限(字节,不含 NUL 终止);服务端 keybuf 栈缓冲容量,客户端编码前据此拒绝超长 key
+#define DC_KEY_MAX 512
+
 /// <summary>
 /// 注册 DataCenter task service。
 /// 在 loader_init 之后、业务 task 启动之前调用一次,name 由 config.json 的 dc_name 字段决定,默认 "datacenter",空串表示不启动。
@@ -50,13 +53,13 @@ void *coro_dc_wait(task_ctx *task, name_t dc_name, const char *key, size_t *size
 /// <returns>ERR_OK 成功(key 不存在也返 OK)</returns>
 int32_t coro_dc_del(task_ctx *task, name_t dc_name, const char *key);
 /// <summary>
-/// 列出全部 key(换行 \n 分隔)。调试用,生产 key 量大时谨慎调。
+/// 列出全部 key。调试用,生产 key 量大时谨慎调。
 /// 必须在协程中调用。
 /// </summary>
 /// <param name="task">当前 task</param>
 /// <param name="dc_name">DataCenter task name</param>
-/// <param name="size">出参:返回 buffer 字节数(含末尾 \n)</param>
-/// <returns>换行分隔的 key 列表 buffer;空时 size=0 返回 NULL;指针下次 yield 前有效</returns>
+/// <param name="size">出参:返回 buffer 字节数</param>
+/// <returns>key 列表 buffer,每条格式 | u16 klen(大端) | key |;空时 size=0 返回 NULL;指针下次 yield 前有效</returns>
 void *coro_dc_keys(task_ctx *task, name_t dc_name, size_t *size);
 /// <summary>
 /// 写入或覆盖 KV;不挂起,可在非协程上下文调用。sess=0 fire-and-forget;sess!=0 业务在 _response 收 OK 确认。
@@ -99,7 +102,7 @@ int32_t dc_get(task_ctx *task, name_t dc_name, uint64_t sess, const char *key);
 /// <returns>ERR_OK 成功投递;ERR_FAILED datacenter 不可达</returns>
 int32_t dc_wait(task_ctx *task, name_t dc_name, uint64_t sess, const char *key);
 /// <summary>
-/// 列出全部 key(换行 \n 分隔);不挂起。sess=0 收不到响应;sess!=0 业务在 _response 收 buffer。
+/// 列出全部 key,每条格式 | u16 klen(大端) | key |;不挂起。sess=0 收不到响应;sess!=0 业务在 _response 收 buffer。
 /// </summary>
 /// <param name="task">当前 task(sess!=0 时的 response 目标)</param>
 /// <param name="dc_name">DataCenter task name</param>

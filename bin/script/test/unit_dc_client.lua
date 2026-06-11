@@ -1,4 +1,4 @@
--- dc_client Lua 协程客户端单元测试:mirror C 测试 task_dc_client.c 的 8 个子测试,
+-- dc_client Lua 协程客户端单元测试:mirror C 测试 task_dc_client.c 的 9 个子测试,
 -- 走 srey.request → DataCenter task service(C 层 startup 已自动注册到 TASK_NAME.DATACENTER)。
 
 local srey      = require("lib.srey")
@@ -103,12 +103,16 @@ runner.run("dc_client", function(t)
         t:eq(nil, dc_client.get(DC, "k_clr"), "set('') 后 get 返回 nil")
     end
 
-    -- ── 子段 9(Lua 特有):非法 key 早返,不下发到 datacenter ─────────
+    -- ── 子段 9(Lua 特有):非法 key(空/nil/超长)早返,不下发到 datacenter ─
     do
         t:eq(ERR_FAILED, dc_client.set(DC, "", "v"), "set 空 key 返 ERR_FAILED")
         t:eq(ERR_FAILED, dc_client.set(DC, nil, "v"), "set nil key 返 ERR_FAILED")
         t:eq(nil, dc_client.get(DC, ""), "get 空 key 返 nil")
         t:eq(ERR_FAILED, dc_client.del(DC, ""), "del 空 key 返 ERR_FAILED")
+        local long_key = string.rep("k", 512)  -- >= DC_KEY_MAX(512)
+        t:eq(ERR_FAILED, dc_client.set(DC, long_key, "v"), "set 超长 key 返 ERR_FAILED")
+        t:eq(nil, dc_client.get(DC, long_key), "get 超长 key 返 nil")
+        t:eq(ERR_FAILED, dc_client.del(DC, long_key), "del 超长 key 返 ERR_FAILED")
     end
 end)
 end)

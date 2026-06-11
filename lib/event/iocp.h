@@ -61,6 +61,10 @@ int32_t _iocp_join(watcher_ctx *watcher, SOCKET fd);
 void _iocp_try_ssl_exchange(watcher_ctx *watcher, sock_ctx *skctx, struct evssl_ctx *evssl, int32_t client);
 // 在事件循环内将accept到的fd完成初始化并开始接收
 void _iocp_add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn);
+// 在watcher线程内注册连接中的socket：sockel_add后投递ConnectEx
+void _iocp_add_conn_inloop(watcher_ctx *watcher, struct sock_ctx *skctx, netaddr_ctx *addr);
+// 在watcher线程内注册socket：sockel_add后按TCP/UDP投递WSARecv/WSARecvFrom
+void _iocp_add_fd_inloop(watcher_ctx *watcher, struct sock_ctx *skctx);
 // 提交WSARecv异步接收请求
 int32_t _iocp_post_recv(sock_ctx *skctx, DWORD  *bytes, DWORD  *flag, IOV_TYPE *wsabuf, DWORD niov);
 // 将数据加入TCP发送队列，若当前未发送则立即提交WSASend

@@ -265,6 +265,8 @@ function srey.serial()
         -- 本协程返回上层前必须还原为 self，否则上层下次 srey.* yield 类 API 通过 _set_coro_sess 把
         -- stale waiter 登记到 sess，后续消息错协程 resume 触发 "attempt to call a table value"
         coro_running = self
+        -- active_lua 同样被 _coro_resume 切到 waiter，需一并还原 self，否则窗口内 task.trap 把中断 hook 装主 thread 致延迟
+        task.active(self)
         return ok, ret
     end
 end

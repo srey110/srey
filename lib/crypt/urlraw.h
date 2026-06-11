@@ -15,9 +15,9 @@ char *url_encode(const char *data, const size_t lens, char *out);
 /// <summary>
 /// URL解码
 /// </summary>
-/// <param name="data">要解码的数据</param>
+/// <param name="data">要解码的数据(原地解码)；缓冲区须 >= lens+1 字节，解码后在末尾写 '\0'</param>
 /// <param name="lens">数据长度</param>
-/// <returns>解码后的长度</returns>
+/// <returns>解码后的长度(不含末尾 '\0')</returns>
 size_t url_decode(char *data, size_t lens);
 
 #endif//URLRAW_H_

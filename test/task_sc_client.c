@@ -396,6 +396,82 @@ static int32_t _test_shared_basic(task_ctx *task) {
     return ERR_OK;
 }
 
+// 辅助"死订阅者":订阅通配 "tw/+" 后即返回,由主 task task_close 销毁(不 unsubscribe),
+// 用于触发 subcenter 对通配节点死订阅的懒清理。直接用文件级 _sc_name(主 task 已设)
+static void _dead_sub_startup(task_ctx *task) {
+    coro_sc_subscribe(task, _sc_name, "tw/+");
+}
+// 解析 coro_sc_topics wire(每条 | u16 tlen | topic | u32 normal | u32 shared |,大端),查 want 是否在列表
+static int32_t _topics_contains(const void *data, size_t size, const char *want) {
+    const uint8_t *p = (const uint8_t *)data;
+    size_t off = 0;
+    size_t wlen = strlen(want);
+    while (off + 2 <= size) {
+        uint16_t tlen = (uint16_t)(((uint16_t)p[off] << 8) | p[off + 1]);
+        off += 2;
+        if (off + (size_t)tlen + 8 > size) {
+            break;
+        }
+        if ((size_t)tlen == wlen && 0 == memcmp(p + off, want, wlen)) {
+            return 1;
+        }
+        off += (size_t)tlen + 8;
+    }
+    return 0;
+}
+// 子段 16:通配订阅者死亡后 publish → 死订阅从通配节点回收 + 空通配节点删除(M4)
+static int32_t _test_wildcard_dead_sub_cleanup(task_ctx *task) {
+    int32_t poll;
+    size_t lsize;
+    void *ldata;
+    task_ctx *probe;
+    task_ctx *b = coro_task_register(task->loader, "sc_dead_sub", 0, _dead_sub_startup, NULL, NULL, NULL);
+    if (NULL == b) {
+        LOG_ERROR("dead_sub_cleanup: register helper failed");
+        return ERR_FAILED;
+    }
+    name_t bname = task_find_name(task->loader, "sc_dead_sub");
+    // 等 B 订阅成功("tw/+" 出现),避免 B 没订上导致假阳性
+    for (poll = 0; poll < 40; poll++) {
+        lsize = 0;
+        ldata = coro_sc_topics(task, _sc_name, &lsize);
+        if (_topics_contains(ldata, lsize, "tw/+")) {
+            break;
+        }
+        coro_sleep(task, 50);
+    }
+    if (poll >= 40) {
+        LOG_ERROR("dead_sub_cleanup: helper subscribe 'tw/+' not observed");
+        return ERR_FAILED;
+    }
+    // 关闭 B,轮询等其真正销毁(subcenter 据 task_grab 失败才判其为死订阅)
+    task_close(b);
+    for (poll = 0; poll < 40; poll++) {
+        probe = task_grab(task->loader, bname);
+        if (NULL == probe) {
+            break;
+        }
+        task_ungrab(probe);
+        coro_sleep(task, 50);
+    }
+    if (poll >= 40) {
+        LOG_ERROR("dead_sub_cleanup: helper not destroyed");
+        return ERR_FAILED;
+    }
+    // publish 命中 "tw/+" 触发懒清理;轮询等 "tw/+" 从订阅列表消失(修复前死订阅残留在通配节点,永不消失)
+    coro_sc_publish(task, _sc_name, "tw/x", "p", 1);
+    for (poll = 0; poll < 40; poll++) {
+        lsize = 0;
+        ldata = coro_sc_topics(task, _sc_name, &lsize);
+        if (!_topics_contains(ldata, lsize, "tw/+")) {
+            return ERR_OK;
+        }
+        coro_sleep(task, 50);
+    }
+    LOG_ERROR("dead_sub_cleanup: 'tw/+' not pruned after dead subscriber + publish");
+    return ERR_FAILED;
+}
+
 static void _startup(task_ctx *task) {
     task_sc_client_args *arg = (task_sc_client_args *)coro_get_arg(task);
     _sc_name = task_find_name(task->loader, arg->sc_name);
@@ -416,9 +492,10 @@ static void _startup(task_ctx *task) {
     if (ERR_OK != _test_topics_list(task))           { return; }
     if (ERR_OK != _test_retained_topics_list(task))  { return; }
     if (ERR_OK != _test_shared_basic(task))          { return; }
+    if (ERR_OK != _test_wildcard_dead_sub_cleanup(task)) { return; }
 
     *(arg->ok) = 1;
-    LOG_INFO("sc_client tested: 15/15 subtests passed.");
+    LOG_INFO("sc_client tested: 16/16 subtests passed.");
 }
 
 void task_sc_client_start(loader_ctx *loader, const char *base_name, const char *sc_name, int32_t *ok) {

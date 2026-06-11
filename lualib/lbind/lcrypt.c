@@ -31,7 +31,7 @@ static int32_t _lcrypt_url_decode(lua_State *lua) {
     size_t size;
     data = lpub_check_buf(lua, 1, &size, NULL);
     luaL_Buffer lbuf;
-    char *out = luaL_buffinitsize(lua, &lbuf, size);
+    char *out = luaL_buffinitsize(lua, &lbuf, size + 1);//url_decode 原地解码后在末尾写 '\0'，需 size+1
     memcpy(out, data, size);
     size_t decoded = url_decode(out, size);
     luaL_pushresultsize(&lbuf, decoded);

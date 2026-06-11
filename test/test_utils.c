@@ -115,7 +115,7 @@ static void test_buffer(CuTest *tc) {
     CuAssertTrue(tc, 13 == buffer_size(&buf));
 
     /* copyout：不删除数据 */
-    char out[32] = {0};
+    char out[32] = { 0 };
     size_t nr = buffer_copyout(&buf, 0, out, 13);
     CuAssertTrue(tc, 13 == nr);
     CuAssertTrue(tc, 0 == memcmp("Hello, World!", out, 13));

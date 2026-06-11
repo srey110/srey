@@ -13,7 +13,7 @@ static atomic_t _oid_counter = 0;
 static void _bson_oid_init(void) {
     int32_t pid = GETPID();
     uint32_t h = 0;
-    char hostname[HOST_LENS] = {0};
+    char hostname[HOST_LENS] = { 0 };
     if (0 == gethostname(hostname, sizeof(hostname))) {
         int32_t i;
         for (i = 0; i < (int32_t)sizeof(hostname) && hostname[i]; i++) {

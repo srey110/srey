@@ -494,7 +494,7 @@ static void _coro_timeout_monitor(task_ctx *task, uint64_t sess) {
     /* 只有存在挂起协程且堆非空才需要检查 */
     if (coctx->nyield > 0 && NULL != coctx->timeout_heap.root) {
         uint64_t now = timer_cur_ms(&coctx->timer);
-        task_dispatch_arg arg = {0};
+        task_dispatch_arg arg = { 0 };
         arg.task = task;
         arg.msg.mtype = MSG_TYPE_TIMEOUT;
         /* 堆顶是最早到期的条目：若堆顶未到期，后续全部未到期，O(1) 退出 */
@@ -807,7 +807,7 @@ void coro_fork(task_ctx *task,
     MALLOC(item, sizeof(*item));
     item->func = func;
     item->arg = arg;
-    message_ctx msg = {0};
+    message_ctx msg = { 0 };
     msg.mtype = MSG_TYPE_FORK;
     msg.data = item;
     _task_message_push(task, &msg);

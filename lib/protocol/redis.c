@@ -55,7 +55,7 @@ static inline void _redis_create_sds(binary_ctx *fbuf, binary_ctx *sdsbuf, size_
     if (0 == fbuf->offset) {
         return;
     }
-    binary_set_va(sdsbuf, "$%u"FLAG_CRLF, (uint32_t)fbuf->offset);
+    binary_set_va(sdsbuf, "$%zu"FLAG_CRLF, fbuf->offset);
     binary_set_string(sdsbuf, fbuf->data, fbuf->offset);
     binary_set_string(sdsbuf, FLAG_CRLF, CRLF_SIZE);
     binary_offset(fbuf, 0);

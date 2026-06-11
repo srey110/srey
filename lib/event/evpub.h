@@ -57,13 +57,20 @@ typedef struct ev_ctx {
 }ev_ctx;
 
 // 回调函数类型定义（accept_cb/connect_cb 返回失败则不加进事件循环）
-typedef int32_t(*accept_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud);          // 接受新连接回调
-typedef int32_t(*connect_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t err, ud_cxt *ud); // 连接完成回调
-typedef int32_t(*ssl_exchanged_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud, void *ssl); // SSL握手完成回调（ssl 为 SSL 对象指针，WITH_SSL 时有效，否则为 NULL）
-typedef void(*recv_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, buffer_ctx *buf, size_t size, ud_cxt *ud); // 接收数据回调
-typedef void(*send_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, size_t size, ud_cxt *ud); // 发送完成回调
-typedef void(*close_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud); // 连接关闭回调
-typedef void(*recvfrom_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud); // UDP接收回调
+typedef int32_t(*accept_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid,
+                            ud_cxt *ud);// 接受新连接回调
+typedef int32_t(*connect_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid,
+                             int32_t err, ud_cxt *ud);// 连接完成回调
+typedef int32_t(*ssl_exchanged_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid,
+                                   int32_t client, ud_cxt *ud, void *ssl);// SSL握手完成回调（ssl 为 SSL 对象指针，WITH_SSL 时有效，否则为 NULL）
+typedef void(*recv_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid,
+                      int32_t client, buffer_ctx *buf, size_t size, ud_cxt *ud);// 接收数据回调
+typedef void(*send_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid,
+                       int32_t client, size_t size, ud_cxt *ud);// 发送完成回调
+typedef void(*close_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid,
+                        int32_t client, ud_cxt *ud);// 连接关闭回调
+typedef void(*recvfrom_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid,
+                           char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud);// UDP接收回调
 // 回调函数集合
 typedef struct cbs_ctx {
     accept_cb acp_cb;       // 接受连接回调

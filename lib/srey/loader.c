@@ -399,7 +399,7 @@ static bool _loader_closing_timeout(const void *item, void *udata) {
 }
 // 广播关闭消息给所有任务，并等待所有任务退出（最长 15 秒超时告警）
 static void _loader_task_closing(loader_ctx *loader) {
-    message_ctx closing;
+    message_ctx closing = { 0 };
     closing.mtype = MSG_TYPE_CLOSING;
     rwlock_distr_rdlock(&loader->lckmaptasks);
     // 在持锁期间置位 closing，与 task_register 的写锁互斥：

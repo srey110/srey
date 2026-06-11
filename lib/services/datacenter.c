@@ -5,8 +5,6 @@
 #include "utils/utils.h"
 #include "base/macro.h"
 
-// klen 不能太大;栈上字节足够大多数 key,超过直接拒绝
-#define DC_KEY_MAX 512
 // 子命令操作码:payload 首字节,跟随特定子命令格式的剩余字节
 // payload 布局:
 // u8 op   + u16 key len(网络序) + key + u32 val len(网络字节序) + val
@@ -458,6 +456,9 @@ static char *_dc_pack(dc_op op, const char *key, void *val, size_t vsize, size_t
 int32_t coro_dc_set(task_ctx *task, name_t dc_name, const char *key, void *val, size_t size) {
     ASSERTAB(!EMPTYSTR(key), "datacenter key empty");
     ASSERTAB(size <= UINT32_MAX, "datacenter val size exceeds UINT32_MAX");
+    if (strlen(key) >= DC_KEY_MAX) {
+        return ERR_FAILED;
+    }
     task_ctx *dc = task_grab(task->loader, dc_name);
     if (NULL == dc) {
         return ERR_FAILED;
@@ -472,6 +473,10 @@ int32_t coro_dc_set(task_ctx *task, name_t dc_name, const char *key, void *val, 
 }
 void *coro_dc_get(task_ctx *task, name_t dc_name, const char *key, size_t *size) {
     ASSERTAB(!EMPTYSTR(key), "datacenter key empty");
+    if (strlen(key) >= DC_KEY_MAX) {
+        SET_PTR(size, 0);
+        return NULL;
+    }
     task_ctx *dc = task_grab(task->loader, dc_name);
     if (NULL == dc) {
         SET_PTR(size, 0);
@@ -490,6 +495,10 @@ void *coro_dc_get(task_ctx *task, name_t dc_name, const char *key, size_t *size)
 }
 void *coro_dc_wait(task_ctx *task, name_t dc_name, const char *key, size_t *size) {
     ASSERTAB(!EMPTYSTR(key), "datacenter key empty");
+    if (strlen(key) >= DC_KEY_MAX) {
+        SET_PTR(size, 0);
+        return NULL;
+    }
     task_ctx *dc = task_grab(task->loader, dc_name);
     if (NULL == dc) {
         SET_PTR(size, 0);
@@ -508,6 +517,9 @@ void *coro_dc_wait(task_ctx *task, name_t dc_name, const char *key, size_t *size
 }
 int32_t coro_dc_del(task_ctx *task, name_t dc_name, const char *key) {
     ASSERTAB(!EMPTYSTR(key), "datacenter key empty");
+    if (strlen(key) >= DC_KEY_MAX) {
+        return ERR_FAILED;
+    }
     task_ctx *dc = task_grab(task->loader, dc_name);
     if (NULL == dc) {
         return ERR_FAILED;
@@ -542,6 +554,9 @@ void *coro_dc_keys(task_ctx *task, name_t dc_name, size_t *size) {
 int32_t dc_set(task_ctx *task, name_t dc_name, uint64_t sess, const char *key, void *val, size_t size) {
     ASSERTAB(!EMPTYSTR(key), "datacenter key empty");
     ASSERTAB(size <= UINT32_MAX, "datacenter val size exceeds UINT32_MAX");
+    if (strlen(key) >= DC_KEY_MAX) {
+        return ERR_FAILED;
+    }
     task_ctx *dc = task_grab(task->loader, dc_name);
     if (NULL == dc) {
         return ERR_FAILED;
@@ -558,6 +573,9 @@ int32_t dc_set(task_ctx *task, name_t dc_name, uint64_t sess, const char *key, v
 }
 int32_t dc_del(task_ctx *task, name_t dc_name, uint64_t sess, const char *key) {
     ASSERTAB(!EMPTYSTR(key), "datacenter key empty");
+    if (strlen(key) >= DC_KEY_MAX) {
+        return ERR_FAILED;
+    }
     task_ctx *dc = task_grab(task->loader, dc_name);
     if (NULL == dc) {
         return ERR_FAILED;
@@ -574,6 +592,9 @@ int32_t dc_del(task_ctx *task, name_t dc_name, uint64_t sess, const char *key) {
 }
 int32_t dc_get(task_ctx *task, name_t dc_name, uint64_t sess, const char *key) {
     ASSERTAB(!EMPTYSTR(key), "datacenter key empty");
+    if (strlen(key) >= DC_KEY_MAX) {
+        return ERR_FAILED;
+    }
     task_ctx *dc = task_grab(task->loader, dc_name);
     if (NULL == dc) {
         return ERR_FAILED;
@@ -590,6 +611,9 @@ int32_t dc_get(task_ctx *task, name_t dc_name, uint64_t sess, const char *key) {
 }
 int32_t dc_wait(task_ctx *task, name_t dc_name, uint64_t sess, const char *key) {
     ASSERTAB(!EMPTYSTR(key), "datacenter key empty");
+    if (strlen(key) >= DC_KEY_MAX) {
+        return ERR_FAILED;
+    }
     task_ctx *dc = task_grab(task->loader, dc_name);
     if (NULL == dc) {
         return ERR_FAILED;

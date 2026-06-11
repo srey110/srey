@@ -559,7 +559,9 @@ static void _lcore_task_list_collect(const char *name, name_t handle, void *arg)
 /// <returns type="table">{name,handle} 对象数组（name 字符串、handle 整数；匿名 task 无 name 字段）；无 task 时空表</returns>
 static int32_t _lcore_task_list(lua_State *lua) {
     lua_newtable(lua);
-    _task_list_arg c = { lua, 0 };
+    _task_list_arg c;
+    c.n = 0;
+    c.lua = lua;
     loader_task_each(g_loader, _lcore_task_list_collect, &c);
     return 1;
 }

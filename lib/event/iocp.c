@@ -31,9 +31,9 @@ static void *_iocp_exfunc(SOCKET fd, GUID  *guid) {
 static void _iocp_init_callback(void) {
     cmd_cbs[CMD_STOP]    = _on_cmd_stop;
     cmd_cbs[CMD_DISCONN] = _on_cmd_disconn;
-    cmd_cbs[CMD_ADD]     = _on_cmd_add;
     cmd_cbs[CMD_ADDACP]  = _on_cmd_addacp;
-    cmd_cbs[CMD_REMOVE]  = _on_cmd_remove;
+    cmd_cbs[CMD_CONN]    = _on_cmd_conn;
+    cmd_cbs[CMD_ADD]     = _on_cmd_add;
     cmd_cbs[CMD_SEND]    = _on_cmd_send;
     cmd_cbs[CMD_SEND_MULTI] = _on_cmd_send_multi;
     cmd_cbs[CMD_SENDTO]  = _on_cmd_sendto;
@@ -365,6 +365,11 @@ static void _iocp_free_cmd(watcher_ctx *watcher) {
             FREE(udp_arg);
             break;
         }
+        case CMD_CONN:
+            skctx = (sock_ctx *)cmd->arg;
+            _free_sk(skctx);
+            FREE((void *)cmd->skid);  // CMD_CONN 借 skid 携带 MALLOC 的 conn addr,排空未处理命令时一并释放
+            break;
         case CMD_ADD:
             skctx = (sock_ctx *)cmd->arg;
             if (SOCK_STREAM == skctx->type) {

@@ -134,13 +134,16 @@ else
     # 链接时透明处理 bitcode。SunOS/AIX 不启用 LTO。
     if [ "$OSNAME" != "SunOS" ] && [ "$OSNAME" != "AIX" ]
     then
-        CFLAGS=$CFLAGS" -flto"
         if [ "$OSNAME" != "Darwin" ] && command -v gcc-ar >/dev/null 2>&1
         then
+            CFLAGS=$CFLAGS" -flto=$(nproc 2>/dev/null || echo 4)"
             ARCH="gcc-ar rcsD"
-        elif [ "$OSNAME" = "FreeBSD" ] && command -v llvm-ar >/dev/null 2>&1
-        then
-            ARCH="llvm-ar rcsD"
+        else
+            CFLAGS=$CFLAGS" -flto"
+            if [ "$OSNAME" = "FreeBSD" ] && command -v llvm-ar >/dev/null 2>&1
+            then
+                ARCH="llvm-ar rcsD"
+            fi
         fi
     fi
     # _FORTIFY_SOURCE=2 需要 -O2 以上才生效
