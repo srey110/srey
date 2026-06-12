@@ -26,6 +26,7 @@ local TESTS = {
     "test.unit_dc_client",
     "test.unit_sc_client",
     "test.unit_hotfix",
+    "test.unit_inject",
     "test.unit_seri",
     "test.unit_stm",
     "test.e2e_runner",   -- 用 srey.popen 跑 bin/py_assist/test_*.py 自动收集 exit code
@@ -67,6 +68,7 @@ local function register()
     task.register("test.unit_dc_client", "unit_dc_client", 0)
     task.register("test.unit_sc_client", "unit_sc_client", 0)
     task.register("test.unit_hotfix", "unit_hotfix", 0)
+    task.register("test.unit_inject", "unit_inject", 0)
     task.register("test.unit_seri", "unit_seri", 0)
     task.register("test.unit_stm", "unit_stm", 0)
     task.register("test.e2e_runner", "e2e_runner", 0)

@@ -31,7 +31,7 @@ runner.run("sc_client", function(t)
         sc_client.subscribe(SC, "t1/a", function(topic, payload, publisher, meta)
             got[#got + 1] = { topic = topic, payload = payload, publisher = publisher, meta = meta }
         end)
-        sc_client.publish(SC, "t1/a", "hello")
+        t:eq(true, sc_client.publish(SC, "t1/a", "hello"), "basic: publish 返 true")
         _wait(function() return #got >= 1 end)
         t:eq(1, #got, "basic: 收到 1 次")
         t:eq("t1/a", got[1] and got[1].topic, "basic: topic 't1/a'")
@@ -180,18 +180,18 @@ runner.run("sc_client", function(t)
 
     -- ── 子段 11(Lua 特有):非法参数早返,不下发到 subcenter ────────────
     do
-        t:eq(ERR_FAILED, sc_client.subscribe(SC, "", function() end),
-            "subscribe: empty topic 返 ERR_FAILED")
-        t:eq(ERR_FAILED, sc_client.subscribe(SC, "t/x", nil),
-            "subscribe: nil handler 返 ERR_FAILED")
-        t:eq(ERR_FAILED, sc_client.subscribe_shared(SC, "t/x", "", function() end),
-            "subscribe_shared: empty group 返 ERR_FAILED")
-        t:eq(ERR_FAILED, sc_client.publish(SC, ""),
-            "publish: empty topic 返 ERR_FAILED")
-        t:eq(ERR_FAILED, sc_client.publish_retained(SC, ""),
-            "publish_retained: empty topic 返 ERR_FAILED")
-        t:eq(ERR_FAILED, sc_client.unsubscribe(SC, ""),
-            "unsubscribe: empty topic 返 ERR_FAILED")
+        t:eq(false, sc_client.subscribe(SC, "", function() end),
+            "subscribe: empty topic 返 false")
+        t:eq(false, sc_client.subscribe(SC, "t/x", nil),
+            "subscribe: nil handler 返 false")
+        t:eq(false, sc_client.subscribe_shared(SC, "t/x", "", function() end),
+            "subscribe_shared: empty group 返 false")
+        t:eq(false, sc_client.publish(SC, ""),
+            "publish: empty topic 返 false")
+        t:eq(false, sc_client.publish_retained(SC, ""),
+            "publish_retained: empty topic 返 false")
+        t:eq(false, sc_client.unsubscribe(SC, ""),
+            "unsubscribe: empty topic 返 false")
         t:eq(nil, sc_client.query_retained(SC, ""),
             "query_retained: empty pattern 返 nil")
     end

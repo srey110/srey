@@ -163,5 +163,26 @@ runner.run("seri", function(t)
         local ok = pcall(seri.unpack, bad)
         t:check(not ok, "malicious huge array_n rejected as malformed")
     end
+
+    -- 15. table 嵌套深度边界(上限 32 层):32 层往返成功,33 层 pack 报错
+    do
+        local function build(levels)
+            local root = {}
+            local cur = root
+            for _ = 2, levels do
+                cur.sub = {}
+                cur = cur.sub
+            end
+            return root
+        end
+        buf, size = seri.pack(build(32))
+        t:check(buf ~= nil, "32 层嵌套 pack 成功")
+        local r = seri.unpack(buf, size)
+        utils.ud_free(buf)
+        t:check(type(r) == "table", "32 层 unpack 成功")
+        local pok, perr = pcall(seri.pack, build(33))
+        t:eq(false, pok, "33 层嵌套 pack 报错(超深度上限)")
+        t:check(type(perr) == "string" and nil ~= perr:find("deep"), "err 含 'deep'")
+    end
 end)
 end)

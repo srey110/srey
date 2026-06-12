@@ -15,7 +15,8 @@ static atomic_t _multi_waiter_received;
 static void _multi_waiter(task_ctx *task, void *arg) {
     const char *key = (const char *)arg;
     size_t sz;
-    void *val = coro_dc_wait(task, _dc_name, key, &sz);
+    int32_t erro;
+    void *val = coro_dc_wait(task, _dc_name, key, &sz, &erro);
     if (NULL != val && 5 == sz && 0 == memcmp(val, "hello", 5)) {
         ATOMIC_ADD(&_multi_waiter_received, 1);
     }
@@ -39,15 +40,16 @@ static int32_t _test_set_get(task_ctx *task) {
         return ERR_FAILED;
     }
     size_t sz;
-    void *val = coro_dc_get(task, _dc_name, "k1", &sz);
+    int32_t erro;
+    void *val = coro_dc_get(task, _dc_name, "k1", &sz, &erro);
     if (NULL == val || 2 != sz || 0 != memcmp(val, "v1", 2)) {
         LOG_ERROR("dc get k1: expect 'v1'(2),got %p(%zu)", val, sz);
         return ERR_FAILED;
     }
-    // get 不存在的 key
-    val = coro_dc_get(task, _dc_name, "no_such_key", &sz);
-    if (NULL != val) {
-        LOG_ERROR("dc get no_such_key: expect NULL,got %p", val);
+    // get 不存在的 key:返 NULL 且 erro=ERR_FAILED(key 不存在视为失败)
+    val = coro_dc_get(task, _dc_name, "no_such_key", &sz, &erro);
+    if (NULL != val || ERR_OK == erro) {
+        LOG_ERROR("dc get no_such_key: expect NULL+fail,got %p erro=%d", val, erro);
         return ERR_FAILED;
     }
     return ERR_OK;
@@ -57,7 +59,8 @@ static int32_t _test_set_get(task_ctx *task) {
 static int32_t _test_wait_hit(task_ctx *task) {
     coro_dc_set(task, _dc_name, "k_hit", "ready", 5);
     size_t sz;
-    void *val = coro_dc_wait(task, _dc_name, "k_hit", &sz);
+    int32_t erro;
+    void *val = coro_dc_wait(task, _dc_name, "k_hit", &sz, &erro);
     if (NULL == val || 5 != sz || 0 != memcmp(val, "ready", 5)) {
         LOG_ERROR("dc wait k_hit hit path: expect 'ready'");
         return ERR_FAILED;
@@ -74,7 +77,8 @@ static void _delayed_setter(task_ctx *task, void *arg) {
 static int32_t _test_wait_miss_then_set(task_ctx *task) {
     coro_fork(task, _delayed_setter, (void *)"k_delay");
     size_t sz;
-    void *val = coro_dc_wait(task, _dc_name, "k_delay", &sz);  // 挂起 ~100ms
+    int32_t erro;
+    void *val = coro_dc_wait(task, _dc_name, "k_delay", &sz, &erro);  // 挂起 ~100ms
     if (NULL == val || 7 != sz || 0 != memcmp(val, "delayed", 7)) {
         LOG_ERROR("dc wait k_delay miss-then-set: expect 'delayed'");
         return ERR_FAILED;
@@ -114,10 +118,12 @@ static int32_t _test_wait_timeout(task_ctx *task) {
     uint32_t old_to = task_get_request_timeout(task);
     task_set_request_timeout(task, 200);  // 200ms(实际超时由 _timeout_monitor 1s 粒度兜底)
     size_t sz;
-    void *val = coro_dc_wait(task, _dc_name, "k_never", &sz);
+    int32_t erro;
+    void *val = coro_dc_wait(task, _dc_name, "k_never", &sz, &erro);
     task_set_request_timeout(task, old_to);
-    if (NULL != val) {
-        LOG_ERROR("dc wait k_never timeout: expect NULL,got %p", val);
+    // 超时:返 NULL 且 erro != ERR_OK(失败,区别于 key 不存在的 ERR_OK)
+    if (NULL != val || ERR_OK == erro) {
+        LOG_ERROR("dc wait k_never timeout: expect NULL+fail,got %p erro=%d", val, erro);
         return ERR_FAILED;
     }
     return ERR_OK;
@@ -127,7 +133,8 @@ static int32_t _test_wait_timeout(task_ctx *task) {
 static int32_t _test_delete(task_ctx *task) {
     coro_dc_set(task, _dc_name, "k_del", "x", 1);
     size_t sz;
-    void *val = coro_dc_get(task, _dc_name, "k_del", &sz);
+    int32_t erro;
+    void *val = coro_dc_get(task, _dc_name, "k_del", &sz, &erro);
     if (NULL == val) {
         LOG_ERROR("dc delete: pre-check failed");
         return ERR_FAILED;
@@ -136,9 +143,9 @@ static int32_t _test_delete(task_ctx *task) {
         LOG_ERROR("dc delete failed");
         return ERR_FAILED;
     }
-    val = coro_dc_get(task, _dc_name, "k_del", &sz);
-    if (NULL != val) {
-        LOG_ERROR("dc delete: expect NULL after del,got %p", val);
+    val = coro_dc_get(task, _dc_name, "k_del", &sz, &erro);
+    if (NULL != val || ERR_OK == erro) {
+        LOG_ERROR("dc delete: expect NULL+fail after del,got %p erro=%d", val, erro);
         return ERR_FAILED;
     }
     return ERR_OK;
@@ -150,7 +157,8 @@ static int32_t _test_list_keys(task_ctx *task) {
     coro_dc_set(task, _dc_name, "lk_b", "2", 1);
     coro_dc_set(task, _dc_name, "lk_c", "3", 1);
     size_t sz;
-    void *buf = coro_dc_keys(task, _dc_name, &sz);
+    int32_t erro;
+    void *buf = coro_dc_keys(task, _dc_name, &sz, &erro);
     if (EMPTYPTR(buf, sz)) {
         LOG_ERROR("dc list_keys: empty");
         return ERR_FAILED;
@@ -193,15 +201,17 @@ static int32_t _test_list_keys(task_ctx *task) {
 static int32_t _test_set_null(task_ctx *task) {
     coro_dc_set(task, _dc_name, "k_clr", "data", 4);
     size_t sz;
-    void *val = coro_dc_get(task, _dc_name, "k_clr", &sz);
+    int32_t erro;
+    void *val = coro_dc_get(task, _dc_name, "k_clr", &sz, &erro);
     if (NULL == val) {
         LOG_ERROR("dc set_null: pre-check failed");
         return ERR_FAILED;
     }
     coro_dc_set(task, _dc_name, "k_clr", NULL, 0);
-    val = coro_dc_get(task, _dc_name, "k_clr", &sz);
-    if (NULL != val) {
-        LOG_ERROR("dc set_null: expect NULL after set(NULL),got %p", val);
+    // 软清空后 key 仍存在(空值)→ get 返 NULL 但 erro=ERR_OK(区别于真不存在的 ERR_FAILED)
+    val = coro_dc_get(task, _dc_name, "k_clr", &sz, &erro);
+    if (NULL != val || ERR_OK != erro) {
+        LOG_ERROR("dc set_null: expect NULL+ERR_OK (empty present),got %p erro=%d", val, erro);
         return ERR_FAILED;
     }
     return ERR_OK;
@@ -218,8 +228,9 @@ static int32_t _test_key_too_long(task_ctx *task) {
         return ERR_FAILED;
     }
     size_t sz;
-    if (NULL != coro_dc_get(task, _dc_name, long_key, &sz)) {
-        LOG_ERROR("dc get long key: expect NULL");
+    int32_t erro;
+    if (NULL != coro_dc_get(task, _dc_name, long_key, &sz, &erro) || ERR_OK == erro) {
+        LOG_ERROR("dc get long key: expect NULL+fail, erro=%d", erro);
         return ERR_FAILED;
     }
     if (ERR_FAILED != coro_dc_del(task, _dc_name, long_key)) {
@@ -232,9 +243,10 @@ static int32_t _test_key_too_long(task_ctx *task) {
 // 子段 10:waiter 超时过期后,迟到 set 不再唤醒它(不产生幽灵响应,F-DC-2)
 static int32_t _test_late_set_no_ghost(task_ctx *task) {
     size_t sz;
+    int32_t erro;
     uint32_t old_to = task_get_request_timeout(task);
     task_set_request_timeout(task, 200);
-    void *val = coro_dc_wait(task, _dc_name, "k_ghost", &sz);  // 未命中挂 waiter(deadline=入队+200ms),超时返 NULL
+    void *val = coro_dc_wait(task, _dc_name, "k_ghost", &sz, &erro);  // 未命中挂 waiter(deadline=入队+200ms),超时返 NULL
     task_set_request_timeout(task, old_to);
     if (NULL != val) {
         LOG_ERROR("late_set_no_ghost: expect NULL on timeout");

@@ -211,7 +211,8 @@ static int32_t _test_retained_basic(task_ctx *task) {
         return ERR_FAILED;
     }
     size_t qsize = 0;
-    void *qdata = coro_sc_query_retained(task, _sc_name, "t7/r", &qsize);
+    int32_t erro = 0;
+    void *qdata = coro_sc_query_retained(task, _sc_name, "t7/r", &qsize, &erro);
     if (EMPTYPTR(qdata, qsize)) {
         LOG_ERROR("retained_basic: query_retained empty");
         return ERR_FAILED;
@@ -244,7 +245,8 @@ static int32_t _test_retained_clear(task_ctx *task) {
     coro_sc_publish_retained(task, _sc_name, "t8/r", "data", 4);
     coro_sc_publish_retained(task, _sc_name, "t8/r", NULL, 0);   // 清空
     size_t qsize = 0;
-    void *qdata = coro_sc_query_retained(task, _sc_name, "t8/r", &qsize);
+    int32_t erro = 0;
+    void *qdata = coro_sc_query_retained(task, _sc_name, "t8/r", &qsize, &erro);
     if (NULL != qdata && qsize > 0) {
         LOG_ERROR("retained_clear: expect empty after plen=0, got size=%zu", qsize);
         return ERR_FAILED;
@@ -258,7 +260,8 @@ static int32_t _test_retained_meta_snapshot(task_ctx *task) {
     coro_sc_publish_retained(task, _sc_name, "t9/s", "data", 4);
     coro_sc_set_meta(task, _sc_name, "v2", 2);   // 改 publisher 当前 meta
     size_t qsize = 0;
-    void *qdata = coro_sc_query_retained(task, _sc_name, "t9/s", &qsize);
+    int32_t erro = 0;
+    void *qdata = coro_sc_query_retained(task, _sc_name, "t9/s", &qsize, &erro);
     if (EMPTYPTR(qdata, qsize)) {
         LOG_ERROR("retained_meta_snapshot: query empty");
         return ERR_FAILED;
@@ -342,7 +345,8 @@ static int32_t _test_topics_list(task_ctx *task) {
     coro_sc_subscribe(task, _sc_name, "t13/aaa");
     coro_sc_subscribe(task, _sc_name, "t13/bbb");
     size_t lsize = 0;
-    void *ldata = coro_sc_topics(task, _sc_name, &lsize);
+    int32_t erro = 0;
+    void *ldata = coro_sc_topics(task, _sc_name, &lsize, &erro);
     if (EMPTYPTR(ldata, lsize)) {
         LOG_ERROR("topics_list: empty");
         return ERR_FAILED;
@@ -357,7 +361,8 @@ static int32_t _test_retained_topics_list(task_ctx *task) {
     coro_sc_publish_retained(task, _sc_name, "t14/a", "1", 1);
     coro_sc_publish_retained(task, _sc_name, "t14/b", "2", 1);
     size_t lsize = 0;
-    void *ldata = coro_sc_retained_topics(task, _sc_name, &lsize);
+    int32_t erro = 0;
+    void *ldata = coro_sc_retained_topics(task, _sc_name, &lsize, &erro);
     if (EMPTYPTR(ldata, lsize)) {
         LOG_ERROR("retained_topics_list: empty");
         return ERR_FAILED;
@@ -423,6 +428,7 @@ static int32_t _topics_contains(const void *data, size_t size, const char *want)
 static int32_t _test_wildcard_dead_sub_cleanup(task_ctx *task) {
     int32_t poll;
     size_t lsize;
+    int32_t erro;
     void *ldata;
     task_ctx *probe;
     task_ctx *b = coro_task_register(task->loader, "sc_dead_sub", 0, _dead_sub_startup, NULL, NULL, NULL);
@@ -434,7 +440,7 @@ static int32_t _test_wildcard_dead_sub_cleanup(task_ctx *task) {
     // 等 B 订阅成功("tw/+" 出现),避免 B 没订上导致假阳性
     for (poll = 0; poll < 40; poll++) {
         lsize = 0;
-        ldata = coro_sc_topics(task, _sc_name, &lsize);
+        ldata = coro_sc_topics(task, _sc_name, &lsize, &erro);
         if (_topics_contains(ldata, lsize, "tw/+")) {
             break;
         }
@@ -462,7 +468,7 @@ static int32_t _test_wildcard_dead_sub_cleanup(task_ctx *task) {
     coro_sc_publish(task, _sc_name, "tw/x", "p", 1);
     for (poll = 0; poll < 40; poll++) {
         lsize = 0;
-        ldata = coro_sc_topics(task, _sc_name, &lsize);
+        ldata = coro_sc_topics(task, _sc_name, &lsize, &erro);
         if (!_topics_contains(ldata, lsize, "tw/+")) {
             return ERR_OK;
         }
@@ -484,6 +490,7 @@ static void _dead_shared_sub2_startup(task_ctx *task) {
 static int32_t _test_shared_dead_member_cleanup(task_ctx *task) {
     int32_t poll;
     size_t lsize;
+    int32_t erro;
     void *ldata;
     task_ctx *probe;
     task_ctx *b = coro_task_register(task->loader, "sc_dead_shared", 0, _dead_shared_sub_startup, NULL, NULL, NULL);
@@ -495,7 +502,7 @@ static int32_t _test_shared_dead_member_cleanup(task_ctx *task) {
     // 等 B 共享订阅成功("tsw/m" 出现)
     for (poll = 0; poll < 40; poll++) {
         lsize = 0;
-        ldata = coro_sc_topics(task, _sc_name, &lsize);
+        ldata = coro_sc_topics(task, _sc_name, &lsize, &erro);
         if (_topics_contains(ldata, lsize, "tsw/m")) {
             break;
         }
@@ -523,7 +530,7 @@ static int32_t _test_shared_dead_member_cleanup(task_ctx *task) {
     coro_sc_publish(task, _sc_name, "tsw/m", "p", 1);
     for (poll = 0; poll < 40; poll++) {
         lsize = 0;
-        ldata = coro_sc_topics(task, _sc_name, &lsize);
+        ldata = coro_sc_topics(task, _sc_name, &lsize, &erro);
         if (!_topics_contains(ldata, lsize, "tsw/m")) {
             return ERR_OK;
         }
@@ -579,6 +586,48 @@ static int32_t _test_shared_dead_skip_deliver(task_ctx *task) {
     return ERR_OK;
 }
 
+// 子段:同 task 同 topic 多 group 各自精确投递(对齐 Lua unit_sc_client sub14)
+// 主 task 同时加入 g1、g2 各为唯一成员 → 单次 publish 收 2 次;退订 g1 后只剩 g2 收 1 次,互不覆盖
+static int32_t _test_shared_multi_group(task_ctx *task) {
+    if (ERR_OK != coro_sc_subscribe_shared(task, _sc_name, "t20/x", "g1")) {
+        LOG_ERROR("multi_group: subscribe g1 failed");
+        return ERR_FAILED;
+    }
+    if (ERR_OK != coro_sc_subscribe_shared(task, _sc_name, "t20/x", "g2")) {
+        coro_sc_unsubscribe_shared(task, _sc_name, "t20/x", "g1");
+        LOG_ERROR("multi_group: subscribe g2 failed");
+        return ERR_FAILED;
+    }
+    coro_sleep(task, 100);
+    // 单次 publish:g1、g2 各挑唯一成员(自己)→ 共收 2 次
+    _reset_recv();
+    coro_sc_publish(task, _sc_name, "t20/x", "p", 1);
+    if (!_wait_recv(task, 2)) {
+        LOG_ERROR("multi_group: expect 2 deliveries (g1 + g2), got %d", (int32_t)ATOMIC_GET(&_recv_count));
+        coro_sc_unsubscribe_shared(task, _sc_name, "t20/x", "g1");
+        coro_sc_unsubscribe_shared(task, _sc_name, "t20/x", "g2");
+        return ERR_FAILED;
+    }
+    // 退订 g1:不抹 g2;再 publish 仅 g2 收 1 次
+    coro_sc_unsubscribe_shared(task, _sc_name, "t20/x", "g1");
+    _reset_recv();
+    coro_sc_publish(task, _sc_name, "t20/x", "p2", 2);
+    if (!_wait_recv(task, 1)) {
+        LOG_ERROR("multi_group: after unsub g1, expect 1 delivery from g2");
+        coro_sc_unsubscribe_shared(task, _sc_name, "t20/x", "g2");
+        return ERR_FAILED;
+    }
+    // 留观察窗口确认 g1 退订后不再投递
+    coro_sleep(task, 100);
+    if (1 != (int32_t)ATOMIC_GET(&_recv_count)) {
+        LOG_ERROR("multi_group: after unsub g1, expect exactly 1, got %d", (int32_t)ATOMIC_GET(&_recv_count));
+        coro_sc_unsubscribe_shared(task, _sc_name, "t20/x", "g2");
+        return ERR_FAILED;
+    }
+    coro_sc_unsubscribe_shared(task, _sc_name, "t20/x", "g2");
+    return ERR_OK;
+}
+
 // 子段 19:异步 sc_* sess=0 拒绝 — sess=0 会丢调用方身份,全部返 ERR_FAILED 且不下发(A1 入口层)
 static int32_t _test_async_sess_zero_reject(task_ctx *task) {
     if (ERR_FAILED != sc_subscribe(task, _sc_name, 0, "z/a")
@@ -595,7 +644,8 @@ static int32_t _test_async_sess_zero_reject(task_ctx *task) {
     }
     // sess=0 被拒后不应产生订阅:z/a 不在 topics 列表
     size_t lsize = 0;
-    void *ldata = coro_sc_topics(task, _sc_name, &lsize);
+    int32_t erro = 0;
+    void *ldata = coro_sc_topics(task, _sc_name, &lsize, &erro);
     if (_topics_contains(ldata, lsize, "z/a")) {
         LOG_ERROR("async sess=0: 'z/a' should not be subscribed");
         return ERR_FAILED;
@@ -626,10 +676,11 @@ static void _startup(task_ctx *task) {
     if (ERR_OK != _test_wildcard_dead_sub_cleanup(task)) { return; }
     if (ERR_OK != _test_shared_dead_member_cleanup(task)) { return; }
     if (ERR_OK != _test_shared_dead_skip_deliver(task)) { return; }
+    if (ERR_OK != _test_shared_multi_group(task))    { return; }
     if (ERR_OK != _test_async_sess_zero_reject(task)) { return; }
 
     *(arg->ok) = 1;
-    LOG_INFO("sc_client tested: 19/19 subtests passed.");
+    LOG_INFO("sc_client tested: 20/20 subtests passed.");
 }
 
 void task_sc_client_start(loader_ctx *loader, const char *base_name, const char *sc_name, int32_t *ok) {

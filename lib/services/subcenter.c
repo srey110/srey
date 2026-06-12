@@ -1224,57 +1224,60 @@ int32_t coro_sc_publish_retained(task_ctx *task, name_t sc_name, const char *top
     task_ungrab(sc);
     return erro;
 }
-void *coro_sc_query_retained(task_ctx *task, name_t sc_name,
-                             const char *pattern, size_t *size) {
+void *coro_sc_query_retained(task_ctx *task, name_t sc_name, const char *pattern,
+                             size_t *size, int32_t *erro) {
     if (EMPTYSTR(pattern)) {
         SET_PTR(size, 0);
+        *erro = ERR_FAILED;
         return NULL;
     }
     task_ctx *sc = task_grab(task->loader, sc_name);
     if (NULL == sc) {
         SET_PTR(size, 0);
+        *erro = ERR_FAILED;
         return NULL;
     }
     size_t total;
     char *buf = _sc_pack_topic(SC_OP_QUERY_RETAINED, pattern, &total);
-    int32_t erro = 0;
-    void *resp = coro_request(sc, task, REQ_SC, buf, total, 0, &erro, size);
+    void *resp = coro_request(sc, task, REQ_SC, buf, total, 0, erro, size);
     task_ungrab(sc);
-    if (ERR_OK != erro) {
+    if (ERR_OK != *erro) {
         SET_PTR(size, 0);
         return NULL;
     }
     return resp;
 }
-void *coro_sc_topics(task_ctx *task, name_t sc_name, size_t *size) {
+void *coro_sc_topics(task_ctx *task, name_t sc_name,
+                     size_t *size, int32_t *erro) {
     task_ctx *sc = task_grab(task->loader, sc_name);
     if (NULL == sc) {
         SET_PTR(size, 0);
+        *erro = ERR_FAILED;
         return NULL;
     }
     size_t total;
     char *buf = _sc_pack_nobody(SC_OP_LIST, &total);
-    int32_t erro = 0;
-    void *resp = coro_request(sc, task, REQ_SC, buf, total, 0, &erro, size);
+    void *resp = coro_request(sc, task, REQ_SC, buf, total, 0, erro, size);
     task_ungrab(sc);
-    if (ERR_OK != erro) {
+    if (ERR_OK != *erro) {
         SET_PTR(size, 0);
         return NULL;
     }
     return resp;
 }
-void *coro_sc_retained_topics(task_ctx *task, name_t sc_name, size_t *size) {
+void *coro_sc_retained_topics(task_ctx *task, name_t sc_name,
+                              size_t *size, int32_t *erro) {
     task_ctx *sc = task_grab(task->loader, sc_name);
     if (NULL == sc) {
         SET_PTR(size, 0);
+        *erro = ERR_FAILED;
         return NULL;
     }
     size_t total;
     char *buf = _sc_pack_nobody(SC_OP_RETAINED_LIST, &total);
-    int32_t erro = 0;
-    void *resp = coro_request(sc, task, REQ_SC, buf, total, 0, &erro, size);
+    void *resp = coro_request(sc, task, REQ_SC, buf, total, 0, erro, size);
     task_ungrab(sc);
-    if (ERR_OK != erro) {
+    if (ERR_OK != *erro) {
         SET_PTR(size, 0);
         return NULL;
     }

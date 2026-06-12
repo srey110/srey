@@ -220,27 +220,27 @@ end
 ---@param sc_name TASK_NAME subcenter task name(C 层 sc_start 注册一致)
 ---@param topic string 订阅模式;可含 + / # 通配
 ---@param handler fun(topic:string, payload:string, publisher:integer, meta:string?) 收消息时调用,topic 是匹配到的精确 topic;publisher 为 0(INVALID_TNAME)时表示 publisher 已失效
----@return integer erro ERR_OK 成功;ERR_FAILED topic 非法/subcenter 不可达
+---@return boolean ok 成功 true;topic 非法或 subcenter 不可达 false
 function sc_client.subscribe(sc_name, topic, handler)
     if not topic or "" == topic or not handler then
         WARN("sc subscribe: topic/handler empty.")
-        return ERR_FAILED
+        return false
     end
     _handlers[topic] = handler
     local sub_payload = OP_SUB .. string.pack(">s2", topic)
     local _, size = srey.request(sc_name, REQUEST_TYPE.REQ_SC, sub_payload)
     if nil == size then
         _handlers[topic] = nil   -- 回滚本地表
-        return ERR_FAILED
+        return false
     end
     -- 自动 query_retained 转交首批匹配 retained 给 handler
     local q_payload = OP_QUERY_RETAINED .. string.pack(">s2", topic)
     local rdata, rsize = srey.request(sc_name, REQUEST_TYPE.REQ_SC, q_payload)
     if nil == rsize then
-        return ERR_OK   -- 订阅已成功,query 失败不影响
+        return true   -- 订阅已成功,query 失败不影响
     end
     if nil == rdata or 0 == rsize then
-        return ERR_OK   -- 无匹配 retained
+        return true   -- 无匹配 retained
     end
     local raw = srey.ud_str(rdata, rsize)
     local list = _unpack_retained_list(raw)
@@ -248,7 +248,7 @@ function sc_client.subscribe(sc_name, topic, handler)
         local r = list[i]
         srey.xpcall(handler, r.topic, r.payload, r.publisher, r.meta)
     end
-    return ERR_OK
+    return true
 end
 
 ---共享订阅:同 group 内多个订阅者轮询接收 publish。不收 retained。必须在协程中调用。
@@ -256,11 +256,11 @@ end
 ---@param topic string 订阅模式
 ---@param group string 共享组名(非空)
 ---@param handler fun(topic:string, payload:string, publisher:integer, meta:string?)
----@return integer erro ERR_OK 成功;ERR_FAILED 参数非法/subcenter 不可达
+---@return boolean ok 成功 true;参数非法或 subcenter 不可达 false
 function sc_client.subscribe_shared(sc_name, topic, group, handler)
     if not topic or "" == topic or not group or "" == group or not handler then
         WARN("sc subscribe_shared: param empty.")
-        return ERR_FAILED
+        return false
     end
     local groups = _shared_handlers[topic]
     if not groups then
@@ -275,38 +275,38 @@ function sc_client.subscribe_shared(sc_name, topic, group, handler)
         if nil == next(groups) then
             _shared_handlers[topic] = nil
         end
-        return ERR_FAILED
+        return false
     end
-    return ERR_OK
+    return true
 end
 
 ---取消订阅。未订阅过的 topic 幂等返 OK。必须在协程中调用。
 ---@param sc_name TASK_NAME subcenter task name
 ---@param topic string 订阅模式;须与 subscribe 时完全一致
----@return integer erro ERR_OK 成功;ERR_FAILED topic 非法/subcenter 不可达
+---@return boolean ok 成功 true;topic 非法或 subcenter 不可达 false
 function sc_client.unsubscribe(sc_name, topic)
     if not topic or "" == topic then
         WARN("sc unsubscribe: topic empty.")
-        return ERR_FAILED
+        return false
     end
     _handlers[topic] = nil
     local payload = OP_UNSUB .. string.pack(">s2", topic)
     local _, size = srey.request(sc_name, REQUEST_TYPE.REQ_SC, payload)
     if nil == size then
-        return ERR_FAILED
+        return false
     end
-    return ERR_OK
+    return true
 end
 
 ---取消共享订阅。未订阅过的 topic+group 幂等返 OK。必须在协程中调用。
 ---@param sc_name TASK_NAME subcenter task name
 ---@param topic string
 ---@param group string
----@return integer erro
+---@return boolean ok 成功 true;参数非法或 subcenter 不可达 false
 function sc_client.unsubscribe_shared(sc_name, topic, group)
     if not topic or "" == topic or not group or "" == group then
         WARN("sc unsubscribe_shared: param empty.")
-        return ERR_FAILED
+        return false
     end
     local groups = _shared_handlers[topic]
     if groups then
@@ -318,27 +318,27 @@ function sc_client.unsubscribe_shared(sc_name, topic, group)
     local payload = OP_UNSUB_SHARED .. string.pack(">s2", topic) .. string.pack(">s2", group)
     local _, size = srey.request(sc_name, REQUEST_TYPE.REQ_SC, payload)
     if nil == size then
-        return ERR_FAILED
+        return false
     end
-    return ERR_OK
+    return true
 end
 
 ---发布消息到精确 topic。fire-and-forget。必须在协程中调用。
 ---@param sc_name TASK_NAME subcenter task name
 ---@param topic string 精确 topic;不允许含通配
 ---@param data string? payload;nil 等价空 payload
----@return integer erro ERR_OK 成功;ERR_FAILED topic 非法/subcenter 不可达
+---@return boolean ok 成功 true;topic 非法或 subcenter 不可达 false
 function sc_client.publish(sc_name, topic, data)
     if not topic or "" == topic then
         WARN("sc publish: topic empty.")
-        return ERR_FAILED
+        return false
     end
     local payload = OP_PUB .. string.pack(">s2", topic) .. string.pack(">s4", data or "")
     local _, size = srey.request(sc_name, REQUEST_TYPE.REQ_SC, payload)
     if nil == size then
-        return ERR_FAILED
+        return false
     end
-    return ERR_OK
+    return true
 end
 
 ---发布保留消息。data 为 nil/空串等价"清空 retained 槽位,不 deliver"。
@@ -346,18 +346,18 @@ end
 ---@param sc_name TASK_NAME subcenter task name
 ---@param topic string 精确 topic
 ---@param data string? retained payload(nil 清空槽位)
----@return integer erro
+---@return boolean ok 成功 true;topic 非法或 subcenter 不可达 false
 function sc_client.publish_retained(sc_name, topic, data)
     if not topic or "" == topic then
         WARN("sc publish_retained: topic empty.")
-        return ERR_FAILED
+        return false
     end
     local payload = OP_PUB_RETAINED .. string.pack(">s2", topic) .. string.pack(">s4", data or "")
     local _, size = srey.request(sc_name, REQUEST_TYPE.REQ_SC, payload)
     if nil == size then
-        return ERR_FAILED
+        return false
     end
-    return ERR_OK
+    return true
 end
 
 ---查询匹配 pattern 的所有当前 retained 消息。
@@ -418,14 +418,14 @@ end
 ---publisher 应在 task 退出前调 set_meta(sc_name, nil) 主动清理。必须在协程中调用。
 ---@param sc_name TASK_NAME subcenter task name
 ---@param meta string? 元数据;nil 或空串等价"清除元数据";上限 SC_META_MAX_SIZE(1KB)
----@return integer erro ERR_OK 成功;ERR_FAILED subcenter 不可达
+---@return boolean ok 成功 true;subcenter 不可达 false
 function sc_client.set_meta(sc_name, meta)
     local payload = OP_SET_META .. string.pack(">s2", meta or "")
     local _, size = srey.request(sc_name, REQUEST_TYPE.REQ_SC, payload)
     if nil == size then
-        return ERR_FAILED
+        return false
     end
-    return ERR_OK
+    return true
 end
 
 return sc_client

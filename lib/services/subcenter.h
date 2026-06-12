@@ -122,11 +122,12 @@ int32_t coro_sc_publish_retained(task_ctx *task, name_t sc_name, const char *top
 /// <param name="sc_name">subcenter task name</param>
 /// <param name="pattern">查询模式;可含通配</param>
 /// <param name="size">出参:返回 buffer 字节数;NULL 不写</param>
+/// <param name="erro">出参:ERR_OK 成功(含无匹配);ERR_FAILED subcenter 不可达/超时</param>
 /// <returns>多条 retained 拼接 buffer,下次 yield 前有效;每条格式:
 ///     | name_t retained_publisher | u16 mlen | meta | u16 tlen | topic | u32 plen | payload |
-///     无匹配返 NULL 且 size=0</returns>
-void *coro_sc_query_retained(task_ctx *task, name_t sc_name,
-                             const char *pattern, size_t *size);
+///     无匹配返 NULL 且 size=0(erro=ERR_OK),失败返 NULL 且 erro=ERR_FAILED</returns>
+void *coro_sc_query_retained(task_ctx *task, name_t sc_name, const char *pattern,
+                             size_t *size, int32_t *erro);
 /// <summary>
 /// 列出所有订阅 topic(仅订阅信息,不含 retained)。调试用,topic 量大时谨慎调。
 /// 必须在协程中调用。
@@ -134,10 +135,12 @@ void *coro_sc_query_retained(task_ctx *task, name_t sc_name,
 /// <param name="task">当前 task</param>
 /// <param name="sc_name">subcenter task name</param>
 /// <param name="size">出参:返回 buffer 字节数;NULL 不写</param>
+/// <param name="erro">出参:ERR_OK 成功(含空);ERR_FAILED subcenter 不可达/超时</param>
 /// <returns>binary buffer,每条格式:
 ///     | u16 tlen | topic | u32 normal_count | u32 shared_groups_count |
-///     空时返 NULL 且 size=0;下次 yield 前有效</returns>
-void *coro_sc_topics(task_ctx *task, name_t sc_name, size_t *size);
+///     空时返 NULL 且 size=0(erro=ERR_OK),失败返 NULL 且 erro=ERR_FAILED;下次 yield 前有效</returns>
+void *coro_sc_topics(task_ctx *task, name_t sc_name,
+                     size_t *size, int32_t *erro);
 /// <summary>
 /// 列出所有 retained topic 元信息(不返 retained payload 自身,避免数据量大)。
 /// 调试用。必须在协程中调用。
@@ -145,10 +148,12 @@ void *coro_sc_topics(task_ctx *task, name_t sc_name, size_t *size);
 /// <param name="task">当前 task</param>
 /// <param name="sc_name">subcenter task name</param>
 /// <param name="size">出参:返回 buffer 字节数;NULL 不写</param>
+/// <param name="erro">出参:ERR_OK 成功(含空);ERR_FAILED subcenter 不可达/超时</param>
 /// <returns>binary buffer,每条格式:
 ///     | u16 tlen | topic | name_t retained_publisher | u32 retained_size | u16 retained_meta_size |
-///     空时返 NULL 且 size=0;下次 yield 前有效</returns>
-void *coro_sc_retained_topics(task_ctx *task, name_t sc_name, size_t *size);
+///     空时返 NULL 且 size=0(erro=ERR_OK),失败返 NULL 且 erro=ERR_FAILED;下次 yield 前有效</returns>
+void *coro_sc_retained_topics(task_ctx *task, name_t sc_name,
+                              size_t *size, int32_t *erro);
 /// <summary>
 /// 注册或更新当前 task 的发布者元数据。
 /// 后续该 task 所有 publish/publish_retained 都自动携带 meta 投递给订阅者。

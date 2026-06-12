@@ -263,10 +263,15 @@ static void _dc_handle_get(dc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *b
     dc_entry *e = _dc_kv_get(ctx, keybuf);
     task_ctx *src_task = task_grab(ctx->loader, src);
     if (NULL != src_task) {
-        if (e && e->val) {
-            task_response(src_task, sess, ERR_OK, e->val, e->size, 1);
+        // key 真不存在 → 失败;空值键(存在但 val=NULL)视为有效值仍返 ERR_OK
+        if (NULL == e) {
+            task_response(src_task, sess, ERR_FAILED, NULL, 0, 0);
         } else {
-            task_response(src_task, sess, ERR_OK, NULL, 0, 0);
+            if (e->val) {
+                task_response(src_task, sess, ERR_OK, e->val, e->size, 1);
+            } else {
+                task_response(src_task, sess, ERR_OK, NULL, 0, 0);
+            }
         }
         task_ungrab(src_task);
     }
@@ -337,11 +342,15 @@ static void _dc_handle_wait(dc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *
         return;
     }
     dc_entry *e = _dc_kv_get(ctx, keybuf);
-    if (e && e->val) {
-        // 命中,立即返回
+    if (e) {
+        // 命中即返回;空值(e->val==NULL)也算命中(视为有效值),task_response 对 NULL data 安全返回 nil
         task_ctx *src_task = task_grab(ctx->loader, src);
         if (NULL != src_task) {
-            task_response(src_task, sess, ERR_OK, e->val, e->size, 1);
+            if (e->val) {
+                task_response(src_task, sess, ERR_OK, e->val, e->size, 1);
+            } else {
+                task_response(src_task, sess, ERR_OK, NULL, 0, 1);
+            }
             task_ungrab(src_task);
         }
         return;
@@ -534,43 +543,47 @@ int32_t coro_dc_set(task_ctx *task, name_t dc_name, const char *key, void *val, 
     task_ungrab(dc);
     return erro;
 }
-void *coro_dc_get(task_ctx *task, name_t dc_name, const char *key, size_t *size) {
+void *coro_dc_get(task_ctx *task, name_t dc_name, const char *key,
+                  size_t *size, int32_t *erro) {
     if (EMPTYSTR(key) || strlen(key) >= DC_KEY_MAX) {
         SET_PTR(size, 0);
+        *erro = ERR_FAILED;
         return NULL;
     }
     task_ctx *dc = task_grab(task->loader, dc_name);
     if (NULL == dc) {
         SET_PTR(size, 0);
+        *erro = ERR_FAILED;
         return NULL;
     }
     size_t total;
     char *buf = _dc_pack(DC_OP_GET, key, NULL, 0, &total);
-    int32_t erro = 0;
-    void *resp = coro_request(dc, task, REQ_DC, buf, total, 0, &erro, size);  // copy=0 转移所有权
+    void *resp = coro_request(dc, task, REQ_DC, buf, total, 0, erro, size);  // copy=0 转移所有权
     task_ungrab(dc);
-    if (ERR_OK != erro) {
+    if (ERR_OK != *erro) {
         SET_PTR(size, 0);
         return NULL;
     }
     return resp;
 }
-void *coro_dc_wait(task_ctx *task, name_t dc_name, const char *key, size_t *size) {
+void *coro_dc_wait(task_ctx *task, name_t dc_name, const char *key,
+                   size_t *size, int32_t *erro) {
     if (EMPTYSTR(key) || strlen(key) >= DC_KEY_MAX) {
         SET_PTR(size, 0);
+        *erro = ERR_FAILED;
         return NULL;
     }
     task_ctx *dc = task_grab(task->loader, dc_name);
     if (NULL == dc) {
         SET_PTR(size, 0);
+        *erro = ERR_FAILED;
         return NULL;
     }
     size_t total;
     char *buf = _dc_pack(DC_OP_WAIT, key, NULL, 0, &total);
-    int32_t erro = 0;
-    void *resp = coro_request(dc, task, REQ_DC, buf, total, 0, &erro, size);  // copy=0 转移所有权
+    void *resp = coro_request(dc, task, REQ_DC, buf, total, 0, erro, size);  // copy=0 转移所有权
     task_ungrab(dc);
-    if (ERR_OK != erro) {
+    if (ERR_OK != *erro) {
         SET_PTR(size, 0);
         return NULL;
     }
@@ -592,18 +605,19 @@ int32_t coro_dc_del(task_ctx *task, name_t dc_name, const char *key) {
     task_ungrab(dc);
     return erro;
 }
-void *coro_dc_keys(task_ctx *task, name_t dc_name, size_t *size) {
+void *coro_dc_keys(task_ctx *task, name_t dc_name,
+                   size_t *size, int32_t *erro) {
     task_ctx *dc = task_grab(task->loader, dc_name);
     if (NULL == dc) {
         SET_PTR(size, 0);
+        *erro = ERR_FAILED;
         return NULL;
     }
     size_t total;
     char *buf = _dc_pack(DC_OP_LIST, NULL, NULL, 0, &total);
-    int32_t erro = 0;
-    void *resp = coro_request(dc, task, REQ_DC, buf, total, 0, &erro, size);  // copy=0 转移所有权
+    void *resp = coro_request(dc, task, REQ_DC, buf, total, 0, erro, size);  // copy=0 转移所有权
     task_ungrab(dc);
-    if (ERR_OK != erro) {
+    if (ERR_OK != *erro) {
         SET_PTR(size, 0);
         return NULL;
     }
@@ -650,7 +664,9 @@ int32_t dc_del(task_ctx *task, name_t dc_name, uint64_t sess, const char *key) {
     return ERR_OK;
 }
 int32_t dc_get(task_ctx *task, name_t dc_name, uint64_t sess, const char *key) {
-    if (EMPTYSTR(key) || strlen(key) >= DC_KEY_MAX) {
+    if (EMPTYSTR(key)
+        || strlen(key) >= DC_KEY_MAX
+        || 0 == sess) {
         return ERR_FAILED;
     }
     task_ctx *dc = task_grab(task->loader, dc_name);
@@ -659,16 +675,14 @@ int32_t dc_get(task_ctx *task, name_t dc_name, uint64_t sess, const char *key) {
     }
     size_t total;
     char *buf = _dc_pack(DC_OP_GET, key, NULL, 0, &total);
-    if (0 == sess) {
-        task_call(dc, REQ_DC, buf, total, 0);
-    } else {
-        task_request(dc, task, REQ_DC, sess, buf, total, 0);
-    }
+    task_request(dc, task, REQ_DC, sess, buf, total, 0);
     task_ungrab(dc);
     return ERR_OK;
 }
 int32_t dc_wait(task_ctx *task, name_t dc_name, uint64_t sess, const char *key) {
-    if (EMPTYSTR(key) || strlen(key) >= DC_KEY_MAX) {
+    if (EMPTYSTR(key)
+        || strlen(key) >= DC_KEY_MAX
+        || 0 == sess) {
         return ERR_FAILED;
     }
     task_ctx *dc = task_grab(task->loader, dc_name);
@@ -677,26 +691,21 @@ int32_t dc_wait(task_ctx *task, name_t dc_name, uint64_t sess, const char *key) 
     }
     size_t total;
     char *buf = _dc_pack(DC_OP_WAIT, key, NULL, 0, &total);
-    if (0 == sess) {
-        task_call(dc, REQ_DC, buf, total, 0);
-    } else {
-        task_request(dc, task, REQ_DC, sess, buf, total, 0);
-    }
+    task_request(dc, task, REQ_DC, sess, buf, total, 0);
     task_ungrab(dc);
     return ERR_OK;
 }
 int32_t dc_keys(task_ctx *task, name_t dc_name, uint64_t sess) {
+    if (0 == sess) {
+        return ERR_FAILED;
+    }
     task_ctx *dc = task_grab(task->loader, dc_name);
     if (NULL == dc) {
         return ERR_FAILED;
     }
     size_t total;
     char *buf = _dc_pack(DC_OP_LIST, NULL, NULL, 0, &total);
-    if (0 == sess) {
-        task_call(dc, REQ_DC, buf, total, 0);
-    } else {
-        task_request(dc, task, REQ_DC, sess, buf, total, 0);
-    }
+    task_request(dc, task, REQ_DC, sess, buf, total, 0);
     task_ungrab(dc);
     return ERR_OK;
 }

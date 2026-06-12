@@ -220,5 +220,31 @@ runner.run("hotfix", function(t)
         t:eq(false, ok2, "source 非 string(number)返回 false")
         t:check(err2 and nil ~= err2:find("source"), "err 含 'source'")
     end
+
+    -- ── 子段 15:同名遮蔽 upvalue(同名不同 cell)→ 拒绝热修(df27021)─────
+    do
+        package.loaded.hotfix_shadow_mod = nil
+        -- 两个 do 块各声明同名 local v,M.f1/M.f2 捕获不同 cell;按名嫁接无法判定目标
+        local src = [[
+            local M = {}
+            do local v = 1; function M.f1() return v end end
+            do local v = 2; function M.f2() return v end end
+            return M
+        ]]
+        package.loaded.hotfix_shadow_mod = assert(load(src, "=hotfix_shadow_mod"))()
+        local ok, err = hotfix.apply("hotfix_shadow_mod", "function M.f1() return 9 end")
+        t:eq(false, ok, "同名遮蔽 upvalue 拒绝热修")
+        t:check(err and nil ~= err:find("shadowed"), "err 含 'shadowed'")
+        package.loaded.hotfix_shadow_mod = nil
+    end
+
+    -- ── 子段 16:patch 为预编译字节码 → load 't' 模式拒绝(禁止注入字节码)──
+    do
+        _setup_module()
+        local bytecode = string.dump(function() return 1 end)
+        local ok, err = hotfix.apply("hotfix_unit_mod", bytecode)
+        t:eq(false, ok, "字节码 patch 被拒绝")
+        t:check(err and nil ~= err:find("binary"), "err 含 'binary'(被 't' 模式拒绝)")
+    end
 end)
 end)
