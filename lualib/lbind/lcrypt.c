@@ -9,14 +9,17 @@
 /// </summary>
 /// <param name="data" type="string|lightuserdata">原始数据；字符串时长度自动取得</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
+/// <param name="space2plus" type="integer?">非 0(默认):空格编码为 '+'(form-urlencoded)；0:空格编码为 %20(RFC 3986)</param>
 /// <returns type="string">URL 编码后的字符串</returns>
 static int32_t _lcrypt_url_encode(lua_State *lua) {
     void *data;
     size_t size;
-    data = lpub_check_buf(lua, 1, &size, NULL);
+    int32_t idx = 1;
+    data = lpub_check_buf_idx(lua, &idx, &size, NULL);
+    int32_t space2plus = (int32_t)luaL_optinteger(lua, idx, 1);
     luaL_Buffer lbuf;
     char *out = luaL_buffinitsize(lua, &lbuf, URLEN_SIZE(size));
-    url_encode(data, size, out);
+    url_encode(data, size, out, space2plus);
     luaL_pushresultsize(&lbuf, strlen(out));
     return 1;
 }
@@ -25,15 +28,18 @@ static int32_t _lcrypt_url_encode(lua_State *lua) {
 /// </summary>
 /// <param name="data" type="string|lightuserdata">URL 编码数据；字符串时长度自动取得</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
+/// <param name="plus2space" type="integer?">非 0(默认):'+' 解码为空格(form-urlencoded)；0:'+' 保持字面(RFC 3986)</param>
 /// <returns type="string">解码后的原始字符串（可含 \0）</returns>
 static int32_t _lcrypt_url_decode(lua_State *lua) {
     void *data;
     size_t size;
-    data = lpub_check_buf(lua, 1, &size, NULL);
+    int32_t idx = 1;
+    data = lpub_check_buf_idx(lua, &idx, &size, NULL);
+    int32_t plus2space = (int32_t)luaL_optinteger(lua, idx, 1);
     luaL_Buffer lbuf;
     char *out = luaL_buffinitsize(lua, &lbuf, size + 1);//url_decode 原地解码后在末尾写 '\0'，需 size+1
     memcpy(out, data, size);
-    size_t decoded = url_decode(out, size);
+    size_t decoded = url_decode(out, size, plus2space);
     luaL_pushresultsize(&lbuf, decoded);
     return 1;
 }
@@ -48,8 +54,8 @@ static int32_t _lcrypt_url_parse(lua_State *lua) {
     size_t size;
     data = lpub_check_buf(lua, 1, &size, NULL);
     url_ctx url;
-    url_parse(&url, (const char *)data, size);
-    lua_createtable(lua, 0, 8);
+    url_parse(&url, (const char *)data, size, '/', 1);
+    lua_createtable(lua, 0, 9);
     if (!buf_empty(&url.scheme)) {
         lua_pushlstring(lua, url.scheme.data, url.scheme.lens);
         lua_setfield(lua, -2, "scheme");
@@ -70,18 +76,27 @@ static int32_t _lcrypt_url_parse(lua_State *lua) {
         lua_pushlstring(lua, url.port.data, url.port.lens);
         lua_setfield(lua, -2, "port");
     }
-    if (!buf_empty(&url.path)) {
-        lua_pushlstring(lua, url.path.data, url.path.lens);
+    if (url.npath > 0) {
+        char pathbuf[URL_BUF_LENS];
+        size_t plen = url_get_path(&url, pathbuf, sizeof(pathbuf));
+        lua_pushlstring(lua, pathbuf, plen);
         lua_setfield(lua, -2, "path");
     }
+    // segs: 已解码路径段数组(router 直接消费, 避免重切把 %2F 当分隔符)
+    lua_createtable(lua, url.npath > 0 ? url.npath : 0, 0);
+    for (int32_t i = 0; i < url.npath; i++) {
+        lua_pushlstring(lua, url.segs[i].data, url.segs[i].lens);
+        lua_rawseti(lua, -2, i + 1);
+    }
+    lua_setfield(lua, -2, "segs");
     if (!buf_empty(&url.anchor)) {
         lua_pushlstring(lua, url.anchor.data, url.anchor.lens);
         lua_setfield(lua, -2, "anchor");
     }
     // 将 query 参数列表打包为 key->value 的子 table；param key 是动态字符串，子表内只能 settable
-    lua_createtable(lua, 0, MAX_NPARAM);
+    lua_createtable(lua, 0, URL_MAX_PARAM);
     url_param *param;
-    for (int32_t i = 0; i < MAX_NPARAM; i++) {
+    for (int32_t i = 0; i < URL_MAX_PARAM; i++) {
         param = &url.param[i];
         if (buf_empty(&param->key)) {
             break;

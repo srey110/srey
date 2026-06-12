@@ -156,14 +156,12 @@ struct router_req {
     int32_t chain_i;    // next 推进游标
     int32_t params_n;   // 路径参数数量
     int32_t responded;  // 响应已写出标志 (用于兜底 500)
-    uint32_t path_len;
     router_method method;     // 当前请求方法位掩码
     SOCKET fd;
     uint64_t skid;
     task_ctx *task;       // 当前 task
     struct http_pack_ctx *pack;       // 原始 http 包, 供 http_data / http_header 访问
     void *user;       // 中间件间传值, 用户自管
-    const char *path;       // 解析后的路径 (指向 url_storage 内部)
     router_cb chain[ROUTER_MAX_CHAIN]; // 中间件 + handler 拼接链
     router_kv params[ROUTER_MAX_PARAMS]; // {name} / {name?} 提取结果
     url_ctx  url_storage; // URL 解析结果 (内部使用)

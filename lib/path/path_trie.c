@@ -1,6 +1,6 @@
 ﻿#include "path/path_trie.h"
 #include "containers/hashmap.h"
-#include "utils/log.h"
+#include "protocol/urlparse.h"
 
 #define PATH_MAX_DEPTH      256       // 单 path 最多段数
 #define PATH_SCAN_BUF       1024      // path_scan 路径重建栈缓冲
@@ -8,7 +8,7 @@
 // (void 函数传空 fail_value,展开为 return ;)
 #define PATH_PREP_SEGS(t, path, kind, fail_value) \
     if (NULL == (t)) { return fail_value; } \
-    seg_view segs[PATH_MAX_DEPTH]; \
+    buf_ctx segs[PATH_MAX_DEPTH]; \
     int32_t n = 0; \
     if (ERR_OK != _path_validate((t)->rules, (path), (kind), segs, PATH_MAX_DEPTH, &n)) { \
         return fail_value; \
@@ -25,16 +25,10 @@ typedef struct path_node {
 }path_node;
 struct path_trie {
     size_t count;               // 持有 payload 的节点数(insert 增 / delete 减)
-    path_node root;             // 根节点(seg=NULL)
     const path_rules *rules;    // path 解析/匹配规则(外部持有,长生命周期)
+    path_node root;             // 根节点(seg=NULL)
     free_cb _free;              // payload 释放回调(节点删除/树销毁时调)
 };
-// 段视图(不修改输入字符串)
-typedef struct seg_view {
-    size_t len;       // 段字节长度
-    const char *p;    // 段起始指针(指向输入串,不复制)
-}seg_view;
-
 // children hashmap 存储 path_node*(by-value 存指针),hash/cmp 通过解引用读 seg
 static uint64_t _path_child_hash(const void *item, uint64_t s0, uint64_t s1) {
     const path_node *n = *(path_node *const *)item;
@@ -46,62 +40,35 @@ static int _path_child_cmp(const void *a, const void *b, void *ud) {
     const path_node *nb = *(path_node *const *)b;
     return strcmp(na->seg, nb->seg);
 }
-// 切分:把 path 按 sep 拆成 seg_view 数组。返回段数;> cap 返 -1
-static int32_t _path_split_segs(const char *path, char sep, seg_view *out, int32_t cap) {
-    if (NULL == path) {
-        return -1;
-    }
-    int32_t n = 0;
-    const char *p = path;
-    const char *q;
-    for (;;) {
-        if (n >= cap) {
-            return -1;
-        }
-        q = strchr(p, sep);
-        if (NULL != q) {
-            out[n].p = p;
-            out[n].len = (size_t)(q - p);
-            n++;
-            p = q + 1;
-        } else {
-            out[n].p = p;
-            out[n].len = strlen(p);
-            n++;
-            break;
-        }
-    }
-    return n;
-}
 // 段级内置校验(每段调一次)
-static int32_t _path_builtin_validate_seg(const path_rules *r, const seg_view *sv, path_kind kind) {
-    if (0 == sv->len) {
+static int32_t _path_builtin_validate_seg(const path_rules *r, const buf_ctx *sv, path_kind kind) {
+    if (0 == sv->lens) {
         return ERR_FAILED;
     }
-    if (NULL != memchr(sv->p, '\0', sv->len)) {
+    if (NULL != memchr(sv->data, '\0', sv->lens)) {
         return ERR_FAILED;
     }
-    if (NULL != memchr(sv->p, r->sep, sv->len)) {
+    if (NULL != memchr(sv->data, r->sep, sv->lens)) {
         return ERR_FAILED;
     }
     if (0 != r->single_wildcard) {
-        if (NULL != memchr(sv->p, r->single_wildcard, sv->len)
-            && !(1 == sv->len && r->single_wildcard == sv->p[0])) {
+        if (NULL != memchr(sv->data, r->single_wildcard, sv->lens)
+            && !(1 == sv->lens && r->single_wildcard == ((char *)sv->data)[0])) {
             return ERR_FAILED;
         }
     }
     if (0 != r->multi_wildcard) {
-        if (NULL != memchr(sv->p, r->multi_wildcard, sv->len)
-            && !(1 == sv->len && r->multi_wildcard == sv->p[0])) {
+        if (NULL != memchr(sv->data, r->multi_wildcard, sv->lens)
+            && !(1 == sv->lens && r->multi_wildcard == ((char *)sv->data)[0])) {
             return ERR_FAILED;
         }
     }
     if (PATH_KIND_LITERAL == kind) {
-        if (1 == sv->len) {
-            if (0 != r->single_wildcard && r->single_wildcard == sv->p[0]) {
+        if (1 == sv->lens) {
+            if (0 != r->single_wildcard && r->single_wildcard == ((char *)sv->data)[0]) {
                 return ERR_FAILED;
             }
-            if (0 != r->multi_wildcard && r->multi_wildcard == sv->p[0]) {
+            if (0 != r->multi_wildcard && r->multi_wildcard == ((char *)sv->data)[0]) {
                 return ERR_FAILED;
             }
         }
@@ -109,7 +76,7 @@ static int32_t _path_builtin_validate_seg(const path_rules *r, const seg_view *s
     return ERR_OK;
 }
 // 路径级内置校验(切分后调一次)
-static int32_t _path_builtin_validate(const path_rules *r, const seg_view *segs, int32_t n, path_kind kind) {
+static int32_t _path_builtin_validate(const path_rules *r, const buf_ctx *segs, int32_t n, path_kind kind) {
     if (0 == n) {
         return ERR_FAILED;
     }
@@ -120,7 +87,7 @@ static int32_t _path_builtin_validate(const path_rules *r, const seg_view *segs,
     if (0 != r->multi_wildcard && PATH_KIND_WILDCARD == kind) {
         int32_t i;
         for (i = 0; i < n - 1; i++) {
-            if (1 == segs[i].len && r->multi_wildcard == segs[i].p[0]) {
+            if (1 == segs[i].lens && r->multi_wildcard == ((char *)segs[i].data)[0]) {
                 return ERR_FAILED;
             }
         }
@@ -129,7 +96,7 @@ static int32_t _path_builtin_validate(const path_rules *r, const seg_view *segs,
 }
 // 统一校验流程:返回 ERR_OK + 段数;失败返 ERR_FAILED
 static int32_t _path_validate(const path_rules *r, const char *path, path_kind kind,
-                          seg_view *segs, int32_t cap, int32_t *out_n) {
+                          buf_ctx *segs, int32_t cap, int32_t *out_n) {
     if (NULL == r || NULL == path) {
         return ERR_FAILED;
     }
@@ -137,7 +104,7 @@ static int32_t _path_validate(const path_rules *r, const char *path, path_kind k
         && ERR_OK != r->validate_path(path, kind, r->udata)) {
         return ERR_FAILED;
     }
-    int32_t n = _path_split_segs(path, r->sep, segs, cap);
+    int32_t n = _url_path_split((char *)path, strlen(path), r->sep, segs, cap);
     if (n < 0) {
         return ERR_FAILED;
     }
@@ -147,7 +114,7 @@ static int32_t _path_validate(const path_rules *r, const char *path, path_kind k
     int32_t i;
     for (i = 0; i < n; i++) {
         if (NULL != r->validate_segment
-            && ERR_OK != r->validate_segment(segs[i].p, segs[i].len, kind, r->udata)) {
+            && ERR_OK != r->validate_segment(segs[i].data, segs[i].lens, kind, r->udata)) {
             return ERR_FAILED;
         }
         if (ERR_OK != _path_builtin_validate_seg(r, &segs[i], kind)) {
@@ -159,19 +126,19 @@ static int32_t _path_validate(const path_rules *r, const char *path, path_kind k
 }
 // 公开:独立校验
 int32_t path_validate(const path_rules *rules, const char *path, path_kind kind) {
-    seg_view segs[PATH_MAX_DEPTH];
+    buf_ctx segs[PATH_MAX_DEPTH];
     int32_t n = 0;
     return _path_validate(rules, path, kind, segs, PATH_MAX_DEPTH, &n);
 }
 // 节点 alloc:sv=NULL 表示根
-static path_node *_path_node_alloc(const seg_view *sv, path_node *parent) {
+static path_node *_path_node_alloc(const buf_ctx *sv, path_node *parent) {
     path_node *n;
     CALLOC(n, 1, sizeof(path_node));
     n->parent = parent;
-    if (NULL != sv && sv->len > 0) {
-        MALLOC(n->seg, sv->len + 1);
-        memcpy(n->seg, sv->p, sv->len);
-        n->seg[sv->len] = '\0';
+    if (NULL != sv && sv->lens > 0) {
+        MALLOC(n->seg, sv->lens + 1);
+        memcpy(n->seg, sv->data, sv->lens);
+        n->seg[sv->lens] = '\0';
     }
     return n;
 }
@@ -230,7 +197,7 @@ size_t path_count(const path_trie *t) {
     return NULL == t ? 0 : t->count;
 }
 // 在父节点 children 中查找(临时构造查询节点)
-static path_node *_path_children_lookup(struct hashmap *children, const seg_view *sv) {
+static path_node *_path_children_lookup(struct hashmap *children, const buf_ctx *sv) {
     if (NULL == children) {
         return NULL;
     }
@@ -238,14 +205,14 @@ static path_node *_path_children_lookup(struct hashmap *children, const seg_view
     char stack[128];
     char *cstr;
     int32_t is_heap = 0;
-    if (sv->len + 1 <= sizeof(stack)) {
+    if (sv->lens + 1 <= sizeof(stack)) {
         cstr = stack;
     } else {
-        MALLOC(cstr, sv->len + 1);
+        MALLOC(cstr, sv->lens + 1);
         is_heap = 1;
     }
-    memcpy(cstr, sv->p, sv->len);
-    cstr[sv->len] = '\0';
+    memcpy(cstr, sv->data, sv->lens);
+    cstr[sv->lens] = '\0';
     path_node tmp;
     tmp.seg = cstr;
     path_node *qptr = &tmp;
@@ -257,18 +224,18 @@ static path_node *_path_children_lookup(struct hashmap *children, const seg_view
     return result;
 }
 // walk insert:从 root 沿 segs 创建路径,返回最终节点(NULL 失败)
-static path_node *_path_walk_insert(path_trie *t, const seg_view *segs, int32_t n) {
+static path_node *_path_walk_insert(path_trie *t, const buf_ctx *segs, int32_t n) {
     path_node *cur = &t->root;
     const path_rules *r = t->rules;
     int32_t i;
     for (i = 0; i < n; i++) {
         path_node *next = NULL;
-        if (0 != r->single_wildcard && 1 == segs[i].len && r->single_wildcard == segs[i].p[0]) {
+        if (0 != r->single_wildcard && 1 == segs[i].lens && r->single_wildcard == ((char *)segs[i].data)[0]) {
             if (NULL == cur->plus) {
                 cur->plus = _path_node_alloc(&segs[i], cur);
             }
             next = cur->plus;
-        } else if (0 != r->multi_wildcard && 1 == segs[i].len && r->multi_wildcard == segs[i].p[0]) {
+        } else if (0 != r->multi_wildcard && 1 == segs[i].lens && r->multi_wildcard == ((char *)segs[i].data)[0]) {
             if (NULL == cur->hash) {
                 cur->hash = _path_node_alloc(&segs[i], cur);
             }
@@ -294,15 +261,15 @@ static path_node *_path_walk_insert(path_trie *t, const seg_view *segs, int32_t 
     return cur;
 }
 // walk 精确路径(仅查询,不创建)
-static path_node *_path_walk_exact(path_trie *t, const seg_view *segs, int32_t n) {
+static path_node *_path_walk_exact(path_trie *t, const buf_ctx *segs, int32_t n) {
     path_node *cur = &t->root;
     const path_rules *r = t->rules;
     int32_t i;
     for (i = 0; i < n; i++) {
         path_node *next = NULL;
-        if (0 != r->single_wildcard && 1 == segs[i].len && r->single_wildcard == segs[i].p[0]) {
+        if (0 != r->single_wildcard && 1 == segs[i].lens && r->single_wildcard == ((char *)segs[i].data)[0]) {
             next = cur->plus;
-        } else if (0 != r->multi_wildcard && 1 == segs[i].len && r->multi_wildcard == segs[i].p[0]) {
+        } else if (0 != r->multi_wildcard && 1 == segs[i].lens && r->multi_wildcard == ((char *)segs[i].data)[0]) {
             next = cur->hash;
         } else {
             next = _path_children_lookup(cur->children, &segs[i]);
@@ -397,7 +364,7 @@ void *path_remove(path_trie *t, const char *path) {
 }
 // DFS 匹配
 static void _path_match_recurse(path_node *node, const path_rules *r,
-                            const seg_view *segs, int32_t n, int32_t idx,
+                            const buf_ctx *segs, int32_t n, int32_t idx,
                             match_visit_cb cb, void *ud) {
     // multi_wildcard 终端:匹配剩余任意层(含 0 层)
     if (NULL != node->hash && NULL != node->hash->payload) {
@@ -437,10 +404,10 @@ int32_t path_matches_pattern(const path_rules *rules,
     if (NULL == rules || NULL == literal_path || NULL == pattern) {
         return ERR_FAILED;
     }
-    seg_view lits[PATH_MAX_DEPTH];
-    seg_view pats[PATH_MAX_DEPTH];
-    int32_t ln = _path_split_segs(literal_path, rules->sep, lits, PATH_MAX_DEPTH);
-    int32_t pn = _path_split_segs(pattern, rules->sep, pats, PATH_MAX_DEPTH);
+    buf_ctx lits[PATH_MAX_DEPTH];
+    buf_ctx pats[PATH_MAX_DEPTH];
+    int32_t ln = _url_path_split((char *)literal_path, strlen(literal_path), rules->sep, lits, PATH_MAX_DEPTH);
+    int32_t pn = _url_path_split((char *)pattern, strlen(pattern), rules->sep, pats, PATH_MAX_DEPTH);
     if (ln <= 0 || pn <= 0) {
         return ERR_FAILED;
     }
@@ -451,7 +418,7 @@ int32_t path_matches_pattern(const path_rules *rules,
     char mw = rules->multi_wildcard;
     while (pi < pn) {
         // pattern 段是 multi_wildcard 终端 → 匹配剩余任意层
-        if (0 != mw && 1 == pats[pi].len && mw == pats[pi].p[0]) {
+        if (0 != mw && 1 == pats[pi].lens && mw == ((char *)pats[pi].data)[0]) {
             // 必须末尾
             if (pi != pn - 1) {
                 return ERR_FAILED;
@@ -463,8 +430,8 @@ int32_t path_matches_pattern(const path_rules *rules,
             return ERR_FAILED;
         }
         // single_wildcard:literal 段非空即可
-        if (0 != sw && 1 == pats[pi].len && sw == pats[pi].p[0]) {
-            if (0 == lits[li].len) {
+        if (0 != sw && 1 == pats[pi].lens && sw == ((char *)pats[pi].data)[0]) {
+            if (0 == lits[li].lens) {
                 return ERR_FAILED;
             }
             li++;
@@ -472,8 +439,8 @@ int32_t path_matches_pattern(const path_rules *rules,
             continue;
         }
         // 精确比较
-        if (lits[li].len != pats[pi].len
-            || 0 != memcmp(lits[li].p, pats[pi].p, lits[li].len)) {
+        if (lits[li].lens != pats[pi].lens
+            || 0 != memcmp(lits[li].data, pats[pi].data, lits[li].lens)) {
             return ERR_FAILED;
         }
         li++;

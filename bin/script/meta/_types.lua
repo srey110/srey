@@ -15,7 +15,8 @@
 ---@field psw    string?              密码；URL 中无密码时为 nil
 ---@field host   string               主机名或 IP
 ---@field port   integer              端口号
----@field path   string               路径（如 "/user/42"）
+---@field path   string?              重组后的解码路径（如 "/user/42"）；无路径段时为 nil
+---@field segs   string[]             解码后的路径段数组（如 {"user","42"}）；router 直接消费, %2F 不当分隔符
 ---@field anchor string?              片段标识符（# 后部分）；不存在时为 nil
 ---@field param  table<string,string> 查询字符串键值对；无查询字符串时为空表
 

@@ -176,6 +176,22 @@ runner.run("unit_router", function(t)
         t:eq("root", (dispatch(r, "GET", "/") or {}).body, "root / body")
     end
 
+    -- 1.13 %2F 不当分隔符(A3):段内 %2F 解成字面 '/', 不重新分段
+    do
+        local r = Route.new()
+        local got
+        r:get("/files/{name}", function(ctx) got = ctx.params.name; ctx:text(200, "ok") end)
+        t:eq(200,   (dispatch(r, "GET", "/files/a%2Fb") or {}).code, "%2F 命中单段路由")
+        t:eq("a/b", got, "%2F 解码为字面 'a/b', 未被切成两段")
+    end
+
+    -- 1.14 path 里 '+' 是字面量(A2):不转空格
+    do
+        local r = Route.new()
+        r:get("/lit/a+b", function(ctx) ctx:text(200, "litok") end)
+        t:eq("litok", (dispatch(r, "GET", "/lit/a+b") or {}).body, "'+' 保持字面, 命中字面路由")
+    end
+
     -- ── 2. ctx 字段 ────────────────────────────────────────────────────────
 
     do

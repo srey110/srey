@@ -69,7 +69,7 @@ dns_ip *dns_lookup(task_ctx *task, const char *domain, int32_t ipv6, int32_t udp
 }
 SOCKET wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, const char *secprot, uint64_t *skid, int32_t netev) {
     url_ctx url;
-    url_parse(&url, ws, strlen(ws));
+    url_parse(&url, ws, strlen(ws), '/', 1);
     int32_t isws = buf_icompare(&url.scheme, "ws", strlen("ws"));
     int32_t iswss = buf_icompare(&url.scheme, "wss", strlen("wss"));
     if (!isws && !iswss) {

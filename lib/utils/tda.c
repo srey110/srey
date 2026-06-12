@@ -1,5 +1,4 @@
 ﻿#include "utils/tda.h"
-#include "utils/log.h"
 #include "utils/utils.h"
 
 void tda_init(tda_ctx *ctx, size_t overload_init) {

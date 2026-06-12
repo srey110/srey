@@ -2,7 +2,6 @@
 #include "protocol/prots.h"
 #include "utils/utils.h"
 #include "utils/binary.h"
-#include "utils/log.h"
 #include "srey/loader.h"
 #include "srey/task.h"
 
@@ -170,40 +169,12 @@ static int32_t _router_parse_path(const char *path, size_t path_len, router_seg 
     *out_n = n;
     return ERR_OK;
 }
-// 把请求 path 拆段后与 rsegs 对照, 成功填 ctx->params 并返回 1
-// 不修改 path; ctx->params[i].key 指向 rsegs[].str (router_ctx 持有),
-// val 指向 path 内部 (ctx 持有, 即 ctx->url_storage.buf)
+// 把 url_parse 拆好的请求段 qsegs 与 rsegs 对照, 成功填 ctx->params 并返回 1。
+// qsegs 已解码(%XX 已解、'+' 保持字面), data 指向 ctx->url_storage.buf;
+// ctx->params[i].key 指向 rsegs[].str(router_ctx 持有), val 指向 qsegs 内部
 static int32_t _router_match_path(const router_seg *rsegs, int32_t rn,
-                                  const char *path, size_t path_len,
+                                  const buf_ctx *qsegs, int32_t qn,
                                   router_req *ctx) {
-    // 把请求 path 拆成 (起址, 长度) 二元组数组, 不复制字符串
-    struct { const char *s; size_t n; } qsegs[ROUTER_MAX_SEGS];
-    int32_t qn = 0;
-    size_t i = 0;
-    size_t start;
-    while (i < path_len && qn < ROUTER_MAX_SEGS) {
-        while (i < path_len && '/' == path[i]) {
-            i++;
-        }
-        if (i >= path_len) {
-            break;
-        }
-        start = i;
-        while (i < path_len && '/' != path[i]) {
-            i++;
-        }
-        qsegs[qn].s = path + start;
-        qsegs[qn].n = i - start;
-        qn++;
-    }
-    // 请求段超 ROUTER_MAX_SEGS:跳末尾 '/' 后仍有内容即存在第 65 段,标记溢出供下方判不匹配
-    int32_t overflow = 0;
-    if (ROUTER_MAX_SEGS == qn) {
-        while (i < path_len && '/' == path[i]) {
-            i++;
-        }
-        overflow = (i < path_len) ? 1 : 0;
-    }
     // ri = 路由段游标, qi = 请求段游标, pn = 已填参数计数
     int32_t ri = 0;
     int32_t qi = 0;
@@ -216,8 +187,8 @@ static int32_t _router_match_path(const router_seg *rsegs, int32_t rn,
             return 1;
         } else if (ROUTER_SEG_LIT == seg->t) {
             // 字面量必须长度相同且内容全等
-            if (qi >= qn || seg->str_len != (uint32_t)qsegs[qi].n
-                || 0 != memcmp(seg->str, qsegs[qi].s, qsegs[qi].n)) {
+            if (qi >= qn || seg->str_len != (uint32_t)qsegs[qi].lens
+                || 0 != memcmp(seg->str, qsegs[qi].data, qsegs[qi].lens)) {
                 return 0;
             }
             ri++;
@@ -233,8 +204,8 @@ static int32_t _router_match_path(const router_seg *rsegs, int32_t rn,
             }
             ctx->params[pn].key = seg->str;
             ctx->params[pn].key_len = seg->str_len;
-            ctx->params[pn].val = qsegs[qi].s;
-            ctx->params[pn].val_len = (uint32_t)qsegs[qi].n;
+            ctx->params[pn].val = qsegs[qi].data;
+            ctx->params[pn].val_len = (uint32_t)qsegs[qi].lens;
             pn++;
             ri++;
             qi++;
@@ -247,16 +218,16 @@ static int32_t _router_match_path(const router_seg *rsegs, int32_t rn,
                 }
                 ctx->params[pn].key = seg->str;
                 ctx->params[pn].key_len = seg->str_len;
-                ctx->params[pn].val = qsegs[qi].s;
-                ctx->params[pn].val_len = (uint32_t)qsegs[qi].n;
+                ctx->params[pn].val = qsegs[qi].data;
+                ctx->params[pn].val_len = (uint32_t)qsegs[qi].lens;
                 pn++;
                 qi++;
             }
             ri++;
         }
     }
-    // 路由段消耗完但请求段还有剩或溢出 ROUTER_MAX_SEGS, 不匹配 (避免 /a 命中 /a/b)
-    if (qi != qn || overflow) {
+    // 路由段消耗完但请求段还有剩, 不匹配 (避免 /a 命中 /a/b)
+    if (qi != qn) {
         return 0;
     }
     ctx->params_n = pn;
@@ -618,16 +589,25 @@ void router_dispatch(router_ctx *r, task_ctx *task,
         _router_send_simple(&tmpctx, 405, "Method Not Allowed\n");
         return;
     }
-    // 解析 URL: path 用于段匹配, query 落 ctx->url_storage 供 router_req_query 取
+    // 解析 URL: path 拆成 segs(已 %XX 解码、'+' 保持字面)供段匹配, query 落 ctx->url_storage 供 router_req_query 取
     router_req ctx = { 0 };
     ctx.task = task;
     ctx.fd = fd;
     ctx.skid = skid;
     ctx.pack = pack;
     ctx.method = m;
-    url_parse(&ctx.url_storage, st[1].data, st[1].lens);
-    ctx.path = ctx.url_storage.path.data;
-    ctx.path_len = (uint32_t)ctx.url_storage.path.lens;
+    if (ERR_OK != url_parse(&ctx.url_storage, st[1].data, st[1].lens, '/', 1)) {
+        // 段数超 URL_MAX_PATH_DEPTH 或 URI 过长, 无法路由
+        _router_send_simple(&ctx, 404, "Not Found\n");
+        return;
+    }
+    // url_parse 保留空段(RFC);路由按"模板跳空段"语义匹配, 这里就地剔除空段
+    int32_t qn = 0;
+    for (int32_t i = 0; i < ctx.url_storage.npath; i++) {
+        if (ctx.url_storage.segs[i].lens > 0) {
+            ctx.url_storage.segs[qn++] = ctx.url_storage.segs[i];
+        }
+    }
     // 线性扫描路由表: 方法位掩码 & 命中 + 路径匹配, 首条命中即用
     router_entry *matched = NULL;
     for (int32_t i = 0; i < r->routes_n; i++) {
@@ -636,7 +616,7 @@ void router_dispatch(router_ctx *r, task_ctx *task,
             continue;
         }
         ctx.params_n = 0;
-        if (_router_match_path(e->segs, e->segs_n, ctx.path, ctx.path_len, &ctx)) {
+        if (_router_match_path(e->segs, e->segs_n, ctx.url_storage.segs, qn, &ctx)) {
             matched = e;
             break;
         }

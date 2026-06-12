@@ -7,7 +7,6 @@
 #include "event/event.h"
 #include "utils/binary.h"
 #include "utils/utils.h"
-#include "utils/log.h"
 
 // task 列表收集项 + 动态数组（用于 /__alive 与广播）
 typedef struct dbg_task {

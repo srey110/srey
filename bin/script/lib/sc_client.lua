@@ -11,7 +11,7 @@
 --   SET_META       = | u8 0x09 | u16 mlen | meta |
 --   RETAINED_LIST  = | u8 0x0A |
 -- subcenter → 订阅者推送(REQUEST_TYPE.REQ_SC_DELIVER):
---   | u8 kind | name_t publisher | u16 mlen | meta | u16 tlen | topic | u32 plen | payload |   (kind: 0=普通 1=共享)
+--   | u8 kind | name_t publisher | u16 mlen | meta | u16 glen | group | u16 tlen | topic | u32 plen | payload |   (kind: 0=普通 1=共享;group 仅共享非空)
 -- subscribe 内部自动两步:SUB → QUERY_RETAINED 把首批 retained 转交 handler。
 -- 性能说明:_handlers 表线性扫描,适合 < 100 pattern;> 100 考虑分组路由。
 
@@ -29,10 +29,10 @@ local OP_SET_META        = "\x09"
 local OP_RETAINED_LIST   = "\x0A"
 
 -- per-task handler 路由表:pattern → handler。task 内单线程协作,无锁
--- 普通订阅(_handlers)与共享订阅(_shared_handlers)各一张表,按 deliver 的 kind 分别路由,同一 topic 两种订阅互不覆盖
+-- 普通订阅(_handlers:pattern→handler)与共享订阅(_shared_handlers:pattern→group→handler,多 group 同 topic 各自独立)各一张表,按 deliver kind 分别路由
 ---@type table<string, fun(topic:string, payload:string, publisher:integer, meta:string?)>
 local _handlers = {}
----@type table<string, fun(topic:string, payload:string, publisher:integer, meta:string?)>
+---@type table<string, table<string, fun(topic:string, payload:string, publisher:integer, meta:string?)>>
 local _shared_handlers = {}
 
 local sc_client = {}
@@ -88,24 +88,26 @@ local function _topic_match(pattern, topic)
     return li == ln + 1
 end
 
--- 拆 deliver wire:| u8 kind | name_t publisher | u16 mlen | meta | u16 tlen | topic | u32 plen | payload |
--- name_t = uint64_t(见 lib/base/structs.h);所有数值字段网络序
+-- 拆 deliver wire:| u8 kind | name_t publisher | u16 mlen | meta | u16 glen | group | u16 tlen | topic | u32 plen | payload |
+-- name_t = uint64_t(见 lib/base/structs.h);所有数值字段网络序;group 仅共享投递非空
 ---@param raw string
 ---@return integer kind 0=普通投递 1=共享投递
 ---@return integer publisher
 ---@return string topic
 ---@return string payload
 ---@return string? meta meta 字节(mlen=0 时返 nil)
+---@return string group 共享投递的组名(普通投递为 "")
 local function _unpack_deliver(raw)
     local kind, pos = string.unpack(">B", raw)
     local publisher, pos1 = string.unpack(">I8", raw, pos)
     local meta, pos2 = string.unpack(">s2", raw, pos1)
-    local topic, pos3 = string.unpack(">s2", raw, pos2)
-    local payload = string.unpack(">s4", raw, pos3)
+    local group, pos3 = string.unpack(">s2", raw, pos2)
+    local topic, pos4 = string.unpack(">s2", raw, pos3)
+    local payload = string.unpack(">s4", raw, pos4)
     if "" == meta then
         meta = nil
     end
-    return kind, publisher, topic, payload, meta
+    return kind, publisher, topic, payload, meta, group
 end
 
 -- 拆 query_retained 响应 wire:多条 retained 拼接
@@ -185,13 +187,24 @@ function sc_client._on_deliver(data, size)
         return
     end
     local raw = srey.ud_str(data, size)
-    local kind, publisher, topic, payload, meta = _unpack_deliver(raw)
-    local handlers = (1 == kind) and _shared_handlers or _handlers
+    local kind, publisher, topic, payload, meta, group = _unpack_deliver(raw)
     -- snapshot 匹配 handler 列表,避免 handler 内 subscribe/unsubscribe 改表触发迭代 UB
     local matched = {}
-    for pattern, handler in pairs(handlers) do
-        if _topic_match(pattern, topic) then
-            matched[#matched + 1] = handler
+    if 1 == kind then
+        -- 共享:按 (匹配 pattern, 投递 group) 精确取 handler,多 group 同 topic 互不串
+        for pattern, groups in pairs(_shared_handlers) do
+            if _topic_match(pattern, topic) then
+                local handler = groups[group]
+                if handler then
+                    matched[#matched + 1] = handler
+                end
+            end
+        end
+    else
+        for pattern, handler in pairs(_handlers) do
+            if _topic_match(pattern, topic) then
+                matched[#matched + 1] = handler
+            end
         end
     end
     for i = 1, #matched do
@@ -249,11 +262,19 @@ function sc_client.subscribe_shared(sc_name, topic, group, handler)
         WARN("sc subscribe_shared: param empty.")
         return ERR_FAILED
     end
-    _shared_handlers[topic] = handler
+    local groups = _shared_handlers[topic]
+    if not groups then
+        groups = {}
+        _shared_handlers[topic] = groups
+    end
+    groups[group] = handler
     local payload = OP_SUB_SHARED .. string.pack(">s2", topic) .. string.pack(">s2", group)
     local _, size = srey.request(sc_name, REQUEST_TYPE.REQ_SC, payload)
     if nil == size then
-        _shared_handlers[topic] = nil
+        groups[group] = nil
+        if nil == next(groups) then
+            _shared_handlers[topic] = nil
+        end
         return ERR_FAILED
     end
     return ERR_OK
@@ -287,7 +308,13 @@ function sc_client.unsubscribe_shared(sc_name, topic, group)
         WARN("sc unsubscribe_shared: param empty.")
         return ERR_FAILED
     end
-    _shared_handlers[topic] = nil
+    local groups = _shared_handlers[topic]
+    if groups then
+        groups[group] = nil
+        if nil == next(groups) then
+            _shared_handlers[topic] = nil
+        end
+    end
     local payload = OP_UNSUB_SHARED .. string.pack(">s2", topic) .. string.pack(">s2", group)
     local _, size = srey.request(sc_name, REQUEST_TYPE.REQ_SC, payload)
     if nil == size then

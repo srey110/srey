@@ -228,5 +228,26 @@ runner.run("sc_client", function(t)
         sc_client.unsubscribe(SC, "t13/x")
         sc_client.unsubscribe_shared(SC, "t13/x", "g13")
     end
+
+    -- ── 子段 14(本次修复):同 task 同 topic 多 group 各自精确收 ──────────
+    -- 修复前 _shared_handlers[topic] 单槽:g2 覆盖 g1、unsub 任一抹全部。
+    -- 修复后 deliver wire 带 group,_shared_handlers[topic][group] 二级索引精确路由。
+    do
+        local n1 = 0
+        local n2 = 0
+        sc_client.subscribe_shared(SC, "t14/x", "g1", function() n1 = n1 + 1 end)
+        sc_client.subscribe_shared(SC, "t14/x", "g2", function() n2 = n2 + 1 end)
+        sc_client.publish(SC, "t14/x", "p")
+        _wait(function() return n1 >= 1 and n2 >= 1 end)
+        t:eq(1, n1, "multi-group: g1 handler 精确收 1 次(不被 g2 覆盖)")
+        t:eq(1, n2, "multi-group: g2 handler 精确收 1 次")
+        -- group 级退订:退 g1 后只剩 g2 收
+        sc_client.unsubscribe_shared(SC, "t14/x", "g1")
+        sc_client.publish(SC, "t14/x", "p2")
+        _wait(function() return n2 >= 2 end)
+        t:eq(1, n1, "multi-group: 退 g1 后 g1 handler 不再收")
+        t:eq(2, n2, "multi-group: 退 g1 不影响 g2,g2 仍收")
+        sc_client.unsubscribe_shared(SC, "t14/x", "g2")
+    end
 end)
 end)

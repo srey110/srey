@@ -58,6 +58,17 @@ int32_t global_string(lua_State *lua, const char *name, char *buf, size_t bufsiz
 /// <param name="size">输出: size 字节数</param>
 /// <param name="copy">输出 copy 标志的指针;传 NULL 表示不解析 copy</param>
 /// <returns>data 指针</returns>
+/// <summary>
+/// 同 lpub_check_buf,但 idx 为 in/out:返回后 *idx 推进到下一个未消费的参数位
+/// (string 消费 1 位;lightuserdata 消费 data+size 2 位,copy 命中再 +1),
+/// 便于在 buf 之后继续读可选参数
+/// </summary>
+/// <param name="lua">Lua 栈</param>
+/// <param name="idx">输入:data 在栈中的位置;输出:下一个空闲参数位</param>
+/// <param name="size">输出: size 字节数</param>
+/// <param name="copy">输出 copy 标志的指针;传 NULL 表示不解析 copy</param>
+/// <returns>data 指针</returns>
+void *lpub_check_buf_idx(lua_State *lua, int32_t *idx, size_t *size, int32_t *copy);
 void *lpub_check_buf(lua_State *lua, int32_t idx, size_t *size, int32_t *copy);
 
 #endif//LPUB_H_

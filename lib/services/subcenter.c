@@ -5,9 +5,7 @@
 #include "path/path_trie.h"
 #include "containers/sarray.h"
 #include "utils/binary.h"
-#include "utils/log.h"
 #include "utils/utils.h"
-#include "base/macro.h"
 
 // ── subcenter 限制(业务特定上限,可按部署需要调整后重编) ────────────
 #define SC_RETAINED_MAX_SIZE        (1 * 1024 * 1024)  // 单 topic retained 上限 1MB
@@ -69,11 +67,16 @@ typedef struct sc_ctx {
     hashset *publish_dedup;          // publish 去重复用容器(name_t set)
 }sc_ctx;
 // path_match 的 visit:收集订阅者
+// 共享投递目标:挑中的成员 + 其所属组名(打 deliver wire 需 group;指向 sc_shared_group.group,投递期有效)
+typedef struct sc_shared_dst {
+    task_ctx *task;
+    const char *group;
+}sc_shared_dst;
 typedef struct sc_collect_ctx {
     int32_t failed;               // 内存分配失败标志
     int32_t shared_emptied;       // 有共享组在 pick 时被清空 → 触发清理 pass
     sc_ctx *ctx;                  // subcenter 上下文
-    array_ctx *shared_dsts;       // 共享组挑选结果(元素 task_ctx*,已 grab,投递后 ungrab)
+    array_ctx *shared_dsts;       // 共享组挑选结果(元素 sc_shared_dst,已 grab,投递后 ungrab)
 }sc_collect_ctx;
 // QUERY_RETAINED 遍历 retained_index 的上下文:pattern 过滤,匹配项拼进 bw,超 BURST_MAX 截断
 typedef struct sc_qr_ctx {
@@ -227,9 +230,11 @@ static int32_t _sc_read_cstr_max(binary_ctx *br, char *dst, size_t dst_cap, uint
     dst[n] = '\0';
     return ERR_OK;
 }
-// 构造 deliver wire:| u8 kind | name_t publisher | u16 mlen | meta | u16 tlen | topic | u32 plen | payload |
+// 构造 deliver wire:| u8 kind | name_t publisher | u16 mlen | meta | u16 glen | group | u16 tlen | topic | u32 plen | payload |
+// group 仅共享投递(kind=SHARED)非空;普通投递 glen=0
 static char *_sc_pack_deliver(uint8_t kind, name_t publisher,
                               const void *meta, uint16_t mlen,
+                              const char *group, uint16_t glen,
                               const char *topic,
                               const void *payload, uint32_t plen,
                               size_t *out_total) {
@@ -240,6 +245,10 @@ static char *_sc_pack_deliver(uint8_t kind, name_t publisher,
     binary_set_uinteger(&bw, (uint64_t)mlen, 2, 0);
     if (mlen > 0 && NULL != meta) {
         binary_set_string(&bw, (const char *)meta, mlen);
+    }
+    binary_set_uinteger(&bw, (uint64_t)glen, 2, 0);
+    if (glen > 0 && NULL != group) {
+        binary_set_string(&bw, group, glen);
     }
     size_t tlen = strlen(topic);
     binary_set_uinteger(&bw, (uint64_t)tlen, 2, 0);
@@ -264,12 +273,20 @@ int32_t sc_parse_deliver(const void *data, size_t size, sc_deliver *out) {
     off += sizeof(name_t);
     out->mlen = (size_t)unpack_integer(p + off, 2, 0, 0);
     off += 2;
-    // meta(mlen) + tlen(u16)
+    // meta(mlen) + glen(u16)
     if (off + out->mlen + 2 > size) {
         return ERR_FAILED;
     }
     out->meta = out->mlen > 0 ? p + off : NULL;
     off += out->mlen;
+    out->glen = (size_t)unpack_integer(p + off, 2, 0, 0);
+    off += 2;
+    // group(glen) + tlen(u16)
+    if (off + out->glen + 2 > size) {
+        return ERR_FAILED;
+    }
+    out->group = out->glen > 0 ? p + off : NULL;
+    off += out->glen;
     out->tlen = (size_t)unpack_integer(p + off, 2, 0, 0);
     off += 2;
     // topic(tlen) + plen(u32)
@@ -532,7 +549,8 @@ static bool _sc_sg_pick_iter(const void *item, void *udata) {
     sc_shared_group *g = (sc_shared_group *)item;
     task_ctx *picked = _sc_shared_pick_live(cc->ctx, g);
     if (NULL != picked) {
-        array_push_back(cc->shared_dsts, &picked);
+        sc_shared_dst sd = { picked, g->group };
+        array_push_back(cc->shared_dsts, &sd);
     } else {
         cc->shared_emptied = 1;
     }
@@ -642,7 +660,7 @@ static void _sc_publish_deliver(sc_ctx *ctx, name_t src, const char *topic,
     // 收集订阅者:normal 进 dedup hashset 去重;shared 每组挑首个活成员并 grab,死成员当场剔除
     hashset_clear(ctx->publish_dedup, 0);
     array_ctx shared_dsts;
-    array_init(&shared_dsts, sizeof(task_ctx *), 0);
+    array_init(&shared_dsts, sizeof(sc_shared_dst), 0);
     sc_collect_ctx cc;
     cc.ctx = ctx;
     cc.shared_dsts = &shared_dsts;
@@ -652,9 +670,9 @@ static void _sc_publish_deliver(sc_ctx *ctx, name_t src, const char *topic,
     uint32_t i;
     if (cc.failed) {
         // collect 中途失败:已 grab 的共享目标需 ungrab
-        task_ctx **sp = (task_ctx **)shared_dsts.ptr;
+        sc_shared_dst *sp = (sc_shared_dst *)shared_dsts.ptr;
         for (i = 0; i < shared_dsts.size; i++) {
-            task_ungrab(sp[i]);
+            task_ungrab(sp[i].task);
         }
         array_free(&shared_dsts);
         return;
@@ -697,23 +715,25 @@ static void _sc_publish_deliver(sc_ctx *ctx, name_t src, const char *topic,
         array_free(&empty_nodes);
     }
     array_free(&prune_normal);
-    // 两组各自打 kind、投递、ungrab(task_multi_call copy=0 转移 buffer 所有权)
-    task_ctx **groups[2] = { normal_dsts, (task_ctx **)shared_dsts.ptr };
-    int32_t counts[2] = { normal_cnt, (int32_t)shared_dsts.size };
-    uint8_t kinds[2] = { SC_DELIVER_NORMAL, SC_DELIVER_SHARED };
-    size_t deliver_size;
-    char *deliver_buf;
-    int32_t g;
-    int32_t k;
-    for (g = 0; g < 2; g++) {
-        if (counts[g] > 0) {
-            deliver_size = 0;
-            deliver_buf = _sc_pack_deliver(kinds[g], src, meta, mlen, topic, payload, plen, &deliver_size);
-            task_multi_call(groups[g], counts[g], REQ_SC_DELIVER, deliver_buf, deliver_size, 0);
-            for (k = 0; k < counts[g]; k++) {
-                task_ungrab(groups[g][k]);
-            }
+    // 普通投递:group 空(glen=0),批量群发同一 buffer(task_multi_call copy=0 转移所有权)
+    if (normal_cnt > 0) {
+        size_t dsize = 0;
+        char *dbuf = _sc_pack_deliver(SC_DELIVER_NORMAL, src, meta, mlen, NULL, 0, topic, payload, plen, &dsize);
+        task_multi_call(normal_dsts, normal_cnt, REQ_SC_DELIVER, dbuf, dsize, 0);
+        int32_t k;
+        for (k = 0; k < normal_cnt; k++) {
+            task_ungrab(normal_dsts[k]);
         }
+    }
+    // 共享投递:每个挑中成员按各自 group 名单独打包单发,接收方据 group 精确路由
+    sc_shared_dst *sds = (sc_shared_dst *)shared_dsts.ptr;
+    for (i = 0; i < shared_dsts.size; i++) {
+        size_t dsize = 0;
+        char *dbuf = _sc_pack_deliver(SC_DELIVER_SHARED, src, meta, mlen,
+                                      sds[i].group, (uint16_t)strlen(sds[i].group),
+                                      topic, payload, plen, &dsize);
+        task_multi_call(&sds[i].task, 1, REQ_SC_DELIVER, dbuf, dsize, 0);
+        task_ungrab(sds[i].task);
     }
     FREE(normal_dsts);
     array_free(&shared_dsts);

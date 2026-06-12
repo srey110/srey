@@ -1063,14 +1063,16 @@ static void test_url_parse(CuTest *tc) {
     /* url_parse 在原始 char 数组上就地操作，不能用 const char * */
     char url[] = "http://user:psw@host.com:8080/path/to?k1=v1&k2=v2#anchor";
     url_ctx ctx;
-    url_parse(&ctx, url, strlen(url));
+    url_parse(&ctx, url, strlen(url), '/', 1);
 
     CuAssertTrue(tc, buf_compare(&ctx.scheme, "http", 4));
     CuAssertTrue(tc, buf_compare(&ctx.user,   "user", 4));
     CuAssertTrue(tc, buf_compare(&ctx.psw,    "psw",  3));
     CuAssertTrue(tc, buf_compare(&ctx.host,   "host.com", 8));
     CuAssertTrue(tc, buf_compare(&ctx.port,   "8080", 4));
-    CuAssertTrue(tc, buf_compare(&ctx.path,   "/path/to", 8));
+    CuAssertTrue(tc, 2 == ctx.npath);
+    CuAssertTrue(tc, buf_compare(&ctx.segs[0], "path", 4));
+    CuAssertTrue(tc, buf_compare(&ctx.segs[1], "to", 2));
     CuAssertTrue(tc, buf_compare(&ctx.anchor, "anchor", 6));
 
     buf_ctx *p = url_get_param(&ctx, "k1");
@@ -1092,11 +1094,11 @@ static void test_url_parse_edges(CuTest *tc) {
     {
         char u[] = "http://host?k=v";
         url_ctx ctx;
-        url_parse(&ctx, u, strlen(u));
+        url_parse(&ctx, u, strlen(u), '/', 1);
         CuAssertTrue(tc, buf_compare(&ctx.scheme, "http", 4));
         CuAssertTrue(tc, buf_compare(&ctx.host, "host", 4));
         CuAssertTrue(tc, 0 == ctx.port.lens);
-        CuAssertTrue(tc, 0 == ctx.path.lens);
+        CuAssertTrue(tc, 0 == ctx.npath);
         buf_ctx *p = url_get_param(&ctx, "k");
         CuAssertPtrNotNull(tc, p);
         CuAssertTrue(tc, buf_compare(p, "v", 1));
@@ -1105,21 +1107,21 @@ static void test_url_parse_edges(CuTest *tc) {
     {
         char u[] = "http://host#frag";
         url_ctx ctx;
-        url_parse(&ctx, u, strlen(u));
+        url_parse(&ctx, u, strlen(u), '/', 1);
         CuAssertTrue(tc, buf_compare(&ctx.scheme, "http", 4));
         CuAssertTrue(tc, buf_compare(&ctx.host, "host", 4));
-        CuAssertTrue(tc, 0 == ctx.path.lens);
+        CuAssertTrue(tc, 0 == ctx.npath);
         CuAssertTrue(tc, buf_compare(&ctx.anchor, "frag", 4));
     }
     // 3. http://user@host?k=v —— userinfo + host + query 均正确切分
     {
         char u[] = "http://user@host?k=v";
         url_ctx ctx;
-        url_parse(&ctx, u, strlen(u));
+        url_parse(&ctx, u, strlen(u), '/', 1);
         CuAssertTrue(tc, buf_compare(&ctx.user, "user", 4));
         CuAssertTrue(tc, 0 == ctx.psw.lens);
         CuAssertTrue(tc, buf_compare(&ctx.host, "host", 4));
-        CuAssertTrue(tc, 0 == ctx.path.lens);
+        CuAssertTrue(tc, 0 == ctx.npath);
         buf_ctx *p = url_get_param(&ctx, "k");
         CuAssertPtrNotNull(tc, p);
         CuAssertTrue(tc, buf_compare(p, "v", 1));
@@ -1128,36 +1130,38 @@ static void test_url_parse_edges(CuTest *tc) {
     {
         char u[] = "http://host";
         url_ctx ctx;
-        url_parse(&ctx, u, strlen(u));
+        url_parse(&ctx, u, strlen(u), '/', 1);
         CuAssertTrue(tc, buf_compare(&ctx.host, "host", 4));
-        CuAssertTrue(tc, 0 == ctx.path.lens);
+        CuAssertTrue(tc, 0 == ctx.npath);
         CuAssertTrue(tc, 0 == ctx.anchor.lens);
     }
     // 5. http://host:8080?k=v —— port + query（无 path 但含端口）
     {
         char u[] = "http://host:8080?k=v";
         url_ctx ctx;
-        url_parse(&ctx, u, strlen(u));
+        url_parse(&ctx, u, strlen(u), '/', 1);
         CuAssertTrue(tc, buf_compare(&ctx.host, "host", 4));
         CuAssertTrue(tc, buf_compare(&ctx.port, "8080", 4));
         buf_ctx *p = url_get_param(&ctx, "k");
         CuAssertPtrNotNull(tc, p);
         CuAssertTrue(tc, buf_compare(p, "v", 1));
     }
-    // 6. http://host/ —— path 为 "/"
+    // 6. http://host/ —— 根路径 '/' → 一个空段(RFC path-abempty:前导 sep 后是空 segment)
     {
         char u[] = "http://host/";
         url_ctx ctx;
-        url_parse(&ctx, u, strlen(u));
+        url_parse(&ctx, u, strlen(u), '/', 1);
         CuAssertTrue(tc, buf_compare(&ctx.host, "host", 4));
-        CuAssertTrue(tc, buf_compare(&ctx.path, "/", 1));
+        CuAssertTrue(tc, 1 == ctx.npath);
+        CuAssertTrue(tc, 0 == ctx.segs[0].lens);
     }
     // 7. harbor 风格：/call?dst=N&type=M
     {
         char u[] = "/call?dst=123&type=4";
         url_ctx ctx;
-        url_parse(&ctx, u, strlen(u));
-        CuAssertTrue(tc, buf_compare(&ctx.path, "/call", 5));
+        url_parse(&ctx, u, strlen(u), '/', 1);
+        CuAssertTrue(tc, 1 == ctx.npath);
+        CuAssertTrue(tc, buf_compare(&ctx.segs[0], "call", 4));
         buf_ctx *p = url_get_param(&ctx, "dst");
         CuAssertPtrNotNull(tc, p);
         CuAssertTrue(tc, buf_compare(p, "123", 3));

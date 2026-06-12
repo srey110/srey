@@ -32,21 +32,34 @@ int32_t global_string(lua_State *lua, const char *name, char *buf, size_t bufsiz
     lua_pop(lua, 1);
     return ERR_OK;
 }
-void *lpub_check_buf(lua_State *lua, int32_t idx, size_t *size, int32_t *copy) {
-    int32_t type = lua_type(lua, idx);
+void *lpub_check_buf_idx(lua_State *lua, int32_t *idx, size_t *size, int32_t *copy) {
+    int32_t type = lua_type(lua, *idx);
     if (LUA_TSTRING == type) {
+        const char *s = luaL_checklstring(lua, *idx, size);
         if (NULL != copy) {
             *copy = 1;
         }
-        return (void *)luaL_checklstring(lua, idx, size);
+        *idx += 1;// string 占 1 位
+        return (void *)s;
     }
     if (LUA_TLIGHTUSERDATA == type) {
-        *size = (size_t)luaL_checkinteger(lua, idx + 1);
+        void *ud = lua_touserdata(lua, *idx);
+        *size = (size_t)luaL_checkinteger(lua, *idx + 1);
+        *idx += 2;// 先吃掉 data + size,*idx 转到 copy 位
         if (NULL != copy) {
-            *copy = lua_isinteger(lua, idx + 2) ? (int32_t)luaL_checkinteger(lua, idx + 2) : 1;
+            if (lua_isinteger(lua, *idx)) {
+                *copy = (int32_t)luaL_checkinteger(lua, *idx);
+                *idx += 1;// copy 命中再 +1
+            } else {
+                *copy = 1;
+            }
         }
-        return lua_touserdata(lua, idx);
+        return ud;
     }
-    luaL_argerror(lua, idx, "string or light userdata expected");
+    luaL_argerror(lua, *idx, "string or light userdata expected");
     return NULL;//unreachable: luaL_argerror longjmp
+}
+// idx 按值的兼容包装,丢弃推进位置;旧调用方无需改动
+void *lpub_check_buf(lua_State *lua, int32_t idx, size_t *size, int32_t *copy) {
+    return lpub_check_buf_idx(lua, &idx, size, copy);
 }

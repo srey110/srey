@@ -31,17 +31,19 @@ typedef enum sc_deliver_kind {
     SC_DELIVER_NORMAL = 0, // 普通订阅投递
     SC_DELIVER_SHARED = 1  // 共享订阅投递
 } sc_deliver_kind;
-// REQ_SC_DELIVER 推送 wire 解析结果；topic/payload/meta 零拷贝指向源 data,生命周期与 data 一致。
-// topic/payload/meta 非 NUL 结尾,须配合对应 len 使用。
+// REQ_SC_DELIVER 推送 wire 解析结果；topic/payload/meta/group 零拷贝指向源 data,生命周期与 data 一致。
+// topic/payload/meta/group 非 NUL 结尾,须配合对应 len 使用。
 typedef struct sc_deliver {
     int32_t kind;         // 投递来源:SC_DELIVER_NORMAL(普通) / SC_DELIVER_SHARED(共享)
+    size_t tlen;          // topic 字节数
+    size_t plen;          // 载荷字节数
+    size_t mlen;          // 元数据字节数
+    size_t glen;          // 组名字节数;0 表示普通投递无组
     name_t publisher;     // 发布者 task 句柄;INVALID_TNAME 表示 publisher 已失效
     const char *topic;    // 匹配到的精确 topic(非 NUL 结尾)
-    size_t tlen;          // topic 字节数
     const char *payload;  // 载荷;plen=0 时 NULL
-    size_t plen;          // 载荷字节数
     const char *meta;     // 发布者元数据;mlen=0 时 NULL
-    size_t mlen;          // 元数据字节数
+    const char *group;    // 共享投递的组名(kind=SHARED 时非 NULL;NORMAL 时 NULL)
 } sc_deliver;
 /// <summary>
 /// 注册 subcenter task service。

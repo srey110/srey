@@ -199,23 +199,23 @@ static void test_urlraw(CuTest *tc) {
 
     /* 编码：空格 → %20，特殊字符均被转义 */
     const char *plain = "hello world! foo=bar&a=1";
-    url_encode(plain, strlen(plain), enc);
+    url_encode(plain, strlen(plain), enc, 0);
     CuAssertTrue(tc, NULL == strchr(enc, ' '));
     CuAssertTrue(tc, NULL == strchr(enc, '!'));
 
     /* 解码还原 */
     safe_fill_str(dec, sizeof(dec), enc);
-    dlen = url_decode(dec, strlen(dec));
+    dlen = url_decode(dec, strlen(dec), 0);
     CuAssertTrue(tc, dlen == strlen(plain));
     CuAssertTrue(tc, 0 == memcmp(dec, plain, dlen));
 
     /* 纯 ASCII 字母数字不被转义，往返后相同 */
     const char *alpha = "abcABC012";
-    url_encode(alpha, strlen(alpha), enc);
+    url_encode(alpha, strlen(alpha), enc, 0);
     CuAssertStrEquals(tc, alpha, enc);
 
     /* 空字符串 */
-    url_encode("", 0, enc);
+    url_encode("", 0, enc, 0);
     CuAssertTrue(tc, '\0' == enc[0]);
 }
 
@@ -1533,37 +1533,37 @@ static void test_urlraw_invalid(CuTest *tc) {
 
     /* %GG：G 非十六进制，url_decode 不做转换，% G G 原样保留 */
     safe_fill_str(buf, sizeof(buf), "a%GGb");
-    dlen = url_decode(buf, strlen("a%GGb"));
+    dlen = url_decode(buf, strlen("a%GGb"), 0);
     CuAssertTrue(tc, 5 == dlen);
     CuAssertTrue(tc, 0 == memcmp(buf, "a%GGb", 5));
 
     /* 只有 %1：剩余字节不够 2 位，原样保留 */
     safe_fill_str(buf, sizeof(buf), "x%1");
-    dlen = url_decode(buf, strlen("x%1"));
+    dlen = url_decode(buf, strlen("x%1"), 0);
     CuAssertTrue(tc, 3 == dlen);
     CuAssertTrue(tc, 0 == memcmp(buf, "x%1", 3));
 
     /* 末尾孤悬 % */
     safe_fill_str(buf, sizeof(buf), "abc%");
-    dlen = url_decode(buf, strlen("abc%"));
+    dlen = url_decode(buf, strlen("abc%"), 0);
     CuAssertTrue(tc, 4 == dlen);
     CuAssertTrue(tc, 0 == memcmp(buf, "abc%", 4));
 
     /* 半合法：%1G —— 'G' 非 hex，整段保留 */
     safe_fill_str(buf, sizeof(buf), "%1G");
-    dlen = url_decode(buf, strlen("%1G"));
+    dlen = url_decode(buf, strlen("%1G"), 0);
     CuAssertTrue(tc, 3 == dlen);
     CuAssertTrue(tc, 0 == memcmp(buf, "%1G", 3));
 
     /* 大小写混合 hex 正常解码 */
     safe_fill_str(buf, sizeof(buf), "%aA");
-    dlen = url_decode(buf, strlen("%aA"));
+    dlen = url_decode(buf, strlen("%aA"), 0);
     CuAssertTrue(tc, 1 == dlen);
     CuAssertTrue(tc, (char)0xaa == buf[0]);
 
     /* + 转空格（编码反向语义） */
     safe_fill_str(buf, sizeof(buf), "a+b+c");
-    dlen = url_decode(buf, strlen("a+b+c"));
+    dlen = url_decode(buf, strlen("a+b+c"), 1);
     CuAssertTrue(tc, 5 == dlen);
     CuAssertStrEquals(tc, "a b c", buf);
 }

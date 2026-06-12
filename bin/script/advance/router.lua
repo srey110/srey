@@ -109,15 +109,6 @@ end
 
 -- ── 内部辅助 ──────────────────────────────────────────────────────────────
 
--- 将请求路径拆分为纯字符串段数组
-local function _split(path)
-    local segs = {}
-    for seg in path:gmatch("[^/]+") do
-        segs[#segs + 1] = seg
-    end
-    return segs
-end
-
 -- 将路由路径解析为结构化段数组
 -- 段类型: lit(字面量) / param({x}) / opt({x?}) / wild(*)
 local function _parse(path)
@@ -416,8 +407,13 @@ function Router:dispatch(fd, skid, pack, client)
     end
     local method   = status[1]
     local parsed   = url_mod.parse(status[2] or "")
-    local path     = parsed.path or "/"
-    local req_segs = _split(path)
+    -- C 侧 segs 已解码、%2F 在段内不当分隔符;RFC 保留空段,这里按路由语义剔除空段
+    local req_segs = {}
+    for _, s in ipairs(parsed.segs or {}) do
+        if "" ~= s then
+            req_segs[#req_segs + 1] = s
+        end
+    end
     -- 线性扫描路由表，首个方法匹配且路径匹配的条目即为结果
     local route, params
     for _, r in ipairs(self._routes) do

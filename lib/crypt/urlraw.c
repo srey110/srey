@@ -1,7 +1,7 @@
 ﻿#include "crypt/urlraw.h"
 
 static const unsigned char hexchars[] = "0123456789ABCDEF"; // URL 编码用十六进制字符表
-char *url_encode(const char *data, const size_t lens, char *out) {
+char *url_encode(const char *data, const size_t lens, char *out, int32_t space2plus) {
     register unsigned char c;
     unsigned char const *from, *end;
     from = (unsigned char *)data;
@@ -9,7 +9,7 @@ char *url_encode(const char *data, const size_t lens, char *out) {
     unsigned char *to = (unsigned char *)out;
     while (from < end) {
         c = *from++;
-        if (c == ' ') {
+        if (c == ' ' && space2plus) {
             *to++ = '+';
         } else if ((c < '0' && c != '-' && c != '.') ||
             (c < 'A' && c > '9') ||
@@ -41,11 +41,11 @@ static int32_t _url_htoi(char *s) {
     value += c >= '0' && c <= '9' ? c - '0' : c - 'a' + 10;
     return (value);
 }
-size_t url_decode(char *data, size_t lens) {
+size_t url_decode(char *data, size_t lens, int32_t plus2space) {
     char *dest = data;
     char *p = data;
     while (lens--) {
-        if (*p == '+') {
+        if (*p == '+' && plus2space) {
             *dest = ' ';
         } else if (*p == '%'
                    && lens >= 2
