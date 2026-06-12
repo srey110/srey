@@ -71,7 +71,9 @@ void _mqtt_udfree(ud_cxt *ud) {
 // 从缓冲区读取固定长度整数（1/2/4字节），存入 num
 static int32_t _mqtt_data_fixnum(buffer_ctx *buf, size_t lens, int32_t *num) {
     char tmp[4];
-    ASSERTAB(lens <= sizeof(tmp), "too long.");
+    if (lens > sizeof(tmp)) {
+        return ERR_FAILED;
+    }
     if (lens != buffer_remove(buf, tmp, lens)) {
         return ERR_FAILED;
     }

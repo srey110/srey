@@ -30,7 +30,7 @@ typedef struct dc_entry {
 typedef struct dc_waiter {
     name_t src;              // 请求方 task 句柄
     uint64_t sess;           // 会话 id(task_response 唤醒用)
-    uint64_t deadline_ms;    // 绝对过期毫秒(timer 基准);0=请求方无限等待,永不驱逐
+    uint64_t deadline_ms;    // 绝对过期毫秒(timer 基准)
     struct dc_waiter *next;  // 同 key FIFO 链表 next
 } dc_waiter;
 // sweep 上下文:收集变空的 pending key,scan 结束后统一 hashmap_delete(scan 中不可改 map 结构)
@@ -238,8 +238,8 @@ static void _dc_handle_set(dc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *b
     dc_waiter *next;
     while (w) {
         next = w->next;
-        // 跳过已过期 waiter:请求方早已超时放弃,唤醒只会在其 task 触发幽灵响应;deadline_ms==0 为无限等照常唤醒
-        if (0 == w->deadline_ms || now_ms < w->deadline_ms) {
+        // 跳过已过期 waiter:请求方早已超时放弃,唤醒只会在其 task 触发幽灵响应
+        if (now_ms < w->deadline_ms) {
             wt = task_grab(ctx->loader, w->src);
             if (wt) {
                 task_response(wt, w->sess, ERR_OK, val, vsize, 1);  // copy=1
@@ -279,7 +279,7 @@ static bool _dc_pending_sweep_iter(const void *item, void *udata) {
     dc_waiter *next, *prev = NULL, *w = p->head;
     while (w) {
         next = w->next;
-        if (0 != w->deadline_ms && sc->now_ms >= w->deadline_ms) {
+        if (sc->now_ms >= w->deadline_ms) {
             if (NULL == prev) {
                 p->head = next;
             } else {
@@ -357,8 +357,8 @@ static void _dc_handle_wait(dc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *
     MALLOC(w, sizeof(dc_waiter));
     w->src = src;
     w->sess = sess;
-    // timeout_ms==0(请求方无限等待)→ deadline 0 哨兵永不驱逐;否则 src 自身超时点即过期(SET 不再唤醒、sweep 回收)
-    w->deadline_ms = (timeout_ms > 0) ? (timer_cur_ms(&ctx->timer) + (uint64_t)timeout_ms) : 0;
+    // src 自身超时点即过期:SET 不再唤醒、sweep 回收
+    w->deadline_ms = timer_cur_ms(&ctx->timer) + timeout_ms;
     w->next = NULL;
     _dc_pending_push(ctx, keybuf, w);
 }
@@ -443,26 +443,6 @@ static void _dc_requested(task_ctx *task, uint8_t reqtype, uint64_t sess, name_t
         break;
     }
 }
-// task 关闭回调:唤醒所有 pending waiter(ERR_FAILED) + 释放 hashmap
-static bool _dc_pending_close_iter(const void *item, void *udata) {
-    const dc_pending *p = (const dc_pending *)item;
-    dc_ctx *ctx = (dc_ctx *)udata;
-    dc_waiter *w = p->head;
-    while (w) {
-        task_ctx *wt = task_grab(ctx->loader, w->src);
-        if (wt) {
-            task_response(wt, w->sess, ERR_FAILED, NULL, 0, 0);
-            task_ungrab(wt);
-        }
-        w = w->next;
-    }
-    return true;
-}
-static void _dc_closing(task_ctx *task) {
-    dc_ctx *ctx = (dc_ctx *)task->arg;
-    // 唤醒所有 pending waiter(ERR_FAILED),避免业务协程死等
-    hashmap_scan(ctx->pending, _dc_pending_close_iter, ctx);
-}
 static void _dc_free(void *arg) {
     if (NULL == arg) {
         return;
@@ -489,7 +469,7 @@ int32_t dc_start(loader_ctx *loader, const char *name) {
                                               _dc_pending_hash, _dc_pending_compare, _dc_pending_free, NULL);
     task_ctx *task = task_new(loader, name, 4 * ONEK, NULL, _dc_free, ctx);
     task_requested(task, _dc_requested);
-    if (ERR_OK != task_register(task, NULL, _dc_closing)) {
+    if (ERR_OK != task_register(task, NULL, NULL)) {
         // task_register 失败时 task 未进 maptasks,需手动 task_free;
         task_free(task);
         return ERR_FAILED;
@@ -537,9 +517,9 @@ static char *_dc_pack(dc_op op, const char *key, void *val, size_t vsize, size_t
 // ── 业务侧 helper:C 端业务通过这些函数调 DataCenter,内部包 coro_request ──
 // 所有 reqtype 统一为 REQ_DC,子命令由 _dc_pack 写入 payload 首字节
 int32_t coro_dc_set(task_ctx *task, name_t dc_name, const char *key, void *val, size_t size) {
-    ASSERTAB(!EMPTYSTR(key), "datacenter key empty");
-    ASSERTAB(size <= UINT32_MAX, "datacenter val size exceeds UINT32_MAX");
-    if (strlen(key) >= DC_KEY_MAX) {
+    if (EMPTYSTR(key)
+        || strlen(key) >= DC_KEY_MAX
+        || size > UINT32_MAX) {
         return ERR_FAILED;
     }
     task_ctx *dc = task_grab(task->loader, dc_name);
@@ -555,8 +535,7 @@ int32_t coro_dc_set(task_ctx *task, name_t dc_name, const char *key, void *val, 
     return erro;
 }
 void *coro_dc_get(task_ctx *task, name_t dc_name, const char *key, size_t *size) {
-    ASSERTAB(!EMPTYSTR(key), "datacenter key empty");
-    if (strlen(key) >= DC_KEY_MAX) {
+    if (EMPTYSTR(key) || strlen(key) >= DC_KEY_MAX) {
         SET_PTR(size, 0);
         return NULL;
     }
@@ -577,8 +556,7 @@ void *coro_dc_get(task_ctx *task, name_t dc_name, const char *key, size_t *size)
     return resp;
 }
 void *coro_dc_wait(task_ctx *task, name_t dc_name, const char *key, size_t *size) {
-    ASSERTAB(!EMPTYSTR(key), "datacenter key empty");
-    if (strlen(key) >= DC_KEY_MAX) {
+    if (EMPTYSTR(key) || strlen(key) >= DC_KEY_MAX) {
         SET_PTR(size, 0);
         return NULL;
     }
@@ -599,8 +577,7 @@ void *coro_dc_wait(task_ctx *task, name_t dc_name, const char *key, size_t *size
     return resp;
 }
 int32_t coro_dc_del(task_ctx *task, name_t dc_name, const char *key) {
-    ASSERTAB(!EMPTYSTR(key), "datacenter key empty");
-    if (strlen(key) >= DC_KEY_MAX) {
+    if (EMPTYSTR(key) || strlen(key) >= DC_KEY_MAX) {
         return ERR_FAILED;
     }
     task_ctx *dc = task_grab(task->loader, dc_name);
@@ -635,9 +612,9 @@ void *coro_dc_keys(task_ctx *task, name_t dc_name, size_t *size) {
 // ── 无协程版本:直接 task_request 不挂起;sess=0 走 fire-and-forget(src=NULL),sess!=0 业务自管响应配对 ──
 // 所有 reqtype 统一为 REQ_DC,子命令由 _dc_pack 写入 payload 首字节;copy=0 转移所有权
 int32_t dc_set(task_ctx *task, name_t dc_name, uint64_t sess, const char *key, void *val, size_t size) {
-    ASSERTAB(!EMPTYSTR(key), "datacenter key empty");
-    ASSERTAB(size <= UINT32_MAX, "datacenter val size exceeds UINT32_MAX");
-    if (strlen(key) >= DC_KEY_MAX) {
+    if (EMPTYSTR(key)
+        || strlen(key) >= DC_KEY_MAX
+        || size > UINT32_MAX) {
         return ERR_FAILED;
     }
     task_ctx *dc = task_grab(task->loader, dc_name);
@@ -655,8 +632,7 @@ int32_t dc_set(task_ctx *task, name_t dc_name, uint64_t sess, const char *key, v
     return ERR_OK;
 }
 int32_t dc_del(task_ctx *task, name_t dc_name, uint64_t sess, const char *key) {
-    ASSERTAB(!EMPTYSTR(key), "datacenter key empty");
-    if (strlen(key) >= DC_KEY_MAX) {
+    if (EMPTYSTR(key) || strlen(key) >= DC_KEY_MAX) {
         return ERR_FAILED;
     }
     task_ctx *dc = task_grab(task->loader, dc_name);
@@ -674,8 +650,7 @@ int32_t dc_del(task_ctx *task, name_t dc_name, uint64_t sess, const char *key) {
     return ERR_OK;
 }
 int32_t dc_get(task_ctx *task, name_t dc_name, uint64_t sess, const char *key) {
-    ASSERTAB(!EMPTYSTR(key), "datacenter key empty");
-    if (strlen(key) >= DC_KEY_MAX) {
+    if (EMPTYSTR(key) || strlen(key) >= DC_KEY_MAX) {
         return ERR_FAILED;
     }
     task_ctx *dc = task_grab(task->loader, dc_name);
@@ -693,8 +668,7 @@ int32_t dc_get(task_ctx *task, name_t dc_name, uint64_t sess, const char *key) {
     return ERR_OK;
 }
 int32_t dc_wait(task_ctx *task, name_t dc_name, uint64_t sess, const char *key) {
-    ASSERTAB(!EMPTYSTR(key), "datacenter key empty");
-    if (strlen(key) >= DC_KEY_MAX) {
+    if (EMPTYSTR(key) || strlen(key) >= DC_KEY_MAX) {
         return ERR_FAILED;
     }
     task_ctx *dc = task_grab(task->loader, dc_name);

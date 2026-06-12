@@ -209,5 +209,16 @@ runner.run("hotfix", function(t)
         t:check(err and nil ~= err:find("no matching"), "err 含 'no matching'")
         t:eq(2, mod.bump(), "counter 回滚:1 + 1 = 2(未回滚则为 778)")
     end
+
+    -- ── 子段 14:apply 缺 source(nil / 非 string)→ false,不抛错 ─────
+    do
+        _setup_module()
+        local ok, err = hotfix.apply("hotfix_unit_mod")
+        t:eq(false, ok, "缺 source 返回 false")
+        t:check(err and nil ~= err:find("source"), "err 含 'source'")
+        local ok2, err2 = hotfix.apply("hotfix_unit_mod", 123)
+        t:eq(false, ok2, "source 非 string(number)返回 false")
+        t:check(err2 and nil ~= err2:find("source"), "err 含 'source'")
+    end
 end)
 end)

@@ -938,6 +938,9 @@ static void _sc_requested(task_ctx *task, uint8_t reqtype, uint64_t sess, name_t
                           void *data, size_t size) {
     (void)reqtype;
     sc_ctx *ctx = (sc_ctx *)task->arg;
+    if (INVALID_TNAME == src) {
+        return;
+    }
     if (size < 1 || NULL == data) {
         _sc_resp_failed(ctx, src, sess);
         return;
@@ -1102,7 +1105,9 @@ static char *_sc_pack_nobody(sc_op op, size_t *out_total) {
     return bw.data;
 }
 int32_t coro_sc_subscribe(task_ctx *task, name_t sc_name, const char *topic) {
-    ASSERTAB(!EMPTYSTR(topic), "subcenter topic empty");
+    if (EMPTYSTR(topic)) {
+        return ERR_FAILED;
+    }
     task_ctx *sc = task_grab(task->loader, sc_name);
     if (NULL == sc) {
         return ERR_FAILED;
@@ -1117,8 +1122,9 @@ int32_t coro_sc_subscribe(task_ctx *task, name_t sc_name, const char *topic) {
 }
 int32_t coro_sc_subscribe_shared(task_ctx *task, name_t sc_name,
                                  const char *topic, const char *group) {
-    ASSERTAB(!EMPTYSTR(topic), "subcenter topic empty");
-    ASSERTAB(!EMPTYSTR(group), "subcenter group empty");
+    if (EMPTYSTR(topic) || EMPTYSTR(group)) {
+        return ERR_FAILED;
+    }
     task_ctx *sc = task_grab(task->loader, sc_name);
     if (NULL == sc) {
         return ERR_FAILED;
@@ -1132,7 +1138,9 @@ int32_t coro_sc_subscribe_shared(task_ctx *task, name_t sc_name,
     return erro;
 }
 int32_t coro_sc_unsubscribe(task_ctx *task, name_t sc_name, const char *topic) {
-    ASSERTAB(!EMPTYSTR(topic), "subcenter topic empty");
+    if (EMPTYSTR(topic)) {
+        return ERR_FAILED;
+    }
     task_ctx *sc = task_grab(task->loader, sc_name);
     if (NULL == sc) {
         return ERR_FAILED;
@@ -1147,8 +1155,9 @@ int32_t coro_sc_unsubscribe(task_ctx *task, name_t sc_name, const char *topic) {
 }
 int32_t coro_sc_unsubscribe_shared(task_ctx *task, name_t sc_name,
                                    const char *topic, const char *group) {
-    ASSERTAB(!EMPTYSTR(topic), "subcenter topic empty");
-    ASSERTAB(!EMPTYSTR(group), "subcenter group empty");
+    if (EMPTYSTR(topic) || EMPTYSTR(group)) {
+        return ERR_FAILED;
+    }
     task_ctx *sc = task_grab(task->loader, sc_name);
     if (NULL == sc) {
         return ERR_FAILED;
@@ -1163,8 +1172,9 @@ int32_t coro_sc_unsubscribe_shared(task_ctx *task, name_t sc_name,
 }
 int32_t coro_sc_publish(task_ctx *task, name_t sc_name, const char *topic,
                         void *data, size_t size) {
-    ASSERTAB(!EMPTYSTR(topic), "subcenter topic empty");
-    ASSERTAB(size <= UINT32_MAX, "subcenter payload size exceeds UINT32_MAX");
+    if (EMPTYSTR(topic) || size > UINT32_MAX) {
+        return ERR_FAILED;
+    }
     task_ctx *sc = task_grab(task->loader, sc_name);
     if (NULL == sc) {
         return ERR_FAILED;
@@ -1179,8 +1189,9 @@ int32_t coro_sc_publish(task_ctx *task, name_t sc_name, const char *topic,
 }
 int32_t coro_sc_publish_retained(task_ctx *task, name_t sc_name, const char *topic,
                                  void *data, size_t size) {
-    ASSERTAB(!EMPTYSTR(topic), "subcenter topic empty");
-    ASSERTAB(size <= UINT32_MAX, "subcenter payload size exceeds UINT32_MAX");
+    if (EMPTYSTR(topic) || size > UINT32_MAX) {
+        return ERR_FAILED;
+    }
     task_ctx *sc = task_grab(task->loader, sc_name);
     if (NULL == sc) {
         return ERR_FAILED;
@@ -1195,7 +1206,10 @@ int32_t coro_sc_publish_retained(task_ctx *task, name_t sc_name, const char *top
 }
 void *coro_sc_query_retained(task_ctx *task, name_t sc_name,
                              const char *pattern, size_t *size) {
-    ASSERTAB(!EMPTYSTR(pattern), "subcenter pattern empty");
+    if (EMPTYSTR(pattern)) {
+        SET_PTR(size, 0);
+        return NULL;
+    }
     task_ctx *sc = task_grab(task->loader, sc_name);
     if (NULL == sc) {
         SET_PTR(size, 0);
@@ -1248,7 +1262,9 @@ void *coro_sc_retained_topics(task_ctx *task, name_t sc_name, size_t *size) {
 }
 int32_t coro_sc_set_meta(task_ctx *task, name_t sc_name,
                          const void *meta, size_t size) {
-    ASSERTAB(size <= SC_META_MAX_SIZE, "subcenter meta size exceeds SC_META_MAX_SIZE");
+    if (size > SC_META_MAX_SIZE) {
+        return ERR_FAILED;
+    }
     task_ctx *sc = task_grab(task->loader, sc_name);
     if (NULL == sc) {
         return ERR_FAILED;
@@ -1262,169 +1278,147 @@ int32_t coro_sc_set_meta(task_ctx *task, name_t sc_name,
     return erro;
 }
 int32_t sc_subscribe(task_ctx *task, name_t sc_name, uint64_t sess, const char *topic) {
-    ASSERTAB(!EMPTYSTR(topic), "subcenter topic empty");
+    if (EMPTYSTR(topic) || 0 == sess) {
+        return ERR_FAILED;
+    }
     task_ctx *sc = task_grab(task->loader, sc_name);
     if (NULL == sc) {
         return ERR_FAILED;
     }
     size_t total;
     char *buf = _sc_pack_topic(SC_OP_SUB, topic, &total);
-    if (0 == sess) {
-        task_call(sc, REQ_SC, buf, total, 0);
-    } else {
-        task_request(sc, task, REQ_SC, sess, buf, total, 0);
-    }
+    task_request(sc, task, REQ_SC, sess, buf, total, 0);
     task_ungrab(sc);
     return ERR_OK;
 }
 int32_t sc_subscribe_shared(task_ctx *task, name_t sc_name, uint64_t sess,
                             const char *topic, const char *group) {
-    ASSERTAB(!EMPTYSTR(topic), "subcenter topic empty");
-    ASSERTAB(!EMPTYSTR(group), "subcenter group empty");
+    if (EMPTYSTR(topic) || EMPTYSTR(group) || 0 == sess) {
+        return ERR_FAILED;
+    }
     task_ctx *sc = task_grab(task->loader, sc_name);
     if (NULL == sc) {
         return ERR_FAILED;
     }
     size_t total;
     char *buf = _sc_pack_topic_group(SC_OP_SUB_SHARED, topic, group, &total);
-    if (0 == sess) {
-        task_call(sc, REQ_SC, buf, total, 0);
-    } else {
-        task_request(sc, task, REQ_SC, sess, buf, total, 0);
-    }
+    task_request(sc, task, REQ_SC, sess, buf, total, 0);
     task_ungrab(sc);
     return ERR_OK;
 }
 int32_t sc_unsubscribe(task_ctx *task, name_t sc_name, uint64_t sess, const char *topic) {
-    ASSERTAB(!EMPTYSTR(topic), "subcenter topic empty");
+    if (EMPTYSTR(topic) || 0 == sess) {
+        return ERR_FAILED;
+    }
     task_ctx *sc = task_grab(task->loader, sc_name);
     if (NULL == sc) {
         return ERR_FAILED;
     }
     size_t total;
     char *buf = _sc_pack_topic(SC_OP_UNSUB, topic, &total);
-    if (0 == sess) {
-        task_call(sc, REQ_SC, buf, total, 0);
-    } else {
-        task_request(sc, task, REQ_SC, sess, buf, total, 0);
-    }
+    task_request(sc, task, REQ_SC, sess, buf, total, 0);
     task_ungrab(sc);
     return ERR_OK;
 }
 int32_t sc_unsubscribe_shared(task_ctx *task, name_t sc_name, uint64_t sess,
                               const char *topic, const char *group) {
-    ASSERTAB(!EMPTYSTR(topic), "subcenter topic empty");
-    ASSERTAB(!EMPTYSTR(group), "subcenter group empty");
+    if (EMPTYSTR(topic) || EMPTYSTR(group) || 0 == sess) {
+        return ERR_FAILED;
+    }
     task_ctx *sc = task_grab(task->loader, sc_name);
     if (NULL == sc) {
         return ERR_FAILED;
     }
     size_t total;
     char *buf = _sc_pack_topic_group(SC_OP_UNSUB_SHARED, topic, group, &total);
-    if (0 == sess) {
-        task_call(sc, REQ_SC, buf, total, 0);
-    } else {
-        task_request(sc, task, REQ_SC, sess, buf, total, 0);
-    }
+    task_request(sc, task, REQ_SC, sess, buf, total, 0);
     task_ungrab(sc);
     return ERR_OK;
 }
 int32_t sc_publish(task_ctx *task, name_t sc_name, uint64_t sess, const char *topic,
                    void *data, size_t size) {
-    ASSERTAB(!EMPTYSTR(topic), "subcenter topic empty");
-    ASSERTAB(size <= UINT32_MAX, "subcenter payload size exceeds UINT32_MAX");
+    if (EMPTYSTR(topic) || size > UINT32_MAX || 0 == sess) {
+        return ERR_FAILED;
+    }
     task_ctx *sc = task_grab(task->loader, sc_name);
     if (NULL == sc) {
         return ERR_FAILED;
     }
     size_t total;
     char *buf = _sc_pack_topic_payload(SC_OP_PUB, topic, data, size, &total);
-    if (0 == sess) {
-        task_call(sc, REQ_SC, buf, total, 0);
-    } else {
-        task_request(sc, task, REQ_SC, sess, buf, total, 0);
-    }
+    task_request(sc, task, REQ_SC, sess, buf, total, 0);
     task_ungrab(sc);
     return ERR_OK;
 }
 int32_t sc_publish_retained(task_ctx *task, name_t sc_name, uint64_t sess,
                             const char *topic, void *data, size_t size) {
-    ASSERTAB(!EMPTYSTR(topic), "subcenter topic empty");
-    ASSERTAB(size <= UINT32_MAX, "subcenter payload size exceeds UINT32_MAX");
+    if (EMPTYSTR(topic) || size > UINT32_MAX || 0 == sess) {
+        return ERR_FAILED;
+    }
     task_ctx *sc = task_grab(task->loader, sc_name);
     if (NULL == sc) {
         return ERR_FAILED;
     }
     size_t total;
     char *buf = _sc_pack_topic_payload(SC_OP_PUB_RETAINED, topic, data, size, &total);
-    if (0 == sess) {
-        task_call(sc, REQ_SC, buf, total, 0);
-    } else {
-        task_request(sc, task, REQ_SC, sess, buf, total, 0);
-    }
+    task_request(sc, task, REQ_SC, sess, buf, total, 0);
     task_ungrab(sc);
     return ERR_OK;
 }
 int32_t sc_query_retained(task_ctx *task, name_t sc_name, uint64_t sess, const char *pattern) {
-    ASSERTAB(!EMPTYSTR(pattern), "subcenter pattern empty");
+    if (EMPTYSTR(pattern) || 0 == sess) {
+        return ERR_FAILED;
+    }
     task_ctx *sc = task_grab(task->loader, sc_name);
     if (NULL == sc) {
         return ERR_FAILED;
     }
     size_t total;
     char *buf = _sc_pack_topic(SC_OP_QUERY_RETAINED, pattern, &total);
-    if (0 == sess) {
-        task_call(sc, REQ_SC, buf, total, 0);
-    } else {
-        task_request(sc, task, REQ_SC, sess, buf, total, 0);
-    }
+    task_request(sc, task, REQ_SC, sess, buf, total, 0);
     task_ungrab(sc);
     return ERR_OK;
 }
 int32_t sc_topics(task_ctx *task, name_t sc_name, uint64_t sess) {
+    if (0 == sess) {
+        return ERR_FAILED;
+    }
     task_ctx *sc = task_grab(task->loader, sc_name);
     if (NULL == sc) {
         return ERR_FAILED;
     }
     size_t total;
     char *buf = _sc_pack_nobody(SC_OP_LIST, &total);
-    if (0 == sess) {
-        task_call(sc, REQ_SC, buf, total, 0);
-    } else {
-        task_request(sc, task, REQ_SC, sess, buf, total, 0);
-    }
+    task_request(sc, task, REQ_SC, sess, buf, total, 0);
     task_ungrab(sc);
     return ERR_OK;
 }
 int32_t sc_retained_topics(task_ctx *task, name_t sc_name, uint64_t sess) {
+    if (0 == sess) {
+        return ERR_FAILED;
+    }
     task_ctx *sc = task_grab(task->loader, sc_name);
     if (NULL == sc) {
         return ERR_FAILED;
     }
     size_t total;
     char *buf = _sc_pack_nobody(SC_OP_RETAINED_LIST, &total);
-    if (0 == sess) {
-        task_call(sc, REQ_SC, buf, total, 0);
-    } else {
-        task_request(sc, task, REQ_SC, sess, buf, total, 0);
-    }
+    task_request(sc, task, REQ_SC, sess, buf, total, 0);
     task_ungrab(sc);
     return ERR_OK;
 }
 int32_t sc_set_meta(task_ctx *task, name_t sc_name, uint64_t sess,
                     const void *meta, size_t size) {
-    ASSERTAB(size <= SC_META_MAX_SIZE, "subcenter meta size exceeds SC_META_MAX_SIZE");
+    if (size > SC_META_MAX_SIZE || 0 == sess) {
+        return ERR_FAILED;
+    }
     task_ctx *sc = task_grab(task->loader, sc_name);
     if (NULL == sc) {
         return ERR_FAILED;
     }
     size_t total;
     char *buf = _sc_pack_meta(SC_OP_SET_META, meta, size, &total);
-    if (0 == sess) {
-        task_call(sc, REQ_SC, buf, total, 0);
-    } else {
-        task_request(sc, task, REQ_SC, sess, buf, total, 0);
-    }
+    task_request(sc, task, REQ_SC, sess, buf, total, 0);
     task_ungrab(sc);
     return ERR_OK;
 }

@@ -739,18 +739,27 @@ int32_t task_get_priority(task_ctx *task) {
     return (int32_t)ATOMIC_GET(&task->priority);
 }
 void task_set_request_timeout(task_ctx *task, uint32_t ms) {
+    if (0 == ms) {
+        return;
+    }
     ATOMIC_SET(&task->timeout_request, ms);
 }
 uint32_t task_get_request_timeout(task_ctx *task) {
     return (uint32_t)ATOMIC_GET(&task->timeout_request);
 }
 void task_set_connect_timeout(task_ctx *task, uint32_t ms) {
+    if (0 == ms) {
+        return;
+    }
     ATOMIC_SET(&task->timeout_connect, ms);
 }
 uint32_t task_get_connect_timeout(task_ctx *task) {
     return (uint32_t)ATOMIC_GET(&task->timeout_connect);
 }
 void task_set_netread_timeout(task_ctx *task, uint32_t ms) {
+    if (0 == ms) {
+        return;
+    }
     ATOMIC_SET(&task->timeout_netread, ms);
 }
 uint32_t task_get_netread_timeout(task_ctx *task) {

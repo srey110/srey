@@ -155,25 +155,25 @@ void *coro_sc_retained_topics(task_ctx *task, name_t sc_name, size_t *size);
 /// <param name="task">当前 task</param>
 /// <param name="sc_name">subcenter task name</param>
 /// <param name="meta">元数据 buffer(允许 NULL)</param>
-/// <param name="size">字节数;0 等价清除元数据;> SC_META_MAX_SIZE 时 ASSERTAB 终止</param>
+/// <param name="size">字节数;0 等价清除元数据;> SC_META_MAX_SIZE 返 ERR_FAILED</param>
 /// <returns>ERR_OK 成功;ERR_FAILED subcenter 不可达</returns>
 int32_t coro_sc_set_meta(task_ctx *task, name_t sc_name,
                          const void *meta, size_t size);
 // ── 异步版 API ────────────────────────────────────────────────────────────
-// 非协程上下文使用;不挂起。sess=0 fire-and-forget(无响应);sess≠0 业务自管响应配对,
+// 非协程上下文使用;不挂起。sess 必须非 0(=0 返 ERR_FAILED),业务自管响应配对,
 // 在 task->_response 回调中按 sess 收 OK / 数据。语义与协程版完全一致,差别仅在阻塞与否。
 
 /// <summary>异步订阅。同 coro_sc_subscribe,但不挂起</summary>
 /// <param name="task">当前 task</param>
 /// <param name="sc_name">subcenter task name</param>
-/// <param name="sess">会话 id;0=fire-and-forget,非 0=业务自管响应配对</param>
+/// <param name="sess">会话 id;必须非 0(=0 返 ERR_FAILED),业务自管响应配对</param>
 /// <param name="topic">订阅模式</param>
 /// <returns>ERR_OK 投递成功;ERR_FAILED subcenter 不可达</returns>
 int32_t sc_subscribe(task_ctx *task, name_t sc_name, uint64_t sess, const char *topic);
 /// <summary>异步共享订阅。同 coro_sc_subscribe_shared,但不挂起</summary>
 /// <param name="task">当前 task</param>
 /// <param name="sc_name">subcenter task name</param>
-/// <param name="sess">会话 id;0=fire-and-forget</param>
+/// <param name="sess">会话 id;必须非 0,=0 返 ERR_FAILED</param>
 /// <param name="topic">订阅模式</param>
 /// <param name="group">共享组名</param>
 /// <returns>ERR_OK 投递成功;ERR_FAILED subcenter 不可达</returns>
@@ -182,14 +182,14 @@ int32_t sc_subscribe_shared(task_ctx *task, name_t sc_name, uint64_t sess,
 /// <summary>异步取消订阅。同 coro_sc_unsubscribe,但不挂起</summary>
 /// <param name="task">当前 task</param>
 /// <param name="sc_name">subcenter task name</param>
-/// <param name="sess">会话 id;0=fire-and-forget</param>
+/// <param name="sess">会话 id;必须非 0,=0 返 ERR_FAILED</param>
 /// <param name="topic">订阅模式</param>
 /// <returns>ERR_OK 投递成功;ERR_FAILED subcenter 不可达</returns>
 int32_t sc_unsubscribe(task_ctx *task, name_t sc_name, uint64_t sess, const char *topic);
 /// <summary>异步取消共享订阅。同 coro_sc_unsubscribe_shared,但不挂起</summary>
 /// <param name="task">当前 task</param>
 /// <param name="sc_name">subcenter task name</param>
-/// <param name="sess">会话 id;0=fire-and-forget</param>
+/// <param name="sess">会话 id;必须非 0,=0 返 ERR_FAILED</param>
 /// <param name="topic">订阅模式</param>
 /// <param name="group">共享组名</param>
 /// <returns>ERR_OK 投递成功;ERR_FAILED subcenter 不可达</returns>
@@ -198,7 +198,7 @@ int32_t sc_unsubscribe_shared(task_ctx *task, name_t sc_name, uint64_t sess,
 /// <summary>异步发布。同 coro_sc_publish,但不挂起</summary>
 /// <param name="task">当前 task</param>
 /// <param name="sc_name">subcenter task name</param>
-/// <param name="sess">会话 id;0=fire-and-forget</param>
+/// <param name="sess">会话 id;必须非 0,=0 返 ERR_FAILED</param>
 /// <param name="topic">精确 topic</param>
 /// <param name="data">payload</param>
 /// <param name="size">payload 字节数</param>
@@ -208,7 +208,7 @@ int32_t sc_publish(task_ctx *task, name_t sc_name, uint64_t sess, const char *to
 /// <summary>异步发布保留消息。同 coro_sc_publish_retained,但不挂起</summary>
 /// <param name="task">当前 task</param>
 /// <param name="sc_name">subcenter task name</param>
-/// <param name="sess">会话 id;0=fire-and-forget</param>
+/// <param name="sess">会话 id;必须非 0,=0 返 ERR_FAILED</param>
 /// <param name="topic">精确 topic</param>
 /// <param name="data">retained payload(NULL/0 清空槽位)</param>
 /// <param name="size">payload 字节数</param>
@@ -221,28 +221,28 @@ int32_t sc_publish_retained(task_ctx *task, name_t sc_name, uint64_t sess,
 /// </summary>
 /// <param name="task">当前 task</param>
 /// <param name="sc_name">subcenter task name</param>
-/// <param name="sess">会话 id;0 时无响应</param>
+/// <param name="sess">会话 id;必须非 0,=0 返 ERR_FAILED</param>
 /// <param name="pattern">查询模式</param>
 /// <returns>ERR_OK 投递成功;ERR_FAILED subcenter 不可达</returns>
 int32_t sc_query_retained(task_ctx *task, name_t sc_name, uint64_t sess, const char *pattern);
 /// <summary>异步列出订阅 topic。同 coro_sc_topics,但不挂起</summary>
 /// <param name="task">当前 task</param>
 /// <param name="sc_name">subcenter task name</param>
-/// <param name="sess">会话 id;0 时无响应</param>
+/// <param name="sess">会话 id;必须非 0,=0 返 ERR_FAILED</param>
 /// <returns>ERR_OK 投递成功;ERR_FAILED subcenter 不可达</returns>
 int32_t sc_topics(task_ctx *task, name_t sc_name, uint64_t sess);
 /// <summary>异步列出 retained 元信息。同 coro_sc_retained_topics,但不挂起</summary>
 /// <param name="task">当前 task</param>
 /// <param name="sc_name">subcenter task name</param>
-/// <param name="sess">会话 id;0 时无响应</param>
+/// <param name="sess">会话 id;必须非 0,=0 返 ERR_FAILED</param>
 /// <returns>ERR_OK 投递成功;ERR_FAILED subcenter 不可达</returns>
 int32_t sc_retained_topics(task_ctx *task, name_t sc_name, uint64_t sess);
 /// <summary>异步设置 publisher meta。同 coro_sc_set_meta,但不挂起</summary>
 /// <param name="task">当前 task</param>
 /// <param name="sc_name">subcenter task name</param>
-/// <param name="sess">会话 id;0=fire-and-forget</param>
+/// <param name="sess">会话 id;必须非 0,=0 返 ERR_FAILED</param>
 /// <param name="meta">元数据 buffer(NULL/0 清除)</param>
-/// <param name="size">字节数;> SC_META_MAX_SIZE 时 ASSERTAB 终止</param>
+/// <param name="size">字节数;> SC_META_MAX_SIZE 返 ERR_FAILED</param>
 /// <returns>ERR_OK 投递成功;ERR_FAILED subcenter 不可达</returns>
 int32_t sc_set_meta(task_ctx *task, name_t sc_name, uint64_t sess,
                     const void *meta, size_t size);

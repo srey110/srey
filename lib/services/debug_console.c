@@ -316,10 +316,6 @@ static void _debug_startup(task_ctx *task) {
     debug_console_ctx *ctx = coro_get_arg(task);
     task_recved(task, _net_recv);
     ctx->router = router_new();
-    if (NULL == ctx->router) {
-        LOG_ERROR("debug_console router_new failed.");
-        return;
-    }
     router_get(ctx->router, NULL, "/", _debug_root, NULL, 0);
     router_get(ctx->router, NULL, "/__alive", _debug_alive, NULL, 0);
     router_get(ctx->router, NULL, "/__cmem", _debug_cmem, NULL, 0);

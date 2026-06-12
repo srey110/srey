@@ -567,5 +567,24 @@ runner.run("unit_router", function(t)
         t:eq(500, (dispatch(r, "GET", "/x") or {}).code, "first mw error → 500 (no double response)")
     end
 
+    -- 7.4 handler 已成功响应后再抛错 → 不补第二个 500（responded 机制，对齐 C 端 router.c:671）
+    do
+        local resp_count = 0
+        local orig_resp = mock_http.response
+        mock_http.response = function(fd, skid, code, headers, body)
+            resp_count = resp_count + 1
+            orig_resp(fd, skid, code, headers, body)
+        end
+        local r = Route.new()
+        r:get("/late", function(ctx)
+            ctx:text(200, "done")      -- 先成功响应
+            error("after response")    -- 再抛错
+        end)
+        local resp = dispatch(r, "GET", "/late")
+        mock_http.response = orig_resp  -- 还原 mock
+        t:eq(1,   resp_count,           "已响应后抛错:只发 1 次响应,不补 500")
+        t:eq(200, resp and resp.code,   "保留 handler 的 200,不被 500 覆盖")
+    end
+
 end)
 end)

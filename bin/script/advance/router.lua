@@ -182,6 +182,7 @@ end
 ---@field query   table<string,string>  URL 查询参数
 ---@field body    string?            请求体，无则为 nil
 ---@field headers table<string,string>  请求头
+---@field responded boolean            是否已发送响应;响应方法置位,dispatch 据此避免重复 500
 ---@field text    fun(self:Ctx, code:integer, body:string?)        纯文本响应
 ---@field json    fun(self:Ctx, code:integer, tbl:table)           JSON 响应，自动附加 Content-Type
 ---@field html    fun(self:Ctx, code:integer, body:string?)        HTML 响应，自动附加 Content-Type
@@ -200,20 +201,25 @@ local function _make_ctx(fd, skid, pack, client, method, parsed, version)
         query   = parsed.param or {},
         body    = http.datastr(pack),
         headers = http.heads(pack) or {},
+        responded = false,
     }
     function ctx:text(code, body)
         http.response(self.fd, self.skid, code, nil, tostring(body or ""))
+        self.responded = true
     end
     function ctx:json(code, tbl)
         http.response(self.fd, self.skid, code,
             { ["Content-Type"] = "application/json" }, tbl)
+        self.responded = true
     end
     function ctx:html(code, body)
         http.response(self.fd, self.skid, code,
             { ["Content-Type"] = "text/html; charset=utf-8" }, tostring(body or ""))
+        self.responded = true
     end
     function ctx:respond(code, headers, body)
         http.response(self.fd, self.skid, code, headers, body)
+        self.responded = true
     end
     return ctx
 end
@@ -442,10 +448,11 @@ function Router:dispatch(fd, skid, pack, client)
     chain[#chain + 1] = route.handler
     -- 链内任意位置抛出异常均由 srey.xpcall 兜底（自动 ERROR + traceback），避免 handler/中间件崩溃丢失响应
     local ok, err = srey.xpcall(_run_chain, chain, ctx, 1)
-    if not ok then
-        -- 用 pcall 保护 response，防止写已关闭连接时二次抛出
-        pcall(http.response, fd, skid, 500, nil,
-              string.format("Internal Server Error. %s\n", tostring(err)))
+    -- 仅未响应时补 500
+    if not ctx.responded then
+        local errmsg = ok and "Internal Server Error\n"
+            or string.format("Internal Server Error. %s\n", tostring(err))
+        pcall(http.response, fd, skid, 500, nil, errmsg)
     end
 end
 

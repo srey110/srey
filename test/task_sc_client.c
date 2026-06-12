@@ -579,6 +579,30 @@ static int32_t _test_shared_dead_skip_deliver(task_ctx *task) {
     return ERR_OK;
 }
 
+// 子段 19:异步 sc_* sess=0 拒绝 — sess=0 会丢调用方身份,全部返 ERR_FAILED 且不下发(A1 入口层)
+static int32_t _test_async_sess_zero_reject(task_ctx *task) {
+    if (ERR_FAILED != sc_subscribe(task, _sc_name, 0, "z/a")
+        || ERR_FAILED != sc_subscribe_shared(task, _sc_name, 0, "z/a", "zg")
+        || ERR_FAILED != sc_unsubscribe(task, _sc_name, 0, "z/a")
+        || ERR_FAILED != sc_publish(task, _sc_name, 0, "z/a", "x", 1)
+        || ERR_FAILED != sc_publish_retained(task, _sc_name, 0, "z/a", "x", 1)
+        || ERR_FAILED != sc_query_retained(task, _sc_name, 0, "z/a")
+        || ERR_FAILED != sc_topics(task, _sc_name, 0)
+        || ERR_FAILED != sc_retained_topics(task, _sc_name, 0)
+        || ERR_FAILED != sc_set_meta(task, _sc_name, 0, "m", 1)) {
+        LOG_ERROR("async sess=0: expect all ERR_FAILED");
+        return ERR_FAILED;
+    }
+    // sess=0 被拒后不应产生订阅:z/a 不在 topics 列表
+    size_t lsize = 0;
+    void *ldata = coro_sc_topics(task, _sc_name, &lsize);
+    if (_topics_contains(ldata, lsize, "z/a")) {
+        LOG_ERROR("async sess=0: 'z/a' should not be subscribed");
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+
 static void _startup(task_ctx *task) {
     task_sc_client_args *arg = (task_sc_client_args *)coro_get_arg(task);
     _sc_name = task_find_name(task->loader, arg->sc_name);
@@ -602,9 +626,10 @@ static void _startup(task_ctx *task) {
     if (ERR_OK != _test_wildcard_dead_sub_cleanup(task)) { return; }
     if (ERR_OK != _test_shared_dead_member_cleanup(task)) { return; }
     if (ERR_OK != _test_shared_dead_skip_deliver(task)) { return; }
+    if (ERR_OK != _test_async_sess_zero_reject(task)) { return; }
 
     *(arg->ok) = 1;
-    LOG_INFO("sc_client tested: 18/18 subtests passed.");
+    LOG_INFO("sc_client tested: 19/19 subtests passed.");
 }
 
 void task_sc_client_start(loader_ctx *loader, const char *base_name, const char *sc_name, int32_t *ok) {

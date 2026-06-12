@@ -564,7 +564,12 @@ static void _usk_on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev
 }
 int32_t ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud,
     SOCKET *fd, uint64_t *skid) {
-    ASSERTAB(NULL != cbs && NULL != cbs->r_cb, ERRSTR_NULLP);
+    if (NULL == cbs || NULL == cbs->r_cb) {
+        if (NULL != cbs) {
+            UD_FREE(cbs->ud_free, ud);
+        }
+        return ERR_FAILED;
+    }
     netaddr_ctx addr;
     if (ERR_OK != netaddr_set(&addr, ip, port)) {
         LOG_ERROR("netaddr_set %s:%d, %s", ip, port, ERRORSTR(ERRNO));
@@ -689,7 +694,12 @@ static void _usk_close_lsnsock(listener_ctx *lsn, int32_t cnt) {
 }
 int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const uint16_t port,
     cbs_ctx *cbs, ud_cxt *ud, uint64_t *id) {
-    ASSERTAB(NULL != cbs && NULL != cbs->r_cb, ERRSTR_NULLP);
+    if (NULL == cbs || NULL == cbs->r_cb) {
+        if (NULL != cbs) {
+            UD_FREE(cbs->ud_free, ud);
+        }
+        return ERR_FAILED;
+    }
     netaddr_ctx addr;
     if (ERR_OK != netaddr_set(&addr, ip, port)) {
         LOG_ERROR("netaddr_set %s:%d, %s", ip, port, ERRORSTR(ERRNO));
@@ -1023,7 +1033,12 @@ void _uev_free_udp(sock_ctx *skctx) {
 }
 int32_t ev_udp(ev_ctx *ctx, const char *ip, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud,
     SOCKET *fd, uint64_t *skid) {
-    ASSERTAB(NULL != cbs->rf_cb, ERRSTR_NULLP);
+    if (NULL == cbs || NULL == cbs->rf_cb) {
+        if (NULL != cbs) {
+            UD_FREE(cbs->ud_free, ud);
+        }
+        return ERR_FAILED;
+    }
     netaddr_ctx addr;
     if (ERR_OK != netaddr_set(&addr, ip, port)) {
         LOG_ERROR("netaddr_set %s:%d, %s", ip, port, ERRORSTR(ERRNO));

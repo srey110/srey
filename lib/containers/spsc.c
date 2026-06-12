@@ -40,8 +40,9 @@ void spsc_free(spsc_ctx *q) {
  */
 //非阻塞入队：从 data 拷贝 elsize 字节，队列满时立即返回 ERR_FAILED
 int32_t spsc_trypush(spsc_ctx *q, const void *data) {
-    ASSERTAB(NULL != q,    ERRSTR_NULLP);
-    ASSERTAB(NULL != data, ERRSTR_INVPARAM);
+    if (NULL == q || NULL == data) {
+        return ERR_FAILED;
+    }
     uint32_t enq = ATOMIC_GET(&q->enq.v);
     uint32_t deq = ATOMIC_GET(&q->deq.v);
     if (enq - deq >= q->capacity) {
@@ -74,8 +75,9 @@ void spsc_push(spsc_ctx *q, const void *data) {
  *   旧 enq 看起来更少、最坏只是误判为空。uint32_t 减法处理 wrap。
  */
 int32_t spsc_pop(spsc_ctx *q, void *out) {
-    ASSERTAB(NULL != q,   ERRSTR_NULLP);
-    ASSERTAB(NULL != out, ERRSTR_INVPARAM);
+    if (NULL == q || NULL == out) {
+        return ERR_FAILED;
+    }
     uint32_t deq = ATOMIC_GET(&q->deq.v);
     uint32_t enq = ATOMIC_GET(&q->enq.v);
     if (deq == enq) {

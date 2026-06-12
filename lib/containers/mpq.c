@@ -47,8 +47,9 @@ void mpq_free(mpq_ctx *q) {
  */
 //非阻塞入队：从 data 拷贝 elsize 字节，队列满时立即返回 ERR_FAILED
 int32_t mpq_trypush(mpq_ctx *q, const void *data) {
-    ASSERTAB(NULL != q,    ERRSTR_NULLP);
-    ASSERTAB(NULL != data, ERRSTR_INVPARAM);
+    if (NULL == q || NULL == data) {
+        return ERR_FAILED;
+    }
     mpq_cell *cell;
     uint32_t  pos;
     int32_t   diff;
@@ -101,8 +102,9 @@ void mpq_push(mpq_ctx *q, const void *data) {
  *     diff  > 0  → deq_pos 已被其他消费者推进，重新加载 pos 重试
  */
 int32_t mpq_pop(mpq_ctx *q, void *out) {
-    ASSERTAB(NULL != q,   ERRSTR_NULLP);
-    ASSERTAB(NULL != out, ERRSTR_INVPARAM);
+    if (NULL == q || NULL == out) {
+        return ERR_FAILED;
+    }
     mpq_cell *cell;
     uint32_t  pos;
     int32_t   diff;
@@ -144,8 +146,9 @@ int32_t mpq_pop(mpq_ctx *q, void *out) {
  *   出队完成后单调推进 deq.v，并把 sequence 设为 pos+capacity 通知生产者下一轮可用。
  */
 int32_t mpq_pop_sc(mpq_ctx *q, void *out) {
-    ASSERTAB(NULL != q,   ERRSTR_NULLP);
-    ASSERTAB(NULL != out, ERRSTR_INVPARAM);
+    if (NULL == q || NULL == out) {
+        return ERR_FAILED;
+    }
     //消费者独占 deq.v，本地一次 load 即可（无并发推进者）
     uint32_t pos = ATOMIC_GET(&q->deq.v);
     mpq_cell *cell = _mpq_cell_at(q, pos);

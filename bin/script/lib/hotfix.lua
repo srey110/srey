@@ -35,8 +35,8 @@ local function _join_upvalues(patch_fn, upmap)
     end
 end
 
--- 扫 mod 表所有 function 的 upvalue,收集 name → {fn, idx} 去重(_ENV 排除)
--- 多个 closure 共享同一 UpVal 时,任意一个都能定位到该 UpVal,只保留首次发现即可
+-- 扫 mod 表所有 function 的 upvalue,收集 name → {fn, idx, id}(_ENV 排除)
+-- upvalueid 辨 cell 身份:同名不同 cell(chunk 内 local 遮蔽)按名无法判定嫁接目标,标记 ambiguous 供 apply 拒绝
 local function _collect_upvalues(mod)
     local map = {}
     for _, fn in pairs(mod) do
@@ -45,8 +45,14 @@ local function _collect_upvalues(mod)
             while true do
                 local name, _ = debug.getupvalue(fn, i)
                 if not name then break end
-                if "_ENV" ~= name and nil == map[name] then
-                    map[name] = {fn = fn, idx = i}
+                if "_ENV" ~= name then
+                    local id = debug.upvalueid(fn, i)
+                    local entry = map[name]
+                    if nil == entry then
+                        map[name] = {fn = fn, idx = i, id = id}
+                    elseif entry.id ~= id then
+                        entry.ambiguous = true
+                    end
                 end
                 i = i + 1
             end
@@ -66,11 +72,20 @@ function M.apply(module_name, patch_source)
     if not mod or "table" ~= type(mod) then
         return false, "module not loaded as table: " .. tostring(module_name)
     end
+    if "string" ~= type(patch_source) then
+        return false, "patch source not a string"
+    end
     -- patch_M 代理表:patch 写 `function M.xxx() end` 落到 patch_M(__newindex 走 rawset);
     -- patch 读 `M._helper` 透传 mod(__index = mod),让 patch 内部能引用原 module 未替换字段
     local patch_M = setmetatable({}, {__index = mod})
     -- 收集 mod 所有 closure 的 upvalue 索引,供 patch_env metatable 转发(路径 B)
     local upmap = _collect_upvalues(mod)
+    -- 含同名遮蔽 upvalue(同名不同 cell)时按名嫁接无法判定目标,拒绝处理避免静默接错 cell
+    for _, entry in pairs(upmap) do
+        if entry.ambiguous then
+            return false, "module has shadowed upvalues, hotfix unsupported"
+        end
+    end
     -- path-B 写入原 module UpVal 的撤销日志:k → {entry, orig};任一失败路径逐一回滚,避免半改污染
     local dirty = {}
     local function _rollback_dirty()

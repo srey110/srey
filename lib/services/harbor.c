@@ -227,10 +227,6 @@ static void _harbor_startup(task_ctx *harbor) {
     harbor_ctx *ctx = (harbor_ctx *)coro_get_arg(harbor);
     task_recved(harbor, _net_recv);
     ctx->router = router_new();
-    if (NULL == ctx->router) {
-        LOG_ERROR("harbor router_new failed.");
-        return;
-    }
     // 参数 + 签名校验统一放 group 中间件，/call 与 /request 共享
     router_define(ctx->router, "sign", _harbor_check);
     const char *mws[] = { "sign" };
