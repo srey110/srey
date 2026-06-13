@@ -158,8 +158,8 @@ static void _harbor_check(router_req *ctx) {
     }
     size_t dn = 0;
     size_t tn = 0;
-    if (NULL == router_req_query(ctx, "dst", &dn)
-        || NULL == router_req_query(ctx, "type", &tn)) {
+    if (NULL == router_req_query(ctx, "dst", &dn) || 0 == dn
+        || NULL == router_req_query(ctx, "type", &tn) || 0 == tn) {
         ev_close(&ctx->task->loader->netev, ctx->fd, ctx->skid, 1);
         ctx->responded = 1;
         return;

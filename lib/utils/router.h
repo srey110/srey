@@ -22,6 +22,7 @@
 //   /foo/bar         字面量精确匹配
 //   /user/{id}       {name} 必填路径参数, router_req_param("id", ...) 取
 //   /file/{path?}    {name?} 可选路径参数, 缺失时取不到值但仍匹配
+//   {name} 内部含 '?' (如 {a?b}) 视为非法参数名, 整段退化为字面量匹配 (与 Lua 端文法一致)
 //   /static/*        末尾通配, 一旦命中后续任意请求段都吃下
 //   多条同 path 不同 method 算独立路由, 方法位掩码 ROUTER_M_GET|ROUTER_M_POST 也支持
 // 中间件 (洋葱模型)
@@ -304,7 +305,7 @@ const char *router_req_param(router_req *ctx, const char *key, size_t *lens);
 /// <param name="ctx">router_req</param>
 /// <param name="key">参数名</param>
 /// <param name="lens">输出值长度</param>
-/// <returns>值指针; 未找到返回 NULL</returns>
+/// <returns>值指针; 键不存在返回 NULL, 键存在但值空(?a=)返回非 NULL 零长指针(对齐 Lua query 子表 "")</returns>
 const char *router_req_query(router_req *ctx, const char *key, size_t *lens);
 /// <summary>
 /// 取请求 body

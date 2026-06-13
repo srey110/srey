@@ -91,13 +91,16 @@ static int32_t _router_parse_seg(const char *src, size_t len, router_seg *out) {
         if (0 == name_len) {
             return ERR_FAILED;
         }
-        // +1 字节存 \0, router_req_param 内可直接 memcmp 不必再带长度
-        MALLOC(out->str, name_len + 1);
-        memcpy(out->str, name_src, name_len);
-        out->str[name_len] = '\0';
-        out->str_len = (uint32_t)name_len;
-        out->t = is_opt ? ROUTER_SEG_OPT : ROUTER_SEG_PARAM;
-        return ERR_OK;
+        // 参数名内部含 '?' 视为非法, 落字面量(对齐 Lua [^}?]+ 文法); 否则才是 PARAM/OPT
+        if (NULL == memchr(name_src, '?', name_len)) {
+            // +1 字节存 \0, router_req_param 内可直接 memcmp 不必再带长度
+            MALLOC(out->str, name_len + 1);
+            memcpy(out->str, name_src, name_len);
+            out->str[name_len] = '\0';
+            out->str_len = (uint32_t)name_len;
+            out->t = is_opt ? ROUTER_SEG_OPT : ROUTER_SEG_PARAM;
+            return ERR_OK;
+        }
     }
     // 其他: 字面量段, 整体拷贝
     MALLOC(out->str, len + 1);
@@ -498,7 +501,8 @@ const char *router_req_query(router_req *ctx, const char *key, size_t *lens) {
         return NULL;
     }
     *lens = v->lens;
-    return (const char *)v->data;
+    // 值空(?a=)返非 NULL 零长指针, 与 Lua query 子表 "" 对齐, 区别于键不存在的 NULL
+    return (NULL != v->data) ? (const char *)v->data : "";
 }
 void *router_req_body(router_req *ctx, size_t *lens) {
     return http_data(ctx->pack, lens);

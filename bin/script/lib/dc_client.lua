@@ -39,30 +39,42 @@ function dc_client.set(dc_name, key, val)
     return nil ~= _wait_resp(set(dc_name, sess, key, val), sess, "set")
 end
 
----读 KV;key 不存在返回 nil。必须在协程中调用。
+---读 KV。必须在协程中调用。返回值三态(对齐 C router_req_query 的 nil/空串语义):
+---  key 不存在/非法/失败/超时 → nil
+---  key 存在但值空 → "" (空字符串, rsize 0)
+---  key 存在且有值 → lightuserdata 裸指针 + rsize
 ---@param dc_name TASK_NAME DataCenter task name
 ---@param key string key 字符串(非空)
----@return lightuserdata|nil rdata 响应数据指针；仅在本协程下次 yield（再调任意挂起 API）前有效，下次 resume 时框架自动释放，需保留请自行拷贝；失败/超时返回 nil
----@return integer? rsize 响应数据长度
+---@return lightuserdata|string|nil rdata 有值返裸指针(仅本协程下次 yield 前有效,下次 resume 框架自动释放,需保留请自拷贝);空值返 "";不存在/失败/超时返 nil
+---@return integer? rsize 响应数据长度(空值 0,不存在/超时 nil)
 function dc_client.get(dc_name, key)
     local sess = srey.id()
     local msg = _wait_resp(get(dc_name, sess, key), sess, "get")
     if not msg then
         return nil
     end
+    -- key 存在但值空返 "" 区分于不存在的 nil(对齐 router_req_query 值空返非 NULL 空串)
+    if not msg.data or 0 == msg.size then
+        return "", 0
+    end
     return msg.data, msg.size
 end
 
 ---读 KV;key 不存在则挂起协程直到 set 触发,或 request_timeout 超时。必须在协程中调用。
+---命中后:值空 → "" (rsize 0);有值 → lightuserdata + rsize。超时/失败 → nil。
 ---@param dc_name TASK_NAME DataCenter task name
 ---@param key string key 字符串(非空)
----@return lightuserdata|nil rdata 响应数据指针；仅在本协程下次 yield（再调任意挂起 API）前有效，下次 resume 时框架自动释放，需保留请自行拷贝；失败/超时返回 nil
----@return integer? rsize 响应数据长度
+---@return lightuserdata|string|nil rdata 有值返裸指针(仅本协程下次 yield 前有效,下次 resume 框架自动释放,需保留请自拷贝);命中空值返 "";超时/失败返 nil
+---@return integer? rsize 响应数据长度(空值 0,超时 nil)
 function dc_client.wait(dc_name, key)
     local sess = srey.id()
     local msg = _wait_resp(wait(dc_name, sess, key), sess, "wait")
     if not msg then
         return nil
+    end
+    -- 命中空值返 "" 区分于超时的 nil(对齐 get / router_req_query)
+    if not msg.data or 0 == msg.size then
+        return "", 0
     end
     return msg.data, msg.size
 end

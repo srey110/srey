@@ -55,6 +55,14 @@ static void _h_query(router_req *ctx) {
                          (int32_t)(NULL == b ? 0 : blen), NULL == b ? "" : b);
     router_req_text(ctx, 200, buf, (size_t)k);
 }
+// GET /qexist?a=... → 区分 a 键不存在(NULL→"missing")/值空(非NULL+len0→"empty")/有值("value");
+// 验证 router_req_query 对 ?a= 返非 NULL 零长指针, 与 Lua query 子表 "" 对齐
+static void _h_qexist(router_req *ctx) {
+    size_t alen;
+    const char *a = router_req_query(ctx, "a", &alen);
+    const char *r = (NULL == a) ? "missing" : (0 == alen ? "empty" : "value");
+    router_req_text(ctx, 200, r, strlen(r));
+}
 // POST /admin/stats → JSON; 覆盖 router_req_json (Content-Type 自动写)
 static void _h_admin_stats(router_req *ctx) {
     const char *json = "{\"ok\":true}";
@@ -176,6 +184,9 @@ static void _server_startup(task_ctx *task) {
     // 参数段 + 末尾通配: 命中后通配前的 {id} 必须仍对 handler 可见
     router_get(r, NULL, "/asset/{id}/*", _h_user,        NULL, 0);
     router_get(r, NULL, "/query",        _h_query,       NULL, 0);
+    router_get(r, NULL, "/qexist",       _h_qexist,      NULL, 0);
+    // {a?b} 参数名含内部 ?, 按 B2 文法当字面量段(对齐 Lua); 故 /litq/xyz 不命中参数 → 404
+    router_get(r, NULL, "/litq/{a?b}",   _h_root,        NULL, 0);
     router_post(r, NULL, "/admin/stats",  _h_admin_stats, NULL, 0);
     router_get(r, NULL, "/forget",       _h_forget,      NULL, 0);
     router_post(r, NULL, "/only-post",    _h_only_post,   NULL, 0);
@@ -299,7 +310,7 @@ done:
     return rtn;
 }
 
-// 19 项断言依次跑, 任一失败都 bad 置位; 全部通过返 ERR_OK
+// 21 项断言依次跑, 任一失败都 bad 置位; 全部通过返 ERR_OK
 // 每次 _do_req 之间插 task_isclosing 早返, SIGINT 时尽快收尾
 // bad 用位掩码记录, 单次跑不会复用, 但若失败时 LOG_WARN 输出可看到哪几位出错
 static int32_t _run_all(task_ctx *task, uint16_t port) {
@@ -377,6 +388,14 @@ static int32_t _run_all(task_ctx *task, uint16_t port) {
     if (task_isclosing(task)) return ERR_FAILED;
     // [18] 参数段 + 末尾通配: /asset/{id}/* 命中后 {id} 仍可取 (通配不吞掉 params_n)
     if (ERR_OK != _do_req(task, port, "GET", "/asset/42/x", NULL, NULL, 200, "42")) bad |= (1 << 18);
+    if (task_isclosing(task)) return ERR_FAILED;
+    // [19] router_req_query 区分键不存在/值空/有值: ?a= 返非 NULL 零长(empty), 缺 a 返 NULL(missing)
+    if (ERR_OK != _do_req(task, port, "GET", "/qexist?a=1", NULL, NULL, 200, "value"))   bad |= (1 << 19);
+    if (ERR_OK != _do_req(task, port, "GET", "/qexist?a=",  NULL, NULL, 200, "empty"))   bad |= (1 << 19);
+    if (ERR_OK != _do_req(task, port, "GET", "/qexist",     NULL, NULL, 200, "missing")) bad |= (1 << 19);
+    if (task_isclosing(task)) return ERR_FAILED;
+    // [20] B2: {a?b} 参数名含内部 ? → 当字面量段, /litq/xyz 不命中参数 → 404 (修复前当 PARAM 会返 200)
+    if (ERR_OK != _do_req(task, port, "GET", "/litq/xyz", NULL, NULL, 404, NULL)) bad |= (1 << 20);
 
     return 0 == bad ? ERR_OK : ERR_FAILED;
 }

@@ -192,6 +192,13 @@ runner.run("unit_router", function(t)
         t:eq("litok", (dispatch(r, "GET", "/lit/a+b") or {}).body, "'+' 保持字面, 命中字面路由")
     end
 
+    -- 1.15 {a?b} 参数名含内部 '?' → 当字面量段(对齐 C 端 B2 文法), 不当参数匹配
+    do
+        local r = Route.new()
+        r:get("/litq/{a?b}", function(ctx) ctx:text(200, "litok") end)
+        t:eq(404, (dispatch(r, "GET", "/litq/xyz") or {}).code, "{a?b} 当字面量, /litq/xyz 不命中参数 → 404")
+    end
+
     -- ── 2. ctx 字段 ────────────────────────────────────────────────────────
 
     do

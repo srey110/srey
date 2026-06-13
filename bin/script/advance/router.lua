@@ -66,6 +66,9 @@ local pcall    = pcall
 local tostring = tostring
 local assert   = assert
 
+-- 路径段数上限,须与 C urlparse.h 的 URL_MAX_PATH_DEPTH 同步;仅校验注册期模板,运行期请求段数由 C url_parse 以同一上限兜底
+local _URL_MAX_PATH_DEPTH = 64
+
 -- ── GroupBuilder ──────────────────────────────────────────────────────────
 
 ---@class GroupBuilder
@@ -116,7 +119,7 @@ local _KNOWN_METHODS = {
     PATCH = true, HEAD = true, OPTIONS = true,
 }
 
--- 将路由路径解析为结构化段数组;非法模板(空名/段数>64/中置 *)返 nil+errmsg,由 _add 告警并跳过
+-- 将路由路径解析为结构化段数组;非法模板(空名/段数超上限/中置 *)返 nil+errmsg,由 _add 告警并跳过
 -- 段类型: lit(字面量) / param({x}) / opt({x?}) / wild(*)
 local function _parse(path)
     local segs = {}
@@ -135,8 +138,8 @@ local function _parse(path)
             end
         end
     end
-    if #segs > 64 then
-        return nil, "path segments exceed 64"
+    if #segs > _URL_MAX_PATH_DEPTH then
+        return nil, "path segments exceed " .. _URL_MAX_PATH_DEPTH
     end
     for i = 1, #segs - 1 do
         if "wild" == segs[i].t then

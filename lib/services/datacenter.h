@@ -37,7 +37,7 @@ int32_t coro_dc_set(task_ctx *task, name_t dc_name, const char *key, void *val, 
 /// <param name="dc_name">DataCenter task name</param>
 /// <param name="key">key 字符串</param>
 /// <param name="size">出参:val 字节数(NULL 时不写)</param>
-/// <param name="erro">出参:ERR_OK key 存在(含空值);ERR_FAILED key 不存在/非法/datacenter 不可达/超时</param>
+/// <param name="erro">出参(必须非 NULL,函数内裸解引用):ERR_OK key 存在(含空值);ERR_FAILED key 不存在/非法/datacenter 不可达/超时</param>
 /// <returns>val 指针,下次 yield 前有效,框架自动 FREE;返回 NULL 时由 erro 区分:ERR_OK=存在但空值,ERR_FAILED=不存在/失败</returns>
 void *coro_dc_get(task_ctx *task, name_t dc_name, const char *key,
                   size_t *size, int32_t *erro);
@@ -49,7 +49,7 @@ void *coro_dc_get(task_ctx *task, name_t dc_name, const char *key,
 /// <param name="dc_name">DataCenter task name</param>
 /// <param name="key">key 字符串</param>
 /// <param name="size">出参:val 字节数</param>
-/// <param name="erro">出参:ERR_OK 成功(命中,含空值);ERR_FAILED key 非法/datacenter 不可达/超时</param>
+/// <param name="erro">出参(必须非 NULL,函数内裸解引用):ERR_OK 成功(命中,含空值);ERR_FAILED key 非法/datacenter 不可达/超时</param>
 /// <returns>val 指针,下次 yield 前有效;返回 NULL 时由 erro 区分:ERR_OK=命中空值,ERR_FAILED=超时/失败</returns>
 void *coro_dc_wait(task_ctx *task, name_t dc_name, const char *key,
                    size_t *size, int32_t *erro);
@@ -69,7 +69,7 @@ int32_t coro_dc_del(task_ctx *task, name_t dc_name, const char *key);
 /// <param name="task">当前 task</param>
 /// <param name="dc_name">DataCenter task name</param>
 /// <param name="size">出参:返回 buffer 字节数</param>
-/// <param name="erro">出参:ERR_OK 成功(含空,返 NULL+size 0);ERR_FAILED datacenter 不可达/超时</param>
+/// <param name="erro">出参(必须非 NULL,函数内裸解引用):ERR_OK 成功(含空,返 NULL+size 0);ERR_FAILED datacenter 不可达/超时</param>
 /// <returns>key 列表 buffer,每条格式 | u16 klen(大端) | key |;空时 size=0 返回 NULL(erro=ERR_OK),失败返 NULL 且 erro=ERR_FAILED;指针下次 yield 前有效;用 dc_parse_keys 逐条解析</returns>
 void *coro_dc_keys(task_ctx *task, name_t dc_name,
                    size_t *size, int32_t *erro);

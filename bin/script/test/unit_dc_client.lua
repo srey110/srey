@@ -1,7 +1,7 @@
 -- dc_client Lua 协程客户端单元测试:mirror C 测试 task_dc_client.c,
 -- 走 srey.request → DataCenter task service(C 层 startup 已自动注册到 TASK_NAME.DATACENTER)。
--- 接口契约(与 dc_client.lua 一致):set/del 返 boolean;get/wait 返 (rdata, rsize) 裸指针,
--- 由调用方 srey.ud_str 解码;keys 返字符串数组。
+-- 接口契约(与 dc_client.lua 一致):set/del 返 boolean;get/wait 返 (rdata, rsize),有值 rdata 为裸指针
+-- (srey.ud_str 解码),空值 rdata 为 "",不存在/超时为 nil;keys 返字符串数组。
 
 local srey      = require("lib.srey")
 local dc_client = require("lib.dc_client")
@@ -101,16 +101,19 @@ runner.run("dc_client", function(t)
         dc_client.del(DC, "lk_c")
     end
 
-    -- ── 子段 8:set value=nil/空串 软清空 → get 返回 nil ─────────────
+    -- ── 子段 8:set value=nil/空串 软清空 → 空值(get 直接返 "",_val 解码为 nil)──
     do
         dc_client.set(DC, "k_clr", "data")
         t:eq("data", _val(dc_client.get(DC, "k_clr")), "set_null pre-check")
         dc_client.set(DC, "k_clr", nil)
-        t:eq(nil, _val(dc_client.get(DC, "k_clr")), "set(nil) 后 get 返回 nil")
+        t:eq(nil, _val(dc_client.get(DC, "k_clr")), "set(nil) 后 _val 解码为 nil")
         -- 空串也是软清空
         dc_client.set(DC, "k_clr", "again")
         dc_client.set(DC, "k_clr", "")
-        t:eq(nil, _val(dc_client.get(DC, "k_clr")), "set('') 后 get 返回 nil")
+        t:eq(nil, _val(dc_client.get(DC, "k_clr")), "set('') 后 _val 解码为 nil")
+        -- B4:空值经 get 直接返 ""(区别于不存在的 nil),对齐 router_req_query
+        t:eq("", (dc_client.get(DC, "k_clr")), "空值 get 直接返 ''(非 nil)")
+        t:eq(nil, (dc_client.get(DC, "no_such_key_x")), "不存在 key get 直接返 nil(区别空值 '')")
     end
 
     -- ── 子段 9(Lua 特有):非法 key(空/nil/超长)早返,不下发到 datacenter ─
@@ -135,6 +138,7 @@ runner.run("dc_client", function(t)
         local dt = srey.timer_ms() - t0
         srey.set_request_timeout(old)
         t:eq(0, s, "空值 wait 命中返回 size 0(成功;区别于超时的 nil)")
+        t:eq("", d, "空值 wait 命中 d 返 ''(B4:区别于超时的 nil)")
         t:eq(nil, _val(d, s), "空值解码为 nil")
         t:check(dt < 1000, "空值 wait 立即命中(dt=" .. dt .. "ms,非挂起到 3s 超时)")
         dc_client.del(DC, "k_empty_b")
