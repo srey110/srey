@@ -1,32 +1,25 @@
--- subcenter Lua 协程客户端:11 个协程版 API 走 srey.request → subcenter task service。
--- payload 与 lib/services/subcenter.c 协议一致(reqtype 统一 REQUEST_TYPE.REQ_SC,首字节 u8 op 标识子命令):
---   SUB            = | u8 0x01 | u16 tlen | topic |
---   SUB_SHARED     = | u8 0x02 | u16 tlen | topic | u16 glen | group |
---   UNSUB          = | u8 0x03 | u16 tlen | topic |
---   UNSUB_SHARED   = | u8 0x04 | u16 tlen | topic | u16 glen | group |
---   PUB            = | u8 0x05 | u16 tlen | topic | u32 plen | payload |
---   PUB_RETAINED   = | u8 0x06 | u16 tlen | topic | u32 plen | payload |
---   LIST           = | u8 0x07 |
---   QUERY_RETAINED = | u8 0x08 | u16 plen | pattern |
---   SET_META       = | u8 0x09 | u16 mlen | meta |
---   RETAINED_LIST  = | u8 0x0A |
--- subcenter → 订阅者推送(REQUEST_TYPE.REQ_SC_DELIVER):
---   | u8 kind | name_t publisher | u16 mlen | meta | u16 glen | group | u16 tlen | topic | u32 plen | payload |   (kind: 0=普通 1=共享;group 仅共享非空)
--- subscribe 内部自动两步:SUB → QUERY_RETAINED 把首批 retained 转交 handler。
+-- subcenter Lua 协程客户端:10 个请求 API 经 srey.subcenter C 绑定投递(wire 打包在 C 侧 sc_* 完成),
+-- 再由 srey 协程层挂起等响应;投递推送(REQ_SC_DELIVER)经 subcenter.parse_deliver 解析。
+-- 响应列表(query_retained/topics/retained_topics)经对应 subcenter.parse_* C 绑定解析;订阅者本地路由(_handlers/_topic_match)仍在 Lua。
+-- subscribe 内部自动两步:SUB → query_retained 把首批 retained 转交 handler。
 -- 性能说明:_handlers 表线性扫描,适合 < 100 pattern;> 100 考虑分组路由。
-
-local srey = require("lib.srey")
--- 子命令操作码,与 subcenter.c 内部 sc_op 枚举对齐
-local OP_SUB             = "\x01"
-local OP_SUB_SHARED      = "\x02"
-local OP_UNSUB           = "\x03"
-local OP_UNSUB_SHARED    = "\x04"
-local OP_PUB             = "\x05"
-local OP_PUB_RETAINED    = "\x06"
-local OP_LIST            = "\x07"
-local OP_QUERY_RETAINED  = "\x08"
-local OP_SET_META        = "\x09"
-local OP_RETAINED_LIST   = "\x0A"
+local srey       = require("lib.srey")
+local subcenter  = require("srey.subcenter")
+local MSG_TYPE   = srey.MSG_TYPE
+local subscribe = subcenter.subscribe
+local subscribe_shared = subcenter.subscribe_shared
+local unsubscribe = subcenter.unsubscribe
+local unsubscribe_shared = subcenter.unsubscribe_shared
+local publish = subcenter.publish
+local publish_retained = subcenter.publish_retained
+local query_retained = subcenter.query_retained
+local topics = subcenter.topics
+local retained_topics = subcenter.retained_topics
+local set_meta = subcenter.set_meta
+local parse_deliver = subcenter.parse_deliver
+local parse_retained = subcenter.parse_retained
+local parse_topics = subcenter.parse_topics
+local parse_retained_topics = subcenter.parse_retained_topics
 
 -- per-task handler 路由表:pattern → handler。task 内单线程协作,无锁
 -- 普通订阅(_handlers:pattern→handler)与共享订阅(_shared_handlers:pattern→group→handler,多 group 同 topic 各自独立)各一张表,按 deliver kind 分别路由
@@ -36,6 +29,23 @@ local _handlers = {}
 local _shared_handlers = {}
 
 local sc_client = {}
+
+-- 投递成功(post_ok)后挂起等响应;返回 msg(含空命中)或 nil(未投递/超时/erro 非 OK)
+local function _wait_resp(post_ok, sess, op)
+    if not post_ok then
+        WARN("sc %s failed: subcenter unreachable or invalid args.", op)
+        return nil
+    end
+    local msg = srey._coro_wait(true, sess, MSG_TYPE.RESPONSE, srey.get_request_timeout())
+    if MSG_TYPE.TIMEOUT == msg.mtype then
+        WARN("sc %s timeout, session %s.", op, tostring(sess))
+        return nil
+    end
+    if ERR_OK ~= msg.erro then
+        return nil
+    end
+    return msg
+end
 
 -- 段切分:把 path 按 '/' 拆成数组(保留空段,供 _topic_match 严格段数比较)
 ---@param s string
@@ -88,113 +98,35 @@ local function _topic_match(pattern, topic)
     return li == ln + 1
 end
 
--- 拆 deliver wire:| u8 kind | name_t publisher | u16 mlen | meta | u16 glen | group | u16 tlen | topic | u32 plen | payload |
--- name_t = uint64_t(见 lib/base/structs.h);所有数值字段网络序;group 仅共享投递非空
----@param raw string
----@return integer kind 0=普通投递 1=共享投递
----@return integer publisher
----@return string topic
----@return string payload
----@return string? meta meta 字节(mlen=0 时返 nil)
----@return string group 共享投递的组名(普通投递为 "")
-local function _unpack_deliver(raw)
-    local kind, pos = string.unpack(">B", raw)
-    local publisher, pos1 = string.unpack(">I8", raw, pos)
-    local meta, pos2 = string.unpack(">s2", raw, pos1)
-    local group, pos3 = string.unpack(">s2", raw, pos2)
-    local topic, pos4 = string.unpack(">s2", raw, pos3)
-    local payload = string.unpack(">s4", raw, pos4)
-    if "" == meta then
-        meta = nil
-    end
-    return kind, publisher, topic, payload, meta, group
-end
-
--- 拆 query_retained 响应 wire:多条 retained 拼接
--- 每条:| name_t retained_publisher | u16 mlen | meta | u16 tlen | topic | u32 plen | payload |
----@param raw string
----@return {publisher:integer, topic:string, payload:string, meta:string?}[] list
-local function _unpack_retained_list(raw)
-    local list = {}
-    local total = #raw
-    local pos = 1
-    while pos <= total do
-        local publisher, p1 = string.unpack(">I8", raw, pos)
-        local meta, p2 = string.unpack(">s2", raw, p1)
-        local topic, p3 = string.unpack(">s2", raw, p2)
-        local payload, p4 = string.unpack(">s4", raw, p3)
-        if "" == meta then
-            meta = nil
-        end
-        list[#list + 1] = {
-            publisher = publisher,
-            topic = topic,
-            payload = payload,
-            meta = meta,
-        }
-        pos = p4
-    end
-    return list
-end
-
--- 拆 topics 响应:| u16 tlen | topic | u32 normal_count | u32 shared_groups_count |
----@param raw string
----@return {topic:string, normal:integer, shared:integer}[] list
-local function _unpack_topics(raw)
-    local list = {}
-    local total = #raw
-    local pos = 1
-    while pos <= total do
-        local topic, p1 = string.unpack(">s2", raw, pos)
-        local normal, p2 = string.unpack(">I4", raw, p1)
-        local shared, p3 = string.unpack(">I4", raw, p2)
-        list[#list + 1] = { topic = topic, normal = normal, shared = shared }
-        pos = p3
-    end
-    return list
-end
-
--- 拆 retained_topics 响应:| u16 tlen | topic | name_t publisher | u32 size | u16 meta_size |
----@param raw string
----@return {topic:string, publisher:integer, size:integer, meta_size:integer}[] list
-local function _unpack_retained_topics(raw)
-    local list = {}
-    local total = #raw
-    local pos = 1
-    while pos <= total do
-        local topic, p1 = string.unpack(">s2", raw, pos)
-        local publisher, p2 = string.unpack(">I8", raw, p1)
-        local size, p3 = string.unpack(">I4", raw, p2)
-        local meta_size, p4 = string.unpack(">I2", raw, p3)
-        list[#list + 1] = {
-            topic = topic,
-            publisher = publisher,
-            size = size,
-            meta_size = meta_size,
-        }
-        pos = p4
-    end
-    return list
-end
-
 -- ── 内部:收到 REQ_SC_DELIVER 时由 srey.lua dispatch 调用 ──────────────────
--- 按 deliver 的 kind 选普通(_handlers)或共享(_shared_handlers)表,对所有匹配 topic 的 pattern srey.xpcall 调 handler。
--- 同一订阅者订多个匹配 pattern 时 handler 会被调用多次(业务自行去重),与 C 层语义一致。
+-- 投递 wire 由 C 绑定 subcenter.parse_deliver 解析为下表;按 kind 选普通(_handlers)或共享(_shared_handlers)表,
+-- 对所有匹配 topic 的 pattern srey.xpcall 调 handler。同一订阅者订多个匹配 pattern 时 handler 被调多次(业务自行去重)。
+---@class sc_deliver_msg
+---@field kind integer 0=普通投递 1=共享投递
+---@field publisher integer 发布者句柄;0(INVALID_TNAME)表示已失效
+---@field topic string 匹配到的精确 topic
+---@field payload string 载荷(空为 "")
+---@field meta string? 发布者元数据(无则 nil)
+---@field group string 共享投递组名;普通投递为 ""
 ---@param data lightuserdata
 ---@param size integer
 function sc_client._on_deliver(data, size)
     if not data or size <= 0 then
         return
     end
-    local raw = srey.ud_str(data, size)
-    local kind, publisher, topic, payload, meta, group = _unpack_deliver(raw)
+    ---@type sc_deliver_msg?
+    local d = parse_deliver(data, size)
+    if not d then
+        return   -- wire 截断/损坏
+    end
+    local topic = d.topic
     -- snapshot 匹配 handler 列表,避免 handler 内 subscribe/unsubscribe 改表触发迭代 UB
     local matched = {}
-    if 1 == kind then
+    if 1 == d.kind then
         -- 共享:按 (匹配 pattern, 投递 group) 精确取 handler,多 group 同 topic 互不串
         for pattern, groups in pairs(_shared_handlers) do
             if _topic_match(pattern, topic) then
-                local handler = groups[group]
+                local handler = groups[d.group]
                 if handler then
                     matched[#matched + 1] = handler
                 end
@@ -208,7 +140,7 @@ function sc_client._on_deliver(data, size)
         end
     end
     for i = 1, #matched do
-        srey.xpcall(matched[i], topic, payload, publisher, meta)
+        srey.xpcall(matched[i], topic, d.payload, d.publisher, d.meta)
     end
 end
 
@@ -228,29 +160,23 @@ function sc_client.subscribe(sc_name, topic, handler)
     end
     local old = _handlers[topic]
     _handlers[topic] = handler
-    local sub_payload = OP_SUB .. string.pack(">s2", topic)
-    local _, size = srey.request(sc_name, REQUEST_TYPE.REQ_SC, sub_payload)
-    if nil == size then
+    local sess = srey.id()
+    if not _wait_resp(subscribe(sc_name, sess, topic), sess, "subscribe") then
         -- 仅当当前值仍是本次 handler(未被并发/重订覆盖)时才回滚,避免抹掉他人写入
         if handler == _handlers[topic] then
             _handlers[topic] = old
         end
         return false
     end
-    -- 自动 query_retained 转交首批匹配 retained 给 handler
-    local q_payload = OP_QUERY_RETAINED .. string.pack(">s2", topic)
-    local rdata, rsize = srey.request(sc_name, REQUEST_TYPE.REQ_SC, q_payload)
-    if nil == rsize then
-        return true   -- 订阅已成功,query 失败不影响
-    end
-    if nil == rdata or 0 == rsize then
-        return true   -- 无匹配 retained
-    end
-    local raw = srey.ud_str(rdata, rsize)
-    local list = _unpack_retained_list(raw)
-    for i = 1, #list do
-        local r = list[i]
-        srey.xpcall(handler, r.topic, r.payload, r.publisher, r.meta)
+    -- 自动 query_retained 转交首批匹配 retained 给 handler(query 失败不影响订阅成功)
+    local qsess = srey.id()
+    local msg = _wait_resp(query_retained(sc_name, qsess, topic), qsess, "query_retained")
+    if msg and msg.data and msg.size > 0 then
+        local list = parse_retained(msg.data, msg.size)
+        for i = 1, #list do
+            local r = list[i]
+            srey.xpcall(handler, r.topic, r.payload, r.publisher, r.meta)
+        end
     end
     return true
 end
@@ -273,9 +199,8 @@ function sc_client.subscribe_shared(sc_name, topic, group, handler)
     end
     local old = groups[group]
     groups[group] = handler
-    local payload = OP_SUB_SHARED .. string.pack(">s2", topic) .. string.pack(">s2", group)
-    local _, size = srey.request(sc_name, REQUEST_TYPE.REQ_SC, payload)
-    if nil == size then
+    local sess = srey.id()
+    if not _wait_resp(subscribe_shared(sc_name, sess, topic, group), sess, "subscribe_shared") then
         if handler == groups[group] then
             groups[group] = old
             if nil == next(groups) then
@@ -298,9 +223,8 @@ function sc_client.unsubscribe(sc_name, topic)
     end
     local old = _handlers[topic]
     _handlers[topic] = nil
-    local payload = OP_UNSUB .. string.pack(">s2", topic)
-    local _, size = srey.request(sc_name, REQUEST_TYPE.REQ_SC, payload)
-    if nil == size then
+    local sess = srey.id()
+    if not _wait_resp(unsubscribe(sc_name, sess, topic), sess, "unsubscribe") then
         if nil == _handlers[topic] then
             _handlers[topic] = old
         end
@@ -327,9 +251,8 @@ function sc_client.unsubscribe_shared(sc_name, topic, group)
             _shared_handlers[topic] = nil
         end
     end
-    local payload = OP_UNSUB_SHARED .. string.pack(">s2", topic) .. string.pack(">s2", group)
-    local _, size = srey.request(sc_name, REQUEST_TYPE.REQ_SC, payload)
-    if nil == size then
+    local sess = srey.id()
+    if not _wait_resp(unsubscribe_shared(sc_name, sess, topic, group), sess, "unsubscribe_shared") then
         if nil ~= old then
             local g = _shared_handlers[topic]
             if not g then
@@ -351,16 +274,8 @@ end
 ---@param data string? payload;nil 等价空 payload
 ---@return boolean ok 成功 true;topic 非法或 subcenter 不可达 false
 function sc_client.publish(sc_name, topic, data)
-    if not topic or "" == topic then
-        WARN("sc publish: topic empty.")
-        return false
-    end
-    local payload = OP_PUB .. string.pack(">s2", topic) .. string.pack(">s4", data or "")
-    local _, size = srey.request(sc_name, REQUEST_TYPE.REQ_SC, payload)
-    if nil == size then
-        return false
-    end
-    return true
+    local sess = srey.id()
+    return nil ~= _wait_resp(publish(sc_name, sess, topic, data), sess, "publish")
 end
 
 ---发布保留消息。data 为 nil/空串等价"清空 retained 槽位,不 deliver"。
@@ -370,16 +285,8 @@ end
 ---@param data string? retained payload(nil 清空槽位)
 ---@return boolean ok 成功 true;topic 非法或 subcenter 不可达 false
 function sc_client.publish_retained(sc_name, topic, data)
-    if not topic or "" == topic then
-        WARN("sc publish_retained: topic empty.")
-        return false
-    end
-    local payload = OP_PUB_RETAINED .. string.pack(">s2", topic) .. string.pack(">s4", data or "")
-    local _, size = srey.request(sc_name, REQUEST_TYPE.REQ_SC, payload)
-    if nil == size then
-        return false
-    end
-    return true
+    local sess = srey.id()
+    return nil ~= _wait_resp(publish_retained(sc_name, sess, topic, data), sess, "publish_retained")
 end
 
 ---查询匹配 pattern 的所有当前 retained 消息。
@@ -390,19 +297,15 @@ end
 ---@param pattern string 查询模式;可含 + / # 通配
 ---@return {publisher:integer, topic:string, payload:string, meta:string?}[]? list 匹配 retained 列表;nil 表示 subcenter 不可达
 function sc_client.query_retained(sc_name, pattern)
-    if not pattern or "" == pattern then
-        WARN("sc query_retained: pattern empty.")
+    local sess = srey.id()
+    local msg = _wait_resp(query_retained(sc_name, sess, pattern), sess, "query_retained")
+    if not msg then
         return nil
     end
-    local payload = OP_QUERY_RETAINED .. string.pack(">s2", pattern)
-    local data, size = srey.request(sc_name, REQUEST_TYPE.REQ_SC, payload)
-    if nil == size then
-        return nil
-    end
-    if nil == data or 0 == size then
+    if not msg.data or 0 == msg.size then
         return {}
     end
-    return _unpack_retained_list(srey.ud_str(data, size))
+    return parse_retained(msg.data, msg.size)
 end
 
 ---列出所有订阅 topic(仅订阅信息,不含 retained)。调试用,topic 量大时谨慎调。
@@ -410,14 +313,15 @@ end
 ---@param sc_name TASK_NAME subcenter task name
 ---@return {topic:string, normal:integer, shared:integer}[]? list 空时返空表;subcenter 不可达返 nil
 function sc_client.topics(sc_name)
-    local data, size = srey.request(sc_name, REQUEST_TYPE.REQ_SC, OP_LIST)
-    if nil == size then
+    local sess = srey.id()
+    local msg = _wait_resp(topics(sc_name, sess), sess, "topics")
+    if not msg then
         return nil
     end
-    if nil == data or 0 == size then
+    if not msg.data or 0 == msg.size then
         return {}
     end
-    return _unpack_topics(srey.ud_str(data, size))
+    return parse_topics(msg.data, msg.size)
 end
 
 ---列出所有 retained topic 元信息(不返 retained payload,避免数据量大)。调试用。
@@ -425,14 +329,15 @@ end
 ---@param sc_name TASK_NAME subcenter task name
 ---@return {topic:string, publisher:integer, size:integer, meta_size:integer}[]? list 空时返空表;subcenter 不可达返 nil
 function sc_client.retained_topics(sc_name)
-    local data, size = srey.request(sc_name, REQUEST_TYPE.REQ_SC, OP_RETAINED_LIST)
-    if nil == size then
+    local sess = srey.id()
+    local msg = _wait_resp(retained_topics(sc_name, sess), sess, "retained_topics")
+    if not msg then
         return nil
     end
-    if nil == data or 0 == size then
+    if not msg.data or 0 == msg.size then
         return {}
     end
-    return _unpack_retained_topics(srey.ud_str(data, size))
+    return parse_retained_topics(msg.data, msg.size)
 end
 
 ---注册或更新当前 task 的发布者元数据。
@@ -442,12 +347,8 @@ end
 ---@param meta string? 元数据;nil 或空串等价"清除元数据";上限 SC_META_MAX_SIZE(1KB)
 ---@return boolean ok 成功 true;subcenter 不可达 false
 function sc_client.set_meta(sc_name, meta)
-    local payload = OP_SET_META .. string.pack(">s2", meta or "")
-    local _, size = srey.request(sc_name, REQUEST_TYPE.REQ_SC, payload)
-    if nil == size then
-        return false
-    end
-    return true
+    local sess = srey.id()
+    return nil ~= _wait_resp(set_meta(sc_name, sess, meta), sess, "set_meta")
 end
 
 return sc_client

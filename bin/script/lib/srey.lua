@@ -53,6 +53,7 @@ local MSG_TYPE = {
     RESPONSE     = 0x0d,   -- 收到跨 task 响应
     FORK         = 0x0e    -- coro_fork 自发消息（C 层内部 mtype，Lua 业务一般不用）
 }
+srey.MSG_TYPE = MSG_TYPE
 -- 数据分片标志（对应 C 层 slice_type）
 local SLICE_TYPE = {
     START = 0x01,   -- 分片开始
@@ -520,7 +521,7 @@ end
 ---@param mtype integer 期望唤醒的消息类型
 ---@param ms integer 超时毫秒数；0 表示永不超时
 ---@return Message msg 触发 resume 的消息表
-local function _coro_wait(disposable, sess, mtype, ms)
+function srey._coro_wait(disposable, sess, mtype, ms)
     _set_coro_sess(disposable, coro_running, sess, mtype, ms)
     nyield = nyield + 1
     local msg = coroutine_yield()
@@ -534,7 +535,7 @@ end
 function srey.sleep(ms)
     local sess = srey.id()
     core.timeout(sess, ms)
-    _coro_wait(true, sess, MSG_TYPE.TIMEOUT, 0)
+    srey._coro_wait(true, sess, MSG_TYPE.TIMEOUT, 0)
 end
 
 ---异步定时器：ms 毫秒后在新协程中调用 func(...)，当前协程不挂起
@@ -605,7 +606,7 @@ function srey.request(dst, reqtype, data, size, copy)
     local sess = srey.id()
     core.request(dtask, reqtype, sess, data, size, copy)
     srey.task_ungrab(dtask)
-    local msg = _coro_wait(true, sess, MSG_TYPE.RESPONSE, srey.get_request_timeout())
+    local msg = srey._coro_wait(true, sess, MSG_TYPE.RESPONSE, srey.get_request_timeout())
     if MSG_TYPE.TIMEOUT == msg.mtype then
         WARN("request timeout, session %s.", tostring(sess))
         return nil
@@ -885,7 +886,7 @@ function srey.wait_connect(fd, skid, ssl)
     if INVALID_SOCK == fd then
         return false
     end
-    local msg = _coro_wait(false, skid, MSG_TYPE.CONNECT, srey.get_connect_timeout())
+    local msg = srey._coro_wait(false, skid, MSG_TYPE.CONNECT, srey.get_connect_timeout())
     if MSG_TYPE.TIMEOUT == msg.mtype then
         srey.close(fd, skid, 1)
         WARN("connect timeout, skid %s.", tostring(skid))
@@ -1005,7 +1006,7 @@ function srey.wait_ssl_exchanged(fd, skid)
     if INVALID_SOCK == fd then
         return false
     end
-    local msg = _coro_wait(false, skid, MSG_TYPE.SSLEXCHANGED, srey.get_netread_timeout())
+    local msg = srey._coro_wait(false, skid, MSG_TYPE.SSLEXCHANGED, srey.get_netread_timeout())
     if MSG_TYPE.TIMEOUT == msg.mtype then
         srey.close(fd, skid, 1)
         WARN("ssl exchange timeout, skid %s.", tostring(skid))
@@ -1055,7 +1056,7 @@ function srey.wait_handshaked(fd, skid)
     if INVALID_SOCK == fd then
         return false
     end
-    local msg = _coro_wait(false, skid, MSG_TYPE.HANDSHAKED, srey.get_netread_timeout())
+    local msg = srey._coro_wait(false, skid, MSG_TYPE.HANDSHAKED, srey.get_netread_timeout())
     if MSG_TYPE.TIMEOUT == msg.mtype then
         srey.close(fd, skid, 1)
         WARN("handshake timeout, skid %s.", tostring(skid))
@@ -1130,7 +1131,7 @@ end
 ---@param skid integer 连接 skid
 ---@return Message|nil msg 收到的消息表；超时/断开返回 nil
 local function _wait_net_recv(fd, skid)
-    local msg = _coro_wait(false, skid, MSG_TYPE.RECV, srey.get_netread_timeout())
+    local msg = srey._coro_wait(false, skid, MSG_TYPE.RECV, srey.get_netread_timeout())
     if MSG_TYPE.TIMEOUT == msg.mtype then
         srey.close(fd, skid, 1)
         WARN("send timeout, skid %s.", tostring(skid))
@@ -1298,7 +1299,7 @@ function srey.sync_close(fd, skid, immed)
         return
     end
     core.close(fd, skid, immed or 0)
-    _coro_wait(false, skid, MSG_TYPE.CLOSE, srey.get_netread_timeout())
+    srey._coro_wait(false, skid, MSG_TYPE.CLOSE, srey.get_netread_timeout())
 end
 
 ---@param msg Message
@@ -1382,7 +1383,7 @@ function srey.syn_sendto(fd, skid, ip, port, data, size, copy)
         WARN("sendto error, skid %s.", tostring(skid))
         return nil
     end
-    local msg = _coro_wait(true, skid, MSG_TYPE.RECVFROM, srey.get_netread_timeout())
+    local msg = srey._coro_wait(true, skid, MSG_TYPE.RECVFROM, srey.get_netread_timeout())
     if MSG_TYPE.TIMEOUT == msg.mtype then
         srey.sock_session(fd, skid, 0)
         WARN("sendto timeout, skid %s.", tostring(skid))

@@ -15,19 +15,6 @@
 #define SC_SUB_WARN_THRESHOLD       1000                // 单 topic 订阅者超过此值 LOG_WARN
 #define SC_QUERY_RETAINED_BURST_MAX 1000                // query_retained 单次上限,超过截断 + WARN
 
-// 子命令操作码:payload 首字节,跟随特定子命令的剩余字节
-typedef enum sc_op {
-    SC_OP_SUB              = 0x01,  // u16 tlen + topic
-    SC_OP_SUB_SHARED       = 0x02,  // u16 tlen + topic + u16 glen + group
-    SC_OP_UNSUB            = 0x03,  // u16 tlen + topic
-    SC_OP_UNSUB_SHARED     = 0x04,  // u16 tlen + topic + u16 glen + group
-    SC_OP_PUB              = 0x05,  // u16 tlen + topic + u32 plen + payload
-    SC_OP_PUB_RETAINED     = 0x06,  // u16 tlen + topic + u32 plen + payload
-    SC_OP_LIST             = 0x07,  // no body
-    SC_OP_QUERY_RETAINED   = 0x08,  // u16 plen + pattern
-    SC_OP_SET_META         = 0x09,  // u16 mlen + meta
-    SC_OP_RETAINED_LIST    = 0x0A,  // no body
-}sc_op;
 // publisher 元数据条目(挂 sc_ctx.publisher_meta hashmap)
 typedef struct sc_publisher_meta {
     size_t size;          // meta 字节数
@@ -261,47 +248,98 @@ static char *_sc_pack_deliver(uint8_t kind, name_t publisher,
     return bw.data;
 }
 int32_t sc_parse_deliver(const void *data, size_t size, sc_deliver *out) {
-    const char *p = (const char *)data;
-    size_t off = 0;
+    binary_ctx br;
+    binary_init(&br, (char *)data, size, 0);
     // kind(u8) + publisher(name_t) + mlen(u16)
-    if (off + 1 + sizeof(name_t) + 2 > size) {
+    if (br.size - br.offset < 1 + sizeof(name_t) + 2) {
         return ERR_FAILED;
     }
-    out->kind = (int32_t)(uint8_t)p[off];
-    off += 1;
-    out->publisher = (name_t)unpack_integer(p + off, (int32_t)sizeof(name_t), 0, 0);
-    off += sizeof(name_t);
-    out->mlen = (size_t)unpack_integer(p + off, 2, 0, 0);
-    off += 2;
+    out->kind = (int32_t)binary_get_uint8(&br);
+    out->publisher = (name_t)binary_get_uinteger(&br, sizeof(name_t), 0);
+    out->mlen = (size_t)binary_get_uinteger(&br, 2, 0);
     // meta(mlen) + glen(u16)
-    if (off + out->mlen + 2 > size) {
+    if (br.size - br.offset < out->mlen + 2) {
         return ERR_FAILED;
     }
-    out->meta = out->mlen > 0 ? p + off : NULL;
-    off += out->mlen;
-    out->glen = (size_t)unpack_integer(p + off, 2, 0, 0);
-    off += 2;
+    out->meta = out->mlen > 0 ? binary_get_string(&br, out->mlen) : NULL;
+    out->glen = (size_t)binary_get_uinteger(&br, 2, 0);
     // group(glen) + tlen(u16)
-    if (off + out->glen + 2 > size) {
+    if (br.size - br.offset < out->glen + 2) {
         return ERR_FAILED;
     }
-    out->group = out->glen > 0 ? p + off : NULL;
-    off += out->glen;
-    out->tlen = (size_t)unpack_integer(p + off, 2, 0, 0);
-    off += 2;
+    out->group = out->glen > 0 ? binary_get_string(&br, out->glen) : NULL;
+    out->tlen = (size_t)binary_get_uinteger(&br, 2, 0);
     // topic(tlen) + plen(u32)
-    if (off + out->tlen + 4 > size) {
+    if (br.size - br.offset < out->tlen + 4) {
         return ERR_FAILED;
     }
-    out->topic = out->tlen > 0 ? p + off : NULL;
-    off += out->tlen;
-    out->plen = (size_t)unpack_integer(p + off, 4, 0, 0);
-    off += 4;
+    out->topic = out->tlen > 0 ? binary_get_string(&br, out->tlen) : NULL;
+    out->plen = (size_t)binary_get_uinteger(&br, 4, 0);
     // payload(plen)
-    if (off + out->plen > size) {
+    if (br.size - br.offset < out->plen) {
         return ERR_FAILED;
     }
-    out->payload = out->plen > 0 ? p + off : NULL;
+    out->payload = out->plen > 0 ? binary_get_string(&br, out->plen) : NULL;
+    return ERR_OK;
+}
+// 游标式解析 query_retained 响应:| name_t publisher | u16 mlen | meta | u16 tlen | topic | u32 plen | payload |
+int32_t sc_parse_retained(binary_ctx *br, sc_retained *out) {
+    // publisher(name_t) + mlen(u16)
+    if (br->size - br->offset < sizeof(name_t) + 2) {
+        return ERR_FAILED;
+    }
+    out->publisher = (name_t)binary_get_uinteger(br, sizeof(name_t), 0);
+    out->mlen = (size_t)binary_get_uinteger(br, 2, 0);
+    // meta(mlen) + tlen(u16)
+    if (br->size - br->offset < out->mlen + 2) {
+        return ERR_FAILED;
+    }
+    out->meta = out->mlen > 0 ? binary_get_string(br, out->mlen) : NULL;
+    out->tlen = (size_t)binary_get_uinteger(br, 2, 0);
+    // topic(tlen) + plen(u32)
+    if (br->size - br->offset < out->tlen + 4) {
+        return ERR_FAILED;
+    }
+    out->topic = out->tlen > 0 ? binary_get_string(br, out->tlen) : NULL;
+    out->plen = (size_t)binary_get_uinteger(br, 4, 0);
+    // payload(plen)
+    if (br->size - br->offset < out->plen) {
+        return ERR_FAILED;
+    }
+    out->payload = out->plen > 0 ? binary_get_string(br, out->plen) : NULL;
+    return ERR_OK;
+}
+// 游标式解析 topics 响应:| u16 tlen | topic | u32 normal | u32 shared |
+int32_t sc_parse_topics(binary_ctx *br, sc_topic *out) {
+    // tlen(u16)
+    if (br->size - br->offset < 2) {
+        return ERR_FAILED;
+    }
+    out->tlen = (size_t)binary_get_uinteger(br, 2, 0);
+    // topic(tlen) + normal(u32) + shared(u32)
+    if (br->size - br->offset < out->tlen + 4 + 4) {
+        return ERR_FAILED;
+    }
+    out->topic = out->tlen > 0 ? binary_get_string(br, out->tlen) : NULL;
+    out->normal = (uint32_t)binary_get_uinteger(br, 4, 0);
+    out->shared = (uint32_t)binary_get_uinteger(br, 4, 0);
+    return ERR_OK;
+}
+// 游标式解析 retained_topics 响应:| u16 tlen | topic | name_t publisher | u32 size | u16 meta_size |
+int32_t sc_parse_retained_topics(binary_ctx *br, sc_retained_topic *out) {
+    // tlen(u16)
+    if (br->size - br->offset < 2) {
+        return ERR_FAILED;
+    }
+    out->tlen = (size_t)binary_get_uinteger(br, 2, 0);
+    // topic(tlen) + publisher(name_t) + size(u32) + meta_size(u16)
+    if (br->size - br->offset < out->tlen + sizeof(name_t) + 4 + 2) {
+        return ERR_FAILED;
+    }
+    out->topic = out->tlen > 0 ? binary_get_string(br, out->tlen) : NULL;
+    out->publisher = (name_t)binary_get_uinteger(br, sizeof(name_t), 0);
+    out->size = (uint32_t)binary_get_uinteger(br, 4, 0);
+    out->meta_size = (uint16_t)binary_get_uinteger(br, 2, 0);
     return ERR_OK;
 }
 // 在 array_ctx 中线性查找 name,找到返回索引,否则返 -1

@@ -167,24 +167,22 @@ static int32_t _test_list_keys(task_ctx *task) {
     int32_t got_a = 0;
     int32_t got_b = 0;
     int32_t got_c = 0;
-    const char *p = (const char *)buf;
-    const char *end = p + sz;
-    while (end - p >= 2) {
-        size_t klen = ((size_t)(uint8_t)p[0] << 8) | (size_t)(uint8_t)p[1];
-        p += 2;
-        if ((size_t)(end - p) < klen) {
+    binary_ctx br;
+    binary_init(&br, (char *)buf, sz, 0);
+    dc_key k;
+    while (br.offset < br.size) {
+        if (ERR_OK != dc_parse_keys(&br, &k)) {
             break;
         }
-        if (4 == klen && 0 == memcmp(p, "lk_a", 4)) {
+        if (4 == k.klen && 0 == memcmp(k.key, "lk_a", 4)) {
             got_a = 1;
         }
-        if (4 == klen && 0 == memcmp(p, "lk_b", 4)) {
+        if (4 == k.klen && 0 == memcmp(k.key, "lk_b", 4)) {
             got_b = 1;
         }
-        if (4 == klen && 0 == memcmp(p, "lk_c", 4)) {
+        if (4 == k.klen && 0 == memcmp(k.key, "lk_c", 4)) {
             got_c = 1;
         }
-        p += klen;
     }
     if (!(got_a && got_b && got_c)) {
         LOG_ERROR("dc list_keys: lk_a=%d lk_b=%d lk_c=%d", got_a, got_b, got_c);

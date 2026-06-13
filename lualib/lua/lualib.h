@@ -74,6 +74,10 @@ LUAMOD_API int (luaopen_task)(lua_State *L);
 LUAMOD_API int (luaopen_core)(lua_State *L);
 #define LUA_SREYHARBOR "srey.harbor"
 LUAMOD_API int (luaopen_harbor)(lua_State *L);
+#define LUA_SREYDATACENTER "srey.datacenter"
+LUAMOD_API int (luaopen_datacenter)(lua_State *L);
+#define LUA_SREYSUBCENTER "srey.subcenter"
+LUAMOD_API int (luaopen_subcenter)(lua_State *L);
 #define LUA_SREYDNS "srey.dns"
 LUAMOD_API int (luaopen_dns)(lua_State *L);
 #define LUA_SREYCUSTZ "srey.custz"

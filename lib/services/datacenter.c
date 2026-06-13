@@ -10,16 +10,6 @@
 // pending waiter 清理节流:每个 WAIT 入口最多每 DC_SWEEP_THROTTLE_MS 触发一次 sweep
 #define DC_SWEEP_THROTTLE_MS 5000
 
-// 子命令操作码:payload 首字节,跟随特定子命令格式的剩余字节
-// payload 布局:
-// u8 op   + u16 key len(网络序) + key + u32 val len(网络字节序) + val
-typedef enum dc_op {
-    DC_OP_SET  = 0x01,
-    DC_OP_GET  = 0x02,
-    DC_OP_WAIT = 0x03,
-    DC_OP_DEL  = 0x04,
-    DC_OP_LIST = 0x05,
-}dc_op;
 // 内部存储 entry:key/val 都由 dc_ctx 拷贝持有,删除时统一 FREE
 typedef struct dc_entry {
     size_t size;   // val 字节数
@@ -707,5 +697,19 @@ int32_t dc_keys(task_ctx *task, name_t dc_name, uint64_t sess) {
     char *buf = _dc_pack(DC_OP_LIST, NULL, NULL, 0, &total);
     task_request(dc, task, REQ_DC, sess, buf, total, 0);
     task_ungrab(dc);
+    return ERR_OK;
+}
+// 游标式解析 dc_keys 响应:每条 | u16 klen | key |
+int32_t dc_parse_keys(binary_ctx *br, dc_key *out) {
+    // klen(u16)
+    if (br->size - br->offset < 2) {
+        return ERR_FAILED;
+    }
+    out->klen = (size_t)binary_get_uinteger(br, 2, 0);
+    // key(klen)
+    if (br->size - br->offset < out->klen) {
+        return ERR_FAILED;
+    }
+    out->key = out->klen > 0 ? binary_get_string(br, out->klen) : NULL;
     return ERR_OK;
 }

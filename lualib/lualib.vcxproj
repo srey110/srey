@@ -20,6 +20,8 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="lbind\lcore.c" />
+    <ClCompile Include="lbind\ldatacenter.c" />
+    <ClCompile Include="lbind\lsubcenter.c" />
     <ClCompile Include="lbind\lcrypt.c" />
     <ClCompile Include="lbind\lmysql.c" />
     <ClCompile Include="lbind\lpgsql.c" />

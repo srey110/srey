@@ -3,6 +3,7 @@
 
 #include "srey/coro.h"
 #include "path/path_rules.h"
+#include "utils/binary.h"
 
 // subcenter:订阅中心 service,task 间 pub/sub
 // 命名约定:
@@ -27,6 +28,19 @@
 //   2. query_retained O(M) 已用 retained_index 直查(已优化),M = retained 总数
 
 // REQ_SC_DELIVER 投递来源(sc_deliver.kind);普通订阅与共享订阅各自独立投递,接收方据此路由
+// 子命令操作码:payload 首字节,跟随特定子命令的剩余字节
+typedef enum sc_op {
+    SC_OP_SUB              = 0x01,  // u16 tlen + topic
+    SC_OP_SUB_SHARED       = 0x02,  // u16 tlen + topic + u16 glen + group
+    SC_OP_UNSUB            = 0x03,  // u16 tlen + topic
+    SC_OP_UNSUB_SHARED     = 0x04,  // u16 tlen + topic + u16 glen + group
+    SC_OP_PUB              = 0x05,  // u16 tlen + topic + u32 plen + payload
+    SC_OP_PUB_RETAINED     = 0x06,  // u16 tlen + topic + u32 plen + payload
+    SC_OP_LIST             = 0x07,  // no body
+    SC_OP_QUERY_RETAINED   = 0x08,  // u16 plen + pattern
+    SC_OP_SET_META         = 0x09,  // u16 mlen + meta
+    SC_OP_RETAINED_LIST    = 0x0A,  // no body
+}sc_op;
 typedef enum sc_deliver_kind {
     SC_DELIVER_NORMAL = 0, // 普通订阅投递
     SC_DELIVER_SHARED = 1  // 共享订阅投递
@@ -45,6 +59,29 @@ typedef struct sc_deliver {
     const char *meta;     // 发布者元数据;mlen=0 时 NULL
     const char *group;    // 共享投递的组名(kind=SHARED 时非 NULL;NORMAL 时 NULL)
 } sc_deliver;
+// query_retained / topics / retained_topics 响应的逐条解析结果;指针零拷贝指向源 data,生命周期与 data 一致,非 NUL 结尾。
+typedef struct sc_retained {
+    size_t mlen;          // 元数据字节数
+    size_t tlen;          // topic 字节数
+    size_t plen;          // 载荷字节数
+    name_t publisher;     // 原 retained 发布者句柄;INVALID_TNAME 表示已失效
+    const char *meta;     // 发布者元数据;mlen=0 时 NULL
+    const char *topic;    // retained topic;tlen=0 时 NULL
+    const char *payload;  // retained 载荷;plen=0 时 NULL
+} sc_retained;
+typedef struct sc_topic {
+    uint32_t normal;      // 普通订阅者数
+    uint32_t shared;      // 共享订阅组数
+    size_t tlen;          // topic 字节数
+    const char *topic;    // topic;tlen=0 时 NULL
+} sc_topic;
+typedef struct sc_retained_topic {
+    uint16_t meta_size;   // retained meta 字节数
+    uint32_t size;        // retained 载荷字节数
+    size_t tlen;          // topic 字节数
+    name_t publisher;     // retained 发布者句柄;INVALID_TNAME 表示已失效
+    const char *topic;    // topic;tlen=0 时 NULL
+} sc_retained_topic;
 /// <summary>
 /// 注册 subcenter task service。
 /// 在 loader_init 之后、业务 task 启动之前调用一次。
@@ -125,7 +162,8 @@ int32_t coro_sc_publish_retained(task_ctx *task, name_t sc_name, const char *top
 /// <param name="erro">出参:ERR_OK 成功(含无匹配);ERR_FAILED subcenter 不可达/超时</param>
 /// <returns>多条 retained 拼接 buffer,下次 yield 前有效;每条格式:
 ///     | name_t retained_publisher | u16 mlen | meta | u16 tlen | topic | u32 plen | payload |
-///     无匹配返 NULL 且 size=0(erro=ERR_OK),失败返 NULL 且 erro=ERR_FAILED</returns>
+///     无匹配返 NULL 且 size=0(erro=ERR_OK),失败返 NULL 且 erro=ERR_FAILED;
+///     用 sc_parse_retained 逐条解析</returns>
 void *coro_sc_query_retained(task_ctx *task, name_t sc_name, const char *pattern,
                              size_t *size, int32_t *erro);
 /// <summary>
@@ -138,7 +176,8 @@ void *coro_sc_query_retained(task_ctx *task, name_t sc_name, const char *pattern
 /// <param name="erro">出参:ERR_OK 成功(含空);ERR_FAILED subcenter 不可达/超时</param>
 /// <returns>binary buffer,每条格式:
 ///     | u16 tlen | topic | u32 normal_count | u32 shared_groups_count |
-///     空时返 NULL 且 size=0(erro=ERR_OK),失败返 NULL 且 erro=ERR_FAILED;下次 yield 前有效</returns>
+///     空时返 NULL 且 size=0(erro=ERR_OK),失败返 NULL 且 erro=ERR_FAILED;下次 yield 前有效;
+///     用 sc_parse_topics 逐条解析</returns>
 void *coro_sc_topics(task_ctx *task, name_t sc_name,
                      size_t *size, int32_t *erro);
 /// <summary>
@@ -151,7 +190,8 @@ void *coro_sc_topics(task_ctx *task, name_t sc_name,
 /// <param name="erro">出参:ERR_OK 成功(含空);ERR_FAILED subcenter 不可达/超时</param>
 /// <returns>binary buffer,每条格式:
 ///     | u16 tlen | topic | name_t retained_publisher | u32 retained_size | u16 retained_meta_size |
-///     空时返 NULL 且 size=0(erro=ERR_OK),失败返 NULL 且 erro=ERR_FAILED;下次 yield 前有效</returns>
+///     空时返 NULL 且 size=0(erro=ERR_OK),失败返 NULL 且 erro=ERR_FAILED;下次 yield 前有效;
+///     用 sc_parse_retained_topics 逐条解析</returns>
 void *coro_sc_retained_topics(task_ctx *task, name_t sc_name,
                               size_t *size, int32_t *erro);
 /// <summary>
@@ -224,7 +264,7 @@ int32_t sc_publish_retained(task_ctx *task, name_t sc_name, uint64_t sess,
                             const char *topic, void *data, size_t size);
 /// <summary>
 /// 异步查询匹配 pattern 的当前 retained。同 coro_sc_query_retained,但不挂起;
-/// 业务在 _response 回调里按 sess 收 buffer
+/// 业务在 _response 回调里按 sess 收 buffer,用 sc_parse_retained 逐条解析
 /// </summary>
 /// <param name="task">当前 task</param>
 /// <param name="sc_name">subcenter task name</param>
@@ -232,13 +272,13 @@ int32_t sc_publish_retained(task_ctx *task, name_t sc_name, uint64_t sess,
 /// <param name="pattern">查询模式</param>
 /// <returns>ERR_OK 投递成功;ERR_FAILED subcenter 不可达</returns>
 int32_t sc_query_retained(task_ctx *task, name_t sc_name, uint64_t sess, const char *pattern);
-/// <summary>异步列出订阅 topic。同 coro_sc_topics,但不挂起</summary>
+/// <summary>异步列出订阅 topic。同 coro_sc_topics,但不挂起;响应 buffer 用 sc_parse_topics 逐条解析</summary>
 /// <param name="task">当前 task</param>
 /// <param name="sc_name">subcenter task name</param>
 /// <param name="sess">会话 id;必须非 0,=0 返 ERR_FAILED</param>
 /// <returns>ERR_OK 投递成功;ERR_FAILED subcenter 不可达</returns>
 int32_t sc_topics(task_ctx *task, name_t sc_name, uint64_t sess);
-/// <summary>异步列出 retained 元信息。同 coro_sc_retained_topics,但不挂起</summary>
+/// <summary>异步列出 retained 元信息。同 coro_sc_retained_topics,但不挂起;响应 buffer 用 sc_parse_retained_topics 逐条解析</summary>
 /// <param name="task">当前 task</param>
 /// <param name="sc_name">subcenter task name</param>
 /// <param name="sess">会话 id;必须非 0,=0 返 ERR_FAILED</param>
@@ -264,5 +304,25 @@ int32_t sc_set_meta(task_ctx *task, name_t sc_name, uint64_t sess,
 /// <param name="out">出参:解析结果,成功时填充</param>
 /// <returns>ERR_OK 成功;ERR_FAILED wire 不完整(损坏/截断)</returns>
 int32_t sc_parse_deliver(const void *data, size_t size, sc_deliver *out);
+// ── 列表响应解析 ──────────────────────────────────────────────────────────
+// 游标式逐条解析 query_retained / topics / retained_topics 的多记录响应 buffer。
+// 调用方先 binary_init(&br, data, size, 0),再循环 while(br.offset < br.size) 取下一条;出参指针零拷贝指向源 buffer。
+/// <summary>
+/// 解析 br 当前位置的下一条 retained。出参 meta/topic/payload 零拷贝指向 br 源 buffer。
+/// </summary>
+/// <param name="br">query_retained 响应 binary_ctx(已 init);成功后内部 offset 推进到下一条</param>
+/// <param name="out">出参:解析结果,成功时填充</param>
+/// <returns>ERR_OK 解析出一条;ERR_FAILED 当前位置数据不足一条(截断/损坏)</returns>
+int32_t sc_parse_retained(binary_ctx *br, sc_retained *out);
+/// <summary>解析 br 当前位置的下一条 topic 订阅统计。out->topic 零拷贝指向源 buffer。</summary>
+/// <param name="br">topics 响应 binary_ctx(已 init);成功后 offset 推进到下一条</param>
+/// <param name="out">出参:解析结果,成功时填充</param>
+/// <returns>ERR_OK 解析出一条;ERR_FAILED 数据不足一条(截断/损坏)</returns>
+int32_t sc_parse_topics(binary_ctx *br, sc_topic *out);
+/// <summary>解析 br 当前位置的下一条 retained 元信息。out->topic 零拷贝指向源 buffer。</summary>
+/// <param name="br">retained_topics 响应 binary_ctx(已 init);成功后 offset 推进到下一条</param>
+/// <param name="out">出参:解析结果,成功时填充</param>
+/// <returns>ERR_OK 解析出一条;ERR_FAILED 数据不足一条(截断/损坏)</returns>
+int32_t sc_parse_retained_topics(binary_ctx *br, sc_retained_topic *out);
 
 #endif//SUBCENTER_H_

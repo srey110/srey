@@ -653,6 +653,105 @@ static int32_t _test_async_sess_zero_reject(task_ctx *task) {
     return ERR_OK;
 }
 
+// 子段 21:sc_parse_retained / sc_parse_topics / sc_parse_retained_topics 对真实 service 输出回环解码
+static int32_t _test_parse_helpers(task_ctx *task) {
+    coro_sc_set_meta(task, _sc_name, "pm", 2);
+    if (ERR_OK != coro_sc_publish_retained(task, _sc_name, "tp/k", "val123", 6)
+        || ERR_OK != coro_sc_subscribe(task, _sc_name, "tp/k")) {
+        return ERR_FAILED;
+    }
+    size_t sz = 0;
+    int32_t erro = 0;
+    int32_t found;
+    binary_ctx br;
+    // 1) sc_parse_retained:query_retained("tp/k") 含一条,publisher/topic/payload/meta 匹配
+    void *qd = coro_sc_query_retained(task, _sc_name, "tp/k", &sz, &erro);
+    if (EMPTYPTR(qd, sz)) {
+        LOG_ERROR("parse_helpers: query_retained empty");
+        return ERR_FAILED;
+    }
+    binary_init(&br, (char *)qd, sz, 0);
+    found = 0;
+    sc_retained r;
+    while (br.offset < br.size) {
+        if (ERR_OK != sc_parse_retained(&br, &r)) {
+            LOG_ERROR("parse_helpers: sc_parse_retained failed");
+            return ERR_FAILED;
+        }
+        if (4 == r.tlen && 0 == memcmp(r.topic, "tp/k", 4)) {
+            found = 1;
+            if (6 != r.plen || 0 != memcmp(r.payload, "val123", 6)
+                || 2 != r.mlen || 0 != memcmp(r.meta, "pm", 2)) {
+                LOG_ERROR("parse_helpers: sc_retained fields mismatch");
+                return ERR_FAILED;
+            }
+        }
+    }
+    if (!found) {
+        LOG_ERROR("parse_helpers: 'tp/k' not found via sc_parse_retained");
+        return ERR_FAILED;
+    }
+    // 2) sc_parse_topics:topics 列表含 tp/k 且 normal>=1
+    sz = 0;
+    void *td = coro_sc_topics(task, _sc_name, &sz, &erro);
+    if (EMPTYPTR(td, sz)) {
+        LOG_ERROR("parse_helpers: topics empty");
+        return ERR_FAILED;
+    }
+    binary_init(&br, (char *)td, sz, 0);
+    found = 0;
+    sc_topic tp;
+    while (br.offset < br.size) {
+        if (ERR_OK != sc_parse_topics(&br, &tp)) {
+            LOG_ERROR("parse_helpers: sc_parse_topics failed");
+            return ERR_FAILED;
+        }
+        if (4 == tp.tlen && 0 == memcmp(tp.topic, "tp/k", 4)) {
+            found = 1;
+            if (tp.normal < 1) {
+                LOG_ERROR("parse_helpers: tp/k normal=%u (<1)", tp.normal);
+                return ERR_FAILED;
+            }
+        }
+    }
+    if (!found) {
+        LOG_ERROR("parse_helpers: 'tp/k' not found via sc_parse_topics");
+        return ERR_FAILED;
+    }
+    // 3) sc_parse_retained_topics:含 tp/k 且 size=6 meta_size=2
+    sz = 0;
+    void *rd = coro_sc_retained_topics(task, _sc_name, &sz, &erro);
+    if (EMPTYPTR(rd, sz)) {
+        LOG_ERROR("parse_helpers: retained_topics empty");
+        return ERR_FAILED;
+    }
+    binary_init(&br, (char *)rd, sz, 0);
+    found = 0;
+    sc_retained_topic rt;
+    while (br.offset < br.size) {
+        if (ERR_OK != sc_parse_retained_topics(&br, &rt)) {
+            LOG_ERROR("parse_helpers: sc_parse_retained_topics failed");
+            return ERR_FAILED;
+        }
+        if (4 == rt.tlen && 0 == memcmp(rt.topic, "tp/k", 4)) {
+            found = 1;
+            if (6 != rt.size || 2 != rt.meta_size) {
+                LOG_ERROR("parse_helpers: rt size=%u meta_size=%u", rt.size, rt.meta_size);
+                return ERR_FAILED;
+            }
+        }
+    }
+    if (!found) {
+        LOG_ERROR("parse_helpers: 'tp/k' not found via sc_parse_retained_topics");
+        return ERR_FAILED;
+    }
+    // 清理:取消订阅 + 清空 retained + 清 meta
+    coro_sc_unsubscribe(task, _sc_name, "tp/k");
+    coro_sc_publish_retained(task, _sc_name, "tp/k", NULL, 0);
+    coro_sc_set_meta(task, _sc_name, NULL, 0);
+    return ERR_OK;
+}
+
 static void _startup(task_ctx *task) {
     task_sc_client_args *arg = (task_sc_client_args *)coro_get_arg(task);
     _sc_name = task_find_name(task->loader, arg->sc_name);
@@ -678,9 +777,10 @@ static void _startup(task_ctx *task) {
     if (ERR_OK != _test_shared_dead_skip_deliver(task)) { return; }
     if (ERR_OK != _test_shared_multi_group(task))    { return; }
     if (ERR_OK != _test_async_sess_zero_reject(task)) { return; }
+    if (ERR_OK != _test_parse_helpers(task))         { return; }
 
     *(arg->ok) = 1;
-    LOG_INFO("sc_client tested: 20/20 subtests passed.");
+    LOG_INFO("sc_client tested: 21/21 subtests passed.");
 }
 
 void task_sc_client_start(loader_ctx *loader, const char *base_name, const char *sc_name, int32_t *ok) {

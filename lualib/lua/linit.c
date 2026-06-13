@@ -46,6 +46,8 @@ static const luaL_Reg extlibs[] = {
   {LUA_SREYTASK, luaopen_task},
   {LUA_SREYCORE, luaopen_core},
   {LUA_SREYHARBOR, luaopen_harbor},
+  {LUA_SREYDATACENTER, luaopen_datacenter},
+  {LUA_SREYSUBCENTER, luaopen_subcenter},
   {LUA_SREYDNS, luaopen_dns},
   {LUA_SREYCUSTZ, luaopen_custz},
   {LUA_SREYWEBSOCK, luaopen_websock},

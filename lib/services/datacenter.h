@@ -2,9 +2,25 @@
 #define DATACENTER_H_
 
 #include "srey/coro.h"
+#include "utils/binary.h"
 
 // keybuf 栈缓冲容量(字节,含 NUL 终止);有效 key 长度须 < DC_KEY_MAX(即 ≤511),客户端编码前/服务端据此拒绝超长 key
 #define DC_KEY_MAX 512
+// 子命令操作码:payload 首字节,跟随特定子命令格式的剩余字节
+// payload 布局:
+// u8 op   + u16 key len(网络序) + key + u32 val len(网络字节序) + val
+typedef enum dc_op {
+    DC_OP_SET  = 0x01,
+    DC_OP_GET  = 0x02,
+    DC_OP_WAIT = 0x03,
+    DC_OP_DEL  = 0x04,
+    DC_OP_LIST = 0x05,
+}dc_op;
+// dc_keys 响应的逐条解析结果;key 零拷贝指向源 data,生命周期与 data 一致,非 NUL 结尾。
+typedef struct dc_key {
+    size_t klen;        // key 字节数
+    const char *key;    // key;klen=0 时 NULL
+} dc_key;
 
 /// <summary>
 /// 注册 DataCenter task service。
@@ -64,7 +80,7 @@ int32_t coro_dc_del(task_ctx *task, name_t dc_name, const char *key);
 /// <param name="dc_name">DataCenter task name</param>
 /// <param name="size">出参:返回 buffer 字节数</param>
 /// <param name="erro">出参:ERR_OK 成功(含空,返 NULL+size 0);ERR_FAILED datacenter 不可达/超时</param>
-/// <returns>key 列表 buffer,每条格式 | u16 klen(大端) | key |;空时 size=0 返回 NULL(erro=ERR_OK),失败返 NULL 且 erro=ERR_FAILED;指针下次 yield 前有效</returns>
+/// <returns>key 列表 buffer,每条格式 | u16 klen(大端) | key |;空时 size=0 返回 NULL(erro=ERR_OK),失败返 NULL 且 erro=ERR_FAILED;指针下次 yield 前有效;用 dc_parse_keys 逐条解析</returns>
 void *coro_dc_keys(task_ctx *task, name_t dc_name,
                    size_t *size, int32_t *erro);
 /// <summary>
@@ -110,12 +126,20 @@ int32_t dc_get(task_ctx *task, name_t dc_name, uint64_t sess, const char *key);
 /// <returns>ERR_OK 成功投递;ERR_FAILED key 非法/sess=0/datacenter 不可达</returns>
 int32_t dc_wait(task_ctx *task, name_t dc_name, uint64_t sess, const char *key);
 /// <summary>
-/// 列出全部 key,每条格式 | u16 klen(大端) | key |;不挂起,sess 必须非 0(读需响应通道,sess=0 返 ERR_FAILED);业务在 _response 收 buffer。
+/// 列出全部 key,每条格式 | u16 klen(大端) | key |;不挂起,sess 必须非 0(读需响应通道,sess=0 返 ERR_FAILED);业务在 _response 收 buffer,用 dc_parse_keys 逐条解析。
 /// </summary>
 /// <param name="task">当前 task(response 目标)</param>
 /// <param name="dc_name">DataCenter task name</param>
 /// <param name="sess">会话 id;必须非 0(读操作需响应配对,0 返 ERR_FAILED)</param>
 /// <returns>ERR_OK 成功投递;ERR_FAILED sess=0/datacenter 不可达</returns>
 int32_t dc_keys(task_ctx *task, name_t dc_name, uint64_t sess);
+// ── 列表响应解析 ──────────────────────────────────────────────────────────
+// 游标式逐条解析 dc_keys / coro_dc_keys 的 key 列表响应 buffer。
+// 调用方先 binary_init(&br, data, size, 0),再循环 while(br.offset < br.size) 取下一条;out->key 零拷贝指向源 buffer。
+/// <summary>解析 br 当前位置的下一条 key。out->key 零拷贝指向源 buffer。</summary>
+/// <param name="br">dc_keys 响应 binary_ctx(已 init);成功后内部 offset 推进到下一条</param>
+/// <param name="out">出参:解析结果,成功时填充</param>
+/// <returns>ERR_OK 解析出一条;ERR_FAILED 当前位置数据不足一条(截断/损坏)</returns>
+int32_t dc_parse_keys(binary_ctx *br, dc_key *out);
 
 #endif//DATACENTER_H_
