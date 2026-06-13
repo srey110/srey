@@ -583,7 +583,7 @@ runner.run("unit_router", function(t)
         t:eq(500, (dispatch(r, "GET", "/x") or {}).code, "first mw error → 500 (no double response)")
     end
 
-    -- 7.4 handler 已成功响应后再抛错 → 不补第二个 500（responded 机制，对齐 C 端 router.c:671）
+    -- 7.4 handler 已成功响应后再抛错 → 不补第二个 500（responded 机制，对齐 C 端 router_dispatch 兜底逻辑）
     do
         local resp_count = 0
         local orig_resp = mock_http.response
@@ -600,6 +600,41 @@ runner.run("unit_router", function(t)
         mock_http.response = orig_resp  -- 还原 mock
         t:eq(1,   resp_count,           "已响应后抛错:只发 1 次响应,不补 500")
         t:eq(200, resp and resp.code,   "保留 handler 的 200,不被 500 覆盖")
+    end
+
+    -- 8.1(本次:对齐 C 端 router_add 软失败):非法模板被跳过(返 nil)不注册、不中断 startup
+    do
+        local r = Route.new()
+        t:eq(nil, r:get("/a/*/b", function() end), "中置 * 被跳过(返 nil)")
+        t:eq(nil, r:get("/x/{}",  function() end), "空名 {} 被跳过")
+        t:eq(nil, r:get("/y/{?}", function() end), "空名 {?} 被跳过")
+        t:eq(nil, r:get("/" .. string.rep("s/", 65), function() end), "段数超 64 被跳过")
+        t:check(nil ~= r:get("/ok/{id}/*", function() end), "末段 * 合法,返 entry")
+        r:get("/legit", function(ctx) ctx:text(200, "ok") end)
+        t:eq(200, (dispatch(r, "GET", "/legit") or {}).code, "非法跳过后合法路由仍正常")
+    end
+
+    -- 8.2(本次:对齐 C 端 405):未知/小写 method → 405,响应带 Content-Type
+    do
+        local r = Route.new()
+        r:any("/ping", function(ctx) ctx:text(200, "pong") end)
+        local resp = dispatch(r, "BREW", "/ping")
+        t:eq(405, resp and resp.code, "未知 method → 405")
+        t:eq("text/plain; charset=utf-8", resp and resp.headers and resp.headers["Content-Type"], "405 带 Content-Type")
+        t:eq(405, (dispatch(r, "get", "/ping") or {}).code, "小写 method → 405")
+        t:eq(200, (dispatch(r, "GET", "/ping") or {}).code, "已知 method → 200")
+    end
+
+    -- 8.3(本次:对齐 C 端):解析失败(400)/无匹配(404) 响应带 Content-Type
+    do
+        local r = Route.new()
+        r:get("/exists", function(ctx) ctx:text(200, "ok") end)
+        local r404 = dispatch(r, "GET", "/nope")
+        t:eq(404, r404 and r404.code, "无匹配 → 404")
+        t:eq("text/plain; charset=utf-8", r404 and r404.headers and r404.headers["Content-Type"], "404 带 Content-Type")
+        local r400 = dispatch(r, "GET", "/" .. string.rep("a", 1100))
+        t:eq(400, r400 and r400.code, "URI 超长解析失败 → 400")
+        t:eq("text/plain; charset=utf-8", r400 and r400.headers and r400.headers["Content-Type"], "400 带 Content-Type")
     end
 
 end)

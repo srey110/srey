@@ -3,9 +3,7 @@
 
 #include "CuTest.h"
 
-/// <summary>
-/// 注册 stm (共享只读快照) 测试套件
-/// </summary>
+// 注册 stm (共享只读快照) 测试套件
 void test_stm(CuSuite *suite);
 
 #endif//TEST_STM_H_

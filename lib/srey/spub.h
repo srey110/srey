@@ -75,7 +75,7 @@ typedef enum request_type {
     REQ_DEBUG = 0x01, // 调试命令
     REQ_DC = 0x10,    // DataCenter:统一入口,子命令(SET/GET/WAIT/DEL/LIST)由 payload 首字节 u8 op 标识
     REQ_SC = 0x20,    // subcenter 订阅中心:统一入口,子命令由 payload 首字节 u8 op 标识(见 subcenter.c sc_op)
-    REQ_SC_DELIVER = 0x21, // subcenter → 订阅者推送:wire = | kind | publisher | mlen | meta | tlen | topic | plen | payload |
+    REQ_SC_DELIVER = 0x21, // subcenter → 订阅者推送:wire = | kind | publisher | mlen | meta | glen | group | tlen | topic | plen | payload |
 }request_type;
 // 任务间传递的消息体
 struct message_ctx {

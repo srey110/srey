@@ -109,7 +109,14 @@ end
 
 -- ── 内部辅助 ──────────────────────────────────────────────────────────────
 
--- 将路由路径解析为结构化段数组
+local _PLAIN_HEADERS = { ["Content-Type"] = "text/plain; charset=utf-8" }
+-- 须与 C 端 _router_method_str_to_mask 的方法集同步
+local _KNOWN_METHODS = {
+    GET = true, POST = true, PUT = true, DELETE = true,
+    PATCH = true, HEAD = true, OPTIONS = true,
+}
+
+-- 将路由路径解析为结构化段数组;非法模板(空名/段数>64/中置 *)返 nil+errmsg,由 _add 告警并跳过
 -- 段类型: lit(字面量) / param({x}) / opt({x?}) / wild(*)
 local function _parse(path)
     local segs = {}
@@ -121,8 +128,19 @@ local function _parse(path)
             if name then
                 segs[#segs + 1] = { t = q == "?" and "opt" or "param", name = name }
             else
+                if seg:match("^{%??}$") then
+                    return nil, "empty param name in segment: " .. seg
+                end
                 segs[#segs + 1] = { t = "lit", val = seg }
             end
+        end
+    end
+    if #segs > 64 then
+        return nil, "path segments exceed 64"
+    end
+    for i = 1, #segs - 1 do
+        if "wild" == segs[i].t then
+            return nil, "wildcard '*' must be the last segment"
         end
     end
     return segs
@@ -287,6 +305,11 @@ end
 function Router:_add(method, path, handler, extra_mws)
     local prefix, ctx_mws = self:_ctx()
     local full = prefix .. path
+    local segs, err = _parse(full)
+    if not segs then
+        WARN("router: path '%s' rejected: %s", full, err)
+        return nil
+    end
     local mws  = {}
     for _, mw in ipairs(ctx_mws) do
         mws[#mws + 1] = mw
@@ -299,7 +322,7 @@ function Router:_add(method, path, handler, extra_mws)
     local router = self
     local entry  = {
         method  = method,           -- HTTP 方法（"GET"/"POST"/... 或 "ANY"）
-        segs    = _parse(full),     -- 路由路径解析后的段数组，供 _match 使用
+        segs    = segs,             -- 已校验的路由路径段数组，供 _match 使用
         raw     = full,             -- 原始完整路径字符串（含前缀），调试用
         handler = handler,          -- 路由处理函数 fun(ctx)
         mws     = mws,              -- 路由级中间件列表（分组中间件已静态合并进来）
@@ -394,7 +417,7 @@ function Router:middleware(...)
     return _gb_new(self, "", mws)
 end
 
----分发 HTTP 请求：解析方法和路径，匹配路由后执行中间件链；无匹配时响应 404
+---分发 HTTP 请求：解析方法和路径，匹配路由后执行中间件链；URL 解析失败响应 400,无匹配响应 404
 ---@param fd integer socket fd
 ---@param skid integer 连接 skid
 ---@param pack lightuserdata http_pack_ctx 指针
@@ -406,7 +429,15 @@ function Router:dispatch(fd, skid, pack, client)
         return
     end
     local method   = status[1]
+    if not _KNOWN_METHODS[method] then
+        http.response(fd, skid, 405, _PLAIN_HEADERS, "Method Not Allowed\n")
+        return
+    end
     local parsed   = url_mod.parse(status[2] or "")
+    if not parsed then
+        http.response(fd, skid, 400, _PLAIN_HEADERS, "Bad Request\n")
+        return
+    end
     -- C 侧 segs 已解码、%2F 在段内不当分隔符;RFC 保留空段,这里按路由语义剔除空段
     local req_segs = {}
     for _, s in ipairs(parsed.segs or {}) do
@@ -427,7 +458,7 @@ function Router:dispatch(fd, skid, pack, client)
         end
     end
     if not route then
-        http.response(fd, skid, 404, nil, "Not Found\n")
+        http.response(fd, skid, 404, _PLAIN_HEADERS, "Not Found\n")
         return
     end
     local ctx = _make_ctx(fd, skid, pack, client, method, parsed, status[3])
@@ -448,7 +479,7 @@ function Router:dispatch(fd, skid, pack, client)
     if not ctx.responded then
         local errmsg = ok and "Internal Server Error\n"
             or string.format("Internal Server Error. %s\n", tostring(err))
-        pcall(http.response, fd, skid, 500, nil, errmsg)
+        pcall(http.response, fd, skid, 500, _PLAIN_HEADERS, errmsg)
     end
 end
 

@@ -246,5 +246,47 @@ runner.run("hotfix", function(t)
         t:eq(false, ok, "字节码 patch 被拒绝")
         t:check(err and nil ~= err:find("binary"), "err 含 'binary'(被 't' 模式拒绝)")
     end
+
+    -- ── 子段 17(已知限制 #3):path-B 对独占 cell 二次热修失败,反复迭代须用 path-A ──
+    -- _setup_module 中 counter 仅 bump 引用;首次 path-B 替换后 mod.bump 只剩 _ENV、不再具名持有
+    -- counter,二次 path-B 时 _collect_upvalues 扫不到 cell → env 转发回退 _G → nil → 运行报错。
+    do
+        local mod = _setup_module()
+        mod.bump()   -- counter=1
+        t:eq(true, hotfix.apply("hotfix_unit_mod", [[
+            function M.bump() counter = counter + 1; return counter + 100 end
+        ]]), "首次 path-B apply ok")
+        t:eq(102, mod.bump(), "首次 path-B 生效:2 + 100")
+        -- 二次 path-B:apply 本身成功(仅替换函数),但新 bump 运行时 counter 解析为 _G.counter=nil
+        t:eq(true, hotfix.apply("hotfix_unit_mod", [[
+            function M.bump() counter = counter + 1; return counter + 200 end
+        ]]), "二次 path-B apply 仍返 true(只替换函数)")
+        t:eq(false, pcall(mod.bump), "已知限制:二次 path-B 的 bump 运行报错(counter 丢失→nil+1)")
+    end
+
+    -- ── 子段 18(限制条件性):counter 被其他未替换函数持有时,二次 path-B 仍能定位 cell ──
+    do
+        package.loaded.hotfix_shared_uv = nil
+        local src = [[
+            local M = {}
+            local counter = 0
+            function M.bump() counter = counter + 1; return counter end
+            function M.peek() return counter end   -- 同样持有 counter,本测试不替换它
+            return M
+        ]]
+        package.loaded.hotfix_shared_uv = assert(load(src, "=hotfix_shared_uv"))()
+        local m = package.loaded.hotfix_shared_uv
+        m.bump()   -- counter=1
+        t:eq(true, hotfix.apply("hotfix_shared_uv", [[
+            function M.bump() counter = counter + 1; return counter + 10 end
+        ]]), "首次 path-B apply ok")
+        t:eq(12, m.bump(), "首次:2 + 10")
+        -- 二次 path-B:mod.bump 已无具名 counter,但 mod.peek 仍持有 → _collect_upvalues 命中
+        t:eq(true, hotfix.apply("hotfix_shared_uv", [[
+            function M.bump() counter = counter + 1; return counter + 20 end
+        ]]), "二次 path-B apply ok")
+        t:eq(23, m.bump(), "二次成功:peek 仍持 counter cell,3 + 20")
+        package.loaded.hotfix_shared_uv = nil
+    end
 end)
 end)

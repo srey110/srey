@@ -45,7 +45,7 @@ void seri_append_int(binary_ctx *bw, int64_t v) {
         binary_set_uint8(bw, COMBINE_TYPE(SERI_TYPE_NUMBER, SERI_NUMBER_WORD));
         binary_set_uinteger(bw, (uint64_t)v, 2, 1);
     } else {
-        // 0 < v <= 0xFFFFFFFF：DWORD(u32)
+        // 0x10000 <= v <= INT32_MAX：DWORD(u32)(>INT32_MAX 已在上面走 QWORD)
         binary_set_uint8(bw, COMBINE_TYPE(SERI_TYPE_NUMBER, SERI_NUMBER_DWORD));
         binary_set_uinteger(bw, (uint64_t)v, 4, 1);
     }

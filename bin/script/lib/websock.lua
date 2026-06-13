@@ -55,6 +55,9 @@ wbsk.unpack = websock.unpack
 ---@return integer? skid 连接 skid；仅在 fd 有效时返回
 function wbsk.connect(ws, sslname, secprot, netev)
     local url = srey_url.parse(ws)
+    if not url then
+        return INVALID_SOCK
+    end
     if ("ws" ~= url.scheme and "wss" ~= url.scheme) or not url.host then
         return INVALID_SOCK
     end

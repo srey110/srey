@@ -102,8 +102,6 @@ static int32_t _lstm_read(lua_State *lua) {
         lua_pushboolean(lua, 0);
         return 1;
     }
-    stm_ungrab_data(box->lastcopy);
-    box->lastcopy = snap;
     if (NULL != snap) {
         // 栈布局技巧 : 入栈 [box, func, ud?]
         // settop=3 补 nil ud; replace(1) 把 ud 移到 idx=1; settop=2 截为 [ud, func]
@@ -114,12 +112,20 @@ static int32_t _lstm_read(lua_State *lua) {
         lua_pushlightuserdata(lua, snap->data);
         lua_pushinteger(lua, (lua_Integer)snap->sz);
         lua_pushvalue(lua, 1);
-        lua_call(lua, 3, LUA_MULTRET);
+        // pcall 而非 call 且交接延后到此:重入读不释放本次 snap(防 UAF),抛错也走交接(防 snap 引用泄漏)
+        int32_t st = lua_pcall(lua, 3, LUA_MULTRET, 0);
+        stm_ungrab_data(box->lastcopy);
+        box->lastcopy = snap;
+        if (LUA_OK != st) {
+            return lua_error(lua);
+        }
         lua_pushboolean(lua, 1);
         lua_replace(lua, 1);
         return lua_gettop(lua);
     }
     // writer 已释放, ctx->data=NULL
+    stm_ungrab_data(box->lastcopy);
+    box->lastcopy = NULL;
     lua_pushboolean(lua, 0);
     return 1;
 }

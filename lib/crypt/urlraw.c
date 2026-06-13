@@ -60,6 +60,5 @@ size_t url_decode(char *data, size_t lens, int32_t plus2space) {
         p++;
         dest++;
     }
-    *dest = '\0';
     return (size_t)(dest - data);
 }

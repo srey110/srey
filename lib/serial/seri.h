@@ -11,7 +11,6 @@ typedef enum seri_item_type {
     SERI_ITEM_STRING,
     SERI_ITEM_USERDATA,
     SERI_ITEM_ARRAY_BEGIN,
-    SERI_ITEM_ARRAY_END,
 }seri_item_type;
 
 typedef struct seri_item {
@@ -45,7 +44,7 @@ void seri_append_bool(binary_ctx *bw, int32_t b);
 /// <summary>
 /// 追加整数；根据 v 范围自动选档：
 /// v==0 → ZERO(1 byte)；v 越出 int32 → QWORD(9 byte i64)；v 小于 0 → DWORD(5 byte i32)；
-/// v 小于 0x100 → BYTE(2 byte)；v 小于 0x10000 → WORD(3 byte)；其余正数 → DWORD(5 byte u32)。
+/// v 小于 0x100 → BYTE(2 byte)；v 小于 0x10000 → WORD(3 byte)；[0x10000, INT32_MAX] → DWORD(5 byte u32)。
 /// 多字节均小端。
 /// </summary>
 void seri_append_int(binary_ctx *bw, int64_t v);
@@ -86,7 +85,7 @@ void seri_iter_init(seri_iter *it, const void *buf, size_t size);
 /// <summary>
 /// 解码下一个值；调用方循环调用直到返回 0（流结束）或 -1（格式错）。
 /// 遇到 SERI_ITEM_ARRAY_BEGIN 时调用方需消费后续 v.array_n 个数组元素，
-/// 然后循环读 key/value 对直到 SERI_ITEM_ARRAY_END。
+/// 然后循环读 key/value 对直到 SERI_ITEM_NIL(hash 段终止符)。
 /// </summary>
 /// <param name="it">seri_iter</param>
 /// <param name="out">出参：解码后的 item（字符串 p 指向 it->buffer 内部，零拷贝）</param>

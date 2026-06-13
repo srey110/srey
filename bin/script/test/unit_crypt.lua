@@ -18,8 +18,7 @@ runner.run("crypt", function(t)
         t:check(not enc:find(" ", 1, true), "url encode no space")
         t:check(enc:find("%%", 1) ~= nil, "url encode has %")
         t:eq(raw, url.decode(enc), "url round-trip")
-        -- 1024 字节无转义串恰好命中 LUAL_BUFFERSIZE 边界；url_decode 在 data[lens] 写 '\0'，
-        -- binding 缓冲须 size+1，否则越界 1 字节(ASan 下暴露)
+        -- url_decode 不写末尾 '\0'、严格在 [0,lens) 内原地缩短;binding 按返回长度取结果,无越界
         local big = string.rep("a", 1024)
         t:eq(big, url.decode(big), "url.decode 1024B no-escape")
     end
@@ -35,6 +34,11 @@ runner.run("crypt", function(t)
         t:eq("frag",  u.anchor, "url anchor")
         t:eq("1", u.param.a, "url param a")
         t:eq("2", u.param.b, "url param b")
+    end
+    do
+        -- URL parse 失败：超 1KB / 超 64 段路径返回 nil
+        t:eq(nil, url.parse(string.rep("a", 1024)),       "url.parse 超 1KB 返回 nil")
+        t:eq(nil, url.parse("/" .. string.rep("a/", 70)), "url.parse 超 64 段返回 nil")
     end
 
     -- ── base64 ─────────────────────────────────────────────────────────

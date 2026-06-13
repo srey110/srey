@@ -1,6 +1,11 @@
 ﻿#ifndef ROUTER_H_
 #define ROUTER_H_
 
+#include "protocol/http.h"
+#include "protocol/urlparse.h"
+#include "srey/spub.h"
+#include "event/event.h"
+
 // ─────────────────────────────────────────────────────────────────────────────
 // HTTP 路由器 (基于 task + http_pack_ctx)
 // 用途
@@ -96,6 +101,7 @@
 //   的 ctx 跨 yield 保留, handler 可直接 coro_request / coro_fork_wait, 返回前再用
 //   ctx 写响应 (见 lib/services/harbor.c、lib/services/debug_console.c)。
 // 错误响应
+//   URL 解析失败      → 400 Bad Request (段数超 URL_MAX_PATH_DEPTH / URI 超长)
 //   未匹配路由        → 404 Not Found
 //   方法不识别        → 405 Method Not Allowed
 //   中间件 + handler 都没写响应  → 500 Internal Server Error (兜底)
@@ -110,11 +116,6 @@
 //   query 返回值     指向 ctx->url_storage 内部, 跟 dispatch 调用同生命周期
 //   header / body    指向 pack 内部, pack 在 _net_recv 返回后失效
 // ─────────────────────────────────────────────────────────────────────────────
-
-#include "protocol/http.h"
-#include "protocol/urlparse.h"
-#include "srey/spub.h"
-#include "event/event.h"
 
 // 路径参数 / chain 数组上限
 #define ROUTER_MAX_PARAMS  16
@@ -264,7 +265,7 @@ router_entry *router_any(router_ctx *r, const router_group *g, const char *path,
                          router_cb h, const char *const *mws, int32_t mws_n);
 /// <summary>
 /// 派发 HTTP 请求 —— 在 _net_recv 中 slice == 0 分支调用; 内部完成方法 / 路径
-/// 匹配, 拼接 chain, 启动中间件链。方法不识别 → 405; 路径未匹配 → 404;
+/// 匹配, 拼接 chain, 启动中间件链。URL 解析失败 → 400; 方法不识别 → 405; 路径未匹配 → 404;
 /// 中间件 / handler 漏写响应 → 兜底 500 (C 无 setjmp 救援, 段错误等不可恢复异常仍会崩溃)
 /// </summary>
 /// <param name="r">router_ctx</param>

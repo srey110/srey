@@ -94,7 +94,7 @@ static void _h_deep(router_req *ctx) {
     router_req_text(ctx, 200, buf, (size_t)k);
 }
 
-// 构造 nseg 段 "/s" 重复路径写入 buf,返回 buf;server 注册与 client 请求共用,测段截断溢出
+// 构造 nseg 段 "/s" 重复路径写入 buf,返回 buf;server 注册与 client 请求共用,测段数超限拒绝
 static const char *_segpath(char *buf, size_t cap, int32_t nseg) {
     size_t pos = 0;
     int32_t i;
@@ -105,7 +105,7 @@ static const char *_segpath(char *buf, size_t cap, int32_t nseg) {
     buf[pos] = '\0';
     return buf;
 }
-// GET 64 段 "/s/.../s" → "s64"; 覆盖 ROUTER_MAX_SEGS 段精确路由,验证 >64 段请求不误命中
+// GET 64 段 "/s/.../s" → "s64"; 覆盖 URL_MAX_PATH_DEPTH 段精确路由,验证 >64 段请求不误命中
 static void _h_seg64(router_req *ctx) {
     router_req_text(ctx, 200, "s64", 3);
 }
@@ -198,7 +198,7 @@ static void _server_startup(task_ctx *task) {
     router_group_nest(&g1, &g2, "/g2", g2_names, 1);
     router_get(r, &g2, "/deep", _h_deep, NULL, 0);
 
-    // ROUTER_MAX_SEGS(64) 段精确路由:测 >64 段请求截断后不误命中(64 须与 router.c ROUTER_MAX_SEGS 同步)
+    // URL_MAX_PATH_DEPTH(64) 段精确路由:测 >64 段请求被拒(400)不误命中(64 须与 urlparse.h URL_MAX_PATH_DEPTH 同步)
     char seg64_path[160];
     router_get(r, NULL, _segpath(seg64_path, sizeof(seg64_path), 64), _h_seg64, NULL, 0);
 
@@ -365,15 +365,15 @@ static int32_t _run_all(task_ctx *task, uint16_t port) {
     if (ERR_OK != _do_req(task, port, "GET",  "/g1/g2/deep", NULL, NULL, 200, "deep=11")) bad |= (1 << 15);
     if (task_isclosing(task)) return ERR_FAILED;
 
-    // [16] 正好 ROUTER_MAX_SEGS(64) 段精确请求命中 64 段路由
+    // [16] 正好 URL_MAX_PATH_DEPTH(64) 段精确请求命中 64 段路由
     char p64[160];
     char p65[170];
     _segpath(p64, sizeof(p64), 64);
     _segpath(p65, sizeof(p65), 65);
     if (ERR_OK != _do_req(task, port, "GET", p64, NULL, NULL, 200, "s64")) bad |= (1 << 16);
     if (task_isclosing(task)) return ERR_FAILED;
-    // [17] 65 段请求:截断到 64 段后不得误命中 64 段路由(overflow → 404)
-    if (ERR_OK != _do_req(task, port, "GET", p65, NULL, NULL, 404, NULL)) bad |= (1 << 17);
+    // [17] 65 段请求:url_parse 段数超限直接失败,不误命中 64 段路由(→ 400)
+    if (ERR_OK != _do_req(task, port, "GET", p65, NULL, NULL, 400, NULL)) bad |= (1 << 17);
     if (task_isclosing(task)) return ERR_FAILED;
     // [18] 参数段 + 末尾通配: /asset/{id}/* 命中后 {id} 仍可取 (通配不吞掉 params_n)
     if (ERR_OK != _do_req(task, port, "GET", "/asset/42/x", NULL, NULL, 200, "42")) bad |= (1 << 18);

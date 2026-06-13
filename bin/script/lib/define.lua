@@ -22,7 +22,7 @@ REQUEST_TYPE = {
     REQ_DEBUG      = 0x01, -- 调试命令（lib/services/debug_console.c → 目标 task）
     REQ_DC         = 0x10, -- DataCenter:统一入口,子命令由 payload 首字节 u8 op 标识(见 lib/services/datacenter.c dc_op)
     REQ_SC         = 0x20, -- subcenter 订阅中心:统一入口,子命令由 payload 首字节 u8 op 标识(见 lib/services/subcenter.c sc_op)
-    REQ_SC_DELIVER = 0x21, -- subcenter → 订阅者推送:wire=|kind|publisher|mlen|meta|tlen|topic|plen|payload|
+    REQ_SC_DELIVER = 0x21, -- subcenter → 订阅者推送:wire=|kind|publisher|mlen|meta|glen|group|tlen|topic|plen|payload|
 }
 -- MySQL 响应包类型，与 C 层 mysql_pack_type 枚举一一对应。
 ---@enum MYSQL_PACK_TYPE

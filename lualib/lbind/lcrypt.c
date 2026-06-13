@@ -37,7 +37,7 @@ static int32_t _lcrypt_url_decode(lua_State *lua) {
     data = lpub_check_buf_idx(lua, &idx, &size, NULL);
     int32_t plus2space = (int32_t)luaL_optinteger(lua, idx, 1);
     luaL_Buffer lbuf;
-    char *out = luaL_buffinitsize(lua, &lbuf, size + 1);//url_decode 原地解码后在末尾写 '\0'，需 size+1
+    char *out = luaL_buffinitsize(lua, &lbuf, size);
     memcpy(out, data, size);
     size_t decoded = url_decode(out, size, plus2space);
     luaL_pushresultsize(&lbuf, decoded);
@@ -48,13 +48,16 @@ static int32_t _lcrypt_url_decode(lua_State *lua) {
 /// </summary>
 /// <param name="data" type="string|lightuserdata">URL 字符串；字符串时长度自动取得</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
-/// <returns type="ParsedURL">含 scheme/user/psw/host/port/path/anchor/param 的表；param 为 key→value 子表</returns>
+/// <returns type="ParsedURL?">成功返回含 scheme/user/psw/host/port/path/anchor/param 的表（param 为 key→value 子表）；URL 超 1KB 或路径段数超 URL_MAX_PATH_DEPTH 时返回 nil</returns>
 static int32_t _lcrypt_url_parse(lua_State *lua) {
     void *data;
     size_t size;
     data = lpub_check_buf(lua, 1, &size, NULL);
     url_ctx url;
-    url_parse(&url, (const char *)data, size, '/', 1);
+    if (ERR_OK != url_parse(&url, (const char *)data, size, '/', 1)) {
+        lua_pushnil(lua);
+        return 1;
+    }
     lua_createtable(lua, 0, 9);
     if (!buf_empty(&url.scheme)) {
         lua_pushlstring(lua, url.scheme.data, url.scheme.lens);

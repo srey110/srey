@@ -82,7 +82,7 @@ void *path_remove(path_trie *t, const char *path);
 void path_match(path_trie *t, const char *literal_path, match_visit_cb cb, void *udata);
 /// <summary>
 /// 全遍历所有 payload 节点。cb 收到完整路径字符串(实时重建,栈缓冲 PATH_SCAN_BUF=1024)。
-/// 路径过长的节点跳过 + LOG_WARN(insert 已限长,实际不会触发)。
+/// 路径过长(段拼接 > PATH_SCAN_BUF)的节点跳过 + LOG_WARN;insert 不限路径字节长度,超长路径会在此被跳过。
 /// </summary>
 /// <param name="t">trie 指针</param>
 /// <param name="cb">每个 payload 节点调用一次;NULL 直接返回</param>

@@ -5,9 +5,6 @@
 #include "srey/loader.h"
 #include "srey/task.h"
 
-// 路径解析时单条路径的段数上限; 同时也是 _router_match_path 中请求段数组的容量上限
-#define ROUTER_MAX_SEGS 64
-
 // 路径段类型
 typedef enum router_seg_type {
     ROUTER_SEG_LIT,    // 字面量
@@ -117,7 +114,7 @@ static int32_t _router_parse_path(const char *path, size_t path_len, router_seg 
     size_t i = 0;
     size_t start;
     // 栈缓存: 先填这里, 全部成功后一次性 MALLOC + memcpy, 失败路径无需 realloc 回滚
-    router_seg buf[ROUTER_MAX_SEGS];
+    router_seg buf[URL_MAX_PATH_DEPTH];
     while (i < path_len) {
         // 跳过连续 '/': 兼容 "//foo" 或前导 '/' 多次
         while (i < path_len && '/' == path[i]) {
@@ -131,8 +128,8 @@ static int32_t _router_parse_path(const char *path, size_t path_len, router_seg 
         while (i < path_len && '/' != path[i]) {
             i++;
         }
-        if (n >= ROUTER_MAX_SEGS) {
-            LOG_WARN("router: path segments exceed %d, rejected.", ROUTER_MAX_SEGS);
+        if (n >= URL_MAX_PATH_DEPTH) {
+            LOG_WARN("router: path segments exceed %d, rejected.", URL_MAX_PATH_DEPTH);
             // 已申请 str 释放; buf 本身是栈缓冲无需 free
             for (int32_t k = 0; k < n; k++) {
                 FREE(buf[k].str);
@@ -597,8 +594,8 @@ void router_dispatch(router_ctx *r, task_ctx *task,
     ctx.pack = pack;
     ctx.method = m;
     if (ERR_OK != url_parse(&ctx.url_storage, st[1].data, st[1].lens, '/', 1)) {
-        // 段数超 URL_MAX_PATH_DEPTH 或 URI 过长, 无法路由
-        _router_send_simple(&ctx, 404, "Not Found\n");
+        // 段数超 URL_MAX_PATH_DEPTH 或 URI 过长, 无法解析
+        _router_send_simple(&ctx, 400, "Bad Request\n");
         return;
     }
     // url_parse 保留空段(RFC);路由按"模板跳空段"语义匹配, 这里就地剔除空段

@@ -3,7 +3,7 @@
 
 #include "srey/coro.h"
 
-// key 最大长度上限(字节,不含 NUL 终止);服务端 keybuf 栈缓冲容量,客户端编码前据此拒绝超长 key
+// keybuf 栈缓冲容量(字节,含 NUL 终止);有效 key 长度须 < DC_KEY_MAX(即 ≤511),客户端编码前/服务端据此拒绝超长 key
 #define DC_KEY_MAX 512
 
 /// <summary>
@@ -54,7 +54,7 @@ void *coro_dc_wait(task_ctx *task, name_t dc_name, const char *key,
 /// <param name="task">当前 task</param>
 /// <param name="dc_name">DataCenter task name</param>
 /// <param name="key">key 字符串</param>
-/// <returns>ERR_OK 成功(key 不存在也返 OK)</returns>
+/// <returns>ERR_OK 成功(key 不存在也返 OK);ERR_FAILED key 非法/datacenter 不可达/超时</returns>
 int32_t coro_dc_del(task_ctx *task, name_t dc_name, const char *key);
 /// <summary>
 /// 列出全部 key。调试用,生产 key 量大时谨慎调。

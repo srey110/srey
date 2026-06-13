@@ -294,7 +294,7 @@ buf_ctx *url_get_param(url_ctx *ctx, const char *key) {
             || 0 == param->key.lens) {
             break;
         }
-        if (buf_icompare(&param->key, key, klens)) {
+        if (buf_compare(&param->key, key, klens)) {
             return &param->val;
         }
     }

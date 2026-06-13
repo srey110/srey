@@ -249,5 +249,51 @@ runner.run("sc_client", function(t)
         t:eq(2, n2, "multi-group: 退 g1 不影响 g2,g2 仍收")
         sc_client.unsubscribe_shared(SC, "t14/x", "g2")
     end
+
+    -- ── 子段 15(本次修复):请求失败回滚不误删已成功的旧 handler ──────────
+    -- 旧版失败无条件置 nil,会连带抹掉之前成功订阅的 handler(C 端仍 deliver→Lua 静默丢弃)。
+    -- 用 TASK_NAME.NONE 让 srey.request 在 task_grab 前早退返 nil,稳定触发失败分支。
+    do
+        local got = 0
+        sc_client.subscribe(SC, "t15/x", function() got = got + 1 end)
+        local ok = sc_client.subscribe(TASK_NAME.NONE, "t15/x", function() got = got + 100 end)
+        t:eq(false, ok, "rollback: 失败 subscribe 返 false")
+        sc_client.publish(SC, "t15/x", "p")
+        _wait(function() return got >= 1 end)
+        t:eq(1, got, "rollback: 失败重订未抹掉已成功的普通 handler")
+        sc_client.unsubscribe(SC, "t15/x")
+
+        local ns = 0
+        sc_client.subscribe_shared(SC, "t15/s", "g", function() ns = ns + 1 end)
+        local ok2 = sc_client.subscribe_shared(TASK_NAME.NONE, "t15/s", "g", function() ns = ns + 100 end)
+        t:eq(false, ok2, "rollback: 失败 subscribe_shared 返 false")
+        sc_client.publish(SC, "t15/s", "p")
+        _wait(function() return ns >= 1 end)
+        t:eq(1, ns, "rollback: 失败重订未抹掉已成功的共享 handler")
+        sc_client.unsubscribe_shared(SC, "t15/s", "g")
+    end
+
+    -- ── 子段 16(本次修复):unsubscribe/unsubscribe_shared 失败回滚恢复本地 handler ──
+    -- 改为与 subscribe 对称的一致性语义:退订请求失败则本地 handler 恢复,
+    -- 与 C 端"可能未退成、仍投递"的实际状态一致(旧版先删不恢复→C 投递被静默丢弃)。
+    do
+        local got = 0
+        sc_client.subscribe(SC, "t16/x", function() got = got + 1 end)
+        local ok = sc_client.unsubscribe(TASK_NAME.NONE, "t16/x")
+        t:eq(false, ok, "unsub-rollback: 失败 unsubscribe 返 false")
+        sc_client.publish(SC, "t16/x", "p")
+        _wait(function() return got >= 1 end)
+        t:eq(1, got, "unsub-rollback: 失败退订恢复本地 handler,仍收 publish")
+        sc_client.unsubscribe(SC, "t16/x")
+
+        local ns = 0
+        sc_client.subscribe_shared(SC, "t16/s", "g", function() ns = ns + 1 end)
+        local ok2 = sc_client.unsubscribe_shared(TASK_NAME.NONE, "t16/s", "g")
+        t:eq(false, ok2, "unsub-rollback: 失败 unsubscribe_shared 返 false")
+        sc_client.publish(SC, "t16/s", "p")
+        _wait(function() return ns >= 1 end)
+        t:eq(1, ns, "unsub-rollback: 失败退订恢复共享 handler,仍收 publish")
+        sc_client.unsubscribe_shared(SC, "t16/s", "g")
+    end
 end)
 end)

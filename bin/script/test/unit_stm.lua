@@ -124,5 +124,32 @@ runner.run("stm", function(t)
         t:eq(false, pcall(stm.copy, r),   "stm.copy(reader) 错类型 userdata 应报错")
     end
     collectgarbage("collect")
+
+    -- ── 9) 回调内重入读同一 reader:外层 lud 不被重入释放(UAF 回归,ASan 下判别)
+    do
+        local w = stm.new("v1")
+        local r = stm.newcopy(stm.copy(w))
+        local outer
+        r(function(lud, sz)
+            w("v2")              -- update:旧快照 ref 减到仅外层 read 持有
+            r(function() end)    -- 重入读同一 reader
+            outer = utils.ud_str(lud, sz)   -- 重入返回后外层 lud 须仍有效
+        end)
+        t:eq("v1", outer, "reentry: 重入读后外层 lud 仍指向有效 v1 快照")
+    end
+    collectgarbage("collect")
+
+    -- ── 10) 回调抛错:lua_pcall 后引用正确交接,错误仍向上传播,不泄漏 snap(退出期 _memcheck/ASan 验)
+    do
+        local w = stm.new("e1")
+        local r = stm.newcopy(stm.copy(w))
+        local ok = pcall(function() r(function() error("boom") end) end)
+        t:eq(false, ok, "callback-error: 回调抛错仍向上传播(被 pcall 捕获)")
+        w("e2")
+        local got
+        r(function(lud, sz) got = utils.ud_str(lud, sz) end)
+        t:eq("e2", got, "callback-error: 抛错后 reader 仍能正常读新快照")
+    end
+    collectgarbage("collect")
 end)
 end)

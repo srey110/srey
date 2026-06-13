@@ -1169,6 +1169,34 @@ static void test_url_parse_edges(CuTest *tc) {
         CuAssertPtrNotNull(tc, p);
         CuAssertTrue(tc, buf_compare(p, "4", 1));
     }
+    // 8. path + 直接 fragment(无 query)：path 段解码不写 '\0',不覆盖紧跟的 '#',anchor 正确
+    {
+        char u[] = "/a/b#frag";
+        url_ctx ctx;
+        url_parse(&ctx, u, strlen(u), '/', 1);
+        CuAssertTrue(tc, 2 == ctx.npath);
+        CuAssertTrue(tc, buf_compare(&ctx.segs[0], "a", 1));
+        CuAssertTrue(tc, buf_compare(&ctx.segs[1], "b", 1));
+        CuAssertTrue(tc, buf_compare(&ctx.anchor, "frag", 4));
+    }
+    // 9. fragment 含 '='：整体归 anchor,不被误扫成 query 参数
+    {
+        char u[] = "/p#x=1";
+        url_ctx ctx;
+        url_parse(&ctx, u, strlen(u), '/', 1);
+        CuAssertTrue(tc, 1 == ctx.npath);
+        CuAssertTrue(tc, buf_compare(&ctx.segs[0], "p", 1));
+        CuAssertTrue(tc, buf_compare(&ctx.anchor, "x=1", 3));
+        CuAssertTrue(tc, NULL == url_get_param(&ctx, "x"));
+    }
+    // 10. query 键大小写敏感(url_get_param 用 buf_compare)：注册 Key,查 key 不命中
+    {
+        char u[] = "/p?Key=v";
+        url_ctx ctx;
+        url_parse(&ctx, u, strlen(u), '/', 1);
+        CuAssertPtrNotNull(tc, url_get_param(&ctx, "Key"));
+        CuAssertTrue(tc, NULL == url_get_param(&ctx, "key"));
+    }
 }
 
 /* =======================================================================

@@ -2,11 +2,13 @@
 -- 约束:
 --   1. 仅替换 module 表上的 M.xxx = function() end 形式;不支持新增/删除函数、不支持 metatable / C function
 --   2. patch 必须用 `function M.xxx() end` 写法,patch_env 中 M 是代理表(__index = mod)
---   3. patch 想读/写原 module 顶层 local,有两种等价用法,任选其一:
+--   3. patch 想读/写原 module 顶层 local,两种用法(反复热修时不等价,见末两行):
 --      - 路径 A:patch 用 `local name = ...` 重新声明同名 local,debug.upvaluejoin 在替换时嫁接
 --        patch fn 的 name upvalue 槽到原 fn 同名 upvalue UpVal,两个 closure 共享同一份内存
 --      - 路径 B:patch 裸读 `name`(不声明 local),走 patch_env metatable 转发到原 mod closure 的 upvalue,
 --        读取/写入都作用于原 UpVal,所有引用 name 的旧 closure 与新 closure 同步看到新值
+--      路径 A 替换后 patch fn 仍具名持有该 UpVal,可对同一函数反复热修;路径 B 替换后只有 _ENV,
+--      若该 local 仅被本函数持有,二次热修 _collect_upvalues 扫不到 cell(转发回退 _G → nil)→ 反复迭代用路径 A
 --   4. patch 中的 local function _helper 是 patch chunk 独立 closure;仅被 patch 内同时重写的 M.xxx 使用,
 --      需要单独热修的 helper 应业务侧提升为 module 表字段(M._helper 而不是 local _helper)
 --   5. 已 yield 的协程持有旧 closure reference,继续跑旧逻辑;新调用从 mod[name] 取走新版

@@ -226,11 +226,15 @@ function sc_client.subscribe(sc_name, topic, handler)
         WARN("sc subscribe: topic/handler empty.")
         return false
     end
+    local old = _handlers[topic]
     _handlers[topic] = handler
     local sub_payload = OP_SUB .. string.pack(">s2", topic)
     local _, size = srey.request(sc_name, REQUEST_TYPE.REQ_SC, sub_payload)
     if nil == size then
-        _handlers[topic] = nil   -- 回滚本地表
+        -- 仅当当前值仍是本次 handler(未被并发/重订覆盖)时才回滚,避免抹掉他人写入
+        if handler == _handlers[topic] then
+            _handlers[topic] = old
+        end
         return false
     end
     -- 自动 query_retained 转交首批匹配 retained 给 handler
@@ -267,13 +271,16 @@ function sc_client.subscribe_shared(sc_name, topic, group, handler)
         groups = {}
         _shared_handlers[topic] = groups
     end
+    local old = groups[group]
     groups[group] = handler
     local payload = OP_SUB_SHARED .. string.pack(">s2", topic) .. string.pack(">s2", group)
     local _, size = srey.request(sc_name, REQUEST_TYPE.REQ_SC, payload)
     if nil == size then
-        groups[group] = nil
-        if nil == next(groups) then
-            _shared_handlers[topic] = nil
+        if handler == groups[group] then
+            groups[group] = old
+            if nil == next(groups) then
+                _shared_handlers[topic] = nil
+            end
         end
         return false
     end
@@ -289,10 +296,14 @@ function sc_client.unsubscribe(sc_name, topic)
         WARN("sc unsubscribe: topic empty.")
         return false
     end
+    local old = _handlers[topic]
     _handlers[topic] = nil
     local payload = OP_UNSUB .. string.pack(">s2", topic)
     local _, size = srey.request(sc_name, REQUEST_TYPE.REQ_SC, payload)
     if nil == size then
+        if nil == _handlers[topic] then
+            _handlers[topic] = old
+        end
         return false
     end
     return true
@@ -309,6 +320,7 @@ function sc_client.unsubscribe_shared(sc_name, topic, group)
         return false
     end
     local groups = _shared_handlers[topic]
+    local old = groups and groups[group]
     if groups then
         groups[group] = nil
         if nil == next(groups) then
@@ -318,6 +330,16 @@ function sc_client.unsubscribe_shared(sc_name, topic, group)
     local payload = OP_UNSUB_SHARED .. string.pack(">s2", topic) .. string.pack(">s2", group)
     local _, size = srey.request(sc_name, REQUEST_TYPE.REQ_SC, payload)
     if nil == size then
+        if nil ~= old then
+            local g = _shared_handlers[topic]
+            if not g then
+                g = {}
+                _shared_handlers[topic] = g
+            end
+            if nil == g[group] then
+                g[group] = old
+            end
+        end
         return false
     end
     return true

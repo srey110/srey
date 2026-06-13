@@ -1565,7 +1565,7 @@ static void test_urlraw_invalid(CuTest *tc) {
     safe_fill_str(buf, sizeof(buf), "a+b+c");
     dlen = url_decode(buf, strlen("a+b+c"), 1);
     CuAssertTrue(tc, 5 == dlen);
-    CuAssertStrEquals(tc, "a b c", buf);
+    CuAssertTrue(tc, 0 == memcmp(buf, "a b c", dlen));
 }
 
 /* ======================================================================= */
