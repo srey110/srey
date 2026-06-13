@@ -17,7 +17,7 @@
 static int32_t _lprot_harbor_pack(lua_State *lua) {
     name_t task = (name_t)luaL_checkinteger(lua, 1);
     int32_t call = (int32_t)luaL_checkinteger(lua, 2);      // 0=call，1=request
-    uint8_t reqtype = (uint8_t)luaL_checkinteger(lua, 3);
+    subtype_t reqtype = (subtype_t)luaL_checkinteger(lua, 3);
     const char *key = luaL_checkstring(lua, 4);              // 路由 key
     void *data;
     size_t size;
@@ -139,7 +139,7 @@ LUAMOD_API int luaopen_dns(lua_State *lua) {
 /// <returns type="lightuserdata">打包后的数据指针</returns>
 /// <returns type="integer">数据长度</returns>
 static int32_t _lprot_custz_pack(lua_State *lua) {
-    uint8_t pktype = (uint8_t)luaL_checkinteger(lua, 1);
+    pack_type pktype = (pack_type)luaL_checkinteger(lua, 1);
     void *data;
     size_t size;
     data = lpub_check_buf(lua, 2, &size, NULL);

@@ -99,17 +99,20 @@ void task_timeout(task_ctx *task, uint64_t sess, uint32_t ms, _timeout_cb _timeo
 /// <param name="data">数据</param>
 /// <param name="size">数据长度</param>
 /// <param name="copy">1 拷贝 0不拷贝</param>
-void task_request(task_ctx *dst, task_ctx *src, uint8_t reqtype, uint64_t sess, void *data, size_t size, int32_t copy);
+void task_request(task_ctx *dst, task_ctx *src, subtype_t reqtype, uint64_t sess,
+                  void *data, size_t size, int32_t copy);
 /// <summary>
 /// 任务间通信,返回
 /// </summary>
 /// <param name="dst">目标任务</param>
+/// <param name="reqtype">请求类型 request_type</param>
 /// <param name="sess">session</param>
 /// <param name="erro">错误码</param>
 /// <param name="data">数据</param>
 /// <param name="size">数据长度</param>
 /// <param name="copy">1 拷贝 0不拷贝</param>
-void task_response(task_ctx *dst, uint64_t sess, int32_t erro, void *data, size_t size, int32_t copy);
+void task_response(task_ctx *dst, subtype_t reqtype, uint64_t sess,
+                   int32_t erro, void *data, size_t size, int32_t copy);
 /// <summary>
 /// 任务间通信,无返回
 /// </summary>
@@ -118,7 +121,7 @@ void task_response(task_ctx *dst, uint64_t sess, int32_t erro, void *data, size_
 /// <param name="data">数据</param>
 /// <param name="size">数据长度</param>
 /// <param name="copy">1 拷贝 0不拷贝</param>
-void task_call(task_ctx *dst, uint8_t reqtype, void *data, size_t size, int32_t copy);
+void task_call(task_ctx *dst, subtype_t reqtype, void *data, size_t size, int32_t copy);
 /// <summary>
 /// 广播请求：把同一份 data 投递给 N 个 task,各 dst 在 _request 回调中可独立 task_response 回 src(共用同一 sess)。
 /// 与 task_multi_call 区别：携带 src + sess,dst 知道响应该回给谁；src 端 _response 回调将被调用 N 次（同 sess,
@@ -135,7 +138,7 @@ void task_call(task_ctx *dst, uint8_t reqtype, void *data, size_t size, int32_t 
 /// <param name="size">数据长度</param>
 /// <param name="copy">1 拷贝(内部 MALLOC+memcpy)；0 不拷贝(直接转移 data 所有权)</param>
 /// <returns>实际成功投递的 dst 数（dsts 中非 NULL 元素个数,0 表示全部跳过未投递）</returns>
-int32_t task_multi_request(task_ctx *dsts[], int32_t n, task_ctx *src, uint8_t reqtype,
+int32_t task_multi_request(task_ctx *dsts[], int32_t n, task_ctx *src, subtype_t reqtype,
                            uint64_t sess, void *data, size_t size, int32_t copy);
 /// <summary>
 /// 单向投递同一份数据给 N 个 task(fire-and-forget pub/sub,publisher 不等响应)。
@@ -149,7 +152,7 @@ int32_t task_multi_request(task_ctx *dsts[], int32_t n, task_ctx *src, uint8_t r
 /// <param name="data">数据</param>
 /// <param name="size">数据长度</param>
 /// <param name="copy">1 拷贝(内部 MALLOC+memcpy)；0 不拷贝(直接转移 data 所有权)</param>
-void task_multi_call(task_ctx *dsts[], int32_t n, uint8_t reqtype,
+void task_multi_call(task_ctx *dsts[], int32_t n, subtype_t reqtype,
                      void *data, size_t size, int32_t copy);
 /// <summary>
 /// 监听

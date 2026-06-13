@@ -6,16 +6,6 @@
 
 // keybuf 栈缓冲容量(字节,含 NUL 终止);有效 key 长度须 < DC_KEY_MAX(即 ≤511),客户端编码前/服务端据此拒绝超长 key
 #define DC_KEY_MAX 512
-// 子命令操作码:payload 首字节,跟随特定子命令格式的剩余字节
-// payload 布局:
-// u8 op   + u16 key len(网络序) + key + u32 val len(网络字节序) + val
-typedef enum dc_op {
-    DC_OP_SET  = 0x01,
-    DC_OP_GET  = 0x02,
-    DC_OP_WAIT = 0x03,
-    DC_OP_DEL  = 0x04,
-    DC_OP_LIST = 0x05,
-}dc_op;
 // dc_keys 响应的逐条解析结果;key 零拷贝指向源 data,生命周期与 data 一致,非 NUL 结尾。
 typedef struct dc_key {
     size_t klen;        // key 字节数

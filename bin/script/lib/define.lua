@@ -19,10 +19,25 @@ TASK_TYPE = {
 }
 ---@enum REQUEST_TYPE
 REQUEST_TYPE = {
-    REQ_DEBUG      = 0x01, -- 调试命令（lib/services/debug_console.c → 目标 task）
-    REQ_DC         = 0x10, -- DataCenter:统一入口,子命令由 payload 首字节 u8 op 标识(见 lib/services/datacenter.c dc_op)
-    REQ_SC         = 0x20, -- subcenter 订阅中心:统一入口,子命令由 payload 首字节 u8 op 标识(见 lib/services/subcenter.c sc_op)
-    REQ_SC_DELIVER = 0x21, -- subcenter → 订阅者推送:wire=|kind|publisher|mlen|meta|glen|group|tlen|topic|plen|payload|
+    REQ_DEBUG             = 0x01, -- 调试命令
+
+    REQ_DC_SET            = 0x10, -- DataCenter 子命令(与 C request_type 一致)
+    REQ_DC_GET            = 0x11,
+    REQ_DC_WAIT           = 0x12,
+    REQ_DC_DEL            = 0x13,
+    REQ_DC_LIST           = 0x14,
+
+    REQ_SC_SUB            = 0x20, -- subcenter 子命令(与 C request_type 一致)
+    REQ_SC_SUB_SHARED     = 0x21,
+    REQ_SC_UNSUB          = 0x22,
+    REQ_SC_UNSUB_SHARED   = 0x23,
+    REQ_SC_PUB            = 0x24,
+    REQ_SC_PUB_RETAINED   = 0x25,
+    REQ_SC_LIST           = 0x26,
+    REQ_SC_QUERY_RETAINED = 0x27,
+    REQ_SC_SET_META       = 0x28,
+    REQ_SC_RETAINED_LIST  = 0x29,
+    REQ_SC_DELIVER        = 0x2A, -- subcenter → 订阅者推送
 }
 -- MySQL 响应包类型，与 C 层 mysql_pack_type 枚举一一对应。
 ---@enum MYSQL_PACK_TYPE

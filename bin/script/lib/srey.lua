@@ -731,7 +731,7 @@ local _sc_client        -- 懒加载缓存(收到 REQ_SC_DELIVER 时初始化)
 -- 其余转交用户注册的 on_requested 回调
 ---@param msg Message
 local function _request_dispatch(msg)
-    if REQUEST_TYPE.REQ_DEBUG == msg.pktype then
+    if REQUEST_TYPE.REQ_DEBUG == msg.subtype then
         if not _debug_request then
             _debug_request = require("lib.debug_request")
             _debug_request._set_coro_sess(coro_sess)
@@ -743,12 +743,12 @@ local function _request_dispatch(msg)
                 if func then
                     func(reqtype, sess, src, data, size)
                 else
-                    srey.response(src, sess, ERR_FAILED, "not register request function.")
+                    srey.response(src, reqtype, sess, ERR_FAILED, "not register request function.")
                 end
             end)
         end
-        _coro_run(_coro_cb, _debug_request._dispatch, msg.pktype, msg.sess, msg.src, msg.data, msg.size)
-    elseif REQUEST_TYPE.REQ_SC_DELIVER == msg.pktype then
+        _coro_run(_coro_cb, _debug_request._dispatch, msg.subtype, msg.sess, msg.src, msg.data, msg.size)
+    elseif REQUEST_TYPE.REQ_SC_DELIVER == msg.subtype then
         if not _sc_client then
             _sc_client = require("lib.sc_client")
         end
@@ -756,21 +756,22 @@ local function _request_dispatch(msg)
     else
         local func = func_cbs[MSG_TYPE.REQUEST]
         if not func then
-            srey.response(msg.src, msg.sess, ERR_FAILED, "not register request function.")
+            srey.response(msg.src, msg.subtype, msg.sess, ERR_FAILED, "not register request function.")
             return
         end
-        _coro_run(_coro_cb, func, msg.pktype, msg.sess, msg.src, msg.data, msg.size)
+        _coro_run(_coro_cb, func, msg.subtype, msg.sess, msg.src, msg.data, msg.size)
     end
 end
 
 ---向请求方 task 回复响应
 ---@param dst TASK_NAME 请求方 task name
+---@param reqtype REQUEST_TYPE 请求类型(回带给请求方)
 ---@param sess integer 请求会话 id
 ---@param erro integer 错误码，0 表示成功
 ---@param data string|lightuserdata|nil 响应数据
 ---@param size integer? data 为 lightuserdata 时必填
 ---@param copy integer? 是否复制数据，默认 1
-function srey.response(dst, sess, erro, data, size, copy)
+function srey.response(dst, reqtype, sess, erro, data, size, copy)
     -- 调 core.response 前的早退出路径：copy=0 时调用方已转移所有权,主动 utils.ud_free 兜底
     if TASK_NAME.NONE == dst or 0 == sess then
         WARN("parameter error.")
@@ -787,7 +788,7 @@ function srey.response(dst, sess, erro, data, size, copy)
         end
         return
     end
-    core.response(dtask, sess, erro, data, size, copy)
+    core.response(dtask, reqtype, sess, erro, data, size, copy)
     srey.task_ungrab(dtask)
 end
 
@@ -806,7 +807,7 @@ local function _response_dispatch(msg)
     -- 用户回调内可 yield(coro_wait/sleep/call 等)而不影响主分发循环
     local cb = func_cbs[MSG_TYPE.RESPONSE]
     if cb then
-        _coro_run(_coro_cb, cb, msg.sess, msg.erro, msg.data, msg.size)
+        _coro_run(_coro_cb, cb, msg.subtype, msg.sess, msg.erro, msg.data, msg.size)
         return
     end
     WARN("can't find session %s.", tostring(msg.sess))
@@ -814,7 +815,7 @@ end
 
 ---注册全局 response 回调；srey.request 等协程同步 API 不走此回调,仅当 sess 不在协程等待表时触发
 ---（典型场景：srey.multi_request 广播 N 个响应共用 sess,框架不做聚合,业务在此回调中据 sess 累计）
----@param func fun(sess:integer, erro:integer, data:lightuserdata?, size:integer) 响应回调
+---@param func fun(reqtype:REQUEST_TYPE, sess:integer, erro:integer, data:lightuserdata?, size:integer) 响应回调
 function srey.on_responsed(func)
     func_cbs[MSG_TYPE.RESPONSE] = func
 end
@@ -867,7 +868,7 @@ srey.unlisten = core.unlisten
 local function _net_accept_dispatch(msg)
     local func = func_cbs[MSG_TYPE.ACCEPT]
     if func then
-        _coro_run(_coro_cb, func, msg.pktype, msg.fd, msg.skid)
+        _coro_run(_coro_cb, func, msg.subtype, msg.fd, msg.skid)
     end
 end
 
@@ -946,7 +947,7 @@ local function _net_connect_dispatch(msg)
     local corosess = _get_coro_sess(msg.skid, MSG_TYPE.CONNECT)
     if not corosess then
         if func then
-            _coro_run(_coro_cb, func, msg.pktype, msg.fd, msg.skid, msg.erro)
+            _coro_run(_coro_cb, func, msg.subtype, msg.fd, msg.skid, msg.erro)
         end
     else
         local coroinfo = _coro_info(corosess)
@@ -955,7 +956,7 @@ local function _net_connect_dispatch(msg)
             _coro_resume(coro, msg)
         else
             if func then
-                _coro_run(_coro_cb, func, msg.pktype, msg.fd, msg.skid, msg.erro)
+                _coro_run(_coro_cb, func, msg.subtype, msg.fd, msg.skid, msg.erro)
             end
         end
     end
@@ -1025,7 +1026,7 @@ local function _net_ssl_exchanged_dispatch(msg)
     local corosess = _get_coro_sess(msg.skid, MSG_TYPE.SSLEXCHANGED)
     if not corosess then
         if func then
-            _coro_run(_coro_cb, func, msg.pktype, msg.fd, msg.skid, msg.client)
+            _coro_run(_coro_cb, func, msg.subtype, msg.fd, msg.skid, msg.client)
         end
     else
         local coroinfo = _coro_info(corosess)
@@ -1034,7 +1035,7 @@ local function _net_ssl_exchanged_dispatch(msg)
             _coro_resume(coro, msg)
         else
             if func then
-                _coro_run(_coro_cb, func, msg.pktype, msg.fd, msg.skid, msg.client)
+                _coro_run(_coro_cb, func, msg.subtype, msg.fd, msg.skid, msg.client)
             end
         end
     end
@@ -1075,7 +1076,7 @@ local function _net_handshaked_dispatch(msg)
     local corosess = _get_coro_sess(msg.skid, MSG_TYPE.HANDSHAKED)
     if not corosess then
         if func then
-            _coro_run(_coro_cb, func, msg.pktype, msg.fd, msg.skid, msg.client, msg.erro, msg.data, msg.size)
+            _coro_run(_coro_cb, func, msg.subtype, msg.fd, msg.skid, msg.client, msg.erro, msg.data, msg.size)
         end
     else
         local coroinfo = _coro_info(corosess)
@@ -1084,7 +1085,7 @@ local function _net_handshaked_dispatch(msg)
             _coro_resume(coro, msg)
         else
             if func then
-                _coro_run(_coro_cb, func, msg.pktype, msg.fd, msg.skid, msg.client, msg.erro, msg.data, msg.size)
+                _coro_run(_coro_cb, func, msg.subtype, msg.fd, msg.skid, msg.client, msg.erro, msg.data, msg.size)
             end
         end
     end
@@ -1237,16 +1238,16 @@ end
 ---@param msg Message
 local function _net_recv_dispatch(msg)
     local func = func_cbs[MSG_TYPE.RECV]
-    if 0 == msg.sess or not core.may_resume(msg.pktype, msg.data) then
+    if 0 == msg.sess or not core.may_resume(msg.subtype, msg.data) then
         if func then
-            _coro_run(_coro_cb, func, msg.pktype, msg.fd, msg.skid, msg.client, msg.slice, msg.data, msg.size)
+            _coro_run(_coro_cb, func, msg.subtype, msg.fd, msg.skid, msg.client, msg.slice, msg.data, msg.size)
         end
         return
     end
     local corosess = _get_coro_sess(msg.sess, MSG_TYPE.RECV)
     if not corosess then
         if func then
-            _coro_run(_coro_cb, func, msg.pktype, msg.fd, msg.skid, msg.client, msg.slice, msg.data, msg.size)
+            _coro_run(_coro_cb, func, msg.subtype, msg.fd, msg.skid, msg.client, msg.slice, msg.data, msg.size)
         end
         return
     end
@@ -1256,7 +1257,7 @@ local function _net_recv_dispatch(msg)
         _coro_resume(coro, msg)
     else
         if func then
-            _coro_run(_coro_cb, func, msg.pktype, msg.fd, msg.skid, msg.client, msg.slice, msg.data, msg.size)
+            _coro_run(_coro_cb, func, msg.subtype, msg.fd, msg.skid, msg.client, msg.slice, msg.data, msg.size)
         end
     end
 end
@@ -1271,7 +1272,7 @@ end
 local function _net_sended_dispatch(msg)
     local func = func_cbs[MSG_TYPE.SEND]
     if func then
-        _coro_run(_coro_cb, func, msg.pktype, msg.fd, msg.skid, msg.client, msg.size)
+        _coro_run(_coro_cb, func, msg.subtype, msg.fd, msg.skid, msg.client, msg.size)
     end
 end
 
@@ -1321,7 +1322,7 @@ local function _net_close_dispatch(msg)
         end
     end
     if func then
-        _coro_run(_coro_cb, func, msg.pktype, msg.fd, msg.skid, msg.client)
+        _coro_run(_coro_cb, func, msg.subtype, msg.fd, msg.skid, msg.client)
     end
 end
 
@@ -1495,7 +1496,7 @@ end
 ---@field sess   integer?             会话 id；TIMEOUT/REQUEST/RESPONSE/RECV 携带
 ---@field fd     integer?             socket fd；网络消息携带
 ---@field skid   integer?             连接 skid；网络消息携带
----@field pktype PACK_TYPE?           封包协议类型；RECV/CONNECT/REQUEST 携带
+---@field subtype PACK_TYPE?          封包协议类型；RECV/CONNECT/REQUEST 携带
 ---@field erro   integer?             错误码；CONNECT/SEND/RESPONSE/SSLEXCHANGED 携带
 ---@field client string?              客户端地址；ACCEPT/SSLEXCHANGED/RECV 携带
 ---@field data   lightuserdata?       数据指针；RECV/REQUEST/RESPONSE 携带

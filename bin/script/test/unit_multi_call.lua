@@ -63,7 +63,7 @@ runner.run("multi_call", function(t)
     -- ── 集成: multi_request,sub 各自 task_response 回 src,触发 on_responsed ──
     local rpc_sess = srey.id()
     local resp_count = 0
-    srey.on_responsed(function(sess, _, data, size)
+    srey.on_responsed(function(reqtype, sess, _, data, size)
         if sess == rpc_sess and data and size > 0 then
             resp_count = resp_count + 1
         end

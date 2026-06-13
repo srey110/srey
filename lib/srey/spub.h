@@ -15,35 +15,6 @@
 
 #define INVALID_TNAME         0  // 无效任务名（空值）
 #define _NAME_OR(s)           ((s) ? (s) : "?")  // 日志打印任务名；匿名(NULL)回退 "?"
-typedef struct loader_ctx loader_ctx;
-typedef struct task_ctx task_ctx;
-typedef struct message_ctx message_ctx;
-typedef struct task_dispatch_arg task_dispatch_arg;
-
-typedef void(*_task_dispatch_cb)(task_dispatch_arg *arg);// 消息分发回调
-typedef void(*_task_startup_cb)(task_ctx *task);// 任务启动回调
-typedef void(*_task_closing_cb)(task_ctx *task);// 任务关闭回调
-typedef void(*_timeout_cb)(task_ctx *task, uint64_t sess);// 超时回调
-typedef void(*_request_cb)(task_ctx *task, uint8_t reqtype, uint64_t sess,
-                           name_t src, void *data, size_t size);// 任务请求回调
-typedef void(*_response_cb)(task_ctx *task, uint64_t sess,
-                            int32_t error, void *data, size_t size);// 任务响应回调
-typedef void(*_net_accept_cb)(task_ctx *task, SOCKET fd, uint64_t skid,
-                              uint8_t pktype);// 新连接接受回调
-typedef void(*_net_recv_cb)(task_ctx *task, SOCKET fd, uint64_t skid,
-                            uint8_t pktype, uint8_t client, uint8_t slice, void *data, size_t size); // 数据接收回调
-typedef void(*_net_send_cb)(task_ctx *task, SOCKET fd, uint64_t skid,
-                            uint8_t pktype, uint8_t client, size_t size);// 数据发送完成回调
-typedef void(*_net_connect_cb)(task_ctx *task, SOCKET fd, uint64_t skid,
-                               uint8_t pktype, int32_t erro);// 连接建立回调
-typedef void(*_net_ssl_exchanged_cb)(task_ctx *task, SOCKET fd, uint64_t skid,
-                                     uint8_t pktype, uint8_t client);// SSL 交换完成回调
-typedef void(*_net_handshake_cb)(task_ctx *task, SOCKET fd, uint64_t skid,
-                                 uint8_t pktype, uint8_t client, int32_t erro, void *data, size_t lens);// 应用层握手完成回调
-typedef void(*_net_close_cb)(task_ctx *task, SOCKET fd, uint64_t skid,
-                             uint8_t pktype, uint8_t client);// 连接关闭回调
-typedef void(*_net_recvfrom_cb)(task_ctx *task, SOCKET fd, uint64_t skid,
-                                char ip[IP_LENS], uint16_t port, void *data, size_t size);// UDP 数据接收回调
 
 // 任务间消息类型枚举
 typedef enum msg_type {
@@ -63,7 +34,6 @@ typedef enum msg_type {
     MSG_TYPE_RESPONSE,      // 任务间响应
     MSG_TYPE_FORK,          // 内部 mtype：由 coro_fork 自发投递到本 task 的消息队列，
                             // 业务回调跑在 _handle_fork 内（与 REQUEST 同模式：每条消息总是新协程）
-
     MSG_TYPE_ALL            // 消息类型总数（边界值）
 }msg_type;
 typedef enum task_type {
@@ -72,17 +42,62 @@ typedef enum task_type {
     TASK_LUA
 }task_type;
 typedef enum request_type {
-    REQ_DEBUG = 0x01, // 调试命令
-    REQ_DC = 0x10,    // DataCenter:统一入口,子命令(SET/GET/WAIT/DEL/LIST)由 payload 首字节 u8 op 标识
-    REQ_SC = 0x20,    // subcenter 订阅中心:统一入口,子命令由 payload 首字节 u8 op 标识(见 subcenter.c sc_op)
-    REQ_SC_DELIVER = 0x21, // subcenter → 订阅者推送:wire = | kind | publisher | mlen | meta | glen | group | tlen | topic | plen | payload |
+    REQ_DEBUG             = 0x01, // 调试命令
+    
+    REQ_DC_SET            = 0x10,
+    REQ_DC_GET            = 0x11,
+    REQ_DC_WAIT           = 0x12,
+    REQ_DC_DEL            = 0x13,
+    REQ_DC_LIST           = 0x14,
+    
+    REQ_SC_SUB            = 0x20,
+    REQ_SC_SUB_SHARED     = 0x21,
+    REQ_SC_UNSUB          = 0x22,
+    REQ_SC_UNSUB_SHARED   = 0x23,
+    REQ_SC_PUB            = 0x24,
+    REQ_SC_PUB_RETAINED   = 0x25,
+    REQ_SC_LIST           = 0x26,
+    REQ_SC_QUERY_RETAINED = 0x27,
+    REQ_SC_SET_META       = 0x28,
+    REQ_SC_RETAINED_LIST  = 0x29,
+    REQ_SC_DELIVER        = 0x2A, // subcenter → 订阅者推送
 }request_type;
+
+typedef struct loader_ctx loader_ctx;
+typedef struct task_ctx task_ctx;
+typedef struct message_ctx message_ctx;
+typedef struct task_dispatch_arg task_dispatch_arg;
+
+typedef void(*_task_dispatch_cb)(task_dispatch_arg *arg);// 消息分发回调
+typedef void(*_task_startup_cb)(task_ctx *task);// 任务启动回调
+typedef void(*_task_closing_cb)(task_ctx *task);// 任务关闭回调
+typedef void(*_timeout_cb)(task_ctx *task, uint64_t sess);// 超时回调
+typedef void(*_request_cb)(task_ctx *task, subtype_t reqtype, uint64_t sess,
+                           name_t src, void *data, size_t size);// 任务请求回调
+typedef void(*_response_cb)(task_ctx *task, subtype_t reqtype, uint64_t sess,
+                            int32_t error, void *data, size_t size);// 任务响应回调
+typedef void(*_net_accept_cb)(task_ctx *task, SOCKET fd, uint64_t skid,
+                              subtype_t pktype);// 新连接接受回调
+typedef void(*_net_recv_cb)(task_ctx *task, SOCKET fd, uint64_t skid,
+                            subtype_t pktype, uint8_t client, uint8_t slice, void *data, size_t size); // 数据接收回调
+typedef void(*_net_send_cb)(task_ctx *task, SOCKET fd, uint64_t skid,
+                            subtype_t pktype, uint8_t client, size_t size);// 数据发送完成回调
+typedef void(*_net_connect_cb)(task_ctx *task, SOCKET fd, uint64_t skid,
+                               subtype_t pktype, int32_t erro);// 连接建立回调
+typedef void(*_net_ssl_exchanged_cb)(task_ctx *task, SOCKET fd, uint64_t skid,
+                                     subtype_t pktype, uint8_t client);// SSL 交换完成回调
+typedef void(*_net_handshake_cb)(task_ctx *task, SOCKET fd, uint64_t skid,
+                                 subtype_t pktype, uint8_t client, int32_t erro, void *data, size_t lens);// 应用层握手完成回调
+typedef void(*_net_close_cb)(task_ctx *task, SOCKET fd, uint64_t skid,
+                             subtype_t pktype, uint8_t client);// 连接关闭回调
+typedef void(*_net_recvfrom_cb)(task_ctx *task, SOCKET fd, uint64_t skid,
+                                char ip[IP_LENS], uint16_t port, void *data, size_t size);// UDP 数据接收回调
 // 任务间传递的消息体
 struct message_ctx {
-    uint8_t mtype;  // 消息类型（msg_type）
-    uint8_t pktype; // 数据包解包类型（pack_type）
     uint8_t slice;  // 分片类型（slice_type）
     uint8_t client; // 1 表示客户端连接，0 表示服务端连接
+    subtype_t subtype; // 数据包解包类型（pack_type）或 请求类型（request_type）
+    msg_type mtype;  // 消息类型
     int32_t erro;   // 错误码
     SOCKET fd;      // socket 句柄
     size_t size;    // 数据长度

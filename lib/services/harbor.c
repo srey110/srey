@@ -175,7 +175,7 @@ static void _harbor_call(router_req *ctx) {
     const char *tp = router_req_query(ctx, "type", &tn);
     void *body = http_data(ctx->pack, &blen);
     name_t dst = (name_t)strtoull(ds, NULL, 10);
-    uint8_t type = (uint8_t)strtoul(tp, NULL, 10);
+    subtype_t type = (subtype_t)strtoul(tp, NULL, 10);
     task_ctx *to = task_grab(ctx->task->loader, dst);
     if (NULL == to) {
         _harbor_respond(ctx, 404, NULL, 0);
@@ -194,7 +194,7 @@ static void _harbor_request(router_req *ctx) {
     const char *tp = router_req_query(ctx, "type", &tn);
     void *body = http_data(ctx->pack, &blen);
     name_t dst = (name_t)strtoull(ds, NULL, 10);
-    uint8_t type = (uint8_t)strtoul(tp, NULL, 10);
+    subtype_t type = (subtype_t)strtoul(tp, NULL, 10);
     task_ctx *to = task_grab(ctx->task->loader, dst);
     if (NULL == to) {
         _harbor_respond(ctx, 404, NULL, 0);
@@ -211,7 +211,7 @@ static void _harbor_request(router_req *ctx) {
     }
 }
 // HTTP 接收回调：完整请求到达后交 router 派发（签名/参数校验在 group 中间件，转发在 handler）
-static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype,
+static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, subtype_t pktype,
     uint8_t client, uint8_t slice, void *data, size_t size) {
     (void)pktype;
     (void)client;
@@ -341,7 +341,7 @@ static int32_t _harbor_sign(binary_ctx *bwriter, const char *key, const char *ur
     secure_zero(nonce_hex, sizeof(nonce_hex));
     return ERR_OK;
 }
-void *harbor_pack(name_t task, int32_t call, uint8_t reqtype, const char *key, void *data, size_t size, size_t *lens) {
+void *harbor_pack(name_t task, int32_t call, subtype_t reqtype, const char *key, void *data, size_t size, size_t *lens) {
     char url[512];
     if (0 != call) {
         SNPRINTF(url, sizeof(url), "/call?dst=%"PRIu64"&type=%u", task, reqtype);

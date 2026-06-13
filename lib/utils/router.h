@@ -47,7 +47,7 @@
 //       router_req_text(ctx, 200, id, n);
 //   }
 //   static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid,
-//                         uint8_t pktype, uint8_t client, uint8_t slice,
+//                         subtype_t pktype, uint8_t client, uint8_t slice,
 //                         void *data, size_t size) {
 //       if (0 != slice) { return; }
 //       router_dispatch(g_router, task, fd, skid, (struct http_pack_ctx *)data);

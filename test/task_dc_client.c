@@ -24,8 +24,9 @@ static void _multi_waiter(task_ctx *task, void *arg) {
 // F-DC-2 幽灵响应捕获器:coro_dc_* 的响应由 coro_sess 匹配后直接 resume 协程,不经此回调;
 // 只有 coro_sess 已不存在的迟到响应(陈旧 waiter 被唤醒)才进这里,故计数即"幽灵"次数
 static atomic_t _ghost_resp;
-static void _on_ghost_response(task_ctx *task, uint64_t sess, int32_t error, void *data, size_t size) {
+static void _on_ghost_response(task_ctx *task, subtype_t reqtype, uint64_t sess, int32_t error, void *data, size_t size) {
     (void)task;
+    (void)reqtype;
     (void)sess;
     (void)error;
     (void)data;

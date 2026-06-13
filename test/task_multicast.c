@@ -18,7 +18,7 @@ static atomic_t _broadcast_sent;
 
 // accept 端回调：累积 server-side fd 到数组,等满 N 个由主协程统一广播。
 // 注意 ATOMIC_ADD 是 fetch_and_add 返回旧值,首次返回 0 即为本次写入的 idx
-static void _net_accept(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype) {
+static void _net_accept(task_ctx *task, SOCKET fd, uint64_t skid, subtype_t pktype) {
     (void)task; (void)pktype;
     int32_t idx = (int32_t)ATOMIC_ADD(&_accepted_count, 1);
     if (idx < N_CLIENTS) {
@@ -28,7 +28,7 @@ static void _net_accept(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype
 }
 
 // 任意 fd 收到数据回调：client=1 时是 outgoing 连接收到 server 广播,验证内容并计数
-static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, uint8_t client,
+static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, subtype_t pktype, uint8_t client,
                       uint8_t slice, void *data, size_t size) {
     (void)task; (void)fd; (void)skid; (void)pktype; (void)slice;
     // client 字段含 STATUS_CLIENT (0x08) 标志位,非 0 即 outgoing 连接(收到 server 广播)

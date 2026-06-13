@@ -28,7 +28,7 @@ static void _debug_resp(task_ctx *task, name_t src, uint64_t sess, const char *t
     if (NULL == dtask) {
         return;
     }
-    task_response(dtask, sess, ERR_OK, (void *)text, len, 1);
+    task_response(dtask, REQ_DEBUG, sess, ERR_OK, (void *)text, len, 1);
     task_ungrab(dtask);
 }
 // stat：拼各 mtype 的 nmsg / dispatch_cpu_ns / avg，格式与 Lua 端 stat 命令一致

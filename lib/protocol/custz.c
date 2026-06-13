@@ -2,7 +2,7 @@
 #include "protocol/custz_head.h"
 #include "protocol/prots.h"
 
-void *custz_unpack(uint8_t pktype, buffer_ctx *buf, size_t *size, int32_t *status) {
+void *custz_unpack(pack_type pktype, buffer_ctx *buf, size_t *size, int32_t *status) {
     size_t hlens;
     int32_t rtn = ERR_FAILED;
     // 根据包类型调用对应的头部解码函数
@@ -47,7 +47,7 @@ void *custz_unpack(uint8_t pktype, buffer_ctx *buf, size_t *size, int32_t *statu
     ASSERTAB(pklens == buffer_drain(buf, pklens), "drain buffer error.");
     return msg;
 }
-void *custz_pack(uint8_t pktype, void *data, size_t lens, size_t *size) {
+void *custz_pack(pack_type pktype, void *data, size_t lens, size_t *size) {
     size_t hlens;
     char *pack = NULL;
     // 根据包类型调用对应的头部编码函数，分配头部+数据体的连续内存

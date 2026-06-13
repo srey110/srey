@@ -144,7 +144,7 @@ static void _mw_g2(router_req *ctx) {
 // server _net_recv: HTTP 完整包到达 (slice == 0) 时分发, 分片态忽略
 // (任务路由不处理 chunked 请求体, 简化假设)
 static void _server_net_recv(task_ctx *task, SOCKET fd, uint64_t skid,
-                             uint8_t pktype, uint8_t client, uint8_t slice,
+                             subtype_t pktype, uint8_t client, uint8_t slice,
                              void *data, size_t size) {
     (void)pktype; (void)client; (void)size;
     if (0 != slice) {

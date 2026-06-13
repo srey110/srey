@@ -33,7 +33,7 @@ static int32_t _lcore_timeout(lua_State *lua) {
 static int32_t _lcore_call(lua_State *lua) {
     LUACHECK_LUDATA(lua, 1);
     task_ctx *dst = (task_ctx *)lua_touserdata(lua, 1);
-    uint8_t reqtype = (uint8_t)luaL_checkinteger(lua, 2);
+    subtype_t reqtype = (subtype_t)luaL_checkinteger(lua, 2);
     void *data;
     size_t size;
     int32_t copy;
@@ -72,7 +72,7 @@ static task_ctx **_parse_multi_dsts(lua_State *lua, int32_t idx, int32_t *n_out)
 /// <param name="copy" type="integer?">是否复制数据,默认 1（复制）;0 时直接转移所有权</param>
 /// <returns type="integer">实际成功投递的 dst 数（非 NULL 元素个数,0 表示全部跳过未投递）</returns>
 static int32_t _lcore_multi_request(lua_State *lua) {
-    uint8_t reqtype = (uint8_t)luaL_checkinteger(lua, 2);
+    subtype_t reqtype = (subtype_t)luaL_checkinteger(lua, 2);
     uint64_t sess = (uint64_t)luaL_checkinteger(lua, 3);
     void *data;
     size_t size;
@@ -102,7 +102,7 @@ static int32_t _lcore_multi_request(lua_State *lua) {
 /// <param name="copy" type="integer?">是否复制数据,默认 1（复制）;0 时直接转移所有权</param>
 /// <returns>无</returns>
 static int32_t _lcore_multi_call(lua_State *lua) {
-    uint8_t reqtype = (uint8_t)luaL_checkinteger(lua, 2);
+    subtype_t reqtype = (subtype_t)luaL_checkinteger(lua, 2);
     void *data;
     size_t size;
     int32_t copy;
@@ -131,7 +131,7 @@ static int32_t _lcore_multi_call(lua_State *lua) {
 static int32_t _lcore_request(lua_State *lua) {
     LUACHECK_LUDATA(lua, 1);
     task_ctx *dst = (task_ctx *)lua_touserdata(lua, 1);
-    uint8_t reqtype = (uint8_t)luaL_checkinteger(lua, 2);
+    subtype_t reqtype = (subtype_t)luaL_checkinteger(lua, 2);
     uint64_t sess = (uint64_t)luaL_checkinteger(lua, 3);
     void *data;
     size_t size;
@@ -145,6 +145,7 @@ static int32_t _lcore_request(lua_State *lua) {
 /// 向请求方 task 回复响应消息，携带错误码及可选数据
 /// </summary>
 /// <param name="dst" type="lightuserdata">请求方 task 指针</param>
+/// <param name="reqtype" type="integer">请求类型 request_type</param>
 /// <param name="sess" type="integer">原请求会话 id</param>
 /// <param name="erro" type="integer">错误码，0 表示成功</param>
 /// <param name="data" type="string|lightuserdata|nil">响应数据；nil 表示无数据</param>
@@ -154,28 +155,29 @@ static int32_t _lcore_request(lua_State *lua) {
 static int32_t _lcore_response(lua_State *lua) {
     LUACHECK_LUDATA(lua, 1);
     task_ctx *dst = (task_ctx *)lua_touserdata(lua, 1);
-    uint64_t sess = (uint64_t)luaL_checkinteger(lua, 2);
-    int32_t erro = (int32_t)luaL_checkinteger(lua, 3);
+    subtype_t reqtype = (subtype_t)luaL_checkinteger(lua, 2);
+    uint64_t sess = (uint64_t)luaL_checkinteger(lua, 3);
+    int32_t erro = (int32_t)luaL_checkinteger(lua, 4);
     void *data;
     size_t size;
     int32_t copy;
-    int32_t type = lua_type(lua, 4);
+    int32_t type = lua_type(lua, 5);
     if (LUA_TNIL == type
         || LUA_TNONE == type) {
         data = NULL;
         size = 0;
         copy = 1;
     } else if (LUA_TSTRING == type) {
-        data = (void *)luaL_checklstring(lua, 4, &size);
+        data = (void *)luaL_checklstring(lua, 5, &size);
         copy = 1;
     } else if (LUA_TLIGHTUSERDATA == type) {
-        data = lua_touserdata(lua, 4);
-        size = (size_t)luaL_checkinteger(lua, 5);
-        copy = COPY_TYPE(lua, 6);
+        data = lua_touserdata(lua, 5);
+        size = (size_t)luaL_checkinteger(lua, 6);
+        copy = COPY_TYPE(lua, 7);
     } else {
-        return luaL_argerror(lua, 4, "nil, string or light userdata expected");
+        return luaL_argerror(lua, 5, "nil, string or light userdata expected");
     }
-    task_response(dst, sess, erro, data, size, copy);
+    task_response(dst, reqtype, sess, erro, data, size, copy);
     return 0;
 }
 /// <summary>
@@ -475,7 +477,7 @@ static int32_t _lcore_close(lua_State *lua) {
 static int32_t _lcore_pack_type(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    pack_type pktype = (pack_type)luaL_checkinteger(lua, 3);
+    subtype_t pktype = (subtype_t)luaL_checkinteger(lua, 3);
     ev_ud_pktype(&g_loader->netev, fd, skid, pktype);
     return 0;
 }

@@ -11,7 +11,7 @@ typedef struct mqtt_client_args {
 }mqtt_client_args;
 
 // TCP 连接建立后发送 CONNECT 包，MQTT 5.0 时携带扩展连接属性和遗嘱属性
-static void _net_connect(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, int32_t erro) {
+static void _net_connect(task_ctx *task, SOCKET fd, uint64_t skid, subtype_t pktype, int32_t erro) {
     (void)pktype;
     mqtt_client_args *arg = coro_get_arg(task);
     if (ERR_OK != erro) {
@@ -61,7 +61,7 @@ static void _send_publish(mqtt_pack_ctx *pack, task_ctx *task, SOCKET fd, uint64
 }
 // 收到服务端数据包，驱动完整的 MQTT 消息流程状态机
 static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid,
-     uint8_t pktype, uint8_t client, uint8_t slice, void *data, size_t size) {
+     subtype_t pktype, uint8_t client, uint8_t slice, void *data, size_t size) {
     (void)pktype;
     (void)client;
     (void)slice;

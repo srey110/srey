@@ -81,7 +81,7 @@ static void _startup(task_ctx *task) {
     *(ctx->ok) = 1;
 }
 // 连接断开：若两封邮件未全部发送完则说明服务端提前关闭连接
-static void _net_close(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, uint8_t client) {
+static void _net_close(task_ctx *task, SOCKET fd, uint64_t skid, subtype_t pktype, uint8_t client) {
     (void)fd;
     (void)skid;
     (void)pktype;

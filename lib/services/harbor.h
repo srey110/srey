@@ -25,6 +25,6 @@ int32_t harbor_start(loader_ctx *loader, const char *tname, const char *ssl, con
 /// <param name="size">数据长度</param>
 /// <param name="lens">请求包长度</param>
 /// <returns>请求包;key 非空但签名生成失败返 NULL 且 *lens=0</returns>
-void *harbor_pack(name_t task, int32_t call, uint8_t reqtype, const char *key, void *data, size_t size, size_t *lens);
+void *harbor_pack(name_t task, int32_t call, subtype_t reqtype, const char *key, void *data, size_t size, size_t *lens);
 
 #endif//HARBOR_H_

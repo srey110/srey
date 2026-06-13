@@ -22,9 +22,9 @@
     lua_pushinteger(lua, size);\
     lua_setfield(lua, -2, "size")
 
-// 向 Lua table 中写入网络公共字段：pktype、fd、skid
+// 向 Lua table 中写入网络公共字段：subtype、fd、skid
 #define LUA_TB_NETPUB(msg)\
-    LUA_TB_NUMBER("pktype", msg->pktype);\
+    LUA_TB_NUMBER("subtype", msg->subtype);\
     LUA_TB_NUMBER("fd", msg->fd);\
     LUA_TB_NUMBER("skid", msg->skid)
 
@@ -281,10 +281,10 @@ static int32_t _msg_clean(lua_State *lua) {
     ASSERTAB(LUA_TTABLE == lua_type(lua, 1), "_msg_clean type error.");
     message_ctx tmp = { 0 };
     lua_getfield(lua, 1, "mtype");
-    tmp.mtype = (uint8_t)lua_tointeger(lua, -1);
+    tmp.mtype = (msg_type)lua_tointeger(lua, -1);
     lua_pop(lua, 1);
-    lua_getfield(lua, 1, "pktype");
-    tmp.pktype = (uint8_t)lua_tointeger(lua, -1);
+    lua_getfield(lua, 1, "subtype");
+    tmp.subtype = (subtype_t)lua_tointeger(lua, -1);
     lua_pop(lua, 1);
     lua_getfield(lua, 1, "data");
     tmp.data = lua_touserdata(lua, -1);
@@ -370,7 +370,7 @@ static void _ltask_pack_msg(lua_State *lua, message_ctx *msg) {
         break;
     }
     case MSG_TYPE_REQUEST:
-        LUA_TB_NUMBER("pktype", msg->pktype);
+        LUA_TB_NUMBER("subtype", msg->subtype);
         LUA_TB_NUMBER("sess", msg->sess);
         LUA_TB_NUMBER("src", msg->src);
         LUA_TB_UD(msg->data, msg->size);
@@ -381,6 +381,7 @@ static void _ltask_pack_msg(lua_State *lua, message_ctx *msg) {
         }
         break;
     case MSG_TYPE_RESPONSE:
+        LUA_TB_NUMBER("subtype", msg->subtype);
         LUA_TB_NUMBER("sess", msg->sess);
         LUA_TB_NUMBER("erro", msg->erro);
         LUA_TB_UD(msg->data, msg->size);

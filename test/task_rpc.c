@@ -7,7 +7,7 @@ static int32_t _add(int32_t a, int32_t b) {
     return a + b;
 }
 // 处理来自 task_timeout 的 RPC 请求，src 为 INVALID_TNAME 时表示 fire-and-forget
-static void _requested(task_ctx *task, uint8_t reqtype, uint64_t sess, name_t src, void *data, size_t size) {
+static void _requested(task_ctx *task, subtype_t reqtype, uint64_t sess, name_t src, void *data, size_t size) {
     switch (reqtype) {
     case 100: {
         // 整数加法：读取两个 int32（网络字节序），返回和（网络字节序）
@@ -20,7 +20,7 @@ static void _requested(task_ctx *task, uint8_t reqtype, uint64_t sess, name_t sr
             task_ctx *resp = task_grab(task->loader, src);
             if (NULL != resp) {
                 int32_t rst = htonl(sum);
-                task_response(resp, sess, ERR_OK, &rst, sizeof(rst), 1);
+                task_response(resp, reqtype, sess, ERR_OK, &rst, sizeof(rst), 1);
                 task_ungrab(resp);
             } else {
                 LOG_WARN("grab task %"PRIu64" error.", src);
@@ -38,7 +38,7 @@ static void _requested(task_ctx *task, uint8_t reqtype, uint64_t sess, name_t sr
         if (INVALID_TNAME != src) {
             task_ctx *resp = task_grab(task->loader, src);
             if (NULL != resp) {
-                task_response(resp, sess, ERR_OK, data, size, 1);
+                task_response(resp, reqtype, sess, ERR_OK, data, size, 1);
                 task_ungrab(resp);
             } else {
                 LOG_WARN("grab task %"PRIu64" error.", src);

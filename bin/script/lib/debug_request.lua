@@ -8,7 +8,7 @@ local task   = require("srey.task")
 local M = {}
 
 local _coro_sess     -- 由 _set_coro_sess 注入的 coro_sess 只读引用（不要写）
-local _response      -- 由 _set_response 注入的响应函数：(dst, sess, erro, data) → void
+local _response      -- 由 _set_response 注入的响应函数：(dst, reqtype, sess, erro, data) → void
 local _mtype_names   -- 由 _set_mtype_names 注入：mtype 整数 → 名字字符串（MSG_TYPE 反转表）
 local _fallback      -- 由 _set_fallback 注入：未知 debug 命令时透传给业务 on_requested：(reqtype,sess,src,data,size) → void
 
@@ -117,7 +117,7 @@ function M._set_coro_sess(corosess)
 end
 
 ---注入响应函数（通常是 srey.response）；仅初始化阶段调用一次
----@param respfunc fun(dst:integer, sess:integer, erro:integer, data:string) 响应回调
+---@param respfunc fun(dst:integer, reqtype:integer, sess:integer, erro:integer, data:string) 响应回调
 function M._set_response(respfunc)
     _response = respfunc
 end
@@ -148,7 +148,7 @@ function M._dispatch(reqtype, sess, src, data, size)
     local ok, cmd, a1, a2 = pcall(seri.unpack, data, size)
     if not ok then
         -- debug 响应一律 ERR_OK，结果(含错误说明)由文本承载；否则 srey.request 对 erro!=OK 吞 data
-        _response(src, sess, ERR_OK, "invalid seri: " .. tostring(cmd))
+        _response(src, reqtype, sess, ERR_OK, "invalid seri: " .. tostring(cmd))
         return
     end
     local result = _debug_handle(cmd, a1, a2)
@@ -157,11 +157,11 @@ function M._dispatch(reqtype, sess, src, data, size)
         if _fallback then
             _fallback(reqtype, sess, src, data, size)
         else
-            _response(src, sess, ERR_OK, "unknown command: " .. tostring(cmd))
+            _response(src, reqtype, sess, ERR_OK, "unknown command: " .. tostring(cmd))
         end
         return
     end
-    _response(src, sess, ERR_OK, result)
+    _response(src, reqtype, sess, ERR_OK, result)
 end
 
 return M

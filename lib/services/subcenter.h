@@ -28,19 +28,6 @@
 //   2. query_retained O(M) 已用 retained_index 直查(已优化),M = retained 总数
 
 // REQ_SC_DELIVER 投递来源(sc_deliver.kind);普通订阅与共享订阅各自独立投递,接收方据此路由
-// 子命令操作码:payload 首字节,跟随特定子命令的剩余字节
-typedef enum sc_op {
-    SC_OP_SUB              = 0x01,  // u16 tlen + topic
-    SC_OP_SUB_SHARED       = 0x02,  // u16 tlen + topic + u16 glen + group
-    SC_OP_UNSUB            = 0x03,  // u16 tlen + topic
-    SC_OP_UNSUB_SHARED     = 0x04,  // u16 tlen + topic + u16 glen + group
-    SC_OP_PUB              = 0x05,  // u16 tlen + topic + u32 plen + payload
-    SC_OP_PUB_RETAINED     = 0x06,  // u16 tlen + topic + u32 plen + payload
-    SC_OP_LIST             = 0x07,  // no body
-    SC_OP_QUERY_RETAINED   = 0x08,  // u16 plen + pattern
-    SC_OP_SET_META         = 0x09,  // u16 mlen + meta
-    SC_OP_RETAINED_LIST    = 0x0A,  // no body
-}sc_op;
 typedef enum sc_deliver_kind {
     SC_DELIVER_NORMAL = 0, // 普通订阅投递
     SC_DELIVER_SHARED = 1  // 共享订阅投递

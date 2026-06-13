@@ -20,7 +20,7 @@ static atomic_t _received_rpc;      // multi_request 路径
 static atomic_t _responded_count;   // publisher 收到的响应数
 
 // subscriber 的 request 回调：REQ_TYPE_CALL 仅计数；REQ_TYPE_RPC 计数后 task_response 回 src
-static void _sub_requested(task_ctx *task, uint8_t reqtype, uint64_t sess, name_t src,
+static void _sub_requested(task_ctx *task, subtype_t reqtype, uint64_t sess, name_t src,
                            void *data, size_t size) {
     if (MSG_LEN != size || 0 != memcmp(data, MSG_BROADCAST, MSG_LEN)) {
         return;
@@ -33,7 +33,7 @@ static void _sub_requested(task_ctx *task, uint8_t reqtype, uint64_t sess, name_
         ATOMIC_ADD(&_received_rpc, 1);
         task_ctx *pub = task_grab(task->loader, src);
         if (NULL != pub) {
-            task_response(pub, sess, ERR_OK, ACK_STR, ACK_LEN, 1);
+            task_response(pub, reqtype, sess, ERR_OK, ACK_STR, ACK_LEN, 1);
             task_ungrab(pub);
         }
     }
@@ -44,8 +44,8 @@ static void _sub_startup(task_ctx *task) {
 }
 
 // publisher 的 _response 回调：在 multi_request 后被调用 N 次（同 sess,各 dst 各自响应）
-static void _pub_response(task_ctx *task, uint64_t sess, int32_t erro, void *data, size_t size) {
-    (void)task; (void)erro;
+static void _pub_response(task_ctx *task, subtype_t reqtype, uint64_t sess, int32_t erro, void *data, size_t size) {
+    (void)task; (void)erro; (void)reqtype;
     if (RPC_SESS == sess && ACK_LEN == size && 0 == memcmp(data, ACK_STR, ACK_LEN)) {
         ATOMIC_ADD(&_responded_count, 1);
     }

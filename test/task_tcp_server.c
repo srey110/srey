@@ -6,7 +6,7 @@ static int32_t _prt = 0;
 static name_t _rpcname = INVALID_TNAME;
 
 // 新连接接入
-static void _net_accept(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype) {
+static void _net_accept(task_ctx *task, SOCKET fd, uint64_t skid, subtype_t pktype) {
     (void)task;
     (void)skid;
     (void)pktype;
@@ -15,7 +15,7 @@ static void _net_accept(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype
     }
 }
 // SSL 握手完成
-static void _net_ssl_exchanged(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, uint8_t client) {
+static void _net_ssl_exchanged(task_ctx *task, SOCKET fd, uint64_t skid, subtype_t pktype, uint8_t client) {
     (void)task;
     (void)skid;
     (void)pktype;
@@ -25,7 +25,7 @@ static void _net_ssl_exchanged(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t
     }
 }
 // 收到数据包，按首字节指令分发处理
-static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, uint8_t client, uint8_t slice, void *data, size_t size) {
+static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, subtype_t pktype, uint8_t client, uint8_t slice, void *data, size_t size) {
     (void)slice;
     binary_ctx reader;
     binary_init(&reader, data, size, 0);
@@ -94,7 +94,7 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, 
     }
 }
 // 数据发送完成
-static void _net_send(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, uint8_t client, size_t size) {
+static void _net_send(task_ctx *task, SOCKET fd, uint64_t skid, subtype_t pktype, uint8_t client, size_t size) {
     (void)task;
     (void)skid;
     (void)pktype;
@@ -104,7 +104,7 @@ static void _net_send(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, 
     }
 }
 // 连接关闭
-static void _net_close(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, uint8_t client) {
+static void _net_close(task_ctx *task, SOCKET fd, uint64_t skid, subtype_t pktype, uint8_t client) {
     (void)task;
     (void)skid;
     (void)pktype;

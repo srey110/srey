@@ -171,13 +171,13 @@ static int _dc_key_to_cstr(const void *src, size_t len, char *dst, size_t dst_ca
     return ERR_OK;
 }
 // 失败响应 helper:统一回 ERR_FAILED 给 src,无数据
-static void _dc_resp_failed(dc_ctx *ctx, name_t src, uint64_t sess) {
+static void _dc_resp_failed(dc_ctx *ctx, name_t src, uint64_t sess, subtype_t reqtype) {
     if (INVALID_TNAME == src) {
         return;
     }
     task_ctx *src_task = task_grab(ctx->loader, src);
     if (NULL != src_task) {
-        task_response(src_task, sess, ERR_FAILED, NULL, 0, 0);
+        task_response(src_task, reqtype, sess, ERR_FAILED, NULL, 0, 0);
         task_ungrab(src_task);
     }
 }
@@ -197,16 +197,16 @@ static int _dc_read_key(binary_ctx *br, char *keybuf, size_t cap) {
 static void _dc_handle_set(dc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *br) {
     char keybuf[DC_KEY_MAX];
     if (ERR_OK != _dc_read_key(br, keybuf, sizeof(keybuf))) {
-        _dc_resp_failed(ctx, src, sess);
+        _dc_resp_failed(ctx, src, sess, REQ_DC_SET);
         return;
     }
     if (br->size - br->offset < 4) {
-        _dc_resp_failed(ctx, src, sess);
+        _dc_resp_failed(ctx, src, sess, REQ_DC_SET);
         return;
     }
     uint32_t vlen = (uint32_t)binary_get_uinteger(br, 4, 0);  // u32 vlen 网络序
     if (br->size - br->offset < (size_t)vlen) {
-        _dc_resp_failed(ctx, src, sess);
+        _dc_resp_failed(ctx, src, sess, REQ_DC_SET);
         return;
     }
     size_t vsize = vlen;
@@ -217,11 +217,11 @@ static void _dc_handle_set(dc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *b
     if (INVALID_TNAME != src) {
         task_ctx *src_task = task_grab(ctx->loader, src);
         if (NULL != src_task) {
-            task_response(src_task, sess, ERR_OK, NULL, 0, 0);
+            task_response(src_task, REQ_DC_SET, sess, ERR_OK, NULL, 0, 0);
             task_ungrab(src_task);
         }
     }
-    // 3. 摘下 pending[key] 并唤醒所有 waiter(waiter 来自其它协程的 wait,有独立 src/sess,不受本请求 src 影响)
+    // 3. 摘下 pending[key] 并唤醒所有 waiter(waiter 全来自 WAIT 挂起,有独立 src/sess,回带 REQ_DC_WAIT)
     dc_waiter *w = _dc_pending_take(ctx, keybuf);
     uint64_t now_ms = (NULL != w) ? timer_cur_ms(&ctx->timer) : 0;
     task_ctx *wt;
@@ -232,7 +232,7 @@ static void _dc_handle_set(dc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *b
         if (now_ms < w->deadline_ms) {
             wt = task_grab(ctx->loader, w->src);
             if (wt) {
-                task_response(wt, w->sess, ERR_OK, val, vsize, 1);  // copy=1
+                task_response(wt, REQ_DC_WAIT, w->sess, ERR_OK, val, vsize, 1);  // copy=1
                 task_ungrab(wt);
             }
         }
@@ -247,7 +247,7 @@ static void _dc_handle_get(dc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *b
     }
     char keybuf[DC_KEY_MAX];
     if (ERR_OK != _dc_read_key(br, keybuf, sizeof(keybuf))) {
-        _dc_resp_failed(ctx, src, sess);
+        _dc_resp_failed(ctx, src, sess, REQ_DC_GET);
         return;
     }
     dc_entry *e = _dc_kv_get(ctx, keybuf);
@@ -255,12 +255,12 @@ static void _dc_handle_get(dc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *b
     if (NULL != src_task) {
         // key 真不存在 → 失败;空值键(存在但 val=NULL)视为有效值仍返 ERR_OK
         if (NULL == e) {
-            task_response(src_task, sess, ERR_FAILED, NULL, 0, 0);
+            task_response(src_task, REQ_DC_GET, sess, ERR_FAILED, NULL, 0, 0);
         } else {
             if (e->val) {
-                task_response(src_task, sess, ERR_OK, e->val, e->size, 1);
+                task_response(src_task, REQ_DC_GET, sess, ERR_OK, e->val, e->size, 1);
             } else {
-                task_response(src_task, sess, ERR_OK, NULL, 0, 0);
+                task_response(src_task, REQ_DC_GET, sess, ERR_OK, NULL, 0, 0);
             }
         }
         task_ungrab(src_task);
@@ -328,7 +328,7 @@ static void _dc_handle_wait(dc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *
     }
     char keybuf[DC_KEY_MAX];
     if (ERR_OK != _dc_read_key(br, keybuf, sizeof(keybuf))) {
-        _dc_resp_failed(ctx, src, sess);
+        _dc_resp_failed(ctx, src, sess, REQ_DC_WAIT);
         return;
     }
     dc_entry *e = _dc_kv_get(ctx, keybuf);
@@ -337,9 +337,9 @@ static void _dc_handle_wait(dc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *
         task_ctx *src_task = task_grab(ctx->loader, src);
         if (NULL != src_task) {
             if (e->val) {
-                task_response(src_task, sess, ERR_OK, e->val, e->size, 1);
+                task_response(src_task, REQ_DC_WAIT, sess, ERR_OK, e->val, e->size, 1);
             } else {
-                task_response(src_task, sess, ERR_OK, NULL, 0, 1);
+                task_response(src_task, REQ_DC_WAIT, sess, ERR_OK, NULL, 0, 1);
             }
             task_ungrab(src_task);
         }
@@ -365,7 +365,7 @@ static void _dc_handle_wait(dc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *
 static void _dc_handle_del(dc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *br) {
     char keybuf[DC_KEY_MAX];
     if (ERR_OK != _dc_read_key(br, keybuf, sizeof(keybuf))) {
-        _dc_resp_failed(ctx, src, sess);
+        _dc_resp_failed(ctx, src, sess, REQ_DC_DEL);
         return;
     }
     _dc_kv_del(ctx, keybuf);  // 不影响 _pending,语义上"撤回真值"
@@ -373,7 +373,7 @@ static void _dc_handle_del(dc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *b
     if (INVALID_TNAME != src) {
         task_ctx *src_task = task_grab(ctx->loader, src);
         if (NULL != src_task) {
-            task_response(src_task, sess, ERR_OK, NULL, 0, 0);
+            task_response(src_task, REQ_DC_DEL, sess, ERR_OK, NULL, 0, 0);
             task_ungrab(src_task);
         }
     }
@@ -400,45 +400,40 @@ static void _dc_handle_list(dc_ctx *ctx, name_t src, uint64_t sess) {
     }
     if (bw.offset > 0) {
         // copy=0 转移所有权,response 投递完成后由 _message_clean → FREE 释放 bw.data
-        task_response(src_task, sess, ERR_OK, bw.data, bw.offset, 0);
+        task_response(src_task, REQ_DC_LIST, sess, ERR_OK, bw.data, bw.offset, 0);
     } else {
-        task_response(src_task, sess, ERR_OK, NULL, 0, 0);
+        task_response(src_task, REQ_DC_LIST, sess, ERR_OK, NULL, 0, 0);
         binary_free(&bw);
     }
     task_ungrab(src_task);
 }
-// 中心 dispatch:reqtype 锁定 REQ_DC,剥 payload 首字节 op 后子分发到 5 个 handler
-static void _dc_requested(task_ctx *task, uint8_t reqtype, uint64_t sess, name_t src,
+// 中心 dispatch:reqtype 直接标识子命令(请求不再带 op 字节),子分发到 5 个 handler
+static void _dc_requested(task_ctx *task, subtype_t reqtype, uint64_t sess, name_t src,
                           void *data, size_t size) {
-    (void)reqtype;
     dc_ctx *ctx = (dc_ctx *)task->arg;
-    // payload 至少 1 字节 op;前置自检避免 binary_get_* 内部 ASSERTAB abort 远端构造的非法包
-    if (size < 1 || NULL == data) {
-        _dc_resp_failed(ctx, src, sess);
-        return;
-    }
     binary_ctx br;
-    binary_init(&br, (char *)data, size, 0);  // 外部托管,只读
-    uint8_t op = binary_get_uint8(&br);
-    switch (op) {
-    case DC_OP_SET:
+    switch (reqtype) {
+    case REQ_DC_SET:
+        binary_init(&br, (char *)data, size, 0);
         _dc_handle_set(ctx, src, sess, &br);
         break;
-    case DC_OP_GET:
+    case REQ_DC_GET:
+        binary_init(&br, (char *)data, size, 0);
         _dc_handle_get(ctx, src, sess, &br);
         break;
-    case DC_OP_WAIT:
+    case REQ_DC_WAIT:
+        binary_init(&br, (char *)data, size, 0);
         _dc_handle_wait(ctx, src, sess, &br);
         break;
-    case DC_OP_DEL:
+    case REQ_DC_DEL:
+        binary_init(&br, (char *)data, size, 0);
         _dc_handle_del(ctx, src, sess, &br);
         break;
-    case DC_OP_LIST:
+    case REQ_DC_LIST:
         _dc_handle_list(ctx, src, sess);
         break;
     default:
-        // 未知 op:回 ERR_FAILED
-        _dc_resp_failed(ctx, src, sess);
+        _dc_resp_failed(ctx, src, sess, reqtype);
         break;
     }
 }
@@ -475,46 +470,37 @@ int32_t dc_start(loader_ctx *loader, const char *name) {
     }
     return ERR_OK;
 }
-// 统一 payload 构造:| u8 op | <子命令字段> |
-//   SET:           u16 keylen(网络序) + key + val(可选)
-//   GET/WAIT/DEL:  key
-//   LIST:          (无 body)
-// 返回 binary 内部 MALLOC 的 buf,所有权转给调用方;调用方 copy=0 传给 task_request,
-// 由 _message_clean → FREE 释放(binary 内部用 MALLOC,与 _message_clean 的 FREE 配对)。
-static char *_dc_pack(dc_op op, const char *key, void *val, size_t vsize, size_t *out_total) {
+// payload 构造(请求不再带 op,reqtype 标识子命令):
+//   SET(_dc_pack_kv):           u16 klen(网络序) + key + u32 vlen(网络序) + val(可选)
+//   GET/WAIT/DEL(_dc_pack_key): u16 klen + key
+//   LIST:                       无 body(helper 直接传 NULL/0)
+// 返回 binary 内部 MALLOC 的 buf,所有权转给调用方;copy=0 传给 task_request,由 _message_clean → FREE 释放。
+static char *_dc_pack_kv(const char *key, void *val, size_t vsize, size_t *out_total) {
     binary_ctx bw;
     binary_init(&bw, NULL, 0, 0);
-    binary_set_uint8(&bw, (uint8_t)op);
-    switch (op) {
-    case DC_OP_SET: {
-        size_t klen = strlen(key);
-        // val=NULL 时强制 vlen=0,避免"vlen 声称 N 但实际不写 val 字节"造成协议不一致
-        size_t real_vsize = (NULL != val) ? vsize : 0;
-        binary_set_uinteger(&bw, (uint64_t)klen, 2, 0);  // u16 klen 网络序
-        binary_set_string(&bw, key, klen);
-        binary_set_uinteger(&bw, (uint64_t)real_vsize, 4, 0);  // u32 vlen 网络序(总写,空 val 也写 0)
-        if (real_vsize > 0) {
-            binary_set_string(&bw, (const char *)val, real_vsize);
-        }
-        break;
-    }
-    case DC_OP_GET:
-    case DC_OP_WAIT:
-    case DC_OP_DEL: {
-        size_t klen = strlen(key);
-        binary_set_uinteger(&bw, (uint64_t)klen, 2, 0);  // u16 klen 网络序
-        binary_set_string(&bw, key, klen);
-        break;
-    }
-    case DC_OP_LIST:
-        // 只写 op,无 body
-        break;
+    size_t klen = strlen(key);
+    // val=NULL 时强制 vlen=0,避免"vlen 声称 N 但实际不写 val 字节"造成协议不一致
+    size_t real_vsize = (NULL != val) ? vsize : 0;
+    binary_set_uinteger(&bw, (uint64_t)klen, 2, 0);  // u16 klen 网络序
+    binary_set_string(&bw, key, klen);
+    binary_set_uinteger(&bw, (uint64_t)real_vsize, 4, 0);  // u32 vlen 网络序(总写,空 val 也写 0)
+    if (real_vsize > 0) {
+        binary_set_string(&bw, (const char *)val, real_vsize);
     }
     *out_total = bw.offset;
     return bw.data;
 }
+static char *_dc_pack_key(const char *key, size_t *out_total) {
+    binary_ctx bw;
+    binary_init(&bw, NULL, 0, 0);
+    size_t klen = strlen(key);
+    binary_set_uinteger(&bw, (uint64_t)klen, 2, 0);  // u16 klen 网络序
+    binary_set_string(&bw, key, klen);
+    *out_total = bw.offset;
+    return bw.data;
+}
 // ── 业务侧 helper:C 端业务通过这些函数调 DataCenter,内部包 coro_request ──
-// 所有 reqtype 统一为 REQ_DC,子命令由 _dc_pack 写入 payload 首字节
+// reqtype 直接标识子命令(REQ_DC_*),请求 payload 不再带 op 字节
 int32_t coro_dc_set(task_ctx *task, name_t dc_name, const char *key, void *val, size_t size) {
     if (EMPTYSTR(key)
         || strlen(key) >= DC_KEY_MAX
@@ -526,10 +512,10 @@ int32_t coro_dc_set(task_ctx *task, name_t dc_name, const char *key, void *val, 
         return ERR_FAILED;
     }
     size_t total;
-    char *buf = _dc_pack(DC_OP_SET, key, val, size, &total);
+    char *buf = _dc_pack_kv(key, val, size, &total);
     int32_t erro = 0;
     size_t rsize = 0;
-    coro_request(dc, task, REQ_DC, buf, total, 0, &erro, &rsize);  // copy=0 转移所有权
+    coro_request(dc, task, REQ_DC_SET, buf, total, 0, &erro, &rsize);  // copy=0 转移所有权
     task_ungrab(dc);
     return erro;
 }
@@ -547,8 +533,8 @@ void *coro_dc_get(task_ctx *task, name_t dc_name, const char *key,
         return NULL;
     }
     size_t total;
-    char *buf = _dc_pack(DC_OP_GET, key, NULL, 0, &total);
-    void *resp = coro_request(dc, task, REQ_DC, buf, total, 0, erro, size);  // copy=0 转移所有权
+    char *buf = _dc_pack_key(key, &total);
+    void *resp = coro_request(dc, task, REQ_DC_GET, buf, total, 0, erro, size);  // copy=0 转移所有权
     task_ungrab(dc);
     if (ERR_OK != *erro) {
         SET_PTR(size, 0);
@@ -570,8 +556,8 @@ void *coro_dc_wait(task_ctx *task, name_t dc_name, const char *key,
         return NULL;
     }
     size_t total;
-    char *buf = _dc_pack(DC_OP_WAIT, key, NULL, 0, &total);
-    void *resp = coro_request(dc, task, REQ_DC, buf, total, 0, erro, size);  // copy=0 转移所有权
+    char *buf = _dc_pack_key(key, &total);
+    void *resp = coro_request(dc, task, REQ_DC_WAIT, buf, total, 0, erro, size);  // copy=0 转移所有权
     task_ungrab(dc);
     if (ERR_OK != *erro) {
         SET_PTR(size, 0);
@@ -588,10 +574,10 @@ int32_t coro_dc_del(task_ctx *task, name_t dc_name, const char *key) {
         return ERR_FAILED;
     }
     size_t total;
-    char *buf = _dc_pack(DC_OP_DEL, key, NULL, 0, &total);
+    char *buf = _dc_pack_key(key, &total);
     int32_t erro = 0;
     size_t rsize = 0;
-    coro_request(dc, task, REQ_DC, buf, total, 0, &erro, &rsize);  // copy=0 转移所有权
+    coro_request(dc, task, REQ_DC_DEL, buf, total, 0, &erro, &rsize);  // copy=0 转移所有权
     task_ungrab(dc);
     return erro;
 }
@@ -603,9 +589,7 @@ void *coro_dc_keys(task_ctx *task, name_t dc_name,
         *erro = ERR_FAILED;
         return NULL;
     }
-    size_t total;
-    char *buf = _dc_pack(DC_OP_LIST, NULL, NULL, 0, &total);
-    void *resp = coro_request(dc, task, REQ_DC, buf, total, 0, erro, size);  // copy=0 转移所有权
+    void *resp = coro_request(dc, task, REQ_DC_LIST, NULL, 0, 0, erro, size);  // LIST 无 body,copy=0
     task_ungrab(dc);
     if (ERR_OK != *erro) {
         SET_PTR(size, 0);
@@ -614,7 +598,7 @@ void *coro_dc_keys(task_ctx *task, name_t dc_name,
     return resp;
 }
 // ── 无协程版本:直接 task_request 不挂起;sess=0 走 fire-and-forget(src=NULL),sess!=0 业务自管响应配对 ──
-// 所有 reqtype 统一为 REQ_DC,子命令由 _dc_pack 写入 payload 首字节;copy=0 转移所有权
+// reqtype 直接标识子命令(REQ_DC_*),请求 payload 不再带 op 字节;copy=0 转移所有权
 int32_t dc_set(task_ctx *task, name_t dc_name, uint64_t sess, const char *key, void *val, size_t size) {
     if (EMPTYSTR(key)
         || strlen(key) >= DC_KEY_MAX
@@ -626,11 +610,11 @@ int32_t dc_set(task_ctx *task, name_t dc_name, uint64_t sess, const char *key, v
         return ERR_FAILED;
     }
     size_t total;
-    char *buf = _dc_pack(DC_OP_SET, key, val, size, &total);
+    char *buf = _dc_pack_kv(key, val, size, &total);
     if (0 == sess) {
-        task_call(dc, REQ_DC, buf, total, 0);
+        task_call(dc, REQ_DC_SET, buf, total, 0);
     } else {
-        task_request(dc, task, REQ_DC, sess, buf, total, 0);
+        task_request(dc, task, REQ_DC_SET, sess, buf, total, 0);
     }
     task_ungrab(dc);
     return ERR_OK;
@@ -644,11 +628,11 @@ int32_t dc_del(task_ctx *task, name_t dc_name, uint64_t sess, const char *key) {
         return ERR_FAILED;
     }
     size_t total;
-    char *buf = _dc_pack(DC_OP_DEL, key, NULL, 0, &total);
+    char *buf = _dc_pack_key(key, &total);
     if (0 == sess) {
-        task_call(dc, REQ_DC, buf, total, 0);
+        task_call(dc, REQ_DC_DEL, buf, total, 0);
     } else {
-        task_request(dc, task, REQ_DC, sess, buf, total, 0);
+        task_request(dc, task, REQ_DC_DEL, sess, buf, total, 0);
     }
     task_ungrab(dc);
     return ERR_OK;
@@ -664,8 +648,8 @@ int32_t dc_get(task_ctx *task, name_t dc_name, uint64_t sess, const char *key) {
         return ERR_FAILED;
     }
     size_t total;
-    char *buf = _dc_pack(DC_OP_GET, key, NULL, 0, &total);
-    task_request(dc, task, REQ_DC, sess, buf, total, 0);
+    char *buf = _dc_pack_key(key, &total);
+    task_request(dc, task, REQ_DC_GET, sess, buf, total, 0);
     task_ungrab(dc);
     return ERR_OK;
 }
@@ -680,8 +664,8 @@ int32_t dc_wait(task_ctx *task, name_t dc_name, uint64_t sess, const char *key) 
         return ERR_FAILED;
     }
     size_t total;
-    char *buf = _dc_pack(DC_OP_WAIT, key, NULL, 0, &total);
-    task_request(dc, task, REQ_DC, sess, buf, total, 0);
+    char *buf = _dc_pack_key(key, &total);
+    task_request(dc, task, REQ_DC_WAIT, sess, buf, total, 0);
     task_ungrab(dc);
     return ERR_OK;
 }
@@ -693,9 +677,7 @@ int32_t dc_keys(task_ctx *task, name_t dc_name, uint64_t sess) {
     if (NULL == dc) {
         return ERR_FAILED;
     }
-    size_t total;
-    char *buf = _dc_pack(DC_OP_LIST, NULL, NULL, 0, &total);
-    task_request(dc, task, REQ_DC, sess, buf, total, 0);
+    task_request(dc, task, REQ_DC_LIST, sess, NULL, 0, 0);
     task_ungrab(dc);
     return ERR_OK;
 }

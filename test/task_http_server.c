@@ -6,7 +6,7 @@ static int32_t _prt = 0;
 // 收到数据包：
 //   分片（chunked）请求 - 收齐完整请求（PROT_SLICE_END）后回复三帧 chunked 响应
 //   普通请求 - POST 回显请求体，其他返回 "ok"
-static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype, uint8_t client, uint8_t slice, void *data, size_t size) {
+static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, subtype_t pktype, uint8_t client, uint8_t slice, void *data, size_t size) {
     (void)pktype;
     (void)client;
     (void)size;

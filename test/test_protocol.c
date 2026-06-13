@@ -1203,7 +1203,7 @@ static void test_url_parse_edges(CuTest *tc) {
  * Custz —— 三种打包格式往返验证
  * ======================================================================= */
 
-static void _custz_roundtrip(CuTest *tc, uint8_t pktype,
+static void _custz_roundtrip(CuTest *tc, pack_type pktype,
                              const char *payload, size_t plen) {
     /* 组包：header + payload */
     size_t pksize = 0;
@@ -2291,7 +2291,7 @@ static void test_prots_udfree_default(CuTest *tc) {
     for (size_t i = 0; i < sizeof(defaults) / sizeof(defaults[0]); i++) {
         ud_cxt ud;
         ZERO(&ud, sizeof(ud));
-        ud.pktype = (uint8_t)defaults[i];
+        ud.pktype = (subtype_t)defaults[i];
         MALLOC(ud.context, 16);
         prots_udfree(&ud);
         // 释放后 ud.context 仍保留指针值（prots_udfree 不清零），
@@ -2313,7 +2313,7 @@ static void test_prots_closed_default(CuTest *tc) {
     for (size_t i = 0; i < sizeof(defaults) / sizeof(defaults[0]); i++) {
         ud_cxt ud;
         ZERO(&ud, sizeof(ud));
-        ud.pktype = (uint8_t)defaults[i];
+        ud.pktype = (subtype_t)defaults[i];
         // default 分支只 break，应无 side effect、不崩
         prots_closed(&ud);
     }

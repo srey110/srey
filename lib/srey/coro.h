@@ -57,7 +57,7 @@ void coro_sleep(task_ctx *task, uint32_t ms);
 /// <returns>响应数据；仅在当前协程下次 yield（再调任意 coro_* API）前有效，
 ///   下次 resume 时框架自动释放，需要保留请自行拷贝</returns>
 void *coro_request(task_ctx *dst, task_ctx *src,
-                   uint8_t rtype, void *data, size_t size, int32_t copy,
+                   subtype_t rtype, void *data, size_t size, int32_t copy,
                    int32_t *erro, size_t *lens);
 /// <summary>
 /// 切换为SSL链接

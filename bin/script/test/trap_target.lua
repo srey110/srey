@@ -5,7 +5,7 @@
 local srey = require("lib.srey")
 
 srey.startup(function()
-    srey.on_requested(function(_, sess, src, data, size)
+    srey.on_requested(function(reqtype, sess, src, data, size)
         local txt = srey.ud_str(data, size)
         if txt == "spin" then
             -- 纯字节码循环，LUA_MASKCOUNT hook 触发后下一条字节码立即 luaL_error
@@ -14,7 +14,7 @@ srey.startup(function()
                 for i = 1, 1000 do s = s + i end
             end
         elseif txt == "ping" then
-            srey.response(src, sess, 0, "pong")
+            srey.response(src, reqtype, sess, 0, "pong")
         end
     end)
 end)

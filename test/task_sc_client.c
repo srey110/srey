@@ -53,7 +53,7 @@ static void _parse_deliver(void *data, size_t size) {
 }
 
 // task _request 回调:收 REQ_SC_DELIVER 时拆 wire 累计统计
-static void _on_request(task_ctx *task, uint8_t reqtype, uint64_t sess, name_t src,
+static void _on_request(task_ctx *task, subtype_t reqtype, uint64_t sess, name_t src,
                         void *data, size_t size) {
     (void)task;
     (void)sess;

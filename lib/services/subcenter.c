@@ -159,24 +159,24 @@ static void _sc_topic_data_free(void *p) {
     FREE(d);
 }
 // 失败响应:统一回 ERR_FAILED
-static void _sc_resp_failed(sc_ctx *ctx, name_t src, uint64_t sess) {
+static void _sc_resp_failed(sc_ctx *ctx, name_t src, uint64_t sess, subtype_t reqtype) {
     if (INVALID_TNAME == src || 0 == sess) {
         return;
     }
     task_ctx *t = task_grab(ctx->loader, src);
     if (NULL != t) {
-        task_response(t, sess, ERR_FAILED, NULL, 0, 0);
+        task_response(t, reqtype, sess, ERR_FAILED, NULL, 0, 0);
         task_ungrab(t);
     }
 }
 // 成功响应
-static void _sc_resp_ok(sc_ctx *ctx, name_t src, uint64_t sess) {
+static void _sc_resp_ok(sc_ctx *ctx, name_t src, uint64_t sess, subtype_t reqtype) {
     if (INVALID_TNAME == src || 0 == sess) {
         return;
     }
     task_ctx *t = task_grab(ctx->loader, src);
     if (NULL != t) {
-        task_response(t, sess, ERR_OK, NULL, 0, 0);
+        task_response(t, reqtype, sess, ERR_OK, NULL, 0, 0);
         task_ungrab(t);
     }
 }
@@ -373,15 +373,16 @@ static int32_t _sc_normal_subs_remove(array_ctx *subs, name_t src) {
 // handler:SUB(shared=0)/ SUB_SHARED(shared=1)。shared 时多解析 group;
 // 路径含通配由 path_get_or_create 内部 WILDCARD 校验拒绝
 static void _sc_handle_sub(sc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *br, int32_t shared) {
+    subtype_t reqtype = shared ? REQ_SC_SUB_SHARED : REQ_SC_SUB;
     char topic[SC_TOPIC_MAX + 1];
     if (ERR_OK != _sc_read_cstr_max(br, topic, sizeof(topic), SC_TOPIC_MAX)) {
-        _sc_resp_failed(ctx, src, sess);
+        _sc_resp_failed(ctx, src, sess, reqtype);
         return;
     }
     char group[SC_GROUP_MAX + 1];
     if (shared) {
         if (ERR_OK != _sc_read_cstr_max(br, group, sizeof(group), SC_GROUP_MAX)) {
-            _sc_resp_failed(ctx, src, sess);
+            _sc_resp_failed(ctx, src, sess, reqtype);
             return;
         }
     }
@@ -392,7 +393,7 @@ static void _sc_handle_sub(sc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *b
         d = _sc_alloc_topic_data(topic);
         if (ERR_OK != path_insert(ctx->topics, topic, d)) {
             _sc_topic_data_free(d);
-            _sc_resp_failed(ctx, src, sess);
+            _sc_resp_failed(ctx, src, sess, reqtype);
             return;
         }
     }
@@ -402,7 +403,7 @@ static void _sc_handle_sub(sc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *b
                                                            sizeof(sc_shared_group), 4, 0, 0,
                                                            _sc_sg_hash, _sc_sg_cmp, _sc_sg_free, NULL);
             if (NULL == d->shared_groups) {
-                _sc_resp_failed(ctx, src, sess);
+                _sc_resp_failed(ctx, src, sess, reqtype);
                 return;
             }
         }
@@ -420,7 +421,7 @@ static void _sc_handle_sub(sc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *b
             if (hashmap_oom(d->shared_groups)) {
                 FREE(ng.group);
                 array_free(&ng.members);
-                _sc_resp_failed(ctx, src, sess);
+                _sc_resp_failed(ctx, src, sess, reqtype);
                 return;
             }
             g = (sc_shared_group *)hashmap_get(d->shared_groups, &qg);
@@ -435,7 +436,7 @@ static void _sc_handle_sub(sc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *b
             LOG_WARN("subcenter topic '%s' has %u subscribers", topic, d->normal_subs.size);
         }
     }
-    _sc_resp_ok(ctx, src, sess);
+    _sc_resp_ok(ctx, src, sess, reqtype);
 }
 // 节点回收检查:若节点完全空(无普通订阅、无共享组),从 trie 移除
 static void _sc_try_remove_empty_topic(sc_ctx *ctx, const char *topic, sc_topic_data *d) {
@@ -453,26 +454,27 @@ static void _sc_try_remove_empty_topic(sc_ctx *ctx, const char *topic, sc_topic_
 // handler:UNSUB(shared=0)/ UNSUB_SHARED(shared=1)。未订阅过的 topic 幂等返 OK;
 // 节点完全空(无 normal_subs、无 shared_groups)时从 trie 移除
 static void _sc_handle_unsub(sc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *br, int32_t shared) {
+    subtype_t reqtype = shared ? REQ_SC_UNSUB_SHARED : REQ_SC_UNSUB;
     char topic[SC_TOPIC_MAX + 1];
     if (ERR_OK != _sc_read_cstr_max(br, topic, sizeof(topic), SC_TOPIC_MAX)) {
-        _sc_resp_failed(ctx, src, sess);
+        _sc_resp_failed(ctx, src, sess, reqtype);
         return;
     }
     char group[SC_GROUP_MAX + 1];
     if (shared) {
         if (ERR_OK != _sc_read_cstr_max(br, group, sizeof(group), SC_GROUP_MAX)) {
-            _sc_resp_failed(ctx, src, sess);
+            _sc_resp_failed(ctx, src, sess, reqtype);
             return;
         }
     }
     sc_topic_data *d = (sc_topic_data *)path_get(ctx->topics, topic);
     if (NULL == d) {
-        _sc_resp_ok(ctx, src, sess);    // 幂等
+        _sc_resp_ok(ctx, src, sess, reqtype);    // 幂等
         return;
     }
     if (shared) {
         if (NULL == d->shared_groups) {
-            _sc_resp_ok(ctx, src, sess);
+            _sc_resp_ok(ctx, src, sess, reqtype);
             return;
         }
         sc_shared_group qg;
@@ -499,7 +501,7 @@ static void _sc_handle_unsub(sc_ctx *ctx, name_t src, uint64_t sess, binary_ctx 
         (void)_sc_normal_subs_remove(&d->normal_subs, src);
     }
     _sc_try_remove_empty_topic(ctx, topic, d);
-    _sc_resp_ok(ctx, src, sess);
+    _sc_resp_ok(ctx, src, sess, reqtype);
 }
 // 更新 retained_index 槽位(publish_retained 第一步,独立于普通 deliver 路径)。
 // plen=0 → 删除条目;否则 MALLOC + memcpy + 取 publisher 当前 meta 做快照存进 entry
@@ -780,24 +782,25 @@ static void _sc_publish_deliver(sc_ctx *ctx, name_t src, const char *topic,
 // retained 路径:先 _sc_update_retained 更新槽位;plen=0 时清空后直接返,不 deliver。
 // deliver 路径:_sc_publish_deliver 收集订阅者 + task_multi_call 投递
 static void _sc_handle_pub(sc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *br, int32_t retained) {
+    subtype_t reqtype = retained ? REQ_SC_PUB_RETAINED : REQ_SC_PUB;
     char topic[SC_TOPIC_MAX + 1];
     if (ERR_OK != _sc_read_cstr_max(br, topic, sizeof(topic), SC_TOPIC_MAX)) {
-        _sc_resp_failed(ctx, src, sess);
+        _sc_resp_failed(ctx, src, sess, reqtype);
         return;
     }
     // publish/publish_retained topic 必须精确,拒绝含通配的 topic
     // (否则 retained 槽位可写但永远不会被 deliver,徒留垃圾)
     if (ERR_OK != path_validate(ctx->rules, topic, PATH_KIND_LITERAL)) {
-        _sc_resp_failed(ctx, src, sess);
+        _sc_resp_failed(ctx, src, sess, reqtype);
         return;
     }
     if (br->size - br->offset < 4) {
-        _sc_resp_failed(ctx, src, sess);
+        _sc_resp_failed(ctx, src, sess, reqtype);
         return;
     }
     uint32_t plen = (uint32_t)binary_get_uinteger(br, 4, 0);
     if (br->size - br->offset < (size_t)plen) {
-        _sc_resp_failed(ctx, src, sess);
+        _sc_resp_failed(ctx, src, sess, reqtype);
         return;
     }
     const void *payload = (plen > 0) ? binary_get_string(br, plen) : NULL;
@@ -805,18 +808,18 @@ static void _sc_handle_pub(sc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *b
         // 超长 retained 按头文件契约拒绝：返 ERR_FAILED、不 deliver 不存储，避免静默数据丢失
         if (plen > SC_RETAINED_MAX_SIZE) {
             LOG_WARN("subcenter retained too large: topic=%s size=%u", topic, plen);
-            _sc_resp_failed(ctx, src, sess);
+            _sc_resp_failed(ctx, src, sess, reqtype);
             return;
         }
         _sc_update_retained(ctx, src, topic, payload, plen);
         if (0 == plen) {
             // 清空 retained 后不 deliver
-            _sc_resp_ok(ctx, src, sess);
+            _sc_resp_ok(ctx, src, sess, reqtype);
             return;
         }
     }
     _sc_publish_deliver(ctx, src, topic, payload, plen);
-    _sc_resp_ok(ctx, src, sess);
+    _sc_resp_ok(ctx, src, sess, reqtype);
 }
 // handler:SET_META。mlen=0 删除 publisher_meta 条目(等价"清除");
 // 否则 MALLOC + memcpy 覆盖现有 entry,或新建条目入 hashmap
@@ -824,7 +827,7 @@ static void _sc_handle_set_meta(sc_ctx *ctx, name_t src, uint64_t sess, binary_c
     const char *meta;
     uint16_t mlen;
     if (ERR_OK != _sc_read_lp16_max(br, &meta, &mlen, SC_META_MAX_SIZE)) {
-        _sc_resp_failed(ctx, src, sess);
+        _sc_resp_failed(ctx, src, sess, REQ_SC_SET_META);
         return;
     }
     sc_publisher_meta q;
@@ -835,7 +838,7 @@ static void _sc_handle_set_meta(sc_ctx *ctx, name_t src, uint64_t sess, binary_c
         if (NULL != removed) {
             _sc_pm_free(removed);
         }
-        _sc_resp_ok(ctx, src, sess);
+        _sc_resp_ok(ctx, src, sess, REQ_SC_SET_META);
         return;
     }
     sc_publisher_meta *e = (sc_publisher_meta *)hashmap_get(ctx->publisher_meta, &q);
@@ -853,11 +856,11 @@ static void _sc_handle_set_meta(sc_ctx *ctx, name_t src, uint64_t sess, binary_c
         hashmap_set(ctx->publisher_meta, &ne);
         if (hashmap_oom(ctx->publisher_meta)) {
             FREE(ne.meta);
-            _sc_resp_failed(ctx, src, sess);
+            _sc_resp_failed(ctx, src, sess, REQ_SC_SET_META);
             return;
         }
     }
-    _sc_resp_ok(ctx, src, sess);
+    _sc_resp_ok(ctx, src, sess, REQ_SC_SET_META);
 }
 // hashmap_iter 回调(retained_index):对匹配 pattern 的每条 retained 写入 wire buf,
 // 达到 SC_QUERY_RETAINED_BURST_MAX 后 truncated=1 + 返 false 终止 scan
@@ -891,11 +894,11 @@ static bool _sc_qr_iter(const void *item, void *udata) {
 static void _sc_handle_query_retained(sc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *br) {
     char pattern[SC_TOPIC_MAX + 1];
     if (ERR_OK != _sc_read_cstr_max(br, pattern, sizeof(pattern), SC_TOPIC_MAX)) {
-        _sc_resp_failed(ctx, src, sess);
+        _sc_resp_failed(ctx, src, sess, REQ_SC_QUERY_RETAINED);
         return;
     }
     if (ERR_OK != path_validate(ctx->rules, pattern, PATH_KIND_WILDCARD)) {
-        _sc_resp_failed(ctx, src, sess);
+        _sc_resp_failed(ctx, src, sess, REQ_SC_QUERY_RETAINED);
         return;
     }
     if (INVALID_TNAME == src || 0 == sess) {
@@ -919,9 +922,9 @@ static void _sc_handle_query_retained(sc_ctx *ctx, name_t src, uint64_t sess, bi
         return;
     }
     if (bw.offset > 0) {
-        task_response(t, sess, ERR_OK, bw.data, bw.offset, 0);
+        task_response(t, REQ_SC_QUERY_RETAINED, sess, ERR_OK, bw.data, bw.offset, 0);
     } else {
-        task_response(t, sess, ERR_OK, NULL, 0, 0);
+        task_response(t, REQ_SC_QUERY_RETAINED, sess, ERR_OK, NULL, 0, 0);
         binary_free(&bw);
     }
     task_ungrab(t);
@@ -950,9 +953,9 @@ static void _sc_handle_list(sc_ctx *ctx, name_t src, uint64_t sess) {
         return;
     }
     if (bw.offset > 0) {
-        task_response(t, sess, ERR_OK, bw.data, bw.offset, 0);
+        task_response(t, REQ_SC_LIST, sess, ERR_OK, bw.data, bw.offset, 0);
     } else {
-        task_response(t, sess, ERR_OK, NULL, 0, 0);
+        task_response(t, REQ_SC_LIST, sess, ERR_OK, NULL, 0, 0);
         binary_free(&bw);
     }
     task_ungrab(t);
@@ -984,61 +987,62 @@ static void _sc_handle_retained_list(sc_ctx *ctx, name_t src, uint64_t sess) {
         return;
     }
     if (bw.offset > 0) {
-        task_response(t, sess, ERR_OK, bw.data, bw.offset, 0);
+        task_response(t, REQ_SC_RETAINED_LIST, sess, ERR_OK, bw.data, bw.offset, 0);
     } else {
-        task_response(t, sess, ERR_OK, NULL, 0, 0);
+        task_response(t, REQ_SC_RETAINED_LIST, sess, ERR_OK, NULL, 0, 0);
         binary_free(&bw);
     }
     task_ungrab(t);
 }
-// 中心 dispatch:reqtype 锁定 REQ_SC,剥 payload 首字节 op 后子分发到 10 个 handler
-static void _sc_requested(task_ctx *task, uint8_t reqtype, uint64_t sess, name_t src,
+// 中心 dispatch:reqtype 直接标识子命令(请求不再带 op 字节),子分发到 10 个 handler
+static void _sc_requested(task_ctx *task, subtype_t reqtype, uint64_t sess, name_t src,
                           void *data, size_t size) {
-    (void)reqtype;
     sc_ctx *ctx = (sc_ctx *)task->arg;
     if (INVALID_TNAME == src) {
         return;
     }
-    if (size < 1 || NULL == data) {
-        _sc_resp_failed(ctx, src, sess);
-        return;
-    }
     binary_ctx br;
-    binary_init(&br, (char *)data, size, 0);
-    uint8_t op = binary_get_uint8(&br);
-    switch (op) {
-    case SC_OP_SUB:
+    switch (reqtype) {
+    case REQ_SC_SUB:
+        binary_init(&br, (char *)data, size, 0);
         _sc_handle_sub(ctx, src, sess, &br, 0);
         break;
-    case SC_OP_SUB_SHARED:
+    case REQ_SC_SUB_SHARED:
+        binary_init(&br, (char *)data, size, 0);
         _sc_handle_sub(ctx, src, sess, &br, 1);
         break;
-    case SC_OP_UNSUB:
+    case REQ_SC_UNSUB:
+        binary_init(&br, (char *)data, size, 0);
         _sc_handle_unsub(ctx, src, sess, &br, 0);
         break;
-    case SC_OP_UNSUB_SHARED:
+    case REQ_SC_UNSUB_SHARED:
+        binary_init(&br, (char *)data, size, 0);
         _sc_handle_unsub(ctx, src, sess, &br, 1);
         break;
-    case SC_OP_PUB:
+    case REQ_SC_PUB:
+        binary_init(&br, (char *)data, size, 0);
         _sc_handle_pub(ctx, src, sess, &br, 0);
         break;
-    case SC_OP_PUB_RETAINED:
+    case REQ_SC_PUB_RETAINED:
+        binary_init(&br, (char *)data, size, 0);
         _sc_handle_pub(ctx, src, sess, &br, 1);
         break;
-    case SC_OP_LIST:
+    case REQ_SC_LIST:
         _sc_handle_list(ctx, src, sess);
         break;
-    case SC_OP_QUERY_RETAINED:
+    case REQ_SC_QUERY_RETAINED:
+        binary_init(&br, (char *)data, size, 0);
         _sc_handle_query_retained(ctx, src, sess, &br);
         break;
-    case SC_OP_SET_META:
+    case REQ_SC_SET_META:
+        binary_init(&br, (char *)data, size, 0);
         _sc_handle_set_meta(ctx, src, sess, &br);
         break;
-    case SC_OP_RETAINED_LIST:
+    case REQ_SC_RETAINED_LIST:
         _sc_handle_retained_list(ctx, src, sess);
         break;
     default:
-        _sc_resp_failed(ctx, src, sess);
+        _sc_resp_failed(ctx, src, sess, reqtype);
         break;
     }
 }
@@ -1099,22 +1103,20 @@ int32_t sc_start(loader_ctx *loader, const char *name, const path_rules *rules) 
     }
     return ERR_OK;
 }
-// SUB/UNSUB/QUERY_RETAINED:| u8 op | u16 tlen | topic |
-static char *_sc_pack_topic(sc_op op, const char *topic, size_t *out_total) {
+// SUB/UNSUB/QUERY_RETAINED body(不带 op): u16 tlen | topic
+static char *_sc_pack_topic(const char *topic, size_t *out_total) {
     binary_ctx bw;
     binary_init(&bw, NULL, 0, 0);
-    binary_set_uint8(&bw, (uint8_t)op);
     size_t tlen = strlen(topic);
     binary_set_uinteger(&bw, (uint64_t)tlen, 2, 0);
     binary_set_string(&bw, topic, tlen);
     *out_total = bw.offset;
     return bw.data;
 }
-// SUB_SHARED/UNSUB_SHARED:| u8 op | u16 tlen | topic | u16 glen | group |
-static char *_sc_pack_topic_group(sc_op op, const char *topic, const char *group, size_t *out_total) {
+// SUB_SHARED/UNSUB_SHARED body: u16 tlen | topic | u16 glen | group
+static char *_sc_pack_topic_group(const char *topic, const char *group, size_t *out_total) {
     binary_ctx bw;
     binary_init(&bw, NULL, 0, 0);
-    binary_set_uint8(&bw, (uint8_t)op);
     size_t tlen = strlen(topic);
     binary_set_uinteger(&bw, (uint64_t)tlen, 2, 0);
     binary_set_string(&bw, topic, tlen);
@@ -1124,12 +1126,11 @@ static char *_sc_pack_topic_group(sc_op op, const char *topic, const char *group
     *out_total = bw.offset;
     return bw.data;
 }
-// PUB/PUB_RETAINED:| u8 op | u16 tlen | topic | u32 plen | payload |
-static char *_sc_pack_topic_payload(sc_op op, const char *topic, const void *payload, size_t plen,
+// PUB/PUB_RETAINED body: u16 tlen | topic | u32 plen | payload
+static char *_sc_pack_topic_payload(const char *topic, const void *payload, size_t plen,
                                     size_t *out_total) {
     binary_ctx bw;
     binary_init(&bw, NULL, 0, 0);
-    binary_set_uint8(&bw, (uint8_t)op);
     size_t tlen = strlen(topic);
     binary_set_uinteger(&bw, (uint64_t)tlen, 2, 0);
     binary_set_string(&bw, topic, tlen);
@@ -1141,24 +1142,15 @@ static char *_sc_pack_topic_payload(sc_op op, const char *topic, const void *pay
     *out_total = bw.offset;
     return bw.data;
 }
-// SET_META:| u8 op | u16 mlen | meta |
-static char *_sc_pack_meta(sc_op op, const void *meta, size_t mlen, size_t *out_total) {
+// SET_META body: u16 mlen | meta
+static char *_sc_pack_meta(const void *meta, size_t mlen, size_t *out_total) {
     binary_ctx bw;
     binary_init(&bw, NULL, 0, 0);
-    binary_set_uint8(&bw, (uint8_t)op);
     size_t real_mlen = (NULL != meta) ? mlen : 0;
     binary_set_uinteger(&bw, (uint64_t)real_mlen, 2, 0);
     if (real_mlen > 0) {
         binary_set_string(&bw, (const char *)meta, real_mlen);
     }
-    *out_total = bw.offset;
-    return bw.data;
-}
-// LIST/RETAINED_LIST:| u8 op | (no body) |
-static char *_sc_pack_nobody(sc_op op, size_t *out_total) {
-    binary_ctx bw;
-    binary_init(&bw, NULL, 0, 0);
-    binary_set_uint8(&bw, (uint8_t)op);
     *out_total = bw.offset;
     return bw.data;
 }
@@ -1171,10 +1163,10 @@ int32_t coro_sc_subscribe(task_ctx *task, name_t sc_name, const char *topic) {
         return ERR_FAILED;
     }
     size_t total;
-    char *buf = _sc_pack_topic(SC_OP_SUB, topic, &total);
+    char *buf = _sc_pack_topic(topic, &total);
     int32_t erro = 0;
     size_t rsize = 0;
-    coro_request(sc, task, REQ_SC, buf, total, 0, &erro, &rsize);
+    coro_request(sc, task, REQ_SC_SUB, buf, total, 0, &erro, &rsize);
     task_ungrab(sc);
     return erro;
 }
@@ -1188,10 +1180,10 @@ int32_t coro_sc_subscribe_shared(task_ctx *task, name_t sc_name,
         return ERR_FAILED;
     }
     size_t total;
-    char *buf = _sc_pack_topic_group(SC_OP_SUB_SHARED, topic, group, &total);
+    char *buf = _sc_pack_topic_group(topic, group, &total);
     int32_t erro = 0;
     size_t rsize = 0;
-    coro_request(sc, task, REQ_SC, buf, total, 0, &erro, &rsize);
+    coro_request(sc, task, REQ_SC_SUB_SHARED, buf, total, 0, &erro, &rsize);
     task_ungrab(sc);
     return erro;
 }
@@ -1204,10 +1196,10 @@ int32_t coro_sc_unsubscribe(task_ctx *task, name_t sc_name, const char *topic) {
         return ERR_FAILED;
     }
     size_t total;
-    char *buf = _sc_pack_topic(SC_OP_UNSUB, topic, &total);
+    char *buf = _sc_pack_topic(topic, &total);
     int32_t erro = 0;
     size_t rsize = 0;
-    coro_request(sc, task, REQ_SC, buf, total, 0, &erro, &rsize);
+    coro_request(sc, task, REQ_SC_UNSUB, buf, total, 0, &erro, &rsize);
     task_ungrab(sc);
     return erro;
 }
@@ -1221,10 +1213,10 @@ int32_t coro_sc_unsubscribe_shared(task_ctx *task, name_t sc_name,
         return ERR_FAILED;
     }
     size_t total;
-    char *buf = _sc_pack_topic_group(SC_OP_UNSUB_SHARED, topic, group, &total);
+    char *buf = _sc_pack_topic_group(topic, group, &total);
     int32_t erro = 0;
     size_t rsize = 0;
-    coro_request(sc, task, REQ_SC, buf, total, 0, &erro, &rsize);
+    coro_request(sc, task, REQ_SC_UNSUB_SHARED, buf, total, 0, &erro, &rsize);
     task_ungrab(sc);
     return erro;
 }
@@ -1238,10 +1230,10 @@ int32_t coro_sc_publish(task_ctx *task, name_t sc_name, const char *topic,
         return ERR_FAILED;
     }
     size_t total;
-    char *buf = _sc_pack_topic_payload(SC_OP_PUB, topic, data, size, &total);
+    char *buf = _sc_pack_topic_payload(topic, data, size, &total);
     int32_t erro = 0;
     size_t rsize = 0;
-    coro_request(sc, task, REQ_SC, buf, total, 0, &erro, &rsize);
+    coro_request(sc, task, REQ_SC_PUB, buf, total, 0, &erro, &rsize);
     task_ungrab(sc);
     return erro;
 }
@@ -1255,10 +1247,10 @@ int32_t coro_sc_publish_retained(task_ctx *task, name_t sc_name, const char *top
         return ERR_FAILED;
     }
     size_t total;
-    char *buf = _sc_pack_topic_payload(SC_OP_PUB_RETAINED, topic, data, size, &total);
+    char *buf = _sc_pack_topic_payload(topic, data, size, &total);
     int32_t erro = 0;
     size_t rsize = 0;
-    coro_request(sc, task, REQ_SC, buf, total, 0, &erro, &rsize);
+    coro_request(sc, task, REQ_SC_PUB_RETAINED, buf, total, 0, &erro, &rsize);
     task_ungrab(sc);
     return erro;
 }
@@ -1276,8 +1268,8 @@ void *coro_sc_query_retained(task_ctx *task, name_t sc_name, const char *pattern
         return NULL;
     }
     size_t total;
-    char *buf = _sc_pack_topic(SC_OP_QUERY_RETAINED, pattern, &total);
-    void *resp = coro_request(sc, task, REQ_SC, buf, total, 0, erro, size);
+    char *buf = _sc_pack_topic(pattern, &total);
+    void *resp = coro_request(sc, task, REQ_SC_QUERY_RETAINED, buf, total, 0, erro, size);
     task_ungrab(sc);
     if (ERR_OK != *erro) {
         SET_PTR(size, 0);
@@ -1293,9 +1285,7 @@ void *coro_sc_topics(task_ctx *task, name_t sc_name,
         *erro = ERR_FAILED;
         return NULL;
     }
-    size_t total;
-    char *buf = _sc_pack_nobody(SC_OP_LIST, &total);
-    void *resp = coro_request(sc, task, REQ_SC, buf, total, 0, erro, size);
+    void *resp = coro_request(sc, task, REQ_SC_LIST, NULL, 0, 0, erro, size);
     task_ungrab(sc);
     if (ERR_OK != *erro) {
         SET_PTR(size, 0);
@@ -1311,9 +1301,7 @@ void *coro_sc_retained_topics(task_ctx *task, name_t sc_name,
         *erro = ERR_FAILED;
         return NULL;
     }
-    size_t total;
-    char *buf = _sc_pack_nobody(SC_OP_RETAINED_LIST, &total);
-    void *resp = coro_request(sc, task, REQ_SC, buf, total, 0, erro, size);
+    void *resp = coro_request(sc, task, REQ_SC_RETAINED_LIST, NULL, 0, 0, erro, size);
     task_ungrab(sc);
     if (ERR_OK != *erro) {
         SET_PTR(size, 0);
@@ -1331,10 +1319,10 @@ int32_t coro_sc_set_meta(task_ctx *task, name_t sc_name,
         return ERR_FAILED;
     }
     size_t total;
-    char *buf = _sc_pack_meta(SC_OP_SET_META, meta, size, &total);
+    char *buf = _sc_pack_meta(meta, size, &total);
     int32_t erro = 0;
     size_t rsize = 0;
-    coro_request(sc, task, REQ_SC, buf, total, 0, &erro, &rsize);
+    coro_request(sc, task, REQ_SC_SET_META, buf, total, 0, &erro, &rsize);
     task_ungrab(sc);
     return erro;
 }
@@ -1347,8 +1335,8 @@ int32_t sc_subscribe(task_ctx *task, name_t sc_name, uint64_t sess, const char *
         return ERR_FAILED;
     }
     size_t total;
-    char *buf = _sc_pack_topic(SC_OP_SUB, topic, &total);
-    task_request(sc, task, REQ_SC, sess, buf, total, 0);
+    char *buf = _sc_pack_topic(topic, &total);
+    task_request(sc, task, REQ_SC_SUB, sess, buf, total, 0);
     task_ungrab(sc);
     return ERR_OK;
 }
@@ -1362,8 +1350,8 @@ int32_t sc_subscribe_shared(task_ctx *task, name_t sc_name, uint64_t sess,
         return ERR_FAILED;
     }
     size_t total;
-    char *buf = _sc_pack_topic_group(SC_OP_SUB_SHARED, topic, group, &total);
-    task_request(sc, task, REQ_SC, sess, buf, total, 0);
+    char *buf = _sc_pack_topic_group(topic, group, &total);
+    task_request(sc, task, REQ_SC_SUB_SHARED, sess, buf, total, 0);
     task_ungrab(sc);
     return ERR_OK;
 }
@@ -1376,8 +1364,8 @@ int32_t sc_unsubscribe(task_ctx *task, name_t sc_name, uint64_t sess, const char
         return ERR_FAILED;
     }
     size_t total;
-    char *buf = _sc_pack_topic(SC_OP_UNSUB, topic, &total);
-    task_request(sc, task, REQ_SC, sess, buf, total, 0);
+    char *buf = _sc_pack_topic(topic, &total);
+    task_request(sc, task, REQ_SC_UNSUB, sess, buf, total, 0);
     task_ungrab(sc);
     return ERR_OK;
 }
@@ -1391,8 +1379,8 @@ int32_t sc_unsubscribe_shared(task_ctx *task, name_t sc_name, uint64_t sess,
         return ERR_FAILED;
     }
     size_t total;
-    char *buf = _sc_pack_topic_group(SC_OP_UNSUB_SHARED, topic, group, &total);
-    task_request(sc, task, REQ_SC, sess, buf, total, 0);
+    char *buf = _sc_pack_topic_group(topic, group, &total);
+    task_request(sc, task, REQ_SC_UNSUB_SHARED, sess, buf, total, 0);
     task_ungrab(sc);
     return ERR_OK;
 }
@@ -1406,8 +1394,8 @@ int32_t sc_publish(task_ctx *task, name_t sc_name, uint64_t sess, const char *to
         return ERR_FAILED;
     }
     size_t total;
-    char *buf = _sc_pack_topic_payload(SC_OP_PUB, topic, data, size, &total);
-    task_request(sc, task, REQ_SC, sess, buf, total, 0);
+    char *buf = _sc_pack_topic_payload(topic, data, size, &total);
+    task_request(sc, task, REQ_SC_PUB, sess, buf, total, 0);
     task_ungrab(sc);
     return ERR_OK;
 }
@@ -1421,8 +1409,8 @@ int32_t sc_publish_retained(task_ctx *task, name_t sc_name, uint64_t sess,
         return ERR_FAILED;
     }
     size_t total;
-    char *buf = _sc_pack_topic_payload(SC_OP_PUB_RETAINED, topic, data, size, &total);
-    task_request(sc, task, REQ_SC, sess, buf, total, 0);
+    char *buf = _sc_pack_topic_payload(topic, data, size, &total);
+    task_request(sc, task, REQ_SC_PUB_RETAINED, sess, buf, total, 0);
     task_ungrab(sc);
     return ERR_OK;
 }
@@ -1435,8 +1423,8 @@ int32_t sc_query_retained(task_ctx *task, name_t sc_name, uint64_t sess, const c
         return ERR_FAILED;
     }
     size_t total;
-    char *buf = _sc_pack_topic(SC_OP_QUERY_RETAINED, pattern, &total);
-    task_request(sc, task, REQ_SC, sess, buf, total, 0);
+    char *buf = _sc_pack_topic(pattern, &total);
+    task_request(sc, task, REQ_SC_QUERY_RETAINED, sess, buf, total, 0);
     task_ungrab(sc);
     return ERR_OK;
 }
@@ -1448,9 +1436,7 @@ int32_t sc_topics(task_ctx *task, name_t sc_name, uint64_t sess) {
     if (NULL == sc) {
         return ERR_FAILED;
     }
-    size_t total;
-    char *buf = _sc_pack_nobody(SC_OP_LIST, &total);
-    task_request(sc, task, REQ_SC, sess, buf, total, 0);
+    task_request(sc, task, REQ_SC_LIST, sess, NULL, 0, 0);
     task_ungrab(sc);
     return ERR_OK;
 }
@@ -1462,9 +1448,7 @@ int32_t sc_retained_topics(task_ctx *task, name_t sc_name, uint64_t sess) {
     if (NULL == sc) {
         return ERR_FAILED;
     }
-    size_t total;
-    char *buf = _sc_pack_nobody(SC_OP_RETAINED_LIST, &total);
-    task_request(sc, task, REQ_SC, sess, buf, total, 0);
+    task_request(sc, task, REQ_SC_RETAINED_LIST, sess, NULL, 0, 0);
     task_ungrab(sc);
     return ERR_OK;
 }
@@ -1478,8 +1462,8 @@ int32_t sc_set_meta(task_ctx *task, name_t sc_name, uint64_t sess,
         return ERR_FAILED;
     }
     size_t total;
-    char *buf = _sc_pack_meta(SC_OP_SET_META, meta, size, &total);
-    task_request(sc, task, REQ_SC, sess, buf, total, 0);
+    char *buf = _sc_pack_meta(meta, size, &total);
+    task_request(sc, task, REQ_SC_SET_META, sess, buf, total, 0);
     task_ungrab(sc);
     return ERR_OK;
 }

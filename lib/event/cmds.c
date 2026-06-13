@@ -534,7 +534,7 @@ static void _cmd_set_ud(ev_ctx *ctx, SOCKET fd, uint64_t skid, int32_t type, uin
     cmd.arg = val;
     _SEND_CMD(ctx, cmd);
 }
-void ev_ud_pktype(ev_ctx *ctx, SOCKET fd, uint64_t skid, uint8_t pktype) {
+void ev_ud_pktype(ev_ctx *ctx, SOCKET fd, uint64_t skid, subtype_t pktype) {
     _cmd_set_ud(ctx, fd, skid, UD_PKTYPE, pktype);
 }
 void ev_ud_status(ev_ctx *ctx, SOCKET fd, uint64_t skid, uint8_t status) {
@@ -555,7 +555,7 @@ void ev_ud_seccontext(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *extra) {
 static void _set_ud(ud_cxt *ud, int32_t type, uint64_t val) {
     switch (type) {
     case UD_PKTYPE:
-        ud->pktype = (uint8_t)val;
+        ud->pktype = (subtype_t)val;
         break;
     case UD_STATUS:
         ud->status = (uint8_t)val;

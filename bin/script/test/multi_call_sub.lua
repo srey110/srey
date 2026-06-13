@@ -17,7 +17,7 @@ srey.startup(function()
             srey.call(_parent, 101, tostring(_idx) .. ":" .. payload)
         elseif 102 == reqtype then   -- RPC_REQ：multi_request 路径,task_response 回 src
             if src ~= TASK_NAME.NONE and sess ~= 0 then
-                srey.response(src, sess, 0, "ack" .. tostring(_idx))
+                srey.response(src, reqtype, sess, 0, "ack" .. tostring(_idx))
             end
         end
     end)

@@ -171,7 +171,7 @@ void ev_unlisten(ev_ctx *ctx, uint64_t id);
 /// <param name="fd">socket句柄</param>
 /// <param name="skid">链接ID</param>
 /// <param name="pktype">数据包类型 pack_type</param>
-void ev_ud_pktype(ev_ctx *ctx, SOCKET fd, uint64_t skid, uint8_t pktype);
+void ev_ud_pktype(ev_ctx *ctx, SOCKET fd, uint64_t skid, subtype_t pktype);
 /// <summary>
 /// 设置ud_cxt的状态
 /// </summary>

@@ -3,12 +3,13 @@
 
 #include "base/macro.h"
 
+typedef uint16_t subtype_t; //子类型
 typedef uint64_t name_t; // 任务名类型（64 位整数 ID）
 
 // 连接用户自定义上下文，挂载在每个网络连接上
 typedef struct ud_cxt {
-    uint8_t  pktype;  // 数据包类型（由上层协议定义）
     uint8_t  status;  // 解包状态（协议解析状态机）
+    subtype_t pktype;  // 数据包类型（由上层协议定义）
     size_t   prot_offset; // 协议解析私有偏移（如 HTTP 头扫描位置缓存），由各协议自行管理
     name_t   handle;  // 所属任务句柄（task 的标识 ID）
     uint64_t sess;    // 会话 ID（用于超时匹配）

@@ -299,7 +299,7 @@ static void _debug_hotfix(router_req *ctx) {
     _debug_forward(ctx, &cmd);
 }
 // HTTP 接收回调：完整请求到达后交 router 派发
-static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, uint8_t pktype,
+static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, subtype_t pktype,
                       uint8_t client, uint8_t slice, void *data, size_t size) {
     (void)pktype;
     (void)client;

@@ -61,45 +61,45 @@ static void _task_handle_timeout(task_ctx *task, message_ctx *msg) {
 // 处理新连接接受消息
 static void _task_handle_accept(task_ctx *task, message_ctx *msg) {
     if (NULL != task->_net_accept) {
-        task->_net_accept(task, msg->fd, msg->skid, msg->pktype);
+        task->_net_accept(task, msg->fd, msg->skid, msg->subtype);
     }
 }
 // 处理连接建立消息
 static void _task_handle_connect(task_ctx *task, message_ctx *msg) {
     if (NULL != task->_net_connect) {
-        task->_net_connect(task, msg->fd, msg->skid, msg->pktype, msg->erro);
+        task->_net_connect(task, msg->fd, msg->skid, msg->subtype, msg->erro);
     }
 }
 // 处理 SSL 交换完成消息
 static void _task_handle_ssl_exchanged(task_ctx *task, message_ctx *msg) {
     if (NULL != task->_ssl_exchanged) {
-        task->_ssl_exchanged(task, msg->fd, msg->skid, msg->pktype, msg->client);
+        task->_ssl_exchanged(task, msg->fd, msg->skid, msg->subtype, msg->client);
     }
 }
 // 处理应用层握手完成消息，处理后清理消息数据
 static void _task_handle_handshaked(task_ctx *task, message_ctx *msg) {
     if (NULL != task->_net_handshaked) {
-        task->_net_handshaked(task, msg->fd, msg->skid, msg->pktype, msg->client, msg->erro, msg->data, msg->size);
+        task->_net_handshaked(task, msg->fd, msg->skid, msg->subtype, msg->client, msg->erro, msg->data, msg->size);
     }
     _message_clean(msg);
 }
 // 处理 TCP 数据接收消息，处理后清理消息数据
 static void _task_handle_recv(task_ctx *task, message_ctx *msg) {
     if (NULL != task->_net_recv) {
-        task->_net_recv(task, msg->fd, msg->skid, msg->pktype, msg->client, msg->slice, msg->data, msg->size);
+        task->_net_recv(task, msg->fd, msg->skid, msg->subtype, msg->client, msg->slice, msg->data, msg->size);
     }
     _message_clean(msg);
 }
 // 处理数据发送完成消息
 static void _task_handle_send(task_ctx *task, message_ctx *msg) {
     if (NULL != task->_net_send) {
-        task->_net_send(task, msg->fd, msg->skid, msg->pktype, msg->client, msg->size);
+        task->_net_send(task, msg->fd, msg->skid, msg->subtype, msg->client, msg->size);
     }
 }
 // 处理连接关闭消息
 static void _task_handle_close(task_ctx *task, message_ctx *msg) {
     if (NULL != task->_net_close) {
-        task->_net_close(task, msg->fd, msg->skid, msg->pktype, msg->client);
+        task->_net_close(task, msg->fd, msg->skid, msg->subtype, msg->client);
     }
 }
 // 处理 UDP 数据接收消息：从消息数据中解析出地址和载荷，处理后清理
@@ -117,19 +117,19 @@ static void _task_handle_recvfrom(task_ctx *task, message_ctx *msg) {
 // 处理任务间请求消息：若未注册请求回调，则返回错误响应
 static void _task_handle_request(task_ctx *task, message_ctx *msg) {
     int32_t rtn = ERR_FAILED;//默认未处理；仅 REQ_DEBUG 被 _debug_request 处理后置 ERR_OK
-    if (REQ_DEBUG == msg->pktype) {//公共的debug处理
+    if (REQ_DEBUG == msg->subtype) {//公共的debug处理
         rtn = _debug_request(task, msg);
     }
     //REQ_SC_DELIVER 也走_request，自行处理。
     //sc_parse_deliver解析参数 path_matches_pattern 判断主题匹配
     if (ERR_OK != rtn) {//未被 debug 处理(非 REQ_DEBUG 或 debug 未接管)→ 透传给具体任务处理
         if (NULL != task->_request) {
-            task->_request(task, msg->pktype, msg->sess, msg->src, msg->data, msg->size);
+            task->_request(task, msg->subtype, msg->sess, msg->src, msg->data, msg->size);
         } else {
             task_ctx *dtask = task_grab(task->loader, msg->src);
             if (NULL != dtask) {
                 const char *erro = "not register request callback function.";
-                task_response(dtask, msg->sess, ERR_FAILED, (void *)erro, strlen(erro), 1);
+                task_response(dtask, msg->subtype, msg->sess, ERR_FAILED, (void *)erro, strlen(erro), 1);
                 task_ungrab(dtask);
             }
         }
@@ -139,7 +139,7 @@ static void _task_handle_request(task_ctx *task, message_ctx *msg) {
 // 处理任务间响应消息，处理后清理消息数据
 static void _task_handle_response(task_ctx *task, message_ctx *msg) {
     if (NULL != task->_response) {
-        task->_response(task, msg->sess, msg->erro, msg->data, msg->size);
+        task->_response(task, msg->subtype, msg->sess, msg->erro, msg->data, msg->size);
     }
     _message_clean(msg);
 }
@@ -341,10 +341,10 @@ void _message_clean(message_ctx *msg) {
     switch (msg->mtype) {
     case MSG_TYPE_RECV:
     case MSG_TYPE_RECVFROM:
-        prots_pkfree(msg->pktype, msg->data);
+        prots_pkfree(msg->subtype, msg->data);
         break;
     case MSG_TYPE_HANDSHAKED:
-        prots_hsfree(msg->pktype, msg->data);
+        prots_hsfree(msg->subtype, msg->data);
         break;
     case MSG_TYPE_REQUEST:
     case MSG_TYPE_RESPONSE:
@@ -380,11 +380,12 @@ void task_timeout(task_ctx *task, uint64_t sess, uint32_t ms, _timeout_cb _timeo
     ud.context = (void*)_timeout;
     tw_add(&task->loader->tw, ms, _task_message_timeout_push, NULL, &ud);
 }
-void task_request(task_ctx *dst, task_ctx *src, uint8_t reqtype, uint64_t sess, void *data, size_t size, int32_t copy) {
+void task_request(task_ctx *dst, task_ctx *src, subtype_t reqtype, uint64_t sess,
+                  void *data, size_t size, int32_t copy) {
     ASSERTAB((NULL != src && 0 != sess) || (NULL == src && 0 == sess), "parameter error");
     message_ctx msg = { 0 };
     msg.mtype = MSG_TYPE_REQUEST;
-    msg.pktype = reqtype;
+    msg.subtype = reqtype;
     if (NULL != src) {
         msg.src = src->handle;
         msg.sess = sess;
@@ -403,10 +404,12 @@ void task_request(task_ctx *dst, task_ctx *src, uint8_t reqtype, uint64_t sess, 
     msg.size = size;
     _task_message_push(dst, &msg);
 }
-void task_response(task_ctx *dst, uint64_t sess, int32_t erro, void *data, size_t size, int32_t copy) {
+void task_response(task_ctx *dst, subtype_t reqtype, uint64_t sess,
+                   int32_t erro, void *data, size_t size, int32_t copy) {
     message_ctx msg = { 0 };
     msg.mtype = MSG_TYPE_RESPONSE;
     msg.sess = sess;
+    msg.subtype = reqtype;
     msg.erro = erro;
     msg.size = size;
     if (NULL != data) {
@@ -424,10 +427,10 @@ void task_response(task_ctx *dst, uint64_t sess, int32_t erro, void *data, size_
     }
     _task_message_push(dst, &msg);
 }
-void task_call(task_ctx *dst, uint8_t reqtype, void *data, size_t size, int32_t copy) {
+void task_call(task_ctx *dst, subtype_t reqtype, void *data, size_t size, int32_t copy) {
     task_request(dst, NULL, reqtype, 0, data, size, copy);
 }
-int32_t task_multi_request(task_ctx *dsts[], int32_t n, task_ctx *src, uint8_t reqtype,
+int32_t task_multi_request(task_ctx *dsts[], int32_t n, task_ctx *src, subtype_t reqtype,
                            uint64_t sess, void *data, size_t size, int32_t copy) {
     ASSERTAB((NULL != src && 0 != sess) || (NULL == src && 0 == sess), "parameter error");
     int32_t i;
@@ -460,7 +463,7 @@ int32_t task_multi_request(task_ctx *dsts[], int32_t n, task_ctx *src, uint8_t r
     // 投递 N 条 message：共用 shared，_message_clean 走 shared 分支 ref-- 归 0 才 FREE
     message_ctx msg = { 0 };
     msg.mtype = MSG_TYPE_REQUEST;
-    msg.pktype = reqtype;
+    msg.subtype = reqtype;
     if (NULL != src) {
         msg.src = src->handle;
         msg.sess = sess;
@@ -477,7 +480,7 @@ int32_t task_multi_request(task_ctx *dsts[], int32_t n, task_ctx *src, uint8_t r
     }
     return valid;
 }
-void task_multi_call(task_ctx *dsts[], int32_t n, uint8_t reqtype,
+void task_multi_call(task_ctx *dsts[], int32_t n, subtype_t reqtype,
                      void *data, size_t size, int32_t copy) {
     (void)task_multi_request(dsts, n, NULL, reqtype, 0, data, size, copy);
 }
@@ -491,7 +494,7 @@ static int32_t _task_net_accept(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud
     if (ERR_OK == rtn) {
         message_ctx msg = { 0 };
         msg.mtype = MSG_TYPE_ACCEPT;
-        msg.pktype = ud->pktype;
+        msg.subtype = ud->pktype;
         msg.fd = fd;
         msg.skid = skid;
         _task_message_push(task, &msg);
@@ -504,14 +507,14 @@ int32_t _message_handshaked_push(SOCKET fd, uint64_t skid, int32_t client, ud_cx
     if (NULL == task) {
         message_ctx tmp = { 0 };
         tmp.mtype = MSG_TYPE_HANDSHAKED;
-        tmp.pktype = ud->pktype;
+        tmp.subtype = ud->pktype;
         tmp.data = data;
         _message_clean(&tmp);
         return ERR_FAILED;
     }
     message_ctx msg = { 0 };
     msg.mtype = MSG_TYPE_HANDSHAKED;
-    msg.pktype = ud->pktype;
+    msg.subtype = ud->pktype;
     msg.fd = fd;
     msg.skid = skid;
     msg.client = client;
@@ -532,7 +535,7 @@ static void _task_net_recv(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
     }
     message_ctx msg = { 0 };
     msg.mtype = MSG_TYPE_RECV;
-    msg.pktype = ud->pktype;
+    msg.subtype = ud->pktype;
     msg.fd = fd;
     msg.skid = skid;
     msg.client = client;
@@ -584,7 +587,7 @@ static void _task_net_send(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
     }
     message_ctx msg = { 0 };
     msg.mtype = MSG_TYPE_SEND;
-    msg.pktype = ud->pktype;
+    msg.subtype = ud->pktype;
     msg.fd = fd;
     msg.skid = skid;
     msg.client = client;
@@ -602,7 +605,7 @@ static int32_t _task_net_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int
     if (ERR_OK == rtn) {
         message_ctx msg = { 0 };
         msg.mtype = MSG_TYPE_SSLEXCHANGED;
-        msg.pktype = ud->pktype;
+        msg.subtype = ud->pktype;
         msg.fd = fd;
         msg.skid = skid;
         msg.client = client;
@@ -621,7 +624,7 @@ static void _task_net_close(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client
     }
     message_ctx msg = { 0 };
     msg.mtype = MSG_TYPE_CLOSE;
-    msg.pktype = ud->pktype;
+    msg.subtype = ud->pktype;
     msg.fd = fd;
     msg.skid = skid;
     msg.client = client;
@@ -664,7 +667,7 @@ static int32_t _task_net_connect(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t e
     }
     message_ctx msg = { 0 };
     msg.mtype = MSG_TYPE_CONNECT;
-    msg.pktype = ud->pktype;
+    msg.subtype = ud->pktype;
     msg.fd = fd;
     msg.skid = skid;
     msg.erro = err;
@@ -703,7 +706,7 @@ static void _task_net_recvfrom(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, 
     }
     message_ctx msg = { 0 };
     msg.mtype = MSG_TYPE_RECVFROM;
-    msg.pktype = PACK_NONE; // UDP 路径透传原始数据，避免 _message_clean→prots_pkfree 进入特定协议释放路径
+    msg.subtype = PACK_NONE; // UDP 路径透传原始数据，避免 _message_clean→prots_pkfree 进入特定协议释放路径
     msg.fd = fd;
     msg.skid = skid;
     char *umsg;

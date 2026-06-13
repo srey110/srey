@@ -374,7 +374,7 @@ static void _coro_handle_timeout(task_dispatch_arg *arg) {
         return;
     }
     coro_ctx *coctx = arg->task->arg;
-    coro_sess *cosess = _coro_cosess_get(coctx, arg->msg.sess, (msg_type)arg->msg.mtype);
+    coro_sess *cosess = _coro_cosess_get(coctx, arg->msg.sess, arg->msg.mtype);
     if (NULL == cosess) {
         LOG_WARN("task %s message type %d, can't find session %"PRIu64, _NAME_OR(arg->task->name), arg->msg.mtype, arg->msg.sess);
         return;
@@ -388,7 +388,7 @@ static void _coro_handle_timeout(task_dispatch_arg *arg) {
 // non-disposable 唤醒(skid 作 key):cosess 或 _coro_get_mco 队列空时新建协程,不删 sess。
 static void _coro_handle_non_disposable(task_dispatch_arg *arg) {
     coro_ctx *coctx = arg->task->arg;
-    coro_sess *cosess = _coro_cosess_get(coctx, arg->msg.skid, (msg_type)arg->msg.mtype);
+    coro_sess *cosess = _coro_cosess_get(coctx, arg->msg.skid, arg->msg.mtype);
     if (NULL == cosess) {
         _coro_mco_create(arg);
         return;
@@ -403,7 +403,7 @@ static void _coro_handle_non_disposable(task_dispatch_arg *arg) {
 // disposable 唤醒(sess 作 key):由 _coro_wait disposable=1 注册,_coro_get_mco 不会 NULL;唤醒后删 sess。
 static void _coro_handle_disposable(task_dispatch_arg *arg) {
     coro_ctx *coctx = arg->task->arg;
-    coro_sess *cosess = _coro_cosess_get(coctx, arg->msg.sess, (msg_type)arg->msg.mtype);
+    coro_sess *cosess = _coro_cosess_get(coctx, arg->msg.sess, arg->msg.mtype);
     if (NULL == cosess) {
         _coro_mco_create(arg);
         return;
@@ -415,12 +415,12 @@ static void _coro_handle_disposable(task_dispatch_arg *arg) {
 // 处理数据接收消息：sess==0 或协议不允许 resume 则新建协程，否则唤醒等待的协程
 static void _coro_handle_recved(task_dispatch_arg *arg) {
     if (0 == arg->msg.sess
-        || ERR_OK != prots_may_resume(arg->msg.pktype, arg->msg.data)) {
+        || ERR_OK != prots_may_resume(arg->msg.subtype, arg->msg.data)) {
         _coro_mco_create(arg);
         return;
     }
     coro_ctx *coctx = arg->task->arg;
-    coro_sess *cosess = _coro_cosess_get(coctx, arg->msg.sess, (msg_type)arg->msg.mtype);
+    coro_sess *cosess = _coro_cosess_get(coctx, arg->msg.sess, arg->msg.mtype);
     if (NULL == cosess) {
         _coro_mco_create(arg);
         return;
@@ -435,7 +435,7 @@ static void _coro_handle_recved(task_dispatch_arg *arg) {
 // 处理连接关闭消息：排干所有等待该 skid 的挂起协程，再新建协程处理关闭事件
 static void _coro_handle_closed(task_dispatch_arg *arg) {
     coro_ctx *coctx = arg->task->arg;
-    coro_sess *cosess = _coro_cosess_get(coctx, arg->msg.skid, (msg_type)arg->msg.mtype);
+    coro_sess *cosess = _coro_cosess_get(coctx, arg->msg.skid, arg->msg.mtype);
     if (NULL != cosess) {
         mco_coro *coro;
         if (cosess->disposable) {
@@ -639,7 +639,7 @@ void coro_sleep(task_ctx *task, uint32_t ms) {
     _coro_wait(task, 1, sess, MSG_TYPE_TIMEOUT, 0);
 }
 void *coro_request(task_ctx *dst, task_ctx *src,
-                   uint8_t rtype, void *data, size_t size, int32_t copy,
+                   subtype_t rtype, void *data, size_t size, int32_t copy,
                    int32_t *erro, size_t *lens) {
     uint64_t sess = createid();
     task_request(dst, src, rtype, sess, data, size, copy);
