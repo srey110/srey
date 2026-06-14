@@ -138,6 +138,11 @@ int64_t pgsql_reader_integer(pgsql_reader_ctx *reader, const char *name, int32_t
         return val;
     }
     // 二进制格式：大端序整数解包
+    int32_t expect = (INT2OID == field->type_oid) ? 2 : ((INT4OID == field->type_oid) ? 4 : 8);
+    if (expect != row->lens) {
+        SET_PTR(err, ERR_FAILED);
+        return 0;
+    }
     return unpack_integer(row->val, row->lens, 0, 1);
 }
 double pgsql_reader_double(pgsql_reader_ctx *reader, const char *name, int32_t *err) {
@@ -327,6 +332,10 @@ int64_t pgsql_reader_timestamp(pgsql_reader_ctx *reader, const char *name, int32
         return _pgsql_usec_from_text(row->val, row->lens, err);
     }
     // 二进制格式：大端序 int64，相对 PG 纪元的微秒数
+    if (8 != row->lens) {
+        SET_PTR(err, ERR_FAILED);
+        return 0;
+    }
     return (int64_t)unpack_integer(row->val, row->lens, 0, 1);
 }
 int32_t pgsql_reader_date(pgsql_reader_ctx *reader, const char *name, int32_t *err) {
@@ -349,6 +358,10 @@ int32_t pgsql_reader_date(pgsql_reader_ctx *reader, const char *name, int32_t *e
         return _pgsql_days_from_text(row->val, row->lens, err);
     }
     // 二进制格式：大端序 int32，相对 PG 纪元的天数
+    if (4 != row->lens) {
+        SET_PTR(err, ERR_FAILED);
+        return 0;
+    }
     return (int32_t)unpack_integer(row->val, row->lens, 0, 1);
 }
 // 将文本格式 UUID "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"（36 字符）解析为 16 字节

@@ -1389,6 +1389,9 @@ void pack_integer(char *buf, uint64_t val, int32_t size, int32_t islittle) {
     }
 }
 int64_t unpack_integer(const char *buf, int32_t size, int32_t islittle, int32_t issigned) {
+    if (size <= 0) {
+        return 0;
+    }
     uint64_t rtn = 0;
     int32_t limit = (size <= (int32_t)sizeof(uint64_t)) ? size : (int32_t)sizeof(uint64_t);
     for (int32_t i = limit - 1; i >= 0; i--) {
@@ -1447,7 +1450,6 @@ uint64_t htonll(uint64_t val) {
     pack_integer((char *)&rtn, val, (int32_t)sizeof(uint64_t), 0);
     return rtn;
 }
-
 #endif
 int32_t ct_memcmp(const void *a, const void *b, size_t len) {
     const unsigned char *pa = (const unsigned char *)a;

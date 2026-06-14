@@ -1315,6 +1315,9 @@ static int json_decode(lua_State *l)
     if (json_len >= 2 && (!json.data[0] || !json.data[1]))
         luaL_error(l, "JSON parser does not support UTF-16 or UTF-32");
 
+    if (json_len >= (size_t)INT_MAX)
+        luaL_error(l, "JSON document too large");
+
     /* Ensure the temporary buffer can hold the entire string.
      * This means we no longer need to do length checks since the decoded
      * string must be smaller than the entire json string */

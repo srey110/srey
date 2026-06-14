@@ -49,8 +49,8 @@ size_t url_decode(char *data, size_t lens, int32_t plus2space) {
             *dest = ' ';
         } else if (*p == '%'
                    && lens >= 2
-                   && isxdigit((int) *(p + 1))
-                   && isxdigit((int) *(p + 2))) {
+                   && isxdigit((unsigned char) *(p + 1))
+                   && isxdigit((unsigned char) *(p + 2))) {
             *dest = (char)_url_htoi(p + 1);
             p += 2;
             lens -= 2;

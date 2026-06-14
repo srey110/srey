@@ -1566,6 +1566,12 @@ static void test_urlraw_invalid(CuTest *tc) {
     dlen = url_decode(buf, strlen("a+b+c"), 1);
     CuAssertTrue(tc, 5 == dlen);
     CuAssertTrue(tc, 0 == memcmp(buf, "a b c", dlen));
+
+    /* % 后跟高位字节（≥0x80）：非 hex，整段原样保留（isxdigit 入参须按 unsigned char 处理）*/
+    buf[0] = '%'; buf[1] = (char)0x80; buf[2] = (char)0x81; buf[3] = 'z';
+    dlen = url_decode(buf, 4, 0);
+    CuAssertTrue(tc, 4 == dlen);
+    CuAssertTrue(tc, '%' == buf[0] && (char)0x80 == buf[1] && (char)0x81 == buf[2] && 'z' == buf[3]);
 }
 
 /* ======================================================================= */

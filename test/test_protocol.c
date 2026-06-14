@@ -192,6 +192,13 @@ static void test_http_smuggling(CuTest *tc) {
         "\r\n"
         "0\r\n\r\n",
         0);
+    // 8. 正号 Content-Length（RFC 7230 仅 1*DIGIT）→ 拒绝
+    _http_smuggle_check(tc,
+        "POST / HTTP/1.1\r\n"
+        "Host: x\r\n"
+        "Content-Length: +6\r\n"
+        "\r\n",
+        1);
 }
 
 // chunked chunk-size 走私：第一次 unpack 解析 header(chunked)，第二次 unpack 解析 chunk-size 行；断言其是否被拒
@@ -1243,7 +1250,7 @@ static void test_custz(CuTest *tc) {
 
 /* =======================================================================
  * SMTP —— 多行响应识别（_smtp_full_response）
- * 测试目标：覆盖单行 / 多行 / TCP 分包 / 边界 / 协议错误共 19 个 case
+ * 测试目标：覆盖单行 / 多行 / TCP 分包 / 边界 / 协议错误共 20 个 case
  * ======================================================================= */
 
 // 辅助：构造 buffer，跑 helper，断言返回值
@@ -1306,6 +1313,16 @@ static void test_smtp_full_response(CuTest *tc) {
     memset(longline + 4, 'X', 1024);
     memcpy(longline + 4 + 1024, "\r\n220 OK\r\n", 10);
     _smtp_resp_check(tc, longline, 4 + 1024 + 10, "220", 4 + 1024 + 10);
+    /* 20. 握手续行洪泛超 MAX_PACK_SIZE → 拒绝（防恶意 server 续行耗内存） */
+    size_t units = (size_t)MAX_PACK_SIZE / 6 + 1; /* 每单元 "220-\r\n" 6 字节 */
+    size_t floodlen = units * 6;
+    char *flood;
+    MALLOC(flood, floodlen);
+    for (size_t fi = 0; fi < units; fi++) {
+        memcpy(flood + fi * 6, "220-\r\n", 6);
+    }
+    _smtp_resp_check(tc, flood, floodlen, "220", ERR_FAILED);
+    FREE(flood);
 }
 
 // mail_pack 必须对 mail->msg 做 dot-stuffing（RFC 5321 §4.5.2）

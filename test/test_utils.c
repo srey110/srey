@@ -43,6 +43,11 @@ static void test_pack_unpack(CuTest *tc) {
     uint64_t v64 = 0x0102030405060708ULL;
     uint64_t net = htonll(v64);
     CuAssertTrue(tc, v64 == ntohll(net));
+
+    /* size<=0 边界：0 字节解包恒为 0，避免 1<<(size*8-1) 移位 UB */
+    CuAssertTrue(tc, 0 == unpack_integer(buf, 0, 1, 1));
+    CuAssertTrue(tc, 0 == unpack_integer(buf, 0, 0, 0));
+    CuAssertTrue(tc, 0 == unpack_integer(buf, -1, 0, 1));
 }
 
 /* =======================================================================

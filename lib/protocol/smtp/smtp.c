@@ -90,6 +90,9 @@ char *smtp_pack_data(void) {
 // 返回值：>0 表示完整响应总字节数（含末尾 CRLF）；0 表示需要等待更多数据；ERR_FAILED 表示协议错误
 int32_t _smtp_full_response(buffer_ctx *buf, const char *code) {
     size_t blens = buffer_size(buf);
+    if (PACK_TOO_LONG(blens)) {
+        return ERR_FAILED;
+    }
     int32_t pos = 0;
     char line[SMTP_CODE_LENS];
     char sep;

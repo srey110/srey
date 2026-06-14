@@ -46,7 +46,7 @@ static void _uev_cmd_loop(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
     (void)ev;
     pip_ctx *pip = UPCAST(skctx, pip_ctx, skpip);
     size_t cnt_total = _uev_cmd_run(watcher, skctx, pip);
-    if (cnt_total > 0 && tda_check(&pip->tda, cnt_total)) {
+    if (tda_check(&pip->tda, cnt_total)) {
         LOG_WARN("watcher %d cmd pipe overload, count %zu.", watcher->index, cnt_total);
     }
 #ifdef MANUAL_ADD
@@ -554,7 +554,7 @@ static void _uev_free_pipe(watcher_ctx *watcher) {
         if (nread <= 0) {
             break;
         }
-        cnt = nread / sizeof(cmd_ctx);
+        cnt = (int32_t)(nread / sizeof(cmd_ctx));
 #endif
         for (j = 0; j < cnt; j++) {
             switch (cmds[j].cmd) {

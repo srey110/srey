@@ -59,7 +59,7 @@ int32_t _http_check_keyval(http_header_ctx *head,
     }
     return ERR_FAILED;
 }
-// 解析 Content-Length 字段的十进制值；拒绝负号、空值、非纯数字。
+// 解析 Content-Length 字段的十进制值；拒绝正负号、空值、非纯数字。
 // RFC 7230 §3.2.4 允许 value 含尾随 OWS, 解析前 trim
 static int32_t _http_parse_content_length(http_header_ctx *field, size_t *out) {
     char *vbuf = (char *)field->value.data;
@@ -67,7 +67,7 @@ static int32_t _http_parse_content_length(http_header_ctx *field, size_t *out) {
     while (vlen > 0 && (' ' == vbuf[vlen - 1] || '\t' == vbuf[vlen - 1])) {
         vlen--;
     }
-    if (0 == vlen || '-' == vbuf[0]) {
+    if (0 == vlen || '-' == vbuf[0] || '+' == vbuf[0]) {
         return ERR_FAILED;
     }
     char *endptr;
