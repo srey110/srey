@@ -12,7 +12,8 @@ typedef enum scram_status {
     SCRAM_LOCAL_FIRST,    // 已发送/接收本端第一条消息
     SCRAM_REMOTE_FIRST,   // 已发送/接收对端第一条消息
     SCRAM_LOCAL_FINAL,    // 已发送/接收本端最终消息
-    SCRAM_REMOTE_FINAL    // 已发送/接收对端最终消息（认证完成）
+    SCRAM_REMOTE_FINAL,   // 已发送/接收对端最终消息（认证完成）
+    SCRAM_ERROR = 0xFF    // 解析失败终态：各入口 == 守卫均不匹配，拒绝重入与后续操作
 }scram_status;
 typedef struct scram_ctx {
     scram_status status;                    // 当前握手状态

@@ -124,11 +124,11 @@ static char *_scram_username_filter(const char *user) {
     binary_init(&bwriter, NULL, 0, 0);
     for (size_t i = 0; i < strlen(user); i++) {
         if (',' == user[i]) {
-            binary_set_string(&bwriter, "=2C", strlen("=2C"));
+            binary_set_binary(&bwriter, "=2C", strlen("=2C"));
             continue;
         }
         if ('=' == user[i]) {
-            binary_set_string(&bwriter, "=3D", strlen("=3D"));
+            binary_set_binary(&bwriter, "=3D", strlen("=3D"));
             continue;
         }
         binary_set_int8(&bwriter, user[i]);
@@ -479,8 +479,12 @@ char *scram_first_message(scram_ctx *scram) {
         _scram_client_first_message(scram) : _scram_server_first_message(scram);
 }
 int32_t scram_parse_first_message(scram_ctx *scram, char *msg, size_t mlens) {
-    return scram->client ?
+    int32_t rtn = scram->client ?
         _scram_parse_server_first_message(scram, msg, mlens) : _scram_parse_client_first_message(scram, msg, mlens);
+    if (ERR_OK != rtn) {
+        scram->status = SCRAM_ERROR;
+    }
+    return rtn;
 }
 // 客户端生成最终消息（格式：c=<cbind_b64>,r=<nonce>,p=<ClientProof_base64>）
 static char *_scram_client_final_message(scram_ctx *scram) {
@@ -585,6 +589,10 @@ char *scram_final_message(scram_ctx *scram) {
         _scram_client_final_message(scram) : _scram_server_final_message(scram);
 }
 int32_t scram_check_final_message(scram_ctx *scram, char *msg, size_t mlens) {
-    return scram->client ?
+    int32_t rtn = scram->client ?
         _scram_client_check_final_message(scram, msg, mlens) : _scram_server_check_final_message(scram, msg, mlens);
+    if (ERR_OK != rtn) {
+        scram->status = SCRAM_ERROR;
+    }
+    return rtn;
 }

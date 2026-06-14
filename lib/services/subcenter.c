@@ -190,7 +190,7 @@ static int32_t _sc_read_lp16(binary_ctx *br, const char **out_data, uint16_t *ou
         return ERR_FAILED;
     }
     *out_len = n;
-    *out_data = (n > 0) ? binary_get_string(br, n) : NULL;
+    *out_data = (n > 0) ? binary_get_binary(br, n) : NULL;
     return ERR_OK;
 }
 // 同上,长度上限校验
@@ -231,18 +231,18 @@ static char *_sc_pack_deliver(uint8_t kind, name_t publisher,
     binary_set_uinteger(&bw, (uint64_t)publisher, sizeof(name_t), 0);
     binary_set_uinteger(&bw, (uint64_t)mlen, 2, 0);
     if (mlen > 0 && NULL != meta) {
-        binary_set_string(&bw, (const char *)meta, mlen);
+        binary_set_binary(&bw, (const char *)meta, mlen);
     }
     binary_set_uinteger(&bw, (uint64_t)glen, 2, 0);
     if (glen > 0 && NULL != group) {
-        binary_set_string(&bw, group, glen);
+        binary_set_binary(&bw, group, glen);
     }
     size_t tlen = strlen(topic);
     binary_set_uinteger(&bw, (uint64_t)tlen, 2, 0);
-    binary_set_string(&bw, topic, tlen);
+    binary_set_binary(&bw, topic, tlen);
     binary_set_uinteger(&bw, (uint64_t)plen, 4, 0);
     if (plen > 0 && NULL != payload) {
-        binary_set_string(&bw, (const char *)payload, plen);
+        binary_set_binary(&bw, (const char *)payload, plen);
     }
     *out_total = bw.offset;
     return bw.data;
@@ -261,25 +261,25 @@ int32_t sc_parse_deliver(const void *data, size_t size, sc_deliver *out) {
     if (br.size - br.offset < out->mlen + 2) {
         return ERR_FAILED;
     }
-    out->meta = out->mlen > 0 ? binary_get_string(&br, out->mlen) : NULL;
+    out->meta = out->mlen > 0 ? binary_get_binary(&br, out->mlen) : NULL;
     out->glen = (size_t)binary_get_uinteger(&br, 2, 0);
     // group(glen) + tlen(u16)
     if (br.size - br.offset < out->glen + 2) {
         return ERR_FAILED;
     }
-    out->group = out->glen > 0 ? binary_get_string(&br, out->glen) : NULL;
+    out->group = out->glen > 0 ? binary_get_binary(&br, out->glen) : NULL;
     out->tlen = (size_t)binary_get_uinteger(&br, 2, 0);
     // topic(tlen) + plen(u32)
     if (br.size - br.offset < out->tlen + 4) {
         return ERR_FAILED;
     }
-    out->topic = out->tlen > 0 ? binary_get_string(&br, out->tlen) : NULL;
+    out->topic = out->tlen > 0 ? binary_get_binary(&br, out->tlen) : NULL;
     out->plen = (size_t)binary_get_uinteger(&br, 4, 0);
     // payload(plen)
     if (br.size - br.offset < out->plen) {
         return ERR_FAILED;
     }
-    out->payload = out->plen > 0 ? binary_get_string(&br, out->plen) : NULL;
+    out->payload = out->plen > 0 ? binary_get_binary(&br, out->plen) : NULL;
     return ERR_OK;
 }
 // 游标式解析 query_retained 响应:| name_t publisher | u16 mlen | meta | u16 tlen | topic | u32 plen | payload |
@@ -294,19 +294,19 @@ int32_t sc_parse_retained(binary_ctx *br, sc_retained *out) {
     if (br->size - br->offset < out->mlen + 2) {
         return ERR_FAILED;
     }
-    out->meta = out->mlen > 0 ? binary_get_string(br, out->mlen) : NULL;
+    out->meta = out->mlen > 0 ? binary_get_binary(br, out->mlen) : NULL;
     out->tlen = (size_t)binary_get_uinteger(br, 2, 0);
     // topic(tlen) + plen(u32)
     if (br->size - br->offset < out->tlen + 4) {
         return ERR_FAILED;
     }
-    out->topic = out->tlen > 0 ? binary_get_string(br, out->tlen) : NULL;
+    out->topic = out->tlen > 0 ? binary_get_binary(br, out->tlen) : NULL;
     out->plen = (size_t)binary_get_uinteger(br, 4, 0);
     // payload(plen)
     if (br->size - br->offset < out->plen) {
         return ERR_FAILED;
     }
-    out->payload = out->plen > 0 ? binary_get_string(br, out->plen) : NULL;
+    out->payload = out->plen > 0 ? binary_get_binary(br, out->plen) : NULL;
     return ERR_OK;
 }
 // 游标式解析 topics 响应:| u16 tlen | topic | u32 normal | u32 shared |
@@ -320,7 +320,7 @@ int32_t sc_parse_topics(binary_ctx *br, sc_topic *out) {
     if (br->size - br->offset < out->tlen + 4 + 4) {
         return ERR_FAILED;
     }
-    out->topic = out->tlen > 0 ? binary_get_string(br, out->tlen) : NULL;
+    out->topic = out->tlen > 0 ? binary_get_binary(br, out->tlen) : NULL;
     out->normal = (uint32_t)binary_get_uinteger(br, 4, 0);
     out->shared = (uint32_t)binary_get_uinteger(br, 4, 0);
     return ERR_OK;
@@ -336,7 +336,7 @@ int32_t sc_parse_retained_topics(binary_ctx *br, sc_retained_topic *out) {
     if (br->size - br->offset < out->tlen + sizeof(name_t) + 4 + 2) {
         return ERR_FAILED;
     }
-    out->topic = out->tlen > 0 ? binary_get_string(br, out->tlen) : NULL;
+    out->topic = out->tlen > 0 ? binary_get_binary(br, out->tlen) : NULL;
     out->publisher = (name_t)binary_get_uinteger(br, sizeof(name_t), 0);
     out->size = (uint32_t)binary_get_uinteger(br, 4, 0);
     out->meta_size = (uint16_t)binary_get_uinteger(br, 2, 0);
@@ -803,7 +803,7 @@ static void _sc_handle_pub(sc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *b
         _sc_resp_failed(ctx, src, sess, reqtype);
         return;
     }
-    const void *payload = (plen > 0) ? binary_get_string(br, plen) : NULL;
+    const void *payload = (plen > 0) ? binary_get_binary(br, plen) : NULL;
     if (retained) {
         // 超长 retained 按头文件契约拒绝：返 ERR_FAILED、不 deliver 不存储，避免静默数据丢失
         if (plen > SC_RETAINED_MAX_SIZE) {
@@ -877,17 +877,32 @@ static bool _sc_qr_iter(const void *item, void *udata) {
     binary_set_uinteger(c->bw, (uint64_t)e->retained_publisher, sizeof(name_t), 0);
     binary_set_uinteger(c->bw, (uint64_t)e->retained_meta_size, 2, 0);
     if (e->retained_meta_size > 0 && NULL != e->retained_meta) {
-        binary_set_string(c->bw, (const char *)e->retained_meta, e->retained_meta_size);
+        binary_set_binary(c->bw, (const char *)e->retained_meta, e->retained_meta_size);
     }
     size_t tlen = strlen(e->topic);
     binary_set_uinteger(c->bw, (uint64_t)tlen, 2, 0);
-    binary_set_string(c->bw, e->topic, tlen);
+    binary_set_binary(c->bw, e->topic, tlen);
     binary_set_uinteger(c->bw, (uint64_t)e->retained_size, 4, 0);
     if (e->retained_size > 0 && NULL != e->retained) {
-        binary_set_string(c->bw, (const char *)e->retained, e->retained_size);
+        binary_set_binary(c->bw, (const char *)e->retained, e->retained_size);
     }
     c->pushed++;
     return true;
+}
+// 把 scan 填好的 bw 回给 src:非空转移所有权(copy=0),空则回 NULL 并释放 bw
+static void _sc_grab_respond(sc_ctx *ctx, name_t src, uint64_t sess, subtype_t reqtype, binary_ctx *bw) {
+    task_ctx *t = task_grab(ctx->loader, src);
+    if (NULL == t) {
+        binary_free(bw);
+        return;
+    }
+    if (bw->offset > 0) {
+        task_response(t, reqtype, sess, ERR_OK, bw->data, bw->offset, 0);
+    } else {
+        task_response(t, reqtype, sess, ERR_OK, NULL, 0, 0);
+        binary_free(bw);
+    }
+    task_ungrab(t);
 }
 // handler:QUERY_RETAINED。pattern 走 WILDCARD 校验后,
 // hashmap_iter 扫 retained_index + path_matches_pattern 过滤,匹配项拼到 wire buf 一次性返回
@@ -916,18 +931,7 @@ static void _sc_handle_query_retained(sc_ctx *ctx, name_t src, uint64_t sess, bi
     if (qc.truncated) {
         LOG_WARN("query_retained pattern '%s' truncated at %d entries", pattern, qc.pushed);
     }
-    task_ctx *t = task_grab(ctx->loader, src);
-    if (NULL == t) {
-        binary_free(&bw);
-        return;
-    }
-    if (bw.offset > 0) {
-        task_response(t, REQ_SC_QUERY_RETAINED, sess, ERR_OK, bw.data, bw.offset, 0);
-    } else {
-        task_response(t, REQ_SC_QUERY_RETAINED, sess, ERR_OK, NULL, 0, 0);
-        binary_free(&bw);
-    }
-    task_ungrab(t);
+    _sc_grab_respond(ctx, src, sess, REQ_SC_QUERY_RETAINED, &bw);
 }
 // path_scan 回调:把每个 topic 节点的"topic + normal_count + shared_count"写入 binary_ctx
 static void _sc_list_visit(const char *path, void *payload, void *udata) {
@@ -935,7 +939,7 @@ static void _sc_list_visit(const char *path, void *payload, void *udata) {
     sc_topic_data *d = (sc_topic_data *)payload;
     size_t tlen = strlen(path);
     binary_set_uinteger(bw, (uint64_t)tlen, 2, 0);
-    binary_set_string(bw, path, tlen);
+    binary_set_binary(bw, path, tlen);
     binary_set_uinteger(bw, (uint64_t)d->normal_subs.size, 4, 0);
     binary_set_uinteger(bw, (uint64_t)(NULL != d->shared_groups ? hashmap_count(d->shared_groups) : 0), 4, 0);
 }
@@ -947,18 +951,7 @@ static void _sc_handle_list(sc_ctx *ctx, name_t src, uint64_t sess) {
     binary_ctx bw;
     binary_init(&bw, NULL, 0, 0);
     path_scan(ctx->topics, _sc_list_visit, &bw);
-    task_ctx *t = task_grab(ctx->loader, src);
-    if (NULL == t) {
-        binary_free(&bw);
-        return;
-    }
-    if (bw.offset > 0) {
-        task_response(t, REQ_SC_LIST, sess, ERR_OK, bw.data, bw.offset, 0);
-    } else {
-        task_response(t, REQ_SC_LIST, sess, ERR_OK, NULL, 0, 0);
-        binary_free(&bw);
-    }
-    task_ungrab(t);
+    _sc_grab_respond(ctx, src, sess, REQ_SC_LIST, &bw);
 }
 // hashmap_scan 回调:把每条 retained 的"topic + publisher + size + meta_size"写入 binary_ctx
 // (不含 retained payload 自身,避免数据量大)
@@ -967,7 +960,7 @@ static bool _sc_retained_list_iter(const void *item, void *udata) {
     const sc_retained_entry *e = (const sc_retained_entry *)item;
     size_t tlen = strlen(e->topic);
     binary_set_uinteger(bw, (uint64_t)tlen, 2, 0);
-    binary_set_string(bw, e->topic, tlen);
+    binary_set_binary(bw, e->topic, tlen);
     binary_set_uinteger(bw, (uint64_t)e->retained_publisher, sizeof(name_t), 0);
     binary_set_uinteger(bw, (uint64_t)e->retained_size, 4, 0);
     binary_set_uinteger(bw, (uint64_t)e->retained_meta_size, 2, 0);
@@ -981,18 +974,7 @@ static void _sc_handle_retained_list(sc_ctx *ctx, name_t src, uint64_t sess) {
     binary_ctx bw;
     binary_init(&bw, NULL, 0, 0);
     hashmap_scan(ctx->retained_index, _sc_retained_list_iter, &bw);
-    task_ctx *t = task_grab(ctx->loader, src);
-    if (NULL == t) {
-        binary_free(&bw);
-        return;
-    }
-    if (bw.offset > 0) {
-        task_response(t, REQ_SC_RETAINED_LIST, sess, ERR_OK, bw.data, bw.offset, 0);
-    } else {
-        task_response(t, REQ_SC_RETAINED_LIST, sess, ERR_OK, NULL, 0, 0);
-        binary_free(&bw);
-    }
-    task_ungrab(t);
+    _sc_grab_respond(ctx, src, sess, REQ_SC_RETAINED_LIST, &bw);
 }
 // 中心 dispatch:reqtype 直接标识子命令(请求不再带 op 字节),子分发到 10 个 handler
 static void _sc_requested(task_ctx *task, subtype_t reqtype, uint64_t sess, name_t src,
@@ -1109,7 +1091,7 @@ static char *_sc_pack_topic(const char *topic, size_t *out_total) {
     binary_init(&bw, NULL, 0, 0);
     size_t tlen = strlen(topic);
     binary_set_uinteger(&bw, (uint64_t)tlen, 2, 0);
-    binary_set_string(&bw, topic, tlen);
+    binary_set_binary(&bw, topic, tlen);
     *out_total = bw.offset;
     return bw.data;
 }
@@ -1119,10 +1101,10 @@ static char *_sc_pack_topic_group(const char *topic, const char *group, size_t *
     binary_init(&bw, NULL, 0, 0);
     size_t tlen = strlen(topic);
     binary_set_uinteger(&bw, (uint64_t)tlen, 2, 0);
-    binary_set_string(&bw, topic, tlen);
+    binary_set_binary(&bw, topic, tlen);
     size_t glen = strlen(group);
     binary_set_uinteger(&bw, (uint64_t)glen, 2, 0);
-    binary_set_string(&bw, group, glen);
+    binary_set_binary(&bw, group, glen);
     *out_total = bw.offset;
     return bw.data;
 }
@@ -1133,11 +1115,11 @@ static char *_sc_pack_topic_payload(const char *topic, const void *payload, size
     binary_init(&bw, NULL, 0, 0);
     size_t tlen = strlen(topic);
     binary_set_uinteger(&bw, (uint64_t)tlen, 2, 0);
-    binary_set_string(&bw, topic, tlen);
+    binary_set_binary(&bw, topic, tlen);
     size_t real_plen = (NULL != payload) ? plen : 0;
     binary_set_uinteger(&bw, (uint64_t)real_plen, 4, 0);
     if (real_plen > 0) {
-        binary_set_string(&bw, (const char *)payload, real_plen);
+        binary_set_binary(&bw, (const char *)payload, real_plen);
     }
     *out_total = bw.offset;
     return bw.data;
@@ -1149,7 +1131,7 @@ static char *_sc_pack_meta(const void *meta, size_t mlen, size_t *out_total) {
     size_t real_mlen = (NULL != meta) ? mlen : 0;
     binary_set_uinteger(&bw, (uint64_t)real_mlen, 2, 0);
     if (real_mlen > 0) {
-        binary_set_string(&bw, (const char *)meta, real_mlen);
+        binary_set_binary(&bw, (const char *)meta, real_mlen);
     }
     *out_total = bw.offset;
     return bw.data;

@@ -64,8 +64,8 @@ static void test_binary(CuTest *tc) {
     double  dv  = 2.718281828; binary_set_double(&bw, dv, 1);
     binary_set_fill(&bw, 0xAB, 4);   /* 填充 4 字节 0xAB */
     binary_set_skip(&bw, 2);         /* 跳过 2 字节（写入 0）*/
-    const char *str = "hello";       binary_set_string(&bw, str, 0);   /* 含 \0 */
-    const char *bin = "world";       binary_set_string(&bw, bin, 5);   /* 不含 \0 */
+    const char *str = "hello";       binary_set_string(&bw, str);   /* 含 \0 */
+    const char *bin = "world";       binary_set_binary(&bw, bin, 5);   /* 不含 \0 */
 
     /* 读取并逐一验证 */
     binary_ctx br;
@@ -88,9 +88,9 @@ static void test_binary(CuTest *tc) {
     binary_get_skip(&br, 4 + 2);
 
     /* 字符串 */
-    const char *rs = binary_get_string(&br, 0);
+    const char *rs = binary_get_string(&br);
     CuAssertStrEquals(tc, str, rs);
-    const char *rb = binary_get_string(&br, 5);
+    const char *rb = binary_get_binary(&br, 5);
     CuAssertTrue(tc, 0 == memcmp(bin, rb, 5));
 
     /* 读写游标对齐，已全部消费 */
@@ -343,7 +343,7 @@ static void test_binary_extra(CuTest *tc) {
     binary_init(&bw, NULL, 0, 64);
     binary_set_skip(&bw, 4);                          /* 预留 4 字节长度字段 */
     size_t body_start = bw.offset;
-    binary_set_string(&bw, "body", 4);                /* 写入消息体（4 字节，无 \0）*/
+    binary_set_binary(&bw, "body", 4);                /* 写入消息体（4 字节，无 \0）*/
     size_t body_end   = bw.offset;
     size_t body_len   = body_end - body_start;        /* 4 */
 
@@ -356,7 +356,7 @@ static void test_binary_extra(CuTest *tc) {
     binary_init(&br, bw.data, body_end, 0);
     uint32_t filled = (uint32_t)binary_get_uinteger(&br, 4, 0);
     CuAssertTrue(tc, 4 == (int)filled);
-    const char *body = binary_get_string(&br, 4);
+    const char *body = binary_get_binary(&br, 4);
     CuAssertTrue(tc, 0 == memcmp("body", body, 4));
 
     binary_free(&bw);

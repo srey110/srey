@@ -545,12 +545,12 @@ void http_pack_head(binary_ctx *bwriter, const char *key, const char *val) {
     binary_set_va(bwriter, "%s: %s"FLAG_CRLF, key, val);
 }
 void http_pack_end(binary_ctx *bwriter) {
-    binary_set_string(bwriter, FLAG_CRLF, CRLF_SIZE);
+    binary_set_binary(bwriter, FLAG_CRLF, CRLF_SIZE);
 }
 void http_pack_content(binary_ctx *bwriter, void *data, size_t lens) {
     if (!EMPTYPTR(data, lens)) {
         binary_set_va(bwriter, "Content-Length: %zu"CONCAT2(FLAG_CRLF, FLAG_CRLF), lens);
-        binary_set_string(bwriter, data, lens);
+        binary_set_binary(bwriter, data, lens);
     } else {
         binary_set_va(bwriter, "%s", "Content-Length: 0"CONCAT2(FLAG_CRLF, FLAG_CRLF));
     }
@@ -563,7 +563,7 @@ void http_pack_chunked(binary_ctx *bwriter, void *data, size_t lens) {
         binary_set_va(bwriter, "0"FLAG_CRLF);
     } else {
         binary_set_va(bwriter, "%zx"FLAG_CRLF, lens);
-        binary_set_string(bwriter, data, lens);
+        binary_set_binary(bwriter, data, lens);
     }
-    binary_set_string(bwriter, FLAG_CRLF, CRLF_SIZE);
+    binary_set_binary(bwriter, FLAG_CRLF, CRLF_SIZE);
 }

@@ -62,7 +62,7 @@ local SLICE_TYPE = {
 }
 
 ---带错误捕获的函数调用；异常时自动打印错误信息和调用栈
----@param func function 待调用函数
+---@param func fun(...):any 待调用函数
 ---@param ... any 函数参数
 ---@return boolean ok 是否成功
 ---@return any ... func 的返回值（成功）或错误信息（失败）
@@ -89,7 +89,7 @@ end
 
 ---从协程池取一个空闲协程绑定新任务，池为空时新建；执行完毕后协程归还池中复用，
 ---池满（&gt;= CORO_POOL_MAX）时协程退出由 GC 回收，避免池无界增长
----@param func function 任务函数
+---@param func fun(...) 任务函数
 ---@return thread coro 协程对象
 local function _coro_create(func)
     local coro = tremove(coro_pool)
@@ -161,14 +161,14 @@ local function _coro_resume(coro, ...)
 end
 
 ---从池中取协程（或新建）并立即 resume 执行 func(...)
----@param func function 协程任务函数
+---@param func fun(...) 协程任务函数
 ---@param ... any 传给 func 的参数
 local function _coro_run(func, ...)
     _coro_resume(_coro_create(func), ...)
 end
 
 ---协程包装器：执行前 incref 防止 task 被提前销毁，执行后 ungrab 释放引用
----@param func function 业务回调
+---@param func fun(...) 业务回调
 ---@param ... any 传给 func 的参数
 local function _coro_cb(func, ...)
     srey.task_incref(cur_task)
@@ -178,7 +178,7 @@ end
 
 ---将函数 f 与参数预绑定，返回一个无参 lambda，调用即 f(args)。
 ---用于 srey.fork / srey.fork_wait 等接收 () -> any 的 API，减少 function() return ... end 样板。
----@param f function 待绑定函数
+---@param f fun(...):any 待绑定函数
 ---@param ... any 预绑定的参数（用闭包捕获，每次调用 lambda 都传给 f）
 ---@return fun(): any wrapped 无参 lambda
 function srey.fork_bind(f, ...)
@@ -189,7 +189,7 @@ end
 ---立即在新协程中执行 func(...)（fire-and-forget）；当前协程不让出；
 ---新协程在本条消息 dispatch 完成后的 _drain_fork_queue 里被起，不走时间轮；
 ---错误由 _coro_cb 的 xpcall 捕获并打 ERROR 日志（不会传播到主协程）。
----@param func function 协程任务函数
+---@param func fun(...) 协程任务函数
 ---@param ... any 传给 func 的参数
 function srey.fork(func, ...)
     fork_queue[#fork_queue + 1] = { func = func, args = tpack(...) }
@@ -229,7 +229,7 @@ end
 ---创建一个协程串行化执行器。同 task 内多协程对同一资源并发访问时串行进入，避免穿插；
 ---同一协程嵌套调用安全（ref 计数）；f 抛错由 srey.xpcall 捕获并打 ERROR 日志，锁照常释放，
 ---下个等待者继续。
----@return fun(f:function, ...):boolean,any serial 串行化调用器；返回 srey.xpcall 的 (ok, f 的首返回值)
+---@return fun(f:fun(...):any, ...):boolean,any serial 串行化调用器；返回 srey.xpcall 的 (ok, f 的首返回值)
 function srey.serial()
     local current = nil   -- 当前持锁协程
     local ref = 0         -- 嵌套深度（同协程多次进入累加）
@@ -423,7 +423,7 @@ end
 ---@field since   integer      挂起起始时刻（毫秒，timer_ms 单位）；用于 debug 计算挂起时长
 ---@field coro    thread?      等待唤醒的协程；func 模式下为 nil
 ---@field mtype   integer      期望唤醒的消息类型（MSG_TYPE.*）
----@field func    function?    定时回调；非 nil 时由新协程执行而非 resume coro
+---@field func    fun(...)?    定时回调；非 nil 时由新协程执行而非 resume coro
 ---@field args    any[]?       传给 func 的参数列表；func 为 nil 时不存在
 
 ---@class CoroSession
@@ -436,7 +436,7 @@ end
 ---@param sess integer 会话 id
 ---@param mtype integer 期望唤醒的消息类型（MSG_TYPE.*）
 ---@param ms integer 超时毫秒数；0 表示永不超时
----@param func function? 定时回调；非 nil 时消息到达后新建协程执行而非 resume coro
+---@param func fun(...)? 定时回调；非 nil 时消息到达后新建协程执行而非 resume coro
 ---@param ... any 传给 func 的参数
 local function _set_coro_sess(disposable, coro, sess, mtype, ms, func, ...)
     local timeout = 0
@@ -540,7 +540,7 @@ end
 
 ---异步定时器：ms 毫秒后在新协程中调用 func(...)，当前协程不挂起
 ---@param ms integer 延迟毫秒数
----@param func function 超时回调
+---@param func fun(...) 超时回调
 ---@param ... any 传给 func 的参数
 function srey.timeout(ms, func, ...)
     local sess = srey.id()

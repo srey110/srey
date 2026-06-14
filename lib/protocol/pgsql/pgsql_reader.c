@@ -94,6 +94,10 @@ int32_t pgsql_reader_bool(pgsql_reader_ctx *reader, const char *name, int32_t *e
         return 0;
     }
     // 二进制格式：直接取第一个字节
+    if (1 != row->lens) {
+        SET_PTR(err, ERR_FAILED);
+        return 0;
+    }
     return row->val[0];
 }
 int64_t pgsql_reader_integer(pgsql_reader_ctx *reader, const char *name, int32_t *err) {
@@ -175,9 +179,11 @@ double pgsql_reader_double(pgsql_reader_ctx *reader, const char *name, int32_t *
     // 二进制格式：按长度区分 float4 / float8
     if (sizeof(double) == row->lens) {
         return unpack_double(row->val, 0);
-    } else {
+    } else if (sizeof(float) == row->lens) {
         return unpack_float(row->val, 0);
     }
+    SET_PTR(err, ERR_FAILED);
+    return 0.0;
 }
 int32_t pgsql_reader_isnull(pgsql_reader_ctx *reader, const char *name) {
     pgpack_row *row = pgsql_reader_name(reader, name, NULL);

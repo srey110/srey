@@ -857,7 +857,7 @@ static void test_mqtt_malformed_reject(CuTest *tc) {
 
 /* ======================================================================= */
 
-/* 空 clientid 的 CONNECT —— binary_set_string 的 lens==0 重载曾多写 1 个 NUL，
+/* 空 clientid 的 CONNECT —— 旧 binary_set_string 在 lens==0 时曾多写 1 个 NUL，
  * 使 remaining length 与实际 body 字节不符、解包后 buffer 残留 1 字节导致后续帧错位 */
 static void test_mqtt_connect_empty_clientid(CuTest *tc) {
     size_t lens = 0;

@@ -204,10 +204,10 @@ static void _mysql_connect_attrs(binary_ctx *battrs) {
     for (size_t i = 0; i < ARRAY_SIZE(attrs); i++) {
         lens = strlen(attrs[i].key);
         _mysql_set_lenenc(battrs, lens);
-        binary_set_string(battrs, attrs[i].key, lens);
+        binary_set_binary(battrs, attrs[i].key, lens);
         lens = strlen(attrs[i].val);
         _mysql_set_lenenc(battrs, lens);
-        binary_set_string(battrs, attrs[i].val, lens);
+        binary_set_binary(battrs, attrs[i].val, lens);
     }
 }
 // 发送客户端认证响应包（HandshakeResponse），包含用户名、密码签名、连接属性等
@@ -221,16 +221,16 @@ static int32_t _mysql_auth_response(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
     binary_set_integer(&bwriter, mysql->client.maxpack, 4, 1);//max_packet_size
     binary_set_uint8(&bwriter, mysql->client.charset);//character_set
     binary_set_fill(&bwriter, 0, 23);//filler
-    binary_set_string(&bwriter, mysql->client.user, 0);//username
+    binary_set_string(&bwriter, mysql->client.user);//username
     if (0 == strcmp(CACHING_SHA2_PASSWORLD, mysql->server.plugin)) {
         char sign[SHA256_BLOCK_SIZE];
         _mysql_caching_sha2_sign(mysql, sign);
         if (BIT_CHECK(mysql->client.caps, CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA)) {
             _mysql_set_lenenc(&bwriter, sizeof(sign));
-            binary_set_string(&bwriter, sign, sizeof(sign));//auth_response
+            binary_set_binary(&bwriter, sign, sizeof(sign));//auth_response
         } else {
             binary_set_uint8(&bwriter, (uint8_t)sizeof(sign));
-            binary_set_string(&bwriter, sign, sizeof(sign));//auth_response
+            binary_set_binary(&bwriter, sign, sizeof(sign));//auth_response
         }
         secure_zero(sign, sizeof(sign));
     } else {
@@ -238,25 +238,25 @@ static int32_t _mysql_auth_response(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
         _mysql_native_sign(mysql, sign);
         if (BIT_CHECK(mysql->client.caps, CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA)) {
             _mysql_set_lenenc(&bwriter, sizeof(sign));
-            binary_set_string(&bwriter, sign, sizeof(sign));//auth_response
+            binary_set_binary(&bwriter, sign, sizeof(sign));//auth_response
         } else {
             binary_set_uint8(&bwriter, (uint8_t)sizeof(sign));
-            binary_set_string(&bwriter, sign, sizeof(sign));//auth_response
+            binary_set_binary(&bwriter, sign, sizeof(sign));//auth_response
         }
         secure_zero(sign, sizeof(sign));
     }
     if (BIT_CHECK(mysql->client.caps, CLIENT_CONNECT_WITH_DB)) {
-        binary_set_string(&bwriter, mysql->client.database, 0);//database
+        binary_set_string(&bwriter, mysql->client.database);//database
     }
     if (BIT_CHECK(mysql->client.caps, CLIENT_PLUGIN_AUTH)) {
-        binary_set_string(&bwriter, mysql->server.plugin, 0);//client_plugin_name
+        binary_set_string(&bwriter, mysql->server.plugin);//client_plugin_name
     }
     if (BIT_CHECK(mysql->client.caps, CLIENT_CONNECT_ATTRS)) {
         binary_ctx battrs;
         binary_init(&battrs, NULL, 0, 0);
         _mysql_connect_attrs(&battrs);
         _mysql_set_lenenc(&bwriter, battrs.offset);
-        binary_set_string(&bwriter, battrs.data, battrs.offset);
+        binary_set_binary(&bwriter, battrs.data, battrs.offset);
         binary_free(&battrs);
     }
     if (ERR_OK != _mysql_set_payload_lens(&bwriter)) {
@@ -307,7 +307,7 @@ static void _mysql_auth_request(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t
         LOG_ERROR("mysql protocol version not 0x0a.");
         return;
     }
-    char *val = binary_get_string(&breader, 0);//server version
+    char *val = binary_get_string(&breader);//server version
     if (strlen(val) > sizeof(mysql->version) - 1) {
         BIT_SET(*status, PROT_ERROR);
         FREE(payload);
@@ -316,7 +316,7 @@ static void _mysql_auth_request(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t
     }
     safe_fill_str(mysql->version, sizeof(mysql->version), val);
     binary_get_skip(&breader, 4);//thread id
-    val = binary_get_string(&breader, 8);//auth-plugin-data-part-1
+    val = binary_get_binary(&breader, 8);//auth-plugin-data-part-1
     memcpy(mysql->server.salt, val, 8);
     binary_get_skip(&breader, 1);//filler
     mysql->server.caps = (uint32_t)binary_get_uinteger(&breader, 2, 1);//capability_flags_1
@@ -337,9 +337,9 @@ static void _mysql_auth_request(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t
         return;
     }
     binary_get_skip(&breader, 10);//reserved
-    val = binary_get_string(&breader, 13);//auth-plugin-data-part-2
+    val = binary_get_binary(&breader, 13);//auth-plugin-data-part-2
     memcpy(mysql->server.salt + 8, val, 12);
-    val = binary_get_string(&breader, 0);//auth_plugin_name
+    val = binary_get_string(&breader);//auth_plugin_name
     if (strlen(val) > sizeof(mysql->server.plugin) - 1) {
         BIT_SET(*status, PROT_ERROR);
         LOG_ERROR("auth plugin name %s too long.", val);
@@ -500,7 +500,7 @@ static int32_t _mysql_password_send(mysql_ctx *mysql, ev_ctx *ev) {
     binary_init(&bwriter, NULL, 0, 0);
     binary_set_skip(&bwriter, 3);
     binary_set_int8(&bwriter, mysql->id);
-    binary_set_string(&bwriter, mysql->client.password, 0);
+    binary_set_string(&bwriter, mysql->client.password);
     if (ERR_OK != _mysql_set_payload_lens(&bwriter)) {
         binary_free(&bwriter);
         return ERR_FAILED;
@@ -525,12 +525,12 @@ static int32_t _mysql_auth_switch_response(mysql_ctx *mysql, ev_ctx *ev, mpack_a
     if (0 == strcmp(CACHING_SHA2_PASSWORLD, mysql->server.plugin)) {
         char sign[SHA256_BLOCK_SIZE];
         _mysql_caching_sha2_sign(mysql, sign);
-        binary_set_string(&bwriter, sign, sizeof(sign));
+        binary_set_binary(&bwriter, sign, sizeof(sign));
         secure_zero(sign, sizeof(sign));
     } else {
         char sign[SHA1_BLOCK_SIZE];
         _mysql_native_sign(mysql, sign);
-        binary_set_string(&bwriter, sign, sizeof(sign));
+        binary_set_binary(&bwriter, sign, sizeof(sign));
         secure_zero(sign, sizeof(sign));
     }
     if (ERR_OK != _mysql_set_payload_lens(&bwriter)) {
@@ -557,13 +557,13 @@ static void _mysql_auth_err(mysql_ctx *mysql, binary_ctx *breader, int32_t *stat
 static void _mysql_auth_switch(mysql_ctx *mysql, ev_ctx *ev, binary_ctx *breader, int32_t *status) {
     if (BIT_CHECK(mysql->client.caps, CLIENT_PLUGIN_AUTH)) {
         mpack_auth_switch auswitch;
-        auswitch.plugin = binary_get_string(breader, 0);
+        auswitch.plugin = binary_get_string(breader);
         auswitch.provided.lens = breader->size - breader->offset;
         if (0 == auswitch.provided.lens) {
             BIT_SET(*status, PROT_ERROR);
             return;
         }
-        auswitch.provided.data = binary_get_string(breader, auswitch.provided.lens);
+        auswitch.provided.data = binary_get_binary(breader, auswitch.provided.lens);
         if (ERR_OK != _mysql_auth_switch_response(mysql, ev, &auswitch)) {
             BIT_SET(*status, PROT_ERROR);
             LOG_ERROR("mysql auth switch failed.");
@@ -599,7 +599,7 @@ static void _mysql_caching_sha2(mysql_ctx *mysql, ev_ctx *ev, binary_ctx *breade
     }
     if (breader->size > 2) {
         size_t klens = breader->size - 1;
-        char *pubkey = binary_get_string(breader, klens);
+        char *pubkey = binary_get_binary(breader, klens);
         if (ERR_OK != _mysql_full_auth(mysql, ev, pubkey, klens)) {
             BIT_SET(*status, PROT_ERROR);
             LOG_ERROR("_mysql_full_auth error.");

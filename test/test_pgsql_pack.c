@@ -205,7 +205,7 @@ static void test_pgsql_pack_helpers(CuTest *tc) {
     /* 主消息：'Q' + body */
     pgsql_pack_start(&bw, 'Q');
     /* 写入一段固定 body */
-    binary_set_string(&bw, "BODY", 4);
+    binary_set_binary(&bw, "BODY", 4);
     pgsql_pack_end(&bw);
 
     /* offset 0 是类型字节 */
@@ -218,11 +218,11 @@ static void test_pgsql_pack_helpers(CuTest *tc) {
 
     /* 子消息追加 */
     pgsql_pack_start(&bw, 'A');
-    binary_set_string(&bw, "AA", 2);
+    binary_set_binary(&bw, "AA", 2);
     pgsql_pack_end(&bw);
 
     size_t off = pgsql_pack_append_start(&bw, 'B');
-    binary_set_string(&bw, "BBB", 3);
+    binary_set_binary(&bw, "BBB", 3);
     pgsql_pack_append_end(&bw, off);
 
     /* 第一段 'A' + len(4)=6 + AA */

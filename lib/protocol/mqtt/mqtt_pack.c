@@ -1,12 +1,10 @@
 ﻿#include "protocol/mqtt/mqtt_pack.h"
 #include "utils/varint.h"
 
-// 长度前缀字符串字段：2 字节大端长度 + 体；lens==0 仅写长度，避开 binary_set_string 的 strlen+NUL 重载
+// 长度前缀字符串字段：2 字节大端长度 + 体（lens==0 仅写长度）
 static void _mqtt_pack_lenstr(binary_ctx *bw, const void *buf, size_t lens) {
     binary_set_uinteger(bw, lens, 2, 0);
-    if (lens > 0) {
-        binary_set_string(bw, (const char *)buf, lens);
-    }
+    binary_set_binary(bw, (const char *)buf, lens);
 }
 int32_t mqtt_props_fixnum(binary_ctx *props, mqtt_prop_flag flag, uint32_t val) {
     size_t saved_offset = props->offset;
@@ -47,7 +45,7 @@ static int32_t _mqtt_props_varnum(binary_ctx *props, uint32_t val) {
     if (0 == lens) {
         return ERR_FAILED;
     }
-    binary_set_string(props, buf, lens);
+    binary_set_binary(props, buf, lens);
     return ERR_OK;
 }
 int32_t mqtt_props_varnum(binary_ctx *props, mqtt_prop_flag flag, uint32_t val) {
@@ -205,42 +203,42 @@ char *mqtt_pack_connect(mqtt_protversion version, int8_t cleanstart, int16_t kee
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 1 + roccupy + total, 0);
     binary_set_int8(&bwriter, fixhead);//固定报头
-    binary_set_string(&bwriter, rmain, roccupy);//剩余长度
+    binary_set_binary(&bwriter, rmain, roccupy);//剩余长度
     binary_set_integer(&bwriter, 4, 2, 0);//协议名长度
-    binary_set_string(&bwriter, "MQTT", 4);//协议名
+    binary_set_binary(&bwriter, "MQTT", 4);//协议名
     binary_set_int8(&bwriter, version);//协议版本
     binary_set_int8(&bwriter, connflags);//连接标志
     binary_set_integer(&bwriter, keepalive, 2, 0);//保持连接
     if (version >= MQTT_50) {
-        binary_set_string(&bwriter, cpvlens, cpoccupy);//属性长度
+        binary_set_binary(&bwriter, cpvlens, cpoccupy);//属性长度
         if (NULL != connprops
             && 0 != connprops->offset) {
-            binary_set_string(&bwriter, connprops->data, connprops->offset);//属性
+            binary_set_binary(&bwriter, connprops->data, connprops->offset);//属性
         }
     }
     _mqtt_pack_lenstr(&bwriter, clientid, cidlens);//客户标识符
     if (willflag) {
         if (version >= MQTT_50) {
-            binary_set_string(&bwriter, wpvlens, wpoccupy);//属性长度
+            binary_set_binary(&bwriter, wpvlens, wpoccupy);//属性长度
             if (NULL != willprops
                 && 0 != willprops->offset) {
-                binary_set_string(&bwriter, willprops->data, willprops->offset);//属性
+                binary_set_binary(&bwriter, willprops->data, willprops->offset);//属性
             }
         }
         binary_set_integer(&bwriter, wtlens, 2, 0);
-        binary_set_string(&bwriter, willtopic, wtlens);//遗嘱主题
+        binary_set_binary(&bwriter, willtopic, wtlens);//遗嘱主题
         binary_set_integer(&bwriter, wplens, 2, 0);
         if (wplens > 0) {
-            binary_set_string(&bwriter, willpayload, wplens);//遗嘱载荷
+            binary_set_binary(&bwriter, willpayload, wplens);//遗嘱载荷
         }
     }
     if (userflag) {
         binary_set_integer(&bwriter, ulens, 2, 0);
-        binary_set_string(&bwriter, user, ulens);//用户名
+        binary_set_binary(&bwriter, user, ulens);//用户名
     }
     if (passwordflag) {
         binary_set_integer(&bwriter, pwlens, 2, 0);
-        binary_set_string(&bwriter, password, pwlens);//密码 
+        binary_set_binary(&bwriter, password, pwlens);//密码 
     }
     *lens = bwriter.offset;
     return bwriter.data;
@@ -268,14 +266,14 @@ char *mqtt_pack_connack(mqtt_protversion version, int8_t sesspresent, uint8_t re
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 1 + roccupy + total, 0);
     binary_set_int8(&bwriter, fixhead);//固定报头
-    binary_set_string(&bwriter, rmain, roccupy);//剩余长度
+    binary_set_binary(&bwriter, rmain, roccupy);//剩余长度
     binary_set_int8(&bwriter, caflag);//连接确认标志
     binary_set_uint8(&bwriter, reason);//连接原因码
     if (version >= MQTT_50) {//属性
-        binary_set_string(&bwriter, pvlens, pvoccupy);//属性长度
+        binary_set_binary(&bwriter, pvlens, pvoccupy);//属性长度
         if (NULL != props
             && 0 != props->offset) {
-            binary_set_string(&bwriter, props->data, props->offset);//属性
+            binary_set_binary(&bwriter, props->data, props->offset);//属性
         }
     }
     *lens = bwriter.offset;
@@ -314,20 +312,20 @@ char *mqtt_pack_publish(mqtt_protversion version, int8_t retain, int8_t qos, int
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 1 + roccupy + total, 0);
     binary_set_int8(&bwriter, fixhead);//固定报头
-    binary_set_string(&bwriter, rmain, roccupy);//剩余长度
+    binary_set_binary(&bwriter, rmain, roccupy);//剩余长度
     _mqtt_pack_lenstr(&bwriter, topic, tlens);//主题名
     if (1 == qos || 2 == qos) {
         binary_set_integer(&bwriter, packid, 2, 0);//报文标识符
     }
     if (version >= MQTT_50) {//属性
-        binary_set_string(&bwriter, pvlens, pvoccupy);//属性长度
+        binary_set_binary(&bwriter, pvlens, pvoccupy);//属性长度
         if (NULL != props
             && 0 != props->offset) {
-            binary_set_string(&bwriter, props->data, props->offset);//属性
+            binary_set_binary(&bwriter, props->data, props->offset);//属性
         }
     }
     if (NULL != payload && 0 != pllens) {
-        binary_set_string(&bwriter, payload, pllens);//载荷
+        binary_set_binary(&bwriter, payload, pllens);//载荷
     }
     *lens = bwriter.offset;
     return bwriter.data;
@@ -368,7 +366,7 @@ static char *_mqtt_pack_pubackrel_common(mqtt_protversion version, int16_t packi
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 1 + roccupy + total, 0);
     binary_set_int8(&bwriter, fixhead);//固定报头
-    binary_set_string(&bwriter, rmain, roccupy);//剩余长度
+    binary_set_binary(&bwriter, rmain, roccupy);//剩余长度
     binary_set_integer(&bwriter, packid, 2, 0);//报文标识符
     if (2 == total) {
         *lens = bwriter.offset;
@@ -378,9 +376,9 @@ static char *_mqtt_pack_pubackrel_common(mqtt_protversion version, int16_t packi
         binary_set_uint8(&bwriter, reason);//原因码
     }
     if (total >= 4) {
-        binary_set_string(&bwriter, pvlens, pvoccupy);//属性长度
+        binary_set_binary(&bwriter, pvlens, pvoccupy);//属性长度
         if (NULL != props && 0 != props->offset) {
-            binary_set_string(&bwriter, props->data, props->offset);//属性
+            binary_set_binary(&bwriter, props->data, props->offset);//属性
         }
     }
     *lens = bwriter.offset;
@@ -421,15 +419,15 @@ char *mqtt_pack_subscribe(mqtt_protversion version, int16_t packid, binary_ctx *
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 1 + roccupy + total, 0);
     binary_set_int8(&bwriter, fixhead);//固定报头
-    binary_set_string(&bwriter, rmain, roccupy);//剩余长度
+    binary_set_binary(&bwriter, rmain, roccupy);//剩余长度
     binary_set_integer(&bwriter, packid, 2, 0);//报文标识符
     if (version >= MQTT_50) {
-        binary_set_string(&bwriter, pvlens, pvoccupy);//属性长度
+        binary_set_binary(&bwriter, pvlens, pvoccupy);//属性长度
         if (NULL != props && 0 != props->offset) {
-            binary_set_string(&bwriter, props->data, props->offset);//属性
+            binary_set_binary(&bwriter, props->data, props->offset);//属性
         }
     }
-    binary_set_string(&bwriter, topics->data, topics->offset);
+    binary_set_binary(&bwriter, topics->data, topics->offset);
     *lens = bwriter.offset;
     return bwriter.data;
 }
@@ -453,15 +451,15 @@ char *mqtt_pack_suback(mqtt_protversion version, int16_t packid, uint8_t *reason
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 1 + roccupy + total, 0);
     binary_set_int8(&bwriter, fixhead);//固定报头
-    binary_set_string(&bwriter, rmain, roccupy);//剩余长度
+    binary_set_binary(&bwriter, rmain, roccupy);//剩余长度
     binary_set_integer(&bwriter, packid, 2, 0);//报文标识符
     if (version >= MQTT_50) {
-        binary_set_string(&bwriter, pvlens, pvoccupy);//属性长度
+        binary_set_binary(&bwriter, pvlens, pvoccupy);//属性长度
         if (NULL != props && 0 != props->offset) {
-            binary_set_string(&bwriter, props->data, props->offset);//属性
+            binary_set_binary(&bwriter, props->data, props->offset);//属性
         }
     }
-    binary_set_string(&bwriter, (const char *)reasons, rslens);
+    binary_set_binary(&bwriter, (const char *)reasons, rslens);
     *lens = bwriter.offset;
     return bwriter.data;
 }
@@ -486,15 +484,15 @@ char *mqtt_pack_unsubscribe(mqtt_protversion version, int16_t packid, binary_ctx
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 1 + roccupy + total, 0);
     binary_set_int8(&bwriter, fixhead);//固定报头
-    binary_set_string(&bwriter, rmain, roccupy);//剩余长度
+    binary_set_binary(&bwriter, rmain, roccupy);//剩余长度
     binary_set_integer(&bwriter, packid, 2, 0);//报文标识符
     if (version >= MQTT_50) {
-        binary_set_string(&bwriter, pvlens, pvoccupy);//属性长度
+        binary_set_binary(&bwriter, pvlens, pvoccupy);//属性长度
         if (NULL != props && 0 != props->offset) {
-            binary_set_string(&bwriter, props->data, props->offset);//属性
+            binary_set_binary(&bwriter, props->data, props->offset);//属性
         }
     }
-    binary_set_string(&bwriter, topics->data, topics->offset);
+    binary_set_binary(&bwriter, topics->data, topics->offset);
     *lens = bwriter.offset;
     return bwriter.data;
 }
@@ -520,14 +518,14 @@ char *mqtt_pack_unsuback(mqtt_protversion version, int16_t packid, uint8_t *reas
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 1 + roccupy + total, 0);
     binary_set_int8(&bwriter, fixhead);//固定报头
-    binary_set_string(&bwriter, rmain, roccupy);//剩余长度
+    binary_set_binary(&bwriter, rmain, roccupy);//剩余长度
     binary_set_integer(&bwriter, packid, 2, 0);//报文标识符
     if (version >= MQTT_50) {
-        binary_set_string(&bwriter, pvlens, pvoccupy);//属性长度
+        binary_set_binary(&bwriter, pvlens, pvoccupy);//属性长度
         if (NULL != props && 0 != props->offset) {
-            binary_set_string(&bwriter, props->data, props->offset);//属性
+            binary_set_binary(&bwriter, props->data, props->offset);//属性
         }
-        binary_set_string(&bwriter, (const char *)reasons, rslens);
+        binary_set_binary(&bwriter, (const char *)reasons, rslens);
     }
     *lens = bwriter.offset;
     return bwriter.data;
@@ -544,7 +542,7 @@ char *mqtt_pack_ping(size_t *lens) {
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 1 + roccupy, 0);
     binary_set_int8(&bwriter, fixhead);//固定报头
-    binary_set_string(&bwriter, rmain, roccupy);//剩余长度
+    binary_set_binary(&bwriter, rmain, roccupy);//剩余长度
     *lens = bwriter.offset;
     return bwriter.data;
 }
@@ -560,7 +558,7 @@ char *mqtt_pack_pong(size_t *lens) {
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 1 + roccupy, 0);
     binary_set_int8(&bwriter, fixhead);//固定报头
-    binary_set_string(&bwriter, rmain, roccupy);//剩余长度
+    binary_set_binary(&bwriter, rmain, roccupy);//剩余长度
     *lens = bwriter.offset;
     return bwriter.data;
 }
@@ -596,7 +594,7 @@ char *mqtt_pack_disconnect(mqtt_protversion version, uint8_t reason, binary_ctx 
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 1 + roccupy + total, 0);
     binary_set_int8(&bwriter, fixhead);//固定报头
-    binary_set_string(&bwriter, rmain, roccupy);//剩余长度
+    binary_set_binary(&bwriter, rmain, roccupy);//剩余长度
     if (0 == total) {
         *lens = bwriter.offset;
         return bwriter.data;
@@ -604,9 +602,9 @@ char *mqtt_pack_disconnect(mqtt_protversion version, uint8_t reason, binary_ctx 
     // total >= 1：reason 始终写；total >= 2 时附加 property length + properties
     binary_set_uint8(&bwriter, reason);//原因码
     if (total >= 2) {
-        binary_set_string(&bwriter, pvlens, pvoccupy);//属性长度
+        binary_set_binary(&bwriter, pvlens, pvoccupy);//属性长度
         if (NULL != props && 0 != props->offset) {
-            binary_set_string(&bwriter, props->data, props->offset);//属性
+            binary_set_binary(&bwriter, props->data, props->offset);//属性
         }
     }
     *lens = bwriter.offset;
@@ -642,12 +640,12 @@ char *mqtt_pack_auth(mqtt_protversion version, uint8_t reason, binary_ctx *props
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 1 + roccupy + total, 0);
     binary_set_int8(&bwriter, fixhead);//固定报头
-    binary_set_string(&bwriter, rmain, roccupy);//剩余长度
+    binary_set_binary(&bwriter, rmain, roccupy);//剩余长度
     if (0 != total) {
         binary_set_uint8(&bwriter, reason);//原因码
-        binary_set_string(&bwriter, pvlens, pvoccupy);//属性长度
+        binary_set_binary(&bwriter, pvlens, pvoccupy);//属性长度
         if (NULL != props && 0 != props->offset) {
-            binary_set_string(&bwriter, props->data, props->offset);//属性
+            binary_set_binary(&bwriter, props->data, props->offset);//属性
         }
     }
     *lens = bwriter.offset;

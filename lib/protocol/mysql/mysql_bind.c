@@ -46,7 +46,7 @@ static void _mysql_bind_type_name(mysql_bind_ctx *mbind, mysql_field_types type,
         size_t lens = strlen(name);
         _mysql_set_lenenc(&mbind->type_name, lens);
         if (lens > 0) {
-            binary_set_string(&mbind->type_name, name, lens);
+            binary_set_binary(&mbind->type_name, name, lens);
         }
     }
 }
@@ -62,7 +62,7 @@ void mysql_bind_string(mysql_bind_ctx *mbind, const char *name, char *value, siz
         _mysql_bind_type_name(mbind, MYSQL_TYPE_STRING, name, 0);
         _mysql_set_lenenc(&mbind->value, lens);
         if (lens > 0) {
-            binary_set_string(&mbind->value, value, lens);
+            binary_set_binary(&mbind->value, value, lens);
         }
     }
 }

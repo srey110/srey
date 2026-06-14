@@ -430,11 +430,11 @@ static void test_pgpack_error_notice(CuTest *tc) {
     binary_ctx bw;
     binary_init(&bw, NULL, 0, 0);
     binary_set_int8(&bw, 'S');
-    binary_set_string(&bw, "ERROR", 0);
+    binary_set_string(&bw, "ERROR");
     binary_set_int8(&bw, 'M');
-    binary_set_string(&bw, "bad command", 0);
+    binary_set_string(&bw, "bad command");
     binary_set_int8(&bw, 'C');
-    binary_set_string(&bw, "42601", 0);
+    binary_set_string(&bw, "42601");
     binary_set_int8(&bw, 0);
 
     binary_ctx br;

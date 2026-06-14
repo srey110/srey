@@ -77,12 +77,12 @@ static int32_t _pgsql_startup(ev_ctx *ev, ud_cxt *ud) {
     binary_set_skip(&bwriter, 4);                           // 预留长度字段
     binary_set_integer(&bwriter, 3, 2, 0);                  // 协议主版本号 3
     binary_set_integer(&bwriter, 0, 2, 0);                  // 协议次版本号 0
-    binary_set_string(&bwriter, "user", 0);
-    binary_set_string(&bwriter, pg->user, 0);
-    binary_set_string(&bwriter, "database", 0);
-    binary_set_string(&bwriter, pg->database, 0);
-    binary_set_string(&bwriter, "application_name", 0);
-    binary_set_string(&bwriter, "srey", 0);
+    binary_set_string(&bwriter, "user");
+    binary_set_string(&bwriter, pg->user);
+    binary_set_string(&bwriter, "database");
+    binary_set_string(&bwriter, pg->database);
+    binary_set_string(&bwriter, "application_name");
+    binary_set_string(&bwriter, "srey");
     binary_set_int8(&bwriter, 0);                           // 参数列表结束标志
     size_t size = bwriter.offset;
     binary_offset(&bwriter, 0);
@@ -191,7 +191,7 @@ static const char *_pgsql_get_authmod(pgsql_ctx *pg, binary_ctx *breader) {
         if (slen >= remain) {
             break;
         }
-        server_mods[server_count] = binary_get_string(breader, 0);
+        server_mods[server_count] = binary_get_string(breader);
         server_count++;
     }
     // 按优先级遍历本端支持的方法列表，找到服务端也支持的第一个
@@ -219,7 +219,7 @@ static const char *_pgsql_get_authmod(pgsql_ctx *pg, binary_ctx *breader) {
 static int32_t _pgsql_password_auth(pgsql_ctx *pg, ev_ctx *ev) {
     binary_ctx bwriter;
     pgsql_pack_start(&bwriter, 'p');
-    binary_set_string(&bwriter, pg->password, 0);
+    binary_set_string(&bwriter, pg->password);
     pgsql_pack_end(&bwriter);
     return ev_send(ev, pg->fd, pg->skid, bwriter.data, bwriter.offset, 0);
 }
@@ -231,7 +231,7 @@ static int32_t _pgsql_md5_auth(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *breader) {
         LOG_WARN("%s", "md5 auth: salt length invalid.");
         return ERR_FAILED;
     }
-    const char *salt = binary_get_string(breader, 4);
+    const char *salt = binary_get_binary(breader, 4);
     md5_ctx md5;
     char hash[MD5_BLOCK_SIZE];
     char inner_hex[MD5_BLOCK_SIZE * 2 + 1];       // hex(md5(password+user))
@@ -260,7 +260,7 @@ static int32_t _pgsql_md5_auth(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *breader) {
     secure_zero(&md5, sizeof(md5));
     binary_ctx bwriter;
     pgsql_pack_start(&bwriter, 'p');
-    binary_set_string(&bwriter, response, 0);
+    binary_set_string(&bwriter, response);
     secure_zero(response, sizeof(response));
     pgsql_pack_end(&bwriter);
     return ev_send(ev, pg->fd, pg->skid, bwriter.data, bwriter.offset, 0);
@@ -286,10 +286,10 @@ static int32_t _pgsql_scram_client_first(pgsql_ctx *pg, ev_ctx *ev, const char *
     }
     binary_ctx bwriter;
     pgsql_pack_start(&bwriter, 'p');
-    binary_set_string(&bwriter, mod, 0);                    // 所选 SASL 机制名称
+    binary_set_string(&bwriter, mod);                    // 所选 SASL 机制名称
     size_t fmlens = strlen(first_message);
     binary_set_integer(&bwriter, fmlens, 4, 0);             // client-first-message 长度
-    binary_set_string(&bwriter, first_message, fmlens);
+    binary_set_binary(&bwriter, first_message, fmlens);
     FREE(first_message);
     pgsql_pack_end(&bwriter);
     return ev_send(ev, pg->fd, pg->skid, bwriter.data, bwriter.offset, 0);
@@ -315,7 +315,7 @@ static int32_t _pgsql_scram_client_final(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *
     }
     binary_ctx bwriter;
     pgsql_pack_start(&bwriter, 'p');
-    binary_set_string(&bwriter, final_message, strlen(final_message));
+    binary_set_binary(&bwriter, final_message, strlen(final_message));
     FREE(final_message);
     pgsql_pack_end(&bwriter);
     return ev_send(ev, pg->fd, pg->skid, bwriter.data, bwriter.offset, 0);

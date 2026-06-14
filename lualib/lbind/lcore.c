@@ -54,7 +54,7 @@ static task_ctx **_parse_multi_dsts(lua_State *lua, int32_t idx, int32_t *n_out)
     MALLOC(dsts, sizeof(task_ctx *) * (size_t)n);
     lua_Integer i;
     for (i = 0; i < n; i++) {
-        lua_geti(lua, idx, i + 1);
+        lua_rawgeti(lua, idx, i + 1);
         dsts[i] = (task_ctx *)lua_touserdata(lua, -1);
         lua_pop(lua, 1);
     }
@@ -352,10 +352,10 @@ static int32_t _lcore_send_multi(lua_State *lua) {
     MALLOC(skids, sizeof(uint64_t) * (size_t)n_fds);
     lua_Integer i;
     for (i = 0; i < n_fds; i++) {
-        lua_geti(lua, 1, i + 1);
+        lua_rawgeti(lua, 1, i + 1);
         fds[i] = (SOCKET)lua_tointeger(lua, -1);
         lua_pop(lua, 1);
-        lua_geti(lua, 2, i + 1);
+        lua_rawgeti(lua, 2, i + 1);
         skids[i] = (uint64_t)lua_tointeger(lua, -1);
         lua_pop(lua, 1);
     }

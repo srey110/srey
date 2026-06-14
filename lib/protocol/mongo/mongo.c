@@ -204,7 +204,7 @@ void *mongo_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
             _mongo_pkfree(mgopack);
             return NULL;
         }
-        mgopack->docid = binary_get_string(&breader, 0);
+        mgopack->docid = binary_get_string(&breader);
         if (section_start + mgopack->klens != breader.size) {
             BIT_SET(*status, PROT_ERROR);
             LOG_WARN("OP_MSG multi-Section response not supported (kind=1).");

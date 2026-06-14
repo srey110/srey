@@ -76,14 +76,18 @@ void binary_set_float(binary_ctx *ctx, float val, int32_t islittle);
 /// <param name="islittle">1 小端序列 0大端序列</param>
 void binary_set_double(binary_ctx *ctx, double val, int32_t islittle);
 /// <summary>
+/// 写入以'\0'结束的字符串
+/// </summary>
+/// <param name="ctx">binary_ctx</param>
+/// <param name="buf">值</param>
+void binary_set_string(binary_ctx *ctx, const char *buf);
+/// <summary>
 /// 写入char *
 /// </summary>
 /// <param name="ctx">binary_ctx</param>
 /// <param name="buf">值</param>
-/// <param name="lens">字节数；0 表示 buf 是 C 字符串（自动 strlen 并写入 NUL 终止），
-///                    大于 0 表示 buf 是二进制数据（纯写入指定长度，不含 NUL）</param>
-/// <remarks>lens=0 时 buf 必须以 NUL 终止，否则 strlen 越界读</remarks>
-void binary_set_string(binary_ctx *ctx, const char *buf, size_t lens);
+/// <param name="lens">字节数</param>
+void binary_set_binary(binary_ctx *ctx, const char *buf, size_t lens);
 /// <summary>
 /// 填充
 /// </summary>
@@ -154,12 +158,18 @@ float binary_get_float(binary_ctx *ctx, int32_t islittle);
 /// <returns>double</returns>
 double binary_get_double(binary_ctx *ctx, int32_t islittle);
 /// <summary>
-/// 获取字符串值
+/// 获取字符串值,取到'\0'结束
 /// </summary>
 /// <param name="ctx">binary_ctx</param>
-/// <param name="lens">长度,0 取到'\0'结束</param>
 /// <returns>char *</returns>
-char *binary_get_string(binary_ctx *ctx, size_t lens);
+char *binary_get_string(binary_ctx *ctx);
+/// <summary>
+/// 获取指定长度的数据
+/// </summary>
+/// <param name="ctx">binary_ctx</param>
+/// <param name="lens">长度</param>
+/// <returns>char *;lens 为 0 时返回 NULL</returns>
+char *binary_get_binary(binary_ctx *ctx, size_t lens);
 /// <summary>
 /// 跳过指定字节
 /// </summary>

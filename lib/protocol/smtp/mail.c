@@ -156,13 +156,13 @@ static void _mail_pack_addr(mail_ctx *mail, binary_ctx *bwriter, mail_addr_type 
     }
     switch (type) {
     case TO:
-        binary_set_string(bwriter, "To: ", strlen("To: "));
+        binary_set_binary(bwriter, "To: ", strlen("To: "));
         break;
     case CC:
-        binary_set_string(bwriter, "Cc: ", strlen("Cc: "));
+        binary_set_binary(bwriter, "Cc: ", strlen("Cc: "));
         break;
     case BCC:
-        binary_set_string(bwriter, "Bcc: ", strlen("Bcc: "));
+        binary_set_binary(bwriter, "Bcc: ", strlen("Bcc: "));
         break;
     default:
         return;
@@ -196,20 +196,20 @@ static void _mail_dot_stuff(binary_ctx *bw, const char *body, size_t lens) {
     const char *end = body + lens;
     // 输入首字节即第一行行首
     if ('.' == *start) {
-        binary_set_string(bw, ".", 1);
+        binary_set_binary(bw, ".", 1);
     }
     while (start < end) {
         const char *crlf = memstr(0, (char *)start, (size_t)(end - start), "\r\n", 2);
         if (NULL == crlf) {
-            binary_set_string(bw, start, (size_t)(end - start));
+            binary_set_binary(bw, start, (size_t)(end - start));
             return;
         }
         // 写到 \r\n 含
-        binary_set_string(bw, start, (size_t)(crlf + 2 - start));
+        binary_set_binary(bw, start, (size_t)(crlf + 2 - start));
         start = crlf + 2;
         // \r\n 之后若紧跟 '.'，插入额外 '.' 实现 dot-stuffing
         if (start < end && '.' == *start) {
-            binary_set_string(bw, ".", 1);
+            binary_set_binary(bw, ".", 1);
         }
     }
 }
@@ -265,7 +265,7 @@ char *mail_pack(mail_ctx *mail) {
             binary_set_va(&bwriter, "\r\n\r\n--%s\r\n", innerboundary);
             //Add html message here
             binary_set_va(&bwriter, "%s", "Content-type: text/html; charset=" MIME_CHARSET "\r\nContent-Transfer-Encoding: base64\r\n\r\n");
-            binary_set_string(&bwriter, mail->html, strlen(mail->html));
+            binary_set_binary(&bwriter, mail->html, strlen(mail->html));
             binary_set_va(&bwriter, "\r\n\r\n--%s--\r\n", innerboundary);
             //end the boundaries if there are no attachments
             if (0 == nattach) {
@@ -281,7 +281,7 @@ char *mail_pack(mail_ctx *mail) {
             binary_set_va(&bwriter, "\tname=\"%s\"\r\n", att->file);
             binary_set_va(&bwriter, "%s", "Content-Transfer-Encoding: base64\r\n");
             binary_set_va(&bwriter, "Content-Disposition: attachment; filename=\"%s\"\r\n\r\n", att->file);
-            binary_set_string(&bwriter, att->content, strlen(att->content));
+            binary_set_binary(&bwriter, att->content, strlen(att->content));
             if (i + 1 == nattach) {
                 binary_set_va(&bwriter, "\r\n\r\n--%s--\r\n", boundary);
             } else {
@@ -293,7 +293,7 @@ char *mail_pack(mail_ctx *mail) {
             _mail_dot_stuff(&bwriter, mail->msg, strlen(mail->msg));
         }
     }
-    binary_set_string(&bwriter, "\r\n.\r\n", 5);
+    binary_set_binary(&bwriter, "\r\n.\r\n", 5);
     // 调用方 coro_utils.c / lprot.c 以 strlen() 计算长度；显式追加 NUL 终结避免读未初始化内存 UB
     binary_set_uint8(&bwriter, 0);
     return bwriter.data;

@@ -190,7 +190,7 @@ static int _dc_read_key(binary_ctx *br, char *keybuf, size_t cap) {
     if (br->size - br->offset < (size_t)klen) {
         return ERR_FAILED;
     }
-    char *raw = binary_get_string(br, klen);
+    char *raw = binary_get_binary(br, klen);
     return _dc_key_to_cstr(raw, klen, keybuf, cap);
 }
 // SET body 格式:| u16 klen | key | u32 vlen | val |
@@ -210,7 +210,7 @@ static void _dc_handle_set(dc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *b
         return;
     }
     size_t vsize = vlen;
-    void *val = (vsize > 0) ? (void *)binary_get_string(br, vsize) : NULL;
+    void *val = (vsize > 0) ? (void *)binary_get_binary(br, vsize) : NULL;
     // 1. 写 kv
     _dc_kv_set(ctx, keybuf, val, vsize);
     // 2. 回 setter:OK(fire-and-forget 跳过)
@@ -383,7 +383,7 @@ static bool _dc_iter(const void *item, void *udata) {
     binary_ctx *bw = (binary_ctx *)udata;
     size_t klen = strlen(e->key);
     binary_set_uinteger(bw, (uint64_t)klen, 2, 0);
-    binary_set_string(bw, e->key, klen);
+    binary_set_binary(bw, e->key, klen);
     return true;
 }
 static void _dc_handle_list(dc_ctx *ctx, name_t src, uint64_t sess) {
@@ -482,10 +482,10 @@ static char *_dc_pack_kv(const char *key, void *val, size_t vsize, size_t *out_t
     // val=NULL 时强制 vlen=0,避免"vlen 声称 N 但实际不写 val 字节"造成协议不一致
     size_t real_vsize = (NULL != val) ? vsize : 0;
     binary_set_uinteger(&bw, (uint64_t)klen, 2, 0);  // u16 klen 网络序
-    binary_set_string(&bw, key, klen);
+    binary_set_binary(&bw, key, klen);
     binary_set_uinteger(&bw, (uint64_t)real_vsize, 4, 0);  // u32 vlen 网络序(总写,空 val 也写 0)
     if (real_vsize > 0) {
-        binary_set_string(&bw, (const char *)val, real_vsize);
+        binary_set_binary(&bw, (const char *)val, real_vsize);
     }
     *out_total = bw.offset;
     return bw.data;
@@ -495,7 +495,7 @@ static char *_dc_pack_key(const char *key, size_t *out_total) {
     binary_init(&bw, NULL, 0, 0);
     size_t klen = strlen(key);
     binary_set_uinteger(&bw, (uint64_t)klen, 2, 0);  // u16 klen 网络序
-    binary_set_string(&bw, key, klen);
+    binary_set_binary(&bw, key, klen);
     *out_total = bw.offset;
     return bw.data;
 }
@@ -692,6 +692,6 @@ int32_t dc_parse_keys(binary_ctx *br, dc_key *out) {
     if (br->size - br->offset < out->klen) {
         return ERR_FAILED;
     }
-    out->key = out->klen > 0 ? binary_get_string(br, out->klen) : NULL;
+    out->key = out->klen > 0 ? binary_get_binary(br, out->klen) : NULL;
     return ERR_OK;
 }

@@ -223,12 +223,12 @@ static int32_t _test_retained_basic(task_ctx *task) {
     (void)binary_get_uinteger(&br, sizeof(name_t), 0);   // skip publisher
     uint16_t mlen = (uint16_t)binary_get_uinteger(&br, 2, 0);
     if (mlen > 0) {
-        (void)binary_get_string(&br, mlen);
+        (void)binary_get_binary(&br, mlen);
     }
     uint16_t tlen = (uint16_t)binary_get_uinteger(&br, 2, 0);
-    const char *topic = binary_get_string(&br, tlen);
+    const char *topic = binary_get_binary(&br, tlen);
     uint32_t plen = (uint32_t)binary_get_uinteger(&br, 4, 0);
-    const char *payload = binary_get_string(&br, plen);
+    const char *payload = binary_get_binary(&br, plen);
     if (4 != tlen || 0 != memcmp(topic, "t7/r", 4)) {
         LOG_ERROR("retained_basic: topic mismatch len=%u", tlen);
         return ERR_FAILED;
@@ -274,7 +274,7 @@ static int32_t _test_retained_meta_snapshot(task_ctx *task) {
         LOG_ERROR("retained_meta_snapshot: meta size %u != 2", mlen);
         return ERR_FAILED;
     }
-    const char *meta = binary_get_string(&br, mlen);
+    const char *meta = binary_get_binary(&br, mlen);
     if (0 != memcmp(meta, "v1", 2)) {
         LOG_ERROR("retained_meta_snapshot: expect v1 snapshot, got %.2s", meta);
         return ERR_FAILED;

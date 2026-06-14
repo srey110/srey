@@ -40,9 +40,9 @@ static void *_mongo_pack_msg(mongo_ctx *mongo, int32_t kind, const char *docid, 
     } else {
         binary_set_int8(&bwriter, 1);//kind
         binary_set_integer(&bwriter, 4 + strlen(docid) + 1 + dlens, 4, 1);
-        binary_set_string(&bwriter, docid, 0);
+        binary_set_string(&bwriter, docid);
     }
-    binary_set_string(&bwriter, docs, dlens);//正文
+    binary_set_binary(&bwriter, docs, dlens);//正文
     *size = bwriter.offset;
     binary_offset(&bwriter, 0);
     binary_set_integer(&bwriter, *size, 4, 1);

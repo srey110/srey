@@ -111,7 +111,7 @@ local function _debug_handle(cmd, a1, a2)
 end
 
 ---注入 srey 挂起会话表 coro_sess 的只读引用；仅初始化阶段调用一次
----@param corosess table 由 lib/srey 持有的 coro_sess 表
+---@param corosess table<integer, CoroSession> 由 lib/srey 持有的 coro_sess 表
 function M._set_coro_sess(corosess)
     _coro_sess = corosess
 end

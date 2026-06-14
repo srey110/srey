@@ -20,6 +20,7 @@ void spsc_init(spsc_ctx *q, size_t elsize, uint32_t capacity) {
     q->stride   = (uint32_t)ROUND_UP(elsize, 8);
     q->enq.v    = 0;
     q->deq.v    = 0;
+    ASSERTAB((size_t)capacity <= SIZE_MAX / q->stride, "byte size overflow.");
     MALLOC(q->cells, (size_t)q->stride * capacity);
     ASSERTAB(NULL != q->cells, "spsc_init: malloc failed.");
 }

@@ -455,8 +455,8 @@ pgpack_ctx *pgsql_copy_in(pgsql_ctx *pg, const char *sql, const void *data, size
     // 合并两段到连续缓冲区后发送，避免两次系统调用
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
-    binary_set_string(&bwriter, copy_data, dsize);
-    binary_set_string(&bwriter, copy_done, csize);
+    binary_set_binary(&bwriter, copy_data, dsize);
+    binary_set_binary(&bwriter, copy_done, csize);
     FREE(copy_data);
     FREE(copy_done);
     return coro_send(pg->task, pg->fd, pg->skid, bwriter.data, bwriter.offset, NULL, 0);

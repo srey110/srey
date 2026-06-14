@@ -15,13 +15,13 @@ char *_pgpack_error_notice(binary_ctx *breader) {
         if (0 == flag) {
             break;
         }
-        tmp = binary_get_string(breader, 0);
+        tmp = binary_get_string(breader);
         binary_set_int8(&bwriter, flag);
-        binary_set_string(&bwriter, ": ", 2);
+        binary_set_binary(&bwriter, ": ", 2);
         if (breader->size - breader->offset > 1) { // 还有后续字段（1 字节为结束标志）
             binary_set_va(&bwriter, "%s\r\n", tmp);
         } else {
-            binary_set_string(&bwriter, tmp, 0); // 最后一个字段，不追加换行
+            binary_set_string(&bwriter, tmp); // 最后一个字段，不追加换行
             break;
         }
     }
@@ -83,8 +83,8 @@ static pgpack_ctx *_pgpack_notification_response(binary_ctx *breader) {
     MALLOC(notification, sizeof(pgpack_notification));
     notification->payload = breader->data; // 接管原始消息缓冲区的所有权
     notification->pid = (int32_t)binary_get_integer(breader, 4, 0);
-    notification->channel = binary_get_string(breader, 0);
-    notification->notification = binary_get_string(breader, 0);
+    notification->channel = binary_get_string(breader);
+    notification->notification = binary_get_string(breader);
     pgpack_ctx *pgpack = _pgpack_init(NULL, PGPACK_NOTIFICATION);
     pgpack->pack = notification;
     pgpack->_free_pgpack = _pgpack_notification_response_free;
@@ -136,7 +136,7 @@ static int32_t _pgpack_row_description(pgpack_ctx *pgpack, binary_ctx *breader) 
     pgpack_field *field;
     for (uint16_t i = 0; i < reader->field_count; i++) {
         field = &reader->fields[i];
-        fname = binary_get_string(breader, 0);
+        fname = binary_get_string(breader);
         safe_fill_str(field->name, sizeof(field->name), fname);
         field->table_oid = (int32_t)binary_get_integer(breader, 4, 0);
         field->index = (int16_t)binary_get_integer(breader, 2, 0);
@@ -224,7 +224,7 @@ static void _pgpack_copy_data(pgpack_ctx *pgpack, binary_ctx *breader) {
     if (0 == datalen) {
         return;
     }
-    binary_set_string(&copyout->data, breader->data + breader->offset, datalen);
+    binary_set_binary(&copyout->data, breader->data + breader->offset, datalen);
 }
 // 解析一个完整的服务端消息，在收到 ReadyForQuery 时返回已累积的 pgpack_ctx
 pgpack_ctx *_pgpack_parser(pgsql_ctx *pg, binary_ctx *breader, ud_cxt *ud, int32_t *status) {
@@ -299,7 +299,7 @@ pgpack_ctx *_pgpack_parser(pgsql_ctx *pg, binary_ctx *breader, ud_cxt *ud, int32
     case 'd': // CopyData：服务端发来的 COPY OUT 数据，追加到累积缓冲区
         //合法序列必为 'H'（CopyOutResponse 初始化 pg->pack=PGPACK_COPY_OUT）后才能收到 'd'。
         //若 pg->pack 为 NULL（无 'H' 前置）或类型不符（前一个查询的 PGPACK_OK 累积中），
-        //强转 pgpack_copy_out_ctx* 后 binary_set_string 会写到错误偏移 → 内存损坏 / 空指针解引用。
+        //强转 pgpack_copy_out_ctx* 后 binary_set_binary 会写到错误偏移 → 内存损坏 / 空指针解引用。
         if (NULL == pg->pack || PGPACK_COPY_OUT != pg->pack->type) {
             BIT_SET(*status, PROT_ERROR);
             FREE(breader->data);
@@ -316,7 +316,7 @@ pgpack_ctx *_pgpack_parser(pgsql_ctx *pg, binary_ctx *breader, ud_cxt *ud, int32
         if (NULL == pg->pack) {
             _pgpack_init(pg, PGPACK_OK);
         }
-        char *complete = binary_get_string(breader, 0);
+        char *complete = binary_get_string(breader);
         if (!EMPTYSTR(complete)) {
             safe_fill_str(pg->pack->complete, sizeof(pg->pack->complete), complete);
         }

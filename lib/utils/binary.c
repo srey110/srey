@@ -82,17 +82,19 @@ void binary_set_double(binary_ctx *ctx, double val, int32_t islittle) {
     pack_double(ctx->data + ctx->offset, val, islittle);
     ctx->offset += sizeof(val);
 }
-void binary_set_string(binary_ctx *ctx, const char *buf, size_t lens) {
+void binary_set_string(binary_ctx *ctx, const char *buf) {
     if (NULL == buf) {
         return;
     }
-    if (0 == lens) {
-        lens = strlen(buf);
-        _binary_expand(ctx, lens + 1);
-        memcpy(ctx->data + ctx->offset, buf, lens);
-        ctx->offset += lens;
-        ctx->data[ctx->offset] = '\0';
-        ctx->offset++;
+    size_t lens = strlen(buf);
+    _binary_expand(ctx, lens + 1);
+    memcpy(ctx->data + ctx->offset, buf, lens);
+    ctx->offset += lens;
+    ctx->data[ctx->offset] = '\0';
+    ctx->offset++;
+}
+void binary_set_binary(binary_ctx *ctx, const char *buf, size_t lens) {
+    if (NULL == buf || 0 == lens) {
         return;
     }
     _binary_expand(ctx, lens);
@@ -180,23 +182,21 @@ double binary_get_double(binary_ctx *ctx, int32_t islittle) {
     ctx->offset += sizeof(val);
     return val;
 }
-char *binary_get_string(binary_ctx *ctx, size_t lens) {
+char *binary_get_string(binary_ctx *ctx) {
     char *val = ctx->data + ctx->offset;
+    size_t remain = ctx->size - ctx->offset;
+    size_t slen = strnlen(val, remain);
+    ASSERTAB(slen < remain, "out of memory.");
+    ctx->offset += slen + 1;
+    return val;
+}
+char *binary_get_binary(binary_ctx *ctx, size_t lens) {
+    ASSERTAB(lens <= ctx->size - ctx->offset, "out of memory.");
     if (0 == lens) {
-        size_t remain = ctx->size - ctx->offset;
-        size_t slen = strnlen(val, remain);
-        if (slen < remain) {
-            ctx->offset += slen + 1;
-        } else {
-            if (remain > 0) {
-                ctx->data[ctx->size - 1] = '\0';
-            }
-            ctx->offset = ctx->size;
-        }
-    } else {
-        ASSERTAB(lens <= ctx->size - ctx->offset, "out of memory.");
-        ctx->offset += lens;
+        return NULL;
     }
+    char *val = ctx->data + ctx->offset;
+    ctx->offset += lens;
     return val;
 }
 void binary_get_skip(binary_ctx *ctx, size_t lens) {

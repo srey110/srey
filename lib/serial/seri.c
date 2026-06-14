@@ -58,16 +58,16 @@ void seri_append_string(binary_ctx *bw, const char *s, size_t len) {
     if (len < SERI_MAX_COOKIE) {
         binary_set_uint8(bw, COMBINE_TYPE(SERI_TYPE_SHORT_STRING, (uint8_t)len));
         if (len > 0) {
-            binary_set_string(bw, s, len);
+            binary_set_binary(bw, s, len);
         }
     } else if (len < 0x10000) {
         binary_set_uint8(bw, COMBINE_TYPE(SERI_TYPE_LONG_STRING, 2));
         binary_set_uinteger(bw, (uint64_t)len, 2, 1);
-        binary_set_string(bw, s, len);
+        binary_set_binary(bw, s, len);
     } else {
         binary_set_uint8(bw, COMBINE_TYPE(SERI_TYPE_LONG_STRING, 4));
         binary_set_uinteger(bw, (uint64_t)len, 4, 1);
-        binary_set_string(bw, s, len);
+        binary_set_binary(bw, s, len);
     }
 }
 void seri_append_userdata(binary_ctx *bw, void *ud) {

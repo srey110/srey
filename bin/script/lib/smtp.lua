@@ -46,7 +46,7 @@ end
 function ctx:reset()
     local fd, skid = self.smtp:sock_id()
     local cmd, csize = self.smtp:pack_reset()
-    local pack, _ =  srey.syn_send(fd, skid, cmd, csize, 0)
+    local pack =  srey.syn_send(fd, skid, cmd, csize, 0)
     if nil == pack then
         return false
     end
@@ -58,7 +58,7 @@ end
 function ctx:_ping()
     local fd, skid = self.smtp:sock_id()
     local cmd, csize = self.smtp:pack_ping()
-    local pack, _ =  srey.syn_send(fd, skid, cmd, csize, 0)
+    local pack =  srey.syn_send(fd, skid, cmd, csize, 0)
     if nil == pack then
         return false
     end
@@ -85,7 +85,7 @@ function ctx:_send(mail)
     if not cmd then
         return false
     end
-    local pack, _ =  srey.syn_send(fd, skid, cmd, csize, 0)
+    local pack =  srey.syn_send(fd, skid, cmd, csize, 0)
     if nil == pack or not self.smtp:check_ok(pack)  then
         return false
     end
@@ -94,18 +94,18 @@ function ctx:_send(mail)
         if not cmd then
             return false
         end
-        pack, _ =  srey.syn_send(fd, skid, cmd, csize, 0)
+        pack =  srey.syn_send(fd, skid, cmd, csize, 0)
         if nil == pack or not self.smtp:check_ok(pack) then
             return false
         end
     end
     cmd, csize = self.smtp:pack_data()
-    pack, _ =  srey.syn_send(fd, skid, cmd, csize, 0)
+    pack =  srey.syn_send(fd, skid, cmd, csize, 0)
     if nil == pack or not self.smtp:check_code(pack, "354") then
         return false
     end
     cmd, csize = mail:pack()
-    pack, _ =  srey.syn_send(fd, skid, cmd, csize, 0)
+    pack =  srey.syn_send(fd, skid, cmd, csize, 0)
     if nil == pack or not self.smtp:check_ok(pack) then
         return false
     end

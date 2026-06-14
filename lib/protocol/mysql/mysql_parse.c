@@ -71,7 +71,7 @@ void _mpack_err(mysql_ctx *mysql, binary_ctx *breader, mpack_err *err) {
     err->error_msg.lens = breader->size - breader->offset;
     mysql->error_code = err->error_code;
     if (err->error_msg.lens > 0) {
-        err->error_msg.data = binary_get_string(breader, err->error_msg.lens);
+        err->error_msg.data = binary_get_binary(breader, err->error_msg.lens);
         size_t lens = err->error_msg.lens <= sizeof(mysql->error_msg) - 1 ? err->error_msg.lens : sizeof(mysql->error_msg) - 1;
         memcpy(mysql->error_msg, err->error_msg.data, lens);
         mysql->error_msg[lens] = '\0';
@@ -198,7 +198,7 @@ static int32_t _mpack_parse_text_row(mysql_reader_ctx *reader, binary_ctx *bread
             return ERR_FAILED;
         }
         if (row[i].val.lens > 0) {
-            row[i].val.data = binary_get_string(breader, row[i].val.lens);
+            row[i].val.data = binary_get_binary(breader, row[i].val.lens);
         }
     }
     array_push_back(&reader->arr_rows, &row);
@@ -212,7 +212,7 @@ static int32_t _mpack_parse_binary_row(mysql_reader_ctx *reader, binary_ctx *bre
     CALLOC(row, 1, sizeof(mpack_row) * (size_t)reader->field_count);
     row->payload = breader->data;
     // 读取 NULL 位图（偏移量 +2 是因为二进制协议位图从第 3 位开始）
-    char *bitmap = binary_get_string(breader, (((size_t)reader->field_count + 9) / 8));
+    char *bitmap = binary_get_binary(breader, (((size_t)reader->field_count + 9) / 8));
     for (int32_t i = 0; i < reader->field_count; i++) {
         off = i + 2;
         if (BIT_CHECK(bitmap[(off / 8)], (1 << (off % 8)))) {
@@ -274,7 +274,7 @@ static int32_t _mpack_parse_binary_row(mysql_reader_ctx *reader, binary_ctx *bre
             return ERR_FAILED;
         }
         if (row[i].val.lens > 0) {
-            row[i].val.data = binary_get_string(breader, row[i].val.lens);
+            row[i].val.data = binary_get_binary(breader, row[i].val.lens);
         }
     }
     array_push_back(&reader->arr_rows, &row);
@@ -351,7 +351,7 @@ static int32_t _mpack_parse_field(binary_ctx *breader, mpack_field *field) {
         return ERR_FAILED;
     }
     if (lens > 0) {
-        val = binary_get_string(breader, (size_t)lens);
+        val = binary_get_binary(breader, (size_t)lens);
         cplen = lens < sizeof(field->schema) ? (size_t)lens : sizeof(field->schema) - 1;
         memcpy(field->schema, val, cplen);
         field->schema[cplen] = '\0';
@@ -361,7 +361,7 @@ static int32_t _mpack_parse_field(binary_ctx *breader, mpack_field *field) {
         return ERR_FAILED;
     }
     if (lens > 0) {
-        val = binary_get_string(breader, (size_t)lens);
+        val = binary_get_binary(breader, (size_t)lens);
         cplen = lens < sizeof(field->table) ? (size_t)lens : sizeof(field->table) - 1;
         memcpy(field->table, val, cplen);
         field->table[cplen] = '\0';
@@ -371,7 +371,7 @@ static int32_t _mpack_parse_field(binary_ctx *breader, mpack_field *field) {
         return ERR_FAILED;
     }
     if (lens > 0) {
-        val = binary_get_string(breader, (size_t)lens);
+        val = binary_get_binary(breader, (size_t)lens);
         cplen = lens < sizeof(field->org_table) ? (size_t)lens : sizeof(field->org_table) - 1;
         memcpy(field->org_table, val, cplen);
         field->org_table[cplen] = '\0';
@@ -381,7 +381,7 @@ static int32_t _mpack_parse_field(binary_ctx *breader, mpack_field *field) {
         return ERR_FAILED;
     }
     if (lens > 0) {
-        val = binary_get_string(breader, (size_t)lens);
+        val = binary_get_binary(breader, (size_t)lens);
         cplen = lens < sizeof(field->name) ? (size_t)lens : sizeof(field->name) - 1;
         memcpy(field->name, val, cplen);
         field->name[cplen] = '\0';
@@ -391,7 +391,7 @@ static int32_t _mpack_parse_field(binary_ctx *breader, mpack_field *field) {
         return ERR_FAILED;
     }
     if (lens > 0) {
-        val = binary_get_string(breader, (size_t)lens);
+        val = binary_get_binary(breader, (size_t)lens);
         cplen = lens < sizeof(field->org_name) ? (size_t)lens : sizeof(field->org_name) - 1;
         memcpy(field->org_name, val, cplen);
         field->org_name[cplen] = '\0';

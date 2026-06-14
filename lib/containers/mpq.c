@@ -20,6 +20,7 @@ void mpq_init(mpq_ctx *q, size_t elsize, uint32_t capacity) {
     q->stride   = (uint32_t)ROUND_UP(sizeof(atomic_t) + elsize, 8);
     q->enq.v    = 0;
     q->deq.v    = 0;
+    ASSERTAB((size_t)capacity <= SIZE_MAX / q->stride, "byte size overflow.");
     MALLOC(q->cells, (size_t)q->stride * capacity);
     ASSERTAB(NULL != q->cells, "mpq_init: malloc failed.");
     uint32_t i;

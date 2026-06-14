@@ -362,11 +362,12 @@ static int32_t _lbson_cat(lua_State *lua) {
     } else {
         return luaL_argerror(lua, 2, "string or light userdata expected");
     }
-    if (actual_lens >= 4) {
-        uint32_t bson_lens = (uint32_t)unpack_integer(doc, 4, 1, 0);
-        if (bson_lens > (uint32_t)actual_lens) {
-            return luaL_error(lua, "bson_cat: embedded length %u exceeds buffer size %zu", bson_lens, actual_lens);
-        }
+    if (actual_lens < 5) {
+        return luaL_error(lua, "bson_cat: invalid bson document size %zu (minimum 5)", actual_lens);
+    }
+    uint32_t bson_lens = (uint32_t)unpack_integer(doc, 4, 1, 0);
+    if (bson_lens > (uint32_t)actual_lens) {
+        return luaL_error(lua, "bson_cat: embedded length %u exceeds buffer size %zu", bson_lens, actual_lens);
     }
     bson_cat(bson, doc);
     return 0;
@@ -787,7 +788,9 @@ static void _lbson_decode_field(lua_State *lua, bson_iter *iter, int32_t is_arra
         lbson_binary_t *ud = lua_newuserdata(lua, sizeof(lbson_binary_t) + blens);
         ud->subtype = subtype;
         ud->lens = blens;
-        memcpy(ud + 1, bdata, blens);
+        if (blens > 0) {
+            memcpy(ud + 1, bdata, blens);
+        }
         ASSOC_MTABLE(lua, MT_BSON_BINARY);
         break;
     }

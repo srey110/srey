@@ -423,10 +423,10 @@ static void test_mpack_err_parse(CuTest *tc) {
     // error_code 0x1234
     binary_set_integer(&bw, 0x1234, 2, 1);
     // sql_state_marker(1) + sql_state(5) = 6 字节
-    binary_set_string(&bw, "#HY000", 6);
+    binary_set_binary(&bw, "#HY000", 6);
     // 错误消息
     const char *msg = "syntax error near 'foo'";
-    binary_set_string(&bw, msg, strlen(msg));
+    binary_set_binary(&bw, msg, strlen(msg));
 
     binary_ctx br;
     binary_init(&br, bw.data, bw.offset, 0);
@@ -448,7 +448,7 @@ static void test_mpack_err_empty_msg(CuTest *tc) {
     binary_ctx bw;
     binary_init(&bw, NULL, 0, 0);
     binary_set_integer(&bw, 1045, 2, 1);
-    binary_set_string(&bw, "#28000", 6);
+    binary_set_binary(&bw, "#28000", 6);
     // 无 msg
 
     binary_ctx br;

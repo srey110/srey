@@ -1,6 +1,6 @@
 ﻿#include "serial/bson.h"
 
-#define BSON_APPEND_CSTRING(str) binary_set_string(&bson->doc, str, 0)
+#define BSON_APPEND_CSTRING(str) binary_set_string(&bson->doc, str)
 #define BSON_APPEND_KEY(type) \
     binary_set_int8(&bson->doc, (int8_t)type);\
     BSON_APPEND_CSTRING(key)
@@ -88,7 +88,7 @@ void bson_cat(bson_ctx *bson, char *doc) {
     if (lens <= 5 || PACK_TOO_LONG(lens)) {
         return;
     }
-    binary_set_string(&bson->doc, doc + 4, lens - 5);//4 + 1(eod)
+    binary_set_binary(&bson->doc, doc + 4, lens - 5);//4 + 1(eod)
 }
 void bson_append_document_begain(bson_ctx *bson, const char *key) {
     BSON_APPEND_KEY(BSON_DOCUMENT);
@@ -108,7 +108,7 @@ void bson_append_utf8_n(bson_ctx *bson, const char *key, const char *val, size_t
     ASSERTAB(lens <= INT32_MAX - 1, "BSON UTF-8 string length exceeds 2GB limit");
     BSON_APPEND_KEY(BSON_UTF8);
     binary_set_integer(&bson->doc, lens + 1, 4, 1);
-    binary_set_string(&bson->doc, val, lens);
+    binary_set_binary(&bson->doc, val, lens);
     binary_set_int8(&bson->doc, 0);
 }
 void bson_append_utf8(bson_ctx *bson, const char *key, const char *val) {
@@ -117,24 +117,24 @@ void bson_append_utf8(bson_ctx *bson, const char *key, const char *val) {
 //signed_byte(3) e_name document
 void bson_append_document(bson_ctx *bson, const char *key, char *doc, size_t lens) {
     BSON_APPEND_KEY(BSON_DOCUMENT);
-    binary_set_string(&bson->doc, doc, lens);
+    binary_set_binary(&bson->doc, doc, lens);
 }
 //signed_byte(4) e_name document
 void bson_append_array(bson_ctx *bson, const char *key, char *doc, size_t lens) {
     BSON_APPEND_KEY(BSON_ARRAY);
-    binary_set_string(&bson->doc, doc, lens);
+    binary_set_binary(&bson->doc, doc, lens);
 }
 //signed_byte(5) e_name binary
 void bson_append_binary(bson_ctx *bson, const char *key, bson_subtype type, char *val, size_t lens) {
     BSON_APPEND_KEY(BSON_BINARY);
     binary_set_integer(&bson->doc, lens, 4, 1);
     binary_set_int8(&bson->doc, type);
-    binary_set_string(&bson->doc, val, lens);
+    binary_set_binary(&bson->doc, val, lens);
 }
 //signed_byte(7) e_name (byte*12)
 void bson_append_oid(bson_ctx *bson, const char *key, char oid[BSON_OID_LENS]) {
     BSON_APPEND_KEY(BSON_OID);
-    binary_set_string(&bson->doc, oid, BSON_OID_LENS);
+    binary_set_binary(&bson->doc, oid, BSON_OID_LENS);
 }
 //signed_byte(8) e_name unsigned_byte(0/1)
 void bson_append_bool(bson_ctx *bson, const char *key, int8_t b) {
@@ -163,7 +163,7 @@ void bson_append_regex(bson_ctx *bson, const char *key, const char *pattern, con
 void bson_append_jscode_n(bson_ctx *bson, const char *key, const char *jscode, size_t lens) {
     BSON_APPEND_KEY(BSON_JSCODE);
     binary_set_integer(&bson->doc, lens + 1, 4, 1);
-    binary_set_string(&bson->doc, jscode, lens);
+    binary_set_binary(&bson->doc, jscode, lens);
     binary_set_int8(&bson->doc, 0);
 }
 //signed_byte(13) e_name string
@@ -225,27 +225,27 @@ int32_t bson_iter_next(bson_iter *iter) {
         more = 0;
         break;
     case BSON_DOUBLE://e_name double
-        iter->key = binary_get_string(iter->doc, 0);
+        iter->key = binary_get_string(iter->doc);
         iter->lens = sizeof(double);
-        iter->val = binary_get_string(iter->doc, iter->lens);
+        iter->val = binary_get_binary(iter->doc, iter->lens);
         break;
     case BSON_UTF8://e_name string
     case BSON_JSCODE://e_name string
-        iter->key = binary_get_string(iter->doc, 0);
+        iter->key = binary_get_string(iter->doc);
         lens = binary_get_integer(iter->doc, 4, 1);
         if (lens < 1 || (size_t)(lens + 1) > iter->doc->size - iter->doc->offset) {
             /* BSON 字符串长度字段含末尾 \0，合法值 >= 1；
-             * 为 0 或负数时转 size_t 后下溢为 SIZE_MAX，binary_get_string 将 abort。*/
+             * 为 0 或负数时 (size_t)(lens-1) 下溢，binary_get_binary 读越界。*/
             more = 0;
             LOG_WARN("invalid bson string length %" PRId64 ".", lens);
             break;
         }
         iter->lens = (size_t)lens - 1;
-        iter->val = binary_get_string(iter->doc, iter->lens + 1);
+        iter->val = binary_get_binary(iter->doc, iter->lens + 1);
         break;
     case BSON_DOCUMENT://e_name document
     case BSON_ARRAY://e_name document
-        iter->key = binary_get_string(iter->doc, 0);
+        iter->key = binary_get_string(iter->doc);
         off = iter->doc->offset;
         lens = binary_get_integer(iter->doc, 4, 1);
         if (lens < 5 || (size_t)lens > iter->doc->size - off) {
@@ -255,10 +255,10 @@ int32_t bson_iter_next(bson_iter *iter) {
         }
         iter->lens = (size_t)lens;
         binary_offset(iter->doc, off);
-        iter->val = binary_get_string(iter->doc, iter->lens);
+        iter->val = binary_get_binary(iter->doc, iter->lens);
         break;
     case BSON_BINARY://e_name binary
-        iter->key = binary_get_string(iter->doc, 0);
+        iter->key = binary_get_string(iter->doc);
         lens = binary_get_integer(iter->doc, 4, 1);
         if (lens < 0 || (size_t)lens + 1 > iter->doc->size - iter->doc->offset) {
             more = 0;
@@ -267,39 +267,39 @@ int32_t bson_iter_next(bson_iter *iter) {
         }
         iter->lens = (size_t)lens;
         iter->subtype = binary_get_int8(iter->doc);
-        iter->val = binary_get_string(iter->doc, iter->lens);
+        iter->val = binary_get_binary(iter->doc, iter->lens);
         break;
     case BSON_OID://e_name (byte*12)
-        iter->key = binary_get_string(iter->doc, 0);
+        iter->key = binary_get_string(iter->doc);
         iter->lens = BSON_OID_LENS;
-        iter->val = binary_get_string(iter->doc, iter->lens);
+        iter->val = binary_get_binary(iter->doc, iter->lens);
         break;
     case BSON_BOOL://e_name unsigned_byte(0/1)
-        iter->key = binary_get_string(iter->doc, 0);
+        iter->key = binary_get_string(iter->doc);
         iter->lens = 1;
-        iter->val = binary_get_string(iter->doc, iter->lens);
+        iter->val = binary_get_binary(iter->doc, iter->lens);
         break;
     case BSON_DATE://e_name int64
     case BSON_TIMESTAMP://e_name uint64
     case BSON_INT64://e_name int64
-        iter->key = binary_get_string(iter->doc, 0);
+        iter->key = binary_get_string(iter->doc);
         iter->lens = 8;
-        iter->val = binary_get_string(iter->doc, iter->lens);
+        iter->val = binary_get_binary(iter->doc, iter->lens);
         break;
     case BSON_NULL://e_name
     case BSON_MINKEY://e_name
     case BSON_MAXKEY://e_name
-        iter->key = binary_get_string(iter->doc, 0);
+        iter->key = binary_get_string(iter->doc);
         break;
     case BSON_REGEX://e_name cstring(regex pattern) cstring(regex options)
-        iter->key = binary_get_string(iter->doc, 0);
-        iter->val = binary_get_string(iter->doc, 0);
-        iter->val2 = binary_get_string(iter->doc, 0);
+        iter->key = binary_get_string(iter->doc);
+        iter->val = binary_get_string(iter->doc);
+        iter->val2 = binary_get_string(iter->doc);
         break;
     case BSON_INT32://e_name int32
-        iter->key = binary_get_string(iter->doc, 0);
+        iter->key = binary_get_string(iter->doc);
         iter->lens = 4;
-        iter->val = binary_get_string(iter->doc, iter->lens);
+        iter->val = binary_get_binary(iter->doc, iter->lens);
         break;
     case BSON_DECIMAL128:
     default:
@@ -554,19 +554,19 @@ int32_t bson_check_depth(char *data, size_t lens) {
 static void _bson_dump(bson_ctx *bson, int32_t index, int32_t depth, binary_ctx *str) {
     if (depth > BSON_MAX_DEPTH) {
         binary_set_fill(str, ' ', index * 4);
-        binary_set_string(str, "...(too deep)\r\n", 15);
+        binary_set_binary(str, "...(too deep)\r\n", 15);
         return;
     }
     bson_iter iter;
     bson_iter_init(&iter, bson);
     while (bson_iter_next(&iter)) {
         binary_set_fill(str, ' ', index * 4);
-        binary_set_string(str, iter.key, strlen(iter.key));
-        binary_set_string(str, "(", 1);
+        binary_set_binary(str, iter.key, strlen(iter.key));
+        binary_set_binary(str, "(", 1);
         const char *strtype = bson_type_tostring(iter.type);
-        binary_set_string(str, strtype, strlen(strtype));
-        binary_set_string(str, ")", 1);
-        binary_set_string(str, ": ", 2);
+        binary_set_binary(str, strtype, strlen(strtype));
+        binary_set_binary(str, ")", 1);
+        binary_set_binary(str, ": ", 2);
         switch (iter.type) {
         case BSON_DOUBLE: {
             double val = bson_iter_double(&iter, NULL);
@@ -575,12 +575,12 @@ static void _bson_dump(bson_ctx *bson, int32_t index, int32_t depth, binary_ctx 
         }
         case BSON_UTF8: {
             const char *val = bson_iter_utf8(&iter, NULL);
-            binary_set_string(str, val, strlen(val));
+            binary_set_binary(str, val, strlen(val));
             break;
         }
         case BSON_JSCODE: {
             const char *val = bson_iter_jscode(&iter, NULL);
-            binary_set_string(str, val, strlen(val));
+            binary_set_binary(str, val, strlen(val));
             break;
         }
         case BSON_DOCUMENT:
@@ -590,18 +590,18 @@ static void _bson_dump(bson_ctx *bson, int32_t index, int32_t depth, binary_ctx 
             binary_ctx strchild;
             binary_init(&strchild, NULL, 0, 0);
             if (BSON_DOCUMENT == iter.type) {
-                binary_set_string(&strchild, "{\r\n", 3);
+                binary_set_binary(&strchild, "{\r\n", 3);
             } else {
-                binary_set_string(&strchild, "[\r\n", 3);
+                binary_set_binary(&strchild, "[\r\n", 3);
             }
             _bson_dump(&child, index + 1, depth + 1, &strchild);
             binary_set_fill(&strchild, ' ', index * 4);
             if (BSON_DOCUMENT == iter.type) {
-                binary_set_string(&strchild, "}", 1);
+                binary_set_binary(&strchild, "}", 1);
             } else {
-                binary_set_string(&strchild, "]", 1);
+                binary_set_binary(&strchild, "]", 1);
             }
-            binary_set_string(str, strchild.data, strchild.offset);
+            binary_set_binary(str, strchild.data, strchild.offset);
             binary_free(&strchild);
             break;
         }
@@ -610,13 +610,13 @@ static void _bson_dump(bson_ctx *bson, int32_t index, int32_t depth, binary_ctx 
             bson_subtype subtype;
             char *val = bson_iter_binary(&iter, &subtype, &lens, NULL);
             const char *subtstr = bson_subtype_tostring(subtype);
-            binary_set_string(str, "(", 1);
-            binary_set_string(str, subtstr, strlen(subtstr));
-            binary_set_string(str, ") ", 2);
+            binary_set_binary(str, "(", 1);
+            binary_set_binary(str, subtstr, strlen(subtstr));
+            binary_set_binary(str, ") ", 2);
             char *hex;
             MALLOC(hex, HEX_ENSIZE(lens));
             tohex(val, lens, hex);
-            binary_set_string(str, hex, strlen(hex));
+            binary_set_binary(str, hex, strlen(hex));
             FREE(hex);
             break;
         }
@@ -624,15 +624,15 @@ static void _bson_dump(bson_ctx *bson, int32_t index, int32_t depth, binary_ctx 
             char *val = bson_iter_oid(&iter, NULL);
             char hex[HEX_ENSIZE(BSON_OID_LENS)];
             tohex(val, BSON_OID_LENS, hex);
-            binary_set_string(str, hex, strlen(hex));
+            binary_set_binary(str, hex, strlen(hex));
             break;
         }
         case BSON_BOOL: {
             int32_t val = bson_iter_bool(&iter, NULL);
             if (val) {
-                binary_set_string(str, "true", strlen("true"));
+                binary_set_binary(str, "true", strlen("true"));
             } else {
-                binary_set_string(str, "false", strlen("false"));
+                binary_set_binary(str, "false", strlen("false"));
             }
             break;
         }
@@ -659,9 +659,9 @@ static void _bson_dump(bson_ctx *bson, int32_t index, int32_t depth, binary_ctx 
         case BSON_REGEX: {
             char *options;
             const char *val = bson_iter_regex(&iter, &options, NULL);
-            binary_set_string(str, val, strlen(val));
+            binary_set_binary(str, val, strlen(val));
             binary_set_fill(str, ' ', 4);
-            binary_set_string(str, options, strlen(options));
+            binary_set_binary(str, options, strlen(options));
             break;
         }
         case BSON_INT32: {
@@ -672,7 +672,7 @@ static void _bson_dump(bson_ctx *bson, int32_t index, int32_t depth, binary_ctx 
         default:
             break;
         }
-        binary_set_string(str, FLAG_CRLF, CRLF_SIZE);
+        binary_set_binary(str, FLAG_CRLF, CRLF_SIZE);
     }
 }
 char *bson_tostring(bson_ctx *bson) {
@@ -680,9 +680,9 @@ char *bson_tostring(bson_ctx *bson) {
     binary_offset(&bson->doc, 0);
     binary_ctx str;
     binary_init(&str, NULL, 0, 0);
-    binary_set_string(&str, "{\r\n", 3);
+    binary_set_binary(&str, "{\r\n", 3);
     _bson_dump(bson, 1, 0, &str);
-    binary_set_string(&str, "}", 1);
+    binary_set_binary(&str, "}", 1);
     binary_set_int8(&str, 0);
     binary_offset(&bson->doc, offset);
     return str.data;

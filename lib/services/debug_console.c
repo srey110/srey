@@ -131,12 +131,12 @@ static void _debug_broadcast(router_req *ctx, void *body, size_t bsize) {
         const char *nm = ('\0' == tl.items[i].name[0]) ? "(anonymous)" : tl.items[i].name;
         binary_set_va(&bw, "%s:\n", nm);
         if (NULL != bargs[i].resp && bargs[i].resp_len > 0) {
-            binary_set_string(&bw, bargs[i].resp, bargs[i].resp_len);
+            binary_set_binary(&bw, bargs[i].resp, bargs[i].resp_len);
             FREE(bargs[i].resp);
         } else {
-            binary_set_string(&bw, "(unavailable)", strlen("(unavailable)"));
+            binary_set_binary(&bw, "(unavailable)", strlen("(unavailable)"));
         }
-        binary_set_string(&bw, "\n", 1);
+        binary_set_binary(&bw, "\n", 1);
     }
     router_req_text(ctx, 200, bw.data, bw.offset);
     binary_free(&bw);

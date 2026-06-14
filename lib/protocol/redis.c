@@ -50,20 +50,22 @@ void _redis_udfree(ud_cxt *ud) {
     FREE(rd);
     ud->context = NULL;
 }
-// 将 fbuf 中已积累的文本作为一个 RESP Bulk String 追加到 sdsbuf，并重置 fbuf 偏移，n 自增
-static inline void _redis_create_sds(binary_ctx *fbuf, binary_ctx *sdsbuf, size_t *n) {
-    if (0 == fbuf->offset) {
+// pending 非 0（当前位置存在参数，含空串）时将 fbuf 内容作为一个 RESP Bulk String 追加到 sdsbuf（空参数输出 $0）；重置 fbuf 偏移与 pending，n 自增
+static inline void _redis_create_sds(binary_ctx *fbuf, binary_ctx *sdsbuf, size_t *n, int32_t *pending) {
+    if (0 == *pending) {
         return;
     }
     binary_set_va(sdsbuf, "$%zu"FLAG_CRLF, fbuf->offset);
-    binary_set_string(sdsbuf, fbuf->data, fbuf->offset);
-    binary_set_string(sdsbuf, FLAG_CRLF, CRLF_SIZE);
+    binary_set_binary(sdsbuf, fbuf->data, fbuf->offset);
+    binary_set_binary(sdsbuf, FLAG_CRLF, CRLF_SIZE);
     binary_offset(fbuf, 0);
+    *pending = 0;
     (*n)++;
 }
 // redis_pack 的内部实现，解析格式字符串并将各参数编码为 RESP Bulk String 序列
 static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
     size_t lens, n = 0;
+    int32_t pending = 0;
     binary_ctx fbuf, sdsbuf;
     binary_init(&fbuf, NULL, 0, 0);
     binary_init(&sdsbuf, NULL, 0, 0);
@@ -79,10 +81,11 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
             while ('\0' != *f && '%' != *f && ' ' != *f) f++;
             lens = (size_t)(f - p);
             if (lens > 0) {
-                binary_set_string(&fbuf, p, lens);
+                binary_set_binary(&fbuf, p, lens);
+                pending = 1;
             }
             if ('\0' == *f || ' ' == *f) {
-                _redis_create_sds(&fbuf, &sdsbuf, &n);
+                _redis_create_sds(&fbuf, &sdsbuf, &n, &pending);
                 if (' ' == *f) {
                     f++;
                 }
@@ -91,6 +94,7 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
         }
         p = f;
         f++;
+        pending = 1;
         switch (*f) {
         case 's': {
             FMT_TYPE(char *);
@@ -101,7 +105,7 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
             char *val = va_arg(args, char *);
             lens = va_arg(args, size_t);
             if (lens > 0) {
-                binary_set_string(&fbuf, val, lens);
+                binary_set_binary(&fbuf, val, lens);
             }
             f++;
             break;
@@ -117,7 +121,7 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
             break;
         }
         case '%': {
-            binary_set_string(&fbuf, "%", 1);
+            binary_set_binary(&fbuf, "%", 1);
             f++;
             break;
         }
@@ -132,7 +136,7 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
             if ('\0' == *f) {
                 lens = (size_t)(f - p);
                 if (lens >= 2) {
-                    binary_set_string(&fbuf, p + 1, lens - 1);
+                    binary_set_binary(&fbuf, p + 1, lens - 1);
                 }
                 break;
             }
@@ -154,7 +158,7 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
                     FMT_TYPE(int);
                     f++;
                 } else {
-                    binary_set_string(&fbuf, p + 1, (size_t)(f - p) - 1);
+                    binary_set_binary(&fbuf, p + 1, (size_t)(f - p) - 1);
                 }
                 break;
             }
@@ -164,7 +168,7 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
                     FMT_TYPE(int);
                     f++;
                 } else {
-                    binary_set_string(&fbuf, p + 1, (size_t)(f - p) - 1);
+                    binary_set_binary(&fbuf, p + 1, (size_t)(f - p) - 1);
                 }
                 break;
             }
@@ -174,7 +178,7 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
                     FMT_TYPE(long long);
                     f++;
                 } else {
-                    binary_set_string(&fbuf, p + 1, (size_t)(f - p) - 1);
+                    binary_set_binary(&fbuf, p + 1, (size_t)(f - p) - 1);
                 }
                 break;
             }
@@ -184,19 +188,19 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
                     FMT_TYPE(long);
                     f++;
                 } else {
-                    binary_set_string(&fbuf, p + 1, (size_t)(f - p) - 1);
+                    binary_set_binary(&fbuf, p + 1, (size_t)(f - p) - 1);
                 }
                 break;
             }
             lens = (size_t)(f - p);
             if (lens >= 2) {
-                binary_set_string(&fbuf, p + 1, lens - 1);
+                binary_set_binary(&fbuf, p + 1, lens - 1);
             }
             break;
         }
         }
     }
-    _redis_create_sds(&fbuf, &sdsbuf, &n);
+    _redis_create_sds(&fbuf, &sdsbuf, &n, &pending);
     /* 格式化 RESP 数组计数头并回填到 sdsbuf 头部预留槽中。
      * memmove 将 Bulk String 主体向左移动以消除填充间隙，
      * 避免额外的输出内存分配。 */

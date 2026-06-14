@@ -21,7 +21,7 @@ void *mysql_pack_selectdb(mysql_ctx *mysql, const char *database, size_t *size) 
     binary_set_integer(&bwriter, lens + 1, 3, 1);
     binary_set_int8(&bwriter, mysql->id);
     binary_set_uint8(&bwriter, MYSQL_INIT_DB);
-    binary_set_string(&bwriter, database, lens);
+    binary_set_binary(&bwriter, database, lens);
     *size = bwriter.offset;
     mysql->cur_cmd = MYSQL_INIT_DB;
     return bwriter.data;
@@ -53,16 +53,16 @@ void *mysql_pack_query(mysql_ctx *mysql, const char *sql, mysql_bind_ctx *mbind,
         _mysql_set_lenenc(&bwriter, count);//parameter_count
         _mysql_set_lenenc(&bwriter, 1);//parameter_set_count
         if (count > 0) {
-            binary_set_string(&bwriter, mbind->bitmap.data, mbind->bitmap.offset);//null_bitmap
+            binary_set_binary(&bwriter, mbind->bitmap.data, mbind->bitmap.offset);//null_bitmap
             int8_t bind_flag = 1;
             binary_set_int8(&bwriter, bind_flag);//new_params_bind_flag
             if (bind_flag) {
-                binary_set_string(&bwriter, mbind->type_name.data, mbind->type_name.offset);//param_type_and_flag parameter name
+                binary_set_binary(&bwriter, mbind->type_name.data, mbind->type_name.offset);//param_type_and_flag parameter name
             }
-            binary_set_string(&bwriter, mbind->value.data, mbind->value.offset);//parameter_values
+            binary_set_binary(&bwriter, mbind->value.data, mbind->value.offset);//parameter_values
         }
     }
-    binary_set_string(&bwriter, sql, strlen(sql));//query
+    binary_set_binary(&bwriter, sql, strlen(sql));//query
     if (ERR_OK != _mysql_set_payload_lens(&bwriter)) {
         binary_free(&bwriter);
         *size = 0;
@@ -86,7 +86,7 @@ void *mysql_pack_stmt_prepare(mysql_ctx *mysql, const char *sql, size_t *size) {
     binary_set_integer(&bwriter, lens + 1, 3, 1);
     binary_set_int8(&bwriter, mysql->id);
     binary_set_uint8(&bwriter, MYSQL_PREPARE);
-    binary_set_string(&bwriter, sql, lens);
+    binary_set_binary(&bwriter, sql, lens);
     *size = bwriter.offset;
     mysql->cur_cmd = MYSQL_PREPARE;
     mysql->parse_status = 0;
@@ -117,17 +117,17 @@ void *mysql_pack_stmt_execute(mysql_stmt_ctx *stmt, mysql_bind_ctx *mbind, size_
             _mysql_set_lenenc(&bwriter, count);//parameter_count
         }
         if (count > 0) {
-            binary_set_string(&bwriter, mbind->bitmap.data, mbind->bitmap.offset);//null_bitmap
+            binary_set_binary(&bwriter, mbind->bitmap.data, mbind->bitmap.offset);//null_bitmap
             int8_t bind_flag = 1;
             binary_set_int8(&bwriter, bind_flag);//new_params_bind_flag
             if (bind_flag) {
                 if (BIT_CHECK(stmt->mysql->client.caps, CLIENT_QUERY_ATTRIBUTES)) {
-                    binary_set_string(&bwriter, mbind->type_name.data, mbind->type_name.offset); //parameter_type parameter_name
+                    binary_set_binary(&bwriter, mbind->type_name.data, mbind->type_name.offset); //parameter_type parameter_name
                 } else {
-                    binary_set_string(&bwriter, mbind->type.data, mbind->type.offset);//parameter_type
+                    binary_set_binary(&bwriter, mbind->type.data, mbind->type.offset);//parameter_type
                 }
             }
-            binary_set_string(&bwriter, mbind->value.data, mbind->value.offset);//parameter_values
+            binary_set_binary(&bwriter, mbind->value.data, mbind->value.offset);//parameter_values
         }
     }
     if (ERR_OK != _mysql_set_payload_lens(&bwriter)) {

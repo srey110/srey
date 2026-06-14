@@ -32,7 +32,7 @@ void pgsql_bind(pgsql_bind_ctx *bind, char *value, size_t lens, pgpack_format fo
     binary_set_integer(&bind->format, format, 2, 0); // 追加该参数的格式代码
     binary_set_integer(&bind->values, lens, 4, 0);   // 追加该参数值的字节长度
     if (lens > 0) {
-        binary_set_string(&bind->values, value, lens); // 追加参数值数据
+        binary_set_binary(&bind->values, value, lens); // 追加参数值数据
     }
 }
 void pgsql_bind_bool(pgsql_bind_ctx *bind, int8_t value) {

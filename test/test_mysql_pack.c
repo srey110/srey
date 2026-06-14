@@ -71,7 +71,7 @@ static void test_mysql_set_payload_lens(CuTest *tc) {
     /* MySQL 包头 4 字节：3 字节长度 + 1 字节 sequence id */
     binary_set_skip(&bw, 4);
     /* 写 7 字节 payload */
-    binary_set_string(&bw, "PAYLOAD", 7);
+    binary_set_binary(&bw, "PAYLOAD", 7);
 
     _mysql_set_payload_lens(&bw);
 
