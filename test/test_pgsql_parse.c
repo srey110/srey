@@ -231,6 +231,30 @@ static void test_pgsql_reader_double(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_OK, err);
     CuAssertTrue(tc, d > 1.49 && d < 1.51);
     pgsql_reader_free(r3);
+
+    // 类型↔长度不符回归（修复前 FLOAT8OID+4 字节会被误当 float4 解码不报错）
+    // FLOAT8OID 只给 4 字节 → 拒绝
+    pgsql_reader_ctx *r4 = _pg_reader_new(1, oids, names);
+    r4->format = FORMAT_BINARY;
+    char *p4;
+    MALLOC(p4, 4);
+    pack_float(p4, 1.5f, 0);
+    pgpack_row cols4[1] = { { 4, p4, NULL } };
+    _pg_reader_push_row(r4, p4, cols4);
+    pgsql_reader_double(r4, "d", &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    pgsql_reader_free(r4);
+    // FLOAT4OID 给 8 字节 → 拒绝
+    pgsql_reader_ctx *r5 = _pg_reader_new(1, oids3, names);
+    r5->format = FORMAT_BINARY;
+    char *p5;
+    MALLOC(p5, 8);
+    pack_double(p5, 2.0, 0);
+    pgpack_row cols5[1] = { { 8, p5, NULL } };
+    _pg_reader_push_row(r5, p5, cols5);
+    pgsql_reader_double(r5, "d", &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    pgsql_reader_free(r5);
 }
 
 // pgsql_reader_isnull + pgsql_reader_text

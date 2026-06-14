@@ -3028,6 +3028,36 @@ static void test_smtp_unpack_state_auth_moredata(CuTest *tc) {
     buffer_free(&buf);
 }
 
+// 续行洪泛回归：AUTH / AUTH_CHECK / COMMAND 三态持续无 CRLF 时必须按 PACK_TOO_LONG
+// 上界拒绝（PROT_ERROR），而非无限 PROT_MOREDATA 累积耗内存
+// 对齐 test_smtp_full_response case 20 对 INIT/EHLO 的洪泛防护
+static void test_smtp_unpack_flood(CuTest *tc) {
+    size_t floodlen = (size_t)MAX_PACK_SIZE + 16; // 超单包上界且不含任何 CRLF
+    char *flood;
+    MALLOC(flood, floodlen);
+    memset(flood, 'A', floodlen);
+    int32_t states[] = { _SMTP_AUTH, _SMTP_AUTH_CHECK, 4 }; // 4 = COMMAND
+    smtp_ctx smtp;
+    ud_cxt ud;
+    buffer_ctx buf;
+    int32_t status;
+    size_t size;
+    void *pack;
+    for (int32_t i = 0; i < (int32_t)ARRAY_SIZE(states); i++) {
+        _smtp_ud_setup(&smtp, &ud, states[i]);
+        smtp.authtype = _SMTP_LOGIN;
+        buffer_init(&buf);
+        buffer_append(&buf, flood, floodlen);
+        status = PROT_INIT;
+        size = 0;
+        pack = smtp_unpack(NULL, INVALID_SOCK, 0, &buf, &ud, &size, &status);
+        CuAssertTrue(tc, NULL == pack);
+        CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+        buffer_free(&buf);
+    }
+    FREE(flood);
+}
+
 /* ======================================================================= */
 
 void test_protocol(CuSuite *suite) {
@@ -3063,6 +3093,7 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_smtp_unpack_state_auth_login);
     SUITE_ADD_TEST(suite, test_smtp_unpack_state_auth_plain);
     SUITE_ADD_TEST(suite, test_smtp_unpack_state_auth_moredata);
+    SUITE_ADD_TEST(suite, test_smtp_unpack_flood);
     SUITE_ADD_TEST(suite, test_dns_request_pack);
     SUITE_ADD_TEST(suite, test_dns_request_pack_tcp);
     SUITE_ADD_TEST(suite, test_dns_unpack);

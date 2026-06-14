@@ -470,11 +470,12 @@ static void json_encode_exception(lua_State *l, json_config_t *cfg, strbuf_t *js
 
 /* json_append_string args:
  * - lua_State
+ * - JSON config
  * - JSON strbuf
  * - String (Lua stack index)
  *
  * Returns nothing. Doesn't remove string from Lua stack */
-static void json_append_string(lua_State *l, strbuf_t *json, int lindex)
+static void json_append_string(lua_State *l, json_config_t *cfg, strbuf_t *json, int lindex)
 {
     const char *escstr;
     const char *str;
@@ -487,8 +488,11 @@ static void json_append_string(lua_State *l, strbuf_t *json, int lindex)
      * This buffer is reused constantly for small strings
      * If there are any excess pages, they won't be hit anyway.
      * This gains ~5% speedup. */
-    if (len > ((size_t)INT_MAX - 2) / 6)
+    if (len > ((size_t)INT_MAX - 2) / 6) {
+        if (!cfg->encode_keep_buffer)
+            strbuf_free(json);
         luaL_error(l, "JSON: string too long to encode");
+    }
     strbuf_ensure_empty_length(json, len * 6 + 2);
 
     strbuf_append_char_unsafe(json, '\"');
@@ -663,7 +667,7 @@ static void json_append_object(lua_State *l, json_config_t *cfg,
             json_append_number(l, cfg, json, -2);
             strbuf_append_mem(json, "\":", 2);
         } else if (keytype == LUA_TSTRING) {
-            json_append_string(l, json, -2);
+            json_append_string(l, cfg, json, -2);
             strbuf_append_char(json, ':');
         } else {
             json_encode_exception(l, cfg, json, -2,
@@ -688,7 +692,7 @@ static void json_append_data(lua_State *l, json_config_t *cfg,
 
     switch (lua_type(l, -1)) {
     case LUA_TSTRING:
-        json_append_string(l, json, -1);
+        json_append_string(l, cfg, json, -1);
         break;
     case LUA_TNUMBER:
         json_append_number(l, cfg, json, -1);

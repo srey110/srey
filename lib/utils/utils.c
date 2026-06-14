@@ -1382,6 +1382,7 @@ uint32_t pow2_ceil(uint32_t n) {
     return n + 1;
 }
 void pack_integer(char *buf, uint64_t val, int32_t size, int32_t islittle) {
+    ASSERTAB(size > 0, "pack_integer size must be positive.");
     buf[islittle ? 0 : size - 1] = (int8_t)(val & _MC);
     for (int32_t i = 1; i < size; i++) {
         val >>= CHAR_BIT;
@@ -1408,6 +1409,7 @@ int64_t unpack_integer(const char *buf, int32_t size, int32_t islittle, int32_t 
 }
 // 按指定字节序将 src 的 size 字节复制到 dest，自动处理大小端转换
 static void _copy_with_endian(char *dest, const char *src, size_t size, int32_t islittle) {
+    ASSERTAB(size > 0, "pack_float/double size must be positive.");
     if (islittle == is_little()) {
         memcpy(dest, src, size);
     } else {

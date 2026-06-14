@@ -181,14 +181,13 @@ double pgsql_reader_double(pgsql_reader_ctx *reader, const char *name, int32_t *
         }
         return val;
     }
-    // 二进制格式：按长度区分 float4 / float8
-    if (sizeof(double) == row->lens) {
-        return unpack_double(row->val, 0);
-    } else if (sizeof(float) == row->lens) {
-        return unpack_float(row->val, 0);
+    // 二进制格式：float4=4 字节、float8=8 字节，长度不符即拒绝
+    int32_t expect = (FLOAT4OID == field->type_oid) ? 4 : 8;
+    if (expect != row->lens) {
+        SET_PTR(err, ERR_FAILED);
+        return 0.0;
     }
-    SET_PTR(err, ERR_FAILED);
-    return 0.0;
+    return (4 == expect) ? unpack_float(row->val, 0) : unpack_double(row->val, 0);
 }
 int32_t pgsql_reader_isnull(pgsql_reader_ctx *reader, const char *name) {
     pgpack_row *row = pgsql_reader_name(reader, name, NULL);

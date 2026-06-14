@@ -331,6 +331,10 @@ static void _smtp_auth(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buf
     }
     //找首个 CRLF 而非末尾 CRLF，支持流水线场景下首条已完整即可消费
     if (ERR_FAILED == buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE)) {
+        if (PACK_TOO_LONG(blens)) {
+            BIT_SET(*status, PROT_ERROR);
+            return;
+        }
         BIT_SET(*status, PROT_MOREDATA);
         return;
     }
@@ -352,6 +356,10 @@ static void _smtp_auth_check(SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt *
     }
     //找首个 CRLF 而非末尾 CRLF，支持流水线场景下首条已完整即可消费
     if (ERR_FAILED == buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE)) {
+        if (PACK_TOO_LONG(blens)) {
+            BIT_SET(*status, PROT_ERROR);
+            return;
+        }
         BIT_SET(*status, PROT_MOREDATA);
         return;
     }
@@ -391,6 +399,10 @@ static char *_smtp_command(buffer_ctx *buf, size_t *size, int32_t *status) {
     //找首个 CRLF 确定单条响应边界，仅消费当前响应避免吞掉后续流水线
     int32_t crlf = buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE);
     if (ERR_FAILED == crlf) {
+        if (PACK_TOO_LONG(blens)) {
+            BIT_SET(*status, PROT_ERROR);
+            return NULL;
+        }
         BIT_SET(*status, PROT_MOREDATA);
         return NULL;
     }

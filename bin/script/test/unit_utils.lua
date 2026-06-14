@@ -5,6 +5,7 @@ local runner  = require("test.runner")
 local utils   = require("srey.utils")
 local hashring = require("srey.hashring")
 local trend   = require("srey.trend")
+local cjson   = require("cjson")
 
 srey.startup(function()
 runner.run("utils", function(t)
@@ -35,6 +36,12 @@ runner.run("utils", function(t)
         t:check(type(lv) == "number", "log_getlv returns number")
         utils.log_setlv(lv)  -- 写回原值确保不破坏其他模块
         t:eq(lv, utils.log_getlv(), "log_setlv round-trip")
+    end
+    do
+        -- ud_str：nil 与 NULL light userdata(cjson.null) 均优雅返回 nil，不解引用崩溃
+        t:eq(nil, utils.ud_str(nil), "ud_str(nil) returns nil")
+        t:eq(nil, utils.ud_str(cjson.null, 5), "ud_str(NULL lud, size>0) returns nil")
+        t:eq("", utils.ud_str(cjson.null, 0), "ud_str(NULL lud, 0) returns empty")
     end
 
     -- ── hashring ───────────────────────────────────────────────────────
