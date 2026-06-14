@@ -537,13 +537,9 @@ static void _usk_on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev
     tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
     tcp->sock.ev_cb = _usk_on_rw_cb;
     _uev_del_event(watcher, tcp->sock.fd, &tcp->sock.events, tcp->sock.events, skctx);
-    if (ERR_OK != sock_checkconn(tcp->sock.fd)) {
-        _usk_call_conn_cb(watcher->ev, tcp, ERR_FAILED);
-        _evpub_sockel_remove(watcher, tcp->sock.fd);
-        pool_push(&watcher->pool, &tcp->sock);
-        return;
-    }
-    if (ERR_OK != _uev_add_event(watcher, tcp->sock.fd, &tcp->sock.events, EVENT_READ, &tcp->sock)) {
+    if (BIT_CHECK(tcp->status, STATUS_ERROR)
+        || ERR_OK != sock_checkconn(tcp->sock.fd)
+        || ERR_OK != _uev_add_event(watcher, tcp->sock.fd, &tcp->sock.events, EVENT_READ, &tcp->sock)) {
         _usk_call_conn_cb(watcher->ev, tcp, ERR_FAILED);
         _evpub_sockel_remove(watcher, tcp->sock.fd);
         pool_push(&watcher->pool, &tcp->sock);

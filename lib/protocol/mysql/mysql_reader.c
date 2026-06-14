@@ -277,14 +277,16 @@ uint64_t mysql_reader_datetime(mysql_reader_ctx *reader, const char *name, int32
         return ts;
     } else {
         // 二进制协议：长度前缀 0=零值 4=仅日期 7=日期+时间 11=含微秒
+        if (4 != row->val.lens && 7 != row->val.lens && 11 != row->val.lens) {
+            SET_PTR(err, ERR_FAILED);
+            return 0;
+        }
         struct tm dt = { 0 };
         binary_ctx breader;
         binary_init(&breader, row->val.data, row->val.lens, 0);
-        if (row->val.lens >= 4) {
-            dt.tm_year = (int32_t)binary_get_integer(&breader, 2, 1) - 1900;
-            dt.tm_mon = (int32_t)binary_get_int8(&breader) - 1;
-            dt.tm_mday = (int32_t)binary_get_int8(&breader);
-        }
+        dt.tm_year = (int32_t)binary_get_integer(&breader, 2, 1) - 1900;
+        dt.tm_mon = (int32_t)binary_get_int8(&breader) - 1;
+        dt.tm_mday = (int32_t)binary_get_int8(&breader);
         if (row->val.lens >= 7) {
             dt.tm_hour = (int32_t)binary_get_int8(&breader);
             dt.tm_min = (int32_t)binary_get_int8(&breader);
@@ -352,15 +354,17 @@ int32_t mysql_reader_time(mysql_reader_ctx *reader, const char *name, struct tm 
         time->tm_sec = strtol(end + 1, &end, 10);
     } else {
         // 二进制协议：长度前缀 0=零值(上方已拦截) 8=天+时分秒 12=含微秒
+        if (8 != row->val.lens && 12 != row->val.lens) {
+            SET_PTR(err, ERR_FAILED);
+            return 0;
+        }
         binary_ctx breader;
         binary_init(&breader, row->val.data, row->val.lens, 0);
-        if (row->val.lens >= 8) {
-            is_negative = (int32_t)binary_get_int8(&breader);
-            time->tm_mday = (int32_t)binary_get_integer(&breader, 4, 1);
-            time->tm_hour = (int32_t)binary_get_int8(&breader);
-            time->tm_min = (int32_t)binary_get_int8(&breader);
-            time->tm_sec = (int32_t)binary_get_int8(&breader);
-        }
+        is_negative = (int32_t)binary_get_int8(&breader);
+        time->tm_mday = (int32_t)binary_get_integer(&breader, 4, 1);
+        time->tm_hour = (int32_t)binary_get_int8(&breader);
+        time->tm_min = (int32_t)binary_get_int8(&breader);
+        time->tm_sec = (int32_t)binary_get_int8(&breader);
     }
     return is_negative;
 }

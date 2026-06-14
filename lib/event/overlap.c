@@ -579,24 +579,9 @@ static int32_t _olp_post_connect(overlap_tcp_ctx *oltcp, netaddr_ctx *addr) {
 static void _olp_on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
     skctx->ev_cb = _olp_on_recv_cb;
     overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
-    if (ERROR_SUCCESS != oltcp->ol_r.overlapped.Internal) {
-        _olp_call_conn_cb(watcher->ev, oltcp, ERR_FAILED);
-        _evpub_sockel_remove(watcher, oltcp->ol_r.fd);
-        pool_push(&watcher->pool, &oltcp->ol_r);
-        return;
-    }
-    if (ERR_OK != setsockopt(oltcp->ol_r.fd,
-                             SOL_SOCKET,
-                             SO_UPDATE_CONNECT_CONTEXT,
-                             NULL,
-                             0)) {
-        LOG_ERROR("%s", ERRORSTR(ERRNO));
-        _olp_call_conn_cb(watcher->ev, oltcp, ERR_FAILED);
-        _evpub_sockel_remove(watcher, oltcp->ol_r.fd);
-        pool_push(&watcher->pool, &oltcp->ol_r);
-        return;
-    }
-    if (ERR_OK != _iocp_post_recv(&oltcp->ol_r, &oltcp->bytes_r, &oltcp->flag, &oltcp->wsabuf, 1)) {
+    if (ERROR_SUCCESS != oltcp->ol_r.overlapped.Internal
+        || ERR_OK != setsockopt(oltcp->ol_r.fd, SOL_SOCKET, SO_UPDATE_CONNECT_CONTEXT, NULL, 0)
+        || ERR_OK != _iocp_post_recv(&oltcp->ol_r, &oltcp->bytes_r, &oltcp->flag, &oltcp->wsabuf, 1)) {
         _olp_call_conn_cb(watcher->ev, oltcp, ERR_FAILED);
         _evpub_sockel_remove(watcher, oltcp->ol_r.fd);
         pool_push(&watcher->pool, &oltcp->ol_r);
@@ -908,6 +893,7 @@ void ev_unlisten(ev_ctx *ctx, uint64_t id) {
 static int32_t _olp_post_recv_from(overlap_udp_ctx *oludp) {
     ZERO(&oludp->ol_r.overlapped, sizeof(oludp->ol_r.overlapped));
     oludp->flag = oludp->bytes_r = 0;
+    oludp->addrlen = netaddr_size(&oludp->addr);
     if (ERR_OK != WSARecvFrom(oludp->ol_r.fd,
                               &oludp->wsabuf_r,
                               1,
