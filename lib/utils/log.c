@@ -2,7 +2,8 @@
 #include "utils/utils.h"
 #include "thread/cond.h"
 #include "thread/thread.h"
-#include "containers/fsqu.h"
+#include "utils/pool.h"
+#include "utils/timer.h"
 
 #define LOG_FMT "[%s][%s]%s\n"
 #define LOG_INLINE_SIZE 256
@@ -21,6 +22,7 @@ static atomic_t   _running = 0; /* atomic 保证跨平台内存可见 */
 static atomic_t   _sleeping = 0;
 static pthread_t  _th;
 static fsqu_ctx  _que;
+static pool_ctx  _itempool;
 static mutex_ctx  _mtx;
 static cond_ctx   _cond;
 #ifdef OS_WIN
@@ -90,6 +92,14 @@ static void _log_write_item(const log_item *item) {
         }
     }
 }
+// 对象池 _elclear：归还前释放长消息独立缓冲（短消息走 inline_buf 不分配）
+static void _log_item_clear(void *data) {
+    log_item *it = (log_item *)data;
+    if (it->msg != it->inline_buf) {
+        FREE(it->msg);
+    }
+    it->msg = it->inline_buf;
+}
 static void _log_write_all(log_item **items) {
     log_item *item;
     uint32_t n, i;
@@ -97,29 +107,32 @@ static void _log_write_all(log_item **items) {
         for (i = 0; i < n; i++) {
             item = items[i];
             _log_write_item(item);
-            if (item->msg != item->inline_buf) {
-                FREE(item->msg);
-            }
-            FREE(item);
+            pool_push(&_itempool, item);
         }
     }
 }
 static void _log_loop(void *arg) {
     (void)arg;
     log_item *items[LOG_POP_BATCH];
+    timer_ctx timer;
+    timer_init(&timer);
+    uint64_t now, shrink_start = timer_cur_ms(&timer);
     while (ATOMIC_GET(&_running)) {
         _log_write_all(items);
+        // 空闲时按 SHRINK_TIME 门控回落 log_item 池（锁外执行）
+        now = timer_cur_ms(&timer);
+        if (now - shrink_start >= SHRINK_TIME) {
+            shrink_start = now;
+            pool_shrink(&_itempool, SHRINK_NKEEP(pool_size(&_itempool)), SHRINK_BUSY);
+        }
         mutex_lock(&_mtx);
-        while (0 == fsqu_size(&_que) && ATOMIC_GET(&_running)) {
+        // 单次带守卫等待，外层循环负责重试：超时上限 SHRINK_TIME 保证每 ≤SHRINK_TIME 重跑一次以收缩
+        if (0 == fsqu_size(&_que) && ATOMIC_GET(&_running)) {
             ATOMIC_SET(&_sleeping, 1);
-            // 防丢失唤醒：在 _sleeping=1 之后再次检查队列。
-            // 若生产者已 push 但因读到旧 _sleeping=0 跳过 signal，此处会发现非空并跳出，
-            // 避免无人唤醒导致永久阻塞
-            if (fsqu_size(&_que) > 0) {
-                ATOMIC_SET(&_sleeping, 0);
-                break;
+            // 防丢失唤醒：置 _sleeping 后再次检查队列，仍空才等待
+            if (0 == fsqu_size(&_que)) {
+                cond_timedwait(&_cond, &_mtx, SHRINK_TIME);
             }
-            cond_wait(&_cond, &_mtx);
             ATOMIC_SET(&_sleeping, 0);
         }
         mutex_unlock(&_mtx);
@@ -141,7 +154,10 @@ void log_init(FILE *file, uint32_t capacity) {
         GetConsoleScreenBufferInfo(_console, &_def_console);
     }
 #endif
-    fsqu_init(&_que, sizeof(log_item *), 0 == capacity ? 4 * ONEK : capacity);
+    uint32_t cap = 0 == capacity ? 4 * ONEK : capacity;
+    fsqu_init(&_que, sizeof(log_item *), cap);
+    el_cbs _logitem_cbs = { NULL, NULL, NULL, _log_item_clear };
+    pool_init(&_itempool, sizeof(log_item), cap, cap / 4, 1, &_logitem_cbs);
     mutex_init(&_mtx);
     cond_init(&_cond);
     ATOMIC_SET(&_running, 1); 
@@ -160,6 +176,7 @@ void log_free(void) {
     log_item *items[LOG_POP_BATCH];
     _log_write_all(items);
     fsqu_free(&_que);
+    pool_free(&_itempool);
     mutex_free(&_mtx);
     cond_free(&_cond);
 }
@@ -174,8 +191,7 @@ void slog(int32_t lv, const char *fmt, ...) {
         || 0 == ATOMIC_GET(&_running)) {
         return;
     }
-    log_item *item;
-    MALLOC(item, sizeof(log_item));
+    log_item *item = (log_item *)pool_pop(&_itempool, NULL);
     item->lv = lv;
     (void)mstostr(nowms(), "%Y-%m-%d %H:%M:%S", item->time);
     //先尝试写入 inline_buf，短消息（典型场景）至此完成单次 malloc；
@@ -189,7 +205,7 @@ void slog(int32_t lv, const char *fmt, ...) {
         va_end(args2);
         fprintf(stderr, LOG_FMT, item->time, _log_lvstr(item->lv), fmt);
         fflush(stderr);
-        FREE(item);
+        pool_push(&_itempool, item);
         return;
     }
     if (rtn < LOG_INLINE_SIZE) {
@@ -204,7 +220,7 @@ void slog(int32_t lv, const char *fmt, ...) {
             fprintf(stderr, LOG_FMT, item->time, _log_lvstr(item->lv), fmt);
             fflush(stderr);
             FREE(heap_msg);
-            FREE(item);
+            pool_push(&_itempool, item);
             return;
         }
         item->msg = heap_msg;
@@ -213,10 +229,7 @@ void slog(int32_t lv, const char *fmt, ...) {
     if (ERR_OK != fsqu_trypush(&_que, &item)) {
         fprintf(stderr, LOG_FMT, item->time, _log_lvstr(item->lv), item->msg);
         fflush(stderr);
-        if (item->msg != item->inline_buf) {
-            FREE(item->msg);
-        }
-        FREE(item);
+        pool_push(&_itempool, item);
         return;
     }
     if (ATOMIC_GET(&_sleeping)) {

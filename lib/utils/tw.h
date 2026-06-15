@@ -6,7 +6,7 @@
 #include "thread/cond.h"
 #include "utils/timer.h"
 #include "base/structs.h"
-#include "containers/fsqu.h"
+#include "utils/pool.h"
 
 #define TVN_BITS (6)                                                   //高精度轮（tv2~tv5）每级位数
 #define TVR_BITS (8)                                                   //最低精度轮（tv1）位数
@@ -36,7 +36,7 @@ typedef struct tw_ctx {
     mutex_ctx mu;
     cond_ctx cond;
     fsqu_ctx reqadd;          //外部新增请求暂存队列（平台自适应 fsqu，容量 capacity）
-    fsqu_ctx node_pool;       //空闲节点复用池（平台自适应 fsqu，容量 TW_NODE_POOL_MAX）
+    pool_ctx node_pool;       //空闲节点复用池（utils/pool，容量 TW_NODE_POOL_MAX）
     tw_slot_ctx tv1[TVR_SIZE];  //最低精度轮（精度 1ms，范围 256ms）
     tw_slot_ctx tv2[TVN_SIZE];  //第 2 级精度轮
     tw_slot_ctx tv3[TVN_SIZE];  //第 3 级精度轮

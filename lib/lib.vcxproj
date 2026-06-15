@@ -59,7 +59,6 @@
     <ClInclude Include="event\evpub.h" />
     <ClInclude Include="event\evssl.h" />
     <ClInclude Include="event\iocp.h" />
-    <ClInclude Include="event\skpool.h" />
     <ClInclude Include="event\uev.h" />
     <ClInclude Include="lib.h" />
     <ClInclude Include="protocol\custz.h" />
@@ -121,6 +120,7 @@
     <ClInclude Include="utils\hug.h" />
     <ClInclude Include="utils\load_trend.h" />
     <ClInclude Include="utils\log.h" />
+    <ClInclude Include="utils\pool.h" />
     <ClInclude Include="utils\stm.h" />
     <ClInclude Include="utils\tda.h" />
     <ClInclude Include="utils\varint.h" />
@@ -216,6 +216,7 @@
     <ClCompile Include="utils\hash_ring.c" />
     <ClCompile Include="utils\hug.c" />
     <ClCompile Include="utils\log.c" />
+    <ClCompile Include="utils\pool.c" />
     <ClCompile Include="utils\stm.c" />
     <ClCompile Include="utils\tda.c" />
     <ClCompile Include="utils\varint.c" />

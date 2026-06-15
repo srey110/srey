@@ -2,12 +2,11 @@
 #define UEV_H_
 
 #include "event/event.h"
-#include "event/skpool.h"
+#include "utils/pool.h"
 #include "event/cmds.h"
 #include "thread/thread.h"
 #include "utils/tda.h"
 #include "utils/timer.h"
-#include "containers/fsqu.h"
 
 #ifndef EV_IOCP
 
@@ -84,7 +83,7 @@ typedef struct watcher_ctx {
     ev_ctx *ev;                 // 所属ev_ctx
     struct hashmap *element;    // fd -> sock_ctx 哈希表
     pthread_t thevent;          // 事件循环线程
-    skpool_ctx pool;            // sock_ctx对象池
+    pool_ctx pool;              // sock_ctx对象池
     timer_ctx tm_qtn;           // qtn 用 monotonic 计时
     queue_ctx qtn;              // 隔离队列 FIFO，元素 qtn_entry
     pip_ctx pipe;               // 命令管道（单通道，多生产者 < PIPE_BUF 原子写）

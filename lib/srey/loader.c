@@ -1,6 +1,7 @@
 ﻿#include "srey/loader.h"
 #include "containers/hashmap.h"
 #include "srey/task.h"
+#include "utils/utils.h"
 
 #define TASK_MSG_BATCH  128
 
@@ -40,20 +41,6 @@ static uint64_t _loader_name_hash(const void *item, uint64_t seed0, uint64_t see
 static int _loader_name_compare(const void *a, const void *b, void *ud) {
     (void)ud;
     return strcmp(((const name_handle_entry *)a)->name, ((const name_handle_entry *)b)->name);
-}
-// 从对象池取一个 message_ctx；池空时回退到 malloc
-static message_ctx *_loader_msg_alloc(loader_ctx *loader) {
-    message_ctx *p = NULL;
-    if (ERR_OK != fsqu_pop(&loader->msg_pool, &p)) {
-        MALLOC(p, sizeof(message_ctx));
-    }
-    return p;
-}
-// 将已处理完的 message_ctx 归还对象池；池满时直接 free
-static void _loader_msg_free(loader_ctx *loader, message_ctx *p) {
-    if (ERR_OK != fsqu_trypush(&loader->msg_pool, &p)) {
-        FREE(p);
-    }
 }
 // 基础 slot 注册:仅 lckmaptasks;net / acpex / tw 用(不跑 Lua,无需 lckcache slot)
 static void _loader_slot_register_base(void *udata, void *assist) {
@@ -145,7 +132,7 @@ static void _loader_worker_wakeup(loader_ctx *loader, name_t *task) {
 }
 // 将消息推入任务的无锁消息队列并在必要时唤醒工作线程
 void _task_message_push(task_ctx *task, message_ctx *msg) {
-    message_ctx *pmsg = _loader_msg_alloc(task->loader);
+    message_ctx *pmsg = (message_ctx *)pool_pop(&task->loader->msg_pool, NULL);
     *pmsg = *msg;
     // 阻塞入队；队列满时自旋等待
     fsqu_push(&task->qumsg, &pmsg);
@@ -208,7 +195,7 @@ static void _loader_task_run(loader_ctx *loader, worker_ctx *worker,
         for (k = 0; k < got; k++) {
             msg = msgbatch[k];
             runarg->msg = *msg;
-            _loader_msg_free(loader, msg);
+            pool_push(&loader->msg_pool, msg);
             ATOMIC_ADD(&version->ver, 1);
             ATOMIC_SET(&version->msgtype, runarg->msg.mtype);
 #if ENABLE_DISPATCH_STAT
@@ -299,6 +286,9 @@ static void _loader_monitor_check(loader_ctx *loader) {
 // 监控线程主循环：每 5 秒调用 _loader_monitor_check 检测卡死的工作线程
 static void _loader_monitor_loop(void *arg) {
     loader_ctx *loader = (loader_ctx *)arg;
+    timer_ctx timer;
+    timer_init(&timer);
+    uint64_t now, shrink_start = timer_cur_ms(&timer);
     while (0 == ATOMIC_GET(&loader->monitor.stop)) {
         mutex_lock(&loader->monitor.mutex);
         cond_timedwait(&loader->monitor.cond, &loader->monitor.mutex, 5000);
@@ -307,6 +297,12 @@ static void _loader_monitor_loop(void *arg) {
             break;
         }
         _loader_monitor_check(loader);
+        // 空闲时按 SHRINK_TIME 门控回落消息池
+        now = timer_cur_ms(&timer);
+        if (now - shrink_start >= SHRINK_TIME) {
+            shrink_start = now;
+            pool_shrink(&loader->msg_pool, SHRINK_NKEEP(pool_size(&loader->msg_pool)), SHRINK_BUSY);
+        }
     }
     LOG_INFO("%s", "worker monitor thread exited.");
 }
@@ -323,7 +319,8 @@ loader_ctx *loader_init(uint16_t nnet, uint16_t nworker, uint32_t twcap) {
     CALLOC(loader->monitor.version, 1, sizeof(worker_version) * loader->nworker);
     mutex_init(&loader->monitor.mutex);
     cond_init(&loader->monitor.cond);
-    fsqu_init(&loader->msg_pool, sizeof(message_ctx *), (uint32_t)INIT_EVENTS_CNT * loader->nworker * 2);
+    pool_init(&loader->msg_pool, sizeof(message_ctx),
+              (uint32_t)INIT_EVENTS_CNT * loader->nworker * 2, INIT_EVENTS_CNT, 1, NULL);
     rwlock_distr_init(&loader->lckmaptasks, (uint32_t)loader->nworker * 4);
 #if WITH_LUA && ENABLE_LUA_BYTECACHE
     rwlock_distr_init(&loader->lckcache, (uint32_t)loader->nworker + 3);
@@ -475,10 +472,6 @@ void loader_free(loader_ctx *loader) {
 #endif
     FREE(loader->worker);
     FREE(loader->monitor.version);
-    message_ctx *poolmsg;
-    while (ERR_OK == fsqu_pop(&loader->msg_pool, &poolmsg)) {
-        FREE(poolmsg);
-    }
-    fsqu_free(&loader->msg_pool);
+    pool_free(&loader->msg_pool);
     FREE(loader);
 }

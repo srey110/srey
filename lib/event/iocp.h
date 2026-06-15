@@ -2,11 +2,10 @@
 #define IOCP_H_
 
 #include "event/event.h"
-#include "event/skpool.h"
+#include "utils/pool.h"
 #include "event/cmds.h"
 #include "thread/thread.h"
 #include "utils/tda.h"
-#include "containers/fsqu.h"
 
 #ifdef EV_IOCP
 
@@ -37,7 +36,7 @@ typedef struct watcher_ctx {
     ev_ctx *ev;                 // 所属ev_ctx
     struct hashmap *element;    // fd -> sock_ctx 哈希表
     pthread_t thevent;          // 事件循环线程
-    skpool_ctx pool;            // sock_ctx对象池
+    pool_ctx pool;              // sock_ctx对象池
     overlap_cmd_ctx cmd;        // 命令通道（fsqu 多生产者，单通道足够）
 }watcher_ctx;
 // AcceptEx专用线程上下文

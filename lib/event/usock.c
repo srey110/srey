@@ -67,12 +67,13 @@ void _uev_sk_shutdown(sock_ctx *skctx) {
     shutdown(skctx->fd, SHUT_RD);
 #endif
 }
-sock_ctx *_new_sk(SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
+void *_evpub_sk_new(void *args) {
+    skpool_args *skargs = (skpool_args *)args;
     tcp_ctx *tcp;
     MALLOC(tcp, sizeof(tcp_ctx));
     tcp->sock.ev_cb = _usk_on_rw_cb;
     tcp->sock.type = SOCK_STREAM;
-    tcp->sock.fd = fd;
+    tcp->sock.fd = skargs->fd;
     tcp->sock.events = 0;
     tcp->status = STATUS_NONE;
     tcp->skid = createid();
@@ -80,16 +81,16 @@ sock_ctx *_new_sk(SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
     tcp->ssl = NULL;
     tcp->evssl = NULL;
 #endif
-    tcp->cbs = *cbs;
-    COPY_UD(tcp->ud, ud);
+    tcp->cbs = *skargs->cbs;
+    COPY_UD(tcp->ud, skargs->ud);
     buffer_init(&tcp->buf_r);
     queue_init(&tcp->buf_s, sizeof(off_buf_ctx), INIT_SENDBUF_LEN);
     tcp->wb_size = 0;
     tda_init(&tcp->tda, WB_WARN_INIT_SIZE);
     return &tcp->sock;
 }
-void _free_sk(sock_ctx *skctx) {
-    tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
+void _evpub_sk_free(void *sk) {
+    tcp_ctx *tcp = UPCAST((sock_ctx *)sk, tcp_ctx, sock);
 #if WITH_SSL
     FREE_SSL(tcp->ssl);
 #endif
@@ -100,8 +101,8 @@ void _free_sk(sock_ctx *skctx) {
     UD_FREE(tcp->cbs.ud_free, &tcp->ud);
     FREE(tcp);
 }
-void _clear_sk(sock_ctx *skctx) {
-    tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
+void _evpub_sk_clear(void *sk) {
+    tcp_ctx *tcp = UPCAST((sock_ctx *)sk, tcp_ctx, sock);
     tcp->sock.events = 0;
     tcp->status = STATUS_NONE;
 #if WITH_SSL
@@ -115,13 +116,14 @@ void _clear_sk(sock_ctx *skctx) {
     buffer_drain(&tcp->buf_r, buffer_size(&tcp->buf_r));
     UD_FREE(tcp->cbs.ud_free, &tcp->ud);
 }
-void _reset_sk(sock_ctx *skctx, SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
-    tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
-    tcp->sock.fd = fd;
+void _evpub_sk_reset(void *sk, void *args) {
+    tcp_ctx *tcp = UPCAST((sock_ctx *)sk, tcp_ctx, sock);
+    skpool_args *skargs = (skpool_args *)args;
+    tcp->sock.fd = skargs->fd;
     tcp->sock.ev_cb = _usk_on_rw_cb;
-    tcp->cbs = *cbs;
+    tcp->cbs = *skargs->cbs;
     tcp->skid = createid();
-    COPY_UD(tcp->ud, ud);
+    COPY_UD(tcp->ud, skargs->ud);
 }
 ud_cxt *_uev_get_ud(sock_ctx *skctx) {
     if (SOCK_STREAM == skctx->type) {
@@ -369,12 +371,12 @@ static inline void _usk_close_tcp(watcher_ctx *watcher, tcp_ctx *tcp) {
     _uev_del_event(watcher, tcp->sock.fd, &tcp->sock.events, tcp->sock.events, &tcp->sock);
 #endif
     _evpub_sockel_remove(watcher, tcp->sock.fd);
-    // 立即 close fd 把 fd 还给 OS（不延迟到 _clear_sk）；CLOSE_SOCK 设 fd=INVALID_SOCK,
-    // 后续 _clear_sk 再次 CLOSE_SOCK 内宏判 INVALID_SOCK 跳过（幂等）
+    // 立即 close fd 把 fd 还给 OS（不延迟到 _evpub_sk_clear）；CLOSE_SOCK 设 fd=INVALID_SOCK,
+    // 后续 _evpub_sk_clear 再次 CLOSE_SOCK 内宏判 INVALID_SOCK 跳过（幂等）
     CLOSE_SOCK(tcp->sock.fd);
     // 清空回调防止同批次后续 events 进入 skctx 触发二次 _usk_close_tcp；
     // 隔离期内本 watcher events 跨轮 stale 也读 ev_cb=NULL 跳过；
-    // pool_pop 经 _reset_sk 恢复为 _usk_on_rw_cb（usock.c:_reset_sk 内）
+    // pool_pop 经 _evpub_sk_reset 恢复为 _usk_on_rw_cb（usock.c:_evpub_sk_reset 内）
     tcp->sock.ev_cb = NULL;
     _uev_qtn_push(watcher, &tcp->sock, QTN_TCP);
 }
@@ -590,7 +592,8 @@ int32_t ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const u
             return ERR_FAILED;
         }
     }
-    sock_ctx *skctx = _new_sk(*fd, cbs, ud);
+    skpool_args skargs = { *fd, cbs, ud };
+    sock_ctx *skctx = (sock_ctx *)_evpub_sk_new(&skargs);
     skctx->ev_cb = _usk_on_connect_cb;
     tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
     BIT_SET(tcp->status, STATUS_CLIENT);
@@ -653,7 +656,8 @@ static void _usk_on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev)
 #endif
 }
 void _uev_add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) {
-    sock_ctx *skctx = pool_pop(&watcher->pool, fd, &lsn->cbs, &lsn->ud);
+    skpool_args skargs = { fd, &lsn->cbs, &lsn->ud };
+    sock_ctx *skctx = pool_pop(&watcher->pool, &skargs);
     tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
     _evpub_sockel_add(watcher, skctx);
     /* _uev_add_event(READ) 必须在 _usk_ssl_exchange 之前：EPOLLET 的 ADD-time 语义保证若
@@ -817,7 +821,7 @@ void _uev_qtn_flush(watcher_ctx *watcher) {
     while (NULL != (e = (qtn_entry *)queue_pop(&watcher->qtn))) {
         switch (e->type) {
         case QTN_TCP:
-            _free_sk((sock_ctx *)e->obj);
+            _evpub_sk_free((sock_ctx *)e->obj);
             break;
         case QTN_UDP:
             _uev_free_udp((sock_ctx *)e->obj);

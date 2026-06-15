@@ -24,8 +24,9 @@ local cur_task  = _curtask   -- 当前 task 的 C 层指针，由 loader 注入
 local TASK_NAME = TASK_NAME
 local SSL_NAME  = SSL_NAME
 local REQUEST_TYPE = REQUEST_TYPE
-local CORO_POOL_MAX      = 64    -- 协程池上限；超出后空闲协程自然退出由 GC 回收
+local CORO_POOL_MAX      = 128   -- 协程池上限；超出后空闲协程自然退出由 GC 回收
 local CORO_POOL_MIN_KEEP = 4     -- 协程池收缩底线
+local CORO_SHRINK_TICKS  = 10    -- 收缩门控：_coro_timeout 每 1s 触发，累计 10 次(≈SHRINK_TIME 10s)收缩一次，与 C 侧统一
 local coro_running   = nil   -- 当前正在执行的协程（用于 _set_coro_sess 记录 coro）
 local coro_sess      = {}    -- 会话表：sess/skid → corosess，保存挂起协程的等待信息
 local func_cbs       = {}    -- 消息类型 → 用户注册回调函数
@@ -121,7 +122,13 @@ local function _coro_create(func)
     return coro
 end
 
+local coro_shrink_tick = 0   -- _coro_pool_shrink 距上次实际收缩的累计触发次数（每次 = 一轮 _coro_timeout = 1s）
 local function _coro_pool_shrink()
+    coro_shrink_tick = coro_shrink_tick + 1
+    if coro_shrink_tick < CORO_SHRINK_TICKS then
+        return
+    end
+    coro_shrink_tick = 0
     local cur = #coro_pool
     if coro_pool_trend:busy(cur, 4, 5) then
         return
@@ -129,7 +136,7 @@ local function _coro_pool_shrink()
     if cur <= CORO_POOL_MIN_KEEP then
         return
     end
-    local keep = cur >> 1
+    local keep = cur - (cur // 5)
     if keep < CORO_POOL_MIN_KEEP then
         keep = CORO_POOL_MIN_KEEP
     end

@@ -1,6 +1,6 @@
 ﻿#include "event/event.h"
 #include "event/iocp.h"
-#include "event/skpool.h"
+#include "utils/pool.h"
 #include "utils/buffer.h"
 #include "utils/netutils.h"
 #include "utils/tda.h"
@@ -85,14 +85,15 @@ void _iocp_sk_shutdown(sock_ctx *skctx) {
     shutdown(skctx->fd, SHUT_RD);
 #endif
 }
-sock_ctx *_new_sk(SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
+void *_evpub_sk_new(void *args) {
+    skpool_args *skargs = (skpool_args *)args;
     overlap_tcp_ctx *oltcp;
     MALLOC(oltcp, sizeof(overlap_tcp_ctx));
     oltcp->ol_r.type = SOCK_STREAM;
-    oltcp->ol_r.fd = fd;
+    oltcp->ol_r.fd = skargs->fd;
     oltcp->ol_r.ev_cb = _olp_on_recv_cb;
     oltcp->ol_s.type = SOCK_STREAM;
-    oltcp->ol_s.fd = fd;
+    oltcp->ol_s.fd = skargs->fd;
     oltcp->ol_s.ev_cb = _olp_on_send_cb;
     oltcp->status = STATUS_NONE;
     oltcp->skid = createid();
@@ -102,16 +103,16 @@ sock_ctx *_new_sk(SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
 #endif
     oltcp->wsabuf.IOV_PTR_FIELD = NULL;
     oltcp->wsabuf.IOV_LEN_FIELD = 0;
-    oltcp->cbs = *cbs;
-    COPY_UD(oltcp->ud, ud);
+    oltcp->cbs = *skargs->cbs;
+    COPY_UD(oltcp->ud, skargs->ud);
     buffer_init(&oltcp->buf_r);
     queue_init(&oltcp->buf_s, sizeof(off_buf_ctx), INIT_SENDBUF_LEN);
     oltcp->wb_size = 0;
     tda_init(&oltcp->tda, WB_WARN_INIT_SIZE);
     return &oltcp->ol_r;
 }
-void _free_sk(sock_ctx *skctx) {
-    overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
+void _evpub_sk_free(void *sk) {
+    overlap_tcp_ctx *oltcp = UPCAST((sock_ctx *)sk, overlap_tcp_ctx, ol_r);
 #if WITH_SSL
     FREE_SSL(oltcp->ssl);
 #endif
@@ -122,8 +123,8 @@ void _free_sk(sock_ctx *skctx) {
     UD_FREE(oltcp->cbs.ud_free, &oltcp->ud);
     FREE(oltcp);
 }
-void _clear_sk(sock_ctx *skctx) {
-    overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
+void _evpub_sk_clear(void *sk)  {
+    overlap_tcp_ctx *oltcp = UPCAST((sock_ctx *)sk, overlap_tcp_ctx, ol_r);
     oltcp->status = STATUS_NONE;
 #if WITH_SSL
     FREE_SSL(oltcp->ssl);
@@ -137,15 +138,16 @@ void _clear_sk(sock_ctx *skctx) {
     buffer_drain(&oltcp->buf_r, buffer_size(&oltcp->buf_r));
     UD_FREE(oltcp->cbs.ud_free, &oltcp->ud);
 }
-void _reset_sk(sock_ctx *skctx, SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
-    overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
-    oltcp->ol_r.fd = fd;
+void _evpub_sk_reset(void *sk, void *args) {
+    skpool_args *skargs = (skpool_args *)args;
+    overlap_tcp_ctx *oltcp = UPCAST((sock_ctx *)sk, overlap_tcp_ctx, ol_r);
+    oltcp->ol_r.fd = skargs->fd;
     oltcp->ol_r.ev_cb = _olp_on_recv_cb;
-    oltcp->ol_s.fd = fd;
+    oltcp->ol_s.fd = skargs->fd;
     oltcp->ol_s.ev_cb = _olp_on_send_cb;
-    oltcp->cbs = *cbs;
+    oltcp->cbs = *skargs->cbs;
     oltcp->skid = createid();
-    COPY_UD(oltcp->ud, ud);
+    COPY_UD(oltcp->ud, skargs->ud);
 }
 ud_cxt *_iocp_get_ud(sock_ctx *skctx) {
     if (SOCK_STREAM == skctx->type) {
@@ -631,7 +633,8 @@ int32_t ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const u
         FREE(addr);
         return ERR_FAILED;
     }
-    sock_ctx *skctx = _new_sk(*fd, cbs, ud);
+    skpool_args skargs = { *fd, cbs, ud };
+    sock_ctx *skctx = (sock_ctx *)_evpub_sk_new(&skargs);
     skctx->ev_cb = _olp_on_connect_cb;
     overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
     BIT_SET(oltcp->status, STATUS_CLIENT);
@@ -735,7 +738,8 @@ void _iocp_add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) 
         CLOSE_SOCK(fd);
         return;
     }
-    sock_ctx *skctx = pool_pop(&watcher->pool, fd, &lsn->cbs, &lsn->ud);
+    skpool_args skargs = { fd, &lsn->cbs, &lsn->ud };
+    sock_ctx *skctx = pool_pop(&watcher->pool, &skargs);
     overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
     _evpub_sockel_add(watcher, skctx);
     /* _iocp_post_recv 在 _olp_ssl_exchange（设置 STATUS_AUTHSSL）之前投递，但不存在竞态：

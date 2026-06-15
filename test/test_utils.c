@@ -1,6 +1,7 @@
 ﻿#include "test_utils.h"
 #include "lib.h"
 #include "utils/strptime.h"
+#include "utils/pool.h"
 
 /* =======================================================================
  * pack / unpack —— 整数、浮点数的字节序读写
@@ -1508,6 +1509,192 @@ static void test_tw_long_timeout(CuTest *tc) {
     tw_free(&tw);
 }
 
+/* =======================================================================
+ * pool —— 对象池:取/还/复用、满处理、收缩、释放(thsafe=0 queue / thsafe=1 fsqu)
+ * ======================================================================= */
+// 带标记的测试对象:_elfree 收到真实对象时 magic 必为 POOL_T_MAGIC;
+// 若收到队列槽位地址(历史 bug),magic 不符,_pt_free_bad 增长
+#define POOL_T_MAGIC 0x5ada5adau
+typedef struct pool_t_obj {
+    uint32_t magic;      // _elnew 置 POOL_T_MAGIC
+    uint32_t reset_cnt;  // 本对象被 _elreset 次数
+    uint32_t clear_cnt;  // 本对象被 _elclear 次数
+} pool_t_obj;
+// 回调无 user-data,用文件静态累计各回调次数与最近一次透传 args
+static uint32_t _pt_new, _pt_free, _pt_reset, _pt_clear, _pt_free_bad;
+static void *_pt_new_args, *_pt_reset_args;
+static void _pt_counters_reset(void) {
+    _pt_new = _pt_free = _pt_reset = _pt_clear = _pt_free_bad = 0;
+    _pt_new_args = _pt_reset_args = NULL;
+}
+static void *_pt_elnew(void *args) {
+    pool_t_obj *o;
+    CALLOC(o, 1, sizeof(pool_t_obj));
+    o->magic = POOL_T_MAGIC;
+    _pt_new++;
+    _pt_new_args = args;
+    return o;
+}
+static void _pt_elfree(void *data) {
+    pool_t_obj *o = (pool_t_obj *)data;
+    if (POOL_T_MAGIC != o->magic) {
+        _pt_free_bad++;
+    }
+    _pt_free++;
+    FREE(o);
+}
+static void _pt_elreset(void *data, void *args) {
+    ((pool_t_obj *)data)->reset_cnt++;
+    _pt_reset++;
+    _pt_reset_args = args;
+}
+static void _pt_elclear(void *data) {
+    ((pool_t_obj *)data)->clear_cnt++;
+    _pt_clear++;
+}
+static el_cbs _pt_cbs = { _pt_elnew, _pt_elfree, _pt_elreset, _pt_elclear };
+
+// 取/还/复用:空池 pop 走 _elnew,push 走 _elclear,命中 pop 走 _elreset(不再 new),args 透传
+static void _pool_basic_check(CuTest *tc, int32_t thsafe) {
+    pool_ctx pool;
+    pool_t_obj *o, *o2;
+    int32_t arg = 7;
+    _pt_counters_reset();
+    pool_init(&pool, sizeof(pool_t_obj), 8, 2, thsafe, &_pt_cbs);
+    CuAssertIntEquals(tc, 0, pool_size(&pool));
+    CuAssertTrue(tc, pool_capacity(&pool) >= 8);
+    o = (pool_t_obj *)pool_pop(&pool, &arg);
+    CuAssertPtrNotNull(tc, o);
+    CuAssertTrue(tc, POOL_T_MAGIC == o->magic);
+    CuAssertIntEquals(tc, 1, _pt_new);
+    CuAssertPtrEquals(tc, &arg, _pt_new_args);
+    CuAssertIntEquals(tc, 0, pool_size(&pool));
+    pool_push(&pool, o);
+    CuAssertIntEquals(tc, 1, _pt_clear);
+    CuAssertIntEquals(tc, 1, pool_size(&pool));
+    o2 = (pool_t_obj *)pool_pop(&pool, &arg);
+    CuAssertPtrEquals(tc, o, o2); // 命中复用,同一对象
+    CuAssertIntEquals(tc, 1, _pt_new); // 未新建
+    CuAssertIntEquals(tc, 1, _pt_reset);
+    CuAssertPtrEquals(tc, &arg, _pt_reset_args);
+    CuAssertIntEquals(tc, 0, pool_size(&pool));
+    pool_push(&pool, o2);
+    pool_free(&pool);
+    CuAssertIntEquals(tc, 1, _pt_free);
+    CuAssertIntEquals(tc, 0, _pt_free_bad);
+}
+static void test_pool_basic(CuTest *tc) {
+    _pool_basic_check(tc, 0);
+    _pool_basic_check(tc, 1);
+}
+// 满池:pool_push 满则 _elfree;pool_trypush 满则返回 ERR_FAILED 且不接管对象
+static void test_pool_full(CuTest *tc) {
+    pool_ctx pool;
+    pool_t_obj *objs[4], *over;
+    uint32_t i;
+    int32_t rt;
+    _pt_counters_reset();
+    pool_init(&pool, sizeof(pool_t_obj), 4, 0, 0, &_pt_cbs);
+    CuAssertIntEquals(tc, 4, pool_capacity(&pool));
+    for (i = 0; i < 4; i++) {
+        objs[i] = (pool_t_obj *)pool_pop(&pool, NULL);
+    }
+    for (i = 0; i < 4; i++) {
+        pool_push(&pool, objs[i]);
+    }
+    CuAssertIntEquals(tc, 4, pool_size(&pool));
+    CuAssertIntEquals(tc, 0, _pt_free);
+    // 满池 pool_push:对象被释放,size 不变
+    over = (pool_t_obj *)_pt_elnew(NULL);
+    pool_push(&pool, over);
+    CuAssertIntEquals(tc, 1, _pt_free);
+    CuAssertIntEquals(tc, 4, pool_size(&pool));
+    // 满池 pool_trypush:返回 ERR_FAILED 且不释放,对象仍归调用方
+    over = (pool_t_obj *)_pt_elnew(NULL);
+    rt = pool_trypush(&pool, over);
+    CuAssertIntEquals(tc, ERR_FAILED, rt);
+    CuAssertIntEquals(tc, 1, _pt_free);
+    CuAssertIntEquals(tc, 4, pool_size(&pool));
+    FREE(over); // trypush 满未接管,调用方自行释放
+    pool_free(&pool);
+    CuAssertIntEquals(tc, 5, _pt_free); // 1(push 满)+4(pool_free)
+    CuAssertIntEquals(tc, 0, _pt_free_bad);
+}
+// 收缩:释放至 max(keep,nkeep),且交给 _elfree 的都是真实对象(magic 正确)——历史 bug 回归点
+static void _pool_shrink_check(CuTest *tc, int32_t thsafe) {
+    pool_ctx pool;
+    pool_t_obj *objs[8];
+    uint32_t i;
+    _pt_counters_reset();
+    pool_init(&pool, sizeof(pool_t_obj), 16, 2, thsafe, &_pt_cbs);
+    for (i = 0; i < 8; i++) {
+        objs[i] = (pool_t_obj *)pool_pop(&pool, NULL);
+    }
+    for (i = 0; i < 8; i++) {
+        pool_push(&pool, objs[i]);
+    }
+    CuAssertIntEquals(tc, 8, pool_size(&pool));
+    pool_shrink(&pool, 3, 4, 5); // keep=max(3,nkeep=2)=3,释放 5
+    CuAssertIntEquals(tc, 5, _pt_free);
+    CuAssertIntEquals(tc, 0, _pt_free_bad); // bug 版收到槽位地址,magic 不符则 >0
+    CuAssertIntEquals(tc, 3, pool_size(&pool));
+    pool_free(&pool);
+    CuAssertIntEquals(tc, 8, _pt_free);
+    CuAssertIntEquals(tc, 0, _pt_free_bad);
+}
+static void test_pool_shrink(CuTest *tc) {
+    _pool_shrink_check(tc, 0); // 非线程安全 queue —— 本次修复路径
+    _pool_shrink_check(tc, 1); // 线程安全 fsqu —— 确认仍正确
+}
+// 收缩策略:nkeep 下限 与 load_trend busy 跳过(thsafe=0,确定性)
+static void test_pool_shrink_policy(CuTest *tc) {
+    pool_ctx pool;
+    pool_t_obj *objs[8];
+    uint32_t i;
+    // nkeep 下限:keep 小于 nkeep 时仍保留 nkeep 个
+    _pt_counters_reset();
+    pool_init(&pool, sizeof(pool_t_obj), 16, 2, 0, &_pt_cbs);
+    for (i = 0; i < 8; i++) {
+        objs[i] = (pool_t_obj *)pool_pop(&pool, NULL);
+    }
+    for (i = 0; i < 8; i++) {
+        pool_push(&pool, objs[i]);
+    }
+    pool_shrink(&pool, 0, 4, 5); // 首次 prev=0 不忙;keep=max(0,2)=2
+    CuAssertIntEquals(tc, 2, pool_size(&pool));
+    pool_free(&pool);
+    // busy 跳过:采样骤降(8→2,跌幅 >20%)后,下一次收缩被跳过
+    _pt_counters_reset();
+    pool_init(&pool, sizeof(pool_t_obj), 16, 0, 0, &_pt_cbs);
+    for (i = 0; i < 8; i++) {
+        objs[i] = (pool_t_obj *)pool_pop(&pool, NULL);
+    }
+    for (i = 0; i < 8; i++) {
+        pool_push(&pool, objs[i]);
+    }
+    pool_shrink(&pool, 2, 4, 5); // 首次:不忙,8→2,记录 prev=8
+    CuAssertIntEquals(tc, 2, pool_size(&pool));
+    pool_shrink(&pool, 0, 4, 5); // cur=2 < prev(8)*4/5 → 忙 → 跳过
+    CuAssertIntEquals(tc, 2, pool_size(&pool));
+    pool_free(&pool);
+}
+// 默认回调(NULL):走 CALLOC/FREE;容量 0 用默认值
+static void test_pool_default(CuTest *tc) {
+    pool_ctx pool;
+    uint64_t *a, *b;
+    pool_init(&pool, sizeof(uint64_t), 0, 4, 0, NULL);
+    CuAssertTrue(tc, pool_capacity(&pool) >= 1024); // POOL_DEFAULT_CAP
+    a = (uint64_t *)pool_pop(&pool, NULL);
+    CuAssertPtrNotNull(tc, a);
+    CuAssertTrue(tc, 0 == *a); // CALLOC 清零
+    *a = 12345;
+    pool_push(&pool, a);
+    b = (uint64_t *)pool_pop(&pool, NULL);
+    CuAssertPtrEquals(tc, a, b); // 命中复用
+    pool_push(&pool, b);
+    pool_free(&pool);
+}
+
 /* ======================================================================= */
 
 void test_utils(CuSuite *suite) {
@@ -1546,4 +1733,9 @@ void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_sock_pair);
     SUITE_ADD_TEST(suite, test_sock_options);
     SUITE_ADD_TEST(suite, test_utils_filesystem);
+    SUITE_ADD_TEST(suite, test_pool_basic);
+    SUITE_ADD_TEST(suite, test_pool_full);
+    SUITE_ADD_TEST(suite, test_pool_shrink);
+    SUITE_ADD_TEST(suite, test_pool_shrink_policy);
+    SUITE_ADD_TEST(suite, test_pool_default);
 }

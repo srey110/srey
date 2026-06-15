@@ -350,7 +350,7 @@ static void _uev_pool_shrink(watcher_ctx *watcher, uint64_t *shrink_start, uint6
     }
     *shrink_start = now_ms;
     // hashmap_count 含 1 个命令管道 sock(type=0)，偏差可忽略
-    pool_shrink(&watcher->pool, hashmap_count(watcher->element) / 2);
+    pool_shrink(&watcher->pool, (uint32_t)SHRINK_NKEEP(hashmap_count(watcher->element)), SHRINK_BUSY);
 }
 // 事件循环主函数（Unix平台：epoll/kqueue/evport/pollset/devpoll）
 static void _uev_loop_event(void *arg) {
@@ -441,7 +441,7 @@ static void _uev_loop_event(void *arg) {
 static void _uev_free_element(void *item) {
     sock_ctx *sock = *((sock_ctx **)item);
     if (SOCK_STREAM == sock->type) {
-        _free_sk(sock);
+        _evpub_sk_free(sock);
         return;
     }
     if (SOCK_DGRAM == sock->type) {
@@ -502,6 +502,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
     _uev_init_callback();
     MALLOC(ctx->watcher, sizeof(watcher_ctx) * ctx->nthreads);
     watcher_ctx *watcher;
+    el_cbs skcbs = { _evpub_sk_new, _evpub_sk_free, _evpub_sk_reset, _evpub_sk_clear };
     for (uint32_t i = 0; i < ctx->nthreads; i++) {
         watcher = &ctx->watcher[i];
         watcher->index = i;
@@ -520,7 +521,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
         watcher->element = hashmap_new_with_allocator(_malloc, _realloc, _free,
                                                       sizeof(sock_ctx *), ONEK, 0, 0,
                                                       _evpub_sockel_hash, _evpub_sockel_compare, _uev_free_element, NULL);
-        pool_init(&watcher->pool, ONEK);
+        pool_init(&watcher->pool, 0, 4 * ONEK, INIT_EVENTS_CNT, 0, &skcbs);
         queue_init(&watcher->qtn, sizeof(qtn_entry), ONEK);
         timer_init(&watcher->tm_qtn);
         timer_start(&watcher->tm_qtn);
@@ -582,12 +583,12 @@ static void _uev_free_pipe(watcher_ctx *watcher) {
             }
             case CMD_CONN:
                 skctx = (sock_ctx *)cmds[j].arg;
-                _free_sk(skctx);
+                _evpub_sk_free(skctx);
                 break;
             case CMD_ADD:
                 skctx = (sock_ctx *)cmds[j].arg;
                 if (SOCK_STREAM == skctx->type) {
-                    _free_sk(skctx);
+                    _evpub_sk_free(skctx);
                 } else {
                     _uev_free_udp(skctx);
                 }

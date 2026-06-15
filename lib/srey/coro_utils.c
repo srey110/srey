@@ -121,7 +121,7 @@ SOCKET wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, c
     char *reqpack = websock_pack_handshake(host, secprot, signkey);
     //signkey 通过 ud->context 交给协议层管理：
     //  - coro_connect 失败：ev_connect 失败路径会调 cbs->ud_free → _websock_udfree 释放
-    //  - coro_connect 成功后任意失败：sock 关闭路径（_clear_sk/_free_sk）统一调 ud_free
+    //  - coro_connect 成功后任意失败：sock 关闭路径（_evpub_sk_clear/_evpub_sk_free）统一调 ud_free
     //  无需在此处显式 FREE(signkey)，否则 double-free。
     if (ERR_OK != coro_connect(task, PACK_WEBSOCK, evssl, ip, port, netev, signkey, &fd, skid)) {
         FREE(host);

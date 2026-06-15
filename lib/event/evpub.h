@@ -82,6 +82,11 @@ typedef struct cbs_ctx {
     recvfrom_cb rf_cb;      // UDP接收回调
     free_cb ud_free;        // 用户数据释放回调
 }cbs_ctx;
+typedef struct skpool_args {
+    SOCKET fd;
+    cbs_ctx *cbs;
+    ud_cxt *ud;
+}skpool_args;
 
 // fd → sock_ctx hashmap 工具集
 // hashmap哈希函数：以fd作为key计算哈希值（hashmap_new_with_allocator 回调）
@@ -94,6 +99,12 @@ struct sock_ctx *_evpub_sockel_get(struct watcher_ctx *watcher, SOCKET fd);
 void _evpub_sockel_add(struct watcher_ctx *watcher, struct sock_ctx *skctx);
 // 从watcher的hashmap中移除fd，返回 hashmap spare 缓冲指针（下次操作前有效，调用方按需用）
 void *_evpub_sockel_remove(struct watcher_ctx *watcher, SOCKET fd);
+
+//sock_ctx 池相关
+void *_evpub_sk_new(void *args);
+void _evpub_sk_free(void *sk);
+void _evpub_sk_clear(void *sk);
+void _evpub_sk_reset(void *sk, void *args);
 
 // 统一释放一个 off_buf_ctx：shared==NULL 走独占 FREE(data)；非 NULL 走多播 ref-- 路径
 void _evpub_off_buf_release(off_buf_ctx *buf);

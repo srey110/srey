@@ -33,6 +33,8 @@
 #define WB_WARN_INIT_SIZE   (1024 * 1024) // 单 sock 发送缓冲字节告警首阈值；触发后翻倍（1MB→2MB→4MB...），队列清空后复位；0 表示禁用
 #define INIT_SENDBUF_LEN    32      // 发送缓冲区初始长度
 #define SHRINK_TIME         10000   // 缓冲区收缩检测周期（毫秒）
+#define SHRINK_NKEEP(n)  ((n) - (n) / 5) // pool_shrink 的 keep 量
+#define SHRINK_BUSY      4, 5 // pool_shrink 的 load_trend busy 判定比例 num/den:空闲骤降至上次的 4/5 以下视为忙,跳过本次收缩
 #define QTN_MS              500     // 释放对象隔离时间(毫秒)，应大于一轮 kevent 周期
 #define EVENT_CHECK_INTERVAL 10     // 每隔多少次事件循环才检查一次定时器，避免每次紧循环都调用 clock_gettime
 #define SPIN_CNT             32     // 自旋次数

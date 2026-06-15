@@ -82,9 +82,6 @@
     <ClInclude Include="event\uev.h">
       <Filter>event\unix</Filter>
     </ClInclude>
-    <ClInclude Include="event\skpool.h">
-      <Filter>event</Filter>
-    </ClInclude>
     <ClInclude Include="event\evssl.h">
       <Filter>event</Filter>
     </ClInclude>
@@ -161,6 +158,9 @@
       <Filter>utils</Filter>
     </ClInclude>
     <ClInclude Include="utils\log.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="utils\pool.h">
       <Filter>utils</Filter>
     </ClInclude>
     <ClInclude Include="utils\stm.h">
@@ -466,6 +466,9 @@
       <Filter>utils</Filter>
     </ClCompile>
     <ClCompile Include="utils\log.c">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="utils\pool.c">
       <Filter>utils</Filter>
     </ClCompile>
     <ClCompile Include="utils\stm.c">

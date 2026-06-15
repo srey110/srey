@@ -3,20 +3,6 @@
 #define TW_NODE_POOL_MAX    4 * ONEK    // 节点池上限：超出后直接释放，避免无界增长
 #define TW_REQADD_BATCH     128         // reqadd 单次批量出队上限
 
-// 从节点池无锁出队；池为空时退化为 MALLOC
-static tw_node_ctx *_tw_node_alloc(tw_ctx *ctx) {
-    tw_node_ctx *node = NULL;
-    if (ERR_OK != fsqu_pop(&ctx->node_pool, &node)) {
-        MALLOC(node, sizeof(tw_node_ctx));
-    }
-    return node;
-}
-// 将节点无锁归还到池；池满时直接 FREE
-static void _tw_node_release(tw_ctx *ctx, tw_node_ctx *node) {
-    if (ERR_OK != fsqu_trypush(&ctx->node_pool, &node)) {
-        FREE(node);
-    }
-}
 // 释放时间轮槽位数组中所有节点，并调用各节点的 _freecb 释放用户数据
 static void _tw_free_slot(tw_slot_ctx *slot, const size_t len) {
     tw_node_ctx *pnode, *pdel;
@@ -56,12 +42,8 @@ void tw_free(tw_ctx *ctx) {
         }
     }
     fsqu_free(&ctx->reqadd);
-    /* 排空节点池并释放 */
-    tw_node_ctx *node;
-    while (ERR_OK == fsqu_pop(&ctx->node_pool, &node)) {
-        FREE(node);
-    }
-    fsqu_free(&ctx->node_pool);
+    /* 释放节点池 */
+    pool_free(&ctx->node_pool);
     cond_free(&ctx->cond);
     mutex_free(&ctx->mu);
 }
@@ -69,7 +51,7 @@ void tw_free(tw_ctx *ctx) {
  *  在 queue 侧（macOS）则自动扩容。常规负载下不会触发（容量 4096，主线程 ≤5ms 排空一轮）。
  *  仅在极端突发或时间轮主线程被严重抢占时才会触底。*/
 void tw_add(tw_ctx *ctx, const uint32_t timeout, tw_cb _cb, free_cb _freecb, ud_cxt *ud) {
-    tw_node_ctx *node = _tw_node_alloc(ctx);
+    tw_node_ctx *node = (tw_node_ctx *)pool_pop(&ctx->node_pool, NULL);
     COPY_UD(node->ud, ud);
     node->expires = timer_cur_ms(&ctx->timer) + timeout;
     node->_cb = _cb;
@@ -155,7 +137,7 @@ static void _tw_run(tw_ctx *ctx) {
         // 回调契约：不得将 &ud 存入生命周期超出本次调用的结构体。
         ud = pnode->ud;
         cb = pnode->_cb;
-        _tw_node_release(ctx, pnode);
+        pool_push(&ctx->node_pool, pnode);
         cb(&ud);
         pnode = pnext;
     }
@@ -177,6 +159,7 @@ static void _tw_loop(void *arg) {
     tw_ctx *ctx = (tw_ctx *)arg;
     tw_node_ctx *nodes[TW_REQADD_BATCH];
     ctx->jiffies = timer_cur_ms(&ctx->timer);
+    uint64_t shrink_start = ctx->jiffies;
     while (0 == ATOMIC_GET(&ctx->exit)) {
         /*  将外部通过 tw_add 提交的节点分发到对应槽位（reqadd 仅 tw 主线程独占消费，走 pop_sc_batch）。
          *  tw_add 已设置 node->next = NULL。
@@ -188,6 +171,11 @@ static void _tw_loop(void *arg) {
         curtick = timer_cur_ms(&ctx->timer);
         while (ctx->jiffies <= curtick) {
             _tw_run(ctx);
+        }
+        // 空闲时按 SHRINK_TIME 门控回落节点池
+        if (curtick - shrink_start >= SHRINK_TIME) {
+            shrink_start = curtick;
+            pool_shrink(&ctx->node_pool, SHRINK_NKEEP(pool_size(&ctx->node_pool)), SHRINK_BUSY);
         }
         /*  精确睡眠直到下一个 jiffy 到期，而非固定 1ms 空转。
          *  sleep_ms = max(1, min(next_jiffy - now, 5))
@@ -214,7 +202,7 @@ void tw_init(tw_ctx *ctx, uint32_t capacity, const thread_hooks *hooks) {
     cond_init(&ctx->cond);
     timer_init(&ctx->timer);
     fsqu_init(&ctx->reqadd, sizeof(tw_node_ctx *), 0 == capacity ? 4 * ONEK : capacity);
-    fsqu_init(&ctx->node_pool, sizeof(tw_node_ctx *), TW_NODE_POOL_MAX);
+    pool_init(&ctx->node_pool, sizeof(tw_node_ctx), TW_NODE_POOL_MAX, TW_NODE_POOL_MAX / 4, 1, NULL);
     ZERO(ctx->tv1, sizeof(ctx->tv1));
     ZERO(ctx->tv2, sizeof(ctx->tv2));
     ZERO(ctx->tv3, sizeof(ctx->tv3));

@@ -4,14 +4,13 @@
 #include "protocol/prots.h"
 #include "event/event.h"
 #include "containers/sarray.h"
-#include "containers/queue.h"
-#include "containers/fsqu.h"
 #include "thread/rwlock_distr.h"
 #include "thread/spinlock.h"
 #include "thread/mutex.h"
 #include "thread/cond.h"
 #include "utils/tw.h"
 #include "utils/tda.h"
+#include "utils/pool.h"
 
 #define INVALID_TNAME         0  // 无效任务名（空值）
 #define _NAME_OR(s)           ((s) ? (s) : "?")  // 日志打印任务名；匿名(NULL)回退 "?"
@@ -155,7 +154,7 @@ struct loader_ctx {
     monitor_ctx monitor;       // 监控线程上下文
     tw_ctx tw;                 // 时间轮（超时调度）
     ev_ctx netev;              // 网络事件驱动上下文
-    fsqu_ctx msg_pool;        // message_ctx 对象回收池（减少跨线程 malloc/free 开销）
+    pool_ctx msg_pool;        // message_ctx 对象回收池（减少跨线程 malloc/free 开销）
 };
 // 任务上下文
 struct task_ctx {

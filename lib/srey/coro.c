@@ -2,12 +2,12 @@
 #include "containers/hashmap.h"
 #include "containers/heap.h"
 #include "utils/timer.h"
-#include "utils/load_trend.h"
 #include "utils/binary.h"
+#include "utils/pool.h"
 #define MINICORO_IMPL
 #include "srey/minicoro.h"
 
-#define COROPOOL_CAP      64
+#define COROPOOL_CAP      128
 #define COROPOOL_MIN_KEEP 4
 
 // 超时堆节点：嵌入最小堆，存储过期时间和关联 session
@@ -42,8 +42,8 @@ typedef struct coro_ctx {
     struct hashmap *mapco;   // sess → coro_sess 哈希映射
     void *arg;               // 用户自定义数据
     free_cb _arg_free;       // 用户数据释放回调
-    queue_ctx qucopool;      // 空闲协程对象池（元素 mco_coro *）
-    load_trend_ctx pool_trend; // 负载趋势
+    uint64_t shrink_ms;      // 上次协程池收缩的时间戳(ms)，按 SHRINK_TIME 门控
+    pool_ctx copool;         // 空闲协程对象池（元素 mco_coro *，含负载趋势）
     timer_ctx timer;         // 用于获取当前毫秒时间戳
     heap_ctx timeout_heap;   // 按到期时间排序的最小堆,O(1) 检查最早超时
 }coro_ctx;
@@ -224,26 +224,43 @@ static void _coro_mco_cb(mco_coro *coro) {
         task_incref(arg.task); // 保证 _message_run 在 yield 后 task 不会被释放
         _message_run(arg.task, &arg.msg);
         coro_ctx *ctx = (coro_ctx *)arg.task->arg;
-        if (queue_size(&ctx->qucopool) >= COROPOOL_CAP) {
+        if (ERR_OK != pool_trypush(&ctx->copool, coro)) {
             task_ungrab(arg.task);
             break; // 池满时跳出循环，让函数自然返回使协程进入 MCO_DEAD 状态
         }
-        queue_push(&ctx->qucopool, &coro);
         task_ungrab(arg.task);
     }
 }
 void coro_desc_init(size_t stack_size) {
     _coro_desc = mco_desc_init(_coro_mco_cb, stack_size);
 }
+// 对象池 _elnew：新建协程并首次 resume 到第一个 yield 点
+static void *_coro_new(void *args) {
+    (void)args;
+    mco_coro *co;
+    mco_result rtn = mco_create(&co, &_coro_desc);
+    ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
+    rtn = mco_resume(co);
+    ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
+    return co;
+}
+// 对象池 _elfree：销毁协程对象
+static void _coro_free(void *co) {
+    mco_result rtn = mco_destroy((mco_coro *)co);
+    if (MCO_SUCCESS != rtn) {
+        LOG_WARN("%s", mco_result_description(rtn));
+    }
+}
 // 初始化协程任务运行时上下文
 static coro_ctx *_coro_ctx_init(free_cb _argfree, void *arg) {
+    el_cbs _coro_pool_cbs = { _coro_new, _coro_free, NULL, NULL };
     coro_ctx *coctx;
     CALLOC(coctx, 1, sizeof(coro_ctx));
     coctx->arg = arg;
     coctx->_arg_free = _argfree;
-    queue_init(&coctx->qucopool, sizeof(mco_coro *), COROPOOL_CAP);
-    load_trend_init(&coctx->pool_trend);
+    pool_init(&coctx->copool, 0, COROPOOL_CAP, COROPOOL_MIN_KEEP, 0, &_coro_pool_cbs);
     timer_init(&coctx->timer);
+    coctx->shrink_ms = timer_cur_ms(&coctx->timer);
     coctx->mapco = hashmap_new_with_allocator(_malloc, _realloc, _free,
                                               sizeof(coro_sess), ONEK, 0, 0,
                                               _coro_cosess_hash, _coro_cosess_compare, NULL, NULL);
@@ -253,15 +270,7 @@ static coro_ctx *_coro_ctx_init(free_cb _argfree, void *arg) {
 // 释放协程任务运行时上下文（包括对象池、超时堆、哈希表）
 static void _coro_ctx_free(void *arg) {
     coro_ctx *coctx = (coro_ctx *)arg;
-    mco_result rtn;
-    mco_coro **coro;
-    while (NULL != (coro = (mco_coro **)queue_pop(&coctx->qucopool))) {
-        rtn = mco_destroy(*coro);
-        if (MCO_SUCCESS != rtn) {
-            LOG_WARN("%s", mco_result_description(rtn));
-        }
-    }
-    queue_free(&coctx->qucopool);
+    pool_free(&coctx->copool);
     /* 先释放超时堆（堆节点独立分配，不依赖 mapco） */
     while (NULL != coctx->timeout_heap.root) {
         timeout_entry *te = _TE_FROM_HNODE(coctx->timeout_heap.root);
@@ -302,41 +311,7 @@ static void _coro_ctx_free(void *arg) {
 // 从协程对象池取出可用协程，池为空时新建并首次 resume 到第一个 yield 点
 static mco_coro *_coro_pool_get(task_ctx *task) {
     coro_ctx *coctx = task->arg;
-    mco_coro **coro = (mco_coro **)queue_pop(&coctx->qucopool);
-    if (NULL != coro) {
-        return *coro;
-    }
-    mco_coro *coronew;
-    mco_result rtn = mco_create(&coronew, &_coro_desc);
-    ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
-    rtn = mco_resume(coronew);
-    ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
-    return coronew;
-}
-static void _coro_pool_shrink(coro_ctx *coctx) {
-    size_t cur = queue_size(&coctx->qucopool);
-    if (load_trend_busy(&coctx->pool_trend, cur, 4, 5)) {
-        return;
-    }
-    if (cur <= COROPOOL_MIN_KEEP) {
-        return;
-    }
-    size_t keep = cur / 2;
-    if (keep < COROPOOL_MIN_KEEP) {
-        keep = COROPOOL_MIN_KEEP;
-    }
-    mco_coro **coro;
-    mco_result rtn;
-    while (queue_size(&coctx->qucopool) > keep) {
-        coro = (mco_coro **)queue_pop(&coctx->qucopool);
-        if (NULL == coro) {
-            break;
-        }
-        rtn = mco_destroy(*coro);
-        if (MCO_SUCCESS != rtn) {
-            LOG_WARN("%s", mco_result_description(rtn));
-        }
-    }
+    return (mco_coro *)pool_pop(&coctx->copool, NULL);
 }
 // 从对象池取出协程并推入分发参数，开始执行新的消息处理流程
 static void _coro_mco_create(task_dispatch_arg *arg) {
@@ -491,9 +466,9 @@ static void _coro_handle_recvfrom(task_dispatch_arg *arg) {
 static void _coro_timeout_monitor(task_ctx *task, uint64_t sess) {
     (void)sess;
     coro_ctx *coctx = task->arg;
+    uint64_t now = timer_cur_ms(&coctx->timer);
     /* 只有存在挂起协程且堆非空才需要检查 */
     if (coctx->nyield > 0 && NULL != coctx->timeout_heap.root) {
-        uint64_t now = timer_cur_ms(&coctx->timer);
         task_dispatch_arg arg = { 0 };
         arg.task = task;
         arg.msg.mtype = MSG_TYPE_TIMEOUT;
@@ -554,7 +529,10 @@ static void _coro_timeout_monitor(task_ctx *task, uint64_t sess) {
             _coro_mco_resume(coro, &arg);
         }
     }
-    _coro_pool_shrink(coctx);
+    if (now - coctx->shrink_ms >= SHRINK_TIME) {
+        coctx->shrink_ms = now;
+        pool_shrink(&coctx->copool, SHRINK_NKEEP(pool_size(&coctx->copool)), SHRINK_BUSY);
+    }
     task_timeout(task, 0, 1 * 1000, _coro_timeout_monitor);
 }
 // 协程任务的消息分发总入口，根据消息类型路由到对应的处理函数

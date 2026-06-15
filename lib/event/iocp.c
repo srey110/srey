@@ -96,7 +96,7 @@ static void _iocp_pool_shrink(watcher_ctx *watcher, timer_ctx *timer, uint32_t *
     }
     timer_start(timer);
     // cmd sock 仅 _iocp_join 不入 hashmap，hashmap_count 即业务 socket 数
-    pool_shrink(&watcher->pool, hashmap_count(watcher->element) / 2);
+    pool_shrink(&watcher->pool, (uint32_t)SHRINK_NKEEP(hashmap_count(watcher->element)), SHRINK_BUSY);
 }
 #if (_WIN32_WINNT >= 0x0600)
 // 事件循环主函数（Vista+，使用GetQueuedCompletionStatusEx批量获取事件）
@@ -267,7 +267,7 @@ static void _iocp_loop_acpex(void *arg) {
 static void _iocp_sockel_free(void *item) {
     sock_ctx *sock = *((sock_ctx **)item);
     if (SOCK_STREAM == sock->type) {
-        _free_sk(sock);
+        _evpub_sk_free(sock);
     } else {
         _iocp_free_udp(sock);
     }
@@ -295,6 +295,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
     MALLOC(ctx->watcher, sizeof(watcher_ctx) * ctx->nthreads);
     watcher_ctx *watcher;
     uint32_t i;
+    el_cbs skcbs = { _evpub_sk_new, _evpub_sk_free, _evpub_sk_reset, _evpub_sk_clear };
     for (i = 0; i < ctx->nthreads; i++) {
         watcher = &ctx->watcher[i];
         watcher->index = i;
@@ -305,7 +306,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
         watcher->element = hashmap_new_with_allocator(_malloc, _realloc, _free,
                                                       sizeof(sock_ctx *), ONEK, 0, 0,
                                                       _evpub_sockel_hash, _evpub_sockel_compare, _iocp_sockel_free, NULL);
-        pool_init(&watcher->pool, ONEK);
+        pool_init(&watcher->pool, 0, 4 * ONEK, INIT_EVENTS_CNT, 0, &skcbs);
         _iocp_init_cmd(watcher);
         if (NULL != hooks) {
             watcher->thevent = thread_creat_hooks(_iocp_loop_event, hooks->init, hooks->exit, watcher, hooks->assist);
@@ -367,13 +368,13 @@ static void _iocp_free_cmd(watcher_ctx *watcher) {
         }
         case CMD_CONN:
             skctx = (sock_ctx *)cmd->arg;
-            _free_sk(skctx);
+            _evpub_sk_free(skctx);
             FREE((void *)cmd->skid);  // CMD_CONN 借 skid 携带 MALLOC 的 conn addr,排空未处理命令时一并释放
             break;
         case CMD_ADD:
             skctx = (sock_ctx *)cmd->arg;
             if (SOCK_STREAM == skctx->type) {
-                _free_sk(skctx);
+                _evpub_sk_free(skctx);
             } else {
                 _iocp_free_udp(skctx);
             }
