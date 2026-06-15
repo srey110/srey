@@ -113,6 +113,10 @@ int32_t popen_startup(popen_ctx *ctx, const char *cmd, const char *mode) {
         popen_free(ctx);
         return ERR_FAILED;
     }
+    if (NULL != ctx->pipe[0]) {
+        CloseHandle(ctx->pipe[0]);
+        ctx->pipe[0] = NULL;
+    }
 #else
     SOCKET sock[2];
     ctx->sock = INVALID_SOCK;

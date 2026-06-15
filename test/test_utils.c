@@ -787,6 +787,13 @@ static void test_utils_misc(CuTest *tc) {
 
     CuAssertIntEquals(tc, ERR_OK, mstostr(ms, "%Y-%m-%d %H:%M:%S", timebuf));
     CuAssertTrue(tc, strlen(timebuf) > 0);
+
+    /* strtots：不断言绝对值(依赖进程时区/DST)，仅验证解析成功、畸形返 0、相邻秒差恒为 1(DST 偏移相减抵消) */
+    uint64_t t0 = strtots("2026-06-15 12:00:00", "%Y-%m-%d %H:%M:%S");
+    uint64_t t1 = strtots("2026-06-15 12:00:01", "%Y-%m-%d %H:%M:%S");
+    CuAssertTrue(tc, t0 > 0 && t1 > 0);
+    CuAssertTrue(tc, 1 == t1 - t0);
+    CuAssertTrue(tc, 0 == strtots("not-a-date", "%Y-%m-%d %H:%M:%S"));
 }
 
 /* =======================================================================

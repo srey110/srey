@@ -80,9 +80,6 @@ static int32_t _path_builtin_validate(const path_rules *r, const buf_ctx *segs, 
     if (0 == n) {
         return ERR_FAILED;
     }
-    if (n > PATH_MAX_DEPTH) {
-        return ERR_FAILED;
-    }
     // multi_wildcard 必须末尾
     if (0 != r->multi_wildcard && PATH_KIND_WILDCARD == kind) {
         int32_t i;

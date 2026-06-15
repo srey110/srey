@@ -31,7 +31,7 @@ void ev_free(ev_ctx *ctx);
 int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const uint16_t port,
     cbs_ctx *cbs, ud_cxt *ud, uint64_t *id);
 /// <summary>
-/// 链接。启用 SSL 时（evssl != NULL）业务须等 ssl握手完成回调后才能 ev_send
+/// 链接。业务须等连接回调(conn_cb)后才能 ev_send;启用 SSL 时（evssl != NULL）还须等 ssl握手完成回调后才能 ev_send
 /// </summary>
 /// <param name="ctx">ev_ctx</param>
 /// <param name="evssl">evssl_ctx, NULL 不使用,不为NULL默认启用ssl</param>

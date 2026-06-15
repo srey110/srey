@@ -46,12 +46,17 @@ typedef struct sc_retained_entry {
 }sc_retained_entry;
 // subcenter task 上下文
 typedef struct sc_ctx {
+    uint32_t pub_normal_cap;         // pub_normal 当前容量(元素数)
     loader_ctx *loader;              // 所属 loader
     path_trie *topics;               // 订阅关系
     const path_rules *rules;         // topic 规则(由 sc_start 传入,长生命周期持有)
     struct hashmap *publisher_meta;  // name_t → sc_publisher_meta
     struct hashmap *retained_index;  // topic → sc_retained_entry
     hashset *publish_dedup;          // publish 去重复用容器(name_t set)
+    task_ctx **pub_normal;           // publish 复用:普通投递目标缓冲(按需 grow)
+    array_ctx pub_shared;            // publish 复用:共享投递目标(sc_shared_dst)
+    array_ctx pub_prune;             // publish 复用:死订阅待清理(name_t)
+    array_ctx pub_empty;             // publish 复用:空节点路径(char*)
 }sc_ctx;
 // path_match 的 visit:收集订阅者
 // 共享投递目标:挑中的成员 + 其所属组名(打 deliver wire 需 group;指向 sc_shared_group.group,投递期有效)
@@ -699,62 +704,62 @@ static void _sc_publish_deliver(sc_ctx *ctx, name_t src, const char *topic,
     uint16_t mlen = (NULL != pm) ? (uint16_t)pm->size : 0;
     // 收集订阅者:normal 进 dedup hashset 去重;shared 每组挑首个活成员并 grab,死成员当场剔除
     hashset_clear(ctx->publish_dedup, 0);
-    array_ctx shared_dsts;
-    array_init(&shared_dsts, sizeof(sc_shared_dst), 0);
+    array_ctx *shared_dsts = &ctx->pub_shared;
+    array_clear(shared_dsts);
     sc_collect_ctx cc;
     cc.ctx = ctx;
-    cc.shared_dsts = &shared_dsts;
+    cc.shared_dsts = shared_dsts;
     cc.failed = 0;
     cc.shared_emptied = 0;
     path_match(ctx->topics, topic, _sc_collect_visit, &cc);
     uint32_t i;
     if (cc.failed) {
         // collect 中途失败:已 grab 的共享目标需 ungrab
-        sc_shared_dst *sp = (sc_shared_dst *)shared_dsts.ptr;
-        for (i = 0; i < shared_dsts.size; i++) {
+        sc_shared_dst *sp = (sc_shared_dst *)shared_dsts->ptr;
+        for (i = 0; i < shared_dsts->size; i++) {
             task_ungrab(sp[i].task);
         }
-        array_free(&shared_dsts);
         return;
     }
     size_t n_normal = hashset_count(ctx->publish_dedup);
-    if (0 == n_normal && 0 == shared_dsts.size && 0 == cc.shared_emptied) {
-        array_free(&shared_dsts);
+    if (0 == n_normal && 0 == shared_dsts->size && 0 == cc.shared_emptied) {
         return;
     }
     // 普通组(kind=0)dedup 后逐个 grab,死订阅收入 prune_normal 懒清理(共享已在 collect 内挑活并剔死)
     task_ctx **normal_dsts = NULL;
     int32_t normal_cnt = 0;
-    array_ctx prune_normal;
-    array_init(&prune_normal, sizeof(name_t), 0);
+    array_ctx *prune_normal = &ctx->pub_prune;
+    array_clear(prune_normal);
     if (n_normal > 0) {
-        MALLOC(normal_dsts, sizeof(task_ctx *) * n_normal);
+        if (ctx->pub_normal_cap < n_normal) {
+            REALLOC(ctx->pub_normal, ctx->pub_normal, sizeof(task_ctx *) * n_normal);
+            ctx->pub_normal_cap = (uint32_t)n_normal;
+        }
+        normal_dsts = ctx->pub_normal;
         size_t it = 0;
         void *item;
         while (hashset_iter(ctx->publish_dedup, &it, &item)) {
-            _sc_resolve_one(ctx, *(name_t *)item, normal_dsts, (int32_t)n_normal, &normal_cnt, &prune_normal);
+            _sc_resolve_one(ctx, *(name_t *)item, normal_dsts, (int32_t)n_normal, &normal_cnt, prune_normal);
         }
     }
     // 懒清理:死 normal 订阅 + collect 清空的共享组 + 随之变空的节点。死订阅/空组挂在命中的通配
     // /字面节点上,用 path_match 遍历所有命中节点统一处理;变空节点在返回后 path_remove
-    if (prune_normal.size > 0 || 0 != cc.shared_emptied) {
-        array_ctx empty_nodes;
-        array_init(&empty_nodes, sizeof(char *), 0);
+    if (prune_normal->size > 0 || 0 != cc.shared_emptied) {
+        array_ctx *empty_nodes = &ctx->pub_empty;
+        array_clear(empty_nodes);
         sc_prune_ctx pc;
-        pc.prune = &prune_normal;
-        pc.empty_nodes = &empty_nodes;
+        pc.prune = prune_normal;
+        pc.empty_nodes = empty_nodes;
         path_match(ctx->topics, topic, _sc_prune_visit, &pc);
-        char **paths = (char **)empty_nodes.ptr;
+        char **paths = (char **)empty_nodes->ptr;
         void *removed;
-        for (i = 0; i < empty_nodes.size; i++) {
+        for (i = 0; i < empty_nodes->size; i++) {
             removed = path_remove(ctx->topics, paths[i]);
             if (NULL != removed) {
                 _sc_topic_data_free(removed);
             }
         }
-        array_free(&empty_nodes);
     }
-    array_free(&prune_normal);
     // 普通投递:group 空(glen=0),批量群发同一 buffer(task_multi_call copy=0 转移所有权)
     if (normal_cnt > 0) {
         size_t dsize = 0;
@@ -766,8 +771,8 @@ static void _sc_publish_deliver(sc_ctx *ctx, name_t src, const char *topic,
         }
     }
     // 共享投递:每个挑中成员按各自 group 名单独打包单发,接收方据 group 精确路由
-    sc_shared_dst *sds = (sc_shared_dst *)shared_dsts.ptr;
-    for (i = 0; i < shared_dsts.size; i++) {
+    sc_shared_dst *sds = (sc_shared_dst *)shared_dsts->ptr;
+    for (i = 0; i < shared_dsts->size; i++) {
         size_t dsize = 0;
         char *dbuf = _sc_pack_deliver(SC_DELIVER_SHARED, src, meta, mlen,
                                       sds[i].group, (uint16_t)strlen(sds[i].group),
@@ -775,8 +780,6 @@ static void _sc_publish_deliver(sc_ctx *ctx, name_t src, const char *topic,
         task_multi_call(&sds[i].task, 1, REQ_SC_DELIVER, dbuf, dsize, 0);
         task_ungrab(sds[i].task);
     }
-    FREE(normal_dsts);
-    array_free(&shared_dsts);
 }
 // handler:PUB(retained=0)/ PUB_RETAINED(retained=1)。
 // retained 路径:先 _sc_update_retained 更新槽位;plen=0 时清空后直接返,不 deliver。
@@ -1045,6 +1048,10 @@ static void _sc_free(void *arg) {
     if (NULL != ctx->topics) {
         path_free(ctx->topics);
     }
+    array_free(&ctx->pub_shared);
+    array_free(&ctx->pub_prune);
+    array_free(&ctx->pub_empty);
+    FREE(ctx->pub_normal);
     FREE(ctx);
 }
 int32_t sc_start(loader_ctx *loader, const char *name, const path_rules *rules) {
@@ -1076,6 +1083,9 @@ int32_t sc_start(loader_ctx *loader, const char *name, const path_rules *rules) 
         _sc_free(ctx);
         return ERR_FAILED;
     }
+    array_init(&ctx->pub_shared, sizeof(sc_shared_dst), 0);
+    array_init(&ctx->pub_prune, sizeof(name_t), 0);
+    array_init(&ctx->pub_empty, sizeof(char *), 0);
     task_ctx *task = task_new(loader, name, 4 * ONEK, NULL, _sc_free, ctx);
     task_requested(task, _sc_requested);
     if (ERR_OK != task_register(task, NULL, NULL)) {

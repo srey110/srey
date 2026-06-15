@@ -4,6 +4,7 @@
 #include "event/event.h"
 #include "utils/binary.h"
 #include "utils/utils.h"
+#include "utils/timer.h"
 #include "containers/hashmap.h"
 #include "crypt/hmac.h"
 
@@ -18,15 +19,17 @@ typedef struct nonce_entry_ctx {
 // harbor 实例上下文（每 task 堆分配，存 task->arg，由 coro_get_arg 取；监听信息 + HMAC 签名上下文）
 typedef struct harbor_ctx {
     uint16_t port;          // 监听端口
+    uint64_t lsnid;         // 监听ID（ev_unlisten使用）
+    uint64_t window_start;
     struct evssl_ctx *ssl;  // SSL上下文（NULL表示不使用SSL）
     router_ctx *router;     // HTTP 路由器
-    uint64_t lsnid;         // 监听ID（ev_unlisten使用）
-    hmac_ctx hmac;          // HMAC签名上下文（用于验证请求合法性）
-    char ip[IP_LENS];       // 监听IP
     // 双 hashmap 轮转防 nonce 重放：每 HARBOR_SIGN_WINDOW_SEC 切换，实际重放窗口最长 2×SEC
     struct hashmap *nonce_cur;
     struct hashmap *nonce_prev;
-    uint64_t window_start;
+    char ip[IP_LENS];       // 监听IP
+    timer_ctx wtimer;
+    hmac_ctx hmac;          // HMAC签名上下文（用于验证请求合法性）
+    
 }harbor_ctx;
 
 static uint64_t _harbor_nonce_hash(const void *item, uint64_t seed0, uint64_t seed1) {
@@ -99,7 +102,8 @@ static int32_t _harbor_check_sign(task_ctx *harbor, struct http_pack_ctx *pack, 
         return ERR_FAILED;
     }
     // 签名通过后做 nonce 重放检查；窗口轮转：每 HARBOR_SIGN_WINDOW_SEC 切换 cur→prev
-    if (tnow - ctx->window_start >= HARBOR_SIGN_WINDOW_SEC) {
+    uint64_t wnow = timer_cur_ms(&ctx->wtimer) / 1000;
+    if (wnow - ctx->window_start >= HARBOR_SIGN_WINDOW_SEC) {
         if (NULL != ctx->nonce_prev) {
             hashmap_free(ctx->nonce_prev);
         }
@@ -107,7 +111,7 @@ static int32_t _harbor_check_sign(task_ctx *harbor, struct http_pack_ctx *pack, 
         ctx->nonce_cur = hashmap_new_with_allocator(_malloc, _realloc, _free,
                                                     sizeof(nonce_entry_ctx), 0, 0, 0,
                                                     _harbor_nonce_hash, _harbor_nonce_compare, NULL, NULL);
-        ctx->window_start = tnow;
+        ctx->window_start = wnow;
     }
     nonce_entry_ctx key;
     memcpy(key.nonce, nonce_hex, HARBOR_NONCE_HEX);
@@ -293,7 +297,8 @@ int32_t harbor_start(loader_ctx *loader, const char *tname, const char *ssl, con
     ctx->nonce_cur = hashmap_new_with_allocator(_malloc, _realloc, _free,
                                                 sizeof(nonce_entry_ctx), 0, 0, 0,
                                                 _harbor_nonce_hash, _harbor_nonce_compare, NULL, NULL);
-    ctx->window_start = nowsec();
+    timer_init(&ctx->wtimer);
+    ctx->window_start = timer_cur_ms(&ctx->wtimer) / 1000;
     if (NULL == coro_task_register(loader, tname, 4 * ONEK,
                                    _harbor_startup, _harbor_closing,
                                    _harbor_free, ctx)) {

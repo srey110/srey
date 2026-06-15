@@ -528,7 +528,7 @@ static int lua_array_length(lua_State *l, json_config_t *cfg, strbuf_t *json)
             /* Integer >= 1 ? */
             if (floor(k) == k && k >= 1) {
                 if (k > max)
-                    max = k;
+                    max = k > INT_MAX ? INT_MAX : (int)k;
                 items++;
                 lua_pop(l, 1);
                 continue;

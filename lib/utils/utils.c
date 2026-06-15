@@ -1042,7 +1042,7 @@ int32_t mstostr(uint64_t ms, const char *fmt, char time[TIME_LENS]) {
     return ERR_OK;
 }
 uint64_t strtots(const char *time, const char *fmt) {
-    struct tm dttm;
+    struct tm dttm = { 0 };
     if (NULL == _strptime(time, fmt, &dttm)) {
         return 0;
     }

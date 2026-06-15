@@ -172,7 +172,7 @@ int32_t ev_ssl(ev_ctx *ctx, SOCKET fd, uint64_t skid, int32_t client, struct evs
         return ERR_FAILED;
     }
 #if WITH_SSL
-    cmd_ctx cmd;
+    cmd_ctx cmd = { 0 };
     cmd.cmd = CMD_SSL;
     cmd.fd = fd;
     cmd.skid = skid;
@@ -202,7 +202,7 @@ int32_t ev_send(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *data, size_t len, i
         }
         return ERR_FAILED;
     }
-    cmd_ctx cmd;
+    cmd_ctx cmd = { 0 };
     cmd.cmd = CMD_SEND;
     cmd.fd = fd;
     cmd.skid = skid;
@@ -276,7 +276,7 @@ int32_t ev_send_multi(ev_ctx *ctx, SOCKET fds[], uint64_t skids[], int32_t n,
     }
     ATOMIC_SET(&pack->ref, valid);
     // 给每个有效 fd 投一条 CMD_SEND_MULTI;事件线程取出后包装 off_buf{shared=pack} 入队
-    cmd_ctx cmd;
+    cmd_ctx cmd = { 0 };
     cmd.cmd = CMD_SEND_MULTI;
     cmd.len = len;
     cmd.arg = (uint64_t)pack;
@@ -323,7 +323,7 @@ int32_t ev_sendto(ev_ctx *ctx, SOCKET fd, uint64_t skid, const char *ip, const u
         }
         return ERR_FAILED;
     }
-    cmd_ctx cmd;
+    cmd_ctx cmd = { 0 };
     cmd.cmd = CMD_SENDTO;
     cmd.fd = fd;
     cmd.skid = skid;
@@ -375,7 +375,7 @@ void _on_cmd_sendto(watcher_ctx *watcher, cmd_ctx *cmd) {
 }
 // UDP 多播 4 个公开 API 走同一 cmd 投递路径,差异只在 udp_opt_arg 字段填充
 static int32_t _send_cmd_udp_opt(ev_ctx *ctx, SOCKET fd, uint64_t skid, udp_opt_arg *arg) {
-    cmd_ctx cmd;
+    cmd_ctx cmd = { 0 };
     cmd.cmd = CMD_UDP_OPT;
     cmd.fd = fd;
     cmd.skid = skid;
@@ -526,7 +526,7 @@ static void _cmd_set_ud(ev_ctx *ctx, SOCKET fd, uint64_t skid, int32_t type, uin
     if (INVALID_SOCK == fd) {
         return;
     }
-    cmd_ctx cmd;
+    cmd_ctx cmd = { 0 };
     cmd.cmd = CMD_SETUD;
     cmd.fd = fd;
     cmd.skid = skid;
