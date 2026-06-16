@@ -323,10 +323,16 @@ end
 ---@param nsinfo lightuserdata BSON 数组格式命名空间信息指针
 ---@param nsz integer nsinfo 字节数
 ---@param opts lightuserdata? 附加 BSON 选项
----@return lightuserdata|nil mgopack 响应包指针；失败返回 nil
+---@return lightuserdata|true|nil mgopack 普通模式返回响应包指针供解析；MORETOCOME fire-and-forget 成功返回 true；发送失败返回 nil
 function ctx:bulkwrite(ops, opsz, nsinfo, nsz, opts)
     local pack, size = self.mongo:pack_bulkwrite(ops, opsz, nsinfo, nsz, opts)
-    local _, mgopack = _wsend(self.mongo, self.fd, self.skid, pack, size)
+    local ok, mgopack = _wsend(self.mongo, self.fd, self.skid, pack, size)
+    if not ok then
+        return nil
+    end
+    if not mgopack then
+        return true
+    end
     return mgopack
 end
 

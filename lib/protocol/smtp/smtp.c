@@ -85,8 +85,8 @@ char *smtp_pack_data(void) {
     return format_va("DATA%s", FLAG_CRLF);
 }
 // 在 buffer 中扫描完整 SMTP 多行响应（RFC 5321 §4.2.1）
-// 多行格式：每行 "<code><sep><text>\r\n"，sep='-' 表示后续仍有行，sep=' ' 表示结束行
-// 单行格式与 sep=' ' 等价（只一行结束行）
+// 多行格式：每行 "<code><sep>[text]\r\n"，sep='-' 表示后续仍有行，sep=' ' 或裸行 "<code>\r\n" 表示结束行
+// code 非 NULL 时校验每行 code 一致；code 为 NULL 时以首行 code 为准（COMMAND 命令响应 code 不固定）
 // 返回值：>0 表示完整响应总字节数（含末尾 CRLF）；0 表示需要等待更多数据；ERR_FAILED 表示协议错误
 int32_t _smtp_full_response(buffer_ctx *buf, const char *code) {
     size_t blens = buffer_size(buf);
@@ -95,30 +95,40 @@ int32_t _smtp_full_response(buffer_ctx *buf, const char *code) {
     }
     int32_t pos = 0;
     char line[SMTP_CODE_LENS];
+    char expect[SMTP_CODE_LENS] = { 0 };
     char sep;
     int32_t crlf;
+    int32_t haveexp = (NULL != code);
+    if (haveexp) {
+        memcpy(expect, code, SMTP_CODE_LENS);
+    }
     while ((size_t)pos < blens) {
-        //每行至少需要 code(3) + sep(1) + CRLF(2) = 6 字节
-        if (blens - (size_t)pos < SMTP_CODE_LENS + 1 + CRLF_SIZE) {
+        //每行至少需要 code(3) + CRLF(2) = 5 字节（裸结束行 "<code>\r\n"）
+        if (blens - (size_t)pos < SMTP_CODE_LENS + CRLF_SIZE) {
             return 0;
         }
         if (SMTP_CODE_LENS != buffer_copyout(buf, (size_t)pos, line, SMTP_CODE_LENS)) {
             return 0;
         }
-        if (0 != memcmp(line, code, SMTP_CODE_LENS)) {
+        if (!haveexp) {
+            memcpy(expect, line, SMTP_CODE_LENS);
+            haveexp = 1;
+        }
+        if (0 != memcmp(line, expect, SMTP_CODE_LENS)) {
             return ERR_FAILED;
         }
         if (1 != buffer_copyout(buf, (size_t)pos + SMTP_CODE_LENS, &sep, 1)) {
             return 0;
         }
-        if ('-' != sep && ' ' != sep) {
+        //code 之后是 '-'(续行) / ' '(结束行) / CR(裸结束行 "<code>\r\n")，其余非法
+        if ('-' != sep && ' ' != sep && '\r' != sep) {
             return ERR_FAILED;
         }
-        crlf = buffer_search(buf, 0, (size_t)pos + SMTP_CODE_LENS + 1, 0, FLAG_CRLF, CRLF_SIZE);
+        crlf = buffer_search(buf, 0, (size_t)pos + SMTP_CODE_LENS, 0, FLAG_CRLF, CRLF_SIZE);
         if (ERR_FAILED == crlf) {
             return 0;
         }
-        if (' ' == sep) {
+        if ('-' != sep) {
             return crlf + (int32_t)CRLF_SIZE;//结束行尾部位置
         }
         pos = crlf + (int32_t)CRLF_SIZE;//继续扫描下一行
@@ -389,33 +399,23 @@ static void _smtp_auth_check(SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt *
     _hs_push(fd, skid, 1, ud, ERR_OK, NULL, 0);
     ud->status = COMMAND;
 }
-// COMMAND 阶段：等待完整的服务端响应行，提取内容（不含 CRLF）返回给调用者
+// COMMAND 阶段：等待完整服务端响应（含多行，RFC 5321 §4.2.1），提取内容（不含末尾 CRLF）返回给调用者
 static char *_smtp_command(buffer_ctx *buf, size_t *size, int32_t *status) {
-    size_t blens = buffer_size(buf);
-    if (blens < SMTP_CODE_LENS + CRLF_SIZE) {
-        BIT_SET(*status, PROT_MOREDATA);
-        return NULL;
-    }
-    //找首个 CRLF 确定单条响应边界，仅消费当前响应避免吞掉后续流水线
-    int32_t crlf = buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE);
-    if (ERR_FAILED == crlf) {
-        if (PACK_TOO_LONG(blens)) {
-            BIT_SET(*status, PROT_ERROR);
-            return NULL;
-        }
-        BIT_SET(*status, PROT_MOREDATA);
-        return NULL;
-    }
-    if (PACK_TOO_LONG(crlf)
-        || crlf < SMTP_CODE_LENS) {
+    //命令响应 code 不固定，传 NULL 让 _smtp_full_response 以首行 code 为准合并多行
+    int32_t total = _smtp_full_response(buf, NULL);
+    if (ERR_FAILED == total) {
         BIT_SET(*status, PROT_ERROR);
         return NULL;
     }
+    if (0 == total) {
+        BIT_SET(*status, PROT_MOREDATA);
+        return NULL;
+    }
     char *pack;
-    *size = (size_t)crlf;
+    *size = (size_t)total - CRLF_SIZE;
     CALLOC(pack, 1, *size + 1);
     ASSERTAB(*size == buffer_copyout(buf, 0, pack, *size), "copy buffer failed.");
-    buffer_drain(buf, (size_t)crlf + CRLF_SIZE);
+    buffer_drain(buf, (size_t)total);
     return pack;
 }
 void *smtp_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status) {

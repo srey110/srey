@@ -1484,6 +1484,44 @@ static void test_strptime_invalid(CuTest *tc) {
 }
 
 /* =======================================================================
+ * _strptime 周序(%U/%W)高周数：tm_yday>=366 时月份归算不越界读
+ * 回归 start_of_month[2][13] 行尾越界：旧循环无上界，tm_yday>=366 时会读到
+ * start_of_month[isleap][13]（越界一格）才被随后的 i>12 跨年归一兜住；
+ * ASan 构建(sh mk.sh test asan debug)下可稳定捕获该越界读
+ * ======================================================================= */
+static void test_strptime_week_rollover(CuTest *tc) {
+    struct tm tm;
+    char *end;
+
+    /* %U（周日为周首）第 53 周 + 周六 → tm_yday≈376>=366，触发月份归算上界 + 跨年归一到 2025 */
+    ZERO(&tm, sizeof(tm));
+    end = _strptime("2024 53 6", "%Y %U %w", &tm);
+    CuAssertPtrNotNull(tc, end);
+    CuAssertTrue(tc, '\0' == *end);
+    CuAssertTrue(tc, 125 == tm.tm_year);
+    CuAssertTrue(tc, 0 == tm.tm_mon);
+    CuAssertTrue(tc, tm.tm_mday >= 1 && tm.tm_mday <= 31);
+
+    /* %W（周一为周首）第 53 周 → 同样 tm_yday>=366 触发越界路径 */
+    ZERO(&tm, sizeof(tm));
+    end = _strptime("2024 53 6", "%Y %W %w", &tm);
+    CuAssertPtrNotNull(tc, end);
+    CuAssertTrue(tc, '\0' == *end);
+    CuAssertTrue(tc, 125 == tm.tm_year);
+    CuAssertTrue(tc, 0 == tm.tm_mon);
+    CuAssertTrue(tc, tm.tm_mday >= 1 && tm.tm_mday <= 31);
+
+    /* 常规低周数：不溢出，月份正常归算（确保上界修复未误伤常规路径） */
+    ZERO(&tm, sizeof(tm));
+    end = _strptime("2024 10 3", "%Y %U %w", &tm);
+    CuAssertPtrNotNull(tc, end);
+    CuAssertTrue(tc, '\0' == *end);
+    CuAssertTrue(tc, 124 == tm.tm_year);
+    CuAssertTrue(tc, tm.tm_mon >= 0 && tm.tm_mon <= 11);
+    CuAssertTrue(tc, tm.tm_mday >= 1 && tm.tm_mday <= 31);
+}
+
+/* =======================================================================
  * tw 长超时路径：> 256ms 进入 tv2 槽
  * （tv1 容量 256，超过即下沉到 tv2，验证 cascade 后回调仍正确触发）
  * ======================================================================= */
@@ -1723,6 +1761,7 @@ void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_log_slog_filter);
     SUITE_ADD_TEST(suite, test_strptime);
     SUITE_ADD_TEST(suite, test_strptime_invalid);
+    SUITE_ADD_TEST(suite, test_strptime_week_rollover);
     SUITE_ADD_TEST(suite, test_tw);
     SUITE_ADD_TEST(suite, test_tw_long_timeout);
     SUITE_ADD_TEST(suite, test_mem_helpers);

@@ -757,6 +757,34 @@ static void test_cipher_padding_zeroed(CuTest *tc) {
     cipher_free(&dec);
 }
 
+/* 解密遇非法 padding 应拒绝:返回 0 且 output 清零(常数时间校验路径,与成功剥离对称) */
+static void test_cipher_decrypt_bad_padding(CuTest *tc) {
+    const char *key16 = "0123456789abcdef";
+    const char *plain = "Hello, Cipher!!!"; /* 16 字节,末字节 '!'=0x21=33 */
+    char enc_buf[64], dec_buf[64];
+    cipher_ctx enc, dec;
+    size_t enc_len, dec_len;
+    char zero[16] = { 0 };
+
+    cipher_init(&enc, AES, ECB, key16, 16, 128, 1);
+    cipher_padding(&enc, PKCS57);
+    cipher_init(&dec, AES, ECB, key16, 16, 128, 0);
+    cipher_padding(&dec, PKCS57);
+
+    enc_len = cipher_dofinal(&enc, plain, 16, enc_buf);
+    CuAssertTrue(tc, 32 == (int)enc_len); /* 16 数据块 + 16 PKCS7 整填充块 */
+
+    /* 只取首个密文块(16B 数据块)解密:还原 "Hello, Cipher!!!",
+     * 末字节当 pad=0x21=33 > 块长 16 → padding 非法 → 拒绝,返回 0 且 output 清零 */
+    memset(dec_buf, 0x5a, sizeof(dec_buf));
+    dec_len = cipher_dofinal(&dec, enc_buf, 16, dec_buf);
+    CuAssertTrue(tc, 0 == (int)dec_len);
+    CuAssertTrue(tc, 0 == memcmp(dec_buf, zero, 16));
+
+    cipher_free(&enc);
+    cipher_free(&dec);
+}
+
 /* =======================================================================
  * HMAC —— SHA-1 / SHA-512 已知测试向量
  * ======================================================================= */
@@ -1591,6 +1619,7 @@ void test_crypt(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_xor);
     SUITE_ADD_TEST(suite, test_cipher);
     SUITE_ADD_TEST(suite, test_cipher_padding_zeroed);
+    SUITE_ADD_TEST(suite, test_cipher_decrypt_bad_padding);
     SUITE_ADD_TEST(suite, test_cipher_block_reset);
     SUITE_ADD_TEST(suite, test_cipher_stream_modes);
     SUITE_ADD_TEST(suite, test_padding);

@@ -99,7 +99,7 @@ char *smtp_pack_data(void);
 void *smtp_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status);
 
 // 内部 helper（仅供单元测试使用，业务代码请勿直接调用）：
-// 在 buffer 中扫描完整 SMTP 多行响应。
+// 在 buffer 中扫描完整 SMTP 多行响应。code 非 NULL 校验每行 code 一致，NULL 则以首行 code 为准。
 // 返回 >0 = 完整响应总字节数（含末尾 CRLF）；0 = 需等待更多数据；ERR_FAILED = 协议错误
 int32_t _smtp_full_response(buffer_ctx *buf, const char *code);
 

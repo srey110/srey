@@ -718,6 +718,51 @@ static void test_heap(CuTest *tc) {
     CuAssertTrue(tc, 10 == UPCAST(h.root, _hnode, node)->val);
 }
 
+/* heap_remove 删根路径 + 多次按引用删除后堆序保持（现有 test_heap 仅删中间节点）*/
+static void test_heap_remove_root(CuTest *tc) {
+    heap_ctx h;
+    heap_init(&h, _heap_lt);
+    int vals[] = { 50, 20, 70, 10, 60, 30, 90, 40, 80, 5 };
+    int n = 10;
+    _hnode nodes[10];
+    int prev, top, i;
+
+    /* 反复显式删除 root → 应按升序取出（覆盖 remove 删根 + 末节点替换 sift-down 深路径）*/
+    ZERO(nodes, sizeof(nodes));
+    for (i = 0; i < n; i++) {
+        nodes[i].val = vals[i];
+        heap_insert(&h, &nodes[i].node);
+    }
+    CuAssertTrue(tc, n == (int)h.nelts);
+    prev = -1;
+    for (i = 0; i < n; i++) {
+        top = UPCAST(h.root, _hnode, node)->val;
+        CuAssertTrue(tc, top > prev); /* 值互异,严格升序 */
+        prev = top;
+        heap_remove(&h, h.root);
+    }
+    CuAssertTrue(tc, 0 == h.nelts);
+
+    /* 按引用删除若干内部/末/根节点后,余下仍保持堆序（覆盖 remove 触发的 sift 两方向）*/
+    ZERO(nodes, sizeof(nodes));
+    for (i = 0; i < n; i++) {
+        nodes[i].val = vals[i];
+        heap_insert(&h, &nodes[i].node);
+    }
+    heap_remove(&h, &nodes[6].node); /* 90 最大 */
+    heap_remove(&h, &nodes[3].node); /* 10 最小(当前根) */
+    heap_remove(&h, &nodes[9].node); /* 5(末插入) */
+    CuAssertTrue(tc, (n - 3) == (int)h.nelts);
+    prev = -1;
+    while (h.nelts > 0) {
+        top = UPCAST(h.root, _hnode, node)->val;
+        CuAssertTrue(tc, top > prev);
+        prev = top;
+        heap_dequeue(&h);
+    }
+    CuAssertTrue(tc, 0 == h.nelts);
+}
+
 /* =======================================================================
  * queue_ctx —— 环形队列（自动扩容）
  * ======================================================================= */
@@ -1054,6 +1099,7 @@ void test_containers(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_hashmap_with_hash_variants);
     SUITE_ADD_TEST(suite, test_hashmap_clear_update_cap);
     SUITE_ADD_TEST(suite, test_heap);
+    SUITE_ADD_TEST(suite, test_heap_remove_root);
     SUITE_ADD_TEST(suite, test_queue);
     SUITE_ADD_TEST(suite, test_array);
     SUITE_ADD_TEST(suite, test_array_ptr);

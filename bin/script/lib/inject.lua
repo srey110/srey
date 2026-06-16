@@ -39,11 +39,12 @@ local function _inject(source, filename)
     local output = {}
     local env = setmetatable({
         print = function(...)
+            local n = select("#", ...)
             local t = { ... }
-            for k, v in ipairs(t) do
-                t[k] = tostring(v)
+            for i = 1, n do
+                t[i] = tostring(t[i])
             end
-            output[#output + 1] = table.concat(t, "\t")
+            output[#output + 1] = table.concat(t, "\t", 1, n)
         end,
         _U = u,
     }, { __index = _G })

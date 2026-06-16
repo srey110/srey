@@ -363,6 +363,67 @@ static void test_pgsql_reader_date(CuTest *tc) {
     pgsql_reader_free(r);
 }
 
+// pgsql_reader_timestamp/date 二进制协议：大端定长（timestamp=8 / date=4），长度不符拒绝
+// 回归：此前仅文本路径有覆盖，二进制路径与长度校验无单测
+static void test_pgsql_reader_temporal_binary(CuTest *tc) {
+    int32_t tsoid[1] = { TIMESTAMPOID };
+    int32_t doid[1] = { DATEOID };
+    char tsname[1][64] = { "ts" };
+    char dname[1][64] = { "d" };
+    int32_t err;
+    char *p;
+    pgsql_reader_ctx *r;
+    pgpack_row cols[1];
+    int64_t usec;
+    int32_t days;
+
+    // timestamp 二进制 8 字节大端 int64（PG 纪元微秒）→ OK
+    r = _pg_reader_new(1, tsoid, tsname);
+    r->format = FORMAT_BINARY;
+    MALLOC(p, 8);
+    pack_integer(p, (uint64_t)86400000000LL, 8, 0);
+    cols[0] = (pgpack_row){ 8, p, NULL };
+    _pg_reader_push_row(r, p, cols);
+    usec = pgsql_reader_timestamp(r, "ts", &err);
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertTrue(tc, 86400000000LL == usec);
+    pgsql_reader_free(r);
+
+    // timestamp 二进制长度不符（4 字节）→ ERR_FAILED
+    r = _pg_reader_new(1, tsoid, tsname);
+    r->format = FORMAT_BINARY;
+    MALLOC(p, 4);
+    pack_integer(p, 1, 4, 0);
+    cols[0] = (pgpack_row){ 4, p, NULL };
+    _pg_reader_push_row(r, p, cols);
+    (void)pgsql_reader_timestamp(r, "ts", &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    pgsql_reader_free(r);
+
+    // date 二进制 4 字节大端 int32（PG 纪元天数，1 → 2000-01-02）→ OK
+    r = _pg_reader_new(1, doid, dname);
+    r->format = FORMAT_BINARY;
+    MALLOC(p, 4);
+    pack_integer(p, 1, 4, 0);
+    cols[0] = (pgpack_row){ 4, p, NULL };
+    _pg_reader_push_row(r, p, cols);
+    days = pgsql_reader_date(r, "d", &err);
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertIntEquals(tc, 1, days);
+    pgsql_reader_free(r);
+
+    // date 二进制长度不符（8 字节）→ ERR_FAILED
+    r = _pg_reader_new(1, doid, dname);
+    r->format = FORMAT_BINARY;
+    MALLOC(p, 8);
+    pack_integer(p, 1, 8, 0);
+    cols[0] = (pgpack_row){ 8, p, NULL };
+    _pg_reader_push_row(r, p, cols);
+    (void)pgsql_reader_date(r, "d", &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    pgsql_reader_free(r);
+}
+
 // pgsql_reader_uuid：文本 + 二进制双协议
 static void test_pgsql_reader_uuid(CuTest *tc) {
     int32_t oids[1] = { UUIDOID };
@@ -499,6 +560,7 @@ void test_pgsql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_pgsql_reader_bytea);
     SUITE_ADD_TEST(suite, test_pgsql_reader_timestamp_text);
     SUITE_ADD_TEST(suite, test_pgsql_reader_date);
+    SUITE_ADD_TEST(suite, test_pgsql_reader_temporal_binary);
     SUITE_ADD_TEST(suite, test_pgsql_reader_uuid);
     SUITE_ADD_TEST(suite, test_pgsql_reader_index);
     SUITE_ADD_TEST(suite, test_pgpack_error_notice);

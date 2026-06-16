@@ -62,5 +62,22 @@ runner.run("inject", function(t)
         t:eq(false, ok, "运行错返回 false")
         t:check(out and #out >= 1 and nil ~= tostring(out[#out]):find("boom"), "末行含 'boom'")
     end
+
+    -- ── 子段 9:print 含中间/尾随/单 nil → 按真实参数个数输出,不被 ipairs 截断 ──
+    do
+        local ok, out = inject("print('a', nil, 'c')")
+        t:eq(true, ok, "inject 中间 nil print ok")
+        t:eq("a\tnil\tc", out and out[1], "中间 nil 不截断,输出 'nil'")
+    end
+    do
+        local ok, out = inject("print('x', nil)")
+        t:eq(true, ok, "inject 尾随 nil print ok")
+        t:eq("x\tnil", out and out[1], "尾随 nil 不丢失")
+    end
+    do
+        local ok, out = inject("print(nil)")
+        t:eq(true, ok, "inject 单 nil print ok")
+        t:eq("nil", out and out[1], "单 nil 输出 'nil'")
+    end
 end)
 end)

@@ -1323,6 +1323,16 @@ static void test_smtp_full_response(CuTest *tc) {
     }
     _smtp_resp_check(tc, flood, floodlen, "220", ERR_FAILED);
     FREE(flood);
+    /* 21. 裸结束行 "<code>\r\n"（code 后直接 CRLF，无 sep/text） */
+    _smtp_resp_check(tc, "220\r\n", 5, "220", 5);
+    /* 22. code 为 NULL：以首行 code 为准，单行 */
+    _smtp_resp_check(tc, "354 go\r\n", 8, NULL, 8);
+    /* 23. code 为 NULL：多行，首行 code 作后续行校验基准 */
+    _smtp_resp_check(tc, "250-A\r\n250 B\r\n", 14, NULL, 14);
+    /* 24. code 为 NULL：裸结束行 */
+    _smtp_resp_check(tc, "421\r\n", 5, NULL, 5);
+    /* 25. code 为 NULL：续行 code 与首行不一致 → 拒绝 */
+    _smtp_resp_check(tc, "250-A\r\n500 X\r\n", 14, NULL, ERR_FAILED);
 }
 
 // mail_pack 必须对 mail->msg 做 dot-stuffing（RFC 5321 §4.5.2）
@@ -2561,7 +2571,7 @@ static void test_smtp_unpack_command(CuTest *tc) {
     CuAssertTrue(tc, BIT_CHECK(status, PROT_MOREDATA));
     buffer_free(&buf);
 
-    /* COMMAND + 多行响应：仅消费首行，剩余字节保留在 buffer */
+    /* COMMAND + 多行响应：一次性消费整段，返回完整内容（含内嵌 CRLF、不含末尾 CRLF），buffer 清空 */
     buffer_init(&buf);
     ZERO(&ud, sizeof(ud));
     ud.status = 4;
@@ -2569,13 +2579,54 @@ static void test_smtp_unpack_command(CuTest *tc) {
     size = 0; status = PROT_INIT;
     pack = smtp_unpack(NULL, 0, 0, &buf, &ud, &size, &status);
     CuAssertPtrNotNull(tc, pack);
-    CuAssertStrEquals(tc, "250-First", pack);
+    CuAssertTrue(tc, 18 == size);
+    CuAssertStrEquals(tc, "250-First\r\n250 End", pack);
     FREE(pack);
-    /* 剩余 "250 End\r\n" 仍在 buffer，再次 unpack 取出 */
+    CuAssertTrue(tc, 0 == buffer_size(&buf));
+    buffer_free(&buf);
+
+    /* COMMAND + 流水线：先一次性取完首段多行，剩余下一条响应保留待下次取出 */
+    buffer_init(&buf);
+    ZERO(&ud, sizeof(ud));
+    ud.status = 4;
+    buffer_append(&buf, "250-A\r\n250 B\r\n221 Bye\r\n", 23);
+    size = 0; status = PROT_INIT;
     pack = smtp_unpack(NULL, 0, 0, &buf, &ud, &size, &status);
     CuAssertPtrNotNull(tc, pack);
-    CuAssertStrEquals(tc, "250 End", pack);
+    CuAssertStrEquals(tc, "250-A\r\n250 B", pack);
     FREE(pack);
+    pack = smtp_unpack(NULL, 0, 0, &buf, &ud, &size, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertStrEquals(tc, "221 Bye", pack);
+    FREE(pack);
+    CuAssertTrue(tc, 0 == buffer_size(&buf));
+    buffer_free(&buf);
+
+    /* COMMAND + 裸结束行 "<code>\r\n"（无 text）→ 返回纯 code */
+    buffer_init(&buf);
+    ZERO(&ud, sizeof(ud));
+    ud.status = 4;
+    buffer_append(&buf, "250\r\n", 5);
+    size = 0; status = PROT_INIT;
+    pack = smtp_unpack(NULL, 0, 0, &buf, &ud, &size, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, 3 == size);
+    CuAssertStrEquals(tc, "250", pack);
+    FREE(pack);
+    CuAssertTrue(tc, 0 == buffer_size(&buf));
+    buffer_free(&buf);
+
+    /* COMMAND + 异于 250 的多行 code（如 DATA 的 354）→ 以首行 code 合并 */
+    buffer_init(&buf);
+    ZERO(&ud, sizeof(ud));
+    ud.status = 4;
+    buffer_append(&buf, "354-go\r\n354 ahead\r\n", 19);
+    size = 0; status = PROT_INIT;
+    pack = smtp_unpack(NULL, 0, 0, &buf, &ud, &size, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertStrEquals(tc, "354-go\r\n354 ahead", pack);
+    FREE(pack);
+    CuAssertTrue(tc, 0 == buffer_size(&buf));
     buffer_free(&buf);
 }
 

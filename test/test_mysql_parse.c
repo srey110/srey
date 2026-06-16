@@ -383,6 +383,130 @@ static void test_mysql_reader_time(CuTest *tc) {
     }
 }
 
+// 二进制 reader 长度校验回归：FLOAT 恰 4 字节 / DOUBLE 恰 8 字节 / DATETIME ∈ {4,7,11} /
+// TIME ∈ {8,12}；长度不符一律返 ERR_FAILED（覆盖近期修复，防畸形 server 数据被误当合法值或越界）
+static void test_mysql_reader_binary_lens(CuTest *tc) {
+    char nm[1][64] = { "v" };
+    char tnm[1][64] = { "t" };
+    int32_t err;
+    char *p;
+    buf_ctx c[1];
+    mysql_reader_ctx *r;
+    float f;
+    double dd;
+    uint64_t ts;
+    struct tm tmv;
+    int32_t neg;
+
+    // FLOAT 二进制恰 4 字节 → OK
+    r = _reader_new(MPACK_STMT_EXECUTE, 1, nm, (uint8_t[]){ MYSQL_TYPE_FLOAT });
+    MALLOC(p, 4);
+    pack_float(p, 3.5f, 1);
+    c[0].data = p; c[0].lens = 4;
+    _reader_push_row(r, p, c, NULL);
+    f = mysql_reader_float(r, "v", &err);
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertTrue(tc, f > 3.49f && f < 3.51f);
+    mysql_reader_free(r);
+
+    // FLOAT 列但 8 字节 → 长度不符 ERR_FAILED（不读越界）
+    r = _reader_new(MPACK_STMT_EXECUTE, 1, nm, (uint8_t[]){ MYSQL_TYPE_FLOAT });
+    MALLOC(p, 8);
+    pack_double(p, 3.5, 1);
+    c[0].data = p; c[0].lens = 8;
+    _reader_push_row(r, p, c, NULL);
+    (void)mysql_reader_float(r, "v", &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    mysql_reader_free(r);
+
+    // DOUBLE 二进制恰 8 字节 → OK
+    r = _reader_new(MPACK_STMT_EXECUTE, 1, nm, (uint8_t[]){ MYSQL_TYPE_DOUBLE });
+    MALLOC(p, 8);
+    pack_double(p, 2.5, 1);
+    c[0].data = p; c[0].lens = 8;
+    _reader_push_row(r, p, c, NULL);
+    dd = mysql_reader_double(r, "v", &err);
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertTrue(tc, dd > 2.49 && dd < 2.51);
+    mysql_reader_free(r);
+
+    // DOUBLE 列但 4 字节 → 长度不符 ERR_FAILED
+    r = _reader_new(MPACK_STMT_EXECUTE, 1, nm, (uint8_t[]){ MYSQL_TYPE_DOUBLE });
+    MALLOC(p, 4);
+    pack_float(p, 2.5f, 1);
+    c[0].data = p; c[0].lens = 4;
+    _reader_push_row(r, p, c, NULL);
+    (void)mysql_reader_double(r, "v", &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    mysql_reader_free(r);
+
+    // DATETIME 二进制 4 字节（仅日期）→ OK
+    r = _reader_new(MPACK_STMT_EXECUTE, 1, nm, (uint8_t[]){ MYSQL_TYPE_DATETIME });
+    MALLOC(p, 4);
+    pack_integer(p, 2024, 2, 1);
+    p[2] = 6; p[3] = 15;
+    c[0].data = p; c[0].lens = 4;
+    _reader_push_row(r, p, c, NULL);
+    ts = mysql_reader_datetime(r, "v", &err);
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertTrue(tc, ts > 0);
+    mysql_reader_free(r);
+
+    // DATETIME 二进制 11 字节（含微秒，微秒被忽略）→ OK
+    r = _reader_new(MPACK_STMT_EXECUTE, 1, nm, (uint8_t[]){ MYSQL_TYPE_DATETIME });
+    MALLOC(p, 11);
+    pack_integer(p, 2024, 2, 1);
+    p[2] = 6; p[3] = 15; p[4] = 10; p[5] = 20; p[6] = 30;
+    pack_integer(p + 7, 123456, 4, 1);
+    c[0].data = p; c[0].lens = 11;
+    _reader_push_row(r, p, c, NULL);
+    ts = mysql_reader_datetime(r, "v", &err);
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertTrue(tc, ts > 0);
+    mysql_reader_free(r);
+
+    // DATETIME 二进制畸形长度 5 → ERR_FAILED
+    r = _reader_new(MPACK_STMT_EXECUTE, 1, nm, (uint8_t[]){ MYSQL_TYPE_DATETIME });
+    MALLOC(p, 5);
+    pack_integer(p, 2024, 2, 1);
+    p[2] = 6; p[3] = 15; p[4] = 10;
+    c[0].data = p; c[0].lens = 5;
+    _reader_push_row(r, p, c, NULL);
+    (void)mysql_reader_datetime(r, "v", &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    mysql_reader_free(r);
+
+    // TIME 二进制 12 字节（含微秒）→ OK，微秒不读
+    r = _reader_new(MPACK_STMT_EXECUTE, 1, tnm, (uint8_t[]){ MYSQL_TYPE_TIME });
+    MALLOC(p, 12);
+    p[0] = 0;
+    pack_integer(p + 1, 3, 4, 1);
+    p[5] = 8; p[6] = 15; p[7] = 30;
+    pack_integer(p + 8, 654321, 4, 1);
+    c[0].data = p; c[0].lens = 12;
+    _reader_push_row(r, p, c, NULL);
+    ZERO(&tmv, sizeof(tmv));
+    neg = mysql_reader_time(r, "t", &tmv, &err);
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertIntEquals(tc, 0, neg);
+    CuAssertIntEquals(tc, 3, tmv.tm_mday);
+    CuAssertIntEquals(tc, 8, tmv.tm_hour);
+    mysql_reader_free(r);
+
+    // TIME 二进制畸形长度 7 → ERR_FAILED
+    r = _reader_new(MPACK_STMT_EXECUTE, 1, tnm, (uint8_t[]){ MYSQL_TYPE_TIME });
+    MALLOC(p, 7);
+    p[0] = 0;
+    pack_integer(p + 1, 3, 4, 1);
+    p[5] = 8; p[6] = 15;
+    c[0].data = p; c[0].lens = 7;
+    _reader_push_row(r, p, c, NULL);
+    ZERO(&tmv, sizeof(tmv));
+    (void)mysql_reader_time(r, "t", &tmv, &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    mysql_reader_free(r);
+}
+
 // _mpack_ok 解析 OK 包：affected_rows + last_insert_id + status_flags + warnings
 static void test_mpack_ok_parse(CuTest *tc) {
     binary_ctx bw;
@@ -561,6 +685,7 @@ void test_mysql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mysql_reader_string);
     SUITE_ADD_TEST(suite, test_mysql_reader_datetime_binary);
     SUITE_ADD_TEST(suite, test_mysql_reader_time);
+    SUITE_ADD_TEST(suite, test_mysql_reader_binary_lens);
     SUITE_ADD_TEST(suite, test_mpack_ok_parse);
     SUITE_ADD_TEST(suite, test_mpack_err_parse);
     SUITE_ADD_TEST(suite, test_mpack_err_empty_msg);
