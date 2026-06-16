@@ -191,6 +191,10 @@ float mysql_reader_float(mysql_reader_ctx *reader, const char *name, int32_t *er
     if (MPACK_QUERY == reader->pack_type) {
         return (float)_mysql_reader_parse_text_float(row, err);
     } else {
+        if (sizeof(float) != row->val.lens) {
+            SET_PTR(err, ERR_FAILED);
+            return 0.0f;
+        }
         return unpack_float(row->val.data, 1);
     }
 }
@@ -209,6 +213,10 @@ double mysql_reader_double(mysql_reader_ctx *reader, const char *name, int32_t *
     if (MPACK_QUERY == reader->pack_type) {
         return _mysql_reader_parse_text_float(row, err);
     } else {
+        if (sizeof(double) != row->val.lens) {
+            SET_PTR(err, ERR_FAILED);
+            return 0.0;
+        }
         return unpack_double(row->val.data, 1);
     }
 }

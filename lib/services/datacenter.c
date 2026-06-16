@@ -378,6 +378,7 @@ static void _dc_handle_del(dc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *b
         }
     }
 }
+// kv scan 回调:每个 entry 写 | u16 klen | key |
 static bool _dc_iter(const void *item, void *udata) {
     const dc_entry *e = (const dc_entry *)item;
     binary_ctx *bw = (binary_ctx *)udata;

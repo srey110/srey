@@ -42,15 +42,19 @@ static int _path_child_cmp(const void *a, const void *b, void *ud) {
 }
 // 段级内置校验(每段调一次)
 static int32_t _path_builtin_validate_seg(const path_rules *r, const buf_ctx *sv, path_kind kind) {
+    // 空段
     if (0 == sv->lens) {
         return ERR_FAILED;
     }
+    // 段内含 NUL,会被 strdup 截断
     if (NULL != memchr(sv->data, '\0', sv->lens)) {
         return ERR_FAILED;
     }
+    // 段内混入分隔符
     if (NULL != memchr(sv->data, r->sep, sv->lens)) {
         return ERR_FAILED;
     }
+    // 通配符出现即必须独占整段,不能作为段内普通字符
     if (0 != r->single_wildcard) {
         if (NULL != memchr(sv->data, r->single_wildcard, sv->lens)
             && !(1 == sv->lens && r->single_wildcard == ((char *)sv->data)[0])) {
@@ -63,6 +67,7 @@ static int32_t _path_builtin_validate_seg(const path_rules *r, const buf_ctx *sv
             return ERR_FAILED;
         }
     }
+    // 字面路径不接受纯通配段
     if (PATH_KIND_LITERAL == kind) {
         if (1 == sv->lens) {
             if (0 != r->single_wildcard && r->single_wildcard == ((char *)sv->data)[0]) {
@@ -97,17 +102,21 @@ static int32_t _path_validate(const path_rules *r, const char *path, path_kind k
     if (NULL == r || NULL == path) {
         return ERR_FAILED;
     }
+    // 业务自定义整路径校验
     if (NULL != r->validate_path
         && ERR_OK != r->validate_path(path, kind, r->udata)) {
         return ERR_FAILED;
     }
+    // 按 sep 切分为段
     int32_t n = _url_path_split((char *)path, strlen(path), r->sep, segs, cap);
     if (n < 0) {
         return ERR_FAILED;
     }
+    // 路径级内置校验(段数 / multi_wildcard 必须末尾)
     if (ERR_OK != _path_builtin_validate(r, segs, n, kind)) {
         return ERR_FAILED;
     }
+    // 逐段:业务自定义段校验 + 内置段校验
     int32_t i;
     for (i = 0; i < n; i++) {
         if (NULL != r->validate_segment
@@ -228,11 +237,13 @@ static path_node *_path_walk_insert(path_trie *t, const buf_ctx *segs, int32_t n
     for (i = 0; i < n; i++) {
         path_node *next = NULL;
         if (0 != r->single_wildcard && 1 == segs[i].lens && r->single_wildcard == ((char *)segs[i].data)[0]) {
+            // single_wildcard 段:plus 子树
             if (NULL == cur->plus) {
                 cur->plus = _path_node_alloc(&segs[i], cur);
             }
             next = cur->plus;
         } else if (0 != r->multi_wildcard && 1 == segs[i].lens && r->multi_wildcard == ((char *)segs[i].data)[0]) {
+            // multi_wildcard 段:hash 子树(叶)
             if (NULL == cur->hash) {
                 cur->hash = _path_node_alloc(&segs[i], cur);
             }
@@ -265,10 +276,13 @@ static path_node *_path_walk_exact(path_trie *t, const buf_ctx *segs, int32_t n)
     for (i = 0; i < n; i++) {
         path_node *next = NULL;
         if (0 != r->single_wildcard && 1 == segs[i].lens && r->single_wildcard == ((char *)segs[i].data)[0]) {
+            // single_wildcard 段:plus 子树
             next = cur->plus;
         } else if (0 != r->multi_wildcard && 1 == segs[i].lens && r->multi_wildcard == ((char *)segs[i].data)[0]) {
+            // multi_wildcard 段:hash 子树(叶)
             next = cur->hash;
         } else {
+            // 精确分支
             next = _path_children_lookup(cur->children, &segs[i]);
         }
         if (NULL == next) {

@@ -1228,7 +1228,7 @@ static uint64_t _xorshift64(void) {
 int32_t randrange(int32_t min, int32_t max) {
     // 闭区间 [min, max]：允许 max==min 退化情况返回 min；range==1 时 % 1 = 0 自然处理 
     ASSERTAB(max >= min, "rand range max must >= min.");
-    uint32_t range = (uint32_t)(max - min) + 1;
+    uint32_t range = ((uint32_t)max - (uint32_t)min) + 1;
     if (0 == range) {
         return min + (int32_t)(_xorshift64() >> 32);
     }

@@ -200,7 +200,9 @@ static void _debug_root(router_req *ctx) {
 static void _debug_alive(router_req *ctx) {
     dbg_tasklist tl = { 0, 0, NULL };
     loader_task_each(ctx->task->loader, _debug_tasklist, &tl);
-    qsort(tl.items, (size_t)tl.n, sizeof(dbg_task), _debug_cmp_handle);
+    if (0 != tl.n) {
+        qsort(tl.items, (size_t)tl.n, sizeof(dbg_task), _debug_cmp_handle);
+    }
     binary_ctx bw;
     binary_init(&bw, NULL, 0, 0);
     int32_t i;

@@ -1146,6 +1146,7 @@ static char *_sc_pack_meta(const void *meta, size_t mlen, size_t *out_total) {
     *out_total = bw.offset;
     return bw.data;
 }
+// ── 业务侧 helper:协程版,内部包 coro_request 挂起等响应 ──
 int32_t coro_sc_subscribe(task_ctx *task, name_t sc_name, const char *topic) {
     if (EMPTYSTR(topic)) {
         return ERR_FAILED;
@@ -1318,6 +1319,7 @@ int32_t coro_sc_set_meta(task_ctx *task, name_t sc_name,
     task_ungrab(sc);
     return erro;
 }
+// ── 无协程版:task_request 不挂起,sess 由业务自管配对 ──
 int32_t sc_subscribe(task_ctx *task, name_t sc_name, uint64_t sess, const char *topic) {
     if (EMPTYSTR(topic) || 0 == sess) {
         return ERR_FAILED;

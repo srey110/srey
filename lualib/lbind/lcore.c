@@ -18,6 +18,9 @@ static int32_t _lcore_timeout(lua_State *lua) {
     uint64_t sess = (uint64_t)luaL_checkinteger(lua, 1);
     uint32_t time = (uint32_t)luaL_checkinteger(lua, 2);
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
+    if (NULL == task) {
+        return luaL_error(lua, "task is nil");
+    }
     task_timeout(task, sess, time, NULL);
     return 0;
 }
@@ -72,6 +75,10 @@ static task_ctx **_parse_multi_dsts(lua_State *lua, int32_t idx, int32_t *n_out)
 /// <param name="copy" type="integer?">是否复制数据,默认 1（复制）;0 时直接转移所有权</param>
 /// <returns type="integer">实际成功投递的 dst 数（非 NULL 元素个数,0 表示全部跳过未投递）</returns>
 static int32_t _lcore_multi_request(lua_State *lua) {
+    task_ctx *src = global_userdata(lua, CUR_TASK_NAME);
+    if (NULL == src) {
+        return luaL_error(lua, "task is nil");
+    }
     subtype_t reqtype = (subtype_t)luaL_checkinteger(lua, 2);
     uint64_t sess = (uint64_t)luaL_checkinteger(lua, 3);
     void *data;
@@ -86,7 +93,6 @@ static int32_t _lcore_multi_request(lua_State *lua) {
         lua_pushinteger(lua, 0);
         return 1;
     }
-    task_ctx *src = global_userdata(lua, CUR_TASK_NAME);
     int32_t valid = task_multi_request(dsts, n, src, reqtype, sess, data, size, copy);
     FREE(dsts);
     lua_pushinteger(lua, valid);
@@ -136,8 +142,11 @@ static int32_t _lcore_request(lua_State *lua) {
     void *data;
     size_t size;
     int32_t copy;
-    data = lpub_check_buf(lua, 4, &size, &copy);
     task_ctx *src = global_userdata(lua, CUR_TASK_NAME);
+    if (NULL == src) {
+        return luaL_error(lua, "task is nil");
+    }
+    data = lpub_check_buf(lua, 4, &size, &copy);
     task_request(dst, src, reqtype, sess, data, size, copy);
     return 0;
 }
@@ -201,6 +210,9 @@ static int32_t _lcore_listen(lua_State *lua) {
     int32_t netev = lua_isinteger(lua, 5) ? (int32_t)luaL_checkinteger(lua, 5) : NETEV_NONE;
     uint64_t id;
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
+    if (NULL == task) {
+        return luaL_error(lua, "task is nil");
+    }
     if (ERR_OK != task_listen(task, pktype, evssl, ip, port, &id, netev)) {
         lua_pushinteger(lua, -1);
     } else {
@@ -243,6 +255,9 @@ static int32_t _lcore_connect(lua_State *lua) {
     SOCKET fd;
     uint64_t skid;
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
+    if (NULL == task) {
+        return luaL_error(lua, "task is nil");
+    }
     if (ERR_OK != task_connect(task, pktype, evssl, ip, port, netev, extra, &fd, &skid)) {
         lua_pushinteger(lua, INVALID_SOCK);
         return 1;
@@ -269,6 +284,9 @@ static int32_t _lcore_ssl_exchange(lua_State *lua) {
     }
     struct evssl_ctx *evssl = lua_touserdata(lua, 4);
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
+    if (NULL == task) {
+        return luaL_error(lua, "task is nil");
+    }
     if (ERR_OK == ev_ssl(&task->loader->netev, fd, skid, client, evssl)) {
         lua_pushboolean(lua, 1);
     } else {
@@ -289,6 +307,9 @@ static int32_t _lcore_udp(lua_State *lua) {
     SOCKET fd;
     uint64_t skid;
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
+    if (NULL == task) {
+        return luaL_error(lua, "task is nil");
+    }
     if (ERR_OK != task_udp(task, ip, port, &fd, &skid)) {
         lua_pushinteger(lua, INVALID_SOCK);
         return 1;

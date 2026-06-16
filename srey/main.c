@@ -21,14 +21,14 @@ static char *_config_read(void) {
     }
     return info;
 }
-// 从 cJSON 对象中读取数值字段，字段不存在、非数字、或为 NaN/Inf 时返回 dft
-static double _json_get_number(cJSON *json, const char *name, double dft) {
+// 从 cJSON 对象中读取数值字段，字段不存在、非数字、或不在 [0, max] 范围内时返回 dft
+static double _json_get_number(cJSON *json, const char *name, double dft, double max) {
     cJSON *val = cJSON_GetObjectItem(json, name);
     if (NULL != val
         && cJSON_IsNumber(val)) {
         double d = val->valuedouble;
-        if (isnan(d) || isinf(d) || d < 0) {
-            LOG_WARN("%s is NaN/Inf/negative, use default.", name);
+        if (isnan(d) || isinf(d) || d < 0 || d > max) {
+            LOG_WARN("%s is NaN/Inf/out of range, use default.", name);
             return dft;
         }
         return d;
@@ -64,13 +64,13 @@ static void _parse_config(config_ctx *cnf) {
         }
         return;
     }
-    cnf->serviceid = (uint16_t)_json_get_number(json, "serviceid", cnf->serviceid);
-    cnf->nnet = (uint16_t)_json_get_number(json, "nnet", cnf->nnet);
-    cnf->nworker = (uint16_t)_json_get_number(json, "nworker", cnf->nworker);
-    cnf->loglv = (uint8_t)_json_get_number(json, "loglv", cnf->loglv);
-    cnf->stacksize = (uint32_t)_json_get_number(json, "stacksize", cnf->stacksize);
-    cnf->twqueuelens = (uint32_t)_json_get_number(json, "twqueuelens", cnf->twqueuelens);
-    cnf->logqueuelens = (uint32_t)_json_get_number(json, "logqueuelens", cnf->logqueuelens);
+    cnf->serviceid = (uint16_t)_json_get_number(json, "serviceid", cnf->serviceid, UINT16_MAX);
+    cnf->nnet = (uint16_t)_json_get_number(json, "nnet", cnf->nnet, UINT16_MAX);
+    cnf->nworker = (uint16_t)_json_get_number(json, "nworker", cnf->nworker, UINT16_MAX);
+    cnf->loglv = (uint8_t)_json_get_number(json, "loglv", cnf->loglv, UINT8_MAX);
+    cnf->stacksize = (uint32_t)_json_get_number(json, "stacksize", cnf->stacksize, UINT32_MAX);
+    cnf->twqueuelens = (uint32_t)_json_get_number(json, "twqueuelens", cnf->twqueuelens, UINT32_MAX);
+    cnf->logqueuelens = (uint32_t)_json_get_number(json, "logqueuelens", cnf->logqueuelens, UINT32_MAX);
     _json_get_string(json, "dns", cnf->dns, sizeof(cnf->dns));
     _json_get_string(json, "script", cnf->script, sizeof(cnf->script));
     // debug / harbor / datacenter / subcenter 各为嵌套对象
@@ -78,14 +78,14 @@ static void _parse_config(config_ctx *cnf) {
     if (NULL != debug) {
         _json_get_string(debug, "name", cnf->debug.name, sizeof(cnf->debug.name));
         _json_get_string(debug, "ip", cnf->debug.ip, sizeof(cnf->debug.ip));
-        cnf->debug.port = (uint16_t)_json_get_number(debug, "port", cnf->debug.port);
+        cnf->debug.port = (uint16_t)_json_get_number(debug, "port", cnf->debug.port, UINT16_MAX);
     }
     cJSON *harbor = cJSON_GetObjectItem(json, "harbor");
     if (NULL != harbor) {
         _json_get_string(harbor, "name", cnf->harbor.name, sizeof(cnf->harbor.name));
         _json_get_string(harbor, "ssl", cnf->harbor.ssl, sizeof(cnf->harbor.ssl));
         _json_get_string(harbor, "ip", cnf->harbor.ip, sizeof(cnf->harbor.ip));
-        cnf->harbor.port = (uint16_t)_json_get_number(harbor, "port", cnf->harbor.port);
+        cnf->harbor.port = (uint16_t)_json_get_number(harbor, "port", cnf->harbor.port, UINT16_MAX);
         _json_get_string(harbor, "key", cnf->harbor.key, sizeof(cnf->harbor.key));
     }
     cJSON *datacenter = cJSON_GetObjectItem(json, "datacenter");
