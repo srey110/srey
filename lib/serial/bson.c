@@ -161,6 +161,7 @@ void bson_append_regex(bson_ctx *bson, const char *key, const char *pattern, con
     BSON_APPEND_CSTRING(options);
 }
 void bson_append_jscode_n(bson_ctx *bson, const char *key, const char *jscode, size_t lens) {
+    ASSERTAB(lens <= INT32_MAX - 1, "BSON JavaScript code length exceeds 2GB limit");
     BSON_APPEND_KEY(BSON_JSCODE);
     binary_set_integer(&bson->doc, lens + 1, 4, 1);
     binary_set_binary(&bson->doc, jscode, lens);
@@ -204,7 +205,12 @@ static void _bson_iter_clear(bson_iter *iter) {
 }
 void bson_iter_init(bson_iter *iter, bson_ctx *bson) {
     iter->doc = &bson->doc;
-    iter->doclens = (size_t)binary_get_integer(iter->doc, 4, 1);
+    size_t lens = (size_t)binary_get_integer(iter->doc, 4, 1);
+    if (lens < 5 || lens > iter->doc->size) {
+        iter->doclens = 0;
+    } else {
+        iter->doclens = lens;
+    }
     _bson_iter_clear(iter);
     iter->type = BSON_EOD;
 }
@@ -233,7 +239,8 @@ int32_t bson_iter_next(bson_iter *iter) {
     case BSON_JSCODE://e_name string
         iter->key = binary_get_string(iter->doc);
         lens = binary_get_integer(iter->doc, 4, 1);
-        if (lens < 1 || (size_t)(lens + 1) > iter->doc->size - iter->doc->offset) {
+        if (lens < 1 || iter->doc->offset > iter->doclens
+            || (size_t)(lens + 1) > iter->doclens - iter->doc->offset) {
             /* BSON 字符串长度字段含末尾 \0，合法值 >= 1；
              * 为 0 或负数时 (size_t)(lens-1) 下溢，binary_get_binary 读越界。*/
             more = 0;
@@ -248,7 +255,7 @@ int32_t bson_iter_next(bson_iter *iter) {
         iter->key = binary_get_string(iter->doc);
         off = iter->doc->offset;
         lens = binary_get_integer(iter->doc, 4, 1);
-        if (lens < 5 || (size_t)lens > iter->doc->size - off) {
+        if (lens < 5 || off > iter->doclens || (size_t)lens > iter->doclens - off) {
             more = 0;
             LOG_WARN("invalid bson document length %" PRId64 ".", lens);
             break;
@@ -260,7 +267,8 @@ int32_t bson_iter_next(bson_iter *iter) {
     case BSON_BINARY://e_name binary
         iter->key = binary_get_string(iter->doc);
         lens = binary_get_integer(iter->doc, 4, 1);
-        if (lens < 0 || (size_t)lens + 1 > iter->doc->size - iter->doc->offset) {
+        if (lens < 0 || iter->doc->offset > iter->doclens
+            || (size_t)lens + 1 > iter->doclens - iter->doc->offset) {
             more = 0;
             LOG_WARN("invalid bson binary length %" PRId64 ".", lens);
             break;

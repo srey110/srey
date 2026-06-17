@@ -428,6 +428,7 @@ static websock_pack_ctx *_websock_sec_unpack(websock_ctx *ws, websock_pack_ctx *
         rtn = _websock_sec_mqtt(ws, pack, client, status);
         break;
     default:
+        _websock_pkfree(pack);
         BIT_SET(*status, PROT_ERROR);
         break;
     }

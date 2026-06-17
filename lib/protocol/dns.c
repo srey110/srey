@@ -287,11 +287,17 @@ dns_ip *dns_parse_pack(char *buf, size_t buflen, size_t *cnt) {
                 break;
             }
             if (0xC0 == (llen & 0xC0)) {
+                if (p + 2 > end) {
+                    return NULL;
+                }
                 p += 2;
                 break;
             }
             if (llen >= 64) {
                 return NULL; // RFC 1035 保留标签类型
+            }
+            if (p + 1 + llen > end) {
+                return NULL;
             }
             p += 1 + llen;
         }

@@ -27,8 +27,9 @@ typedef struct bufnode_ctx {
 
 //新建一节点
 static bufnode_ctx *_buffer_node_new(const size_t size) {
-    size_t total = ROUND_UP(size + sizeof(bufnode_ctx), sizeof(void *) < 8 ? 512 : ONEK);
-    //size_t total = size + sizeof(bufnode_ctx);
+    size_t align = sizeof(void *) < 8 ? 512 : ONEK;
+    ASSERTAB(size <= SIZE_MAX - sizeof(bufnode_ctx) - (align - 1), "buffer node size overflow");
+    size_t total = ROUND_UP(size + sizeof(bufnode_ctx), align);
     char *buf;
     MALLOC(buf, total);
     bufnode_ctx *node = (bufnode_ctx *)buf;

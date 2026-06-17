@@ -293,7 +293,8 @@ void _uev_try_ssl_exchange(watcher_ctx *watcher, sock_ctx *skctx, struct evssl_c
         LOG_WARN("repeat request ssl exchange.");
         return;
     }
-    if (BIT_CHECK(tcp->status, STATUS_ERROR)) {
+    if (BIT_CHECK(tcp->status, STATUS_ERROR)
+        || BIT_CHECK(tcp->status, STATUS_GRACEFUL_CLOSE)) {
         return;
     }
     if (client) {

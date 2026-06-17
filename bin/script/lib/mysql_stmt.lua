@@ -16,7 +16,7 @@ local MYSQL_PACK_TYPE = MYSQL_PACK_TYPE
 local ctx = class("mysql_stmt_ctx")
 
 ---构造函数
----@param owner table mysql_ctx Lua 包装实例（持有实时 generation 与 C mysql 对象）
+---@param owner any mysql_ctx Lua 包装实例（持有实时 generation 与 C mysql 对象）
 ---@param mpack lightuserdata COM_STMT_PREPARE 响应包，C 层据此初始化列元数据和参数个数
 function ctx:ctor(owner, mpack)
     self.stmt = stmt.new(mpack)

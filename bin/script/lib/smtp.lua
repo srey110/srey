@@ -112,12 +112,17 @@ function ctx:_send(mail)
     return true
 end
 
----发送邮件：_send 后无论成败都执行 reset，保证服务端状态干净以便复用连接
+---发送邮件：_send 后无论成败都执行 reset，保证服务端状态干净以便复用连接；reset 失败说明连接已断，立即关闭
 ---@param mail any mail_ctx 邮件对象
 ---@return boolean ok 发送成功 true
 function ctx:send(mail)
     local rtn = self:_send(mail)
-    self:reset()
+    if not self:reset() then
+        local fd, skid = self.smtp:sock_id()
+        if INVALID_SOCK ~= fd then
+            srey.sync_close(fd, skid, 1)
+        end
+    end
     return rtn
 end
 

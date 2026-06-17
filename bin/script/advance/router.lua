@@ -296,6 +296,9 @@ function Router:_ctx()
     return prefix, mws
 end
 
+local _bad_entry = {}
+_bad_entry.name = function() return _bad_entry end
+
 ---@class RouteEntry
 ---@field method  string                          HTTP 方法（"GET"/"POST"/... 或 "ANY"）
 ---@field raw     string                          注册时的完整路径（含 prefix），调试用
@@ -311,7 +314,7 @@ function Router:_add(method, path, handler, extra_mws)
     local segs, err = _parse(full)
     if not segs then
         WARN("router: path '%s' rejected: %s", full, err)
-        return nil
+        return _bad_entry
     end
     local mws  = {}
     for _, mw in ipairs(ctx_mws) do

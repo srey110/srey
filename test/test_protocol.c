@@ -591,6 +591,27 @@ static void test_redis_bulk(CuTest *tc) {
     buffer_free(&buf);
 }
 
+// Null Bulk String：$-1\r\n → pack->len == -1，修复前 PACK_TOO_LONG(UINT64_MAX) 永久拒绝此合法包
+static void test_redis_null_bulk(CuTest *tc) {
+    buffer_ctx buf;
+    buffer_init(&buf);
+    _bput(&buf, "$-1\r\n");
+
+    ud_cxt ud;
+    ZERO(&ud, sizeof(ud_cxt));
+    int32_t status = PROT_INIT;
+
+    redis_pack_ctx *pack = redis_unpack(&buf, &ud, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, RESP_BSTRING == pack->prot);
+    CuAssertTrue(tc, -1 == pack->len);
+    CuAssertTrue(tc, NULL == pack->next);
+
+    _redis_pkfree(pack);
+    _redis_udfree(&ud);
+    buffer_free(&buf);
+}
+
 /* 数组：*2\r\n$3\r\nfoo\r\n$3\r\nbar\r\n */
 static void test_redis_array(CuTest *tc) {
     buffer_ctx buf;
@@ -1599,6 +1620,28 @@ static void test_dns_parse_pack(CuTest *tc) {
     CuAssertTrue(tc, 0 == ecnt);
 }
 
+// DNS-31：查询段截断包拒绝验证
+// 压缩指针仅 1 字节 / label 长度字段超缓冲区 → dns_parse_pack 应返回 NULL
+static void test_dns_parse_pack_truncated_query(CuTest *tc) {
+    size_t cnt;
+    dns_ip *ips;
+    // 压缩指针截断：0xC0 后缺第二字节
+    uint8_t trunc_ptr[] = {
+        0x00, 0x00, 0x81, 0x80, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+        0xC0
+    };
+    cnt = 0;
+    ips = dns_parse_pack((char *)trunc_ptr, sizeof(trunc_ptr), &cnt);
+    CuAssertTrue(tc, NULL == ips);
+    // label 截断：length=5 但缓冲区仅剩 3 字节数据
+    uint8_t trunc_label[] = {
+        0x00, 0x00, 0x81, 0x80, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+        0x05, 'a', 'b', 'c'
+    };
+    cnt = 0;
+    ips = dns_parse_pack((char *)trunc_label, sizeof(trunc_label), &cnt);
+    CuAssertTrue(tc, NULL == ips);
+}
 static void test_dns_set_get_ip(CuTest *tc) {
     const char *prev = dns_get_ip();
     char saved[64];
@@ -3124,6 +3167,7 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_http_header_at);
     SUITE_ADD_TEST(suite, test_redis_simple);
     SUITE_ADD_TEST(suite, test_redis_bulk);
+    SUITE_ADD_TEST(suite, test_redis_null_bulk);
     SUITE_ADD_TEST(suite, test_redis_array);
     SUITE_ADD_TEST(suite, test_redis_pack);
     SUITE_ADD_TEST(suite, test_redis_moredata);
@@ -3149,6 +3193,7 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_dns_request_pack_tcp);
     SUITE_ADD_TEST(suite, test_dns_unpack);
     SUITE_ADD_TEST(suite, test_dns_parse_pack);
+    SUITE_ADD_TEST(suite, test_dns_parse_pack_truncated_query);
     SUITE_ADD_TEST(suite, test_dns_set_get_ip);
     SUITE_ADD_TEST(suite, test_custz_head_fixed);
     SUITE_ADD_TEST(suite, test_custz_head_flag);

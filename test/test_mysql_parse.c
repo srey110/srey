@@ -675,6 +675,55 @@ static void test_mysql_stmt_init(CuTest *tc) {
     FREE(stmt);
 }
 
+// _mpack_parse_binary_row：temporal 类型非法长度前缀 → ERR_FAILED
+static void test_mysql_binary_row_temporal_invalid_len(CuTest *tc) {
+    char names[1][64] = { "ts" };
+    // DATETIME 非法长度 9 → ERR_FAILED（合法：0/4/7/11）
+    {
+        uint8_t types[1] = { MYSQL_TYPE_DATETIME };
+        mysql_reader_ctx *r = _reader_new(MPACK_STMT_EXECUTE, 1, names, types);
+        binary_ctx bw;
+        binary_init(&bw, NULL, 0, 0);
+        binary_set_uint8(&bw, 0x00);//NULL 位图：field 0 不为 NULL
+        binary_set_uint8(&bw, 9);//DATETIME 长度前缀：9（非法）
+        binary_ctx br;
+        binary_init(&br, bw.data, bw.offset, 0);
+        int32_t rtn = _mpack_parse_binary_row(r, &br);
+        CuAssertIntEquals(tc, ERR_FAILED, rtn);
+        mysql_reader_free(r);
+        binary_free(&bw);
+    }
+    // TIME 非法长度 5 → ERR_FAILED（合法：0/8/12）
+    {
+        uint8_t types[1] = { MYSQL_TYPE_TIME };
+        mysql_reader_ctx *r = _reader_new(MPACK_STMT_EXECUTE, 1, names, types);
+        binary_ctx bw;
+        binary_init(&bw, NULL, 0, 0);
+        binary_set_uint8(&bw, 0x00);//NULL 位图
+        binary_set_uint8(&bw, 5);//TIME 长度前缀：5（非法）
+        binary_ctx br;
+        binary_init(&br, bw.data, bw.offset, 0);
+        int32_t rtn = _mpack_parse_binary_row(r, &br);
+        CuAssertIntEquals(tc, ERR_FAILED, rtn);
+        mysql_reader_free(r);
+        binary_free(&bw);
+    }
+    // DATE 合法长度 0（零值）→ ERR_OK
+    {
+        uint8_t types[1] = { MYSQL_TYPE_DATE };
+        mysql_reader_ctx *r = _reader_new(MPACK_STMT_EXECUTE, 1, names, types);
+        char *buf;
+        MALLOC(buf, 2);
+        buf[0] = 0x00;//NULL 位图
+        buf[1] = 0;//DATE 长度前缀：0（零值，合法）
+        binary_ctx br;
+        binary_init(&br, buf, 2, 0);//外部托管：所有权随 row->payload 转 mysql_reader_free
+        int32_t rtn = _mpack_parse_binary_row(r, &br);
+        CuAssertIntEquals(tc, ERR_OK, rtn);
+        mysql_reader_free(r);//释放 buf（通过 row->payload）
+    }
+}
+
 void test_mysql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mysql_reader_init);
     SUITE_ADD_TEST(suite, test_mysql_reader_cursor);
@@ -691,4 +740,5 @@ void test_mysql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mpack_err_empty_msg);
     SUITE_ADD_TEST(suite, test_mysql_payload);
     SUITE_ADD_TEST(suite, test_mysql_stmt_init);
+    SUITE_ADD_TEST(suite, test_mysql_binary_row_temporal_invalid_len);
 }

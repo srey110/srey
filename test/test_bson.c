@@ -489,6 +489,30 @@ static void test_bson_misc(CuTest *tc) {
     CuAssertStrEquals(tc, "md5",      bson_subtype_tostring(BSON_SUBTYPE_MD5));
 }
 
+// 负/零/过小长度字段：doclens 归 0，bson_iter_next 立即返回 0，不无限遍历
+static void test_bson_iter_neg_lens(CuTest *tc) {
+    bson_ctx reader;
+    bson_iter iter;
+
+    // -1（0xFFFFFFFF）→ (size_t)(-1) = SIZE_MAX；修复前无限遍历
+    char neg[5] = {(char)0xFF, (char)0xFF, (char)0xFF, (char)0xFF, 0x00};
+    bson_init(&reader, neg, 5);
+    bson_iter_init(&iter, &reader);
+    CuAssertTrue(tc, !bson_iter_next(&iter));
+
+    // 长度 = 3（< 5，低于合法最小值）
+    char small[5] = {0x03, 0x00, 0x00, 0x00, 0x00};
+    bson_init(&reader, small, 5);
+    bson_iter_init(&iter, &reader);
+    CuAssertTrue(tc, !bson_iter_next(&iter));
+
+    // 长度声称 100，实际缓冲区只有 5 字节
+    char oversize[5] = {0x64, 0x00, 0x00, 0x00, 0x00};
+    bson_init(&reader, oversize, 5);
+    bson_iter_init(&iter, &reader);
+    CuAssertTrue(tc, !bson_iter_next(&iter));
+}
+
 // 深度临界：18 层（BSON_MAX_DEPTH=18）应允许，19 层拒绝
 // 现有 test_bson_check_depth 已覆盖 17/20 层，本测试精确卡边界
 static void test_bson_check_depth_boundary(CuTest *tc) {
@@ -516,6 +540,25 @@ static void test_bson_check_depth_boundary(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_OK, bson_check_depth(buf[18], blens[18]));
     // buf[19] 深度走到 19，超出 BSON_MAX_DEPTH 拒绝
     CuAssertIntEquals(tc, ERR_FAILED, bson_check_depth(buf[19], blens[19]));
+}
+
+// BSN-2：doc->size > doclens 时，内层字段长度检查须以 doclens 为界而非 doc->size
+// 构造：声明 doc size=15，buffer size=20；UTF8 字段 lens=5 → lens+1=6 > doclens-offset=4，应拒绝
+static void test_bson_iter_field_exceeds_doclens(CuTest *tc) {
+    bson_ctx reader;
+    bson_iter iter;
+    // 手工 wire 格式：4 字节声明 doc 大小(=15) + type(0x02) + key"a\0" + int32 lens(=5) + 9 字节 padding
+    char buf[20];
+    memset(buf, 0, sizeof(buf));
+    buf[0] = 0x0F; buf[1] = 0x00; buf[2] = 0x00; buf[3] = 0x00;//声明 doc size = 15
+    buf[4] = 0x02;//BSON_UTF8
+    buf[5] = 'a'; buf[6] = 0x00;//key "a"
+    buf[7] = 0x05; buf[8] = 0x00; buf[9] = 0x00; buf[10] = 0x00;//string lens = 5
+    // buf[11..19]：padding（共 9 字节，使 doc->size=20 > doclens=15）
+    // 检查：lens+1=6 > doclens(15)-offset(11)=4 → 拒绝
+    bson_init(&reader, buf, sizeof(buf));//doc->size = 20
+    bson_iter_init(&iter, &reader);//doclens = 15
+    CuAssertTrue(tc, !bson_iter_next(&iter));
 }
 
 // 补全 bson_tostring 未覆盖子类型分支：
@@ -576,6 +619,8 @@ void test_bson(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_bson_complete_cat);
     SUITE_ADD_TEST(suite, test_bson_extra_types);
     SUITE_ADD_TEST(suite, test_bson_check_depth);
+    SUITE_ADD_TEST(suite, test_bson_iter_neg_lens);
+    SUITE_ADD_TEST(suite, test_bson_iter_field_exceeds_doclens);
     SUITE_ADD_TEST(suite, test_bson_check_depth_boundary);
     SUITE_ADD_TEST(suite, test_bson_tostring);
     SUITE_ADD_TEST(suite, test_bson_tostring_subtypes);

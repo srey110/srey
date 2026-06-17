@@ -374,6 +374,9 @@ static void test_pt_matches_pattern(CuTest *tc) {
     // 边界:literal 段数不够
     CuAssertTrue(tc, ERR_OK == path_matches_pattern(&MQTT_RULES, "a", "a/#"));        // # 匹配空尾
     CuAssertTrue(tc, ERR_FAILED == path_matches_pattern(&MQTT_RULES, "a", "a/+"));    // + 必须有段
+    // 校验路径:literal 含通配段 / pattern 的 # 不在末尾 → 均拒绝
+    CuAssertTrue(tc, ERR_FAILED == path_matches_pattern(&MQTT_RULES, "a/+/b", "a/+/b")); // literal 含 + 非法
+    CuAssertTrue(tc, ERR_FAILED == path_matches_pattern(&MQTT_RULES, "a/b/c", "a/#/c")); // pattern # 非末尾
 }
 
 // 20. payload 不可为 NULL:insert NULL 返 ERR_FAILED,不增 count、不留节点、不误调 _free

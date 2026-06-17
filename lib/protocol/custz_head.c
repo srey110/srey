@@ -67,10 +67,12 @@ int32_t _custz_decode_flag(buffer_ctx *buf, size_t *hlens, size_t *size, int32_t
         }
         ASSERTAB(sizeof(buf64) == buffer_copyout(buf, sizeof(flag), buf64, sizeof(buf64)), "copy buffer error.");
         uint64_t val64 = (uint64_t)unpack_integer(buf64, sizeof(buf64), 0, 0);
+#if SIZE_MAX < UINT64_MAX// 仅在 32 位平台
         if (val64 > (uint64_t)SIZE_MAX) {
             BIT_SET(*status, PROT_ERROR);
             return ERR_FAILED;
         }
+#endif
         *size = (size_t)val64;
     }
     return ERR_OK;

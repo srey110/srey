@@ -400,7 +400,8 @@ void _iocp_try_ssl_exchange(watcher_ctx *watcher, sock_ctx *skctx, struct evssl_
         LOG_WARN("repeat request ssl exchange.");
         return;
     }
-    if (BIT_CHECK(oltcp->status, STATUS_ERROR)) {
+    if (BIT_CHECK(oltcp->status, STATUS_ERROR)
+        || BIT_CHECK(oltcp->status, STATUS_GRACEFUL_CLOSE)) {
         return;
     }
     if (client) {
@@ -694,12 +695,14 @@ static int32_t _olp_post_accept(overlap_acpt_ctx *olacp) {
 static void _olp_on_accept_cb(acceptex_ctx *acpctx, sock_ctx *skctx, DWORD bytes) {
     overlap_acpt_ctx *olacp = UPCAST(skctx, overlap_acpt_ctx, overlap);
     listener_ctx *lsn = olacp->lsn;
+    SOCKET fd = olacp->overlap.fd;
     if (0 != ATOMIC_GET(&lsn->remove)) {
         // ev_unlisten 或 _olp_acceptex 失败已标记卸载，最后一个减到 0 的 cb 释放 lsn
         _iocp_try_freelsn(lsn);
         return;
     }
-    SOCKET fd = olacp->overlap.fd;
+    // 放这里为了让 _iocp_try_freelsn 能关闭
+    olacp->overlap.fd = INVALID_SOCK;
     // lsn->ref 计「挂起 AcceptEx 槽位数 + ev_unlisten/ev_listen 占位 + 跨 watcher CMD_ADDACP 投递占位」。
     // _olp_post_accept 成功后槽位重新挂起，ref 不变；仅当 _olp_post_accept 失败时减 1。
     if (ERR_OK != _olp_post_accept(olacp)) {
@@ -714,6 +717,10 @@ static void _olp_on_accept_cb(acceptex_ctx *acpctx, sock_ctx *skctx, DWORD bytes
             LOG_ERROR("all AcceptEx slots exhausted, listener fd %d (call ev_unlisten to release).", (int32_t)log_fd);
         }
         return;
+    }
+    // 防止执行 ev_unlisten 的时候 _olp_post_accept 里面还未设置 olacp->overlap.fd，造成该新的fd不能关闭
+    if (0 != ATOMIC_GET(&lsn->remove)) {
+        CLOSE_SOCK(olacp->overlap.fd);
     }
     // 此时 olacp 已成功重投 AcceptEx（ref 不变），fd 是本次接受的连接套接字。
     // 以下若失败只需关闭 fd，无需触碰 ref。

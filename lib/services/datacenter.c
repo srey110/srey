@@ -106,6 +106,10 @@ static void _dc_kv_set(dc_ctx *ctx, const char *key, void *val, size_t size) {
     e.val = new_val;
     e.size = size;
     hashmap_set(ctx->kv, &e);
+    if (hashmap_oom(ctx->kv)) {
+        FREE(e.key);
+        FREE(new_val);
+    }
 }
 // 读 kv:返回 hashmap 内部 dc_entry 指针(不要修改),不存在返回 NULL
 static dc_entry *_dc_kv_get(dc_ctx *ctx, const char *key) {
@@ -143,6 +147,10 @@ static void _dc_pending_push(dc_ctx *ctx, const char *key, dc_waiter *w) {
     safe_fill_str(p.key, klen + 1, key);
     p.head = p.tail = w;
     hashmap_set(ctx->pending, &p);
+    if (hashmap_oom(ctx->pending)) {
+        FREE(p.key);
+        FREE(w);
+    }
 }
 // 摘下 pending[key] 整条 FIFO 队列并从 hashmap 删除节点,返回头指针(调用方负责 FREE 链表)
 static dc_waiter *_dc_pending_take(dc_ctx *ctx, const char *key) {

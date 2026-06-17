@@ -609,14 +609,17 @@ runner.run("unit_router", function(t)
         t:eq(200, resp and resp.code,   "保留 handler 的 200,不被 500 覆盖")
     end
 
-    -- 8.1(本次:对齐 C 端 router_add 软失败):非法模板被跳过(返 nil)不注册、不中断 startup
+    -- 8.1(本次:对齐 C 端 router_add 软失败):非法模板被跳过(返 sentinel)不注册、不中断 startup
     do
         local r = Route.new()
-        t:eq(nil, r:get("/a/*/b", function() end), "中置 * 被跳过(返 nil)")
-        t:eq(nil, r:get("/x/{}",  function() end), "空名 {} 被跳过")
-        t:eq(nil, r:get("/y/{?}", function() end), "空名 {?} 被跳过")
-        t:eq(nil, r:get("/" .. string.rep("s/", 65), function() end), "段数超 64 被跳过")
+        t:check(nil ~= r:get("/a/*/b", function() end), "中置 * 被跳过(返 sentinel)")
+        t:check(nil ~= r:get("/x/{}",  function() end), "空名 {} 被跳过")
+        t:check(nil ~= r:get("/y/{?}", function() end), "空名 {?} 被跳过")
+        t:check(nil ~= r:get("/" .. string.rep("s/", 65), function() end), "段数超 64 被跳过")
         t:check(nil ~= r:get("/ok/{id}/*", function() end), "末段 * 合法,返 entry")
+        -- sentinel 支持链式 :name() 不崩溃，且不污染命名路由表
+        r:get("/a/*/b", function() end):name("bad_route")
+        t:eq(nil, r._named["bad_route"], "非法路由 :name() 不写入命名表")
         r:get("/legit", function(ctx) ctx:text(200, "ok") end)
         t:eq(200, (dispatch(r, "GET", "/legit") or {}).code, "非法跳过后合法路由仍正常")
     end

@@ -14,8 +14,12 @@ int32_t tda_check(tda_ctx *ctx, size_t overload) {
         return 0;
     }
     int32_t triggered = 0;
-    while (overload > ctx->overload_threshold) {
+    while (overload >= ctx->overload_threshold) {
         triggered = 1;
+        if (ctx->overload_threshold > SIZE_MAX / 2) {
+            ctx->overload_threshold = SIZE_MAX;
+            break;
+        }
         ctx->overload_threshold *= 2;
     }
     return triggered;

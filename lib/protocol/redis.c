@@ -204,7 +204,7 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
     /* 格式化 RESP 数组计数头并回填到 sdsbuf 头部预留槽中。
      * memmove 将 Bulk String 主体向左移动以消除填充间隙，
      * 避免额外的输出内存分配。 */
-    int hlen_int = SNPRINTF(_fmt, sizeof(_fmt), "*%d"FLAG_CRLF, (int32_t)n);
+    int hlen_int = SNPRINTF(_fmt, sizeof(_fmt), "*%zu"FLAG_CRLF, n);
     size_t hlens     = (size_t)hlen_int;
     ASSERTAB(sdsbuf.offset >= MAX_HEADER_RESERVE, "RESP body skip violated.");
     size_t body_size = sdsbuf.offset - MAX_HEADER_RESERVE;
@@ -366,10 +366,6 @@ static int32_t _redis_reader_bulk(reader_ctx *rd, int32_t prot, buffer_ctx *buf,
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
-    if (PACK_TOO_LONG(blens)) {
-        BIT_SET(*status, PROT_ERROR);
-        return ERR_FAILED;
-    }
     size_t total;
     if (-1 == blens) {
         redis_pack_ctx *pk;
@@ -380,6 +376,10 @@ static int32_t _redis_reader_bulk(reader_ctx *rd, int32_t prot, buffer_ctx *buf,
         ASSERTAB(total == buffer_drain(buf, total), "drain buffer failed.");
         _redis_add_node(rd, pk);
         return ERR_OK;
+    }
+    if (PACK_TOO_LONG(blens)) {
+        BIT_SET(*status, PROT_ERROR);
+        return ERR_FAILED;
     }
     total = (size_t)(blens + pos + CRLF_SIZE * 2);
     if (buffer_size(buf) < total) {

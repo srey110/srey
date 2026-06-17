@@ -121,6 +121,9 @@ static int32_t _harbor_check_sign(task_ctx *harbor, struct http_pack_ctx *pack, 
         return ERR_FAILED;
     }
     hashmap_set(ctx->nonce_cur, &key);
+    if (hashmap_oom(ctx->nonce_cur)) {
+        return ERR_FAILED;
+    }
     return ERR_OK;
 }
 // 构造并发送 HTTP 响应（有数据时 Content-Type 为 octet-stream，否则 text/plain 状态文本）

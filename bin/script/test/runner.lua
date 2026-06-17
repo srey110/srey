@@ -10,12 +10,16 @@
 local srey = require("lib.srey")
 local json = require("cjson")
 
+---@class M
+---@field name string 模块名
+---@field npass integer 通过数
+---@field nfail integer 失败数
 local M = {}
 M.__index = M
 
 ---新建测试上下文
 ---@param name string 模块名
----@return table ctx
+---@return M ctx
 function M.new(name)
     return setmetatable({ name = name, npass = 0, nfail = 0 }, M)
 end

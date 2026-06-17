@@ -417,9 +417,10 @@ int32_t path_matches_pattern(const path_rules *rules,
     }
     buf_ctx lits[PATH_MAX_DEPTH];
     buf_ctx pats[PATH_MAX_DEPTH];
-    int32_t ln = _url_path_split((char *)literal_path, strlen(literal_path), rules->sep, lits, PATH_MAX_DEPTH);
-    int32_t pn = _url_path_split((char *)pattern, strlen(pattern), rules->sep, pats, PATH_MAX_DEPTH);
-    if (ln <= 0 || pn <= 0) {
+    int32_t ln = 0;
+    int32_t pn = 0;
+    if (ERR_OK != _path_validate(rules, literal_path, PATH_KIND_LITERAL, lits, PATH_MAX_DEPTH, &ln)
+        || ERR_OK != _path_validate(rules, pattern, PATH_KIND_WILDCARD, pats, PATH_MAX_DEPTH, &pn)) {
         return ERR_FAILED;
     }
     // 逐段比较

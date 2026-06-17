@@ -49,6 +49,7 @@ static void _mongo_format_pwd(mongo_ctx *mongo, char fmtpwd[HEX_ENSIZE(MD5_BLOCK
     secure_zero(buf, blen);
     FREE(buf);
     md5_final(&md5, hs);
+    secure_zero(&md5, sizeof(md5));
     tohex(hs, sizeof(hs), fmtpwd);
     strlower(fmtpwd);
     secure_zero(hs, sizeof(hs));

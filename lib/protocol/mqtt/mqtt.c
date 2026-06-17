@@ -257,6 +257,8 @@ static array_ctx *_mqtt_properties(buffer_ctx *buf, int32_t *status, int32_t *to
         case USER_PROPERTY://0x26 用户属性	UTF-8字符串对	CONNECT, CONNACK, PUBLISH, Will Properties, PUBACK, PUBREC, PUBREL, PUBCOMP, SUBSCRIBE, SUBACK, UNSUBSCRIBE, UNSUBACK, DISCONNECT, AUTH
             propt = _mqtt_data_kv(buf, &off);
             break;
+        default:
+            break;
         }
         if (NULL == propt) {
             BIT_SET(*status, PROT_ERROR);

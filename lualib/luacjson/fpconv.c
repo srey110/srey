@@ -126,8 +126,7 @@ double fpconv_strtod(const char *nptr, char **endptr)
         /* Handle unusually large numbers */
         buf = (char *)malloc(buflen + 1);
         if (!buf) {
-            fprintf(stderr, "Out of memory");
-            abort();
+            return strtod(nptr, endptr);
         }
     } else {
         /* This is the common case.. */

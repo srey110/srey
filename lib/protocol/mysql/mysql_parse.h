@@ -24,5 +24,7 @@ int32_t _mpack_ok(mysql_ctx *mysql, binary_ctx *breader, mpack_ok *ok);
 void _mpack_err(mysql_ctx *mysql, binary_ctx *breader, mpack_err *err);
 // 内部函数：根据 mysql->cur_cmd 分发并解析响应包，返回完整解析的 mpack_ctx
 mpack_ctx *_mpack_parser(mysql_ctx *mysql, buffer_ctx *buf, binary_ctx *breader, int32_t *status);
+// 内部函数：解析二进制协议一行数据（NULL 位图 + 各字段），填充 reader->arr_rows
+int32_t _mpack_parse_binary_row(mysql_reader_ctx *reader, binary_ctx *breader);
 
 #endif//MYSQL_PARSE_H_

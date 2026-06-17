@@ -1522,6 +1522,42 @@ static void test_strptime_week_rollover(CuTest *tc) {
 }
 
 /* =======================================================================
+ * %U/%W 第 0 周 + 小 wday → tm_yday 为负数 → 归一到上一年
+ * 覆盖 strptime.c 负 tm_yday 回滚路径（与 test_strptime_week_rollover 的正溢互补）
+ * ======================================================================= */
+static void test_strptime_week_neg_yday(CuTest *tc) {
+    struct tm tm;
+    char *end;
+
+    // 2023-01-01 是周日(fwd=0)，%U 第 0 周 + wday=0 → tm_yday = -7 → 2022-12-25
+    ZERO(&tm, sizeof(tm));
+    end = _strptime("2023 0 0", "%Y %U %w", &tm);
+    CuAssertPtrNotNull(tc, end);
+    CuAssertTrue(tc, '\0' == *end);
+    CuAssertTrue(tc, 122 == tm.tm_year);
+    CuAssertTrue(tc, 11 == tm.tm_mon);
+    CuAssertTrue(tc, 25 == tm.tm_mday);
+
+    // 2024-01-01 是周一(fwd=1)，%W 第 0 周 + wday=0 → tm_yday = -8 → 2023-12-24
+    ZERO(&tm, sizeof(tm));
+    end = _strptime("2024 0 0", "%Y %W %w", &tm);
+    CuAssertPtrNotNull(tc, end);
+    CuAssertTrue(tc, '\0' == *end);
+    CuAssertTrue(tc, 123 == tm.tm_year);
+    CuAssertTrue(tc, 11 == tm.tm_mon);
+    CuAssertTrue(tc, 24 == tm.tm_mday);
+
+    // 常规路径（week>0）不受影响：%U 第 1 周 + 周三 = 2024-01-10
+    ZERO(&tm, sizeof(tm));
+    end = _strptime("2024 1 3", "%Y %U %w", &tm);
+    CuAssertPtrNotNull(tc, end);
+    CuAssertTrue(tc, '\0' == *end);
+    CuAssertTrue(tc, 124 == tm.tm_year);
+    CuAssertTrue(tc, 0 == tm.tm_mon);
+    CuAssertTrue(tc, 10 == tm.tm_mday);
+}
+
+/* =======================================================================
  * tw 长超时路径：> 256ms 进入 tv2 槽
  * （tv1 容量 256，超过即下沉到 tv2，验证 cascade 后回调仍正确触发）
  * ======================================================================= */
@@ -1733,6 +1769,26 @@ static void test_pool_default(CuTest *tc) {
     pool_free(&pool);
 }
 
+// TDA-1：threshold 翻倍溢出修复验证
+// overload = SIZE_MAX, init = 1 → 不死循环，threshold 钳至 SIZE_MAX，返回 1
+static void test_tda_overflow(CuTest *tc) {
+    tda_ctx ctx;
+    // 普通路径：触发 1→2→4
+    tda_init(&ctx, 1);
+    CuAssertIntEquals(tc, 1, tda_check(&ctx, 2));
+    CuAssertIntEquals(tc, 4, (int)ctx.overload_threshold);
+    CuAssertIntEquals(tc, 0, tda_check(&ctx, 3));
+    CuAssertIntEquals(tc, 1, tda_check(&ctx, 5));
+    CuAssertIntEquals(tc, 8, (int)ctx.overload_threshold);
+    // 复位
+    CuAssertIntEquals(tc, 0, tda_check(&ctx, 0));
+    CuAssertIntEquals(tc, 1, (int)ctx.overload_threshold);
+    // 上溢路径：overload = SIZE_MAX → 不死循环，threshold 被钳为 SIZE_MAX
+    tda_init(&ctx, 1);
+    CuAssertIntEquals(tc, 1, tda_check(&ctx, SIZE_MAX));
+    CuAssertTrue(tc, ctx.overload_threshold == SIZE_MAX);
+}
+
 /* ======================================================================= */
 
 void test_utils(CuSuite *suite) {
@@ -1762,6 +1818,7 @@ void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_strptime);
     SUITE_ADD_TEST(suite, test_strptime_invalid);
     SUITE_ADD_TEST(suite, test_strptime_week_rollover);
+    SUITE_ADD_TEST(suite, test_strptime_week_neg_yday);
     SUITE_ADD_TEST(suite, test_tw);
     SUITE_ADD_TEST(suite, test_tw_long_timeout);
     SUITE_ADD_TEST(suite, test_mem_helpers);
@@ -1777,4 +1834,5 @@ void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_pool_shrink);
     SUITE_ADD_TEST(suite, test_pool_shrink_policy);
     SUITE_ADD_TEST(suite, test_pool_default);
+    SUITE_ADD_TEST(suite, test_tda_overflow);
 }

@@ -205,7 +205,7 @@ static int32_t _mpack_parse_text_row(mysql_reader_ctx *reader, binary_ctx *bread
     return ERR_OK;
 }
 // 解析二进制协议（COM_STMT_EXECUTE）结果集中的一行数据，字段值按类型固定或 lenenc 长度读取
-static int32_t _mpack_parse_binary_row(mysql_reader_ctx *reader, binary_ctx *breader) {
+int32_t _mpack_parse_binary_row(mysql_reader_ctx *reader, binary_ctx *breader) {
     int32_t off;
     int32_t _rtn;
     mpack_row *row;
@@ -243,9 +243,19 @@ static int32_t _mpack_parse_binary_row(mysql_reader_ctx *reader, binary_ctx *bre
         case MYSQL_TYPE_DATE:
         case MYSQL_TYPE_DATETIME:
         case MYSQL_TYPE_TIMESTAMP:
-        case MYSQL_TYPE_TIME:
-            // 日期/时间类型以 1 字节长度前缀编码
             row[i].val.lens = (size_t)binary_get_uint8(breader);
+            if (0 != row[i].val.lens && 4 != row[i].val.lens
+                && 7 != row[i].val.lens && 11 != row[i].val.lens) {
+                FREE(row);
+                return ERR_FAILED;
+            }
+            break;
+        case MYSQL_TYPE_TIME:
+            row[i].val.lens = (size_t)binary_get_uint8(breader);
+            if (0 != row[i].val.lens && 8 != row[i].val.lens && 12 != row[i].val.lens) {
+                FREE(row);
+                return ERR_FAILED;
+            }
             break;
         case MYSQL_TYPE_STRING:
         case MYSQL_TYPE_VARCHAR:

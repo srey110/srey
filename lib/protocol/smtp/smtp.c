@@ -396,7 +396,10 @@ static void _smtp_auth_check(SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt *
         return;
     }
     buffer_drain(buf, total);
-    _hs_push(fd, skid, 1, ud, ERR_OK, NULL, 0);
+    if (ERR_OK != _hs_push(fd, skid, 1, ud, ERR_OK, NULL, 0)) {
+        BIT_SET(*status, PROT_ERROR);
+        return;
+    }
     ud->status = COMMAND;
 }
 // COMMAND 阶段：等待完整服务端响应（含多行，RFC 5321 §4.2.1），提取内容（不含末尾 CRLF）返回给调用者

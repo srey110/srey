@@ -694,6 +694,11 @@ char *_strptime(const char *buf, const char *fmt, struct tm *tm) {
             /* calculate month of day of year */
             i = 0;
             isleap = isleap_sum(tm->tm_year, TM_YEAR_BASE);
+            if (tm->tm_yday < 0) {
+                tm->tm_year--;
+                isleap = isleap_sum(tm->tm_year, TM_YEAR_BASE);
+                tm->tm_yday += start_of_month[isleap][12];
+            }
             while (i <= 12 && tm->tm_yday >= start_of_month[isleap][i])
                 i++;
             if (i > 12) {

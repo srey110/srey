@@ -31,7 +31,7 @@ PG_FORMAT = {
 local ctx = class("pgsql_stmt_ctx")
 
 ---构造函数
----@param owner table pgsql_ctx Lua 包装实例（持有实时 generation 与 C pgsql 对象）
+---@param owner any pgsql_ctx Lua 包装实例（持有实时 generation 与 C pgsql 对象）
 ---@param name string 预处理语句名
 ---@param format PG_FORMAT 结果列格式，默认 BINARY
 function ctx:ctor(owner, name, format)

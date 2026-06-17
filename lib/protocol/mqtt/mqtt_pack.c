@@ -176,7 +176,6 @@ char *mqtt_pack_connect(mqtt_protversion version, int8_t cleanstart, int16_t kee
         return NULL;
     }
     size_t cidlens = NULL == clientid ? 0 : strlen(clientid);
-    total += ((uint32_t)cidlens + 2);//客户标识符
     char wpvlens[4];
     int32_t wpoccupy = 0;
     if (willflag) {
@@ -184,15 +183,23 @@ char *mqtt_pack_connect(mqtt_protversion version, int8_t cleanstart, int16_t kee
         if (ERR_FAILED == wpoccupy) {
             return NULL;
         }
-        total += ((uint32_t)wtlens + 2);//遗嘱主题
-        total += ((uint32_t)wplens + 2);//遗嘱载荷
+    }
+    // 用 size_t 累加用户提供的字符串长度，避免各路 (uint32_t) 截断
+    size_t payloads = cidlens + 2;//客户标识符
+    if (willflag) {
+        payloads += wtlens + 2;//遗嘱主题
+        payloads += wplens + 2;//遗嘱载荷
     }
     if (userflag) {
-        total += ((uint32_t)ulens + 2);//用户名
+        payloads += ulens + 2;//用户名
     }
     if (passwordflag) {
-        total += ((uint32_t)pwlens + 2);//密码
+        payloads += pwlens + 2;//密码
     }
+    if (payloads > (size_t)(UINT32_MAX - total)) {
+        return NULL;
+    }
+    total += (uint32_t)payloads;
     //编码剩余长度
     char rmain[4];
     int32_t roccupy = varint_encode_mqtt(total, rmain);

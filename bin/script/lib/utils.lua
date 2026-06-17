@@ -62,7 +62,7 @@ function str_nullorempty(str)
 end
 
 ---统计表中键值对的数量（含非连续整数键；# 运算符仅对序列有效，此函数适用于任意表）
----@param tb table 任意表
+---@param tb table<any,any> 任意表
 ---@return integer count 键值对数量
 function table_size(tb)
     local cnt = 0
@@ -73,7 +73,7 @@ function table_size(tb)
 end
 
 ---判断表是否为 nil 或空表（无任何键值对）
----@param tb table|nil 待检测的表
+---@param tb table<any,any>|nil 待检测的表
 ---@return boolean is_empty nil 或无任何键值对时返回 true
 function table_nullorempty(tb)
     if not tb then
@@ -199,8 +199,8 @@ function dump(obj, offset)
 end
 
 ---递归设置元表的 __index 字段；__index 被占用且不等于新值时沿元表链向上追加，形成链式继承
----@param t table 目标表
----@param index table 要设置的 __index 表
+---@param t table<any,any> 目标表
+---@param index table<any,any> 要设置的 __index 表
 local function setmetatableindex(t, index)
     if nil == t or nil == index then
         assert(false, "nil value")
@@ -220,8 +220,8 @@ end
 
 ---轻量级 OOP class 实现，支持多继承；调用 cls.new(...) 创建实例并触发 ctor
 ---@param classname string 类名（存入 __cname，仅用于调试）
----@param ... table 零个或多个父类；多继承时按顺序查找 key
----@return table cls 类表（含 new / ctor / super / __cname / __supers）
+---@param ... table<any,any> 零个或多个父类；多继承时按顺序查找 key
+---@return table<any,any> cls 类表（含 new / ctor / super / __cname / __supers）
 function class(classname, ...)
     local cls = { __cname = classname }
     local supers = { ... }
