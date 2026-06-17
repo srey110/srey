@@ -457,7 +457,7 @@ local function _set_coro_sess(disposable, coro, sess, mtype, ms, func, ...)
         coro    = coro,
         mtype   = mtype,
         func    = func,
-        args    = func and {...} or nil,
+        args    = func and tpack(...) or nil,
     }
     if disposable then
         assert(not coro_sess[sess], "repeat session")
@@ -569,7 +569,7 @@ local function _timeout_dispatch(msg)
     end
     if coroinfo.func then
         local func, args = coroinfo.func, coroinfo.args
-        _coro_run(_coro_cb, func, tunpack(args))
+        _coro_run(_coro_cb, func, tunpack(args, 1, args.n))
     elseif coroinfo.coro then
         local coro = coroinfo.coro
         _coro_resume(coro, msg)

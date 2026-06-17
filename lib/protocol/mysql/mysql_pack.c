@@ -38,6 +38,12 @@ void *mysql_pack_ping(mysql_ctx *mysql, size_t *size) {
     return bwriter.data;
 }
 void *mysql_pack_query(mysql_ctx *mysql, const char *sql, mysql_bind_ctx *mbind, size_t *size) {
+    size_t sqllen = strlen(sql);
+    if (sqllen + 1 > INT3_MAX) {
+        LOG_WARN("mysql payload exceeds 16MB: %zu bytes.", sqllen + 1);
+        *size = 0;
+        return NULL;
+    }
     mysql->id = 0;
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
@@ -62,7 +68,7 @@ void *mysql_pack_query(mysql_ctx *mysql, const char *sql, mysql_bind_ctx *mbind,
             binary_set_binary(&bwriter, mbind->value.data, mbind->value.offset);//parameter_values
         }
     }
-    binary_set_binary(&bwriter, sql, strlen(sql));//query
+    binary_set_binary(&bwriter, sql, sqllen);//query
     if (ERR_OK != _mysql_set_payload_lens(&bwriter)) {
         binary_free(&bwriter);
         *size = 0;
