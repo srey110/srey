@@ -736,10 +736,10 @@ static void _websock_sign_keys(char bs64key[B64EN_SIZE(SIGN_KEY_LENS)], char bs6
     bs64_encode(key, SIGN_KEY_LENS, bs64key);
     _websock_sign(bs64key, strlen(bs64key), bs64sha1key);
 }
-char *websock_pack_handshake(const char *host, const char *secprot, char *signkey) {
+char *websock_pack_handshake(const char *host, const char *uri, const char *secprot, char *signkey) {
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
-    http_pack_req(&bwriter, "GET", "/");
+    http_pack_req(&bwriter, "GET", EMPTYSTR(uri) ? "/" : uri);
     if (!EMPTYSTR(host)) {
         http_pack_head(&bwriter, "Host", host);
     }

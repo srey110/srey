@@ -48,13 +48,18 @@ static int32_t _lcrypt_url_decode(lua_State *lua) {
 /// </summary>
 /// <param name="data" type="string|lightuserdata">URL 字符串；字符串时长度自动取得</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
-/// <returns type="ParsedURL?">成功返回含 scheme/user/psw/host/port/path/anchor/param 的表（param 为 key→value 子表）；URL 超 1KB 或路径段数超 URL_MAX_PATH_DEPTH 时返回 nil</returns>
+/// <param name="decode" type="boolean|integer?">true/非 0（默认 true）：对 path 段与 query 做 URL 解码；false/0：保留原始 percent 编码，适合后续用于 HTTP 重组</param>
+/// <returns type="ParsedURL?">成功返回含 scheme/user/psw/host/port/path/query/anchor/param/segs 的表（path/query 语义随 decode 参数而定）；URL 超 1KB 或路径段数超 URL_MAX_PATH_DEPTH 时返回 nil</returns>
 static int32_t _lcrypt_url_parse(lua_State *lua) {
     void *data;
     size_t size;
-    data = lpub_check_buf(lua, 1, &size, NULL);
+    int32_t idx = 1;
+    data = lpub_check_buf_idx(lua, &idx, &size, NULL);
+    int32_t decode = (LUA_TBOOLEAN == lua_type(lua, idx)) ? lua_toboolean(lua, idx)
+                   : (LUA_TNUMBER  == lua_type(lua, idx)) ? (int32_t)lua_tointeger(lua, idx)
+                   : 1;
     url_ctx url;
-    if (ERR_OK != url_parse(&url, (const char *)data, size, '/', 1)) {
+    if (ERR_OK != url_parse(&url, (const char *)data, size, '/', decode)) {
         lua_pushnil(lua);
         return 1;
     }
@@ -81,7 +86,7 @@ static int32_t _lcrypt_url_parse(lua_State *lua) {
     }
     if (url.npath > 0) {
         char pathbuf[URL_BUF_LENS];
-        size_t plen = url_get_path(&url, pathbuf, sizeof(pathbuf));
+        size_t plen = url_reorg_path(&url, pathbuf, sizeof(pathbuf));
         lua_pushlstring(lua, pathbuf, plen);
         lua_setfield(lua, -2, "path");
     }
@@ -113,6 +118,12 @@ static int32_t _lcrypt_url_parse(lua_State *lua) {
         lua_settable(lua, -3);
     }
     lua_setfield(lua, -2, "param");
+    if (!buf_empty(&url.param[0].key)) {
+        char querybuf[URL_BUF_LENS];
+        size_t qlen = url_reorg_param(&url, querybuf, sizeof(querybuf));
+        lua_pushlstring(lua, querybuf, qlen);
+        lua_setfield(lua, -2, "query");
+    }
     return 1;
 }
 //srey.url

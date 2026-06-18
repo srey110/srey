@@ -126,6 +126,7 @@ void bson_append_array(bson_ctx *bson, const char *key, char *doc, size_t lens) 
 }
 //signed_byte(5) e_name binary
 void bson_append_binary(bson_ctx *bson, const char *key, bson_subtype type, char *val, size_t lens) {
+    ASSERTAB(lens <= INT32_MAX, "BSON binary length exceeds 2GB limit");
     BSON_APPEND_KEY(BSON_BINARY);
     binary_set_integer(&bson->doc, lens, 4, 1);
     binary_set_int8(&bson->doc, type);

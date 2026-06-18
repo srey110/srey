@@ -57,7 +57,16 @@ int32_t url_parse(url_ctx *ctx, const char *url, size_t lens, int8_t sep, int32_
 /// <param name="path">输出缓冲</param>
 /// <param name="cap">path 缓冲容量（字节）；不截断需 >= ctx->pathlens + 1</param>
 /// <returns>写入 path 的字节数（不含结尾 '\0'）</returns>
-size_t url_get_path(url_ctx *ctx, char *path, size_t cap);
+size_t url_reorg_path(url_ctx *ctx, char *path, size_t cap);
+/// <summary>
+/// 把 url_parse 解析的 param[] 重组为 key=val&amp;k2=v2 形式的查询字符串写入 param，并写结尾 '\0'。
+/// 容量不足时截断到放得下的整对为止
+/// </summary>
+/// <param name="ctx">url_ctx（须先经 url_parse）</param>
+/// <param name="param">输出缓冲</param>
+/// <param name="cap">param 缓冲容量（字节）</param>
+/// <returns>写入 param 的字节数（不含结尾 '\0'）；无参数时返回 0</returns>
+size_t url_reorg_param(url_ctx *ctx, char *param, size_t cap);
 /// <summary>
 /// 获取参数
 /// </summary>

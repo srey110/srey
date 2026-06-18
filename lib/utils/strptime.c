@@ -415,9 +415,8 @@ char *_strptime(const char *buf, const char *fmt, struct tm *tm) {
     case 'G':/* The year corresponding to the ISO week
                 * number with century.
                 */
-        do
+        while (isdigit(*bp))
             bp++;
-        while (isdigit(*bp));
         continue;
 
     case 'V':/* The ISO 8601:1988 week number as decimal */

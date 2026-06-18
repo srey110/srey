@@ -69,7 +69,7 @@ dns_ip *dns_lookup(task_ctx *task, const char *domain, int32_t ipv6, int32_t udp
 }
 SOCKET wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, const char *secprot, uint64_t *skid, int32_t netev) {
     url_ctx url;
-    if (ERR_OK != url_parse(&url, ws, strlen(ws), '/', 1)) {
+    if (ERR_OK != url_parse(&url, ws, strlen(ws), '/', 0)) {
         return INVALID_SOCK;
     }
     int32_t isws = buf_icompare(&url.scheme, "ws", strlen("ws"));
@@ -118,7 +118,13 @@ SOCKET wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, c
     SOCKET fd;
     char *signkey;
     MALLOC(signkey, WS_SIGN_KEY_LENS);
-    char *reqpack = websock_pack_handshake(host, secprot, signkey);
+    char uribuf[URL_BUF_LENS];
+    size_t plen = url_reorg_path(&url, uribuf, sizeof(uribuf));
+    if (!buf_empty(&url.param[0].key) && plen + 1 < sizeof(uribuf)) {
+        uribuf[plen] = '?';
+        url_reorg_param(&url, uribuf + plen + 1, sizeof(uribuf) - plen - 1);
+    }
+    char *reqpack = websock_pack_handshake(host, uribuf, secprot, signkey);
     //signkey 通过 ud->context 交给协议层管理：
     //  - coro_connect 失败：ev_connect 失败路径会调 cbs->ud_free → _websock_udfree 释放
     //  - coro_connect 成功后任意失败：sock 关闭路径（_evpub_sk_clear/_evpub_sk_free）统一调 ud_free

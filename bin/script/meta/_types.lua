@@ -14,11 +14,12 @@
 ---@field user   string?              用户名；URL 中无用户信息时为 nil
 ---@field psw    string?              密码；URL 中无密码时为 nil
 ---@field host   string               主机名或 IP
----@field port   integer              端口号
----@field path   string?              重组后的解码路径（如 "/user/42"）；无路径段时为 nil
----@field segs   string[]             解码后的路径段数组（如 {"user","42"}）；router 直接消费, %2F 不当分隔符
+---@field port   string?              端口号字符串（如 "8080"）；URL 中无端口时为 nil
+---@field path   string?              重组后的路径（如 "/user/42"）；语义随 decode 参数：decode=true 已解码，decode=false 保留原始编码；无路径段时为 nil
+---@field query  string?              重组后的查询字符串（如 "k=v&k2=v2"）；语义随 decode 参数；无查询参数时为 nil
+---@field segs   string[]             路径段数组（如 {"user","42"}）；语义随 decode 参数；router 直接消费, %2F 不当分隔符
 ---@field anchor string?              片段标识符（# 后部分）；不存在时为 nil
----@field param  table<string,string> 查询字符串键值对；无查询字符串时为空表
+---@field param  table<string,string> 查询字符串键值对；语义随 decode 参数；无查询字符串时为空表
 
 ---@class RedisAggValue
 ---@field resp_type  "array"|"set"|"map"|"push"|"attr"  聚合类型名

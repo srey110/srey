@@ -541,6 +541,10 @@ static int32_t _scram_server_check_final_message(scram_ctx *scram, char *msg, si
     if (strlen(proof) != lens
         || 0 != ct_memcmp(client_proof, proof, lens)) {
         secure_zero(proof, sizeof(proof));
+        if (NULL != scram->final_message_without_proof) {
+            secure_zero(scram->final_message_without_proof, strlen(scram->final_message_without_proof));
+        }
+        FREE(scram->final_message_without_proof);
         return ERR_FAILED;
     }
     secure_zero(proof, sizeof(proof));

@@ -234,7 +234,7 @@ int32_t url_parse(url_ctx *ctx, const char *url, size_t lens, int8_t sep, int32_
         if (ERR_FAILED == ctx->npath) {
             return ERR_FAILED;
         }
-        //逐段解码并累计重组后总长(与 url_get_path 输出对齐)
+        //逐段解码并累计重组后总长(与 url_reorg_path 输出对齐)
         for (int32_t i = 0; i < ctx->npath; i++) {
             if (ctx->decode && ctx->segs[i].lens > 0) {
                 ctx->segs[i].lens = url_decode(ctx->segs[i].data, ctx->segs[i].lens, 0);
@@ -268,7 +268,7 @@ int32_t url_parse(url_ctx *ctx, const char *url, size_t lens, int8_t sep, int32_
     }
     return ERR_OK;
 }
-size_t url_get_path(url_ctx *ctx, char *path, size_t cap) {
+size_t url_reorg_path(url_ctx *ctx, char *path, size_t cap) {
     if (0 == cap) {
         return 0;
     }
@@ -283,6 +283,36 @@ size_t url_get_path(url_ctx *ctx, char *path, size_t cap) {
         offset += ctx->segs[i].lens;
     }
     path[offset] = '\0';
+    return offset;
+}
+size_t url_reorg_param(url_ctx *ctx, char *param, size_t cap) {
+    if (0 == cap) {
+        return 0;
+    }
+    size_t offset = 0;
+    url_param *p;
+    for (int32_t i = 0; i < URL_MAX_PARAM; i++) {
+        p = &ctx->param[i];
+        if (buf_empty(&p->key)) {
+            break;
+        }
+        // '&' + key + '=' + val + '\0' 放不下则截断
+        size_t need = (i > 0 ? 1 : 0) + p->key.lens + 1 + p->val.lens;
+        if (offset + need + 1 > cap) {
+            break;
+        }
+        if (i > 0) {
+            param[offset++] = '&';
+        }
+        memcpy(param + offset, p->key.data, p->key.lens);
+        offset += p->key.lens;
+        param[offset++] = '=';
+        if (p->val.lens > 0) {
+            memcpy(param + offset, p->val.data, p->val.lens);
+            offset += p->val.lens;
+        }
+    }
+    param[offset] = '\0';
     return offset;
 }
 buf_ctx *url_get_param(url_ctx *ctx, const char *key) {

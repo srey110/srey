@@ -43,7 +43,7 @@ runner.run("protocol", function(t)
     -- ── websock pack 系列（验证返回非空，记得 ud_free） ────────────────
     do
         -- handshake：返回 (pack, size, signkey)，signkey 也需要释放
-        local pack, size, signkey = websock.pack_handshake("example.com", "chat")
+        local pack, size, signkey = websock.pack_handshake("example.com", nil, "chat")
         t:check(pack ~= nil and size > 0, "websock.pack_handshake")
         local txt = srey.ud_str(pack, size)
         t:check(txt:find("GET ", 1, true) ~= nil, "handshake has GET")

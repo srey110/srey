@@ -1227,6 +1227,63 @@ static void test_url_parse_edges(CuTest *tc) {
     }
 }
 
+/* url_reorg_param：重组 query 参数字符串（decode=0，保留原始编码） */
+static void test_url_reorg_param(CuTest *tc) {
+    url_ctx ctx;
+    char buf[256];
+    size_t n;
+
+    // 1. 无参数 → 返回 0，输出空串
+    char u1[] = "http://host/path";
+    url_parse(&ctx, u1, strlen(u1), '/', 0);
+    n = url_reorg_param(&ctx, buf, sizeof(buf));
+    CuAssertIntEquals(tc, 0, (int)n);
+    CuAssertStrEquals(tc, "", buf);
+
+    // 2. 单参数
+    char u2[] = "http://host/path?k=v";
+    url_parse(&ctx, u2, strlen(u2), '/', 0);
+    n = url_reorg_param(&ctx, buf, sizeof(buf));
+    CuAssertIntEquals(tc, 3, (int)n);
+    CuAssertStrEquals(tc, "k=v", buf);
+
+    // 3. 多参数
+    char u3[] = "http://host?k1=v1&k2=v2";
+    url_parse(&ctx, u3, strlen(u3), '/', 0);
+    url_reorg_param(&ctx, buf, sizeof(buf));
+    CuAssertStrEquals(tc, "k1=v1&k2=v2", buf);
+
+    // 4. 空值参数
+    char u4[] = "/p?k=";
+    url_parse(&ctx, u4, strlen(u4), '/', 0);
+    url_reorg_param(&ctx, buf, sizeof(buf));
+    CuAssertStrEquals(tc, "k=", buf);
+
+    // 5. decode=0：%2F 保留原始编码，不解码
+    char u5[] = "/p?k=%2F";
+    url_parse(&ctx, u5, strlen(u5), '/', 0);
+    url_reorg_param(&ctx, buf, sizeof(buf));
+    CuAssertStrEquals(tc, "k=%2F", buf);
+
+    // 6. 容量截断：cap=6 只放第一对 k1=v1（5字节+'\0'），截断 &k2=v2
+    char u6[] = "/p?k1=v1&k2=v2";
+    url_parse(&ctx, u6, strlen(u6), '/', 0);
+    char small[6];
+    n = url_reorg_param(&ctx, small, sizeof(small));
+    CuAssertStrEquals(tc, "k1=v1", small);
+    CuAssertIntEquals(tc, 5, (int)n);
+
+    // 7. url_reorg_path + url_reorg_param 组合：WebSocket URI 场景
+    char u7[] = "ws://host/chat?token=abc&v=1";
+    url_parse(&ctx, u7, strlen(u7), '/', 0);
+    char uribuf[256];
+    size_t plen = url_reorg_path(&ctx, uribuf, sizeof(uribuf));
+    CuAssertStrEquals(tc, "/chat", uribuf);
+    uribuf[plen] = '?';
+    url_reorg_param(&ctx, uribuf + plen + 1, sizeof(uribuf) - plen - 1);
+    CuAssertStrEquals(tc, "/chat?token=abc&v=1", uribuf);
+}
+
 /* =======================================================================
  * Custz —— 三种打包格式往返验证
  * ======================================================================= */
@@ -1884,7 +1941,7 @@ static void test_websock_pack_frames(CuTest *tc) {
 static void test_websock_pack_handshake(CuTest *tc) {
     char signkey[WS_SIGN_KEY_LENS];
     ZERO(signkey, sizeof(signkey));
-    char *req = websock_pack_handshake("example.com", "mqtt", signkey);
+    char *req = websock_pack_handshake("example.com", NULL, "mqtt", signkey);
     CuAssertPtrNotNull(tc, req);
 
     /* 握手请求必须含 GET / Upgrade / Sec-WebSocket-Version 等关键头 */
@@ -3176,6 +3233,7 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_redis_resp3_aggregate);
     SUITE_ADD_TEST(suite, test_url_parse);
     SUITE_ADD_TEST(suite, test_url_parse_edges);
+    SUITE_ADD_TEST(suite, test_url_reorg_param);
     SUITE_ADD_TEST(suite, test_custz);
     SUITE_ADD_TEST(suite, test_smtp_full_response);
     SUITE_ADD_TEST(suite, test_smtp_dot_stuffing);

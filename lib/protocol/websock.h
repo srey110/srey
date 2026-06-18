@@ -26,10 +26,11 @@ struct websock_pack_ctx *websock_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, in
 /// 握手包
 /// </summary>
 /// <param name="host">Host</param>
+/// <param name="uri">HTTP request-target（path?query）；NULL 或空字符串时使用 "/"</param>
 /// <param name="secprot">Sec-WebSocket-Protocol</param>
 /// <param name="signkey">out 握手验证数据 长度 WS_SIGN_KEY_LENS，作为task_connect extra参数传入</param>
 /// <returns>握手包</returns>
-char *websock_pack_handshake(const char *host, const char *secprot, char *signkey);
+char *websock_pack_handshake(const char *host, const char *uri, const char *secprot, char *signkey);
 /// <summary>
 /// ping包
 /// </summary>

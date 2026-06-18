@@ -91,6 +91,10 @@ int32_t _debug_request(task_ctx *task, message_ctx *msg) {
             _debug_resp(task, msg->src, msg->sess, "loglv: missing level.", strlen("loglv: missing level."));
             return ERR_OK;
         }
+        if (lv.v.i < LOGLV_FATAL || lv.v.i > LOGLV_DEBUG) {
+            _debug_resp(task, msg->src, msg->sess, "loglv: invalid level.", strlen("loglv: invalid level."));
+            return ERR_OK;
+        }
         log_setlv((LOG_LEVEL)lv.v.i);
         char buf[32];
         int32_t n = SNPRINTF(buf, sizeof(buf), "log level => %d", (int32_t)lv.v.i);

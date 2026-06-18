@@ -196,6 +196,7 @@ static int32_t _lprot_websock_unpack(lua_State *lua) {
 /// 构造 WebSocket 握手请求包（HTTP Upgrade）
 /// </summary>
 /// <param name="host" type="string?">Host 头字段；nil 表示省略</param>
+/// <param name="uri" type="string?">HTTP request-target（path?query）；nil 或空字符串时使用 "/"</param>
 /// <param name="secprot" type="string?">Sec-WebSocket-Protocol 字段；nil 表示省略</param>
 /// <returns type="lightuserdata">握手包数据指针（业务通过 srey.send/connect copy=0 接管或 utils.ud_free 释放）</returns>
 /// <returns type="integer">数据长度</returns>
@@ -205,13 +206,17 @@ static int32_t _lprot_websock_pack_handshake(lua_State *lua) {
     if (LUA_TSTRING == lua_type(lua, 1)) {
         host = (char *)luaL_checkstring(lua, 1);
     }
-    char *secprot = NULL;
+    char *uri = NULL;
     if (LUA_TSTRING == lua_type(lua, 2)) {
-        secprot = (char *)luaL_checkstring(lua, 2);  // Sec-WebSocket-Protocol 值
+        uri = (char *)luaL_checkstring(lua, 2);
+    }
+    char *secprot = NULL;
+    if (LUA_TSTRING == lua_type(lua, 3)) {
+        secprot = (char *)luaL_checkstring(lua, 3);
     }
     char *signkey;
     MALLOC(signkey, WS_SIGN_KEY_LENS);
-    char *hspack = websock_pack_handshake(host, secprot, signkey);
+    char *hspack = websock_pack_handshake(host, uri, secprot, signkey);
     lua_pushlightuserdata(lua, hspack);
     lua_pushinteger(lua, strlen(hspack));
     lua_pushlightuserdata(lua, signkey);

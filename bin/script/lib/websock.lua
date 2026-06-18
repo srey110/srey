@@ -54,7 +54,7 @@ wbsk.unpack = websock.unpack
 ---@return integer fd socket fd；任一步失败返回 INVALID_SOCK
 ---@return integer? skid 连接 skid；仅在 fd 有效时返回
 function wbsk.connect(ws, sslname, secprot, netev)
-    local url = srey_url.parse(ws)
+    local url = srey_url.parse(ws, false)
     if not url then
         return INVALID_SOCK
     end
@@ -83,7 +83,9 @@ function wbsk.connect(ws, sslname, secprot, netev)
         end
     end
     -- 构造 HTTP Upgrade 握手包；signkey 用于 C 层验证服务端 Sec-WebSocket-Accept
-    local hspack, size, signkey = websock.pack_handshake(url.host, secprot)
+    local path = url.path or "/"
+    local uri = url.query and (path .. "?" .. url.query) or path
+    local hspack, size, signkey = websock.pack_handshake(url.host, uri, secprot)
     local fd, skid = srey.connect(PACK_TYPE.WEBSOCK, sslname, ip, port, netev, signkey)
     if INVALID_SOCK == fd then
         utils.ud_free(hspack)   -- TCP 连接失败，释放 C 层分配的握手包内存
