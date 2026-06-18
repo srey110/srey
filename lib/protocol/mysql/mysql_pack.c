@@ -39,7 +39,7 @@ void *mysql_pack_ping(mysql_ctx *mysql, size_t *size) {
 }
 void *mysql_pack_query(mysql_ctx *mysql, const char *sql, mysql_bind_ctx *mbind, size_t *size) {
     size_t sqllen = strlen(sql);
-    if (sqllen + 1 > INT3_MAX) {
+    if (sqllen >= INT3_MAX) {
         LOG_WARN("mysql payload exceeds 16MB: %zu bytes.", sqllen + 1);
         *size = 0;
         return NULL;

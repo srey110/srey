@@ -121,8 +121,10 @@ static int32_t _lcrypt_url_parse(lua_State *lua) {
     if (!buf_empty(&url.param[0].key)) {
         char querybuf[URL_BUF_LENS];
         size_t qlen = url_reorg_param(&url, querybuf, sizeof(querybuf));
-        lua_pushlstring(lua, querybuf, qlen);
-        lua_setfield(lua, -2, "query");
+        if (qlen > 0) {
+            lua_pushlstring(lua, querybuf, qlen);
+            lua_setfield(lua, -2, "query");
+        }
     }
     return 1;
 }

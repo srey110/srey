@@ -51,6 +51,10 @@ void tw_free(tw_ctx *ctx) {
  *  在 queue 侧（macOS）则自动扩容。常规负载下不会触发（容量 4096，主线程 ≤5ms 排空一轮）。
  *  仅在极端突发或时间轮主线程被严重抢占时才会触底。*/
 void tw_add(tw_ctx *ctx, const uint32_t timeout, tw_cb _cb, free_cb _freecb, ud_cxt *ud) {
+    if (0 == timeout) {
+        _cb(ud);
+        return;
+    }
     tw_node_ctx *node = (tw_node_ctx *)pool_pop(&ctx->node_pool, NULL);
     COPY_UD(node->ud, ud);
     node->expires = timer_cur_ms(&ctx->timer) + timeout;
@@ -85,13 +89,13 @@ static tw_slot_ctx *_tw_getslot(tw_ctx *ctx, tw_node_ctx *node) {
     if (idx < TVR_SIZE) {
         // tv1：超时在 [1, 255] ms 内，直接按到期时间低 8 位定槽
         slot = &ctx->tv1[(node->expires & TVR_MASK)];
-    } else if (idx < 1UL << (TVR_BITS + TVN_BITS)) {
+    } else if (idx < 1ULL << (TVR_BITS + TVN_BITS)) {
         // tv2：超时在 [256, 16383] ms 内，取到期时间第 8~13 位定槽
         slot = &ctx->tv2[((node->expires >> TVR_BITS) & TVN_MASK)];
-    } else if (idx < 1UL << (TVR_BITS + 2 * TVN_BITS)) {
+    } else if (idx < 1ULL << (TVR_BITS + 2 * TVN_BITS)) {
         // tv3：超时在 [16384, 1048575] ms (~17 min) 内，取到期时间第 14~19 位定槽
         slot = &ctx->tv3[((node->expires >> (TVR_BITS + TVN_BITS)) & TVN_MASK)];
-    } else if (idx < 1UL << (TVR_BITS + 3 * TVN_BITS)) {
+    } else if (idx < 1ULL << (TVR_BITS + 3 * TVN_BITS)) {
         // tv4：超时在 [1048576, 67108863] ms (~18.6 h) 内，取到期时间第 20~25 位定槽
         slot = &ctx->tv4[((node->expires >> (TVR_BITS + 2 * TVN_BITS)) & TVN_MASK)];
     } else {

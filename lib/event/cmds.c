@@ -35,7 +35,7 @@ void _send_cmd(watcher_ctx *watcher, cmd_ctx *cmd) {
     overlap_cmd_ctx *olcmd = &watcher->cmd;
     fsqu_push(&olcmd->qu, cmd);
     static const char trigger[1] = { 's' };
-    while (0 == watcher->stop
+    while (0 == ATOMIC_GET(&watcher->stop)
         && SOCKET_ERROR == send(olcmd->fd, trigger, sizeof(trigger), 0)) {
         erro = ERRNO;
         ASSERTAB(IS_EAGAIN(erro), ERRORSTR(erro));
@@ -53,7 +53,7 @@ void _send_cmd(watcher_ctx *watcher, cmd_ctx *cmd) {
     buf = (char *)cmd;
     blens = sizeof(cmd_ctx);
 #endif
-    while (0 == watcher->stop
+    while (0 == ATOMIC_GET(&watcher->stop)
            && ERR_FAILED == write(watcher->pipe.pipes[1], buf, blens)) {
         erro = ERRNO;
         ASSERTAB(ERR_RW_RETRIABLE(erro), ERRORSTR(erro));
@@ -142,7 +142,7 @@ void _on_cmd_lsn_unref(watcher_ctx *watcher, cmd_ctx *cmd) {
 #endif
 void _on_cmd_stop(watcher_ctx *watcher, cmd_ctx *cmd) {
     (void)cmd;
-    watcher->stop = 1;
+    ATOMIC_SET(&watcher->stop, 1);
 }
 void ev_close(ev_ctx *ctx, SOCKET fd, uint64_t skid, int32_t immed) {
     if (INVALID_SOCK == fd) {

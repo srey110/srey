@@ -31,7 +31,7 @@ typedef struct overlap_cmd_ctx {
 // 事件监听器上下文（每个工作线程一个）
 typedef struct watcher_ctx {
     int32_t index;              // 当前watcher编号
-    int32_t stop;               // 停止标志
+    atomic_t stop;              // 停止标志
     HANDLE iocp;                // IOCP句柄
     ev_ctx *ev;                 // 所属ev_ctx
     struct hashmap *element;    // fd -> sock_ctx 哈希表
@@ -42,7 +42,7 @@ typedef struct watcher_ctx {
 // AcceptEx专用线程上下文
 typedef struct acceptex_ctx {
     int32_t index;  // 编号
-    int32_t stop;   // 停止标志
+    atomic_t stop;  // 停止标志
     ev_ctx *ev;     // 所属ev_ctx
     HANDLE iocp;    // AcceptEx专用IOCP句柄
     pthread_t thacp; // AcceptEx线程

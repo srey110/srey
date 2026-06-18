@@ -585,6 +585,9 @@ static task_ctx *_sc_shared_pick_live(sc_ctx *ctx, sc_shared_group *g) {
             return t;
         }
         array_del_nomove(&g->members, (int32_t)g->cursor);
+        if (g->cursor > 0) {
+            g->cursor--;
+        }
     }
     return NULL;
 }

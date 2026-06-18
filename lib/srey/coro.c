@@ -612,6 +612,9 @@ static inline message_ctx *_coro_wait(task_ctx *task, int32_t disposable, uint64
     return msg;
 }
 void coro_sleep(task_ctx *task, uint32_t ms) {
+    if (0 == ms) {
+        return;
+    }
     uint64_t sess = createid();
     task_timeout(task, sess, ms, NULL);
     _coro_wait(task, 1, sess, MSG_TYPE_TIMEOUT, 0);

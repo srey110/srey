@@ -51,7 +51,7 @@ static void _uev_cmd_loop(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
     }
 #ifdef MANUAL_ADD
     // 命令管道只关心读事件，硬编码 EVENT_READ 避免依赖回调入参（evport 平台下避免误注册写事件造成忙循环）
-    if (0 == watcher->stop) {
+    if (0 == ATOMIC_GET(&watcher->stop)) {
         ASSERTAB(ERR_OK == _uev_add_event(watcher, skctx->fd, &skctx->events, EVENT_READ, skctx), ERRORSTR(ERRNO));
     }
 #endif
@@ -377,7 +377,7 @@ static void _uev_loop_event(void *arg) {
     uint64_t now_ms;
     uint64_t shrink_start = timer_cur_ms(&watcher->tm_qtn);
     //主循环
-    while (0 == watcher->stop) {
+    while (0 == ATOMIC_GET(&watcher->stop)) {
 #if defined(EV_EPOLL)
         cnt = epoll_wait(watcher->evfd, watcher->events, watcher->nevents, timeout);
 #elif defined(EV_POLLSET)
@@ -416,7 +416,7 @@ static void _uev_loop_event(void *arg) {
                 skctx->ev_cb(watcher, skctx, ev);
             }
         }
-        if (0 == watcher->stop
+        if (0 == ATOMIC_GET(&watcher->stop)
             && cnt == watcher->nevents) {
             watcher->nevents *= 2;
             FREE(watcher->events);
@@ -506,7 +506,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
     for (uint32_t i = 0; i < ctx->nthreads; i++) {
         watcher = &ctx->watcher[i];
         watcher->index = i;
-        watcher->stop = 0;
+        ATOMIC_SET(&watcher->stop, 0);
         watcher->ev = ctx;
 #ifdef COMMIT_NCHANGES
         watcher->nsize = EVENT_CHANGES_CNT;

@@ -71,7 +71,7 @@ typedef struct qtn_entry {
 // 事件监听器上下文（每个工作线程一个）
 typedef struct watcher_ctx {
     int32_t index;              // 当前watcher编号
-    int32_t stop;               // 停止标志
+    atomic_t stop;              // 停止标志
     int32_t evfd;               // epoll/kqueue/evport等的事件fd
     int32_t nevents;            // events数组容量
 #ifdef COMMIT_NCHANGES

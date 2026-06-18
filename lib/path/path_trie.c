@@ -314,7 +314,10 @@ static void _path_try_collect(path_trie *t, path_node *node) {
         } else if (NULL != parent->children) {
             path_node *qptr = cur;
             hashmap_delete(parent->children, &qptr);
-            // 若 children 空,后续轮回收时可回收 parent->children;此处不释放 hashmap
+            if (0 == hashmap_count(parent->children)) {
+                hashmap_free(parent->children);
+                parent->children = NULL;
+            }
         }
         if (NULL != cur->children) {
             hashmap_free(cur->children);
@@ -323,7 +326,6 @@ static void _path_try_collect(path_trie *t, path_node *node) {
         FREE(cur);
         cur = parent;
     }
-    // 根节点空 children 不主动释放(留待下次 insert 复用,或在 path_free 释放)
 }
 int32_t path_insert(path_trie *t, const char *path, void *payload) {
     if (NULL == payload) {

@@ -61,7 +61,7 @@ void tw_free(tw_ctx *ctx);
 /// <param name="ctx">tw_ctx</param>
 /// <param name="timeout">超时 毫秒</param>
 /// <param name="_cb">超时回调函数</param>
-/// <param name="_freecb">参数释放函数</param>
+/// <param name="_freecb">参数释放函数，tw退出未触发 _cb 的时候调用</param>
 /// <param name="ud">参数</param>
 void tw_add(tw_ctx *ctx, const uint32_t timeout, tw_cb _cb, free_cb _freecb, ud_cxt *ud);
 
