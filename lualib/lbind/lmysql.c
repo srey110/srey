@@ -405,10 +405,10 @@ static int32_t _lmysql_reader_datetime(lua_State *lua) {
     mysql_reader_ctx **reader = luaL_checkudata(lua, 1, MT_MYSQL_READER);
     const char *name = luaL_checkstring(lua, 2);
     int32_t err;
-    uint64_t val = mysql_reader_datetime(*reader, name, &err);
+    int64_t val = mysql_reader_datetime(*reader, name, &err);
     if (ERR_OK == err) {
         lua_pushboolean(lua, 1);
-        lua_pushinteger(lua, (int64_t)val);
+        lua_pushinteger(lua, val);
         return 2;
     }
     if (1 == err) {
@@ -430,12 +430,14 @@ static int32_t _lmysql_reader_datetime(lua_State *lua) {
 /// <returns type="integer?">hour；字段为 NULL 时不返回</returns>
 /// <returns type="integer?">minute；字段为 NULL 时不返回</returns>
 /// <returns type="integer?">second；字段为 NULL 时不返回</returns>
+/// <returns type="integer?">usec（0~999999）；字段为 NULL 时不返回</returns>
 static int32_t _lmysql_reader_time(lua_State *lua) {
     mysql_reader_ctx **reader = luaL_checkudata(lua, 1, MT_MYSQL_READER);
     const char *name = luaL_checkstring(lua, 2);
     int32_t err;
     struct tm dt = { 0 };
-    int32_t is_negative = mysql_reader_time(*reader, name, &dt, &err);
+    uint32_t usec;
+    int32_t is_negative = mysql_reader_time(*reader, name, &dt, &usec, &err);
     if (ERR_OK == err) {
         lua_pushboolean(lua, 1);
         lua_pushboolean(lua, is_negative);
@@ -443,7 +445,8 @@ static int32_t _lmysql_reader_time(lua_State *lua) {
         lua_pushinteger(lua, dt.tm_hour);
         lua_pushinteger(lua, dt.tm_min);
         lua_pushinteger(lua, dt.tm_sec);
-        return 6;
+        lua_pushinteger(lua, usec);
+        return 7;
     }
     if (1 == err) {
         // 字段值为 NULL

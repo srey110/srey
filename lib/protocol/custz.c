@@ -24,7 +24,7 @@ void *custz_unpack(pack_type pktype, buffer_ctx *buf, size_t *size, int32_t *sta
         return NULL;
     }
     // 数据体长度超限，协议错误
-    if (PACK_TOO_LONG(*size)) {
+    if (PACK_TOO_LONG(*size) || *size > SIZE_MAX - hlens) {
         BIT_SET(*status, PROT_ERROR);
         return NULL;
     }

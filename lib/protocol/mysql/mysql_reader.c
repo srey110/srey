@@ -248,7 +248,7 @@ char *mysql_reader_string(mysql_reader_ctx *reader, const char *name, size_t *le
     *lens = row->val.lens;
     return row->val.data;
 }
-uint64_t mysql_reader_datetime(mysql_reader_ctx *reader, const char *name, int32_t *err) {
+int64_t mysql_reader_datetime(mysql_reader_ctx *reader, const char *name, int32_t *err) {
     SET_PTR(err, ERR_OK);
     mpack_field *field;
     mpack_row *row = _mysql_reader_row(reader, name, &field, err);
@@ -261,28 +261,49 @@ uint64_t mysql_reader_datetime(mysql_reader_ctx *reader, const char *name, int32
     }
     if (MYSQL_TYPE_DATE != field->type
         && MYSQL_TYPE_DATETIME != field->type
-        && MYSQL_TYPE_TIMESTAMP != field->type) {
+        && MYSQL_TYPE_DATETIME2 != field->type
+        && MYSQL_TYPE_TIMESTAMP != field->type
+        && MYSQL_TYPE_TIMESTAMP2 != field->type) {
         SET_PTR(err, ERR_FAILED);
         LOG_WARN("does not match required data type.");
         return 0;
     }
     if (MPACK_QUERY == reader->pack_type) {
-        // 文本协议：按 "YYYY-MM-DD HH:MM:SS" 格式解析字符串为时间戳
-        char tmp[64];
+        char tmp[48];
         if (row->val.lens >= sizeof(tmp)) {
             SET_PTR(err, ERR_FAILED);
-            LOG_WARN("parse failed.");
             return 0;
         }
-        if (row->val.lens > 0) {
-            memcpy(tmp, row->val.data, row->val.lens);
-        }
+        memcpy(tmp, row->val.data, row->val.lens);
         tmp[row->val.lens] = '\0';
-        uint64_t ts = strtots(tmp, "%Y-%m-%d %H:%M:%S");
-        if (0 == ts) {
+        int32_t y, mo, d, h = 0, mi = 0, sec = 0;
+        int32_t n = sscanf(tmp, "%d-%d-%d %d:%d:%d", &y, &mo, &d, &h, &mi, &sec);
+        if (n != 3 && n != 6) {
             SET_PTR(err, ERR_FAILED);
+            return 0;
         }
-        return ts;
+        uint32_t usec = 0;
+        const char *dot = strchr(tmp, '.');
+        if (NULL != dot) {
+            dot++;
+            int32_t mult = 100000;
+            for (int32_t i = 0; i < 6 && dot[i] >= '0' && dot[i] <= '9'; i++, mult /= 10) {
+                usec += (uint32_t)((dot[i] - '0') * mult);
+            }
+        }
+        struct tm dt = { 0 };
+        dt.tm_year = y - 1900;
+        dt.tm_mon  = mo - 1;
+        dt.tm_mday = d;
+        dt.tm_hour = h;
+        dt.tm_min  = mi;
+        dt.tm_sec  = sec;
+        time_t ts = mktime(&dt);
+        if ((time_t)-1 == ts) {
+            SET_PTR(err, ERR_FAILED);
+            return 0;
+        }
+        return (int64_t)ts * 1000000LL + usec;
     } else {
         // 二进制协议：长度前缀 0=零值 4=仅日期 7=日期+时间 11=含微秒
         if (4 != row->val.lens && 7 != row->val.lens && 11 != row->val.lens) {
@@ -305,10 +326,11 @@ uint64_t mysql_reader_datetime(mysql_reader_ctx *reader, const char *name, int32
             SET_PTR(err, ERR_FAILED);
             return 0;
         }
-        return (uint64_t)ts;
+        uint32_t usec = (11 == row->val.lens) ? (uint32_t)binary_get_integer(&breader, 4, 1) : 0;
+        return (int64_t)ts * 1000000LL + usec;
     }
 }
-int32_t mysql_reader_time(mysql_reader_ctx *reader, const char *name, struct tm *time, int32_t *err) {
+int32_t mysql_reader_time(mysql_reader_ctx *reader, const char *name, struct tm *time, uint32_t *usec, int32_t *err) {
     SET_PTR(err, ERR_OK);
     mpack_field *field;
     mpack_row *row = _mysql_reader_row(reader, name, &field, err);
@@ -319,47 +341,45 @@ int32_t mysql_reader_time(mysql_reader_ctx *reader, const char *name, struct tm 
         SET_PTR(err, ERR_FAILED);
         return 0;
     }
-    if (MYSQL_TYPE_TIME != field->type) {
+    if (MYSQL_TYPE_TIME != field->type
+        && MYSQL_TYPE_TIME2 != field->type) {
         SET_PTR(err, ERR_FAILED);
         LOG_WARN("does not match required data type.");
         return 0;
     }
     int32_t is_negative = 0;
     *time = (struct tm) { 0 };
+    *usec = 0;
     if (MPACK_QUERY == reader->pack_type) {
-        // 文本协议：按 "HH:MM:SS" 或 "-HHH:MM:SS" 格式解析时间字符串
-        char tmp[64];
+        char tmp[48];
         if (row->val.lens >= sizeof(tmp)) {
             SET_PTR(err, ERR_FAILED);
-            LOG_WARN("parse failed.");
             return 0;
         }
-        if (row->val.lens > 0) {
-            memcpy(tmp, row->val.data, row->val.lens);
-        }
+        memcpy(tmp, row->val.data, row->val.lens);
         tmp[row->val.lens] = '\0';
-        char *end;
-        int32_t val = strtol(tmp, &end, 10);
-        if (val < 0) {
+        char *p = tmp;
+        if ('-' == *p) {
             is_negative = 1;
-            // 先转 uint32 取反避免 signed overflow UB；MySQL TIME 上限 838:59:59，
-            // INT32_MIN 实际不可达，本转换为严格 C11 §6.5p5 合规
-            val = -(int32_t)(uint32_t)val;
+            p++;
         }
-        if (':' != *end) {
+        int32_t h = 0, mi = 0, sec = 0;
+        if (3 != sscanf(p, "%d:%d:%d", &h, &mi, &sec)) {
             SET_PTR(err, ERR_FAILED);
-            LOG_WARN("parse failed.");
             return 0;
         }
-        time->tm_mday = val / 24;
-        time->tm_hour = val % 24;
-        time->tm_min = strtol(end + 1, &end, 10);
-        if (':' != *end) {
-            SET_PTR(err, ERR_FAILED);
-            LOG_WARN("parse failed.");
-            return 0;
+        const char *dot = strchr(p, '.');
+        if (NULL != dot) {
+            dot++;
+            int32_t mult = 100000;
+            for (int32_t i = 0; i < 6 && dot[i] >= '0' && dot[i] <= '9'; i++, mult /= 10) {
+                *usec += (uint32_t)((dot[i] - '0') * mult);
+            }
         }
-        time->tm_sec = strtol(end + 1, &end, 10);
+        time->tm_mday = h / 24;
+        time->tm_hour = h % 24;
+        time->tm_min  = mi;
+        time->tm_sec  = sec;
     } else {
         // 二进制协议：长度前缀 0=零值(上方已拦截) 8=天+时分秒 12=含微秒
         if (8 != row->val.lens && 12 != row->val.lens) {
@@ -373,6 +393,9 @@ int32_t mysql_reader_time(mysql_reader_ctx *reader, const char *name, struct tm 
         time->tm_hour = (int32_t)binary_get_int8(&breader);
         time->tm_min = (int32_t)binary_get_int8(&breader);
         time->tm_sec = (int32_t)binary_get_int8(&breader);
+        if (12 == row->val.lens) {
+            *usec = (uint32_t)binary_get_integer(&breader, 4, 1);
+        }
     }
     return is_negative;
 }

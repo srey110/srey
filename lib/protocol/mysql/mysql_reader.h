@@ -84,16 +84,17 @@ char *mysql_reader_string(mysql_reader_ctx *reader, const char *name, size_t *le
 /// <param name="reader">mysql_reader_ctx</param>
 /// <param name="name">字段</param>
 /// <param name="err">ERR_OK 成功  ERR_FAILED 失败 1 nil</param>
-/// <returns>时间戳</returns>
-uint64_t mysql_reader_datetime(mysql_reader_ctx *reader, const char *name, int32_t *err);
+/// <returns>Unix 微秒时间戳（秒×1000000＋微秒）</returns>
+int64_t mysql_reader_datetime(mysql_reader_ctx *reader, const char *name, int32_t *err);
 /// <summary>
 /// 根据名称获取字段时间值
 /// </summary>
 /// <param name="reader">mysql_reader_ctx</param>
 /// <param name="name">字段</param>
-/// <param name="time">struct tm</param>
+/// <param name="time">struct tm（tm_mday 存天数）</param>
+/// <param name="usec">微秒分量（0~999999）</param>
 /// <param name="err">ERR_OK 成功  ERR_FAILED 失败 1 nil</param>
 /// <returns>1负 0 正</returns>
-int32_t mysql_reader_time(mysql_reader_ctx *reader, const char *name, struct tm *time, int32_t *err);
+int32_t mysql_reader_time(mysql_reader_ctx *reader, const char *name, struct tm *time, uint32_t *usec, int32_t *err);
 
 #endif//MYSQL_READER_H_

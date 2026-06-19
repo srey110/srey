@@ -242,7 +242,9 @@ int32_t _mpack_parse_binary_row(mysql_reader_ctx *reader, binary_ctx *breader) {
             break;
         case MYSQL_TYPE_DATE:
         case MYSQL_TYPE_DATETIME:
+        case MYSQL_TYPE_DATETIME2:
         case MYSQL_TYPE_TIMESTAMP:
+        case MYSQL_TYPE_TIMESTAMP2:
             row[i].val.lens = (size_t)binary_get_uint8(breader);
             if (0 != row[i].val.lens && 4 != row[i].val.lens
                 && 7 != row[i].val.lens && 11 != row[i].val.lens) {
@@ -251,6 +253,7 @@ int32_t _mpack_parse_binary_row(mysql_reader_ctx *reader, binary_ctx *breader) {
             }
             break;
         case MYSQL_TYPE_TIME:
+        case MYSQL_TYPE_TIME2:
             row[i].val.lens = (size_t)binary_get_uint8(breader);
             if (0 != row[i].val.lens && 8 != row[i].val.lens && 12 != row[i].val.lens) {
                 FREE(row);

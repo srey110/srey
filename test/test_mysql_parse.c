@@ -299,7 +299,7 @@ static void test_mysql_reader_datetime_binary(CuTest *tc) {
     buf_ctx c[1] = { { .data = p, .lens = 7 } };
     _reader_push_row(r, p, c, NULL);
     int32_t err;
-    uint64_t ts = mysql_reader_datetime(r, "dt", &err);
+    int64_t ts = mysql_reader_datetime(r, "dt", &err);
     CuAssertIntEquals(tc, ERR_OK, err);
     CuAssertTrue(tc, ts > 0);
     mysql_reader_free(r);
@@ -329,14 +329,36 @@ static void test_mysql_reader_time(CuTest *tc) {
         buf_ctx c[1] = { { .data = p, .lens = strlen(s) } };
         _reader_push_row(r, p, c, NULL);
         struct tm t;
+        uint32_t usec = 0;
         ZERO(&t, sizeof(t));
         int32_t err;
-        int32_t neg = mysql_reader_time(r, "t", &t, &err);
+        int32_t neg = mysql_reader_time(r, "t", &t, &usec, &err);
         CuAssertIntEquals(tc, ERR_OK, err);
         CuAssertIntEquals(tc, 0, neg);
         CuAssertIntEquals(tc, 12, t.tm_hour);
         CuAssertIntEquals(tc, 34, t.tm_min);
         CuAssertIntEquals(tc, 56, t.tm_sec);
+        CuAssertIntEquals(tc, 0, (int32_t)usec);
+        mysql_reader_free(r);
+    }
+    // 文本路径含微秒
+    {
+        mysql_reader_ctx *r = _reader_new(MPACK_QUERY, 1, names, types);
+        char *p;
+        MALLOC(p, 24);
+        const char *s = "12:34:56.123456";
+        memcpy(p, s, strlen(s));
+        buf_ctx c[1] = { { .data = p, .lens = strlen(s) } };
+        _reader_push_row(r, p, c, NULL);
+        struct tm t;
+        uint32_t usec = 0;
+        ZERO(&t, sizeof(t));
+        int32_t err;
+        int32_t neg = mysql_reader_time(r, "t", &t, &usec, &err);
+        CuAssertIntEquals(tc, ERR_OK, err);
+        CuAssertIntEquals(tc, 0, neg);
+        CuAssertIntEquals(tc, 56, t.tm_sec);
+        CuAssertIntEquals(tc, 123456, (int32_t)usec);
         mysql_reader_free(r);
     }
     // 文本路径负值
@@ -349,9 +371,10 @@ static void test_mysql_reader_time(CuTest *tc) {
         buf_ctx c[1] = { { .data = p, .lens = strlen(s) } };
         _reader_push_row(r, p, c, NULL);
         struct tm t;
+        uint32_t usec = 0;
         ZERO(&t, sizeof(t));
         int32_t err;
-        int32_t neg = mysql_reader_time(r, "t", &t, &err);
+        int32_t neg = mysql_reader_time(r, "t", &t, &usec, &err);
         CuAssertIntEquals(tc, ERR_OK, err);
         CuAssertIntEquals(tc, 1, neg);
         mysql_reader_free(r);
@@ -370,15 +393,17 @@ static void test_mysql_reader_time(CuTest *tc) {
         buf_ctx c[1] = { { .data = p, .lens = 8 } };
         _reader_push_row(r, p, c, NULL);
         struct tm t;
+        uint32_t usec = 0;
         ZERO(&t, sizeof(t));
         int32_t err;
-        int32_t neg = mysql_reader_time(r, "t", &t, &err);
+        int32_t neg = mysql_reader_time(r, "t", &t, &usec, &err);
         CuAssertIntEquals(tc, ERR_OK, err);
         CuAssertIntEquals(tc, 1, neg);
         CuAssertIntEquals(tc, 2, t.tm_mday);
         CuAssertIntEquals(tc, 5, t.tm_hour);
         CuAssertIntEquals(tc, 30, t.tm_min);
         CuAssertIntEquals(tc, 45, t.tm_sec);
+        CuAssertIntEquals(tc, 0, (int32_t)usec);
         mysql_reader_free(r);
     }
 }
@@ -394,8 +419,9 @@ static void test_mysql_reader_binary_lens(CuTest *tc) {
     mysql_reader_ctx *r;
     float f;
     double dd;
-    uint64_t ts;
+    int64_t ts;
     struct tm tmv;
+    uint32_t usec;
     int32_t neg;
 
     // FLOAT 二进制恰 4 字节 → OK
@@ -452,7 +478,7 @@ static void test_mysql_reader_binary_lens(CuTest *tc) {
     CuAssertTrue(tc, ts > 0);
     mysql_reader_free(r);
 
-    // DATETIME 二进制 11 字节（含微秒，微秒被忽略）→ OK
+    // DATETIME 二进制 11 字节（含微秒）→ OK，微秒纳入返回值
     r = _reader_new(MPACK_STMT_EXECUTE, 1, nm, (uint8_t[]){ MYSQL_TYPE_DATETIME });
     MALLOC(p, 11);
     pack_integer(p, 2024, 2, 1);
@@ -463,6 +489,7 @@ static void test_mysql_reader_binary_lens(CuTest *tc) {
     ts = mysql_reader_datetime(r, "v", &err);
     CuAssertIntEquals(tc, ERR_OK, err);
     CuAssertTrue(tc, ts > 0);
+    CuAssertTrue(tc, 123456 == (int32_t)(ts % 1000000));
     mysql_reader_free(r);
 
     // DATETIME 二进制畸形长度 5 → ERR_FAILED
@@ -476,7 +503,7 @@ static void test_mysql_reader_binary_lens(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_FAILED, err);
     mysql_reader_free(r);
 
-    // TIME 二进制 12 字节（含微秒）→ OK，微秒不读
+    // TIME 二进制 12 字节（含微秒）→ OK，微秒纳入返回值
     r = _reader_new(MPACK_STMT_EXECUTE, 1, tnm, (uint8_t[]){ MYSQL_TYPE_TIME });
     MALLOC(p, 12);
     p[0] = 0;
@@ -486,11 +513,15 @@ static void test_mysql_reader_binary_lens(CuTest *tc) {
     c[0].data = p; c[0].lens = 12;
     _reader_push_row(r, p, c, NULL);
     ZERO(&tmv, sizeof(tmv));
-    neg = mysql_reader_time(r, "t", &tmv, &err);
+    usec = 0;
+    neg = mysql_reader_time(r, "t", &tmv, &usec, &err);
     CuAssertIntEquals(tc, ERR_OK, err);
     CuAssertIntEquals(tc, 0, neg);
     CuAssertIntEquals(tc, 3, tmv.tm_mday);
     CuAssertIntEquals(tc, 8, tmv.tm_hour);
+    CuAssertIntEquals(tc, 15, tmv.tm_min);
+    CuAssertIntEquals(tc, 30, tmv.tm_sec);
+    CuAssertIntEquals(tc, 654321, (int32_t)usec);
     mysql_reader_free(r);
 
     // TIME 二进制畸形长度 7 → ERR_FAILED
@@ -502,7 +533,8 @@ static void test_mysql_reader_binary_lens(CuTest *tc) {
     c[0].data = p; c[0].lens = 7;
     _reader_push_row(r, p, c, NULL);
     ZERO(&tmv, sizeof(tmv));
-    (void)mysql_reader_time(r, "t", &tmv, &err);
+    usec = 0;
+    (void)mysql_reader_time(r, "t", &tmv, &usec, &err);
     CuAssertIntEquals(tc, ERR_FAILED, err);
     mysql_reader_free(r);
 }
@@ -724,6 +756,114 @@ static void test_mysql_binary_row_temporal_invalid_len(CuTest *tc) {
     }
 }
 
+// mysql_reader_datetime 文本路径：DATE-only(n=3)、DATETIME(n=6)、含微秒、格式错误
+static void test_mysql_reader_datetime_text(CuTest *tc) {
+    char names[1][64] = { "v" };
+    int32_t err;
+    int64_t ts;
+    mysql_reader_ctx *r;
+    char *p;
+    buf_ctx c[1];
+    // DATE-only "YYYY-MM-DD"（n=3）→ 微秒余数为 0
+    r = _reader_new(MPACK_QUERY, 1, names, (uint8_t[]){ MYSQL_TYPE_DATE });
+    MALLOC(p, 16);
+    memcpy(p, "2024-06-15", 10);
+    c[0].data = p; c[0].lens = 10;
+    _reader_push_row(r, p, c, NULL);
+    ts = mysql_reader_datetime(r, "v", &err);
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertTrue(tc, ts > 0);
+    CuAssertIntEquals(tc, 0, (int32_t)(ts % 1000000));
+    mysql_reader_free(r);
+    // DATETIME 无微秒（n=6）→ 微秒余数为 0
+    r = _reader_new(MPACK_QUERY, 1, names, (uint8_t[]){ MYSQL_TYPE_DATETIME });
+    MALLOC(p, 32);
+    memcpy(p, "2024-06-15 10:20:30", 19);
+    c[0].data = p; c[0].lens = 19;
+    _reader_push_row(r, p, c, NULL);
+    ts = mysql_reader_datetime(r, "v", &err);
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertTrue(tc, ts > 0);
+    CuAssertIntEquals(tc, 0, (int32_t)(ts % 1000000));
+    mysql_reader_free(r);
+    // DATETIME 含微秒 → 微秒余数 = 123456
+    r = _reader_new(MPACK_QUERY, 1, names, (uint8_t[]){ MYSQL_TYPE_DATETIME });
+    MALLOC(p, 32);
+    memcpy(p, "2024-06-15 10:20:30.123456", 26);
+    c[0].data = p; c[0].lens = 26;
+    _reader_push_row(r, p, c, NULL);
+    ts = mysql_reader_datetime(r, "v", &err);
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertTrue(tc, ts > 0);
+    CuAssertIntEquals(tc, 123456, (int32_t)(ts % 1000000));
+    mysql_reader_free(r);
+    // 格式错误 → ERR_FAILED
+    r = _reader_new(MPACK_QUERY, 1, names, (uint8_t[]){ MYSQL_TYPE_DATETIME });
+    MALLOC(p, 16);
+    memcpy(p, "not-a-date", 10);
+    c[0].data = p; c[0].lens = 10;
+    _reader_push_row(r, p, c, NULL);
+    (void)mysql_reader_datetime(r, "v", &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    mysql_reader_free(r);
+}
+// DATETIME2/TIMESTAMP2/TIME2 二进制路径与基类型相同解码逻辑
+static void test_mysql_reader_datetime2_types(CuTest *tc) {
+    char nm[1][64] = { "v" };
+    char tnm[1][64] = { "t" };
+    int32_t err;
+    int64_t ts;
+    struct tm tmv;
+    uint32_t usec;
+    int32_t neg;
+    char *p;
+    buf_ctx c[1];
+    mysql_reader_ctx *r;
+    // DATETIME2 二进制 7 字节 → 与 DATETIME 相同解码路径，微秒余数 0
+    r = _reader_new(MPACK_STMT_EXECUTE, 1, nm, (uint8_t[]){ MYSQL_TYPE_DATETIME2 });
+    MALLOC(p, 7);
+    pack_integer(p, 2024, 2, 1);
+    p[2] = 3; p[3] = 10; p[4] = 14; p[5] = 30; p[6] = 45;
+    c[0].data = p; c[0].lens = 7;
+    _reader_push_row(r, p, c, NULL);
+    ts = mysql_reader_datetime(r, "v", &err);
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertTrue(tc, ts > 0);
+    CuAssertIntEquals(tc, 0, (int32_t)(ts % 1000000));
+    mysql_reader_free(r);
+    // TIMESTAMP2 二进制 11 字节（含微秒）→ 微秒余数 = 999999
+    r = _reader_new(MPACK_STMT_EXECUTE, 1, nm, (uint8_t[]){ MYSQL_TYPE_TIMESTAMP2 });
+    MALLOC(p, 11);
+    pack_integer(p, 2025, 2, 1);
+    p[2] = 1; p[3] = 1; p[4] = 0; p[5] = 0; p[6] = 0;
+    pack_integer(p + 7, 999999, 4, 1);
+    c[0].data = p; c[0].lens = 11;
+    _reader_push_row(r, p, c, NULL);
+    ts = mysql_reader_datetime(r, "v", &err);
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertTrue(tc, ts > 0);
+    CuAssertIntEquals(tc, 999999, (int32_t)(ts % 1000000));
+    mysql_reader_free(r);
+    // TIME2 二进制 8 字节 → 与 TIME 相同解码路径
+    r = _reader_new(MPACK_STMT_EXECUTE, 1, tnm, (uint8_t[]){ MYSQL_TYPE_TIME2 });
+    MALLOC(p, 8);
+    p[0] = 0;
+    pack_integer(p + 1, 1, 4, 1);
+    p[5] = 2; p[6] = 3; p[7] = 4;
+    c[0].data = p; c[0].lens = 8;
+    _reader_push_row(r, p, c, NULL);
+    ZERO(&tmv, sizeof(tmv));
+    usec = 0;
+    neg = mysql_reader_time(r, "t", &tmv, &usec, &err);
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertIntEquals(tc, 0, neg);
+    CuAssertIntEquals(tc, 1, tmv.tm_mday);
+    CuAssertIntEquals(tc, 2, tmv.tm_hour);
+    CuAssertIntEquals(tc, 3, tmv.tm_min);
+    CuAssertIntEquals(tc, 4, tmv.tm_sec);
+    CuAssertIntEquals(tc, 0, (int32_t)usec);
+    mysql_reader_free(r);
+}
 void test_mysql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mysql_reader_init);
     SUITE_ADD_TEST(suite, test_mysql_reader_cursor);
@@ -741,4 +881,6 @@ void test_mysql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mysql_payload);
     SUITE_ADD_TEST(suite, test_mysql_stmt_init);
     SUITE_ADD_TEST(suite, test_mysql_binary_row_temporal_invalid_len);
+    SUITE_ADD_TEST(suite, test_mysql_reader_datetime_text);
+    SUITE_ADD_TEST(suite, test_mysql_reader_datetime2_types);
 }

@@ -778,11 +778,12 @@ static void _coro_fork_wait_stub(task_ctx *task, void *arg) {
         // 与 _coro_mco_resume 同模式：mco_resume 前必须把 coctx->curco 同步为 waiter，
         // 否则 waiter 醒来后 _coro_wait/_coro_get_mco 会用错协程标识进 cosess
         coro_ctx *coctx = (coro_ctx *)task->arg;
-        coctx->curco = b->waiter;
-        mco_result rtn = mco_resume(b->waiter);
+        mco_coro *waiter = b->waiter;// b 在 W 协程栈内，mco_destroy(W) 后释放整块，须先缓存 waiter 防 SIGBUS
+        coctx->curco = waiter;
+        mco_result rtn = mco_resume(waiter);
         ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
-        if (MCO_DEAD == mco_status(b->waiter)) {// 池满导致 _coro_mco_cb 返回，协程已死亡，须在此释放
-            mco_destroy(b->waiter);
+        if (MCO_DEAD == mco_status(waiter)) {
+            mco_destroy(waiter);// 池满导致 _coro_mco_cb 返回，协程已死亡，须在此释放
         }
     }
 }

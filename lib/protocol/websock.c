@@ -212,7 +212,7 @@ static int32_t _websock_handshake_server(ev_ctx *ev, SOCKET fd, uint64_t skid, i
         return ERR_FAILED;
     }
     //签名base64校验
-    //缓冲区按 B64DE_SIZE(B64EN_SIZE(SIGN_KEY_LENS))=19 字节分配，避免恶意客户端传入
+    //缓冲区按 B64DE_SIZE(B64EN_SIZE(SIGN_KEY_LENS))=22 字节分配，避免恶意客户端传入
     //合法长度区间内（lens<25）但解码字节数 >SIGN_KEY_LENS 时 bs64_decode 在校验返回值前写越界
     char key[B64DE_SIZE(B64EN_SIZE(SIGN_KEY_LENS))];
     if (SIGN_KEY_LENS != bs64_decode(signstr->value.data, signstr->value.lens, key)) {
