@@ -17,10 +17,13 @@ static void test_bson_primitives(CuTest *tc) {
     char oid[BSON_OID_LENS];
     char bindata[3];
     int32_t err;
+    bson_ctx bson;
+    char *got_oid;
+    bson_subtype subtype;
+    size_t blens;
+    char *bdata;
     memset(oid, 0xAB, BSON_OID_LENS);
     bindata[0] = 0x01; bindata[1] = 0x02; bindata[2] = 0x03;
-
-    bson_ctx bson;
     bson_init(&bson, NULL, 0);
     bson_append_double(&bson, "pi", 3.14);
     bson_append_utf8(&bson, "name", "hello");
@@ -81,7 +84,7 @@ static void test_bson_primitives(CuTest *tc) {
     CuAssertTrue(tc, bson_iter_next(&iter));
     CuAssertIntEquals(tc, BSON_OID, iter.type);
     CuAssertStrEquals(tc, "_id", iter.key);
-    char *got_oid = bson_iter_oid(&iter, &err);
+    got_oid = bson_iter_oid(&iter, &err);
     CuAssertIntEquals(tc, ERR_OK, err);
     CuAssertTrue(tc, 0 == memcmp(got_oid, oid, BSON_OID_LENS));
 
@@ -89,9 +92,9 @@ static void test_bson_primitives(CuTest *tc) {
     CuAssertTrue(tc, bson_iter_next(&iter));
     CuAssertIntEquals(tc, BSON_BINARY, iter.type);
     CuAssertStrEquals(tc, "data", iter.key);
-    bson_subtype subtype = BSON_SUBTYPE_BINARY;
-    size_t blens = 0;
-    char *bdata = bson_iter_binary(&iter, &subtype, &blens, &err);
+    subtype = BSON_SUBTYPE_BINARY;
+    blens = 0;
+    bdata = bson_iter_binary(&iter, &subtype, &blens, &err);
     CuAssertIntEquals(tc, ERR_OK, err);
     CuAssertIntEquals(tc, BSON_SUBTYPE_BINARY, (int32_t)subtype);
     CuAssertTrue(tc, 3 == blens);
@@ -147,6 +150,14 @@ static void test_bson_iter_no_next(CuTest *tc) {
 static void test_bson_nested(CuTest *tc) {
     int32_t err;
     bson_ctx bson;
+    size_t dlens;
+    char *ddata;
+    bson_ctx sub;
+    bson_iter sub_iter;
+    size_t alens;
+    char *adata;
+    bson_ctx asub;
+    bson_iter a_iter;
     bson_init(&bson, NULL, 0);
 
     // 嵌套文档
@@ -170,12 +181,10 @@ static void test_bson_nested(CuTest *tc) {
     CuAssertTrue(tc, bson_iter_next(&iter));
     CuAssertIntEquals(tc, BSON_DOCUMENT, iter.type);
     CuAssertStrEquals(tc, "meta", iter.key);
-    size_t dlens = 0;
-    char *ddata = bson_iter_document(&iter, &dlens, &err);
+    dlens = 0;
+    ddata = bson_iter_document(&iter, &dlens, &err);
     CuAssertIntEquals(tc, ERR_OK, err);
 
-    bson_ctx sub;
-    bson_iter sub_iter;
     bson_init(&sub, ddata, dlens);
     bson_iter_init(&sub_iter, &sub);
     CuAssertTrue(tc, bson_iter_next(&sub_iter));
@@ -190,12 +199,10 @@ static void test_bson_nested(CuTest *tc) {
     CuAssertTrue(tc, bson_iter_next(&iter));
     CuAssertIntEquals(tc, BSON_ARRAY, iter.type);
     CuAssertStrEquals(tc, "tags", iter.key);
-    size_t alens = 0;
-    char *adata = bson_iter_array(&iter, &alens, &err);
+    alens = 0;
+    adata = bson_iter_array(&iter, &alens, &err);
     CuAssertIntEquals(tc, ERR_OK, err);
 
-    bson_ctx asub;
-    bson_iter a_iter;
     bson_init(&asub, adata, alens);
     bson_iter_init(&a_iter, &asub);
     CuAssertTrue(tc, bson_iter_next(&a_iter));
@@ -218,14 +225,13 @@ static void test_bson_nested(CuTest *tc) {
 static void test_bson_find(CuTest *tc) {
     int32_t err;
     bson_ctx bson;
+    bson_iter result;
     bson_init(&bson, NULL, 0);
     bson_append_int32(&bson, "a", 1);
     bson_append_document_begain(&bson, "b");
     bson_append_int32(&bson, "c", 42);
     bson_append_end(&bson);
     bson_append_end(&bson);
-
-    bson_iter result;
 
     // 顶层查找
     BSON_ITER_FROM(bson, rd1, iter1);
@@ -250,8 +256,12 @@ static void test_bson_find(CuTest *tc) {
  * bson_complete / bson_cat
  * ======================================================================= */
 static void test_bson_complete_cat(CuTest *tc) {
-    // 未完成时 complete=false
     bson_ctx bson;
+    bson_ctx src;
+    bson_ctx dst;
+    int32_t err;
+    bson_iter result;
+    // 未完成时 complete=false
     bson_init(&bson, NULL, 0);
     bson_append_int32(&bson, "n", 1);
     CuAssertTrue(tc, !bson_complete(&bson));
@@ -259,20 +269,16 @@ static void test_bson_complete_cat(CuTest *tc) {
     CuAssertTrue(tc, bson_complete(&bson));
 
     // bson_cat：将另一个已完成文档的字段合并进来
-    bson_ctx src;
     bson_init(&src, NULL, 0);
     bson_append_utf8(&src, "tag", "x");
     bson_append_end(&src);
 
-    bson_ctx dst;
     bson_init(&dst, NULL, 0);
     bson_cat(&dst, BSON_DOC(&src));
     bson_append_end(&dst);
     CuAssertTrue(tc, bson_complete(&dst));
 
     // 验证合并后有 "tag" 字段
-    int32_t err;
-    bson_iter result;
     BSON_ITER_FROM(dst, rd, iter);
     CuAssertTrue(tc, ERR_OK == bson_iter_find(&iter, "tag", &result));
     CuAssertStrEquals(tc, "x", bson_iter_utf8(&result, &err));
@@ -289,6 +295,10 @@ static void test_bson_complete_cat(CuTest *tc) {
 static void test_bson_extra_types(CuTest *tc) {
     int32_t err;
     bson_ctx bson;
+    char *opts;
+    const char *pat;
+    uint32_t inc;
+    uint32_t ts_val;
     bson_init(&bson, NULL, 0);
     bson_append_regex(&bson, "re", "^foo$", "i");
     bson_append_jscode(&bson, "js", "function() {}");
@@ -306,8 +316,8 @@ static void test_bson_extra_types(CuTest *tc) {
     CuAssertTrue(tc, bson_iter_next(&iter));
     CuAssertIntEquals(tc, BSON_REGEX, iter.type);
     CuAssertStrEquals(tc, "re", iter.key);
-    char *opts = NULL;
-    const char *pat = bson_iter_regex(&iter, &opts, &err);
+    opts = NULL;
+    pat = bson_iter_regex(&iter, &opts, &err);
     CuAssertIntEquals(tc, ERR_OK, err);
     CuAssertStrEquals(tc, "^foo$", pat);
     CuAssertStrEquals(tc, "i", opts);
@@ -329,8 +339,8 @@ static void test_bson_extra_types(CuTest *tc) {
     CuAssertTrue(tc, bson_iter_next(&iter));
     CuAssertIntEquals(tc, BSON_TIMESTAMP, iter.type);
     CuAssertStrEquals(tc, "ts", iter.key);
-    uint32_t inc = 0;
-    uint32_t ts_val = bson_iter_timestamp(&iter, &inc, &err);
+    inc = 0;
+    ts_val = bson_iter_timestamp(&iter, &inc, &err);
     CuAssertIntEquals(tc, ERR_OK, err);
     CuAssertTrue(tc, 1700000000u == ts_val);
     CuAssertTrue(tc, 7u == inc);
@@ -358,8 +368,13 @@ static void test_bson_extra_types(CuTest *tc) {
  * BSON_MAX_DEPTH = 18，depth > 18 拒绝
  * ======================================================================= */
 static void test_bson_check_depth(CuTest *tc) {
-    /* 平坦文档：深度 0，应允许 */
     bson_ctx flat;
+    bson_ctx near_max;
+    char buf[20][1024];
+    size_t blens[20];
+    size_t total;
+    int i;
+    /* 平坦文档：深度 0，应允许 */
     bson_init(&flat, NULL, 0);
     bson_append_int32(&flat, "a", 1);
     bson_append_int32(&flat, "b", 2);
@@ -368,9 +383,7 @@ static void test_bson_check_depth(CuTest *tc) {
     BSON_FREE(&flat);
 
     /* 接近上限：17 层嵌套（含根共 18 层）应允许 */
-    bson_ctx near_max;
     bson_init(&near_max, NULL, 0);
-    int i;
     for (i = 0; i < 17; i++) {
         bson_append_document_begain(&near_max, "n");
     }
@@ -386,13 +399,11 @@ static void test_bson_check_depth(CuTest *tc) {
     /* 手工构造 20 层 BSON 触发 depth > BSON_MAX_DEPTH 的拒绝路径
      * 每层格式：[len:4 LE][0x03 type][key "x"][\0][子文档原始字节][\0 EOD]
      * 叶子：[5,0,0,0, 0]，共 5 字节 */
-    char buf[20][1024];
-    size_t blens[20];
     buf[0][0] = 5; buf[0][1] = 0; buf[0][2] = 0; buf[0][3] = 0; buf[0][4] = 0;
     blens[0] = 5;
     for (i = 1; i < 20; i++) {
         /* total = 4(len) + 1(type) + 2("x"+\0) + lens[i-1] + 1(EOD) */
-        size_t total = 4 + 1 + 2 + blens[i-1] + 1;
+        total = 4 + 1 + 2 + blens[i-1] + 1;
         buf[i][0] = (char)(total & 0xff);
         buf[i][1] = (char)((total >> 8) & 0xff);
         buf[i][2] = (char)((total >> 16) & 0xff);
@@ -413,6 +424,8 @@ static void test_bson_check_depth(CuTest *tc) {
  * ======================================================================= */
 static void test_bson_tostring(CuTest *tc) {
     bson_ctx bson;
+    char *s;
+    char *s2;
     bson_init(&bson, NULL, 0);
     bson_append_int32(&bson, "age", 42);
     bson_append_utf8(&bson, "name", "alice");
@@ -430,7 +443,7 @@ static void test_bson_tostring(CuTest *tc) {
     bson_append_int64(&bson, "big", 1234567890123LL);
     bson_append_end(&bson);
 
-    char *s = bson_tostring(&bson);
+    s = bson_tostring(&bson);
     CuAssertPtrNotNull(tc, s);
     CuAssertTrue(tc, NULL != strstr(s, "age"));
     CuAssertTrue(tc, NULL != strstr(s, "name"));
@@ -443,7 +456,7 @@ static void test_bson_tostring(CuTest *tc) {
     FREE(s);
 
     /* bson_tostring2 接受原始 BSON 字节 */
-    char *s2 = bson_tostring2(BSON_DOC(&bson), BSON_DOC_LENS(&bson));
+    s2 = bson_tostring2(BSON_DOC(&bson), BSON_DOC_LENS(&bson));
     CuAssertPtrNotNull(tc, s2);
     CuAssertTrue(tc, NULL != strstr(s2, "alice"));
     FREE(s2);
@@ -456,18 +469,21 @@ static void test_bson_tostring(CuTest *tc) {
  * ======================================================================= */
 static void test_bson_misc(CuTest *tc) {
     size_t elen;
-    const char *empty = bson_empty(&elen);
+    const char *empty;
+    char a[BSON_OID_LENS], b[BSON_OID_LENS];
+    int all_zero;
+    int i;
+    empty = bson_empty(&elen);
     CuAssertPtrNotNull(tc, empty);
     CuAssertTrue(tc, 5 == elen);                   /* 4 字节长度 + 1 EOD */
     CuAssertIntEquals(tc, 5, (uint8_t)empty[0]);   /* len = 5 */
     CuAssertIntEquals(tc, 0, (uint8_t)empty[4]);   /* EOD */
 
     /* bson_oid：连续生成应递增；非全零 */
-    char a[BSON_OID_LENS], b[BSON_OID_LENS];
     bson_oid(a);
     bson_oid(b);
-    int all_zero = 1;
-    for (int i = 0; i < BSON_OID_LENS; i++) {
+    all_zero = 1;
+    for (i = 0; i < BSON_OID_LENS; i++) {
         if (a[i] != 0) { all_zero = 0; break; }
     }
     CuAssertTrue(tc, !all_zero);
@@ -493,21 +509,21 @@ static void test_bson_misc(CuTest *tc) {
 static void test_bson_iter_neg_lens(CuTest *tc) {
     bson_ctx reader;
     bson_iter iter;
+    char neg[5] = {(char)0xFF, (char)0xFF, (char)0xFF, (char)0xFF, 0x00};
+    char smallbuf[5] = {0x03, 0x00, 0x00, 0x00, 0x00};
+    char oversize[5] = {0x64, 0x00, 0x00, 0x00, 0x00};
 
     // -1（0xFFFFFFFF）→ (size_t)(-1) = SIZE_MAX；修复前无限遍历
-    char neg[5] = {(char)0xFF, (char)0xFF, (char)0xFF, (char)0xFF, 0x00};
     bson_init(&reader, neg, 5);
     bson_iter_init(&iter, &reader);
     CuAssertTrue(tc, !bson_iter_next(&iter));
 
     // 长度 = 3（< 5，低于合法最小值）
-    char small[5] = {0x03, 0x00, 0x00, 0x00, 0x00};
-    bson_init(&reader, small, 5);
+    bson_init(&reader, smallbuf, 5);
     bson_iter_init(&iter, &reader);
     CuAssertTrue(tc, !bson_iter_next(&iter));
 
     // 长度声称 100，实际缓冲区只有 5 字节
-    char oversize[5] = {0x64, 0x00, 0x00, 0x00, 0x00};
     bson_init(&reader, oversize, 5);
     bson_iter_init(&iter, &reader);
     CuAssertTrue(tc, !bson_iter_next(&iter));
@@ -516,15 +532,15 @@ static void test_bson_iter_neg_lens(CuTest *tc) {
 // 深度临界：18 层（BSON_MAX_DEPTH=18）应允许，19 层拒绝
 // 现有 test_bson_check_depth 已覆盖 17/20 层，本测试精确卡边界
 static void test_bson_check_depth_boundary(CuTest *tc) {
-    // 复用 test_bson_check_depth 同样的手工 wire 构造方式
     char buf[20][1024];
     size_t blens[20];
+    size_t total;
+    int i;
     // 叶子（深度 0）: 空文档 5 字节
     buf[0][0] = 5; buf[0][1] = 0; buf[0][2] = 0; buf[0][3] = 0; buf[0][4] = 0;
     blens[0] = 5;
-    int i;
     for (i = 1; i < 20; i++) {
-        size_t total = 4 + 1 + 2 + blens[i-1] + 1;
+        total = 4 + 1 + 2 + blens[i-1] + 1;
         buf[i][0] = (char)(total & 0xff);
         buf[i][1] = (char)((total >> 8) & 0xff);
         buf[i][2] = (char)((total >> 16) & 0xff);
@@ -566,12 +582,13 @@ static void test_bson_iter_field_exceeds_doclens(CuTest *tc) {
 // 对应 lib/serial/bson.c _bson_dump switch 各 case
 static void test_bson_tostring_subtypes(CuTest *tc) {
     bson_ctx bson;
+    char bin[] = { 0x01, 0x02, 0x03, 0x04 };
+    char oid[BSON_OID_LENS];
+    char *s;
     bson_init(&bson, NULL, 0);
     bson_append_regex(&bson, "re", "abc.*", "im");
     bson_append_jscode(&bson, "code", "function(){return 1;}");
-    char bin[] = { 0x01, 0x02, 0x03, 0x04 };
     bson_append_binary(&bson, "bin", BSON_SUBTYPE_BINARY, bin, sizeof(bin));
-    char oid[BSON_OID_LENS];
     bson_oid(oid);
     bson_append_oid(&bson, "oid", oid);
     bson_append_timestamp(&bson, "ts", 0x12345678, 42);
@@ -580,7 +597,7 @@ static void test_bson_tostring_subtypes(CuTest *tc) {
     bson_append_maxkey(&bson, "max");
     bson_append_end(&bson);
 
-    char *s = bson_tostring(&bson);
+    s = bson_tostring(&bson);
     CuAssertPtrNotNull(tc, s);
     // 字段名一定都出现
     CuAssertTrue(tc, NULL != strstr(s, "re"));

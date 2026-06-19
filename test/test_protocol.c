@@ -979,18 +979,22 @@ static void test_redis_resp3_aggregate(CuTest *tc) {
     // SET: "~3\r\n+a\r\n+b\r\n+c\r\n"
     {
         buffer_ctx buf;
+        ud_cxt ud;
+        int32_t status;
+        redis_pack_ctx *pack;
+        redis_pack_ctx *p;
+        const char *exp[] = { "a", "b", "c" };
+        int i;
         buffer_init(&buf);
         _bput(&buf, "~3\r\n+a\r\n+b\r\n+c\r\n");
-        ud_cxt ud;
         ZERO(&ud, sizeof(ud));
-        int32_t status = PROT_INIT;
-        redis_pack_ctx *pack = redis_unpack(&buf, &ud, &status);
+        status = PROT_INIT;
+        pack = redis_unpack(&buf, &ud, &status);
         CuAssertPtrNotNull(tc, pack);
         CuAssertTrue(tc, RESP_SET == pack->prot);
         CuAssertTrue(tc, 3 == pack->nelem);
-        redis_pack_ctx *p = pack->next;
-        const char *exp[] = { "a", "b", "c" };
-        for (int i = 0; i < 3; i++) {
+        p = pack->next;
+        for (i = 0; i < 3; i++) {
             CuAssertPtrNotNull(tc, p);
             CuAssertTrue(tc, RESP_STRING == p->prot);
             CuAssertTrue(tc, 1 == p->len);
@@ -1005,12 +1009,14 @@ static void test_redis_resp3_aggregate(CuTest *tc) {
     // PUSHE（发布订阅推送）: ">2\r\n+pub\r\n+msg\r\n"
     {
         buffer_ctx buf;
+        ud_cxt ud;
+        int32_t status;
+        redis_pack_ctx *pack;
         buffer_init(&buf);
         _bput(&buf, ">2\r\n+pub\r\n+msg\r\n");
-        ud_cxt ud;
         ZERO(&ud, sizeof(ud));
-        int32_t status = PROT_INIT;
-        redis_pack_ctx *pack = redis_unpack(&buf, &ud, &status);
+        status = PROT_INIT;
+        pack = redis_unpack(&buf, &ud, &status);
         CuAssertPtrNotNull(tc, pack);
         CuAssertTrue(tc, RESP_PUSHE == pack->prot);
         CuAssertTrue(tc, 2 == pack->nelem);
@@ -1024,17 +1030,20 @@ static void test_redis_resp3_aggregate(CuTest *tc) {
     // MAP: "%2\r\n+k1\r\n:1\r\n+k2\r\n:2\r\n" — 2 个键值对 = 4 个子节点
     {
         buffer_ctx buf;
+        ud_cxt ud;
+        int32_t status;
+        redis_pack_ctx *pack;
+        redis_pack_ctx *p;
         buffer_init(&buf);
         _bput(&buf, "%2\r\n+k1\r\n:1\r\n+k2\r\n:2\r\n");
-        ud_cxt ud;
         ZERO(&ud, sizeof(ud));
-        int32_t status = PROT_INIT;
-        redis_pack_ctx *pack = redis_unpack(&buf, &ud, &status);
+        status = PROT_INIT;
+        pack = redis_unpack(&buf, &ud, &status);
         CuAssertPtrNotNull(tc, pack);
         CuAssertTrue(tc, RESP_MAP == pack->prot);
         CuAssertTrue(tc, 2 == pack->nelem);
         // 链表跟随 4 个节点: k1, 1, k2, 2
-        redis_pack_ctx *p = pack->next;
+        p = pack->next;
         CuAssertPtrNotNull(tc, p);
         CuAssertTrue(tc, 0 == memcmp(p->data, "k1", 2));
         p = p->next;
@@ -1057,16 +1066,19 @@ static void test_redis_resp3_aggregate(CuTest *tc) {
     // ATTR 后必须紧跟实际响应（这里是 +OK\r\n）才算完整
     {
         buffer_ctx buf;
+        ud_cxt ud;
+        int32_t status;
+        redis_pack_ctx *pack;
+        redis_pack_ctx *p;
         buffer_init(&buf);
         _bput(&buf, "|1\r\n+key\r\n+val\r\n+OK\r\n");
-        ud_cxt ud;
         ZERO(&ud, sizeof(ud));
-        int32_t status = PROT_INIT;
-        redis_pack_ctx *pack = redis_unpack(&buf, &ud, &status);
+        status = PROT_INIT;
+        pack = redis_unpack(&buf, &ud, &status);
         CuAssertPtrNotNull(tc, pack);
         CuAssertTrue(tc, RESP_ATTR == pack->prot);
         CuAssertTrue(tc, 1 == pack->nelem);
-        redis_pack_ctx *p = pack->next;
+        p = pack->next;
         CuAssertPtrNotNull(tc, p);
         CuAssertTrue(tc, 0 == memcmp(p->data, "key", 3));
         p = p->next;
@@ -1120,6 +1132,7 @@ static void test_url_parse(CuTest *tc) {
 static void test_url_parse_edges(CuTest *tc) {
     // 1. http://host?k=v —— host 仅含 "host"，query 被正确解析
     {
+        buf_ctx *p;
         char u[] = "http://host?k=v";
         url_ctx ctx;
         url_parse(&ctx, u, strlen(u), '/', 1);
@@ -1127,7 +1140,7 @@ static void test_url_parse_edges(CuTest *tc) {
         CuAssertTrue(tc, buf_compare(&ctx.host, "host", 4));
         CuAssertTrue(tc, 0 == ctx.port.lens);
         CuAssertTrue(tc, 0 == ctx.npath);
-        buf_ctx *p = url_get_param(&ctx, "k");
+        p = url_get_param(&ctx, "k");
         CuAssertPtrNotNull(tc, p);
         CuAssertTrue(tc, buf_compare(p, "v", 1));
     }
@@ -1143,6 +1156,7 @@ static void test_url_parse_edges(CuTest *tc) {
     }
     // 3. http://user@host?k=v —— userinfo + host + query 均正确切分
     {
+        buf_ctx *p;
         char u[] = "http://user@host?k=v";
         url_ctx ctx;
         url_parse(&ctx, u, strlen(u), '/', 1);
@@ -1150,7 +1164,7 @@ static void test_url_parse_edges(CuTest *tc) {
         CuAssertTrue(tc, 0 == ctx.psw.lens);
         CuAssertTrue(tc, buf_compare(&ctx.host, "host", 4));
         CuAssertTrue(tc, 0 == ctx.npath);
-        buf_ctx *p = url_get_param(&ctx, "k");
+        p = url_get_param(&ctx, "k");
         CuAssertPtrNotNull(tc, p);
         CuAssertTrue(tc, buf_compare(p, "v", 1));
     }
@@ -1165,12 +1179,13 @@ static void test_url_parse_edges(CuTest *tc) {
     }
     // 5. http://host:8080?k=v —— port + query（无 path 但含端口）
     {
+        buf_ctx *p;
         char u[] = "http://host:8080?k=v";
         url_ctx ctx;
         url_parse(&ctx, u, strlen(u), '/', 1);
         CuAssertTrue(tc, buf_compare(&ctx.host, "host", 4));
         CuAssertTrue(tc, buf_compare(&ctx.port, "8080", 4));
-        buf_ctx *p = url_get_param(&ctx, "k");
+        p = url_get_param(&ctx, "k");
         CuAssertPtrNotNull(tc, p);
         CuAssertTrue(tc, buf_compare(p, "v", 1));
     }
@@ -1185,12 +1200,13 @@ static void test_url_parse_edges(CuTest *tc) {
     }
     // 7. harbor 风格：/call?dst=N&type=M
     {
+        buf_ctx *p;
         char u[] = "/call?dst=123&type=4";
         url_ctx ctx;
         url_parse(&ctx, u, strlen(u), '/', 1);
         CuAssertTrue(tc, 1 == ctx.npath);
         CuAssertTrue(tc, buf_compare(&ctx.segs[0], "call", 4));
-        buf_ctx *p = url_get_param(&ctx, "dst");
+        p = url_get_param(&ctx, "dst");
         CuAssertPtrNotNull(tc, p);
         CuAssertTrue(tc, buf_compare(p, "123", 3));
         p = url_get_param(&ctx, "type");
@@ -1231,53 +1247,54 @@ static void test_url_parse_edges(CuTest *tc) {
 static void test_url_reorg_param(CuTest *tc) {
     url_ctx ctx;
     char buf[256];
+    char smallbuf[6];
+    char uribuf[256];
+    char u1[] = "http://host/path";
+    char u2[] = "http://host/path?k=v";
+    char u3[] = "http://host?k1=v1&k2=v2";
+    char u4[] = "/p?k=";
+    char u5[] = "/p?k=%2F";
+    char u6[] = "/p?k1=v1&k2=v2";
+    char u7[] = "ws://host/chat?token=abc&v=1";
     size_t n;
+    size_t plen;
 
     // 1. 无参数 → 返回 0，输出空串
-    char u1[] = "http://host/path";
     url_parse(&ctx, u1, strlen(u1), '/', 0);
     n = url_reorg_param(&ctx, buf, sizeof(buf));
     CuAssertIntEquals(tc, 0, (int)n);
     CuAssertStrEquals(tc, "", buf);
 
     // 2. 单参数
-    char u2[] = "http://host/path?k=v";
     url_parse(&ctx, u2, strlen(u2), '/', 0);
     n = url_reorg_param(&ctx, buf, sizeof(buf));
     CuAssertIntEquals(tc, 3, (int)n);
     CuAssertStrEquals(tc, "k=v", buf);
 
     // 3. 多参数
-    char u3[] = "http://host?k1=v1&k2=v2";
     url_parse(&ctx, u3, strlen(u3), '/', 0);
     url_reorg_param(&ctx, buf, sizeof(buf));
     CuAssertStrEquals(tc, "k1=v1&k2=v2", buf);
 
     // 4. 空值参数
-    char u4[] = "/p?k=";
     url_parse(&ctx, u4, strlen(u4), '/', 0);
     url_reorg_param(&ctx, buf, sizeof(buf));
     CuAssertStrEquals(tc, "k=", buf);
 
     // 5. decode=0：%2F 保留原始编码，不解码
-    char u5[] = "/p?k=%2F";
     url_parse(&ctx, u5, strlen(u5), '/', 0);
     url_reorg_param(&ctx, buf, sizeof(buf));
     CuAssertStrEquals(tc, "k=%2F", buf);
 
     // 6. 容量截断：cap=6 只放第一对 k1=v1（5字节+'\0'），截断 &k2=v2
-    char u6[] = "/p?k1=v1&k2=v2";
     url_parse(&ctx, u6, strlen(u6), '/', 0);
-    char small[6];
-    n = url_reorg_param(&ctx, small, sizeof(small));
-    CuAssertStrEquals(tc, "k1=v1", small);
+    n = url_reorg_param(&ctx, smallbuf, sizeof(smallbuf));
+    CuAssertStrEquals(tc, "k1=v1", smallbuf);
     CuAssertIntEquals(tc, 5, (int)n);
 
     // 7. url_reorg_path + url_reorg_param 组合：WebSocket URI 场景
-    char u7[] = "ws://host/chat?token=abc&v=1";
     url_parse(&ctx, u7, strlen(u7), '/', 0);
-    char uribuf[256];
-    size_t plen = url_reorg_path(&ctx, uribuf, sizeof(uribuf));
+    plen = url_reorg_path(&ctx, uribuf, sizeof(uribuf));
     CuAssertStrEquals(tc, "/chat", uribuf);
     uribuf[plen] = '?';
     url_reorg_param(&ctx, uribuf + plen + 1, sizeof(uribuf) - plen - 1);
