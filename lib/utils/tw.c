@@ -55,7 +55,7 @@ void tw_add(tw_ctx *ctx, const uint32_t timeout, tw_cb _cb, free_cb _freecb, ud_
         _cb(ud);
         return;
     }
-    tw_node_ctx *node = (tw_node_ctx *)pool_pop(&ctx->node_pool, NULL);
+    tw_node_ctx *node = (tw_node_ctx *)pool_pop(&ctx->node_pool, NULL, 0);
     COPY_UD(node->ud, ud);
     node->expires = timer_cur_ms(&ctx->timer) + timeout;
     node->_cb = _cb;
@@ -141,7 +141,7 @@ static void _tw_run(tw_ctx *ctx) {
         // 回调契约：不得将 &ud 存入生命周期超出本次调用的结构体。
         ud = pnode->ud;
         cb = pnode->_cb;
-        pool_push(&ctx->node_pool, pnode);
+        pool_push(&ctx->node_pool, pnode, 0);
         cb(&ud);
         pnode = pnext;
     }

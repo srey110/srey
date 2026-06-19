@@ -154,7 +154,9 @@ function ctx:connect()
     if not srey.wait_connect(fd, skid, SSL_NAME.NONE ~= self.sslname or nil) then
         return false   -- wait_connect 内已 close
     end
-    srey.sock_session(fd, skid, skid)
+    if not srey.sock_session(fd, skid, skid) then
+        return false
+    end
     self.fd, self.skid = fd, skid
     -- 从此处往后失败需 close fd 并重置 self 缓存
     local function _fail()
@@ -169,7 +171,9 @@ function ctx:connect()
     if not mgopack then return _fail() end
     if self.mongo:check_error(mgopack) < 0 then return _fail() end
     if self.user then
-        self.mongo:set_auth_status(fd, skid)
+        if not self.mongo:set_auth_status(fd, skid) then
+            return false --event 已关闭
+        end
         local authpack, authsize = self.mongo:pack_auth_first(self.authmod)
         if not authpack then return _fail() end
         if not srey.send(fd, skid, authpack, authsize, 0) then return _fail() end

@@ -5,6 +5,12 @@
 #include "utils/load_trend.h"
 #include "containers/fsqu.h"
 
+typedef enum pool_ops {
+    POOL_OP_NOCLEAR = 0x01,// 不执行 _pool_elclear
+    POOL_OP_NOFREE = 0x02,// 不执行 _pool_elfree
+    POOL_OP_NORESET= 0x04// 不执行 _pool_elreset
+}pool_ops;
+
 typedef void *(*_el_new)(void *args);// 新建
 typedef void (*_el_reset)(void *data, void *args);// 重置
 typedef void (*_el_clear)(void *data);// 清理
@@ -82,33 +88,33 @@ void pool_free(pool_ctx *pool);
 /// </summary>
 /// <param name="pool">pool_ctx</param>
 /// <param name="data">归还的对象指针</param>
-static inline void pool_push(pool_ctx *pool, void *data) {
-    _pool_elclear(pool, data);
-    if (ERR_OK == pool->_qu_trypush(pool->cur_qu, &data)) {
-        return;
+/// <param name="ops">pool_ops, 控制是否执行 clear free</param>
+/// <returns>ERR_OK 入池成功,ERR_FAILED 池满:含 POOL_OP_NOFREE 时对象仍归调用方,否则已被 _elfree 释放</returns>
+static inline int32_t pool_push(pool_ctx *pool, void *data, int32_t ops) {
+    if (!BIT_CHECK(ops, POOL_OP_NOCLEAR)) {
+        _pool_elclear(pool, data);
     }
-    _pool_elfree(pool, data);
-}
-/// <summary>
-/// 尝试归还对象到池:先 _elclear 再入池;池满返回 ERR_FAILED 且不释放对象,由调用方处置(区别于 pool_push 满则 _elfree)
-/// </summary>
-/// <param name="pool">pool_ctx</param>
-/// <param name="data">归还的对象指针</param>
-/// <returns>ERR_OK 入池成功,ERR_FAILED 池满未入池(对象仍归调用方)</returns>
-static inline int32_t pool_trypush(pool_ctx *pool, void *data) {
-    _pool_elclear(pool, data);
-    return pool->_qu_trypush(pool->cur_qu, &data);
+    if (ERR_OK == pool->_qu_trypush(pool->cur_qu, &data)) {
+        return ERR_OK;
+    }
+    if (!BIT_CHECK(ops, POOL_OP_NOFREE)) {
+        _pool_elfree(pool, data);
+    }
+    return ERR_FAILED;
 }
 /// <summary>
 /// 从池取一个对象:命中空闲则经 _elreset 复用,否则经 _elnew 新建
 /// </summary>
 /// <param name="pool">pool_ctx</param>
 /// <param name="args">透传给 _elreset / _elnew 的参数</param>
+/// <param name="ops">pool_ops, 控制是否执行 reset</param>
 /// <returns>对象指针;自定义 _elnew 失败时可能为 NULL</returns>
-static inline void *pool_pop(pool_ctx *pool, void *args) {
+static inline void *pool_pop(pool_ctx *pool, void *args, int32_t ops) {
     void *data = NULL;
     if (ERR_OK == pool->_qu_pop(pool->cur_qu, &data)) {
-        _pool_elreset(pool, data, args);
+        if (!BIT_CHECK(ops, POOL_OP_NORESET)) {
+            _pool_elreset(pool, data, args);
+        }
     } else {
         data = _pool_elnew(pool, args);
     }

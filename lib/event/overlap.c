@@ -285,7 +285,7 @@ static inline void _olp_close_tcp(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) 
     } else {
         _olp_call_close_cb(watcher->ev, oltcp);
         _evpub_sockel_remove(watcher, oltcp->ol_r.fd);
-        pool_push(&watcher->pool, &oltcp->ol_r);
+        pool_push(&watcher->pool, &oltcp->ol_r, 0);
     }
 }
 // 从socket读取数据到接收缓冲区并触发recv回调，成功后重新提交WSARecv
@@ -453,7 +453,7 @@ static void _olp_on_send_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) 
         if (BIT_CHECK(oltcp->status, STATUS_REMOVE)) {
             _olp_call_close_cb(watcher->ev, oltcp);
             _evpub_sockel_remove(watcher, oltcp->ol_r.fd);
-            pool_push(&watcher->pool, &oltcp->ol_r);
+            pool_push(&watcher->pool, &oltcp->ol_r, 0);
         } else {
             BIT_REMOVE(oltcp->status, STATUS_SENDING);
         }
@@ -587,7 +587,7 @@ static void _olp_on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD byte
         || ERR_OK != _iocp_post_recv(&oltcp->ol_r, &oltcp->bytes_r, &oltcp->flag, &oltcp->wsabuf, 1)) {
         _olp_call_conn_cb(watcher->ev, oltcp, ERR_FAILED);
         _evpub_sockel_remove(watcher, oltcp->ol_r.fd);
-        pool_push(&watcher->pool, &oltcp->ol_r);
+        pool_push(&watcher->pool, &oltcp->ol_r, 0);
         return;
     }
     if (ERR_OK != _olp_call_conn_cb(watcher->ev, oltcp, ERR_OK)) {
@@ -645,7 +645,11 @@ int32_t ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const u
 #else
     (void)evssl;
 #endif
-    _cmd_connect(ctx, skctx, addr);
+    if (ERR_OK != _cmd_connect(ctx, skctx, addr)) {
+        FREE(addr);
+        _evpub_sk_free(skctx);
+        return ERR_FAILED;
+    }
     return ERR_OK;
 }
 void _iocp_add_conn_inloop(watcher_ctx *watcher, struct sock_ctx *skctx, netaddr_ctx *addr) {
@@ -653,14 +657,14 @@ void _iocp_add_conn_inloop(watcher_ctx *watcher, struct sock_ctx *skctx, netaddr
     if (ERR_OK != _iocp_join(watcher, skctx->fd)) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         _olp_call_conn_cb(watcher->ev, oltcp, ERR_FAILED);
-        pool_push(&watcher->pool, &oltcp->ol_r);
+        pool_push(&watcher->pool, &oltcp->ol_r, 0);
         return;
     }
     _evpub_sockel_add(watcher, skctx);
     if (ERR_OK != _olp_post_connect(oltcp, addr)) {
         _olp_call_conn_cb(watcher->ev, oltcp, ERR_FAILED);
         _evpub_sockel_remove(watcher, oltcp->ol_r.fd);
-        pool_push(&watcher->pool, &oltcp->ol_r);
+        pool_push(&watcher->pool, &oltcp->ol_r, 0);
     }
 }
 // 提交一个AcceptEx异步接受请求（创建新socket并挂起等待连接）
@@ -737,7 +741,10 @@ static void _olp_on_accept_cb(acceptex_ctx *acpctx, sock_ctx *skctx, DWORD bytes
     // 跨 watcher 投递前 ref++ 占位：防 ev_unlisten 在目标 watcher 取出
     // CMD_ADDACP 前将 lsn ref 减到 0 释放，_on_cmd_addacp/_iocp_free_cmd 配对减
     ATOMIC_ADD(&lsn->ref, 1);
-    _cmd_add_acpfd(GET_PTR(acpctx->ev->watcher, acpctx->ev->nthreads, fd), fd, lsn);
+    if (ERR_OK != _cmd_add_acpfd(GET_PTR(acpctx->ev->watcher, acpctx->ev->nthreads, fd), fd, lsn)) {
+        CLOSE_SOCK(fd);
+        _iocp_try_freelsn(lsn);
+    }
 }
 void _iocp_add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) {
     if (ERR_OK != _iocp_join(watcher, fd)) {
@@ -746,7 +753,7 @@ void _iocp_add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) 
         return;
     }
     skpool_args skargs = { fd, &lsn->cbs, &lsn->ud };
-    sock_ctx *skctx = pool_pop(&watcher->pool, &skargs);
+    sock_ctx *skctx = pool_pop(&watcher->pool, &skargs, 0);
     overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
     _evpub_sockel_add(watcher, skctx);
     /* _iocp_post_recv 在 _olp_ssl_exchange（设置 STATUS_AUTHSSL）之前投递，但不存在竞态：
@@ -755,7 +762,7 @@ void _iocp_add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) 
      * 因此 WSARecv 完成只有在本函数返回后才能被取到，届时 STATUS_AUTHSSL 已设置。*/
     if (ERR_OK != _iocp_post_recv(&oltcp->ol_r, &oltcp->bytes_r, &oltcp->flag, &oltcp->wsabuf, 1)) {
         _evpub_sockel_remove(watcher, skctx->fd);
-        pool_push(&watcher->pool, skctx);
+        pool_push(&watcher->pool, skctx, 0);
         return;
     }
     if (ERR_OK != _olp_call_acp_cb(watcher->ev, oltcp)) {
@@ -895,7 +902,7 @@ void ev_unlisten(ev_ctx *ctx, uint64_t id) {
     // remove=1 必须在 SOCK_CLOSE 之前置位：closesocket 全屏障保证 cb 取到取消完成时已见 remove==1
     ATOMIC_SET(&lsn->remove, 1);
     for (int32_t i = 0; i < MAX_ACCEPTEX_CNT; i++) {
-        SOCK_CLOSE(lsn->overlap_acpt[i].overlap.fd);
+        CLOSE_SOCK(lsn->overlap_acpt[i].overlap.fd);
     }
     // 减占位 ref；cb 都已完成时此处减到 0 释放，否则由最后一个 cb 释放
     _iocp_try_freelsn(lsn);
@@ -1088,14 +1095,17 @@ int32_t ev_udp(ev_ctx *ctx, const char *ip, const uint16_t port, cbs_ctx *cbs, u
     sock_ctx *skctx = _olp_new_udp(*fd, cbs, ud);
     overlap_udp_ctx *udp = UPCAST(skctx, overlap_udp_ctx, ol_r);
     *skid = udp->skid;
-    _cmd_add(GET_PTR(ctx->watcher, ctx->nthreads, (*fd)), skctx);
+    if (ERR_OK != _cmd_add(GET_PTR(ctx->watcher, ctx->nthreads, (*fd)), skctx)) {
+        _iocp_free_udp(skctx);
+        return ERR_FAILED;
+    }
     return ERR_OK;
 }
 void _iocp_add_fd_inloop(watcher_ctx *watcher, sock_ctx *skctx) {
     if (ERR_OK != _iocp_join(watcher, skctx->fd)) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         if (SOCK_STREAM == skctx->type) {
-            pool_push(&watcher->pool, skctx);
+            pool_push(&watcher->pool, skctx, 0);
         } else {
             _iocp_free_udp(skctx);
         }
@@ -1106,7 +1116,7 @@ void _iocp_add_fd_inloop(watcher_ctx *watcher, sock_ctx *skctx) {
         overlap_tcp_ctx *tcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
         if (ERR_OK != _iocp_post_recv(&tcp->ol_r, &tcp->bytes_r, &tcp->flag, &tcp->wsabuf, 1)) {
             _evpub_sockel_remove(watcher, skctx->fd);
-            pool_push(&watcher->pool, skctx);
+            pool_push(&watcher->pool, skctx, 0);
         }
     } else {
         overlap_udp_ctx *udp = UPCAST(skctx, overlap_udp_ctx, ol_r);

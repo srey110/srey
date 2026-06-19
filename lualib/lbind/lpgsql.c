@@ -886,7 +886,7 @@ static int32_t _lpgsql_free(lua_State *lua) {
     if (NULL != pg->task && INVALID_SOCK != pg->fd) {
         size_t size;
         void *pack = pgsql_pack_terminate(&size);
-        ev_ud_context(&pg->task->loader->netev, pg->fd, pg->skid, NULL);
+        (void)ev_ud_context(&pg->task->loader->netev, pg->fd, pg->skid, NULL);
         ev_send(&pg->task->loader->netev, pg->fd, pg->skid, pack, size, 0);
     }
     secure_zero(pg->password, sizeof(pg->password));

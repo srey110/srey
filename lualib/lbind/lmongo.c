@@ -38,7 +38,7 @@ static int32_t _lmongo_new(lua_State *lua) {
 static int32_t _lmongo_free(lua_State *lua) {
     mongo_ctx *mongo = luaL_checkudata(lua, 1, MT_MONGO);
     if (NULL != mongo->task && INVALID_SOCK != mongo->fd) {
-        ev_ud_context(&mongo->task->loader->netev, mongo->fd, mongo->skid, NULL);
+        (void)ev_ud_context(&mongo->task->loader->netev, mongo->fd, mongo->skid, NULL);
         ev_close(&mongo->task->loader->netev, mongo->fd, mongo->skid, 0);
         mongo->fd = INVALID_SOCK;
     }
@@ -69,14 +69,18 @@ static int32_t _lmongo_try_connect(lua_State *lua) {
 /// <param name="self" type="userdata">mongo 对象</param>
 /// <param name="fd" type="integer">socket fd</param>
 /// <param name="skid" type="integer">连接 skid</param>
-/// <returns>无</returns>
+/// <returns type="boolean">成功 true，stop 非0失败</returns>
 static int32_t _lmongo_set_auth_status(lua_State *lua) {
     luaL_checkudata(lua, 1, MT_MONGO);
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 2);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 3);
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    ev_ud_status(&task->loader->netev, fd, skid, (uint8_t)mongo_status_auth());
-    return 0;
+    if (ERR_OK != ev_ud_status(&task->loader->netev, fd, skid, (uint8_t)mongo_status_auth())) {
+        lua_pushboolean(lua, 0);
+    } else {
+        lua_pushboolean(lua, 1);
+    }
+    return 1;
 }
 /// <summary>
 /// 设置当前数据库名

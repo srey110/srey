@@ -107,7 +107,7 @@ static void _log_write_all(log_item **items) {
         for (i = 0; i < n; i++) {
             item = items[i];
             _log_write_item(item);
-            pool_push(&_itempool, item);
+            pool_push(&_itempool, item, 0);
         }
     }
 }
@@ -191,7 +191,7 @@ void slog(int32_t lv, const char *fmt, ...) {
         || 0 == ATOMIC_GET(&_running)) {
         return;
     }
-    log_item *item = (log_item *)pool_pop(&_itempool, NULL);
+    log_item *item = (log_item *)pool_pop(&_itempool, NULL, 0);
     item->lv = lv;
     (void)mstostr(nowms(), "%Y-%m-%d %H:%M:%S", item->time);
     //先尝试写入 inline_buf，短消息（典型场景）至此完成单次 malloc；
@@ -205,7 +205,7 @@ void slog(int32_t lv, const char *fmt, ...) {
         va_end(args2);
         fprintf(stderr, LOG_FMT, item->time, _log_lvstr(item->lv), fmt);
         fflush(stderr);
-        pool_push(&_itempool, item);
+        pool_push(&_itempool, item, 0);
         return;
     }
     if (rtn < LOG_INLINE_SIZE) {
@@ -220,7 +220,7 @@ void slog(int32_t lv, const char *fmt, ...) {
             fprintf(stderr, LOG_FMT, item->time, _log_lvstr(item->lv), fmt);
             fflush(stderr);
             FREE(heap_msg);
-            pool_push(&_itempool, item);
+            pool_push(&_itempool, item, 0);
             return;
         }
         item->msg = heap_msg;
@@ -229,7 +229,7 @@ void slog(int32_t lv, const char *fmt, ...) {
     if (ERR_OK != fsqu_trypush(&_que, &item)) {
         fprintf(stderr, LOG_FMT, item->time, _log_lvstr(item->lv), item->msg);
         fflush(stderr);
-        pool_push(&_itempool, item);
+        pool_push(&_itempool, item, 0);
         return;
     }
     if (ATOMIC_GET(&_sleeping)) {

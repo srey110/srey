@@ -545,7 +545,7 @@ static void _usk_on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev
         || ERR_OK != _uev_add_event(watcher, tcp->sock.fd, &tcp->sock.events, EVENT_READ, &tcp->sock)) {
         _usk_call_conn_cb(watcher->ev, tcp, ERR_FAILED);
         _evpub_sockel_remove(watcher, tcp->sock.fd);
-        pool_push(&watcher->pool, &tcp->sock);
+        pool_push(&watcher->pool, &tcp->sock, 0);
         return;
     }
     if (ERR_OK != _usk_call_conn_cb(watcher->ev, tcp, ERR_OK)) {
@@ -604,7 +604,10 @@ int32_t ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const u
 #else
     (void)evssl;
 #endif
-    _cmd_connect(ctx, skctx, NULL);
+    if (ERR_OK != _cmd_connect(ctx, skctx, NULL)) {
+        _evpub_sk_free(skctx);
+        return ERR_FAILED;
+    }
     return ERR_OK;
 }
 void _uev_add_conn_inloop(watcher_ctx *watcher, sock_ctx *skctx) {
@@ -614,7 +617,7 @@ void _uev_add_conn_inloop(watcher_ctx *watcher, sock_ctx *skctx) {
         _usk_call_conn_cb(watcher->ev, tcp, ERR_FAILED);
         skctx->ev_cb = _usk_on_rw_cb;
         _evpub_sockel_remove(watcher, skctx->fd);
-        pool_push(&watcher->pool, skctx);
+        pool_push(&watcher->pool, skctx, 0);
     }
 }
 // 监听socket可读事件回调：循环accept新连接并分发给对应watcher
@@ -644,12 +647,16 @@ static void _usk_on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev)
             // 跨 watcher 投递前 ref++ 占位：防 ev_unlisten 在目标 watcher 取出
             // CMD_ADDACP 前将 lsn ref 减到 0 释放，_on_cmd_addacp/_uev_free_pipe 配对减
             ATOMIC_ADD(&acpt->lsn->ref, 1);
-            _cmd_add_acpfd(to, fd, acpt->lsn);
+            if (ERR_OK != _cmd_add_acpfd(to, fd, acpt->lsn)) {
+                CLOSE_SOCK(fd);
+                _uev_qtn_freelsn(watcher, acpt->lsn);
+            }
         }
     }
 #ifdef MANUAL_ADD
     if (ERR_OK != _uev_add_event(watcher, acpt->sock.fd, &acpt->sock.events, EVENT_READ, &acpt->sock)) {
         _evpub_sockel_remove(watcher, acpt->sock.fd);
+        CLOSE_SOCK(acpt->sock.fd);
         LOG_ERROR("%s", ERRORSTR(ERRNO));
     }
 #else
@@ -658,7 +665,7 @@ static void _usk_on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev)
 }
 void _uev_add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) {
     skpool_args skargs = { fd, &lsn->cbs, &lsn->ud };
-    sock_ctx *skctx = pool_pop(&watcher->pool, &skargs);
+    sock_ctx *skctx = pool_pop(&watcher->pool, &skargs, 0);
     tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
     _evpub_sockel_add(watcher, skctx);
     /* _uev_add_event(READ) 必须在 _usk_ssl_exchange 之前：EPOLLET 的 ADD-time 语义保证若
@@ -667,7 +674,7 @@ void _uev_add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) {
      * 下一次 epoll_wait，_usk_on_rw_cb 届时调用 evssl_tryacpt 驱动握手。*/
     if (ERR_OK != _uev_add_event(watcher, fd, &skctx->events, EVENT_READ, skctx)) {
         _evpub_sockel_remove(watcher, fd);
-        pool_push(&watcher->pool, skctx);
+        pool_push(&watcher->pool, skctx, 0);
         return;
     }
     if (ERR_OK != _usk_call_acp_cb(watcher->ev, tcp)) {
@@ -758,7 +765,14 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
     array_push_back(&ctx->arrlsn, &lsn);
     spin_unlock(&ctx->spin);
     for (i = 0; i < lsn->nlsn; i++) {
-        _cmd_listen(&ctx->watcher[i], &lsn->lsnsock[i].sock);
+        if (ERR_OK != _cmd_listen(&ctx->watcher[i], &lsn->lsnsock[i].sock)) {
+            LOG_WARN("_cmd_listen error event closed, total listener %d, success %d.", lsn->nlsn, i);
+            break;
+        }
+    }
+    if (0 == i) {
+        _uev_freelsn(lsn);
+        return ERR_FAILED;
     }
     SET_PTR(id, lsn->id);
     return ERR_OK;
@@ -768,12 +782,11 @@ void _uev_add_lsn_inloop(watcher_ctx *watcher, sock_ctx *skctx) {
     if (ERR_OK != _uev_add_event(watcher, skctx->fd, &skctx->events, EVENT_READ, skctx)) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         _evpub_sockel_remove(watcher, skctx->fd);
+        CLOSE_SOCK(skctx->fd);
     }
 }
 void _uev_freelsn(listener_ctx *lsn) {
-    if (0 == ATOMIC_GET(&lsn->remove)) {
-        _usk_close_lsnsock(lsn, lsn->nlsn);
-    }
+    _usk_close_lsnsock(lsn, lsn->nlsn);
     UD_FREE(lsn->cbs.ud_free, &lsn->ud);
     FREE(lsn->lsnsock);
     FREE(lsn);
@@ -805,7 +818,7 @@ void _uev_qtn_drain(watcher_ctx *watcher, uint64_t now_ms) {
         }
         switch (e->type) {
         case QTN_TCP:
-            pool_push(&watcher->pool, (sock_ctx *)e->obj);
+            pool_push(&watcher->pool, (sock_ctx *)e->obj, 0);
             break;
         case QTN_UDP:
             _uev_free_udp((sock_ctx *)e->obj);
@@ -863,14 +876,16 @@ void ev_unlisten(ev_ctx *ctx, uint64_t id) {
     ATOMIC_ADD(&lsn->ref, 1);
     ATOMIC_SET(&lsn->remove, 1);
     for (int32_t i = 0; i < lsn->nlsn; i++) {
-        _cmd_unlisten(&ctx->watcher[i], lsn->lsnsock[i].sock.fd, lsn);
+        if (ERR_OK != _cmd_unlisten(&ctx->watcher[i], lsn->lsnsock[i].sock.fd, lsn)) {
+            LOG_WARN("_cmd_unlisten error, index %d.", i);
+        }
     }
     // 占位减发 CMD 给 worker[0] 在 _uev_cmd_loop 内执行 (_on_cmd_lsn_unref 内归 0 时
     // 入 watcher->qtn 隔离队列); 主线程直接 _uev_try_freelsn 在 ref 归 0 时立即 FREE,
     // 会跟 worker 在 _uev_loop_event 内迭代 events[] 数组的跨线程 UAF 竞态: worker 已减完
     // 自己 CMD_UNLSN ref 但 events[k>i] 仍可能指向 lsnsock, 主线程同步 FREE 后 worker
     // 读 skctx->ev_cb UAF。走 worker 上下文则 FREE 跨过 QTN_MS 隔离期, events 已遍历完
-    _cmd_lsn_unref(&ctx->watcher[0], lsn);
+    (void)_cmd_lsn_unref(&ctx->watcher[0], lsn);
 }
 void _uev_remove_lsn(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) {
     sock_ctx **skctx = _evpub_sockel_remove(watcher, fd);
@@ -879,10 +894,10 @@ void _uev_remove_lsn(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) {
         lsnsock_ctx *acpt = UPCAST(*skctx, lsnsock_ctx, sock);
         _uev_del_event(watcher, fd, &acpt->sock.events, EVENT_READ, &acpt->sock);
     }
-#else
-    (void)skctx;
 #endif
-    SOCK_CLOSE(fd);
+    if (NULL != skctx) {//防止关掉正确的socket
+        CLOSE_SOCK((*skctx)->fd);
+    }
     // 仅清本 watcher 持有的 lsnsock ev_cb,让本批次 events[] 残留事件跳过本 lsnsock;
     // 跨 watcher 不写(避免与其他 watcher _uev_loop_event 读 events[k].udata->ev_cb 产生 race)
     lsn->lsnsock[watcher->index].sock.ev_cb = NULL;
@@ -1054,7 +1069,10 @@ int32_t ev_udp(ev_ctx *ctx, const char *ip, const uint16_t port, cbs_ctx *cbs, u
     }
     sock_ctx *skctx = _usk_new_udp(*fd, cbs, ud);
     *skid = UPCAST(skctx, udp_ctx, sock)->skid;
-    _cmd_add(GET_PTR(ctx->watcher, ctx->nthreads, *fd), skctx);
+    if (ERR_OK != _cmd_add(GET_PTR(ctx->watcher, ctx->nthreads, *fd), skctx)) {
+        _uev_free_udp(skctx);
+        return ERR_FAILED;
+    }
     return ERR_OK;
 }
 void _uev_add_fd_inloop(watcher_ctx *watcher, sock_ctx *skctx) {
@@ -1063,7 +1081,7 @@ void _uev_add_fd_inloop(watcher_ctx *watcher, sock_ctx *skctx) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         _evpub_sockel_remove(watcher, skctx->fd);
         if (SOCK_STREAM == skctx->type) {
-            pool_push(&watcher->pool, skctx);
+            pool_push(&watcher->pool, skctx, 0);
         } else {
             _uev_free_udp(skctx);
         }

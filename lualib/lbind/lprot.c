@@ -611,7 +611,7 @@ static int32_t _lprot_smtp_free(lua_State *lua) {
     smtp_ctx *smtp = luaL_checkudata(lua, 1, MT_SMTP);
     if (NULL != smtp->task && INVALID_SOCK != smtp->fd) {
         char *cmd = smtp_pack_quit();
-        ev_ud_context(&smtp->task->loader->netev, smtp->fd, smtp->skid, NULL);
+        (void)ev_ud_context(&smtp->task->loader->netev, smtp->fd, smtp->skid, NULL);
         ev_send(&smtp->task->loader->netev, smtp->fd, smtp->skid, cmd, strlen(cmd), 0);
     }
     secure_zero(smtp->psw, sizeof(smtp->psw));

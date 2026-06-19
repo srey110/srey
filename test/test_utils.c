@@ -1637,22 +1637,22 @@ static void _pool_basic_check(CuTest *tc, int32_t thsafe) {
     pool_init(&pool, sizeof(pool_t_obj), 8, 2, thsafe, &_pt_cbs);
     CuAssertIntEquals(tc, 0, pool_size(&pool));
     CuAssertTrue(tc, pool_capacity(&pool) >= 8);
-    o = (pool_t_obj *)pool_pop(&pool, &arg);
+    o = (pool_t_obj *)pool_pop(&pool, &arg, 0);
     CuAssertPtrNotNull(tc, o);
     CuAssertTrue(tc, POOL_T_MAGIC == o->magic);
     CuAssertIntEquals(tc, 1, _pt_new);
     CuAssertPtrEquals(tc, &arg, _pt_new_args);
     CuAssertIntEquals(tc, 0, pool_size(&pool));
-    pool_push(&pool, o);
+    pool_push(&pool, o, 0);
     CuAssertIntEquals(tc, 1, _pt_clear);
     CuAssertIntEquals(tc, 1, pool_size(&pool));
-    o2 = (pool_t_obj *)pool_pop(&pool, &arg);
+    o2 = (pool_t_obj *)pool_pop(&pool, &arg, 0);
     CuAssertPtrEquals(tc, o, o2); // 命中复用,同一对象
     CuAssertIntEquals(tc, 1, _pt_new); // 未新建
     CuAssertIntEquals(tc, 1, _pt_reset);
     CuAssertPtrEquals(tc, &arg, _pt_reset_args);
     CuAssertIntEquals(tc, 0, pool_size(&pool));
-    pool_push(&pool, o2);
+    pool_push(&pool, o2, 0);
     pool_free(&pool);
     CuAssertIntEquals(tc, 1, _pt_free);
     CuAssertIntEquals(tc, 0, _pt_free_bad);
@@ -1661,37 +1661,47 @@ static void test_pool_basic(CuTest *tc) {
     _pool_basic_check(tc, 0);
     _pool_basic_check(tc, 1);
 }
-// 满池:pool_push 满则 _elfree;pool_trypush 满则返回 ERR_FAILED 且不接管对象
+// 满池:pool_push 满则 _elfree;POOL_OP_NOFREE 满则不释放,对象仍归调用方
 static void test_pool_full(CuTest *tc) {
     pool_ctx pool;
     pool_t_obj *objs[4], *over;
     uint32_t i;
-    int32_t rt;
     _pt_counters_reset();
     pool_init(&pool, sizeof(pool_t_obj), 4, 0, 0, &_pt_cbs);
     CuAssertIntEquals(tc, 4, pool_capacity(&pool));
     for (i = 0; i < 4; i++) {
-        objs[i] = (pool_t_obj *)pool_pop(&pool, NULL);
+        objs[i] = (pool_t_obj *)pool_pop(&pool, NULL, 0);
     }
     for (i = 0; i < 4; i++) {
-        pool_push(&pool, objs[i]);
+        pool_push(&pool, objs[i], 0);
     }
     CuAssertIntEquals(tc, 4, pool_size(&pool));
     CuAssertIntEquals(tc, 0, _pt_free);
-    // 满池 pool_push:对象被释放,size 不变
+    // 满池 pool_push:先 clear 再尝试入池;池满则 _elfree
     over = (pool_t_obj *)_pt_elnew(NULL);
-    pool_push(&pool, over);
+    pool_push(&pool, over, 0);
     CuAssertIntEquals(tc, 1, _pt_free);
     CuAssertIntEquals(tc, 4, pool_size(&pool));
-    // 满池 pool_trypush:返回 ERR_FAILED 且不释放,对象仍归调用方
-    over = (pool_t_obj *)_pt_elnew(NULL);
-    rt = pool_trypush(&pool, over);
-    CuAssertIntEquals(tc, ERR_FAILED, rt);
-    CuAssertIntEquals(tc, 1, _pt_free);
-    CuAssertIntEquals(tc, 4, pool_size(&pool));
-    FREE(over); // trypush 满未接管,调用方自行释放
     pool_free(&pool);
     CuAssertIntEquals(tc, 5, _pt_free); // 1(push 满)+4(pool_free)
+    CuAssertIntEquals(tc, 0, _pt_free_bad);
+    // POOL_OP_NOFREE: 满时 pool_push 不释放,对象仍归调用方
+    _pt_counters_reset();
+    pool_init(&pool, sizeof(pool_t_obj), 4, 0, 0, &_pt_cbs);
+    for (i = 0; i < 4; i++) {
+        objs[i] = (pool_t_obj *)pool_pop(&pool, NULL, 0);
+    }
+    for (i = 0; i < 4; i++) {
+        pool_push(&pool, objs[i], 0);
+    }
+    over = (pool_t_obj *)_pt_elnew(NULL);
+    int32_t rt = pool_push(&pool, over, POOL_OP_NOFREE); // 满+NOFREE:不释放
+    CuAssertIntEquals(tc, ERR_FAILED, rt);
+    CuAssertIntEquals(tc, 0, _pt_free);
+    CuAssertIntEquals(tc, 4, pool_size(&pool));
+    FREE(over); // 调用方手动释放
+    pool_free(&pool);
+    CuAssertIntEquals(tc, 4, _pt_free); // 0(push 满)+4(pool_free)
     CuAssertIntEquals(tc, 0, _pt_free_bad);
 }
 // 收缩:释放至 max(keep,nkeep),且交给 _elfree 的都是真实对象(magic 正确)——历史 bug 回归点
@@ -1702,10 +1712,10 @@ static void _pool_shrink_check(CuTest *tc, int32_t thsafe) {
     _pt_counters_reset();
     pool_init(&pool, sizeof(pool_t_obj), 16, 2, thsafe, &_pt_cbs);
     for (i = 0; i < 8; i++) {
-        objs[i] = (pool_t_obj *)pool_pop(&pool, NULL);
+        objs[i] = (pool_t_obj *)pool_pop(&pool, NULL, 0);
     }
     for (i = 0; i < 8; i++) {
-        pool_push(&pool, objs[i]);
+        pool_push(&pool, objs[i], 0);
     }
     CuAssertIntEquals(tc, 8, pool_size(&pool));
     pool_shrink(&pool, 3, 4, 5); // keep=max(3,nkeep=2)=3,释放 5
@@ -1729,10 +1739,10 @@ static void test_pool_shrink_policy(CuTest *tc) {
     _pt_counters_reset();
     pool_init(&pool, sizeof(pool_t_obj), 16, 2, 0, &_pt_cbs);
     for (i = 0; i < 8; i++) {
-        objs[i] = (pool_t_obj *)pool_pop(&pool, NULL);
+        objs[i] = (pool_t_obj *)pool_pop(&pool, NULL, 0);
     }
     for (i = 0; i < 8; i++) {
-        pool_push(&pool, objs[i]);
+        pool_push(&pool, objs[i], 0);
     }
     pool_shrink(&pool, 0, 4, 5); // 首次 prev=0 不忙;keep=max(0,2)=2
     CuAssertIntEquals(tc, 2, pool_size(&pool));
@@ -1741,10 +1751,10 @@ static void test_pool_shrink_policy(CuTest *tc) {
     _pt_counters_reset();
     pool_init(&pool, sizeof(pool_t_obj), 16, 0, 0, &_pt_cbs);
     for (i = 0; i < 8; i++) {
-        objs[i] = (pool_t_obj *)pool_pop(&pool, NULL);
+        objs[i] = (pool_t_obj *)pool_pop(&pool, NULL, 0);
     }
     for (i = 0; i < 8; i++) {
-        pool_push(&pool, objs[i]);
+        pool_push(&pool, objs[i], 0);
     }
     pool_shrink(&pool, 2, 4, 5); // 首次:不忙,8→2,记录 prev=8
     CuAssertIntEquals(tc, 2, pool_size(&pool));
@@ -1758,14 +1768,14 @@ static void test_pool_default(CuTest *tc) {
     uint64_t *a, *b;
     pool_init(&pool, sizeof(uint64_t), 0, 4, 0, NULL);
     CuAssertTrue(tc, pool_capacity(&pool) >= 1024); // POOL_DEFAULT_CAP
-    a = (uint64_t *)pool_pop(&pool, NULL);
+    a = (uint64_t *)pool_pop(&pool, NULL, 0);
     CuAssertPtrNotNull(tc, a);
     CuAssertTrue(tc, 0 == *a); // CALLOC 清零
     *a = 12345;
-    pool_push(&pool, a);
-    b = (uint64_t *)pool_pop(&pool, NULL);
+    pool_push(&pool, a, 0);
+    b = (uint64_t *)pool_pop(&pool, NULL, 0);
     CuAssertPtrEquals(tc, a, b); // 命中复用
-    pool_push(&pool, b);
+    pool_push(&pool, b, 0);
     pool_free(&pool);
 }
 

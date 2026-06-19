@@ -224,7 +224,7 @@ static void _coro_mco_cb(mco_coro *coro) {
         task_incref(arg.task); // 保证 _message_run 在 yield 后 task 不会被释放
         _message_run(arg.task, &arg.msg);
         coro_ctx *ctx = (coro_ctx *)arg.task->arg;
-        if (ERR_OK != pool_trypush(&ctx->copool, coro)) {
+        if (ERR_OK != pool_push(&ctx->copool, coro, POOL_OP_NOFREE)) {
             task_ungrab(arg.task);
             break; // 池满时跳出循环，让函数自然返回使协程进入 MCO_DEAD 状态
         }
@@ -311,7 +311,7 @@ static void _coro_ctx_free(void *arg) {
 // 从协程对象池取出可用协程，池为空时新建并首次 resume 到第一个 yield 点
 static mco_coro *_coro_pool_get(task_ctx *task) {
     coro_ctx *coctx = task->arg;
-    return (mco_coro *)pool_pop(&coctx->copool, NULL);
+    return (mco_coro *)pool_pop(&coctx->copool, NULL, 0);
 }
 // 从对象池取出协程并推入分发参数，开始执行新的消息处理流程
 static void _coro_mco_create(task_dispatch_arg *arg) {
@@ -589,8 +589,8 @@ void *coro_get_arg(task_ctx *task) {
     }
     return ((coro_ctx *)task->arg)->arg;
 }
-void coro_sync(task_ctx *task, SOCKET fd, uint64_t skid) {
-    ev_ud_sess(&task->loader->netev, fd, skid, skid);
+int32_t coro_sync(task_ctx *task, SOCKET fd, uint64_t skid) {
+    return ev_ud_sess(&task->loader->netev, fd, skid, skid);
 }
 // 挂起当前协程并等待下一条匹配消息
 // 返回指向分发参数中 msg 的指针，在下次 _coro_wait 或 _coro_mco_resume 返回前有效
@@ -697,8 +697,7 @@ int32_t coro_connect(task_ctx *task, pack_type pktype,
             return ERR_FAILED;
         }
     }
-    coro_sync(task, *fd, *skid);
-    return ERR_OK;
+    return coro_sync(task, *fd, *skid);
 }
 void coro_close(task_ctx *task, SOCKET fd, uint64_t skid, int32_t immed) {
     if (INVALID_SOCK == fd) {
@@ -748,15 +747,20 @@ void *coro_slice(task_ctx *task, SOCKET fd, uint64_t skid, size_t *size, int32_t
 void *coro_sendto(task_ctx *task, SOCKET fd, uint64_t skid,
                   const char *ip, const uint16_t port,
                   void *data, size_t len, size_t *size, int32_t copy) {
-    coro_sync(task, fd, skid);
+    if (ERR_OK != coro_sync(task, fd, skid)) {
+        if (!copy) {
+            FREE(data);
+        }
+        return NULL;
+    }
     if (ERR_OK != ev_sendto(&task->loader->netev, fd, skid, ip, port, data, len, copy)) {
         LOG_WARN("task %s, sendto error, skid %"PRIu64".", _NAME_OR(task->name), skid);
-        ev_ud_sess(&task->loader->netev, fd, skid, 0);
+        (void)ev_ud_sess(&task->loader->netev, fd, skid, 0);
         return NULL;
     }
     message_ctx *msg = _coro_wait(task, 1, skid, MSG_TYPE_RECVFROM, task_get_netread_timeout(task));
     if (MSG_TYPE_TIMEOUT == msg->mtype) {
-        ev_ud_sess(&task->loader->netev, fd, skid, 0);
+        (void)ev_ud_sess(&task->loader->netev, fd, skid, 0);
         LOG_WARN("task %s, sendto timeout, skid %"PRIu64".", _NAME_OR(task->name), skid);
         return NULL;
     }

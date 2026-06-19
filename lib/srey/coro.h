@@ -36,7 +36,8 @@ void *coro_get_arg(task_ctx *task);
 /// <param name="task">task_ctx</param>
 /// <param name="fd">socket 句柄</param>
 /// <param name="skid">链接ID</param>
-void coro_sync(task_ctx *task, SOCKET fd, uint64_t skid);
+/// <returns>ERR_OK 成功</returns>
+int32_t coro_sync(task_ctx *task, SOCKET fd, uint64_t skid);
 /// <summary>
 /// 休眠
 /// </summary>

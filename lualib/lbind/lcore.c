@@ -494,13 +494,17 @@ static int32_t _lcore_close(lua_State *lua) {
 /// <param name="fd" type="integer">socket fd</param>
 /// <param name="skid" type="integer">连接 skid</param>
 /// <param name="pktype" type="integer">新封包协议类型，参考 PACK_TYPE</param>
-/// <returns>无</returns>
+/// <returns type="boolean">成功 true，stop 非0失败</returns>
 static int32_t _lcore_pack_type(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
     subtype_t pktype = (subtype_t)luaL_checkinteger(lua, 3);
-    ev_ud_pktype(&g_loader->netev, fd, skid, pktype);
-    return 0;
+    if (ERR_OK != ev_ud_pktype(&g_loader->netev, fd, skid, pktype)) {
+        lua_pushboolean(lua, 0);
+    } else {
+        lua_pushboolean(lua, 1);
+    }
+    return 1;
 }
 /// <summary>
 /// 设置指定连接的用户自定义状态值
@@ -508,13 +512,17 @@ static int32_t _lcore_pack_type(lua_State *lua) {
 /// <param name="fd" type="integer">socket fd</param>
 /// <param name="skid" type="integer">连接 skid</param>
 /// <param name="status" type="integer">用户自定义状态值（int8）</param>
-/// <returns>无</returns>
+/// <returns type="boolean">成功 true，stop 非0失败</returns>
 static int32_t _lcore_status(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
     int8_t status = (int8_t)luaL_checkinteger(lua, 3);
-    ev_ud_status(&g_loader->netev, fd, skid, status);
-    return 0;
+    if (ERR_OK != ev_ud_status(&g_loader->netev, fd, skid, status)) {
+        lua_pushboolean(lua, 0);
+    } else {
+        lua_pushboolean(lua, 1);
+    }
+    return 1;
 }
 /// <summary>
 /// 将指定连接绑定到目标 task（后续网络消息投递到该 task）
@@ -522,15 +530,19 @@ static int32_t _lcore_status(lua_State *lua) {
 /// <param name="fd" type="integer">socket fd</param>
 /// <param name="skid" type="integer">连接 skid</param>
 /// <param name="name" type="string|integer">目标字符串名或数字句柄</param>
-/// <returns>无</returns>
+/// <returns type="boolean">成功 true，stop 非0失败</returns>
 static int32_t _lcore_bind_task(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
     name_t handle = (LUA_TSTRING == lua_type(lua, 3))
         ? task_find_name(g_loader, lua_tostring(lua, 3))
         : (name_t)luaL_checkinteger(lua, 3);
-    ev_ud_handle(&g_loader->netev, fd, skid, handle);
-    return 0;
+    if (ERR_OK != ev_ud_handle(&g_loader->netev, fd, skid, handle)) {
+        lua_pushboolean(lua, 0);
+    } else {
+        lua_pushboolean(lua, 1);
+    }
+    return 1;
 }
 /// <summary>
 /// 为指定连接设置会话 id，用于关联请求与响应
@@ -538,13 +550,17 @@ static int32_t _lcore_bind_task(lua_State *lua) {
 /// <param name="fd" type="integer">socket fd</param>
 /// <param name="skid" type="integer">连接 skid</param>
 /// <param name="sess" type="integer">会话 id</param>
-/// <returns>无</returns>
+/// <returns type="boolean">成功 true，stop 非0失败</returns>
 static int32_t _lcore_session(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
     uint64_t sess = (uint64_t)luaL_checkinteger(lua, 3);
-    ev_ud_sess(&g_loader->netev, fd, skid, sess);
-    return 0;
+    if (ERR_OK != ev_ud_sess(&g_loader->netev, fd, skid, sess)) {
+        lua_pushboolean(lua, 0);
+    } else {
+        lua_pushboolean(lua, 1);
+    }
+    return 1;
 }
 /// <summary>
 /// 询问协议层指定封包是否允许恢复（分片重组判断）

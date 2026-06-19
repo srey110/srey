@@ -132,7 +132,7 @@ static void _loader_worker_wakeup(loader_ctx *loader, name_t *task) {
 }
 // 将消息推入任务的无锁消息队列并在必要时唤醒工作线程
 void _task_message_push(task_ctx *task, message_ctx *msg) {
-    message_ctx *pmsg = (message_ctx *)pool_pop(&task->loader->msg_pool, NULL);
+    message_ctx *pmsg = (message_ctx *)pool_pop(&task->loader->msg_pool, NULL, 0);
     *pmsg = *msg;
     // 阻塞入队；队列满时自旋等待
     fsqu_push(&task->qumsg, &pmsg);
@@ -195,7 +195,7 @@ static void _loader_task_run(loader_ctx *loader, worker_ctx *worker,
         for (k = 0; k < got; k++) {
             msg = msgbatch[k];
             runarg->msg = *msg;
-            pool_push(&loader->msg_pool, msg);
+            pool_push(&loader->msg_pool, msg, 0);
             ATOMIC_ADD(&version->ver, 1);
             ATOMIC_SET(&version->msgtype, runarg->msg.mtype);
 #if ENABLE_DISPATCH_STAT

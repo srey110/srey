@@ -624,7 +624,7 @@ void ev_free(ev_ctx *ctx) {
     watcher_ctx *watcher;
     for (i = 0; i < ctx->nthreads; i++) {
         watcher = &ctx->watcher[i];
-        _send_cmd(watcher, &cmd);
+        (void)_send_cmd(watcher, &cmd);
     }
     for (i = 0; i < ctx->nthreads; i++) {
         watcher = &ctx->watcher[i];

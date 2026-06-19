@@ -193,7 +193,9 @@ int32_t mysql_connect(task_ctx *task, mysql_ctx *mysql) {
             LOG_WARN("%s", errmsg);
         }
     } else {
-        coro_sync(task, mysql->client.fd, mysql->client.skid);
+        if (ERR_OK != coro_sync(task, mysql->client.fd, mysql->client.skid)) {
+            return ERR_FAILED;
+        }
     }
     return err;
 }
@@ -277,7 +279,9 @@ int32_t smtp_connect(task_ctx *task, smtp_ctx *smtp) {
             LOG_WARN("%s", msg);
         }
     } else {
-        coro_sync(task, smtp->fd, smtp->skid);
+        if (ERR_OK != coro_sync(task, smtp->fd, smtp->skid)) {
+            return ERR_FAILED;
+        }
     }
     return err;
 }
@@ -379,7 +383,9 @@ int32_t pgsql_connect(task_ctx *task, pgsql_ctx *pg) {
             LOG_WARN("%s", err);
         }
     } else {
-        coro_sync(task, pg->fd, pg->skid);
+        if (ERR_OK != coro_sync(task, pg->fd, pg->skid)) {
+            return ERR_FAILED;
+        }
     }
     return code;
 }
@@ -489,12 +495,14 @@ void mongo_quit(mongo_ctx *mongo) {
 }
 // 执行 MongoDB SCRAM 认证流程（发送 client-first 消息并等待握手结果）
 static int32_t _mongo_auth(mongo_ctx *mongo, const char *authmod) {
+    if (ERR_OK != ev_ud_status(&mongo->task->loader->netev, mongo->fd, mongo->skid, mongo_status_auth())) {
+        return ERR_FAILED;
+    }
     size_t lens;
     void *client_first = mongo_pack_scram_client_first(mongo, authmod, &lens);
     if (NULL == client_first) {
         return ERR_FAILED;
     }
-    ev_ud_status(&mongo->task->loader->netev, mongo->fd, mongo->skid, mongo_status_auth());
     if (ERR_OK != ev_send(&mongo->task->loader->netev, mongo->fd, mongo->skid, client_first, lens, 0)) {
         return ERR_FAILED;
     }

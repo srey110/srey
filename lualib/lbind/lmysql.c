@@ -703,7 +703,7 @@ static int32_t _lmysql_free(lua_State *lua) {
         && INVALID_SOCK != mysql->client.fd) {
         size_t size;
         void *pack = mysql_pack_quit(mysql, &size);
-        ev_ud_context(&mysql->task->loader->netev, mysql->client.fd, mysql->client.skid, NULL);
+        (void)ev_ud_context(&mysql->task->loader->netev, mysql->client.fd, mysql->client.skid, NULL);
         ev_send(&mysql->task->loader->netev, mysql->client.fd, mysql->client.skid, pack, size, 0);
     }
     secure_zero(mysql->client.password, sizeof(mysql->client.password));

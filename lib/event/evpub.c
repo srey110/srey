@@ -31,6 +31,9 @@ void _evpub_sockel_add(watcher_ctx *watcher, sock_ctx *skctx) {
     ASSERTAB(!hashmap_oom(watcher->element), "hashmap oom.");
 }
 void *_evpub_sockel_remove(watcher_ctx *watcher, SOCKET fd) {
+    if (INVALID_SOCK == fd) {
+        return NULL;
+    }
     sock_ctx key;
     key.fd = fd;
     sock_ctx *pkey = &key;

@@ -33,32 +33,32 @@ typedef struct cmd_ctx {
     uint64_t arg;   // 命令携带的指针或值参数
 }cmd_ctx;
 
-// 向watcher投递命令
-void _send_cmd(struct watcher_ctx *watcher, cmd_ctx *cmd);
-// 发送CMD_ADDACP命令，通知watcher处理新accept的fd
-void _cmd_add_acpfd(struct watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn);
+// 向watcher投递命令。stop 非0失败,兜底释放只能由ev_free完成
+int32_t _send_cmd(struct watcher_ctx *watcher, cmd_ctx *cmd);
+// 发送CMD_ADDACP命令，通知watcher处理新accept的fd，stop 非0失败
+int32_t _cmd_add_acpfd(struct watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn);
 // CMD_ADDACP命令处理：完成 accept fd 的初始化
 void _on_cmd_addacp(struct watcher_ctx *watcher, cmd_ctx *cmd);
-// 发送CMD_CONN命令，将连接中的sock_ctx交给对应watcher处理
-void _cmd_connect(ev_ctx *ctx, struct sock_ctx *skctx, void *arg);
+// 发送CMD_CONN命令，将连接中的sock_ctx交给对应watcher处理，stop 非0失败
+int32_t _cmd_connect(ev_ctx *ctx, struct sock_ctx *skctx, void *arg);
 // CMD_CONN命令处理：在事件循环内注册连接中的socket
 void _on_cmd_conn(struct watcher_ctx *watcher, cmd_ctx *cmd);
-// 发送CMD_ADD命令
-void _cmd_add(struct watcher_ctx *watcher, struct sock_ctx *skctx);
+// 发送CMD_ADD命令，stop 非0 会失败
+int32_t _cmd_add(struct watcher_ctx *watcher, struct sock_ctx *skctx);
 // CMD_ADD命令处理：添加 socket
 void _on_cmd_add(struct watcher_ctx *watcher, cmd_ctx *cmd);
 #ifndef EV_IOCP
-// 发送CMD_LSN命令，通知watcher注册监听socket
-void _cmd_listen(struct watcher_ctx *watcher, struct sock_ctx *skctx);
+// 发送CMD_LSN命令，通知watcher注册监听socket，stop 非0失败
+int32_t _cmd_listen(struct watcher_ctx *watcher, struct sock_ctx *skctx);
 // CMD_LSN命令处理：在事件循环内完成监听注册
 void _on_cmd_lsn(struct watcher_ctx *watcher, cmd_ctx *cmd);
-// 发送CMD_UNLSN命令，通知watcher取消监听
-void _cmd_unlisten(struct watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn);
+// 发送CMD_UNLSN命令，通知watcher取消监听，stop 非0失败
+int32_t _cmd_unlisten(struct watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn);
 // CMD_UNLSN命令处理：在事件循环内取消监听
 void _on_cmd_unlsn(struct watcher_ctx *watcher, cmd_ctx *cmd);
 // 发送CMD_LSN_UNREF命令，让 worker 在 _uev_cmd_loop 内减 lsn 占位 ref
-// (ev_unlisten 末尾用, 让减占位在 worker 上下文走 qtn 隔离队列)
-void _cmd_lsn_unref(struct watcher_ctx *watcher, struct listener_ctx *lsn);
+// (ev_unlisten 末尾用, 让减占位在 worker 上下文走 qtn 隔离队列)，stop 非0失败
+int32_t _cmd_lsn_unref(struct watcher_ctx *watcher, struct listener_ctx *lsn);
 // CMD_LSN_UNREF命令处理：在事件循环内减 lsn 占位 ref (ev_unlisten 末尾发的减占位命令)
 void _on_cmd_lsn_unref(struct watcher_ctx *watcher, cmd_ctx *cmd);
 #endif //EV_IOCP

@@ -831,19 +831,19 @@ function srey.on_responsed(func)
 end
 
 ---设置 socket 的会话键（sess），后续该 socket 消息携带此值；0 表示清除
----@type fun(fd:integer, skid:integer, sess:integer)
+---@type fun(fd:integer, skid:integer, sess:integer):boolean
 srey.sock_session = core.session
 
 ---切换 socket 的应用层协议类型
----@type fun(fd:integer, skid:integer, pktype:PACK_TYPE)
+---@type fun(fd:integer, skid:integer, pktype:PACK_TYPE):boolean
 srey.sock_pack_type = core.pack_type
 
 ---设置 socket 状态标志（具体含义由协议层定义）
----@type fun(fd:integer, skid:integer, status:integer)
+---@type fun(fd:integer, skid:integer, status:integer):boolean
 srey.sock_status = core.status
 
 ---将 socket 绑定到指定 task（跨 task 推送场景）
----@type fun(fd:integer, skid:integer, tname:TASK_NAME)
+---@type fun(fd:integer, skid:integer, tname:TASK_NAME):boolean
 srey.sock_bind_task = core.bind_task
 
 ---注册新连接 accept 回调；每次有连接进来在新协程中调用
@@ -947,7 +947,9 @@ function srey.connect(pktype, sslname, ip, port, netev, extra)
     if not srey.wait_connect(fd, skid, ssl) then
         return INVALID_SOCK
     end
-    srey.sock_session(fd, skid, skid)
+    if not srey.sock_session(fd, skid, skid) then
+        return INVALID_SOCK
+    end
     return fd, skid
 end
 
@@ -1388,7 +1390,9 @@ srey.sendto = core.sendto
 ---@return lightuserdata|nil rdata 响应数据指针；仅在本协程下次 yield（再调任意挂起 API）前有效，下次 resume 时框架自动释放，需保留请自行拷贝；超时/失败返回 nil
 ---@return integer|nil rsize 响应数据长度
 function srey.syn_sendto(fd, skid, ip, port, data, size, copy)
-    srey.sock_session(fd, skid, skid)
+    if not srey.sock_session(fd, skid, skid) then
+        return nil
+    end
     if not srey.sendto(fd, skid, ip, port, data, size, copy) then
         srey.sock_session(fd, skid, 0)
         WARN("sendto error, skid %s.", tostring(skid))

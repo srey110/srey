@@ -171,7 +171,8 @@ void ev_unlisten(ev_ctx *ctx, uint64_t id);
 /// <param name="fd">socket句柄</param>
 /// <param name="skid">链接ID</param>
 /// <param name="pktype">数据包类型 pack_type</param>
-void ev_ud_pktype(ev_ctx *ctx, SOCKET fd, uint64_t skid, subtype_t pktype);
+/// <returns>ERR_OK 成功，stop 非0失败</returns>
+int32_t ev_ud_pktype(ev_ctx *ctx, SOCKET fd, uint64_t skid, subtype_t pktype);
 /// <summary>
 /// 设置ud_cxt的状态
 /// </summary>
@@ -179,7 +180,8 @@ void ev_ud_pktype(ev_ctx *ctx, SOCKET fd, uint64_t skid, subtype_t pktype);
 /// <param name="fd">socket句柄</param>
 /// <param name="skid">链接ID</param>
 /// <param name="status">状态</param>
-void ev_ud_status(ev_ctx *ctx, SOCKET fd, uint64_t skid, uint8_t status);
+/// <returns>ERR_OK 成功，stop 非0失败</returns>
+int32_t ev_ud_status(ev_ctx *ctx, SOCKET fd, uint64_t skid, uint8_t status);
 /// <summary>
 /// 设置ud_cxt的session
 /// </summary>
@@ -187,7 +189,8 @@ void ev_ud_status(ev_ctx *ctx, SOCKET fd, uint64_t skid, uint8_t status);
 /// <param name="fd">socket句柄</param>
 /// <param name="skid">链接ID</param>
 /// <param name="sess">session</param>
-void ev_ud_sess(ev_ctx *ctx, SOCKET fd, uint64_t skid, uint64_t sess);
+/// <returns>ERR_OK 成功，stop 非0失败</returns>
+int32_t ev_ud_sess(ev_ctx *ctx, SOCKET fd, uint64_t skid, uint64_t sess);
 /// <summary>
 /// 设置ud_cxt的任务句柄
 /// </summary>
@@ -195,7 +198,8 @@ void ev_ud_sess(ev_ctx *ctx, SOCKET fd, uint64_t skid, uint64_t sess);
 /// <param name="fd">socket句柄</param>
 /// <param name="skid">链接ID</param>
 /// <param name="handle">任务句柄</param>
-void ev_ud_handle(ev_ctx *ctx, SOCKET fd, uint64_t skid, name_t handle);
+/// <returns>ERR_OK 成功，stop 非0失败</returns>
+int32_t ev_ud_handle(ev_ctx *ctx, SOCKET fd, uint64_t skid, name_t handle);
 /// <summary>
 /// 设置ud_cxt的extra
 /// </summary>
@@ -203,7 +207,8 @@ void ev_ud_handle(ev_ctx *ctx, SOCKET fd, uint64_t skid, name_t handle);
 /// <param name="fd">socket句柄</param>
 /// <param name="skid">链接ID</param>
 /// <param name="extra">extra</param>
-void ev_ud_context(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *extra);
+/// <returns>ERR_OK 成功，stop 非0失败</returns>
+int32_t ev_ud_context(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *extra);
 /// <summary>
 /// 设置子协议的ud_cxt的extra,websocket
 /// </summary>
@@ -211,6 +216,7 @@ void ev_ud_context(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *extra);
 /// <param name="fd">socket句柄</param>
 /// <param name="skid">链接ID</param>
 /// <param name="extra">extra</param>
-void ev_ud_seccontext(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *extra);
+/// <returns>ERR_OK 成功，stop 非0失败</returns>
+int32_t ev_ud_seccontext(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *extra);
 
 #endif//EVENT_H_
