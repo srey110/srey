@@ -249,7 +249,7 @@ static void _loader_worker_loop(void *arg) {
         //   则任务已在队列中，此处必然能看到非空，从而跳过 cond_wait。
         //   若生产者在本线程写 waiting 之后读 waiting，则会执行 signal，
         //   cond_wait 不会永久阻塞。
-        if (fsqu_size(&worker->qutasks) > 0) {
+        if (fsqu_size(&worker->qutasks) > 0 || 0 != ATOMIC_GET(&loader->stop)) {
             ATOMIC_ADD(&worker->waiting, -1);
             mutex_unlock(&worker->mutex);
             continue;
@@ -351,11 +351,11 @@ loader_ctx *loader_init(uint16_t nnet, uint16_t nworker, uint32_t twcap) {
         3, 3, 3, 3, 3, 3, 3, 3,
     };
     worker_ctx *worker;
-    uint16_t wn = ARRAY_SIZE(weights);
+    uint16_t i, wn = ARRAY_SIZE(weights);
     // 先把所有 worker 的字段初始化完(fsqu_init/mutex_init/cond_init/timer_init)
     // 再启动 worker 线程;否则 worker[0] 启动后会跨 worker 遍历 worker[1..N-1].qutasks
     // 而后者的 fsqu_init 还在主线程进行中(TSan 报 fsqu_size 的 race)
-    for (uint16_t i = 0; i < loader->nworker; i++) {
+    for (i = 0; i < loader->nworker; i++) {
         worker = &loader->worker[i];
         worker->index = i;
         worker->weight = weights[i % wn];
@@ -366,7 +366,7 @@ loader_ctx *loader_init(uint16_t nnet, uint16_t nworker, uint32_t twcap) {
         timer_init(&worker->timer);
     }
     // pthread_create 的 release barrier 保证 worker 线程能看到第一轮循环的所有写入
-    for (uint16_t i = 0; i < loader->nworker; i++) {
+    for (i = 0; i < loader->nworker; i++) {
         worker = &loader->worker[i];
         worker->thread_worker = thread_creat_hooks(_loader_worker_loop, hooks_worker.init, hooks_worker.exit, worker, hooks_worker.assist);
     }

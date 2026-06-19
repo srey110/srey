@@ -706,6 +706,7 @@ static int32_t _lmysql_free(lua_State *lua) {
         (void)ev_ud_context(&mysql->task->loader->netev, mysql->client.fd, mysql->client.skid, NULL);
         ev_send(&mysql->task->loader->netev, mysql->client.fd, mysql->client.skid, pack, size, 0);
     }
+    secure_zero(mysql->server.salt, sizeof(mysql->server.salt));
     secure_zero(mysql->client.password, sizeof(mysql->client.password));
     return 0;
 }

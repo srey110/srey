@@ -176,7 +176,7 @@ function ctx:copy_in_done()
         self.affected = pgsql.affected_rows(pgpack)
         return true
     end
-    self.err = pgsql.erro(pgpack)
+    self.err = pgsql.erro(pgpack) or ""
     return false
 end
 
@@ -190,7 +190,7 @@ function ctx:copy_in_abort(msg)
     if not pgpack then
         return false
     end
-    self.err = pgsql.erro(pgpack)
+    self.err = pgsql.erro(pgpack) or ""
     return true
 end
 

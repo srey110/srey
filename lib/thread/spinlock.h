@@ -63,7 +63,7 @@ static inline int32_t spin_trylock(spin_ctx *ctx) {
 #elif defined(OS_DARWIN)
     return os_unfair_lock_trylock(ctx) ? ERR_OK : ERR_FAILED;
 #else
-    return pthread_spin_trylock(ctx);
+    return ERR_OK == pthread_spin_trylock(ctx) ? ERR_OK : ERR_FAILED;
 #endif
 };
 /// <summary>

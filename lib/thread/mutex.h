@@ -51,7 +51,7 @@ static inline int32_t mutex_trylock(mutex_ctx *ctx) {
 #if defined(OS_WIN)
     return TRUE == TryEnterCriticalSection(ctx) ? ERR_OK : ERR_FAILED;
 #else
-    return pthread_mutex_trylock(ctx);
+    return ERR_OK == pthread_mutex_trylock(ctx) ? ERR_OK : ERR_FAILED;
 #endif
 };
 /// <summary>

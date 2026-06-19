@@ -171,13 +171,13 @@ uint64_t binary_get_uinteger(binary_ctx *ctx, size_t lens, int32_t islittle) {
     return val;
 }
 float binary_get_float(binary_ctx *ctx, int32_t islittle) {
-    ASSERTAB(ctx->offset + sizeof(float) <= ctx->size, "out of memory.");
+    ASSERTAB(sizeof(float) <= ctx->size - ctx->offset, "out of memory.");
     float val = unpack_float(ctx->data + ctx->offset, islittle);
     ctx->offset += sizeof(val);
     return val;
 }
 double binary_get_double(binary_ctx *ctx, int32_t islittle) {
-    ASSERTAB(ctx->offset + sizeof(double) <= ctx->size, "out of memory.");
+    ASSERTAB(sizeof(double) <= ctx->size - ctx->offset, "out of memory.");
     double val = unpack_double(ctx->data + ctx->offset, islittle);
     ctx->offset += sizeof(val);
     return val;

@@ -256,7 +256,7 @@ int32_t bson_iter_next(bson_iter *iter) {
         iter->key = binary_get_string(iter->doc);
         off = iter->doc->offset;
         lens = binary_get_integer(iter->doc, 4, 1);
-        if (lens < 5 || off > iter->doclens || (size_t)lens > iter->doclens - off) {
+        if (lens < 5 || iter->doc->offset > iter->doclens || (size_t)lens > iter->doclens - off) {
             more = 0;
             LOG_WARN("invalid bson document length %" PRId64 ".", lens);
             break;

@@ -280,6 +280,7 @@ static void _coro_ctx_free(void *arg) {
     size_t iter = 0;
     coro_sess *corosess;
     coro_info *ci;
+    uint32_t i, n;
     // 注意：上面已释放整个 timeout_heap，此处 coinfo->te 均为悬空指针，禁止解引用；
     // 仅销毁 coinfo->co 协程对象即可，te 内存随堆释放无需单独 FREE
     while (hashmap_iter(coctx->mapco, &iter, (void **)&corosess)) {
@@ -290,8 +291,8 @@ static void _coro_ctx_free(void *arg) {
             }
         } else {
             /* 持久 session：逐项销毁队列中每个挂起协程，再释放 ptr 数组 */
-            uint32_t n = queue_size(&corosess->qucoinfo);
-            for (uint32_t i = 0; i < n; i++) {
+            n = queue_size(&corosess->qucoinfo);
+            for (i = 0; i < n; i++) {
                 ci = queue_at(&corosess->qucoinfo, i);
                 if (NULL != ci && NULL != ci->co) {
                     mco_destroy(ci->co);
@@ -780,6 +781,9 @@ static void _coro_fork_wait_stub(task_ctx *task, void *arg) {
         coctx->curco = b->waiter;
         mco_result rtn = mco_resume(b->waiter);
         ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
+        if (MCO_DEAD == mco_status(b->waiter)) {// 池满导致 _coro_mco_cb 返回，协程已死亡，须在此释放
+            mco_destroy(b->waiter);
+        }
     }
 }
 void coro_fork(task_ctx *task,
@@ -856,13 +860,17 @@ static void _coro_serial_release(coro_serial_ctx *serial) {
         serial->tail = NULL;
     }
     // 唤醒前先设置 current/ref，nxt 唤醒后读取看到一致状态
-    serial->current = nxt->co;
+    mco_coro *wco = nxt->co;
+    serial->current = wco;
     serial->ref = 1;
     coro_ctx *coctx = (coro_ctx *)serial->task->arg;
-    coctx->curco = nxt->co;
-    mco_result rtn = mco_resume(nxt->co);
+    coctx->curco = wco;
+    mco_result rtn = mco_resume(wco);
     ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
     FREE(nxt);
+    if (MCO_DEAD == mco_status(wco)) {// 池满导致 _coro_mco_cb 返回，协程已死亡，须在此释放
+        mco_destroy(wco);
+    }
 }
 int32_t coro_serial_call(coro_serial_ctx *serial,
                     void (*func)(task_ctx *task, void *arg),

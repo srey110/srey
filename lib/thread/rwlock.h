@@ -54,7 +54,7 @@ static inline int32_t rwlock_tryrdlock(rwlock_ctx *ctx) {
 #if defined(OS_WIN)
     return 0 != TryAcquireSRWLockShared(&ctx->rwlock) ? ERR_OK : ERR_FAILED;
 #else
-    return pthread_rwlock_tryrdlock(&ctx->rwlock);
+    return ERR_OK == pthread_rwlock_tryrdlock(&ctx->rwlock) ? ERR_OK : ERR_FAILED;
 #endif
 };
 /// <summary>
@@ -82,7 +82,7 @@ static inline int32_t rwlock_trywrlock(rwlock_ctx *ctx) {
     }
     return ERR_FAILED;
 #else
-    return pthread_rwlock_trywrlock(&ctx->rwlock);
+    return ERR_OK == pthread_rwlock_trywrlock(&ctx->rwlock) ? ERR_OK : ERR_FAILED;
 #endif
 };
 /// <summary>

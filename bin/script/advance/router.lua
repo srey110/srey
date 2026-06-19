@@ -145,6 +145,9 @@ local function _parse(path)
         if "wild" == segs[i].t then
             return nil, "wildcard '*' must be the last segment"
         end
+        if "opt" == segs[i].t then
+            return nil, "optional param '{x?}' must be the last segment"
+        end
     end
     return segs
 end
