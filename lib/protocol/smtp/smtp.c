@@ -440,6 +440,9 @@ void *smtp_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt 
     case COMMAND:
         pack = _smtp_command(buf, size, status);
         break;
+    default:
+        BIT_SET(*status, PROT_ERROR);
+        break;
     }
     return pack;
 }

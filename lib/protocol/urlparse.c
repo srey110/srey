@@ -293,8 +293,11 @@ size_t url_reorg_param(url_ctx *ctx, char *param, size_t cap) {
     url_param *p;
     for (int32_t i = 0; i < URL_MAX_PARAM; i++) {
         p = &ctx->param[i];
-        if (buf_empty(&p->key)) {
+        if (NULL == p->key.data) {
             break;
+        }
+        if (0 == p->key.lens) {
+            continue;
         }
         // '&' + key + '=' + val + '\0' 放不下则截断
         size_t need = (i > 0 ? 1 : 0) + p->key.lens + 1 + p->val.lens;
@@ -320,9 +323,11 @@ buf_ctx *url_get_param(url_ctx *ctx, const char *key) {
     size_t klens = strlen(key);
     for (int32_t i = 0; i < URL_MAX_PARAM; i++) {
         param = &ctx->param[i];
-        if (NULL == param->key.data
-            || 0 == param->key.lens) {
+        if (NULL == param->key.data) {
             break;
+        }
+        if (0 == param->key.lens) {
+            continue;
         }
         if (buf_compare(&param->key, key, klens)) {
             return &param->val;

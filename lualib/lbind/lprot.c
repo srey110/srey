@@ -637,6 +637,9 @@ static int32_t _lprot_smtp_sock_id(lua_State *lua) {
 static int32_t _lprot_smtp_try_connect(lua_State *lua) {
     smtp_ctx *smtp = luaL_checkudata(lua, 1, MT_SMTP);
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
+    if (NULL == task) {
+        return luaL_error(lua, "task is nil");
+    }
     int32_t rtn = smtp_try_connect(task, smtp);
     if (ERR_OK == rtn) {
         lua_pushboolean(lua, 1);

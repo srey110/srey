@@ -10,6 +10,9 @@
 /// <returns type="boolean">成功投递 true;key 非法/datacenter 不可达 false</returns>
 static int32_t _ldc_set(lua_State *lua) {
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
+    if (NULL == task) {
+        return luaL_error(lua, "task is nil");
+    }
     name_t dc_name = (LUA_TSTRING == lua_type(lua, 1))
         ? task_find_name(g_loader, lua_tostring(lua, 1))
         : (name_t)luaL_checkinteger(lua, 1);
@@ -29,6 +32,9 @@ static int32_t _ldc_set(lua_State *lua) {
 /// <returns type="boolean">成功投递 true;key 非法/sess=0/datacenter 不可达 false</returns>
 static int32_t _ldc_get(lua_State *lua) {
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
+    if (NULL == task) {
+        return luaL_error(lua, "task is nil");
+    }
     name_t dc_name = (LUA_TSTRING == lua_type(lua, 1))
         ? task_find_name(g_loader, lua_tostring(lua, 1))
         : (name_t)luaL_checkinteger(lua, 1);
@@ -46,6 +52,9 @@ static int32_t _ldc_get(lua_State *lua) {
 /// <returns type="boolean">成功投递 true;key 非法/sess=0/datacenter 不可达 false</returns>
 static int32_t _ldc_wait(lua_State *lua) {
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
+    if (NULL == task) {
+        return luaL_error(lua, "task is nil");
+    }
     name_t dc_name = (LUA_TSTRING == lua_type(lua, 1))
         ? task_find_name(g_loader, lua_tostring(lua, 1))
         : (name_t)luaL_checkinteger(lua, 1);
@@ -63,6 +72,9 @@ static int32_t _ldc_wait(lua_State *lua) {
 /// <returns type="boolean">成功投递 true;key 非法/datacenter 不可达 false</returns>
 static int32_t _ldc_del(lua_State *lua) {
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
+    if (NULL == task) {
+        return luaL_error(lua, "task is nil");
+    }
     name_t dc_name = (LUA_TSTRING == lua_type(lua, 1))
         ? task_find_name(g_loader, lua_tostring(lua, 1))
         : (name_t)luaL_checkinteger(lua, 1);
@@ -79,6 +91,9 @@ static int32_t _ldc_del(lua_State *lua) {
 /// <returns type="boolean">成功投递 true;sess=0/datacenter 不可达 false</returns>
 static int32_t _ldc_keys(lua_State *lua) {
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
+    if (NULL == task) {
+        return luaL_error(lua, "task is nil");
+    }
     name_t dc_name = (LUA_TSTRING == lua_type(lua, 1))
         ? task_find_name(g_loader, lua_tostring(lua, 1))
         : (name_t)luaL_checkinteger(lua, 1);

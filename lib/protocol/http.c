@@ -188,7 +188,7 @@ static int32_t _http_parse_head(http_pack_ctx *pack, int32_t *transfer) {
     char *pcrlf;
     size_t least = 2 * CRLF_SIZE + 1;//\r\n\r\n + :
     http_header_ctx field;
-    while ((size_t)(head + least - (char *)pack->head.data) <= pack->head.lens) {
+    while ((size_t)(head - (char *)pack->head.data) + least <= pack->head.lens) {
         head = skipempty(head, HEAD_REMAIN);
         if (NULL == head) {
             return ERR_FAILED;

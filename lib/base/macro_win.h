@@ -40,7 +40,6 @@ static inline int _swprintf_safe(wchar_t *buf, size_t size, const wchar_t *fmt, 
     return n;
 }
 #define SWPRINTF _swprintf_safe    // 宽字符格式化输出（自动补 NUL）
-#define STRNCPY  strncpy_s         // 安全的固定长度字符串复制
 #define FSTAT    _stat             // 获取文件状态
 // 微秒级睡眠（Windows 使用可等待定时器实现）
 #define USLEEP(us)\

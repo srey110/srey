@@ -140,6 +140,8 @@
     #include <MSTcpIP.h>
     #include <mswsock.h>
     #include <sys/timeb.h>
+    #include <DbgHelp.h>
+    #include <bcrypt.h>
 #else
     #include <unistd.h>
     #include <signal.h>    
@@ -159,8 +161,9 @@
     #include <sys/poll.h>
     #include <sched.h>
     #ifndef OS_AIX
+        #include <execinfo.h>
         #include <sys/syscall.h>
-    #endif    
+    #endif
     #include <sys/resource.h>
     #include <sys/uio.h>
     #include <net/if.h>    

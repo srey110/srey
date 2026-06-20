@@ -31,7 +31,6 @@
 #define STRTOK   strtok_r       // 线程安全的字符串分割
 #define SNPRINTF snprintf       // 格式化输出到缓冲区
 #define SWPRINTF swprintf       // 宽字符格式化输出
-#define STRNCPY  strncpy        // 固定长度字符串复制
 #define FSTAT    stat           // 获取文件状态
 #define USLEEP(us) usleep(us)   // 微秒级睡眠
 #define MSLEEP(ms) usleep((ms) * 1000) // 毫秒级睡眠

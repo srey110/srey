@@ -900,6 +900,9 @@ static int32_t _lpgsql_free(lua_State *lua) {
 static int32_t _lpgsql_try_connect(lua_State *lua) {
     pgsql_ctx *pg = luaL_checkudata(lua, 1, MT_PGSQL);
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
+    if (NULL == task) {
+        return luaL_error(lua, "task is nil");
+    }
     if (ERR_OK == pgsql_try_connect(task, pg)) {
         lua_pushboolean(lua, 1);
     } else {

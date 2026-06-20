@@ -3,6 +3,7 @@
 
 // 长度前缀字符串字段：2 字节大端长度 + 体（lens==0 仅写长度）
 static void _mqtt_pack_lenstr(binary_ctx *bw, const void *buf, size_t lens) {
+    ASSERTAB(lens <= UINT16_MAX, "mqtt string/binary length must be <= 65535");
     binary_set_uinteger(bw, lens, 2, 0);
     binary_set_binary(bw, (const char *)buf, lens);
 }
@@ -127,6 +128,9 @@ static int32_t _mqtt_props_varlens(mqtt_protversion version, binary_ctx *props, 
     if (NULL == props) {
         occupy = varint_encode_mqtt(0, vlens);
     } else {
+        if (props->offset > UINT32_MAX) {
+            return ERR_FAILED;
+        }
         (*off) += (uint32_t)props->offset;
         occupy = varint_encode_mqtt((uint32_t)props->offset, vlens);
     }
@@ -184,6 +188,12 @@ char *mqtt_pack_connect(mqtt_protversion version, int8_t cleanstart, int16_t kee
             return NULL;
         }
     }
+    if (cidlens > UINT16_MAX
+        || (willflag && (wtlens > UINT16_MAX || wplens > UINT16_MAX))
+        || (userflag && ulens > UINT16_MAX)
+        || (passwordflag && pwlens > UINT16_MAX)) {
+        return NULL;
+    }
     // 用 size_t 累加用户提供的字符串长度，避免各路 (uint32_t) 截断
     size_t payloads = cidlens + 2;//客户标识符
     if (willflag) {
@@ -232,20 +242,14 @@ char *mqtt_pack_connect(mqtt_protversion version, int8_t cleanstart, int16_t kee
                 binary_set_binary(&bwriter, willprops->data, willprops->offset);//属性
             }
         }
-        binary_set_integer(&bwriter, wtlens, 2, 0);
-        binary_set_binary(&bwriter, willtopic, wtlens);//遗嘱主题
-        binary_set_integer(&bwriter, wplens, 2, 0);
-        if (wplens > 0) {
-            binary_set_binary(&bwriter, willpayload, wplens);//遗嘱载荷
-        }
+        _mqtt_pack_lenstr(&bwriter, willtopic, wtlens);//遗嘱主题
+        _mqtt_pack_lenstr(&bwriter, willpayload, wplens);//遗嘱载荷
     }
     if (userflag) {
-        binary_set_integer(&bwriter, ulens, 2, 0);
-        binary_set_binary(&bwriter, user, ulens);//用户名
+        _mqtt_pack_lenstr(&bwriter, user, ulens);//用户名
     }
     if (passwordflag) {
-        binary_set_integer(&bwriter, pwlens, 2, 0);
-        binary_set_binary(&bwriter, password, pwlens);//密码 
+        _mqtt_pack_lenstr(&bwriter, password, pwlens);//密码
     }
     *lens = bwriter.offset;
     return bwriter.data;
@@ -296,6 +300,9 @@ char *mqtt_pack_publish(mqtt_protversion version, int8_t retain, int8_t qos, int
     BIT_SETN(fixhead, 3, dup);//重发标志
     //计算剩余长度
     size_t tlens = strlen(topic);
+    if (tlens > UINT16_MAX) {
+        return NULL;
+    }
     uint32_t total = 2 + (uint32_t)tlens;//主题名
     if (1 == qos
         || 2 == qos) {//只有当QoS等级是1或2时，报文标识符字段才能出现在报文中
@@ -307,6 +314,9 @@ char *mqtt_pack_publish(mqtt_protversion version, int8_t retain, int8_t qos, int
         return NULL;
     }
     if (NULL != payload) {
+        if (pllens > (size_t)(UINT32_MAX - total)) {
+            return NULL;
+        }
         total += (uint32_t)pllens;
     }
     //编码剩余长度

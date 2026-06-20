@@ -679,10 +679,10 @@ uint32_t buffer_get(buffer_ctx *ctx, size_t atmost, IOV_TYPE *iov, const uint32_
 }
 void buffer_commit_get(buffer_ctx *ctx, size_t lens) {
     ASSERTAB(1 == ctx->freeze_read, "read unfreezed.");
+    ctx->freeze_read = 0;
     if (lens > 0) {
         buffer_drain(ctx, lens);
     }
-    ctx->freeze_read = 0;
 }
 int32_t buffer_from_sock(buffer_ctx *ctx, SOCKET fd, size_t *nread,
     int32_t(*_readv)(SOCKET, IOV_TYPE *, uint32_t, void *, size_t *), void *arg) {

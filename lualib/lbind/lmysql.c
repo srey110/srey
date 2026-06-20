@@ -721,6 +721,9 @@ static int32_t _lmysql_free(lua_State *lua) {
 static int32_t _lmysql_try_connect(lua_State *lua) {
     mysql_ctx *mysql = luaL_checkudata(lua, 1, MT_MYSQL);
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
+    if (NULL == task) {
+        return luaL_error(lua, "task is nil");
+    }
     int32_t rtn = mysql_try_connect(task, mysql);
     if (ERR_OK == rtn) {
         lua_pushboolean(lua, 1);

@@ -146,13 +146,13 @@ char *binary_at(binary_ctx *ctx, size_t pos) {
     return ctx->data + pos;
 }
 int8_t binary_get_int8(binary_ctx *ctx) {
-    ASSERTAB(ctx->offset + sizeof(int8_t) <= ctx->size, "out of memory.");
+    ASSERTAB(sizeof(int8_t) <= ctx->size - ctx->offset, "out of memory.");
     int8_t val = (ctx->data + ctx->offset)[0];
     ctx->offset += sizeof(val);
     return val;
 }
 uint8_t binary_get_uint8(binary_ctx *ctx) {
-    ASSERTAB(ctx->offset + sizeof(uint8_t) <= ctx->size, "out of memory.");
+    ASSERTAB(sizeof(uint8_t) <= ctx->size - ctx->offset, "out of memory.");
     uint8_t val = (uint8_t)(ctx->data + ctx->offset)[0];
     ctx->offset += sizeof(val);
     return val;

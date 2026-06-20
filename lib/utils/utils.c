@@ -4,8 +4,6 @@
 
 #ifdef OS_WIN
 #pragma warning(disable:4091)
-#include <DbgHelp.h>
-#include <bcrypt.h>
 #pragma comment(lib, "Dbghelp.lib" )
 #pragma comment(lib, "Bcrypt.lib")
 static atomic_t _exindex = 0;
@@ -1230,9 +1228,9 @@ int32_t randrange(int32_t min, int32_t max) {
     ASSERTAB(max >= min, "rand range max must >= min.");
     uint32_t range = ((uint32_t)max - (uint32_t)min) + 1;
     if (0 == range) {
-        return min + (int32_t)(_xorshift64() >> 32);
+        return (int32_t)(_xorshift64() >> 32);
     }
-    return min + (int32_t)(_xorshift64() % range);
+    return (int32_t)((uint32_t)min + (uint32_t)(_xorshift64() % range));
 }
 // buf 必须至少分配 len+1 字节；函数在 buf[len] 处写 '\0'
 char *randstr(char *buf, size_t len) {

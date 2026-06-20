@@ -12,14 +12,17 @@ static atomic64_t _nfree  = 0; // 累计释放次数（原子计数）
 #endif
 
 #if MEMORY_CHECK && MEMORY_TRACE
-// ===== 分配调用栈追踪：记录每次分配的 backtrace，_memcheck 时 dump 未释放块 =====
-#if defined(OS_WIN)
-#include <DbgHelp.h>
-#else
-#include <execinfo.h>
-#endif
 #define MEM_TRK_BUCKET 65536 // 活动分配哈希桶数（2 的幂）
-#define MEM_TRK_FRAMES 32    // 单条记录最大栈帧数
+#define MEM_TRK_FRAMES 32 // 单条记录最大栈帧数
+#if defined(OS_WIN)
+    static SRWLOCK _trk_lock = SRWLOCK_INIT;
+    #define MEM_TRK_LOCK()   AcquireSRWLockExclusive(&_trk_lock)
+    #define MEM_TRK_UNLOCK() ReleaseSRWLockExclusive(&_trk_lock)
+#else
+    static pthread_mutex_t _trk_lock = PTHREAD_MUTEX_INITIALIZER;
+    #define MEM_TRK_LOCK()   pthread_mutex_lock(&_trk_lock)
+    #define MEM_TRK_UNLOCK() pthread_mutex_unlock(&_trk_lock)
+#endif
 // 活动分配记录：ptr -> 调用栈，按 ptr 哈希链式存储
 typedef struct mem_trk_ctx {
     int32_t frames;
@@ -28,15 +31,6 @@ typedef struct mem_trk_ctx {
     void *stack[MEM_TRK_FRAMES];
 }mem_trk_ctx;
 static mem_trk_ctx *_trk_bucket[MEM_TRK_BUCKET];
-#if defined(OS_WIN)
-static SRWLOCK _trk_lock = SRWLOCK_INIT;
-#define MEM_TRK_LOCK()   AcquireSRWLockExclusive(&_trk_lock)
-#define MEM_TRK_UNLOCK() ReleaseSRWLockExclusive(&_trk_lock)
-#else
-static pthread_mutex_t _trk_lock = PTHREAD_MUTEX_INITIALIZER;
-#define MEM_TRK_LOCK()   pthread_mutex_lock(&_trk_lock)
-#define MEM_TRK_UNLOCK() pthread_mutex_unlock(&_trk_lock)
-#endif
 // ptr 哈希到桶下标（低位通常为对齐 0，右移消除）
 static size_t _trk_hash(void *ptr) {
     return ((uintptr_t)ptr >> 4) & (MEM_TRK_BUCKET - 1);
@@ -46,7 +40,11 @@ static int32_t _trk_capture(void **stack, int32_t max) {
 #if defined(OS_WIN)
     return (int32_t)CaptureStackBackTrace(2, (DWORD)max, stack, NULL);
 #else
-    return backtrace(stack, max);
+    void *tmp[MEM_TRK_FRAMES + 2];
+    int32_t n = backtrace(tmp, max + 2);
+    n = n > 2 ? n - 2 : 0;
+    memcpy(stack, tmp + 2, (size_t)n * sizeof(void *));
+    return n;
 #endif
 }
 // 记录一次分配（节点用系统 malloc，不计入 _nalloc/_nfree）
@@ -72,10 +70,11 @@ static void _trk_del(void *ptr) {
         return;
     }
     MEM_TRK_LOCK();
+    mem_trk_ctx *dead;
     mem_trk_ctx **pp = &_trk_bucket[_trk_hash(ptr)];
     while (NULL != *pp) {
         if ((*pp)->ptr == ptr) {
-            mem_trk_ctx *dead = *pp;
+            dead = *pp;
             *pp = dead->next;
             _FREE(dead);
             break;
@@ -93,9 +92,9 @@ static void _trk_print(const mem_trk_ctx *node) {
     sym->SizeOfStruct = sizeof(SYMBOL_INFO);
     sym->MaxNameLen = 255;
     HANDLE proc = GetCurrentProcess();
-    int32_t i;
-    for (i = 0; i < node->frames; i++) {
-        DWORD64 disp = 0;
+    DWORD64 disp;
+    for (int32_t i = 0; i < node->frames; i++) {
+        disp = 0;
         if (SymFromAddr(proc, (DWORD64)(uintptr_t)node->stack[i], &disp, sym)) {
             fprintf(stderr, "  %2d %s + 0x%llx\n", i, sym->Name, (unsigned long long)disp);
         } else {
@@ -113,9 +112,8 @@ static void _trk_dump(void) {
     SymInitialize(GetCurrentProcess(), NULL, TRUE);
 #endif
     MEM_TRK_LOCK();
-    size_t slot;
-    for (slot = 0; slot < MEM_TRK_BUCKET; slot++) {
-        mem_trk_ctx *node;
+    mem_trk_ctx *node;
+    for (size_t slot = 0; slot < MEM_TRK_BUCKET; slot++) {
         for (node = _trk_bucket[slot]; NULL != node; node = node->next) {
             _trk_print(node);
         }
