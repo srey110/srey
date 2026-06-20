@@ -21,19 +21,21 @@ int32_t mqtt_props_kv(binary_ctx *props, mqtt_prop_flag flag, void *key, size_t 
 /// 1:表示向此订阅转发应用消息时保持消息被发布时设置的保留(RETAIN)标志。
 /// 0:表示向此订阅转发应用消息时把保留标志设置为0。当订阅建立之后，发送保留消息时保留标志设置为1。
 /// </param>
-/// <param name="retain">保留操作(MQTT5.0) 
-/// 0:订阅建立时发送保留消息 
+/// <param name="retain">保留操作(MQTT5.0)
+/// 0:订阅建立时发送保留消息
 /// 1:订阅建立时，若该订阅当前不存在则发送保留消息
 /// 2:订阅建立时不要发送保留消息
 /// </param>
-void mqtt_topics_subscribe(binary_ctx *topics, mqtt_protversion version, const char *topic,
+/// <returns>ERR_OK 成功；ERR_FAILED topic 长度超过 65535 字节被跳过</returns>
+int32_t mqtt_topics_subscribe(binary_ctx *topics, mqtt_protversion version, const char *topic,
     int8_t qos, int8_t nl, int8_t rap, int8_t retain);
 /// <summary>
 /// 取消订阅 主题打包
 /// </summary>
 /// <param name="topics">binary_ctx</param>
 /// <param name="topic">主题名 UTF-8字符串</param>
-void mqtt_topics_unsubscribe(binary_ctx *topics, const char *topic);
+/// <returns>ERR_OK 成功；ERR_FAILED topic 长度超过 65535 字节被跳过</returns>
+int32_t mqtt_topics_unsubscribe(binary_ctx *topics, const char *topic);
 /// <summary>
 /// 连接请求
 /// </summary>

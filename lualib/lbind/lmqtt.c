@@ -120,29 +120,29 @@ static int32_t _lmqtt_props_kv(lua_State *lua) {
 /// <param name="nl" type="integer?">No Local 标志（MQTT 5.0），3.1.1 传 0；默认 0</param>
 /// <param name="rap" type="integer?">Retain As Published 标志（MQTT 5.0），3.1.1 传 0；默认 0</param>
 /// <param name="retain" type="integer?">Retain Handling（MQTT 5.0），3.1.1 传 0；默认 0</param>
-/// <returns>无</returns>
+/// <returns type="boolean">true 成功；false topic 长度超过 65535 字节</returns>
 static int32_t _lmqtt_props_subscribe(lua_State *lua) {
     binary_ctx *topics = luaL_checkudata(lua, 1, MT_MQTT_PROPS);
     mqtt_protversion version = (mqtt_protversion)luaL_checkinteger(lua, 2);
     const char *topic = luaL_checkstring(lua, 3);
-    int8_t qos    = (int8_t)luaL_checkinteger(lua, 4);
-    int8_t nl     = (int8_t)luaL_optinteger(lua, 5, 0);
-    int8_t rap    = (int8_t)luaL_optinteger(lua, 6, 0);
+    int8_t qos = (int8_t)luaL_checkinteger(lua, 4);
+    int8_t nl = (int8_t)luaL_optinteger(lua, 5, 0);
+    int8_t rap = (int8_t)luaL_optinteger(lua, 6, 0);
     int8_t retain = (int8_t)luaL_optinteger(lua, 7, 0);
-    mqtt_topics_subscribe(topics, version, topic, qos, nl, rap, retain);
-    return 0;
+    lua_pushboolean(lua, ERR_OK == mqtt_topics_subscribe(topics, version, topic, qos, nl, rap, retain));
+    return 1;
 }
 /// <summary>
 /// 向 topics 缓冲区追加一条取消订阅主题
 /// </summary>
 /// <param name="self" type="userdata">topics 缓冲区</param>
 /// <param name="topic" type="string">主题</param>
-/// <returns>无</returns>
+/// <returns type="boolean">true 成功；false topic 长度超过 65535 字节</returns>
 static int32_t _lmqtt_props_unsubscribe(lua_State *lua) {
     binary_ctx *topics = luaL_checkudata(lua, 1, MT_MQTT_PROPS);
     const char *topic = luaL_checkstring(lua, 2);
-    mqtt_topics_unsubscribe(topics, topic);
-    return 0;
+    lua_pushboolean(lua, ERR_OK == mqtt_topics_unsubscribe(topics, topic));
+    return 1;
 }
 /// <summary>
 /// 返回缓冲区当前已写入数据。调用方拿到指针后禁止再写入 props(后续 realloc 会让返回指针悬挂);

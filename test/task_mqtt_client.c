@@ -130,7 +130,10 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid,
         }
         binary_ctx topics;
         binary_init(&topics, NULL, 0, 0);
-        mqtt_topics_subscribe(&topics, pack->version, "/test/topic1", 1, 1, 1, 1);
+        if (ERR_OK != mqtt_topics_subscribe(&topics, pack->version, "/test/topic1", 1, 1, 1, 1)) {
+            binary_free(&topics);
+            break;
+        }
         size_t lens;
         char *pk = mqtt_pack_subscribe(pack->version, (int16_t)randrange(100, 20000), &topics, NULL, &lens);
         binary_free(&topics);
@@ -151,7 +154,10 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid,
         if (0x00 == pl->reasons[0] || 0x01 == pl->reasons[0] || 0x02 == pl->reasons[0]) {
             binary_ctx topics;
             binary_init(&topics, NULL, 0, 0);
-            mqtt_topics_unsubscribe(&topics, "/test/topic1");
+            if (ERR_OK != mqtt_topics_unsubscribe(&topics, "/test/topic1")) {
+                binary_free(&topics);
+                break;
+            }
             size_t lens;
             char *pk = mqtt_pack_unsubscribe(pack->version, (int16_t)randrange(100, 20000), &topics, NULL, &lens);
             binary_free(&topics);

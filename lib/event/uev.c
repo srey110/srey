@@ -542,6 +542,8 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
 static void _uev_free_pipe(watcher_ctx *watcher) {
     void *data;
     sock_ctx *skctx;
+    shared_data *pack;
+    udp_opt_arg *udp_arg;
     int32_t j, cnt;
     cmd_ctx cmds[CMD_MAX_NREAD];
     for (;;) {
@@ -567,20 +569,18 @@ static void _uev_free_pipe(watcher_ctx *watcher) {
                 FREE(data);
                 break;
             // CMD_SEND_MULTI 持有 shared_data*；多 fd 共享,归还本 fd 引用归 0 时释放
-            case CMD_SEND_MULTI: {
-                shared_data *pack = (shared_data *)cmds[j].arg;
+            case CMD_SEND_MULTI:
+                pack = (shared_data *)cmds[j].arg;
                 if (1 == ATOMIC_ADD(&pack->ref, -1)) {
                     FREE(pack->data);
                     FREE(pack);
                 }
                 break;
-            }
             // CMD_UDP_OPT 持有 udp_opt_arg*；watcher 退出时未执行的命令直接释放参数包
-            case CMD_UDP_OPT: {
-                udp_opt_arg *udp_arg = (udp_opt_arg *)cmds[j].arg;
+            case CMD_UDP_OPT:
+                udp_arg = (udp_opt_arg *)cmds[j].arg;
                 FREE(udp_arg);
                 break;
-            }
             case CMD_CONN:
                 skctx = (sock_ctx *)cmds[j].arg;
                 _evpub_sk_free(skctx);

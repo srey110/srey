@@ -3,9 +3,14 @@
 // 辅助宏：若栈上指定位置为整数则取其值，否则默认为 1（复制语义）
 #define COPY_TYPE(lua, idx) (lua_isinteger(lua, idx) ? (int32_t)luaL_checkinteger(lua, idx) : 1)
 
+typedef struct _task_entry {
+    name_t handle;
+    char name[64];
+}_task_entry;
 typedef struct _task_list_arg {
     int32_t n;
-    lua_State *lua;
+    size_t cap;
+    _task_entry *entries;
 }_task_list_arg;
 
 /// <summary>
@@ -579,29 +584,48 @@ static int32_t _lcore_may_resume(lua_State *lua) {
     }
     return 1;
 }
-// task_list 收集回调：把 {name=名, handle=句柄} 追加进栈顶数组（匿名 task 省略 name 字段）
+// task_list 收集回调：仅存入 C 数组，不调 Lua API，避免 OOM longjmp 绕过 rwlock 解锁
 static void _lcore_task_list_collect(const char *name, name_t handle, void *arg) {
     _task_list_arg *c = (_task_list_arg *)arg;
-    c->n++;
-    lua_newtable(c->lua);
-    if (NULL != name) {
-        lua_pushstring(c->lua, name);
-        lua_setfield(c->lua, -2, "name");
+    if (c->n >= c->cap) {
+        _task_entry *newel;
+        size_t newcap = c->cap * 2;
+        REALLOC(newel, c->entries, newcap * sizeof(_task_entry));
+        c->cap = newcap;
+        c->entries = newel;
     }
-    lua_pushinteger(c->lua, (lua_Integer)handle);
-    lua_setfield(c->lua, -2, "handle");
-    lua_rawseti(c->lua, -2, c->n);
+    c->entries[c->n].handle = handle;
+    if (NULL != name) {
+        strncpy(c->entries[c->n].name, name, sizeof(c->entries[c->n].name) - 1);
+        c->entries[c->n].name[sizeof(c->entries[c->n].name) - 1] = '\0';
+    } else {
+        c->entries[c->n].name[0] = '\0';
+    }
+    c->n++;
 }
 /// <summary>
 /// 枚举当前 loader 已注册的所有 task（C 层列表）
 /// </summary>
 /// <returns type="table">{name,handle} 对象数组（name 字符串、handle 整数；匿名 task 无 name 字段）；无 task 时空表</returns>
 static int32_t _lcore_task_list(lua_State *lua) {
-    lua_newtable(lua);
     _task_list_arg c;
-    c.n = 0;
-    c.lua = lua;
+    ZERO(&c, sizeof(c));
+    c.cap = 128;
+    CALLOC(c.entries, c.cap, sizeof(_task_entry));
     loader_task_each(g_loader, _lcore_task_list_collect, &c);
+    lua_newtable(lua);
+    int32_t i = 0;
+    for (; i < c.n; i++) {
+        lua_newtable(lua);
+        if ('\0' != c.entries[i].name[0]) {
+            lua_pushstring(lua, c.entries[i].name);
+            lua_setfield(lua, -2, "name");
+        }
+        lua_pushinteger(lua, (lua_Integer)c.entries[i].handle);
+        lua_setfield(lua, -2, "handle");
+        lua_rawseti(lua, -2, i + 1);
+    }
+    FREE(c.entries);
     return 1;
 }
 /// <summary>

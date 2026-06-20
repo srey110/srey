@@ -66,6 +66,9 @@ int32_t mqtt_props_varnum(binary_ctx *props, mqtt_prop_flag flag, uint32_t val) 
     return ERR_OK;
 }
 int32_t mqtt_props_binary(binary_ctx *props, mqtt_prop_flag flag, void *data, size_t lens) {
+    if (lens > UINT16_MAX) {
+        return ERR_FAILED;
+    }
     size_t saved_offset = props->offset;
     binary_set_uint8(props, (uint8_t)flag);
     switch (flag) {
@@ -87,6 +90,9 @@ int32_t mqtt_props_binary(binary_ctx *props, mqtt_prop_flag flag, void *data, si
     return ERR_OK;
 }
 int32_t mqtt_props_kv(binary_ctx *props, mqtt_prop_flag flag, void *key, size_t klens, void *val, size_t vlens) {
+    if (klens > UINT16_MAX || vlens > UINT16_MAX) {
+        return ERR_FAILED;
+    }
     size_t saved_offset = props->offset;
     binary_set_uint8(props, (uint8_t)flag);
     switch (flag) {
@@ -100,7 +106,7 @@ int32_t mqtt_props_kv(binary_ctx *props, mqtt_prop_flag flag, void *key, size_t 
     }
     return ERR_OK;
 }
-void mqtt_topics_subscribe(binary_ctx *topics, mqtt_protversion version, const char *topic,
+int32_t mqtt_topics_subscribe(binary_ctx *topics, mqtt_protversion version, const char *topic,
     int8_t qos, int8_t nl, int8_t rap, int8_t retain) {
     int8_t subop = 0;
     BIT_SETN(subop, 0, (BIT_GETN(qos, 0)));
@@ -112,12 +118,20 @@ void mqtt_topics_subscribe(binary_ctx *topics, mqtt_protversion version, const c
         BIT_SETN(subop, 5, (BIT_GETN(retain, 1)));//Retain Handling
     }
     size_t tlens = strlen(topic);
+    if (tlens > UINT16_MAX) {
+        return ERR_FAILED;
+    }
     _mqtt_pack_lenstr(topics, topic, tlens);
     binary_set_int8(topics, subop);
+    return ERR_OK;
 }
-void mqtt_topics_unsubscribe(binary_ctx *topics, const char *topic) {
+int32_t mqtt_topics_unsubscribe(binary_ctx *topics, const char *topic) {
     size_t tlens = strlen(topic);
+    if (tlens > UINT16_MAX) {
+        return ERR_FAILED;
+    }
     _mqtt_pack_lenstr(topics, topic, tlens);
+    return ERR_OK;
 }
 // 计算并编码属性段长度（MQTT5.0），返回属性长度字段占用字节数；非5.0版本返回0
 static int32_t _mqtt_props_varlens(mqtt_protversion version, binary_ctx *props, char vlens[4], uint32_t *off) {
@@ -425,6 +439,9 @@ char *mqtt_pack_subscribe(mqtt_protversion version, int16_t packid, binary_ctx *
     if (ERR_FAILED == pvoccupy) {
         return NULL;
     }
+    if (topics->offset > (size_t)(UINT32_MAX - total)) {
+        return NULL;
+    }
     total += (uint32_t)topics->offset;
     //编码剩余长度
     char rmain[4];
@@ -455,6 +472,9 @@ char *mqtt_pack_suback(mqtt_protversion version, int16_t packid, uint8_t *reason
     char pvlens[4];
     int32_t pvoccupy = _mqtt_props_varlens(version, props, pvlens, &total);
     if (ERR_FAILED == pvoccupy) {
+        return NULL;
+    }
+    if (rslens > (size_t)(UINT32_MAX - total)) {
         return NULL;
     }
     total += (uint32_t)rslens;
@@ -490,6 +510,9 @@ char *mqtt_pack_unsubscribe(mqtt_protversion version, int16_t packid, binary_ctx
     if (ERR_FAILED == pvoccupy) {
         return NULL;
     }
+    if (topics->offset > (size_t)(UINT32_MAX - total)) {
+        return NULL;
+    }
     total += (uint32_t)topics->offset;
     //编码剩余长度
     char rmain[4];
@@ -523,6 +546,9 @@ char *mqtt_pack_unsuback(mqtt_protversion version, int16_t packid, uint8_t *reas
         return NULL;
     }
     if (version >= MQTT_50) {
+        if (rslens > (size_t)(UINT32_MAX - total)) {
+            return NULL;
+        }
         total += (uint32_t)rslens;
     }
     //编码剩余长度

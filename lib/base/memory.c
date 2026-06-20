@@ -11,7 +11,7 @@ static atomic64_t _nalloc = 0; // 累计分配次数（原子计数）
 static atomic64_t _nfree  = 0; // 累计释放次数（原子计数）
 #endif
 
-#if MEMORY_CHECK && MEMORY_TRACE
+#if MEMORY_CHECK && MEMORY_TRACE && !defined(OS_AIX)
 #define MEM_TRK_BUCKET 65536 // 活动分配哈希桶数（2 的幂）
 #define MEM_TRK_FRAMES 32 // 单条记录最大栈帧数
 #if defined(OS_WIN)
@@ -107,21 +107,21 @@ static void _trk_print(const mem_trk_ctx *node) {
 }
 // 遍历所有桶，dump 仍存活（未释放）的分配
 static void _trk_dump(void) {
+    MEM_TRK_LOCK();
 #if defined(OS_WIN)
     SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);
     SymInitialize(GetCurrentProcess(), NULL, TRUE);
 #endif
-    MEM_TRK_LOCK();
     mem_trk_ctx *node;
     for (size_t slot = 0; slot < MEM_TRK_BUCKET; slot++) {
         for (node = _trk_bucket[slot]; NULL != node; node = node->next) {
             _trk_print(node);
         }
     }
-    MEM_TRK_UNLOCK();
 #if defined(OS_WIN)
     SymCleanup(GetCurrentProcess());
 #endif
+    MEM_TRK_UNLOCK();
 }
 #endif//MEMORY_CHECK && MEMORY_TRACE
 
@@ -134,7 +134,7 @@ void *_malloc(size_t size) {
         LOG_ERROR("malloc(%zu) failed!", size);
         exit(ERR_FAILED);
     }
-#if MEMORY_CHECK && MEMORY_TRACE
+#if MEMORY_CHECK && MEMORY_TRACE && !defined(OS_AIX)
     _trk_add(ptr);
 #endif
     return ptr;
@@ -148,7 +148,7 @@ void *_calloc(size_t count, size_t size) {
         LOG_ERROR("calloc(%zu, %zu) failed!", count, size);
         exit(ERR_FAILED);
     }
-#if MEMORY_CHECK && MEMORY_TRACE
+#if MEMORY_CHECK && MEMORY_TRACE && !defined(OS_AIX)
     _trk_add(ptr);
 #endif
     return ptr;
@@ -163,7 +163,7 @@ void *_realloc(void* oldptr, size_t size) {
     // (NULL, 0) no-op + (非NULL, >0) realloc 改大小，均不计数
 #endif
     if (0 == size) {
-#if MEMORY_CHECK && MEMORY_TRACE
+#if MEMORY_CHECK && MEMORY_TRACE && !defined(OS_AIX)
         _trk_del(oldptr);
 #endif
         _FREE(oldptr);
@@ -174,7 +174,7 @@ void *_realloc(void* oldptr, size_t size) {
         LOG_ERROR("realloc(%p, %zu) failed!", oldptr, size);
         exit(ERR_FAILED);
     }
-#if MEMORY_CHECK && MEMORY_TRACE
+#if MEMORY_CHECK && MEMORY_TRACE && !defined(OS_AIX)
     if (NULL != oldptr) {
         _trk_del(oldptr);
     }
@@ -189,7 +189,7 @@ void _free(void* ptr) {
 #if MEMORY_CHECK
     ATOMIC64_ADD(&_nfree, 1);
 #endif
-#if MEMORY_CHECK && MEMORY_TRACE
+#if MEMORY_CHECK && MEMORY_TRACE && !defined(OS_AIX)
     _trk_del(ptr);
 #endif
     _FREE(ptr);
@@ -198,7 +198,7 @@ void _memcheck(void) {
 #if MEMORY_CHECK
     int64_t leak = (int64_t)(_nalloc - _nfree);
     PRINT("memory check => not free: %" PRId64 ".", leak);
-#if MEMORY_TRACE
+#if MEMORY_TRACE && !defined(OS_AIX)
     if (0 != leak) {
         _trk_dump();
     }

@@ -247,8 +247,8 @@ static void test_mqtt_publish(CuTest *tc) {
 static void test_mqtt_subscribe(CuTest *tc) {
     binary_ctx topics;
     binary_init(&topics, NULL, 0, 64);
-    mqtt_topics_subscribe(&topics, MQTT_311, "topic/a", 0, 0, 0, 0);
-    mqtt_topics_subscribe(&topics, MQTT_311, "topic/b", 1, 0, 0, 0);
+    CuAssertIntEquals(tc, ERR_OK, mqtt_topics_subscribe(&topics, MQTT_311, "topic/a", 0, 0, 0, 0));
+    CuAssertIntEquals(tc, ERR_OK, mqtt_topics_subscribe(&topics, MQTT_311, "topic/b", 1, 0, 0, 0));
 
     size_t lens = 0;
     char *pack = mqtt_pack_subscribe(MQTT_311, 0xAABB, &topics, NULL, &lens);
@@ -305,8 +305,8 @@ static void test_mqtt_subscribe(CuTest *tc) {
     /* UNSUBSCRIBE */
     binary_ctx untopics;
     binary_init(&untopics, NULL, 0, 64);
-    mqtt_topics_unsubscribe(&untopics, "topic/a");
-    mqtt_topics_unsubscribe(&untopics, "topic/b");
+    CuAssertIntEquals(tc, ERR_OK, mqtt_topics_unsubscribe(&untopics, "topic/a"));
+    CuAssertIntEquals(tc, ERR_OK, mqtt_topics_unsubscribe(&untopics, "topic/b"));
     pack = mqtt_pack_unsubscribe(MQTT_311, 0xCCDD, &untopics, NULL, &lens);
     CuAssertPtrNotNull(tc, pack);
     binary_free(&untopics);

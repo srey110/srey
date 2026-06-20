@@ -85,6 +85,7 @@ int32_t mpq_trypush(mpq_ctx *q, const void *data) {
 }
 //阻塞入队：队列满时自旋等待直到成功；长时间满则 yield 退让
 void mpq_push(mpq_ctx *q, const void *data) {
+    ASSERTAB(NULL != q && NULL != data, ERRSTR_NULLP);
     uint32_t spins = 0;
     while (ERR_OK != mpq_trypush(q, data)) {
         if (++spins >= MPQ_SPIN_MAX) {

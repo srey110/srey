@@ -761,9 +761,6 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
     }
     ATOMIC_SET(&lsn->ref, lsn->nlsn);
     lsn->id = createid();
-    spin_lock(&ctx->spin);
-    array_push_back(&ctx->arrlsn, &lsn);
-    spin_unlock(&ctx->spin);
     for (i = 0; i < lsn->nlsn; i++) {
         if (ERR_OK != _cmd_listen(&ctx->watcher[i], &lsn->lsnsock[i].sock)) {
             LOG_WARN("_cmd_listen error event closed, total listener %d, success %d.", lsn->nlsn, i);
@@ -774,6 +771,9 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
         _uev_freelsn(lsn);
         return ERR_FAILED;
     }
+    spin_lock(&ctx->spin);
+    array_push_back(&ctx->arrlsn, &lsn);
+    spin_unlock(&ctx->spin);
     SET_PTR(id, lsn->id);
     return ERR_OK;
 }

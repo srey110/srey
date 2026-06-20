@@ -248,15 +248,23 @@ char *mysql_reader_string(mysql_reader_ctx *reader, const char *name, size_t *le
     *lens = row->val.lens;
     return row->val.data;
 }
+static uint32_t _parse_usec_frac(const char *s) {
+    uint32_t usec = 0;
+    const char *dot = strchr(s, '.');
+    if (NULL != dot) {
+        dot++;
+        int32_t mult = 100000;
+        for (int32_t i = 0; i < 6 && dot[i] >= '0' && dot[i] <= '9'; i++, mult /= 10) {
+            usec += (uint32_t)((dot[i] - '0') * mult);
+        }
+    }
+    return usec;
+}
 int64_t mysql_reader_datetime(mysql_reader_ctx *reader, const char *name, int32_t *err) {
     SET_PTR(err, ERR_OK);
     mpack_field *field;
     mpack_row *row = _mysql_reader_row(reader, name, &field, err);
     if (NULL == row) {
-        return 0;
-    }
-    if (0 == row->val.lens) {
-        SET_PTR(err, ERR_FAILED);
         return 0;
     }
     if (MYSQL_TYPE_DATE != field->type
@@ -282,15 +290,7 @@ int64_t mysql_reader_datetime(mysql_reader_ctx *reader, const char *name, int32_
             SET_PTR(err, ERR_FAILED);
             return 0;
         }
-        uint32_t usec = 0;
-        const char *dot = strchr(tmp, '.');
-        if (NULL != dot) {
-            dot++;
-            int32_t mult = 100000;
-            for (int32_t i = 0; i < 6 && dot[i] >= '0' && dot[i] <= '9'; i++, mult /= 10) {
-                usec += (uint32_t)((dot[i] - '0') * mult);
-            }
-        }
+        uint32_t usec = _parse_usec_frac(tmp);
         struct tm dt = { 0 };
         dt.tm_year = y - 1900;
         dt.tm_mon  = mo - 1;
@@ -305,7 +305,10 @@ int64_t mysql_reader_datetime(mysql_reader_ctx *reader, const char *name, int32_
         }
         return (int64_t)ts * 1000000LL + usec;
     } else {
-        // 二进制协议：长度前缀 0=零值 4=仅日期 7=日期+时间 11=含微秒
+        // 二进制协议：长度前缀 0=全零日期时间 4=仅日期 7=日期+时间 11=含微秒
+        if (0 == row->val.lens) {
+            return 0;
+        }
         if (4 != row->val.lens && 7 != row->val.lens && 11 != row->val.lens) {
             SET_PTR(err, ERR_FAILED);
             return 0;
@@ -337,10 +340,6 @@ int32_t mysql_reader_time(mysql_reader_ctx *reader, const char *name, struct tm 
     if (NULL == row) {
         return 0;
     }
-    if (0 == row->val.lens) {
-        SET_PTR(err, ERR_FAILED);
-        return 0;
-    }
     if (MYSQL_TYPE_TIME != field->type
         && MYSQL_TYPE_TIME2 != field->type) {
         SET_PTR(err, ERR_FAILED);
@@ -368,20 +367,16 @@ int32_t mysql_reader_time(mysql_reader_ctx *reader, const char *name, struct tm 
             SET_PTR(err, ERR_FAILED);
             return 0;
         }
-        const char *dot = strchr(p, '.');
-        if (NULL != dot) {
-            dot++;
-            int32_t mult = 100000;
-            for (int32_t i = 0; i < 6 && dot[i] >= '0' && dot[i] <= '9'; i++, mult /= 10) {
-                *usec += (uint32_t)((dot[i] - '0') * mult);
-            }
-        }
+        *usec = _parse_usec_frac(p);
         time->tm_mday = h / 24;
         time->tm_hour = h % 24;
         time->tm_min  = mi;
         time->tm_sec  = sec;
     } else {
-        // 二进制协议：长度前缀 0=零值(上方已拦截) 8=天+时分秒 12=含微秒
+        // 二进制协议：长度前缀 0=零时间 8=天+时分秒 12=含微秒
+        if (0 == row->val.lens) {
+            return 0;
+        }
         if (8 != row->val.lens && 12 != row->val.lens) {
             SET_PTR(err, ERR_FAILED);
             return 0;

@@ -637,11 +637,11 @@ static int32_t _lmongo_cursorid(lua_State *lua) {
 /// 解析 SCRAM 认证响应
 /// </summary>
 /// <param name="mgopack" type="lightuserdata">mgopack_ctx 响应指针</param>
-/// <returns type="boolean">解析成功 true，失败 false</returns>
-/// <returns type="integer">对话 id（convid）</returns>
-/// <returns type="boolean">是否已完成最终认证</returns>
-/// <returns type="lightuserdata">payload 指针</returns>
-/// <returns type="integer">payload 字节数</returns>
+/// <returns type="boolean">成功 true（其余 4 个值有效），失败 false（仅此值有效）</returns>
+/// <returns type="integer">对话 id（convid）；成功时有效</returns>
+/// <returns type="boolean">是否已完成最终认证；成功时有效</returns>
+/// <returns type="lightuserdata">payload 指针；成功时有效；指针指向 mgopack 内部缓冲区，需在当前协程周期内消费</returns>
+/// <returns type="integer">payload 字节数；成功时有效</returns>
 static int32_t _lmongo_parse_auth_response(lua_State *lua) {
     LUACHECK_LUDATA(lua, 1);
     mgopack_ctx *mgopack = lua_touserdata(lua, 1);
@@ -650,7 +650,11 @@ static int32_t _lmongo_parse_auth_response(lua_State *lua) {
     char *payload = NULL;
     size_t plens = 0;
     int32_t ok = mongo_parse_auth_response(mgopack, &convid, &done, &payload, &plens);
-    lua_pushboolean(lua, ok);
+    if (!ok) {
+        lua_pushboolean(lua, 0);
+        return 1;
+    }
+    lua_pushboolean(lua, 1);
     lua_pushinteger(lua, convid);
     lua_pushboolean(lua, done);
     lua_pushlightuserdata(lua, payload);

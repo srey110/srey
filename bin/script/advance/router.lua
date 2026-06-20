@@ -106,8 +106,9 @@ end
 function GroupBuilder:group(fn)
     local stack = self._router._stack
     stack[#stack + 1] = { prefix = self._prefix, mws = self._mws }
-    fn()
+    local ok, err = pcall(fn)
     stack[#stack] = nil
+    if not ok then error(err, 0) end
 end
 
 -- ── 内部辅助 ──────────────────────────────────────────────────────────────
@@ -300,7 +301,7 @@ function Router:_ctx()
 end
 
 local _bad_entry = {}
-_bad_entry.name = function() return _bad_entry end
+_bad_entry.name = function(_, n) WARN("router: :name(%s) on rejected entry.", tostring(n)) return _bad_entry end
 
 ---@class RouteEntry
 ---@field method  string                          HTTP 方法（"GET"/"POST"/... 或 "ANY"）

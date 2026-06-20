@@ -91,7 +91,7 @@ static void _loader_worker_wakeup_all(loader_ctx *loader) {
         worker = &loader->worker[i];
         if (ATOMIC_GET(&worker->waiting) > 0) {
             mutex_lock(&worker->mutex);
-            cond_signal(&worker->cond);
+            cond_broadcast(&worker->cond);
             mutex_unlock(&worker->mutex);
         }
     }

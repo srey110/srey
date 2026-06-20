@@ -355,6 +355,9 @@ static void _smtp_auth(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buf
     case PLAIN:
         _smtp_plain(smtp, ev, fd, skid, buf, ud, status);
         break;
+    default:
+        BIT_SET(*status, PROT_ERROR);
+        break;
     }
 }
 // AUTH_CHECK 阶段：等待服务端 235 认证成功响应，成功后切换到 COMMAND 状态并触发握手完成回调

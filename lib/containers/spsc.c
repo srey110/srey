@@ -59,6 +59,7 @@ int32_t spsc_trypush(spsc_ctx *q, const void *data) {
 }
 //阻塞入队：队列满时自旋等待直到成功；长时间满则 yield 退让
 void spsc_push(spsc_ctx *q, const void *data) {
+    ASSERTAB(NULL != q && NULL != data, ERRSTR_NULLP);
     uint32_t spins = 0;
     while (ERR_OK != spsc_trypush(q, data)) {
         if (++spins >= SPSC_SPIN_MAX) {

@@ -395,12 +395,12 @@ static int32_t _lmysql_reader_string(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// 读取当前行指定字段的 DATETIME 值（转换为 Unix 时间戳）
+/// 读取当前行指定字段的 DATETIME 值（微秒精度）
 /// </summary>
 /// <param name="self" type="userdata">reader 对象</param>
 /// <param name="name" type="string">字段名</param>
 /// <returns type="boolean">true 表示读取成功（含字段为 NULL）；false 表示读取失败</returns>
-/// <returns type="integer?">Unix 时间戳；字段为 NULL 时不返回此值</returns>
+/// <returns type="integer?">微秒精度 Unix 时间戳；字段为 NULL 时不返回此值</returns>
 static int32_t _lmysql_reader_datetime(lua_State *lua) {
     mysql_reader_ctx **reader = luaL_checkudata(lua, 1, MT_MYSQL_READER);
     const char *name = luaL_checkstring(lua, 2);

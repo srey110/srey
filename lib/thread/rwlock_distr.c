@@ -55,11 +55,12 @@ int32_t rwlock_distr_register(rwlock_distr_ctx *ctx) {
     return ERR_FAILED;
 }
 void rwlock_distr_unregister(rwlock_distr_ctx *ctx) {
+    int32_t idx;
     for (int32_t i = 0; i < RWLOCK_DISTR_MAX_TLS; i++) {
         if (_tls[i].owner != ctx) {
             continue;
         }
-        int32_t idx = _tls[i].slot;
+        idx = _tls[i].slot;
         _tls[i].owner = NULL;
         _tls[i].slot = 0;
         // 兜底清 active,即使调用方违反契约也不让 writer 卡死
@@ -69,12 +70,13 @@ void rwlock_distr_unregister(rwlock_distr_ctx *ctx) {
     }
 }
 void rwlock_distr_rdlock(rwlock_distr_ctx *ctx) {
+    int32_t slot;
     // 线性扫 _tls 查 ctx 对应的 slot;命中走快路径
     for (int32_t i = 0; i < RWLOCK_DISTR_MAX_TLS; i++) {
         if (_tls[i].owner != ctx) {
             continue;
         }
-        int32_t slot = _tls[i].slot;
+        slot = _tls[i].slot;
         // store active=1 与 load write_flag 之间靠 ATOMIC_SET 的 seq_cst 屏障保证顺序
         // writer 在 wrlock 中先 store write_flag=1 再扫所有 slot 的 active
         // 两侧握手:任一方先标记,另一方必能看见

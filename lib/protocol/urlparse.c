@@ -254,10 +254,13 @@ int32_t url_parse(url_ctx *ctx, const char *url, size_t lens, int8_t sep, int32_
     url_param *p;
     for (int32_t i = 0; i < URL_MAX_PARAM; i++) {
         p = &ctx->param[i];
-        if (buf_empty(&p->key)) {
+        if (NULL == p->key.data) {
             break;
         }
-        if (ctx->decode && p->key.lens > 0) {
+        if (0 == p->key.lens) {
+            continue;
+        }
+        if (ctx->decode) {
             p->key.lens = url_decode(p->key.data, p->key.lens, 1);
         }
         if (!buf_empty(&p->val)) {
@@ -289,7 +292,7 @@ size_t url_reorg_param(url_ctx *ctx, char *param, size_t cap) {
     if (0 == cap) {
         return 0;
     }
-    size_t offset = 0;
+    size_t need, offset = 0;
     url_param *p;
     for (int32_t i = 0; i < URL_MAX_PARAM; i++) {
         p = &ctx->param[i];
@@ -300,11 +303,11 @@ size_t url_reorg_param(url_ctx *ctx, char *param, size_t cap) {
             continue;
         }
         // '&' + key + '=' + val + '\0' 放不下则截断
-        size_t need = (i > 0 ? 1 : 0) + p->key.lens + 1 + p->val.lens;
+        need = (offset > 0 ? 1 : 0) + p->key.lens + 1 + p->val.lens;
         if (offset + need + 1 > cap) {
             break;
         }
-        if (i > 0) {
+        if (offset > 0) {
             param[offset++] = '&';
         }
         memcpy(param + offset, p->key.data, p->key.lens);
