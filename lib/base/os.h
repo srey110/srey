@@ -140,7 +140,10 @@
     #include <MSTcpIP.h>
     #include <mswsock.h>
     #include <sys/timeb.h>
+    #pragma warning(push)
+    #pragma warning(disable: 4091)
     #include <DbgHelp.h>
+    #pragma warning(pop)
     #include <bcrypt.h>
 #else
     #include <unistd.h>

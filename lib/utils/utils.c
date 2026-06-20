@@ -3,7 +3,6 @@
 #include "base/structs.h"
 
 #ifdef OS_WIN
-#pragma warning(disable:4091)
 #pragma comment(lib, "Dbghelp.lib" )
 #pragma comment(lib, "Bcrypt.lib")
 static atomic_t _exindex = 0;
