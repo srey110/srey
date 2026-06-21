@@ -540,7 +540,7 @@ end
 ---阻塞当前协程指定毫秒（底层使用定时器，不阻塞事件线程）
 ---@param ms integer 睡眠毫秒数
 function srey.sleep(ms)
-    if 0 == ms then
+    if ms <= 0 then
         return
     end
     local sess = srey.id()
@@ -1147,7 +1147,7 @@ local function _wait_net_recv(fd, skid)
     local msg = srey._coro_wait(false, skid, MSG_TYPE.RECV, srey.get_netread_timeout())
     if MSG_TYPE.TIMEOUT == msg.mtype then
         srey.close(fd, skid, 1)
-        WARN("send timeout, skid %s.", tostring(skid))
+        WARN("netread timeout, skid %s.", tostring(skid))
         return nil
     end
     if MSG_TYPE.CLOSE == msg.mtype then

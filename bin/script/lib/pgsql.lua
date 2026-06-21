@@ -91,7 +91,7 @@ function ctx:query(sql, format)
     end
     local pktype = pgsql.pack_type(pgpack)
     if PGPACK_TYPE.ERR == pktype then
-        self.err = pgsql.erro(pgpack)
+        self.err = pgsql.erro(pgpack) or ""
         return false
     end
     if PGPACK_TYPE.OK ~= pktype then
@@ -120,7 +120,7 @@ function ctx:prepare(name, sql, nparam, oids, format)
         return false
     end
     if PGPACK_TYPE.ERR == pgsql.pack_type(pgpack) then
-        self.err = pgsql.erro(pgpack)
+        self.err = pgsql.erro(pgpack) or ""
         return false
     end
     return stmt.new(self, name, format)
@@ -142,7 +142,7 @@ function ctx:copy_in_begin(sql)
     local pktype = pgsql.pack_type(pgpack)
     if PGPACK_TYPE.COPY_IN ~= pktype then
         if PGPACK_TYPE.ERR == pktype then
-            self.err = pgsql.erro(pgpack)
+            self.err = pgsql.erro(pgpack) or ""
             return false
         end
         return false
@@ -210,7 +210,7 @@ function ctx:copy_out(sql)
     local pktype = pgsql.pack_type(pgpack)
     if PGPACK_TYPE.COPY_OUT ~= pktype then
         if PGPACK_TYPE.ERR == pktype then
-            self.err = pgsql.erro(pgpack)
+            self.err = pgsql.erro(pgpack) or ""
             return false
         end
         return false

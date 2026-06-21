@@ -304,7 +304,7 @@ static int32_t _lmqtt_pack_publish(lua_State *lua) {
     int8_t  qos     = (int8_t)luaL_checkinteger(lua, 3);
     int8_t  dup     = (int8_t)luaL_checkinteger(lua, 4);
     const char *topic = luaL_checkstring(lua, 5);
-    int16_t packid  = (int16_t)luaL_checkinteger(lua, 6);
+    uint16_t packid = (uint16_t)luaL_checkinteger(lua, 6);
     char   *payload = NULL;
     size_t  pllens  = 0;
     int32_t next    = _lmqtt_get_payload(lua, 7, &payload, &pllens);
@@ -329,7 +329,7 @@ static int32_t _lmqtt_pack_publish(lua_State *lua) {
 /// <returns type="integer">数据长度</returns>
 static int32_t _lmqtt_pack_puback(lua_State *lua) {
     mqtt_protversion version = (mqtt_protversion)luaL_checkinteger(lua, 1);
-    int16_t packid  = (int16_t)luaL_checkinteger(lua, 2);
+    uint16_t packid = (uint16_t)luaL_checkinteger(lua, 2);
     uint8_t reason  = (uint8_t)luaL_optinteger(lua, 3, 0);
     binary_ctx *props = _lmqtt_get_props(lua, 4);
     size_t lens;
@@ -351,7 +351,7 @@ static int32_t _lmqtt_pack_puback(lua_State *lua) {
 /// <returns type="integer">数据长度</returns>
 static int32_t _lmqtt_pack_pubrec(lua_State *lua) {
     mqtt_protversion version = (mqtt_protversion)luaL_checkinteger(lua, 1);
-    int16_t packid  = (int16_t)luaL_checkinteger(lua, 2);
+    uint16_t packid = (uint16_t)luaL_checkinteger(lua, 2);
     uint8_t reason  = (uint8_t)luaL_optinteger(lua, 3, 0);
     binary_ctx *props = _lmqtt_get_props(lua, 4);
     size_t lens;
@@ -373,7 +373,7 @@ static int32_t _lmqtt_pack_pubrec(lua_State *lua) {
 /// <returns type="integer">数据长度</returns>
 static int32_t _lmqtt_pack_pubrel(lua_State *lua) {
     mqtt_protversion version = (mqtt_protversion)luaL_checkinteger(lua, 1);
-    int16_t packid  = (int16_t)luaL_checkinteger(lua, 2);
+    uint16_t packid = (uint16_t)luaL_checkinteger(lua, 2);
     uint8_t reason  = (uint8_t)luaL_optinteger(lua, 3, 0);
     binary_ctx *props = _lmqtt_get_props(lua, 4);
     size_t lens;
@@ -395,7 +395,7 @@ static int32_t _lmqtt_pack_pubrel(lua_State *lua) {
 /// <returns type="integer">数据长度</returns>
 static int32_t _lmqtt_pack_pubcomp(lua_State *lua) {
     mqtt_protversion version = (mqtt_protversion)luaL_checkinteger(lua, 1);
-    int16_t packid  = (int16_t)luaL_checkinteger(lua, 2);
+    uint16_t packid = (uint16_t)luaL_checkinteger(lua, 2);
     uint8_t reason  = (uint8_t)luaL_optinteger(lua, 3, 0);
     binary_ctx *props = _lmqtt_get_props(lua, 4);
     size_t lens;
@@ -417,7 +417,7 @@ static int32_t _lmqtt_pack_pubcomp(lua_State *lua) {
 /// <returns type="integer">数据长度</returns>
 static int32_t _lmqtt_pack_subscribe(lua_State *lua) {
     mqtt_protversion version = (mqtt_protversion)luaL_checkinteger(lua, 1);
-    int16_t packid  = (int16_t)luaL_checkinteger(lua, 2);
+    uint16_t packid = (uint16_t)luaL_checkinteger(lua, 2);
     binary_ctx *topics = luaL_checkudata(lua, 3, MT_MQTT_PROPS);
     binary_ctx *props  = _lmqtt_get_props(lua, 4);
     size_t lens;
@@ -439,7 +439,7 @@ static int32_t _lmqtt_pack_subscribe(lua_State *lua) {
 /// <returns type="integer">数据长度</returns>
 static int32_t _lmqtt_pack_suback(lua_State *lua) {
     mqtt_protversion version = (mqtt_protversion)luaL_checkinteger(lua, 1);
-    int16_t packid  = (int16_t)luaL_checkinteger(lua, 2);
+    uint16_t packid = (uint16_t)luaL_checkinteger(lua, 2);
     size_t rslens;
     const char *reasons = luaL_checklstring(lua, 3, &rslens);
     binary_ctx *props   = _lmqtt_get_props(lua, 4);
@@ -463,7 +463,7 @@ static int32_t _lmqtt_pack_suback(lua_State *lua) {
 /// <returns type="integer">数据长度</returns>
 static int32_t _lmqtt_pack_unsubscribe(lua_State *lua) {
     mqtt_protversion version = (mqtt_protversion)luaL_checkinteger(lua, 1);
-    int16_t packid  = (int16_t)luaL_checkinteger(lua, 2);
+    uint16_t packid = (uint16_t)luaL_checkinteger(lua, 2);
     binary_ctx *topics = luaL_checkudata(lua, 3, MT_MQTT_PROPS);
     binary_ctx *props  = _lmqtt_get_props(lua, 4);
     size_t lens;
@@ -485,7 +485,7 @@ static int32_t _lmqtt_pack_unsubscribe(lua_State *lua) {
 /// <returns type="integer">数据长度</returns>
 static int32_t _lmqtt_pack_unsuback(lua_State *lua) {
     mqtt_protversion version = (mqtt_protversion)luaL_checkinteger(lua, 1);
-    int16_t packid  = (int16_t)luaL_checkinteger(lua, 2);
+    uint16_t packid = (uint16_t)luaL_checkinteger(lua, 2);
     size_t rslens;
     const char *reasons = luaL_checklstring(lua, 3, &rslens);
     binary_ctx *props   = _lmqtt_get_props(lua, 4);

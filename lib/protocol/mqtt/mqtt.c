@@ -478,7 +478,7 @@ static int32_t _mqtt_publish(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, i
             return ERR_FAILED;
         }
         off += 2;
-        vh->packid = (int16_t)num;
+        vh->packid = (uint16_t)num;
     }
     pack->version = ((mqtt_ctx *)ud->context)->version;
     if (pack->version >= MQTT_50) {
@@ -523,7 +523,7 @@ static int32_t _mqtt_pubackrel_common(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_c
     mqtt_pubackrel_varhead *vh;
     CALLOC(vh, 1, sizeof(mqtt_pubackrel_varhead));
     pack->varhead = vh;
-    vh->packid = (int16_t)num;
+    vh->packid = (uint16_t)num;
     pack->version = ((mqtt_ctx *)ud->context)->version;
     if (pack->version < MQTT_50
         || 2 == pack->fixhead.remaining_lens) {//剩余长度为2，则表示使用原因码0x00（成功）
@@ -580,7 +580,7 @@ static int32_t _mqtt_subscribe(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *
     mqtt_subreqresp_varhead *vh;
     CALLOC(vh, 1, sizeof(mqtt_subreqresp_varhead));
     pack->varhead = vh;
-    vh->packid = (int16_t)num;
+    vh->packid = (uint16_t)num;
     num = 0;
     pack->version = ((mqtt_ctx *)ud->context)->version;
     if (pack->version >= MQTT_50) {
@@ -656,7 +656,7 @@ static int32_t _mqtt_suback(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf
     mqtt_subreqresp_varhead *vh;
     CALLOC(vh, 1, sizeof(mqtt_subreqresp_varhead));
     pack->varhead = vh;
-    vh->packid = (int16_t)num;
+    vh->packid = (uint16_t)num;
     num = 0;
     pack->version = ((mqtt_ctx *)ud->context)->version;
     if (pack->version >= MQTT_50) {
@@ -698,7 +698,7 @@ static int32_t _mqtt_unsubscribe(mqtt_pack_ctx *pack, int32_t client, buffer_ctx
     mqtt_subreqresp_varhead *vh;
     CALLOC(vh, 1, sizeof(mqtt_subreqresp_varhead));
     pack->varhead = vh;
-    vh->packid = (int16_t)num;
+    vh->packid = (uint16_t)num;
     num = 0;
     pack->version = ((mqtt_ctx *)ud->context)->version;
     if (pack->version >= MQTT_50) {
@@ -751,7 +751,7 @@ static int32_t _mqtt_unsuback(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *b
     mqtt_subreqresp_varhead *vh;
     CALLOC(vh, 1, sizeof(mqtt_subreqresp_varhead));
     pack->varhead = vh;
-    vh->packid = (int16_t)num;
+    vh->packid = (uint16_t)num;
     pack->version = ((mqtt_ctx *)ud->context)->version;
     if (pack->version < MQTT_50) {
         return ERR_OK;

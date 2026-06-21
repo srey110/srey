@@ -48,7 +48,7 @@ typedef struct mqtt_publish_varhead {
     int8_t dup;//0:表示这是客户端或服务端第一次请求发送这个PUBLISH报文。1:表示这可能是一个早前报文请求的重发。QoS为0的消息，DUP标志必须设置为0
     int8_t qos;//服务质量等级 0 最多分发一次 1 至少分发一次 2 只分发一次
     int8_t retain;//保留标志 1:服务端必须存储此消息，并用其替换此话题下任何已存在的消息
-    int16_t packid;//报文标识符  只有当QoS等级是1或2时才有
+    uint16_t packid;//报文标识符  只有当QoS等级是1或2时才有
     char *topic;//主题名
     array_ctx *properties;//属性 5.0 元素 mqtt_propertie *
 }mqtt_publish_varhead;
@@ -59,12 +59,12 @@ typedef struct mqtt_publish_payload {
 // PUBACK / PUBREC / PUBREL / PUBCOMP 共用可变报头
 typedef struct mqtt_pubackrel_varhead {
     uint8_t reason;//原因码 5.0
-    int16_t packid;//报文标识符
+    uint16_t packid;//报文标识符
     array_ctx *properties;//属性 5.0 元素 mqtt_propertie *
 }mqtt_pubackrel_varhead;
 // SUBSCRIBE / SUBACK / UNSUBSCRIBE / UNSUBACK 共用可变报头
 typedef struct mqtt_subreqresp_varhead {
-    int16_t packid;//报文标识符
+    uint16_t packid;//报文标识符
     array_ctx *properties;//属性 5.0 元素 mqtt_propertie *
 }mqtt_subreqresp_varhead;
 typedef struct subscribe_option {

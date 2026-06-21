@@ -8,7 +8,7 @@ typedef struct _task_entry {
     char name[64];
 }_task_entry;
 typedef struct _task_list_arg {
-    int32_t n;
+    size_t n;
     size_t cap;
     _task_entry *entries;
 }_task_list_arg;
@@ -614,7 +614,7 @@ static int32_t _lcore_task_list(lua_State *lua) {
     CALLOC(c.entries, c.cap, sizeof(_task_entry));
     loader_task_each(g_loader, _lcore_task_list_collect, &c);
     lua_newtable(lua);
-    int32_t i = 0;
+    size_t i = 0;
     for (; i < c.n; i++) {
         lua_newtable(lua);
         if ('\0' != c.entries[i].name[0]) {

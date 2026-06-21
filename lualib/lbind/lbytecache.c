@@ -20,8 +20,8 @@ typedef struct dump_buf {
     char *buf;
 }dump_buf;
 
-static struct hashmap *_bc_map;       // path -> bc_entry
-static rwlock_distr_ctx *_bc_lock;    // 复用 loader->lckcache,不自建锁
+static struct hashmap *_bc_map;// path -> bc_entry
+static rwlock_distr_ctx *_bc_lock;// 复用 loader->lckcache,不自建锁
 
 // hashmap 回调:按 path 哈希/比较;元素释放 path + code
 static uint64_t _lbc_hash(const void *item, uint64_t seed0, uint64_t seed1) {

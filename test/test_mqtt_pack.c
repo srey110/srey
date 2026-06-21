@@ -140,7 +140,7 @@ static void test_mqtt_connack(CuTest *tc) {
 }
 
 static void _mqtt_pack_ack_test(CuTest *tc, mqtt_protversion ver, mqtt_prot expected,
-    char *(*packer)(mqtt_protversion, int16_t, uint8_t, binary_ctx *, size_t *)) {
+    char *(*packer)(mqtt_protversion, uint16_t, uint8_t, binary_ctx *, size_t *)) {
     size_t lens = 0;
     char *pack = packer(ver, 12345, 0x00, NULL, &lens);
     CuAssertPtrNotNull(tc, pack);
@@ -271,7 +271,7 @@ static void test_mqtt_subscribe(CuTest *tc) {
     CuAssertPtrNotNull(tc, p);
     CuAssertIntEquals(tc, MQTT_SUBSCRIBE, p->fixhead.prot);
     mqtt_subreqresp_varhead *vh = (mqtt_subreqresp_varhead *)p->varhead;
-    CuAssertIntEquals(tc, (int16_t)0xAABB, vh->packid);
+    CuAssertIntEquals(tc, 0xAABB, vh->packid);
 
     mqtt_subscribe_payload *pl = (mqtt_subscribe_payload *)p->payload;
     CuAssertIntEquals(tc, 2, (int)array_size(&pl->subop));

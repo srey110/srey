@@ -104,7 +104,7 @@ char *mqtt_pack_connack(mqtt_protversion version, int8_t sesspresent, uint8_t re
 /// <param name="lens">组包后的数据长度</param>
 /// <returns>char * 数据包</returns>
 char *mqtt_pack_publish(mqtt_protversion version, int8_t retain, int8_t qos, int8_t dup,
-    const char *topic, int16_t packid, char *payload, size_t pllens, binary_ctx *props, size_t *lens);
+    const char *topic, uint16_t packid, char *payload, size_t pllens, binary_ctx *props, size_t *lens);
 /// <summary>
 /// 发布确认
 /// </summary>
@@ -116,7 +116,7 @@ char *mqtt_pack_publish(mqtt_protversion version, int8_t retain, int8_t qos, int
 /// </param>
 /// <param name="lens">组包后的数据长度</param>
 /// <returns>char * 数据包</returns>
-char *mqtt_pack_puback(mqtt_protversion version, int16_t packid, uint8_t reason, binary_ctx *props, size_t *lens);
+char *mqtt_pack_puback(mqtt_protversion version, uint16_t packid, uint8_t reason, binary_ctx *props, size_t *lens);
 /// <summary>
 /// 发布已接收（QoS 2，第一步）
 /// </summary>
@@ -128,7 +128,7 @@ char *mqtt_pack_puback(mqtt_protversion version, int16_t packid, uint8_t reason,
 /// </param>
 /// <param name="lens">组包后的数据长度</param>
 /// <returns>char * 数据包</returns>
-char *mqtt_pack_pubrec(mqtt_protversion version, int16_t packid, uint8_t reason, binary_ctx *props, size_t *lens);
+char *mqtt_pack_pubrec(mqtt_protversion version, uint16_t packid, uint8_t reason, binary_ctx *props, size_t *lens);
 /// <summary>
 /// 发布释放（QoS 2，第二步）
 /// </summary>
@@ -140,7 +140,7 @@ char *mqtt_pack_pubrec(mqtt_protversion version, int16_t packid, uint8_t reason,
 /// </param>
 /// <param name="lens">组包后的数据长度</param>
 /// <returns>char * 数据包</returns>
-char *mqtt_pack_pubrel(mqtt_protversion version, int16_t packid, uint8_t reason, binary_ctx *props, size_t *lens);
+char *mqtt_pack_pubrel(mqtt_protversion version, uint16_t packid, uint8_t reason, binary_ctx *props, size_t *lens);
 /// <summary>
 /// 发布完成（QoS 2，第三步）
 /// </summary>
@@ -152,7 +152,7 @@ char *mqtt_pack_pubrel(mqtt_protversion version, int16_t packid, uint8_t reason,
 /// </param>
 /// <param name="lens">组包后的数据长度</param>
 /// <returns>char * 数据包</returns>
-char *mqtt_pack_pubcomp(mqtt_protversion version, int16_t packid, uint8_t reason, binary_ctx *props, size_t *lens);
+char *mqtt_pack_pubcomp(mqtt_protversion version, uint16_t packid, uint8_t reason, binary_ctx *props, size_t *lens);
 /// <summary>
 /// 订阅请求
 /// </summary>
@@ -164,7 +164,7 @@ char *mqtt_pack_pubcomp(mqtt_protversion version, int16_t packid, uint8_t reason
 /// </param>
 /// <param name="lens">组包后的数据长度</param>
 /// <returns>char * 数据包</returns>
-char *mqtt_pack_subscribe(mqtt_protversion version, int16_t packid, binary_ctx *topics, binary_ctx *props, size_t *lens);
+char *mqtt_pack_subscribe(mqtt_protversion version, uint16_t packid, binary_ctx *topics, binary_ctx *props, size_t *lens);
 /// <summary>
 /// 订阅确认
 /// </summary>
@@ -177,7 +177,7 @@ char *mqtt_pack_subscribe(mqtt_protversion version, int16_t packid, binary_ctx *
 /// </param>
 /// <param name="lens">组包后的数据长度</param>
 /// <returns>char * 数据包</returns>
-char *mqtt_pack_suback(mqtt_protversion version, int16_t packid, uint8_t *reasons, size_t rslens, binary_ctx *props, size_t *lens);
+char *mqtt_pack_suback(mqtt_protversion version, uint16_t packid, uint8_t *reasons, size_t rslens, binary_ctx *props, size_t *lens);
 /// <summary>
 /// 取消订阅请求
 /// </summary>
@@ -189,7 +189,7 @@ char *mqtt_pack_suback(mqtt_protversion version, int16_t packid, uint8_t *reason
 /// </param>
 /// <param name="lens">组包后的数据长度</param>
 /// <returns>char * 数据包</returns>
-char *mqtt_pack_unsubscribe(mqtt_protversion version, int16_t packid, binary_ctx *topics, binary_ctx *props, size_t *lens);
+char *mqtt_pack_unsubscribe(mqtt_protversion version, uint16_t packid, binary_ctx *topics, binary_ctx *props, size_t *lens);
 /// <summary>
 /// 取消订阅确认
 /// </summary>
@@ -202,7 +202,7 @@ char *mqtt_pack_unsubscribe(mqtt_protversion version, int16_t packid, binary_ctx
 /// </param>
 /// <param name="lens">组包后的数据长度</param>
 /// <returns>char * 数据包</returns>
-char *mqtt_pack_unsuback(mqtt_protversion version, int16_t packid, uint8_t *reasons, size_t rslens, binary_ctx *props, size_t *lens);
+char *mqtt_pack_unsuback(mqtt_protversion version, uint16_t packid, uint8_t *reasons, size_t rslens, binary_ctx *props, size_t *lens);
 /// <summary>
 /// PING
 /// </summary>

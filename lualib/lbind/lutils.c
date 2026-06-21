@@ -72,9 +72,7 @@ static int32_t _lutils_ud_str(lua_State *lua) {
 /// <param name="data" type="lightuserdata">待释放的 C 堆指针</param>
 /// <returns>无</returns>
 static int32_t _lutils_ud_free(lua_State *lua) {
-    /* 只释放 light userdata（lua_pushlightuserdata 推入的 C 堆指针）。
-     * full userdata 由 Lua GC 管理，不得手动 free：
-     * GC 会在对象回收时再次释放同一块内存，导致 double-free 崩溃。*/
+    //只释放 light userdata；full userdata 由 GC 管理，不得手动 free，否则 double-free 崩溃
     if (!lua_islightuserdata(lua, 1)) {
         return 0;
     }
@@ -403,9 +401,10 @@ static int32_t _lpopen_read(lua_State *lua) {
     luaL_buffinit(lua, &lbuf);
     char tmp[4096];
     size_t total = 0;
+    size_t want;
     int32_t nread;
     while (total < cap) {
-        size_t want = sizeof(tmp);
+        want = sizeof(tmp);
         if (want > cap - total) {
             want = cap - total;
         }

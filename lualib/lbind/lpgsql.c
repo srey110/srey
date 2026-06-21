@@ -332,6 +332,9 @@ static int32_t _lpgsql_reader_free(lua_State *lua) {
 /// <returns type="integer">行数</returns>
 static int32_t _lpgsql_reader_size(lua_State *lua) {
     pgsql_reader_ctx **reader = luaL_checkudata(lua, 1, MT_PGSQL_READER);
+    if (NULL == *reader) {
+        return luaL_error(lua, "reader freed");
+    }
     lua_pushinteger(lua, pgsql_reader_size(*reader));
     return 1;
 }
@@ -343,6 +346,9 @@ static int32_t _lpgsql_reader_size(lua_State *lua) {
 /// <returns>无</returns>
 static int32_t _lpgsql_reader_seek(lua_State *lua) {
     pgsql_reader_ctx **reader = luaL_checkudata(lua, 1, MT_PGSQL_READER);
+    if (NULL == *reader) {
+        return luaL_error(lua, "reader freed");
+    }
     pgsql_reader_seek(*reader, (size_t)luaL_checkinteger(lua, 2));
     return 0;
 }
@@ -353,6 +359,9 @@ static int32_t _lpgsql_reader_seek(lua_State *lua) {
 /// <returns type="boolean">已到末尾 true，否则 false</returns>
 static int32_t _lpgsql_reader_eof(lua_State *lua) {
     pgsql_reader_ctx **reader = luaL_checkudata(lua, 1, MT_PGSQL_READER);
+    if (NULL == *reader) {
+        return luaL_error(lua, "reader freed");
+    }
     lua_pushboolean(lua, pgsql_reader_eof(*reader));
     return 1;
 }
@@ -363,6 +372,9 @@ static int32_t _lpgsql_reader_eof(lua_State *lua) {
 /// <returns>无</returns>
 static int32_t _lpgsql_reader_next(lua_State *lua) {
     pgsql_reader_ctx **reader = luaL_checkudata(lua, 1, MT_PGSQL_READER);
+    if (NULL == *reader) {
+        return luaL_error(lua, "reader freed");
+    }
     pgsql_reader_next(*reader);
     return 0;
 }
@@ -375,6 +387,9 @@ static int32_t _lpgsql_reader_next(lua_State *lua) {
 /// <returns type="boolean?">字段布尔值；字段为 NULL 时不返回</returns>
 static int32_t _lpgsql_reader_bool(lua_State *lua) {
     pgsql_reader_ctx **reader = luaL_checkudata(lua, 1, MT_PGSQL_READER);
+    if (NULL == *reader) {
+        return luaL_error(lua, "reader freed");
+    }
     const char *name = luaL_checkstring(lua, 2);
     int32_t err;
     int32_t val = pgsql_reader_bool(*reader, name, &err);
@@ -399,6 +414,9 @@ static int32_t _lpgsql_reader_bool(lua_State *lua) {
 /// <returns type="integer?">字段整数值；字段为 NULL 时不返回</returns>
 static int32_t _lpgsql_reader_integer(lua_State *lua) {
     pgsql_reader_ctx **reader = luaL_checkudata(lua, 1, MT_PGSQL_READER);
+    if (NULL == *reader) {
+        return luaL_error(lua, "reader freed");
+    }
     const char *name = luaL_checkstring(lua, 2);
     int32_t err;
     int64_t val = pgsql_reader_integer(*reader, name, &err);
@@ -423,6 +441,9 @@ static int32_t _lpgsql_reader_integer(lua_State *lua) {
 /// <returns type="number?">字段浮点值；字段为 NULL 时不返回</returns>
 static int32_t _lpgsql_reader_double(lua_State *lua) {
     pgsql_reader_ctx **reader = luaL_checkudata(lua, 1, MT_PGSQL_READER);
+    if (NULL == *reader) {
+        return luaL_error(lua, "reader freed");
+    }
     const char *name = luaL_checkstring(lua, 2);
     int32_t err;
     double val = pgsql_reader_double(*reader, name, &err);
@@ -448,6 +469,9 @@ static int32_t _lpgsql_reader_double(lua_State *lua) {
 /// <returns type="integer?">字节数；字段为 NULL 时不返回</returns>
 static int32_t _lpgsql_reader_text(lua_State *lua) {
     pgsql_reader_ctx **reader = luaL_checkudata(lua, 1, MT_PGSQL_READER);
+    if (NULL == *reader) {
+        return luaL_error(lua, "reader freed");
+    }
     const char *name = luaL_checkstring(lua, 2);
     int32_t err;
     int32_t lens = 0;
@@ -475,6 +499,9 @@ static int32_t _lpgsql_reader_text(lua_State *lua) {
 /// <returns type="integer?">字节数；字段为 NULL 时不返回</returns>
 static int32_t _lpgsql_reader_bytea(lua_State *lua) {
     pgsql_reader_ctx **reader = luaL_checkudata(lua, 1, MT_PGSQL_READER);
+    if (NULL == *reader) {
+        return luaL_error(lua, "reader freed");
+    }
     const char *name = luaL_checkstring(lua, 2);
     int32_t err;
     int32_t lens = 0;
@@ -501,6 +528,9 @@ static int32_t _lpgsql_reader_bytea(lua_State *lua) {
 /// <returns type="integer?">微秒数；字段为 NULL 时不返回</returns>
 static int32_t _lpgsql_reader_timestamp(lua_State *lua) {
     pgsql_reader_ctx **reader = luaL_checkudata(lua, 1, MT_PGSQL_READER);
+    if (NULL == *reader) {
+        return luaL_error(lua, "reader freed");
+    }
     const char *name = luaL_checkstring(lua, 2);
     int32_t err;
     int64_t val = pgsql_reader_timestamp(*reader, name, &err);
@@ -525,6 +555,9 @@ static int32_t _lpgsql_reader_timestamp(lua_State *lua) {
 /// <returns type="integer?">天数；字段为 NULL 时不返回</returns>
 static int32_t _lpgsql_reader_date(lua_State *lua) {
     pgsql_reader_ctx **reader = luaL_checkudata(lua, 1, MT_PGSQL_READER);
+    if (NULL == *reader) {
+        return luaL_error(lua, "reader freed");
+    }
     const char *name = luaL_checkstring(lua, 2);
     int32_t err;
     int32_t val = pgsql_reader_date(*reader, name, &err);
@@ -549,6 +582,9 @@ static int32_t _lpgsql_reader_date(lua_State *lua) {
 /// <returns type="string?">16 字节 UUID 串；字段为 NULL 时不返回</returns>
 static int32_t _lpgsql_reader_uuid(lua_State *lua) {
     pgsql_reader_ctx **reader = luaL_checkudata(lua, 1, MT_PGSQL_READER);
+    if (NULL == *reader) {
+        return luaL_error(lua, "reader freed");
+    }
     const char *name = luaL_checkstring(lua, 2);
     int32_t err;
     char uuid[16];
@@ -573,6 +609,9 @@ static int32_t _lpgsql_reader_uuid(lua_State *lua) {
 /// <returns type="boolean">NULL 返回 true，否则 false</returns>
 static int32_t _lpgsql_reader_isnull(lua_State *lua) {
     pgsql_reader_ctx **reader = luaL_checkudata(lua, 1, MT_PGSQL_READER);
+    if (NULL == *reader) {
+        return luaL_error(lua, "reader freed");
+    }
     const char *name = luaL_checkstring(lua, 2);
     lua_pushboolean(lua, pgsql_reader_isnull(*reader, name));
     return 1;

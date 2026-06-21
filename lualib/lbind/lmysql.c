@@ -258,6 +258,9 @@ static int32_t _lmysql_reader_free(lua_State *lua) {
 /// <returns type="integer">行数</returns>
 static int32_t _lmysql_reader_size(lua_State *lua) {
     mysql_reader_ctx **reader = luaL_checkudata(lua, 1, MT_MYSQL_READER);
+    if (NULL == *reader) {
+        return luaL_error(lua, "reader freed");
+    }
     lua_pushinteger(lua, mysql_reader_size(*reader));
     return 1;
 }
@@ -269,6 +272,9 @@ static int32_t _lmysql_reader_size(lua_State *lua) {
 /// <returns>无</returns>
 static int32_t _lmysql_reader_seek(lua_State *lua) {
     mysql_reader_ctx **reader = luaL_checkudata(lua, 1, MT_MYSQL_READER);
+    if (NULL == *reader) {
+        return luaL_error(lua, "reader freed");
+    }
     size_t pos = (size_t)luaL_checkinteger(lua, 2);
     mysql_reader_seek(*reader, pos);
     return 0;
@@ -280,6 +286,9 @@ static int32_t _lmysql_reader_seek(lua_State *lua) {
 /// <returns type="boolean">已到末尾 true，否则 false</returns>
 static int32_t _lmysql_reader_eof(lua_State *lua) {
     mysql_reader_ctx **reader = luaL_checkudata(lua, 1, MT_MYSQL_READER);
+    if (NULL == *reader) {
+        return luaL_error(lua, "reader freed");
+    }
     lua_pushboolean(lua, mysql_reader_eof(*reader));
     return 1;
 }
@@ -290,6 +299,9 @@ static int32_t _lmysql_reader_eof(lua_State *lua) {
 /// <returns>无</returns>
 static int32_t _lmysql_reader_next(lua_State *lua) {
     mysql_reader_ctx **reader = luaL_checkudata(lua, 1, MT_MYSQL_READER);
+    if (NULL == *reader) {
+        return luaL_error(lua, "reader freed");
+    }
     mysql_reader_next(*reader);
     return 0;
 }
@@ -302,6 +314,9 @@ static int32_t _lmysql_reader_next(lua_State *lua) {
 /// <returns type="integer?">字段整数值；字段为 NULL 时不返回此值</returns>
 static int32_t _lmysql_reader_integer(lua_State *lua) {
     mysql_reader_ctx **reader = luaL_checkudata(lua, 1, MT_MYSQL_READER);
+    if (NULL == *reader) {
+        return luaL_error(lua, "reader freed");
+    }
     const char *name = luaL_checkstring(lua, 2);
     int32_t err;
     int64_t val = mysql_reader_integer(*reader, name, &err);
@@ -327,6 +342,9 @@ static int32_t _lmysql_reader_integer(lua_State *lua) {
 /// <returns type="number?">字段单精度浮点值；字段为 NULL 时不返回此值</returns>
 static int32_t _lmysql_reader_float(lua_State *lua) {
     mysql_reader_ctx **reader = luaL_checkudata(lua, 1, MT_MYSQL_READER);
+    if (NULL == *reader) {
+        return luaL_error(lua, "reader freed");
+    }
     const char *name = luaL_checkstring(lua, 2);
     int32_t err;
     float val = mysql_reader_float(*reader, name, &err);
@@ -351,6 +369,9 @@ static int32_t _lmysql_reader_float(lua_State *lua) {
 /// <returns type="number?">字段双精度浮点值；字段为 NULL 时不返回此值</returns>
 static int32_t _lmysql_reader_double(lua_State *lua) {
     mysql_reader_ctx **reader = luaL_checkudata(lua, 1, MT_MYSQL_READER);
+    if (NULL == *reader) {
+        return luaL_error(lua, "reader freed");
+    }
     const char *name = luaL_checkstring(lua, 2);
     int32_t err;
     double val = mysql_reader_double(*reader, name, &err);
@@ -376,6 +397,9 @@ static int32_t _lmysql_reader_double(lua_State *lua) {
 /// <returns type="integer?">字段字节数；字段为 NULL 时不返回此值</returns>
 static int32_t _lmysql_reader_string(lua_State *lua) {
     mysql_reader_ctx **reader = luaL_checkudata(lua, 1, MT_MYSQL_READER);
+    if (NULL == *reader) {
+        return luaL_error(lua, "reader freed");
+    }
     const char *name = luaL_checkstring(lua, 2);
     int32_t err;
     size_t lens = 0;
@@ -403,6 +427,9 @@ static int32_t _lmysql_reader_string(lua_State *lua) {
 /// <returns type="integer?">微秒精度 Unix 时间戳；字段为 NULL 时不返回此值</returns>
 static int32_t _lmysql_reader_datetime(lua_State *lua) {
     mysql_reader_ctx **reader = luaL_checkudata(lua, 1, MT_MYSQL_READER);
+    if (NULL == *reader) {
+        return luaL_error(lua, "reader freed");
+    }
     const char *name = luaL_checkstring(lua, 2);
     int32_t err;
     int64_t val = mysql_reader_datetime(*reader, name, &err);
@@ -433,6 +460,9 @@ static int32_t _lmysql_reader_datetime(lua_State *lua) {
 /// <returns type="integer?">usec（0~999999）；字段为 NULL 时不返回</returns>
 static int32_t _lmysql_reader_time(lua_State *lua) {
     mysql_reader_ctx **reader = luaL_checkudata(lua, 1, MT_MYSQL_READER);
+    if (NULL == *reader) {
+        return luaL_error(lua, "reader freed");
+    }
     const char *name = luaL_checkstring(lua, 2);
     int32_t err;
     struct tm dt = { 0 };
@@ -519,6 +549,9 @@ static int32_t _lmysql_stmt_free(lua_State *lua) {
 /// <returns type="integer">数据长度</returns>
 static int32_t _lmysql_pack_stmt_execute(lua_State *lua) {
     mysql_stmt_ctx **stmt = luaL_checkudata(lua, 1, MT_MYSQL_STMT);
+    if (NULL == *stmt) {
+        return luaL_error(lua, "stmt freed");
+    }
     mysql_bind_ctx *mbind = NULL;
     if (LUA_TUSERDATA == lua_type(lua, 2)) {
         mbind = luaL_checkudata(lua, 2, MT_MYSQL_BIND);
@@ -538,6 +571,9 @@ static int32_t _lmysql_pack_stmt_execute(lua_State *lua) {
 /// <returns type="integer">数据长度</returns>
 static int32_t _lmysql_pack_stmt_reset(lua_State *lua) {
     mysql_stmt_ctx **stmt = luaL_checkudata(lua, 1, MT_MYSQL_STMT);
+    if (NULL == *stmt) {
+        return luaL_error(lua, "stmt freed");
+    }
     size_t size;
     void *pack = mysql_pack_stmt_reset(*stmt, &size);
     LPUB_RET_LUD(lua, pack, size);
@@ -550,6 +586,9 @@ static int32_t _lmysql_pack_stmt_reset(lua_State *lua) {
 /// <returns type="integer">skid</returns>
 static int32_t _lmysql_stmt_sock_id(lua_State *lua) {
     mysql_stmt_ctx **stmt = luaL_checkudata(lua, 1, MT_MYSQL_STMT);
+    if (NULL == *stmt) {
+        return luaL_error(lua, "stmt freed");
+    }
     lua_pushinteger(lua, (*stmt)->mysql->client.fd);
     lua_pushinteger(lua, (*stmt)->mysql->client.skid);
     return 2;

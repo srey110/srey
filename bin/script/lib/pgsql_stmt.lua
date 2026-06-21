@@ -61,7 +61,7 @@ function ctx:execute(bind)
     end
     local pktype = pgsql.pack_type(pgpack)
     if PGPACK_TYPE.ERR == pktype then
-        self.err = pgsql.erro(pgpack)
+        self.err = pgsql.erro(pgpack) or ""
         return false
     end
     if PGPACK_TYPE.OK ~= pktype then

@@ -8,12 +8,12 @@
 #include "utils/utils.h"
 
 // ── subcenter 限制(业务特定上限,可按部署需要调整后重编) ────────────
-#define SC_RETAINED_MAX_SIZE        (1 * 1024 * 1024)  // 单 topic retained 上限 1MB
-#define SC_META_MAX_SIZE            1024                // publisher meta 上限 1KB
-#define SC_TOPIC_MAX                256                 // topic 字符串最大长度
-#define SC_GROUP_MAX                64                  // group 名最大长度
-#define SC_SUB_WARN_THRESHOLD       1000                // 单 topic 订阅者超过此值 LOG_WARN
-#define SC_QUERY_RETAINED_BURST_MAX 1000                // query_retained 单次上限,超过截断 + WARN
+#define SC_RETAINED_MAX_SIZE        (1 * 1024 * 1024) // 单 topic retained 上限 1MB
+#define SC_META_MAX_SIZE            1024 // publisher meta 上限 1KB
+#define SC_TOPIC_MAX                256 // topic 字符串最大长度
+#define SC_GROUP_MAX                64 // group 名最大长度
+#define SC_SUB_WARN_THRESHOLD       1000 // 单 topic 订阅者超过此值 LOG_WARN
+#define SC_QUERY_RETAINED_BURST_MAX 1000 // query_retained 单次上限,超过截断 + WARN
 
 // publisher 元数据条目(挂 sc_ctx.publisher_meta hashmap)
 typedef struct sc_publisher_meta {
@@ -154,6 +154,7 @@ static sc_topic_data *_sc_alloc_topic_data(const char *pattern) {
     array_init(&d->normal_subs, sizeof(name_t), 0);
     return d;
 }
+// 释放 sc_topic_data（trie 节点移除或销毁时调用）
 static void _sc_topic_data_free(void *p) {
     sc_topic_data *d = (sc_topic_data *)p;
     array_free(&d->normal_subs);
@@ -361,10 +362,10 @@ static int32_t _sc_name_find(array_ctx *arr, name_t n) {
 // 普通订阅:加入 normal_subs(幂等)
 static int32_t _sc_normal_subs_add(array_ctx *subs, name_t src) {
     if (_sc_name_find(subs, src) >= 0) {
-        return 0;   // 已存在
+        return 0;// 已存在
     }
     array_push_back(subs, &src);
-    return 1;       // 新增
+    return 1;// 新增
 }
 // 普通订阅:从 normal_subs 移除(找不到幂等返 0)
 static int32_t _sc_normal_subs_remove(array_ctx *subs, name_t src) {
@@ -661,6 +662,7 @@ static bool _sc_sg_prune_member_iter(const void *item, void *udata) {
     }
     return true;
 }
+// path_match visit：移除死订阅，空节点收入 empty_nodes 待后续 path_remove
 static void _sc_prune_visit(void *payload, void *udata) {
     sc_topic_data *d = (sc_topic_data *)payload;
     sc_prune_ctx *pc = (sc_prune_ctx *)udata;
@@ -777,11 +779,12 @@ static void _sc_publish_deliver(sc_ctx *ctx, name_t src, const char *topic,
     }
     // 共享投递:每个挑中成员按各自 group 名单独打包单发,接收方据 group 精确路由
     sc_shared_dst *sds = (sc_shared_dst *)shared_dsts->ptr;
+    size_t dsize = 0;
+    char *dbuf;
     for (i = 0; i < shared_dsts->size; i++) {
-        size_t dsize = 0;
-        char *dbuf = _sc_pack_deliver(SC_DELIVER_SHARED, src, meta, mlen,
-                                      sds[i].group, (uint16_t)strlen(sds[i].group),
-                                      topic, payload, plen, &dsize);
+        dbuf = _sc_pack_deliver(SC_DELIVER_SHARED, src, meta, mlen,
+                                sds[i].group, (uint16_t)strlen(sds[i].group),
+                                topic, payload, plen, &dsize);
         task_multi_call(&sds[i].task, 1, REQ_SC_DELIVER, dbuf, dsize, 0);
         task_ungrab(sds[i].task);
     }
@@ -1036,6 +1039,7 @@ static void _sc_requested(task_ctx *task, subtype_t reqtype, uint64_t sess, name
         break;
     }
 }
+// 释放 subcenter task 关联资源
 static void _sc_free(void *arg) {
     if (NULL == arg) {
         return;

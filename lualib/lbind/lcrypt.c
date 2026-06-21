@@ -280,6 +280,11 @@ static int32_t _lcrypt_digest_final(lua_State *lua) {
     lua_pushlstring(lua, out, lens);
     return 1;
 }
+static int32_t _lcrypt_digest_gc(lua_State *lua) {
+    digest_ctx *digest = luaL_checkudata(lua, 1, MT_DIGEST);
+    secure_zero(digest, sizeof(digest_ctx));
+    return 0;
+}
 //srey.digest
 LUAMOD_API int luaopen_digest(lua_State *lua) {
     luaL_Reg reg_new[] = {
@@ -291,6 +296,7 @@ LUAMOD_API int luaopen_digest(lua_State *lua) {
         { "reset", _lcrypt_digest_reset },
         { "update", _lcrypt_digest_update },
         { "final", _lcrypt_digest_final },
+        { "__gc", _lcrypt_digest_gc },
         { NULL, NULL }
     };
     REG_MTABLE(lua, MT_DIGEST, reg_new, reg_func);
@@ -356,6 +362,7 @@ static int32_t _lcrypt_hmac_final(lua_State *lua) {
     char out[DG_BLOCK_SIZE];
     size_t lens = hmac_final(hmac, out);
     lua_pushlstring(lua, out, lens);
+    secure_zero(out, sizeof(out));
     return 1;
 }
 static int32_t _lcrypt_hmac_gc(lua_State *lua) {

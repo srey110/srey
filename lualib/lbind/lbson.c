@@ -615,10 +615,11 @@ static int32_t _table_is_array(lua_State *lua, int32_t idx) {
 static void _lbson_encode_value(lua_State *lua, int32_t val_idx, bson_ctx *bson, const char *key);
 static void _lbson_encode_table_as_doc(lua_State *lua, int32_t idx, bson_ctx *bson) {
     luaL_checkstack(lua, 4, "bson encode");
+    const char *key;
+    char keybuf[24];
     lua_pushnil(lua);
     while (lua_next(lua, idx)) {
-        const char *key = NULL;
-        char keybuf[24];
+        key = NULL;
         if (LUA_TSTRING == lua_type(lua, -2)) {
             key = lua_tostring(lua, -2);
         } else if (lua_isinteger(lua, -2)) {

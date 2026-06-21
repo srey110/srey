@@ -28,7 +28,7 @@ function redis.connect(ip, port, sslname, psw, netev)
     -- 发送 AUTH 命令验证密码
     local auth = redis.pack("AUTH", psw)
     local rtn, _ = srey.syn_send(fd, skid, auth, #auth, 1)
-    local result = rtn and redis.unpack(rtn) or nil
+    local result = rtn and redis.unpack(rtn)
     if "OK" ~= result then
         srey.close(fd, skid)
         return INVALID_SOCK
@@ -47,13 +47,18 @@ function redis.pack(...)
     local req = { '*', n, '\r\n' }
     local idx = 4
     for i = 1, n do
-        local value = tostring(args[i])
-        req[idx] = '$'
-        req[idx + 1] = #value
-        req[idx + 2] = '\r\n'
-        req[idx + 3] = value
-        req[idx + 4] = '\r\n'
-        idx = idx + 5
+        if nil ~= args[i] then
+            local value = tostring(args[i])
+            req[idx] = '$'
+            req[idx + 1] = #value
+            req[idx + 2] = '\r\n'
+            req[idx + 3] = value
+            req[idx + 4] = '\r\n'
+            idx = idx + 5
+        else
+            req[idx] = "$-1\r\n"
+            idx = idx + 1
+        end
     end
     return table.concat(req)
 end

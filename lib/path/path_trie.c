@@ -40,6 +40,14 @@ static int _path_child_cmp(const void *a, const void *b, void *ud) {
     const path_node *nb = *(path_node *const *)b;
     return strcmp(na->seg, nb->seg);
 }
+// 通配符 wc 出现在段内时须独占整段,否则返 ERR_FAILED
+static int32_t _wildcard_must_own_seg(const buf_ctx *sv, char wc) {
+    if (NULL != memchr(sv->data, wc, sv->lens)
+        && !(1 == sv->lens && wc == ((char *)sv->data)[0])) {
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
 // 段级内置校验(每段调一次)
 static int32_t _path_builtin_validate_seg(const path_rules *r, const buf_ctx *sv, path_kind kind) {
     // 空段
@@ -55,17 +63,13 @@ static int32_t _path_builtin_validate_seg(const path_rules *r, const buf_ctx *sv
         return ERR_FAILED;
     }
     // 通配符出现即必须独占整段,不能作为段内普通字符
-    if (0 != r->single_wildcard) {
-        if (NULL != memchr(sv->data, r->single_wildcard, sv->lens)
-            && !(1 == sv->lens && r->single_wildcard == ((char *)sv->data)[0])) {
-            return ERR_FAILED;
-        }
+    if (0 != r->single_wildcard 
+        && ERR_OK != _wildcard_must_own_seg(sv, r->single_wildcard)) {
+        return ERR_FAILED;
     }
-    if (0 != r->multi_wildcard) {
-        if (NULL != memchr(sv->data, r->multi_wildcard, sv->lens)
-            && !(1 == sv->lens && r->multi_wildcard == ((char *)sv->data)[0])) {
-            return ERR_FAILED;
-        }
+    if (0 != r->multi_wildcard 
+        && ERR_OK != _wildcard_must_own_seg(sv, r->multi_wildcard)) {
+        return ERR_FAILED;
     }
     // 字面路径不接受纯通配段
     if (PATH_KIND_LITERAL == kind) {
@@ -87,8 +91,7 @@ static int32_t _path_builtin_validate(const path_rules *r, const buf_ctx *segs, 
     }
     // multi_wildcard 必须末尾
     if (0 != r->multi_wildcard && PATH_KIND_WILDCARD == kind) {
-        int32_t i;
-        for (i = 0; i < n - 1; i++) {
+        for (int32_t i = 0; i < n - 1; i++) {
             if (1 == segs[i].lens && r->multi_wildcard == ((char *)segs[i].data)[0]) {
                 return ERR_FAILED;
             }
@@ -117,8 +120,7 @@ static int32_t _path_validate(const path_rules *r, const char *path, path_kind k
         return ERR_FAILED;
     }
     // 逐段:业务自定义段校验 + 内置段校验
-    int32_t i;
-    for (i = 0; i < n; i++) {
+    for (int32_t i = 0; i < n; i++) {
         if (NULL != r->validate_segment
             && ERR_OK != r->validate_segment(segs[i].data, segs[i].lens, kind, r->udata)) {
             return ERR_FAILED;
@@ -168,8 +170,9 @@ static void _path_node_free_recursive(path_trie *t, path_node *n) {
     if (NULL != n->children) {
         size_t i = 0;
         void *item;
+        path_node *child;
         while (hashmap_iter(n->children, &i, &item)) {
-            path_node *child = *(path_node **)item;
+            child = *(path_node **)item;
             _path_node_free_recursive(t, child);
         }
         hashmap_free(n->children);
@@ -233,9 +236,9 @@ static path_node *_path_children_lookup(struct hashmap *children, const buf_ctx 
 static path_node *_path_walk_insert(path_trie *t, const buf_ctx *segs, int32_t n) {
     path_node *cur = &t->root;
     const path_rules *r = t->rules;
-    int32_t i;
-    for (i = 0; i < n; i++) {
-        path_node *next = NULL;
+    path_node *next, *found, *child;
+    for (int32_t i = 0; i < n; i++) {
+        next = NULL;
         if (0 != r->single_wildcard && 1 == segs[i].lens && r->single_wildcard == ((char *)segs[i].data)[0]) {
             // single_wildcard 段:plus 子树
             if (NULL == cur->plus) {
@@ -255,11 +258,11 @@ static path_node *_path_walk_insert(path_trie *t, const buf_ctx *segs, int32_t n
                                                            sizeof(path_node *), 4, 0, 0,
                                                            _path_child_hash, _path_child_cmp, NULL, NULL);
             }
-            path_node *found = _path_children_lookup(cur->children, &segs[i]);
+            found = _path_children_lookup(cur->children, &segs[i]);
             if (NULL != found) {
                 next = found;
             } else {
-                path_node *child = _path_node_alloc(&segs[i], cur);
+                child = _path_node_alloc(&segs[i], cur);
                 hashmap_set(cur->children, &child);
                 next = child;
             }
@@ -272,9 +275,9 @@ static path_node *_path_walk_insert(path_trie *t, const buf_ctx *segs, int32_t n
 static path_node *_path_walk_exact(path_trie *t, const buf_ctx *segs, int32_t n) {
     path_node *cur = &t->root;
     const path_rules *r = t->rules;
-    int32_t i;
-    for (i = 0; i < n; i++) {
-        path_node *next = NULL;
+    path_node *next;
+    for (int32_t i = 0; i < n; i++) {
+        next = NULL;
         if (0 != r->single_wildcard && 1 == segs[i].lens && r->single_wildcard == ((char *)segs[i].data)[0]) {
             // single_wildcard 段:plus 子树
             next = cur->plus;
@@ -295,6 +298,8 @@ static path_node *_path_walk_exact(path_trie *t, const buf_ctx *segs, int32_t n)
 // 空节点回收:从 node 向 root 回溯,沿途释放完全空的节点
 static void _path_try_collect(path_trie *t, path_node *node) {
     path_node *cur = node;
+    path_node *parent = NULL;
+    path_node *qptr = NULL;
     while (cur != &t->root) {
         if (NULL != cur->payload) {
             return;
@@ -305,14 +310,14 @@ static void _path_try_collect(path_trie *t, path_node *node) {
         if (NULL != cur->children && hashmap_count(cur->children) > 0) {
             return;
         }
-        path_node *parent = cur->parent;
+        parent = cur->parent;
         // 从 parent 摘除自己
         if (parent->plus == cur) {
             parent->plus = NULL;
         } else if (parent->hash == cur) {
             parent->hash = NULL;
         } else if (NULL != parent->children) {
-            path_node *qptr = cur;
+            qptr = cur;
             hashmap_delete(parent->children, &qptr);
             if (0 == hashmap_count(parent->children)) {
                 hashmap_free(parent->children);
@@ -462,6 +467,25 @@ int32_t path_matches_pattern(const path_rules *rules,
     }
     return li == ln ? ERR_OK : ERR_FAILED;
 }
+static void _path_scan_recurse(path_trie *t, path_node *node, char *buf, size_t cap, size_t pos,
+                           scan_visit_cb cb, void *udata);
+// 将子节点路径拼入 buf 并递归
+static void _path_scan_visit(path_trie *t, path_node *child, char *buf, size_t cap, size_t pos,
+                             char sep, scan_visit_cb cb, void *udata) {
+    size_t slen = strlen(child->seg);
+    size_t need = (pos > 0 ? 1 : 0) + slen + 1;
+    if (pos + need > cap) {
+        LOG_WARN("path_scan: path too long, skip");
+        return;
+    }
+    size_t newpos = pos;
+    if (pos > 0) {
+        buf[newpos++] = sep;
+    }
+    memcpy(buf + newpos, child->seg, slen);
+    newpos += slen;
+    _path_scan_recurse(t, child, buf, cap, newpos, cb, udata);
+}
 // 递归遍历 path_scan:用栈缓冲拼接路径
 static void _path_scan_recurse(path_trie *t, path_node *node, char *buf, size_t cap, size_t pos,
                            scan_visit_cb cb, void *udata) {
@@ -476,54 +500,14 @@ static void _path_scan_recurse(path_trie *t, path_node *node, char *buf, size_t 
         size_t i = 0;
         void *item;
         while (hashmap_iter(node->children, &i, &item)) {
-            path_node *child = *(path_node **)item;
-            size_t slen = strlen(child->seg);
-            // 需空间:sep + seg + \0
-            size_t need = (pos > 0 ? 1 : 0) + slen + 1;
-            if (pos + need > cap) {
-                LOG_WARN("path_scan: path too long, skip node");
-                continue;
-            }
-            size_t newpos = pos;
-            if (pos > 0) {
-                buf[newpos++] = sep;
-            }
-            memcpy(buf + newpos, child->seg, slen);
-            newpos += slen;
-            _path_scan_recurse(t, child, buf, cap, newpos, cb, udata);
+            _path_scan_visit(t, *(path_node **)item, buf, cap, pos, sep, cb, udata);
         }
     }
-    // plus 子节点
     if (NULL != node->plus) {
-        size_t slen = strlen(node->plus->seg);
-        size_t need = (pos > 0 ? 1 : 0) + slen + 1;
-        if (pos + need <= cap) {
-            size_t newpos = pos;
-            if (pos > 0) {
-                buf[newpos++] = sep;
-            }
-            memcpy(buf + newpos, node->plus->seg, slen);
-            newpos += slen;
-            _path_scan_recurse(t, node->plus, buf, cap, newpos, cb, udata);
-        } else {
-            LOG_WARN("path_scan: path too long, skip plus");
-        }
+        _path_scan_visit(t, node->plus, buf, cap, pos, sep, cb, udata);
     }
-    // hash 子节点
     if (NULL != node->hash) {
-        size_t slen = strlen(node->hash->seg);
-        size_t need = (pos > 0 ? 1 : 0) + slen + 1;
-        if (pos + need <= cap) {
-            size_t newpos = pos;
-            if (pos > 0) {
-                buf[newpos++] = sep;
-            }
-            memcpy(buf + newpos, node->hash->seg, slen);
-            newpos += slen;
-            _path_scan_recurse(t, node->hash, buf, cap, newpos, cb, udata);
-        } else {
-            LOG_WARN("path_scan: path too long, skip hash");
-        }
+        _path_scan_visit(t, node->hash, buf, cap, pos, sep, cb, udata);
     }
 }
 void path_scan(path_trie *t, scan_visit_cb cb, void *udata) {

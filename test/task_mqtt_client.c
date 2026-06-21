@@ -50,7 +50,7 @@ static void _send_publish(mqtt_pack_ctx *pack, task_ctx *task, SOCKET fd, uint64
     binary_init(&props, NULL, 0, 0);
     mqtt_props_kv(&props, USER_PROPERTY, "key1", 4, "val1", 4);
     size_t lens;
-    char *pk = mqtt_pack_publish(pack->version, 1, qos, 1, "srey/will", (int16_t)randrange(100, 20000), "publish payload", strlen("publish payload"), &props, &lens);
+    char *pk = mqtt_pack_publish(pack->version, 1, qos, 1, "srey/will", (uint16_t)randrange(100, 20000), "publish payload", strlen("publish payload"), &props, &lens);
     binary_free(&props);
     if (NULL != pk) {
         ev_send(&task->loader->netev, fd, skid, pk, lens, 0);
@@ -135,7 +135,7 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid,
             break;
         }
         size_t lens;
-        char *pk = mqtt_pack_subscribe(pack->version, (int16_t)randrange(100, 20000), &topics, NULL, &lens);
+        char *pk = mqtt_pack_subscribe(pack->version, (uint16_t)randrange(100, 20000), &topics, NULL, &lens);
         binary_free(&topics);
         if (NULL != pk) {
             ev_send(&task->loader->netev, fd, skid, pk, lens, 0);
@@ -159,7 +159,7 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid,
                 break;
             }
             size_t lens;
-            char *pk = mqtt_pack_unsubscribe(pack->version, (int16_t)randrange(100, 20000), &topics, NULL, &lens);
+            char *pk = mqtt_pack_unsubscribe(pack->version, (uint16_t)randrange(100, 20000), &topics, NULL, &lens);
             binary_free(&topics);
             if (NULL != pk) {
                 ev_send(&task->loader->netev, fd, skid, pk, lens, 0);

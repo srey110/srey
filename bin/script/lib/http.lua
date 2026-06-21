@@ -166,17 +166,19 @@ local function _http_msg(rsp, fd, skid, status, headers, ckfunc, info, ...)
                     table.insert(msg, "0\r\n\r\n")
                     return _http_send(rsp, fd, skid, msg, ckfunc)
                 end
-                table.insert(msg, string.format("%x\r\n", #rtn))
-                table.insert(msg, rtn)
-                table.insert(msg, "\r\n")
-                smsg = table.concat(msg)
-                if not srey.send(fd, skid, smsg, #smsg, 1) then
-                    -- 中间帧失败仍尝试补发终止块,让对端退出 chunked 累积状态
-                    srey.send(fd, skid, "0\r\n\r\n", 5, 1)
-                    return
-                end
-                for i = #msg, 1, -1 do
-                     msg[i] = nil
+                if #rtn > 0 then
+                    table.insert(msg, string.format("%x\r\n", #rtn))
+                    table.insert(msg, rtn)
+                    table.insert(msg, "\r\n")
+                    smsg = table.concat(msg)
+                    if not srey.send(fd, skid, smsg, #smsg, 1) then
+                        -- 中间帧失败仍尝试补发终止块,让对端退出 chunked 累积状态
+                        srey.send(fd, skid, "0\r\n\r\n", 5, 1)
+                        return
+                    end
+                    for i = #msg, 1, -1 do
+                         msg[i] = nil
+                    end
                 end
             else
                 table.insert(msg, "0\r\n\r\n")

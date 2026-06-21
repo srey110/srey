@@ -446,6 +446,7 @@ static void _dc_requested(task_ctx *task, subtype_t reqtype, uint64_t sess, name
         break;
     }
 }
+// 释放 DataCenter task 关联资源
 static void _dc_free(void *arg) {
     if (NULL == arg) {
         return;

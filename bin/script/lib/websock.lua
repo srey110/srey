@@ -76,11 +76,7 @@ function wbsk.connect(ws, sslname, secprot, netev)
     -- 端口：ws 默认 80，wss 默认 443
     local port = url.port
     if not port then
-        if SSL_NAME.NONE == sslname then
-            port = 80
-        else
-            port = 443
-        end
+        port = ("wss" == url.scheme) and 443 or 80
     end
     -- 构造 HTTP Upgrade 握手包；signkey 用于 C 层验证服务端 Sec-WebSocket-Accept
     local path = url.path or "/"
@@ -164,7 +160,7 @@ wbsk.continua = websock.pack_continua
 ---内部流式发送：将 func(...) 产生的数据按 WebSocket 分片协议逐帧发送；
 ---发送 fin=1 空 continuation 帧标记消息结束
 local function _send_end_frame(fd, skid, client)
-    local data, size = wbsk.continua(client, 1, nil, 0)
+    local data, size = wbsk.continua(client, 1, "", 0)
     return srey.send(fd, skid, data, size, 0)
 end
 

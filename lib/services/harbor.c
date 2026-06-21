@@ -4,13 +4,12 @@
 #include "event/event.h"
 #include "utils/binary.h"
 #include "utils/utils.h"
-#include "utils/timer.h"
 #include "containers/hashmap.h"
 #include "crypt/hmac.h"
 
-#define HARBOR_SIGN_WINDOW_SEC  (5 * 60)   // 请求时间戳容许的偏差窗口（秒）
-#define HARBOR_NONCE_BYTES      16         // nonce 原始字节数（128 bit 防碰撞）
-#define HARBOR_NONCE_HEX        (HARBOR_NONCE_BYTES * 2)  // X-Nonce header 字符长度（hex 编码）
+#define HARBOR_SIGN_WINDOW_SEC  (5 * 60) // 请求时间戳容许的偏差窗口（秒）
+#define HARBOR_NONCE_BYTES      16 // nonce 原始字节数（128 bit 防碰撞）
+#define HARBOR_NONCE_HEX        (HARBOR_NONCE_BYTES * 2) // X-Nonce header 字符长度（hex 编码）
 
 // nonce 缓存项：以 hex 字符串形式存储，避免 hex 解码开销
 typedef struct nonce_entry_ctx {
@@ -27,23 +26,22 @@ typedef struct harbor_ctx {
     struct hashmap *nonce_cur;
     struct hashmap *nonce_prev;
     char ip[IP_LENS];       // 监听IP
-    timer_ctx wtimer;
     hmac_ctx hmac;          // HMAC签名上下文（用于验证请求合法性）
-    
 }harbor_ctx;
 
+// nonce hashmap 哈希函数
 static uint64_t _harbor_nonce_hash(const void *item, uint64_t seed0, uint64_t seed1) {
     const nonce_entry_ctx *e = item;
     return hashmap_sip(e->nonce, HARBOR_NONCE_HEX, seed0, seed1);
 }
+// nonce hashmap 比较函数
 static int _harbor_nonce_compare(const void *a, const void *b, void *udata) {
     (void)udata;
     return memcmp(((const nonce_entry_ctx *)a)->nonce,
                   ((const nonce_entry_ctx *)b)->nonce,
                   HARBOR_NONCE_HEX);
 }
-/* 时间恒定的十六进制字符串比较（大小写不敏感），防止时序侧信道攻击。
- * 使用 volatile 阻止编译器将循环优化为短路分支。 */
+// 时间恒定十六进制比较（大小写不敏感）；volatile 阻止编译器短路优化防时序侧信道
 static int32_t _harbor_ct_hexcmp(const char *a, const char *b, size_t n) {
     volatile uint8_t diff = 0;
     for (size_t i = 0; i < n; i++) {
@@ -102,8 +100,8 @@ static int32_t _harbor_check_sign(task_ctx *harbor, struct http_pack_ctx *pack, 
         return ERR_FAILED;
     }
     // 签名通过后做 nonce 重放检查；窗口轮转：每 HARBOR_SIGN_WINDOW_SEC 切换 cur→prev
-    uint64_t wnow = timer_cur_ms(&ctx->wtimer) / 1000;
-    if (wnow - ctx->window_start >= HARBOR_SIGN_WINDOW_SEC) {
+    uint64_t wnow = nowsec();
+    if (wnow >= ctx->window_start && wnow - ctx->window_start >= HARBOR_SIGN_WINDOW_SEC) {
         if (NULL != ctx->nonce_prev) {
             hashmap_free(ctx->nonce_prev);
         }
@@ -245,6 +243,7 @@ static void _harbor_startup(task_ctx *harbor) {
         LOG_ERROR("task_listen %s:%d error", ctx->ip, ctx->port);
     }
 }
+// 释放 harbor task 关联资源
 static void _harbor_free(void *arg) {
     if (NULL == arg) {
         return;
@@ -300,8 +299,7 @@ int32_t harbor_start(loader_ctx *loader, const char *tname, const char *ssl, con
     ctx->nonce_cur = hashmap_new_with_allocator(_malloc, _realloc, _free,
                                                 sizeof(nonce_entry_ctx), 0, 0, 0,
                                                 _harbor_nonce_hash, _harbor_nonce_compare, NULL, NULL);
-    timer_init(&ctx->wtimer);
-    ctx->window_start = timer_cur_ms(&ctx->wtimer) / 1000;
+    ctx->window_start = nowsec();
     if (NULL == coro_task_register(loader, tname, 4 * ONEK,
                                    _harbor_startup, _harbor_closing,
                                    _harbor_free, ctx)) {

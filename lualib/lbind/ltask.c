@@ -413,7 +413,11 @@ static void _ltask_run(task_dispatch_arg *arg) {
 static int32_t _ltask_register(lua_State *lua) {
     const char *file = luaL_checkstring(lua, 1);
     const char *name = luaL_optstring(lua, 2, NULL);
-    size_t quecap = (size_t)luaL_checkinteger(lua, 3);
+    lua_Integer cap_arg = luaL_checkinteger(lua, 3);
+    if (cap_arg < 0) {
+        return luaL_argerror(lua, 3, "quecap must be non-negative");
+    }
+    size_t quecap = (size_t)cap_arg;
     int32_t arg_top = lua_gettop(lua);
     ltask_ctx *ltask;
     CALLOC(ltask, 1, sizeof(ltask_ctx));

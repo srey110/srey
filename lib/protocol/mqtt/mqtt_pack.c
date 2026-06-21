@@ -305,7 +305,7 @@ char *mqtt_pack_connack(mqtt_protversion version, int8_t sesspresent, uint8_t re
     return bwriter.data;
 }
 char *mqtt_pack_publish(mqtt_protversion version, int8_t retain, int8_t qos, int8_t dup,
-    const char *topic, int16_t packid, char *payload, size_t pllens, binary_ctx *props, size_t *lens) {
+    const char *topic, uint16_t packid, char *payload, size_t pllens, binary_ctx *props, size_t *lens) {
     int8_t fixhead = (MQTT_PUBLISH << 4);//固定报头
     //固定报头标志
     BIT_SETN(fixhead, 0, retain);//保留标志
@@ -361,7 +361,7 @@ char *mqtt_pack_publish(mqtt_protversion version, int8_t retain, int8_t qos, int
     *lens = bwriter.offset;
     return bwriter.data;
 }
-static char *_mqtt_pack_pubackrel_common(mqtt_protversion version, int16_t packid, uint8_t reason,
+static char *_mqtt_pack_pubackrel_common(mqtt_protversion version, uint16_t packid, uint8_t reason,
                                          binary_ctx *props, size_t *lens, int8_t fixhead) {
     //计算剩余长度
     uint32_t total;
@@ -415,21 +415,21 @@ static char *_mqtt_pack_pubackrel_common(mqtt_protversion version, int16_t packi
     *lens = bwriter.offset;
     return bwriter.data;
 }
-char *mqtt_pack_puback(mqtt_protversion version, int16_t packid, uint8_t reason, binary_ctx *props, size_t *lens) {
+char *mqtt_pack_puback(mqtt_protversion version, uint16_t packid, uint8_t reason, binary_ctx *props, size_t *lens) {
     return _mqtt_pack_pubackrel_common(version, packid, reason, props, lens, (MQTT_PUBACK << 4));
 }
-char *mqtt_pack_pubrec(mqtt_protversion version, int16_t packid, uint8_t reason, binary_ctx *props, size_t *lens) {
+char *mqtt_pack_pubrec(mqtt_protversion version, uint16_t packid, uint8_t reason, binary_ctx *props, size_t *lens) {
     return _mqtt_pack_pubackrel_common(version, packid, reason, props, lens, (MQTT_PUBREC << 4));
 }
-char *mqtt_pack_pubrel(mqtt_protversion version, int16_t packid, uint8_t reason, binary_ctx *props, size_t *lens) {
+char *mqtt_pack_pubrel(mqtt_protversion version, uint16_t packid, uint8_t reason, binary_ctx *props, size_t *lens) {
     int8_t fixhead = (MQTT_PUBREL << 4);
     BIT_SETN(fixhead, 1, 1);//第3，2，1，0位是保留位，必须被设置为0，0，1，0
     return _mqtt_pack_pubackrel_common(version, packid, reason, props, lens, fixhead);
 }
-char *mqtt_pack_pubcomp(mqtt_protversion version, int16_t packid, uint8_t reason, binary_ctx *props, size_t *lens) {
+char *mqtt_pack_pubcomp(mqtt_protversion version, uint16_t packid, uint8_t reason, binary_ctx *props, size_t *lens) {
     return _mqtt_pack_pubackrel_common(version, packid, reason, props, lens, (MQTT_PUBCOMP << 4));
 }
-char *mqtt_pack_subscribe(mqtt_protversion version, int16_t packid, binary_ctx *topics, binary_ctx *props, size_t *lens) {
+char *mqtt_pack_subscribe(mqtt_protversion version, uint16_t packid, binary_ctx *topics, binary_ctx *props, size_t *lens) {
     int8_t fixhead = (int8_t)(MQTT_SUBSCRIBE << 4);//固定报头
     BIT_SETN(fixhead, 1, 1);//第3，2，1，0位是保留位，必须被设置为0，0，1，0
     //计算剩余长度
@@ -465,7 +465,7 @@ char *mqtt_pack_subscribe(mqtt_protversion version, int16_t packid, binary_ctx *
     *lens = bwriter.offset;
     return bwriter.data;
 }
-char *mqtt_pack_suback(mqtt_protversion version, int16_t packid, uint8_t *reasons, size_t rslens, binary_ctx *props, size_t *lens) {
+char *mqtt_pack_suback(mqtt_protversion version, uint16_t packid, uint8_t *reasons, size_t rslens, binary_ctx *props, size_t *lens) {
     int8_t fixhead = (int8_t)(MQTT_SUBACK << 4);//固定报头
     //计算剩余长度
     uint32_t total = 2;//报文标识符(2)
@@ -500,7 +500,7 @@ char *mqtt_pack_suback(mqtt_protversion version, int16_t packid, uint8_t *reason
     *lens = bwriter.offset;
     return bwriter.data;
 }
-char *mqtt_pack_unsubscribe(mqtt_protversion version, int16_t packid, binary_ctx *topics, binary_ctx *props, size_t *lens) {
+char *mqtt_pack_unsubscribe(mqtt_protversion version, uint16_t packid, binary_ctx *topics, binary_ctx *props, size_t *lens) {
     int8_t fixhead = (int8_t)(MQTT_UNSUBSCRIBE << 4);//固定报头
     BIT_SETN(fixhead, 1, 1);//第3，2，1，0位是保留位，必须被设置为0，0，1，0
     //计算剩余长度
@@ -536,7 +536,7 @@ char *mqtt_pack_unsubscribe(mqtt_protversion version, int16_t packid, binary_ctx
     *lens = bwriter.offset;
     return bwriter.data;
 }
-char *mqtt_pack_unsuback(mqtt_protversion version, int16_t packid, uint8_t *reasons, size_t rslens, binary_ctx *props, size_t *lens) {
+char *mqtt_pack_unsuback(mqtt_protversion version, uint16_t packid, uint8_t *reasons, size_t rslens, binary_ctx *props, size_t *lens) {
     int8_t fixhead = (int8_t)(MQTT_UNSUBACK << 4);//固定报头
     //计算剩余长度
     uint32_t total = 2;//报文标识符(2)

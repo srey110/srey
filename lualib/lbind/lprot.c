@@ -16,9 +16,9 @@
 /// <returns type="integer">数据长度</returns>
 static int32_t _lprot_harbor_pack(lua_State *lua) {
     name_t task = (name_t)luaL_checkinteger(lua, 1);
-    int32_t call = (int32_t)luaL_checkinteger(lua, 2);      // 0=call，1=request
+    int32_t call = (int32_t)luaL_checkinteger(lua, 2);// 0=call，1=request
     subtype_t reqtype = (subtype_t)luaL_checkinteger(lua, 3);
-    const char *key = luaL_checkstring(lua, 4);              // 路由 key
+    const char *key = luaL_checkstring(lua, 4);// 路由 key
     void *data;
     size_t size;
     switch (lua_type(lua, 5)) {
@@ -146,7 +146,8 @@ static int32_t _lprot_custz_pack(lua_State *lua) {
     data = custz_pack(pktype, data, size, &size);
     if (NULL == data) {
         lua_pushnil(lua);
-        return 1;
+        lua_pushinteger(lua, 0);
+        return 2;
     }
     LPUB_RET_LUD(lua, data, size);
 }
@@ -168,18 +169,18 @@ static int32_t _lprot_websock_unpack(lua_State *lua) {
     LUACHECK_LUDATA(lua, 1);
     struct websock_pack_ctx *pack = (struct websock_pack_ctx *)lua_touserdata(lua, 1);
     lua_createtable(lua, 0, 6);
-    lua_pushinteger(lua, websock_fin(pack));      // 是否为最终分片
+    lua_pushinteger(lua, websock_fin(pack));// 是否为最终分片
     lua_setfield(lua, -2, "fin");
-    lua_pushinteger(lua, websock_prot(pack));     // 帧操作码（文本/二进制/控制帧等）
+    lua_pushinteger(lua, websock_prot(pack));// 帧操作码（文本/二进制/控制帧等）
     lua_setfield(lua, -2, "prot");
     int32_t secprot = websock_secprot(pack);
     if (PACK_NONE != secprot) {
-        lua_pushinteger(lua, secprot);            // 子协议类型
+        lua_pushinteger(lua, secprot);// 子协议类型
         lua_setfield(lua, -2, "secprot");
     }
     void *secpack = websock_secpack(pack);
     if (NULL != secpack) {
-        lua_pushlightuserdata(lua, secpack);      // 子协议数据包指针
+        lua_pushlightuserdata(lua, secpack);// 子协议数据包指针
         lua_setfield(lua, -2, "secpack");
     }
     size_t lens;
@@ -504,11 +505,11 @@ static int32_t _lprot_redis_value(lua_State *lua) {
         return 1;
     }
     switch (pk->prot) {
-    case RESP_STRING:   // 简单字符串
-    case RESP_ERROR:    // 错误字符串
-    case RESP_BSTRING:  // 批量字符串
-    case RESP_BERROR:   // 批量错误
-    case RESP_VERB:     // 带类型的字符串
+    case RESP_STRING:// 简单字符串
+    case RESP_ERROR:// 错误字符串
+    case RESP_BSTRING:// 批量字符串
+    case RESP_BERROR:// 批量错误
+    case RESP_VERB:// 带类型的字符串
         if (pk->len < 0) {
             lua_pushnil(lua);
         } else if (0 == pk->len) {
@@ -517,32 +518,32 @@ static int32_t _lprot_redis_value(lua_State *lua) {
             lua_pushlstring(lua, pk->data, (size_t)pk->len);
         }
         break;
-    case RESP_INTEGER:  // 整数
-    case RESP_BIGNUM:   // 大整数
+    case RESP_INTEGER:// 整数
+    case RESP_BIGNUM:// 大整数
         lua_pushinteger(lua, pk->ival);
         break;
-    case RESP_NIL:      // Null 值
+    case RESP_NIL:// Null 值
         lua_pushnil(lua);
         break;
-    case RESP_BOOL:     // 布尔值
+    case RESP_BOOL:// 布尔值
         lua_pushboolean(lua, (int32_t)pk->ival);
         break;
-    case RESP_DOUBLE:   // 浮点数
+    case RESP_DOUBLE:// 浮点数
         lua_pushnumber(lua, pk->dval);
         break;
-    case RESP_ARRAY:    // 数组
+    case RESP_ARRAY:// 数组
         _lprot_redis_agg(lua, "array", pk->nelem);
         break;
-    case RESP_SET:      // 集合
+    case RESP_SET:// 集合
         _lprot_redis_agg(lua, "set", pk->nelem);
         break;
-    case RESP_PUSHE:    // 推送消息
+    case RESP_PUSHE:// 推送消息
         _lprot_redis_agg(lua, "push", pk->nelem);
         break;
-    case RESP_MAP:      // 映射
+    case RESP_MAP:// 映射
         _lprot_redis_agg(lua, "map", pk->nelem);
         break;
-    case RESP_ATTR:     // 属性
+    case RESP_ATTR:// 属性
         _lprot_redis_agg(lua, "attr", pk->nelem);
         break;
     default:
