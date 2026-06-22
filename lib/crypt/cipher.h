@@ -94,7 +94,7 @@ void *cipher_block(cipher_ctx *cipher, const void *data, size_t lens, size_t *si
 /// <param name="data">要加解密的数据</param>
 /// <param name="lens">数据长度</param>
 /// <param name="output">加解密后的数据,预估长度:lens + 分组长度</param>
-/// <returns>加解密后的长度</returns>
+/// <returns>加解密后的长度；NoPadding+ECB/CBC 输入非对齐时返回 0（失败，output 已清零）</returns>
 /// <remarks>
 /// CTR/CFB/OFB 模式：函数内部会 cipher_reset 将 cur_iv 重置为初始 iv；
 /// 因此跨多条独立消息复用同一 cipher_ctx 时，调用方必须在每条消息前

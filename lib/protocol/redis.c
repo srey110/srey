@@ -205,7 +205,7 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
      * memmove 将 Bulk String 主体向左移动以消除填充间隙，
      * 避免额外的输出内存分配。 */
     int hlen_int = SNPRINTF(_fmt, sizeof(_fmt), "*%zu"FLAG_CRLF, n);
-    size_t hlens     = (size_t)hlen_int;
+    size_t hlens = (size_t)hlen_int;
     ASSERTAB(sdsbuf.offset >= MAX_HEADER_RESERVE, "RESP body skip violated.");
     size_t body_size = sdsbuf.offset - MAX_HEADER_RESERVE;
     ASSERTAB(hlens <= MAX_HEADER_RESERVE, "RESP header too long for reserved slot.");

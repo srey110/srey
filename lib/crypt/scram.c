@@ -58,35 +58,47 @@ void scram_free(scram_ctx *scram) {
     }
     FREE(scram->salt);
     if (NULL != scram->remote_nonce) {
-        secure_zero(scram->remote_nonce, strlen(scram->remote_nonce));
+        secure_zero(scram->remote_nonce, strlen(scram->remote_nonce) + 1);
     }
     FREE(scram->remote_nonce);
     if (NULL != scram->cbind_data) {
         secure_zero(scram->cbind_data, (size_t)scram->cbind_len);
     }
     FREE(scram->cbind_data);
+    if (NULL != scram->user) {
+        secure_zero(scram->user, strlen(scram->user) + 1);
+    }
+    FREE(scram->user);
+    if (NULL != scram->pwd) {
+        secure_zero(scram->pwd, strlen(scram->pwd) + 1);
+    }
+    FREE(scram->pwd);
     secure_zero(scram, sizeof(scram_ctx));
     FREE(scram);
 }
-void scram_set_user(scram_ctx *scram, const char *user) {
-    if (!scram->client) {
+void scram_set_user(scram_ctx *scram, const char *user, size_t ulens) {
+    if (EMPTYPTR(user, ulens)) {
         return;
     }
-    if (strlen(user) >= sizeof(scram->user)) {
-        LOG_WARN("scram user name too long, truncated.");
+    if (NULL != scram->user) {
+        secure_zero(scram->user, strlen(scram->user) + 1);
+        FREE(scram->user);
     }
-    secure_zero(scram->user, sizeof(scram->user));
-    safe_fill_str(scram->user, sizeof(scram->user), user);
+    MALLOC(scram->user, ulens + 1);
+    memcpy(scram->user, user, ulens);
+    scram->user[ulens] = '\0';
 }
-int32_t scram_set_pwd(scram_ctx *scram, const char *pwd) {
-    size_t plen = strlen(pwd);
-    if (plen >= sizeof(scram->pwd)) {
-        LOG_ERROR("scram password too long (%zu >= %zu), rejected.", plen, sizeof(scram->pwd));
-        return ERR_FAILED;
+void scram_set_pwd(scram_ctx *scram, const char *pwd, size_t plens) {
+    if (NULL == pwd) {// 接受空密码""
+        return;
     }
-    secure_zero(scram->pwd, sizeof(scram->pwd));
-    safe_fill_str(scram->pwd, sizeof(scram->pwd), pwd);
-    return ERR_OK;
+    if (NULL != scram->pwd) {
+        secure_zero(scram->pwd, strlen(scram->pwd) + 1);
+        FREE(scram->pwd);
+    }
+    MALLOC(scram->pwd, plens + 1);
+    memcpy(scram->pwd, pwd, plens);
+    scram->pwd[plens] = '\0';
 }
 void scram_set_salt(scram_ctx *scram, char *salt, size_t lens) {
     if (scram->client) {
@@ -94,6 +106,9 @@ void scram_set_salt(scram_ctx *scram, char *salt, size_t lens) {
     }
     if (EMPTYPTR(salt, lens)) {
         return;
+    }
+    if (NULL != scram->salt) {
+        secure_zero(scram->salt, (size_t)scram->saltlen);
     }
     FREE(scram->salt);
     MALLOC(scram->salt, lens);
@@ -110,6 +125,9 @@ void scram_set_cbind(scram_ctx *scram, const char *data, size_t lens) {
     if (!scram->cbind || EMPTYPTR(data, lens)) {
         return;
     }
+    if (NULL != scram->cbind_data) {
+        secure_zero(scram->cbind_data, (size_t)scram->cbind_len);
+    }
     FREE(scram->cbind_data);
     MALLOC(scram->cbind_data, lens);
     memcpy(scram->cbind_data, data, lens);
@@ -122,13 +140,14 @@ const char *scram_get_user(scram_ctx *scram) {
 static char *_scram_username_filter(const char *user) {
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
-    for (size_t i = 0; i < strlen(user); i++) {
+    size_t ulen = strlen(user);
+    for (size_t i = 0; i < ulen; i++) {
         if (',' == user[i]) {
-            binary_set_binary(&bwriter, "=2C", strlen("=2C"));
+            binary_set_binary(&bwriter, "=2C", 3);
             continue;
         }
         if ('=' == user[i]) {
-            binary_set_binary(&bwriter, "=3D", strlen("=3D"));
+            binary_set_binary(&bwriter, "=3D", 3);
             continue;
         }
         binary_set_int8(&bwriter, user[i]);
@@ -360,23 +379,14 @@ static int32_t _scram_parse_client_first_message(scram_ctx *scram, char *msg, si
     }
     if (NULL != memstr(0, user, lens, "=2C", 3)
         || NULL != memstr(0, user, lens, "=3D", 3)) {
-        char *recovered = _scram_username_recover(user, lens);
-        if (NULL == recovered) {
-            // 非法 =XX 转义被拒
+        char *uname = _scram_username_recover(user, lens);
+        if (NULL == uname) {
             return ERR_FAILED;
         }
-        if (strlen(recovered) >= sizeof(scram->user)) {
-            FREE(recovered);
-            return ERR_FAILED;
-        }
-        safe_fill_str(scram->user, sizeof(scram->user), recovered);
-        FREE(recovered);
+        scram_set_user(scram, uname, strlen(uname));
+        FREE(uname);
     } else {
-        if (lens >= sizeof(scram->user)) {
-            return ERR_FAILED;
-        }
-        memcpy(scram->user, user, lens);
-        scram->user[lens] = '\0';
+        scram_set_user(scram, user, lens);
     }
     char *nonce = _scram_attr_value(msg, mlens, "r=", &lens);
     if (NULL == nonce) {
@@ -448,7 +458,7 @@ static int32_t _scram_parse_server_first_message(scram_ctx *scram, char *msg, si
     if (NULL == iter) {
         return ERR_FAILED;
     }
-    char ibuf[8] = { 0 };
+    char ibuf[12] = { 0 };
     if (lens >= sizeof(ibuf)) {
         return ERR_FAILED;
     }
@@ -513,26 +523,28 @@ static int32_t _scram_server_check_final_message(scram_ctx *scram, char *msg, si
     }
     char *cbind_b64 = _scram_cbind_b64(scram);
     int32_t mismatch = (strlen(cbind_b64) != lens || 0 != ct_memcmp(cbind_val, cbind_b64, lens));
-    FREE(cbind_b64);
     if (mismatch) {
+        FREE(cbind_b64);
         return ERR_FAILED;
     }
     char *nonce = _scram_attr_value(msg, mlens, "r=", &lens);
     if (NULL == nonce) {
+        FREE(cbind_b64);
         return ERR_FAILED;
     }
     char *buf = format_va("%s%s", scram->remote_nonce, scram->local_nonce);
     if (strlen(buf) != lens
         || 0 != ct_memcmp(nonce, buf, lens)) {
+        FREE(cbind_b64);
         FREE(buf);
         return ERR_FAILED;
     }
     char *client_proof = _scram_attr_value(msg, mlens, "p=", &lens);
     if (NULL == client_proof) {
+        FREE(cbind_b64);
         FREE(buf);
         return ERR_FAILED;
     }
-    cbind_b64 = _scram_cbind_b64(scram);
     scram->final_message_without_proof = format_va("c=%s,r=%s", cbind_b64, buf);
     FREE(cbind_b64);
     FREE(buf);

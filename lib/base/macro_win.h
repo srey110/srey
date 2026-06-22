@@ -24,6 +24,9 @@ static inline int _snprintf_safe(char *buf, size_t size, const char *fmt, ...) {
     va_end(args);
     if (size > 0) {
         buf[size - 1] = '\0';
+        if (n < 0) {
+            n = (int)strlen(buf);//MSVC < 2015 下 _vsnprintf 截断时返回 -1
+        }
     }
     return n;
 }

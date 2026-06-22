@@ -92,6 +92,18 @@ static void _h_stats(router_req *ctx) {
     int32_t k = SNPRINTF(buf, sizeof(buf), "%d", cnt);
     router_req_text(ctx, 200, buf, (size_t)k);
 }
+// GET /a/{x?}/b → OPT 中置前瞻: 有值返 "x=<val>", 无值(前瞻跳过)返 "x=none"
+static void _h_opt_mid(router_req *ctx) {
+    size_t n;
+    const char *x = router_req_param(ctx, "x", &n);
+    if (NULL == x) {
+        router_req_text(ctx, 200, "x=none", 6);
+    } else {
+        char buf[64];
+        int32_t k = SNPRINTF(buf, sizeof(buf), "x=%.*s", (int32_t)n, x);
+        router_req_text(ctx, 200, buf, (size_t)k);
+    }
+}
 // GET /g1/g2/deep → "deep=11"; 嵌套 group 终点 handler:
 // g1mw 中间件先 ctx->user += 1, g2mw 中间件再 += 10, 累加值 11 由 handler 写出
 // 验证: (a) 嵌套 group 中间件按父→子顺序入链 (b) ctx->user 跨中间件传值
@@ -187,6 +199,7 @@ static void _server_startup(task_ctx *task) {
     router_get(r, NULL, "/qexist",       _h_qexist,      NULL, 0);
     // {a?b} 参数名含内部 ?, 按 B2 文法当字面量段(对齐 Lua); 故 /litq/xyz 不命中参数 → 404
     router_get(r, NULL, "/litq/{a?b}",   _h_root,        NULL, 0);
+    router_get(r, NULL, "/a/{x?}/b",    _h_opt_mid,     NULL, 0);
     router_post(r, NULL, "/admin/stats",  _h_admin_stats, NULL, 0);
     router_get(r, NULL, "/forget",       _h_forget,      NULL, 0);
     router_post(r, NULL, "/only-post",    _h_only_post,   NULL, 0);
@@ -310,14 +323,13 @@ done:
     return rtn;
 }
 
-// 21 项断言依次跑, 任一失败都 bad 置位; 全部通过返 ERR_OK
+// 24 项断言依次跑, 任一失败都 bad 置位; 全部通过返 ERR_OK
 // 每次 _do_req 之间插 task_isclosing 早返, SIGINT 时尽快收尾
 // bad 用位掩码记录, 单次跑不会复用, 但若失败时 LOG_WARN 输出可看到哪几位出错
 static int32_t _run_all(task_ctx *task, uint16_t port) {
     int32_t bad = 0;
     // 计数器是全局静态变量, 进程多次跑 test 会累加, 先清零隔离
     ATOMIC_SET(&_g_post_count, 0);
-
     // [0]  字面量 + 默认 200
     if (ERR_OK != _do_req(task, port, "GET",  "/",                NULL, NULL, 200, "root"))      bad |= (1 << 0);
     if (task_isclosing(task)) return ERR_FAILED;
@@ -396,6 +408,16 @@ static int32_t _run_all(task_ctx *task, uint16_t port) {
     if (task_isclosing(task)) return ERR_FAILED;
     // [20] B2: {a?b} 参数名含内部 ? → 当字面量段, /litq/xyz 不命中参数 → 404 (修复前当 PARAM 会返 200)
     if (ERR_OK != _do_req(task, port, "GET", "/litq/xyz", NULL, NULL, 404, NULL)) bad |= (1 << 20);
+    if (task_isclosing(task)) return ERR_FAILED;
+
+    // [21] OPT 中置+有值: /a/42/b → param x 消耗后 LIT /b 匹配
+    if (ERR_OK != _do_req(task, port, "GET", "/a/42/b", NULL, NULL, 200, "x=42")) bad |= (1 << 21);
+    if (task_isclosing(task)) return ERR_FAILED;
+    // [22] OPT 中置+无值(前瞻跳过): /a/b → skip_opt 令 OPT 不消耗, LIT /b 吞当前段
+    if (ERR_OK != _do_req(task, port, "GET", "/a/b",    NULL, NULL, 200, "x=none")) bad |= (1 << 22);
+    if (task_isclosing(task)) return ERR_FAILED;
+    // [23] OPT 中置多余段: /a/b/c → 路由段消耗完但请求段剩余 → 404
+    if (ERR_OK != _do_req(task, port, "GET", "/a/b/c",  NULL, NULL, 404, NULL)) bad |= (1 << 23);
 
     return 0 == bad ? ERR_OK : ERR_FAILED;
 }

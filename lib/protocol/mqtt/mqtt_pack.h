@@ -60,7 +60,7 @@ int32_t mqtt_topics_unsubscribe(binary_ctx *topics, const char *topic);
 /// </param>
 /// <param name="lens">组包后的数据长度</param>
 /// <returns>char * 数据包；失败返回 NULL（MQTT 3.1.1 零长度 clientid 配 cleanstart=0、或编码失败）</returns>
-char *mqtt_pack_connect(mqtt_protversion version, int8_t cleanstart, int16_t keepalive, const char *clientid,
+char *mqtt_pack_connect(mqtt_protversion version, int8_t cleanstart, uint16_t keepalive, const char *clientid,
     const char *user, char *password, size_t pwlens,
     const char *willtopic, char *willpayload, size_t wplens, int8_t willqos, int8_t willretain,
     binary_ctx *connprops, binary_ctx *willprops, size_t *lens);

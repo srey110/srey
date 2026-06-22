@@ -10,19 +10,18 @@ static inline mpq_cell *_mpq_cell_at(mpq_ctx *q, uint32_t pos) {
 }
 void mpq_init(mpq_ctx *q, size_t elsize, uint32_t capacity) {
     ASSERTAB(NULL != q, ERRSTR_NULLP);
-    ASSERTAB(elsize > 0, ERRSTR_INVPARAM);
+    ASSERTAB(elsize > 0 && elsize <= (size_t)UINT32_MAX - sizeof(atomic_t) - 7, ERRSTR_INVPARAM);
     capacity = (0 == capacity) ? MPQ_DEFAULT_CAP : pow2_ceil(capacity);
     ASSERTAB(capacity >= 2, ERRSTR_INVPARAM);
     q->capacity = capacity;
-    q->mask     = capacity - 1;
-    q->elsize   = (uint32_t)elsize;
+    q->mask = capacity - 1;
+    q->elsize = (uint32_t)elsize;
     //每槽位 = 序列号 + elsize 数据，向上对齐到 8 字节，保证各槽位 sequence 对齐
-    q->stride   = (uint32_t)ROUND_UP(sizeof(atomic_t) + elsize, 8);
-    q->enq.v    = 0;
-    q->deq.v    = 0;
+    q->stride = (uint32_t)ROUND_UP(sizeof(atomic_t) + elsize, 8);
+    q->enq.v = 0;
+    q->deq.v = 0;
     ASSERTAB((size_t)capacity <= SIZE_MAX / q->stride, "byte size overflow.");
     MALLOC(q->cells, (size_t)q->stride * capacity);
-    ASSERTAB(NULL != q->cells, "mpq_init: malloc failed.");
     uint32_t i;
     //初始化每个槽位的序列号为其下标，表示"可入队"状态
     for (i = 0; i < capacity; i++) {
@@ -52,8 +51,8 @@ int32_t mpq_trypush(mpq_ctx *q, const void *data) {
         return ERR_FAILED;
     }
     mpq_cell *cell;
-    uint32_t  pos;
-    int32_t   diff;
+    uint32_t pos;
+    int32_t diff;
     pos = ATOMIC_GET(&q->enq.v);
     for (;;) {
         cell = _mpq_cell_at(q, pos);
@@ -108,8 +107,8 @@ int32_t mpq_pop(mpq_ctx *q, void *out) {
         return ERR_FAILED;
     }
     mpq_cell *cell;
-    uint32_t  pos;
-    int32_t   diff;
+    uint32_t pos;
+    int32_t diff;
     pos = ATOMIC_GET(&q->deq.v);
     for (;;) {
         cell = _mpq_cell_at(q, pos);

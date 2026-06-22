@@ -189,7 +189,8 @@ size_t cipher_dofinal(cipher_ctx *cipher, const void *data, size_t lens, char *o
         enlens = (i + cipher->block_lens > lens ? lens - i : cipher->block_lens);
         buf = cipher_block(cipher, (const char *)data + i, enlens, &enlens);
         if (NULL == buf) {
-            return size;
+            secure_zero(output, size);
+            return 0;
         }
         memcpy(output + size, buf, enlens);
         size += enlens;
@@ -204,7 +205,8 @@ size_t cipher_dofinal(cipher_ctx *cipher, const void *data, size_t lens, char *o
                 //合法初始化下不会返回 NULL（_cipher_process_data 走 line 101 直返；model 必为枚举内值）；
                 //此处与 line 205 同款防御 NULL，避免未来扩展 model 时静默段错误。
                 if (NULL == buf) {
-                    return size;
+                    secure_zero(output, size);
+                    return 0;
                 }
                 memcpy(output + size, buf, enlens);
                 size += enlens;

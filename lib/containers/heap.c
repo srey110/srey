@@ -43,16 +43,16 @@ static void _heap_swap(heap_ctx *heap, heap_node *parent, heap_node *child) {
     parent->right = rchild;
 }
 // 计算第 nelts 个节点的路径编码和深度，用于定位完全二叉树末尾节点（内部使用）
-static inline void _heap_path(int32_t nelts, int32_t *path, int32_t *depth) {
+static inline void _heap_path(uint32_t nelts, uint32_t *path, uint32_t *depth) {
     *path = 0;
     *depth = 0;
-    for (int32_t n = nelts; n >= 2; ++(*depth), n >>= 1) {
+    for (uint32_t n = nelts; n >= 2; ++(*depth), n >>= 1) {
         *path = (*path << 1) | (n & 1);
     }
 }
 void heap_insert(heap_ctx *heap, heap_node *node) {
     // 0: left, 1: right
-    int32_t path, d;
+    uint32_t path, d;
     ++heap->nelts;
     // traverse from bottom to up, get path of last node
     _heap_path(heap->nelts, &path, &d);
@@ -106,7 +106,7 @@ void heap_remove(heap_ctx *heap, heap_node *node) {
         return;
     }
     // 0: left, 1: right
-    int32_t path, d;
+    uint32_t path, d;
     // traverse from bottom to up, get path of last node
     _heap_path(heap->nelts, &path, &d);
     --heap->nelts;

@@ -234,6 +234,7 @@ evssl_ctx *evssl_qury(const char *name) {
 }
 SSL *evssl_setfd(evssl_ctx *evssl, SOCKET fd) {
     if ((uint64_t)fd > (uint64_t)INT_MAX) {
+        LOG_ERROR("fd %llu exceeds INT_MAX, SSL_set_fd skipped.", (unsigned long long)fd);
         return NULL;
     }
     ERR_clear_error();
@@ -256,7 +257,7 @@ int32_t evssl_tryacpt(SSL *ssl) {
         return ERR_OK;
     }
     int32_t err = SSL_get_error(ssl, rtn);
-    if (SSL_ERROR_WANT_READ  == err) {
+    if (SSL_ERROR_WANT_READ == err) {
         return 1;
     }
     if (SSL_ERROR_WANT_WRITE == err) {
@@ -271,7 +272,7 @@ int32_t evssl_tryconn(SSL *ssl) {
         return ERR_OK;
     }
     int32_t err = SSL_get_error(ssl, rtn);
-    if (SSL_ERROR_WANT_READ  == err) {
+    if (SSL_ERROR_WANT_READ == err) {
         return 1;
     }
     if (SSL_ERROR_WANT_WRITE == err) {
@@ -292,7 +293,7 @@ int32_t evssl_read(SSL *ssl, char *buf, size_t len, size_t *readed) {
     }
     int32_t err = SSL_get_error(ssl, rtn);
     /* TLS 重协商期间 SSL_read 也可能返回 WANT_WRITE，同等对待 */
-    if (SSL_ERROR_WANT_READ  == err
+    if (SSL_ERROR_WANT_READ == err
         || SSL_ERROR_WANT_WRITE == err) {
         return ERR_OK;
     }
@@ -319,7 +320,7 @@ int32_t evssl_send(SSL *ssl, char *buf, size_t len, size_t *sended) {
             err = SSL_get_error(ssl, rtn);
             /* TLS 重协商期间 SSL_write 也可能返回 WANT_READ，同等对待 */
             if (SSL_ERROR_WANT_WRITE == err
-                || SSL_ERROR_WANT_READ  == err) {
+                || SSL_ERROR_WANT_READ == err) {
                 return ERR_OK;
             }
             return ERR_FAILED;

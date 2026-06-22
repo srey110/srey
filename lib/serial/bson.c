@@ -206,7 +206,10 @@ static void _bson_iter_clear(bson_iter *iter) {
 }
 void bson_iter_init(bson_iter *iter, bson_ctx *bson) {
     iter->doc = &bson->doc;
-    size_t lens = (size_t)binary_get_integer(iter->doc, 4, 1);
+    size_t lens = 0;
+    if (iter->doc->size >= 4) {
+        lens = (size_t)binary_get_integer(iter->doc, 4, 1);
+    }
     if (lens < 5 || lens > iter->doc->size) {
         iter->doclens = 0;
     } else {
@@ -406,7 +409,20 @@ int32_t bson_iter_next(bson_iter *iter) {
         }
         iter->val = binary_get_binary(iter->doc, iter->lens);
         break;
-    case BSON_DECIMAL128:
+    case BSON_DECIMAL128://e_name decimal128
+        if (0 == _bson_iter_read_key(iter)) {
+            more = 0;
+            break;
+        }
+        iter->lens = 16;
+        if (iter->doc->offset > iter->doclens
+            || iter->lens > iter->doclens - iter->doc->offset) {
+            more = 0;
+            LOG_WARN("invalid bson decimal128.");
+            break;
+        }
+        iter->val = binary_get_binary(iter->doc, iter->lens);
+        break;
     default:
         more = 0;
         LOG_WARN("unsupported bson type %d.", iter->type);
@@ -432,6 +448,10 @@ int32_t bson_iter_find(bson_iter *iter, const char *keys, bson_iter *result) {
     if (NULL == strstr(keys, ".")) {
         rtn = _bson_iter_find(iter, keys, klens, result);
         binary_offset(iter->doc, offset);
+        if (ERR_OK == rtn) {
+            result->nested_doc = *iter->doc;
+            result->doc = &result->nested_doc;
+        }
         return rtn;
     }
     size_t n = 0;
@@ -462,6 +482,10 @@ int32_t bson_iter_find(bson_iter *iter, const char *keys, bson_iter *result) {
         bson_iter_init(&cur_iter, &bson);
     }
     FREE(arr_key);
+    if (ERR_OK == rtn) {
+        result->nested_doc = bson.doc;
+        result->doc = &result->nested_doc;
+    }
     binary_offset(iter->doc, offset);
     return rtn;
 }

@@ -108,19 +108,27 @@ static int32_t _seri_read_integer(seri_iter *it, uint8_t cookie, int64_t *out) {
         *out = 0;
         return 0;
     case SERI_NUMBER_BYTE:
-        if (NULL == (p = _seri_rb_read(it, 1))) return -1;
+        if (NULL == (p = _seri_rb_read(it, 1))) {
+            return -1;
+        }
         *out = (int64_t)(uint8_t)*p;
         return 0;
     case SERI_NUMBER_WORD:
-        if (NULL == (p = _seri_rb_read(it, 2))) return -1;
+        if (NULL == (p = _seri_rb_read(it, 2))) {
+            return -1;
+        }
         *out = unpack_integer(p, 2, 1, 0);  // u16 LE
         return 0;
     case SERI_NUMBER_DWORD:
-        if (NULL == (p = _seri_rb_read(it, 4))) return -1;
+        if (NULL == (p = _seri_rb_read(it, 4))) {
+            return -1;
+        }
         *out = unpack_integer(p, 4, 1, 1);  // i32 LE（保留负数符号）
         return 0;
     case SERI_NUMBER_QWORD:
-        if (NULL == (p = _seri_rb_read(it, 8))) return -1;
+        if (NULL == (p = _seri_rb_read(it, 8))) {
+            return -1;
+        }
         *out = unpack_integer(p, 8, 1, 1);  // i64 LE
         return 0;
     default:
@@ -146,7 +154,9 @@ int32_t seri_iter_next(seri_iter *it, seri_item *out) {
         return 1;
     case SERI_TYPE_NUMBER:
         if (SERI_NUMBER_REAL == cookie) {
-            if (NULL == (p = _seri_rb_read(it, 8))) return -1;
+            if (NULL == (p = _seri_rb_read(it, 8))) {
+                return -1;
+            }
             out->type = SERI_ITEM_REAL;
             out->v.r = unpack_double(p, 1);
             return 1;
@@ -157,7 +167,9 @@ int32_t seri_iter_next(seri_iter *it, seri_item *out) {
         }
         return 1;
     case SERI_TYPE_USERDATA: {
-        if (NULL == (p = _seri_rb_read(it, sizeof(void *)))) return -1;
+        if (NULL == (p = _seri_rb_read(it, sizeof(void *)))) {
+            return -1;
+        }
         uint64_t addr = (uint64_t)unpack_integer(p, sizeof(void *), 1, 0);
         out->type = SERI_ITEM_USERDATA;
         out->v.ud = (void *)(uintptr_t)addr;
@@ -165,7 +177,9 @@ int32_t seri_iter_next(seri_iter *it, seri_item *out) {
     }
     case SERI_TYPE_SHORT_STRING:
         if (cookie > 0) {
-            if (NULL == (p = _seri_rb_read(it, cookie))) return -1;
+            if (NULL == (p = _seri_rb_read(it, cookie))) {
+                return -1;
+            }
         } else {
             p = it->buffer + it->offset;  // 长度 0 时 p 指向当前位置（占位）
         }
@@ -176,15 +190,21 @@ int32_t seri_iter_next(seri_iter *it, seri_item *out) {
     case SERI_TYPE_LONG_STRING: {
         size_t slen;
         if (2 == cookie) {
-            if (NULL == (p = _seri_rb_read(it, 2))) return -1;
+            if (NULL == (p = _seri_rb_read(it, 2))) {
+                return -1;
+            }
             slen = (size_t)unpack_integer(p, 2, 1, 0);
         } else if (4 == cookie) {
-            if (NULL == (p = _seri_rb_read(it, 4))) return -1;
+            if (NULL == (p = _seri_rb_read(it, 4))) {
+                return -1;
+            }
             slen = (size_t)unpack_integer(p, 4, 1, 0);
         } else {
             return -1;
         }
-        if (NULL == (p = _seri_rb_read(it, slen))) return -1;
+        if (NULL == (p = _seri_rb_read(it, slen))) {
+            return -1;
+        }
         out->type = SERI_ITEM_STRING;
         out->v.s.p = p;
         out->v.s.len = slen;
@@ -197,7 +217,9 @@ int32_t seri_iter_next(seri_iter *it, seri_item *out) {
         } else {
             // 长 array 转义：后跟一个完整 INT
             const char *q = _seri_rb_read(it, 1);
-            if (NULL == q) return -1;
+            if (NULL == q) {
+                return -1;
+            }
             uint8_t ntag = (uint8_t)*q;
             uint8_t ntype = ntag & 0x7;
             uint8_t ncookie = ntag >> 3;

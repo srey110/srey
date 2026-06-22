@@ -70,16 +70,11 @@ static int32_t _mongo_server_first_message(ev_ctx *ev, mongo_ctx *mongo, mgopack
     if (DG_SHA1 == mongo->scram->dtype) {
         char fmtpwd[HEX_ENSIZE(MD5_BLOCK_SIZE)];
         _mongo_format_pwd(mongo, fmtpwd);
-        int32_t set_rtn = scram_set_pwd(mongo->scram, fmtpwd);
-        secure_zero(fmtpwd, sizeof(fmtpwd));  // 无论成败都清栈密码
-        if (ERR_OK != set_rtn) {
-            return ERR_FAILED;
-        }
+        scram_set_pwd(mongo->scram, fmtpwd, strlen(fmtpwd));
+        secure_zero(fmtpwd, sizeof(fmtpwd));
         client_final = scram_final_message(mongo->scram);
     } else {
-        if (ERR_OK != scram_set_pwd(mongo->scram, mongo->password)) {
-            return ERR_FAILED;
-        }
+        scram_set_pwd(mongo->scram, mongo->password, strlen(mongo->password));
         client_final = scram_final_message(mongo->scram);
     }
     if (NULL == client_final) {

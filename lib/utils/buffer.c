@@ -430,7 +430,7 @@ static bufnode_ctx *_buffer_search_start_cached(buffer_ctx *ctx, size_t start, s
     while (NULL != node && 0 != node->off) {
         *totaloff += node->off;
         if (*totaloff > start) {
-            ctx->hint_node     = node;
+            ctx->hint_node = node;
             ctx->hint_base_off = *totaloff - node->off;
             return node;
         }
@@ -497,9 +497,9 @@ size_t buffer_drain(buffer_ctx *ctx, size_t lens) {
         lens = oldlen;
     }
     /* 在 drain 循环释放节点前保存游标，drain 后再恢复（节点存活）或清零（节点已释放）。 */
-    bufnode_ctx *saved_hint     = ctx->hint_node;
-    size_t       saved_hint_off = ctx->hint_base_off;
-    ctx->hint_node     = NULL;
+    bufnode_ctx *saved_hint = ctx->hint_node;
+    size_t saved_hint_off = ctx->hint_base_off;
+    ctx->hint_node = NULL;
     ctx->hint_base_off = 0;
     ctx->total_lens -= lens;
     remain = lens;
@@ -537,10 +537,10 @@ size_t buffer_drain(buffer_ctx *ctx, size_t lens) {
      *   其他情况表示游标节点已被释放，游标保持 NULL/0。 */
     if (NULL != saved_hint) {
         if (saved_hint_off >= lens) {
-            ctx->hint_node     = saved_hint;
+            ctx->hint_node = saved_hint;
             ctx->hint_base_off = saved_hint_off - lens;
         } else if (ctx->head == saved_hint) {
-            ctx->hint_node     = saved_hint;
+            ctx->hint_node = saved_hint;
             ctx->hint_base_off = 0;
         }
     }

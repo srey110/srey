@@ -50,15 +50,11 @@ int32_t hashset_oom(const hashset *s) {
     return hashmap_oom((struct hashmap *)s->map) ? 1 : 0;
 }
 int32_t hashset_add(hashset *s, const void *item) {
-    // 先查是否已存在,避免 hashmap_set 无谓的"替换"开销与歧义
-    if (NULL != hashmap_get(s->map, item)) {
-        return 0;
-    }
-    (void)hashmap_set(s->map, item);
+    const void *old = hashmap_set(s->map, item);
     if (hashmap_oom(s->map)) {
         return -1;
     }
-    return 1;
+    return (NULL == old) ? 1 : 0;
 }
 int32_t hashset_contains(const hashset *s, const void *item) {
     return NULL != hashmap_get(s->map, item) ? 1 : 0;

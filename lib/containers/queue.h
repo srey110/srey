@@ -97,6 +97,7 @@ static inline void *queue_peek(queue_ctx *qu) {
 /// <param name="elem">指向待追加元素的指针，拷贝 elsize 字节</param>
 static inline void queue_push(queue_ctx *qu, const void *elem) {
     if (qu->size == qu->maxsize) {
+        ASSERTAB(qu->maxsize <= UINT32_MAX / 2, "queue maxsize overflow.");
         queue_resize(qu, qu->maxsize * 2);
     }
     uint32_t pos = qu->offset + qu->size;

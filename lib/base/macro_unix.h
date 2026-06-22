@@ -86,6 +86,9 @@
     #define ATOMIC64_SET(ptr, val) atomic_swap_64((volatile atomic64_t *)ptr, val)
     #define ATOMIC64_CAS(ptr, oldval, newval) (atomic_cas_64((volatile atomic64_t *)ptr, oldval, newval) == oldval)
 #elif defined(OS_AIX)
+    #ifndef __64BIT__
+        #error "32-bit AIX (ILP32) is not supported; compile with -maix64 or -q64"
+    #endif
     typedef int32_t atomic_t;  // 32 位原子整数类型（AIX）
     typedef long atomic64_t;   // 64 位原子整数类型（AIX）
     // 原子交换：__sync_lock_test_and_set 仅提供 acquire 屏障，

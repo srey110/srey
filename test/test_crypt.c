@@ -276,9 +276,9 @@ static int _scram_handshake(const char *method,
     int rtn = ERR_FAILED;
     if (!cli || !srv) goto out;
 
-    scram_set_user(cli, "user");
-    scram_set_pwd(cli, pwd_cli);
-    scram_set_pwd(srv, pwd_srv);
+    scram_set_user(cli, "user", 4);
+    scram_set_pwd(cli, pwd_cli, strlen(pwd_cli));
+    scram_set_pwd(srv, pwd_srv, strlen(pwd_srv));
     if (cbind_cli && cbind_len > 0) scram_set_cbind(cli, cbind_cli, cbind_len);
     if (cbind_srv && cbind_len > 0) scram_set_cbind(srv, cbind_srv, cbind_len);
     scram_set_salt(srv, (char *)salt, sizeof(salt));
@@ -334,9 +334,9 @@ static void test_scram_handshake(CuTest *tc) {
         };
         scram_ctx *cli = scram_init("SCRAM-SHA-256", 1);
         scram_ctx *srv = scram_init("SCRAM-SHA-256", 0);
-        scram_set_user(cli, "alice");
-        scram_set_pwd(cli, "pass");
-        scram_set_pwd(srv, "pass");
+        scram_set_user(cli, "alice", 5);
+        scram_set_pwd(cli, "pass", 4);
+        scram_set_pwd(srv, "pass", 4);
         scram_set_salt(srv, (char *)salt, sizeof(salt));
         scram_set_iter(srv, 4096);
         char *cf = scram_first_message(cli);
@@ -362,8 +362,8 @@ static void test_scram_rfc_vectors(CuTest *tc) {
 
         scram_ctx *cli = scram_init("SCRAM-SHA-1", 1);
         CuAssertPtrNotNull(tc, cli);
-        scram_set_user(cli, "user");
-        scram_set_pwd(cli, "pencil");
+        scram_set_user(cli, "user", 4);
+        scram_set_pwd(cli, "pencil", 6);
 
         char *first = scram_first_message(cli); // 推进状态至 LOCAL_FIRST
         FREE(first);
@@ -396,8 +396,8 @@ static void test_scram_rfc_vectors(CuTest *tc) {
 
         scram_ctx *cli = scram_init("SCRAM-SHA-256", 1);
         CuAssertPtrNotNull(tc, cli);
-        scram_set_user(cli, "user");
-        scram_set_pwd(cli, "pencil");
+        scram_set_user(cli, "user", 4);
+        scram_set_pwd(cli, "pencil", 6);
 
         char *first = scram_first_message(cli);
         FREE(first);
@@ -437,8 +437,8 @@ static void test_scram_plus(CuTest *tc) {
     {
         scram_ctx *cli = scram_init("SCRAM-SHA-256-PLUS", 1);
         CuAssertPtrNotNull(tc, cli);
-        scram_set_user(cli, "user");
-        scram_set_pwd(cli, "pass");
+        scram_set_user(cli, "user", 4);
+        scram_set_pwd(cli, "pass", 4);
         scram_set_cbind(cli, cbind, sizeof(cbind));
         char *first = scram_first_message(cli);
         CuAssertPtrNotNull(tc, first);
@@ -471,7 +471,7 @@ static void test_scram_failures(CuTest *tc) {
     {
         scram_ctx *cli = scram_init("SCRAM-SHA-256", 1);
         CuAssertPtrNotNull(tc, cli);
-        scram_set_pwd(cli, "pass");
+        scram_set_pwd(cli, "pass", 4);
         char *first = scram_first_message(cli);
         CuAssertPtrNotNull(tc, first);
         FREE(first);
@@ -493,9 +493,9 @@ static void test_scram_failures(CuTest *tc) {
         };
         scram_ctx *cli = scram_init("SCRAM-SHA-256", 1);
         scram_ctx *srv = scram_init("SCRAM-SHA-256", 0);
-        scram_set_user(cli, "user");
-        scram_set_pwd(cli, "pass");
-        scram_set_pwd(srv, "pass");
+        scram_set_user(cli, "user", 4);
+        scram_set_pwd(cli, "pass", 4);
+        scram_set_pwd(srv, "pass", 4);
         scram_set_salt(srv, (char *)salt, sizeof(salt));
         scram_set_iter(srv, 4096);
 
@@ -518,7 +518,7 @@ static void test_scram_failures(CuTest *tc) {
     /* 状态机：未完成首轮交换就调用 scram_final_message → NULL */
     {
         scram_ctx *cli = scram_init("SCRAM-SHA-256", 1);
-        scram_set_pwd(cli, "pass");
+        scram_set_pwd(cli, "pass", 4);
         /* status=INIT → NULL */
         CuAssertTrue(tc, NULL == scram_final_message(cli));
         char *first = scram_first_message(cli);
@@ -552,9 +552,9 @@ static void test_scram_failures(CuTest *tc) {
         };
         scram_ctx *cli = scram_init("SCRAM-SHA-256", 1);
         scram_ctx *srv = scram_init("SCRAM-SHA-256", 0);
-        scram_set_user(cli, "user,=test");
-        scram_set_pwd(cli, "pass");
-        scram_set_pwd(srv, "pass");
+        scram_set_user(cli, "user,=test", 10);
+        scram_set_pwd(cli, "pass", 4);
+        scram_set_pwd(srv, "pass", 4);
         scram_set_salt(srv, (char *)salt, sizeof(salt));
         scram_set_iter(srv, 4096);
 
@@ -572,28 +572,30 @@ static void test_scram_failures(CuTest *tc) {
     }
 }
 
-// scram setter 角色拒绝路径 + scram_set_pwd 超长拒绝 + scram_free(NULL) NULL safety
+// scram setter 角色拒绝路径 + scram_set_pwd 动态分配验证 + scram_free(NULL) NULL safety
 static void test_scram_setters(CuTest *tc) {
     // scram_free(NULL) 不崩
     scram_free(NULL);
 
-    // scram_set_pwd 长度 = sizeof(scram->pwd) - 1 = 511 字节，刚好通过
+    // scram_set_pwd：511 字节正常设置（动态分配，无长度上限）
     {
         scram_ctx *cli = scram_init("SCRAM-SHA-256", 1);
         CuAssertPtrNotNull(tc, cli);
         char pwd511[512];
         memset(pwd511, 'x', 511);
         pwd511[511] = '\0';
-        CuAssertIntEquals(tc, ERR_OK, scram_set_pwd(cli, pwd511));
+        scram_set_pwd(cli, pwd511, 511);
+        CuAssertIntEquals(tc, 511, (int)strlen(cli->pwd));
         scram_free(cli);
     }
-    // scram_set_pwd 长度 = 512 字节，>= sizeof，被拒绝
+    // scram_set_pwd：512 字节同样可设置
     {
         scram_ctx *cli = scram_init("SCRAM-SHA-256", 1);
         char pwd512[513];
         memset(pwd512, 'x', 512);
         pwd512[512] = '\0';
-        CuAssertIntEquals(tc, ERR_FAILED, scram_set_pwd(cli, pwd512));
+        scram_set_pwd(cli, pwd512, 512);
+        CuAssertIntEquals(tc, 512, (int)strlen(cli->pwd));
         scram_free(cli);
     }
     // scram_set_iter：服务端 iter < SCRAM_MIN_ITER(4096) 自动提升到 4096
@@ -639,21 +641,21 @@ static void test_scram_setters(CuTest *tc) {
         CuAssertIntEquals(tc, 8, srv->saltlen);
         scram_free(srv);
     }
-    // scram_set_user：服务端调用被忽略（user 保持空字符串）
+    // scram_set_user：服务端可直接调用（parse_first_message 内部复用同一实现）
     {
         scram_ctx *srv = scram_init("SCRAM-SHA-256", 0);
-        scram_set_user(srv, "should_be_ignored");
-        CuAssertTrue(tc, '\0' == srv->user[0]);
+        scram_set_user(srv, "alice", 5);
+        CuAssertStrEquals(tc, "alice", srv->user);
         scram_free(srv);
     }
-    // scram_set_user：超长用户名截断到 sizeof(user) - 1 (= 63)
+    // scram_set_user：任意长度均可设置（动态分配）
     {
         scram_ctx *cli = scram_init("SCRAM-SHA-256", 1);
         char longuser[128];
         memset(longuser, 'A', 127);
         longuser[127] = '\0';
-        scram_set_user(cli, longuser);
-        CuAssertIntEquals(tc, 63, (int)strlen(cli->user));
+        scram_set_user(cli, longuser, 127);
+        CuAssertIntEquals(tc, 127, (int)strlen(cli->user));
         scram_free(cli);
     }
 }

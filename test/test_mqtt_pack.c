@@ -625,9 +625,9 @@ static void test_mqtt_auth_scram_sha256(CuTest *tc) {
     scram_ctx *srv = scram_init(METHOD, 0);
     CuAssertPtrNotNull(tc, cli);
     CuAssertPtrNotNull(tc, srv);
-    scram_set_user(cli, "alice");
-    scram_set_pwd(cli, "correcthorsebatterystaple");
-    scram_set_pwd(srv, "correcthorsebatterystaple");
+    scram_set_user(cli, "alice", 5);
+    scram_set_pwd(cli, "correcthorsebatterystaple", 25);
+    scram_set_pwd(srv, "correcthorsebatterystaple", 25);
     scram_set_salt(srv, (char *)salt, sizeof(salt));
     scram_set_iter(srv, 4096);
 

@@ -154,7 +154,7 @@ static int32_t _mqtt_props_varlens(mqtt_protversion version, binary_ctx *props, 
     (*off) += occupy;
     return occupy;
 }
-char *mqtt_pack_connect(mqtt_protversion version, int8_t cleanstart, int16_t keepalive, const char *clientid,
+char *mqtt_pack_connect(mqtt_protversion version, int8_t cleanstart, uint16_t keepalive, const char *clientid,
     const char *user, char *password, size_t pwlens,
     const char *willtopic, char *willpayload, size_t wplens, int8_t willqos, int8_t willretain,
     binary_ctx *connprops, binary_ctx *willprops, size_t *lens) {

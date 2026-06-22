@@ -63,7 +63,7 @@ void *mongo_pack_scram_client_first(mongo_ctx *mongo, const char *method, size_t
     if (NULL == mongo->scram) {
         return NULL;
     }
-    scram_set_user(mongo->scram, mongo->user);
+    scram_set_user(mongo->scram, mongo->user, strlen(mongo->user));
     char *first_message = scram_first_message(mongo->scram);
     if (NULL == first_message) {
         scram_free(mongo->scram);

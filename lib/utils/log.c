@@ -16,15 +16,15 @@ typedef struct {
     char    inline_buf[LOG_INLINE_SIZE]; // 短消息内嵌，避免 _format_va 第二次 malloc
 } log_item;
 
-static FILE      *_handle  = NULL;
-static atomic_t   _log_lv  = LOGLV_DEBUG;
-static atomic_t   _running = 0; /* atomic 保证跨平台内存可见 */
-static atomic_t   _sleeping = 0;
-static pthread_t  _th;
-static fsqu_ctx  _que;
-static pool_ctx  _itempool;
-static mutex_ctx  _mtx;
-static cond_ctx   _cond;
+static FILE *_handle = NULL;
+static atomic_t _log_lv = LOGLV_DEBUG;
+static atomic_t _running = 0; /* atomic 保证跨平台内存可见 */
+static atomic_t _sleeping = 0;
+static pthread_t _th;
+static fsqu_ctx _que;
+static pool_ctx _itempool;
+static mutex_ctx _mtx;
+static cond_ctx _cond;
 #ifdef OS_WIN
 static HANDLE _console = NULL;
 static CONSOLE_SCREEN_BUFFER_INFO _def_console;

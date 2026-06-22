@@ -9,8 +9,8 @@
 #include "utils/netaddr.h"
 #include "base/structs.h"
 
-#define GET_POS(fd, n) ((fd) % (n))                             // 根据fd计算索引位置
-#define GET_PTR(p, n, fd) (1 == (n) ? (p) : &(p)[GET_POS((fd), (n))]) // 根据fd获取对应的指针
+#define GET_POS(fd, n) ((fd) % (n))// 根据fd计算索引位置
+#define GET_PTR(p, n, fd) (1 == (n) ? (p) : &(p)[GET_POS((fd), (n))])// 根据fd获取对应的指针
 
 struct evssl_ctx;
 struct watcher_ctx;

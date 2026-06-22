@@ -65,7 +65,7 @@ void _iocp_add_conn_inloop(watcher_ctx *watcher, struct sock_ctx *skctx, netaddr
 // 在watcher线程内注册socket：sockel_add后按TCP/UDP投递WSARecv/WSARecvFrom
 void _iocp_add_fd_inloop(watcher_ctx *watcher, struct sock_ctx *skctx);
 // 提交WSARecv异步接收请求
-int32_t _iocp_post_recv(sock_ctx *skctx, DWORD  *bytes, DWORD  *flag, IOV_TYPE *wsabuf, DWORD niov);
+int32_t _iocp_post_recv(sock_ctx *skctx, DWORD *bytes, DWORD *flag, IOV_TYPE *wsabuf, DWORD niov);
 // 将数据加入TCP发送队列，若当前未发送则立即提交WSASend
 void _iocp_add_bufs_trypost(sock_ctx *skctx, off_buf_ctx *buf);
 // 将UDP数据加入发送队列，若当前未发送则立即提交WSASendTo

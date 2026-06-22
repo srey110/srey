@@ -4,6 +4,7 @@
 #include "event/event.h"
 #include "utils/binary.h"
 #include "utils/utils.h"
+#include "utils/timer.h"
 #include "containers/hashmap.h"
 #include "crypt/hmac.h"
 
@@ -19,7 +20,8 @@ typedef struct nonce_entry_ctx {
 typedef struct harbor_ctx {
     uint16_t port;          // 监听端口
     uint64_t lsnid;         // 监听ID（ev_unlisten使用）
-    uint64_t window_start;
+    uint64_t window_start;  // 单调时钟窗口起始（毫秒）
+    timer_ctx wtimer;       // 单调时钟（免疫 wall clock 回拨）
     struct evssl_ctx *ssl;  // SSL上下文（NULL表示不使用SSL）
     router_ctx *router;     // HTTP 路由器
     // 双 hashmap 轮转防 nonce 重放：每 HARBOR_SIGN_WINDOW_SEC 切换，实际重放窗口最长 2×SEC
@@ -100,8 +102,8 @@ static int32_t _harbor_check_sign(task_ctx *harbor, struct http_pack_ctx *pack, 
         return ERR_FAILED;
     }
     // 签名通过后做 nonce 重放检查；窗口轮转：每 HARBOR_SIGN_WINDOW_SEC 切换 cur→prev
-    uint64_t wnow = nowsec();
-    if (wnow >= ctx->window_start && wnow - ctx->window_start >= HARBOR_SIGN_WINDOW_SEC) {
+    uint64_t wnow = timer_cur_ms(&ctx->wtimer);
+    if (wnow - ctx->window_start >= (uint64_t)HARBOR_SIGN_WINDOW_SEC * 1000) {
         if (NULL != ctx->nonce_prev) {
             hashmap_free(ctx->nonce_prev);
         }
@@ -299,7 +301,8 @@ int32_t harbor_start(loader_ctx *loader, const char *tname, const char *ssl, con
     ctx->nonce_cur = hashmap_new_with_allocator(_malloc, _realloc, _free,
                                                 sizeof(nonce_entry_ctx), 0, 0, 0,
                                                 _harbor_nonce_hash, _harbor_nonce_compare, NULL, NULL);
-    ctx->window_start = nowsec();
+    timer_init(&ctx->wtimer);
+    ctx->window_start = timer_cur_ms(&ctx->wtimer);
     if (NULL == coro_task_register(loader, tname, 4 * ONEK,
                                    _harbor_startup, _harbor_closing,
                                    _harbor_free, ctx)) {

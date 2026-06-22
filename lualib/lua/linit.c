@@ -79,6 +79,7 @@ static const luaL_Reg extlibs[] = {
   {LUA_BSONITER, luaopen_bson_iter},
   {LUA_MONGO, luaopen_mongo},
   {LUA_MONGOSESSION, luaopen_mongo_session},
+  {LUA_SREYROUTER, luaopen_router},
   {NULL, NULL}
 };
 

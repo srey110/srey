@@ -134,7 +134,7 @@ static int32_t _lmongo_collection(lua_State *lua) {
 static int32_t _lmongo_user_pwd(lua_State *lua) {
     mongo_ctx *mongo = luaL_checkudata(lua, 1, MT_MONGO);
     const char *user = luaL_checkstring(lua, 2);
-    const char *pwd  = luaL_checkstring(lua, 3);
+    const char *pwd = luaL_checkstring(lua, 3);
     mongo_user_pwd(mongo, user, pwd);
     return 0;
 }
@@ -352,7 +352,7 @@ static int32_t _lmongo_pack_find(lua_State *lua) {
     size_t flens = 0;
     if (lua_islightuserdata(lua, 2)) {
         filter = lua_touserdata(lua, 2);
-        flens  = (size_t)luaL_checkinteger(lua, 3);
+        flens = (size_t)luaL_checkinteger(lua, 3);
     }
     char *opts = _lmongo_get_opts(lua, 4);
     size_t size;
@@ -458,13 +458,13 @@ static int32_t _lmongo_pack_findandmodify(lua_State *lua) {
         query = lua_touserdata(lua, 2);
         qlens = (size_t)luaL_checkinteger(lua, 3);
     }
-    int32_t remove   = (int32_t)luaL_checkinteger(lua, 4);
+    int32_t remove = (int32_t)luaL_checkinteger(lua, 4);
     int32_t pipeline = (int32_t)luaL_checkinteger(lua, 5);
     char *update = NULL;
     size_t ulens = 0;
     if (lua_islightuserdata(lua, 6)) {
         update = lua_touserdata(lua, 6);
-        ulens  = (size_t)luaL_checkinteger(lua, 7);
+        ulens = (size_t)luaL_checkinteger(lua, 7);
     }
     char *opts = _lmongo_get_opts(lua, 8);
     size_t size;
@@ -734,11 +734,11 @@ static int32_t _lmongo_session_new(lua_State *lua) {
     mongo_session *session;
     MALLOC(session, sizeof(mongo_session));
     memcpy(session->uuid, uuid_str, UUID_LENS);
-    session->mongo       = mongo;
-    session->timeoutmin  = timeout;
-    session->txnnumber   = 0;
-    session->options     = NULL;
-    session->timeout     = nowsec() + (uint64_t)timeout * 60;
+    session->mongo = mongo;
+    session->timeoutmin = timeout;
+    session->txnnumber = 0;
+    session->options = NULL;
+    session->timeout = nowsec() + (uint64_t)timeout * 60;
     *psession = session;
     lua_pushvalue(lua, 1);
     lua_setiuservalue(lua, -2, 1);
@@ -769,6 +769,9 @@ static int32_t _lmongo_session_free(lua_State *lua) {
 /// <returns>无</returns>
 static int32_t _lmongo_session_begin(lua_State *lua) {
     mongo_session **psession = luaL_checkudata(lua, 1, MT_MONGO_SESSION);
+    if (NULL == *psession) {
+        return luaL_error(lua, "session freed");
+    }
     mongo_begin(*psession);
     return 0;
 }
@@ -798,6 +801,9 @@ static int32_t _lmongo_session_done(lua_State *lua) {
 /// <returns type="integer">数据长度</returns>
 static int32_t _lmongo_session_pack_refresh(lua_State *lua) {
     mongo_session **psession = luaL_checkudata(lua, 1, MT_MONGO_SESSION);
+    if (NULL == *psession) {
+        return luaL_error(lua, "session freed");
+    }
     size_t size;
     void *pack = mongo_pack_refreshsession(*psession, &size);
     LPUB_RET_LUD(lua, pack, (lua_Integer)size);
@@ -810,6 +816,9 @@ static int32_t _lmongo_session_pack_refresh(lua_State *lua) {
 /// <returns type="integer">数据长度</returns>
 static int32_t _lmongo_session_pack_endsession(lua_State *lua) {
     mongo_session **psession = luaL_checkudata(lua, 1, MT_MONGO_SESSION);
+    if (NULL == *psession) {
+        return luaL_error(lua, "session freed");
+    }
     size_t size;
     void *pack = mongo_pack_endsession(*psession, &size);
     LPUB_RET_LUD(lua, pack, (lua_Integer)size);
@@ -823,6 +832,9 @@ static int32_t _lmongo_session_pack_endsession(lua_State *lua) {
 /// <returns type="integer">数据长度</returns>
 static int32_t _lmongo_session_pack_commit(lua_State *lua) {
     mongo_session **psession = luaL_checkudata(lua, 1, MT_MONGO_SESSION);
+    if (NULL == *psession) {
+        return luaL_error(lua, "session freed");
+    }
     char *opts = _lmongo_get_opts(lua, 2);
     size_t size;
     void *pack = mongo_pack_committransaction(*psession, opts, &size);
@@ -837,6 +849,9 @@ static int32_t _lmongo_session_pack_commit(lua_State *lua) {
 /// <returns type="integer">数据长度</returns>
 static int32_t _lmongo_session_pack_abort(lua_State *lua) {
     mongo_session **psession = luaL_checkudata(lua, 1, MT_MONGO_SESSION);
+    if (NULL == *psession) {
+        return luaL_error(lua, "session freed");
+    }
     char *opts = _lmongo_get_opts(lua, 2);
     size_t size;
     void *pack = mongo_pack_aborttransaction(*psession, opts, &size);

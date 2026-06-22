@@ -546,6 +546,9 @@ static void _uev_free_pipe(watcher_ctx *watcher) {
     udp_opt_arg *udp_arg;
     int32_t j, cnt;
     cmd_ctx cmds[CMD_MAX_NREAD];
+#if !CMD_PIPE_QU
+    int32_t nread;
+#endif
     for (;;) {
 #if CMD_PIPE_QU
         cnt = (int32_t)fsqu_pop_sc_batch(&watcher->pipe.qu, cmds, CMD_MAX_NREAD);
@@ -553,7 +556,7 @@ static void _uev_free_pipe(watcher_ctx *watcher) {
             break;
         }
 #else
-        int32_t nread = read(watcher->pipe.pipes[0], cmds, sizeof(cmds));
+        nread = read(watcher->pipe.pipes[0], cmds, sizeof(cmds));
         if (nread <= 0) {
             break;
         }

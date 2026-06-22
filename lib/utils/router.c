@@ -79,7 +79,7 @@ static int32_t _router_parse_seg(const char *src, size_t len, router_seg *out) {
     }
     // {name} 或 {name?}; 至少 "{x}" 三字符
     if (len >= 3 && '{' == src[0] && '}' == src[len - 1]) {
-        size_t name_len = len - 2;        // 去掉首尾花括号
+        size_t name_len = len - 2;// 去掉首尾花括号
         const char *name_src = src + 1;
         int32_t is_opt = 0;
         // 末尾 '?' 表示可选段
@@ -211,17 +211,24 @@ static int32_t _router_match_path(const router_seg *rsegs, int32_t rn,
             qi++;
         } else /* ROUTER_SEG_OPT */ {
             // {name?} 有就吃, 没就跳, 不算匹配失败
+            // 若下一路由段是 LIT 且与当前请求段字面完全匹配, 优先让 LIT 消耗, OPT 跳过
             if (qi < qn) {
-                if (pn >= ROUTER_MAX_PARAMS) {
-                    LOG_WARN("router: params exceed %d, rejected.", ROUTER_MAX_PARAMS);
-                    return 0;
+                int32_t skip_opt = (ri + 1 < rn
+                    && ROUTER_SEG_LIT == rsegs[ri + 1].t
+                    && rsegs[ri + 1].str_len == (uint32_t)qsegs[qi].lens
+                    && 0 == memcmp(rsegs[ri + 1].str, qsegs[qi].data, qsegs[qi].lens));
+                if (!skip_opt) {
+                    if (pn >= ROUTER_MAX_PARAMS) {
+                        LOG_WARN("router: params exceed %d, rejected.", ROUTER_MAX_PARAMS);
+                        return 0;
+                    }
+                    ctx->params[pn].key = seg->str;
+                    ctx->params[pn].key_len = seg->str_len;
+                    ctx->params[pn].val = qsegs[qi].data;
+                    ctx->params[pn].val_len = (uint32_t)qsegs[qi].lens;
+                    pn++;
+                    qi++;
                 }
-                ctx->params[pn].key = seg->str;
-                ctx->params[pn].key_len = seg->str_len;
-                ctx->params[pn].val = qsegs[qi].data;
-                ctx->params[pn].val_len = (uint32_t)qsegs[qi].lens;
-                pn++;
-                qi++;
             }
             ri++;
         }
@@ -411,12 +418,13 @@ router_entry *router_add(router_ctx *r, const router_group *g,
         MALLOC(mws_arr, sizeof(router_cb) * (size_t)total_mws);
         int32_t k = 0;
         // 3a) 先收集 group 上下文的 mw_names, 查表落实为函数指针
+        router_cb fn;
         if (g_mws_n > 0) {
             char **gnames;
             MALLOC(gnames, sizeof(const char *) * (size_t)g_mws_n);
             _router_group_collect_mws(g, gnames);
             for (int32_t i = 0; i < g_mws_n; i++) {
-                router_cb fn = _router_resolve_mw(r, (const char*)gnames[i]);
+                fn = _router_resolve_mw(r, (const char*)gnames[i]);
                 if (NULL != fn) {
                     mws_arr[k++] = fn;
                 }
@@ -425,7 +433,7 @@ router_entry *router_add(router_ctx *r, const router_group *g,
         }
         // 3b) 再追加路由级 mws
         for (int32_t i = 0; i < mws_n; i++) {
-            router_cb fn = _router_resolve_mw(r, mws[i]);
+            fn = _router_resolve_mw(r, mws[i]);
             if (NULL != fn) {
                 mws_arr[k++] = fn;
             }
@@ -437,6 +445,10 @@ router_entry *router_add(router_ctx *r, const router_group *g,
         }
     }
     // 4) 入路由表 (尾插, dispatch 时按注册顺序线性扫描)
+    if (r->global_mw_n + total_mws + 1 > ROUTER_MAX_CHAIN) {
+        LOG_WARN("router: chain will exceed %d (global=%d, route=%d) at dispatch.",
+                 ROUTER_MAX_CHAIN, r->global_mw_n, total_mws);
+    }
     _router_grow((void **)&r->routes, &r->routes_cap, r->routes_n + 1, sizeof(router_entry));
     router_entry *e = &r->routes[r->routes_n];
     ZERO(e, sizeof(*e));
@@ -465,7 +477,58 @@ DEF_ROUTE_FN(head,    ROUTER_M_HEAD)
 DEF_ROUTE_FN(options, ROUTER_M_OPTIONS)
 DEF_ROUTE_FN(any,     ROUTER_M_ANY)
 #undef DEF_ROUTE_FN
-
+int32_t router_add_index(router_ctx *r, const char *method, size_t method_len,
+                       const char *path, size_t path_len) {
+    router_method m = _router_method_str_to_mask(method, method_len);
+    if (0 == m) {
+        //_router_method_str_to_mask 不含 ANY，此处特判后映射 ROUTER_M_ANY（全方法通配掩码）
+        if (3 != method_len || 0 != memcmp(method, "ANY", 3)) {
+            return -1;
+        }
+        m = ROUTER_M_ANY;
+    }
+    router_seg *segs = NULL;
+    int32_t segs_n = 0;
+    if (ERR_OK != _router_parse_path(path, path_len, &segs, &segs_n)) {
+        return -1;
+    }
+    _router_grow((void **)&r->routes, &r->routes_cap, r->routes_n + 1, sizeof(router_entry));
+    router_entry *e = &r->routes[r->routes_n];
+    ZERO(e, sizeof(*e));
+    e->method_mask = m;
+    e->segs = segs;
+    e->segs_n = segs_n;
+    return r->routes_n++;//后自增：调用方拿到旧值即新条目的稳定索引
+}
+int32_t router_match_index(router_ctx *r, const char *method, size_t method_len,
+                           const char *url, size_t url_len, router_req *ctx) {
+    router_method m = _router_method_str_to_mask(method, method_len);
+    if (0 == m) {
+        return -1;
+    }
+    //url_parse 解码后段写入 ctx->url_storage；params.val 指向该缓冲，ctx 生命周期须覆盖 params 使用
+    if (ERR_OK != url_parse(&ctx->url_storage, url, url_len, '/', 1)) {
+        return -2;
+    }
+    int32_t qn = 0;
+    //RFC 3986 允许空段（如 /a//b），路由匹配须过滤
+    for (int32_t i = 0; i < ctx->url_storage.npath; i++) {
+        if (ctx->url_storage.segs[i].lens > 0) {
+            ctx->url_storage.segs[qn++] = ctx->url_storage.segs[i];
+        }
+    }
+    for (int32_t i = 0; i < r->routes_n; i++) {
+        router_entry *e = &r->routes[i];
+        if (0 == (e->method_mask & m)) {
+            continue;
+        }
+        ctx->params_n = 0;//_router_match_path 累积追加，每次尝试前必须归零
+        if (_router_match_path(e->segs, e->segs_n, ctx->url_storage.segs, qn, ctx)) {
+            return i;
+        }
+    }
+    return -1;
+}
 // 中间件需主动调本函数推进链路; 不调即截断, 后续 mw / handler 不执行。
 // 因为是同步递归调用栈, 中间件可在 router_next 返回后做后置处理 (打日志 / 统计耗时)
 void router_next(router_req *ctx) {
@@ -527,6 +590,9 @@ static void _router_send_resp(router_req *ctx, int32_t code, const char *content
     for (int32_t i = 0; i < extra_n; i++) {
         klen = extra[i].key.lens < sizeof(k) - 1 ? extra[i].key.lens : sizeof(k) - 1;
         vlen = extra[i].value.lens < sizeof(v) - 1 ? extra[i].value.lens : sizeof(v) - 1;
+        if (klen < extra[i].key.lens) {
+            LOG_WARN("router: header key truncated (%zu → %zu).", extra[i].key.lens, klen);
+        }
         memcpy(k, extra[i].key.data, klen); k[klen] = '\0';
         memcpy(v, extra[i].value.data, vlen); v[vlen] = '\0';
         http_pack_head(&bw, k, v);

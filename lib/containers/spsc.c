@@ -10,19 +10,18 @@ static inline char *_spsc_cell_at(spsc_ctx *q, uint32_t pos) {
 }
 void spsc_init(spsc_ctx *q, size_t elsize, uint32_t capacity) {
     ASSERTAB(NULL != q, ERRSTR_NULLP);
-    ASSERTAB(elsize > 0, ERRSTR_INVPARAM);
+    ASSERTAB(elsize > 0 && elsize <= (size_t)UINT32_MAX - 7, ERRSTR_INVPARAM);
     capacity = (0 == capacity) ? SPSC_DEFAULT_CAP : pow2_ceil(capacity);
     ASSERTAB(capacity >= 2, ERRSTR_INVPARAM);
     q->capacity = capacity;
-    q->mask     = capacity - 1;
-    q->elsize   = (uint32_t)elsize;
+    q->mask = capacity - 1;
+    q->elsize = (uint32_t)elsize;
     //每槽位仅存 data，向上对齐到 8 字节，保证后续访问对齐
-    q->stride   = (uint32_t)ROUND_UP(elsize, 8);
-    q->enq.v    = 0;
-    q->deq.v    = 0;
+    q->stride = (uint32_t)ROUND_UP(elsize, 8);
+    q->enq.v = 0;
+    q->deq.v = 0;
     ASSERTAB((size_t)capacity <= SIZE_MAX / q->stride, "byte size overflow.");
     MALLOC(q->cells, (size_t)q->stride * capacity);
-    ASSERTAB(NULL != q->cells, "spsc_init: malloc failed.");
 }
 void spsc_free(spsc_ctx *q) {
     if (NULL == q) {

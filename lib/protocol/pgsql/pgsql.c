@@ -274,6 +274,7 @@ static int32_t _pgsql_scram_client_first(pgsql_ctx *pg, ev_ctx *ev, const char *
     if (NULL == pg->scram) {
         return ERR_FAILED;
     }
+    scram_set_user(pg->scram, pg->user, strlen(pg->user));
 #if WITH_SSL
     // PLUS 变体：注入 tls-server-end-point 通道绑定数据
     if (pg->scram->cbind && pg->tls_cbind_len > 0) {
@@ -306,9 +307,7 @@ static int32_t _pgsql_scram_client_final(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *
         breader->data + breader->offset, breader->size - breader->offset)) {
         return ERR_FAILED;
     }
-    if (ERR_OK != scram_set_pwd(pg->scram, pg->password)) {
-        return ERR_FAILED;
-    }
+    scram_set_pwd(pg->scram, pg->password, strlen(pg->password));
     char *final_message = scram_final_message(pg->scram);
     if (NULL == final_message) {
         return ERR_FAILED;

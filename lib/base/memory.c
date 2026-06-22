@@ -8,7 +8,7 @@
 
 #if MEMORY_CHECK
 static atomic64_t _nalloc = 0; // 累计分配次数（原子计数）
-static atomic64_t _nfree  = 0; // 累计释放次数（原子计数）
+static atomic64_t _nfree = 0; // 累计释放次数（原子计数）
 #endif
 
 #if MEMORY_CHECK && MEMORY_TRACE && !defined(OS_AIX)

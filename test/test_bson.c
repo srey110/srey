@@ -611,6 +611,35 @@ static void test_bson_tostring_subtypes(CuTest *tc) {
     BSON_FREE(&bson);
 }
 
+// 点分路径 find 后 result.doc 须指向自身 nested_doc（非栈变量），
+// find 后调 bson_iter_next 能继续迭代子文档剩余字段
+static void test_bson_find_dotted_iter_continue(CuTest *tc) {
+    bson_ctx bson;
+    bson_init(&bson, NULL, 0);
+    bson_append_document_begain(&bson, "cursor");
+    bson_append_int64(&bson, "id", 12345LL);
+    bson_append_utf8(&bson, "ns", "test.col");
+    bson_append_end(&bson);
+    bson_append_end(&bson);
+    CuAssertTrue(tc, bson_complete(&bson));
+
+    BSON_ITER_FROM(bson, rd, iter);
+    bson_iter result;
+    int32_t err;
+    CuAssertIntEquals(tc, ERR_OK, bson_iter_find(&iter, "cursor.id", &result));
+    CuAssertIntEquals(tc, BSON_INT64, result.type);
+    CuAssertTrue(tc, 12345LL == bson_iter_int64(&result, &err));
+    // find 后 result.doc 指向 result.nested_doc（自身字段），不再悬空；
+    // bson_iter_next 应能取到子文档下一字段 "ns"
+    CuAssertTrue(tc, bson_iter_next(&result));
+    CuAssertIntEquals(tc, BSON_UTF8, result.type);
+    CuAssertStrEquals(tc, "ns", result.key);
+    CuAssertStrEquals(tc, "test.col", bson_iter_utf8(&result, &err));
+    CuAssertIntEquals(tc, ERR_OK, err);
+
+    BSON_FREE(&bson);
+}
+
 void test_bson(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_bson_primitives);
     SUITE_ADD_TEST(suite, test_bson_iter_no_next);
@@ -625,4 +654,5 @@ void test_bson(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_bson_tostring);
     SUITE_ADD_TEST(suite, test_bson_tostring_subtypes);
     SUITE_ADD_TEST(suite, test_bson_misc);
+    SUITE_ADD_TEST(suite, test_bson_find_dotted_iter_continue);
 }

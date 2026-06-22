@@ -23,7 +23,7 @@
 #define FLOAT_EQZERO(f) (ABS(f) < FLOAT_PRECISION) // 判断浮点数是否等于零
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof(*(a))) // 获取静态数组元素个数
 #define EMPTYSTR(str) ((NULL == (str)) || ('\0' == *(const char *)(str))) // 判断字符串是否为空
-#define EMPTYPTR(ptr, lens) ((NULL == (ptr)) || ((lens) <= 0))
+#define EMPTYPTR(ptr, lens) ((NULL == (ptr)) || (0 == (lens)))
 #define ROUND_UP(s, n) (((s) + (n) - 1) & (~((n) - 1))) //s向上 取n(n 为2的倍数)的整数倍
 
 #define CONCAT2(a, b) a b // 拼接两个字符串字面量

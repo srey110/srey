@@ -35,6 +35,7 @@
     <ClCompile Include="lbind\ltask.c" />
     <ClCompile Include="lbind\lbytecache.c" />
     <ClCompile Include="lbind\lutils.c" />
+    <ClCompile Include="lbind\lrouter.c" />
     <ClCompile Include="lfs\lfs.c" />
     <ClCompile Include="luacjson\fpconv.c" />
     <ClCompile Include="luacjson\lua_cjson.c" />

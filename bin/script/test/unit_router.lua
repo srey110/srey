@@ -647,5 +647,25 @@ runner.run("unit_router", function(t)
         t:eq("text/plain; charset=utf-8", r400 and r400.headers and r400.headers["Content-Type"], "400 带 Content-Type")
     end
 
+    -- 8.4 OPT 中置前瞻：对齐 C 端 _router_match_path skip_opt 逻辑
+    do
+        local r = Route.new()
+        local got_x
+        r:get("/a/{x?}/b", function(ctx)
+            got_x = ctx.params.x
+            ctx:text(200, "ok")
+        end)
+        -- OPT 有值时消耗，后续 LIT /b 匹配
+        got_x = nil
+        t:eq(200,  (dispatch(r, "GET", "/a/42/b") or {}).code, "opt mid+value: 200")
+        t:eq("42", got_x, "opt mid+value: param filled")
+        -- OPT 无值时跳过（前瞻到 LIT /b 匹配当前请求段）
+        got_x = "SENTINEL"
+        t:eq(200, (dispatch(r, "GET", "/a/b") or {}).code, "opt mid+skip: 200")
+        t:eq(nil, got_x, "opt mid+skip: param nil")
+        -- 多余段不匹配
+        t:eq(404, (dispatch(r, "GET", "/a/b/c") or {}).code, "opt mid: extra seg → 404")
+    end
+
 end)
 end)

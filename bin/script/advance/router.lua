@@ -58,16 +58,13 @@
 --   链内异常不在中间件内捕获，由 dispatch 的 srey.xpcall 统一兜底（自动 ERROR + traceback），响应 500。
 --   prefix/middleware/group 分组的中间件在注册阶段静态合并进路由条目，
 
-local srey     = require("lib.srey")
-local http     = require("lib.http")
-local url_mod  = require("srey.url")
+local srey        = require("lib.srey")
+local http        = require("lib.http")
+local _srey_router_new = require("srey.router").new
 local type     = type
 local pcall    = pcall
 local tostring = tostring
 local assert   = assert
-
--- 路径段数上限,须与 C urlparse.h 的 URL_MAX_PATH_DEPTH 同步;仅校验注册期模板,运行期请求段数由 C url_parse 以同一上限兜底
-local _URL_MAX_PATH_DEPTH = 64
 
 -- ── GroupBuilder ──────────────────────────────────────────────────────────
 
@@ -120,73 +117,6 @@ local _KNOWN_METHODS = {
     PATCH = true, HEAD = true, OPTIONS = true,
 }
 
--- 将路由路径解析为结构化段数组;非法模板(空名/段数超上限/中置 *)返 nil+errmsg,由 _add 告警并跳过
--- 段类型: lit(字面量) / param({x}) / opt({x?}) / wild(*)
-local function _parse(path)
-    local segs = {}
-    for seg in path:gmatch("[^/]+") do
-        if seg == "*" then
-            segs[#segs + 1] = { t = "wild" }
-        else
-            local name, q = seg:match("^{([^}?]+)(%??)}$")
-            if name then
-                segs[#segs + 1] = { t = q == "?" and "opt" or "param", name = name }
-            else
-                if seg:match("^{%??}$") then
-                    return nil, "empty param name in segment: " .. seg
-                end
-                segs[#segs + 1] = { t = "lit", val = seg }
-            end
-        end
-    end
-    if #segs > _URL_MAX_PATH_DEPTH then
-        return nil, "path segments exceed " .. _URL_MAX_PATH_DEPTH
-    end
-    for i = 1, #segs - 1 do
-        if "wild" == segs[i].t then
-            return nil, "wildcard '*' must be the last segment"
-        end
-        if "opt" == segs[i].t then
-            return nil, "optional param '{x?}' must be the last segment"
-        end
-    end
-    return segs
-end
-
--- 将路由段与请求段匹配，填充 params；返回 true/false
-local function _match(rsegs, qsegs, params)
-    local ri = 1
-    local qi = 1
-    local rn = #rsegs
-    local qn = #qsegs
-    while ri <= rn do
-        local seg = rsegs[ri]
-        if seg.t == "wild" then
-            return true
-        elseif seg.t == "lit" then
-            if qi > qn or seg.val ~= qsegs[qi] then
-                return false
-            end
-            ri = ri + 1
-            qi = qi + 1
-        elseif seg.t == "param" then
-            if qi > qn then
-                return false
-            end
-            params[seg.name] = qsegs[qi]
-            ri = ri + 1
-            qi = qi + 1
-        elseif seg.t == "opt" then
-            if qi <= qn then
-                params[seg.name] = qsegs[qi]
-                qi = qi + 1
-            end
-            ri = ri + 1
-        end
-    end
-    return qi > qn
-end
-
 ---@class Ctx
 ---@field fd      integer            socket fd
 ---@field skid    integer            连接 skid
@@ -213,7 +143,7 @@ local function _make_ctx(fd, skid, pack, client, method, parsed, version)
         method  = method,
         version = version,
         path    = parsed.path or "/",
-        params  = {},   -- 由 dispatch 在匹配后填充
+        params  = nil,  -- 由 dispatch 在匹配后填充
         query   = parsed.param or {},
         body    = http.datastr(pack),
         headers = http.heads(pack) or {},
@@ -262,7 +192,8 @@ Router.__index = Router
 ---@return Router
 function Router.new()
     return setmetatable({
-        _routes    = {},    -- 所有已注册路由条目（entry）列表，dispatch 线性扫描
+        _c_router  = _srey_router_new(), -- C 路由器（持有路径段数组，匹配在 C 侧完成）
+        _routes    = {},    -- [C索引] = {handler, mws, raw}，与 C 路由表索引对齐
         _named     = {},    -- 命名路由索引：name → entry，由 :name("key") 写入
         _global_mw = {},    -- 全局中间件列表，对所有路由生效
         _mw_reg    = {},    -- 具名中间件注册表：name → fun，由 :define() 写入
@@ -315,9 +246,9 @@ _bad_entry.name = function(_, n) WARN("router: :name(%s) on rejected entry.", to
 function Router:_add(method, path, handler, extra_mws)
     local prefix, ctx_mws = self:_ctx()
     local full = prefix .. path
-    local segs, err = _parse(full)
-    if not segs then
-        WARN("router: path '%s' rejected: %s", full, err)
+    local ok, idx = self._c_router:add(method, full)
+    if not ok then
+        WARN("router: path '%s' rejected.", full)
         return _bad_entry
     end
     local mws  = {}
@@ -331,12 +262,10 @@ function Router:_add(method, path, handler, extra_mws)
     end
     local router = self
     local entry  = {
-        method  = method,           -- HTTP 方法（"GET"/"POST"/... 或 "ANY"）
-        segs    = segs,             -- 已校验的路由路径段数组，供 _match 使用
-        raw     = full,             -- 原始完整路径字符串（含前缀），调试用
-        handler = handler,          -- 路由处理函数 fun(ctx)
-        mws     = mws,              -- 路由级中间件列表（分组中间件已静态合并进来）
-        _name   = nil,              -- 命名路由键，由 :name("key") 写入
+        raw     = full,     -- 原始完整路径字符串（含前缀），调试用
+        handler = handler,  -- 路由处理函数 fun(ctx)
+        mws     = mws,      -- 路由级中间件列表（分组中间件已静态合并进来）
+        _name   = nil,      -- 命名路由键，由 :name("key") 写入
     }
     -- :name("key") 链式命名路由
     entry.name = function(_, n)
@@ -344,7 +273,7 @@ function Router:_add(method, path, handler, extra_mws)
         router._named[n] = entry
         return entry
     end
-    self._routes[#self._routes + 1] = entry
+    self._routes[idx] = entry  -- 以 C 侧路由索引为键
     return entry
 end
 
@@ -438,39 +367,22 @@ function Router:dispatch(fd, skid, pack, client)
     if not status then
         return
     end
-    local method   = status[1]
+    local method = status[1]
     if not _KNOWN_METHODS[method] then
         http.response(fd, skid, 405, _PLAIN_HEADERS, "Method Not Allowed\n")
         return
     end
-    local parsed   = url_mod.parse(status[2] or "")
-    if not parsed then
-        http.response(fd, skid, 400, _PLAIN_HEADERS, "Bad Request\n")
+    -- C 侧完成 url_parse + 空段过滤 + 路由扫描；false=400；false,url=404；true,url,idx,params=200
+    local ok, parsed, idx, params = self._c_router:match(method, status[2] or "")
+    if not ok then
+        if parsed then
+            http.response(fd, skid, 404, _PLAIN_HEADERS, "Not Found\n")
+        else
+            http.response(fd, skid, 400, _PLAIN_HEADERS, "Bad Request\n")
+        end
         return
     end
-    -- C 侧 segs 已解码、%2F 在段内不当分隔符;RFC 保留空段,这里按路由语义剔除空段
-    local req_segs = {}
-    for _, s in ipairs(parsed.segs or {}) do
-        if "" ~= s then
-            req_segs[#req_segs + 1] = s
-        end
-    end
-    -- 线性扫描路由表，首个方法匹配且路径匹配的条目即为结果
-    local route, params
-    for _, r in ipairs(self._routes) do
-        if r.method == "ANY" or r.method == method then
-            local p = {}
-            if _match(r.segs, req_segs, p) then
-                route  = r
-                params = p
-                break
-            end
-        end
-    end
-    if not route then
-        http.response(fd, skid, 404, _PLAIN_HEADERS, "Not Found\n")
-        return
-    end
+    local route = self._routes[idx]
     local ctx = _make_ctx(fd, skid, pack, client, method, parsed, status[3])
     ctx.params = params
     -- 拼接执行链：全局中间件 → 路由级中间件 → handler

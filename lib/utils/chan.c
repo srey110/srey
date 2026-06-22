@@ -167,6 +167,7 @@ int32_t chan_send(chan_ctx *chan, void *data, size_t lens, int32_t copy) {
     buf_ctx buf;
     buf.lens = lens;
     if (copy) {
+        ASSERTAB(NULL != data || 0 == lens, "chan_send: data is NULL but lens > 0");
         char *msg;
         MALLOC(msg, lens + 1);
         if (lens > 0) {

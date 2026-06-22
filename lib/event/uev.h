@@ -16,14 +16,14 @@
 #elif defined(EV_KQUEUE)
     typedef struct kevent events_t;
     typedef struct kevent changes_t;
-    #define COMMIT_NCHANGES   // kqueue/devpoll：需批量提交变更列表
+    #define COMMIT_NCHANGES// kqueue/devpoll：需批量提交变更列表
 #elif defined(EV_EVPORT)
     typedef port_event_t events_t;
-    #define MANUAL_ADD        // evport：每次触发后需手动重新注册
+    #define MANUAL_ADD// evport：每次触发后需手动重新注册
 #elif defined(EV_POLLSET)
     typedef struct pollfd events_t;
-    #define MANUAL_REMOVE     // pollset：关闭时需手动从pollset中删除
-    #define NO_UDATA          // pollset/devpoll：事件不携带用户数据，需从hashmap查找
+    #define MANUAL_REMOVE// pollset：关闭时需手动从pollset中删除
+    #define NO_UDATA// pollset/devpoll：事件不携带用户数据，需从hashmap查找
 #elif defined(EV_DEVPOLL)
     typedef struct pollfd events_t;
     typedef struct pollfd changes_t;

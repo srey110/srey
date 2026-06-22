@@ -63,3 +63,66 @@ void *lpub_check_buf_idx(lua_State *lua, int32_t *idx, size_t *size, int32_t *co
 void *lpub_check_buf(lua_State *lua, int32_t idx, size_t *size, int32_t *copy) {
     return lpub_check_buf_idx(lua, &idx, size, copy);
 }
+void lpub_push_url_table(lua_State *lua, url_ctx *url) {
+    lua_createtable(lua, 0, 9);
+    if (!buf_empty(&url->scheme)) {
+        lua_pushlstring(lua, url->scheme.data, url->scheme.lens);
+        lua_setfield(lua, -2, "scheme");
+    }
+    if (!buf_empty(&url->user)) {
+        lua_pushlstring(lua, url->user.data, url->user.lens);
+        lua_setfield(lua, -2, "user");
+    }
+    if (!buf_empty(&url->psw)) {
+        lua_pushlstring(lua, url->psw.data, url->psw.lens);
+        lua_setfield(lua, -2, "psw");
+    }
+    if (!buf_empty(&url->host)) {
+        lua_pushlstring(lua, url->host.data, url->host.lens);
+        lua_setfield(lua, -2, "host");
+    }
+    if (!buf_empty(&url->port)) {
+        lua_pushlstring(lua, url->port.data, url->port.lens);
+        lua_setfield(lua, -2, "port");
+    }
+    if (url->npath > 0) {
+        char pathbuf[URL_BUF_LENS];
+        size_t plen = url_reorg_path(url, pathbuf, sizeof(pathbuf));
+        lua_pushlstring(lua, pathbuf, plen);
+        lua_setfield(lua, -2, "path");
+    }
+    lua_createtable(lua, url->npath > 0 ? url->npath : 0, 0);
+    for (int32_t i = 0; i < url->npath; i++) {
+        lua_pushlstring(lua, url->segs[i].data, url->segs[i].lens);
+        lua_rawseti(lua, -2, i + 1);
+    }
+    lua_setfield(lua, -2, "segs");
+    if (!buf_empty(&url->anchor)) {
+        lua_pushlstring(lua, url->anchor.data, url->anchor.lens);
+        lua_setfield(lua, -2, "anchor");
+    }
+    lua_createtable(lua, 0, URL_MAX_PARAM);
+    url_param *param;
+    for (int32_t i = 0; i < URL_MAX_PARAM; i++) {
+        param = &url->param[i];
+        if (buf_empty(&param->key)) {
+            break;
+        }
+        lua_pushlstring(lua, param->key.data, param->key.lens);
+        if (buf_empty(&param->val)) {
+            lua_pushstring(lua, "");
+        } else {
+            lua_pushlstring(lua, param->val.data, param->val.lens);
+        }
+        lua_settable(lua, -3);
+    }
+    lua_setfield(lua, -2, "param");
+    if (!buf_empty(&url->param[0].key)) {
+        char querybuf[URL_BUF_LENS];
+        size_t qlen = url_reorg_param(url, querybuf, sizeof(querybuf));
+        if (qlen > 0) {
+            lua_pushlstring(lua, querybuf, qlen);
+            lua_setfield(lua, -2, "query");
+        }
+    }
+}

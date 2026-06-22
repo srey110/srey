@@ -327,6 +327,19 @@ static int32_t _usk_tcp_recv(watcher_ctx *watcher, tcp_ctx *tcp) {
     int32_t rtn = buffer_from_sock(&tcp->buf_r, tcp->sock.fd, &nread, _evpub_sock_read, NULL);
 #endif
     _usk_call_recv_cb(watcher->ev, tcp, nread);
+#if WITH_SSL
+    // TLS 重协商：握手完成后 SSL_read 仍可返回 WANT_WRITE，需等写就绪再重试
+    if (ERR_OK == rtn && 0 == nread 
+        && NULL != tcp->ssl && SSL_want_write(tcp->ssl)
+        && !BIT_CHECK(tcp->status, STATUS_ERROR)) {
+        BIT_SET(tcp->status, STATUS_SSLWANTWRITE);
+        if (!BIT_CHECK(tcp->sock.events, EVENT_WRITE)) {
+            if (ERR_OK != _uev_add_event(watcher, tcp->sock.fd, &tcp->sock.events, EVENT_WRITE, &tcp->sock)) {
+                return ERR_FAILED;
+            }
+        }
+    }
+#endif
 #ifdef MANUAL_ADD
     if (ERR_OK == rtn) {
         rtn = _uev_add_event(watcher, tcp->sock.fd, &tcp->sock.events, EVENT_READ, &tcp->sock);
@@ -447,7 +460,17 @@ static void _usk_on_rw_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
             return;
         }//switch
     }
-#endif
+    // TLS 重协商写就绪：evread=1 让下面的 _usk_tcp_recv 重试 SSL_read 完成握手
+    if (NULL != tcp->ssl
+        && !BIT_CHECK(tcp->status, STATUS_AUTHSSL)
+        && BIT_CHECK(tcp->status, STATUS_SSLWANTWRITE)
+        && BIT_CHECK(ev, EVENT_WRITE)
+        && !BIT_CHECK(tcp->status, STATUS_ERROR)) {
+        BIT_REMOVE(tcp->status, STATUS_SSLWANTWRITE);
+        _uev_del_event(watcher, tcp->sock.fd, &tcp->sock.events, EVENT_WRITE, &tcp->sock);
+        evread = 1;
+    }
+#endif// WITH_SSL
     if (BIT_CHECK(tcp->status, STATUS_ERROR)) {
         _usk_close_tcp(watcher, tcp);
         return;
@@ -626,7 +649,8 @@ static void _usk_on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev)
     SOCKET fd;
     watcher_ctx *to;
     int32_t err;
-    for (;;) {
+    int32_t unremove;
+    while ((unremove = (0 == ATOMIC_GET(&acpt->lsn->remove)))) {
         fd = accept(acpt->sock.fd, NULL, NULL);
         if (INVALID_SOCK == fd) {
             err = ERRNO;
@@ -654,10 +678,12 @@ static void _usk_on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev)
         }
     }
 #ifdef MANUAL_ADD
-    if (ERR_OK != _uev_add_event(watcher, acpt->sock.fd, &acpt->sock.events, EVENT_READ, &acpt->sock)) {
-        _evpub_sockel_remove(watcher, acpt->sock.fd);
-        CLOSE_SOCK(acpt->sock.fd);
-        LOG_ERROR("%s", ERRORSTR(ERRNO));
+    if (unremove) {
+        if (ERR_OK != _uev_add_event(watcher, acpt->sock.fd, &acpt->sock.events, EVENT_READ, &acpt->sock)) {
+            _evpub_sockel_remove(watcher, acpt->sock.fd);
+            CLOSE_SOCK(acpt->sock.fd);
+            LOG_ERROR("%s", ERRORSTR(ERRNO));
+        }
     }
 #else
     (void)ev;

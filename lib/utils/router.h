@@ -166,7 +166,7 @@ struct router_req {
     void *user;       // 中间件间传值, 用户自管
     router_cb chain[ROUTER_MAX_CHAIN]; // 中间件 + handler 拼接链
     router_kv params[ROUTER_MAX_PARAMS]; // {name} / {name?} 提取结果
-    url_ctx  url_storage; // URL 解析结果 (内部使用)
+    url_ctx url_storage; // URL 解析结果 (内部使用)
 };
 // 分组对象 (栈分配, 调用方持有);  prefix / mws 仅持引用, 调用方需保证生命周期
 // 跨过所有 router_* 注册调用。嵌套通过 router_group_nest 派生, 父对象不可变
@@ -247,23 +247,87 @@ router_entry *router_add(router_ctx *r, const router_group *g,
                          router_method method, const char *path,
                          router_cb h,
                          const char *const *mws, int32_t mws_n);
-// 便捷注册接口: 单一方法
+/// <summary>等价于 router_add(r, g, ROUTER_M_GET, path, h, mws, mws_n)</summary>
+/// <param name="r">router_ctx</param><param name="g">分组, 可为 NULL</param>
+/// <param name="path">路由路径</param><param name="h">handler</param>
+/// <param name="mws">路由级中间件名数组, 可为 NULL</param><param name="mws_n">mws 数量</param>
+/// <returns>路由条目, NULL 表示失败</returns>
 router_entry *router_get(router_ctx *r, const router_group *g, const char *path,
                          router_cb h, const char *const *mws, int32_t mws_n);
+/// <summary>等价于 router_add(r, g, ROUTER_M_POST, path, h, mws, mws_n)</summary>
+/// <param name="r">router_ctx</param><param name="g">分组, 可为 NULL</param>
+/// <param name="path">路由路径</param><param name="h">handler</param>
+/// <param name="mws">路由级中间件名数组, 可为 NULL</param><param name="mws_n">mws 数量</param>
+/// <returns>路由条目, NULL 表示失败</returns>
 router_entry *router_post(router_ctx *r, const router_group *g, const char *path,
                           router_cb h, const char *const *mws, int32_t mws_n);
+/// <summary>等价于 router_add(r, g, ROUTER_M_PUT, path, h, mws, mws_n)</summary>
+/// <param name="r">router_ctx</param><param name="g">分组, 可为 NULL</param>
+/// <param name="path">路由路径</param><param name="h">handler</param>
+/// <param name="mws">路由级中间件名数组, 可为 NULL</param><param name="mws_n">mws 数量</param>
+/// <returns>路由条目, NULL 表示失败</returns>
 router_entry *router_put(router_ctx *r, const router_group *g, const char *path,
                          router_cb h, const char *const *mws, int32_t mws_n);
+/// <summary>等价于 router_add(r, g, ROUTER_M_DELETE, path, h, mws, mws_n)</summary>
+/// <param name="r">router_ctx</param><param name="g">分组, 可为 NULL</param>
+/// <param name="path">路由路径</param><param name="h">handler</param>
+/// <param name="mws">路由级中间件名数组, 可为 NULL</param><param name="mws_n">mws 数量</param>
+/// <returns>路由条目, NULL 表示失败</returns>
 router_entry *router_delete(router_ctx *r, const router_group *g, const char *path,
                             router_cb h, const char *const *mws, int32_t mws_n);
+/// <summary>等价于 router_add(r, g, ROUTER_M_PATCH, path, h, mws, mws_n)</summary>
+/// <param name="r">router_ctx</param><param name="g">分组, 可为 NULL</param>
+/// <param name="path">路由路径</param><param name="h">handler</param>
+/// <param name="mws">路由级中间件名数组, 可为 NULL</param><param name="mws_n">mws 数量</param>
+/// <returns>路由条目, NULL 表示失败</returns>
 router_entry *router_patch(router_ctx *r, const router_group *g, const char *path,
                            router_cb h, const char *const *mws, int32_t mws_n);
+/// <summary>等价于 router_add(r, g, ROUTER_M_HEAD, path, h, mws, mws_n)</summary>
+/// <param name="r">router_ctx</param><param name="g">分组, 可为 NULL</param>
+/// <param name="path">路由路径</param><param name="h">handler</param>
+/// <param name="mws">路由级中间件名数组, 可为 NULL</param><param name="mws_n">mws 数量</param>
+/// <returns>路由条目, NULL 表示失败</returns>
 router_entry *router_head(router_ctx *r, const router_group *g, const char *path,
                           router_cb h, const char *const *mws, int32_t mws_n);
+/// <summary>等价于 router_add(r, g, ROUTER_M_OPTIONS, path, h, mws, mws_n)</summary>
+/// <param name="r">router_ctx</param><param name="g">分组, 可为 NULL</param>
+/// <param name="path">路由路径</param><param name="h">handler</param>
+/// <param name="mws">路由级中间件名数组, 可为 NULL</param><param name="mws_n">mws 数量</param>
+/// <returns>路由条目, NULL 表示失败</returns>
 router_entry *router_options(router_ctx *r, const router_group *g, const char *path,
                              router_cb h, const char *const *mws, int32_t mws_n);
+/// <summary>等价于 router_add(r, g, ROUTER_M_ANY, path, h, mws, mws_n)，匹配所有已知 HTTP 方法</summary>
+/// <param name="r">router_ctx</param><param name="g">分组, 可为 NULL</param>
+/// <param name="path">路由路径</param><param name="h">handler</param>
+/// <param name="mws">路由级中间件名数组, 可为 NULL</param><param name="mws_n">mws 数量</param>
+/// <returns>路由条目, NULL 表示失败</returns>
 router_entry *router_any(router_ctx *r, const router_group *g, const char *path,
                          router_cb h, const char *const *mws, int32_t mws_n);
+/// <summary>
+/// 注册路由并返回索引；不经 group/mw 解析，handler 置 NULL
+/// method 支持 "GET"/"POST"/"PUT"/"DELETE"/"PATCH"/"HEAD"/"OPTIONS"/"ANY"
+/// </summary>
+/// <param name="r">router_ctx</param>
+/// <param name="method">HTTP 方法字符串</param>
+/// <param name="method_len">method 长度</param>
+/// <param name="path">路由完整路径（调用方已拼好前缀）</param>
+/// <param name="path_len">path 长度</param>
+/// <returns>路由索引（≥0）；-1 表示路径非法或方法未知</returns>
+int32_t router_add_index(router_ctx *r, const char *method, size_t method_len,
+                         const char *path, size_t path_len);
+/// <summary>
+/// 路径匹配（不执行 handler/中间件）；调用方提供已零初始化的 ctx
+/// 成功后 ctx->params/params_n 已填充，ctx->url_storage 为 backing store
+/// </summary>
+/// <param name="r">router_ctx</param>
+/// <param name="method">HTTP 方法字符串</param>
+/// <param name="method_len">method 长度</param>
+/// <param name="url">原始请求 URI（含查询字符串）</param>
+/// <param name="url_len">url 长度</param>
+/// <param name="ctx">调用方提供的 router_req（须已零初始化）</param>
+/// <returns>路由索引（≥0）；-1 表示方法未知或无匹配路由；-2 表示 URL 解析失败</returns>
+int32_t router_match_index(router_ctx *r, const char *method, size_t method_len,
+                           const char *url, size_t url_len, router_req *ctx);
 /// <summary>
 /// 派发 HTTP 请求 —— 在 _net_recv 中 slice == 0 分支调用; 内部完成方法 / 路径
 /// 匹配, 拼接 chain, 启动中间件链。URL 解析失败 → 400; 方法不识别 → 405; 路径未匹配 → 404;

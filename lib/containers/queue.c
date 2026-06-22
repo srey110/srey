@@ -1,6 +1,6 @@
 ﻿#include "containers/queue.h"
 
-#define QUEUE_INIT_SIZE      32   // 默认初始容量
+#define QUEUE_INIT_SIZE 32 // 默认初始容量
 
 void queue_init(queue_ctx *qu, uint32_t elsize, uint32_t maxsize) {
     ASSERTAB(elsize > 0, "elsize invalid.");

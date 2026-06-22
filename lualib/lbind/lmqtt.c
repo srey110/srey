@@ -186,8 +186,8 @@ static int32_t _lmqtt_try_connect(lua_State *lua) {
     mqtt_protversion version = (mqtt_protversion)luaL_checkinteger(lua, 1);
     const char *sslname = luaL_optstring(lua, 2, NULL);
     const char *ip = luaL_checkstring(lua, 3);
-    uint16_t port  = (uint16_t)luaL_checkinteger(lua, 4);
-    int32_t netev  = (int32_t)luaL_optinteger(lua, 5, 0);
+    uint16_t port = (uint16_t)luaL_checkinteger(lua, 4);
+    int32_t netev = (int32_t)luaL_optinteger(lua, 5, 0);
     struct evssl_ctx *evssl = NULL;
     if (!EMPTYSTR(sslname)) {
 #if WITH_SSL
@@ -232,22 +232,22 @@ static int32_t _lmqtt_try_connect(lua_State *lua) {
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmqtt_pack_connect(lua_State *lua) {
     mqtt_protversion version = (mqtt_protversion)luaL_checkinteger(lua, 1);
-    int8_t   cleanstart = (int8_t)luaL_checkinteger(lua, 2);
-    int16_t  keepalive  = (int16_t)luaL_checkinteger(lua, 3);
+    int8_t cleanstart = (int8_t)luaL_checkinteger(lua, 2);
+    uint16_t keepalive = (uint16_t)luaL_checkinteger(lua, 3);
     const char *clientid = luaL_checkstring(lua, 4);
     const char *user = lua_isnoneornil(lua, 5) ? NULL : luaL_checkstring(lua, 5);
-    char   *password = NULL;
-    size_t  pwlens   = 0;
+    char *password = NULL;
+    size_t pwlens = 0;
     if (!lua_isnoneornil(lua, 6)) {
         password = (char *)luaL_checklstring(lua, 6, &pwlens);
     }
     const char *willtopic = lua_isnoneornil(lua, 7) ? NULL : luaL_checkstring(lua, 7);
-    char   *willpayload = NULL;
-    size_t  wplens      = 0;
+    char *willpayload = NULL;
+    size_t wplens = 0;
     if (!lua_isnoneornil(lua, 8)) {
         willpayload = (char *)luaL_checklstring(lua, 8, &wplens);
     }
-    int8_t willqos    = (int8_t)luaL_optinteger(lua, 9, 0);
+    int8_t willqos = (int8_t)luaL_optinteger(lua, 9, 0);
     int8_t willretain = (int8_t)luaL_optinteger(lua, 10, 0);
     binary_ctx *connprops = _lmqtt_get_props(lua, 11);
     binary_ctx *willprops = _lmqtt_get_props(lua, 12);
@@ -273,9 +273,9 @@ static int32_t _lmqtt_pack_connect(lua_State *lua) {
 /// <returns type="integer">数据长度</returns>
 static int32_t _lmqtt_pack_connack(lua_State *lua) {
     mqtt_protversion version = (mqtt_protversion)luaL_checkinteger(lua, 1);
-    int8_t  sesspresent = (int8_t)luaL_checkinteger(lua, 2);
-    uint8_t reason      = (uint8_t)luaL_checkinteger(lua, 3);
-    binary_ctx *props   = _lmqtt_get_props(lua, 4);
+    int8_t sesspresent = (int8_t)luaL_checkinteger(lua, 2);
+    uint8_t reason = (uint8_t)luaL_checkinteger(lua, 3);
+    binary_ctx *props = _lmqtt_get_props(lua, 4);
     size_t lens;
     char *pack = mqtt_pack_connack(version, sesspresent, reason, props, &lens);
     if (NULL == pack) {
@@ -300,14 +300,14 @@ static int32_t _lmqtt_pack_connack(lua_State *lua) {
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmqtt_pack_publish(lua_State *lua) {
     mqtt_protversion version = (mqtt_protversion)luaL_checkinteger(lua, 1);
-    int8_t  retain  = (int8_t)luaL_checkinteger(lua, 2);
-    int8_t  qos     = (int8_t)luaL_checkinteger(lua, 3);
-    int8_t  dup     = (int8_t)luaL_checkinteger(lua, 4);
+    int8_t retain = (int8_t)luaL_checkinteger(lua, 2);
+    int8_t qos = (int8_t)luaL_checkinteger(lua, 3);
+    int8_t dup = (int8_t)luaL_checkinteger(lua, 4);
     const char *topic = luaL_checkstring(lua, 5);
     uint16_t packid = (uint16_t)luaL_checkinteger(lua, 6);
-    char   *payload = NULL;
-    size_t  pllens  = 0;
-    int32_t next    = _lmqtt_get_payload(lua, 7, &payload, &pllens);
+    char *payload = NULL;
+    size_t pllens = 0;
+    int32_t next = _lmqtt_get_payload(lua, 7, &payload, &pllens);
     binary_ctx *props = _lmqtt_get_props(lua, next);
     size_t lens;
     char *pack = mqtt_pack_publish(version, retain, qos, dup,
@@ -330,7 +330,7 @@ static int32_t _lmqtt_pack_publish(lua_State *lua) {
 static int32_t _lmqtt_pack_puback(lua_State *lua) {
     mqtt_protversion version = (mqtt_protversion)luaL_checkinteger(lua, 1);
     uint16_t packid = (uint16_t)luaL_checkinteger(lua, 2);
-    uint8_t reason  = (uint8_t)luaL_optinteger(lua, 3, 0);
+    uint8_t reason = (uint8_t)luaL_optinteger(lua, 3, 0);
     binary_ctx *props = _lmqtt_get_props(lua, 4);
     size_t lens;
     char *pack = mqtt_pack_puback(version, packid, reason, props, &lens);
@@ -352,7 +352,7 @@ static int32_t _lmqtt_pack_puback(lua_State *lua) {
 static int32_t _lmqtt_pack_pubrec(lua_State *lua) {
     mqtt_protversion version = (mqtt_protversion)luaL_checkinteger(lua, 1);
     uint16_t packid = (uint16_t)luaL_checkinteger(lua, 2);
-    uint8_t reason  = (uint8_t)luaL_optinteger(lua, 3, 0);
+    uint8_t reason = (uint8_t)luaL_optinteger(lua, 3, 0);
     binary_ctx *props = _lmqtt_get_props(lua, 4);
     size_t lens;
     char *pack = mqtt_pack_pubrec(version, packid, reason, props, &lens);
@@ -374,7 +374,7 @@ static int32_t _lmqtt_pack_pubrec(lua_State *lua) {
 static int32_t _lmqtt_pack_pubrel(lua_State *lua) {
     mqtt_protversion version = (mqtt_protversion)luaL_checkinteger(lua, 1);
     uint16_t packid = (uint16_t)luaL_checkinteger(lua, 2);
-    uint8_t reason  = (uint8_t)luaL_optinteger(lua, 3, 0);
+    uint8_t reason = (uint8_t)luaL_optinteger(lua, 3, 0);
     binary_ctx *props = _lmqtt_get_props(lua, 4);
     size_t lens;
     char *pack = mqtt_pack_pubrel(version, packid, reason, props, &lens);
@@ -396,7 +396,7 @@ static int32_t _lmqtt_pack_pubrel(lua_State *lua) {
 static int32_t _lmqtt_pack_pubcomp(lua_State *lua) {
     mqtt_protversion version = (mqtt_protversion)luaL_checkinteger(lua, 1);
     uint16_t packid = (uint16_t)luaL_checkinteger(lua, 2);
-    uint8_t reason  = (uint8_t)luaL_optinteger(lua, 3, 0);
+    uint8_t reason = (uint8_t)luaL_optinteger(lua, 3, 0);
     binary_ctx *props = _lmqtt_get_props(lua, 4);
     size_t lens;
     char *pack = mqtt_pack_pubcomp(version, packid, reason, props, &lens);
@@ -419,7 +419,7 @@ static int32_t _lmqtt_pack_subscribe(lua_State *lua) {
     mqtt_protversion version = (mqtt_protversion)luaL_checkinteger(lua, 1);
     uint16_t packid = (uint16_t)luaL_checkinteger(lua, 2);
     binary_ctx *topics = luaL_checkudata(lua, 3, MT_MQTT_PROPS);
-    binary_ctx *props  = _lmqtt_get_props(lua, 4);
+    binary_ctx *props = _lmqtt_get_props(lua, 4);
     size_t lens;
     char *pack = mqtt_pack_subscribe(version, packid, topics, props, &lens);
     if (NULL == pack) {
@@ -442,7 +442,7 @@ static int32_t _lmqtt_pack_suback(lua_State *lua) {
     uint16_t packid = (uint16_t)luaL_checkinteger(lua, 2);
     size_t rslens;
     const char *reasons = luaL_checklstring(lua, 3, &rslens);
-    binary_ctx *props   = _lmqtt_get_props(lua, 4);
+    binary_ctx *props = _lmqtt_get_props(lua, 4);
     size_t lens;
     char *pack = mqtt_pack_suback(version, packid,
                                   (uint8_t *)reasons, rslens, props, &lens);
@@ -465,7 +465,7 @@ static int32_t _lmqtt_pack_unsubscribe(lua_State *lua) {
     mqtt_protversion version = (mqtt_protversion)luaL_checkinteger(lua, 1);
     uint16_t packid = (uint16_t)luaL_checkinteger(lua, 2);
     binary_ctx *topics = luaL_checkudata(lua, 3, MT_MQTT_PROPS);
-    binary_ctx *props  = _lmqtt_get_props(lua, 4);
+    binary_ctx *props = _lmqtt_get_props(lua, 4);
     size_t lens;
     char *pack = mqtt_pack_unsubscribe(version, packid, topics, props, &lens);
     if (NULL == pack) {
@@ -488,7 +488,7 @@ static int32_t _lmqtt_pack_unsuback(lua_State *lua) {
     uint16_t packid = (uint16_t)luaL_checkinteger(lua, 2);
     size_t rslens;
     const char *reasons = luaL_checklstring(lua, 3, &rslens);
-    binary_ctx *props   = _lmqtt_get_props(lua, 4);
+    binary_ctx *props = _lmqtt_get_props(lua, 4);
     size_t lens;
     char *pack = mqtt_pack_unsuback(version, packid,
                                     (uint8_t *)reasons, rslens, props, &lens);
@@ -574,20 +574,20 @@ static int32_t _lmqtt_pack_auth(lua_State *lua) {
 // 从 pack->varhead 中取 properties 指针（按 prot 分派）；无属性时返回 NULL
 static array_ctx *_lmqtt_varhead_props(mqtt_pack_ctx *pack) {
     switch (pack->fixhead.prot) {
-    case MQTT_CONNECT:     return ((mqtt_connect_varhead    *)pack->varhead)->properties;
-    case MQTT_CONNACK:     return ((mqtt_connack_varhead    *)pack->varhead)->properties;
-    case MQTT_PUBLISH:     return ((mqtt_publish_varhead    *)pack->varhead)->properties;
+    case MQTT_CONNECT: return ((mqtt_connect_varhead *)pack->varhead)->properties;
+    case MQTT_CONNACK: return ((mqtt_connack_varhead *)pack->varhead)->properties;
+    case MQTT_PUBLISH: return ((mqtt_publish_varhead *)pack->varhead)->properties;
     case MQTT_PUBACK:
     case MQTT_PUBREC:
     case MQTT_PUBREL:
-    case MQTT_PUBCOMP:     return ((mqtt_pubackrel_varhead  *)pack->varhead)->properties;
+    case MQTT_PUBCOMP: return ((mqtt_pubackrel_varhead *)pack->varhead)->properties;
     case MQTT_SUBSCRIBE:
     case MQTT_SUBACK:
     case MQTT_UNSUBSCRIBE:
-    case MQTT_UNSUBACK:    return ((mqtt_subreqresp_varhead *)pack->varhead)->properties;
+    case MQTT_UNSUBACK: return ((mqtt_subreqresp_varhead *)pack->varhead)->properties;
     case MQTT_DISCONNECT:
-    case MQTT_AUTH:        return ((mqtt_reason_varhead     *)pack->varhead)->properties;
-    default:               return NULL;
+    case MQTT_AUTH: return ((mqtt_reason_varhead *)pack->varhead)->properties;
+    default: return NULL;
     }
 }
 /// <summary>
@@ -705,11 +705,11 @@ static int32_t _lmqtt_connect_info(lua_State *lua) {
         return 1;
     }
     lua_createtable(lua, 0, 11);
-    lua_pushinteger(lua, vh->version);    lua_setfield(lua, -2, "version");
+    lua_pushinteger(lua, vh->version); lua_setfield(lua, -2, "version");
     lua_pushinteger(lua, vh->cleanstart); lua_setfield(lua, -2, "cleanstart");
-    lua_pushinteger(lua, vh->keepalive);  lua_setfield(lua, -2, "keepalive");
-    lua_pushinteger(lua, vh->willflag);   lua_setfield(lua, -2, "willflag");
-    lua_pushinteger(lua, vh->willqos);    lua_setfield(lua, -2, "willqos");
+    lua_pushinteger(lua, vh->keepalive); lua_setfield(lua, -2, "keepalive");
+    lua_pushinteger(lua, vh->willflag); lua_setfield(lua, -2, "willflag");
+    lua_pushinteger(lua, vh->willqos); lua_setfield(lua, -2, "willqos");
     lua_pushinteger(lua, vh->willretain); lua_setfield(lua, -2, "willretain");
     if (NULL != pl->clientid) {
         lua_pushstring(lua, pl->clientid);
@@ -763,8 +763,8 @@ static int32_t _lmqtt_connack(lua_State *lua) {
 static int32_t _lmqtt_publish(lua_State *lua) {
     LUACHECK_LUDATA(lua, 1);
     mqtt_pack_ctx *pack = lua_touserdata(lua, 1);
-    mqtt_publish_varhead  *vh = (mqtt_publish_varhead *)pack->varhead;
-    mqtt_publish_payload  *pl = (mqtt_publish_payload *)pack->payload;
+    mqtt_publish_varhead *vh = (mqtt_publish_varhead *)pack->varhead;
+    mqtt_publish_payload *pl = (mqtt_publish_payload *)pack->payload;
     lua_pushinteger(lua, vh->dup);
     lua_pushinteger(lua, vh->qos);
     lua_pushinteger(lua, vh->retain);
@@ -858,9 +858,9 @@ static int32_t _lmqtt_subscribe(lua_State *lua) {
             lua_pushstring(lua, op->topic);
             lua_setfield(lua, -2, "topic");
         }
-        lua_pushinteger(lua, op->qos);    lua_setfield(lua, -2, "qos");
-        lua_pushinteger(lua, op->nl);     lua_setfield(lua, -2, "nl");
-        lua_pushinteger(lua, op->rap);    lua_setfield(lua, -2, "rap");
+        lua_pushinteger(lua, op->qos); lua_setfield(lua, -2, "qos");
+        lua_pushinteger(lua, op->nl); lua_setfield(lua, -2, "nl");
+        lua_pushinteger(lua, op->rap); lua_setfield(lua, -2, "rap");
         lua_pushinteger(lua, op->retain); lua_setfield(lua, -2, "retain");
         lua_rawseti(lua, -2, i + 1);
     }
@@ -951,7 +951,7 @@ static int32_t _lmqtt_disconnect(lua_State *lua) {
 /// <returns type="string">可读描述</returns>
 static int32_t _lmqtt_reason(lua_State *lua) {
     mqtt_prot prot = (mqtt_prot)luaL_checkinteger(lua, 1);
-    int32_t code   = (int32_t)luaL_checkinteger(lua, 2);
+    int32_t code = (int32_t)luaL_checkinteger(lua, 2);
     lua_pushstring(lua, mqtt_reason(prot, code));
     return 1;
 }
@@ -959,16 +959,16 @@ static int32_t _lmqtt_reason(lua_State *lua) {
 LUAMOD_API int luaopen_mqtt(lua_State *lua) {
     // MT_MQTT_PROPS 元表
     luaL_Reg props_reg_func[] = {
-        { "fixnum",      _lmqtt_props_fixnum },
-        { "varnum",      _lmqtt_props_varnum },
-        { "binary",      _lmqtt_props_binary },
-        { "kv",          _lmqtt_props_kv },
-        { "subscribe",   _lmqtt_props_subscribe },
+        { "fixnum", _lmqtt_props_fixnum },
+        { "varnum", _lmqtt_props_varnum },
+        { "binary", _lmqtt_props_binary },
+        { "kv", _lmqtt_props_kv },
+        { "subscribe", _lmqtt_props_subscribe },
         { "unsubscribe", _lmqtt_props_unsubscribe },
-        { "data",        _lmqtt_props_data },
-        { "reset",       _lmqtt_props_reset },
-        { "free",        _lmqtt_props_free },
-        { "__gc",        _lmqtt_props_free },
+        { "data", _lmqtt_props_data },
+        { "reset", _lmqtt_props_reset },
+        { "free", _lmqtt_props_free },
+        { "__gc", _lmqtt_props_free },
         { NULL, NULL }
     };
     luaL_newmetatable(lua, MT_MQTT_PROPS);
@@ -978,42 +978,41 @@ LUAMOD_API int luaopen_mqtt(lua_State *lua) {
     lua_pop(lua, 1);
     // 模块表：所有函数均为模块级
     luaL_Reg reg_mod[] = {
-        { "try_connect",       _lmqtt_try_connect },
-        { "props",             _lmqtt_props_new },
-        { "pack_props",        _lmqtt_props_of },
-        { "connect_will_props",_lmqtt_connect_will_props },
-        { "prop_at",           _lmqtt_prop_at },
-        { "prot",              _lmqtt_prot },
-        { "pack_version",      _lmqtt_pack_version },
-        
-        { "connect_info",      _lmqtt_connect_info },
-        { "connack",           _lmqtt_connack },
-        { "publish",           _lmqtt_publish },
-        { "puback",            _lmqtt_puback },
-        { "pubrec",            _lmqtt_pubrec },
-        { "pubrel",            _lmqtt_pubrel },
-        { "pubcomp",           _lmqtt_pubcomp },
-        { "subscribe",         _lmqtt_subscribe },
-        { "unsubscribe",       _lmqtt_unsubscribe },
-        { "suback",            _lmqtt_suback },
-        { "unsuback",          _lmqtt_unsuback },
-        { "disconnect",        _lmqtt_disconnect },
-        { "reason",            _lmqtt_reason },
-        { "pack_connect",      _lmqtt_pack_connect },
-        { "pack_connack",      _lmqtt_pack_connack },
-        { "pack_publish",      _lmqtt_pack_publish },
-        { "pack_puback",       _lmqtt_pack_puback },
-        { "pack_pubrec",       _lmqtt_pack_pubrec },
-        { "pack_pubrel",       _lmqtt_pack_pubrel },
-        { "pack_pubcomp",      _lmqtt_pack_pubcomp },
-        { "pack_subscribe",    _lmqtt_pack_subscribe },
-        { "pack_suback",       _lmqtt_pack_suback },
-        { "pack_unsubscribe",  _lmqtt_pack_unsubscribe },
-        { "pack_unsuback",     _lmqtt_pack_unsuback },
-        { "pack_ping",         _lmqtt_pack_ping },
-        { "pack_pong",         _lmqtt_pack_pong },
-        { "pack_disconnect",   _lmqtt_pack_disconnect },
-        { "pack_auth",         _lmqtt_pack_auth },
+        { "try_connect", _lmqtt_try_connect },
+        { "props", _lmqtt_props_new },
+        { "pack_props", _lmqtt_props_of },
+        { "connect_will_props", _lmqtt_connect_will_props },
+        { "prop_at", _lmqtt_prop_at },
+        { "prot", _lmqtt_prot },
+        { "pack_version", _lmqtt_pack_version },
+        { "connect_info", _lmqtt_connect_info },
+        { "connack", _lmqtt_connack },
+        { "publish", _lmqtt_publish },
+        { "puback", _lmqtt_puback },
+        { "pubrec", _lmqtt_pubrec },
+        { "pubrel", _lmqtt_pubrel },
+        { "pubcomp", _lmqtt_pubcomp },
+        { "subscribe", _lmqtt_subscribe },
+        { "unsubscribe", _lmqtt_unsubscribe },
+        { "suback", _lmqtt_suback },
+        { "unsuback", _lmqtt_unsuback },
+        { "disconnect", _lmqtt_disconnect },
+        { "reason", _lmqtt_reason },
+        { "pack_connect", _lmqtt_pack_connect },
+        { "pack_connack", _lmqtt_pack_connack },
+        { "pack_publish", _lmqtt_pack_publish },
+        { "pack_puback", _lmqtt_pack_puback },
+        { "pack_pubrec", _lmqtt_pack_pubrec },
+        { "pack_pubrel", _lmqtt_pack_pubrel },
+        { "pack_pubcomp", _lmqtt_pack_pubcomp },
+        { "pack_subscribe", _lmqtt_pack_subscribe },
+        { "pack_suback", _lmqtt_pack_suback },
+        { "pack_unsubscribe", _lmqtt_pack_unsubscribe },
+        { "pack_unsuback", _lmqtt_pack_unsuback },
+        { "pack_ping", _lmqtt_pack_ping },
+        { "pack_pong", _lmqtt_pack_pong },
+        { "pack_disconnect", _lmqtt_pack_disconnect },
+        { "pack_auth", _lmqtt_pack_auth },
         { NULL, NULL }
     };
     luaL_newlib(lua, reg_mod);

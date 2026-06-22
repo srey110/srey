@@ -293,11 +293,11 @@ int64_t mysql_reader_datetime(mysql_reader_ctx *reader, const char *name, int32_
         uint32_t usec = _parse_usec_frac(tmp);
         struct tm dt = { 0 };
         dt.tm_year = y - 1900;
-        dt.tm_mon  = mo - 1;
+        dt.tm_mon = mo - 1;
         dt.tm_mday = d;
         dt.tm_hour = h;
-        dt.tm_min  = mi;
-        dt.tm_sec  = sec;
+        dt.tm_min = mi;
+        dt.tm_sec = sec;
         time_t ts = mktime(&dt);
         if ((time_t)-1 == ts) {
             SET_PTR(err, ERR_FAILED);
@@ -370,8 +370,8 @@ int32_t mysql_reader_time(mysql_reader_ctx *reader, const char *name, struct tm 
         *usec = _parse_usec_frac(p);
         time->tm_mday = h / 24;
         time->tm_hour = h % 24;
-        time->tm_min  = mi;
-        time->tm_sec  = sec;
+        time->tm_min = mi;
+        time->tm_sec = sec;
     } else {
         // 二进制协议：长度前缀 0=零时间 8=天+时分秒 12=含微秒
         if (0 == row->val.lens) {

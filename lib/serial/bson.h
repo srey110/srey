@@ -61,6 +61,7 @@ typedef struct bson_iter {
     char *val;//值1
     char *val2;//值2
     binary_ctx *doc;//bson_ctx中的doc
+    binary_ctx nested_doc;//点分路径查找时持有子文档 binary_ctx 副本（避免指向栈变量）；不可调 binary_free，为父 buffer 的视图别名
 } bson_iter;
 
 /// <summary>

@@ -70,5 +70,11 @@ int32_t global_string(lua_State *lua, const char *name, char *buf, size_t bufsiz
 /// <returns>data 指针</returns>
 void *lpub_check_buf_idx(lua_State *lua, int32_t *idx, size_t *size, int32_t *copy);
 void *lpub_check_buf(lua_State *lua, int32_t idx, size_t *size, int32_t *copy);
+/// <summary>
+/// 将 url_ctx 字段打包为 Lua 表并压栈（scheme/user/psw/host/port/path/query/segs/param）
+/// </summary>
+/// <param name="lua">Lua 虚拟机状态</param>
+/// <param name="url">已由 url_parse 填充的 url_ctx</param>
+void lpub_push_url_table(lua_State *lua, url_ctx *url);
 
 #endif//LPUB_H_

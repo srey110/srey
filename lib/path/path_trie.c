@@ -2,8 +2,8 @@
 #include "containers/hashmap.h"
 #include "protocol/urlparse.h"
 
-#define PATH_MAX_DEPTH      256       // 单 path 最多段数
-#define PATH_SCAN_BUF       1024      // path_scan 路径重建栈缓冲
+#define PATH_MAX_DEPTH 256 // 单 path 最多段数
+#define PATH_SCAN_BUF 1024 // path_scan 路径重建栈缓冲
 // 公开 API 前导:校验 t,WILDCARD/LITERAL 模式切片至局部 segs/n;失败 return fail_value
 // (void 函数传空 fail_value,展开为 return ;)
 #define PATH_PREP_SEGS(t, path, kind, fail_value) \

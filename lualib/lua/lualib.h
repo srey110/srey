@@ -140,5 +140,7 @@ LUAMOD_API int (luaopen_bson_iter)(lua_State *L);
 LUAMOD_API int (luaopen_mongo)(lua_State *L);
 #define LUA_MONGOSESSION "mongo.session"
 LUAMOD_API int (luaopen_mongo_session)(lua_State *L);
+#define LUA_SREYROUTER "srey.router"
+LUAMOD_API int (luaopen_router)(lua_State *L);
 
 #endif

@@ -30,10 +30,10 @@ typedef struct scram_ctx {
     char *salt;                             // 服务端 salt（原始字节）
     char *remote_nonce;                     // 对端 nonce（base64 字符串）
     char *cbind_data;                       // channel binding 原始数据（tls-server-end-point 时为证书哈希）
+    char *user;                             // 用户名（CALLOC，scram_free 释放）
+    char *pwd;                              // 密码（CALLOC，scram_free 释放）
     char local_nonce[B64EN_SIZE(SCRAM_NONCE_LEN) + 1]; // 本端 nonce（base64 编码）
     char saltedpwd[DG_BLOCK_SIZE];          // SaltedPassword（PBKDF 输出）
-    char user[64];                          // 用户名
-    char pwd[512];                          // 密码（扩到 512 容纳现代密码管理器生成的长密码 + 兜底 set_pwd 拒绝逻辑）
 }scram_ctx;
 /* SCRAM 握手流程（左列为客户端，右列为服务端）：
 client                                      server
@@ -63,19 +63,19 @@ scram_ctx *scram_init(const char *method, int32_t client);
 /// <param name="scram">scram_ctx</param>
 void scram_free(scram_ctx *scram);
 /// <summary>
-/// 设置用户名（仅客户端调用）
+/// 设置用户名（客户端握手前调用；服务端由 scram_parse_first_message 内部调用）
 /// </summary>
 /// <param name="scram">scram_ctx</param>
 /// <param name="user">用户名</param>
-void scram_set_user(scram_ctx *scram, const char *user);
+/// <param name="ulens">用户名长度（字节）</param>
+void scram_set_user(scram_ctx *scram, const char *user, size_t ulens);
 /// <summary>
 /// 设置密码（客户端和服务端均需调用）
-/// 密码长度 >= sizeof(scram->pwd) 时返回 ERR_FAILED（不再静默截断导致认证失败）
 /// </summary>
 /// <param name="scram">scram_ctx</param>
 /// <param name="pwd">密码</param>
-/// <returns>ERR_OK 成功，ERR_FAILED 密码过长被拒绝</returns>
-int32_t scram_set_pwd(scram_ctx *scram, const char *pwd);
+/// <param name="plens">密码长度（字节）</param>
+void scram_set_pwd(scram_ctx *scram, const char *pwd, size_t plens);
 /// <summary>
 /// 设置 salt（仅服务端调用）
 /// </summary>

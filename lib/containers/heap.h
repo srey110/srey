@@ -23,7 +23,7 @@ typedef struct heap_node {
 typedef int(*_heap_compare)(const heap_node *lhs, const heap_node *rhs);
 // 二叉堆上下文（数组式完全二叉树，通过节点指针链接）
 typedef struct heap_ctx {
-    int32_t    nelts;    // 当前元素数量
+    uint32_t nelts;    // 当前元素数量
     heap_node *root;     // 根节点指针
     // 比较函数为 less_than 时为最小堆（根最小），为 larger_than 时为最大堆（根最大）
     _heap_compare _compare; // 节点优先级比较函数

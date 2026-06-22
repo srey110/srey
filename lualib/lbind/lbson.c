@@ -1037,6 +1037,7 @@ static int32_t _lbson_iter_find(lua_State *lua) {
     bson_iter result;
     if (ERR_OK == bson_iter_find(iter, keys, &result)) {
         *iter = result;
+        iter->doc = &iter->nested_doc;
         lua_pushboolean(lua, 1);
     } else {
         lua_pushboolean(lua, 0);

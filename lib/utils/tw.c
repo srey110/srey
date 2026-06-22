@@ -135,7 +135,7 @@ static void _tw_run(tw_ctx *ctx) {
     tw_cb  cb;
     tw_node_ctx *pnext, *pnode = ctx->tv1[ulidx].head;
     while (NULL != pnode) {
-        pnext  = pnode->next;
+        pnext = pnode->next;
         // 先将 ud 拷贝到栈，再释放节点，再调用回调：
         // 确保回调持有的指针不指向已被池复用的节点内存（防 UAF）。
         // 回调契约：不得将 &ud 存入生命周期超出本次调用的结构体。

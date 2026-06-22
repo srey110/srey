@@ -8,6 +8,7 @@ typedef struct array_ctx {
     uint32_t size;        // 当前元素数量
     uint32_t maxsize;     // 当前分配容量
     void    *ptr;         // 数据存储数组
+    void    *tmp;         // array_swap 复用交换缓冲（大小 = elsize）
 }array_ctx;
 /// <summary>
 /// 初始化数组
@@ -106,6 +107,7 @@ static inline void *array_back(array_ctx *arr) {
 /// <param name="elem">指向待追加元素的指针，拷贝 elsize 字节</param>
 static inline void array_push_back(array_ctx *arr, const void *elem) {
     if (arr->size == arr->maxsize) {
+        ASSERTAB(arr->maxsize <= UINT32_MAX / 2, "array maxsize overflow.");
         array_resize(arr, arr->maxsize * 2);
     }
     memcpy((char *)arr->ptr + (size_t)arr->size * arr->elsize, elem, arr->elsize);

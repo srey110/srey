@@ -35,6 +35,7 @@ void binary_free(binary_ctx *ctx) {
     ctx->offset = 0;
 }
 void binary_offset(binary_ctx *ctx, size_t off) {
+    ASSERTAB(off <= ctx->size, "binary offset out of bounds");
     ctx->offset = off;
 }
 // 扩展缓冲区，确保有足够空间写入 size 字节（仅内部托管可扩容）

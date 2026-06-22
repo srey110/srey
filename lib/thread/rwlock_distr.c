@@ -16,7 +16,6 @@ void rwlock_distr_init(rwlock_distr_ctx *ctx, uint32_t slot_count) {
     // 多分配一个 cache line 用于手动对齐,保证首个 slot 在 cache line 边界
     size_t total = (size_t)slot_count * sizeof(rwlock_distr_slot) + CACHELINE_SIZE;
     MALLOC(ctx->slots_raw, total);
-    ASSERTAB(NULL != ctx->slots_raw, "rwlock_distr_init: malloc failed");
     uintptr_t addr = (uintptr_t)ctx->slots_raw;
     addr = (addr + CACHELINE_SIZE - 1) & ~(uintptr_t)(CACHELINE_SIZE - 1);
     ctx->slots = (rwlock_distr_slot *)addr;

@@ -35,24 +35,27 @@ typedef struct coro_sess {
         queue_ctx qucoinfo; // disposable == 0：挂起协程队列（内联，无额外 malloc，元素 coro_info）
     };
 }coro_sess;
+// fork_wait 屏障：栈分配于 coro_fork_wait 内，子协程跑完 stub 递减 pending；
+// 归零时唤醒 waiter（栈生命周期到 coro_fork_wait return 才结束，覆盖 yield 期间）；
+// yield 期间挂入 coctx->fork_barriers 链表，task 关闭时由 _coro_ctx_free 兜底 destroy
+typedef struct fork_barrier {
+    int32_t pending;            // 未完成的 fork 子协程数；stub 跑完递减 1，归零唤醒 waiter
+    mco_coro *waiter;           // 等待 barrier 归零的父协程；pending=0 时 mco_resume 唤醒
+    struct fork_barrier *next;  // coctx->fork_barriers 链表 next 指针
+} fork_barrier;
 // 协程任务的运行时上下文，挂在 task->arg
 typedef struct coro_ctx {
-    int32_t nyield;          // 当前挂起（yield）中的协程数量
-    mco_coro *curco;         // 正在运行的协程指针
-    struct hashmap *mapco;   // sess → coro_sess 哈希映射
-    void *arg;               // 用户自定义数据
-    free_cb _arg_free;       // 用户数据释放回调
-    uint64_t shrink_ms;      // 上次协程池收缩的时间戳(ms)，按 SHRINK_TIME 门控
-    pool_ctx copool;         // 空闲协程对象池（元素 mco_coro *，含负载趋势）
-    timer_ctx timer;         // 用于获取当前毫秒时间戳
-    heap_ctx timeout_heap;   // 按到期时间排序的最小堆,O(1) 检查最早超时
+    int32_t nyield;              // 当前挂起（yield）中的协程数量
+    mco_coro *curco;             // 正在运行的协程指针
+    fork_barrier *fork_barriers; // 所有挂起的 fork_wait 屏障链表；支持嵌套；task 关闭时由 _coro_ctx_free 兜底 destroy
+    struct hashmap *mapco;       // sess → coro_sess 哈希映射
+    void *arg;                   // 用户自定义数据
+    free_cb _arg_free;           // 用户数据释放回调
+    uint64_t shrink_ms;          // 上次协程池收缩的时间戳(ms)，按 SHRINK_TIME 门控
+    pool_ctx copool;             // 空闲协程对象池（元素 mco_coro *，含负载趋势）
+    timer_ctx timer;             // 用于获取当前毫秒时间戳
+    heap_ctx timeout_heap;       // 按到期时间排序的最小堆,O(1) 检查最早超时
 }coro_ctx;
-// fork_wait 屏障：栈分配于 coro_fork_wait 内，子协程跑完 stub 递减 pending；
-// 归零时唤醒 waiter（栈生命周期到 coro_fork_wait return 才结束，覆盖 yield 期间）
-typedef struct fork_barrier {
-    int32_t pending;  // 未完成的 fork 子协程数；stub 跑完递减 1，归零唤醒 waiter
-    mco_coro *waiter; // 等待 barrier 归零的父协程；pending=0 时 mco_resume 唤醒
-} fork_barrier;
 // fork_wait 内部包装：每个 func 配一份 slot，stub 跑完后释放
 typedef struct fork_wait_slot {
     void (*func)(task_ctx *task, void *arg);      // 业务回调函数
@@ -84,7 +87,7 @@ static timeout_entry *_coro_te_insert(coro_ctx *coctx, uint64_t timeout, uint64_
     MALLOC(te, sizeof(timeout_entry));
     te->hnode.parent = te->hnode.left = te->hnode.right = NULL;
     te->timeout = timeout;
-    te->sess    = sess;
+    te->sess = sess;
     heap_insert(&coctx->timeout_heap, &te->hnode);
     return te;
 }
@@ -192,7 +195,7 @@ static void _coro_cosess_delete(coro_ctx *coctx, uint64_t sess) {
 static inline mco_coro *_coro_get_mco(task_ctx *task, coro_sess *cosess) {
     coro_ctx *coctx = (coro_ctx *)task->arg;
     coro_info *coinfo;
-    mco_coro  *co;
+    mco_coro *co;
     if (cosess->disposable) {
         coinfo = &cosess->coinfo;
         co = coinfo->co;
@@ -272,8 +275,9 @@ static void _coro_ctx_free(void *arg) {
     coro_ctx *coctx = (coro_ctx *)arg;
     pool_free(&coctx->copool);
     /* 先释放超时堆（堆节点独立分配，不依赖 mapco） */
+    timeout_entry *te;
     while (NULL != coctx->timeout_heap.root) {
-        timeout_entry *te = _TE_FROM_HNODE(coctx->timeout_heap.root);
+        te = _TE_FROM_HNODE(coctx->timeout_heap.root);
         heap_dequeue(&coctx->timeout_heap);
         FREE(te);
     }
@@ -302,6 +306,12 @@ static void _coro_ctx_free(void *arg) {
         }
     }
     hashmap_free(coctx->mapco);
+    fork_barrier *next, *fb = coctx->fork_barriers;
+    while (NULL != fb) {
+        next = fb->next;
+        mco_destroy(fb->waiter);
+        fb = next;
+    }
     //释放用户数据
     if (NULL != coctx->_arg_free
         && NULL != coctx->arg) {
@@ -474,22 +484,24 @@ static void _coro_timeout_monitor(task_ctx *task, uint64_t sess) {
         arg.task = task;
         arg.msg.mtype = MSG_TYPE_TIMEOUT;
         /* 堆顶是最早到期的条目：若堆顶未到期，后续全部未到期，O(1) 退出 */
+        timeout_entry *te;
+        coro_sess key, *cosess;
+        mco_coro *coro;
+        coro_info *coinfo, *probe;
+        uint32_t qsize, idx;
         while (NULL != coctx->timeout_heap.root) {
-            timeout_entry *te = _TE_FROM_HNODE(coctx->timeout_heap.root);
+            te = _TE_FROM_HNODE(coctx->timeout_heap.root);
             if (te->timeout > now) {
                 break; /* 最早的都没到期，无需继续 */
             }
             heap_dequeue(&coctx->timeout_heap);
-            coro_sess key;
             key.sess = te->sess;
-            coro_sess *cosess = (coro_sess *)hashmap_get(coctx->mapco, &key);
+            cosess = (coro_sess *)hashmap_get(coctx->mapco, &key);
             if (NULL == cosess) {
                 /* 已被正常路径消费（_get_mco 已删堆节点），此处只需释放 te */
                 FREE(te);
                 continue;
             }
-            mco_coro *coro;
-            coro_info *coinfo;
             if (cosess->disposable) {
                 coinfo = &cosess->coinfo;
                 coinfo->te = NULL; /* 堆节点已由 heap_dequeue 移除 */
@@ -501,9 +513,7 @@ static void _coro_timeout_monitor(task_ctx *task, uint64_t sess) {
                 /* 队列按 push 序排列，但 te 在堆中按 timeout 排序：
                  * 若两次 push 的 timeout 不同，先到期的 te 对应的 coinfo
                  * 不一定是队首，需按 coinfo->te 精确定位。 */
-                uint32_t qsize = queue_size(&cosess->qucoinfo);
-                uint32_t idx;
-                coro_info *probe;
+                qsize = queue_size(&cosess->qucoinfo);
                 coinfo = NULL;
                 for (idx = 0; idx < qsize; idx++) {
                     probe = queue_at(&cosess->qucoinfo, idx);
@@ -828,8 +838,12 @@ int32_t coro_fork_wait(task_ctx *task,
         slot->barrier = &barrier;
         coro_fork(task, _coro_fork_wait_stub, slot);
     }
-    // 让出当前协程，等最后完成的子协程 mco_resume 唤醒
+    barrier.next = coctx->fork_barriers;
+    coctx->fork_barriers = &barrier;
+    ++coctx->nyield;
     mco_result rtn = mco_yield(coctx->curco);
+    --coctx->nyield;
+    coctx->fork_barriers = barrier.next;
     ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
     return ERR_OK;
 }

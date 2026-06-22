@@ -261,7 +261,7 @@ static inline void _olp_call_recvfrom_cb(ev_ctx *ev, overlap_udp_ctx *oludp, siz
     }
 }
 // 提交WSARecv异步接收请求（用于TCP和命令管道）
-int32_t _iocp_post_recv(sock_ctx *skctx, DWORD  *bytes, DWORD  *flag, IOV_TYPE *wsabuf, DWORD niov) {
+int32_t _iocp_post_recv(sock_ctx *skctx, DWORD *bytes, DWORD *flag, IOV_TYPE *wsabuf, DWORD niov) {
     *flag = 0;
     *bytes = 0;
     ZERO(&skctx->overlapped, sizeof(skctx->overlapped));
@@ -530,14 +530,13 @@ void _iocp_add_bufs_trypost(sock_ctx *skctx, off_buf_ctx *buf) {
                  (int32_t)oltcp->ol_s.fd, oltcp->wb_size);
     }
     queue_push(&oltcp->buf_s, buf);
-    if (BIT_CHECK(oltcp->status, STATUS_SENDING)
-        || BIT_CHECK(oltcp->status, STATUS_ERROR)) {
+    if (BIT_CHECK(oltcp->status, STATUS_SENDING)) {
         return;
     }
     BIT_SET(oltcp->status, STATUS_SENDING);
     if (ERR_OK != _olp_post_send(oltcp)) {
-        BIT_SET(oltcp->status, STATUS_ERROR);
         BIT_REMOVE(oltcp->status, STATUS_SENDING);
+        _iocp_disconnect(&oltcp->ol_r, 1);
     }
 }
 // 将socket绑定到通配地址（ConnectEx要求socket必须先bind）
