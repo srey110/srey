@@ -666,17 +666,27 @@ void _iocp_add_conn_inloop(watcher_ctx *watcher, struct sock_ctx *skctx, netaddr
         pool_push(&watcher->pool, &oltcp->ol_r, 0);
     }
 }
+// 原子取走 *pfd 并置为 INVALID_SOCK；ev_unlisten 与 AcceptEx 回调并发时只有一方拿到有效 fd
+static inline SOCKET _olp_take_fd(SOCKET volatile *pfd) {
+    return (SOCKET)(ULONG_PTR)InterlockedExchangePointer((volatile PVOID *)pfd,
+        (PVOID)(ULONG_PTR)INVALID_SOCK);
+}
+static inline void _olp_take_close(SOCKET volatile *pfd) {
+    SOCKET fd = _olp_take_fd(pfd);
+    if (INVALID_SOCK != fd) {
+        SOCK_CLOSE(fd);
+    }
+}
 // 提交一个AcceptEx异步接受请求（创建新socket并挂起等待连接）
 static int32_t _olp_post_accept(overlap_acpt_ctx *olacp) {
     SOCKET fd = _evpub_create_sock(SOCK_STREAM, olacp->lsn->family);
     if (INVALID_SOCK == fd) {
-        olacp->overlap.fd = INVALID_SOCK;
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
+    ZERO(&olacp->overlap.overlapped, sizeof(olacp->overlap.overlapped));
     olacp->bytes = 0;
     olacp->overlap.fd = fd;
-    ZERO(&olacp->overlap.overlapped, sizeof(olacp->overlap.overlapped));
     if (!_exfuncs.acceptex(olacp->lsn->fd,//Listen Socket
                            olacp->overlap.fd,//Accept Socket
                            &olacp->addr,
@@ -687,7 +697,7 @@ static int32_t _olp_post_accept(overlap_acpt_ctx *olacp) {
                            &olacp->overlap.overlapped)) {
         int32_t erro = ERRNO;
         if (ERROR_IO_PENDING != erro) {
-            CLOSE_SOCK(olacp->overlap.fd);
+            _olp_take_close(&olacp->overlap.fd);
             LOG_ERROR("%s", ERRORSTR(erro));
             return ERR_FAILED;
         }
@@ -698,29 +708,31 @@ static int32_t _olp_post_accept(overlap_acpt_ctx *olacp) {
 static void _olp_on_accept_cb(acceptex_ctx *acpctx, sock_ctx *skctx, DWORD bytes) {
     overlap_acpt_ctx *olacp = UPCAST(skctx, overlap_acpt_ctx, overlap);
     listener_ctx *lsn = olacp->lsn;
-    SOCKET fd = olacp->overlap.fd;
-    if (0 != ATOMIC_GET(&lsn->remove)) {
+    SOCKET fd = _olp_take_fd(&olacp->overlap.fd);
+    if (INVALID_SOCK == fd || 0 != ATOMIC_GET(&lsn->remove)) {
+        if (INVALID_SOCK != fd) {
+            SOCK_CLOSE(fd);
+        }
         _iocp_try_freelsn(lsn);
         return;
     }
-    olacp->overlap.fd = INVALID_SOCK;// 先置 INVALID，避免 ev_unlisten 关闭本次已接受的 fd
     // _olp_post_accept 写入新 fd 后 ev_unlisten 可立即关闭并触发 error completion 减 slot ref；
     // 须在此之前 +1 占位，否则 lsn 可能提前被释放
     ATOMIC_ADD(&lsn->ref, 1);
     if (ERR_OK != _olp_post_accept(olacp)) {
         SOCKET log_fd = lsn->fd;
         CLOSE_SOCK(fd);
-        int32_t old = ATOMIC_ADD(&lsn->ref, -2);// _olp_post_accept 之前的 +1 与 slot 本身 ref 合并减 2
+        int32_t old = ATOMIC_ADD(&lsn->ref, -2);
         if (2 == old) {
             _iocp_freelsn(lsn);
         } else if (3 == old) {
-            LOG_ERROR("all AcceptEx slots exhausted, listener fd %d (call ev_unlisten to release).", (int32_t)log_fd);
+            LOG_ERROR("AcceptEx slot failed to re-post, listener fd %d.", (int32_t)log_fd);
         }
         return;
     }
     // _olp_post_accept 执行期间 ev_unlisten 可能运行但未能关闭新 fd，返回后需补关
     if (0 != ATOMIC_GET(&lsn->remove)) {
-        CLOSE_SOCK(olacp->overlap.fd);
+        _olp_take_close(&olacp->overlap.fd);
     }
     if (ERR_OK != setsockopt(fd,
                              SOL_SOCKET,
@@ -733,10 +745,7 @@ static void _olp_on_accept_cb(acceptex_ctx *acpctx, sock_ctx *skctx, DWORD bytes
         _iocp_try_freelsn(lsn);
         return;
     }
-    if (ERR_OK != _cmd_add_acpfd(GET_PTR(acpctx->ev->watcher, acpctx->ev->nthreads, fd), fd, lsn)) {
-        CLOSE_SOCK(fd);
-        _iocp_try_freelsn(lsn);
-    }
+    _cmd_add_acpfd(GET_PTR(acpctx->ev->watcher, acpctx->ev->nthreads, fd), fd, lsn);
 }
 void _iocp_add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) {
     if (ERR_OK != _iocp_join(watcher, fd)) {
@@ -773,7 +782,7 @@ void _iocp_add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) 
 // 关闭前cnt个AcceptEx挂起的socket（取消未完成的AcceptEx操作）
 static void _olp_free_acceptex(listener_ctx *lsn, int32_t cnt) {
     for (int32_t i = 0; i < cnt; i++) {
-        CLOSE_SOCK(lsn->overlap_acpt[i].overlap.fd);
+        _olp_take_close(&lsn->overlap_acpt[i].overlap.fd);
     }
 }
 // 将监听socket关联到AcceptEx IOCP并预挂MAX_ACCEPTEX_CNT个AcceptEx操作
@@ -826,7 +835,7 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
     }
     listener_ctx *lsn;
     // 显式初始化所有 overlap_acpt[].overlap.fd = INVALID_SOCK，CreateIoCompletionPort 失败走 _iocp_freelsn 时
-    // _olp_free_acceptex 中 CLOSE_SOCK 仅跳过 INVALID_SOCK，避免脏值（含 fd=0）被误关
+    // _olp_free_acceptex 中 _olp_take_close 仅跳过 INVALID_SOCK，避免脏值（含 fd=0）被误关
     CALLOC(lsn, 1, sizeof(listener_ctx));
     for (int32_t i = 0; i < MAX_ACCEPTEX_CNT; i++) {
         lsn->overlap_acpt[i].overlap.fd = INVALID_SOCK;
@@ -893,9 +902,7 @@ void ev_unlisten(ev_ctx *ctx, uint64_t id) {
     }
     // remove=1 必须在 SOCK_CLOSE 之前置位：closesocket 全屏障保证 cb 取到取消完成时已见 remove==1
     ATOMIC_SET(&lsn->remove, 1);
-    for (int32_t i = 0; i < MAX_ACCEPTEX_CNT; i++) {
-        CLOSE_SOCK(lsn->overlap_acpt[i].overlap.fd);
-    }
+    _olp_free_acceptex(lsn, MAX_ACCEPTEX_CNT);
     // 减占位 ref；cb 都已完成时此处减到 0 释放，否则由最后一个 cb 释放
     _iocp_try_freelsn(lsn);
 }
