@@ -591,7 +591,7 @@ static void _router_send_resp(router_req *ctx, int32_t code, const char *content
         klen = extra[i].key.lens < sizeof(k) - 1 ? extra[i].key.lens : sizeof(k) - 1;
         vlen = extra[i].value.lens < sizeof(v) - 1 ? extra[i].value.lens : sizeof(v) - 1;
         if (klen < extra[i].key.lens) {
-            LOG_WARN("router: header key truncated (%zu → %zu).", extra[i].key.lens, klen);
+            LOG_WARN("router: header key truncated (%zu %zu).", extra[i].key.lens, klen);
         }
         memcpy(k, extra[i].key.data, klen); k[klen] = '\0';
         memcpy(v, extra[i].value.data, vlen); v[vlen] = '\0';

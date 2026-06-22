@@ -107,10 +107,9 @@ static int32_t _test_fifo(task_ctx *task) {
     fifo_arg jb = { .s = s, .order = order, .cnt = &cnt, .label = 2, .hold_ms = 0 };
     fifo_arg jc = { .s = s, .order = order, .cnt = &cnt, .label = 3, .hold_ms = 0 };
     // 三个协程依次 fork，进入 cs 的先后顺序 = fork 顺序（_drain_fork_queue 顺序起协程）
-    coro_fork(task, _fifo_worker, &ja);
-    coro_fork(task, _fifo_worker, &jb);
-    coro_fork(task, _fifo_worker, &jc);
-    coro_sleep(task, 80);                   // 等三个协程都跑完
+    void (*fifo_fns[3])(task_ctx *, void *) = { _fifo_worker, _fifo_worker, _fifo_worker };
+    void *fifo_args[3] = { &ja, &jb, &jc };
+    coro_fork_wait(task, 3, fifo_fns, fifo_args);
     // 期望 order = [1(A 进), 1(A 出), 2(B), 3(C)]：A 完全退出后 B 才能进
     if (4 != cnt || 1 != order[0] || 1 != order[1] || 2 != order[2] || 3 != order[3]) {
         LOG_ERROR("serial fifo: expect [1,1,2,3], got cnt=%d [%d,%d,%d,%d].",
@@ -207,9 +206,9 @@ static int32_t _test_mutex(task_ctx *task) {
     coro_serial_ctx *s = coro_serial_new(task);
     int32_t in_cs = 0, peak = 0;
     mutex_arg a = { .s = s, .in_cs = &in_cs, .peak = &peak };
-    coro_fork(task, _mutex_worker, &a);
-    coro_fork(task, _mutex_worker, &a);
-    coro_sleep(task, 80);                   // 等两个协程都跑完
+    void (*mutex_fns[2])(task_ctx *, void *) = { _mutex_worker, _mutex_worker };
+    void *mutex_args[2] = { &a, &a };
+    coro_fork_wait(task, 2, mutex_fns, mutex_args);
     if (1 != peak) {
         LOG_ERROR("serial mutex: expect peak=1, got %d.", peak);
         coro_serial_free(s);
@@ -259,9 +258,9 @@ static int32_t _test_curco_restore(task_ctx *task) {
     coro_serial_ctx *s = coro_serial_new(task);
     int32_t a_done = 0, b_done = 0;
     curco_arg arg = { .s = s, .a_done = &a_done, .b_done = &b_done };
-    coro_fork(task, _curco_worker_a, &arg);     // A 先 fork → 占锁 sleep
-    coro_fork(task, _curco_worker_b, &arg);     // B 后 fork → 跨协程路径入队
-    coro_sleep(task, 100);                      // 等两个 worker 完成
+    void (*curco_fns[2])(task_ctx *, void *) = { _curco_worker_a, _curco_worker_b };
+    void *curco_args[2] = { &arg, &arg };
+    coro_fork_wait(task, 2, curco_fns, curco_args);// A 先 fork → 占锁 sleep，B 后 fork → 跨协程路径入队
     if (1 != a_done) {
         LOG_ERROR("serial curco_restore: A did not finish post-cs coro_sleep (curco stale?), a_done=%d.", a_done);
         coro_serial_free(s);

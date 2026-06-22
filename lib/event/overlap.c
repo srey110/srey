@@ -700,33 +700,28 @@ static void _olp_on_accept_cb(acceptex_ctx *acpctx, sock_ctx *skctx, DWORD bytes
     listener_ctx *lsn = olacp->lsn;
     SOCKET fd = olacp->overlap.fd;
     if (0 != ATOMIC_GET(&lsn->remove)) {
-        // ev_unlisten 或 _olp_acceptex 失败已标记卸载，最后一个减到 0 的 cb 释放 lsn
         _iocp_try_freelsn(lsn);
         return;
     }
-    // 放这里为了让 _iocp_try_freelsn 能关闭
-    olacp->overlap.fd = INVALID_SOCK;
-    // lsn->ref 计「挂起 AcceptEx 槽位数 + ev_unlisten/ev_listen 占位 + 跨 watcher CMD_ADDACP 投递占位」。
-    // _olp_post_accept 成功后槽位重新挂起，ref 不变；仅当 _olp_post_accept 失败时减 1。
+    olacp->overlap.fd = INVALID_SOCK;// 先置 INVALID，避免 ev_unlisten 关闭本次已接受的 fd
+    // _olp_post_accept 写入新 fd 后 ev_unlisten 可立即关闭并触发 error completion 减 slot ref；
+    // 须在此之前 +1 占位，否则 lsn 可能提前被释放
+    ATOMIC_ADD(&lsn->ref, 1);
     if (ERR_OK != _olp_post_accept(olacp)) {
-        SOCKET log_fd = lsn->fd; // 在 atomic 减 ref 前拷贝，此时 ref >= 1，lsn 有效
+        SOCKET log_fd = lsn->fd;
         CLOSE_SOCK(fd);
-        int32_t old = ATOMIC_ADD(&lsn->ref, -1);
-        if (1 == old) {
-            // 减到 0：其他 cb 与占位都已减完，独占释放
+        int32_t old = ATOMIC_ADD(&lsn->ref, -2);// _olp_post_accept 之前的 +1 与 slot 本身 ref 合并减 2
+        if (2 == old) {
             _iocp_freelsn(lsn);
-        } else if (2 == old) {
-            // 减到 1：所有 cb 失败但占位 ref 还在；端口仍由 lsn->fd 占用，等用户调 ev_unlisten
+        } else if (3 == old) {
             LOG_ERROR("all AcceptEx slots exhausted, listener fd %d (call ev_unlisten to release).", (int32_t)log_fd);
         }
         return;
     }
-    // 防止执行 ev_unlisten 的时候 _olp_post_accept 里面还未设置 olacp->overlap.fd，造成该新的fd不能关闭
+    // _olp_post_accept 执行期间 ev_unlisten 可能运行但未能关闭新 fd，返回后需补关
     if (0 != ATOMIC_GET(&lsn->remove)) {
         CLOSE_SOCK(olacp->overlap.fd);
     }
-    // 此时 olacp 已成功重投 AcceptEx（ref 不变），fd 是本次接受的连接套接字。
-    // 以下若失败只需关闭 fd，无需触碰 ref。
     if (ERR_OK != setsockopt(fd,
                              SOL_SOCKET,
                              SO_UPDATE_ACCEPT_CONTEXT,
@@ -735,11 +730,9 @@ static void _olp_on_accept_cb(acceptex_ctx *acpctx, sock_ctx *skctx, DWORD bytes
         || ERR_OK != _evpub_nodelay_nonblock(fd)
         || ERR_OK != sock_keepalive(fd, KEEPALIVE_TIME, KEEPALIVE_INTERVAL)) {
         CLOSE_SOCK(fd);
+        _iocp_try_freelsn(lsn);
         return;
     }
-    // 跨 watcher 投递前 ref++ 占位：防 ev_unlisten 在目标 watcher 取出
-    // CMD_ADDACP 前将 lsn ref 减到 0 释放，_on_cmd_addacp/_iocp_free_cmd 配对减
-    ATOMIC_ADD(&lsn->ref, 1);
     if (ERR_OK != _cmd_add_acpfd(GET_PTR(acpctx->ev->watcher, acpctx->ev->nthreads, fd), fd, lsn)) {
         CLOSE_SOCK(fd);
         _iocp_try_freelsn(lsn);

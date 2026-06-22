@@ -47,8 +47,11 @@ static void test_mysql_lenenc(CuTest *tc) {
     _lenenc_roundtrip(tc, INT3_MAX,   4);
 
     /* > 0xffffff：1 标志 + 8 字节 = 9 字节 */
-    _lenenc_roundtrip(tc, 0x01000000ULL,     9);
-    _lenenc_roundtrip(tc, 0x123456789ABCDEFULL, 9);
+    _lenenc_roundtrip(tc, 0x01000000ULL, 9);
+    _lenenc_roundtrip(tc, 0xFFFFFFFFUL,  9);/* 32 位 size_t 最大值，仍触发 8 字节编码 */
+#if SIZE_MAX > 0xFFFFFFFFUL
+    _lenenc_roundtrip(tc, 0x123456789ABCDEFULL, 9);/* 仅 64 位平台 size_t 能容纳此值 */
+#endif
 
     /* 异常 flag：0xff 在 _mysql_get_lenenc 内未定义 */
     binary_ctx bw;
