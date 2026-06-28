@@ -48,12 +48,8 @@ typedef struct udp_ctx {
     uint64_t skid;              // 连接唯一ID
     tda_ctx tda;                // 字节告警翻倍状态
     cbs_ctx cbs;                // 回调函数集合
-    IOV_TYPE buf_r;             // 接收缓冲区描述符（指向buf）
-    struct msghdr msg;          // recvmsg使用的消息头（含地址和iov）
     queue_ctx buf_s;            // 发送队列
-    netaddr_ctx addr;           // 接收到的对端地址（recvmsg填充）
     ud_cxt ud;                  // 用户数据
-    char buf[MAX_RECVFROM_SIZE]; // 固定接收缓冲区
 }udp_ctx;
 
 static void _usk_on_rw_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev); // 前向声明：TCP读写事件回调
@@ -243,9 +239,9 @@ static inline void _usk_call_close_cb(ev_ctx *ev, tcp_ctx *tcp) {
 }
 // 调用UDP接收回调；0 字节 datagram 由本函数过滤不向上抛（_usk_on_udp_rcb 仍不视为 EOF，
 // 继续 recvmsg 循环），避免上层处理空 payload 的特殊路径
-static inline void _usk_call_recvfrom_cb(ev_ctx *ev, udp_ctx *udp, size_t nread) {
+static inline void _usk_call_recvfrom_cb(ev_ctx *ev, udp_ctx *udp, char *buf, netaddr_ctx *addr, size_t nread) {
     if (nread > 0) {
-        udp->cbs.rf_cb(ev, udp->sock.fd, udp->skid, udp->buf_r.IOV_PTR_FIELD, nread, &udp->addr, &udp->ud);
+        udp->cbs.rf_cb(ev, udp->sock.fd, udp->skid, buf, nread, addr, &udp->ud);
     }
 }
 #if WITH_SSL
@@ -974,19 +970,26 @@ static void _usk_init_msghdr(struct msghdr *msg, netaddr_ctx *addr, IOV_TYPE *io
 // 必须本次唤醒就读光，否则后续 datagram 卡到 buffer 直到新边沿到达
 static int32_t _usk_on_udp_rcb(watcher_ctx *watcher, udp_ctx *udp) {
     int32_t rtn;
+    netaddr_ctx addr;
+    IOV_TYPE iov;
+    struct msghdr msg;
+    netaddr_empty(&addr);
+    iov.IOV_PTR_FIELD = watcher->udp_rbuf;
+    iov.IOV_LEN_FIELD = (IOV_LEN_TYPE)MAX_RECVFROM_SIZE;
+    _usk_init_msghdr(&msg, &addr, &iov, 1);
     for (;;) {
         // recvmsg 会将 msg_namelen 改写为本次实际地址长度，下一次调用前须重置为缓冲最大值
-        udp->msg.msg_namelen = netaddr_size(&udp->addr);
-        rtn = (int32_t)recvmsg(udp->sock.fd, &udp->msg, 0);
+        msg.msg_namelen = netaddr_size(&addr);
+        rtn = (int32_t)recvmsg(udp->sock.fd, &msg, 0);
         if (rtn >= 0) {
-            if (udp->msg.msg_flags & MSG_TRUNC) {
+            if (msg.msg_flags & MSG_TRUNC) {
                 // datagram 超过 MAX_RECVFROM_SIZE 被截断：残缺数据不上抛，告警丢弃后继续收（不关 socket）
                 LOG_WARN("UDP datagram truncated on fd %d (exceeds %d bytes), dropped.",
                          (int32_t)udp->sock.fd, MAX_RECVFROM_SIZE);
                 continue;
             }
             // 0 字节是合法 UDP datagram 不视为对端关闭；由 _usk_call_recvfrom_cb 过滤不向上抛
-            _usk_call_recvfrom_cb(watcher->ev, udp, (size_t)rtn);
+            _usk_call_recvfrom_cb(watcher->ev, udp, watcher->udp_rbuf, &addr, (size_t)rtn);
             continue;
         }
         if (ERR_RW_RETRIABLE(ERRNO)) {
@@ -1086,11 +1089,7 @@ static sock_ctx *_usk_new_udp(SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
     udp->status = STATUS_NONE;
     udp->skid = createid();
     udp->cbs = *cbs;
-    udp->buf_r.IOV_PTR_FIELD = udp->buf;
-    udp->buf_r.IOV_LEN_FIELD = sizeof(udp->buf);
     COPY_UD(udp->ud, ud);
-    netaddr_empty(&udp->addr);
-    _usk_init_msghdr(&udp->msg, &udp->addr, &udp->buf_r, 1);
     queue_init(&udp->buf_s, sizeof(off_buf_ctx), INIT_SENDBUF_LEN);
     udp->wb_size = 0;
     tda_init(&udp->tda, WB_WARN_INIT_SIZE);

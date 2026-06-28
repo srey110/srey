@@ -1088,7 +1088,7 @@ static void _olp_on_recvfrom_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD byt
         _olp_on_udp_close_r(watcher, oludp);
         return;
     }
-    if (0 != oludp->ol_r.overlapped.Internal) {
+    if (ERROR_SUCCESS != oludp->ol_r.overlapped.Internal) {
         // 超大 datagram WSAEMSGSIZE 截断等软错误：告警丢弃，不关 socket，重新提交接收（与 POSIX UDP 对齐）
         LOG_WARN("UDP recvfrom error on fd %d, dropped (socket kept).", (int32_t)oludp->ol_r.fd);
     } else {

@@ -25,7 +25,7 @@
 #define EVENT_CHANGES_CNT   128     // 事件变更队列初始容量
 #define INIT_EVENTS_CNT     256     // 初始事件槽位数量
 #define MAX_RECV_SIZE       4096    // 最大接收缓冲区大小（字节）
-#define MAX_RECVFROM_SIZE   4096    // UDP 单次 recvfrom 最大字节数
+#define MAX_RECVFROM_SIZE   (64 * ONEK)// UDP 单次 recvfrom 最大字节数
 #define MAX_SEND_SIZE       4096    // 单次发送最大字节数
 #define MAX_SEND_NIOV       16      // scatter/gather 发送最大 iov 数量
 #define MAX_PACK_SIZE       65535   // 最大数据包大小，0 表示不限制
