@@ -156,7 +156,6 @@ int main(int argc, char *argv[]) {
     char pandan[PATH_LENS];
     SNPRINTF(pandan, sizeof(pandan), "%s%s%s", local, PATH_SEPARATORSTR, "panda.png");
     void *evssl_server = NULL;
-    void *evssl_p12 = NULL;
     void *evssl_null = NULL;
     const char *ssl_server = "";
     const char *ssl_clientnull = "";
@@ -172,7 +171,7 @@ int main(int argc, char *argv[]) {
     evssl_server = evssl_new(ca, svcrt, svkey, SSL_FILETYPE_PEM);
     ssl_server = "server";
     evssl_register(ssl_server, evssl_server);
-    evssl_p12 = evssl_p12_new(p12, "srey");
+    void *evssl_p12 = evssl_p12_new(p12, "srey");
     evssl_register("p12", evssl_p12);
     evssl_null = evssl_new(NULL, NULL, NULL, SSL_FILETYPE_PEM);
     ssl_clientnull = "clientnull";

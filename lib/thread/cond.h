@@ -72,7 +72,7 @@ static inline int32_t cond_timedwait(cond_ctx *ctx, mutex_ctx *mu, const uint32_
     return ERR_OK;
 #else
     long seconds = ms / 1000;
-    long nanoseconds = (ms - seconds * 1000) * 1000000;
+    long nanoseconds = (ms % 1000) * 1000000;
     struct timespec timewait;
 #if defined(OS_DARWIN)
     // macOS 条件变量绑定 CLOCK_REALTIME，仍用 gettimeofday 计算截止时间

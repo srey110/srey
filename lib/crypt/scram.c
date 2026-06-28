@@ -84,9 +84,7 @@ void scram_set_user(scram_ctx *scram, const char *user, size_t ulens) {
         secure_zero(scram->user, strlen(scram->user) + 1);
         FREE(scram->user);
     }
-    MALLOC(scram->user, ulens + 1);
-    memcpy(scram->user, user, ulens);
-    scram->user[ulens] = '\0';
+    scram->user = dup_zero(user, ulens);
 }
 void scram_set_pwd(scram_ctx *scram, const char *pwd, size_t plens) {
     if (NULL == pwd) {// 接受空密码""
@@ -96,9 +94,7 @@ void scram_set_pwd(scram_ctx *scram, const char *pwd, size_t plens) {
         secure_zero(scram->pwd, strlen(scram->pwd) + 1);
         FREE(scram->pwd);
     }
-    MALLOC(scram->pwd, plens + 1);
-    memcpy(scram->pwd, pwd, plens);
-    scram->pwd[plens] = '\0';
+    scram->pwd = dup_zero(pwd, plens);
 }
 void scram_set_salt(scram_ctx *scram, char *salt, size_t lens) {
     if (scram->client) {
@@ -260,6 +256,7 @@ static void _scram_h(scram_ctx *scram, char client_key[DG_BLOCK_SIZE], char resu
     digest_init(&digest, scram->dtype);
     digest_update(&digest, client_key, scram->hslens);
     digest_final(&digest, result);
+    digest_free(&digest);
 }
 // 计算 HMAC(key, AuthMessage)：key 为 StoredKey 或 ServerKey，AuthMessage 为三段消息拼接
 static void _scram_whole(scram_ctx *scram, char key[DG_BLOCK_SIZE], char result[DG_BLOCK_SIZE]) {
@@ -357,9 +354,7 @@ static char *_scram_client_first_message(scram_ctx *scram) {
     }
     size_t buflen = strlen(buf);
     // local_first_message 保存 client-first-message-bare（GS2 头之后的部分）
-    MALLOC(scram->local_first_message, buflen - gs2_len + 1);
-    memcpy(scram->local_first_message, buf + gs2_len, buflen - gs2_len);
-    scram->local_first_message[buflen - gs2_len] = '\0';
+    scram->local_first_message = dup_zero(buf + gs2_len, buflen - gs2_len);
     scram->status = SCRAM_LOCAL_FIRST;
     secure_zero(nonce, sizeof(nonce));
     return buf;
@@ -392,13 +387,9 @@ static int32_t _scram_parse_client_first_message(scram_ctx *scram, char *msg, si
     if (NULL == nonce) {
         return ERR_FAILED;
     }
-    MALLOC(scram->remote_nonce, lens + 1);
-    memcpy(scram->remote_nonce, nonce, lens);
-    scram->remote_nonce[lens] = '\0';
+    scram->remote_nonce = dup_zero(nonce, lens);
     // remote_first_message 保存 client-first-message-bare（GS2 头之后的部分）
-    MALLOC(scram->remote_first_message, mlens - gs2_len + 1);
-    memcpy(scram->remote_first_message, msg + gs2_len, mlens - gs2_len);
-    scram->remote_first_message[mlens - gs2_len] = '\0';
+    scram->remote_first_message = dup_zero(msg + gs2_len, mlens - gs2_len);
     scram->status = SCRAM_REMOTE_FIRST;
     return ERR_OK;
 }
@@ -419,9 +410,7 @@ static char *_scram_server_first_message(scram_ctx *scram) {
     char *buf = format_va("r=%s%s,s=%s,i=%d", scram->remote_nonce, scram->local_nonce, salt, scram->iter);
     FREE(salt);
     size_t buflen = strlen(buf);
-    MALLOC(scram->local_first_message, buflen + 1);
-    memcpy(scram->local_first_message, buf, buflen);
-    scram->local_first_message[buflen] = '\0';
+    scram->local_first_message = dup_zero(buf, buflen);
     scram->status = SCRAM_LOCAL_FIRST;
     secure_zero(nonce, sizeof(nonce));
     return buf;
@@ -440,9 +429,7 @@ static int32_t _scram_parse_server_first_message(scram_ctx *scram, char *msg, si
         || 0 != memcmp(nonce, scram->local_nonce, strlen(scram->local_nonce))) {
         return ERR_FAILED;
     }
-    MALLOC(scram->remote_nonce, lens + 1);
-    memcpy(scram->remote_nonce, nonce, lens);
-    scram->remote_nonce[lens] = '\0';
+    scram->remote_nonce = dup_zero(nonce, lens);
     char *salt = _scram_attr_value(msg, mlens, "s=", &lens);
     if (NULL == salt) {
         return ERR_FAILED;
@@ -478,9 +465,7 @@ static int32_t _scram_parse_server_first_message(scram_ctx *scram, char *msg, si
         LOG_WARN("scram iter %d < min %d, possible downgrade attack.", scram->iter, SCRAM_MIN_ITER);
         return ERR_FAILED;
     }
-    MALLOC(scram->remote_first_message, mlens + 1);
-    memcpy(scram->remote_first_message, msg, mlens);
-    scram->remote_first_message[mlens] = '\0';
+    scram->remote_first_message = dup_zero(msg, mlens);
     scram->status = SCRAM_REMOTE_FIRST;
     return ERR_OK;
 }

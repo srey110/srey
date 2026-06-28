@@ -114,6 +114,12 @@ runner.run("lua_layer", function(t)
         t:eq(0, utils.log_getlv(), "log_setlv sync to C 层 (FATAL only)")
         log_setlv(saved)
         t:eq(saved, utils.log_getlv(), "log_setlv restore")
+        -- 非法级别（非整数 / 越界）返回 false 且不改变当前级别
+        t:eq(false, log_setlv("abc"), "log_setlv reject non-integer")
+        t:eq(false, log_setlv(99),    "log_setlv reject out-of-range")
+        t:eq(false, log_setlv(-1),    "log_setlv reject negative")
+        t:eq(saved, utils.log_getlv(), "log_setlv invalid keeps level")
+        t:eq(true,  log_setlv(saved),  "log_setlv valid returns true")
         -- FATAL/ERROR/WARN/INFO/DEBUG 五个全局函数都存在
         t:eq("function", type(FATAL), "FATAL exists")
         t:eq("function", type(ERROR), "ERROR exists")

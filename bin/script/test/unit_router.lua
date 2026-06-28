@@ -227,6 +227,20 @@ runner.run("unit_router", function(t)
         t:eq(20,          got.skid,   "ctx.skid")
     end
 
+    -- 空段 URL（/a//b）：匹配按压缩段进行，回填的 ctx.path 不应残留重复/空段
+    -- 回归 router.c _router_find 压缩空段后未回写 npath（Lua 绑定按旧 npath 重建 path）
+    do
+        local r = Route.new()
+        local got = {}
+        r:get("/a/b", function(ctx)
+            got.path = ctx.path
+            ctx:text(200, "ok")
+        end)
+        local pack = make_pack("GET", "/a//b")
+        r:dispatch(1, 1, pack, nil)
+        t:eq("/a/b", got.path, "ctx.path 去空段不残留 (/a//b)")
+    end
+
     -- ctx.query 传递
     do
         local r = Route.new()

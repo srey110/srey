@@ -2,6 +2,7 @@
 #include "srey/task.h"
 #include "containers/hashmap.h"
 #include "containers/sarray.h"
+#include "containers/slist.h"
 #include "utils/binary.h"
 #include "utils/timer.h"
 #include "utils/utils.h"
@@ -18,10 +19,10 @@ typedef struct dc_entry {
 } dc_entry;
 // 单个 waiter:src+sess 标识一个挂起协程,set 时通过 task_response 唤醒
 typedef struct dc_waiter {
+    list_node node;          // 同 key FIFO 侵入式链表节点（slist，UPCAST 复原外层）
     name_t src;              // 请求方 task 句柄
     uint64_t sess;           // 会话 id(task_response 唤醒用)
     uint64_t deadline_ms;    // 绝对过期毫秒(timer 基准)
-    struct dc_waiter *next;  // 同 key FIFO 链表 next
 } dc_waiter;
 // sweep 上下文:收集变空的 pending key,scan 结束后统一 hashmap_delete(scan 中不可改 map 结构)
 typedef struct dc_sweep_ctx {
@@ -31,8 +32,7 @@ typedef struct dc_sweep_ctx {
 // 单个 key 的 waiter FIFO 队列
 typedef struct dc_pending {
     char *key;          // strdup,作为 hashmap key
-    dc_waiter *head;    // 队头(最早等待者)
-    dc_waiter *tail;    // 队尾(最新追加)
+    list_ctx waiters;   // 该 key 的 waiter FIFO（元素 dc_waiter，UPCAST 复原）
 } dc_pending;
 // DataCenter task 的 arg 上下文
 typedef struct dc_ctx {
@@ -74,11 +74,10 @@ static void _dc_pending_free(void *item) {
     FREE(p->key);
     // waiter 链表由调用方在 take 时摘走;走到这里说明 hashmap_free/clear 强制清理,
     // 此时 waiter 协程已无人唤醒(loader 关闭),释放节点不发 response
-    dc_waiter *next, *w = p->head;
-    while (w) {
-        next = w->next;
+    dc_waiter *w;
+    list_foreach_safe(&p->waiters, ln, tmp) {
+        w = UPCAST(ln, dc_waiter, node);
         FREE(w);
-        w = next;
     }
 }
 // 写 kv:已存在 → 释放旧 val + 替换新 val;不存在 → 新建。key 内部 strdup,val MALLOC 拷贝
@@ -132,12 +131,7 @@ static void _dc_pending_push(dc_ctx *ctx, const char *key, dc_waiter *w) {
     query.key = (char *)key;
     dc_pending *found = (dc_pending *)hashmap_get(ctx->pending, &query);
     if (found) {
-        if (found->tail) {
-            found->tail->next = w;
-            found->tail = w;
-        } else {
-            found->head = found->tail = w;
-        }
+        list_push_tail(&found->waiters, &w->node);
         return;
     }
     // 新建
@@ -145,29 +139,32 @@ static void _dc_pending_push(dc_ctx *ctx, const char *key, dc_waiter *w) {
     size_t klen = strlen(key);
     MALLOC(p.key, klen + 1);
     safe_fill_str(p.key, klen + 1, key);
-    p.head = p.tail = w;
+    list_init(&p.waiters);
+    list_push_tail(&p.waiters, &w->node);
     hashmap_set(ctx->pending, &p);
     if (hashmap_oom(ctx->pending)) {
         FREE(p.key);
         FREE(w);
     }
 }
-// 摘下 pending[key] 整条 FIFO 队列并从 hashmap 删除节点,返回头指针(调用方负责 FREE 链表)
-static dc_waiter *_dc_pending_take(dc_ctx *ctx, const char *key) {
+// 摘下 pending[key] 整条 FIFO 队列并从 hashmap 删除节点,返回该队列(调用方负责 FREE 各 waiter)
+static list_ctx _dc_pending_take(dc_ctx *ctx, const char *key) {
+    list_ctx taken;
+    list_init(&taken);
     dc_pending query;
     query.key = (char *)key;
     dc_pending *found = (dc_pending *)hashmap_get(ctx->pending, &query);
     if (!found) {
-        return NULL;
+        return taken;
     }
-    dc_waiter *head = found->head;
-    found->head = found->tail = NULL;  // 摘空,避免 _dc_pending_free 再次释放链表
+    taken = found->waiters;            // 整条队列移交调用方
+    list_init(&found->waiters);        // entry 置空,避免 _dc_pending_free 再次释放
     // hashmap_delete 不自动调 elfree,需手动 _dc_pending_free 释放 key
     dc_pending *removed = (dc_pending *)hashmap_delete(ctx->pending, &query);
     if (NULL != removed) {
         _dc_pending_free(removed);
     }
-    return head;
+    return taken;
 }
 // 把 key bytes 复制为 NUL 结尾 string(hashmap 比较走 strcmp,要求 NUL 终止)
 static int _dc_key_to_cstr(const void *src, size_t len, char *dst, size_t dst_cap) {
@@ -230,12 +227,13 @@ static void _dc_handle_set(dc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *b
         }
     }
     // 3. 摘下 pending[key] 并唤醒所有 waiter(waiter 全来自 WAIT 挂起,有独立 src/sess,回带 REQ_DC_WAIT)
-    dc_waiter *w = _dc_pending_take(ctx, keybuf);
-    uint64_t now_ms = (NULL != w) ? timer_cur_ms(&ctx->timer) : 0;
+    list_ctx taken = _dc_pending_take(ctx, keybuf);
+    uint64_t now_ms = (list_size(&taken) > 0) ? timer_cur_ms(&ctx->timer) : 0;
     task_ctx *wt;
-    dc_waiter *next;
-    while (w) {
-        next = w->next;
+    list_node *ln;
+    dc_waiter *w;
+    while (NULL != (ln = list_pop_head(&taken))) {
+        w = UPCAST(ln, dc_waiter, node);
         // 跳过已过期 waiter:请求方早已超时放弃,唤醒只会在其 task 触发幽灵响应
         if (now_ms < w->deadline_ms) {
             wt = task_grab(ctx->loader, w->src);
@@ -245,7 +243,6 @@ static void _dc_handle_set(dc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *b
             }
         }
         FREE(w);
-        w = next;
     }
 }
 // GET body 格式:| u16 klen | key |
@@ -278,26 +275,16 @@ static void _dc_handle_get(dc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *b
 static bool _dc_pending_sweep_iter(const void *item, void *udata) {
     dc_pending *p = (dc_pending *)item;
     dc_sweep_ctx *sc = (dc_sweep_ctx *)udata;
-    // deadline 跨请求方非单调,需全链表遍历 + prev 中段摘除
-    dc_waiter *next, *prev = NULL, *w = p->head;
-    while (w) {
-        next = w->next;
+    // deadline 跨请求方非单调,需全链表遍历 + 中段摘除
+    dc_waiter *w;
+    list_foreach_safe(&p->waiters, ln, tmp) {
+        w = UPCAST(ln, dc_waiter, node);
         if (sc->now_ms >= w->deadline_ms) {
-            if (NULL == prev) {
-                p->head = next;
-            } else {
-                prev->next = next;
-            }
-            if (p->tail == w) {
-                p->tail = prev;
-            }
+            list_remove(&p->waiters, ln);
             FREE(w);
-        } else {
-            prev = w;
         }
-        w = next;
     }
-    if (NULL == p->head) {
+    if (list_empty(&p->waiters)) {
         array_push_back(sc->empty_keys, &p->key);
     }
     return true;
@@ -366,7 +353,6 @@ static void _dc_handle_wait(dc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *
     w->sess = sess;
     // src 自身超时点即过期:SET 不再唤醒、sweep 回收
     w->deadline_ms = timer_cur_ms(&ctx->timer) + timeout_ms;
-    w->next = NULL;
     _dc_pending_push(ctx, keybuf, w);
 }
 // DEL body 格式:| u16 klen | key |

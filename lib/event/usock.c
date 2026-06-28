@@ -249,28 +249,27 @@ static inline void _usk_call_recvfrom_cb(ev_ctx *ev, udp_ctx *udp, size_t nread)
     }
 }
 #if WITH_SSL
-// 在事件循环内启动SSL握手：设置SSL fd并根据角色调用connect/accept
-static int32_t _usk_ssl_exchange(watcher_ctx *watcher, tcp_ctx *tcp, struct evssl_ctx *evssl) {
+// 触发切ssl
+static int32_t _usk_ssl_exchange_trigger(watcher_ctx *watcher, tcp_ctx *tcp, struct evssl_ctx *evssl) {
     tcp->ssl = evssl_setfd(evssl, tcp->sock.fd);
     if (NULL == tcp->ssl) {
         return ERR_FAILED;
     }
     if (BIT_CHECK(tcp->status, STATUS_CLIENT)) {
         switch (evssl_tryconn(tcp->ssl)) {
-        case ERR_FAILED://错误
-            return ERR_FAILED;
         case ERR_OK://完成
             return _usk_call_ssl_exchanged_cb(watcher->ev, tcp);
         case 1://等待读就绪（WANT_READ）
             BIT_SET(tcp->status, STATUS_AUTHSSL);
             break;
-        case 2://等待写就绪（WANT_WRITE）：注册写事件，写就绪后由 _usk_on_rw_cb 重试
+        case 2://等待写就绪（WANT_WRITE）：注册写事件，写就绪后由 _usk_on_rw_cb 经 AUTHSSL 驱动重试
             BIT_SET(tcp->status, STATUS_AUTHSSL);
-            BIT_SET(tcp->status, STATUS_SSLWANTWRITE);
             if (ERR_OK != _uev_add_event(watcher, tcp->sock.fd, &tcp->sock.events, EVENT_WRITE, &tcp->sock)) {
                 return ERR_FAILED;
             }
             break;
+        default://错误
+            return ERR_FAILED;
         }
     } else {
         BIT_SET(tcp->status, STATUS_AUTHSSL);
@@ -306,7 +305,7 @@ void _uev_try_ssl_exchange(watcher_ctx *watcher, sock_ctx *skctx, struct evssl_c
         tcp->evssl = evssl;
         BIT_SET(tcp->status, STATUS_SSLEXCHANGE);
     } else {
-        if (ERR_OK != _usk_ssl_exchange(watcher, tcp, evssl)) {
+        if (ERR_OK != _usk_ssl_exchange_trigger(watcher, tcp, evssl)) {
             _uev_disconnect(watcher, skctx, 1);
             LOG_ERROR("ssl exchange error.");
         }
@@ -318,34 +317,43 @@ void _uev_try_ssl_exchange(watcher_ctx *watcher, sock_ctx *skctx, struct evssl_c
     (void)client;
 #endif
 }
+static inline int32_t _usk_tcp_keep_read(watcher_ctx *watcher, tcp_ctx *tcp) {
+#ifdef MANUAL_ADD
+    return _uev_add_event(watcher, tcp->sock.fd, &tcp->sock.events, EVENT_READ, &tcp->sock);
+#else
+    (void)watcher;
+    (void)tcp;
+    return ERR_OK;
+#endif
+}
 // 从socket读取数据到接收缓冲区并触发recv回调，MANUAL_ADD时需重新注册读事件
 static int32_t _usk_tcp_recv(watcher_ctx *watcher, tcp_ctx *tcp) {
     size_t nread;
 #if WITH_SSL
     int32_t rtn = buffer_from_sock(&tcp->buf_r, tcp->sock.fd, &nread, _evpub_sock_read, tcp->ssl);
+    if (ERR_OK == rtn
+        && NULL != tcp->ssl
+        && SSL_want_write(tcp->ssl)) {// tls1.3 KeyUpdate探测
+        BIT_SET(tcp->status, STATUS_KEYUPDATE);
+        rtn = _uev_add_event(watcher, tcp->sock.fd, &tcp->sock.events, EVENT_WRITE, &tcp->sock);
+    }
 #else
     int32_t rtn = buffer_from_sock(&tcp->buf_r, tcp->sock.fd, &nread, _evpub_sock_read, NULL);
 #endif
     _usk_call_recv_cb(watcher->ev, tcp, nread);
-#if WITH_SSL
-    // TLS 重协商：握手完成后 SSL_read 仍可返回 WANT_WRITE，需等写就绪再重试
-    if (ERR_OK == rtn && 0 == nread 
-        && NULL != tcp->ssl && SSL_want_write(tcp->ssl)
-        && !BIT_CHECK(tcp->status, STATUS_ERROR)) {
-        BIT_SET(tcp->status, STATUS_SSLWANTWRITE);
-        if (!BIT_CHECK(tcp->sock.events, EVENT_WRITE)) {
-            if (ERR_OK != _uev_add_event(watcher, tcp->sock.fd, &tcp->sock.events, EVENT_WRITE, &tcp->sock)) {
-                return ERR_FAILED;
-            }
-        }
-    }
-#endif
-#ifdef MANUAL_ADD
     if (ERR_OK == rtn) {
-        rtn = _uev_add_event(watcher, tcp->sock.fd, &tcp->sock.events, EVENT_READ, &tcp->sock);
+        return _usk_tcp_keep_read(watcher, tcp);
     }
+    return ERR_FAILED;
+}
+static inline int32_t _usk_tcp_keep_write(watcher_ctx *watcher, tcp_ctx *tcp) {
+#ifdef MANUAL_ADD
+    return _uev_add_event(watcher, tcp->sock.fd, &tcp->sock.events, EVENT_WRITE, &tcp->sock);
+#else
+    (void)watcher;
+    (void)tcp;
+    return ERR_OK;
 #endif
-    return rtn;
 }
 // 发送队列中的数据，队列空后删除写事件（可选SSL升级），MANUAL_ADD时重注册写事件
 static int32_t _usk_tcp_send(watcher_ctx *watcher, tcp_ctx *tcp) {
@@ -361,11 +369,19 @@ static int32_t _usk_tcp_send(watcher_ctx *watcher, tcp_ctx *tcp) {
         return rtn;
     }
     if (0 == queue_size(&tcp->buf_s)) {
+        if (BIT_CHECK(tcp->status, STATUS_GRACEFUL_CLOSE)) {
+            return ERR_FAILED;
+        }
+#if WITH_SSL
+        if (BIT_CHECK(tcp->status, STATUS_KEYUPDATE)) {// tls1.3 KeyUpdate 仍等写就绪,保留 EVENT_WRITE
+            return _usk_tcp_keep_write(watcher, tcp);
+        }
+#endif// WITH_SSL
         _uev_del_event(watcher, tcp->sock.fd, &tcp->sock.events, EVENT_WRITE, &tcp->sock);
 #if WITH_SSL
         if (BIT_CHECK(tcp->status, STATUS_SSLEXCHANGE)) {
             BIT_REMOVE(tcp->status, STATUS_SSLEXCHANGE);
-            if (ERR_OK != _usk_ssl_exchange(watcher, tcp, tcp->evssl)) {
+            if (ERR_OK != _usk_ssl_exchange_trigger(watcher, tcp, tcp->evssl)) {
                 LOG_ERROR("ssl exchange error.");
                 return ERR_FAILED;
             }
@@ -373,11 +389,51 @@ static int32_t _usk_tcp_send(watcher_ctx *watcher, tcp_ctx *tcp) {
 #endif
         return ERR_OK;
     }
-#ifdef MANUAL_ADD
-    rtn = _uev_add_event(watcher, tcp->sock.fd, &tcp->sock.events, EVENT_WRITE, &tcp->sock);
-#endif
-    return rtn;
+    return _usk_tcp_keep_write(watcher, tcp);
 }
+#if WITH_SSL
+// SSL 握手；1 继续执行 return；0：返回
+static int32_t _usk_ssl_do_handshake(watcher_ctx *watcher, tcp_ctx *tcp, int32_t *err) {
+    *err = ERR_OK;
+    int32_t rtn = BIT_CHECK(tcp->status, STATUS_CLIENT) ?
+                  evssl_tryconn(tcp->ssl) :
+                  evssl_tryacpt(tcp->ssl);
+    switch (rtn) {
+    case ERR_OK://完成：清除写事件注册（若有），然后通知上层
+        if (BIT_CHECK(tcp->sock.events, EVENT_WRITE)) {
+            _uev_del_event(watcher, tcp->sock.fd, &tcp->sock.events, EVENT_WRITE, &tcp->sock);
+        }
+        if (ERR_OK != _usk_call_ssl_exchanged_cb(watcher->ev, tcp)) {
+            *err = ERR_FAILED;
+            return 1;
+        }
+        BIT_REMOVE(tcp->status, STATUS_AUTHSSL);
+#ifdef READV_EINVAL
+        return 0;
+#else
+        return 1;
+#endif
+    case 1://等待读就绪（WANT_READ）：若之前在等写，撤销写事件
+        if (BIT_CHECK(tcp->sock.events, EVENT_WRITE)) {
+            _uev_del_event(watcher, tcp->sock.fd, &tcp->sock.events, EVENT_WRITE, &tcp->sock);
+        }
+        if (ERR_OK != _usk_tcp_keep_read(watcher, tcp)) {
+            *err = ERR_FAILED;
+            return 1;
+        }
+        return 0;
+    case 2://等待写就绪（WANT_WRITE）：注册写事件，写就绪后再次进入此分支重试
+        if (ERR_OK != _uev_add_event(watcher, tcp->sock.fd, &tcp->sock.events, EVENT_WRITE, &tcp->sock)) {
+            *err = ERR_FAILED;
+            return 1;
+        }
+        return 0;
+    default://错误
+        *err = ERR_FAILED;
+        return 1;
+    }
+}
+#endif
 // 关闭TCP连接：触发关闭回调，从hashmap移除，入隔离队列暂存 QTN_MS 后归 pool
 static inline void _usk_close_tcp(watcher_ctx *watcher, tcp_ctx *tcp) {
     _usk_call_close_cb(watcher->ev, tcp);
@@ -396,108 +452,48 @@ static inline void _usk_close_tcp(watcher_ctx *watcher, tcp_ctx *tcp) {
 }
 // TCP读写事件统一回调：处理SSL握手、读、写，任意失败则关闭连接
 static void _usk_on_rw_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
-    int32_t rtn;
-    int32_t evread = BIT_CHECK(ev, EVENT_READ);
     tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
-#if WITH_SSL
-    /* SSL握手驱动条件：
-     *   读就绪（evread）         — WANT_READ 后新数据到达，正常握手路径
-     *   写就绪（STATUS_SSLWANTWRITE） — WANT_WRITE 后 socket 发送缓冲区可用，握手恢复 */
-    if (NULL != tcp->ssl
-        && (evread 
-            || (BIT_CHECK(ev, EVENT_WRITE) && (BIT_CHECK(tcp->status, STATUS_SSLWANTWRITE))))
-        && BIT_CHECK(tcp->status, STATUS_AUTHSSL)
-        && !BIT_CHECK(tcp->status, STATUS_ERROR)) {
-        if (BIT_CHECK(tcp->status, STATUS_CLIENT)) {
-            rtn = evssl_tryconn(tcp->ssl);
-        } else {
-            rtn = evssl_tryacpt(tcp->ssl);
-        }
-        switch (rtn) {
-        case ERR_FAILED://错误
-            if (BIT_CHECK(tcp->status, STATUS_SSLWANTWRITE)) {
-                BIT_REMOVE(tcp->status, STATUS_SSLWANTWRITE);
-                _uev_del_event(watcher, tcp->sock.fd, &tcp->sock.events, EVENT_WRITE, &tcp->sock);
-            }
-            BIT_SET(tcp->status, STATUS_ERROR);
-            break;
-        case ERR_OK://完成：清除写事件注册（若有），然后通知上层
-            if (BIT_CHECK(tcp->status, STATUS_SSLWANTWRITE)) {
-                BIT_REMOVE(tcp->status, STATUS_SSLWANTWRITE);
-                _uev_del_event(watcher, tcp->sock.fd, &tcp->sock.events, EVENT_WRITE, &tcp->sock);
-            }
-            if (ERR_OK == _usk_call_ssl_exchanged_cb(watcher->ev, tcp)) {
-                BIT_REMOVE(tcp->status, STATUS_AUTHSSL);
-#ifdef READV_EINVAL
-                return;
-#else
-                break;
-#endif
-            }
-            BIT_SET(tcp->status, STATUS_ERROR);
-            break;
-        case 1://等待读就绪（WANT_READ）：若之前在等写，撤销写事件
-            if (BIT_CHECK(tcp->status, STATUS_SSLWANTWRITE)) {
-                BIT_REMOVE(tcp->status, STATUS_SSLWANTWRITE);
-                _uev_del_event(watcher, tcp->sock.fd, &tcp->sock.events, EVENT_WRITE, &tcp->sock);
-            }
-#ifdef MANUAL_ADD
-            if (ERR_OK != _uev_add_event(watcher, tcp->sock.fd, &tcp->sock.events, EVENT_READ, &tcp->sock)) {
-                BIT_SET(tcp->status, STATUS_ERROR);
-                break;
-            } else {
-                return;
-            }
-#else
-            return;
-#endif
-        case 2://等待写就绪（WANT_WRITE）：注册写事件，写就绪后再次进入此分支重试
-            BIT_SET(tcp->status, STATUS_SSLWANTWRITE);
-            if (ERR_OK != _uev_add_event(watcher, tcp->sock.fd, &tcp->sock.events, EVENT_WRITE, &tcp->sock)) {
-                BIT_SET(tcp->status, STATUS_ERROR);
-                break;
-            }
-            return;
-        }//switch
-    }
-    // TLS 重协商写就绪：evread=1 让下面的 _usk_tcp_recv 重试 SSL_read 完成握手
-    if (NULL != tcp->ssl
-        && !BIT_CHECK(tcp->status, STATUS_AUTHSSL)
-        && BIT_CHECK(tcp->status, STATUS_SSLWANTWRITE)
-        && BIT_CHECK(ev, EVENT_WRITE)
-        && !BIT_CHECK(tcp->status, STATUS_ERROR)) {
-        BIT_REMOVE(tcp->status, STATUS_SSLWANTWRITE);
-        _uev_del_event(watcher, tcp->sock.fd, &tcp->sock.events, EVENT_WRITE, &tcp->sock);
-        evread = 1;
-    }
-#endif// WITH_SSL
     if (BIT_CHECK(tcp->status, STATUS_ERROR)) {
         _usk_close_tcp(watcher, tcp);
         return;
     }
-    rtn = ERR_OK;
-    int32_t graceful = BIT_CHECK(tcp->status, STATUS_GRACEFUL_CLOSE);
-    if (evread && !graceful) {
+    int32_t evread = BIT_CHECK(ev, EVENT_READ);
+    int32_t evwrite = BIT_CHECK(ev, EVENT_WRITE);
+#if WITH_SSL
+    if (NULL != tcp->ssl) {
+        if (BIT_CHECK(tcp->status, STATUS_AUTHSSL)) {// SSL握手
+            int32_t err;
+            if (!_usk_ssl_do_handshake(watcher, tcp, &err)) {
+                return;
+            }
+            if (ERR_OK != err) {
+                BIT_SET(tcp->status, STATUS_ERROR);
+                _usk_close_tcp(watcher, tcp);
+                return;
+            }
+        } else {
+            if (evwrite && BIT_CHECK(tcp->status, STATUS_KEYUPDATE)) {// tls1.3 KeyUpdate 处理
+                BIT_REMOVE(tcp->status, STATUS_KEYUPDATE);
+                if (0 == queue_size(&tcp->buf_s)) {
+                    evwrite = 0;
+                    _uev_del_event(watcher, tcp->sock.fd, &tcp->sock.events, EVENT_WRITE, &tcp->sock);
+                }
+                evread = 1;
+            }
+        }
+    }
+#endif// WITH_SSL
+    int32_t rtn = ERR_OK;
+    if (evread && !BIT_CHECK(tcp->status, STATUS_GRACEFUL_CLOSE)) {// 没有设置关闭
         rtn = _usk_tcp_recv(watcher, tcp);
     }
-    if (ERR_OK == rtn
-        && BIT_CHECK(ev, EVENT_WRITE)) {
+    if (ERR_OK == rtn && evwrite) {
         rtn = _usk_tcp_send(watcher, tcp);
     }
     if (ERR_OK != rtn) {
-        // graceful 中转 error 路径:清 GRACEFUL_CLOSE 保持状态互斥
-        if (graceful) {
-            BIT_REMOVE(tcp->status, STATUS_GRACEFUL_CLOSE);
-        }
         BIT_SET(tcp->status, STATUS_ERROR);
         _usk_close_tcp(watcher, tcp);
         return;
-    }
-    if (graceful
-        && 0 == queue_size(&tcp->buf_s)) {
-        BIT_REMOVE(tcp->status, STATUS_GRACEFUL_CLOSE);
-        BIT_SET(tcp->status, STATUS_ERROR);
-        _usk_close_tcp(watcher, tcp);
     }
 }
 void _uev_add_write_inloop(watcher_ctx *watcher, sock_ctx *skctx, off_buf_ctx *buf) {
@@ -557,6 +553,11 @@ void _uev_add_write_inloop(watcher_ctx *watcher, sock_ctx *skctx, off_buf_ctx *b
         }
     }
 }
+static void _usk_on_connect_cb_err(watcher_ctx *watcher, tcp_ctx *tcp) {
+    _usk_call_conn_cb(watcher->ev, tcp, ERR_FAILED);
+    _evpub_sockel_remove(watcher, tcp->sock.fd);
+    pool_push(&watcher->pool, &tcp->sock, 0);
+}
 // connect完成事件回调：检查连接结果，切换为读写回调，触发conn回调
 static void _usk_on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
     (void)ev;
@@ -564,20 +565,48 @@ static void _usk_on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev
     tcp->sock.ev_cb = _usk_on_rw_cb;
     _uev_del_event(watcher, tcp->sock.fd, &tcp->sock.events, tcp->sock.events, skctx);
     if (BIT_CHECK(tcp->status, STATUS_ERROR)
-        || ERR_OK != sock_checkconn(tcp->sock.fd)
-        || ERR_OK != _uev_add_event(watcher, tcp->sock.fd, &tcp->sock.events, EVENT_READ, &tcp->sock)) {
-        _usk_call_conn_cb(watcher->ev, tcp, ERR_FAILED);
-        _evpub_sockel_remove(watcher, tcp->sock.fd);
-        pool_push(&watcher->pool, &tcp->sock, 0);
+        || ERR_OK != sock_checkconn(tcp->sock.fd)) {
+        _usk_on_connect_cb_err(watcher, tcp);
         return;
     }
+#if WITH_SSL
+    if (NULL != tcp->evssl) {// 默认启用ssl，初始化
+        tcp->ssl = evssl_setfd(tcp->evssl, tcp->sock.fd);
+        if (NULL == tcp->ssl) {
+            _usk_on_connect_cb_err(watcher, tcp);
+            return;
+        }
+        BIT_SET(tcp->status, STATUS_AUTHSSL);
+    }
+#endif
+    if (ERR_OK != _uev_add_event(watcher, tcp->sock.fd, &tcp->sock.events, EVENT_READ, &tcp->sock)) {
+        _usk_on_connect_cb_err(watcher, tcp);
+        return;
+    }
+    // 链接成功回调
     if (ERR_OK != _usk_call_conn_cb(watcher->ev, tcp, ERR_OK)) {
         _uev_disconnect(watcher, skctx, 1);
         return;
     }
 #if WITH_SSL
-    if (NULL != tcp->evssl) {
-        if (ERR_OK != _usk_ssl_exchange(watcher, tcp, tcp->evssl)) {
+    if (NULL != tcp->ssl) {
+        switch (evssl_tryconn(tcp->ssl)) {
+        case ERR_OK://完成
+            BIT_REMOVE(tcp->status, STATUS_AUTHSSL);
+            if (ERR_OK != _usk_call_ssl_exchanged_cb(watcher->ev, tcp)) {
+                _uev_disconnect(watcher, skctx, 1);
+                return;
+            }
+            break;
+        case 1:// WANT_READ
+            break;
+        case 2://WANT_WRITE
+            if (ERR_OK != _uev_add_event(watcher, tcp->sock.fd, &tcp->sock.events, EVENT_WRITE, &tcp->sock)) {
+                _uev_disconnect(watcher, skctx, 1);
+                return;
+            }
+            break;
+        default://错误
             _uev_disconnect(watcher, skctx, 1);
             return;
         }
@@ -689,32 +718,34 @@ static void _usk_on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev)
     (void)ev;
 #endif
 }
+static void _uev_add_acpfd_inloop_err(watcher_ctx *watcher, tcp_ctx *tcp) {
+    _evpub_sockel_remove(watcher, tcp->sock.fd);
+    pool_push(&watcher->pool, &tcp->sock, 0);
+}
 void _uev_add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) {
     skpool_args skargs = { fd, &lsn->cbs, &lsn->ud };
     sock_ctx *skctx = pool_pop(&watcher->pool, &skargs, 0);
     tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
     _evpub_sockel_add(watcher, skctx);
-    /* _uev_add_event(READ) 必须在 _usk_ssl_exchange 之前：EPOLLET 的 ADD-time 语义保证若
-     * ClientHello 已在 socket buffer，下一次 epoll_wait 仍会合成 EPOLLIN 通知。
-     * 整个函数在单一 watcher 线程内运行完毕（STATUS_AUTHSSL 已设置）后才进入
-     * 下一次 epoll_wait，_usk_on_rw_cb 届时调用 evssl_tryacpt 驱动握手。*/
+#if WITH_SSL
+    if (NULL != lsn->evssl) {// 默认启用ssl
+        // 设置ssl
+        tcp->ssl = evssl_setfd(lsn->evssl, tcp->sock.fd);
+        if (NULL == tcp->ssl) {
+            _uev_add_acpfd_inloop_err(watcher, tcp);
+            return;
+        }
+        BIT_SET(tcp->status, STATUS_AUTHSSL);
+    }
+#endif
     if (ERR_OK != _uev_add_event(watcher, fd, &skctx->events, EVENT_READ, skctx)) {
-        _evpub_sockel_remove(watcher, fd);
-        pool_push(&watcher->pool, skctx, 0);
+        _uev_add_acpfd_inloop_err(watcher, tcp);
         return;
     }
     if (ERR_OK != _usk_call_acp_cb(watcher->ev, tcp)) {
         _uev_disconnect(watcher, skctx, 1);
         return;
     }
-#if WITH_SSL
-    if (NULL != lsn->evssl) {
-        if (ERR_OK != _usk_ssl_exchange(watcher, tcp, lsn->evssl)) {
-            _uev_disconnect(watcher, skctx, 1);
-            return;
-        }
-    }
-#endif
 }
 // 关闭监听socket（无SO_REUSEPORT只关闭第一个，否则关闭所有cnt个）
 static void _usk_close_lsnsock(listener_ctx *lsn, int32_t cnt) {

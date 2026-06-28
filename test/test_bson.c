@@ -561,6 +561,35 @@ static void test_bson_iter_field_exceeds_doclens(CuTest *tc) {
     CuAssertTrue(tc, !bson_iter_next(&iter));
 }
 
+// UTF8/JSCODE 字段声明长度的末尾字节必须是 NUL;畸形为非 NUL 时 bson_iter_next 须拒绝,
+// 否则下游 _bson_dump strlen / lua_pushstring 会越过文档末尾读堆外内存
+static void test_bson_iter_utf8_no_terminator(CuTest *tc) {
+    bson_ctx reader;
+    bson_iter iter;
+    // wire: int32 doclen=13 | 0x02 UTF8 | key "v\0" | int32 strlen=1 | 末尾位 | 文档末尾
+    // strlen=1 = 0 内容字符 + 1 终止位;末尾位畸形为 'X' → iter->val 无 NUL 终止
+    size_t dlen = 13;
+    char *buf;
+    MALLOC(buf, dlen);// 精确分配,ASan redzone 紧贴文档末尾,修复前 strlen 越界即报 heap-overflow
+    buf[0] = 0x0D; buf[1] = 0x00; buf[2] = 0x00; buf[3] = 0x00;// doclen = 13
+    buf[4] = 0x02;// BSON_UTF8
+    buf[5] = 'v'; buf[6] = 0x00;// key "v"
+    buf[7] = 0x01; buf[8] = 0x00; buf[9] = 0x00; buf[10] = 0x00;// strlen = 1
+    buf[11] = 'X';// 末尾位畸形非 NUL
+    buf[12] = 'Y';// 文档末尾畸形非 EOD,使 strlen 越过 buf[12] 读堆外
+
+    bson_init(&reader, buf, dlen);
+    bson_iter_init(&iter, &reader);// doclens = 13
+    CuAssertTrue(tc, !bson_iter_next(&iter));// 修复后拒绝;修复前接受致下游越界
+
+    // bson_tostring2 全程不得越界:畸形 UTF8 被拒,dump 不触发 strlen
+    char *s = bson_tostring2(buf, dlen);
+    CuAssertPtrNotNull(tc, s);
+    FREE(s);
+
+    FREE(buf);
+}
+
 // 补全 bson_tostring 未覆盖子类型分支：
 //   regex / jscode / binary / oid / timestamp / date / minkey / maxkey
 // 对应 lib/serial/bson.c _bson_dump switch 各 case
@@ -650,6 +679,7 @@ void test_bson(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_bson_check_depth);
     SUITE_ADD_TEST(suite, test_bson_iter_neg_lens);
     SUITE_ADD_TEST(suite, test_bson_iter_field_exceeds_doclens);
+    SUITE_ADD_TEST(suite, test_bson_iter_utf8_no_terminator);
     SUITE_ADD_TEST(suite, test_bson_check_depth_boundary);
     SUITE_ADD_TEST(suite, test_bson_tostring);
     SUITE_ADD_TEST(suite, test_bson_tostring_subtypes);

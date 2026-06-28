@@ -4,13 +4,11 @@
 #define TW_REQADD_BATCH     128         // reqadd 单次批量出队上限
 
 // 释放时间轮槽位数组中所有节点，并调用各节点的 _freecb 释放用户数据
-static void _tw_free_slot(tw_slot_ctx *slot, const size_t len) {
-    tw_node_ctx *pnode, *pdel;
+static void _tw_free_slot(list_ctx *slot, const size_t len) {
+    tw_node_ctx *pdel;
     for (size_t i = 0; i < len; i++) {
-        pnode = slot[i].head;
-        while (NULL != pnode) {
-            pdel = pnode;
-            pnode = pnode->next;
+        list_foreach_safe(&slot[i], ln, tmp) {
+            pdel = UPCAST(ln, tw_node_ctx, node);
             if (NULL != pdel->_freecb) {
                 pdel->_freecb(&pdel->ud);
             }
@@ -60,7 +58,6 @@ void tw_add(tw_ctx *ctx, const uint32_t timeout, tw_cb _cb, free_cb _freecb, ud_
     node->expires = timer_cur_ms(&ctx->timer) + timeout;
     node->_cb = _cb;
     node->_freecb = _freecb;
-    node->next = NULL;
     fsqu_push(&ctx->reqadd, &node);
     /* 仅当标志由 0→1 时（首批新任务）才唤醒轮线程，批量入队后续节点不重复 signal */
     if (ATOMIC_CAS(&ctx->reqadd_pending, 0, 1)) {
@@ -69,18 +66,9 @@ void tw_add(tw_ctx *ctx, const uint32_t timeout, tw_cb _cb, free_cb _freecb, ud_
         mutex_unlock(&ctx->mu);
     }
 }
-// 将节点追加到指定槽位的链表尾部
-static void _tw_insert(tw_slot_ctx *slot, tw_node_ctx *node) {
-    if (NULL == slot->head) {
-        slot->head = slot->tail = node;
-        return;
-    }
-    slot->tail->next = node;
-    slot->tail = node;
-}
 // 根据节点的到期时间计算应放入 tv1～tv5 中的哪个槽位
-static tw_slot_ctx *_tw_getslot(tw_ctx *ctx, tw_node_ctx *node) {
-    tw_slot_ctx *slot;
+static list_ctx *_tw_getslot(tw_ctx *ctx, tw_node_ctx *node) {
+    list_ctx *slot;
     if (node->expires <= ctx->jiffies) {
         // 已过期：放入当前 jiffies 对应的 tv1 槽，下一次 _tw_run 立即触发
         return &ctx->tv1[(ctx->jiffies & TVR_MASK)];
@@ -108,15 +96,13 @@ static tw_slot_ctx *_tw_getslot(tw_ctx *ctx, tw_node_ctx *node) {
     return slot;
 }
 // 将高精度槽位中的节点重新分配到低精度槽位（时间轮进位）
-static uint32_t _tw_cascade(tw_ctx *ctx, tw_slot_ctx *slot, const uint32_t index) {
-    tw_node_ctx *pnext, *pnode = slot[index].head;
-    while (NULL != pnode) {
-        pnext = pnode->next;
-        pnode->next = NULL;
-        _tw_insert(_tw_getslot(ctx, pnode), pnode);
-        pnode = pnext;
+static uint32_t _tw_cascade(tw_ctx *ctx, list_ctx *slot, const uint32_t index) {
+    tw_node_ctx *pnode;
+    list_foreach_safe(&slot[index], ln, tmp) {
+        pnode = UPCAST(ln, tw_node_ctx, node);
+        list_remove(&slot[index], ln);          // 从源槽摘除
+        list_push_tail(_tw_getslot(ctx, pnode), &pnode->node);   // 改投目标槽（cascade 必降级,目标≠源槽）
     }
-    slot[index].head = slot[index].tail = NULL;
     return index;
 }
 // 推进一个 jiffie：先做进位 cascade，再执行当前槽位所有到期节点的回调
@@ -133,26 +119,26 @@ static void _tw_run(tw_ctx *ctx) {
     //执行
     ud_cxt ud;
     tw_cb  cb;
-    tw_node_ctx *pnext, *pnode = ctx->tv1[ulidx].head;
-    while (NULL != pnode) {
-        pnext = pnode->next;
+    tw_node_ctx *pnode;
+    list_foreach_safe(&ctx->tv1[ulidx], ln, tmp) {
+        pnode = UPCAST(ln, tw_node_ctx, node);
         // 先将 ud 拷贝到栈，再释放节点，再调用回调：
         // 确保回调持有的指针不指向已被池复用的节点内存（防 UAF）。
         // 回调契约：不得将 &ud 存入生命周期超出本次调用的结构体。
+        // foreach_safe 已预存 next，故 pool_push 复用节点内存不影响遍历。
         ud = pnode->ud;
         cb = pnode->_cb;
         pool_push(&ctx->node_pool, pnode, 0);
         cb(&ud);
-        pnode = pnext;
     }
-    ctx->tv1[ulidx].head = ctx->tv1[ulidx].tail = NULL;
+    list_init(&ctx->tv1[ulidx]);
 }
 // 批量排空 reqadd 队列，将节点分发到对应时间轮槽位
 static void _tw_insert_all(tw_ctx *ctx, tw_node_ctx **nodes) {
     uint32_t n, i;
     while ((n = fsqu_pop_sc_batch(&ctx->reqadd, nodes, TW_REQADD_BATCH)) > 0) {
         for (i = 0; i < n; i++) {
-            _tw_insert(_tw_getslot(ctx, nodes[i]), nodes[i]);
+            list_push_tail(_tw_getslot(ctx, nodes[i]), &nodes[i]->node);
         }
     }
 }
@@ -166,7 +152,7 @@ static void _tw_loop(void *arg) {
     uint64_t shrink_start = ctx->jiffies;
     while (0 == ATOMIC_GET(&ctx->exit)) {
         /*  将外部通过 tw_add 提交的节点分发到对应槽位（reqadd 仅 tw 主线程独占消费，走 pop_sc_batch）。
-         *  tw_add 已设置 node->next = NULL。
+         *  节点链接由 list_push_tail 设置，无需 tw_add 预置。
          *  先排空，再清标志，再二次排空：避免清标志与生产者入队之间的竞态导致漏唤醒 */
         _tw_insert_all(ctx, nodes);
         ATOMIC_SET(&ctx->reqadd_pending, 0);

@@ -7,8 +7,8 @@
 #define NAME_STACK_LEN  512
 
 typedef struct hash_ring_list {
+    list_node lnode;                //slist 节点（UPCAST 复原）
     hash_ring_node *node;           //指向真实节点数据
-    struct hash_ring_list *next;    //链表下一项
 } hash_ring_list;
 typedef struct hash_ring_item {
     hash_ring_node *node;   //所属真实节点
@@ -33,15 +33,14 @@ void hash_ring_free(hash_ring_ctx *ring) {
     if (NULL == ring) {
         return;
     }
-    hash_ring_list *tmp, *cur = ring->nodes;
-    while (NULL != cur) {
+    hash_ring_list *cur;
+    list_foreach_safe(&ring->nodes, ln, tmp) {
+        cur = UPCAST(ln, hash_ring_list, lnode);
         FREE(cur->node->name);
         FREE(cur->node);
-        tmp = cur;
-        cur = tmp->next;
-        FREE(tmp);
+        FREE(cur);
     }
-    ring->nodes = NULL;
+    list_init(&ring->nodes);
     for (uint32_t i = 0; i < ring->nitems; i++) {
         FREE(ring->items[i]);
     }
@@ -94,13 +93,13 @@ static void _hash_ring_add_items(hash_ring_ctx *ring, hash_ring_node *node) {
 }
 // 在节点链表中按名称查找节点，返回 NULL 表示不存在
 static hash_ring_node *_hash_ring_get_node(hash_ring_ctx *ring, void *name, size_t lens) {
-    hash_ring_list *cur = ring->nodes;
-    while (NULL != cur) {
+    hash_ring_list *cur;
+    list_foreach(&ring->nodes, ln) {
+        cur = UPCAST(ln, hash_ring_list, lnode);
         if (cur->node->lens == lens
             && 0 == memcmp(cur->node->name, name, lens)) {
             return cur->node;
         }
-        cur = cur->next;
     }
     return NULL;
 }
@@ -126,9 +125,7 @@ int32_t hash_ring_add_nosort(hash_ring_ctx *ring, void *name, size_t lens, uint3
     hash_ring_list *cur;
     MALLOC(cur, sizeof(hash_ring_list));
     cur->node = node;
-    hash_ring_list *tmp = ring->nodes;
-    ring->nodes = cur;
-    ring->nodes->next = tmp;
+    list_push_head(&ring->nodes, &cur->lnode);
     ring->nnodes++;
     _hash_ring_add_items(ring, node);
     return ERR_OK;
@@ -146,18 +143,14 @@ void hash_ring_remove(hash_ring_ctx *ring, void *name, size_t lens) {
         || 0 == lens) {
         return;
     }
-    hash_ring_list *next, *prev = NULL, *cur = ring->nodes;
-    while (NULL != cur) {
+    hash_ring_list *cur;
+    list_foreach(&ring->nodes, ln) {
+        cur = UPCAST(ln, hash_ring_list, lnode);
         if (cur->node->lens == lens
             && 0 == memcmp(cur->node->name, name, lens)) {
-            // 找到目标节点，将其移除
-            next = cur->next;
+            // 找到目标节点，将其移除（命中即 return，遍历不再续，list_foreach 安全）
+            list_remove(&ring->nodes, ln);
             FREE(cur->node->name);
-            if (prev == NULL) {
-                ring->nodes = next;
-            } else {
-                prev->next = next;
-            }
             /* 原先：标记 NULL 后调用 qsort，O(n log n)。
              * 优化：因 items 已有序，用单次 O(n) 原地压缩即可：
              * 保留所有不属于被删节点的 item，紧凑排列，顺序不变。 */
@@ -175,8 +168,6 @@ void hash_ring_remove(hash_ring_ctx *ring, void *name, size_t lens) {
             ring->nnodes--;
             return;
         }
-        prev = cur;
-        cur = prev->next;
     }
 }
 // 二分查找大于等于 digest 的第一个节点；超出末尾则环绕返回第一个节点
@@ -203,7 +194,7 @@ static hash_ring_item *_hash_ring_find_next_highest_item(hash_ring_ctx *ring, ui
         if (item->digest > digest) {
             // key 在左半区间
             max = midpointindex - 1;  // int32_t 可降至 -1，不再下溢
-        } else if (item->digest <= digest) {
+        } else {
             // key 在右半区间
             min = midpointindex + 1;
         }
@@ -229,17 +220,17 @@ void hash_ring_print(hash_ring_ctx *ring) {
     printf("----------------------------------------\n");
     printf("hash_ring\n\n");
     printf("Nodes: \n\n");
-    hash_ring_list *cur = ring->nodes;
+    hash_ring_list *cur;
     x = 0;
     uint8_t *name;
-    while (cur != NULL) {
+    list_foreach(&ring->nodes, ln) {
+        cur = UPCAST(ln, hash_ring_list, lnode);
         printf("%d: ", x);
         name = cur->node->name;
         for (y = 0; y < cur->node->lens; y++) {
             printf("%c", name[y]);
         }
         printf("\n");
-        cur = cur->next;
         x++;
     }
     printf("\n");

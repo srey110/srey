@@ -32,8 +32,17 @@
 #define SNPRINTF snprintf       // 格式化输出到缓冲区
 #define SWPRINTF swprintf       // 宽字符格式化输出
 #define FSTAT    stat           // 获取文件状态
-#define USLEEP(us) usleep(us)   // 微秒级睡眠
-#define MSLEEP(ms) usleep((ms) * 1000) // 毫秒级睡眠
+// 微秒级睡眠
+#define USLEEP(us)\
+    do {\
+        uint64_t _slus = (uint64_t)(us);\
+        struct timespec _slts;\
+        _slts.tv_sec = (time_t)(_slus / 1000000);\
+        _slts.tv_nsec = (long)(_slus % 1000000) * 1000L;\
+        nanosleep(&_slts, NULL);\
+    } while (0)
+// 毫秒级睡眠
+#define MSLEEP(ms) USLEEP((uint64_t)(ms) * 1000)
 #define THREAD_YIELD() sched_yield() // OS 级线程让出，用于自旋超限后的兜底退避
 /* 自旋等待 CPU 暂停提示，降低功耗并减少流水线压力 */
 #if defined(ARCH_X86) || defined(ARCH_X64)
@@ -66,63 +75,105 @@
 #define ERRNO       errno       // 获取当前 errno 错误码
 #define ERRORSTR(errcode) strerror(errcode) // 将错误码转换为字符串
 
-#if defined(OS_SUN)
-    typedef uint32_t atomic_t;   // 32 位原子整数类型（Solaris）
-    typedef uint64_t atomic64_t; // 64 位原子整数类型（Solaris）
-    // 原子加，返回旧值（Solaris atomic_add_32_nv 返回新值，减去 val 得旧值）
-    static inline atomic_t _fetchandadd(atomic_t *ptr, atomic_t val) {
-        return atomic_add_32_nv((volatile atomic_t *)ptr, val) - val;
-    }
-    static inline atomic64_t _fetchandadd64(atomic64_t *ptr, atomic64_t val) {
-        return atomic_add_64_nv((volatile atomic64_t *)ptr, val) - val;
-    }
-    // 原子加 32 位，返回旧值
-    #define ATOMIC_ADD(ptr, val) _fetchandadd(ptr, val)
-    // 原子交换 32 位，返回旧值
-    #define ATOMIC_SET(ptr, val) atomic_swap_32((volatile atomic_t *)ptr, val)
-    // 原子比较并交换 32 位，成功返回非零
-    #define ATOMIC_CAS(ptr, oldval, newval) (atomic_cas_32((volatile atomic_t *)ptr, oldval, newval) == oldval)
-    #define ATOMIC64_ADD(ptr, val) _fetchandadd64(ptr, val)
-    #define ATOMIC64_SET(ptr, val) atomic_swap_64((volatile atomic64_t *)ptr, val)
-    #define ATOMIC64_CAS(ptr, oldval, newval) (atomic_cas_64((volatile atomic64_t *)ptr, oldval, newval) == oldval)
-#elif defined(OS_AIX)
+// typedef 按 OS（仅类型不同）；ATOMIC_* 在下方按编译器统一分流
+#if defined(OS_AIX)
     #ifndef __64BIT__
         #error "32-bit AIX (ILP32) is not supported; compile with -maix64 or -q64"
     #endif
     typedef int32_t atomic_t;  // 32 位原子整数类型（AIX）
     typedef long atomic64_t;   // 64 位原子整数类型（AIX）
-    // 原子交换：__sync_lock_test_and_set 仅提供 acquire 屏障，
-    // 前置 __sync_synchronize 补全 release 语义，匹配其他平台的 full barrier
-    static inline atomic_t _aix_exchange(atomic_t *ptr, atomic_t val) {
-        __sync_synchronize();
-        return __sync_lock_test_and_set(ptr, val);
-    };
-    static inline atomic64_t _aix_exchange64(atomic64_t *ptr, atomic64_t val) {
-        __sync_synchronize();
-        return __sync_lock_test_and_set(ptr, val);
-    };
-    // 原子比较并交换（AIX 封装）
-    static inline int32_t _aix_cas(atomic_t *ptr, atomic_t oldval, atomic_t newval) {
-        return compare_and_swap(ptr, &oldval, newval);
-    };
-    static inline int32_t _aix_cas64(atomic64_t *ptr, atomic64_t oldval, atomic64_t newval) {
-        return compare_and_swaplp(ptr, &oldval, newval);
-    };
-    #define ATOMIC_ADD(ptr, val) fetch_and_add(ptr, val)
-    #define ATOMIC_SET(ptr, val) _aix_exchange(ptr, val)
-    #define ATOMIC_CAS(ptr, oldval, newval) _aix_cas(ptr, oldval, newval)
-    #define ATOMIC64_ADD(ptr, val) fetch_and_addlp(ptr, val)
-    #define ATOMIC64_SET(ptr, val) _aix_exchange64(ptr, val)
-    #define ATOMIC64_CAS(ptr, oldval, newval) _aix_cas64(ptr, oldval, newval)
 #else
-    typedef uint32_t atomic_t;   // 32 位原子整数类型（GCC 内建）
-    typedef uint64_t atomic64_t; // 64 位原子整数类型（GCC 内建）
+    typedef uint32_t atomic_t;   // 32 位原子整数类型
+    typedef uint64_t atomic64_t; // 64 位原子整数类型
+#endif
+// ATOMIC_* 按编译器分流：GCC/Clang 用内建（一份覆盖所有 OS）；
+// 否则按 OS 回退——Sun Studio 用 libc atomic + __machine_rw_barrier，xlC 用 AIX 原子服务 + __sync()
+#if defined(__GNUC__) || defined(__clang__)
     #define ATOMIC_ADD(ptr, val) __sync_fetch_and_add(ptr, val)
     #define ATOMIC_SET(ptr, val) __atomic_exchange_n(ptr, val, __ATOMIC_SEQ_CST)
     #define ATOMIC_CAS(ptr, oldval, newval) __sync_bool_compare_and_swap(ptr, oldval, newval)
     #define ATOMIC64_ADD(ptr, val) __sync_fetch_and_add(ptr, val)
     #define ATOMIC64_SET(ptr, val) __atomic_exchange_n(ptr, val, __ATOMIC_SEQ_CST)
     #define ATOMIC64_CAS(ptr, oldval, newval) __sync_bool_compare_and_swap(ptr, oldval, newval)
+#elif defined(OS_SUN)
+    // Sun Studio：atomic_ops(3C) 不含屏障，前后补 __machine_rw_barrier(<mbarrier.h>) 凑齐 seq_cst
+    static inline atomic_t _fetchandadd(atomic_t *ptr, atomic_t val) {
+        return atomic_add_32_nv((volatile atomic_t *)ptr, val) - val;
+    }
+    static inline atomic64_t _fetchandadd64(atomic64_t *ptr, atomic64_t val) {
+        return atomic_add_64_nv((volatile atomic64_t *)ptr, val) - val;
+    }
+    static inline atomic_t _sun_swap(atomic_t *ptr, atomic_t val) {
+        __machine_rw_barrier();
+        atomic_t old = atomic_swap_32((volatile atomic_t *)ptr, val);
+        __machine_rw_barrier();
+        return old;
+    }
+    static inline atomic64_t _sun_swap64(atomic64_t *ptr, atomic64_t val) {
+        __machine_rw_barrier();
+        atomic64_t old = atomic_swap_64((volatile atomic64_t *)ptr, val);
+        __machine_rw_barrier();
+        return old;
+    }
+    static inline int32_t _sun_cas(atomic_t *ptr, atomic_t oldval, atomic_t newval) {
+        __machine_rw_barrier();
+        int32_t ok = (atomic_cas_32((volatile atomic_t *)ptr, oldval, newval) == oldval);
+        __machine_rw_barrier();
+        return ok;
+    }
+    static inline int32_t _sun_cas64(atomic64_t *ptr, atomic64_t oldval, atomic64_t newval) {
+        __machine_rw_barrier();
+        int32_t ok = (atomic_cas_64((volatile atomic64_t *)ptr, oldval, newval) == oldval);
+        __machine_rw_barrier();
+        return ok;
+    }
+    #define ATOMIC_ADD(ptr, val) _fetchandadd(ptr, val)
+    #define ATOMIC_SET(ptr, val) _sun_swap((atomic_t *)(ptr), val)
+    #define ATOMIC_CAS(ptr, oldval, newval) _sun_cas((atomic_t *)(ptr), oldval, newval)
+    #define ATOMIC64_ADD(ptr, val) _fetchandadd64(ptr, val)
+    #define ATOMIC64_SET(ptr, val) _sun_swap64((atomic64_t *)(ptr), val)
+    #define ATOMIC64_CAS(ptr, oldval, newval) _sun_cas64((atomic64_t *)(ptr), oldval, newval)
+#elif defined(OS_AIX)
+    // xlC：AIX 原子服务不含内存序，用 __sync()(PowerPC sync 全屏障，含 StoreLoad) 前后夹住凑齐 seq_cst。
+    // AIX 无原子交换服务，ATOMIC_SET 由 compare_and_swap 循环构造
+    static inline atomic_t _aix_swap(atomic_t *ptr, atomic_t val) {
+        atomic_t old;
+        __sync();
+        do {
+            old = *(volatile atomic_t *)ptr;
+        } while (0 == compare_and_swap(ptr, &old, val));
+        __sync();
+        return old;
+    }
+    static inline atomic64_t _aix_swap64(atomic64_t *ptr, atomic64_t val) {
+        atomic64_t old;
+        __sync();
+        do {
+            old = *(volatile atomic64_t *)ptr;
+        } while (0 == compare_and_swaplp(ptr, &old, val));
+        __sync();
+        return old;
+    }
+    static inline int32_t _aix_cas(atomic_t *ptr, atomic_t oldval, atomic_t newval) {
+        __sync();
+        int32_t ok = compare_and_swap(ptr, &oldval, newval);
+        __sync();
+        return ok;
+    }
+    static inline int32_t _aix_cas64(atomic64_t *ptr, atomic64_t oldval, atomic64_t newval) {
+        __sync();
+        int32_t ok = compare_and_swaplp(ptr, &oldval, newval);
+        __sync();
+        return ok;
+    }
+    #define ATOMIC_ADD(ptr, val) fetch_and_add(ptr, val)
+    #define ATOMIC_SET(ptr, val) _aix_swap(ptr, val)
+    #define ATOMIC_CAS(ptr, oldval, newval) _aix_cas(ptr, oldval, newval)
+    #define ATOMIC64_ADD(ptr, val) fetch_and_addlp(ptr, val)
+    #define ATOMIC64_SET(ptr, val) _aix_swap64(ptr, val)
+    #define ATOMIC64_CAS(ptr, oldval, newval) _aix_cas64(ptr, oldval, newval)
+#else
+    #error "atomic ops: unsupported compiler (need GCC/Clang, Sun Studio on Solaris, or xlC on AIX)"
 #endif
 /// <summary>
 /// 不区分大小写的内存比较（Unix 平台实现）

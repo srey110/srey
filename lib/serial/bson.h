@@ -4,6 +4,7 @@
 #include "utils/binary.h"
 
 #define BSON_OID_LENS  12//ObjectId长度
+#define BSON_DECIMAL128_LENS 16//Decimal128长度
 #define BSON_MAX_DEPTH 18//最大嵌套层数
 
 #define BSON_DOC(bson)  (bson)->doc.data

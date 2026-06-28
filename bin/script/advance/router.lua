@@ -128,7 +128,7 @@ local _KNOWN_METHODS = {
 ---@field query   table<string,string>  URL 查询参数
 ---@field body    string?            请求体，无则为 nil
 ---@field headers table<string,string>  请求头
----@field responded boolean            是否已发送响应;响应方法置位,dispatch 据此避免重复 500
+---@field responded boolean            已响应标志;ctx:* 方法自动置位,dispatch 据此补兜底 500;延迟/手动响应须手动置 true 且勿直接调 http.response(否则与兜底叠成双响应)
 ---@field text    fun(self:Ctx, code:integer, body:string?)        纯文本响应
 ---@field json    fun(self:Ctx, code:integer, tbl:table)           JSON 响应，自动附加 Content-Type
 ---@field html    fun(self:Ctx, code:integer, body:string?)        HTML 响应，自动附加 Content-Type

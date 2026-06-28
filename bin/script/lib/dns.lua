@@ -60,10 +60,10 @@ local function nslookup_tcp(domain, ipv6)
     return dns.unpack(resp, resplens)
 end
 
----查询 domain 的 IP 地址列表：先 UDP，失败时回退 TCP
+---查询 domain 的 IP 地址列表：udp=true 时先 UDP、失败回退 TCP；否则（默认）直接 TCP
 ---@param domain string 待解析的域名
 ---@param ipv6 boolean true 时查询 AAAA 记录，否则 A 记录
----@param udp boolean? true 时优先使用upd查询，否则使用tcp查询
+---@param udp boolean? true 时优先 UDP（失败回退 TCP），否则（默认）仅 TCP
 ---@return string[]|nil ips IP 字符串数组；失败或无结果时返回 nil
 function nslookup(domain, ipv6, udp)
     if udp then

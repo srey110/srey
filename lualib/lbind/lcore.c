@@ -768,6 +768,8 @@ static int32_t _lcore_ssl_seclevel(lua_State *lua) {
     struct evssl_ctx *ssl = lua_touserdata(lua, 1);
     int32_t level = (int32_t)luaL_checkinteger(lua, 2);
     evssl_seclevel(ssl, level);
+#else
+    (void)lua;
 #endif
     return 0;
 }
@@ -788,6 +790,8 @@ static int32_t _lcore_ssl_min_proto(lua_State *lua) {
     struct evssl_ctx *ssl = lua_touserdata(lua, 1);
     int32_t version = (int32_t)luaL_checkinteger(lua, 2);
     evssl_min_proto(ssl, version);
+#else
+    (void)lua;
 #endif
     return 0;
 }
@@ -802,6 +806,8 @@ static int32_t _lcore_ssl_verify(lua_State *lua) {
     struct evssl_ctx *ssl = lua_touserdata(lua, 1);
     int32_t verify = (int32_t)luaL_checkinteger(lua, 2);
     evssl_verify(ssl, verify);
+#else
+    (void)lua;
 #endif
     return 0;
 }

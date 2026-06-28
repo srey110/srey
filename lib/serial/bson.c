@@ -140,11 +140,7 @@ void bson_append_oid(bson_ctx *bson, const char *key, char oid[BSON_OID_LENS]) {
 //signed_byte(8) e_name unsigned_byte(0/1)
 void bson_append_bool(bson_ctx *bson, const char *key, int8_t b) {
     BSON_APPEND_KEY(BSON_BOOL);
-    if (b) {
-        binary_set_int8(&bson->doc, 1);
-    } else {
-        binary_set_int8(&bson->doc, 0);
-    }
+    binary_set_int8(&bson->doc, b ? 1 : 0);
 }
 //signed_byte(9) e_name int64
 void bson_append_date(bson_ctx *bson, const char *key, int64_t date) {
@@ -230,6 +226,20 @@ static int32_t _bson_iter_read_key(bson_iter *iter) {
     iter->key = binary_get_string(iter->doc);
     return 1;
 }
+// 定长类型统一读取:read_key + 边界检查 + binary_get_binary;成功返 1,失败返 0
+static int32_t _bson_iter_fixed(bson_iter *iter, size_t lens) {
+    if (0 == _bson_iter_read_key(iter)) {
+        return ERR_FAILED;
+    }
+    iter->lens = lens;
+    if (iter->doc->offset > iter->doclens
+        || iter->lens > iter->doclens - iter->doc->offset) {
+        LOG_WARN("invalid bson %s.", bson_type_tostring(iter->type));
+        return ERR_FAILED;
+    }
+    iter->val = binary_get_binary(iter->doc, iter->lens);
+    return ERR_OK;
+}
 int32_t bson_iter_next(bson_iter *iter) {
     if (iter->doc->offset >= iter->doclens) {
         return 0;
@@ -244,18 +254,9 @@ int32_t bson_iter_next(bson_iter *iter) {
         more = 0;
         break;
     case BSON_DOUBLE://e_name double
-        if (0 == _bson_iter_read_key(iter)) {
+        if (ERR_OK != _bson_iter_fixed(iter, sizeof(double))) {
             more = 0;
-            break;
         }
-        iter->lens = sizeof(double);
-        if (iter->doc->offset > iter->doclens
-            || iter->lens > iter->doclens - iter->doc->offset) {
-            more = 0;
-            LOG_WARN("invalid bson double.");
-            break;
-        }
-        iter->val = binary_get_binary(iter->doc, iter->lens);
         break;
     case BSON_UTF8://e_name string
     case BSON_JSCODE://e_name string
@@ -263,13 +264,15 @@ int32_t bson_iter_next(bson_iter *iter) {
             more = 0;
             break;
         }
-        if (iter->doc->offset > iter->doclens || 4 > iter->doclens - iter->doc->offset) {
+        if (iter->doc->offset > iter->doclens
+            || 4 > iter->doclens - iter->doc->offset) {
             more = 0;
             LOG_WARN("invalid bson string length.");
             break;
         }
         lens = binary_get_integer(iter->doc, 4, 1);
-        if (lens < 1 || iter->doc->offset > iter->doclens
+        if (lens < 1
+            || iter->doc->offset > iter->doclens
             || (size_t)(lens + 1) > iter->doclens - iter->doc->offset) {
             /* BSON 字符串长度字段含末尾 \0，合法值 >= 1；
              * 为 0 或负数时 (size_t)(lens-1) 下溢，binary_get_binary 读越界。*/
@@ -279,6 +282,11 @@ int32_t bson_iter_next(bson_iter *iter) {
         }
         iter->lens = (size_t)lens - 1;
         iter->val = binary_get_binary(iter->doc, iter->lens + 1);
+        if ('\0' != iter->val[iter->lens]) {
+            iter->val = NULL;
+            more = 0;
+            LOG_WARN("invalid bson string, not null-terminated.");
+        }
         break;
     case BSON_DOCUMENT://e_name document
     case BSON_ARRAY://e_name document
@@ -286,14 +294,17 @@ int32_t bson_iter_next(bson_iter *iter) {
             more = 0;
             break;
         }
-        if (iter->doc->offset > iter->doclens || 4 > iter->doclens - iter->doc->offset) {
+        if (iter->doc->offset > iter->doclens
+            || 4 > iter->doclens - iter->doc->offset) {
             more = 0;
             LOG_WARN("invalid bson document length.");
             break;
         }
         off = iter->doc->offset;
         lens = binary_get_integer(iter->doc, 4, 1);
-        if (lens < 5 || iter->doc->offset > iter->doclens || (size_t)lens > iter->doclens - off) {
+        if (lens < 5
+            || iter->doc->offset > iter->doclens
+            || (size_t)lens > iter->doclens - off) {
             more = 0;
             LOG_WARN("invalid bson document length %" PRId64 ".", lens);
             break;
@@ -307,13 +318,15 @@ int32_t bson_iter_next(bson_iter *iter) {
             more = 0;
             break;
         }
-        if (iter->doc->offset > iter->doclens || 4 > iter->doclens - iter->doc->offset) {
+        if (iter->doc->offset > iter->doclens
+            || 4 > iter->doclens - iter->doc->offset) {
             more = 0;
             LOG_WARN("invalid bson binary length.");
             break;
         }
         lens = binary_get_integer(iter->doc, 4, 1);
-        if (lens < 0 || iter->doc->offset > iter->doclens
+        if (lens < 0
+            || iter->doc->offset > iter->doclens
             || (size_t)lens + 1 > iter->doclens - iter->doc->offset) {
             more = 0;
             LOG_WARN("invalid bson binary length %" PRId64 ".", lens);
@@ -324,55 +337,27 @@ int32_t bson_iter_next(bson_iter *iter) {
         iter->val = binary_get_binary(iter->doc, iter->lens);
         break;
     case BSON_OID://e_name (byte*12)
-        if (0 == _bson_iter_read_key(iter)) {
+        if (ERR_OK != _bson_iter_fixed(iter, BSON_OID_LENS)) {
             more = 0;
-            break;
         }
-        iter->lens = BSON_OID_LENS;
-        if (iter->doc->offset > iter->doclens
-            || iter->lens > iter->doclens - iter->doc->offset) {
-            more = 0;
-            LOG_WARN("invalid bson oid.");
-            break;
-        }
-        iter->val = binary_get_binary(iter->doc, iter->lens);
         break;
     case BSON_BOOL://e_name unsigned_byte(0/1)
-        if (0 == _bson_iter_read_key(iter)) {
+        if (ERR_OK != _bson_iter_fixed(iter, sizeof(uint8_t))) {
             more = 0;
-            break;
         }
-        iter->lens = 1;
-        if (iter->doc->offset > iter->doclens
-            || iter->lens > iter->doclens - iter->doc->offset) {
-            more = 0;
-            LOG_WARN("invalid bson bool.");
-            break;
-        }
-        iter->val = binary_get_binary(iter->doc, iter->lens);
         break;
     case BSON_DATE://e_name int64
     case BSON_TIMESTAMP://e_name uint64
     case BSON_INT64://e_name int64
-        if (0 == _bson_iter_read_key(iter)) {
+        if (ERR_OK != _bson_iter_fixed(iter, sizeof(uint64_t))) {
             more = 0;
-            break;
         }
-        iter->lens = 8;
-        if (iter->doc->offset > iter->doclens
-            || iter->lens > iter->doclens - iter->doc->offset) {
-            more = 0;
-            LOG_WARN("invalid bson int64.");
-            break;
-        }
-        iter->val = binary_get_binary(iter->doc, iter->lens);
         break;
     case BSON_NULL://e_name
     case BSON_MINKEY://e_name
     case BSON_MAXKEY://e_name
         if (0 == _bson_iter_read_key(iter)) {
             more = 0;
-            break;
         }
         break;
     case BSON_REGEX://e_name cstring(regex pattern) cstring(regex options)
@@ -396,32 +381,14 @@ int32_t bson_iter_next(bson_iter *iter) {
         iter->val2 = binary_get_string(iter->doc);
         break;
     case BSON_INT32://e_name int32
-        if (0 == _bson_iter_read_key(iter)) {
+        if (ERR_OK != _bson_iter_fixed(iter, sizeof(int32_t))) {
             more = 0;
-            break;
         }
-        iter->lens = 4;
-        if (iter->doc->offset > iter->doclens
-            || iter->lens > iter->doclens - iter->doc->offset) {
-            more = 0;
-            LOG_WARN("invalid bson int32.");
-            break;
-        }
-        iter->val = binary_get_binary(iter->doc, iter->lens);
         break;
     case BSON_DECIMAL128://e_name decimal128
-        if (0 == _bson_iter_read_key(iter)) {
+        if (ERR_OK != _bson_iter_fixed(iter, BSON_DECIMAL128_LENS)) {
             more = 0;
-            break;
         }
-        iter->lens = 16;
-        if (iter->doc->offset > iter->doclens
-            || iter->lens > iter->doclens - iter->doc->offset) {
-            more = 0;
-            LOG_WARN("invalid bson decimal128.");
-            break;
-        }
-        iter->val = binary_get_binary(iter->doc, iter->lens);
         break;
     default:
         more = 0;
@@ -454,19 +421,20 @@ int32_t bson_iter_find(bson_iter *iter, const char *keys, bson_iter *result) {
         }
         return rtn;
     }
-    size_t n = 0;
-    buf_ctx *arr_key = split(keys, klens, ".", 1, &n);
+    buf_ctx segs[BSON_MAX_DEPTH];
+    int32_t n = split2((char *)keys, klens, '.', segs, BSON_MAX_DEPTH);
+    if (n < 0) {
+        binary_offset(iter->doc, offset);
+        return ERR_FAILED;
+    }
     bson_iter cur_iter = *iter;
-    buf_ctx *key;
     bson_ctx bson;
-    for (size_t i = 0; i < n; i++) {
-        key = &arr_key[i];
-        if (NULL == key->data
-            || 0 == key->lens) {
+    for (int32_t i = 0; i < n; i++) {
+        if (0 == segs[i].lens) {
             rtn = ERR_FAILED;
             break;
         }
-        rtn = _bson_iter_find(&cur_iter, key->data, key->lens, result);
+        rtn = _bson_iter_find(&cur_iter, segs[i].data, segs[i].lens, result);
         if (ERR_OK != rtn) {
             break;
         }
@@ -481,7 +449,6 @@ int32_t bson_iter_find(bson_iter *iter, const char *keys, bson_iter *result) {
         bson_init(&bson, result->val, result->lens);
         bson_iter_init(&cur_iter, &bson);
     }
-    FREE(arr_key);
     if (ERR_OK == rtn) {
         result->nested_doc = bson.doc;
         result->doc = &result->nested_doc;

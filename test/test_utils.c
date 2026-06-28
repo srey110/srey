@@ -1065,6 +1065,25 @@ static void test_str_helpers(CuTest *tc) {
     CuAssertTrue(tc, 1 == n);
     CuAssertTrue(tc, 5 == parts[0].lens);
     FREE(parts);
+
+    /* split2：栈数组切分,无堆分配,保留空段,段数 = sep 数 + 1 */
+    buf_ctx segs[8];
+    char sp1[] = "a/b/c";
+    int32_t sn = split2(sp1, strlen(sp1), '/', segs, 8);
+    CuAssertIntEquals(tc, 3, sn);
+    CuAssertTrue(tc, 1 == segs[0].lens && 0 == memcmp(segs[0].data, "a", 1));
+    CuAssertTrue(tc, 1 == segs[2].lens && 0 == memcmp(segs[2].data, "c", 1));
+
+    /* split2：尾随/连续 sep 产生 len==0 空段 */
+    char sp2[] = "a//";
+    sn = split2(sp2, strlen(sp2), '/', segs, 8);
+    CuAssertIntEquals(tc, 3, sn);
+    CuAssertIntEquals(tc, 0, (int32_t)segs[1].lens);
+    CuAssertIntEquals(tc, 0, (int32_t)segs[2].lens);
+
+    /* split2：段数超 cap 返回 ERR_FAILED */
+    char sp3[] = "a/b/c/d";
+    CuAssertIntEquals(tc, ERR_FAILED, split2(sp3, strlen(sp3), '/', segs, 2));
 }
 
 /* =======================================================================

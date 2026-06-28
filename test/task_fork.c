@@ -192,6 +192,46 @@ static int32_t _test_multi_yield(task_ctx *task) {
     return ERR_OK;
 }
 
+// ── 测试 8：并发 fork_wait 非 LIFO 完成 ───────────────────────────────────
+// 两个独立协程各 coro_fork_wait：先入 fork_barriers 链表者(A)其 worker 先完成 →
+// 移除的是链表非头节点，回归"按节点解链不假设 LIFO"，否则关闭时 _coro_ctx_free 崩
+typedef struct concurrent_arg {
+    uint32_t sleep_ms;
+    int32_t done;
+    int32_t *ok;
+}concurrent_arg;
+
+static void _concurrent_worker(task_ctx *task, void *arg) {
+    concurrent_arg *a = (concurrent_arg *)arg;
+    coro_sleep(task, a->sleep_ms);
+    a->done = 1;
+}
+
+static void _concurrent_driver(task_ctx *task, void *arg) {
+    concurrent_arg *a = (concurrent_arg *)arg;
+    void *wargs[1] = { a };
+    void (*wfuncs[1])(task_ctx *, void *) = { _concurrent_worker };
+    if (ERR_OK == coro_fork_wait(task, 1, wfuncs, wargs) && 1 == a->done) {
+        *(a->ok) = 1;
+    }
+}
+
+static int32_t _test_concurrent_fork_wait(task_ctx *task) {
+    int32_t a_ok = 0;
+    int32_t b_ok = 0;
+    concurrent_arg ca = { .sleep_ms = 20, .done = 0, .ok = &a_ok };
+    concurrent_arg cb = { .sleep_ms = 60, .done = 0, .ok = &b_ok };
+    // A 先 fork（先入链表，处于链表尾），B 后 fork（链表头）；A 先完成 → 非 LIFO 移除
+    coro_fork(task, _concurrent_driver, &ca);
+    coro_fork(task, _concurrent_driver, &cb);
+    coro_sleep(task, 140);// 等 A(~20ms) 与 B(~60ms) 两个 fork_wait 都完成
+    if (1 != a_ok || 1 != b_ok) {
+        LOG_ERROR("fork_wait concurrent: expect both ok, got a=%d b=%d.", a_ok, b_ok);
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+
 static void _startup(task_ctx *task) {
     task_fork_args *arg = (task_fork_args *)coro_get_arg(task);
     if (ERR_OK != _test_single(task)) {
@@ -231,6 +271,12 @@ static void _startup(task_ctx *task) {
         return;
     }
     if (ERR_OK != _test_multi_yield(task)) {
+        return;
+    }
+    if (task_isclosing(task)) {
+        return;
+    }
+    if (ERR_OK != _test_concurrent_fork_wait(task)) {
         return;
     }
     *(arg->ok) = 1;

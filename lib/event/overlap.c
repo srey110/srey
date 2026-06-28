@@ -183,11 +183,12 @@ void _iocp_disconnect(sock_ctx *skctx, int32_t immed) {
             // graceful 中升级到 immed (如 _olp_on_send_cb 内 send 失败): 清 GRACEFUL_CLOSE 走 ERROR 路径
             BIT_REMOVE(tcp->status, STATUS_GRACEFUL_CLOSE);
         }
-        // graceful 但已无待发数据 + 无 in-flight WSASend → 退化为立即关
-        // (否则 _olp_on_send_cb 不会再触发,无人关闭连接)
+        // graceful 无待发数据 + (无 in-flight WSASend 或 ol_s 仅 KeyUpdate 探针) → 退化为立即关
+        // (否则 _olp_on_send_cb 不会再触发,无人关闭连接;KeyUpdate 探针 socket 满会 pend 不完成)
         if (0 == immed
             && 0 == queue_size(&tcp->buf_s)
-            && !BIT_CHECK(tcp->status, STATUS_SENDING)) {
+            && (!BIT_CHECK(tcp->status, STATUS_SENDING)
+                || BIT_CHECK(tcp->status, STATUS_KEYUPDATE))) {
             immed = 1;
         }
         if (0 != immed) {
@@ -197,7 +198,7 @@ void _iocp_disconnect(sock_ctx *skctx, int32_t immed) {
         } else {
             BIT_SET(tcp->status, STATUS_GRACEFUL_CLOSE);
             _iocp_sk_shutdown(skctx);
-            // 不调 CancelIoEx; outstanding WSASend 完成后 _olp_on_send_cb 检测 GRACEFUL+empty → _olp_close_tcp
+            // 不调 CancelIoEx; WSASend 完成后检查队列为再空关闭.
         }
     } else {
         // UDP datagram graceful 无意义,始终走立即关分支
@@ -278,8 +279,116 @@ int32_t _iocp_post_recv(sock_ctx *skctx, DWORD *bytes, DWORD *flag, IOV_TYPE *ws
     }
     return ERR_OK;
 }
+static inline int32_t _olp_post_recv(overlap_tcp_ctx *oltcp) {
+    return _iocp_post_recv(&oltcp->ol_r, &oltcp->bytes_r, &oltcp->flag, &oltcp->wsabuf, 1);
+}
+// 提交WSASend异步发送请求
+// 0 字节 wakeup：
+// 成功 → kernel 有空间 → continue
+// EWOULDBLOCK → kernel 满 → 0 字节 post pend → 等到 buffer 空出空间触发完成 → continue
+static int32_t _olp_post_send(overlap_tcp_ctx *oltcp) {
+    oltcp->bytes_s = 0;
+    ZERO(&oltcp->ol_s.overlapped, sizeof(oltcp->ol_s.overlapped));
+    if (ERR_OK != WSASend(oltcp->ol_s.fd,
+                          &oltcp->wsabuf,
+                          1,
+                          &oltcp->bytes_s,
+                          0,
+                          &oltcp->ol_s.overlapped,
+                          NULL)) {
+        if (ERROR_IO_PENDING != ERRNO) {
+            return ERR_FAILED;
+        }
+    }
+    return ERR_OK;
+}
+static int32_t _olp_wantwrite(overlap_tcp_ctx *oltcp) {
+    if (!BIT_CHECK(oltcp->status, STATUS_SENDING)) {
+        BIT_SET(oltcp->status, STATUS_SENDING);
+        if (ERR_OK != _olp_post_send(oltcp)) {
+            BIT_REMOVE(oltcp->status, STATUS_SENDING);
+            return ERR_FAILED;
+        }
+    }
+    return ERR_OK;
+}
+#if WITH_SSL
+// SSL 握手；1 继续执行 return；0：返回
+static int32_t _olp_ssl_do_handshake(watcher_ctx *watcher, overlap_tcp_ctx *oltcp, int32_t *err, int32_t isrecv) {
+    *err = ERR_OK;
+    int32_t rtn = BIT_CHECK(oltcp->status, STATUS_CLIENT) ?
+                  evssl_tryconn(oltcp->ssl) :
+                  evssl_tryacpt(oltcp->ssl);
+    switch (rtn) {
+    case ERR_OK://完成
+        if (ERR_OK != _olp_call_ssl_exchanged_cb(watcher->ev, oltcp)) {
+            *err = ERR_FAILED;
+            return 1;
+        }
+        BIT_REMOVE(oltcp->status, STATUS_AUTHSSL);
+        return 1;
+    case 1://WANT_READ
+        if (isrecv) {
+            if (ERR_OK != _olp_post_recv(oltcp)) {
+                *err = ERR_FAILED;
+                return 1;
+            }
+        } else {
+            BIT_REMOVE(oltcp->status, STATUS_SENDING);
+        }
+        return 0;
+    case 2://WANT_WRITE
+        if (isrecv) {
+            if (ERR_OK != _olp_wantwrite(oltcp)) {
+                *err = ERR_FAILED;
+                return 1;
+            }
+            if (ERR_OK != _olp_post_recv(oltcp)) {
+                *err = ERR_FAILED;
+                return 1;
+            }
+        } else {
+            if (ERR_OK != _olp_post_send(oltcp)) {
+                *err = ERR_FAILED;
+                return 1;
+            }
+        }
+        return 0;
+    default://错误
+        *err = ERR_FAILED;
+        return 1;
+    }
+}
+#endif
+// 从socket读取数据到接收缓冲区并触发recv回调，成功后重新提交WSARecv
+static inline int32_t _olp_tcp_recv(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
+    size_t nread;
+#if WITH_SSL
+    int32_t rtn = buffer_from_sock(&oltcp->buf_r, oltcp->ol_r.fd, &nread, _evpub_sock_read, oltcp->ssl);
+    if (ERR_OK == rtn
+        && NULL != oltcp->ssl
+        && !BIT_CHECK(oltcp->status, STATUS_SENDING) //忙则跟着业务自行完成
+        && SSL_want_write(oltcp->ssl)) {// tls1.3 KeyUpdate探测
+        BIT_SET(oltcp->status, STATUS_KEYUPDATE);
+    }
+#else
+    int32_t rtn = buffer_from_sock(&oltcp->buf_r, oltcp->ol_r.fd, &nread, _evpub_sock_read, NULL);
+#endif
+    _olp_call_recv_cb(watcher->ev, oltcp, nread);
+    if (ERR_OK == rtn) {
+#if WITH_SSL
+        if (BIT_CHECK(oltcp->status, STATUS_KEYUPDATE)) {// 处理 KeyUpdate 触发可写
+            BIT_SET(oltcp->status, STATUS_NORECV);
+            return _olp_wantwrite(oltcp);
+        }
+#endif
+        rtn = _olp_post_recv(oltcp);
+    }
+    return rtn;
+}
 // 关闭TCP连接：若正在发送则标记延迟关闭，否则立即执行关闭回调并回收到对象池
-static inline void _olp_close_tcp(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
+static void _olp_on_recv_cb_err(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
+    BIT_SET(oltcp->status, STATUS_ERROR);
     if (BIT_CHECK(oltcp->status, STATUS_SENDING)) {
         BIT_SET(oltcp->status, STATUS_REMOVE);
     } else {
@@ -288,101 +397,64 @@ static inline void _olp_close_tcp(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) 
         pool_push(&watcher->pool, &oltcp->ol_r, 0);
     }
 }
-// 从socket读取数据到接收缓冲区并触发recv回调，成功后重新提交WSARecv
-static inline void _olp_tcp_recv(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
-    size_t nread;
-#if WITH_SSL
-    int32_t rtn = buffer_from_sock(&oltcp->buf_r, oltcp->ol_r.fd, &nread, _evpub_sock_read, oltcp->ssl);
-#else
-    int32_t rtn = buffer_from_sock(&oltcp->buf_r, oltcp->ol_r.fd, &nread, _evpub_sock_read, NULL);
-#endif
-    _olp_call_recv_cb(watcher->ev, oltcp, nread);
-    if (ERR_OK == rtn) {
-        rtn = _iocp_post_recv(&oltcp->ol_r, &oltcp->bytes_r, &oltcp->flag, &oltcp->wsabuf, 1);
-    }
-    if (ERR_OK != rtn) {
-        BIT_SET(oltcp->status, STATUS_ERROR);
-        _olp_close_tcp(watcher, oltcp);
-    }
-}
 // IOCP TCP接收完成回调：处理SSL握手或普通数据接收
 static void _olp_on_recv_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
     overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
-    if (0 != oltcp->ol_r.overlapped.Internal) {
-        BIT_SET(oltcp->status, STATUS_ERROR);
+    if (ERROR_SUCCESS != oltcp->ol_r.overlapped.Internal
+        || BIT_CHECK(oltcp->status, STATUS_ERROR)) {
+        _olp_on_recv_cb_err(watcher, oltcp);
+        return;
     }
 #if WITH_SSL
-    if (NULL != oltcp->ssl
-        && BIT_CHECK(oltcp->status, STATUS_AUTHSSL)
-        && !BIT_CHECK(oltcp->status, STATUS_ERROR)) {
-        /* IOCP 无原生写就绪通知机制，无法像 epoll 那样注册 WANT_WRITE 等待。
-         * 握手报文通常 < 16KB，socket 发送缓冲区 >= 8KB，绝大多数情况下
-         * 首次调用即可成功；有界自旋（最多 16 次 CPU_PAUSE 重试）覆盖极端情况，
-         * 仍无法写则视为不可恢复错误关闭连接。*/
-        int32_t rtn;
-        int32_t is_client = BIT_CHECK(oltcp->status, STATUS_CLIENT);
-        for (int32_t i = 0; i < 16; i++) {
-            rtn = is_client ? evssl_tryconn(oltcp->ssl) : evssl_tryacpt(oltcp->ssl);
-            if (2 != rtn) {
-                break;
-            }
-            CPU_PAUSE();
-        }
-        switch (rtn) {
-        case ERR_FAILED://错误
-            BIT_SET(oltcp->status, STATUS_ERROR);
-            break;
-        case ERR_OK://完成
-            if (ERR_OK == _olp_call_ssl_exchanged_cb(watcher->ev, oltcp)) {
-                BIT_REMOVE(oltcp->status, STATUS_AUTHSSL);
-            } else {
-                BIT_SET(oltcp->status, STATUS_ERROR);
-            }
-            break;
-        case 1://等待更多数据（WANT_READ）
-            if (ERR_OK != _iocp_post_recv(&oltcp->ol_r, &oltcp->bytes_r, &oltcp->flag, &oltcp->wsabuf, 1)) {
-                BIT_SET(oltcp->status, STATUS_ERROR);
-                break;
-            } else {
+    if (NULL != oltcp->ssl) {
+        if (BIT_CHECK(oltcp->status, STATUS_AUTHSSL)) {// SSL握手
+            int32_t err;
+            if (!_olp_ssl_do_handshake(watcher, oltcp, &err, 1)) {
                 return;
             }
-        case 2://有界重试耗尽，发送缓冲区持续满，关闭连接
-            BIT_SET(oltcp->status, STATUS_ERROR);
-            break;
+            if (ERR_OK != err) {
+                _olp_on_recv_cb_err(watcher, oltcp);
+                return;
+            }
         }
     }
 #endif
-    if (BIT_CHECK(oltcp->status, STATUS_ERROR)) {
-        _olp_close_tcp(watcher, oltcp);
+    if (ERR_OK != _olp_tcp_recv(watcher, oltcp)) {
+        _olp_on_recv_cb_err(watcher, oltcp);
         return;
     }
-    _olp_tcp_recv(watcher, oltcp);
 }
 #if WITH_SSL
-// 在事件循环内启动SSL握手：设置SSL fd并根据角色调用connect/accept，客户端可能立即完成
-static int32_t _olp_ssl_exchange(watcher_ctx *watcher, overlap_tcp_ctx *oltcp, struct evssl_ctx *evssl) {
+// 触发切ssl
+static int32_t _olp_ssl_exchange_trigger(watcher_ctx *watcher, overlap_tcp_ctx *oltcp,
+                                         struct evssl_ctx *evssl, int32_t *sending) {
+    *sending = 0;
     oltcp->ssl = evssl_setfd(evssl, oltcp->ol_r.fd);
     if (NULL == oltcp->ssl) {
         return ERR_FAILED;
     }
     if (BIT_CHECK(oltcp->status, STATUS_CLIENT)) {
         switch (evssl_tryconn(oltcp->ssl)) {
-        case ERR_FAILED://错误
-            return ERR_FAILED;
-        case ERR_OK://完成
+        case ERR_OK://握手完成
             return _olp_call_ssl_exchanged_cb(watcher->ev, oltcp);
         case 1://等待读就绪（WANT_READ）
             BIT_SET(oltcp->status, STATUS_AUTHSSL);
-            break;
-        case 2://等待写就绪（WANT_WRITE）：IOCP 无写就绪通知，设 STATUS_AUTHSSL 后
-               // 由 _olp_on_recv_cb 的有界自旋重试处理
+            return ERR_OK;
+        case 2://等待写就绪（WANT_WRITE)
+            *sending = 1;
             BIT_SET(oltcp->status, STATUS_AUTHSSL);
-            break;
+            if (ERR_OK != _olp_post_send(oltcp)) {
+                *sending = 0;
+                return ERR_FAILED;
+            }
+            return ERR_OK;
+        default://错误
+            return ERR_FAILED;
         }
     } else {
         BIT_SET(oltcp->status, STATUS_AUTHSSL);
+        return ERR_OK;
     }
-    return ERR_OK;
 }
 #endif
 void _iocp_try_ssl_exchange(watcher_ctx *watcher, sock_ctx *skctx, struct evssl_ctx *evssl, int32_t client) {
@@ -411,54 +483,21 @@ void _iocp_try_ssl_exchange(watcher_ctx *watcher, sock_ctx *skctx, struct evssl_
     }
     if (BIT_CHECK(oltcp->status, STATUS_SENDING)) {
         oltcp->evssl = evssl;
-        BIT_SET(oltcp->status, STATUS_SSLEXCHANGE);
+        BIT_SET(oltcp->status, STATUS_SSLEXCHANGE);// 标记发送队列为空则开始ssl握手
     } else {
-        if (ERR_OK != _olp_ssl_exchange(watcher, oltcp, evssl)) {
+        int32_t sending;
+        if (ERR_OK != _olp_ssl_exchange_trigger(watcher, oltcp, evssl, &sending)) {
             _iocp_disconnect(skctx, 1);
             LOG_ERROR("ssl exchange error.");
+            return;
+        }
+        if (sending) {
+            BIT_SET(oltcp->status, STATUS_SENDING);
         }
     }
 #endif
 }
-// 提交WSASend异步发送请求
-// 0 字节 wakeup：
-// 成功 → kernel 有空间 → continue
-// EWOULDBLOCK → kernel 满 → 0 字节 post pend → 等到 buffer 空出空间触发完成 → continue
-static int32_t _olp_post_send(overlap_tcp_ctx *oltcp) {
-    oltcp->bytes_s = 0;
-    ZERO(&oltcp->ol_s.overlapped, sizeof(oltcp->ol_s.overlapped));
-    if (ERR_OK != WSASend(oltcp->ol_s.fd,
-                          &oltcp->wsabuf,
-                          1,
-                          &oltcp->bytes_s,
-                          0,
-                          &oltcp->ol_s.overlapped,
-                          NULL)) {
-        if (ERROR_IO_PENDING != ERRNO) {
-            return ERR_FAILED;
-        }
-    }
-    return ERR_OK;
-}
-// IOCP TCP发送完成回调：消费发送队列，处理SSL升级，触发send回调
-static void _olp_on_send_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
-    overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_s);
-    (void)bytes;
-    // OVERLAPPED.Internal 是底层 NTSTATUS：非 0 表示 IOCP 已报错（对端 reset 等），
-    // 提前置 STATUS_ERROR 省去下一轮同步 _evpub_sock_send 的无谓尝试
-    if (0 != oltcp->ol_s.overlapped.Internal) {
-        BIT_SET(oltcp->status, STATUS_ERROR);
-    }
-    if (BIT_CHECK(oltcp->status, STATUS_ERROR)) {
-        if (BIT_CHECK(oltcp->status, STATUS_REMOVE)) {
-            _olp_call_close_cb(watcher->ev, oltcp);
-            _evpub_sockel_remove(watcher, oltcp->ol_r.fd);
-            pool_push(&watcher->pool, &oltcp->ol_r, 0);
-        } else {
-            BIT_REMOVE(oltcp->status, STATUS_SENDING);
-        }
-        return;
-    }
+static inline int32_t _olp_tcp_send(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
     size_t nsend;
 #if WITH_SSL
     int32_t rtn = _evpub_sock_send(oltcp->ol_s.fd, &oltcp->buf_s, &nsend, oltcp->ssl);
@@ -468,33 +507,110 @@ static void _olp_on_send_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) 
     oltcp->wb_size -= nsend;
     _olp_call_send_cb(watcher->ev, oltcp, nsend);
     if (ERR_OK != rtn) {
-        BIT_REMOVE(oltcp->status, STATUS_SENDING);
-        _iocp_disconnect(&oltcp->ol_r, 1);
-        return;
+        return ERR_FAILED;
     }
     if (0 == queue_size(&oltcp->buf_s)) {
-        BIT_REMOVE(oltcp->status, STATUS_SENDING);
+        if (BIT_CHECK(oltcp->status, STATUS_GRACEFUL_CLOSE)) {
+            return ERR_FAILED;
+        }
 #if WITH_SSL
-        if (BIT_CHECK(oltcp->status, STATUS_SSLEXCHANGE)) {
-            BIT_REMOVE(oltcp->status, STATUS_SSLEXCHANGE);
-            if (ERR_OK != _olp_ssl_exchange(watcher, oltcp, oltcp->evssl)) {
-                LOG_ERROR("ssl exchange error.");
-                _iocp_disconnect(&oltcp->ol_r, 1);
-                return;
+        // 防止接收侧(_olp_tcp_recv)因 STATUS_SENDING 守卫未触发;
+        // 此时 ol_r 仍在途(NORECV=0),投 ol_s 探针接力,等可写后由 flush 冲出
+        if (NULL != oltcp->ssl
+            && SSL_want_write(oltcp->ssl)) {
+            if (ERR_OK != _olp_post_send(oltcp)) {
+                return ERR_FAILED;
             }
+            BIT_SET(oltcp->status, STATUS_KEYUPDATE);
+            return ERR_OK;// SENDING 保持,探针接力
+        }
+        if (BIT_CHECK(oltcp->status, STATUS_SSLEXCHANGE)) {// 数据发完，切ssl
+            BIT_REMOVE(oltcp->status, STATUS_SSLEXCHANGE);
+            int32_t sending;
+            if (ERR_OK != _olp_ssl_exchange_trigger(watcher, oltcp, oltcp->evssl, &sending)) {
+                LOG_ERROR("ssl exchange error.");
+                return ERR_FAILED;
+            }
+            if (!sending) {
+                BIT_REMOVE(oltcp->status, STATUS_SENDING);
+            }
+            return ERR_OK;
         }
 #endif
-        // graceful close 数据发完:转 immed 关闭路径,经 CancelIoEx 取消 outstanding WSARecv,
-        // 由 _olp_on_recv_cb 走 STATUS_ERROR 分支统一 _olp_close_tcp,避免在此立即关导致 ol_r 完成事件二次进入
-        // (_iocp_disconnect 内部已处理 graceful→immed 升级,无需手动 BIT_REMOVE)
-        if (BIT_CHECK(oltcp->status, STATUS_GRACEFUL_CLOSE)) {
-            _iocp_disconnect(&oltcp->ol_r, 1);
-        }
-        return;
+        BIT_REMOVE(oltcp->status, STATUS_SENDING);
+        return ERR_OK;
     }
-    if (ERR_OK != _olp_post_send(oltcp)) {
+    return _olp_post_send(oltcp);
+}
+#if WITH_SSL
+// KeyUpdate 写就绪探针完成:重试 SSL_read 冲刷响应;没冲完重投探针,冲完按 NORECV 恢复 ol_r
+static int32_t _olp_ssl_keyupdate_flush(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
+    size_t nread;
+    int32_t rtn = buffer_from_sock(&oltcp->buf_r, oltcp->ol_r.fd, &nread, _evpub_sock_read, oltcp->ssl);
+    _olp_call_recv_cb(watcher->ev, oltcp, nread);
+    if (ERR_OK != rtn) {
+        return ERR_FAILED;
+    }
+    if (SSL_want_write(oltcp->ssl)) {// 没冲完,直接重投探针:SENDING 已持有,不走 wantwrite
+        return _olp_post_send(oltcp);
+    }
+    BIT_REMOVE(oltcp->status, STATUS_KEYUPDATE);
+    if (!BIT_CHECK(oltcp->status, STATUS_NORECV)) {// 发侧（_olp_tcp_send）检测出的,此时 STATUS_NORECV = 0
+        return ERR_OK;
+    }
+    rtn = _olp_post_recv(oltcp);// 收侧:暂停收已结束,重投恢复 ol_r
+    if (ERR_OK == rtn) {
+        BIT_REMOVE(oltcp->status, STATUS_NORECV);
+    }
+    return rtn;
+}
+#endif
+static void _olp_send_close_tcp(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
+    if (BIT_CHECK(oltcp->status, STATUS_REMOVE)
+        || BIT_CHECK(oltcp->status, STATUS_NORECV)) {
+        _olp_call_close_cb(watcher->ev, oltcp);
+        _evpub_sockel_remove(watcher, oltcp->ol_r.fd);
+        pool_push(&watcher->pool, &oltcp->ol_r, 0);
+    } else {
         BIT_REMOVE(oltcp->status, STATUS_SENDING);
         _iocp_disconnect(&oltcp->ol_r, 1);
+    }
+}
+// IOCP TCP发送完成回调：消费发送队列，处理SSL升级，触发send回调
+static void _olp_on_send_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
+    overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_s);
+    if (ERROR_SUCCESS != oltcp->ol_s.overlapped.Internal
+        || BIT_CHECK(oltcp->status, STATUS_ERROR)) {
+        _olp_send_close_tcp(watcher, oltcp);
+        return;
+    }
+#if WITH_SSL
+    if (NULL != oltcp->ssl) {
+        if (BIT_CHECK(oltcp->status, STATUS_AUTHSSL)) {// SSL握手
+            int32_t err;
+            if (!_olp_ssl_do_handshake(watcher, oltcp, &err, 0)) {
+                return;
+            }
+            if (ERR_OK != err) {
+                _olp_send_close_tcp(watcher, oltcp);
+                return;
+            }
+        } else {
+            if (BIT_CHECK(oltcp->status, STATUS_KEYUPDATE)) {// tls1.3 KeyUpdate 写就绪
+                if (ERR_OK != _olp_ssl_keyupdate_flush(watcher, oltcp)) {
+                    _olp_send_close_tcp(watcher, oltcp);
+                    return;
+                }
+                if (BIT_CHECK(oltcp->status, STATUS_KEYUPDATE)) {// 没冲完,探针已重投,等下次完成
+                    return;
+                }
+            }
+        }
+    }
+#endif
+    if (ERR_OK != _olp_tcp_send(watcher, oltcp)) {
+        _olp_send_close_tcp(watcher, oltcp);
+        return;
     }
 }
 void _iocp_add_bufs_trypost(sock_ctx *skctx, off_buf_ctx *buf) {
@@ -519,7 +635,7 @@ void _iocp_add_bufs_trypost(sock_ctx *skctx, off_buf_ctx *buf) {
     if (0 != MAX_SENDQ_CNT
         && queue_size(&oltcp->buf_s) >= MAX_SENDQ_CNT) {
         LOG_WARN("TCP send queue overflow on fd %d (>= %d), disconnect.",
-                 (int32_t)oltcp->ol_s.fd, MAX_SENDQ_CNT);
+                (int32_t)oltcp->ol_s.fd, MAX_SENDQ_CNT);
         _evpub_off_buf_release(buf);
         _iocp_disconnect(&oltcp->ol_r, 1);
         return;
@@ -527,15 +643,10 @@ void _iocp_add_bufs_trypost(sock_ctx *skctx, off_buf_ctx *buf) {
     oltcp->wb_size += buf->lens;
     if (tda_check(&oltcp->tda, oltcp->wb_size)) {
         LOG_WARN("TCP send buf growing on fd %d: %zu bytes.",
-                 (int32_t)oltcp->ol_s.fd, oltcp->wb_size);
+                (int32_t)oltcp->ol_s.fd, oltcp->wb_size);
     }
     queue_push(&oltcp->buf_s, buf);
-    if (BIT_CHECK(oltcp->status, STATUS_SENDING)) {
-        return;
-    }
-    BIT_SET(oltcp->status, STATUS_SENDING);
-    if (ERR_OK != _olp_post_send(oltcp)) {
-        BIT_REMOVE(oltcp->status, STATUS_SENDING);
+    if (ERR_OK != _olp_wantwrite(oltcp)) {
         _iocp_disconnect(&oltcp->ol_r, 1);
     }
 }
@@ -577,26 +688,59 @@ static int32_t _olp_post_connect(overlap_tcp_ctx *oltcp, netaddr_ctx *addr) {
     }
     return ERR_OK;
 }
+static void _olp_on_connect_cb_err(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
+    _olp_call_conn_cb(watcher->ev, oltcp, ERR_FAILED);
+    _evpub_sockel_remove(watcher, oltcp->ol_r.fd);
+    pool_push(&watcher->pool, &oltcp->ol_r, 0);
+}
 // ConnectEx完成回调：切换为读回调并提交WSARecv，触发conn回调，可选启动SSL
 static void _olp_on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
     skctx->ev_cb = _olp_on_recv_cb;
     overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
     if (ERROR_SUCCESS != oltcp->ol_r.overlapped.Internal
-        || ERR_OK != setsockopt(oltcp->ol_r.fd, SOL_SOCKET, SO_UPDATE_CONNECT_CONTEXT, NULL, 0)
-        || ERR_OK != _iocp_post_recv(&oltcp->ol_r, &oltcp->bytes_r, &oltcp->flag, &oltcp->wsabuf, 1)) {
-        _olp_call_conn_cb(watcher->ev, oltcp, ERR_FAILED);
-        _evpub_sockel_remove(watcher, oltcp->ol_r.fd);
-        pool_push(&watcher->pool, &oltcp->ol_r, 0);
+        || ERR_OK != setsockopt(oltcp->ol_r.fd, SOL_SOCKET, SO_UPDATE_CONNECT_CONTEXT, NULL, 0)) {
+        _olp_on_connect_cb_err(watcher, oltcp);
         return;
     }
+#if WITH_SSL // 默认启用ssl，初始化
+    if (NULL != oltcp->evssl) {
+        oltcp->ssl = evssl_setfd(oltcp->evssl, oltcp->ol_r.fd);
+        if (NULL == oltcp->ssl) {
+            _olp_on_connect_cb_err(watcher, oltcp);
+            return;
+        }
+        BIT_SET(oltcp->status, STATUS_AUTHSSL);
+    }
+#endif
+    if (ERR_OK != _olp_post_recv(oltcp)) {
+        _olp_on_connect_cb_err(watcher, oltcp);
+        return;
+    }
+    // 链接成功回调
     if (ERR_OK != _olp_call_conn_cb(watcher->ev, oltcp, ERR_OK)) {
-        _iocp_disconnect(skctx, 1);
+        _iocp_disconnect(&oltcp->ol_r, 1);
         return;
     }
 #if WITH_SSL
-    if (NULL != oltcp->evssl) {
-        if (ERR_OK != _olp_ssl_exchange(watcher, oltcp, oltcp->evssl)) {
-            _iocp_disconnect(skctx, 1);
+    if (NULL != oltcp->ssl) {// 开始握手
+        switch (evssl_tryconn(oltcp->ssl)) {
+        case ERR_OK://握手完成
+            BIT_REMOVE(oltcp->status, STATUS_AUTHSSL);
+            if (ERR_OK != _olp_call_ssl_exchanged_cb(watcher->ev, oltcp)) {
+                _iocp_disconnect(&oltcp->ol_r, 1);
+                return;
+            }
+            break;
+        case 1:// WANT_READ
+            break;
+        case 2:// WANT_WRITE
+            if (ERR_OK != _olp_wantwrite(oltcp)) {// 注册写
+                _iocp_disconnect(&oltcp->ol_r, 1);
+                return;
+            }
+            break;
+        default:
+            _iocp_disconnect(&oltcp->ol_r, 1);
             return;
         }
     }
@@ -747,6 +891,10 @@ static void _olp_on_accept_cb(acceptex_ctx *acpctx, sock_ctx *skctx, DWORD bytes
     }
     _cmd_add_acpfd(GET_PTR(acpctx->ev->watcher, acpctx->ev->nthreads, fd), fd, lsn);
 }
+static void _iocp_add_acpfd_inloop_err(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
+    _evpub_sockel_remove(watcher, oltcp->ol_r.fd);
+    pool_push(&watcher->pool, &oltcp->ol_r, 0);
+}
 void _iocp_add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) {
     if (ERR_OK != _iocp_join(watcher, fd)) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
@@ -757,27 +905,25 @@ void _iocp_add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) 
     sock_ctx *skctx = pool_pop(&watcher->pool, &skargs, 0);
     overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
     _evpub_sockel_add(watcher, skctx);
-    /* _iocp_post_recv 在 _olp_ssl_exchange（设置 STATUS_AUTHSSL）之前投递，但不存在竞态：
-     * _iocp_join 将 fd 绑定到本 watcher 的 IOCP，fd 上的所有完成事件只投递到该队列；
-     * 本 watcher 线程此刻正在执行本回调，不会再次进入 GetQueuedCompletionStatus，
-     * 因此 WSARecv 完成只有在本函数返回后才能被取到，届时 STATUS_AUTHSSL 已设置。*/
-    if (ERR_OK != _iocp_post_recv(&oltcp->ol_r, &oltcp->bytes_r, &oltcp->flag, &oltcp->wsabuf, 1)) {
-        _evpub_sockel_remove(watcher, skctx->fd);
-        pool_push(&watcher->pool, skctx, 0);
+#if WITH_SSL
+    if (NULL != lsn->evssl) {// 默认启用ssl
+        // 设置ssl
+        oltcp->ssl = evssl_setfd(lsn->evssl, oltcp->ol_r.fd);
+        if (NULL == oltcp->ssl) {
+            _iocp_add_acpfd_inloop_err(watcher, oltcp);
+            return;
+        }
+        BIT_SET(oltcp->status, STATUS_AUTHSSL);// 等待握手
+    }
+#endif
+    if (ERR_OK != _olp_post_recv(oltcp)) {
+        _iocp_add_acpfd_inloop_err(watcher, oltcp);
         return;
     }
     if (ERR_OK != _olp_call_acp_cb(watcher->ev, oltcp)) {
-        _iocp_disconnect(skctx, 1);
+        _iocp_disconnect(&oltcp->ol_r, 1);
         return;
     }
-#if WITH_SSL
-    if (NULL != lsn->evssl) {
-        if (ERR_OK != _olp_ssl_exchange(watcher, oltcp, lsn->evssl)) {
-            _iocp_disconnect(skctx, 1);
-            return;
-        }
-    }
-#endif
 }
 // 关闭前cnt个AcceptEx挂起的socket（取消未完成的AcceptEx操作）
 static void _olp_free_acceptex(listener_ctx *lsn, int32_t cnt) {
@@ -1113,7 +1259,7 @@ void _iocp_add_fd_inloop(watcher_ctx *watcher, sock_ctx *skctx) {
     _evpub_sockel_add(watcher, skctx);
     if (SOCK_STREAM == skctx->type) {
         overlap_tcp_ctx *tcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
-        if (ERR_OK != _iocp_post_recv(&tcp->ol_r, &tcp->bytes_r, &tcp->flag, &tcp->wsabuf, 1)) {
+        if (ERR_OK != _olp_post_recv(tcp)) {
             _evpub_sockel_remove(watcher, skctx->fd);
             pool_push(&watcher->pool, skctx, 0);
         }

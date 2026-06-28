@@ -28,18 +28,6 @@ typedef struct url_ctx {
 }url_ctx;
 
 /// <summary>
-/// 按 sep 把 path 拆成段写入 segs；标准切分，保留空段（连续 / 尾随 sep 产生 len==0 段，段数 = sep 数 + 1）。
-/// 仅记录段 (data,lens)，不复制、不解码，data 指向 path 内部
-/// </summary>
-/// <param name="path">待拆分路径（可写；调用方若随后就地解码须传可写缓冲）</param>
-/// <param name="lens">path 长度</param>
-/// <param name="sep">段分隔符</param>
-/// <param name="segs">输出段数组，调用方分配</param>
-/// <param name="cap">segs 容量</param>
-/// <returns>段数量；超过 cap 返回 ERR_FAILED</returns>
-int32_t _url_path_split(char *path, size_t lens, int8_t sep,
-                        buf_ctx *segs, int32_t cap);
-/// <summary>
 /// 不支持嵌套 [协议类型]://[访问资源需要的凭证信息]@[服务器地址]:[端口号]/[资源层级UNIX文件路径][文件名]?[查询]#[片段ID]
 /// </summary>
 /// <param name="ctx">url_ctx</param>

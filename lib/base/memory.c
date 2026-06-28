@@ -169,15 +169,17 @@ void *_realloc(void* oldptr, size_t size) {
         _FREE(oldptr);
         return NULL;
     }
+#if MEMORY_CHECK && MEMORY_TRACE && !defined(OS_AIX)
+    if (NULL != oldptr) {
+        _trk_del(oldptr);
+    }
+#endif
     void *ptr = _REALLOC(oldptr, size);
     if (NULL == ptr) {
         LOG_ERROR("realloc(%p, %zu) failed!", oldptr, size);
         exit(ERR_FAILED);
     }
 #if MEMORY_CHECK && MEMORY_TRACE && !defined(OS_AIX)
-    if (NULL != oldptr) {
-        _trk_del(oldptr);
-    }
     _trk_add(ptr);
 #endif
     return ptr;

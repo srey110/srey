@@ -13,6 +13,7 @@ local _SCRIPTS = {
     "http",
     "ws",
     "mqtt",
+    "ssl_reneg",
 }
 
 -- 用 _propath（C 层注入的程序根路径）拼绝对路径，避免依赖 cwd

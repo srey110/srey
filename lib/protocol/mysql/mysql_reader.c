@@ -282,7 +282,9 @@ int64_t mysql_reader_datetime(mysql_reader_ctx *reader, const char *name, int32_
             SET_PTR(err, ERR_FAILED);
             return 0;
         }
-        memcpy(tmp, row->val.data, row->val.lens);
+        if (row->val.lens > 0) {
+            memcpy(tmp, row->val.data, row->val.lens);
+        }
         tmp[row->val.lens] = '\0';
         int32_t y, mo, d, h = 0, mi = 0, sec = 0;
         int32_t n = sscanf(tmp, "%d-%d-%d %d:%d:%d", &y, &mo, &d, &h, &mi, &sec);
@@ -355,7 +357,9 @@ int32_t mysql_reader_time(mysql_reader_ctx *reader, const char *name, struct tm 
             SET_PTR(err, ERR_FAILED);
             return 0;
         }
-        memcpy(tmp, row->val.data, row->val.lens);
+        if (row->val.lens > 0) {
+            memcpy(tmp, row->val.data, row->val.lens);
+        }
         tmp[row->val.lens] = '\0';
         char *p = tmp;
         if ('-' == *p) {

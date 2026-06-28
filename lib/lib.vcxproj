@@ -37,6 +37,7 @@
     <ClInclude Include="containers\queue.h" />
     <ClInclude Include="containers\fsqu.h" />
     <ClInclude Include="containers\sarray.h" />
+    <ClInclude Include="containers\slist.h" />
     <ClInclude Include="crypt\aes.h" />
     <ClInclude Include="crypt\base64.h" />
     <ClInclude Include="crypt\cipher.h" />
@@ -148,6 +149,7 @@
     <ClCompile Include="containers\sarray.c" />
     <ClCompile Include="containers\queue.c" />
     <ClCompile Include="containers\fsqu.c" />
+    <ClCompile Include="containers\slist.c" />
     <ClCompile Include="crypt\aes.c" />
     <ClCompile Include="crypt\base64.c" />
     <ClCompile Include="crypt\cipher.c" />

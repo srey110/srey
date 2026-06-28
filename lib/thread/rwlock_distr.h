@@ -51,7 +51,8 @@ typedef struct rwlock_distr_ctx {
 /// <param name="slot_count">slot 池容量,建议 = 长期读者线程数 + 临时余量</param>
 void rwlock_distr_init(rwlock_distr_ctx *ctx, uint32_t slot_count);
 /// <summary>
-/// 分布式读锁释放
+/// 分布式读锁释放。调用前所有已注册线程须先 rwlock_distr_unregister:
+/// free 无法清其他线程的 TLS,残留陈旧 slot 索引会致其下次 rdlock 越界
 /// </summary>
 /// <param name="ctx">rwlock_distr_ctx</param>
 void rwlock_distr_free(rwlock_distr_ctx *ctx);

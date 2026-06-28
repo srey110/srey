@@ -50,6 +50,9 @@ void hmac_init(hmac_ctx *hmac, digest_type dtype, const char *key, size_t klens)
     secure_zero(block_ipad, sizeof(block_ipad));
     secure_zero(block_opad, sizeof(block_opad));
 }
+void hmac_free(hmac_ctx *hmac) {
+    secure_zero(hmac, sizeof(hmac_ctx));
+}
 size_t hmac_size(hmac_ctx *hmac) {
     return digest_size(&hmac->outside);
 }
@@ -64,7 +67,4 @@ size_t hmac_final(hmac_ctx *hmac, char *hash) {
 void hmac_reset(hmac_ctx *hmac) {
     memcpy(&hmac->inside.eng_ctx, &hmac->inside_init.eng_ctx, sizeof(hmac->inside_init.eng_ctx));
     memcpy(&hmac->outside.eng_ctx, &hmac->outside_init.eng_ctx, sizeof(hmac->outside_init.eng_ctx));
-}
-void hmac_free(hmac_ctx *hmac) {
-    secure_zero(hmac, sizeof(hmac_ctx));
 }

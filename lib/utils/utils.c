@@ -1091,6 +1091,15 @@ void safe_fill_str(char *dst, size_t dstsz, const char *src) {
     memcpy(dst, src, n);
     dst[n] = '\0';
 }
+char *dup_zero(const void *src, size_t lens) {
+    char *dst;
+    MALLOC(dst, lens + 1);
+    if (0 != lens) {
+        memcpy(dst, src, lens);
+    }
+    dst[lens] = '\0';
+    return dst;
+}
 #ifndef OS_WIN
 // 不区分大小写的内存比较（Windows 下由系统提供，非 Windows 手动实现）
 int32_t _memicmp(const void *ptr1, const void *ptr2, size_t lens) {
@@ -1318,6 +1327,31 @@ buf_ctx *split(const void *ptr, size_t plens, const void *sep, size_t seplens, s
     } while (NULL != pos && plens > 0);
     return buf;
 }
+int32_t split2(char *ptr, size_t plens, uint8_t sep, struct buf_ctx *segs, int32_t cap) {
+    int32_t n = 0;
+    size_t remain = plens;
+    char *p = ptr;
+    char *q;
+    size_t slen;
+    // 标准切分:保留空段(连续/尾随 sep 产生 len==0 段),段数 = sep 数 + 1
+    for (;;) {
+        if (n >= cap) {
+            LOG_WARN("split2 segments exceed cap.");
+            return ERR_FAILED;
+        }
+        q = memchr(p, sep, remain);
+        slen = (NULL != q) ? (size_t)(q - p) : remain;
+        segs[n].data = p;
+        segs[n].lens = slen;
+        n++;
+        if (NULL == q) {
+            break;
+        }
+        remain -= (slen + 1);
+        p = q + 1;
+    }
+    return n;
+}
 char *_format_va(const char *fmt, va_list args) {
     /* 先用栈缓冲尝试格式化（绝大多数场景够用），成功则直接复制返回，避免堆分配；
      * 仅当字符串超过栈缓冲大小时，才按实际长度堆分配并重试。 */
@@ -1442,12 +1476,7 @@ uint64_t ntohll(uint64_t val) {
     return rtn;
 }
 uint64_t htonll(uint64_t val) {
-    if (!is_little()) {
-        return val;
-    }
-    uint64_t rtn;
-    pack_integer((char *)&rtn, val, (int32_t)sizeof(uint64_t), 0);
-    return rtn;
+    return ntohll(val);
 }
 #endif
 int32_t ct_memcmp(const void *a, const void *b, size_t len) {

@@ -1,6 +1,6 @@
 ﻿#include "serial/seri.h"
 
-#define SERI_MAX_COOKIE        32     // 短字符串/短数组的 cookie 上限（含 31 表示长 array 转义）
+#define SERI_MAX_COOKIE 32// 短字符串/短数组的 cookie 上限（含 31 表示长 array 转义）
 #define COMBINE_TYPE(t, v)  ((uint8_t)((t) | ((v) << 3)))
 // wire format 类型与 cookie 常量
 typedef enum seri_type {
@@ -117,19 +117,19 @@ static int32_t _seri_read_integer(seri_iter *it, uint8_t cookie, int64_t *out) {
         if (NULL == (p = _seri_rb_read(it, 2))) {
             return -1;
         }
-        *out = unpack_integer(p, 2, 1, 0);  // u16 LE
+        *out = unpack_integer(p, 2, 1, 0);// u16 LE
         return 0;
     case SERI_NUMBER_DWORD:
         if (NULL == (p = _seri_rb_read(it, 4))) {
             return -1;
         }
-        *out = unpack_integer(p, 4, 1, 1);  // i32 LE（保留负数符号）
+        *out = unpack_integer(p, 4, 1, 1);// i32 LE（保留负数符号）
         return 0;
     case SERI_NUMBER_QWORD:
         if (NULL == (p = _seri_rb_read(it, 8))) {
             return -1;
         }
-        *out = unpack_integer(p, 8, 1, 1);  // i64 LE
+        *out = unpack_integer(p, 8, 1, 1);// i64 LE
         return 0;
     default:
         return -1;
@@ -181,7 +181,7 @@ int32_t seri_iter_next(seri_iter *it, seri_item *out) {
                 return -1;
             }
         } else {
-            p = it->buffer + it->offset;  // 长度 0 时 p 指向当前位置（占位）
+            p = it->buffer + it->offset;// 长度 0 时 p 指向当前位置（占位）
         }
         out->type = SERI_ITEM_STRING;
         out->v.s.p = p;

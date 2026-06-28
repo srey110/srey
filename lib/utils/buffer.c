@@ -348,8 +348,8 @@ int32_t buffer_append(buffer_ctx *ctx, void *data, const size_t lens) {
         && 0 == tail->used
         && NODE_SPACE_LEN(tail) >= lens) {
         memcpy(NODE_SPACE_PTR(tail), data, lens);
-        tail->off         += lens;
-        ctx->total_lens   += lens;
+        tail->off += lens;
+        ctx->total_lens += lens;
         return ERR_OK;
     }
     /* 对齐恢复路径：快路径因空间不足失败，但 tail 有 misalign 可回收。
@@ -361,7 +361,7 @@ int32_t buffer_append(buffer_ctx *ctx, void *data, const size_t lens) {
         && _buffer_should_realign(tail, lens)) {
         _buffer_align(tail);
         memcpy(NODE_SPACE_PTR(tail), data, lens);
-        tail->off       += lens;
+        tail->off += lens;
         ctx->total_lens += lens;
         return ERR_OK;
     }

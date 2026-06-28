@@ -11,6 +11,8 @@
 //   5) scatter-gather：coro_fork_wait 3 个 worker 并发 coro_sleep，验证总耗时 ≈ max
 //   6) fork_wait 0 任务：立即返回 ERR_OK，不挂起
 //   7) fork_wait 内多次 yield：每个 worker 多次 yield，验证 barrier 计数正确
+//   8) 并发 fork_wait 非 LIFO 完成：两个独立协程各 fork_wait，先入链表者先完成，
+//      回归 fork_barriers 链表按节点解链（不可假设 LIFO 头部弹出）
 // 全部 case 通过后将 *ok 置 1。
 void task_fork_start(loader_ctx *loader, const char *name, int32_t *ok);
 

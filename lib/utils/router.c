@@ -500,23 +500,16 @@ int32_t router_add_index(router_ctx *r, const char *method, size_t method_len,
     e->segs_n = segs_n;
     return r->routes_n++;//后自增：调用方拿到旧值即新条目的稳定索引
 }
-int32_t router_match_index(router_ctx *r, const char *method, size_t method_len,
-                           const char *url, size_t url_len, router_req *ctx) {
-    router_method m = _router_method_str_to_mask(method, method_len);
-    if (0 == m) {
-        return -1;
-    }
-    //url_parse 解码后段写入 ctx->url_storage；params.val 指向该缓冲，ctx 生命周期须覆盖 params 使用
-    if (ERR_OK != url_parse(&ctx->url_storage, url, url_len, '/', 1)) {
-        return -2;
-    }
+// 在已 url_parse 的 ctx->url_storage 上匹配：就地剔除空段（RFC 允许 /a//b）后线性
+// 扫描路由表，方法掩码命中 + 路径匹配，返回首条命中索引，无命中返回 -1
+static int32_t _router_find(router_ctx *r, router_method m, router_req *ctx) {
     int32_t qn = 0;
-    //RFC 3986 允许空段（如 /a//b），路由匹配须过滤
     for (int32_t i = 0; i < ctx->url_storage.npath; i++) {
         if (ctx->url_storage.segs[i].lens > 0) {
             ctx->url_storage.segs[qn++] = ctx->url_storage.segs[i];
         }
     }
+    ctx->url_storage.npath = qn;
     for (int32_t i = 0; i < r->routes_n; i++) {
         router_entry *e = &r->routes[i];
         if (0 == (e->method_mask & m)) {
@@ -528,6 +521,18 @@ int32_t router_match_index(router_ctx *r, const char *method, size_t method_len,
         }
     }
     return -1;
+}
+int32_t router_match_index(router_ctx *r, const char *method, size_t method_len,
+                           const char *url, size_t url_len, router_req *ctx) {
+    router_method m = _router_method_str_to_mask(method, method_len);
+    if (0 == m) {
+        return -1;
+    }
+    //url_parse 解码后段写入 ctx->url_storage；params.val 指向该缓冲，ctx 生命周期须覆盖 params 使用
+    if (ERR_OK != url_parse(&ctx->url_storage, url, url_len, '/', 1)) {
+        return -2;
+    }
+    return _router_find(r, m, ctx);
 }
 // 中间件需主动调本函数推进链路; 不调即截断, 后续 mw / handler 不执行。
 // 因为是同步递归调用栈, 中间件可在 router_next 返回后做后置处理 (打日志 / 统计耗时)
@@ -668,30 +673,12 @@ void router_dispatch(router_ctx *r, task_ctx *task,
         _router_send_simple(&ctx, 400, "Bad Request\n");
         return;
     }
-    // url_parse 保留空段(RFC);路由按"模板跳空段"语义匹配, 这里就地剔除空段
-    int32_t qn = 0;
-    for (int32_t i = 0; i < ctx.url_storage.npath; i++) {
-        if (ctx.url_storage.segs[i].lens > 0) {
-            ctx.url_storage.segs[qn++] = ctx.url_storage.segs[i];
-        }
-    }
-    // 线性扫描路由表: 方法位掩码 & 命中 + 路径匹配, 首条命中即用
-    router_entry *matched = NULL;
-    for (int32_t i = 0; i < r->routes_n; i++) {
-        router_entry *e = &r->routes[i];
-        if (0 == (e->method_mask & m)) {
-            continue;
-        }
-        ctx.params_n = 0;
-        if (_router_match_path(e->segs, e->segs_n, ctx.url_storage.segs, qn, &ctx)) {
-            matched = e;
-            break;
-        }
-    }
-    if (NULL == matched) {
+    int32_t idx = _router_find(r, m, &ctx);
+    if (idx < 0) {
         _router_send_simple(&ctx, 404, "Not Found\n");
         return;
     }
+    router_entry *matched = &r->routes[idx];
     // 拼接执行链 chain: 全局中间件 → 路由级中间件 → handler
     int32_t need = r->global_mw_n + matched->mws_n + 1;
     if (need > ROUTER_MAX_CHAIN) {

@@ -63,21 +63,20 @@ int32_t _iocp_join(watcher_ctx *watcher, SOCKET fd) {
 // 命令管道可读事件回调：批量窃取队列后无锁处理
 static void _iocp_on_cmd(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
     size_t cnt_total = 0;
-    int32_t i, cnt, nread;
+    int32_t i, cnt;
     char ntrigger[CMD_MAX_NREAD];
     cmd_ctx cmds[CMD_MAX_NREAD];
     overlap_cmd_ctx *olcmd = UPCAST(skctx, overlap_cmd_ctx, ol_r);
-    for (;;) {
-        nread = recv(olcmd->ol_r.fd, ntrigger, sizeof(ntrigger), 0);
-        if (nread <= 0) {
-            break;
-        }
-        cnt = (int32_t)fsqu_pop_sc_batch(&olcmd->qu, cmds, (uint32_t)nread);
-        cnt_total += (size_t)cnt;
+    // 触发字节仅作唤醒信号，先抽干清可读态（零字节 WSARecv re-arm 只在新字节到达时再触发）
+    while (recv(olcmd->ol_r.fd, ntrigger, sizeof(ntrigger), 0) > 0) { }
+    // 与字节数解耦全量抽干：队头被并发生产者占槽未发布时本轮提前停，其触发字节随后必到再唤醒补齐，不丢命令也不空转
+    do {
+        cnt = (int32_t)fsqu_pop_sc_batch(&olcmd->qu, cmds, CMD_MAX_NREAD);
         for (i = 0; i < cnt; i++) {
             cmd_cbs[cmds[i].cmd](watcher, &cmds[i]);
         }
-    }
+        cnt_total += (size_t)cnt;
+    } while (cnt > 0);
     if (tda_check(&olcmd->tda, cnt_total)) {
         LOG_WARN("watcher %d cmd queue overload, count %zu.", watcher->index, cnt_total);
     }
@@ -300,7 +299,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
         watcher = &ctx->watcher[i];
         watcher->index = i;
         ATOMIC_SET(&watcher->stop, 0);
-        watcher->iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 1);
+        watcher->iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 1);// 1线程 对同一socket操作是线程安全
         ASSERTAB(NULL != watcher->iocp, ERRORSTR(ERRNO));
         watcher->ev = ctx;
         watcher->element = hashmap_new_with_allocator(_malloc, _realloc, _free,

@@ -111,9 +111,9 @@ SSL *evssl_setfd(evssl_ctx *evssl, SOCKET fd);
 /// </summary>
 /// <param name="ssl">SSL</param>
 /// <returns>
-///     ERR_OK:握手完成 
-///     1:需要读就绪（WANT_READ），重新注册读事件后重试 
-///     2:需要写就绪（WANT_WRITE），重新注册写事件后重试（Unix）或有界自旋（IOCP） 
+///     ERR_OK:握手完成
+///     1:需要读就绪（WANT_READ），重新注册读事件后重试
+///     2:需要写就绪（WANT_WRITE），重新注册写事件后重试
 ///     ERR_FAILED:失败
 ///</returns>
 int32_t evssl_tryacpt(SSL *ssl);
@@ -122,9 +122,9 @@ int32_t evssl_tryacpt(SSL *ssl);
 /// </summary>
 /// <param name="ssl">SSL</param>
 /// <returns>
-/// ERR_OK:握手完成 
-///     1:需要读就绪（WANT_READ），重新注册读事件后重试 
-///     2:需要写就绪（WANT_WRITE），重新注册写事件后重试（Unix）或有界自旋（IOCP） 
+/// ERR_OK:握手完成
+///     1:需要读就绪（WANT_READ），重新注册读事件后重试
+///     2:需要写就绪（WANT_WRITE），重新注册写事件后重试
 ///     ERR_FAILED:失败
 ///</returns>
 int32_t evssl_tryconn(SSL *ssl);
@@ -152,6 +152,19 @@ int32_t evssl_send(SSL *ssl, char *buf, size_t len, size_t *sended);
 /// <param name="ssl">SSL</param>
 /// <param name="fd">socket句柄</param>
 void evssl_shutdown(SSL *ssl, SOCKET fd);
+/// <summary>
+/// ssl版本，完成握手后调用
+/// </summary>
+/// <param name="ssl">SSL</param>
+/// <returns>SSL3_VERSION TLS1_VERSION TLS1_1_VERSION TLS1_2_VERSION TLS1_3_VERSION</returns>
+int32_t evssl_version(SSL *ssl);
+/// <summary>
+/// TLS1_3 keyupdate
+/// </summary>
+/// <param name="ssl">SSL</param>
+/// <param name="updatetype">SSL_KEY_UPDATE_NOT_REQUESTED(单向更新) SSL_KEY_UPDATE_REQUESTED(双向更新)</param>
+/// <returns>ERR_OK 成功</returns>
+int32_t evssl_keyupdate(SSL *ssl, int32_t updatetype);
 
 #endif//WITH_SSL
 #endif//EVSSL_H_

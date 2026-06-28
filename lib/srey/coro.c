@@ -4,6 +4,7 @@
 #include "utils/timer.h"
 #include "utils/binary.h"
 #include "utils/pool.h"
+#include "containers/slist.h"
 #define MINICORO_IMPL
 #include "srey/minicoro.h"
 
@@ -39,19 +40,19 @@ typedef struct coro_sess {
 // 归零时唤醒 waiter（栈生命周期到 coro_fork_wait return 才结束，覆盖 yield 期间）；
 // yield 期间挂入 coctx->fork_barriers 链表，task 关闭时由 _coro_ctx_free 兜底 destroy
 typedef struct fork_barrier {
+    list_node node;             // coctx->fork_barriers 侵入式链表节点（slist，UPCAST 复原外层）
     int32_t pending;            // 未完成的 fork 子协程数；stub 跑完递减 1，归零唤醒 waiter
     mco_coro *waiter;           // 等待 barrier 归零的父协程；pending=0 时 mco_resume 唤醒
-    struct fork_barrier *next;  // coctx->fork_barriers 链表 next 指针
 } fork_barrier;
 // 协程任务的运行时上下文，挂在 task->arg
 typedef struct coro_ctx {
     int32_t nyield;              // 当前挂起（yield）中的协程数量
     mco_coro *curco;             // 正在运行的协程指针
-    fork_barrier *fork_barriers; // 所有挂起的 fork_wait 屏障链表；支持嵌套；task 关闭时由 _coro_ctx_free 兜底 destroy
     struct hashmap *mapco;       // sess → coro_sess 哈希映射
     void *arg;                   // 用户自定义数据
     free_cb _arg_free;           // 用户数据释放回调
     uint64_t shrink_ms;          // 上次协程池收缩的时间戳(ms)，按 SHRINK_TIME 门控
+    list_ctx fork_barriers;      // 所有挂起的 fork_wait 屏障链表（slist）；task 关闭时由 _coro_ctx_free 兜底 destroy
     pool_ctx copool;             // 空闲协程对象池（元素 mco_coro *，含负载趋势）
     timer_ctx timer;             // 用于获取当前毫秒时间戳
     heap_ctx timeout_heap;       // 按到期时间排序的最小堆,O(1) 检查最早超时
@@ -64,15 +65,14 @@ typedef struct fork_wait_slot {
 } fork_wait_slot;
 // serial waiter 链表节点：cs 挂起协程的 FIFO 元素，进队时 MALLOC、出队由前一个协程的 _coro_serial_release FREE
 typedef struct serial_node {
+    list_node node;           // 侵入式 FIFO 链表节点（slist，UPCAST 复原外层）
     mco_coro *co;             // 等待中的协程
-    struct serial_node *next; // 下一节点；NULL 表示队尾
 } serial_node;
 struct coro_serial_ctx {
     int32_t ref;           // 嵌套深度（同协程多次进入累加）
     task_ctx *task;        // 所属 task；resume 时同步 coctx->curco 需要
     mco_coro *current;     // 当前持锁协程；NULL 表示无锁
-    serial_node *head;     // waiters FIFO 队头
-    serial_node *tail;     // waiters FIFO 队尾
+    list_ctx waiters;      // 挂起 waiter 的 FIFO（元素 serial_node，UPCAST 复原）
 };
 
 static mco_desc _coro_desc; // 全局协程描述符，由 coro_desc_init 初始化
@@ -306,11 +306,10 @@ static void _coro_ctx_free(void *arg) {
         }
     }
     hashmap_free(coctx->mapco);
-    fork_barrier *next, *fb = coctx->fork_barriers;
-    while (NULL != fb) {
-        next = fb->next;
+    fork_barrier *fb;
+    list_foreach_safe(&coctx->fork_barriers, ln, tmp) {
+        fb = UPCAST(ln, fork_barrier, node);
         mco_destroy(fb->waiter);
-        fb = next;
     }
     //释放用户数据
     if (NULL != coctx->_arg_free
@@ -838,12 +837,12 @@ int32_t coro_fork_wait(task_ctx *task,
         slot->barrier = &barrier;
         coro_fork(task, _coro_fork_wait_stub, slot);
     }
-    barrier.next = coctx->fork_barriers;
-    coctx->fork_barriers = &barrier;
+    list_push_head(&coctx->fork_barriers, &barrier.node);// 入队
     ++coctx->nyield;
     mco_result rtn = mco_yield(coctx->curco);
     --coctx->nyield;
-    coctx->fork_barriers = barrier.next;
+    // 并发 fork_wait 完成顺序非 LIFO，移除的可能非队头，按节点解链（勿改 pop_head）
+    list_remove(&coctx->fork_barriers, &barrier.node);
     ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
     return ERR_OK;
 }
@@ -855,7 +854,7 @@ coro_serial_ctx *coro_serial_new(task_ctx *task) {
 }
 void coro_serial_free(coro_serial_ctx *serial) {
     // 销毁前调用方应保证无 in-flight：current/ref/waiters 全清空
-    ASSERTAB(NULL == serial->current && 0 == serial->ref && NULL == serial->head,
+    ASSERTAB(NULL == serial->current && 0 == serial->ref && list_empty(&serial->waiters),
              "coro_serial_free with active holders or waiters");
     FREE(serial);
 }
@@ -865,15 +864,12 @@ static void _coro_serial_release(coro_serial_ctx *serial) {
     if (0 != serial->ref) {
         return;
     }
-    serial_node *nxt = serial->head;
-    if (NULL == nxt) {
+    list_node *ln = list_pop_head(&serial->waiters);
+    if (NULL == ln) {
         serial->current = NULL;
         return;
     }
-    serial->head = nxt->next;
-    if (NULL == serial->head) {
-        serial->tail = NULL;
-    }
+    serial_node *nxt = UPCAST(ln, serial_node, node);
     // 唤醒前先设置 current/ref，nxt 唤醒后读取看到一致状态
     mco_coro *wco = nxt->co;
     serial->current = wco;
@@ -901,25 +897,19 @@ int32_t coro_serial_call(coro_serial_ctx *serial,
     mco_coro *self = coctx->curco;
     if (NULL != serial->current && serial->current != self) {
         // ── 跨协程路径：锁被其他协程持有，需排队等待 ─────────────────────
-        // 1) MALLOC 新 waiter 节点，单向链表 tail 入队保证 FIFO 顺序
+        // 1) MALLOC 新 waiter 节点，list_push_tail 入队保证 FIFO 顺序
         // 2) mco_yield(self) 挂起当前协程，控制权交回 task 消息循环
         // 3) 唤醒由前一个持锁协程在 _coro_serial_release 内完成：
-        //    - FREE(node) → current=self → ref=1 → coctx->curco=self → mco_resume(self)
-        // 4) 所以本路径不重复 current/ref 赋值，唤醒方已代劳；node 也已 FREE
-        // 频繁 MALLOC/FREE：若 cs 高频可改 intrusive 栈节点，目前按简单实现走
-        serial_node *node;
-        MALLOC(node, sizeof(*node));
-        node->co = self;
-        node->next = NULL;
-        if (NULL != serial->tail) {
-            serial->tail->next = node;
-        } else {
-            serial->head = node;
-        }
-        serial->tail = node;
+        //    - FREE(nd) → current=self → ref=1 → coctx->curco=self → mco_resume(self)
+        // 4) 所以本路径不重复 current/ref 赋值，唤醒方已代劳；nd 也已 FREE
+        // 频繁 MALLOC/FREE：若 cs 高频可改栈分配 waiter 节点，目前按简单实现走
+        serial_node *nd;
+        MALLOC(nd, sizeof(*nd));
+        nd->co = self;
+        list_push_tail(&serial->waiters, &nd->node);
         mco_result rtn = mco_yield(self);
         ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
-        // 唤醒后状态：serial->current==self, serial->ref==1, node 已 FREE
+        // 唤醒后状态：serial->current==self, serial->ref==1, nd 已 FREE
     } else {
         // ── 无锁或同协程嵌套路径 ─────────────────────────────────────
         // current==NULL：占据锁，current=self, ref 从 0 → 1

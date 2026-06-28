@@ -764,6 +764,230 @@ static void test_heap_remove_root(CuTest *tc) {
 }
 
 /* =======================================================================
+ * slist —— 侵入式双向链表（intrusive）
+ * ======================================================================= */
+typedef struct { list_node node; int val; } _lnode;
+
+/* 校验双向完整性 + 顺序：size、空判、正向序列==exp、反向序列==exp 逆序、head->prev/tail->next 边界 */
+static void _slist_check(CuTest *tc, list_ctx *l, const int *exp, uint32_t n) {
+    list_node *it;
+    uint32_t cnt;
+    CuAssertTrue(tc, n == list_size(l));
+    if (0 == n) {
+        CuAssertTrue(tc, 0 != list_empty(l));
+        CuAssertTrue(tc, NULL == l->head);
+        CuAssertTrue(tc, NULL == l->tail);
+    } else {
+        CuAssertTrue(tc, 0 == list_empty(l));
+        CuAssertTrue(tc, NULL == l->head->prev);
+        CuAssertTrue(tc, NULL == l->tail->next);
+    }
+    cnt = 0;
+    for (it = l->head; NULL != it; it = it->next) {
+        CuAssertTrue(tc, exp[cnt] == UPCAST(it, _lnode, node)->val);
+        cnt++;
+    }
+    CuAssertTrue(tc, n == cnt);
+    cnt = 0;
+    for (it = l->tail; NULL != it; it = it->prev) {
+        CuAssertTrue(tc, exp[n - 1 - cnt] == UPCAST(it, _lnode, node)->val);
+        cnt++;
+    }
+    CuAssertTrue(tc, n == cnt);
+}
+
+/* 空表 / push_head·tail 顺序 / pop_head·tail / size */
+static void test_slist_basic(CuTest *tc) {
+    list_ctx l;
+    _lnode nodes[5];
+    int exp[5];
+    int i;
+    list_node *p;
+    list_init(&l);
+    CuAssertTrue(tc, 0 != list_empty(&l));
+    CuAssertTrue(tc, 0 == list_size(&l));
+    CuAssertTrue(tc, NULL == list_pop_head(&l));
+    CuAssertTrue(tc, NULL == list_pop_tail(&l));
+    /* push_tail → 正序 0..4 */
+    for (i = 0; i < 5; i++) {
+        nodes[i].val = i;
+        list_push_tail(&l, &nodes[i].node);
+        exp[i] = i;
+    }
+    _slist_check(tc, &l, exp, 5);
+    /* pop_head FIFO：0,1,2,3,4 */
+    for (i = 0; i < 5; i++) {
+        p = list_pop_head(&l);
+        CuAssertTrue(tc, NULL != p);
+        CuAssertTrue(tc, i == UPCAST(p, _lnode, node)->val);
+    }
+    CuAssertTrue(tc, 0 != list_empty(&l));
+    /* push_head → 逆序 4..0；pop_tail 取 0,1,2,3,4 */
+    for (i = 0; i < 5; i++) {
+        nodes[i].val = i;
+        list_push_head(&l, &nodes[i].node);
+    }
+    for (i = 0; i < 5; i++) {
+        exp[i] = 4 - i;
+    }
+    _slist_check(tc, &l, exp, 5);
+    for (i = 0; i < 5; i++) {
+        p = list_pop_tail(&l);
+        CuAssertTrue(tc, NULL != p);
+        CuAssertTrue(tc, i == UPCAST(p, _lnode, node)->val);
+    }
+    CuAssertTrue(tc, 0 == list_size(&l));
+}
+
+/* insert_before(含新头) / insert_after(含新尾) / 中间插 */
+static void test_slist_insert(CuTest *tc) {
+    list_ctx l;
+    _lnode n[5];
+    int exp[5];
+    int i;
+    list_init(&l);
+    for (i = 0; i < 5; i++) {
+        n[i].val = i;
+    }
+    list_push_tail(&l, &n[2].node);                  /* [2] */
+    list_insert_before(&l, &n[2].node, &n[1].node);  /* [1,2] */
+    list_insert_before(&l, &n[1].node, &n[0].node);  /* [0,1,2] n0 成新头 */
+    CuAssertTrue(tc, &n[0].node == l.head);
+    list_insert_after(&l, &n[2].node, &n[3].node);   /* [0,1,2,3] */
+    list_insert_after(&l, &n[3].node, &n[4].node);   /* [0,1,2,3,4] n4 成新尾 */
+    CuAssertTrue(tc, &n[4].node == l.tail);
+    for (i = 0; i < 5; i++) {
+        exp[i] = i;
+    }
+    _slist_check(tc, &l, exp, 5);
+}
+
+/* remove 头/尾/中/唯一 四位置 + 解后置 NULL + 复用 */
+static void test_slist_remove(CuTest *tc) {
+    list_ctx l;
+    _lnode n[5];
+    int exp[5];
+    int i;
+    list_init(&l);
+    for (i = 0; i < 5; i++) {
+        n[i].val = i;
+        list_push_tail(&l, &n[i].node);
+    }
+    /* 中间 */
+    list_remove(&l, &n[2].node);
+    CuAssertTrue(tc, NULL == n[2].node.next);
+    CuAssertTrue(tc, NULL == n[2].node.prev);
+    exp[0] = 0; exp[1] = 1; exp[2] = 3; exp[3] = 4;
+    _slist_check(tc, &l, exp, 4);
+    /* 头 */
+    list_remove(&l, &n[0].node);
+    exp[0] = 1; exp[1] = 3; exp[2] = 4;
+    _slist_check(tc, &l, exp, 3);
+    /* 尾 */
+    list_remove(&l, &n[4].node);
+    exp[0] = 1; exp[1] = 3;
+    _slist_check(tc, &l, exp, 2);
+    /* 至唯一 → 空 */
+    list_remove(&l, &n[1].node);
+    exp[0] = 3;
+    _slist_check(tc, &l, exp, 1);
+    list_remove(&l, &n[3].node);
+    _slist_check(tc, &l, NULL, 0);
+    /* 复用被删节点 */
+    list_push_head(&l, &n[2].node);
+    list_push_tail(&l, &n[0].node);
+    exp[0] = 2; exp[1] = 0;
+    _slist_check(tc, &l, exp, 2);
+}
+
+/* splice(空src/空dst/两端非空) + list_iter + foreach + foreach_safe(遍历中删) */
+static void test_slist_splice_iter(CuTest *tc) {
+    list_ctx a, b;
+    _lnode na[3], nb[3];
+    int exp[6];
+    int i, cnt;
+    list_node *p;
+    list_iter it;
+    /* 空 src → no-op */
+    list_init(&a);
+    list_init(&b);
+    for (i = 0; i < 3; i++) {
+        na[i].val = i;
+        list_push_tail(&a, &na[i].node);
+    }
+    list_splice_tail(&a, &b);
+    exp[0] = 0; exp[1] = 1; exp[2] = 2;
+    _slist_check(tc, &a, exp, 3);
+    /* 空 dst ← src（src 清空）*/
+    list_init(&a);
+    list_init(&b);
+    for (i = 0; i < 3; i++) {
+        nb[i].val = 10 + i;
+        list_push_tail(&b, &nb[i].node);
+    }
+    list_splice_tail(&a, &b);
+    exp[0] = 10; exp[1] = 11; exp[2] = 12;
+    _slist_check(tc, &a, exp, 3);
+    _slist_check(tc, &b, NULL, 0);
+    /* 两端非空：顺序保留 + size 相加 */
+    list_init(&a);
+    list_init(&b);
+    for (i = 0; i < 3; i++) {
+        na[i].val = i;
+        list_push_tail(&a, &na[i].node);
+    }
+    for (i = 0; i < 3; i++) {
+        nb[i].val = 10 + i;
+        list_push_tail(&b, &nb[i].node);
+    }
+    list_splice_tail(&a, &b);
+    exp[0] = 0; exp[1] = 1; exp[2] = 2; exp[3] = 10; exp[4] = 11; exp[5] = 12;
+    _slist_check(tc, &a, exp, 6);
+    _slist_check(tc, &b, NULL, 0);
+    /* list_iter 顺序遍历 */
+    list_iter_init(&it, &a);
+    cnt = 0;
+    while (NULL != (p = list_iter_next(&it))) {
+        CuAssertTrue(tc, exp[cnt] == UPCAST(p, _lnode, node)->val);
+        cnt++;
+    }
+    CuAssertTrue(tc, 6 == cnt);
+    /* foreach 顺序遍历 */
+    cnt = 0;
+    list_foreach(&a, fit) {
+        CuAssertTrue(tc, exp[cnt] == UPCAST(fit, _lnode, node)->val);
+        cnt++;
+    }
+    CuAssertTrue(tc, 6 == cnt);
+    /* foreach_safe 遍历中删偶数值（剩 1,11）*/
+    list_foreach_safe(&a, sit, tmp) {
+        if (0 == (UPCAST(sit, _lnode, node)->val & 1)) {
+            list_remove(&a, sit);
+        }
+    }
+    exp[0] = 1; exp[1] = 11;
+    _slist_check(tc, &a, exp, 2);
+    /* 空表遍历：list_iter / foreach / foreach_safe body 均执行 0 次 */
+    list_init(&b);
+    cnt = 0;
+    list_iter_init(&it, &b);
+    while (NULL != list_iter_next(&it)) {
+        cnt++;
+    }
+    CuAssertTrue(tc, 0 == cnt);
+    cnt = 0;
+    list_foreach(&b, eit) {
+        cnt++;
+    }
+    CuAssertTrue(tc, 0 == cnt);
+    cnt = 0;
+    list_foreach_safe(&b, esit, etmp) {
+        cnt++;
+    }
+    CuAssertTrue(tc, 0 == cnt);
+}
+
+/* =======================================================================
  * queue_ctx —— 环形队列（自动扩容）
  * ======================================================================= */
 
@@ -1025,6 +1249,19 @@ static void test_hashmap_with_hash_variants(CuTest *tc) {
     hashmap_free(map);
 }
 
+// hashmap_murmur(MM86128) 对含高位字节、>=16 且非对齐起始的 key 不触发 UB:
+// tail 的 <<24 有符号溢出 + block 的未对齐 uint32_t 读;asan/ubsan 构建下验证
+static void test_hashmap_murmur_no_ub(CuTest *tc) {
+    uint8_t buf[32];
+    for (int32_t i = 0; i < 32; i++) {
+        buf[i] = (uint8_t)(0x80 + i);// 全部 >= 0x80,触发 tail <<24 有符号溢出
+    }
+    // buf+1 非对齐起始;len=20 = 1 完整 block(触发未对齐读) + 4 tail(触发 case4 <<24)
+    uint64_t h1 = hashmap_murmur(buf + 1, 20, 0, 0);
+    uint64_t h2 = hashmap_murmur(buf + 1, 20, 0, 0);
+    CuAssertTrue(tc, h1 == h2);// 确定性;UBSan 下验证无溢出/未对齐 UB
+}
+
 static void test_hashmap_clear_update_cap(CuTest *tc) {
     /* 大容量初始化后插入再 clear(true)：容量回缩到初始 */
     struct hashmap *map = hashmap_new(sizeof(_kv), 16, 0, 0,
@@ -1097,9 +1334,14 @@ void test_containers(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_hashmap);
     SUITE_ADD_TEST(suite, test_hashmap_scan_iter);
     SUITE_ADD_TEST(suite, test_hashmap_with_hash_variants);
+    SUITE_ADD_TEST(suite, test_hashmap_murmur_no_ub);
     SUITE_ADD_TEST(suite, test_hashmap_clear_update_cap);
     SUITE_ADD_TEST(suite, test_heap);
     SUITE_ADD_TEST(suite, test_heap_remove_root);
+    SUITE_ADD_TEST(suite, test_slist_basic);
+    SUITE_ADD_TEST(suite, test_slist_insert);
+    SUITE_ADD_TEST(suite, test_slist_remove);
+    SUITE_ADD_TEST(suite, test_slist_splice_iter);
     SUITE_ADD_TEST(suite, test_queue);
     SUITE_ADD_TEST(suite, test_array);
     SUITE_ADD_TEST(suite, test_array_ptr);

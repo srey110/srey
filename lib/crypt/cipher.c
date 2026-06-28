@@ -98,13 +98,11 @@ static void _cipher_xor_data(cipher_ctx *cipher, const uint8_t *data, const uint
         cipher->xor_data[i] = data[i] ^ xorbuf[i];
     }
 }
-// CTR 模式下自增 IV 计数器，counter_size 为计数器字节数
-static void _cipher_inc_iv(uint8_t *iv, int32_t block_lens, int32_t counter_size) {
-    int32_t nonce_idx = block_lens - counter_size;
-    for (int32_t idx = block_lens - 1; idx >= nonce_idx; idx--) {
+// CTR 模式下将整个 IV 块作为大端计数器自增
+static void _cipher_inc_iv(uint8_t *iv, int32_t block_lens) {
+    for (int32_t idx = block_lens - 1; idx >= 0; idx--) {
         iv[idx]++;
-        if (0 != iv[idx]
-            || idx == nonce_idx) {
+        if (0 != iv[idx]) {
             break;
         }
     }
@@ -150,7 +148,7 @@ static inline void *_cipher_ofb_model(cipher_ctx *cipher, const void *data, size
 static inline void *_cipher_ctr_model(cipher_ctx *cipher, const void *data, size_t lens) {
     void *en = (void *)cipher->_cipher(cipher->cur_ctx, cipher->cur_iv);
     _cipher_xor_data(cipher, data, en, lens);
-    _cipher_inc_iv(cipher->cur_iv, (int32_t)cipher->block_lens, (int32_t)(cipher->block_lens));
+    _cipher_inc_iv(cipher->cur_iv, (int32_t)cipher->block_lens);
     return (void *)cipher->xor_data;
 }
 void *cipher_block(cipher_ctx *cipher, const void *data, size_t lens, size_t *size) {

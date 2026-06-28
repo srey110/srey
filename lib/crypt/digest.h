@@ -43,6 +43,12 @@ typedef struct digest_ctx {
 /// <param name="dtype">摘要算法</param>
 void digest_init(digest_ctx *digest, digest_type dtype);
 /// <summary>
+/// 清零 digest_ctx 中的全部哈希计算状态，防止密钥派生材料残留于栈内存；
+/// 每次 digest_init 完成并使用后均应调用，无论 digest_ctx 分配于栈还是堆。
+/// </summary>
+/// <param name="digest">digest_ctx</param>
+void digest_free(digest_ctx *digest);
+/// <summary>
 /// 获取hash长度
 /// </summary>
 /// <param name="digest">digest_ctx</param>

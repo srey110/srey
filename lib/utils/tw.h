@@ -7,6 +7,7 @@
 #include "utils/timer.h"
 #include "base/structs.h"
 #include "utils/pool.h"
+#include "containers/slist.h"
 
 #define TVN_BITS (6)                                                   //高精度轮（tv2~tv5）每级位数
 #define TVR_BITS (8)                                                   //最低精度轮（tv1）位数
@@ -17,16 +18,12 @@
 #define INDEX(N) ((ctx->jiffies >> (TVR_BITS + (N) * TVN_BITS)) & TVN_MASK) //计算第 N 级高精度轮的当前槽索引
 typedef void(*tw_cb)(ud_cxt *ud);   //超时回调函数类型
 typedef struct tw_node_ctx {
-    struct tw_node_ctx *next;
+    list_node node;     //侵入式链表节点（slist，UPCAST 复原）
     tw_cb _cb;          //超时触发的回调函数
     free_cb _freecb;    //用户数据释放回调
     ud_cxt ud;          //用户数据
     uint64_t expires;   //到期时间（毫秒绝对时间）
 }tw_node_ctx;
-typedef struct tw_slot_ctx {
-    tw_node_ctx *head;  //链表头节点
-    tw_node_ctx *tail;  //链表尾节点
-}tw_slot_ctx;
 typedef struct tw_ctx {
     atomic_t exit;          //退出标志，非零时轮线程退出
     atomic_t reqadd_pending;  //入队脏标志：0 已感知，1 有待处理节点；仅在 0→1 时才唤醒轮线程
@@ -37,11 +34,11 @@ typedef struct tw_ctx {
     cond_ctx cond;
     fsqu_ctx reqadd;          //外部新增请求暂存队列（平台自适应 fsqu，容量 capacity）
     pool_ctx node_pool;       //空闲节点复用池（utils/pool，容量 TW_NODE_POOL_MAX）
-    tw_slot_ctx tv1[TVR_SIZE];  //最低精度轮（精度 1ms，范围 256ms）
-    tw_slot_ctx tv2[TVN_SIZE];  //第 2 级精度轮
-    tw_slot_ctx tv3[TVN_SIZE];  //第 3 级精度轮
-    tw_slot_ctx tv4[TVN_SIZE];  //第 4 级精度轮
-    tw_slot_ctx tv5[TVN_SIZE];  //第 5 级精度轮（最大超时约 2^32 ms）
+    list_ctx tv1[TVR_SIZE];   //最低精度轮（精度 1ms，范围 256ms），槽即 slist（元素 tw_node_ctx）
+    list_ctx tv2[TVN_SIZE];   //第 2 级精度轮
+    list_ctx tv3[TVN_SIZE];   //第 3 级精度轮
+    list_ctx tv4[TVN_SIZE];   //第 4 级精度轮
+    list_ctx tv5[TVN_SIZE];   //第 5 级精度轮（最大超时约 2^32 ms）
 }tw_ctx;
 /// <summary>
 /// 时间轮初始化

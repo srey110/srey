@@ -412,6 +412,9 @@
     <ClInclude Include="containers\fsqu.h">
       <Filter>containers</Filter>
     </ClInclude>
+    <ClInclude Include="containers\slist.h">
+      <Filter>containers</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="event\evpub.c">
@@ -694,6 +697,9 @@
       <Filter>containers</Filter>
     </ClCompile>
     <ClCompile Include="containers\fsqu.c">
+      <Filter>containers</Filter>
+    </ClCompile>
+    <ClCompile Include="containers\slist.c">
       <Filter>containers</Filter>
     </ClCompile>
   </ItemGroup>

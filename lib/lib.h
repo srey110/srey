@@ -15,6 +15,7 @@
 #include "containers/mpq.h"
 #include "containers/spsc.h"
 #include "containers/fsqu.h"
+#include "containers/slist.h"
 #include "crypt/base64.h"
 #include "crypt/crc.h"
 #include "crypt/urlraw.h"

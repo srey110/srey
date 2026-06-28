@@ -221,7 +221,7 @@ static int32_t _lcrypt_digest_final(lua_State *lua) {
 }
 static int32_t _lcrypt_digest_gc(lua_State *lua) {
     digest_ctx *digest = luaL_checkudata(lua, 1, MT_DIGEST);
-    secure_zero(digest, sizeof(digest_ctx));
+    digest_free(digest);
     return 0;
 }
 //srey.digest

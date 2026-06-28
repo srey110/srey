@@ -183,6 +183,9 @@
     #elif defined(OS_SUN)
         #include <port.h>
         #include <atomic.h>
+        #if !defined(__GNUC__) && !defined(__clang__)
+            #include <mbarrier.h>
+        #endif
         #include <sys/filio.h>
         #include <sys/devpoll.h>
     #elif defined (OS_BSD)

@@ -20,13 +20,14 @@ struct listener_ctx;
 typedef enum sock_status {
     STATUS_NONE = 0x00,         // 无状态
     STATUS_SENDING = 0x01,      // 正在发送数据
-    STATUS_ERROR = 0x02,        // 发生错误
-    STATUS_REMOVE = 0x04,       // 待移除
-    STATUS_CLIENT = 0x08,       // 作为客户端
-    STATUS_SSLEXCHANGE = 0x10,  // 是否切换成SSL链接，发送队列为空时移除该标识，并开始SSL握手
-    STATUS_AUTHSSL = 0x20,      // SSL握手中
-    STATUS_SSLWANTWRITE = 0x40, // SSL握手等待写就绪（WANT_WRITE），仅 Unix 侧使用
-    STATUS_GRACEFUL_CLOSE = 0x80// ev_close(immed=0) 标记，buf_s 发完后 _close_tcp
+    STATUS_NORECV = 0x02,       // 仅 IOCP：KeyUpdate 探针期暂停收(ol_r 未重投 WSARecv)
+    STATUS_ERROR = 0x04,        // 发生错误
+    STATUS_REMOVE = 0x08,       // 待移除
+    STATUS_CLIENT = 0x10,       // 作为客户端
+    STATUS_SSLEXCHANGE = 0x20,  // 是否切换成SSL链接，发送队列为空时移除该标识，并开始SSL握手
+    STATUS_AUTHSSL = 0x40,      // SSL握手中
+    STATUS_KEYUPDATE = 0x80,    // 数据期 TLS1.3 KeyUpdate 等写就绪(两平台均仅数据期)；Unix 注册 EVENT_WRITE，IOCP 投 0 字节 WSASend 探针
+    STATUS_GRACEFUL_CLOSE = 0x100// ev_close(immed=0) 标记，buf_s 发完后 _close_tcp
 }sock_status;
 // UDP 多播 setsockopt 操作类型,由 ev_udp_join/leave/ttl/loop 投递 CMD_UDP_OPT 时填写
 typedef enum udp_opt_type {
@@ -56,7 +57,10 @@ typedef struct ev_ctx {
     spin_ctx spin;                  // 保护arrlsn的自旋锁
 }ev_ctx;
 
-// 回调函数类型定义（accept_cb/connect_cb 返回失败则不加进事件循环）
+// 回调函数类型定义
+// accept_cb/connect_cb 返回失败则自动关闭链接，并触发close_cb回调
+// 启用 ssl 握手未完成前（ssl_exchanged_cb）不能调用发送，否则会关闭链接
+// ssl_exchanged_cb 返回失败则自动关闭链接
 typedef int32_t(*accept_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid,
                             ud_cxt *ud);// 接受新连接回调
 typedef int32_t(*connect_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid,

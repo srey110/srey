@@ -171,6 +171,14 @@ void *memichr(const void *ptr, int32_t val, size_t maxlen);
 /// <param name="src">源字符串，可为 NULL</param>
 void safe_fill_str(char *dst, size_t dstsz, const char *src);
 /// <summary>
+/// 复制 src 的 lens 字节为新分配的 NUL 结尾字符串，返回堆缓冲，调用方负责 FREE；
+/// 按定长字节复制，不依赖 src 含 NUL；分配失败时底层 _malloc 终止进程。
+/// </summary>
+/// <param name="src">源缓冲</param>
+/// <param name="lens">复制字节数</param>
+/// <returns>新分配的 NUL 结尾字符串</returns>
+char *dup_zero(const void *src, size_t lens);
+/// <summary>
 /// 内存查找
 /// </summary>
 /// <param name="ncs">0 区分大小写</param>
@@ -238,6 +246,17 @@ char *tohex(const void *buf, size_t len, char *out);
 /// <param name="n">拆分后的长度</param>
 /// <returns>buf_ctx *, 需要free</returns>
 struct buf_ctx *split(const void *ptr, size_t plens, const void *sep, size_t seplens, size_t *n);
+/// <summary>
+/// 按单字节 sep 就地拆分到调用方栈数组,不堆分配;标准切分保留空段(连续/尾随 sep 产生 len==0 段,段数 = sep 数 + 1)。
+/// 仅记录段 (data,lens),不复制,data 指向 ptr 内部
+/// </summary>
+/// <param name="ptr">待拆分缓冲(只读取,不修改)</param>
+/// <param name="plens">ptr 字节长度</param>
+/// <param name="sep">单字节分隔符</param>
+/// <param name="segs">输出段数组,调用方分配</param>
+/// <param name="cap">segs 容量</param>
+/// <returns>段数量;超过 cap 返回 ERR_FAILED</returns>
+int32_t split2(char *ptr, size_t plens, uint8_t sep, struct buf_ctx *segs, int32_t cap);
 /// <summary>
 /// 变参
 /// </summary>

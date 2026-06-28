@@ -170,7 +170,7 @@ static void _mysql_native_sign(mysql_ctx *mysql, char sh1[SHA1_BLOCK_SIZE]) {
     }
     secure_zero(shpsw, sizeof(shpsw));
     secure_zero(shscr, sizeof(shscr));
-    secure_zero(&digest, sizeof(digest));
+    digest_free(&digest);
 }
 // 使用 caching_sha2_password 算法计算认证签名（SHA256 双重哈希后与盐值异或）
 static void _mysql_caching_sha2_sign(mysql_ctx *mysql, char sh2[SHA256_BLOCK_SIZE]) {
@@ -192,7 +192,7 @@ static void _mysql_caching_sha2_sign(mysql_ctx *mysql, char sh2[SHA256_BLOCK_SIZ
     }
     secure_zero(shpsw, sizeof(shpsw));
     secure_zero(shscr, sizeof(shscr));
-    secure_zero(&digest, sizeof(digest));
+    digest_free(&digest);
 }
 // 将连接属性（application、os 等）写入二进制缓冲区
 static void _mysql_connect_attrs(binary_ctx *battrs) {

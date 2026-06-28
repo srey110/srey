@@ -33,11 +33,16 @@ local function _log(lv, fmt, ...)
     utils.log(lv, info.source, info.currentline, string.format(fmt, ...))
 end
 
----动态调整运行时日志级别，同步更新 Lua 缓存与 C 层
----@param lv integer 新日志级别（LOG_LV.*）
+---动态调整运行时日志级别，同步更新 Lua 缓存与 C 层；非法级别（非整数或越界）返回 false 不改状态
+---@param lv integer 新日志级别（LOG_LV.* FATAL..DEBUG）
+---@return boolean ok 合法并已设置返回 true，否则 false
 function log_setlv(lv)
+    if math.type(lv) ~= "integer" or lv < LOG_LV.FATAL or lv > LOG_LV.DEBUG then
+        return false
+    end
     _curlv = lv
     utils.log_setlv(lv)
+    return true
 end
 
 ---输出 FATAL 级别日志

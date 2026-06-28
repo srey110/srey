@@ -93,32 +93,6 @@ static char *_url_path(buf_ctx *path, char *cur, size_t lens) {
     path->lens = (size_t)(pos - cur);
     return pos + 1;
 }
-int32_t _url_path_split(char *path, size_t lens, int8_t sep,
-                        buf_ctx *segs, int32_t cap) {
-    int32_t n = 0;
-    size_t remain = lens;
-    char *p = path;
-    char *q;
-    size_t slen;
-    // 标准切分:保留空段(连续/尾随 sep 产生 len==0 段),段数 = sep 数 + 1
-    for (;;) {
-        if (n >= cap) {
-            LOG_WARN("path depth too long.");
-            return ERR_FAILED;
-        }
-        q = memchr(p, sep, remain);
-        slen = (NULL != q) ? (size_t)(q - p) : remain;
-        segs[n].data = p;
-        segs[n].lens = slen;
-        n++;
-        if (NULL == q) {
-            break;
-        }
-        remain -= (slen + 1);
-        p = q + 1;
-    }
-    return n;
-}
 // 从当前段中提取锚点（# 之后的部分），返回锚点之前的查询参数段长度
 static size_t _url_anchor(buf_ctx *anchor, char *cur, size_t lens) {
     char *pos = memchr(cur, '#', lens);
@@ -230,7 +204,7 @@ int32_t url_parse(url_ctx *ctx, const char *url, size_t lens, int8_t sep, int32_
             pp++;
             plen--;
         }
-        ctx->npath = _url_path_split(pp, plen, ctx->sep, ctx->segs, URL_MAX_PATH_DEPTH);
+        ctx->npath = split2(pp, plen, ctx->sep, ctx->segs, URL_MAX_PATH_DEPTH);
         if (ERR_FAILED == ctx->npath) {
             return ERR_FAILED;
         }

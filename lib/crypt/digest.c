@@ -1,4 +1,5 @@
 ﻿#include "crypt/digest.h"
+#include "utils/utils.h"
 
 void digest_init(digest_ctx *digest, digest_type dtype) {
     switch (dtype) {
@@ -49,6 +50,9 @@ void digest_init(digest_ctx *digest, digest_type dtype) {
         break;
     }
     digest_reset(digest);
+}
+void digest_free(digest_ctx *digest) {
+    secure_zero(digest, sizeof(digest_ctx));
 }
 size_t digest_size(digest_ctx *digest) {
     return digest->block_lens;

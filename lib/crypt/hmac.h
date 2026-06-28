@@ -18,6 +18,12 @@ typedef struct hmac_ctx {
 /// <param name="klens">密码长度</param>
 void hmac_init(hmac_ctx *hmac, digest_type dtype, const char *key, size_t klens);
 /// <summary>
+/// 清零 hmac_ctx 中的全部密钥派生状态（inside_init / outside_init），防止密钥材料残留于栈或堆内存；
+/// 每次 hmac_init 完成并使用后均应调用，无论 hmac_ctx 分配于栈还是堆。
+/// </summary>
+/// <param name="hmac">hmac_ctx</param>
+void hmac_free(hmac_ctx *hmac);
+/// <summary>
 /// 获取hash长度
 /// </summary>
 /// <param name="hmac">hmac_ctx</param>
@@ -42,11 +48,5 @@ size_t hmac_final(hmac_ctx *hmac, char *hash);
 /// </summary>
 /// <param name="hmac">hmac_ctx</param>
 void hmac_reset(hmac_ctx *hmac);
-/// <summary>
-/// 清零 hmac_ctx 中的全部密钥派生状态（inside_init / outside_init），防止密钥材料残留于栈或堆内存；
-/// 每次 hmac_init 完成并使用后均应调用，无论 hmac_ctx 分配于栈还是堆。
-/// </summary>
-/// <param name="hmac">hmac_ctx</param>
-void hmac_free(hmac_ctx *hmac);
 
 #endif//HMAC_H_

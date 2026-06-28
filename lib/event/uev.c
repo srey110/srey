@@ -7,25 +7,26 @@
 #ifndef EV_IOCP
 
 static void(*cmd_cbs[CMD_TOTAL])(watcher_ctx *watcher, cmd_ctx *cmd); // 命令回调函数表
+
 //pipe作为触发器，命令在qu里面获取
 static size_t _uev_cmd_run(watcher_ctx *watcher, sock_ctx *skctx, pip_ctx *pip) {
     size_t cnt_total = 0;
-    int32_t i, cnt, nread;
+    int32_t i, cnt;
     cmd_ctx cmds[CMD_MAX_NREAD];
 #if CMD_PIPE_QU
     char ntrigger[CMD_MAX_NREAD];
-    for (;;) {
-        nread = read(skctx->fd, ntrigger, sizeof(ntrigger));
-        if (nread <= 0) {
-            break;
-        }
-        cnt = (int32_t)fsqu_pop_sc_batch(&pip->qu, cmds, (uint32_t)nread);
-        cnt_total += (size_t)cnt;
+    // 触发字节仅作唤醒信号，先抽干清可读态（epoll ET / MANUAL_ADD re-arm 后仅新字节再触发）
+    while (read(skctx->fd, ntrigger, sizeof(ntrigger)) > 0) { }
+    // 与字节数解耦,循环抽干至队列空;触发字节仅作唤醒,本轮后入队命令其字节随后必到再唤醒,不丢命令也不空转
+    do {
+        cnt = (int32_t)fsqu_pop_sc_batch(&pip->qu, cmds, CMD_MAX_NREAD);
         for (i = 0; i < cnt; i++) {
             cmd_cbs[cmds[i].cmd](watcher, &cmds[i]);
         }
-    }
+        cnt_total += (size_t)cnt;
+    } while (cnt > 0);
 #else
+    int32_t nread;
     (void)pip;
     for (;;) {
         nread = read(skctx->fd, cmds, sizeof(cmds));

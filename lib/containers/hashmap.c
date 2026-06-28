@@ -615,12 +615,12 @@ static uint64_t MM86128(const void *key, const int len, uint32_t seed) {
     uint32_t c2 = 0xab0e9789;
     uint32_t c3 = 0x38b34ae5; 
     uint32_t c4 = 0xa1e38b93;
-    const uint32_t * blocks = (const uint32_t *)(data + nblocks*16);
-    for (int i = -nblocks; i; i++) {
-        uint32_t k1 = blocks[i*4+0];
-        uint32_t k2 = blocks[i*4+1];
-        uint32_t k3 = blocks[i*4+2];
-        uint32_t k4 = blocks[i*4+3];
+    uint32_t k1, k2, k3, k4;
+    for (int i = 0; i < nblocks; i++) {
+        memcpy(&k1, data + i*16 + 0, sizeof(k1));
+        memcpy(&k2, data + i*16 + 4, sizeof(k2));
+        memcpy(&k3, data + i*16 + 8, sizeof(k3));
+        memcpy(&k4, data + i*16 + 12, sizeof(k4));
         k1 *= c1; k1  = ROTL32(k1,15); k1 *= c2; h1 ^= k1;
         h1 = ROTL32(h1,19); h1 += h2; h1 = h1*5+0x561ccd1b;
         k2 *= c2; k2  = ROTL32(k2,16); k2 *= c3; h2 ^= k2;
@@ -631,29 +631,26 @@ static uint64_t MM86128(const void *key, const int len, uint32_t seed) {
         h4 = ROTL32(h4,13); h4 += h1; h4 = h4*5+0x32ac3b17;
     }
     const uint8_t * tail = (const uint8_t*)(data + nblocks*16);
-    uint32_t k1 = 0;
-    uint32_t k2 = 0;
-    uint32_t k3 = 0;
-    uint32_t k4 = 0;
+    k1 = k2 = k3 = k4 = 0;
     switch(len & 15) {
     case 15: k4 ^= tail[14] << 16; /* fall through */
     case 14: k4 ^= tail[13] << 8; /* fall through */
     case 13: k4 ^= tail[12] << 0;
              k4 *= c4; k4  = ROTL32(k4,18); k4 *= c1; h4 ^= k4;
              /* fall through */
-    case 12: k3 ^= tail[11] << 24; /* fall through */
+    case 12: k3 ^= (uint32_t)tail[11] << 24; /* fall through */
     case 11: k3 ^= tail[10] << 16; /* fall through */
     case 10: k3 ^= tail[ 9] << 8; /* fall through */
     case  9: k3 ^= tail[ 8] << 0;
              k3 *= c3; k3  = ROTL32(k3,17); k3 *= c4; h3 ^= k3;
              /* fall through */
-    case  8: k2 ^= tail[ 7] << 24; /* fall through */
+    case  8: k2 ^= (uint32_t)tail[ 7] << 24; /* fall through */
     case  7: k2 ^= tail[ 6] << 16; /* fall through */
     case  6: k2 ^= tail[ 5] << 8; /* fall through */
     case  5: k2 ^= tail[ 4] << 0;
              k2 *= c2; k2  = ROTL32(k2,16); k2 *= c3; h2 ^= k2;
              /* fall through */
-    case  4: k1 ^= tail[ 3] << 24; /* fall through */
+    case  4: k1 ^= (uint32_t)tail[ 3] << 24; /* fall through */
     case  3: k1 ^= tail[ 2] << 16; /* fall through */
     case  2: k1 ^= tail[ 1] << 8; /* fall through */
     case  1: k1 ^= tail[ 0] << 0;

@@ -95,7 +95,9 @@ local function _debug_handle(cmd, a1, a2)
     elseif "coros" == cmd then
         return _dump_coros()
     elseif "loglv" == cmd then
-        log_setlv(a1)
+        if not log_setlv(a1) then
+            return string.format("invalid log level: %s", tostring(a1))
+        end
         return string.format("log level => %d", a1)
     elseif "inject" == cmd then
         local ok, out = inject(a1)

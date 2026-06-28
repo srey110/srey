@@ -2,6 +2,7 @@
 #define HASH_RING_H_
 
 #include "base/macro.h"
+#include "containers/slist.h"
 
 typedef struct hash_ring_node {
     uint32_t nreplicas;//节点数
@@ -11,8 +12,8 @@ typedef struct hash_ring_node {
 typedef struct hash_ring_ctx {
     uint32_t nnodes;            //真实节点数量
     uint32_t nitems;            //虚拟节点（副本）总数
-    struct hash_ring_list *nodes; //真实节点链表
     struct hash_ring_item **items;//按 digest 排序的虚拟节点数组
+    list_ctx nodes;             //真实节点链表（slist，元素 hash_ring_list）
 } hash_ring_ctx;
 
 /// <summary>

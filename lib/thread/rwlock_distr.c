@@ -8,6 +8,15 @@ typedef struct rwlock_distr_tls_entry {
 } rwlock_distr_tls_entry;
 static THREAD_LOCAL rwlock_distr_tls_entry _tls[RWLOCK_DISTR_MAX_TLS];
 
+// 线性扫 _tls 返回 ctx 对应槽位下标;未注册返回 -1
+static int32_t _rwlock_distr_tls_find(rwlock_distr_ctx *ctx) {
+    for (int32_t i = 0; i < RWLOCK_DISTR_MAX_TLS; i++) {
+        if (_tls[i].owner == ctx) {
+            return i;
+        }
+    }
+    return -1;
+}
 void rwlock_distr_init(rwlock_distr_ctx *ctx, uint32_t slot_count) {
     ASSERTAB(slot_count > 0, "rwlock_distr_init: slot_count must be > 0");
     rwlock_init(&ctx->fallback);
@@ -17,7 +26,7 @@ void rwlock_distr_init(rwlock_distr_ctx *ctx, uint32_t slot_count) {
     size_t total = (size_t)slot_count * sizeof(rwlock_distr_slot) + CACHELINE_SIZE;
     MALLOC(ctx->slots_raw, total);
     uintptr_t addr = (uintptr_t)ctx->slots_raw;
-    addr = (addr + CACHELINE_SIZE - 1) & ~(uintptr_t)(CACHELINE_SIZE - 1);
+    addr = ROUND_UP(addr, CACHELINE_SIZE);
     ctx->slots = (rwlock_distr_slot *)addr;
     ZERO(ctx->slots, (size_t)slot_count * sizeof(rwlock_distr_slot));
 }
@@ -54,28 +63,21 @@ int32_t rwlock_distr_register(rwlock_distr_ctx *ctx) {
     return ERR_FAILED;
 }
 void rwlock_distr_unregister(rwlock_distr_ctx *ctx) {
-    int32_t idx;
-    for (int32_t i = 0; i < RWLOCK_DISTR_MAX_TLS; i++) {
-        if (_tls[i].owner != ctx) {
-            continue;
-        }
-        idx = _tls[i].slot;
-        _tls[i].owner = NULL;
-        _tls[i].slot = 0;
-        // 兜底清 active,即使调用方违反契约也不让 writer 卡死
-        ATOMIC_SET(&ctx->slots[idx].active, 0);
-        ATOMIC_SET(&ctx->slots[idx].in_use, 0);
+    int32_t i = _rwlock_distr_tls_find(ctx);
+    if (-1 == i) {
         return;
     }
+    int32_t idx = _tls[i].slot;
+    _tls[i].owner = NULL;
+    _tls[i].slot = 0;
+    // 兜底清 active,即使调用方违反契约也不让 writer 卡死
+    ATOMIC_SET(&ctx->slots[idx].active, 0);
+    ATOMIC_SET(&ctx->slots[idx].in_use, 0);
 }
 void rwlock_distr_rdlock(rwlock_distr_ctx *ctx) {
-    int32_t slot;
-    // 线性扫 _tls 查 ctx 对应的 slot;命中走快路径
-    for (int32_t i = 0; i < RWLOCK_DISTR_MAX_TLS; i++) {
-        if (_tls[i].owner != ctx) {
-            continue;
-        }
-        slot = _tls[i].slot;
+    int32_t i = _rwlock_distr_tls_find(ctx);
+    if (-1 != i) {
+        int32_t slot = _tls[i].slot;
         // store active=1 与 load write_flag 之间靠 ATOMIC_SET 的 seq_cst 屏障保证顺序
         // writer 在 wrlock 中先 store write_flag=1 再扫所有 slot 的 active
         // 两侧握手:任一方先标记,另一方必能看见
@@ -95,10 +97,8 @@ void rwlock_distr_rdlock(rwlock_distr_ctx *ctx) {
     rwlock_rdlock(&ctx->fallback);
 }
 void rwlock_distr_runlock(rwlock_distr_ctx *ctx) {
-    for (int32_t i = 0; i < RWLOCK_DISTR_MAX_TLS; i++) {
-        if (_tls[i].owner != ctx) {
-            continue;
-        }
+    int32_t i = _rwlock_distr_tls_find(ctx);
+    if (-1 != i) {
         ATOMIC_SET(&ctx->slots[_tls[i].slot].active, 0);
         return;
     }
