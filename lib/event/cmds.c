@@ -239,7 +239,7 @@ void _on_cmd_send(watcher_ctx *watcher, cmd_ctx *cmd) {
 #ifdef EV_IOCP
     _iocp_add_bufs_trypost(skctx, &buf);
 #else
-    _uev_add_write_inloop(watcher, skctx, &buf);
+    _uev_add_bufs_send(watcher, skctx, &buf);
 #endif
 }
 int32_t ev_send_multi(ev_ctx *ctx, SOCKET fds[], uint64_t skids[], int32_t n,
@@ -315,7 +315,7 @@ void _on_cmd_send_multi(watcher_ctx *watcher, cmd_ctx *cmd) {
 #ifdef EV_IOCP
     _iocp_add_bufs_trypost(skctx, &buf);
 #else
-    _uev_add_write_inloop(watcher, skctx, &buf);
+    _uev_add_bufs_send(watcher, skctx, &buf);
 #endif
 }
 int32_t ev_sendto(ev_ctx *ctx, SOCKET fd, uint64_t skid, const char *ip, const uint16_t port,
@@ -331,53 +331,45 @@ int32_t ev_sendto(ev_ctx *ctx, SOCKET fd, uint64_t skid, const char *ip, const u
     cmd.fd = fd;
     cmd.skid = skid;
     cmd.args.sendto.len = len;
-    char *buf;
-    MALLOC(buf, sizeof(netaddr_ctx) + len);
-    netaddr_ctx *addr = (netaddr_ctx *)buf;
-    if (ERR_OK != netaddr_set(addr, ip, port)) {
-        FREE(buf);
+    if (ERR_OK != netaddr_set(&cmd.args.sendto.addr, ip, port)) {
         if (!copy) {
             FREE(data);
         }
         LOG_WARN("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
-    memcpy(buf + sizeof(netaddr_ctx), data, len);
-    cmd.args.sendto.data = buf;
-    if (ERR_OK != _send_cmd(GET_PTR(ctx->watcher, ctx->nthreads, cmd.fd), &cmd)) {
-        FREE(buf);
-        if (!copy) {
-            FREE(data);
-        }
-        return ERR_FAILED;
+    if (copy) {
+        char *buf;
+        MALLOC(buf, len);
+        memcpy(buf, data, len);
+        cmd.args.sendto.data = buf;
+    } else {
+        cmd.args.sendto.data = data;
     }
-    if (!copy) {
-        FREE(data);
+    if (ERR_OK != _send_cmd(GET_PTR(ctx->watcher, ctx->nthreads, cmd.fd), &cmd)) {
+        void *fbuf = cmd.args.sendto.data;
+        FREE(fbuf);
+        return ERR_FAILED;
     }
     return ERR_OK;
 }
 void _on_cmd_sendto(watcher_ctx *watcher, cmd_ctx *cmd) {
-    void *data = cmd->args.sendto.data;
     sock_ctx *skctx = _evpub_sockel_get(watcher, cmd->fd);
     if (NULL == skctx
         || ERR_OK != _CHECK_SKID(skctx, cmd->skid)) {
-        FREE(data);
+        FREE(cmd->args.sendto.data);
         return;
     }
-    // ev_sendto 仅适用于 UDP；TCP fd 用 ev_send（CMD_SEND 路径）。误用时丢弃数据避免
-    // 把 [netaddr_ctx + payload] 整段经 TCP 发送路径发出（netaddr 前缀污染对端协议解析）。
+    // ev_sendto 仅适用于 UDP；TCP fd 用 ev_send（CMD_SEND 路径）。误用时丢弃数据
     if (SOCK_DGRAM != skctx->type) {
         LOG_ERROR("ev_sendto called on non-UDP fd %d, drop.", (int32_t)cmd->fd);
-        FREE(data);
+        FREE(cmd->args.sendto.data);
         return;
     }
-    off_buf_ctx buf = { 0 };
-    buf.data = data;
-    buf.lens = cmd->args.sendto.len;
 #ifdef EV_IOCP
-    _iocp_add_bufs_trysendto(skctx, &buf);
+    _iocp_add_bufs_trysendto(skctx, &cmd->args.sendto);
 #else
-    _uev_add_write_inloop(watcher, skctx, &buf);
+    _uev_add_bufs_sendto(watcher, skctx, &cmd->args.sendto);
 #endif
 }
 // UDP 多播 4 个公开 API 走同一 cmd 投递路径,差异只在 udp_opt_arg 字段填充

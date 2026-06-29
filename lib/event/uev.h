@@ -105,8 +105,10 @@ void _uev_try_ssl_exchange(watcher_ctx *watcher, sock_ctx *skctx, struct evssl_c
 void _uev_add_conn_inloop(watcher_ctx *watcher, sock_ctx *skctx);
 // 在事件循环内将accept到的fd完成初始化并注册读事件
 void _uev_add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn);
-// 将数据加入发送队列，并确保注册写事件
-void _uev_add_write_inloop(watcher_ctx *watcher, sock_ctx *skctx, off_buf_ctx *buf);
+// 将 TCP 数据加入发送队列，并确保注册写事件
+void _uev_add_bufs_send(watcher_ctx *watcher, sock_ctx *skctx, off_buf_ctx *buf);
+// 将 UDP datagram(sendto_ctx) 加入发送队列，并确保注册写事件
+void _uev_add_bufs_sendto(watcher_ctx *watcher, sock_ctx *skctx, sendto_ctx *buf);
 // 在事件循环内将socket注册读事件（TCP/UDP通用）
 void _uev_add_fd_inloop(watcher_ctx *watcher, sock_ctx *skctx);
 

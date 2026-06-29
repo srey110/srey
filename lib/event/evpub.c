@@ -59,6 +59,13 @@ void _evpub_off_buf_clear(queue_ctx *bufs) {
     }
     queue_clear(bufs);
 }
+void _evpub_sendto_clear(queue_ctx *bufs) {
+    sendto_ctx *buf;
+    while (NULL != (buf = queue_pop(bufs))) {
+        FREE(buf->data);
+    }
+    queue_clear(bufs);
+}
 int32_t _evpub_nodelay_nonblock(SOCKET fd) {
     if (ERR_OK != sock_nodelay(fd)
         || ERR_OK != sock_nonblock(fd)) {

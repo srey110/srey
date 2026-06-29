@@ -69,7 +69,8 @@ typedef struct overlap_udp_ctx {
     IOV_TYPE wsabuf_s;      // 发送缓冲区描述符
     IOV_TYPE wsabuf_r;      // 接收缓冲区描述符（指向buf）
     queue_ctx buf_s;        // 发送队列
-    netaddr_ctx addr;       // 接收到的对端地址（WSARecvFrom填充）
+    netaddr_ctx addr_r;     // 接收到的对端地址（WSARecvFrom填充）
+    netaddr_ctx addr_s;     // 在途 WSASendTo 目标地址（异步期间须持久,不可指向队列元素）
     ud_cxt ud;              // 用户数据
     char buf[MAX_RECVFROM_SIZE]; // 固定接收缓冲区
 }overlap_udp_ctx;
@@ -258,7 +259,7 @@ static inline void _olp_call_close_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp) {
 // 继续 _olp_post_recv_from 接收下一包），避免上层处理空 payload 的特殊路径
 static inline void _olp_call_recvfrom_cb(ev_ctx *ev, overlap_udp_ctx *oludp, size_t nread) {
     if (nread > 0) {
-        oludp->cbs.rf_cb(ev, oludp->ol_r.fd, oludp->skid, oludp->wsabuf_r.buf, nread, &oludp->addr, &oludp->ud);
+        oludp->cbs.rf_cb(ev, oludp->ol_r.fd, oludp->skid, oludp->wsabuf_r.buf, nread, &oludp->addr_r, &oludp->ud);
     }
 }
 // 提交WSARecv异步接收请求（用于TCP和命令管道）
@@ -1051,13 +1052,13 @@ void ev_unlisten(ev_ctx *ctx, uint64_t id) {
 static int32_t _olp_post_recv_from(overlap_udp_ctx *oludp) {
     ZERO(&oludp->ol_r.overlapped, sizeof(oludp->ol_r.overlapped));
     oludp->flag = oludp->bytes_r = 0;
-    oludp->addrlen = netaddr_size(&oludp->addr);
+    oludp->addrlen = netaddr_size(&oludp->addr_r);
     if (ERR_OK != WSARecvFrom(oludp->ol_r.fd,
                               &oludp->wsabuf_r,
                               1,
                               &oludp->bytes_r,
                               &oludp->flag,
-                              netaddr_addr(&oludp->addr),
+                              netaddr_addr(&oludp->addr_r),
                               &oludp->addrlen,
                               &oludp->ol_r.overlapped,
                               NULL)) {
@@ -1099,20 +1100,20 @@ static void _olp_on_recvfrom_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD byt
         _olp_on_udp_close_r(watcher, oludp);
     }
 }
-// 提交WSASendTo异步UDP发送请求（buf中包含netaddr_ctx + 数据）
-static int32_t _olp_post_sendto(overlap_udp_ctx *oludp, off_buf_ctx *buf) {
+// 提交WSASendTo异步UDP发送请求；addr 拷到 oludp->addr_s 持久化(队列元素异步期间可能被复用)
+static int32_t _olp_post_sendto(overlap_udp_ctx *oludp, sendto_ctx *buf) {
     ZERO(&oludp->ol_s.overlapped, sizeof(oludp->ol_s.overlapped));
     oludp->bytes_s = 0;
-    netaddr_ctx *addr = (netaddr_ctx *)buf->data;
-    oludp->wsabuf_s.IOV_PTR_FIELD = (char *)buf->data + sizeof(netaddr_ctx);
-    oludp->wsabuf_s.IOV_LEN_FIELD = (IOV_LEN_TYPE)buf->lens;
+    oludp->addr_s = buf->addr;
+    oludp->wsabuf_s.IOV_PTR_FIELD = (char *)buf->data;
+    oludp->wsabuf_s.IOV_LEN_FIELD = (IOV_LEN_TYPE)buf->len;
     if (ERR_OK != WSASendTo(oludp->ol_s.fd,
                             &oludp->wsabuf_s,
                             1,
                             &oludp->bytes_s,
                             0,
-                            netaddr_addr(addr),
-                            netaddr_size(addr),
+                            netaddr_addr(&oludp->addr_s),
+                            netaddr_size(&oludp->addr_s),
                             &oludp->ol_s.overlapped,
                             NULL)) {
         if (ERROR_IO_PENDING != ERRNO) {
@@ -1124,7 +1125,7 @@ static int32_t _olp_post_sendto(overlap_udp_ctx *oludp, off_buf_ctx *buf) {
 // WSASendTo完成回调：释放当前缓冲区，继续发送队列中下一条或清除发送标志
 static void _olp_on_sendto_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
     overlap_udp_ctx *oludp = UPCAST(skctx, overlap_udp_ctx, ol_s);
-    void *data = oludp->wsabuf_s.IOV_PTR_FIELD - sizeof(netaddr_ctx);
+    void *data = oludp->wsabuf_s.IOV_PTR_FIELD;
     FREE(data);
     if (BIT_CHECK(oludp->status, STATUS_ERROR)) {
         if (BIT_CHECK(oludp->status, STATUS_REMOVE)) {
@@ -1144,25 +1145,25 @@ static void _olp_on_sendto_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes
         BIT_REMOVE(oludp->status, STATUS_SENDING);
         return;
     }
-    off_buf_ctx *sendbuf = queue_pop(&oludp->buf_s);
-    oludp->wb_size -= sendbuf->lens;
+    sendto_ctx *sendbuf = queue_pop(&oludp->buf_s);
+    oludp->wb_size -= sendbuf->len;
     if (ERR_OK != _olp_post_sendto(oludp, sendbuf)) {
-        _evpub_off_buf_release(sendbuf);
+        FREE(sendbuf->data);
         BIT_REMOVE(oludp->status, STATUS_SENDING);
         _iocp_disconnect(&oludp->ol_r, 1);
     }
 }
-void _iocp_add_bufs_trysendto(sock_ctx *skctx, off_buf_ctx *buf) {
+void _iocp_add_bufs_trysendto(sock_ctx *skctx, sendto_ctx *buf) {
     overlap_udp_ctx *oludp = UPCAST(skctx, overlap_udp_ctx, ol_r);
     // UDP 队列超阈值丢 datagram 不断 fd
     if (0 != MAX_SENDQ_CNT
         && queue_size(&oludp->buf_s) >= MAX_SENDQ_CNT) {
         LOG_WARN("UDP send queue overflow on fd %d (>= %d), drop datagram.",
                  (int32_t)oludp->ol_s.fd, MAX_SENDQ_CNT);
-        _evpub_off_buf_release(buf);
+        FREE(buf->data);
         return;
     }
-    oludp->wb_size += buf->lens;
+    oludp->wb_size += buf->len;
     if (tda_check(&oludp->tda, oludp->wb_size)) {
         LOG_WARN("UDP send buf growing on fd %d: %zu bytes.",
                  (int32_t)oludp->ol_s.fd, oludp->wb_size);
@@ -1173,10 +1174,10 @@ void _iocp_add_bufs_trysendto(sock_ctx *skctx, off_buf_ctx *buf) {
         return;
     }
     BIT_SET(oludp->status, STATUS_SENDING);
-    off_buf_ctx *sendbuf = queue_pop(&oludp->buf_s);
-    oludp->wb_size -= sendbuf->lens;
+    sendto_ctx *sendbuf = queue_pop(&oludp->buf_s);
+    oludp->wb_size -= sendbuf->len;
     if (ERR_OK != _olp_post_sendto(oludp, sendbuf)) {
-        _evpub_off_buf_release(sendbuf);
+        FREE(sendbuf->data);
         BIT_REMOVE(oludp->status, STATUS_SENDING);
         _iocp_disconnect(&oludp->ol_r, 1);
     }
@@ -1195,11 +1196,11 @@ static sock_ctx *_olp_new_udp(SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
     oludp->skid = createid();
     oludp->cbs = *cbs;
     COPY_UD(oludp->ud, ud);
-    netaddr_empty(&oludp->addr);
-    oludp->addrlen = netaddr_size(&oludp->addr);
+    netaddr_empty(&oludp->addr_r);
+    oludp->addrlen = netaddr_size(&oludp->addr_r);
     oludp->wsabuf_r.buf = oludp->buf;
     oludp->wsabuf_r.len = sizeof(oludp->buf);
-    queue_init(&oludp->buf_s, sizeof(off_buf_ctx), INIT_SENDBUF_LEN);
+    queue_init(&oludp->buf_s, sizeof(sendto_ctx), INIT_SENDBUF_LEN);
     oludp->wb_size = 0;
     tda_init(&oludp->tda, WB_WARN_INIT_SIZE);
     return &oludp->ol_r;
@@ -1207,7 +1208,7 @@ static sock_ctx *_olp_new_udp(SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
 void _iocp_free_udp(sock_ctx *skctx) {
     overlap_udp_ctx *oludp = UPCAST(skctx, overlap_udp_ctx, ol_r);
     CLOSE_SOCK(oludp->ol_r.fd);
-    _evpub_off_buf_clear(&oludp->buf_s);
+    _evpub_sendto_clear(&oludp->buf_s);
     queue_free(&oludp->buf_s);
     UD_FREE(oludp->cbs.ud_free, &oludp->ud);
     FREE(oludp);

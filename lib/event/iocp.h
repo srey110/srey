@@ -69,7 +69,7 @@ int32_t _iocp_post_recv(sock_ctx *skctx, DWORD *bytes, DWORD *flag, IOV_TYPE *ws
 // 将数据加入TCP发送队列，若当前未发送则立即提交WSASend
 void _iocp_add_bufs_trypost(sock_ctx *skctx, off_buf_ctx *buf);
 // 将UDP数据加入发送队列，若当前未发送则立即提交WSASendTo
-void _iocp_add_bufs_trysendto(sock_ctx *skctx, off_buf_ctx *buf);
+void _iocp_add_bufs_trysendto(sock_ctx *skctx, sendto_ctx *buf);
 // shutdown socket读端（触发对端关闭流程）
 void _iocp_sk_shutdown(sock_ctx *skctx);
 // 标记连接为错误状态并取消所有IOCP挂起操作

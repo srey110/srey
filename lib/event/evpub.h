@@ -45,6 +45,12 @@ typedef struct udp_opt_arg {
     char group_ip[64];          // op=JOIN/LEAVE 时使用,多播组地址字符串(支持 IPv4/IPv6)
     char iface_str[64];         // op=JOIN/LEAVE 时使用,IPv4 走 IP 字符串,IPv6 走接口名(如 "en0");空串走系统默认
 }udp_opt_arg;
+// UDP 发送队列元素：地址与 payload 分离,copy=0 时 data 直接复用调用方缓冲(零拷贝)
+typedef struct sendto_ctx {
+    size_t len;        // payload 长度
+    void *data;        // payload 指针(copy=1 时为内部 MALLOC,copy=0 时为调用方转移所有权)
+    netaddr_ctx addr;  // 目标地址
+}sendto_ctx;
 // 网络事件上下文
 typedef struct ev_ctx {
     uint32_t nthreads;              // 工作线程数
@@ -115,6 +121,8 @@ void _evpub_off_buf_release(off_buf_ctx *buf);
 // 以下为模块内部公共函数
 // 清空发送缓冲队列并释放数据
 void _evpub_off_buf_clear(queue_ctx *bufs);
+// 清空 UDP 发送队列(sendto_ctx)并释放各 payload
+void _evpub_sendto_clear(queue_ctx *bufs);
 // 设置socket选项：无延迟 + 非阻塞
 int32_t _evpub_nodelay_nonblock(SOCKET fd);
 // 创建socket（SOCK_DGRAM/SOCK_STREAM，AF_INET/AF_INET6）

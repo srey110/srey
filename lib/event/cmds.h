@@ -12,7 +12,7 @@ typedef enum EV_CMDS {
     CMD_ADD,          // [_cmd_add → _on_cmd_add] 添加socket
     CMD_SEND,         // [ev_send → _on_cmd_send] 发送TCP数据（裸 payload）
     CMD_SEND_MULTI,   // [ev_send_multi → _on_cmd_send_multi] 多播发送 TCP 数据：args.multi.pack = shared_data* 共享 pack 指针(N 个 fd 共享同一份 data,各 buf 释放时 ref--)
-    CMD_SENDTO,       // [ev_sendto → _on_cmd_sendto] 发送UDP数据（buf 前缀 netaddr_ctx + payload，与 CMD_SEND 区分以校验 fd 类型）
+    CMD_SENDTO,       // [ev_sendto → _on_cmd_sendto] 发送UDP数据：args.sendto = sendto_ctx(addr 与 payload 分离)，与 CMD_SEND 区分以校验 fd 类型
     CMD_UDP_OPT,      // [ev_udp_* → _on_cmd_udp_opt] UDP 多播 setsockopt：args.udpop = udp_opt_arg* 参数包(JOIN/LEAVE/TTL/LOOP)
     CMD_SETUD,        // [ev_ud_* → _on_cmd_setud] 设置ud_cxt字段
     CMD_SSL,          // [ev_ssl → _on_cmd_ssl] 切换为SSL连接
@@ -37,9 +37,9 @@ typedef struct cmd_ctx {
         struct { struct sock_ctx *skctx; netaddr_ctx addr; } conn; // CMD_CONN：连接中 socket + 目标地址(仅 IOCP 用)
         struct { size_t len; void *data; } send;         // CMD_SEND：长度 + 裸 payload
         struct { size_t len; shared_data *pack; } multi; // CMD_SEND_MULTI：长度 + 共享包
-        struct { size_t len; void *data; } sendto;       // CMD_SENDTO：长度 + [netaddr_ctx + payload]
         struct { int32_t client; struct evssl_ctx *evssl; } ssl;   // CMD_SSL：是否客户端 + evssl
         struct { int32_t type; uint64_t val; } setud;    // CMD_SETUD：ud 字段类型 + 值
+        sendto_ctx sendto;       // CMD_SENDTO
     } args;
 }cmd_ctx;
 

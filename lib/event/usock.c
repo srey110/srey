@@ -492,57 +492,39 @@ static void _usk_on_rw_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
         return;
     }
 }
-void _uev_add_write_inloop(watcher_ctx *watcher, sock_ctx *skctx, off_buf_ctx *buf) {
-    if (SOCK_STREAM == skctx->type) {
-        tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
-        // 已在 graceful/error 关闭流程：拒收新数据
-        if (BIT_CHECK(tcp->status, STATUS_GRACEFUL_CLOSE)
-            || BIT_CHECK(tcp->status, STATUS_ERROR)) {
-            _evpub_off_buf_release(buf);
-            return;
-        }
-#if WITH_SSL
-        // SSL 握手期间禁止发送业务数据，否则会中断握手；命中即丢数据并立即关连接
-        if (BIT_CHECK(tcp->status, STATUS_AUTHSSL)
-            || BIT_CHECK(tcp->status, STATUS_SSLEXCHANGE)) {
-            LOG_WARN("ev_send during SSL handshake on fd %d, disconnect.", (int32_t)skctx->fd);
-            _evpub_off_buf_release(buf);
-            _uev_disconnect(watcher, skctx, 1);
-            return;
-        }
-#endif
-        // TCP 慢消费者保护：发送队列超阈值丢数据并 disconnect，避免业务无脑写打爆内存
-        if (0 != MAX_SENDQ_CNT
-            && queue_size(&tcp->buf_s) >= MAX_SENDQ_CNT) {
-            LOG_WARN("TCP send queue overflow on fd %d (>= %d), disconnect.",
-                     (int32_t)skctx->fd, MAX_SENDQ_CNT);
-            _evpub_off_buf_release(buf);
-            _uev_disconnect(watcher, skctx, 1);
-            return;
-        }
-        tcp->wb_size += buf->lens;
-        if (tda_check(&tcp->tda, tcp->wb_size)) {
-            LOG_WARN("TCP send buf growing on fd %d: %zu bytes.",
-                     (int32_t)skctx->fd, tcp->wb_size);
-        }
-        queue_push(&tcp->buf_s, buf);
-    } else {
-        udp_ctx *udp = UPCAST(skctx, udp_ctx, sock);
-        // UDP 队列超阈值丢 datagram 不断 fd
-        if (0 != MAX_SENDQ_CNT
-            && queue_size(&udp->buf_s) >= MAX_SENDQ_CNT) {
-            LOG_WARN("UDP send queue overflow on fd %d (>= %d), drop datagram.",
-                     (int32_t)skctx->fd, MAX_SENDQ_CNT);
-            _evpub_off_buf_release(buf);
-            return;
-        }
-        udp->wb_size += buf->lens;
-        if (tda_check(&udp->tda, udp->wb_size)) {
-            LOG_WARN("UDP send buf growing on fd %d: %zu bytes.",
-                     (int32_t)skctx->fd, udp->wb_size);
-        }
-        queue_push(&udp->buf_s, buf);
+void _uev_add_bufs_send(watcher_ctx *watcher, sock_ctx *skctx, off_buf_ctx *buf) {
+    tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
+    // 已在 graceful/error 关闭流程：拒收新数据
+    if (BIT_CHECK(tcp->status, STATUS_GRACEFUL_CLOSE)
+        || BIT_CHECK(tcp->status, STATUS_ERROR)) {
+        _evpub_off_buf_release(buf);
+        return;
     }
+#if WITH_SSL
+    // SSL 握手期间禁止发送业务数据，否则会中断握手；命中即丢数据并立即关连接
+    if (BIT_CHECK(tcp->status, STATUS_AUTHSSL)
+        || BIT_CHECK(tcp->status, STATUS_SSLEXCHANGE)) {
+        LOG_WARN("ev_send during SSL handshake on fd %d, disconnect.", (int32_t)skctx->fd);
+        _evpub_off_buf_release(buf);
+        _uev_disconnect(watcher, skctx, 1);
+        return;
+    }
+#endif
+    // TCP 慢消费者保护：发送队列超阈值丢数据并 disconnect，避免业务无脑写打爆内存
+    if (0 != MAX_SENDQ_CNT
+        && queue_size(&tcp->buf_s) >= MAX_SENDQ_CNT) {
+        LOG_WARN("TCP send queue overflow on fd %d (>= %d), disconnect.",
+                 (int32_t)skctx->fd, MAX_SENDQ_CNT);
+        _evpub_off_buf_release(buf);
+        _uev_disconnect(watcher, skctx, 1);
+        return;
+    }
+    tcp->wb_size += buf->lens;
+    if (tda_check(&tcp->tda, tcp->wb_size)) {
+        LOG_WARN("TCP send buf growing on fd %d: %zu bytes.",
+                 (int32_t)skctx->fd, tcp->wb_size);
+    }
+    queue_push(&tcp->buf_s, buf);
     if (!BIT_CHECK(skctx->events, EVENT_WRITE)) {
         if (ERR_OK != _uev_add_event(watcher, skctx->fd, &skctx->events, EVENT_WRITE, skctx)) {
             _uev_disconnect(watcher, skctx, 1);
@@ -1007,28 +989,26 @@ static int32_t _usk_on_udp_rcb(watcher_ctx *watcher, udp_ctx *udp) {
 // UDP发送处理：循环sendmsg发送队列中所有数据包，队列空后删除写事件
 static int32_t _usk_on_udp_wcb(watcher_ctx *watcher, udp_ctx *udp) {
     IOV_TYPE iov;
-    off_buf_ctx *buf;
-    netaddr_ctx *addr;
+    sendto_ctx *buf;
     struct msghdr msg;
     int32_t rtn = ERR_OK;
     while (NULL != (buf = queue_peek(&udp->buf_s))) {
-        addr = (netaddr_ctx *)buf->data;
-        iov.IOV_PTR_FIELD = (char *)buf->data + sizeof(netaddr_ctx);
-        iov.IOV_LEN_FIELD = (IOV_LEN_TYPE)buf->lens;
-        _usk_init_msghdr(&msg, addr, &iov, 1);
+        iov.IOV_PTR_FIELD = (char *)buf->data;
+        iov.IOV_LEN_FIELD = (IOV_LEN_TYPE)buf->len;
+        _usk_init_msghdr(&msg, &buf->addr, &iov, 1);
         rtn = sendmsg(udp->sock.fd, &msg, 0);
         if (rtn >= 0) {
-            udp->wb_size -= buf->lens;
+            udp->wb_size -= buf->len;
+            FREE(buf->data);
             queue_pop(&udp->buf_s);
-            _evpub_off_buf_release(buf);
             rtn = ERR_OK;
         } else {
             if (ERR_RW_RETRIABLE(ERRNO)) {
                 rtn = ERR_OK;
             } else {
-                udp->wb_size -= buf->lens;
+                udp->wb_size -= buf->len;
+                FREE(buf->data);
                 queue_pop(&udp->buf_s);
-                _evpub_off_buf_release(buf);
                 rtn = ERR_FAILED;
             }
             break;
@@ -1078,6 +1058,28 @@ static void _usk_on_udp_rw(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
         _uev_qtn_push(watcher, skctx, QTN_UDP);
     }
 }
+void _uev_add_bufs_sendto(watcher_ctx *watcher, sock_ctx *skctx, sendto_ctx *buf) {
+    udp_ctx *udp = UPCAST(skctx, udp_ctx, sock);
+    // UDP 队列超阈值丢 datagram 不断 fd
+    if (0 != MAX_SENDQ_CNT
+        && queue_size(&udp->buf_s) >= MAX_SENDQ_CNT) {
+        LOG_WARN("UDP send queue overflow on fd %d (>= %d), drop datagram.",
+                 (int32_t)skctx->fd, MAX_SENDQ_CNT);
+        FREE(buf->data);
+        return;
+    }
+    udp->wb_size += buf->len;
+    if (tda_check(&udp->tda, udp->wb_size)) {
+        LOG_WARN("UDP send buf growing on fd %d: %zu bytes.",
+                 (int32_t)skctx->fd, udp->wb_size);
+    }
+    queue_push(&udp->buf_s, buf);
+    if (!BIT_CHECK(skctx->events, EVENT_WRITE)) {
+        if (ERR_OK != _uev_add_event(watcher, skctx->fd, &skctx->events, EVENT_WRITE, skctx)) {
+            _uev_disconnect(watcher, skctx, 1);
+        }
+    }
+}
 // 分配并初始化UDP上下文
 static sock_ctx *_usk_new_udp(SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
     udp_ctx *udp;
@@ -1090,7 +1092,7 @@ static sock_ctx *_usk_new_udp(SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
     udp->skid = createid();
     udp->cbs = *cbs;
     COPY_UD(udp->ud, ud);
-    queue_init(&udp->buf_s, sizeof(off_buf_ctx), INIT_SENDBUF_LEN);
+    queue_init(&udp->buf_s, sizeof(sendto_ctx), INIT_SENDBUF_LEN);
     udp->wb_size = 0;
     tda_init(&udp->tda, WB_WARN_INIT_SIZE);
     return &udp->sock;
@@ -1098,7 +1100,7 @@ static sock_ctx *_usk_new_udp(SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
 void _uev_free_udp(sock_ctx *skctx) {
     udp_ctx *udp = UPCAST(skctx, udp_ctx, sock);
     CLOSE_SOCK(udp->sock.fd);
-    _evpub_off_buf_clear(&udp->buf_s);
+    _evpub_sendto_clear(&udp->buf_s);
     queue_free(&udp->buf_s);
     UD_FREE(udp->cbs.ud_free, &udp->ud);
     FREE(udp);
