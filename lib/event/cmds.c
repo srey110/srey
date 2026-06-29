@@ -58,80 +58,78 @@ int32_t _cmd_add_acpfd(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn
     cmd_ctx cmd = { 0 };
     cmd.cmd = CMD_ADDACP;
     cmd.fd = fd;
-    cmd.arg = (uint64_t)lsn;
+    cmd.args.lsn = lsn;
     return _send_cmd(watcher, &cmd);
 }
 void _on_cmd_addacp(watcher_ctx *watcher, cmd_ctx *cmd) {
-    struct listener_ctx *lsn = (struct listener_ctx *)cmd->arg;
 #ifdef EV_IOCP
-    _iocp_add_acpfd_inloop(watcher, cmd->fd, lsn);
+    _iocp_add_acpfd_inloop(watcher, cmd->fd, cmd->args.lsn);
     // 配对 _on_accept_cb path 3 投递前 ref++ 占位：归零路径释放 lsn
-    _iocp_try_freelsn(lsn);
+    _iocp_try_freelsn(cmd->args.lsn);
 #else
-    _uev_add_acpfd_inloop(watcher, cmd->fd, lsn);
-    _uev_qtn_freelsn(watcher, lsn);
+    _uev_add_acpfd_inloop(watcher, cmd->fd, cmd->args.lsn);
+    _uev_qtn_freelsn(watcher, cmd->args.lsn);
 #endif
 }
-int32_t _cmd_connect(ev_ctx *ctx, struct sock_ctx *skctx, void *arg) {
+int32_t _cmd_connect(ev_ctx *ctx, struct sock_ctx *skctx, netaddr_ctx *addr) {
     cmd_ctx cmd = { 0 };
     cmd.cmd = CMD_CONN;
     cmd.fd = skctx->fd;
-    cmd.arg = (uint64_t)skctx;
-    cmd.skid = (uint64_t)arg;
+    cmd.args.conn.skctx = skctx;
+    if (NULL != addr) {
+        cmd.args.conn.addr = *addr;
+    }
     return _send_cmd(GET_PTR(ctx->watcher, ctx->nthreads, cmd.fd), &cmd);
 }
 void _on_cmd_conn(watcher_ctx *watcher, cmd_ctx *cmd) {
 #ifdef EV_IOCP
-    netaddr_ctx *addr = (netaddr_ctx *)cmd->skid;
-    _iocp_add_conn_inloop(watcher, (sock_ctx *)cmd->arg, addr);
-    FREE(addr);
+    _iocp_add_conn_inloop(watcher, cmd->args.conn.skctx, &cmd->args.conn.addr);
 #else
-    _uev_add_conn_inloop(watcher, (sock_ctx *)cmd->arg);
+    _uev_add_conn_inloop(watcher, cmd->args.conn.skctx);
 #endif
 }
 int32_t _cmd_add(watcher_ctx *watcher, sock_ctx *skctx) {
     cmd_ctx cmd = { 0 };
     cmd.cmd = CMD_ADD;
-    cmd.arg = (uint64_t)skctx;
+    cmd.args.skctx = skctx;
     return _send_cmd(watcher, &cmd);
 }
 void _on_cmd_add(watcher_ctx *watcher, cmd_ctx *cmd) {
-    sock_ctx *skctx = (sock_ctx *)cmd->arg;
 #ifdef EV_IOCP
-    _iocp_add_fd_inloop(watcher, skctx);
+    _iocp_add_fd_inloop(watcher, cmd->args.skctx);
 #else
-    _uev_add_fd_inloop(watcher, skctx);
+    _uev_add_fd_inloop(watcher, cmd->args.skctx);
 #endif
 }
 #ifndef EV_IOCP
 int32_t _cmd_listen(watcher_ctx *watcher, sock_ctx *skctx) {
     cmd_ctx cmd = { 0 };
     cmd.cmd = CMD_LSN;
-    cmd.arg = (uint64_t)skctx;
+    cmd.args.skctx = skctx;
     return _send_cmd(watcher, &cmd);
 }
 void _on_cmd_lsn(watcher_ctx *watcher, cmd_ctx *cmd) {
-    _uev_add_lsn_inloop(watcher, (sock_ctx *)cmd->arg);
+    _uev_add_lsn_inloop(watcher, cmd->args.skctx);
 }
 int32_t _cmd_unlisten(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn) {
     cmd_ctx cmd = { 0 };
     cmd.cmd = CMD_UNLSN;
     cmd.fd = fd;
-    cmd.arg = (uint64_t)lsn;
+    cmd.args.lsn = lsn;
     return _send_cmd(watcher, &cmd);
 }
 void _on_cmd_unlsn(watcher_ctx *watcher, cmd_ctx *cmd) {
-    _uev_remove_lsn(watcher, cmd->fd, (struct listener_ctx *)cmd->arg);
+    _uev_remove_lsn(watcher, cmd->fd, cmd->args.lsn);
 }
 int32_t _cmd_lsn_unref(watcher_ctx *watcher, struct listener_ctx *lsn) {
     cmd_ctx cmd = { 0 };
     cmd.cmd = CMD_LSN_UNREF;
-    cmd.arg = (uint64_t)lsn;
+    cmd.args.lsn = lsn;
     // cmd 不关联 fd, 任 watcher 接收即可
     return _send_cmd(watcher, &cmd);
 }
 void _on_cmd_lsn_unref(watcher_ctx *watcher, cmd_ctx *cmd) {
-    _uev_qtn_freelsn(watcher, (struct listener_ctx *)cmd->arg);
+    _uev_qtn_freelsn(watcher, cmd->args.lsn);
 }
 #endif
 void _on_cmd_stop(watcher_ctx *watcher, cmd_ctx *cmd) {
@@ -146,7 +144,7 @@ void ev_close(ev_ctx *ctx, SOCKET fd, uint64_t skid, int32_t immed) {
     cmd.cmd = CMD_DISCONN;
     cmd.fd = fd;
     cmd.skid = skid;
-    cmd.arg = (uint64_t)immed;
+    cmd.args.immed = immed;
     (void)_send_cmd(GET_PTR(ctx->watcher, ctx->nthreads, cmd.fd), &cmd);
 }
 void _on_cmd_disconn(watcher_ctx *watcher, cmd_ctx *cmd) {
@@ -156,9 +154,9 @@ void _on_cmd_disconn(watcher_ctx *watcher, cmd_ctx *cmd) {
         return;
     }
 #ifdef EV_IOCP
-    _iocp_disconnect(skctx, (int32_t)cmd->arg);
+    _iocp_disconnect(skctx, cmd->args.immed);
 #else
-    _uev_disconnect(watcher, skctx, (int32_t)cmd->arg);
+    _uev_disconnect(watcher, skctx, cmd->args.immed);
 #endif
 }
 int32_t ev_ssl(ev_ctx *ctx, SOCKET fd, uint64_t skid, int32_t client, struct evssl_ctx *evssl) {
@@ -170,8 +168,8 @@ int32_t ev_ssl(ev_ctx *ctx, SOCKET fd, uint64_t skid, int32_t client, struct evs
     cmd.cmd = CMD_SSL;
     cmd.fd = fd;
     cmd.skid = skid;
-    cmd.len = (size_t)client;
-    cmd.arg = (uint64_t)evssl;
+    cmd.args.ssl.client = client;
+    cmd.args.ssl.evssl = evssl;
     return _send_cmd(GET_PTR(ctx->watcher, ctx->nthreads, cmd.fd), &cmd);
 #else
     (void)ctx;
@@ -188,9 +186,9 @@ void _on_cmd_ssl(watcher_ctx *watcher, cmd_ctx *cmd) {
         return;
     }
 #ifdef EV_IOCP
-    _iocp_try_ssl_exchange(watcher, skctx, (struct evssl_ctx *)cmd->arg, (int32_t)cmd->len);
+    _iocp_try_ssl_exchange(watcher, skctx, cmd->args.ssl.evssl, cmd->args.ssl.client);
 #else
-    _uev_try_ssl_exchange(watcher, skctx, (struct evssl_ctx *)cmd->arg, (int32_t)cmd->len);
+    _uev_try_ssl_exchange(watcher, skctx, cmd->args.ssl.evssl, cmd->args.ssl.client);
 #endif
 }
 int32_t ev_send(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *data, size_t len, int32_t copy) {
@@ -204,25 +202,24 @@ int32_t ev_send(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *data, size_t len, i
     cmd.cmd = CMD_SEND;
     cmd.fd = fd;
     cmd.skid = skid;
-    cmd.len = len;
+    cmd.args.send.len = len;
     if (copy) {
         char *buf;
         MALLOC(buf, len);
         memcpy(buf, data, len);
-        cmd.arg = (uint64_t)buf;
+        cmd.args.send.data = buf;
     } else {
-        cmd.arg = (uint64_t)data;
+        cmd.args.send.data = data;
     }
-    watcher_ctx *watcher = GET_PTR(ctx->watcher, ctx->nthreads, cmd.fd);
-    if (ERR_OK != _send_cmd(watcher, &cmd)) {
-        void *fbuf = (void *)cmd.arg;
+    if (ERR_OK != _send_cmd(GET_PTR(ctx->watcher, ctx->nthreads, cmd.fd), &cmd)) {
+        void *fbuf = cmd.args.send.data;
         FREE(fbuf);
         return ERR_FAILED;
     }
     return ERR_OK;
 }
 void _on_cmd_send(watcher_ctx *watcher, cmd_ctx *cmd) {
-    void *data = (void *)cmd->arg;
+    void *data = cmd->args.send.data;
     sock_ctx *skctx = _evpub_sockel_get(watcher, cmd->fd);
     if (NULL == skctx
         || ERR_OK != _CHECK_SKID(skctx, cmd->skid)) {
@@ -236,11 +233,9 @@ void _on_cmd_send(watcher_ctx *watcher, cmd_ctx *cmd) {
         FREE(data);
         return;
     }
-    off_buf_ctx buf;
+    off_buf_ctx buf = { 0 };
     buf.data = data;
-    buf.lens = cmd->len;
-    buf.offset = 0;
-    buf.shared = NULL;
+    buf.lens = cmd->args.send.len;
 #ifdef EV_IOCP
     _iocp_add_bufs_trypost(skctx, &buf);
 #else
@@ -281,17 +276,15 @@ int32_t ev_send_multi(ev_ctx *ctx, SOCKET fds[], uint64_t skids[], int32_t n,
     // 给每个有效 fd 投一条 CMD_SEND_MULTI;事件线程取出后包装 off_buf{shared=pack} 入队
     cmd_ctx cmd = { 0 };
     cmd.cmd = CMD_SEND_MULTI;
-    cmd.len = len;
-    cmd.arg = (uint64_t)pack;
-    watcher_ctx *watcher;
+    cmd.args.multi.len = len;
+    cmd.args.multi.pack = pack;
     for (i = 0; i < n; i++) {
         if (INVALID_SOCK == fds[i]) {
             continue;
         }
         cmd.fd = fds[i];
         cmd.skid = skids[i];
-        watcher = GET_PTR(ctx->watcher, ctx->nthreads, cmd.fd);
-        if (ERR_OK != _send_cmd(watcher, &cmd)) {
+        if (ERR_OK != _send_cmd(GET_PTR(ctx->watcher, ctx->nthreads, cmd.fd), &cmd)) {
             if (1 == ATOMIC_ADD(&pack->ref, -1)) {
                 FREE(pack->data);
                 FREE(pack);
@@ -302,7 +295,7 @@ int32_t ev_send_multi(ev_ctx *ctx, SOCKET fds[], uint64_t skids[], int32_t n,
     return ERR_OK;
 }
 void _on_cmd_send_multi(watcher_ctx *watcher, cmd_ctx *cmd) {
-    shared_data *pack = (shared_data *)cmd->arg;
+    shared_data *pack = cmd->args.multi.pack;
     sock_ctx *skctx = _evpub_sockel_get(watcher, cmd->fd);
     // sock 失效或非 TCP：本 fd 这份引用归还,归 0 时释放。正常路径由 off_buf_ctx.shared 承载共享 ref 减；
     // 此处未构造 off_buf_ctx,直接 ATOMIC_ADD -1 即可
@@ -315,10 +308,9 @@ void _on_cmd_send_multi(watcher_ctx *watcher, cmd_ctx *cmd) {
         }
         return;
     }
-    off_buf_ctx buf;
+    off_buf_ctx buf = { 0 };
     buf.data = pack->data;
-    buf.lens = cmd->len;
-    buf.offset = 0;
+    buf.lens = cmd->args.multi.len;
     buf.shared = pack;
 #ifdef EV_IOCP
     _iocp_add_bufs_trypost(skctx, &buf);
@@ -338,7 +330,7 @@ int32_t ev_sendto(ev_ctx *ctx, SOCKET fd, uint64_t skid, const char *ip, const u
     cmd.cmd = CMD_SENDTO;
     cmd.fd = fd;
     cmd.skid = skid;
-    cmd.len = len;
+    cmd.args.sendto.len = len;
     char *buf;
     MALLOC(buf, sizeof(netaddr_ctx) + len);
     netaddr_ctx *addr = (netaddr_ctx *)buf;
@@ -351,9 +343,8 @@ int32_t ev_sendto(ev_ctx *ctx, SOCKET fd, uint64_t skid, const char *ip, const u
         return ERR_FAILED;
     }
     memcpy(buf + sizeof(netaddr_ctx), data, len);
-    cmd.arg = (uint64_t)buf;
-    watcher_ctx *watcher = GET_PTR(ctx->watcher, ctx->nthreads, cmd.fd);
-    if (ERR_OK != _send_cmd(watcher, &cmd)) {
+    cmd.args.sendto.data = buf;
+    if (ERR_OK != _send_cmd(GET_PTR(ctx->watcher, ctx->nthreads, cmd.fd), &cmd)) {
         FREE(buf);
         if (!copy) {
             FREE(data);
@@ -366,7 +357,7 @@ int32_t ev_sendto(ev_ctx *ctx, SOCKET fd, uint64_t skid, const char *ip, const u
     return ERR_OK;
 }
 void _on_cmd_sendto(watcher_ctx *watcher, cmd_ctx *cmd) {
-    void *data = (void *)cmd->arg;
+    void *data = cmd->args.sendto.data;
     sock_ctx *skctx = _evpub_sockel_get(watcher, cmd->fd);
     if (NULL == skctx
         || ERR_OK != _CHECK_SKID(skctx, cmd->skid)) {
@@ -380,11 +371,9 @@ void _on_cmd_sendto(watcher_ctx *watcher, cmd_ctx *cmd) {
         FREE(data);
         return;
     }
-    off_buf_ctx buf;
+    off_buf_ctx buf = { 0 };
     buf.data = data;
-    buf.lens = cmd->len;
-    buf.offset = 0;
-    buf.shared = NULL;
+    buf.lens = cmd->args.sendto.len;
 #ifdef EV_IOCP
     _iocp_add_bufs_trysendto(skctx, &buf);
 #else
@@ -397,10 +386,8 @@ static int32_t _send_cmd_udp_opt(ev_ctx *ctx, SOCKET fd, uint64_t skid, udp_opt_
     cmd.cmd = CMD_UDP_OPT;
     cmd.fd = fd;
     cmd.skid = skid;
-    cmd.len = 0;
-    cmd.arg = (uint64_t)arg;
-    watcher_ctx *watcher = GET_PTR(ctx->watcher, ctx->nthreads, cmd.fd);
-    if (ERR_OK != _send_cmd(watcher, &cmd)) {
+    cmd.args.udpop = arg;
+    if (ERR_OK != _send_cmd(GET_PTR(ctx->watcher, ctx->nthreads, cmd.fd), &cmd)) {
         FREE(arg);
         return ERR_FAILED;
     }
@@ -412,10 +399,8 @@ int32_t ev_udp_join(ev_ctx *ctx, SOCKET fd, uint64_t skid,
         return ERR_FAILED;
     }
     udp_opt_arg *arg;
-    MALLOC(arg, sizeof(udp_opt_arg));
+    CALLOC(arg, 1, sizeof(udp_opt_arg));
     arg->op = UDP_OPT_JOIN;
-    arg->ttl = 0;
-    arg->loop = 0;
     safe_fill_str(arg->group_ip, sizeof(arg->group_ip), group_ip);
     safe_fill_str(arg->iface_str, sizeof(arg->iface_str), iface_str);
     return _send_cmd_udp_opt(ctx, fd, skid, arg);
@@ -426,10 +411,8 @@ int32_t ev_udp_leave(ev_ctx *ctx, SOCKET fd, uint64_t skid,
         return ERR_FAILED;
     }
     udp_opt_arg *arg;
-    MALLOC(arg, sizeof(udp_opt_arg));
+    CALLOC(arg, 1, sizeof(udp_opt_arg));
     arg->op = UDP_OPT_LEAVE;
-    arg->ttl = 0;
-    arg->loop = 0;
     safe_fill_str(arg->group_ip, sizeof(arg->group_ip), group_ip);
     safe_fill_str(arg->iface_str, sizeof(arg->iface_str), iface_str);
     return _send_cmd_udp_opt(ctx, fd, skid, arg);
@@ -439,12 +422,9 @@ int32_t ev_udp_ttl(ev_ctx *ctx, SOCKET fd, uint64_t skid, uint8_t ttl) {
         return ERR_FAILED;
     }
     udp_opt_arg *arg;
-    MALLOC(arg, sizeof(udp_opt_arg));
+    CALLOC(arg, 1, sizeof(udp_opt_arg));
     arg->op = UDP_OPT_TTL;
     arg->ttl = ttl;
-    arg->loop = 0;
-    arg->group_ip[0] = '\0';
-    arg->iface_str[0] = '\0';
     return _send_cmd_udp_opt(ctx, fd, skid, arg);
 }
 int32_t ev_udp_loop(ev_ctx *ctx, SOCKET fd, uint64_t skid, int32_t enable) {
@@ -452,18 +432,15 @@ int32_t ev_udp_loop(ev_ctx *ctx, SOCKET fd, uint64_t skid, int32_t enable) {
         return ERR_FAILED;
     }
     udp_opt_arg *arg;
-    MALLOC(arg, sizeof(udp_opt_arg));
+    CALLOC(arg, 1, sizeof(udp_opt_arg));
     arg->op = UDP_OPT_LOOP;
-    arg->ttl = 0;
     arg->loop = enable ? 1 : 0;
-    arg->group_ip[0] = '\0';
-    arg->iface_str[0] = '\0';
     return _send_cmd_udp_opt(ctx, fd, skid, arg);
 }
 // 事件线程内执行 UDP 多播 setsockopt：先取 sock family,按 IPv4/IPv6 分支调对应 IP_*/IPV6_* 选项;
 // Windows 路径下 IPv6 iface_str 忽略走默认接口(if_nametoindex 需 iphlpapi.lib,不引入依赖)
 void _on_cmd_udp_opt(watcher_ctx *watcher, cmd_ctx *cmd) {
-    udp_opt_arg *arg = (udp_opt_arg *)cmd->arg;
+    udp_opt_arg *arg = cmd->args.udpop;
     sock_ctx *skctx = _evpub_sockel_get(watcher, cmd->fd);
     if (NULL == skctx || ERR_OK != _CHECK_SKID(skctx, cmd->skid)) {
         FREE(arg);
@@ -552,8 +529,8 @@ static int32_t _cmd_set_ud(ev_ctx *ctx, SOCKET fd, uint64_t skid, int32_t type, 
     cmd.cmd = CMD_SETUD;
     cmd.fd = fd;
     cmd.skid = skid;
-    cmd.len = (size_t)type;
-    cmd.arg = val;
+    cmd.args.setud.type = type;
+    cmd.args.setud.val = val;
     return _send_cmd(GET_PTR(ctx->watcher, ctx->nthreads, cmd.fd), &cmd);
 }
 int32_t ev_ud_pktype(ev_ctx *ctx, SOCKET fd, uint64_t skid, subtype_t pktype) {
@@ -605,8 +582,8 @@ void _on_cmd_setud(watcher_ctx *watcher, cmd_ctx *cmd) {
         return;
     }
 #ifdef EV_IOCP
-    _set_ud(_iocp_get_ud(skctx), (int32_t)cmd->len, cmd->arg);
+    _set_ud(_iocp_get_ud(skctx), cmd->args.setud.type, cmd->args.setud.val);
 #else
-    _set_ud(_uev_get_ud(skctx), (int32_t)cmd->len, cmd->arg);
+    _set_ud(_uev_get_ud(skctx), cmd->args.setud.type, cmd->args.setud.val);
 #endif
 }

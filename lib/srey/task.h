@@ -197,7 +197,7 @@ int32_t task_udp(task_ctx *task, const char *ip, uint16_t port, SOCKET *fd, uint
 /// 公式: n = n_base * (1 + priority/8),cap 到当前队列长度;
 /// n_base 由 worker.weight 推导(历史逻辑不变)。
 /// 每 +8 翻倍,每 +1 ≈ +12.5%,粒度 1/8 n_base。
-/// priority=0 (默认) 与历史行为完全一致。可在任意线程随时调整,新值下一轮调度生效。
+/// priority=0 (默认)。可在任意线程随时调整,新值下一轮调度生效。
 /// 注意:priority 是相对加成,绝对消费数仍受 worker.weight 影响;
 /// work-stealing 偷过去后 priority 跟随 task,但 stealer 的 weight 决定 n_base。
 /// </summary>

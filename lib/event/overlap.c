@@ -754,27 +754,23 @@ int32_t ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const u
         }
         return ERR_FAILED;
     }
-    netaddr_ctx *addr;
-    MALLOC(addr, sizeof(netaddr_ctx));
-    if (ERR_OK != netaddr_set(addr, ip, port)) {
+    netaddr_ctx addr;
+    if (ERR_OK != netaddr_set(&addr, ip, port)) {
         LOG_ERROR("netaddr_set %s:%d, %s", ip, port, ERRORSTR(ERRNO));
         UD_FREE(cbs->ud_free, ud);
-        FREE(addr);
         return ERR_FAILED;
     }
-    *fd = _evpub_create_sock(SOCK_STREAM, netaddr_family(addr));
+    *fd = _evpub_create_sock(SOCK_STREAM, netaddr_family(&addr));
     if (INVALID_SOCK == *fd) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         UD_FREE(cbs->ud_free, ud);
-        FREE(addr);
         return ERR_FAILED;
     }
     sock_reuseaddr(*fd);
     _evpub_nodelay_nonblock(*fd);
-    if (ERR_OK != _olp_trybind(*fd, netaddr_family(addr))) {
+    if (ERR_OK != _olp_trybind(*fd, netaddr_family(&addr))) {
         CLOSE_SOCK((*fd));
         UD_FREE(cbs->ud_free, ud);
-        FREE(addr);
         return ERR_FAILED;
     }
     skpool_args skargs = { *fd, cbs, ud };
@@ -788,8 +784,7 @@ int32_t ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const u
 #else
     (void)evssl;
 #endif
-    if (ERR_OK != _cmd_connect(ctx, skctx, addr)) {
-        FREE(addr);
+    if (ERR_OK != _cmd_connect(ctx, skctx, &addr)) {
         _evpub_sk_free(skctx);
         return ERR_FAILED;
     }

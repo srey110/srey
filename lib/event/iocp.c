@@ -346,15 +346,18 @@ static void _iocp_free_cmd(watcher_ctx *watcher) {
     while (ERR_OK == fsqu_pop_sc(&olcmd->qu, &cmd_local)) {
         switch (cmd->cmd) {
         // CMD_SEND 持有裸 payload；CMD_SENDTO 持有 [netaddr_ctx + payload]
-        // 一整段 MALLOC，关闭路径都只需 FREE(arg) 释放整段
+        // 一整段 MALLOC，关闭路径都只需 FREE 释放整段
         case CMD_SEND:
+            data = cmd->args.send.data;
+            FREE(data);
+            break;
         case CMD_SENDTO:
-            data = (void *)cmd->arg;
+            data = cmd->args.sendto.data;
             FREE(data);
             break;
         // CMD_SEND_MULTI 持有 shared_data*；多 fd 共享同一 pack,归还本 fd 引用即可
         case CMD_SEND_MULTI:
-            pack = (shared_data *)cmd->arg;
+            pack = cmd->args.multi.pack;
             if (1 == ATOMIC_ADD(&pack->ref, -1)) {
                 FREE(pack->data);
                 FREE(pack);
@@ -362,16 +365,15 @@ static void _iocp_free_cmd(watcher_ctx *watcher) {
             break;
         // CMD_UDP_OPT 持有 udp_opt_arg*；watcher 退出时未执行的命令直接释放参数包
         case CMD_UDP_OPT:
-            udp_arg = (udp_opt_arg *)cmd->arg;
+            udp_arg = cmd->args.udpop;
             FREE(udp_arg);
             break;
         case CMD_CONN:
-            skctx = (sock_ctx *)cmd->arg;
+            skctx = cmd->args.conn.skctx;
             _evpub_sk_free(skctx);
-            FREE((void *)cmd->skid);  // CMD_CONN 借 skid 携带 MALLOC 的 conn addr,排空未处理命令时一并释放
             break;
         case CMD_ADD:
-            skctx = (sock_ctx *)cmd->arg;
+            skctx = cmd->args.skctx;
             if (SOCK_STREAM == skctx->type) {
                 _evpub_sk_free(skctx);
             } else {
@@ -382,7 +384,7 @@ static void _iocp_free_cmd(watcher_ctx *watcher) {
             // fd 是 accept 到的连接，未能加入事件循环；同时配对 _on_accept_cb
             // path 3 投递前 ref++ 占位的减法，ref 归零时释放 lsn
             CLOSE_SOCK(cmd->fd);
-            _iocp_try_freelsn((struct listener_ctx *)cmd->arg);
+            _iocp_try_freelsn(cmd->args.lsn);
             break;
         default:
             break;

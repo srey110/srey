@@ -566,15 +566,18 @@ static void _uev_free_pipe(watcher_ctx *watcher) {
         for (j = 0; j < cnt; j++) {
             switch (cmds[j].cmd) {
             // CMD_SEND 持有裸 payload；CMD_SENDTO 持有 [netaddr_ctx + payload]
-            // 一整段 MALLOC，关闭路径都只需 FREE(arg) 释放整段
+            // 一整段 MALLOC，关闭路径都只需 FREE 释放整段
             case CMD_SEND:
+                data = cmds[j].args.send.data;
+                FREE(data);
+                break;
             case CMD_SENDTO:
-                data = (void *)cmds[j].arg;
+                data = cmds[j].args.sendto.data;
                 FREE(data);
                 break;
             // CMD_SEND_MULTI 持有 shared_data*；多 fd 共享,归还本 fd 引用归 0 时释放
             case CMD_SEND_MULTI:
-                pack = (shared_data *)cmds[j].arg;
+                pack = cmds[j].args.multi.pack;
                 if (1 == ATOMIC_ADD(&pack->ref, -1)) {
                     FREE(pack->data);
                     FREE(pack);
@@ -582,15 +585,15 @@ static void _uev_free_pipe(watcher_ctx *watcher) {
                 break;
             // CMD_UDP_OPT 持有 udp_opt_arg*；watcher 退出时未执行的命令直接释放参数包
             case CMD_UDP_OPT:
-                udp_arg = (udp_opt_arg *)cmds[j].arg;
+                udp_arg = cmds[j].args.udpop;
                 FREE(udp_arg);
                 break;
             case CMD_CONN:
-                skctx = (sock_ctx *)cmds[j].arg;
+                skctx = cmds[j].args.conn.skctx;
                 _evpub_sk_free(skctx);
                 break;
             case CMD_ADD:
-                skctx = (sock_ctx *)cmds[j].arg;
+                skctx = cmds[j].args.skctx;
                 if (SOCK_STREAM == skctx->type) {
                     _evpub_sk_free(skctx);
                 } else {
@@ -603,11 +606,11 @@ static void _uev_free_pipe(watcher_ctx *watcher) {
                 // 两者都需关闭 fd（listen 端口 / 未注册的 accept 连接）+ _uev_try_freelsn
             case CMD_ADDACP:
                 CLOSE_SOCK(cmds[j].fd);
-                _uev_try_freelsn((struct listener_ctx *)cmds[j].arg);
+                _uev_try_freelsn(cmds[j].args.lsn);
                 break;
             case CMD_LSN_UNREF:
                 // ev_unlisten 末尾减占位 ref: worker 已退出 loop, 无 events[] 迭代, 立即释放安全
-                _uev_try_freelsn((struct listener_ctx *)cmds[j].arg);
+                _uev_try_freelsn(cmds[j].args.lsn);
                 break;
             default:
                 break;
