@@ -41,7 +41,7 @@ void _pgsql_udfree(ud_cxt *ud) {
     pg->pack = NULL;
     scram_free(pg->scram);
     pg->scram = NULL;
-    pg->fd = INVALID_SOCK;
+    pg->sk.fd = INVALID_SOCK;
     ud->context = NULL;
 }
 void _pgsql_closed(ud_cxt *ud) {
@@ -88,7 +88,7 @@ static int32_t _pgsql_startup(ev_ctx *ev, ud_cxt *ud) {
     binary_offset(&bwriter, 0);
     binary_set_integer(&bwriter, size, 4, 0);               // 回填消息总长度
     ud->status = AUTH;
-    return ev_send(ev, pg->fd, pg->skid, bwriter.data, size, 0);
+    return ev_send(ev, pg->sk.fd, pg->sk.skid, bwriter.data, size, 0);
 }
 // 处理服务端 SSL 响应：'S' 升级为 SSL，'N' 直接发送 Startup 消息
 static void _pgsql_ssl_response(pgsql_ctx *pg, ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
@@ -102,7 +102,7 @@ static void _pgsql_ssl_response(pgsql_ctx *pg, ev_ctx *ev, buffer_ctx *buf, ud_c
     case 'S':
         // 服务端支持 SSL；若客户端未配置 evssl 则状态不一致（已发 SSLRequest 却无 evssl 上下文可升级），拒收
         if (NULL != pg->evssl) {
-            if (ERR_OK != ev_ssl(ev, pg->fd, pg->skid, 1, pg->evssl)) {
+            if (ERR_OK != ev_ssl(ev, pg->sk.fd, pg->sk.skid, 1, pg->evssl)) {
                 BIT_SET(*status, PROT_ERROR);
             }
         } else {
@@ -221,7 +221,7 @@ static int32_t _pgsql_password_auth(pgsql_ctx *pg, ev_ctx *ev) {
     pgsql_pack_start(&bwriter, 'p');
     binary_set_string(&bwriter, pg->password);
     pgsql_pack_end(&bwriter);
-    return ev_send(ev, pg->fd, pg->skid, bwriter.data, bwriter.offset, 0);
+    return ev_send(ev, pg->sk.fd, pg->sk.skid, bwriter.data, bwriter.offset, 0);
 }
 // MD5 密码认证（AuthenticationMD5Password）
 // 响应格式："md5" + hex(md5(hex(md5(password+user)) + salt)) + '\0'
@@ -263,7 +263,7 @@ static int32_t _pgsql_md5_auth(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *breader) {
     binary_set_string(&bwriter, response);
     secure_zero(response, sizeof(response));
     pgsql_pack_end(&bwriter);
-    return ev_send(ev, pg->fd, pg->skid, bwriter.data, bwriter.offset, 0);
+    return ev_send(ev, pg->sk.fd, pg->sk.skid, bwriter.data, bwriter.offset, 0);
 }
 // SCRAM 第一步：发送 client-first-message（SCRAM-SHA-256 或 SCRAM-SHA-256-PLUS）
 static int32_t _pgsql_scram_client_first(pgsql_ctx *pg, ev_ctx *ev, const char *mod) {
@@ -293,7 +293,7 @@ static int32_t _pgsql_scram_client_first(pgsql_ctx *pg, ev_ctx *ev, const char *
     binary_set_binary(&bwriter, first_message, fmlens);
     FREE(first_message);
     pgsql_pack_end(&bwriter);
-    return ev_send(ev, pg->fd, pg->skid, bwriter.data, bwriter.offset, 0);
+    return ev_send(ev, pg->sk.fd, pg->sk.skid, bwriter.data, bwriter.offset, 0);
 }
 // SCRAM-SHA-256 第二步：解析 server-first-message 并发送 client-final-message
 static int32_t _pgsql_scram_client_final(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *breader) {
@@ -317,7 +317,7 @@ static int32_t _pgsql_scram_client_final(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *
     binary_set_binary(&bwriter, final_message, strlen(final_message));
     FREE(final_message);
     pgsql_pack_end(&bwriter);
-    return ev_send(ev, pg->fd, pg->skid, bwriter.data, bwriter.offset, 0);
+    return ev_send(ev, pg->sk.fd, pg->sk.skid, bwriter.data, bwriter.offset, 0);
 }
 // 根据认证类型码分派具体的认证处理逻辑
 static void _pgsql_auth_process(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *breader, int32_t *status) {
@@ -388,7 +388,7 @@ static void _pgsql_auth_response(pgsql_ctx *pg, ev_ctx *ev, buffer_ctx *buf, ud_
     switch (pack[0]) {
     case 'E': { // ErrorResponse：认证失败，推送错误消息
         char *err = _pgpack_error_notice(&breader);
-        _hs_push(pg->fd, pg->skid, 1, ud, ERR_FAILED, err, strlen(err));
+        _hs_push(pg->sk.fd, pg->sk.skid, 1, ud, ERR_FAILED, err, strlen(err));
         BIT_SET(*status, PROT_ERROR);
         break;
     }
@@ -404,7 +404,7 @@ static void _pgsql_auth_response(pgsql_ctx *pg, ev_ctx *ev, buffer_ctx *buf, ud_
     case 'Z': // ReadyForQuery：认证完成，服务端就绪，推送成功通知
         pg->readyforquery = binary_get_int8(&breader);
         ud->status = COMMAND;
-        _hs_push(pg->fd, pg->skid, 1, ud, ERR_OK, NULL, 0);
+        _hs_push(pg->sk.fd, pg->sk.skid, 1, ud, ERR_OK, NULL, 0);
         break;
     default:
         BIT_SET(*status, PROT_ERROR);
@@ -455,13 +455,13 @@ int32_t pgsql_init(pgsql_ctx *pg, const char *ip, uint16_t port, struct evssl_ct
     safe_fill_str(pg->password, sizeof(pg->password), password);
     safe_fill_str(pg->database, sizeof(pg->database), NULL != database ? database : "");
     pg->port = 0 == port ? 5432 : port;
-    pg->fd = INVALID_SOCK;
+    pg->sk.fd = INVALID_SOCK;
     pg->evssl = evssl;
     return ERR_OK;
 }
 int32_t pgsql_try_connect(task_ctx *task, pgsql_ctx *pg) {
     pg->task = task;
-    return task_connect(task, PACK_PGSQL, NULL, pg->ip, pg->port, NETEV_AUTHSSL, pg, &pg->fd, &pg->skid);
+    return task_connect(task, PACK_PGSQL, NULL, pg->ip, pg->port, NETEV_AUTHSSL, pg, &pg->sk.fd, &pg->sk.skid);
 }
 void pgsql_set_userpwd(pgsql_ctx *pg, const char *user, const char *password) {
     if (strlen(user) > sizeof(pg->user) - 1

@@ -12,9 +12,9 @@ typedef struct task_udp_multicast_args {
 static atomic_t _recv_count;
 
 // 单播自收回调：验证 task_recvedfrom 路径基本工作
-static void _net_recvfrom(task_ctx *task, SOCKET fd, uint64_t skid,
+static void _net_recvfrom(task_ctx *task, sk_id *sk,
                           char ip[IP_LENS], uint16_t port, void *data, size_t size) {
-    (void)task; (void)fd; (void)skid; (void)ip; (void)port;
+    (void)task; (void)sk; (void)ip; (void)port;
     if (UNI_LEN == size && 0 == memcmp(data, UNI_MSG, UNI_LEN)) {
         ATOMIC_ADD(&_recv_count, 1);
     }

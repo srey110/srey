@@ -75,21 +75,16 @@ typedef void(*_request_cb)(task_ctx *task, subtype_t reqtype, uint64_t sess,
                            name_t src, void *data, size_t size);// 任务请求回调
 typedef void(*_response_cb)(task_ctx *task, subtype_t reqtype, uint64_t sess,
                             int32_t error, void *data, size_t size);// 任务响应回调
-typedef void(*_net_accept_cb)(task_ctx *task, SOCKET fd, uint64_t skid,
-                              subtype_t pktype);// 新连接接受回调
-typedef void(*_net_recv_cb)(task_ctx *task, SOCKET fd, uint64_t skid,
+typedef void(*_net_accept_cb)(task_ctx *task, sk_id *sk, subtype_t pktype);// 新连接接受回调
+typedef void(*_net_recv_cb)(task_ctx *task, sk_id *sk,
                             subtype_t pktype, uint8_t client, uint8_t slice, void *data, size_t size); // 数据接收回调
-typedef void(*_net_send_cb)(task_ctx *task, SOCKET fd, uint64_t skid,
-                            subtype_t pktype, uint8_t client, size_t size);// 数据发送完成回调
-typedef void(*_net_connect_cb)(task_ctx *task, SOCKET fd, uint64_t skid,
-                               subtype_t pktype, int32_t erro);// 连接建立回调
-typedef void(*_net_ssl_exchanged_cb)(task_ctx *task, SOCKET fd, uint64_t skid,
-                                     subtype_t pktype, uint8_t client);// SSL 交换完成回调
-typedef void(*_net_handshake_cb)(task_ctx *task, SOCKET fd, uint64_t skid,
+typedef void(*_net_send_cb)(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client, size_t size);// 数据发送完成回调
+typedef void(*_net_connect_cb)(task_ctx *task, sk_id *sk, subtype_t pktype, int32_t erro);// 连接建立回调
+typedef void(*_net_ssl_exchanged_cb)(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client);// SSL 交换完成回调
+typedef void(*_net_handshake_cb)(task_ctx *task, sk_id *sk,
                                  subtype_t pktype, uint8_t client, int32_t erro, void *data, size_t lens);// 应用层握手完成回调
-typedef void(*_net_close_cb)(task_ctx *task, SOCKET fd, uint64_t skid,
-                             subtype_t pktype, uint8_t client);// 连接关闭回调
-typedef void(*_net_recvfrom_cb)(task_ctx *task, SOCKET fd, uint64_t skid,
+typedef void(*_net_close_cb)(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client);// 连接关闭回调
+typedef void(*_net_recvfrom_cb)(task_ctx *task, sk_id *sk,
                                 char ip[IP_LENS], uint16_t port, void *data, size_t size);// UDP 数据接收回调
 // 任务间传递的消息体
 struct message_ctx {
@@ -98,13 +93,12 @@ struct message_ctx {
     subtype_t subtype; // 数据包解包类型（pack_type）或 请求类型（request_type）
     msg_type mtype;  // 消息类型
     int32_t erro;   // 错误码
-    SOCKET fd;      // socket 句柄
     size_t size;    // 数据长度
     name_t src;     // 发送方任务名
-    uint64_t skid;  // 连接 ID
     uint64_t sess;  // 会话 ID（用于请求/响应匹配）
     void *data;     // 消息数据指针
     shared_data *shared; // NULL=独占（默认 _message_clean 走 prots_pkfree/FREE）；非 NULL=task_multi_call / task_multi_request 广播,N 个 task 共享同一 data,各 task 释放时 ATOMIC_ADD(&ref,-1) 归 0 才 FREE
+    sk_id sk;       // 连接标识 fd+skid
 };
 // 工作线程版本快照，供监控线程检测卡死
 typedef struct worker_version {

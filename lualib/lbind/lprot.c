@@ -610,10 +610,10 @@ static int32_t _lprot_smtp_new(lua_State *lua) {
 /// <returns>无</returns>
 static int32_t _lprot_smtp_free(lua_State *lua) {
     smtp_ctx *smtp = luaL_checkudata(lua, 1, MT_SMTP);
-    if (NULL != smtp->task && INVALID_SOCK != smtp->fd) {
+    if (NULL != smtp->task && INVALID_SOCK != smtp->sk.fd) {
         char *cmd = smtp_pack_quit();
-        (void)ev_ud_context(&smtp->task->loader->netev, smtp->fd, smtp->skid, NULL);
-        ev_send(&smtp->task->loader->netev, smtp->fd, smtp->skid, cmd, strlen(cmd), 0);
+        (void)ev_ud_context(&smtp->task->loader->netev, smtp->sk.fd, smtp->sk.skid, NULL);
+        ev_send(&smtp->task->loader->netev, smtp->sk.fd, smtp->sk.skid, cmd, strlen(cmd), 0);
     }
     secure_zero(smtp->psw, sizeof(smtp->psw));
     return 0;
@@ -626,8 +626,8 @@ static int32_t _lprot_smtp_free(lua_State *lua) {
 /// <returns type="integer">skid</returns>
 static int32_t _lprot_smtp_sock_id(lua_State *lua) {
     smtp_ctx *smtp = luaL_checkudata(lua, 1, MT_SMTP);
-    lua_pushinteger(lua, smtp->fd);
-    lua_pushinteger(lua, smtp->skid);
+    lua_pushinteger(lua, smtp->sk.fd);
+    lua_pushinteger(lua, smtp->sk.skid);
     return 2;
 }
 /// <summary>

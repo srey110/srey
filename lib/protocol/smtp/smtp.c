@@ -29,7 +29,7 @@ void _smtp_udfree(ud_cxt *ud) {
         return;
     }
     smtp_ctx *smtp = ud->context;
-    smtp->fd = INVALID_SOCK;
+    smtp->sk.fd = INVALID_SOCK;
     ud->context = NULL;
 }
 void _smtp_closed(ud_cxt *ud) {
@@ -40,13 +40,13 @@ void smtp_init(smtp_ctx *smtp, const char *ip, uint16_t port, struct evssl_ctx *
     safe_fill_str(smtp->ip, sizeof(smtp->ip), ip);
     smtp->port = port;
     smtp->evssl = evssl;
-    smtp->fd = INVALID_SOCK;
+    smtp->sk.fd = INVALID_SOCK;
     safe_fill_str(smtp->user, sizeof(smtp->user), user);
     safe_fill_str(smtp->psw, sizeof(smtp->psw), psw);
 }
 int32_t smtp_try_connect(task_ctx *task, smtp_ctx *smtp) {
     smtp->task = task;
-    return task_connect(task, PACK_SMTP, smtp->evssl, smtp->ip, smtp->port, 0, smtp, &smtp->fd, &smtp->skid);
+    return task_connect(task, PACK_SMTP, smtp->evssl, smtp->ip, smtp->port, 0, smtp, &smtp->sk.fd, &smtp->sk.skid);
 }
 int32_t smtp_check_code(char *pack, const char *code) {
     if (0 == memcmp(pack, code, strlen(code))) {

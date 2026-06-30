@@ -62,7 +62,7 @@ void _mysql_udfree(ud_cxt *ud) {
     mysql_ctx *mysql = ud->context;
     _mysql_pkfree(mysql->mpack);
     mysql->mpack = NULL;
-    mysql->client.fd = INVALID_SOCK;
+    mysql->client.sk.fd = INVALID_SOCK;
     ud->context = NULL;
 }
 void _mysql_closed(ud_cxt *ud) {
@@ -264,7 +264,7 @@ static int32_t _mysql_auth_response(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
         return ERR_FAILED;
     }
     ud->status = AUTH_PROCESS;
-    return ev_send(ev, mysql->client.fd, mysql->client.skid, bwriter.data, bwriter.offset, 0);
+    return ev_send(ev, mysql->client.sk.fd, mysql->client.sk.skid, bwriter.data, bwriter.offset, 0);
 }
 // 发送 SSL 握手请求包（SSLRequest），触发后续 SSL 升级
 static int32_t _mysql_ssl_exchange(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
@@ -282,8 +282,8 @@ static int32_t _mysql_ssl_exchange(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
         return ERR_FAILED;
     }
     ud->status = SSL_EXCHANGE;
-    if (ERR_OK != ev_send(ev, mysql->client.fd, mysql->client.skid, bwriter.data, bwriter.offset, 0)
-        || ERR_OK != ev_ssl(ev, mysql->client.fd, mysql->client.skid, 1, mysql->client.evssl)) {
+    if (ERR_OK != ev_send(ev, mysql->client.sk.fd, mysql->client.sk.skid, bwriter.data, bwriter.offset, 0)
+        || ERR_OK != ev_ssl(ev, mysql->client.sk.fd, mysql->client.sk.skid, 1, mysql->client.evssl)) {
         return ERR_FAILED;
     }
     return ERR_OK;
@@ -387,7 +387,7 @@ static int32_t _mysql_public_key(mysql_ctx *mysql, ev_ctx *ev) {
     binary_set_integer(&bwriter, 1, 3, 1);
     binary_set_int8(&bwriter, mysql->id);
     binary_set_uint8(&bwriter, 0x02);
-    return ev_send(ev, mysql->client.fd, mysql->client.skid, bwriter.data, bwriter.offset, 0);
+    return ev_send(ev, mysql->client.sk.fd, mysql->client.sk.skid, bwriter.data, bwriter.offset, 0);
 }
 // 将密码与服务器盐值进行逐字节异或，返回异或后的数据（调用方负责释放）
 static char *_mysql_password_xor_salt(mysql_ctx *mysql, size_t *lens) {
@@ -491,7 +491,7 @@ static int32_t _mysql_full_auth(mysql_ctx *mysql, ev_ctx *ev, char *pubkey, size
         binary_free(&bwriter);
         return ERR_FAILED;
     }
-    return ev_send(ev, mysql->client.fd, mysql->client.skid, bwriter.data, bwriter.offset, 0);
+    return ev_send(ev, mysql->client.sk.fd, mysql->client.sk.skid, bwriter.data, bwriter.offset, 0);
 }
 // 在 SSL 已建立的情况下，直接明文发送密码给服务器（caching_sha2 完整认证 SSL 路径）
 static int32_t _mysql_password_send(mysql_ctx *mysql, ev_ctx *ev) {
@@ -505,7 +505,7 @@ static int32_t _mysql_password_send(mysql_ctx *mysql, ev_ctx *ev) {
         binary_free(&bwriter);
         return ERR_FAILED;
     }
-    return ev_send(ev, mysql->client.fd, mysql->client.skid, bwriter.data, bwriter.offset, 0);
+    return ev_send(ev, mysql->client.sk.fd, mysql->client.sk.skid, bwriter.data, bwriter.offset, 0);
 }
 // 处理服务器发起的认证插件切换请求，重新计算签名并发送响应
 static int32_t _mysql_auth_switch_response(mysql_ctx *mysql, ev_ctx *ev, mpack_auth_switch *auswitch) {
@@ -537,11 +537,11 @@ static int32_t _mysql_auth_switch_response(mysql_ctx *mysql, ev_ctx *ev, mpack_a
         binary_free(&bwriter);
         return ERR_FAILED;
     }
-    return ev_send(ev, mysql->client.fd, mysql->client.skid, bwriter.data, bwriter.offset, 0);
+    return ev_send(ev, mysql->client.sk.fd, mysql->client.sk.skid, bwriter.data, bwriter.offset, 0);
 }
 // 认证成功：通知上层握手完成，切换到命令阶段
 static void _mysql_auth_ok(mysql_ctx *mysql, ud_cxt *ud, int32_t *status) {
-    if (ERR_OK != _hs_push(mysql->client.fd, mysql->client.skid, 1, ud, ERR_OK, NULL, 0)) {
+    if (ERR_OK != _hs_push(mysql->client.sk.fd, mysql->client.sk.skid, 1, ud, ERR_OK, NULL, 0)) {
         BIT_SET(*status, PROT_ERROR);
         return;
     }
@@ -692,13 +692,13 @@ int32_t mysql_init(mysql_ctx *mysql, const char *ip, uint16_t port, struct evssl
     mysql->client.evssl = evssl;
     mysql->client.charset = _mysql_charset(charset);
     mysql->client.maxpack = 0 == maxpk ? ONEK * ONEK : maxpk;
-    mysql->client.fd = INVALID_SOCK;
+    mysql->client.sk.fd = INVALID_SOCK;
     return ERR_OK;
 }
 int32_t mysql_try_connect(task_ctx *task, mysql_ctx *mysql) {
     mysql->task = task;
     return task_connect(task, PACK_MYSQL, NULL, mysql->client.ip, mysql->client.port,
-        NULL == mysql->client.evssl ? NETEV_NONE : NETEV_AUTHSSL, mysql, &mysql->client.fd, &mysql->client.skid);
+        NULL == mysql->client.evssl ? NETEV_NONE : NETEV_AUTHSSL, mysql, &mysql->client.sk.fd, &mysql->client.sk.skid);
 }
 const char *mysql_version(mysql_ctx *mysql) {
     return mysql->version;
@@ -723,9 +723,9 @@ void mysql_stmt_close(mysql_stmt_ctx *stmt) {
     void *close = mysql_pack_stmt_close(stmt, &size);
     /* mysql_pack_stmt_close 已释放 stmt，此后只能访问 mysql（已在 free 前捕获）。
      * fd == INVALID_SOCK 表示连接已关闭（或 mysql_ctx 已失效），跳过发包直接释放。 */
-    if (INVALID_SOCK == mysql->client.fd) {
+    if (INVALID_SOCK == mysql->client.sk.fd) {
         FREE(close);
         return;
     }
-    ev_send(&mysql->task->loader->netev, mysql->client.fd, mysql->client.skid, close, size, 0);
+    ev_send(&mysql->task->loader->netev, mysql->client.sk.fd, mysql->client.sk.skid, close, size, 0);
 }

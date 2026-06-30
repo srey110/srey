@@ -605,7 +605,7 @@ static void _uev_free_pipe(watcher_ctx *watcher) {
                 // CMD_ADDACP：减 _on_accept_cb 跨投递前的 ref 占位
                 // 两者都需关闭 fd（listen 端口 / 未注册的 accept 连接）+ _uev_try_freelsn
             case CMD_ADDACP:
-                CLOSE_SOCK(cmds[j].fd);
+                CLOSE_SOCK(cmds[j].sk.fd);
                 _uev_try_freelsn(cmds[j].args.lsn);
                 break;
             case CMD_LSN_UNREF:

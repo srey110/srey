@@ -6,26 +6,24 @@ static int32_t _prt = 0;
 static name_t _rpcname = INVALID_TNAME;
 
 // 新连接接入
-static void _net_accept(task_ctx *task, SOCKET fd, uint64_t skid, subtype_t pktype) {
+static void _net_accept(task_ctx *task, sk_id *sk, subtype_t pktype) {
     (void)task;
-    (void)skid;
     (void)pktype;
     if (_prt) {
-        LOG_INFO("accept socket %d.", (uint32_t)fd);
+        LOG_INFO("accept socket %d.", (uint32_t)sk->fd);
     }
 }
 // SSL 握手完成
-static void _net_ssl_exchanged(task_ctx *task, SOCKET fd, uint64_t skid, subtype_t pktype, uint8_t client) {
+static void _net_ssl_exchanged(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client) {
     (void)task;
-    (void)skid;
     (void)pktype;
     (void)client;
     if (_prt) {
-        LOG_INFO("ssl_exchanged socket %d.", (uint32_t)fd);
+        LOG_INFO("ssl_exchanged socket %d.", (uint32_t)sk->fd);
     }
 }
 // 收到数据包，按首字节指令分发处理
-static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, subtype_t pktype, uint8_t client, uint8_t slice, void *data, size_t size) {
+static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client, uint8_t slice, void *data, size_t size) {
     (void)slice;
     binary_ctx reader;
     binary_init(&reader, data, size, 0);
@@ -35,7 +33,7 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, subtype_t pktype
         // 原样回显整个数据包
         size_t lens;
         void *outbuf = custz_pack(pktype, data, size, &lens);
-        ev_send(&task->loader->netev, fd, skid, outbuf, lens, 0);
+        ev_send(&task->loader->netev, sk->fd, sk->skid, outbuf, lens, 0);
         break;
     }
     case TEST_SSL_CHANGE: {
@@ -44,10 +42,10 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, subtype_t pktype
         // CMD_SSL 必然已处理完毕，服务端已就绪，避免多任务并发时握手失败
         size_t lens;
         void *outbuf = custz_pack(pktype, data, size, &lens);
-        ev_send(&task->loader->netev, fd, skid, outbuf, lens, 0);
-        if (ERR_OK != ev_ssl(&task->loader->netev, fd, skid, client, _evssl)) {
+        ev_send(&task->loader->netev, sk->fd, sk->skid, outbuf, lens, 0);
+        if (ERR_OK != ev_ssl(&task->loader->netev, sk->fd, sk->skid, client, _evssl)) {
             LOG_WARN("ev_ssl error.");
-            ev_close(&task->loader->netev, fd, skid, 1);
+            ev_close(&task->loader->netev, sk->fd, sk->skid, 1);
         }
         break;
     }
@@ -57,8 +55,8 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, subtype_t pktype
         uint8_t type = (uint8_t)binary_get_int8(&reader);
         size_t lens;
         void *outbuf = custz_pack(pktype, data, size, &lens);
-        ev_send(&task->loader->netev, fd, skid, outbuf, lens, 0);
-        ev_ud_pktype(&task->loader->netev, fd, skid, type);
+        ev_send(&task->loader->netev, sk->fd, sk->skid, outbuf, lens, 0);
+        ev_ud_pktype(&task->loader->netev, sk->fd, sk->skid, type);
         break;
     }
     case TEST_RPC_ECHO: {
@@ -67,7 +65,7 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, subtype_t pktype
         task_ctx *rpc = task_grab(task->loader, _rpcname);
         if (NULL == rpc) {
             LOG_WARN("grab rpc task error.");
-            ev_close(&task->loader->netev, fd, skid, 1);
+            ev_close(&task->loader->netev, sk->fd, sk->skid, 1);
             break;
         }
         int32_t erro;
@@ -76,41 +74,39 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, subtype_t pktype
         task_ungrab(rpc);
         if (ERR_OK != erro || NULL == echo || rlen != size) {
             LOG_WARN("rpc echo error.");
-            ev_close(&task->loader->netev, fd, skid, 1);
+            ev_close(&task->loader->netev, sk->fd, sk->skid, 1);
             break;
         }
         size_t lens;
         void *outbuf = custz_pack(pktype, echo, rlen, &lens);
-        ev_send(&task->loader->netev, fd, skid, outbuf, lens, 0);
+        ev_send(&task->loader->netev, sk->fd, sk->skid, outbuf, lens, 0);
         break;
     }
     default: {
         // 未知指令一律回显
         size_t lens;
         void *outbuf = custz_pack(pktype, data, size, &lens);
-        ev_send(&task->loader->netev, fd, skid, outbuf, lens, 0);
+        ev_send(&task->loader->netev, sk->fd, sk->skid, outbuf, lens, 0);
         break;
     }
     }
 }
 // 数据发送完成
-static void _net_send(task_ctx *task, SOCKET fd, uint64_t skid, subtype_t pktype, uint8_t client, size_t size) {
+static void _net_send(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client, size_t size) {
     (void)task;
-    (void)skid;
     (void)pktype;
     (void)client;
     if (_prt) {
-        LOG_INFO("socket %d sended %d byte.", (uint32_t)fd, (uint32_t)size);
+        LOG_INFO("socket %d sended %d byte.", (uint32_t)sk->fd, (uint32_t)size);
     }
 }
 // 连接关闭
-static void _net_close(task_ctx *task, SOCKET fd, uint64_t skid, subtype_t pktype, uint8_t client) {
+static void _net_close(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client) {
     (void)task;
-    (void)skid;
     (void)pktype;
     (void)client;
     if (_prt) {
-        LOG_INFO("socket %d closed", (uint32_t)fd);
+        LOG_INFO("socket %d closed", (uint32_t)sk->fd);
     }
 }
 static void _startup(task_ctx *task) {

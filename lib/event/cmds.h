@@ -26,9 +26,8 @@ typedef enum EV_CMDS {
 }EV_CMDS;
 // 命令上下文
 typedef struct cmd_ctx {
-    int32_t  cmd;    // 命令类型 EV_CMDS
-    SOCKET   fd;     // 目标 socket（STOP/ADD/LSN/LSN_UNREF 不用）
-    uint64_t skid;   // 连接ID（防 fd 复用误操作；DISCONN/SEND 系列/UDP_OPT/SSL/SETUD 用）
+    int32_t cmd;    // 命令类型 EV_CMDS
+    sk_id sk;     // 目标连接 fd+skid（STOP/ADD/LSN/LSN_UNREF 不用 fd；skid 仅 DISCONN/SEND 系列/UDP_OPT/SSL/SETUD 用）
     union {
         int32_t immed;                // CMD_DISCONN：立即关闭标志
         struct sock_ctx *skctx;       // CMD_ADD / CMD_LSN：待加入事件循环的 socket

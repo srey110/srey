@@ -6,7 +6,7 @@ static int32_t _prt = 1;
 static int32_t _publish = 0;
 
 // 收到 MQTT 数据包，按协议类型分发处理
-static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, subtype_t pktype, uint8_t client, uint8_t slice, void *data, size_t size) {
+static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client, uint8_t slice, void *data, size_t size) {
     (void)pktype;
     (void)client;
     (void)slice;
@@ -40,7 +40,7 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, subtype_t pktype
             if (_prt) {
                 LOG_INFO("S->CONNACK");
             }
-            ev_send(&task->loader->netev, fd, skid, pk, plens, 0);
+            ev_send(&task->loader->netev, sk->fd, sk->skid, pk, plens, 0);
         }
         break;
     }
@@ -61,7 +61,7 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, subtype_t pktype
                 if (_prt) {
                     LOG_INFO("S->DISCONNECT");
                 }
-                ev_send(&task->loader->netev, fd, skid, pk, lens, 0);
+                ev_send(&task->loader->netev, sk->fd, sk->skid, pk, lens, 0);
             }
             break;
         }
@@ -98,7 +98,7 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, subtype_t pktype
         }
         binary_free(&props);
         if (NULL != pk) {
-            ev_send(&task->loader->netev, fd, skid, pk, lens, 0);
+            ev_send(&task->loader->netev, sk->fd, sk->skid, pk, lens, 0);
         }
         if (3 == _publish) {
             _publish = 0;
@@ -118,7 +118,7 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, subtype_t pktype
             if (_prt) {
                 LOG_INFO("S->PUBCOMP");
             }
-            ev_send(&task->loader->netev, fd, skid, pk, lens, 0);
+            ev_send(&task->loader->netev, sk->fd, sk->skid, pk, lens, 0);
         }
         break;
     }
@@ -140,7 +140,7 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, subtype_t pktype
             if (_prt) {
                 LOG_INFO("S->SUBACK");
             }
-            ev_send(&task->loader->netev, fd, skid, pk, lens, 0);
+            ev_send(&task->loader->netev, sk->fd, sk->skid, pk, lens, 0);
         }
         binary_free(&props);
         pk = mqtt_pack_publish(pack->version, 0, 0, 0, "/test/topic1", 0, "server push", strlen("server push"), NULL, &lens);
@@ -148,7 +148,7 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, subtype_t pktype
             if (_prt) {
                 LOG_INFO("S->PUBLISH QoS0");
             }
-            ev_send(&task->loader->netev, fd, skid, pk, lens, 0);
+            ev_send(&task->loader->netev, sk->fd, sk->skid, pk, lens, 0);
         }
         break;
     }
@@ -169,7 +169,7 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, subtype_t pktype
             if (_prt) {
                 LOG_INFO("S->UNSUBACK");
             }
-            ev_send(&task->loader->netev, fd, skid, pk, lens, 0);
+            ev_send(&task->loader->netev, sk->fd, sk->skid, pk, lens, 0);
         }
         binary_free(&props);
         break;
@@ -186,7 +186,7 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, subtype_t pktype
             if (_prt) {
                 LOG_INFO("S->PINGRESP");
             }
-            ev_send(&task->loader->netev, fd, skid, pk, lens, 0);
+            ev_send(&task->loader->netev, sk->fd, sk->skid, pk, lens, 0);
         }
         break;
     }

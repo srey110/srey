@@ -14,9 +14,8 @@ typedef struct mysql_client_param {
     uint16_t port;          // 服务器端口号
     uint32_t maxpack;       // 最大数据包大小（字节）
     uint32_t caps;          // 客户端能力标志位
-    SOCKET fd;              // 连接套接字
-    uint64_t skid;          // 套接字 ID（用于标识连接）
     struct evssl_ctx *evssl; // SSL 上下文，NULL 表示不启用 SSL
+    sk_id sk;               // 连接标识 fd+skid
     char ip[IP_LENS];       // 服务器 IP 地址
     char user[64];          // 登录用户名
     char database[64];      // 默认数据库名

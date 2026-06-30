@@ -37,10 +37,10 @@ static int32_t _lmongo_new(lua_State *lua) {
 /// <returns>无</returns>
 static int32_t _lmongo_free(lua_State *lua) {
     mongo_ctx *mongo = luaL_checkudata(lua, 1, MT_MONGO);
-    if (NULL != mongo->task && INVALID_SOCK != mongo->fd) {
-        (void)ev_ud_context(&mongo->task->loader->netev, mongo->fd, mongo->skid, NULL);
-        ev_close(&mongo->task->loader->netev, mongo->fd, mongo->skid, 0);
-        mongo->fd = INVALID_SOCK;
+    if (NULL != mongo->task && INVALID_SOCK != mongo->sk.fd) {
+        (void)ev_ud_context(&mongo->task->loader->netev, mongo->sk.fd, mongo->sk.skid, NULL);
+        ev_close(&mongo->task->loader->netev, mongo->sk.fd, mongo->sk.skid, 0);
+        mongo->sk.fd = INVALID_SOCK;
     }
     secure_zero(mongo->user, sizeof(mongo->user));
     secure_zero(mongo->password, sizeof(mongo->password));
@@ -62,8 +62,8 @@ static int32_t _lmongo_try_connect(lua_State *lua) {
         lua_pushinteger(lua, INVALID_SOCK);
         return 1;
     }
-    lua_pushinteger(lua, mongo->fd);
-    lua_pushinteger(lua, (lua_Integer)mongo->skid);
+    lua_pushinteger(lua, mongo->sk.fd);
+    lua_pushinteger(lua, (lua_Integer)mongo->sk.skid);
     return 2;
 }
 /// <summary>

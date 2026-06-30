@@ -11,7 +11,7 @@ typedef struct mqtt_client_args {
 }mqtt_client_args;
 
 // TCP 连接建立后发送 CONNECT 包，MQTT 5.0 时携带扩展连接属性和遗嘱属性
-static void _net_connect(task_ctx *task, SOCKET fd, uint64_t skid, subtype_t pktype, int32_t erro) {
+static void _net_connect(task_ctx *task, sk_id *sk, subtype_t pktype, int32_t erro) {
     (void)pktype;
     mqtt_client_args *arg = coro_get_arg(task);
     if (ERR_OK != erro) {
@@ -37,7 +37,7 @@ static void _net_connect(task_ctx *task, SOCKET fd, uint64_t skid, subtype_t pkt
     binary_free(&connprop);
     binary_free(&willprop);
     if (NULL != pk) {
-        ev_send(&task->loader->netev, fd, skid, pk, lens, 0);
+        ev_send(&task->loader->netev, sk->fd, sk->skid, pk, lens, 0);
         if (arg->prt) {
             LOG_INFO("C->CONNECT");
         }
@@ -60,7 +60,7 @@ static void _send_publish(mqtt_pack_ctx *pack, task_ctx *task, SOCKET fd, uint64
     }
 }
 // 收到服务端数据包，驱动完整的 MQTT 消息流程状态机
-static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid,
+static void _net_recv(task_ctx *task, sk_id *sk,
      subtype_t pktype, uint8_t client, uint8_t slice, void *data, size_t size) {
     (void)pktype;
     (void)client;
@@ -78,8 +78,8 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid,
         if (0x00 != vh->reason) {
             break;
         }
-        _send_publish(pack, task, fd, skid, 0);
-        _send_publish(pack, task, fd, skid, 1);
+        _send_publish(pack, task, sk->fd, sk->skid, 0);
+        _send_publish(pack, task, sk->fd, sk->skid, 1);
         break;
     }
     case MQTT_PUBLISH: {
@@ -100,7 +100,7 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid,
             LOG_INFO("PUBACK<-S %d (%s)", (int32_t)vh->reason, mqtt_reason(pack->fixhead.prot, vh->reason));
         }
         if (0x00 == vh->reason || 0x10 == vh->reason) {
-            _send_publish(pack, task, fd, skid, 2);
+            _send_publish(pack, task, sk->fd, sk->skid, 2);
         }
         break;
     }
@@ -114,7 +114,7 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid,
             size_t lens;
             char *pk = mqtt_pack_pubrel(pack->version, vh->packid, 0, NULL, &lens);
             if (NULL != pk) {
-                ev_send(&task->loader->netev, fd, skid, pk, lens, 0);
+                ev_send(&task->loader->netev, sk->fd, sk->skid, pk, lens, 0);
                 if (arg->prt) {
                     LOG_INFO("C->PUBREL");
                 }
@@ -138,7 +138,7 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid,
         char *pk = mqtt_pack_subscribe(pack->version, (uint16_t)randrange(100, 20000), &topics, NULL, &lens);
         binary_free(&topics);
         if (NULL != pk) {
-            ev_send(&task->loader->netev, fd, skid, pk, lens, 0);
+            ev_send(&task->loader->netev, sk->fd, sk->skid, pk, lens, 0);
             if (arg->prt) {
                 LOG_INFO("C->SUBSCRIBE");
             }
@@ -162,7 +162,7 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid,
             char *pk = mqtt_pack_unsubscribe(pack->version, (uint16_t)randrange(100, 20000), &topics, NULL, &lens);
             binary_free(&topics);
             if (NULL != pk) {
-                ev_send(&task->loader->netev, fd, skid, pk, lens, 0);
+                ev_send(&task->loader->netev, sk->fd, sk->skid, pk, lens, 0);
                 if (arg->prt) {
                     LOG_INFO("C->UNSUBSCRIBE");
                 }
@@ -183,7 +183,7 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid,
         size_t lens;
         char *pk = mqtt_pack_ping(&lens);
         if (NULL != pk) {
-            ev_send(&task->loader->netev, fd, skid, pk, lens, 0);
+            ev_send(&task->loader->netev, sk->fd, sk->skid, pk, lens, 0);
             if (arg->prt) {
                 LOG_INFO("C->PING");
             }
@@ -198,7 +198,7 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid,
         size_t lens;
         char *pk = mqtt_pack_disconnect(pack->version, 0, NULL, &lens);
         if (NULL != pk) {
-            ev_send(&task->loader->netev, fd, skid, pk, lens, 0);
+            ev_send(&task->loader->netev, sk->fd, sk->skid, pk, lens, 0);
             if (arg->prt) {
                 LOG_INFO("C->DISCONNECT");
             }

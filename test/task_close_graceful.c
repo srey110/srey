@@ -12,17 +12,17 @@ typedef struct close_graceful_args {
 static atomic_t g_recv_bytes;   // server 端累计收到字节(整 task 内共享)
 static atomic_t g_close_cnt;    // server 端 _net_close 触发次数
 
-static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, subtype_t pktype, uint8_t client,
+static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client,
                        uint8_t slice, void *data, size_t size) {
-    (void)task; (void)fd; (void)skid; (void)pktype; (void)slice; (void)data;
+    (void)task; (void)sk; (void)pktype; (void)slice; (void)data;
     // 仅累计 accept 进来的连接(client=0);client=1 是 coro_connect 出去的 client 端
     if (client) {
         return;
     }
     ATOMIC_ADD(&g_recv_bytes, (atomic_t)size);
 }
-static void _net_close(task_ctx *task, SOCKET fd, uint64_t skid, subtype_t pktype, uint8_t client) {
-    (void)task; (void)fd; (void)skid; (void)pktype;
+static void _net_close(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client) {
+    (void)task; (void)sk; (void)pktype;
     if (client) {
         return;
     }

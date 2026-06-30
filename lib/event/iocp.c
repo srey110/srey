@@ -383,7 +383,7 @@ static void _iocp_free_cmd(watcher_ctx *watcher) {
         case CMD_ADDACP:
             // fd 是 accept 到的连接，未能加入事件循环；同时配对 _on_accept_cb
             // path 3 投递前 ref++ 占位的减法，ref 归零时释放 lsn
-            CLOSE_SOCK(cmd->fd);
+            CLOSE_SOCK(cmd->sk.fd);
             _iocp_try_freelsn(cmd->args.lsn);
             break;
         default:

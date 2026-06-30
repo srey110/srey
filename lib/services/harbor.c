@@ -141,7 +141,7 @@ static void _harbor_respond(router_req *ctx, int32_t code, void *body, size_t le
         const char *erro = http_code_status(code);
         http_pack_content(&bwriter, (void *)erro, strlen(erro));
     }
-    ev_send(&ctx->task->loader->netev, ctx->fd, ctx->skid, bwriter.data, bwriter.offset, 0);
+    ev_send(&ctx->task->loader->netev, ctx->sk.fd, ctx->sk.skid, bwriter.data, bwriter.offset, 0);
     ctx->responded = 1;
 }
 // 签名 + 参数校验中间件（router_group 承载）：非法请求静默关连接（不暴露），合法则 router_next
@@ -152,14 +152,14 @@ static void _harbor_check(router_req *ctx) {
     if (NULL == body
         || 0 == blen
         || 0 != http_chunked(pack)) {
-        ev_close(&ctx->task->loader->netev, ctx->fd, ctx->skid, 1);
+        ev_close(&ctx->task->loader->netev, ctx->sk.fd, ctx->sk.skid, 1);
         ctx->responded = 1;
         return;
     }
     // 签名内容含请求行 url（含 query），从原始状态行取
     buf_ctx *st = http_status(pack);
     if (ERR_OK != _harbor_check_sign(ctx->task, pack, &st[1], body, blen)) {
-        ev_close(&ctx->task->loader->netev, ctx->fd, ctx->skid, 1);
+        ev_close(&ctx->task->loader->netev, ctx->sk.fd, ctx->sk.skid, 1);
         ctx->responded = 1;
         return;
     }
@@ -167,7 +167,7 @@ static void _harbor_check(router_req *ctx) {
     size_t tn = 0;
     if (NULL == router_req_query(ctx, "dst", &dn) || 0 == dn
         || NULL == router_req_query(ctx, "type", &tn) || 0 == tn) {
-        ev_close(&ctx->task->loader->netev, ctx->fd, ctx->skid, 1);
+        ev_close(&ctx->task->loader->netev, ctx->sk.fd, ctx->sk.skid, 1);
         ctx->responded = 1;
         return;
     }
@@ -218,7 +218,7 @@ static void _harbor_request(router_req *ctx) {
     }
 }
 // HTTP 接收回调：完整请求到达后交 router 派发（签名/参数校验在 group 中间件，转发在 handler）
-static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, subtype_t pktype,
+static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype,
     uint8_t client, uint8_t slice, void *data, size_t size) {
     (void)pktype;
     (void)client;
@@ -227,7 +227,7 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, subtype_t pktype
         return;
     }
     harbor_ctx *ctx = (harbor_ctx *)coro_get_arg(task);
-    router_dispatch(ctx->router, task, fd, skid, (struct http_pack_ctx *)data);
+    router_dispatch(ctx->router, task, sk->fd, sk->skid, (struct http_pack_ctx *)data);
 }
 // harbor任务启动回调：建路由器 + 注册带签名中间件的 group + 监听
 static void _harbor_startup(task_ctx *harbor) {

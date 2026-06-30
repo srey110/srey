@@ -589,8 +589,8 @@ static int32_t _lmysql_stmt_sock_id(lua_State *lua) {
     if (NULL == *stmt) {
         return luaL_error(lua, "stmt freed");
     }
-    lua_pushinteger(lua, (*stmt)->mysql->client.fd);
-    lua_pushinteger(lua, (*stmt)->mysql->client.skid);
+    lua_pushinteger(lua, (*stmt)->mysql->client.sk.fd);
+    lua_pushinteger(lua, (*stmt)->mysql->client.sk.skid);
     return 2;
 }
 //mysql.stmt
@@ -742,11 +742,11 @@ static int32_t _lmysql_pack_type(lua_State *lua) {
 static int32_t _lmysql_free(lua_State *lua) {
     mysql_ctx *mysql = luaL_checkudata(lua, 1, MT_MYSQL);
     if (NULL != mysql->task
-        && INVALID_SOCK != mysql->client.fd) {
+        && INVALID_SOCK != mysql->client.sk.fd) {
         size_t size;
         void *pack = mysql_pack_quit(mysql, &size);
-        (void)ev_ud_context(&mysql->task->loader->netev, mysql->client.fd, mysql->client.skid, NULL);
-        ev_send(&mysql->task->loader->netev, mysql->client.fd, mysql->client.skid, pack, size, 0);
+        (void)ev_ud_context(&mysql->task->loader->netev, mysql->client.sk.fd, mysql->client.sk.skid, NULL);
+        ev_send(&mysql->task->loader->netev, mysql->client.sk.fd, mysql->client.sk.skid, pack, size, 0);
     }
     secure_zero(mysql->server.salt, sizeof(mysql->server.salt));
     secure_zero(mysql->client.password, sizeof(mysql->client.password));
@@ -800,8 +800,8 @@ static int32_t _lmysql_erro(lua_State *lua) {
 /// <returns type="integer">skid</returns>
 static int32_t _lmysql_sock_id(lua_State *lua) {
     mysql_ctx *mysql = luaL_checkudata(lua, 1, MT_MYSQL);
-    lua_pushinteger(lua, mysql->client.fd);
-    lua_pushinteger(lua, mysql->client.skid);
+    lua_pushinteger(lua, mysql->client.sk.fd);
+    lua_pushinteger(lua, mysql->client.sk.skid);
     return 2;
 }
 /// <summary>

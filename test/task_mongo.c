@@ -188,7 +188,7 @@ static int32_t _txn_flow(mongo_ctx *mongo) {
 
 // ping 自动重连（含 re-auth）：强制关闭连接后 mongo_ping 应重连并恢复可用，count 验证
 static int32_t _reconnect_flow(task_ctx *task, mongo_ctx *mongo) {
-    ev_close(&task->loader->netev, mongo->fd, mongo->skid, 1);
+    ev_close(&task->loader->netev, mongo->sk.fd, mongo->sk.skid, 1);
     if (ERR_OK != mongo_ping(mongo)) {
         LOG_ERROR("mongo ping reconnect error.");
         return ERR_FAILED;
@@ -248,39 +248,39 @@ static void _startup(task_ctx *task) {
     }
     if (NULL == mongo_hello(&arg->mongo, NULL)) {
         LOG_ERROR("mongo hello error.");
-        ev_close(&task->loader->netev, arg->mongo.fd, arg->mongo.skid, 1);
+        ev_close(&task->loader->netev, arg->mongo.sk.fd, arg->mongo.sk.skid, 1);
         return;
     }
     if (ERR_OK != mongo_auth(&arg->mongo, "SCRAM-SHA-256", arg->user, arg->password)) {
         LOG_ERROR("mongo auth error.");
-        ev_close(&task->loader->netev, arg->mongo.fd, arg->mongo.skid, 1);
+        ev_close(&task->loader->netev, arg->mongo.sk.fd, arg->mongo.sk.skid, 1);
         return;
     }
     if (ERR_OK != mongo_ping(&arg->mongo)) {
         LOG_ERROR("mongo ping error.");
-        ev_close(&task->loader->netev, arg->mongo.fd, arg->mongo.skid, 1);
+        ev_close(&task->loader->netev, arg->mongo.sk.fd, arg->mongo.sk.skid, 1);
         return;
     }
     if (ERR_OK != _crud_flow(&arg->mongo)) {
-        ev_close(&task->loader->netev, arg->mongo.fd, arg->mongo.skid, 1);
+        ev_close(&task->loader->netev, arg->mongo.sk.fd, arg->mongo.sk.skid, 1);
         return;
     }
     if (ERR_OK != _duplicate_key_error(&arg->mongo)) {
-        ev_close(&task->loader->netev, arg->mongo.fd, arg->mongo.skid, 1);
+        ev_close(&task->loader->netev, arg->mongo.sk.fd, arg->mongo.sk.skid, 1);
         return;
     }
     if (ERR_OK != _reconnect_flow(task, &arg->mongo)) {
-        ev_close(&task->loader->netev, arg->mongo.fd, arg->mongo.skid, 1);
+        ev_close(&task->loader->netev, arg->mongo.sk.fd, arg->mongo.sk.skid, 1);
         return;
     }
     if (ERR_OK != _moretocome_flow(&arg->mongo)) {
-        ev_close(&task->loader->netev, arg->mongo.fd, arg->mongo.skid, 1);
+        ev_close(&task->loader->netev, arg->mongo.sk.fd, arg->mongo.sk.skid, 1);
         return;
     }
     // 事务路径需要 mongo 以 replica set / sharded 模式运行；docker-compose 单节点跳过。
     // 启用方法：mongo 命令加 --replSet rs0 并通过 rs.initiate() 初始化后解开下面注释。
     // if (ERR_OK != _txn_flow(&arg->mongo)) {
-    //     ev_close(&task->loader->netev, arg->mongo.fd, arg->mongo.skid, 1);
+    //     ev_close(&task->loader->netev, arg->mongo.sk.fd, arg->mongo.sk.skid, 1);
     //     return;
     // }
     (void)_txn_flow;  // 抑制未使用函数告警

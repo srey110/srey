@@ -6,7 +6,7 @@ static int32_t _prt = 0;
 // 收到 WebSocket 帧：
 //   分片帧 - 收齐完整消息（PROT_SLICE_END）后回复三帧分片消息（text_fin0 + continua_fin0 + continua_fin1）
 //   非分片帧 - 回显 text/binary，ping 回 pong，close 关闭连接
-static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, subtype_t pktype, uint8_t client, uint8_t slice, void *data, size_t size) {
+static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client, uint8_t slice, void *data, size_t size) {
     (void)pktype;
     (void)client;
     (void)size;
@@ -20,11 +20,11 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, subtype_t pktype
     if (0 != slice) {
         if (PROT_SLICE_END == slice) {
             frame = websock_pack_text(0, 0, "a", 1, &fsize);
-            ev_send(&task->loader->netev, fd, skid, frame, fsize, 0);
+            ev_send(&task->loader->netev, sk->fd, sk->skid, frame, fsize, 0);
             frame = websock_pack_continua(0, 0, "b", 1, &fsize);
-            ev_send(&task->loader->netev, fd, skid, frame, fsize, 0);
+            ev_send(&task->loader->netev, sk->fd, sk->skid, frame, fsize, 0);
             frame = websock_pack_continua(0, 1, "c", 1, &fsize);
-            ev_send(&task->loader->netev, fd, skid, frame, fsize, 0);
+            ev_send(&task->loader->netev, sk->fd, sk->skid, frame, fsize, 0);
         }
         return;
     }
@@ -36,12 +36,12 @@ static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid, subtype_t pktype
         } else {
             frame = websock_pack_binary(0, 1, wdata, dlens, &fsize);
         }
-        ev_send(&task->loader->netev, fd, skid, frame, fsize, 0);
+        ev_send(&task->loader->netev, sk->fd, sk->skid, frame, fsize, 0);
     } else if (WS_PING == prot) {
         frame = websock_pack_pong(0, &fsize);
-        ev_send(&task->loader->netev, fd, skid, frame, fsize, 0);
+        ev_send(&task->loader->netev, sk->fd, sk->skid, frame, fsize, 0);
     } else if (WS_CLOSE == prot) {
-        ev_close(&task->loader->netev, fd, skid, 1);
+        ev_close(&task->loader->netev, sk->fd, sk->skid, 1);
     }
 }
 static void _startup(task_ctx *task) {

@@ -25,8 +25,8 @@
 // 向 Lua table 中写入网络公共字段：subtype、fd、skid
 #define LUA_TB_NETPUB(msg)\
     LUA_TB_NUMBER("subtype", msg->subtype);\
-    LUA_TB_NUMBER("fd", msg->fd);\
-    LUA_TB_NUMBER("skid", msg->skid)
+    LUA_TB_NUMBER("fd", msg->sk.fd);\
+    LUA_TB_NUMBER("skid", msg->sk.skid)
 
 // Lua task 上下文：保存 Lua 虚拟机、消息分发函数引用、计时器、内存统计及中断信号
 typedef struct ltask_ctx {
@@ -355,8 +355,8 @@ static void _ltask_pack_msg(lua_State *lua, message_ctx *msg) {
         LUA_TB_UD(msg->data, msg->size);
         break;
     case MSG_TYPE_RECVFROM: {
-        LUA_TB_NUMBER("fd", msg->fd);
-        LUA_TB_NUMBER("skid", msg->skid);
+        LUA_TB_NUMBER("fd", msg->sk.fd);
+        LUA_TB_NUMBER("skid", msg->sk.skid);
         LUA_TB_NUMBER("sess", msg->sess);
         char ip[IP_LENS];
         netaddr_ctx *addr = msg->data;

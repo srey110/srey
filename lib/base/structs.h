@@ -16,6 +16,11 @@ typedef struct ud_cxt {
     void    *loader;  // 指向 loader_ctx，用于访问 loader
     void    *context; // 上层上下文指针（超时回调时使用）
 }ud_cxt;
+// socket 标识：fd 定位 socket，skid 防 fd 复用，两者合起来确定一条活连接
+typedef struct sk_id {
+    SOCKET   fd;    // socket 句柄
+    uint64_t skid;  // 连接 ID（防 fd 复用误操作）
+}sk_id;
 // 通用数据缓冲区（仅持有指针，不管理内存所有权）
 typedef struct buf_ctx {
     size_t  lens; // 数据长度（字节）

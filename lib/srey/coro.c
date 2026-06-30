@@ -373,7 +373,7 @@ static void _coro_handle_timeout(task_dispatch_arg *arg) {
 // non-disposable 唤醒(skid 作 key):cosess 或 _coro_get_mco 队列空时新建协程,不删 sess。
 static void _coro_handle_non_disposable(task_dispatch_arg *arg) {
     coro_ctx *coctx = arg->task->arg;
-    coro_sess *cosess = _coro_cosess_get(coctx, arg->msg.skid, arg->msg.mtype);
+    coro_sess *cosess = _coro_cosess_get(coctx, arg->msg.sk.skid, arg->msg.mtype);
     if (NULL == cosess) {
         _coro_mco_create(arg);
         return;
@@ -420,13 +420,13 @@ static void _coro_handle_recved(task_dispatch_arg *arg) {
 // 处理连接关闭消息：排干所有等待该 skid 的挂起协程，再新建协程处理关闭事件
 static void _coro_handle_closed(task_dispatch_arg *arg) {
     coro_ctx *coctx = arg->task->arg;
-    coro_sess *cosess = _coro_cosess_get(coctx, arg->msg.skid, arg->msg.mtype);
+    coro_sess *cosess = _coro_cosess_get(coctx, arg->msg.sk.skid, arg->msg.mtype);
     if (NULL != cosess) {
         mco_coro *coro;
         if (cosess->disposable) {
             /* disposable 只有一个协程，_get_mco 不消耗节点，不能循环 */
             coro = _coro_get_mco(arg->task, cosess);
-            _coro_cosess_delete(coctx, arg->msg.skid); /* 先删再 resume，cosess 此后不再访问 */
+            _coro_cosess_delete(coctx, arg->msg.sk.skid); /* 先删再 resume，cosess 此后不再访问 */
             _coro_mco_resume(coro, arg);
             arg->msg.data = NULL; /* _coro_mco_resume 已清理，置 NULL 防后续重复释放 */
         } else {
@@ -436,7 +436,7 @@ static void _coro_handle_closed(task_dispatch_arg *arg) {
              * qucoinfo.ptr 是独立堆分配，浅拷贝后不受 resize 影响。*/
             queue_ctx local_q = cosess->qucoinfo;
             queue_clear(&cosess->qucoinfo);   /* 防止 _coro_ctx_free 中 iter 重复 free ptr */
-            _coro_cosess_delete(coctx, arg->msg.skid); /* cosess 此后可能悬空，不再访问 */
+            _coro_cosess_delete(coctx, arg->msg.sk.skid); /* cosess 此后可能悬空，不再访问 */
             coro_info *coinfo;
             while (NULL != (coinfo = queue_pop(&local_q))) {
                 coro = coinfo->co;
@@ -455,7 +455,7 @@ static void _coro_handle_closed(task_dispatch_arg *arg) {
          * 在此补清。mapco elfree=NULL，hashmap_delete 不触发释放回调，
          * 必须显式 queue_free 否则 ptr 数组泄漏。*/
         coro_sess key;
-        key.sess = arg->msg.skid;
+        key.sess = arg->msg.sk.skid;
         coro_sess *cofind = (coro_sess *)hashmap_get(coctx->mapco, &key);
         if (NULL != cofind && !cofind->disposable) {
             queue_free(&cofind->qucoinfo);

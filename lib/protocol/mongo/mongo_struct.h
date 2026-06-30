@@ -1,6 +1,7 @@
 ﻿#ifndef MONGO_STRUCT_H_
 #define MONGO_STRUCT_H_
 
+#include "base/structs.h"
 #include "protocol/mongo/mongo_macro.h"
 
 typedef struct mgopack_ctx {
@@ -29,12 +30,11 @@ typedef struct mongo_ctx {
     uint16_t port;              //服务器端口
     int32_t reqid;              //当前请求 ID（自增）
     uint32_t flags;             //消息标志位（mongo_flags）
-    SOCKET fd;                  //套接字文件描述符
-    uint64_t skid;              //套接字唯一 ID
     mongo_session *session;     //当前会话（事务时非 NULL）
     struct task_ctx *task;      //所属任务上下文
     struct evssl_ctx *evssl;    //TLS 上下文，NULL 表示不加密
     struct scram_ctx *scram;    //SCRAM 认证上下文
+    sk_id sk;                   //连接标识 fd+skid
     char ip[IP_LENS];           //服务器 IP 地址
     char db[64];                //当前数据库名
     char authdb[64];            //认证数据库名

@@ -4,9 +4,9 @@ static int32_t _prt = 0;
 static uint16_t _port = 0;
 
 // 收到 UDP 数据报后原样回发给发送方
-static void _net_recvfrom(task_ctx *task, SOCKET fd, uint64_t skid,
+static void _net_recvfrom(task_ctx *task, sk_id *sk,
     char ip[IP_LENS], uint16_t port, void *data, size_t size) {
-    ev_sendto(&task->loader->netev, fd, skid, ip, port, data, size, 1);
+    ev_sendto(&task->loader->netev, sk->fd, sk->skid, ip, port, data, size, 1);
 }
 static void _startup(task_ctx *task) {
     task_recvedfrom(task, _net_recvfrom);

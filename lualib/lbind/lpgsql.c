@@ -922,11 +922,11 @@ static int32_t _lpgsql_new(lua_State *lua) {
 /// <returns>无</returns>
 static int32_t _lpgsql_free(lua_State *lua) {
     pgsql_ctx *pg = luaL_checkudata(lua, 1, MT_PGSQL);
-    if (NULL != pg->task && INVALID_SOCK != pg->fd) {
+    if (NULL != pg->task && INVALID_SOCK != pg->sk.fd) {
         size_t size;
         void *pack = pgsql_pack_terminate(&size);
-        (void)ev_ud_context(&pg->task->loader->netev, pg->fd, pg->skid, NULL);
-        ev_send(&pg->task->loader->netev, pg->fd, pg->skid, pack, size, 0);
+        (void)ev_ud_context(&pg->task->loader->netev, pg->sk.fd, pg->sk.skid, NULL);
+        ev_send(&pg->task->loader->netev, pg->sk.fd, pg->sk.skid, pack, size, 0);
     }
     secure_zero(pg->password, sizeof(pg->password));
     return 0;
@@ -993,8 +993,8 @@ static int32_t _lpgsql_get_db(lua_State *lua) {
 /// <returns type="integer">skid</returns>
 static int32_t _lpgsql_sock_id(lua_State *lua) {
     pgsql_ctx *pg = luaL_checkudata(lua, 1, MT_PGSQL);
-    lua_pushinteger(lua, pg->fd);
-    lua_pushinteger(lua, pg->skid);
+    lua_pushinteger(lua, pg->sk.fd);
+    lua_pushinteger(lua, pg->sk.skid);
     return 2;
 }
 /// <summary>

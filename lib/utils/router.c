@@ -604,7 +604,7 @@ static void _router_send_resp(router_req *ctx, int32_t code, const char *content
     }
     // http_pack_content 内部会写 \r\n\r\n + body, 完成完整响应包
     http_pack_content(&bw, (void *)body, body_len);
-    ev_send(&ctx->task->loader->netev, ctx->fd, ctx->skid, bw.data, bw.offset, 0);
+    ev_send(&ctx->task->loader->netev, ctx->sk.fd, ctx->sk.skid, bw.data, bw.offset, 0);
     // 置位避免 dispatch 末尾兜底 500 又发一遍
     ctx->responded = 1;
 }
@@ -635,7 +635,7 @@ static void _router_send_simple(router_req *ctx, int32_t code, const char *body)
     http_pack_head(&bw, "Content-Type", "text/plain; charset=utf-8");
     size_t blen = NULL == body ? 0 : strlen(body);
     http_pack_content(&bw, (void *)(NULL == body ? "" : body), blen);
-    ev_send(&ctx->task->loader->netev, ctx->fd, ctx->skid, bw.data, bw.offset, 0);
+    ev_send(&ctx->task->loader->netev, ctx->sk.fd, ctx->sk.skid, bw.data, bw.offset, 0);
     ctx->responded = 1;
 }
 // 派发流程: 解方法 → URL parse → 线性扫表 → 拼 chain → 推进 → 兜底 500
@@ -655,8 +655,8 @@ void router_dispatch(router_ctx *r, task_ctx *task,
         // 方法不在我们已知列表 → 405; 因为 ctx 尚未完整初始化, 用临时 ctx 仅承载发响应必需字段
         router_req tmpctx = { 0 };
         tmpctx.task = task;
-        tmpctx.fd = fd;
-        tmpctx.skid = skid;
+        tmpctx.sk.fd = fd;
+        tmpctx.sk.skid = skid;
         tmpctx.pack = pack;
         _router_send_simple(&tmpctx, 405, "Method Not Allowed\n");
         return;
@@ -664,8 +664,8 @@ void router_dispatch(router_ctx *r, task_ctx *task,
     // 解析 URL: path 拆成 segs(已 %XX 解码、'+' 保持字面)供段匹配, query 落 ctx->url_storage 供 router_req_query 取
     router_req ctx = { 0 };
     ctx.task = task;
-    ctx.fd = fd;
-    ctx.skid = skid;
+    ctx.sk.fd = fd;
+    ctx.sk.skid = skid;
     ctx.pack = pack;
     ctx.method = m;
     if (ERR_OK != url_parse(&ctx.url_storage, st[1].data, st[1].lens, '/', 1)) {

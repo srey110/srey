@@ -61,45 +61,45 @@ static void _task_handle_timeout(task_ctx *task, message_ctx *msg) {
 // 处理新连接接受消息
 static void _task_handle_accept(task_ctx *task, message_ctx *msg) {
     if (NULL != task->_net_accept) {
-        task->_net_accept(task, msg->fd, msg->skid, msg->subtype);
+        task->_net_accept(task, &msg->sk, msg->subtype);
     }
 }
 // 处理连接建立消息
 static void _task_handle_connect(task_ctx *task, message_ctx *msg) {
     if (NULL != task->_net_connect) {
-        task->_net_connect(task, msg->fd, msg->skid, msg->subtype, msg->erro);
+        task->_net_connect(task, &msg->sk, msg->subtype, msg->erro);
     }
 }
 // 处理 SSL 交换完成消息
 static void _task_handle_ssl_exchanged(task_ctx *task, message_ctx *msg) {
     if (NULL != task->_ssl_exchanged) {
-        task->_ssl_exchanged(task, msg->fd, msg->skid, msg->subtype, msg->client);
+        task->_ssl_exchanged(task, &msg->sk, msg->subtype, msg->client);
     }
 }
 // 处理应用层握手完成消息，处理后清理消息数据
 static void _task_handle_handshaked(task_ctx *task, message_ctx *msg) {
     if (NULL != task->_net_handshaked) {
-        task->_net_handshaked(task, msg->fd, msg->skid, msg->subtype, msg->client, msg->erro, msg->data, msg->size);
+        task->_net_handshaked(task, &msg->sk, msg->subtype, msg->client, msg->erro, msg->data, msg->size);
     }
     _message_clean(msg);
 }
 // 处理 TCP 数据接收消息，处理后清理消息数据
 static void _task_handle_recv(task_ctx *task, message_ctx *msg) {
     if (NULL != task->_net_recv) {
-        task->_net_recv(task, msg->fd, msg->skid, msg->subtype, msg->client, msg->slice, msg->data, msg->size);
+        task->_net_recv(task, &msg->sk, msg->subtype, msg->client, msg->slice, msg->data, msg->size);
     }
     _message_clean(msg);
 }
 // 处理数据发送完成消息
 static void _task_handle_send(task_ctx *task, message_ctx *msg) {
     if (NULL != task->_net_send) {
-        task->_net_send(task, msg->fd, msg->skid, msg->subtype, msg->client, msg->size);
+        task->_net_send(task, &msg->sk, msg->subtype, msg->client, msg->size);
     }
 }
 // 处理连接关闭消息
 static void _task_handle_close(task_ctx *task, message_ctx *msg) {
     if (NULL != task->_net_close) {
-        task->_net_close(task, msg->fd, msg->skid, msg->subtype, msg->client);
+        task->_net_close(task, &msg->sk, msg->subtype, msg->client);
     }
 }
 // 处理 UDP 数据接收消息：从消息数据中解析出地址和载荷，处理后清理
@@ -110,7 +110,7 @@ static void _task_handle_recvfrom(task_ctx *task, message_ctx *msg) {
         netaddr_ip(addr, ip);
         uint16_t port = netaddr_port(addr);
         char *data = ((char*)msg->data) + sizeof(netaddr_ctx);
-        task->_net_recvfrom(task, msg->fd, msg->skid, ip, port, data, msg->size);
+        task->_net_recvfrom(task, &msg->sk, ip, port, data, msg->size);
     }
     _message_clean(msg);
 }
@@ -495,8 +495,8 @@ static int32_t _task_net_accept(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud
         message_ctx msg = { 0 };
         msg.mtype = MSG_TYPE_ACCEPT;
         msg.subtype = ud->pktype;
-        msg.fd = fd;
-        msg.skid = skid;
+        msg.sk.fd = fd;
+        msg.sk.skid = skid;
         _task_message_push(task, &msg);
     }
     task_ungrab(task);
@@ -515,8 +515,8 @@ int32_t _message_handshaked_push(SOCKET fd, uint64_t skid, int32_t client, ud_cx
     message_ctx msg = { 0 };
     msg.mtype = MSG_TYPE_HANDSHAKED;
     msg.subtype = ud->pktype;
-    msg.fd = fd;
-    msg.skid = skid;
+    msg.sk.fd = fd;
+    msg.sk.skid = skid;
     msg.client = client;
     msg.erro = erro;
     msg.data = data;
@@ -536,8 +536,8 @@ static void _task_net_recv(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
     message_ctx msg = { 0 };
     msg.mtype = MSG_TYPE_RECV;
     msg.subtype = ud->pktype;
-    msg.fd = fd;
-    msg.skid = skid;
+    msg.sk.fd = fd;
+    msg.sk.skid = skid;
     msg.client = client;
     void *data;
     int32_t status;
@@ -588,8 +588,8 @@ static void _task_net_send(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
     message_ctx msg = { 0 };
     msg.mtype = MSG_TYPE_SEND;
     msg.subtype = ud->pktype;
-    msg.fd = fd;
-    msg.skid = skid;
+    msg.sk.fd = fd;
+    msg.sk.skid = skid;
     msg.client = client;
     msg.size = size;
     _task_message_push(task, &msg);
@@ -606,8 +606,8 @@ static int32_t _task_net_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int
         message_ctx msg = { 0 };
         msg.mtype = MSG_TYPE_SSLEXCHANGED;
         msg.subtype = ud->pktype;
-        msg.fd = fd;
-        msg.skid = skid;
+        msg.sk.fd = fd;
+        msg.sk.skid = skid;
         msg.client = client;
         msg.sess = skid;
         _task_message_push(task, &msg);
@@ -625,8 +625,8 @@ static void _task_net_close(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client
     message_ctx msg = { 0 };
     msg.mtype = MSG_TYPE_CLOSE;
     msg.subtype = ud->pktype;
-    msg.fd = fd;
-    msg.skid = skid;
+    msg.sk.fd = fd;
+    msg.sk.skid = skid;
     msg.client = client;
     msg.sess = skid;
     prots_closed(ud);
@@ -668,8 +668,8 @@ static int32_t _task_net_connect(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t e
     message_ctx msg = { 0 };
     msg.mtype = MSG_TYPE_CONNECT;
     msg.subtype = ud->pktype;
-    msg.fd = fd;
-    msg.skid = skid;
+    msg.sk.fd = fd;
+    msg.sk.skid = skid;
     msg.erro = err;
     msg.sess = skid;
     _task_message_push(task, &msg);
@@ -707,8 +707,8 @@ static void _task_net_recvfrom(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, 
     message_ctx msg = { 0 };
     msg.mtype = MSG_TYPE_RECVFROM;
     msg.subtype = PACK_NONE; // UDP 路径透传原始数据，避免 _message_clean→prots_pkfree 进入特定协议释放路径
-    msg.fd = fd;
-    msg.skid = skid;
+    msg.sk.fd = fd;
+    msg.sk.skid = skid;
     char *umsg;
     MALLOC(umsg, sizeof(netaddr_ctx) + size);
     memcpy(umsg, addr, sizeof(netaddr_ctx));

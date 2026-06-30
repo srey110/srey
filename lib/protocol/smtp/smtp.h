@@ -7,10 +7,9 @@
 typedef struct smtp_ctx {
     uint16_t port;           //SMTP 服务器端口
     int32_t authtype;        //认证类型（LOGIN 或 PLAIN），握手后自动设置
-    SOCKET fd;               //套接字文件描述符
-    uint64_t skid;           //套接字唯一 ID
     struct evssl_ctx *evssl; //TLS 上下文，NULL 表示不加密
     task_ctx *task;          //所属任务上下文
+    sk_id sk;                //连接标识 fd+skid
     char user[64];           //SMTP 用户名
     char psw[64];            //SMTP 密码
     char ip[IP_LENS];        //SMTP 服务器 IP 地址

@@ -47,11 +47,11 @@
 //       size_t n; const char *id = router_req_param(ctx, "id", &n);
 //       router_req_text(ctx, 200, id, n);
 //   }
-//   static void _net_recv(task_ctx *task, SOCKET fd, uint64_t skid,
+//   static void _net_recv(task_ctx *task, sk_id *sk,
 //                         subtype_t pktype, uint8_t client, uint8_t slice,
 //                         void *data, size_t size) {
 //       if (0 != slice) { return; }
-//       router_dispatch(g_router, task, fd, skid, (struct http_pack_ctx *)data);
+//       router_dispatch(g_router, task, sk->fd, sk->skid, (struct http_pack_ctx *)data);
 //   }
 //   static void _startup(task_ctx *task) {
 //       task_recved(task, _net_recv);
@@ -159,11 +159,10 @@ struct router_req {
     int32_t params_n;   // 路径参数数量
     int32_t responded;  // 响应已写出标志 (用于兜底 500)
     router_method method;     // 当前请求方法位掩码
-    SOCKET fd;
-    uint64_t skid;
     task_ctx *task;       // 当前 task
     struct http_pack_ctx *pack;       // 原始 http 包, 供 http_data / http_header 访问
     void *user;       // 中间件间传值, 用户自管
+    sk_id sk;                 // 连接标识 fd+skid
     router_cb chain[ROUTER_MAX_CHAIN]; // 中间件 + handler 拼接链
     router_kv params[ROUTER_MAX_PARAMS]; // {name} / {name?} 提取结果
     url_ctx url_storage; // URL 解析结果 (内部使用)

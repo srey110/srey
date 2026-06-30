@@ -32,7 +32,7 @@ void _mongo_udfree(ud_cxt *ud) {
     mongo_ctx *mongo = (mongo_ctx *)ud->context;
     scram_free(mongo->scram);
     mongo->scram = NULL;
-    mongo->fd = INVALID_SOCK;
+    mongo->sk.fd = INVALID_SOCK;
     ud->context = NULL;
 }
 void _mongo_closed(ud_cxt *ud) {
@@ -82,7 +82,7 @@ static int32_t _mongo_server_first_message(ev_ctx *ev, mongo_ctx *mongo, mgopack
     }
     void *data = mongo_pack_scram_client_final(mongo, convid, client_final, &size);
     FREE(client_final);
-    return ev_send(ev, mongo->fd, mongo->skid, data, size, 0);
+    return ev_send(ev, mongo->sk.fd, mongo->sk.skid, data, size, 0);
 }
 // 处理 SCRAM 服务端最终消息：验证服务端签名，确认认证完成
 static int32_t _mongo_server_final_message(mongo_ctx *mongo, mgopack_ctx *mgopack) {
@@ -104,7 +104,7 @@ static void _mongo_scram_auth(ev_ctx *ev, mgopack_ctx *mgopack, ud_cxt *ud) {
         rtn = _mongo_server_first_message(ev, mongo, mgopack);
         if (ERR_OK != rtn) {
             ud->status = COMMAND;
-            _hs_push(mongo->fd, mongo->skid, 1, ud, rtn, NULL, 0);
+            _hs_push(mongo->sk.fd, mongo->sk.skid, 1, ud, rtn, NULL, 0);
             scram_free(mongo->scram);
             mongo->scram = NULL;
         }
@@ -112,7 +112,7 @@ static void _mongo_scram_auth(ev_ctx *ev, mgopack_ctx *mgopack, ud_cxt *ud) {
     case SCRAM_LOCAL_FINAL:
         ud->status = COMMAND;
         rtn = _mongo_server_final_message(mongo, mgopack);
-        _hs_push(mongo->fd, mongo->skid, 1, ud, rtn, NULL, 0);
+        _hs_push(mongo->sk.fd, mongo->sk.skid, 1, ud, rtn, NULL, 0);
         scram_free(mongo->scram);
         mongo->scram = NULL;
         break;
@@ -241,7 +241,7 @@ void *mongo_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
 void mongo_init(mongo_ctx *mongo, const char *ip, uint16_t port, struct evssl_ctx *evssl, const char *db) {
     ZERO(mongo, sizeof(mongo_ctx));
     mongo->reqid = 1;
-    mongo->fd = INVALID_SOCK;
+    mongo->sk.fd = INVALID_SOCK;
     safe_fill_str(mongo->ip, sizeof(mongo->ip), ip);
     mongo->port = 0 == port ? 27017 : port;
     mongo->evssl = evssl;
@@ -250,7 +250,7 @@ void mongo_init(mongo_ctx *mongo, const char *ip, uint16_t port, struct evssl_ct
 int32_t mongo_try_connect(task_ctx *task, mongo_ctx *mongo) {
     mongo->task = task;
     return task_connect(task, PACK_MONGO, NULL, mongo->ip, mongo->port,
-        NULL == mongo->evssl ? NETEV_NONE : NETEV_AUTHSSL, mongo, &mongo->fd, &mongo->skid);
+        NULL == mongo->evssl ? NETEV_NONE : NETEV_AUTHSSL, mongo, &mongo->sk.fd, &mongo->sk.skid);
 }
 void mongo_db(mongo_ctx *mongo, const char *db) {
     safe_fill_str(mongo->db, sizeof(mongo->db), db);

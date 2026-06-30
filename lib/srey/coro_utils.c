@@ -187,13 +187,13 @@ int32_t mysql_connect(task_ctx *task, mysql_ctx *mysql) {
         return ERR_FAILED;
     }
     int32_t err;
-    char *errmsg = coro_handshaked(task, mysql->client.fd, mysql->client.skid, &err, NULL);
+    char *errmsg = coro_handshaked(task, mysql->client.sk.fd, mysql->client.sk.skid, &err, NULL);
     if (ERR_OK != err) {
         if (NULL != errmsg) {
             LOG_WARN("%s", errmsg);
         }
     } else {
-        if (ERR_OK != coro_sync(task, mysql->client.fd, mysql->client.skid)) {
+        if (ERR_OK != coro_sync(task, mysql->client.sk.fd, mysql->client.sk.skid)) {
             return ERR_FAILED;
         }
     }
@@ -202,7 +202,7 @@ int32_t mysql_connect(task_ctx *task, mysql_ctx *mysql) {
 int32_t mysql_selectdb(mysql_ctx *mysql, const char *database) {
     size_t size;
     void *selectdb = mysql_pack_selectdb(mysql, database, &size);
-    mpack_ctx *mpack = coro_send(mysql->task, mysql->client.fd, mysql->client.skid, selectdb, size, NULL, 0);
+    mpack_ctx *mpack = coro_send(mysql->task, mysql->client.sk.fd, mysql->client.sk.skid, selectdb, size, NULL, 0);
     if (NULL == mpack) {
         return ERR_FAILED;
     }
@@ -212,7 +212,7 @@ int32_t mysql_selectdb(mysql_ctx *mysql, const char *database) {
 static int32_t _mysql_ping(mysql_ctx *mysql) {
     size_t size;
     void *ping = mysql_pack_ping(mysql, &size);
-    mpack_ctx *mpack = coro_send(mysql->task, mysql->client.fd, mysql->client.skid, ping, size, NULL, 0);
+    mpack_ctx *mpack = coro_send(mysql->task, mysql->client.sk.fd, mysql->client.sk.skid, ping, size, NULL, 0);
     if (NULL == mpack) {
         return ERR_FAILED;
     }
@@ -220,7 +220,7 @@ static int32_t _mysql_ping(mysql_ctx *mysql) {
 }
 int32_t mysql_ping(mysql_ctx *mysql) {
     if (ERR_OK != _mysql_ping(mysql)) {
-        coro_close(mysql->task, mysql->client.fd, mysql->client.skid, 1);
+        coro_close(mysql->task, mysql->client.sk.fd, mysql->client.sk.skid, 1);
         return mysql_connect(mysql->task, mysql);
     }
     return ERR_OK;
@@ -231,7 +231,7 @@ mpack_ctx *mysql_query(mysql_ctx *mysql, const char *sql, mysql_bind_ctx *mbind)
     if (NULL == query) {
         return NULL;
     }
-    return coro_send(mysql->task, mysql->client.fd, mysql->client.skid, query, size, NULL, 0);
+    return coro_send(mysql->task, mysql->client.sk.fd, mysql->client.sk.skid, query, size, NULL, 0);
 }
 mysql_stmt_ctx *mysql_stmt_prepare(mysql_ctx *mysql, const char *sql) {
     size_t size;
@@ -239,7 +239,7 @@ mysql_stmt_ctx *mysql_stmt_prepare(mysql_ctx *mysql, const char *sql) {
     if (NULL == prepare) {
         return NULL;
     }
-    mpack_ctx *mpack = coro_send(mysql->task, mysql->client.fd, mysql->client.skid, prepare, size, NULL, 0);
+    mpack_ctx *mpack = coro_send(mysql->task, mysql->client.sk.fd, mysql->client.sk.skid, prepare, size, NULL, 0);
     return mysql_stmt_init(mpack);
 }
 mpack_ctx *mysql_stmt_execute(mysql_stmt_ctx *stmt, mysql_bind_ctx *mbind) {
@@ -248,38 +248,38 @@ mpack_ctx *mysql_stmt_execute(mysql_stmt_ctx *stmt, mysql_bind_ctx *mbind) {
     if (NULL == exec) {
         return NULL;
     }
-    return coro_send(stmt->mysql->task, stmt->mysql->client.fd, stmt->mysql->client.skid, exec, size, NULL, 0);
+    return coro_send(stmt->mysql->task, stmt->mysql->client.sk.fd, stmt->mysql->client.sk.skid, exec, size, NULL, 0);
 }
 int32_t mysql_stmt_reset(mysql_stmt_ctx *stmt) {
     size_t size;
     void *resetpk = mysql_pack_stmt_reset(stmt, &size);
-    mpack_ctx *mpack = coro_send(stmt->mysql->task, stmt->mysql->client.fd, stmt->mysql->client.skid, resetpk, size, NULL, 0);
+    mpack_ctx *mpack = coro_send(stmt->mysql->task, stmt->mysql->client.sk.fd, stmt->mysql->client.sk.skid, resetpk, size, NULL, 0);
     if (NULL == mpack) {
         return ERR_FAILED;
     }
     return MPACK_OK == mpack->pack_type ? ERR_OK : ERR_FAILED;
 }
 void mysql_quit(mysql_ctx *mysql) {
-    if (INVALID_SOCK == mysql->client.fd) {
+    if (INVALID_SOCK == mysql->client.sk.fd) {
         return;
     }
     size_t size;
     void *quit = mysql_pack_quit(mysql, &size);
-    ev_send(&mysql->task->loader->netev, mysql->client.fd, mysql->client.skid, quit, size, 0);
-    coro_close(mysql->task, mysql->client.fd, mysql->client.skid, 0);
+    ev_send(&mysql->task->loader->netev, mysql->client.sk.fd, mysql->client.sk.skid, quit, size, 0);
+    coro_close(mysql->task, mysql->client.sk.fd, mysql->client.sk.skid, 0);
 }
 int32_t smtp_connect(task_ctx *task, smtp_ctx *smtp) {
     if (ERR_OK != smtp_try_connect(task, smtp)) {
         return ERR_FAILED;
     }
     int32_t err;
-    char *msg = (char *)coro_handshaked(task, smtp->fd, smtp->skid, &err, NULL);
+    char *msg = (char *)coro_handshaked(task, smtp->sk.fd, smtp->sk.skid, &err, NULL);
     if (ERR_OK != err) {
         if (NULL != msg) {
             LOG_WARN("%s", msg);
         }
     } else {
-        if (ERR_OK != coro_sync(task, smtp->fd, smtp->skid)) {
+        if (ERR_OK != coro_sync(task, smtp->sk.fd, smtp->sk.skid)) {
             return ERR_FAILED;
         }
     }
@@ -288,23 +288,23 @@ int32_t smtp_connect(task_ctx *task, smtp_ctx *smtp) {
 // 发送 SMTP QUIT 命令并等待响应（不关闭 socket）
 static void _smtp_quit(smtp_ctx *smtp) {
     char *cmd = smtp_pack_quit();
-    char *pack = coro_send(smtp->task, smtp->fd, smtp->skid, cmd, strlen(cmd), NULL, 0);
+    char *pack = coro_send(smtp->task, smtp->sk.fd, smtp->sk.skid, cmd, strlen(cmd), NULL, 0);
     if (NULL == pack) {
         return;
     }
     smtp_check_code(pack, "221");
 }
 void smtp_quit(smtp_ctx *smtp) {
-    if (INVALID_SOCK == smtp->fd) {
+    if (INVALID_SOCK == smtp->sk.fd) {
         return;
     }
     _smtp_quit(smtp);
-    coro_close(smtp->task, smtp->fd, smtp->skid, 0);
+    coro_close(smtp->task, smtp->sk.fd, smtp->sk.skid, 0);
 }
 // 发送 SMTP NOOP 命令检测连接是否存活，失败返回 ERR_FAILED
 static int32_t _smtp_ping(smtp_ctx *smtp) {
     char *cmd = smtp_pack_ping();
-    char *pack = coro_send(smtp->task, smtp->fd, smtp->skid, cmd, strlen(cmd), NULL, 0);
+    char *pack = coro_send(smtp->task, smtp->sk.fd, smtp->sk.skid, cmd, strlen(cmd), NULL, 0);
     if (NULL == pack) {
         return ERR_FAILED;
     }
@@ -312,7 +312,7 @@ static int32_t _smtp_ping(smtp_ctx *smtp) {
 }
 int32_t smtp_ping(smtp_ctx *smtp) {
     if (ERR_OK != _smtp_ping(smtp)) {
-        coro_close(smtp->task, smtp->fd, smtp->skid, 1);
+        coro_close(smtp->task, smtp->sk.fd, smtp->sk.skid, 1);
         return smtp_connect(smtp->task, smtp);
     }
     return ERR_OK;
@@ -324,7 +324,7 @@ static int32_t _smtp_send(smtp_ctx *smtp, mail_ctx *mail) {
     if (NULL == cmd) {
         return ERR_FAILED;
     }
-    char *pack = coro_send(smtp->task, smtp->fd, smtp->skid, cmd, strlen(cmd), NULL, 0);
+    char *pack = coro_send(smtp->task, smtp->sk.fd, smtp->sk.skid, cmd, strlen(cmd), NULL, 0);
     if (NULL == pack
         || ERR_OK != smtp_check_ok(pack)) {
         return ERR_FAILED;
@@ -336,14 +336,14 @@ static int32_t _smtp_send(smtp_ctx *smtp, mail_ctx *mail) {
         if (NULL == cmd) {
             return ERR_FAILED;
         }
-        pack = coro_send(smtp->task, smtp->fd, smtp->skid, cmd, strlen(cmd), NULL, 0);
+        pack = coro_send(smtp->task, smtp->sk.fd, smtp->sk.skid, cmd, strlen(cmd), NULL, 0);
         if (NULL == pack
             || ERR_OK != smtp_check_ok(pack)) {
             return ERR_FAILED;
         }
     }
     cmd = smtp_pack_data();
-    pack = coro_send(smtp->task, smtp->fd, smtp->skid, cmd, strlen(cmd), NULL, 0);
+    pack = coro_send(smtp->task, smtp->sk.fd, smtp->sk.skid, cmd, strlen(cmd), NULL, 0);
     if (NULL == pack) {
         return ERR_FAILED;
     }
@@ -351,7 +351,7 @@ static int32_t _smtp_send(smtp_ctx *smtp, mail_ctx *mail) {
         return ERR_FAILED;
     }
     cmd = mail_pack(mail);
-    pack = coro_send(smtp->task, smtp->fd, smtp->skid, cmd, strlen(cmd), NULL, 0);
+    pack = coro_send(smtp->task, smtp->sk.fd, smtp->sk.skid, cmd, strlen(cmd), NULL, 0);
     if (NULL == pack
         || ERR_OK != smtp_check_ok(pack)) {
         return ERR_FAILED;
@@ -361,7 +361,7 @@ static int32_t _smtp_send(smtp_ctx *smtp, mail_ctx *mail) {
 // 发送 SMTP RSET 命令重置会话状态（不关闭连接）
 static int32_t _smtp_reset(smtp_ctx *smtp) {
     char *cmd = smtp_pack_reset();
-    char *pack = coro_send(smtp->task, smtp->fd, smtp->skid, cmd, strlen(cmd), NULL, 0);
+    char *pack = coro_send(smtp->task, smtp->sk.fd, smtp->sk.skid, cmd, strlen(cmd), NULL, 0);
     if (NULL == pack) {
         return ERR_FAILED;
     }
@@ -377,20 +377,20 @@ int32_t pgsql_connect(task_ctx *task, pgsql_ctx *pg) {
         return ERR_FAILED;
     }
     int32_t code;
-    char *err = coro_handshaked(task, pg->fd, pg->skid, &code, NULL);
+    char *err = coro_handshaked(task, pg->sk.fd, pg->sk.skid, &code, NULL);
     if (ERR_OK != code) {
         if (NULL != err) {
             LOG_WARN("%s", err);
         }
     } else {
-        if (ERR_OK != coro_sync(task, pg->fd, pg->skid)) {
+        if (ERR_OK != coro_sync(task, pg->sk.fd, pg->sk.skid)) {
             return ERR_FAILED;
         }
     }
     return code;
 }
 int32_t pgsql_cancel(pgsql_ctx *pg) {
-    if (INVALID_SOCK == pg->fd || 0 == pg->pid) {
+    if (INVALID_SOCK == pg->sk.fd || 0 == pg->pid) {
         return ERR_FAILED;
     }
     SOCKET fd;
@@ -406,13 +406,13 @@ int32_t pgsql_cancel(pgsql_ctx *pg) {
     return rtn;
 }
 void pgsql_quit(pgsql_ctx *pg) {
-    if (INVALID_SOCK == pg->fd) {
+    if (INVALID_SOCK == pg->sk.fd) {
         return;
     }
     size_t lens;
     void *quit = pgsql_pack_terminate(&lens);
-    ev_send(&pg->task->loader->netev, pg->fd, pg->skid, quit, lens, 0);
-    coro_close(pg->task, pg->fd, pg->skid, 0);
+    ev_send(&pg->task->loader->netev, pg->sk.fd, pg->sk.skid, quit, lens, 0);
+    coro_close(pg->task, pg->sk.fd, pg->sk.skid, 0);
 }
 int32_t pgsql_selectdb(pgsql_ctx *pg, const char *database) {
     pgsql_quit(pg);
@@ -422,7 +422,7 @@ int32_t pgsql_selectdb(pgsql_ctx *pg, const char *database) {
 int32_t pgsql_ping(pgsql_ctx *pg) {
     pgpack_ctx *pgpack = pgsql_query(pg, ";");
     if (NULL == pgpack) {
-        coro_close(pg->task, pg->fd, pg->skid, 1);
+        coro_close(pg->task, pg->sk.fd, pg->sk.skid, 1);
         return pgsql_connect(pg->task, pg);
     }
     return ERR_OK;
@@ -430,7 +430,7 @@ int32_t pgsql_ping(pgsql_ctx *pg) {
 pgpack_ctx *pgsql_query(pgsql_ctx *pg, const char *sql) {
     size_t lens;
     void *query = pgsql_pack_query(sql, &lens);
-    return coro_send(pg->task, pg->fd, pg->skid, query, lens, NULL, 0);
+    return coro_send(pg->task, pg->sk.fd, pg->sk.skid, query, lens, NULL, 0);
 }
 int32_t pgsql_stmt_prepare(pgsql_ctx *pg, const char *name, const char *sql, int16_t nparam, uint32_t *oids) {
     if (EMPTYSTR(sql)) {
@@ -438,7 +438,7 @@ int32_t pgsql_stmt_prepare(pgsql_ctx *pg, const char *name, const char *sql, int
     }
     size_t lens;
     void *parse = pgsql_pack_stmt_prepare(name, sql, nparam, oids, &lens);
-    pgpack_ctx *pgpack = coro_send(pg->task, pg->fd, pg->skid, parse, lens, NULL, 0);
+    pgpack_ctx *pgpack = coro_send(pg->task, pg->sk.fd, pg->sk.skid, parse, lens, NULL, 0);
     if (NULL == pgpack) {
         return ERR_FAILED;
     }
@@ -451,18 +451,18 @@ int32_t pgsql_stmt_prepare(pgsql_ctx *pg, const char *name, const char *sql, int
 pgpack_ctx *pgsql_stmt_execute(pgsql_ctx *pg, const char *name, pgsql_bind_ctx *bind, pgpack_format resultformat) {
     size_t lens;
     void *exec = pgsql_pack_stmt_execute(name, bind, resultformat, &lens);
-    return coro_send(pg->task, pg->fd, pg->skid, exec, lens, NULL, 0);
+    return coro_send(pg->task, pg->sk.fd, pg->sk.skid, exec, lens, NULL, 0);
 }
 void pgsql_stmt_close(pgsql_ctx *pg, const char *name) {
     size_t lens;
     void *close = pgsql_pack_stmt_close(name, &lens);
-    coro_send(pg->task, pg->fd, pg->skid, close, lens, NULL, 0);
+    coro_send(pg->task, pg->sk.fd, pg->sk.skid, close, lens, NULL, 0);
 }
 pgpack_ctx *pgsql_copy_in(pgsql_ctx *pg, const char *sql, const void *data, size_t lens) {
     // 第一步：发送 COPY SQL，等待服务端返回 CopyInResponse（PGPACK_COPY_IN）
     size_t qsize;
     void *query = pgsql_pack_query(sql, &qsize);
-    pgpack_ctx *pgpack = coro_send(pg->task, pg->fd, pg->skid, query, qsize, NULL, 0);
+    pgpack_ctx *pgpack = coro_send(pg->task, pg->sk.fd, pg->sk.skid, query, qsize, NULL, 0);
     if (NULL == pgpack || PGPACK_COPY_IN != pgpack->type) {
         return pgpack; // 服务端未进入 COPY IN 模式（通常为 PGPACK_ERR），直接返回调用方
     }
@@ -478,24 +478,24 @@ pgpack_ctx *pgsql_copy_in(pgsql_ctx *pg, const char *sql, const void *data, size
     binary_set_binary(&bwriter, copy_done, csize);
     FREE(copy_data);
     FREE(copy_done);
-    return coro_send(pg->task, pg->fd, pg->skid, bwriter.data, bwriter.offset, NULL, 0);
+    return coro_send(pg->task, pg->sk.fd, pg->sk.skid, bwriter.data, bwriter.offset, NULL, 0);
 }
 pgpack_ctx *pgsql_copy_out(pgsql_ctx *pg, const char *sql) {
     // 发送 COPY SQL，解析器在收到所有 CopyData + CopyDone 后于 ReadyForQuery 时返回累积结果
     size_t qsize;
     void *query = pgsql_pack_query(sql, &qsize);
-    return coro_send(pg->task, pg->fd, pg->skid, query, qsize, NULL, 0);
+    return coro_send(pg->task, pg->sk.fd, pg->sk.skid, query, qsize, NULL, 0);
 }
 int32_t mongo_connect(task_ctx *task, mongo_ctx *mongo) {
     mongo->task = task;
-    return coro_connect(task, PACK_MONGO, mongo->evssl, mongo->ip, mongo->port, 0, mongo, &mongo->fd, &mongo->skid);
+    return coro_connect(task, PACK_MONGO, mongo->evssl, mongo->ip, mongo->port, 0, mongo, &mongo->sk.fd, &mongo->sk.skid);
 }
 void mongo_quit(mongo_ctx *mongo) {
-    coro_close(mongo->task, mongo->fd, mongo->skid, 0);
+    coro_close(mongo->task, mongo->sk.fd, mongo->sk.skid, 0);
 }
 // 执行 MongoDB SCRAM 认证流程（发送 client-first 消息并等待握手结果）
 static int32_t _mongo_auth(mongo_ctx *mongo, const char *authmod) {
-    if (ERR_OK != ev_ud_status(&mongo->task->loader->netev, mongo->fd, mongo->skid, mongo_status_auth())) {
+    if (ERR_OK != ev_ud_status(&mongo->task->loader->netev, mongo->sk.fd, mongo->sk.skid, mongo_status_auth())) {
         return ERR_FAILED;
     }
     size_t lens;
@@ -503,11 +503,11 @@ static int32_t _mongo_auth(mongo_ctx *mongo, const char *authmod) {
     if (NULL == client_first) {
         return ERR_FAILED;
     }
-    if (ERR_OK != ev_send(&mongo->task->loader->netev, mongo->fd, mongo->skid, client_first, lens, 0)) {
+    if (ERR_OK != ev_send(&mongo->task->loader->netev, mongo->sk.fd, mongo->sk.skid, client_first, lens, 0)) {
         return ERR_FAILED;
     }
     int32_t err;
-    coro_handshaked(mongo->task, mongo->fd, mongo->skid, &err, NULL);
+    coro_handshaked(mongo->task, mongo->sk.fd, mongo->sk.skid, &err, NULL);
     return err;
 }
 int32_t mongo_auth(mongo_ctx *mongo, const char *authmod, const char *user, const char *pwd) {
@@ -523,7 +523,7 @@ mgopack_ctx *mongo_hello(mongo_ctx *mongo, char *options) {
     size_t lens;
     void *hello = mongo_pack_hello(mongo, options, &lens);
     mongo_set_flag(mongo, flags);
-    mgopack_ctx *mgpack = coro_send(mongo->task, mongo->fd, mongo->skid, hello, lens, NULL, 0);
+    mgopack_ctx *mgpack = coro_send(mongo->task, mongo->sk.fd, mongo->sk.skid, hello, lens, NULL, 0);
     if (NULL == mgpack) {
         return NULL;
     }
@@ -537,7 +537,7 @@ static int32_t _mongo_ping(mongo_ctx *mongo) {
     size_t lens;
     void *ping = mongo_pack_ping(mongo, &lens);
     mongo_set_flag(mongo, flags);
-    mgopack_ctx *mgpack = coro_send(mongo->task, mongo->fd, mongo->skid, ping, lens, NULL, 0);
+    mgopack_ctx *mgpack = coro_send(mongo->task, mongo->sk.fd, mongo->sk.skid, ping, lens, NULL, 0);
     if (NULL == mgpack) {
         return ERR_FAILED;
     }
@@ -548,7 +548,7 @@ static int32_t _mongo_ping(mongo_ctx *mongo) {
 }
 int32_t mongo_ping(mongo_ctx *mongo) {
     if (ERR_OK != _mongo_ping(mongo)) {
-        coro_close(mongo->task, mongo->fd, mongo->skid, 1);
+        coro_close(mongo->task, mongo->sk.fd, mongo->sk.skid, 1);
         if (ERR_OK != mongo_connect(mongo->task, mongo)) {
             return ERR_FAILED;
         }
@@ -565,12 +565,12 @@ int32_t mongo_ping(mongo_ctx *mongo) {
 // MongoDB 统一发送函数：设置了 MORETOCOME 标志时仅发送不等待响应，否则同步等待响应
 static inline int32_t _mongo_send(mongo_ctx *mongo, void *pack, size_t lens, mgopack_ctx **mgopack) {
     if (mongo_check_flag(mongo, MORETOCOME)) {
-        if (ERR_OK != ev_send(&mongo->task->loader->netev, mongo->fd, mongo->skid, pack, lens, 0)) {
+        if (ERR_OK != ev_send(&mongo->task->loader->netev, mongo->sk.fd, mongo->sk.skid, pack, lens, 0)) {
             return ERR_FAILED;
         }
         return ERR_OK;
     }
-    mgopack_ctx *rtnpack = coro_send(mongo->task, mongo->fd, mongo->skid, pack, lens, NULL, 0);
+    mgopack_ctx *rtnpack = coro_send(mongo->task, mongo->sk.fd, mongo->sk.skid, pack, lens, NULL, 0);
     if (NULL == rtnpack) {
         return ERR_FAILED;
     }
@@ -648,7 +648,7 @@ mgopack_ctx *mongo_find(mongo_ctx *mongo, char *filter, size_t flens, char *opti
     size_t lens;
     void *find = mongo_pack_find(mongo, filter, flens, options, &lens);
     mongo_set_flag(mongo, flags);
-    mgopack_ctx *mgpack = coro_send(mongo->task, mongo->fd, mongo->skid, find, lens, NULL, 0);
+    mgopack_ctx *mgpack = coro_send(mongo->task, mongo->sk.fd, mongo->sk.skid, find, lens, NULL, 0);
     if (NULL == mgpack) {
         return NULL;
     }
@@ -662,7 +662,7 @@ mgopack_ctx *mongo_aggregate(mongo_ctx *mongo, char *pipeline, size_t pllens, ch
     size_t lens;
     void *aggt = mongo_pack_aggregate(mongo, pipeline, pllens, options, &lens);
     mongo_set_flag(mongo, flags);
-    mgopack_ctx *mgpack = coro_send(mongo->task, mongo->fd, mongo->skid, aggt, lens, NULL, 0);
+    mgopack_ctx *mgpack = coro_send(mongo->task, mongo->sk.fd, mongo->sk.skid, aggt, lens, NULL, 0);
     if (NULL == mgpack) {
         return NULL;
     }
@@ -676,7 +676,7 @@ mgopack_ctx *mongo_getmore(mongo_ctx *mongo, int64_t cursorid, char *options) {
     size_t lens;
     void *getmore = mongo_pack_getmore(mongo, cursorid, options, &lens);
     mongo_set_flag(mongo, flags);
-    mgopack_ctx *mgpack = coro_send(mongo->task, mongo->fd, mongo->skid, getmore, lens, NULL, 0);
+    mgopack_ctx *mgpack = coro_send(mongo->task, mongo->sk.fd, mongo->sk.skid, getmore, lens, NULL, 0);
     if (NULL == mgpack) {
         return NULL;
     }
@@ -705,7 +705,7 @@ mgopack_ctx *mongo_distinct(mongo_ctx *mongo, const char *key, char *query, size
     size_t lens;
     void *distinct = mongo_pack_distinct(mongo, key, query, qlens, options, &lens);
     mongo_set_flag(mongo, flags);
-    mgopack_ctx *mgpack = coro_send(mongo->task, mongo->fd, mongo->skid, distinct, lens, NULL, 0);
+    mgopack_ctx *mgpack = coro_send(mongo->task, mongo->sk.fd, mongo->sk.skid, distinct, lens, NULL, 0);
     if (NULL == mgpack) {
         return NULL;
     }
@@ -720,7 +720,7 @@ mgopack_ctx *mongo_findandmodify(mongo_ctx *mongo, char *query, size_t qlens,
     size_t lens;
     void *findandmodify = mongo_pack_findandmodify(mongo, query, qlens, remove, pipeline, update, ulens, options, &lens);
     mongo_set_flag(mongo, flags);
-    mgopack_ctx *mgpack = coro_send(mongo->task, mongo->fd, mongo->skid, findandmodify, lens, NULL, 0);
+    mgopack_ctx *mgpack = coro_send(mongo->task, mongo->sk.fd, mongo->sk.skid, findandmodify, lens, NULL, 0);
     if (NULL == mgpack) {
         return NULL;
     }
@@ -734,7 +734,7 @@ int32_t mongo_count(mongo_ctx *mongo, char *query, size_t qlens, char *options) 
     size_t lens;
     void *count = mongo_pack_count(mongo, query, qlens, options, &lens);
     mongo_set_flag(mongo, flags);
-    mgopack_ctx *mgpack = coro_send(mongo->task, mongo->fd, mongo->skid, count, lens, NULL, 0);
+    mgopack_ctx *mgpack = coro_send(mongo->task, mongo->sk.fd, mongo->sk.skid, count, lens, NULL, 0);
     if (NULL == mgpack) {
         return ERR_FAILED;
     }
@@ -775,7 +775,7 @@ mongo_session *mongo_startsession(mongo_ctx *mongo) {
     size_t lens;
     void *startsession = mongo_pack_startsession(mongo, &lens);
     mongo_set_flag(mongo, flags);
-    mgopack_ctx *mgpack = coro_send(mongo->task, mongo->fd, mongo->skid, startsession, lens, NULL, 0);
+    mgopack_ctx *mgpack = coro_send(mongo->task, mongo->sk.fd, mongo->sk.skid, startsession, lens, NULL, 0);
     if (NULL == mgpack) {
         return NULL;
     }
@@ -796,7 +796,7 @@ int32_t mongo_refreshsession(mongo_session *session) {
     size_t lens;
     void *refreshsession = mongo_pack_refreshsession(session, &lens);
     mongo_set_flag(mongo, flags);
-    mgopack_ctx *mgpack = coro_send(mongo->task, mongo->fd, mongo->skid, refreshsession, lens, NULL, 0);
+    mgopack_ctx *mgpack = coro_send(mongo->task, mongo->sk.fd, mongo->sk.skid, refreshsession, lens, NULL, 0);
     if (NULL == mgpack) {
         return ERR_FAILED;
     }
@@ -829,7 +829,7 @@ int32_t mongo_commit(mongo_session *session, char *options) {
     mongo_set_flag(mongo, flags);
     mongo->session = NULL;
     FREE(session->options);
-    mgopack_ctx *mgpack = coro_send(mongo->task, mongo->fd, mongo->skid, committransaction, lens, NULL, 0);
+    mgopack_ctx *mgpack = coro_send(mongo->task, mongo->sk.fd, mongo->sk.skid, committransaction, lens, NULL, 0);
     if (NULL == mgpack) {
         return ERR_FAILED;
     }
@@ -847,7 +847,7 @@ int32_t mongo_rollback(mongo_session *session, char *options) {
     mongo_set_flag(mongo, flags);
     mongo->session = NULL;
     FREE(session->options);
-    mgopack_ctx *mgpack = coro_send(mongo->task, mongo->fd, mongo->skid, aborttransaction, lens, NULL, 0);
+    mgopack_ctx *mgpack = coro_send(mongo->task, mongo->sk.fd, mongo->sk.skid, aborttransaction, lens, NULL, 0);
     if (NULL == mgpack) {
         return ERR_FAILED;
     }

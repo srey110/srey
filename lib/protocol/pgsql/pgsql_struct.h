@@ -54,12 +54,11 @@ typedef struct pgsql_ctx {
     uint16_t port;              // 服务端端口号
     int32_t pid;                // 后端进程 ID
     uint32_t key;               // 后端取消密钥
-    SOCKET fd;                  // 套接字描述符
-    uint64_t skid;              // 套接字唯一 ID
     struct task_ctx *task;      // 所属任务上下文
     struct evssl_ctx *evssl;    // SSL 上下文（不使用 SSL 时为 NULL）
     struct scram_ctx *scram;    // SCRAM 认证上下文（认证完成后释放）
     pgpack_ctx *pack;           // 当前正在累积的数据包
+    sk_id sk;                   // 连接标识 fd+skid
     char ip[IP_LENS];           // 服务端 IP 地址
     char user[64];              // 登录用户名
     char password[64];          // 登录密码

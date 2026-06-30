@@ -163,14 +163,14 @@ static void _mw_g2(router_req *ctx) {
 
 // server _net_recv: HTTP 完整包到达 (slice == 0) 时分发, 分片态忽略
 // (任务路由不处理 chunked 请求体, 简化假设)
-static void _server_net_recv(task_ctx *task, SOCKET fd, uint64_t skid,
+static void _server_net_recv(task_ctx *task, sk_id *sk,
                              subtype_t pktype, uint8_t client, uint8_t slice,
                              void *data, size_t size) {
     (void)pktype; (void)client; (void)size;
     if (0 != slice) {
         return;
     }
-    router_dispatch((router_ctx *)task->arg, task, fd, skid, (struct http_pack_ctx *)data);
+    router_dispatch((router_ctx *)task->arg, task, sk->fd, sk->skid, (struct http_pack_ctx *)data);
 }
 // 用户数据释放(argfree, task_free 时调): router_free 一并释放所有 entry/segs/mws/named 字符串
 static void _router_free(void *arg) {
