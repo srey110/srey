@@ -33,13 +33,6 @@ void *pgsql_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status);
 int32_t pgsql_init(pgsql_ctx *pg, const char *ip, uint16_t port, struct evssl_ctx *evssl,
     const char *user, const char *password, const char *database);
 /// <summary>
-/// 发起到 pgsql 服务端的异步连接请求
-/// </summary>
-/// <param name="task">task_ctx 指针</param>
-/// <param name="pg">pgsql_ctx 指针</param>
-/// <returns>ERR_OK 请求成功</returns>
-int32_t pgsql_try_connect(task_ctx *task, pgsql_ctx *pg);
-/// <summary>
 /// 更新 pgsql 连接的用户名和密码
 /// </summary>
 /// <param name="pg">pgsql_ctx 指针</param>

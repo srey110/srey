@@ -1,7 +1,7 @@
 ﻿#ifndef MONGO_H_
 #define MONGO_H_
 
-#include "srey/spub.h"
+#include "protocol/prots.h"
 #include "protocol/mongo/mongo_pack.h"
 #include "protocol/mongo/mongo_parse.h"
 
@@ -31,13 +31,6 @@ void *mongo_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status);
 /// <param name="evssl">struct evssl_ctx</param>
 /// <param name="db">数据库</param>
 void mongo_init(mongo_ctx *mongo, const char *ip, uint16_t port, struct evssl_ctx *evssl, const char *db);
-/// <summary>
-/// 发起数据库连接请求
-/// </summary>
-/// <param name="task">task_ctx</param>
-/// <param name="mongo">mongo_ctx</param>
-/// <returns>ERR_OK 请求发起成功</returns>
-int32_t mongo_try_connect(task_ctx *task, mongo_ctx *mongo);
 /// <summary>
 /// 设置当前数据库
 /// </summary>

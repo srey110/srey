@@ -69,6 +69,7 @@
 #include "srey/task.h"
 #include "srey/coro.h"
 #include "srey/coro_utils.h"
+#include "srey/prots_wrap.h"
 #include "services/harbor.h"
 #include "services/datacenter.h"
 #include "services/subcenter.h"

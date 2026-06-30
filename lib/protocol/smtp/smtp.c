@@ -1,7 +1,7 @@
 ﻿#include "protocol/smtp/smtp.h"
 #include "utils/utils.h"
 #include "utils/binary.h"
-#include "srey/task.h"
+#include "event/event.h"
 #include "protocol/prots.h"
 #include "crypt/base64.h"
 
@@ -43,10 +43,6 @@ void smtp_init(smtp_ctx *smtp, const char *ip, uint16_t port, struct evssl_ctx *
     smtp->sk.fd = INVALID_SOCK;
     safe_fill_str(smtp->user, sizeof(smtp->user), user);
     safe_fill_str(smtp->psw, sizeof(smtp->psw), psw);
-}
-int32_t smtp_try_connect(task_ctx *task, smtp_ctx *smtp) {
-    smtp->task = task;
-    return task_connect(task, PACK_SMTP, smtp->evssl, smtp->ip, smtp->port, 0, smtp, &smtp->sk.fd, &smtp->sk.skid);
 }
 int32_t smtp_check_code(char *pack, const char *code) {
     if (0 == memcmp(pack, code, strlen(code))) {

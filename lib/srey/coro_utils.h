@@ -89,6 +89,11 @@ mpack_ctx *mysql_stmt_execute(mysql_stmt_ctx *stmt, mysql_bind_ctx *mbind);
 /// <returns>ERR_OK 成功</returns>
 int32_t mysql_stmt_reset(mysql_stmt_ctx *stmt);
 /// <summary>
+/// 关闭预处理语句并释放相关资源
+/// </summary>
+/// <param name="stmt">mysql_stmt_ctx</param>
+void mysql_stmt_close(mysql_stmt_ctx *stmt);
+/// <summary>
 /// 退出关闭链接
 /// </summary>
 /// <param name="mysql">mysql_ctx</param>

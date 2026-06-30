@@ -2,7 +2,7 @@
 #define MYSQL_H_
 
 #include "protocol/mysql/mysql_struct.h"
-#include "srey/spub.h"
+#include "protocol/prots.h"
 
 // 内部函数：初始化握手回调函数指针
 void _mysql_init(void *hspush);
@@ -31,13 +31,6 @@ void *mysql_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status);
 /// <returns>ERR_OK 成功，ERR_FAILED 失败</returns>
 int32_t mysql_init(mysql_ctx *mysql, const char *ip, uint16_t port, struct evssl_ctx *evssl,
     const char *user, const char *password, const char *database, const char *charset, uint32_t maxpk);
-/// <summary>
-/// 发起数据库连接请求
-/// </summary>
-/// <param name="task">task_ctx</param>
-/// <param name="mysql">mysql_ctx</param>
-/// <returns>ERR_OK 请求发起成功</returns>
-int32_t mysql_try_connect(task_ctx *task, mysql_ctx *mysql);
 /// <summary>
 /// 获取服务器版本信息
 /// </summary>
@@ -68,10 +61,5 @@ int64_t mysql_last_id(mysql_ctx *mysql);
 /// <param name="mysql">mysql_ctx</param>
 /// <returns>影响的行数</returns>
 int64_t mysql_affected_rows(mysql_ctx *mysql);
-/// <summary>
-/// 关闭预处理语句并释放相关资源
-/// </summary>
-/// <param name="stmt">mysql_stmt_ctx</param>
-void mysql_stmt_close(mysql_stmt_ctx *stmt);
 
 #endif//MYSQL_H_

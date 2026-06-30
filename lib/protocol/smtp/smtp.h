@@ -1,14 +1,14 @@
 ﻿#ifndef SMTP_H_
 #define SMTP_H_
 
-#include "srey/spub.h"
+#include "protocol/prots.h"
 #include "protocol/smtp/mail.h"
 
 typedef struct smtp_ctx {
     uint16_t port;           //SMTP 服务器端口
     int32_t authtype;        //认证类型（LOGIN 或 PLAIN），握手后自动设置
     struct evssl_ctx *evssl; //TLS 上下文，NULL 表示不加密
-    task_ctx *task;          //所属任务上下文
+    struct task_ctx *task;   //所属任务上下文
     sk_id sk;                //连接标识 fd+skid
     char user[64];           //SMTP 用户名
     char psw[64];            //SMTP 密码
@@ -31,13 +31,6 @@ void _smtp_closed(ud_cxt *ud);
 /// <param name="user">用户名</param>
 /// <param name="psw">密码</param>
 void smtp_init(smtp_ctx *smtp, const char *ip, uint16_t port, struct evssl_ctx *evssl, const char *user, const char *psw);
-/// <summary>
-/// 链接smtp服务器
-/// </summary>
-/// <param name="task">task_ctx</param>
-/// <param name="smtp">smtp_ctx</param>
-/// <returns>ERR_OK 成功</returns>
-int32_t smtp_try_connect(task_ctx *task, smtp_ctx *smtp);
 /// <summary>
 /// 检查返回码是否匹配
 /// </summary>

@@ -1,7 +1,7 @@
 ﻿#ifndef PGSQL_STRUCT_H_
 #define PGSQL_STRUCT_H_
 
-#include "srey/spub.h"
+#include "protocol/prots.h"
 #include "utils/binary.h"
 #include "protocol/pgsql/pgsql_macro.h"
 

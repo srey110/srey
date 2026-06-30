@@ -1,5 +1,5 @@
 ﻿#include "protocol/mongo/mongo.h"
-#include "srey/task.h"
+#include "event/event.h"
 #include "utils/binary.h"
 #include "utils/utils.h"
 #include "crypt/scram.h"
@@ -246,11 +246,6 @@ void mongo_init(mongo_ctx *mongo, const char *ip, uint16_t port, struct evssl_ct
     mongo->port = 0 == port ? 27017 : port;
     mongo->evssl = evssl;
     safe_fill_str(mongo->db, sizeof(mongo->db), EMPTYSTR(db) ? "admin" : db);
-}
-int32_t mongo_try_connect(task_ctx *task, mongo_ctx *mongo) {
-    mongo->task = task;
-    return task_connect(task, PACK_MONGO, NULL, mongo->ip, mongo->port,
-        NULL == mongo->evssl ? NETEV_NONE : NETEV_AUTHSSL, mongo, &mongo->sk.fd, &mongo->sk.skid);
 }
 void mongo_db(mongo_ctx *mongo, const char *db) {
     safe_fill_str(mongo->db, sizeof(mongo->db), db);

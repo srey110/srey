@@ -5,7 +5,7 @@
 #include "mysql_bind.h"
 #include "protocol/prots.h"
 #include "crypt/digest.h"
-#include "srey/task.h"
+#include "event/event.h"
 #if WITH_SSL
 #include <openssl/evp.h>
 #include <openssl/rsa.h>
@@ -695,11 +695,6 @@ int32_t mysql_init(mysql_ctx *mysql, const char *ip, uint16_t port, struct evssl
     mysql->client.sk.fd = INVALID_SOCK;
     return ERR_OK;
 }
-int32_t mysql_try_connect(task_ctx *task, mysql_ctx *mysql) {
-    mysql->task = task;
-    return task_connect(task, PACK_MYSQL, NULL, mysql->client.ip, mysql->client.port,
-        NULL == mysql->client.evssl ? NETEV_NONE : NETEV_AUTHSSL, mysql, &mysql->client.sk.fd, &mysql->client.sk.skid);
-}
 const char *mysql_version(mysql_ctx *mysql) {
     return mysql->version;
 }
@@ -716,16 +711,4 @@ int64_t mysql_last_id(mysql_ctx *mysql) {
 }
 int64_t mysql_affected_rows(mysql_ctx *mysql) {
     return mysql->affected_rows;
-}
-void mysql_stmt_close(mysql_stmt_ctx *stmt) {
-    size_t size;
-    mysql_ctx *mysql = stmt->mysql;
-    void *close = mysql_pack_stmt_close(stmt, &size);
-    /* mysql_pack_stmt_close 已释放 stmt，此后只能访问 mysql（已在 free 前捕获）。
-     * fd == INVALID_SOCK 表示连接已关闭（或 mysql_ctx 已失效），跳过发包直接释放。 */
-    if (INVALID_SOCK == mysql->client.sk.fd) {
-        FREE(close);
-        return;
-    }
-    ev_send(&mysql->task->loader->netev, mysql->client.sk.fd, mysql->client.sk.skid, close, size, 0);
 }

@@ -2,7 +2,6 @@
 #include "protocol/prots.h"
 #include "utils/utils.h"
 #include "utils/varint.h"
-#include "srey/task.h"
 
 //https://mqtt.p2hp.com/mqtt311
 //https://mqtt.p2hp.com/mqtt-5-0
@@ -991,14 +990,6 @@ mqtt_pack_ctx *mqtt_unpack(int32_t client, buffer_ctx *buf, ud_cxt *ud, int32_t 
         return NULL;
     }
     return pack;
-}
-int32_t mqtt_try_connect(task_ctx *task, struct evssl_ctx *evssl,
-                         const char *ip, uint16_t port, int32_t netev,
-                         mqtt_protversion version, SOCKET *fd, uint64_t *skid) {
-    mqtt_ctx *mq;
-    MALLOC(mq, sizeof(mqtt_ctx));
-    mq->version = version;
-    return task_connect(task, PACK_MQTT, evssl, ip, port, netev, mq, fd, skid);
 }
 const char *mqtt_reason(mqtt_prot prot, int32_t code) {
     switch (code) {

@@ -2,6 +2,7 @@
 #include "protocol/prots.h"
 #include "protocol/http.h"
 #include "protocol/mqtt/mqtt.h"
+#include "event/event.h"
 #include "utils/utils.h"
 
 #define MASK_KEY_LENS  4  //掩码密钥长度

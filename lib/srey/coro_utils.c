@@ -1,6 +1,7 @@
 ﻿#include "srey/coro_utils.h"
 #include "srey/coro.h"
 #include "srey/task.h"
+#include "srey/prots_wrap.h"
 #include "protocol/urlparse.h"
 #include "protocol/dns.h"
 #include "protocol/websock.h"
@@ -258,6 +259,18 @@ int32_t mysql_stmt_reset(mysql_stmt_ctx *stmt) {
         return ERR_FAILED;
     }
     return MPACK_OK == mpack->pack_type ? ERR_OK : ERR_FAILED;
+}
+void mysql_stmt_close(mysql_stmt_ctx *stmt) {
+    size_t size;
+    mysql_ctx *mysql = stmt->mysql;
+    void *close = mysql_pack_stmt_close(stmt, &size);
+    /* mysql_pack_stmt_close 已释放 stmt，此后只能访问 mysql（已在 free 前捕获）。
+     * fd == INVALID_SOCK 表示连接已关闭（或 mysql_ctx 已失效），跳过发包直接释放。 */
+    if (INVALID_SOCK == mysql->client.sk.fd) {
+        FREE(close);
+        return;
+    }
+    ev_send(&mysql->task->loader->netev, mysql->client.sk.fd, mysql->client.sk.skid, close, size, 0);
 }
 void mysql_quit(mysql_ctx *mysql) {
     if (INVALID_SOCK == mysql->client.sk.fd) {

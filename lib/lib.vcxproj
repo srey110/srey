@@ -103,6 +103,7 @@
     <ClInclude Include="services\subcenter.h" />
     <ClInclude Include="srey\coro.h" />
     <ClInclude Include="srey\coro_utils.h" />
+    <ClInclude Include="srey\prots_wrap.h" />
     <ClInclude Include="srey\debug_request.h" />
     <ClInclude Include="srey\loader.h" />
     <ClInclude Include="srey\minicoro.h" />
@@ -208,6 +209,7 @@
     <ClCompile Include="services\subcenter.c" />
     <ClCompile Include="srey\coro.c" />
     <ClCompile Include="srey\coro_utils.c" />
+    <ClCompile Include="srey\prots_wrap.c" />
     <ClCompile Include="srey\debug_request.c" />
     <ClCompile Include="srey\loader.c" />
     <ClCompile Include="srey\task.c" />

@@ -2,7 +2,7 @@
 #include "protocol/pgsql/pgsql_parse.h"
 #include "crypt/scram.h"
 #include "crypt/md5.h"
-#include "srey/task.h"
+#include "event/event.h"
 #include "utils/utils.h"
 
 //https://www.postgresql.org/docs/18/protocol-flow.html
@@ -458,10 +458,6 @@ int32_t pgsql_init(pgsql_ctx *pg, const char *ip, uint16_t port, struct evssl_ct
     pg->sk.fd = INVALID_SOCK;
     pg->evssl = evssl;
     return ERR_OK;
-}
-int32_t pgsql_try_connect(task_ctx *task, pgsql_ctx *pg) {
-    pg->task = task;
-    return task_connect(task, PACK_PGSQL, NULL, pg->ip, pg->port, NETEV_AUTHSSL, pg, &pg->sk.fd, &pg->sk.skid);
 }
 void pgsql_set_userpwd(pgsql_ctx *pg, const char *user, const char *password) {
     if (strlen(user) > sizeof(pg->user) - 1

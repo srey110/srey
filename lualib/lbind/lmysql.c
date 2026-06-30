@@ -535,7 +535,14 @@ static int32_t _lmysql_stmt_new(lua_State *lua) {
 static int32_t _lmysql_stmt_free(lua_State *lua) {
     mysql_stmt_ctx **stmt = luaL_checkudata(lua, 1, MT_MYSQL_STMT);
     if (NULL != *stmt) {
-        mysql_stmt_close(*stmt);
+        size_t size;
+        mysql_ctx *mysql = (*stmt)->mysql;
+        void *close = mysql_pack_stmt_close(*stmt, &size);
+        if (INVALID_SOCK == mysql->client.sk.fd) {
+            FREE(close);
+        } else {
+            ev_send(&mysql->task->loader->netev, mysql->client.sk.fd, mysql->client.sk.skid, close, size, 0);
+        }
         *stmt = NULL;
     }
     return 0;
