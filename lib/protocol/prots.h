@@ -2,6 +2,7 @@
 #define PROTS_H_
 
 #include "event/evpub.h"
+#include "protocol/message.h"
 
 // 协议包类型枚举
 typedef enum pack_type {
@@ -30,13 +31,24 @@ typedef enum prot_status {
     PROT_MOREDATA = 0x10,      // 数据不足，需等待更多数据
     PROT_CLOSE = 0x20          // 连接关闭信号
 }prot_status;
+
 // 握手完成后的推送回调函数类型
 typedef int32_t(*_handshaked_push)(SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud, int32_t erro, void *data, size_t lens);
+// 消息汇：网络事件回调向上推消息的接口，由 task 层注册实现
+typedef void*(*prots_emit_begin_cb)(ud_cxt *ud);              // 开窗：grab 目标，返回不透明句柄，NULL=目标不存在
+typedef void(*prots_emit_cb)(void *target, message_ctx *msg);// 推一条消息给已开窗的目标
+typedef void(*prots_emit_end_cb)(void *target);              // 关窗：释放 begin 取得的句柄
+typedef struct prot_emit {
+    prots_emit_begin_cb begin;
+    prots_emit_cb emit;
+    prots_emit_end_cb end;
+}prot_emit;
+
 /// <summary>
-/// 初始化协议模块，注册握手完成推送回调
+/// 初始化协议模块，注册消息汇（网络事件回调经它向上推消息）
 /// </summary>
-/// <param name="hspush">握手完成后的推送回调函数指针</param>
-void prots_init(_handshaked_push hspush);
+/// <param name="emit">消息汇实现（begin/emit/end），prots 内部按值保存</param>
+void prots_init(prot_emit *emit);
 /// <summary>
 /// 释放协议模块全局资源
 /// </summary>
@@ -115,5 +127,22 @@ int32_t prots_may_resume(pack_type pktype, void *data);
 /// <returns>解包后的数据指针，NULL 表示数据不足或出错</returns>
 void *prots_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status);
+// 以下 7 个为网络事件回调，由 task_listen/connect/udp 装入 cbs_ctx、event 层触发；
+// 各自经 prots_init 注册的消息汇 begin→emit→end 把事件转成 message_ctx 推给上层；
+// 签名与 cbs_ctx 对应回调（accept_cb/connect_cb/recv_cb/...）一致。
+/// <summary>接受新连接：完成协议初始化并推送 MSG_TYPE_ACCEPT</summary>
+int32_t prots_net_accept(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud);
+/// <summary>主动连接建立：完成协议初始化并推送 MSG_TYPE_CONNECT</summary>
+int32_t prots_net_connect(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t err, ud_cxt *ud);
+/// <summary>数据接收：循环解包并推送 MSG_TYPE_RECV（按 slice 标记分片）</summary>
+void prots_net_recv(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, buffer_ctx *buf, size_t size, ud_cxt *ud);
+/// <summary>发送完成：推送 MSG_TYPE_SEND</summary>
+void prots_net_send(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, size_t size, ud_cxt *ud);
+/// <summary>SSL 握手完成：完成协议 SSL 初始化并推送 MSG_TYPE_SSLEXCHANGED</summary>
+int32_t prots_net_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud, void *ssl);
+/// <summary>连接关闭：通知协议层并推送 MSG_TYPE_CLOSE</summary>
+void prots_net_close(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud);
+/// <summary>UDP 接收：打包地址+数据并推送 MSG_TYPE_RECVFROM</summary>
+void prots_net_recvfrom(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud);
 
 #endif//PROTS_H_

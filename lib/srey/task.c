@@ -484,154 +484,19 @@ void task_multi_call(task_ctx *dsts[], int32_t n, subtype_t reqtype,
                      void *data, size_t size, int32_t copy) {
     (void)task_multi_request(dsts, n, NULL, reqtype, 0, data, size, copy);
 }
-// 网络层接受回调：完成协议初始化并向任务推送 MSG_TYPE_ACCEPT 消息
-static int32_t _task_net_accept(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud) {
-    task_ctx *task = task_grab(ud->loader, ud->handle);
-    if (NULL == task) {
-        return ERR_FAILED;
-    }
-    int32_t rtn = prots_accepted(ev, fd, skid, ud);
-    if (ERR_OK == rtn) {
-        message_ctx msg = { 0 };
-        msg.mtype = MSG_TYPE_ACCEPT;
-        msg.subtype = ud->pktype;
-        msg.sk.fd = fd;
-        msg.sk.skid = skid;
-        _task_message_push(task, &msg);
-    }
-    task_ungrab(task);
-    return rtn;
+// 网络事件 emit 实现：begin=grab 目标 task，emit=入队，end=ungrab；经 task_net_emit 注册给 prots 作为消息汇
+static void *_task_emit_begin(ud_cxt *ud) {
+    return task_grab(ud->loader, ud->handle);
 }
-int32_t _message_handshaked_push(SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud, int32_t erro, void *data, size_t lens) {
-    task_ctx *task = task_grab(ud->loader, ud->handle);
-    if (NULL == task) {
-        message_ctx tmp = { 0 };
-        tmp.mtype = MSG_TYPE_HANDSHAKED;
-        tmp.subtype = ud->pktype;
-        tmp.data = data;
-        _message_clean(&tmp);
-        return ERR_FAILED;
-    }
-    message_ctx msg = { 0 };
-    msg.mtype = MSG_TYPE_HANDSHAKED;
-    msg.subtype = ud->pktype;
-    msg.sk.fd = fd;
-    msg.sk.skid = skid;
-    msg.client = client;
-    msg.erro = erro;
-    msg.data = data;
-    msg.size = lens;
-    msg.sess = skid;
-    _task_message_push(task, &msg);
-    task_ungrab(task);
-    return ERR_OK;
+static void _task_emit(void *target, message_ctx *msg) {
+    _task_message_push((task_ctx *)target, msg);
 }
-// 网络层数据接收回调：循环解包并向任务推送 MSG_TYPE_RECV 消息
-static void _task_net_recv(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, buffer_ctx *buf, size_t size, ud_cxt *ud) {
-    task_ctx *task = task_grab(ud->loader, ud->handle);
-    if (NULL == task) {
-        ev_close(ev, fd, skid, 1);
-        return;
-    }
-    message_ctx msg = { 0 };
-    msg.mtype = MSG_TYPE_RECV;
-    msg.subtype = ud->pktype;
-    msg.sk.fd = fd;
-    msg.sk.skid = skid;
-    msg.client = client;
-    void *data;
-    int32_t status;
-    size_t esize;
-    for (;;) {
-        size = buffer_size(buf);
-        data = prots_unpack(ev, fd, skid, client, buf, ud, &msg.size, &status);
-        if (NULL != data) {
-            msg.data = data;
-            msg.sess = ud->sess;
-            if (BIT_CHECK(status, PROT_SLICE_START)) {
-                msg.slice = PROT_SLICE_START;
-            } else if(BIT_CHECK(status, PROT_SLICE)) {
-                msg.slice = PROT_SLICE;
-            } else if(BIT_CHECK(status, PROT_SLICE_END)) {
-                msg.slice = PROT_SLICE_END;
-            } else {
-                msg.slice = 0;
-            }
-            _task_message_push(task, &msg);
-        }
-        if (BIT_CHECK(status, PROT_ERROR)) {
-            ev_close(ev, fd, skid, 1);
-            break;
-        }
-        if (BIT_CHECK(status, PROT_CLOSE)) {
-            // 协议层正常关闭信号(如 WebSocket close frame),业务应答 close frame
-            // 可能仍在 buf_s,immed=0 让其发完再关
-            ev_close(ev, fd, skid, 0);
-            break;
-        }
-        esize = buffer_size(buf);
-        if (0 == esize
-            || size == esize
-            || BIT_CHECK(status, PROT_MOREDATA)) {
-            break;
-        }
-    }
-    task_ungrab(task);
+static void _task_emit_end(void *target) {
+    task_ungrab((task_ctx *)target);
 }
-// 网络层发送完成回调：向任务推送 MSG_TYPE_SEND 消息
-static void _task_net_send(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, size_t size, ud_cxt *ud) {
-    task_ctx *task = task_grab(ud->loader, ud->handle);
-    if (NULL == task) {
-        ev_close(ev, fd, skid, 1);
-        return;
-    }
-    message_ctx msg = { 0 };
-    msg.mtype = MSG_TYPE_SEND;
-    msg.subtype = ud->pktype;
-    msg.sk.fd = fd;
-    msg.sk.skid = skid;
-    msg.client = client;
-    msg.size = size;
-    _task_message_push(task, &msg);
-    task_ungrab(task);
-}
-// 网络层 SSL 交换完成回调：完成协议 SSL 初始化并向任务推送 MSG_TYPE_SSLEXCHANGED 消息
-static int32_t _task_net_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud, void *ssl) {
-    task_ctx *task = task_grab(ud->loader, ud->handle);
-    if (NULL == task) {
-        return ERR_FAILED;
-    }
-    int32_t rtn = prots_ssl_exchanged(ev, fd, skid, client, ud, ssl);
-    if (ERR_OK == rtn) {
-        message_ctx msg = { 0 };
-        msg.mtype = MSG_TYPE_SSLEXCHANGED;
-        msg.subtype = ud->pktype;
-        msg.sk.fd = fd;
-        msg.sk.skid = skid;
-        msg.client = client;
-        msg.sess = skid;
-        _task_message_push(task, &msg);
-    }
-    task_ungrab(task);
-    return rtn;
-}
-// 网络层连接关闭回调：通知协议层并向任务推送 MSG_TYPE_CLOSE 消息
-static void _task_net_close(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud) {
-    (void)ev;
-    task_ctx *task = task_grab(ud->loader, ud->handle);
-    if (NULL == task) {
-        return;
-    }
-    message_ctx msg = { 0 };
-    msg.mtype = MSG_TYPE_CLOSE;
-    msg.subtype = ud->pktype;
-    msg.sk.fd = fd;
-    msg.sk.skid = skid;
-    msg.client = client;
-    msg.sess = skid;
-    prots_closed(ud);
-    _task_message_push(task, &msg);
-    task_ungrab(task);
+static prot_emit g_task_emit = { _task_emit_begin, _task_emit, _task_emit_end };
+prot_emit *task_net_emit(void) {
+    return &g_task_emit;
 }
 int32_t task_listen(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
     const char *ip, uint16_t port, uint64_t *id, int32_t netev) {
@@ -641,40 +506,19 @@ int32_t task_listen(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
     ud.loader = task->loader;
     cbs_ctx cbs = { 0 };
     if (BIT_CHECK(netev, NETEV_ACCEPT)) {
-        cbs.acp_cb = _task_net_accept;
+        cbs.acp_cb = prots_net_accept;
     }
     if (BIT_CHECK(netev, NETEV_SEND)) {
-        cbs.s_cb = _task_net_send;
+        cbs.s_cb = prots_net_send;
     }
     if (NULL != evssl
         || BIT_CHECK(netev, NETEV_AUTHSSL)) {
-        cbs.exch_cb = _task_net_ssl_exchanged;
+        cbs.exch_cb = prots_net_ssl_exchanged;
     }
-    cbs.r_cb = _task_net_recv;
-    cbs.c_cb = _task_net_close;
+    cbs.r_cb = prots_net_recv;
+    cbs.c_cb = prots_net_close;
     cbs.ud_free = prots_udfree;
     return ev_listen(&task->loader->netev, evssl, ip, port, &cbs, &ud, id);
-}
-// 网络层连接建立回调：完成协议初始化并向任务推送 MSG_TYPE_CONNECT 消息
-static int32_t _task_net_connect(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t err, ud_cxt *ud) {
-    task_ctx *task = task_grab(ud->loader, ud->handle);
-    if (NULL == task) {
-        return ERR_FAILED;
-    }
-    int32_t rtn = prots_connected(ev, fd, skid, ud, err);
-    if (ERR_OK != rtn) {
-        err = rtn;
-    }
-    message_ctx msg = { 0 };
-    msg.mtype = MSG_TYPE_CONNECT;
-    msg.subtype = ud->pktype;
-    msg.sk.fd = fd;
-    msg.sk.skid = skid;
-    msg.erro = err;
-    msg.sess = skid;
-    _task_message_push(task, &msg);
-    task_ungrab(task);
-    return err;
 }
 int32_t task_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl, const char *ip, uint16_t port, int32_t netev, void *extra,
     SOCKET *fd, uint64_t *skid) {
@@ -685,47 +529,24 @@ int32_t task_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl, 
     ud.context = extra;
     cbs_ctx cbs = { 0 };
     if (BIT_CHECK(netev, NETEV_SEND)) {
-        cbs.s_cb = _task_net_send;
+        cbs.s_cb = prots_net_send;
     }
-    if (NULL != evssl 
+    if (NULL != evssl
         || BIT_CHECK(netev, NETEV_AUTHSSL)) {
-        cbs.exch_cb = _task_net_ssl_exchanged;
+        cbs.exch_cb = prots_net_ssl_exchanged;
     }
-    cbs.conn_cb = _task_net_connect;
-    cbs.r_cb = _task_net_recv;
-    cbs.c_cb = _task_net_close;
+    cbs.conn_cb = prots_net_connect;
+    cbs.r_cb = prots_net_recv;
+    cbs.c_cb = prots_net_close;
     cbs.ud_free = prots_udfree;
     return ev_connect(&task->loader->netev, evssl, ip, port, &cbs, &ud, fd, skid);
-}
-// 网络层 UDP 接收回调：将地址和数据打包后向任务推送 MSG_TYPE_RECVFROM 消息
-static void _task_net_recvfrom(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
-    task_ctx *task = task_grab(ud->loader, ud->handle);
-    if (NULL == task) {
-        ev_close(ev, fd, skid, 1);
-        return;
-    }
-    message_ctx msg = { 0 };
-    msg.mtype = MSG_TYPE_RECVFROM;
-    msg.subtype = PACK_NONE; // UDP 路径透传原始数据，避免 _message_clean→prots_pkfree 进入特定协议释放路径
-    msg.sk.fd = fd;
-    msg.sk.skid = skid;
-    char *umsg;
-    MALLOC(umsg, sizeof(netaddr_ctx) + size);
-    memcpy(umsg, addr, sizeof(netaddr_ctx));
-    memcpy(umsg + sizeof(netaddr_ctx), buf, size);
-    msg.data = umsg;
-    msg.size = size;
-    msg.sess = ud->sess;
-    ud->sess = 0;
-    _task_message_push(task, &msg);
-    task_ungrab(task);
 }
 int32_t task_udp(task_ctx *task, const char *ip, uint16_t port, SOCKET *fd, uint64_t *skid) {
     ud_cxt ud = { 0 };
     ud.handle = task->handle;
     ud.loader = task->loader;
     cbs_ctx cbs = { 0 };
-    cbs.rf_cb = _task_net_recvfrom;
+    cbs.rf_cb = prots_net_recvfrom;
     cbs.ud_free = prots_udfree;
     return ev_udp(&task->loader->netev, ip, port, &cbs, &ud, fd, skid);
 }

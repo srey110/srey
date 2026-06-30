@@ -331,6 +331,9 @@
     <ClInclude Include="protocol\mqtt\mqtt_pack.h">
       <Filter>protocol\mqtt</Filter>
     </ClInclude>
+    <ClInclude Include="protocol\message.h">
+      <Filter>protocol</Filter>
+    </ClInclude>
     <ClInclude Include="protocol\prots.h">
       <Filter>protocol</Filter>
     </ClInclude>

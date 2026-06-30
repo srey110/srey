@@ -90,6 +90,7 @@
     <ClInclude Include="protocol\pgsql\pgsql_parse.h" />
     <ClInclude Include="protocol\pgsql\pgsql_reader.h" />
     <ClInclude Include="protocol\pgsql\pgsql_struct.h" />
+    <ClInclude Include="protocol\message.h" />
     <ClInclude Include="protocol\prots.h" />
     <ClInclude Include="protocol\redis.h" />
     <ClInclude Include="protocol\smtp\mail.h" />

@@ -309,7 +309,7 @@ static void _loader_monitor_loop(void *arg) {
 loader_ctx *loader_init(uint16_t nnet, uint16_t nworker, uint32_t twcap) {
     loader_ctx *loader;
     CALLOC(loader, 1, sizeof(loader_ctx));
-    prots_init(_message_handshaked_push);
+    prots_init(task_net_emit());
 #if WITH_SSL
     evssl_init();
     evssl_pool_init();

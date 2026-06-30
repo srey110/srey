@@ -9,13 +9,38 @@
 #include "protocol/pgsql/pgsql.h"
 #include "protocol/mongo/mongo.h"
 #include "protocol/smtp/smtp.h"
+#include "event/event.h"
 
-void prots_init(_handshaked_push hspush) {
-    _websock_init(hspush);
-    _smtp_init(hspush);
-    _mysql_init(hspush);
-    _pgsql_init(hspush);
-    _mongo_init(hspush);
+static prot_emit g_emit;
+
+// 应用层握手完成推送：各协议握手完成时回调（注册见 prots_init），经消息汇推 MSG_TYPE_HANDSHAKED
+static int32_t _prots_handshaked(SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud, int32_t erro, void *data, size_t lens) {
+    void *target = g_emit.begin(ud);
+    if (NULL == target) {
+        prots_hsfree(ud->pktype, data);
+        return ERR_FAILED;
+    }
+    message_ctx msg = { 0 };
+    msg.mtype = MSG_TYPE_HANDSHAKED;
+    msg.subtype = ud->pktype;
+    msg.sk.fd = fd;
+    msg.sk.skid = skid;
+    msg.client = client;
+    msg.erro = erro;
+    msg.data = data;
+    msg.size = lens;
+    msg.sess = skid;
+    g_emit.emit(target, &msg);
+    g_emit.end(target);
+    return ERR_OK;
+}
+void prots_init(prot_emit *emit) {
+    g_emit = *emit;
+    _websock_init(_prots_handshaked);
+    _smtp_init(_prots_handshaked);
+    _mysql_init(_prots_handshaked);
+    _pgsql_init(_prots_handshaked);
+    _mongo_init(_prots_handshaked);
 }
 void prots_free(void) {
 }
@@ -222,4 +247,166 @@ void *prots_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
         break;
     }
     return unpack;
+}
+int32_t prots_net_accept(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud) {
+    void *target = g_emit.begin(ud);
+    if (NULL == target) {
+        return ERR_FAILED;
+    }
+    int32_t rtn = prots_accepted(ev, fd, skid, ud);
+    if (ERR_OK == rtn) {
+        message_ctx msg = { 0 };
+        msg.mtype = MSG_TYPE_ACCEPT;
+        msg.subtype = ud->pktype;
+        msg.sk.fd = fd;
+        msg.sk.skid = skid;
+        g_emit.emit(target, &msg);
+    }
+    g_emit.end(target);
+    return rtn;
+}
+int32_t prots_net_connect(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t err, ud_cxt *ud) {
+    void *target = g_emit.begin(ud);
+    if (NULL == target) {
+        return ERR_FAILED;
+    }
+    int32_t rtn = prots_connected(ev, fd, skid, ud, err);
+    if (ERR_OK != rtn) {
+        err = rtn;
+    }
+    message_ctx msg = { 0 };
+    msg.mtype = MSG_TYPE_CONNECT;
+    msg.subtype = ud->pktype;
+    msg.sk.fd = fd;
+    msg.sk.skid = skid;
+    msg.erro = err;
+    msg.sess = skid;
+    g_emit.emit(target, &msg);
+    g_emit.end(target);
+    return err;
+}
+void prots_net_recv(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, buffer_ctx *buf, size_t size, ud_cxt *ud) {
+    void *target = g_emit.begin(ud);
+    if (NULL == target) {
+        ev_close(ev, fd, skid, 1);
+        return;
+    }
+    message_ctx msg = { 0 };
+    msg.mtype = MSG_TYPE_RECV;
+    msg.subtype = ud->pktype;
+    msg.sk.fd = fd;
+    msg.sk.skid = skid;
+    msg.client = client;
+    void *data;
+    int32_t status;
+    size_t esize;
+    for (;;) {
+        size = buffer_size(buf);
+        data = prots_unpack(ev, fd, skid, client, buf, ud, &msg.size, &status);
+        if (NULL != data) {
+            msg.data = data;
+            msg.sess = ud->sess;
+            if (BIT_CHECK(status, PROT_SLICE_START)) {
+                msg.slice = PROT_SLICE_START;
+            } else if(BIT_CHECK(status, PROT_SLICE)) {
+                msg.slice = PROT_SLICE;
+            } else if(BIT_CHECK(status, PROT_SLICE_END)) {
+                msg.slice = PROT_SLICE_END;
+            } else {
+                msg.slice = 0;
+            }
+            g_emit.emit(target, &msg);
+        }
+        if (BIT_CHECK(status, PROT_ERROR)) {
+            ev_close(ev, fd, skid, 1);
+            break;
+        }
+        if (BIT_CHECK(status, PROT_CLOSE)) {
+            // 协议层正常关闭信号(如 WebSocket close frame),业务应答 close frame
+            // 可能仍在 buf_s,immed=0 让其发完再关
+            ev_close(ev, fd, skid, 0);
+            break;
+        }
+        esize = buffer_size(buf);
+        if (0 == esize
+            || size == esize
+            || BIT_CHECK(status, PROT_MOREDATA)) {
+            break;
+        }
+    }
+    g_emit.end(target);
+}
+void prots_net_send(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, size_t size, ud_cxt *ud) {
+    void *target = g_emit.begin(ud);
+    if (NULL == target) {
+        ev_close(ev, fd, skid, 1);
+        return;
+    }
+    message_ctx msg = { 0 };
+    msg.mtype = MSG_TYPE_SEND;
+    msg.subtype = ud->pktype;
+    msg.sk.fd = fd;
+    msg.sk.skid = skid;
+    msg.client = client;
+    msg.size = size;
+    g_emit.emit(target, &msg);
+    g_emit.end(target);
+}
+int32_t prots_net_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud, void *ssl) {
+    void *target = g_emit.begin(ud);
+    if (NULL == target) {
+        return ERR_FAILED;
+    }
+    int32_t rtn = prots_ssl_exchanged(ev, fd, skid, client, ud, ssl);
+    if (ERR_OK == rtn) {
+        message_ctx msg = { 0 };
+        msg.mtype = MSG_TYPE_SSLEXCHANGED;
+        msg.subtype = ud->pktype;
+        msg.sk.fd = fd;
+        msg.sk.skid = skid;
+        msg.client = client;
+        msg.sess = skid;
+        g_emit.emit(target, &msg);
+    }
+    g_emit.end(target);
+    return rtn;
+}
+void prots_net_close(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud) {
+    (void)ev;
+    void *target = g_emit.begin(ud);
+    if (NULL == target) {
+        return;
+    }
+    message_ctx msg = { 0 };
+    msg.mtype = MSG_TYPE_CLOSE;
+    msg.subtype = ud->pktype;
+    msg.sk.fd = fd;
+    msg.sk.skid = skid;
+    msg.client = client;
+    msg.sess = skid;
+    prots_closed(ud);
+    g_emit.emit(target, &msg);
+    g_emit.end(target);
+}
+void prots_net_recvfrom(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
+    void *target = g_emit.begin(ud);
+    if (NULL == target) {
+        ev_close(ev, fd, skid, 1);
+        return;
+    }
+    message_ctx msg = { 0 };
+    msg.mtype = MSG_TYPE_RECVFROM;
+    msg.subtype = PACK_NONE; // UDP 路径透传原始数据，避免 _message_clean→prots_pkfree 进入特定协议释放路径
+    msg.sk.fd = fd;
+    msg.sk.skid = skid;
+    char *umsg;
+    MALLOC(umsg, sizeof(netaddr_ctx) + size);
+    memcpy(umsg, addr, sizeof(netaddr_ctx));
+    memcpy(umsg + sizeof(netaddr_ctx), buf, size);
+    msg.data = umsg;
+    msg.size = size;
+    msg.sess = ud->sess;
+    ud->sess = 0;
+    g_emit.emit(target, &msg);
+    g_emit.end(target);
 }

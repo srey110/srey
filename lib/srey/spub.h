@@ -15,26 +15,6 @@
 #define INVALID_TNAME         0  // 无效任务名（空值）
 #define _NAME_OR(s)           ((s) ? (s) : "?")  // 日志打印任务名；匿名(NULL)回退 "?"
 
-// 任务间消息类型枚举
-typedef enum msg_type {
-    MSG_TYPE_NONE = 0x00,   // 无消息（占位）
-    MSG_TYPE_STARTUP,       // 任务启动
-    MSG_TYPE_CLOSING,       // 任务关闭
-    MSG_TYPE_TIMEOUT,       // 超时
-    MSG_TYPE_ACCEPT,        // 新 TCP 连接接受
-    MSG_TYPE_CONNECT,       // TCP 主动连接建立
-    MSG_TYPE_SSLEXCHANGED,  // SSL 握手完成
-    MSG_TYPE_HANDSHAKED,    // 应用层握手完成
-    MSG_TYPE_RECV,          // TCP 数据接收
-    MSG_TYPE_SEND,          // TCP 数据发送完成
-    MSG_TYPE_CLOSE,         // 连接关闭
-    MSG_TYPE_RECVFROM,      // UDP 数据接收
-    MSG_TYPE_REQUEST,       // 任务间请求
-    MSG_TYPE_RESPONSE,      // 任务间响应
-    MSG_TYPE_FORK,          // 内部 mtype：由 coro_fork 自发投递到本 task 的消息队列，
-                            // 业务回调跑在 _handle_fork 内（与 REQUEST 同模式：每条消息总是新协程）
-    MSG_TYPE_ALL            // 消息类型总数（边界值）
-}msg_type;
 typedef enum task_type {
     TASK_NORMAL = 0x00,
     TASK_MCO,
@@ -64,7 +44,6 @@ typedef enum request_type {
 
 typedef struct loader_ctx loader_ctx;
 typedef struct task_ctx task_ctx;
-typedef struct message_ctx message_ctx;
 typedef struct task_dispatch_arg task_dispatch_arg;
 
 typedef void(*_task_dispatch_cb)(task_dispatch_arg *arg);// 消息分发回调
@@ -86,20 +65,6 @@ typedef void(*_net_handshake_cb)(task_ctx *task, sk_id *sk,
 typedef void(*_net_close_cb)(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client);// 连接关闭回调
 typedef void(*_net_recvfrom_cb)(task_ctx *task, sk_id *sk,
                                 char ip[IP_LENS], uint16_t port, void *data, size_t size);// UDP 数据接收回调
-// 任务间传递的消息体
-struct message_ctx {
-    uint8_t slice;  // 分片类型（slice_type）
-    uint8_t client; // 1 表示客户端连接，0 表示服务端连接
-    subtype_t subtype; // 数据包解包类型（pack_type）或 请求类型（request_type）
-    msg_type mtype;  // 消息类型
-    int32_t erro;   // 错误码
-    size_t size;    // 数据长度
-    name_t src;     // 发送方任务名
-    uint64_t sess;  // 会话 ID（用于请求/响应匹配）
-    void *data;     // 消息数据指针
-    shared_data *shared; // NULL=独占（默认 _message_clean 走 prots_pkfree/FREE）；非 NULL=task_multi_call / task_multi_request 广播,N 个 task 共享同一 data,各 task 释放时 ATOMIC_ADD(&ref,-1) 归 0 才 FREE
-    sk_id sk;       // 连接标识 fd+skid
-};
 // 工作线程版本快照，供监控线程检测卡死
 typedef struct worker_version {
     int32_t ckver;     // 上次检查时记录的版本号（仅monitor读写，无竞态）
@@ -201,8 +166,8 @@ typedef struct fork_item {
 const char *_message_str(msg_type type);
 // 根据消息类型调用对应处理函数（内部接口）
 void _message_run(task_ctx *task, message_ctx *msg);
-// 将握手完成消息推入任务队列（由协议层回调，内部接口）
-int32_t _message_handshaked_push(SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud, int32_t erro, void *data, size_t lens);
+// 返回 task 层实现的网络事件消息汇（注册给 prots_init，内部接口）
+prot_emit *task_net_emit(void);
 // 将消息推入任务的无锁消息队列（内部接口）
 void _task_message_push(task_ctx *task, message_ctx *msg);
 // 判断消息是否需要清理数据（内部接口）
