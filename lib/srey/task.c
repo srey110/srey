@@ -105,12 +105,11 @@ static void _task_handle_close(task_ctx *task, message_ctx *msg) {
 // 处理 UDP 数据接收消息：从消息数据中解析出地址和载荷，处理后清理
 static void _task_handle_recvfrom(task_ctx *task, message_ctx *msg) {
     if (NULL != task->_net_recvfrom) {
-        netaddr_ctx *addr = msg->data;
+        recvfrom_ctx *rfmsg = msg->data;
         char ip[IP_LENS];
-        netaddr_ip(addr, ip);
-        uint16_t port = netaddr_port(addr);
-        char *data = ((char*)msg->data) + sizeof(netaddr_ctx);
-        task->_net_recvfrom(task, &msg->sk, ip, port, data, msg->size);
+        netaddr_ip(&rfmsg->addr, ip);
+        uint16_t port = netaddr_port(&rfmsg->addr);
+        task->_net_recvfrom(task, &msg->sk, ip, port, rfmsg->data, rfmsg->len);
     }
     _message_clean(msg);
 }

@@ -51,6 +51,11 @@ typedef struct sendto_ctx {
     void *data;        // payload 指针(copy=1 时为内部 MALLOC,copy=0 时为调用方转移所有权)
     netaddr_ctx addr;  // 目标地址
 }sendto_ctx;
+typedef struct recvfrom_ctx {
+    size_t len;
+    netaddr_ctx addr;  // 发送端地址
+    char data[];
+}recvfrom_ctx;
 // 网络事件上下文
 typedef struct ev_ctx {
     uint32_t nthreads;              // 工作线程数

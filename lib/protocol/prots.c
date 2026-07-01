@@ -399,10 +399,11 @@ void prots_net_recvfrom(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, size_t 
     msg.subtype = PACK_NONE; // UDP 路径透传原始数据，避免 _message_clean→prots_pkfree 进入特定协议释放路径
     msg.sk.fd = fd;
     msg.sk.skid = skid;
-    char *umsg;
-    MALLOC(umsg, sizeof(netaddr_ctx) + size);
-    memcpy(umsg, addr, sizeof(netaddr_ctx));
-    memcpy(umsg + sizeof(netaddr_ctx), buf, size);
+    recvfrom_ctx *umsg;
+    MALLOC(umsg, sizeof(recvfrom_ctx) + size);
+    umsg->addr = *addr;
+    umsg->len = size;
+    memcpy(umsg->data, buf, size);
     msg.data = umsg;
     msg.size = size;
     msg.sess = ud->sess;

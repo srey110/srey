@@ -774,8 +774,9 @@ void *coro_sendto(task_ctx *task, SOCKET fd, uint64_t skid,
         LOG_WARN("task %s, sendto timeout, skid %"PRIu64".", _NAME_OR(task->name), skid);
         return NULL;
     }
-    SET_PTR(size, msg->size);
-    return ((char *)msg->data) + sizeof(netaddr_ctx);
+    recvfrom_ctx *rfmsg = msg->data;
+    SET_PTR(size, rfmsg->len);
+    return rfmsg->data;
 }
 // fork_wait 内部 stub：跑用户 func 后递减 barrier，归零时同步 curco 并 mco_resume 唤醒 waiter
 static void _coro_fork_wait_stub(task_ctx *task, void *arg) {

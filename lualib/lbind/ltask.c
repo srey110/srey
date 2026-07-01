@@ -358,15 +358,15 @@ static void _ltask_pack_msg(lua_State *lua, message_ctx *msg) {
         LUA_TB_NUMBER("fd", msg->sk.fd);
         LUA_TB_NUMBER("skid", msg->sk.skid);
         LUA_TB_NUMBER("sess", msg->sess);
+        recvfrom_ctx *rfmsg = msg->data;
         char ip[IP_LENS];
-        netaddr_ctx *addr = msg->data;
-        netaddr_ip(addr, ip);
+        netaddr_ip(&rfmsg->addr, ip);
         LUA_TB_STRING("ip", ip);
-        LUA_TB_NUMBER("port", netaddr_port(addr));
+        LUA_TB_NUMBER("port", netaddr_port(&rfmsg->addr));
         // udata 指向紧跟在 netaddr_ctx 后面的 UDP 数据负载
-        lua_pushlightuserdata(lua, ((char *)msg->data) + sizeof(netaddr_ctx));
+        lua_pushlightuserdata(lua, rfmsg->data);
         lua_setfield(lua, -2, "udata");
-        LUA_TB_UD(msg->data, msg->size);
+        LUA_TB_UD(msg->data, rfmsg->len);
         break;
     }
     case MSG_TYPE_REQUEST:
