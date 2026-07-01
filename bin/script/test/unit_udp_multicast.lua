@@ -20,7 +20,7 @@ runner.run("udp_multicast", function(t)
             end
         end
     end)
-    local fd, skid = srey.udp("0.0.0.0", PORT)
+    local fd, skid = srey.udp(PACK_TYPE.NONE, "0.0.0.0", PORT)
     t:check(fd and fd ~= INVALID_SOCK, "udp create 成功")
     if not fd or fd == INVALID_SOCK then return end
 

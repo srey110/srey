@@ -18,9 +18,9 @@ static dns_ip *_dns_lookup_udp(task_ctx *task, const char *domain, int32_t ipv6,
     uint64_t skid;
     const char *dnsip = dns_get_ip();
     if (ERR_OK == is_ipv6(dnsip)) {
-        rtn = task_udp(task, "::", 0, &fd, &skid);
+        rtn = task_udp(task, PACK_NONE, "::", 0, &fd, &skid);
     } else {
-        rtn = task_udp(task, "0.0.0.0", 0, &fd, &skid);
+        rtn = task_udp(task, PACK_NONE, "0.0.0.0", 0, &fd, &skid);
     }
     if (ERR_OK != rtn) {
         return NULL;

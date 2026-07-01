@@ -54,7 +54,7 @@ typedef void(*free_cb)(void *arg); // 通用资源释放回调函数类型
 // 调用用户数据释放回调（ud_free 不为 NULL 时才调用）
 #define UD_FREE(ud_free, ud) \
     do { \
-        if (NULL != (ud_free)) { \
+        if (NULL != (ud_free) && NULL != (ud)) { \
             (ud_free)(ud); \
         } \
     } while (0)

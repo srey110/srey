@@ -109,6 +109,19 @@ int32_t ev_send_multi(ev_ctx *ctx, SOCKET fds[], uint64_t skids[], int32_t n,
 int32_t ev_sendto(ev_ctx *ctx, SOCKET fd, uint64_t skid, const char *ip, const uint16_t port,
     void *data, size_t len, int32_t copy);
 /// <summary>
+/// UDP发送数据,直接指定目标地址
+/// </summary>
+/// <param name="ctx">ev_ctx</param>
+/// <param name="fd">socket句柄</param>
+/// <param name="skid">链接ID</param>
+/// <param name="addr">目标地址</param>
+/// <param name="data">要发送的数据</param>
+/// <param name="len">数据长度</param>
+/// <param name="copy">1 不自动释放, 0 自动释放</param>
+/// <returns>ERR_OK 请求成功</returns>
+int32_t ev_sendto_addr(ev_ctx *ctx, SOCKET fd, uint64_t skid, netaddr_ctx *addr,
+    void *data, size_t len, int32_t copy);
+/// <summary>
 /// UDP socket 加入多播组(IPv4/IPv6 自动按 socket family 分支)。
 /// 加入后该 socket 会收到发往 group_ip:port 的多播包,通过 cbs.rf_cb 上报。
 /// 接收端先 ev_udp("0.0.0.0", PORT)/ev_udp("::", PORT) 绑定端口,再 ev_udp_join 加组;
@@ -164,6 +177,19 @@ void ev_close(ev_ctx *ctx, SOCKET fd, uint64_t skid, int32_t immed);
 /// <param name="ctx">ev_ctx</param>
 /// <param name="id">监听ID</param>
 void ev_unlisten(ev_ctx *ctx, uint64_t id);
+/// <summary>
+/// 在事件循环线程内对连接的 ud_cxt 执行自定义操作(ev_ud_* 均基于此实现)
+/// </summary>
+/// <param name="ctx">ev_ctx</param>
+/// <param name="fd">socket句柄</param>
+/// <param name="skid">链接ID</param>
+/// <param name="ppcb">操作回调,仅当 fd/skid 有效时在事件线程内被调用,签名 (skctx, ud, data, number)</param>
+/// <param name="fcb">data 释放回调,可为 NULL;仅在 data 非 NULL 时于 ppcb 执行后或各失败路径被调用释放 data</param>
+/// <param name="data">传给 ppcb 的指针参数(其生命周期由 fcb 负责释放),无指针载荷时传 NULL</param>
+/// <param name="number">传给 ppcb 的整数参数,无整数载荷时传 0</param>
+/// <returns>ERR_OK 请求成功,stop 非0或参数非法失败</returns>
+int32_t ev_props(ev_ctx *ctx, SOCKET fd, uint64_t skid,
+                 props_cb ppcb, free_cb fcb, void *data, uint64_t number);
 /// <summary>
 /// 设置ud_cxt的数据包类型
 /// </summary>

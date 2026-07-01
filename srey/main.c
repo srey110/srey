@@ -189,7 +189,7 @@ static int32_t service_init(void) {
     }
     coro_desc_init(config.stacksize);
     dns_set_ip(config.dns);
-    log_setlv((LOG_LEVEL)config.loglv);
+    log_setlv((log_level)config.loglv);
     _open_log(config.logqueuelens);
     unlimit();
     g_loader = loader_init(config.nnet, config.nworker, config.twqueuelens);

@@ -863,7 +863,7 @@ static void test_popen2(CuTest *tc) {
 static void test_log_lv(CuTest *tc) {
     /* 注：main.c 已 log_init(NULL, 0)，此处仅做 set/get 一致性验证，
      * 测试结束后还原默认级别避免影响后续日志输出 */
-    LOG_LEVEL prev = log_getlv();
+    log_level prev = log_getlv();
 
     log_setlv(LOGLV_FATAL);
     CuAssertIntEquals(tc, LOGLV_FATAL, log_getlv());
@@ -884,7 +884,7 @@ static void test_log_lv(CuTest *tc) {
 // 注：mpq 入队/丢弃路径已由 test_mpq_concurrent_mc 覆盖，slog 入队路径无需重复测试
 static void test_log_slog_filter(CuTest *tc) {
     (void)tc;
-    LOG_LEVEL prev = log_getlv();
+    log_level prev = log_getlv();
     // 设到 FATAL（最高级，值 0）：所有 lv > 0 的 slog 都被过滤
     log_setlv(LOGLV_FATAL);
     for (int i = 0; i < 100; i++) {

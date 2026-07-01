@@ -38,8 +38,8 @@ static void _iocp_init_callback(void) {
     cmd_cbs[CMD_SEND_MULTI] = _on_cmd_send_multi;
     cmd_cbs[CMD_SENDTO]  = _on_cmd_sendto;
     cmd_cbs[CMD_UDP_OPT] = _on_cmd_udp_opt;
-    cmd_cbs[CMD_SETUD]   = _on_cmd_setud;
     cmd_cbs[CMD_SSL]     = _on_cmd_ssl;
+    cmd_cbs[CMD_PROPS]   = _on_cmd_props;
 }
 // 懒加载初始化AcceptEx/ConnectEx等扩展函数（全进程只执行一次）
 static void _iocp_init_funcs(void) {
@@ -385,6 +385,9 @@ static void _iocp_free_cmd(watcher_ctx *watcher) {
             // path 3 投递前 ref++ 占位的减法，ref 归零时释放 lsn
             CLOSE_SOCK(cmd->sk.fd);
             _iocp_try_freelsn(cmd->args.lsn);
+            break;
+        case CMD_PROPS:
+            UD_FREE(cmd->args.props.fcb, cmd->args.props.data);
             break;
         default:
             break;

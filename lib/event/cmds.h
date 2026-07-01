@@ -4,7 +4,7 @@
 #include "event/event.h"
 
 // 事件循环内部命令枚举
-typedef enum EV_CMDS {
+typedef enum ev_cmds {
     CMD_STOP = 0x00,  // [ev_free → _on_cmd_stop] 停止事件循环
     CMD_DISCONN,      // [ev_close → _on_cmd_disconn] 断开连接
     CMD_ADDACP,       // [_cmd_add_acpfd → _on_cmd_addacp] 将accept到的fd加入事件循环
@@ -14,20 +14,20 @@ typedef enum EV_CMDS {
     CMD_SEND_MULTI,   // [ev_send_multi → _on_cmd_send_multi] 多播发送 TCP 数据：args.multi.pack = shared_data* 共享 pack 指针(N 个 fd 共享同一份 data,各 buf 释放时 ref--)
     CMD_SENDTO,       // [ev_sendto → _on_cmd_sendto] 发送UDP数据：args.sendto = sendto_ctx(addr 与 payload 分离)，与 CMD_SEND 区分以校验 fd 类型
     CMD_UDP_OPT,      // [ev_udp_* → _on_cmd_udp_opt] UDP 多播 setsockopt：args.udpop = udp_opt_arg* 参数包(JOIN/LEAVE/TTL/LOOP)
-    CMD_SETUD,        // [ev_ud_* → _on_cmd_setud] 设置ud_cxt字段
     CMD_SSL,          // [ev_ssl → _on_cmd_ssl] 切换为SSL连接
 #ifndef EV_IOCP
     CMD_LSN,          // [_cmd_listen → _on_cmd_lsn] 添加监听socket
     CMD_UNLSN,        // [_cmd_unlisten → _on_cmd_unlsn] 取消监听
     CMD_LSN_UNREF,    // [_cmd_lsn_unref → _on_cmd_lsn_unref] ev_unlisten 末尾减占位 ref
 #endif
+    CMD_PROPS,
 
-    CMD_TOTAL,        // 命令总数（用于数组大小）
-}EV_CMDS;
+    CMD_TOTAL        // 命令总数（用于数组大小）
+}ev_cmds;
 // 命令上下文
 typedef struct cmd_ctx {
-    int32_t cmd;    // 命令类型 EV_CMDS
-    sk_id sk;     // 目标连接 fd+skid（STOP/ADD/LSN/LSN_UNREF 不用 fd；skid 仅 DISCONN/SEND 系列/UDP_OPT/SSL/SETUD 用）
+    int32_t cmd;    // 命令类型 ev_cmds
+    sk_id sk;     // 目标连接 fd+skid（STOP/ADD/LSN/LSN_UNREF 不用 fd；skid 仅 DISCONN/SEND 系列/UDP_OPT/SSL/PROPS 用）
     union {
         int32_t immed;                // CMD_DISCONN：立即关闭标志
         struct sock_ctx *skctx;       // CMD_ADD / CMD_LSN：待加入事件循环的 socket
@@ -37,7 +37,7 @@ typedef struct cmd_ctx {
         struct { size_t len; void *data; } send;         // CMD_SEND：长度 + 裸 payload
         struct { size_t len; shared_data *pack; } multi; // CMD_SEND_MULTI：长度 + 共享包
         struct { int32_t client; struct evssl_ctx *evssl; } ssl;   // CMD_SSL：是否客户端 + evssl
-        struct { int32_t type; uint64_t val; } setud;    // CMD_SETUD：ud 字段类型 + 值
+        struct { props_cb ppcb; free_cb fcb; void *data; uint64_t number; } props;// CMD_PROPS
         sendto_ctx sendto;       // CMD_SENDTO
     } args;
 }cmd_ctx;
@@ -85,7 +85,7 @@ void _on_cmd_send_multi(struct watcher_ctx *watcher, cmd_ctx *cmd);
 void _on_cmd_sendto(struct watcher_ctx *watcher, cmd_ctx *cmd);
 // _send_udp_opt CMD_UDP_OPT命令处理：UDP 多播 setsockopt,args.udpop = udp_opt_arg*；按 sock family 分 IPv4/IPv6 分支调对应 IP_*/IPV6_* 选项,完成后 FREE(arg)
 void _on_cmd_udp_opt(struct watcher_ctx *watcher, cmd_ctx *cmd);
-// ev_ud_* CMD_SETUD命令处理：设置ud_cxt字段值
-void _on_cmd_setud(struct watcher_ctx *watcher, cmd_ctx *cmd);
+// ev_props CMD_PROPS 自定义
+void _on_cmd_props(struct watcher_ctx *watcher, cmd_ctx *cmd);
 
 #endif//CMDS_H_

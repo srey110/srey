@@ -114,17 +114,17 @@
     } while(0)
 
 //日志级别
-typedef enum LOG_LEVEL {
+typedef enum log_level {
     LOGLV_FATAL = 0, // 致命错误，程序无法继续
     LOGLV_ERROR,     // 错误
     LOGLV_WARN,      // 警告
     LOGLV_INFO,      // 信息
     LOGLV_DEBUG,     // 调试
-}LOG_LEVEL;
+}log_level;
 /// <summary>
 /// 底层日志输出函数
 /// </summary>
-/// <param name="lv">日志级别，参见 LOG_LEVEL</param>
+/// <param name="lv">日志级别，参见 log_level</param>
 /// <param name="fmt">格式化字符串</param>
 void slog(int32_t lv, const char *fmt, ...);
 #define LOG(lv, fmt, ...) slog(lv, CONCAT2("[%s %s %d] ", fmt), __FILENAME__(__FILE__), __FUNCTION__, __LINE__, ##__VA_ARGS__) // 带文件/函数/行号的日志宏

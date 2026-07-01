@@ -32,12 +32,11 @@
     #define NO_UDATA
 #endif
 
-
 // I/O事件类型
-typedef enum EVENTS {
+typedef enum events {
     EVENT_READ = 0x01,  // 可读事件
     EVENT_WRITE = 0x02, // 可写事件
-}EVENTS;
+}events;
 // 隔离队列元素类型
 typedef enum qtn_type {
     QTN_TCP,    // 出队 → pool_push

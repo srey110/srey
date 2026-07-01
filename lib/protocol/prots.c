@@ -15,7 +15,7 @@ static prot_emit g_emit;
 
 // 应用层握手完成推送：各协议握手完成时回调（注册见 prots_init），经消息汇推 MSG_TYPE_HANDSHAKED
 static int32_t _prots_handshaked(SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud, int32_t erro, void *data, size_t lens) {
-    void *target = g_emit.begin(ud);
+    void *target = g_emit.begin(ud->loader, ud->handle);
     if (NULL == target) {
         prots_hsfree(ud->pktype, data);
         return ERR_FAILED;
@@ -249,7 +249,7 @@ void *prots_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
     return unpack;
 }
 int32_t prots_net_accept(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud) {
-    void *target = g_emit.begin(ud);
+    void *target = g_emit.begin(ud->loader, ud->handle);
     if (NULL == target) {
         return ERR_FAILED;
     }
@@ -266,7 +266,7 @@ int32_t prots_net_accept(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud) {
     return rtn;
 }
 int32_t prots_net_connect(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t err, ud_cxt *ud) {
-    void *target = g_emit.begin(ud);
+    void *target = g_emit.begin(ud->loader, ud->handle);
     if (NULL == target) {
         return ERR_FAILED;
     }
@@ -286,7 +286,7 @@ int32_t prots_net_connect(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t err, ud_
     return err;
 }
 void prots_net_recv(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, buffer_ctx *buf, size_t size, ud_cxt *ud) {
-    void *target = g_emit.begin(ud);
+    void *target = g_emit.begin(ud->loader, ud->handle);
     if (NULL == target) {
         ev_close(ev, fd, skid, 1);
         return;
@@ -337,7 +337,7 @@ void prots_net_recv(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, buffer
     g_emit.end(target);
 }
 void prots_net_send(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, size_t size, ud_cxt *ud) {
-    void *target = g_emit.begin(ud);
+    void *target = g_emit.begin(ud->loader, ud->handle);
     if (NULL == target) {
         ev_close(ev, fd, skid, 1);
         return;
@@ -353,7 +353,7 @@ void prots_net_send(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, size_t
     g_emit.end(target);
 }
 int32_t prots_net_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud, void *ssl) {
-    void *target = g_emit.begin(ud);
+    void *target = g_emit.begin(ud->loader, ud->handle);
     if (NULL == target) {
         return ERR_FAILED;
     }
@@ -373,7 +373,7 @@ int32_t prots_net_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t cl
 }
 void prots_net_close(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud) {
     (void)ev;
-    void *target = g_emit.begin(ud);
+    void *target = g_emit.begin(ud->loader, ud->handle);
     if (NULL == target) {
         return;
     }
@@ -389,7 +389,7 @@ void prots_net_close(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cx
     g_emit.end(target);
 }
 void prots_net_recvfrom(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
-    void *target = g_emit.begin(ud);
+    void *target = g_emit.begin(ud->loader, ud->handle);
     if (NULL == target) {
         ev_close(ev, fd, skid, 1);
         return;

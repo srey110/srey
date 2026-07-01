@@ -26,7 +26,7 @@ static void _startup(task_ctx *task) {
     task_recvedfrom(task, _net_recvfrom);
     SOCKET fd;
     uint64_t skid;
-    if (ERR_OK != task_udp(task, "0.0.0.0", arg->port, &fd, &skid)) {
+    if (ERR_OK != task_udp(task, PACK_NONE, "0.0.0.0", arg->port, &fd, &skid)) {
         LOG_ERROR("udp_multicast: task_udp failed.");
         return;
     }

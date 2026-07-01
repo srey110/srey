@@ -91,10 +91,10 @@ PACK_TYPE = {
     CUSTZ_FLAG = 0x07,    -- 自定义：标志分隔
     CUSTZ_VAR = 0x08,     -- 自定义：变长包
 
-    REDIS   = 0x50,
-    MYSQL   = 0x51,
-    PGSQL   = 0x52,
-    MGDB    = 0x53   -- MongoDB
+    REDIS   = 0x20,
+    MYSQL   = 0x21,
+    PGSQL   = 0x22,
+    MGDB    = 0x23   -- MongoDB
 }
 -- 对称加密算法类型
 ---@enum CIPHER_TYPE

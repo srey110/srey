@@ -86,6 +86,7 @@ typedef void(*close_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid,
                         int32_t client, ud_cxt *ud);// 连接关闭回调
 typedef void(*recvfrom_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid,
                            char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud);// UDP接收回调
+typedef void(*props_cb)(struct sock_ctx *skctx, ud_cxt *ud, void *data, uint64_t number);
 // 回调函数集合
 typedef struct cbs_ctx {
     accept_cb acp_cb;       // 接受连接回调

@@ -16,7 +16,7 @@ typedef enum pack_type {
     PACK_CUSTZ_FLAG,        // 自定义协议 - 标志位变长头
     PACK_CUSTZ_VAR,         // 自定义协议 - MQTT 风格变长头
 
-    PACK_REDIS = 0x50,      // Redis RESP 协议
+    PACK_REDIS = 0x20,      // Redis RESP 协议
     PACK_MYSQL,             // MySQL 协议
     PACK_PGSQL,             // PostgreSQL 协议
     PACK_MONGO              // MongoDB Wire 协议
@@ -35,7 +35,7 @@ typedef enum prot_status {
 // 握手完成后的推送回调函数类型
 typedef int32_t(*_handshaked_push)(SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud, int32_t erro, void *data, size_t lens);
 // 消息汇：网络事件回调向上推消息的接口，由 task 层注册实现
-typedef void*(*prots_emit_begin_cb)(ud_cxt *ud);              // 开窗：grab 目标，返回不透明句柄，NULL=目标不存在
+typedef void*(*prots_emit_begin_cb)(void *loader, name_t handle);// 开窗：grab 目标，返回不透明句柄，NULL=目标不存在
 typedef void(*prots_emit_cb)(void *target, message_ctx *msg);// 推一条消息给已开窗的目标
 typedef void(*prots_emit_end_cb)(void *target);              // 关窗：释放 begin 取得的句柄
 typedef struct prot_emit {

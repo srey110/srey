@@ -9,7 +9,6 @@
     "workspace.checkThirdParty": false,
     "diagnostics.globals": [
         "PACK_TYPE",
-        "LOG_LEVEL",
         "NETEV_NONE",
         "INVALID_SOCK",
         "MSG_TYPE_STARTUP",

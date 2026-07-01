@@ -12,7 +12,7 @@ static void _startup(task_ctx *task) {
     task_recvedfrom(task, _net_recvfrom);
     SOCKET fd;
     uint64_t id;
-    if (ERR_OK != task_udp(task, "0.0.0.0", _port, &fd, &id)) {
+    if (ERR_OK != task_udp(task, (pack_type)_prt, "0.0.0.0", _port, &fd, &id)) {
         LOG_WARN("start udp server error.");
     }
 }

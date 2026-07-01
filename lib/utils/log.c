@@ -180,11 +180,11 @@ void log_free(void) {
     mutex_free(&_mtx);
     cond_free(&_cond);
 }
-void log_setlv(LOG_LEVEL lv) {
+void log_setlv(log_level lv) {
     ATOMIC_SET(&_log_lv, (int32_t)lv);
 }
-LOG_LEVEL log_getlv(void) {
-    return (LOG_LEVEL)ATOMIC_GET(&_log_lv);
+log_level log_getlv(void) {
+    return (log_level)ATOMIC_GET(&_log_lv);
 }
 void slog(int32_t lv, const char *fmt, ...) {
     if (lv > (int32_t)ATOMIC_GET(&_log_lv)

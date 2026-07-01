@@ -122,7 +122,7 @@ static int32_t _timeout_udp(task_ctx *task) {
     size_t rlens;
     void *resp;
     size_t rlen;
-    if (ERR_OK != task_udp(task, "0.0.0.0", 0, &fd, &skid)) {
+    if (ERR_OK != task_udp(task, PACK_NONE, "0.0.0.0", 0, &fd, &skid)) {
         LOG_WARN("task_udp error.");
         return ERR_FAILED;
     }

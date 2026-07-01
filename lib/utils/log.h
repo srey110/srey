@@ -16,13 +16,13 @@ void log_free(void);
 /// <summary>
 /// 设置日志级别
 /// </summary>
-/// <param name="lv">LOG_LEVEL</param>
-void log_setlv(LOG_LEVEL lv);
+/// <param name="lv">log_level</param>
+void log_setlv(log_level lv);
 /// <summary>
 /// 获取当前日志级别
 /// </summary>
-/// <returns>LOG_LEVEL</returns>
-LOG_LEVEL log_getlv(void);
+/// <returns>log_level</returns>
+log_level log_getlv(void);
 /// <summary>
 /// 输出一条日志，低于当前日志级别时直接忽略
 /// </summary>

@@ -186,12 +186,14 @@ int32_t task_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl, 
 /// UDP
 /// </summary>
 /// <param name="task">task_ctx</param>
+/// <param name="pktype">包类型</param>
 /// <param name="ip">IP</param>
 /// <param name="port">端口</param>
 /// <param name="fd">SOCKET</param>
 /// <param name="skid">链接ID</param>
 /// <returns>ERR_OK 成功</returns>
-int32_t task_udp(task_ctx *task, const char *ip, uint16_t port, SOCKET *fd, uint64_t *skid);
+int32_t task_udp(task_ctx *task, pack_type pktype, const char *ip, uint16_t port,
+                 SOCKET *fd, uint64_t *skid);
 /// <summary>
 /// 设置 task 调度优先级。priority 越大,worker 单次消费消息越多。
 /// 公式: n = n_base * (1 + priority/8),cap 到当前队列长度;

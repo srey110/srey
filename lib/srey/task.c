@@ -484,8 +484,8 @@ void task_multi_call(task_ctx *dsts[], int32_t n, subtype_t reqtype,
     (void)task_multi_request(dsts, n, NULL, reqtype, 0, data, size, copy);
 }
 // 网络事件 emit 实现：begin=grab 目标 task，emit=入队，end=ungrab；经 task_net_emit 注册给 prots 作为消息汇
-static void *_task_emit_begin(ud_cxt *ud) {
-    return task_grab(ud->loader, ud->handle);
+static void *_task_emit_begin(void *loader, name_t handle) {
+    return task_grab(loader, handle);
 }
 static void _task_emit(void *target, message_ctx *msg) {
     _task_message_push((task_ctx *)target, msg);
@@ -540,8 +540,10 @@ int32_t task_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl, 
     cbs.ud_free = prots_udfree;
     return ev_connect(&task->loader->netev, evssl, ip, port, &cbs, &ud, fd, skid);
 }
-int32_t task_udp(task_ctx *task, const char *ip, uint16_t port, SOCKET *fd, uint64_t *skid) {
+int32_t task_udp(task_ctx *task, pack_type pktype, const char *ip, uint16_t port,
+                 SOCKET *fd, uint64_t *skid) {
     ud_cxt ud = { 0 };
+    ud.pktype = pktype;
     ud.handle = task->handle;
     ud.loader = task->loader;
     cbs_ctx cbs = { 0 };

@@ -1345,18 +1345,19 @@ function srey.on_recvedfrom(func)
 end
 
 ---创建 UDP socket 并绑定到 ip:port
+---@param pktype integer 封包协议类型，参考 PACK_TYPE（原始透传用 PACK_TYPE.NONE）
 ---@param ip string? 绑定 IP，默认 "0.0.0.0"
 ---@param port integer? 绑定端口，默认 0（由 OS 分配）
 ---@return integer fd socket fd
 ---@return integer skid 连接 skid
-function srey.udp(ip, port)
+function srey.udp(pktype, ip, port)
     if not ip then
         ip = "0.0.0.0"
     end
     if not port then
         port = 0
     end
-    return core.udp(ip, port)
+    return core.udp(pktype, ip, port)
 end
 
 ---UDP socket 加入多播组(IPv4/IPv6 自动按 socket family 分支)

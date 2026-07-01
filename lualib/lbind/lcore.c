@@ -302,20 +302,22 @@ static int32_t _lcore_ssl_exchange(lua_State *lua) {
 /// <summary>
 /// 创建 UDP 套接字并绑定地址
 /// </summary>
+/// <param name="pktype" type="integer">封包协议类型，参考 PACK_TYPE</param>
 /// <param name="ip" type="string">绑定 IP</param>
 /// <param name="port" type="integer">绑定端口</param>
 /// <returns type="integer">socket fd；失败返回 INVALID_SOCK</returns>
 /// <returns type="integer?">skid；仅在 fd 有效时有效</returns>
 static int32_t _lcore_udp(lua_State *lua) {
-    const char *ip = luaL_checkstring(lua, 1);
-    uint16_t port = (uint16_t)luaL_checkinteger(lua, 2);
+    pack_type pktype = (pack_type)luaL_checkinteger(lua, 1);
+    const char *ip = luaL_checkstring(lua, 2);
+    uint16_t port = (uint16_t)luaL_checkinteger(lua, 3);
     SOCKET fd;
     uint64_t skid;
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
     if (NULL == task) {
         return luaL_error(lua, "task is nil");
     }
-    if (ERR_OK != task_udp(task, ip, port, &fd, &skid)) {
+    if (ERR_OK != task_udp(task, pktype, ip, port, &fd, &skid)) {
         lua_pushinteger(lua, INVALID_SOCK);
         return 1;
     }

@@ -5,15 +5,15 @@
 #include "utils/utils.h"
 
 // 结果集解析状态：字段描述阶段 / 行数据阶段
-typedef enum RST_STATUS {
+typedef enum rst_status {
     RST_FIELD = 0x01,  // 正在解析列字段描述
     RST_ROW            // 正在解析行数据
-}RST_STATUS;
+}rst_status;
 // 预处理语句准备响应解析状态：参数字段阶段 / 结果集字段阶段
-typedef enum STMT_PREPARE_STATUS {
+typedef enum stmt_prepare_status {
     STMT_PREPARE_PARAMS = 0x01, // 正在解析参数字段描述
     STMT_PREPARE_FIELD          // 正在解析结果集字段描述
-}STMT_PREPARE_STATUS;
+}stmt_prepare_status;
 
 // 解析 MySQL 数据包头部（4 字节），输出 payload 长度；数据不足时返回 ERR_FAILED
 static int32_t _mysql_head(mysql_ctx *mysql, buffer_ctx *buf, size_t *payload_lens) {

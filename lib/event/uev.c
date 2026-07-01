@@ -69,11 +69,11 @@ static void _uev_init_callback(void) {
     cmd_cbs[CMD_SEND_MULTI] = _on_cmd_send_multi;
     cmd_cbs[CMD_SENDTO]  = _on_cmd_sendto;
     cmd_cbs[CMD_UDP_OPT] = _on_cmd_udp_opt;
-    cmd_cbs[CMD_SETUD]   = _on_cmd_setud;
     cmd_cbs[CMD_SSL]     = _on_cmd_ssl;
     cmd_cbs[CMD_LSN]     = _on_cmd_lsn;
     cmd_cbs[CMD_UNLSN]   = _on_cmd_unlsn;
     cmd_cbs[CMD_LSN_UNREF] = _on_cmd_lsn_unref;
+    cmd_cbs[CMD_PROPS]   = _on_cmd_props;
 }
 // 将命令管道读端注册到事件循环（读事件触发_uev_cmd_loop）
 static void _uev_init_cmd(watcher_ctx *watcher) {
@@ -611,6 +611,9 @@ static void _uev_free_pipe(watcher_ctx *watcher) {
             case CMD_LSN_UNREF:
                 // ev_unlisten 末尾减占位 ref: worker 已退出 loop, 无 events[] 迭代, 立即释放安全
                 _uev_try_freelsn(cmds[j].args.lsn);
+                break;
+            case CMD_PROPS:
+                UD_FREE(cmds[j].args.props.fcb, cmds[j].args.props.data);
                 break;
             default:
                 break;

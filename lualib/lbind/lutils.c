@@ -7,10 +7,10 @@
 /// <summary>
 /// 设置全局日志输出等级
 /// </summary>
-/// <param name="lv" type="integer">日志等级，参考 LOG_LEVEL</param>
+/// <param name="lv" type="integer">日志等级，参考 log_level</param>
 /// <returns>无</returns>
 static int32_t _lutils_log_setlv(lua_State *lua) {
-    LOG_LEVEL lv = (LOG_LEVEL)luaL_checkinteger(lua, 1);
+    log_level lv = (log_level)luaL_checkinteger(lua, 1);
     log_setlv(lv);
     return 0;
 }
@@ -18,7 +18,7 @@ static int32_t _lutils_log_setlv(lua_State *lua) {
 /// 获取当前全局日志输出等级
 /// </summary>
 /// <param>无</param>
-/// <returns type="integer">当前日志等级，参考 LOG_LEVEL</returns>
+/// <returns type="integer">当前日志等级，参考 log_level</returns>
 static int32_t _lutils_log_getlv(lua_State *lua) {
     lua_pushinteger(lua, (lua_Integer)log_getlv());
     return 1;
@@ -26,13 +26,13 @@ static int32_t _lutils_log_getlv(lua_State *lua) {
 /// <summary>
 /// 输出一条日志，自动附带调用文件名、行号、task 名称（若存在）
 /// </summary>
-/// <param name="lv" type="integer">日志等级，参考 LOG_LEVEL</param>
+/// <param name="lv" type="integer">日志等级，参考 log_level</param>
 /// <param name="file" type="string">调用方文件名</param>
 /// <param name="line" type="integer">调用方行号</param>
 /// <param name="log" type="string">日志正文</param>
 /// <returns>无</returns>
 static int32_t _lutils_log(lua_State *lua) {
-    LOG_LEVEL lv = (LOG_LEVEL)luaL_checkinteger(lua, 1);
+    log_level lv = (log_level)luaL_checkinteger(lua, 1);
     const char *file = luaL_checkstring(lua, 2);
     int32_t line = (int32_t)luaL_checkinteger(lua, 3);
     const char *log = luaL_checkstring(lua, 4);

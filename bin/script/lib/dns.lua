@@ -18,9 +18,9 @@ local function nslookup_udp(domain, ipv6)
     -- 根据 DNS 服务器类型创建对应的 UDP socket（IPv6 本地地址为 "::"）
     local fd, skid
     if isipv6 then
-        fd, skid = srey.udp("::", 0)
+        fd, skid = srey.udp(PACK_TYPE.NONE, "::", 0)
     else
-        fd, skid = srey.udp()
+        fd, skid = srey.udp(PACK_TYPE.NONE)
     end
     if INVALID_SOCK == fd then
         WARN("init udp error.")

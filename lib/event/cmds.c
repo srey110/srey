@@ -8,16 +8,6 @@
 #define _CHECK_SKID _uev_check_skid
 #endif
 
-// ud_cxt 字段设置类型枚举
-typedef enum ud_type {
-    UD_PKTYPE = 0x00, // 数据包类型
-    UD_STATUS,        // 状态
-    UD_HANDLE,        // 任务句柄
-    UD_SESS,          // session
-    UD_CONTEXT,       // 用户自定义数据指针
-    UD_SECCONTEXT     // 子协议（如websocket）用户数据指针
-}ud_type;
-
 int32_t _send_cmd(watcher_ctx *watcher, cmd_ctx *cmd) {
     int32_t erro;
 #ifdef EV_IOCP
@@ -191,6 +181,15 @@ void _on_cmd_ssl(watcher_ctx *watcher, cmd_ctx *cmd) {
     _uev_try_ssl_exchange(watcher, skctx, cmd->args.ssl.evssl, cmd->args.ssl.client);
 #endif
 }
+static inline void *_cmd_cpy_buf(void *data, size_t len, int32_t copy) {
+    if (!copy) {
+        return data;
+    }
+    void *buf;
+    MALLOC(buf, len);
+    memcpy(buf, data, len);
+    return buf;
+}
 int32_t ev_send(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *data, size_t len, int32_t copy) {
     if (INVALID_SOCK == fd || EMPTYPTR(data, len)) {
         if (!copy) {
@@ -203,17 +202,9 @@ int32_t ev_send(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *data, size_t len, i
     cmd.sk.fd = fd;
     cmd.sk.skid = skid;
     cmd.args.send.len = len;
-    if (copy) {
-        char *buf;
-        MALLOC(buf, len);
-        memcpy(buf, data, len);
-        cmd.args.send.data = buf;
-    } else {
-        cmd.args.send.data = data;
-    }
+    cmd.args.send.data = _cmd_cpy_buf(data, len, copy);
     if (ERR_OK != _send_cmd(GET_PTR(ctx->watcher, ctx->nthreads, cmd.sk.fd), &cmd)) {
-        void *fbuf = cmd.args.send.data;
-        FREE(fbuf);
+        FREE(cmd.args.send.data);
         return ERR_FAILED;
     }
     return ERR_OK;
@@ -338,17 +329,30 @@ int32_t ev_sendto(ev_ctx *ctx, SOCKET fd, uint64_t skid, const char *ip, const u
         LOG_WARN("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
-    if (copy) {
-        char *buf;
-        MALLOC(buf, len);
-        memcpy(buf, data, len);
-        cmd.args.sendto.data = buf;
-    } else {
-        cmd.args.sendto.data = data;
-    }
+    cmd.args.sendto.data = _cmd_cpy_buf(data, len, copy);
     if (ERR_OK != _send_cmd(GET_PTR(ctx->watcher, ctx->nthreads, cmd.sk.fd), &cmd)) {
-        void *fbuf = cmd.args.sendto.data;
-        FREE(fbuf);
+        FREE(cmd.args.sendto.data);
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+int32_t ev_sendto_addr(ev_ctx *ctx, SOCKET fd, uint64_t skid, netaddr_ctx *addr,
+    void *data, size_t len, int32_t copy) {
+    if (INVALID_SOCK == fd || NULL == addr || EMPTYPTR(data, len)) {
+        if (!copy) {
+            FREE(data);
+        }
+        return ERR_FAILED;
+    }
+    cmd_ctx cmd = { 0 };
+    cmd.cmd = CMD_SENDTO;
+    cmd.sk.fd = fd;
+    cmd.sk.skid = skid;
+    cmd.args.sendto.len = len;
+    cmd.args.sendto.addr = *addr;
+    cmd.args.sendto.data = _cmd_cpy_buf(data, len, copy);
+    if (ERR_OK != _send_cmd(GET_PTR(ctx->watcher, ctx->nthreads, cmd.sk.fd), &cmd)) {
+        FREE(cmd.args.sendto.data);
         return ERR_FAILED;
     }
     return ERR_OK;
@@ -513,69 +517,87 @@ void _on_cmd_udp_opt(watcher_ctx *watcher, cmd_ctx *cmd) {
     }
     FREE(arg);
 }
-static int32_t _cmd_set_ud(ev_ctx *ctx, SOCKET fd, uint64_t skid, int32_t type, uint64_t val) {
-    if (INVALID_SOCK == fd) {
+int32_t ev_props(ev_ctx *ctx, SOCKET fd, uint64_t skid,
+                 props_cb ppcb, free_cb fcb, void *data, uint64_t number) {
+    if (INVALID_SOCK == fd || NULL == ppcb) {
+        UD_FREE(fcb, data);
         return ERR_FAILED;
     }
     cmd_ctx cmd = { 0 };
-    cmd.cmd = CMD_SETUD;
+    cmd.cmd = CMD_PROPS;
     cmd.sk.fd = fd;
     cmd.sk.skid = skid;
-    cmd.args.setud.type = type;
-    cmd.args.setud.val = val;
-    return _send_cmd(GET_PTR(ctx->watcher, ctx->nthreads, cmd.sk.fd), &cmd);
-}
-int32_t ev_ud_pktype(ev_ctx *ctx, SOCKET fd, uint64_t skid, subtype_t pktype) {
-    return _cmd_set_ud(ctx, fd, skid, UD_PKTYPE, pktype);
-}
-int32_t ev_ud_status(ev_ctx *ctx, SOCKET fd, uint64_t skid, uint8_t status) {
-    return _cmd_set_ud(ctx, fd, skid, UD_STATUS, status);
-}
-int32_t ev_ud_sess(ev_ctx *ctx, SOCKET fd, uint64_t skid, uint64_t sess) {
-    return _cmd_set_ud(ctx, fd, skid, UD_SESS, sess);
-}
-int32_t ev_ud_handle(ev_ctx *ctx, SOCKET fd, uint64_t skid, name_t handle) {
-    return _cmd_set_ud(ctx, fd, skid, UD_HANDLE, handle);
-}
-int32_t ev_ud_context(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *extra) {
-    return _cmd_set_ud(ctx, fd, skid, UD_CONTEXT, (uint64_t)extra);
-}
-int32_t ev_ud_seccontext(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *extra) {
-    return _cmd_set_ud(ctx, fd, skid, UD_SECCONTEXT, (uint64_t)extra);
-}
-static void _set_ud(ud_cxt *ud, int32_t type, uint64_t val) {
-    switch (type) {
-    case UD_PKTYPE:
-        ud->pktype = (subtype_t)val;
-        break;
-    case UD_STATUS:
-        ud->status = (uint8_t)val;
-        break;
-    case UD_HANDLE:
-        ud->handle = (name_t)val;
-        break;
-    case UD_SESS:
-        ud->sess = val;
-        break;
-    case UD_CONTEXT:
-        ud->context = (void *)val;
-        break;
-    case UD_SECCONTEXT:
-        _evpub_set_secextra(ud, (void *)val);
-        break;
-    default:
-        break;
+    cmd.args.props.ppcb = ppcb;
+    cmd.args.props.fcb = fcb;
+    cmd.args.props.number = number;
+    cmd.args.props.data = data;
+    if (ERR_OK != _send_cmd(GET_PTR(ctx->watcher, ctx->nthreads, cmd.sk.fd), &cmd)) {
+        UD_FREE(fcb, data);
+        return ERR_FAILED;
     }
+    return ERR_OK;
 }
-void _on_cmd_setud(watcher_ctx *watcher, cmd_ctx *cmd) {
+void _on_cmd_props(struct watcher_ctx *watcher, cmd_ctx *cmd) {
     sock_ctx *skctx = _evpub_sockel_get(watcher, cmd->sk.fd);
     if (NULL == skctx
         || ERR_OK != _CHECK_SKID(skctx, cmd->sk.skid)) {
+        UD_FREE(cmd->args.props.fcb, cmd->args.props.data);
         return;
     }
+    ud_cxt *ud;
 #ifdef EV_IOCP
-    _set_ud(_iocp_get_ud(skctx), cmd->args.setud.type, cmd->args.setud.val);
+    ud = _iocp_get_ud(skctx);
 #else
-    _set_ud(_uev_get_ud(skctx), cmd->args.setud.type, cmd->args.setud.val);
+    ud = _uev_get_ud(skctx);
 #endif
+    cmd->args.props.ppcb(skctx, ud, cmd->args.props.data, cmd->args.props.number);
+    UD_FREE(cmd->args.props.fcb, cmd->args.props.data);
+}
+static void _cmd_ud_pktype(struct sock_ctx *skctx, ud_cxt *ud, void *data, uint64_t number) {
+    (void)skctx;
+    (void)data;
+    ud->pktype = (subtype_t)number;
+}
+int32_t ev_ud_pktype(ev_ctx *ctx, SOCKET fd, uint64_t skid, subtype_t pktype) {
+    return ev_props(ctx, fd, skid, _cmd_ud_pktype, NULL, NULL, pktype);
+}
+static void _cmd_ud_status(struct sock_ctx *skctx, ud_cxt *ud, void *data, uint64_t number) {
+    (void)skctx;
+    (void)data;
+    ud->status = (uint8_t)number;
+}
+int32_t ev_ud_status(ev_ctx *ctx, SOCKET fd, uint64_t skid, uint8_t status) {
+    return ev_props(ctx, fd, skid, _cmd_ud_status, NULL, NULL, status);
+}
+static void _cmd_ud_sess(struct sock_ctx *skctx, ud_cxt *ud, void *data, uint64_t number) {
+    (void)skctx;
+    (void)data;
+    ud->sess = number;
+}
+int32_t ev_ud_sess(ev_ctx *ctx, SOCKET fd, uint64_t skid, uint64_t sess) {
+    return ev_props(ctx, fd, skid, _cmd_ud_sess, NULL, NULL, sess);
+}
+static void _cmd_ud_handle(struct sock_ctx *skctx, ud_cxt *ud, void *data, uint64_t number) {
+    (void)skctx;
+    (void)data;
+    ud->handle = (name_t)number;
+}
+int32_t ev_ud_handle(ev_ctx *ctx, SOCKET fd, uint64_t skid, name_t handle) {
+    return ev_props(ctx, fd, skid, _cmd_ud_handle, NULL, NULL, handle);
+}
+static void _cmd_ud_context(struct sock_ctx *skctx, ud_cxt *ud, void *data, uint64_t number) {
+    (void)skctx;
+    (void)number;
+    ud->context = data;
+}
+int32_t ev_ud_context(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *extra) {
+    return ev_props(ctx, fd, skid, _cmd_ud_context, NULL, extra, 0);
+}
+static void _cmd_ud_seccontext(struct sock_ctx *skctx, ud_cxt *ud, void *data, uint64_t number) {
+    (void)skctx;
+    (void)number;
+    _evpub_set_secextra(ud, data);
+}
+int32_t ev_ud_seccontext(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *extra) {
+    return ev_props(ctx, fd, skid, _cmd_ud_seccontext, NULL, extra, 0);
 }
