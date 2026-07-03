@@ -66,6 +66,8 @@
     <ClInclude Include="protocol\custz_head.h" />
     <ClInclude Include="protocol\dns.h" />
     <ClInclude Include="protocol\http.h" />
+    <ClInclude Include="protocol\kcp\ikcp.h" />
+    <ClInclude Include="protocol\kcp\kcp.h" />
     <ClInclude Include="protocol\mongo\mongo.h" />
     <ClInclude Include="protocol\mongo\mongo_macro.h" />
     <ClInclude Include="protocol\mongo\mongo_pack.h" />
@@ -90,7 +92,7 @@
     <ClInclude Include="protocol\pgsql\pgsql_parse.h" />
     <ClInclude Include="protocol\pgsql\pgsql_reader.h" />
     <ClInclude Include="protocol\pgsql\pgsql_struct.h" />
-    <ClInclude Include="protocol\message.h" />
+    <ClInclude Include="protocol\prots_pub.h" />
     <ClInclude Include="protocol\prots.h" />
     <ClInclude Include="protocol\redis.h" />
     <ClInclude Include="protocol\smtp\mail.h" />
@@ -180,6 +182,8 @@
     <ClCompile Include="protocol\custz_head.c" />
     <ClCompile Include="protocol\dns.c" />
     <ClCompile Include="protocol\http.c" />
+    <ClCompile Include="protocol\kcp\ikcp.c" />
+    <ClCompile Include="protocol\kcp\kcp.c" />
     <ClCompile Include="protocol\mongo\mongo.c" />
     <ClCompile Include="protocol\mongo\mongo_pack.c" />
     <ClCompile Include="protocol\mongo\mongo_parse.c" />

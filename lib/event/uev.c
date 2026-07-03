@@ -357,16 +357,14 @@ static void _uev_pool_shrink(watcher_ctx *watcher, uint64_t *shrink_start, uint6
 static void _uev_loop_event(void *arg) {
     watcher_ctx *watcher = (watcher_ctx *)arg;
 #if defined(EV_EPOLL) || defined(EV_POLLSET) || defined(EV_DEVPOLL)
-    int32_t timeout = EVENT_WAIT_TIMEOUT;
+    int32_t timeout;
 #else
     struct timespec timeout;
-    fill_timespec(&timeout, EVENT_WAIT_TIMEOUT);
 #endif
 #ifdef EV_DEVPOLL
     struct dvpoll dvp;
     dvp.dp_fds = watcher->events;
     dvp.dp_nfds = watcher->nevents;
-    dvp.dp_timeout = timeout;
 #endif
 #ifdef EV_EVPORT
     uint32_t nget;
@@ -374,11 +372,19 @@ static void _uev_loop_event(void *arg) {
     SOCKET fd = INVALID_SOCK;
     sock_ctx *skctx;
     int32_t i, cnt, ev;
-    uint32_t shrink_cnt = 0;
-    uint64_t now_ms;
-    uint64_t shrink_start = timer_cur_ms(&watcher->tm_qtn);
+    uint32_t shrink_cnt = 0, next_to = EVENT_WAIT_TIMEOUT;
+    uint64_t now_ms, shrink_start = timer_cur_ms(&watcher->tm_qtn);
     //主循环
     while (0 == ATOMIC_GET(&watcher->stop)) {
+        //设置超时时间
+#if defined(EV_EPOLL) || defined(EV_POLLSET) || defined(EV_DEVPOLL)
+        timeout = (int32_t)next_to;
+#else
+        fill_timespec(&timeout, next_to);
+#endif
+#ifdef EV_DEVPOLL
+        dvp.dp_timeout = timeout;
+#endif
 #if defined(EV_EPOLL)
         cnt = epoll_wait(watcher->evfd, watcher->events, watcher->nevents, timeout);
 #elif defined(EV_POLLSET)
@@ -427,12 +433,15 @@ static void _uev_loop_event(void *arg) {
             dvp.dp_nfds = watcher->nevents;
 #endif
         }
+        next_to = _evpub_tick_drive(watcher, &watcher->tm_qtn, &now_ms);
         shrink_cnt++;
         if (shrink_cnt < EVENT_CHECK_INTERVAL) {
             continue;
         }
         shrink_cnt = 0;
-        now_ms = timer_cur_ms(&watcher->tm_qtn);
+        if (0 == now_ms) {
+            now_ms = timer_cur_ms(&watcher->tm_qtn);
+        }
         _uev_qtn_drain(watcher, now_ms);
         _uev_pool_shrink(watcher, &shrink_start, now_ms);
     }
@@ -524,6 +533,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
                                                       _evpub_sockel_hash, _evpub_sockel_compare, _uev_free_element, NULL);
         pool_init(&watcher->pool, 0, 4 * ONEK, INIT_EVENTS_CNT, 0, &skcbs);
         queue_init(&watcher->qtn, sizeof(qtn_entry), ONEK);
+        list_init(&watcher->ticks);
         timer_init(&watcher->tm_qtn);
         timer_start(&watcher->tm_qtn);
         _uev_init_cmd(watcher);

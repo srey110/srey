@@ -85,15 +85,11 @@ static void _iocp_on_cmd(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
     }
 }
 // 定期收缩对象池（每EVENT_CHECK_INTERVAL轮检查一次时钟，避免频繁syscall）
-static void _iocp_pool_shrink(watcher_ctx *watcher, timer_ctx *timer, uint32_t *cnt) {
-    if (++(*cnt) < EVENT_CHECK_INTERVAL) {
+static void _iocp_pool_shrink(watcher_ctx *watcher, uint64_t *shrink_start, uint64_t now_ms) {
+    if (now_ms - *shrink_start < SHRINK_TIME) {
         return;
     }
-    *cnt = 0;
-    if (timer_elapsed_ms(timer) < SHRINK_TIME) {
-        return;
-    }
-    timer_start(timer);
+    *shrink_start = now_ms;
     // cmd sock 仅 _iocp_join 不入 hashmap，hashmap_count 即业务 socket 数
     pool_shrink(&watcher->pool, (uint32_t)SHRINK_NKEEP(hashmap_count(watcher->element)), SHRINK_BUSY);
 }
@@ -107,19 +103,20 @@ static void _iocp_loop_event(void *arg) {
     ULONG nevent = INIT_EVENTS_CNT;
     sock_ctx *sock;
     uint32_t shrink_cnt = 0;
-    timer_ctx timer;
+    uint32_t next_to = EVENT_WAIT_TIMEOUT;
     LPOVERLAPPED overlap;
     LPOVERLAPPED_ENTRY tmp;
     LPOVERLAPPED_ENTRY overlappeds;
     MALLOC(overlappeds, sizeof(OVERLAPPED_ENTRY) * nevent);
+    timer_ctx timer;
     timer_init(&timer);
-    timer_start(&timer);
+    uint64_t now_ms, shrink_start = timer_cur_ms(&timer);
     while (0 == ATOMIC_GET(&watcher->stop)) {
         if (GetQueuedCompletionStatusEx(watcher->iocp,
                                         overlappeds,
                                         nevent,
                                         &count,
-                                        EVENT_WAIT_TIMEOUT,
+                                        next_to,
                                         FALSE)) {
             for (i = 0; i < count; i++) {
                 overlap = overlappeds[i].lpOverlapped;
@@ -139,7 +136,16 @@ static void _iocp_loop_event(void *arg) {
         } else if (WAIT_TIMEOUT != (err = ERRNO)) {
             LOG_ERROR("%s", ERRORSTR(err));
         }
-        _iocp_pool_shrink(watcher, &timer, &shrink_cnt);
+        next_to = _evpub_tick_drive(watcher, &timer, &now_ms);
+        shrink_cnt++;
+        if (shrink_cnt < EVENT_CHECK_INTERVAL) {
+            continue;
+        }
+        shrink_cnt = 0;
+        if (0 == now_ms) {
+            now_ms = timer_cur_ms(&timer);
+        }
+        _iocp_pool_shrink(watcher, &shrink_start, now_ms);
     }
     LOG_INFO("net event thread %d exited.", watcher->index);
     FREE(overlappeds);
@@ -205,24 +211,34 @@ static void _iocp_loop_event(void *arg) {
     int32_t err;
     ULONG_PTR key;
     sock_ctx *sock;
-    uint32_t shrink_cnt = 0;
-    timer_ctx timer;
     OVERLAPPED *overlap;
+    uint32_t shrink_cnt = 0;
+    uint32_t next_to = EVENT_WAIT_TIMEOUT;
+    timer_ctx timer;
     timer_init(&timer);
-    timer_start(&timer);
+    uint64_t now_ms, shrink_start = timer_cur_ms(&timer);
     while (0 == ATOMIC_GET(&watcher->stop)) {
         GetQueuedCompletionStatus(watcher->iocp,
                                   &bytes,
                                   &key,
                                   &overlap,
-                                  EVENT_WAIT_TIMEOUT);
+                                  next_to);
         if (NULL != overlap) {
             sock = UPCAST(overlap, sock_ctx, overlapped);
             sock->ev_cb(watcher, sock, bytes);
         } else if (WAIT_TIMEOUT != (err = ERRNO)) {
             LOG_ERROR("%s", ERRORSTR(err));
         }
-        _iocp_pool_shrink(watcher, &timer, &shrink_cnt);
+        next_to = _evpub_tick_drive(watcher, &timer, &now_ms);
+        shrink_cnt++;
+        if (shrink_cnt < EVENT_CHECK_INTERVAL) {
+            continue;
+        }
+        shrink_cnt = 0;
+        if (0 == now_ms) {
+            now_ms = timer_cur_ms(&timer);
+        }
+        _iocp_pool_shrink(watcher, &shrink_start, now_ms);
     }
     LOG_INFO("net event thread %d exited.", watcher->index);
 }
@@ -307,6 +323,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
                                                       _evpub_sockel_hash, _evpub_sockel_compare, _iocp_sockel_free, NULL);
         pool_init(&watcher->pool, 0, 4 * ONEK, INIT_EVENTS_CNT, 0, &skcbs);
         _iocp_init_cmd(watcher);
+        list_init(&watcher->ticks);
         if (NULL != hooks) {
             watcher->thevent = thread_creat_hooks(_iocp_loop_event, hooks->init, hooks->exit, watcher, hooks->assist);
         } else {

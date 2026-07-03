@@ -38,6 +38,7 @@ typedef struct watcher_ctx {
     pthread_t thevent;          // 事件循环线程
     pool_ctx pool;              // sock_ctx对象池
     overlap_cmd_ctx cmd;        // 命令通道（fsqu 多生产者，单通道足够）
+    list_ctx ticks;             // event 线程周期驱动节点(ev_tick)链表
 }watcher_ctx;
 // AcceptEx专用线程上下文
 typedef struct acceptex_ctx {

@@ -1,5 +1,6 @@
 ﻿#include "containers/hashmap.h"
 #include "utils/netutils.h"
+#include "utils/timer.h"
 #ifdef EV_IOCP
 #include "event/iocp.h"
 #else
@@ -38,6 +39,32 @@ void *_evpub_sockel_remove(watcher_ctx *watcher, SOCKET fd) {
     key.fd = fd;
     sock_ctx *pkey = &key;
     return (void *)hashmap_delete(watcher->element, &pkey);
+}
+void _evpub_tick_add(watcher_ctx *watcher, ev_tick *tk) {
+    list_push_tail(&watcher->ticks, &tk->node);
+}
+void _evpub_tick_remove(watcher_ctx *watcher, ev_tick *tk) {
+    list_remove(&watcher->ticks, &tk->node);
+}
+uint32_t _evpub_tick_drive(watcher_ctx *watcher, timer_ctx *timer, uint64_t *now_ms) {
+    *now_ms = 0;
+    uint32_t next_to = EVENT_WAIT_TIMEOUT;
+    if (!list_empty(&watcher->ticks)) {
+        ev_tick *tk;
+        uint32_t d;
+        *now_ms = timer_cur_ms(timer);
+        list_foreach(&watcher->ticks, it) {
+            tk = UPCAST(it, ev_tick, node);
+            d = tk->cb(tk->ud, *now_ms);
+            if (d < next_to) {
+                next_to = d;
+            }
+        }
+        if (next_to < EVENT_TICK_MIN) {
+            next_to = EVENT_TICK_MIN;
+        }
+    }
+    return next_to;
 }
 void _evpub_off_buf_release(off_buf_ctx *buf) {
     if (NULL == buf->shared) {

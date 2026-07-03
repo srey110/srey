@@ -748,7 +748,7 @@ static void _olp_on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD byte
 #endif
 }
 int32_t ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const uint16_t port, cbs_ctx *cbs, ud_cxt *ud,
-    SOCKET *fd, uint64_t *skid) {
+    int32_t setsess, SOCKET *fd, uint64_t *skid) {
     if (NULL == cbs || NULL == cbs->r_cb) {
         if (NULL != cbs) {
             UD_FREE(cbs->ud_free, ud);
@@ -778,6 +778,9 @@ int32_t ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const u
     sock_ctx *skctx = (sock_ctx *)_evpub_sk_new(&skargs);
     skctx->ev_cb = _olp_on_connect_cb;
     overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
+    if (setsess) {
+        oltcp->ud.sess = oltcp->skid;
+    }
     BIT_SET(oltcp->status, STATUS_CLIENT);
     *skid = oltcp->skid;
 #if WITH_SSL

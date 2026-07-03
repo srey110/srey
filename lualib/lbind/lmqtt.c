@@ -204,7 +204,7 @@ static int32_t _lmqtt_try_connect(lua_State *lua) {
     }
     SOCKET fd;
     uint64_t skid;
-    if (ERR_OK != mqtt_try_connect(task, evssl, ip, port, netev, version, &fd, &skid)) {
+    if (ERR_OK != mqtt_try_connect(task, evssl, ip, port, netev, version, 1, &fd, &skid)) {
         lua_pushinteger(lua, INVALID_SOCK);
         return 1;
     }

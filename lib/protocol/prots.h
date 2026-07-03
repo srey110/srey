@@ -2,47 +2,7 @@
 #define PROTS_H_
 
 #include "event/evpub.h"
-#include "protocol/message.h"
-
-// 协议包类型枚举
-typedef enum pack_type {
-    PACK_NONE = 0x00,       // 无协议（透传原始数据）
-    PACK_DNS,               // DNS 协议
-    PACK_HTTP,              // HTTP 协议
-    PACK_WEBSOCK,           // WebSocket 协议
-    PACK_MQTT,              // MQTT 协议
-    PACK_SMTP,              // SMTP 协议
-    PACK_CUSTZ_FIXED,       // 自定义协议 - 固定 4 字节长度头
-    PACK_CUSTZ_FLAG,        // 自定义协议 - 标志位变长头
-    PACK_CUSTZ_VAR,         // 自定义协议 - MQTT 风格变长头
-
-    PACK_REDIS = 0x20,      // Redis RESP 协议
-    PACK_MYSQL,             // MySQL 协议
-    PACK_PGSQL,             // PostgreSQL 协议
-    PACK_MONGO              // MongoDB Wire 协议
-}pack_type;
-// 协议解包状态标志（可多个标志同时置位）
-typedef enum prot_status {
-    PROT_INIT = 0x00,          // 初始/正常状态
-    PROT_SLICE_START = 0x01,   // 分片起始包
-    PROT_SLICE = 0x02,         // 分片中间包
-    PROT_SLICE_END = 0x04,     // 分片结束包
-    PROT_ERROR = 0x08,         // 协议错误
-    PROT_MOREDATA = 0x10,      // 数据不足，需等待更多数据
-    PROT_CLOSE = 0x20          // 连接关闭信号
-}prot_status;
-
-// 握手完成后的推送回调函数类型
-typedef int32_t(*_handshaked_push)(SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud, int32_t erro, void *data, size_t lens);
-// 消息汇：网络事件回调向上推消息的接口，由 task 层注册实现
-typedef void*(*prots_emit_begin_cb)(void *loader, name_t handle);// 开窗：grab 目标，返回不透明句柄，NULL=目标不存在
-typedef void(*prots_emit_cb)(void *target, message_ctx *msg);// 推一条消息给已开窗的目标
-typedef void(*prots_emit_end_cb)(void *target);              // 关窗：释放 begin 取得的句柄
-typedef struct prot_emit {
-    prots_emit_begin_cb begin;
-    prots_emit_cb emit;
-    prots_emit_end_cb end;
-}prot_emit;
+#include "protocol/prots_pub.h"
 
 /// <summary>
 /// 初始化协议模块，注册消息汇（网络事件回调经它向上推消息）
@@ -113,6 +73,12 @@ int32_t prots_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client
 /// <param name="data">已解析的包数据</param>
 /// <returns>ERR_OK=可继续，其他值=暂停读取</returns>
 int32_t prots_may_resume(pack_type pktype, void *data);
+/// <summary>
+/// 查询该 UDP 协议的 MSG_TYPE_RECVFROM 应按 disposable 还是 non-disposable 唤醒协程
+/// </summary>
+/// <param name="pktype">协议包类型</param>
+/// <returns>非 0=disposable（单发单收，用完删）；0=non-disposable（sess 队列，用完保留）</returns>
+int32_t prots_udp_isdisposable(pack_type pktype);
 /// <summary>
 /// 统一解包入口，根据 ud->pktype 调用对应协议的解包函数
 /// </summary>

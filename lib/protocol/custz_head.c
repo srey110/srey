@@ -1,5 +1,5 @@
 ﻿#include "protocol/custz_head.h"
-#include "protocol/prots.h"
+#include "protocol/prots_pub.h"
 #include "utils/utils.h"
 #include "utils/varint.h"
 

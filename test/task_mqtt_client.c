@@ -225,10 +225,10 @@ static void _startup(task_ctx *task) {
             LOG_ERROR("dns_lookup error.");
             return;
         }
-        rtn = mqtt_try_connect(task, NULL, ips[0].ip, arg->port, 0, arg->version, &arg->fd, &arg->skid);
+        rtn = mqtt_try_connect(task, NULL, ips[0].ip, arg->port, 0, arg->version, 1, &arg->fd, &arg->skid);
         FREE(ips);
     } else {
-        rtn = mqtt_try_connect(task, NULL, arg->host, arg->port, 0, arg->version, &arg->fd, &arg->skid);
+        rtn = mqtt_try_connect(task, NULL, arg->host, arg->port, 0, arg->version, 1, &arg->fd, &arg->skid);
     }
     if (ERR_OK != rtn) {
         LOG_WARN("task_connect %s error.", arg->host);

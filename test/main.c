@@ -39,6 +39,7 @@
 #include "task_serial.h"
 #include "task_multicast.h"
 #include "task_udp_multicast.h"
+#include "task_kcp.h"
 #include "task_multi_call.h"
 #include "task_dc_client.h"
 #include "task_sc_client.h"
@@ -205,6 +206,10 @@ int main(int argc, char *argv[]) {
         {"sendbuf_warn", 0},
         {"priority_test", 0},
         {"router_test", 0},
+        {"kcp_test", 0},
+        {"kcp_test2", 0},
+        {"kcp_test3", 0},
+        {"kcp_test4", 0},
         {"python_http", 0},
         {"python_ws", 0},
         {"python_mqtt", 0},
@@ -219,6 +224,8 @@ int main(int argc, char *argv[]) {
         {"ws_sv", 15003},
         {"harbor", 15004},
         {"router_sv", 15005},
+        {"kcp_tcp", 15040},
+        {"kcp_udp", 15041},
 
         {NULL, 0}
     };
@@ -324,6 +331,24 @@ int main(int argc, char *argv[]) {
     task_router_client_start(g_loader, "router_test",
         (uint16_t)*_get_name_val(portlist, "router_sv"),
         _get_name_val(testlist, "router_test"));
+    //kcp: server 一个 task,client 侧四组场景(happy path/close 唤醒/同 session 并发 FIFO/kcp_synstart)各一个 task,update 业务层协程驱动
+    task_kcp_server_start(g_loader, "kcp_server",
+        (uint16_t)*_get_name_val(portlist, "kcp_tcp"),
+        (uint16_t)*_get_name_val(portlist, "kcp_udp"));
+    task_kcp_client_start(g_loader, "kcp_client",
+        (uint16_t)*_get_name_val(portlist, "kcp_tcp"),
+        (uint16_t)*_get_name_val(portlist, "kcp_udp"),
+        _get_name_val(testlist, "kcp_test"));
+    task_kcp_close_start(g_loader, "kcp_close",
+        (uint16_t)*_get_name_val(portlist, "kcp_udp"),
+        _get_name_val(testlist, "kcp_test2"));
+    task_kcp_fifo_start(g_loader, "kcp_fifo",
+        (uint16_t)*_get_name_val(portlist, "kcp_tcp"),
+        (uint16_t)*_get_name_val(portlist, "kcp_udp"),
+        _get_name_val(testlist, "kcp_test3"));
+    task_kcp_synstart_start(g_loader, "kcp_synstart",
+        (uint16_t)*_get_name_val(portlist, "kcp_udp"),
+        _get_name_val(testlist, "kcp_test4"));
 
     //等 server task_listen 落地后再以子进程跑 Python 协议模糊
     MSLEEP(1000);

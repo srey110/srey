@@ -358,6 +358,7 @@ static void _ltask_pack_msg(lua_State *lua, message_ctx *msg) {
         LUA_TB_NUMBER("fd", msg->sk.fd);
         LUA_TB_NUMBER("skid", msg->sk.skid);
         LUA_TB_NUMBER("sess", msg->sess);
+        LUA_TB_NUMBER("subtype", msg->subtype);
         recvfrom_ctx *rfmsg = msg->data;
         char ip[IP_LENS];
         netaddr_ip(&rfmsg->addr, ip);

@@ -154,9 +154,6 @@ function ctx:connect()
     if not srey.wait_connect(fd, skid, SSL_NAME.NONE ~= self.sslname or nil) then
         return false   -- wait_connect 内已 close
     end
-    if not srey.sock_session(fd, skid, skid) then
-        return false
-    end
     self.fd, self.skid = fd, skid
     -- 从此处往后失败需 close fd 并重置 self 缓存
     local function _fail()

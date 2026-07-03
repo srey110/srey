@@ -641,7 +641,7 @@ static int32_t _lprot_smtp_try_connect(lua_State *lua) {
     if (NULL == task) {
         return luaL_error(lua, "task is nil");
     }
-    int32_t rtn = smtp_try_connect(task, smtp);
+    int32_t rtn = smtp_try_connect(task, smtp, 1);
     if (ERR_OK == rtn) {
         lua_pushboolean(lua, 1);
     } else {

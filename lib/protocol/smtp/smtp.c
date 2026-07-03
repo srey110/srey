@@ -1,8 +1,8 @@
 ﻿#include "protocol/smtp/smtp.h"
+#include "protocol/prots_pub.h"
 #include "utils/utils.h"
 #include "utils/binary.h"
 #include "event/event.h"
-#include "protocol/prots.h"
 #include "crypt/base64.h"
 
 #define SMTP_OK "250"

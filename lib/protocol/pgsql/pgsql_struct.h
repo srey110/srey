@@ -1,7 +1,9 @@
 ﻿#ifndef PGSQL_STRUCT_H_
 #define PGSQL_STRUCT_H_
 
-#include "protocol/prots.h"
+#include "event/evpub.h"
+#include "protocol/prots_pub.h"
+#include "containers/sarray.h"
 #include "utils/binary.h"
 #include "protocol/pgsql/pgsql_macro.h"
 

@@ -1,8 +1,8 @@
 ﻿#ifndef MYSQL_H_
 #define MYSQL_H_
 
+#include "event/evpub.h"
 #include "protocol/mysql/mysql_struct.h"
-#include "protocol/prots.h"
 
 // 内部函数：初始化握手回调函数指针
 void _mysql_init(void *hspush);

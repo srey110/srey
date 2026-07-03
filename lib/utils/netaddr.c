@@ -68,3 +68,20 @@ uint16_t netaddr_port(netaddr_ctx *ctx) {
 int32_t netaddr_family(netaddr_ctx *ctx) {
     return ctx->addr.sa_family;
 }
+int32_t netaddr_compare(netaddr_ctx *a, netaddr_ctx *b) {
+    if (a->addr.sa_family != b->addr.sa_family) {
+        return ERR_FAILED;
+    }
+    if (AF_INET == a->addr.sa_family) {
+        if (a->ipv4.sin_port != b->ipv4.sin_port
+            || 0 != memcmp(&a->ipv4.sin_addr, &b->ipv4.sin_addr, sizeof(a->ipv4.sin_addr))) {
+            return ERR_FAILED;
+        }
+    } else {
+        if (a->ipv6.sin6_port != b->ipv6.sin6_port
+            || 0 != memcmp(&a->ipv6.sin6_addr, &b->ipv6.sin6_addr, sizeof(a->ipv6.sin6_addr))) {
+            return ERR_FAILED;
+        }
+    }
+    return ERR_OK;
+}

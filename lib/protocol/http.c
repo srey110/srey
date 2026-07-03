@@ -1,5 +1,5 @@
 ﻿#include "protocol/http.h"
-#include "protocol/prots.h"
+#include "protocol/prots_pub.h"
 #include "crypt/urlraw.h"
 #include "containers/sarray.h"
 #include "utils/utils.h"

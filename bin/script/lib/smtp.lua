@@ -25,7 +25,7 @@ function ctx:ctor(ip, port, sslname, user, password)
     self.smtp = smtp.new(ip, port, ssl, user, password)
 end
 
----建立 TCP 连接并完成 SMTP 握手（等待 220 欢迎行及 AUTH 协商）；成功后 skid 设为 socket 会话键
+---建立 TCP 连接并完成 SMTP 握手（等待 220 欢迎行及 AUTH 协商）
 ---@return boolean ok 握手成功 true，失败 false
 function ctx:connect()
     if not self.smtp:try_connect() then
@@ -33,11 +33,7 @@ function ctx:connect()
     end
     local fd, skid = self.smtp:sock_id()
     local ok, err, elens = srey.wait_handshaked(fd, skid)
-    if ok then
-        if not srey.sock_session(fd, skid, skid) then
-            return false
-        end
-    elseif err then
+    if not ok and err then
         WARN("%s", srey.ud_str(err, elens))
     end
     return ok

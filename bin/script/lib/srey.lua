@@ -522,6 +522,21 @@ local function _coro_info(corosess)
     return coroinfo
 end
 
+---non-disposable 唤醒公共尾部:cosess 或 coroinfo 为空则调用 func(...)，否则 resume 等待协程；
+---sess==0 的入口判断由各 dispatch 函数自行处理，不在此函数内
+---@param msg Message
+---@param mtype integer 期望匹配的消息类型
+---@param func function? 无协程等待时的业务回调；nil 表示未注册
+local function _dispatch_non_disposable(msg, mtype, func, ...)
+    local corosess = _get_coro_sess(msg.sess, mtype)
+    local coroinfo = corosess and _coro_info(corosess)
+    if coroinfo then
+        _coro_resume(coroinfo.coro, msg)
+    elseif func then
+        _coro_run(_coro_cb, func, ...)
+    end
+end
+
 ---挂起当前协程，等待指定会话的消息
 ---@param disposable boolean true=一次性会话；false=可重入
 ---@param sess integer 会话 id
@@ -812,15 +827,15 @@ local function _response_dispatch(msg)
         end
         return
     end
-    -- sess 不在 coro_sess（srey.multi_request 等场景）：起新协程跑全局 on_responsed 回调,
-    -- 与其他 on_* 回调一致(_coro_cb 自带 task_incref/ungrab + xpcall),
-    -- 用户回调内可 yield(coro_wait/sleep/call 等)而不影响主分发循环
+    -- sess 不在 coro_sess（可能是 srey.multi_request 等广播场景，也可能是逻辑错误）：
+    -- 告警对齐 C 侧 _coro_handle_disposable，不管是否有 fallback 都先告警；
+    -- 仍起新协程跑全局 on_responsed 回调兜底,与其他 on_* 回调一致(_coro_cb 自带
+    -- task_incref/ungrab + xpcall),用户回调内可 yield(coro_wait/sleep/call 等)而不影响主分发循环
+    WARN("can't find session, maybe logic error. msg_type %d.", MSG_TYPE.RESPONSE)
     local cb = func_cbs[MSG_TYPE.RESPONSE]
     if cb then
         _coro_run(_coro_cb, cb, msg.subtype, msg.sess, msg.erro, msg.data, msg.size)
-        return
     end
-    WARN("can't find session %s.", tostring(msg.sess))
 end
 
 ---注册全局 response 回调；srey.request 等协程同步 API 不走此回调,仅当 sess 不在协程等待表时触发
@@ -916,7 +931,7 @@ function srey.wait_connect(fd, skid, ssl)
 end
 
 ---同步发起 TCP/TLS 连接：挂起协程等待连接结果，超时则关闭并返回 INVALID_SOCK；
----成功后若启用 TLS 自动等待 SSL 握手完成，再设置会话键
+---成功后若启用 TLS 自动等待 SSL 握手完成；连接建立即置 ud->sess=skid（同步请求/响应模式）
 ---@param pktype PACK_TYPE 应用层协议类型
 ---@param sslname SSL_NAME SSL 上下文名；SSL_NAME.NONE 表示明文
 ---@param ip string 对端 IP
@@ -939,15 +954,12 @@ function srey.connect(pktype, sslname, ip, port, netev, extra)
             return INVALID_SOCK
         end
     end
-    local fd, skid = core.connect(pktype, ssl, ip, port, netev, extra)
+    local fd, skid = core.connect(pktype, ssl, ip, port, netev, extra, 1)
     if INVALID_SOCK == fd then
         WARN("connect %s:%d error.", ip, port)
         return INVALID_SOCK
     end
     if not srey.wait_connect(fd, skid, ssl) then
-        return INVALID_SOCK
-    end
-    if not srey.sock_session(fd, skid, skid) then
         return INVALID_SOCK
     end
     return fd, skid
@@ -956,22 +968,13 @@ end
 ---@param msg Message
 local function _net_connect_dispatch(msg)
     local func = func_cbs[MSG_TYPE.CONNECT]
-    local corosess = _get_coro_sess(msg.skid, MSG_TYPE.CONNECT)
-    if not corosess then
+    if 0 == msg.sess then
         if func then
             _coro_run(_coro_cb, func, msg.subtype, msg.fd, msg.skid, msg.erro)
         end
-    else
-        local coroinfo = _coro_info(corosess)
-        if coroinfo then
-            local coro = coroinfo.coro
-            _coro_resume(coro, msg)
-        else
-            if func then
-                _coro_run(_coro_cb, func, msg.subtype, msg.fd, msg.skid, msg.erro)
-            end
-        end
+        return
     end
+    _dispatch_non_disposable(msg, MSG_TYPE.CONNECT, func, msg.subtype, msg.fd, msg.skid, msg.erro)
 end
 
 ---注册 TLS 握手完成回调；仅在没有协程等待该事件时触发
@@ -1035,22 +1038,13 @@ end
 ---@param msg Message
 local function _net_ssl_exchanged_dispatch(msg)
     local func = func_cbs[MSG_TYPE.SSLEXCHANGED]
-    local corosess = _get_coro_sess(msg.skid, MSG_TYPE.SSLEXCHANGED)
-    if not corosess then
+    if 0 == msg.sess then
         if func then
             _coro_run(_coro_cb, func, msg.subtype, msg.fd, msg.skid, msg.client)
         end
-    else
-        local coroinfo = _coro_info(corosess)
-        if coroinfo then
-            local coro = coroinfo.coro
-            _coro_resume(coro, msg)
-        else
-            if func then
-                _coro_run(_coro_cb, func, msg.subtype, msg.fd, msg.skid, msg.client)
-            end
-        end
+        return
     end
+    _dispatch_non_disposable(msg, MSG_TYPE.SSLEXCHANGED, func, msg.subtype, msg.fd, msg.skid, msg.client)
 end
 
 ---注册应用层握手完成回调；适用于 MySQL 认证 / SMTP 欢迎行 / WebSocket Upgrade 等协议
@@ -1085,22 +1079,13 @@ end
 ---@param msg Message
 local function _net_handshaked_dispatch(msg)
     local func = func_cbs[MSG_TYPE.HANDSHAKED]
-    local corosess = _get_coro_sess(msg.skid, MSG_TYPE.HANDSHAKED)
-    if not corosess then
+    if 0 == msg.sess then
         if func then
             _coro_run(_coro_cb, func, msg.subtype, msg.fd, msg.skid, msg.client, msg.erro, msg.data, msg.size)
         end
-    else
-        local coroinfo = _coro_info(corosess)
-        if coroinfo then
-            local coro = coroinfo.coro
-            _coro_resume(coro, msg)
-        else
-            if func then
-                _coro_run(_coro_cb, func, msg.subtype, msg.fd, msg.skid, msg.client, msg.erro, msg.data, msg.size)
-            end
-        end
+        return
     end
+    _dispatch_non_disposable(msg, MSG_TYPE.HANDSHAKED, func, msg.subtype, msg.fd, msg.skid, msg.client, msg.erro, msg.data, msg.size)
 end
 
 ---注册数据接收回调；仅在没有协程通过 syn_send 等待该 socket 时触发
@@ -1256,22 +1241,7 @@ local function _net_recv_dispatch(msg)
         end
         return
     end
-    local corosess = _get_coro_sess(msg.sess, MSG_TYPE.RECV)
-    if not corosess then
-        if func then
-            _coro_run(_coro_cb, func, msg.subtype, msg.fd, msg.skid, msg.client, msg.slice, msg.data, msg.size)
-        end
-        return
-    end
-    local coroinfo = _coro_info(corosess)
-    if coroinfo then
-        local coro = coroinfo.coro
-        _coro_resume(coro, msg)
-    else
-        if func then
-            _coro_run(_coro_cb, func, msg.subtype, msg.fd, msg.skid, msg.client, msg.slice, msg.data, msg.size)
-        end
-    end
+    _dispatch_non_disposable(msg, MSG_TYPE.RECV, func, msg.subtype, msg.fd, msg.skid, msg.client, msg.slice, msg.data, msg.size)
 end
 
 ---注册数据发送完成回调；仅在 NET_EV.SEND 标志启用时触发，可用于流控或写缓冲监控
@@ -1318,7 +1288,7 @@ end
 ---@param msg Message
 local function _net_close_dispatch(msg)
     local func = func_cbs[MSG_TYPE.CLOSE]
-    local corosess = _get_coro_sess(msg.skid, MSG_TYPE.CLOSE)
+    local corosess = _get_coro_sess(msg.sess, MSG_TYPE.CLOSE)
     if corosess then
         local coroinfo, coro
         while true do
@@ -1381,6 +1351,7 @@ srey.udp_loop = core.udp_loop
 srey.sendto = core.sendto
 
 ---同步 UDP 发送并等待响应：设置会话键 → sendto → 挂起协程等 RECVFROM
+---同一 fd 一次只能有一路在途请求；若上一次已超时放弃又复用同一 fd 发起新请求，网络上迟到的旧响应可能被误判为新请求的响应
 ---@param fd integer UDP socket fd
 ---@param skid integer 连接 skid
 ---@param ip string 目标 IP
@@ -1391,6 +1362,12 @@ srey.sendto = core.sendto
 ---@return lightuserdata|nil rdata 响应数据指针；仅在本协程下次 yield（再调任意挂起 API）前有效，下次 resume 时框架自动释放，需保留请自行拷贝；超时/失败返回 nil
 ---@return integer|nil rsize 响应数据长度
 function srey.syn_sendto(fd, skid, ip, port, data, size, copy)
+    -- 同一 skid 已有未消费的 RECVFROM 等待时直接拒绝，避免并发调用触发 _set_coro_sess 里的 repeat session assert
+    local corosess = coro_sess[skid]
+    if corosess and corosess.disposable and corosess.coroinfo.mtype == MSG_TYPE.RECVFROM then
+        WARN("sendto busy, skid %s already has a pending sendto.", tostring(skid))
+        return nil
+    end
     if not srey.sock_session(fd, skid, skid) then
         return nil
     end
@@ -1419,22 +1396,20 @@ local function _net_recvfrom_dispatch(msg)
         end
         return
     end
-    local corosess = _get_coro_sess(msg.skid, MSG_TYPE.RECVFROM)
+    if not core.udp_isdisposable(msg.subtype) then
+        _dispatch_non_disposable(msg, MSG_TYPE.RECVFROM, func, msg.fd, msg.skid, msg.ip, msg.port, msg.udata, msg.size)
+        return
+    end
+    -- disposable(如普通 UDP 的 syn_sendto):找不到 cosess 视为逻辑错误,告警后按回调兜底
+    local corosess = _get_coro_sess(msg.sess, MSG_TYPE.RECVFROM)
     if not corosess then
+        WARN("can't find session, maybe logic error. msg_type %d.", MSG_TYPE.RECVFROM)
         if func then
             _coro_run(_coro_cb, func, msg.fd, msg.skid, msg.ip, msg.port, msg.udata, msg.size)
         end
         return
     end
-    local coroinfo = _coro_info(corosess)
-    if coroinfo then
-        local coro = coroinfo.coro
-        _coro_resume(coro, msg)
-    else
-        if func then
-            _coro_run(_coro_cb, func, msg.fd, msg.skid, msg.ip, msg.port, msg.udata, msg.size)
-        end
-    end
+    _coro_resume(_coro_info(corosess).coro, msg)
 end
 
 ---定时扫描所有挂起的协程，将已超时者强制 resume（携带 TIMEOUT 消息）；每 1 秒触发一次，

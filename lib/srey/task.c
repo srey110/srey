@@ -519,8 +519,9 @@ int32_t task_listen(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
     cbs.ud_free = prots_udfree;
     return ev_listen(&task->loader->netev, evssl, ip, port, &cbs, &ud, id);
 }
-int32_t task_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl, const char *ip, uint16_t port, int32_t netev, void *extra,
-    SOCKET *fd, uint64_t *skid) {
+int32_t task_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
+    const char *ip, uint16_t port, int32_t netev, void *extra,
+    int32_t setsess, SOCKET *fd, uint64_t *skid) {
     ud_cxt ud = { 0 };
     ud.pktype = pktype;
     ud.handle = task->handle;
@@ -538,7 +539,7 @@ int32_t task_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl, 
     cbs.r_cb = prots_net_recv;
     cbs.c_cb = prots_net_close;
     cbs.ud_free = prots_udfree;
-    return ev_connect(&task->loader->netev, evssl, ip, port, &cbs, &ud, fd, skid);
+    return ev_connect(&task->loader->netev, evssl, ip, port, &cbs, &ud, setsess, fd, skid);
 }
 int32_t task_udp(task_ctx *task, pack_type pktype, const char *ip, uint16_t port,
                  SOCKET *fd, uint64_t *skid) {

@@ -3,6 +3,9 @@
 
 #include "srey/task.h"
 
+// sess 唤醒约定:客户端 connect 默认 setsess=1(ud.sess=skid),coro_ssl_exchange/coro_handshaked/coro_send/coro_slice
+// 等挂起等 skid 消息的 API 会被自动唤醒;服务端 accept 连接 ud.sess=0,须显式 coro_sync 设置,否则这些等待挂到超时。
+
 typedef struct coro_serial_ctx coro_serial_ctx;
 
 /// <summary>
@@ -135,6 +138,7 @@ void *coro_send(task_ctx *task, SOCKET fd, uint64_t skid,
 void *coro_slice(task_ctx *task, SOCKET fd, uint64_t skid, size_t *size, int32_t *end);
 /// <summary>
 /// UDP发送
+/// 同一 fd 一次只能有一路在途请求；若上一次已超时放弃又复用同一 fd 发起新请求，网络上迟到的旧响应可能被误判为新请求的响应
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="fd">socket句柄</param>
@@ -146,7 +150,7 @@ void *coro_slice(task_ctx *task, SOCKET fd, uint64_t skid, size_t *size, int32_t
 /// <param name="size">返回数据长度</param>
 /// <param name="copy">1 不自动释放, 0 自动释放</param>
 /// <returns>响应数据（已去除 netaddr_ctx 前缀）；仅在当前协程下次 yield（再调任意 coro_* API）前有效，
-///   下次 resume 时框架自动释放，需要保留请自行拷贝</returns>
+///   下次 resume 时框架自动释放，需要保留请自行拷贝；同一 fd 已有在途请求时返回 NULL</returns>
 void *coro_sendto(task_ctx *task, SOCKET fd, uint64_t skid,
                   const char *ip, const uint16_t port,
                   void *data, size_t len, size_t *size, int32_t copy);
@@ -209,5 +213,6 @@ int32_t coro_serial_call(coro_serial_ctx *serial,
 /// <param name="size">出参:buffer 字节数;NULL 不写</param>
 /// <returns>文本 buffer(调用方 FREE);非协程 task(TASK_MCO 以外)返回 NULL 且 size=0</returns>
 char *coro_dump(task_ctx *task, size_t *size);
+message_ctx *_coro_wait(task_ctx *task, int32_t disposable, uint64_t sess, msg_type mtype, uint32_t ms);
 
 #endif//CORO_TASK_H_

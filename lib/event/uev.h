@@ -86,6 +86,7 @@ typedef struct watcher_ctx {
     timer_ctx tm_qtn;           // qtn 用 monotonic 计时
     queue_ctx qtn;              // 隔离队列 FIFO，元素 qtn_entry
     pip_ctx pipe;               // 命令管道（单通道，多生产者 < PIPE_BUF 原子写）
+    list_ctx ticks;             // event 线程周期驱动节点(ev_tick)链表
     char udp_rbuf[MAX_RECVFROM_SIZE]; // UDP 接收共享缓冲：本线程所有 UDP socket 复用
 }watcher_ctx;
 

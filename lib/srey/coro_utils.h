@@ -6,6 +6,7 @@
 #include "protocol/pgsql/pgsql.h"
 #include "protocol/mongo/mongo.h"
 #include "protocol/smtp/smtp.h"
+#include "protocol/kcp/kcp.h"
 
 /// <summary>
 /// dns域名解析：先 UDP 查询，失败时回退到 TCP 查询
@@ -412,5 +413,31 @@ int32_t mongo_commit(mongo_session *session, char *options);
 /// <param name="options">可选 其他参数 document (writeConcern comment)</param>
 /// <returns>ERR_OK 成功</returns>
 int32_t mongo_rollback(mongo_session *session, char *options);
+/// <summary>
+/// kcp 同步建立会话:kcp_start 后挂起当前协程,等 event 线程实际建会话完成(或 conv 冲突失败)后返回;须在协程内调用。
+/// 数据到达时推送的目标固定为调用方所在 task(即 task->handle);不等待也可用 kcp_start 异步发起并自定目标 handle,
+/// 结果同样会以 MSG_TYPE_HANDSHAKED 推给 task_handshaked 注册的回调(msg.subtype 为 PACK_UDP_KCP)
+/// </summary>
+/// <param name="task">task_ctx,同时也是会话数据的推送目标</param>
+/// <param name="kcp">已 kcp_init 的 kcp_ctx</param>
+/// <param name="ip">对端 IP</param>
+/// <param name="port">对端端口</param>
+/// <param name="cfg">KCP 可调参数;NULL 用库默认(见 kcp_config)</param>
+/// <returns>ERR_OK 会话建立成功;ERR_FAILED 失败(kcp_start 本身失败/conv 冲突/超时/会话被关闭)</returns>
+int32_t kcp_synstart(task_ctx *task, struct kcp_ctx *kcp,
+                     const char *ip, uint16_t port, const struct kcp_config *cfg);
+/// <summary>
+/// kcp 同步发送并等待响应:发送后挂起当前协程,收到对端响应后返回;须在协程内调用。
+/// sess 固定为 kcp_init 时传入的值,同一会话上的多次 synsend 按 FIFO 排队唤醒。
+/// 超时会 kcp_stop 销毁该会话,之后需重新 kcp_start 才能再用;会话被其它途径关闭时也返回 NULL
+/// </summary>
+/// <param name="task">task_ctx</param>
+/// <param name="kcp">已 kcp_start 的 kcp_ctx</param>
+/// <param name="data">数据</param>
+/// <param name="lens">数据长度</param>
+/// <param name="copy">1 拷贝数据;0 转移所有权</param>
+/// <param name="size">出参:响应数据长度</param>
+/// <returns>响应数据(仅在下次 yield 前有效,需保留请自行拷贝);超时或失败返回 NULL</returns>
+void *kcp_synsend(task_ctx *task, struct kcp_ctx *kcp, void *data, size_t lens, int32_t copy, size_t *size);
 
 #endif//CORO_UTILS_H_

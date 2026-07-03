@@ -244,6 +244,7 @@ static int32_t _lcore_unlisten(lua_State *lua) {
 /// <param name="port" type="integer">对端端口</param>
 /// <param name="netev" type="integer?">事件订阅掩码，默认 NETEV_NONE</param>
 /// <param name="extra" type="userdata?">协议握手所需附加上下文，所有权移交框架</param>
+/// <param name="setsess" type="integer?">是否连接时置 ud->sess=skid（同步请求/响应模式），默认 1</param>
 /// <returns type="integer">socket fd；失败返回 INVALID_SOCK</returns>
 /// <returns type="integer?">skid（连接唯一序号）；仅在 fd 有效时有效</returns>
 static int32_t _lcore_connect(lua_State *lua) {
@@ -257,13 +258,14 @@ static int32_t _lcore_connect(lua_State *lua) {
     uint16_t port = (uint16_t)luaL_checkinteger(lua, 4);
     int32_t netev = lua_isinteger(lua, 5) ? (int32_t)luaL_checkinteger(lua, 5) : NETEV_NONE;
     void *extra = lua_isuserdata(lua, 6) ? lua_touserdata(lua, 6) : NULL;
+    int32_t setsess = (int32_t)luaL_optinteger(lua, 7, 1);
     SOCKET fd;
     uint64_t skid;
     task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
     if (NULL == task) {
         return luaL_error(lua, "task is nil");
     }
-    if (ERR_OK != task_connect(task, pktype, evssl, ip, port, netev, extra, &fd, &skid)) {
+    if (ERR_OK != task_connect(task, pktype, evssl, ip, port, netev, extra, setsess, &fd, &skid)) {
         lua_pushinteger(lua, INVALID_SOCK);
         return 1;
     }
@@ -586,6 +588,16 @@ static int32_t _lcore_may_resume(lua_State *lua) {
     }
     return 1;
 }
+/// <summary>
+/// 询问该 UDP 协议的 MSG_TYPE_RECVFROM 应按 disposable 还是 non-disposable 唤醒协程
+/// </summary>
+/// <param name="pktype" type="integer">封包协议类型，参考 PACK_TYPE</param>
+/// <returns type="boolean">disposable（单发单收，用完删）true；non-disposable（sess 固定，按 FIFO 排队）false</returns>
+static int32_t _lcore_udp_isdisposable(lua_State *lua) {
+    pack_type pktype = (pack_type)luaL_checkinteger(lua, 1);
+    lua_pushboolean(lua, prots_udp_isdisposable(pktype) ? 1 : 0);
+    return 1;
+}
 // task_list 收集回调：仅存入 C 数组，不调 Lua API，避免 OOM longjmp 绕过 rwlock 解锁
 static void _lcore_task_list_collect(const char *name, name_t handle, void *arg) {
     _task_list_arg *c = (_task_list_arg *)arg;
@@ -843,6 +855,7 @@ LUAMOD_API int luaopen_core(lua_State *lua) {
         { "session", _lcore_session },
 
         { "may_resume", _lcore_may_resume },
+        { "udp_isdisposable", _lcore_udp_isdisposable },
 
         { "task_list", _lcore_task_list },
         { "mem_stat", _lcore_mem_stat },

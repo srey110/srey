@@ -942,7 +942,7 @@ static int32_t _lpgsql_try_connect(lua_State *lua) {
     if (NULL == task) {
         return luaL_error(lua, "task is nil");
     }
-    if (ERR_OK == pgsql_try_connect(task, pg)) {
+    if (ERR_OK == pgsql_try_connect(task, pg, 1)) {
         lua_pushboolean(lua, 1);
     } else {
         lua_pushboolean(lua, 0);

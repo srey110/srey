@@ -177,11 +177,13 @@ int32_t task_listen(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
 /// <param name="port">端口</param>
 /// <param name="netev">task_netev</param>
 /// <param name="extra">ud_cxt extra</param>
+/// <param name="setsess">是否设置sess</param>
 /// <param name="fd">SOCKET</param>
 /// <param name="skid">链接ID</param>
 /// <returns>ERR_OK 成功</returns>
-int32_t task_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl, const char *ip, uint16_t port, int32_t netev, void *extra,
-    SOCKET *fd, uint64_t *skid);
+int32_t task_connect(task_ctx *task, pack_type pktype, struct evssl_ctx *evssl,
+    const char *ip, uint16_t port, int32_t netev, void *extra,
+    int32_t setsess, SOCKET *fd, uint64_t *skid);
 /// <summary>
 /// UDP
 /// </summary>

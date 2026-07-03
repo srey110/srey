@@ -94,7 +94,9 @@ PACK_TYPE = {
     REDIS   = 0x20,
     MYSQL   = 0x21,
     PGSQL   = 0x22,
-    MGDB    = 0x23   -- MongoDB
+    MGDB    = 0x23,  -- MongoDB
+
+    UDP_KCP = 0x40   -- KCP 可靠 UDP
 }
 -- 对称加密算法类型
 ---@enum CIPHER_TYPE

@@ -8,14 +8,17 @@
 #include "utils/buffer.h"
 #include "utils/netaddr.h"
 #include "base/structs.h"
+#include "containers/slist.h"
 
 #define GET_POS(fd, n) ((fd) % (n))// 根据fd计算索引位置
 #define GET_PTR(p, n, fd) (1 == (n) ? (p) : &(p)[GET_POS((fd), (n))])// 根据fd获取对应的指针
+#define EVENT_TICK_MIN 10          // event 线程周期驱动(ev_tick)的最小间隔(毫秒),防 tick 返回 0 忙轮询
 
 struct evssl_ctx;
 struct watcher_ctx;
 struct sock_ctx;
 struct listener_ctx;
+struct timer_ctx;
 // socket 状态标志位
 typedef enum sock_status {
     STATUS_NONE = 0x00,         // 无状态
@@ -86,7 +89,7 @@ typedef void(*close_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid,
                         int32_t client, ud_cxt *ud);// 连接关闭回调
 typedef void(*recvfrom_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid,
                            char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud);// UDP接收回调
-typedef void(*props_cb)(struct sock_ctx *skctx, ud_cxt *ud, void *data, uint64_t number);
+typedef int32_t(*props_cb)(struct sock_ctx *skctx, ud_cxt *ud, void *data, uint64_t number);// 返回值为0 不执行free。
 // 回调函数集合
 typedef struct cbs_ctx {
     accept_cb acp_cb;       // 接受连接回调
@@ -103,6 +106,14 @@ typedef struct skpool_args {
     cbs_ctx *cbs;
     ud_cxt *ud;
 }skpool_args;
+// event 线程周期驱动回调:返回"距下次应被驱动的毫秒数",event 循环取所有 tick 的最小值作等待超时
+typedef uint32_t (*ev_tick_cb)(void *ud, uint64_t now_ms);
+// 周期驱动节点(侵入式,挂 watcher->ticks);由需周期驱动的模块(如 kcp)注册
+typedef struct ev_tick {
+    list_node node;// 挂 watcher->ticks 链表
+    ev_tick_cb cb; // 驱动回调,返回距下次的毫秒数
+    void *ud;      // 透传给 cb 的上下文
+}ev_tick;
 
 // fd → sock_ctx hashmap 工具集
 // hashmap哈希函数：以fd作为key计算哈希值（hashmap_new_with_allocator 回调）
@@ -115,6 +126,14 @@ struct sock_ctx *_evpub_sockel_get(struct watcher_ctx *watcher, SOCKET fd);
 void _evpub_sockel_add(struct watcher_ctx *watcher, struct sock_ctx *skctx);
 // 从watcher的hashmap中移除fd，返回 hashmap spare 缓冲指针（下次操作前有效，调用方按需用）
 void *_evpub_sockel_remove(struct watcher_ctx *watcher, SOCKET fd);
+int32_t _evpub_checkid(struct sock_ctx *skctx, const uint64_t skid);
+// 注册周期驱动节点到 watcher->ticks(须在该 fd 所属 event 线程内调用)
+void _evpub_tick_add(struct watcher_ctx *watcher, ev_tick *tk);
+// 从 watcher->ticks 注销周期驱动节点(须在该 fd 所属 event 线程内调用)
+void _evpub_tick_remove(struct watcher_ctx *watcher, ev_tick *tk);
+// 驱动 watcher->ticks 全部节点:逐个调用 tick 回调,返回下轮 wait 超时(ms,clamp 到 [EVENT_TICK_MIN, EVENT_WAIT_TIMEOUT]);
+// *now_ms 回填本轮时钟,无 tick 时置 0(供调用方 drain/shrink 复用,省一次 timer_cur_ms)
+uint32_t _evpub_tick_drive(struct watcher_ctx *watcher, struct timer_ctx *timer, uint64_t *now_ms);
 
 //sock_ctx 池相关
 void *_evpub_sk_new(void *args);

@@ -47,9 +47,6 @@ function ctx:connect()
     local fd, skid = self.pg:sock_id()
     local ok, _, _ = srey.wait_handshaked(fd, skid)
     if ok then
-        if not srey.sock_session(fd, skid, skid) then
-            return false
-        end
         self.generation = self.generation + 1
     end
     return ok

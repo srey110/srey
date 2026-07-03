@@ -1,6 +1,5 @@
 ﻿#include "protocol/custz.h"
 #include "protocol/custz_head.h"
-#include "protocol/prots.h"
 
 void *custz_unpack(pack_type pktype, buffer_ctx *buf, size_t *size, int32_t *status) {
     size_t hlens;

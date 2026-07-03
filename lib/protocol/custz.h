@@ -2,7 +2,7 @@
 #define CUSTOMIZE_H_
 
 #include "utils/buffer.h"
-#include "protocol/prots.h"
+#include "protocol/prots_pub.h"
 
 /// <summary>
 /// 自定义协议解包，根据 pktype 选择固定长度/标志位/变长编码方式

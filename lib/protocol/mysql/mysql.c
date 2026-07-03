@@ -2,8 +2,8 @@
 #include "protocol/mysql/mysql_parse.h"
 #include "protocol/mysql/mysql_utils.h"
 #include "protocol/mysql/mysql_pack.h"
+#include "protocol/prots_pub.h"
 #include "mysql_bind.h"
-#include "protocol/prots.h"
 #include "crypt/digest.h"
 #include "event/event.h"
 #if WITH_SSL

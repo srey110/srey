@@ -9,12 +9,14 @@
 #include "protocol/pgsql/pgsql.h"
 #include "protocol/mongo/mongo.h"
 #include "protocol/smtp/smtp.h"
+#include "protocol/kcp/kcp.h"
 #include "event/event.h"
 
 static prot_emit g_emit;
 
 // 应用层握手完成推送：各协议握手完成时回调（注册见 prots_init），经消息汇推 MSG_TYPE_HANDSHAKED
-static int32_t _prots_handshaked(SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud, int32_t erro, void *data, size_t lens) {
+static int32_t _prots_handshaked(SOCKET fd, uint64_t skid, int32_t client,
+    ud_cxt *ud, int32_t erro, void *data, size_t lens) {
     void *target = g_emit.begin(ud->loader, ud->handle);
     if (NULL == target) {
         prots_hsfree(ud->pktype, data);
@@ -29,7 +31,7 @@ static int32_t _prots_handshaked(SOCKET fd, uint64_t skid, int32_t client, ud_cx
     msg.erro = erro;
     msg.data = data;
     msg.size = lens;
-    msg.sess = skid;
+    msg.sess = ud->sess;
     g_emit.emit(target, &msg);
     g_emit.end(target);
     return ERR_OK;
@@ -41,6 +43,7 @@ void prots_init(prot_emit *emit) {
     _mysql_init(_prots_handshaked);
     _pgsql_init(_prots_handshaked);
     _mongo_init(_prots_handshaked);
+    _kcp_init(&g_emit);
 }
 void prots_free(void) {
 }
@@ -126,6 +129,9 @@ void prots_udfree(void *arg) {
     case PACK_MONGO:
         _mongo_udfree(ud);
         break;
+    case PACK_UDP_KCP:
+        _kcp_udfree(ud);
+        break;
     default:
         FREE(ud->context);
         break;
@@ -204,6 +210,14 @@ int32_t prots_may_resume(pack_type pktype, void *data) {
     }
     return ERR_OK;
 }
+int32_t prots_udp_isdisposable(pack_type pktype) {
+    switch (pktype) {
+    case PACK_UDP_KCP:
+        return 0;
+    default:
+        return 1;
+    }
+}
 void *prots_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status) {
     *size = 0;
@@ -280,7 +294,7 @@ int32_t prots_net_connect(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t err, ud_
     msg.sk.fd = fd;
     msg.sk.skid = skid;
     msg.erro = err;
-    msg.sess = skid;
+    msg.sess = ud->sess;
     g_emit.emit(target, &msg);
     g_emit.end(target);
     return err;
@@ -365,7 +379,7 @@ int32_t prots_net_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t cl
         msg.sk.fd = fd;
         msg.sk.skid = skid;
         msg.client = client;
-        msg.sess = skid;
+        msg.sess = ud->sess;
         g_emit.emit(target, &msg);
     }
     g_emit.end(target);
@@ -383,12 +397,12 @@ void prots_net_close(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cx
     msg.sk.fd = fd;
     msg.sk.skid = skid;
     msg.client = client;
-    msg.sess = skid;
+    msg.sess = skid;// 始终尝试唤醒
     prots_closed(ud);
     g_emit.emit(target, &msg);
     g_emit.end(target);
 }
-void prots_net_recvfrom(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
+static void _prots_udp_default(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
     void *target = g_emit.begin(ud->loader, ud->handle);
     if (NULL == target) {
         ev_close(ev, fd, skid, 1);
@@ -396,7 +410,7 @@ void prots_net_recvfrom(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, size_t 
     }
     message_ctx msg = { 0 };
     msg.mtype = MSG_TYPE_RECVFROM;
-    msg.subtype = PACK_NONE; // UDP 路径透传原始数据，避免 _message_clean→prots_pkfree 进入特定协议释放路径
+    msg.subtype = PACK_NONE;
     msg.sk.fd = fd;
     msg.sk.skid = skid;
     recvfrom_ctx *umsg;
@@ -410,4 +424,14 @@ void prots_net_recvfrom(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, size_t 
     ud->sess = 0;
     g_emit.emit(target, &msg);
     g_emit.end(target);
+}
+void prots_net_recvfrom(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
+    switch(ud->pktype) {
+    case PACK_UDP_KCP:
+        _kcp_unpack(fd, skid, buf, size, addr, ud);
+        break;
+    default:
+        _prots_udp_default(ev, fd, skid, buf, size, addr, ud);
+        break;
+    }
 }

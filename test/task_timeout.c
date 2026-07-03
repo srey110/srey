@@ -154,6 +154,59 @@ erro:
     ev_close(&task->loader->netev, fd, skid, 1);
     return ERR_FAILED;
 }
+typedef struct udp_busy_ctx {
+    uint16_t   port;
+    SOCKET     fd;
+    int32_t    ok;
+    int32_t    rejected;
+    uint64_t   skid;
+}udp_busy_ctx;
+static void _udp_busy_first(task_ctx *task, void *arg) {
+    udp_busy_ctx *ctx = arg;
+    char buf[17];
+    randstr(buf, sizeof(buf) - 1);
+    size_t rlens;
+    void *resp = coro_sendto(task, ctx->fd, ctx->skid, "127.0.0.1", ctx->port, buf, sizeof(buf) - 1, &rlens, 1);
+    ctx->ok = (NULL != resp && rlens == sizeof(buf) - 1 && 0 == memcmp(buf, resp, sizeof(buf) - 1));
+}
+static void _udp_busy_second(task_ctx *task, void *arg) {
+    udp_busy_ctx *ctx = arg;
+    char buf[17];
+    randstr(buf, sizeof(buf) - 1);
+    size_t rlens;
+    void *resp = coro_sendto(task, ctx->fd, ctx->skid, "127.0.0.1", ctx->port, buf, sizeof(buf) - 1, &rlens, 1);
+    ctx->rejected = (NULL == resp);
+}
+// 两个协程 fork_wait 并发共享同一 skid：func0 先注册等待，func1 随后必被拒绝而非触发 repeat session abort
+static int32_t _timeout_udp_busy(task_ctx *task) {
+    task_timeout_ctx *tctx = coro_get_arg(task);
+    uint16_t udpport = (uint16_t)*_get_name_val(tctx->_ports, "udp_echo");
+    SOCKET fd;
+    uint64_t skid;
+    if (ERR_OK != task_udp(task, PACK_NONE, "0.0.0.0", 0, &fd, &skid)) {
+        LOG_WARN("task_udp error.");
+        return ERR_FAILED;
+    }
+    udp_busy_ctx ctx1 = { udpport, fd, 0, 0, skid };
+    udp_busy_ctx ctx2 = { udpport, fd, 0, 0, skid };
+    void (*funcs[2])(task_ctx *task, void *arg) = { _udp_busy_first, _udp_busy_second };
+    void *args[2] = { &ctx1, &ctx2 };
+    int32_t rtn = coro_fork_wait(task, 2, funcs, args);
+    ev_close(&task->loader->netev, fd, skid, 1);
+    if (ERR_OK != rtn) {
+        LOG_WARN("udp busy fork_wait error.");
+        return ERR_FAILED;
+    }
+    if (!ctx1.ok) {
+        LOG_WARN("udp busy test: first concurrent sendto should have succeeded.");
+        return ERR_FAILED;
+    }
+    if (!ctx2.rejected) {
+        LOG_WARN("udp busy test: second concurrent sendto should have been rejected.");
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
 // 对当前连接发送 count 轮随机大小的 TEST_ECHO 和 TEST_RPC_ECHO 包，验证回显内容完全一致。
 // 每轮复用同一段 randstr 数据：先测直接回显，再测经 task_tcp_server → task_rpc 中转的回显。
 static int32_t _tcp_echo(task_ctx *task, SOCKET fd, uint64_t skid, pack_type curtype, int32_t count) {
@@ -487,6 +540,13 @@ static void _timeout(task_ctx *task, uint64_t sess) {
     if (ERR_OK != _timeout_udp(task)) {
         ctx->_err = 1;
         LOG_WARN("udp test error.");
+    }
+    if (task_isclosing(task)) {
+        return;
+    }
+    if (ERR_OK != _timeout_udp_busy(task)) {
+        ctx->_err = 1;
+        LOG_WARN("udp busy test error.");
     }
     if (task_isclosing(task)) {
         return;

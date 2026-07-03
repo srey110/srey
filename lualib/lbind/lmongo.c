@@ -58,7 +58,7 @@ static int32_t _lmongo_try_connect(lua_State *lua) {
     if (NULL == task) {
         return luaL_error(lua, "task is nil");
     }
-    if (ERR_OK != mongo_try_connect(task, mongo)) {
+    if (ERR_OK != mongo_try_connect(task, mongo, 1)) {
         lua_pushinteger(lua, INVALID_SOCK);
         return 1;
     }

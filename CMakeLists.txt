@@ -67,6 +67,7 @@ set(SREY_INCLUDES
     ${CMAKE_SOURCE_DIR}/lib/protocol/mysql
     ${CMAKE_SOURCE_DIR}/lib/protocol/pgsql
     ${CMAKE_SOURCE_DIR}/lib/protocol/smtp
+    ${CMAKE_SOURCE_DIR}/lib/protocol/kcp
     ${CMAKE_SOURCE_DIR}/lib/serial
     ${CMAKE_SOURCE_DIR}/lib/services
     ${CMAKE_SOURCE_DIR}/lib/srey
@@ -96,6 +97,7 @@ file(GLOB SRC_MQTT        lib/protocol/mqtt/*.c)
 file(GLOB SRC_MYSQL       lib/protocol/mysql/*.c)
 file(GLOB SRC_PGSQL       lib/protocol/pgsql/*.c)
 file(GLOB SRC_SMTP        lib/protocol/smtp/*.c)
+file(GLOB SRC_KCP         lib/protocol/kcp/*.c)
 file(GLOB SRC_SERIAL      lib/serial/*.c)
 file(GLOB SRC_SERVICES    lib/services/*.c)
 file(GLOB SRC_SREY_LIB    lib/srey/*.c)
@@ -114,6 +116,7 @@ set(LIB_SOURCES
     ${SRC_MYSQL}
     ${SRC_PGSQL}
     ${SRC_SMTP}
+    ${SRC_KCP}
     ${SRC_SERIAL}
     ${SRC_SERVICES}
     ${SRC_SREY_LIB}

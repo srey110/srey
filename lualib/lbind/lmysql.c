@@ -770,7 +770,7 @@ static int32_t _lmysql_try_connect(lua_State *lua) {
     if (NULL == task) {
         return luaL_error(lua, "task is nil");
     }
-    int32_t rtn = mysql_try_connect(task, mysql);
+    int32_t rtn = mysql_try_connect(task, mysql, 1);
     if (ERR_OK == rtn) {
         lua_pushboolean(lua, 1);
     } else {

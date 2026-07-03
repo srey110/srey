@@ -1,7 +1,6 @@
 ﻿#ifndef MQTT_H_
 #define MQTT_H_
 
-#include "protocol/prots.h"
 #include "protocol/mqtt/mqtt_pack.h"
 
 // 释放 mqtt_pack_ctx 及其子结构的内存

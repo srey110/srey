@@ -1,5 +1,5 @@
 ﻿#include "protocol/dns.h"
-#include "protocol/prots.h"
+#include "protocol/prots_pub.h"
 #include "base/config.h"
 #include "utils/utils.h"
 

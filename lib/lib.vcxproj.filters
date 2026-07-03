@@ -64,6 +64,9 @@
     <Filter Include="path">
       <UniqueIdentifier>{a4cda5b9-94d3-4f7f-bd16-21b0c84c3ee9}</UniqueIdentifier>
     </Filter>
+    <Filter Include="protocol\kcp">
+      <UniqueIdentifier>{3346e3f3-b2e5-4211-a97e-cec7e18d2fed}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="lib.h" />
@@ -331,7 +334,7 @@
     <ClInclude Include="protocol\mqtt\mqtt_pack.h">
       <Filter>protocol\mqtt</Filter>
     </ClInclude>
-    <ClInclude Include="protocol\message.h">
+    <ClInclude Include="protocol\prots_pub.h">
       <Filter>protocol</Filter>
     </ClInclude>
     <ClInclude Include="protocol\prots.h">
@@ -420,6 +423,12 @@
     </ClInclude>
     <ClInclude Include="containers\slist.h">
       <Filter>containers</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\kcp\ikcp.h">
+      <Filter>protocol\kcp</Filter>
+    </ClInclude>
+    <ClInclude Include="protocol\kcp\kcp.h">
+      <Filter>protocol\kcp</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -710,6 +719,12 @@
     </ClCompile>
     <ClCompile Include="containers\slist.c">
       <Filter>containers</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\kcp\ikcp.c">
+      <Filter>protocol\kcp</Filter>
+    </ClCompile>
+    <ClCompile Include="protocol\kcp\kcp.c">
+      <Filter>protocol\kcp</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

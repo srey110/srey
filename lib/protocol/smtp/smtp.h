@@ -1,7 +1,7 @@
 ﻿#ifndef SMTP_H_
 #define SMTP_H_
 
-#include "protocol/prots.h"
+#include "event/evpub.h"
 #include "protocol/smtp/mail.h"
 
 typedef struct smtp_ctx {

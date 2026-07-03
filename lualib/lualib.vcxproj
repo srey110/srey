@@ -20,6 +20,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="lbind\lcore.c" />
+    <ClCompile Include="lbind\lkcp.c" />
     <ClCompile Include="lbind\ldatacenter.c" />
     <ClCompile Include="lbind\lsubcenter.c" />
     <ClCompile Include="lbind\lcrypt.c" />

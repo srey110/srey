@@ -14,28 +14,28 @@
 /// <param name="task">所属 task_ctx</param>
 /// <param name="mysql">mysql_ctx</param>
 /// <returns>ERR_OK 成功，其他失败</returns>
-int32_t mysql_try_connect(task_ctx *task, mysql_ctx *mysql);
+int32_t mysql_try_connect(task_ctx *task, mysql_ctx *mysql, int32_t setsess);
 /// <summary>
 /// 发起 PostgreSQL 连接：绑定 task 并经 task_connect 注册网络事件回调
 /// </summary>
 /// <param name="task">所属 task_ctx</param>
 /// <param name="pg">pgsql_ctx</param>
 /// <returns>ERR_OK 成功，其他失败</returns>
-int32_t pgsql_try_connect(task_ctx *task, pgsql_ctx *pg);
+int32_t pgsql_try_connect(task_ctx *task, pgsql_ctx *pg, int32_t setsess);
 /// <summary>
 /// 发起 MongoDB 连接：绑定 task 并经 task_connect 注册网络事件回调
 /// </summary>
 /// <param name="task">所属 task_ctx</param>
 /// <param name="mongo">mongo_ctx</param>
 /// <returns>ERR_OK 成功，其他失败</returns>
-int32_t mongo_try_connect(task_ctx *task, mongo_ctx *mongo);
+int32_t mongo_try_connect(task_ctx *task, mongo_ctx *mongo, int32_t setsess);
 /// <summary>
 /// 发起 SMTP 连接：绑定 task 并经 task_connect 注册网络事件回调
 /// </summary>
 /// <param name="task">所属 task_ctx</param>
 /// <param name="smtp">smtp_ctx</param>
 /// <returns>ERR_OK 成功，其他失败</returns>
-int32_t smtp_try_connect(task_ctx *task, smtp_ctx *smtp);
+int32_t smtp_try_connect(task_ctx *task, smtp_ctx *smtp, int32_t setsess);
 /// <summary>
 /// 发起 MQTT 连接：内部创建 mqtt_ctx，绑定 task 并经 task_connect 注册网络事件回调
 /// </summary>
@@ -50,6 +50,6 @@ int32_t smtp_try_connect(task_ctx *task, smtp_ctx *smtp);
 /// <returns>ERR_OK 成功，其他失败</returns>
 int32_t mqtt_try_connect(task_ctx *task, struct evssl_ctx *evssl,
                          const char *ip, uint16_t port, int32_t netev,
-                         mqtt_protversion version, SOCKET *fd, uint64_t *skid);
+                         mqtt_protversion version, int32_t setsess, SOCKET *fd, uint64_t *skid);
 
 #endif//PROTS_WRAP_H_

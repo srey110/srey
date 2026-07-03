@@ -1,9 +1,9 @@
 ﻿#include "protocol/mongo/mongo.h"
+#include "protocol/prots_pub.h"
 #include "event/event.h"
 #include "utils/binary.h"
 #include "utils/utils.h"
 #include "crypt/scram.h"
-#include "protocol/prots.h"
 
 #define MONGO_MAX_PACK_SIZE (64 * 1024 * 1024)  // MongoDB 单包上限 64MB
 

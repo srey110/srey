@@ -47,7 +47,7 @@ do
 done < `pwd`/lib/base/config.h
 # 共享库目录（参与 libsrey.a；srey 与 test 二进制共用）
 SHARED_DIR="lib lib/base lib/utils lib/containers lib/crypt lib/event lib/serial lib/srey lib/thread lib/path"
-SHARED_DIR=$SHARED_DIR" lib/protocol lib/protocol/mongo lib/protocol/mqtt lib/protocol/mysql lib/protocol/pgsql lib/protocol/smtp"
+SHARED_DIR=$SHARED_DIR" lib/protocol lib/protocol/mongo lib/protocol/mqtt lib/protocol/mysql lib/protocol/pgsql lib/protocol/smtp lib/protocol/kcp"
 SHARED_DIR=$SHARED_DIR" lib/services"
 if [ $LUA -eq 1 ]
 then

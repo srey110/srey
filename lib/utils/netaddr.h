@@ -84,5 +84,12 @@ uint16_t netaddr_port(netaddr_ctx *ctx);
 /// <param name="ctx">netaddr_ctx</param>
 /// <returns>AF_INET 或 AF_INET6</returns>
 int32_t netaddr_family(netaddr_ctx *ctx);
+/// <summary>
+/// 比较两个网络地址（family+IP+端口）是否相同
+/// </summary>
+/// <param name="a">netaddr_ctx</param>
+/// <param name="b">netaddr_ctx</param>
+/// <returns>ERR_OK 相同</returns>
+int32_t netaddr_compare(netaddr_ctx *a, netaddr_ctx *b);
 
 #endif//NETADDR_H_

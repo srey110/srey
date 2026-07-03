@@ -1,7 +1,7 @@
 ﻿#ifndef MONGO_H_
 #define MONGO_H_
 
-#include "protocol/prots.h"
+#include "event/evpub.h"
 #include "protocol/mongo/mongo_pack.h"
 #include "protocol/mongo/mongo_parse.h"
 

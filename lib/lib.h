@@ -54,6 +54,7 @@
 #include "protocol/websock.h"
 #include "protocol/mqtt/mqtt.h"
 #include "protocol/redis.h"
+#include "protocol/kcp/kcp.h"
 #include "protocol/mysql/mysql_bind.h"
 #include "protocol/mysql/mysql_reader.h"
 #include "protocol/mysql/mysql_parse.h"

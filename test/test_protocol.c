@@ -2,7 +2,6 @@
 #include "test_protocol.h"
 #include "lib.h"
 #include "protocol/custz_head.h"
-#include "protocol/prots.h"
 
 /* =======================================================================
  * 公共辅助 —— 将字符串字面量追加到 buffer_ctx

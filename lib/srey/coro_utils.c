@@ -2,6 +2,7 @@
 #include "srey/coro.h"
 #include "srey/task.h"
 #include "srey/prots_wrap.h"
+#include "protocol/prots.h"
 #include "protocol/urlparse.h"
 #include "protocol/dns.h"
 #include "protocol/websock.h"
@@ -184,7 +185,7 @@ SOCKET redis_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ip, ui
     return fd;
 }
 int32_t mysql_connect(task_ctx *task, mysql_ctx *mysql) {
-    if (ERR_OK != mysql_try_connect(task, mysql)) {
+    if (ERR_OK != mysql_try_connect(task, mysql, 1)) {
         return ERR_FAILED;
     }
     int32_t err;
@@ -192,10 +193,6 @@ int32_t mysql_connect(task_ctx *task, mysql_ctx *mysql) {
     if (ERR_OK != err) {
         if (NULL != errmsg) {
             LOG_WARN("%s", errmsg);
-        }
-    } else {
-        if (ERR_OK != coro_sync(task, mysql->client.sk.fd, mysql->client.sk.skid)) {
-            return ERR_FAILED;
         }
     }
     return err;
@@ -282,7 +279,7 @@ void mysql_quit(mysql_ctx *mysql) {
     coro_close(mysql->task, mysql->client.sk.fd, mysql->client.sk.skid, 0);
 }
 int32_t smtp_connect(task_ctx *task, smtp_ctx *smtp) {
-    if (ERR_OK != smtp_try_connect(task, smtp)) {
+    if (ERR_OK != smtp_try_connect(task, smtp, 1)) {
         return ERR_FAILED;
     }
     int32_t err;
@@ -290,10 +287,6 @@ int32_t smtp_connect(task_ctx *task, smtp_ctx *smtp) {
     if (ERR_OK != err) {
         if (NULL != msg) {
             LOG_WARN("%s", msg);
-        }
-    } else {
-        if (ERR_OK != coro_sync(task, smtp->sk.fd, smtp->sk.skid)) {
-            return ERR_FAILED;
         }
     }
     return err;
@@ -386,7 +379,7 @@ int32_t smtp_send(smtp_ctx *smtp, mail_ctx *mail) {
     return rtn;
 }
 int32_t pgsql_connect(task_ctx *task, pgsql_ctx *pg) {
-    if (ERR_OK != pgsql_try_connect(task, pg)) {
+    if (ERR_OK != pgsql_try_connect(task, pg, 1)) {
         return ERR_FAILED;
     }
     int32_t code;
@@ -394,10 +387,6 @@ int32_t pgsql_connect(task_ctx *task, pgsql_ctx *pg) {
     if (ERR_OK != code) {
         if (NULL != err) {
             LOG_WARN("%s", err);
-        }
-    } else {
-        if (ERR_OK != coro_sync(task, pg->sk.fd, pg->sk.skid)) {
-            return ERR_FAILED;
         }
     }
     return code;
@@ -869,4 +858,49 @@ int32_t mongo_rollback(mongo_session *session, char *options) {
     }
     session->timeout = nowsec() + session->timeoutmin * 60;
     return ERR_OK;
+}
+int32_t kcp_synstart(task_ctx *task, struct kcp_ctx *kcp,
+                     const char *ip, uint16_t port, const struct kcp_config *cfg) {
+    if (0 == kcp->sess) {
+        // sess==0 时 _coro_handle_non_disposable 恒新建协程,永远等不到本次唤醒
+        return ERR_FAILED;
+    }
+    if (ERR_OK != kcp_start(kcp, task->handle, ip, port, cfg)) {
+        return ERR_FAILED;
+    }
+    message_ctx *msg = _coro_wait(task, 0, kcp->sess, MSG_TYPE_HANDSHAKED, task_get_netread_timeout(task));
+    if (MSG_TYPE_TIMEOUT == msg->mtype) {
+        kcp_stop(kcp);
+        LOG_WARN("task %s, kcp start timeout, skid %"PRIu64".", _NAME_OR(task->name), kcp->sk.skid);
+        return ERR_FAILED;
+    }
+    if (MSG_TYPE_CLOSE == msg->mtype) {
+        return ERR_FAILED;
+    }
+    return msg->erro;
+}
+void *kcp_synsend(task_ctx *task, struct kcp_ctx *kcp, void *data, size_t lens, int32_t copy, size_t *size) {
+    if (0 == kcp->sess) {
+        // sess==0 时 _coro_handle_recvfrom 分流到的 disposable/non-disposable 分支都恒新建协程,永远等不到本次唤醒
+        if (!copy) {
+            FREE(data);
+        }
+        return NULL;
+    }
+    if (ERR_OK != kcp_send(kcp, data, lens, copy)) {
+        return NULL;
+    }
+    message_ctx *msg = _coro_wait(task, prots_udp_isdisposable(PACK_UDP_KCP), kcp->sess,
+        MSG_TYPE_RECVFROM, task_get_netread_timeout(task));
+    if (MSG_TYPE_TIMEOUT == msg->mtype) {
+        kcp_stop(kcp);
+        LOG_WARN("task %s, kcp send timeout, skid %"PRIu64".", _NAME_OR(task->name), kcp->sk.skid);
+        return NULL;
+    }
+    if (MSG_TYPE_CLOSE == msg->mtype) {
+        return NULL;
+    }
+    recvfrom_ctx *rfmsg = msg->data;
+    SET_PTR(size, rfmsg->len);
+    return rfmsg->data;
 }
