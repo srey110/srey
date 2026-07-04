@@ -8,10 +8,7 @@
 /// <param name="topic" type="string">订阅模式;空/nil 由 C 侧拒绝并返 false</param>
 /// <returns type="boolean">成功投递 true;topic 非法/sess=0/subcenter 不可达 false</returns>
 static int32_t _lsc_subscribe(lua_State *lua) {
-    task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    if (NULL == task) {
-        return luaL_error(lua, "task is nil");
-    }
+    LPUB_CUR_TASK(lua, task);
     name_t sc_name = (LUA_TSTRING == lua_type(lua, 1))
         ? task_find_name(g_loader, lua_tostring(lua, 1))
         : (name_t)luaL_checkinteger(lua, 1);
@@ -29,10 +26,7 @@ static int32_t _lsc_subscribe(lua_State *lua) {
 /// <param name="group" type="string">共享组名;空/nil 由 C 侧拒绝</param>
 /// <returns type="boolean">成功投递 true;参数非法/sess=0/subcenter 不可达 false</returns>
 static int32_t _lsc_subscribe_shared(lua_State *lua) {
-    task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    if (NULL == task) {
-        return luaL_error(lua, "task is nil");
-    }
+    LPUB_CUR_TASK(lua, task);
     name_t sc_name = (LUA_TSTRING == lua_type(lua, 1))
         ? task_find_name(g_loader, lua_tostring(lua, 1))
         : (name_t)luaL_checkinteger(lua, 1);
@@ -48,10 +42,7 @@ static int32_t _lsc_subscribe_shared(lua_State *lua) {
 /// <param name="topic" type="string">订阅模式;须与 subscribe 时一致</param>
 /// <returns type="boolean">成功投递 true;topic 非法/sess=0/subcenter 不可达 false</returns>
 static int32_t _lsc_unsubscribe(lua_State *lua) {
-    task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    if (NULL == task) {
-        return luaL_error(lua, "task is nil");
-    }
+    LPUB_CUR_TASK(lua, task);
     name_t sc_name = (LUA_TSTRING == lua_type(lua, 1))
         ? task_find_name(g_loader, lua_tostring(lua, 1))
         : (name_t)luaL_checkinteger(lua, 1);
@@ -67,10 +58,7 @@ static int32_t _lsc_unsubscribe(lua_State *lua) {
 /// <param name="group" type="string">共享组名;须与 subscribe_shared 时一致</param>
 /// <returns type="boolean">成功投递 true;参数非法/sess=0/subcenter 不可达 false</returns>
 static int32_t _lsc_unsubscribe_shared(lua_State *lua) {
-    task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    if (NULL == task) {
-        return luaL_error(lua, "task is nil");
-    }
+    LPUB_CUR_TASK(lua, task);
     name_t sc_name = (LUA_TSTRING == lua_type(lua, 1))
         ? task_find_name(g_loader, lua_tostring(lua, 1))
         : (name_t)luaL_checkinteger(lua, 1);
@@ -87,10 +75,7 @@ static int32_t _lsc_unsubscribe_shared(lua_State *lua) {
 /// <param name="data" type="string?">payload;nil 等价空 payload</param>
 /// <returns type="boolean">成功投递 true;topic 非法/sess=0/subcenter 不可达 false</returns>
 static int32_t _lsc_publish(lua_State *lua) {
-    task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    if (NULL == task) {
-        return luaL_error(lua, "task is nil");
-    }
+    LPUB_CUR_TASK(lua, task);
     name_t sc_name = (LUA_TSTRING == lua_type(lua, 1))
         ? task_find_name(g_loader, lua_tostring(lua, 1))
         : (name_t)luaL_checkinteger(lua, 1);
@@ -108,10 +93,7 @@ static int32_t _lsc_publish(lua_State *lua) {
 /// <param name="data" type="string?">retained payload;nil/空清空槽位;超 SC_RETAINED_MAX_SIZE 拒绝</param>
 /// <returns type="boolean">成功投递 true;参数非法/超长/sess=0/subcenter 不可达 false</returns>
 static int32_t _lsc_publish_retained(lua_State *lua) {
-    task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    if (NULL == task) {
-        return luaL_error(lua, "task is nil");
-    }
+    LPUB_CUR_TASK(lua, task);
     name_t sc_name = (LUA_TSTRING == lua_type(lua, 1))
         ? task_find_name(g_loader, lua_tostring(lua, 1))
         : (name_t)luaL_checkinteger(lua, 1);
@@ -128,10 +110,7 @@ static int32_t _lsc_publish_retained(lua_State *lua) {
 /// <param name="pattern" type="string">查询模式;可含通配</param>
 /// <returns type="boolean">成功投递 true;pattern 非法/sess=0/subcenter 不可达 false</returns>
 static int32_t _lsc_query_retained(lua_State *lua) {
-    task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    if (NULL == task) {
-        return luaL_error(lua, "task is nil");
-    }
+    LPUB_CUR_TASK(lua, task);
     name_t sc_name = (LUA_TSTRING == lua_type(lua, 1))
         ? task_find_name(g_loader, lua_tostring(lua, 1))
         : (name_t)luaL_checkinteger(lua, 1);
@@ -145,10 +124,7 @@ static int32_t _lsc_query_retained(lua_State *lua) {
 /// <param name="sess" type="integer">会话 id(非 0);响应回带</param>
 /// <returns type="boolean">成功投递 true;sess=0/subcenter 不可达 false</returns>
 static int32_t _lsc_topics(lua_State *lua) {
-    task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    if (NULL == task) {
-        return luaL_error(lua, "task is nil");
-    }
+    LPUB_CUR_TASK(lua, task);
     name_t sc_name = (LUA_TSTRING == lua_type(lua, 1))
         ? task_find_name(g_loader, lua_tostring(lua, 1))
         : (name_t)luaL_checkinteger(lua, 1);
@@ -161,10 +137,7 @@ static int32_t _lsc_topics(lua_State *lua) {
 /// <param name="sess" type="integer">会话 id(非 0);响应回带</param>
 /// <returns type="boolean">成功投递 true;sess=0/subcenter 不可达 false</returns>
 static int32_t _lsc_retained_topics(lua_State *lua) {
-    task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    if (NULL == task) {
-        return luaL_error(lua, "task is nil");
-    }
+    LPUB_CUR_TASK(lua, task);
     name_t sc_name = (LUA_TSTRING == lua_type(lua, 1))
         ? task_find_name(g_loader, lua_tostring(lua, 1))
         : (name_t)luaL_checkinteger(lua, 1);
@@ -178,10 +151,7 @@ static int32_t _lsc_retained_topics(lua_State *lua) {
 /// <param name="meta" type="string?">元数据;nil/空等价清除;超 SC_META_MAX_SIZE 返 false</param>
 /// <returns type="boolean">成功投递 true;超长/sess=0/subcenter 不可达 false</returns>
 static int32_t _lsc_set_meta(lua_State *lua) {
-    task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    if (NULL == task) {
-        return luaL_error(lua, "task is nil");
-    }
+    LPUB_CUR_TASK(lua, task);
     name_t sc_name = (LUA_TSTRING == lua_type(lua, 1))
         ? task_find_name(g_loader, lua_tostring(lua, 1))
         : (name_t)luaL_checkinteger(lua, 1);

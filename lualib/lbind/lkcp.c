@@ -11,10 +11,7 @@
 /// <param name="sess" type="integer">本会话生命周期内固定不变的唤醒 sess(调用方生成,如 srey.id())</param>
 /// <returns type="userdata">kcp 会话句柄(_kcp_ctx)</returns>
 static int32_t _lkcp_new(lua_State *lua) {
-    task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    if (NULL == task) {
-        return luaL_error(lua, "task is nil");
-    }
+    LPUB_CUR_TASK(lua, task);
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
     uint32_t conv = (uint32_t)luaL_checkinteger(lua, 3);
@@ -50,10 +47,7 @@ static lua_Integer _lkcp_optint(lua_State *lua, int32_t tidx, const char *key, l
 /// <returns type="boolean">成功 true,失败 false</returns>
 static int32_t _lkcp_start(lua_State *lua) {
     kcp_ctx *kcp = luaL_checkudata(lua, 1, MT_KCP);
-    task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    if (NULL == task) {
-        return luaL_error(lua, "task is nil");
-    }
+    LPUB_CUR_TASK(lua, task);
     const char *ip = luaL_checkstring(lua, 2);
     uint16_t port = (uint16_t)luaL_checkinteger(lua, 3);
     kcp_config cfg;

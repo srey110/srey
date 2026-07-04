@@ -30,6 +30,12 @@
     lua_pushlightuserdata((lua), (pack)); \
     lua_pushinteger((lua), (lua_Integer)(size)); \
     return 2
+// 声明 task_ctx *var 并从当前 Lua 全局变量取值；取不到直接 luaL_error(longjmp，不返回)
+#define LPUB_CUR_TASK(lua, var) \
+    task_ctx *var = global_userdata((lua), CUR_TASK_NAME); \
+    if (NULL == (var)) { \
+        return luaL_error((lua), "task is nil"); \
+    }
 
 /// <summary>
 /// 从 Lua 全局变量中读取轻量用户数据（light userdata）

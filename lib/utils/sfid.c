@@ -48,11 +48,24 @@ uint64_t sfid_id(sfid_ctx *ctx) {
             continue;
         } else if (curms == ctx->lasttimestamp) {
             if (ctx->sequence >= ctx->sequencemask) {
-                // 序列号耗尽：自旋等待 ms 跳跃，最长 < 1ms，避免 MSLEEP 在粗粒度时钟下反复短睡眠
-                do {
-                    CPU_PAUSE();
+                // 序列号耗尽：自旋等待 ms 跳跃，最长 < 1ms（正常单调时钟下），避免 MSLEEP 在粗粒度时钟下反复短睡眠；
+                // 若自旋期间发生时钟回拨，改走 MSLEEP 让出 CPU 并打日志，不忙等烧核
+                for (;;) {
                     curms = nowms() - ctx->customepoch;
-                } while (curms <= ctx->lasttimestamp);
+                    if (curms > ctx->lasttimestamp) {
+                        break;
+                    }
+                    if (curms < ctx->lasttimestamp) {
+                        if (0 == ctx->clockback_warned) {
+                            LOG_ERROR("clock rollback detected: cur=%"PRIu64" last=%"PRIu64" diff=%"PRIu64"ms.",
+                                      curms, ctx->lasttimestamp, ctx->lasttimestamp - curms);
+                            ctx->clockback_warned = 1;
+                        }
+                        MSLEEP(1);
+                    } else {
+                        CPU_PAUSE();
+                    }
+                }
                 ctx->sequence = 0;
                 ctx->lasttimestamp = curms;
                 break;

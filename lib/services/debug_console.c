@@ -300,13 +300,21 @@ static void _debug_hotfix(router_req *ctx) {
     seri_append_string(&cmd, (const char *)body, blen);
     _debug_forward(ctx, &cmd);
 }
-// HTTP 接收回调：完整请求到达后交 router 派发
+// HTTP 接收回调：完整请求到达后交 router 派发；不支持 chunked，收到即拒绝并关闭连接
 static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype,
                       uint8_t client, uint8_t slice, void *data, size_t size) {
     (void)pktype;
     (void)client;
     (void)size;
     if (0 != slice) {
+        if (PROT_SLICE_START == slice) {
+            binary_ctx bwriter;
+            binary_init(&bwriter, NULL, 0, 0);
+            http_pack_resp(&bwriter, 411);
+            http_pack_content(&bwriter, "chunked request not supported\n", strlen("chunked request not supported\n"));
+            ev_send(&task->loader->netev, sk->fd, sk->skid, bwriter.data, bwriter.offset, 0);
+            ev_close(&task->loader->netev, sk->fd, sk->skid, 0);
+        }
         return;
     }
     debug_console_ctx *ctx = coro_get_arg(task);

@@ -1,6 +1,7 @@
 ﻿#include "srey/task.h"
 #include "srey/debug_request.h"
 #include "containers/hashmap.h"
+#include "utils/utils.h"
 
 // 将任务名指针插入任务哈希表（重复时触发断言）
 static void _task_map_set(struct hashmap *map, task_ctx *task) {
@@ -188,9 +189,7 @@ task_ctx *task_new(loader_ctx *loader, const char *name, size_t quecap,
     task->loader = loader;
     task->handle = createid();
     if (!EMPTYSTR(name)) {
-        size_t len = strlen(name);
-        MALLOC(task->name, len + 1);
-        memcpy(task->name, name, len + 1);
+        task->name = dup_zero(name, strlen(name));
     }
     task->ref = 1;
     task->timeout_request = 3 * 1000;
@@ -392,11 +391,7 @@ void task_request(task_ctx *dst, task_ctx *src, subtype_t reqtype, uint64_t sess
         msg.src = INVALID_TNAME;
     }
     if (NULL != data && 0 != copy) {
-        char *req;
-        MALLOC(req, size + 1);
-        memcpy(req, data, size);
-        req[size] = '\0';
-        msg.data = req;
+        msg.data = dup_zero(data, size);
     } else {
         msg.data = data;
     }
@@ -413,11 +408,7 @@ void task_response(task_ctx *dst, subtype_t reqtype, uint64_t sess,
     msg.size = size;
     if (NULL != data) {
         if (0 != copy) {
-            char *resp;
-            MALLOC(resp, size + 1);
-            memcpy(resp, data, size);
-            resp[size] = '\0';
-            msg.data = resp;
+            msg.data = dup_zero(data, size);
         } else {
             msg.data = data;
         }
@@ -450,11 +441,7 @@ int32_t task_multi_request(task_ctx *dsts[], int32_t n, task_ctx *src, subtype_t
     shared_data *shared;
     MALLOC(shared, sizeof(shared_data));
     if (0 != copy && NULL != data) {
-        char *buf;
-        MALLOC(buf, size + 1);
-        memcpy(buf, data, size);
-        buf[size] = '\0';
-        shared->data = buf;
+        shared->data = dup_zero(data, size);
     } else {
         shared->data = data;
     }

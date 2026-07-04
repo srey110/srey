@@ -646,9 +646,11 @@ void ev_free(ev_ctx *ctx) {
         watcher = &ctx->watcher[i];
         (void)_send_cmd(watcher, &cmd);
     }
+    for (i = 0; i < ctx->nthreads; i++) {// 等全部停止，防 accept push到释放后的队列
+        thread_join(ctx->watcher[i].thevent);
+    }
     for (i = 0; i < ctx->nthreads; i++) {
         watcher = &ctx->watcher[i];
-        thread_join(watcher->thevent);
         // _uev_init_cmd 将 pip_ctx::skpip（嵌入 watcher->pipe）以 type=0 注册进 element；
         // 必须先 hashmap_free 再 _uev_free_pipe，否则 _uev_free_element 读 sock->type 时访问已释放内存。
         hashmap_free(watcher->element);
@@ -667,7 +669,7 @@ void ev_free(ev_ctx *ctx) {
         FREE(watcher->events);
     }
     FREE(ctx->watcher);
-    //free listener
+    //释放 listener
     struct listener_ctx **lsn;
     uint32_t nlsn = array_size(&ctx->arrlsn);
     for (i = 0; i < nlsn; i++) {

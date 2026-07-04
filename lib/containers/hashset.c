@@ -8,7 +8,7 @@ typedef struct _hs_scan_ctx {
 } _hs_scan_ctx;
 // 内部:hashset 是 hashmap 的薄包装。
 // hashmap_set 语义:已存在则替换并返回旧 item 指针;不存在新插入返 NULL。
-// hashset_add 上层语义:不更新已存在元素,1 新增 / 0 已存在 / -1 OOM。
+// hashset_add 直接透传该语义:返回旧值指针,或 NULL(新增/OOM,用 hashset_oom 区分)。
 struct hashset {
     struct hashmap *map;
 };
@@ -49,12 +49,8 @@ int32_t hashset_oom(const hashset *s) {
     // hashmap_oom 接收非 const 指针(内部访问 oom 字段),这里 cast 掉 const
     return hashmap_oom((struct hashmap *)s->map) ? 1 : 0;
 }
-int32_t hashset_add(hashset *s, const void *item) {
-    const void *old = hashmap_set(s->map, item);
-    if (hashmap_oom(s->map)) {
-        return -1;
-    }
-    return (NULL == old) ? 1 : 0;
+const void *hashset_add(hashset *s, const void *item) {
+    return hashmap_set(s->map, item);
 }
 int32_t hashset_contains(const hashset *s, const void *item) {
     return NULL != hashmap_get(s->map, item) ? 1 : 0;

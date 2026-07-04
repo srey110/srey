@@ -62,6 +62,14 @@ local SLICE_TYPE = {
     END   = 0x04,   -- 最后一片（完整消息）
 }
 
+-- 早退路径统一兜底：copy=0 时调用方已转移 data 所有权,需主动 utils.ud_free 释放
+-- （utils.ud_free 内部仅对 lightuserdata 生效,非 lightuserdata 自动跳过）
+local function _ud_free_copy(data, copy)
+    if 0 == copy then
+        utils.ud_free(data)
+    end
+end
+
 ---带错误捕获的函数调用；异常时自动打印错误信息和调用栈
 ---@param func fun(...):any 待调用函数
 ---@param ... any 函数参数
@@ -611,21 +619,15 @@ end
 ---@return lightuserdata|nil rdata 响应数据指针；仅在本协程下次 yield（再调任意挂起 API）前有效，下次 resume 时框架自动释放，需保留请自行拷贝；失败/超时返回 nil
 ---@return integer? rsize 响应数据长度
 function srey.request(dst, reqtype, data, size, copy)
-    -- 调 core.request 前的早退出路径：copy=0 时调用方已转移所有权,主动 utils.ud_free 兜底
-    -- （utils.ud_free 内部仅对 lightuserdata 生效,非 lightuserdata 自动跳过）
     if TASK_NAME.NONE == dst then
         WARN("parameter error.")
-        if 0 == copy then
-            utils.ud_free(data)
-        end
+        _ud_free_copy(data, copy)
         return nil
     end
     local dtask = srey.task_grab(dst)
     if not dtask then
         WARN("grab task error.")
-        if 0 == copy then
-            utils.ud_free(data)
-        end
+        _ud_free_copy(data, copy)
         return nil
     end
     local sess = srey.id()
@@ -656,17 +658,13 @@ function srey.call(dst, reqtype, data, size, copy)
     -- 调 core.call 前的早退出路径：copy=0 时调用方已转移所有权,主动 utils.ud_free 兜底
     if TASK_NAME.NONE == dst then
         WARN("parameter error.")
-        if 0 == copy then
-            utils.ud_free(data)
-        end
+        _ud_free_copy(data, copy)
         return
     end
     local dtask = srey.task_grab(dst)
     if not dtask then
         WARN("grab task error.")
-        if 0 == copy then
-            utils.ud_free(data)
-        end
+        _ud_free_copy(data, copy)
         return
     end
     core.call(dtask, reqtype, data, size, copy)
@@ -713,16 +711,12 @@ function srey.multi_request(dsts, reqtype, sess, data, size, copy)
     -- 避免 C 端 longjmp / short-circuit return 时漏 FREE 调用方已转移的 data
     -- （utils.ud_free 内部仅对 lightuserdata 生效,非 lightuserdata 自动跳过）
     if 0 == sess then
-        if 0 == copy then
-            utils.ud_free(data)
-        end
+        _ud_free_copy(data, copy)
         error("multi_request sess must be non-zero")
     end
     local tasks = _grab_multi_tasks(dsts)
     if 0 == #tasks then
-        if 0 == copy then
-            utils.ud_free(data)
-        end
+        _ud_free_copy(data, copy)
         return 0
     end
     local valid = core.multi_request(tasks, reqtype, sess, data, size, copy)
@@ -741,9 +735,7 @@ function srey.multi_call(dsts, reqtype, data, size, copy)
     local tasks = _grab_multi_tasks(dsts)
     if 0 == #tasks then
         -- 调用方 copy=0 时所有权已转移,但本路径不进入 core.multi_call,需主动 utils.ud_free 兜底
-        if 0 == copy then
-            utils.ud_free(data)
-        end
+        _ud_free_copy(data, copy)
         return
     end
     core.multi_call(tasks, reqtype, data, size, copy)
@@ -800,17 +792,13 @@ function srey.response(dst, reqtype, sess, erro, data, size, copy)
     -- 调 core.response 前的早退出路径：copy=0 时调用方已转移所有权,主动 utils.ud_free 兜底
     if TASK_NAME.NONE == dst or 0 == sess then
         WARN("parameter error.")
-        if 0 == copy then
-            utils.ud_free(data)
-        end
+        _ud_free_copy(data, copy)
         return
     end
     local dtask = srey.task_grab(dst)
     if not dtask then
         WARN("grab task error.")
-        if 0 == copy then
-            utils.ud_free(data)
-        end
+        _ud_free_copy(data, copy)
         return
     end
     core.response(dtask, reqtype, sess, erro, data, size, copy)
@@ -1110,15 +1098,11 @@ function srey.send_multi(fds, skids, data, size, copy)
     -- 所有不进入 core.send_multi 的退出路径都先 utils.ud_free 兜底,
     -- 避免 C 端 luaL_error longjmp / 空表 return 漏 FREE 调用方已转移的 data
     if #fds ~= #skids then
-        if 0 == copy then
-            utils.ud_free(data)
-        end
+        _ud_free_copy(data, copy)
         error(string.format("send_multi fds and skids length mismatch (%d vs %d)", #fds, #skids))
     end
     if 0 == #fds then
-        if 0 == copy then
-            utils.ud_free(data)
-        end
+        _ud_free_copy(data, copy)
         return false
     end
     return core.send_multi(fds, skids, data, size, copy)
@@ -1362,13 +1346,16 @@ srey.sendto = core.sendto
 ---@return lightuserdata|nil rdata 响应数据指针；仅在本协程下次 yield（再调任意挂起 API）前有效，下次 resume 时框架自动释放，需保留请自行拷贝；超时/失败返回 nil
 ---@return integer|nil rsize 响应数据长度
 function srey.syn_sendto(fd, skid, ip, port, data, size, copy)
-    -- 同一 skid 已有未消费的 RECVFROM 等待时直接拒绝，避免并发调用触发 _set_coro_sess 里的 repeat session assert
-    local corosess = coro_sess[skid]
-    if corosess and corosess.disposable and corosess.coroinfo.mtype == MSG_TYPE.RECVFROM then
-        WARN("sendto busy, skid %s already has a pending sendto.", tostring(skid))
+    -- 调 core.sendto 前的早退出路径：copy=0 时调用方已转移所有权,主动 utils.ud_free 兜底
+    -- （utils.ud_free 内部仅对 lightuserdata 生效,非 lightuserdata 自动跳过）
+    -- 同一 skid 已有任意挂起等待（RECVFROM/CLOSE 等）时直接拒绝，避免 _set_coro_sess 里的 repeat session assert
+    if coro_sess[skid] then
+        WARN("sendto busy, skid %s already has a pending session.", tostring(skid))
+        _ud_free_copy(data, copy)
         return nil
     end
     if not srey.sock_session(fd, skid, skid) then
+        _ud_free_copy(data, copy)
         return nil
     end
     if not srey.sendto(fd, skid, ip, port, data, size, copy) then
@@ -1380,6 +1367,9 @@ function srey.syn_sendto(fd, skid, ip, port, data, size, copy)
     if MSG_TYPE.TIMEOUT == msg.mtype then
         srey.sock_session(fd, skid, 0)
         WARN("sendto timeout, skid %s.", tostring(skid))
+        return nil
+    end
+    if MSG_TYPE.CLOSE == msg.mtype then
         return nil
     end
     -- 成功路径不调 sock_session(0)：C 端 _net_recvfrom 接收时已 ud->sess = 0，

@@ -66,12 +66,16 @@ static int32_t _lprot_dns_ip(lua_State *lua) {
 /// </summary>
 /// <param name="domain" type="string">查询域名</param>
 /// <param name="ipv6" type="integer">1 查询 AAAA 记录，0 查询 A 记录</param>
-/// <returns type="string">DNS 查询二进制字符串</returns>
+/// <returns type="string?">DNS 查询二进制字符串；构造失败返回 nil</returns>
 static int32_t _lprot_dns_pack(lua_State *lua) {
     const char *domain = luaL_checkstring(lua, 1);
     int32_t ipv6 = (int32_t)luaL_checkinteger(lua, 2);
     char buf[ONEK];
     size_t lens = (size_t)dns_request_pack(buf, domain, ipv6);
+    if (0 == lens) {
+        lua_pushnil(lua);
+        return 1;
+    }
     lua_pushlstring(lua, buf, lens);
     return 1;
 }
@@ -637,10 +641,7 @@ static int32_t _lprot_smtp_sock_id(lua_State *lua) {
 /// <returns type="boolean">发起成功 true，失败 false</returns>
 static int32_t _lprot_smtp_try_connect(lua_State *lua) {
     smtp_ctx *smtp = luaL_checkudata(lua, 1, MT_SMTP);
-    task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    if (NULL == task) {
-        return luaL_error(lua, "task is nil");
-    }
+    LPUB_CUR_TASK(lua, task);
     int32_t rtn = smtp_try_connect(task, smtp, 1);
     if (ERR_OK == rtn) {
         lua_pushboolean(lua, 1);

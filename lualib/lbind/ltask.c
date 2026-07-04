@@ -3,6 +3,7 @@
 #include "lbind/lbytecache.h"
 #endif
 
+#define MSG_GC_MT "_msg_gc_mt" // 消息 table 的 __gc 元表在 registry 中的缓存 key
 // 向 Lua table 中写入整数字段（setfield 比 push+settable 省一次 lock 配对）
 #define LUA_TB_NUMBER(key, val)\
     lua_pushinteger(lua, val);\
@@ -302,10 +303,11 @@ static int32_t _msg_clean(lua_State *lua) {
 static void _ltask_pack_msg(lua_State *lua, message_ctx *msg) {
     lua_createtable(lua, 0, 11);
     if (ERR_OK == _message_should_clean(msg)) {
-        // 需要手动释放内存的消息挂 __gc 元方法
-        lua_newtable(lua);
-        lua_pushcfunction(lua, _msg_clean);
-        lua_setfield(lua, -2, "__gc");
+        // 需要手动释放内存的消息挂 __gc 元方法；元表缓存于 registry，首次创建后各消息复用
+        if (luaL_newmetatable(lua, MSG_GC_MT)) {
+            lua_pushcfunction(lua, _msg_clean);
+            lua_setfield(lua, -2, "__gc");
+        }
         lua_setmetatable(lua, -2);
     }
     LUA_TB_NUMBER("mtype", msg->mtype);
@@ -364,7 +366,6 @@ static void _ltask_pack_msg(lua_State *lua, message_ctx *msg) {
         netaddr_ip(&rfmsg->addr, ip);
         LUA_TB_STRING("ip", ip);
         LUA_TB_NUMBER("port", netaddr_port(&rfmsg->addr));
-        // udata 指向紧跟在 netaddr_ctx 后面的 UDP 数据负载
         lua_pushlightuserdata(lua, rfmsg->data);
         lua_setfield(lua, -2, "udata");
         LUA_TB_UD(msg->data, rfmsg->len);
@@ -567,7 +568,7 @@ static int32_t _ltask_name(lua_State *lua) {
 /// 获取 task 的数字句柄（createid 生成）
 /// </summary>
 /// <param name="task" type="lightuserdata?">task 指针；nil 时取当前 task</param>
-/// <returns type="integer">task 句柄；不存在返回 INVALID_TNAME</returns>
+/// <returns type="integer">task 句柄</returns>
 static int32_t _ltask_handle(lua_State *lua) {
     task_ctx *task;
     int32_t type = lua_type(lua, 1);
@@ -578,7 +579,10 @@ static int32_t _ltask_handle(lua_State *lua) {
         LUACHECK_LUDATA(lua, 1);
         task = lua_touserdata(lua, 1);
     }
-    lua_pushinteger(lua, (NULL == task) ? INVALID_TNAME : task->handle);
+    if (NULL == task) {
+        return luaL_error(lua, "task is nil");
+    }
+    lua_pushinteger(lua, task->handle);
     return 1;
 }
 /// <summary>
@@ -587,10 +591,7 @@ static int32_t _ltask_handle(lua_State *lua) {
 /// <param>无</param>
 /// <returns type="integer">已运行毫秒数</returns>
 static int32_t _ltask_timer_ms(lua_State *lua) {
-    task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    if (NULL == task) {
-        return luaL_error(lua, "task is nil");
-    }
+    LPUB_CUR_TASK(lua, task);
     ltask_ctx *ltask = task->arg;
     lua_pushinteger(lua, timer_cur_ms(&ltask->timer));
     return 1;
@@ -602,10 +603,7 @@ static int32_t _ltask_timer_ms(lua_State *lua) {
 /// <param>无</param>
 /// <returns type="TaskStat">分桶累计统计</returns>
 static int32_t _ltask_stat(lua_State *lua) {
-    task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    if (NULL == task) {
-        return luaL_error(lua, "task is nil");
-    }
+    LPUB_CUR_TASK(lua, task);
     uint64_t nmsg[MSG_TYPE_ALL];
     uint64_t dispatch_cpu_ns[MSG_TYPE_ALL];
     task_stat(task, nmsg, dispatch_cpu_ns);
@@ -638,10 +636,7 @@ static int32_t _ltask_stat(lua_State *lua) {
 /// </summary>
 /// <returns type="integer">累计字节数</returns>
 static int32_t _ltask_mem(lua_State *lua) {
-    task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    if (NULL == task) {
-        return luaL_error(lua, "task is nil");
-    }
+    LPUB_CUR_TASK(lua, task);
     ltask_ctx *ltask = task->arg;
     lua_pushinteger(lua, (lua_Integer)ltask->mem);
     return 1;
@@ -654,10 +649,7 @@ static int32_t _ltask_mem(lua_State *lua) {
 /// <returns>无</returns>
 static int32_t _ltask_memlimit(lua_State *lua) {
     lua_Integer limit = luaL_checkinteger(lua, 1);
-    task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    if (NULL == task) {
-        return luaL_error(lua, "task is nil");
-    }
+    LPUB_CUR_TASK(lua, task);
     ltask_ctx *ltask = task->arg;
     tda_init(&ltask->mem_tda, (size_t)(limit < 0 ? 0 : limit));
     return 0;
@@ -670,10 +662,7 @@ static int32_t _ltask_memlimit(lua_State *lua) {
 /// <param name="coro" type="thread?">当前活跃协程；nil/不传时还原为主 thread</param>
 /// <returns>无</returns>
 static int32_t _ltask_active(lua_State *lua) {
-    task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    if (NULL == task) {
-        return luaL_error(lua, "task is nil");
-    }
+    LPUB_CUR_TASK(lua, task);
     ltask_ctx *ltask = task->arg;
     int32_t type = lua_type(lua, 1);
     if (LUA_TNIL == type || LUA_TNONE == type) {
@@ -730,10 +719,7 @@ static int32_t _ltask_trap(lua_State *lua) {
 /// <returns>无</returns>
 static int32_t _ltask_set_request_timeout(lua_State *lua) {
     uint32_t ms = (uint32_t)luaL_checkinteger(lua, 1);
-    task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    if (NULL == task) {
-        return luaL_error(lua, "task is nil");
-    }
+    LPUB_CUR_TASK(lua, task);
     task_set_request_timeout(task, ms);
     return 0;
 }
@@ -743,10 +729,7 @@ static int32_t _ltask_set_request_timeout(lua_State *lua) {
 /// <param>无</param>
 /// <returns type="integer">超时毫秒数</returns>
 static int32_t _ltask_get_request_timeout(lua_State *lua) {
-    task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    if (NULL == task) {
-        return luaL_error(lua, "task is nil");
-    }
+    LPUB_CUR_TASK(lua, task);
     lua_pushinteger(lua, task_get_request_timeout(task));
     return 1;
 }
@@ -757,10 +740,7 @@ static int32_t _ltask_get_request_timeout(lua_State *lua) {
 /// <returns>无</returns>
 static int32_t _ltask_set_connect_timeout(lua_State *lua) {
     uint32_t ms = (uint32_t)luaL_checkinteger(lua, 1);
-    task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    if (NULL == task) {
-        return luaL_error(lua, "task is nil");
-    }
+    LPUB_CUR_TASK(lua, task);
     task_set_connect_timeout(task, ms);
     return 0;
 }
@@ -770,10 +750,7 @@ static int32_t _ltask_set_connect_timeout(lua_State *lua) {
 /// <param>无</param>
 /// <returns type="integer">超时毫秒数</returns>
 static int32_t _ltask_get_connect_timeout(lua_State *lua) {
-    task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    if (NULL == task) {
-        return luaL_error(lua, "task is nil");
-    }
+    LPUB_CUR_TASK(lua, task);
     lua_pushinteger(lua, task_get_connect_timeout(task));
     return 1;
 }
@@ -784,10 +761,7 @@ static int32_t _ltask_get_connect_timeout(lua_State *lua) {
 /// <returns>无</returns>
 static int32_t _ltask_set_netread_timeout(lua_State *lua) {
     uint32_t ms = (uint32_t)luaL_checkinteger(lua, 1);
-    task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    if (NULL == task) {
-        return luaL_error(lua, "task is nil");
-    }
+    LPUB_CUR_TASK(lua, task);
     task_set_netread_timeout(task, ms);
     return 0;
 }
@@ -797,10 +771,7 @@ static int32_t _ltask_set_netread_timeout(lua_State *lua) {
 /// <param>无</param>
 /// <returns type="integer">超时毫秒数</returns>
 static int32_t _ltask_get_netread_timeout(lua_State *lua) {
-    task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    if (NULL == task) {
-        return luaL_error(lua, "task is nil");
-    }
+    LPUB_CUR_TASK(lua, task);
     lua_pushinteger(lua, task_get_netread_timeout(task));
     return 1;
 }
@@ -811,10 +782,7 @@ static int32_t _ltask_get_netread_timeout(lua_State *lua) {
 /// <returns>无</returns>
 static int32_t _ltask_set_priority(lua_State *lua) {
     int32_t prio = (int32_t)luaL_checkinteger(lua, 1);
-    task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    if (NULL == task) {
-        return luaL_error(lua, "task is nil");
-    }
+    LPUB_CUR_TASK(lua, task);
     task_set_priority(task, prio);
     return 0;
 }
@@ -824,10 +792,7 @@ static int32_t _ltask_set_priority(lua_State *lua) {
 /// <param>无</param>
 /// <returns type="integer">0..TASK_PRIORITY_MAX (16)</returns>
 static int32_t _ltask_get_priority(lua_State *lua) {
-    task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    if (NULL == task) {
-        return luaL_error(lua, "task is nil");
-    }
+    LPUB_CUR_TASK(lua, task);
     lua_pushinteger(lua, task_get_priority(task));
     return 1;
 }

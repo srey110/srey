@@ -262,12 +262,7 @@ int32_t ev_send_multi(ev_ctx *ctx, SOCKET fds[], uint64_t skids[], int32_t n,
     }
     shared_data *pack;
     MALLOC(pack, sizeof(shared_data));
-    if (copy) {
-        MALLOC(pack->data, len);
-        memcpy(pack->data, data, len);
-    } else {
-        pack->data = data;
-    }
+    pack->data = _cmd_cpy_buf(data, len, copy);
     ATOMIC_SET(&pack->ref, valid);
     // 给每个有效 fd 投一条 CMD_SEND_MULTI;事件线程取出后包装 off_buf{shared=pack} 入队
     cmd_ctx cmd = { 0 };
@@ -316,30 +311,15 @@ void _on_cmd_send_multi(watcher_ctx *watcher, cmd_ctx *cmd) {
 }
 int32_t ev_sendto(ev_ctx *ctx, SOCKET fd, uint64_t skid, const char *ip, const uint16_t port,
     void *data, size_t len, int32_t copy) {
-    if (INVALID_SOCK == fd || EMPTYPTR(data, len)) {
-        if (!copy) {
-            FREE(data);
-        }
-        return ERR_FAILED;
-    }
-    cmd_ctx cmd = { 0 };
-    cmd.cmd = CMD_SENDTO;
-    cmd.sk.fd = fd;
-    cmd.sk.skid = skid;
-    cmd.args.sendto.len = len;
-    if (ERR_OK != netaddr_set(&cmd.args.sendto.addr, ip, port)) {
+    netaddr_ctx addr;
+    if (ERR_OK != netaddr_set(&addr, ip, port)) {
         if (!copy) {
             FREE(data);
         }
         LOG_WARN("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
-    cmd.args.sendto.data = _cmd_cpy_buf(data, len, copy);
-    if (ERR_OK != _send_cmd(GET_PTR(ctx->watcher, ctx->nthreads, cmd.sk.fd), &cmd)) {
-        FREE(cmd.args.sendto.data);
-        return ERR_FAILED;
-    }
-    return ERR_OK;
+    return ev_sendto_addr(ctx, fd, skid, &addr, data, len, copy);
 }
 int32_t ev_sendto_addr(ev_ctx *ctx, SOCKET fd, uint64_t skid, netaddr_ctx *addr,
     void *data, size_t len, int32_t copy) {

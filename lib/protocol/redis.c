@@ -128,10 +128,10 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
         default: {
             // 跳过格式标志位（#、0、-、+、空格）
             while ('\0' != *f && NULL != strchr("#0-+ ", *f)) f++;
-            while ('\0' != *f && isdigit((int)*f)) f++;
+            while ('\0' != *f && isdigit((unsigned char)*f)) f++;
             if ('.' == *f) {
                 f++;
-                while ('\0' != *f && isdigit((int)*f)) f++;
+                while ('\0' != *f && isdigit((unsigned char)*f)) f++;
             }
             if ('\0' == *f) {
                 lens = (size_t)(f - p);

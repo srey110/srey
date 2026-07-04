@@ -414,11 +414,11 @@ int32_t bson_iter_find(bson_iter *iter, const char *keys, bson_iter *result) {
     size_t offset = iter->doc->offset;
     if (NULL == strstr(keys, ".")) {
         rtn = _bson_iter_find(iter, keys, klens, result);
-        binary_offset(iter->doc, offset);
         if (ERR_OK == rtn) {
             result->nested_doc = *iter->doc;
             result->doc = &result->nested_doc;
         }
+        binary_offset(iter->doc, offset);
         return rtn;
     }
     buf_ctx segs[BSON_MAX_DEPTH];

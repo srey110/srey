@@ -241,13 +241,27 @@ static int32_t _router_match_path(const router_seg *rsegs, int32_t rn,
 }
 // HTTP 方法字符串 → 位掩码; 未识别返回 0, dispatch 处响应 405
 static router_method _router_method_str_to_mask(const char *m, size_t n) {
-    if (3 == n && 0 == memcmp(m, "GET", 3))    return ROUTER_M_GET;
-    if (4 == n && 0 == memcmp(m, "POST", 4))   return ROUTER_M_POST;
-    if (3 == n && 0 == memcmp(m, "PUT", 3))    return ROUTER_M_PUT;
-    if (6 == n && 0 == memcmp(m, "DELETE", 6)) return ROUTER_M_DELETE;
-    if (5 == n && 0 == memcmp(m, "PATCH", 5))  return ROUTER_M_PATCH;
-    if (4 == n && 0 == memcmp(m, "HEAD", 4))   return ROUTER_M_HEAD;
-    if (7 == n && 0 == memcmp(m, "OPTIONS", 7))return ROUTER_M_OPTIONS;
+    if (3 == n && 0 == memcmp(m, "GET", 3)) {
+        return ROUTER_M_GET;
+    }
+    if (4 == n && 0 == memcmp(m, "POST", 4)) {
+        return ROUTER_M_POST;
+    }
+    if (3 == n && 0 == memcmp(m, "PUT", 3)) {
+        return ROUTER_M_PUT;
+    }
+    if (6 == n && 0 == memcmp(m, "DELETE", 6)) {
+        return ROUTER_M_DELETE;
+    }
+    if (5 == n && 0 == memcmp(m, "PATCH", 5)) {
+        return ROUTER_M_PATCH;
+    }
+    if (4 == n && 0 == memcmp(m, "HEAD", 4)) {
+        return ROUTER_M_HEAD;
+    }
+    if (7 == n && 0 == memcmp(m, "OPTIONS", 7)) {
+        return ROUTER_M_OPTIONS;
+    }
     return 0;
 }
 router_ctx *router_new(void) {
@@ -596,6 +610,9 @@ static void _router_send_resp(router_req *ctx, int32_t code, const char *content
         vlen = extra[i].value.lens < sizeof(v) - 1 ? extra[i].value.lens : sizeof(v) - 1;
         if (klen < extra[i].key.lens) {
             LOG_WARN("router: header key truncated (%zu %zu).", extra[i].key.lens, klen);
+        }
+        if (vlen < extra[i].value.lens) {
+            LOG_WARN("router: header value truncated (%zu %zu).", extra[i].value.lens, vlen);
         }
         memcpy(k, extra[i].key.data, klen); k[klen] = '\0';
         memcpy(v, extra[i].value.data, vlen); v[vlen] = '\0';

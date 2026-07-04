@@ -616,7 +616,8 @@ static void _sc_collect_visit(void *payload, void *udata) {
     name_t *subs = (name_t *)d->normal_subs.ptr;
     uint32_t i;
     for (i = 0; i < d->normal_subs.size; i++) {
-        if (hashset_add(cc->ctx->publish_dedup, &subs[i]) < 0) {
+        (void)hashset_add(cc->ctx->publish_dedup, &subs[i]);
+        if (hashset_oom(cc->ctx->publish_dedup)) {
             cc->failed = 1;
             return;
         }
@@ -997,26 +998,50 @@ static void _sc_requested(task_ctx *task, subtype_t reqtype, uint64_t sess, name
     binary_ctx br;
     switch (reqtype) {
     case REQ_SC_SUB:
+        if (NULL == data) {
+            _sc_resp_failed(ctx, src, sess, reqtype);
+            break;
+        }
         binary_init(&br, (char *)data, size, 0);
         _sc_handle_sub(ctx, src, sess, &br, 0);
         break;
     case REQ_SC_SUB_SHARED:
+        if (NULL == data) {
+            _sc_resp_failed(ctx, src, sess, reqtype);
+            break;
+        }
         binary_init(&br, (char *)data, size, 0);
         _sc_handle_sub(ctx, src, sess, &br, 1);
         break;
     case REQ_SC_UNSUB:
+        if (NULL == data) {
+            _sc_resp_failed(ctx, src, sess, reqtype);
+            break;
+        }
         binary_init(&br, (char *)data, size, 0);
         _sc_handle_unsub(ctx, src, sess, &br, 0);
         break;
     case REQ_SC_UNSUB_SHARED:
+        if (NULL == data) {
+            _sc_resp_failed(ctx, src, sess, reqtype);
+            break;
+        }
         binary_init(&br, (char *)data, size, 0);
         _sc_handle_unsub(ctx, src, sess, &br, 1);
         break;
     case REQ_SC_PUB:
+        if (NULL == data) {
+            _sc_resp_failed(ctx, src, sess, reqtype);
+            break;
+        }
         binary_init(&br, (char *)data, size, 0);
         _sc_handle_pub(ctx, src, sess, &br, 0);
         break;
     case REQ_SC_PUB_RETAINED:
+        if (NULL == data) {
+            _sc_resp_failed(ctx, src, sess, reqtype);
+            break;
+        }
         binary_init(&br, (char *)data, size, 0);
         _sc_handle_pub(ctx, src, sess, &br, 1);
         break;
@@ -1024,10 +1049,18 @@ static void _sc_requested(task_ctx *task, subtype_t reqtype, uint64_t sess, name
         _sc_handle_list(ctx, src, sess);
         break;
     case REQ_SC_QUERY_RETAINED:
+        if (NULL == data) {
+            _sc_resp_failed(ctx, src, sess, reqtype);
+            break;
+        }
         binary_init(&br, (char *)data, size, 0);
         _sc_handle_query_retained(ctx, src, sess, &br);
         break;
     case REQ_SC_SET_META:
+        if (NULL == data) {
+            _sc_resp_failed(ctx, src, sess, reqtype);
+            break;
+        }
         binary_init(&br, (char *)data, size, 0);
         _sc_handle_set_meta(ctx, src, sess, &br);
         break;

@@ -54,10 +54,7 @@ static int32_t _lmongo_free(lua_State *lua) {
 /// <returns type="integer?">skid；仅在 fd 有效时返回</returns>
 static int32_t _lmongo_try_connect(lua_State *lua) {
     mongo_ctx *mongo = luaL_checkudata(lua, 1, MT_MONGO);
-    task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    if (NULL == task) {
-        return luaL_error(lua, "task is nil");
-    }
+    LPUB_CUR_TASK(lua, task);
     if (ERR_OK != mongo_try_connect(task, mongo, 1)) {
         lua_pushinteger(lua, INVALID_SOCK);
         return 1;
@@ -77,10 +74,7 @@ static int32_t _lmongo_set_auth_status(lua_State *lua) {
     luaL_checkudata(lua, 1, MT_MONGO);
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 2);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 3);
-    task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    if (NULL == task) {
-        return luaL_error(lua, "task is nil");
-    }
+    LPUB_CUR_TASK(lua, task);
     if (ERR_OK != ev_ud_status(&task->loader->netev, fd, skid, (uint8_t)mongo_status_auth())) {
         lua_pushboolean(lua, 0);
     } else {

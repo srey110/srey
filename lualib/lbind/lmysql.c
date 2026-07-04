@@ -56,8 +56,8 @@ static int32_t _lmysql_bind_nil(lua_State *lua) {
 /// </summary>
 /// <param name="self" type="userdata">bind 对象</param>
 /// <param name="name" type="string?">具名参数名；nil 表示按位置绑定</param>
-/// <param name="data" type="string|userdata|nil">字符串值；nil 视为 NULL</param>
-/// <param name="size" type="integer?">data 为 userdata 时必填，表示数据字节数</param>
+/// <param name="data" type="string|userdata|lightuserdata|nil">字符串值；nil 视为 NULL</param>
+/// <param name="size" type="integer?">data 为 userdata/lightuserdata 时必填，表示数据字节数</param>
 /// <returns>无</returns>
 static int32_t _lmysql_bind_string(lua_State *lua) {
     mysql_bind_ctx *mbind = luaL_checkudata(lua, 1, MT_MYSQL_BIND);
@@ -72,6 +72,7 @@ static int32_t _lmysql_bind_string(lua_State *lua) {
         data = (char *)luaL_checklstring(lua, 3, &size);
         break;
     case LUA_TUSERDATA:
+    case LUA_TLIGHTUSERDATA:
         data = lua_touserdata(lua, 3);
         size = (size_t)luaL_checkinteger(lua, 4);
         break;
@@ -766,10 +767,7 @@ static int32_t _lmysql_free(lua_State *lua) {
 /// <returns type="boolean">发起成功 true，失败 false</returns>
 static int32_t _lmysql_try_connect(lua_State *lua) {
     mysql_ctx *mysql = luaL_checkudata(lua, 1, MT_MYSQL);
-    task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    if (NULL == task) {
-        return luaL_error(lua, "task is nil");
-    }
+    LPUB_CUR_TASK(lua, task);
     int32_t rtn = mysql_try_connect(task, mysql, 1);
     if (ERR_OK == rtn) {
         lua_pushboolean(lua, 1);

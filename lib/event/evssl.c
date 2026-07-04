@@ -17,9 +17,9 @@ typedef struct certs_ctx {
     struct evssl_ctx *ssl;     // 对应的evssl_ctx
     char name[EVSSL_NAME_LEN]; // 注册名称
 }certs_ctx;
-static array_ctx *_arr_certs = NULL;       // 全局证书注册池（元素 certs_ctx）
-static rwlock_ctx *_rwlck_certs = NULL;    // 保护证书池的读写锁
-static atomic_t _init_once = 0;            // 保证证书池只初始化一次
+static array_ctx *_arr_certs = NULL;// 全局证书注册池（元素 certs_ctx）
+static rwlock_ctx *_rwlck_certs = NULL;// 保护证书池的读写锁
+static atomic_t _init_once = 0;// 保证证书池只初始化一次
 
 // 设置SSL_CTX的通用选项：忽略意外EOF、禁止重协商、不验证对端
 // 不设 SSL_MODE_AUTO_RETRY：该模式在非阻塞 socket 上会使 SSL_read/write 内部自旋，

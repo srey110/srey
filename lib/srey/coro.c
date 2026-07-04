@@ -116,35 +116,26 @@ static void _coro_cosess_set(task_ctx *task, int32_t disposable, mco_coro *coro,
         coro_sess cosess;
         cosess.disposable = 1;
         cosess.sess = sess;
-        cosess.coinfo.te = NULL;
         cosess.coinfo.since = now;
         cosess.coinfo.timeout = ms > 0 ? now + ms : 0;
         cosess.coinfo.co = coro;
         cosess.coinfo.mtype = mtype;
+        /* te 在 hashmap_set 前就地设好,随整个 cosess 一起被拷入桶,无需再二次查找回填 */
+        cosess.coinfo.te = ms > 0 ? _coro_te_insert(coctx, cosess.coinfo.timeout, sess) : NULL;
         ASSERTAB(NULL == hashmap_set(coctx->mapco, &cosess), "repeat session");
-        if (ms > 0) {
-            /* hashmap_set 已拷贝 cosess；取真实存储位置设 te */
-            coro_sess *stored = (coro_sess *)hashmap_get(coctx->mapco, &key);
-            stored->coinfo.te = _coro_te_insert(coctx, cosess.coinfo.timeout, sess);
-        }
         return;
     }
     /* non-disposable: inline queue_ctx, no heap allocation for the queue header */
     coro_info coinfo;
-    coinfo.te = NULL;
     coinfo.since = now;
     coinfo.timeout = ms > 0 ? now + ms : 0;
     coinfo.co = coro;
     coinfo.mtype = mtype;
+    coinfo.te = ms > 0 ? _coro_te_insert(coctx, coinfo.timeout, sess) : NULL;
     coro_sess *cofind = (coro_sess *)hashmap_get(coctx->mapco, &key);
     if (NULL != cofind) {
-        /* entry already exists: push directly into the inline queue */
+        /* entry already exists: coinfo.te 已就位,直接入队,无需 queue_at 回填 */
         queue_push(&cofind->qucoinfo, &coinfo);
-        if (ms > 0) {
-            coro_info *last = queue_at(&cofind->qucoinfo,
-                                       queue_size(&cofind->qucoinfo) - 1);
-            last->te = _coro_te_insert(coctx, coinfo.timeout, sess);
-        }
     } else {
         /* new entry: init inline queue on the stack, hashmap_set copies the whole struct */
         coro_sess cosess;
@@ -153,15 +144,15 @@ static void _coro_cosess_set(task_ctx *task, int32_t disposable, mco_coro *coro,
         queue_init(&cosess.qucoinfo, sizeof(coro_info), 4);   /* allocates cosess.qucoinfo.ptr on heap */
         queue_push(&cosess.qucoinfo, &coinfo);
         hashmap_set(coctx->mapco, &cosess);
-        /* hashmap_set copies cosess (struct copy); qucoinfo.ptr is now owned by the stored copy.
-         * cosess goes out of scope but the heap array lives on through the stored copy. */
-        if (ms > 0) {
-            coro_sess *stored = (coro_sess *)hashmap_get(coctx->mapco, &key);
-            coro_info *last = queue_at(&stored->qucoinfo,
-                                       queue_size(&stored->qucoinfo) - 1);
-            last->te = _coro_te_insert(coctx, coinfo.timeout, sess);
-        }
+        /* hashmap_set copies cosess (struct copy); qucoinfo.ptr is now owned by the stored copy. */
     }
+}
+// 判断 mapco 中是否已存在指定 sess 的挂起记录，不区分 mtype/disposable；
+// mapco 按 sess 单键存储，任意已存在记录都会导致后续 _coro_cosess_set(disposable=1,...) 冲突
+static int32_t _coro_cosess_exist(coro_ctx *coctx, uint64_t sess) {
+    coro_sess key;
+    key.sess = sess;
+    return NULL != hashmap_get(coctx->mapco, &key);
 }
 // 从 mapco 查找匹配 sess 和 mtype 的挂起协程节点
 // 返回哈希表内部存储的直接指针，调用方在使用完毕前不得调用 _coro_cosess_delete
@@ -765,9 +756,9 @@ void *coro_sendto(task_ctx *task, SOCKET fd, uint64_t skid,
                   const char *ip, const uint16_t port,
                   void *data, size_t len, size_t *size, int32_t copy) {
     coro_ctx *coctx = task->arg;
-    // 同一 skid 已有未消费的 RECVFROM 等待时直接拒绝，避免并发调用触发 _coro_cosess_set 里的 repeat session abort
-    if (NULL != _coro_cosess_get(coctx, skid, MSG_TYPE_RECVFROM)) {
-        LOG_WARN("task %s, sendto busy, skid %"PRIu64" already has a pending sendto.", _NAME_OR(task->name), skid);
+    // 同一 skid 已有任意挂起等待（RECVFROM/CLOSE 等）时直接拒绝，避免 _coro_cosess_set 里的 repeat session abort
+    if (_coro_cosess_exist(coctx, skid)) {
+        LOG_WARN("task %s, sendto busy, skid %"PRIu64" already has a pending session.", _NAME_OR(task->name), skid);
         if (!copy) {
             FREE(data);
         }
@@ -788,6 +779,9 @@ void *coro_sendto(task_ctx *task, SOCKET fd, uint64_t skid,
     if (MSG_TYPE_TIMEOUT == msg->mtype) {
         (void)ev_ud_sess(&task->loader->netev, fd, skid, 0);
         LOG_WARN("task %s, sendto timeout, skid %"PRIu64".", _NAME_OR(task->name), skid);
+        return NULL;
+    }
+    if (MSG_TYPE_CLOSE == msg->mtype) {
         return NULL;
     }
     recvfrom_ctx *rfmsg = msg->data;

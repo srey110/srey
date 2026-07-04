@@ -9,12 +9,12 @@ static atomic_t _exindex = 0;
 #endif
 
 #define _MC ((1 << CHAR_BIT) - 1) //字节掩码（0xff），用于逐字节提取整数
-static void *_ud;                              //信号处理回调的用户数据
-static void(*_sig_cb)(int32_t, void *);       //用户注册的信号处理回调函数
+static void *_ud;//信号处理回调的用户数据
+static void(*_sig_cb)(int32_t, void *);//用户注册的信号处理回调函数
 static uint16_t _serviceid = 1;
-static atomic64_t _ids = 1;                   //全局自增 ID 原子计数器
-static char _path[PATH_LENS] = { 0 };         //程序所在目录路径缓存
-static atomic_t _path_once = 0;               //路径初始化状态：0=未初始化 1=初始化中 2=已完成
+static atomic64_t _ids = 1;//全局自增 ID 原子计数器
+static char _path[PATH_LENS] = { 0 };//程序所在目录路径缓存
+static atomic_t _path_once = 0;//路径初始化状态：0=未初始化 1=初始化中 2=已完成
 
 #ifdef OS_WIN
 // 获取当前线程或进程的令牌句柄，用于后续权限操作

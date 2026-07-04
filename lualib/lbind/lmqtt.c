@@ -198,10 +198,7 @@ static int32_t _lmqtt_try_connect(lua_State *lua) {
             return 1;
         }
     }
-    task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    if (NULL == task) {
-        return luaL_error(lua, "task is nil");
-    }
+    LPUB_CUR_TASK(lua, task);
     SOCKET fd;
     uint64_t skid;
     if (ERR_OK != mqtt_try_connect(task, evssl, ip, port, netev, version, 1, &fd, &skid)) {

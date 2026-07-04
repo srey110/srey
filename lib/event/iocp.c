@@ -93,6 +93,22 @@ static void _iocp_pool_shrink(watcher_ctx *watcher, uint64_t *shrink_start, uint
     // cmd sock 仅 _iocp_join 不入 hashmap，hashmap_count 即业务 socket 数
     pool_shrink(&watcher->pool, (uint32_t)SHRINK_NKEEP(hashmap_count(watcher->element)), SHRINK_BUSY);
 }
+// 驱动 tick 并按 EVENT_CHECK_INTERVAL 节流触发 pool_shrink；返回下次 wait 超时(ms)，Vista+/XP 两份 _iocp_loop_event 共用
+static uint32_t _iocp_loop_check(watcher_ctx *watcher, timer_ctx *timer,
+                                 uint32_t *shrink_cnt, uint64_t *shrink_start) {
+    uint64_t now_ms;
+    uint32_t next_to = _evpub_tick_drive(watcher, timer, &now_ms);
+    (*shrink_cnt)++;
+    if (*shrink_cnt < EVENT_CHECK_INTERVAL) {
+        return next_to;
+    }
+    *shrink_cnt = 0;
+    if (0 == now_ms) {
+        now_ms = timer_cur_ms(timer);
+    }
+    _iocp_pool_shrink(watcher, shrink_start, now_ms);
+    return next_to;
+}
 #if (_WIN32_WINNT >= 0x0600)
 // 事件循环主函数（Vista+，使用GetQueuedCompletionStatusEx批量获取事件）
 static void _iocp_loop_event(void *arg) {
@@ -110,7 +126,7 @@ static void _iocp_loop_event(void *arg) {
     MALLOC(overlappeds, sizeof(OVERLAPPED_ENTRY) * nevent);
     timer_ctx timer;
     timer_init(&timer);
-    uint64_t now_ms, shrink_start = timer_cur_ms(&timer);
+    uint64_t shrink_start = timer_cur_ms(&timer);
     while (0 == ATOMIC_GET(&watcher->stop)) {
         if (GetQueuedCompletionStatusEx(watcher->iocp,
                                         overlappeds,
@@ -136,16 +152,7 @@ static void _iocp_loop_event(void *arg) {
         } else if (WAIT_TIMEOUT != (err = ERRNO)) {
             LOG_ERROR("%s", ERRORSTR(err));
         }
-        next_to = _evpub_tick_drive(watcher, &timer, &now_ms);
-        shrink_cnt++;
-        if (shrink_cnt < EVENT_CHECK_INTERVAL) {
-            continue;
-        }
-        shrink_cnt = 0;
-        if (0 == now_ms) {
-            now_ms = timer_cur_ms(&timer);
-        }
-        _iocp_pool_shrink(watcher, &shrink_start, now_ms);
+        next_to = _iocp_loop_check(watcher, &timer, &shrink_cnt, &shrink_start);
     }
     LOG_INFO("net event thread %d exited.", watcher->index);
     FREE(overlappeds);
@@ -216,7 +223,7 @@ static void _iocp_loop_event(void *arg) {
     uint32_t next_to = EVENT_WAIT_TIMEOUT;
     timer_ctx timer;
     timer_init(&timer);
-    uint64_t now_ms, shrink_start = timer_cur_ms(&timer);
+    uint64_t shrink_start = timer_cur_ms(&timer);
     while (0 == ATOMIC_GET(&watcher->stop)) {
         GetQueuedCompletionStatus(watcher->iocp,
                                   &bytes,
@@ -229,16 +236,7 @@ static void _iocp_loop_event(void *arg) {
         } else if (WAIT_TIMEOUT != (err = ERRNO)) {
             LOG_ERROR("%s", ERRORSTR(err));
         }
-        next_to = _evpub_tick_drive(watcher, &timer, &now_ms);
-        shrink_cnt++;
-        if (shrink_cnt < EVENT_CHECK_INTERVAL) {
-            continue;
-        }
-        shrink_cnt = 0;
-        if (0 == now_ms) {
-            now_ms = timer_cur_ms(&timer);
-        }
-        _iocp_pool_shrink(watcher, &shrink_start, now_ms);
+        next_to = _iocp_loop_check(watcher, &timer, &shrink_cnt, &shrink_start);
     }
     LOG_INFO("net event thread %d exited.", watcher->index);
 }

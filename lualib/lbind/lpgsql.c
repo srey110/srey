@@ -938,10 +938,7 @@ static int32_t _lpgsql_free(lua_State *lua) {
 /// <returns type="boolean">发起成功 true，失败 false</returns>
 static int32_t _lpgsql_try_connect(lua_State *lua) {
     pgsql_ctx *pg = luaL_checkudata(lua, 1, MT_PGSQL);
-    task_ctx *task = global_userdata(lua, CUR_TASK_NAME);
-    if (NULL == task) {
-        return luaL_error(lua, "task is nil");
-    }
+    LPUB_CUR_TASK(lua, task);
     if (ERR_OK == pgsql_try_connect(task, pg, 1)) {
         lua_pushboolean(lua, 1);
     } else {

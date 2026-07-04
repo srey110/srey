@@ -407,6 +407,9 @@ int32_t buffer_appendv(buffer_ctx *ctx, const char *fmt, ...) {
             node->used = 0;
             node->off += rtn;
             ctx->total_lens += rtn;
+            if (0 != rtn) {
+                _buffer_last_with_data(ctx);
+            }
             break;
         }
         node->used = 0;

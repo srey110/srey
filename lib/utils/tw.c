@@ -100,8 +100,8 @@ static uint32_t _tw_cascade(tw_ctx *ctx, list_ctx *slot, const uint32_t index) {
     tw_node_ctx *pnode;
     list_foreach_safe(&slot[index], ln, tmp) {
         pnode = UPCAST(ln, tw_node_ctx, node);
-        list_remove(&slot[index], ln);          // 从源槽摘除
-        list_push_tail(_tw_getslot(ctx, pnode), &pnode->node);   // 改投目标槽（cascade 必降级,目标≠源槽）
+        list_remove(&slot[index], ln);// 从源槽摘除
+        list_push_tail(_tw_getslot(ctx, pnode), &pnode->node);// 改投目标槽（cascade 必降级,目标≠源槽）
     }
     return index;
 }

@@ -36,6 +36,14 @@ static int32_t _prots_handshaked(SOCKET fd, uint64_t skid, int32_t client,
     g_emit.end(target);
     return ERR_OK;
 }
+// 设置子协议 ud_cxt 的额外上下文数据（目前仅 WebSocket 子协议需要）
+void _evpub_set_secextra(ud_cxt *ud, void *val) {
+    switch (ud->pktype) {
+    case PACK_WEBSOCK:
+        _websock_secextra(ud, val);
+        break;
+    }
+}
 void prots_init(prot_emit *emit) {
     g_emit = *emit;
     _websock_init(_prots_handshaked);
@@ -46,14 +54,6 @@ void prots_init(prot_emit *emit) {
     _kcp_init(&g_emit);
 }
 void prots_free(void) {
-}
-// 设置子协议 ud_cxt 的额外上下文数据（目前仅 WebSocket 子协议需要）
-void _evpub_set_secextra(ud_cxt *ud, void *val) {
-    switch (ud->pktype) {
-    case PACK_WEBSOCK:
-        _websock_secextra(ud, val);
-        break;
-    }
 }
 void prots_pkfree(pack_type pktype, void *data) {
     if (NULL == data) {
@@ -137,7 +137,8 @@ void prots_udfree(void *arg) {
         break;
     }
 }
-void prots_closed(ud_cxt *ud) {
+// 连接关闭时通知各协议模块做清理（如发送挂断命令）
+static void prots_closed(ud_cxt *ud) {
     if (NULL == ud) {
         return;
     }
@@ -158,14 +159,16 @@ void prots_closed(ud_cxt *ud) {
         break;
     }
 }
-int32_t prots_accepted(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud) {
+// 新连接被接受时的回调，按协议扩展；当前各协议均返回 ERR_OK
+static int32_t prots_accepted(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud) {
     (void)ev;
     (void)fd;
     (void)skid;
     (void)ud;
     return ERR_OK;
 }
-int32_t prots_connected(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud, int32_t err) {
+// 主动连接建立后的回调，部分协议需在此发送初始化包
+static int32_t prots_connected(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud, int32_t err) {
     switch (ud->pktype) {
     case PACK_PGSQL:
         return _pgsql_on_connected(ev, fd, skid, ud, err);
@@ -174,7 +177,8 @@ int32_t prots_connected(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud, int32_
     }
     return err;
 }
-int32_t prots_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud, void *ssl) {
+// SSL 握手完成后的回调，部分协议需在 SSL 建立后发送认证包（pgsql 用于 SCRAM-SHA-256-PLUS 通道绑定）
+static int32_t prots_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud, void *ssl) {
     (void)fd;
     (void)skid;
     (void)client;

@@ -352,7 +352,7 @@ loader_ctx *loader_init(uint16_t nnet, uint16_t nworker, uint32_t twcap) {
     };
     worker_ctx *worker;
     uint16_t i, wn = ARRAY_SIZE(weights);
-    // 先把所有 worker 的字段初始化完(fsqu_init/mutex_init/cond_init/timer_init)
+    // 先把所有 worker 的字段初始化完(fsqu_init/mutex_init/cond_init)
     // 再启动 worker 线程;否则 worker[0] 启动后会跨 worker 遍历 worker[1..N-1].qutasks
     // 而后者的 fsqu_init 还在主线程进行中(TSan 报 fsqu_size 的 race)
     for (i = 0; i < loader->nworker; i++) {
@@ -363,7 +363,6 @@ loader_ctx *loader_init(uint16_t nnet, uint16_t nworker, uint32_t twcap) {
         fsqu_init(&worker->qutasks, sizeof(name_t), ONEK);
         mutex_init(&worker->mutex);
         cond_init(&worker->cond);
-        timer_init(&worker->timer);
     }
     // pthread_create 的 release barrier 保证 worker 线程能看到第一轮循环的所有写入
     for (i = 0; i < loader->nworker; i++) {

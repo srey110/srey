@@ -38,12 +38,13 @@ size_t hashset_count(const hashset *s);
 /// <returns>1 OOM(本次 add 未成功);0 正常</returns>
 int32_t hashset_oom(const hashset *s);
 /// <summary>
-/// 加入元素。已存在时不更新;新增时按 elsize 字节 by-value 拷贝。
+/// 加入元素。已存在时更新(覆写为新值);按 elsize 字节 by-value 拷贝。
 /// </summary>
 /// <param name="s">hashset 指针</param>
 /// <param name="item">元素指针;按 elsize 字节读取</param>
-/// <returns>1 新增;0 已存在;-1 内存分配失败(可用 hashset_oom 二次确认)</returns>
-int32_t hashset_add(hashset *s, const void *item);
+/// <returns>hashmap 内部 item 指针(指向被覆写的旧元素副本,下次 add/grow 前有效);
+///     新增或内存分配失败时返回 NULL,可用 hashset_oom 区分是否 OOM</returns>
+const void *hashset_add(hashset *s, const void *item);
 /// <summary>判断元素是否存在</summary>
 /// <param name="s">hashset 指针</param>
 /// <param name="item">查询元素</param>

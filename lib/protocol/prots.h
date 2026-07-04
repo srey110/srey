@@ -31,42 +31,6 @@ void prots_hsfree(pack_type pktype, void *data);
 /// <param name="arg">ud_cxt 指针</param>
 void prots_udfree(void *arg);
 /// <summary>
-/// 连接关闭时通知各协议模块做清理（如发送挂断命令）
-/// </summary>
-/// <param name="ud">ud_cxt 指针</param>
-void prots_closed(ud_cxt *ud);
-/// <summary>
-/// 新连接被接受时的回调，目前各协议均返回 ERR_OK
-/// </summary>
-/// <param name="ev">事件上下文</param>
-/// <param name="fd">套接字</param>
-/// <param name="skid">套接字 ID</param>
-/// <param name="ud">ud_cxt 指针</param>
-/// <returns>ERR_OK</returns>
-int32_t prots_accepted(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud);
-/// <summary>
-/// 主动连接建立后的回调，部分协议需在此发送初始化包
-/// </summary>
-/// <param name="ev">事件上下文</param>
-/// <param name="fd">套接字</param>
-/// <param name="skid">套接字 ID</param>
-/// <param name="ud">ud_cxt 指针</param>
-/// <param name="err">连接错误码</param>
-/// <returns>ERR_OK 或错误码</returns>
-int32_t prots_connected(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud, int32_t err);
-/// <summary>
-/// SSL 握手完成后的回调，部分协议需在 SSL 建立后发送认证包
-/// pgsql 会从 ssl 中提取服务端证书 SHA-256 摘要用于 SCRAM-SHA-256-PLUS 通道绑定
-/// </summary>
-/// <param name="ev">事件上下文</param>
-/// <param name="fd">套接字</param>
-/// <param name="skid">套接字 ID</param>
-/// <param name="client">1=客户端 0=服务端</param>
-/// <param name="ud">ud_cxt 指针</param>
-/// <param name="ssl">SSL 对象指针（WITH_SSL 时有效，否则为 NULL）</param>
-/// <returns>ERR_OK 或错误码</returns>
-int32_t prots_ssl_exchanged(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud, void *ssl);
-/// <summary>
 /// 检查协议是否允许继续读取数据（如 pgsql 的流量控制）
 /// </summary>
 /// <param name="pktype">协议包类型</param>

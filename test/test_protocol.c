@@ -2376,8 +2376,6 @@ static void test_prots_free_null(CuTest *tc) {
     prots_hsfree(PACK_HTTP, NULL);
     // prots_udfree(NULL) 安全
     prots_udfree(NULL);
-    // prots_closed(NULL) 安全
-    prots_closed(NULL);
     // prots_free 空实现，多次调用无副作用
     prots_free();
     prots_free();
@@ -2431,18 +2429,42 @@ static void test_prots_udfree_default(CuTest *tc) {
     prots_udfree(&ud2);
 }
 
-// prots_closed default 分支：PACK_NONE / PACK_HTTP / PACK_WEBSOCK 等不做事，仅安全返回
-static void test_prots_closed_default(CuTest *tc) {
-    (void)tc;
+// prots_net_close 测试桩：prots_closed 已改为内部静态分发，只能通过 prots_net_close 间接触发；
+// g_emit.begin 必须返回非 NULL 才能走到内部 prots_closed，桩函数忽略 loader/handle 直接放行
+static int32_t g_stub_emit_calls;
+static message_ctx g_stub_last_msg;
+static void *_stub_emit_begin(void *loader, name_t handle) {
+    (void)loader;
+    (void)handle;
+    return (void *)1;
+}
+static void _stub_emit_emit(void *target, message_ctx *msg) {
+    (void)target;
+    g_stub_last_msg = *msg;
+    g_stub_emit_calls++;
+}
+static void _stub_emit_end(void *target) {
+    (void)target;
+}
+static prot_emit g_stub_emit = { _stub_emit_begin, _stub_emit_emit, _stub_emit_end };
+// prots_net_close default 分支：PACK_NONE / PACK_HTTP / PACK_WEBSOCK 等无协议专属清理，
+// 仅推一条 MSG_TYPE_CLOSE（SMTP/MYSQL/PGSQL/MONGO 需要真实协议 context，不在此测试范围）
+static void test_prots_net_close_default(CuTest *tc) {
+    prots_init(&g_stub_emit);
     pack_type defaults[] = { PACK_NONE, PACK_DNS, PACK_HTTP, PACK_WEBSOCK,
                              PACK_MQTT, PACK_CUSTZ_FIXED, PACK_REDIS };
     for (size_t i = 0; i < sizeof(defaults) / sizeof(defaults[0]); i++) {
         ud_cxt ud;
         ZERO(&ud, sizeof(ud));
         ud.pktype = (subtype_t)defaults[i];
-        // default 分支只 break，应无 side effect、不崩
-        prots_closed(&ud);
+        g_stub_emit_calls = 0;
+        prots_net_close(NULL, INVALID_SOCK, 100 + (uint64_t)i, 0, &ud);
+        CuAssertIntEquals(tc, 1, g_stub_emit_calls);
+        CuAssertIntEquals(tc, (int)MSG_TYPE_CLOSE, (int)g_stub_last_msg.mtype);
+        CuAssertIntEquals(tc, (int)defaults[i], (int)g_stub_last_msg.subtype);
     }
+    prot_emit empty = { 0 };
+    prots_init(&empty);// 还原为测试前的零值,不依赖 main.c 里紧接着的 loader_init 顺延覆盖
 }
 
 // prots_unpack 默认 PACK_NONE 路径：从 buffer 一次性取出所有数据 → MALLOC 返回
@@ -3275,7 +3297,7 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_prots_pkfree_default);
     SUITE_ADD_TEST(suite, test_prots_hsfree_default);
     SUITE_ADD_TEST(suite, test_prots_udfree_default);
-    SUITE_ADD_TEST(suite, test_prots_closed_default);
+    SUITE_ADD_TEST(suite, test_prots_net_close_default);
     SUITE_ADD_TEST(suite, test_prots_unpack_default);
     SUITE_ADD_TEST(suite, test_prots_may_resume_default);
     SUITE_ADD_TEST(suite, test_mail_html_and_clear);

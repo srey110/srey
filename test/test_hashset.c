@@ -20,7 +20,7 @@ static void test_hs_basic(CuTest *tc) {
 
     int32_t v = 42;
     CuAssertTrue(tc, 0 == hashset_contains(s, &v));
-    CuAssertTrue(tc, 1 == hashset_add(s, &v));
+    CuAssertPtrEquals(tc, NULL, (void *)hashset_add(s, &v));
     CuAssertTrue(tc, 1 == hashset_contains(s, &v));
     CuAssertTrue(tc, 1 == hashset_count(s));
 
@@ -30,13 +30,13 @@ static void test_hs_basic(CuTest *tc) {
 
     hashset_free(s);
 }
-// 重复 add 返 0,首次返 1
-static void test_hs_dedup(CuTest *tc) {
+// 重复 add 覆写已存在元素,返回旧值指针;首次返 NULL
+static void test_hs_replace(CuTest *tc) {
     hashset *s = hashset_new(sizeof(int32_t), 0, _int_hash, _int_cmp, NULL, NULL);
     int32_t v = 7;
-    CuAssertTrue(tc, 1 == hashset_add(s, &v));
-    CuAssertTrue(tc, 0 == hashset_add(s, &v));
-    CuAssertTrue(tc, 0 == hashset_add(s, &v));
+    CuAssertPtrEquals(tc, NULL, (void *)hashset_add(s, &v));
+    CuAssertPtrNotNull(tc, hashset_add(s, &v));
+    CuAssertPtrNotNull(tc, hashset_add(s, &v));
     CuAssertTrue(tc, 1 == hashset_count(s));
     hashset_free(s);
 }
@@ -64,7 +64,7 @@ static void test_hs_clear(CuTest *tc) {
     CuAssertTrue(tc, 0 == hashset_count(s));
     v = 5;
     CuAssertTrue(tc, 0 == hashset_contains(s, &v));
-    CuAssertTrue(tc, 1 == hashset_add(s, &v));
+    CuAssertPtrEquals(tc, NULL, (void *)hashset_add(s, &v));
     CuAssertTrue(tc, 1 == hashset_count(s));
 
     // clear(update_cap=true)缩回初始容量
@@ -162,12 +162,35 @@ static void test_hs_elfree(CuTest *tc) {
     hashset_free(s);
     CuAssertTrue(tc, 10 == g_bag_free_cnt);
 }
+// add 覆写已存在 key 时返回旧值指针,旧值不会被自动 elfree,需调用方按需处理其内部分配
+static void test_hs_replace_elfree(CuTest *tc) {
+    g_bag_free_cnt = 0;
+    hashset *s = hashset_new(sizeof(_bag), 0, _bag_hash, _bag_cmp, _bag_free, NULL);
+    _bag first;
+    first.key = 1;
+    MALLOC(first.name, 16);
+    snprintf(first.name, 16, "first");
+    CuAssertPtrEquals(tc, NULL, (void *)hashset_add(s, &first));
+
+    _bag second;
+    second.key = 1;
+    MALLOC(second.name, 16);
+    snprintf(second.name, 16, "second");
+    _bag *old = (_bag *)hashset_add(s, &second);
+    CuAssertPtrNotNull(tc, old);
+    CuAssertTrue(tc, 0 == strcmp("first", old->name));
+    FREE(old->name);
+
+    CuAssertTrue(tc, 1 == hashset_count(s));
+    hashset_free(s);
+    CuAssertTrue(tc, 1 == g_bag_free_cnt);
+}
 // 大规模 10k 元素 add/contains/remove(ASan 验证内存安全)
 static void test_hs_stress(CuTest *tc) {
     hashset *s = hashset_new(sizeof(int32_t), 0, _int_hash, _int_cmp, NULL, NULL);
     int32_t i;
     for (i = 0; i < 10000; i++) {
-        CuAssertTrue(tc, 1 == hashset_add(s, &i));
+        CuAssertPtrEquals(tc, NULL, (void *)hashset_add(s, &i));
     }
     CuAssertTrue(tc, 10000 == hashset_count(s));
     // 全部存在
@@ -198,7 +221,7 @@ static void test_hs_clear_no_shrink(CuTest *tc) {
     CuAssertTrue(tc, 0 == hashset_count(s));
     // 再次填满,验证可用
     for (i = 0; i < 50; i++) {
-        CuAssertTrue(tc, 1 == hashset_add(s, &i));
+        CuAssertPtrEquals(tc, NULL, (void *)hashset_add(s, &i));
     }
     CuAssertTrue(tc, 50 == hashset_count(s));
     hashset_free(s);
@@ -207,12 +230,13 @@ static void test_hs_clear_no_shrink(CuTest *tc) {
 // 注册套件
 void test_hashset(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_hs_basic);
-    SUITE_ADD_TEST(suite, test_hs_dedup);
+    SUITE_ADD_TEST(suite, test_hs_replace);
     SUITE_ADD_TEST(suite, test_hs_remove_missing);
     SUITE_ADD_TEST(suite, test_hs_clear);
     SUITE_ADD_TEST(suite, test_hs_scan);
     SUITE_ADD_TEST(suite, test_hs_iter);
     SUITE_ADD_TEST(suite, test_hs_elfree);
+    SUITE_ADD_TEST(suite, test_hs_replace_elfree);
     SUITE_ADD_TEST(suite, test_hs_stress);
     SUITE_ADD_TEST(suite, test_hs_invalid);
     SUITE_ADD_TEST(suite, test_hs_clear_no_shrink);

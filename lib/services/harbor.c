@@ -49,8 +49,12 @@ static int32_t _harbor_ct_hexcmp(const char *a, const char *b, size_t n) {
     for (size_t i = 0; i < n; i++) {
         uint8_t ca = (uint8_t)a[i];
         uint8_t cb = (uint8_t)b[i];
-        if (ca >= 'a' && ca <= 'f') ca -= 0x20;
-        if (cb >= 'a' && cb <= 'f') cb -= 0x20;
+        if (ca >= 'a' && ca <= 'f') {
+            ca -= 0x20;
+        }
+        if (cb >= 'a' && cb <= 'f') {
+            cb -= 0x20;
+        }
         diff |= ca ^ cb;
     }
     return 0 != diff;

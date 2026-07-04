@@ -28,6 +28,10 @@ local function nslookup_udp(domain, ipv6)
     end
     -- 打包 DNS 查询报文并同步发送到 DNS 服务器的 53 端口，等待响应
     local req = dns.pack(domain, ipv6 and 1 or 0)
+    if not req then
+        srey.close(fd, skid)
+        return nil
+    end
     local resp, resplens = srey.syn_sendto(fd, skid, dns_ip, 53, req, #req, 1)
     srey.close(fd, skid)
     if not resp then

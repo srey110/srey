@@ -90,7 +90,6 @@ typedef struct worker_ctx {
     fsqu_ctx qutasks;     // 任务名队列（平台自适应 fsqu，替代原 spinlock + qu_task）
     mutex_ctx mutex;       // 配合条件变量使用的互斥锁
     cond_ctx cond;         // 工作线程休眠/唤醒条件变量
-    timer_ctx timer;       // 单调时钟（用于 dispatch 计时；init 后只读，无并发问题）
 }worker_ctx;
 // 字符串名 → name_t 句柄 索引项；name 借用 task_ctx.name（不另持有），handle 为 createid 句柄
 typedef struct name_handle_entry {

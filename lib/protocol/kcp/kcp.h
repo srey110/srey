@@ -5,6 +5,8 @@
 #include "protocol/prots_pub.h"
 #include "protocol/kcp/ikcp.h"
 
+// tick 调度方式:1=最小堆早退(会话多且同时到期少时占优) 0=hashmap_scan 全量扫描(同时到期会话占多数时占优)
+#define KCP_TICK_HEAP 1
 // kcp 会话句柄(值类型,业务持有):仅标识一个会话,不持有会话对象本身。
 // 会话对象(含 ikcpcb)由框架在 event 线程内建/查/释放,业务只通过此句柄操作,不会悬空。
 typedef struct kcp_ctx {

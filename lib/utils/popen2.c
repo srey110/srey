@@ -74,6 +74,9 @@ static int32_t _popen_pipe(HANDLE pipe[2]) {
 int32_t popen_startup(popen_ctx *ctx, const char *cmd, const char *mode) {
     // 必须在所有失败路径之前 ZERO,失败时调用方走 popen_free/popen_close 兜底能读到 NULL/INVALID 终止
     ZERO(ctx, sizeof(popen_ctx));
+#ifndef OS_WIN
+    ctx->sock = INVALID_SOCK;// 防 EMPTYSTR 早返，popen_free 关掉stdin(0)
+#endif
     if (EMPTYSTR(cmd)) {
         return ERR_FAILED;
     }
@@ -119,7 +122,6 @@ int32_t popen_startup(popen_ctx *ctx, const char *cmd, const char *mode) {
     }
 #else
     SOCKET sock[2];
-    ctx->sock = INVALID_SOCK;
     if (r || w) {
         if (ERR_FAILED == socketpair(AF_UNIX, SOCK_STREAM, 0, sock)) {
             LOG_ERROR("%s", ERRORSTR(ERRNO));

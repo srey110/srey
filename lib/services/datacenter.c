@@ -409,18 +409,34 @@ static void _dc_requested(task_ctx *task, subtype_t reqtype, uint64_t sess, name
     binary_ctx br;
     switch (reqtype) {
     case REQ_DC_SET:
+        if (NULL == data) {
+            _dc_resp_failed(ctx, src, sess, reqtype);
+            break;
+        }
         binary_init(&br, (char *)data, size, 0);
         _dc_handle_set(ctx, src, sess, &br);
         break;
     case REQ_DC_GET:
+        if (NULL == data) {
+            _dc_resp_failed(ctx, src, sess, reqtype);
+            break;
+        }
         binary_init(&br, (char *)data, size, 0);
         _dc_handle_get(ctx, src, sess, &br);
         break;
     case REQ_DC_WAIT:
+        if (NULL == data) {
+            _dc_resp_failed(ctx, src, sess, reqtype);
+            break;
+        }
         binary_init(&br, (char *)data, size, 0);
         _dc_handle_wait(ctx, src, sess, &br);
         break;
     case REQ_DC_DEL:
+        if (NULL == data) {
+            _dc_resp_failed(ctx, src, sess, reqtype);
+            break;
+        }
         binary_init(&br, (char *)data, size, 0);
         _dc_handle_del(ctx, src, sess, &br);
         break;

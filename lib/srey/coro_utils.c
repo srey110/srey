@@ -12,6 +12,7 @@
 #include "protocol/mysql/mysql_pack.h"
 #include "serial/bson.h"
 #include "utils/buffer.h"
+#include "utils/utils.h"
 
 static dns_ip *_dns_lookup_udp(task_ctx *task, const char *domain, int32_t ipv6, size_t *cnt) {
     int32_t rtn;
@@ -85,10 +86,8 @@ SOCKET wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, c
     if (0 == url.host.lens) {
         return INVALID_SOCK;
     }
-    char *host;
+    char *host = dup_zero(url.host.data, url.host.lens);
     char ip[IP_LENS] = { 0 };
-    CALLOC(host, 1, url.host.lens + 1);
-    memcpy(host, url.host.data, url.host.lens);
     if (ERR_OK != is_ipaddr(host)) {
         size_t nips;
         dns_ip *ips = dns_lookup(task, host, 0, 0, &nips);
@@ -520,12 +519,9 @@ int32_t mongo_auth(mongo_ctx *mongo, const char *authmod, const char *user, cons
     mongo_set_flag(mongo, flags);
     return rtn;
 }
-mgopack_ctx *mongo_hello(mongo_ctx *mongo, char *options) {
-    int32_t flags = mongo_clear_flag(mongo);
-    size_t lens;
-    void *hello = mongo_pack_hello(mongo, options, &lens);
-    mongo_set_flag(mongo, flags);
-    mgopack_ctx *mgpack = coro_send(mongo->task, mongo->sk.fd, mongo->sk.skid, hello, lens, NULL, 0);
+// 统一"发送+同步等待响应+校验错误"尾块(不受 MORETOCOME 影响,总是等待);成功返回 mgopack,失败返回 NULL
+static mgopack_ctx *_mongo_call(mongo_ctx *mongo, void *pack, size_t lens) {
+    mgopack_ctx *mgpack = coro_send(mongo->task, mongo->sk.fd, mongo->sk.skid, pack, lens, NULL, 0);
     if (NULL == mgpack) {
         return NULL;
     }
@@ -534,19 +530,19 @@ mgopack_ctx *mongo_hello(mongo_ctx *mongo, char *options) {
     }
     return mgpack;
 }
+mgopack_ctx *mongo_hello(mongo_ctx *mongo, char *options) {
+    int32_t flags = mongo_clear_flag(mongo);
+    size_t lens;
+    void *hello = mongo_pack_hello(mongo, options, &lens);
+    mongo_set_flag(mongo, flags);
+    return _mongo_call(mongo, hello, lens);
+}
 static int32_t _mongo_ping(mongo_ctx *mongo) {
     int32_t flags = mongo_clear_flag(mongo);
     size_t lens;
     void *ping = mongo_pack_ping(mongo, &lens);
     mongo_set_flag(mongo, flags);
-    mgopack_ctx *mgpack = coro_send(mongo->task, mongo->sk.fd, mongo->sk.skid, ping, lens, NULL, 0);
-    if (NULL == mgpack) {
-        return ERR_FAILED;
-    }
-    if (ERR_FAILED == mongo_parse_check_error(mgpack)) {
-        return ERR_FAILED;
-    }
-    return ERR_OK;
+    return NULL == _mongo_call(mongo, ping, lens) ? ERR_FAILED : ERR_OK;
 }
 int32_t mongo_ping(mongo_ctx *mongo) {
     if (ERR_OK != _mongo_ping(mongo)) {
@@ -650,42 +646,21 @@ mgopack_ctx *mongo_find(mongo_ctx *mongo, char *filter, size_t flens, char *opti
     size_t lens;
     void *find = mongo_pack_find(mongo, filter, flens, options, &lens);
     mongo_set_flag(mongo, flags);
-    mgopack_ctx *mgpack = coro_send(mongo->task, mongo->sk.fd, mongo->sk.skid, find, lens, NULL, 0);
-    if (NULL == mgpack) {
-        return NULL;
-    }
-    if (ERR_FAILED == mongo_parse_check_error(mgpack)) {
-        return NULL;
-    }
-    return mgpack;
+    return _mongo_call(mongo, find, lens);
 }
 mgopack_ctx *mongo_aggregate(mongo_ctx *mongo, char *pipeline, size_t pllens, char *options) {
     int32_t flags = mongo_clear_flag(mongo);
     size_t lens;
     void *aggt = mongo_pack_aggregate(mongo, pipeline, pllens, options, &lens);
     mongo_set_flag(mongo, flags);
-    mgopack_ctx *mgpack = coro_send(mongo->task, mongo->sk.fd, mongo->sk.skid, aggt, lens, NULL, 0);
-    if (NULL == mgpack) {
-        return NULL;
-    }
-    if (ERR_FAILED == mongo_parse_check_error(mgpack)) {
-        return NULL;
-    }
-    return mgpack;
+    return _mongo_call(mongo, aggt, lens);
 }
 mgopack_ctx *mongo_getmore(mongo_ctx *mongo, int64_t cursorid, char *options) {
     int32_t flags = mongo_clear_flag(mongo);
     size_t lens;
     void *getmore = mongo_pack_getmore(mongo, cursorid, options, &lens);
     mongo_set_flag(mongo, flags);
-    mgopack_ctx *mgpack = coro_send(mongo->task, mongo->sk.fd, mongo->sk.skid, getmore, lens, NULL, 0);
-    if (NULL == mgpack) {
-        return NULL;
-    }
-    if (ERR_FAILED == mongo_parse_check_error(mgpack)) {
-        return NULL;
-    }
-    return mgpack;
+    return _mongo_call(mongo, getmore, lens);
 }
 mgopack_ctx *mongo_killcursors(mongo_ctx *mongo, char *cursorids, size_t cslens, char *options) {
     size_t lens;
@@ -707,14 +682,7 @@ mgopack_ctx *mongo_distinct(mongo_ctx *mongo, const char *key, char *query, size
     size_t lens;
     void *distinct = mongo_pack_distinct(mongo, key, query, qlens, options, &lens);
     mongo_set_flag(mongo, flags);
-    mgopack_ctx *mgpack = coro_send(mongo->task, mongo->sk.fd, mongo->sk.skid, distinct, lens, NULL, 0);
-    if (NULL == mgpack) {
-        return NULL;
-    }
-    if (ERR_FAILED == mongo_parse_check_error(mgpack)) {
-        return NULL;
-    }
-    return mgpack;
+    return _mongo_call(mongo, distinct, lens);
 }
 mgopack_ctx *mongo_findandmodify(mongo_ctx *mongo, char *query, size_t qlens,
     int32_t remove, int32_t pipeline, char *update, size_t ulens, char *options) {
@@ -722,14 +690,7 @@ mgopack_ctx *mongo_findandmodify(mongo_ctx *mongo, char *query, size_t qlens,
     size_t lens;
     void *findandmodify = mongo_pack_findandmodify(mongo, query, qlens, remove, pipeline, update, ulens, options, &lens);
     mongo_set_flag(mongo, flags);
-    mgopack_ctx *mgpack = coro_send(mongo->task, mongo->sk.fd, mongo->sk.skid, findandmodify, lens, NULL, 0);
-    if (NULL == mgpack) {
-        return NULL;
-    }
-    if (ERR_FAILED == mongo_parse_check_error(mgpack)) {
-        return NULL;
-    }
-    return mgpack;
+    return _mongo_call(mongo, findandmodify, lens);
 }
 int32_t mongo_count(mongo_ctx *mongo, char *query, size_t qlens, char *options) {
     int32_t flags = mongo_clear_flag(mongo);
@@ -798,11 +759,7 @@ int32_t mongo_refreshsession(mongo_session *session) {
     size_t lens;
     void *refreshsession = mongo_pack_refreshsession(session, &lens);
     mongo_set_flag(mongo, flags);
-    mgopack_ctx *mgpack = coro_send(mongo->task, mongo->sk.fd, mongo->sk.skid, refreshsession, lens, NULL, 0);
-    if (NULL == mgpack) {
-        return ERR_FAILED;
-    }
-    if (ERR_FAILED == mongo_parse_check_error(mgpack)) {
+    if (NULL == _mongo_call(mongo, refreshsession, lens)) {
         return ERR_FAILED;
     }
     session->timeout = nowsec() + session->timeoutmin * 60;
@@ -831,11 +788,7 @@ int32_t mongo_commit(mongo_session *session, char *options) {
     mongo_set_flag(mongo, flags);
     mongo->session = NULL;
     FREE(session->options);
-    mgopack_ctx *mgpack = coro_send(mongo->task, mongo->sk.fd, mongo->sk.skid, committransaction, lens, NULL, 0);
-    if (NULL == mgpack) {
-        return ERR_FAILED;
-    }
-    if (ERR_FAILED == mongo_parse_check_error(mgpack)) {
+    if (NULL == _mongo_call(mongo, committransaction, lens)) {
         return ERR_FAILED;
     }
     session->timeout = nowsec() + session->timeoutmin * 60;
@@ -849,11 +802,7 @@ int32_t mongo_rollback(mongo_session *session, char *options) {
     mongo_set_flag(mongo, flags);
     mongo->session = NULL;
     FREE(session->options);
-    mgopack_ctx *mgpack = coro_send(mongo->task, mongo->sk.fd, mongo->sk.skid, aborttransaction, lens, NULL, 0);
-    if (NULL == mgpack) {
-        return ERR_FAILED;
-    }
-    if (ERR_FAILED == mongo_parse_check_error(mgpack)) {
+    if (NULL == _mongo_call(mongo, aborttransaction, lens)) {
         return ERR_FAILED;
     }
     session->timeout = nowsec() + session->timeoutmin * 60;

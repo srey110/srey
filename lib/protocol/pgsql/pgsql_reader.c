@@ -305,9 +305,15 @@ static int32_t _pgsql_days_from_text(const char *s, int32_t slen, int32_t *err) 
 }
 // 将十六进制字符转为整数值，无效字符返回 -1
 static int32_t _pgsql_hex_digit(char c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    if (c >= '0' && c <= '9') {
+        return c - '0';
+    }
+    if (c >= 'a' && c <= 'f') {
+        return c - 'a' + 10;
+    }
+    if (c >= 'A' && c <= 'F') {
+        return c - 'A' + 10;
+    }
     return -1;
 }
 int64_t pgsql_reader_timestamp(pgsql_reader_ctx *reader, const char *name, int32_t *err) {
