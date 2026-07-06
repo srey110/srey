@@ -32,14 +32,14 @@ typedef enum sock_status {
     STATUS_KEYUPDATE = 0x80,    // 数据期 TLS1.3 KeyUpdate 等写就绪(两平台均仅数据期)；Unix 注册 EVENT_WRITE，IOCP 投 0 字节 WSASend 探针
     STATUS_GRACEFUL_CLOSE = 0x100// ev_close(immed=0) 标记，buf_s 发完后 _close_tcp
 }sock_status;
-// UDP 多播 setsockopt 操作类型,由 ev_udp_join/leave/ttl/loop 投递 CMD_UDP_OPT 时填写
+// UDP 多播 setsockopt 操作类型,由 ev_udp_join/leave/ttl/loop 经 ev_props 投递时填写
 typedef enum udp_opt_type {
     UDP_OPT_JOIN = 0x01,   // 加入多播组(IP_ADD_MEMBERSHIP / IPV6_JOIN_GROUP)
     UDP_OPT_LEAVE,         // 离开多播组(IP_DROP_MEMBERSHIP / IPV6_LEAVE_GROUP)
     UDP_OPT_TTL,           // 多播 TTL(IP_MULTICAST_TTL / IPV6_MULTICAST_HOPS)
     UDP_OPT_LOOP           // 多播本机回环(IP_MULTICAST_LOOP / IPV6_MULTICAST_LOOP)
 }udp_opt_type;
-// CMD_UDP_OPT 命令携带的参数：业务侧 MALLOC,事件线程内 setsockopt 后 FREE。
+// ev_props 携带的 UDP 多播 setsockopt 参数：业务侧 MALLOC,事件线程内 setsockopt 后 FREE。
 // 字段按 op 不同使用：JOIN/LEAVE 用 group_ip+iface_str；TTL 用 ttl；LOOP 用 loop
 typedef struct udp_opt_arg {
     uint8_t  ttl;               // op=UDP_OPT_TTL 时使用;1=仅本网段,255=跨广域
@@ -134,6 +134,12 @@ void _evpub_tick_remove(struct watcher_ctx *watcher, ev_tick *tk);
 // 驱动 watcher->ticks 全部节点:逐个调用 tick 回调,返回下轮 wait 超时(ms,clamp 到 [EVENT_TICK_MIN, EVENT_WAIT_TIMEOUT]);
 // *now_ms 回填本轮时钟,无 tick 时置 0(供调用方 drain/shrink 复用,省一次 timer_cur_ms)
 uint32_t _evpub_tick_drive(struct watcher_ctx *watcher, struct timer_ctx *timer, uint64_t *now_ms);
+// 该 watcher的 计时器
+struct timer_ctx *_evpub_watcher_timer(struct watcher_ctx *watcher);
+// 根据fd获取所属 watcher（GET_PTR 的平台无关封装，供不知道 watcher_ctx 完整定义的调用方使用）
+struct watcher_ctx *_evpub_watcher_at(ev_ctx *netev, SOCKET fd);
+// 获取 sock_ctx 的 socket 类型（SOCK_STREAM/SOCK_DGRAM），供不知道 sock_ctx 完整定义的调用方使用
+int32_t _evpub_sock_type(struct sock_ctx *skctx);
 
 //sock_ctx 池相关
 void *_evpub_sk_new(void *args);
@@ -160,7 +166,14 @@ SOCKET _evpub_udp(netaddr_ctx *addr);
 int32_t _evpub_sock_read(SOCKET fd, IOV_TYPE *iov, uint32_t niov, void *arg, size_t *readed);
 // 向socket发送数据（支持SSL/普通）
 int32_t _evpub_sock_send(SOCKET fd, queue_ctx *buf_s, size_t *nsend, void *arg);
-// 设置ud_cxt的子协议extra字段
-void _evpub_set_secextra(ud_cxt *ud, void *val);
+// UDP 发送缓冲入队并尝试立即发送（IOCP/uev 平台无关封装）；
+// tried 非 0 表示调用方在入队前已经尝试过一次发送（如 _evpub_try_sendto 遇到 EAGAIN），
+// 此次必然复现，跳过重复尝试，仅确保写事件已注册（IOCP 平台忽略该参数）
+void _evpub_add_bufs_sendto(struct watcher_ctx *watcher, struct sock_ctx *skctx, sendto_ctx *buf, int32_t tried);
+// 尝试直接发送 UDP 数据，不转移 data 所有权（调用方返回后可自由处置该内存）；
+// 发出成功或致命错误（已断开）均返回 ERR_OK，调用方无需任何后续操作；
+// 发送队列已有积压、EAGAIN 或 IOCP 平台（发送恒为异步）均返回 ERR_FAILED，
+// 调用方需自行 MALLOC+memcpy 后以 tried=1 转入 _evpub_add_bufs_sendto 排队
+int32_t _evpub_try_sendto(struct watcher_ctx *watcher, struct sock_ctx *skctx, const void *data, size_t len, netaddr_ctx *addr);
 
 #endif//EVPUB_H_

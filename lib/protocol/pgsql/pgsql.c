@@ -18,13 +18,13 @@ typedef enum parse_status {
 // 支持的 SASL 认证方法列表（优先级从高到低：PLUS变体优先，回退到无通道绑定版本）
 #if WITH_SSL
 static const char *_pgsql_scram_mod[] = {
-    "SCRAM-SHA-256-PLUS",  // 带通道绑定，首选
-    "SCRAM-SHA-256",       // 无通道绑定，回退
+    "SCRAM-SHA-256-PLUS", // 带通道绑定，首选
+    "SCRAM-SHA-256", // 无通道绑定，回退
 };
 #else
 static const char *_pgsql_scram_mod[] = { "SCRAM-SHA-256" };
 #endif
-static _handshaked_push _hs_push;                             // 握手完成推送回调函数指针
+static _handshaked_push _hs_push; // 握手完成推送回调函数指针
 
 void _pgsql_init(void *hspush) {
     _hs_push = hspush;
@@ -65,7 +65,7 @@ int32_t _pgsql_on_connected(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud, in
         return err;
     }
     char buf[8];
-    pack_integer(buf, 8, 4, 0);         // 消息总长度 = 8
+    pack_integer(buf, 8, 4, 0); // 消息总长度 = 8
     pack_integer(buf + 4, 80877103, 4, 0); // SSLRequest 魔数
     return ev_send(ev, fd, skid, buf, sizeof(buf), 1);
 }
@@ -74,19 +74,19 @@ static int32_t _pgsql_startup(ev_ctx *ev, ud_cxt *ud) {
     pgsql_ctx *pg = (pgsql_ctx *)ud->context;
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
-    binary_set_skip(&bwriter, 4);                           // 预留长度字段
-    binary_set_integer(&bwriter, 3, 2, 0);                  // 协议主版本号 3
-    binary_set_integer(&bwriter, 0, 2, 0);                  // 协议次版本号 0
+    binary_set_skip(&bwriter, 4); // 预留长度字段
+    binary_set_integer(&bwriter, 3, 2, 0); // 协议主版本号 3
+    binary_set_integer(&bwriter, 0, 2, 0); // 协议次版本号 0
     binary_set_string(&bwriter, "user");
     binary_set_string(&bwriter, pg->user);
     binary_set_string(&bwriter, "database");
     binary_set_string(&bwriter, pg->database);
     binary_set_string(&bwriter, "application_name");
     binary_set_string(&bwriter, "srey");
-    binary_set_int8(&bwriter, 0);                           // 参数列表结束标志
+    binary_set_int8(&bwriter, 0); // 参数列表结束标志
     size_t size = bwriter.offset;
     binary_offset(&bwriter, 0);
-    binary_set_integer(&bwriter, size, 4, 0);               // 回填消息总长度
+    binary_set_integer(&bwriter, size, 4, 0); // 回填消息总长度
     ud->status = AUTH;
     return ev_send(ev, pg->sk.fd, pg->sk.skid, bwriter.data, size, 0);
 }
@@ -234,27 +234,21 @@ static int32_t _pgsql_md5_auth(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *breader) {
     const char *salt = binary_get_binary(breader, 4);
     md5_ctx md5;
     char hash[MD5_BLOCK_SIZE];
-    char inner_hex[MD5_BLOCK_SIZE * 2 + 1];       // hex(md5(password+user))
-    char response[3 + MD5_BLOCK_SIZE * 2 + 1];    // "md5" + hex + '\0'
+    char inner_hex[MD5_BLOCK_SIZE * 2 + 1]; // hex(md5(password+user))
+    char response[3 + MD5_BLOCK_SIZE * 2 + 1]; // "md5" + hex + '\0'
     // 第一步：内层 md5(password + user) → 十六进制字符串
     md5_init(&md5);
     md5_update(&md5, pg->password, strlen(pg->password));
     md5_update(&md5, pg->user, strlen(pg->user));
     md5_final(&md5, hash);
-    for (int32_t i = 0; i < MD5_BLOCK_SIZE; i++) {
-        SNPRINTF(inner_hex + i * 2, 3, "%02x", (uint8_t)hash[i]);
-    }
-    inner_hex[MD5_BLOCK_SIZE * 2] = '\0';
+    tohex(hash, MD5_BLOCK_SIZE, inner_hex, 1);
     // 第二步：外层 md5(inner_hex + salt) → 十六进制字符串，拼接 "md5" 前缀
     md5_init(&md5);
     md5_update(&md5, inner_hex, MD5_BLOCK_SIZE * 2);
     md5_update(&md5, salt, 4);
     md5_final(&md5, hash);
     safe_fill_str(response, sizeof(response), "md5");
-    for (int32_t i = 0; i < MD5_BLOCK_SIZE; i++) {
-        SNPRINTF(response + 3 + i * 2, 3, "%02x", (uint8_t)hash[i]);
-    }
-    response[3 + MD5_BLOCK_SIZE * 2] = '\0';
+    tohex(hash, MD5_BLOCK_SIZE, response + 3, 1);
     secure_zero(hash, sizeof(hash));
     secure_zero(inner_hex, sizeof(inner_hex));
     secure_zero(&md5, sizeof(md5));
@@ -287,9 +281,9 @@ static int32_t _pgsql_scram_client_first(pgsql_ctx *pg, ev_ctx *ev, const char *
     }
     binary_ctx bwriter;
     pgsql_pack_start(&bwriter, 'p');
-    binary_set_string(&bwriter, mod);                    // 所选 SASL 机制名称
+    binary_set_string(&bwriter, mod); // 所选 SASL 机制名称
     size_t fmlens = strlen(first_message);
-    binary_set_integer(&bwriter, fmlens, 4, 0);             // client-first-message 长度
+    binary_set_integer(&bwriter, fmlens, 4, 0); // client-first-message 长度
     binary_set_binary(&bwriter, first_message, fmlens);
     FREE(first_message);
     pgsql_pack_end(&bwriter);
@@ -384,7 +378,7 @@ static void _pgsql_auth_response(pgsql_ctx *pg, ev_ctx *ev, buffer_ctx *buf, ud_
     }
     binary_ctx breader;
     binary_init(&breader, pack, lens + 1, 0); // +1 为类型码字节
-    binary_get_skip(&breader, 5);             // 跳过类型码(1) + 长度(4)
+    binary_get_skip(&breader, 5); // 跳过类型码(1) + 长度(4)
     switch (pack[0]) {
     case 'E': { // ErrorResponse：认证失败，推送错误消息
         char *err = _pgpack_error_notice(&breader);
@@ -427,10 +421,10 @@ void *pgsql_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     pgsql_ctx *pg = (pgsql_ctx *)ud->context;
     pgpack_ctx *pack = NULL;
     switch (ud->status) {
-    case INIT:    // 等待 SSL 协商响应
+    case INIT: // 等待 SSL 协商响应
         _pgsql_ssl_response(pg, ev, buf, ud, status);
         break;
-    case AUTH:    // 认证阶段消息处理
+    case AUTH: // 认证阶段消息处理
         _pgsql_auth_response(pg, ev, buf, ud, status);
         break;
     case COMMAND: // 命令阶段消息处理

@@ -445,15 +445,7 @@ static int32_t _ltask_register(lua_State *lua) {
 /// <param name="task" type="lightuserdata?">目标 task 指针；nil 时关闭当前 task</param>
 /// <returns>无</returns>
 static int32_t _ltask_close(lua_State *lua) {
-    task_ctx *task;
-    int32_t type = lua_type(lua, 1);
-    if (LUA_TNIL == type
-        || LUA_TNONE == type) {
-        task = global_userdata(lua, CUR_TASK_NAME);
-    } else {
-        LUACHECK_LUDATA(lua, 1);
-        task = lua_touserdata(lua, 1);
-    }
+    LPUB_TASK_ARG(lua, task);
     if (NULL == task) {
         return luaL_error(lua, "task is nil");
     }
@@ -505,15 +497,7 @@ static int32_t _ltask_ungrab(lua_State *lua) {
 /// <param name="task" type="lightuserdata?">task 指针；nil 时查询当前 task</param>
 /// <returns type="boolean">关闭中返回 true</returns>
 static int32_t _ltask_isclosing(lua_State *lua) {
-    task_ctx *task;
-    int32_t type = lua_type(lua, 1);
-    if (LUA_TNIL == type
-        || LUA_TNONE == type) {
-        task = global_userdata(lua, CUR_TASK_NAME);
-    } else {
-        LUACHECK_LUDATA(lua, 1);
-        task = lua_touserdata(lua, 1);
-    }
+    LPUB_TASK_ARG(lua, task);
     if (NULL == task) {
         return luaL_error(lua, "task is nil");
     }
@@ -526,15 +510,7 @@ static int32_t _ltask_isclosing(lua_State *lua) {
 /// <param name="task" type="lightuserdata?">task 指针；nil 时查询当前 task</param>
 /// <returns type="TASK_TYPE">任务类型</returns>
 static int32_t _ltask_get_type(lua_State *lua) {
-    task_ctx *task;
-    int32_t type = lua_type(lua, 1);
-    if (LUA_TNIL == type
-        || LUA_TNONE == type) {
-        task = global_userdata(lua, CUR_TASK_NAME);
-    } else {
-        LUACHECK_LUDATA(lua, 1);
-        task = lua_touserdata(lua, 1);
-    }
+    LPUB_TASK_ARG(lua, task);
     if (NULL == task) {
         return luaL_error(lua, "task is nil");
     }
@@ -547,15 +523,7 @@ static int32_t _ltask_get_type(lua_State *lua) {
 /// <param name="task" type="lightuserdata?">task 指针；nil 时取当前 task</param>
 /// <returns type="string?">字符串 task 名；匿名 task 或不存在返回 nil</returns>
 static int32_t _ltask_name(lua_State *lua) {
-    task_ctx *task;
-    int32_t type = lua_type(lua, 1);
-    if (LUA_TNIL == type
-        || LUA_TNONE == type) {
-        task = global_userdata(lua, CUR_TASK_NAME);
-    } else {
-        LUACHECK_LUDATA(lua, 1);
-        task = lua_touserdata(lua, 1);
-    }
+    LPUB_TASK_ARG(lua, task);
     if (NULL == task
         || NULL == task->name) {
         lua_pushnil(lua);
@@ -570,15 +538,7 @@ static int32_t _ltask_name(lua_State *lua) {
 /// <param name="task" type="lightuserdata?">task 指针；nil 时取当前 task</param>
 /// <returns type="integer">task 句柄</returns>
 static int32_t _ltask_handle(lua_State *lua) {
-    task_ctx *task;
-    int32_t type = lua_type(lua, 1);
-    if (LUA_TNIL == type
-        || LUA_TNONE == type) {
-        task = global_userdata(lua, CUR_TASK_NAME);
-    } else {
-        LUACHECK_LUDATA(lua, 1);
-        task = lua_touserdata(lua, 1);
-    }
+    LPUB_TASK_ARG(lua, task);
     if (NULL == task) {
         return luaL_error(lua, "task is nil");
     }

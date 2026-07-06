@@ -236,14 +236,5 @@ int32_t ev_ud_handle(ev_ctx *ctx, SOCKET fd, uint64_t skid, name_t handle);
 /// <param name="extra">extra</param>
 /// <returns>ERR_OK 成功，stop 非0失败</returns>
 int32_t ev_ud_context(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *extra);
-/// <summary>
-/// 设置子协议的ud_cxt的extra,websocket
-/// </summary>
-/// <param name="ctx">ev_ctx</param>
-/// <param name="fd">socket句柄</param>
-/// <param name="skid">链接ID</param>
-/// <param name="extra">extra</param>
-/// <returns>ERR_OK 成功，stop 非0失败</returns>
-int32_t ev_ud_seccontext(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *extra);
 
 #endif//EVENT_H_

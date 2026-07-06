@@ -17,9 +17,11 @@ local xpcall           = xpcall
 local tunpack          = table.unpack
 local tremove          = table.remove
 local tpack            = table.pack
+local tinsert          = table.insert
 local coroutine_create = coroutine.create
 local coroutine_yield  = coroutine.yield
 local coroutine_resume = coroutine.resume
+local message_may_keep = core.message_may_keep
 local cur_task  = _curtask   -- 当前 task 的 C 层指针，由 loader 注入
 local TASK_NAME = TASK_NAME
 local SSL_NAME  = SSL_NAME
@@ -442,18 +444,19 @@ end
 ---@field args    any[]?       传给 func 的参数列表；func 为 nil 时不存在
 
 ---@class CoroSession
----@field disposable boolean           true=一次性（单协程等待）；false=可重入（FIFO 队列）
----@field coroinfo   CoroInfo|CoroInfo[]  disposable 时为单个 CoroInfo，否则为 CoroInfo 数组
+---@field keep    boolean     waiters 摘空后是否保留本条目：false 立即删除；true 保留（TCP/UDP 同一
+---                            skid 高频复用，免去反复 table 删除+插入），仅 _net_close_dispatch 会强制清 false
+---@field waiters CoroInfo[]  挂起协程数组，严格按 FIFO 顺序等待/唤醒（[1] 为队头，队头 mtype 匹配才摘除）
 
----将协程或回调函数注册到会话表，等待指定消息类型唤醒
----@param disposable boolean true=一次性会话；false=可重入（同一 skid 可有多等待者，FIFO 消费）
+---将协程或回调函数注册到会话表，等待指定消息类型唤醒；keep 仅在新建条目时按 mtype 由 message_may_keep 推导，
+---追加到已有条目不覆盖旧值——keep 描述的是 sess 本身的性质，一旦被 _net_close_dispatch 清 false 就应保持 false
 ---@param coro thread? 等待唤醒的协程；func 模式下可为 nil
 ---@param sess integer 会话 id
 ---@param mtype integer 期望唤醒的消息类型（MSG_TYPE.*）
 ---@param ms integer 超时毫秒数；0 表示永不超时
 ---@param func fun(...)? 定时回调；非 nil 时消息到达后新建协程执行而非 resume coro
 ---@param ... any 传给 func 的参数
-local function _set_coro_sess(disposable, coro, sess, mtype, ms, func, ...)
+local function _set_coro_sess(coro, sess, mtype, ms, func, ...)
     local timeout = 0
     local now = srey.timer_ms()
     if ms > 0 then
@@ -467,92 +470,66 @@ local function _set_coro_sess(disposable, coro, sess, mtype, ms, func, ...)
         func    = func,
         args    = func and tpack(...) or nil,
     }
-    if disposable then
-        assert(not coro_sess[sess], "repeat session")
-        coro_sess[sess] = {
-            disposable = disposable,
-            coroinfo = coroinfo
-        }
-    else
-        local corosess = coro_sess[sess]
-        if not corosess then
-            coro_sess[sess] = {
-                disposable = disposable,
-                coroinfo = {coroinfo}
-            }
-        else
-            table.insert(corosess.coroinfo, coroinfo)
-        end
-    end
-end
-
----从会话表中查找匹配的 corosess；mtype 须与登记时一致或为 CLOSE（强制唤醒）
----@param sess integer 会话 id
----@param mtype integer 消息类型
----@return CoroSession|nil corosess 匹配的会话对象；不匹配返回 nil
-local function _get_coro_sess(sess, mtype)
     local corosess = coro_sess[sess]
     if not corosess then
-        return nil
+        coro_sess[sess] = {
+            keep = message_may_keep(mtype),
+            waiters = {coroinfo}
+        }
+    else
+        tinsert(corosess.waiters, coroinfo)
     end
-    if corosess.disposable then
-        if mtype ~= corosess.coroinfo.mtype and MSG_TYPE.CLOSE ~= mtype then
-            return nil
-        end
-        coro_sess[sess] = nil
-        return corosess
-    end
-    if 0 == #corosess.coroinfo then
-        coro_sess[sess] = nil
-        return nil
-    end
-    if mtype ~= corosess.coroinfo[1].mtype and MSG_TYPE.CLOSE ~= mtype then
-        return nil
-    end
-    if MSG_TYPE.CLOSE == mtype then
-        coro_sess[sess] = nil
-    end
-    return corosess
 end
 
----从 corosess 中取出一个 coroinfo；disposable 直接返回，非 disposable 按 FIFO 出队
----@param corosess CoroSession 会话对象
----@return CoroInfo|nil coroinfo 协程信息表
-local function _coro_info(corosess)
-    if corosess.disposable then
-        return corosess.coroinfo
-    end
-    if 0 == #corosess.coroinfo then
+---从会话表中查找匹配的队头 coroinfo 并摘除：仅检测队头，mtype 匹配（或参数为 CLOSE 通配）才摘除返回，
+---队头不匹配（含 keep 保留的空条目）视为无等待者，不越过队头继续查找（保持严格 FIFO）；
+---摘除后 waiters 为空且 !keep 时才删除会话表条目
+---@param sess integer 会话 id
+---@param mtype integer 消息类型
+---@return CoroInfo|nil coroinfo 匹配的队头协程信息；不匹配返回 nil
+local function _get_coro_sess(sess, mtype)
+    local corosess = coro_sess[sess]
+    if not corosess or 0 == #corosess.waiters then
         return nil
     end
-    local coroinfo = corosess.coroinfo[1]
-    table.remove(corosess.coroinfo, 1)
+    local coroinfo = corosess.waiters[1]
+    if mtype ~= coroinfo.mtype and MSG_TYPE.CLOSE ~= mtype then
+        return nil
+    end
+    tremove(corosess.waiters, 1)
+    if 0 == #corosess.waiters and not corosess.keep then
+        coro_sess[sess] = nil
+    end
     return coroinfo
 end
 
----non-disposable 唤醒公共尾部:cosess 或 coroinfo 为空则调用 func(...)，否则 resume 等待协程；
----sess==0 的入口判断由各 dispatch 函数自行处理，不在此函数内
+---统一唤醒尾部：找到匹配等待者则唤醒；否则 warn 为 true 时先告警（未找到即逻辑异常，与是否调用 func 无关），
+---再调用 func(...)（如果注册了）；sess==0 的入口判断由各 dispatch 函数自行处理，不在此函数内
 ---@param msg Message
 ---@param mtype integer 期望匹配的消息类型
----@param func function? 无协程等待时的业务回调；nil 表示未注册
-local function _dispatch_non_disposable(msg, mtype, func, ...)
-    local corosess = _get_coro_sess(msg.sess, mtype)
-    local coroinfo = corosess and _coro_info(corosess)
+---@param warn boolean 找不到等待者时是否告警
+---@param func fun(...)? 无协程等待时的业务回调；nil 表示未注册
+local function _dispatch_wait(msg, mtype, warn, func, ...)
+    local coroinfo = _get_coro_sess(msg.sess, mtype)
     if coroinfo then
         _coro_resume(coroinfo.coro, msg)
-    elseif func then
+        return
+    end
+    if warn then
+        WARN("can't find session, maybe logic error. msg_type %d.", mtype)
+    end
+    if func then
         _coro_run(_coro_cb, func, ...)
     end
 end
 
 ---挂起当前协程，等待指定会话的消息
----@param disposable boolean true=一次性会话；false=可重入
 ---@param sess integer 会话 id
 ---@param mtype integer 期望唤醒的消息类型
 ---@param ms integer 超时毫秒数；0 表示永不超时
 ---@return Message msg 触发 resume 的消息表
-function srey._coro_wait(disposable, sess, mtype, ms)
-    _set_coro_sess(disposable, coro_running, sess, mtype, ms)
+function srey._coro_wait(sess, mtype, ms)
+    _set_coro_sess(coro_running, sess, mtype, ms)
     nyield = nyield + 1
     local msg = coroutine_yield()
     nyield = nyield - 1
@@ -568,7 +545,7 @@ function srey.sleep(ms)
     end
     local sess = srey.id()
     core.timeout(sess, ms)
-    srey._coro_wait(true, sess, MSG_TYPE.TIMEOUT, 0)
+    srey._coro_wait(sess, MSG_TYPE.TIMEOUT, 0)
 end
 
 ---异步定时器：ms 毫秒后在新协程中调用 func(...)，当前协程不挂起
@@ -577,18 +554,13 @@ end
 ---@param ... any 传给 func 的参数
 function srey.timeout(ms, func, ...)
     local sess = srey.id()
-    _set_coro_sess(true, nil, sess, MSG_TYPE.TIMEOUT, 0, func, ...)
+    _set_coro_sess(nil, sess, MSG_TYPE.TIMEOUT, 0, func, ...)
     core.timeout(sess, ms)
 end
 
 ---@param msg Message
 local function _timeout_dispatch(msg)
-    local corosess = _get_coro_sess(msg.sess, MSG_TYPE.TIMEOUT)
-    if not corosess then
-        WARN("can't find session %s.", tostring(msg.sess))
-        return
-    end
-    local coroinfo = _coro_info(corosess)
+    local coroinfo = _get_coro_sess(msg.sess, MSG_TYPE.TIMEOUT)
     if not coroinfo then
         WARN("can't find session %s.", tostring(msg.sess))
         return
@@ -633,7 +605,7 @@ function srey.request(dst, reqtype, data, size, copy)
     local sess = srey.id()
     core.request(dtask, reqtype, sess, data, size, copy)
     srey.task_ungrab(dtask)
-    local msg = srey._coro_wait(true, sess, MSG_TYPE.RESPONSE, srey.get_request_timeout())
+    local msg = srey._coro_wait(sess, MSG_TYPE.RESPONSE, srey.get_request_timeout())
     if MSG_TYPE.TIMEOUT == msg.mtype then
         WARN("request timeout, session %s.", tostring(sess))
         return nil
@@ -807,23 +779,11 @@ end
 
 ---@param msg Message
 local function _response_dispatch(msg)
-    local corosess = _get_coro_sess(msg.sess, MSG_TYPE.RESPONSE)
-    if corosess then
-        local coroinfo = _coro_info(corosess)
-        if coroinfo then
-            _coro_resume(coroinfo.coro, msg)
-        end
-        return
-    end
     -- sess 不在 coro_sess（可能是 srey.multi_request 等广播场景，也可能是逻辑错误）：
-    -- 告警对齐 C 侧 _coro_handle_disposable，不管是否有 fallback 都先告警；
+    -- 告警对齐 C 侧 _coro_handle_response，不管是否有 fallback 都先告警；
     -- 仍起新协程跑全局 on_responsed 回调兜底,与其他 on_* 回调一致(_coro_cb 自带
     -- task_incref/ungrab + xpcall),用户回调内可 yield(coro_wait/sleep/call 等)而不影响主分发循环
-    WARN("can't find session, maybe logic error. msg_type %d.", MSG_TYPE.RESPONSE)
-    local cb = func_cbs[MSG_TYPE.RESPONSE]
-    if cb then
-        _coro_run(_coro_cb, cb, msg.subtype, msg.sess, msg.erro, msg.data, msg.size)
-    end
+    _dispatch_wait(msg, MSG_TYPE.RESPONSE, true, func_cbs[MSG_TYPE.RESPONSE], msg.subtype, msg.sess, msg.erro, msg.data, msg.size)
 end
 
 ---注册全局 response 回调；srey.request 等协程同步 API 不走此回调,仅当 sess 不在协程等待表时触发
@@ -900,7 +860,7 @@ function srey.wait_connect(fd, skid, ssl)
     if INVALID_SOCK == fd then
         return false
     end
-    local msg = srey._coro_wait(false, skid, MSG_TYPE.CONNECT, srey.get_connect_timeout())
+    local msg = srey._coro_wait(skid, MSG_TYPE.CONNECT, srey.get_connect_timeout())
     if MSG_TYPE.TIMEOUT == msg.mtype then
         srey.close(fd, skid, 1)
         WARN("connect timeout, skid %s.", tostring(skid))
@@ -962,7 +922,7 @@ local function _net_connect_dispatch(msg)
         end
         return
     end
-    _dispatch_non_disposable(msg, MSG_TYPE.CONNECT, func, msg.subtype, msg.fd, msg.skid, msg.erro)
+    _dispatch_wait(msg, MSG_TYPE.CONNECT, false, func, msg.subtype, msg.fd, msg.skid, msg.erro)
 end
 
 ---注册 TLS 握手完成回调；仅在没有协程等待该事件时触发
@@ -1010,7 +970,7 @@ function srey.wait_ssl_exchanged(fd, skid)
     if INVALID_SOCK == fd then
         return false
     end
-    local msg = srey._coro_wait(false, skid, MSG_TYPE.SSLEXCHANGED, srey.get_netread_timeout())
+    local msg = srey._coro_wait(skid, MSG_TYPE.SSLEXCHANGED, srey.get_netread_timeout())
     if MSG_TYPE.TIMEOUT == msg.mtype then
         srey.close(fd, skid, 1)
         WARN("ssl exchange timeout, skid %s.", tostring(skid))
@@ -1032,7 +992,7 @@ local function _net_ssl_exchanged_dispatch(msg)
         end
         return
     end
-    _dispatch_non_disposable(msg, MSG_TYPE.SSLEXCHANGED, func, msg.subtype, msg.fd, msg.skid, msg.client)
+    _dispatch_wait(msg, MSG_TYPE.SSLEXCHANGED, false, func, msg.subtype, msg.fd, msg.skid, msg.client)
 end
 
 ---注册应用层握手完成回调；适用于 MySQL 认证 / SMTP 欢迎行 / WebSocket Upgrade 等协议
@@ -1051,7 +1011,7 @@ function srey.wait_handshaked(fd, skid)
     if INVALID_SOCK == fd then
         return false
     end
-    local msg = srey._coro_wait(false, skid, MSG_TYPE.HANDSHAKED, srey.get_netread_timeout())
+    local msg = srey._coro_wait(skid, MSG_TYPE.HANDSHAKED, srey.get_netread_timeout())
     if MSG_TYPE.TIMEOUT == msg.mtype then
         srey.close(fd, skid, 1)
         WARN("handshake timeout, skid %s.", tostring(skid))
@@ -1073,7 +1033,7 @@ local function _net_handshaked_dispatch(msg)
         end
         return
     end
-    _dispatch_non_disposable(msg, MSG_TYPE.HANDSHAKED, func, msg.subtype, msg.fd, msg.skid, msg.client, msg.erro, msg.data, msg.size)
+    _dispatch_wait(msg, MSG_TYPE.HANDSHAKED, false, func, msg.subtype, msg.fd, msg.skid, msg.client, msg.erro, msg.data, msg.size)
 end
 
 ---注册数据接收回调；仅在没有协程通过 syn_send 等待该 socket 时触发
@@ -1113,7 +1073,7 @@ end
 ---@param skid integer 连接 skid
 ---@return Message|nil msg 收到的消息表；超时/断开返回 nil
 local function _wait_net_recv(fd, skid)
-    local msg = srey._coro_wait(false, skid, MSG_TYPE.RECV, srey.get_netread_timeout())
+    local msg = srey._coro_wait(skid, MSG_TYPE.RECV, srey.get_netread_timeout())
     if MSG_TYPE.TIMEOUT == msg.mtype then
         srey.close(fd, skid, 1)
         WARN("netread timeout, skid %s.", tostring(skid))
@@ -1225,7 +1185,7 @@ local function _net_recv_dispatch(msg)
         end
         return
     end
-    _dispatch_non_disposable(msg, MSG_TYPE.RECV, func, msg.subtype, msg.fd, msg.skid, msg.client, msg.slice, msg.data, msg.size)
+    _dispatch_wait(msg, MSG_TYPE.RECV, false, func, msg.subtype, msg.fd, msg.skid, msg.client, msg.slice, msg.data, msg.size)
 end
 
 ---注册数据发送完成回调；仅在 NET_EV.SEND 标志启用时触发，可用于流控或写缓冲监控
@@ -1266,34 +1226,37 @@ function srey.sync_close(fd, skid, immed)
         return
     end
     core.close(fd, skid, immed or 0)
-    srey._coro_wait(false, skid, MSG_TYPE.CLOSE, srey.get_netread_timeout())
+    srey._coro_wait(skid, MSG_TYPE.CLOSE, srey.get_netread_timeout())
 end
 
+---处理连接关闭消息：进入时探测一次会话表，把该 sess(连接类即 skid)下全部挂起等待者转移到本地数组再消费，
+---resume 期间业务代码在同一 sess 上重新注册的等待不会被本轮循环看到，而是追加回同一个会话表条目；
+---回调关闭事件后重新查询该条目，仍为空才删除，避免 resume 期间的重新注册被误删/重复插入；
+---不需要 C 侧那个"防 hashmap resize 导致 cofind 悬空"的技巧，Lua table 是引用类型，摘出来的 waiters 数组本身就独立有效
 ---@param msg Message
 local function _net_close_dispatch(msg)
-    local func = func_cbs[MSG_TYPE.CLOSE]
-    local corosess = _get_coro_sess(msg.sess, MSG_TYPE.CLOSE)
+    local sess = msg.sess
+    local corosess = coro_sess[sess]
     if corosess then
-        local coroinfo, coro
-        while true do
-            coroinfo = _coro_info(corosess)
-            if not coroinfo then
-                break
-            end
-            coro = coroinfo.coro
-            _coro_resume(coro, msg)
-            if corosess.disposable then
-                break
-            end
+        corosess.keep = false -- 连接已关闭，不再保留，之后追加也不会被改回
+        local waiters = corosess.waiters
+        corosess.waiters = {}
+        for i = 1, #waiters do
+            _coro_resume(waiters[i].coro, msg)
         end
     end
+    local func = func_cbs[MSG_TYPE.CLOSE]
     if func then
         _coro_run(_coro_cb, func, msg.subtype, msg.fd, msg.skid, msg.client)
+    end
+    corosess = coro_sess[sess]
+    if corosess and 0 == #corosess.waiters then
+        coro_sess[sess] = nil
     end
 end
 
 ---注册 UDP 数据接收回调
----@param func fun(fd:integer, skid:integer, ip:string, port:integer, data:lightuserdata?, size:integer) RECVFROM 回调
+---@param func fun(pktype:PACK_TYPE, fd:integer, skid:integer, ip:string, port:integer, data:lightuserdata?, size:integer) RECVFROM 回调
 function srey.on_recvedfrom(func)
     func_cbs[MSG_TYPE.RECVFROM] = func
 end
@@ -1334,8 +1297,9 @@ srey.udp_loop = core.udp_loop
 ---@type fun(fd:integer, skid:integer, ip:string, port:integer, data:string|lightuserdata, size:integer?, copy:integer):boolean
 srey.sendto = core.sendto
 
----同步 UDP 发送并等待响应：设置会话键 → sendto → 挂起协程等 RECVFROM
----同一 fd 一次只能有一路在途请求；若上一次已超时放弃又复用同一 fd 发起新请求，网络上迟到的旧响应可能被误判为新请求的响应
+---同步 UDP 发送并等待响应：设置会话键 → sendto → 挂起协程等 RECVFROM；
+---同一 skid 上可连续/并发多次调用，多次调用与多次响应按到达顺序 FIFO 配对；
+---网络乱序时配对结果仍可能与发送顺序不一致——UDP 协议本身无法避免的限制
 ---@param fd integer UDP socket fd
 ---@param skid integer 连接 skid
 ---@param ip string 目标 IP
@@ -1348,32 +1312,22 @@ srey.sendto = core.sendto
 function srey.syn_sendto(fd, skid, ip, port, data, size, copy)
     -- 调 core.sendto 前的早退出路径：copy=0 时调用方已转移所有权,主动 utils.ud_free 兜底
     -- （utils.ud_free 内部仅对 lightuserdata 生效,非 lightuserdata 自动跳过）
-    -- 同一 skid 已有任意挂起等待（RECVFROM/CLOSE 等）时直接拒绝，避免 _set_coro_sess 里的 repeat session assert
-    if coro_sess[skid] then
-        WARN("sendto busy, skid %s already has a pending session.", tostring(skid))
-        _ud_free_copy(data, copy)
-        return nil
-    end
     if not srey.sock_session(fd, skid, skid) then
         _ud_free_copy(data, copy)
         return nil
     end
     if not srey.sendto(fd, skid, ip, port, data, size, copy) then
-        srey.sock_session(fd, skid, 0)
         WARN("sendto error, skid %s.", tostring(skid))
         return nil
     end
-    local msg = srey._coro_wait(true, skid, MSG_TYPE.RECVFROM, srey.get_netread_timeout())
+    local msg = srey._coro_wait(skid, MSG_TYPE.RECVFROM, srey.get_netread_timeout())
     if MSG_TYPE.TIMEOUT == msg.mtype then
-        srey.sock_session(fd, skid, 0)
         WARN("sendto timeout, skid %s.", tostring(skid))
         return nil
     end
     if MSG_TYPE.CLOSE == msg.mtype then
         return nil
     end
-    -- 成功路径不调 sock_session(0)：C 端 _net_recvfrom 接收时已 ud->sess = 0，
-    -- 错误/超时路径无 RECVFROM 事件，需 lua 手动清以免 ud->sess 残留影响下一包路由
     return msg.udata, msg.size
 end
 
@@ -1382,24 +1336,12 @@ local function _net_recvfrom_dispatch(msg)
     local func = func_cbs[MSG_TYPE.RECVFROM]
     if 0 == msg.sess then
         if func then
-            _coro_run(_coro_cb, func, msg.fd, msg.skid, msg.ip, msg.port, msg.udata, msg.size)
+            _coro_run(_coro_cb, func, msg.subtype, msg.fd, msg.skid, msg.ip, msg.port, msg.udata, msg.size)
         end
         return
     end
-    if not core.udp_isdisposable(msg.subtype) then
-        _dispatch_non_disposable(msg, MSG_TYPE.RECVFROM, func, msg.fd, msg.skid, msg.ip, msg.port, msg.udata, msg.size)
-        return
-    end
-    -- disposable(如普通 UDP 的 syn_sendto):找不到 cosess 视为逻辑错误,告警后按回调兜底
-    local corosess = _get_coro_sess(msg.sess, MSG_TYPE.RECVFROM)
-    if not corosess then
-        WARN("can't find session, maybe logic error. msg_type %d.", MSG_TYPE.RECVFROM)
-        if func then
-            _coro_run(_coro_cb, func, msg.fd, msg.skid, msg.ip, msg.port, msg.udata, msg.size)
-        end
-        return
-    end
-    _coro_resume(_coro_info(corosess).coro, msg)
+    -- UDP 本身不保证顺序与送达，找不到等待者（迟到/孤儿包）是正常场景，不告警
+    _dispatch_wait(msg, MSG_TYPE.RECVFROM, false, func, msg.subtype, msg.fd, msg.skid, msg.ip, msg.port, msg.udata, msg.size)
 end
 
 ---定时扫描所有挂起的协程，将已超时者强制 resume（携带 TIMEOUT 消息）；每 1 秒触发一次，
@@ -1411,19 +1353,11 @@ local function _coro_timeout()
             local cnt = 0
             local _timeout_buf = {}
             for sess, corosess in pairs(coro_sess) do
-                if corosess.disposable then
-                    local coroinfo = corosess.coroinfo
-                    if coroinfo.timeout > 0 and now >= coroinfo.timeout then
+                for i = 1, #corosess.waiters do
+                    if corosess.waiters[i].timeout > 0 and now >= corosess.waiters[i].timeout then
                         cnt = cnt + 1
                         _timeout_buf[cnt] = sess
-                    end
-                else
-                    for i = 1, #corosess.coroinfo do
-                        if corosess.coroinfo[i].timeout > 0 and now >= corosess.coroinfo[i].timeout then
-                            cnt = cnt + 1
-                            _timeout_buf[cnt] = sess
-                            break
-                        end
+                        break
                     end
                 end
             end
@@ -1439,30 +1373,20 @@ local function _coro_timeout()
                     goto continue
                 end
                 local msg = {mtype = MSG_TYPE.TIMEOUT, sess = cur_sess}
-                if cur_corosess.disposable then
-                    coro_sess[cur_sess] = nil
-                    cur_coroinfo = _coro_info(cur_corosess)
-                    if cur_coroinfo then
+                local j = 1
+                while j <= #cur_corosess.waiters do
+                    cur_coroinfo = cur_corosess.waiters[j]
+                    if cur_coroinfo.timeout > 0 and now >= cur_coroinfo.timeout then
+                        tremove(cur_corosess.waiters, j)
                         cur_coro = cur_coroinfo.coro
                         _coro_resume(cur_coro, msg)
                         WARN("resume timeout session %s.", tostring(cur_sess))
+                    else
+                        j = j + 1
                     end
-                else
-                    local j = 1
-                    while j <= #cur_corosess.coroinfo do
-                        cur_coroinfo = cur_corosess.coroinfo[j]
-                        if cur_coroinfo.timeout > 0 and now >= cur_coroinfo.timeout then
-                            tremove(cur_corosess.coroinfo, j)
-                            cur_coro = cur_coroinfo.coro
-                            _coro_resume(cur_coro, msg)
-                            WARN("resume timeout session %s.", tostring(cur_sess))
-                        else
-                            j = j + 1
-                        end
-                    end
-                    if #cur_corosess.coroinfo == 0 then
-                        coro_sess[cur_sess] = nil
-                    end
+                end
+                if 0 == #cur_corosess.waiters and not cur_corosess.keep then
+                    coro_sess[cur_sess] = nil
                 end
                 ::continue::
             end

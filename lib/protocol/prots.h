@@ -38,12 +38,6 @@ void prots_udfree(void *arg);
 /// <returns>ERR_OK=可继续，其他值=暂停读取</returns>
 int32_t prots_may_resume(pack_type pktype, void *data);
 /// <summary>
-/// 查询该 UDP 协议的 MSG_TYPE_RECVFROM 应按 disposable 还是 non-disposable 唤醒协程
-/// </summary>
-/// <param name="pktype">协议包类型</param>
-/// <returns>非 0=disposable（单发单收，用完删）；0=non-disposable（sess 队列，用完保留）</returns>
-int32_t prots_udp_isdisposable(pack_type pktype);
-/// <summary>
 /// 统一解包入口，根据 ud->pktype 调用对应协议的解包函数
 /// </summary>
 /// <param name="ev">事件上下文</param>

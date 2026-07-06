@@ -36,6 +36,17 @@
     if (NULL == (var)) { \
         return luaL_error((lua), "task is nil"); \
     }
+// 声明 task_ctx *var 并从栈位 1 取值：nil/none 取当前 task(_curtask 全局)，否则按 lightuserdata 校验取值；
+// 不做 NULL 校验，调用方按各自语义处理(luaL_error 报错或 pushnil 等)
+#define LPUB_TASK_ARG(lua, var) \
+    task_ctx *var; \
+    int32_t _lpta_type_##var = lua_type((lua), 1); \
+    if (LUA_TNIL == _lpta_type_##var || LUA_TNONE == _lpta_type_##var) { \
+        (var) = global_userdata((lua), CUR_TASK_NAME); \
+    } else { \
+        LUACHECK_LUDATA((lua), 1); \
+        (var) = lua_touserdata((lua), 1); \
+    }
 
 /// <summary>
 /// 从 Lua 全局变量中读取轻量用户数据（light userdata）

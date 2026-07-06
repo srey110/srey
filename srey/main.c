@@ -6,7 +6,7 @@
 
 static int32_t _log_use_file = 1; //是否将日志写文件
 static FILE *logstream = NULL; // 日志文件流，NULL 表示输出到标准输出
-static hug_ctx _hug;           // 退出等待原语 (信号 handler 通过 sighandle data 拿到 &_hug 调 hug_wakeup)
+static hug_ctx _hug; // 退出等待原语 (信号 handler 通过 sighandle data 拿到 &_hug 调 hug_wakeup)
 
 // 读取进程目录下 configs/config.json 的内容，返回堆分配字符串（调用方负责释放）
 static char *_config_read(void) {
@@ -16,7 +16,7 @@ static char *_config_read(void) {
     size_t lens;
     char *info = readall(config, &lens);
     if (NULL == info) {
-        LOG_WARN("%s", ERRORSTR(errno));
+        PRINT("%s", ERRORSTR(errno));
         return NULL;
     }
     return info;
@@ -28,7 +28,7 @@ static double _json_get_number(cJSON *json, const char *name, double dft, double
         && cJSON_IsNumber(val)) {
         double d = val->valuedouble;
         if (isnan(d) || isinf(d) || d < 0 || d > max) {
-            LOG_WARN("%s is NaN/Inf/out of range, use default.", name);
+            PRINT("%s is NaN/Inf/out of range, use default.", name);
             return dft;
         }
         return d;
@@ -45,7 +45,7 @@ static void _json_get_string(cJSON *json, const char *name, char *str, size_t le
             memcpy(str, val->valuestring, vlen);
             str[vlen] = '\0';
         } else {
-            LOG_WARN("%s value too long.", name);
+            PRINT("%s value too long.", name);
         }
     }
 }
@@ -60,7 +60,7 @@ static void _parse_config(config_ctx *cnf) {
     if (NULL == json) {
         const char *erro = cJSON_GetErrorPtr();
         if (NULL != erro) {
-            LOG_WARN("%s", erro);
+            PRINT("%s", erro);
         }
         return;
     }
@@ -155,11 +155,11 @@ static void _config_init(config_ctx *config) {
     config->serviceid = 1;
     config->loglv = LOGLV_DEBUG;
     config->harbor.port = 0;
-    config->debug.port = 0;     // 端口 0 关闭 debug_console,可由 config.json "debug.port" 覆盖
+    config->debug.port = 0; // 端口 0 关闭 debug_console,可由 config.json "debug.port" 覆盖
     SNPRINTF(config->harbor.name, sizeof(config->harbor.name), "%s", "harbor");
     SNPRINTF(config->datacenter.name, sizeof(config->datacenter.name), "%s", "datacenter"); // 空串关闭 DataCenter,可由 config.json "datacenter.name" 覆盖
-    SNPRINTF(config->subcenter.name, sizeof(config->subcenter.name), "%s", "subcenter");  // 空串关闭 subcenter,可由 config.json "subcenter.name" 覆盖
-    SNPRINTF(config->subcenter.rule, sizeof(config->subcenter.rule), "%s", "def");        // subcenter 默认通用 pub/sub 规则
+    SNPRINTF(config->subcenter.name, sizeof(config->subcenter.name), "%s", "subcenter"); // 空串关闭 subcenter,可由 config.json "subcenter.name" 覆盖
+    SNPRINTF(config->subcenter.rule, sizeof(config->subcenter.rule), "%s", "def"); // subcenter 默认通用 pub/sub 规则
     SNPRINTF(config->debug.name, sizeof(config->debug.name), "%s", "debug");
     SNPRINTF(config->harbor.ip, sizeof(config->harbor.ip), "%s", "0.0.0.0");
     SNPRINTF(config->debug.ip, sizeof(config->debug.ip), "%s", "127.0.0.1");
@@ -258,8 +258,8 @@ static int32_t service_hug(int32_t ready_fd) {
 #if WITH_LUA
     #pragma comment(lib, "lualib.lib")
 #endif
-#define WINSV_STOP_TIMEOUT       (30 * 1000)    // Windows 服务停止超时时间（毫秒）
-#define WINSV_START_TIMEOUT      (30 * 1000)    // Windows 服务启动超时时间（毫秒）
+#define WINSV_STOP_TIMEOUT (30 * 1000) // Windows 服务停止超时时间（毫秒）
+#define WINSV_START_TIMEOUT (30 * 1000) // Windows 服务启动超时时间（毫秒）
 
 typedef WINADVAPI BOOL(WINAPI *_csd_t)(SC_HANDLE, DWORD, LPCVOID); // ChangeServiceConfig2A 函数指针类型
 typedef int32_t(*_wsv_cb)(void); // Windows 服务初始化/退出回调函数类型

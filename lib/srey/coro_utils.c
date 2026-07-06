@@ -27,6 +27,7 @@ static dns_ip *_dns_lookup_udp(task_ctx *task, const char *domain, int32_t ipv6,
     if (ERR_OK != rtn) {
         return NULL;
     }
+    coro_sync(task, fd, skid);
     char buf[ONEK];
     size_t lens = dns_request_pack(buf, domain, ipv6);
     if (0 == lens) {
@@ -196,24 +197,24 @@ int32_t mysql_connect(task_ctx *task, mysql_ctx *mysql) {
     }
     return err;
 }
-int32_t mysql_selectdb(mysql_ctx *mysql, const char *database) {
-    size_t size;
-    void *selectdb = mysql_pack_selectdb(mysql, database, &size);
-    mpack_ctx *mpack = coro_send(mysql->task, mysql->client.sk.fd, mysql->client.sk.skid, selectdb, size, NULL, 0);
+// 统一"发送+同步等待响应+校验 MPACK_OK"尾块;成功返回 ERR_OK,失败返回 ERR_FAILED
+static int32_t _mysql_call(mysql_ctx *mysql, void *pack, size_t size) {
+    mpack_ctx *mpack = coro_send(mysql->task, mysql->client.sk.fd, mysql->client.sk.skid, pack, size, NULL, 0);
     if (NULL == mpack) {
         return ERR_FAILED;
     }
     return MPACK_OK == mpack->pack_type ? ERR_OK : ERR_FAILED;
 }
+int32_t mysql_selectdb(mysql_ctx *mysql, const char *database) {
+    size_t size;
+    void *selectdb = mysql_pack_selectdb(mysql, database, &size);
+    return _mysql_call(mysql, selectdb, size);
+}
 // 向 MySQL 服务器发送 ping 包并等待响应，失败返回 ERR_FAILED
 static int32_t _mysql_ping(mysql_ctx *mysql) {
     size_t size;
     void *ping = mysql_pack_ping(mysql, &size);
-    mpack_ctx *mpack = coro_send(mysql->task, mysql->client.sk.fd, mysql->client.sk.skid, ping, size, NULL, 0);
-    if (NULL == mpack) {
-        return ERR_FAILED;
-    }
-    return MPACK_OK == mpack->pack_type ? ERR_OK : ERR_FAILED;
+    return _mysql_call(mysql, ping, size);
 }
 int32_t mysql_ping(mysql_ctx *mysql) {
     if (ERR_OK != _mysql_ping(mysql)) {
@@ -250,11 +251,7 @@ mpack_ctx *mysql_stmt_execute(mysql_stmt_ctx *stmt, mysql_bind_ctx *mbind) {
 int32_t mysql_stmt_reset(mysql_stmt_ctx *stmt) {
     size_t size;
     void *resetpk = mysql_pack_stmt_reset(stmt, &size);
-    mpack_ctx *mpack = coro_send(stmt->mysql->task, stmt->mysql->client.sk.fd, stmt->mysql->client.sk.skid, resetpk, size, NULL, 0);
-    if (NULL == mpack) {
-        return ERR_FAILED;
-    }
-    return MPACK_OK == mpack->pack_type ? ERR_OK : ERR_FAILED;
+    return _mysql_call(stmt->mysql, resetpk, size);
 }
 void mysql_stmt_close(mysql_stmt_ctx *stmt) {
     size_t size;
@@ -811,13 +808,13 @@ int32_t mongo_rollback(mongo_session *session, char *options) {
 int32_t kcp_synstart(task_ctx *task, struct kcp_ctx *kcp,
                      const char *ip, uint16_t port, const struct kcp_config *cfg) {
     if (0 == kcp->sess) {
-        // sess==0 时 _coro_handle_non_disposable 恒新建协程,永远等不到本次唤醒
+        // sess==0 时 _coro_handle_handshaked 恒新建协程,永远等不到本次唤醒
         return ERR_FAILED;
     }
     if (ERR_OK != kcp_start(kcp, task->handle, ip, port, cfg)) {
         return ERR_FAILED;
     }
-    message_ctx *msg = _coro_wait(task, 0, kcp->sess, MSG_TYPE_HANDSHAKED, task_get_netread_timeout(task));
+    message_ctx *msg = _coro_wait(task, kcp->sess, MSG_TYPE_HANDSHAKED, task_get_netread_timeout(task));
     if (MSG_TYPE_TIMEOUT == msg->mtype) {
         kcp_stop(kcp);
         LOG_WARN("task %s, kcp start timeout, skid %"PRIu64".", _NAME_OR(task->name), kcp->sk.skid);
@@ -830,7 +827,7 @@ int32_t kcp_synstart(task_ctx *task, struct kcp_ctx *kcp,
 }
 void *kcp_synsend(task_ctx *task, struct kcp_ctx *kcp, void *data, size_t lens, int32_t copy, size_t *size) {
     if (0 == kcp->sess) {
-        // sess==0 时 _coro_handle_recvfrom 分流到的 disposable/non-disposable 分支都恒新建协程,永远等不到本次唤醒
+        // sess==0 时 _coro_handle_recvfrom 内部恒新建协程,永远等不到本次唤醒
         if (!copy) {
             FREE(data);
         }
@@ -839,8 +836,7 @@ void *kcp_synsend(task_ctx *task, struct kcp_ctx *kcp, void *data, size_t lens, 
     if (ERR_OK != kcp_send(kcp, data, lens, copy)) {
         return NULL;
     }
-    message_ctx *msg = _coro_wait(task, prots_udp_isdisposable(PACK_UDP_KCP), kcp->sess,
-        MSG_TYPE_RECVFROM, task_get_netread_timeout(task));
+    message_ctx *msg = _coro_wait(task, kcp->sess, MSG_TYPE_RECVFROM, task_get_netread_timeout(task));
     if (MSG_TYPE_TIMEOUT == msg->mtype) {
         kcp_stop(kcp);
         LOG_WARN("task %s, kcp send timeout, skid %"PRIu64".", _NAME_OR(task->name), kcp->sk.skid);

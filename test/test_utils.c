@@ -1037,8 +1037,13 @@ static void test_str_helpers(CuTest *tc) {
     char hex[HEX_ENSIZE(4)];
     /* HEX_ENSIZE = len*2+1，需手动补 '\0' */
     hex[HEX_ENSIZE(4) - 1] = '\0';
-    CuAssertTrue(tc, hex == tohex(bin, 4, hex));
+    CuAssertTrue(tc, hex == tohex(bin, 4, hex, 0));
     CuAssertStrEquals(tc, "00ABFF10", hex);
+    /* tohex：二进制转 16 进制（小写）*/
+    char hexlower[HEX_ENSIZE(4)];
+    hexlower[HEX_ENSIZE(4) - 1] = '\0';
+    CuAssertTrue(tc, hexlower == tohex(bin, 4, hexlower, 1));
+    CuAssertStrEquals(tc, "00abff10", hexlower);
 
     /* split：以 "," 拆分 */
     size_t n = 0;

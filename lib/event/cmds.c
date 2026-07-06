@@ -355,24 +355,91 @@ void _on_cmd_sendto(watcher_ctx *watcher, cmd_ctx *cmd) {
         FREE(cmd->args.sendto.data);
         return;
     }
+    _evpub_add_bufs_sendto(watcher, skctx, &cmd->args.sendto, 0);
+}
+// 事件线程内执行 UDP 多播 setsockopt：先取 sock family,按 IPv4/IPv6 分支调对应 IP_*/IPV6_* 选项;
+// Windows 路径下 IPv6 iface_str 忽略走默认接口(if_nametoindex 需 iphlpapi.lib,不引入依赖);
+// 走 ev_props 通用命令,arg 由 ev_props 统一 UD_FREE,此处恒返回 1
+static int32_t _udp_opt_cb(struct sock_ctx *skctx, ud_cxt *ud, void *data, uint64_t number) {
+    (void)ud;
+    (void)number;
+    udp_opt_arg *arg = data;
+    if (SOCK_DGRAM != skctx->type) {
+        LOG_ERROR("ev_udp_* called on non-UDP fd %d, drop.", (int32_t)skctx->fd);
+        return 1;
+    }
+    int32_t family = sock_family(skctx->fd);
+    if (ERR_FAILED == family) {
+        LOG_ERROR("sock_family(fd=%d) failed: %s", (int32_t)skctx->fd, ERRORSTR(ERRNO));
+        return 1;
+    }
+    int32_t rtn = ERR_FAILED;
+    switch (arg->op) {
+    case UDP_OPT_JOIN:
+    case UDP_OPT_LEAVE:
+        if (AF_INET == family) {
+            struct ip_mreq mreq = { 0 };
+            if (1 != inet_pton(AF_INET, arg->group_ip, &mreq.imr_multiaddr)) {
+                LOG_ERROR("inet_pton(IPv4 %s) failed.", arg->group_ip);
+                break;
+            }
+            if ('\0' != arg->iface_str[0]
+                && 1 != inet_pton(AF_INET, arg->iface_str, &mreq.imr_interface)) {
+                LOG_WARN("inet_pton(iface %s) failed,fallback INADDR_ANY", arg->iface_str);
+                mreq.imr_interface.s_addr = htonl(INADDR_ANY);
+            } else if ('\0' == arg->iface_str[0]) {
+                mreq.imr_interface.s_addr = htonl(INADDR_ANY);
+            }
+            int32_t opt = (UDP_OPT_JOIN == arg->op) ? IP_ADD_MEMBERSHIP : IP_DROP_MEMBERSHIP;
+            rtn = setsockopt(skctx->fd, IPPROTO_IP, opt, (const char *)&mreq, sizeof(mreq));
+        } else if (AF_INET6 == family) {
+            struct ipv6_mreq mreq = { 0 };
+            if (1 != inet_pton(AF_INET6, arg->group_ip, &mreq.ipv6mr_multiaddr)) {
+                LOG_ERROR("inet_pton(IPv6 %s) failed.", arg->group_ip);
+                break;
+            }
 #ifdef EV_IOCP
-    _iocp_add_bufs_trysendto(skctx, &cmd->args.sendto);
+            // Windows 不解析接口名,走默认 0;业务可用 IPV6_MULTICAST_IF 单独设
+            mreq.ipv6mr_interface = 0;
 #else
-    _uev_add_bufs_sendto(watcher, skctx, &cmd->args.sendto);
+            if ('\0' != arg->iface_str[0]) {
+                mreq.ipv6mr_interface = if_nametoindex(arg->iface_str);
+                if (0 == mreq.ipv6mr_interface) {
+                    LOG_WARN("if_nametoindex(%s) failed,fallback 0(default iface)", arg->iface_str);
+                }
+            }
 #endif
+            int32_t opt = (UDP_OPT_JOIN == arg->op) ? IPV6_JOIN_GROUP : IPV6_LEAVE_GROUP;
+            rtn = setsockopt(skctx->fd, IPPROTO_IPV6, opt, (const char *)&mreq, sizeof(mreq));
+        }
+        break;
+    case UDP_OPT_TTL:
+        if (AF_INET == family) {
+            uint8_t ttl = arg->ttl;
+            rtn = setsockopt(skctx->fd, IPPROTO_IP, IP_MULTICAST_TTL, (const char *)&ttl, sizeof(ttl));
+        } else if (AF_INET6 == family) {
+            int32_t hops = (int32_t)arg->ttl;
+            rtn = setsockopt(skctx->fd, IPPROTO_IPV6, IPV6_MULTICAST_HOPS, (const char *)&hops, sizeof(hops));
+        }
+        break;
+    case UDP_OPT_LOOP:
+        if (AF_INET == family) {
+            uint8_t loop = (uint8_t)(arg->loop ? 1 : 0);
+            rtn = setsockopt(skctx->fd, IPPROTO_IP, IP_MULTICAST_LOOP, (const char *)&loop, sizeof(loop));
+        } else if (AF_INET6 == family) {
+            int32_t loop = arg->loop ? 1 : 0;
+            rtn = setsockopt(skctx->fd, IPPROTO_IPV6, IPV6_MULTICAST_LOOP, (const char *)&loop, sizeof(loop));
+        }
+        break;
+    }
+    if (0 != rtn) {
+        LOG_ERROR("UDP opt %d failed on fd %d: %s", (int32_t)arg->op, (int32_t)skctx->fd, ERRORSTR(ERRNO));
+    }
+    return 1;
 }
 // UDP 多播 4 个公开 API 走同一 cmd 投递路径,差异只在 udp_opt_arg 字段填充
 static int32_t _send_cmd_udp_opt(ev_ctx *ctx, SOCKET fd, uint64_t skid, udp_opt_arg *arg) {
-    cmd_ctx cmd = { 0 };
-    cmd.cmd = CMD_UDP_OPT;
-    cmd.sk.fd = fd;
-    cmd.sk.skid = skid;
-    cmd.args.udpop = arg;
-    if (ERR_OK != _send_cmd(GET_PTR(ctx->watcher, ctx->nthreads, cmd.sk.fd), &cmd)) {
-        FREE(arg);
-        return ERR_FAILED;
-    }
-    return ERR_OK;
+    return ev_props(ctx, fd, skid, _udp_opt_cb, _free, arg, 0);
 }
 int32_t ev_udp_join(ev_ctx *ctx, SOCKET fd, uint64_t skid,
                     const char *group_ip, const char *iface_str) {
@@ -417,90 +484,6 @@ int32_t ev_udp_loop(ev_ctx *ctx, SOCKET fd, uint64_t skid, int32_t enable) {
     arg->op = UDP_OPT_LOOP;
     arg->loop = enable ? 1 : 0;
     return _send_cmd_udp_opt(ctx, fd, skid, arg);
-}
-// 事件线程内执行 UDP 多播 setsockopt：先取 sock family,按 IPv4/IPv6 分支调对应 IP_*/IPV6_* 选项;
-// Windows 路径下 IPv6 iface_str 忽略走默认接口(if_nametoindex 需 iphlpapi.lib,不引入依赖)
-void _on_cmd_udp_opt(watcher_ctx *watcher, cmd_ctx *cmd) {
-    udp_opt_arg *arg = cmd->args.udpop;
-    sock_ctx *skctx = _evpub_sockel_get(watcher, cmd->sk.fd);
-    if (NULL == skctx || ERR_OK != _evpub_checkid(skctx, cmd->sk.skid)) {
-        FREE(arg);
-        return;
-    }
-    if (SOCK_DGRAM != skctx->type) {
-        LOG_ERROR("ev_udp_* called on non-UDP fd %d, drop.", (int32_t)cmd->sk.fd);
-        FREE(arg);
-        return;
-    }
-    int32_t family = sock_family(cmd->sk.fd);
-    if (ERR_FAILED == family) {
-        LOG_ERROR("sock_family(fd=%d) failed: %s", (int32_t)cmd->sk.fd, ERRORSTR(ERRNO));
-        FREE(arg);
-        return;
-    }
-    int32_t rtn = ERR_FAILED;
-    switch (arg->op) {
-    case UDP_OPT_JOIN:
-    case UDP_OPT_LEAVE:
-        if (AF_INET == family) {
-            struct ip_mreq mreq = { 0 };
-            if (1 != inet_pton(AF_INET, arg->group_ip, &mreq.imr_multiaddr)) {
-                LOG_ERROR("inet_pton(IPv4 %s) failed.", arg->group_ip);
-                break;
-            }
-            if ('\0' != arg->iface_str[0]
-                && 1 != inet_pton(AF_INET, arg->iface_str, &mreq.imr_interface)) {
-                LOG_WARN("inet_pton(iface %s) failed,fallback INADDR_ANY", arg->iface_str);
-                mreq.imr_interface.s_addr = htonl(INADDR_ANY);
-            } else if ('\0' == arg->iface_str[0]) {
-                mreq.imr_interface.s_addr = htonl(INADDR_ANY);
-            }
-            int32_t opt = (UDP_OPT_JOIN == arg->op) ? IP_ADD_MEMBERSHIP : IP_DROP_MEMBERSHIP;
-            rtn = setsockopt(cmd->sk.fd, IPPROTO_IP, opt, (const char *)&mreq, sizeof(mreq));
-        } else if (AF_INET6 == family) {
-            struct ipv6_mreq mreq = { 0 };
-            if (1 != inet_pton(AF_INET6, arg->group_ip, &mreq.ipv6mr_multiaddr)) {
-                LOG_ERROR("inet_pton(IPv6 %s) failed.", arg->group_ip);
-                break;
-            }
-#ifdef EV_IOCP
-            // Windows 不解析接口名,走默认 0;业务可用 IPV6_MULTICAST_IF 单独设
-            mreq.ipv6mr_interface = 0;
-#else
-            if ('\0' != arg->iface_str[0]) {
-                mreq.ipv6mr_interface = if_nametoindex(arg->iface_str);
-                if (0 == mreq.ipv6mr_interface) {
-                    LOG_WARN("if_nametoindex(%s) failed,fallback 0(default iface)", arg->iface_str);
-                }
-            }
-#endif
-            int32_t opt = (UDP_OPT_JOIN == arg->op) ? IPV6_JOIN_GROUP : IPV6_LEAVE_GROUP;
-            rtn = setsockopt(cmd->sk.fd, IPPROTO_IPV6, opt, (const char *)&mreq, sizeof(mreq));
-        }
-        break;
-    case UDP_OPT_TTL:
-        if (AF_INET == family) {
-            uint8_t ttl = arg->ttl;
-            rtn = setsockopt(cmd->sk.fd, IPPROTO_IP, IP_MULTICAST_TTL, (const char *)&ttl, sizeof(ttl));
-        } else if (AF_INET6 == family) {
-            int32_t hops = (int32_t)arg->ttl;
-            rtn = setsockopt(cmd->sk.fd, IPPROTO_IPV6, IPV6_MULTICAST_HOPS, (const char *)&hops, sizeof(hops));
-        }
-        break;
-    case UDP_OPT_LOOP:
-        if (AF_INET == family) {
-            uint8_t loop = (uint8_t)(arg->loop ? 1 : 0);
-            rtn = setsockopt(cmd->sk.fd, IPPROTO_IP, IP_MULTICAST_LOOP, (const char *)&loop, sizeof(loop));
-        } else if (AF_INET6 == family) {
-            int32_t loop = arg->loop ? 1 : 0;
-            rtn = setsockopt(cmd->sk.fd, IPPROTO_IPV6, IPV6_MULTICAST_LOOP, (const char *)&loop, sizeof(loop));
-        }
-        break;
-    }
-    if (0 != rtn) {
-        LOG_ERROR("UDP opt %d failed on fd %d: %s", (int32_t)arg->op, (int32_t)cmd->sk.fd, ERRORSTR(ERRNO));
-    }
-    FREE(arg);
 }
 int32_t ev_props(ev_ctx *ctx, SOCKET fd, uint64_t skid,
                  props_cb ppcb, free_cb fcb, void *data, uint64_t number) {
@@ -583,13 +566,4 @@ static int32_t _cmd_ud_context(struct sock_ctx *skctx, ud_cxt *ud, void *data, u
 }
 int32_t ev_ud_context(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *extra) {
     return ev_props(ctx, fd, skid, _cmd_ud_context, NULL, extra, 0);
-}
-static int32_t _cmd_ud_seccontext(struct sock_ctx *skctx, ud_cxt *ud, void *data, uint64_t number) {
-    (void)skctx;
-    (void)number;
-    _evpub_set_secextra(ud, data);
-    return 0;
-}
-int32_t ev_ud_seccontext(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *extra) {
-    return ev_props(ctx, fd, skid, _cmd_ud_seccontext, NULL, extra, 0);
 }

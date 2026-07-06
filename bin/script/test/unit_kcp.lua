@@ -36,7 +36,7 @@ runner.run("kcp", function(t)
     t:eq(false, dup_kcp:start("127.0.0.1", SV_PORT), "duplicate conv start should fail")
 
     -- server 收到数据原样 echo(sess=0 走回调);client send 响应 sess≠0 由框架唤醒协程,不进此回调
-    srey.on_recvedfrom(function(fd, skid, ip, port, data, size)
+    srey.on_recvedfrom(function(pktype, fd, skid, ip, port, data, size)
         if fd == sv_fd then
             sv_kcp:send(data, size, 1)
         end

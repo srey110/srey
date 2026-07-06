@@ -36,14 +36,6 @@ static int32_t _prots_handshaked(SOCKET fd, uint64_t skid, int32_t client,
     g_emit.end(target);
     return ERR_OK;
 }
-// 设置子协议 ud_cxt 的额外上下文数据（目前仅 WebSocket 子协议需要）
-void _evpub_set_secextra(ud_cxt *ud, void *val) {
-    switch (ud->pktype) {
-    case PACK_WEBSOCK:
-        _websock_secextra(ud, val);
-        break;
-    }
-}
 void prots_init(prot_emit *emit) {
     g_emit = *emit;
     _websock_init(_prots_handshaked);
@@ -214,14 +206,6 @@ int32_t prots_may_resume(pack_type pktype, void *data) {
     }
     return ERR_OK;
 }
-int32_t prots_udp_isdisposable(pack_type pktype) {
-    switch (pktype) {
-    case PACK_UDP_KCP:
-        return 0;
-    default:
-        return 1;
-    }
-}
 void *prots_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, size_t *size, int32_t *status) {
     *size = 0;
@@ -265,6 +249,13 @@ void *prots_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
         break;
     }
     return unpack;
+}
+// 取单次 prots_unpack 结果携带的下一个包(仅 websock 承载子协议单帧多包场景非 NULL,其余协议恒 NULL)
+static void *_prots_next_pack(pack_type pktype, void *pack) {
+    if (PACK_WEBSOCK != pktype) {
+        return NULL;
+    }
+    return _websock_pack_next(pack);
 }
 int32_t prots_net_accept(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud) {
     void *target = g_emit.begin(ud->loader, ud->handle);
@@ -315,13 +306,13 @@ void prots_net_recv(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, buffer
     msg.sk.fd = fd;
     msg.sk.skid = skid;
     msg.client = client;
-    void *data;
+    void *data, *next;
     int32_t status;
     size_t esize;
     for (;;) {
         size = buffer_size(buf);
         data = prots_unpack(ev, fd, skid, client, buf, ud, &msg.size, &status);
-        if (NULL != data) {
+        while (NULL != data) {
             msg.data = data;
             msg.sess = ud->sess;
             if (BIT_CHECK(status, PROT_SLICE_START)) {
@@ -333,7 +324,9 @@ void prots_net_recv(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, buffer
             } else {
                 msg.slice = 0;
             }
+            next = _prots_next_pack(ud->pktype, data);// 提前取出，防止消息(data)emit后在worker线程被释放.
             g_emit.emit(target, &msg);
+            data = next;
         }
         if (BIT_CHECK(status, PROT_ERROR)) {
             ev_close(ev, fd, skid, 1);
@@ -414,7 +407,7 @@ static void _prots_udp_default(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, 
     }
     message_ctx msg = { 0 };
     msg.mtype = MSG_TYPE_RECVFROM;
-    msg.subtype = PACK_NONE;
+    msg.subtype = ud->pktype;
     msg.sk.fd = fd;
     msg.sk.skid = skid;
     recvfrom_ctx *umsg;
@@ -425,7 +418,6 @@ static void _prots_udp_default(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, 
     msg.data = umsg;
     msg.size = size;
     msg.sess = ud->sess;
-    ud->sess = 0;
     g_emit.emit(target, &msg);
     g_emit.end(target);
 }

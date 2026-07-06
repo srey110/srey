@@ -63,7 +63,7 @@ static inline int32_t rwlock_tryrdlock(rwlock_ctx *ctx) {
 /// <param name="ctx">rwlock_ctx</param>
 static inline void rwlock_wrlock(rwlock_ctx *ctx) {
 #if defined(OS_WIN)
-    AcquireSRWLockExclusive(&ctx->rwlock); /* acquire barrier */
+    AcquireSRWLockExclusive(&ctx->rwlock); /* 获取屏障 */
     ctx->wlock = 1; /* 写锁独占，此处无并发写者；AcquireSRWLockExclusive 阻止编译器跨调用缓存 */
 #else
     ASSERTAB(ERR_OK == pthread_rwlock_wrlock(&ctx->rwlock), ERRORSTR(ERRNO));
@@ -96,7 +96,7 @@ static inline void rwlock_unlock(rwlock_ctx *ctx) {
      * SRW API 为不透明外部调用，编译器不会跨调用缓存 wlock 的值。*/
     if (0 != ctx->wlock) {
         ctx->wlock = 0;
-        ReleaseSRWLockExclusive(&ctx->rwlock); /* release barrier，wlock=0 对后续 acquire 可见 */
+        ReleaseSRWLockExclusive(&ctx->rwlock); /* 释放屏障，wlock=0 对后续 acquire 可见 */
     } else {
         ReleaseSRWLockShared(&ctx->rwlock);
     }

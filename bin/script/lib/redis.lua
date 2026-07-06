@@ -106,9 +106,14 @@ end
 
 -- ── 解析栈管理 ────────────────────────────────────────────────────────────
 
+---@class RedisParseMark
+---@field status 0|1           0=期望 key，1=期望 val（仅 map/attr 使用）
+---@field nelem  integer       剩余待处理元素个数（map/attr 已 ×2）
+---@field agg    RedisAggValue 所属聚合节点
+
 ---更新栈顶计数器；计数归零时弹出并归还对象池；attr 完成后立即 break，
 ---因为 attr 之后跟随被修饰的真实数据，需由上层继续处理，不能连续弹出
----@param mark table[] 解析栈
+---@param mark RedisParseMark[] 解析栈
 local function _update_mark(mark)
     local mk
     local attr
@@ -132,7 +137,7 @@ local function _update_mark(mark)
 end
 
 ---将聚合节点压入解析栈；map/attr 的元素个数需乘以 2（每元素占 key+val 两节点）
----@param mark table[] 解析栈
+---@param mark RedisParseMark[] 解析栈
 ---@param val RedisAggValue 聚合节点
 local function _add_mark(mark, val)
     local nelem = _is_map(val) and val.resp_nelem * 2 or val.resp_nelem
@@ -164,7 +169,7 @@ local function _single_node(pk)
 end
 
 ---处理多节点响应的第一个节点（必须为聚合类型）；attr 类型用 {val} 包装以区分属性与数据节点
----@param mark table[] 解析栈
+---@param mark RedisParseMark[] 解析栈
 ---@param pk lightuserdata redis_pack_ctx 首节点指针
 ---@return RedisAggValue|nil rtn 容器表；首节点非聚合或为 nil 聚合返回 nil
 local function _first_nodes(mark, pk)

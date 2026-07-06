@@ -85,8 +85,7 @@ static void _lbc_put(const char *path, char *code, size_t size, uint64_t mtime) 
     }
     bc_entry ne;
     size_t plen = strlen(path);
-    MALLOC(ne.path, plen + 1);
-    memcpy(ne.path, path, plen + 1);
+    ne.path = dup_zero(path, plen);
     ne.code = code;
     ne.size = size;
     ne.mtime = mtime;

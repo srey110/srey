@@ -2,7 +2,6 @@
 #include "containers/hashmap.h"
 #include "thread/spinlock.h"
 #include "utils/netutils.h"
-#include "utils/timer.h"
 
 #ifdef EV_IOCP
 
@@ -29,17 +28,16 @@ static void *_iocp_exfunc(SOCKET fd, GUID *guid) {
 // 初始化命令回调函数表，_iocp_on_cmd 批量处理cmd，为了快速消费掉cmd，里面不应有耗时操作。
 // 如 在_on_cmd_send里面直接发送数据
 static void _iocp_init_callback(void) {
-    cmd_cbs[CMD_STOP]    = _on_cmd_stop;
+    cmd_cbs[CMD_STOP] = _on_cmd_stop;
     cmd_cbs[CMD_DISCONN] = _on_cmd_disconn;
-    cmd_cbs[CMD_ADDACP]  = _on_cmd_addacp;
-    cmd_cbs[CMD_CONN]    = _on_cmd_conn;
-    cmd_cbs[CMD_ADD]     = _on_cmd_add;
-    cmd_cbs[CMD_SEND]    = _on_cmd_send;
+    cmd_cbs[CMD_ADDACP] = _on_cmd_addacp;
+    cmd_cbs[CMD_CONN] = _on_cmd_conn;
+    cmd_cbs[CMD_ADD] = _on_cmd_add;
+    cmd_cbs[CMD_SEND] = _on_cmd_send;
     cmd_cbs[CMD_SEND_MULTI] = _on_cmd_send_multi;
-    cmd_cbs[CMD_SENDTO]  = _on_cmd_sendto;
-    cmd_cbs[CMD_UDP_OPT] = _on_cmd_udp_opt;
-    cmd_cbs[CMD_SSL]     = _on_cmd_ssl;
-    cmd_cbs[CMD_PROPS]   = _on_cmd_props;
+    cmd_cbs[CMD_SENDTO] = _on_cmd_sendto;
+    cmd_cbs[CMD_SSL] = _on_cmd_ssl;
+    cmd_cbs[CMD_PROPS] = _on_cmd_props;
 }
 // 懒加载初始化AcceptEx/ConnectEx等扩展函数（全进程只执行一次）
 static void _iocp_init_funcs(void) {
@@ -94,20 +92,22 @@ static void _iocp_pool_shrink(watcher_ctx *watcher, uint64_t *shrink_start, uint
     pool_shrink(&watcher->pool, (uint32_t)SHRINK_NKEEP(hashmap_count(watcher->element)), SHRINK_BUSY);
 }
 // 驱动 tick 并按 EVENT_CHECK_INTERVAL 节流触发 pool_shrink；返回下次 wait 超时(ms)，Vista+/XP 两份 _iocp_loop_event 共用
-static uint32_t _iocp_loop_check(watcher_ctx *watcher, timer_ctx *timer,
-                                 uint32_t *shrink_cnt, uint64_t *shrink_start) {
+static uint32_t _iocp_loop_check(watcher_ctx *watcher, uint32_t *shrink_cnt, uint64_t *shrink_start) {
     uint64_t now_ms;
-    uint32_t next_to = _evpub_tick_drive(watcher, timer, &now_ms);
+    uint32_t next_to = _evpub_tick_drive(watcher, &watcher->timer, &now_ms);
     (*shrink_cnt)++;
     if (*shrink_cnt < EVENT_CHECK_INTERVAL) {
         return next_to;
     }
     *shrink_cnt = 0;
     if (0 == now_ms) {
-        now_ms = timer_cur_ms(timer);
+        now_ms = timer_cur_ms(&watcher->timer);
     }
     _iocp_pool_shrink(watcher, shrink_start, now_ms);
     return next_to;
+}
+timer_ctx *_evpub_watcher_timer(watcher_ctx *watcher) {
+    return &watcher->timer;
 }
 #if (_WIN32_WINNT >= 0x0600)
 // 事件循环主函数（Vista+，使用GetQueuedCompletionStatusEx批量获取事件）
@@ -124,9 +124,7 @@ static void _iocp_loop_event(void *arg) {
     LPOVERLAPPED_ENTRY tmp;
     LPOVERLAPPED_ENTRY overlappeds;
     MALLOC(overlappeds, sizeof(OVERLAPPED_ENTRY) * nevent);
-    timer_ctx timer;
-    timer_init(&timer);
-    uint64_t shrink_start = timer_cur_ms(&timer);
+    uint64_t shrink_start = timer_cur_ms(&watcher->timer);
     while (0 == ATOMIC_GET(&watcher->stop)) {
         if (GetQueuedCompletionStatusEx(watcher->iocp,
                                         overlappeds,
@@ -152,7 +150,7 @@ static void _iocp_loop_event(void *arg) {
         } else if (WAIT_TIMEOUT != (err = ERRNO)) {
             LOG_ERROR("%s", ERRORSTR(err));
         }
-        next_to = _iocp_loop_check(watcher, &timer, &shrink_cnt, &shrink_start);
+        next_to = _iocp_loop_check(watcher, &shrink_cnt, &shrink_start);
     }
     LOG_INFO("net event thread %d exited.", watcher->index);
     FREE(overlappeds);
@@ -221,9 +219,7 @@ static void _iocp_loop_event(void *arg) {
     OVERLAPPED *overlap;
     uint32_t shrink_cnt = 0;
     uint32_t next_to = EVENT_WAIT_TIMEOUT;
-    timer_ctx timer;
-    timer_init(&timer);
-    uint64_t shrink_start = timer_cur_ms(&timer);
+    uint64_t shrink_start = timer_cur_ms(&watcher->timer);
     while (0 == ATOMIC_GET(&watcher->stop)) {
         GetQueuedCompletionStatus(watcher->iocp,
                                   &bytes,
@@ -236,7 +232,7 @@ static void _iocp_loop_event(void *arg) {
         } else if (WAIT_TIMEOUT != (err = ERRNO)) {
             LOG_ERROR("%s", ERRORSTR(err));
         }
-        next_to = _iocp_loop_check(watcher, &timer, &shrink_cnt, &shrink_start);
+        next_to = _iocp_loop_check(watcher, &shrink_cnt, &shrink_start);
     }
     LOG_INFO("net event thread %d exited.", watcher->index);
 }
@@ -320,6 +316,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
                                                       sizeof(sock_ctx *), ONEK, 0, 0,
                                                       _evpub_sockel_hash, _evpub_sockel_compare, _iocp_sockel_free, NULL);
         pool_init(&watcher->pool, 0, 4 * ONEK, INIT_EVENTS_CNT, 0, &skcbs);
+        timer_init(&watcher->timer);
         _iocp_init_cmd(watcher);
         list_init(&watcher->ticks);
         if (NULL != hooks) {
@@ -350,45 +347,37 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
 }
 // 释放watcher的命令通道（排空队列中未处理的命令，释放内存，关闭socket对）
 static void _iocp_free_cmd(watcher_ctx *watcher) {
-    cmd_ctx *cmd;
     cmd_ctx cmd_local;
     void *data;
     sock_ctx *skctx;
     shared_data *pack;
-    udp_opt_arg *udp_arg;
     overlap_cmd_ctx *olcmd = &watcher->cmd;
-    cmd = &cmd_local;
     while (ERR_OK == fsqu_pop_sc(&olcmd->qu, &cmd_local)) {
-        switch (cmd->cmd) {
+        switch (cmd_local.cmd) {
         // CMD_SEND 持有裸 payload；CMD_SENDTO 持有 [netaddr_ctx + payload]
         // 一整段 MALLOC，关闭路径都只需 FREE 释放整段
         case CMD_SEND:
-            data = cmd->args.send.data;
+            data = cmd_local.args.send.data;
             FREE(data);
             break;
         case CMD_SENDTO:
-            data = cmd->args.sendto.data;
+            data = cmd_local.args.sendto.data;
             FREE(data);
             break;
         // CMD_SEND_MULTI 持有 shared_data*；多 fd 共享同一 pack,归还本 fd 引用即可
         case CMD_SEND_MULTI:
-            pack = cmd->args.multi.pack;
+            pack = cmd_local.args.multi.pack;
             if (1 == ATOMIC_ADD(&pack->ref, -1)) {
                 FREE(pack->data);
                 FREE(pack);
             }
             break;
-        // CMD_UDP_OPT 持有 udp_opt_arg*；watcher 退出时未执行的命令直接释放参数包
-        case CMD_UDP_OPT:
-            udp_arg = cmd->args.udpop;
-            FREE(udp_arg);
-            break;
         case CMD_CONN:
-            skctx = cmd->args.conn.skctx;
+            skctx = cmd_local.args.conn.skctx;
             _evpub_sk_free(skctx);
             break;
         case CMD_ADD:
-            skctx = cmd->args.skctx;
+            skctx = cmd_local.args.skctx;
             if (SOCK_STREAM == skctx->type) {
                 _evpub_sk_free(skctx);
             } else {
@@ -398,11 +387,11 @@ static void _iocp_free_cmd(watcher_ctx *watcher) {
         case CMD_ADDACP:
             // fd 是 accept 到的连接，未能加入事件循环；同时配对 _on_accept_cb
             // path 3 投递前 ref++ 占位的减法，ref 归零时释放 lsn
-            CLOSE_SOCK(cmd->sk.fd);
-            _iocp_try_freelsn(cmd->args.lsn);
+            CLOSE_SOCK(cmd_local.sk.fd);
+            _iocp_try_freelsn(cmd_local.args.lsn);
             break;
         case CMD_PROPS:
-            UD_FREE(cmd->args.props.fcb, cmd->args.props.data);
+            UD_FREE(cmd_local.args.props.fcb, cmd_local.args.props.data);
             break;
         default:
             break;

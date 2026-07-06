@@ -19,7 +19,7 @@ runner.run("utils", function(t)
     end
     do
         -- hex 编码字符串（tohex 输出大写）
-        t:eq("616263", utils.hex("abc"):lower(), "hex abc")
+        t:eq("616263", utils.hex("abc", true), "hex abc")
         t:eq("FF00",   utils.hex("\xff\x00"),    "hex binary (大写)")
     end
     do

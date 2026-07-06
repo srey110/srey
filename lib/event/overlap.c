@@ -198,7 +198,9 @@ void _iocp_disconnect(sock_ctx *skctx, int32_t immed) {
             CancelIoEx((HANDLE)skctx->fd, NULL);
         } else {
             BIT_SET(tcp->status, STATUS_GRACEFUL_CLOSE);
-            _iocp_sk_shutdown(skctx);
+            // 仅半关读端,不碰 SSL 对象:留 SSL_write 继续发完 buf_s;buf_s 发完后 _olp_send_close_tcp
+            // 会重入本函数走 immed=1 分支补完整 shutdown(含 SSL_shutdown),此处不需要单独补
+            shutdown(skctx->fd, SHUT_RD);
             // 不调 CancelIoEx; WSASend 完成后检查队列为再空关闭.
         }
     } else {

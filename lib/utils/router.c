@@ -93,18 +93,14 @@ static int32_t _router_parse_seg(const char *src, size_t len, router_seg *out) {
         // 参数名内部含 '?' 视为非法, 落字面量(对齐 Lua [^}?]+ 文法); 否则才是 PARAM/OPT
         if (NULL == memchr(name_src, '?', name_len)) {
             // +1 字节存 \0, router_req_param 内可直接 memcmp 不必再带长度
-            MALLOC(out->str, name_len + 1);
-            memcpy(out->str, name_src, name_len);
-            out->str[name_len] = '\0';
+            out->str = dup_zero(name_src, name_len);
             out->str_len = (uint32_t)name_len;
             out->t = is_opt ? ROUTER_SEG_OPT : ROUTER_SEG_PARAM;
             return ERR_OK;
         }
     }
     // 其他: 字面量段, 整体拷贝
-    MALLOC(out->str, len + 1);
-    memcpy(out->str, src, len);
-    out->str[len] = '\0';
+    out->str = dup_zero(src, len);
     out->str_len = (uint32_t)len;
     out->t = ROUTER_SEG_LIT;
     return ERR_OK;
@@ -316,9 +312,7 @@ void router_define(router_ctx *r, const char *name, router_cb fn) {
     _router_grow((void **)&r->named, &r->named_cap, r->named_n + 1, sizeof(named_mw));
     // strdup 一份, 调用方栈上 / 常量区字符串都能用
     size_t len = strlen(name);
-    char *dup;
-    MALLOC(dup, len + 1);
-    memcpy(dup, name, len + 1);
+    char *dup = dup_zero(name, len);
     r->named[r->named_n].name = dup;
     r->named[r->named_n].fn = fn;
     r->named_n++;

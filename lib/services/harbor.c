@@ -97,7 +97,7 @@ static int32_t _harbor_check_sign(task_ctx *harbor, struct http_pack_ctx *pack, 
     hmac_update(&ctx->hmac, nonce_hex, nlens);
     hmac_final(&ctx->hmac, hs);
     hmac_reset(&ctx->hmac);
-    tohex(hs, sizeof(hs), hexhs);
+    tohex(hs, sizeof(hs), hexhs, 0);
     int32_t sign_ok = (sizeof(hs) * 2 == slens && 0 == _harbor_ct_hexcmp(sign, hexhs, slens));
     secure_zero(hs, sizeof(hs));
     secure_zero(hexhs, sizeof(hexhs));
@@ -221,13 +221,21 @@ static void _harbor_request(router_req *ctx) {
         _harbor_respond(ctx, 200, rtn, rlen);
     }
 }
-// HTTP 接收回调：完整请求到达后交 router 派发（签名/参数校验在 group 中间件，转发在 handler）
+// HTTP 接收回调：完整请求到达后交 router 派发（签名/参数校验在 group 中间件，转发在 handler）；不支持 chunked，收到即拒绝并关闭连接
 static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype,
     uint8_t client, uint8_t slice, void *data, size_t size) {
     (void)pktype;
     (void)client;
     (void)size;
     if (0 != slice) {
+        if (PROT_SLICE_START == slice) {
+            binary_ctx bwriter;
+            binary_init(&bwriter, NULL, 0, 0);
+            http_pack_resp(&bwriter, 411);
+            http_pack_content(&bwriter, "chunked request not supported\n", strlen("chunked request not supported\n"));
+            ev_send(&task->loader->netev, sk->fd, sk->skid, bwriter.data, bwriter.offset, 0);
+            ev_close(&task->loader->netev, sk->fd, sk->skid, 0);
+        }
         return;
     }
     harbor_ctx *ctx = (harbor_ctx *)coro_get_arg(task);
@@ -327,7 +335,7 @@ static int32_t _harbor_sign(binary_ctx *bwriter, const char *key, const char *ur
         LOG_ERROR("csprng_rand failed, abort harbor sign.");
         return ERR_FAILED;
     }
-    tohex(nonce_raw, sizeof(nonce_raw), nonce_hex);
+    tohex(nonce_raw, sizeof(nonce_raw), nonce_hex, 0);
     secure_zero(nonce_raw, sizeof(nonce_raw));
     char tms[64];
     SNPRINTF(tms, sizeof(tms), "%"PRIu64, nowsec());
@@ -345,7 +353,7 @@ static int32_t _harbor_sign(binary_ctx *bwriter, const char *key, const char *ur
     hmac_update(&hmac, nonce_hex, HARBOR_NONCE_HEX);
     hmac_final(&hmac, hs);
     hmac_free(&hmac);
-    tohex(hs, sizeof(hs), hexhs);
+    tohex(hs, sizeof(hs), hexhs, 0);
     secure_zero(hs, sizeof(hs));
     http_pack_head(bwriter, "X-Timestamp", tms);
     http_pack_head(bwriter, "X-Nonce", nonce_hex);

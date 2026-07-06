@@ -17,8 +17,18 @@ typedef enum ws_prot {
 #define WS_SIGN_KEY_LENS B64EN_SIZE(SHA1_BLOCK_SIZE)
 
 void _websock_pkfree(void *data);
+void *_websock_pack_next(void *pack);
 void _websock_udfree(ud_cxt *ud);
 void _websock_secextra(ud_cxt *ud, void *val);
+/// <summary>
+/// 设置 WebSocket 承载子协议(如 MQTT over WebSocket)的额外上下文数据(ws->ud->context)
+/// </summary>
+/// <param name="ev">ev_ctx</param>
+/// <param name="fd">socket句柄</param>
+/// <param name="skid">链接ID</param>
+/// <param name="val">业务自定义数据,所有权转移给 ws->ud->context</param>
+/// <returns>ERR_OK 成功投递；stop 非0失败</returns>
+int32_t websock_set_secextra(ev_ctx *ev, SOCKET fd, uint64_t skid, void *val);
 //解包
 struct websock_pack_ctx *websock_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
     buffer_ctx *buf, ud_cxt *ud, int32_t *status);

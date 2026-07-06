@@ -176,7 +176,7 @@ static void _mail_pack_addr(mail_ctx *mail, binary_ctx *bwriter, mail_addr_type 
         }
         index++;
         if (count > 1 && index < count) {
-            binary_set_va(bwriter, "%s,\r\n ", addr->addr);//must add a space after the comma
+            binary_set_va(bwriter, "%s,\r\n ", addr->addr);// 逗号后需要加空格
         } else {
             binary_set_va(bwriter, "%s\r\n", addr->addr);
         }
@@ -245,29 +245,29 @@ char *mail_pack(mail_ctx *mail) {
         || nattach > 0) {
         binary_set_va(&bwriter, "This is a MIME encapsulated message\r\n\r\n--%s\r\n", boundary);
         if (EMPTYSTR(mail->html)) {
-            //plain text message first.
+            // 先写纯文本内容
             binary_set_va(&bwriter, "%s", "Content-type: text/plain; charset=" MIME_CHARSET "\r\nContent-transfer-encoding: 8bit\r\n\r\n");
             if (!EMPTYSTR(mail->msg)) {
                 _mail_dot_stuff(&bwriter, mail->msg, strlen(mail->msg));
             }
             binary_set_va(&bwriter, "\r\n\r\n--%s\r\n", boundary);
         } else {
-            //make it multipart/alternative as we have html
+            // 含 html 内容，使用 multipart/alternative
             const char *innerboundary = "inner_jfd_0078hj_0_8_part_tp";
             binary_set_va(&bwriter, "Content-Type: multipart/alternative;\r\n\tboundary=\"%s\"\r\n", innerboundary);
-            //need the inner boundary starter.
+            // 写内层 boundary 起始标记
             binary_set_va(&bwriter, "\r\n\r\n--%s\r\n", innerboundary);
-            //plain text message first.
+            // 先写纯文本内容
             binary_set_va(&bwriter, "%s", "Content-type: text/plain; charset=" MIME_CHARSET "\r\nContent-transfer-encoding: 8bit\r\n\r\n");
             if (!EMPTYSTR(mail->msg)) {
                 _mail_dot_stuff(&bwriter, mail->msg, strlen(mail->msg));
             }
             binary_set_va(&bwriter, "\r\n\r\n--%s\r\n", innerboundary);
-            //Add html message here
+            // 写入 html 内容
             binary_set_va(&bwriter, "%s", "Content-type: text/html; charset=" MIME_CHARSET "\r\nContent-Transfer-Encoding: base64\r\n\r\n");
             binary_set_binary(&bwriter, mail->html, strlen(mail->html));
             binary_set_va(&bwriter, "\r\n\r\n--%s--\r\n", innerboundary);
-            //end the boundaries if there are no attachments
+            // 无附件时直接结束边界
             if (0 == nattach) {
                 binary_set_va(&bwriter, "\r\n--%s--\r\n", boundary);
             } else {

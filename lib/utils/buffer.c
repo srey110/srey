@@ -1,6 +1,5 @@
 ﻿#include "utils/buffer.h"
 #include "utils/utils.h"
-#include "utils/netutils.h"
 
 #define MAX_COPY_IN_EXPAND       4096 //节点数据量超过此值时不做数据迁移，直接新建节点
 #define MAX_REALIGN_IN_EXPAND    2048 //节点 off 不超过此值时允许通过对齐操作复用空间
@@ -690,20 +689,13 @@ void buffer_commit_get(buffer_ctx *ctx, size_t lens) {
 int32_t buffer_from_sock(buffer_ctx *ctx, SOCKET fd, size_t *nread,
     int32_t(*_readv)(SOCKET, IOV_TYPE *, uint32_t, void *, size_t *), void *arg) {
     *nread = 0;
-    int32_t nbuf = sock_nread(fd);
-    if (ERR_FAILED == nbuf) {
-        return ERR_FAILED;
-    }
-    if (0 == nbuf
-        || nbuf > MAX_RECV_SIZE) {
-        nbuf = MAX_RECV_SIZE;
-    }
+    size_t nbuf = MAX_RECV_SIZE;
     size_t readed;
     int32_t rtn;
     uint32_t niov;
     IOV_TYPE iov[MAX_EXPAND_NIOV];
     for (;;) {
-        niov = buffer_expand(ctx, (size_t)nbuf, iov, MAX_EXPAND_NIOV);
+        niov = buffer_expand(ctx, nbuf, iov, MAX_EXPAND_NIOV);
         rtn = _readv(fd, iov, niov, arg, &readed);
         buffer_commit_expand(ctx, readed, iov, niov);
         *nread += readed;
@@ -714,8 +706,8 @@ int32_t buffer_from_sock(buffer_ctx *ctx, SOCKET fd, size_t *nread,
             break;
         }
 #ifdef READV_EINVAL
-        if (readed < (size_t)nbuf
-            || *nread >= (size_t)nbuf) {
+        if (readed < nbuf
+            || *nread >= nbuf) {
             break;
         }
 #endif

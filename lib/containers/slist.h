@@ -34,6 +34,11 @@ typedef struct list_iter {
 /// <param name="lst">list_ctx 指针</param>
 void list_init(list_ctx *lst);
 /// <summary>
+/// 清空链表（重置为空，不释放节点，语义同 list_init，用于已在使用的链表）
+/// </summary>
+/// <param name="lst">list_ctx 指针</param>
+void list_clear(list_ctx *lst);
+/// <summary>
 /// 头插：node 成为新队头
 /// </summary>
 /// <param name="lst">list_ctx 指针</param>

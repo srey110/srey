@@ -13,7 +13,7 @@
 //   3) close: 用 server 从未注册的 conv 指向真实 UDP 端口(永远不会 echo),coro_fork_wait 并发跑
 //      synsend 等待者 + 200ms 后 kcp_stop 者;验证 synsend 被 MSG_TYPE_CLOSE 及时唤醒(非等满超时)。
 //   4) fifo: 真实握手拿 conv 后,coro_fork_wait 并发多个协程对同一 kcp_ctx synsend;
-//      验证 non-disposable FIFO 派发下每个协程收到的 echo 精确对应自己发送的内容,不串号。
+//      验证 keep=true FIFO 派发下每个协程收到的 echo 精确对应自己发送的内容,不串号。
 //   5) synstart: 不依赖真实对端(kcp_start 只在本地登记会话表)。同一 socket 上先后 kcp_synstart
 //      两个相同 conv,验证第二次因冲突同步返回失败;再用 sess=0 的 kcp_ctx 验证 kcp_synstart/kcp_synsend
 //      均立即失败(不进入 _coro_wait),且 copy=0 时不漏释放调用方缓冲区。

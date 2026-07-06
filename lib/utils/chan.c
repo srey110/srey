@@ -1,4 +1,5 @@
 ﻿#include "utils/chan.h"
+#include "utils/utils.h"
 
 struct chan_ctx {
     int32_t  buffered;   /* 是否带缓存（只写一次，无需原子） */
@@ -168,13 +169,7 @@ int32_t chan_send(chan_ctx *chan, void *data, size_t lens, int32_t copy) {
     buf.lens = lens;
     if (copy) {
         ASSERTAB(NULL != data || 0 == lens, "chan_send: data is NULL but lens > 0");
-        char *msg;
-        MALLOC(msg, lens + 1);
-        if (lens > 0) {
-            memcpy(msg, data, lens);
-        }
-        msg[lens] = '\0';
-        buf.data = msg;
+        buf.data = dup_zero(data, lens);
     } else {
         buf.data = data;
     }

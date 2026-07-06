@@ -66,6 +66,12 @@ uint32_t _evpub_tick_drive(watcher_ctx *watcher, timer_ctx *timer, uint64_t *now
     }
     return next_to;
 }
+watcher_ctx *_evpub_watcher_at(ev_ctx *netev, SOCKET fd) {
+    return GET_PTR(netev->watcher, netev->nthreads, fd);
+}
+int32_t _evpub_sock_type(sock_ctx *skctx) {
+    return skctx->type;
+}
 void _evpub_off_buf_release(off_buf_ctx *buf) {
     if (NULL == buf->shared) {
         FREE(buf->data);
@@ -354,5 +360,28 @@ int32_t _evpub_sock_send(SOCKET fd, queue_ctx *buf_s, size_t *nsend, void *arg) 
 #else
     (void)arg;
     return _evpub_sock_send_normal(fd, buf_s, nsend);
+#endif
+}
+void _evpub_add_bufs_sendto(watcher_ctx *watcher, sock_ctx *skctx, sendto_ctx *buf, int32_t tried) {
+#ifdef EV_IOCP
+    // IOCP 侧 _iocp_add_bufs_trysendto 本身已是独立的 try-then-queue 实现，不需要外部传入的尝试状态
+    (void)watcher;
+    (void)tried;
+    _iocp_add_bufs_trysendto(skctx, buf);
+#else
+    _uev_add_bufs_sendto(watcher, skctx, buf, tried);
+#endif
+}
+int32_t _evpub_try_sendto(watcher_ctx *watcher, sock_ctx *skctx, const void *data, size_t len, netaddr_ctx *addr) {
+#ifdef EV_IOCP
+    // IOCP 发送恒为异步投递，不存在“同步立即完成、零分配”的路径，统一交调用方转入排队
+    (void)watcher;
+    (void)skctx;
+    (void)data;
+    (void)len;
+    (void)addr;
+    return ERR_FAILED;
+#else
+    return _uev_try_sendto(watcher, skctx, data, len, addr);
 #endif
 }

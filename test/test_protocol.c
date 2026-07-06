@@ -2845,6 +2845,78 @@ static void test_websock_unpack_mask_all_zero(CuTest *tc) {
     buffer_free(&buf);
 }
 
+// 一个 WS BINARY 帧内含 2 个完整 MQTT PINGREQ 包,验证链表机制把两个包都投递出来
+// 而不是只返回第一个、第二个丢在 ws->buf 里(回归 lib/protocol/websock.c _websock_sec_mqtt 修复)
+static void test_websock_mqtt_multipack(CuTest *tc) {
+    size_t p1size, p2size;
+    char *p1 = mqtt_pack_ping(&p1size);
+    char *p2 = mqtt_pack_ping(&p2size);
+    CuAssertPtrNotNull(tc, p1);
+    CuAssertPtrNotNull(tc, p2);
+
+    char payload[32];
+    memcpy(payload, p1, p1size);
+    memcpy(payload + p1size, p2, p2size);
+    size_t plens = p1size + p2size;
+    FREE(p1);
+    FREE(p2);
+
+    size_t fsize;
+    void *frame = websock_pack_binary(1 /* mask,server 视角要求 */, 1 /* fin */, payload, plens, &fsize);
+    CuAssertPtrNotNull(tc, frame);
+
+    buffer_ctx buf;
+    buffer_init(&buf);
+    buffer_append(&buf, frame, fsize);
+    FREE(frame);
+
+    mqtt_ctx mctx = { MQTT_311 };
+    ud_cxt mqtt_ud;
+    ZERO(&mqtt_ud, sizeof(mqtt_ud));
+    mqtt_ud.status = 1; /* mqtt 内部 COMMAND 状态,跳过 CONNECT 前置直接测命令阶段 */
+    mqtt_ud.context = &mctx;
+
+    buffer_ctx subbuf;
+    buffer_init(&subbuf);
+
+    test_ws_ctx ws;
+    ZERO(&ws, sizeof(ws));
+    ws.secprot = PACK_MQTT;
+    ws.ud = &mqtt_ud;
+    ws.buf = &subbuf;
+
+    ud_cxt ud;
+    ZERO(&ud, sizeof(ud));
+    ud.status = 1; /* websock 内部 START 状态 */
+    ud.context = &ws;
+
+    int32_t status = PROT_INIT;
+    struct websock_pack_ctx *pack1 = websock_unpack(NULL, INVALID_SOCK, 0,
+        0 /* server */, &buf, &ud, &status);
+    CuAssertPtrNotNull(tc, pack1);
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    CuAssertIntEquals(tc, PACK_MQTT, websock_secprot(pack1));
+
+    mqtt_pack_ctx *mp1 = (mqtt_pack_ctx *)websock_secpack(pack1);
+    CuAssertPtrNotNull(tc, mp1);
+    CuAssertIntEquals(tc, MQTT_PINGREQ, mp1->fixhead.prot);
+
+    /* 关键验证:第二个完整包必须能通过链表继续取到,而不是永久积压在 ws->buf 里 */
+    struct websock_pack_ctx *pack2 = _websock_pack_next(pack1);
+    CuAssertPtrNotNull(tc, pack2);
+    mqtt_pack_ctx *mp2 = (mqtt_pack_ctx *)websock_secpack(pack2);
+    CuAssertPtrNotNull(tc, mp2);
+    CuAssertIntEquals(tc, MQTT_PINGREQ, mp2->fixhead.prot);
+
+    /* 没有第三个包 */
+    CuAssertPtrEquals(tc, NULL, _websock_pack_next(pack2));
+
+    _websock_pkfree(pack1);
+    _websock_pkfree(pack2);
+    buffer_free(&subbuf);
+    buffer_free(&buf);
+}
+
 // 手工构造 payloadlen=127 + 8 字节大端长度的 64-bit 扩展长度帧
 // 覆盖 _websock_parse_payloadlen 中 payloadlen==127 分支（lib/protocol/websock.c:518-543）
 //   1) 合法 100 字节 payload 通过 ntohll 正确解析
@@ -3293,6 +3365,7 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_websock_getters);
     SUITE_ADD_TEST(suite, test_websock_unpack_mask_xor);
     SUITE_ADD_TEST(suite, test_websock_unpack_mask_all_zero);
+    SUITE_ADD_TEST(suite, test_websock_mqtt_multipack);
     SUITE_ADD_TEST(suite, test_prots_free_null);
     SUITE_ADD_TEST(suite, test_prots_pkfree_default);
     SUITE_ADD_TEST(suite, test_prots_hsfree_default);

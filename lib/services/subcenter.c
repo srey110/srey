@@ -149,8 +149,7 @@ static sc_topic_data *_sc_alloc_topic_data(const char *pattern) {
     sc_topic_data *d;
     CALLOC(d, 1, sizeof(sc_topic_data));
     size_t plen = strlen(pattern);
-    MALLOC(d->pattern, plen + 1);
-    safe_fill_str(d->pattern, plen + 1, pattern);
+    d->pattern = dup_zero(pattern, plen);
     array_init(&d->normal_subs, sizeof(name_t), 0);
     return d;
 }
@@ -419,8 +418,7 @@ static void _sc_handle_sub(sc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *b
         if (NULL == g) {
             sc_shared_group ng;
             size_t glen = strlen(group);
-            MALLOC(ng.group, glen + 1);
-            safe_fill_str(ng.group, glen + 1, group);
+            ng.group = dup_zero(group, glen);
             array_init(&ng.members, sizeof(name_t), 0);
             ng.cursor = 0;
             hashmap_set(d->shared_groups, &ng);
@@ -552,8 +550,7 @@ static void _sc_update_retained(sc_ctx *ctx, name_t src, const char *topic,
         // 新建 entry
         sc_retained_entry ne;
         size_t tlen = strlen(topic);
-        MALLOC(ne.topic, tlen + 1);
-        safe_fill_str(ne.topic, tlen + 1, topic);
+        ne.topic = dup_zero(topic, tlen);
         MALLOC(ne.retained, plen);
         memcpy(ne.retained, payload, plen);
         ne.retained_size = plen;

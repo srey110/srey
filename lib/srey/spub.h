@@ -63,7 +63,7 @@ typedef void(*_net_ssl_exchanged_cb)(task_ctx *task, sk_id *sk, subtype_t pktype
 typedef void(*_net_handshake_cb)(task_ctx *task, sk_id *sk,
                                  subtype_t pktype, uint8_t client, int32_t erro, void *data, size_t lens);// 应用层握手完成回调
 typedef void(*_net_close_cb)(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t client);// 连接关闭回调
-typedef void(*_net_recvfrom_cb)(task_ctx *task, sk_id *sk,
+typedef void(*_net_recvfrom_cb)(task_ctx *task, sk_id *sk, subtype_t pktype,
                                 char ip[IP_LENS], uint16_t port, void *data, size_t size);// UDP 数据接收回调
 // 工作线程版本快照，供监控线程检测卡死
 typedef struct worker_version {
@@ -173,5 +173,7 @@ void _task_message_push(task_ctx *task, message_ctx *msg);
 int32_t _message_should_clean(message_ctx *msg);
 // 根据消息类型释放消息数据（内部接口）
 void _message_clean(message_ctx *msg);
+// 判断消息对应的coro keep参数
+int32_t _message_may_keep(msg_type type);
 
 #endif//SVPUB_H_

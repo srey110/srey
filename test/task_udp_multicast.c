@@ -12,9 +12,9 @@ typedef struct task_udp_multicast_args {
 static atomic_t _recv_count;
 
 // 单播自收回调：验证 task_recvedfrom 路径基本工作
-static void _net_recvfrom(task_ctx *task, sk_id *sk,
+static void _net_recvfrom(task_ctx *task, sk_id *sk, subtype_t pktype,
                           char ip[IP_LENS], uint16_t port, void *data, size_t size) {
-    (void)task; (void)sk; (void)ip; (void)port;
+    (void)task; (void)sk; (void)pktype; (void)ip; (void)port;
     if (UNI_LEN == size && 0 == memcmp(data, UNI_MSG, UNI_LEN)) {
         ATOMIC_ADD(&_recv_count, 1);
     }
@@ -44,7 +44,7 @@ static void _startup(task_ctx *task) {
         LOG_ERROR("udp_multicast: ev_udp_join post failed.");
         return;
     }
-    // 等 4 个 cmd 投递到事件线程并执行 setsockopt(若 setsockopt 失败 _on_cmd_udp_opt 内 LOG_ERROR)
+    // 等 4 个 cmd 投递到事件线程并执行 setsockopt(若 setsockopt 失败 _udp_opt_cb 内 LOG_ERROR)
     coro_sleep(task, 200);
     // 单播自收验证 task_recvedfrom 基础路径(127.0.0.1:port → 同 socket recvfrom)；
     // 多播实际 loopback 跨 OS/网络环境差异大,本测试只验证 API 调用路径不验证多播传输

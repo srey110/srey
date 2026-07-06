@@ -39,7 +39,7 @@ function ctx:start(ip, port, config)
     if not self.kcp:start(ip, port, config) then
         return false
     end
-    local msg = srey._coro_wait(false, self.sess, srey.MSG_TYPE.HANDSHAKED, srey.get_netread_timeout())
+    local msg = srey._coro_wait(self.sess, srey.MSG_TYPE.HANDSHAKED, srey.get_netread_timeout())
     if srey.MSG_TYPE.TIMEOUT == msg.mtype then
         self.kcp:stop()
         return false
@@ -76,7 +76,7 @@ function ctx:send(data, size, copy)
     if not self.kcp:send(data, size, copy) then
         return nil
     end
-    local msg = srey._coro_wait(false, self.sess, srey.MSG_TYPE.RECVFROM, srey.get_netread_timeout())
+    local msg = srey._coro_wait(self.sess, srey.MSG_TYPE.RECVFROM, srey.get_netread_timeout())
     if srey.MSG_TYPE.TIMEOUT == msg.mtype then
         self.kcp:stop()
         return nil

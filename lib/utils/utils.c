@@ -1254,19 +1254,26 @@ char *randstr(char *buf, size_t len) {
     buf[i] = '\0';
     return buf;
 }
-static const char hex_char[16] = {
+static const char hex_char_upper[16] = {
     '0', '1', '2', '3',
     '4', '5', '6', '7',
     '8', '9', 'A', 'B',
     'C', 'D', 'E', 'F'
 };
-char *tohex(const void *buf, size_t len, char *out) {
+static const char hex_char_lower[16] = {
+    '0', '1', '2', '3',
+    '4', '5', '6', '7',
+    '8', '9', 'a', 'b',
+    'c', 'd', 'e', 'f'
+};
+char *tohex(const void *buf, size_t len, char *out, int32_t lower) {
+    const char *tbl = lower ? hex_char_lower : hex_char_upper;
     size_t j = 0;
     unsigned char *p = (unsigned char *)buf;
     for (size_t i = 0; i < len; ++i) {
-        out[j] = hex_char[(p[i] / 16)];
+        out[j] = tbl[(p[i] / 16)];
         ++j;
-        out[j] = hex_char[(p[i] % 16)];
+        out[j] = tbl[(p[i] % 16)];
         ++j;
     }
     out[j] = '\0';
@@ -1366,11 +1373,7 @@ char *_format_va(const char *fmt, va_list args) {
     }
     if (rtn < _FMT_STACK_SIZE) {
         va_end(args2);
-        /* 使用项目自带的 MALLOC 以与 FREE() 配对 */
-        char *pbuff;
-        MALLOC(pbuff, (size_t)rtn + 1);
-        memcpy(pbuff, stk, (size_t)rtn + 1);
-        return pbuff;
+        return dup_zero(stk, (size_t)rtn);
     }
     /* 栈缓冲不足，按实际长度堆分配后重试 */
     size_t size = (size_t)rtn + 1;

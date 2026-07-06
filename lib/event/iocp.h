@@ -6,6 +6,7 @@
 #include "event/cmds.h"
 #include "thread/thread.h"
 #include "utils/tda.h"
+#include "utils/timer.h"
 
 #ifdef EV_IOCP
 
@@ -37,6 +38,7 @@ typedef struct watcher_ctx {
     struct hashmap *element;    // fd -> sock_ctx 哈希表
     pthread_t thevent;          // 事件循环线程
     pool_ctx pool;              // sock_ctx对象池
+    timer_ctx timer;            // 计时器
     overlap_cmd_ctx cmd;        // 命令通道（fsqu 多生产者，单通道足够）
     list_ctx ticks;             // event 线程周期驱动节点(ev_tick)链表
 }watcher_ctx;

@@ -110,7 +110,7 @@ static void _task_handle_recvfrom(task_ctx *task, message_ctx *msg) {
         char ip[IP_LENS];
         netaddr_ip(&rfmsg->addr, ip);
         uint16_t port = netaddr_port(&rfmsg->addr);
-        task->_net_recvfrom(task, &msg->sk, ip, port, rfmsg->data, rfmsg->len);
+        task->_net_recvfrom(task, &msg->sk, msg->subtype, ip, port, rfmsg->data, rfmsg->len);
     }
     _message_clean(msg);
 }
@@ -356,6 +356,19 @@ void _message_clean(message_ctx *msg) {
         break;
     }
 }
+int32_t _message_may_keep(msg_type type) {
+    switch (type) {
+    case MSG_TYPE_ACCEPT:
+    case MSG_TYPE_CONNECT:
+    case MSG_TYPE_SSLEXCHANGED:
+    case MSG_TYPE_HANDSHAKED:
+    case MSG_TYPE_RECV:
+    case MSG_TYPE_RECVFROM:
+        return 1;
+    default:
+        return 0;
+    }
+}
 // 时间轮超时回调：将超时消息推入对应任务队列
 static void _task_message_timeout_push(ud_cxt *ud) {
     task_ctx *task = task_grab(ud->loader, ud->handle);
@@ -406,14 +419,10 @@ void task_response(task_ctx *dst, subtype_t reqtype, uint64_t sess,
     msg.subtype = reqtype;
     msg.erro = erro;
     msg.size = size;
-    if (NULL != data) {
-        if (0 != copy) {
-            msg.data = dup_zero(data, size);
-        } else {
-            msg.data = data;
-        }
+    if (NULL != data && 0 != copy) {
+        msg.data = dup_zero(data, size);
     } else {
-        msg.data = NULL;
+        msg.data = data;
     }
     _task_message_push(dst, &msg);
 }

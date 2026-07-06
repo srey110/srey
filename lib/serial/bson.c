@@ -711,7 +711,7 @@ static void _bson_dump(bson_ctx *bson, int32_t index, int32_t depth, binary_ctx 
             binary_set_binary(str, ") ", 2);
             char *hex;
             MALLOC(hex, HEX_ENSIZE(lens));
-            tohex(val, lens, hex);
+            tohex(val, lens, hex, 0);
             binary_set_binary(str, hex, strlen(hex));
             FREE(hex);
             break;
@@ -719,7 +719,7 @@ static void _bson_dump(bson_ctx *bson, int32_t index, int32_t depth, binary_ctx 
         case BSON_OID: {
             char *val = bson_iter_oid(&iter, NULL);
             char hex[HEX_ENSIZE(BSON_OID_LENS)];
-            tohex(val, BSON_OID_LENS, hex);
+            tohex(val, BSON_OID_LENS, hex, 0);
             binary_set_binary(str, hex, strlen(hex));
             break;
         }

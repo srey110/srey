@@ -100,8 +100,7 @@ static void _dc_kv_set(dc_ctx *ctx, const char *key, void *val, size_t size) {
     // 新建:key 独立 strdup
     dc_entry e;
     size_t klen = strlen(key);
-    MALLOC(e.key, klen + 1);
-    safe_fill_str(e.key, klen + 1, key);
+    e.key = dup_zero(key, klen);
     e.val = new_val;
     e.size = size;
     hashmap_set(ctx->kv, &e);
@@ -137,8 +136,7 @@ static void _dc_pending_push(dc_ctx *ctx, const char *key, dc_waiter *w) {
     // 新建
     dc_pending p;
     size_t klen = strlen(key);
-    MALLOC(p.key, klen + 1);
-    safe_fill_str(p.key, klen + 1, key);
+    p.key = dup_zero(key, klen);
     list_init(&p.waiters);
     list_push_tail(&p.waiters, &w->node);
     hashmap_set(ctx->pending, &p);
@@ -157,8 +155,8 @@ static list_ctx _dc_pending_take(dc_ctx *ctx, const char *key) {
     if (!found) {
         return taken;
     }
-    taken = found->waiters;            // 整条队列移交调用方
-    list_init(&found->waiters);        // entry 置空,避免 _dc_pending_free 再次释放
+    taken = found->waiters; // 整条队列移交调用方
+    list_init(&found->waiters); // entry 置空,避免 _dc_pending_free 再次释放
     // hashmap_delete 不自动调 elfree,需手动 _dc_pending_free 释放 key
     dc_pending *removed = (dc_pending *)hashmap_delete(ctx->pending, &query);
     if (NULL != removed) {
@@ -191,7 +189,7 @@ static int _dc_read_key(binary_ctx *br, char *keybuf, size_t cap) {
     if (br->size - br->offset < 2) {
         return ERR_FAILED;
     }
-    uint16_t klen = (uint16_t)binary_get_uinteger(br, 2, 0);  // u16 klen 网络序
+    uint16_t klen = (uint16_t)binary_get_uinteger(br, 2, 0); // u16 klen 网络序
     if (br->size - br->offset < (size_t)klen) {
         return ERR_FAILED;
     }
@@ -209,7 +207,7 @@ static void _dc_handle_set(dc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *b
         _dc_resp_failed(ctx, src, sess, REQ_DC_SET);
         return;
     }
-    uint32_t vlen = (uint32_t)binary_get_uinteger(br, 4, 0);  // u32 vlen 网络序
+    uint32_t vlen = (uint32_t)binary_get_uinteger(br, 4, 0); // u32 vlen 网络序
     if (br->size - br->offset < (size_t)vlen) {
         _dc_resp_failed(ctx, src, sess, REQ_DC_SET);
         return;
@@ -238,7 +236,7 @@ static void _dc_handle_set(dc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *b
         if (now_ms < w->deadline_ms) {
             wt = task_grab(ctx->loader, w->src);
             if (wt) {
-                task_response(wt, REQ_DC_WAIT, w->sess, ERR_OK, val, vsize, 1);  // copy=1
+                task_response(wt, REQ_DC_WAIT, w->sess, ERR_OK, val, vsize, 1); // copy=1
                 task_ungrab(wt);
             }
         }
@@ -248,7 +246,7 @@ static void _dc_handle_set(dc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *b
 // GET body 格式:| u16 klen | key |
 static void _dc_handle_get(dc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *br) {
     if (INVALID_TNAME == src) {
-        return;  // fire-and-forget:无人接响应,纯读操作直接早返
+        return; // fire-and-forget:无人接响应,纯读操作直接早返
     }
     char keybuf[DC_KEY_MAX];
     if (ERR_OK != _dc_read_key(br, keybuf, sizeof(keybuf))) {
@@ -305,7 +303,7 @@ static void _dc_pending_sweep(dc_ctx *ctx, uint64_t now_ms) {
         query.key = keys[i];
         removed = (dc_pending *)hashmap_delete(ctx->pending, &query);
         if (NULL != removed) {
-            _dc_pending_free(removed);  // head 已空,仅 FREE(key)
+            _dc_pending_free(removed); // head 已空,仅 FREE(key)
         }
     }
     array_free(&empty_keys);
@@ -319,7 +317,7 @@ static void _dc_handle_wait(dc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *
         _dc_pending_sweep(ctx, now_ms);
     }
     if (INVALID_TNAME == src) {
-        return;  // fire-and-forget:命中也无人接,未命中也不能挂 pending(永远无法唤醒,内存泄漏)
+        return; // fire-and-forget:命中也无人接,未命中也不能挂 pending(永远无法唤醒,内存泄漏)
     }
     char keybuf[DC_KEY_MAX];
     if (ERR_OK != _dc_read_key(br, keybuf, sizeof(keybuf))) {
@@ -343,7 +341,7 @@ static void _dc_handle_wait(dc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *
     // 未命中:塞入 pending,不发 response → src 业务协程继续 yield,超时由其自身 coro_request 超时机制兜底
     task_ctx *src_task = task_grab(ctx->loader, src);
     if (NULL == src_task) {
-        return;  // src 已不存在,挂 waiter 也无法唤醒
+        return; // src 已不存在,挂 waiter 也无法唤醒
     }
     uint32_t timeout_ms = task_get_request_timeout(src_task);
     task_ungrab(src_task);
@@ -362,7 +360,7 @@ static void _dc_handle_del(dc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *b
         _dc_resp_failed(ctx, src, sess, REQ_DC_DEL);
         return;
     }
-    _dc_kv_del(ctx, keybuf);  // 不影响 _pending,语义上"撤回真值"
+    _dc_kv_del(ctx, keybuf); // 不影响 _pending,语义上"撤回真值"
     // 回 ack:OK(fire-and-forget 跳过)
     if (INVALID_TNAME != src) {
         task_ctx *src_task = task_grab(ctx->loader, src);
@@ -383,7 +381,7 @@ static bool _dc_iter(const void *item, void *udata) {
 }
 static void _dc_handle_list(dc_ctx *ctx, name_t src, uint64_t sess) {
     if (INVALID_TNAME == src) {
-        return;  // fire-and-forget:跳过整个 scan,无人接响应
+        return; // fire-and-forget:跳过整个 scan,无人接响应
     }
     binary_ctx bw;
     binary_init(&bw, NULL, 0, 0);
@@ -493,9 +491,9 @@ static char *_dc_pack_kv(const char *key, void *val, size_t vsize, size_t *out_t
     size_t klen = strlen(key);
     // val=NULL 时强制 vlen=0,避免"vlen 声称 N 但实际不写 val 字节"造成协议不一致
     size_t real_vsize = (NULL != val) ? vsize : 0;
-    binary_set_uinteger(&bw, (uint64_t)klen, 2, 0);  // u16 klen 网络序
+    binary_set_uinteger(&bw, (uint64_t)klen, 2, 0); // u16 klen 网络序
     binary_set_binary(&bw, key, klen);
-    binary_set_uinteger(&bw, (uint64_t)real_vsize, 4, 0);  // u32 vlen 网络序(总写,空 val 也写 0)
+    binary_set_uinteger(&bw, (uint64_t)real_vsize, 4, 0); // u32 vlen 网络序(总写,空 val 也写 0)
     if (real_vsize > 0) {
         binary_set_binary(&bw, (const char *)val, real_vsize);
     }
@@ -506,7 +504,7 @@ static char *_dc_pack_key(const char *key, size_t *out_total) {
     binary_ctx bw;
     binary_init(&bw, NULL, 0, 0);
     size_t klen = strlen(key);
-    binary_set_uinteger(&bw, (uint64_t)klen, 2, 0);  // u16 klen 网络序
+    binary_set_uinteger(&bw, (uint64_t)klen, 2, 0); // u16 klen 网络序
     binary_set_binary(&bw, key, klen);
     *out_total = bw.offset;
     return bw.data;
@@ -527,7 +525,7 @@ int32_t coro_dc_set(task_ctx *task, name_t dc_name, const char *key, void *val, 
     char *buf = _dc_pack_kv(key, val, size, &total);
     int32_t erro = 0;
     size_t rsize = 0;
-    coro_request(dc, task, REQ_DC_SET, buf, total, 0, &erro, &rsize);  // copy=0 转移所有权
+    coro_request(dc, task, REQ_DC_SET, buf, total, 0, &erro, &rsize); // copy=0 转移所有权
     task_ungrab(dc);
     return erro;
 }
@@ -546,7 +544,7 @@ void *coro_dc_get(task_ctx *task, name_t dc_name, const char *key,
     }
     size_t total;
     char *buf = _dc_pack_key(key, &total);
-    void *resp = coro_request(dc, task, REQ_DC_GET, buf, total, 0, erro, size);  // copy=0 转移所有权
+    void *resp = coro_request(dc, task, REQ_DC_GET, buf, total, 0, erro, size); // copy=0 转移所有权
     task_ungrab(dc);
     if (ERR_OK != *erro) {
         SET_PTR(size, 0);
@@ -569,7 +567,7 @@ void *coro_dc_wait(task_ctx *task, name_t dc_name, const char *key,
     }
     size_t total;
     char *buf = _dc_pack_key(key, &total);
-    void *resp = coro_request(dc, task, REQ_DC_WAIT, buf, total, 0, erro, size);  // copy=0 转移所有权
+    void *resp = coro_request(dc, task, REQ_DC_WAIT, buf, total, 0, erro, size); // copy=0 转移所有权
     task_ungrab(dc);
     if (ERR_OK != *erro) {
         SET_PTR(size, 0);
@@ -589,7 +587,7 @@ int32_t coro_dc_del(task_ctx *task, name_t dc_name, const char *key) {
     char *buf = _dc_pack_key(key, &total);
     int32_t erro = 0;
     size_t rsize = 0;
-    coro_request(dc, task, REQ_DC_DEL, buf, total, 0, &erro, &rsize);  // copy=0 转移所有权
+    coro_request(dc, task, REQ_DC_DEL, buf, total, 0, &erro, &rsize); // copy=0 转移所有权
     task_ungrab(dc);
     return erro;
 }
@@ -601,7 +599,7 @@ void *coro_dc_keys(task_ctx *task, name_t dc_name,
         *erro = ERR_FAILED;
         return NULL;
     }
-    void *resp = coro_request(dc, task, REQ_DC_LIST, NULL, 0, 0, erro, size);  // LIST 无 body,copy=0
+    void *resp = coro_request(dc, task, REQ_DC_LIST, NULL, 0, 0, erro, size); // LIST 无 body,copy=0
     task_ungrab(dc);
     if (ERR_OK != *erro) {
         SET_PTR(size, 0);

@@ -51,19 +51,19 @@ static inline void _heap_path(uint32_t nelts, uint32_t *path, uint32_t *depth) {
     }
 }
 void heap_insert(heap_ctx *heap, heap_node *node) {
-    // 0: left, 1: right
+    // 0:左子节点，1:右子节点
     uint32_t path, d;
     ++heap->nelts;
-    // traverse from bottom to up, get path of last node
+    // 从下往上定位末尾节点的路径
     _heap_path(heap->nelts, &path, &d);
-    // get last->parent by path
+    // 按路径找到末尾节点的父节点
     heap_node *parent = heap->root;
     while (d > 1) {
         parent = (path & 1) ? parent->right : parent->left;
         --d;
         path >>= 1;
     }
-    // insert node
+    // 插入节点
     node->parent = parent;
     if (NULL == parent) {
         heap->root = node;
@@ -72,7 +72,7 @@ void heap_insert(heap_ctx *heap, heap_node *node) {
     } else {
         parent->left = node;
     }
-    // sift up
+    // 上浮调整
     if (heap->_compare) {
         while (node->parent
                && heap->_compare(node, node->parent)) {
@@ -105,19 +105,19 @@ void heap_remove(heap_ctx *heap, heap_node *node) {
     if (0 == heap->nelts) {
         return;
     }
-    // 0: left, 1: right
+    // 0:左子节点，1:右子节点
     uint32_t path, d;
-    // traverse from bottom to up, get path of last node
+    // 从下往上定位末尾节点的路径
     _heap_path(heap->nelts, &path, &d);
     --heap->nelts;
-    // get last->parent by path
+    // 按路径找到末尾节点的父节点
     heap_node *parent = heap->root;
     while (d > 1) {
         parent = (path & 1) ? parent->right : parent->left;
         --d;
         path >>= 1;
     }
-    // replace node with last
+    // 用末尾节点替换待删除节点
     heap_node *last = NULL;
     if (NULL == parent) {
         return;
@@ -141,7 +141,7 @@ void heap_remove(heap_ctx *heap, heap_node *node) {
     }
     heap_node *v = last;
     heap_node *est = NULL;
-    // sift down
+    // 下沉调整
     while (1) {
         est = v;
         if (v->left) {
@@ -155,7 +155,7 @@ void heap_remove(heap_ctx *heap, heap_node *node) {
         }
         _heap_swap(heap, v, est);
     }
-    // sift up
+    // 上浮调整
     while (v->parent
            && heap->_compare(v, v->parent)) {
         _heap_swap(heap, v->parent, v);

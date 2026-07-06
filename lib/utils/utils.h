@@ -234,8 +234,9 @@ char *randstr(char *buf, size_t len);
 /// <param name="buf">要转的数据</param>
 /// <param name="len">数据长度</param>
 /// <param name="out">转换后的数据,长度:HEX_ENSIZE</param>
+/// <param name="lower">0 输出大写；非 0 输出小写</param>
 /// <returns>char *</returns>
-char *tohex(const void *buf, size_t len, char *out);
+char *tohex(const void *buf, size_t len, char *out, int32_t lower);
 /// <summary>
 /// 拆分
 /// </summary>

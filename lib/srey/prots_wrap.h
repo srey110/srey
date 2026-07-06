@@ -13,6 +13,7 @@
 /// </summary>
 /// <param name="task">所属 task_ctx</param>
 /// <param name="mysql">mysql_ctx</param>
+/// <param name="setsess">是否设置sess</param>
 /// <returns>ERR_OK 成功，其他失败</returns>
 int32_t mysql_try_connect(task_ctx *task, mysql_ctx *mysql, int32_t setsess);
 /// <summary>
@@ -20,6 +21,7 @@ int32_t mysql_try_connect(task_ctx *task, mysql_ctx *mysql, int32_t setsess);
 /// </summary>
 /// <param name="task">所属 task_ctx</param>
 /// <param name="pg">pgsql_ctx</param>
+/// <param name="setsess">是否设置sess</param>
 /// <returns>ERR_OK 成功，其他失败</returns>
 int32_t pgsql_try_connect(task_ctx *task, pgsql_ctx *pg, int32_t setsess);
 /// <summary>
@@ -27,6 +29,7 @@ int32_t pgsql_try_connect(task_ctx *task, pgsql_ctx *pg, int32_t setsess);
 /// </summary>
 /// <param name="task">所属 task_ctx</param>
 /// <param name="mongo">mongo_ctx</param>
+/// <param name="setsess">是否设置sess</param>
 /// <returns>ERR_OK 成功，其他失败</returns>
 int32_t mongo_try_connect(task_ctx *task, mongo_ctx *mongo, int32_t setsess);
 /// <summary>
@@ -34,6 +37,7 @@ int32_t mongo_try_connect(task_ctx *task, mongo_ctx *mongo, int32_t setsess);
 /// </summary>
 /// <param name="task">所属 task_ctx</param>
 /// <param name="smtp">smtp_ctx</param>
+/// <param name="setsess">是否设置sess</param>
 /// <returns>ERR_OK 成功，其他失败</returns>
 int32_t smtp_try_connect(task_ctx *task, smtp_ctx *smtp, int32_t setsess);
 /// <summary>
@@ -45,6 +49,7 @@ int32_t smtp_try_connect(task_ctx *task, smtp_ctx *smtp, int32_t setsess);
 /// <param name="port">服务器端口</param>
 /// <param name="netev">网络事件标志</param>
 /// <param name="version">MQTT 协议版本</param>
+/// <param name="setsess">是否设置sess</param>
 /// <param name="fd">输出：socket 句柄</param>
 /// <param name="skid">输出：socket ID</param>
 /// <returns>ERR_OK 成功，其他失败</returns>

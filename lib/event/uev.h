@@ -83,7 +83,7 @@ typedef struct watcher_ctx {
     struct hashmap *element;    // fd -> sock_ctx 哈希表
     pthread_t thevent;          // 事件循环线程
     pool_ctx pool;              // sock_ctx对象池
-    timer_ctx tm_qtn;           // qtn 用 monotonic 计时
+    timer_ctx timer;            // 计时器
     queue_ctx qtn;              // 隔离队列 FIFO，元素 qtn_entry
     pip_ctx pipe;               // 命令管道（单通道，多生产者 < PIPE_BUF 原子写）
     list_ctx ticks;             // event 线程周期驱动节点(ev_tick)链表
@@ -107,8 +107,12 @@ void _uev_add_conn_inloop(watcher_ctx *watcher, sock_ctx *skctx);
 void _uev_add_acpfd_inloop(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn);
 // 将 TCP 数据加入发送队列，并确保注册写事件
 void _uev_add_bufs_send(watcher_ctx *watcher, sock_ctx *skctx, off_buf_ctx *buf);
-// 将 UDP datagram(sendto_ctx) 加入发送队列，并确保注册写事件
-void _uev_add_bufs_sendto(watcher_ctx *watcher, sock_ctx *skctx, sendto_ctx *buf);
+// 将 UDP datagram(sendto_ctx) 加入发送队列，并确保注册写事件；
+// tried 非 0 表示调用方入队前已尝试过一次发送（如 _uev_try_sendto 遇到 EAGAIN），跳过重复尝试
+void _uev_add_bufs_sendto(watcher_ctx *watcher, sock_ctx *skctx, sendto_ctx *buf, int32_t tried);
+// 尝试直接发送；发出成功或致命错误（已断开）均返回 ERR_OK；
+// 发送队列已有积压或 EAGAIN 均返回 ERR_FAILED，调用方需自行以 tried=1 转入 _uev_add_bufs_sendto 排队
+int32_t _uev_try_sendto(watcher_ctx *watcher, sock_ctx *skctx, const void *data, size_t len, netaddr_ctx *addr);
 // 在事件循环内将socket注册读事件（TCP/UDP通用）
 void _uev_add_fd_inloop(watcher_ctx *watcher, sock_ctx *skctx);
 

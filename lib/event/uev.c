@@ -1,7 +1,6 @@
 ﻿#include "event/uev.h"
 #include "containers/hashmap.h"
 #include "utils/netutils.h"
-#include "utils/timer.h"
 #include "utils/utils.h"
 
 #ifndef EV_IOCP
@@ -60,20 +59,19 @@ static void _uev_cmd_loop(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
 // 初始化命令回调函数表，_on_cmd 批量处理cmd，为了快速消费掉cmd，里面不应有耗时操作。
 // 如 在_on_cmd_send里面直接发送数据
 static void _uev_init_callback(void) {
-    cmd_cbs[CMD_STOP]    = _on_cmd_stop;
+    cmd_cbs[CMD_STOP] = _on_cmd_stop;
     cmd_cbs[CMD_DISCONN] = _on_cmd_disconn;
-    cmd_cbs[CMD_ADDACP]  = _on_cmd_addacp;
-    cmd_cbs[CMD_CONN]    = _on_cmd_conn;
-    cmd_cbs[CMD_ADD]     = _on_cmd_add;
-    cmd_cbs[CMD_SEND]    = _on_cmd_send;
+    cmd_cbs[CMD_ADDACP] = _on_cmd_addacp;
+    cmd_cbs[CMD_CONN] = _on_cmd_conn;
+    cmd_cbs[CMD_ADD] = _on_cmd_add;
+    cmd_cbs[CMD_SEND] = _on_cmd_send;
     cmd_cbs[CMD_SEND_MULTI] = _on_cmd_send_multi;
-    cmd_cbs[CMD_SENDTO]  = _on_cmd_sendto;
-    cmd_cbs[CMD_UDP_OPT] = _on_cmd_udp_opt;
-    cmd_cbs[CMD_SSL]     = _on_cmd_ssl;
-    cmd_cbs[CMD_LSN]     = _on_cmd_lsn;
-    cmd_cbs[CMD_UNLSN]   = _on_cmd_unlsn;
+    cmd_cbs[CMD_SENDTO] = _on_cmd_sendto;
+    cmd_cbs[CMD_SSL] = _on_cmd_ssl;
+    cmd_cbs[CMD_LSN] = _on_cmd_lsn;
+    cmd_cbs[CMD_UNLSN] = _on_cmd_unlsn;
     cmd_cbs[CMD_LSN_UNREF] = _on_cmd_lsn_unref;
-    cmd_cbs[CMD_PROPS]   = _on_cmd_props;
+    cmd_cbs[CMD_PROPS] = _on_cmd_props;
 }
 // 将命令管道读端注册到事件循环（读事件触发_uev_cmd_loop）
 static void _uev_init_cmd(watcher_ctx *watcher) {
@@ -373,7 +371,7 @@ static void _uev_loop_event(void *arg) {
     sock_ctx *skctx;
     int32_t i, cnt, ev;
     uint32_t shrink_cnt = 0, next_to = EVENT_WAIT_TIMEOUT;
-    uint64_t now_ms, shrink_start = timer_cur_ms(&watcher->tm_qtn);
+    uint64_t now_ms, shrink_start = timer_cur_ms(&watcher->timer);
     //主循环
     while (0 == ATOMIC_GET(&watcher->stop)) {
         //设置超时时间
@@ -433,14 +431,14 @@ static void _uev_loop_event(void *arg) {
             dvp.dp_nfds = watcher->nevents;
 #endif
         }
-        next_to = _evpub_tick_drive(watcher, &watcher->tm_qtn, &now_ms);
+        next_to = _evpub_tick_drive(watcher, &watcher->timer, &now_ms);
         shrink_cnt++;
         if (shrink_cnt < EVENT_CHECK_INTERVAL) {
             continue;
         }
         shrink_cnt = 0;
         if (0 == now_ms) {
-            now_ms = timer_cur_ms(&watcher->tm_qtn);
+            now_ms = timer_cur_ms(&watcher->timer);
         }
         _uev_qtn_drain(watcher, now_ms);
         _uev_pool_shrink(watcher, &shrink_start, now_ms);
@@ -534,8 +532,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
         pool_init(&watcher->pool, 0, 4 * ONEK, INIT_EVENTS_CNT, 0, &skcbs);
         queue_init(&watcher->qtn, sizeof(qtn_entry), ONEK);
         list_init(&watcher->ticks);
-        timer_init(&watcher->tm_qtn);
-        timer_start(&watcher->tm_qtn);
+        timer_init(&watcher->timer);
         _uev_init_cmd(watcher);
         if (NULL != hooks) {
             watcher->thevent = thread_creat_hooks(_uev_loop_event, hooks->init, hooks->exit, watcher, hooks->assist);
@@ -549,12 +546,14 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
     LOG_INFO("event: %s, SO_REUSEPORT: false.", EV_NAME);
 #endif
 }
+timer_ctx *_evpub_watcher_timer(watcher_ctx *watcher) {
+    return &watcher->timer;
+}
 // 排空管道中未处理的命令并关闭管道fd（释放watcher前调用）
 static void _uev_free_pipe(watcher_ctx *watcher) {
     void *data;
     sock_ctx *skctx;
     shared_data *pack;
-    udp_opt_arg *udp_arg;
     int32_t j, cnt;
     cmd_ctx cmds[CMD_MAX_NREAD];
 #if !CMD_PIPE_QU
@@ -592,11 +591,6 @@ static void _uev_free_pipe(watcher_ctx *watcher) {
                     FREE(pack->data);
                     FREE(pack);
                 }
-                break;
-            // CMD_UDP_OPT 持有 udp_opt_arg*；watcher 退出时未执行的命令直接释放参数包
-            case CMD_UDP_OPT:
-                udp_arg = cmds[j].args.udpop;
-                FREE(udp_arg);
                 break;
             case CMD_CONN:
                 skctx = cmds[j].args.conn.skctx;

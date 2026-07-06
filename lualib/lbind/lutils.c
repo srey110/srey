@@ -85,14 +85,19 @@ static int32_t _lutils_ud_free(lua_State *lua) {
 /// </summary>
 /// <param name="data" type="string|lightuserdata">待编码数据；为字符串时长度自动取得</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
+/// <param name="lower" type="boolean?">true 输出小写；缺省或 false 输出大写</param>
 /// <returns type="string">十六进制字符串</returns>
 static int32_t _lutils_hex(lua_State *lua) {
     void *data;
     size_t size;
-    data = lpub_check_buf(lua, 1, &size, NULL);
+    int32_t idx = 1;
+    // data 为字符串时只占 1 个栈位,为 lightuserdata 时占 2 个(data+size);
+    // lower 是可变位置的下一个参数,须用 _idx 版本取推进后的准确栈位,不能固定写死
+    data = lpub_check_buf_idx(lua, &idx, &size, NULL);
+    int32_t lower = lua_toboolean(lua, idx);
     luaL_Buffer lbuf;
     char *out = luaL_buffinitsize(lua, &lbuf, HEX_ENSIZE(size));
-    tohex(data, size, out);
+    tohex(data, size, out, lower);
     luaL_pushresultsize(&lbuf, strlen(out));
     return 1;
 }

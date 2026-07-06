@@ -13,7 +13,6 @@ typedef enum ev_cmds {
     CMD_SEND,         // [ev_send → _on_cmd_send] 发送TCP数据（裸 payload）
     CMD_SEND_MULTI,   // [ev_send_multi → _on_cmd_send_multi] 多播发送 TCP 数据：args.multi.pack = shared_data* 共享 pack 指针(N 个 fd 共享同一份 data,各 buf 释放时 ref--)
     CMD_SENDTO,       // [ev_sendto → _on_cmd_sendto] 发送UDP数据：args.sendto = sendto_ctx(addr 与 payload 分离)，与 CMD_SEND 区分以校验 fd 类型
-    CMD_UDP_OPT,      // [ev_udp_* → _on_cmd_udp_opt] UDP 多播 setsockopt：args.udpop = udp_opt_arg* 参数包(JOIN/LEAVE/TTL/LOOP)
     CMD_SSL,          // [ev_ssl → _on_cmd_ssl] 切换为SSL连接
 #ifndef EV_IOCP
     CMD_LSN,          // [_cmd_listen → _on_cmd_lsn] 添加监听socket
@@ -27,12 +26,11 @@ typedef enum ev_cmds {
 // 命令上下文
 typedef struct cmd_ctx {
     int32_t cmd;    // 命令类型 ev_cmds
-    sk_id sk;     // 目标连接 fd+skid（STOP/ADD/LSN/LSN_UNREF 不用 fd；skid 仅 DISCONN/SEND 系列/UDP_OPT/SSL/PROPS 用）
+    sk_id sk;     // 目标连接 fd+skid（STOP/ADD/LSN/LSN_UNREF 不用 fd；skid 仅 DISCONN/SEND 系列/SSL/PROPS 用）
     union {
         int32_t immed;                // CMD_DISCONN：立即关闭标志
         struct sock_ctx *skctx;       // CMD_ADD / CMD_LSN：待加入事件循环的 socket
         struct listener_ctx *lsn;     // CMD_ADDACP / CMD_UNLSN / CMD_LSN_UNREF：监听对象
-        struct udp_opt_arg *udpop;    // CMD_UDP_OPT：setsockopt 参数包
         struct { struct sock_ctx *skctx; netaddr_ctx addr; } conn; // CMD_CONN：连接中 socket + 目标地址(仅 IOCP 用)
         struct { size_t len; void *data; } send;         // CMD_SEND：长度 + 裸 payload
         struct { size_t len; shared_data *pack; } multi; // CMD_SEND_MULTI：长度 + 共享包
@@ -83,8 +81,6 @@ void _on_cmd_send(struct watcher_ctx *watcher, cmd_ctx *cmd);
 void _on_cmd_send_multi(struct watcher_ctx *watcher, cmd_ctx *cmd);
 // ev_sendto CMD_SENDTO命令处理：将UDP数据加入发送队列（校验 fd 类型为 SOCK_DGRAM）
 void _on_cmd_sendto(struct watcher_ctx *watcher, cmd_ctx *cmd);
-// _send_udp_opt CMD_UDP_OPT命令处理：UDP 多播 setsockopt,args.udpop = udp_opt_arg*；按 sock family 分 IPv4/IPv6 分支调对应 IP_*/IPV6_* 选项,完成后 FREE(arg)
-void _on_cmd_udp_opt(struct watcher_ctx *watcher, cmd_ctx *cmd);
 // ev_props CMD_PROPS 自定义
 void _on_cmd_props(struct watcher_ctx *watcher, cmd_ctx *cmd);
 

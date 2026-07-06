@@ -12,7 +12,7 @@ local UNI_MSG = "UNI_LUA"
 srey.startup(function()
 runner.run("udp_multicast", function(t)
     local received = 0
-    srey.on_recvedfrom(function(fd, skid, ip, port, data, size)
+    srey.on_recvedfrom(function(pktype, fd, skid, ip, port, data, size)
         if size == #UNI_MSG then
             local s = srey.ud_str(data, size)
             if s == UNI_MSG then

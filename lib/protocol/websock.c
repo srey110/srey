@@ -5,9 +5,9 @@
 #include "event/event.h"
 #include "utils/utils.h"
 
-#define MASK_KEY_LENS  4  //掩码密钥长度
-#define SIGN_KEY_LENS  16 //握手签名（RFC 6455：16 字节随机 nonce，base64 后 24 字符）
-#define HEAD_LESN      2  // WebSocket 帧最小头部长度（字节）
+#define MASK_KEY_LENS 4 // 掩码密钥长度
+#define SIGN_KEY_LENS 16 // 握手签名（RFC 6455：16 字节随机 nonce，base64 后 24 字符）
+#define HEAD_LESN 2 // WebSocket 帧最小头部长度（字节）
 #define SIGNKEY "258EAFA5-E914-47DA-95CA-C5AB0DC85B11" // WebSocket 握手固定密钥后缀（RFC 6455）
 
 // WebSocket 帧解析状态
@@ -25,6 +25,7 @@ typedef struct websock_pack_ctx {
     size_t remain;       // 帧数据段在缓冲区中的剩余待读字节数
     size_t dlens;        // 数据体长度（不含掩码键）
     void *secpack;       // 子协议解包结果
+    struct websock_pack_ctx *next; // 单帧多子协议包时链接后续包，仅 _websock_sec_mqtt 构造、prots_net_recv 消费
     char key[MASK_KEY_LENS]; // 掩码密钥（mask=1 时有效）
     char data[];         // 数据体（柔性数组）
 }websock_pack_ctx;
@@ -37,7 +38,7 @@ typedef struct websock_ctx {
     websock_pack_ctx *pack; // 当前正在解析的帧（DATA 状态下有效）
 }websock_ctx;
 
-static _handshaked_push _hs_push;                      // 握手完成后的推送回调
+static _handshaked_push _hs_push; // 握手完成后的推送回调
 
 #if defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
     #include <emmintrin.h>
@@ -97,6 +98,13 @@ void _websock_pkfree(void *data) {
     prots_pkfree(pack->secprot, pack->secpack);
     FREE(data);
 }
+// 取出并断开单帧多包链表的下一个节点,供 prots_next_pack 分派调用
+void *_websock_pack_next(void *pack) {
+    websock_pack_ctx *p = (websock_pack_ctx *)pack;
+    void *next = p->next;
+    p->next = NULL;
+    return next;
+}
 void _websock_udfree(ud_cxt *ud) {
     if (NULL == ud->context) {
         return;
@@ -128,6 +136,15 @@ void _websock_secextra(ud_cxt *ud, void *val) {
         return;
     }
     ws->ud->context = val;
+}
+static int32_t _websock_set_secextra_cb(struct sock_ctx *skctx, ud_cxt *ud, void *data, uint64_t number) {
+    (void)skctx;
+    (void)number;
+    _websock_secextra(ud, data);
+    return 0;
+}
+int32_t websock_set_secextra(ev_ctx *ev, SOCKET fd, uint64_t skid, void *val) {
+    return ev_props(ev, fd, skid, _websock_set_secextra_cb, NULL, val, 0);
 }
 /* 直接用 HTTP 解析器返回的原始指针（非 NUL 结尾）比对已知子协议名称，
  * 长度和内容均须匹配，无需额外内存分配。 */
@@ -233,9 +250,7 @@ static int32_t _websock_handshake_server(ev_ctx *ev, SOCKET fd, uint64_t skid, i
             _hs_push(fd, skid, client, ud, ERR_FAILED, NULL, 0);
             return ERR_FAILED;
         }
-        MALLOC(secprot, lens + 1);
-        memcpy(secprot, sechead, lens);
-        secprot[lens] = '\0';
+        secprot = dup_zero(sechead, lens);
     }
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
@@ -343,9 +358,7 @@ static int32_t _websock_handshake_client(SOCKET fd, uint64_t skid, int32_t clien
             _hs_push(fd, skid, client, ud, ERR_FAILED, NULL, 0);
             return ERR_FAILED;
         }
-        MALLOC(secprot, lens + 1);
-        memcpy(secprot, sechead, lens);
-        secprot[lens] = '\0';
+        secprot = dup_zero(sechead, lens);
     }
     //secprot 最终在 _message_clean 释放
     if (ERR_OK != _hs_push(fd, skid, client, ud, ERR_OK, secprot, lens)) {
@@ -409,17 +422,23 @@ static websock_pack_ctx *_websock_sec_mqtt(websock_ctx *ws, websock_pack_ctx *pa
         return NULL;
     }
     buffer_external(ws->buf, pack->data, pack->dlens, _websock_mqtt_buffree);
-    struct mqtt_pack_ctx *mpack = mqtt_unpack(client, ws->buf, ws->ud, status);
-    if (NULL == mpack) {
-        return NULL;
+    websock_pack_ctx *head = NULL, *tail = NULL, *node;
+    struct mqtt_pack_ctx *mpack;
+    // ws->buf 一次性吐空,一帧内含多个完整 MQTT 包时串成链表,避免余包积压到无新数据触发才被拾起
+    while (NULL != (mpack = mqtt_unpack(client, ws->buf, ws->ud, status))) {
+        CALLOC(node, 1, sizeof(websock_pack_ctx));
+        node->fin = 1;
+        node->prot = WS_BINARY;
+        node->secprot = ws->secprot;
+        node->secpack = mpack;
+        if (NULL == head) {
+            head = node;
+        } else {
+            tail->next = node;
+        }
+        tail = node;
     }
-    websock_pack_ctx *rtn;
-    CALLOC(rtn, 1, sizeof(websock_pack_ctx));
-    rtn->fin = 1;
-    rtn->prot = WS_BINARY;
-    rtn->secprot = ws->secprot;
-    rtn->secpack = mpack;
-    return rtn;
+    return head;
 }
 // 子协议统一解包入口，将 WebSocket 帧数据转发给对应子协议处理
 static websock_pack_ctx *_websock_sec_unpack(websock_ctx *ws, websock_pack_ctx *pack, int32_t client, int32_t *status) {
@@ -474,7 +493,7 @@ static websock_pack_ctx *_websock_parse_data(buffer_ctx *buf, int32_t client, ud
     ws->pack = NULL;
     ud->status = START;
     if (PACK_NONE != ws->secprot // 存在子协议
-        && pack->dlens > 0      // 排除空包
+        && pack->dlens > 0 // 排除空包
         && (WS_CONTINUE == pack->prot
             || WS_TEXT == pack->prot
             || WS_BINARY == pack->prot)) {
@@ -547,6 +566,7 @@ static websock_pack_ctx *_websock_parse_pllens(buffer_ctx *buf, size_t blens,
         BIT_SET(*status, PROT_ERROR);
         return NULL;
     }
+    pack->next = NULL;// MALLOC 不清零,显式初始化避免 prots_next_pack 读到垃圾值
     return pack;
 }
 // 解析 WebSocket 帧头（FIN/RSV/opcode/MASK/payloadlen），校验 RSV 位和掩码要求

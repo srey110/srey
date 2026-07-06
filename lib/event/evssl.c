@@ -4,9 +4,13 @@
 #include "thread/rwlock.h"
 #include <openssl/pkcs12.h>
 
+// ERR_error_string(err, NULL) 的 NULL 分支写 OpenSSL 进程级静态缓冲，多 watcher 线程并发失败时数据竞争；
+// 改 ERR_error_string_n 写各自栈缓冲
 #define SSLCTX_ERRO()\
     unsigned long err = ERR_get_error();\
-    LOG_WARN("errno: %lu, %s", err, ERR_error_string(err, NULL))
+    char errbuf[256];\
+    ERR_error_string_n(err, errbuf, sizeof(errbuf));\
+    LOG_WARN("errno: %lu, %s", err, errbuf)
 
 // SSL上下文封装结构
 struct evssl_ctx {

@@ -5,6 +5,11 @@ void list_init(list_ctx *lst) {
     lst->tail = NULL;
     lst->size = 0;
 }
+void list_clear(list_ctx *lst) {
+    lst->head = NULL;
+    lst->tail = NULL;
+    lst->size = 0;
+}
 void list_push_head(list_ctx *lst, list_node *node) {
     node->prev = NULL;
     node->next = lst->head;

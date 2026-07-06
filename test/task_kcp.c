@@ -43,9 +43,10 @@ static void _sv_net_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t cl
     ev_send(&task->loader->netev, sk->fd, sk->skid, out, sizeof(conv), 0);
 }
 // UDP 侧 kcp 数据:按来源端口找到会话,原样 echo 回该 client
-static void _sv_net_recvfrom(task_ctx *task, sk_id *sk, char *ip, uint16_t port, void *data, size_t size) {
+static void _sv_net_recvfrom(task_ctx *task, sk_id *sk, subtype_t pktype, char *ip, uint16_t port, void *data, size_t size) {
     (void)task;
     (void)sk;
+    (void)pktype;
     (void)ip;
     int32_t i;
     for (i = 0; i < _sv_nsess; i++) {

@@ -19,8 +19,7 @@ local function _dump_coros()
     local total = 0
     local clusters = {}    -- traceback → { count, samples = {sess,...}, mtype, maxage }
     for sess, corosess in pairs(_coro_sess) do
-        local list = corosess.disposable and { corosess.coroinfo } or corosess.coroinfo
-        for _, info in ipairs(list) do
+        for _, info in ipairs(corosess.waiters) do
             if info.coro then    -- 跳过 func 模式（无挂起协程）
                 total = total + 1
                 local age = info.since and (now - info.since) or 0

@@ -72,13 +72,12 @@ runner.run("crypt", function(t)
         t:eq(16, d:size(), "MD5 size")
         d:update("")
         local out = d:final()
-        -- srey.hex 输出大写，转小写后比对标准向量
-        t:eq("d41d8cd98f00b204e9800998ecf8427e", srey.hex(out, #out):lower(), "MD5 empty")
+        t:eq("d41d8cd98f00b204e9800998ecf8427e", srey.hex(out, #out, true), "MD5 empty")
 
         d:reset()
         d:update("abc")
         out = d:final()
-        t:eq("900150983cd24fb0d6963f7d28e17f72", srey.hex(out, #out):lower(), "MD5 abc")
+        t:eq("900150983cd24fb0d6963f7d28e17f72", srey.hex(out, #out, true), "MD5 abc")
     end
     do
         -- SHA256("abc") = ba7816bf...f20015ad
@@ -87,7 +86,7 @@ runner.run("crypt", function(t)
         d:update("abc")
         local out = d:final()
         t:eq("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
-             srey.hex(out, #out):lower(), "SHA256 abc")
+             srey.hex(out, #out, true), "SHA256 abc")
     end
     do
         -- 分段 update 与一次性 update 结果一致
@@ -98,7 +97,7 @@ runner.run("crypt", function(t)
         d2:update("hello ")
         d2:update("world")
         local h2 = d2:final()
-        t:eq(srey.hex(h1, #h1):lower(), srey.hex(h2, #h2):lower(), "SHA1 分段 update 一致")
+        t:eq(srey.hex(h1, #h1, true), srey.hex(h2, #h2, true), "SHA1 分段 update 一致")
     end
 
     -- ── hmac ───────────────────────────────────────────────────────────
@@ -110,13 +109,13 @@ runner.run("crypt", function(t)
         h:update("Hi There")
         local out = h:final()
         t:eq("b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7",
-             srey.hex(out, #out):lower(), "HMAC-SHA256 RFC 4231 #1")
+             srey.hex(out, #out, true), "HMAC-SHA256 RFC 4231 #1")
 
         -- reset 后再计算
         h:reset()
         h:update("Hi There")
         local out2 = h:final()
-        t:eq(srey.hex(out, #out):lower(), srey.hex(out2, #out2):lower(), "HMAC reset round-trip")
+        t:eq(srey.hex(out, #out, true), srey.hex(out2, #out2, true), "HMAC reset round-trip")
     end
 
     -- ── cipher ─────────────────────────────────────────────────────────

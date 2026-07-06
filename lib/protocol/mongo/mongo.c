@@ -50,8 +50,7 @@ static void _mongo_format_pwd(mongo_ctx *mongo, char fmtpwd[HEX_ENSIZE(MD5_BLOCK
     FREE(buf);
     md5_final(&md5, hs);
     secure_zero(&md5, sizeof(md5));
-    tohex(hs, sizeof(hs), fmtpwd);
-    strlower(fmtpwd);
+    tohex(hs, sizeof(hs), fmtpwd, 1);
     secure_zero(hs, sizeof(hs));
 }
 // 处理 SCRAM 服务端第一消息：解析服务端 nonce/salt/迭代次数，构造并发送客户端 final 消息

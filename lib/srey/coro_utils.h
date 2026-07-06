@@ -24,7 +24,7 @@ struct dns_ip *dns_lookup(task_ctx *task, const char *domain, int32_t ipv6, int3
 /// <param name="task">task_ctx</param>
 /// <param name="evssl">evssl_ctx</param>
 /// <param name="ws">ws://host:port</param>
-/// <param name="secproto">Sec-WebSocket-Protocol</param>
+/// <param name="secprot">Sec-WebSocket-Protocol</param>
 /// <param name="skid">链接ID</param>
 /// <param name="netev">task_netev</param>
 /// <returns>socket句柄</returns>
@@ -52,7 +52,7 @@ int32_t mysql_connect(task_ctx *task, mysql_ctx *mysql);
 /// 选择数据库
 /// </summary>
 /// <param name="mysql">mysql_ctx</param>
-/// <param name="mysql">数据库</param>
+/// <param name="database">数据库</param>
 /// <returns>ERR_OK 成功</returns>
 int32_t mysql_selectdb(mysql_ctx *mysql, const char *database);
 /// <summary>
@@ -310,7 +310,7 @@ mgopack_ctx *mongo_aggregate(mongo_ctx *mongo, char *pipeline, size_t pllens, ch
 /// <summary>
 /// getMore 命令 返回游标当前指向的文档的后续批次
 /// </summary>
-/// <param name="mgpack">mgopack_ctx</param>
+/// <param name="mongo">mongo_ctx</param>
 /// <param name="cursorid">游标标识符</param>
 /// <param name="options">可选 其他参数 document (collection batchSize maxTimeMS comment)</param>
 /// <returns>NULL 失败</returns>
@@ -318,7 +318,7 @@ mgopack_ctx *mongo_getmore(mongo_ctx *mongo, int64_t cursorid, char *options);
 /// <summary>
 /// killCursors 命令 终止集合的一个或多个指定游标  MORETOCOME 可用
 /// </summary>
-/// <param name="mgpack">mgopack_ctx</param>
+/// <param name="mongo">mongo_ctx</param>
 /// <param name="cursorids">游标标识符 [cursorid, ...]</param>
 /// <param name="cslens">cursorids长度</param>
 /// <param name="options">可选 其他参数 document (comment)</param>
@@ -327,7 +327,7 @@ mgopack_ctx *mongo_killcursors(mongo_ctx *mongo, char *cursorids, size_t cslens,
 /// <summary>
 /// distinct 命令 查找单个集合中指定字段的不同值
 /// </summary>
-/// <param name="mgpack">mgopack_ctx</param>
+/// <param name="mongo">mongo_ctx</param>
 /// <param name="key">字段</param>
 /// <param name="query">可选 查询 document </param>
 /// <param name="qlens">query长度</param>
@@ -355,7 +355,7 @@ mgopack_ctx *mongo_findandmodify(mongo_ctx *mongo, char *query, size_t qlens,
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
 /// <param name="query">可选 查询，选择哪些文档要在集合或视图中计数</param>
-/// <param name="qlens,">query长度</param>
+/// <param name="qlens">query长度</param>
 /// <param name="options">可选 其他参数 document (limit skip hint readConcern maxTimeMS collation comment)</param>
 /// <returns>ERR_OK 成功</returns>
 int32_t mongo_count(mongo_ctx *mongo, char *query, size_t qlens, char *options);

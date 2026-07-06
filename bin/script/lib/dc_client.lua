@@ -18,7 +18,7 @@ local function _wait_resp(post_ok, sess, op)
         WARN("dc %s failed: datacenter unreachable or invalid args.", op)
         return nil
     end
-    local msg = srey._coro_wait(true, sess, MSG_TYPE.RESPONSE, srey.get_request_timeout())
+    local msg = srey._coro_wait(sess, MSG_TYPE.RESPONSE, srey.get_request_timeout())
     if MSG_TYPE.TIMEOUT == msg.mtype then
         WARN("dc %s timeout, session %s.", op, tostring(sess))
         return nil
