@@ -57,17 +57,13 @@ static void _uev_cmd_loop(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
 #endif
 }
 // 初始化命令回调函数表，_on_cmd 批量处理cmd，为了快速消费掉cmd，里面不应有耗时操作。
-// 如 在_on_cmd_send里面直接发送数据
+// 如 在_ev_send里面直接发送数据
 static void _uev_init_callback(void) {
     cmd_cbs[CMD_STOP] = _on_cmd_stop;
-    cmd_cbs[CMD_DISCONN] = _on_cmd_disconn;
     cmd_cbs[CMD_ADDACP] = _on_cmd_addacp;
     cmd_cbs[CMD_CONN] = _on_cmd_conn;
     cmd_cbs[CMD_ADD] = _on_cmd_add;
-    cmd_cbs[CMD_SEND] = _on_cmd_send;
-    cmd_cbs[CMD_SEND_MULTI] = _on_cmd_send_multi;
     cmd_cbs[CMD_SENDTO] = _on_cmd_sendto;
-    cmd_cbs[CMD_SSL] = _on_cmd_ssl;
     cmd_cbs[CMD_LSN] = _on_cmd_lsn;
     cmd_cbs[CMD_UNLSN] = _on_cmd_unlsn;
     cmd_cbs[CMD_LSN_UNREF] = _on_cmd_lsn_unref;
@@ -553,7 +549,6 @@ timer_ctx *_evpub_watcher_timer(watcher_ctx *watcher) {
 static void _uev_free_pipe(watcher_ctx *watcher) {
     void *data;
     sock_ctx *skctx;
-    shared_data *pack;
     int32_t j, cnt;
     cmd_ctx cmds[CMD_MAX_NREAD];
 #if !CMD_PIPE_QU
@@ -574,23 +569,9 @@ static void _uev_free_pipe(watcher_ctx *watcher) {
 #endif
         for (j = 0; j < cnt; j++) {
             switch (cmds[j].cmd) {
-            // CMD_SEND 持有裸 payload；CMD_SENDTO 持有 [netaddr_ctx + payload]
-            // 一整段 MALLOC，关闭路径都只需 FREE 释放整段
-            case CMD_SEND:
-                data = cmds[j].args.send.data;
-                FREE(data);
-                break;
             case CMD_SENDTO:
                 data = cmds[j].args.sendto.data;
                 FREE(data);
-                break;
-            // CMD_SEND_MULTI 持有 shared_data*；多 fd 共享,归还本 fd 引用归 0 时释放
-            case CMD_SEND_MULTI:
-                pack = cmds[j].args.multi.pack;
-                if (1 == ATOMIC_ADD(&pack->ref, -1)) {
-                    FREE(pack->data);
-                    FREE(pack);
-                }
                 break;
             case CMD_CONN:
                 skctx = cmds[j].args.conn.skctx;

@@ -79,11 +79,7 @@ int32_t ev_udp(ev_ctx *ctx, const char *ip, const uint16_t port, cbs_ctx *cbs, u
 /// <returns>ERR_OK 成功</returns>
 int32_t ev_send(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *data, size_t len, int32_t copy);
 /// <summary>
-/// 多播发送：将同一份 data 零拷贝广播给 N 个 TCP fd。内部分配 shared_data(引用计数=有效 fd 数),
-/// 给每个 fd 投一条 CMD_SEND_MULTI 命令；各 fd 发送完成或失败时 ref--, 归 0 才真正释放 data。
-/// 支持 fds[i]=INVALID_SOCK 占位（跳过不投递）；有效 fd 全为 INVALID_SOCK 时直接按 copy 语义清理 data 返回 ERR_FAILED。
-/// copy=1 内部 MALLOC+memcpy 一份给 pack 持有；copy=0 直接持有 data 所有权(业务不可再用)。
-/// 仅适用 TCP；UDP 仍走 ev_sendto。
+/// 多播发送：将同一份 data 零拷贝广播给 N 个 TCP fd
 /// </summary>
 /// <param name="ctx">ev_ctx</param>
 /// <param name="fds">SOCKET 数组，长度 n</param>
@@ -171,7 +167,8 @@ int32_t ev_udp_loop(ev_ctx *ctx, SOCKET fd, uint64_t skid, int32_t enable);
 ///    0=优雅关闭(等 send queue 发完, TCP only; UDP 退化为立即关);
 ///    1=立即关闭(丢弃未发数据)
 /// </param>
-void ev_close(ev_ctx *ctx, SOCKET fd, uint64_t skid, int32_t immed);
+/// <returns>ERR_OK 成功</returns>
+int32_t ev_close(ev_ctx *ctx, SOCKET fd, uint64_t skid, int32_t immed);
 /// <summary>
 /// 取消监听
 /// </summary>
@@ -179,12 +176,12 @@ void ev_close(ev_ctx *ctx, SOCKET fd, uint64_t skid, int32_t immed);
 /// <param name="id">监听ID</param>
 void ev_unlisten(ev_ctx *ctx, uint64_t id);
 /// <summary>
-/// 在事件循环线程内对连接的 ud_cxt 执行自定义操作(ev_ud_* 均基于此实现)
+/// 在事件循环线程内对连接的 ud_cxt 执行自定义操作
 /// </summary>
 /// <param name="ctx">ev_ctx</param>
 /// <param name="fd">socket句柄</param>
 /// <param name="skid">链接ID</param>
-/// <param name="ppcb">操作回调,仅当 fd/skid 有效时在事件线程内被调用,签名 (skctx, ud, data, number)</param>
+/// <param name="ppcb">操作回调,仅当 fd/skid 有效时在事件线程内被调用,签名 (watcher, skctx, data, number)</param>
 /// <param name="fcb">data 释放回调,可为 NULL;仅在 data 非 NULL 时于 ppcb 执行后或各失败路径被调用释放 data</param>
 /// <param name="data">传给 ppcb 的指针参数(其生命周期由 fcb 负责释放),无指针载荷时传 NULL</param>
 /// <param name="number">传给 ppcb 的整数参数,无整数载荷时传 0</param>

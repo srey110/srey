@@ -330,10 +330,7 @@ int32_t _message_should_clean(message_ctx *msg) {
 void _message_clean(message_ctx *msg) {
     // task_multi_call / task_multi_request 广播路径：N 个 message 共享同一份 data,各 task ref-- 归 0 才 FREE
     if (NULL != msg->shared) {
-        if (1 == ATOMIC_ADD(&msg->shared->ref, -1)) {
-            FREE(msg->shared->data);
-            FREE(msg->shared);
-        }
+        shared_data_free(msg->shared, _free);
         return;
     }
     switch (msg->mtype) {

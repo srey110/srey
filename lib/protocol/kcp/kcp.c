@@ -17,7 +17,7 @@ typedef struct kcp_element {
     uint8_t warned;
     uint32_t conv;
     IUINT32 next_update; // 下次应调用 ikcp_update 的时刻(ms),由 ikcp_check 算出;<=now 才真正 update
-    ev_ctx *netev;
+    struct watcher_ctx *watcher; // 所属 event 线程,_kcp_start 时赋值,_kcp_output 用于取 skctx
     ikcpcb *ikcp;
     name_t handle;
     uint64_t sess;
@@ -202,7 +202,7 @@ static int _kcp_output(const char *buf, int len, ikcpcb *ikcp, void *user) {
         return ERR_FAILED;
     }
     kcp_element *kel = user;
-    struct watcher_ctx *watcher = _evpub_watcher_at(kel->netev, kel->sk.fd);
+    struct watcher_ctx *watcher = kel->watcher;
     struct sock_ctx *skctx = _evpub_sockel_get(watcher, kel->sk.fd);
     if (NULL == skctx
         || ERR_OK != _evpub_checkid(skctx, kel->sk.skid)) {
@@ -327,22 +327,23 @@ static kcp_element *kcp_element_init(kcp_ctx *kcp, name_t handle, const char *ip
     }
     kel->conv = kcp->conv;
     kel->sess = kcp->sess;
-    kel->netev = kcp->netev;
     kel->handle = handle;
     kel->sk.fd = kcp->sk.fd;
     kel->sk.skid = kcp->sk.skid;
-    struct watcher_ctx *watcher = _evpub_watcher_at(kcp->netev, kcp->sk.fd);
-    kel->next_update = (IUINT32)timer_cur_ms(_evpub_watcher_timer(watcher));
     return kel;
 }
-static int32_t _kcp_start(struct sock_ctx *skctx, ud_cxt *ud, void *data, uint64_t number) {
+static int32_t _kcp_start(struct watcher_ctx *watcher, struct sock_ctx *skctx,
+    void *data, uint64_t number) {
     (void)number;
+    ud_cxt *ud = _evpub_get_ud(skctx);
     kcp_element *kel = data;
     if (SOCK_DGRAM != _evpub_sock_type(skctx) || PACK_UDP_KCP != ud->pktype) {
         LOG_ERROR("kcp_start called on non-UDP_KCP fd %d, drop.", (int32_t)kel->sk.fd);
         _kcp_notify_handshaked(ud, kel, ERR_FAILED);
         return 1;
     }
+    kel->watcher = watcher;
+    kel->next_update = (IUINT32)timer_cur_ms(_evpub_watcher_timer(watcher));
     kcp_ud_ctx *ctx = ud->context;
     if (NULL == ctx) {
         MALLOC(ctx, sizeof(kcp_ud_ctx));
@@ -352,10 +353,10 @@ static int32_t _kcp_start(struct sock_ctx *skctx, ud_cxt *ud, void *data, uint64
 #if KCP_TICK_HEAP
         heap_init(&ctx->heap_due, _kcp_due_cmp);
 #endif
-        ctx->watcher = _evpub_watcher_at(kel->netev, kel->sk.fd);
+        ctx->watcher = watcher;
         ctx->tick.cb = _kcp_tick;
         ctx->tick.ud = ctx;
-        _evpub_tick_add(ctx->watcher, &ctx->tick);
+        _evpub_tick_add(watcher, &ctx->tick);
         ud->context = ctx;
     } else if (NULL != _kcp_map_get(ctx, kel->conv)) {
         LOG_WARN("kcp conv %u repeat, ignore.", kel->conv);
@@ -375,20 +376,28 @@ int32_t kcp_start(kcp_ctx *kcp, name_t handle, const char *ip, uint16_t port, co
     kcp->maxpack = _kcp_maxpack((int32_t)kel->ikcp->mtu);
     return ev_props(kcp->netev, kcp->sk.fd, kcp->sk.skid, _kcp_start, _kcp_element_free, kel, 0);
 }
-static int32_t _kcp_stop(struct sock_ctx *skctx, ud_cxt *ud, void *data, uint64_t number) {
-    (void)skctx;
+static kcp_element *_kcp_resolve(ud_cxt *ud, uint32_t conv, uint64_t sess) {
     if (NULL == ud->context) {
         LOG_WARN("kcp context not init.");
-        return 0;
+        return NULL;
     }
-    kcp_ud_ctx *ctx = ud->context;
-    kcp_element *kel = _kcp_map_get(ctx, (uint32_t)(uintptr_t)data);
-    if (NULL == kel || kel->sess != number) {
-        LOG_WARN("can't find conv %u.", (uint32_t)(uintptr_t)data);
+    kcp_element *kel = _kcp_map_get((kcp_ud_ctx *)ud->context, conv);
+    if (NULL == kel || kel->sess != sess) {
+        LOG_WARN("can't find conv %u.", conv);
+        return NULL;
+    }
+    return kel;
+}
+static int32_t _kcp_stop(struct watcher_ctx *watcher, struct sock_ctx *skctx,
+    void *data, uint64_t number) {
+    (void)watcher;
+    ud_cxt *ud = _evpub_get_ud(skctx);
+    kcp_element *kel = _kcp_resolve(ud, (uint32_t)(uintptr_t)data, number);
+    if (NULL == kel) {
         return 0;
     }
     _kcp_notify_closed(ud, kel);
-    _kcp_map_remove(ctx, kel);
+    _kcp_map_remove((kcp_ud_ctx *)ud->context, kel);
     _kcp_element_free(kel);
     return 0;
 }
@@ -400,20 +409,15 @@ void kcp_stop(kcp_ctx *kcp) {
     (void)ev_props(kcp->netev, kcp->sk.fd, kcp->sk.skid, _kcp_stop, NULL, (void *)(uintptr_t)kcp->conv, kcp->sess);
 }
 // number 校验 sess，防止 conv 被 stop 后以新 sess 重建期间，持旧 kcp_ctx 副本的 stale 调用改到新会话的推送目标（同 _kcp_stop）
-static int32_t _kcp_handle(struct sock_ctx *skctx, ud_cxt *ud, void *data, uint64_t number) {
-    (void)skctx;
+static int32_t _kcp_handle(struct watcher_ctx *watcher, struct sock_ctx *skctx,
+    void *data, uint64_t number) {
+    (void)watcher;
+    ud_cxt *ud = _evpub_get_ud(skctx);
     kcp_handle_arg *arg = data;
-    if (NULL == ud->context) {
-        LOG_WARN("kcp context not init.");
-        return 1;
+    kcp_element *kel = _kcp_resolve(ud, arg->conv, arg->sess);
+    if (NULL != kel) {
+        kel->handle = (name_t)number;
     }
-    kcp_ud_ctx *ctx = ud->context;
-    kcp_element *kel = _kcp_map_get(ctx, arg->conv);
-    if (NULL == kel || kel->sess != arg->sess) {
-        LOG_WARN("can't find conv %u.", arg->conv);
-        return 1;
-    }
-    kel->handle = (name_t)number;
     return 1;
 }
 int32_t kcp_handle(kcp_ctx *kcp, name_t handle) {
@@ -437,20 +441,15 @@ static void _kcp_send_free(void *arg) {
     FREE(buf);
 }
 // number 校验 sess，防止 conv 被 stop 后以新 sess 重建期间，持旧 kcp_ctx 副本的 stale 调用把数据注入新会话（同 _kcp_stop）
-static int32_t _kcp_send(struct sock_ctx *skctx, ud_cxt *ud, void *data, uint64_t number) {
-    (void)skctx;
+static int32_t _kcp_send(struct watcher_ctx *watcher, struct sock_ctx *skctx,
+    void *data, uint64_t number) {
+    (void)watcher;
+    ud_cxt *ud = _evpub_get_ud(skctx);
     kcp_send_buf *buf = data;
-    if (NULL == ud->context) {
-        LOG_WARN("kcp context not init.");
-        return 1;
+    kcp_element *kel = _kcp_resolve(ud, buf->conv, number);
+    if (NULL != kel) {
+        ikcp_send(kel->ikcp, buf->data, (int32_t)buf->lens);
     }
-    kcp_ud_ctx *ctx = ud->context;
-    kcp_element *kel = _kcp_map_get(ctx, buf->conv);
-    if (NULL == kel || kel->sess != number) {
-        LOG_WARN("can't find conv %u.", buf->conv);
-        return 1;
-    }
-    ikcp_send(kel->ikcp, buf->data, (int32_t)buf->lens);
     return 1;
 }
 int32_t kcp_send(kcp_ctx *kcp, void *data, size_t lens, int32_t copy) {

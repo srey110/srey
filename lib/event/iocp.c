@@ -26,17 +26,13 @@ static void *_iocp_exfunc(SOCKET fd, GUID *guid) {
     return func;
 }
 // 初始化命令回调函数表，_iocp_on_cmd 批量处理cmd，为了快速消费掉cmd，里面不应有耗时操作。
-// 如 在_on_cmd_send里面直接发送数据
+// 如 在_ev_send里面直接发送数据
 static void _iocp_init_callback(void) {
     cmd_cbs[CMD_STOP] = _on_cmd_stop;
-    cmd_cbs[CMD_DISCONN] = _on_cmd_disconn;
     cmd_cbs[CMD_ADDACP] = _on_cmd_addacp;
     cmd_cbs[CMD_CONN] = _on_cmd_conn;
     cmd_cbs[CMD_ADD] = _on_cmd_add;
-    cmd_cbs[CMD_SEND] = _on_cmd_send;
-    cmd_cbs[CMD_SEND_MULTI] = _on_cmd_send_multi;
     cmd_cbs[CMD_SENDTO] = _on_cmd_sendto;
-    cmd_cbs[CMD_SSL] = _on_cmd_ssl;
     cmd_cbs[CMD_PROPS] = _on_cmd_props;
 }
 // 懒加载初始化AcceptEx/ConnectEx等扩展函数（全进程只执行一次）
@@ -350,27 +346,12 @@ static void _iocp_free_cmd(watcher_ctx *watcher) {
     cmd_ctx cmd_local;
     void *data;
     sock_ctx *skctx;
-    shared_data *pack;
     overlap_cmd_ctx *olcmd = &watcher->cmd;
     while (ERR_OK == fsqu_pop_sc(&olcmd->qu, &cmd_local)) {
         switch (cmd_local.cmd) {
-        // CMD_SEND 持有裸 payload；CMD_SENDTO 持有 [netaddr_ctx + payload]
-        // 一整段 MALLOC，关闭路径都只需 FREE 释放整段
-        case CMD_SEND:
-            data = cmd_local.args.send.data;
-            FREE(data);
-            break;
         case CMD_SENDTO:
             data = cmd_local.args.sendto.data;
             FREE(data);
-            break;
-        // CMD_SEND_MULTI 持有 shared_data*；多 fd 共享同一 pack,归还本 fd 引用即可
-        case CMD_SEND_MULTI:
-            pack = cmd_local.args.multi.pack;
-            if (1 == ATOMIC_ADD(&pack->ref, -1)) {
-                FREE(pack->data);
-                FREE(pack);
-            }
             break;
         case CMD_CONN:
             skctx = cmd_local.args.conn.skctx;

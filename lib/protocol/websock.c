@@ -137,10 +137,11 @@ void _websock_secextra(ud_cxt *ud, void *val) {
     }
     ws->ud->context = val;
 }
-static int32_t _websock_set_secextra_cb(struct sock_ctx *skctx, ud_cxt *ud, void *data, uint64_t number) {
-    (void)skctx;
+static int32_t _websock_set_secextra_cb(struct watcher_ctx *watcher, struct sock_ctx *skctx,
+    void *data, uint64_t number) {
+    (void)watcher;
     (void)number;
-    _websock_secextra(ud, data);
+    _websock_secextra(_evpub_get_ud(skctx), data);
     return 0;
 }
 int32_t websock_set_secextra(ev_ctx *ev, SOCKET fd, uint64_t skid, void *val) {

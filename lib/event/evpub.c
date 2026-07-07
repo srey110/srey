@@ -66,11 +66,11 @@ uint32_t _evpub_tick_drive(watcher_ctx *watcher, timer_ctx *timer, uint64_t *now
     }
     return next_to;
 }
-watcher_ctx *_evpub_watcher_at(ev_ctx *netev, SOCKET fd) {
-    return GET_PTR(netev->watcher, netev->nthreads, fd);
-}
 int32_t _evpub_sock_type(sock_ctx *skctx) {
     return skctx->type;
+}
+void _evpub_share_data_free(void *arg) {
+    shared_data_free(arg, _free);
 }
 void _evpub_off_buf_release(off_buf_ctx *buf) {
     if (NULL == buf->shared) {
@@ -78,10 +78,7 @@ void _evpub_off_buf_release(off_buf_ctx *buf) {
         return;
     }
     // 多播路径：N 个 buf 共享 shared->data，最后一个释放方才 FREE
-    if (1 == ATOMIC_ADD(&buf->shared->ref, -1)) {
-        FREE(buf->shared->data);
-        FREE(buf->shared);
-    }
+    _evpub_share_data_free(buf->shared);
     buf->data = NULL;
     buf->shared = NULL;
 }

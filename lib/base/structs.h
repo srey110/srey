@@ -71,5 +71,14 @@ static inline int32_t buf_compare(buf_ctx *buf, const char *data, size_t lens) {
 static inline int32_t buf_icompare(buf_ctx *buf, const char *data, size_t lens) {
     return buf->lens == lens && 0 == _memicmp(buf->data, data, lens);
 };
+static inline void shared_data_free(void *sdate, free_cb fcb) {
+    shared_data *date = sdate;
+    if (1 == ATOMIC_ADD(&date->ref, -1)) {
+        if (NULL != fcb) {
+            fcb(date->data);
+        }
+        FREE(date);
+    }
+}
 
 #endif//STRUCTS_H_

@@ -232,7 +232,7 @@ static int32_t _timeout_tcp(task_ctx *task) {
         goto erro;
     }
     if (NULL != ctx->_evssl) {
-        //ssl 切换：用 coro_send 等待服务端回显，确认 CMD_SSL 已入队后再握手，
+        //ssl 切换：用 coro_send 等待服务端回显，确认 ev_ssl 已入队后再握手，
         // 避免多任务并发时客户端早于服务端进入 SSL 模式导致握手失败
         sslbuf[0] = TEST_SSL_CHANGE;
         sslpack = custz_pack(curtype, sslbuf, 1, &sslsize);
@@ -464,6 +464,7 @@ erro:
 static void _timeout(task_ctx *task, uint64_t sess) {
     (void)sess;
     task_timeout_ctx *ctx = coro_get_arg(task);
+    ctx->_err = 0;
     if (ERR_OK != _timeout_sleep(task)) {
         ctx->_err = 1;
         LOG_WARN("sleep test error.");

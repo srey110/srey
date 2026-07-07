@@ -89,7 +89,8 @@ typedef void(*close_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid,
                         int32_t client, ud_cxt *ud);// 连接关闭回调
 typedef void(*recvfrom_cb)(ev_ctx *ev, SOCKET fd, uint64_t skid,
                            char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud);// UDP接收回调
-typedef int32_t(*props_cb)(struct sock_ctx *skctx, ud_cxt *ud, void *data, uint64_t number);// 返回值为0 不执行free。
+typedef int32_t(*props_cb)(struct watcher_ctx *watcher, struct sock_ctx *skctx,
+    void *data, uint64_t number);// 返回值为0 不执行free。
 // 回调函数集合
 typedef struct cbs_ctx {
     accept_cb acp_cb;       // 接受连接回调
@@ -127,6 +128,8 @@ void _evpub_sockel_add(struct watcher_ctx *watcher, struct sock_ctx *skctx);
 // 从watcher的hashmap中移除fd，返回 hashmap spare 缓冲指针（下次操作前有效，调用方按需用）
 void *_evpub_sockel_remove(struct watcher_ctx *watcher, SOCKET fd);
 int32_t _evpub_checkid(struct sock_ctx *skctx, const uint64_t skid);
+// 获取ud_cxt
+ud_cxt *_evpub_get_ud(struct sock_ctx *skctx);
 // 注册周期驱动节点到 watcher->ticks(须在该 fd 所属 event 线程内调用)
 void _evpub_tick_add(struct watcher_ctx *watcher, ev_tick *tk);
 // 从 watcher->ticks 注销周期驱动节点(须在该 fd 所属 event 线程内调用)
@@ -136,8 +139,6 @@ void _evpub_tick_remove(struct watcher_ctx *watcher, ev_tick *tk);
 uint32_t _evpub_tick_drive(struct watcher_ctx *watcher, struct timer_ctx *timer, uint64_t *now_ms);
 // 该 watcher的 计时器
 struct timer_ctx *_evpub_watcher_timer(struct watcher_ctx *watcher);
-// 根据fd获取所属 watcher（GET_PTR 的平台无关封装，供不知道 watcher_ctx 完整定义的调用方使用）
-struct watcher_ctx *_evpub_watcher_at(ev_ctx *netev, SOCKET fd);
 // 获取 sock_ctx 的 socket 类型（SOCK_STREAM/SOCK_DGRAM），供不知道 sock_ctx 完整定义的调用方使用
 int32_t _evpub_sock_type(struct sock_ctx *skctx);
 
@@ -147,6 +148,7 @@ void _evpub_sk_free(void *sk);
 void _evpub_sk_clear(void *sk);
 void _evpub_sk_reset(void *sk, void *args);
 
+void _evpub_share_data_free(void *arg);
 // 统一释放一个 off_buf_ctx：shared==NULL 走独占 FREE(data)；非 NULL 走多播 ref-- 路径
 void _evpub_off_buf_release(off_buf_ctx *buf);
 // 以下为模块内部公共函数

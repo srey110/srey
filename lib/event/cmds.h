@@ -6,14 +6,10 @@
 // 事件循环内部命令枚举
 typedef enum ev_cmds {
     CMD_STOP = 0x00,  // [ev_free → _on_cmd_stop] 停止事件循环
-    CMD_DISCONN,      // [ev_close → _on_cmd_disconn] 断开连接
     CMD_ADDACP,       // [_cmd_add_acpfd → _on_cmd_addacp] 将accept到的fd加入事件循环
     CMD_CONN,         // [_cmd_connect → _on_cmd_conn] 添加连接中的socket
     CMD_ADD,          // [_cmd_add → _on_cmd_add] 添加socket
-    CMD_SEND,         // [ev_send → _on_cmd_send] 发送TCP数据（裸 payload）
-    CMD_SEND_MULTI,   // [ev_send_multi → _on_cmd_send_multi] 多播发送 TCP 数据：args.multi.pack = shared_data* 共享 pack 指针(N 个 fd 共享同一份 data,各 buf 释放时 ref--)
-    CMD_SENDTO,       // [ev_sendto → _on_cmd_sendto] 发送UDP数据：args.sendto = sendto_ctx(addr 与 payload 分离)，与 CMD_SEND 区分以校验 fd 类型
-    CMD_SSL,          // [ev_ssl → _on_cmd_ssl] 切换为SSL连接
+    CMD_SENDTO,       // [ev_sendto → _on_cmd_sendto] 发送UDP数据：args.sendto = sendto_ctx(addr 与 payload 分离)，与 TCP 的 ev_send(CMD_PROPS) 区分以校验 fd 类型
 #ifndef EV_IOCP
     CMD_LSN,          // [_cmd_listen → _on_cmd_lsn] 添加监听socket
     CMD_UNLSN,        // [_cmd_unlisten → _on_cmd_unlsn] 取消监听
@@ -25,18 +21,14 @@ typedef enum ev_cmds {
 }ev_cmds;
 // 命令上下文
 typedef struct cmd_ctx {
-    int32_t cmd;    // 命令类型 ev_cmds
-    sk_id sk;     // 目标连接 fd+skid（STOP/ADD/LSN/LSN_UNREF 不用 fd；skid 仅 DISCONN/SEND 系列/SSL/PROPS 用）
+    int32_t cmd;// 命令类型 ev_cmds
+    sk_id sk;// 目标连接 fd+skid（STOP/ADD/LSN/LSN_UNREF 不用 fd；skid 仅 SENDTO/PROPS 用）
     union {
-        int32_t immed;                // CMD_DISCONN：立即关闭标志
-        struct sock_ctx *skctx;       // CMD_ADD / CMD_LSN：待加入事件循环的 socket
-        struct listener_ctx *lsn;     // CMD_ADDACP / CMD_UNLSN / CMD_LSN_UNREF：监听对象
+        struct sock_ctx *skctx;// CMD_ADD / CMD_LSN：待加入事件循环的 socket
+        struct listener_ctx *lsn;// CMD_ADDACP / CMD_UNLSN / CMD_LSN_UNREF：监听对象
         struct { struct sock_ctx *skctx; netaddr_ctx addr; } conn; // CMD_CONN：连接中 socket + 目标地址(仅 IOCP 用)
-        struct { size_t len; void *data; } send;         // CMD_SEND：长度 + 裸 payload
-        struct { size_t len; shared_data *pack; } multi; // CMD_SEND_MULTI：长度 + 共享包
-        struct { int32_t client; struct evssl_ctx *evssl; } ssl;   // CMD_SSL：是否客户端 + evssl
         struct { props_cb ppcb; free_cb fcb; void *data; uint64_t number; } props;// CMD_PROPS
-        sendto_ctx sendto;       // CMD_SENDTO
+        sendto_ctx sendto;// CMD_SENDTO
     } args;
 }cmd_ctx;
 
@@ -71,14 +63,6 @@ void _on_cmd_lsn_unref(struct watcher_ctx *watcher, cmd_ctx *cmd);
 #endif //EV_IOCP
 // ev_free CMD_STOP命令处理：停止事件循环
 void _on_cmd_stop(struct watcher_ctx *watcher, cmd_ctx *cmd);
-// ev_close CMD_DISCONN命令处理：断开连接
-void _on_cmd_disconn(struct watcher_ctx *watcher, cmd_ctx *cmd);
-// ev_ssl CMD_SSL命令处理：触发SSL握手流程
-void _on_cmd_ssl(struct watcher_ctx *watcher, cmd_ctx *cmd);
-// ev_send CMD_SEND命令处理：将TCP数据加入发送队列（校验 fd 类型为 SOCK_STREAM）
-void _on_cmd_send(struct watcher_ctx *watcher, cmd_ctx *cmd);
-// ev_send_multi CMD_SEND_MULTI命令处理：多播 TCP 数据,args.multi.pack = shared_data*；sock 失效时归还引用,有效时包装 off_buf(shared=pack) 入队
-void _on_cmd_send_multi(struct watcher_ctx *watcher, cmd_ctx *cmd);
 // ev_sendto CMD_SENDTO命令处理：将UDP数据加入发送队列（校验 fd 类型为 SOCK_DGRAM）
 void _on_cmd_sendto(struct watcher_ctx *watcher, cmd_ctx *cmd);
 // ev_props CMD_PROPS 自定义

@@ -37,9 +37,9 @@ static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t clien
         break;
     }
     case TEST_SSL_CHANGE: {
-        // 先回显告知客户端可以开始握手，再投 CMD_SSL；
+        // 先回显告知客户端可以开始握手，再投 ev_ssl；
         // 两条命令顺序入同一 watcher 队列，客户端收到回显时
-        // CMD_SSL 必然已处理完毕，服务端已就绪，避免多任务并发时握手失败
+        // 必然已处理完毕，服务端已就绪，避免多任务并发时握手失败
         size_t lens;
         void *outbuf = custz_pack(pktype, data, size, &lens);
         ev_send(&task->loader->netev, sk->fd, sk->skid, outbuf, lens, 0);
