@@ -335,8 +335,10 @@ void _message_clean(message_ctx *msg) {
     }
     switch (msg->mtype) {
     case MSG_TYPE_RECV:
-    case MSG_TYPE_RECVFROM:
         prots_pkfree(msg->subtype, msg->data);
+        break;
+    case MSG_TYPE_RECVFROM:
+        prots_udp_pkfree(msg->subtype, msg->data);
         break;
     case MSG_TYPE_HANDSHAKED:
         prots_hsfree(msg->subtype, msg->data);

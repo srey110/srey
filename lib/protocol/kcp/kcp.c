@@ -303,7 +303,7 @@ static uint32_t _kcp_tick(void *ud, uint64_t now_ms) {
     kcp_ud_ctx *ctx = ud;
     return _kcp_tick_update(ctx, now_ms);
 }
-static kcp_element *kcp_element_init(kcp_ctx *kcp, name_t handle, const char *ip, uint16_t port, const kcp_config *cfg) {
+static kcp_element *_kcp_element_init(kcp_ctx *kcp, name_t handle, const char *ip, uint16_t port, const kcp_config *cfg) {
     kcp_element *kel;
     CALLOC(kel, 1, sizeof(kcp_element));
     kel->ikcp = ikcp_create(kcp->conv, kel);
@@ -368,13 +368,14 @@ static int32_t _kcp_start(struct watcher_ctx *watcher, struct sock_ctx *skctx,
     return 0;
 }
 int32_t kcp_start(kcp_ctx *kcp, name_t handle, const char *ip, uint16_t port, const kcp_config *cfg) {
-    kcp_element *kel = kcp_element_init(kcp, handle, ip, port, cfg);
+    kcp_element *kel = _kcp_element_init(kcp, handle, ip, port, cfg);
     if (NULL == kel) {
         return ERR_FAILED;
     }
     kcp->stopped = 0;
     kcp->maxpack = _kcp_maxpack((int32_t)kel->ikcp->mtu);
-    return ev_props(kcp->netev, kcp->sk.fd, kcp->sk.skid, _kcp_start, _kcp_element_free, kel, 0);
+    return ev_props(kcp->netev, kcp->sk.fd, kcp->sk.skid,
+        _kcp_start, _kcp_element_free, kel, 0);
 }
 static kcp_element *_kcp_resolve(ud_cxt *ud, uint32_t conv, uint64_t sess) {
     if (NULL == ud->context) {
@@ -406,7 +407,8 @@ void kcp_stop(kcp_ctx *kcp) {
         return;
     }
     kcp->stopped = 1;
-    (void)ev_props(kcp->netev, kcp->sk.fd, kcp->sk.skid, _kcp_stop, NULL, (void *)(uintptr_t)kcp->conv, kcp->sess);
+    (void)ev_props(kcp->netev, kcp->sk.fd, kcp->sk.skid,
+        _kcp_stop, NULL, (void *)(uintptr_t)kcp->conv, kcp->sess);
 }
 // number 校验 sess，防止 conv 被 stop 后以新 sess 重建期间，持旧 kcp_ctx 副本的 stale 调用改到新会话的推送目标（同 _kcp_stop）
 static int32_t _kcp_handle(struct watcher_ctx *watcher, struct sock_ctx *skctx,
@@ -428,7 +430,8 @@ int32_t kcp_handle(kcp_ctx *kcp, name_t handle) {
     MALLOC(arg, sizeof(kcp_handle_arg));
     arg->conv = kcp->conv;
     arg->sess = kcp->sess;
-    return ev_props(kcp->netev, kcp->sk.fd, kcp->sk.skid, _kcp_handle, _free, arg, handle);
+    return ev_props(kcp->netev, kcp->sk.fd, kcp->sk.skid,
+        _kcp_handle, _free, arg, handle);
 }
 static void _kcp_send_free(void *arg) {
     if (NULL == arg) {
@@ -477,5 +480,6 @@ int32_t kcp_send(kcp_ctx *kcp, void *data, size_t lens, int32_t copy) {
     }
     buf->conv = kcp->conv;
     buf->lens = lens;
-    return ev_props(kcp->netev, kcp->sk.fd, kcp->sk.skid, _kcp_send, _kcp_send_free, buf, kcp->sess);
+    return ev_props(kcp->netev, kcp->sk.fd, kcp->sk.skid,
+        _kcp_send, _kcp_send_free, buf, kcp->sess);
 }

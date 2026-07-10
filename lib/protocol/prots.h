@@ -20,6 +20,12 @@ void prots_free(void);
 /// <param name="data">待释放的包指针</param>
 void prots_pkfree(pack_type pktype, void *data);
 /// <summary>
+/// 释放udp解包数据包内存，根据协议类型调用对应的释放函数
+/// </summary>
+/// <param name="pktype">协议包类型</param>
+/// <param name="data">待释放的包指针</param>
+void prots_udp_pkfree(pack_type pktype, void *data);
+/// <summary>
 /// 释放握手阶段数据包内存
 /// </summary>
 /// <param name="pktype">协议包类型</param>

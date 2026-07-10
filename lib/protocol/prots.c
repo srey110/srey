@@ -78,6 +78,13 @@ void prots_pkfree(pack_type pktype, void *data) {
         break;
     }
 }
+void prots_udp_pkfree(pack_type pktype, void *data) {
+    (void)pktype;
+    if (NULL == data) {
+        return;
+    }
+    FREE(data);
+}
 void prots_hsfree(pack_type pktype, void *data) {
     if (NULL == data) {
         return;
