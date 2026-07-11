@@ -63,6 +63,7 @@ local SLICE_TYPE = {
     SLICE = 0x02,   -- 中间分片
     END   = 0x04,   -- 最后一片（完整消息）
 }
+srey.SLICE_TYPE = SLICE_TYPE
 
 -- 早退路径统一兜底：copy=0 时调用方已转移 data 所有权,需主动 utils.ud_free 释放
 -- （utils.ud_free 内部仅对 lightuserdata 生效,非 lightuserdata 自动跳过）
@@ -481,7 +482,7 @@ local function _set_coro_sess(coro, sess, mtype, ms, func, ...)
     end
 end
 
----从会话表中查找匹配的队头 coroinfo 并摘除：仅检测队头，mtype 匹配（或参数为 CLOSE 通配）才摘除返回，
+---从会话表中查找匹配的队头 coroinfo 并摘除：仅检测队头，mtype 匹配才摘除返回，
 ---队头不匹配（含 keep 保留的空条目）视为无等待者，不越过队头继续查找（保持严格 FIFO）；
 ---摘除后 waiters 为空且 !keep 时才删除会话表条目
 ---@param sess integer 会话 id
@@ -493,7 +494,7 @@ local function _get_coro_sess(sess, mtype)
         return nil
     end
     local coroinfo = corosess.waiters[1]
-    if mtype ~= coroinfo.mtype and MSG_TYPE.CLOSE ~= mtype then
+    if mtype ~= coroinfo.mtype then
         return nil
     end
     tremove(corosess.waiters, 1)
@@ -1245,8 +1246,9 @@ local function _net_close_dispatch(msg)
             _coro_resume(waiters[i].coro, msg)
         end
     end
+    -- erro~=ERR_OK 是 srey.connect 因连接失败补发的合成 CLOSE（见 prots_net_connect），不触发 on_close 观察者
     local func = func_cbs[MSG_TYPE.CLOSE]
-    if func then
+    if func and ERR_OK == msg.erro then
         _coro_run(_coro_cb, func, msg.subtype, msg.fd, msg.skid, msg.client)
     end
     corosess = coro_sess[sess]
@@ -1401,7 +1403,7 @@ end
 ---@field fd     integer?             socket fd；网络消息携带
 ---@field skid   integer?             连接 skid；网络消息携带
 ---@field subtype PACK_TYPE?          封包协议类型；RECV/CONNECT/REQUEST 携带
----@field erro   integer?             错误码；CONNECT/SEND/RESPONSE/SSLEXCHANGED 携带
+---@field erro   integer?             错误码；CONNECT/SEND/RESPONSE/SSLEXCHANGED/CLOSE 携带
 ---@field client string?              客户端地址；ACCEPT/SSLEXCHANGED/RECV 携带
 ---@field data   lightuserdata?       数据指针；RECV/REQUEST/RESPONSE 携带
 ---@field size   integer?             数据字节数；与 data 同步出现
@@ -1411,36 +1413,34 @@ end
 ---@field port   integer?             UDP 源端口；UDP_RECV 携带
 ---@field udata  lightuserdata?       UDP 数据指针；UDP_RECV 携带
 
----全局消息分发入口，由 C 层 loader 在每条消息到达时调用；按 msg.mtype 路由到对应内部分发函数
+-- STARTUP 消息处理：注册 1s 定时器驱动协程池收缩，再跑业务 startup 回调
+local function _startup_msg_dispatch(msg)
+    srey.timeout(1 * 1000, _coro_timeout)
+    _startup_dispatch()
+end
+
+local _dispatchers = {
+    [MSG_TYPE.STARTUP] = _startup_msg_dispatch,
+    [MSG_TYPE.CLOSING] = _closing_dispatch,
+    [MSG_TYPE.TIMEOUT] = _timeout_dispatch,
+    [MSG_TYPE.ACCEPT] = _net_accept_dispatch,
+    [MSG_TYPE.CONNECT] = _net_connect_dispatch,
+    [MSG_TYPE.SSLEXCHANGED] = _net_ssl_exchanged_dispatch,
+    [MSG_TYPE.HANDSHAKED] = _net_handshaked_dispatch,
+    [MSG_TYPE.RECV] = _net_recv_dispatch,
+    [MSG_TYPE.SEND] = _net_sended_dispatch,
+    [MSG_TYPE.CLOSE] = _net_close_dispatch,
+    [MSG_TYPE.RECVFROM] = _net_recvfrom_dispatch,
+    [MSG_TYPE.REQUEST] = _request_dispatch,
+    [MSG_TYPE.RESPONSE] = _response_dispatch,
+}
+
+---全局消息分发入口，由 C 层 loader 在每条消息到达时调用；按 msg.mtype 查表路由到对应内部分发函数
 ---@param msg Message 由 C 层 _ltask_pack_msg 打包的消息表
 function message_dispatch(msg)
-    if MSG_TYPE.STARTUP == msg.mtype then
-        srey.timeout(1 * 1000, _coro_timeout)
-        _startup_dispatch()
-    elseif MSG_TYPE.CLOSING == msg.mtype then
-        _closing_dispatch()
-    elseif MSG_TYPE.TIMEOUT == msg.mtype then
-        _timeout_dispatch(msg)
-    elseif MSG_TYPE.ACCEPT == msg.mtype then
-        _net_accept_dispatch(msg)
-    elseif MSG_TYPE.CONNECT == msg.mtype then
-        _net_connect_dispatch(msg)
-    elseif MSG_TYPE.SSLEXCHANGED == msg.mtype then
-        _net_ssl_exchanged_dispatch(msg)
-    elseif MSG_TYPE.HANDSHAKED == msg.mtype then
-        _net_handshaked_dispatch(msg)
-    elseif MSG_TYPE.RECV == msg.mtype then
-        _net_recv_dispatch(msg)
-    elseif MSG_TYPE.SEND == msg.mtype then
-        _net_sended_dispatch(msg)
-    elseif MSG_TYPE.CLOSE == msg.mtype then
-        _net_close_dispatch(msg)
-    elseif MSG_TYPE.RECVFROM == msg.mtype then
-        _net_recvfrom_dispatch(msg)
-    elseif MSG_TYPE.REQUEST == msg.mtype then
-        _request_dispatch(msg)
-    elseif MSG_TYPE.RESPONSE == msg.mtype then
-        _response_dispatch(msg)
+    local dispatcher = _dispatchers[msg.mtype]
+    if dispatcher then
+        dispatcher(msg)
     end
     _drain_fork_queue()    -- srey.fork 在此起新协程
 end

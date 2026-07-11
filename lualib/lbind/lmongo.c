@@ -64,6 +64,18 @@ static int32_t _lmongo_try_connect(lua_State *lua) {
     return 2;
 }
 /// <summary>
+/// 返回当前 MongoDB 连接的 fd 和 skid
+/// </summary>
+/// <param name="self" type="userdata">mongo 对象</param>
+/// <returns type="integer">socket fd</returns>
+/// <returns type="integer">skid</returns>
+static int32_t _lmongo_sock_id(lua_State *lua) {
+    mongo_ctx *mongo = luaL_checkudata(lua, 1, MT_MONGO);
+    lua_pushinteger(lua, mongo->sk.fd);
+    lua_pushinteger(lua, (lua_Integer)mongo->sk.skid);
+    return 2;
+}
+/// <summary>
 /// 将指定连接切换到 AUTH 状态，供 SCRAM 认证流程使用
 /// </summary>
 /// <param name="self" type="userdata">mongo 对象</param>
@@ -669,6 +681,7 @@ LUAMOD_API int luaopen_mongo(lua_State *lua) {
     };
     luaL_Reg reg_func[] = {
         { "try_connect",          _lmongo_try_connect },
+        { "sock_id",              _lmongo_sock_id },
         { "set_auth_status",      _lmongo_set_auth_status },
         { "db",                   _lmongo_db },
         { "authdb",               _lmongo_authdb },
@@ -762,10 +775,7 @@ static int32_t _lmongo_session_free(lua_State *lua) {
 /// <param name="self" type="userdata">session 对象</param>
 /// <returns>无</returns>
 static int32_t _lmongo_session_begin(lua_State *lua) {
-    mongo_session **psession = luaL_checkudata(lua, 1, MT_MONGO_SESSION);
-    if (NULL == *psession) {
-        return luaL_error(lua, "session freed");
-    }
+    LPUB_UD_ARG(lua, mongo_session, MT_MONGO_SESSION, psession, "session freed");
     mongo_begin(*psession);
     return 0;
 }
@@ -794,10 +804,7 @@ static int32_t _lmongo_session_done(lua_State *lua) {
 /// <returns type="lightuserdata">命令数据指针</returns>
 /// <returns type="integer">数据长度</returns>
 static int32_t _lmongo_session_pack_refresh(lua_State *lua) {
-    mongo_session **psession = luaL_checkudata(lua, 1, MT_MONGO_SESSION);
-    if (NULL == *psession) {
-        return luaL_error(lua, "session freed");
-    }
+    LPUB_UD_ARG(lua, mongo_session, MT_MONGO_SESSION, psession, "session freed");
     size_t size;
     void *pack = mongo_pack_refreshsession(*psession, &size);
     LPUB_RET_LUD(lua, pack, (lua_Integer)size);
@@ -809,10 +816,7 @@ static int32_t _lmongo_session_pack_refresh(lua_State *lua) {
 /// <returns type="lightuserdata">命令数据指针</returns>
 /// <returns type="integer">数据长度</returns>
 static int32_t _lmongo_session_pack_endsession(lua_State *lua) {
-    mongo_session **psession = luaL_checkudata(lua, 1, MT_MONGO_SESSION);
-    if (NULL == *psession) {
-        return luaL_error(lua, "session freed");
-    }
+    LPUB_UD_ARG(lua, mongo_session, MT_MONGO_SESSION, psession, "session freed");
     size_t size;
     void *pack = mongo_pack_endsession(*psession, &size);
     LPUB_RET_LUD(lua, pack, (lua_Integer)size);
@@ -825,10 +829,7 @@ static int32_t _lmongo_session_pack_endsession(lua_State *lua) {
 /// <returns type="lightuserdata">命令数据指针</returns>
 /// <returns type="integer">数据长度</returns>
 static int32_t _lmongo_session_pack_commit(lua_State *lua) {
-    mongo_session **psession = luaL_checkudata(lua, 1, MT_MONGO_SESSION);
-    if (NULL == *psession) {
-        return luaL_error(lua, "session freed");
-    }
+    LPUB_UD_ARG(lua, mongo_session, MT_MONGO_SESSION, psession, "session freed");
     char *opts = _lmongo_get_opts(lua, 2);
     size_t size;
     void *pack = mongo_pack_committransaction(*psession, opts, &size);
@@ -842,10 +843,7 @@ static int32_t _lmongo_session_pack_commit(lua_State *lua) {
 /// <returns type="lightuserdata">命令数据指针</returns>
 /// <returns type="integer">数据长度</returns>
 static int32_t _lmongo_session_pack_abort(lua_State *lua) {
-    mongo_session **psession = luaL_checkudata(lua, 1, MT_MONGO_SESSION);
-    if (NULL == *psession) {
-        return luaL_error(lua, "session freed");
-    }
+    LPUB_UD_ARG(lua, mongo_session, MT_MONGO_SESSION, psession, "session freed");
     char *opts = _lmongo_get_opts(lua, 2);
     size_t size;
     void *pack = mongo_pack_aborttransaction(*psession, opts, &size);

@@ -151,8 +151,11 @@ char *_strptime(const char *buf, const char *fmt, struct tm *tm) {
     unsigned char c;
     const unsigned char *bp, *ep, *zname;
     int alt_format, i, split_year = 0, neg = 0, state = 0,
-        day_offset = -1, week_offset = 0, offs, mandatory;
+        day_offset = -1, week_offset = 0, offs, mandatory, year;
     const char *new_fmt;
+    time_t sse;
+    uint64_t acc;
+    uint64_t rulim;
     bp = (const unsigned char *)buf;
     while (bp != NULL && (c = *fmt++) != '\0') {
         /* Clear `alternate' modifier prior to new conversion. */
@@ -235,7 +238,7 @@ char *_strptime(const char *buf, const char *fmt, struct tm *tm) {
         new_fmt = HERE_D_FMT;
         LEGAL_ALT(0);
         state |= S_MON | S_MDAY | S_YEAR;
-        const int year = split_year ? tm->tm_year : 0;
+        year = split_year ? tm->tm_year : 0;
 
         bp = (const unsigned char *)_strptime((const char *)bp,
             new_fmt, tm);
@@ -343,9 +346,9 @@ char *_strptime(const char *buf, const char *fmt, struct tm *tm) {
 #endif
     case 's':/* seconds since the epoch */
     {
-        time_t sse = 0;
-        uint64_t acc = 0;
-        uint64_t rulim = TIME_MAX;
+        sse = 0;
+        acc = 0;
+        rulim = TIME_MAX;
 
         if (*bp < '0' || *bp > '9') {
             bp = NULL;

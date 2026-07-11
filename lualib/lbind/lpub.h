@@ -47,6 +47,13 @@
         LUACHECK_LUDATA((lua), 1); \
         (var) = lua_touserdata((lua), 1); \
     }
+// 声明 type **var 并从栈位 1 按 mt 校验取值(双重指针，对应可被 __gc 提前置 NULL 的 reader/stmt 型 userdata)；
+// *var 为 NULL(已被显式释放)时直接 luaL_error(longjmp，不返回)
+#define LPUB_UD_ARG(lua, type, mt, var, errmsg) \
+    type **var = luaL_checkudata((lua), 1, (mt)); \
+    if (NULL == *(var)) { \
+        return luaL_error((lua), (errmsg)); \
+    }
 
 /// <summary>
 /// 从 Lua 全局变量中读取轻量用户数据（light userdata）

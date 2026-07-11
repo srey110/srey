@@ -31,6 +31,7 @@ function ctx:ctor(ip, port, sslname, user, password, database, charset, maxpk)
     if not self.mysql then
         error(string.format("mysql.new failed: %s:%d db=%s", ip, port, tostring(database)), 2)
     end
+    self.sslname = sslname
     -- 连接代次：每次 connect 成功后 +1，prepare 出来的 stmt 持有创建时的代次，
     -- execute 前比对，重连后旧 statement_id 已被服务端清理时返 false 明确提示重新 prepare
     self.generation = 0
@@ -43,6 +44,9 @@ function ctx:connect()
         return false
     end
     local fd, skid = self.mysql:sock_id()
+    if not srey.wait_connect(fd, skid, SSL_NAME.NONE ~= self.sslname or nil) then
+        return false
+    end
     local ok,_,_ = srey.wait_handshaked(fd, skid)
     if ok then
         self.generation = self.generation + 1

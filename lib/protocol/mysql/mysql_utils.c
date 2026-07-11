@@ -56,3 +56,19 @@ int32_t _mysql_set_payload_lens(binary_ctx *bwriter) {
     binary_offset(bwriter, size);
     return ERR_OK;
 }
+// 有界拷贝进定长缓冲区并补 NUL：strict 非0 时 lens>=cap 返回 ERR_FAILED 且不写 dst，
+// strict 为0 时 lens>=cap 静默截断为 cap-1 字节写入（仍返回 ERR_OK）
+int32_t _mysql_copy_bounded(const void *data, size_t lens, char *dst, size_t cap, int32_t strict) {
+    size_t cplen = lens;
+    if (lens >= cap) {
+        if (0 != strict) {
+            return ERR_FAILED;
+        }
+        cplen = cap - 1;
+    }
+    if (cplen > 0) {
+        memcpy(dst, data, cplen);
+    }
+    dst[cplen] = '\0';
+    return ERR_OK;
+}

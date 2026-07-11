@@ -107,5 +107,19 @@ typedef uint64_t atomic64_t; // 64 位原子整数类型（Windows）
 #define ATOMIC64_SET(ptr, val) InterlockedExchange64(ptr, val)
 #define ATOMIC64_CAS(ptr, oldval, newval) (InterlockedCompareExchange64(ptr, newval, oldval) == oldval)
 
+// 松散序变体：仅适用于单写者字段（无并发写竞争，只需不撕裂 + 迟早可见）。
+// ADD 无更便宜的硬件原语，复用现有 Interlocked；32 位对齐 store 天然原子，直接裸写
+#define ATOMIC_ADD_RELAXED(ptr, val) ATOMIC_ADD(ptr, val)
+// volatile 与 ATOMIC_GET 读侧对称：/volatile:ms 下防止 MSVC 把这次写当死代码优化掉
+#define ATOMIC_SET_RELAXED(ptr, val) (*(volatile atomic_t *)(ptr) = (val))
+#define ATOMIC64_ADD_RELAXED(ptr, val) ATOMIC64_ADD(ptr, val)
+#if defined(ARCH_ARM) || defined(ARCH_X86)
+    // 32 位平台：64 位 plain store 会编译成两条 mov（撕裂写），退到现有 Interlocked64
+    #define ATOMIC64_SET_RELAXED(ptr, val) ATOMIC64_SET(ptr, val)
+#else
+    // x64/ARM64：64 位对齐 store 天然原子
+    #define ATOMIC64_SET_RELAXED(ptr, val) (*(volatile atomic64_t *)(ptr) = (val))
+#endif
+
 #endif
 #endif//MACRO_WIN_H_

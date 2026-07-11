@@ -90,6 +90,9 @@ int32_t mongo_parse_startsession(mgopack_ctx *mgpack, char uid[UUID_LENS], int32
     bson_init(&bson, mgpack->doc, mgpack->dlens);
     bson_iter iter;
     bson_iter_init(&iter, &bson);
+    bson_ctx bsonid;
+    bson_iter iterid;
+    bson_iter result;
     int32_t ok = 0;
     while (bson_iter_next(&iter)) {
         if (0 == strcmp(iter.key, "ok")) {
@@ -103,11 +106,8 @@ int32_t mongo_parse_startsession(mgopack_ctx *mgpack, char uid[UUID_LENS], int32
             if (BSON_DOCUMENT != iter.type) {
                 return ERR_FAILED;
             }
-            bson_ctx bsonid;
             bson_init(&bsonid, iter.val, iter.lens);
-            bson_iter iterid;
             bson_iter_init(&iterid, &bsonid);
-            bson_iter result;
             if (ERR_OK != bson_iter_find(&iterid, "id", &result)) {
                 return ERR_FAILED;
             }

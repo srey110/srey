@@ -252,9 +252,11 @@ static uint32_t _evpub_off_buf_fill_iov(queue_ctx *buf_s, size_t nbuf,
 // 根据实际发送字节数sent，从发送队列头部消费已完成的缓冲区，更新offset或弹出并释放
 static void _evpub_off_buf_apply_sent(queue_ctx *buf_s, off_buf_ctx *sndbuf[MAX_SEND_NIOV],
                                       uint32_t niov, size_t sent) {
+    off_buf_ctx *buf;
+    size_t buflen;
     for (uint32_t i = 0; i < niov && sent > 0; i++) {
-        off_buf_ctx *buf = sndbuf[i];
-        size_t buflen = buf->lens - buf->offset;
+        buf = sndbuf[i];
+        buflen = buf->lens - buf->offset;
         if (sent >= buflen) {
             sent -= buflen;
             _evpub_off_buf_release(buf);
@@ -377,7 +379,7 @@ int32_t _evpub_try_sendto(watcher_ctx *watcher, sock_ctx *skctx, const void *dat
     (void)data;
     (void)len;
     (void)addr;
-    return ERR_FAILED;
+    return 1;
 #else
     return _uev_try_sendto(watcher, skctx, data, len, addr);
 #endif

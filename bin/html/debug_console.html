@@ -171,9 +171,9 @@ function Y(){var t=tk();if(t!==null)get('/'+t+'/coros')}
 function A(){get('/__alive')}
 function W(){get('/__cmem')}
 function L(lv){
-  var t=tk();if(t===null)return;
+  // loglv 后端恒广播到全部 task,与任务选择框无关,固定走 handle=0
   document.querySelectorAll('#lvg .lv').forEach(function(b,i){b.classList.toggle('on',i===lv)});
-  get('/'+t+'/loglv/'+lv);
+  get('/0/loglv/'+lv);
 }
 function I(){var t=tk();if(t===null)return;var c=document.getElementById('cd').value;if(c.trim())post('/'+t+'/inject',c)}
 function H(){

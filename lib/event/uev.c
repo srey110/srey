@@ -239,9 +239,11 @@ void _uev_del_event(watcher_ctx *watcher, SOCKET fd, int32_t *events, int32_t ev
         (void)pollset_ctl(watcher->evfd, &ctl, 1);
     } else {
         struct poll_ctl ctl;
-        ctl.cmd = PS_MOD;
         ctl.fd = fd;
+        ctl.cmd = PS_DELETE;
         ctl.events = 0;
+        (void)pollset_ctl(watcher->evfd, &ctl, 1);
+        ctl.cmd = PS_ADD;
         if (BIT_CHECK((*events), EVENT_READ)) {
             BIT_SET(ctl.events, POLLIN);
         }

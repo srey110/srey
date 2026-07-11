@@ -136,6 +136,9 @@ void _on_cmd_lsn_unref(watcher_ctx *watcher, cmd_ctx *cmd) {
 #endif
 void _on_cmd_stop(watcher_ctx *watcher, cmd_ctx *cmd) {
     (void)cmd;
+#ifdef EV_IOCP
+    _iocp_disconnect_all(watcher);
+#endif
     ATOMIC_SET(&watcher->stop, 1);
 }
 static inline int32_t _ev_props(ev_ctx *ctx, cmd_ctx *cmd) {

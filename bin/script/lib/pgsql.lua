@@ -45,6 +45,9 @@ function ctx:connect()
         return false
     end
     local fd, skid = self.pg:sock_id()
+    if not srey.wait_connect(fd, skid) then
+        return false
+    end
     local ok, _, _ = srey.wait_handshaked(fd, skid)
     if ok then
         self.generation = self.generation + 1

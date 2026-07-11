@@ -88,6 +88,15 @@ int32_t coro_ssl_exchange(task_ctx *task, SOCKET fd, uint64_t skid,
 ///   下次 resume 时框架自动释放，需要保留请自行拷贝</returns>
 void *coro_handshaked(task_ctx *task, SOCKET fd, uint64_t skid, int32_t *err, size_t *size);
 /// <summary>
+/// 等待 task_connect 已发起的 CONNECT 完成；超时或失败均关闭 fd；evssl 非 NULL 时紧接着等 SSL 握手完成
+/// </summary>
+/// <param name="task">task_ctx</param>
+/// <param name="fd">SOCKET</param>
+/// <param name="skid">链接ID</param>
+/// <param name="evssl">非 NULL 时额外等待 SSL 握手；须是 connect 时已同步触发握手的 evssl，协议层后续才发起握手的场景不适用</param>
+/// <returns>ERR_OK 成功</returns>
+int32_t coro_wait_connect(task_ctx *task, SOCKET fd, uint64_t skid, struct evssl_ctx *evssl);
+/// <summary>
 /// 链接
 /// </summary>
 /// <param name="task">task_ctx</param>

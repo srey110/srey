@@ -257,6 +257,12 @@ static inline void _olp_call_close_cb(ev_ctx *ev, overlap_tcp_ctx *oltcp) {
         oltcp->cbs.c_cb(ev, oltcp->ol_r.fd, oltcp->skid, BIT_CHECK(oltcp->status, STATUS_CLIENT), &oltcp->ud);
     }
 }
+// 调用UDP关闭回调
+static inline void _olp_call_udp_close_cb(ev_ctx *ev, overlap_udp_ctx *oludp) {
+    if (NULL != oludp->cbs.c_cb) {
+        oludp->cbs.c_cb(ev, oludp->ol_r.fd, oludp->skid, 0, &oludp->ud);
+    }
+}
 // 调用UDP接收回调；0 字节 datagram 由本函数过滤不向上抛（_olp_on_recvfrom_cb 仍不视为 EOF，
 // 继续 _olp_post_recv_from 接收下一包），避免上层处理空 payload 的特殊路径
 static inline void _olp_call_recvfrom_cb(ev_ctx *ev, overlap_udp_ctx *oludp, size_t nread) {
@@ -403,6 +409,10 @@ static void _olp_on_recv_cb_err(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
 // IOCP TCP接收完成回调：处理SSL握手或普通数据接收
 static void _olp_on_recv_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
     overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
+    if (BIT_CHECK(oltcp->status, STATUS_GRACEFUL_CLOSE)) {
+        BIT_SET(oltcp->status, STATUS_NORECV);
+        return;
+    }
     if (ERROR_SUCCESS != oltcp->ol_r.overlapped.Internal
         || BIT_CHECK(oltcp->status, STATUS_ERROR)) {
         _olp_on_recv_cb_err(watcher, oltcp);
@@ -1075,6 +1085,7 @@ static int32_t _olp_post_recv_from(overlap_udp_ctx *oludp) {
 }
 // 处理UDP接收侧关闭：若正在发送则标记延迟，否则直接移除并释放
 static void _olp_on_udp_close_r(watcher_ctx *watcher, overlap_udp_ctx *oludp) {
+    _olp_call_udp_close_cb(watcher->ev, oludp);
     if (BIT_CHECK(oludp->status, STATUS_SENDING)) {
         BIT_SET(oludp->status, STATUS_REMOVE);
     } else {
@@ -1142,9 +1153,15 @@ static void _olp_on_sendto_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes
         return;
     }
     if (0 != oludp->ol_s.overlapped.Internal) {
-        BIT_REMOVE(oludp->status, STATUS_SENDING);
-        _iocp_disconnect(&oludp->ol_r, 1);
-        return;
+        DWORD transferred, flags;
+        WSAGetOverlappedResult(oludp->ol_s.fd, &oludp->ol_s.overlapped, &transferred, FALSE, &flags);
+        int32_t err = (int32_t)WSAGetLastError();
+        if (WSAEBADF == err || WSAENOTSOCK == err) {
+            BIT_REMOVE(oludp->status, STATUS_SENDING);
+            _iocp_disconnect(&oludp->ol_r, 1);
+            return;
+        }
+        LOG_WARN("UDP sendto dropped one datagram on fd %d: %s.", (int32_t)oludp->ol_s.fd, ERRORSTR(err));
     }
     if (0 == queue_size(&oludp->buf_s)) {
         BIT_REMOVE(oludp->status, STATUS_SENDING);

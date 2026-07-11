@@ -43,7 +43,7 @@ static const char *_HELP =
     "GET  /{handle}/gc              force GC, show freed amount\n"
     "GET  /{handle}/stat            per-mtype dispatch stat (nmsg, dispatch_cpu_ns, avg_ns + total)\n"
     "GET  /{handle}/coros           list suspended coros clustered by stack\n"
-    "GET  /{handle}/loglv/{lv}      set log level (0=FATAL 1=ERROR 2=WARN 3=INFO 4=DEBUG)\n"
+    "GET  /{handle}/loglv/{lv}      set log level for ALL tasks (handle ignored; 0=FATAL 1=ERROR 2=WARN 3=INFO 4=DEBUG)\n"
     "POST /{handle}/inject          inject Lua; body=source, _U holds upvalues\n"
     "POST /{handle}/hotfix/{module} hotfix module; body=patch source\n";
 
@@ -127,8 +127,9 @@ static void _debug_broadcast(router_req *ctx, void *body, size_t bsize) {
     coro_fork_wait(task, tl.n, funcs, args);
     binary_ctx bw;
     binary_init(&bw, NULL, 0, 0);
+    const char *nm;
     for (i = 0; i < tl.n; i++) {
-        const char *nm = ('\0' == tl.items[i].name[0]) ? "(anonymous)" : tl.items[i].name;
+        nm = ('\0' == tl.items[i].name[0]) ? "(anonymous)" : tl.items[i].name;
         binary_set_va(&bw, "%s:\n", nm);
         if (NULL != bargs[i].resp && bargs[i].resp_len > 0) {
             binary_set_binary(&bw, bargs[i].resp, bargs[i].resp_len);
@@ -253,7 +254,8 @@ static void _debug_coros(router_req *ctx) {
     _debug_pack_cmd(&cmd, "coros");
     _debug_forward(ctx, &cmd);
 }
-// GET /{handle}/loglv/{lv}：lv 须 0-4
+// GET /{handle}/loglv/{lv}：lv 须 0-4；日志级别是进程级设置(C 全局 + 每 task Lua 侧 _curlv 缓存)，
+// 忽略 URL 中的 {handle}，恒走广播，否则其余 task 的 Lua 缓存会与新级别脱节，DEBUG/INFO 在 Lua 层被永久短路
 static void _debug_loglv(router_req *ctx) {
     size_t n = 0;
     const char *lv_s = router_req_param(ctx, "lv", &n);
@@ -269,7 +271,8 @@ static void _debug_loglv(router_req *ctx) {
     binary_ctx cmd;
     _debug_pack_cmd(&cmd, "loglv");
     seri_append_int(&cmd, lv);
-    _debug_forward(ctx, &cmd);
+    _debug_broadcast(ctx, cmd.data, cmd.offset);
+    binary_free(&cmd);
 }
 // POST /{handle}/inject：body 为 Lua 源码
 static void _debug_inject(router_req *ctx) {
@@ -308,12 +311,7 @@ static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype,
     (void)size;
     if (0 != slice) {
         if (PROT_SLICE_START == slice) {
-            binary_ctx bwriter;
-            binary_init(&bwriter, NULL, 0, 0);
-            http_pack_resp(&bwriter, 411);
-            http_pack_content(&bwriter, "chunked request not supported\n", strlen("chunked request not supported\n"));
-            ev_send(&task->loader->netev, sk->fd, sk->skid, bwriter.data, bwriter.offset, 0);
-            ev_close(&task->loader->netev, sk->fd, sk->skid, 0);
+            router_reject_chunked(task, sk->fd, sk->skid);
         }
         return;
     }

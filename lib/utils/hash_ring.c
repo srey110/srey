@@ -144,6 +144,7 @@ void hash_ring_remove(hash_ring_ctx *ring, void *name, size_t lens) {
         return;
     }
     hash_ring_list *cur;
+    uint32_t write;
     list_foreach(&ring->nodes, ln) {
         cur = UPCAST(ln, hash_ring_list, lnode);
         if (cur->node->lens == lens
@@ -154,7 +155,7 @@ void hash_ring_remove(hash_ring_ctx *ring, void *name, size_t lens) {
             /* 原先：标记 NULL 后调用 qsort，O(n log n)。
              * 优化：因 items 已有序，用单次 O(n) 原地压缩即可：
              * 保留所有不属于被删节点的 item，紧凑排列，顺序不变。 */
-            uint32_t write = 0;
+            write = 0;
             for (uint32_t i = 0; i < ring->nitems; i++) {
                 if (ring->items[i]->node == cur->node) {
                     FREE(ring->items[i]);
@@ -193,7 +194,7 @@ static hash_ring_item *_hash_ring_find_next_highest_item(hash_ring_ctx *ring, ui
         item = ring->items[midpointindex];
         if (item->digest > digest) {
             // key 在左半区间
-            max = midpointindex - 1;  // int32_t 可降至 -1，不再下溢
+            max = midpointindex - 1;// int32_t 可降至 -1，不再下溢
         } else {
             // key 在右半区间
             min = midpointindex + 1;
@@ -223,6 +224,7 @@ void hash_ring_print(hash_ring_ctx *ring) {
     hash_ring_list *cur;
     x = 0;
     uint8_t *name;
+    hash_ring_item *item;
     list_foreach(&ring->nodes, ln) {
         cur = UPCAST(ln, hash_ring_list, lnode);
         printf("%d: ", x);
@@ -236,7 +238,7 @@ void hash_ring_print(hash_ring_ctx *ring) {
     printf("\n");
     printf("Items (%d): \n\n", ring->nitems);
     for (x = 0; x < ring->nitems; x++) {
-        hash_ring_item *item = ring->items[x];
+        item = ring->items[x];
         printf("%" PRIu64 " : ", item->digest);
         name = item->node->name;
         for (y = 0; y < item->node->lens; y++) {

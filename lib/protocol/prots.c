@@ -154,6 +154,9 @@ static void prots_closed(ud_cxt *ud) {
     case PACK_MONGO:
         _mongo_closed(ud);
         break;
+    case PACK_UDP_KCP:
+        _kcp_fd_closed(ud);
+        break;
     default:
         break;
     }
@@ -281,11 +284,28 @@ int32_t prots_net_accept(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud) {
     g_emit.end(target);
     return rtn;
 }
+// 构造并 emit 一条 CLOSE 消息；调用方负责 begin/end target
+static void _prots_emit_close(void *target, SOCKET fd, uint64_t skid, int32_t client, int32_t erro, ud_cxt *ud) {
+    message_ctx msg = { 0 };
+    msg.mtype = MSG_TYPE_CLOSE;
+    msg.subtype = ud->pktype;
+    msg.sk.fd = fd;
+    msg.sk.skid = skid;
+    msg.client = client;
+    msg.erro = erro;
+    msg.sess = skid;// 始终尝试唤醒
+    prots_closed(ud);
+    g_emit.emit(target, &msg);
+}
 int32_t prots_net_connect(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t err, ud_cxt *ud) {
     void *target = g_emit.begin(ud->loader, ud->handle);
     if (NULL == target) {
         return ERR_FAILED;
     }
+    // 用原始 err 判断：TCP 层本身已失败(fd 已被 event 层 remove,没人会再补 CLOSE)才需要我方补发；
+    // TCP 成功但 prots_connected 才失败时 fd 仍在监听表中,_usk_on_connect_cb/_olp_on_connect_cb
+    // 会因返回值非 ERR_OK 自行 _uev_disconnect 触发真实 CLOSE,此处再补会重复
+    int32_t emitclose = ERR_OK != err;
     int32_t rtn = prots_connected(ev, fd, skid, ud, err);
     if (ERR_OK != rtn) {
         err = rtn;
@@ -298,6 +318,11 @@ int32_t prots_net_connect(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t err, ud_
     msg.erro = err;
     msg.sess = ud->sess;
     g_emit.emit(target, &msg);
+    if (emitclose) {
+        // CONNECT 只发生在客户端发起连接场景，client 恒为 1；erro 非 ERR_OK 标记这是因连接失败而补发的
+        // 合成 CLOSE，供消费侧区分是否跳过 on_close 观察者
+        _prots_emit_close(target, fd, skid, 1, err, ud);
+    }
     g_emit.end(target);
     return err;
 }
@@ -395,15 +420,7 @@ void prots_net_close(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client, ud_cx
     if (NULL == target) {
         return;
     }
-    message_ctx msg = { 0 };
-    msg.mtype = MSG_TYPE_CLOSE;
-    msg.subtype = ud->pktype;
-    msg.sk.fd = fd;
-    msg.sk.skid = skid;
-    msg.client = client;
-    msg.sess = skid;// 始终尝试唤醒
-    prots_closed(ud);
-    g_emit.emit(target, &msg);
+    _prots_emit_close(target, fd, skid, client, ERR_OK, ud);
     g_emit.end(target);
 }
 static void _prots_udp_default(ev_ctx *ev, SOCKET fd, uint64_t skid, char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {

@@ -194,12 +194,13 @@ static void _mail_dot_stuff(binary_ctx *bw, const char *body, size_t lens) {
     }
     const char *start = body;
     const char *end = body + lens;
+    const char *crlf;
     // 输入首字节即第一行行首
     if ('.' == *start) {
         binary_set_binary(bw, ".", 1);
     }
     while (start < end) {
-        const char *crlf = memstr(0, (char *)start, (size_t)(end - start), "\r\n", 2);
+        crlf = memstr(0, (char *)start, (size_t)(end - start), "\r\n", 2);
         if (NULL == crlf) {
             binary_set_binary(bw, start, (size_t)(end - start));
             return;

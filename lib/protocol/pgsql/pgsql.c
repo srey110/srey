@@ -481,6 +481,7 @@ int32_t pgsql_affected_rows(pgpack_ctx *pgpack) {
     }
     // 从命令完成标签末尾反向找最后一个空格，取其后的数字字符串
     int32_t space = 1;
+    char *rows;
     for (int32_t i = (int32_t)lens - 1; i >= 0; i--) {
         if (space) {
             if (' ' != pgpack->complete[i]) {
@@ -489,7 +490,7 @@ int32_t pgsql_affected_rows(pgpack_ctx *pgpack) {
             continue;
         }
         if (' ' == pgpack->complete[i]) {
-            char *rows = pgpack->complete + i + 1;
+            rows = pgpack->complete + i + 1;
             return (int32_t)strtol(rows, NULL, 10);
         }
     }

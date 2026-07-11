@@ -543,6 +543,7 @@ int32_t task_udp(task_ctx *task, pack_type pktype, const char *ip, uint16_t port
     ud.handle = task->handle;
     ud.loader = task->loader;
     cbs_ctx cbs = { 0 };
+    cbs.c_cb = prots_net_close;
     cbs.rf_cb = prots_net_recvfrom;
     cbs.ud_free = prots_udfree;
     return ev_udp(&task->loader->netev, ip, port, &cbs, &ud, fd, skid);

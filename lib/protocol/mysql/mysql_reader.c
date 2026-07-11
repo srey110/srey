@@ -1,5 +1,6 @@
 ﻿#include "protocol/mysql/mysql_reader.h"
 #include "protocol/mysql/mysql_parse.h"
+#include "protocol/mysql/mysql_utils.h"
 
 mysql_reader_ctx *mysql_reader_init(mpack_ctx *mpack) {
     if ((MPACK_QUERY != mpack->pack_type && MPACK_STMT_EXECUTE != mpack->pack_type)
@@ -83,15 +84,11 @@ int64_t mysql_reader_integer(mysql_reader_ctx *reader, const char *name, int32_t
     if (MPACK_QUERY == reader->pack_type) {
         // 文本协议：字段值为字符串，需转换为整数
         char tmp[64];
-        if (row->val.lens >= sizeof(tmp)) {
+        if (ERR_OK != _mysql_copy_bounded(row->val.data, row->val.lens, tmp, sizeof(tmp), 1)) {
             SET_PTR(err, ERR_FAILED);
             LOG_WARN("parse failed.");
             return 0;
         }
-        if (row->val.lens > 0) {
-            memcpy(tmp, row->val.data, row->val.lens);
-        }
-        tmp[row->val.lens] = '\0';
         char *end;
         int64_t val = strtoll(tmp, &end, 10);
         if ((size_t)(end - tmp) != row->val.lens) {
@@ -129,15 +126,11 @@ uint64_t mysql_reader_uinteger(mysql_reader_ctx *reader, const char *name, int32
     if (MPACK_QUERY == reader->pack_type) {
         // 文本协议：字段值为字符串，需转换为无符号整数
         char tmp[64];
-        if (row->val.lens >= sizeof(tmp)) {
+        if (ERR_OK != _mysql_copy_bounded(row->val.data, row->val.lens, tmp, sizeof(tmp), 1)) {
             SET_PTR(err, ERR_FAILED);
             LOG_WARN("parse failed.");
             return 0;
         }
-        if (row->val.lens > 0) {
-            memcpy(tmp, row->val.data, row->val.lens);
-        }
-        tmp[row->val.lens] = '\0';
         char *end;
         uint64_t val = strtoull(tmp, &end, 10);
         if ((size_t)(end - tmp) != row->val.lens) {
@@ -158,15 +151,11 @@ uint64_t mysql_reader_uinteger(mysql_reader_ctx *reader, const char *name, int32
 // 文本协议浮点解析公共逻辑
 static double _mysql_reader_parse_text_float(mpack_row *row, int32_t *err) {
     char tmp[128];
-    if (row->val.lens >= sizeof(tmp)) {
+    if (ERR_OK != _mysql_copy_bounded(row->val.data, row->val.lens, tmp, sizeof(tmp), 1)) {
         SET_PTR(err, ERR_FAILED);
         LOG_WARN("parse failed.");
         return 0.0;
     }
-    if (row->val.lens > 0) {
-        memcpy(tmp, row->val.data, row->val.lens);
-    }
-    tmp[row->val.lens] = '\0';
     char *end;
     double val = strtod(tmp, &end);
     if ((size_t)(end - tmp) != row->val.lens) {
@@ -278,14 +267,10 @@ int64_t mysql_reader_datetime(mysql_reader_ctx *reader, const char *name, int32_
     }
     if (MPACK_QUERY == reader->pack_type) {
         char tmp[48];
-        if (row->val.lens >= sizeof(tmp)) {
+        if (ERR_OK != _mysql_copy_bounded(row->val.data, row->val.lens, tmp, sizeof(tmp), 1)) {
             SET_PTR(err, ERR_FAILED);
             return 0;
         }
-        if (row->val.lens > 0) {
-            memcpy(tmp, row->val.data, row->val.lens);
-        }
-        tmp[row->val.lens] = '\0';
         int32_t y, mo, d, h = 0, mi = 0, sec = 0;
         int32_t n = sscanf(tmp, "%d-%d-%d %d:%d:%d", &y, &mo, &d, &h, &mi, &sec);
         if (n != 3 && n != 6) {
@@ -353,14 +338,10 @@ int32_t mysql_reader_time(mysql_reader_ctx *reader, const char *name, struct tm 
     *usec = 0;
     if (MPACK_QUERY == reader->pack_type) {
         char tmp[48];
-        if (row->val.lens >= sizeof(tmp)) {
+        if (ERR_OK != _mysql_copy_bounded(row->val.data, row->val.lens, tmp, sizeof(tmp), 1)) {
             SET_PTR(err, ERR_FAILED);
             return 0;
         }
-        if (row->val.lens > 0) {
-            memcpy(tmp, row->val.data, row->val.lens);
-        }
-        tmp[row->val.lens] = '\0';
         char *p = tmp;
         if ('-' == *p) {
             is_negative = 1;

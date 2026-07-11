@@ -110,8 +110,8 @@ void _uev_add_bufs_send(watcher_ctx *watcher, sock_ctx *skctx, off_buf_ctx *buf)
 // 将 UDP datagram(sendto_ctx) 加入发送队列，并确保注册写事件；
 // tried 非 0 表示调用方入队前已尝试过一次发送（如 _uev_try_sendto 遇到 EAGAIN），跳过重复尝试
 void _uev_add_bufs_sendto(watcher_ctx *watcher, sock_ctx *skctx, sendto_ctx *buf, int32_t tried);
-// 尝试直接发送；发出成功或致命错误（已断开）均返回 ERR_OK；
-// 发送队列已有积压或 EAGAIN 均返回 ERR_FAILED，调用方需自行以 tried=1 转入 _uev_add_bufs_sendto 排队
+// 尝试直接发送；返回 0 表示已处理完(发送成功或致命错误已断开)，调用方无需任何后续操作；
+// 返回 1 表示需要调用方继续(发送队列已有积压或 EAGAIN)，自行以 tried=1 转入 _uev_add_bufs_sendto 排队
 int32_t _uev_try_sendto(watcher_ctx *watcher, sock_ctx *skctx, const void *data, size_t len, netaddr_ctx *addr);
 // 在事件循环内将socket注册读事件（TCP/UDP通用）
 void _uev_add_fd_inloop(watcher_ctx *watcher, sock_ctx *skctx);

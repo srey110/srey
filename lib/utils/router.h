@@ -341,6 +341,14 @@ void router_dispatch(router_ctx *r, task_ctx *task,
                      SOCKET fd, uint64_t skid,
                      struct http_pack_ctx *pack);
 /// <summary>
+/// 拒绝 chunked 请求 —— 在 _net_recv 中 slice == PROT_SLICE_START 分支调用;
+/// 回 HTTP 411 后立即关闭连接 (不支持 Transfer-Encoding: chunked)
+/// </summary>
+/// <param name="task">task</param>
+/// <param name="fd">socket fd</param>
+/// <param name="skid">连接 skid</param>
+void router_reject_chunked(task_ctx *task, SOCKET fd, uint64_t skid);
+/// <summary>
 /// 中间件链推进; 中间件内调用即执行下一节点 (handler 或下一个中间件),
 /// next 返回后可继续做后置处理。handler 不应调用
 /// </summary>

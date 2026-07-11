@@ -14,7 +14,7 @@
 //是否使用lua bytecache
 #define ENABLE_LUA_BYTECACHE 1
 //是否启用消息分发 CPU 耗时统计
-#define ENABLE_DISPATCH_STAT 1
+#define ENABLE_DISPATCH_STAT 0
 
 #define TIMER_ACCURACY      1000000 // 定时器精度（纳秒，1ms）
 #define KEEPALIVE_TIME      30      // TCP keepalive 空闲时间（秒）

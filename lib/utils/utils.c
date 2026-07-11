@@ -946,9 +946,9 @@ void timeofday(struct timeval *tv) {
 #if defined(OS_WIN)
 #define U64_LITERAL(n) n##ui64
 #define EPOCH_BIAS U64_LITERAL(116444736000000000) //Windows FILETIME 纪元与 Unix 纪元的差值（100ns 单位）
-#define UNITS_PER_SEC U64_LITERAL(10000000)        //每秒的 100ns 单位数
-#define USEC_PER_SEC U64_LITERAL(1000000)          //每秒的微秒数
-#define UNITS_PER_USEC U64_LITERAL(10)             //每微秒的 100ns 单位数
+#define UNITS_PER_SEC U64_LITERAL(10000000)//每秒的 100ns 单位数
+#define USEC_PER_SEC U64_LITERAL(1000000)//每秒的微秒数
+#define UNITS_PER_USEC U64_LITERAL(10)//每微秒的 100ns 单位数
     union {
         FILETIME ft_ft;
         uint64_t ft_64;
@@ -1302,7 +1302,7 @@ buf_ctx *split(const void *ptr, size_t plens, const void *sep, size_t seplens, s
         pos = memstr(0, cur, plens, sep, seplens);
         if (*n >= total) {
             total *= 2;
-            buf = REALLOC(buf, buf, sizeof(buf_ctx) * total);
+            REALLOC(buf, buf, sizeof(buf_ctx) * total);
         }
         if (NULL != pos) {
             size = (size_t)(pos - cur);
@@ -1320,7 +1320,7 @@ buf_ctx *split(const void *ptr, size_t plens, const void *sep, size_t seplens, s
             if (0 == plens) {
                 if (*n >= total) {
                     ++total;
-                    buf = REALLOC(buf, buf, sizeof(buf_ctx) * total);
+                    REALLOC(buf, buf, sizeof(buf_ctx) * total);
                 }
                 buf[*n].data = NULL;
                 buf[*n].lens = 0;

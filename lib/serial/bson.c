@@ -655,11 +655,20 @@ static void _bson_dump(bson_ctx *bson, int32_t index, int32_t depth, binary_ctx 
     }
     bson_iter iter;
     bson_iter_init(&iter, bson);
+    const char *strtype;
+    bson_ctx child;
+    binary_ctx strchild;
+    size_t lens;
+    bson_subtype subtype;
+    const char *subtstr;
+    uint32_t inc;
+    uint32_t ts;
+    char *options;
     while (bson_iter_next(&iter)) {
         binary_set_fill(str, ' ', index * 4);
         binary_set_binary(str, iter.key, strlen(iter.key));
         binary_set_binary(str, "(", 1);
-        const char *strtype = bson_type_tostring(iter.type);
+        strtype = bson_type_tostring(iter.type);
         binary_set_binary(str, strtype, strlen(strtype));
         binary_set_binary(str, ")", 1);
         binary_set_binary(str, ": ", 2);
@@ -681,9 +690,7 @@ static void _bson_dump(bson_ctx *bson, int32_t index, int32_t depth, binary_ctx 
         }
         case BSON_DOCUMENT:
         case BSON_ARRAY: {
-            bson_ctx child;
             bson_init(&child, iter.val, iter.lens);
-            binary_ctx strchild;
             binary_init(&strchild, NULL, 0, 0);
             if (BSON_DOCUMENT == iter.type) {
                 binary_set_binary(&strchild, "{\r\n", 3);
@@ -702,10 +709,8 @@ static void _bson_dump(bson_ctx *bson, int32_t index, int32_t depth, binary_ctx 
             break;
         }
         case BSON_BINARY: {
-            size_t lens;
-            bson_subtype subtype;
             char *val = bson_iter_binary(&iter, &subtype, &lens, NULL);
-            const char *subtstr = bson_subtype_tostring(subtype);
+            subtstr = bson_subtype_tostring(subtype);
             binary_set_binary(str, "(", 1);
             binary_set_binary(str, subtstr, strlen(subtstr));
             binary_set_binary(str, ") ", 2);
@@ -733,8 +738,8 @@ static void _bson_dump(bson_ctx *bson, int32_t index, int32_t depth, binary_ctx 
             break;
         }
         case BSON_TIMESTAMP: {
-            uint32_t inc = 0;
-            uint32_t ts = bson_iter_timestamp(&iter, &inc, NULL);
+            inc = 0;
+            ts = bson_iter_timestamp(&iter, &inc, NULL);
             binary_set_va(str, "%d %d", inc, ts);
             break;
         }
@@ -753,7 +758,6 @@ static void _bson_dump(bson_ctx *bson, int32_t index, int32_t depth, binary_ctx 
         case BSON_MAXKEY:
             break;
         case BSON_REGEX: {
-            char *options;
             const char *val = bson_iter_regex(&iter, &options, NULL);
             binary_set_binary(str, val, strlen(val));
             binary_set_fill(str, ' ', 4);

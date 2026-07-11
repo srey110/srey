@@ -73,6 +73,7 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
      * 只有扫描完所有参数确定 n 之后才能写入该头部。 */
     binary_set_skip(&sdsbuf, MAX_HEADER_RESERVE);
     char *p;
+    char *val;
     char _fmt[64];
     char *f = (char *)fmt;
     while ('\0' != *f) {
@@ -102,7 +103,7 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
             break;
         }
         case 'b': {
-            char *val = va_arg(args, char *);
+            val = va_arg(args, char *);
             lens = va_arg(args, size_t);
             if (lens > 0) {
                 binary_set_binary(&fbuf, val, lens);
@@ -468,6 +469,8 @@ static int32_t _redis_reader_agg(reader_ctx *rd, int32_t prot, buffer_ctx *buf, 
 }
 redis_pack_ctx *redis_unpack(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     int32_t rtn, prot;
+    uint32_t cnt;
+    redis_pack_ctx *pk;
     reader_ctx *rd = _redis_create_reader(ud);
     for (;;) {
         if (array_size(&rd->arr) >= REDIS_MAX_NODES) {
@@ -509,7 +512,7 @@ redis_pack_ctx *redis_unpack(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
             break;
         }
         if (0 == rd->nelem) {
-            uint32_t cnt = array_size(&rd->arr);
+            cnt = array_size(&rd->arr);
             for (uint32_t i = 0; i + 1 < cnt; i++) {
                 (*(redis_pack_ctx **)array_at(&rd->arr, i))->next =
                     *(redis_pack_ctx **)array_at(&rd->arr, i + 1);
@@ -517,7 +520,7 @@ redis_pack_ctx *redis_unpack(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
             if (cnt > 0) {
                 (*(redis_pack_ctx **)array_at(&rd->arr, cnt - 1))->next = NULL;
             }
-            redis_pack_ctx *pk = (cnt > 0) ? *(redis_pack_ctx **)array_at(&rd->arr, 0) : NULL;
+            pk = (cnt > 0) ? *(redis_pack_ctx **)array_at(&rd->arr, 0) : NULL;
             array_clear(&rd->arr);
             rd->nelem = 1;
             return pk;

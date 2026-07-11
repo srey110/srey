@@ -46,9 +46,10 @@ static int _harbor_nonce_compare(const void *a, const void *b, void *udata) {
 // 时间恒定十六进制比较（大小写不敏感）；volatile 阻止编译器短路优化防时序侧信道
 static int32_t _harbor_ct_hexcmp(const char *a, const char *b, size_t n) {
     volatile uint8_t diff = 0;
+    uint8_t ca, cb;
     for (size_t i = 0; i < n; i++) {
-        uint8_t ca = (uint8_t)a[i];
-        uint8_t cb = (uint8_t)b[i];
+        ca = (uint8_t)a[i];
+        cb = (uint8_t)b[i];
         if (ca >= 'a' && ca <= 'f') {
             ca -= 0x20;
         }
@@ -229,12 +230,7 @@ static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype,
     (void)size;
     if (0 != slice) {
         if (PROT_SLICE_START == slice) {
-            binary_ctx bwriter;
-            binary_init(&bwriter, NULL, 0, 0);
-            http_pack_resp(&bwriter, 411);
-            http_pack_content(&bwriter, "chunked request not supported\n", strlen("chunked request not supported\n"));
-            ev_send(&task->loader->netev, sk->fd, sk->skid, bwriter.data, bwriter.offset, 0);
-            ev_close(&task->loader->netev, sk->fd, sk->skid, 0);
+            router_reject_chunked(task, sk->fd, sk->skid);
         }
         return;
     }

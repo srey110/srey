@@ -95,6 +95,14 @@
     #define ATOMIC64_ADD(ptr, val) __sync_fetch_and_add(ptr, val)
     #define ATOMIC64_SET(ptr, val) __atomic_exchange_n(ptr, val, __ATOMIC_SEQ_CST)
     #define ATOMIC64_CAS(ptr, oldval, newval) __sync_bool_compare_and_swap(ptr, oldval, newval)
+    // 松散序变体：仅适用于单写者字段（无并发写竞争，只需不撕裂 + 迟早可见）；
+    // SET 用 store_n（纯写非 RMW）而非 exchange_n，x86 上从 LOCK XCHG 降为裸 MOV；
+    // ADD 仍是 RMW，x86 上无论序强弱都得 LOCK XADD，收益主要在 ARM/ARM64（省 DMB）；
+    // __atomic_* 内建对超出原生字长的类型自动生成正确代码，32/64 位均安全，无需按位宽拆分
+    #define ATOMIC_ADD_RELAXED(ptr, val) __atomic_fetch_add(ptr, val, __ATOMIC_RELAXED)
+    #define ATOMIC_SET_RELAXED(ptr, val) __atomic_store_n(ptr, val, __ATOMIC_RELAXED)
+    #define ATOMIC64_ADD_RELAXED(ptr, val) __atomic_fetch_add(ptr, val, __ATOMIC_RELAXED)
+    #define ATOMIC64_SET_RELAXED(ptr, val) __atomic_store_n(ptr, val, __ATOMIC_RELAXED)
 #elif defined(OS_SUN)
     // Sun Studio：atomic_ops(3C) 不含屏障，前后补 __machine_rw_barrier(<mbarrier.h>) 凑齐 seq_cst
     static inline atomic_t _fetchandadd(atomic_t *ptr, atomic_t val) {
@@ -133,6 +141,11 @@
     #define ATOMIC64_ADD(ptr, val) _fetchandadd64(ptr, val)
     #define ATOMIC64_SET(ptr, val) _sun_swap64((atomic64_t *)(ptr), val)
     #define ATOMIC64_CAS(ptr, oldval, newval) _sun_cas64((atomic64_t *)(ptr), oldval, newval)
+    // 不手写 relaxed 原语，直接复用现有 seq_cst 版本（正确但不加速）
+    #define ATOMIC_ADD_RELAXED(ptr, val) ATOMIC_ADD(ptr, val)
+    #define ATOMIC_SET_RELAXED(ptr, val) ATOMIC_SET(ptr, val)
+    #define ATOMIC64_ADD_RELAXED(ptr, val) ATOMIC64_ADD(ptr, val)
+    #define ATOMIC64_SET_RELAXED(ptr, val) ATOMIC64_SET(ptr, val)
 #elif defined(OS_AIX)
     // xlC：AIX 原子服务不含内存序，用 __sync()(PowerPC sync 全屏障，含 StoreLoad) 前后夹住凑齐 seq_cst。
     // AIX 无原子交换服务，ATOMIC_SET 由 compare_and_swap 循环构造
@@ -172,6 +185,11 @@
     #define ATOMIC64_ADD(ptr, val) fetch_and_addlp(ptr, val)
     #define ATOMIC64_SET(ptr, val) _aix_swap64(ptr, val)
     #define ATOMIC64_CAS(ptr, oldval, newval) _aix_cas64(ptr, oldval, newval)
+    // 不手写 relaxed 原语，直接复用现有 seq_cst 版本（正确但不加速）
+    #define ATOMIC_ADD_RELAXED(ptr, val) ATOMIC_ADD(ptr, val)
+    #define ATOMIC_SET_RELAXED(ptr, val) ATOMIC_SET(ptr, val)
+    #define ATOMIC64_ADD_RELAXED(ptr, val) ATOMIC64_ADD(ptr, val)
+    #define ATOMIC64_SET_RELAXED(ptr, val) ATOMIC64_SET(ptr, val)
 #else
     #error "atomic ops: unsupported compiler (need GCC/Clang, Sun Studio on Solaris, or xlC on AIX)"
 #endif

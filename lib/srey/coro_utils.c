@@ -188,6 +188,9 @@ int32_t mysql_connect(task_ctx *task, mysql_ctx *mysql) {
     if (ERR_OK != mysql_try_connect(task, mysql, 1)) {
         return ERR_FAILED;
     }
+    if (ERR_OK != coro_wait_connect(task, mysql->client.sk.fd, mysql->client.sk.skid, mysql->client.evssl)) {
+        return ERR_FAILED;
+    }
     int32_t err;
     char *errmsg = coro_handshaked(task, mysql->client.sk.fd, mysql->client.sk.skid, &err, NULL);
     if (ERR_OK != err) {
@@ -276,6 +279,9 @@ void mysql_quit(mysql_ctx *mysql) {
 }
 int32_t smtp_connect(task_ctx *task, smtp_ctx *smtp) {
     if (ERR_OK != smtp_try_connect(task, smtp, 1)) {
+        return ERR_FAILED;
+    }
+    if (ERR_OK != coro_wait_connect(task, smtp->sk.fd, smtp->sk.skid, smtp->evssl)) {
         return ERR_FAILED;
     }
     int32_t err;
@@ -376,6 +382,11 @@ int32_t smtp_send(smtp_ctx *smtp, mail_ctx *mail) {
 }
 int32_t pgsql_connect(task_ctx *task, pgsql_ctx *pg) {
     if (ERR_OK != pgsql_try_connect(task, pg, 1)) {
+        return ERR_FAILED;
+    }
+    // pgsql SSL 是协议层收到服务端 'S' 应答后才发起(见 _pgsql_ssl_response)，此处不能传 pg->evssl，
+    // 否则会等一个尚未触发的 SSLEXCHANGED 直到超时；coro_handshaked 的等待自然跨过该升级过程
+    if (ERR_OK != coro_wait_connect(task, pg->sk.fd, pg->sk.skid, NULL)) {
         return ERR_FAILED;
     }
     int32_t code;

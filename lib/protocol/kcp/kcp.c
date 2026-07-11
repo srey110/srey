@@ -143,6 +143,9 @@ void _kcp_udfree(ud_cxt *ud) {
     FREE(ctx);
     ud->context = NULL;
 }
+void _kcp_fd_closed(ud_cxt *ud) {
+    _kcp_udfree(ud);
+}
 void _kcp_unpack(SOCKET fd, uint64_t skid,
                  char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud) {
     if (size < KCP_MIN_OVERHEAD
@@ -213,7 +216,7 @@ static int _kcp_output(const char *buf, int len, ikcpcb *ikcp, void *user) {
         return ERR_FAILED;
     }
     // 非iocp且发送队列为空，尝试直接发送。
-    if (ERR_OK == _evpub_try_sendto(watcher, skctx, buf, (size_t)len, &kel->addr)) {
+    if (!_evpub_try_sendto(watcher, skctx, buf, (size_t)len, &kel->addr)) {
         return ERR_OK;
     }
     sendto_ctx sbuf;
@@ -377,7 +380,11 @@ int32_t kcp_start(kcp_ctx *kcp, name_t handle, const char *ip, uint16_t port, co
     return ev_props(kcp->netev, kcp->sk.fd, kcp->sk.skid,
         _kcp_start, _kcp_element_free, kel, 0);
 }
-static kcp_element *_kcp_resolve(ud_cxt *ud, uint32_t conv, uint64_t sess) {
+static kcp_element *_kcp_resolve(struct sock_ctx *skctx, ud_cxt *ud, uint32_t conv, uint64_t sess) {
+    if (SOCK_DGRAM != _evpub_sock_type(skctx) || PACK_UDP_KCP != ud->pktype) {
+        LOG_ERROR("kcp resolve called on non-UDP_KCP fd, conv %u, drop.", conv);
+        return NULL;
+    }
     if (NULL == ud->context) {
         LOG_WARN("kcp context not init.");
         return NULL;
@@ -393,7 +400,7 @@ static int32_t _kcp_stop(struct watcher_ctx *watcher, struct sock_ctx *skctx,
     void *data, uint64_t number) {
     (void)watcher;
     ud_cxt *ud = _evpub_get_ud(skctx);
-    kcp_element *kel = _kcp_resolve(ud, (uint32_t)(uintptr_t)data, number);
+    kcp_element *kel = _kcp_resolve(skctx, ud, (uint32_t)(uintptr_t)data, number);
     if (NULL == kel) {
         return 0;
     }
@@ -416,7 +423,7 @@ static int32_t _kcp_handle(struct watcher_ctx *watcher, struct sock_ctx *skctx,
     (void)watcher;
     ud_cxt *ud = _evpub_get_ud(skctx);
     kcp_handle_arg *arg = data;
-    kcp_element *kel = _kcp_resolve(ud, arg->conv, arg->sess);
+    kcp_element *kel = _kcp_resolve(skctx, ud, arg->conv, arg->sess);
     if (NULL != kel) {
         kel->handle = (name_t)number;
     }
@@ -449,7 +456,7 @@ static int32_t _kcp_send(struct watcher_ctx *watcher, struct sock_ctx *skctx,
     (void)watcher;
     ud_cxt *ud = _evpub_get_ud(skctx);
     kcp_send_buf *buf = data;
-    kcp_element *kel = _kcp_resolve(ud, buf->conv, number);
+    kcp_element *kel = _kcp_resolve(skctx, ud, buf->conv, number);
     if (NULL != kel) {
         ikcp_send(kel->ikcp, buf->data, (int32_t)buf->lens);
     }

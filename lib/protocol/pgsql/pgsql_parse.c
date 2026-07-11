@@ -11,7 +11,7 @@ char *_pgpack_error_notice(binary_ctx *breader) {
         if (breader->size - breader->offset < 1) {
             break;
         }
-        flag = binary_get_int8(breader);   // 字段类型标志（如 'S'=严重性, 'M'=消息等）
+        flag = binary_get_int8(breader); // 字段类型标志（如 'S'=严重性, 'M'=消息等）
         if (0 == flag) {
             break;
         }
@@ -230,8 +230,8 @@ static void _pgpack_copy_data(pgpack_ctx *pgpack, binary_ctx *breader) {
 pgpack_ctx *_pgpack_parser(pgsql_ctx *pg, binary_ctx *breader, ud_cxt *ud, int32_t *status) {
     (void)ud;
     pgpack_ctx *pack = NULL;
-    int8_t code = binary_get_int8(breader);  // 读取消息类型码
-    binary_get_skip(breader, 4);             // 跳过消息体长度字段
+    int8_t code = binary_get_int8(breader); // 读取消息类型码
+    binary_get_skip(breader, 4); // 跳过消息体长度字段
     switch (code) { // N / S / A 随时都有可能收到（异步消息）
     case 'N': // NoticeResponse：服务端通知消息，忽略
         FREE(breader->data);

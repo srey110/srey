@@ -125,6 +125,7 @@ static int32_t _dns_decode_domain(unsigned char *name, size_t namelen,
                                   unsigned char *reader, unsigned char *buffer, size_t buflen,
                                   int32_t *count) {
     uint32_t p = 0, jumped = 0, jump_count = 0, label_remaining = 0;
+    uint32_t offset;
     unsigned char *buf_end = buffer + buflen;
     *count = 1;
     name[0] = '\0';
@@ -149,7 +150,7 @@ static int32_t _dns_decode_domain(unsigned char *name, size_t namelen,
             if (jump_count++ >= buflen / 2) {
                 return ERR_FAILED;
             }
-            uint32_t offset = (uint32_t)((*reader & 0x3F) << 8) | *(reader + 1);
+            offset = (uint32_t)((*reader & 0x3F) << 8) | *(reader + 1);
             if (offset >= buflen) {
                 return ERR_FAILED;
             }
@@ -210,6 +211,7 @@ static char *_dns_parse_data(char *buf, size_t buflen, char *reader, uint16_t n,
     int32_t cnt;
     dns_ip *tmp;
     uint16_t rtype, rlens;
+    uint16_t _u16;
     char domain[256];
     for (uint16_t i = 0; i < n; i++) {
         if (ERR_OK != _dns_decode_domain((unsigned char *)domain, sizeof(domain),
@@ -226,7 +228,6 @@ static char *_dns_parse_data(char *buf, size_t buflen, char *reader, uint16_t n,
         if ((size_t)(buf_end - reader) < 2 * sizeof(uint16_t) + sizeof(uint32_t) + sizeof(uint16_t)) {
             return NULL;
         }
-        uint16_t _u16;
         memcpy(&_u16, reader, sizeof(_u16));//直接转型解引用在 ARM、SPARC 等严格对齐平台上是未定义行为
         rtype = ntohs(_u16);
         reader += 2 * sizeof(uint16_t) + sizeof(uint32_t); // 跳过 type/class/ttl

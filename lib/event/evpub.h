@@ -173,9 +173,9 @@ int32_t _evpub_sock_send(SOCKET fd, queue_ctx *buf_s, size_t *nsend, void *arg);
 // 此次必然复现，跳过重复尝试，仅确保写事件已注册（IOCP 平台忽略该参数）
 void _evpub_add_bufs_sendto(struct watcher_ctx *watcher, struct sock_ctx *skctx, sendto_ctx *buf, int32_t tried);
 // 尝试直接发送 UDP 数据，不转移 data 所有权（调用方返回后可自由处置该内存）；
-// 发出成功或致命错误（已断开）均返回 ERR_OK，调用方无需任何后续操作；
-// 发送队列已有积压、EAGAIN 或 IOCP 平台（发送恒为异步）均返回 ERR_FAILED，
-// 调用方需自行 MALLOC+memcpy 后以 tried=1 转入 _evpub_add_bufs_sendto 排队
+// 返回 0 表示已处理完(发送成功或致命错误已断开)，调用方无需任何后续操作；
+// 返回 1 表示需要调用方继续(发送队列已有积压、EAGAIN，或 IOCP 平台发送恒为异步)，
+// 自行 MALLOC+memcpy 后以 tried=1 转入 _evpub_add_bufs_sendto 排队
 int32_t _evpub_try_sendto(struct watcher_ctx *watcher, struct sock_ctx *skctx, const void *data, size_t len, netaddr_ctx *addr);
 
 #endif//EVPUB_H_

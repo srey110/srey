@@ -59,6 +59,8 @@ extern exfuncs_ctx _exfuncs; // 全局扩展函数指针（懒加载初始化）
 
 // 将fd关联到IOCP句柄
 int32_t _iocp_join(watcher_ctx *watcher, SOCKET fd);
+// 对 watcher 下每个存活 socket 发起立即 disconnect(CancelIoEx)，CMD_STOP 时调用
+void _iocp_disconnect_all(watcher_ctx *watcher);
 // 尝试对已有连接启动SSL握手（支持延迟到发送完毕）
 void _iocp_try_ssl_exchange(watcher_ctx *watcher, sock_ctx *skctx, struct evssl_ctx *evssl, int32_t client);
 // 在事件循环内将accept到的fd完成初始化并开始接收

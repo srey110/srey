@@ -473,7 +473,7 @@ static void _sc_handle_unsub(sc_ctx *ctx, name_t src, uint64_t sess, binary_ctx 
     }
     sc_topic_data *d = (sc_topic_data *)path_get(ctx->topics, topic);
     if (NULL == d) {
-        _sc_resp_ok(ctx, src, sess, reqtype);    // 幂等
+        _sc_resp_ok(ctx, src, sess, reqtype);// 幂等
         return;
     }
     if (shared) {
@@ -575,10 +575,12 @@ static void _sc_update_retained(sc_ctx *ctx, name_t src, const char *topic,
 // 从 cursor 起轮询挑一个活成员;死成员当场从 members 剔除,返回首个活成员(grab 保留,投递后由调用方 ungrab);
 // 组内全死(members 清空)返 NULL。每轮非返回即剔一员,至多 members.size 次,必终止
 static task_ctx *_sc_shared_pick_live(sc_ctx *ctx, sc_shared_group *g) {
+    name_t cand;
+    task_ctx *t;
     while (g->members.size > 0) {
         g->cursor = (g->cursor + 1) % g->members.size;
-        name_t cand = ((name_t *)g->members.ptr)[g->cursor];
-        task_ctx *t = task_grab(ctx->loader, cand);
+        cand = ((name_t *)g->members.ptr)[g->cursor];
+        t = task_grab(ctx->loader, cand);
         if (NULL != t) {
             return t;
         }
@@ -636,7 +638,7 @@ static int32_t _sc_resolve_one(sc_ctx *ctx, name_t n, task_ctx **dsts, int32_t c
         if (NULL != prune) {
             array_push_back(prune, &n);
         }
-        return ERR_OK;   // 跳过
+        return ERR_OK;// 跳过
     }
     dsts[*cnt] = t;
     (*cnt)++;
@@ -926,7 +928,7 @@ static void _sc_handle_query_retained(sc_ctx *ctx, name_t src, uint64_t sess, bi
         return;
     }
     if (INVALID_TNAME == src || 0 == sess) {
-        return;   // 无人接响应,跳过 scan 工作
+        return;// 无人接响应,跳过 scan 工作
     }
     binary_ctx bw;
     binary_init(&bw, NULL, 0, 0);

@@ -864,6 +864,110 @@ static void test_mysql_reader_datetime2_types(CuTest *tc) {
     CuAssertIntEquals(tc, 0, (int32_t)usec);
     mysql_reader_free(r);
 }
+// 分配 cap 字节全 '1' 的 payload，作为唯一字段的行数据压入 reader，用于构造 lens==cap 越界场景
+static void _push_oversized_field(mysql_reader_ctx *reader, size_t cap) {
+    char *p;
+    MALLOC(p, cap);
+    memset(p, '1', cap);
+    buf_ctx c[1] = { { .data = p, .lens = cap } };
+    _reader_push_row(reader, p, c, NULL);
+}
+// _mysql_copy_bounded strict=1 边界 (mysql_utils.c)：mysql_reader.c 5 个调用点(text 协议下
+// integer/uinteger cap=64、float/double 共用 cap=128、datetime/time 共用 cap=48)均应返回
+// ERR_FAILED 且不写入目标缓冲，而非截断或越界
+static void test_mysql_reader_copy_field_boundary(CuTest *tc) {
+    char names[1][64] = { "n" };
+
+    // integer/uinteger 共用 cap=64：构造 64 字节数字串 (lens==cap)
+    uint8_t itypes[1] = { MYSQL_TYPE_LONGLONG };
+    mysql_reader_ctx *r = _reader_new(MPACK_QUERY, 1, names, itypes);
+    _push_oversized_field(r, 64);
+    int32_t err;
+    int64_t iv = mysql_reader_integer(r, "n", &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    CuAssertTrue(tc, 0 == iv);
+    uint64_t uv = mysql_reader_uinteger(r, "n", &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    CuAssertTrue(tc, 0 == uv);
+    mysql_reader_free(r);
+
+    // float/double 共用 cap=128
+    uint8_t ftypes[1] = { MYSQL_TYPE_DOUBLE };
+    mysql_reader_ctx *rf = _reader_new(MPACK_QUERY, 1, names, ftypes);
+    _push_oversized_field(rf, 128);
+    double dv = mysql_reader_double(rf, "n", &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    CuAssertTrue(tc, 0.0 == dv);
+    mysql_reader_free(rf);
+
+    // datetime/time 共用 cap=48
+    uint8_t dtypes[1] = { MYSQL_TYPE_DATETIME };
+    mysql_reader_ctx *rd = _reader_new(MPACK_QUERY, 1, names, dtypes);
+    _push_oversized_field(rd, 48);
+    int64_t ts = mysql_reader_datetime(rd, "n", &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    CuAssertTrue(tc, 0 == ts);
+    mysql_reader_free(rd);
+
+    uint8_t ttypes[1] = { MYSQL_TYPE_TIME };
+    mysql_reader_ctx *rt = _reader_new(MPACK_QUERY, 1, names, ttypes);
+    _push_oversized_field(rt, 48);
+    struct tm tmv;
+    uint32_t usec;
+    (void)mysql_reader_time(rt, "n", &tmv, &usec, &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    mysql_reader_free(rt);
+}
+// _mpack_parse_lenenc_field 边界 (mysql_parse.c:356)：lens>=cap 时静默截断为 cap-1 字节 + NUL，
+// 不越界写入；经 _mpack_parse_field 的 schema 字段(cap=64)验证
+static void test_mpack_parse_field_truncation(CuTest *tc) {
+    binary_ctx bw;
+    binary_init(&bw, NULL, 0, 0);
+    // catalog（任意值，_mpack_parse_field 内部只 skip）
+    _mysql_set_lenenc(&bw, 3);
+    binary_set_binary(&bw, "def", 3);
+    // schema：70 字节全 'a'，超过 field->schema[64] 的 cap=64 → 应截断为 63 字节 + '\0'
+    _mysql_set_lenenc(&bw, 70);
+    char oversized[70];
+    memset(oversized, 'a', sizeof(oversized));
+    binary_set_binary(&bw, oversized, sizeof(oversized));
+    // table / org_table / name / org_name：正常长度，验证截断字段之后的解析未受影响
+    _mysql_set_lenenc(&bw, 4);
+    binary_set_binary(&bw, "tbl1", 4);
+    _mysql_set_lenenc(&bw, 4);
+    binary_set_binary(&bw, "tbl1", 4);
+    _mysql_set_lenenc(&bw, 3);
+    binary_set_binary(&bw, "col", 3);
+    _mysql_set_lenenc(&bw, 3);
+    binary_set_binary(&bw, "col", 3);
+    // length of fixed length fields（固定为 0x0c，仅被 skip 验证）
+    _mysql_set_lenenc(&bw, 0x0c);
+    // character(2) + field_lens(4) + type(1) + flags(2) + decimals(1)
+    binary_set_integer(&bw, 0x21, 2, 1);
+    binary_set_integer(&bw, 100, 4, 1);
+    binary_set_uint8(&bw, MYSQL_TYPE_VARCHAR);
+    binary_set_uinteger(&bw, 0, 2, 1);
+    binary_set_uint8(&bw, 0);
+
+    binary_ctx br;
+    binary_init(&br, bw.data, bw.offset, 0);
+    mpack_field field;
+    ZERO(&field, sizeof(field));
+    int32_t rtn = _mpack_parse_field(&br, &field);
+    CuAssertIntEquals(tc, ERR_OK, rtn);
+    // 截断为 cap-1=63 字节，末尾正确 NUL 结尾，不越界写入第 64 字节之外
+    CuAssertIntEquals(tc, 63, (int)strlen(field.schema));
+    for (int i = 0; i < 63; i++) {
+        CuAssertTrue(tc, 'a' == field.schema[i]);
+    }
+    // 截断字段之后的其余字段未受影响
+    CuAssertTrue(tc, 0 == strcmp(field.table, "tbl1"));
+    CuAssertTrue(tc, 0 == strcmp(field.org_table, "tbl1"));
+    CuAssertTrue(tc, 0 == strcmp(field.name, "col"));
+    CuAssertTrue(tc, 0 == strcmp(field.org_name, "col"));
+    CuAssertIntEquals(tc, MYSQL_TYPE_VARCHAR, field.type);
+    binary_free(&bw);
+}
 void test_mysql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mysql_reader_init);
     SUITE_ADD_TEST(suite, test_mysql_reader_cursor);
@@ -883,4 +987,6 @@ void test_mysql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mysql_binary_row_temporal_invalid_len);
     SUITE_ADD_TEST(suite, test_mysql_reader_datetime_text);
     SUITE_ADD_TEST(suite, test_mysql_reader_datetime2_types);
+    SUITE_ADD_TEST(suite, test_mysql_reader_copy_field_boundary);
+    SUITE_ADD_TEST(suite, test_mpack_parse_field_truncation);
 }

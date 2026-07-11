@@ -136,7 +136,7 @@ static void _coro_cosess_delete(coro_ctx *coctx, uint64_t sess) {
     key.sess = sess;
     hashmap_delete(coctx->mapco, &key);
 }
-// 从 mapco 查找匹配 sess 的挂起协程节点，仅检测队头：mtype 匹配（或参数为 CLOSE 通配）才摘除返回，
+// 从 mapco 查找匹配 sess 的挂起协程节点，仅检测队头：mtype 匹配才摘除返回，
 // 队头不匹配（含 keep 保留的空条目）视为无等待者，不越过队头继续查找（保持严格 FIFO）；
 // 摘除后链表为空且 !keep 时才删除 mapco 条目
 static coro_info *_coro_cosess_get(coro_ctx *coctx, uint64_t sess, msg_type mtype) {
@@ -147,7 +147,7 @@ static coro_info *_coro_cosess_get(coro_ctx *coctx, uint64_t sess, msg_type mtyp
         return NULL;
     }
     coro_info *coinfo = UPCAST(cofind->waiters.head, coro_info, node);
-    if (mtype != coinfo->mtype && MSG_TYPE_CLOSE != mtype) {
+    if (mtype != coinfo->mtype) {
         return NULL;
     }
     list_remove(&cofind->waiters, &coinfo->node);
@@ -170,16 +170,18 @@ static inline mco_coro *_coro_take_mco(coro_ctx *coctx, coro_info *coinfo) {
 static void _coro_mco_cb(mco_coro *coro) {
     mco_result rtn;
     task_dispatch_arg *argp;
+    task_dispatch_arg arg;
+    coro_ctx *ctx;
     for (;;) {
         rtn = mco_yield(coro);
         ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
         // 弹出 8 字节指针并在协程栈上复制一份，保证 arg.fd/arg.skid 在整个生命期内有效
         rtn = mco_pop(coro, &argp, sizeof(argp));
         ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
-        task_dispatch_arg arg = *argp; // 在协程栈上保存一份副本
+        arg = *argp; // 在协程栈上保存一份副本
         task_incref(arg.task); // 保证 _message_run 在 yield 后 task 不会被释放
         _message_run(arg.task, &arg.msg);
-        coro_ctx *ctx = (coro_ctx *)arg.task->arg;
+        ctx = (coro_ctx *)arg.task->arg;
         if (ERR_OK != pool_push(&ctx->copool, coro, POOL_OP_NOFREE)) {
             task_ungrab(arg.task);
             break; // 池满时跳出循环，让函数自然返回使协程进入 MCO_DEAD 状态
@@ -366,7 +368,10 @@ static void _coro_handle_closed(task_dispatch_arg *arg) {
             _coro_mco_resume(coro, arg);
         }
     }
-    _coro_mco_create(arg);
+    // erro!=ERR_OK 是 prots_net_connect 因连接失败补发的合成 CLOSE（见该函数），不触发 on_close 观察者
+    if (ERR_OK == arg->msg.erro) {
+        _coro_mco_create(arg);
+    }
     /* resume 期间协程可能重新在同一 sess 上注册等待（追加到 cofind->waiters），
      * 也可能因其它 sess 的插入触发 hashmap resize 导致 cofind 悬空，须重新查询而非复用旧指针 */
     cofind = (coro_sess *)hashmap_get(coctx->mapco, &key);
@@ -582,6 +587,27 @@ void *coro_handshaked(task_ctx *task, SOCKET fd, uint64_t skid, int32_t *err, si
     SET_PTR(size, msg->size);
     return msg->data;
 }
+int32_t coro_wait_connect(task_ctx *task, SOCKET fd, uint64_t skid, struct evssl_ctx *evssl) {
+    if (INVALID_SOCK == fd) {
+        return ERR_FAILED;
+    }
+    message_ctx *msg = _coro_wait(task, skid, MSG_TYPE_CONNECT, task_get_connect_timeout(task));
+    if (MSG_TYPE_TIMEOUT == msg->mtype) {
+        ev_close(&task->loader->netev, fd, skid, 1);
+        LOG_WARN("task %s, connect timeout, skid %"PRIu64".", _NAME_OR(task->name), skid);
+        return ERR_FAILED;
+    }
+    if (ERR_OK != msg->erro) {
+        LOG_WARN("task %s, connect error, skid %"PRIu64".", _NAME_OR(task->name), skid);
+        return ERR_FAILED;
+    }
+    if (NULL != evssl) {
+        if (ERR_OK != _wait_ssl_exchanged(task, fd, skid)) {
+            return ERR_FAILED;
+        }
+    }
+    return ERR_OK;
+}
 int32_t coro_connect(task_ctx *task, pack_type pktype,
                      struct evssl_ctx *evssl, const char *ip, uint16_t port,
                      int32_t netev, void *extra,
@@ -590,22 +616,7 @@ int32_t coro_connect(task_ctx *task, pack_type pktype,
         LOG_WARN("task: %s, connect %s:%d error.", _NAME_OR(task->name), ip, port);
         return ERR_FAILED;
     }
-    message_ctx *msg = _coro_wait(task, *skid, MSG_TYPE_CONNECT, task_get_connect_timeout(task));
-    if (MSG_TYPE_TIMEOUT == msg->mtype) {
-        ev_close(&task->loader->netev, *fd, *skid, 1);
-        LOG_WARN("task: %s, connect %s:%d timeout.", _NAME_OR(task->name), ip, port);
-        return ERR_FAILED;
-    }
-    if (ERR_OK != msg->erro) {
-        LOG_WARN("task: %s, connect %s:%d error.", _NAME_OR(task->name), ip, port);
-        return ERR_FAILED;
-    }
-    if (NULL != evssl) {
-        if (ERR_OK != _wait_ssl_exchanged(task, *fd, *skid)) {
-            return ERR_FAILED;
-        }
-    }
-    return ERR_OK;
+    return coro_wait_connect(task, *fd, *skid, evssl);
 }
 void coro_close(task_ctx *task, SOCKET fd, uint64_t skid, int32_t immed) {
     if (INVALID_SOCK == fd) {

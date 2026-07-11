@@ -34,6 +34,8 @@ typedef struct kcp_config {
 void _kcp_init(prot_emit *emit);
 // 释放 UDP socket 上的 kcp 上下文及其所有会话(由 prots_udfree 调用)
 void _kcp_udfree(ud_cxt *ud);
+// UDP socket 关闭时的清理回调，等同于 _kcp_udfree(由 prots_closed 调用)
+void _kcp_fd_closed(ud_cxt *ud);
 // UDP 数据解包:ikcp_input 喂入后 ikcp_recv 取完整消息上抛(由 prots_net_recvfrom 调用)
 void _kcp_unpack(SOCKET fd, uint64_t skid,
                  char *buf, size_t size, netaddr_ctx *addr, ud_cxt *ud);

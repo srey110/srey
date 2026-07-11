@@ -47,32 +47,14 @@ local function _wait_resp(post_ok, sess, op)
     return msg
 end
 
--- 段切分:把 path 按 '/' 拆成数组(保留空段,供 _topic_match 严格段数比较)
----@param s string
----@return string[]
-local function _split_segs(s)
-    local segs = {}
-    local start = 1
-    while true do
-        local i = string.find(s, "/", start, true)
-        if not i then
-            segs[#segs + 1] = string.sub(s, start)
-            break
-        end
-        segs[#segs + 1] = string.sub(s, start, i - 1)
-        start = i + 1
-    end
-    return segs
-end
-
--- 通配匹配:精确 topic 是否匹配含通配的 pattern(对齐 C 层 path_matches_pattern)
+-- 通配匹配:精确 topic(已按 '/' 切分为 lits,同一条消息投递内所有 pattern 共用,调用方只需切一次)
+-- 是否匹配含通配的 pattern(对齐 C 层 path_matches_pattern)
 -- 规则:'+' 匹配单层(段非空);'#' 匹配剩余任意层(必须末尾);其他段精确比较
 ---@param pattern string
----@param topic string
+---@param lits string[] topic 按 '/' 切分后的段数组(保留空段)
 ---@return boolean
-local function _topic_match(pattern, topic)
-    local pats = _split_segs(pattern)
-    local lits = _split_segs(topic)
+local function _topic_match(pattern, lits)
+    local pats = split(pattern, "/")
     local pn = #pats
     local ln = #lits
     local pi = 1
@@ -120,12 +102,14 @@ function sc_client._on_deliver(data, size)
         return   -- wire 截断/损坏
     end
     local topic = d.topic
+    -- topic 段切分对本次投递内所有 pattern 一致,提到循环外只做一次
+    local lits = split(topic, "/")
     -- snapshot 匹配 handler 列表,避免 handler 内 subscribe/unsubscribe 改表触发迭代 UB
     local matched = {}
     if 1 == d.kind then
         -- 共享:按 (匹配 pattern, 投递 group) 精确取 handler,多 group 同 topic 互不串
         for pattern, groups in pairs(_shared_handlers) do
-            if _topic_match(pattern, topic) then
+            if _topic_match(pattern, lits) then
                 local handler = groups[d.group]
                 if handler then
                     matched[#matched + 1] = handler
@@ -134,7 +118,7 @@ function sc_client._on_deliver(data, size)
         end
     else
         for pattern, handler in pairs(_handlers) do
-            if _topic_match(pattern, topic) then
+            if _topic_match(pattern, lits) then
                 matched[#matched + 1] = handler
             end
         end

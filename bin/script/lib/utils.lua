@@ -45,12 +45,17 @@ function split(str, delimiter)
     if ('' == delimiter) then
         return {str}
     end
-    local pos,arr = 0, {}
-    for st,sp in function() return string.find(str, delimiter, pos, true) end do
-        table.insert(arr, string.sub(str, pos, st - 1))
+    local arr = {}
+    local pos = 1
+    while true do
+        local st, sp = string.find(str, delimiter, pos, true)
+        if not st then
+            arr[#arr + 1] = string.sub(str, pos)
+            break
+        end
+        arr[#arr + 1] = string.sub(str, pos, st - 1)
         pos = sp + 1
     end
-    table.insert(arr, string.sub(str, pos))
     return arr
 end
 

@@ -23,6 +23,7 @@ function ctx:ctor(ip, port, sslname, user, password)
         ssl = core.ssl_qury(sslname)
     end
     self.smtp = smtp.new(ip, port, ssl, user, password)
+    self.sslname = sslname
 end
 
 ---建立 TCP 连接并完成 SMTP 握手（等待 220 欢迎行及 AUTH 协商）
@@ -32,6 +33,9 @@ function ctx:connect()
         return false
     end
     local fd, skid = self.smtp:sock_id()
+    if not srey.wait_connect(fd, skid, SSL_NAME.NONE ~= self.sslname or nil) then
+        return false
+    end
     local ok, err, elens = srey.wait_handshaked(fd, skid)
     if not ok and err then
         WARN("%s", srey.ud_str(err, elens))

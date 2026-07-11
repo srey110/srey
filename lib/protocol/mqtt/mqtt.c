@@ -415,6 +415,10 @@ static int32_t _mqtt_connack(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *bu
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
+    if (NULL == ud->context) {
+        BIT_SET(*status, PROT_ERROR);
+        return ERR_FAILED;
+    }
     //可变报头 连接确认标志（Connect Acknowledge Flags），连接原因码（Reason Code），属性（Properties MQTT_50）
     int32_t num;
     if (ERR_OK != _mqtt_data_fixnum(buf, 1, &num)) {//连接确认标志

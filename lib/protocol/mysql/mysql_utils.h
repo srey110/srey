@@ -9,5 +9,8 @@ void _mysql_set_lenenc(binary_ctx *bwriter, size_t integer);
 uint64_t _mysql_get_lenenc(binary_ctx *breader, int32_t *err);
 // 内部函数：将 bwriter 偏移 0-2 字节回填为实际 payload 长度（排除 4 字节包头）；超 16MB 返 ERR_FAILED
 int32_t _mysql_set_payload_lens(binary_ctx *bwriter);
+// 内部函数：有界拷贝进定长缓冲区并补 NUL；strict 非0 时 lens>=cap 返回 ERR_FAILED 且不写 dst，
+// strict 为0 时 lens>=cap 静默截断为 cap-1 字节写入（仍返回 ERR_OK）
+int32_t _mysql_copy_bounded(const void *data, size_t lens, char *dst, size_t cap, int32_t strict);
 
 #endif//MYSQL_UTILS_H_

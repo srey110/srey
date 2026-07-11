@@ -161,13 +161,16 @@ static void _mw_g2(router_req *ctx) {
     router_next(ctx);
 }
 
-// server _net_recv: HTTP 完整包到达 (slice == 0) 时分发, 分片态忽略
-// (任务路由不处理 chunked 请求体, 简化假设)
+// server _net_recv: HTTP 完整包到达 (slice == 0) 时分发; chunked 请求体开始 (PROT_SLICE_START)
+// 时按 debug_console.c/harbor.c 同款做法回 411 并关连接, 其余分片帧忽略 (连接已关不会再收到)
 static void _server_net_recv(task_ctx *task, sk_id *sk,
                              subtype_t pktype, uint8_t client, uint8_t slice,
                              void *data, size_t size) {
     (void)pktype; (void)client; (void)size;
     if (0 != slice) {
+        if (PROT_SLICE_START == slice) {
+            router_reject_chunked(task, sk->fd, sk->skid);
+        }
         return;
     }
     router_dispatch((router_ctx *)task->arg, task, sk->fd, sk->skid, (struct http_pack_ctx *)data);
@@ -323,7 +326,48 @@ done:
     return rtn;
 }
 
-// 24 项断言依次跑, 任一失败都 bad 置位; 全部通过返 ERR_OK
+// chunked 请求断言: 发一个带 Transfer-Encoding: Chunked 的单块 POST, 验证 _server_net_recv 收到
+// PROT_SLICE_START 后调 router_reject_chunked 回 411 (覆盖 router.c 的 router_reject_chunked)
+static int32_t _do_chunked_req(task_ctx *task, uint16_t port) {
+    SOCKET fd;
+    uint64_t skid;
+    if (ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", port, 0, NULL, &fd, &skid)) {
+        LOG_WARN("router test: connect to %d failed for chunked req.", port);
+        return ERR_FAILED;
+    }
+    binary_ctx bw;
+    binary_init(&bw, NULL, 0, 0);
+    http_pack_req(&bw, "POST", "/");
+    http_pack_head(&bw, "Host", "127.0.0.1");
+    http_pack_chunked(&bw, "x", 1); // bwriter->offset>0 时自动附加 Transfer-Encoding: Chunked header
+    size_t rsize;
+    struct http_pack_ctx *resp = coro_send(task, fd, skid, bw.data, bw.offset, &rsize, 0);
+    int32_t rtn = ERR_FAILED;
+    if (NULL == resp) {
+        LOG_WARN("router test: chunked req coro_send failed.");
+        goto done;
+    }
+    buf_ctx *st = http_status(resp);
+    if (!buf_compare(&st[1], "411", 3)) {
+        LOG_WARN("router test: chunked req expected code 411, got %.*s.",
+                 (int32_t)st[1].lens, (char *)st[1].data);
+        goto done;
+    }
+    size_t dlen;
+    void *body = http_data(resp, &dlen);
+    const char *want = "chunked request not supported\n";
+    if (NULL == body || dlen != strlen(want) || 0 != memcmp(body, want, dlen)) {
+        LOG_WARN("router test: chunked req expected body '%s', got '%.*s'.",
+                 want, (int32_t)dlen, (char *)body);
+        goto done;
+    }
+    rtn = ERR_OK;
+done:
+    ev_close(&task->loader->netev, fd, skid, 1);
+    return rtn;
+}
+
+// 25 项断言依次跑, 任一失败都 bad 置位; 全部通过返 ERR_OK
 // 每次 _do_req 之间插 task_isclosing 早返, SIGINT 时尽快收尾
 // bad 用位掩码记录, 单次跑不会复用, 但若失败时 LOG_WARN 输出可看到哪几位出错
 static int32_t _run_all(task_ctx *task, uint16_t port) {
@@ -418,6 +462,9 @@ static int32_t _run_all(task_ctx *task, uint16_t port) {
     if (task_isclosing(task)) return ERR_FAILED;
     // [23] OPT 中置多余段: /a/b/c → 路由段消耗完但请求段剩余 → 404
     if (ERR_OK != _do_req(task, port, "GET", "/a/b/c",  NULL, NULL, 404, NULL)) bad |= (1 << 23);
+    if (task_isclosing(task)) return ERR_FAILED;
+    // [24] chunked 请求体 → PROT_SLICE_START 分支调 router_reject_chunked 回 411
+    if (ERR_OK != _do_chunked_req(task, port)) bad |= (1 << 24);
 
     return 0 == bad ? ERR_OK : ERR_FAILED;
 }

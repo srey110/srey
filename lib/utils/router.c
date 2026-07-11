@@ -174,8 +174,10 @@ static int32_t _router_match_path(const router_seg *rsegs, int32_t rn,
     int32_t ri = 0;
     int32_t qi = 0;
     int32_t pn = 0;
+    const router_seg *seg;
+    int32_t skip_opt;
     while (ri < rn) {
-        const router_seg *seg = &rsegs[ri];
+        seg = &rsegs[ri];
         if (ROUTER_SEG_WILD == seg->t) {
             // '*' 一旦出现, 后续请求段任意, 直接匹配成功
             ctx->params_n = pn;
@@ -208,7 +210,7 @@ static int32_t _router_match_path(const router_seg *rsegs, int32_t rn,
             // {name?} 有就吃, 没就跳, 不算匹配失败
             // 若下一路由段是 LIT 且与当前请求段字面完全匹配, 优先让 LIT 消耗, OPT 跳过
             if (qi < qn) {
-                int32_t skip_opt = (ri + 1 < rn
+                skip_opt = (ri + 1 < rn
                     && ROUTER_SEG_LIT == rsegs[ri + 1].t
                     && rsegs[ri + 1].str_len == (uint32_t)qsegs[qi].lens
                     && 0 == memcmp(rsegs[ri + 1].str, qsegs[qi].data, qsegs[qi].lens));
@@ -511,6 +513,7 @@ int32_t router_add_index(router_ctx *r, const char *method, size_t method_len,
 // 扫描路由表，方法掩码命中 + 路径匹配，返回首条命中索引，无命中返回 -1
 static int32_t _router_find(router_ctx *r, router_method m, router_req *ctx) {
     int32_t qn = 0;
+    router_entry *e;
     for (int32_t i = 0; i < ctx->url_storage.npath; i++) {
         if (ctx->url_storage.segs[i].lens > 0) {
             ctx->url_storage.segs[qn++] = ctx->url_storage.segs[i];
@@ -518,7 +521,7 @@ static int32_t _router_find(router_ctx *r, router_method m, router_req *ctx) {
     }
     ctx->url_storage.npath = qn;
     for (int32_t i = 0; i < r->routes_n; i++) {
-        router_entry *e = &r->routes[i];
+        e = &r->routes[i];
         if (0 == (e->method_mask & m)) {
             continue;
         }
@@ -637,16 +640,22 @@ void router_req_respond(router_req *ctx, int32_t code,
                       NULL == body ? "" : body, NULL == body ? 0 : body_len);
 }
 // 兜底响应 (404 / 405 / 500); 跟 _router_send_resp 相比省去 extra 头数组处理, body 走 strlen,
-// 适合 dispatch 未匹配 / 未识别方法 / 中间件链溢出等错误路径快速发出短文本响应
-static void _router_send_simple(router_req *ctx, int32_t code, const char *body) {
+// 适合 dispatch 未匹配 / 未识别方法 / 中间件链溢出等错误路径快速发出短文本响应；
+// 部分调用方 (router_reject_chunked) 无 router_req 可用, 故不接 ctx —— 有 ctx 的调用方
+// 需自行在调用后置 ctx->responded = 1 防止 dispatch 末尾兜底 500 重发
+static void _router_send_simple(task_ctx *task, SOCKET fd, uint64_t skid, int32_t code, const char *body) {
     binary_ctx bw;
     binary_init(&bw, NULL, 0, 0);
     http_pack_resp(&bw, code);
     http_pack_head(&bw, "Content-Type", "text/plain; charset=utf-8");
     size_t blen = NULL == body ? 0 : strlen(body);
     http_pack_content(&bw, (void *)(NULL == body ? "" : body), blen);
-    ev_send(&ctx->task->loader->netev, ctx->sk.fd, ctx->sk.skid, bw.data, bw.offset, 0);
-    ctx->responded = 1;
+    ev_send(&task->loader->netev, fd, skid, bw.data, bw.offset, 0);
+}
+// 拒绝 chunked 请求：回 411 后立即关闭连接
+void router_reject_chunked(task_ctx *task, SOCKET fd, uint64_t skid) {
+    _router_send_simple(task, fd, skid, 411, "chunked request not supported\n");
+    ev_close(&task->loader->netev, fd, skid, 0);
 }
 // 派发流程: 解方法 → URL parse → 线性扫表 → 拼 chain → 推进 → 兜底 500
 void router_dispatch(router_ctx *r, task_ctx *task,
@@ -662,13 +671,8 @@ void router_dispatch(router_ctx *r, task_ctx *task,
     }
     router_method m = _router_method_str_to_mask(st[0].data, st[0].lens);
     if (0 == m) {
-        // 方法不在我们已知列表 → 405; 因为 ctx 尚未完整初始化, 用临时 ctx 仅承载发响应必需字段
-        router_req tmpctx = { 0 };
-        tmpctx.task = task;
-        tmpctx.sk.fd = fd;
-        tmpctx.sk.skid = skid;
-        tmpctx.pack = pack;
-        _router_send_simple(&tmpctx, 405, "Method Not Allowed\n");
+        // 方法不在我们已知列表 → 405
+        _router_send_simple(task, fd, skid, 405, "Method Not Allowed\n");
         return;
     }
     // 解析 URL: path 拆成 segs(已 %XX 解码、'+' 保持字面)供段匹配, query 落 ctx->url_storage 供 router_req_query 取
@@ -680,12 +684,12 @@ void router_dispatch(router_ctx *r, task_ctx *task,
     ctx.method = m;
     if (ERR_OK != url_parse(&ctx.url_storage, st[1].data, st[1].lens, '/', 1)) {
         // 段数超 URL_MAX_PATH_DEPTH 或 URI 过长, 无法解析
-        _router_send_simple(&ctx, 400, "Bad Request\n");
+        _router_send_simple(task, fd, skid, 400, "Bad Request\n");
         return;
     }
     int32_t idx = _router_find(r, m, &ctx);
     if (idx < 0) {
-        _router_send_simple(&ctx, 404, "Not Found\n");
+        _router_send_simple(task, fd, skid, 404, "Not Found\n");
         return;
     }
     router_entry *matched = &r->routes[idx];
@@ -695,7 +699,7 @@ void router_dispatch(router_ctx *r, task_ctx *task,
         // chain 数组容量固定 (ROUTER_MAX_CHAIN), 超额视为配置错误直接 500
         LOG_WARN("router: chain exceeds %d (global=%d, route=%d), rejected.",
                  ROUTER_MAX_CHAIN, r->global_mw_n, matched->mws_n);
-        _router_send_simple(&ctx, 500, "Chain too long\n");
+        _router_send_simple(task, fd, skid, 500, "Chain too long\n");
         return;
     }
     int32_t k = 0;
@@ -713,6 +717,6 @@ void router_dispatch(router_ctx *r, task_ctx *task,
     // 中间件主动 return 不调 router_next 是合法截断; 但都没写响应 (handler 漏发 + 中间件
     // 也没截断) 时, 客户端会卡死, 这里兜底 500 让连接尽快关闭
     if (!ctx.responded) {
-        _router_send_simple(&ctx, 500, "Internal Server Error\n");
+        _router_send_simple(task, fd, skid, 500, "Internal Server Error\n");
     }
 }

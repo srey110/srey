@@ -25,6 +25,14 @@ static void *_iocp_exfunc(SOCKET fd, GUID *guid) {
     ASSERTAB(rtn != SOCKET_ERROR, ERRORSTR(ERRNO));
     return func;
 }
+static bool _iocp_disconnect_iter(const void *item, void *udata) {
+    (void)udata;
+    _iocp_disconnect(*((sock_ctx **)item), 1);
+    return true;
+}
+void _iocp_disconnect_all(watcher_ctx *watcher) {
+    hashmap_scan(watcher->element, _iocp_disconnect_iter, NULL);
+}
 // 初始化命令回调函数表，_iocp_on_cmd 批量处理cmd，为了快速消费掉cmd，里面不应有耗时操作。
 // 如 在_ev_send里面直接发送数据
 static void _iocp_init_callback(void) {
@@ -109,25 +117,28 @@ timer_ctx *_evpub_watcher_timer(watcher_ctx *watcher) {
 // 事件循环主函数（Vista+，使用GetQueuedCompletionStatusEx批量获取事件）
 static void _iocp_loop_event(void *arg) {
     watcher_ctx *watcher = (watcher_ctx *)arg;
-    int32_t err;
+    int32_t err, stop;
     ULONG i;
     ULONG count;
     ULONG nevent = INIT_EVENTS_CNT;
     sock_ctx *sock;
     uint32_t shrink_cnt = 0;
     uint32_t next_to = EVENT_WAIT_TIMEOUT;
+    BOOL ok = FALSE;
     LPOVERLAPPED overlap;
     LPOVERLAPPED_ENTRY tmp;
     LPOVERLAPPED_ENTRY overlappeds;
     MALLOC(overlappeds, sizeof(OVERLAPPED_ENTRY) * nevent);
     uint64_t shrink_start = timer_cur_ms(&watcher->timer);
-    while (0 == ATOMIC_GET(&watcher->stop)) {
-        if (GetQueuedCompletionStatusEx(watcher->iocp,
+    while (0 == (stop = (int32_t)ATOMIC_GET(&watcher->stop))
+           || (stop && ok)) {//退出前抽干事件
+        ok = GetQueuedCompletionStatusEx(watcher->iocp,
                                         overlappeds,
                                         nevent,
                                         &count,
-                                        next_to,
-                                        FALSE)) {
+                                        1 == stop ? 0 : next_to,
+                                        FALSE);
+        if (ok) {
             for (i = 0; i < count; i++) {
                 overlap = overlappeds[i].lpOverlapped;
                 if (NULL == overlap) {
@@ -136,14 +147,19 @@ static void _iocp_loop_event(void *arg) {
                 sock = UPCAST(overlap, sock_ctx, overlapped);
                 sock->ev_cb(watcher, sock, overlappeds[i].dwNumberOfBytesTransferred);
             }
-            if (0 == ATOMIC_GET(&watcher->stop)
-                && count == nevent) {
-                MALLOC(tmp, sizeof(OVERLAPPED_ENTRY) * nevent * 2);
-                FREE(overlappeds);
-                overlappeds = tmp;
-                nevent *= 2;
+            if (0 == ATOMIC_GET(&watcher->stop)) {
+                if (count == nevent) {
+                    MALLOC(tmp, sizeof(OVERLAPPED_ENTRY) * nevent * 2);
+                    FREE(overlappeds);
+                    overlappeds = tmp;
+                    nevent *= 2;
+                }
             }
-        } else if (WAIT_TIMEOUT != (err = ERRNO)) {
+        } else if (WAIT_TIMEOUT == (err = ERRNO)) {
+            if (0 == ATOMIC_GET(&watcher->stop)) {//防止退出时第一次while判断错误
+                ok = TRUE;
+            }
+        } else {
             LOG_ERROR("%s", ERRORSTR(err));
         }
         next_to = _iocp_loop_check(watcher, &shrink_cnt, &shrink_start);
@@ -154,7 +170,7 @@ static void _iocp_loop_event(void *arg) {
 // AcceptEx专用线程事件循环（Vista+，批量处理accept完成事件）
 static void _iocp_loop_acpex(void *arg) {
     acceptex_ctx *acpex = (acceptex_ctx *)arg;
-    int32_t err;
+    int32_t err, stop;
     ULONG i;
     ULONG count;
     ULONG nevent = INIT_EVENTS_CNT;
@@ -164,13 +180,13 @@ static void _iocp_loop_acpex(void *arg) {
     LPOVERLAPPED_ENTRY tmp;
     LPOVERLAPPED_ENTRY overlappeds;
     MALLOC(overlappeds, sizeof(OVERLAPPED_ENTRY) * nevent);
-    while (0 == ATOMIC_GET(&acpex->stop)
-           || (1 == ATOMIC_GET(&acpex->stop) && ok)) {//退出前抽干事件，防止lsn泄漏
+    while (0 == (stop = (int32_t)ATOMIC_GET(&acpex->stop))
+           || (stop && ok)) {//退出前抽干事件，防止lsn泄漏
         ok = GetQueuedCompletionStatusEx(acpex->iocp,
                                          overlappeds,
                                          nevent,
                                          &count,
-                                         1 == ATOMIC_GET(&acpex->stop) ? 0 : EVENT_WAIT_TIMEOUT,
+                                         1 == stop ? 0 : EVENT_WAIT_TIMEOUT,
                                          FALSE);
         if (ok) {
             for (i = 0; i < count; i++) {
@@ -209,24 +225,36 @@ static void _iocp_loop_acpex(void *arg) {
 static void _iocp_loop_event(void *arg) {
     watcher_ctx *watcher = (watcher_ctx *)arg;
     DWORD bytes;
-    int32_t err;
+    int32_t err, stop;
+    BOOL ok = FALSE;
     ULONG_PTR key;
     sock_ctx *sock;
     OVERLAPPED *overlap;
     uint32_t shrink_cnt = 0;
     uint32_t next_to = EVENT_WAIT_TIMEOUT;
     uint64_t shrink_start = timer_cur_ms(&watcher->timer);
-    while (0 == ATOMIC_GET(&watcher->stop)) {
-        GetQueuedCompletionStatus(watcher->iocp,
-                                  &bytes,
-                                  &key,
-                                  &overlap,
-                                  next_to);
+    while (0 == (stop = (int32_t)ATOMIC_GET(&watcher->stop))
+           || (stop && ok)) {//退出前抽干事件
+        overlap = NULL;
+        ok = GetQueuedCompletionStatus(watcher->iocp,
+                                       &bytes,
+                                       &key,
+                                       &overlap,
+                                       1 == stop ? 0 : next_to);
         if (NULL != overlap) {
             sock = UPCAST(overlap, sock_ctx, overlapped);
             sock->ev_cb(watcher, sock, bytes);
-        } else if (WAIT_TIMEOUT != (err = ERRNO)) {
-            LOG_ERROR("%s", ERRORSTR(err));
+            if (1 == ATOMIC_GET(&watcher->stop)) {//cancelled 完成事件会返回 ok=FALSE,overlap!=NULL
+                ok = TRUE;
+            }
+        } else if (!ok) {
+            if (WAIT_TIMEOUT == (err = ERRNO)) {
+                if (0 == ATOMIC_GET(&watcher->stop)) {
+                    ok = TRUE;
+                }
+            } else {
+                LOG_ERROR("%s", ERRORSTR(err));
+            }
         }
         next_to = _iocp_loop_check(watcher, &shrink_cnt, &shrink_start);
     }
@@ -236,19 +264,19 @@ static void _iocp_loop_event(void *arg) {
 static void _iocp_loop_acpex(void *arg) {
     acceptex_ctx *acpex = (acceptex_ctx *)arg;
     DWORD bytes;
-    int32_t err;
+    int32_t err, stop;
     BOOL ok = FALSE;
     ULONG_PTR key;
     sock_ctx *sock;
     OVERLAPPED *overlap;
-    while (0 == ATOMIC_GET(&acpex->stop)
-           || (1 == ATOMIC_GET(&acpex->stop) && ok)) {//退出前抽干事件，防止lsn泄漏
+    while (0 == (stop = (int32_t)ATOMIC_GET(&acpex->stop))
+           || (stop && ok)) {//退出前抽干事件，防止lsn泄漏
         overlap = NULL;
         ok = GetQueuedCompletionStatus(acpex->iocp,
                                        &bytes,
                                        &key,
                                        &overlap,
-                                       1 == ATOMIC_GET(&acpex->stop) ? 0 : EVENT_WAIT_TIMEOUT);
+                                       1 == stop ? 0 : EVENT_WAIT_TIMEOUT);
         if (NULL != overlap) {
             sock = UPCAST(overlap, sock_ctx, overlapped);
             sock->ev_cb(acpex, sock, bytes);

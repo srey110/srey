@@ -181,7 +181,8 @@ static void _loader_task_run(loader_ctx *loader, worker_ctx *worker,
 #if ENABLE_DISPATCH_STAT
     uint64_t t0;
 #endif
-    ATOMIC64_SET(&version->handle, task->handle);
+    // version 是每 worker 独占的单写者字段, monitor 每 5s 才读一次, 用 RELAXED 换掉不必要的 seq_cst 屏障
+    ATOMIC64_SET_RELAXED(&version->handle, task->handle);
     // task->global CAS 保证同 task 同一时刻仅一个 worker 调度，qumsg 是单消费者，走 pop_sc_batch
     while (processed < n) {
         want = n - processed;
@@ -196,8 +197,8 @@ static void _loader_task_run(loader_ctx *loader, worker_ctx *worker,
             msg = msgbatch[k];
             runarg->msg = *msg;
             pool_push(&loader->msg_pool, msg, 0);
-            ATOMIC_ADD(&version->ver, 1);
-            ATOMIC_SET(&version->msgtype, runarg->msg.mtype);
+            ATOMIC_ADD_RELAXED(&version->ver, 1);
+            ATOMIC_SET_RELAXED(&version->msgtype, runarg->msg.mtype);
 #if ENABLE_DISPATCH_STAT
             t0 = timer_thread_cpu_ns();
             task->_task_dispatch(runarg);
@@ -210,7 +211,7 @@ static void _loader_task_run(loader_ctx *loader, worker_ctx *worker,
         processed += got;
     }
     // worker 退出 dispatch 进入空闲，清 msgtype 让 monitor 区分"卡死"与"空闲"
-    ATOMIC_SET(&version->msgtype, MSG_TYPE_NONE);
+    ATOMIC_SET_RELAXED(&version->msgtype, MSG_TYPE_NONE);
     // 无锁重调度：先将 global CAS 1→0（取消调度），再检查队列是否仍有消息。
     // 若有：尝试 CAS 0→1 重新调度；若 CAS 失败说明某生产者已抢先调度。
     // 两步均为 seq_cst 原子操作，保证不丢消息。

@@ -3,7 +3,6 @@
 #include "lbind/lbytecache.h"
 #endif
 
-#define MSG_GC_MT "_msg_gc_mt" // 消息 table 的 __gc 元表在 registry 中的缓存 key
 // 向 Lua table 中写入整数字段（setfield 比 push+settable 省一次 lock 配对）
 #define LUA_TB_NUMBER(key, val)\
     lua_pushinteger(lua, val);\
@@ -32,6 +31,7 @@
 // Lua task 上下文：保存 Lua 虚拟机、消息分发函数引用、计时器、内存统计及中断信号
 typedef struct ltask_ctx {
     int32_t    ref;       // message_dispatch 函数在 Lua 注册表中的引用 id
+    int32_t    msg_gc_mtref; // 消息 table 的 __gc 元表在注册表中的整数引用；0=尚未创建，luaL_ref 恒不返回 0
     atomic_t   trap;      // 中断信号：0=正常 1=待 hook 触发；其他线程置位后 hook 抛错
     size_t     mem;       // 当前 Lua 累计内存（字节，单 worker 串行操作，无需 atomic）
     task_ctx  *task;      // 回指 task_ctx，供 allocator/trap 日志取 name
@@ -300,14 +300,18 @@ static int32_t _msg_clean(lua_State *lua) {
     return 0;
 }
 // 将 C 层 message_ctx 打包为 Lua table，按 mtype 类型填充对应字段
-static void _ltask_pack_msg(lua_State *lua, message_ctx *msg) {
+static void _ltask_pack_msg(lua_State *lua, ltask_ctx *ltask, message_ctx *msg) {
     lua_createtable(lua, 0, 11);
     if (ERR_OK == _message_should_clean(msg)) {
-        // 需要手动释放内存的消息挂 __gc 元方法；元表缓存于 registry，首次创建后各消息复用
-        if (luaL_newmetatable(lua, MSG_GC_MT)) {
+        // 需要手动释放内存的消息挂 __gc 元方法；元表整数引用缓存在 ltask_ctx，首次创建后
+        // 各消息按整数下标直取，避免 luaL_newmetatable 内部等价的 registry 字符串查找
+        if (0 == ltask->msg_gc_mtref) {
+            lua_newtable(lua);
             lua_pushcfunction(lua, _msg_clean);
             lua_setfield(lua, -2, "__gc");
+            ltask->msg_gc_mtref = luaL_ref(lua, LUA_REGISTRYINDEX);
         }
+        lua_rawgeti(lua, LUA_REGISTRYINDEX, ltask->msg_gc_mtref);
         lua_setmetatable(lua, -2);
     }
     LUA_TB_NUMBER("mtype", msg->mtype);
@@ -338,6 +342,7 @@ static void _ltask_pack_msg(lua_State *lua, message_ctx *msg) {
         LUA_TB_NETPUB(msg);
         LUA_TB_NUMBER("client", msg->client);
         LUA_TB_NUMBER("sess", msg->sess);
+        LUA_TB_NUMBER("erro", msg->erro);
         break;
     case MSG_TYPE_CONNECT:
         LUA_TB_NETPUB(msg);
@@ -396,7 +401,7 @@ static void _ltask_pack_msg(lua_State *lua, message_ctx *msg) {
 static void _ltask_run(task_dispatch_arg *arg) {
     ltask_ctx *ltask = arg->task->arg;
     lua_rawgeti(ltask->lua, LUA_REGISTRYINDEX, ltask->ref);
-    _ltask_pack_msg(ltask->lua, &arg->msg);
+    _ltask_pack_msg(ltask->lua, ltask, &arg->msg);
     if (LUA_OK != lua_pcall(ltask->lua, 1, 0, 0)) {
         LOG_ERROR("%s", lua_tostring(ltask->lua, -1));
         lua_pop(ltask->lua, 1);

@@ -54,7 +54,7 @@ int32_t _http_check_keyval(http_header_ctx *head,
             return ERR_OK;
         }
         if (p < end) {
-            p++;   // 跳过 ','
+            p++;// 跳过 ','
         }
     }
     return ERR_FAILED;
