@@ -34,6 +34,7 @@
 #include "task_pgsql.h"
 #include "task_redis.h"
 #include "task_mongo.h"
+#include "task_dbrefcnt.h"
 #include "task_coro_extra.h"
 #include "task_fork.h"
 #include "task_serial.h"
@@ -158,8 +159,10 @@ int main(int argc, char *argv[]) {
     SNPRINTF(pandan, sizeof(pandan), "%s%s%s", local, PATH_SEPARATORSTR, "panda.png");
     void *evssl_server = NULL;
     void *evssl_null = NULL;
+    void *evssl_hbcli = NULL;
     const char *ssl_server = "";
     const char *ssl_clientnull = "";
+    const char *ssl_harbor = "";
 #if WITH_SSL
     char ca[PATH_LENS];
     char svcrt[PATH_LENS];
@@ -177,6 +180,18 @@ int main(int argc, char *argv[]) {
     evssl_null = evssl_new(NULL, NULL, NULL, SSL_FILETYPE_PEM);
     ssl_clientnull = "clientnull";
     evssl_register(ssl_clientnull, evssl_null);
+    char clcrt[PATH_LENS];
+    char clkey[PATH_LENS];
+    SNPRINTF(clcrt, sizeof(clcrt), "%s%s%s%s%s", local, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, "client.crt");
+    SNPRINTF(clkey, sizeof(clkey), "%s%s%s%s%s", local, PATH_SEPARATORSTR, "keys", PATH_SEPARATORSTR, "client.key");
+    // harbor mTLS:server 端 PEER|FAIL 强制对端出证书,client 端带 client 证书验 server
+    void *evssl_hbsrv = evssl_new(ca, svcrt, svkey, SSL_FILETYPE_PEM);
+    evssl_verify(evssl_hbsrv, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, NULL);
+    ssl_harbor = "hbserver";
+    evssl_register(ssl_harbor, evssl_hbsrv);
+    evssl_hbcli = evssl_new(ca, clcrt, clkey, SSL_FILETYPE_PEM);
+    evssl_verify(evssl_hbcli, SSL_VERIFY_PEER, NULL);
+    evssl_register("hbclient", evssl_hbcli);
 #endif
 
     name_val_ctx testlist[] = {
@@ -189,6 +204,7 @@ int main(int argc, char *argv[]) {
         {"pgsql_test", 0},
         {"redis_test", 0},
         {"mongo_test", 0},
+        {"db_refcount", 0},
         {"timeout_test1", 0},
         {"timeout_test2", 0},
         {"timeout_test3", 0},
@@ -253,9 +269,7 @@ int main(int argc, char *argv[]) {
     task_mqtt_client_start(g_loader, "mqtt_test4", MQTT_50, "127.0.0.1", 1883,
         0, _get_name_val(testlist, "mqtt_test4"));
     //habor
-    char hbkey[129];
-    randstr(hbkey, 128);
-    int32_t rtn = harbor_start(g_loader, "harbor", ssl_server, "0.0.0.0", (uint16_t)*(_get_name_val(portlist, "harbor")), hbkey);
+    int32_t rtn = harbor_start(g_loader, "harbor", ssl_harbor, "0.0.0.0", (uint16_t)*(_get_name_val(portlist, "harbor")));
     if (ERR_OK != rtn) {
         LOG_WARN("harbor start error.");
     }
@@ -285,13 +299,15 @@ int main(int argc, char *argv[]) {
          NULL, _get_name_val(testlist, "redis_test"));
     task_mongo_start(g_loader, "mongo_test", "127.0.0.1", 27017,
          "admin", "12345678", "test", "admin", _get_name_val(testlist, "mongo_test"));
+    //DB 绑定引用计数配对回归（连非法地址触发 ev_connect 同步失败，验证 acquire/udfree 配对不误 free）
+    task_dbrefcnt_start(g_loader, "db_refcount", _get_name_val(testlist, "db_refcount"));
     //模拟多路请求
     task_timeout_start(g_loader, "timeout_test1", rpcname, portlist,
-         evssl_null, 1, hbkey, 0, _get_name_val(testlist, "timeout_test1"));
+         evssl_null, evssl_hbcli, 1, 0, _get_name_val(testlist, "timeout_test1"));
     task_timeout_start(g_loader, "timeout_test2", rpcname, portlist,
-         evssl_null, 0, hbkey, 0, _get_name_val(testlist, "timeout_test2"));
+         evssl_null, evssl_hbcli, 0, 0, _get_name_val(testlist, "timeout_test2"));
     task_timeout_start(g_loader, "timeout_test3", rpcname, portlist,
-         evssl_null, 0, hbkey, 0, _get_name_val(testlist, "timeout_test3"));
+         evssl_null, evssl_hbcli, 0, 0, _get_name_val(testlist, "timeout_test3"));
     //协程 API 边界/失败路径补充
     task_coro_extra_start(g_loader, "coro_extra",
         (uint16_t)*(_get_name_val(portlist, "http_sv")), rpcname,

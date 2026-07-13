@@ -159,8 +159,12 @@ void _kcp_unpack(SOCKET fd, uint64_t skid,
         LOG_WARN("kcp get conv %u error.", conv);
         return;
     }
-    (void)addr;
-    //地址验证，暂时未做
+    // 源地址校验:防 off-path 猜中 conv 后伪造源地址注入;仅严格绑定建会话时的对端地址(kcp_start 指定),
+    // 未处理地址正常变化(NAT 重绑定/客户端漫游),如需地址迁移须另行设计
+    if (ERR_OK != netaddr_compare(addr, &kel->addr)) {
+        LOG_WARN("kcp conv %u source addr mismatch, drop.", conv);
+        return;
+    }
     ikcp_input(kel->ikcp, buf, (long)size);
     int32_t peek = ikcp_peeksize(kel->ikcp);
     if (peek <= 0) {

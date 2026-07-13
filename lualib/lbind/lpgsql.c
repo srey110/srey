@@ -867,13 +867,18 @@ static int32_t _lpgsql_new(lua_State *lua) {
     const char *user = luaL_checkstring(lua, 4);
     const char *password = luaL_checkstring(lua, 5);
     const char *database = luaL_checkstring(lua, 6);
-    pgsql_ctx *pg = lua_newuserdata(lua, sizeof(pgsql_ctx));
+    pgsql_ctx *pg;
+    MALLOC(pg, sizeof(pgsql_ctx));
     if (ERR_OK != pgsql_init(pg, ip, port, evssl, user, password, database)) {
-        lua_pop(lua, 1);
+        FREE(pg);
         lua_pushnil(lua);
-    } else {
-        ASSOC_MTABLE(lua, MT_PGSQL);
+        return 1;
     }
+    ATOMIC_SET(&pg->ref, 1);// Lua 持有者份额
+    // userdata 只持 ctx 指针；ctx 独立堆分配脱离 Lua GC，避免 __gc 后网络线程经 ud->context 悬空访问(跨线程 UAF)
+    pgsql_ctx **ud = lua_newuserdata(lua, sizeof(pgsql_ctx *));
+    *ud = pg;
+    ASSOC_MTABLE(lua, MT_PGSQL);
     return 1;
 }
 /// <summary>
@@ -882,14 +887,22 @@ static int32_t _lpgsql_new(lua_State *lua) {
 /// <param name="self" type="userdata">pgsql 对象</param>
 /// <returns>无</returns>
 static int32_t _lpgsql_free(lua_State *lua) {
-    pgsql_ctx *pg = luaL_checkudata(lua, 1, MT_PGSQL);
+    pgsql_ctx **ud = luaL_checkudata(lua, 1, MT_PGSQL);
+    pgsql_ctx *pg = *ud;
+    if (NULL == pg) {
+        return 0;
+    }
     if (NULL != pg->task && INVALID_SOCK != pg->sk.fd) {
         size_t size;
         void *pack = pgsql_pack_terminate(&size);
-        (void)ev_ud_context(&pg->task->loader->netev, pg->sk.fd, pg->sk.skid, NULL);
         ev_send(&pg->task->loader->netev, pg->sk.fd, pg->sk.skid, pack, size, 0);
+        // 主动关连接：触发该 socket 的 udfree 释放事件侧份额，否则弃用的活连接块滞留至对端关
+        ev_close(&pg->task->loader->netev, pg->sk.fd, pg->sk.skid, 0);
     }
+    *ud = NULL;
     secure_zero(pg->password, sizeof(pg->password));
+    // pack/scram 由网络线程 udfree 释放，__gc 不碰(防跨线程 UAF)
+    PROT_REF_RELEASE(pg);
     return 0;
 }
 /// <summary>
@@ -898,9 +911,9 @@ static int32_t _lpgsql_free(lua_State *lua) {
 /// <param name="self" type="userdata">pgsql 对象</param>
 /// <returns type="boolean">发起成功 true，失败 false</returns>
 static int32_t _lpgsql_try_connect(lua_State *lua) {
-    pgsql_ctx *pg = luaL_checkudata(lua, 1, MT_PGSQL);
+    LPUB_UD_ARG(lua, pgsql_ctx, MT_PGSQL, ud, "pgsql freed");
     LPUB_CUR_TASK(lua, task);
-    if (ERR_OK == pgsql_try_connect(task, pg, 1)) {
+    if (ERR_OK == pgsql_try_connect(task, *ud, 1)) {
         lua_pushboolean(lua, 1);
     } else {
         lua_pushboolean(lua, 0);
@@ -915,10 +928,10 @@ static int32_t _lpgsql_try_connect(lua_State *lua) {
 /// <param name="password" type="string">新密码</param>
 /// <returns>无</returns>
 static int32_t _lpgsql_set_userpwd(lua_State *lua) {
-    pgsql_ctx *pg = luaL_checkudata(lua, 1, MT_PGSQL);
+    LPUB_UD_ARG(lua, pgsql_ctx, MT_PGSQL, ud, "pgsql freed");
     const char *user = luaL_checkstring(lua, 2);
     const char *password = luaL_checkstring(lua, 3);
-    pgsql_set_userpwd(pg, user, password);
+    pgsql_set_userpwd(*ud, user, password);
     return 0;
 }
 /// <summary>
@@ -928,9 +941,9 @@ static int32_t _lpgsql_set_userpwd(lua_State *lua) {
 /// <param name="database" type="string">新数据库名</param>
 /// <returns>无</returns>
 static int32_t _lpgsql_set_db(lua_State *lua) {
-    pgsql_ctx *pg = luaL_checkudata(lua, 1, MT_PGSQL);
+    LPUB_UD_ARG(lua, pgsql_ctx, MT_PGSQL, ud, "pgsql freed");
     const char *database = luaL_checkstring(lua, 2);
-    pgsql_set_db(pg, database);
+    pgsql_set_db(*ud, database);
     return 0;
 }
 /// <summary>
@@ -939,8 +952,8 @@ static int32_t _lpgsql_set_db(lua_State *lua) {
 /// <param name="self" type="userdata">pgsql 对象</param>
 /// <returns type="string">数据库名</returns>
 static int32_t _lpgsql_get_db(lua_State *lua) {
-    pgsql_ctx *pg = luaL_checkudata(lua, 1, MT_PGSQL);
-    lua_pushstring(lua, pgsql_get_db(pg));
+    LPUB_UD_ARG(lua, pgsql_ctx, MT_PGSQL, ud, "pgsql freed");
+    lua_pushstring(lua, pgsql_get_db(*ud));
     return 1;
 }
 /// <summary>
@@ -950,7 +963,8 @@ static int32_t _lpgsql_get_db(lua_State *lua) {
 /// <returns type="integer">socket fd</returns>
 /// <returns type="integer">skid</returns>
 static int32_t _lpgsql_sock_id(lua_State *lua) {
-    pgsql_ctx *pg = luaL_checkudata(lua, 1, MT_PGSQL);
+    LPUB_UD_ARG(lua, pgsql_ctx, MT_PGSQL, ud, "pgsql freed");
+    pgsql_ctx *pg = *ud;
     lua_pushinteger(lua, pg->sk.fd);
     lua_pushinteger(lua, pg->sk.skid);
     return 2;
@@ -961,7 +975,8 @@ static int32_t _lpgsql_sock_id(lua_State *lua) {
 /// <param name="self" type="userdata">pgsql 对象</param>
 /// <returns type="string">16 字节 CancelRequest 二进制串</returns>
 static int32_t _lpgsql_pack_cancel(lua_State *lua) {
-    pgsql_ctx *pg = luaL_checkudata(lua, 1, MT_PGSQL);
+    LPUB_UD_ARG(lua, pgsql_ctx, MT_PGSQL, ud, "pgsql freed");
+    pgsql_ctx *pg = *ud;
     char buf[16];
     pgsql_pack_cancel(buf, pg->pid, pg->key);
     lua_pushlstring(lua, buf, 16);
@@ -973,7 +988,8 @@ static int32_t _lpgsql_pack_cancel(lua_State *lua) {
 /// <param name="self" type="userdata">pgsql 对象</param>
 /// <returns type="integer">字符码（'I'=空闲，'T'=事务中，'E'=事务失败）</returns>
 static int32_t _lpgsql_readyforquery(lua_State *lua) {
-    pgsql_ctx *pg = luaL_checkudata(lua, 1, MT_PGSQL);
+    LPUB_UD_ARG(lua, pgsql_ctx, MT_PGSQL, ud, "pgsql freed");
+    pgsql_ctx *pg = *ud;
     lua_pushinteger(lua, pg->readyforquery);
     return 1;
 }

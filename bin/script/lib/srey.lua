@@ -1110,7 +1110,7 @@ end
 ---@param fd integer socket fd
 ---@param skid integer 连接 skid
 ---@return boolean ok 接收成功 true
----@return boolean? fin 当前分片是否为最后一片（仅 ok=true 时）
+---@return boolean? fin 是否为最后一片或非分片完整消息（仅 ok=true 时）
 ---@return lightuserdata? data 分片数据指针；仅在本协程下次 yield（再调任意挂起 API）前有效，下次 resume 时框架自动释放，需保留请自行拷贝
 ---@return integer? size 分片字节数
 function srey.syn_slice(fd, skid)
@@ -1121,7 +1121,7 @@ function srey.syn_slice(fd, skid)
     if not msg then
         return false
     end
-    return true, SLICE_TYPE.END == msg.slice, msg.data, msg.size
+    return true, (SLICE_TYPE.END == msg.slice or 0 == msg.slice), msg.data, msg.size
 end
 
 ---通过 harbor 协议向目标 task 发起单向 call（HTTP 封装，不等待返回数据）
@@ -1129,12 +1129,11 @@ end
 ---@param skid integer 连接 skid
 ---@param dst TASK_NAME 目标 task name
 ---@param reqtype REQUEST_TYPE 业务请求类型
----@param key string 路由 key（一致性哈希定位节点）
 ---@param data string|lightuserdata|nil 消息内容
 ---@param size integer? data 为 lightuserdata 时必填
 ---@return boolean ok 远端返回 200 OK 时 true
-function srey.net_call(fd, skid, dst, reqtype, key, data, size)
-    local reqdata, reqsize = harbor.pack(dst, 1, reqtype, key, data, size)
+function srey.net_call(fd, skid, dst, reqtype, data, size)
+    local reqdata, reqsize = harbor.pack(dst, 1, reqtype, data, size)
     local respdata, _ = srey.syn_send(fd, skid, reqdata, reqsize, 0)
     if not respdata then
         WARN("syn_send error, skid %s.", tostring(skid))
@@ -1153,13 +1152,12 @@ end
 ---@param skid integer 连接 skid
 ---@param dst TASK_NAME 目标 task name
 ---@param reqtype REQUEST_TYPE 业务请求类型
----@param key string 路由 key
 ---@param data string|lightuserdata|nil 消息内容
 ---@param size integer? data 为 lightuserdata 时必填
 ---@return lightuserdata|nil rdata 响应数据指针；仅在本协程下次 yield（再调任意挂起 API）前有效，下次 resume 时框架自动释放，需保留请自行拷贝；失败或非 200 返回 nil
 ---@return integer? rsize 响应数据长度
-function srey.net_request(fd, skid, dst, reqtype, key, data, size)
-    local reqdata, reqsize = harbor.pack(dst, 0, reqtype, key, data, size)
+function srey.net_request(fd, skid, dst, reqtype, data, size)
+    local reqdata, reqsize = harbor.pack(dst, 0, reqtype, data, size)
     local respdata, _ = srey.syn_send(fd, skid, reqdata, reqsize, 0)
     if not respdata then
         WARN("syn_send error, skid %s.", tostring(skid))

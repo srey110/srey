@@ -29,7 +29,6 @@ typedef struct config_ctx {
         char ssl[EVSSL_NAME_LEN];       // SSL 名称（"" 表示不启用 SSL）
         char ip[IP_LENS];               // 监听 IP
         uint16_t port;                  // 监听端口
-        char key[128];                  // 通信密钥
     }harbor;
     struct {                            // 全局 KV（对应 config.json "datacenter"）
         char name[TASK_NAME_LEN];       // 任务名（"" 表示不启动）

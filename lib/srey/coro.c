@@ -444,7 +444,7 @@ static void _coro_timeout_monitor(task_ctx *task, uint64_t sess) {
     }
     if (now - coctx->shrink_ms >= SHRINK_TIME) {
         coctx->shrink_ms = now;
-        pool_shrink(&coctx->copool, SHRINK_NKEEP(pool_size(&coctx->copool)), SHRINK_BUSY);
+        pool_shrink(&coctx->copool, shrink_nkeep(pool_size(&coctx->copool)), SHRINK_BUSY);
     }
     task_timeout(task, 0, 1 * 1000, _coro_timeout_monitor);
 }
@@ -659,7 +659,8 @@ void *coro_slice(task_ctx *task, SOCKET fd, uint64_t skid, size_t *size, int32_t
     if (NULL == msg) {
         return NULL;
     }
-    *end = (PROT_SLICE_END == msg->slice) ? 1 : 0;
+    // 非分片完整消息(slice==0)也视为末片,通用客户端 while(!end) 循环不会误判还有后续分片而挂到超时
+    *end = (PROT_SLICE_END == msg->slice || 0 == msg->slice) ? 1 : 0;
     SET_PTR(size, msg->size);
     return msg->data;
 }

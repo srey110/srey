@@ -13,7 +13,7 @@ typedef struct task_timeout_ctx {
     int32_t *_ok;
     name_val_ctx *_ports;
     void *_evssl;
-    char _haborkey[129];
+    void *_hbssl;
 }task_timeout_ctx;
 
 // 测试 coro_sleep 在指定时长下的唤醒精度，diff 超出容忍范围返回 ERR_FAILED
@@ -416,7 +416,7 @@ static int32_t _timeout_habor(task_ctx *task) {
     uint16_t port = (uint16_t)*_get_name_val(ctx->_ports, "harbor");
     SOCKET fd;
     uint64_t skid;
-    if (ERR_OK != coro_connect(task, PACK_HTTP, ctx->_evssl, "127.0.0.1", port, 0, NULL, &fd, &skid)) {
+    if (ERR_OK != coro_connect(task, PACK_HTTP, ctx->_hbssl, "127.0.0.1", port, 0, NULL, &fd, &skid)) {
         LOG_WARN("habor connect error.");
         return ERR_FAILED;
     }
@@ -424,7 +424,7 @@ static int32_t _timeout_habor(task_ctx *task) {
     char data[257];
     int32_t dlen = randrange(1, 256);
     randstr(data, (size_t)dlen);
-    void *pack = harbor_pack(ctx->_rpcname, 1, 2, ctx->_haborkey, data, dlen, &rsize);
+    void *pack = harbor_pack(ctx->_rpcname, 1, 2, data, dlen, &rsize);
     //call
     struct http_pack_ctx *rpack = coro_send(task, fd, skid, pack, rsize, NULL, 0);
     if (NULL == rpack) {
@@ -439,7 +439,7 @@ static int32_t _timeout_habor(task_ctx *task) {
     //request
     dlen = randrange(1, 256);
     randstr(data, (size_t)dlen);
-    pack = harbor_pack(ctx->_rpcname, 0, 101, ctx->_haborkey, data, dlen, &rsize);
+    pack = harbor_pack(ctx->_rpcname, 0, 101, data, dlen, &rsize);
     rpack = coro_send(task, fd, skid, pack, rsize, NULL, 0);
     if (NULL == rpack) {
         LOG_WARN("coro_send error.");
@@ -460,6 +460,28 @@ static int32_t _timeout_habor(task_ctx *task) {
 erro:
     ev_close(&task->loader->netev, fd, skid, 1);
     return ERR_FAILED;
+}
+// harbor mTLS 负面:无 client 证书(_evssl 无证书)连 hbserver 应被 FAIL_IF_NO_PEER_CERT 拒。
+// TLS1.3 下无证书 client 握手会先完成返回,server 验证失败后才异步发 certificate_required alert,
+// 故 connect 成功不代表通过,须再发请求断言拿不到正常响应
+static int32_t _timeout_habor_reject(task_ctx *task) {
+#if WITH_SSL
+    task_timeout_ctx *ctx = coro_get_arg(task);
+    uint16_t port = (uint16_t)*_get_name_val(ctx->_ports, "harbor");
+    SOCKET fd;
+    uint64_t skid;
+    if (ERR_OK != coro_connect(task, PACK_HTTP, ctx->_evssl, "127.0.0.1", port, 0, NULL, &fd, &skid)) {
+        return ERR_OK;// connect 阶段即被拒,符合预期
+    }
+    size_t rsize;
+    void *pack = harbor_pack(ctx->_rpcname, 1, 2, "x", 1, &rsize);
+    struct http_pack_ctx *rpack = coro_send(task, fd, skid, pack, rsize, NULL, 0);
+    ev_close(&task->loader->netev, fd, skid, 1);
+    return (NULL == rpack) ? ERR_OK : ERR_FAILED;// 无证书被拒,不该拿到响应
+#else
+    (void)task;
+    return ERR_OK;
+#endif
 }
 static void _timeout(task_ctx *task, uint64_t sess) {
     (void)sess;
@@ -518,6 +540,13 @@ static void _timeout(task_ctx *task, uint64_t sess) {
         ctx->_err = 1;
         LOG_WARN("habor test error.");
     }
+    if (task_isclosing(task)) {
+        return;
+    }
+    if (ERR_OK != _timeout_habor_reject(task)) {
+        ctx->_err = 1;
+        LOG_WARN("habor reject test error.");
+    }
     if (ctx->_err) {
         *ctx->_ok = 0;
     } else {
@@ -532,8 +561,8 @@ static void _closing(task_ctx *task) {
     (void)task;
 }
 void task_timeout_start(loader_ctx *loader, const char *name,
-    const char *rpcname, name_val_ctx *ports, void *evssl,
-    int32_t autoclose, const char *haborkey, int32_t pt, int32_t *ok) {
+    const char *rpcname, name_val_ctx *ports, void *evssl, void *hbssl,
+    int32_t autoclose, int32_t pt, int32_t *ok) {
     task_timeout_ctx *ctx;
     CALLOC(ctx, 1, sizeof(task_timeout_ctx));
     ctx->_rpcname = task_find_name(loader, rpcname);
@@ -541,7 +570,7 @@ void task_timeout_start(loader_ctx *loader, const char *name,
     ctx->_autoclose = autoclose;
     ctx->_ports = ports;
     ctx->_evssl = evssl;
+    ctx->_hbssl = hbssl;
     ctx->_ok = ok;
-    safe_fill_str(ctx->_haborkey, sizeof(ctx->_haborkey), haborkey);
     coro_task_register(loader, name, 0, _startup, _closing, _free, ctx);
 }

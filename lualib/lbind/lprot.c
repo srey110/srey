@@ -7,40 +7,35 @@
 /// 打包 harbor 跨节点消息
 /// </summary>
 /// <param name="task" type="integer">目标 task name</param>
-/// <param name="call" type="integer">调用类型：0=call（单向），1=request（双向）</param>
+/// <param name="call" type="integer">调用类型：非0=call（单向），0=request（双向）</param>
 /// <param name="reqtype" type="integer">业务请求类型</param>
-/// <param name="key" type="string">路由 key（用于一致性哈希定位节点）</param>
 /// <param name="data" type="string|lightuserdata|nil">消息内容；nil 表示无数据</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
 /// <returns type="lightuserdata">打包后的数据指针</returns>
 /// <returns type="integer">数据长度</returns>
 static int32_t _lprot_harbor_pack(lua_State *lua) {
     name_t task = (name_t)luaL_checkinteger(lua, 1);
-    int32_t call = (int32_t)luaL_checkinteger(lua, 2);// 0=call，1=request
+    int32_t call = (int32_t)luaL_checkinteger(lua, 2);// 非0=call，0=request
     subtype_t reqtype = (subtype_t)luaL_checkinteger(lua, 3);
-    const char *key = luaL_checkstring(lua, 4);// 路由 key
     void *data;
     size_t size;
-    switch (lua_type(lua, 5)) {
+    switch (lua_type(lua, 4)) {
     case LUA_TNIL:
     case LUA_TNONE:
         data = NULL;
         size = 0;
         break;
     case LUA_TSTRING:
-        data = (void *)luaL_checklstring(lua, 5, &size);
+        data = (void *)luaL_checklstring(lua, 4, &size);
         break;
     case LUA_TLIGHTUSERDATA:
-        data = lua_touserdata(lua, 5);
-        size = (size_t)luaL_checkinteger(lua, 6);
+        data = lua_touserdata(lua, 4);
+        size = (size_t)luaL_checkinteger(lua, 5);
         break;
     default:
-        return luaL_argerror(lua, 5, "nil, string or light userdata expected");
+        return luaL_argerror(lua, 4, "nil, string or light userdata expected");
     }
-    data = harbor_pack(task, call, reqtype, key, data, size, &size);
-    if (NULL == data) {
-        return luaL_error(lua, "harbor_pack: signature generation failed.");
-    }
+    data = harbor_pack(task, call, reqtype, data, size, &size);
     LPUB_RET_LUD(lua, data, size);
 }
 //srey.harbor
@@ -523,8 +518,10 @@ static int32_t _lprot_redis_value(lua_State *lua) {
         }
         break;
     case RESP_INTEGER:// 整数
-    case RESP_BIGNUM:// 大整数
         lua_pushinteger(lua, pk->ival);
+        break;
+    case RESP_BIGNUM:// 大整数(任意精度,以字符串返回)
+        lua_pushlstring(lua, pk->data, (size_t)pk->len);
         break;
     case RESP_NIL:// Null 值
         lua_pushnil(lua);
@@ -602,8 +599,13 @@ static int32_t _lprot_smtp_new(lua_State *lua) {
     }
     const char *user = luaL_checkstring(lua, 4);
     const char *psw = luaL_checkstring(lua, 5);
-    smtp_ctx *smtp = lua_newuserdata(lua, sizeof(smtp_ctx));
+    smtp_ctx *smtp;
+    MALLOC(smtp, sizeof(smtp_ctx));
     smtp_init(smtp, ip, port, evssl, user, psw);
+    ATOMIC_SET(&smtp->ref, 1);// Lua 持有者份额
+    // userdata 只持 ctx 指针；ctx 独立堆分配脱离 Lua GC，避免 __gc 后网络线程经 ud->context 悬空访问(跨线程 UAF)
+    smtp_ctx **ud = lua_newuserdata(lua, sizeof(smtp_ctx *));
+    *ud = smtp;
     ASSOC_MTABLE(lua, MT_SMTP);
     return 1;
 }
@@ -613,13 +615,20 @@ static int32_t _lprot_smtp_new(lua_State *lua) {
 /// <param name="self" type="userdata">SMTP 对象</param>
 /// <returns>无</returns>
 static int32_t _lprot_smtp_free(lua_State *lua) {
-    smtp_ctx *smtp = luaL_checkudata(lua, 1, MT_SMTP);
+    smtp_ctx **ud = luaL_checkudata(lua, 1, MT_SMTP);
+    smtp_ctx *smtp = *ud;
+    if (NULL == smtp) {
+        return 0;
+    }
     if (NULL != smtp->task && INVALID_SOCK != smtp->sk.fd) {
         char *cmd = smtp_pack_quit();
-        (void)ev_ud_context(&smtp->task->loader->netev, smtp->sk.fd, smtp->sk.skid, NULL);
         ev_send(&smtp->task->loader->netev, smtp->sk.fd, smtp->sk.skid, cmd, strlen(cmd), 0);
+        // 主动关连接：触发该 socket 的 udfree 释放事件侧份额，否则弃用的活连接块滞留至对端关
+        ev_close(&smtp->task->loader->netev, smtp->sk.fd, smtp->sk.skid, 0);
     }
+    *ud = NULL;
     secure_zero(smtp->psw, sizeof(smtp->psw));
+    PROT_REF_RELEASE(smtp);
     return 0;
 }
 /// <summary>
@@ -629,7 +638,8 @@ static int32_t _lprot_smtp_free(lua_State *lua) {
 /// <returns type="integer">socket fd</returns>
 /// <returns type="integer">skid</returns>
 static int32_t _lprot_smtp_sock_id(lua_State *lua) {
-    smtp_ctx *smtp = luaL_checkudata(lua, 1, MT_SMTP);
+    LPUB_UD_ARG(lua, smtp_ctx, MT_SMTP, ud, "smtp freed");
+    smtp_ctx *smtp = *ud;
     lua_pushinteger(lua, smtp->sk.fd);
     lua_pushinteger(lua, smtp->sk.skid);
     return 2;
@@ -640,9 +650,9 @@ static int32_t _lprot_smtp_sock_id(lua_State *lua) {
 /// <param name="self" type="userdata">SMTP 对象</param>
 /// <returns type="boolean">发起成功 true，失败 false</returns>
 static int32_t _lprot_smtp_try_connect(lua_State *lua) {
-    smtp_ctx *smtp = luaL_checkudata(lua, 1, MT_SMTP);
+    LPUB_UD_ARG(lua, smtp_ctx, MT_SMTP, ud, "smtp freed");
     LPUB_CUR_TASK(lua, task);
-    int32_t rtn = smtp_try_connect(task, smtp, 1);
+    int32_t rtn = smtp_try_connect(task, *ud, 1);
     if (ERR_OK == rtn) {
         lua_pushboolean(lua, 1);
     } else {
@@ -658,7 +668,7 @@ static int32_t _lprot_smtp_try_connect(lua_State *lua) {
 /// <param name="code" type="string">期望状态码（如 "220"、"250"）</param>
 /// <returns type="boolean">匹配 true，否则 false</returns>
 static int32_t _lprot_smtp_check_code(lua_State *lua) {
-    luaL_checkudata(lua, 1, MT_SMTP);
+    LPUB_UD_ARG(lua, smtp_ctx, MT_SMTP, ud, "smtp freed");
     LUACHECK_LUDATA(lua, 2);
     char *pack = (char *)lua_touserdata(lua, 2);
     const char *code = luaL_checkstring(lua, 3);
@@ -676,7 +686,7 @@ static int32_t _lprot_smtp_check_code(lua_State *lua) {
 /// <param name="pack" type="lightuserdata">SMTP 响应包指针</param>
 /// <returns type="boolean">2xx 返回 true，否则 false</returns>
 static int32_t _lprot_smtp_check_ok(lua_State *lua) {
-    luaL_checkudata(lua, 1, MT_SMTP);
+    LPUB_UD_ARG(lua, smtp_ctx, MT_SMTP, ud, "smtp freed");
     LUACHECK_LUDATA(lua, 2);
     char *pack = (char *)lua_touserdata(lua, 2);
     if (ERR_OK == smtp_check_ok(pack)) {
@@ -693,7 +703,7 @@ static int32_t _lprot_smtp_check_ok(lua_State *lua) {
 /// <returns type="lightuserdata">命令数据指针</returns>
 /// <returns type="integer">数据长度</returns>
 static int32_t _lprot_smtp_pack_reset(lua_State *lua) {
-    luaL_checkudata(lua, 1, MT_SMTP);
+    LPUB_UD_ARG(lua, smtp_ctx, MT_SMTP, ud, "smtp freed");
     char *cmd = smtp_pack_reset();
     LPUB_RET_LUD(lua, (void *)cmd, strlen(cmd));
 }
@@ -705,7 +715,7 @@ static int32_t _lprot_smtp_pack_reset(lua_State *lua) {
 /// <returns type="lightuserdata?">命令数据指针；地址含 CRLF 时返回 nil</returns>
 /// <returns type="integer">数据长度；地址含 CRLF 时为 0</returns>
 static int32_t _lprot_smtp_pack_from(lua_State *lua) {
-    luaL_checkudata(lua, 1, MT_SMTP);
+    LPUB_UD_ARG(lua, smtp_ctx, MT_SMTP, ud, "smtp freed");
     const char *from = luaL_checkstring(lua, 2);
     char *cmd = smtp_pack_from(from);
     if (NULL == cmd) {
@@ -723,7 +733,7 @@ static int32_t _lprot_smtp_pack_from(lua_State *lua) {
 /// <returns type="lightuserdata?">命令数据指针；地址含 CRLF 时返回 nil</returns>
 /// <returns type="integer">数据长度；地址含 CRLF 时为 0</returns>
 static int32_t _lprot_smtp_pack_rcpt(lua_State *lua) {
-    luaL_checkudata(lua, 1, MT_SMTP);
+    LPUB_UD_ARG(lua, smtp_ctx, MT_SMTP, ud, "smtp freed");
     const char *rcpt = luaL_checkstring(lua, 2);
     char *cmd = smtp_pack_rcpt(rcpt);
     if (NULL == cmd) {
@@ -740,7 +750,7 @@ static int32_t _lprot_smtp_pack_rcpt(lua_State *lua) {
 /// <returns type="lightuserdata">命令数据指针</returns>
 /// <returns type="integer">数据长度</returns>
 static int32_t _lprot_smtp_pack_data(lua_State *lua) {
-    luaL_checkudata(lua, 1, MT_SMTP);
+    LPUB_UD_ARG(lua, smtp_ctx, MT_SMTP, ud, "smtp freed");
     char *cmd = smtp_pack_data();
     LPUB_RET_LUD(lua, cmd, strlen(cmd));
 }
@@ -751,7 +761,7 @@ static int32_t _lprot_smtp_pack_data(lua_State *lua) {
 /// <returns type="lightuserdata">命令数据指针</returns>
 /// <returns type="integer">数据长度</returns>
 static int32_t _lprot_smtp_pack_quit(lua_State *lua) {
-    luaL_checkudata(lua, 1, MT_SMTP);
+    LPUB_UD_ARG(lua, smtp_ctx, MT_SMTP, ud, "smtp freed");
     char *cmd = smtp_pack_quit();
     LPUB_RET_LUD(lua, cmd, strlen(cmd));
 }
@@ -762,7 +772,7 @@ static int32_t _lprot_smtp_pack_quit(lua_State *lua) {
 /// <returns type="lightuserdata">命令数据指针</returns>
 /// <returns type="integer">数据长度</returns>
 static int32_t _lprot_smtp_pack_ping(lua_State *lua) {
-    luaL_checkudata(lua, 1, MT_SMTP);
+    LPUB_UD_ARG(lua, smtp_ctx, MT_SMTP, ud, "smtp freed");
     char *cmd = smtp_pack_ping();
     LPUB_RET_LUD(lua, cmd, strlen(cmd));
 }

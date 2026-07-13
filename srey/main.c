@@ -86,7 +86,6 @@ static void _parse_config(config_ctx *cnf) {
         _json_get_string(harbor, "ssl", cnf->harbor.ssl, sizeof(cnf->harbor.ssl));
         _json_get_string(harbor, "ip", cnf->harbor.ip, sizeof(cnf->harbor.ip));
         cnf->harbor.port = (uint16_t)_json_get_number(harbor, "port", cnf->harbor.port, UINT16_MAX);
-        _json_get_string(harbor, "key", cnf->harbor.key, sizeof(cnf->harbor.key));
     }
     cJSON *datacenter = cJSON_GetObjectItem(json, "datacenter");
     if (NULL != datacenter) {
@@ -183,7 +182,6 @@ static int32_t service_init(void) {
     _config_init(&config);
     _parse_config(&config);
     if (ERR_OK != serviceid(config.serviceid)) {
-        secure_zero(config.harbor.key, sizeof(config.harbor.key));
         PRINT("serviceid error.");
         return ERR_FAILED;
     }
@@ -197,11 +195,9 @@ static int32_t service_init(void) {
     lbc_init(loader_lckcache(g_loader));
 #endif
     if (ERR_OK != task_startup(g_loader, &config)) {
-        secure_zero(config.harbor.key, sizeof(config.harbor.key));
         service_exit();
         return ERR_FAILED;
     }
-    secure_zero(config.harbor.key, sizeof(config.harbor.key));
     return ERR_OK;
 }
 // 信号处理回调: 通过 sighandle data 拿到 hug_ctx, 转发到 hug_wakeup 唤醒主线程

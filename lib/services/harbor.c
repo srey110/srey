@@ -4,133 +4,16 @@
 #include "event/event.h"
 #include "utils/binary.h"
 #include "utils/utils.h"
-#include "utils/timer.h"
-#include "containers/hashmap.h"
-#include "crypt/hmac.h"
 
-#define HARBOR_SIGN_WINDOW_SEC  (5 * 60) // 请求时间戳容许的偏差窗口（秒）
-#define HARBOR_NONCE_BYTES      16 // nonce 原始字节数（128 bit 防碰撞）
-#define HARBOR_NONCE_HEX        (HARBOR_NONCE_BYTES * 2) // X-Nonce header 字符长度（hex 编码）
-
-// nonce 缓存项：以 hex 字符串形式存储，避免 hex 解码开销
-typedef struct nonce_entry_ctx {
-    char nonce[HARBOR_NONCE_HEX];
-}nonce_entry_ctx;
-// harbor 实例上下文（每 task 堆分配，存 task->arg，由 coro_get_arg 取；监听信息 + HMAC 签名上下文）
+// harbor 实例上下文（每 task 堆分配，存 task->arg，由 coro_get_arg 取；仅监听信息）
 typedef struct harbor_ctx {
     uint16_t port;          // 监听端口
     uint64_t lsnid;         // 监听ID（ev_unlisten使用）
-    uint64_t window_start;  // 单调时钟窗口起始（毫秒）
-    timer_ctx wtimer;       // 单调时钟（免疫 wall clock 回拨）
     struct evssl_ctx *ssl;  // SSL上下文（NULL表示不使用SSL）
     router_ctx *router;     // HTTP 路由器
-    // 双 hashmap 轮转防 nonce 重放：每 HARBOR_SIGN_WINDOW_SEC 切换，实际重放窗口最长 2×SEC
-    struct hashmap *nonce_cur;
-    struct hashmap *nonce_prev;
     char ip[IP_LENS];       // 监听IP
-    hmac_ctx hmac;          // HMAC签名上下文（用于验证请求合法性）
 }harbor_ctx;
 
-// nonce hashmap 哈希函数
-static uint64_t _harbor_nonce_hash(const void *item, uint64_t seed0, uint64_t seed1) {
-    const nonce_entry_ctx *e = item;
-    return hashmap_sip(e->nonce, HARBOR_NONCE_HEX, seed0, seed1);
-}
-// nonce hashmap 比较函数
-static int _harbor_nonce_compare(const void *a, const void *b, void *udata) {
-    (void)udata;
-    return memcmp(((const nonce_entry_ctx *)a)->nonce,
-                  ((const nonce_entry_ctx *)b)->nonce,
-                  HARBOR_NONCE_HEX);
-}
-// 时间恒定十六进制比较（大小写不敏感）；volatile 阻止编译器短路优化防时序侧信道
-static int32_t _harbor_ct_hexcmp(const char *a, const char *b, size_t n) {
-    volatile uint8_t diff = 0;
-    uint8_t ca, cb;
-    for (size_t i = 0; i < n; i++) {
-        ca = (uint8_t)a[i];
-        cb = (uint8_t)b[i];
-        if (ca >= 'a' && ca <= 'f') {
-            ca -= 0x20;
-        }
-        if (cb >= 'a' && cb <= 'f') {
-            cb -= 0x20;
-        }
-        diff |= ca ^ cb;
-    }
-    return 0 != diff;
-}
-// 验证请求签名：X-Timestamp 时间窗口 + X-Nonce 防重放 + Authorization HMAC-SHA256 签名
-static int32_t _harbor_check_sign(task_ctx *harbor, struct http_pack_ctx *pack, buf_ctx *url, char *reqdata, size_t reqlens) {
-    size_t tlens = 0;
-    harbor_ctx *ctx = (harbor_ctx *)coro_get_arg(harbor);
-    char *tbuf = http_header(pack, "X-Timestamp", &tlens);
-    if (EMPTYPTR(tbuf, tlens)) {
-        LOG_WARN("not find X-Timestamp.");
-        return ERR_FAILED;
-    }
-    size_t nlens = 0;
-    char *nonce_hex = http_header(pack, "X-Nonce", &nlens);
-    if (NULL == nonce_hex || HARBOR_NONCE_HEX != nlens) {
-        LOG_WARN("not find X-Nonce or invalid length.");
-        return ERR_FAILED;
-    }
-    size_t slens = 0;
-    char *sign = http_header(pack, "Authorization", &slens);
-    if (EMPTYPTR(sign, slens)) {
-        LOG_WARN("not find Authorization.");
-        return ERR_FAILED;
-    }
-    uint64_t tms = strtoull(tbuf, NULL, 10);
-    uint64_t tnow = nowsec();
-    uint64_t diff = tnow >= tms ? (tnow - tms) : (tms - tnow);
-    if (diff >= HARBOR_SIGN_WINDOW_SEC) {
-        LOG_WARN("timestamp error.");
-        return ERR_FAILED;
-    }
-    char hs[SHA256_BLOCK_SIZE];
-    char hexhs[HEX_ENSIZE(sizeof(hs))];
-    hmac_update(&ctx->hmac, url->data, url->lens);
-    if (0 != reqlens) {
-        hmac_update(&ctx->hmac, reqdata, reqlens);
-    }
-    hmac_update(&ctx->hmac, tbuf, tlens);
-    hmac_update(&ctx->hmac, nonce_hex, nlens);
-    hmac_final(&ctx->hmac, hs);
-    hmac_reset(&ctx->hmac);
-    tohex(hs, sizeof(hs), hexhs, 0);
-    int32_t sign_ok = (sizeof(hs) * 2 == slens && 0 == _harbor_ct_hexcmp(sign, hexhs, slens));
-    secure_zero(hs, sizeof(hs));
-    secure_zero(hexhs, sizeof(hexhs));
-    if (!sign_ok) {
-        LOG_WARN("check sign failed.");
-        return ERR_FAILED;
-    }
-    // 签名通过后做 nonce 重放检查；窗口轮转：每 HARBOR_SIGN_WINDOW_SEC 切换 cur→prev
-    uint64_t wnow = timer_cur_ms(&ctx->wtimer);
-    if (wnow - ctx->window_start >= (uint64_t)HARBOR_SIGN_WINDOW_SEC * 1000) {
-        if (NULL != ctx->nonce_prev) {
-            hashmap_free(ctx->nonce_prev);
-        }
-        ctx->nonce_prev = ctx->nonce_cur;
-        ctx->nonce_cur = hashmap_new_with_allocator(_malloc, _realloc, _free,
-                                                    sizeof(nonce_entry_ctx), 0, 0, 0,
-                                                    _harbor_nonce_hash, _harbor_nonce_compare, NULL, NULL);
-        ctx->window_start = wnow;
-    }
-    nonce_entry_ctx key;
-    memcpy(key.nonce, nonce_hex, HARBOR_NONCE_HEX);
-    if (NULL != hashmap_get(ctx->nonce_cur, &key)
-        || (NULL != ctx->nonce_prev && NULL != hashmap_get(ctx->nonce_prev, &key))) {
-        LOG_WARN("nonce replay detected.");
-        return ERR_FAILED;
-    }
-    hashmap_set(ctx->nonce_cur, &key);
-    if (hashmap_oom(ctx->nonce_cur)) {
-        return ERR_FAILED;
-    }
-    return ERR_OK;
-}
 // 构造并发送 HTTP 响应（有数据时 Content-Type 为 octet-stream，否则 text/plain 状态文本）
 // router handler 内自行响应后置 ctx->responded = 1，防 router_dispatch 兜底 500
 static void _harbor_respond(router_req *ctx, int32_t code, void *body, size_t lens) {
@@ -149,21 +32,11 @@ static void _harbor_respond(router_req *ctx, int32_t code, void *body, size_t le
     ev_send(&ctx->task->loader->netev, ctx->sk.fd, ctx->sk.skid, bwriter.data, bwriter.offset, 0);
     ctx->responded = 1;
 }
-// 签名 + 参数校验中间件（router_group 承载）：非法请求静默关连接（不暴露），合法则 router_next
+// 参数校验中间件（router_group 承载）：非法请求静默关连接（不暴露），合法则 router_next
 static void _harbor_check(router_req *ctx) {
     struct http_pack_ctx *pack = ctx->pack;
-    size_t blen = 0;
-    char *body = http_data(pack, &blen);
-    if (NULL == body
-        || 0 == blen
-        || 0 != http_chunked(pack)) {
-        ev_close(&ctx->task->loader->netev, ctx->sk.fd, ctx->sk.skid, 1);
-        ctx->responded = 1;
-        return;
-    }
-    // 签名内容含请求行 url（含 query），从原始状态行取
-    buf_ctx *st = http_status(pack);
-    if (ERR_OK != _harbor_check_sign(ctx->task, pack, &st[1], body, blen)) {
+    // 仅拒分片(harbor 不支持);空 body 放行(无参 RPC)
+    if (0 != http_chunked(pack)) {
         ev_close(&ctx->task->loader->netev, ctx->sk.fd, ctx->sk.skid, 1);
         ctx->responded = 1;
         return;
@@ -222,7 +95,7 @@ static void _harbor_request(router_req *ctx) {
         _harbor_respond(ctx, 200, rtn, rlen);
     }
 }
-// HTTP 接收回调：完整请求到达后交 router 派发（签名/参数校验在 group 中间件，转发在 handler）；不支持 chunked，收到即拒绝并关闭连接
+// HTTP 接收回调：完整请求到达后交 router 派发（参数校验在 group 中间件，转发在 handler）；不支持 chunked，收到即拒绝并关闭连接
 static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype,
     uint8_t client, uint8_t slice, void *data, size_t size) {
     (void)pktype;
@@ -237,14 +110,14 @@ static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype,
     harbor_ctx *ctx = (harbor_ctx *)coro_get_arg(task);
     router_dispatch(ctx->router, task, sk->fd, sk->skid, (struct http_pack_ctx *)data);
 }
-// harbor任务启动回调：建路由器 + 注册带签名中间件的 group + 监听
+// harbor任务启动回调：建路由器 + 注册参数校验中间件的 group + 监听
 static void _harbor_startup(task_ctx *harbor) {
     harbor_ctx *ctx = (harbor_ctx *)coro_get_arg(harbor);
     task_recved(harbor, _net_recv);
     ctx->router = router_new();
-    // 参数 + 签名校验统一放 group 中间件，/call 与 /request 共享
-    router_define(ctx->router, "sign", _harbor_check);
-    const char *mws[] = { "sign" };
+    // 参数校验统一放 group 中间件，/call 与 /request 共享
+    router_define(ctx->router, "check", _harbor_check);
+    const char *mws[] = { "check" };
     router_group g;
     router_group_root(ctx->router, &g, "", mws, 1);
     router_post(ctx->router, &g, "/call", _harbor_call, NULL, 0);
@@ -262,15 +135,6 @@ static void _harbor_free(void *arg) {
     if (NULL != ctx->router) {
         router_free(ctx->router);
     }
-    hmac_free(&ctx->hmac);
-    if (NULL != ctx->nonce_cur) {
-        hashmap_free(ctx->nonce_cur);
-        ctx->nonce_cur = NULL;
-    }
-    if (NULL != ctx->nonce_prev) {
-        hashmap_free(ctx->nonce_prev);
-        ctx->nonce_prev = NULL;
-    }
     FREE(ctx);
 }
 // harbor任务关闭回调：取消监听
@@ -284,16 +148,11 @@ static void _harbor_closing(task_ctx *harbor) {
         ctx->lsnid = 0;
     }
 }
-int32_t harbor_start(loader_ctx *loader, const char *tname, const char *ssl, const char *ip, uint16_t port, const char *key) {
+int32_t harbor_start(loader_ctx *loader, const char *tname, const char *ssl, const char *ip, uint16_t port) {
     if (EMPTYSTR(tname) || 0 == port) {
         return ERR_OK;
     }
-    if (NULL == ip || NULL == key) {
-        return ERR_FAILED;
-    }
-    size_t klens = strlen(key);
-    size_t iplens = strlen(ip);
-    if (0 == klens || iplens >= IP_LENS) {
+    if (NULL == ip || strlen(ip) >= IP_LENS) {
         return ERR_FAILED;
     }
     harbor_ctx *ctx;
@@ -304,13 +163,7 @@ int32_t harbor_start(loader_ctx *loader, const char *tname, const char *ssl, con
 #else
     (void)ssl;
 #endif
-    hmac_init(&ctx->hmac, DG_SHA256, key, klens);
     safe_fill_str(ctx->ip, sizeof(ctx->ip), ip);
-    ctx->nonce_cur = hashmap_new_with_allocator(_malloc, _realloc, _free,
-                                                sizeof(nonce_entry_ctx), 0, 0, 0,
-                                                _harbor_nonce_hash, _harbor_nonce_compare, NULL, NULL);
-    timer_init(&ctx->wtimer);
-    ctx->window_start = timer_cur_ms(&ctx->wtimer);
     if (NULL == coro_task_register(loader, tname, 4 * ONEK,
                                    _harbor_startup, _harbor_closing,
                                    _harbor_free, ctx)) {
@@ -318,47 +171,7 @@ int32_t harbor_start(loader_ctx *loader, const char *tname, const char *ssl, con
     }
     return ERR_OK;
 }
-// 为 HTTP 请求头添加 X-Timestamp / X-Nonce / Authorization；
-// 签名内容 = url + data + timestamp + nonce_hex；nonce 由 CSPRNG 生成防重放
-static int32_t _harbor_sign(binary_ctx *bwriter, const char *key, const char *url, void *data, size_t size) {
-    size_t klens = strlen(key);
-    if (0 == klens) {
-        return ERR_OK;
-    }
-    uint8_t nonce_raw[HARBOR_NONCE_BYTES];
-    char nonce_hex[HARBOR_NONCE_HEX + 1] = { 0 };
-    if (ERR_OK != csprng_rand(nonce_raw, sizeof(nonce_raw))) {
-        LOG_ERROR("csprng_rand failed, abort harbor sign.");
-        return ERR_FAILED;
-    }
-    tohex(nonce_raw, sizeof(nonce_raw), nonce_hex, 0);
-    secure_zero(nonce_raw, sizeof(nonce_raw));
-    char tms[64];
-    SNPRINTF(tms, sizeof(tms), "%"PRIu64, nowsec());
-    size_t ulens = strlen(url);
-    size_t tslens = strlen(tms);
-    char hs[SHA256_BLOCK_SIZE];
-    char hexhs[HEX_ENSIZE(sizeof(hs))];
-    hmac_ctx hmac;
-    hmac_init(&hmac, DG_SHA256, key, klens);
-    hmac_update(&hmac, url, ulens);
-    if (0 != size) {
-        hmac_update(&hmac, data, size);
-    }
-    hmac_update(&hmac, tms, tslens);
-    hmac_update(&hmac, nonce_hex, HARBOR_NONCE_HEX);
-    hmac_final(&hmac, hs);
-    hmac_free(&hmac);
-    tohex(hs, sizeof(hs), hexhs, 0);
-    secure_zero(hs, sizeof(hs));
-    http_pack_head(bwriter, "X-Timestamp", tms);
-    http_pack_head(bwriter, "X-Nonce", nonce_hex);
-    http_pack_head(bwriter, "Authorization", hexhs);
-    secure_zero(hexhs, sizeof(hexhs));
-    secure_zero(nonce_hex, sizeof(nonce_hex));
-    return ERR_OK;
-}
-void *harbor_pack(name_t task, int32_t call, subtype_t reqtype, const char *key, void *data, size_t size, size_t *lens) {
+void *harbor_pack(name_t task, int32_t call, subtype_t reqtype, void *data, size_t size, size_t *lens) {
     char url[512];
     if (0 != call) {
         SNPRINTF(url, sizeof(url), "/call?dst=%"PRIu64"&type=%u", task, reqtype);
@@ -370,11 +183,6 @@ void *harbor_pack(name_t task, int32_t call, subtype_t reqtype, const char *key,
     http_pack_req(&bwriter, "POST", url);
     http_pack_head(&bwriter, "Connection", "Keep-Alive");
     http_pack_head(&bwriter, "Content-Type", "application/octet-stream");
-    if (ERR_OK != _harbor_sign(&bwriter, key, url, data, size)) {
-        binary_free(&bwriter);
-        *lens = 0;
-        return NULL;
-    }
     http_pack_content(&bwriter, data, size);
     *lens = bwriter.offset;
     return bwriter.data;

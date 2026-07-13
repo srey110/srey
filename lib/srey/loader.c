@@ -302,7 +302,7 @@ static void _loader_monitor_loop(void *arg) {
         now = timer_cur_ms(&timer);
         if (now - shrink_start >= SHRINK_TIME) {
             shrink_start = now;
-            pool_shrink(&loader->msg_pool, SHRINK_NKEEP(pool_size(&loader->msg_pool)), SHRINK_BUSY);
+            pool_shrink(&loader->msg_pool, shrink_nkeep(pool_size(&loader->msg_pool)), SHRINK_BUSY);
         }
     }
     LOG_INFO("%s", "worker monitor thread exited.");

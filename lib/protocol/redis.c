@@ -271,7 +271,6 @@ static int32_t _redis_reader_line(reader_ctx *rd, int32_t prot, buffer_ctx *buf,
         buffer_copyout(buf, 1, pk->data, (size_t)pk->len);
         break;
     case RESP_INTEGER:
-    case RESP_BIGNUM:
         if (0 == pk->len) {
             BIT_SET(*status, PROT_ERROR);
         } else {
@@ -283,6 +282,13 @@ static int32_t _redis_reader_line(reader_ctx *rd, int32_t prot, buffer_ctx *buf,
                 || errno == ERANGE) {
                 BIT_SET(*status, PROT_ERROR);
             }
+        }
+        break;
+    case RESP_BIGNUM:// 任意精度,原样保留 data 字符串交业务解析(不限 int64,不解析 ival)
+        if (0 == pk->len) {
+            BIT_SET(*status, PROT_ERROR);
+        } else {
+            buffer_copyout(buf, 1, pk->data, (size_t)pk->len);
         }
         break;
     case RESP_NIL:

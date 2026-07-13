@@ -24,8 +24,8 @@ typedef struct mpq_ctx {
     uint32_t   elsize;   //单元素字节数（init 时指定）
     uint32_t   stride;   //每槽位字节数 = ROUND_UP(sizeof(atomic_t)+elsize, 8)
     char       *cells;   //槽位数组基址（按 stride 步进寻址，不可用下标索引）
-    mpq_aln_t  enq;      //入队位置计数器，独占缓存行（多生产者 CAS 抢）
-    mpq_aln_t  deq;      //出队位置计数器，独占缓存行
+    mpq_aln_t  enq;      //入队位置计数器,多生产者 CAS 抢(char[64] 仅与 deq 隔离,未强制缓存行对齐)
+    mpq_aln_t  deq;      //出队位置计数器
 } mpq_ctx;
 /// <summary>
 /// 初始化队列

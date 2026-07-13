@@ -17,8 +17,7 @@
         "name": "harbor",
         "ssl": "",
         "ip": "0.0.0.0",
-        "port": 8080,
-        "key": "p1KaLmIg2kB7fZp5Tm1qbi6dss92C31aPGJK9Lvk7DMPDONXrwD2yVLZrHBio74s"
+        "port": 8080
     },
     "datacenter": {
         "name": "datacenter"

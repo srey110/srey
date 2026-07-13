@@ -165,7 +165,7 @@ static void _tw_loop(void *arg) {
         // 空闲时按 SHRINK_TIME 门控回落节点池
         if (curtick - shrink_start >= SHRINK_TIME) {
             shrink_start = curtick;
-            pool_shrink(&ctx->node_pool, SHRINK_NKEEP(pool_size(&ctx->node_pool)), SHRINK_BUSY);
+            pool_shrink(&ctx->node_pool, shrink_nkeep(pool_size(&ctx->node_pool)), SHRINK_BUSY);
         }
         /*  精确睡眠直到下一个 jiffy 到期，而非固定 1ms 空转。
          *  sleep_ms = max(1, min(next_jiffy - now, 5))

@@ -639,6 +639,7 @@ char buffer_at(buffer_ctx *ctx, size_t pos) {
     ASSERTAB(pos < ctx->total_lens, "index error.");
     size_t off = 0;
     bufnode_ctx *node = _buffer_search_start_cached(ctx, pos, &off);
+    ASSERTAB(NULL != node, "index error.");
     off = node->off - (off - pos);
     return (node->buffer + node->misalign + off)[0];
 }

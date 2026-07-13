@@ -137,6 +137,14 @@ static inline uint32_t pool_capacity(pool_ctx *pool) {
     return pool->_qu_capacity(pool->cur_qu);
 }
 /// <summary>
+/// 计算 pool_shrink 的保留量
+/// </summary>
+/// <param name="n">当前对象/元素数(pool_size 或 hashmap_count 结果)</param>
+/// <returns>建议保留的空闲对象数</returns>
+static inline uint32_t shrink_nkeep(size_t n) {
+    return (uint32_t)(n - n / 5);
+}
+/// <summary>
 /// 收缩空闲对象至 max(keep, nkeep);load_trend 判 busy 时跳过本次。
 /// push/pop 多线程安全,但 shrink 须由单一线程调用(内部更新 trend 无锁);并发 push/pop 下收缩量为尽力而为
 /// </summary>

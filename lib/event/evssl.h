@@ -53,8 +53,9 @@ SSL_CTX *evssl_sslctx(evssl_ctx *evssl);
 /// 设置是否验证对端证书（需先加载 CA 证书）
 /// </summary>
 /// <param name="evssl">evssl_ctx</param>
-/// <param name="verify">1 启用验证（SSL_VERIFY_PEER），0 不验证（SSL_VERIFY_NONE）</param>
-void evssl_verify(evssl_ctx *evssl, int32_t verify);
+/// <param name="mod">SSL_VERIFY_* </param>
+/// <param name="vcb">SSL_verify_cb</param>
+void evssl_verify(evssl_ctx *evssl, int32_t mod, SSL_verify_cb vcb);
 /// <summary>
 /// 设置 SSL 安全级别（OpenSSL 安全级别 0-5，默认 0）
 /// </summary>

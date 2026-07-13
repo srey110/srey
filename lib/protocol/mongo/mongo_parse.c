@@ -104,16 +104,16 @@ int32_t mongo_parse_startsession(mgopack_ctx *mgpack, char uid[UUID_LENS], int32
             *timeout = bson_iter_int32(&iter, NULL);
         } else if (0 == strcmp(iter.key, "id")) {
             if (BSON_DOCUMENT != iter.type) {
-                return ERR_FAILED;
+                return 0;
             }
             bson_init(&bsonid, iter.val, iter.lens);
             bson_iter_init(&iterid, &bsonid);
             if (ERR_OK != bson_iter_find(&iterid, "id", &result)) {
-                return ERR_FAILED;
+                return 0;
             }
             if (UUID_LENS != result.lens
                 || BSON_SUBTYPE_UUID != result.subtype) {
-                return ERR_FAILED;
+                return 0;
             }
             memcpy(uid, result.val, result.lens);
         }

@@ -10,6 +10,7 @@
       <Filter>CuTest</Filter>
     </ClCompile>
     <ClCompile Include="main.c" />
+    <ClCompile Include="task_dbrefcnt.c" />
     <ClCompile Include="task_mysql.c" />
     <ClCompile Include="task_pgsql.c" />
     <ClCompile Include="task_redis.c" />
@@ -65,6 +66,7 @@
     <ClInclude Include="CuTest.h">
       <Filter>CuTest</Filter>
     </ClInclude>
+    <ClInclude Include="task_dbrefcnt.h" />
     <ClInclude Include="task_mysql.h" />
     <ClInclude Include="task_pgsql.h" />
     <ClInclude Include="task_redis.h" />

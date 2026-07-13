@@ -40,10 +40,7 @@ static int32_t _lbson_new(lua_State *lua) {
 /// <returns>无</returns>
 static int32_t _lbson_free(lua_State *lua) {
     bson_ctx *bson = luaL_checkudata(lua, 1, MT_BSON);
-    if (0 != bson->doc.inc && NULL != bson->doc.data) {
-        BSON_FREE(bson);
-        bson->doc.data = NULL;
-    }
+    BSON_FREE(bson);
     return 0;
 }
 /// <summary>
@@ -404,12 +401,8 @@ static int32_t _lbson_tostring(lua_State *lua) {
         lua_pushnil(lua);
         return 1;
     }
-    size_t len = strlen(str);
-    luaL_Buffer lbuf;
-    char *p = luaL_buffinitsize(lua, &lbuf, len);
-    memcpy(p, str, len);
+    lua_pushstring(lua, str);
     FREE(str);
-    luaL_pushresultsize(&lbuf, len);
     return 1;
 }
 /// <summary>
@@ -455,12 +448,8 @@ static int32_t _lbson_tostring2(lua_State *lua) {
         lua_pushnil(lua);
         return 1;
     }
-    size_t slen = strlen(str);
-    luaL_Buffer lbuf;
-    char *p = luaL_buffinitsize(lua, &lbuf, slen);
-    memcpy(p, str, slen);
+    lua_pushstring(lua, str);
     FREE(str);
-    luaL_pushresultsize(&lbuf, slen);
     return 1;
 }
 /// <summary>
@@ -695,9 +684,12 @@ static void _lbson_encode_value(lua_State *lua, int32_t val_idx, bson_ctx *bson,
         } else if (NULL != luaL_testudata(lua, val_idx, MT_BSON_INT64)) {
             lbson_int64_t *ud = lua_touserdata(lua, val_idx);
             bson_append_int64(bson, key, ud->val);
+        } else {
+            luaL_error(lua, "bson encode unsupported userdata, key '%s'", key);
         }
         break;
     default:
+        luaL_error(lua, "bson encode unsupported type '%s', key '%s'", lua_typename(lua, lua_type(lua, val_idx)), key);
         break;
     }
 }

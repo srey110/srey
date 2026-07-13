@@ -97,18 +97,30 @@ local _RANDSTR_CHARS = {
     "A","B","C","D","E","F","G","H","I","J","K","L","M","N","O","P","Q","R","S","T","U","V","W","X","Y","Z"
 }
 local _RANDSTR_LEN = #_RANDSTR_CHARS
+-- 拒绝采样上界(4*62=248):丢弃 >= 此值的 CSPRNG 字节,使 0..247 均匀映射,消除 %62 模偏差
+local _RANDSTR_MAX = 256 - (256 % _RANDSTR_LEN)
 
 ---生成指定长度的随机字母数字字符串（字符集 0-9 / a-z / A-Z），由 srey.utils.csprng_rand 提供 CSPRNG
 ---@param cnt integer 字符串长度
 ---@return string? str 随机字符串；CSPRNG 失败（熵未就绪等）返回 nil
 function randstr(cnt)
-    local bytes = utils.csprng_rand(cnt)
-    if not bytes then
-        return nil
-    end
     local rtn = {}
-    for i = 1, cnt do
-        rtn[i] = _RANDSTR_CHARS[(string.byte(bytes, i) % _RANDSTR_LEN) + 1]
+    local n = 0
+    while n < cnt do
+        local bytes = utils.csprng_rand(cnt - n)
+        if not bytes then
+            return nil
+        end
+        for i = 1, #bytes do
+            local b = string.byte(bytes, i)
+            if b < _RANDSTR_MAX then
+                n = n + 1
+                rtn[n] = _RANDSTR_CHARS[(b % _RANDSTR_LEN) + 1]
+                if n >= cnt then
+                    break
+                end
+            end
+        end
     end
     return table.concat(rtn)
 end

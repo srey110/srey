@@ -43,6 +43,7 @@ void _pgsql_udfree(ud_cxt *ud) {
     pg->scram = NULL;
     pg->sk.fd = INVALID_SOCK;
     ud->context = NULL;
+    PROT_REF_RELEASE(pg);
 }
 void _pgsql_closed(ud_cxt *ud) {
     _pgsql_udfree(ud);
@@ -418,6 +419,10 @@ static pgpack_ctx *_pgsql_command_response(pgsql_ctx *pg, buffer_ctx *buf, ud_cx
     return _pgpack_parser(pg, &breader, ud, status);
 }
 void *pgsql_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
+    if (NULL == ud->context) {
+        BIT_SET(*status, PROT_ERROR);
+        return NULL;
+    }
     pgsql_ctx *pg = (pgsql_ctx *)ud->context;
     pgpack_ctx *pack = NULL;
     switch (ud->status) {

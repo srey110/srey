@@ -515,9 +515,8 @@ char *_strptime(const char *buf, const char *fmt, struct tm *tm) {
             bp = zname;
 
             /* Nautical / Military style */
-            if (delim(bp[1]) &&
-                ((*bp >= 'A' && *bp <= 'I') ||
-                (*bp >= 'L' && *bp <= 'Y'))) {
+            if (((*bp >= 'A' && *bp <= 'I') ||
+                (*bp >= 'L' && *bp <= 'Y')) && delim(bp[1])) {
 #ifdef TM_GMTOFF
                 /* Argh! No 'J'! */
                 if (*bp >= 'A' && *bp <= 'I')
@@ -536,7 +535,7 @@ char *_strptime(const char *buf, const char *fmt, struct tm *tm) {
                 continue;
             }
             /* 'J' is local time */
-            if (delim(bp[1]) && *bp == 'J') {
+            if (*bp == 'J' && delim(bp[1])) {
 #ifdef TM_GMTOFF
                 tm->TM_GMTOFF = -timezone;
 #endif
@@ -723,7 +722,7 @@ char *_strptime(const char *buf, const char *fmt, struct tm *tm) {
         if (!HAVE_WDAY(state)) {
             /* calculate day of week */
             i = 0;
-            week_offset = _first_wday_of(tm->tm_year);
+            week_offset = _first_wday_of(tm->tm_year + TM_YEAR_BASE);
             while (i++ <= tm->tm_yday) {
                 if (week_offset++ >= 6)
                     week_offset = 0;

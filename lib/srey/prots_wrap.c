@@ -2,23 +2,27 @@
 
 int32_t mysql_try_connect(task_ctx *task, mysql_ctx *mysql, int32_t setsess) {
     mysql->task = task;
+    PROT_REF_ACQUIRE(mysql);// connect失败由prots_udfree兜底减引用
     return task_connect(task, PACK_MYSQL, NULL, mysql->client.ip, mysql->client.port,
         NULL == mysql->client.evssl ? NETEV_NONE : NETEV_AUTHSSL,
         mysql, setsess, &mysql->client.sk.fd, &mysql->client.sk.skid);
 }
 int32_t pgsql_try_connect(task_ctx *task, pgsql_ctx *pg, int32_t setsess) {
     pg->task = task;
+    PROT_REF_ACQUIRE(pg);
     return task_connect(task, PACK_PGSQL, NULL, pg->ip, pg->port,
         NETEV_AUTHSSL, pg, setsess, &pg->sk.fd, &pg->sk.skid);
 }
 int32_t mongo_try_connect(task_ctx *task, mongo_ctx *mongo, int32_t setsess) {
     mongo->task = task;
+    PROT_REF_ACQUIRE(mongo);
     return task_connect(task, PACK_MONGO, NULL, mongo->ip, mongo->port,
         NULL == mongo->evssl ? NETEV_NONE : NETEV_AUTHSSL,
         mongo, setsess, &mongo->sk.fd, &mongo->sk.skid);
 }
 int32_t smtp_try_connect(task_ctx *task, smtp_ctx *smtp, int32_t setsess) {
     smtp->task = task;
+    PROT_REF_ACQUIRE(smtp);
     return task_connect(task, PACK_SMTP, smtp->evssl, smtp->ip, smtp->port,
         0, smtp, setsess, &smtp->sk.fd, &smtp->sk.skid);
 }

@@ -31,11 +31,11 @@ runner.run("protocol", function(t)
 
     -- ── harbor.pack ────────────────────────────────────────────────────
     do
-        local data, size = harbor.pack(0x10, 0, 0, "route-key", "hello", 5)
+        local data, size = harbor.pack(0x10, 0, 0, "hello", 5)
         t:check(data ~= nil and size > 0, "harbor.pack returns data")
         utils.ud_free(data)
         -- 无 payload
-        data, size = harbor.pack(0x10, 1, 0, "route-key")
+        data, size = harbor.pack(0x10, 1, 0)
         t:check(data ~= nil and size > 0, "harbor.pack no payload")
         utils.ud_free(data)
     end

@@ -27,7 +27,10 @@ static void *_iocp_exfunc(SOCKET fd, GUID *guid) {
 }
 static bool _iocp_disconnect_iter(const void *item, void *udata) {
     (void)udata;
-    _iocp_disconnect(*((sock_ctx **)item), 1);
+    sock_ctx *sk = *((sock_ctx **)item);
+    //防止 ERROR socket 还有在途未被取消的
+    CancelIoEx((HANDLE)sk->fd, NULL);
+    _iocp_disconnect(sk, 1);
     return true;
 }
 void _iocp_disconnect_all(watcher_ctx *watcher) {
@@ -93,7 +96,7 @@ static void _iocp_pool_shrink(watcher_ctx *watcher, uint64_t *shrink_start, uint
     }
     *shrink_start = now_ms;
     // cmd sock 仅 _iocp_join 不入 hashmap，hashmap_count 即业务 socket 数
-    pool_shrink(&watcher->pool, (uint32_t)SHRINK_NKEEP(hashmap_count(watcher->element)), SHRINK_BUSY);
+    pool_shrink(&watcher->pool, shrink_nkeep(hashmap_count(watcher->element)), SHRINK_BUSY);
 }
 // 驱动 tick 并按 EVENT_CHECK_INTERVAL 节流触发 pool_shrink；返回下次 wait 超时(ms)，Vista+/XP 两份 _iocp_loop_event 共用
 static uint32_t _iocp_loop_check(watcher_ctx *watcher, uint32_t *shrink_cnt, uint64_t *shrink_start) {

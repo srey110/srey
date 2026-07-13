@@ -891,7 +891,7 @@ static void test_redis_resp3_scalar(CuTest *tc) {
         _redis_udfree(&ud);
         buffer_free(&buf);
     }
-    // BIGNUM 在 int64 范围内: "(9223372036854775807\r\n"
+    // BIGNUM 按字符串原样保留(不解析 ival): "(9223372036854775807\r\n"
     {
         buffer_ctx buf;
         buffer_init(&buf);
@@ -902,7 +902,8 @@ static void test_redis_resp3_scalar(CuTest *tc) {
         redis_pack_ctx *pack = redis_unpack(&buf, &ud, &status);
         CuAssertPtrNotNull(tc, pack);
         CuAssertTrue(tc, RESP_BIGNUM == pack->prot);
-        CuAssertTrue(tc, INT64_MAX == pack->ival);
+        CuAssertTrue(tc, 19 == pack->len);
+        CuAssertTrue(tc, 0 == memcmp(pack->data, "9223372036854775807", 19));
         _redis_pkfree(pack);
         _redis_udfree(&ud);
         buffer_free(&buf);

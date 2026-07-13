@@ -187,6 +187,7 @@
     <ClCompile Include="task_mqtt_server.c" />
     <ClCompile Include="task_multicast.c" />
     <ClCompile Include="task_multi_call.c" />
+    <ClCompile Include="task_dbrefcnt.c" />
     <ClCompile Include="task_mysql.c" />
     <ClCompile Include="task_pgsql.c" />
     <ClCompile Include="task_priority.c" />
@@ -240,6 +241,7 @@
     <ClInclude Include="task_mqtt_server.h" />
     <ClInclude Include="task_multicast.h" />
     <ClInclude Include="task_multi_call.h" />
+    <ClInclude Include="task_dbrefcnt.h" />
     <ClInclude Include="task_mysql.h" />
     <ClInclude Include="task_pgsql.h" />
     <ClInclude Include="task_priority.h" />

@@ -303,8 +303,8 @@ static int json_cfg_encode_max_depth(lua_State *l)
 static int json_cfg_decode_max_depth(lua_State *l)
 {
     json_config_t *cfg = json_arg_init(l, 1);
-
-    return json_integer_option(l, 1, &cfg->decode_max_depth, 1, INT_MAX);
+    // 上界限默认深度:decode 递归下降,过深不可信 JSON 会溢出线程 C 栈
+    return json_integer_option(l, 1, &cfg->decode_max_depth, 1, DEFAULT_DECODE_MAX_DEPTH);
 }
 
 /* Configures number precision when converting doubles to text */

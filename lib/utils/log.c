@@ -123,7 +123,7 @@ static void _log_loop(void *arg) {
         now = timer_cur_ms(&timer);
         if (now - shrink_start >= SHRINK_TIME) {
             shrink_start = now;
-            pool_shrink(&_itempool, SHRINK_NKEEP(pool_size(&_itempool)), SHRINK_BUSY);
+            pool_shrink(&_itempool, shrink_nkeep(pool_size(&_itempool)), SHRINK_BUSY);
         }
         mutex_lock(&_mtx);
         // 单次带守卫等待，外层循环负责重试：超时上限 SHRINK_TIME 保证每 ≤SHRINK_TIME 重跑一次以收缩

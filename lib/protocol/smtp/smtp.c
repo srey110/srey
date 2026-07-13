@@ -31,6 +31,7 @@ void _smtp_udfree(ud_cxt *ud) {
     smtp_ctx *smtp = ud->context;
     smtp->sk.fd = INVALID_SOCK;
     ud->context = NULL;
+    PROT_REF_RELEASE(smtp);
 }
 void _smtp_closed(ud_cxt *ud) {
     _smtp_udfree(ud);
@@ -428,9 +429,17 @@ void *smtp_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *buf, ud_cxt 
         _smtp_connected(ev, fd, skid, buf, ud, status);
         break;
     case EHLO:
+        if (NULL == smtp) {
+            BIT_SET(*status, PROT_ERROR);
+            break;
+        }
         _smtp_ehlo(smtp, ev, fd, skid, buf, ud, status);
         break;
     case AUTH:
+        if (NULL == smtp) {
+            BIT_SET(*status, PROT_ERROR);
+            break;
+        }
         _smtp_auth(smtp, ev, fd, skid, buf, ud, status);
         break;
     case AUTH_CHECK:

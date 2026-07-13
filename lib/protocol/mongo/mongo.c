@@ -34,6 +34,7 @@ void _mongo_udfree(ud_cxt *ud) {
     mongo->scram = NULL;
     mongo->sk.fd = INVALID_SOCK;
     ud->context = NULL;
+    PROT_REF_RELEASE(mongo);
 }
 void _mongo_closed(ud_cxt *ud) {
     _mongo_udfree(ud);
@@ -228,6 +229,12 @@ void *mongo_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     case COMMAND:
         return mgopack;
     case AUTH:
+        // 仅 AUTH 阶段 _mongo_scram_auth 解引用 ud->context；COMMAND 只 return mgopack 不碰 context
+        if (NULL == ud->context) {
+            BIT_SET(*status, PROT_ERROR);
+            _mongo_pkfree(mgopack);
+            return NULL;
+        }
         _mongo_scram_auth(ev, mgopack, ud);
         break;
     default:

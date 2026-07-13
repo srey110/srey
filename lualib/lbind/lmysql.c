@@ -481,13 +481,15 @@ LUAMOD_API int luaopen_mysql_reader(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// 从 mpack 数据包中创建预处理语句上下文
+/// 从 mpack 数据包中创建预处理语句上下文，并把 mysql 对象锚定为 uservalue 防其先于 stmt 被 GC
 /// </summary>
+/// <param name="mysql" type="userdata">所属 mysql 对象（锚定为 uservalue 保活）</param>
 /// <param name="mpack" type="lightuserdata">mpack_ctx 数据包指针</param>
 /// <returns type="_mysql_stmt_ctx?">stmt 对象；失败返回 nil</returns>
 static int32_t _lmysql_stmt_new(lua_State *lua) {
-    luaL_checktype(lua, 1, LUA_TLIGHTUSERDATA);
-    mpack_ctx *mpack = lua_touserdata(lua, 1);
+    LPUB_UD_ARG(lua, mysql_ctx, MT_MYSQL, ud, "mysql freed");
+    luaL_checktype(lua, 2, LUA_TLIGHTUSERDATA);
+    mpack_ctx *mpack = lua_touserdata(lua, 2);
     mysql_stmt_ctx *stmt = mysql_stmt_init(mpack);
     if (NULL == stmt) {
         lua_pushnil(lua);
@@ -496,6 +498,8 @@ static int32_t _lmysql_stmt_new(lua_State *lua) {
     mysql_stmt_ctx **st = lua_newuserdata(lua, sizeof(mysql_stmt_ctx *));
     *st = stmt;
     ASSOC_MTABLE(lua, MT_MYSQL_STMT);
+    lua_pushvalue(lua, 1);
+    lua_setiuservalue(lua, -2, 1);
     return 1;
 }
 /// <summary>
@@ -586,10 +590,10 @@ LUAMOD_API int luaopen_mysql_stmt(lua_State *lua) {
 /// <returns type="lightuserdata">命令数据指针</returns>
 /// <returns type="integer">数据长度</returns>
 static int32_t _lmysql_pack_selectdb(lua_State *lua) {
-    mysql_ctx *mysql = luaL_checkudata(lua, 1, MT_MYSQL);
+    LPUB_UD_ARG(lua, mysql_ctx, MT_MYSQL, ud, "mysql freed");
     const char *db = luaL_checkstring(lua, 2);
     size_t size;
-    void *pack = mysql_pack_selectdb(mysql, db, &size);
+    void *pack = mysql_pack_selectdb(*ud, db, &size);
     LPUB_RET_LUD(lua, pack, size);
 }
 /// <summary>
@@ -599,9 +603,9 @@ static int32_t _lmysql_pack_selectdb(lua_State *lua) {
 /// <returns type="lightuserdata">命令数据指针</returns>
 /// <returns type="integer">数据长度</returns>
 static int32_t _lmysql_pack_ping(lua_State *lua) {
-    mysql_ctx *mysql = luaL_checkudata(lua, 1, MT_MYSQL);
+    LPUB_UD_ARG(lua, mysql_ctx, MT_MYSQL, ud, "mysql freed");
     size_t size;
-    void *pack = mysql_pack_ping(mysql, &size);
+    void *pack = mysql_pack_ping(*ud, &size);
     LPUB_RET_LUD(lua, pack, size);
 }
 /// <summary>
@@ -613,14 +617,14 @@ static int32_t _lmysql_pack_ping(lua_State *lua) {
 /// <returns type="lightuserdata">命令数据指针</returns>
 /// <returns type="integer">数据长度</returns>
 static int32_t _lmysql_pack_query(lua_State *lua) {
-    mysql_ctx *mysql = luaL_checkudata(lua, 1, MT_MYSQL);
+    LPUB_UD_ARG(lua, mysql_ctx, MT_MYSQL, ud, "mysql freed");
     const char *sql = luaL_checkstring(lua, 2);
     mysql_bind_ctx *mbind = NULL;
     if (LUA_TUSERDATA == lua_type(lua, 3)){
         mbind = luaL_checkudata(lua, 3, MT_MYSQL_BIND);
     }
     size_t size;
-    void *pack = mysql_pack_query(mysql, sql, mbind, &size);
+    void *pack = mysql_pack_query(*ud, sql, mbind, &size);
     if (NULL == pack) {
         return luaL_error(lua, "pack_query: payload exceeds 16MB.");
     }
@@ -633,9 +637,9 @@ static int32_t _lmysql_pack_query(lua_State *lua) {
 /// <returns type="lightuserdata">命令数据指针</returns>
 /// <returns type="integer">数据长度</returns>
 static int32_t _lmysql_pack_quit(lua_State *lua) {
-    mysql_ctx *mysql = luaL_checkudata(lua, 1, MT_MYSQL);
+    LPUB_UD_ARG(lua, mysql_ctx, MT_MYSQL, ud, "mysql freed");
     size_t size;
-    void *pack = mysql_pack_quit(mysql, &size);
+    void *pack = mysql_pack_quit(*ud, &size);
     LPUB_RET_LUD(lua, pack, size);
 }
 /// <summary>
@@ -646,10 +650,10 @@ static int32_t _lmysql_pack_quit(lua_State *lua) {
 /// <returns type="lightuserdata">命令数据指针</returns>
 /// <returns type="integer">数据长度</returns>
 static int32_t _lmysql_pack_stmt_prepare(lua_State *lua) {
-    mysql_ctx *mysql = luaL_checkudata(lua, 1, MT_MYSQL);
+    LPUB_UD_ARG(lua, mysql_ctx, MT_MYSQL, ud, "mysql freed");
     const char *sql = luaL_checkstring(lua, 2);
     size_t size;
-    void *pack = mysql_pack_stmt_prepare(mysql, sql, &size);
+    void *pack = mysql_pack_stmt_prepare(*ud, sql, &size);
     if (NULL == pack) {
         return luaL_error(lua, "pack_stmt_prepare: payload exceeds 16MB.");
     }
@@ -683,13 +687,18 @@ static int32_t _lmysql_new(lua_State *lua) {
     if (LUA_TNUMBER == lua_type(lua, 8)) {
         maxpk = (uint32_t)luaL_checkinteger(lua, 8);
     }
-    mysql_ctx *mysql = lua_newuserdata(lua, sizeof(mysql_ctx));
+    mysql_ctx *mysql;
+    MALLOC(mysql, sizeof(mysql_ctx));
     if (ERR_OK != mysql_init(mysql, ip, port, evssl, user, password, database, charset, maxpk)) {
-        lua_pop(lua, 1);// 弹出 userdata，避免在 nil 下方遗留无用中间值
+        FREE(mysql);
         lua_pushnil(lua);
-    } else {
-        ASSOC_MTABLE(lua, MT_MYSQL);
+        return 1;
     }
+    ATOMIC_SET(&mysql->ref, 1);// Lua 持有者份额
+    // userdata 只持 ctx 指针；ctx 独立堆分配脱离 Lua GC，避免 __gc 后网络线程经 ud->context 悬空访问(跨线程 UAF)
+    mysql_ctx **ud = lua_newuserdata(lua, sizeof(mysql_ctx *));
+    *ud = mysql;
+    ASSOC_MTABLE(lua, MT_MYSQL);
     return 1;
 }
 /// <summary>
@@ -709,16 +718,24 @@ static int32_t _lmysql_pack_type(lua_State *lua) {
 /// <param name="self" type="userdata">mysql 对象</param>
 /// <returns>无</returns>
 static int32_t _lmysql_free(lua_State *lua) {
-    mysql_ctx *mysql = luaL_checkudata(lua, 1, MT_MYSQL);
+    mysql_ctx **ud = luaL_checkudata(lua, 1, MT_MYSQL);
+    mysql_ctx *mysql = *ud;
+    if (NULL == mysql) {
+        return 0;
+    }
     if (NULL != mysql->task
         && INVALID_SOCK != mysql->client.sk.fd) {
         size_t size;
         void *pack = mysql_pack_quit(mysql, &size);
-        (void)ev_ud_context(&mysql->task->loader->netev, mysql->client.sk.fd, mysql->client.sk.skid, NULL);
         ev_send(&mysql->task->loader->netev, mysql->client.sk.fd, mysql->client.sk.skid, pack, size, 0);
+        // 主动关连接：触发该 socket 的 udfree 释放事件侧份额，否则弃用的活连接块滞留至对端关
+        ev_close(&mysql->task->loader->netev, mysql->client.sk.fd, mysql->client.sk.skid, 0);
     }
+    *ud = NULL;
     secure_zero(mysql->server.salt, sizeof(mysql->server.salt));
     secure_zero(mysql->client.password, sizeof(mysql->client.password));
+    // mpack 由网络线程 udfree 释放，__gc 不碰(防跨线程 UAF)
+    PROT_REF_RELEASE(mysql);
     return 0;
 }
 /// <summary>
@@ -727,9 +744,9 @@ static int32_t _lmysql_free(lua_State *lua) {
 /// <param name="self" type="userdata">mysql 对象</param>
 /// <returns type="boolean">发起成功 true，失败 false</returns>
 static int32_t _lmysql_try_connect(lua_State *lua) {
-    mysql_ctx *mysql = luaL_checkudata(lua, 1, MT_MYSQL);
+    LPUB_UD_ARG(lua, mysql_ctx, MT_MYSQL, ud, "mysql freed");
     LPUB_CUR_TASK(lua, task);
-    int32_t rtn = mysql_try_connect(task, mysql, 1);
+    int32_t rtn = mysql_try_connect(task, *ud, 1);
     if (ERR_OK == rtn) {
         lua_pushboolean(lua, 1);
     } else {
@@ -743,8 +760,8 @@ static int32_t _lmysql_try_connect(lua_State *lua) {
 /// <param name="self" type="userdata">mysql 对象</param>
 /// <returns type="string">服务端版本</returns>
 static int32_t _lmysql_version(lua_State *lua) {
-    mysql_ctx *mysql = luaL_checkudata(lua, 1, MT_MYSQL);
-    lua_pushstring(lua, mysql_version(mysql));
+    LPUB_UD_ARG(lua, mysql_ctx, MT_MYSQL, ud, "mysql freed");
+    lua_pushstring(lua, mysql_version(*ud));
     return 1;
 }
 /// <summary>
@@ -753,7 +770,8 @@ static int32_t _lmysql_version(lua_State *lua) {
 /// <param name="self" type="userdata">mysql 对象</param>
 /// <returns type="string">错误信息</returns>
 static int32_t _lmysql_erro(lua_State *lua) {
-    mysql_ctx *mysql = luaL_checkudata(lua, 1, MT_MYSQL);
+    LPUB_UD_ARG(lua, mysql_ctx, MT_MYSQL, ud, "mysql freed");
+    mysql_ctx *mysql = *ud;
     lua_pushstring(lua, mysql_erro(mysql, NULL));
     mysql_erro_clear(mysql);
     return 1;
@@ -765,7 +783,8 @@ static int32_t _lmysql_erro(lua_State *lua) {
 /// <returns type="integer">socket fd</returns>
 /// <returns type="integer">skid</returns>
 static int32_t _lmysql_sock_id(lua_State *lua) {
-    mysql_ctx *mysql = luaL_checkudata(lua, 1, MT_MYSQL);
+    LPUB_UD_ARG(lua, mysql_ctx, MT_MYSQL, ud, "mysql freed");
+    mysql_ctx *mysql = *ud;
     lua_pushinteger(lua, mysql->client.sk.fd);
     lua_pushinteger(lua, mysql->client.sk.skid);
     return 2;
@@ -776,8 +795,8 @@ static int32_t _lmysql_sock_id(lua_State *lua) {
 /// <param name="self" type="userdata">mysql 对象</param>
 /// <returns type="integer">last insert id</returns>
 static int32_t _lmysql_last_id(lua_State *lua) {
-    mysql_ctx *mysql = luaL_checkudata(lua, 1, MT_MYSQL);
-    lua_pushinteger(lua, mysql_last_id(mysql));
+    LPUB_UD_ARG(lua, mysql_ctx, MT_MYSQL, ud, "mysql freed");
+    lua_pushinteger(lua, mysql_last_id(*ud));
     return 1;
 }
 /// <summary>
@@ -786,8 +805,8 @@ static int32_t _lmysql_last_id(lua_State *lua) {
 /// <param name="self" type="userdata">mysql 对象</param>
 /// <returns type="integer">affected rows</returns>
 static int32_t _lmysql_affectd_rows(lua_State *lua) {
-    mysql_ctx *mysql = luaL_checkudata(lua, 1, MT_MYSQL);
-    lua_pushinteger(lua, mysql_affected_rows(mysql));
+    LPUB_UD_ARG(lua, mysql_ctx, MT_MYSQL, ud, "mysql freed");
+    lua_pushinteger(lua, mysql_affected_rows(*ud));
     return 1;
 }
 //mysql

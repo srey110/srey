@@ -10,7 +10,7 @@
 #define RESP_NIL     '_' // 空值         RESP3  _\r\n
 #define RESP_BOOL    '#' // 布尔值       RESP3  #<t|f>\r\n
 #define RESP_DOUBLE  ',' // 浮点数       RESP3  ,[<+|->]<integral>[.<fractional>][<E|e>[sign]<exponent>]\r\n
-#define RESP_BIGNUM  '(' // 大整数       RESP3  ([+|-]<number>\r\n
+#define RESP_BIGNUM  '(' // 大整数 按字符串处理       RESP3  ([+|-]<number>\r\n
 
 #define RESP_BSTRING '$' // 批量字符串   RESP2  $<length>\r\n<data>\r\n
 #define RESP_BERROR  '!' // 批量错误     RESP3  !<length>\r\n<error>\r\n
@@ -28,10 +28,10 @@ typedef struct redis_pack_ctx {
     char venc[4];               // 仅 RESP_VERB 使用：3 字节编码名称（如 "txt"），末位为 '\0'
     int64_t nelem;              // 聚合类型（RESP_ARRAY/SET/PUSHE/MAP/ATTR）的元素数量
     int64_t len;                // data 字段的数据长度（字节数），-1 表示 Null bulk
-    int64_t ival;               // 整型值（RESP_INTEGER/RESP_BOOL/RESP_BIGNUM）
+    int64_t ival;               // 整型值（RESP_INTEGER/RESP_BOOL）
     double dval;                // 浮点值（RESP_DOUBLE）
     struct redis_pack_ctx *next; // 指向下一个节点（聚合类型链式存储）
-    char data[];               // 字符串数据（RESP_STRING/RESP_ERROR/RESP_BSTRING/RESP_BERROR/RESP_VERB）
+    char data[];               // 字符串数据（RESP_STRING/RESP_ERROR/RESP_BSTRING/RESP_BERROR/RESP_VERB/RESP_BIGNUM）
 }redis_pack_ctx;
 
 // 释放 redis_pack_ctx 链表（含所有 next 节点）

@@ -19,7 +19,7 @@ local ctx = class("mysql_stmt_ctx")
 ---@param owner any mysql_ctx Lua 包装实例（持有实时 generation 与 C mysql 对象）
 ---@param mpack lightuserdata COM_STMT_PREPARE 响应包，C 层据此初始化列元数据和参数个数
 function ctx:ctor(owner, mpack)
-    self.stmt = stmt.new(mpack)
+    self.stmt = stmt.new(owner.mysql, mpack)
     if not self.stmt then
         error("mysql stmt.new failed", 2)
     end

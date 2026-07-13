@@ -3,6 +3,22 @@
 
 #include "base/structs.h"
 
+// mysql pgsql monogo smtp引用宏（ref：0=C 借用，事件层不释放块；>0=Lua 堆持有者数）
+// 建连前 acquire：仅 Lua 持有(ref>0)时 +1，C 借用(ref=0)短路
+#define PROT_REF_ACQUIRE(ptr) \
+    do { \
+        if (0 != ATOMIC_GET(&(ptr)->ref)) { \
+            ATOMIC_ADD(&(ptr)->ref, 1); \
+        } \
+    } while (0)
+// release：C 借用(ref=0)短路，Lua 持有者归零时 FREE；事件层 udfree 与 Lua __gc 共用(__gc 时 ref 必>0，GET 短路恒真)
+#define PROT_REF_RELEASE(ptr) \
+    do { \
+        if (0 != ATOMIC_GET(&(ptr)->ref) && 1 == ATOMIC_ADD(&(ptr)->ref, -1)) { \
+            FREE(ptr); \
+        } \
+    } while (0)
+
 // 任务间消息类型枚举
 typedef enum msg_type {
     MSG_TYPE_NONE = 0x00,   // 无消息（占位）

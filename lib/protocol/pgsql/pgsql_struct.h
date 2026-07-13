@@ -56,6 +56,7 @@ typedef struct pgsql_ctx {
     uint16_t port;              // 服务端端口号
     int32_t pid;                // 后端进程 ID
     uint32_t key;               // 后端取消密钥
+    atomic_t ref;               // Lua handle 引用计数：0=C 借用(事件层不 free 块)，>0=Lua 堆持有者数
     struct task_ctx *task;      // 所属任务上下文
     struct evssl_ctx *evssl;    // SSL 上下文（不使用 SSL 时为 NULL）
     struct scram_ctx *scram;    // SCRAM 认证上下文（认证完成后释放）

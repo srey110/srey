@@ -496,8 +496,10 @@ pgpack_ctx *pgsql_copy_out(pgsql_ctx *pg, const char *sql) {
     return coro_send(pg->task, pg->sk.fd, pg->sk.skid, query, qsize, NULL, 0);
 }
 int32_t mongo_connect(task_ctx *task, mongo_ctx *mongo) {
-    mongo->task = task;
-    return coro_connect(task, PACK_MONGO, mongo->evssl, mongo->ip, mongo->port, 0, mongo, &mongo->sk.fd, &mongo->sk.skid);
+    if (ERR_OK != mongo_try_connect(task, mongo, 1)) {
+        return ERR_FAILED;
+    }
+    return coro_wait_connect(task, mongo->sk.fd, mongo->sk.skid, mongo->evssl);
 }
 void mongo_quit(mongo_ctx *mongo) {
     coro_close(mongo->task, mongo->sk.fd, mongo->sk.skid, 0);

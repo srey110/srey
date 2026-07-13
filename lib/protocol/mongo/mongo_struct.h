@@ -30,6 +30,7 @@ typedef struct mongo_ctx {
     uint16_t port;              //服务器端口
     int32_t reqid;              //当前请求 ID（自增）
     uint32_t flags;             //消息标志位（mongo_flags）
+    atomic_t ref;               //Lua handle 引用计数：0=C 借用(事件层不 free 块)，>0=Lua 堆持有者数
     mongo_session *session;     //当前会话（事务时非 NULL）
     struct task_ctx *task;      //所属任务上下文
     struct evssl_ctx *evssl;    //TLS 上下文，NULL 表示不加密

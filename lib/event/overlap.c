@@ -581,6 +581,14 @@ static int32_t _olp_ssl_keyupdate_flush(watcher_ctx *watcher, overlap_tcp_ctx *o
 static void _olp_send_close_tcp(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
     if (BIT_CHECK(oltcp->status, STATUS_REMOVE)
         || BIT_CHECK(oltcp->status, STATUS_NORECV)) {
+#if WITH_SSL
+        // graceful 优雅关闭补发 SSL close_notify(对齐 Unix _usk_close_tcp);ERROR 错误路径不发
+        if (NULL != oltcp->ssl
+            && BIT_CHECK(oltcp->status, STATUS_GRACEFUL_CLOSE)
+            && !BIT_CHECK(oltcp->status, STATUS_ERROR)) {
+            evssl_shutdown(oltcp->ssl, oltcp->ol_r.fd);
+        }
+#endif
         _olp_call_close_cb(watcher->ev, oltcp);
         _evpub_sockel_remove(watcher, oltcp->ol_r.fd);
         pool_push(&watcher->pool, &oltcp->ol_r, 0);
@@ -1270,6 +1278,7 @@ void _iocp_add_fd_inloop(watcher_ctx *watcher, sock_ctx *skctx) {
         if (SOCK_STREAM == skctx->type) {
             pool_push(&watcher->pool, skctx, 0);
         } else {
+            _olp_call_udp_close_cb(watcher->ev, UPCAST(skctx, overlap_udp_ctx, ol_r));
             _iocp_free_udp(skctx);
         }
         return;
@@ -1285,6 +1294,7 @@ void _iocp_add_fd_inloop(watcher_ctx *watcher, sock_ctx *skctx) {
         overlap_udp_ctx *udp = UPCAST(skctx, overlap_udp_ctx, ol_r);
         if (ERR_OK != _olp_post_recv_from(udp)) {
             _evpub_sockel_remove(watcher, skctx->fd);
+            _olp_call_udp_close_cb(watcher->ev, udp);
             _iocp_free_udp(skctx);
         }
     }

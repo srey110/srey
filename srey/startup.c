@@ -21,7 +21,7 @@ int32_t task_startup(loader_ctx *loader, config_ctx *config) {
         return rtn;
     }
     rtn = harbor_start(loader, config->harbor.name, config->harbor.ssl,
-        config->harbor.ip, config->harbor.port, config->harbor.key);
+        config->harbor.ip, config->harbor.port);
     if (ERR_OK != rtn) {
         return rtn;
     }

@@ -15,7 +15,7 @@
 //   8. Harbor：跨节点 call(fire-and-forget) + request 收发校验，request 额外验证回显数据一致
 // rpcname 为 INVALID_TNAME 时跳过 RPC 子测试；autoclose 非 0 时本任务负责驱动 auto_close 子测试
 void task_timeout_start(loader_ctx *loader, const char *name,
-    const char *rpcname, name_val_ctx *ports, void *evssl,
-    int32_t autoclose, const char *haborkey, int32_t pt, int32_t *ok);
+    const char *rpcname, name_val_ctx *ports, void *evssl, void *hbssl,
+    int32_t autoclose, int32_t pt, int32_t *ok);
 
 #endif//TASK_TIMEOUT_H_

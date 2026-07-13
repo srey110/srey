@@ -140,12 +140,8 @@ evssl_ctx *evssl_p12_new(const char *p12, const char *pwd) {
 SSL_CTX *evssl_sslctx(evssl_ctx *evssl) {
     return evssl->ssl;
 }
-void evssl_verify(evssl_ctx *evssl, int32_t verify) {
-    if (verify) {
-        SSL_CTX_set_verify(evssl->ssl, SSL_VERIFY_PEER, NULL);
-    } else {
-        SSL_CTX_set_verify(evssl->ssl, SSL_VERIFY_NONE, NULL);
-    }
+void evssl_verify(evssl_ctx *evssl, int32_t mod, SSL_verify_cb vcb) {
+    SSL_CTX_set_verify(evssl->ssl, mod, vcb);
 }
 void evssl_seclevel(evssl_ctx *evssl, int32_t level) {
     SSL_CTX_set_security_level(evssl->ssl, level);
@@ -234,10 +230,12 @@ evssl_ctx *evssl_qury(const char *name) {
         return NULL;
     }
     certs_ctx *cert;
+    evssl_ctx *ssl;
     rwlock_rdlock(_rwlck_certs);
     cert = _evssl_get(name);
+    ssl = NULL == cert ? NULL : cert->ssl;
     rwlock_unlock(_rwlck_certs);
-    return NULL == cert ? NULL : cert->ssl;
+    return ssl;
 }
 SSL *evssl_setfd(evssl_ctx *evssl, SOCKET fd) {
     if ((uint64_t)fd > (uint64_t)INT_MAX) {

@@ -86,9 +86,11 @@ static int32_t _lcore_multi_request(lua_State *lua) {
     data = lpub_check_buf(lua, 4, &size, &copy);
     int32_t n;
     task_ctx **dsts = _parse_multi_dsts(lua, 1, &n);
-    // n<=0 / sess=0 / 类型错等异常退出由 Lua wrapper(srey.multi_request) 提前 utils.ud_free 兜底,
-    // C 端只走正常路径,不再做 copy=0 + lightuserdata 的 FREE 兜底
     if (n <= 0) {
+        // copy=0 时 data 所有权已转移给 C,无目标不投递,补 FREE 防泄漏(dsts 为 NULL 无需释放)
+        if (!copy) {
+            FREE(data);
+        }
         lua_pushinteger(lua, 0);
         return 1;
     }
@@ -114,9 +116,11 @@ static int32_t _lcore_multi_call(lua_State *lua) {
     data = lpub_check_buf(lua, 3, &size, &copy);
     int32_t n;
     task_ctx **dsts = _parse_multi_dsts(lua, 1, &n);
-    // 空表 / 类型错等异常退出由 Lua wrapper(srey.multi_call) 提前 utils.ud_free 兜底,
-    // C 端只走正常路径,不再做 copy=0 + lightuserdata 的 FREE 兜底
     if (n <= 0) {
+        // copy=0 时 data 所有权已转移给 C,无目标不投递,补 FREE 防泄漏(dsts 为 NULL 无需释放)
+        if (!copy) {
+            FREE(data);
+        }
         return 0;
     }
     task_multi_call(dsts, n, reqtype, data, size, copy);
@@ -796,13 +800,13 @@ static int32_t _lcore_ssl_min_proto(lua_State *lua) {
 /// 设置 SSL 上下文是否验证对端证书
 /// </summary>
 /// <param name="evssl" type="lightuserdata">SSL 上下文指针</param>
-/// <param name="verify" type="integer">1 启用验证，0 不验证</param>
+/// <param name="mod" type="integer">SSL_VERIFY_* 掩码：0 不验证 / SSL_VERIFY_PEER 验对端 / 叠加 SSL_VERIFY_FAIL_IF_NO_PEER_CERT 强制对端出证书(mTLS)</param>
 static int32_t _lcore_ssl_verify(lua_State *lua) {
 #if WITH_SSL
     LUACHECK_LUDATA(lua, 1);
     struct evssl_ctx *ssl = lua_touserdata(lua, 1);
-    int32_t verify = (int32_t)luaL_checkinteger(lua, 2);
-    evssl_verify(ssl, verify);
+    int32_t mod = (int32_t)luaL_checkinteger(lua, 2);
+    evssl_verify(ssl, mod, NULL);
 #else
     (void)lua;
 #endif
