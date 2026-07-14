@@ -91,9 +91,9 @@ typedef struct watcher_ctx {
 }watcher_ctx;
 
 // 向事件多路复用器注册或追加监听事件
-int32_t _uev_add_event(watcher_ctx *watcher, SOCKET fd, int32_t *events, int32_t ev, void *arg);
+int32_t _uev_add_event(watcher_ctx *watcher, SOCKET fd, int32_t *curevents, int32_t ev, void *arg);
 // 从事件多路复用器删除或减少监听事件
-void _uev_del_event(watcher_ctx *watcher, SOCKET fd, int32_t *events, int32_t ev, void *arg);
+void _uev_del_event(watcher_ctx *watcher, SOCKET fd, int32_t *curevents, int32_t ev, void *arg);
 // close fd 前从待提交 changes 移除该 fd 的项，防 fd 复用后陈旧变更(旧 udata)落到新 fd；非 kqueue 平台空操作
 void _uev_drop_changes(watcher_ctx *watcher, SOCKET fd);
 // 在事件循环内完成监听socket的注册
