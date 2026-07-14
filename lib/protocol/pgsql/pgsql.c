@@ -59,17 +59,6 @@ int32_t _pgsql_may_resume(void *data) {
     }
     return ERR_OK;
 }
-// 连接建立后请求是否启用 SSL 加密
-int32_t _pgsql_on_connected(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud, int32_t err) {
-    (void)ud;
-    if (ERR_OK != err) {
-        return err;
-    }
-    char buf[8];
-    pack_integer(buf, 8, 4, 0); // 消息总长度 = 8
-    pack_integer(buf + 4, 80877103, 4, 0); // SSLRequest 魔数
-    return ev_send(ev, fd, skid, buf, sizeof(buf), 1);
-}
 // 发送 Startup 消息，包含用户名、数据库名等启动参数
 static int32_t _pgsql_startup(ev_ctx *ev, ud_cxt *ud) {
     pgsql_ctx *pg = (pgsql_ctx *)ud->context;
@@ -90,6 +79,21 @@ static int32_t _pgsql_startup(ev_ctx *ev, ud_cxt *ud) {
     binary_set_integer(&bwriter, size, 4, 0); // 回填消息总长度
     ud->status = AUTH;
     return ev_send(ev, pg->sk.fd, pg->sk.skid, bwriter.data, size, 0);
+}
+// 连接建立后请求是否启用 SSL 加密；evssl 未配置(明文模式)时跳过 SSLRequest 协商直接进入 Startup，
+// 否则服务端应答 'S' 时无 evssl 可升级只能拒收(见 _pgsql_ssl_response case 'S')，明文连接必然失败
+int32_t _pgsql_on_connected(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud, int32_t err) {
+    if (ERR_OK != err) {
+        return err;
+    }
+    pgsql_ctx *pg = (pgsql_ctx *)ud->context;
+    if (NULL == pg->evssl) {
+        return _pgsql_startup(ev, ud);
+    }
+    char buf[8];
+    pack_integer(buf, 8, 4, 0); // 消息总长度 = 8
+    pack_integer(buf + 4, 80877103, 4, 0); // SSLRequest 魔数
+    return ev_send(ev, fd, skid, buf, sizeof(buf), 1);
 }
 // 处理服务端 SSL 响应：'S' 升级为 SSL，'N' 直接发送 Startup 消息
 static void _pgsql_ssl_response(pgsql_ctx *pg, ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {

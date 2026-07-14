@@ -99,6 +99,15 @@ static int32_t _mongo_server_final_message(mongo_ctx *mongo, mgopack_ctx *mgopac
 static void _mongo_scram_auth(ev_ctx *ev, mgopack_ctx *mgopack, ud_cxt *ud) {
     int32_t rtn;
     mongo_ctx *mongo = ud->context;
+    // ud->status==AUTH 但 scram 未初始化(乱序消息 / _mongo_auth 中 pack_scram_client_first 失败后
+    // 未及时回滚状态):按认证失败处理,不解引用 NULL,同 pgsql _pgsql_scram_client_final 的判空
+    if (NULL == mongo->scram) {
+        LOG_WARN("mongo scram auth response received without prior SCRAM initialization.");
+        ud->status = COMMAND;
+        _hs_push(mongo->sk.fd, mongo->sk.skid, 1, ud, ERR_FAILED, NULL, 0);
+        _mongo_pkfree(mgopack);
+        return;
+    }
     switch (mongo->scram->status) {
     case SCRAM_LOCAL_FIRST:
         rtn = _mongo_server_first_message(ev, mongo, mgopack);
@@ -286,4 +295,7 @@ int32_t mongo_clear_flag(mongo_ctx *mongo) {
 }
 int32_t mongo_status_auth(void) {
     return AUTH;
+}
+int32_t mongo_status_command(void) {
+    return COMMAND;
 }

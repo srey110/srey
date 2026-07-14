@@ -64,6 +64,7 @@ typedef struct ev_ctx {
     uint32_t nthreads;              // 工作线程数
 #ifdef EV_IOCP
     uint32_t nacpex;                // AcceptEx线程数
+    atomic_t nlsn;                  // 存活listener计数（ev_free关闭阶段排空同步用）
     struct acceptex_ctx *acpex;     // AcceptEx上下文数组
 #endif
     struct watcher_ctx *watcher;    // 事件监听器数组
@@ -147,6 +148,8 @@ void *_evpub_sk_new(void *args);
 void _evpub_sk_free(void *sk);
 void _evpub_sk_clear(void *sk);
 void _evpub_sk_reset(void *sk, void *args);
+// 定期收缩对象池（调用方按周期节流触发；now_ms 距上次不足 SHRINK_TIME 则跳过）
+void _evpub_pool_shrink(struct watcher_ctx *watcher, uint64_t *shrink_start, uint64_t now_ms);
 
 void _evpub_share_data_free(void *arg);
 // 统一释放一个 off_buf_ctx：shared==NULL 走独占 FREE(data)；非 NULL 走多播 ref-- 路径

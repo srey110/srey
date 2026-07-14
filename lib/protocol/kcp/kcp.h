@@ -84,7 +84,7 @@ int32_t kcp_handle(kcp_ctx *kcp, name_t handle);
 /// <param name="data">数据</param>
 /// <param name="lens">数据长度</param>
 /// <param name="copy">1 拷贝数据;0 转移所有权(框架内部释放)</param>
-/// <returns>ERR_OK 成功;lens 超过 kcp->maxpack(见 kcp_start)返回 ERR_FAILED</returns>
+/// <returns>ERR_OK 成功;lens 为 0 或超过 kcp->maxpack(见 kcp_start)返回 ERR_FAILED</returns>
 int32_t kcp_send(kcp_ctx *kcp, void *data, size_t lens, int32_t copy);
 
 #endif// KCP_H_

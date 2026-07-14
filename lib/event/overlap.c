@@ -30,6 +30,7 @@ typedef struct listener_ctx {
     cbs_ctx cbs;                                    // 回调函数集合
     ud_cxt ud;                                      // 用户数据模板（每个accept连接复制一份）
     uint64_t id;                                    // 监听器唯一ID（ev_unlisten使用）
+    struct ev_ctx *ev;                              // 所属ev_ctx（_iocp_freelsn递减存活计数nlsn）
     overlap_acpt_ctx overlap_acpt[MAX_ACCEPTEX_CNT]; // 预挂起的AcceptEx数组
 }listener_ctx;
 // IOCP TCP连接上下文（读写各用一个sock_ctx / OVERLAPPED）
@@ -184,12 +185,14 @@ void _iocp_disconnect(sock_ctx *skctx, int32_t immed) {
             // graceful 中升级到 immed (如 _olp_on_send_cb 内 send 失败): 清 GRACEFUL_CLOSE 走 ERROR 路径
             BIT_REMOVE(tcp->status, STATUS_GRACEFUL_CLOSE);
         }
-        // graceful 无待发数据 + (无 in-flight WSASend 或 ol_s 仅 KeyUpdate 探针) → 退化为立即关
-        // (否则 _olp_on_send_cb 不会再触发,无人关闭连接;KeyUpdate 探针 socket 满会 pend 不完成)
+        // graceful 无待发数据 + (无 in-flight WSASend 或 ol_s 仅 KeyUpdate/AUTHSSL 握手探针) → 退化为立即关
+        // (否则 _olp_on_send_cb 不会再触发,无人关闭连接;这类 0 字节探针 socket 满会 pend 不完成,
+        //  尤其握手期 AUTHSSL 探针一旦 pend,读端摘 recv 后零 in-flight IO,连接永久滞留、close_cb 不触发)
         if (0 == immed
             && 0 == queue_size(&tcp->buf_s)
             && (!BIT_CHECK(tcp->status, STATUS_SENDING)
-                || BIT_CHECK(tcp->status, STATUS_KEYUPDATE))) {
+                || BIT_CHECK(tcp->status, STATUS_KEYUPDATE)
+                || BIT_CHECK(tcp->status, STATUS_AUTHSSL))) {
             immed = 1;
         }
         if (0 != immed) {
@@ -618,12 +621,18 @@ static void _olp_on_send_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) 
             }
         } else {
             if (BIT_CHECK(oltcp->status, STATUS_KEYUPDATE)) {// tls1.3 KeyUpdate 写就绪
-                if (ERR_OK != _olp_ssl_keyupdate_flush(watcher, oltcp)) {
-                    _olp_send_close_tcp(watcher, oltcp);
-                    return;
-                }
-                if (BIT_CHECK(oltcp->status, STATUS_KEYUPDATE)) {// 没冲完,探针已重投,等下次完成
-                    return;
+                // graceful 已 SHUT_RD 读端,keyupdate_flush 内 SSL_read 必收 EOF → _olp_send_close_tcp 提前断连丢 buf_s;
+                // 跳过读冲刷、清 KEYUPDATE,落到下方 _olp_tcp_send 排空 buf_s(SSL_write 先 flush 挂起的 KeyUpdate 写),空则触发关闭
+                if (BIT_CHECK(oltcp->status, STATUS_GRACEFUL_CLOSE)) {
+                    BIT_REMOVE(oltcp->status, STATUS_KEYUPDATE);
+                } else {
+                    if (ERR_OK != _olp_ssl_keyupdate_flush(watcher, oltcp)) {
+                        _olp_send_close_tcp(watcher, oltcp);
+                        return;
+                    }
+                    if (BIT_CHECK(oltcp->status, STATUS_KEYUPDATE)) {// 没冲完,探针已重投,等下次完成
+                        return;
+                    }
                 }
             }
         }
@@ -1005,6 +1014,9 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
     for (int32_t i = 0; i < MAX_ACCEPTEX_CNT; i++) {
         lsn->overlap_acpt[i].overlap.fd = INVALID_SOCK;
     }
+    lsn->ev = ctx;
+    // 存活计数+1，须在任何走_iocp_freelsn的失败路径之前；_iocp_freelsn统一-1
+    ATOMIC_ADD(&ctx->nlsn, 1);
     lsn->family = netaddr_family(&addr);
     lsn->fd = fd;
     lsn->cbs = *cbs;
@@ -1034,6 +1046,7 @@ void _iocp_freelsn(listener_ctx *lsn) {
     }
     CLOSE_SOCK(lsn->fd);
     UD_FREE(lsn->cbs.ud_free, &lsn->ud);
+    ATOMIC_ADD(&lsn->ev->nlsn, -1);
     FREE(lsn);
 }
 // 递减 lsn 引用计数；归零时释放 listener_ctx。listener_ctx 完整定义仅在本文件可见，
@@ -1070,6 +1083,28 @@ void ev_unlisten(ev_ctx *ctx, uint64_t id) {
     _olp_free_acceptex(lsn, MAX_ACCEPTEX_CNT);
     // 减占位 ref；cb 都已完成时此处减到 0 释放，否则由最后一个 cb 释放
     _iocp_try_freelsn(lsn);
+}
+// ev_free关闭阶段：ev_unlisten掉所有仍在arrlsn中的listener（remove=1+取消在途AcceptEx）。
+// 释放交由取消完成驱动（cb减ref至0走_iocp_freelsn），取代旧的强制_iocp_freelsn——
+// 后者在内核异步写取消完成的内嵌OVERLAPPED之前FREE(lsn)，构成write-after-free。
+void _iocp_unlisten_all(ev_ctx *ctx) {
+    uint64_t id;
+    for (;;) {
+        spin_lock(&ctx->spin);
+        if (0 == array_size(&ctx->arrlsn)) {
+            spin_unlock(&ctx->spin);
+            break;
+        }
+        id = (*(listener_ctx **)array_at(&ctx->arrlsn, 0))->id;
+        spin_unlock(&ctx->spin);
+        ev_unlisten(ctx, id);
+    }
+}
+// ev_free排空阶段直接释放AcceptEx完成对应的listener引用：此时所有slot已remove=1+取fd，
+// _olp_on_accept_cb必走释放分支且仅调_iocp_try_freelsn，故直接减ref跳过其余死分支
+void _iocp_acpex_release(sock_ctx *skctx) {
+    overlap_acpt_ctx *olacp = UPCAST(skctx, overlap_acpt_ctx, overlap);
+    _iocp_try_freelsn(olacp->lsn);
 }
 // 提交WSARecvFrom异步UDP接收请求
 static int32_t _olp_post_recv_from(overlap_udp_ctx *oludp) {

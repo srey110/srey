@@ -166,9 +166,7 @@ static inline void _usk_close_tcp(watcher_ctx *watcher, tcp_ctx *tcp) {
     _uev_del_event(watcher, tcp->sock.fd, &tcp->sock.events, tcp->sock.events, &tcp->sock);
 #endif
     _evpub_sockel_remove(watcher, tcp->sock.fd);
-#if defined(EV_KQUEUE)
     _uev_drop_changes(watcher, tcp->sock.fd);
-#endif
     // 立即 close fd 把 fd 还给 OS（不延迟到 _evpub_sk_clear）；CLOSE_SOCK 设 fd=INVALID_SOCK,
     // 后续 _evpub_sk_clear 再次 CLOSE_SOCK 内宏判 INVALID_SOCK 跳过（幂等）
     CLOSE_SOCK(tcp->sock.fd);
@@ -188,9 +186,7 @@ static inline void _usk_close_udp(watcher_ctx *watcher, udp_ctx *udp) {
     _uev_del_event(watcher, udp->sock.fd, &udp->sock.events, udp->sock.events, &udp->sock);
 #endif
     _evpub_sockel_remove(watcher, udp->sock.fd);
-#if defined(EV_KQUEUE)
     _uev_drop_changes(watcher, udp->sock.fd);
-#endif
     CLOSE_SOCK(udp->sock.fd);
     udp->sock.ev_cb = NULL;
     _uev_qtn_push(watcher, &udp->sock, QTN_UDP);
@@ -334,6 +330,12 @@ void _uev_try_ssl_exchange(watcher_ctx *watcher, sock_ctx *skctx, struct evssl_c
     }
     if (BIT_CHECK(tcp->status, STATUS_ERROR)
         || BIT_CHECK(tcp->status, STATUS_GRACEFUL_CLOSE)) {
+        return;
+    }
+    // 连接未完成(ev_cb 仍为 _usk_on_connect_cb)时 EVENT_WRITE 表示等待 connect 而非待发数据,
+    // 误入下方延迟分支会残留 SSLEXCHANGE 脏位;拒绝(正确用法:ev_connect 带 evssl,或等连接建立后再 ev_ssl)
+    if (_usk_on_rw_cb != skctx->ev_cb) {
+        LOG_WARN("ssl exchange requested before connection established.");
         return;
     }
     if (client) {
@@ -486,12 +488,16 @@ static void _usk_on_rw_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
         } else {
             if (evwrite && BIT_CHECK(tcp->status, STATUS_KEYUPDATE)) {// tls1.3 KeyUpdate 处理
                 BIT_REMOVE(tcp->status, STATUS_KEYUPDATE);
-                if (0 == queue_size(&tcp->buf_s)) {
-                    evwrite = 0;
-                    _uev_del_event(watcher, tcp->sock.fd, &tcp->sock.events, EVENT_WRITE, &tcp->sock);
+                // graceful 已 SHUT_RD 读端,再 SSL_read 重试必收 EOF 提前断连丢 buf_s;此时跳过读重试,
+                // 落到下方 _usk_tcp_send 排空 buf_s(SSL_write 会先 flush 挂起的 KeyUpdate 写),空则触发关闭
+                if (!BIT_CHECK(tcp->status, STATUS_GRACEFUL_CLOSE)) {
+                    if (0 == queue_size(&tcp->buf_s)) {
+                        evwrite = 0;
+                        _uev_del_event(watcher, tcp->sock.fd, &tcp->sock.events, EVENT_WRITE, &tcp->sock);
+                    }
+                    evread = 1;
+                    kuread = 1;
                 }
-                evread = 1;
-                kuread = 1;
             }
         }
     }
@@ -564,6 +570,7 @@ void _uev_add_bufs_send(watcher_ctx *watcher, sock_ctx *skctx, off_buf_ctx *buf)
 static void _usk_on_connect_cb_err(watcher_ctx *watcher, tcp_ctx *tcp) {
     _usk_call_conn_cb(watcher->ev, tcp, ERR_FAILED);
     _evpub_sockel_remove(watcher, tcp->sock.fd);
+    _uev_drop_changes(watcher, tcp->sock.fd);
     pool_push(&watcher->pool, &tcp->sock, 0);
 }
 // connect完成事件回调：检查连接结果，切换为读写回调，触发conn回调
@@ -964,6 +971,7 @@ void _uev_remove_lsn(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) {
     }
 #endif
     if (NULL != skctx) {//防止关掉正确的socket
+        _uev_drop_changes(watcher, fd);
         CLOSE_SOCK((*skctx)->fd);
     }
     // 仅清本 watcher 持有的 lsnsock ev_cb,让本批次 events[] 残留事件跳过本 lsnsock;

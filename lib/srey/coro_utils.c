@@ -512,6 +512,9 @@ static int32_t _mongo_auth(mongo_ctx *mongo, const char *authmod) {
     size_t lens;
     void *client_first = mongo_pack_scram_client_first(mongo, authmod, &lens);
     if (NULL == client_first) {
+        // scram 未初始化成功,回滚状态为 COMMAND,避免连接卡在 AUTH 态导致后续正常响应
+        // 误入 _mongo_scram_auth 解引用 NULL scram(mongo.c 内已加判空兜底,此处是根因修复)
+        ev_ud_status(&mongo->task->loader->netev, mongo->sk.fd, mongo->sk.skid, mongo_status_command());
         return ERR_FAILED;
     }
     if (ERR_OK != ev_send(&mongo->task->loader->netev, mongo->sk.fd, mongo->sk.skid, client_first, lens, 0)) {

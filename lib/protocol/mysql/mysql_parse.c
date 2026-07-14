@@ -37,6 +37,14 @@ char *_mysql_payload(mysql_ctx *mysql, buffer_ctx *buf, size_t *payload_lens, in
         BIT_SET(*status, PROT_MOREDATA);
         return NULL;
     }
+    // payload==0xffffff(INT3_MAX) 按 MySQL 协议恒表示服务端还有续传包(即便本包恰好 16MB-1)，
+    // 本实现不支持拼接多物理包（同 _mysql_set_payload_lens 发送侧限制），报协议错误断连，
+    // 避免把这个 16MB 块误当完整 payload 交付解析（行数据会在边界截断、长度字段错位）
+    if (INT3_MAX == *payload_lens) {
+        LOG_ERROR("mysql response requires 16MB packet continuation, unsupported.");
+        BIT_SET(*status, PROT_ERROR);
+        return NULL;
+    }
     char *payload;
     MALLOC(payload, *payload_lens);
     ASSERTAB(*payload_lens == buffer_remove(buf, payload, *payload_lens), "copy buffer failed.");
@@ -465,12 +473,17 @@ static mpack_ctx *_mpack_resultset_response(mysql_ctx *mysql, buffer_ctx *buf, b
             mpack = _mpack_new(mysql, breader->data);
             mpack->pack_type = MPACK_OK;
             MALLOC(mpack->pack, sizeof(mpack_ok));
-            if (ERR_OK != _mpack_ok(mysql, breader, mpack->pack)) {
+            mpack_ok *ok = mpack->pack;
+            if (ERR_OK != _mpack_ok(mysql, breader, ok)) {
                 BIT_SET(*status, PROT_ERROR);
                 _mysql_pkfree(mpack);
                 return NULL;
             }
-            mysql->cur_cmd = 0;
+            // 与行阶段 EOF 续接同规则(见 _mpack_check_final)：OK 包若声明还有更多结果集(多语句/CALL
+            // 多结果集)，保留 cur_cmd 供下一个包续接解析；否则下一响应会落入 default 分支误判协议错误断连
+            if (!BIT_CHECK(ok->status_flags, SERVER_MORE_RESULTS_EXISTS)) {
+                mysql->cur_cmd = 0;
+            }
         } else if (MYSQL_ERR == first) {
             binary_get_skip(breader, 1);
             mpack = _mpack_new(mysql, breader->data);

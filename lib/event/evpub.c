@@ -69,6 +69,15 @@ uint32_t _evpub_tick_drive(watcher_ctx *watcher, timer_ctx *timer, uint64_t *now
 int32_t _evpub_sock_type(sock_ctx *skctx) {
     return skctx->type;
 }
+// 定期收缩对象池（调用方按 EVENT_CHECK_INTERVAL 节流触发，避免频繁 syscall）。
+// hashmap_count 作收缩基数：IOCP 下 cmd sock 不入 hashmap（精确），Unix 下含 1 个 cmd 管道 sock（偏差可忽略）。
+void _evpub_pool_shrink(watcher_ctx *watcher, uint64_t *shrink_start, uint64_t now_ms) {
+    if (now_ms - *shrink_start < SHRINK_TIME) {
+        return;
+    }
+    *shrink_start = now_ms;
+    pool_shrink(&watcher->pool, shrink_nkeep(hashmap_count(watcher->element)), SHRINK_BUSY);
+}
 void _evpub_share_data_free(void *arg) {
     shared_data_free(arg, _free);
 }

@@ -15,7 +15,8 @@ mysql_stmt_ctx *mysql_stmt_init(mpack_ctx *mpack);
 void _mpack_stm_free(void *pack);
 // 内部函数：释放结果集读取器中所有行数据和字段数组
 void _mpack_reader_free(void *pack);
-// 内部函数：从接收缓冲区读取并分配一个完整 MySQL payload，数据不足时设置 PROT_MOREDATA
+// 内部函数：从接收缓冲区读取并分配一个完整 MySQL payload；数据不足时设置 PROT_MOREDATA，
+// payload 达到 16MB 续传边界(0xffffff，本实现不支持拼接)时设置 PROT_ERROR
 char *_mysql_payload(mysql_ctx *mysql, buffer_ctx *buf, size_t *payload_lens, int32_t *status);
 
 // 内部函数：解析 OK 响应包，更新 mysql->last_id 和 mysql->affected_rows

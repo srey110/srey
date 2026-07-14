@@ -95,15 +95,27 @@ static void _uev_check_changes(watcher_ctx *watcher) {
     }
 }
 #endif
-#if defined(EV_KQUEUE)
 void _uev_drop_changes(watcher_ctx *watcher, SOCKET fd) {
-    for (int32_t i = watcher->nchanges - 1; i >= 0; i--) {
-        if ((SOCKET)watcher->changes[i].ident == fd) {
-            watcher->changes[i] = watcher->changes[--watcher->nchanges];
+#if defined(EV_KQUEUE) || defined(EV_DEVPOLL)
+    int32_t n = 0;
+    for (int32_t i = 0; i < watcher->nchanges; i++) {
+#if defined(EV_KQUEUE)
+        if ((SOCKET)watcher->changes[i].ident != fd) {
+#else
+        if ((SOCKET)watcher->changes[i].fd != fd) {
+#endif
+            if (n != i) {
+                watcher->changes[n] = watcher->changes[i];
+            }
+            n++;
         }
     }
-}
+    watcher->nchanges = n;
+#else
+    (void)watcher;
+    (void)fd;
 #endif
+}
 int32_t _uev_add_event(watcher_ctx *watcher, SOCKET fd, int32_t *events, int32_t ev, void *arg) {
 #if defined(EV_EPOLL)
     events_t epev = { 0 };
@@ -349,15 +361,6 @@ static int32_t _uev_parse_event(events_t *ev, SOCKET *fd, void **arg) {
 #endif
     return rtn;
 }
-// 定期收缩对象池
-static void _uev_pool_shrink(watcher_ctx *watcher, uint64_t *shrink_start, uint64_t now_ms) {
-    if (now_ms - *shrink_start < SHRINK_TIME) {
-        return;
-    }
-    *shrink_start = now_ms;
-    // hashmap_count 含 1 个命令管道 sock(type=0)，偏差可忽略
-    pool_shrink(&watcher->pool, shrink_nkeep(hashmap_count(watcher->element)), SHRINK_BUSY);
-}
 // 事件循环主函数（Unix平台：epoll/kqueue/evport/pollset/devpoll）
 static void _uev_loop_event(void *arg) {
     watcher_ctx *watcher = (watcher_ctx *)arg;
@@ -448,7 +451,7 @@ static void _uev_loop_event(void *arg) {
             now_ms = timer_cur_ms(&watcher->timer);
         }
         _uev_qtn_drain(watcher, now_ms);
-        _uev_pool_shrink(watcher, &shrink_start, now_ms);
+        _evpub_pool_shrink(watcher, &shrink_start, now_ms);
     }
     LOG_INFO("net event thread %d exited.", watcher->index);
 }
@@ -622,8 +625,7 @@ static void _uev_free_pipe(watcher_ctx *watcher) {
     fsqu_free(&watcher->pipe.qu);
 #endif
 }
-void ev_free(ev_ctx *ctx) {
-    //stop
+static void _uev_stop_watcher(ev_ctx *ctx) {
     uint32_t i;
     cmd_ctx cmd;
     cmd.cmd = CMD_STOP;
@@ -635,6 +637,10 @@ void ev_free(ev_ctx *ctx) {
     for (i = 0; i < ctx->nthreads; i++) {// 等全部停止，防 accept push到释放后的队列
         thread_join(ctx->watcher[i].thevent);
     }
+}
+static void _uev_free_watcher(ev_ctx *ctx) {
+    uint32_t i;
+    watcher_ctx *watcher;
     for (i = 0; i < ctx->nthreads; i++) {
         watcher = &ctx->watcher[i];
         // _uev_init_cmd 将 pip_ctx::skpip（嵌入 watcher->pipe）以 type=0 注册进 element；
@@ -655,14 +661,22 @@ void ev_free(ev_ctx *ctx) {
         FREE(watcher->events);
     }
     FREE(ctx->watcher);
-    //释放 listener
+}
+static void _uev_free_alllsn(ev_ctx *ctx) {
     struct listener_ctx **lsn;
+    uint32_t i;
     uint32_t nlsn = array_size(&ctx->arrlsn);
     for (i = 0; i < nlsn; i++) {
         lsn = (struct listener_ctx **)array_at(&ctx->arrlsn, i);
         _uev_freelsn(*lsn);
     }
     array_free(&ctx->arrlsn);
+}
+void ev_free(ev_ctx *ctx) {
+    // 先停全部 watcher 线程再释放，防 accept 向已释放队列 push
+    _uev_stop_watcher(ctx);
+    _uev_free_watcher(ctx);
+    _uev_free_alllsn(ctx);
     spin_free(&ctx->spin);
 }
 

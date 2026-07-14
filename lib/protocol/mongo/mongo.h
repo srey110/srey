@@ -86,6 +86,10 @@ int32_t mongo_clear_flag(mongo_ctx *mongo);
 /// </summary>
 /// <returns>AUTH 状态枚举值</returns>
 int32_t mongo_status_auth(void);
-
+/// <summary>
+/// 返回 COMMAND 状态值，供外部在 AUTH 初始化失败时回滚 ud_cxt.status，避免连接卡在 AUTH 态
+/// </summary>
+/// <returns>COMMAND 状态枚举值</returns>
+int32_t mongo_status_command(void);
 
 #endif//MONGO_H_

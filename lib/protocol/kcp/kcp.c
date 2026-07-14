@@ -166,8 +166,10 @@ void _kcp_unpack(SOCKET fd, uint64_t skid,
         return;
     }
     ikcp_input(kel->ikcp, buf, (long)size);
+    // peek==0 是"队头存在一条 0 长度消息",必须 ikcp_recv 消费出队,不能与 peek<0(无消息)一样早退,
+    // 否则空消息永久堵住 rcv_queue 队头,其后所有消息投递不出去
     int32_t peek = ikcp_peeksize(kel->ikcp);
-    if (peek <= 0) {
+    if (peek < 0) {
         return;
     }
     void *target = g_emit->begin(ud->loader, kel->handle);
@@ -183,20 +185,25 @@ void _kcp_unpack(SOCKET fd, uint64_t skid,
     int32_t rtn;
     recvfrom_ctx *umsg;
     for (;;) {
-        MALLOC(umsg, sizeof(recvfrom_ctx) + peek);
-        rtn = ikcp_recv(kel->ikcp, umsg->data, peek);
-        if (rtn < 0) {
-            FREE(umsg);
-            break;
+        if (0 == peek) {
+            // 0 长度消息:传 NULL 让 ikcp_recv 消费出队但不投递(对齐 UDP 0 字节过滤),免去分配
+            ikcp_recv(kel->ikcp, NULL, 0);
+        } else {
+            MALLOC(umsg, sizeof(recvfrom_ctx) + peek);
+            rtn = ikcp_recv(kel->ikcp, umsg->data, peek);
+            if (rtn < 0) {
+                FREE(umsg);
+                break;
+            }
+            umsg->len = (size_t)rtn;
+            umsg->addr = kel->addr;
+            msg.data = umsg;
+            msg.size = umsg->len;
+            msg.sess = kel->sess;
+            g_emit->emit(target, &msg);
         }
-        umsg->len = (size_t)rtn;
-        umsg->addr = kel->addr;
-        msg.data = umsg;
-        msg.size = umsg->len;
-        msg.sess = kel->sess;
-        g_emit->emit(target, &msg);
         peek = ikcp_peeksize(kel->ikcp);
-        if (peek <= 0) {
+        if (peek < 0) {
             break;
         }
     }
@@ -473,8 +480,8 @@ int32_t kcp_send(kcp_ctx *kcp, void *data, size_t lens, int32_t copy) {
         }
         return ERR_FAILED;
     }
-    if (lens > kcp->maxpack) {
-        LOG_WARN("kcp send lens %zu exceeds max pack %zu.", lens, kcp->maxpack);
+    if (0 == lens || lens > kcp->maxpack) {
+        LOG_WARN("kcp send invalid lens %zu (max pack %zu).", lens, kcp->maxpack);
         if (!copy) {
             FREE(data);
         }

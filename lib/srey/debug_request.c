@@ -4,6 +4,9 @@
 #include "utils/binary.h"
 #include "utils/log.h"
 
+// 字面量响应：串只写一次，长度由 sizeof-1 编译期得出，免同串双写改文案时长度不匹配
+#define _debug_resp_lit(task, src, sess, lit) \
+    _debug_resp((task), (src), (sess), (lit), sizeof(lit) - 1)
 // stat 输出用的 mtype 名字表，索引对齐 msg_type 枚举
 static const char *_mtype_names[MSG_TYPE_ALL] = {
     "NONE", "STARTUP", "CLOSING", "TIMEOUT", "ACCEPT", "CONNECT",
@@ -80,7 +83,7 @@ int32_t _debug_request(task_ctx *task, message_ctx *msg) {
             _debug_resp(task, msg->src, msg->sess, dump, dlen);
             FREE(dump);
         } else {
-            _debug_resp(task, msg->src, msg->sess, "coros: not a coroutine task.", strlen("coros: not a coroutine task."));
+            _debug_resp_lit(task, msg->src, msg->sess, "coros: not a coroutine task.");
         }
         return ERR_OK;
     }
@@ -88,11 +91,11 @@ int32_t _debug_request(task_ctx *task, message_ctx *msg) {
         seri_item lv;
         if (1 != seri_iter_next(&it, &lv) || SERI_ITEM_INT != lv.type) {
             // 命令已识别但参数错：回错误响应并接管，不透传
-            _debug_resp(task, msg->src, msg->sess, "loglv: missing level.", strlen("loglv: missing level."));
+            _debug_resp_lit(task, msg->src, msg->sess, "loglv: missing level.");
             return ERR_OK;
         }
         if (lv.v.i < LOGLV_FATAL || lv.v.i > LOGLV_DEBUG) {
-            _debug_resp(task, msg->src, msg->sess, "loglv: invalid level.", strlen("loglv: invalid level."));
+            _debug_resp_lit(task, msg->src, msg->sess, "loglv: invalid level.");
             return ERR_OK;
         }
         log_setlv((log_level)lv.v.i);
@@ -105,7 +108,7 @@ int32_t _debug_request(task_ctx *task, message_ctx *msg) {
     // 避免透传到无 on_requested 的框架 task 显示误导的 "unavailable"
     if (_debug_cmd_eq(&cmd, "mem", 3) || _debug_cmd_eq(&cmd, "gc", 2)
         || _debug_cmd_eq(&cmd, "inject", 6) || _debug_cmd_eq(&cmd, "hotfix", 6)) {
-        _debug_resp(task, msg->src, msg->sess, "command not supported in C task.", strlen("command not supported in C task."));
+        _debug_resp_lit(task, msg->src, msg->sess, "command not supported in C task.");
         return ERR_OK;
     }
     // 非公共命令(业务自定义)：返回 ERR_FAILED 透传给业务 on_requested 自行处理

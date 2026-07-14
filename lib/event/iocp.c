@@ -5,6 +5,7 @@
 
 #ifdef EV_IOCP
 
+#define IOCP_STOP_DRAIN_TIMEOUT  3000  // 停止排空整体截止(ms);超时说明有 socket close 后未从 map 摘除(bug)
 exfuncs_ctx _exfuncs;// 全局扩展函数指针（AcceptEx/ConnectEx）
 static atomic_t _init_once = 0;// 保证扩展函数只初始化一次
 static void(*cmd_cbs[CMD_TOTAL])(watcher_ctx *watcher, cmd_ctx *cmd);// 命令回调函数表
@@ -89,16 +90,7 @@ static void _iocp_on_cmd(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
         ASSERTAB(ERR_OK == _iocp_post_recv(&olcmd->ol_r, &olcmd->bytes, &olcmd->flag, &olcmd->wsabuf, 1), ERRORSTR(ERRNO));
     }
 }
-// 定期收缩对象池（每EVENT_CHECK_INTERVAL轮检查一次时钟，避免频繁syscall）
-static void _iocp_pool_shrink(watcher_ctx *watcher, uint64_t *shrink_start, uint64_t now_ms) {
-    if (now_ms - *shrink_start < SHRINK_TIME) {
-        return;
-    }
-    *shrink_start = now_ms;
-    // cmd sock 仅 _iocp_join 不入 hashmap，hashmap_count 即业务 socket 数
-    pool_shrink(&watcher->pool, shrink_nkeep(hashmap_count(watcher->element)), SHRINK_BUSY);
-}
-// 驱动 tick 并按 EVENT_CHECK_INTERVAL 节流触发 pool_shrink；返回下次 wait 超时(ms)，Vista+/XP 两份 _iocp_loop_event 共用
+// 驱动 tick 并按 EVENT_CHECK_INTERVAL 节流触发 pool_shrink；返回下次 wait 超时(ms)
 static uint32_t _iocp_loop_check(watcher_ctx *watcher, uint32_t *shrink_cnt, uint64_t *shrink_start) {
     uint64_t now_ms;
     uint32_t next_to = _evpub_tick_drive(watcher, &watcher->timer, &now_ms);
@@ -110,20 +102,39 @@ static uint32_t _iocp_loop_check(watcher_ctx *watcher, uint32_t *shrink_cnt, uin
     if (0 == now_ms) {
         now_ms = timer_cur_ms(&watcher->timer);
     }
-    _iocp_pool_shrink(watcher, shrink_start, now_ms);
+    _evpub_pool_shrink(watcher, shrink_start, now_ms);
     return next_to;
 }
 timer_ctx *_evpub_watcher_timer(watcher_ctx *watcher) {
     return &watcher->timer;
 }
-#if (_WIN32_WINNT >= 0x0600)
-// 事件循环主函数（Vista+，使用GetQueuedCompletionStatusEx批量获取事件）
+// stop 后判断事件循环是否应退出：排空完成(element 空)或排空超时则返回 1，否则(含未 stop)返回 0
+static int32_t _iocp_check_stop(watcher_ctx *watcher, int32_t stop, uint64_t *drain_deadline) {
+    if (0 == stop) {
+        return 0;
+    }
+    // 停止后收干 CancelIoEx 触发的在途完成:element 里的 socket 仅在其 IRP 全完成、refcount 归 0 时
+    // 才被摘除,count 归 0 即无在途 IRP,hashmap_free 才不会释放仍有在途 IRP 的 sock_ctx(内核 write-after-free)
+    // cmd socket 在处理完 CMD_STOP 命令已不再投递
+    if (0 == hashmap_count(watcher->element)) {
+        return 1;
+    }
+    uint64_t now = timer_cur_ms(&watcher->timer);
+    if (0 == *drain_deadline) {
+        *drain_deadline = now + IOCP_STOP_DRAIN_TIMEOUT;
+    } else if (now >= *drain_deadline) {
+        // 超时兜底:仍有 socket 未从 map 摘除,说明有 close 后未被完成回调移除的 socket(程序 bug),告警后退出防挂死
+        LOG_ERROR("watcher %d stop drain timeout, %zu socket(s) still in map (possible leak/bug).",
+            watcher->index, hashmap_count(watcher->element));
+        return 1;
+    }
+    return 0;
+}
+// 事件循环主函数（使用GetQueuedCompletionStatusEx批量获取事件）
 static void _iocp_loop_event(void *arg) {
     watcher_ctx *watcher = (watcher_ctx *)arg;
     int32_t err, stop;
-    ULONG i;
-    ULONG count;
-    ULONG nevent = INIT_EVENTS_CNT;
+    ULONG i, count, nevent = INIT_EVENTS_CNT;
     sock_ctx *sock;
     uint32_t shrink_cnt = 0;
     uint32_t next_to = EVENT_WAIT_TIMEOUT;
@@ -133,13 +144,17 @@ static void _iocp_loop_event(void *arg) {
     LPOVERLAPPED_ENTRY overlappeds;
     MALLOC(overlappeds, sizeof(OVERLAPPED_ENTRY) * nevent);
     uint64_t shrink_start = timer_cur_ms(&watcher->timer);
-    while (0 == (stop = (int32_t)ATOMIC_GET(&watcher->stop))
-           || (stop && ok)) {//退出前抽干事件
+    uint64_t drain_deadline = 0;// stop 后进入排空的截止时刻(ms);0=未进入
+    for (;;) {
+        stop = (int32_t)ATOMIC_GET(&watcher->stop);
+        if (0 != _iocp_check_stop(watcher, stop, &drain_deadline)) {
+            break;
+        }
         ok = GetQueuedCompletionStatusEx(watcher->iocp,
                                         overlappeds,
                                         nevent,
                                         &count,
-                                        1 == stop ? 0 : next_to,
+                                        0 != stop ? EVENT_WAIT_TIMEOUT : next_to,
                                         FALSE);
         if (ok) {
             for (i = 0; i < count; i++) {
@@ -158,11 +173,7 @@ static void _iocp_loop_event(void *arg) {
                     nevent *= 2;
                 }
             }
-        } else if (WAIT_TIMEOUT == (err = ERRNO)) {
-            if (0 == ATOMIC_GET(&watcher->stop)) {//防止退出时第一次while判断错误
-                ok = TRUE;
-            }
-        } else {
+        } else if (WAIT_TIMEOUT != (err = ERRNO)) {
             LOG_ERROR("%s", ERRORSTR(err));
         }
         next_to = _iocp_loop_check(watcher, &shrink_cnt, &shrink_start);
@@ -170,13 +181,11 @@ static void _iocp_loop_event(void *arg) {
     LOG_INFO("net event thread %d exited.", watcher->index);
     FREE(overlappeds);
 }
-// AcceptEx专用线程事件循环（Vista+，批量处理accept完成事件）
+// AcceptEx专用线程事件循环（批量处理accept完成事件）
 static void _iocp_loop_acpex(void *arg) {
     acceptex_ctx *acpex = (acceptex_ctx *)arg;
     int32_t err, stop;
-    ULONG i;
-    ULONG count;
-    ULONG nevent = INIT_EVENTS_CNT;
+    ULONG i, count, nevent = INIT_EVENTS_CNT;
     sock_ctx *sock;
     BOOL ok = FALSE;
     LPOVERLAPPED overlap;
@@ -184,12 +193,12 @@ static void _iocp_loop_acpex(void *arg) {
     LPOVERLAPPED_ENTRY overlappeds;
     MALLOC(overlappeds, sizeof(OVERLAPPED_ENTRY) * nevent);
     while (0 == (stop = (int32_t)ATOMIC_GET(&acpex->stop))
-           || (stop && ok)) {//退出前抽干事件，防止lsn泄漏
+           || (stop && ok)) {
         ok = GetQueuedCompletionStatusEx(acpex->iocp,
                                          overlappeds,
                                          nevent,
                                          &count,
-                                         1 == stop ? 0 : EVENT_WAIT_TIMEOUT,
+                                         EVENT_WAIT_TIMEOUT,
                                          FALSE);
         if (ok) {
             for (i = 0; i < count; i++) {
@@ -223,82 +232,6 @@ static void _iocp_loop_acpex(void *arg) {
     LOG_INFO("accept thread %d exited.", acpex->index);
     FREE(overlappeds);
 }
-#else
-// 事件循环主函数（XP兼容，使用GetQueuedCompletionStatus单个获取事件）
-static void _iocp_loop_event(void *arg) {
-    watcher_ctx *watcher = (watcher_ctx *)arg;
-    DWORD bytes;
-    int32_t err, stop;
-    BOOL ok = FALSE;
-    ULONG_PTR key;
-    sock_ctx *sock;
-    OVERLAPPED *overlap;
-    uint32_t shrink_cnt = 0;
-    uint32_t next_to = EVENT_WAIT_TIMEOUT;
-    uint64_t shrink_start = timer_cur_ms(&watcher->timer);
-    while (0 == (stop = (int32_t)ATOMIC_GET(&watcher->stop))
-           || (stop && ok)) {//退出前抽干事件
-        overlap = NULL;
-        ok = GetQueuedCompletionStatus(watcher->iocp,
-                                       &bytes,
-                                       &key,
-                                       &overlap,
-                                       1 == stop ? 0 : next_to);
-        if (NULL != overlap) {
-            sock = UPCAST(overlap, sock_ctx, overlapped);
-            sock->ev_cb(watcher, sock, bytes);
-            if (1 == ATOMIC_GET(&watcher->stop)) {//cancelled 完成事件会返回 ok=FALSE,overlap!=NULL
-                ok = TRUE;
-            }
-        } else if (!ok) {
-            if (WAIT_TIMEOUT == (err = ERRNO)) {
-                if (0 == ATOMIC_GET(&watcher->stop)) {
-                    ok = TRUE;
-                }
-            } else {
-                LOG_ERROR("%s", ERRORSTR(err));
-            }
-        }
-        next_to = _iocp_loop_check(watcher, &shrink_cnt, &shrink_start);
-    }
-    LOG_INFO("net event thread %d exited.", watcher->index);
-}
-// AcceptEx专用线程事件循环（XP兼容）
-static void _iocp_loop_acpex(void *arg) {
-    acceptex_ctx *acpex = (acceptex_ctx *)arg;
-    DWORD bytes;
-    int32_t err, stop;
-    BOOL ok = FALSE;
-    ULONG_PTR key;
-    sock_ctx *sock;
-    OVERLAPPED *overlap;
-    while (0 == (stop = (int32_t)ATOMIC_GET(&acpex->stop))
-           || (stop && ok)) {//退出前抽干事件，防止lsn泄漏
-        overlap = NULL;
-        ok = GetQueuedCompletionStatus(acpex->iocp,
-                                       &bytes,
-                                       &key,
-                                       &overlap,
-                                       1 == stop ? 0 : EVENT_WAIT_TIMEOUT);
-        if (NULL != overlap) {
-            sock = UPCAST(overlap, sock_ctx, overlapped);
-            sock->ev_cb(acpex, sock, bytes);
-            if (1 == ATOMIC_GET(&acpex->stop)) {//cancelled 完成事件（accept 被 CancelIoEx 取消的完成）会返回 ok=FALSE, overlap!=NULL
-                ok = TRUE;
-            }
-        } else if (!ok) {
-            if (WAIT_TIMEOUT == (err = ERRNO)) {
-                if (0 == ATOMIC_GET(&acpex->stop)) {
-                    ok = TRUE;
-                }
-            } else {
-                LOG_ERROR("%s", ERRORSTR(err));
-            }
-        }
-    }
-    LOG_INFO("accept thread %d exited.", acpex->index);
-}
-#endif
 // hashmap元素释放回调：根据socket类型选择释放函数
 static void _iocp_sockel_free(void *item) {
     sock_ctx *sock = *((sock_ctx **)item);
@@ -327,6 +260,7 @@ static void _iocp_init_cmd(watcher_ctx *watcher) {
 void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
     ctx->nthreads = (0 == nthreads ? procscnt() : nthreads);
     ctx->nacpex = ctx->nthreads > 3 ? 2 : 1;
+    ATOMIC_SET(&ctx->nlsn, 0);
     _iocp_init_funcs();
     MALLOC(ctx->watcher, sizeof(watcher_ctx) * ctx->nthreads);
     watcher_ctx *watcher;
@@ -413,14 +347,9 @@ static void _iocp_free_cmd(watcher_ctx *watcher) {
     CLOSE_SOCK(olcmd->fd);
     fsqu_free(&olcmd->qu);
 }
-void ev_free(ev_ctx *ctx) {
-    // 顺序：先停 acpex 防止新 CMD_ADDACP 投递；再停 watcher 并 _iocp_free_cmd 排空 cmd 队列
-    // （内部 CMD_ADDACP 经 _iocp_try_freelsn 释放跨 watcher 投递占位 ref，操作仍存活的 lsn）；
-    // 最后才释放仍在 arrlsn 中的 listener（此时 watcher/acpex 均已停，无路径再访问 lsn）。
-    // 反向顺序（先释 listener 再 _iocp_free_cmd）会令 _iocp_free_cmd 中 CMD_ADDACP 的 _iocp_try_freelsn
-    // 在已释放的 lsn->ref 上 atomic add → UAF；与 Unix 路径 ev_free 顺序对称。
+static void _iocp_stop_acpex_thread(ev_ctx *ctx) {
     uint32_t i;
-    // 1. 停止 AcceptEx 线程：之后不会再有 _on_accept_cb 投递新的 CMD_ADDACP
+    // 停止 AcceptEx 线程（暂不关共用 IOCP，步骤4 仍需从中取出取消完成）
     for (i = 0; i < ctx->nacpex; i++) {
         ATOMIC_SET(&ctx->acpex[i].stop, 1);
         // 投递空包唤醒线程；失败时线程会在 EVENT_WAIT_TIMEOUT 后自行检测 stop 退出
@@ -431,9 +360,9 @@ void ev_free(ev_ctx *ctx) {
     for (i = 0; i < ctx->nacpex; i++) {
         thread_join(ctx->acpex[i].thacp);
     }
-    (void)CloseHandle(ctx->acpex[0].iocp); // 所有acceptex_ctx共用同一个iocp，只需关闭一次
-    FREE(ctx->acpex);
-    // 2. 停止并释放所有 watcher：_iocp_free_cmd 内 CMD_ADDACP 的 _iocp_try_freelsn 此时 lsn 仍活，正确
+}
+static void _iocp_free_watcher(ev_ctx *ctx) {
+    uint32_t i;
     cmd_ctx cmd;
     cmd.cmd = CMD_STOP;
     watcher_ctx *watcher;
@@ -450,14 +379,44 @@ void ev_free(ev_ctx *ctx) {
         pool_free(&watcher->pool);
     }
     FREE(ctx->watcher);
-    // 3. 释放仍在 arrlsn 中的 listener（未被 ev_unlisten 过的）：watcher/acpex 已停 + cmd 队列已空，
-    //    ref 已无任何并发访问路径，_iocp_freelsn 不查 ref 强释安全（与 Unix 路径行为一致）
-    struct listener_ctx **lsn;
-    uint32_t nlsn = array_size(&ctx->arrlsn);
-    for (i = 0; i < nlsn; i++) {
-        lsn = (struct listener_ctx **)array_at(&ctx->arrlsn, i);
-        _iocp_freelsn(*lsn);
+}
+static void _iocp_free_acpex(ev_ctx *ctx) {
+    DWORD bytes;
+    ULONG_PTR key;
+    LPOVERLAPPED overlap;
+    sock_ctx *sock;
+    uint32_t idle = 0;
+    while (ATOMIC_GET(&ctx->nlsn) > 0) {
+        overlap = NULL;
+        (void)GetQueuedCompletionStatus(ctx->acpex[0].iocp, &bytes, &key, &overlap, EVENT_WAIT_TIMEOUT);
+        if (NULL != overlap) {
+            sock = UPCAST(overlap, sock_ctx, overlapped);
+            _iocp_acpex_release(sock);
+            idle = 0;
+        } else {
+            idle += EVENT_WAIT_TIMEOUT;
+            if (idle >= IOCP_STOP_DRAIN_TIMEOUT) {
+                LOG_ERROR("ev_free acpex drain timeout, %d listener(s) leaked (AcceptEx cancel completion missing).",
+                          (int32_t)ATOMIC_GET(&ctx->nlsn));
+                break;
+            }
+        }
     }
+    // 关闭共用 acpex IOCP 并释放（所有 acceptex_ctx 共用同一个 iocp，只需关闭一次）
+    (void)CloseHandle(ctx->acpex[0].iocp);
+    FREE(ctx->acpex);
+}
+void ev_free(ev_ctx *ctx) {
+    // 1. 停止 AcceptEx 线程（暂不关共用 IOCP，步骤4 仍需从中取出取消完成）
+    _iocp_stop_acpex_thread(ctx);
+    // 2. ev_unlisten 全部残留 listener：取消在途 AcceptEx，取消完成排队到仍开着的 acpex IOCP（步骤4排空）
+    _iocp_unlisten_all(ctx);
+    // 3. 停止并释放所有 watcher：_iocp_free_cmd 内 CMD_ADDACP 的 _iocp_try_freelsn 此时 lsn 仍活，正确
+    _iocp_free_watcher(ctx);
+    // 4. 本线程独占排空 acpex IOCP 的 AcceptEx 取消完成（acpex/watcher 均已停，无并发）：
+    //    _olp_on_accept_cb 见 remove==1 走释放分支只减 ref，ref 归零 → _iocp_freelsn 安全释放（内核已写完 OVERLAPPED）。
+    //    排空到 nlsn 归零；连续 IOCP_STOP_DRAIN_TIMEOUT 无完成仍未清零 → LOG_ERROR（取消完成缺失=bug，宁可残留泄漏也不强释造成 UAF）。
+    _iocp_free_acpex(ctx);
     array_free(&ctx->arrlsn);
     spin_free(&ctx->spin);
 }

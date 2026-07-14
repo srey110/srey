@@ -88,6 +88,10 @@ void _iocp_free_udp(sock_ctx *skctx);
 void _iocp_freelsn(struct listener_ctx *lsn);
 // 递减 listener_ctx 引用计数，归零后释放（跨文件路径访问 lsn->ref 的封装）
 void _iocp_try_freelsn(struct listener_ctx *lsn);
+// ev_free 关闭阶段 ev_unlisten 掉所有残留 listener（走完成驱动释放，非强制 FREE）
+void _iocp_unlisten_all(ev_ctx *ctx);
+// ev_free 排空阶段直接释放一个 AcceptEx 完成对应的 listener 引用（跳过 _olp_on_accept_cb 分支）
+void _iocp_acpex_release(sock_ctx *skctx);
 // 获取sock_ctx对应的ud_cxt指针
 ud_cxt *_iocp_get_ud(sock_ctx *skctx);
 // 校验skid是否与当前连接匹配（防止fd复用误操作）
