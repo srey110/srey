@@ -165,13 +165,12 @@ static void _iocp_loop_event(void *arg) {
                 sock = UPCAST(overlap, sock_ctx, overlapped);
                 sock->ev_cb(watcher, sock, overlappeds[i].dwNumberOfBytesTransferred);
             }
-            if (0 == ATOMIC_GET(&watcher->stop)) {
-                if (count == nevent) {
-                    MALLOC(tmp, sizeof(OVERLAPPED_ENTRY) * nevent * 2);
-                    FREE(overlappeds);
-                    overlappeds = tmp;
-                    nevent *= 2;
-                }
+            if (count == nevent
+                && 0 == ATOMIC_GET(&watcher->stop)) {
+                MALLOC(tmp, sizeof(OVERLAPPED_ENTRY) * nevent * 2);
+                FREE(overlappeds);
+                overlappeds = tmp;
+                nevent *= 2;
             }
         } else if (WAIT_TIMEOUT != (err = ERRNO)) {
             LOG_ERROR("%s", ERRORSTR(err));
@@ -184,16 +183,17 @@ static void _iocp_loop_event(void *arg) {
 // AcceptEx专用线程事件循环（批量处理accept完成事件）
 static void _iocp_loop_acpex(void *arg) {
     acceptex_ctx *acpex = (acceptex_ctx *)arg;
-    int32_t err, stop;
+    int32_t err;
     ULONG i, count, nevent = INIT_EVENTS_CNT;
     sock_ctx *sock;
-    BOOL ok = FALSE;
+    BOOL ok;
     LPOVERLAPPED overlap;
     LPOVERLAPPED_ENTRY tmp;
     LPOVERLAPPED_ENTRY overlappeds;
     MALLOC(overlappeds, sizeof(OVERLAPPED_ENTRY) * nevent);
-    while (0 == (stop = (int32_t)ATOMIC_GET(&acpex->stop))
-           || (stop && ok)) {
+    // 停止后立即退出,不在此排空:遗留 AcceptEx 完成由 ev_free 的 _iocp_free_acpex 统一排空(见其注释)，
+    // 每个 slot 预分配的客户端 socket 由 _olp_free_acceptex 同步 take-and-close,与本线程是否先排空过无关
+    while (0 == ATOMIC_GET(&acpex->stop)) {
         ok = GetQueuedCompletionStatusEx(acpex->iocp,
                                          overlappeds,
                                          nevent,
@@ -209,23 +209,14 @@ static void _iocp_loop_acpex(void *arg) {
                 sock = UPCAST(overlap, sock_ctx, overlapped);
                 sock->ev_cb(acpex, sock, overlappeds[i].dwNumberOfBytesTransferred);
             }
-            if (0 == ATOMIC_GET(&acpex->stop)) {
-                if (count == nevent) {
-                    MALLOC(tmp, sizeof(OVERLAPPED_ENTRY) * nevent * 2);
-                    FREE(overlappeds);
-                    overlappeds = tmp;
-                    nevent *= 2;
-                }
-            } else {
-                if (count < nevent) {//退出时已经没数据了
-                    break;
-                }
+            if (count == nevent
+                && 0 == ATOMIC_GET(&acpex->stop)) {
+                MALLOC(tmp, sizeof(OVERLAPPED_ENTRY) * nevent * 2);
+                FREE(overlappeds);
+                overlappeds = tmp;
+                nevent *= 2;
             }
-        } else if (WAIT_TIMEOUT == (err = ERRNO)) {
-            if (0 == ATOMIC_GET(&acpex->stop)) {//防止退出时第一次while 判断错误
-                ok = TRUE;
-            }
-        } else {
+        } else if (WAIT_TIMEOUT != (err = ERRNO)) {
             LOG_ERROR("%s", ERRORSTR(err));
         }
     }
