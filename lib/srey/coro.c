@@ -597,6 +597,9 @@ int32_t coro_wait_connect(task_ctx *task, SOCKET fd, uint64_t skid, struct evssl
         LOG_WARN("task %s, connect timeout, skid %"PRIu64".", _NAME_OR(task->name), skid);
         return ERR_FAILED;
     }
+    if (MSG_TYPE_CLOSE == msg->mtype) {
+        return ERR_FAILED;
+    }
     if (ERR_OK != msg->erro) {
         LOG_WARN("task %s, connect error, skid %"PRIu64".", _NAME_OR(task->name), skid);
         return ERR_FAILED;

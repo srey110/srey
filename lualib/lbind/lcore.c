@@ -46,19 +46,32 @@ static int32_t _lcore_call(lua_State *lua) {
     task_call(dst, reqtype, data, size, copy);
     return 0;
 }
-// 解析 dsts table(栈位置 idx)：MALLOC task_ctx*[n] 数组并填充,n=0 时返回 NULL。
-// 调用方负责 FREE 返回值。table 类型校验由 luaL_checktype 负责出错时 longjmp。
-static task_ctx **_parse_multi_dsts(lua_State *lua, int32_t idx, int32_t *n_out) {
+// 校验 dsts table(栈位置 idx)类型、逐元素类型(必须 light userdata 或 nil)并返回长度,不做任何分配。
+// 必须在调用方尚未持有任何待释放资源(如 lpub_check_buf 取出的 copy=0 data)前调用——
+// 内部 luaL_checktype/luaL_len/luaL_error 可能 longjmp,若晚于资源获取调用会导致该资源泄漏。
+static int32_t _check_multi_dsts(lua_State *lua, int32_t idx) {
     luaL_checktype(lua, idx, LUA_TTABLE);
-    lua_Integer n = luaL_len(lua, idx);
-    *n_out = (int32_t)n;
-    if (n <= 0) {
-        return NULL;
+    int32_t n = (int32_t)luaL_len(lua, idx);
+    for (int32_t i = 0; i < n; i++) {
+        lua_rawgeti(lua, idx, i + 1);
+        int32_t vtype = lua_type(lua, -1);
+        lua_pop(lua, 1);
+        // 非 light userdata 的非 nil 元素(字符串/数字/table 等)若放行,_fill_multi_dsts 会经
+        // lua_touserdata 静默转成 NULL,和"nil=跳过"的合法语义混淆,掩盖调用方的类型错误
+        if (LUA_TNIL != vtype && LUA_TLIGHTUSERDATA != vtype) {
+            return luaL_error(lua, "dsts[%d] must be light userdata or nil, got %s",
+                              i + 1, lua_typename(lua, vtype));
+        }
     }
+    return n;
+}
+// 按 _check_multi_dsts 已校验的长度 n(>0) 从 dsts table(栈位置 idx)分配填充 task_ctx*[n] 数组。
+// 调用方负责 FREE 返回值。仅用 lua_rawgeti/lua_touserdata/lua_pop,不会 longjmp,可在其它资源
+// 就绪后安全调用。
+static task_ctx **_fill_multi_dsts(lua_State *lua, int32_t idx, int32_t n) {
     task_ctx **dsts;
     MALLOC(dsts, sizeof(task_ctx *) * (size_t)n);
-    lua_Integer i;
-    for (i = 0; i < n; i++) {
+    for (int32_t i = 0; i < n; i++) {
         lua_rawgeti(lua, idx, i + 1);
         dsts[i] = (task_ctx *)lua_touserdata(lua, -1);
         lua_pop(lua, 1);
@@ -80,20 +93,21 @@ static int32_t _lcore_multi_request(lua_State *lua) {
     LPUB_CUR_TASK(lua, src);
     subtype_t reqtype = (subtype_t)luaL_checkinteger(lua, 2);
     uint64_t sess = (uint64_t)luaL_checkinteger(lua, 3);
+    // dsts 先校验类型/取长度(不分配)，data 后取，避免 dsts 非法时 data(copy=0 已转移所有权)被 longjmp 绕过 FREE
+    int32_t n = _check_multi_dsts(lua, 1);
     void *data;
     size_t size;
     int32_t copy;
     data = lpub_check_buf(lua, 4, &size, &copy);
-    int32_t n;
-    task_ctx **dsts = _parse_multi_dsts(lua, 1, &n);
     if (n <= 0) {
-        // copy=0 时 data 所有权已转移给 C,无目标不投递,补 FREE 防泄漏(dsts 为 NULL 无需释放)
+        // copy=0 时 data 所有权已转移给 C,无目标不投递,补 FREE 防泄漏
         if (!copy) {
             FREE(data);
         }
         lua_pushinteger(lua, 0);
         return 1;
     }
+    task_ctx **dsts = _fill_multi_dsts(lua, 1, n);
     int32_t valid = task_multi_request(dsts, n, src, reqtype, sess, data, size, copy);
     FREE(dsts);
     lua_pushinteger(lua, valid);
@@ -110,19 +124,20 @@ static int32_t _lcore_multi_request(lua_State *lua) {
 /// <returns>无</returns>
 static int32_t _lcore_multi_call(lua_State *lua) {
     subtype_t reqtype = (subtype_t)luaL_checkinteger(lua, 2);
+    // dsts 先校验类型/取长度(不分配)，data 后取，避免 dsts 非法时 data(copy=0 已转移所有权)被 longjmp 绕过 FREE
+    int32_t n = _check_multi_dsts(lua, 1);
     void *data;
     size_t size;
     int32_t copy;
     data = lpub_check_buf(lua, 3, &size, &copy);
-    int32_t n;
-    task_ctx **dsts = _parse_multi_dsts(lua, 1, &n);
     if (n <= 0) {
-        // copy=0 时 data 所有权已转移给 C,无目标不投递,补 FREE 防泄漏(dsts 为 NULL 无需释放)
+        // copy=0 时 data 所有权已转移给 C,无目标不投递,补 FREE 防泄漏
         if (!copy) {
             FREE(data);
         }
         return 0;
     }
+    task_ctx **dsts = _fill_multi_dsts(lua, 1, n);
     task_multi_call(dsts, n, reqtype, data, size, copy);
     FREE(dsts);
     return 0;
@@ -359,6 +374,24 @@ static int32_t _lcore_send_multi(lua_State *lua) {
         lua_pushboolean(lua, 0);
         return 1;
     }
+    // fds/skids 逐元素类型校验须在 lpub_check_buf 取 data 前完成：非法元素若放行到下面的填充循环,
+    // lua_tointeger 会静默转成 0 掩盖调用方的类型错误；若校验放在 lpub_check_buf 之后再 luaL_error,
+    // longjmp 会绕过 copy=0 时已转移所有权的 data 的 FREE(与 _check_multi_dsts 同一坑)
+    lua_Integer i;
+    for (i = 0; i < n_fds; i++) {
+        lua_rawgeti(lua, 1, i + 1);
+        if (!lua_isnumber(lua, -1)) {
+            return luaL_error(lua, "fds[%d] must be a number, got %s",
+                              (int)(i + 1), lua_typename(lua, lua_type(lua, -1)));
+        }
+        lua_pop(lua, 1);
+        lua_rawgeti(lua, 2, i + 1);
+        if (!lua_isnumber(lua, -1)) {
+            return luaL_error(lua, "skids[%d] must be a number, got %s",
+                              (int)(i + 1), lua_typename(lua, lua_type(lua, -1)));
+        }
+        lua_pop(lua, 1);
+    }
     void *data;
     size_t size;
     int32_t copy;
@@ -367,7 +400,6 @@ static int32_t _lcore_send_multi(lua_State *lua) {
     uint64_t *skids;
     MALLOC(fds, sizeof(SOCKET) * (size_t)n_fds);
     MALLOC(skids, sizeof(uint64_t) * (size_t)n_fds);
-    lua_Integer i;
     for (i = 0; i < n_fds; i++) {
         lua_rawgeti(lua, 1, i + 1);
         fds[i] = (SOCKET)lua_tointeger(lua, -1);

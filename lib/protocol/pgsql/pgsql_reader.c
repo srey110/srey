@@ -281,11 +281,22 @@ static int64_t _pgsql_usec_from_text(const char *s, int32_t slen, int32_t *err) 
         }
     }
     int64_t days = _pgsql_date_to_days(y, mo, d);
-    return days * 86400000000LL
+    int64_t total = days * 86400000000LL
          + (int64_t)h * 3600000000LL
          + (int64_t)mi * 60000000LL
          + (int64_t)sec * 1000000LL
          + usec;
+    int32_t zh = 0, zm = 0, zs = 0;
+    int64_t offset;
+    for (int32_t i = 11; i < slen; i++) {
+        if ('+' == tmp[i] || '-' == tmp[i]) {
+            sscanf(tmp + i + 1, "%d:%d:%d", &zh, &zm, &zs);
+            offset = ((int64_t)zh * 3600 + zm * 60 + zs) * 1000000LL;
+            total -= ('-' == tmp[i]) ? -offset : offset;
+            break;
+        }
+    }
+    return total;
 }
 // 将文本格式日期 "YYYY-MM-DD" 解析为相对 PG 纪元的天数
 static int32_t _pgsql_days_from_text(const char *s, int32_t slen, int32_t *err) {

@@ -82,6 +82,12 @@ int32_t mongo_check_flag(mongo_ctx *mongo, mongo_flags flag);
 /// <returns>清除前的标志位值</returns>
 int32_t mongo_clear_flag(mongo_ctx *mongo);
 /// <summary>
+/// 强制清空当前挂载的事务会话指针（不释放 session 对象本身）；重连后调用，避免跨代残留的
+/// lsid/txnNumber 被 TRANSACTION_OPTIONS 宏自动附加到后续普通命令
+/// </summary>
+/// <param name="mongo">mongo_ctx</param>
+void mongo_clear_session(mongo_ctx *mongo);
+/// <summary>
 /// 返回 AUTH 状态值，供外部设置 ud_cxt.status 以触发认证流程
 /// </summary>
 /// <returns>AUTH 状态枚举值</returns>

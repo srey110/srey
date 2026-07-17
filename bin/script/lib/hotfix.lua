@@ -118,7 +118,8 @@ function M.apply(module_name, patch_source)
                 debug.setupvalue(entry.fn, entry.idx, v)
                 return
             end
-            rawset(t, k, v)
+            -- 未命中 upmap：与 __index 的 _G[k] 回退对称，写真正全局，而非困在一次性 env 沙箱里出不来
+            _G[k] = v
         end,
     })
     local chunk, err = load(patch_source, "=hotfix:" .. module_name, "t", env)

@@ -47,8 +47,11 @@ end
 
 ---执行预处理语句（Bind + Describe + Execute + Sync）
 ---@param bind any? pgsql_bind_ctx 参数绑定上下文
----@return boolean|_pgsql_reader_ctx result reader=结果集；true=无结果集 OK；false=失败
+---@return boolean|_pgsql_reader_ctx result reader=结果集；true=无结果集 OK；false=失败、语句失效或 owner 正在 connect() 中
 function ctx:execute(bind)
+    if self.owner.connecting then
+        return false
+    end
     if self.gen ~= self.owner.generation then
         WARN("pgsql stmt invalidated by reconnect, please re-prepare.")
         return false
@@ -78,8 +81,8 @@ end
 ---发送 Close + Sync，通知服务端释放该预处理语句
 ---@return boolean ok 关闭成功 true
 function ctx:close()
-    if self.gen ~= self.owner.generation then
-        -- 重连后服务端已自动清理旧语句，无需再发 Close
+    if self.owner.connecting or self.gen ~= self.owner.generation then
+        -- 重连后服务端已自动清理旧语句，或 owner 正在 connect() 中尚不可发送，均视为无需再发 Close
         return true
     end
     local fd, skid = self.pg:sock_id()

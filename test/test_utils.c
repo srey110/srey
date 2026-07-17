@@ -834,7 +834,7 @@ static void test_popen2(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_OK, popen_startup(&ctx, cmd, "r"));
     CuAssertIntEquals(tc, ERR_OK, popen_waitexit(&ctx, 3000));
     ZERO(buf, sizeof(buf));
-    n = popen_read(&ctx, buf, sizeof(buf) - 1);
+    n = popen_read(&ctx, buf, sizeof(buf) - 1, NULL);
     CuAssertTrue(tc, n > 0);
     CuAssertTrue(tc, NULL != strstr(buf, "hello popen"));
     popen_free(&ctx);
@@ -851,7 +851,7 @@ static void test_popen2(CuTest *tc) {
     CuAssertTrue(tc, n > 0);
     CuAssertIntEquals(tc, ERR_OK, popen_waitexit(&ctx, 3000));
     ZERO(buf, sizeof(buf));
-    n = popen_read(&ctx, buf, sizeof(buf) - 1);
+    n = popen_read(&ctx, buf, sizeof(buf) - 1, NULL);
     CuAssertTrue(tc, n > 0);
     CuAssertTrue(tc, NULL != strstr(buf, "srey test"));
     popen_free(&ctx);

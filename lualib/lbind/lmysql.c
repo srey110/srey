@@ -100,12 +100,15 @@ static int32_t _lmysql_bind_integer(lua_State *lua) {
         name = (char *)luaL_checkstring(lua, 2);
     }
     int32_t type = lua_type(lua, 3);
-    if (LUA_TNUMBER != type
-        && LUA_TBOOLEAN != type) {
+    int64_t val;
+    if (LUA_TBOOLEAN == type) {
+        val = lua_toboolean(lua, 3);
+    } else if (LUA_TNUMBER == type) {
+        val = (int64_t)luaL_checkinteger(lua, 3);
+    } else {
         mysql_bind_nil(mbind, name);
         return 0;
     }
-    int64_t val = (int64_t)luaL_checkinteger(lua, 3);
     mysql_bind_integer(mbind, name, val);
     return 0;
 }
@@ -713,6 +716,17 @@ static int32_t _lmysql_pack_type(lua_State *lua) {
     return 1;
 }
 /// <summary>
+/// 查询该响应包之后是否还有更多结果集（多语句 / 存储过程 CALL 多结果集）
+/// </summary>
+/// <param name="mpack" type="lightuserdata">mpack_ctx 数据包指针</param>
+/// <returns type="boolean">true=其后还有结果集需继续接收；false=已是最后一个</returns>
+static int32_t _lmysql_has_more(lua_State *lua) {
+    luaL_checktype(lua, 1, LUA_TLIGHTUSERDATA);
+    mpack_ctx *mpack = lua_touserdata(lua, 1);
+    lua_pushboolean(lua, mysql_more(mpack));
+    return 1;
+}
+/// <summary>
 /// 发送 QUIT 命令并清理连接上下文绑定（绑定为 __gc，由 Lua GC 自动调用）
 /// </summary>
 /// <param name="self" type="userdata">mysql 对象</param>
@@ -814,6 +828,7 @@ LUAMOD_API int luaopen_mysql(lua_State *lua) {
     luaL_Reg reg_new[] = {
         { "new", _lmysql_new },
         { "pack_type", _lmysql_pack_type },
+        { "has_more", _lmysql_has_more },
         { NULL, NULL }
     };
     luaL_Reg reg_func[] = {

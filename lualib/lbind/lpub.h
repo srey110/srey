@@ -5,10 +5,10 @@
 #include "lua/lualib.h"
 #include "lua/lauxlib.h"
 
-#define CERT_FOLDER "keys"           // SSL 证书文件所在子目录名
-#define CUR_TASK_NAME "_curtask"     // Lua 全局变量名：当前 task 指针
-#define PATH_NAME "_propath"         // Lua 全局变量名：程序根路径
-#define PATH_SEP_NAME "_pathsep"     // Lua 全局变量名：路径分隔符字符串
+#define CERT_FOLDER "keys" // SSL 证书文件所在子目录名
+#define CUR_TASK_NAME "_curtask" // Lua 全局变量名：当前 task 指针
+#define PATH_NAME "_propath" // Lua 全局变量名：程序根路径
+#define PATH_SEP_NAME "_pathsep" // Lua 全局变量名：路径分隔符字符串
 #define MSG_DISP_FUNC "message_dispatch" // Lua 脚本中消息分发回调函数名
 
 // 校验栈上指定位置必须是 light userdata（任意 C 指针），否则通过 luaL_argerror 抛 Lua 错误

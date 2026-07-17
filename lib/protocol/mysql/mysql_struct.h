@@ -59,6 +59,7 @@ typedef struct mysql_bind_ctx {
 // MySQL 数据包上下文（解析后的响应包）
 typedef struct mpack_ctx {
     int8_t sequence_id;     // 数据包序列号
+    int8_t more;            // 1=其后还有结果集（SERVER_MORE_RESULTS_EXISTS，多语句 / CALL 多结果集）
     mpack_type pack_type;   // 数据包类型
     char *payload;          // 原始 payload 数据（由此结构体持有内存所有权）
     void *pack;             // 实际解析结果（mpack_ok / mpack_err / mysql_reader_ctx 等）

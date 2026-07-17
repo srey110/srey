@@ -4,6 +4,7 @@
 #include "utils/utils.h"
 
 #define DNS_FLAG1_RD        0x01u   // 期望递归（请求时设置）
+#define DNS_FLAG1_TC        0x02u   // 响应被截断（响应时可能设置，见 RFC 1035 §4.1.1）
 #define DNS_FLAG2_RCODE(f)  ((f) & 0x0Fu) // 提取响应码
 #define DNS_A    1  // IPv4 地址记录类型
 #define DNS_AAAA 28 // IPv6 地址记录类型
@@ -259,6 +260,10 @@ dns_ip *dns_parse_pack(char *buf, size_t buflen, size_t *cnt) {
     }
     dns_head head;
     memcpy(&head, buf, sizeof(dns_head));
+    if (BIT_CHECK(head.flags1, DNS_FLAG1_TC)) {
+        // 截断 提前返回 NULL
+        return NULL;
+    }
     uint8_t rcode = DNS_FLAG2_RCODE(head.flags2);
     if (0 != rcode) {
         LOG_WARN("qurey domain error: %d.", rcode);

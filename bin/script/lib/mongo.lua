@@ -10,7 +10,9 @@ local mongo_session = require("mongo.session")
 -- mongo_ctx：MongoDB 连接上下文，每实例对应一条持久连接。
 local ctx = class("mongo_ctx")
 
--- MongoDB OP_MSG 消息标志位（与 C 层 mongo_flags 枚举对应）
+-- MongoDB OP_MSG 消息标志位（与 C 层 mongo_flags 枚举对应）。
+-- 仅 MORETOCOME 已被 C 层 mongo_set_flag 实现；CHECKSUM/EXHAUSTALLOWED 保留常量供协议完整性参考，
+-- set_flag() 传入这两者会被忽略并 WARN，不代表已支持 wire checksum / exhaust 游标
 ctx.FLAGS = {
     CHECKSUM       = 0x01,
     MORETOCOME     = 0x02,
@@ -39,14 +41,26 @@ function sess_ctx:ctor(mgoctx, session_ud)
 end
 
 ---开始事务：递增 txnNumber，构建 lsid + txnNumber 事务选项 BSON，挂载到 mongo-&gt;session
+---@return boolean ok 成功 true（所属 mongo_ctx 正在 connect() 中或 session 已因重连失效时返回 false）
 function sess_ctx:begin()
+    if self.mgoctx.connecting then
+        return false
+    end
+    if self.gen ~= self.mgoctx.generation then
+        WARN("mongo session invalidated by reconnect, please restart session.")
+        return false
+    end
     self.session:begin()
+    return true
 end
 
 ---提交事务；网络失败时保留事务状态供重试，仅服务端响应确认时清理
 ---@param opts lightuserdata? 附加 writeConcern 等 BSON 选项
----@return boolean ok 提交成功 true
+---@return boolean ok 提交成功 true（所属 mongo_ctx 正在 connect() 时 fail-fast 返回 false）
 function sess_ctx:commit(opts)
+    if self.mgoctx.connecting then
+        return false
+    end
     if self.gen ~= self.mgoctx.generation then
         WARN("mongo session invalidated by reconnect, please restart session.")
         return false
@@ -67,8 +81,11 @@ end
 
 ---回滚事务；网络失败时保留事务状态供重试，仅服务端响应确认时清理
 ---@param opts lightuserdata? 附加 BSON 选项
----@return boolean ok 回滚成功 true
+---@return boolean ok 回滚成功 true（所属 mongo_ctx 正在 connect() 时 fail-fast 返回 false）
 function sess_ctx:rollback(opts)
+    if self.mgoctx.connecting then
+        return false
+    end
     if self.gen ~= self.mgoctx.generation then
         WARN("mongo session invalidated by reconnect, please restart session.")
         return false
@@ -88,8 +105,11 @@ function sess_ctx:rollback(opts)
 end
 
 ---刷新会话超时（refreshSessions），延续会话存活时间
----@return boolean ok 刷新成功 true
+---@return boolean ok 刷新成功 true（所属 mongo_ctx 正在 connect() 时 fail-fast 返回 false）
 function sess_ctx:refresh()
+    if self.mgoctx.connecting then
+        return false
+    end
     if self.gen ~= self.mgoctx.generation then
         WARN("mongo session invalidated by reconnect, please restart session.")
         return false
@@ -107,8 +127,8 @@ end
 
 ---结束会话（endSessions，fire-and-forget）并释放 C 层会话内存
 function sess_ctx:close()
-    -- 重连后服务端已自动清理旧 lsid，跳过 endSessions 网络包；本地 C 资源始终释放
-    if self.gen == self.mgoctx.generation then
+    -- 重连后服务端已自动清理旧 lsid，跳过 endSessions 网络包；所属 mongo_ctx 正在 connect() 时同样跳过；本地 C 资源始终释放
+    if self.gen == self.mgoctx.generation and not self.mgoctx.connecting then
         local fd, skid = self.mgoctx.mongo:sock_id()
         local pack, size = self.session:pack_endsession()
         _wsend(self.mgoctx.mongo, fd, skid, pack, size)
@@ -130,12 +150,12 @@ function ctx:ctor(ip, port, sslname, db, user, password, authdb, authmod)
     local ssl
     if SSL_NAME.NONE ~= sslname then
         ssl = core.ssl_qury(sslname)
+        if not ssl then
+            error(string.format("ssl_qury not find ssl name %s", sslname), 2)
+        end
     end
     self.sslname = sslname
     self.mongo = mongo.new(ip, port, ssl, db)
-    if not self.mongo then
-        error(string.format("mongo.new failed: %s:%d db=%s", ip, port, tostring(db)), 2)
-    end
     self.user = user
     self.authmod = authmod or "SCRAM-SHA-256"
     if user then
@@ -144,21 +164,30 @@ function ctx:ctor(ip, port, sslname, db, user, password, authdb, authmod)
     end
     -- 连接代次：每次 connect 成功 +1，session 持有创建时的代次以感知重连
     self.generation = 0
+    -- connect() 进行中标志：握手/认证完成前 fd/skid 尚不可用，其余方法须 fail-fast 拒绝，避免并发协程读到未就绪的连接
+    self.connecting = false
 end
 
 ---建立 TCP 连接（含可选 SSL 握手）→ 发 hello → 可选 SCRAM 身份验证
----@return boolean ok 连接和认证均成功时 true
+---@return boolean ok 连接和认证均成功时 true，失败 false（含并发期间已有 connect() 在进行中）
 function ctx:connect()
+    if self.connecting then
+        return false
+    end
+    self.connecting = true
     local fd, skid = self.mongo:try_connect()
     if INVALID_SOCK == fd then
+        self.connecting = false
         return false
     end
     if not srey.wait_connect(fd, skid, SSL_NAME.NONE ~= self.sslname or nil) then
+        self.connecting = false
         return false   -- wait_connect 内已 close
     end
-    -- 从此处往后失败需 close fd
+    -- 从此处往后失败需 close fd；用 sync_close 等复位完成再返回，避免旧连接异步 teardown 追上后清掉下一次 connect() 的新 fd
     local function _fail()
-        srey.close(fd, skid)
+        srey.sync_close(fd, skid, 1)
+        self.connecting = false
         return false
     end
     local flags = self.mongo:clear_flag()
@@ -169,6 +198,7 @@ function ctx:connect()
     if self.mongo:check_error(mgopack) < 0 then return _fail() end
     if self.user then
         if not self.mongo:set_auth_status(fd, skid) then
+            self.connecting = false
             return false --event 已关闭
         end
         local authpack, authsize = self.mongo:pack_auth_first(self.authmod)
@@ -177,13 +207,19 @@ function ctx:connect()
         local ok, _, _ = srey.wait_handshaked(fd, skid)
         if not ok then return _fail() end
     end
+    -- 重连成功：清掉上一代残留的事务会话指针，避免跨代 lsid/txnNumber 被自动附加到后续普通命令
+    self.mongo:clear_session()
     self.generation = self.generation + 1
+    self.connecting = false
     return true
 end
 
 ---内部 ping（isMaster / ping 命令），不自动重连
----@return boolean ok 服务端响应成功 true
+---@return boolean ok 服务端响应成功 true（connect() 进行中时 fail-fast 返回 false；仅供 ping() 内部调用，不要直接调用）
 function ctx:_ping()
+    if self.connecting then
+        return false
+    end
     local fd, skid = self.mongo:sock_id()
     local flags = self.mongo:clear_flag()
     local pack, size = self.mongo:pack_ping()
@@ -196,8 +232,11 @@ function ctx:_ping()
 end
 
 ---连接保活：ping 失败时自动重连，建议在执行操作前调用
----@return boolean ok 连接可用 true
+---@return boolean ok 连接可用 true（connect() 进行中时 fail-fast 返回 false，避免与外层 connect() 抢同一 fd/skid）
 function ctx:ping()
+    if self.connecting then
+        return false
+    end
     if not self:_ping() then
         local fd, skid = self.mongo:sock_id()
         srey.sync_close(fd, skid, 1)
@@ -218,9 +257,13 @@ function ctx:collection(name)
     self.mongo:collection(name)
 end
 
----设置下一条命令的消息标志位
+---设置下一条命令的消息标志位（C 层当前仅实现 MORETOCOME；CHECKSUM/EXHAUSTALLOWED 未实现，设置无效果）
 ---@param flag integer ctx.FLAGS 枚举值
 function ctx:set_flag(flag)
+    if ctx.FLAGS.MORETOCOME ~= flag then
+        WARN("mongo set_flag: flag %d not implemented by current mongo_set_flag (only MORETOCOME supported), ignored.", flag)
+        return
+    end
     self.mongo:set_flag(flag)
 end
 
@@ -240,6 +283,9 @@ end
 ---@return boolean ok 成功 true
 ---@return integer? n 成功时为 nInserted
 function ctx:insert(col, docs, dlens, opts)
+    if self.connecting then
+        return false
+    end
     local fd, skid = self.mongo:sock_id()
     self.mongo:collection(col)
     local pack, size = self.mongo:pack_insert(docs, dlens, opts)
@@ -265,6 +311,9 @@ end
 ---@return boolean ok 成功 true
 ---@return integer? n 成功时为 nModified
 function ctx:update(col, updates, ulens, opts)
+    if self.connecting then
+        return false
+    end
     local fd, skid = self.mongo:sock_id()
     self.mongo:collection(col)
     local pack, size = self.mongo:pack_update(updates, ulens, opts)
@@ -290,6 +339,9 @@ end
 ---@return boolean ok 成功 true
 ---@return integer? n 成功时为 nDeleted
 function ctx:delete(col, deletes, dlens, opts)
+    if self.connecting then
+        return false
+    end
     local fd, skid = self.mongo:sock_id()
     self.mongo:collection(col)
     local pack, size = self.mongo:pack_delete(deletes, dlens, opts)
@@ -311,6 +363,9 @@ end
 ---@param opts lightuserdata? 附加 BSON 选项
 ---@return boolean ok 成功 true
 function ctx:drop(opts)
+    if self.connecting then
+        return false
+    end
     local fd, skid = self.mongo:sock_id()
     local pack, size = self.mongo:pack_drop(opts)
     local ok, mgopack = _wsend(self.mongo, fd, skid, pack, size)
@@ -329,8 +384,11 @@ end
 ---@param nsinfo lightuserdata BSON 数组格式命名空间信息指针
 ---@param nsz integer nsinfo 字节数
 ---@param opts lightuserdata? 附加 BSON 选项
----@return lightuserdata|true|nil mgopack 普通模式返回响应包指针供解析；MORETOCOME fire-and-forget 成功返回 true；发送失败返回 nil
+---@return lightuserdata|true|nil mgopack 普通模式返回响应包指针供解析；MORETOCOME fire-and-forget 成功返回 true；发送失败或 connect() 进行中返回 nil
 function ctx:bulkwrite(ops, opsz, nsinfo, nsz, opts)
+    if self.connecting then
+        return nil
+    end
     local fd, skid = self.mongo:sock_id()
     local pack, size = self.mongo:pack_bulkwrite(ops, opsz, nsinfo, nsz, opts)
     local ok, mgopack = _wsend(self.mongo, fd, skid, pack, size)
@@ -350,6 +408,9 @@ end
 ---@param opts lightuserdata? 附加 BSON 选项
 ---@return boolean ok 成功 true
 function ctx:createindexes(col, indexes, ilens, opts)
+    if self.connecting then
+        return false
+    end
     local fd, skid = self.mongo:sock_id()
     self.mongo:collection(col)
     local pack, size = self.mongo:pack_createindexes(indexes, ilens, opts)
@@ -370,6 +431,9 @@ end
 ---@param opts lightuserdata? 附加 BSON 选项
 ---@return boolean ok 成功 true
 function ctx:dropindexes(col, indexes, ilens, opts)
+    if self.connecting then
+        return false
+    end
     local fd, skid = self.mongo:sock_id()
     self.mongo:collection(col)
     local pack, size = self.mongo:pack_dropindexes(indexes, ilens, opts)
@@ -390,8 +454,11 @@ end
 ---@param filter lightuserdata? BSON 过滤条件；nil 表示全部
 ---@param flens integer? filter 字节数
 ---@param opts lightuserdata? 附加 BSON 选项（limit/skip/sort 等）
----@return lightuserdata|nil mgopack 响应包指针；失败返回 nil
+---@return lightuserdata|nil mgopack 响应包指针；失败或 connect() 进行中返回 nil
 function ctx:find(col, filter, flens, opts)
+    if self.connecting then
+        return nil
+    end
     local fd, skid = self.mongo:sock_id()
     self.mongo:collection(col)
     local flags = self.mongo:clear_flag()
@@ -406,8 +473,11 @@ end
 ---@param pipeline lightuserdata BSON 数组格式聚合管道指针
 ---@param pllens integer pipeline 字节数
 ---@param opts lightuserdata? 附加 BSON 选项
----@return lightuserdata|nil mgopack 响应包指针；失败返回 nil
+---@return lightuserdata|nil mgopack 响应包指针；失败或 connect() 进行中返回 nil
 function ctx:aggregate(col, pipeline, pllens, opts)
+    if self.connecting then
+        return nil
+    end
     local fd, skid = self.mongo:sock_id()
     self.mongo:collection(col)
     local flags = self.mongo:clear_flag()
@@ -420,8 +490,11 @@ end
 ---获取游标后续批次（getMore）
 ---@param cursorid integer 上次 find / aggregate 返回的游标 ID
 ---@param opts lightuserdata? 附加 BSON 选项
----@return lightuserdata|nil mgopack 响应包指针；失败返回 nil
+---@return lightuserdata|nil mgopack 响应包指针；失败或 connect() 进行中返回 nil
 function ctx:getmore(cursorid, opts)
+    if self.connecting then
+        return nil
+    end
     local fd, skid = self.mongo:sock_id()
     local flags = self.mongo:clear_flag()
     local pack, size = self.mongo:pack_getmore(cursorid, opts)
@@ -437,6 +510,9 @@ end
 ---@param opts lightuserdata? 附加 BSON 选项
 ---@return boolean ok 成功 true
 function ctx:killcursors(col, cursorids, cslens, opts)
+    if self.connecting then
+        return false
+    end
     local fd, skid = self.mongo:sock_id()
     self.mongo:collection(col)
     local pack, size = self.mongo:pack_killcursors(cursorids, cslens, opts)
@@ -456,8 +532,11 @@ end
 ---@param query lightuserdata? BSON 过滤条件；nil 表示全部
 ---@param qlens integer? query 字节数
 ---@param opts lightuserdata? 附加 BSON 选项
----@return lightuserdata|nil mgopack 响应包指针；失败返回 nil
+---@return lightuserdata|nil mgopack 响应包指针；失败或 connect() 进行中返回 nil
 function ctx:distinct(col, key, query, qlens, opts)
+    if self.connecting then
+        return nil
+    end
     local fd, skid = self.mongo:sock_id()
     self.mongo:collection(col)
     local flags = self.mongo:clear_flag()
@@ -476,8 +555,11 @@ end
 ---@param update lightuserdata? BSON 更新文档或聚合管道；删除时可 nil
 ---@param ulens integer? update 字节数
 ---@param opts lightuserdata? 附加 BSON 选项
----@return lightuserdata|nil mgopack 响应包指针；失败返回 nil
+---@return lightuserdata|nil mgopack 响应包指针；失败或 connect() 进行中返回 nil
 function ctx:findandmodify(col, query, qlens, remove, pipeline, update, ulens, opts)
+    if self.connecting then
+        return nil
+    end
     local fd, skid = self.mongo:sock_id()
     self.mongo:collection(col)
     local flags = self.mongo:clear_flag()
@@ -492,8 +574,11 @@ end
 ---@param query lightuserdata? BSON 过滤条件；nil 表示全部计数
 ---@param qlens integer? query 字节数
 ---@param opts lightuserdata? 附加 BSON 选项
----@return integer|false n 计数整数；失败返回 false
+---@return integer|false n 计数整数；失败或 connect() 进行中返回 false
 function ctx:count(col, query, qlens, opts)
+    if self.connecting then
+        return false
+    end
     local fd, skid = self.mongo:sock_id()
     self.mongo:collection(col)
     local flags = self.mongo:clear_flag()
@@ -513,8 +598,11 @@ end
 -- ---- 会话 ----
 
 ---启动服务端逻辑会话（startSession）
----@return any|nil session mongo_session_ctx 实例；失败返回 nil
+---@return any|nil session mongo_session_ctx 实例；失败或 connect() 进行中返回 nil
 function ctx:startsession()
+    if self.connecting then
+        return nil
+    end
     local fd, skid = self.mongo:sock_id()
     local flags = self.mongo:clear_flag()
     local pack, size = self.mongo:pack_startsession()

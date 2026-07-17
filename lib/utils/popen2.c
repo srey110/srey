@@ -261,25 +261,28 @@ static int32_t _popen_child_exited(popen_ctx *ctx, int wstatus) {
 #endif
     return ERR_FAILED;
 }
+// 非阻塞探测 sock 是否可读：1=就绪可读，0=未就绪，ERR_FAILED=poll 出错（EINTR 已重试）
+static int32_t _popen_poll_readable(int32_t sock) {
+    struct pollfd pfd = { .fd = sock, .events = POLLIN };
+    int32_t r;
+    do {
+        r = poll(&pfd, 1, 0);
+    } while (r < 0 && EINTR == errno);
+    if (r < 0) {
+        return ERR_FAILED;
+    }
+    return (0 == r) ? 0 : 1;
+}
 // 非阻塞检查套接字是否已关闭（对端断开），返回 1 表示已关闭
 static int32_t _popen_sock_closed(int32_t sock) {
-    struct pollfd pfd;
-    pfd.fd = sock;
-    pfd.events = POLLIN;
-    pfd.revents = 0;
-    int32_t rtn = poll(&pfd, 1, 0);
-    if (0 == rtn) {
+    int32_t r = _popen_poll_readable(sock);
+    if (0 == r) {
         return 0;
     }
-    if (rtn < 0) {
-        // EINTR 等可重试错误不应判为关闭，仅返回未就绪
-        if (EINTR == errno) {
-            return 0;
-        }
+    if (ERR_FAILED == r) {
         return 1;
     }
-    rtn = sock_nread(sock);
-    return rtn <= 0;
+    return sock_nread(sock) <= 0;
 }
 #endif
 int32_t popen_waitexit(popen_ctx *ctx, uint32_t ms) {
@@ -362,13 +365,20 @@ int32_t popen_exitcode(popen_ctx *ctx) {
     return ERR_FAILED;
 #endif
 }
-int32_t popen_read(popen_ctx *ctx, char *output, size_t lens) {
+int32_t popen_read(popen_ctx *ctx, char *output, size_t lens, int32_t *eof) {
+    SET_PTR(eof, 0);
 #ifdef OS_WIN
     if (NULL == ctx->pipe[1]) {
         return ERR_FAILED;
     }
     DWORD nread;
     if (!PeekNamedPipe(ctx->pipe[1], NULL, 0, NULL, &nread, NULL)) {
+        // 写端全部关闭时 Peek 报 broken pipe，据此判 EOF；其余才是真失败
+        DWORD err = GetLastError();
+        if (ERROR_BROKEN_PIPE == err || ERROR_PIPE_NOT_CONNECTED == err) {
+            SET_PTR(eof, 1);
+            return 0;
+        }
         return ERR_FAILED;
     }
     if (0 == nread) {
@@ -382,11 +392,11 @@ int32_t popen_read(popen_ctx *ctx, char *output, size_t lens) {
     if (INVALID_SOCK == ctx->sock) {
         return ERR_FAILED;
     }
-    int32_t nread = sock_nread(ctx->sock);
-    if (ERR_FAILED == nread) {
+    int32_t r = _popen_poll_readable(ctx->sock);
+    if (ERR_FAILED == r) {
         return ERR_FAILED;
     }
-    if (0 == nread) {
+    if (0 == r) {
         return 0;
     }
     ssize_t rn;
@@ -395,6 +405,11 @@ int32_t popen_read(popen_ctx *ctx, char *output, size_t lens) {
     } while (-1 == rn && EINTR == errno);
     if (-1 == rn) {
         return ERR_FAILED;
+    }
+    if (0 == rn) {
+        // poll 就绪却读到 0 字节:写端全关,即 EOF
+        SET_PTR(eof, 1);
+        return 0;
     }
     return (int32_t)rn;
 #endif

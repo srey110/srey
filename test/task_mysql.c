@@ -160,6 +160,51 @@ static int32_t _prepare_execute(mysql_ctx *mysql) {
     return ERR_OK;
 }
 
+// 多结果集：多语句查询产生多个结果集，验证 mpack->more 在结果集(reader)与 OK 包两条路径上
+// 都被正确标记；more 须在下一次 _coro_wait 前读取（下次 wait 会回收 first 所在的分发消息）
+static int32_t _multi_result(mysql_ctx *mysql) {
+    // 路径一：SELECT 结果集的 more（行阶段 EOF 带 SERVER_MORE_RESULTS_EXISTS）
+    mpack_ctx *first = mysql_query(mysql, "select 1;select 2", NULL);
+    if (NULL == first) {
+        LOG_ERROR("mysql multi-result: 'select;select' first returned NULL.");
+        return ERR_FAILED;
+    }
+    int32_t rmore1 = mysql_more(first);
+    message_ctx *msg = _coro_wait(mysql->task, mysql->client.sk.skid,
+                                  MSG_TYPE_RECV, task_get_netread_timeout(mysql->task));
+    if (NULL == msg || MSG_TYPE_RECV != msg->mtype || NULL == msg->data) {
+        LOG_ERROR("mysql multi-result: 'select;select' second result set not received.");
+        return ERR_FAILED;
+    }
+    int32_t rmore2 = mysql_more(msg->data);
+    if (1 != rmore1 || 0 != rmore2) {
+        LOG_ERROR("mysql multi-result: resultset more mismatch (first=%d second=%d), want 1,0.",
+                  rmore1, rmore2);
+        return ERR_FAILED;
+    }
+    // 路径二：OK 包的 more（SET 语句返回 OK 包，多语句时带 SERVER_MORE_RESULTS_EXISTS）
+    mpack_ctx *okfirst = mysql_query(mysql, "set @srey_t=1;select 1", NULL);
+    if (NULL == okfirst) {
+        LOG_ERROR("mysql multi-result: 'set;select' first returned NULL.");
+        return ERR_FAILED;
+    }
+    int32_t optype = okfirst->pack_type;
+    int32_t omore1 = mysql_more(okfirst);
+    msg = _coro_wait(mysql->task, mysql->client.sk.skid,
+                     MSG_TYPE_RECV, task_get_netread_timeout(mysql->task));
+    if (NULL == msg || MSG_TYPE_RECV != msg->mtype || NULL == msg->data) {
+        LOG_ERROR("mysql multi-result: 'set;select' second result set not received.");
+        return ERR_FAILED;
+    }
+    int32_t omore2 = mysql_more(msg->data);
+    if (MPACK_OK != optype || 1 != omore1 || 0 != omore2) {
+        LOG_ERROR("mysql multi-result: ok-packet more mismatch (type=%d first=%d second=%d), want OK,1,0.",
+                  optype, omore1, omore2);
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+
 static void _startup(task_ctx *task) {
     task_mysql_args *arg = (task_mysql_args *)coro_get_arg(task);
     if (ERR_OK != mysql_init(&arg->mysql, arg->host, arg->port, NULL,
@@ -203,6 +248,10 @@ static void _startup(task_ctx *task) {
         return;
     }
     if (ERR_OK != _query_syntax_error(&arg->mysql)) {
+        mysql_quit(&arg->mysql);
+        return;
+    }
+    if (ERR_OK != _multi_result(&arg->mysql)) {
         mysql_quit(&arg->mysql);
         return;
     }

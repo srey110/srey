@@ -454,9 +454,7 @@ static websock_pack_ctx *_websock_sec_unpack(websock_ctx *ws, websock_pack_ctx *
         break;
     }
     // 子协议解包循环由外层调用方负责，移除 MOREDATA 标志避免外层误判
-    if (BIT_CHECK(*status, PROT_MOREDATA)) {
-        BIT_REMOVE(*status, PROT_MOREDATA);
-    }
+    BIT_REMOVE(*status, PROT_MOREDATA);
     return rtn;
 }
 // 读取 WebSocket 帧数据体（含掩码解码），设置分片状态标志，按需交子协议处理
@@ -498,6 +496,9 @@ static websock_pack_ctx *_websock_parse_data(buffer_ctx *buf, int32_t client, ud
         && (WS_CONTINUE == pack->prot
             || WS_TEXT == pack->prot
             || WS_BINARY == pack->prot)) {
+        // 交给子协议前清掉刚设置的 WS 帧级分片位：子协议吐出的是完整消息，与本 WS 帧是否分片无关；
+        // 在此清除而非子协议返回后清除，避免误清子协议自己在 status 上产生的标志
+        BIT_REMOVE(*status, PROT_SLICE_START | PROT_SLICE | PROT_SLICE_END);
         return _websock_sec_unpack(ws, pack, client, status);
     } else {
         return pack;

@@ -55,11 +55,17 @@ static int32_t _lpgsql_bind_null(lua_State *lua) {
 static int32_t _lpgsql_bind_bool(lua_State *lua) {
     pgsql_bind_ctx *bind = luaL_checkudata(lua, 1, MT_PGSQL_BIND);
     int32_t type = lua_type(lua, 2);
-    if (LUA_TBOOLEAN != type && LUA_TNUMBER != type) {
+    int8_t val;
+    if (LUA_TBOOLEAN == type) {
+        val = (int8_t)lua_toboolean(lua, 2);
+    } else if (LUA_TNUMBER == type) {
+        // number 按数值 0/非0 表达布尔值，不可用 lua_toboolean(对任何非 nil/false 值恒返回 1，无法表达 FALSE)
+        val = (0 != luaL_checknumber(lua, 2)) ? 1 : 0;
+    } else {
         pgsql_bind_null(bind);
         return 0;
     }
-    pgsql_bind_bool(bind, (int8_t)lua_toboolean(lua, 2));
+    pgsql_bind_bool(bind, val);
     return 0;
 }
 /// <summary>

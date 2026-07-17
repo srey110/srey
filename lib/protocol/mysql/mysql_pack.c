@@ -82,17 +82,17 @@ void *mysql_pack_query(mysql_ctx *mysql, const char *sql, mysql_bind_ctx *mbind,
 void *mysql_pack_stmt_prepare(mysql_ctx *mysql, const char *sql, size_t *size) {
     mysql->id = 0;
     size_t lens = strlen(sql);
-    if (lens + 1 > INT3_MAX) {
-        LOG_WARN("mysql payload exceeds 16MB: %zu bytes.", lens + 1);
-        *size = 0;
-        return NULL;
-    }
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
-    binary_set_integer(&bwriter, lens + 1, 3, 1);
+    binary_set_skip(&bwriter, 3);
     binary_set_int8(&bwriter, mysql->id);
     binary_set_uint8(&bwriter, MYSQL_PREPARE);
     binary_set_binary(&bwriter, sql, lens);
+    if (ERR_OK != _mysql_set_payload_lens(&bwriter)) {
+        binary_free(&bwriter);
+        *size = 0;
+        return NULL;
+    }
     *size = bwriter.offset;
     mysql->cur_cmd = MYSQL_PREPARE;
     mysql->parse_status = 0;

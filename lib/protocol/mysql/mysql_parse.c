@@ -115,16 +115,21 @@ static mpack_ctx *_mpack_selectdb_response(mysql_ctx *mysql, binary_ctx *breader
     mysql->cur_cmd = 0;
     return mpack;
 }
-// 解析 COM_PING 响应包（固定为 OK）
+// 解析 COM_PING 响应包（正常为 OK，服务端关闭中/异常时可能回 ERR）
 static mpack_ctx *_mpack_ping_response(mysql_ctx *mysql, binary_ctx *breader, int32_t *status) {
     mpack_ctx *mpack = _mpack_new(mysql, breader->data);
-    binary_get_skip(breader, 1);
-    mpack->pack_type = MPACK_OK;
-    MALLOC(mpack->pack, sizeof(mpack_ok));
-    if (ERR_OK != _mpack_ok(mysql, breader, mpack->pack)) {
-        BIT_SET(*status, PROT_ERROR);
-        _mysql_pkfree(mpack);
-        return NULL;
+    if (MYSQL_OK == binary_get_uint8(breader)) {
+        mpack->pack_type = MPACK_OK;
+        MALLOC(mpack->pack, sizeof(mpack_ok));
+        if (ERR_OK != _mpack_ok(mysql, breader, mpack->pack)) {
+            BIT_SET(*status, PROT_ERROR);
+            _mysql_pkfree(mpack);
+            return NULL;
+        }
+    } else {
+        mpack->pack_type = MPACK_ERR;
+        MALLOC(mpack->pack, sizeof(mpack_err));
+        _mpack_err(mysql, breader, mpack->pack);
     }
     mysql->cur_cmd = 0;
     return mpack;
@@ -324,6 +329,7 @@ static mpack_ctx *_mpack_reader_rows(mysql_ctx *mysql, buffer_ctx *buf, binary_c
                 FREE(breader->data);
                 BIT_REMOVE(*status, PROT_MOREDATA);
                 mpack = mysql->mpack;
+                mpack->more = 1;
                 mysql->mpack = NULL;
                 mysql->parse_status = 0;
                 return mpack;
@@ -415,11 +421,8 @@ static mpack_ctx *_mpack_reader_fileds(mysql_ctx *mysql, buffer_ctx *buf, binary
             return NULL;
         }
         if (MYSQL_EOF == (uint8_t)(binary_at(breader, breader->offset)[0]) && breader->size < 9) {
-            if (ERR_OK != _mpack_check_final(breader, status)) {
-                BIT_SET(*status, PROT_ERROR);
-                FREE(breader->data);
-                return NULL;
-            }
+            // 字段阶段 EOF 仅标记列定义结束，无条件转入行阶段：SERVER_MORE_RESULTS 是结果集级状态，
+            // 须在行阶段 EOF 判定；多语句 / CALL 时字段 EOF 同样带 more 位，此处若据 more 报错会误判断连
             FREE(breader->data);
             reader->index = 0;
             mysql->parse_status = RST_ROW; // 字段解析完成，切换到行解析阶段
@@ -481,7 +484,9 @@ static mpack_ctx *_mpack_resultset_response(mysql_ctx *mysql, buffer_ctx *buf, b
             }
             // 与行阶段 EOF 续接同规则(见 _mpack_check_final)：OK 包若声明还有更多结果集(多语句/CALL
             // 多结果集)，保留 cur_cmd 供下一个包续接解析；否则下一响应会落入 default 分支误判协议错误断连
-            if (!BIT_CHECK(ok->status_flags, SERVER_MORE_RESULTS_EXISTS)) {
+            if (BIT_CHECK(ok->status_flags, SERVER_MORE_RESULTS_EXISTS)) {
+                mpack->more = 1;
+            } else {
                 mysql->cur_cmd = 0;
             }
         } else if (MYSQL_ERR == first) {

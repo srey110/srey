@@ -1,5 +1,5 @@
--- task 调试请求处理：解析 REQ_DEBUG JSON 命令并在当前 task 的 Lua 虚拟机内执行。
--- 支持命令：mem / gc / stat / coros / loglv / inject。
+-- task 调试请求处理：解析 REQ_DEBUG seri 序列化命令并在当前 task 的 Lua 虚拟机内执行。
+-- 支持命令：mem / gc / stat / coros / loglv / inject / hotfix。
 -- 使用契约：首次 _dispatch 之前必须调用 _set_coro_sess、_set_response、_set_mtype_names 注入依赖。
 
 local seri   = require("srey.seri")
@@ -62,7 +62,7 @@ local function _dump_coros()
     return table.concat(lines, "\n")
 end
 
--- 执行调试命令，在当前 task 的 Lua 虚拟机中运行，返回 erro, result
+-- 执行调试命令，在当前 task 的 Lua 虚拟机中运行
 -- 命令以位置化 seri 解出：cmd 为首参，后续 a1/a2 为该命令参数
 --   loglv → a1=lv;  inject → a1=code;  hotfix → a1=module, a2=source
 -- 返回结果文本字符串（含成功/失败说明，由 [OK]/[ERR] 前缀区分）；未知命令返回 nil 供 _dispatch 透传

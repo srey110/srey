@@ -46,13 +46,15 @@ int32_t popen_waitexit(popen_ctx *ctx, uint32_t ms);
 /// <returns>退出码</returns>
 int32_t popen_exitcode(popen_ctx *ctx);
 /// <summary>
-/// 获取命令的输出 r
+/// 非阻塞单次探测读取子进程输出：有数据则读当前可读的一批（最多 lens 字节）并返回；无数据则立即返回不阻塞。
+/// 通过 eof 出参区分“子进程暂无输出”与“已到流末尾”，避免把暂无输出误判为 EOF
 /// </summary>
 /// <param name="ctx">popen_ctx</param>
 /// <param name="output">输出</param>
 /// <param name="lens">长度</param>
-/// <returns>读到的字节数, ERR_FAILED 失败</returns>
-int32_t popen_read(popen_ctx *ctx, char *output, size_t lens);
+/// <param name="eof">出参，可为 NULL：置 1=已到流末尾（写端全关、不再有输出），置 0=未到（读到数据/暂无数据/出错）</param>
+/// <returns>读到的字节数；0 表示当前无数据（配合 eof 区分暂无输出与 EOF）；ERR_FAILED 失败</returns>
+int32_t popen_read(popen_ctx *ctx, char *output, size_t lens, int32_t *eof);
 /// <summary>
 /// 写入,\n结束 才会执行 w
 /// </summary>

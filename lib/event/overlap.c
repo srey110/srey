@@ -16,6 +16,7 @@ typedef struct overlap_acpt_ctx {
     sock_ctx overlap;                       // 嵌入sock_ctx，供IOCP回调使用
     struct listener_ctx *lsn;               // 所属监听器
     DWORD bytes;                            // AcceptEx接收到的字节数
+    atomic_t dead;                          // 1=re-post失败已放弃,等 _olp_try_revive_slot 用CAS认领复活
     char addr[ACCEPTEX_ADDR_LEN * 2];      // 存储本地/对端地址的缓冲区
 }overlap_acpt_ctx;
 // IOCP监听器上下文
@@ -23,6 +24,7 @@ typedef struct listener_ctx {
     int32_t family;                                 // 地址族（AF_INET/AF_INET6）
     atomic_t remove;                                // 标记为待移除（ev_unlisten后设置）
     atomic_t ref;                                   // 引用计数（等于挂起的AcceptEx数量）
+    atomic_t ndead;                                 // 当前dead槽位数,==0时_olp_try_revive_slot跳过整个扫描
     SOCKET fd;                                      // 监听socket句柄
 #if WITH_SSL
     evssl_ctx *evssl;                               // SSL上下文（NULL表示不使用SSL）
@@ -492,6 +494,10 @@ void _iocp_try_ssl_exchange(watcher_ctx *watcher, sock_ctx *skctx, struct evssl_
         || BIT_CHECK(oltcp->status, STATUS_GRACEFUL_CLOSE)) {
         return;
     }
+    if (_olp_on_recv_cb != skctx->ev_cb) {
+        LOG_WARN("ssl exchange requested before connection established.");
+        return;
+    }
     if (client) {
         BIT_SET(oltcp->status, STATUS_CLIENT);
     } else {
@@ -876,6 +882,30 @@ static int32_t _olp_post_accept(overlap_acpt_ctx *olacp) {
     }
     return ERR_OK;
 }
+// 尝试重投一个此前 _olp_post_accept 失败、已被放弃的槽位
+static void _olp_try_revive_slot(listener_ctx *lsn) {
+    if (0 != ATOMIC_GET(&lsn->remove) || 0 == ATOMIC_GET(&lsn->ndead)) {
+        return;
+    }
+    overlap_acpt_ctx *olacp;
+    for (int32_t i = 0; i < MAX_ACCEPTEX_CNT; i++) {
+        olacp = &lsn->overlap_acpt[i];
+        if (!ATOMIC_CAS(&olacp->dead, 1, 0)) {
+            continue;
+        }
+        ATOMIC_ADD(&lsn->ndead, -1);
+        ATOMIC_ADD(&lsn->ref, 1);
+        if (ERR_OK != _olp_post_accept(olacp)) {
+            ATOMIC_ADD(&lsn->ref, -1);
+            ATOMIC_SET(&olacp->dead, 1);
+            ATOMIC_ADD(&lsn->ndead, 1);
+        } else if (0 != ATOMIC_GET(&lsn->remove)) {
+            // _olp_post_accept 执行期间 ev_unlisten 可能运行但未能关闭新 fd(对齐 _olp_on_accept_cb 同一时机的处理)
+            _olp_take_close(&olacp->overlap.fd);
+        }
+        return;
+    }
+}
 // AcceptEx完成回调：重新提交AcceptEx、设置socket选项、将新fd发送给对应watcher
 static void _olp_on_accept_cb(acceptex_ctx *acpctx, sock_ctx *skctx, DWORD bytes) {
     overlap_acpt_ctx *olacp = UPCAST(skctx, overlap_acpt_ctx, overlap);
@@ -894,6 +924,8 @@ static void _olp_on_accept_cb(acceptex_ctx *acpctx, sock_ctx *skctx, DWORD bytes
     if (ERR_OK != _olp_post_accept(olacp)) {
         SOCKET log_fd = lsn->fd;
         CLOSE_SOCK(fd);
+        ATOMIC_SET(&olacp->dead, 1);
+        ATOMIC_ADD(&lsn->ndead, 1);
         int32_t old = ATOMIC_ADD(&lsn->ref, -2);
         if (2 == old) {
             _iocp_freelsn(lsn);
@@ -918,6 +950,7 @@ static void _olp_on_accept_cb(acceptex_ctx *acpctx, sock_ctx *skctx, DWORD bytes
         return;
     }
     _cmd_add_acpfd(GET_PTR(acpctx->ev->watcher, acpctx->ev->nthreads, fd), fd, lsn);
+    _olp_try_revive_slot(lsn);
 }
 static void _iocp_add_acpfd_inloop_err(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
     _evpub_sockel_remove(watcher, oltcp->ol_r.fd);

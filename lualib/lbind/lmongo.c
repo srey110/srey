@@ -226,6 +226,16 @@ static int32_t _lmongo_clear_flag(lua_State *lua) {
     return 1;
 }
 /// <summary>
+/// 强制清空当前挂载的事务会话指针（不释放 session 对象本身），重连后调用避免跨代残留 lsid/txnNumber
+/// </summary>
+/// <param name="self" type="userdata">mongo 对象</param>
+/// <returns>无</returns>
+static int32_t _lmongo_clear_session(lua_State *lua) {
+    LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
+    mongo_clear_session(*ud);
+    return 0;
+}
+/// <summary>
 /// 返回当前请求 ID
 /// </summary>
 /// <param name="self" type="userdata">mongo 对象</param>
@@ -705,6 +715,7 @@ LUAMOD_API int luaopen_mongo(lua_State *lua) {
         { "set_flag",             _lmongo_set_flag },
         { "check_flag",           _lmongo_check_flag },
         { "clear_flag",           _lmongo_clear_flag },
+        { "clear_session",        _lmongo_clear_session },
         { "requestid",            _lmongo_requestid },
         { "pack_hello",           _lmongo_pack_hello },
         { "pack_ping",            _lmongo_pack_ping },

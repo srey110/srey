@@ -51,8 +51,9 @@ static void _harbor_check(router_req *ctx) {
     }
     router_next(ctx);
 }
-// POST /call：单向投递（task_call），不等响应
-static void _harbor_call(router_req *ctx) {
+// /call 与 /request 共用：解析 dst/type/body，grab 目标 task，404 兜底；
+// is_call!=0 走 task_call(单向投递不等响应)，否则走 coro_request(请求-响应，本协程内 yield 等待)
+static void _harbor_dispatch(router_req *ctx, int32_t is_call) {
     size_t dn = 0;
     size_t tn = 0;
     size_t blen = 0;
@@ -66,26 +67,13 @@ static void _harbor_call(router_req *ctx) {
         _harbor_respond(ctx, 404, NULL, 0);
         return;
     }
-    task_call(to, type, body, blen, 1);
-    task_ungrab(to);
-    _harbor_respond(ctx, 200, NULL, 0);
-}
-// POST /request：请求-响应（coro_request，handler 处于协程栈可 yield），回带目标 task 响应
-static void _harbor_request(router_req *ctx) {
-    size_t dn = 0;
-    size_t tn = 0;
-    size_t blen = 0;
-    const char *ds = router_req_query(ctx, "dst", &dn);
-    const char *tp = router_req_query(ctx, "type", &tn);
-    void *body = http_data(ctx->pack, &blen);
-    name_t dst = (name_t)strtoull(ds, NULL, 10);
-    subtype_t type = (subtype_t)strtoul(tp, NULL, 10);
-    task_ctx *to = task_grab(ctx->task->loader, dst);
-    if (NULL == to) {
-        _harbor_respond(ctx, 404, NULL, 0);
+    if (is_call) {
+        task_call(to, type, body, blen, 1);
+        task_ungrab(to);
+        _harbor_respond(ctx, 200, NULL, 0);
         return;
     }
-    int32_t err = ERR_FAILED;
+    int32_t err = ERR_OK;
     size_t rlen = 0;
     void *rtn = coro_request(to, ctx->task, type, body, blen, 1, &err, &rlen);
     task_ungrab(to);
@@ -94,6 +82,14 @@ static void _harbor_request(router_req *ctx) {
     } else {
         _harbor_respond(ctx, 200, rtn, rlen);
     }
+}
+// POST /call：单向投递（task_call），不等响应
+static void _harbor_call(router_req *ctx) {
+    _harbor_dispatch(ctx, 1);
+}
+// POST /request：请求-响应（coro_request，handler 处于协程栈可 yield），回带目标 task 响应
+static void _harbor_request(router_req *ctx) {
+    _harbor_dispatch(ctx, 0);
 }
 // HTTP 接收回调：完整请求到达后交 router 派发（参数校验在 group 中间件，转发在 handler）；不支持 chunked，收到即拒绝并关闭连接
 static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype,

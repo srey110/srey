@@ -17,6 +17,12 @@ int32_t _mysql_ssl_exchanged(ev_ctx *ev, ud_cxt *ud);
 // 内部函数：MySQL 数据解包（验证阶段和命令阶段统一入口）
 void *mysql_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status);
 /// <summary>
+/// 查询该响应包之后是否还有更多结果集（多语句 / 存储过程 CALL 多结果集）
+/// </summary>
+/// <param name="mpack">mpack_ctx；NULL 视为无更多</param>
+/// <returns>1=其后还有结果集；0=已是最后一个或 mpack 无效</returns>
+int32_t mysql_more(mpack_ctx *mpack);
+/// <summary>
 /// MySQL 参数初始化
 /// </summary>
 /// <param name="mysql">mysql_ctx</param>

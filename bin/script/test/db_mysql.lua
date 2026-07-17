@@ -29,7 +29,8 @@ runner.run("db_mysql", function(t)
     t:check(mctx:ping(),            "mysql ping")
 
     -- 清表
-    t:check(mctx:query("delete from test_bind"), "delete test_bind")
+    local rdel = mctx:query("delete from test_bind")
+    t:check(rdel and true == rdel[1], "delete test_bind")
 
     -- 通过 query attribute 批量插入 3 行
     local bind = mbind.new()
@@ -59,7 +60,8 @@ runner.run("db_mysql", function(t)
         bind:datetime("t_datetime", os.time())
         bind:time("t_time", 0, 0, 1, 30, 0)
         bind:null("t_nil")
-        if not mctx:query(sql, bind) then
+        local rins = mctx:query(sql, bind)
+        if not rins or false == rins[1] then
             insert_ok = false
             break
         end
@@ -67,7 +69,8 @@ runner.run("db_mysql", function(t)
     t:check(insert_ok, "bulk insert 3 rows")
 
     -- 普通 SELECT
-    local reader = mctx:query("select * from test_bind order by t_int8")
+    local rsel = mctx:query("select * from test_bind order by t_int8")
+    local reader = rsel and rsel[1]
     if reader then
         t:eq(3, _count_rows(reader), "select all rows")
     else
@@ -79,7 +82,8 @@ runner.run("db_mysql", function(t)
     if stmt then
         bind:clear()
         bind:integer(nil, 2)
-        local r2 = stmt:execute(bind)
+        local rexe = stmt:execute(bind)
+        local r2 = rexe and rexe[1]
         if r2 then
             t:eq(1, _count_rows(r2), "stmt execute one row")
         else
@@ -92,7 +96,36 @@ runner.run("db_mysql", function(t)
     -- ping 自动重连：quit 关闭连接后 ping 应检测到死连接并重连
     mctx:quit()
     t:check(mctx:ping(), "mysql ping auto-reconnect after quit")
-    t:check(mctx:query("select 1"), "mysql query after reconnect")
+    local rrc = mctx:query("select 1")
+    t:check(rrc and rrc[1], "mysql query after reconnect")
+
+    -- 多语句多结果集（P1）：select 1;select 2 → 两个独立结果集
+    local rmulti = mctx:query("select 1 as a;select 2 as b")
+    t:check(rmulti and 2 == #rmulti, "multi-statement returns 2 result sets")
+    -- 紧接普通查询验证多结果集已收干净、无残留错位：应恰好 1 个结果集
+    local rafter = mctx:query("select 42 as v")
+    t:check(rafter and 1 == #rafter and rafter[1], "single query after multi-result: no misalignment")
+
+    -- 预处理 CALL 存储过程多结果集（P1，二进制协议）：CALL 内 2 个 SELECT → execute 续接循环收齐 2 结果集 + CALL 完成 OK 包
+    mctx:query("drop procedure if exists srey_multi")
+    local rproc = mctx:query("create procedure srey_multi() begin select 1 as a; select 2 as b; end")
+    t:check(rproc and true == rproc[1], "create procedure srey_multi")
+    local cstmt = mctx:prepare("call srey_multi()")
+    if cstmt then
+        local rcall = cstmt:execute()
+        t:check(rcall and 3 == #rcall, "stmt CALL returns 3 packs (2 resultsets + trailing OK)")
+        if rcall and 3 == #rcall then
+            t:eq(1, _count_rows(rcall[1]), "CALL result set 1 one row")
+            t:eq(1, _count_rows(rcall[2]), "CALL result set 2 one row")
+            t:check(true == rcall[3], "CALL trailing OK packet")
+        end
+    else
+        t:fail("prepare call srey_multi nil")
+    end
+    mctx:query("drop procedure if exists srey_multi")
+    -- 紧接普通查询验证 CALL 多结果集已收干净、无残留错位
+    local rcafter = mctx:query("select 7 as v")
+    t:check(rcafter and 1 == #rcafter and rcafter[1], "single query after CALL multi-result: no misalignment")
 
     mctx:quit()
 end)

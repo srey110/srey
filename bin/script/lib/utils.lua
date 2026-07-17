@@ -32,8 +32,8 @@ function printd(fmt, ...)
         return
     end
     local info = debug.getinfo(2)
-    local file = string.match(info.source, string.format("^.+%s(.+)$", pathsep))
-    local tag = string.format("[%s][%s %d] ", os.date("%H:%M:%S", os.time()), file or "", info.currentline)
+    local file = string.match(info.short_src, string.format("^.+%s(.+)$", pathsep)) or info.short_src
+    local tag = string.format("[%s][%s %d] ", os.date("%H:%M:%S", os.time()), file, info.currentline)
     print(string.format(tag..fmt, ...))
 end
 
@@ -159,7 +159,7 @@ function dump(obj, offset)
         if type(val) == "table" then
             return dumpObj(val, level)
         elseif type(val) == "number" then
-            return val
+            return tostring(val)
         elseif type(val) == "string" then
             return quoteStr(val)
         else
@@ -231,7 +231,9 @@ local function setmetatableindex(t, index)
         mt.__index = index
         setmetatable(t, mt)
     elseif mt.__index ~= index then
-        setmetatableindex(mt, index)
+        -- 向已占用的 __index(mt.__index)继续追加，而非对 mt 本身(元表)追加——
+        -- 后者会挂到"元表的元表"上，Lua 解析 t.field 时不会经过这一层，追加内容永久不可达
+        setmetatableindex(mt.__index, index)
     end
 end
 

@@ -37,7 +37,7 @@ void *dns_unpack(buffer_ctx *buf, size_t *size, int32_t *status);
 /// <param name="buf">dns 返回数据包</param>
 /// <param name="buflen">数据包长度</param>
 /// <param name="cnt">解析到的 IP 数量</param>
-/// <returns>dns_ip 需要FREE</returns>
+/// <returns>dns_ip 需要FREE；响应被截断(TC 位置位)或解析失败均返回 NULL</returns>
 dns_ip *dns_parse_pack(char *buf, size_t buflen, size_t *cnt);
 /// <summary>
 /// 设置dns服务器IP

@@ -53,7 +53,7 @@ uint32_t _evpub_tick_drive(watcher_ctx *watcher, timer_ctx *timer, uint64_t *now
         ev_tick *tk;
         uint32_t d;
         *now_ms = timer_cur_ms(timer);
-        list_foreach(&watcher->ticks, it) {
+        list_foreach_safe(&watcher->ticks, it, tmp) {
             tk = UPCAST(it, ev_tick, node);
             d = tk->cb(tk->ud, *now_ms);
             if (d < next_to) {

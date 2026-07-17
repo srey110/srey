@@ -10,10 +10,10 @@ local dns_ip = dns.ip()
 -- 根据 DNS 服务器地址判断是否需要使用 IPv6 UDP socket。
 local isipv6 = ("ipv6" == host_type(dns_ip))
 
----通过 UDP 查询 domain 的 IP 地址列表
+---通过 UDP 查询 domain 的 IP 地址列表；失败、无结果或响应被截断(TC 位置位)时返回 nil，供上层回退 TCP
 ---@param domain string 待解析的域名
 ---@param ipv6 boolean true 时查询 AAAA 记录，否则 A 记录
----@return string[]|nil ips IP 字符串数组；失败或无结果时返回 nil
+---@return string[]|nil ips IP 字符串数组；失败、无结果或响应被截断时返回 nil
 local function nslookup_udp(domain, ipv6)
     -- 根据 DNS 服务器类型创建对应的 UDP socket（IPv6 本地地址为 "::"）
     local fd, skid
@@ -37,7 +37,7 @@ local function nslookup_udp(domain, ipv6)
     if not resp then
         return nil
     end
-    -- 解包响应，提取 IP 地址列表
+    -- 解包响应，提取 IP 地址列表；TC 位置位时 dns.unpack 内部已按失败处理返回 nil
     return dns.unpack(resp, resplens)
 end
 
@@ -61,7 +61,8 @@ local function nslookup_tcp(domain, ipv6)
     if not resp then
         return nil
     end
-    return dns.unpack(resp, resplens)
+    local ips = dns.unpack(resp, resplens)
+    return ips
 end
 
 ---查询 domain 的 IP 地址列表：udp=true 时先 UDP、失败回退 TCP；否则（默认）直接 TCP

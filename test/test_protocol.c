@@ -198,6 +198,76 @@ static void test_http_smuggling(CuTest *tc) {
         "Content-Length: +6\r\n"
         "\r\n",
         1);
+    // 9. chunked 不是最后一个 transfer-coding（RFC 7230 §3.3.3 消息体长度无法可靠确定）→ 拒绝
+    _http_smuggle_check(tc,
+        "POST / HTTP/1.1\r\n"
+        "Host: x\r\n"
+        "Transfer-Encoding: chunked, gzip\r\n"
+        "\r\n",
+        1);
+    // 10. chunked 是最后一个 transfer-coding（合法的层叠编码）→ 接受
+    _http_smuggle_check(tc,
+        "POST / HTTP/1.1\r\n"
+        "Host: x\r\n"
+        "Transfer-Encoding: gzip, chunked\r\n"
+        "\r\n"
+        "0\r\n\r\n",
+        0);
+    // 11. 两行独立 Transfer-Encoding（RFC 7230 §3.2.2 同名头视为逗号拼接，等价于
+    //     "chunked, identity"，chunked 不在拼接后的最后）→ 拒绝，不可被拆行绕过第 9 条的校验
+    _http_smuggle_check(tc,
+        "POST / HTTP/1.1\r\n"
+        "Host: x\r\n"
+        "Transfer-Encoding: chunked\r\n"
+        "Transfer-Encoding: identity\r\n"
+        "\r\n",
+        1);
+    // 12. 两行独立 Transfer-Encoding，拼接后 chunked 在最后 → 接受
+    _http_smuggle_check(tc,
+        "POST / HTTP/1.1\r\n"
+        "Host: x\r\n"
+        "Transfer-Encoding: identity\r\n"
+        "Transfer-Encoding: chunked\r\n"
+        "\r\n"
+        "0\r\n\r\n",
+        0);
+    // 13. Transfer-Encoding 值末尾带多余逗号（RFC 7230 §7：list 末尾空元素须被忽略，
+    //     "chunked," 语义等价于 "chunked"）→ 接受，不可因反向扫描把空元素当"最后一个 token"而误拒
+    _http_smuggle_check(tc,
+        "POST / HTTP/1.1\r\n"
+        "Host: x\r\n"
+        "Transfer-Encoding: chunked,\r\n"
+        "\r\n"
+        "0\r\n\r\n",
+        0);
+}
+
+// 首行三段拆分必须限定在首行内，空格不足的畸形首行不得越行吞并头部字段
+static void test_http_status_line(CuTest *tc) {
+    // 1. 请求行缺 HTTP 版本（只有一个空格），第二个空格不得越行匹配到 Host 行 → 拒绝
+    _http_smuggle_check(tc,
+        "GET /\r\n"
+        "Host: a\r\n"
+        "\r\n",
+        1);
+    // 2. 状态行无 reason-phrase 且无尾随空格（RFC 7230 §3.1.2 status-code 后必须有 SP）→ 拒绝
+    _http_smuggle_check(tc,
+        "HTTP/1.1 200\r\n"
+        "Content-Length: 0\r\n"
+        "\r\n",
+        1);
+    // 3. reason-phrase 为空但保留尾随空格 → 合法，接受
+    _http_smuggle_check(tc,
+        "HTTP/1.1 200 \r\n"
+        "Content-Length: 0\r\n"
+        "\r\n",
+        0);
+    // 4. 报文以空行开头 → 拒绝
+    _http_smuggle_check(tc,
+        "\r\n"
+        "GET / HTTP/1.1\r\n"
+        "\r\n",
+        1);
 }
 
 // chunked chunk-size 走私：第一次 unpack 解析 header(chunked)，第二次 unpack 解析 chunk-size 行；断言其是否被拒
@@ -1676,6 +1746,23 @@ static void test_dns_parse_pack(CuTest *tc) {
     CuAssertTrue(tc, NULL == eips);
     CuAssertTrue(tc, 0 == ecnt);
 }
+// DNS-TC：响应头 TC 位置位时应直接返回 NULL，不产出部分记录
+static void test_dns_parse_pack_truncated_flag(CuTest *tc) {
+    /* 与 test_dns_parse_pack 首个用例相同的合法响应，仅 flags1 从 0x81 改为 0x83（多置 TC 位） */
+    uint8_t resp[] = {
+        0x12, 0x34, 0x83, 0x80, 0x00, 0x01, 0x00, 0x01,
+        0x00, 0x00, 0x00, 0x00,
+        0x07, 'e','x','a','m','p','l','e',
+        0x03, 'c','o','m', 0x00,
+        0x00, 0x01, 0x00, 0x01,
+        0xc0, 0x0c, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00,
+        0x01, 0x2c, 0x00, 0x04,
+        0x01, 0x02, 0x03, 0x04
+    };
+    size_t cnt = 0;
+    dns_ip *ips = dns_parse_pack((char *)resp, sizeof(resp), &cnt);
+    CuAssertTrue(tc, NULL == ips);
+}
 
 // DNS-31：查询段截断包拒绝验证
 // 压缩指针仅 1 字节 / label 长度字段超缓冲区 → dns_parse_pack 应返回 NULL
@@ -2918,6 +3005,83 @@ static void test_websock_mqtt_multipack(CuTest *tc) {
     buffer_free(&buf);
 }
 
+// WS 层真分片(fin=0 起始帧 + fin=1 CONTINUE 结束帧)承载子协议完整消息时,
+// 两帧各自的 WS 分片状态位都不应残留到 status 上(回归 lib/protocol/websock.c
+// _websock_parse_data 修复:子协议吐出的是完整消息,与承载它的 WS 帧自身是否分片无关)
+static void test_websock_mqtt_ws_fragment_slice_clear(CuTest *tc) {
+    size_t p1size, p2size;
+    char *p1 = mqtt_pack_ping(&p1size);
+    char *p2 = mqtt_pack_ping(&p2size);
+    CuAssertPtrNotNull(tc, p1);
+    CuAssertPtrNotNull(tc, p2);
+
+    size_t f1size, f2size;
+    // 起始帧:fin=0 opcode=BINARY,承载一个完整 MQTT PINGREQ → 修复前 status 残留 PROT_SLICE_START
+    void *f1 = websock_pack_binary(1, 0, p1, p1size, &f1size);
+    // 结束帧:fin=1 opcode=CONTINUE,承载另一个完整 MQTT PINGREQ → 修复前 status 残留 PROT_SLICE_END
+    void *f2 = websock_pack_continua(1, 1, p2, p2size, &f2size);
+    CuAssertPtrNotNull(tc, f1);
+    CuAssertPtrNotNull(tc, f2);
+    FREE(p1);
+    FREE(p2);
+
+    mqtt_ctx mctx = { MQTT_311 };
+    ud_cxt mqtt_ud;
+    ZERO(&mqtt_ud, sizeof(mqtt_ud));
+    mqtt_ud.status = 1;
+    mqtt_ud.context = &mctx;
+
+    buffer_ctx subbuf;
+    buffer_init(&subbuf);
+
+    test_ws_ctx ws;
+    ZERO(&ws, sizeof(ws));
+    ws.secprot = PACK_MQTT;
+    ws.ud = &mqtt_ud;
+    ws.buf = &subbuf;
+
+    ud_cxt ud;
+    ZERO(&ud, sizeof(ud));
+    ud.status = 1; /* websock 内部 START 状态 */
+    ud.context = &ws;
+
+    buffer_ctx buf;
+    buffer_init(&buf);
+
+    buffer_append(&buf, f1, f1size);
+    FREE(f1);
+    int32_t status = PROT_INIT;
+    struct websock_pack_ctx *pack1 = websock_unpack(NULL, INVALID_SOCK, 0,
+        0 /* server */, &buf, &ud, &status);
+    CuAssertPtrNotNull(tc, pack1);
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_SLICE_START));
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_SLICE));
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_SLICE_END));
+    mqtt_pack_ctx *mp1 = (mqtt_pack_ctx *)websock_secpack(pack1);
+    CuAssertPtrNotNull(tc, mp1);
+    CuAssertIntEquals(tc, MQTT_PINGREQ, mp1->fixhead.prot);
+    _websock_pkfree(pack1);
+
+    buffer_append(&buf, f2, f2size);
+    FREE(f2);
+    status = PROT_INIT;
+    struct websock_pack_ctx *pack2 = websock_unpack(NULL, INVALID_SOCK, 0,
+        0 /* server */, &buf, &ud, &status);
+    CuAssertPtrNotNull(tc, pack2);
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_SLICE_START));
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_SLICE));
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_SLICE_END));
+    mqtt_pack_ctx *mp2 = (mqtt_pack_ctx *)websock_secpack(pack2);
+    CuAssertPtrNotNull(tc, mp2);
+    CuAssertIntEquals(tc, MQTT_PINGREQ, mp2->fixhead.prot);
+    _websock_pkfree(pack2);
+
+    buffer_free(&subbuf);
+    buffer_free(&buf);
+}
+
 // 手工构造 payloadlen=127 + 8 字节大端长度的 64-bit 扩展长度帧
 // 覆盖 _websock_parse_payloadlen 中 payloadlen==127 分支（lib/protocol/websock.c:518-543）
 //   1) 合法 100 字节 payload 通过 ntohll 正确解析
@@ -3309,6 +3473,7 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_http_response);
     SUITE_ADD_TEST(suite, test_http_pack_req);
     SUITE_ADD_TEST(suite, test_http_smuggling);
+    SUITE_ADD_TEST(suite, test_http_status_line);
     SUITE_ADD_TEST(suite, test_http_chunked_size_smuggle);
     SUITE_ADD_TEST(suite, test_http_check_keyval_token);
     SUITE_ADD_TEST(suite, test_http_chunked_trailer_limit);
@@ -3346,6 +3511,7 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_dns_unpack);
     SUITE_ADD_TEST(suite, test_dns_parse_pack);
     SUITE_ADD_TEST(suite, test_dns_parse_pack_truncated_query);
+    SUITE_ADD_TEST(suite, test_dns_parse_pack_truncated_flag);
     SUITE_ADD_TEST(suite, test_dns_set_get_ip);
     SUITE_ADD_TEST(suite, test_custz_head_fixed);
     SUITE_ADD_TEST(suite, test_custz_head_flag);
@@ -3367,6 +3533,7 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_websock_unpack_mask_xor);
     SUITE_ADD_TEST(suite, test_websock_unpack_mask_all_zero);
     SUITE_ADD_TEST(suite, test_websock_mqtt_multipack);
+    SUITE_ADD_TEST(suite, test_websock_mqtt_ws_fragment_slice_clear);
     SUITE_ADD_TEST(suite, test_prots_free_null);
     SUITE_ADD_TEST(suite, test_prots_pkfree_default);
     SUITE_ADD_TEST(suite, test_prots_hsfree_default);

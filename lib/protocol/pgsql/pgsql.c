@@ -395,6 +395,7 @@ static void _pgsql_auth_response(pgsql_ctx *pg, ev_ctx *ev, buffer_ctx *buf, ud_
         _pgsql_auth_process(pg, ev, &breader, status);
         break;
     case 'S': // ParameterStatus：运行时参数状态报告，忽略
+    case 'N': // NoticeResponse：服务端通知消息，忽略
         break;
     case 'K': // BackendKeyData：记录后端进程 ID 和取消密钥
         pg->pid = (int32_t)binary_get_integer(&breader, 4, 0);

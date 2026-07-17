@@ -97,7 +97,7 @@ static int32_t _lprot_dns_pack_tcp(lua_State *lua) {
 /// </summary>
 /// <param name="pack" type="lightuserdata">DNS 响应数据指针（裸报文，不含 TCP 长度前缀）</param>
 /// <param name="packlen" type="integer">响应包字节数</param>
-/// <returns type="string[]?">IP 字符串数组；解析失败或 RCODE 非 0 时返回 nil</returns>
+/// <returns type="string[]?">IP 字符串数组；解析失败、RCODE 非 0 或响应被截断(TC 位置位)时均返回 nil</returns>
 static int32_t _lprot_dns_unpack(lua_State *lua) {
     LUACHECK_LUDATA(lua, 1);
     void *pack = lua_touserdata(lua, 1);

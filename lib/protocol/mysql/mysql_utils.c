@@ -47,7 +47,7 @@ uint64_t _mysql_get_lenenc(binary_ctx *breader, int32_t *err) {
 int32_t _mysql_set_payload_lens(binary_ctx *bwriter) {
     size_t size = bwriter->offset;
     size_t payload = size - MYSQL_HEAD_LENS;
-    if (payload > INT3_MAX) {
+    if (payload >= INT3_MAX) {
         LOG_WARN("mysql payload exceeds 16MB: %zu bytes.", payload);
         return ERR_FAILED;
     }

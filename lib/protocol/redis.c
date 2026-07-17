@@ -9,6 +9,9 @@
 //单次 RESP 解包最大节点数，防御恶意 server 用 *1\r\n*1\r\n... 嵌套数组导致堆 OOM
 //（每层嵌套 nelem 净变化 0，永不触发完整 pack 返回，节点持续累积到 rd->arr）
 #define REDIS_MAX_NODES     65536
+// Bulk String 最大长度，对齐 Redis 自身 proto-max-bulk-len 默认值(512MB)；
+// 防 blens 参与 size_t 加法/CALLOC 计算时在 32 位平台截断回绕
+#define REDIS_MAX_BULK_LEN  (512 * 1024 * 1024)
 #define FMT_INTEGER_FLAG  "diouxX" // 整型格式字符集
 // 提取 [p, f] 范围的格式说明符，格式化并追加到 fbuf
 #define FMT_TYPE(type)\
@@ -244,16 +247,44 @@ static inline void _redis_add_node(reader_ctx *rd, redis_pack_ctx *pk) {
         rd->nelem--;
     }
 }
-// 解析单行类型（简单字符串/错误/整数/空值/布尔/浮点/大整数）：格式 <type><data>\r\n
-static int32_t _redis_reader_line(reader_ctx *rd, int32_t prot, buffer_ctx *buf, int32_t *status) {
+// 定位下一个 CRLF；未找到时按已累积字节数区分"数据不足"与"行首长度已超限"，置 status 并返回 ERR_FAILED
+static int32_t _redis_find_crlf(buffer_ctx *buf, int32_t *status) {
     int32_t pos = buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE);
     if (ERR_FAILED == pos) {
-        //无 CRLF 终止数据持续累积 buf
         if (PACK_TOO_LONG(buffer_size(buf))) {
             BIT_SET(*status, PROT_ERROR);
-            return ERR_FAILED;
+        } else {
+            BIT_SET(*status, PROT_MOREDATA);
         }
-        BIT_SET(*status, PROT_MOREDATA);
+    }
+    return pos;
+}
+// 解析长度行(CRLF 位于 pos)紧邻的数值 token为 >= -1 的整数；容量不够/非纯数字/溢出 int64 时置 PROT_ERROR
+static int32_t _redis_parse_len(buffer_ctx *buf, int32_t pos, int32_t *status, int64_t *out) {
+    char num[64];
+    int32_t lens = pos - 1;
+    if (lens <= 0 || lens >= (int32_t)sizeof(num)) {
+        BIT_SET(*status, PROT_ERROR);
+        return ERR_FAILED;
+    }
+    buffer_copyout(buf, 1, num, lens);
+    num[lens] = '\0';
+    char *end;
+    errno = 0;
+    int64_t val = (int64_t)strtoll(num, &end, 10);
+    if (num + lens != end
+        || val < -1
+        || errno == ERANGE) {
+        BIT_SET(*status, PROT_ERROR);
+        return ERR_FAILED;
+    }
+    *out = val;
+    return ERR_OK;
+}
+// 解析单行类型（简单字符串/错误/整数/空值/布尔/浮点/大整数）：格式 <type><data>\r\n
+static int32_t _redis_reader_line(reader_ctx *rd, int32_t prot, buffer_ctx *buf, int32_t *status) {
+    int32_t pos = _redis_find_crlf(buf, status);
+    if (ERR_FAILED == pos) {
         return ERR_FAILED;
     }
     redis_pack_ctx *pk;
@@ -346,31 +377,12 @@ static int32_t _redis_reader_line(reader_ctx *rd, int32_t prot, buffer_ctx *buf,
 }
 // 解析批量字符串类型（Bulk String/Error/Verbatim）：格式 <type><length>\r\n<data>\r\n，长度为 -1 表示 Null
 static int32_t _redis_reader_bulk(reader_ctx *rd, int32_t prot, buffer_ctx *buf, int32_t *status) {
-    int32_t pos = buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE);
+    int32_t pos = _redis_find_crlf(buf, status);
     if (ERR_FAILED == pos) {
-        // 长度行无 CRLF 持续累积
-        if (PACK_TOO_LONG(buffer_size(buf))) {
-            BIT_SET(*status, PROT_ERROR);
-            return ERR_FAILED;
-        }
-        BIT_SET(*status, PROT_MOREDATA);
         return ERR_FAILED;
     }
-    char num[64];
-    int32_t lens = pos - 1;
-    if (lens <= 0 || lens >= (int32_t)sizeof(num)) {
-        BIT_SET(*status, PROT_ERROR);
-        return ERR_FAILED;
-    }
-    buffer_copyout(buf, 1, num, lens);
-    num[lens] = '\0';
-    char *end;
-    errno = 0;
-    int64_t blens = (int64_t)strtoll(num, &end, 10);
-    if (num + lens != end
-        || blens < -1
-        || errno == ERANGE) {
-        BIT_SET(*status, PROT_ERROR);
+    int64_t blens;
+    if (ERR_OK != _redis_parse_len(buf, pos, status, &blens)) {
         return ERR_FAILED;
     }
     size_t total;
@@ -384,7 +396,7 @@ static int32_t _redis_reader_bulk(reader_ctx *rd, int32_t prot, buffer_ctx *buf,
         _redis_add_node(rd, pk);
         return ERR_OK;
     }
-    if (PACK_TOO_LONG(blens)) {
+    if (blens > REDIS_MAX_BULK_LEN) {
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
@@ -433,31 +445,15 @@ static int32_t _redis_reader_bulk(reader_ctx *rd, int32_t prot, buffer_ctx *buf,
 }
 // 解析聚合类型（数组/集合/推送/映射/属性）：格式 <type><number-of-elements>\r\n<element-1>...<element-n>
 static int32_t _redis_reader_agg(reader_ctx *rd, int32_t prot, buffer_ctx *buf, int32_t *status) {
-    int32_t pos = buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE);
+    int32_t pos = _redis_find_crlf(buf, status);
     if (ERR_FAILED == pos) {
-        // 长度行无 CRLF 持续累积
-        if (PACK_TOO_LONG(buffer_size(buf))) {
-            BIT_SET(*status, PROT_ERROR);
-            return ERR_FAILED;
-        }
-        BIT_SET(*status, PROT_MOREDATA);
         return ERR_FAILED;
     }
-    char num[64];
-    int32_t lens = pos - 1;
-    if (lens <= 0 || lens >= (int32_t)sizeof(num)) {
-        BIT_SET(*status, PROT_ERROR);
+    int64_t nelem;
+    if (ERR_OK != _redis_parse_len(buf, pos, status, &nelem)) {
         return ERR_FAILED;
     }
-    buffer_copyout(buf, 1, num, lens);
-    num[lens] = '\0';
-    char *end;
-    errno = 0;
-    int64_t nelem = (int64_t)strtoll(num, &end, 10);
-    if (num + lens != end
-        || nelem < -1
-        || nelem > (int64_t)INT32_MAX
-        || errno == ERANGE) {
+    if (nelem > (int64_t)INT32_MAX) {
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }

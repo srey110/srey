@@ -55,6 +55,9 @@ void _mysql_pkfree(void *pack) {
     FREE(mpack->payload);
     FREE(mpack);
 }
+int32_t mysql_more(mpack_ctx *mpack) {
+    return (NULL != mpack) ? mpack->more : 0;
+}
 void _mysql_udfree(ud_cxt *ud) {
     if (NULL == ud->context) {
         return;

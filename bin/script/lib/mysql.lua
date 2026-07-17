@@ -26,6 +26,9 @@ function ctx:ctor(ip, port, sslname, user, password, database, charset, maxpk)
     local ssl
     if SSL_NAME.NONE ~= sslname then
         ssl = core.ssl_qury(sslname)
+        if not ssl then
+            error(string.format("ssl_qury not find ssl name %s", sslname), 2)
+        end
     end
     self.mysql = mysql.new(ip, port, ssl, user, password, database, charset, maxpk)
     if not self.mysql then
@@ -35,29 +38,41 @@ function ctx:ctor(ip, port, sslname, user, password, database, charset, maxpk)
     -- 连接代次：每次 connect 成功后 +1，prepare 出来的 stmt 持有创建时的代次，
     -- execute 前比对，重连后旧 statement_id 已被服务端清理时返 false 明确提示重新 prepare
     self.generation = 0
+    -- connect() 进行中标志：握手/认证完成前 fd/skid 尚不可用，其余方法须 fail-fast 拒绝，避免并发协程读到未就绪的连接
+    self.connecting = false
 end
 
 ---建立 TCP 连接并完成 MySQL 握手（Handshake/AuthResponse）；成功后 skid 设为会话键
----@return boolean ok 握手成功 true，失败 false
+---@return boolean ok 握手成功 true，失败 false（含并发期间已有 connect() 在进行中）
 function ctx:connect()
+    if self.connecting then
+        return false
+    end
+    self.connecting = true
     if not self.mysql:try_connect() then
+        self.connecting = false
         return false
     end
     local fd, skid = self.mysql:sock_id()
     if not srey.wait_connect(fd, skid, SSL_NAME.NONE ~= self.sslname or nil) then
+        self.connecting = false
         return false
     end
     local ok,_,_ = srey.wait_handshaked(fd, skid)
     if ok then
         self.generation = self.generation + 1
     end
+    self.connecting = false
     return ok
 end
 
 ---切换当前数据库（COM_INIT_DB）
 ---@param database string 目标数据库名
----@return boolean ok 切换成功 true
+---@return boolean ok 切换成功 true（connect() 进行中时 fail-fast 返回 false）
 function ctx:selectdb(database)
+    if self.connecting then
+        return false
+    end
     local pack, size = self.mysql:pack_selectdb(database)
     local fd, skid = self.mysql:sock_id()
     local mpack, _ =  srey.syn_send(fd, skid, pack, size, 0)
@@ -68,8 +83,11 @@ function ctx:selectdb(database)
 end
 
 ---内部 ping（COM_PING），不自动重连
----@return boolean ok 服务端响应即 true
+---@return boolean ok 服务端响应即 true（connect() 进行中时 fail-fast 返回 false；仅供 ping() 内部调用，不要直接调用）
 function ctx:_ping()
+    if self.connecting then
+        return false
+    end
     local pack, size = self.mysql:pack_ping()
     local fd, skid = self.mysql:sock_id()
     local mpack, _ =  srey.syn_send(fd, skid, pack, size, 0)
@@ -80,8 +98,11 @@ function ctx:_ping()
 end
 
 ---连接保活：ping 失败时自动重连，建议在执行查询前调用
----@return boolean ok 连接可用 true
+---@return boolean ok 连接可用 true（connect() 进行中时 fail-fast 返回 false，避免与外层 connect() 抢同一 fd/skid）
 function ctx:ping()
+    if self.connecting then
+        return false
+    end
     if not self:_ping() then
         local fd, skid = self.mysql:sock_id()
         srey.sync_close(fd, skid, 1)
@@ -93,28 +114,47 @@ end
 ---执行 SQL 查询（COM_QUERY）
 ---@param sql string SQL 语句
 ---@param mbind any? mysql_bind_ctx 参数绑定上下文
----@return boolean|_mysql_reader_ctx result true=OK 包；false=ERR 包或网络失败；reader=结果集（SELECT）
+---@return (_mysql_reader_ctx|boolean)[]|nil results 结果集数组（元素 reader=SELECT 结果集 / true=OK 包 / false=ERR 包）；网络失败、多结果集中途断连或 connect() 进行中返回 nil
 function ctx:query(sql, mbind)
+    if self.connecting then
+        return nil
+    end
     local pack, size = self.mysql:pack_query(sql, mbind)
     local fd, skid = self.mysql:sock_id()
-    local mpack, _ =  srey.syn_send(fd, skid, pack, size, 0)
+    local mpack = srey.syn_send(fd, skid, pack, size, 0)
     if not mpack then
-        return false
+        return nil
     end
-    local pktype = mysql.pack_type(mpack)
-    if MYSQL_PACK_TYPE.MPACK_OK == pktype then
-        return true
+    -- 多结果集（多语句 / CALL）：一次请求可能产生多个响应包，逐个收齐；has_more 须在 reader.new 前读
+    local results = {}
+    while true do
+        local more = mysql.has_more(mpack)
+        local pktype = mysql.pack_type(mpack)
+        if MYSQL_PACK_TYPE.MPACK_OK == pktype then
+            results[#results + 1] = true
+        elseif MYSQL_PACK_TYPE.MPACK_ERR == pktype then
+            results[#results + 1] = false
+        else
+            results[#results + 1] = reader.new(mpack)
+        end
+        if not more then
+            break
+        end
+        mpack = srey.syn_recv(fd, skid)
+        if not mpack then
+            return nil
+        end
     end
-    if MYSQL_PACK_TYPE.MPACK_ERR == pktype then
-        return false
-    end
-    return reader.new(mpack)
+    return results
 end
 
 ---准备预处理语句（COM_STMT_PREPARE）
 ---@param sql string 含 ? 占位符的 SQL 语句
----@return any|false stmt mysql_stmt_ctx 实例；失败返回 false
+---@return any|false stmt mysql_stmt_ctx 实例；失败或 connect() 进行中返回 false
 function ctx:prepare(sql)
+    if self.connecting then
+        return false
+    end
     local pack, size = self.mysql:pack_stmt_prepare(sql)
     local fd, skid = self.mysql:sock_id()
     local mpack, _ =  srey.syn_send(fd, skid, pack, size, 0)

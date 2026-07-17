@@ -31,31 +31,50 @@ end
 
 ---执行预处理语句（COM_STMT_EXECUTE）
 ---@param mbind any? mysql_bind_ctx 参数绑定上下文
----@return boolean|_mysql_reader_ctx result true=OK；false=ERR；reader=结果集
+---@return (_mysql_reader_ctx|boolean)[]|nil results 结果集数组（元素 reader=结果集 / true=OK 包 / false=ERR 包）；网络失败、多结果集中途断连、语句失效或 owner 正在 connect() 中返回 nil
 function ctx:execute(mbind)
+    if self.owner.connecting then
+        return nil
+    end
     if self.gen ~= self.owner.generation then
         WARN("mysql stmt invalidated by reconnect, please re-prepare.")
-        return false
+        return nil
     end
     local fd, skid = self.stmt:sock_id()
     local pack, size = self.stmt:pack_stmt_execute(mbind)
-    local mpack, _ =  srey.syn_send(fd, skid, pack, size, 0)
+    local mpack = srey.syn_send(fd, skid, pack, size, 0)
     if not mpack then
-        return false
+        return nil
     end
-    local pktype = mysql.pack_type(mpack)
-    if MYSQL_PACK_TYPE.MPACK_OK == pktype then
-        return true
+    -- 多结果集（CALL / 多语句）：逐个收齐；has_more 须在 reader.new 前读
+    local results = {}
+    while true do
+        local more = mysql.has_more(mpack)
+        local pktype = mysql.pack_type(mpack)
+        if MYSQL_PACK_TYPE.MPACK_OK == pktype then
+            results[#results + 1] = true
+        elseif MYSQL_PACK_TYPE.MPACK_ERR == pktype then
+            results[#results + 1] = false
+        else
+            results[#results + 1] = reader.new(mpack)
+        end
+        if not more then
+            break
+        end
+        mpack = srey.syn_recv(fd, skid)
+        if not mpack then
+            return nil
+        end
     end
-    if MYSQL_PACK_TYPE.MPACK_ERR == pktype then
-        return false
-    end
-    return reader.new(mpack)
+    return results
 end
 
 ---发送 COM_STMT_RESET：清除服务端语句执行状态，保留 prepare 结果，下次 execute 可绑定新参数
----@return boolean ok 重置成功 true
+---@return boolean ok 重置成功 true（语句失效或 owner 正在 connect() 中返回 false）
 function ctx:reset()
+    if self.owner.connecting then
+        return false
+    end
     if self.gen ~= self.owner.generation then
         WARN("mysql stmt invalidated by reconnect, please re-prepare.")
         return false

@@ -7,6 +7,9 @@
 // 字面量响应：串只写一次，长度由 sizeof-1 编译期得出，免同串双写改文案时长度不匹配
 #define _debug_resp_lit(task, src, sess, lit) \
     _debug_resp((task), (src), (sess), (lit), sizeof(lit) - 1)
+// 字面量命令比较：同上，免命令名与手数长度分离双写，改名漏改长度即静默失配
+#define _debug_cmd_eq_lit(item, lit) \
+    _debug_cmd_eq((item), (lit), sizeof(lit) - 1)
 // stat 输出用的 mtype 名字表，索引对齐 msg_type 枚举
 static const char *_mtype_names[MSG_TYPE_ALL] = {
     "NONE", "STARTUP", "CLOSING", "TIMEOUT", "ACCEPT", "CONNECT",
@@ -71,11 +74,11 @@ int32_t _debug_request(task_ctx *task, message_ctx *msg) {
         return ERR_FAILED;
     }
     // 公共命令处理后返回 ERR_OK
-    if (_debug_cmd_eq(&cmd, "stat", 4)) {
+    if (_debug_cmd_eq_lit(&cmd, "stat")) {
         _debug_stat(task, msg->src, msg->sess);
         return ERR_OK;
     }
-    if (_debug_cmd_eq(&cmd, "coros", 5)) {
+    if (_debug_cmd_eq_lit(&cmd, "coros")) {
         // coro_dump 返回挂起协程文本(C 协程无栈回溯,仅 sess/mtype/age);非协程 task 返 NULL
         size_t dlen = 0;
         char *dump = coro_dump(task, &dlen);
@@ -87,7 +90,7 @@ int32_t _debug_request(task_ctx *task, message_ctx *msg) {
         }
         return ERR_OK;
     }
-    if (_debug_cmd_eq(&cmd, "loglv", 5)) {
+    if (_debug_cmd_eq_lit(&cmd, "loglv")) {
         seri_item lv;
         if (1 != seri_iter_next(&it, &lv) || SERI_ITEM_INT != lv.type) {
             // 命令已识别但参数错：回错误响应并接管，不透传
@@ -106,8 +109,8 @@ int32_t _debug_request(task_ctx *task, message_ctx *msg) {
     }
     // mem/gc/inject/hotfix 是 Lua VM 专属公共命令,C task 无法执行：回 not supported 并接管,
     // 避免透传到无 on_requested 的框架 task 显示误导的 "unavailable"
-    if (_debug_cmd_eq(&cmd, "mem", 3) || _debug_cmd_eq(&cmd, "gc", 2)
-        || _debug_cmd_eq(&cmd, "inject", 6) || _debug_cmd_eq(&cmd, "hotfix", 6)) {
+    if (_debug_cmd_eq_lit(&cmd, "mem") || _debug_cmd_eq_lit(&cmd, "gc")
+        || _debug_cmd_eq_lit(&cmd, "inject") || _debug_cmd_eq_lit(&cmd, "hotfix")) {
         _debug_resp_lit(task, msg->src, msg->sess, "command not supported in C task.");
         return ERR_OK;
     }

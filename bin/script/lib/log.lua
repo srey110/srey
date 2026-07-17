@@ -30,7 +30,7 @@ local function _log(lv, fmt, ...)
     if not info then
         return
     end
-    utils.log(lv, info.source, info.currentline, string.format(fmt, ...))
+    utils.log(lv, info.short_src, info.currentline, string.format(fmt, ...))
 end
 
 ---动态调整运行时日志级别，同步更新 Lua 缓存与 C 层；非法级别（非整数或越界）返回 false 不改状态

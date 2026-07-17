@@ -567,7 +567,10 @@ int32_t mongo_ping(mongo_ctx *mongo) {
             return ERR_FAILED;
         }
         if (0 != mongo->user[0]) {
-            return mongo_auth(mongo, mongo->authmod, mongo->user, mongo->password);
+            int32_t flags = mongo_clear_flag(mongo);
+            int32_t rtn = _mongo_auth(mongo, mongo->authmod);// 不使用mongo_auth，它里面有psw user赋值
+            mongo_set_flag(mongo, flags);
+            return rtn;
         }
         return ERR_OK;
     }

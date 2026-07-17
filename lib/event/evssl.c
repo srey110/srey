@@ -337,9 +337,8 @@ void evssl_shutdown(SSL *ssl, SOCKET fd) {
     if (NULL != ssl) {
         ERR_clear_error();
         SSL_shutdown(ssl);
-    } else {
-        shutdown(fd, SHUT_RD);
     }
+    shutdown(fd, SHUT_RD);
 }
 int32_t evssl_version(SSL *ssl) {
     return SSL_version(ssl);

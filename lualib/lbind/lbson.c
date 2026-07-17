@@ -1,5 +1,4 @@
 ﻿#include "lbind/lpub.h"
-#include <string.h>
 
 #define MT_BSON        "_bson_ctx"
 #define MT_BSON_ITER   "_bson_iter_ctx"
@@ -615,8 +614,8 @@ static void _lbson_encode_table_as_doc(lua_State *lua, int32_t idx, bson_ctx *bs
             snprintf(keybuf, sizeof(keybuf), "%lld", (long long)lua_tointeger(lua, -2));
             key = keybuf;
         } else {
-            lua_pop(lua, 1);
-            continue;
+            // 与下方 value 类型不支持时的处理一致改为报错，不再静默丢弃该键值对
+            luaL_error(lua, "bson encode unsupported key type '%s'", lua_typename(lua, lua_type(lua, -2)));
         }
         _lbson_encode_value(lua, lua_gettop(lua), bson, key);
         lua_pop(lua, 1);
@@ -972,12 +971,18 @@ LUAMOD_API int luaopen_bson(lua_State *lua) {
 /// 一次性消费契约：iter 会推进底层 bson_ctx 的 doc.offset，且 new 时强制把 offset
 /// 重置到 0 以让 iter_init 正确读 doclens（encode 后 offset 在末尾，直接 init 读到 garbage）。
 /// 因此对同一 bson 调用 iter.new 后，原 bson 的 :data() / :complete() 不再可靠——
-/// 需要保留原始数据时请先调用 :data() 取走再创建 iter，或直接走 bson.decode() 转 Lua table
+/// 需要保留原始数据时请先调用 :data() 取走再创建 iter，或直接走 bson.decode() 转 Lua table。
+/// 要求 bson 已闭合（depth==0，即写入模式下全部 doc_begin 均已配对 end）；否则报错
 /// </summary>
 /// <param name="bson" type="_bson_ctx">bson 对象</param>
 /// <returns type="_bson_iter_ctx">iter 对象</returns>
 static int32_t _lbson_iter_new(lua_State *lua) {
     bson_ctx *bson = luaL_checkudata(lua, 1, MT_BSON);
+    if (0 != bson->depth) {
+        // depth 非 0 表示存在未配对的 doc_begin（含隐式顶层文档），首 4 字节长度前缀
+        // 仍是 MALLOC 未清零的堆内容，此时 iter_init 会把垃圾值当 doclens 解析出脏字段
+        return luaL_error(lua, "bson_iter.new: document not complete (depth=%d), missing matching end()", bson->depth);
+    }
     // encode/write 模式下 doc.offset 在末尾，bson_iter_init 假定 offset=0 才能正确
     // 读首 4 字节 doclens；强制 reset 让 iter 在两种来源（encode / raw bytes）下行为一致
     binary_offset(&bson->doc, 0);

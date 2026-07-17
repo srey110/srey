@@ -153,6 +153,14 @@ static inline void _usk_call_udp_close_cb(ev_ctx *ev, udp_ctx *udp) {
         udp->cbs.c_cb(ev, udp->sock.fd, udp->skid, 0, &udp->ud);
     }
 }
+static inline int32_t _usk_keep_event(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
+#ifndef MANUAL_ADD
+    if (BIT_CHECK(skctx->events, ev)) {
+        return ERR_OK;
+    }
+#endif
+    return _uev_add_event(watcher, skctx->fd, &skctx->events, ev, skctx);
+}
 // 关闭TCP连接：触发关闭回调，从hashmap移除，入隔离队列暂存 QTN_MS 后归 pool
 static inline void _usk_close_tcp(watcher_ctx *watcher, tcp_ctx *tcp) {
 #if WITH_SSL
@@ -212,6 +220,7 @@ void _uev_disconnect(watcher_ctx *watcher, sock_ctx *skctx, int32_t immed) {
         if (0 != immed) {
             BIT_SET(tcp->status, STATUS_ERROR);
             _uev_sk_shutdown(skctx);
+            _usk_keep_event(watcher, &tcp->sock, EVENT_READ);
         } else {
             BIT_SET(tcp->status, STATUS_GRACEFUL_CLOSE);
             // 仅半关读端,不碰 SSL 对象:留 SSL_write 继续发完 buf_s,close_notify 推迟到 _usk_close_tcp 真正关闭前补发
@@ -220,10 +229,8 @@ void _uev_disconnect(watcher_ctx *watcher, sock_ctx *skctx, int32_t immed) {
         }
         // 注册 EVENT_WRITE：immed=1 触发 _usk_on_rw_cb 入口 STATUS_ERROR 分支立即关
         //                  immed=0 触发 STATUS_GRACEFUL_CLOSE 分支发完 buf_s 后关
-        if (!BIT_CHECK(tcp->sock.events, EVENT_WRITE)) {
-            if (ERR_OK != _uev_add_event(watcher, tcp->sock.fd, &tcp->sock.events, EVENT_WRITE, &tcp->sock)) {
-                _usk_close_tcp(watcher, tcp);
-            }
+        if (ERR_OK != _usk_keep_event(watcher, &tcp->sock, EVENT_WRITE)) {
+            _usk_close_tcp(watcher, tcp);
         }
     } else {
         // UDP datagram 无序无连接,graceful 无意义,始终走立即关分支
@@ -232,10 +239,8 @@ void _uev_disconnect(watcher_ctx *watcher, sock_ctx *skctx, int32_t immed) {
             return;
         }
         BIT_SET(udp->status, STATUS_ERROR);
-        if (!BIT_CHECK(skctx->events, EVENT_WRITE)) {
-            if (ERR_OK != _uev_add_event(watcher, skctx->fd, &skctx->events, EVENT_WRITE, skctx)) {
-                _usk_close_udp(watcher, udp);
-            }
+        if (ERR_OK != _usk_keep_event(watcher, skctx, EVENT_WRITE)) {
+            _usk_close_udp(watcher, udp);
         }
     }
 }
@@ -358,14 +363,6 @@ void _uev_try_ssl_exchange(watcher_ctx *watcher, sock_ctx *skctx, struct evssl_c
     (void)evssl;
     (void)client;
 #endif
-}
-static inline int32_t _usk_keep_event(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
-#ifndef MANUAL_ADD
-    if (BIT_CHECK(skctx->events, ev)) {
-        return ERR_OK;
-    }
-#endif
-    return _uev_add_event(watcher, skctx->fd, &skctx->events, ev, skctx);
 }
 // 从socket读取数据到接收缓冲区并触发recv回调，MANUAL_ADD时需重新注册读事件
 static int32_t _usk_tcp_recv(watcher_ctx *watcher, tcp_ctx *tcp) {
@@ -692,6 +689,7 @@ void _uev_add_conn_inloop(watcher_ctx *watcher, sock_ctx *skctx) {
 }
 // 监听socket可读事件回调：循环accept新连接并分发给对应watcher
 static void _usk_on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
+    (void)ev;
     lsnsock_ctx *acpt = UPCAST(skctx, lsnsock_ctx, sock);
     SOCKET fd;
     watcher_ctx *to;
@@ -724,17 +722,13 @@ static void _usk_on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev)
             }
         }
     }
-#ifdef MANUAL_ADD
     if (unremove) {
-        if (ERR_OK != _uev_add_event(watcher, acpt->sock.fd, &acpt->sock.events, EVENT_READ, &acpt->sock)) {
+        if (ERR_OK != _usk_keep_event(watcher, &acpt->sock, EVENT_READ)) {
             _evpub_sockel_remove(watcher, acpt->sock.fd);
             CLOSE_SOCK(acpt->sock.fd);
             LOG_ERROR("%s", ERRORSTR(ERRNO));
         }
     }
-#else
-    (void)ev;
-#endif
 }
 static void _uev_add_acpfd_inloop_err(watcher_ctx *watcher, tcp_ctx *tcp) {
     _evpub_sockel_remove(watcher, tcp->sock.fd);

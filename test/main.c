@@ -390,7 +390,7 @@ int main(int argc, char *argv[]) {
             continue;
         }
         popen_waitexit(&pctx, 60000);
-        while ((nread = popen_read(&pctx, outbuf, sizeof(outbuf) - 1)) > 0) {
+        while ((nread = popen_read(&pctx, outbuf, sizeof(outbuf) - 1, NULL)) > 0) {
             outbuf[nread] = '\0';
             printf("%s\n", outbuf);
         }

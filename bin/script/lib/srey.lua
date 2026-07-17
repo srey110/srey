@@ -236,7 +236,12 @@ function srey.fork_wait(funcs)
             barrier.results[i] = { ok = ok, val = ret }
             barrier.pending = barrier.pending - 1
             if 0 == barrier.pending then
+                local self = coro_running
                 _coro_resume(barrier.waiter)
+                -- _coro_resume 把 coro_running/active_lua 切到 barrier.waiter，本协程还要继续跑
+                -- task_ungrab 等收尾代码，须还原为 self，否则窗口内 task.trap 把中断 hook 装错协程
+                coro_running = self
+                task.active(self)
             end
         end)
     end
@@ -867,6 +872,10 @@ function srey.wait_connect(fd, skid, ssl)
         WARN("connect timeout, skid %s.", tostring(skid))
         return false
     end
+    if MSG_TYPE.CLOSE == msg.mtype then
+        WARN("connction closed, skid %s.", tostring(skid))
+        return false
+    end
     if ERR_OK ~= msg.erro then
         WARN("connect error, skid %s.", tostring(skid))
         return false
@@ -1099,6 +1108,18 @@ function srey.syn_send(fd, skid, data, size, copy)
     if not srey.send(fd, skid, data, size, copy) then
         return nil
     end
+    local msg = _wait_net_recv(fd, skid)
+    if not msg then
+        return nil
+    end
+    return msg.data, msg.size
+end
+---同步接收下一个响应包（不发送）：用于一次请求产生多个响应的场景（如 MySQL 多结果集续接）
+---@param fd integer socket fd
+---@param skid integer 连接 skid
+---@return lightuserdata|nil rdata 响应数据指针；同 syn_send 语义，仅本协程下次 yield 前有效；超时/断开返回 nil
+---@return integer? rsize 响应数据长度
+function srey.syn_recv(fd, skid)
     local msg = _wait_net_recv(fd, skid)
     if not msg then
         return nil
@@ -1347,6 +1368,7 @@ end
 ---定时扫描所有挂起的协程，将已超时者强制 resume（携带 TIMEOUT 消息）；每 1 秒触发一次，
 ---通过 srey.timeout 自我调度形成循环；扫描主体用 xpcall 包裹保证循环不被异常中断
 local function _coro_timeout()
+    local self = coro_running
     srey.xpcall(function()
         if nyield > 0 then
             local now = srey.timer_ms()
@@ -1380,6 +1402,10 @@ local function _coro_timeout()
                         tremove(cur_corosess.waiters, j)
                         cur_coro = cur_coroinfo.coro
                         _coro_resume(cur_coro, msg)
+                        -- _coro_resume 把 coro_running/active_lua 切到 cur_coro，本协程(_coro_timeout 自身)
+                        -- 还要继续跑循环剩余部分，须还原为 self，否则窗口内 task.trap 把中断 hook 装错协程
+                        coro_running = self
+                        task.active(self)
                         WARN("resume timeout session %s.", tostring(cur_sess))
                     else
                         j = j + 1

@@ -96,8 +96,9 @@ function ctx:reply(reply)
     self.mail:reply(reply)
 end
 
----重置邮件内容（主题、正文、收件人、附件均清空）
+---重置邮件内容（主题、正文、收件人、附件、发件人均清空）
 function ctx:clear()
+    self.sender = ""
     self.addrs = {}
     self.mail:clear()
 end

@@ -54,13 +54,13 @@ static int32_t _lmqtt_props_free(lua_State *lua) {
 /// <param name="self" type="userdata">props 对象</param>
 /// <param name="flag" type="integer">属性标识 mqtt_prop_flag</param>
 /// <param name="val" type="integer">属性数值</param>
-/// <returns>无</returns>
+/// <returns type="boolean">true 成功；false flag 类型不匹配（非固定长度数字属性）</returns>
 static int32_t _lmqtt_props_fixnum(lua_State *lua) {
     binary_ctx *props = luaL_checkudata(lua, 1, MT_MQTT_PROPS);
     mqtt_prop_flag flag = (mqtt_prop_flag)luaL_checkinteger(lua, 2);
     uint32_t val = (uint32_t)luaL_checkinteger(lua, 3);
-    mqtt_props_fixnum(props, flag, val);
-    return 0;
+    lua_pushboolean(lua, ERR_OK == mqtt_props_fixnum(props, flag, val));
+    return 1;
 }
 /// <summary>
 /// 追加可变长度数字属性（Variable Byte Integer）
@@ -68,13 +68,13 @@ static int32_t _lmqtt_props_fixnum(lua_State *lua) {
 /// <param name="self" type="userdata">props 对象</param>
 /// <param name="flag" type="integer">属性标识 mqtt_prop_flag</param>
 /// <param name="val" type="integer">属性数值</param>
-/// <returns>无</returns>
+/// <returns type="boolean">true 成功；false flag 类型不匹配（非可变长度数字属性）</returns>
 static int32_t _lmqtt_props_varnum(lua_State *lua) {
     binary_ctx *props = luaL_checkudata(lua, 1, MT_MQTT_PROPS);
     mqtt_prop_flag flag = (mqtt_prop_flag)luaL_checkinteger(lua, 2);
     uint32_t val = (uint32_t)luaL_checkinteger(lua, 3);
-    mqtt_props_varnum(props, flag, val);
-    return 0;
+    lua_pushboolean(lua, ERR_OK == mqtt_props_varnum(props, flag, val));
+    return 1;
 }
 /// <summary>
 /// 追加二进制数据属性
@@ -83,15 +83,15 @@ static int32_t _lmqtt_props_varnum(lua_State *lua) {
 /// <param name="flag" type="integer">属性标识 mqtt_prop_flag</param>
 /// <param name="data" type="string|lightuserdata">数据；字符串时长度自动取得</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
-/// <returns>无</returns>
+/// <returns type="boolean">true 成功；false flag 类型不匹配（非二进制属性）或数据超长</returns>
 static int32_t _lmqtt_props_binary(lua_State *lua) {
     binary_ctx *props = luaL_checkudata(lua, 1, MT_MQTT_PROPS);
     mqtt_prop_flag flag = (mqtt_prop_flag)luaL_checkinteger(lua, 2);
     char *data;
     size_t lens;
     _lmqtt_get_payload(lua, 3, &data, &lens);
-    mqtt_props_binary(props, flag, data, lens);
-    return 0;
+    lua_pushboolean(lua, ERR_OK == mqtt_props_binary(props, flag, data, lens));
+    return 1;
 }
 /// <summary>
 /// 追加 UTF-8 字符串对属性（用户属性 USER_PROPERTY）
@@ -100,15 +100,15 @@ static int32_t _lmqtt_props_binary(lua_State *lua) {
 /// <param name="flag" type="integer">属性标识 mqtt_prop_flag</param>
 /// <param name="key" type="string">键</param>
 /// <param name="val" type="string">值</param>
-/// <returns>无</returns>
+/// <returns type="boolean">true 成功；false flag 类型不匹配（非键值对属性）或数据超长</returns>
 static int32_t _lmqtt_props_kv(lua_State *lua) {
     binary_ctx *props = luaL_checkudata(lua, 1, MT_MQTT_PROPS);
     mqtt_prop_flag flag = (mqtt_prop_flag)luaL_checkinteger(lua, 2);
     size_t klens, vlens;
     const char *key = luaL_checklstring(lua, 3, &klens);
     const char *val = luaL_checklstring(lua, 4, &vlens);
-    mqtt_props_kv(props, flag, (void *)key, klens, (void *)val, vlens);
-    return 0;
+    lua_pushboolean(lua, ERR_OK == mqtt_props_kv(props, flag, (void *)key, klens, (void *)val, vlens));
+    return 1;
 }
 /// <summary>
 /// 向 topics 缓冲区追加一条订阅主题

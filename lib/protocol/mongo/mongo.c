@@ -293,6 +293,9 @@ int32_t mongo_clear_flag(mongo_ctx *mongo) {
     mongo->flags = 0;
     return flags;
 }
+void mongo_clear_session(mongo_ctx *mongo) {
+    mongo->session = NULL;
+}
 int32_t mongo_status_auth(void) {
     return AUTH;
 }

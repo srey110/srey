@@ -14,12 +14,22 @@ typedef enum parse_status{
 }parse_status;
 typedef struct http_pack_ctx {
     int32_t chunked;          // 0=非 chunked，1=chunked 起始包，2=chunked 数据包
+    int32_t chunked_last;     // 最近一次见到的 Transfer-Encoding 行，其末尾 token 是否为 chunked
     buf_ctx head;             // 原始头部数据（含第一行和所有字段）
     buf_ctx data;             // 数据体
     buf_ctx status[3];        // 第一行拆分：status[0]=方法/版本，status[1]=状态码/路径，status[2]=描述/版本
     array_ctx header;         // 所有头部字段列表（元素 http_header_ctx）
 }http_pack_ctx;
 
+// 裁剪 [*start, *end) 区间首尾的 OWS (SP/HTAB)
+static void _http_trim_ows(const char **start, const char **end) {
+    while (*end > *start && (' ' == *(*end - 1) || '\t' == *(*end - 1))) {
+        (*end)--;
+    }
+    while (*start < *end && (' ' == **start || '\t' == **start)) {
+        (*start)++;
+    }
+}
 int32_t _http_check_keyval(http_header_ctx *head,
                            const char *key, size_t klen,
                            const char *val, size_t vlen) {
@@ -34,20 +44,13 @@ int32_t _http_check_keyval(http_header_ctx *head,
     const char *tstart;
     const char *tend;
     while (p < end) {
-        // 跳过前导 OWS (SP/HTAB)
-        while (p < end && (' ' == *p || '\t' == *p)) {
-            p++;
-        }
         tstart = p;
         // 找下个 ',' 或末尾
         while (p < end && ',' != *p) {
             p++;
         }
         tend = p;
-        // 跳过末尾 OWS
-        while (tend > tstart && (' ' == *(tend - 1) || '\t' == *(tend - 1))) {
-            tend--;
-        }
+        _http_trim_ows(&tstart, &tend);
         // 大小写不敏感全等比较
         if ((size_t)(tend - tstart) == vlen
             && 0 == STRNCMP(tstart, val, vlen)) {
@@ -79,13 +82,36 @@ static int32_t _http_parse_content_length(http_header_ctx *field, size_t *out) {
     *out = (size_t)val;
     return ERR_OK;
 }
-// 检查头部字段是否为 Content-Length 或 Transfer-Encoding: chunked，更新传输方式。
-// RFC 7230 §3.3.2 / §3.3.3：拒绝多个不同 Content-Length（CL.CL desync）以及
-// Transfer-Encoding 与 Content-Length 同存（TE.CL desync），防 HTTP Request Smuggling。
+// 检查头部值经逗号分隔后的最后一个 token 是否等于指定字符串（大小写不敏感）
+static int32_t _http_check_lastval(http_header_ctx *head, const char *val, size_t vlen) {
+    const char *data = (const char *)head->value.data;
+    const char *end = data + head->value.lens;
+    const char *start;
+    const char *tstart;
+    const char *tend;
+    for (;;) {
+        start = end;
+        while (start > data && ',' != *(start - 1)) {
+            start--;
+        }
+        tstart = start;
+        tend = end;
+        _http_trim_ows(&tstart, &tend);
+        if (tstart < tend) {
+            return (size_t)(tend - tstart) == vlen && 0 == STRNCMP(tstart, val, vlen) ? ERR_OK : ERR_FAILED;
+        }
+        // RFC 7230 §7：list 末尾/连续逗号引入的空元素须被忽略，跳过该逗号继续找上一个 token
+        if (start == data) {
+            return ERR_FAILED;
+        }
+        end = start - 1;
+    }
+}
+// 检查头部字段是否为 Content-Length 或 Transfer-Encoding，更新传输方式。
 static int32_t _http_check_transfer(http_pack_ctx *pack, http_header_ctx *field, int32_t *transfer) {
     int32_t is_te = (ERR_OK == _http_check_keyval(field,
                                                   "transfer-encoding", sizeof("transfer-encoding") - 1,
-                                                  "chunked", sizeof("chunked") - 1));
+                                                  NULL, 0));
     int32_t is_cl = (ERR_OK == _http_check_keyval(field,
                                                   "content-length", sizeof("content-length") - 1,
                                                   NULL, 0));
@@ -95,6 +121,7 @@ static int32_t _http_check_transfer(http_pack_ctx *pack, http_header_ctx *field,
             LOG_WARN("HTTP smuggling: Transfer-Encoding after Content-Length.");
             return ERR_FAILED;
         }
+        pack->chunked_last = (ERR_OK == _http_check_lastval(field, "chunked", sizeof("chunked") - 1));
         if (CHUNKED != *transfer) {
             *transfer = CHUNKED;
             pack->data.lens = 0;
@@ -133,7 +160,11 @@ static char *_http_parse_status(http_pack_ctx *pack) {
     if (NULL == head) {
         return NULL;
     }
-    char *pos = memstr(0, head, HEAD_REMAIN, " ", 1);
+    char *pcrlf = memstr(0, head, HEAD_REMAIN, FLAG_CRLF, CRLF_SIZE);
+    if (NULL == pcrlf) {
+        return NULL;
+    }
+    char *pos = memstr(0, head, (size_t)(pcrlf - head), " ", 1);
     if (NULL == pos) {
         return NULL;
     }
@@ -143,7 +174,7 @@ static char *_http_parse_status(http_pack_ctx *pack) {
         return NULL;
     }
     head = pos + 1;
-    pos = memstr(0, head, HEAD_REMAIN, " ", 1);
+    pos = memstr(0, head, (size_t)(pcrlf - head), " ", 1);
     if (NULL == pos) {
         return NULL;
     }
@@ -153,16 +184,14 @@ static char *_http_parse_status(http_pack_ctx *pack) {
         return NULL;
     }
     head = pos + 1;
-    pos = memstr(0, head, HEAD_REMAIN, FLAG_CRLF, CRLF_SIZE);
-    if (NULL == pos) {
-        return NULL;
-    }
     pack->status[2].data = head;
-    pack->status[2].lens = pos - head;
-    return pos + CRLF_SIZE;
+    pack->status[2].lens = pcrlf - head;
+    return pcrlf + CRLF_SIZE;
 }
 // 在单次扫描中同时找到冒号和 CRLF，减少内存扫描次数
 static int32_t _http_parse_field_fast(const char *head, size_t remain, char **pcolon, char **pcrlf) {
+    *pcolon = NULL;
+    *pcrlf = NULL;
     const char *cur = head;
     size_t scanned = 0;
     while (scanned < remain) {
@@ -178,46 +207,58 @@ static int32_t _http_parse_field_fast(const char *head, size_t remain, char **pc
     }
     return ERR_FAILED;
 }
+// 解析单个头部字段行（key ":" OWS value CRLF），拒绝空 key 与 obs-fold 续行，成功后 *phead 推进到下一行行首
+static int32_t _http_parse_field(http_pack_ctx *pack, char **phead, http_header_ctx *field) {
+    char *head = *phead;
+    head = skipempty(head, HEAD_REMAIN);
+    if (NULL == head) {
+        return ERR_FAILED;
+    }
+    char *pcolon;
+    char *pcrlf;
+    if (ERR_OK != _http_parse_field_fast(head, HEAD_REMAIN, &pcolon, &pcrlf)) {
+        return ERR_FAILED;
+    }
+    field->key.data = head;
+    field->key.lens = pcolon - head;
+    if (0 == field->key.lens) {
+        return ERR_FAILED;
+    }
+    head = pcolon + 1;
+    head = skipempty(head, HEAD_REMAIN);
+    if (NULL == head) {
+        return ERR_FAILED;
+    }
+    field->value.data = head;
+    field->value.lens = pcrlf - head;
+    head = pcrlf + CRLF_SIZE;
+    if (' ' == *head || '\t' == *head) {
+        return ERR_FAILED;
+    }
+    *phead = head;
+    return ERR_OK;
+}
 // 解析全部头部字段，检测 Content-Length/Transfer-Encoding，将字段存入 pack->header
 static int32_t _http_parse_head(http_pack_ctx *pack, int32_t *transfer) {
     char *head = _http_parse_status(pack);
     if (NULL == head) {
         return ERR_FAILED;
     }
-    char *pcolon;
-    char *pcrlf;
-    size_t least = 2 * CRLF_SIZE + 1;//\r\n\r\n + :
     http_header_ctx field;
-    while ((size_t)(head - (char *)pack->head.data) + least <= pack->head.lens) {
-        head = skipempty(head, HEAD_REMAIN);
-        if (NULL == head) {
-            return ERR_FAILED;
-        }
-        pcolon = NULL;
-        pcrlf = NULL;
-        if (ERR_OK != _http_parse_field_fast(head, HEAD_REMAIN, &pcolon, &pcrlf)) {
-            return ERR_FAILED;
-        }
-        field.key.data = head;
-        field.key.lens = pcolon - head;
-        if (0 == field.key.lens) {
-            return ERR_FAILED;
-        }
-        head = pcolon + 1;
-        head = skipempty(head, HEAD_REMAIN);
-        if (NULL == head) {
-            return ERR_FAILED;
-        }
-        field.value.data = head;
-        field.value.lens = pcrlf - head;
-        head = pcrlf + CRLF_SIZE;
-        if (' ' == *head || '\t' == *head) {
+    // head 缓冲由 _http_headlens 保证以首个 \r\n\r\n 结尾，空行即头部结束
+    while (0 != memcmp(head, FLAG_CRLF, CRLF_SIZE)) {
+        if (ERR_OK != _http_parse_field(pack, &head, &field)) {
             return ERR_FAILED;
         }
         if (ERR_OK != _http_check_transfer(pack, &field, transfer)) {
             return ERR_FAILED;
         }
         array_push_back(&pack->header, &field);
+    }
+    // 全部头部行都见过之后才能确定 chunked 是否为最后一个 transfer-coding
+    if (CHUNKED == *transfer && !pack->chunked_last) {
+        LOG_WARN("HTTP smuggling: chunked is not the final transfer-coding.");
+        return ERR_FAILED;
     }
     return ERR_OK;
 }

@@ -394,11 +394,13 @@ static int32_t _lpopen_exitcode(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// 阻塞读子进程 stdout，直到读到 EOF 或读到 max_lens 字节
+/// 非阻塞读取子进程 stdout 当前已缓冲的数据，最多 max_lens 字节；底层 popen_read 一旦探测到当前无数据即返回，
+/// 故本函数不等待、不保证读到 EOF：子进程尚未产出的输出读不到，需完整输出应先 waitexit 再读
 /// </summary>
 /// <param name="self" type="userdata">popen 对象</param>
 /// <param name="max_lens" type="integer?">最大读取字节数，默认 65536</param>
-/// <returns type="string">读到的内容（可为空字符串）</returns>
+/// <returns type="string">读到的内容（可为空字符串；当前无数据即返回，不阻塞等待）</returns>
+/// <returns type="boolean">是否已读到流末尾：true=写端全关、输出已完整；false=读满 max_lens/暂无数据/出错即停，可能不完整</returns>
 static int32_t _lpopen_read(lua_State *lua) {
     popen_ctx *ctx = luaL_checkudata(lua, 1, MT_POPEN);
     size_t cap = (size_t)luaL_optinteger(lua, 2, 65536);
@@ -408,12 +410,13 @@ static int32_t _lpopen_read(lua_State *lua) {
     size_t total = 0;
     size_t want;
     int32_t nread;
+    int32_t eof = 0;
     while (total < cap) {
         want = sizeof(tmp);
         if (want > cap - total) {
             want = cap - total;
         }
-        nread = popen_read(ctx, tmp, want);
+        nread = popen_read(ctx, tmp, want, &eof);
         if (nread <= 0) {
             break;
         }
@@ -421,7 +424,8 @@ static int32_t _lpopen_read(lua_State *lua) {
         total += (size_t)nread;
     }
     luaL_pushresult(&lbuf);
-    return 1;
+    lua_pushboolean(lua, eof);
+    return 2;
 }
 /// <summary>
 /// 向子进程 stdin 写入数据；popen2.c 契约：以 '\n' 结尾才会真正执行写入
