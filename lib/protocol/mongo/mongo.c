@@ -130,6 +130,69 @@ static void _mongo_scram_auth(ev_ctx *ev, mgopack_ctx *mgopack, ud_cxt *ud) {
     }
     _mongo_pkfree(mgopack);
 }
+// 校验 OP_MSG section header（kind=0 body / kind=1 docid sequence），仅支持单 Section：
+// section 长度须正好覆盖 body 剩余；推进 breader 越过 section header，返回 ERR_FAILED 时已置 PROT_ERROR（调用方负责 _mongo_pkfree）
+static int32_t _mongo_check_kind(mgopack_ctx *mgopack, binary_ctx *breader, int32_t *status) {
+    size_t section_start = breader->offset;
+    uint32_t bson_len;
+    switch (mgopack->kind) {
+    case 0:
+        // body section: 单个 BSON doc, length 在前 4 字节
+        if (breader->size - breader->offset < 5) {
+            BIT_SET(*status, PROT_ERROR);
+            LOG_WARN("invalid OP_MSG kind=0 section too short.");
+            return ERR_FAILED;
+        }
+        bson_len = (uint32_t)unpack_integer(breader->data + breader->offset, 4, 1, 0);
+        if (bson_len < 5 || (size_t)bson_len > breader->size - breader->offset) {
+            BIT_SET(*status, PROT_ERROR);
+            LOG_WARN("invalid OP_MSG kind=0 BSON length %u.", bson_len);
+            return ERR_FAILED;
+        }
+        if (section_start + bson_len != breader->size) {
+            BIT_SET(*status, PROT_ERROR);
+            LOG_WARN("OP_MSG multi-Section response not supported (kind=0).");
+            return ERR_FAILED;
+        }
+        break;
+    case 1:
+        mgopack->klens = (uint32_t)binary_get_integer(breader, 4, 1);
+        // klens 含自身 4 字节 size + docid C-string + 0+ BSON docs;
+        // 异常值（< 5 或超出 OP_MSG body 剩余）视为协议错误
+        if (mgopack->klens < 5 ||
+            (size_t)(mgopack->klens - 4) > breader->size - breader->offset) {
+            BIT_SET(*status, PROT_ERROR);
+            LOG_WARN("invalid OP_MSG kind=1 section length %u.", mgopack->klens);
+            return ERR_FAILED;
+        }
+        // docid 无 NUL 结尾时 binary_get_string 的 strnlen 触发 ASSERTAB abort；与下方 BSON section 过短检查同源，提前拒收防恶意 server 远程崩客户端
+        if (NULL == memchr(breader->data + breader->offset, 0, breader->size - breader->offset)) {
+            BIT_SET(*status, PROT_ERROR);
+            LOG_WARN("OP_MSG kind=1 docid not NUL-terminated.");
+            return ERR_FAILED;
+        }
+        mgopack->docid = binary_get_string(breader);
+        if (section_start + mgopack->klens != breader->size) {
+            BIT_SET(*status, PROT_ERROR);
+            LOG_WARN("OP_MSG multi-Section response not supported (kind=1).");
+            return ERR_FAILED;
+        }
+        // klens=5 + docid="\0" 是协议层合法但 BSON section 为空（dlens=0）；
+        // 下游 mongo_parse_*/bson_iter_init 无条件读 4 字节 doclens 触发 ASSERTAB abort,
+        // 此处提前拒收避免恶意 server 26 字节构造响应远程让客户端进程崩溃
+        if (breader->size - breader->offset < 5) {
+            BIT_SET(*status, PROT_ERROR);
+            LOG_WARN("OP_MSG kind=1 BSON section too short.");
+            return ERR_FAILED;
+        }
+        break;
+    default:
+        BIT_SET(*status, PROT_ERROR);
+        LOG_WARN("unsupported OP_MSG reply: %d section", mgopack->kind);
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
 void *mongo_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     size_t blens = buffer_size(buf);
     if (blens < 4) {
@@ -172,63 +235,7 @@ void *mongo_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
         return NULL;
     }
     mgopack->kind = binary_get_int8(&breader);
-    // OP_MSG 仅支持单 Section response: 解析完 section header 后,section 长度必须正好覆盖 OP_MSG body 剩余字节
-    size_t section_start = breader.offset;
-    uint32_t bson_len;
-    switch (mgopack->kind) {
-    case 0:
-        // body section: 单个 BSON doc, length 在前 4 字节
-        if (breader.size - breader.offset < 5) {
-            BIT_SET(*status, PROT_ERROR);
-            LOG_WARN("invalid OP_MSG kind=0 section too short.");
-            _mongo_pkfree(mgopack);
-            return NULL;
-        }
-        bson_len = (uint32_t)unpack_integer(breader.data + breader.offset, 4, 1, 0);
-        if (bson_len < 5 || (size_t)bson_len > breader.size - breader.offset) {
-            BIT_SET(*status, PROT_ERROR);
-            LOG_WARN("invalid OP_MSG kind=0 BSON length %u.", bson_len);
-            _mongo_pkfree(mgopack);
-            return NULL;
-        }
-        if (section_start + bson_len != breader.size) {
-            BIT_SET(*status, PROT_ERROR);
-            LOG_WARN("OP_MSG multi-Section response not supported (kind=0).");
-            _mongo_pkfree(mgopack);
-            return NULL;
-        }
-        break;
-    case 1:
-        mgopack->klens = (uint32_t)binary_get_integer(&breader, 4, 1);
-        // klens 含自身 4 字节 size + docid C-string + 0+ BSON docs;
-        // 异常值（< 5 或超出 OP_MSG body 剩余）视为协议错误
-        if (mgopack->klens < 5 ||
-            (size_t)(mgopack->klens - 4) > breader.size - breader.offset) {
-            BIT_SET(*status, PROT_ERROR);
-            LOG_WARN("invalid OP_MSG kind=1 section length %u.", mgopack->klens);
-            _mongo_pkfree(mgopack);
-            return NULL;
-        }
-        mgopack->docid = binary_get_string(&breader);
-        if (section_start + mgopack->klens != breader.size) {
-            BIT_SET(*status, PROT_ERROR);
-            LOG_WARN("OP_MSG multi-Section response not supported (kind=1).");
-            _mongo_pkfree(mgopack);
-            return NULL;
-        }
-        // klens=5 + docid="\0" 是协议层合法但 BSON section 为空（dlens=0）；
-        // 下游 mongo_parse_*/bson_iter_init 无条件读 4 字节 doclens 触发 ASSERTAB abort,
-        // 此处提前拒收避免恶意 server 26 字节构造响应远程让客户端进程崩溃
-        if (breader.size - breader.offset < 5) {
-            BIT_SET(*status, PROT_ERROR);
-            LOG_WARN("OP_MSG kind=1 BSON section too short.");
-            _mongo_pkfree(mgopack);
-            return NULL;
-        }
-        break;
-    default:
-        BIT_SET(*status, PROT_ERROR);
-        LOG_WARN("unsupported OP_MSG reply: %d section", mgopack->kind);
+    if (ERR_OK != _mongo_check_kind(mgopack, &breader, status)) {
         _mongo_pkfree(mgopack);
         return NULL;
     }

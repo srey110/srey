@@ -171,6 +171,10 @@ char *mqtt_pack_connect(mqtt_protversion version, int8_t cleanstart, uint16_t ke
     }
     int8_t userflag = 0 == ulens ? 0 : 1;
     int8_t passwordflag = EMPTYPTR(password, pwlens) ? 0 : 1;
+    if (MQTT_311 == version && 0 == userflag && 0 != passwordflag) {
+        LOG_ERROR("%s", "mqtt 3.1.1 password requires username");
+        return NULL;
+    }
     size_t wtlens = 0;
     if (NULL != willtopic) {
         wtlens = strlen(willtopic);

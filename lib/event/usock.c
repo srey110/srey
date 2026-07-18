@@ -10,6 +10,9 @@
 typedef struct lsnsock_ctx {
     sock_ctx sock;          // 监听socket的事件上下文
     struct listener_ctx *lsn; // 所属监听器
+    watcher_ctx *watcher;   // 所属 watcher（EMFILE 退避 tick 回调重挂 READ 用）
+    uint64_t backoff_until; // EMFILE 退避截止时刻(ms)，0=未退避
+    ev_tick backoff_tick;   // EMFILE 退避周期驱动节点（cb 非 NULL 表示已挂）
 }lsnsock_ctx;
 // Unix平台监听器上下文
 typedef struct listener_ctx {
@@ -189,6 +192,10 @@ static inline void _usk_close_tcp(watcher_ctx *watcher, tcp_ctx *tcp) {
 }
 // UDP datagram 无序无连接,graceful 无意义,始终走立即关闭：从事件循环摘除 + close fd + 清回调 + qtn 隔离期延后释放
 static inline void _usk_close_udp(watcher_ctx *watcher, udp_ctx *udp) {
+    // 内层错误路径(如 _uev_disconnect)已关闭后，外层可能再次直调本函数；fd 已 INVALID 即早退，防止同一 udp 二次入 qtn 隔离队列被 drain 两次 free
+    if (INVALID_SOCK == udp->sock.fd) {
+        return;
+    }
     _usk_call_udp_close_cb(watcher->ev, udp);
 #ifdef MANUAL_REMOVE
     _uev_del_event(watcher, udp->sock.fd, &udp->sock.events, udp->sock.events, &udp->sock);
@@ -687,19 +694,51 @@ void _uev_add_conn_inloop(watcher_ctx *watcher, sock_ctx *skctx) {
         pool_push(&watcher->pool, skctx, 0);
     }
 }
+// EMFILE/ENFILE 退避到点：重挂监听 READ 并摘除本 tick（重挂失败则继续退避）
+static uint32_t _usk_accept_backoff(void *ud, uint64_t now_ms) {
+    lsnsock_ctx *acpt = ud;
+    if (now_ms < acpt->backoff_until) {
+        return (uint32_t)(acpt->backoff_until - now_ms);
+    }
+    if (ERR_OK != _usk_keep_event(acpt->watcher, &acpt->sock, EVENT_READ)) {
+        acpt->backoff_until = now_ms + ACCEPT_BACKOFF_MS;
+        return ACCEPT_BACKOFF_MS;
+    }
+    acpt->backoff_until = 0;
+    acpt->backoff_tick.cb = NULL;
+    _evpub_tick_remove(acpt->watcher, &acpt->backoff_tick);
+    return EVENT_WAIT_TIMEOUT;
+}
+// accept 返回 INVALID_SOCK 的分类：EINTR/ECONNABORTED 返回 ERR_OK 继续，其余返回 ERR_FAILED 退出循环；
+// EMFILE/ENFILE 额外暂停监听 READ 并挂退避 tick，到点重挂重试（不误拒 backlog，避免 ET 停滞/LT 忙轮询）
+static int32_t _usk_check_accept(watcher_ctx *watcher, lsnsock_ctx *acpt) {
+    int32_t err = ERRNO;
+    if (EINTR == err || ECONNABORTED == err) {
+        return ERR_OK;
+    }
+    if (EMFILE == err || ENFILE == err) {
+        _uev_del_event(watcher, acpt->sock.fd, &acpt->sock.events, EVENT_READ, &acpt->sock);
+        acpt->backoff_until = timer_cur_ms(&watcher->timer) + ACCEPT_BACKOFF_MS;
+        if (NULL == acpt->backoff_tick.cb) {
+            acpt->watcher = watcher;
+            acpt->backoff_tick.cb = _usk_accept_backoff;
+            acpt->backoff_tick.ud = acpt;
+            _evpub_tick_add(watcher, &acpt->backoff_tick);
+        }
+    }
+    return ERR_FAILED;
+}
 // 监听socket可读事件回调：循环accept新连接并分发给对应watcher
 static void _usk_on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
     (void)ev;
     lsnsock_ctx *acpt = UPCAST(skctx, lsnsock_ctx, sock);
     SOCKET fd;
     watcher_ctx *to;
-    int32_t err;
     int32_t unremove;
     while ((unremove = (0 == ATOMIC_GET(&acpt->lsn->remove)))) {
         fd = accept(acpt->sock.fd, NULL, NULL);
         if (INVALID_SOCK == fd) {
-            err = ERRNO;
-            if (EINTR == err || ECONNABORTED == err) {
+            if (ERR_OK == _usk_check_accept(watcher, acpt)) {
                 continue;
             }
             break;
@@ -722,7 +761,7 @@ static void _usk_on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev)
             }
         }
     }
-    if (unremove) {
+    if (unremove && NULL == acpt->backoff_tick.cb) {
         if (ERR_OK != _usk_keep_event(watcher, &acpt->sock, EVENT_READ)) {
             _evpub_sockel_remove(watcher, acpt->sock.fd);
             CLOSE_SOCK(acpt->sock.fd);
@@ -807,14 +846,12 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
 #else
     (void)evssl;
 #endif
-    MALLOC(lsn->lsnsock, sizeof(lsnsock_ctx) * lsn->nlsn);
+    CALLOC(lsn->lsnsock, lsn->nlsn, sizeof(lsnsock_ctx));
     int32_t i;
     lsnsock_ctx *lsnsock;
     for (i = 0; i < lsn->nlsn; i++) {
         lsnsock = &lsn->lsnsock[i];
         lsnsock->lsn = lsn;
-        lsnsock->sock.type = 0;
-        lsnsock->sock.events = 0;
         lsnsock->sock.ev_cb = _usk_on_accept_cb;
 #ifndef SO_REUSEPORT
         lsnsock->sock.fd = fd;
@@ -968,9 +1005,15 @@ void _uev_remove_lsn(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) {
         _uev_drop_changes(watcher, fd);
         CLOSE_SOCK((*skctx)->fd);
     }
+    lsnsock_ctx *curlsn = &lsn->lsnsock[watcher->index];
+    // lsnsock 释放前必须摘掉退避 tick，否则 tick 节点随 lsnsock 数组释放悬空
+    if (NULL != curlsn->backoff_tick.cb) {
+        _evpub_tick_remove(watcher, &curlsn->backoff_tick);
+        curlsn->backoff_tick.cb = NULL;
+    }
     // 仅清本 watcher 持有的 lsnsock ev_cb,让本批次 events[] 残留事件跳过本 lsnsock;
     // 跨 watcher 不写(避免与其他 watcher _uev_loop_event 读 events[k].udata->ev_cb 产生 race)
-    lsn->lsnsock[watcher->index].sock.ev_cb = NULL;
+    curlsn->sock.ev_cb = NULL;
     // ref 归零入隔离队列: lsn 在 QTN_MS 隔离期内 lsnsock 数组内存仍活,
     _uev_qtn_freelsn(watcher, lsn);
 }

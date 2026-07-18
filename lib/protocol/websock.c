@@ -379,10 +379,15 @@ static void _websock_handshake(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t cli
         return;
     }
     if (0 != transfer) {
-        BIT_SET(*status, PROT_ERROR);
-        _hs_push(fd, skid, client, ud, ERR_FAILED, NULL, 0);
-        _http_pkfree(hpack);
-        return;
+        size_t dlens;
+        (void)http_data(hpack, &dlens);
+        // WS 升级请求不应带 body：chunked 或非空 Content-Length 才拒，Content-Length: 0 合法放行
+        if (0 != dlens || 0 != http_chunked(hpack)) {
+            BIT_SET(*status, PROT_ERROR);
+            _hs_push(fd, skid, client, ud, ERR_FAILED, NULL, 0);
+            _http_pkfree(hpack);
+            return;
+        }
     }
     int32_t rtn;
     pack_type sectype = PACK_NONE;

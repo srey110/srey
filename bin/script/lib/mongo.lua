@@ -190,6 +190,8 @@ function ctx:connect()
         self.connecting = false
         return false
     end
+    -- 清掉上一代残留事务会话，避免跨代 lsid/txnNumber 经 TRANSACTION_OPTIONS 附加进 hello 及后续命令
+    self.mongo:clear_session()
     local flags = self.mongo:clear_flag()
     local pack, size = self.mongo:pack_hello()
     self.mongo:set_flag(flags)
@@ -207,8 +209,7 @@ function ctx:connect()
         local ok, _, _ = srey.wait_handshaked(fd, skid)
         if not ok then return _fail() end
     end
-    -- 重连成功：清掉上一代残留的事务会话指针，避免跨代 lsid/txnNumber 被自动附加到后续普通命令
-    self.mongo:clear_session()
+    -- 重连成功：递增连接代次，使上一代 session 的 gen 校验失效
     self.generation = self.generation + 1
     self.connecting = false
     return true

@@ -315,11 +315,15 @@ static int32_t _uev_parse_event(events_t *ev, SOCKET *fd, void **arg) {
     }
     *arg = ev->data.ptr;
 #elif defined(EV_KQUEUE)
-    if (EVFILT_READ == ev->filter) {
-        BIT_SET(rtn, EVENT_READ);
-    }
-    if (EVFILT_WRITE == ev->filter) {
-        BIT_SET(rtn, EVENT_WRITE);
+    if (BIT_CHECK(ev->flags, EV_ERROR)) {
+        BIT_SET(rtn, (EVENT_READ | EVENT_WRITE));
+    } else {
+        if (EVFILT_READ == ev->filter) {
+            BIT_SET(rtn, EVENT_READ);
+        }
+        if (EVFILT_WRITE == ev->filter) {
+            BIT_SET(rtn, EVENT_WRITE);
+        }
     }
     *arg = ev->udata;
 #elif defined(EV_EVPORT)
@@ -380,7 +384,7 @@ static void _uev_loop_event(void *arg) {
     SOCKET fd = INVALID_SOCK;
     sock_ctx *skctx;
     int32_t i, cnt, ev;
-    uint32_t shrink_cnt = 0, next_to = EVENT_WAIT_TIMEOUT;
+    uint32_t loop_cnt = 0, next_to = EVENT_WAIT_TIMEOUT;
     uint64_t now_ms, shrink_start = timer_cur_ms(&watcher->timer);
     //主循环
     while (0 == ATOMIC_GET(&watcher->stop)) {
@@ -442,11 +446,11 @@ static void _uev_loop_event(void *arg) {
 #endif
         }
         next_to = _evpub_tick_drive(watcher, &watcher->timer, &now_ms);
-        shrink_cnt++;
-        if (shrink_cnt < EVENT_CHECK_INTERVAL) {
+        loop_cnt++;
+        if (loop_cnt < EVENT_CHECK_INTERVAL) {
             continue;
         }
-        shrink_cnt = 0;
+        loop_cnt = 0;
         if (0 == now_ms) {
             now_ms = timer_cur_ms(&watcher->timer);
         }

@@ -100,7 +100,7 @@ int64_t mysql_reader_integer(mysql_reader_ctx *reader, const char *name, int32_t
     } else {
         // 二进制协议：字段值为原始二进制整数
         if (sizeof(int8_t) == row->val.lens) {
-            return ((char *)row->val.data)[0];
+            return (int8_t)(((char *)row->val.data)[0]);// 无符号 char 平台须显式转 int8_t 才能保留 TINYINT 负值
         } else {
             return unpack_integer(row->val.data, (int32_t)row->val.lens, 1, 1);
         }
@@ -279,6 +279,7 @@ int64_t mysql_reader_datetime(mysql_reader_ctx *reader, const char *name, int32_
         }
         uint32_t usec = _parse_usec_frac(tmp);
         struct tm dt = { 0 };
+        dt.tm_isdst = -1;// 由 mktime 依日期/本地时区自行判定夏令时，否则 DST 期恒按标准时解释偏 1 小时
         dt.tm_year = y - 1900;
         dt.tm_mon = mo - 1;
         dt.tm_mday = d;
@@ -301,6 +302,7 @@ int64_t mysql_reader_datetime(mysql_reader_ctx *reader, const char *name, int32_
             return 0;
         }
         struct tm dt = { 0 };
+        dt.tm_isdst = -1;// 由 mktime 依日期/本地时区自行判定夏令时，否则 DST 期恒按标准时解释偏 1 小时
         binary_ctx breader;
         binary_init(&breader, row->val.data, row->val.lens, 0);
         dt.tm_year = (int32_t)binary_get_integer(&breader, 2, 1) - 1900;

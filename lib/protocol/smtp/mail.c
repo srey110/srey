@@ -148,7 +148,7 @@ static uint32_t _mail_addr_count(mail_ctx *mail, mail_addr_type type) {
     }
     return count;
 }
-// 将指定类型的地址列表写入 MIME 头部（To:/Cc:/Bcc: 行）
+// 将指定类型的地址列表写入 MIME 头部（To:/Cc: 行；BCC 只走信封 RCPT TO，不入头部）
 static void _mail_pack_addr(mail_ctx *mail, binary_ctx *bwriter, mail_addr_type type) {
     uint32_t count = _mail_addr_count(mail, type);
     if (0 == count) {
@@ -160,9 +160,6 @@ static void _mail_pack_addr(mail_ctx *mail, binary_ctx *bwriter, mail_addr_type 
         break;
     case CC:
         binary_set_binary(bwriter, "Cc: ", strlen("Cc: "));
-        break;
-    case BCC:
-        binary_set_binary(bwriter, "Bcc: ", strlen("Bcc: "));
         break;
     default:
         return;
@@ -229,7 +226,7 @@ char *mail_pack(mail_ctx *mail) {
     }
     _mail_pack_addr(mail, &bwriter, TO);
     _mail_pack_addr(mail, &bwriter, CC);
-    _mail_pack_addr(mail, &bwriter, BCC);
+    // BCC 收件人已由 _smtp_send 的 RCPT TO 逐个投递(信封层)；密送要求不出现在正文头部，故此处不写 Bcc 头，否则名单对全体收件人可见
     const char *boundary = "bounds=_NextP_0056wi_0_8_ty789432_tp";
     uint32_t nattach = array_size(&mail->attach);
     if (!EMPTYSTR(mail->html)

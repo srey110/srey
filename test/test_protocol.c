@@ -240,6 +240,24 @@ static void test_http_smuggling(CuTest *tc) {
         "\r\n"
         "0\r\n\r\n",
         0);
+    // 14. 字段名与冒号间带空白 OWS（RFC 7230 §3.2.4 禁止）：`Transfer-Encoding :chunked` 若被当未知头静默入库，
+    //     会与去 OWS 后识别为 chunked 的上游代理对报文边界产生分歧 → CL.TE 请求走私 → 拒绝
+    _http_smuggle_check(tc,
+        "POST / HTTP/1.1\r\n"
+        "Host: x\r\n"
+        "Transfer-Encoding : chunked\r\n"
+        "Content-Length: 5\r\n"
+        "\r\n"
+        "hello",
+        1);
+    // 15. 冒号前为制表符 OWS，同 §3.2.4 → 拒绝
+    _http_smuggle_check(tc,
+        "POST / HTTP/1.1\r\n"
+        "Host: x\r\n"
+        "Content-Length\t: 5\r\n"
+        "\r\n"
+        "hello",
+        1);
 }
 
 // 首行三段拆分必须限定在首行内，空格不足的畸形首行不得越行吞并头部字段
@@ -3467,6 +3485,36 @@ static void test_smtp_unpack_flood(CuTest *tc) {
     FREE(flood);
 }
 
+// MQTT 3.1.1 连接收到 AUTH(报文类型15，仅 MQTT 5.0 定义)→ 协议错误断连
+static void test_mqtt_auth_version_gate(CuTest *tc) {
+    mqtt_ctx mctx = { MQTT_311 };
+    ud_cxt ud;
+    ZERO(&ud, sizeof(ud));
+    ud.status = 1; // COMMAND
+    ud.context = &mctx;
+    buffer_ctx buf;
+    buffer_init(&buf);
+    char auth[] = { (char)0xF0, 0x00 }; // AUTH type=15 flags=0 remaining=0
+    buffer_append(&buf, auth, sizeof(auth));
+    int32_t status = PROT_INIT;
+    mqtt_pack_ctx *pack = mqtt_unpack(0, &buf, &ud, &status);
+    CuAssertTrue(tc, NULL == pack);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    buffer_free(&buf);
+}
+// MQTT 3.1.1：CONNECT 有密码无用户名(MQTT-3.1.2-22)打包必拒；同组合在 v5 合法
+static void test_mqtt_connect_pwd_no_user(CuTest *tc) {
+    size_t size = 0;
+    char pwd[] = "pwd";
+    char *pack = mqtt_pack_connect(MQTT_311, 1, 60, "cid", NULL, pwd, sizeof(pwd) - 1,
+        NULL, NULL, 0, 0, 0, NULL, NULL, &size);
+    CuAssertTrue(tc, NULL == pack);
+    pack = mqtt_pack_connect(MQTT_50, 1, 60, "cid", NULL, pwd, sizeof(pwd) - 1,
+        NULL, NULL, 0, 0, 0, NULL, NULL, &size);
+    CuAssertPtrNotNull(tc, pack);
+    FREE(pack);
+}
+
 /* ======================================================================= */
 
 void test_protocol(CuSuite *suite) {
@@ -3534,6 +3582,8 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_websock_unpack_mask_all_zero);
     SUITE_ADD_TEST(suite, test_websock_mqtt_multipack);
     SUITE_ADD_TEST(suite, test_websock_mqtt_ws_fragment_slice_clear);
+    SUITE_ADD_TEST(suite, test_mqtt_auth_version_gate);
+    SUITE_ADD_TEST(suite, test_mqtt_connect_pwd_no_user);
     SUITE_ADD_TEST(suite, test_prots_free_null);
     SUITE_ADD_TEST(suite, test_prots_pkfree_default);
     SUITE_ADD_TEST(suite, test_prots_hsfree_default);

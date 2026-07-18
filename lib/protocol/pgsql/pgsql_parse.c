@@ -256,17 +256,8 @@ pgpack_ctx *_pgpack_parser(pgsql_ctx *pg, binary_ctx *breader, ud_cxt *ud, int32
         FREE(breader->data);
         break;
     case 'I': // EmptyQueryResponse：Query 收到空 SQL，标记为 OK
-        _pgpack_init(pg, PGPACK_OK);
-        FREE(breader->data);
-        break;
     case '1': // ParseComplete：Parse 命令完成
-        _pgpack_init(pg, PGPACK_OK);
-        FREE(breader->data);
-        break;
     case '2': // BindComplete：Bind 命令完成
-        _pgpack_init(pg, PGPACK_OK);
-        FREE(breader->data);
-        break;
     case '3': // CloseComplete：Close 命令完成
         _pgpack_init(pg, PGPACK_OK);
         FREE(breader->data);

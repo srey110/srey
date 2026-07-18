@@ -8,8 +8,9 @@
 
 #ifdef EV_IOCP
 
-#define MAX_ACCEPTEX_CNT    128  // 每个监听socket同时挂起的AcceptEx数量
-#define ACCEPTEX_ADDR_LEN   (sizeof(struct sockaddr_storage) + 16) // AcceptEx 每段地址长度（Microsoft 要求 ≥ sizeof(sockaddr_XX) + 16）
+#define REVIVE_SNAP_CAP 128// _olp_revive_dead 单轮最多快照复活的 listener 数，超出者下轮扫描补（实际 listener 数远小于此）
+#define MAX_ACCEPTEX_CNT    128// 每个监听socket同时挂起的AcceptEx数量
+#define ACCEPTEX_ADDR_LEN   (sizeof(struct sockaddr_storage) + 16)// AcceptEx 每段地址长度（Microsoft 要求 ≥ sizeof(sockaddr_XX) + 16）
 
 // AcceptEx单个挂起操作的上下文
 typedef struct overlap_acpt_ctx {
@@ -882,8 +883,14 @@ static int32_t _olp_post_accept(overlap_acpt_ctx *olacp) {
     }
     return ERR_OK;
 }
-// 尝试重投一个此前 _olp_post_accept 失败、已被放弃的槽位
-static void _olp_try_revive_slot(listener_ctx *lsn) {
+// listener dead 槽计数与全局 ndead_total 单点同步，杜绝两者 drift
+static void _olp_ndead_add(ev_ctx *ev, listener_ctx *lsn, int32_t delta) {
+    ATOMIC_ADD(&lsn->ndead, delta);
+    ATOMIC_ADD(&ev->ndead_total, delta);
+}
+// 重投该 listener 全部此前 _olp_post_accept 失败、已被放弃的槽位；
+// 某槽重投再失败(fd 仍耗尽)即停止本轮(余下同样会失败)，留待下次 periodic 扫描
+static void _olp_try_revive_slot(ev_ctx *ev, listener_ctx *lsn) {
     if (0 != ATOMIC_GET(&lsn->remove) || 0 == ATOMIC_GET(&lsn->ndead)) {
         return;
     }
@@ -893,17 +900,43 @@ static void _olp_try_revive_slot(listener_ctx *lsn) {
         if (!ATOMIC_CAS(&olacp->dead, 1, 0)) {
             continue;
         }
-        ATOMIC_ADD(&lsn->ndead, -1);
+        _olp_ndead_add(ev, lsn, -1);
         ATOMIC_ADD(&lsn->ref, 1);
         if (ERR_OK != _olp_post_accept(olacp)) {
             ATOMIC_ADD(&lsn->ref, -1);
             ATOMIC_SET(&olacp->dead, 1);
-            ATOMIC_ADD(&lsn->ndead, 1);
-        } else if (0 != ATOMIC_GET(&lsn->remove)) {
+            _olp_ndead_add(ev, lsn, 1);
+            break;
+        }
+        if (0 != ATOMIC_GET(&lsn->remove)) {
             // _olp_post_accept 执行期间 ev_unlisten 可能运行但未能关闭新 fd(对齐 _olp_on_accept_cb 同一时机的处理)
             _olp_take_close(&olacp->overlap.fd);
         }
+    }
+}
+// dead 槽复活的唯一驱动（acpex 循环每 ACCEPT_BACKOFF_MS 调一次）：ndead_total==0 时免锁免遍历直接返回。
+// 锁内只快照有 dead 槽的 listener 并各提 ref（纯内存），复活的 WSASocket/AcceptEx 系统调用移到锁外执行，
+// 避免 128×N 次系统调用全程持锁阻塞 ev_listen/ev_unlisten；ref 保证快照期间 listener 不被 _iocp_freelsn 释放
+void _olp_revive_dead(ev_ctx *ev) {
+    if (0 == ATOMIC_GET(&ev->ndead_total)) {
         return;
+    }
+    listener_ctx *snap[REVIVE_SNAP_CAP];
+    uint32_t cnt = 0;
+    spin_lock(&ev->spin);
+    uint32_t n = array_size(&ev->arrlsn);
+    listener_ctx *lsn;
+    for (uint32_t i = 0; i < n && cnt < REVIVE_SNAP_CAP; i++) {
+        lsn = *(listener_ctx **)array_at(&ev->arrlsn, i);
+        if (0 != ATOMIC_GET(&lsn->ndead)) {
+            ATOMIC_ADD(&lsn->ref, 1);
+            snap[cnt++] = lsn;
+        }
+    }
+    spin_unlock(&ev->spin);
+    for (uint32_t i = 0; i < cnt; i++) {
+        _olp_try_revive_slot(ev, snap[i]);
+        _iocp_try_freelsn(snap[i]);
     }
 }
 // AcceptEx完成回调：重新提交AcceptEx、设置socket选项、将新fd发送给对应watcher
@@ -925,7 +958,7 @@ static void _olp_on_accept_cb(acceptex_ctx *acpctx, sock_ctx *skctx, DWORD bytes
         SOCKET log_fd = lsn->fd;
         CLOSE_SOCK(fd);
         ATOMIC_SET(&olacp->dead, 1);
-        ATOMIC_ADD(&lsn->ndead, 1);
+        _olp_ndead_add(acpctx->ev, lsn, 1);
         int32_t old = ATOMIC_ADD(&lsn->ref, -2);
         if (2 == old) {
             _iocp_freelsn(lsn);
@@ -950,7 +983,6 @@ static void _olp_on_accept_cb(acceptex_ctx *acpctx, sock_ctx *skctx, DWORD bytes
         return;
     }
     _cmd_add_acpfd(GET_PTR(acpctx->ev->watcher, acpctx->ev->nthreads, fd), fd, lsn);
-    _olp_try_revive_slot(lsn);
 }
 static void _iocp_add_acpfd_inloop_err(watcher_ctx *watcher, overlap_tcp_ctx *oltcp) {
     _evpub_sockel_remove(watcher, oltcp->ol_r.fd);
@@ -1079,6 +1111,11 @@ void _iocp_freelsn(listener_ctx *lsn) {
     }
     CLOSE_SOCK(lsn->fd);
     UD_FREE(lsn->cbs.ud_free, &lsn->ud);
+    // 释放前扣除本 listener 尚未复活的 dead 槽，保持 ndead_total==sum(存活 lsn->ndead)
+    int32_t ndead = (int32_t)ATOMIC_GET(&lsn->ndead);
+    if (0 != ndead) {
+        ATOMIC_ADD(&lsn->ev->ndead_total, -ndead);
+    }
     ATOMIC_ADD(&lsn->ev->nlsn, -1);
     FREE(lsn);
 }

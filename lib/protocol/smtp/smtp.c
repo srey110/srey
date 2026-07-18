@@ -150,8 +150,8 @@ static void _smtp_connected(ev_ctx *ev, SOCKET fd, uint64_t skid, buffer_ctx *bu
     // 取到下一个空格或 CRLF 之前的内容作为 EHLO 参数。
     char svhost[HOST_LENS] = { 0 };
     int32_t host_start = SMTP_CODE_LENS + 1; // 跳过 "220 " 或 "220-"
-    //首行 CRLF 位置作为主机名搜索上界，避免越界扫描到后续行
-    int32_t first_crlf = buffer_search(buf, 0, (size_t)host_start, 0, FLAG_CRLF, CRLF_SIZE);
+    //首行 CRLF 位置作为主机名搜索上界，避免越界扫描到后续行；须从 0 起找，host_start 可能已越过短行(如裸"220")的 CRLF
+    int32_t first_crlf = buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE);
     int32_t host_end = buffer_search(buf, 1, (size_t)host_start, 0, " ", 1);
     if (ERR_FAILED == host_end
         || (ERR_FAILED != first_crlf && first_crlf < host_end)) {

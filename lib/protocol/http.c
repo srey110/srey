@@ -224,6 +224,10 @@ static int32_t _http_parse_field(http_pack_ctx *pack, char **phead, http_header_
     if (0 == field->key.lens) {
         return ERR_FAILED;
     }
+    // RFC 7230 §3.2.4：字段名与冒号间不允许空白(OWS)，须拒绝；防 `Transfer-Encoding :chunked` 尾随空格绕过 TE/CL 精确长度匹配构成请求走私
+    if (' ' == pcolon[-1] || '\t' == pcolon[-1]) {
+        return ERR_FAILED;
+    }
     head = pcolon + 1;
     head = skipempty(head, HEAD_REMAIN);
     if (NULL == head) {

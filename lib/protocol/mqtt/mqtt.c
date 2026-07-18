@@ -843,6 +843,10 @@ static int32_t _mqtt_auth(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, int3
         return ERR_FAILED;
     }
     pack->version = ((mqtt_ctx *)ud->context)->version;
+    if (pack->version < MQTT_50) {
+        BIT_SET(*status, PROT_ERROR);
+        return ERR_FAILED;
+    }
     //如果原因码为0x00（成功）并且没有属性字段，则可以省略原因码和属性长度。这种情况下，AUTH报文剩余长度为0。
     if (0 == pack->fixhead.remaining_lens) {
         mqtt_reason_varhead *vh;

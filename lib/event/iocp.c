@@ -183,13 +183,16 @@ static void _iocp_loop_event(void *arg) {
 // AcceptEx专用线程事件循环（批量处理accept完成事件）
 static void _iocp_loop_acpex(void *arg) {
     acceptex_ctx *acpex = (acceptex_ctx *)arg;
-    int32_t err;
+    int32_t err, loop_cnt = 0;
     ULONG i, count, nevent = INIT_EVENTS_CNT;
     sock_ctx *sock;
     BOOL ok;
     LPOVERLAPPED overlap;
     LPOVERLAPPED_ENTRY tmp;
     LPOVERLAPPED_ENTRY overlappeds;
+    uint64_t now, last_revive = 0;
+    timer_ctx timer;
+    timer_init(&timer);
     MALLOC(overlappeds, sizeof(OVERLAPPED_ENTRY) * nevent);
     // 停止后立即退出,不在此排空:遗留 AcceptEx 完成由 ev_free 的 _iocp_free_acpex 统一排空(见其注释)，
     // 每个 slot 预分配的客户端 socket 由 _olp_free_acceptex 同步 take-and-close,与本线程是否先排空过无关
@@ -218,6 +221,19 @@ static void _iocp_loop_acpex(void *arg) {
             }
         } else if (WAIT_TIMEOUT != (err = ERRNO)) {
             LOG_ERROR("%s", ERRORSTR(err));
+        }
+        if (0 != acpex->index) {
+            continue;
+        }
+        loop_cnt++;
+        if (loop_cnt < EVENT_CHECK_INTERVAL) {
+            continue;
+        }
+        loop_cnt = 0;
+        now = timer_cur_ms(&timer);
+        if (now - last_revive >= ACCEPT_BACKOFF_MS) {
+            last_revive = now;
+            _olp_revive_dead(acpex->ev);
         }
     }
     LOG_INFO("accept thread %d exited.", acpex->index);
@@ -252,6 +268,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
     ctx->nthreads = (0 == nthreads ? procscnt() : nthreads);
     ctx->nacpex = ctx->nthreads > 3 ? 2 : 1;
     ATOMIC_SET(&ctx->nlsn, 0);
+    ATOMIC_SET(&ctx->ndead_total, 0);
     _iocp_init_funcs();
     MALLOC(ctx->watcher, sizeof(watcher_ctx) * ctx->nthreads);
     watcher_ctx *watcher;

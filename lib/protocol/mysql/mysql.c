@@ -226,7 +226,14 @@ static int32_t _mysql_auth_response(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
     binary_set_uint8(&bwriter, mysql->client.charset);//character_set
     binary_set_fill(&bwriter, 0, 23);//filler
     binary_set_string(&bwriter, mysql->client.user);//username
-    if (0 == strcmp(CACHING_SHA2_PASSWORLD, mysql->server.plugin)) {
+    if (EMPTYSTR(mysql->client.password)) {
+        // 空密码：协议要求发送 0 长度 auth_response，服务端对空密码账户仅接受空响应
+        if (BIT_CHECK(mysql->client.caps, CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA)) {
+            _mysql_set_lenenc(&bwriter, 0);
+        } else {
+            binary_set_uint8(&bwriter, 0);
+        }
+    } else if (0 == strcmp(CACHING_SHA2_PASSWORLD, mysql->server.plugin)) {
         char sign[SHA256_BLOCK_SIZE];
         _mysql_caching_sha2_sign(mysql, sign);
         if (BIT_CHECK(mysql->client.caps, CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA)) {
@@ -526,7 +533,9 @@ static int32_t _mysql_auth_switch_response(mysql_ctx *mysql, ev_ctx *ev, mpack_a
     binary_init(&bwriter, NULL, 0, 0);
     binary_set_skip(&bwriter, 3);
     binary_set_int8(&bwriter, mysql->id);
-    if (0 == strcmp(CACHING_SHA2_PASSWORLD, mysql->server.plugin)) {
+    if (EMPTYSTR(mysql->client.password)) {
+        // 空密码：AuthSwitchResponse 发送空 auth data，不写签名
+    } else if (0 == strcmp(CACHING_SHA2_PASSWORLD, mysql->server.plugin)) {
         char sign[SHA256_BLOCK_SIZE];
         _mysql_caching_sha2_sign(mysql, sign);
         binary_set_binary(&bwriter, sign, sizeof(sign));

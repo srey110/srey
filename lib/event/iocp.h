@@ -90,6 +90,8 @@ void _iocp_freelsn(struct listener_ctx *lsn);
 void _iocp_try_freelsn(struct listener_ctx *lsn);
 // ev_free 关闭阶段 ev_unlisten 掉所有残留 listener（走完成驱动释放，非强制 FREE）
 void _iocp_unlisten_all(ev_ctx *ctx);
+// acpex 循环周期性调用：复活 dead 的 AcceptEx 槽（覆盖全槽 dead 无 accept 完成的死锁）
+void _olp_revive_dead(ev_ctx *ev);
 // ev_free 排空阶段直接释放一个 AcceptEx 完成对应的 listener 引用（跳过 _olp_on_accept_cb 分支）
 void _iocp_acpex_release(sock_ctx *skctx);
 // 获取sock_ctx对应的ud_cxt指针

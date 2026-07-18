@@ -13,6 +13,7 @@
 #define GET_POS(fd, n) ((fd) % (n))// 根据fd计算索引位置
 #define GET_PTR(p, n, fd) (1 == (n) ? (p) : &(p)[GET_POS((fd), (n))])// 根据fd获取对应的指针
 #define EVENT_TICK_MIN 10          // event 线程周期驱动(ev_tick)的最小间隔(毫秒),防 tick 返回 0 忙轮询
+#define ACCEPT_BACKOFF_MS 500 // accept 遇 EMFILE/ENFILE 后暂停监听、退避重试的间隔(毫秒)
 
 struct evssl_ctx;
 struct watcher_ctx;
@@ -65,6 +66,7 @@ typedef struct ev_ctx {
 #ifdef EV_IOCP
     uint32_t nacpex;                // AcceptEx线程数
     atomic_t nlsn;                  // 存活listener计数（ev_free关闭阶段排空同步用）
+    atomic_t ndead_total;           // 所有listener的dead槽总数（==sum(lsn->ndead)）；==0时_olp_revive_dead免锁免遍历
     struct acceptex_ctx *acpex;     // AcceptEx上下文数组
 #endif
     struct watcher_ctx *watcher;    // 事件监听器数组

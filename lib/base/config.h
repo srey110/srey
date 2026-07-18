@@ -35,7 +35,7 @@
 #define SHRINK_TIME         10000   // 缓冲区收缩检测周期（毫秒）
 #define SHRINK_BUSY      4, 5 // pool_shrink 的 load_trend busy 判定比例 num/den:空闲骤降至上次的 4/5 以下视为忙,跳过本次收缩
 #define QTN_MS              500     // 释放对象隔离时间(毫秒)，应大于一轮 kevent 周期
-#define EVENT_CHECK_INTERVAL 10     // 每隔多少次事件循环才检查一次定时器，避免每次紧循环都调用 clock_gettime
+#define EVENT_CHECK_INTERVAL 5     // 每隔多少次事件循环才检查一次定时器，避免每次紧循环都调用 clock_gettime
 #define SPIN_CNT             32     // 自旋次数
 
 #ifdef EV_EPOLL

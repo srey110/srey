@@ -563,6 +563,8 @@ int32_t mongo_ping(mongo_ctx *mongo) {
         if (ERR_OK != mongo_connect(mongo->task, mongo)) {
             return ERR_FAILED;
         }
+        // 清跨代残留事务会话，避免旧 lsid/txnNumber 经 TRANSACTION_OPTIONS 附加进 hello 及后续命令
+        mongo_clear_session(mongo);
         if (NULL == mongo_hello(mongo, NULL)) {
             return ERR_FAILED;
         }
@@ -786,6 +788,9 @@ void mongo_freesession(mongo_session *session) {
     size_t lens;
     void *endsession = mongo_pack_endsession(session, &lens);
     _mongo_send(mongo, endsession, lens, NULL);
+    if (mongo->session == session) {
+        mongo->session = NULL;
+    }
     FREE(session->options);
     FREE(session);
 }
