@@ -210,8 +210,8 @@ static int32_t _http_parse_field_fast(const char *head, size_t remain, char **pc
 // 解析单个头部字段行（key ":" OWS value CRLF），拒绝空 key 与 obs-fold 续行，成功后 *phead 推进到下一行行首
 static int32_t _http_parse_field(http_pack_ctx *pack, char **phead, http_header_ctx *field) {
     char *head = *phead;
-    head = skipempty(head, HEAD_REMAIN);
-    if (NULL == head) {
+    // RFC 7230 §3.2.4：字段行不得以 OWS(SP/HTAB) 开头(obs-fold 续行折叠)，须拒绝防上游折进请求行的边界分歧走私
+    if (' ' == *head || '\t' == *head) {
         return ERR_FAILED;
     }
     char *pcolon;
@@ -236,9 +236,6 @@ static int32_t _http_parse_field(http_pack_ctx *pack, char **phead, http_header_
     field->value.data = head;
     field->value.lens = pcrlf - head;
     head = pcrlf + CRLF_SIZE;
-    if (' ' == *head || '\t' == *head) {
-        return ERR_FAILED;
-    }
     *phead = head;
     return ERR_OK;
 }

@@ -89,5 +89,33 @@ runner.run("multi_call", function(t)
         end)
         t:eq(false, ok, "sess=0 抛错")
     end
+
+    -- ── 回归: core 侧 longjmp(非法 reqtype)时错误须透传,且不泄漏 task 引用 ──
+    -- 全部 grab-in-C:reqtype/data 校验在 grab 前,longjmp 时未 grab → 错误透传(下面断言)+ 无引用泄漏(退出无死锁,ASan 验证)
+    do
+        local ok = pcall(function()
+            srey.multi_request(SUBS, {}, srey.id(), "x")  -- reqtype 非整数 → C 侧 longjmp
+        end)
+        t:eq(false, ok, "multi_request: core longjmp 错误仍透传")
+
+        ok = pcall(function()
+            srey.multi_call(SUBS, {}, "x")  -- reqtype 非整数 → C 侧 longjmp
+        end)
+        t:eq(false, ok, "multi_call: core longjmp 错误仍透传")
+
+        -- 单目标 request/call/response(grab-in-C):非法 reqtype 在 task_grab 前 longjmp,错误透传且未 grab 无泄漏
+        ok = pcall(function()
+            srey.request(SUBS[1], {}, "x")  -- 非法 reqtype → core.request longjmp
+        end)
+        t:eq(false, ok, "request: core longjmp 错误仍透传")
+        ok = pcall(function()
+            srey.call(SUBS[1], {}, "x")
+        end)
+        t:eq(false, ok, "call: core longjmp 错误仍透传")
+        ok = pcall(function()
+            srey.response(SUBS[1], {}, srey.id(), 0, "x")
+        end)
+        t:eq(false, ok, "response: core longjmp 错误仍透传")
+    end
 end)
 end)

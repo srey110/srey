@@ -25,6 +25,14 @@ runner.run("multicast", function(t)
         t:eq(false, ok, "长度不匹配抛 error")
     end
 
+    -- ── 边界: 含非数字元素应抛错(元素校验在填充前完成,不被 lua_tointeger 静默转 0 掩盖) ──
+    do
+        local ok = pcall(function()
+            srey.send_multi({1, "x", 3}, {1, 2, 3}, "")
+        end)
+        t:eq(false, ok, "非数字元素抛 error")
+    end
+
     -- ── 集成: 自启 server + N 个 client + 广播验证 ────────────────
     -- accept 端累积 server-side fd/skid;集齐后 send_multi;每个 client 收到 +1
     local server_fds = {}

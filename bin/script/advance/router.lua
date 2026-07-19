@@ -246,11 +246,6 @@ _bad_entry.name = function(_, n) WARN("router: :name(%s) on rejected entry.", to
 function Router:_add(method, path, handler, extra_mws)
     local prefix, ctx_mws = self:_ctx()
     local full = prefix .. path
-    local ok, idx = self._c_router:add(method, full)
-    if not ok then
-        WARN("router: path '%s' rejected.", full)
-        return _bad_entry
-    end
     local mws  = {}
     for _, mw in ipairs(ctx_mws) do
         mws[#mws + 1] = mw
@@ -259,6 +254,11 @@ function Router:_add(method, path, handler, extra_mws)
         for _, mw in ipairs(extra_mws) do
             mws[#mws + 1] = self:_resolve(mw)
         end
+    end
+    local ok, idx = self._c_router:add(method, full)
+    if not ok then
+        WARN("router: path '%s' rejected.", full)
+        return _bad_entry
     end
     local router = self
     local entry  = {

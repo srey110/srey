@@ -602,15 +602,11 @@ function srey.request(dst, reqtype, data, size, copy)
         _ud_free_copy(data, copy)
         return nil
     end
-    local dtask = srey.task_grab(dst)
-    if not dtask then
-        WARN("grab task error.")
-        _ud_free_copy(data, copy)
+    local sess = srey.id()
+    if not core.request(dst, reqtype, sess, data, size, copy) then
+        WARN("target task not found: %s.", tostring(dst))
         return nil
     end
-    local sess = srey.id()
-    core.request(dtask, reqtype, sess, data, size, copy)
-    srey.task_ungrab(dtask)
     local msg = srey._coro_wait(sess, MSG_TYPE.RESPONSE, srey.get_request_timeout())
     if MSG_TYPE.TIMEOUT == msg.mtype then
         WARN("request timeout, session %s.", tostring(sess))
@@ -639,38 +635,8 @@ function srey.call(dst, reqtype, data, size, copy)
         _ud_free_copy(data, copy)
         return
     end
-    local dtask = srey.task_grab(dst)
-    if not dtask then
-        WARN("grab task error.")
-        _ud_free_copy(data, copy)
-        return
-    end
-    core.call(dtask, reqtype, data, size, copy)
-    srey.task_ungrab(dtask)
-end
-
--- 多播 grab 公共逻辑：遍历 dsts 跳过 TASK_NAME.NONE 与 grab 失败项,顺序填入 task_ctx 指针数组。
--- 返回数组无 nil 空洞,调用方用 #tasks 取实际有效数,配 _ungrab_multi_tasks 归还引用。
----@param dsts TASK_NAME[]
----@return lightuserdata[] tasks
-local function _grab_multi_tasks(dsts)
-    local tasks = {}
-    for i = 1, #dsts do
-        if TASK_NAME.NONE ~= dsts[i] then
-            local dtask = srey.task_grab(dsts[i])
-            if dtask then
-                tasks[#tasks + 1] = dtask
-            end
-        end
-    end
-    return tasks
-end
-
--- 多播 ungrab 公共逻辑：归还 _grab_multi_tasks 返回的 tasks 引用
----@param tasks lightuserdata[]
-local function _ungrab_multi_tasks(tasks)
-    for i = 1, #tasks do
-        srey.task_ungrab(tasks[i])
+    if not core.call(dst, reqtype, data, size, copy) then
+        WARN("target task not found: %s.", tostring(dst))
     end
 end
 
@@ -685,21 +651,11 @@ end
 ---@param copy integer? 是否复制数据，默认 1
 ---@return integer valid 实际成功投递的 dst 数（0 表示全部跳过）
 function srey.multi_request(dsts, reqtype, sess, data, size, copy)
-    -- 所有不进入 core.multi_request 的退出路径都先 utils.ud_free 兜底,
-    -- 避免 C 端 longjmp / short-circuit return 时漏 FREE 调用方已转移的 data
-    -- （utils.ud_free 内部仅对 lightuserdata 生效,非 lightuserdata 自动跳过）
     if 0 == sess then
         _ud_free_copy(data, copy)
         error("multi_request sess must be non-zero")
     end
-    local tasks = _grab_multi_tasks(dsts)
-    if 0 == #tasks then
-        _ud_free_copy(data, copy)
-        return 0
-    end
-    local valid = core.multi_request(tasks, reqtype, sess, data, size, copy)
-    _ungrab_multi_tasks(tasks)
-    return valid
+    return core.multi_request(dsts, reqtype, sess, data, size, copy)
 end
 
 ---单向广播跨 task 消息（fire-and-forget）：同一份 data 投递给 N 个 task，
@@ -710,14 +666,7 @@ end
 ---@param size integer? data 为 lightuserdata 时必填
 ---@param copy integer? 是否复制数据，默认 1
 function srey.multi_call(dsts, reqtype, data, size, copy)
-    local tasks = _grab_multi_tasks(dsts)
-    if 0 == #tasks then
-        -- 调用方 copy=0 时所有权已转移,但本路径不进入 core.multi_call,需主动 utils.ud_free 兜底
-        _ud_free_copy(data, copy)
-        return
-    end
-    core.multi_call(tasks, reqtype, data, size, copy)
-    _ungrab_multi_tasks(tasks)
+    core.multi_call(dsts, reqtype, data, size, copy)
 end
 
 local _debug_request    -- 懒加载缓存
@@ -773,14 +722,9 @@ function srey.response(dst, reqtype, sess, erro, data, size, copy)
         _ud_free_copy(data, copy)
         return
     end
-    local dtask = srey.task_grab(dst)
-    if not dtask then
-        WARN("grab task error.")
-        _ud_free_copy(data, copy)
-        return
+    if not core.response(dst, reqtype, sess, erro, data, size, copy) then
+        WARN("target task not found: %s.", tostring(dst))
     end
-    core.response(dtask, reqtype, sess, erro, data, size, copy)
-    srey.task_ungrab(dtask)
 end
 
 ---@param msg Message

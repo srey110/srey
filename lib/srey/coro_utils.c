@@ -852,9 +852,7 @@ int32_t kcp_synstart(task_ctx *task, struct kcp_ctx *kcp,
 void *kcp_synsend(task_ctx *task, struct kcp_ctx *kcp, void *data, size_t lens, int32_t copy, size_t *size) {
     if (0 == kcp->sess) {
         // sess==0 时 _coro_handle_recvfrom 内部恒新建协程,永远等不到本次唤醒
-        if (!copy) {
-            FREE(data);
-        }
+        CHECK_COPY_FREE(data, copy);
         return NULL;
     }
     if (ERR_OK != kcp_send(kcp, data, lens, copy)) {

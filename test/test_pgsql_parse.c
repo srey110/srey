@@ -1,5 +1,6 @@
 ﻿#include "test_pgsql_parse.h"
 #include "lib.h"
+#include "protocol/pgsql/pgsql.h"
 #include "protocol/pgsql/pgsql_parse.h"
 #include "protocol/pgsql/pgsql_reader.h"
 #include "protocol/pgsql/pgsql_struct.h"
@@ -550,6 +551,23 @@ static void test_pgpack_error_notice_empty(CuTest *tc) {
     binary_free(&bw);
 }
 
+// pgsql_affected_rows：从 CommandComplete 标签末尾取行数；>2^31 须用 int64 不回绕成负数
+static void test_pgsql_affected_rows(CuTest *tc) {
+    pgpack_ctx pg;
+    ZERO(&pg, sizeof(pg));
+    // 常规标签取末尾数字（UPDATE rows / INSERT oid rows）
+    safe_fill_str(pg.complete, sizeof(pg.complete), "UPDATE 5");
+    CuAssertTrue(tc, 5 == pgsql_affected_rows(&pg));
+    safe_fill_str(pg.complete, sizeof(pg.complete), "INSERT 0 3");
+    CuAssertTrue(tc, 3 == pgsql_affected_rows(&pg));
+    // 空标签 → 0
+    pg.complete[0] = '\0';
+    CuAssertTrue(tc, 0 == pgsql_affected_rows(&pg));
+    // 回归：>2^31 行不得截断为负数（曾 (int32_t)strtol 回绕成 -1294967296）
+    safe_fill_str(pg.complete, sizeof(pg.complete), "UPDATE 3000000000");
+    CuAssertTrue(tc, 3000000000LL == pgsql_affected_rows(&pg));
+}
+
 void test_pgsql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_pgsql_reader_init);
     SUITE_ADD_TEST(suite, test_pgsql_reader_cursor);
@@ -565,4 +583,5 @@ void test_pgsql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_pgsql_reader_index);
     SUITE_ADD_TEST(suite, test_pgpack_error_notice);
     SUITE_ADD_TEST(suite, test_pgpack_error_notice_empty);
+    SUITE_ADD_TEST(suite, test_pgsql_affected_rows);
 }

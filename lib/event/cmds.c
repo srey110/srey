@@ -246,9 +246,7 @@ static int32_t _ev_send(struct watcher_ctx *watcher, struct sock_ctx *skctx,
 }
 int32_t ev_send(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *data, size_t len, int32_t copy) {
     if (INVALID_SOCK == fd || EMPTYPTR(data, len)) {
-        if (!copy) {
-            FREE(data);
-        }
+        CHECK_COPY_FREE(data, copy);
         return ERR_FAILED;
     }
     return ev_props(ctx, fd, skid, _ev_send, _free,
@@ -271,9 +269,7 @@ static int32_t _ev_send_multi(struct watcher_ctx *watcher, struct sock_ctx *skct
 int32_t ev_send_multi(ev_ctx *ctx, SOCKET fds[], uint64_t skids[], int32_t n,
                       void *data, size_t len, int32_t copy) {
     if (EMPTYPTR(data, len)) {
-        if (!copy) {
-            FREE(data);
-        }
+        CHECK_COPY_FREE(data, copy);
         return ERR_FAILED;
     }
     // 先扫一遍有效 fd 数,决定 pack->ref 初值
@@ -285,9 +281,7 @@ int32_t ev_send_multi(ev_ctx *ctx, SOCKET fds[], uint64_t skids[], int32_t n,
         }
     }
     if (0 == valid) {
-        if (!copy) {
-            FREE(data);
-        }
+        CHECK_COPY_FREE(data, copy);
         return ERR_FAILED;
     }
     shared_data *pack;
@@ -319,9 +313,7 @@ int32_t ev_sendto(ev_ctx *ctx, SOCKET fd, uint64_t skid, const char *ip, const u
     void *data, size_t len, int32_t copy) {
     netaddr_ctx addr;
     if (ERR_OK != netaddr_set(&addr, ip, port)) {
-        if (!copy) {
-            FREE(data);
-        }
+        CHECK_COPY_FREE(data, copy);
         LOG_WARN("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
@@ -330,9 +322,7 @@ int32_t ev_sendto(ev_ctx *ctx, SOCKET fd, uint64_t skid, const char *ip, const u
 int32_t ev_sendto_addr(ev_ctx *ctx, SOCKET fd, uint64_t skid, netaddr_ctx *addr,
     void *data, size_t len, int32_t copy) {
     if (INVALID_SOCK == fd || NULL == addr || EMPTYPTR(data, len)) {
-        if (!copy) {
-            FREE(data);
-        }
+        CHECK_COPY_FREE(data, copy);
         return ERR_FAILED;
     }
     cmd_ctx cmd = { 0 };

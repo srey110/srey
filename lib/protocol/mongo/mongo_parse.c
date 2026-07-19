@@ -86,6 +86,7 @@ int32_t mongo_parse_check_error(mgopack_ctx *mgpack) {
     return ERR_FAILED;
 }
 int32_t mongo_parse_startsession(mgopack_ctx *mgpack, char uid[UUID_LENS], int32_t *timeout) {
+    *timeout = 0;
     bson_ctx bson;
     bson_init(&bson, mgpack->doc, mgpack->dlens);
     bson_iter iter;

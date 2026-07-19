@@ -59,7 +59,7 @@ void *lpub_check_buf_idx(lua_State *lua, int32_t *idx, size_t *size, int32_t *co
     luaL_argerror(lua, *idx, "string or light userdata expected");
     return NULL;//unreachable: luaL_argerror longjmp
 }
-// idx 按值的兼容包装,丢弃推进位置;旧调用方无需改动
+// idx 按值的兼容包装,丢弃推进位置
 void *lpub_check_buf(lua_State *lua, int32_t idx, size_t *size, int32_t *copy) {
     return lpub_check_buf_idx(lua, &idx, size, copy);
 }

@@ -456,6 +456,22 @@ runner.run("unit_router", function(t)
                 "error message mentions unknown name")
     end
 
+    -- 4.12(回归):路由级具名中间件未定义 → 注册在提交 C 路由前抛错,不留幽灵路由
+    -- 修复前 c_router:add 先提交、_resolve 后 assert 抛错 → _routes[idx] 空,该路径 dispatch 索引 nil route 崩溃且无响应
+    do
+        local r = Route.new()
+        local ok = pcall(function()
+            r:get("/ghost", function(ctx) ctx:text(200, "ok") end, { "undefined_mw" })
+        end)
+        t:eq(false, ok, "未定义路由级具名中间件 → 注册抛错")
+        local dok, dcode = pcall(function() return (dispatch(r, "GET", "/ghost") or {}).code end)
+        t:eq(true, dok,  "注册抛错后 dispatch 不崩溃(无幽灵路由 nil-deref)")
+        t:eq(404, dcode, "注册抛错后 /ghost 干净 404")
+        -- 注册原子:后补 define 同名中间件也不复活未注册路径,须显式重注册
+        r:define("undefined_mw", function(ctx, next) next() end)
+        t:eq(404, (dispatch(r, "GET", "/ghost") or {}).code, "后补 define 不复活未注册路径")
+    end
+
     -- ── 5. GroupBuilder（prefix / middleware / group） ──────────────────────
 
     -- 5.1 prefix：组内路由加前缀，组外不受影响

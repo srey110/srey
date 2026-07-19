@@ -35,7 +35,7 @@ static int32_t _simple_insert(pgsql_ctx *pg) {
         return ERR_FAILED;
     }
     if (2 != pgsql_affected_rows(p)) {
-        LOG_ERROR("pgsql expected 2 rows inserted, got %d.", pgsql_affected_rows(p));
+        LOG_ERROR("pgsql expected 2 rows inserted, got %"PRId64".", pgsql_affected_rows(p));
         return ERR_FAILED;
     }
     return ERR_OK;
@@ -140,7 +140,7 @@ static int32_t _copy_in(pgsql_ctx *pg) {
         return ERR_FAILED;
     }
     if (3 != pgsql_affected_rows(p)) {
-        LOG_ERROR("pgsql copy_in expected 3 rows, got %d.", pgsql_affected_rows(p));
+        LOG_ERROR("pgsql copy_in expected 3 rows, got %"PRId64".", pgsql_affected_rows(p));
         return ERR_FAILED;
     }
     return ERR_OK;

@@ -86,6 +86,13 @@
             ptr = NULL; \
         }\
     } while(0)
+// copy=0（本层已接管 data 所有权）时释放 data；copy!=0（复制语义）不释放。ev_send/task_* 接管失败或无接管的兜底
+#define CHECK_COPY_FREE(data, copy)\
+    do {\
+        if (!(copy)) {\
+            FREE(data);\
+        }\
+    } while(0)
 // 关闭 socket 并将句柄置为无效值
 #define CLOSE_SOCK(fd)\
     do {\

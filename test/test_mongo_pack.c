@@ -766,6 +766,25 @@ static void test_mongo_parse_startsession(CuTest *tc) {
     ok = mongo_parse_startsession(&mg2, out_uuid, &timeout);
     CuAssertIntEquals(tc, 0, ok);
     BSON_FREE(&b2);
+
+    // 回归:响应缺 timeoutMinutes 字段时函数须主动把 *timeout 置 0（曾未初始化 → 上层读到不确定值污染会话过期）
+    bson_ctx b3;
+    bson_init(&b3, NULL, 0);
+    bson_append_document_begain(&b3, "id");
+    bson_append_binary(&b3, "id", BSON_SUBTYPE_UUID, uuid, UUID_LENS);
+    bson_append_end(&b3);
+    bson_append_double(&b3, "ok", 1.0);
+    bson_append_end(&b3);
+    mgopack_ctx mg3;
+    ZERO(&mg3, sizeof(mg3));
+    mg3.doc = b3.doc.data;
+    mg3.dlens = (uint32_t)b3.doc.offset;
+    int32_t timeout3 = 999;// 非零哨兵:证明函数主动写 0 而非沿用旧值
+    ok = mongo_parse_startsession(&mg3, out_uuid, &timeout3);
+    CuAssertIntEquals(tc, 1, ok);
+    CuAssertIntEquals(tc, 0, timeout3);
+    CuAssertTrue(tc, 0 == memcmp(out_uuid, uuid, UUID_LENS));
+    BSON_FREE(&b3);
 }
 
 // mongo_unpack 拒收 kind=1 + klens=5 + docid='\0' 的语义空 section 响应:

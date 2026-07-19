@@ -258,6 +258,27 @@ static void test_http_smuggling(CuTest *tc) {
         "\r\n"
         "hello",
         1);
+    // 16. 首个头部行以空格 OWS 开头(obs-fold 折叠)：旧实现被 skipempty 静默剥离后当合法 chunked 入库,
+    //     与将其视为 obs-fold 折进请求行(看不到 TE)的上游代理产生边界分歧 → 请求走私 → 拒绝
+    _http_smuggle_check(tc,
+        "POST / HTTP/1.1\r\n"
+        " Transfer-Encoding: chunked\r\n"
+        "\r\n"
+        "0\r\n\r\n",
+        1);
+    // 17. 首个头部行以制表符 OWS 开头，同 §3.2.4 → 拒绝
+    _http_smuggle_check(tc,
+        "POST / HTTP/1.1\r\n"
+        "\tHost: x\r\n"
+        "\r\n",
+        1);
+    // 18. 后续头部行 obs-fold 续行(行首 OWS) → 拒绝(回归:行首 OWS 判定从尾部前瞻移到字段入口后仍生效)
+    _http_smuggle_check(tc,
+        "POST / HTTP/1.1\r\n"
+        "Host: x\r\n"
+        " Transfer-Encoding: chunked\r\n"
+        "\r\n",
+        1);
 }
 
 // 首行三段拆分必须限定在首行内，空格不足的畸形首行不得越行吞并头部字段

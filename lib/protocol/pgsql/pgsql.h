@@ -56,6 +56,6 @@ const char *pgsql_get_db(pgsql_ctx *pg);
 /// </summary>
 /// <param name="pgpack">pgpack_ctx 指针，complete 字段须已填充</param>
 /// <returns>受影响的行数，解析失败时返回 0</returns>
-int32_t pgsql_affected_rows(pgpack_ctx *pgpack);
+int64_t pgsql_affected_rows(pgpack_ctx *pgpack);
 
 #endif//PGSQL_H_

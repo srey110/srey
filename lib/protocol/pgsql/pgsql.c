@@ -484,7 +484,7 @@ void pgsql_set_db(pgsql_ctx *pg, const char *database) {
 const char *pgsql_get_db(pgsql_ctx *pg) {
     return pg->database;
 }
-int32_t pgsql_affected_rows(pgpack_ctx *pgpack) {
+int64_t pgsql_affected_rows(pgpack_ctx *pgpack) {
     size_t lens = strlen(pgpack->complete);
     if (0 == lens) {
         return 0;
@@ -501,7 +501,7 @@ int32_t pgsql_affected_rows(pgpack_ctx *pgpack) {
         }
         if (' ' == pgpack->complete[i]) {
             rows = pgpack->complete + i + 1;
-            return (int32_t)strtol(rows, NULL, 10);
+            return (int64_t)strtoll(rows, NULL, 10);
         }
     }
     return 0;

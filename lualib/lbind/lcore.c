@@ -26,63 +26,84 @@ static int32_t _lcore_timeout(lua_State *lua) {
     task_timeout(task, sess, time, NULL);
     return 0;
 }
+static name_t _task_handle(lua_State *lua, int32_t idx) {
+    return (LUA_TSTRING == lua_type(lua, idx))
+        ? task_find_name(g_loader, lua_tostring(lua, idx))
+        : (name_t)luaL_checkinteger(lua, idx);
+}
 /// <summary>
 /// 向目标 task 发送单向调用消息（无响应）
 /// </summary>
-/// <param name="dst" type="lightuserdata">目标 task 指针</param>
+/// <param name="dst" type="string|integer">目标 task 名(字符串)或句柄(整数)</param>
 /// <param name="reqtype" type="integer">业务请求类型</param>
 /// <param name="data" type="string|lightuserdata">消息内容；字符串时长度自动取得</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
 /// <param name="copy" type="integer?">是否复制数据，默认 1（复制）</param>
-/// <returns>无</returns>
+/// <returns type="boolean">grab 到目标并投递 true；目标不存在 false</returns>
 static int32_t _lcore_call(lua_State *lua) {
-    LUACHECK_LUDATA(lua, 1);
-    task_ctx *dst = (task_ctx *)lua_touserdata(lua, 1);
+    name_t handle = _task_handle(lua, 1);
     subtype_t reqtype = (subtype_t)luaL_checkinteger(lua, 2);
     void *data;
     size_t size;
     int32_t copy;
     data = lpub_check_buf(lua, 3, &size, &copy);
+    task_ctx *dst = task_grab(g_loader, handle);
+    if (NULL == dst) {
+        CHECK_COPY_FREE(data, copy);
+        lua_pushboolean(lua, 0);
+        return 1;
+    }
     task_call(dst, reqtype, data, size, copy);
-    return 0;
+    task_ungrab(dst);
+    lua_pushboolean(lua, 1);
+    return 1;
 }
-// 校验 dsts table(栈位置 idx)类型、逐元素类型(必须 light userdata 或 nil)并返回长度,不做任何分配。
-// 必须在调用方尚未持有任何待释放资源(如 lpub_check_buf 取出的 copy=0 data)前调用——
-// 内部 luaL_checktype/luaL_len/luaL_error 可能 longjmp,若晚于资源获取调用会导致该资源泄漏。
-static int32_t _check_multi_dsts(lua_State *lua, int32_t idx) {
-    luaL_checktype(lua, idx, LUA_TTABLE);
+// 校验 dsts table 类型 + 逐元素类型(string/integer 名或 nil)。成功返回长度(>=0);
+// dsts 非 table 或含非法元素返回 -1(不 longjmp,由调用方释放 copy=0 后 luaL_error)。
+static int32_t _check_multi_names(lua_State *lua, int32_t idx) {
+    if (LUA_TTABLE != lua_type(lua, idx)) {
+        return -1;
+    }
     int32_t n = (int32_t)luaL_len(lua, idx);
+    int32_t vtype;
+    int32_t isint;
     for (int32_t i = 0; i < n; i++) {
         lua_rawgeti(lua, idx, i + 1);
-        int32_t vtype = lua_type(lua, -1);
+        vtype = lua_type(lua, -1);
+        isint = lua_isinteger(lua, -1);
         lua_pop(lua, 1);
-        // 非 light userdata 的非 nil 元素(字符串/数字/table 等)若放行,_fill_multi_dsts 会经
-        // lua_touserdata 静默转成 NULL,和"nil=跳过"的合法语义混淆,掩盖调用方的类型错误
-        if (LUA_TNIL != vtype && LUA_TLIGHTUSERDATA != vtype) {
-            return luaL_error(lua, "dsts[%d] must be light userdata or nil, got %s",
-                              i + 1, lua_typename(lua, vtype));
+        if (LUA_TNIL != vtype && LUA_TSTRING != vtype && !isint) {
+            return -1;
         }
     }
     return n;
 }
-// 按 _check_multi_dsts 已校验的长度 n(>0) 从 dsts table(栈位置 idx)分配填充 task_ctx*[n] 数组。
-// 调用方负责 FREE 返回值。仅用 lua_rawgeti/lua_touserdata/lua_pop,不会 longjmp,可在其它资源
-// 就绪后安全调用。
-static task_ctx **_fill_multi_dsts(lua_State *lua, int32_t idx, int32_t n) {
+// 按 _check_multi_names 已校验的长度 n(>0) 从 dsts table(栈位置 idx)逐元素 grab,填充 task_ctx*[n],
+// *cnt 出参为实际 grab 成功数(跳过 nil/NONE/不存在)。调用方 FREE 返回值并对前 *cnt 个 ungrab。
+// 元素类型已校验,循环内 _task_handle/task_grab 不 longjmp,可在其它资源就绪后安全调用。
+static task_ctx **_grab_multi_names(lua_State *lua, int32_t idx, int32_t n, int32_t *cnt) {
     task_ctx **dsts;
     MALLOC(dsts, sizeof(task_ctx *) * (size_t)n);
+    int32_t count = 0;
+    task_ctx *t;
     for (int32_t i = 0; i < n; i++) {
         lua_rawgeti(lua, idx, i + 1);
-        dsts[i] = (task_ctx *)lua_touserdata(lua, -1);
+        if (LUA_TNIL != lua_type(lua, -1)) {
+            t = task_grab(g_loader, _task_handle(lua, -1));
+            if (NULL != t) {
+                dsts[count++] = t;
+            }
+        }
         lua_pop(lua, 1);
     }
+    *cnt = count;
     return dsts;
 }
 /// <summary>
 /// 广播请求：把同一份 data 投递给多个 task,各 dst 在 _request 回调中独立 task_response 回 src(共用 sess)。
 /// 当前 task 作 src,sess 由调用方传入(非 0)；src 端 srey.on_responsed 会被回调 N 次,业务自行据 sess 识别与累计。
 /// </summary>
-/// <param name="dsts" type="lightuserdata[]">目标 task 指针数组(Lua table)；nil 元素被跳过</param>
+/// <param name="dsts" type="(string|integer)[]">目标 task 名/句柄数组(Lua table)；nil/NONE/不存在的被跳过</param>
 /// <param name="reqtype" type="integer">业务请求类型</param>
 /// <param name="sess" type="integer">会话 id(非 0),N 个 dst 共用此 sess</param>
 /// <param name="data" type="string|lightuserdata">数据；string 时长度自动取,lightuserdata 必须传 size</param>
@@ -93,22 +114,31 @@ static int32_t _lcore_multi_request(lua_State *lua) {
     LPUB_CUR_TASK(lua, src);
     subtype_t reqtype = (subtype_t)luaL_checkinteger(lua, 2);
     uint64_t sess = (uint64_t)luaL_checkinteger(lua, 3);
-    // dsts 先校验类型/取长度(不分配)，data 后取，避免 dsts 非法时 data(copy=0 已转移所有权)被 longjmp 绕过 FREE
-    int32_t n = _check_multi_dsts(lua, 1);
     void *data;
     size_t size;
     int32_t copy;
     data = lpub_check_buf(lua, 4, &size, &copy);
+    int32_t n = _check_multi_names(lua, 1);
     if (n <= 0) {
-        // copy=0 时 data 所有权已转移给 C,无目标不投递,补 FREE 防泄漏
-        if (!copy) {
-            FREE(data);
+        CHECK_COPY_FREE(data, copy);
+        if (n < 0) {
+            return luaL_error(lua, "dsts must be a table of task name(string/integer) or nil");
         }
         lua_pushinteger(lua, 0);
         return 1;
     }
-    task_ctx **dsts = _fill_multi_dsts(lua, 1, n);
-    int32_t valid = task_multi_request(dsts, n, src, reqtype, sess, data, size, copy);
+    int32_t count;
+    task_ctx **dsts = _grab_multi_names(lua, 1, n, &count);
+    if (0 == count) {
+        CHECK_COPY_FREE(data, copy);
+        FREE(dsts);
+        lua_pushinteger(lua, 0);
+        return 1;
+    }
+    int32_t valid = task_multi_request(dsts, count, src, reqtype, sess, data, size, copy);
+    for (int32_t i = 0; i < count; i++) {
+        task_ungrab(dsts[i]);
+    }
     FREE(dsts);
     lua_pushinteger(lua, valid);
     return 1;
@@ -116,7 +146,7 @@ static int32_t _lcore_multi_request(lua_State *lua) {
 /// <summary>
 /// 单向广播：把同一份 data 投递给多个 task（N 个 message 共享同一份 data，引用计数自动释放）
 /// </summary>
-/// <param name="dsts" type="lightuserdata[]">目标 task 指针数组(Lua table)；nil 元素被跳过</param>
+/// <param name="dsts" type="(string|integer)[]">目标 task 名/句柄数组(Lua table)；nil/NONE/不存在的被跳过</param>
 /// <param name="reqtype" type="integer">业务请求类型</param>
 /// <param name="data" type="string|lightuserdata">数据；string 时长度自动取,lightuserdata 必须传 size</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填</param>
@@ -124,37 +154,44 @@ static int32_t _lcore_multi_request(lua_State *lua) {
 /// <returns>无</returns>
 static int32_t _lcore_multi_call(lua_State *lua) {
     subtype_t reqtype = (subtype_t)luaL_checkinteger(lua, 2);
-    // dsts 先校验类型/取长度(不分配)，data 后取，避免 dsts 非法时 data(copy=0 已转移所有权)被 longjmp 绕过 FREE
-    int32_t n = _check_multi_dsts(lua, 1);
     void *data;
     size_t size;
     int32_t copy;
     data = lpub_check_buf(lua, 3, &size, &copy);
+    int32_t n = _check_multi_names(lua, 1);
     if (n <= 0) {
-        // copy=0 时 data 所有权已转移给 C,无目标不投递,补 FREE 防泄漏
-        if (!copy) {
-            FREE(data);
+        CHECK_COPY_FREE(data, copy);
+        if (n < 0) {
+            return luaL_error(lua, "dsts must be a table of task name(string/integer) or nil");
         }
         return 0;
     }
-    task_ctx **dsts = _fill_multi_dsts(lua, 1, n);
-    task_multi_call(dsts, n, reqtype, data, size, copy);
+    int32_t count;
+    task_ctx **dsts = _grab_multi_names(lua, 1, n, &count);
+    if (0 == count) {
+        CHECK_COPY_FREE(data, copy);
+        FREE(dsts);
+        return 0;
+    }
+    task_multi_call(dsts, count, reqtype, data, size, copy);
+    for (int32_t i = 0; i < count; i++) {
+        task_ungrab(dsts[i]);
+    }
     FREE(dsts);
     return 0;
 }
 /// <summary>
 /// 向目标 task 发送请求消息，携带会话 id 以便对方响应
 /// </summary>
-/// <param name="dst" type="lightuserdata">目标 task 指针</param>
+/// <param name="dst" type="string|integer">目标 task 名(字符串)或句柄(整数)</param>
 /// <param name="reqtype" type="integer">业务请求类型</param>
 /// <param name="sess" type="integer">会话 id，响应回带</param>
 /// <param name="data" type="string|lightuserdata">消息内容；字符串时长度自动取得</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
 /// <param name="copy" type="integer?">是否复制数据，默认 1（复制）</param>
-/// <returns>无</returns>
+/// <returns type="boolean">grab 到目标并投递 true；目标不存在 false</returns>
 static int32_t _lcore_request(lua_State *lua) {
-    LUACHECK_LUDATA(lua, 1);
-    task_ctx *dst = (task_ctx *)lua_touserdata(lua, 1);
+    name_t handle = _task_handle(lua, 1);
     subtype_t reqtype = (subtype_t)luaL_checkinteger(lua, 2);
     uint64_t sess = (uint64_t)luaL_checkinteger(lua, 3);
     void *data;
@@ -162,23 +199,30 @@ static int32_t _lcore_request(lua_State *lua) {
     int32_t copy;
     LPUB_CUR_TASK(lua, src);
     data = lpub_check_buf(lua, 4, &size, &copy);
+    task_ctx *dst = task_grab(g_loader, handle);
+    if (NULL == dst) {
+        CHECK_COPY_FREE(data, copy);
+        lua_pushboolean(lua, 0);
+        return 1;
+    }
     task_request(dst, src, reqtype, sess, data, size, copy);
-    return 0;
+    task_ungrab(dst);
+    lua_pushboolean(lua, 1);
+    return 1;
 }
 /// <summary>
 /// 向请求方 task 回复响应消息，携带错误码及可选数据
 /// </summary>
-/// <param name="dst" type="lightuserdata">请求方 task 指针</param>
+/// <param name="dst" type="string|integer">请求方 task 名(字符串)或句柄(整数)</param>
 /// <param name="reqtype" type="integer">请求类型 request_type</param>
 /// <param name="sess" type="integer">原请求会话 id</param>
 /// <param name="erro" type="integer">错误码，0 表示成功</param>
 /// <param name="data" type="string|lightuserdata|nil">响应数据；nil 表示无数据</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
 /// <param name="copy" type="integer?">是否复制数据，默认 1（复制）</param>
-/// <returns>无</returns>
+/// <returns type="boolean">grab 到目标并投递 true；目标不存在 false</returns>
 static int32_t _lcore_response(lua_State *lua) {
-    LUACHECK_LUDATA(lua, 1);
-    task_ctx *dst = (task_ctx *)lua_touserdata(lua, 1);
+    name_t handle = _task_handle(lua, 1);
     subtype_t reqtype = (subtype_t)luaL_checkinteger(lua, 2);
     uint64_t sess = (uint64_t)luaL_checkinteger(lua, 3);
     int32_t erro = (int32_t)luaL_checkinteger(lua, 4);
@@ -201,8 +245,16 @@ static int32_t _lcore_response(lua_State *lua) {
     } else {
         return luaL_argerror(lua, 5, "nil, string or light userdata expected");
     }
+    task_ctx *dst = task_grab(g_loader, handle);
+    if (NULL == dst) {
+        CHECK_COPY_FREE(data, copy);
+        lua_pushboolean(lua, 0);
+        return 1;
+    }
     task_response(dst, reqtype, sess, erro, data, size, copy);
-    return 0;
+    task_ungrab(dst);
+    lua_pushboolean(lua, 1);
+    return 1;
 }
 /// <summary>
 /// 在当前 task 上监听 TCP/UDP 端口
@@ -366,36 +418,37 @@ static int32_t _lcore_send_multi(lua_State *lua) {
     luaL_checktype(lua, 2, LUA_TTABLE);
     lua_Integer n_fds = luaL_len(lua, 1);
     lua_Integer n_skids = luaL_len(lua, 2);
+    void *data;
+    size_t size;
+    int32_t copy;
+    data = lpub_check_buf(lua, 3, &size, &copy);
     if (n_fds != n_skids) {
+        CHECK_COPY_FREE(data, copy);
         return luaL_error(lua, "fds and skids length mismatch (%d vs %d)",
                           (int)n_fds, (int)n_skids);
     }
     if (n_fds <= 0) {
+        CHECK_COPY_FREE(data, copy);
         lua_pushboolean(lua, 0);
         return 1;
     }
-    // fds/skids 逐元素类型校验须在 lpub_check_buf 取 data 前完成：非法元素若放行到下面的填充循环,
-    // lua_tointeger 会静默转成 0 掩盖调用方的类型错误；若校验放在 lpub_check_buf 之后再 luaL_error,
-    // longjmp 会绕过 copy=0 时已转移所有权的 data 的 FREE(与 _check_multi_dsts 同一坑)
     lua_Integer i;
     for (i = 0; i < n_fds; i++) {
         lua_rawgeti(lua, 1, i + 1);
         if (!lua_isnumber(lua, -1)) {
+            CHECK_COPY_FREE(data, copy);
             return luaL_error(lua, "fds[%d] must be a number, got %s",
                               (int)(i + 1), lua_typename(lua, lua_type(lua, -1)));
         }
         lua_pop(lua, 1);
         lua_rawgeti(lua, 2, i + 1);
         if (!lua_isnumber(lua, -1)) {
+            CHECK_COPY_FREE(data, copy);
             return luaL_error(lua, "skids[%d] must be a number, got %s",
                               (int)(i + 1), lua_typename(lua, lua_type(lua, -1)));
         }
         lua_pop(lua, 1);
     }
-    void *data;
-    size_t size;
-    int32_t copy;
-    data = lpub_check_buf(lua, 3, &size, &copy);
     SOCKET *fds;
     uint64_t *skids;
     MALLOC(fds, sizeof(SOCKET) * (size_t)n_fds);
@@ -562,9 +615,7 @@ static int32_t _lcore_status(lua_State *lua) {
 static int32_t _lcore_bind_task(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    name_t handle = (LUA_TSTRING == lua_type(lua, 3))
-        ? task_find_name(g_loader, lua_tostring(lua, 3))
-        : (name_t)luaL_checkinteger(lua, 3);
+    name_t handle = _task_handle(lua, 3);
     if (ERR_OK != ev_ud_handle(&g_loader->netev, fd, skid, handle)) {
         lua_pushboolean(lua, 0);
     } else {

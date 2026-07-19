@@ -475,16 +475,12 @@ static int32_t _kcp_send(struct watcher_ctx *watcher, struct sock_ctx *skctx,
 }
 int32_t kcp_send(kcp_ctx *kcp, void *data, size_t lens, int32_t copy) {
     if (kcp->stopped) {
-        if (!copy) {
-            FREE(data);
-        }
+        CHECK_COPY_FREE(data, copy);
         return ERR_FAILED;
     }
     if (0 == lens || lens > kcp->maxpack) {
         LOG_WARN("kcp send invalid lens %zu (max pack %zu).", lens, kcp->maxpack);
-        if (!copy) {
-            FREE(data);
-        }
+        CHECK_COPY_FREE(data, copy);
         return ERR_FAILED;
     }
     kcp_send_buf *buf;//todo 可以用池
