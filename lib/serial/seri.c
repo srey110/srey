@@ -55,6 +55,10 @@ void seri_append_real(binary_ctx *bw, double v) {
     binary_set_double(bw, v, 1);
 }
 void seri_append_string(binary_ctx *bw, const char *s, size_t len) {
+    // 仅 64 位守卫 4 字节长度前缀上界；32 位 size_t≤UINT32_MAX 恒真，略过以免 -Wtype-limits
+#if SIZE_MAX > UINT32_MAX
+    ASSERTAB(len <= UINT32_MAX, "seri string length exceeds 4GB limit");
+#endif
     if (len < SERI_MAX_COOKIE) {
         binary_set_uint8(bw, COMBINE_TYPE(SERI_TYPE_SHORT_STRING, (uint8_t)len));
         if (len > 0) {

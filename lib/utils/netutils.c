@@ -188,13 +188,42 @@ int32_t sock_linger(SOCKET fd) {
     }
     return ERR_OK;
 }
+SOCKET sock_create_cloexec(int32_t family, int32_t type, int32_t proto) {
+#if defined(OS_WIN)
+    // Windows：WSASocket 建 overlapped(IOCP 必需) + 禁句柄被 CreateProcess 继承；proto=0 按 family/type 选默认(TCP/UDP)
+    return WSASocket(family, type, proto, NULL, 0, WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT);
+#elif defined(SOCK_CLOEXEC)
+    // Linux/BSD/Solaris：SOCK_CLOEXEC 原子设置，无 create→设标志 的竞态窗口
+    return socket(family, type | SOCK_CLOEXEC, proto);
+#else
+    // macOS 等：无 SOCK_CLOEXEC，create 后 fcntl 兜底
+    SOCKET fd = socket(family, type, proto);
+    if (INVALID_SOCK != fd) {
+        SET_CLOEXEC(fd);
+    }
+    return fd;
+#endif
+}
+SOCKET sock_accept_cloexec(SOCKET fd, struct sockaddr *addr, socklen_t *addrlen) {
+#if defined(HAVE_ACCEPT4)
+    // 支持 accept4 的平台：原子设置 SOCK_CLOEXEC
+    return accept4(fd, addr, addrlen, SOCK_CLOEXEC);
+#else
+    // macOS/Solaris/Windows：无 accept4，accept 后兜底设标志
+    SOCKET nfd = accept(fd, addr, addrlen);
+    if (INVALID_SOCK != nfd) {
+        SET_CLOEXEC(nfd);
+    }
+    return nfd;
+#endif
+}
 // 在本地回环地址上创建并监听一个临时 TCP 套接字，供 sock_pair 使用
 static SOCKET _sock_listen(void) {
     netaddr_ctx addr;
     if (ERR_OK != netaddr_set(&addr, "127.0.0.1", 0)) {
         return INVALID_SOCK;
     }
-    SOCKET fd = socket(AF_INET, SOCK_STREAM, 0);
+    SOCKET fd = sock_create_cloexec(AF_INET, SOCK_STREAM, 0);
     if (INVALID_SOCK == fd) {
         return INVALID_SOCK;
     }
@@ -210,7 +239,7 @@ static SOCKET _sock_listen(void) {
 }
 // 连接到指定地址，返回连接成功的套接字，供 sock_pair 使用
 static SOCKET _sockcnt(union netaddr_ctx *paddr) {
-    SOCKET fd = socket(AF_INET, SOCK_STREAM, 0);
+    SOCKET fd = sock_create_cloexec(AF_INET, SOCK_STREAM, 0);
     if (INVALID_SOCK == fd) {
         return INVALID_SOCK;
     }
@@ -220,7 +249,7 @@ static SOCKET _sockcnt(union netaddr_ctx *paddr) {
     }
     return fd;
 }
-int32_t sock_pair(SOCKET acSock[2]) {
+int32_t sock_pair(SOCKET acSock[2], int32_t nonblock) {
     SOCKET fdlsn = _sock_listen();
     if (INVALID_SOCK == fdlsn) {
         return ERR_FAILED;
@@ -237,7 +266,7 @@ int32_t sock_pair(SOCKET acSock[2]) {
     }
     struct sockaddr_in listen_addr;
     socklen_t addrlen = (socklen_t)sizeof(listen_addr);
-    SOCKET fdacp = accept(fdlsn, (struct sockaddr *) &listen_addr, &addrlen);
+    SOCKET fdacp = sock_accept_cloexec(fdlsn, (struct sockaddr *) &listen_addr, &addrlen);
     if (INVALID_SOCK == fdacp) {
         CLOSE_SOCK(fdlsn);
         CLOSE_SOCK(fdcn);
@@ -259,8 +288,10 @@ int32_t sock_pair(SOCKET acSock[2]) {
     }
     sock_nodelay(fdacp);
     sock_nodelay(fdcn);
-    sock_nonblock(fdacp);
-    sock_nonblock(fdcn);
+    if (nonblock) {
+        sock_nonblock(fdacp);
+        sock_nonblock(fdcn);
+    }
     acSock[0] = fdacp;
     acSock[1] = fdcn;
     return ERR_OK;

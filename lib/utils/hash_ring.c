@@ -171,7 +171,7 @@ void hash_ring_remove(hash_ring_ctx *ring, void *name, size_t lens) {
         }
     }
 }
-// 二分查找大于等于 digest 的第一个节点；超出末尾则环绕返回第一个节点
+// 二分查找大于 digest 的第一个节点；超出末尾则环绕返回第一个节点
 static hash_ring_item *_hash_ring_find_next_highest_item(hash_ring_ctx *ring, uint64_t digest) {
     if (0 == ring->nitems) {
         return NULL;

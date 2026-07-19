@@ -123,7 +123,17 @@ int32_t popen_startup(popen_ctx *ctx, const char *cmd, const char *mode) {
 #else
     SOCKET sock[2];
     if (r || w) {
-        if (ERR_FAILED == socketpair(AF_UNIX, SOCK_STREAM, 0, sock)) {
+        // AF_UNIX socketpair：阻塞、进程私有、不耗端口，close 带未读数据是干净 EOF（TCP 环回会发 RST 破坏 popen_read 的 eof 语义）
+#if defined(SOCK_CLOEXEC)
+        int32_t sprc = socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sock);
+#else
+        int32_t sprc = socketpair(AF_UNIX, SOCK_STREAM, 0, sock);
+        if (ERR_FAILED != sprc) {
+            SET_CLOEXEC(sock[0]);
+            SET_CLOEXEC(sock[1]);
+        }
+#endif
+        if (ERR_FAILED == sprc) {
             LOG_ERROR("%s", ERRORSTR(ERRNO));
             return ERR_FAILED;
         }
@@ -314,7 +324,8 @@ int32_t popen_waitexit(popen_ctx *ctx, uint32_t ms) {
     uint64_t elapsed;
     uint32_t remaining, s;
     for (;;) {
-        rtn = waitpid(ctx->pid, &wstatus, WNOHANG);
+        while (-1 == (rtn = waitpid(ctx->pid, &wstatus, WNOHANG)) && EINTR == errno) {
+        }
         if (ERR_FAILED == rtn) {
             LOG_ERROR("%s", ERRORSTR(ERRNO));
             return ERR_FAILED;
@@ -357,7 +368,10 @@ int32_t popen_exitcode(popen_ctx *ctx) {
         return ctx->exitcode;
     }
     int wstatus = 0;
-    if (ctx->pid == waitpid(ctx->pid, &wstatus, WNOHANG)) {
+    pid_t rtn;
+    while (-1 == (rtn = waitpid(ctx->pid, &wstatus, WNOHANG)) && EINTR == errno) {
+    }
+    if (ctx->pid == rtn) {
         if (ERR_OK == _popen_child_exited(ctx, wstatus)) {
             return ctx->exitcode;
         }

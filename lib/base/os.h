@@ -107,6 +107,12 @@
     #endif
 #endif
 
+// accept4 / pipe2 能力：无标准 feature-test 宏，按 OS 推导（新增支持平台在此一处维护）
+#if defined(OS_LINUX) || defined(OS_BSD)
+    #define HAVE_ACCEPT4
+    #define HAVE_PIPE2
+#endif
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdarg.h>

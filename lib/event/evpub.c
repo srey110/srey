@@ -112,15 +112,8 @@ int32_t _evpub_nodelay_nonblock(SOCKET fd) {
     }
     return ERR_OK;
 }
-SOCKET _evpub_create_sock(int32_t type, int32_t family) {
-#ifdef EV_IOCP
-    return WSASocket(family, type, SOCK_STREAM == type ? IPPROTO_TCP : IPPROTO_UDP, NULL, 0, WSA_FLAG_OVERLAPPED);
-#else
-    return socket(family, type, 0);
-#endif
-}
 SOCKET _evpub_listen(netaddr_ctx *addr) {
-    SOCKET fd = _evpub_create_sock(SOCK_STREAM, netaddr_family(addr));
+    SOCKET fd = sock_create_cloexec(netaddr_family(addr), SOCK_STREAM, 0);
     if (INVALID_SOCK == fd) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         return INVALID_SOCK;
@@ -145,7 +138,7 @@ SOCKET _evpub_listen(netaddr_ctx *addr) {
     return fd;
 }
 SOCKET _evpub_udp(netaddr_ctx *addr) {
-    SOCKET fd = _evpub_create_sock(SOCK_DGRAM, netaddr_family(addr));
+    SOCKET fd = sock_create_cloexec(netaddr_family(addr), SOCK_DGRAM, 0);
     if (INVALID_SOCK == fd) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         return INVALID_SOCK;

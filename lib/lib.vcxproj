@@ -22,6 +22,7 @@
     <ClInclude Include="base\config.h" />
     <ClInclude Include="base\err.h" />
     <ClInclude Include="base\macro.h" />
+    <ClInclude Include="base\macro_atomic.h" />
     <ClInclude Include="base\macro_unix.h" />
     <ClInclude Include="base\macro_win.h" />
     <ClInclude Include="base\memory.h" />

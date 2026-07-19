@@ -70,6 +70,7 @@ static inline int _swprintf_safe(wchar_t *buf, size_t size, const wchar_t *fmt, 
 #define SHUT_WR   SD_SEND          // 关闭发送方向
 #define SHUT_RDWR SD_BOTH          // 关闭双向
 #define SOCK_CLOSE closesocket     // 关闭 socket
+#define SET_CLOEXEC(fd) (void)SetHandleInformation((HANDLE)(fd), HANDLE_FLAG_INHERIT, 0) // 标记句柄不被子进程继承
 #define LOCALTIME(ts, dt) localtime_s((dt), (ts)) // 线程安全的本地时间转换
 #define ERRNO GetLastError()       // 获取上一个 Windows 错误码
 // 将 Windows 错误码转换为可读字符串（内部使用 FormatMessageA）
@@ -93,33 +94,6 @@ static inline const char *_fmterror(DWORD error) {
     return errstr;
 };
 #define ERRORSTR(errcode) _fmterror(errcode) // 将错误码转换为字符串
-
-typedef uint32_t atomic_t;   // 32 位原子整数类型（Windows）
-typedef uint64_t atomic64_t; // 64 位原子整数类型（Windows）
-// InterlockedExchangeAdd：原子加 32 位，返回旧值
-#define ATOMIC_ADD(ptr, val) InterlockedExchangeAdd(ptr, val)
-// InterlockedExchange：原子交换 32 位，返回旧值
-#define ATOMIC_SET(ptr, val) InterlockedExchange(ptr, val)
-// InterlockedCompareExchange：若 *ptr == oldval 则设为 newval，返回旧值；成功时返回值等于 oldval
-#define ATOMIC_CAS(ptr, oldval, newval) (InterlockedCompareExchange(ptr, newval, oldval) == oldval)
-// 64 位原子操作（与 32 位对应）
-#define ATOMIC64_ADD(ptr, val) InterlockedExchangeAdd64(ptr, val)
-#define ATOMIC64_SET(ptr, val) InterlockedExchange64(ptr, val)
-#define ATOMIC64_CAS(ptr, oldval, newval) (InterlockedCompareExchange64(ptr, newval, oldval) == oldval)
-
-// 松散序变体：仅适用于单写者字段（无并发写竞争，只需不撕裂 + 迟早可见）。
-// ADD 无更便宜的硬件原语，复用现有 Interlocked；32 位对齐 store 天然原子，直接裸写
-#define ATOMIC_ADD_RELAXED(ptr, val) ATOMIC_ADD(ptr, val)
-// volatile 与 ATOMIC_GET 读侧对称：/volatile:ms 下防止 MSVC 把这次写当死代码优化掉
-#define ATOMIC_SET_RELAXED(ptr, val) (*(volatile atomic_t *)(ptr) = (val))
-#define ATOMIC64_ADD_RELAXED(ptr, val) ATOMIC64_ADD(ptr, val)
-#if defined(ARCH_ARM) || defined(ARCH_X86)
-    // 32 位平台：64 位 plain store 会编译成两条 mov（撕裂写），退到现有 Interlocked64
-    #define ATOMIC64_SET_RELAXED(ptr, val) ATOMIC64_SET(ptr, val)
-#else
-    // x64/ARM64：64 位对齐 store 天然原子
-    #define ATOMIC64_SET_RELAXED(ptr, val) (*(volatile atomic64_t *)(ptr) = (val))
-#endif
 
 #endif
 #endif//MACRO_WIN_H_

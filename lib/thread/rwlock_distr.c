@@ -78,12 +78,12 @@ void rwlock_distr_rdlock(rwlock_distr_ctx *ctx) {
     int32_t i = _rwlock_distr_tls_find(ctx);
     if (-1 != i) {
         int32_t slot = _tls[i].slot;
-        // store active=1 与 load write_flag 之间靠 ATOMIC_SET 的 seq_cst 屏障保证顺序
-        // writer 在 wrlock 中先 store write_flag=1 再扫所有 slot 的 active
-        // 两侧握手:任一方先标记,另一方必能看见
+        // reader/writer 为 store-buffer(Dekker)握手,需 StoreLoad 顺序:store active=1(seq_cst)
+        // 后必须以 seq_cst 载入 write_flag——acquire 载入在 ARMv8.3+ RCpc(LDAPR)下不保证该顺序,
+        // 会与 writer 同时进临界区。writer 侧同理:store write_flag=1 后 seq_cst 载入各 slot 的 active
         for (;;) {
             ATOMIC_SET(&ctx->slots[slot].active, 1);
-            if (!ATOMIC_GET(&ctx->write_flag)) {
+            if (!ATOMIC_GET_SEQCST(&ctx->write_flag)) {
                 return;
             }
             // 检测到 writer,让步避免死锁
@@ -111,7 +111,7 @@ void rwlock_distr_wrlock(rwlock_distr_ctx *ctx) {
     ATOMIC_SET(&ctx->write_flag, 1);
     // 等所有已进入 slot reader 退出
     for (uint32_t i = 0; i < ctx->slot_count; i++) {
-        while (ATOMIC_GET(&ctx->slots[i].active)) {
+        while (ATOMIC_GET_SEQCST(&ctx->slots[i].active)) {
             CPU_PAUSE();
         }
     }

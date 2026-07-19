@@ -797,7 +797,7 @@ int32_t ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const u
         UD_FREE(cbs->ud_free, ud);
         return ERR_FAILED;
     }
-    *fd = _evpub_create_sock(SOCK_STREAM, netaddr_family(&addr));
+    *fd = sock_create_cloexec(netaddr_family(&addr), SOCK_STREAM, 0);
     if (INVALID_SOCK == *fd) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         UD_FREE(cbs->ud_free, ud);
@@ -858,7 +858,7 @@ static inline void _olp_take_close(SOCKET volatile *pfd) {
 }
 // 提交一个AcceptEx异步接受请求（创建新socket并挂起等待连接）
 static int32_t _olp_post_accept(overlap_acpt_ctx *olacp) {
-    SOCKET fd = _evpub_create_sock(SOCK_STREAM, olacp->lsn->family);
+    SOCKET fd = sock_create_cloexec(olacp->lsn->family, SOCK_STREAM, 0);
     if (INVALID_SOCK == fd) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         return ERR_FAILED;

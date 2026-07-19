@@ -50,7 +50,7 @@ static void _iocp_init_callback(void) {
 // 懒加载初始化AcceptEx/ConnectEx等扩展函数（全进程只执行一次）
 static void _iocp_init_funcs(void) {
     if (ATOMIC_CAS(&_init_once, 0, 1)) {
-        SOCKET fd = WSASocket(AF_INET, SOCK_STREAM, 0, NULL, 0, 0);
+        SOCKET fd = sock_create_cloexec(AF_INET, SOCK_STREAM, 0);
         ASSERTAB(INVALID_SOCK != fd, ERRORSTR(ERRNO));
         GUID accept_uid = WSAID_ACCEPTEX;
         GUID connect_uid = WSAID_CONNECTEX;
@@ -252,7 +252,7 @@ static void _iocp_sockel_free(void *item) {
 static void _iocp_init_cmd(watcher_ctx *watcher) {
     SOCKET pair[2];
     overlap_cmd_ctx *olcmd = &watcher->cmd;
-    ASSERTAB(ERR_OK == sock_pair(pair), ERRORSTR(ERRNO));
+    ASSERTAB(ERR_OK == sock_pair(pair, 1), ERRORSTR(ERRNO));
     olcmd->ol_r.ev_cb = _iocp_on_cmd;
     olcmd->ol_r.fd = pair[0];
     olcmd->ol_r.type = 0;

@@ -485,14 +485,22 @@ static int32_t _uev_init_evfd(void) {
     evfd = open("/dev/poll", O_RDWR | O_CLOEXEC);
 #endif
     ASSERTAB(INVALID_FD != evfd, ERRORSTR(ERRNO));
-#if defined(EV_KQUEUE) || defined(EV_EVPORT)
+#if defined(EV_KQUEUE) || defined(EV_EVPORT) || defined(EV_POLLSET)
     (void)fcntl(evfd, F_SETFD, FD_CLOEXEC);
 #endif
     return evfd;
 }
 // 创建匿名管道，读写两端均设为非阻塞
 static void _uev_new_pipe(pip_ctx *pip) {
+#if defined(HAVE_PIPE2)
+    // 支持 pipe2 的平台：原子设置 CLOEXEC，防被 fork+exec 的子进程继承
+    ASSERTAB(ERR_OK == pipe2(pip->pipes, O_CLOEXEC), ERRORSTR(ERRNO));
+#else
+    // macOS 等无 pipe2：pipe 后两端补 CLOEXEC
     ASSERTAB(ERR_OK == pipe(pip->pipes), ERRORSTR(ERRNO));
+    SET_CLOEXEC(pip->pipes[0]);
+    SET_CLOEXEC(pip->pipes[1]);
+#endif
     // 读端非阻塞：_uev_cmd_loop可用read-until-EAGAIN循环排空，不阻塞事件线程
     // 写端非阻塞：_send_cmd不会永久阻塞，管道满时CPU_PAUSE重试
     ASSERTAB(ERR_OK == sock_nonblock(pip->pipes[0]), ERRORSTR(ERRNO));

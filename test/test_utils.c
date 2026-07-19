@@ -296,7 +296,7 @@ static void test_netaddr_extra(CuTest *tc) {
     // sock_pair 实测：netaddr_local / netaddr_remote
     // sock_pair 内部用 AF_INET TCP loopback 对，两端互为对端
     SOCKET fds[2];
-    CuAssertIntEquals(tc, ERR_OK, sock_pair(fds));
+    CuAssertIntEquals(tc, ERR_OK, sock_pair(fds, 1));
 
     netaddr_ctx local0, remote0, local1, remote1;
     CuAssertIntEquals(tc, ERR_OK, netaddr_local(&local0, fds[0]));
@@ -1223,7 +1223,7 @@ static void test_security_helpers(CuTest *tc) {
  * ======================================================================= */
 static void test_sock_pair(CuTest *tc) {
     SOCKET fds[2];
-    CuAssertIntEquals(tc, ERR_OK, sock_pair(fds));
+    CuAssertIntEquals(tc, ERR_OK, sock_pair(fds, 1));
     CuAssertTrue(tc, INVALID_SOCK != fds[0]);
     CuAssertTrue(tc, INVALID_SOCK != fds[1]);
 
@@ -1284,7 +1284,7 @@ static void test_sock_pair(CuTest *tc) {
  * ======================================================================= */
 static void test_sock_options(CuTest *tc) {
     SOCKET fds[2];
-    CuAssertIntEquals(tc, ERR_OK, sock_pair(fds));
+    CuAssertIntEquals(tc, ERR_OK, sock_pair(fds, 1));
 
     // setter：sock_pair 内部已设过 nodelay/nonblock，但显式调用必须返回 ERR_OK
     CuAssertIntEquals(tc, ERR_OK, sock_nodelay(fds[0]));

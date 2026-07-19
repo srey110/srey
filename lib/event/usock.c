@@ -646,7 +646,7 @@ int32_t ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const u
         UD_FREE(cbs->ud_free, ud);
         return ERR_FAILED;
     }
-    *fd = _evpub_create_sock(SOCK_STREAM, netaddr_family(&addr));
+    *fd = sock_create_cloexec(netaddr_family(&addr), SOCK_STREAM, 0);
     if (INVALID_SOCK == *fd) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         UD_FREE(cbs->ud_free, ud);
@@ -736,7 +736,7 @@ static void _usk_on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev)
     watcher_ctx *to;
     int32_t unremove;
     while ((unremove = (0 == ATOMIC_GET(&acpt->lsn->remove)))) {
-        fd = accept(acpt->sock.fd, NULL, NULL);
+        fd = sock_accept_cloexec(acpt->sock.fd, NULL, NULL);
         if (INVALID_SOCK == fd) {
             if (ERR_OK == _usk_check_accept(watcher, acpt)) {
                 continue;

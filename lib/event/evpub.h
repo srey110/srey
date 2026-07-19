@@ -163,8 +163,6 @@ void _evpub_off_buf_clear(queue_ctx *bufs);
 void _evpub_sendto_clear(queue_ctx *bufs);
 // 设置socket选项：无延迟 + 非阻塞
 int32_t _evpub_nodelay_nonblock(SOCKET fd);
-// 创建socket（SOCK_DGRAM/SOCK_STREAM，AF_INET/AF_INET6）
-SOCKET _evpub_create_sock(int32_t type, int32_t family);
 // 创建并绑定监听socket
 SOCKET _evpub_listen(netaddr_ctx *addr);
 // 创建并绑定UDP socket

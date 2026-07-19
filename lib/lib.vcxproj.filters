@@ -139,6 +139,9 @@
     <ClInclude Include="base\macro.h">
       <Filter>base</Filter>
     </ClInclude>
+    <ClInclude Include="base\macro_atomic.h">
+      <Filter>base</Filter>
+    </ClInclude>
     <ClInclude Include="base\macro_unix.h">
       <Filter>base</Filter>
     </ClInclude>

@@ -129,7 +129,10 @@ static void _log_loop(void *arg) {
         // 单次带守卫等待，外层循环负责重试：超时上限 SHRINK_TIME 保证每 ≤SHRINK_TIME 重跑一次以收缩
         if (0 == fsqu_size(&_que) && ATOMIC_GET(&_running)) {
             ATOMIC_SET(&_sleeping, 1);
-            // 防丢失唤醒：置 _sleeping 后再次检查队列，仍空才等待
+            // 防丢失唤醒：置 _sleeping 后再次检查队列，仍空才等待。
+            // fence 补足 store _sleeping 与其后 fsqu_size 载入间的 StoreLoad 顺序——mpq 后端
+            // fsqu_size 为 acquire 载入，RCpc 下可与 ATOMIC_SET 的 swpal 重排，否则漏唤醒
+            ATOMIC_THREAD_FENCE_SEQCST();
             if (0 == fsqu_size(&_que)) {
                 cond_timedwait(&_cond, &_mtx, SHRINK_TIME);
             }
@@ -232,7 +235,8 @@ void slog(int32_t lv, const char *fmt, ...) {
         pool_push(&_itempool, item, 0);
         return;
     }
-    if (ATOMIC_GET(&_sleeping)) {
+    // 生产者侧 SB 握手:push 发布 enq.v 后须 seq_cst 载入 _sleeping，与消费者 fence 对称补足 StoreLoad（RCpc 防丢唤醒）
+    if (ATOMIC_GET_SEQCST(&_sleeping)) {
         mutex_lock(&_mtx);
         cond_signal(&_cond);
         mutex_unlock(&_mtx);

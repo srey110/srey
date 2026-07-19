@@ -80,10 +80,27 @@ int32_t sock_keepalive(SOCKET fd, const int32_t delay, const int32_t intvl);
 /// <returns>ERR_OK 成功</returns>
 int32_t sock_linger(SOCKET fd);
 /// <summary>
-/// socket对
+/// 创建互联的 socket 对（环回 TCP，两端已带 CLOEXEC）
 /// </summary>
 /// <param name="sock">socket数组</param>
+/// <param name="nonblock">非 0 则两端设为非阻塞，0 保持阻塞</param>
 /// <returns>ERR_OK 成功</returns>
-int32_t sock_pair(SOCKET sock[2]);
+int32_t sock_pair(SOCKET sock[2], int32_t nonblock);
+/// <summary>
+/// 创建 socket：Unix 带 CLOEXEC，Windows 建 overlapped 且禁句柄继承，避免被子进程(fork+exec / CreateProcess)继承
+/// </summary>
+/// <param name="family">地址族</param>
+/// <param name="type">socket 类型</param>
+/// <param name="proto">协议，0 表示按 family/type 选默认</param>
+/// <returns>socket 句柄，失败返回 INVALID_SOCK</returns>
+SOCKET sock_create_cloexec(int32_t family, int32_t type, int32_t proto);
+/// <summary>
+/// accept 并带 CLOEXEC，避免被 fork+exec 的子进程继承
+/// </summary>
+/// <param name="fd">监听 socket</param>
+/// <param name="addr">对端地址，可为 NULL</param>
+/// <param name="addrlen">地址长度，可为 NULL</param>
+/// <returns>新连接 socket，失败返回 INVALID_SOCK</returns>
+SOCKET sock_accept_cloexec(SOCKET fd, struct sockaddr *addr, socklen_t *addrlen);
 
 #endif

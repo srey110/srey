@@ -3,6 +3,7 @@
 
 #include "base/config.h"
 #include "base/err.h"
+#include "base/macro_atomic.h"
 #include "base/macro_unix.h"
 #include "base/macro_win.h"
 #include "base/memory.h"
@@ -52,31 +53,6 @@
 #define MALLOC(ptr, size) *(void**)&(ptr) = _malloc(size)                  // 分配内存并赋值给指针
 #define CALLOC(ptr, count, size) *(void**)&(ptr) = _calloc(count, size)    // 分配并清零内存
 #define REALLOC(ptr, oldptr, size) *(void**)&(ptr) = _realloc(oldptr, size) // 重新分配内存
-
-// 原子读取
-#if defined(__GNUC__) || defined(__clang__)
-    // x86/x64 零开销，ARM/ARM64 上 LDAR/LDAPR 替代 DMB ISH
-    #define ATOMIC_GET(ptr)   __atomic_load_n((ptr), __ATOMIC_ACQUIRE)
-    #define ATOMIC64_GET(ptr) __atomic_load_n((ptr), __ATOMIC_ACQUIRE)
-#elif defined(OS_WIN) && defined(ARCH_ARM64)
-    // 纯 MSVC + Windows ARM64：__ldar32/64 直接发射 LDAR 指令（load-acquire），单指令完成
-    #define ATOMIC_GET(ptr)   ((atomic_t)__ldar32((const volatile __int32 *)(ptr)))
-    #define ATOMIC64_GET(ptr) ((atomic64_t)__ldar64((const volatile __int64 *)(ptr)))
-#elif defined(OS_WIN) && (defined(ARCH_ARM) || defined(ARCH_X86))
-    // 32 位平台：ARM 无 acquire load 指令，x86 的 64 位 volatile load
-    // 会编译为两条 mov（撕裂读）。统一退到 RMW 兜底确保原子性
-    #define ATOMIC_GET(ptr)   ATOMIC_ADD(ptr, 0)
-    #define ATOMIC64_GET(ptr) ATOMIC64_ADD(ptr, 0)
-#elif defined(OS_WIN)
-    // 纯 MSVC + Windows x64/ARM64：默认 /volatile:ms 下 volatile load 隐含 acquire 语义；
-    // 64 位对齐 load 天然原子
-    #define ATOMIC_GET(ptr)   ((atomic_t)*(const volatile atomic_t *)(ptr))
-    #define ATOMIC64_GET(ptr) ((atomic64_t)*(const volatile atomic64_t *)(ptr))
-#else
-    // AIX/HPUX/Sun 等无 __atomic_* 内建且非 MSVC：保留 RMW 兜底（过强但正确）
-    #define ATOMIC_GET(ptr)   ATOMIC_ADD(ptr, 0)
-    #define ATOMIC64_GET(ptr) ATOMIC64_ADD(ptr, 0)
-#endif
 
 // 释放内存并将指针置为 NULL，避免悬空指针
 #define FREE(ptr)\
