@@ -8,6 +8,7 @@
 // UDP coro_sendto 同此约定:ud.sess 不会自动清零,须在首次调用 coro_sendto 前显式 coro_sync 一次,
 // 之后该 skid 上持续有效,可连续/并发多次调用 coro_sendto,无需每次重新同步。
 
+typedef void (*fork_serial_cb)(task_ctx *task, void *arg);
 typedef struct coro_serial_ctx coro_serial_ctx;
 
 /// <summary>
@@ -168,16 +169,14 @@ void *coro_sendto(task_ctx *task, SOCKET fd, uint64_t skid,
                   void *data, size_t len, size_t *size, int32_t copy);
 /// <summary>
 /// 在新协程中执行 func(task, arg)，fire-and-forget；当前协程不让出。
-/// 新协程通过 task 自发 MSG_TYPE_FORK 消息调度，不走时间轮；与 REQUEST 同模式：
-/// 每条 fork 都新建协程（从 qucopool 取或新建）。
+/// 追加到 task 本地 fork 列表，在本条消息 dispatch 末尾统一起新协程，不走时间轮。
+/// 仅可在本 task 协程上下文内调用（非协程内调用会告警并忽略）。
 /// arg 由调用方管理生命周期；func 内部 abort/segfault 终止进程（C 无 xpcall 兜底）。
 /// </summary>
 /// <param name="task">所属 task</param>
 /// <param name="func">协程任务函数：func(task, arg)</param>
 /// <param name="arg">透传给 func 的 user 数据指针</param>
-void coro_fork(task_ctx *task,
-               void (*func)(task_ctx *task, void *arg),
-               void *arg);
+void coro_fork(task_ctx *task, fork_serial_cb func, void *arg);
 /// <summary>
 /// 并发执行 n 个 funcs[i](task, args[i])，等全部完成后返回（barrier 模式）。
 /// 调用方必须身处协程内（startup/timeout/on_* 回调内部均满足），否则返回 ERR_FAILED。
@@ -189,10 +188,7 @@ void coro_fork(task_ctx *task,
 /// <param name="funcs">长度为 n 的函数指针数组</param>
 /// <param name="args">长度为 n 的参数指针数组，args[i] 与 funcs[i] 配对</param>
 /// <returns>ERR_OK 成功；ERR_FAILED 调用方不在协程内</returns>
-int32_t coro_fork_wait(task_ctx *task,
-                       int32_t n,
-                       void (*funcs[])(task_ctx *task, void *arg),
-                       void *args[]);
+int32_t coro_fork_wait(task_ctx *task, int32_t n, fork_serial_cb funcs[], void *args[]);
 /// <summary>
 /// 创建协程串行化执行器（critical section）。同 task 内多协程对同一资源并发访问时
 /// 串行进入，避免穿插；同一协程嵌套调用安全（ref 计数）。
@@ -214,9 +210,7 @@ void coro_serial_free(coro_serial_ctx *serial);
 /// <param name="func">临界区回调：func(task, arg)</param>
 /// <param name="arg">透传给 func 的参数（生命周期由调用方管理）</param>
 /// <returns>ERR_OK 成功；ERR_FAILED 调用方不在协程内</returns>
-int32_t coro_serial_call(coro_serial_ctx *serial,
-                    void (*func)(task_ctx *task, void *arg),
-                    void *arg);
+int32_t coro_serial_call(coro_serial_ctx *serial, fork_serial_cb func, void *arg);
 /// <summary>
 /// 转储当前 task 所有挂起协程为文本 buffer(调试用)。C 协程无栈回溯,每条仅 sess / mtype / 挂起时长(ms)。
 /// 返回 binary 内部 MALLOC 的 buffer,所有权转给调用方,用完 FREE。

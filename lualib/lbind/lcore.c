@@ -1,8 +1,5 @@
 ﻿#include "lbind/lpub.h"
 
-// 辅助宏：若栈上指定位置为整数则取其值，否则默认为 1（复制语义）
-#define COPY_TYPE(lua, idx) (lua_isinteger(lua, idx) ? (int32_t)luaL_checkinteger(lua, idx) : 1)
-
 typedef struct _task_entry {
     name_t handle;
     char name[64];
@@ -31,12 +28,23 @@ static name_t _task_handle(lua_State *lua, int32_t idx) {
         ? task_find_name(g_loader, lua_tostring(lua, idx))
         : (name_t)luaL_checkinteger(lua, idx);
 }
+// data 参数可选:nil/none 视为无载荷(NULL,0,copy=1);否则同 lpub_check_buf(string/lightuserdata,非法类型 argerror)
+static void *_lcore_opt_buf(lua_State *lua, int32_t idx, size_t *size, int32_t *copy) {
+    int32_t type = lua_type(lua, idx);
+    if (LUA_TNIL == type
+        || LUA_TNONE == type) {
+        *size = 0;
+        *copy = 1;
+        return NULL;
+    }
+    return lpub_check_buf(lua, idx, size, copy);
+}
 /// <summary>
 /// 向目标 task 发送单向调用消息（无响应）
 /// </summary>
 /// <param name="dst" type="string|integer">目标 task 名(字符串)或句柄(整数)</param>
 /// <param name="reqtype" type="integer">业务请求类型</param>
-/// <param name="data" type="string|lightuserdata">消息内容；字符串时长度自动取得</param>
+/// <param name="data" type="string|lightuserdata|nil">消息内容(nil 表示无载荷)；字符串时长度自动取得</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
 /// <param name="copy" type="integer?">是否复制数据，默认 1（复制）</param>
 /// <returns type="boolean">grab 到目标并投递 true；目标不存在 false</returns>
@@ -46,7 +54,7 @@ static int32_t _lcore_call(lua_State *lua) {
     void *data;
     size_t size;
     int32_t copy;
-    data = lpub_check_buf(lua, 3, &size, &copy);
+    data = _lcore_opt_buf(lua, 3, &size, &copy);
     task_ctx *dst = task_grab(g_loader, handle);
     if (NULL == dst) {
         CHECK_COPY_FREE(data, copy);
@@ -106,7 +114,7 @@ static task_ctx **_grab_multi_names(lua_State *lua, int32_t idx, int32_t n, int3
 /// <param name="dsts" type="(string|integer)[]">目标 task 名/句柄数组(Lua table)；nil/NONE/不存在的被跳过</param>
 /// <param name="reqtype" type="integer">业务请求类型</param>
 /// <param name="sess" type="integer">会话 id(非 0),N 个 dst 共用此 sess</param>
-/// <param name="data" type="string|lightuserdata">数据；string 时长度自动取,lightuserdata 必须传 size</param>
+/// <param name="data" type="string|lightuserdata|nil">数据(nil 表示无载荷)；string 时长度自动取,lightuserdata 必须传 size</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填</param>
 /// <param name="copy" type="integer?">是否复制数据,默认 1（复制）;0 时直接转移所有权</param>
 /// <returns type="integer">实际成功投递的 dst 数（非 NULL 元素个数,0 表示全部跳过未投递）</returns>
@@ -117,7 +125,7 @@ static int32_t _lcore_multi_request(lua_State *lua) {
     void *data;
     size_t size;
     int32_t copy;
-    data = lpub_check_buf(lua, 4, &size, &copy);
+    data = _lcore_opt_buf(lua, 4, &size, &copy);
     int32_t n = _check_multi_names(lua, 1);
     if (n <= 0) {
         CHECK_COPY_FREE(data, copy);
@@ -148,7 +156,7 @@ static int32_t _lcore_multi_request(lua_State *lua) {
 /// </summary>
 /// <param name="dsts" type="(string|integer)[]">目标 task 名/句柄数组(Lua table)；nil/NONE/不存在的被跳过</param>
 /// <param name="reqtype" type="integer">业务请求类型</param>
-/// <param name="data" type="string|lightuserdata">数据；string 时长度自动取,lightuserdata 必须传 size</param>
+/// <param name="data" type="string|lightuserdata|nil">数据(nil 表示无载荷)；string 时长度自动取,lightuserdata 必须传 size</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填</param>
 /// <param name="copy" type="integer?">是否复制数据,默认 1（复制）;0 时直接转移所有权</param>
 /// <returns>无</returns>
@@ -157,7 +165,7 @@ static int32_t _lcore_multi_call(lua_State *lua) {
     void *data;
     size_t size;
     int32_t copy;
-    data = lpub_check_buf(lua, 3, &size, &copy);
+    data = _lcore_opt_buf(lua, 3, &size, &copy);
     int32_t n = _check_multi_names(lua, 1);
     if (n <= 0) {
         CHECK_COPY_FREE(data, copy);
@@ -186,7 +194,7 @@ static int32_t _lcore_multi_call(lua_State *lua) {
 /// <param name="dst" type="string|integer">目标 task 名(字符串)或句柄(整数)</param>
 /// <param name="reqtype" type="integer">业务请求类型</param>
 /// <param name="sess" type="integer">会话 id，响应回带</param>
-/// <param name="data" type="string|lightuserdata">消息内容；字符串时长度自动取得</param>
+/// <param name="data" type="string|lightuserdata|nil">消息内容(nil 表示无载荷)；字符串时长度自动取得</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
 /// <param name="copy" type="integer?">是否复制数据，默认 1（复制）</param>
 /// <returns type="boolean">grab 到目标并投递 true；目标不存在 false</returns>
@@ -198,7 +206,7 @@ static int32_t _lcore_request(lua_State *lua) {
     size_t size;
     int32_t copy;
     LPUB_CUR_TASK(lua, src);
-    data = lpub_check_buf(lua, 4, &size, &copy);
+    data = _lcore_opt_buf(lua, 4, &size, &copy);
     task_ctx *dst = task_grab(g_loader, handle);
     if (NULL == dst) {
         CHECK_COPY_FREE(data, copy);
@@ -229,22 +237,7 @@ static int32_t _lcore_response(lua_State *lua) {
     void *data;
     size_t size;
     int32_t copy;
-    int32_t type = lua_type(lua, 5);
-    if (LUA_TNIL == type
-        || LUA_TNONE == type) {
-        data = NULL;
-        size = 0;
-        copy = 1;
-    } else if (LUA_TSTRING == type) {
-        data = (void *)luaL_checklstring(lua, 5, &size);
-        copy = 1;
-    } else if (LUA_TLIGHTUSERDATA == type) {
-        data = lua_touserdata(lua, 5);
-        size = (size_t)luaL_checkinteger(lua, 6);
-        copy = COPY_TYPE(lua, 7);
-    } else {
-        return luaL_argerror(lua, 5, "nil, string or light userdata expected");
-    }
+    data = _lcore_opt_buf(lua, 5, &size, &copy);
     task_ctx *dst = task_grab(g_loader, handle);
     if (NULL == dst) {
         CHECK_COPY_FREE(data, copy);

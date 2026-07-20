@@ -21,6 +21,7 @@ local tinsert          = table.insert
 local coroutine_create = coroutine.create
 local coroutine_yield  = coroutine.yield
 local coroutine_resume = coroutine.resume
+local coroutine_isyieldable = coroutine.isyieldable
 local message_may_keep = core.message_may_keep
 local cur_task  = _curtask   -- 当前 task 的 C 层指针，由 loader 注入
 local TASK_NAME = TASK_NAME
@@ -185,13 +186,18 @@ local function _coro_run(func, ...)
     _coro_resume(_coro_create(func), ...)
 end
 
----协程包装器：执行前 incref 防止 task 被提前销毁，执行后 ungrab 释放引用
+---协程包装器：执行前 incref 防止 task 被提前销毁，执行后 ungrab；并持有 msg 至回调返回——
+---使 msg 的 __gc(释放 msg.data)推迟到回调结束，避免"首次 yield 前未消费 data → dispatch 返回后
+---msg 被 GC → 恢复时解引用悬空"(与 C 侧 _message_clean 延后对齐)。data 型消息传其 msg；
+---无 data 的调用点传 nil(无实参时可省略，默认 nil)。
 ---@param func fun(...) 业务回调
----@param ... any 传给 func 的参数
-local function _coro_cb(func, ...)
+---@param msg Message|nil 仅保活，不传给 func
+---@param ... any 传给 func 的实参
+local function _coro_cb(func, msg, ...)
     srey.task_incref(cur_task)
     srey.xpcall(func, ...)
     srey.task_ungrab(cur_task)
+    return msg -- 引用至函数尾，保证 msg 栈槽在 func yield 期间被 GC 标记存活
 end
 
 ---将函数 f 与参数预绑定，返回一个无参 lambda，调用即 f(args)。
@@ -222,6 +228,9 @@ function srey.fork_wait(funcs)
     local n = #funcs
     if 0 == n then
         return {}
+    end
+    if not coroutine_isyieldable() then
+        error("srey.fork_wait must be called from within a coroutine", 2)
     end
     local barrier = {
         results = {},
@@ -272,6 +281,9 @@ function srey.serial()
         end
     end
     return function(f, ...)
+        if not coroutine_isyieldable() then
+            error("srey.serial executor must be called from within a coroutine", 2)
+        end
         local self = coro_running
         if current and current ~= self then
             waiters[#waiters + 1] = self
@@ -306,7 +318,7 @@ local function _drain_fork_queue()
     while i <= #fork_queue do
         local item = fork_queue[i]
         i = i + 1
-        _coro_run(_coro_cb, item.func, tunpack(item.args, 1, item.args.n))
+        _coro_run(_coro_cb, item.func, nil, tunpack(item.args, 1, item.args.n))
     end
     for j = 1, i - 1 do
         fork_queue[j] = nil
@@ -509,6 +521,16 @@ local function _get_coro_sess(sess, mtype)
     return coroinfo
 end
 
+---删除 sess 的空会话表条目:kcp 等以用户 sess(非 skid)注册 keep=true 会话,ctx:stop 后无 skid 型 CLOSE 可清,
+---须显式删除留空占位防 coro_sess 无界增长;仅无挂起等待者时删,避免误删他协程正在该 sess 等待的会话。
+---@param sess integer 会话 id
+function srey._coro_sess_del_empty(sess)
+    local cs = coro_sess[sess]
+    if cs and 0 == #cs.waiters then
+        coro_sess[sess] = nil
+    end
+end
+
 ---统一唤醒尾部：找到匹配等待者则唤醒；否则 warn 为 true 时先告警（未找到即逻辑异常，与是否调用 func 无关），
 ---再调用 func(...)（如果注册了）；sess==0 的入口判断由各 dispatch 函数自行处理，不在此函数内
 ---@param msg Message
@@ -525,7 +547,7 @@ local function _dispatch_wait(msg, mtype, warn, func, ...)
         WARN("can't find session, maybe logic error. msg_type %d.", mtype)
     end
     if func then
-        _coro_run(_coro_cb, func, ...)
+        _coro_run(_coro_cb, func, msg, ...)
     end
 end
 
@@ -573,7 +595,7 @@ local function _timeout_dispatch(msg)
     end
     if coroinfo.func then
         local func, args = coroinfo.func, coroinfo.args
-        _coro_run(_coro_cb, func, tunpack(args, 1, args.n))
+        _coro_run(_coro_cb, func, nil, tunpack(args, 1, args.n))
     elseif coroinfo.coro then
         local coro = coroinfo.coro
         _coro_resume(coro, msg)
@@ -691,19 +713,19 @@ local function _request_dispatch(msg)
                 end
             end)
         end
-        _coro_run(_coro_cb, _debug_request._dispatch, msg.subtype, msg.sess, msg.src, msg.data, msg.size)
+        _coro_run(_coro_cb, _debug_request._dispatch, msg, msg.subtype, msg.sess, msg.src, msg.data, msg.size)
     elseif REQUEST_TYPE.REQ_SC_DELIVER == msg.subtype then
         if not _sc_client then
             _sc_client = require("lib.sc_client")
         end
-        _coro_run(_coro_cb, _sc_client._on_deliver, msg.data, msg.size)
+        _coro_run(_coro_cb, _sc_client._on_deliver, msg, msg.data, msg.size)
     else
         local func = func_cbs[MSG_TYPE.REQUEST]
         if not func then
             srey.response(msg.src, msg.subtype, msg.sess, ERR_FAILED, "not register request function.")
             return
         end
-        _coro_run(_coro_cb, func, msg.subtype, msg.sess, msg.src, msg.data, msg.size)
+        _coro_run(_coro_cb, func, msg, msg.subtype, msg.sess, msg.src, msg.data, msg.size)
     end
 end
 
@@ -759,6 +781,21 @@ srey.sock_status = core.status
 ---@type fun(fd:integer, skid:integer, tname:TASK_NAME):boolean
 srey.sock_bind_task = core.bind_task
 
+---查 SSL 上下文:NONE→(true,nil) 明文;查到→(true,ssl);name 未注册→(false,nil);error/WARN 由调用处按需处理
+---@param sslname SSL_NAME
+---@return boolean ok  name 已注册(或 NONE)为 true;未注册 false
+---@return lightuserdata? ssl  NONE 时 nil
+function srey.ssl_qury(sslname)
+    if SSL_NAME.NONE == sslname then
+        return true
+    end
+    local ssl = core.ssl_qury(sslname)
+    if not ssl then
+        return false
+    end
+    return true, ssl
+end
+
 ---注册新连接 accept 回调；每次有连接进来在新协程中调用
 ---@param func fun(pktype:PACK_TYPE, fd:integer, skid:integer) accept 回调
 function srey.on_accepted(func)
@@ -773,13 +810,10 @@ end
 ---@param netev NET_EV? 事件订阅掩码
 ---@return integer lsnid 监听 id；失败返回 ERR_FAILED(-1)
 function srey.listen(pktype, sslname, ip, port, netev)
-    local ssl
-    if SSL_NAME.NONE ~= sslname then
-        ssl = core.ssl_qury(sslname)
-        if not ssl then
-            WARN("ssl_qury not find ssl name %s.", sslname)
-            return ERR_FAILED
-        end
+    local ok, ssl = srey.ssl_qury(sslname)
+    if not ok then
+        WARN("ssl_qury not find ssl name %s.", sslname)
+        return ERR_FAILED
     end
     return core.listen(pktype, ssl, ip, port, netev)
 end
@@ -791,7 +825,7 @@ srey.unlisten = core.unlisten
 local function _net_accept_dispatch(msg)
     local func = func_cbs[MSG_TYPE.ACCEPT]
     if func then
-        _coro_run(_coro_cb, func, msg.subtype, msg.fd, msg.skid)
+        _coro_run(_coro_cb, func, nil, msg.subtype, msg.fd, msg.skid)
     end
 end
 
@@ -843,18 +877,15 @@ end
 ---@return integer fd socket fd；失败返回 INVALID_SOCK
 ---@return integer? skid 连接 skid；仅在 fd 有效时返回
 function srey.connect(pktype, sslname, ip, port, netev, extra)
-    local ssl
-    if SSL_NAME.NONE ~= sslname then
-        ssl = core.ssl_qury(sslname)
-        if not ssl then
-            WARN("ssl_qury not find ssl name %s.", sslname)
-            -- extra 尚未传给 C 层，由本函数释放；
-            -- 此路径以外 extra 所有权已转移 C 层（ev_connect 失败由 cbs->ud_free 释放）
-            if extra then
-                utils.ud_free(extra)
-            end
-            return INVALID_SOCK
+    local ok, ssl = srey.ssl_qury(sslname)
+    if not ok then
+        WARN("ssl_qury not find ssl name %s.", sslname)
+        -- extra 尚未传给 C 层，由本函数释放；
+        -- 此路径以外 extra 所有权已转移 C 层（ev_connect 失败由 cbs->ud_free 释放）
+        if extra then
+            utils.ud_free(extra)
         end
+        return INVALID_SOCK
     end
     local fd, skid = core.connect(pktype, ssl, ip, port, netev, extra, 1)
     if INVALID_SOCK == fd then
@@ -872,7 +903,7 @@ local function _net_connect_dispatch(msg)
     local func = func_cbs[MSG_TYPE.CONNECT]
     if 0 == msg.sess then
         if func then
-            _coro_run(_coro_cb, func, msg.subtype, msg.fd, msg.skid, msg.erro)
+            _coro_run(_coro_cb, func, nil, msg.subtype, msg.fd, msg.skid, msg.erro)
         end
         return
     end
@@ -892,12 +923,12 @@ end
 ---@param sslname SSL_NAME SSL 上下文名；SSL_NAME.NONE 时返回 false
 ---@return boolean ok 发起成功 true
 function srey.ssl_exchange(fd, skid, client, sslname)
-    if SSL_NAME.NONE == sslname then
+    local ok, ssl = srey.ssl_qury(sslname)
+    if not ok then
+        WARN("ssl_qury not find ssl name %s.", sslname)
         return false
     end
-    local ssl = core.ssl_qury(sslname)
-    if not ssl then
-        WARN("ssl_qury not find ssl name %s.", sslname)
+    if not ssl then  -- SSL_NAME.NONE:无 SSL 可交换
         return false
     end
     return core.ssl_exchange(fd, skid, client, ssl)
@@ -942,7 +973,7 @@ local function _net_ssl_exchanged_dispatch(msg)
     local func = func_cbs[MSG_TYPE.SSLEXCHANGED]
     if 0 == msg.sess then
         if func then
-            _coro_run(_coro_cb, func, msg.subtype, msg.fd, msg.skid, msg.client)
+            _coro_run(_coro_cb, func, nil, msg.subtype, msg.fd, msg.skid, msg.client)
         end
         return
     end
@@ -983,7 +1014,7 @@ local function _net_handshaked_dispatch(msg)
     local func = func_cbs[MSG_TYPE.HANDSHAKED]
     if 0 == msg.sess then
         if func then
-            _coro_run(_coro_cb, func, msg.subtype, msg.fd, msg.skid, msg.client, msg.erro, msg.data, msg.size)
+            _coro_run(_coro_cb, func, msg, msg.subtype, msg.fd, msg.skid, msg.client, msg.erro, msg.data, msg.size)
         end
         return
     end
@@ -1011,6 +1042,10 @@ srey.send = core.send
 function srey.send_multi(fds, skids, data, size, copy)
     -- 所有不进入 core.send_multi 的退出路径都先 utils.ud_free 兜底,
     -- 避免 C 端 luaL_error longjmp / 空表 return 漏 FREE 调用方已转移的 data
+    if "table" ~= type(fds) or "table" ~= type(skids) then
+        _ud_free_copy(data, copy)
+        error("send_multi fds and skids must be tables")
+    end
     if #fds ~= #skids then
         _ud_free_copy(data, copy)
         error(string.format("send_multi fds and skids length mismatch (%d vs %d)", #fds, #skids))
@@ -1145,7 +1180,7 @@ local function _net_recv_dispatch(msg)
     local func = func_cbs[MSG_TYPE.RECV]
     if 0 == msg.sess or not core.may_resume(msg.subtype, msg.data) then
         if func then
-            _coro_run(_coro_cb, func, msg.subtype, msg.fd, msg.skid, msg.client, msg.slice, msg.data, msg.size)
+            _coro_run(_coro_cb, func, msg, msg.subtype, msg.fd, msg.skid, msg.client, msg.slice, msg.data, msg.size)
         end
         return
     end
@@ -1162,7 +1197,7 @@ end
 local function _net_sended_dispatch(msg)
     local func = func_cbs[MSG_TYPE.SEND]
     if func then
-        _coro_run(_coro_cb, func, msg.subtype, msg.fd, msg.skid, msg.client, msg.size)
+        _coro_run(_coro_cb, func, nil, msg.subtype, msg.fd, msg.skid, msg.client, msg.size)
     end
 end
 
@@ -1212,12 +1247,9 @@ local function _net_close_dispatch(msg)
     -- erro~=ERR_OK 是 srey.connect 因连接失败补发的合成 CLOSE（见 prots_net_connect），不触发 on_close 观察者
     local func = func_cbs[MSG_TYPE.CLOSE]
     if func and ERR_OK == msg.erro then
-        _coro_run(_coro_cb, func, msg.subtype, msg.fd, msg.skid, msg.client)
+        _coro_run(_coro_cb, func, nil, msg.subtype, msg.fd, msg.skid, msg.client)
     end
-    corosess = coro_sess[sess]
-    if corosess and 0 == #corosess.waiters then
-        coro_sess[sess] = nil
-    end
+    srey._coro_sess_del_empty(sess)
 end
 
 ---注册 UDP 数据接收回调
@@ -1301,7 +1333,7 @@ local function _net_recvfrom_dispatch(msg)
     local func = func_cbs[MSG_TYPE.RECVFROM]
     if 0 == msg.sess then
         if func then
-            _coro_run(_coro_cb, func, msg.subtype, msg.fd, msg.skid, msg.ip, msg.port, msg.udata, msg.size)
+            _coro_run(_coro_cb, func, msg, msg.subtype, msg.fd, msg.skid, msg.ip, msg.port, msg.udata, msg.size)
         end
         return
     end
@@ -1366,20 +1398,21 @@ local function _coro_timeout()
     srey.timeout(1 * 1000, _coro_timeout)
 end
 ---@class Message
----@field mtype  MSG_TYPE             消息类型（MSG_TYPE.*），始终存在
----@field sess   integer?             会话 id；TIMEOUT/REQUEST/RESPONSE/RECV 携带
----@field fd     integer?             socket fd；网络消息携带
----@field skid   integer?             连接 skid；网络消息携带
----@field subtype PACK_TYPE?          封包协议类型；RECV/CONNECT/REQUEST 携带
----@field erro   integer?             错误码；CONNECT/SEND/RESPONSE/SSLEXCHANGED/CLOSE 携带
----@field client string?              客户端地址；ACCEPT/SSLEXCHANGED/RECV 携带
----@field data   lightuserdata?       数据指针；RECV/REQUEST/RESPONSE 携带
----@field size   integer?             数据字节数；与 data 同步出现
----@field slice  integer?             分片类型（SLICE_TYPE.*）；RECV 携带
----@field src    integer?            请求方 task 数字句柄；REQUEST 携带
----@field ip     string?              UDP 源 IP；UDP_RECV 携带
----@field port   integer?             UDP 源端口；UDP_RECV 携带
----@field udata  lightuserdata?       UDP 数据指针；UDP_RECV 携带
+---@field mtype   MSG_TYPE       消息类型（MSG_TYPE.*），始终存在
+---@field sess    integer?       会话 id；TIMEOUT/RECV/CLOSE/CONNECT/SSLEXCHANGED/HANDSHAKED/RECVFROM/REQUEST/RESPONSE 携带
+---@field fd      integer?       socket fd；网络消息(ACCEPT/RECV/SEND/CLOSE/CONNECT/SSLEXCHANGED/HANDSHAKED/RECVFROM)携带
+---@field skid    integer?       连接 skid；同 fd 一起携带
+---@field subtype PACK_TYPE?     封包协议类型；上述网络消息及 REQUEST/RESPONSE 携带
+---@field erro    integer?       错误码；CLOSE/CONNECT/HANDSHAKED/RESPONSE 携带
+---@field client  integer?       1=客户端 0=服务端（非地址）；RECV/SEND/CLOSE/SSLEXCHANGED/HANDSHAKED 携带
+---@field data    lightuserdata? 数据指针；RECV/HANDSHAKED/RECVFROM/REQUEST/RESPONSE 携带（仅数据非空）
+---@field size    integer?       数据字节数；RECV/SEND/HANDSHAKED/RECVFROM/REQUEST/RESPONSE 携带
+---@field slice   integer?       分片类型（SLICE_TYPE.*）；RECV 携带
+---@field src     integer?       请求方 task 数字句柄；REQUEST 携带
+---@field ip      string?        UDP 源 IP；RECVFROM 携带
+---@field port    integer?       UDP 源端口；RECVFROM 携带
+---@field udata   lightuserdata? UDP 数据指针；RECVFROM 携带
+---@field shared  lightuserdata? 广播共享数据（内部，__gc 释放用）；REQUEST 广播（multi_call/multi_request）时携带
 
 -- STARTUP 消息处理：注册 1s 定时器驱动协程池收缩，再跑业务 startup 回调
 local function _startup_msg_dispatch(msg)

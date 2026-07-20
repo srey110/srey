@@ -81,7 +81,12 @@ function wbsk.connect(ws, sslname, secprot, netev)
     -- 构造 HTTP Upgrade 握手包；signkey 用于 C 层验证服务端 Sec-WebSocket-Accept
     local path = url.path or "/"
     local uri = url.query and (path .. "?" .. url.query) or path
-    local hspack, size, signkey = websock.pack_handshake(url.host, uri, secprot)
+    -- Host 头须带非默认端口(RFC 6455 §4.1),否则严格服务端 / vhost 路由按纯主机名拒握手
+    local host_hdr = url.host
+    if url.port and url.port ~= (("wss" == url.scheme) and "443" or "80") then
+        host_hdr = url.host .. ":" .. url.port
+    end
+    local hspack, size, signkey = websock.pack_handshake(host_hdr, uri, secprot)
     local fd, skid = srey.connect(PACK_TYPE.WEBSOCK, sslname, ip, port, netev, signkey)
     if INVALID_SOCK == fd then
         utils.ud_free(hspack)   -- TCP 连接失败，释放 C 层分配的握手包内存

@@ -125,6 +125,7 @@ typedef struct mysql_stmt_ctx {
     mpack_field *params;    // 参数字段描述数组
     mpack_field *fields;    // 结果集字段描述数组
     mysql_ctx *mysql;       // 所属 MySQL 连接上下文
+    uint64_t skid;          // prepare 时所在连接的 skid;比对,防重连后旧 stmt_id 误关新连接语句
 }mysql_stmt_ctx;
 
 #endif//MYSQL_STRUCT_H_

@@ -10,7 +10,13 @@
 #include "base/structs.h"
 #include "containers/slist.h"
 
+#if defined(OS_WIN)
+// Windows SOCKET 句柄恒为 4 的倍数(低 2 位保留),fd%n 在偶数 n 下残值聚集(n=4 全落 watcher 0)致 IOCP 多线程退化;
+// 先右移 2 位消除恒零低位再取模,恢复均匀分布
+#define GET_POS(fd, n) (((fd) >> 2) % (n))
+#else
 #define GET_POS(fd, n) ((fd) % (n))// 根据fd计算索引位置
+#endif
 #define GET_PTR(p, n, fd) (1 == (n) ? (p) : &(p)[GET_POS((fd), (n))])// 根据fd获取对应的指针
 #define EVENT_TICK_MIN 10          // event 线程周期驱动(ev_tick)的最小间隔(毫秒),防 tick 返回 0 忙轮询
 #define ACCEPT_BACKOFF_MS 500 // accept 遇 EMFILE/ENFILE 后暂停监听、退避重试的间隔(毫秒)

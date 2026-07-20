@@ -146,13 +146,9 @@ end
 ---@param authdb string? 认证数据库；nil 时使用 db
 ---@param authmod string? SCRAM 算法，默认 "SCRAM-SHA-256"
 function ctx:ctor(ip, port, sslname, db, user, password, authdb, authmod)
-    local core = require("srey.core")
-    local ssl
-    if SSL_NAME.NONE ~= sslname then
-        ssl = core.ssl_qury(sslname)
-        if not ssl then
-            error(string.format("ssl_qury not find ssl name %s", sslname), 2)
-        end
+    local ok, ssl = srey.ssl_qury(sslname)
+    if not ok then
+        error(string.format("ssl_qury not find ssl name %s", sslname), 2)
     end
     self.sslname = sslname
     self.mongo = mongo.new(ip, port, ssl, db)
@@ -186,7 +182,8 @@ function ctx:connect()
     end
     -- 从此处往后失败需 close fd；用 sync_close 等复位完成再返回，避免旧连接异步 teardown 追上后清掉下一次 connect() 的新 fd
     local function _fail()
-        srey.sync_close(fd, skid, 1)
+        local cfd, cskid = self.mongo:sock_id()-- 现取:对端已断时 sk.fd 已被 teardown 复位为 INVALID,sync_close 内 guard 直接返回不空等
+        srey.sync_close(cfd, cskid, 1)
         self.connecting = false
         return false
     end
@@ -203,10 +200,13 @@ function ctx:connect()
             self.connecting = false
             return false --event 已关闭
         end
+        local aflags = self.mongo:clear_flag()
         local authpack, authsize = self.mongo:pack_auth_first(self.authmod)
-        if not authpack then return _fail() end
-        if not srey.send(fd, skid, authpack, authsize, 0) then return _fail() end
-        local ok, _, _ = srey.wait_handshaked(fd, skid)
+        local ok = false
+        if authpack and srey.send(fd, skid, authpack, authsize, 0) then
+            ok = srey.wait_handshaked(fd, skid)
+        end
+        self.mongo:set_flag(aflags)
         if not ok then return _fail() end
     end
     -- 重连成功：递增连接代次，使上一代 session 的 gen 校验失效

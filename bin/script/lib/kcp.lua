@@ -53,6 +53,9 @@ end
 ---停止并释放会话(从会话表移除;之后需重新 start 才能再用)
 function ctx:stop()
     self.kcp:stop()
+    if 0 ~= self.sess then
+        srey._coro_sess_del_empty(self.sess)-- 清 start/send 留下的 keep=true 占位(用户 sess≠skid,无 CLOSE 可清)
+    end
 end
 
 ---变更数据推送目标 task

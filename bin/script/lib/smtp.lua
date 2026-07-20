@@ -5,7 +5,6 @@
 
 local srey = require("lib.srey")
 local smtp = require("srey.smtp")
-local core = require("srey.core")
 
 -- smtp_ctx：SMTP 连接上下文。
 -- 每个实例对应一条到 SMTP 服务器的持久连接。
@@ -18,9 +17,9 @@ local ctx = class("smtp_ctx")
 ---@param user string AUTH 用户名（空时跳过认证）
 ---@param password string AUTH 密码
 function ctx:ctor(ip, port, sslname, user, password)
-    local ssl
-    if SSL_NAME.NONE ~= sslname then
-        ssl = core.ssl_qury(sslname)
+    local ok, ssl = srey.ssl_qury(sslname)
+    if not ok then
+        error(string.format("ssl_qury not find ssl name %s", sslname), 2)
     end
     self.smtp = smtp.new(ip, port, ssl, user, password)
     self.sslname = sslname

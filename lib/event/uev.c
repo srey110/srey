@@ -380,6 +380,7 @@ static void _uev_loop_event(void *arg) {
 #endif
 #ifdef EV_EVPORT
     uint32_t nget;
+    int32_t err;
 #endif
     SOCKET fd = INVALID_SOCK;
     sock_ctx *skctx;
@@ -403,7 +404,14 @@ static void _uev_loop_event(void *arg) {
         cnt = pollset_poll(watcher->evfd, watcher->events, watcher->nevents, timeout);
 #elif defined(EV_EVPORT)
         nget = 1;
-        (void)port_getn(watcher->evfd, watcher->events, watcher->nevents, &nget, &timeout);
+        if (ERR_FAILED == port_getn(watcher->evfd, watcher->events, watcher->nevents, &nget, &timeout)) {
+            err = ERRNO;
+            // port_getn 出错时不保证更新 nget:ETIME/EINTR 已按契约置为实际取回数(须处理以完成 MANUAL_ADD 重注册),
+            // 硬错误强制 0,避免按预置值解析未初始化的 events[0]
+            if (ETIME != err && EINTR != err) {
+                nget = 0;
+            }
+        }
         cnt = (int32_t)nget;
 #elif defined(EV_KQUEUE)
         if (watcher->nchanges >= watcher->nevents) {
@@ -485,7 +493,7 @@ static int32_t _uev_init_evfd(void) {
     evfd = open("/dev/poll", O_RDWR | O_CLOEXEC);
 #endif
     ASSERTAB(INVALID_FD != evfd, ERRORSTR(ERRNO));
-#if defined(EV_KQUEUE) || defined(EV_EVPORT) || defined(EV_POLLSET)
+#if defined(EV_KQUEUE) || defined(EV_EVPORT)
     (void)fcntl(evfd, F_SETFD, FD_CLOEXEC);
 #endif
     return evfd;

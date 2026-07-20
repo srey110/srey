@@ -199,6 +199,11 @@ int32_t evssl_register(const char *name, evssl_ctx *evssl) {
         evssl_free(evssl);
         return ERR_FAILED;
     }
+    if (strlen(name) >= EVSSL_NAME_LEN) {
+        LOG_ERROR("ssl name too long (>= %d): %s.", EVSSL_NAME_LEN, name);
+        evssl_free(evssl);
+        return ERR_FAILED;
+    }
     if (NULL == _arr_certs) {
         LOG_WARN("%s", "not call evssl_pool_init.");
         evssl_free(evssl);

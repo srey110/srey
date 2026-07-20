@@ -82,20 +82,24 @@ void task_incref(task_ctx *task);
 /// <param name="task">task_ctx</param>
 void task_ungrab(task_ctx *task);
 /// <summary>
-/// 超时
+/// 超时：ms 毫秒后触发。sess 与 _timeout 互斥,须恰好一个有效(违反将 ASSERTAB abort)：
+/// _timeout≠NULL 且 sess=0 → 到期回调 _timeout(task, 0)；
+/// _timeout=NULL 且 sess≠0 → 到期投递 TIMEOUT 消息,按 sess 唤醒等待协程(无等待者则无操作)
 /// </summary>
 /// <param name="task">task_ctx</param>
-/// <param name="sess">session</param>
+/// <param name="sess">session；消息(唤醒)模式须非 0,回调模式须为 0</param>
 /// <param name="ms">毫秒</param>
-/// <param name="_timeout">超时回调函数</param>
+/// <param name="_timeout">超时回调函数；回调模式须非 NULL,消息模式须为 NULL</param>
 void task_timeout(task_ctx *task, uint64_t sess, uint32_t ms, _timeout_cb _timeout);
 /// <summary>
-/// 任务间通信,请求
+/// 任务间通信,请求。src 与 sess 须同真同假(违反将 ASSERTAB abort)：
+/// src≠NULL 且 sess≠0 → dst 可经 task_response 按 sess 回复 src；
+/// src=NULL 且 sess=0 → 单向请求,dst 无从回复
 /// </summary>
 /// <param name="dst">目标任务</param>
-/// <param name="src">发起者</param>
+/// <param name="src">发起者；需响应时非 NULL(且 sess≠0),单向时 NULL(且 sess=0)</param>
 /// <param name="reqtype">请求类型 request_type</param>
-/// <param name="sess">session</param>
+/// <param name="sess">session；需响应时非 0,单向时 0</param>
 /// <param name="data">数据</param>
 /// <param name="size">数据长度</param>
 /// <param name="copy">1 拷贝 0不拷贝</param>

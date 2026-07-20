@@ -6,7 +6,6 @@
 
 local srey   = require("lib.srey")
 local stmt   = require("lib.pgsql_stmt")
-local core   = require("srey.core")
 local pgsql  = require("pgsql")
 local reader = require("pgsql.reader")
 
@@ -21,12 +20,9 @@ local ctx = class("pgsql_ctx")
 ---@param password string 密码
 ---@param database string 数据库名
 function ctx:ctor(ip, port, sslname, user, password, database)
-    local ssl
-    if SSL_NAME.NONE ~= sslname then
-        ssl = core.ssl_qury(sslname)
-        if not ssl then
-            error(string.format("ssl_qury not find ssl name %s", sslname), 2)
-        end
+    local ok, ssl = srey.ssl_qury(sslname)
+    if not ok then
+        error(string.format("ssl_qury not find ssl name %s", sslname), 2)
     end
     self.pg = pgsql.new(ip, port, ssl, user, password, database)
     if not self.pg then
@@ -36,6 +32,7 @@ function ctx:ctor(ip, port, sslname, user, password, database)
     self.err = ""
     self.ip = ip
     self.port = port
+    self.sslname = sslname
     -- 连接代次：每次 connect 成功后 +1，prepare 出来的 stmt 持有创建时的代次，
     -- execute 前比对，重连后旧 statement name 已被服务端清理时返 false 明确提示重新 prepare
     self.generation = 0
@@ -119,6 +116,7 @@ function ctx:query(sql, format)
         return false
     end
     if PGPACK_TYPE.OK ~= pktype then
+        self.err = string.format("unexpected pgsql response type: %s", tostring(pktype))
         return false
     end
     local rd = reader.new(pgpack, PG_FORMAT.TEXT)
@@ -291,6 +289,9 @@ function ctx:cancel()
         return false
     end
     local pack = self.pg:pack_cancel()
+    if SSL_NAME.NONE ~= self.sslname then
+        WARN("pgsql cancel: CancelRequest sent in plaintext (BackendKeyData pid+key exposed); SSL cancel not supported")
+    end
     local cfd, cskid = srey.connect(PACK_TYPE.NONE, SSL_NAME.NONE, self.ip, self.port)
     if INVALID_SOCK == cfd then
         return false

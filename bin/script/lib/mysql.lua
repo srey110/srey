@@ -5,7 +5,6 @@
 
 local srey  = require("lib.srey")
 local stmt  = require("lib.mysql_stmt")
-local core  = require("srey.core")
 local mysql = require("mysql")
 local reader = require("mysql.reader")
 local MYSQL_PACK_TYPE = MYSQL_PACK_TYPE
@@ -23,12 +22,9 @@ local ctx = class("mysql_ctx")
 ---@param charset string 字符集（如 "utf8mb4"）
 ---@param maxpk integer? 单包最大字节数，0 使用默认
 function ctx:ctor(ip, port, sslname, user, password, database, charset, maxpk)
-    local ssl
-    if SSL_NAME.NONE ~= sslname then
-        ssl = core.ssl_qury(sslname)
-        if not ssl then
-            error(string.format("ssl_qury not find ssl name %s", sslname), 2)
-        end
+    local ok, ssl = srey.ssl_qury(sslname)
+    if not ok then
+        error(string.format("ssl_qury not find ssl name %s", sslname), 2)
     end
     self.mysql = mysql.new(ip, port, ssl, user, password, database, charset, maxpk)
     if not self.mysql then

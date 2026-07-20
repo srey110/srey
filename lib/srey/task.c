@@ -143,15 +143,6 @@ static void _task_handle_response(task_ctx *task, message_ctx *msg) {
     }
     _message_clean(msg);
 }
-// coro_fork 自发消息处理器：fork_item 由 coro_fork MALLOC、由 _message_clean(MSG_TYPE_FORK) FREE，
-// 业务回调 item->func(task, item->arg) 跑在当前协程内（可 yield/resume 调下游）
-static void _task_handle_fork(task_ctx *task, message_ctx *msg) {
-    fork_item *item = (fork_item *)msg->data;
-    if (NULL != item && NULL != item->func) {
-        item->func(task, item->arg);
-    }
-    _message_clean(msg);
-}
 typedef void (*_msg_handler_t)(task_ctx *, message_ctx *);
 // 按消息类型索引的处理函数表（静态分发，无 switch-case 开销）
 static const _msg_handler_t _msg_handlers[MSG_TYPE_ALL] = {
@@ -168,7 +159,6 @@ static const _msg_handler_t _msg_handlers[MSG_TYPE_ALL] = {
     [MSG_TYPE_RECVFROM]     = _task_handle_recvfrom,
     [MSG_TYPE_REQUEST]      = _task_handle_request,
     [MSG_TYPE_RESPONSE]     = _task_handle_response,
-    [MSG_TYPE_FORK]         = _task_handle_fork,
 };
 void _message_run(task_ctx *task, message_ctx *msg) {
     if (msg->mtype > MSG_TYPE_NONE
@@ -242,10 +232,7 @@ int32_t task_register(task_ctx *task, _task_startup_cb _startup, _task_closing_c
     // loader 正在广播关闭时（closing=1），此 task 晚于广播注册，
     // 不会收到全局 CLOSING，须在此立即补发，确保 task 能正常退出
     if (ATOMIC_GET(&task->loader->closing)) {
-        message_ctx closing = { 0 };
-        closing.mtype = MSG_TYPE_CLOSING;
-        ATOMIC_SET(&task->closing, 1);
-        _task_message_push(task, &closing);
+        task_close(task);
     }
     rwlock_distr_wrunlock(&task->loader->lckmaptasks);
     return ERR_OK;
@@ -320,8 +307,7 @@ int32_t _message_should_clean(message_ctx *msg) {
         || MSG_TYPE_RECVFROM == msg->mtype
         || MSG_TYPE_REQUEST == msg->mtype
         || MSG_TYPE_RESPONSE == msg->mtype
-        || MSG_TYPE_HANDSHAKED == msg->mtype
-        || MSG_TYPE_FORK == msg->mtype)
+        || MSG_TYPE_HANDSHAKED == msg->mtype)
         && NULL != msg->data) {
         return ERR_OK;
     }
@@ -345,10 +331,6 @@ void _message_clean(message_ctx *msg) {
         break;
     case MSG_TYPE_REQUEST:
     case MSG_TYPE_RESPONSE:
-        FREE(msg->data);
-        break;
-    case MSG_TYPE_FORK:
-        // fork_item 由 coro_fork MALLOC，与 REQUEST/RESPONSE 一样 FREE；item->arg 由业务管理不释放
         FREE(msg->data);
         break;
     default:

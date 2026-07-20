@@ -152,7 +152,12 @@ function M._dispatch(reqtype, sess, src, data, size)
         _response(src, reqtype, sess, ERR_OK, "invalid seri: " .. tostring(cmd))
         return
     end
-    local result = _debug_handle(cmd, a1, a2)
+    local hok, result = pcall(_debug_handle, cmd, a1, a2)
+    if not hok then
+        -- 命令处理内部抛错(如 inject 收非 string 源码致 load 抛错):转文本回错,避免请求方挂到 request_timeout
+        _response(src, reqtype, sess, ERR_OK, "[ERR] " .. tostring(result))
+        return
+    end
     if nil == result then
         -- 未知命令：透传给业务 on_requested（对齐 C 端 _debug_request 返回 ERR_FAILED 的语义）
         if _fallback then

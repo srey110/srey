@@ -56,7 +56,8 @@ function redis.pack(...)
             req[idx + 4] = '\r\n'
             idx = idx + 5
         else
-            req[idx] = "$-1\r\n"
+            WARN("redis.pack: nil argument #%d, encoded as empty bulk string", i)
+            req[idx] = "$0\r\n\r\n"
             idx = idx + 1
         end
     end

@@ -47,6 +47,9 @@ typedef struct kcp_handle_arg {
     uint64_t sess;
 } kcp_handle_arg;
 typedef struct kcp_ud_ctx {
+    int32_t in_tick;             // 正在 _kcp_tick_update 迭代中:期间 _kcp_udfree 只置 closing 延后,不真正释放
+    int32_t closing;             // tick 内被请求关闭的延后标记;tick 循环结束后才真正释放
+    ud_cxt *ud;                  // 反指所属 ud(延后释放时取用);ud->context == 本 ctx
     struct watcher_ctx *watcher; // 所属 event 线程(注销 tick 用)
     struct hashmap *mapkcp;      // conv -> kcp_element 会话表
 #if KCP_TICK_HEAP
@@ -137,6 +140,12 @@ void _kcp_udfree(ud_cxt *ud) {
         return;
     }
     kcp_ud_ctx *ctx = ud->context;
+    if (ctx->in_tick) {
+        // 正在本 ctx 的 tick 迭代中(ikcp_update→_kcp_output 发送失败触发的关闭):此刻释放会销毁
+        // 正被迭代的 mapkcp/heap/kel → UAF;仅置延后标记,由 _kcp_tick_update 循环结束后真正释放
+        ctx->closing = 1;
+        return;
+    }
     _evpub_tick_remove(ctx->watcher, &ctx->tick);
     hashmap_scan(ctx->mapkcp, _kcp_notify_closed_iter, ud);
     hashmap_free(ctx->mapkcp);
@@ -276,6 +285,7 @@ static uint32_t _kcp_tick_update(kcp_ud_ctx *ctx, uint64_t now_ms) {
     IUINT32 now = (IUINT32)now_ms;
     uint32_t remain = ctx->heap_due.nelts;// 至多处理本轮已有会话数,防 ikcp_check 异常返回<=now 时死循环
     kcp_element *kel;
+    ctx->in_tick = 1;
     while (remain-- > 0 && NULL != ctx->heap_due.root) {
         kel = _KEL_FROM_HNODE(ctx->heap_due.root);
         if ((IINT32)(now - kel->next_update) < 0) {// 堆顶未到期,防回绕
@@ -283,8 +293,16 @@ static uint32_t _kcp_tick_update(kcp_ud_ctx *ctx, uint64_t now_ms) {
         }
         heap_remove(&ctx->heap_due, &kel->hnode);
         ikcp_update(kel->ikcp, now);
+        if (ctx->closing) {// ikcp_update 内发送失败触发了本 socket 关闭:kel/ctx 待释放,勿再触碰
+            break;
+        }
         kel->next_update = ikcp_check(kel->ikcp, now);
         heap_insert(&ctx->heap_due, &kel->hnode);
+    }
+    ctx->in_tick = 0;
+    if (ctx->closing) {// 延后至此真正释放(in_tick 已清零,_kcp_udfree 走真正释放分支)
+        _kcp_udfree(ctx->ud);
+        return EVENT_WAIT_TIMEOUT;
     }
     if (NULL == ctx->heap_due.root) {
         return EVENT_WAIT_TIMEOUT;
@@ -309,7 +327,13 @@ static bool _kcp_tick_iter(const void *item, void *udata) {
 // ev_tick 回调:驱动本 socket 所有会话 ikcp_update,返回距下次最近的 ikcp_check 间隔(ms)
 static uint32_t _kcp_tick_update(kcp_ud_ctx *ctx, uint64_t now_ms) {
     kcp_tick_arg a = { (IUINT32)now_ms, EVENT_WAIT_TIMEOUT };
+    ctx->in_tick = 1;
     hashmap_scan(ctx->mapkcp, _kcp_tick_iter, &a);
+    ctx->in_tick = 0;
+    if (ctx->closing) {// 扫描中某会话 ikcp_update 发送失败触发关闭:延后至此真正释放
+        _kcp_udfree(ctx->ud);
+        return EVENT_WAIT_TIMEOUT;
+    }
     return a.next;
 }
 #endif
@@ -361,6 +385,9 @@ static int32_t _kcp_start(struct watcher_ctx *watcher, struct sock_ctx *skctx,
     kcp_ud_ctx *ctx = ud->context;
     if (NULL == ctx) {
         MALLOC(ctx, sizeof(kcp_ud_ctx));
+        ctx->in_tick = 0;
+        ctx->closing = 0;
+        ctx->ud = ud;
         ctx->mapkcp = hashmap_new_with_allocator(_malloc, _realloc, _free,
                                                  sizeof(kcp_element *), ONEK, 0, 0,
                                                  _kcp_map_hash, _kcp_map_compare, _kcp_map_elfree, NULL);

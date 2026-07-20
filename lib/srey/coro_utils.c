@@ -117,6 +117,16 @@ SOCKET wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, c
     } else {
         port = NULL == evssl ? 80 : 443;
     }
+    // Host 头须带非默认端口(RFC 6455 §4.1),否则严格服务端 / vhost 路由按纯主机名拒握手
+    if (url.port.lens > 0
+        && port != (NULL == evssl ? 80 : 443)) {
+        char *host_port;
+        size_t hplen = strlen(host) + 8;// ":" + 最多 5 位端口 + '\0'
+        MALLOC(host_port, hplen);
+        SNPRINTF(host_port, hplen, "%s:%d", host, (int32_t)port);
+        FREE(host);
+        host = host_port;
+    }
     SOCKET fd;
     char *signkey;
     MALLOC(signkey, WS_SIGN_KEY_LENS);

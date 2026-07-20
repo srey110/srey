@@ -2,6 +2,7 @@
 #include "containers/hashmap.h"
 #include "srey/task.h"
 #include "utils/utils.h"
+#include "utils/timer.h"
 
 #define TASK_MSG_BATCH  128
 
@@ -89,7 +90,7 @@ static void _loader_worker_wakeup_all(loader_ctx *loader) {
     worker_ctx *worker;
     for (uint16_t i = 0; i < loader->nworker; i++) {
         worker = &loader->worker[i];
-        if (ATOMIC_GET(&worker->waiting) > 0) {
+        if (ATOMIC_GET_SEQCST(&worker->waiting) > 0) {
             mutex_lock(&worker->mutex);
             cond_broadcast(&worker->cond);
             mutex_unlock(&worker->mutex);
@@ -124,7 +125,7 @@ static void _loader_worker_wakeup(loader_ctx *loader, name_t *task) {
     // 必须先入队再读 waiting，与消费者"先写 waiting 再检查队列"形成对称屏障，
     // 确保两者至少有一方能观察到对方的写入，从而消除丢失唤醒窗口。
     // waiting == 0 时 worker 正在运行，无需 signal；仅在 > 0 时才获取 mutex 发信号。
-    if (ATOMIC_GET(&worker->waiting) > 0) {
+    if (ATOMIC_GET_SEQCST(&worker->waiting) > 0) {
         mutex_lock(&worker->mutex);
         cond_signal(&worker->cond);
         mutex_unlock(&worker->mutex);
@@ -244,12 +245,7 @@ static void _loader_worker_loop(void *arg) {
         }
         mutex_lock(&worker->mutex);
         ATOMIC_ADD(&worker->waiting, 1);
-        // 丢失唤醒防护：先写 waiting，再检查队列。
-        // 与生产者"先入队，再读 waiting"构成对称：
-        //   若生产者在本线程写 waiting 之前读到 waiting==0 并跳过了 signal，
-        //   则任务已在队列中，此处必然能看到非空，从而跳过 cond_wait。
-        //   若生产者在本线程写 waiting 之后读 waiting，则会执行 signal，
-        //   cond_wait 不会永久阻塞。
+        ATOMIC_THREAD_FENCE_SEQCST();
         if (fsqu_size(&worker->qutasks) > 0 || 0 != ATOMIC_GET(&loader->stop)) {
             ATOMIC_ADD(&worker->waiting, -1);
             mutex_unlock(&worker->mutex);

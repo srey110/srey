@@ -35,8 +35,8 @@ typedef enum msg_type {
     MSG_TYPE_RECVFROM,      // UDP 数据接收
     MSG_TYPE_REQUEST,       // 任务间请求
     MSG_TYPE_RESPONSE,      // 任务间响应
-    MSG_TYPE_FORK,          // 内部 mtype：由 coro_fork 自发投递到本 task 的消息队列，
-                            // 业务回调跑在 _handle_fork 内（与 REQUEST 同模式：每条消息总是新协程）
+    MSG_TYPE_FORK,          // 内部 mtype 标记：coro_fork/coro_fork_wait 的子任务经 fork_pending 链表，
+                            // 在 dispatch 末尾 drain 起协程，_coro_mco_cb 据此路由到 _coro_fork_run（不入消息队列）
     MSG_TYPE_ALL            // 消息类型总数（边界值）
 }msg_type;
 // 协议包类型枚举

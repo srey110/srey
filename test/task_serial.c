@@ -275,6 +275,60 @@ static int32_t _test_curco_restore(task_ctx *task) {
     return ERR_OK;
 }
 
+// ── 测试 8：serial_node 池复用（多轮跨协程排队）──────────────────────────
+// 反复令多协程争用同一 serial：队头持锁 sleep 期间其余走跨协程路径 pool_pop 排队，
+// 释放时逐个 pool_push 出队。覆盖 serial_node_pool 高频 pop/push 复用 + serial 跨轮重用
+typedef struct spool_arg {
+    coro_serial_ctx *s;
+    int32_t *cnt;
+    uint32_t hold_ms;
+}spool_arg;
+
+static void _spool_cs(task_ctx *task, void *arg) {
+    spool_arg *a = (spool_arg *)arg;
+    if (0 != a->hold_ms) {
+        coro_sleep(task, a->hold_ms);
+    }
+    ++(*a->cnt);
+}
+
+static void _spool_worker(task_ctx *task, void *arg) {
+    (void)task;
+    spool_arg *a = (spool_arg *)arg;
+    coro_serial_call(a->s, _spool_cs, a);
+}
+
+static int32_t _test_serial_pool_reuse(task_ctx *task) {
+    enum { ROUNDS = 16, CONTEND = 4 };
+    coro_serial_ctx *s = coro_serial_new(task);
+    int32_t cnt = 0;
+    spool_arg holder = { .s = s, .cnt = &cnt, .hold_ms = 5 };// 队头持锁 5ms 迫使其余排队
+    spool_arg rest = { .s = s, .cnt = &cnt, .hold_ms = 0 };
+    fork_serial_cb funcs[CONTEND];
+    void *args[CONTEND];
+    int32_t i, r;
+    funcs[0] = _spool_worker;
+    args[0] = &holder;
+    for (i = 1; i < CONTEND; i++) {
+        funcs[i] = _spool_worker;
+        args[i] = &rest;
+    }
+    for (r = 0; r < ROUNDS; r++) {
+        if (ERR_OK != coro_fork_wait(task, CONTEND, funcs, args)) {
+            LOG_ERROR("serial pool reuse: round %d fork_wait failed.", r);
+            coro_serial_free(s);
+            return ERR_FAILED;
+        }
+    }
+    if (ROUNDS * CONTEND != cnt) {
+        LOG_ERROR("serial pool reuse: expect %d, got %d.", ROUNDS * CONTEND, cnt);
+        coro_serial_free(s);
+        return ERR_FAILED;
+    }
+    coro_serial_free(s);
+    return ERR_OK;
+}
+
 static void _startup(task_ctx *task) {
     task_serial_args *arg = (task_serial_args *)coro_get_arg(task);
     if (ERR_OK != _test_single(task)) {
@@ -308,6 +362,12 @@ static void _startup(task_ctx *task) {
         return;
     }
     if (ERR_OK != _test_curco_restore(task)) {
+        return;
+    }
+    if (task_isclosing(task)) {
+        return;
+    }
+    if (ERR_OK != _test_serial_pool_reuse(task)) {
         return;
     }
     *(arg->ok) = 1;

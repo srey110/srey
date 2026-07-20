@@ -10,6 +10,8 @@
 //   4) 不在协程上下文调用：返回 ERR_FAILED
 //   5) 多 serial 实例独立：cs1 不阻塞 cs2
 //   6) cs 内 yield 互斥：任意时刻最多 1 个协程在 cs 内（peak == 1）
+//   7) cs 出口 curco 还原：A 持锁 sleep 期间 B 排队，A release 后再 coro_sleep 不 abort
+//   8) serial_node 池复用：多轮跨协程排队，验证 serial_node_pool 高频 pop/push 复用
 // 全部 case 通过后将 *ok 置 1。
 void task_serial_start(loader_ctx *loader, const char *name, int32_t *ok);
 

@@ -154,12 +154,6 @@ struct task_dispatch_arg {
     task_ctx *task;    // 目标任务
     message_ctx msg;   // 消息体（值拷贝）
 };
-// coro_fork 任务载荷：作为 MSG_TYPE_FORK 消息的 data 字段；
-// 由 coro_fork MALLOC，task.c::_handle_fork 执行后由 _message_clean FREE
-typedef struct fork_item {
-    void (*func)(task_ctx *task, void *arg);  // 业务函数
-    void *arg;                                // 透传给业务函数的参数（生命周期由调用方管理）
-} fork_item;
 
 //返回消息字符串
 const char *_message_str(msg_type type);

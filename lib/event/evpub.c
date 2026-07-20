@@ -238,12 +238,20 @@ static uint32_t _evpub_off_buf_fill_iov(queue_ctx *buf_s, size_t nbuf,
     size_t total = 0;
     uint32_t cnt = 0;
     off_buf_ctx *buf;
+    size_t remain;
     for (uint32_t i = 0; i < (uint32_t)nbuf; i++) {
         buf = queue_at(buf_s, i);
+        remain = buf->lens - buf->offset;
+#if defined(OS_WIN)
+        // WSABUF.len 是 ULONG(32位):单块 >=4GB 且 4GB 整数倍会截断为 0 → WSASend 发 0 字节、offset 不进的忙循环;限到 ULONG 上界
+        if (remain > 0xffffffffu) {
+            remain = 0xffffffffu;
+        }
+#endif
         iov[i].IOV_PTR_FIELD = ((char *)buf->data) + buf->offset;
-        iov[i].IOV_LEN_FIELD = (IOV_LEN_TYPE)(buf->lens - buf->offset);
+        iov[i].IOV_LEN_FIELD = (IOV_LEN_TYPE)remain;
         sndbuf[i] = buf;
-        total += (size_t)iov[i].IOV_LEN_FIELD;
+        total += remain;
         cnt++;
         if (total >= MAX_SEND_SIZE) {
             break;

@@ -357,7 +357,7 @@ mgopack_ctx *mongo_findandmodify(mongo_ctx *mongo, char *query, size_t qlens,
 /// <param name="query">可选 查询，选择哪些文档要在集合或视图中计数</param>
 /// <param name="qlens">query长度</param>
 /// <param name="options">可选 其他参数 document (limit skip hint readConcern maxTimeMS collation comment)</param>
-/// <returns>ERR_OK 成功</returns>
+/// <returns>ERR_FAILED 失败  其他 文档数量</returns>
 int32_t mongo_count(mongo_ctx *mongo, char *query, size_t qlens, char *options);
 /// <summary>
 /// createindexes 命令 为集合构建一个或多个索引  MORETOCOME 可用

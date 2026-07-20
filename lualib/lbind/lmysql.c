@@ -498,6 +498,7 @@ static int32_t _lmysql_stmt_new(lua_State *lua) {
         lua_pushnil(lua);
         return 1;
     }
+    stmt->skid = stmt->mysql->client.sk.skid;// 快照 prepare 连接的 skid,供 __gc 比对
     mysql_stmt_ctx **st = lua_newuserdata(lua, sizeof(mysql_stmt_ctx *));
     *st = stmt;
     ASSOC_MTABLE(lua, MT_MYSQL_STMT);
@@ -516,7 +517,8 @@ static int32_t _lmysql_stmt_free(lua_State *lua) {
         size_t size;
         mysql_ctx *mysql = (*stmt)->mysql;
         void *close = mysql_pack_stmt_close(*stmt, &size);
-        if (INVALID_SOCK == mysql->client.sk.fd) {
+        if (INVALID_SOCK == mysql->client.sk.fd
+            || (*stmt)->skid != mysql->client.sk.skid) {// 连接已关或已重连(skid 变):stmt_id 属旧连接,发到新连接会误关同 id 语句
             FREE(close);
         } else {
             ev_send(&mysql->task->loader->netev, mysql->client.sk.fd, mysql->client.sk.skid, close, size, 0);

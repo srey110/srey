@@ -193,7 +193,7 @@ static int32_t _test_multi_yield(task_ctx *task) {
 }
 
 // ── 测试 8：并发 fork_wait 非 LIFO 完成 ───────────────────────────────────
-// 两个独立协程各 coro_fork_wait：先入 fork_barriers 链表者(A)其 worker 先完成 →
+// 两个独立协程各 coro_fork_wait：先入 fork_waited 链表者(A)其 worker 先完成 →
 // 移除的是链表非头节点，回归"按节点解链不假设 LIFO"，否则关闭时 _coro_ctx_free 崩
 typedef struct concurrent_arg {
     uint32_t sleep_ms;
@@ -227,6 +227,60 @@ static int32_t _test_concurrent_fork_wait(task_ctx *task) {
     coro_sleep(task, 140);// 等 A(~20ms) 与 B(~60ms) 两个 fork_wait 都完成
     if (1 != a_ok || 1 != b_ok) {
         LOG_ERROR("fork_wait concurrent: expect both ok, got a=%d b=%d.", a_ok, b_ok);
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+
+// ── 测试 9：fork_item 池复用（多轮批量 fork_wait，含 yield）───────────────
+// 反复批量 fork_wait：覆盖 fork_item_pool 跨轮 pop/push 复用 + fork_pending 单轮多项 drain
+// + worker yield 期间 fork_item 保持 checked-out
+typedef struct fpool_arg {
+    int32_t *cnt;
+}fpool_arg;
+
+static void _fpool_worker(task_ctx *task, void *arg) {
+    fpool_arg *a = (fpool_arg *)arg;
+    ++(*a->cnt);
+    coro_sleep(task, 1);// yield：fork_item 在此期间保持 checked-out
+}
+
+static int32_t _test_fork_pool_reuse(task_ctx *task) {
+    enum { ROUNDS = 20, BATCH = 16 };
+    int32_t cnt = 0;
+    fpool_arg pa = { .cnt = &cnt };
+    fork_serial_cb funcs[BATCH];
+    void *args[BATCH];
+    int32_t i, r;
+    for (i = 0; i < BATCH; i++) {
+        funcs[i] = _fpool_worker;
+        args[i] = &pa;
+    }
+    for (r = 0; r < ROUNDS; r++) {
+        if (ERR_OK != coro_fork_wait(task, BATCH, funcs, args)) {
+            LOG_ERROR("fork pool reuse: round %d fork_wait failed.", r);
+            return ERR_FAILED;
+        }
+    }
+    if (ROUNDS * BATCH != cnt) {
+        LOG_ERROR("fork pool reuse: expect %d, got %d.", ROUNDS * BATCH, cnt);
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+
+// ── 测试 10：coro_fork 高频 fire-and-forget（fork_pending 大批一次 drain）──
+static int32_t _test_fork_ff_pool(task_ctx *task) {
+    enum { FF_COUNT = 64 };
+    int32_t cnt = 0;
+    fpool_arg pa = { .cnt = &cnt };
+    int32_t i;
+    for (i = 0; i < FF_COUNT; i++) {
+        coro_fork(task, _fpool_worker, &pa);
+    }
+    coro_sleep(task, 100);// 让出后 fork_pending 中 FF_COUNT 个 fork_item 一次性 drain
+    if (FF_COUNT != cnt) {
+        LOG_ERROR("fork ff pool: expect %d, got %d.", FF_COUNT, cnt);
         return ERR_FAILED;
     }
     return ERR_OK;
@@ -277,6 +331,18 @@ static void _startup(task_ctx *task) {
         return;
     }
     if (ERR_OK != _test_concurrent_fork_wait(task)) {
+        return;
+    }
+    if (task_isclosing(task)) {
+        return;
+    }
+    if (ERR_OK != _test_fork_pool_reuse(task)) {
+        return;
+    }
+    if (task_isclosing(task)) {
+        return;
+    }
+    if (ERR_OK != _test_fork_ff_pool(task)) {
         return;
     }
     *(arg->ok) = 1;
