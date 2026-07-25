@@ -62,17 +62,20 @@ static int32_t _lprot_dns_ip(lua_State *lua) {
 /// <param name="domain" type="string">查询域名</param>
 /// <param name="ipv6" type="integer">1 查询 AAAA 记录，0 查询 A 记录</param>
 /// <returns type="string?">DNS 查询二进制字符串；构造失败返回 nil</returns>
+/// <returns type="integer">本次查询的事务 ID（构造成功时返回），传给 dns.unpack 回验响应</returns>
 static int32_t _lprot_dns_pack(lua_State *lua) {
     const char *domain = luaL_checkstring(lua, 1);
     int32_t ipv6 = (int32_t)luaL_checkinteger(lua, 2);
     char buf[ONEK];
-    size_t lens = (size_t)dns_request_pack(buf, domain, ipv6);
+    uint16_t id;
+    size_t lens = (size_t)dns_request_pack(buf, domain, ipv6, &id);
     if (0 == lens) {
         lua_pushnil(lua);
         return 1;
     }
     lua_pushlstring(lua, buf, lens);
-    return 1;
+    lua_pushinteger(lua, id);
+    return 2;
 }
 /// <summary>
 /// 构造 TCP DNS 查询请求包（含 2 字节大端长度前缀，RFC 1035 §4.2.2 / RFC 7766）
@@ -80,30 +83,35 @@ static int32_t _lprot_dns_pack(lua_State *lua) {
 /// <param name="domain" type="string">查询域名</param>
 /// <param name="ipv6" type="integer">1 查询 AAAA 记录，0 查询 A 记录</param>
 /// <returns type="string?">含长度前缀的 DNS 查询二进制字符串；构造失败返回 nil</returns>
+/// <returns type="integer">本次查询的事务 ID（构造成功时返回），传给 dns.unpack 回验响应</returns>
 static int32_t _lprot_dns_pack_tcp(lua_State *lua) {
     const char *domain = luaL_checkstring(lua, 1);
     int32_t ipv6 = (int32_t)luaL_checkinteger(lua, 2);
     char buf[ONEK];
-    size_t lens = dns_request_pack_tcp(buf, domain, ipv6);
+    uint16_t id;
+    size_t lens = dns_request_pack_tcp(buf, domain, ipv6, &id);
     if (0 == lens) {
         lua_pushnil(lua);
         return 1;
     }
     lua_pushlstring(lua, buf, lens);
-    return 1;
+    lua_pushinteger(lua, id);
+    return 2;
 }
 /// <summary>
 /// 解析 DNS 响应包，提取 IP 地址列表
 /// </summary>
 /// <param name="pack" type="lightuserdata">DNS 响应数据指针（裸报文，不含 TCP 长度前缀）</param>
 /// <param name="packlen" type="integer">响应包字节数</param>
-/// <returns type="string[]?">IP 字符串数组；解析失败、RCODE 非 0 或响应被截断(TC 位置位)时均返回 nil</returns>
+/// <param name="id" type="integer">期望的事务 ID（dns.pack/dns.pack_tcp 返回）；响应事务 ID 不匹配即视为错配/伪造返回 nil</param>
+/// <returns type="string[]?">IP 字符串数组；事务 ID 不匹配、解析失败、RCODE 非 0 或响应被截断(TC 位置位)时均返回 nil</returns>
 static int32_t _lprot_dns_unpack(lua_State *lua) {
     LUACHECK_LUDATA(lua, 1);
     void *pack = lua_touserdata(lua, 1);
     size_t packlen = (size_t)luaL_checkinteger(lua, 2);
+    uint16_t id = (uint16_t)luaL_checkinteger(lua, 3);
     size_t n;
-    dns_ip *ips = dns_parse_pack(pack, packlen, &n);
+    dns_ip *ips = dns_parse_pack(pack, packlen, &n, id);
     if (NULL == ips) {
         lua_pushnil(lua);
         return 1;
@@ -198,9 +206,9 @@ static int32_t _lprot_websock_unpack(lua_State *lua) {
 /// <param name="host" type="string?">Host 头字段；nil 表示省略</param>
 /// <param name="uri" type="string?">HTTP request-target（path?query）；nil 或空字符串时使用 "/"</param>
 /// <param name="secprot" type="string?">Sec-WebSocket-Protocol 字段；nil 表示省略</param>
-/// <returns type="lightuserdata">握手包数据指针（业务通过 srey.send/connect copy=0 接管或 utils.ud_free 释放）</returns>
+/// <returns type="lightuserdata">握手包数据指针；secprot 超长时返回 nil。业务通过 srey.send copy=0 接管或 utils.ud_free 释放</returns>
 /// <returns type="integer">数据长度</returns>
-/// <returns type="lightuserdata">signkey 指针,用于校验对端 Sec-WebSocket-Accept;业务用完必须 utils.ud_free 释放</returns>
+/// <returns type="lightuserdata">握手上下文 hsctx，须作为 srey.connect 的 extra 传入；所有权转交协议层(握手成功或 connect 失败时释放)，业务不得 ud_free</returns>
 static int32_t _lprot_websock_pack_handshake(lua_State *lua) {
     char *host = NULL;
     if (LUA_TSTRING == lua_type(lua, 1)) {
@@ -214,12 +222,14 @@ static int32_t _lprot_websock_pack_handshake(lua_State *lua) {
     if (LUA_TSTRING == lua_type(lua, 3)) {
         secprot = (char *)luaL_checkstring(lua, 3);
     }
-    char *signkey;
-    MALLOC(signkey, WS_SIGN_KEY_LENS);
-    char *hspack = websock_pack_handshake(host, uri, secprot, signkey);
+    ws_hs_ctx *hsctx;
+    char *hspack = websock_pack_handshake(host, uri, secprot, &hsctx);
+    if (NULL == hspack) {
+        return 0;
+    }
     lua_pushlightuserdata(lua, hspack);
     lua_pushinteger(lua, strlen(hspack));
-    lua_pushlightuserdata(lua, signkey);
+    lua_pushlightuserdata(lua, hsctx);
     return 3;
 }
 /// <summary>
@@ -324,6 +334,30 @@ static int32_t _lprot_websock_pack_continua(lua_State *lua) {
     void *pack = websock_pack_continua(mask, fin, data, dlens, &dlens);
     LPUB_RET_LUD(lua, pack, dlens);
 }
+/// <summary>
+/// 解析 HANDSHAKED 交付的 ws_secprots_ctx，返回匹配到的子协议下标与全部子协议名列表
+/// </summary>
+/// <param name="spctx" type="lightuserdata">握手交付的 ws_secprots_ctx 指针；仅本协程下次挂起前有效，勿保留</param>
+/// <returns type="integer?">匹配到的子协议下标(0 起，-1 表示无)；spctx 为空返回 nil</returns>
+/// <returns type="string[]">全部子协议名列表（1 起）</returns>
+static int32_t _lprot_websock_secprots(lua_State *lua) {
+    if (!lua_islightuserdata(lua, 1)) {
+        lua_pushnil(lua);
+        return 1;
+    }
+    ws_secprots_ctx *spctx = lua_touserdata(lua, 1);
+    if (NULL == spctx) {
+        lua_pushnil(lua);
+        return 1;
+    }
+    lua_pushinteger(lua, spctx->index);
+    lua_createtable(lua, spctx->cnt, 0);
+    for (int32_t i = 0; i < spctx->cnt; i++) {
+        lua_pushlstring(lua, spctx->prots[i].data, spctx->prots[i].lens);
+        lua_rawseti(lua, -2, i + 1);
+    }
+    return 2;
+}
 //srey.websock
 LUAMOD_API int luaopen_websock(lua_State *lua) {
     luaL_Reg reg[] = {
@@ -335,6 +369,7 @@ LUAMOD_API int luaopen_websock(lua_State *lua) {
         { "pack_text", _lprot_websock_pack_text },
         { "pack_binary", _lprot_websock_pack_binary },
         { "pack_continua", _lprot_websock_pack_continua },
+        { "secprots", _lprot_websock_secprots },
         { NULL, NULL },
     };
     luaL_newlib(lua, reg);

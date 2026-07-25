@@ -173,7 +173,7 @@ double pgsql_reader_double(pgsql_reader_ctx *reader, const char *name, int32_t *
         memcpy(tmp, row->val, row->lens);
         tmp[row->lens] = '\0';
         char *end;
-        double val = strtod(tmp, &end);
+        double val = strtod_c(tmp, &end);
         if ((int32_t)(end - tmp) != row->lens) {
             SET_PTR(err, ERR_FAILED);
             LOG_WARN("parse failed.");
@@ -280,6 +280,9 @@ static int64_t _pgsql_usec_from_text(const char *s, int32_t slen, int32_t *err) 
             usec += (dot[i] - '0') * mult;
         }
     }
+    if (NULL != strstr(tmp, " BC")) {
+        y = 1 - y;
+    }
     int64_t days = _pgsql_date_to_days(y, mo, d);
     int64_t total = days * 86400000000LL
          + (int64_t)h * 3600000000LL
@@ -311,6 +314,9 @@ static int32_t _pgsql_days_from_text(const char *s, int32_t slen, int32_t *err) 
     if (3 != sscanf(tmp, "%d-%d-%d", &y, &m, &d)) {
         SET_PTR(err, ERR_FAILED);
         return 0;
+    }
+    if (NULL != strstr(tmp, " BC")) {
+        y = 1 - y;
     }
     return _pgsql_date_to_days(y, m, d);
 }

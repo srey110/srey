@@ -17,7 +17,14 @@ int32_t _pgsql_on_connected(ev_ctx *ev, SOCKET fd, uint64_t skid, ud_cxt *ud, in
 int32_t _pgsql_ssl_exchanged(ev_ctx *ev, ud_cxt *ud, void *ssl);
 // 判断当前数据包是否允许 task 恢复（通知包不允许立即恢复）
 int32_t _pgsql_may_resume(void *data);
-// 协议解包入口，根据连接状态分派 SSL/认证/命令响应处理
+/// <summary>
+/// PostgreSQL 协议解包入口：按连接状态分派 SSL / 认证 / 命令响应处理
+/// </summary>
+/// <param name="ev">事件上下文</param>
+/// <param name="buf">接收缓冲区</param>
+/// <param name="ud">连接上下文，内部维护解析状态</param>
+/// <param name="status">输出：解包状态标志，见 prot_status</param>
+/// <returns>命令阶段返回 pgpack_ctx，认证阶段内部消费返回 NULL；数据不足或出错返回 NULL</returns>
 void *pgsql_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status);
 /// <summary>
 /// 初始化 pgsql 连接参数

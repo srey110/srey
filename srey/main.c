@@ -171,6 +171,7 @@ static void _init_globle(void) {
     // 提升 Windows 系统定时器精度至 1ms，使 cond_timedwait 等睡眠接口得到更准确的唤醒
     timeBeginPeriod(1);
 #endif
+    locale_init();
     sock_init();
     srand((uint32_t)(time(NULL) ^ nowms() ^ GETPID()));
     bson_globle_init();
@@ -235,6 +236,7 @@ static int32_t service_hug(int32_t ready_fd) {
         service_exit();
     }
     hug_free(&_hug);
+    locale_free();
     return rtn;
 }
 #ifdef OS_WIN

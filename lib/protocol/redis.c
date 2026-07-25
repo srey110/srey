@@ -333,7 +333,8 @@ static int32_t _redis_reader_line(reader_ctx *rd, int32_t prot, buffer_ctx *buf,
             break;
         }
         buffer_copyout(buf, 1, pk->data, (size_t)pk->len);
-        if (NULL == strchr("tTfF", pk->data[0])) {
+        if ('t' != pk->data[0] && 'T' != pk->data[0]
+            && 'f' != pk->data[0] && 'F' != pk->data[0]) {
             BIT_SET(*status, PROT_ERROR);
             break;
         }
@@ -356,7 +357,7 @@ static int32_t _redis_reader_line(reader_ctx *rd, int32_t prot, buffer_ctx *buf,
             pk->dval = NAN;
         } else {
             char *end;
-            pk->dval = strtod(pk->data, &end);
+            pk->dval = strtod_c(pk->data, &end);
             if (end != pk->data + pk->len
                 || !isfinite(pk->dval)) {
                 BIT_SET(*status, PROT_ERROR);

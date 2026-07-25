@@ -157,7 +157,7 @@ static double _mysql_reader_parse_text_float(mpack_row *row, int32_t *err) {
         return 0.0;
     }
     char *end;
-    double val = strtod(tmp, &end);
+    double val = strtod_c(tmp, &end);
     if ((size_t)(end - tmp) != row->val.lens) {
         SET_PTR(err, ERR_FAILED);
         LOG_WARN("parse failed.");
@@ -286,8 +286,9 @@ int64_t mysql_reader_datetime(mysql_reader_ctx *reader, const char *name, int32_
         dt.tm_hour = h;
         dt.tm_min = mi;
         dt.tm_sec = sec;
+        errno = 0;
         time_t ts = mktime(&dt);
-        if ((time_t)-1 == ts) {
+        if ((time_t)-1 == ts && 0 != errno) {
             SET_PTR(err, ERR_FAILED);
             return 0;
         }
@@ -313,8 +314,9 @@ int64_t mysql_reader_datetime(mysql_reader_ctx *reader, const char *name, int32_
             dt.tm_min = (int32_t)binary_get_int8(&breader);
             dt.tm_sec = (int32_t)binary_get_int8(&breader);
         }
+        errno = 0;
         time_t ts = mktime(&dt);
-        if ((time_t)-1 == ts) {
+        if ((time_t)-1 == ts && 0 != errno) {
             SET_PTR(err, ERR_FAILED);
             return 0;
         }

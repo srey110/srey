@@ -2,6 +2,7 @@
 #include "lib.h"
 #include "utils/strptime.h"
 #include "utils/pool.h"
+#include <locale.h>
 
 /* =======================================================================
  * pack / unpack —— 整数、浮点数的字节序读写
@@ -1824,6 +1825,52 @@ static void test_tda_overflow(CuTest *tc) {
 }
 
 /* ======================================================================= */
+// strtod_c：按 C locale 解析 '.' 浮点，不受进程 LC_NUMERIC 影响；先测基础正确性，
+// 逗号小数点 locale 可用时再对照验证（不可用则仅跑基础用例，保证可移植）
+static void test_strtod_c(CuTest *tc) {
+    char *end;
+    double base = strtod_c("3.14", &end);
+    char baseend = *end;
+    // 保存当前 LC_NUMERIC（setlocale 返回的静态串可能被后续调用覆写，须复制）
+    char savedbuf[64] = { 0 };
+    const char *saved = setlocale(LC_NUMERIC, NULL);
+    if (NULL != saved) {
+        SNPRINTF(savedbuf, sizeof(savedbuf), "%s", saved);
+    }
+    // 尝试切到逗号小数点 locale（覆盖 POSIX 与 Windows 常见命名）
+    const char *candidates[] = {
+        "de_DE.UTF-8", "de_DE.utf8", "de_DE", "fr_FR.UTF-8", "nl_NL.UTF-8",
+        "German_Germany.1252", "de-DE"
+    };
+    int32_t comma_ok = 0;
+    for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
+        if (NULL != setlocale(LC_NUMERIC, candidates[i])
+            && ',' == localeconv()->decimal_point[0]) {
+            comma_ok = 1;
+            break;
+        }
+    }
+    double cv = 0.0, sv = 0.0;
+    char cvend = 0, svend = 0;
+    if (comma_ok) {
+        cv = strtod_c("3.14", &end);
+        cvend = *end;
+        sv = strtod("3.14", &end);
+        svend = *end;
+    }
+    // 先还原 locale 再断言：CuAssert 失败会 longjmp，若在还原前断言会污染后续测试
+    setlocale(LC_NUMERIC, ('\0' != savedbuf[0]) ? savedbuf : "C");
+    // 基础正确性（任意 locale）
+    CuAssertDblEquals(tc, 3.14, base, 1e-9);
+    CuAssertTrue(tc, '\0' == baseend);
+    // 逗号 locale 可用时：strtod_c 仍解析 3.14，普通 strtod 截断为 3.0 停在 '.'
+    if (comma_ok) {
+        CuAssertDblEquals(tc, 3.14, cv, 1e-9);
+        CuAssertTrue(tc, '\0' == cvend);
+        CuAssertDblEquals(tc, 3.0, sv, 1e-9);
+        CuAssertTrue(tc, '.' == svend);
+    }
+}
 
 void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_pack_unpack);
@@ -1869,4 +1916,5 @@ void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_pool_shrink_policy);
     SUITE_ADD_TEST(suite, test_pool_default);
     SUITE_ADD_TEST(suite, test_tda_overflow);
+    SUITE_ADD_TEST(suite, test_strtod_c);
 }

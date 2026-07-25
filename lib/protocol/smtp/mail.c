@@ -110,7 +110,7 @@ void mail_attach_add(mail_ctx *mail, const char *file) {
         return;
     }
     mail_attach att;
-    safe_fill_str(att.file, sizeof(att.file), __FILENAME__(file));
+    _mail_strip_crlf(att.file, __FILENAME__(file), sizeof(att.file));
     char *ex = strrchr(att.file, '.');
     safe_fill_str(att.extension, sizeof(att.extension), ex);
     size_t b64lens = B64EN_SIZE(flens);

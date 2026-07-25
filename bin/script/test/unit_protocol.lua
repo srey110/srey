@@ -42,8 +42,8 @@ runner.run("protocol", function(t)
 
     -- ── websock pack 系列（验证返回非空，记得 ud_free） ────────────────
     do
-        -- handshake：返回 (pack, size, signkey)，signkey 也需要释放
-        local pack, size, signkey = websock.pack_handshake("example.com", nil, "chat")
+        -- handshake：返回 (pack, size, hsctx)，hsctx 也需要释放
+        local pack, size, hsctx = websock.pack_handshake("example.com", nil, "chat")
         t:check(pack ~= nil and size > 0, "websock.pack_handshake")
         local txt = srey.ud_str(pack, size)
         t:check(txt:find("GET ", 1, true) ~= nil, "handshake has GET")
@@ -51,7 +51,11 @@ runner.run("protocol", function(t)
         t:check(txt:find("Host: example.com", 1, true) ~= nil, "handshake has Host")
         t:check(txt:find("Sec%-WebSocket%-Protocol: chat") ~= nil, "handshake has Sec-WebSocket-Protocol")
         utils.ud_free(pack)
-        utils.ud_free(signkey)
+        utils.ud_free(hsctx)
+    end
+    do
+        -- secprots：nil/非 lightuserdata 安全返回 nil（真实协商结果由 C 集成测试覆盖）
+        t:check(nil == websock.secprots(nil), "websock.secprots(nil) 返回 nil")
     end
     do
         local pack, size = websock.pack_ping(0)

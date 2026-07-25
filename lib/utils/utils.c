@@ -1,13 +1,21 @@
 ﻿#include "utils/utils.h"
 #include "utils/strptime.h"
 #include "base/structs.h"
+#include <locale.h>
+#if defined(OS_DARWIN) || defined(OS_BSD)
+    #include <xlocale.h>
+#endif
 
 #ifdef OS_WIN
 #pragma comment(lib, "Dbghelp.lib" )
 #pragma comment(lib, "Bcrypt.lib")
 static atomic_t _exindex = 0;
+static _locale_t g_numeric_c;
+#else
+static locale_t g_numeric_c;
 #endif
 
+#define _FMT_STACK_SIZE 512
 #define _MC ((1 << CHAR_BIT) - 1) //字节掩码（0xff），用于逐字节提取整数
 static void *_ud;//信号处理回调的用户数据
 static void(*_sig_cb)(int32_t, void *);//用户注册的信号处理回调函数
@@ -1167,6 +1175,33 @@ void *skipempty(const void *ptr, size_t plens) {
     }
     return cur;
 }
+void locale_init(void) {
+#ifdef OS_WIN
+    g_numeric_c = _create_locale(LC_NUMERIC, "C");
+#else
+    g_numeric_c = newlocale(LC_NUMERIC_MASK, "C", (locale_t)0);
+#endif
+}
+void locale_free(void) {
+#ifdef OS_WIN
+    if (NULL != g_numeric_c) {
+        _free_locale(g_numeric_c);
+        g_numeric_c = NULL;
+    }
+#else
+    if ((locale_t)0 != g_numeric_c) {
+        freelocale(g_numeric_c);
+        g_numeric_c = (locale_t)0;
+    }
+#endif
+}
+double strtod_c(const char *str, char **endptr) {
+#ifdef OS_WIN
+    return _strtod_l(str, endptr, g_numeric_c);
+#else
+    return strtod_l(str, endptr, g_numeric_c);
+#endif
+}
 char *strupper(char *str) {
     if (NULL == str) {
         return NULL;
@@ -1362,7 +1397,6 @@ int32_t split2(char *ptr, size_t plens, uint8_t sep, struct buf_ctx *segs, int32
 char *_format_va(const char *fmt, va_list args) {
     /* 先用栈缓冲尝试格式化（绝大多数场景够用），成功则直接复制返回，避免堆分配；
      * 仅当字符串超过栈缓冲大小时，才按实际长度堆分配并重试。 */
-    #define _FMT_STACK_SIZE 512
     char stk[_FMT_STACK_SIZE];
     va_list args2;
     va_copy(args2, args);
@@ -1386,7 +1420,6 @@ char *_format_va(const char *fmt, va_list args) {
         return NULL;
     }
     return pbuff;
-#undef _FMT_STACK_SIZE
 }
 char *format_va(const char *fmt, ...) {
     va_list args;

@@ -348,9 +348,49 @@ static int32_t _timeout_ws(task_ctx *task) {
     char buf[256];
     int32_t dlen;
     int32_t slend;
+    ws_secprots_ctx *spctx;
     char wsurl[64];
     SNPRINTF(wsurl, sizeof(wsurl), "ws://127.0.0.1:%d", (int)wsport);
-    fd = wbsock_connect(task, NULL, wsurl, NULL, &skid, 0);
+    // 多值 offer：服务端从 "mqtt,foo" 选中内建 mqtt，出参返回协商到的子协议
+    fd = wbsock_connect(task, NULL, wsurl, "mqtt,foo", 0, &skid, &spctx);
+    if (INVALID_SOCK == fd) {
+        LOG_WARN("ws mqtt subprotocol handshake error.");
+        return ERR_FAILED;
+    }
+    if (NULL == spctx || 0 != spctx->index || 1 != spctx->cnt
+        || 4 != spctx->prots[0].lens || 0 != memcmp("mqtt", spctx->prots[0].data, 4)) {
+        LOG_WARN("ws mqtt subprotocol negotiate error.");
+        ev_close(&task->loader->netev, fd, skid, 1);
+        return ERR_FAILED;
+    }
+    ev_close(&task->loader->netev, fd, skid, 1);
+    // 非内建单值 chat：B-lite 透传，服务端回显 chat(PACK_NONE)，出参返回协商到的 chat
+    fd = wbsock_connect(task, NULL, wsurl, "chat", 0, &skid, &spctx);
+    if (INVALID_SOCK == fd) {
+        LOG_WARN("ws chat handshake error.");
+        return ERR_FAILED;
+    }
+    if (NULL == spctx || 0 != spctx->index || 1 != spctx->cnt
+        || 4 != spctx->prots[0].lens || 0 != memcmp("chat", spctx->prots[0].data, 4)) {
+        LOG_WARN("ws chat subprotocol negotiate error.");
+        ev_close(&task->loader->netev, fd, skid, 1);
+        return ERR_FAILED;
+    }
+    pack = websock_pack_text(1, 1, "chat", 4, &psize);
+    resp = coro_send(task, fd, skid, pack, psize, &rsize, 0);
+    if (NULL == resp || WS_TEXT != websock_prot(resp)) {
+        LOG_WARN("ws chat echo error.");
+        ev_close(&task->loader->netev, fd, skid, 1);
+        return ERR_FAILED;
+    }
+    wdata = websock_data(resp, &wlen);
+    if (4 != wlen || 0 != memcmp("chat", wdata, wlen)) {
+        LOG_WARN("ws chat echo data error.");
+        ev_close(&task->loader->netev, fd, skid, 1);
+        return ERR_FAILED;
+    }
+    ev_close(&task->loader->netev, fd, skid, 1);
+    fd = wbsock_connect(task, NULL, wsurl, NULL, 0, &skid, NULL);
     if (INVALID_SOCK == fd) {
         LOG_WARN("ws connect error.");
         return ERR_FAILED;

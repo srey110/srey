@@ -586,10 +586,11 @@ static int32_t _lbson_mkint64_gc(lua_State *lua) {
 }
 // ---- encode 辅助 ----
 // 检查 Lua table 是否为纯序列（key 全为连续整数 1..n，n>0）
-static int32_t _table_is_array(lua_State *lua, int32_t idx) {
-    lua_Integer n = (lua_Integer)lua_rawlen(lua, idx);
+static int32_t _table_is_array(lua_State *lua, int32_t idx, lua_Integer *n) {
+    lua_Integer len = (lua_Integer)lua_rawlen(lua, idx);
     lua_Integer count;
-    if (0 == n) {
+    *n = len;
+    if (0 == len) {
         return 0;
     }
     count = 0;
@@ -598,7 +599,7 @@ static int32_t _table_is_array(lua_State *lua, int32_t idx) {
         lua_pop(lua, 1);
         count++;
     }
-    return count == n;
+    return count == len;
 }
 static void _lbson_encode_value(lua_State *lua, int32_t val_idx, bson_ctx *bson, const char *key);
 static void _lbson_encode_table_as_doc(lua_State *lua, int32_t idx, bson_ctx *bson) {
@@ -621,13 +622,24 @@ static void _lbson_encode_table_as_doc(lua_State *lua, int32_t idx, bson_ctx *bs
         lua_pop(lua, 1);
     }
 }
+// 非负整数(数组下标 0..n-1)转十进制字符串写入 buf 尾部，返回结果起始指针；避免 snprintf 热路径开销
+static const char *_bson_arr_key(char *buf, size_t buflen, lua_Integer i) {
+    char *p = buf + buflen - 1;
+    *p = '\0';
+    do {
+        *(--p) = (char)('0' + (int)(i % 10));
+        i /= 10;
+    } while (0 != i);
+    return p;
+}
 static void _lbson_encode_table_as_arr(lua_State *lua, int32_t idx, bson_ctx *bson, lua_Integer n) {
     lua_Integer i;
     char keybuf[24];
+    const char *key;
     for (i = 1; i <= n; i++) {
-        snprintf(keybuf, sizeof(keybuf), "%lld", (long long)(i - 1));
+        key = _bson_arr_key(keybuf, sizeof(keybuf), i - 1);
         lua_rawgeti(lua, idx, i);
-        _lbson_encode_value(lua, lua_gettop(lua), bson, keybuf);
+        _lbson_encode_value(lua, lua_gettop(lua), bson, key);
         lua_pop(lua, 1);
     }
 }
@@ -657,10 +669,10 @@ static void _lbson_encode_value(lua_State *lua, int32_t val_idx, bson_ctx *bson,
         bson_append_utf8_n(bson, key, s, lens);
         break;
     }
-    case LUA_TTABLE:
+    case LUA_TTABLE: {
         luaL_checkstack(lua, 4, "bson encode");
-        if (_table_is_array(lua, val_idx)) {
-            lua_Integer n = (lua_Integer)lua_rawlen(lua, val_idx);
+        lua_Integer n;
+        if (_table_is_array(lua, val_idx, &n)) {
             bson_append_array_begain(bson, key);
             _lbson_encode_table_as_arr(lua, val_idx, bson, n);
             bson_append_end(bson);
@@ -670,6 +682,7 @@ static void _lbson_encode_value(lua_State *lua, int32_t val_idx, bson_ctx *bson,
             bson_append_end(bson);
         }
         break;
+    }
     case LUA_TUSERDATA:
         if (NULL != luaL_testudata(lua, val_idx, MT_BSON_OID)) {
             lbson_oid_t *ud = lua_touserdata(lua, val_idx);
@@ -702,8 +715,9 @@ static int32_t _lbson_encode(lua_State *lua) {
     bson_ctx *bson = lua_newuserdata(lua, sizeof(bson_ctx));
     bson_init(bson, NULL, 0);
     ASSOC_MTABLE(lua, MT_BSON);
-    if (_table_is_array(lua, 1)) {
-        _lbson_encode_table_as_arr(lua, 1, bson, (lua_Integer)lua_rawlen(lua, 1));
+    lua_Integer n;
+    if (_table_is_array(lua, 1, &n)) {
+        _lbson_encode_table_as_arr(lua, 1, bson, n);
     } else {
         _lbson_encode_table_as_doc(lua, 1, bson);
     }
@@ -713,11 +727,11 @@ static int32_t _lbson_encode(lua_State *lua) {
 // ---- decode 辅助 ----
 static void _lbson_decode_document(lua_State *lua, char *data, size_t lens, int32_t is_array, int32_t depth);
 // 将迭代器当前字段解码并写入栈顶 table；null / 未知类型跳过
-static void _lbson_decode_field(lua_State *lua, bson_iter *iter, int32_t is_array, int32_t depth) {
+static void _lbson_decode_field(lua_State *lua, bson_iter *iter, int32_t is_array, int32_t idx, int32_t depth) {
     int32_t err;
     if (is_array) {
         // BSON 数组 key 是 "0","1"...，转为 Lua 1-base 整数索引
-        lua_pushinteger(lua, (lua_Integer)atoi(iter->key) + 1);
+        lua_pushinteger(lua, (lua_Integer)idx + 1);
     } else {
         lua_pushstring(lua, iter->key);
     }
@@ -857,8 +871,10 @@ static void _lbson_decode_document(lua_State *lua, char *data, size_t lens, int3
     bson_iter iter;
     bson_init(&sub, data, lens);
     bson_iter_init(&iter, &sub);
+    int32_t idx = 0;
     while (bson_iter_next(&iter)) {
-        _lbson_decode_field(lua, &iter, is_array, depth);
+        _lbson_decode_field(lua, &iter, is_array, idx, depth);
+        idx++;
     }
 }
 /// <summary>

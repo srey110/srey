@@ -307,6 +307,18 @@ static void test_http_status_line(CuTest *tc) {
         "GET / HTTP/1.1\r\n"
         "\r\n",
         1);
+    // 5. 请求行前导空格(SP)：不得静默剥离，须与字段行一致拒绝，防上游折进的边界分歧走私
+    _http_smuggle_check(tc,
+        " GET /admin HTTP/1.1\r\n"
+        "Host: a\r\n"
+        "\r\n",
+        1);
+    // 6. 请求行前导制表符(HTAB)：同上拒绝
+    _http_smuggle_check(tc,
+        "\tGET /admin HTTP/1.1\r\n"
+        "Host: a\r\n"
+        "\r\n",
+        1);
 }
 
 // chunked chunk-size 走私：第一次 unpack 解析 header(chunked)，第二次 unpack 解析 chunk-size 行；断言其是否被拒
@@ -927,6 +939,21 @@ static void test_redis_resp3_scalar(CuTest *tc) {
         buffer_ctx buf;
         buffer_init(&buf);
         _bput(&buf, "#x\r\n");
+        ud_cxt ud;
+        ZERO(&ud, sizeof(ud));
+        int32_t status = PROT_INIT;
+        redis_pack_ctx *pack = redis_unpack(&buf, &ud, &status);
+        CuAssertTrue(tc, NULL == pack);
+        CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+        _redis_udfree(&ud);
+        buffer_free(&buf);
+    }
+    // BOOL NUL 字节: "#\x00\r\n" → PROT_ERROR（旧代码 strchr 命中字面量终止符误判为合法 false）
+    {
+        buffer_ctx buf;
+        buffer_init(&buf);
+        char nulbool[] = { '#', '\0', '\r', '\n' };
+        buffer_append(&buf, nulbool, sizeof(nulbool));
         ud_cxt ud;
         ZERO(&ud, sizeof(ud));
         int32_t status = PROT_INIT;
@@ -1662,8 +1689,9 @@ static void test_smtp_dot_stuffing(CuTest *tc) {
 
 static void test_dns_request_pack(CuTest *tc) {
     char buf[256];
+    uint16_t id;
     /* example.com A 查询 */
-    size_t n = dns_request_pack(buf, "example.com", 0);
+    size_t n = dns_request_pack(buf, "example.com", 0, &id);
     /* 12(head) + 13(label:\x07example\x03com\x00) + 4(question) = 29 */
     CuAssertTrue(tc, 29 == (int)n);
 
@@ -1685,14 +1713,15 @@ static void test_dns_request_pack(CuTest *tc) {
     CuAssertTrue(tc, 0 == (uint8_t)buf[4] && 1 == (uint8_t)buf[5]);
 
     /* ipv6=1 → qtype=AAAA(28) */
-    n = dns_request_pack(buf, "example.com", 1);
+    n = dns_request_pack(buf, "example.com", 1, &id);
     CuAssertTrue(tc, 29 == (int)n);
     CuAssertTrue(tc, 0 == (uint8_t)buf[25] && 28 == (uint8_t)buf[26]);
 }
 
 static void test_dns_request_pack_tcp(CuTest *tc) {
     char buf[256];
-    size_t n = dns_request_pack_tcp(buf, "example.com", 0);
+    uint16_t id;
+    size_t n = dns_request_pack_tcp(buf, "example.com", 0, &id);
     /* TCP 前置 2 字节长度 + UDP 形态相同 */
     CuAssertTrue(tc, 2 + 29 == (int)n);
 
@@ -1765,7 +1794,7 @@ static void test_dns_parse_pack(CuTest *tc) {
         0x01, 0x02, 0x03, 0x04
     };
     size_t cnt = 0;
-    dns_ip *ips = dns_parse_pack((char *)resp, sizeof(resp), &cnt);
+    dns_ip *ips = dns_parse_pack((char *)resp, sizeof(resp), &cnt, 0x1234);
     CuAssertPtrNotNull(tc, ips);
     CuAssertTrue(tc, cnt >= 1);
     CuAssertStrEquals(tc, "1.2.3.4", ips[0].ip);
@@ -1781,7 +1810,7 @@ static void test_dns_parse_pack(CuTest *tc) {
         0xFF, 0xFF                /* ar_count=65535 */
     };
     size_t ecnt = 0;
-    dns_ip *eips = dns_parse_pack((char *)evil, sizeof(evil), &ecnt);
+    dns_ip *eips = dns_parse_pack((char *)evil, sizeof(evil), &ecnt, 0x0000);
     CuAssertTrue(tc, NULL == eips);
     CuAssertTrue(tc, 0 == ecnt);
 }
@@ -1799,7 +1828,7 @@ static void test_dns_parse_pack_truncated_flag(CuTest *tc) {
         0x01, 0x02, 0x03, 0x04
     };
     size_t cnt = 0;
-    dns_ip *ips = dns_parse_pack((char *)resp, sizeof(resp), &cnt);
+    dns_ip *ips = dns_parse_pack((char *)resp, sizeof(resp), &cnt, 0x1234);
     CuAssertTrue(tc, NULL == ips);
 }
 
@@ -1814,7 +1843,7 @@ static void test_dns_parse_pack_truncated_query(CuTest *tc) {
         0xC0
     };
     cnt = 0;
-    ips = dns_parse_pack((char *)trunc_ptr, sizeof(trunc_ptr), &cnt);
+    ips = dns_parse_pack((char *)trunc_ptr, sizeof(trunc_ptr), &cnt, 0x0000);
     CuAssertTrue(tc, NULL == ips);
     // label 截断：length=5 但缓冲区仅剩 3 字节数据
     uint8_t trunc_label[] = {
@@ -1822,8 +1851,33 @@ static void test_dns_parse_pack_truncated_query(CuTest *tc) {
         0x05, 'a', 'b', 'c'
     };
     cnt = 0;
-    ips = dns_parse_pack((char *)trunc_label, sizeof(trunc_label), &cnt);
+    ips = dns_parse_pack((char *)trunc_label, sizeof(trunc_label), &cnt, 0x0000);
     CuAssertTrue(tc, NULL == ips);
+}
+// DNS-欺骗：事务 ID 不匹配的响应(伪造/错配)应直接返回 NULL，正确 ID 才解析
+static void test_dns_parse_pack_wrong_id(CuTest *tc) {
+    // 合法响应，事务 ID = 0x1234（与 test_dns_parse_pack 相同）
+    uint8_t resp[] = {
+        0x12, 0x34, 0x81, 0x80, 0x00, 0x01, 0x00, 0x01,
+        0x00, 0x00, 0x00, 0x00,
+        0x07, 'e','x','a','m','p','l','e',
+        0x03, 'c','o','m', 0x00,
+        0x00, 0x01, 0x00, 0x01,
+        0xc0, 0x0c, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00,
+        0x01, 0x2c, 0x00, 0x04,
+        0x01, 0x02, 0x03, 0x04
+    };
+    size_t cnt = 0;
+    // 期望 ID 错配(0x9999) → 视为伪造响应，拒绝
+    dns_ip *ips = dns_parse_pack((char *)resp, sizeof(resp), &cnt, 0x9999);
+    CuAssertTrue(tc, NULL == ips);
+    // 期望 ID 正确(0x1234) → 正常解析出 1.2.3.4
+    cnt = 0;
+    ips = dns_parse_pack((char *)resp, sizeof(resp), &cnt, 0x1234);
+    CuAssertPtrNotNull(tc, ips);
+    CuAssertTrue(tc, cnt >= 1);
+    CuAssertStrEquals(tc, "1.2.3.4", ips[0].ip);
+    FREE(ips);
 }
 static void test_dns_set_get_ip(CuTest *tc) {
     const char *prev = dns_get_ip();
@@ -2065,10 +2119,10 @@ static void test_websock_pack_frames(CuTest *tc) {
 }
 
 static void test_websock_pack_handshake(CuTest *tc) {
-    char signkey[WS_SIGN_KEY_LENS];
-    ZERO(signkey, sizeof(signkey));
-    char *req = websock_pack_handshake("example.com", NULL, "mqtt", signkey);
+    ws_hs_ctx *hsctx = NULL;
+    char *req = websock_pack_handshake("example.com", NULL, "mqtt", &hsctx);
     CuAssertPtrNotNull(tc, req);
+    CuAssertPtrNotNull(tc, hsctx);
 
     /* 握手请求必须含 GET / Upgrade / Sec-WebSocket-Version 等关键头 */
     CuAssertTrue(tc, NULL != strstr(req, "GET "));
@@ -2080,9 +2134,68 @@ static void test_websock_pack_handshake(CuTest *tc) {
     /* 子协议字段写入 */
     CuAssertTrue(tc, NULL != strstr(req, "Sec-WebSocket-Protocol: mqtt"));
 
-    /* signkey 是 base64(sha1(key+GUID))，应非空 */
-    CuAssertTrue(tc, 0 != signkey[0]);
+    /* hsctx->signkey 是 base64(sha1(key+GUID))，应非空 */
+    CuAssertTrue(tc, 0 != hsctx->signkey[0]);
     FREE(req);
+    FREE(hsctx);
+
+    ws_hs_ctx *chatctx = NULL;
+    char *chatreq = websock_pack_handshake("example.com", NULL, "chat", &chatctx);
+    CuAssertPtrNotNull(tc, chatreq);
+    CuAssertPtrNotNull(tc, chatctx);
+    CuAssertTrue(tc, NULL != strstr(chatreq, "Sec-WebSocket-Protocol: chat"));
+    FREE(chatreq);
+    FREE(chatctx);
+
+    ws_hs_ctx *noctx = NULL;
+    char *noreq = websock_pack_handshake("example.com", NULL, NULL, &noctx);
+    CuAssertPtrNotNull(tc, noreq);
+    CuAssertPtrNotNull(tc, noctx);
+    CuAssertTrue(tc, NULL == strstr(noreq, "Sec-WebSocket-Protocol"));
+    FREE(noreq);
+    FREE(noctx);
+
+    /* 多值 + 前后 OWS 去除:req 头原样带列表,hsctx 解析出去空格后的 token */
+    ws_hs_ctx *mctx = NULL;
+    char *mreq = websock_pack_handshake("example.com", NULL, "mqtt , chat", &mctx);
+    CuAssertPtrNotNull(tc, mreq);
+    CuAssertPtrNotNull(tc, mctx);
+    CuAssertTrue(tc, NULL != strstr(mreq, "Sec-WebSocket-Protocol: mqtt , chat"));
+    CuAssertTrue(tc, 2 == mctx->cnt);
+    CuAssertTrue(tc, 4 == mctx->prots[0].lens && 0 == memcmp(mctx->prots[0].data, "mqtt", 4));
+    CuAssertTrue(tc, 4 == mctx->prots[1].lens && 0 == memcmp(mctx->prots[1].data, "chat", 4));
+    FREE(mreq);
+    FREE(mctx);
+
+    /* 空元素(RFC 7230 §7)忽略:"a,,b" 解析为 2 个有效 token */
+    ws_hs_ctx *ectx = NULL;
+    char *ereq = websock_pack_handshake("example.com", NULL, "a,,b", &ectx);
+    CuAssertPtrNotNull(tc, ereq);
+    CuAssertTrue(tc, 2 == ectx->cnt);
+    FREE(ereq);
+    FREE(ectx);
+
+    /* 子协议个数超过 WS_MAXCNT_SECPROT(8) → 返回 NULL */
+    ws_hs_ctx *octx = NULL;
+    CuAssertTrue(tc, NULL == websock_pack_handshake("example.com", NULL, "a,b,c,d,e,f,g,h,i", &octx));
+
+    /* 非法 token(含裸 LF,即 #1 崩溃向量)→ 返回 NULL */
+    ws_hs_ctx *bctx = NULL;
+    CuAssertTrue(tc, NULL == websock_pack_handshake("example.com", NULL, "a\nb", &bctx));
+}
+
+static void test_websock_secprot_match(CuTest *tc) {
+    pack_type sectype = PACK_NONE;
+    CuAssertTrue(tc, ERR_OK == websock_secprot_match("mqtt", 4, &sectype));
+    CuAssertTrue(tc, PACK_MQTT == sectype);
+    sectype = PACK_NONE;
+    CuAssertTrue(tc, ERR_FAILED == websock_secprot_match("MQTT", 4, &sectype));
+    CuAssertTrue(tc, PACK_NONE == sectype);
+    CuAssertTrue(tc, ERR_FAILED == websock_secprot_match("chat", 4, &sectype));
+    CuAssertTrue(tc, ERR_FAILED == websock_secprot_match("mqt", 3, &sectype));
+    sectype = PACK_NONE;
+    CuAssertTrue(tc, ERR_OK == websock_secprot_match("mqttXX", 4, &sectype));
+    CuAssertTrue(tc, PACK_MQTT == sectype);
 }
 
 /* 内部 websock_ctx 仅在 websock.c 中定义，测试中只复制布局够用的字段 */
@@ -3581,12 +3694,14 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_dns_parse_pack);
     SUITE_ADD_TEST(suite, test_dns_parse_pack_truncated_query);
     SUITE_ADD_TEST(suite, test_dns_parse_pack_truncated_flag);
+    SUITE_ADD_TEST(suite, test_dns_parse_pack_wrong_id);
     SUITE_ADD_TEST(suite, test_dns_set_get_ip);
     SUITE_ADD_TEST(suite, test_custz_head_fixed);
     SUITE_ADD_TEST(suite, test_custz_head_flag);
     SUITE_ADD_TEST(suite, test_custz_head_variable);
     SUITE_ADD_TEST(suite, test_websock_pack_frames);
     SUITE_ADD_TEST(suite, test_websock_pack_handshake);
+    SUITE_ADD_TEST(suite, test_websock_secprot_match);
     SUITE_ADD_TEST(suite, test_websock_unpack_text);
     SUITE_ADD_TEST(suite, test_websock_unpack_masked);
     SUITE_ADD_TEST(suite, test_websock_unpack_fragmented);

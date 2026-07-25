@@ -156,8 +156,8 @@ static int32_t _http_check_transfer(http_pack_ctx *pack, http_header_ctx *field,
 // 解析 HTTP 第一行（请求行或状态行），填充 pack->status[0..2]，返回指向第一个头部字段的指针
 static char *_http_parse_status(http_pack_ctx *pack) {
     char *head = pack->head.data;
-    head = skipempty(head, pack->head.lens);
-    if (NULL == head) {
+    if (0 == pack->head.lens
+        || ' ' == *head || '\t' == *head) {
         return NULL;
     }
     char *pcrlf = memstr(0, head, HEAD_REMAIN, FLAG_CRLF, CRLF_SIZE);
@@ -583,8 +583,15 @@ void http_pack_resp(binary_ctx *bwriter, int32_t code) {
     binary_set_va(bwriter, "HTTP/1.1 %d %s"FLAG_CRLF, code, http_code_status(code));
 }
 void http_pack_head(binary_ctx *bwriter, const char *key, const char *val) {
-    ASSERTAB(NULL == strpbrk(key, "\r\n") && NULL == strpbrk(val, "\r\n"), "HTTP header key/val must not contain CRLF.");
+    ASSERTAB(NULL == strpbrk(key, FLAG_CRLF) && NULL == strpbrk(val, FLAG_CRLF), "HTTP header key/val must not contain CRLF.");
     binary_set_va(bwriter, "%s: %s"FLAG_CRLF, key, val);
+}
+void http_pack_head2(binary_ctx *bwriter, const char *key, const char *val, size_t lens) {
+    ASSERTAB(NULL == strpbrk(key, FLAG_CRLF)
+        && NULL == memstr(0, val, lens, FLAG_CRLF, CRLF_SIZE), "HTTP header key/val must not contain CRLF.");
+    binary_set_va(bwriter, "%s: ", key);
+    binary_set_binary(bwriter, val, lens);
+    binary_set_binary(bwriter, FLAG_CRLF, CRLF_SIZE);
 }
 void http_pack_end(binary_ctx *bwriter) {
     binary_set_binary(bwriter, FLAG_CRLF, CRLF_SIZE);

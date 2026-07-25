@@ -516,9 +516,10 @@ static int32_t _lmysql_stmt_free(lua_State *lua) {
     if (NULL != *stmt) {
         size_t size;
         mysql_ctx *mysql = (*stmt)->mysql;
+        uint64_t skid = (*stmt)->skid;
         void *close = mysql_pack_stmt_close(*stmt, &size);
         if (INVALID_SOCK == mysql->client.sk.fd
-            || (*stmt)->skid != mysql->client.sk.skid) {// 连接已关或已重连(skid 变):stmt_id 属旧连接,发到新连接会误关同 id 语句
+            || skid != mysql->client.sk.skid) {// 连接已关或已重连(skid 变):stmt_id 属旧连接,发到新连接会误关同 id 语句
             FREE(close);
         } else {
             ev_send(&mysql->task->loader->netev, mysql->client.sk.fd, mysql->client.sk.skid, close, size, 0);

@@ -27,7 +27,7 @@ local function nslookup_udp(domain, ipv6)
         return nil
     end
     -- 打包 DNS 查询报文并同步发送到 DNS 服务器的 53 端口，等待响应
-    local req = dns.pack(domain, ipv6 and 1 or 0)
+    local req, id = dns.pack(domain, ipv6 and 1 or 0)
     if not req then
         srey.close(fd, skid)
         return nil
@@ -38,7 +38,7 @@ local function nslookup_udp(domain, ipv6)
         return nil
     end
     -- 解包响应，提取 IP 地址列表；TC 位置位时 dns.unpack 内部已按失败处理返回 nil
-    return dns.unpack(resp, resplens)
+    return dns.unpack(resp, resplens, id)
 end
 
 ---通过 TCP 查询 domain 的 IP 地址列表（RFC 1035 §4.2.2 / RFC 7766），适用于响应超 512 字节或 UDP 被屏蔽场景
@@ -50,7 +50,7 @@ local function nslookup_tcp(domain, ipv6)
     if INVALID_SOCK == fd then
         return nil
     end
-    local req = dns.pack_tcp(domain, ipv6 and 1 or 0)
+    local req, id = dns.pack_tcp(domain, ipv6 and 1 or 0)
     if not req then
         srey.close(fd, skid)
         return nil
@@ -61,7 +61,7 @@ local function nslookup_tcp(domain, ipv6)
     if not resp then
         return nil
     end
-    local ips = dns.unpack(resp, resplens)
+    local ips = dns.unpack(resp, resplens, id)
     return ips
 end
 

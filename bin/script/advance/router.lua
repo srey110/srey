@@ -134,40 +134,42 @@ local _KNOWN_METHODS = {
 ---@field html    fun(self:Ctx, code:integer, body:string?)        HTML 响应，自动附加 Content-Type
 ---@field respond fun(self:Ctx, code:integer, headers:table?, body:string?)  自定义响应
 
--- 构造请求上下文，附加响应辅助方法
+-- ctx 响应方法：共享一份挂在 CtxMeta.__index，避免每请求重建 4 个闭包
+local CtxMethods = {}
+function CtxMethods:text(code, body)
+    http.response(self.fd, self.skid, code, nil, tostring(body or ""))
+    self.responded = true
+end
+function CtxMethods:json(code, tbl)
+    http.response(self.fd, self.skid, code,
+        { ["Content-Type"] = "application/json" }, tbl)
+    self.responded = true
+end
+function CtxMethods:html(code, body)
+    http.response(self.fd, self.skid, code,
+        { ["Content-Type"] = "text/html; charset=utf-8" }, tostring(body or ""))
+    self.responded = true
+end
+function CtxMethods:respond(code, headers, body)
+    http.response(self.fd, self.skid, code, headers, body)
+    self.responded = true
+end
+-- ctx 元表：仅提供共享响应方法；body/headers 为急切物化的 raw 字段（见 _make_ctx），命中 rawget 不走 __index
+local CtxMeta = { __index = CtxMethods }
+-- 构造请求上下文；body/headers 急切物化为独立 Lua 值（pack 释放后仍有效，允许 handler 经 srey.fork/timer 延迟访问 ctx），params 由 dispatch 匹配后填充
 local function _make_ctx(fd, skid, pack, client, method, parsed, version)
-    local ctx = {
+    return setmetatable({
         fd      = fd,
         skid    = skid,
         client  = client,
         method  = method,
         version = version,
         path    = parsed.path or "/",
-        params  = nil,  -- 由 dispatch 在匹配后填充
         query   = parsed.param or {},
         body    = http.datastr(pack),
         headers = http.heads(pack) or {},
         responded = false,
-    }
-    function ctx:text(code, body)
-        http.response(self.fd, self.skid, code, nil, tostring(body or ""))
-        self.responded = true
-    end
-    function ctx:json(code, tbl)
-        http.response(self.fd, self.skid, code,
-            { ["Content-Type"] = "application/json" }, tbl)
-        self.responded = true
-    end
-    function ctx:html(code, body)
-        http.response(self.fd, self.skid, code,
-            { ["Content-Type"] = "text/html; charset=utf-8" }, tostring(body or ""))
-        self.responded = true
-    end
-    function ctx:respond(code, headers, body)
-        http.response(self.fd, self.skid, code, headers, body)
-        self.responded = true
-    end
-    return ctx
+    }, CtxMeta)
 end
 
 -- 执行中间件链，异常向上抛出由 dispatch 统一捕获。
@@ -198,6 +200,7 @@ function Router.new()
         _global_mw = {},    -- 全局中间件列表，对所有路由生效
         _mw_reg    = {},    -- 具名中间件注册表：name → fun，由 :define() 写入
         _stack     = {},    -- 分组上下文栈，group() 进入时压栈、退出时弹栈
+        _mw_version = 0,    -- 全局中间件版本号，use() 追加时自增，route chain 缓存据此失效重建
     }, Router)
 end
 
@@ -281,6 +284,7 @@ end
 ---@param mw string|fun(ctx:Ctx, next:fun()) 中间件名称或函数
 function Router:use(mw)
     self._global_mw[#self._global_mw + 1] = self:_resolve(mw)
+    self._mw_version = self._mw_version + 1
 end
 
 ---注册 GET 路由
@@ -385,16 +389,21 @@ function Router:dispatch(fd, skid, pack, client)
     local route = self._routes[idx]
     local ctx = _make_ctx(fd, skid, pack, client, method, parsed, status[3])
     ctx.params = params
-    -- 拼接执行链：全局中间件 → 路由级中间件 → handler
-    local chain = {}
-    for _, mw in ipairs(self._global_mw) do
-        chain[#chain + 1] = mw
+    -- 执行链（全局中间件 → 路由级中间件 → handler）注册期即静态确定，缓存到 route；
+    -- 仅当全局中间件版本变化（use() 追加）时重建，避免每请求重拼
+    local chain = route._chain
+    if route._chain_ver ~= self._mw_version then
+        chain = {}
+        for _, mw in ipairs(self._global_mw) do
+            chain[#chain + 1] = mw
+        end
+        for _, mw in ipairs(route.mws) do
+            chain[#chain + 1] = mw
+        end
+        chain[#chain + 1] = route.handler
+        route._chain = chain
+        route._chain_ver = self._mw_version
     end
-    for _, mw in ipairs(route.mws) do
-        chain[#chain + 1] = mw
-    end
-    --路由处理函数
-    chain[#chain + 1] = route.handler
     -- 链内任意位置抛出异常均由 srey.xpcall 兜底（自动 ERROR + traceback），避免 handler/中间件崩溃丢失响应
     local ok, err = srey.xpcall(_run_chain, chain, ctx, 1)
     -- 仅未响应时补 500

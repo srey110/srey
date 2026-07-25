@@ -4,10 +4,41 @@
 #include "utils/binary.h"
 #include "protocol/mqtt/mqtt_struct.h"
 
-//属性打包函数(MQTT5.0)
+/// <summary>
+/// 打包定长数值属性(MQTT5.0)
+/// </summary>
+/// <param name="props">属性 binary_ctx</param>
+/// <param name="flag">属性标识</param>
+/// <param name="val">数值</param>
+/// <returns>ERR_OK 成功，ERR_FAILED 失败</returns>
 int32_t mqtt_props_fixnum(binary_ctx *props, mqtt_prop_flag flag, uint32_t val);
+/// <summary>
+/// 打包变长整数(varint)属性(MQTT5.0)
+/// </summary>
+/// <param name="props">属性 binary_ctx</param>
+/// <param name="flag">属性标识</param>
+/// <param name="val">数值</param>
+/// <returns>ERR_OK 成功，ERR_FAILED 失败</returns>
 int32_t mqtt_props_varnum(binary_ctx *props, mqtt_prop_flag flag, uint32_t val);
+/// <summary>
+/// 打包二进制/字符串属性(MQTT5.0)
+/// </summary>
+/// <param name="props">属性 binary_ctx</param>
+/// <param name="flag">属性标识</param>
+/// <param name="data">数据</param>
+/// <param name="lens">数据长度</param>
+/// <returns>ERR_OK 成功，ERR_FAILED 失败</returns>
 int32_t mqtt_props_binary(binary_ctx *props, mqtt_prop_flag flag, void *data, size_t lens);
+/// <summary>
+/// 打包 key-value 字符串对属性(MQTT5.0)
+/// </summary>
+/// <param name="props">属性 binary_ctx</param>
+/// <param name="flag">属性标识</param>
+/// <param name="key">键</param>
+/// <param name="klens">键长度</param>
+/// <param name="val">值</param>
+/// <param name="vlens">值长度</param>
+/// <returns>ERR_OK 成功，ERR_FAILED 失败</returns>
 int32_t mqtt_props_kv(binary_ctx *props, mqtt_prop_flag flag, void *key, size_t klens, void *val, size_t vlens);
 /// <summary>
 /// 订阅 主题打包

@@ -14,7 +14,14 @@ void _mysql_udfree(ud_cxt *ud);
 void _mysql_closed(ud_cxt *ud);
 // 内部函数：SSL 握手完成后发送认证响应
 int32_t _mysql_ssl_exchanged(ev_ctx *ev, ud_cxt *ud);
-// 内部函数：MySQL 数据解包（验证阶段和命令阶段统一入口）
+/// <summary>
+/// MySQL 数据解包：验证阶段与命令阶段的统一入口
+/// </summary>
+/// <param name="ev">事件上下文</param>
+/// <param name="buf">接收缓冲区</param>
+/// <param name="ud">连接上下文，内部维护解析状态</param>
+/// <param name="status">输出：解包状态标志，见 prot_status</param>
+/// <returns>解析完成的 mpack_ctx，数据不足或出错返回 NULL</returns>
 void *mysql_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status);
 /// <summary>
 /// 查询该响应包之后是否还有更多结果集（多语句 / 存储过程 CALL 多结果集）

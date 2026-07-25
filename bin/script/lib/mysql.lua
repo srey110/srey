@@ -123,6 +123,7 @@ function ctx:query(sql, mbind)
     end
     -- 多结果集（多语句 / CALL）：一次请求可能产生多个响应包，逐个收齐；has_more 须在 reader.new 前读
     local results = {}
+    local failed = false
     while true do
         local more = mysql.has_more(mpack)
         local pktype = mysql.pack_type(mpack)
@@ -131,7 +132,12 @@ function ctx:query(sql, mbind)
         elseif MYSQL_PACK_TYPE.MPACK_ERR == pktype then
             results[#results + 1] = false
         else
-            results[#results + 1] = reader.new(mpack)
+            local rd = reader.new(mpack)
+            if rd then
+                results[#results + 1] = rd
+            else
+                failed = true -- 异常结果集：标记失败但继续排空剩余包，避免留在连接缓冲致下次查询 desync
+            end
         end
         if not more then
             break
@@ -140,6 +146,9 @@ function ctx:query(sql, mbind)
         if not mpack then
             return nil
         end
+    end
+    if failed then
+        return nil
     end
     return results
 end

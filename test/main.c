@@ -96,6 +96,7 @@ int main(int argc, char *argv[]) {
     srand((uint32_t)time(NULL));
     log_init(NULL, 0);
     bson_globle_init();
+    locale_init();
     coro_desc_init(0);
     dns_set_ip("8.8.8.8");
     const char *local = procpath();
@@ -412,6 +413,7 @@ int main(int argc, char *argv[]) {
 #endif
     log_free();
     _memcheck();
+    locale_free();
     PRINT("%s", "-----------test result-----------");
     uint32_t nclose = get_close_count();
     // auto_close 任务至少被触发一次才说明 _timeout_auto_close 路径有效

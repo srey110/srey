@@ -7,6 +7,7 @@
 #include "protocol/mongo/mongo.h"
 #include "protocol/smtp/smtp.h"
 #include "protocol/kcp/kcp.h"
+#include "protocol/websock.h"
 
 /// <summary>
 /// dns域名解析：先 UDP 查询，失败时回退到 TCP 查询
@@ -25,10 +26,12 @@ struct dns_ip *dns_lookup(task_ctx *task, const char *domain, int32_t ipv6, int3
 /// <param name="evssl">evssl_ctx</param>
 /// <param name="ws">ws://host:port</param>
 /// <param name="secprot">Sec-WebSocket-Protocol</param>
-/// <param name="skid">链接ID</param>
 /// <param name="netev">task_netev</param>
+/// <param name="skid">链接ID</param>
+/// <param name="spctx">out 协商到的子协议(ws_secprots_ctx)，可为 NULL 忽略；NULL 表示未协商(降级纯 WS)。由消息系统持有，仅本协程下次挂起前有效，勿持有勿释放</param>
 /// <returns>socket句柄</returns>
-SOCKET wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, const char *secprot, uint64_t *skid, int32_t netev);
+SOCKET wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, const char *secprot,
+    int32_t netev, uint64_t *skid, struct ws_secprots_ctx **spctx);
 /// <summary>
 /// redis链接
 /// </summary>
@@ -37,10 +40,11 @@ SOCKET wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, c
 /// <param name="ip">IP</param>
 /// <param name="port">端口</param>
 /// <param name="key">密码</param>
-/// <param name="skid">链接ID</param>
 /// <param name="netev">task_netev</param>
+/// <param name="skid">链接ID</param>
 /// <returns>socket句柄</returns>
-SOCKET redis_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ip, uint16_t port, const char *key, uint64_t *skid, int32_t netev);
+SOCKET redis_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ip, uint16_t port,
+    const char *key, int32_t netev, uint64_t *skid);
 /// <summary>
 /// myql链接
 /// </summary>

@@ -63,10 +63,11 @@ static int32_t _dns_encode_domain(char *qname, const char *domain, size_t *lenou
     *lenout = (size_t)(qname - qname_start);
     return ERR_OK;
 }
-size_t dns_request_pack(char *buf, const char *domain, int32_t ipv6) {
+size_t dns_request_pack(char *buf, const char *domain, int32_t ipv6, uint16_t *id) {
     dns_head head;
     uint16_t rid;
     csprng_rand(&rid, sizeof(rid));
+    *id = rid;
     head.id = (uint16_t)htons(rid);
     head.flags1 = DNS_FLAG1_RD;
     head.flags2 = 0;
@@ -86,8 +87,8 @@ size_t dns_request_pack(char *buf, const char *domain, int32_t ipv6) {
     memcpy(&buf[sizeof(dns_head) + qlens], &qinfo, sizeof(dns_question));
     return sizeof(dns_head) + qlens + sizeof(dns_question);
 }
-size_t dns_request_pack_tcp(char *buf, const char *domain, int32_t ipv6) {
-    size_t dlens = dns_request_pack(buf + 2, domain, ipv6);
+size_t dns_request_pack_tcp(char *buf, const char *domain, int32_t ipv6, uint16_t *id) {
+    size_t dlens = dns_request_pack(buf + 2, domain, ipv6, id);
     if (0 == dlens) {
         return 0;
     }
@@ -124,8 +125,8 @@ void *dns_unpack(buffer_ctx *buf, size_t *size, int32_t *status) {
 // 返回 ERR_OK 成功，ERR_FAILED 报文格式非法（越界/指针环路/name 溢出）
 static int32_t _dns_decode_domain(unsigned char *name, size_t namelen,
                                   unsigned char *reader, unsigned char *buffer, size_t buflen,
-                                  int32_t *count) {
-    uint32_t p = 0, jumped = 0, jump_count = 0, label_remaining = 0;
+                                  int32_t *count, uint32_t *jump_budget) {
+    uint32_t p = 0, jumped = 0, label_remaining = 0;
     uint32_t offset;
     unsigned char *buf_end = buffer + buflen;
     *count = 1;
@@ -147,10 +148,12 @@ static int32_t _dns_decode_domain(unsigned char *name, size_t namelen,
             if (reader + 1 >= buf_end) {
                 return ERR_FAILED;
             }
-            // 每个压缩指针至少 2 字节，jump 数学上限 = buflen / 2，防环路而不误拒深度压缩
-            if (jump_count++ >= buflen / 2) {
+            // 全报文共享跳转预算：单个报文内所有域名解压的指针跳转总数受限，
+            // 既防单名指针环路，也防多记录共享长指针链的跨记录 O(n^2) CPU 放大
+            if (0 == *jump_budget) {
                 return ERR_FAILED;
             }
+            (*jump_budget)--;
             offset = (uint32_t)((*reader & 0x3F) << 8) | *(reader + 1);
             if (offset >= buflen) {
                 return ERR_FAILED;
@@ -204,7 +207,7 @@ static int32_t _dns_decode_domain(unsigned char *name, size_t namelen,
 }
 // 解析 DNS 响应中的资源记录段（应答/授权/附加），提取 A/AAAA 类型的 IP 地址
 // 返回下一个 reader 位置，出错返回 NULL
-static char *_dns_parse_data(char *buf, size_t buflen, char *reader, uint16_t n, dns_ip *dnsips, int32_t *index) {
+static char *_dns_parse_data(char *buf, size_t buflen, char *reader, uint16_t n, dns_ip *dnsips, int32_t *index, uint32_t *jump_budget) {
     if (0 == n) {
         return reader;
     }
@@ -216,7 +219,7 @@ static char *_dns_parse_data(char *buf, size_t buflen, char *reader, uint16_t n,
     char domain[256];
     for (uint16_t i = 0; i < n; i++) {
         if (ERR_OK != _dns_decode_domain((unsigned char *)domain, sizeof(domain),
-                                     (unsigned char *)reader, (unsigned char *)buf, buflen, &cnt)) {
+                                     (unsigned char *)reader, (unsigned char *)buf, buflen, &cnt, jump_budget)) {
             return NULL;
         }
         reader += cnt;
@@ -254,12 +257,15 @@ static char *_dns_parse_data(char *buf, size_t buflen, char *reader, uint16_t n,
     }
     return reader;
 }
-dns_ip *dns_parse_pack(char *buf, size_t buflen, size_t *cnt) {
+dns_ip *dns_parse_pack(char *buf, size_t buflen, size_t *cnt, uint16_t id) {
     if (buflen < sizeof(dns_head)) {
         return NULL;
     }
     dns_head head;
     memcpy(&head, buf, sizeof(dns_head));
+    if (ntohs(head.id) != id) {
+        return NULL;
+    }
     if (BIT_CHECK(head.flags1, DNS_FLAG1_TC)) {
         // 截断 提前返回 NULL
         return NULL;
@@ -326,15 +332,16 @@ dns_ip *dns_parse_pack(char *buf, size_t buflen, size_t *cnt) {
     dns_ip *dnsips;
     MALLOC(dnsips, sizeof(dns_ip) * total);
     int32_t index = 0;
+    uint32_t jump_budget = (uint32_t)buflen;
     // 解析应答段
-    reader = _dns_parse_data(buf, buflen, reader, nans, dnsips, &index);
+    reader = _dns_parse_data(buf, buflen, reader, nans, dnsips, &index, &jump_budget);
     // 解析授权段
     if (NULL != reader) {
-        reader = _dns_parse_data(buf, buflen, reader, nauth, dnsips, &index);
+        reader = _dns_parse_data(buf, buflen, reader, nauth, dnsips, &index, &jump_budget);
     }
     // 解析附加段
     if (NULL != reader) {
-        reader = _dns_parse_data(buf, buflen, reader, nadd, dnsips, &index);
+        reader = _dns_parse_data(buf, buflen, reader, nadd, dnsips, &index, &jump_budget);
     }
     if (NULL == reader) {
         FREE(dnsips);

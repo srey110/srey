@@ -742,6 +742,10 @@ static int32_t _lmqtt_connack(lua_State *lua) {
     LUACHECK_LUDATA(lua, 1);
     mqtt_pack_ctx *pack = lua_touserdata(lua, 1);
     mqtt_connack_varhead *vh = (mqtt_connack_varhead *)pack->varhead;
+    if (NULL == vh) {
+        lua_pushnil(lua);
+        return 1;
+    }
     lua_pushinteger(lua, vh->sesspresent);
     lua_pushinteger(lua, vh->reason);
     return 2;
@@ -761,6 +765,10 @@ static int32_t _lmqtt_publish(lua_State *lua) {
     LUACHECK_LUDATA(lua, 1);
     mqtt_pack_ctx *pack = lua_touserdata(lua, 1);
     mqtt_publish_varhead *vh = (mqtt_publish_varhead *)pack->varhead;
+    if (NULL == vh) {
+        lua_pushnil(lua);
+        return 1;
+    }
     mqtt_publish_payload *pl = (mqtt_publish_payload *)pack->payload;
     lua_pushinteger(lua, vh->dup);
     lua_pushinteger(lua, vh->qos);
@@ -786,6 +794,10 @@ static int32_t _lmqtt_puback(lua_State *lua) {
     LUACHECK_LUDATA(lua, 1);
     mqtt_pack_ctx *pack = lua_touserdata(lua, 1);
     mqtt_pubackrel_varhead *vh = (mqtt_pubackrel_varhead *)pack->varhead;
+    if (NULL == vh) {
+        lua_pushnil(lua);
+        return 1;
+    }
     lua_pushinteger(lua, vh->packid);
     lua_pushinteger(lua, vh->reason);
     return 2;
@@ -800,6 +812,10 @@ static int32_t _lmqtt_pubrec(lua_State *lua) {
     LUACHECK_LUDATA(lua, 1);
     mqtt_pack_ctx *pack = lua_touserdata(lua, 1);
     mqtt_pubackrel_varhead *vh = (mqtt_pubackrel_varhead *)pack->varhead;
+    if (NULL == vh) {
+        lua_pushnil(lua);
+        return 1;
+    }
     lua_pushinteger(lua, vh->packid);
     lua_pushinteger(lua, vh->reason);
     return 2;
@@ -814,6 +830,10 @@ static int32_t _lmqtt_pubrel(lua_State *lua) {
     LUACHECK_LUDATA(lua, 1);
     mqtt_pack_ctx *pack = lua_touserdata(lua, 1);
     mqtt_pubackrel_varhead *vh = (mqtt_pubackrel_varhead *)pack->varhead;
+    if (NULL == vh) {
+        lua_pushnil(lua);
+        return 1;
+    }
     lua_pushinteger(lua, vh->packid);
     lua_pushinteger(lua, vh->reason);
     return 2;
@@ -828,6 +848,10 @@ static int32_t _lmqtt_pubcomp(lua_State *lua) {
     LUACHECK_LUDATA(lua, 1);
     mqtt_pack_ctx *pack = lua_touserdata(lua, 1);
     mqtt_pubackrel_varhead *vh = (mqtt_pubackrel_varhead *)pack->varhead;
+    if (NULL == vh) {
+        lua_pushnil(lua);
+        return 1;
+    }
     lua_pushinteger(lua, vh->packid);
     lua_pushinteger(lua, vh->reason);
     return 2;
@@ -842,6 +866,10 @@ static int32_t _lmqtt_subscribe(lua_State *lua) {
     LUACHECK_LUDATA(lua, 1);
     mqtt_pack_ctx *pack = lua_touserdata(lua, 1);
     mqtt_subreqresp_varhead *vh = (mqtt_subreqresp_varhead *)pack->varhead;
+    if (NULL == vh) {
+        lua_pushnil(lua);
+        return 1;
+    }
     mqtt_subscribe_payload *pl = (mqtt_subscribe_payload *)pack->payload;
     lua_pushinteger(lua, vh->packid);
     uint32_t cnt = (NULL == pl) ? 0 : array_size(&pl->subop);
@@ -873,6 +901,10 @@ static int32_t _lmqtt_unsubscribe(lua_State *lua) {
     LUACHECK_LUDATA(lua, 1);
     mqtt_pack_ctx *pack = lua_touserdata(lua, 1);
     mqtt_subreqresp_varhead *vh = (mqtt_subreqresp_varhead *)pack->varhead;
+    if (NULL == vh) {
+        lua_pushnil(lua);
+        return 1;
+    }
     mqtt_unsubscribe_payload *pl = (mqtt_unsubscribe_payload *)pack->payload;
     lua_pushinteger(lua, vh->packid);
     uint32_t cnt = (NULL == pl) ? 0 : array_size(&pl->topics);
@@ -896,6 +928,10 @@ static int32_t _lmqtt_suback(lua_State *lua) {
     LUACHECK_LUDATA(lua, 1);
     mqtt_pack_ctx *pack = lua_touserdata(lua, 1);
     mqtt_subreqresp_varhead *vh = (mqtt_subreqresp_varhead *)pack->varhead;
+    if (NULL == vh) {
+        lua_pushnil(lua);
+        return 1;
+    }
     mqtt_reasonlist_payload *pl = (mqtt_reasonlist_payload *)pack->payload;
     lua_pushinteger(lua, vh->packid);
     if (NULL != pl && pl->rlens > 0) {
@@ -915,6 +951,10 @@ static int32_t _lmqtt_unsuback(lua_State *lua) {
     LUACHECK_LUDATA(lua, 1);
     mqtt_pack_ctx *pack = lua_touserdata(lua, 1);
     mqtt_subreqresp_varhead *vh = (mqtt_subreqresp_varhead *)pack->varhead;
+    if (NULL == vh) {
+        lua_pushnil(lua);
+        return 1;
+    }
     mqtt_reasonlist_payload *pl = (mqtt_reasonlist_payload *)pack->payload;
     lua_pushinteger(lua, vh->packid);
     if (NULL != pl && pl->rlens > 0) {

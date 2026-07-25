@@ -15,7 +15,13 @@ struct http_pack_ctx;
 void _http_pkfree(struct http_pack_ctx *pack);
 // 释放与 ud_cxt 关联的 http 上下文资源
 void _http_udfree(ud_cxt *ud);
-// http 解包：从缓冲区中解析完整 HTTP 报文（头部+内容/chunked）
+/// <summary>
+/// HTTP 解包：从缓冲区解析完整 HTTP 报文（头部 + 内容 / chunked）
+/// </summary>
+/// <param name="buf">接收缓冲区</param>
+/// <param name="ud">连接上下文，内部维护解析状态</param>
+/// <param name="status">输出：解包状态标志，见 prot_status</param>
+/// <returns>解析完成的 http_pack_ctx，数据不足或出错返回 NULL</returns>
 struct http_pack_ctx *http_unpack(buffer_ctx *buf, ud_cxt *ud, int32_t *status);
 /// <summary>
 /// 获取状态码对应描述
@@ -43,6 +49,7 @@ void http_pack_resp(binary_ctx *bwriter, int32_t code);
 /// <param name="key">键</param>
 /// <param name="val">值</param>
 void http_pack_head(binary_ctx *bwriter, const char *key, const char *val);
+void http_pack_head2(binary_ctx *bwriter, const char *key, const char *val, size_t lens);
 /// <summary>
 /// http结束包, 只有头部时使用
 /// </summary>

@@ -89,7 +89,7 @@ typedef int32_t(*_handshaked_push)(SOCKET fd, uint64_t skid, int32_t client,
 // 消息汇：网络事件回调向上推消息的接口，由 task 层注册实现
 typedef void*(*prots_emit_begin_cb)(void *loader, name_t handle);// 开窗：grab 目标，返回不透明句柄，NULL=目标不存在
 typedef void(*prots_emit_cb)(void *target, message_ctx *msg);// 推一条消息给已开窗的目标
-typedef void(*prots_emit_end_cb)(void *target);              // 关窗：释放 begin 取得的句柄
+typedef void(*prots_emit_end_cb)(void *target);// 关窗：释放 begin 取得的句柄
 typedef struct prot_emit {
     prots_emit_begin_cb begin;
     prots_emit_cb emit;

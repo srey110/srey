@@ -64,7 +64,7 @@ static int32_t _wrong_type_error(task_ctx *task, SOCKET fd, uint64_t skid) {
 static void _startup(task_ctx *task) {
     task_redis_args *arg = (task_redis_args *)coro_get_arg(task);
     const char *key = EMPTYSTR(arg->key) ? NULL : arg->key;
-    arg->fd = redis_connect(task, NULL, arg->host, arg->port, key, &arg->skid, 0);
+    arg->fd = redis_connect(task, NULL, arg->host, arg->port, key, 0, &arg->skid);
     if (INVALID_SOCK == arg->fd) {
         LOG_ERROR("redis connect error.");
         return;

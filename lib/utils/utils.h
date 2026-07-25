@@ -196,6 +196,21 @@ void *memstr(int32_t ncs, const void *ptr, size_t plens, const void *what, size_
 /// <returns>void *, NULL全为空</returns>
 void *skipempty(const void *ptr, size_t plens);
 /// <summary>
+/// 初始化用于 locale 无关数值解析的 C locale 句柄，须在启动期单线程调用一次（strtod_c 依赖）
+/// </summary>
+void locale_init(void);
+/// <summary>
+/// 释放 locale_init 创建的 C locale 句柄
+/// </summary>
+void locale_free(void);
+/// <summary>
+/// 按 C locale 解析 double（小数点恒为 '.'），不受进程 LC_NUMERIC 影响
+/// </summary>
+/// <param name="str">NUL 结尾数值字符串</param>
+/// <param name="endptr">输出：解析停止位置</param>
+/// <returns>解析出的 double</returns>
+double strtod_c(const char *str, char **endptr);
+/// <summary>
 /// 转大写
 /// </summary>
 /// <param name="str">源字符</param>

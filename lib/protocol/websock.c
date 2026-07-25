@@ -9,6 +9,7 @@
 #define SIGN_KEY_LENS 16 // 握手签名（RFC 6455：16 字节随机 nonce，base64 后 24 字符）
 #define HEAD_LESN 2 // WebSocket 帧最小头部长度（字节）
 #define SIGNKEY "258EAFA5-E914-47DA-95CA-C5AB0DC85B11" // WebSocket 握手固定密钥后缀（RFC 6455）
+#define SECPROT_SPLIT_FLAG ','
 
 // WebSocket 帧解析状态
 typedef enum parse_status {
@@ -37,8 +38,13 @@ typedef struct websock_ctx {
     ud_cxt *ud;            // 子协议的 ud_cxt（用于子协议解包）
     websock_pack_ctx *pack; // 当前正在解析的帧（DATA 状态下有效）
 }websock_ctx;
-
+typedef struct websock_secprot_pack {
+    pack_type pktype;
+    size_t splens;
+    const char *secprot;
+}websock_secprot_pack;
 static _handshaked_push _hs_push; // 握手完成后的推送回调
+static const websock_secprot_pack _ws_secprot_pack[] = { {PACK_MQTT, strlen("mqtt"), "mqtt"} };
 
 #if defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
     #include <emmintrin.h>
@@ -109,7 +115,7 @@ void _websock_udfree(ud_cxt *ud) {
     if (NULL == ud->context) {
         return;
     }
-    //客户端还未完成握手，释放signkey
+    //客户端还未完成握手，释放握手上下文 hsctx
     if (INIT == ud->status) {
         FREE(ud->context);
         return;
@@ -146,16 +152,6 @@ static int32_t _websock_set_secextra_cb(struct watcher_ctx *watcher, struct sock
 }
 int32_t websock_set_secextra(ev_ctx *ev, SOCKET fd, uint64_t skid, void *val) {
     return ev_props(ev, fd, skid, _websock_set_secextra_cb, NULL, val, 0);
-}
-/* 直接用 HTTP 解析器返回的原始指针（非 NUL 结尾）比对已知子协议名称，
- * 长度和内容均须匹配，无需额外内存分配。 */
-static int32_t _websock_sec_prot(const char *data, size_t lens, pack_type *sectype) {
-    if (lens == sizeof("mqtt") - 1
-        && 0 == _memicmp(data, "mqtt", sizeof("mqtt") - 1)) {
-        *sectype = PACK_MQTT;
-        return ERR_OK;
-    }
-    return ERR_FAILED;
 }
 // 服务端侧握手校验：验证 GET 请求中的 Connection/Upgrade/Sec-WebSocket-Version/Key 字段
 static http_header_ctx *_websock_handshake_svcheck(struct http_pack_ctx *hpack) {
@@ -219,6 +215,110 @@ static void _websock_sign(char *key, size_t klens, char bs64sha1[B64EN_SIZE(SHA1
     digest_final(&digest, sha1str);
     bs64_encode(sha1str, sizeof(sha1str), bs64sha1);
 }
+int32_t websock_secprot_match(const char *data, size_t lens, pack_type *sectype) {
+    size_t n = ARRAY_SIZE(_ws_secprot_pack);
+    const websock_secprot_pack *spp;
+    for (size_t i = 0; i < n; i++) {
+        spp = &_ws_secprot_pack[i];
+        if (lens == spp->splens && 0 == memcmp(data, spp->secprot, lens)) {
+            *sectype = spp->pktype;
+            return ERR_OK;
+        }
+    }
+    return ERR_FAILED;
+}
+// 判断 [data,lens) 是否为合法 RFC 7230 token(非空且全为 tchar)
+static int32_t _ws_is_token(const char *data, size_t lens) {
+    if (0 == lens) {
+        return 0;
+    }
+    unsigned char c;
+    for (size_t i = 0; i < lens; i++) {
+        c = (unsigned char)data[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+            || NULL != memchr("!#$%&'*+-.^_`|~", c, sizeof("!#$%&'*+-.^_`|~") - 1))) {
+            return 0;
+        }
+    }
+    return 1;
+}
+// 每段去前后 OWS、跳过空段、校验为合法 token(非法整体拒绝),压实后返回有效数量,ERR_FAILED失败
+static int32_t _websock_check_secprot(buf_ctx *segs, int32_t cnt) {
+    int32_t n = 0;
+    char *data;
+    size_t lens;
+    for (int32_t i = 0; i < cnt; i++) {
+        data = segs[i].data;
+        lens = segs[i].lens;
+        while (lens > 0 && (' ' == *data || '\t' == *data)) {
+            data++;
+            lens--;
+        }
+        while (lens > 0 && (' ' == data[lens - 1] || '\t' == data[lens - 1])) {
+            lens--;
+        }
+        if (0 == lens) {
+            continue;
+        }
+        if (!_ws_is_token(data, lens)) {
+            return ERR_FAILED;
+        }
+        segs[n].data = data;
+        segs[n].lens = lens;
+        n++;
+    }
+    return n;
+}
+//拆分 解析子协议
+static int32_t _websock_secprot_split(char *data, size_t lens, buf_ctx prots[WS_MAXCNT_SECPROT]) {
+    int32_t n = split2(data, lens, SECPROT_SPLIT_FLAG, prots, WS_MAXCNT_SECPROT);
+    if (ERR_FAILED == n) {
+        return ERR_FAILED;
+    }
+    return _websock_check_secprot(prots, n);
+}
+// 服务端子协议校验
+static int32_t _websock_secprot_check_server(char *secprots, size_t lens, pack_type *sectype, ws_secprots_ctx **spctx) {
+    ws_secprots_ctx *ctx;
+    CALLOC(ctx, 1, sizeof(ws_secprots_ctx) + lens + 1);
+    ctx->index = -1;
+    ctx->dlens = lens;
+    memcpy(ctx->data, secprots, lens);
+    ctx->cnt = _websock_secprot_split(ctx->data, lens, ctx->prots);
+    if (ERR_FAILED == ctx->cnt) {
+        FREE(ctx);
+        return ERR_FAILED;
+    }
+    for (int32_t i = 0; i < ctx->cnt; i++) {
+        if (ERR_OK == websock_secprot_match(ctx->prots[i].data, ctx->prots[i].lens, sectype)) {
+            ctx->index = i;
+            break;
+        }
+    }
+    // 无匹配的，默认选第一个
+    if (-1 == ctx->index && ctx->cnt > 0) {
+        ctx->index = 0;
+    }
+    *spctx = ctx;
+    return ERR_OK;
+}
+static int32_t _websock_handshake_respond(ev_ctx *ev, SOCKET fd, uint64_t skid,
+    http_header_ctx *signstr, ws_secprots_ctx *spctx) {
+    binary_ctx bwriter;
+    binary_init(&bwriter, NULL, 0, 0);
+    http_pack_resp(&bwriter, 101);
+    http_pack_head(&bwriter, "Upgrade", "websocket");
+    http_pack_head(&bwriter, "Connection", "Upgrade");
+    char b64[B64EN_SIZE(SHA1_BLOCK_SIZE)];
+    _websock_sign(signstr->value.data, signstr->value.lens, b64);
+    http_pack_head(&bwriter, "Sec-WebSocket-Accept", b64);
+    if (NULL != spctx && -1 != spctx->index) {
+        http_pack_head2(&bwriter, "Sec-WebSocket-Protocol",
+            spctx->prots[spctx->index].data, spctx->prots[spctx->index].lens);
+    }
+    http_pack_end(&bwriter);
+    return ev_send(ev, fd, skid, bwriter.data, bwriter.offset, 0);
+}
 // 服务端握手处理：发送 101 响应并通知上层握手成功（或失败）
 static int32_t _websock_handshake_server(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t client,
     ud_cxt *ud, struct http_pack_ctx *hpack, int32_t *status, pack_type *sectype) {
@@ -231,8 +331,6 @@ static int32_t _websock_handshake_server(ev_ctx *ev, SOCKET fd, uint64_t skid, i
         return ERR_FAILED;
     }
     //签名base64校验
-    //缓冲区按 B64DE_SIZE(B64EN_SIZE(SIGN_KEY_LENS))=22 字节分配，避免恶意客户端传入
-    //合法长度区间内（lens<25）但解码字节数 >SIGN_KEY_LENS 时 bs64_decode 在校验返回值前写越界
     char key[B64DE_SIZE(B64EN_SIZE(SIGN_KEY_LENS))];
     if (SIGN_KEY_LENS != bs64_decode(signstr->value.data, signstr->value.lens, key)) {
         BIT_SET(*status, PROT_ERROR);
@@ -240,41 +338,25 @@ static int32_t _websock_handshake_server(ev_ctx *ev, SOCKET fd, uint64_t skid, i
         return ERR_FAILED;
     }
     //子协议校验
+    ws_secprots_ctx *spctx = NULL;
     size_t lens = 0;
     char *sechead = http_header(hpack, "Sec-WebSocket-Protocol", &lens);
-    char *secprot = NULL;
-    if (NULL != sechead && 0 != lens) {
-        /* 先直接比较原始头部值（非 NUL 结尾指针），
-         * 仅在协议被支持时才分配持久化副本。 */
-        if (ERR_OK != _websock_sec_prot(sechead, lens, sectype)) {
+    if (lens > 0) {
+        if (ERR_OK != _websock_secprot_check_server(sechead, lens, sectype, &spctx)) {
             BIT_SET(*status, PROT_ERROR);
             _hs_push(fd, skid, client, ud, ERR_FAILED, NULL, 0);
             return ERR_FAILED;
         }
-        secprot = dup_zero(sechead, lens);
     }
-    binary_ctx bwriter;
-    binary_init(&bwriter, NULL, 0, 0);
-    http_pack_resp(&bwriter, 101);
-    http_pack_head(&bwriter, "Upgrade", "websocket");
-    http_pack_head(&bwriter, "Connection", "Upgrade");
-    char b64[B64EN_SIZE(SHA1_BLOCK_SIZE)];
-    _websock_sign(signstr->value.data, signstr->value.lens, b64);
-    http_pack_head(&bwriter, "Sec-WebSocket-Accept", b64);
-    if (NULL != secprot) {
-        http_pack_head(&bwriter, "Sec-WebSocket-Protocol", secprot);
-    }
-    http_pack_end(&bwriter);
-    if (ERR_OK != ev_send(ev, fd, skid, bwriter.data, bwriter.offset, 0)) {
+    //返回握手消息
+    if (ERR_OK != _websock_handshake_respond(ev, fd, skid, signstr, spctx)) {
         BIT_SET(*status, PROT_ERROR);
-        //ev_send(copy=0) 失败时 bwriter.data 由事件层接管释放；
-        //secprot 已分配但未交付 _hs_push，必须本函数释放避免泄漏
-        FREE(secprot);
+        FREE(spctx);
         _hs_push(fd, skid, client, ud, ERR_FAILED, NULL, 0);
         return ERR_FAILED;
     }
-    //secprot 已随握手消息交付 _hs_push，最终在 _message_clean 中释放
-    if (ERR_OK != _hs_push(fd, skid, client, ud, ERR_OK, secprot, lens)) {
+    // 交由应用层处理 子协议 token
+    if (ERR_OK != _hs_push(fd, skid, client, ud, ERR_OK, spctx, 0)) {
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     } else {
@@ -332,11 +414,37 @@ static http_header_ctx *_websock_client_checkhs(struct http_pack_ctx *hpack) {
     }
     return sign;
 }
+// 检查是否包含子协议
+static int32_t _websock_have_secprot(buf_ctx *segs, int32_t cnt, const char *secprot, size_t splens) {
+    for (int32_t i = 0; i < cnt; i++) {
+        if (buf_compare(&segs[i], secprot, splens)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+// 客户端子协议校验
+static int32_t _websock_secprot_check_client(ws_hs_ctx *hsctx, char *secprot, size_t lens, pack_type *sectype, ws_secprots_ctx **spctx) {
+    if (!_websock_have_secprot(hsctx->prots, hsctx->cnt, secprot, lens)) {
+        return ERR_FAILED;
+    }
+    ws_secprots_ctx *ctx;
+    CALLOC(ctx, 1, sizeof(ws_secprots_ctx) + lens + 1);
+    ctx->index = 0;
+    ctx->cnt = 1;
+    ctx->dlens = lens;
+    memcpy(ctx->data, secprot, lens);
+    ctx->prots[0].data = ctx->data;
+    ctx->prots[0].lens = lens;
+    *spctx = ctx;
+    (void)websock_secprot_match(secprot, lens, sectype);
+    return ERR_OK;
+}
 // 客户端握手处理：验证服务端响应的 Accept 签名并通知上层握手成功（或失败）
 static int32_t _websock_handshake_client(SOCKET fd, uint64_t skid, int32_t client, ud_cxt *ud,
     struct http_pack_ctx *hpack, int32_t *status, pack_type *sectype) {
-    char *signkey = (char *)ud->context;
-    if (NULL == signkey) {
+    ws_hs_ctx *hsctx = ud->context;
+    if (NULL == hsctx) {
         BIT_SET(*status, PROT_ERROR);
         _hs_push(fd, skid, client, ud, ERR_FAILED, NULL, 0);
         return ERR_FAILED;
@@ -344,28 +452,32 @@ static int32_t _websock_handshake_client(SOCKET fd, uint64_t skid, int32_t clien
     //签名校验
     http_header_ctx *signstr = _websock_client_checkhs(hpack);
     if (NULL == signstr
-        || !buf_compare(&signstr->value, signkey, strlen(signkey))) {
+        || !buf_compare(&signstr->value, hsctx->signkey, strlen(hsctx->signkey))) {
         BIT_SET(*status, PROT_ERROR);
         _hs_push(fd, skid, client, ud, ERR_FAILED, NULL, 0);
         return ERR_FAILED;
     }
     //子协议校验
+    ws_secprots_ctx *spctx = NULL;
     size_t lens = 0;
     char *sechead = http_header(hpack, "Sec-WebSocket-Protocol", &lens);
-    char *secprot = NULL;
-    if (NULL != sechead && 0 != lens) {
-        if (ERR_OK != _websock_sec_prot(sechead, lens, sectype)) {
+    if (lens > 0) {
+        if (ERR_OK != _websock_secprot_check_client(hsctx, sechead, lens, sectype, &spctx)) {
             BIT_SET(*status, PROT_ERROR);
             _hs_push(fd, skid, client, ud, ERR_FAILED, NULL, 0);
+            LOG_WARN("Sec-WebSocket-Protocol not support.");
             return ERR_FAILED;
         }
-        secprot = dup_zero(sechead, lens);
+    } else if (hsctx->cnt > 0) {
+        // 请求了子协议但服务端未回显：RFC 6455 §4.1 允许，降级为纯 WS
+        LOG_WARN("Sec-WebSocket-Protocol not negotiated by server, downgraded to plain WebSocket.");
     }
-    //secprot 最终在 _message_clean 释放
-    if (ERR_OK != _hs_push(fd, skid, client, ud, ERR_OK, secprot, lens)) {
+    //spctx 最终在 _message_clean 释放
+    if (ERR_OK != _hs_push(fd, skid, client, ud, ERR_OK, spctx, 0)) {
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     } else {
+        FREE(ud->context);
         ud->status = START;
         return ERR_OK;
     }
@@ -397,14 +509,10 @@ static void _websock_handshake(ev_ctx *ev, SOCKET fd, uint64_t skid, int32_t cli
         rtn = _websock_handshake_server(ev, fd, skid, client, ud, hpack, status, &sectype);
     }
     if (ERR_OK == rtn) {
-        if (client) {
-            //客户端释放signkey
-            FREE(ud->context);
-        }
         CALLOC(ud->context, 1, sizeof(websock_ctx));
         websock_ctx *ws = (websock_ctx *)ud->context;
         ws->secprot = sectype;
-        if (PACK_NONE != sectype) {//加密协议
+        if (PACK_NONE != sectype) {
             MALLOC(ws->buf, sizeof(buffer_ctx));
             buffer_init(ws->buf);
             CALLOC(ws->ud, 1, sizeof(ud_cxt));
@@ -764,7 +872,27 @@ static void _websock_sign_keys(char bs64key[B64EN_SIZE(SIGN_KEY_LENS)], char bs6
     bs64_encode(key, SIGN_KEY_LENS, bs64key);
     _websock_sign(bs64key, strlen(bs64key), bs64sha1key);
 }
-char *websock_pack_handshake(const char *host, const char *uri, const char *secprot, char *signkey) {
+// ws_hs_ctx 初始化
+static ws_hs_ctx *_websock_hsctx_init(const char *secprot, size_t splens) {
+    ws_hs_ctx *ctx;
+    CALLOC(ctx, 1, sizeof(ws_hs_ctx) + splens + 1);
+    ctx->dlens = splens;
+    if (splens > 0) {
+        memcpy(ctx->data, secprot, splens);
+        ctx->cnt = _websock_secprot_split(ctx->data, splens, ctx->prots);
+        if (ERR_FAILED == ctx->cnt) {
+            FREE(ctx);
+            return NULL;
+        }
+    }
+    return ctx;
+}
+char *websock_pack_handshake(const char *host, const char *uri, const char *secprot, ws_hs_ctx **hsctx) {
+    size_t splens = (NULL == secprot ? 0 : strlen(secprot));
+    ws_hs_ctx *ctx = _websock_hsctx_init(secprot, splens);
+    if (NULL == ctx) {
+        return NULL;
+    }
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
     http_pack_req(&bwriter, "GET", EMPTYSTR(uri) ? "/" : uri);
@@ -774,14 +902,15 @@ char *websock_pack_handshake(const char *host, const char *uri, const char *secp
     http_pack_head(&bwriter, "Upgrade", "websocket");
     http_pack_head(&bwriter, "Connection", "Upgrade,Keep-Alive");
     char bs64key[B64EN_SIZE(SIGN_KEY_LENS)];
-    _websock_sign_keys(bs64key, signkey);
+    _websock_sign_keys(bs64key, ctx->signkey);
     http_pack_head(&bwriter, "Sec-WebSocket-Key", bs64key);
     http_pack_head(&bwriter, "Sec-WebSocket-Version", "13");
-    if (!EMPTYSTR(secprot)) {
+    if (splens > 0) {
         http_pack_head(&bwriter, "Sec-WebSocket-Protocol", secprot);
     }
     http_pack_end(&bwriter);
     bwriter.data[bwriter.offset] = '\0';
+    *hsctx = ctx;
     return bwriter.data;
 }
 void _websock_init(void *hspush) {

@@ -49,10 +49,11 @@ wbsk.unpack = websock.unpack
 ---解析 ws:// 或 wss:// URL，建立 WebSocket 连接并完成握手
 ---@param ws string WebSocket URL，如 "ws://host:port/path"
 ---@param sslname SSL_NAME wss 时必须为有效 SSL 上下文名；ws 时传 SSL_NAME.NONE
----@param secprot string? 子协议名（Sec-WebSocket-Protocol）
+---@param secprot string? 子协议名（Sec-WebSocket-Protocol），可逗号分隔多个
 ---@param netev NET_EV? 事件订阅掩码
 ---@return integer fd socket fd；任一步失败返回 INVALID_SOCK
 ---@return integer? skid 连接 skid；仅在 fd 有效时返回
+---@return lightuserdata? spctx 协商到的子协议(ws_secprots_ctx)，用 websock.secprots 解析；未协商/降级为 nil；仅本协程下次挂起前有效
 function wbsk.connect(ws, sslname, secprot, netev)
     local url = srey_url.parse(ws, false)
     if not url then
@@ -78,7 +79,7 @@ function wbsk.connect(ws, sslname, secprot, netev)
     if not port then
         port = ("wss" == url.scheme) and 443 or 80
     end
-    -- 构造 HTTP Upgrade 握手包；signkey 用于 C 层验证服务端 Sec-WebSocket-Accept
+    -- 构造 HTTP Upgrade 握手包；hsctx 用于 C 层验证服务端 Sec-WebSocket-Accept 与子协议
     local path = url.path or "/"
     local uri = url.query and (path .. "?" .. url.query) or path
     -- Host 头须带非默认端口(RFC 6455 §4.1),否则严格服务端 / vhost 路由按纯主机名拒握手
@@ -86,8 +87,11 @@ function wbsk.connect(ws, sslname, secprot, netev)
     if url.port and url.port ~= (("wss" == url.scheme) and "443" or "80") then
         host_hdr = url.host .. ":" .. url.port
     end
-    local hspack, size, signkey = websock.pack_handshake(host_hdr, uri, secprot)
-    local fd, skid = srey.connect(PACK_TYPE.WEBSOCK, sslname, ip, port, netev, signkey)
+    local hspack, size, hsctx = websock.pack_handshake(host_hdr, uri, secprot)
+    if not hspack then
+        return INVALID_SOCK
+    end
+    local fd, skid = srey.connect(PACK_TYPE.WEBSOCK, sslname, ip, port, netev, hsctx)
     if INVALID_SOCK == fd then
         utils.ud_free(hspack)   -- TCP 连接失败，释放 C 层分配的握手包内存
         return INVALID_SOCK
@@ -97,19 +101,11 @@ function wbsk.connect(ws, sslname, secprot, netev)
         return INVALID_SOCK
     end
     -- 等待服务端 101 Switching Protocols（C 层完成验证后触发 HANDSHAKED 消息）
-    local ok, data, dlens = srey.wait_handshaked(fd, skid)
+    local ok, spctx = srey.wait_handshaked(fd, skid)
     if not ok then
         return INVALID_SOCK
     end
-    -- 校验服务端协商的子协议是否与请求一致
-    if secprot and #secprot > 0 then
-        local got = data and srey.ud_str(data, dlens) or ""
-        if got ~= secprot then
-            srey.close(fd, skid)
-            return INVALID_SOCK
-        end
-    end
-    return fd, skid
+    return fd, skid, spctx
 end
 
 -- ── 控制帧构造 ────────────────────────────────────────────────────────────

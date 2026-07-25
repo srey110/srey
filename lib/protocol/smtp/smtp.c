@@ -46,7 +46,7 @@ void smtp_init(smtp_ctx *smtp, const char *ip, uint16_t port, struct evssl_ctx *
     safe_fill_str(smtp->psw, sizeof(smtp->psw), psw);
 }
 int32_t smtp_check_code(char *pack, const char *code) {
-    if (0 == memcmp(pack, code, strlen(code))) {
+    if (0 == strncmp(pack, code, strlen(code))) {
         return ERR_OK;
     }
     LOG_WARN("%s", pack);

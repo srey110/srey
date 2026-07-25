@@ -5,7 +5,6 @@
 #include "protocol/prots.h"
 #include "protocol/urlparse.h"
 #include "protocol/dns.h"
-#include "protocol/websock.h"
 #include "protocol/http.h"
 #include "protocol/redis.h"
 #include "protocol/mysql/mysql_parse.h"
@@ -29,7 +28,8 @@ static dns_ip *_dns_lookup_udp(task_ctx *task, const char *domain, int32_t ipv6,
     }
     coro_sync(task, fd, skid);
     char buf[ONEK];
-    size_t lens = dns_request_pack(buf, domain, ipv6);
+    uint16_t id;
+    size_t lens = dns_request_pack(buf, domain, ipv6, &id);
     if (0 == lens) {
         ev_close(&task->loader->netev, fd, skid, 1);
         return NULL;
@@ -39,7 +39,7 @@ static dns_ip *_dns_lookup_udp(task_ctx *task, const char *domain, int32_t ipv6,
     if (NULL == resp) {
         return NULL;
     }
-    return dns_parse_pack(resp, lens, cnt);
+    return dns_parse_pack(resp, lens, cnt, id);
 }
 static dns_ip *_dns_lookup_tcp(task_ctx *task, const char *domain, int32_t ipv6, size_t *cnt) {
     SOCKET fd;
@@ -49,7 +49,8 @@ static dns_ip *_dns_lookup_tcp(task_ctx *task, const char *domain, int32_t ipv6,
         return NULL;
     }
     char buf[ONEK];
-    size_t lens = dns_request_pack_tcp(buf, domain, ipv6);
+    uint16_t id;
+    size_t lens = dns_request_pack_tcp(buf, domain, ipv6, &id);
     if (0 == lens) {
         ev_close(&task->loader->netev, fd, skid, 1);
         return NULL;
@@ -60,7 +61,7 @@ static dns_ip *_dns_lookup_tcp(task_ctx *task, const char *domain, int32_t ipv6,
     if (NULL == resp) {
         return NULL;
     }
-    return dns_parse_pack(resp, rsize, cnt);
+    return dns_parse_pack(resp, rsize, cnt, id);
 }
 dns_ip *dns_lookup(task_ctx *task, const char *domain, int32_t ipv6, int32_t udp, size_t *cnt) {
     if (udp) {
@@ -71,7 +72,9 @@ dns_ip *dns_lookup(task_ctx *task, const char *domain, int32_t ipv6, int32_t udp
     }
     return _dns_lookup_tcp(task, domain, ipv6, cnt);
 }
-SOCKET wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, const char *secprot, uint64_t *skid, int32_t netev) {
+SOCKET wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, const char *secprot,
+    int32_t netev, uint64_t *skid, ws_secprots_ctx **spctx) {
+    SET_PTR(spctx, NULL);
     url_ctx url;
     if (ERR_OK != url_parse(&url, ws, strlen(ws), '/', 0)) {
         return INVALID_SOCK;
@@ -128,8 +131,6 @@ SOCKET wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, c
         host = host_port;
     }
     SOCKET fd;
-    char *signkey;
-    MALLOC(signkey, WS_SIGN_KEY_LENS);
     char uribuf[URL_BUF_LENS];
     size_t plen = url_reorg_path(&url, uribuf, sizeof(uribuf));
     if (0 == plen) {
@@ -143,37 +144,31 @@ SOCKET wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, c
             uribuf[plen] = '\0';
         }
     }
-    char *reqpack = websock_pack_handshake(host, uribuf, secprot, signkey);
-    //signkey 通过 ud->context 交给协议层管理：
-    //  - coro_connect 失败：ev_connect 失败路径会调 cbs->ud_free → _websock_udfree 释放
-    //  - coro_connect 成功后任意失败：sock 关闭路径（_evpub_sk_clear/_evpub_sk_free）统一调 ud_free
-    //  无需在此处显式 FREE(signkey)，否则 double-free。
-    if (ERR_OK != coro_connect(task, PACK_WEBSOCK, evssl, ip, port, netev, signkey, &fd, skid)) {
+    ws_hs_ctx *hsctx;
+    char *reqpack = websock_pack_handshake(host, uribuf, secprot, &hsctx);
+    if (NULL == reqpack) {
+        FREE(host);
+        return INVALID_SOCK;
+    }
+    if (ERR_OK != coro_connect(task, PACK_WEBSOCK, evssl, ip, port, netev, hsctx, &fd, skid)) {
         FREE(host);
         FREE(reqpack);
         return INVALID_SOCK;
     }
     FREE(host);
-    //ev_send copy=0 所有路径下 reqpack 已被接管，调用方不再 FREE
     if (ERR_OK != ev_send(&task->loader->netev, fd, *skid, reqpack, strlen(reqpack), 0)) {
         return INVALID_SOCK;
     }
     int32_t err;
-    size_t size;
-    char *hsdata = coro_handshaked(task, fd, *skid, &err, &size);
+    ws_secprots_ctx *sp = coro_handshaked(task, fd, *skid, &err, NULL);
     if (ERR_OK != err) {
         return INVALID_SOCK;
     }
-    if (!EMPTYSTR(secprot)) {
-        size_t seclens = strlen(secprot);
-        if (seclens != size || 0 != memcmp(secprot, hsdata, seclens)) {
-            ev_close(&task->loader->netev, fd, *skid, 1);
-            return INVALID_SOCK;
-        }
-    }
+    SET_PTR(spctx, sp);
     return fd;
 }
-SOCKET redis_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ip, uint16_t port, const char *key, uint64_t *skid, int32_t netev) {
+SOCKET redis_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ip, uint16_t port,
+    const char *key, int32_t netev, uint64_t *skid) {
     SOCKET fd;
     if (ERR_OK != coro_connect(task, PACK_REDIS, evssl, ip, port, netev, NULL, &fd, skid)) {
         return INVALID_SOCK;
