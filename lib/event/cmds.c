@@ -20,12 +20,12 @@ ud_cxt *_evpub_get_ud(struct sock_ctx *skctx) {
     return _uev_get_ud(skctx);
 #endif
 }
-int32_t _send_cmd(watcher_ctx *watcher, cmd_ctx *cmd) {
+void _send_cmd(watcher_ctx *watcher, cmd_ctx *cmd) {
     int32_t erro;
+    static const char trigger[1] = { 's' };
 #ifdef EV_IOCP
     overlap_cmd_ctx *olcmd = &watcher->cmd;
     fsqu_push(&olcmd->qu, cmd);
-    static const char trigger[1] = { 's' };
     while (0 == ATOMIC_GET(&watcher->stop)
         && SOCKET_ERROR == send(olcmd->fd, trigger, sizeof(trigger), 0)) {
         erro = ERRNO;
@@ -33,35 +33,21 @@ int32_t _send_cmd(watcher_ctx *watcher, cmd_ctx *cmd) {
         CPU_PAUSE();
     }
 #else
-#if CMD_PIPE_QU
     fsqu_push(&watcher->pipe.qu, cmd);
-    static const char trigger[1] = { 's' };
     while (0 == ATOMIC_GET(&watcher->stop)
            && ERR_FAILED == write(watcher->pipe.pipes[1], trigger, sizeof(trigger))) {
         erro = ERRNO;
         ASSERTAB(ERR_RW_RETRIABLE(erro), ERRORSTR(erro));
         CPU_PAUSE();
     }
-#else
-    while (0 == ATOMIC_GET(&watcher->stop)) {
-        if (ERR_FAILED != write(watcher->pipe.pipes[1], cmd, sizeof(cmd_ctx))) {
-            return ERR_OK;
-        }
-        erro = ERRNO;
-        ASSERTAB(ERR_RW_RETRIABLE(erro), ERRORSTR(erro));
-        CPU_PAUSE();
-    }
-    return ERR_FAILED;
-#endif
 #endif//EV_IOCP
-    return ERR_OK;
 }
-int32_t _cmd_add_acpfd(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn) {
+void _cmd_add_acpfd(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn) {
     cmd_ctx cmd = { 0 };
     cmd.cmd = CMD_ADDACP;
     cmd.sk.fd = fd;
     cmd.args.lsn = lsn;
-    return _send_cmd(watcher, &cmd);
+    _send_cmd(watcher, &cmd);
 }
 void _on_cmd_addacp(watcher_ctx *watcher, cmd_ctx *cmd) {
 #ifdef EV_IOCP
@@ -73,7 +59,7 @@ void _on_cmd_addacp(watcher_ctx *watcher, cmd_ctx *cmd) {
     _uev_qtn_freelsn(watcher, cmd->args.lsn);
 #endif
 }
-int32_t _cmd_connect(ev_ctx *ctx, struct sock_ctx *skctx, netaddr_ctx *addr) {
+void _cmd_connect(ev_ctx *ctx, struct sock_ctx *skctx, netaddr_ctx *addr) {
     cmd_ctx cmd = { 0 };
     cmd.cmd = CMD_CONN;
     cmd.sk.fd = skctx->fd;
@@ -81,7 +67,7 @@ int32_t _cmd_connect(ev_ctx *ctx, struct sock_ctx *skctx, netaddr_ctx *addr) {
     if (NULL != addr) {
         cmd.args.conn.addr = *addr;
     }
-    return _send_cmd(GET_PTR(ctx->watcher, ctx->nthreads, cmd.sk.fd), &cmd);
+    _send_cmd(GET_PTR(ctx->watcher, ctx->nthreads, cmd.sk.fd), &cmd);
 }
 void _on_cmd_conn(watcher_ctx *watcher, cmd_ctx *cmd) {
 #ifdef EV_IOCP
@@ -90,11 +76,11 @@ void _on_cmd_conn(watcher_ctx *watcher, cmd_ctx *cmd) {
     _uev_add_conn_inloop(watcher, cmd->args.conn.skctx);
 #endif
 }
-int32_t _cmd_add(watcher_ctx *watcher, sock_ctx *skctx) {
+void _cmd_add(watcher_ctx *watcher, sock_ctx *skctx) {
     cmd_ctx cmd = { 0 };
     cmd.cmd = CMD_ADD;
     cmd.args.skctx = skctx;
-    return _send_cmd(watcher, &cmd);
+    _send_cmd(watcher, &cmd);
 }
 void _on_cmd_add(watcher_ctx *watcher, cmd_ctx *cmd) {
 #ifdef EV_IOCP
@@ -104,31 +90,31 @@ void _on_cmd_add(watcher_ctx *watcher, cmd_ctx *cmd) {
 #endif
 }
 #ifndef EV_IOCP
-int32_t _cmd_listen(watcher_ctx *watcher, sock_ctx *skctx) {
+void _cmd_listen(watcher_ctx *watcher, sock_ctx *skctx) {
     cmd_ctx cmd = { 0 };
     cmd.cmd = CMD_LSN;
     cmd.args.skctx = skctx;
-    return _send_cmd(watcher, &cmd);
+    _send_cmd(watcher, &cmd);
 }
 void _on_cmd_lsn(watcher_ctx *watcher, cmd_ctx *cmd) {
     _uev_add_lsn_inloop(watcher, cmd->args.skctx);
 }
-int32_t _cmd_unlisten(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn) {
+void _cmd_unlisten(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn) {
     cmd_ctx cmd = { 0 };
     cmd.cmd = CMD_UNLSN;
     cmd.sk.fd = fd;
     cmd.args.lsn = lsn;
-    return _send_cmd(watcher, &cmd);
+    _send_cmd(watcher, &cmd);
 }
 void _on_cmd_unlsn(watcher_ctx *watcher, cmd_ctx *cmd) {
     _uev_remove_lsn(watcher, cmd->sk.fd, cmd->args.lsn);
 }
-int32_t _cmd_lsn_unref(watcher_ctx *watcher, struct listener_ctx *lsn) {
+void _cmd_lsn_unref(watcher_ctx *watcher, struct listener_ctx *lsn) {
     cmd_ctx cmd = { 0 };
     cmd.cmd = CMD_LSN_UNREF;
     cmd.args.lsn = lsn;
     // cmd 不关联 fd, 任 watcher 接收即可
-    return _send_cmd(watcher, &cmd);
+    _send_cmd(watcher, &cmd);
 }
 void _on_cmd_lsn_unref(watcher_ctx *watcher, cmd_ctx *cmd) {
     _uev_qtn_freelsn(watcher, cmd->args.lsn);
@@ -141,12 +127,8 @@ void _on_cmd_stop(watcher_ctx *watcher, cmd_ctx *cmd) {
 #endif
     ATOMIC_SET(&watcher->stop, 1);
 }
-static inline int32_t _ev_props(ev_ctx *ctx, cmd_ctx *cmd) {
-    if (ERR_OK != _send_cmd(GET_PTR(ctx->watcher, ctx->nthreads, cmd->sk.fd), cmd)) {
-        UD_FREE(cmd->args.props.fcb, cmd->args.props.data);
-        return ERR_FAILED;
-    }
-    return ERR_OK;
+static inline void _ev_props(ev_ctx *ctx, cmd_ctx *cmd) {
+    _send_cmd(GET_PTR(ctx->watcher, ctx->nthreads, cmd->sk.fd), cmd);
 }
 int32_t ev_props(ev_ctx *ctx, SOCKET fd, uint64_t skid,
                  props_cb ppcb, free_cb fcb, void *data, uint64_t number) {
@@ -162,7 +144,8 @@ int32_t ev_props(ev_ctx *ctx, SOCKET fd, uint64_t skid,
     cmd.args.props.fcb = fcb;
     cmd.args.props.number = number;
     cmd.args.props.data = data;
-    return _ev_props(ctx, &cmd);
+    _ev_props(ctx, &cmd);
+    return ERR_OK;
 }
 void _on_cmd_props(struct watcher_ctx *watcher, cmd_ctx *cmd) {
     sock_ctx *skctx = _evpub_sockel_get(watcher, cmd->sk.fd);
@@ -294,20 +277,17 @@ int32_t ev_send_multi(ev_ctx *ctx, SOCKET fds[], uint64_t skids[], int32_t n,
     cmd.args.props.fcb = _evpub_share_data_free;
     cmd.args.props.data = pack;
     cmd.args.props.number = len;
-    // 全部 fd 都要投递一遍；_ev_props 失败时会在其失败分支对 pack 做一次 ref--,
-    // 提前 return 会让后面还没投递的 fd 漏掉这次 ref--,导致 pack 永远归不了零、无法释放
-    int32_t ok = 0;
+    // 每个有效 fd 投递一次,与 pack->ref 初值 valid 配平：每条命令最终经 _on_cmd_props
+    // 或 ev_free 的 drain(case CMD_PROPS)各减一次 ref,归零时释放 pack
     for (i = 0; i < n; i++) {
         if (INVALID_SOCK == fds[i]) {
             continue;
         }
         cmd.sk.fd = fds[i];
         cmd.sk.skid = skids[i];
-        if (ERR_OK == _ev_props(ctx, &cmd)) {
-            ok = 1;
-        }
+        _ev_props(ctx, &cmd);
     }
-    return ok ? ERR_OK : ERR_FAILED;
+    return ERR_OK;
 }
 int32_t ev_sendto(ev_ctx *ctx, SOCKET fd, uint64_t skid, const char *ip, const uint16_t port,
     void *data, size_t len, int32_t copy) {
@@ -332,10 +312,8 @@ int32_t ev_sendto_addr(ev_ctx *ctx, SOCKET fd, uint64_t skid, netaddr_ctx *addr,
     cmd.args.sendto.len = len;
     cmd.args.sendto.addr = *addr;
     cmd.args.sendto.data = _cmd_cpy_buf(data, len, copy);
-    if (ERR_OK != _send_cmd(GET_PTR(ctx->watcher, ctx->nthreads, cmd.sk.fd), &cmd)) {
-        FREE(cmd.args.sendto.data);
-        return ERR_FAILED;
-    }
+    // 入队即成功：未被消费时 sendto.data 由 ev_free 的 drain(case CMD_SENDTO)释放
+    _send_cmd(GET_PTR(ctx->watcher, ctx->nthreads, cmd.sk.fd), &cmd);
     return ERR_OK;
 }
 void _on_cmd_sendto(watcher_ctx *watcher, cmd_ctx *cmd) {
@@ -370,6 +348,13 @@ static int32_t _udp_opt_cb(struct watcher_ctx *watcher, struct sock_ctx *skctx,
         LOG_ERROR("sock_family(fd=%d) failed: %s", (int32_t)skctx->fd, ERRORSTR(ERRNO));
         return 1;
     }
+    if (AF_INET != family
+        && AF_INET6 != family) {
+        LOG_ERROR("ev_udp_* on fd %d: unsupported family %d.", (int32_t)skctx->fd, family);
+        return 1;
+    }
+    // 此后所有落到末尾汇总日志的失败都来自 setsockopt(errno 有效);
+    // inet_pton 一类不设 errno 的失败各自就地报错并直接返回
     int32_t rtn = ERR_FAILED;
     switch (arg->op) {
     case UDP_OPT_JOIN:
@@ -378,7 +363,7 @@ static int32_t _udp_opt_cb(struct watcher_ctx *watcher, struct sock_ctx *skctx,
             struct ip_mreq mreq = { 0 };
             if (1 != inet_pton(AF_INET, arg->group_ip, &mreq.imr_multiaddr)) {
                 LOG_ERROR("inet_pton(IPv4 %s) failed.", arg->group_ip);
-                break;
+                return 1;
             }
             if ('\0' != arg->iface_str[0]
                 && 1 != inet_pton(AF_INET, arg->iface_str, &mreq.imr_interface)) {
@@ -393,7 +378,7 @@ static int32_t _udp_opt_cb(struct watcher_ctx *watcher, struct sock_ctx *skctx,
             struct ipv6_mreq mreq = { 0 };
             if (1 != inet_pton(AF_INET6, arg->group_ip, &mreq.ipv6mr_multiaddr)) {
                 LOG_ERROR("inet_pton(IPv6 %s) failed.", arg->group_ip);
-                break;
+                return 1;
             }
 #ifdef EV_IOCP
             // Windows 不解析接口名,走默认 0;业务可用 IPV6_MULTICAST_IF 单独设

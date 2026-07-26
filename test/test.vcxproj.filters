@@ -35,6 +35,7 @@
     <ClCompile Include="task_router.c" />
     <ClCompile Include="task_rpc.c" />
     <ClCompile Include="task_sc_client.c" />
+    <ClCompile Include="task_selfpost.c" />
     <ClCompile Include="task_sendbuf_warn.c" />
     <ClCompile Include="task_serial.c" />
     <ClCompile Include="task_smtp.c" />
@@ -92,6 +93,7 @@
     <ClInclude Include="task_router.h" />
     <ClInclude Include="task_rpc.h" />
     <ClInclude Include="task_sc_client.h" />
+    <ClInclude Include="task_selfpost.h" />
     <ClInclude Include="task_sendbuf_warn.h" />
     <ClInclude Include="task_serial.h" />
     <ClInclude Include="task_smtp.h" />

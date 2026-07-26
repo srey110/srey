@@ -31,8 +31,8 @@ static void _sv_net_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t cl
     uint32_t conv = ++_sv_conv_seq;
     kcp_sv_sess *s = &_sv_sess[_sv_nsess];
     s->cport = cport;
-    kcp_init(&s->kcp, &task->loader->netev, _sv_udp_fd, _sv_udp_skid, conv, createid());
-    if (ERR_OK != kcp_start(&s->kcp, _sv_handle, "127.0.0.1", cport, NULL)) {
+    kcp_init(&s->kcp, &task->loader->netev, _sv_udp_fd, _sv_udp_skid, conv);
+    if (ERR_OK != kcp_start(&s->kcp, _sv_handle, createid(), "127.0.0.1", cport, NULL)) {
         LOG_ERROR("kcp server kcp_start conv %u error.", conv);
         return;
     }
@@ -123,9 +123,9 @@ static void _cli_worker(task_ctx *task, void *arg) {
     coro_close(task, tfd, tskid, 1);
     // 4. client 侧 kcp 会话(ikcp_update 由 event 线程 tick 自动驱动,业务无需轮询)
     kcp_ctx kcp;
-    kcp_init(&kcp, &task->loader->netev, ufd, uskid, conv, createid());
+    kcp_init(&kcp, &task->loader->netev, ufd, uskid, conv);
     kcp_config badmtu = { -1, -1, -1, -1, 0, 0, 24 }; // client 0 故意传非法 mtu(<50),验证 maxpack 不会因此归零导致永久发送失败
-    if (ERR_OK != kcp_start(&kcp, task->handle, "127.0.0.1", _cli_sv_udp, 0 == idx ? &badmtu : NULL)) {
+    if (ERR_OK != kcp_start(&kcp, task->handle, createid(), "127.0.0.1", _cli_sv_udp, 0 == idx ? &badmtu : NULL)) {
         LOG_ERROR("kcp client %d kcp_start error.", idx);
         ev_close(&task->loader->netev, ufd, uskid, 1);
         return;
@@ -211,8 +211,8 @@ static void _close_startup(task_ctx *task) {
         return;
     }
     kcp_ctx kcp;
-    kcp_init(&kcp, &task->loader->netev, ufd, uskid, KCP_CLOSE_BOGUS_CONV, createid());
-    if (ERR_OK != kcp_start(&kcp, task->handle, "127.0.0.1", _close_sv_udp, NULL)) {
+    kcp_init(&kcp, &task->loader->netev, ufd, uskid, KCP_CLOSE_BOGUS_CONV);
+    if (ERR_OK != kcp_start(&kcp, task->handle, createid(), "127.0.0.1", _close_sv_udp, NULL)) {
         LOG_ERROR("kcp close test kcp_start error.");
         ev_close(&task->loader->netev, ufd, uskid, 1);
         return;
@@ -302,8 +302,8 @@ static void _fifo_startup(task_ctx *task) {
     coro_close(task, tfd, tskid, 1);
     // 4. 同一 kcp 会话供 KCP_FIFO_N 个协程并发 synsend
     kcp_ctx kcp;
-    kcp_init(&kcp, &task->loader->netev, ufd, uskid, conv, createid());
-    if (ERR_OK != kcp_start(&kcp, task->handle, "127.0.0.1", _fifo_sv_udp, NULL)) {
+    kcp_init(&kcp, &task->loader->netev, ufd, uskid, conv);
+    if (ERR_OK != kcp_start(&kcp, task->handle, createid(), "127.0.0.1", _fifo_sv_udp, NULL)) {
         LOG_ERROR("kcp fifo test kcp_start error.");
         ev_close(&task->loader->netev, ufd, uskid, 1);
         return;
@@ -351,6 +351,16 @@ void task_kcp_fifo_start(loader_ctx *loader, const char *name, uint16_t sv_tcp_p
 // ================= kcp_synstart:正常建立/conv 冲突/sess==0 守卫 =================
 // kcp_start 本身不经网络(仅在本地会话表登记),以下三组用例都不需要真实对端响应
 static uint16_t _syn_sv_udp;
+// CLOSE 用例：fork 出的子协程与主协程不同栈，关 socket 所需信息经 static 传递
+static ev_ctx *_syn_dead_netev;
+static SOCKET _syn_dead_fd;
+static uint64_t _syn_dead_skid;
+// 子协程：等主协程挂进 kcp_synsend 后关掉 socket，触发 _kcp_udfree 逐会话补 CLOSE
+static void _syn_close_fork(task_ctx *task, void *arg) {
+    (void)arg;
+    coro_sleep(task, 50);
+    ev_close(_syn_dead_netev, _syn_dead_fd, _syn_dead_skid, 1);
+}
 static int32_t *_syn_ok;
 
 static void _syn_startup(task_ctx *task) {
@@ -362,30 +372,79 @@ static void _syn_startup(task_ctx *task) {
     }
     // 1. 正常建立:全新 conv,预期成功
     kcp_ctx kcp1;
-    kcp_init(&kcp1, &task->loader->netev, ufd, uskid, 100, createid());
+    kcp_init(&kcp1, &task->loader->netev, ufd, uskid, 100);
     int32_t r1 = kcp_synstart(task, &kcp1, "127.0.0.1", _syn_sv_udp, NULL);
     // 2. conv 冲突:同一 socket 上重复注册相同 conv,预期失败
     kcp_ctx kcp2;
-    kcp_init(&kcp2, &task->loader->netev, ufd, uskid, 100, createid());
+    kcp_init(&kcp2, &task->loader->netev, ufd, uskid, 100);
     int32_t r2 = kcp_synstart(task, &kcp2, "127.0.0.1", _syn_sv_udp, NULL);
-    // 3. sess==0 守卫:kcp_synstart/kcp_synsend 均应立即失败,不进入 _coro_wait;
+    // 3. sess==0 守卫:以 kcp_start(sess=0) 异步建立的会话不能用 kcp_synsend,应立即失败不进 _coro_wait;
     // copy=0 顺带验证守卫分支不漏释放调用方缓冲区(leak 由 MEMORY_CHECK 收尾统计兜底)
     kcp_ctx kcp3;
-    kcp_init(&kcp3, &task->loader->netev, ufd, uskid, 200, 0);
-    uint64_t bgts = nowms();
-    int32_t r3 = kcp_synstart(task, &kcp3, "127.0.0.1", _syn_sv_udp, NULL);
-    uint64_t elapse3 = nowms() - bgts;
+    kcp_init(&kcp3, &task->loader->netev, ufd, uskid, 200);
+    int32_t r3 = kcp_start(&kcp3, task->handle, 0, "127.0.0.1", _syn_sv_udp, NULL);
     void *leak;
     MALLOC(leak, 8);
     size_t esize = 0;
+    uint64_t bgts = nowms();
     void *r4 = kcp_synsend(task, &kcp3, leak, 8, 0, &esize);
+    uint64_t elapse3 = nowms() - bgts;
+    // 4. stop 后立即 synstart 重启:每次生成新 sess,不被上一会话在途的 CLOSE 击穿
     kcp_stop(&kcp1);
+    int32_t r5 = kcp_synstart(task, &kcp1, "127.0.0.1", _syn_sv_udp, NULL);
+    // 5. stop 后 synstart 被拒:失败路径须把 stopped/maxpack 与 sess 一并还原成调用前。
+    // 先 stop 让 conv 空出给 kcp5,kcp1 再以同 conv 重启必被拒;若 stopped 停在 0,句柄就从
+    // "已停"变回"在跑",下面的 synsend 会绕过守卫投到已消失的会话,被静默丢弃后空等满超时
+    kcp_stop(&kcp1);
+    kcp_ctx kcp5;
+    kcp_init(&kcp5, &task->loader->netev, ufd, uskid, 100);
+    int32_t r8 = kcp_synstart(task, &kcp5, "127.0.0.1", _syn_sv_udp, NULL);
+    kcp_config cfg576 = { -1, -1, -1, -1, 0, 0, 576 };// mtu 与默认不同,才能验出 maxpack 被还原
+    size_t mp_before = kcp1.maxpack;
+    int32_t r9 = kcp_synstart(task, &kcp1, "127.0.0.1", _syn_sv_udp, &cfg576);
+    int32_t r10 = (1 == kcp1.stopped && mp_before == kcp1.maxpack) ? ERR_OK : ERR_FAILED;
+    uint64_t b11 = nowms();
+    void *r11 = kcp_synsend(task, &kcp1, "y", 1, 1, &esize);
+    uint64_t elapse11 = nowms() - b11;
+    kcp_stop(&kcp5);
+    kcp_stop(&kcp3);
     ev_close(&task->loader->netev, ufd, uskid, 1);
-    if (ERR_OK == r1 && ERR_OK != r2 && ERR_OK != r3 && elapse3 < 1000 && NULL == r4) {
+    // 6. CLOSE 唤醒 kcp_synsend:挂起期间 socket 被关,_kcp_udfree 逐会话补 CLOSE;
+    // 唤醒后须清 kcp->sess,否则下次 synsend 通过守卫投到已消失的会话,被 _kcp_resolve 静默丢弃后空等满超时。
+    // 与 bin/script/lib/kcp.lua 的 ctx:send 同款分支互为镜像
+    SOCKET dfd;
+    uint64_t dskid;
+    int32_t r6 = ERR_FAILED;
+    int32_t r7 = ERR_FAILED;
+    uint64_t elapse6 = 0;
+    kcp_ctx kcp4;
+    if (ERR_OK == task_udp(task, PACK_UDP_KCP, "0.0.0.0", 0, &dfd, &dskid)) {
+        kcp_init(&kcp4, &task->loader->netev, dfd, dskid, 300);
+        if (ERR_OK == kcp_synstart(task, &kcp4, "127.0.0.1", _syn_sv_udp, NULL)) {
+            _syn_dead_netev = &task->loader->netev;
+            _syn_dead_fd = dfd;
+            _syn_dead_skid = dskid;
+            // 收窄放在 synstart 成功之后:否则安装步骤自身可能超时,后续断言会以错误理由通过
+            task_set_netread_timeout(task, 3000);
+            coro_fork(task, _syn_close_fork, NULL);
+            uint64_t b6 = nowms();
+            // 该会话对端是 kcp server,但本次不等 echo——先被 fork 协程关 socket 触发的 CLOSE 唤醒
+            void *r6p = kcp_synsend(task, &kcp4, "x", 1, 1, &esize);
+            elapse6 = nowms() - b6;
+            r6 = (NULL == r6p) ? ERR_OK : ERR_FAILED;
+            r7 = (0 == kcp4.sess) ? ERR_OK : ERR_FAILED;
+        }
+    }
+    if (ERR_OK == r1 && ERR_OK != r2 && ERR_OK == r3 && elapse3 < 1000 && NULL == r4 && ERR_OK == r5
+        && ERR_OK == r8 && ERR_OK != r9 && ERR_OK == r10 && NULL == r11 && elapse11 < 1000
+        && ERR_OK == r6 && ERR_OK == r7 && elapse6 < 2000) {
         *_syn_ok = 1;
-        LOG_INFO("kcp synstart tested: normal ok, collision/sess-guard rejected as expected.");
+        LOG_INFO("kcp synstart tested: normal/restart ok, collision/sess-guard rejected,"
+                 " reject restores stopped/maxpack, CLOSE clears sess.");
     } else {
-        LOG_ERROR("kcp synstart test failed: r1=%d r2=%d r3=%d elapse3=%"PRIu64" r4=%p.", r1, r2, r3, elapse3, r4);
+        LOG_ERROR("kcp synstart test failed: r1=%d r2=%d r3=%d elapse3=%"PRIu64" r4=%p r5=%d"
+                  " r8=%d r9=%d r10=%d r11=%p elapse11=%"PRIu64" r6=%d r7=%d elapse6=%"PRIu64".",
+                  r1, r2, r3, elapse3, r4, r5, r8, r9, r10, r11, elapse11, r6, r7, elapse6);
     }
 }
 void task_kcp_synstart_start(loader_ctx *loader, const char *name, uint16_t sv_udp_port, int32_t *ok) {

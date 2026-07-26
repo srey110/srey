@@ -108,7 +108,10 @@ static void _mpq_producer(void *arg) {
     uintptr_t end   = start + _MPQ_ITEMS_EACH;
     uintptr_t v;
     for (v = start; v < end; v++) {
-        mpq_push(a->q, &v);
+        // mpq 只提供非阻塞入队,满则自旋重试(测试线程非消费者,不会自死锁)
+        while (ERR_OK != mpq_trypush(a->q, &v)) {
+            CPU_PAUSE();
+        }
     }
 }
 
@@ -290,7 +293,10 @@ static void _spsc_producer(void *arg) {
     spsc_ctx *q = (spsc_ctx *)arg;
     uintptr_t v;
     for (v = 1; v <= _SPSC_ITEMS; v++) {
-        spsc_push(q, &v);
+        // spsc 只提供非阻塞入队,满则自旋重试(测试线程非消费者,不会自死锁)
+        while (ERR_OK != spsc_trypush(q, &v)) {
+            CPU_PAUSE();
+        }
     }
     ATOMIC_SET(&_spsc_done_prod, 1);
 }
@@ -475,6 +481,151 @@ static void test_fsqu_default_cap(CuTest *tc) {
     for (v = 1; v <= 16; v++) {
         CuAssertTrue(tc, ERR_OK == fsqu_pop(&q, &out) && out == v);
     }
+    CuAssertTrue(tc, 0 == fsqu_size(&q));
+    fsqu_free(&q);
+}
+
+/* 溢出降级：超过快路径容量后跨界 FIFO 严格保序，size 须含溢出层。
+   重点验证粘滞降级——溢出层非空期间新元素不得回填快路径，
+   否则快路径被消费腾空后新元素会插到更早的溢出元素之前（MPQ=0 分支为无界 queue，同样保序） */
+static void test_fsqu_overflow_fifo(CuTest *tc) {
+    fsqu_ctx q;
+    int32_t v, out;
+    fsqu_init(&q, sizeof(int32_t), 8);
+
+    for (v = 1; v <= 10; v++) {   /* 1..8 进快路径，9..10 落溢出层 */
+        fsqu_push(&q, &v);
+    }
+    CuAssertTrue(tc, 10 == fsqu_size(&q));
+
+    for (v = 1; v <= 3; v++) {    /* 消费 3 个，快路径腾出空位 */
+        CuAssertTrue(tc, ERR_OK == fsqu_pop(&q, &out) && out == v);
+    }
+    v = 11;                       /* 溢出层仍非空：11 必须继续落溢出层，不得插队到 9 之前 */
+    fsqu_push(&q, &v);
+    CuAssertTrue(tc, 8 == fsqu_size(&q));
+
+    for (v = 4; v <= 11; v++) {
+        CuAssertTrue(tc, ERR_OK == fsqu_pop(&q, &out) && out == v);
+    }
+    CuAssertTrue(tc, 0 == fsqu_size(&q));
+    CuAssertTrue(tc, ERR_FAILED == fsqu_pop(&q, &out));
+
+    /* 溢出层已排空，粘滞解除，后续入队恢复正常 */
+    for (v = 1; v <= 8; v++) {
+        fsqu_push(&q, &v);
+    }
+    for (v = 1; v <= 8; v++) {
+        CuAssertTrue(tc, ERR_OK == fsqu_pop(&q, &out) && out == v);
+    }
+    fsqu_free(&q);
+}
+
+/* 批量出队跨界补齐：一次 pop_batch/pop_sc_batch 须跨快路径与溢出层边界取满 max，
+   否则调用方按返回 0 判空会漏掉溢出层里的元素 */
+static void test_fsqu_overflow_pop_batch(CuTest *tc) {
+    fsqu_ctx q;
+    int32_t v, out[12];
+    uint32_t n, i;
+    fsqu_init(&q, sizeof(int32_t), 8);
+
+    for (v = 1; v <= 12; v++) {
+        fsqu_push(&q, &v);
+    }
+    CuAssertTrue(tc, 12 == fsqu_size(&q));
+    n = fsqu_pop_batch(&q, out, 12);   /* 前 8 来自快路径，后 4 从溢出层续取 */
+    CuAssertTrue(tc, 12 == n);
+    for (i = 0; i < 12; i++) {
+        CuAssertTrue(tc, out[i] == (int32_t)(i + 1));
+    }
+    CuAssertTrue(tc, 0 == fsqu_size(&q));
+
+    for (v = 1; v <= 12; v++) {
+        fsqu_push(&q, &v);
+    }
+    n = fsqu_pop_sc_batch(&q, out, 12);
+    CuAssertTrue(tc, 12 == n);
+    for (i = 0; i < 12; i++) {
+        CuAssertTrue(tc, out[i] == (int32_t)(i + 1));
+    }
+    CuAssertTrue(tc, 0 == fsqu_size(&q));
+    fsqu_free(&q);
+}
+
+/* 批量入队跨界：一次 push_batch 超过快路径容量，余量整批落溢出层且保序 */
+static void test_fsqu_overflow_push_batch(CuTest *tc) {
+    fsqu_ctx q;
+    int32_t in[12], out, v;
+    fsqu_init(&q, sizeof(int32_t), 8);
+
+    for (v = 0; v < 12; v++) {
+        in[v] = v + 1;
+    }
+    fsqu_push_batch(&q, in, 12);
+    CuAssertTrue(tc, 12 == fsqu_size(&q));
+    for (v = 1; v <= 12; v++) {
+        CuAssertTrue(tc, ERR_OK == fsqu_pop(&q, &out) && out == v);
+    }
+    CuAssertTrue(tc, 0 == fsqu_size(&q));
+    fsqu_free(&q);
+}
+
+/* 粘滞规则对 trypush 同样生效：溢出层非空期间即便快路径已被排空,trypush 也须拒绝,
+   否则新元素会插到更早的溢出元素之前。MPQ=0 分支为无界 queue、push 从不溢出,
+   故其中 #if FSQU_MPQ 那段仅在 MPQ=1 平台有实质意义,其余断言两平台通用 */
+static void test_fsqu_trypush_sticky(CuTest *tc) {
+    fsqu_ctx q;
+    int32_t v, out;
+    fsqu_init(&q, sizeof(int32_t), 8);
+
+    for (v = 1; v <= 10; v++) {   /* 1..8 进快路径，9..10 落溢出层 */
+        fsqu_push(&q, &v);
+    }
+    for (v = 1; v <= 8; v++) {    /* 排空快路径，令 mpq 环空出来而溢出层仍存 9、10 */
+        CuAssertTrue(tc, ERR_OK == fsqu_pop(&q, &out) && out == v);
+    }
+    CuAssertTrue(tc, 2 == fsqu_size(&q));
+#if FSQU_MPQ
+    v = 999;
+    CuAssertTrue(tc, ERR_FAILED == fsqu_trypush(&q, &v));   /* 溢出层非空 → 拒绝 */
+    CuAssertTrue(tc, 2 == fsqu_size(&q));
+#endif
+    CuAssertTrue(tc, ERR_OK == fsqu_pop(&q, &out) && 9 == out);
+    CuAssertTrue(tc, ERR_OK == fsqu_pop(&q, &out) && 10 == out);
+    CuAssertTrue(tc, ERR_FAILED == fsqu_pop(&q, &out));
+    fsqu_free(&q);
+}
+
+/* trypush 语义不受溢出层影响：满时仍返 ERR_FAILED 且不落溢出层
+   （pool / log 依赖这个丢弃语义，被污染会让它们变成无界增长） */
+static void test_fsqu_trypush_no_overflow(CuTest *tc) {
+    fsqu_ctx q;
+    int32_t v, out;
+    uint32_t i;
+    fsqu_init(&q, sizeof(int32_t), 8);
+
+    for (v = 1; v <= 8; v++) {
+        CuAssertTrue(tc, ERR_OK == fsqu_trypush(&q, &v));
+    }
+    for (i = 0; i < 4; i++) {   /* 满后连续 trypush 全失败且 size 不增 */
+        v = 100;
+        CuAssertTrue(tc, ERR_FAILED == fsqu_trypush(&q, &v));
+        CuAssertTrue(tc, 8 == fsqu_size(&q));
+    }
+    for (v = 1; v <= 8; v++) {  /* 队列内仍只有最初 8 个 */
+        CuAssertTrue(tc, ERR_OK == fsqu_pop(&q, &out) && out == v);
+    }
+    CuAssertTrue(tc, ERR_FAILED == fsqu_pop(&q, &out));
+    fsqu_free(&q);
+}
+
+/* 从未溢出的队列 free：溢出层延迟分配，ptr 恒为 NULL，依赖 FREE 宏的空指针守卫 */
+static void test_fsqu_never_overflow_free(CuTest *tc) {
+    fsqu_ctx q;
+    int32_t v = 1, out;
+    fsqu_init(&q, sizeof(int32_t), 8);
+    fsqu_push(&q, &v);
+    CuAssertTrue(tc, ERR_OK == fsqu_pop(&q, &out) && 1 == out);
     CuAssertTrue(tc, 0 == fsqu_size(&q));
     fsqu_free(&q);
 }
@@ -1330,6 +1481,12 @@ void test_containers(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_fsqu_batch);
     SUITE_ADD_TEST(suite, test_fsqu_pop_sc);
     SUITE_ADD_TEST(suite, test_fsqu_default_cap);
+    SUITE_ADD_TEST(suite, test_fsqu_overflow_fifo);
+    SUITE_ADD_TEST(suite, test_fsqu_overflow_pop_batch);
+    SUITE_ADD_TEST(suite, test_fsqu_overflow_push_batch);
+    SUITE_ADD_TEST(suite, test_fsqu_trypush_no_overflow);
+    SUITE_ADD_TEST(suite, test_fsqu_trypush_sticky);
+    SUITE_ADD_TEST(suite, test_fsqu_never_overflow_free);
     SUITE_ADD_TEST(suite, test_chan_buffered_race);
     SUITE_ADD_TEST(suite, test_hashmap);
     SUITE_ADD_TEST(suite, test_hashmap_scan_iter);

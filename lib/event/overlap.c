@@ -791,6 +791,11 @@ int32_t ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const u
         }
         return ERR_FAILED;
     }
+    // ev_free 已开始：命令仍能入队但 watcher 不再消费，句柄永不生效，故直接拒绝而非谎报成功
+    if (0 != ATOMIC_GET(&ctx->stopping)) {
+        UD_FREE(cbs->ud_free, ud);
+        return ERR_FAILED;
+    }
     netaddr_ctx addr;
     if (ERR_OK != netaddr_set(&addr, ip, port)) {
         LOG_ERROR("netaddr_set %s:%d, %s", ip, port, ERRORSTR(ERRNO));
@@ -803,7 +808,6 @@ int32_t ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const u
         UD_FREE(cbs->ud_free, ud);
         return ERR_FAILED;
     }
-    sock_reuseaddr(*fd);
     _evpub_nodelay_nonblock(*fd);
     if (ERR_OK != _olp_trybind(*fd, netaddr_family(&addr))) {
         CLOSE_SOCK((*fd));
@@ -824,10 +828,7 @@ int32_t ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const u
 #else
     (void)evssl;
 #endif
-    if (ERR_OK != _cmd_connect(ctx, skctx, &addr)) {
-        _evpub_sk_free(skctx);
-        return ERR_FAILED;
-    }
+    _cmd_connect(ctx, skctx, &addr);
     return ERR_OK;
 }
 void _iocp_add_conn_inloop(watcher_ctx *watcher, struct sock_ctx *skctx, netaddr_ctx *addr) {
@@ -1060,6 +1061,11 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
         }
         return ERR_FAILED;
     }
+    // ev_free 已开始：命令仍能入队但 watcher 不再消费，句柄永不生效，故直接拒绝而非谎报成功
+    if (0 != ATOMIC_GET(&ctx->stopping)) {
+        UD_FREE(cbs->ud_free, ud);
+        return ERR_FAILED;
+    }
     netaddr_ctx addr;
     if (ERR_OK != netaddr_set(&addr, ip, port)) {
         LOG_ERROR("netaddr_set %s:%d, %s", ip, port, ERRORSTR(ERRNO));
@@ -1290,6 +1296,11 @@ static void _olp_on_sendto_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes
 }
 void _iocp_add_bufs_trysendto(sock_ctx *skctx, sendto_ctx *buf) {
     overlap_udp_ctx *oludp = UPCAST(skctx, overlap_udp_ctx, ol_r);
+    // 已在 error 关闭流程：拒收新数据。
+    if (BIT_CHECK(oludp->status, STATUS_ERROR)) {
+        FREE(buf->data);
+        return;
+    }
     // UDP 队列超阈值丢 datagram 不断 fd
     if (0 != MAX_SENDQ_CNT
         && queue_size(&oludp->buf_s) >= MAX_SENDQ_CNT) {
@@ -1304,8 +1315,7 @@ void _iocp_add_bufs_trysendto(sock_ctx *skctx, sendto_ctx *buf) {
                  (int32_t)oludp->ol_s.fd, oludp->wb_size);
     }
     queue_push(&oludp->buf_s, buf);
-    if (BIT_CHECK(oludp->status, STATUS_SENDING)
-        || BIT_CHECK(oludp->status, STATUS_ERROR)) {
+    if (BIT_CHECK(oludp->status, STATUS_SENDING)) {
         return;
     }
     BIT_SET(oludp->status, STATUS_SENDING);
@@ -1356,6 +1366,11 @@ int32_t ev_udp(ev_ctx *ctx, const char *ip, const uint16_t port, cbs_ctx *cbs, u
         }
         return ERR_FAILED;
     }
+    // ev_free 已开始：命令仍能入队但 watcher 不再消费，句柄永不生效，故直接拒绝而非谎报成功
+    if (0 != ATOMIC_GET(&ctx->stopping)) {
+        UD_FREE(cbs->ud_free, ud);
+        return ERR_FAILED;
+    }
     netaddr_ctx addr;
     if (ERR_OK != netaddr_set(&addr, ip, port)) {
         LOG_ERROR("netaddr_set %s:%d, %s", ip, port, ERRORSTR(ERRNO));
@@ -1371,10 +1386,7 @@ int32_t ev_udp(ev_ctx *ctx, const char *ip, const uint16_t port, cbs_ctx *cbs, u
     sock_ctx *skctx = _olp_new_udp(*fd, cbs, ud);
     overlap_udp_ctx *udp = UPCAST(skctx, overlap_udp_ctx, ol_r);
     *skid = udp->skid;
-    if (ERR_OK != _cmd_add(GET_PTR(ctx->watcher, ctx->nthreads, (*fd)), skctx)) {
-        _iocp_free_udp(skctx);
-        return ERR_FAILED;
-    }
+    _cmd_add(GET_PTR(ctx->watcher, ctx->nthreads, (*fd)), skctx);
     return ERR_OK;
 }
 void _iocp_add_fd_inloop(watcher_ctx *watcher, sock_ctx *skctx) {

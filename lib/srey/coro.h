@@ -158,10 +158,10 @@ void *coro_slice(task_ctx *task, SOCKET fd, uint64_t skid, size_t *size, int32_t
 /// <param name="skid">链接ID</param>
 /// <param name="ip">IP</param>
 /// <param name="port">端口</param>
-/// <param name="data">数据 需要手动Free</param>
+/// <param name="data">数据；copy=0 时所有权转移给框架，调用方不得再 FREE</param>
 /// <param name="len">数据长度</param>
 /// <param name="size">返回数据长度</param>
-/// <param name="copy">1 不自动释放, 0 自动释放</param>
+/// <param name="copy">1 拷贝数据 0 不拷贝(转移所有权)</param>
 /// <returns>响应数据（已去除 netaddr_ctx 前缀）；仅在当前协程下次 yield（再调任意 coro_* API）前有效，
 ///   下次 resume 时框架自动释放，需要保留请自行拷贝</returns>
 void *coro_sendto(task_ctx *task, SOCKET fd, uint64_t skid,

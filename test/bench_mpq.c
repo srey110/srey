@@ -22,7 +22,10 @@ static void _bq_producer(void *ud) {
     bq_arg *a = (bq_arg *)ud;
     for (int32_t i = 0; i < a->n; i++) {
         if (1 == a->type) {
-            mpq_push((mpq_ctx *)a->q, &i);
+            // mpq 只提供非阻塞入队(生产路径的满队降级由 fsqu 承接),此处自旋重试测满载吞吐
+            while (ERR_OK != mpq_trypush((mpq_ctx *)a->q, &i)) {
+                CPU_PAUSE();
+            }
         } else {
             spin_lock(a->lock);
             queue_push((queue_ctx *)a->q, &i);

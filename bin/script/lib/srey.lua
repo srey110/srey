@@ -73,6 +73,10 @@ local function _ud_free_copy(data, copy)
         utils.ud_free(data)
     end
 end
+---早退路径释放 data：copy=0 表示调用方已转移所有权，须由被调方释放（仅对 lightuserdata 生效）
+---@param data string|lightuserdata|nil 待释放数据
+---@param copy integer? 1 或缺省=已复制，不释放；0=所有权已转移，须释放
+srey._ud_free_copy = _ud_free_copy
 
 ---带错误捕获的函数调用；异常时自动打印错误信息和调用栈
 ---@param func fun(...):any 待调用函数
@@ -385,7 +389,7 @@ srey.task_handle = task.handle
 ---@type fun():integer
 srey.timer_ms = task.timer_ms
 
----设置跨 task request/response 等待超时
+---设置跨 task request/response 等待超时；ms 须 大于 0（非法值告警并忽略），超上界 clamp
 ---@type fun(ms:integer)
 srey.set_request_timeout = task.set_request_timeout
 
@@ -393,7 +397,7 @@ srey.set_request_timeout = task.set_request_timeout
 ---@type fun():integer
 srey.get_request_timeout = task.get_request_timeout
 
----设置 TCP/TLS 连接建立超时
+---设置 TCP/TLS 连接建立超时；ms 须 大于 0（非法值告警并忽略），超上界 clamp
 ---@type fun(ms:integer)
 srey.set_connect_timeout = task.set_connect_timeout
 
@@ -401,7 +405,7 @@ srey.set_connect_timeout = task.set_connect_timeout
 ---@type fun():integer
 srey.get_connect_timeout = task.get_connect_timeout
 
----设置网络读（recv/handshake/ssl exchange）超时
+---设置网络读（recv/handshake/ssl exchange）超时；ms 须 大于 0（非法值告警并忽略），超上界 clamp
 ---@type fun(ms:integer)
 srey.set_netread_timeout = task.set_netread_timeout
 
@@ -521,10 +525,12 @@ local function _get_coro_sess(sess, mtype)
     return coroinfo
 end
 
----删除 sess 的空会话表条目:kcp 等以用户 sess(非 skid)注册 keep=true 会话,ctx:stop 后无 skid 型 CLOSE 可清,
----须显式删除留空占位防 coro_sess 无界增长;仅无挂起等待者时删,避免误删他协程正在该 sess 等待的会话。
+---删除 sess 的空会话表条目:仅无挂起等待者时删,避免误删他协程正在该 sess 等待的会话。
+---只由 _net_close_dispatch 在 CLOSE 到达后调用——kcp 等以用户 sess(非 skid)注册的 keep=true 条目,
+---无论会话是否建立成功都有 CLOSE 可清(未建立时由 _kcp_start 补发 erro!=ERR_OK 的合成 CLOSE),
+---故无需再向业务侧导出手动清理入口
 ---@param sess integer 会话 id
-function srey._coro_sess_del_empty(sess)
+local function _coro_sess_del_empty(sess)
     local cs = coro_sess[sess]
     if cs and 0 == #cs.waiters then
         coro_sess[sess] = nil
@@ -566,7 +572,7 @@ function srey._coro_wait(sess, mtype, ms)
 end
 
 ---阻塞当前协程指定毫秒（底层使用定时器，不阻塞事件线程）
----@param ms integer 睡眠毫秒数
+---@param ms integer 睡眠毫秒数；非正数直接返回不挂起，超 UINT32_MAX(约 49.7 天)由 C 层钳到该上界
 function srey.sleep(ms)
     if ms <= 0 then
         return
@@ -577,7 +583,7 @@ function srey.sleep(ms)
 end
 
 ---异步定时器：ms 毫秒后在新协程中调用 func(...)，当前协程不挂起
----@param ms integer 延迟毫秒数
+---@param ms integer 延迟毫秒数；非正数立即触发，超 UINT32_MAX(约 49.7 天)钳到该上界（均由 core.timeout 统一处理）
 ---@param func fun(...) 超时回调
 ---@param ... any 传给 func 的参数
 function srey.timeout(ms, func, ...)
@@ -616,8 +622,9 @@ end
 ---@param data string|lightuserdata|nil 消息内容
 ---@param size integer? data 为 lightuserdata 时必填
 ---@param copy integer? 是否复制数据，默认 1
----@return lightuserdata|nil rdata 响应数据指针；仅在本协程下次 yield（再调任意挂起 API）前有效，下次 resume 时框架自动释放，需保留请自行拷贝；失败/超时返回 nil
----@return integer? rsize 响应数据长度
+---@return lightuserdata|nil rdata 响应数据指针；仅在本协程下次 yield（再调任意挂起 API）前有效，下次 resume 时框架自动释放，需保留请自行拷贝。
+---       对端以 srey.response(..., ERR_OK) 无载荷应答时也是 nil，故不可用它判成败
+---@return integer|nil rsize 响应数据长度；请求成功时非 nil（无载荷为 0），失败/超时为 nil。判成败用 `if not rsize`
 function srey.request(dst, reqtype, data, size, copy)
     if TASK_NAME.NONE == dst then
         WARN("parameter error.")
@@ -777,7 +784,8 @@ srey.sock_pack_type = core.pack_type
 ---@type fun(fd:integer, skid:integer, status:integer):boolean
 srey.sock_status = core.status
 
----将 socket 绑定到指定 task（跨 task 推送场景）
+---将 socket 绑定到指定 task（跨 task 推送场景）；目标不存在（名字未注册 / 数字句柄对应 task 已退出）返回 false。
+---仅保证调用时目标存在：目标若在绑定之后才退出，该连接下一条消息会被静默关闭
 ---@type fun(fd:integer, skid:integer, tname:TASK_NAME):boolean
 srey.sock_bind_task = core.bind_task
 
@@ -1127,12 +1135,18 @@ end
 ---通过 harbor 协议向目标 task 发起单向 call（HTTP 封装，不等待返回数据）
 ---@param fd integer harbor 连接 fd（pktype 必须为 HTTP）
 ---@param skid integer 连接 skid
----@param dst TASK_NAME 目标 task name
+---@param dst integer 远端 task 的数字句柄（harbor 在对端按此值 task_grab）。
+---       句柄由对端 createid 运行期生成，本地无从推导，须业务自行获取（如经 datacenter 共享或由对端上报）；
+---       不可传 TASK_NAME 字符串——那是本地名字，对远端无意义
 ---@param reqtype REQUEST_TYPE 业务请求类型
 ---@param data string|lightuserdata|nil 消息内容
 ---@param size integer? data 为 lightuserdata 时必填
 ---@return boolean ok 远端返回 200 OK 时 true
 function srey.net_call(fd, skid, dst, reqtype, data, size)
+    if "number" ~= type(dst) then
+        WARN("net_call dst must be a remote task handle(integer).")
+        return false
+    end
     local reqdata, reqsize = harbor.pack(dst, 1, reqtype, data, size)
     local respdata, _ = srey.syn_send(fd, skid, reqdata, reqsize, 0)
     if not respdata then
@@ -1150,13 +1164,19 @@ end
 ---通过 harbor 协议向目标 task 发起同步请求，等待返回数据
 ---@param fd integer harbor 连接 fd（pktype 必须为 HTTP）
 ---@param skid integer 连接 skid
----@param dst TASK_NAME 目标 task name
+---@param dst integer 远端 task 的数字句柄（harbor 在对端按此值 task_grab）。
+---       句柄由对端 createid 运行期生成，本地无从推导，须业务自行获取（如经 datacenter 共享或由对端上报）；
+---       不可传 TASK_NAME 字符串——那是本地名字，对远端无意义
 ---@param reqtype REQUEST_TYPE 业务请求类型
 ---@param data string|lightuserdata|nil 消息内容
 ---@param size integer? data 为 lightuserdata 时必填
 ---@return lightuserdata|nil rdata 响应数据指针；仅在本协程下次 yield（再调任意挂起 API）前有效，下次 resume 时框架自动释放，需保留请自行拷贝；失败或非 200 返回 nil
 ---@return integer? rsize 响应数据长度
 function srey.net_request(fd, skid, dst, reqtype, data, size)
+    if "number" ~= type(dst) then
+        WARN("net_request dst must be a remote task handle(integer).")
+        return nil
+    end
     local reqdata, reqsize = harbor.pack(dst, 0, reqtype, data, size)
     local respdata, _ = srey.syn_send(fd, skid, reqdata, reqsize, 0)
     if not respdata then
@@ -1249,7 +1269,7 @@ local function _net_close_dispatch(msg)
     if func and ERR_OK == msg.erro then
         _coro_run(_coro_cb, func, nil, msg.subtype, msg.fd, msg.skid, msg.client)
     end
-    srey._coro_sess_del_empty(sess)
+    _coro_sess_del_empty(sess)
 end
 
 ---注册 UDP 数据接收回调

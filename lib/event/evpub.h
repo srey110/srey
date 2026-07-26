@@ -20,6 +20,7 @@
 #define GET_PTR(p, n, fd) (1 == (n) ? (p) : &(p)[GET_POS((fd), (n))])// 根据fd获取对应的指针
 #define EVENT_TICK_MIN 10          // event 线程周期驱动(ev_tick)的最小间隔(毫秒),防 tick 返回 0 忙轮询
 #define ACCEPT_BACKOFF_MS 500 // accept 遇 EMFILE/ENFILE 后暂停监听、退避重试的间隔(毫秒)
+#define UDP_RECV_MAX_ERRS 8// 单次唤醒内 recvmsg 连续失败上限；超限认定 fd 异常转关闭，防不消耗 datagram 的错误原地打转
 
 struct evssl_ctx;
 struct watcher_ctx;
@@ -69,6 +70,9 @@ typedef struct recvfrom_ctx {
 // 网络事件上下文
 typedef struct ev_ctx {
     uint32_t nthreads;              // 工作线程数
+    atomic_t stopping;              // ev_free 入口即置 1：此后拒绝新建 listener/连接/UDP。
+                                    // 不能用 watcher->stop 判断——那个由 CMD_STOP 到达后 event 线程异步置位，
+                                    // ev_free 刚进来时仍为 0，据它检查会漏
 #ifdef EV_IOCP
     uint32_t nacpex;                // AcceptEx线程数
     atomic_t nlsn;                  // 存活listener计数（ev_free关闭阶段排空同步用）

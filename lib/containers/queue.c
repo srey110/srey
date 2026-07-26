@@ -8,7 +8,14 @@ void queue_init(queue_ctx *qu, uint32_t elsize, uint32_t maxsize) {
     qu->elsize = elsize;
     qu->offset = 0;
     qu->size = 0;
-    qu->maxsize = (0 == maxsize) ? QUEUE_INIT_SIZE : maxsize;
+    if (0 == maxsize) {
+        // 延迟分配：不预付内存，首次 queue_push 命中 size==maxsize 由 queue_resize(0) 按默认容量分配。
+        // 供可能永不装入元素的层使用(如 fsqu 的溢出层)
+        qu->maxsize = 0;
+        qu->ptr = NULL;
+        return;
+    }
+    qu->maxsize = maxsize;
     ASSERTAB((size_t)qu->maxsize <= SIZE_MAX / elsize, "byte size overflow.");
     MALLOC(qu->ptr, (size_t)elsize * qu->maxsize);
 }

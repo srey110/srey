@@ -36,6 +36,9 @@
 typedef enum events {
     EVENT_READ = 0x01,  // 可读事件
     EVENT_WRITE = 0x02, // 可写事件
+#if defined(EV_KQUEUE)
+    EVENT_ERROR = 0x04, // 事件注册失败；仅 kqueue 需要（其余平台注册失败由 _uev_add_event 同步返回）
+#endif
 }events;
 // 隔离队列元素类型
 typedef enum qtn_type {
@@ -55,11 +58,9 @@ typedef struct sock_ctx {
 // 命令管道上下文：一对匿名管道 + 读端的sock_ctx（注册到事件循环）
 typedef struct pip_ctx {
     int32_t pipes[2];               // pipes[0] 读端，pipes[1] 写端
-    tda_ctx tda;                    // 队列长度告警翻倍状态（init = pipe 容量cmd数 / QUEUE_OVERLOAD_RATIO）
+    tda_ctx tda;                    // 队列长度告警翻倍状态（init = fsqu 容量 / QUEUE_OVERLOAD_RATIO）
     sock_ctx skpip;                 // 读端的sock_ctx（ev_cb = _uev_cmd_loop）
-#if CMD_PIPE_QU
-    fsqu_ctx qu;                // 命令队列（多生产者，单消费者批量 pop；元素 cmd_ctx）
-#endif
+    fsqu_ctx qu;
 }pip_ctx;
 // 隔离队列元素：close 后对象先入此队列暂存 QTN_MS 毫秒，让 stale event 消化完再真释放
 typedef struct qtn_entry {
@@ -85,7 +86,7 @@ typedef struct watcher_ctx {
     pool_ctx pool;              // sock_ctx对象池
     timer_ctx timer;            // 计时器
     queue_ctx qtn;              // 隔离队列 FIFO，元素 qtn_entry
-    pip_ctx pipe;               // 命令管道（单通道，多生产者 < PIPE_BUF 原子写）
+    pip_ctx pipe;               // 命令通道（fsqu 存命令 + 单管道传唤醒信号）
     list_ctx ticks;             // event 线程周期驱动节点(ev_tick)链表
     char udp_rbuf[MAX_RECVFROM_SIZE]; // UDP 接收共享缓冲：本线程所有 UDP socket 复用
 }watcher_ctx;

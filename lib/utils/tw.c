@@ -45,9 +45,8 @@ void tw_free(tw_ctx *ctx) {
     cond_free(&ctx->cond);
     mutex_free(&ctx->mu);
 }
-/*  注意：reqadd 在 mpq 侧（非 macOS）容量满时 fsqu_push 会自旋阻塞调用方业务线程，
- *  在 queue 侧（macOS）则自动扩容。常规负载下不会触发（容量 4096，主线程 ≤5ms 排空一轮）。
- *  仅在极端突发或时间轮主线程被严重抢占时才会触底。*/
+/*  注意：reqadd 容量 4096，常规负载下不会触底（主线程 ≤5ms 排空一轮）。
+ *  极端突发或时间轮主线程被严重抢占时触底，fsqu_push 降级到无界溢出层，不阻塞调用方。*/
 void tw_add(tw_ctx *ctx, const uint32_t timeout, tw_cb _cb, free_cb _freecb, ud_cxt *ud) {
     if (0 == timeout) {
         _cb(ud);

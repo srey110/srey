@@ -45,20 +45,25 @@ function ctx:connect()
         return false
     end
     self.connecting = true
+    local ok, rtn = pcall(self._connect, self)
+    self.connecting = false
+    if not ok then
+        error(rtn, 0)
+    end
+    return rtn
+end
+function ctx:_connect()
     if not self.mysql:try_connect() then
-        self.connecting = false
         return false
     end
     local fd, skid = self.mysql:sock_id()
     if not srey.wait_connect(fd, skid, SSL_NAME.NONE ~= self.sslname or nil) then
-        self.connecting = false
         return false
     end
     local ok,_,_ = srey.wait_handshaked(fd, skid)
     if ok then
         self.generation = self.generation + 1
     end
-    self.connecting = false
     return ok
 end
 
@@ -107,25 +112,16 @@ function ctx:ping()
     return true
 end
 
----执行 SQL 查询（COM_QUERY）
----@param sql string SQL 语句
----@param mbind any? mysql_bind_ctx 参数绑定上下文
----@return (_mysql_reader_ctx|boolean)[]|nil results 结果集数组（元素 reader=SELECT 结果集 / true=OK 包 / false=ERR 包）；网络失败、多结果集中途断连或 connect() 进行中返回 nil
-function ctx:query(sql, mbind)
-    if self.connecting then
-        return nil
-    end
-    local pack, size = self.mysql:pack_query(sql, mbind)
-    local fd, skid = self.mysql:sock_id()
-    local mpack = srey.syn_send(fd, skid, pack, size, 0)
-    if not mpack then
-        return nil
-    end
-    -- 多结果集（多语句 / CALL）：一次请求可能产生多个响应包，逐个收齐；has_more 须在 reader.new 前读
+---收齐一次请求的全部响应包（多语句 / CALL 会产生多个结果集），query 与 stmt:execute 共用
+---@param fd integer socket fd
+---@param skid integer 会话键
+---@param mpack lightuserdata 首个响应包
+---@return (_mysql_reader_ctx|boolean)[]|nil results 结果集数组（元素 reader=SELECT 结果集 / true=OK 包 / false=ERR 包）；中途断连或结果集异常返回 nil
+function ctx:_read_results(fd, skid, mpack)
     local results = {}
     local failed = false
     while true do
-        local more = mysql.has_more(mpack)
+        local more = mysql.has_more(mpack)-- has_more 须在 reader.new 前读
         local pktype = mysql.pack_type(mpack)
         if MYSQL_PACK_TYPE.MPACK_OK == pktype then
             results[#results + 1] = true
@@ -151,6 +147,23 @@ function ctx:query(sql, mbind)
         return nil
     end
     return results
+end
+
+---执行 SQL 查询（COM_QUERY）
+---@param sql string SQL 语句
+---@param mbind any? mysql_bind_ctx 参数绑定上下文
+---@return (_mysql_reader_ctx|boolean)[]|nil results 结果集数组（元素 reader=SELECT 结果集 / true=OK 包 / false=ERR 包）；网络失败、多结果集中途断连或 connect() 进行中返回 nil
+function ctx:query(sql, mbind)
+    if self.connecting then
+        return nil
+    end
+    local pack, size = self.mysql:pack_query(sql, mbind)
+    local fd, skid = self.mysql:sock_id()
+    local mpack = srey.syn_send(fd, skid, pack, size, 0)
+    if not mpack then
+        return nil
+    end
+    return self:_read_results(fd, skid, mpack)
 end
 
 ---准备预处理语句（COM_STMT_PREPARE）

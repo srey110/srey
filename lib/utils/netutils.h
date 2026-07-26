@@ -54,11 +54,18 @@ int32_t sock_nodelay(SOCKET fd);
 /// <returns>ERR_OK 成功</returns>
 int32_t sock_nonblock(SOCKET fd);
 /// <summary>
-/// 设置地址重用
+/// 设置地址重用。istcp 非 0（TCP 监听）时 Windows 走 SO_EXCLUSIVEADDRUSE：
+/// 该平台的 SO_REUSEADDR 允许他进程绑定并抢占正在使用的 addr:port（本地端口劫持），
+/// 语义与 Unix 的 TIME_WAIT 复用完全不同，故监听须显式独占。
+/// 代价（MSDN 明确记录的取舍）：独占绑定在关闭后不能立即重用——该监听 socket 上 accept 过连接时，
+/// 新 socket 须等这些连接彻底失活才能 bind，重启窗口内返回 WSAEADDRINUSE。不用 SO_LINGER 规避：
+/// 它会让连接以 RST 收场并丢弃未确认数据。Windows 上不设任何选项同样无法重绑，故这不是可换取的收益。
+/// istcp 为 0（UDP）时各平台一律 SO_REUSEADDR：多播要求多 socket 绑定同一 addr:port
 /// </summary>
 /// <param name="fd">socket 句柄</param>
+/// <param name="istcp">非 0 TCP 监听，0 UDP</param>
 /// <returns>ERR_OK 成功</returns>
-int32_t sock_reuseaddr(SOCKET fd);
+int32_t sock_reuseaddr(SOCKET fd, int32_t istcp);
 /// <summary>
 /// 设置端口重用
 /// </summary>

@@ -128,7 +128,14 @@ int32_t sock_nonblock(SOCKET fd) {
 #endif
     return ERR_OK;
 }
-int32_t sock_reuseaddr(SOCKET fd) {
+int32_t sock_reuseaddr(SOCKET fd, int32_t istcp) {
+#if defined(OS_WIN)
+    if (0 != istcp) {
+        return _setsockopt_flag(fd, SOL_SOCKET, SO_EXCLUSIVEADDRUSE);
+    }
+#else
+    (void)istcp;
+#endif
     return _setsockopt_flag(fd, SOL_SOCKET, SO_REUSEADDR);
 }
 int32_t sock_reuseport(SOCKET fd) {
@@ -157,24 +164,28 @@ int32_t sock_keepalive(SOCKET fd, const int32_t delay, const int32_t intvl) {
         return ERR_FAILED;
     }
 #else
-#ifdef TCP_KEEPIDLE
-    int32_t cnt = 3;
     //首次发送 keepalive 前的空闲等待秒数
+#ifdef TCP_KEEPIDLE
     if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, (char *)&delay, (int32_t)sizeof(delay)) < ERR_OK) {
         return ERR_FAILED;
     }
-    //keepalive 探测包发送间隔秒数
-    if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, (char *)&intvl, (int32_t)sizeof(intvl)) < ERR_OK) {
-        return ERR_FAILED;
-    }
-    //keepalive 最大重试次数
-    if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, (char *)&cnt, (int32_t)sizeof(cnt)) < ERR_OK) {
+#elif defined(TCP_KEEPALIVE) && !defined(OS_SUN)
+    if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPALIVE, (char *)&delay, (int32_t)sizeof(delay)) < ERR_OK) {
         return ERR_FAILED;
     }
 #endif
-#if defined(TCP_KEEPALIVE) && !defined(OS_SUN)
+    //keepalive 探测包发送间隔秒数
+#ifdef TCP_KEEPINTVL
+    if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, (char *)&intvl, (int32_t)sizeof(intvl)) < ERR_OK) {
+        return ERR_FAILED;
+    }
+#else
     (void)intvl;
-    if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPALIVE, (char *)&delay, (int32_t)sizeof(delay)) < ERR_OK) {
+#endif
+    //keepalive 最大重试次数
+#ifdef TCP_KEEPCNT
+    int32_t cnt = 3;
+    if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, (char *)&cnt, (int32_t)sizeof(cnt)) < ERR_OK) {
         return ERR_FAILED;
     }
 #endif

@@ -2,7 +2,6 @@
 #include "utils/utils.h"
 
 #define MPQ_DEFAULT_CAP  1024
-#define MPQ_SPIN_MAX     64
 
 //按 pos 取槽位地址：基址 + (pos & mask) * stride
 static inline mpq_cell *_mpq_cell_at(mpq_ctx *q, uint32_t pos) {
@@ -81,19 +80,6 @@ int32_t mpq_trypush(mpq_ctx *q, const void *data) {
     memcpy(cell->data, data, q->elsize);
     ATOMIC_SET(&cell->sequence, pos + 1);
     return ERR_OK;
-}
-//阻塞入队：队列满时自旋等待直到成功；长时间满则 yield 退让
-void mpq_push(mpq_ctx *q, const void *data) {
-    ASSERTAB(NULL != q && NULL != data, ERRSTR_NULLP);
-    uint32_t spins = 0;
-    while (ERR_OK != mpq_trypush(q, data)) {
-        if (++spins >= MPQ_SPIN_MAX) {
-            spins = 0;
-            THREAD_YIELD();
-        } else {
-            CPU_PAUSE();
-        }
-    }
 }
 /*
  * 出队（多消费者安全）核心逻辑：

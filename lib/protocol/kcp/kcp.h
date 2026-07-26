@@ -12,7 +12,7 @@
 typedef struct kcp_ctx {
     uint8_t stopped;    // 是否已 kcp_stop(幂等标识,置 1 后 kcp_stop 不再重入)
     uint32_t conv;      // 会话号(同一 socket 内唯一,两端约定一致)
-    uint64_t sess;      // 会话生命周期内固定不变的唤醒 sess(由调用方在 kcp_init 时传入)
+    uint64_t sess;      // 唤醒 sess,每次 kcp_start 传入,会话内不变;0 表示不唤醒(纯异步)
     ev_ctx *netev;      // 事件上下文
     size_t maxpack;     // 单次 kcp_send 消息上限 = 127×(mtu-24),kcp_start 按 config 算,kcp_send 前置校验
     sk_id sk;           // 底层 UDP socket 标识(fd + skid)
@@ -47,23 +47,26 @@ void _kcp_unpack(SOCKET fd, uint64_t skid,
 /// <param name="fd">底层 UDP socket 句柄</param>
 /// <param name="skid">连接 ID</param>
 /// <param name="conv">会话号(两端须一致)</param>
-/// <param name="sess">本会话生命周期内固定不变的唤醒 sess(调用方生成,如 createid())</param>
-void kcp_init(kcp_ctx *kcp, ev_ctx *netev, SOCKET fd, uint64_t skid, uint32_t conv, uint64_t sess);
+void kcp_init(kcp_ctx *kcp, ev_ctx *netev, SOCKET fd, uint64_t skid, uint32_t conv);
 /// <summary>
 /// 建立 kcp 会话(异步,发起后立即返回):在 event 线程创建会话对象并加入该 socket 的会话表;
 /// 此后该会话收到的数据以 MSG_TYPE_RECVFROM 推送给 handle 所属 task。
 /// event 线程上的实际结果(成功,或因 conv 冲突失败)以 MSG_TYPE_HANDSHAKED 异步推给 handle 所属 task
-/// (msg.subtype 为 PACK_UDP_KCP,msg.sess 为 kcp_init 时传入的 sess,msg.erro 为 ERR_OK/ERR_FAILED);
+/// (msg.subtype 为 PACK_UDP_KCP,msg.sess 为本次传入的 sess,msg.erro 为 ERR_OK/ERR_FAILED);
 /// 需要同步拿到该结果请用 kcp_synstart。
 /// 约束:同一 socket 上 conv 须唯一(由上层协商保证)。
 /// </summary>
 /// <param name="kcp">已 kcp_init 的句柄</param>
 /// <param name="handle">数据到达时推送的目标 task 句柄</param>
+/// <param name="sess">本次会话的唤醒 sess(调用方生成,如 createid());0 表示不唤醒。
+///   每次 kcp_start 须传新值:stop 后重启若复用旧 sess,上一会话在途的 CLOSE 会击穿本次等待</param>
 /// <param name="ip">对端 IP</param>
 /// <param name="port">对端端口</param>
 /// <param name="cfg">KCP 可调参数;NULL 用库默认(见 kcp_config)</param>
-/// <returns>ERR_OK 请求已发起;ERR_FAILED 本地校验失败或请求未能发起(不代表 event 线程上的会话建立结果)</returns>
-int32_t kcp_start(kcp_ctx *kcp, name_t handle, const char *ip, uint16_t port, const kcp_config *cfg);
+/// <returns>ERR_OK 请求已发起;ERR_FAILED 本地校验失败或请求未能发起(不代表 event 线程上的会话建立结果)。
+///   返 ERR_FAILED 时不改动句柄任何状态(sess / stopped / maxpack 保持原值),已有会话不受影响</returns>
+int32_t kcp_start(kcp_ctx *kcp, name_t handle, uint64_t sess,
+                  const char *ip, uint16_t port, const kcp_config *cfg);
 /// <summary>
 /// 停止并释放 kcp 会话(从会话表移除并释放会话对象)
 /// </summary>
@@ -78,7 +81,7 @@ void kcp_stop(kcp_ctx *kcp);
 int32_t kcp_handle(kcp_ctx *kcp, name_t handle);
 /// <summary>
 /// 发送数据:交 KCP 可靠传输,实际发包由 event 线程 tick 周期驱动。
-/// 对端响应到达后以 kcp_init 时传入的 sess 唤醒等待协程(供 kcp_synsend 用)。
+/// 对端响应到达后以 kcp_start 时传入的 sess 唤醒等待协程(供 kcp_synsend 用)。
 /// </summary>
 /// <param name="kcp">kcp_ctx</param>
 /// <param name="data">数据</param>

@@ -40,12 +40,6 @@ void mpq_init(mpq_ctx *q, size_t elsize, uint32_t capacity);
 /// <param name="q">mpq_ctx</param>
 void mpq_free(mpq_ctx *q);
 /// <summary>
-/// 阻塞入队：从 data 拷贝 elsize 字节入队，队列满时自旋等待直到成功
-/// </summary>
-/// <param name="q">mpq_ctx</param>
-/// <param name="data">指向待入队元素的指针，不得为 NULL（拷贝 elsize 字节）</param>
-void mpq_push(mpq_ctx *q, const void *data);
-/// <summary>
 /// 非阻塞入队：从 data 拷贝 elsize 字节入队，队列满时立即返回 ERR_FAILED
 /// </summary>
 /// <param name="q">mpq_ctx</param>

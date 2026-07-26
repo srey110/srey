@@ -2,7 +2,6 @@
 #include "utils/utils.h"
 
 #define SPSC_DEFAULT_CAP  1024
-#define SPSC_SPIN_MAX     64
 
 //按 pos 取槽位地址：基址 + (pos & mask) * stride
 static inline char *_spsc_cell_at(spsc_ctx *q, uint32_t pos) {
@@ -55,19 +54,6 @@ int32_t spsc_trypush(spsc_ctx *q, const void *data) {
     memcpy(_spsc_cell_at(q, enq), data, q->elsize);
     ATOMIC_SET(&q->enq.v, enq + 1);
     return ERR_OK;
-}
-//阻塞入队：队列满时自旋等待直到成功；长时间满则 yield 退让
-void spsc_push(spsc_ctx *q, const void *data) {
-    ASSERTAB(NULL != q && NULL != data, ERRSTR_NULLP);
-    uint32_t spins = 0;
-    while (ERR_OK != spsc_trypush(q, data)) {
-        if (++spins >= SPSC_SPIN_MAX) {
-            spins = 0;
-            THREAD_YIELD();
-        } else {
-            CPU_PAUSE();
-        }
-    }
 }
 /*
  * 出队核心逻辑（单消费者）：

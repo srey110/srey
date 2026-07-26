@@ -171,20 +171,25 @@ function ctx:connect()
         return false
     end
     self.connecting = true
+    local ok, rtn = pcall(self._connect, self)
+    self.connecting = false
+    if not ok then
+        error(rtn, 0)
+    end
+    return rtn
+end
+function ctx:_connect()
     local fd, skid = self.mongo:try_connect()
     if INVALID_SOCK == fd then
-        self.connecting = false
         return false
     end
     if not srey.wait_connect(fd, skid, SSL_NAME.NONE ~= self.sslname or nil) then
-        self.connecting = false
         return false   -- wait_connect 内已 close
     end
     -- 从此处往后失败需 close fd；用 sync_close 等复位完成再返回，避免旧连接异步 teardown 追上后清掉下一次 connect() 的新 fd
     local function _fail()
         local cfd, cskid = self.mongo:sock_id()-- 现取:对端已断时 sk.fd 已被 teardown 复位为 INVALID,sync_close 内 guard 直接返回不空等
         srey.sync_close(cfd, cskid, 1)
-        self.connecting = false
         return false
     end
     -- 清掉上一代残留事务会话，避免跨代 lsid/txnNumber 经 TRANSACTION_OPTIONS 附加进 hello 及后续命令
@@ -197,7 +202,6 @@ function ctx:connect()
     if self.mongo:check_error(mgopack) < 0 then return _fail() end
     if self.user then
         if not self.mongo:set_auth_status(fd, skid) then
-            self.connecting = false
             return false --event 已关闭
         end
         local aflags = self.mongo:clear_flag()
@@ -211,7 +215,6 @@ function ctx:connect()
     end
     -- 重连成功：递增连接代次，使上一代 session 的 gen 校验失效
     self.generation = self.generation + 1
-    self.connecting = false
     return true
 end
 

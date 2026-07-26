@@ -1291,13 +1291,47 @@ static void test_sock_options(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_OK, sock_nodelay(fds[0]));
     CuAssertIntEquals(tc, ERR_OK, sock_nonblock(fds[0]));
     // reuseaddr/reuseport/keepalive/linger 在已连接 fd 上仍可设置（影响新连接或关闭语义）
-    CuAssertIntEquals(tc, ERR_OK, sock_reuseaddr(fds[0]));
+    CuAssertIntEquals(tc, ERR_OK, sock_reuseaddr(fds[0], 0));
     CuAssertIntEquals(tc, ERR_OK, sock_keepalive(fds[0], 60, 10));
     CuAssertIntEquals(tc, ERR_OK, sock_linger(fds[0]));
+    // 读回 keepalive 三项确认真落到内核：断言值与系统默认(idle 7200/intvl 75/cnt 8~9)不同,
+    // 故能区分"已设置"与"整块被 #ifdef 跳过"(Windows 走 WSAIoctl,无法逐项读回)
+#if !defined(OS_WIN)
+    int32_t kaopt;
+    socklen_t kalen;
+#ifdef TCP_KEEPIDLE
+    kaopt = 0;
+    kalen = (socklen_t)sizeof(kaopt);
+    CuAssertTrue(tc, getsockopt(fds[0], IPPROTO_TCP, TCP_KEEPIDLE, (char *)&kaopt, &kalen) >= 0);
+    CuAssertIntEquals(tc, 60, kaopt);
+#elif defined(TCP_KEEPALIVE) && !defined(OS_SUN)
+    kaopt = 0;
+    kalen = (socklen_t)sizeof(kaopt);
+    CuAssertTrue(tc, getsockopt(fds[0], IPPROTO_TCP, TCP_KEEPALIVE, (char *)&kaopt, &kalen) >= 0);
+    CuAssertIntEquals(tc, 60, kaopt);
+#endif
+#ifdef TCP_KEEPINTVL
+    kaopt = 0;
+    kalen = (socklen_t)sizeof(kaopt);
+    CuAssertTrue(tc, getsockopt(fds[0], IPPROTO_TCP, TCP_KEEPINTVL, (char *)&kaopt, &kalen) >= 0);
+    CuAssertIntEquals(tc, 10, kaopt);
+#endif
+#ifdef TCP_KEEPCNT
+    kaopt = 0;
+    kalen = (socklen_t)sizeof(kaopt);
+    CuAssertTrue(tc, getsockopt(fds[0], IPPROTO_TCP, TCP_KEEPCNT, (char *)&kaopt, &kalen) >= 0);
+    CuAssertIntEquals(tc, 3, kaopt);
+#endif
+#endif
 #if !defined(OS_WIN)
     // SO_REUSEPORT 在 Windows 不支持，跳过
     CuAssertIntEquals(tc, ERR_OK, sock_reuseport(fds[0]));
 #endif
+    // istcp=1 在 Windows 走 SO_EXCLUSIVEADDRUSE，该选项须在 bind 前设置，故另建裸 socket
+    SOCKET lsn = sock_create_cloexec(AF_INET, SOCK_STREAM, 0);
+    CuAssertTrue(tc, INVALID_SOCK != lsn);
+    CuAssertIntEquals(tc, ERR_OK, sock_reuseaddr(lsn, 1));
+    CLOSE_SOCK(lsn);
 
     // getter
     CuAssertIntEquals(tc, SOCK_STREAM, sock_type(fds[0]));

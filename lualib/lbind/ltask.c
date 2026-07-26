@@ -677,14 +677,26 @@ static int32_t _ltask_trap(lua_State *lua) {
     lua_pushboolean(lua, 1);
     return 1;
 }
+static int32_t _ltask_opt_timeout(lua_State *lua, task_ctx *task, uint32_t *ms) {
+    lua_Integer val = luaL_checkinteger(lua, 1);
+    if (val <= 0) {
+        LOG_WARN("task %s, invalid timeout %"PRId64", ignored.", _NAME_OR(task->name), (int64_t)val);
+        return ERR_FAILED;
+    }
+    *ms = (uint32_t)(val > TASK_TIMEOUT_MAX ? TASK_TIMEOUT_MAX : val);
+    return ERR_OK;
+}
 /// <summary>
 /// 设置当前 task 的请求超时时间
 /// </summary>
-/// <param name="ms" type="integer">超时毫秒数</param>
+/// <param name="ms" type="integer">超时毫秒数，须 大于 0；超过 TASK_TIMEOUT_MAX 时 clamp 到该上界</param>
 /// <returns>无</returns>
 static int32_t _ltask_set_request_timeout(lua_State *lua) {
-    uint32_t ms = (uint32_t)luaL_checkinteger(lua, 1);
     LPUB_CUR_TASK(lua, task);
+    uint32_t ms;
+    if (ERR_OK != _ltask_opt_timeout(lua, task, &ms)) {
+        return 0;
+    }
     task_set_request_timeout(task, ms);
     return 0;
 }
@@ -701,11 +713,14 @@ static int32_t _ltask_get_request_timeout(lua_State *lua) {
 /// <summary>
 /// 设置当前 task 的连接超时时间
 /// </summary>
-/// <param name="ms" type="integer">超时毫秒数</param>
+/// <param name="ms" type="integer">超时毫秒数，须 大于 0；超过 TASK_TIMEOUT_MAX 时 clamp 到该上界</param>
 /// <returns>无</returns>
 static int32_t _ltask_set_connect_timeout(lua_State *lua) {
-    uint32_t ms = (uint32_t)luaL_checkinteger(lua, 1);
     LPUB_CUR_TASK(lua, task);
+    uint32_t ms;
+    if (ERR_OK != _ltask_opt_timeout(lua, task, &ms)) {
+        return 0;
+    }
     task_set_connect_timeout(task, ms);
     return 0;
 }
@@ -722,11 +737,14 @@ static int32_t _ltask_get_connect_timeout(lua_State *lua) {
 /// <summary>
 /// 设置当前 task 的网络读取超时时间
 /// </summary>
-/// <param name="ms" type="integer">超时毫秒数</param>
+/// <param name="ms" type="integer">超时毫秒数，须 大于 0；超过 TASK_TIMEOUT_MAX 时 clamp 到该上界</param>
 /// <returns>无</returns>
 static int32_t _ltask_set_netread_timeout(lua_State *lua) {
-    uint32_t ms = (uint32_t)luaL_checkinteger(lua, 1);
     LPUB_CUR_TASK(lua, task);
+    uint32_t ms;
+    if (ERR_OK != _ltask_opt_timeout(lua, task, &ms)) {
+        return 0;
+    }
     task_set_netread_timeout(task, ms);
     return 0;
 }

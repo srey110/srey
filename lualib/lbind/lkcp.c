@@ -8,16 +8,14 @@
 /// <param name="fd" type="integer">底层 UDP socket fd</param>
 /// <param name="skid" type="integer">连接 skid</param>
 /// <param name="conv" type="integer">会话号(同一 socket 内唯一,两端约定一致)</param>
-/// <param name="sess" type="integer">本会话生命周期内固定不变的唤醒 sess(调用方生成,如 srey.id())</param>
 /// <returns type="userdata">kcp 会话句柄(_kcp_ctx)</returns>
 static int32_t _lkcp_new(lua_State *lua) {
     LPUB_CUR_TASK(lua, task);
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
     uint32_t conv = (uint32_t)luaL_checkinteger(lua, 3);
-    uint64_t sess = (uint64_t)luaL_checkinteger(lua, 4);
     kcp_ctx *kcp = lua_newuserdata(lua, sizeof(kcp_ctx));
-    kcp_init(kcp, &task->loader->netev, fd, skid, conv, sess);
+    kcp_init(kcp, &task->loader->netev, fd, skid, conv);
     ASSOC_MTABLE(lua, MT_KCP);
     return 1;
 }
@@ -41,6 +39,8 @@ static lua_Integer _lkcp_optint(lua_State *lua, int32_t tidx, const char *key, l
 /// 建立会话,数据到达以当前 task 为推送目标(MSG_TYPE.RECVFROM)
 /// </summary>
 /// <param name="self" type="userdata">kcp 会话句柄</param>
+/// <param name="sess" type="integer">本次会话的唤醒 sess(调用方生成,如 srey.id());0 表示不唤醒。
+///   每次 start 须传新值:stop 后重启若复用旧 sess,上一会话在途的 CLOSE 会击穿本次等待</param>
 /// <param name="ip" type="string">对端 IP</param>
 /// <param name="port" type="integer">对端端口</param>
 /// <param name="config" type="table?">KCP 可调参数(nodelay/interval/resend/nc/sndwnd/rcvwnd/mtu),缺省用库默认</param>
@@ -48,21 +48,22 @@ static lua_Integer _lkcp_optint(lua_State *lua, int32_t tidx, const char *key, l
 static int32_t _lkcp_start(lua_State *lua) {
     kcp_ctx *kcp = luaL_checkudata(lua, 1, MT_KCP);
     LPUB_CUR_TASK(lua, task);
-    const char *ip = luaL_checkstring(lua, 2);
-    uint16_t port = (uint16_t)luaL_checkinteger(lua, 3);
+    uint64_t sess = (uint64_t)luaL_checkinteger(lua, 2);
+    const char *ip = luaL_checkstring(lua, 3);
+    uint16_t port = (uint16_t)luaL_checkinteger(lua, 4);
     kcp_config cfg;
     kcp_config *pcfg = NULL;
-    if (lua_istable(lua, 4)) {
-        cfg.nodelay = (int32_t)_lkcp_optint(lua, 4, "nodelay", -1);
-        cfg.interval = (int32_t)_lkcp_optint(lua, 4, "interval", -1);
-        cfg.resend = (int32_t)_lkcp_optint(lua, 4, "resend", -1);
-        cfg.nc = (int32_t)_lkcp_optint(lua, 4, "nc", -1);
-        cfg.sndwnd = (int32_t)_lkcp_optint(lua, 4, "sndwnd", 0);
-        cfg.rcvwnd = (int32_t)_lkcp_optint(lua, 4, "rcvwnd", 0);
-        cfg.mtu = (int32_t)_lkcp_optint(lua, 4, "mtu", 0);
+    if (lua_istable(lua, 5)) {
+        cfg.nodelay = (int32_t)_lkcp_optint(lua, 5, "nodelay", -1);
+        cfg.interval = (int32_t)_lkcp_optint(lua, 5, "interval", -1);
+        cfg.resend = (int32_t)_lkcp_optint(lua, 5, "resend", -1);
+        cfg.nc = (int32_t)_lkcp_optint(lua, 5, "nc", -1);
+        cfg.sndwnd = (int32_t)_lkcp_optint(lua, 5, "sndwnd", 0);
+        cfg.rcvwnd = (int32_t)_lkcp_optint(lua, 5, "rcvwnd", 0);
+        cfg.mtu = (int32_t)_lkcp_optint(lua, 5, "mtu", 0);
         pcfg = &cfg;
     }
-    lua_pushboolean(lua, ERR_OK == kcp_start(kcp, task->handle, ip, port, pcfg) ? 1 : 0);
+    lua_pushboolean(lua, ERR_OK == kcp_start(kcp, task->handle, sess, ip, port, pcfg) ? 1 : 0);
     return 1;
 }
 /// <summary>

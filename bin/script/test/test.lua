@@ -30,6 +30,8 @@ local TESTS = {
     "test.unit_seri",
     "test.unit_stm",
     "test.unit_kcp",
+    "test.unit_http",
+    "test.unit_websock",
     "test.e2e_runner",   -- 用 srey.popen 跑 bin/py_assist/test_*.py 自动收集 exit code
     -- 集成测试(依赖 docker-compose)
     "test.db_mysql",
@@ -73,6 +75,8 @@ local function register()
     task.register("test.unit_seri", "unit_seri", 0)
     task.register("test.unit_stm", "unit_stm", 0)
     task.register("test.unit_kcp", "unit_kcp", 0)
+    task.register("test.unit_http", "unit_http", 0)
+    task.register("test.unit_websock", "unit_websock", 0)
     task.register("test.e2e_runner", "e2e_runner", 0)
     task.register("test.db_mysql", "db_mysql", 0)
     task.register("test.db_pgsql", "db_pgsql", 0)

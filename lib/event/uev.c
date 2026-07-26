@@ -12,11 +12,13 @@ static size_t _uev_cmd_run(watcher_ctx *watcher, sock_ctx *skctx, pip_ctx *pip) 
     size_t cnt_total = 0;
     int32_t i, cnt;
     cmd_ctx cmds[CMD_MAX_NREAD];
-#if CMD_PIPE_QU
     char ntrigger[CMD_MAX_NREAD];
     // 触发字节仅作唤醒信号，先抽干清可读态（epoll ET / MANUAL_ADD re-arm 后仅新字节再触发）
     while (read(skctx->fd, ntrigger, sizeof(ntrigger)) > 0) { }
-    // 与字节数解耦,循环抽干至队列空;触发字节仅作唤醒,本轮后入队命令其字节随后必到再唤醒,不丢命令也不空转
+    // 与字节数解耦,循环抽干至队列空;触发字节仅作唤醒,本轮后入队命令其字节随后必到再唤醒,不丢命令也不空转。
+    // 有意不设每轮上限:fsqu_push 改为永不阻塞后队列已无背压,持续高压会推迟本 watcher 的 socket 读写
+    // (过载由下方 tda_check 的 overload 告警暴露);设上限须在退出时补写自唤醒字节——触发字节已在上面抽干,
+    // 不补则残留命令无人唤醒——反而引入"补写失败即命令永久滞留"的新失败模式,故保持排空语义
     do {
         cnt = (int32_t)fsqu_pop_sc_batch(&pip->qu, cmds, CMD_MAX_NREAD);
         for (i = 0; i < cnt; i++) {
@@ -24,21 +26,6 @@ static size_t _uev_cmd_run(watcher_ctx *watcher, sock_ctx *skctx, pip_ctx *pip) 
         }
         cnt_total += (size_t)cnt;
     } while (cnt > 0);
-#else
-    int32_t nread;
-    (void)pip;
-    for (;;) {
-        nread = read(skctx->fd, cmds, sizeof(cmds));
-        if (nread <= 0) {
-            break;
-        }
-        cnt = (int32_t)(nread / sizeof(cmd_ctx));
-        cnt_total += (size_t)cnt;
-        for (i = 0; i < cnt; i++) {
-            cmd_cbs[cmds[i].cmd](watcher, &cmds[i]);
-        }
-    }
-#endif
     return cnt_total;
 }
 // 命令管道可读事件回调：批量读取并处理所有待处理命令
@@ -316,7 +303,12 @@ static int32_t _uev_parse_event(events_t *ev, SOCKET *fd, void **arg) {
     *arg = ev->data.ptr;
 #elif defined(EV_KQUEUE)
     if (BIT_CHECK(ev->flags, EV_ERROR)) {
-        BIT_SET(rtn, (EVENT_READ | EVENT_WRITE));
+        if (0 != ev->data
+            && ENOENT != (int32_t)ev->data) {
+            LOG_ERROR("kevent register failed on fd %d: %s.",
+                      (int32_t)ev->ident, ERRORSTR((int32_t)ev->data));
+            BIT_SET(rtn, EVENT_ERROR);
+        }
     } else {
         if (EVFILT_READ == ev->filter) {
             BIT_SET(rtn, EVENT_READ);
@@ -439,9 +431,36 @@ static void _uev_loop_event(void *arg) {
                 continue;
             }
             // _close_tcp 路径会清 ev_cb=NULL；qtn 隔离期内 skctx 内存活，读 ev_cb 安全
-            if (NULL != skctx->ev_cb) {
-                skctx->ev_cb(watcher, skctx, ev);
+            if (NULL == skctx->ev_cb) {
+                continue;
             }
+#if defined(EV_KQUEUE)
+            if (BIT_CHECK(ev, EVENT_ERROR)) {
+                // 注册失败的 fd 已无 knote，此后不会再有事件，关闭须本轮同步做完：_uev_disconnect 只置
+                // STATUS_ERROR 并注册 EVENT_WRITE 等回调来关，而 _uev_add_event 排队 EV_SET 前已乐观置好
+                // events 位，_usk_keep_event 遂直接返回 ERR_OK 什么也不排，等不到的事件即永不关闭(fd 泄漏)。
+                // 故置位后立刻派发读写事件，由 _usk_on_rw_cb / _usk_on_udp_rw 入口的 STATUS_ERROR 分支 close。
+                // pipe / listen(type 为 0)不走 _uev_disconnect：它对非 SOCK_STREAM 一律 UPCAST 成 udp_ctx
+                // 会越界。这两类也补不回 knote(events 位已乐观置好,_usk_keep_event 恒短路),派发一次只为
+                // 排空已入队的命令,之后即永久失联,故按类别把后果写进日志——上游那条只报了 fd 与 errno
+                if (SOCK_STREAM == skctx->type
+                    || SOCK_DGRAM == skctx->type) {
+                    _uev_disconnect(watcher, skctx, 1);
+                } else if (skctx == &watcher->pipe.skpip) {
+                    LOG_FATAL("watcher %d cmd pipe lost its knote, this thread no longer takes commands.",
+                              watcher->index);
+                } else {
+                    LOG_ERROR("watcher %d listener fd %d lost its knote, no longer accepts.",
+                              watcher->index, (int32_t)skctx->fd);
+                }
+                skctx->ev_cb(watcher, skctx, (EVENT_READ | EVENT_WRITE));
+                continue;
+            }
+            if (0 == ev) {
+                continue;// EV_ERROR 被过滤(data 为 0 / ENOENT)时无有效事件位，空掩码会让忽略 ev 的回调(_usk_on_connect_cb)误判就绪
+            }
+#endif
+            skctx->ev_cb(watcher, skctx, ev);
         }
         if (0 == ATOMIC_GET(&watcher->stop)
             && cnt == watcher->nevents) {
@@ -510,31 +529,16 @@ static void _uev_new_pipe(pip_ctx *pip) {
     SET_CLOEXEC(pip->pipes[1]);
 #endif
     // 读端非阻塞：_uev_cmd_loop可用read-until-EAGAIN循环排空，不阻塞事件线程
-    // 写端非阻塞：_send_cmd不会永久阻塞，管道满时CPU_PAUSE重试
+    // 写端非阻塞：_send_cmd 写触发字节不会永久阻塞
     ASSERTAB(ERR_OK == sock_nonblock(pip->pipes[0]), ERRORSTR(ERRNO));
     ASSERTAB(ERR_OK == sock_nonblock(pip->pipes[1]), ERRORSTR(ERRNO));
-#if CMD_PIPE_QU
     // 命令存 fsqu、pipe 仅传 1 字节信号，告警阈值按 fsqu 容量算
     fsqu_init(&pip->qu, sizeof(cmd_ctx), 4 * ONEK);
     tda_init(&pip->tda, (size_t)(fsqu_capacity(&pip->qu) / QUEUE_OVERLOAD_RATIO));
-#else
-    // pipe-direct：cmd_ctx 直接进 pipe，告警阈值按 pipe 可存命令数算
-    // Linux 2.6.35+ 支持 F_GETPIPE_SZ 查实际 pipe 容量（默认 64KB，失败兜底同值）；
-    // 其他平台无此 API，按 16KB 估算
-    int32_t pipe_cap;
-#if defined(OS_LINUX)
-    pipe_cap = fcntl(pip->pipes[1], F_GETPIPE_SZ);
-    if (pipe_cap < 0) {
-        pipe_cap = 64 * 1024;
-    }
-#else
-    pipe_cap = 16 * 1024;
-#endif
-    tda_init(&pip->tda, (size_t)((pipe_cap / (int32_t)sizeof(cmd_ctx)) / QUEUE_OVERLOAD_RATIO));
-#endif
 }
 void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
     ctx->nthreads = (0 == nthreads ? procscnt() : nthreads);
+    ATOMIC_SET(&ctx->stopping, 0);
     spin_init(&ctx->spin, SPIN_CNT);
     array_init(&ctx->arrlsn, sizeof(struct listener_ctx *), 0);
     _uev_init_callback();
@@ -554,7 +558,6 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
         watcher->nevents = INIT_EVENTS_CNT;
         MALLOC(watcher->events, sizeof(events_t) * watcher->nevents);
         watcher->evfd = _uev_init_evfd();
-        // 每个watcher单管道：sizeof(cmd_ctx) < PIPE_BUF 保证POSIX原子写
         _uev_new_pipe(&watcher->pipe);
         watcher->element = hashmap_new_with_allocator(_malloc, _realloc, _free,
                                                       sizeof(sock_ctx *), ONEK, 0, 0,
@@ -585,22 +588,11 @@ static void _uev_free_pipe(watcher_ctx *watcher) {
     sock_ctx *skctx;
     int32_t j, cnt;
     cmd_ctx cmds[CMD_MAX_NREAD];
-#if !CMD_PIPE_QU
-    int32_t nread;
-#endif
     for (;;) {
-#if CMD_PIPE_QU
         cnt = (int32_t)fsqu_pop_sc_batch(&watcher->pipe.qu, cmds, CMD_MAX_NREAD);
         if (cnt <= 0) {
             break;
         }
-#else
-        nread = read(watcher->pipe.pipes[0], cmds, sizeof(cmds));
-        if (nread <= 0) {
-            break;
-        }
-        cnt = (int32_t)(nread / sizeof(cmd_ctx));
-#endif
         for (j = 0; j < cnt; j++) {
             switch (cmds[j].cmd) {
             case CMD_SENDTO:
@@ -641,9 +633,7 @@ static void _uev_free_pipe(watcher_ctx *watcher) {
     }
     close(watcher->pipe.pipes[0]);
     close(watcher->pipe.pipes[1]);
-#if CMD_PIPE_QU
     fsqu_free(&watcher->pipe.qu);
-#endif
 }
 static void _uev_stop_watcher(ev_ctx *ctx) {
     uint32_t i;
@@ -693,6 +683,9 @@ static void _uev_free_alllsn(ev_ctx *ctx) {
     array_free(&ctx->arrlsn);
 }
 void ev_free(ev_ctx *ctx) {
+    // 先置关停标志再停线程：此后 ev_listen/ev_connect/ev_udp 一律拒绝，
+    // 免调用方拿到"已入队但永不被 watcher 处理"的句柄
+    ATOMIC_SET(&ctx->stopping, 1);
     // 先停全部 watcher 线程再释放，防 accept 向已释放队列 push
     _uev_stop_watcher(ctx);
     _uev_free_watcher(ctx);

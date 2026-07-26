@@ -14,11 +14,21 @@ typedef struct _task_list_arg {
 /// 向当前 task 注册一个一次性超时事件
 /// </summary>
 /// <param name="sess" type="integer">会话 id，超时消息回调时回带</param>
-/// <param name="time" type="integer">延迟毫秒数</param>
+/// <param name="time" type="integer">延迟毫秒数；非正数即刻触发，超 UINT32_MAX(约 49.7 天)钳到该上界</param>
 /// <returns>无</returns>
 static int32_t _lcore_timeout(lua_State *lua) {
     uint64_t sess = (uint64_t)luaL_checkinteger(lua, 1);
-    uint32_t time = (uint32_t)luaL_checkinteger(lua, 2);
+    lua_Integer ms = luaL_checkinteger(lua, 2);
+    // 校验放 C 层而非 Lua wrapper：core.timeout 直接注册在 core 表上，绕过 lib.srey 的脚本同受保护。
+    // 不可原样 (uint32_t) 截断——2^32 会截成 0 被 tw_add 当场回调，2^32+1000 则变 1 秒
+    uint32_t time;
+    if (ms <= 0) {
+        time = 0;
+    } else if (ms > (lua_Integer)UINT32_MAX) {
+        time = UINT32_MAX;
+    } else {
+        time = (uint32_t)ms;
+    }
     LPUB_CUR_TASK(lua, task);
     task_timeout(task, sess, time, NULL);
     return 0;
@@ -604,16 +614,24 @@ static int32_t _lcore_status(lua_State *lua) {
 /// <param name="fd" type="integer">socket fd</param>
 /// <param name="skid" type="integer">连接 skid</param>
 /// <param name="name" type="string|integer">目标字符串名或数字句柄</param>
-/// <returns type="boolean">成功 true，stop 非0失败</returns>
+/// <returns type="boolean">成功 true；目标 task 不存在(名字未注册 / 句柄对应 task 已退出)或事件线程已停时 false。
+///   仅保证调用时目标存在——若目标在绑定之后才退出,该连接下一条消息仍会被静默关闭</returns>
 static int32_t _lcore_bind_task(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
     name_t handle = _task_handle(lua, 3);
-    if (ERR_OK != ev_ud_handle(&g_loader->netev, fd, skid, handle)) {
+    // 与 core.call/request/response 一致用 grab 探存在性:_task_handle 仅对字符串形式查表,
+    // 数字句柄原样返回,业务缓存的旧句柄在目标退出后照样非 INVALID_TNAME,单查该值会放行。
+    // task_grab 首行已挡 INVALID_TNAME,故一次 grab 覆盖两种无效来源。
+    // 但它只保证此刻目标在:目标若在 ev_ud_handle 投递后退出,该连接下一条消息仍会因 task_grab
+    // 返 NULL 被静默关闭,而 ev_ud_handle 只校验 fd 与入队结果,那个窗口无法在此消除
+    task_ctx *dst = task_grab(g_loader, handle);
+    if (NULL == dst) {
         lua_pushboolean(lua, 0);
-    } else {
-        lua_pushboolean(lua, 1);
+        return 1;
     }
+    task_ungrab(dst);
+    lua_pushboolean(lua, ERR_OK == ev_ud_handle(&g_loader->netev, fd, skid, handle) ? 1 : 0);
     return 1;
 }
 /// <summary>

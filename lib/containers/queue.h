@@ -15,7 +15,8 @@ typedef struct queue_ctx {
 /// </summary>
 /// <param name="qu">queue_ctx</param>
 /// <param name="elsize">单元素字节数，须 大于 0</param>
-/// <param name="maxsize">期望初始容量，0 使用默认值</param>
+/// <param name="maxsize">期望初始容量；0 表示延迟分配——此刻不申请内存，首次 queue_push 时
+///   按默认容量分配(供可能永不装入元素的层使用，如 fsqu 的溢出层)</param>
 void queue_init(queue_ctx *qu, uint32_t elsize, uint32_t maxsize);
 /// <summary>
 /// 释放队列内部内存，不释放 qu 本身

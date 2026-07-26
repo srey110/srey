@@ -73,6 +73,30 @@ runner.run("framework", function(t)
         t:eq(saved_net, task.get_netread_timeout(), "netread_timeout restored")
     end
 
+    -- ── core.bind_task: 目标不存在须返回 false ────────────────────────
+    -- 字符串名走 task_find_name 返 INVALID_TNAME 可挡；数字句柄原样下传，
+    -- 只查 INVALID_TNAME 的话陈旧句柄会被放行，绑定后该连接下一条消息才被静默关闭
+    do
+        local fd, skid = srey.udp(PACK_TYPE.NONE, "0.0.0.0", 15046)
+        t:check(fd and fd ~= INVALID_SOCK, "bind_task 用 udp 创建")
+        if fd and fd ~= INVALID_SOCK then
+            t:eq(false, srey.sock_bind_task(fd, skid, "no_such_task_name"), "未注册的字符串名返回 false")
+            t:eq(false, srey.sock_bind_task(fd, skid, 0x7FFFFFFF), "不存在的数字句柄返回 false")
+            t:eq(true, srey.sock_bind_task(fd, skid, task.handle()), "有效数字句柄绑定成功(确认没把有效的也挡掉)")
+            srey.close(fd, skid)
+        end
+    end
+
+    -- ── core.timeout 数值边界：(uint32_t) 截断会把超大延时变成极小值甚至 0(当场触发) ──
+    do
+        local big, neg = false, false
+        srey.timeout(4294967296, function() big = true end)-- 2^32：截断成 0 则被 tw_add 当场回调
+        srey.timeout(-1, function() neg = true end)
+        srey.sleep(50)-- 让出协程，令已到期的 TIMEOUT 消息完成投递与派发
+        t:eq(false, big, "超 UINT32_MAX 延时钳到上界,不当场触发")
+        t:eq(true, neg, "非正延时立即触发")
+    end
+
     -- ── srey.task: isclosing / name (当前 task) ───────────────────────
     do
         -- 当前 task 未关闭

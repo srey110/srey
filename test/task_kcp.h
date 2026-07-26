@@ -15,8 +15,12 @@
 //   4) fifo: 真实握手拿 conv 后,coro_fork_wait 并发多个协程对同一 kcp_ctx synsend;
 //      验证 keep=true FIFO 派发下每个协程收到的 echo 精确对应自己发送的内容,不串号。
 //   5) synstart: 不依赖真实对端(kcp_start 只在本地登记会话表)。同一 socket 上先后 kcp_synstart
-//      两个相同 conv,验证第二次因冲突同步返回失败;再用 sess=0 的 kcp_ctx 验证 kcp_synstart/kcp_synsend
-//      均立即失败(不进入 _coro_wait),且 copy=0 时不漏释放调用方缓冲区。
+//      两个相同 conv,验证第二次因冲突同步返回失败;以 kcp_start(sess=0) 异步建的会话验证
+//      kcp_synsend 立即失败(不进入 _coro_wait)且 copy=0 时不漏释放调用方缓冲区;
+//      kcp_stop 后立即 kcp_synstart 重启,验证新 sess 不被上一会话在途的 CLOSE 击穿;
+//      再 stop 并让另一句柄占走同 conv,重启必被拒,验证失败路径把 stopped/maxpack 与 sess 一并还原
+//      (stopped 未还原则句柄从"已停"变回"在跑",随后的 synsend 会空等满超时而非立即失败);
+//      最后另开一个 socket,synsend 挂起期间关掉它,验证 CLOSE 唤醒后 kcp->sess 被清零。
 void task_kcp_server_start(loader_ctx *loader, const char *name, uint16_t tcp_port, uint16_t udp_port);
 void task_kcp_client_start(loader_ctx *loader, const char *name, uint16_t sv_tcp_port, uint16_t sv_udp_port, int32_t *ok);
 void task_kcp_close_start(loader_ctx *loader, const char *name, uint16_t sv_udp_port, int32_t *ok);

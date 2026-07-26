@@ -101,8 +101,10 @@ static void _kcp_map_remove(kcp_ud_ctx *ctx, kcp_element *kel) {
 void _kcp_init(prot_emit *emit) {
     g_emit = emit;
 }
-// 向 kel->handle 所属 task 发一条 MSG_TYPE_CLOSE,排干所有挂在 kel->sess 上的等待协程(synsend)
-static void _kcp_notify_closed(ud_cxt *ud, kcp_element *kel) {
+// 向 kel->handle 所属 task 发一条 MSG_TYPE_CLOSE,排干所有挂在 kel->sess 上的等待协程(synsend)。
+// erro 传 ERR_FAILED 时为"会话未建立"的合成 CLOSE:仅用于清掉 keep 占位条目,两侧的 CLOSE
+// dispatch 都按 erro != ERR_OK 跳过 on_close 观察者(同 prots_net_connect 的连接失败补发)
+static void _kcp_notify_closed(ud_cxt *ud, kcp_element *kel, int32_t erro) {
     void *target = g_emit->begin(ud->loader, kel->handle);
     if (NULL == target) {
         return;
@@ -112,6 +114,7 @@ static void _kcp_notify_closed(ud_cxt *ud, kcp_element *kel) {
     msg.subtype = PACK_UDP_KCP;
     msg.sk = kel->sk;
     msg.sess = kel->sess;
+    msg.erro = erro;
     g_emit->emit(target, &msg);
     g_emit->end(target);
 }
@@ -132,7 +135,7 @@ static void _kcp_notify_handshaked(ud_cxt *ud, kcp_element *kel, int32_t erro) {
 }
 static bool _kcp_notify_closed_iter(const void *item, void *udata) {
     kcp_element *kel = *(kcp_element *const *)item;
-    _kcp_notify_closed((ud_cxt *)udata, kel);
+    _kcp_notify_closed((ud_cxt *)udata, kel, ERR_OK);
     return true;
 }
 void _kcp_udfree(ud_cxt *ud) {
@@ -254,10 +257,10 @@ static size_t _kcp_maxpack(int32_t mtu) {
     }
     return (size_t)(KCP_WND_RCV - 1) * (size_t)(mtu - KCP_MIN_OVERHEAD);
 }
-void kcp_init(kcp_ctx *kcp, ev_ctx *netev, SOCKET fd, uint64_t skid, uint32_t conv, uint64_t sess) {
+void kcp_init(kcp_ctx *kcp, ev_ctx *netev, SOCKET fd, uint64_t skid, uint32_t conv) {
     kcp->stopped = 0;
     kcp->conv = conv;
-    kcp->sess = sess;
+    kcp->sess = 0;
     kcp->netev = netev;
     kcp->maxpack = _kcp_maxpack(0);
     kcp->sk.fd = fd;
@@ -341,7 +344,8 @@ static uint32_t _kcp_tick(void *ud, uint64_t now_ms) {
     kcp_ud_ctx *ctx = ud;
     return _kcp_tick_update(ctx, now_ms);
 }
-static kcp_element *_kcp_element_init(kcp_ctx *kcp, name_t handle, const char *ip, uint16_t port, const kcp_config *cfg) {
+static kcp_element *_kcp_element_init(kcp_ctx *kcp, name_t handle, uint64_t sess,
+                                      const char *ip, uint16_t port, const kcp_config *cfg) {
     kcp_element *kel;
     CALLOC(kel, 1, sizeof(kcp_element));
     kel->ikcp = ikcp_create(kcp->conv, kel);
@@ -364,7 +368,7 @@ static kcp_element *_kcp_element_init(kcp_ctx *kcp, name_t handle, const char *i
         return NULL;
     }
     kel->conv = kcp->conv;
-    kel->sess = kcp->sess;
+    kel->sess = sess;
     kel->handle = handle;
     kel->sk.fd = kcp->sk.fd;
     kel->sk.skid = kcp->sk.skid;
@@ -378,6 +382,8 @@ static int32_t _kcp_start(struct watcher_ctx *watcher, struct sock_ctx *skctx,
     if (SOCK_DGRAM != _evpub_sock_type(skctx) || PACK_UDP_KCP != ud->pktype) {
         LOG_ERROR("kcp_start called on non-UDP_KCP fd %d, drop.", (int32_t)kel->sk.fd);
         _kcp_notify_handshaked(ud, kel, ERR_FAILED);
+        // 会话未进表故此后无人补 CLOSE:合成一条清掉等待方 keep=1 的占位条目,免其无界累积
+        _kcp_notify_closed(ud, kel, ERR_FAILED);
         return 1;
     }
     kel->watcher = watcher;
@@ -402,21 +408,31 @@ static int32_t _kcp_start(struct watcher_ctx *watcher, struct sock_ctx *skctx,
     } else if (NULL != _kcp_map_get(ctx, kel->conv)) {
         LOG_WARN("kcp conv %u repeat, ignore.", kel->conv);
         _kcp_notify_handshaked(ud, kel, ERR_FAILED);
+        _kcp_notify_closed(ud, kel, ERR_FAILED);// 同上:合成 CLOSE 清占位
         return 1;
     }
     _kcp_map_add(ctx, kel);
     _kcp_notify_handshaked(ud, kel, ERR_OK);
     return 0;
 }
-int32_t kcp_start(kcp_ctx *kcp, name_t handle, const char *ip, uint16_t port, const kcp_config *cfg) {
-    kcp_element *kel = _kcp_element_init(kcp, handle, ip, port, cfg);
+int32_t kcp_start(kcp_ctx *kcp, name_t handle, uint64_t sess,
+                  const char *ip, uint16_t port, const kcp_config *cfg) {
+    kcp_element *kel = _kcp_element_init(kcp, handle, sess, ip, port, cfg);
     if (NULL == kel) {
         return ERR_FAILED;
     }
+    // maxpack 须在投递前算:ev_props 成功后 kel 所有权已转给 event 线程,不可再读
+    size_t maxpack = _kcp_maxpack((int32_t)kel->ikcp->mtu);
+    if (ERR_OK != ev_props(kcp->netev, kcp->sk.fd, kcp->sk.skid,
+                           _kcp_start, _kcp_element_free, kel, 0)) {
+        return ERR_FAILED;
+    }
+    // kcp->sess 是 stop/send/handle 经 _kcp_resolve 定位会话的键,须与会话表内存活元素的 kel->sess 一致；
+    // 失败路径一律不改这三个字段,否则上一个会话会因键错位而永久无法 stop
+    kcp->sess = sess;
     kcp->stopped = 0;
-    kcp->maxpack = _kcp_maxpack((int32_t)kel->ikcp->mtu);
-    return ev_props(kcp->netev, kcp->sk.fd, kcp->sk.skid,
-        _kcp_start, _kcp_element_free, kel, 0);
+    kcp->maxpack = maxpack;
+    return ERR_OK;
 }
 static kcp_element *_kcp_resolve(struct sock_ctx *skctx, ud_cxt *ud, uint32_t conv, uint64_t sess) {
     if (SOCK_DGRAM != _evpub_sock_type(skctx) || PACK_UDP_KCP != ud->pktype) {
@@ -442,7 +458,7 @@ static int32_t _kcp_stop(struct watcher_ctx *watcher, struct sock_ctx *skctx,
     if (NULL == kel) {
         return 0;
     }
-    _kcp_notify_closed(ud, kel);
+    _kcp_notify_closed(ud, kel, ERR_OK);
     _kcp_map_remove((kcp_ud_ctx *)ud->context, kel);
     _kcp_element_free(kel);
     return 0;

@@ -6,12 +6,11 @@
 local srey   = require("lib.srey")
 local mysql  = require("mysql")
 local stmt   = require("mysql.stmt")
-local reader = require("mysql.reader")
 local MYSQL_PACK_TYPE = MYSQL_PACK_TYPE
 
 -- mysql_stmt_ctx：预处理语句执行上下文。
 -- self.stmt      ：C 层 stmt 对象，持有服务端 statement_id；动态调用 sock_id() 感知重连。
--- self.owner     ：mysql_ctx Lua 包装实例，守卫读其实时 generation。
+-- self.owner     ：mysql_ctx Lua 包装实例，守卫读其实时 generation，多结果集收包复用其 _read_results。
 -- self.mysql     ：C 层 mysql 对象引用（= owner.mysql），用于 last_id / affectd_rows 查询。
 local ctx = class("mysql_stmt_ctx")
 
@@ -46,36 +45,7 @@ function ctx:execute(mbind)
     if not mpack then
         return nil
     end
-    -- 多结果集（CALL / 多语句）：逐个收齐；has_more 须在 reader.new 前读
-    local results = {}
-    local failed = false
-    while true do
-        local more = mysql.has_more(mpack)
-        local pktype = mysql.pack_type(mpack)
-        if MYSQL_PACK_TYPE.MPACK_OK == pktype then
-            results[#results + 1] = true
-        elseif MYSQL_PACK_TYPE.MPACK_ERR == pktype then
-            results[#results + 1] = false
-        else
-            local rd = reader.new(mpack)
-            if rd then
-                results[#results + 1] = rd
-            else
-                failed = true -- 异常结果集：标记失败但继续排空剩余包，避免留在连接缓冲致下次查询 desync
-            end
-        end
-        if not more then
-            break
-        end
-        mpack = srey.syn_recv(fd, skid)
-        if not mpack then
-            return nil
-        end
-    end
-    if failed then
-        return nil
-    end
-    return results
+    return self.owner:_read_results(fd, skid, mpack)
 end
 
 ---发送 COM_STMT_RESET：清除服务端语句执行状态，保留 prepare 结果，下次 execute 可绑定新参数

@@ -17,6 +17,12 @@ loader_ctx *loader_init(uint16_t nnet, uint16_t nworker, uint32_t twcap);
 /// <param name="loader">loader_ctx</param>
 void loader_free(loader_ctx *loader);
 #if WITH_LUA && ENABLE_LUA_BYTECACHE
+/// <summary>
+/// 取 loader 内的 Lua 字节码缓存读写锁（供 lbc_init 使用）。
+/// 锁随 loader 创建与释放，调用方只借用；slot 仅 worker 线程注册，其余线程走内部 fallback 锁。
+/// </summary>
+/// <param name="loader">loader_ctx</param>
+/// <returns>rwlock_distr_ctx</returns>
 rwlock_distr_ctx *loader_lckcache(loader_ctx *loader);
 #endif
 /// <summary>

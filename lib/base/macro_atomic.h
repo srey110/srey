@@ -94,10 +94,34 @@
     // Sun Studio：atomic_ops(3C) 不含屏障，前后补 __machine_rw_barrier(<mbarrier.h>) 凑齐 seq_cst
     #define ATOMIC_THREAD_FENCE_SEQCST() __machine_rw_barrier()
     static inline atomic_t _fetchandadd(atomic_t *ptr, atomic_t val) {
-        return atomic_add_32_nv((volatile atomic_t *)ptr, val) - val;
+        ATOMIC_THREAD_FENCE_SEQCST();
+        atomic_t old = atomic_add_32_nv((volatile atomic_t *)ptr, val) - val;
+        ATOMIC_THREAD_FENCE_SEQCST();
+        return old;
     }
     static inline atomic64_t _fetchandadd64(atomic64_t *ptr, atomic64_t val) {
-        return atomic_add_64_nv((volatile atomic64_t *)ptr, val) - val;
+        ATOMIC_THREAD_FENCE_SEQCST();
+        atomic64_t old = atomic_add_64_nv((volatile atomic64_t *)ptr, val) - val;
+        ATOMIC_THREAD_FENCE_SEQCST();
+        return old;
+    }
+    // acquire 载入:对齐 ld 单指令即原子,取值后补屏障即成 acquire,与 GCC 分支的 __ATOMIC_ACQUIRE 等强。
+    // 不用 atomic_add_32_nv(ptr,0):那是 cas 循环,会为一次只读取得缓存行独占并写回
+    static inline atomic_t _sun_load(atomic_t *ptr) {
+        atomic_t v = *(volatile atomic_t *)ptr;
+        ATOMIC_THREAD_FENCE_SEQCST();
+        return v;
+    }
+    static inline atomic64_t _sun_load64(atomic64_t *ptr) {
+    #if defined(_LP64) || defined(__LP64__)
+        atomic64_t v = *(volatile atomic64_t *)ptr;// ldx / movq 单指令
+    #else
+        // ILP32 ABI 下 64 位载入会被拆成两条 32 位 ld(SPARC V8 无 ldx、i386 无单指令 64 位载入)而撕裂,
+        // 退回 cas 循环换原子性——与 MSVC 分支 ARCH_X86 的处置一致。os.h 的 ARCH_* 不覆盖 SPARC,故按 ABI 宽度判
+        atomic64_t v = atomic_add_64_nv((volatile atomic64_t *)ptr, 0);
+    #endif
+        ATOMIC_THREAD_FENCE_SEQCST();
+        return v;
     }
     static inline atomic_t _sun_swap(atomic_t *ptr, atomic_t val) {
         ATOMIC_THREAD_FENCE_SEQCST();
@@ -123,17 +147,18 @@
         ATOMIC_THREAD_FENCE_SEQCST();
         return ok;
     }
-    #define ATOMIC_ADD(ptr, val) _fetchandadd(ptr, val)
+    #define ATOMIC_ADD(ptr, val) _fetchandadd((atomic_t *)(ptr), val)
     #define ATOMIC_SET(ptr, val) _sun_swap((atomic_t *)(ptr), val)
     #define ATOMIC_CAS(ptr, oldval, newval) _sun_cas((atomic_t *)(ptr), oldval, newval)
-    #define ATOMIC64_ADD(ptr, val) _fetchandadd64(ptr, val)
+    #define ATOMIC64_ADD(ptr, val) _fetchandadd64((atomic64_t *)(ptr), val)
     #define ATOMIC64_SET(ptr, val) _sun_swap64((atomic64_t *)(ptr), val)
     #define ATOMIC64_CAS(ptr, oldval, newval) _sun_cas64((atomic64_t *)(ptr), oldval, newval)
-    // 原子读取：无 __atomic_* 内建，用 RMW 兜底（过强但正确）
-    #define ATOMIC_GET(ptr)   ATOMIC_ADD(ptr, 0)
-    #define ATOMIC64_GET(ptr) ATOMIC64_ADD(ptr, 0)
-    #define ATOMIC_GET_SEQCST(ptr)   ATOMIC_GET(ptr)
-    #define ATOMIC64_GET_SEQCST(ptr) ATOMIC64_GET(ptr)
+    // 原子读取：GET 走对齐 volatile load + 单侧屏障(acquire);
+    // GET_SEQCST 需 StoreLoad 顺序,复用 ADD 的 RMW 双侧屏障
+    #define ATOMIC_GET(ptr)   _sun_load((atomic_t *)(ptr))
+    #define ATOMIC64_GET(ptr) _sun_load64((atomic64_t *)(ptr))
+    #define ATOMIC_GET_SEQCST(ptr)   _fetchandadd((atomic_t *)(ptr), 0)
+    #define ATOMIC64_GET_SEQCST(ptr) _fetchandadd64((atomic64_t *)(ptr), 0)
     // 不手写 relaxed 原语，直接复用现有 seq_cst 版本（正确但不加速）
     #define ATOMIC_ADD_RELAXED(ptr, val) ATOMIC_ADD(ptr, val)
     #define ATOMIC_SET_RELAXED(ptr, val) ATOMIC_SET(ptr, val)
@@ -173,17 +198,42 @@
         ATOMIC_THREAD_FENCE_SEQCST();
         return ok;
     }
-    #define ATOMIC_ADD(ptr, val) fetch_and_add(ptr, val)
+    static inline atomic_t _aix_fetchandadd(atomic_t *ptr, atomic_t val) {
+        ATOMIC_THREAD_FENCE_SEQCST();
+        atomic_t old = fetch_and_add(ptr, val);
+        ATOMIC_THREAD_FENCE_SEQCST();
+        return old;
+    }
+    static inline atomic64_t _aix_fetchandadd64(atomic64_t *ptr, atomic64_t val) {
+        ATOMIC_THREAD_FENCE_SEQCST();
+        atomic64_t old = fetch_and_addlp(ptr, val);
+        ATOMIC_THREAD_FENCE_SEQCST();
+        return old;
+    }
+    // acquire 载入:POWER 对齐 lwz/ld 单指令即原子,取值后补屏障即成 acquire,与 GCC 分支的 __ATOMIC_ACQUIRE 等强。
+    // 不用 fetch_and_add(ptr,0):那是 lwarx/stwcx. 循环,会为一次只读取得缓存行独占并写回
+    static inline atomic_t _aix_load(atomic_t *ptr) {
+        atomic_t v = *(volatile atomic_t *)ptr;
+        ATOMIC_THREAD_FENCE_SEQCST();
+        return v;
+    }
+    static inline atomic64_t _aix_load64(atomic64_t *ptr) {
+        atomic64_t v = *(volatile atomic64_t *)ptr;
+        ATOMIC_THREAD_FENCE_SEQCST();
+        return v;
+    }
+    #define ATOMIC_ADD(ptr, val) _aix_fetchandadd((atomic_t *)(ptr), val)
     #define ATOMIC_SET(ptr, val) _aix_swap(ptr, val)
     #define ATOMIC_CAS(ptr, oldval, newval) _aix_cas(ptr, oldval, newval)
-    #define ATOMIC64_ADD(ptr, val) fetch_and_addlp(ptr, val)
+    #define ATOMIC64_ADD(ptr, val) _aix_fetchandadd64((atomic64_t *)(ptr), val)
     #define ATOMIC64_SET(ptr, val) _aix_swap64(ptr, val)
     #define ATOMIC64_CAS(ptr, oldval, newval) _aix_cas64(ptr, oldval, newval)
-    // 原子读取：无 __atomic_* 内建，用 RMW 兜底（过强但正确）
-    #define ATOMIC_GET(ptr)   ATOMIC_ADD(ptr, 0)
-    #define ATOMIC64_GET(ptr) ATOMIC64_ADD(ptr, 0)
-    #define ATOMIC_GET_SEQCST(ptr)   ATOMIC_GET(ptr)
-    #define ATOMIC64_GET_SEQCST(ptr) ATOMIC64_GET(ptr)
+    // 原子读取：GET 走对齐 volatile load + 单侧屏障(acquire);
+    // GET_SEQCST 需 StoreLoad 顺序,复用 ADD 的 RMW 双侧屏障
+    #define ATOMIC_GET(ptr)   _aix_load((atomic_t *)(ptr))
+    #define ATOMIC64_GET(ptr) _aix_load64((atomic64_t *)(ptr))
+    #define ATOMIC_GET_SEQCST(ptr)   _aix_fetchandadd((atomic_t *)(ptr), 0)
+    #define ATOMIC64_GET_SEQCST(ptr) _aix_fetchandadd64((atomic64_t *)(ptr), 0)
     // 不手写 relaxed 原语，直接复用现有 seq_cst 版本（正确但不加速）
     #define ATOMIC_ADD_RELAXED(ptr, val) ATOMIC_ADD(ptr, val)
     #define ATOMIC_SET_RELAXED(ptr, val) ATOMIC_SET(ptr, val)

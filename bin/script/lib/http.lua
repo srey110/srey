@@ -119,7 +119,7 @@ local function _http_send(rsp, fd, skid, msg, ckfunc)
 end
 
 ---构造并发送 HTTP 消息的核心函数。info 支持 string（带 Content-Length）、
----table（自动 JSON 编码）、function（chunked 流式分块发送，返回 nil 终止流）三种类型
+---table（自动 JSON 编码）、function（chunked 流式分块发送，返回 nil 或空串终止流）三种类型
 ---@param rsp boolean 是否为响应（true=单向，false=同步请求）
 ---@param fd integer socket fd
 ---@param skid integer 连接 skid
@@ -128,7 +128,7 @@ end
 ---       禁止包含 Content-Length / Content-Type / Transfer-Encoding 等由本函数
 ---       根据 info 类型自动添加的头，否则触发重复头部部分严格 HTTP 实现 / smuggling 防御代理会拒收
 ---@param ckfunc fun(fin:boolean, data:lightuserdata|nil, size:integer)? chunked 接收回调
----@param info string|table|fun(...):string?|nil 报文体；string 直接发送，table 自动 JSON 编码，function 流式分块（返回 nil 终止流）
+---@param info string|table|fun(...):string?|nil 报文体；string 直接发送，table 自动 JSON 编码，function 流式分块（返回 nil 或空串终止流）
 ---@param ... any 传给 info 函数的额外参数
 ---@return HttpPack|nil pack 解包后的响应表；rsp=true 或失败时返回 nil
 local function _http_msg(rsp, fd, skid, status, headers, ckfunc, info, ...)
@@ -155,36 +155,45 @@ local function _http_msg(rsp, fd, skid, status, headers, ckfunc, info, ...)
         return _http_send(rsp, fd, skid, msg, ckfunc)
     elseif "function" == msgtype then
         -- 流式分块发送：每次调用 info(...) 取一块数据，拼成 chunked 格式后发送，
-        -- 直到 info 返回 nil 时补发终止块。
+        -- info 返回 nil 或空串时结束流并补发终止块。
         table.insert(msg, "Transfer-Encoding: chunked\r\n\r\n")
         local smsg, rtn
         while true do
             rtn = info(...)
-            if rtn then
-                if "string" ~= type(rtn) then
-                    ERROR("chunked function must return string, got %s.", type(rtn))
-                    table.insert(msg, "0\r\n\r\n")
-                    return _http_send(rsp, fd, skid, msg, ckfunc)
-                end
-                if #rtn > 0 then
-                    table.insert(msg, string.format("%x\r\n", #rtn))
-                    table.insert(msg, rtn)
-                    table.insert(msg, "\r\n")
-                    smsg = table.concat(msg)
-                    if not srey.send(fd, skid, smsg, #smsg, 1) then
-                        -- 中间帧失败仍尝试补发终止块,让对端退出 chunked 累积状态
-                        srey.send(fd, skid, "0\r\n\r\n", 5, 1)
-                        return
-                    end
-                    for i = #msg, 1, -1 do
-                         msg[i] = nil
-                    end
-                end
-            else
+            if nil == rtn then
+                break
+            end
+            if "string" ~= type(rtn) then
+                ERROR("chunked function must return string, got %s.", type(rtn))
+                -- 生产者违约,body 已截断:补终止块让对端退出 chunked 累积状态,但按失败返回,
+                -- 不把截断的 body 当成一次完整请求交回调用方。
+                -- msg 未发送时(首次迭代)一并带上头部,避免对端收到孤立的终止块
                 table.insert(msg, "0\r\n\r\n")
-                return _http_send(rsp, fd, skid, msg, ckfunc)
+                -- 补了终止块后这仍是一条语法完整的 chunked 请求,对端必回响应,故走正常发送路径把它收完再丢弃:
+                -- 响应自身也可能是 chunked(只 syn_send 收不干净),而 _wait_net_recv 按 skid 匹配、不区分请求,
+                -- 漏收就会落到下一次请求注册的等待者上,连接从此错位一格。ckfunc 传 nil:不拿要丢弃的数据回调业务
+                _http_send(rsp, fd, skid, msg, nil)
+                return
+            end
+            -- 空串按结束处理：既是 chunked 终止块的语义，也避免此处零状态推进死循环
+            if 0 == #rtn then
+                break
+            end
+            table.insert(msg, string.format("%x\r\n", #rtn))
+            table.insert(msg, rtn)
+            table.insert(msg, "\r\n")
+            smsg = table.concat(msg)
+            if not srey.send(fd, skid, smsg, #smsg, 1) then
+                -- 中间帧失败仍尝试补发终止块,让对端退出 chunked 累积状态
+                srey.send(fd, skid, "0\r\n\r\n", 5, 1)
+                return
+            end
+            for i = #msg, 1, -1 do
+                msg[i] = nil
             end
         end
+        table.insert(msg, "0\r\n\r\n")
+        return _http_send(rsp, fd, skid, msg, ckfunc)
     else
         -- 无报文体，仅发送空行结束头部
         table.insert(msg, "\r\n")
@@ -200,7 +209,8 @@ end
 ---@param url string? URL 路径，默认 "/"
 ---@param headers table<string,any>? 附加头部
 ---@param ckfunc fun(fin:boolean, data:lightuserdata|nil, size:integer)? chunked 接收回调
----@return HttpPack|nil pack 解包后的响应表；失败返回 nil
+---@return HttpPack|nil pack 解包后的响应表；失败返回 nil（超时/分片中断时响应可能未收完，
+---此连接不应继续复用，应关闭——等待按 skid 匹配，残留响应会被下一次请求错认）
 function http.get(fd, skid, url, headers, ckfunc)
     local status = string.format("GET %s HTTP/%s\r\n", url or "/", HTTP_VERSION)
     return _http_msg(false, fd, skid, status, headers, ckfunc)
@@ -212,9 +222,10 @@ end
 ---@param url string? URL 路径，默认 "/"
 ---@param headers table<string,any>? 附加头部
 ---@param ckfunc fun(fin:boolean, data:lightuserdata|nil, size:integer)? chunked 接收回调
----@param info string|table|fun(...):string?|nil 报文体；string 直接发送，table 自动 JSON 编码，function 流式分块（返回 nil 终止流）
+---@param info string|table|fun(...):string?|nil 报文体；string 直接发送，table 自动 JSON 编码，function 流式分块（返回 nil 或空串终止流）
 ---@param ... any 传给 info 函数的额外参数
----@return HttpPack|nil pack 解包后的响应表；失败返回 nil
+---@return HttpPack|nil pack 解包后的响应表；失败返回 nil（超时/分片中断时响应可能未收完，
+---此连接不应继续复用，应关闭——等待按 skid 匹配，残留响应会被下一次请求错认）
 function http.post(fd, skid, url, headers, ckfunc, info, ...)
     local status = string.format("POST %s HTTP/%s\r\n", url or "/", HTTP_VERSION)
     return _http_msg(false, fd, skid, status, headers, ckfunc, info, ...)
@@ -225,7 +236,7 @@ end
 ---@param skid integer 连接 skid
 ---@param code integer 状态码（如 200、404）
 ---@param headers table<string,any>? 附加头部
----@param info string|table|fun(...):string?|nil 报文体；string 直接发送，table 自动 JSON 编码，function 流式分块（返回 nil 终止流）
+---@param info string|table|fun(...):string?|nil 报文体；string 直接发送，table 自动 JSON 编码，function 流式分块（返回 nil 或空串终止流）
 ---@param ... any 传给 info 函数的额外参数
 function http.response(fd, skid, code, headers, info, ...)
     local status = string.format("HTTP/%s %03d %s\r\n", HTTP_VERSION, code, http.code_status(code))

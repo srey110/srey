@@ -75,7 +75,8 @@ static void _iocp_on_cmd(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
     overlap_cmd_ctx *olcmd = UPCAST(skctx, overlap_cmd_ctx, ol_r);
     // 触发字节仅作唤醒信号，先抽干清可读态（零字节 WSARecv re-arm 只在新字节到达时再触发）
     while (recv(olcmd->ol_r.fd, ntrigger, sizeof(ntrigger), 0) > 0) { }
-    // 与字节数解耦全量抽干：队头被并发生产者占槽未发布时本轮提前停，其触发字节随后必到再唤醒补齐，不丢命令也不空转
+    // 与字节数解耦全量抽干：队头被并发生产者占槽未发布时本轮提前停，其触发字节随后必到再唤醒补齐，不丢命令也不空转。
+    // 同 _uev_cmd_run：有意不设每轮上限，理由见该函数注释
     do {
         cnt = (int32_t)fsqu_pop_sc_batch(&olcmd->qu, cmds, CMD_MAX_NREAD);
         for (i = 0; i < cnt; i++) {
@@ -266,6 +267,7 @@ static void _iocp_init_cmd(watcher_ctx *watcher) {
 }
 void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
     ctx->nthreads = (0 == nthreads ? procscnt() : nthreads);
+    ATOMIC_SET(&ctx->stopping, 0);
     ctx->nacpex = ctx->nthreads > 3 ? 2 : 1;
     ATOMIC_SET(&ctx->nlsn, 0);
     ATOMIC_SET(&ctx->ndead_total, 0);
@@ -415,6 +417,8 @@ static void _iocp_free_acpex(ev_ctx *ctx) {
     FREE(ctx->acpex);
 }
 void ev_free(ev_ctx *ctx) {
+    // 先置关停标志：此后 ev_listen/ev_connect/ev_udp 一律拒绝，免调用方拿到永不被处理的句柄
+    ATOMIC_SET(&ctx->stopping, 1);
     // 1. 停止 AcceptEx 线程（暂不关共用 IOCP，步骤4 仍需从中取出取消完成）
     _iocp_stop_acpex_thread(ctx);
     // 2. ev_unlisten 全部残留 listener：取消在途 AcceptEx，取消完成排队到仍开着的 acpex IOCP（步骤4排空）

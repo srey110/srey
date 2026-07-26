@@ -34,17 +34,17 @@ local sc_client = {}
 local function _wait_resp(post_ok, sess, op)
     if not post_ok then
         WARN("sc %s failed: subcenter unreachable or invalid args.", op)
-        return nil
+        return nil, true
     end
     local msg = srey._coro_wait(sess, MSG_TYPE.RESPONSE, srey.get_request_timeout())
     if MSG_TYPE.TIMEOUT == msg.mtype then
-        WARN("sc %s timeout, session %s.", op, tostring(sess))
-        return nil
+        WARN("sc %s timeout, session %s, local state kept(server side unknown).", op, tostring(sess))
+        return nil, false
     end
     if ERR_OK ~= msg.erro then
-        return nil
+        return nil, true
     end
-    return msg
+    return msg, true
 end
 
 -- 通配匹配:精确 topic(已按 '/' 切分为 lits,同一条消息投递内所有 pattern 共用,调用方只需切一次)
@@ -145,9 +145,12 @@ function sc_client.subscribe(sc_name, topic, handler)
     local old = _handlers[topic]
     _handlers[topic] = handler
     local sess = srey.id()
-    if not _wait_resp(subscribe(sc_name, sess, topic), sess, "subscribe") then
-        -- 仅当当前值仍是本次 handler(未被并发/重订覆盖)时才回滚,避免抹掉他人写入
-        if handler == _handlers[topic] then
+    local ok, settled = _wait_resp(subscribe(sc_name, sess, topic), sess, "subscribe")
+    if not ok then
+        -- 仅在确定服务端未生效(未投出/明确拒绝)时回滚;超时状态未知则保留本地 handler,
+        -- 否则服务端若已订阅成功,后续 deliver 会因本地无 handler 被静默丢弃。
+        -- 另要求当前值仍是本次 handler(未被并发/重订覆盖),避免抹掉他人写入
+        if settled and handler == _handlers[topic] then
             _handlers[topic] = old
         end
         return false
@@ -184,8 +187,9 @@ function sc_client.subscribe_shared(sc_name, topic, group, handler)
     local old = groups[group]
     groups[group] = handler
     local sess = srey.id()
-    if not _wait_resp(subscribe_shared(sc_name, sess, topic, group), sess, "subscribe_shared") then
-        if handler == groups[group] then
+    local ok, settled = _wait_resp(subscribe_shared(sc_name, sess, topic, group), sess, "subscribe_shared")
+    if not ok then
+        if settled and handler == groups[group] then
             groups[group] = old
             if nil == next(groups) then
                 _shared_handlers[topic] = nil
@@ -208,8 +212,9 @@ function sc_client.unsubscribe(sc_name, topic)
     local old = _handlers[topic]
     _handlers[topic] = nil
     local sess = srey.id()
-    if not _wait_resp(unsubscribe(sc_name, sess, topic), sess, "unsubscribe") then
-        if nil == _handlers[topic] then
+    local ok, settled = _wait_resp(unsubscribe(sc_name, sess, topic), sess, "unsubscribe")
+    if not ok then
+        if settled and nil == _handlers[topic] then
             _handlers[topic] = old
         end
         return false
@@ -236,8 +241,9 @@ function sc_client.unsubscribe_shared(sc_name, topic, group)
         end
     end
     local sess = srey.id()
-    if not _wait_resp(unsubscribe_shared(sc_name, sess, topic, group), sess, "unsubscribe_shared") then
-        if nil ~= old then
+    local ok, settled = _wait_resp(unsubscribe_shared(sc_name, sess, topic, group), sess, "unsubscribe_shared")
+    if not ok then
+        if settled and nil ~= old then
             local g = _shared_handlers[topic]
             if not g then
                 g = {}

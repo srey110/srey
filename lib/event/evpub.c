@@ -118,7 +118,7 @@ SOCKET _evpub_listen(netaddr_ctx *addr) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         return INVALID_SOCK;
     }
-    if (ERR_OK != sock_reuseaddr(fd)
+    if (ERR_OK != sock_reuseaddr(fd, 1)
         || ERR_OK != sock_reuseport(fd)
         || ERR_OK != sock_nonblock(fd)) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
@@ -160,7 +160,7 @@ SOCKET _evpub_udp(netaddr_ctx *addr) {
         return INVALID_SOCK;
     }
 #endif
-    if (ERR_OK != sock_reuseaddr(fd)
+    if (ERR_OK != sock_reuseaddr(fd, 0)
         || ERR_OK != sock_nonblock(fd)) {
         LOG_ERROR("%s", ERRORSTR(ERRNO));
         CLOSE_SOCK(fd);

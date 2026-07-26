@@ -49,6 +49,7 @@
 #include "task_close_graceful.h"
 #include "task_sendbuf_warn.h"
 #include "task_priority.h"
+#include "task_selfpost.h"
 #include "lib.h"
 #if WITH_LUA && ENABLE_LUA_BYTECACHE
 #include "lbind/lbytecache.h"
@@ -119,7 +120,7 @@ int main(int argc, char *argv[]) {
     //mpq 与 queue + spinlock
     bench_mpq();
     LOG_INFO("--------------------------------------------------");
-    //event 命令通道:pipe 直接 vs queue+spinlock(pipe 信号)
+    //event 命令通道:pipe 直写 vs queue+spin vs fsqu(linux 下即 mpq),含触发信号合并对比
     bench_evcmd();
     LOG_INFO("*******************benchmark end*******************");
 #endif
@@ -222,6 +223,7 @@ int main(int argc, char *argv[]) {
         {"close_graceful", 0},
         {"sendbuf_warn", 0},
         {"priority_test", 0},
+        {"selfpost_test", 0},
         {"router_test", 0},
         {"kcp_test", 0},
         {"kcp_test2", 0},
@@ -342,6 +344,9 @@ int main(int argc, char *argv[]) {
     //task_set_priority / task_get_priority round-trip + clamp 单元测试
     task_priority_start(g_loader, "priority_test",
         _get_name_val(testlist, "priority_test"));
+    //自投递不死锁: 自身 dispatch 内连续 task_call 自己, 条数远超 qumsg 容量
+    task_selfpost_start(g_loader, "selfpost_test",
+        _get_name_val(testlist, "selfpost_test"));
     //router: server + client 双 task 联调
     task_router_server_start(g_loader, "task_router_server",
         (uint16_t)*_get_name_val(portlist, "router_sv"));

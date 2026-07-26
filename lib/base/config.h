@@ -41,18 +41,12 @@
 #ifdef EV_EPOLL
     #define TRIGGER_ET          1   // epoll 使用边缘触发模式
 #endif
-//FSQU_MPQ CMD_PIPE_QU 根据test里面的benchmark决定
+//FSQU_MPQ 根据test里面的benchmark(bench_mpq)决定
 //判断fsqu队列使用mpq 还是queue+spin
 #if defined(OS_DARWIN) || defined(OS_BSD)
     #define FSQU_MPQ 0 //queue+spin
 #else
     #define FSQU_MPQ 1 //mpq
-#endif
-//判断是否直接pipe发命令，还是需要队列作为载体.
-#if defined(OS_DARWIN) || defined(OS_BSD)
-    #define CMD_PIPE_QU 1 //pipe + qu(queue类型由FSQU_MPQ确定)
-#else
-    #define CMD_PIPE_QU 0 //pipe
 #endif
 
 #define PACK_TOO_LONG(size) (0 != MAX_PACK_SIZE && (uint64_t)(size) >= MAX_PACK_SIZE) // 判断数据包是否超过最大限制

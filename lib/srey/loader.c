@@ -120,7 +120,6 @@ static void _loader_worker_wakeup(loader_ctx *loader, name_t *task) {
         }
     }
     worker_ctx *worker = &loader->worker[target];
-    // 阻塞入队；队列满时自旋等待（正常负载下极少发生）
     fsqu_push(&worker->qutasks, task);
     // 必须先入队再读 waiting，与消费者"先写 waiting 再检查队列"形成对称屏障，
     // 确保两者至少有一方能观察到对方的写入，从而消除丢失唤醒窗口。
@@ -135,7 +134,6 @@ static void _loader_worker_wakeup(loader_ctx *loader, name_t *task) {
 void _task_message_push(task_ctx *task, message_ctx *msg) {
     message_ctx *pmsg = (message_ctx *)pool_pop(&task->loader->msg_pool, NULL, 0);
     *pmsg = *msg;
-    // 阻塞入队；队列满时自旋等待
     fsqu_push(&task->qumsg, &pmsg);
     // CAS 0→1：只有首个生产者负责调度，避免重复唤醒
     if (ATOMIC_CAS(&task->global, 0, 1)) {

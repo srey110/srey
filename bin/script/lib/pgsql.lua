@@ -47,20 +47,25 @@ function ctx:connect()
         return false
     end
     self.connecting = true
+    local ok, rtn = pcall(self._connect, self)
+    self.connecting = false
+    if not ok then
+        error(rtn, 0)
+    end
+    return rtn
+end
+function ctx:_connect()
     if not self.pg:try_connect() then
-        self.connecting = false
         return false
     end
     local fd, skid = self.pg:sock_id()
     if not srey.wait_connect(fd, skid) then
-        self.connecting = false
         return false
     end
     local ok, _, _ = srey.wait_handshaked(fd, skid)
     if ok then
         self.generation = self.generation + 1
     end
-    self.connecting = false
     return ok
 end
 

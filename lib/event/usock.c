@@ -640,6 +640,11 @@ int32_t ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const u
         }
         return ERR_FAILED;
     }
+    // ev_free 已开始：命令仍能入队但 watcher 不再消费，句柄永不生效，故直接拒绝而非谎报成功
+    if (0 != ATOMIC_GET(&ctx->stopping)) {
+        UD_FREE(cbs->ud_free, ud);
+        return ERR_FAILED;
+    }
     netaddr_ctx addr;
     if (ERR_OK != netaddr_set(&addr, ip, port)) {
         LOG_ERROR("netaddr_set %s:%d, %s", ip, port, ERRORSTR(ERRNO));
@@ -652,7 +657,6 @@ int32_t ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const u
         UD_FREE(cbs->ud_free, ud);
         return ERR_FAILED;
     }
-    sock_reuseaddr(*fd);
     _evpub_nodelay_nonblock(*fd);
     int32_t rtn = connect(*fd, netaddr_addr(&addr), netaddr_size(&addr));
     if (ERR_OK != rtn) {
@@ -678,10 +682,7 @@ int32_t ev_connect(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const u
 #else
     (void)evssl;
 #endif
-    if (ERR_OK != _cmd_connect(ctx, skctx, NULL)) {
-        _evpub_sk_free(skctx);
-        return ERR_FAILED;
-    }
+    _cmd_connect(ctx, skctx, NULL);
     return ERR_OK;
 }
 void _uev_add_conn_inloop(watcher_ctx *watcher, sock_ctx *skctx) {
@@ -709,11 +710,36 @@ static uint32_t _usk_accept_backoff(void *ud, uint64_t now_ms) {
     _evpub_tick_remove(acpt->watcher, &acpt->backoff_tick);
     return EVENT_WAIT_TIMEOUT;
 }
-// accept 返回 INVALID_SOCK 的分类：EINTR/ECONNABORTED 返回 ERR_OK 继续，其余返回 ERR_FAILED 退出循环；
+// EINTR / ECONNABORTED 各平台通用：前者瞬时，后者消耗一个 backlog 项，重试必推进。
+// 其余是 Linux accept(2) 把新连接上已挂起的网络错误当作 accept 自身错误码返回的那一组，
+// 文档要求按 EAGAIN 处理（重试下一条），它们不表示监听 socket 出错；macOS/BSD 的 accept
+// 不返回这些，而 EOPNOTSUPP 在那里只表示"fd 不是 SOCK_STREAM"的永久错误，当可重试会无界自旋
+static int32_t _usk_accept_retriable(int32_t err) {
+    switch (err) {
+    case EINTR:
+    case ECONNABORTED:
+#if defined(OS_LINUX)
+    case ENETDOWN:
+    case EPROTO:
+    case ENOPROTOOPT:
+    case EHOSTDOWN:
+    case EHOSTUNREACH:
+    case EOPNOTSUPP:
+    case ENETUNREACH:
+#ifdef ENONET
+    case ENONET:
+#endif
+#endif
+        return 1;
+    default:
+        return 0;
+    }
+}
+// accept 返回 INVALID_SOCK 的分类：可重试错误返回 ERR_OK 继续，其余返回 ERR_FAILED 退出循环；
 // EMFILE/ENFILE 额外暂停监听 READ 并挂退避 tick，到点重挂重试（不误拒 backlog，避免 ET 停滞/LT 忙轮询）
 static int32_t _usk_check_accept(watcher_ctx *watcher, lsnsock_ctx *acpt) {
     int32_t err = ERRNO;
-    if (EINTR == err || ECONNABORTED == err) {
+    if (0 != _usk_accept_retriable(err)) {
         return ERR_OK;
     }
     if (EMFILE == err || ENFILE == err) {
@@ -755,10 +781,7 @@ static void _usk_on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev)
             // 跨 watcher 投递前 ref++ 占位：防 ev_unlisten 在目标 watcher 取出
             // CMD_ADDACP 前将 lsn ref 减到 0 释放，_on_cmd_addacp/_uev_free_pipe 配对减
             ATOMIC_ADD(&acpt->lsn->ref, 1);
-            if (ERR_OK != _cmd_add_acpfd(to, fd, acpt->lsn)) {
-                CLOSE_SOCK(fd);
-                _uev_qtn_freelsn(watcher, acpt->lsn);
-            }
+            _cmd_add_acpfd(to, fd, acpt->lsn);
         }
     }
     if (unremove && NULL == acpt->backoff_tick.cb) {
@@ -816,6 +839,11 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
         }
         return ERR_FAILED;
     }
+    // ev_free 已开始：命令仍能入队但 watcher 不再消费，句柄永不生效，故直接拒绝而非谎报成功
+    if (0 != ATOMIC_GET(&ctx->stopping)) {
+        UD_FREE(cbs->ud_free, ud);
+        return ERR_FAILED;
+    }
     netaddr_ctx addr;
     if (ERR_OK != netaddr_set(&addr, ip, port)) {
         LOG_ERROR("netaddr_set %s:%d, %s", ip, port, ERRORSTR(ERRNO));
@@ -868,14 +896,7 @@ int32_t ev_listen(ev_ctx *ctx, struct evssl_ctx *evssl, const char *ip, const ui
     ATOMIC_SET(&lsn->ref, lsn->nlsn);
     lsn->id = createid();
     for (i = 0; i < lsn->nlsn; i++) {
-        if (ERR_OK != _cmd_listen(&ctx->watcher[i], &lsn->lsnsock[i].sock)) {
-            LOG_WARN("_cmd_listen error event closed, total listener %d, success %d.", lsn->nlsn, i);
-            break;
-        }
-    }
-    if (0 == i) {
-        _uev_freelsn(lsn);
-        return ERR_FAILED;
+        _cmd_listen(&ctx->watcher[i], &lsn->lsnsock[i].sock);
     }
     spin_lock(&ctx->spin);
     array_push_back(&ctx->arrlsn, &lsn);
@@ -982,16 +1003,14 @@ void ev_unlisten(ev_ctx *ctx, uint64_t id) {
     ATOMIC_ADD(&lsn->ref, 1);
     ATOMIC_SET(&lsn->remove, 1);
     for (int32_t i = 0; i < lsn->nlsn; i++) {
-        if (ERR_OK != _cmd_unlisten(&ctx->watcher[i], lsn->lsnsock[i].sock.fd, lsn)) {
-            LOG_WARN("_cmd_unlisten error, index %d.", i);
-        }
+        _cmd_unlisten(&ctx->watcher[i], lsn->lsnsock[i].sock.fd, lsn);
     }
     // 占位减发 CMD 给 worker[0] 在 _uev_cmd_loop 内执行 (_on_cmd_lsn_unref 内归 0 时
     // 入 watcher->qtn 隔离队列); 主线程直接 _uev_try_freelsn 在 ref 归 0 时立即 FREE,
     // 会跟 worker 在 _uev_loop_event 内迭代 events[] 数组的跨线程 UAF 竞态: worker 已减完
     // 自己 CMD_UNLSN ref 但 events[k>i] 仍可能指向 lsnsock, 主线程同步 FREE 后 worker
     // 读 skctx->ev_cb UAF。走 worker 上下文则 FREE 跨过 QTN_MS 隔离期, events 已遍历完
-    (void)_cmd_lsn_unref(&ctx->watcher[0], lsn);
+    _cmd_lsn_unref(&ctx->watcher[0], lsn);
 }
 void _uev_remove_lsn(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) {
     sock_ctx **skctx = _evpub_sockel_remove(watcher, fd);
@@ -1030,6 +1049,8 @@ static void _usk_init_msghdr(struct msghdr *msg, netaddr_ctx *addr, IOV_TYPE *io
 // 必须本次唤醒就读光，否则后续 datagram 卡到 buffer 直到新边沿到达
 static int32_t _usk_on_udp_rcb(watcher_ctx *watcher, udp_ctx *udp) {
     int32_t rtn;
+    int32_t err;
+    int32_t nerr = 0;
     netaddr_ctx addr;
     IOV_TYPE iov;
     struct msghdr msg;
@@ -1042,6 +1063,7 @@ static int32_t _usk_on_udp_rcb(watcher_ctx *watcher, udp_ctx *udp) {
         msg.msg_namelen = netaddr_size(&addr);
         rtn = (int32_t)recvmsg(udp->sock.fd, &msg, 0);
         if (rtn >= 0) {
+            nerr = 0;// 读到 datagram 即证 fd 正常,失败计数按"连续"而非累计,免高流量下偶发失败攒满上限误关
             if (msg.msg_flags & MSG_TRUNC) {
                 // datagram 超过 MAX_RECVFROM_SIZE 被截断：残缺数据不上抛，告警丢弃后继续收（不关 socket）
                 LOG_WARN("UDP datagram truncated on fd %d (exceeds %d bytes), dropped.",
@@ -1052,10 +1074,25 @@ static int32_t _usk_on_udp_rcb(watcher_ctx *watcher, udp_ctx *udp) {
             _usk_call_recvfrom_cb(watcher->ev, udp, watcher->udp_rbuf, &addr, (size_t)rtn);
             continue;
         }
-        if (ERR_RW_RETRIABLE(ERRNO)) {
+        err = ERRNO;
+        if (ERR_RW_RETRIABLE(err)) {
             rtn = ERR_OK;
+            break;
         }
-        break;
+        if (EBADF == err
+            || ENOTSOCK == err) {
+            break;// fd 本身失效,rtn 保持负值让调用方关闭
+        }
+        // 与发送侧 _usk_udp_sendmsg_once / IOCP 侧 _olp_on_recvfrom_cb 一致：
+        // 单次接收失败告警丢弃并保活，不因一个瞬时错误(如 ENOMEM)关掉承载所有对端的整个 UDP socket。
+        // 继续排空而非 break：失败的 datagram 已被内核消耗(udp_recvmsg 在 copy 失败时 kfree_skb),
+        // 就此退出会漏掉后面积压的 datagram——ET 下 _usk_keep_event 因 events 位已置不会重挂,
+        // 残留要等下一个新包才有边沿。但 EINVAL 之类不消耗 datagram 的错误会原地打转,
+        // 故连续失败超上限即认定 fd 异常,保持 rtn 负值让调用方关闭
+        LOG_WARN("UDP recvmsg dropped on fd %d: %s.", (int32_t)udp->sock.fd, ERRORSTR(err));
+        if (++nerr >= UDP_RECV_MAX_ERRS) {
+            break;
+        }
     }
     if (ERR_OK == rtn) {
         rtn = _usk_keep_event(watcher, &udp->sock, EVENT_READ);
@@ -1221,6 +1258,11 @@ int32_t ev_udp(ev_ctx *ctx, const char *ip, const uint16_t port, cbs_ctx *cbs, u
         }
         return ERR_FAILED;
     }
+    // ev_free 已开始：命令仍能入队但 watcher 不再消费，句柄永不生效，故直接拒绝而非谎报成功
+    if (0 != ATOMIC_GET(&ctx->stopping)) {
+        UD_FREE(cbs->ud_free, ud);
+        return ERR_FAILED;
+    }
     netaddr_ctx addr;
     if (ERR_OK != netaddr_set(&addr, ip, port)) {
         LOG_ERROR("netaddr_set %s:%d, %s", ip, port, ERRORSTR(ERRNO));
@@ -1235,10 +1277,7 @@ int32_t ev_udp(ev_ctx *ctx, const char *ip, const uint16_t port, cbs_ctx *cbs, u
     }
     sock_ctx *skctx = _usk_new_udp(*fd, cbs, ud);
     *skid = UPCAST(skctx, udp_ctx, sock)->skid;
-    if (ERR_OK != _cmd_add(GET_PTR(ctx->watcher, ctx->nthreads, *fd), skctx)) {
-        _uev_free_udp(skctx);
-        return ERR_FAILED;
-    }
+    _cmd_add(GET_PTR(ctx->watcher, ctx->nthreads, *fd), skctx);
     return ERR_OK;
 }
 void _uev_add_fd_inloop(watcher_ctx *watcher, sock_ctx *skctx) {

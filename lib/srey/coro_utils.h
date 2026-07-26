@@ -419,6 +419,7 @@ int32_t mongo_commit(mongo_session *session, char *options);
 int32_t mongo_rollback(mongo_session *session, char *options);
 /// <summary>
 /// kcp 同步建立会话:kcp_start 后挂起当前协程,等 event 线程实际建会话完成(或 conv 冲突失败)后返回;须在协程内调用。
+/// 唤醒 sess 由本函数内部生成(每次新会话一个,故 stop 后重启不会被上一会话的 CLOSE 击穿)。
 /// 数据到达时推送的目标固定为调用方所在 task(即 task->handle);不等待也可用 kcp_start 异步发起并自定目标 handle,
 /// 结果同样会以 MSG_TYPE_HANDSHAKED 推给 task_handshaked 注册的回调(msg.subtype 为 PACK_UDP_KCP)
 /// </summary>
@@ -432,7 +433,8 @@ int32_t kcp_synstart(task_ctx *task, struct kcp_ctx *kcp,
                      const char *ip, uint16_t port, const struct kcp_config *cfg);
 /// <summary>
 /// kcp 同步发送并等待响应:发送后挂起当前协程,收到对端响应后返回;须在协程内调用。
-/// sess 固定为 kcp_init 时传入的值,同一会话上的多次 synsend 按 FIFO 排队唤醒。
+/// sess 取 kcp_start 时传入的值,同一会话上的多次 synsend 按 FIFO 排队唤醒;
+/// 以 kcp_start(sess=0) 异步建立的会话不能用本函数(立即返回 NULL)。
 /// 超时会 kcp_stop 销毁该会话,之后需重新 kcp_start 才能再用;会话被其它途径关闭时也返回 NULL
 /// </summary>
 /// <param name="task">task_ctx</param>

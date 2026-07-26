@@ -5,6 +5,8 @@
 
 // task 调度优先级上限（对应 x3 倍 n_base 加成；超此值 setter 自动 clamp）
 #define TASK_PRIORITY_MAX  16
+// 最大超时时间
+#define TASK_TIMEOUT_MAX   (60 * 60 * 1000)
 
 // 网络事件标志位（可按位组合）
 typedef enum task_netev {
@@ -222,7 +224,7 @@ int32_t task_get_priority(task_ctx *task);
 /// 设置task_request超时时间
 /// </summary>
 /// <param name="task">task_ctx</param>
-/// <param name="ms">毫秒</param>
+/// <param name="ms">毫秒，须 大于 0（0 忽略本次设置）；超过 TASK_TIMEOUT_MAX 时 clamp 到该上界</param>
 void task_set_request_timeout(task_ctx *task, uint32_t ms);
 /// <summary>
 /// 获取task_request超时时间
@@ -234,7 +236,7 @@ uint32_t task_get_request_timeout(task_ctx *task);
 /// 设置task_connect超时时间
 /// </summary>
 /// <param name="task">task_ctx</param>
-/// <param name="ms">毫秒</param>
+/// <param name="ms">毫秒，须 大于 0（0 忽略本次设置）；超过 TASK_TIMEOUT_MAX 时 clamp 到该上界</param>
 void task_set_connect_timeout(task_ctx *task, uint32_t ms);
 /// <summary>
 /// 获取task_connect超时时间
@@ -246,7 +248,7 @@ uint32_t task_get_connect_timeout(task_ctx *task);
 /// 设置网络读取超时时间
 /// </summary>
 /// <param name="task">task_ctx</param>
-/// <param name="ms">毫秒</param>
+/// <param name="ms">毫秒，须 大于 0（0 忽略本次设置）；超过 TASK_TIMEOUT_MAX 时 clamp 到该上界</param>
 void task_set_netread_timeout(task_ctx *task, uint32_t ms);
 /// <summary>
 /// 获取网络读取超时时间

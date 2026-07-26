@@ -99,6 +99,12 @@ static void _task_handle_send(task_ctx *task, message_ctx *msg) {
 }
 // 处理连接关闭消息
 static void _task_handle_close(task_ctx *task, message_ctx *msg) {
+    // erro != ERR_OK 是协议层对"连接/会话从未建立"补发的合成 CLOSE(prots_net_connect 的 TCP 失败、
+    // _kcp_start 的 conv 冲突),只用于清等待方占位,不代表真实连接关闭;_net_close_cb 签名里没有 erro,
+    // 业务无从分辨,故与 coro.c 的 _coro_handle_closed、srey.lua 的 _net_close_dispatch 一致在此过滤
+    if (ERR_OK != msg->erro) {
+        return;
+    }
     if (NULL != task->_net_close) {
         task->_net_close(task, &msg->sk, msg->subtype, msg->client);
     }
@@ -546,7 +552,7 @@ void task_set_request_timeout(task_ctx *task, uint32_t ms) {
     if (0 == ms) {
         return;
     }
-    ATOMIC_SET(&task->timeout_request, ms);
+    ATOMIC_SET(&task->timeout_request, ms > TASK_TIMEOUT_MAX ? TASK_TIMEOUT_MAX : ms);
 }
 uint32_t task_get_request_timeout(task_ctx *task) {
     return (uint32_t)ATOMIC_GET(&task->timeout_request);
@@ -555,7 +561,7 @@ void task_set_connect_timeout(task_ctx *task, uint32_t ms) {
     if (0 == ms) {
         return;
     }
-    ATOMIC_SET(&task->timeout_connect, ms);
+    ATOMIC_SET(&task->timeout_connect, ms > TASK_TIMEOUT_MAX ? TASK_TIMEOUT_MAX : ms);
 }
 uint32_t task_get_connect_timeout(task_ctx *task) {
     return (uint32_t)ATOMIC_GET(&task->timeout_connect);
@@ -564,7 +570,7 @@ void task_set_netread_timeout(task_ctx *task, uint32_t ms) {
     if (0 == ms) {
         return;
     }
-    ATOMIC_SET(&task->timeout_netread, ms);
+    ATOMIC_SET(&task->timeout_netread, ms > TASK_TIMEOUT_MAX ? TASK_TIMEOUT_MAX : ms);
 }
 uint32_t task_get_netread_timeout(task_ctx *task) {
     return (uint32_t)ATOMIC_GET(&task->timeout_netread);

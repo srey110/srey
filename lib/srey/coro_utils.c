@@ -72,90 +72,114 @@ dns_ip *dns_lookup(task_ctx *task, const char *domain, int32_t ipv6, int32_t udp
     }
     return _dns_lookup_tcp(task, domain, ipv6, cnt);
 }
-SOCKET wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, const char *secprot,
-    int32_t netev, uint64_t *skid, ws_secprots_ctx **spctx) {
-    SET_PTR(spctx, NULL);
-    url_ctx url;
-    if (ERR_OK != url_parse(&url, ws, strlen(ws), '/', 0)) {
-        return INVALID_SOCK;
+// ws:// 或 wss:// URL 解析与 scheme 校验；host 回填 NUL 结尾主机名(IPv6 字面量保留方括号)，*iswss 回填 scheme 是否 wss
+static int32_t _ws_parse_url(url_ctx *url, const char *ws, struct evssl_ctx *evssl,
+                             int32_t *iswss, char *host, size_t hostlens) {
+    if (ERR_OK != url_parse(url, ws, strlen(ws), '/', 0)) {
+        return ERR_FAILED;
     }
-    int32_t isws = buf_icompare(&url.scheme, "ws", strlen("ws"));
-    int32_t iswss = buf_icompare(&url.scheme, "wss", strlen("wss"));
-    if (!isws && !iswss) {
-        return INVALID_SOCK;
+    int32_t isws = buf_icompare(&url->scheme, "ws", strlen("ws"));
+    *iswss = buf_icompare(&url->scheme, "wss", strlen("wss"));
+    if (!isws && !*iswss) {
+        return ERR_FAILED;
     }
-    if (iswss && NULL == evssl) {
-        return INVALID_SOCK;
+    if (*iswss && NULL == evssl) {
+        return ERR_FAILED;
     }
-    if (0 == url.host.lens) {
-        return INVALID_SOCK;
+    if (0 == url->host.lens
+        || url->host.lens >= hostlens - 7) {// 预留 ":65535" + '\0'，供 _ws_reorg 就地追加端口
+        return ERR_FAILED;
     }
-    char *host = dup_zero(url.host.data, url.host.lens);
-    char ip[IP_LENS] = { 0 };
-    if (ERR_OK != is_ipaddr(host)) {
+    memcpy(host, url->host.data, url->host.lens);
+    host[url->host.lens] = '\0';
+    return ERR_OK;
+}
+// host 解析为连接用 ip(缓冲须为 IP_LENS 字节)，端口取 url 显式值或按 scheme 默认(RFC 6455 §3：ws 80 / wss 443)
+static int32_t _ws_resolve_addr(task_ctx *task, url_ctx *url, const char *host, int32_t iswss,
+                                char *ip, uint16_t *port) {
+    ZERO(ip, IP_LENS);
+    size_t hlens = strlen(host);
+    // IPv6 字面量按 RFC 3986 §3.2.2 带方括号,连接地址须剥离(host 保留原始形式供 Host 头用)
+    if ('[' == host[0]
+        && hlens > 1
+        && ']' == host[hlens - 1]) {
+        if (hlens - 2 >= IP_LENS) {
+            return ERR_FAILED;
+        }
+        memcpy(ip, host + 1, hlens - 2);
+    } else if (ERR_OK != is_ipaddr(host)) {
         size_t nips;
         dns_ip *ips = dns_lookup(task, host, 0, 0, &nips);
         if (NULL == ips) {
-            FREE(host);
-            return INVALID_SOCK;
+            return ERR_FAILED;
         }
         if (0 == nips) {
-            FREE(host);
             FREE(ips);
-            return INVALID_SOCK;
+            return ERR_FAILED;
         }
         memcpy(ip, ips[0].ip, strlen(ips[0].ip));
         FREE(ips);
     } else {
-        memcpy(ip, host, strlen(host));
+        memcpy(ip, host, hlens);
     }
-    uint16_t port;
-    if (url.port.lens > 0) {
-        unsigned long p = strtoul(url.port.data, NULL, 10);
+    if (url->port.lens > 0) {
+        // url_parse 只按冒号切分不校验字符,strtoul 会把 "80abc" 当 80 接受;
+        // RFC 3986 §3.2.3 的 port 产生式只允许数字,与 Lua 侧 ^%d+$ 对齐
+        const char *pd = (const char *)url->port.data;
+        size_t i;
+        for (i = 0; i < url->port.lens; i++) {
+            if (pd[i] < '0'
+                || pd[i] > '9') {
+                return ERR_FAILED;
+            }
+        }
+        unsigned long p = strtoul(url->port.data, NULL, 10);
         if (0 == p || p > UINT16_MAX) {
-            FREE(host);
-            return INVALID_SOCK;
+            return ERR_FAILED;
         }
-        port = (uint16_t)p;
+        *port = (uint16_t)p;
     } else {
-        port = NULL == evssl ? 80 : 443;
+        *port = (0 != iswss) ? 443 : 80;
     }
-    // Host 头须带非默认端口(RFC 6455 §4.1),否则严格服务端 / vhost 路由按纯主机名拒握手
-    if (url.port.lens > 0
-        && port != (NULL == evssl ? 80 : 443)) {
-        char *host_port;
-        size_t hplen = strlen(host) + 8;// ":" + 最多 5 位端口 + '\0'
-        MALLOC(host_port, hplen);
-        SNPRINTF(host_port, hplen, "%s:%d", host, (int32_t)port);
-        FREE(host);
-        host = host_port;
+    return ERR_OK;
+}
+// 就地在 host 末尾补非默认端口，并把 path + query 重组为 HTTP request-target 写入 uri
+static void _ws_reorg(url_ctx *url, int32_t iswss, uint16_t port,
+                      char *host, size_t hostlens, char *uri, size_t urilens) {
+    // Host 头须带非默认端口(RFC 6455 §4.1)，否则严格服务端 / vhost 路由按纯主机名拒握手
+    if (url->port.lens > 0
+        && port != ((0 != iswss) ? 443 : 80)) {
+        size_t hlens = strlen(host);
+        SNPRINTF(host + hlens, hostlens - hlens, ":%d", (int32_t)port);
     }
-    SOCKET fd;
-    char uribuf[URL_BUF_LENS];
-    size_t plen = url_reorg_path(&url, uribuf, sizeof(uribuf));
+    size_t plen = url_reorg_path(url, uri, urilens);
     if (0 == plen) {
-        uribuf[plen++] = '/';
-        uribuf[plen] = '\0';
+        uri[plen++] = '/';
+        uri[plen] = '\0';
     }
-    if (!buf_empty(&url.param[0].key) && plen + 1 < sizeof(uribuf)) {
-        uribuf[plen] = '?';
-        size_t qlen = url_reorg_param(&url, uribuf + plen + 1, sizeof(uribuf) - plen - 1);
+    if (!buf_empty(&url->param[0].key)
+        && plen + 1 < urilens) {
+        uri[plen] = '?';
+        size_t qlen = url_reorg_param(url, uri + plen + 1, urilens - plen - 1);
         if (0 == qlen) {
-            uribuf[plen] = '\0';
+            uri[plen] = '\0';
         }
     }
+}
+// 打握手包并连接，发出后等服务端 Upgrade 响应；成功返回 fd 并回填 *skid / *spctx
+static SOCKET _ws_handshake(task_ctx *task, struct evssl_ctx *evssl, const char *ip, uint16_t port,
+                            int32_t netev, const char *host, const char *uri, const char *secprot,
+                            uint64_t *skid, ws_secprots_ctx **spctx) {
     ws_hs_ctx *hsctx;
-    char *reqpack = websock_pack_handshake(host, uribuf, secprot, &hsctx);
+    char *reqpack = websock_pack_handshake(host, uri, secprot, &hsctx);
     if (NULL == reqpack) {
-        FREE(host);
         return INVALID_SOCK;
     }
+    SOCKET fd;
     if (ERR_OK != coro_connect(task, PACK_WEBSOCK, evssl, ip, port, netev, hsctx, &fd, skid)) {
-        FREE(host);
         FREE(reqpack);
         return INVALID_SOCK;
     }
-    FREE(host);
     if (ERR_OK != ev_send(&task->loader->netev, fd, *skid, reqpack, strlen(reqpack), 0)) {
         return INVALID_SOCK;
     }
@@ -166,6 +190,24 @@ SOCKET wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, c
     }
     SET_PTR(spctx, sp);
     return fd;
+}
+SOCKET wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, const char *secprot,
+    int32_t netev, uint64_t *skid, ws_secprots_ctx **spctx) {
+    SET_PTR(spctx, NULL);
+    url_ctx url;
+    int32_t iswss;
+    char host[HOST_LENS + 8];// 主机名 + ":65535" + '\0'
+    if (ERR_OK != _ws_parse_url(&url, ws, evssl, &iswss, host, sizeof(host))) {
+        return INVALID_SOCK;
+    }
+    char ip[IP_LENS];
+    uint16_t port;
+    if (ERR_OK != _ws_resolve_addr(task, &url, host, iswss, ip, &port)) {
+        return INVALID_SOCK;
+    }
+    char uribuf[URL_BUF_LENS];
+    _ws_reorg(&url, iswss, port, host, sizeof(host), uribuf, sizeof(uribuf));
+    return _ws_handshake(task, evssl, ip, port, netev, host, uribuf, secprot, skid, spctx);
 }
 SOCKET redis_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ip, uint16_t port,
     const char *key, int32_t netev, uint64_t *skid) {
@@ -836,23 +878,31 @@ int32_t mongo_rollback(mongo_session *session, char *options) {
 }
 int32_t kcp_synstart(task_ctx *task, struct kcp_ctx *kcp,
                      const char *ip, uint16_t port, const struct kcp_config *cfg) {
-    if (0 == kcp->sess) {
-        // sess==0 时 _coro_handle_handshaked 恒新建协程,永远等不到本次唤醒
+    // event 线程若拒绝建会话(conv 重复),须整体还原到调用前——与 kcp_start 失败时不改句柄同一规则:
+    // sess 是 stop/send 定位会话的键,错位会让上一个存活会话永久无法 stop;stopped 若从 1 掉回 0,
+    // 下次 kcp_synsend 会绕过守卫投到已消失的会话,被静默丢弃却返 ERR_OK,继而空等满一个 netread 超时
+    uint64_t prev = kcp->sess;
+    uint8_t prevstopped = kcp->stopped;
+    size_t prevmaxpack = kcp->maxpack;
+    uint64_t sess = createid();
+    if (ERR_OK != kcp_start(kcp, task->handle, sess, ip, port, cfg)) {
         return ERR_FAILED;
     }
-    if (ERR_OK != kcp_start(kcp, task->handle, ip, port, cfg)) {
-        return ERR_FAILED;
-    }
-    message_ctx *msg = _coro_wait(task, kcp->sess, MSG_TYPE_HANDSHAKED, task_get_netread_timeout(task));
+    message_ctx *msg = _coro_wait(task, sess, MSG_TYPE_HANDSHAKED, task_get_netread_timeout(task));
     if (MSG_TYPE_TIMEOUT == msg->mtype) {
+        // 占位条目由随后到达的 CLOSE 清:会话已建立则 kcp_stop 发真 CLOSE,未建立则 _kcp_start 已补合成 CLOSE
         kcp_stop(kcp);
         LOG_WARN("task %s, kcp start timeout, skid %"PRIu64".", _NAME_OR(task->name), kcp->sk.skid);
         return ERR_FAILED;
     }
-    if (MSG_TYPE_CLOSE == msg->mtype) {
+    if (MSG_TYPE_CLOSE == msg->mtype
+        || ERR_OK != msg->erro) {
+        kcp->sess = prev;
+        kcp->stopped = prevstopped;
+        kcp->maxpack = prevmaxpack;
         return ERR_FAILED;
     }
-    return msg->erro;
+    return ERR_OK;
 }
 void *kcp_synsend(task_ctx *task, struct kcp_ctx *kcp, void *data, size_t lens, int32_t copy, size_t *size) {
     if (0 == kcp->sess) {
@@ -865,11 +915,16 @@ void *kcp_synsend(task_ctx *task, struct kcp_ctx *kcp, void *data, size_t lens, 
     }
     message_ctx *msg = _coro_wait(task, kcp->sess, MSG_TYPE_RECVFROM, task_get_netread_timeout(task));
     if (MSG_TYPE_TIMEOUT == msg->mtype) {
+        // 不必清 sess:kcp_stop 置 stopped=1 后 kcp_send 首行即快速失败,不会再进 _coro_wait
         kcp_stop(kcp);
         LOG_WARN("task %s, kcp send timeout, skid %"PRIu64".", _NAME_OR(task->name), kcp->sk.skid);
         return NULL;
     }
     if (MSG_TYPE_CLOSE == msg->mtype) {
+        // 会话已在 event 线程拆除(CLOSE 由 _kcp_notify_closed 发出)而 stopped 仍为 0,故须自行清 sess:
+        // 否则下次 kcp_synsend 通过 0 == kcp->sess 守卫、kcp_send 投到已消失的会话被 _kcp_resolve
+        // 静默丢弃却返 ERR_OK,继而空等满一个 netread 超时。与 Lua 侧 ctx:send 的同款分支对齐
+        kcp->sess = 0;
         return NULL;
     }
     recvfrom_ctx *rfmsg = msg->data;
