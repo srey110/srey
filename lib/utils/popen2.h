@@ -28,7 +28,7 @@ int32_t popen_startup(popen_ctx *ctx, const char *cmd, const char *mode);
 /// <param name="ctx">popen_ctx</param>
 void popen_close(popen_ctx *ctx);
 /// <summary>
-/// 释放
+/// 释放；关闭后句柄置空，重复调用安全，此后 read/write 返回失败
 /// </summary>
 /// <param name="ctx">popen_ctx</param>
 void popen_free(popen_ctx *ctx);
@@ -40,7 +40,7 @@ void popen_free(popen_ctx *ctx);
 /// <returns>ERR_OK 成功</returns>
 int32_t popen_waitexit(popen_ctx *ctx, uint32_t ms);
 /// <summary>
-/// 获取退出码 非windows 不一定能取到
+/// 获取退出码 非windows 不一定能取到；须在 popen_free 之前调用（free 后 windows 已不持有进程句柄）
 /// </summary>
 /// <param name="ctx">popen_ctx</param>
 /// <returns>退出码</returns>

@@ -611,14 +611,14 @@ local function _timeout_dispatch(msg)
 end
 
 ---注册跨 task 请求处理回调；收到 REQUEST 消息时在新协程中调用，需主动调 srey.response 发回结果
----@param func fun(reqtype:REQUEST_TYPE, sess:integer, src:integer, data:lightuserdata?, size:integer) 请求回调（src 为发送方数字句柄）
+---@param func fun(reqtype:integer, sess:integer, src:integer, data:lightuserdata?, size:integer) 请求回调（src 为发送方数字句柄）
 function srey.on_requested(func)
     func_cbs[MSG_TYPE.REQUEST] = func
 end
 
 ---同步跨 task 请求：挂起当前协程直到收到对端 response 或超时
 ---@param dst TASK_NAME 目标 task name
----@param reqtype REQUEST_TYPE 业务请求类型
+---@param reqtype integer 业务请求类型(uint16);REQUEST_TYPE 内的值为框架保留,业务请避开
 ---@param data string|lightuserdata|nil 消息内容
 ---@param size integer? data 为 lightuserdata 时必填
 ---@param copy integer? 是否复制数据，默认 1
@@ -653,7 +653,7 @@ end
 
 ---单向跨 task 消息（fire-and-forget），不等待响应
 ---@param dst TASK_NAME 目标 task name
----@param reqtype REQUEST_TYPE 业务请求类型
+---@param reqtype integer 业务请求类型(uint16);REQUEST_TYPE 内的值为框架保留,业务请避开
 ---@param data string|lightuserdata|nil 消息内容
 ---@param size integer? data 为 lightuserdata 时必填
 ---@param copy integer? 是否复制数据，默认 1
@@ -673,7 +673,7 @@ end
 ---（共用同一 sess）。框架不挂起协程不做聚合,响应到达时触发 srey.on_responsed 回调,业务在回调内据 sess
 ---累计 / 区分。sess 由调用方传入(非 0),典型用法是配合 srey.id() 分配避免与 srey.request 自动 sess 冲突。
 ---@param dsts TASK_NAME[] 目标 task name 数组；TASK_NAME.NONE 与 grab 失败的项被跳过
----@param reqtype REQUEST_TYPE 业务请求类型
+---@param reqtype integer 业务请求类型(uint16);REQUEST_TYPE 内的值为框架保留,业务请避开
 ---@param sess integer 会话 id(非 0),N 个 dst 共用此 sess
 ---@param data string|lightuserdata|nil 消息内容
 ---@param size integer? data 为 lightuserdata 时必填
@@ -690,7 +690,7 @@ end
 ---单向广播跨 task 消息（fire-and-forget）：同一份 data 投递给 N 个 task，
 ---C 层 shared_data 引用计数自动释放，比 N 次 srey.call 节省 N-1 份内存拷贝
 ---@param dsts TASK_NAME[] 目标 task name 数组；TASK_NAME.NONE 与 grab 失败的项被跳过
----@param reqtype REQUEST_TYPE 业务请求类型
+---@param reqtype integer 业务请求类型(uint16);REQUEST_TYPE 内的值为框架保留,业务请避开
 ---@param data string|lightuserdata|nil 消息内容
 ---@param size integer? data 为 lightuserdata 时必填
 ---@param copy integer? 是否复制数据，默认 1
@@ -738,7 +738,7 @@ end
 
 ---向请求方 task 回复响应
 ---@param dst TASK_NAME 请求方 task name
----@param reqtype REQUEST_TYPE 请求类型(回带给请求方)
+---@param reqtype integer 请求类型(uint16,回带给请求方)
 ---@param sess integer 请求会话 id
 ---@param erro integer 错误码，0 表示成功
 ---@param data string|lightuserdata|nil 响应数据
@@ -767,7 +767,7 @@ end
 
 ---注册全局 response 回调；srey.request 等协程同步 API 不走此回调,仅当 sess 不在协程等待表时触发
 ---（典型场景：srey.multi_request 广播 N 个响应共用 sess,框架不做聚合,业务在此回调中据 sess 累计）
----@param func fun(reqtype:REQUEST_TYPE, sess:integer, erro:integer, data:lightuserdata?, size:integer) 响应回调
+---@param func fun(reqtype:integer, sess:integer, erro:integer, data:lightuserdata?, size:integer) 响应回调
 function srey.on_responsed(func)
     func_cbs[MSG_TYPE.RESPONSE] = func
 end
@@ -1138,7 +1138,7 @@ end
 ---@param dst integer 远端 task 的数字句柄（harbor 在对端按此值 task_grab）。
 ---       句柄由对端 createid 运行期生成，本地无从推导，须业务自行获取（如经 datacenter 共享或由对端上报）；
 ---       不可传 TASK_NAME 字符串——那是本地名字，对远端无意义
----@param reqtype REQUEST_TYPE 业务请求类型
+---@param reqtype integer 业务请求类型(uint16);REQUEST_TYPE 内的框架保留值会被对端 harbor 拒为 404
 ---@param data string|lightuserdata|nil 消息内容
 ---@param size integer? data 为 lightuserdata 时必填
 ---@return boolean ok 远端返回 200 OK 时 true
@@ -1167,32 +1167,38 @@ end
 ---@param dst integer 远端 task 的数字句柄（harbor 在对端按此值 task_grab）。
 ---       句柄由对端 createid 运行期生成，本地无从推导，须业务自行获取（如经 datacenter 共享或由对端上报）；
 ---       不可传 TASK_NAME 字符串——那是本地名字，对远端无意义
----@param reqtype REQUEST_TYPE 业务请求类型
+---@param reqtype integer 业务请求类型(uint16);REQUEST_TYPE 内的框架保留值会被对端 harbor 拒为 404
 ---@param data string|lightuserdata|nil 消息内容
 ---@param size integer? data 为 lightuserdata 时必填
----@return lightuserdata|nil rdata 响应数据指针；仅在本协程下次 yield（再调任意挂起 API）前有效，下次 resume 时框架自动释放，需保留请自行拷贝；失败或非 200 返回 nil
----@return integer? rsize 响应数据长度
+---@return boolean ok 对端返回 200 即 true（目标已处理）；网络失败、无状态行、非 200 均为 false。
+---       判成败只看这个值——目标成功但无负载时 rdata 也是 nil，据 rdata 判会把成功当失败而重发 RPC
+---@return lightuserdata? rdata 响应数据指针；仅在本协程下次 yield（再调任意挂起 API）前有效，下次 resume 时框架自动释放，需保留请自行拷贝；目标未回负载时为 nil
+---@return integer? rsize 响应数据长度，无负载为 0
+---@return integer? erro 目标真实错误码，取自对端 X-Srey-Erro 头（十进制）；对端未带该头时为 nil
 function srey.net_request(fd, skid, dst, reqtype, data, size)
     if "number" ~= type(dst) then
         WARN("net_request dst must be a remote task handle(integer).")
-        return nil
+        return false
     end
     local reqdata, reqsize = harbor.pack(dst, 0, reqtype, data, size)
     local respdata, _ = srey.syn_send(fd, skid, reqdata, reqsize, 0)
     if not respdata then
         WARN("syn_send error, skid %s.", tostring(skid))
-        return nil
+        return false
     end
     local status = http.status(respdata)
     if not status then
         WARN("not have status, skid %s.", tostring(skid))
-        return nil
+        return false
     end
+    local heads = http.heads(respdata)
+    local erro = heads and tonumber(heads["X-Srey-Erro"])
     if "200" ~= status[2] then
-        WARN("net request return code %s skid %s.", status[2], tostring(skid))
-        return nil
+        WARN("net request return code %s erro %s skid %s.", status[2], tostring(erro), tostring(skid))
+        return false, nil, 0, erro
     end
-    return http.data(respdata)
+    local rdata, rsize = http.data(respdata)
+    return true, rdata, rsize, erro
 end
 
 ---@param msg Message

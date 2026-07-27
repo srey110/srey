@@ -18,7 +18,7 @@ typedef struct mysql_client_param {
     sk_id sk;               // 连接标识 fd+skid
     char ip[IP_LENS];       // 服务器 IP 地址
     char user[64];          // 登录用户名
-    char database[64];      // 默认数据库名
+    char database[64];      // 握手用库名；重连据此重建握手，故须与服务端当前库一致
     char password[64];      // 登录密码
 }mysql_client_param;
 
@@ -44,6 +44,11 @@ typedef struct mysql_ctx {
     mysql_server_param server; // 服务器握手参数
     mysql_client_param client; // 客户端连接参数
     char version[64];        // 服务器版本字符串
+    // COM_INIT_DB 待提交库名，响应 OK 后写入 client.database。服务端支持 CLIENT_SESSION_TRACK
+    // (MySQL 5.7+，握手时与 server.caps 求交)时 query("USE x") 也会经 OK 包尾部的
+    // session-state-change 回带、由 _mpack_ok_track 更新 client.database；老服务端不置
+    // SERVER_SESSION_STATE_CHANGED，那时只有本字段这条 selectdb 路径能跟踪当前库
+    char pending_db[64];
     char error_msg[256];     // 最近一次错误信息
 }mysql_ctx;
 
@@ -93,11 +98,12 @@ typedef struct mpack_field {
     uint16_t flags;         // 列定义标志位
     int16_t character;      // 字符集 ID
     int32_t field_lens;     // 字段最大长度
-    char schema[64];        // 所属 schema 名
-    char table[64];         // 虚拟表名
-    char org_table[64];     // 物理表名
-    char name[64];          // 虚拟列名（别名）
-    char org_name[64];      // 物理列名
+    char *payload;          // 列定义包原始数据（由本结构体持有内存所有权，同 mpack_row）
+    buf_ctx schema;         // 所属 schema 名
+    buf_ctx table;          // 虚拟表名
+    buf_ctx org_table;      // 物理表名
+    buf_ctx name;           // 虚拟列名（别名）
+    buf_ctx org_name;       // 物理列名
 }mpack_field;
 
 // 一行数据中单个字段的值

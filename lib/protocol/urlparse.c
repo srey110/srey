@@ -115,38 +115,45 @@ static size_t _url_anchor(buf_ctx *anchor, char *cur, size_t lens) {
     }
     return pos - cur;
 }
-// 解析查询字符串中的 key=value 参数对，以 '&' 分隔，最多解析 URL_MAX_PARAM 个
+// 单个 param 重组所需字节数：paramlens 累加与 url_reorg_param 写入共用本式，分开写必漂移
+static inline size_t _url_param_need(const url_param *p, size_t offset) {
+    return (offset > 0 ? 1 : 0) + p->key.lens
+        + (NULL != p->val.data ? 1 : 0) + p->val.lens;
+}
+// 解析查询字符串：先按 '&' 切段，段内首个 '=' 之前为 key、之后为 val；
+// 段内无 '=' 为无值参数(val 空)，最多解析 URL_MAX_PARAM 个。
+// 空段与空名段(如 "=v")都不入表，故"已记录的 param 必有 key.lens > 0"是本函数保证的不变式，
+// 四个消费方(url_parse 累加 / url_reorg_param / url_get_param / lpub 建表)无须各自跳过空名
 static void _url_param(url_param *param, char *cur, size_t lens) {
-    char *pos;
-    char *start = cur;
+    char *end = cur + lens;
+    char *amp;
+    char *eq;
+    char *segend;
     url_param *tmp;
-    size_t rmain, size;
-    for (int32_t i = 0; i < URL_MAX_PARAM; i++) {
-        tmp = &param[i];
-        pos = memchr(cur, '=', lens - (cur - start));
-        if (NULL == pos) {
+    size_t seglens;
+    int32_t i = 0;
+    while (cur < end
+        && i < URL_MAX_PARAM) {
+        amp = memchr(cur, '&', (size_t)(end - cur));
+        segend = (NULL == amp) ? end : amp;
+        seglens = (size_t)(segend - cur);
+        eq = (seglens > 0) ? memchr(cur, '=', seglens) : NULL;
+        if (seglens > 0
+            && cur != eq) {
+            tmp = &param[i++];
+            tmp->key.data = cur;
+            if (NULL == eq) {
+                tmp->key.lens = seglens;
+            } else {
+                tmp->key.lens = (size_t)(eq - cur);
+                tmp->val.data = eq + 1;
+                tmp->val.lens = (size_t)(segend - eq - 1);
+            }
+        }
+        if (NULL == amp) {
             break;
         }
-        tmp->key.data = cur;
-        tmp->key.lens = pos - cur;
-        cur = pos + 1;
-        rmain = lens - (cur - start);
-        if (0 == rmain) {
-            break;
-        }
-        pos = memchr(cur, '&', rmain);
-        if (NULL == pos) {
-            // 最后一个参数
-            tmp->val.data = cur;
-            tmp->val.lens = rmain;
-            break;
-        }
-        size = pos - cur;
-        if (size > 0) {
-            tmp->val.data = cur;
-            tmp->val.lens = size;
-        }
-        cur = pos + 1;
+        cur = amp + 1;
     }
 }
 int32_t url_parse(url_ctx *ctx, const char *url, size_t lens, int8_t sep, int32_t decode) {
@@ -231,9 +238,6 @@ int32_t url_parse(url_ctx *ctx, const char *url, size_t lens, int8_t sep, int32_
         if (NULL == p->key.data) {
             break;
         }
-        if (0 == p->key.lens) {
-            continue;
-        }
         if (ctx->decode) {
             p->key.lens = url_decode(p->key.data, p->key.lens, 1);
         }
@@ -242,6 +246,7 @@ int32_t url_parse(url_ctx *ctx, const char *url, size_t lens, int8_t sep, int32_
                 p->val.lens = url_decode(p->val.data, p->val.lens, 1);
             }
         }
+        ctx->paramlens += _url_param_need(p, ctx->paramlens);
     }
     return ERR_OK;
 }
@@ -273,11 +278,8 @@ size_t url_reorg_param(url_ctx *ctx, char *param, size_t cap) {
         if (NULL == p->key.data) {
             break;
         }
-        if (0 == p->key.lens) {
-            continue;
-        }
-        // '&' + key + '=' + val + '\0' 放不下则截断
-        need = (offset > 0 ? 1 : 0) + p->key.lens + 1 + p->val.lens;
+        // 放不下则截断；无值参数(val.data 为 NULL)不写 '='
+        need = _url_param_need(p, offset);
         if (offset + need + 1 > cap) {
             break;
         }
@@ -286,10 +288,12 @@ size_t url_reorg_param(url_ctx *ctx, char *param, size_t cap) {
         }
         memcpy(param + offset, p->key.data, p->key.lens);
         offset += p->key.lens;
-        param[offset++] = '=';
-        if (p->val.lens > 0) {
-            memcpy(param + offset, p->val.data, p->val.lens);
-            offset += p->val.lens;
+        if (NULL != p->val.data) {
+            param[offset++] = '=';
+            if (p->val.lens > 0) {
+                memcpy(param + offset, p->val.data, p->val.lens);
+                offset += p->val.lens;
+            }
         }
     }
     param[offset] = '\0';
@@ -302,9 +306,6 @@ buf_ctx *url_get_param(url_ctx *ctx, const char *key) {
         param = &ctx->param[i];
         if (NULL == param->key.data) {
             break;
-        }
-        if (0 == param->key.lens) {
-            continue;
         }
         if (buf_compare(&param->key, key, klens)) {
             return &param->val;

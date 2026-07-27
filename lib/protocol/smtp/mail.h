@@ -94,7 +94,7 @@ void mail_attach_add(mail_ctx *mail, const char *file);
 /// <param name="mail">mail_ctx</param>
 void mail_attach_clear(mail_ctx *mail);
 /// <summary>
-/// 邮件清空
+/// 邮件清空：内容字段与 reply 标志一并还原到 mail_init 后的状态，供同一对象复用
 /// </summary>
 /// <param name="mail">mail_ctx</param>
 void mail_clear(mail_ctx *mail);

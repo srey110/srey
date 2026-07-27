@@ -6,9 +6,19 @@
 /* RESP 数组计数头 "*n\r\n" 所需的最大字节数。
  * 即使 "*999999\r\n" 也只有 10 字节；32 字节预留足够裕量。 */
 #define MAX_HEADER_RESERVE  32
-//单次 RESP 解包最大节点数，防御恶意 server 用 *1\r\n*1\r\n... 嵌套数组导致堆 OOM
-//（每层嵌套 nelem 净变化 0，永不触发完整 pack 返回，节点持续累积到 rd->arr）
-#define REDIS_MAX_NODES     65536
+//最大聚合嵌套层数，防御恶意 server 用 *1\r\n*1\r\n... 嵌套数组导致堆 OOM
+//（每层嵌套都只是再压一帧、永不清空帧栈，故永不触发完整 pack 返回，节点持续累积到 rd->arr）
+//含 stack[0] 顶层虚拟帧，故实际可嵌套 REDIS_MAX_DEPTH-1 层
+#define REDIS_MAX_DEPTH     18
+//单次 RESP 解包最大节点数，纯内存兜底；正确性由 REDIS_MAX_DEPTH 保证，
+//此值只决定为一个未完成回复最多垫多少内存，不应低到误伤合法的扁平大结果集。
+//1<<18 时最坏约 19MB（节点约 64B/个 + 指针数组 2MB），仍是现有 7 万元素用例的 3.7 倍余量；
+//再往上抬只是让恶意 server 能用约 4MB 流量顶出几十 MB，业务侧的大结果集应分页取
+#define REDIS_MAX_NODES     (1 << 18)
+//复位时保留的 rd->arr 容量地板（元素个数，8192 个指针 = 64KB）：array_clear 只置 size 不缩容，
+//一次大结果集之后容量会按连接常驻，超过此值即缩回本值。缩到地板而非重新 array_init，
+//后者会退到 ARRAY_INIT_SIZE(32)，让反复取大结果集的连接每次都从 32 一路翻倍长回去
+#define REDIS_ARR_KEEP      8192
 // Bulk String 最大长度，对齐 Redis 自身 proto-max-bulk-len 默认值(512MB)；
 // 防 blens 参与 size_t 加法/CALLOC 计算时在 32 位平台截断回绕
 #define REDIS_MAX_BULK_LEN  (512 * 1024 * 1024)
@@ -21,10 +31,16 @@
     _fmt[lens] = '\0';\
     binary_set_va(&fbuf, _fmt, va_arg(args, type))
 
-// 解包上下文，保存当前响应的所有节点和待解析元素计数
+// 解包上下文，保存当前响应的所有节点与未闭合聚合层的帧栈
+// 聚合层帧：一层未闭合的聚合类型
+typedef struct redis_frame {
+    int32_t attr;     // 1 = RESP_ATTR 层：RESP 规定属性不计入父层元素数，故本层闭合时不消费父层一格
+    int64_t remain;   // 本层还差多少元素才闭合
+}redis_frame;
 typedef struct reader_ctx {
     array_ctx arr;    // 已解析节点的指针数组（元素 redis_pack_ctx *），数组追加比头尾链表更缓存友好
-    int64_t nelem;    // 还需解析的元素数（初始为 1，聚合类型会累加）
+    int32_t depth;    // 当前未闭合聚合层数，stack[0] 为顶层虚拟帧；归零即一条完整回复解析完毕
+    redis_frame stack[REDIS_MAX_DEPTH];
 }reader_ctx;
 
 void _redis_pkfree(redis_pack_ctx *pack) {
@@ -235,16 +251,37 @@ static reader_ctx *_redis_create_reader(ud_cxt *ud) {
         reader_ctx *rd;
         MALLOC(rd, sizeof(reader_ctx));
         array_init(&rd->arr, sizeof(redis_pack_ctx *), 0);
-        rd->nelem = 1; // 初始期望解析 1 个顶层元素
+        rd->depth = 1; // 顶层虚拟帧，期望 1 个顶层元素
+        rd->stack[0].remain = 1;
+        rd->stack[0].attr = 0;
         ud->context = rd;
     }
     return ud->context;
 }
-// 将已解析节点追加到数组，并递减待解析计数（属性类型 RESP_ATTR 不计入计数）
-static inline void _redis_add_node(reader_ctx *rd, redis_pack_ctx *pk) {
+// 将已解析节点追加到数组，并消费帧栈上的一格。
+// open > 0 为声明了元素的聚合类型：压入新层，父层的这个元素要等它闭合才算完成；
+// 否则为叶子或空聚合：消费栈顶一格，栈顶归零则逐层弹出并级联消费父层（ATTR 层闭合不消费父层）
+static inline void _redis_add_node(reader_ctx *rd, redis_pack_ctx *pk, int64_t open) {
     array_push_back(&rd->arr, &pk);
-    if (RESP_ATTR != pk->prot) {
-        rd->nelem--;
+    if (open > 0) {
+        ASSERTAB(rd->depth < REDIS_MAX_DEPTH, "redis frame stack overflow.");
+        rd->stack[rd->depth].remain = open;
+        rd->stack[rd->depth].attr = (RESP_ATTR == pk->prot);
+        rd->depth++;
+        return;
+    }
+    if (RESP_ATTR == pk->prot) {
+        return;
+    }
+    while (rd->depth > 0) {
+        rd->stack[rd->depth - 1].remain--;
+        if (rd->stack[rd->depth - 1].remain > 0) {
+            break;
+        }
+        rd->depth--;
+        if (rd->stack[rd->depth].attr) {
+            break;
+        }
     }
 }
 // 定位下一个 CRLF；未找到时按已累积字节数区分"数据不足"与"行首长度已超限"，置 status 并返回 ERR_FAILED
@@ -373,7 +410,7 @@ static int32_t _redis_reader_line(reader_ctx *rd, int32_t prot, buffer_ctx *buf,
     }
     int32_t del = pos + CRLF_SIZE;
     ASSERTAB(del == (int32_t)buffer_drain(buf, del), "drain buffer failed.");
-    _redis_add_node(rd, pk);
+    _redis_add_node(rd, pk, 0);
     return ERR_OK;
 }
 // 解析批量字符串类型（Bulk String/Error/Verbatim）：格式 <type><length>\r\n<data>\r\n，长度为 -1 表示 Null
@@ -394,7 +431,7 @@ static int32_t _redis_reader_bulk(reader_ctx *rd, int32_t prot, buffer_ctx *buf,
         pk->len = blens;
         total = (size_t)(pos + CRLF_SIZE);
         ASSERTAB(total == buffer_drain(buf, total), "drain buffer failed.");
-        _redis_add_node(rd, pk);
+        _redis_add_node(rd, pk, 0);
         return ERR_OK;
     }
     if (blens > REDIS_MAX_BULK_LEN) {
@@ -441,7 +478,7 @@ static int32_t _redis_reader_bulk(reader_ctx *rd, int32_t prot, buffer_ctx *buf,
         return ERR_FAILED;
     }
     ASSERTAB(total == buffer_drain(buf, total), "drain buffer failed.");
-    _redis_add_node(rd, pk);
+    _redis_add_node(rd, pk, 0);
     return ERR_OK;
 }
 // 解析聚合类型（数组/集合/推送/映射/属性）：格式 <type><number-of-elements>\r\n<element-1>...<element-n>
@@ -458,16 +495,19 @@ static int32_t _redis_reader_agg(reader_ctx *rd, int32_t prot, buffer_ctx *buf, 
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
+    int64_t open = (nelem > 0) ? ((RESP_ATTR == prot || RESP_MAP == prot) ? nelem * 2 : nelem) : 0;
+    if (open > 0
+        && rd->depth >= REDIS_MAX_DEPTH) {
+        BIT_SET(*status, PROT_ERROR);
+        return ERR_FAILED;
+    }
     size_t del = (size_t)(pos + CRLF_SIZE);
     ASSERTAB(del == buffer_drain(buf, del), "drain buffer failed.");
     redis_pack_ctx *pk;
     CALLOC(pk, 1, sizeof(redis_pack_ctx) + 1);
     pk->prot = prot;
     pk->nelem = nelem;
-    _redis_add_node(rd, pk);
-    if (nelem > 0) {
-        rd->nelem += ((RESP_ATTR == prot || RESP_MAP == prot) ? nelem * 2 : nelem);
-    }
+    _redis_add_node(rd, pk, open);
     return ERR_OK;
 }
 redis_pack_ctx *redis_unpack(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
@@ -514,7 +554,7 @@ redis_pack_ctx *redis_unpack(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
         if (ERR_OK != rtn) {
             break;
         }
-        if (0 == rd->nelem) {
+        if (0 == rd->depth) {
             cnt = array_size(&rd->arr);
             for (uint32_t i = 0; i + 1 < cnt; i++) {
                 (*(redis_pack_ctx **)array_at(&rd->arr, i))->next =
@@ -525,7 +565,12 @@ redis_pack_ctx *redis_unpack(buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
             }
             pk = (cnt > 0) ? *(redis_pack_ctx **)array_at(&rd->arr, 0) : NULL;
             array_clear(&rd->arr);
-            rd->nelem = 1;
+            if (rd->arr.maxsize > REDIS_ARR_KEEP) {
+                array_resize(&rd->arr, REDIS_ARR_KEEP);
+            }
+            rd->depth = 1;
+            rd->stack[0].remain = 1;
+            rd->stack[0].attr = 0;
             return pk;
         }
     }

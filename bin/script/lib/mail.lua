@@ -96,7 +96,8 @@ function ctx:reply(reply)
     self.mail:reply(reply)
 end
 
----重置邮件内容（主题、正文、收件人、附件、发件人均清空）
+---重置邮件内容（主题、正文、收件人、附件、发件人均清空）。
+---C 侧 mail_clear 会把 reply 标志复位为 1，同一对象复用时若需 No-Reply 须在每次 clear 后重新调 reply(0)
 function ctx:clear()
     self.sender = ""
     self.addrs = {}

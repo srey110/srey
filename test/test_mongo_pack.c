@@ -785,6 +785,20 @@ static void test_mongo_parse_startsession(CuTest *tc) {
     CuAssertIntEquals(tc, 0, timeout3);
     CuAssertTrue(tc, 0 == memcmp(out_uuid, uuid, UUID_LENS));
     BSON_FREE(&b3);
+
+    bson_ctx b4;
+    bson_init(&b4, NULL, 0);
+    bson_append_int32(&b4, "timeoutMinutes", 30);
+    bson_append_double(&b4, "ok", 1.0);
+    bson_append_end(&b4);
+    mgopack_ctx mg4;
+    ZERO(&mg4, sizeof(mg4));
+    mg4.doc = b4.doc.data;
+    mg4.dlens = (uint32_t)b4.doc.offset;
+    ok = mongo_parse_startsession(&mg4, out_uuid, &timeout);
+    CuAssert(tc, "缺 id 字段须判失败,不得返回成功而留下未写入的 uid(上层会拿全零 UUID 当会话 id)",
+        0 == ok);
+    BSON_FREE(&b4);
 }
 
 // mongo_unpack 拒收 kind=1 + klens=5 + docid='\0' 的语义空 section 响应:

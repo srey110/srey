@@ -16,7 +16,7 @@
 #define CLIENT_CAPS\
     (CLIENT_LONG_PASSWORD | CLIENT_LONG_FLAG | CLIENT_PROTOCOL_41 | CLIENT_INTERACTIVE | CLIENT_RESERVED2 |\
     CLIENT_MULTI_STATEMENTS | CLIENT_MULTI_RESULTS | CLIENT_PS_MULTI_RESULTS | CLIENT_PLUGIN_AUTH | CLIENT_CONNECT_ATTRS |\
-    CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA | CLIENT_CAN_HANDLE_EXPIRED_PASSWORDS | CLIENT_QUERY_ATTRIBUTES)
+    CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA | CLIENT_CAN_HANDLE_EXPIRED_PASSWORDS | CLIENT_QUERY_ATTRIBUTES | CLIENT_SESSION_TRACK)
 
 // 连接解析状态枚举
 typedef enum parse_status {
@@ -688,10 +688,21 @@ void *mysql_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
 }
 int32_t mysql_init(mysql_ctx *mysql, const char *ip, uint16_t port, struct evssl_ctx *evssl,
     const char *user, const char *password, const char *database, const char *charset, uint32_t maxpk) {
-    if (strlen(ip) > sizeof(mysql->client.ip) - 1
-        || strlen(user) > sizeof(mysql->client.user) - 1
-        || strlen(password) > sizeof(mysql->client.password) - 1
-        || (NULL != database && strlen(database) > sizeof(mysql->client.database) - 1)) {
+    if (strlen(ip) > sizeof(mysql->client.ip) - 1) {
+        LOG_ERROR("mysql ip exceeds %zu bytes: %zu.", sizeof(mysql->client.ip) - 1, strlen(ip));
+        return ERR_FAILED;
+    }
+    if (strlen(user) > sizeof(mysql->client.user) - 1) {
+        LOG_ERROR("mysql user name exceeds %zu bytes: %zu.", sizeof(mysql->client.user) - 1, strlen(user));
+        return ERR_FAILED;
+    }
+    if (strlen(password) > sizeof(mysql->client.password) - 1) {
+        LOG_ERROR("mysql password exceeds %zu bytes: %zu.", sizeof(mysql->client.password) - 1, strlen(password));
+        return ERR_FAILED;
+    }
+    if (NULL != database
+        && strlen(database) > sizeof(mysql->client.database) - 1) {
+        LOG_ERROR("mysql database name exceeds %zu bytes: %zu.", sizeof(mysql->client.database) - 1, strlen(database));
         return ERR_FAILED;
     }
     ZERO(mysql, sizeof(mysql_ctx));

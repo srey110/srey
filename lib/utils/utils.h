@@ -145,6 +145,17 @@ void fill_timespec(struct timespec *timeout, uint32_t ms);
 /// <returns>hash</returns>
 uint64_t hash(const char *buf, size_t len);
 /// <summary>
+/// 是否 HTTP/1.1 的 OWS（RFC 7230 §3.2.3：仅 SP 与 HTAB）。
+/// trim_left / trim_right / trim 剔除的就是这两个字符；任何"须拒绝 OWS"的解析器
+/// （如 http.c 的 obs-fold 续行、字段名与冒号间空白）必须用本判定，不要各自手写
+/// ' ' / '\t' 比较——漏一个字符即多一条走私绕过路径
+/// </summary>
+/// <param name="ch">待判字符</param>
+/// <returns>是 OWS 返回 1，否则 0</returns>
+static inline int32_t is_ows(char ch) {
+    return ' ' == ch || '\t' == ch;
+}
+/// <summary>
 /// 64 位整数专用哈希（splitmix64
 /// </summary>
 /// <param name="x">整型 key</param>
@@ -189,12 +200,29 @@ char *dup_zero(const void *src, size_t lens);
 /// <returns>void * 字符出现的指针, NULL无</returns>
 void *memstr(int32_t ncs, const void *ptr, size_t plens, const void *what, size_t wlen);
 /// <summary>
-/// 跳过空字节
+/// 剔除左端空字节(SP/HTAB)，不改动源数据、不写 '\0'
 /// </summary>
-/// <param name="ptr">源字符</param>
-/// <param name="plens">源字符长度</param>
-/// <returns>void *, NULL全为空</returns>
-void *skipempty(const void *ptr, size_t plens);
+/// <param name="data">源数据(可非 NUL 结尾)</param>
+/// <param name="dlens">源数据长度</param>
+/// <param name="lens">输出：剔除后长度；返回 NULL 时写 0</param>
+/// <returns>指向剔除后首字节(仍在 data 内)，全为空字节则返回 NULL</returns>
+char *trim_left(char *data, size_t dlens, size_t *lens);
+/// <summary>
+/// 剔除右端空字节(SP/HTAB)，不改动源数据、不写 '\0'
+/// </summary>
+/// <param name="data">源数据(可非 NUL 结尾)</param>
+/// <param name="dlens">源数据长度</param>
+/// <param name="lens">输出：剔除后长度；返回 NULL 时写 0</param>
+/// <returns>data 本身(起点不变)，全为空字节则返回 NULL</returns>
+char *trim_right(char *data, size_t dlens, size_t *lens);
+/// <summary>
+/// 剔除两端空字节(SP/HTAB)，不改动源数据、不写 '\0'；等价于 trim_left 后接 trim_right
+/// </summary>
+/// <param name="data">源数据(可非 NUL 结尾)</param>
+/// <param name="dlens">源数据长度</param>
+/// <param name="lens">输出：剔除后长度；返回 NULL 时写 0</param>
+/// <returns>指向剔除后首字节(仍在 data 内)，全为空字节则返回 NULL</returns>
+char *trim(char *data, size_t dlens, size_t *lens);
 /// <summary>
 /// 初始化用于 locale 无关数值解析的 C locale 句柄，须在启动期单线程调用一次（strtod_c 依赖）
 /// </summary>

@@ -1,9 +1,12 @@
 ﻿#include "crypt/scram.h"
 #include "utils/utils.h"
 
-/* PBKDF2 最小迭代轮数（RFC 5802 推荐 >= 4096）。
- * 客户端解析服务端 i= 字段时，低于此值视为降级攻击，拒绝握手。*/
+// 最小迭代轮数
 #define SCRAM_MIN_ITER  4096
+// 最大迭代轮数：仅用于挡住荒谬取值(解析器本身接受到 INT32_MAX，约 20 分钟 CPU)，不是安全阈值。
+// 取 256 倍下限即约 100 万轮，最坏约 1 秒 worker 线程 CPU，高于 OWASP 对 PBKDF2-HMAC-SHA256
+// 建议的 60 万，故任何加固过的服务端配置(如 PostgreSQL 的 scram_iterations)都能通过
+#define SCRAM_MAX_ITER  (256 * SCRAM_MIN_ITER)
 /* GS2 头：标准变体不声明 channel binding；PLUS 变体使用 tls-server-end-point 绑定类型。*/
 #define SCRAM_GS2_STD   "n,,"
 #define SCRAM_GS2_PLUS  "p=tls-server-end-point,,"
@@ -460,9 +463,14 @@ static int32_t _scram_parse_server_first_message(scram_ctx *scram, char *msg, si
     }
     scram->iter = (int32_t)val;
     if (scram->iter < SCRAM_MIN_ITER) {
-        /* 拒绝低于最小阈值的迭代轮数，防止恶意服务端通过 i=1 等小值
-         * 将 PBKDF2 降级为单次 HMAC，导致密码暴力破解成本骤降。*/
+        // 拒绝低于最小阈值的迭代轮数
         LOG_WARN("scram iter %d < min %d, possible downgrade attack.", scram->iter, SCRAM_MIN_ITER);
+        return ERR_FAILED;
+    }
+    if (scram->iter > SCRAM_MAX_ITER) {
+        // 拒绝过大的迭代轮数
+        LOG_WARN("scram server iter %d exceeds client cap %d, raise SCRAM_MAX_ITER if the server is trusted.",
+                 scram->iter, SCRAM_MAX_ITER);
         return ERR_FAILED;
     }
     scram->remote_first_message = dup_zero(msg, mlens);

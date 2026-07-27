@@ -11,12 +11,12 @@
 // task 列表收集项 + 动态数组（用于 /__alive 与广播）
 typedef struct dbg_task {
     name_t handle;   // task 句柄
-    char name[64];   // task 名；匿名 task 为空串
+    char *name;      // task 名（dup_zero；匿名 task 为 NULL）；不定长，避免长同前缀名被截断后合体
 }dbg_task;
 typedef struct dbg_tasklist {
     int32_t n;       // 当前元素数
     int32_t cap;     // 已分配容量
-    dbg_task *items; // 元素数组（REALLOC 倍增，调用方 FREE）
+    dbg_task *items; // 元素数组（REALLOC 倍增，调用方走 _debug_tasklist_free）
 }dbg_tasklist;
 // 广播单个 task 的 fork 参数；coro_request 响应在协程结束后失效，须复制到 resp 堆
 typedef struct bcast_arg {
@@ -47,9 +47,15 @@ static const char *_HELP =
     "POST /{handle}/inject          inject Lua; body=source, _U holds upvalues\n"
     "POST /{handle}/hotfix/{module} hotfix module; body=patch source\n";
 
-// qsort 比较器：按 name 升序
+// qsort 比较器：按 name 升序，同名（含多个匿名 task）以 handle 定序，保证多次请求顺序稳定
 static int32_t _debug_cmp_name(const void *a, const void *b) {
-    return strcmp(((const dbg_task *)a)->name, ((const dbg_task *)b)->name);
+    const dbg_task *ta = (const dbg_task *)a;
+    const dbg_task *tb = (const dbg_task *)b;
+    int32_t rtn = strcmp((NULL == ta->name) ? "" : ta->name, (NULL == tb->name) ? "" : tb->name);
+    if (0 != rtn) {
+        return rtn;
+    }
+    return (ta->handle > tb->handle) - (ta->handle < tb->handle);
 }
 // qsort 比较器：按 handle 升序
 static int32_t _debug_cmp_handle(const void *a, const void *b) {
@@ -91,11 +97,15 @@ static void _debug_tasklist(const char *name, name_t handle, void *arg) {
     }
     dbg_task *it = &tl->items[tl->n++];
     it->handle = handle;
-    if (NULL != name) {
-        safe_fill_str(it->name, sizeof(it->name), name);
-    } else {
-        it->name[0] = '\0';
+    it->name = (NULL != name) ? dup_zero(name, strlen(name)) : NULL;
+}
+// 释放收集列表：逐元素释放 dup_zero 的 name 后释放数组本身
+static void _debug_tasklist_free(dbg_tasklist *tl) {
+    int32_t i;
+    for (i = 0; i < tl->n; i++) {
+        FREE(tl->items[i].name);
     }
+    FREE(tl->items);
 }
 // 广播命令到所有 task（coro_fork_wait 并发），按 name 升序聚合响应（"name:\n<resp 或 (unavailable)>\n"）
 static void _debug_broadcast(router_req *ctx, void *body, size_t bsize) {
@@ -104,7 +114,7 @@ static void _debug_broadcast(router_req *ctx, void *body, size_t bsize) {
     loader_task_each(task->loader, _debug_tasklist, &tl);
     if (0 == tl.n) {
         router_req_text(ctx, 200, "(no task)\n", strlen("(no task)\n"));
-        FREE(tl.items);
+        _debug_tasklist_free(&tl);
         return;
     }
     qsort(tl.items, (size_t)tl.n, sizeof(dbg_task), _debug_cmp_name);
@@ -129,7 +139,7 @@ static void _debug_broadcast(router_req *ctx, void *body, size_t bsize) {
     binary_init(&bw, NULL, 0, 0);
     const char *nm;
     for (i = 0; i < tl.n; i++) {
-        nm = ('\0' == tl.items[i].name[0]) ? "(anonymous)" : tl.items[i].name;
+        nm = (NULL == tl.items[i].name) ? "(anonymous)" : tl.items[i].name;
         binary_set_va(&bw, "%s:\n", nm);
         if (NULL != bargs[i].resp && bargs[i].resp_len > 0) {
             binary_set_binary(&bw, bargs[i].resp, bargs[i].resp_len);
@@ -144,7 +154,7 @@ static void _debug_broadcast(router_req *ctx, void *body, size_t bsize) {
     FREE(bargs);
     FREE(funcs);
     FREE(args);
-    FREE(tl.items);
+    _debug_tasklist_free(&tl);
 }
 // handler 公共转发：取 handle，单发直接 coro_request、handle=0 广播；cmd 由本函数接管，完成后 binary_free
 static void _debug_forward(router_req *ctx, binary_ctx *cmd) {
@@ -209,11 +219,11 @@ static void _debug_alive(router_req *ctx) {
     int32_t i;
     for (i = 0; i < tl.n; i++) {
         binary_set_va(&bw, "%"PRIu64"\t%s\n",
-            tl.items[i].handle, ('\0' == tl.items[i].name[0]) ? "" : tl.items[i].name);
+            tl.items[i].handle, (NULL == tl.items[i].name) ? "" : tl.items[i].name);
     }
     router_req_text(ctx, 200, bw.data, bw.offset);
     binary_free(&bw);
-    FREE(tl.items);
+    _debug_tasklist_free(&tl);
 }
 // GET /__cmem：C 层全局内存分配统计（MEMORY_CHECK 关闭时全为 0）
 static void _debug_cmem(router_req *ctx) {
@@ -260,11 +270,17 @@ static void _debug_loglv(router_req *ctx) {
     size_t n = 0;
     const char *lv_s = router_req_param(ctx, "lv", &n);
     char lbuf[8];
-    size_t ln = (NULL == lv_s) ? 0 : ((n < sizeof(lbuf) - 1) ? n : (sizeof(lbuf) - 1));
-    memcpy(lbuf, (NULL == lv_s) ? "" : lv_s, ln);
-    lbuf[ln] = '\0';
-    int32_t lv = (int32_t)strtol(lbuf, NULL, 10);
-    if (lv < 0 || lv > 4) {
+    int32_t lv = -1;
+    if (NULL != lv_s && n > 0 && n < sizeof(lbuf)) {
+        memcpy(lbuf, lv_s, n);
+        lbuf[n] = '\0';
+        char *endp = NULL;
+        lv = (int32_t)strtol(lbuf, &endp, 10);
+        if (endp == lbuf || '\0' != *endp) {
+            lv = -1;
+        }
+    }
+    if (lv < 0 || lv > LOGLV_DEBUG) {
         router_req_text(ctx, 400, "usage: /{handle}/loglv/<0-4>\n", strlen("usage: /{handle}/loglv/<0-4>\n"));
         return;
     }

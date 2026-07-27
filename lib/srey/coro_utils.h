@@ -57,7 +57,7 @@ int32_t mysql_connect(task_ctx *task, mysql_ctx *mysql);
 /// </summary>
 /// <param name="mysql">mysql_ctx</param>
 /// <param name="database">数据库</param>
-/// <returns>ERR_OK 成功</returns>
+/// <returns>ERR_OK 成功；库名超 63 字节时不发包直接返 ERR_FAILED</returns>
 int32_t mysql_selectdb(mysql_ctx *mysql, const char *database);
 /// <summary>
 /// ping
@@ -66,7 +66,9 @@ int32_t mysql_selectdb(mysql_ctx *mysql, const char *database);
 /// <returns>ERR_OK 成功</returns>
 int32_t mysql_ping(mysql_ctx *mysql);
 /// <summary>
-/// 执行SQL语句
+/// 执行SQL语句。服务端支持 CLIENT_SESSION_TRACK（MySQL 5.7+）时 "USE xxx" 会经 OK 包的
+/// session-state-change 回带并更新 client.database；老服务端不带该信息，那时切库须用
+/// mysql_selectdb，否则重连会按旧库名握手
 /// </summary>
 /// <param name="mysql">mysql_ctx</param>
 /// <param name="sql">SQL语句</param>

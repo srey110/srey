@@ -326,7 +326,7 @@ function ctx:get_db()
 end
 
 ---返回服务端就绪状态字符（ASCII 整数）
----@return integer status 73('I') 空闲 / 84('T') 事务中 / 69('E') 失败事务中
+---@return integer status 73('I') 空闲 / 84('T') 事务中 / 69('E') 失败事务中 / 0 尚未收到 ReadyForQuery（新建或刚重连）
 function ctx:readyforquery()
     return self.pg:readyforquery()
 end

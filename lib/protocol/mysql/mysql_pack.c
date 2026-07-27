@@ -14,8 +14,14 @@ void *mysql_pack_quit(mysql_ctx *mysql, size_t *size) {
     return bwriter.data;
 }
 void *mysql_pack_selectdb(mysql_ctx *mysql, const char *database, size_t *size) {
-    mysql->id = 0;
     size_t lens = strlen(database);
+    if (lens > sizeof(mysql->pending_db) - 1) {
+        LOG_ERROR("mysql database name exceeds %zu bytes: %zu.", sizeof(mysql->pending_db) - 1, lens);
+        *size = 0;
+        return NULL;
+    }
+    mysql->id = 0;
+    safe_fill_str(mysql->pending_db, sizeof(mysql->pending_db), database);
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
     binary_set_integer(&bwriter, lens + 1, 3, 1);

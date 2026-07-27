@@ -86,9 +86,10 @@ void lpub_push_url_table(lua_State *lua, url_ctx *url) {
         lua_setfield(lua, -2, "port");
     }
     if (url->npath > 0) {
-        char pathbuf[URL_BUF_LENS];
-        size_t plen = url_reorg_path(url, pathbuf, sizeof(pathbuf));
-        lua_pushlstring(lua, pathbuf, plen);
+        luaL_Buffer pbuf;
+        size_t pcap = url->pathlens + 1;
+        char *pp = luaL_buffinitsize(lua, &pbuf, pcap);
+        luaL_pushresultsize(&pbuf, url_reorg_path(url, pp, pcap));
         lua_setfield(lua, -2, "path");
     }
     lua_createtable(lua, url->npath > 0 ? url->npath : 0, 0);
@@ -105,7 +106,7 @@ void lpub_push_url_table(lua_State *lua, url_ctx *url) {
     url_param *param;
     for (int32_t i = 0; i < URL_MAX_PARAM; i++) {
         param = &url->param[i];
-        if (buf_empty(&param->key)) {
+        if (NULL == param->key.data) {
             break;
         }
         lua_pushlstring(lua, param->key.data, param->key.lens);
@@ -117,12 +118,11 @@ void lpub_push_url_table(lua_State *lua, url_ctx *url) {
         lua_settable(lua, -3);
     }
     lua_setfield(lua, -2, "param");
-    if (!buf_empty(&url->param[0].key)) {
-        char querybuf[URL_BUF_LENS];
-        size_t qlen = url_reorg_param(url, querybuf, sizeof(querybuf));
-        if (qlen > 0) {
-            lua_pushlstring(lua, querybuf, qlen);
-            lua_setfield(lua, -2, "query");
-        }
+    if (url->paramlens > 0) {
+        luaL_Buffer qbuf;
+        size_t qcap = url->paramlens + 1;
+        char *qq = luaL_buffinitsize(lua, &qbuf, qcap);
+        luaL_pushresultsize(&qbuf, url_reorg_param(url, qq, qcap));
+        lua_setfield(lua, -2, "query");
     }
 }

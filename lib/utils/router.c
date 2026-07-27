@@ -536,13 +536,26 @@ int32_t router_match_index(router_ctx *r, const char *method, size_t method_len,
                            const char *url, size_t url_len, router_req *ctx) {
     router_method m = _router_method_str_to_mask(method, method_len);
     if (0 == m) {
-        return -1;
+        return -3;
     }
+    ctx->method = m;
     //url_parse 解码后段写入 ctx->url_storage；params.val 指向该缓冲，ctx 生命周期须覆盖 params 使用
     if (ERR_OK != url_parse(&ctx->url_storage, url, url_len, '/', 1)) {
         return -2;
     }
     return _router_find(r, m, ctx);
+}
+int32_t router_match_code(int32_t idx) {
+    if (idx >= 0) {
+        return 200;
+    }
+    if (-3 == idx) {
+        return 405;
+    }
+    if (-2 == idx) {
+        return 400;
+    }
+    return 404;
 }
 // 中间件需主动调本函数推进链路; 不调即截断, 后续 mw / handler 不执行。
 // 因为是同步递归调用栈, 中间件可在 router_next 返回后做后置处理 (打日志 / 统计耗时)
@@ -669,27 +682,19 @@ void router_dispatch(router_ctx *r, task_ctx *task,
     if (NULL == st || 0 == st[0].lens || 0 == st[1].lens) {
         return;
     }
-    router_method m = _router_method_str_to_mask(st[0].data, st[0].lens);
-    if (0 == m) {
-        // 方法不在我们已知列表 → 405
-        _router_send_simple(task, fd, skid, 405, "Method Not Allowed\n");
-        return;
-    }
-    // 解析 URL: path 拆成 segs(已 %XX 解码、'+' 保持字面)供段匹配, query 落 ctx->url_storage 供 router_req_query 取
+    // 解方法 + URL parse + 扫表与 Lua 侧走同一个 router_match_index，
+    // 状态码也由同一个 router_match_code 映射，避免 C / Lua 两个 HTTP 面对同一请求给出不同码
     router_req ctx = { 0 };
     ctx.task = task;
     ctx.sk.fd = fd;
     ctx.sk.skid = skid;
     ctx.pack = pack;
-    ctx.method = m;
-    if (ERR_OK != url_parse(&ctx.url_storage, st[1].data, st[1].lens, '/', 1)) {
-        // 段数超 URL_MAX_PATH_DEPTH 或 URI 过长, 无法解析
-        _router_send_simple(task, fd, skid, 400, "Bad Request\n");
-        return;
-    }
-    int32_t idx = _router_find(r, m, &ctx);
-    if (idx < 0) {
-        _router_send_simple(task, fd, skid, 404, "Not Found\n");
+    int32_t idx = router_match_index(r, st[0].data, st[0].lens, st[1].data, st[1].lens, &ctx);
+    int32_t code = router_match_code(idx);
+    if (200 != code) {
+        char body[64];
+        SNPRINTF(body, sizeof(body), "%s\n", http_code_status(code));
+        _router_send_simple(task, fd, skid, code, body);
         return;
     }
     router_entry *matched = &r->routes[idx];

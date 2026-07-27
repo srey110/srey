@@ -41,6 +41,12 @@ runner.run("websock_client", function(t)
         srey.close(fd, skid)
     end
 
+    local fdy, skidy, spy = wbsk.connect("ws://127.0.0.1:" .. PORT .. "/", SSL_NAME.NONE, "mqtt")
+    t:check(spy ~= nil, "服务端支持的子协议(mqtt)须协商成功并回显")
+    if fdy and INVALID_SOCK ~= fdy then
+        srey.close(fdy, skidy)
+    end
+
     srey.unlisten(lid)-- 释放端口给后续测试
 end)
 end)

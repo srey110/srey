@@ -392,8 +392,8 @@ static void _syn_startup(task_ctx *task) {
     // 4. stop 后立即 synstart 重启:每次生成新 sess,不被上一会话在途的 CLOSE 击穿
     kcp_stop(&kcp1);
     int32_t r5 = kcp_synstart(task, &kcp1, "127.0.0.1", _syn_sv_udp, NULL);
-    // 5. stop 后 synstart 被拒:失败路径须把 stopped/maxpack 与 sess 一并还原成调用前。
-    // 先 stop 让 conv 空出给 kcp5,kcp1 再以同 conv 重启必被拒;若 stopped 停在 0,句柄就从
+    // 5. stop 后 synstart 被拒:失败路径须置回"无会话"(sess=0 / stopped=1)并还原 maxpack。
+    // 先 stop 让 conv 空出给 kcp5,kcp1 再以同 conv 重启必被 event 线程拒;若 stopped 停在 0,句柄就从
     // "已停"变回"在跑",下面的 synsend 会绕过守卫投到已消失的会话,被静默丢弃后空等满超时
     kcp_stop(&kcp1);
     kcp_ctx kcp5;
@@ -406,7 +406,23 @@ static void _syn_startup(task_ctx *task) {
     uint64_t b11 = nowms();
     void *r11 = kcp_synsend(task, &kcp1, "y", 1, 1, &esize);
     uint64_t elapse11 = nowms() - b11;
+    kcp_ctx kcp6;
+    kcp_init(&kcp6, &task->loader->netev, ufd, uskid, 400);
+    uint64_t s12a = createid();
+    int32_t r12 = kcp_start(&kcp6, task->handle, s12a, "127.0.0.1", _syn_sv_udp, NULL);
+    int32_t r13 = kcp_synstart(task, &kcp6, "127.0.0.1", _syn_sv_udp, NULL);
+    int32_t r14 = (0 == kcp6.stopped && 0 != kcp6.sess && s12a != kcp6.sess) ? ERR_OK : ERR_FAILED;
+    kcp_stop(&kcp6);
+    kcp_ctx kcp7;
+    kcp_init(&kcp7, &task->loader->netev, ufd, uskid, 400);
+    int32_t r15 = kcp_synstart(task, &kcp7, "127.0.0.1", _syn_sv_udp, NULL);
+    kcp_stop(&kcp7);
+    kcp_ctx kcp8;
+    kcp_init(&kcp8, &task->loader->netev, ufd, uskid, 100);
+    int32_t r16 = kcp_start(&kcp8, task->handle, createid(), "127.0.0.1", _syn_sv_udp, NULL);
     kcp_stop(&kcp5);
+    int32_t r17 = kcp_synstart(task, &kcp8, "127.0.0.1", _syn_sv_udp, NULL);
+    kcp_stop(&kcp8);
     kcp_stop(&kcp3);
     ev_close(&task->loader->netev, ufd, uskid, 1);
     // 6. CLOSE 唤醒 kcp_synsend:挂起期间 socket 被关,_kcp_udfree 逐会话补 CLOSE;
@@ -437,14 +453,20 @@ static void _syn_startup(task_ctx *task) {
     }
     if (ERR_OK == r1 && ERR_OK != r2 && ERR_OK == r3 && elapse3 < 1000 && NULL == r4 && ERR_OK == r5
         && ERR_OK == r8 && ERR_OK != r9 && ERR_OK == r10 && NULL == r11 && elapse11 < 1000
-        && ERR_OK == r6 && ERR_OK == r7 && elapse6 < 2000) {
+        && ERR_OK == r6 && ERR_OK == r7 && elapse6 < 2000
+        && ERR_OK == r12 && ERR_OK == r13 && ERR_OK == r14 && ERR_OK == r15
+        && ERR_OK == r16 && ERR_OK == r17) {
         *_syn_ok = 1;
         LOG_INFO("kcp synstart tested: normal/restart ok, collision/sess-guard rejected,"
-                 " reject restores stopped/maxpack, CLOSE clears sess.");
+                 " reject clears sess and restores stopped/maxpack, CLOSE clears sess,"
+                 " same-handle restart implicitly stops the live session and re-registers conv,"
+                 " async handle refused by the event thread stays restartable.");
     } else {
         LOG_ERROR("kcp synstart test failed: r1=%d r2=%d r3=%d elapse3=%"PRIu64" r4=%p r5=%d"
-                  " r8=%d r9=%d r10=%d r11=%p elapse11=%"PRIu64" r6=%d r7=%d elapse6=%"PRIu64".",
-                  r1, r2, r3, elapse3, r4, r5, r8, r9, r10, r11, elapse11, r6, r7, elapse6);
+                  " r8=%d r9=%d r10=%d r11=%p elapse11=%"PRIu64" r6=%d r7=%d elapse6=%"PRIu64
+                  " r12=%d r13=%d r14=%d r15=%d r16=%d r17=%d.",
+                  r1, r2, r3, elapse3, r4, r5, r8, r9, r10, r11, elapse11, r6, r7, elapse6,
+                  r12, r13, r14, r15, r16, r17);
     }
 }
 void task_kcp_synstart_start(loader_ctx *loader, const char *name, uint16_t sv_udp_port, int32_t *ok) {

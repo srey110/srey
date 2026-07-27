@@ -151,5 +151,51 @@ runner.run("stm", function(t)
         t:eq("e2", got, "callback-error: 抛错后 reader 仍能正常读新快照")
     end
     collectgarbage("collect")
+
+    do
+        local w = stm.new("guard")
+        local r = stm.newcopy(stm.copy(w))
+        local h = stm.copy(w)
+        local r2 = stm.newcopy(h)
+        t:eq("stm writer", getmetatable(w), "protected: getmetatable(writer) 返回 __metatable 而非元表")
+        t:eq("stm reader", getmetatable(r), "protected: getmetatable(reader) 返回 __metatable 而非元表")
+        local mtw = debug.getmetatable(w)
+        local mtr = debug.getmetatable(r)
+        t:eq(false, pcall(mtw.__gc), "metamethod: writer.__gc() 无参应报错")
+        t:eq(false, pcall(mtw.__gc, nil), "metamethod: writer.__gc(nil) 应报错")
+        t:eq(false, pcall(mtw.__gc, r), "metamethod: writer.__gc(reader) 跨类型应报错")
+        t:eq(false, pcall(mtw.__gc, h), "metamethod: writer.__gc(lightuserdata) 应报错")
+        t:eq(false, pcall(mtw.__gc, {}), "metamethod: writer.__gc(table) 应报错")
+        t:eq(false, pcall(mtw.__call, nil, "x"), "metamethod: writer.__call(nil) 应报错")
+        t:eq(false, pcall(mtw.__call, r, "x"), "metamethod: writer.__call(reader) 跨类型应报错")
+        t:eq(false, pcall(mtr.__gc, nil), "metamethod: reader.__gc(nil) 应报错")
+        t:eq(false, pcall(mtr.__gc, w), "metamethod: reader.__gc(writer) 跨类型应报错")
+        t:eq(false, pcall(mtr.__gc, h), "metamethod: reader.__gc(lightuserdata) 应报错")
+        t:eq(false, pcall(mtr.__call, nil, function() end), "metamethod: reader.__call(nil) 应报错")
+        t:eq(false, pcall(mtr.__call, w, function() end), "metamethod: reader.__call(writer) 跨类型应报错")
+        local upd = r2(function() end)
+        t:eq(true, upd, "metamethod: 校验失败不影响正常 reader 读取")
+    end
+    collectgarbage("collect")
+
+    do
+        local w = stm.new("released")
+        local mtw = debug.getmetatable(w)
+        mtw.__gc(w)
+        t:eq(false, pcall(stm.copy, w), "released: __gc 后 stm.copy 应报错而非 NULL 解引用")
+        t:eq(false, pcall(mtw.__call, w, "x"), "released: __gc 后 writer.__call 应报错")
+        t:eq(true, pcall(mtw.__gc, w), "released: 重复 __gc 幂等不报错")
+    end
+    collectgarbage("collect")
+
+    do
+        local w = stm.new("released2")
+        local r = stm.newcopy(stm.copy(w))
+        local mtr = debug.getmetatable(r)
+        mtr.__gc(r)
+        t:eq(false, pcall(mtr.__call, r, function() end), "released: __gc 后 reader.__call 应报错")
+        t:eq(true, pcall(mtr.__gc, r), "released: 重复 __gc 幂等不报错")
+    end
+    collectgarbage("collect")
 end)
 end)

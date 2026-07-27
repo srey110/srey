@@ -262,6 +262,39 @@ static int32_t _test_late_set_no_ghost(task_ctx *task) {
     return ERR_OK;
 }
 
+// 子段 11:线上 key 内嵌 NUL — 线上按 u16 klen 定界而存储/比较按 strlen,
+// 放过会静默别名化到前缀("a\0bcd" 落成 "a"),须在入口拒绝
+static int32_t _test_nul_in_key(task_ctx *task) {
+    task_ctx *dc = task_grab(task->loader, _dc_name);
+    if (NULL == dc) {
+        LOG_ERROR("nul_in_key: grab dc failed");
+        return ERR_FAILED;
+    }
+    binary_ctx bw;
+    binary_init(&bw, NULL, 0, 0);
+    binary_set_uinteger(&bw, 5, 2, 0);
+    binary_set_binary(&bw, "a\0bcd", 5);
+    binary_set_uinteger(&bw, 3, 4, 0);
+    binary_set_binary(&bw, "XYZ", 3);
+    int32_t erro = ERR_OK;
+    size_t rsize = 0;
+    coro_request(dc, task, REQ_DC_SET, bw.data, bw.offset, 0, &erro, &rsize);
+    task_ungrab(dc);
+    if (ERR_OK == erro) {
+        LOG_ERROR("nul_in_key: embedded NUL key accepted");
+        return ERR_FAILED;
+    }
+    size_t sz = 0;
+    int32_t gerro = ERR_OK;
+    void *val = coro_dc_get(task, _dc_name, "a", &sz, &gerro);
+    if (NULL != val) {
+        LOG_ERROR("nul_in_key: aliased to prefix key");
+        FREE(val);
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+
 static void _startup(task_ctx *task) {
     task_dc_client_args *arg = (task_dc_client_args *)coro_get_arg(task);
     _dc_name = task_find_name(task->loader, arg->dc_name);
@@ -277,9 +310,10 @@ static void _startup(task_ctx *task) {
     if (ERR_OK != _test_set_null(task))            { return; }
     if (ERR_OK != _test_key_too_long(task))        { return; }
     if (ERR_OK != _test_late_set_no_ghost(task))   { return; }
+    if (ERR_OK != _test_nul_in_key(task))          { return; }
 
     *(arg->ok) = 1;
-    LOG_INFO("dc_client tested: 10/10 subtests passed.");
+    LOG_INFO("dc_client tested: 11/11 subtests passed.");
 }
 
 void task_dc_client_start(loader_ctx *loader, const char *base_name, const char *dc_name, int32_t *ok) {

@@ -135,6 +135,8 @@ runner.run("db_bind", function(t)
     do
         local m = mysql.new("127.0.0.1", 3306, nil, "admin", "x", "testdb", "utf8mb4")
         t:check(m ~= nil, "mysql.new (无连接)")
+        t:eq("_mysql_ctx", getmetatable(m), "REG_MTABLE 置 __metatable:普通 getmetatable 只得类型名")
+        t:check(debug.getmetatable(m) ~= nil, "debug.getmetatable 仍可取真元表(__metatable 不挡它)")
 
         local pack, size = m:pack_ping()
         t:check(pack ~= nil and size > 0, "mysql pack_ping non-empty")

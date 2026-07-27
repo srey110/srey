@@ -856,6 +856,17 @@ static void test_popen2(CuTest *tc) {
     CuAssertTrue(tc, n > 0);
     CuAssertTrue(tc, NULL != strstr(buf, "srey test"));
     popen_free(&ctx);
+
+    CuAssertIntEquals(tc, ERR_OK, popen_startup(&ctx, cmd, "rw"));
+    n = popen_write(&ctx, msg, strlen(msg));
+    CuAssertTrue(tc, n > 0);
+    CuAssertIntEquals(tc, ERR_OK, popen_waitexit(&ctx, 3000));
+    popen_free(&ctx);
+    popen_free(&ctx);
+    CuAssert(tc, "popen_free 幂等: 重复释放不得二次关闭句柄",
+        ERR_FAILED == popen_read(&ctx, buf, sizeof(buf) - 1, NULL));
+    CuAssert(tc, "popen_free 幂等: 释放后 write 返回失败而非写已关闭句柄",
+        ERR_FAILED == popen_write(&ctx, "x", 1));
 }
 
 /* =======================================================================
@@ -971,7 +982,7 @@ static void test_tw(CuTest *tc) {
 }
 
 /* =======================================================================
- * memichr / memstr / skipempty —— 字符/子串查找
+ * memichr / memstr / trim —— 字符/子串查找与两端剔除
  * ======================================================================= */
 static void test_mem_helpers(CuTest *tc) {
     /* memichr：大小写不敏感字符查找 */
@@ -993,15 +1004,37 @@ static void test_mem_helpers(CuTest *tc) {
     /* what 为空或更长于源 → NULL */
     CuAssertTrue(tc, NULL == memstr(0, s, 3, "Hello", 5));
 
-    /* skipempty：跳过开头的空白字符（空格/\t/\r/\n）*/
-    CuAssertTrue(tc, NULL != skipempty("   abc", 6));
-    char *r = (char *)skipempty("   abc", 6);
-    CuAssertTrue(tc, 'a' == *r);
-    /* 全部空白 → NULL */
-    CuAssertTrue(tc, NULL == skipempty("    ", 4));
-    /* 无空白前缀 */
-    r = (char *)skipempty("abc", 3);
-    CuAssertTrue(tc, 'a' == *r);
+    /* trim_left / trim_right / trim：仅剔 SP 与 HTAB，不改源数据、不写 '\0' */
+    char tbuf[] = " \t abc \t ";
+    size_t tlen = sizeof(tbuf) - 1;
+    size_t n = 0;
+    char *r = trim_left(tbuf, tlen, &n);
+    CuAssertPtrNotNull(tc, r);
+    CuAssert(tc, "trim_left 起点跳到首个非空白", 'a' == r[0]);
+    CuAssert(tc, "trim_left 只剥左端，右端空白仍计入长度", strlen("abc \t ") == n);
+    r = trim_right(tbuf, tlen, &n);
+    CuAssertPtrNotNull(tc, r);
+    CuAssert(tc, "trim_right 起点不变", r == tbuf);
+    CuAssert(tc, "trim_right 只剥右端", strlen(" \t abc") == n);
+    r = trim(tbuf, tlen, &n);
+    CuAssertPtrNotNull(tc, r);
+    CuAssert(tc, "trim 两端都剥", 3 == n && 0 == memcmp(r, "abc", 3));
+    CuAssert(tc, "trim 不改源数据", 0 == memcmp(tbuf, " \t abc \t ", tlen));
+    /* 全为空白 → 三者均返回 NULL 且写 0 */
+    char wbuf[] = " \t \t";
+    n = 99;
+    CuAssert(tc, "全空白 trim_left 返 NULL", NULL == trim_left(wbuf, sizeof(wbuf) - 1, &n) && 0 == n);
+    n = 99;
+    CuAssert(tc, "全空白 trim_right 返 NULL", NULL == trim_right(wbuf, sizeof(wbuf) - 1, &n) && 0 == n);
+    n = 99;
+    CuAssert(tc, "全空白 trim 返 NULL", NULL == trim(wbuf, sizeof(wbuf) - 1, &n) && 0 == n);
+    /* 零长度输入 */
+    n = 99;
+    CuAssert(tc, "零长度 trim 返 NULL", NULL == trim(tbuf, 0, &n) && 0 == n);
+    /* 无空白：起点与长度都不变 */
+    char pbuf[] = "abc";
+    r = trim(pbuf, 3, &n);
+    CuAssert(tc, "无空白 trim 原样返回", r == pbuf && 3 == n);
 }
 
 /* =======================================================================

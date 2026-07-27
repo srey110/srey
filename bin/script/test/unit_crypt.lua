@@ -40,6 +40,25 @@ runner.run("crypt", function(t)
         t:eq(nil, url.parse(string.rep("a", 1024)),       "url.parse 超 1KB 返回 nil")
         t:eq(nil, url.parse("/" .. string.rep("a/", 70)), "url.parse 超 64 段返回 nil")
     end
+    do
+        local u = url.parse("/api?a=1&=2&b=3")
+        t:eq("1", u.param.a, "空名参数不截断 param 表: a")
+        t:eq("3", u.param.b, "空名参数不截断 param 表: b(修复前丢失)")
+        t:eq(nil, u.param[""], "空名参数本身不入表")
+        t:eq("a=1&b=3", u.query, "query 跳过空名参数")
+        local u2 = url.parse("/p?=x&token=abc")
+        t:eq("abc", u2.param.token, "首参数无名时后续参数仍入表")
+        t:eq("token=abc", u2.query, "首参数无名不再导致 query 字段整体缺失")
+    end
+    do
+        local token = string.rep("x", 1500)
+        local u = url.parse("wss://h/ws?token=" .. token, false)
+        t:eq(token, u.param.token, "decode=0 超 1KB 参数值完整入表")
+        t:eq("token=" .. token, u.query, "decode=0 长 query 不再被固定 1KB 缓冲整体丢弃")
+        local seg = string.rep("p", 1500)
+        local u2 = url.parse("wss://h/" .. seg, false)
+        t:eq("/" .. seg, u2.path, "decode=0 长 path 不再被截断为空串")
+    end
 
     -- ── base64 ─────────────────────────────────────────────────────────
     do

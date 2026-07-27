@@ -1164,16 +1164,38 @@ void *memstr(int32_t ncs, const void *ptr, size_t plens, const void *what, size_
     } while (plens - (size_t)(cur - (char*)ptr) >= wlen);
     return NULL;
 }
-void *skipempty(const void *ptr, size_t plens) {
-    char *cur = (char *)ptr;
-    while ((size_t)(cur - (char *)ptr) < plens
-           && (' ' == *cur || '\t' == *cur)) {
-        cur++;
+char *trim_left(char *data, size_t dlens, size_t *lens) {
+    size_t off = 0;
+    while (off < dlens && is_ows(data[off])) {
+        off++;
     }
-    if ((size_t)(cur - (char *)ptr) == plens) {
+    if (off == dlens) {
+        SET_PTR(lens, 0);
         return NULL;
     }
-    return cur;
+    SET_PTR(lens, dlens - off);
+    return data + off;
+}
+char *trim_right(char *data, size_t dlens, size_t *lens) {
+    size_t n = dlens;
+    while (n > 0 && is_ows(data[n - 1])) {
+        n--;
+    }
+    if (0 == n) {
+        SET_PTR(lens, 0);
+        return NULL;
+    }
+    SET_PTR(lens, n);
+    return data;
+}
+char *trim(char *data, size_t dlens, size_t *lens) {
+    size_t n = 0;
+    char *cur = trim_left(data, dlens, &n);
+    if (NULL == cur) {
+        SET_PTR(lens, 0);
+        return NULL;
+    }
+    return trim_right(cur, n, lens);
 }
 void locale_init(void) {
 #ifdef OS_WIN

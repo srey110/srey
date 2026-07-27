@@ -258,7 +258,7 @@ static void test_http_smuggling(CuTest *tc) {
         "\r\n"
         "hello",
         1);
-    // 16. 首个头部行以空格 OWS 开头(obs-fold 折叠)：旧实现被 skipempty 静默剥离后当合法 chunked 入库,
+    // 16. 首个头部行以空格 OWS 开头(obs-fold 折叠)：旧实现把前导 OWS 静默剥离后当合法 chunked 入库,
     //     与将其视为 obs-fold 折进请求行(看不到 TE)的上游代理产生边界分歧 → 请求走私 → 拒绝
     _http_smuggle_check(tc,
         "POST / HTTP/1.1\r\n"
@@ -279,6 +279,48 @@ static void test_http_smuggling(CuTest *tc) {
         " Transfer-Encoding: chunked\r\n"
         "\r\n",
         1);
+    _http_smuggle_check(tc,
+        "POST / HTTP/1.1\r\n"
+        "Host: x\r\n"
+        "Content-Length:\n5\r\n"
+        "\r\n"
+        "hello",
+        1);
+    _http_smuggle_check(tc,
+        "POST / HTTP/1.1\r\n"
+        "Host: x\r\n"
+        "Content-Length:\v5\r\n"
+        "\r\n"
+        "hello",
+        1);
+    _http_smuggle_check(tc,
+        "POST / HTTP/1.1\r\n"
+        "Host: x\r\n"
+        "Content-Length:\f5\r\n"
+        "\r\n"
+        "hello",
+        1);
+    _http_smuggle_check(tc,
+        "POST / HTTP/1.1\r\n"
+        "Host: x\r\n"
+        "Content-Length:\r5\r\n"
+        "\r\n"
+        "hello",
+        1);
+    _http_smuggle_check(tc,
+        "POST / HTTP/1.1\r\n"
+        "Host: x\r\n"
+        "Content-Length: 1 2\r\n"
+        "\r\n"
+        "hello",
+        1);
+    _http_smuggle_check(tc,
+        "POST / HTTP/1.1\r\n"
+        "Host: x\r\n"
+        "Content-Length: 5 \r\n"
+        "\r\n"
+        "hello",
+        0);
 }
 
 // 首行三段拆分必须限定在首行内，空格不足的畸形首行不得越行吞并头部字段
@@ -319,6 +361,31 @@ static void test_http_status_line(CuTest *tc) {
         "Host: a\r\n"
         "\r\n",
         1);
+    _http_smuggle_check(tc,
+        "GET /admin /public HTTP/1.1\r\n"
+        "Host: a\r\n"
+        "\r\n",
+        1);
+    _http_smuggle_check(tc,
+        "GET /a JUNKVERSION\r\n"
+        "Host: a\r\n"
+        "\r\n",
+        1);
+    _http_smuggle_check(tc,
+        "GET / http/1.1\r\n"
+        "Host: a\r\n"
+        "\r\n",
+        1);
+    _http_smuggle_check(tc,
+        "GET / HTTP/11\r\n"
+        "Host: a\r\n"
+        "\r\n",
+        1);
+    _http_smuggle_check(tc,
+        "GET /a HTTP/1.0\r\n"
+        "Content-Length: 0\r\n"
+        "\r\n",
+        0);
 }
 
 // chunked chunk-size 走私：第一次 unpack 解析 header(chunked)，第二次 unpack 解析 chunk-size 行；断言其是否被拒
@@ -423,7 +490,8 @@ static void test_http_check_keyval_token(CuTest *tc) {
         _http_check_keyval(&head, "content-length", strlen("content-length"), NULL, 0));
 }
 
-// chunked trailer 超 MAX_HEADLENS=4KB 应 PROT_ERROR
+// chunked trailer 超 MAX_HEADLENS=4KB 应 PROT_ERROR；
+// 但上限只量 trailer 自身，buf 里流水线跟随的下一个请求不得计入
 static void test_http_chunked_trailer_limit(CuTest *tc) {
     buffer_ctx buf;
     buffer_init(&buf);
@@ -461,6 +529,39 @@ static void test_http_chunked_trailer_limit(CuTest *tc) {
     pack = http_unpack(&buf, &ud, &status);
     CuAssertTrue(tc, NULL == pack);
     CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+
+    _http_udfree(&ud);
+    buffer_free(&buf);
+
+    char rest[4089];
+    buffer_init(&buf);
+    _bput(&buf, "HTTP/1.1 200 OK\r\n");
+    _bput(&buf, "Transfer-Encoding: chunked\r\n");
+    _bput(&buf, "\r\n");
+    _bput(&buf, "5\r\nhello\r\n");
+    _bput(&buf, "0\r\n");
+    _bput(&buf, "X: y\r\n\r\n");
+    memset(rest, 'A', sizeof(rest));
+    buffer_append(&buf, rest, sizeof(rest));
+
+    ZERO(&ud, sizeof(ud_cxt));
+    status = PROT_INIT;
+    pack = http_unpack(&buf, &ud, &status);
+    CuAssertPtrNotNull(tc, pack);
+    _http_pkfree(pack);
+    status = PROT_INIT;
+    pack = http_unpack(&buf, &ud, &status);
+    CuAssertPtrNotNull(tc, pack);
+    _http_pkfree(pack);
+
+    status = PROT_INIT;
+    pack = http_unpack(&buf, &ud, &status);
+    CuAssert(tc, "8 字节完整 trailer 跟 4089 字节流水线数据(合计 4097>4096)不得被误拒",
+        NULL != pack && !BIT_CHECK(status, PROT_ERROR));
+    CuAssert(tc, "末尾块须置 PROT_SLICE_END", BIT_CHECK(status, PROT_SLICE_END));
+    CuAssert(tc, "只消费 trailer 自身，流水线数据须原样留在 buf",
+        sizeof(rest) == buffer_size(&buf));
+    _http_pkfree(pack);
 
     _http_udfree(&ud);
     buffer_free(&buf);
@@ -1219,10 +1320,71 @@ static void test_redis_resp3_aggregate(CuTest *tc) {
     }
 }
 
+/* 聚合嵌套：上限量的是嵌套深度而非累计节点数，扁平大结果集不得被误拒 */
+static void test_redis_nesting(CuTest *tc) {
+    buffer_ctx buf;
+    ud_cxt ud;
+    int32_t status;
+    redis_pack_ctx *pack;
+    int32_t i;
+    {
+        buffer_init(&buf);
+        _bput(&buf, "*70000\r\n");
+        for (i = 0; i < 70000; i++) {
+            _bput(&buf, ":1\r\n");
+        }
+        ZERO(&ud, sizeof(ud_cxt));
+        status = PROT_INIT;
+        pack = redis_unpack(&buf, &ud, &status);
+        CuAssert(tc, "扁平 70000 元素数组不得被节点数上限误拒", NULL != pack);
+        CuAssert(tc, "扁平大结果集不得置 PROT_ERROR", !BIT_CHECK(status, PROT_ERROR));
+        CuAssertTrue(tc, RESP_ARRAY == pack->prot);
+        CuAssertTrue(tc, 70000 == pack->nelem);
+        _redis_pkfree(pack);
+        _redis_udfree(&ud);
+        buffer_free(&buf);
+    }
+    {
+        buffer_init(&buf);
+        for (i = 0; i < 17; i++) {
+            _bput(&buf, "*1\r\n");
+        }
+        _bput(&buf, ":1\r\n");
+        ZERO(&ud, sizeof(ud_cxt));
+        status = PROT_INIT;
+        pack = redis_unpack(&buf, &ud, &status);
+        CuAssert(tc, "嵌套 17 层恰好用满 REDIS_MAX_DEPTH，须接受", NULL != pack);
+        CuAssert(tc, "深度未超限不得置 PROT_ERROR", !BIT_CHECK(status, PROT_ERROR));
+        _redis_pkfree(pack);
+        _redis_udfree(&ud);
+        buffer_free(&buf);
+    }
+    {
+        buffer_init(&buf);
+        for (i = 0; i < 18; i++) {
+            _bput(&buf, "*1\r\n");
+        }
+        ZERO(&ud, sizeof(ud_cxt));
+        status = PROT_INIT;
+        pack = redis_unpack(&buf, &ud, &status);
+        CuAssert(tc, "嵌套 18 层超深度上限，须拒绝", NULL == pack);
+        CuAssert(tc, "超深度须置 PROT_ERROR", BIT_CHECK(status, PROT_ERROR));
+        _redis_udfree(&ud);
+        buffer_free(&buf);
+    }
+}
+
 /* =======================================================================
  * URL —— url_parse 各字段验证
  * ======================================================================= */
 
+// 断言 query 参数 key 存在且值与 val 相等；val 为空串时断言参数存在但无值
+static void _url_check_param(CuTest *tc, url_ctx *ctx, const char *key, const char *val) {
+    buf_ctx *prm = url_get_param(ctx, key);
+    CuAssertPtrNotNull(tc, prm);
+    CuAssertTrue(tc, strlen(val) == prm->lens);
+    CuAssertTrue(tc, 0 == prm->lens || buf_compare(prm, val, strlen(val)));
+}
 static void test_url_parse(CuTest *tc) {
     /* url_parse 在原始 char 数组上就地操作，不能用 const char * */
     char url[] = "http://user:psw@host.com:8080/path/to?k1=v1&k2=v2#anchor";
@@ -1239,17 +1401,12 @@ static void test_url_parse(CuTest *tc) {
     CuAssertTrue(tc, buf_compare(&ctx.segs[1], "to", 2));
     CuAssertTrue(tc, buf_compare(&ctx.anchor, "anchor", 6));
 
-    buf_ctx *p = url_get_param(&ctx, "k1");
-    CuAssertPtrNotNull(tc, p);
-    CuAssertTrue(tc, buf_compare(p, "v1", 2));
+    _url_check_param(tc, &ctx, "k1", "v1");
 
-    p = url_get_param(&ctx, "k2");
-    CuAssertPtrNotNull(tc, p);
-    CuAssertTrue(tc, buf_compare(p, "v2", 2));
+    _url_check_param(tc, &ctx, "k2", "v2");
 
     /* 不存在的参数应返回 NULL */
-    p = url_get_param(&ctx, "missing");
-    CuAssertTrue(tc, NULL == p);
+    CuAssertTrue(tc, NULL == url_get_param(&ctx, "missing"));
 }
 
 // URL 缺 path 但含 query / fragment 时，host 段不可越界到 authority 之后
@@ -1263,9 +1420,7 @@ static void test_url_parse_edges(CuTest *tc) {
         CuAssertTrue(tc, buf_compare(&ctx.host, "host", 4));
         CuAssertTrue(tc, 0 == ctx.port.lens);
         CuAssertTrue(tc, 0 == ctx.npath);
-        buf_ctx *p = url_get_param(&ctx, "k");
-        CuAssertPtrNotNull(tc, p);
-        CuAssertTrue(tc, buf_compare(p, "v", 1));
+        _url_check_param(tc, &ctx, "k", "v");
     }
     // 2. http://host#frag —— host 仅含 "host"，anchor 被正确解析
     {
@@ -1286,9 +1441,7 @@ static void test_url_parse_edges(CuTest *tc) {
         CuAssertTrue(tc, 0 == ctx.psw.lens);
         CuAssertTrue(tc, buf_compare(&ctx.host, "host", 4));
         CuAssertTrue(tc, 0 == ctx.npath);
-        buf_ctx *p = url_get_param(&ctx, "k");
-        CuAssertPtrNotNull(tc, p);
-        CuAssertTrue(tc, buf_compare(p, "v", 1));
+        _url_check_param(tc, &ctx, "k", "v");
     }
     // 4. http://host —— 仅 scheme + host
     {
@@ -1306,9 +1459,7 @@ static void test_url_parse_edges(CuTest *tc) {
         url_parse(&ctx, u, strlen(u), '/', 1);
         CuAssertTrue(tc, buf_compare(&ctx.host, "host", 4));
         CuAssertTrue(tc, buf_compare(&ctx.port, "8080", 4));
-        buf_ctx *p = url_get_param(&ctx, "k");
-        CuAssertPtrNotNull(tc, p);
-        CuAssertTrue(tc, buf_compare(p, "v", 1));
+        _url_check_param(tc, &ctx, "k", "v");
     }
     // 6. http://host/ —— 根路径 '/' → 一个空段(RFC path-abempty:前导 sep 后是空 segment)
     {
@@ -1326,12 +1477,8 @@ static void test_url_parse_edges(CuTest *tc) {
         url_parse(&ctx, u, strlen(u), '/', 1);
         CuAssertTrue(tc, 1 == ctx.npath);
         CuAssertTrue(tc, buf_compare(&ctx.segs[0], "call", 4));
-        buf_ctx *p = url_get_param(&ctx, "dst");
-        CuAssertPtrNotNull(tc, p);
-        CuAssertTrue(tc, buf_compare(p, "123", 3));
-        p = url_get_param(&ctx, "type");
-        CuAssertPtrNotNull(tc, p);
-        CuAssertTrue(tc, buf_compare(p, "4", 1));
+        _url_check_param(tc, &ctx, "dst", "123");
+        _url_check_param(tc, &ctx, "type", "4");
     }
     // 8. path + 直接 fragment(无 query)：path 段解码不写 '\0',不覆盖紧跟的 '#',anchor 正确
     {
@@ -1360,6 +1507,35 @@ static void test_url_parse_edges(CuTest *tc) {
         url_parse(&ctx, u, strlen(u), '/', 1);
         CuAssertPtrNotNull(tc, url_get_param(&ctx, "Key"));
         CuAssertTrue(tc, NULL == url_get_param(&ctx, "key"));
+    }
+    {
+        char u[] = "/s?q=x&exact&page=2";
+        url_ctx ctx;
+        url_parse(&ctx, u, strlen(u), '/', 1);
+        _url_check_param(tc, &ctx, "q", "x");
+        _url_check_param(tc, &ctx, "exact", "");
+        _url_check_param(tc, &ctx, "page", "2");
+    }
+    {
+        char u[] = "/s?a&b&c";
+        url_ctx ctx;
+        url_parse(&ctx, u, strlen(u), '/', 1);
+        CuAssertPtrNotNull(tc, url_get_param(&ctx, "a"));
+        CuAssertPtrNotNull(tc, url_get_param(&ctx, "b"));
+        CuAssertPtrNotNull(tc, url_get_param(&ctx, "c"));
+    }
+    {
+        char u[] = "/p?a=1&&b=2";
+        url_ctx ctx;
+        url_parse(&ctx, u, strlen(u), '/', 1);
+        _url_check_param(tc, &ctx, "a", "1");
+        _url_check_param(tc, &ctx, "b", "2");
+    }
+    {
+        char u[] = "/p?=x&token=abc";
+        url_ctx ctx;
+        url_parse(&ctx, u, strlen(u), '/', 1);
+        _url_check_param(tc, &ctx, "token", "abc");
     }
 }
 
@@ -1418,6 +1594,11 @@ static void test_url_reorg_param(CuTest *tc) {
     uribuf[plen] = '?';
     url_reorg_param(&ctx, uribuf + plen + 1, sizeof(uribuf) - plen - 1);
     CuAssertStrEquals(tc, "/chat?token=abc&v=1", uribuf);
+
+    char u8[] = "/p?a&b=2";
+    url_parse(&ctx, u8, strlen(u8), '/', 0);
+    url_reorg_param(&ctx, buf, sizeof(buf));
+    CuAssertStrEquals(tc, "a&b=2", buf);
 }
 
 /* =======================================================================
@@ -1460,6 +1641,27 @@ static void test_custz(CuTest *tc) {
     _custz_roundtrip(tc, PACK_CUSTZ_FIXED, msg, mlen);
     _custz_roundtrip(tc, PACK_CUSTZ_FLAG,  msg, mlen);
     _custz_roundtrip(tc, PACK_CUSTZ_VAR,   msg, mlen);
+}
+
+/* 组包侧须与解包侧的 PACK_TOO_LONG 同阈值，不得造出对端必拒的包 */
+static void test_custz_maxpack(CuTest *tc) {
+#if 0 != MAX_PACK_SIZE
+    pack_type types[] = { PACK_CUSTZ_FIXED, PACK_CUSTZ_FLAG, PACK_CUSTZ_VAR };
+    size_t pksize;
+    size_t i;
+    char *big;
+    MALLOC(big, MAX_PACK_SIZE);
+    memset(big, 'z', MAX_PACK_SIZE);
+    for (i = 0; i < ARRAY_SIZE(types); i++) {
+        pksize = 0;
+        CuAssert(tc, "载荷达到 MAX_PACK_SIZE 须拒绝，不得造出解包侧必拒的包",
+            NULL == custz_pack(types[i], big, MAX_PACK_SIZE, &pksize));
+        _custz_roundtrip(tc, types[i], big, MAX_PACK_SIZE - 1);
+    }
+    FREE(big);
+#else
+    (void)tc;
+#endif
 }
 
 /* =======================================================================
@@ -1547,6 +1749,102 @@ static void test_smtp_full_response(CuTest *tc) {
     _smtp_resp_check(tc, "421\r\n", 5, NULL, 5);
     /* 25. code 为 NULL：续行 code 与首行不一致 → 拒绝 */
     _smtp_resp_check(tc, "250-A\r\n500 X\r\n", 14, NULL, ERR_FAILED);
+}
+
+// mail_clear 须把 reply 一并还原到 mail_init 后的状态：漏还原会让复用同一对象的下一封信
+// 沿用上一封的 No-Reply，而调用方从 API 上看不出 clear() 没覆盖它
+static void test_smtp_clear_reply(CuTest *tc) {
+    mail_ctx mail;
+    mail_init(&mail);
+    mail_from(&mail, NULL, "alice@example.com");
+    mail_addrs_add(&mail, "bob@example.com", TO);
+    mail_subject(&mail, "first");
+    mail_msg(&mail, "body");
+    mail_reply(&mail, 0);
+    char *out = mail_pack(&mail);
+    CuAssertPtrNotNull(tc, out);
+    CuAssert(tc, "reply=0 时须出 No-Reply", NULL != strstr(out, "No-Reply: alice@example.com"));
+    FREE(out);
+
+    mail_clear(&mail);
+    mail_from(&mail, NULL, "carol@example.com");
+    mail_addrs_add(&mail, "dave@example.com", TO);
+    mail_subject(&mail, "second");
+    mail_msg(&mail, "body2");
+    out = mail_pack(&mail);
+    CuAssertPtrNotNull(tc, out);
+    CuAssert(tc, "clear 后须还原默认 Reply-To", NULL != strstr(out, "Reply-To: carol@example.com"));
+    CuAssert(tc, "clear 后不得沿用上一封的 No-Reply", NULL == strstr(out, "No-Reply:"));
+    FREE(out);
+    mail_free(&mail);
+}
+
+// RFC 7230 §3.2：value 两侧 OWS 都不属于字段值。旧实现只剥前导、尾随不剥，
+// 导致直接比较原始 value 的消费者(WebSocket 握手、业务读 headers)在合法输入下必然失配
+static void test_http_value_trailing_ows(CuTest *tc) {
+    buffer_ctx buf;
+    buffer_init(&buf);
+    _bput(&buf,
+        "GET / HTTP/1.1\r\n"
+        "Host: x\r\n"
+        "Content-Type: application/json \t \r\n"
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ== \r\n"
+        "Content-Length: 0\r\n"
+        "\r\n");
+    ud_cxt ud;
+    ZERO(&ud, sizeof(ud_cxt));
+    int32_t status = PROT_INIT;
+    struct http_pack_ctx *pack = http_unpack(&buf, &ud, &status);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    size_t vlens = 0;
+    char *v = http_header(pack, "Content-Type", &vlens);
+    CuAssertPtrNotNull(tc, v);
+    CuAssert(tc, "value 尾随 OWS 须被剥掉,否则业务比较 application/json 必失配",
+        strlen("application/json") == vlens && 0 == memcmp(v, "application/json", vlens));
+    v = http_header(pack, "Sec-WebSocket-Key", &vlens);
+    CuAssertPtrNotNull(tc, v);
+    CuAssert(tc, "带尾随 OWS 的 Sec-WebSocket-Key 剥后须仍是 24 字节 base64(否则握手被拒)",
+        strlen("dGhlIHNhbXBsZSBub25jZQ==") == vlens);
+    _http_pkfree(pack);
+    _http_udfree(&ud);
+    buffer_free(&buf);
+}
+
+// base64 正文须按 RFC 2045 §6.8 折行：不折行时 DATA 单行会远超
+// RFC 5321 §4.5.3.1.6 的 1000 octet 上限，严格 MTA 直接以行长错误退信
+static void test_smtp_b64_fold(CuTest *tc) {
+    char html[4096];
+    memset(html, 'h', sizeof(html));
+    mail_ctx mail;
+    mail_init(&mail);
+    mail_from(&mail, NULL, "alice@example.com");
+    mail_addrs_add(&mail, "bob@example.com", TO);
+    mail_subject(&mail, "test");
+    mail_html(&mail, html, sizeof(html));
+    char *out = mail_pack(&mail);
+    CuAssertPtrNotNull(tc, out);
+    size_t maxline = 0;
+    size_t cur = 0;
+    const char *p = out;
+    while ('\0' != *p) {
+        if ('\r' == p[0] && '\n' == p[1]) {
+            if (cur > maxline) {
+                maxline = cur;
+            }
+            cur = 0;
+            p += 2;
+            continue;
+        }
+        cur++;
+        p++;
+    }
+    if (cur > maxline) {
+        maxline = cur;
+    }
+    CuAssert(tc, "DATA 任一行不得超 998 octet(RFC 5321 计 CRLF 共 1000)", maxline <= 998);
+    FREE(out);
+    mail_free(&mail);
 }
 
 // mail_pack 必须对 mail->msg 做 dot-stuffing（RFC 5321 §4.5.2）
@@ -3672,12 +3970,17 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_redis_oversize_no_crlf);
     SUITE_ADD_TEST(suite, test_redis_resp3_scalar);
     SUITE_ADD_TEST(suite, test_redis_resp3_aggregate);
+    SUITE_ADD_TEST(suite, test_redis_nesting);
     SUITE_ADD_TEST(suite, test_url_parse);
     SUITE_ADD_TEST(suite, test_url_parse_edges);
     SUITE_ADD_TEST(suite, test_url_reorg_param);
     SUITE_ADD_TEST(suite, test_custz);
+    SUITE_ADD_TEST(suite, test_custz_maxpack);
     SUITE_ADD_TEST(suite, test_smtp_full_response);
     SUITE_ADD_TEST(suite, test_smtp_dot_stuffing);
+    SUITE_ADD_TEST(suite, test_smtp_b64_fold);
+    SUITE_ADD_TEST(suite, test_smtp_clear_reply);
+    SUITE_ADD_TEST(suite, test_http_value_trailing_ows);
     SUITE_ADD_TEST(suite, test_smtp_pack_cmds);
     SUITE_ADD_TEST(suite, test_smtp_pack_crlf_inject);
     SUITE_ADD_TEST(suite, test_smtp_check_code);

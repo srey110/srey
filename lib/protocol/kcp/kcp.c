@@ -258,7 +258,7 @@ static size_t _kcp_maxpack(int32_t mtu) {
     return (size_t)(KCP_WND_RCV - 1) * (size_t)(mtu - KCP_MIN_OVERHEAD);
 }
 void kcp_init(kcp_ctx *kcp, ev_ctx *netev, SOCKET fd, uint64_t skid, uint32_t conv) {
-    kcp->stopped = 0;
+    kcp->stopped = 1;
     kcp->conv = conv;
     kcp->sess = 0;
     kcp->netev = netev;
@@ -417,6 +417,10 @@ static int32_t _kcp_start(struct watcher_ctx *watcher, struct sock_ctx *skctx,
 }
 int32_t kcp_start(kcp_ctx *kcp, name_t handle, uint64_t sess,
                   const char *ip, uint16_t port, const kcp_config *cfg) {
+    if (!kcp->stopped) {
+        LOG_WARN("kcp conv %u restarted with a session in flight, stopping it first.", kcp->conv);
+        kcp_stop(kcp);
+    }
     kcp_element *kel = _kcp_element_init(kcp, handle, sess, ip, port, cfg);
     if (NULL == kel) {
         return ERR_FAILED;
@@ -428,7 +432,8 @@ int32_t kcp_start(kcp_ctx *kcp, name_t handle, uint64_t sess,
         return ERR_FAILED;
     }
     // kcp->sess 是 stop/send/handle 经 _kcp_resolve 定位会话的键,须与会话表内存活元素的 kel->sess 一致；
-    // 失败路径一律不改这三个字段,否则上一个会话会因键错位而永久无法 stop
+    // 失败路径不改 sess / maxpack,否则上一个会话会因键错位而永久无法 stop；
+    // stopped 例外:上面的隐式 kcp_stop 可能已把它由 0 置 1,那时确实无存活会话,保持 1 才是真状态
     kcp->sess = sess;
     kcp->stopped = 0;
     kcp->maxpack = maxpack;

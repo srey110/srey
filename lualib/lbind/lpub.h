@@ -18,12 +18,18 @@
 #define ASSOC_MTABLE(lua, name) \
     luaL_getmetatable(lua, name);\
     lua_setmetatable(lua, -2)
-// 注册元表并创建对应的 new 函数库；name 为元表名，regnew 为构造函数列表，regfunc 为成员方法列表
+// 注册元表并创建对应的 new 函数库；name 为元表名，regnew 为构造函数列表，regfunc 为成员方法列表。
+// __metatable 置为元表名：普通 getmetatable 只拿到该字符串，故业务无法经它篡改共享元表
+// （如覆写某个方法或 __index，会影响该类型的全部实例）。注意这挡不住 debug.setmetatable 的
+// 类型混淆——debug.getmetatable 无视 __metatable，而挂元表到 userdata 本就只能靠 debug 库；
+// 要防那个只能在 userdata 载荷内加类型标记，与自伤型威胁不成比例，已评估不做
 #define REG_MTABLE(lua, name, regnew, regfunc)\
     luaL_newmetatable(lua, name);\
     lua_pushvalue(lua, -1);\
     lua_setfield(lua, -2, "__index");\
     luaL_setfuncs(lua, regfunc, 0);\
+    lua_pushstring(lua, name);\
+    lua_setfield(lua, -2, "__metatable");\
     luaL_newlib(lua, regnew)
 // 收尾:push lightuserdata(pack) + push integer(size) + return 2
 #define LPUB_RET_LUD(lua, pack, size) \

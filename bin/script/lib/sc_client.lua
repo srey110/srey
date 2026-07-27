@@ -212,9 +212,9 @@ function sc_client.unsubscribe(sc_name, topic)
     local old = _handlers[topic]
     _handlers[topic] = nil
     local sess = srey.id()
-    local ok, settled = _wait_resp(unsubscribe(sc_name, sess, topic), sess, "unsubscribe")
+    local ok = _wait_resp(unsubscribe(sc_name, sess, topic), sess, "unsubscribe")
     if not ok then
-        if settled and nil == _handlers[topic] then
+        if nil == _handlers[topic] then
             _handlers[topic] = old
         end
         return false
@@ -241,9 +241,9 @@ function sc_client.unsubscribe_shared(sc_name, topic, group)
         end
     end
     local sess = srey.id()
-    local ok, settled = _wait_resp(unsubscribe_shared(sc_name, sess, topic, group), sess, "unsubscribe_shared")
+    local ok = _wait_resp(unsubscribe_shared(sc_name, sess, topic, group), sess, "unsubscribe_shared")
     if not ok then
-        if settled and nil ~= old then
+        if nil ~= old then
             local g = _shared_handlers[topic]
             if not g then
                 g = {}

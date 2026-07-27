@@ -4,6 +4,7 @@
 #include "utils/binary.h"
 
 #define MIME_CHARSET "utf-8"
+#define MIME_B64_LINE 76 // RFC 2045 §6.8：base64 每行不超过 76 字符
 
 void mail_init(mail_ctx *mail) {
     ZERO(mail, sizeof(mail_ctx));
@@ -135,6 +136,7 @@ void mail_clear(mail_ctx *mail) {
     }
     mail->from.name[0] = '\0';
     mail->from.addr[0] = '\0';
+    mail->reply = 1;
     mail_addrs_clear(mail);
     mail_attach_clear(mail);
 }
@@ -211,6 +213,21 @@ static void _mail_dot_stuff(binary_ctx *bw, const char *body, size_t lens) {
         }
     }
 }
+// 按 RFC 2045 §6.8 折行写出 base64 正文（每 MIME_B64_LINE 字符插 CRLF，末行不补）。
+// bs64_encode 不插换行，直接整段写出会让 DATA 单行远超 RFC 5321 §4.5.3.1.6 的 1000 octet 上限
+static void _mail_set_b64(binary_ctx *bw, const char *b64) {
+    size_t lens = strlen(b64);
+    size_t off = 0;
+    size_t n;
+    while (off < lens) {
+        n = (lens - off > MIME_B64_LINE) ? MIME_B64_LINE : (lens - off);
+        binary_set_binary(bw, b64 + off, n);
+        off += n;
+        if (off < lens) {
+            binary_set_binary(bw, FLAG_CRLF, CRLF_SIZE);
+        }
+    }
+}
 char *mail_pack(mail_ctx *mail) {
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, ONEK, ONEK);
@@ -263,7 +280,7 @@ char *mail_pack(mail_ctx *mail) {
             binary_set_va(&bwriter, "\r\n\r\n--%s\r\n", innerboundary);
             // 写入 html 内容
             binary_set_va(&bwriter, "%s", "Content-type: text/html; charset=" MIME_CHARSET "\r\nContent-Transfer-Encoding: base64\r\n\r\n");
-            binary_set_binary(&bwriter, mail->html, strlen(mail->html));
+            _mail_set_b64(&bwriter, mail->html);
             binary_set_va(&bwriter, "\r\n\r\n--%s--\r\n", innerboundary);
             // 无附件时直接结束边界
             if (0 == nattach) {
@@ -279,7 +296,7 @@ char *mail_pack(mail_ctx *mail) {
             binary_set_va(&bwriter, "\tname=\"%s\"\r\n", att->file);
             binary_set_va(&bwriter, "%s", "Content-Transfer-Encoding: base64\r\n");
             binary_set_va(&bwriter, "Content-Disposition: attachment; filename=\"%s\"\r\n\r\n", att->file);
-            binary_set_binary(&bwriter, att->content, strlen(att->content));
+            _mail_set_b64(&bwriter, att->content);
             if (i + 1 == nattach) {
                 binary_set_va(&bwriter, "\r\n\r\n--%s--\r\n", boundary);
             } else {

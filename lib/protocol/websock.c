@@ -248,16 +248,8 @@ static int32_t _websock_check_secprot(buf_ctx *segs, int32_t cnt) {
     char *data;
     size_t lens;
     for (int32_t i = 0; i < cnt; i++) {
-        data = segs[i].data;
-        lens = segs[i].lens;
-        while (lens > 0 && (' ' == *data || '\t' == *data)) {
-            data++;
-            lens--;
-        }
-        while (lens > 0 && (' ' == data[lens - 1] || '\t' == data[lens - 1])) {
-            lens--;
-        }
-        if (0 == lens) {
+        data = trim(segs[i].data, segs[i].lens, &lens);
+        if (NULL == data) {
             continue;
         }
         if (!_ws_is_token(data, lens)) {

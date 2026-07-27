@@ -324,9 +324,16 @@ int32_t router_add_index(router_ctx *r, const char *method, size_t method_len,
 /// <param name="url">原始请求 URI（含查询字符串）</param>
 /// <param name="url_len">url 长度</param>
 /// <param name="ctx">调用方提供的 router_req（须已零初始化）</param>
-/// <returns>路由索引（≥0）；-1 表示方法未知或无匹配路由；-2 表示 URL 解析失败</returns>
+/// <returns>路由索引（≥0）；-1 无匹配路由；-2 URL 解析失败；-3 方法不在已知列表(对应 405)</returns>
 int32_t router_match_index(router_ctx *r, const char *method, size_t method_len,
                            const char *url, size_t url_len, router_req *ctx);
+/// <summary>
+/// router_match_index 的返回值 → HTTP 状态码。C 侧 router_dispatch 与 Lua 绑定共用本映射，
+/// 新增失败哨兵时只需改这一处，两个 HTTP 面不会对同一请求给出不同状态码
+/// </summary>
+/// <param name="idx">router_match_index 的返回值</param>
+/// <returns>200 命中；405 方法未知；400 URL 解析失败；404 无匹配路由</returns>
+int32_t router_match_code(int32_t idx);
 /// <summary>
 /// 派发 HTTP 请求 —— 在 _net_recv 中 slice == 0 分支调用; 内部完成方法 / 路径
 /// 匹配, 拼接 chain, 启动中间件链。URL 解析失败 → 400; 方法不识别 → 405; 路径未匹配 → 404;

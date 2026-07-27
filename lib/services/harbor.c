@@ -14,23 +14,39 @@ typedef struct harbor_ctx {
     char ip[IP_LENS];       // 监听IP
 }harbor_ctx;
 
-// 构造并发送 HTTP 响应（有数据时 Content-Type 为 octet-stream，否则 text/plain 状态文本）
-// router handler 内自行响应后置 ctx->responded = 1，防 router_dispatch 兜底 500
-static void _harbor_respond(router_req *ctx, int32_t code, void *body, size_t lens) {
-    binary_ctx bwriter;
-    binary_init(&bwriter, NULL, 0, 0);
-    http_pack_resp(&bwriter, code);
-    http_pack_head(&bwriter, "Server", "Srey");
-    if (NULL != body && lens > 0) {
-        http_pack_head(&bwriter, "Content-Type", "application/octet-stream");
-        http_pack_content(&bwriter, body, lens);
-    } else {
-        http_pack_head(&bwriter, "Content-Type", "text/plain");
-        const char *erro = http_code_status(code);
-        http_pack_content(&bwriter, (void *)erro, strlen(erro));
+// 填一条响应头：key/val 须在 router_req_respond 组包完成前保持有效(组包时按值拷进缓冲)
+static void _harbor_set_head(http_header_ctx *hd, const char *key, const char *val) {
+    hd->key.data = (void *)key;
+    hd->key.lens = strlen(key);
+    hd->value.data = (void *)val;
+    hd->value.lens = strlen(val);
+}
+// 构造并发送 HTTP 响应。body 为空即发空 body(Content-Length: 0)，不以状态文本充当负载——
+// 否则目标的零长成功 ack 会在线上多出 2 字节 "OK"，被按 RPC 返回值解码的调用方当成数据。
+// erro 非 NULL 时经 X-Srey-Erro 头回带目标真实错误码；ctype 为 NULL 则不写 Content-Type。
+// 组头后交 router_req_respond 发出：响应管线(pack_resp → 头 → content → ev_send copy=0 →
+// 置 responded)只在 router.c 一处实现，harbor 这里只负责自己的头策略
+static void _harbor_respond(router_req *ctx, int32_t code, const int32_t *erro,
+                            const char *ctype, void *body, size_t lens) {
+    char ebuf[16];
+    http_header_ctx extra[3];
+    int32_t n = 0;
+    _harbor_set_head(&extra[n++], "Server", "Srey");
+    if (NULL != erro) {
+        SNPRINTF(ebuf, sizeof(ebuf), "%d", *erro);
+        _harbor_set_head(&extra[n++], "X-Srey-Erro", ebuf);
     }
-    ev_send(&ctx->task->loader->netev, ctx->sk.fd, ctx->sk.skid, bwriter.data, bwriter.offset, 0);
-    ctx->responded = 1;
+    if (NULL != ctype
+        && NULL != body && lens > 0) {
+        _harbor_set_head(&extra[n++], "Content-Type", ctype);
+    }
+    router_req_respond(ctx, code, extra, n, (const char *)body, lens);
+}
+// harbor 自身的诊断响应(非转发目标响应)：以状态文本为 body。Content-Type 与 router_req_text
+// 保持一致(带 charset)，避免同一框架的两个 HTTP 面对同类响应给出不同的类型串
+static void _harbor_respond_text(router_req *ctx, int32_t code) {
+    const char *txt = http_code_status(code);
+    _harbor_respond(ctx, code, NULL, "text/plain; charset=utf-8", (void *)txt, strlen(txt));
 }
 // 参数校验中间件（router_group 承载）：非法请求静默关连接（不暴露），合法则 router_next
 static void _harbor_check(router_req *ctx) {
@@ -62,26 +78,26 @@ static void _harbor_dispatch(router_req *ctx, int32_t is_call) {
     void *body = http_data(ctx->pack, &blen);
     name_t dst = (name_t)strtoull(ds, NULL, 10);
     subtype_t type = (subtype_t)strtoul(tp, NULL, 10);
+    if (subtype_reserved(type)) {
+        _harbor_respond_text(ctx, 404);
+        return;
+    }
     task_ctx *to = task_grab(ctx->task->loader, dst);
     if (NULL == to) {
-        _harbor_respond(ctx, 404, NULL, 0);
+        _harbor_respond_text(ctx, 404);
         return;
     }
     if (is_call) {
         task_call(to, type, body, blen, 1);
         task_ungrab(to);
-        _harbor_respond(ctx, 200, NULL, 0);
+        _harbor_respond(ctx, 200, NULL, NULL, NULL, 0);
         return;
     }
     int32_t err = ERR_OK;
     size_t rlen = 0;
     void *rtn = coro_request(to, ctx->task, type, body, blen, 1, &err, &rlen);
     task_ungrab(to);
-    if (ERR_OK != err) {
-        _harbor_respond(ctx, 400, rtn, rlen);
-    } else {
-        _harbor_respond(ctx, 200, rtn, rlen);
-    }
+    _harbor_respond(ctx, (ERR_OK != err) ? 400 : 200, &err, "application/octet-stream", rtn, rlen);
 }
 // POST /call：单向投递（task_call），不等响应
 static void _harbor_call(router_req *ctx) {

@@ -36,8 +36,9 @@ void mysql_reader_next(mysql_reader_ctx *reader) {
 }
 // 根据字段名在列描述数组中查找对应字段，返回字段指针并输出列索引
 static mpack_field *_mysql_reader_field(mysql_reader_ctx *reader, const char *name, int32_t *pos) {
+    size_t nlens = strlen(name);
     for (int32_t i = 0; i < reader->field_count; i++) {
-        if (0 == strcmp(reader->fields[i].name, name)) {
+        if (buf_compare(&reader->fields[i].name, name, nlens)) {
             *pos = i;
             return &reader->fields[i];
         }

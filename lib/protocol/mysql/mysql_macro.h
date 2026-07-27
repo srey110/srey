@@ -18,6 +18,8 @@
 #define MYSQL_LOCAL_INFILE         0xfb             // 本地文件加载标志
 #define MYSQL_HEAD_LENS            4                // MySQL 数据包头部长度（字节）
 #define SERVER_MORE_RESULTS_EXISTS 8                // 服务器状态标志：还有更多结果集
+#define SERVER_SESSION_STATE_CHANGED 16384          // 服务器状态标志：OK 包尾部带 session 状态变更信息
+#define SESSION_TRACK_SCHEMA       0x01             // session 状态变更类型：当前库已变更
 #define MYSQL_AUTH_SWITCH          0xfe             // 认证插件切换标志
 #define MYSQL_CACHING_SHA2         0x01             // caching_sha2_password 认证状态标志
 #define MYSQL_CACHING_SHA2_FAST    0x03             // caching_sha2 快速认证（密码已在缓存中）
@@ -41,6 +43,7 @@
 #define CLIENT_CONNECT_ATTRS                  (1UL << 20) // 支持连接属性
 #define CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA (1UL << 21) // 认证数据长度可超过 255 字节
 #define CLIENT_CAN_HANDLE_EXPIRED_PASSWORDS   (1UL << 22) // 不因密码过期而断开连接
+#define CLIENT_SESSION_TRACK                  (1UL << 23) // 服务端可在 OK 包回带 session 状态变更(当前库等)
 #define CLIENT_QUERY_ATTRIBUTES               (1UL << 27) // 支持 COM_QUERY/COM_STMT_EXECUTE 可选参数
 
 // MySQL 数据包类型枚举

@@ -8,10 +8,11 @@ local runner = require("test.runner")
 local last_resp
 
 local mock_http = {
-    status    = function(pack) return pack._status end,
-    datastr   = function(pack) return pack._body end,
-    heads     = function(pack) return pack._headers or {} end,
-    response  = function(fd, skid, code, headers, body)
+    status      = function(pack) return pack._status end,
+    datastr     = function(pack) return pack._body end,
+    heads       = function(pack) return pack._headers or {} end,
+    code_status = require("srey.http").code_status,
+    response    = function(fd, skid, code, headers, body)
         last_resp = { fd = fd, skid = skid, code = code,
                       headers = headers, body = body }
     end,

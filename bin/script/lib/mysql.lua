@@ -69,12 +69,15 @@ end
 
 ---切换当前数据库（COM_INIT_DB）
 ---@param database string 目标数据库名
----@return boolean ok 切换成功 true（connect() 进行中时 fail-fast 返回 false）
+---@return boolean ok 切换成功 true（connect() 进行中、或库名超 63 字节时 fail-fast 返回 false）
 function ctx:selectdb(database)
     if self.connecting then
         return false
     end
     local pack, size = self.mysql:pack_selectdb(database)
+    if nil == pack then
+        return false
+    end
     local fd, skid = self.mysql:sock_id()
     local mpack, _ =  srey.syn_send(fd, skid, pack, size, 0)
     if nil == mpack then
@@ -149,7 +152,10 @@ function ctx:_read_results(fd, skid, mpack)
     return results
 end
 
----执行 SQL 查询（COM_QUERY）
+---执行 SQL 查询（COM_QUERY）。
+---服务端支持 CLIENT_SESSION_TRACK（MySQL 5.7+）时 query("USE xxx") 会被 OK 包的
+---session-state-change 跟踪，重连握手用切换后的库；老服务端不带该信息，那时切库须用 selectdb，
+---否则 ping 失败自动重连会按旧库名握手，之后未限定库名的语句全部打到原库上
 ---@param sql string SQL 语句
 ---@param mbind any? mysql_bind_ctx 参数绑定上下文
 ---@return (_mysql_reader_ctx|boolean)[]|nil results 结果集数组（元素 reader=SELECT 结果集 / true=OK 包 / false=ERR 包）；网络失败、多结果集中途断连或 connect() 进行中返回 nil

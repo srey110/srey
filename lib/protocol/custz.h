@@ -20,8 +20,8 @@ void *custz_unpack(pack_type pktype, buffer_ctx *buf, size_t *size, int32_t *sta
 /// <param name="pktype">包类型，取值见 pack_type（PACK_CUSTZ_FIXED / PACK_CUSTZ_FLAG / PACK_CUSTZ_VAR）</param>
 /// <param name="data">待打包的数据</param>
 /// <param name="lens">数据长度</param>
-/// <param name="size">输出：组包后总长度（头部 + 数据）</param>
-/// <returns>组好的包（调用方负责释放）</returns>
+/// <param name="size">输出：组包后总长度（头部 + 数据）；返回 NULL 时不写入</param>
+/// <returns>组好的包（调用方负责释放）；lens 达到 MAX_PACK_SIZE（解包侧的拒收阈值）时返回 NULL</returns>
 void *custz_pack(pack_type pktype, void *data, size_t lens, size_t *size);
 
 #endif//CUSTOMIZE_H_

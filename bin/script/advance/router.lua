@@ -111,11 +111,6 @@ end
 -- ── 内部辅助 ──────────────────────────────────────────────────────────────
 
 local _PLAIN_HEADERS = { ["Content-Type"] = "text/plain; charset=utf-8" }
--- 须与 C 端 _router_method_str_to_mask 的方法集同步
-local _KNOWN_METHODS = {
-    GET = true, POST = true, PUT = true, DELETE = true,
-    PATCH = true, HEAD = true, OPTIONS = true,
-}
 
 ---@class Ctx
 ---@field fd      integer            socket fd
@@ -372,18 +367,10 @@ function Router:dispatch(fd, skid, pack, client)
         return
     end
     local method = status[1]
-    if not _KNOWN_METHODS[method] then
-        http.response(fd, skid, 405, _PLAIN_HEADERS, "Method Not Allowed\n")
-        return
-    end
-    -- C 侧完成 url_parse + 空段过滤 + 路由扫描；false=400；false,url=404；true,url,idx,params=200
-    local ok, parsed, idx, params = self._c_router:match(method, status[2] or "")
+    -- 方法识别、url_parse、空段过滤、路由扫描全在 C 侧完成，状态码由 C 一处决定（200/400/404/405）
+    local ok, code, parsed, idx, params = self._c_router:match(method, status[2] or "")
     if not ok then
-        if parsed then
-            http.response(fd, skid, 404, _PLAIN_HEADERS, "Not Found\n")
-        else
-            http.response(fd, skid, 400, _PLAIN_HEADERS, "Bad Request\n")
-        end
+        http.response(fd, skid, code, _PLAIN_HEADERS, http.code_status(code) .. "\n")
         return
     end
     local route = self._routes[idx]

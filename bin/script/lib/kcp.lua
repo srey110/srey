@@ -41,8 +41,8 @@ function ctx:start(ip, port, config)
     if not self.sync then
         return self.kcp:start(0, ip, port, config)
     end
-    -- 绑定层只有 start 能写 C 侧的 sess 键:本次若因 conv 冲突(与自己的存活会话)被拒,键就停在新 sess
-    -- 上再也回不去,旧会话既发不了也 stop 不掉(C 的 kcp_synstart 靠 prev 还原,Lua 无此手段)
+    -- sync 模式自己记着 sess,故存活期间重复 start 一律在 Lua 侧挡掉:C 侧虽会隐式 stop 旧会话再起
+    -- (不产生 stop 不掉的孤儿),但那会静默丢掉本对象正在等的会话,不如让调用方显式 stop
     if 0 ~= self.sess then
         return false
     end

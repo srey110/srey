@@ -21,14 +21,17 @@ typedef struct http_pack_ctx {
     array_ctx header;         // 所有头部字段列表（元素 http_header_ctx）
 }http_pack_ctx;
 
-// 裁剪 [*start, *end) 区间首尾的 OWS (SP/HTAB)
+// 裁剪 [*start, *end) 区间首尾的 OWS (SP/HTAB)；全为 OWS 时收成 *start 处的空区间。
+// trim 只读不写，故这里丢弃 const 安全（底层缓冲本就是可写的解析区）
 static void _http_trim_ows(const char **start, const char **end) {
-    while (*end > *start && (' ' == *(*end - 1) || '\t' == *(*end - 1))) {
-        (*end)--;
+    size_t lens = 0;
+    const char *cur = trim((char *)*start, (size_t)(*end - *start), &lens);
+    if (NULL == cur) {
+        *end = *start;
+        return;
     }
-    while (*start < *end && (' ' == **start || '\t' == **start)) {
-        (*start)++;
-    }
+    *start = cur;
+    *end = cur + lens;
 }
 int32_t _http_check_keyval(http_header_ctx *head,
                            const char *key, size_t klen,
@@ -62,16 +65,21 @@ int32_t _http_check_keyval(http_header_ctx *head,
     }
     return ERR_FAILED;
 }
-// 解析 Content-Length 字段的十进制值；拒绝正负号、空值、非纯数字。
-// RFC 7230 §3.2.4 允许 value 含尾随 OWS, 解析前 trim
+// 解析 Content-Length 字段的十进制值；拒绝空值与非纯数字（含正负号与空白）。
+// 两侧 OWS 已由 _http_parse_field 的 trim 剥掉，此处 value 即纯字段值
 static int32_t _http_parse_content_length(http_header_ctx *field, size_t *out) {
     char *vbuf = (char *)field->value.data;
     size_t vlen = field->value.lens;
-    while (vlen > 0 && (' ' == vbuf[vlen - 1] || '\t' == vbuf[vlen - 1])) {
-        vlen--;
-    }
-    if (0 == vlen || '-' == vbuf[0] || '+' == vbuf[0]) {
+    if (0 == vlen) {
         return ERR_FAILED;
+    }
+    unsigned char c;
+    for (size_t i = 0; i < vlen; i++) {
+        c = (unsigned char)vbuf[i];
+        if (c < '0'
+            || c > '9') {
+            return ERR_FAILED;
+        }
     }
     char *endptr;
     errno = 0;
@@ -153,11 +161,22 @@ static int32_t _http_check_transfer(http_pack_ctx *pack, http_header_ctx *field,
     }
     return ERR_OK;
 }
-// 解析 HTTP 第一行（请求行或状态行），填充 pack->status[0..2]，返回指向第一个头部字段的指针
+// 是否为 RFC 7230 §2.6 的 HTTP-version（HTTP/DIGIT.DIGIT，恰 8 字节）
+static int32_t _http_is_version(buf_ctx *seg) {
+    const char *ver = (const char *)seg->data;
+    return 8 == seg->lens
+        && 0 == memcmp(ver, "HTTP/", 5)
+        && ver[5] >= '0' && ver[5] <= '9'
+        && '.' == ver[6]
+        && ver[7] >= '0' && ver[7] <= '9';
+}
+// 解析 HTTP 第一行（请求行或状态行），填充 pack->status[0..2]，返回指向第一个头部字段的指针。
+// 状态行 HTTP-version 在首段、请求行在末段，故两段须恰有一段是 HTTP-version：
+// 请求行末段因此不能含多余 SP，也不能是任意垃圾串
 static char *_http_parse_status(http_pack_ctx *pack) {
     char *head = pack->head.data;
     if (0 == pack->head.lens
-        || ' ' == *head || '\t' == *head) {
+        || is_ows(*head)) {
         return NULL;
     }
     char *pcrlf = memstr(0, head, HEAD_REMAIN, FLAG_CRLF, CRLF_SIZE);
@@ -186,6 +205,10 @@ static char *_http_parse_status(http_pack_ctx *pack) {
     head = pos + 1;
     pack->status[2].data = head;
     pack->status[2].lens = pcrlf - head;
+    if (!_http_is_version(&pack->status[0])
+        && !_http_is_version(&pack->status[2])) {
+        return NULL;
+    }
     return pcrlf + CRLF_SIZE;
 }
 // 在单次扫描中同时找到冒号和 CRLF，减少内存扫描次数
@@ -211,7 +234,7 @@ static int32_t _http_parse_field_fast(const char *head, size_t remain, char **pc
 static int32_t _http_parse_field(http_pack_ctx *pack, char **phead, http_header_ctx *field) {
     char *head = *phead;
     // RFC 7230 §3.2.4：字段行不得以 OWS(SP/HTAB) 开头(obs-fold 续行折叠)，须拒绝防上游折进请求行的边界分歧走私
-    if (' ' == *head || '\t' == *head) {
+    if (is_ows(*head)) {
         return ERR_FAILED;
     }
     char *pcolon;
@@ -225,16 +248,14 @@ static int32_t _http_parse_field(http_pack_ctx *pack, char **phead, http_header_
         return ERR_FAILED;
     }
     // RFC 7230 §3.2.4：字段名与冒号间不允许空白(OWS)，须拒绝；防 `Transfer-Encoding :chunked` 尾随空格绕过 TE/CL 精确长度匹配构成请求走私
-    if (' ' == pcolon[-1] || '\t' == pcolon[-1]) {
+    if (is_ows(pcolon[-1])) {
         return ERR_FAILED;
     }
     head = pcolon + 1;
-    head = skipempty(head, HEAD_REMAIN);
-    if (NULL == head) {
-        return ERR_FAILED;
-    }
-    field->value.data = head;
-    field->value.lens = pcrlf - head;
+    size_t vlens = 0;
+    char *vdata = trim(head, (size_t)(pcrlf - head), &vlens);
+    field->value.data = (NULL != vdata) ? vdata : head;
+    field->value.lens = vlens;
     head = pcrlf + CRLF_SIZE;
     *phead = head;
     return ERR_OK;
@@ -445,17 +466,21 @@ static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_t *status
         } else {
             // RFC 7230 §4.1.2 trailer headers 受 MAX_HEADLENS=4KB 上限保护，
             // 防恶意 server 无限发 trailer 数据触发 buf 持续累积
-            if (buffer_size(buf) > MAX_HEADLENS) {
-                BIT_SET(*status, PROT_ERROR);
-                return NULL;
-            }
             size_t flens = CRLF_SIZE * 2;
             int32_t tend = buffer_search(buf, 0, 0, 0, CONCAT2(FLAG_CRLF, FLAG_CRLF), flens);
             if (tend < 0) {
-                BIT_SET(*status, PROT_MOREDATA);
+                if (buffer_size(buf) > MAX_HEADLENS) {
+                    BIT_SET(*status, PROT_ERROR);
+                } else {
+                    BIT_SET(*status, PROT_MOREDATA);
+                }
                 return NULL;
             }
             drain = (size_t)tend + flens;
+            if (drain > MAX_HEADLENS) {
+                BIT_SET(*status, PROT_ERROR);
+                return NULL;
+            }
         }
         BIT_SET(*status, PROT_SLICE_END);
         ud->status = INIT;

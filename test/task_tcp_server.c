@@ -31,7 +31,7 @@ static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t clien
     switch (prot) {
     case TEST_ECHO: {
         // 原样回显整个数据包
-        size_t lens;
+        size_t lens = 0;
         void *outbuf = custz_pack(pktype, data, size, &lens);
         ev_send(&task->loader->netev, sk->fd, sk->skid, outbuf, lens, 0);
         break;
@@ -40,7 +40,7 @@ static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t clien
         // 先回显告知客户端可以开始握手，再投 ev_ssl；
         // 两条命令顺序入同一 watcher 队列，客户端收到回显时
         // 必然已处理完毕，服务端已就绪，避免多任务并发时握手失败
-        size_t lens;
+        size_t lens = 0;
         void *outbuf = custz_pack(pktype, data, size, &lens);
         ev_send(&task->loader->netev, sk->fd, sk->skid, outbuf, lens, 0);
         if (ERR_OK != ev_ssl(&task->loader->netev, sk->fd, sk->skid, client, _evssl)) {
@@ -53,7 +53,7 @@ static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t clien
         // 先回显当前协议格式的确认包，再切换本端 pack_type；
         // 客户端收到回显后同步切换，保证双端同步
         uint8_t type = (uint8_t)binary_get_int8(&reader);
-        size_t lens;
+        size_t lens = 0;
         void *outbuf = custz_pack(pktype, data, size, &lens);
         ev_send(&task->loader->netev, sk->fd, sk->skid, outbuf, lens, 0);
         ev_ud_pktype(&task->loader->netev, sk->fd, sk->skid, type);
@@ -77,14 +77,14 @@ static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype, uint8_t clien
             ev_close(&task->loader->netev, sk->fd, sk->skid, 1);
             break;
         }
-        size_t lens;
+        size_t lens = 0;
         void *outbuf = custz_pack(pktype, echo, rlen, &lens);
         ev_send(&task->loader->netev, sk->fd, sk->skid, outbuf, lens, 0);
         break;
     }
     default: {
         // 未知指令一律回显
-        size_t lens;
+        size_t lens = 0;
         void *outbuf = custz_pack(pktype, data, size, &lens);
         ev_send(&task->loader->netev, sk->fd, sk->skid, outbuf, lens, 0);
         break;

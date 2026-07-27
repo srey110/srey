@@ -152,11 +152,18 @@ function ctx:ctor(ip, port, sslname, db, user, password, authdb, authmod)
     end
     self.sslname = sslname
     self.mongo = mongo.new(ip, port, ssl, db)
+    if not self.mongo then
+        error(string.format("mongo.new failed: %s:%d db=%s", ip, port, tostring(db)), 2)
+    end
     self.user = user
     self.authmod = authmod or "SCRAM-SHA-256"
     if user then
-        self.mongo:user_pwd(user, password)
-        self.mongo:authdb(authdb or db)
+        if not self.mongo:user_pwd(user, password) then
+            error("mongo user_pwd failed: user or password too long", 2)
+        end
+        if not self.mongo:authdb(authdb or db) then
+            error(string.format("mongo authdb failed: %s too long", tostring(authdb or db)), 2)
+        end
     end
     -- 连接代次：每次 connect 成功 +1，session 持有创建时的代次以感知重连
     self.generation = 0
@@ -251,14 +258,16 @@ end
 
 ---切换当前数据库
 ---@param name string 数据库名
+---@return boolean ok 成功 true；库名超 63 字节返 false 且当前库不变
 function ctx:db(name)
-    self.mongo:db(name)
- end
+    return self.mongo:db(name)
+end
 
 ---切换当前集合
 ---@param name string 集合名
+---@return boolean ok 成功 true；集合名超 63 字节返 false 且当前集合不变
 function ctx:collection(name)
-    self.mongo:collection(name)
+    return self.mongo:collection(name)
 end
 
 ---设置下一条命令的消息标志位（C 层当前仅实现 MORETOCOME；CHECKSUM/EXHAUSTALLOWED 未实现，设置无效果）
@@ -291,7 +300,9 @@ function ctx:insert(col, docs, dlens, opts)
         return false
     end
     local fd, skid = self.mongo:sock_id()
-    self.mongo:collection(col)
+    if not self.mongo:collection(col) then
+        return false
+    end
     local pack, size = self.mongo:pack_insert(docs, dlens, opts)
     local ok, mgopack = _wsend(self.mongo, fd, skid, pack, size)
     if not ok then
@@ -319,7 +330,9 @@ function ctx:update(col, updates, ulens, opts)
         return false
     end
     local fd, skid = self.mongo:sock_id()
-    self.mongo:collection(col)
+    if not self.mongo:collection(col) then
+        return false
+    end
     local pack, size = self.mongo:pack_update(updates, ulens, opts)
     local ok, mgopack = _wsend(self.mongo, fd, skid, pack, size)
     if not ok then
@@ -347,7 +360,9 @@ function ctx:delete(col, deletes, dlens, opts)
         return false
     end
     local fd, skid = self.mongo:sock_id()
-    self.mongo:collection(col)
+    if not self.mongo:collection(col) then
+        return false
+    end
     local pack, size = self.mongo:pack_delete(deletes, dlens, opts)
     local ok, mgopack = _wsend(self.mongo, fd, skid, pack, size)
     if not ok then
@@ -416,7 +431,9 @@ function ctx:createindexes(col, indexes, ilens, opts)
         return false
     end
     local fd, skid = self.mongo:sock_id()
-    self.mongo:collection(col)
+    if not self.mongo:collection(col) then
+        return false
+    end
     local pack, size = self.mongo:pack_createindexes(indexes, ilens, opts)
     local ok, mgopack = _wsend(self.mongo, fd, skid, pack, size)
     if not ok then
@@ -439,7 +456,9 @@ function ctx:dropindexes(col, indexes, ilens, opts)
         return false
     end
     local fd, skid = self.mongo:sock_id()
-    self.mongo:collection(col)
+    if not self.mongo:collection(col) then
+        return false
+    end
     local pack, size = self.mongo:pack_dropindexes(indexes, ilens, opts)
     local ok, mgopack = _wsend(self.mongo, fd, skid, pack, size)
     if not ok then
@@ -464,7 +483,9 @@ function ctx:find(col, filter, flens, opts)
         return nil
     end
     local fd, skid = self.mongo:sock_id()
-    self.mongo:collection(col)
+    if not self.mongo:collection(col) then
+        return nil
+    end
     local flags = self.mongo:clear_flag()
     local pack, size = self.mongo:pack_find(filter, flens, opts)
     self.mongo:set_flag(flags)
@@ -483,7 +504,9 @@ function ctx:aggregate(col, pipeline, pllens, opts)
         return nil
     end
     local fd, skid = self.mongo:sock_id()
-    self.mongo:collection(col)
+    if not self.mongo:collection(col) then
+        return nil
+    end
     local flags = self.mongo:clear_flag()
     local pack, size = self.mongo:pack_aggregate(pipeline, pllens, opts)
     self.mongo:set_flag(flags)
@@ -518,7 +541,9 @@ function ctx:killcursors(col, cursorids, cslens, opts)
         return false
     end
     local fd, skid = self.mongo:sock_id()
-    self.mongo:collection(col)
+    if not self.mongo:collection(col) then
+        return false
+    end
     local pack, size = self.mongo:pack_killcursors(cursorids, cslens, opts)
     local ok, mgopack = _wsend(self.mongo, fd, skid, pack, size)
     if not ok then
@@ -542,7 +567,9 @@ function ctx:distinct(col, key, query, qlens, opts)
         return nil
     end
     local fd, skid = self.mongo:sock_id()
-    self.mongo:collection(col)
+    if not self.mongo:collection(col) then
+        return nil
+    end
     local flags = self.mongo:clear_flag()
     local pack, size = self.mongo:pack_distinct(key, query, qlens, opts)
     self.mongo:set_flag(flags)
@@ -565,7 +592,9 @@ function ctx:findandmodify(col, query, qlens, remove, pipeline, update, ulens, o
         return nil
     end
     local fd, skid = self.mongo:sock_id()
-    self.mongo:collection(col)
+    if not self.mongo:collection(col) then
+        return nil
+    end
     local flags = self.mongo:clear_flag()
     local pack, size = self.mongo:pack_findandmodify(query, qlens, remove, pipeline, update, ulens, opts)
     self.mongo:set_flag(flags)
@@ -584,7 +613,9 @@ function ctx:count(col, query, qlens, opts)
         return false
     end
     local fd, skid = self.mongo:sock_id()
-    self.mongo:collection(col)
+    if not self.mongo:collection(col) then
+        return false
+    end
     local flags = self.mongo:clear_flag()
     local pack, size = self.mongo:pack_count(query, qlens, opts)
     self.mongo:set_flag(flags)

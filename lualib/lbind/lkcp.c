@@ -36,7 +36,8 @@ static lua_Integer _lkcp_optint(lua_State *lua, int32_t tidx, const char *key, l
     return v;
 }
 /// <summary>
-/// 建立会话,数据到达以当前 task 为推送目标(MSG_TYPE.RECVFROM)
+/// 建立会话,数据到达以当前 task 为推送目标(MSG_TYPE.RECVFROM)。
+/// 本句柄已有会话未 stop 时先隐式 stop 旧会话再起新的(旧会话投出 CLOSE),不返回失败
 /// </summary>
 /// <param name="self" type="userdata">kcp 会话句柄</param>
 /// <param name="sess" type="integer">本次会话的唤醒 sess(调用方生成,如 srey.id());0 表示不唤醒。

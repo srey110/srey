@@ -232,20 +232,25 @@ void popen_free(popen_ctx *ctx) {
 #ifdef OS_WIN
     if (NULL != ctx->process.hProcess) {
         CloseHandle(ctx->process.hProcess);
+        ctx->process.hProcess = NULL;
     }
     if (NULL != ctx->process.hThread) {
         CloseHandle(ctx->process.hThread);
+        ctx->process.hThread = NULL;
     }
     if (NULL != ctx->pipe[0]) {
         CloseHandle(ctx->pipe[0]);
+        ctx->pipe[0] = NULL;
     }
     if (NULL != ctx->pipe[1]) {
         CloseHandle(ctx->pipe[1]);
+        ctx->pipe[1] = NULL;
     }
 #else
     if (INVALID_SOCK != ctx->sock) {
         shutdown(ctx->sock, SHUT_RD);
         close(ctx->sock);
+        ctx->sock = INVALID_SOCK;
     }
 #endif
 }

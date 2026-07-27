@@ -10,19 +10,39 @@ typedef struct lua_stm_data {
     stm_data *lastcopy;
 } lua_stm_data;
 
+// 校验 idx=1 为本模块 userdata: 元表不进 registry, 故比对 lua_getmetatable 与闭包 upvalue,
+// 元方法(__gc/__call)也必须带该 upvalue 注册, 否则被 getmetatable(obj).__gc(x) 显式调用即解引用任意指针。
+// 还须比 size: writer(8 字节)与 reader(16 字节)两个 box 共用本函数, 只比元表则 debug.setmetatable
+// 换过元表的 writer 能通过 reader 校验, 随后按 lua_stm_data 读 lastcopy 即越界读 + FREE 野地址
+static void *_lstm_checkbox(lua_State *lua, const char *expected, size_t size) {
+    void *box = lua_touserdata(lua, 1);
+    int32_t ok = (NULL != box && size == lua_rawlen(lua, 1) && 0 != lua_getmetatable(lua, 1));
+    if (ok) {
+        ok = lua_rawequal(lua, -1, lua_upvalueindex(1));
+        lua_pop(lua, 1);
+    }
+    luaL_argcheck(lua, ok, 1, expected);
+    return box;
+}
+// writer 校验 + 拒绝已 release 的对象(显式调过 __gc 后 ctx 为 NULL, stm_* 均不判 NULL)
+static lua_stm_ctx *_lstm_checkwriter(lua_State *lua) {
+    lua_stm_ctx *box = (lua_stm_ctx *)_lstm_checkbox(lua, "stm writer expected", sizeof(lua_stm_ctx));
+    luaL_argcheck(lua, NULL != box->ctx, 1, "stm writer released");
+    return box;
+}
+// reader 校验 + 拒绝已 release 的对象
+static lua_stm_data *_lstm_checkreader(lua_State *lua) {
+    lua_stm_data *box = (lua_stm_data *)_lstm_checkbox(lua, "stm reader expected", sizeof(lua_stm_data));
+    luaL_argcheck(lua, NULL != box->ctx, 1, "stm reader released");
+    return box;
+}
 /// <summary>
 /// stm.copy(writer): writer grab 一次 ctx, 返回 ctx 指针的 lightuserdata, 用于跨 task 传递
 /// </summary>
 /// <param name="w" type="userdata">writer 对象 (stm.new 返回)</param>
 /// <returns type="lightuserdata">stm_ctx 指针; 业务通过任务消息发给 reader task, 对端用 stm.newcopy 包装</returns>
 static int32_t _lstm_copy(lua_State *lua) {
-    lua_stm_ctx *box = lua_touserdata(lua, 1);
-    int32_t ok = (NULL != box && 0 != lua_getmetatable(lua, 1));
-    if (ok) {
-        ok = lua_rawequal(lua, -1, lua_upvalueindex(1));
-        lua_pop(lua, 1);
-    }
-    luaL_argcheck(lua, ok, 1, "stm writer expected");
+    lua_stm_ctx *box = _lstm_checkwriter(lua);
     stm_grab(box->ctx);
     lua_pushlightuserdata(lua, box->ctx);
     return 1;
@@ -47,7 +67,7 @@ static int32_t _lstm_newwriter(lua_State *lua) {
 }
 // writer.__gc: 释放 ctx 引用; 若 ctx 内部 ref 归 0 则自动 FREE
 static int32_t _lstm_deletewriter(lua_State *lua) {
-    lua_stm_ctx *box = lua_touserdata(lua, 1);
+    lua_stm_ctx *box = (lua_stm_ctx *)_lstm_checkbox(lua, "stm writer expected", sizeof(lua_stm_ctx));
     if (NULL != box->ctx) {
         stm_free(box->ctx);
         box->ctx = NULL;
@@ -56,7 +76,7 @@ static int32_t _lstm_deletewriter(lua_State *lua) {
 }
 // writer.__call: 等同 stm_update; 用法 w(data, sz?, copy?)
 static int32_t _lstm_update(lua_State *lua) {
-    lua_stm_ctx *box = lua_touserdata(lua, 1);
+    lua_stm_ctx *box = _lstm_checkwriter(lua);
     size_t sz;
     int32_t copy;
     // 参数从 idx=2 开始 (idx=1 是 box 自身, __call 第一个参数固定为对象)
@@ -81,7 +101,7 @@ static int32_t _lstm_newreader(lua_State *lua) {
 }
 // reader.__gc: 释放 ctx 引用 + lastcopy 引用
 static int32_t _lstm_deletereader(lua_State *lua) {
-    lua_stm_data *box = lua_touserdata(lua, 1);
+    lua_stm_data *box = (lua_stm_data *)_lstm_checkbox(lua, "stm reader expected", sizeof(lua_stm_data));
     if (NULL != box->ctx) {
         stm_ungrab(box->ctx);
         box->ctx = NULL;
@@ -93,7 +113,7 @@ static int32_t _lstm_deletereader(lua_State *lua) {
 // reader.__call(func, ud?): 读快照. 若与 lastcopy 相同则 return false 不调 func;
 // 否则调 func(lud, sz, ud?) 处理数据, 透传 func 返回值并在首位补 boolean true
 static int32_t _lstm_read(lua_State *lua) {
-    lua_stm_data *box = lua_touserdata(lua, 1);
+    lua_stm_data *box = _lstm_checkreader(lua);
     luaL_checktype(lua, 2, LUA_TFUNCTION);
     stm_data *snap = stm_grab_data(box->ctx);
     if (snap == box->lastcopy) {
@@ -141,9 +161,12 @@ LUAMOD_API int luaopen_stm(lua_State *lua) {
         { "new", _lstm_newwriter },
         { NULL, NULL }
     };
-    lua_createtable(lua, 0, 2);
-    lua_pushcfunction(lua, _lstm_deletewriter); lua_setfield(lua, -2, "__gc");
-    lua_pushcfunction(lua, _lstm_update); lua_setfield(lua, -2, "__call");
+    lua_createtable(lua, 0, 3);
+    lua_pushvalue(lua, -1);
+    lua_pushcclosure(lua, _lstm_deletewriter, 1); lua_setfield(lua, -2, "__gc");
+    lua_pushvalue(lua, -1);
+    lua_pushcclosure(lua, _lstm_update, 1); lua_setfield(lua, -2, "__call");
+    lua_pushstring(lua, "stm writer"); lua_setfield(lua, -2, "__metatable");
     lua_pushvalue(lua, -1);
     lua_pushcclosure(lua, _lstm_copy, 1);
     lua_setfield(lua, -3, "copy");
@@ -153,9 +176,12 @@ LUAMOD_API int luaopen_stm(lua_State *lua) {
         { "newcopy", _lstm_newreader },
         { NULL, NULL }
     };
-    lua_createtable(lua, 0, 2);
-    lua_pushcfunction(lua, _lstm_deletereader); lua_setfield(lua, -2, "__gc");
-    lua_pushcfunction(lua, _lstm_read); lua_setfield(lua, -2, "__call");
+    lua_createtable(lua, 0, 3);
+    lua_pushvalue(lua, -1);
+    lua_pushcclosure(lua, _lstm_deletereader, 1); lua_setfield(lua, -2, "__gc");
+    lua_pushvalue(lua, -1);
+    lua_pushcclosure(lua, _lstm_read, 1); lua_setfield(lua, -2, "__call");
+    lua_pushstring(lua, "stm reader"); lua_setfield(lua, -2, "__metatable");
     luaL_setfuncs(lua, reg_reader, 1);
     return 1;
 }

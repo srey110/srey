@@ -133,10 +133,17 @@ static int32_t _pgpack_row_description(pgpack_ctx *pgpack, binary_ctx *breader) 
     }
     MALLOC(reader->fields, sizeof(pgpack_field) * (size_t)reader->field_count);
     char *fname;
+    size_t nlens;
     pgpack_field *field;
     for (uint16_t i = 0; i < reader->field_count; i++) {
         field = &reader->fields[i];
         fname = binary_get_string(breader);
+        nlens = strlen(fname);
+        if (nlens > sizeof(field->name) - 1) {
+            LOG_ERROR("pgsql field name exceeds %zu bytes: %zu, truncated (lookup by full name will miss); "
+                      "stock servers truncate at NAMEDATALEN-1 = 63, this one was built with a larger one.",
+                      sizeof(field->name) - 1, nlens);
+        }
         safe_fill_str(field->name, sizeof(field->name), fname);
         field->table_oid = (int32_t)binary_get_integer(breader, 4, 0);
         field->index = (int16_t)binary_get_integer(breader, 2, 0);

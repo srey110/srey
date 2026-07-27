@@ -992,7 +992,7 @@ static int32_t _lpgsql_pack_cancel(lua_State *lua) {
 /// 返回服务端就绪状态字符
 /// </summary>
 /// <param name="self" type="userdata">pgsql 对象</param>
-/// <returns type="integer">字符码（'I'=空闲，'T'=事务中，'E'=事务失败）</returns>
+/// <returns type="integer">字符码（'I'=空闲，'T'=事务中，'E'=事务失败）；0 表示尚未收到 ReadyForQuery（新建或刚重连）</returns>
 static int32_t _lpgsql_readyforquery(lua_State *lua) {
     LPUB_UD_ARG(lua, pgsql_ctx, MT_PGSQL, ud, "pgsql freed");
     pgsql_ctx *pg = *ud;

@@ -17,6 +17,10 @@ TASK_TYPE = {
     MCO = 0x01,
     LUA = 0x02,
 }
+---框架保留的请求子类型(C 侧 subtype_t 为 uint16)。业务自定义的 reqtype 须避开这些值：
+---REQ_DEBUG 与 REQ_SC_DELIVER 被 srey.lua 的 _request_dispatch 拦截（前者仅未知命令才回落到
+---on_requested，后者不回落）；REQ_DC_* 与其余 REQ_SC_* 是发往 datacenter / subcenter 服务 task
+---的命令字；跨节点（srey.net_call / net_request）时整段被对端 harbor 按 spub.h 的 subtype_reserved 拒为 404。
 ---@enum REQUEST_TYPE
 REQUEST_TYPE = {
     REQ_DEBUG             = 0x01, -- 调试命令

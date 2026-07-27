@@ -59,8 +59,8 @@ runner.run("kcp", function(t)
     cli_kcp:stop()
     t:eq(true, cli_kcp:start("127.0.0.1", SV_PORT), "restart right after stop")
 
-    -- 存活会话期间重复 start 须原地拒绝且不动 self.sess:放行则 C 侧 sess 键停在被拒的新 sess 上,
-    -- 旧会话既发不了也 stop 不掉(kcp_stop 解析不到元素,连清占位条目的 CLOSE 都不会发)
+    -- sync 模式存活会话期间重复 start 由 Lua 侧守卫原地拒绝且不动 self.sess:C 侧虽会隐式 stop 旧会话
+    -- 再起新的(不产生 stop 不掉的孤儿),但那会静默丢掉本对象正在等的会话,故不放行
     t:eq(false, cli_kcp:start("127.0.0.1", SV_PORT), "存活会话期间 start 被拒")
     t:check(cli_kcp.sess ~= 0, "被拒后 self.sess 未被清零")
 
@@ -94,6 +94,11 @@ runner.run("kcp", function(t)
             end
         end
     end
+
+    local async_kcp = kcp.new(sv_fd, sv_skid, CONV + 1)
+    t:eq(true, async_kcp:start("127.0.0.1", CLI_PORT), "async 模式 start")
+    t:eq(true, async_kcp:start("127.0.0.1", CLI_PORT), "async 存活会话期间重复 start 仍成功(C 侧隐式 stop 旧会话)")
+    async_kcp:stop()
 
     -- 收尾:关 socket(会话随 socket 关闭释放;kcp 句柄 GC 时 __gc 兜底 stop)
     srey.close(cli_fd, cli_skid)

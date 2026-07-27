@@ -95,6 +95,7 @@ int32_t mongo_parse_startsession(mgopack_ctx *mgpack, char uid[UUID_LENS], int32
     bson_iter iterid;
     bson_iter result;
     int32_t ok = 0;
+    int32_t hasid = 0;
     while (bson_iter_next(&iter)) {
         if (0 == strcmp(iter.key, "ok")) {
             ok = (int32_t)bson_iter_double(&iter, NULL);
@@ -117,12 +118,14 @@ int32_t mongo_parse_startsession(mgopack_ctx *mgpack, char uid[UUID_LENS], int32
                 return 0;
             }
             memcpy(uid, result.val, result.lens);
+            hasid = 1;
         }
     }
-    if (!ok) {
+    if (!ok || !hasid) {
         char *errbson = bson_tostring(&bson); 
         LOG_WARN("%s", errbson);
         FREE(errbson);
+        return 0;
     }
     return ok;
 }

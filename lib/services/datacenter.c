@@ -8,8 +8,8 @@
 #include "utils/utils.h"
 #include "base/macro.h"
 
-// pending waiter 清理节流:每个 WAIT 入口最多每 DC_SWEEP_THROTTLE_MS 触发一次 sweep
-#define DC_SWEEP_THROTTLE_MS 5000
+// pending waiter 清理周期:仅 pending 非空期间由定时器自重挂驱动,空闲态不产生 tick
+#define DC_SWEEP_INTERVAL_MS 5000
 
 // 内部存储 entry:key/val 都由 dc_ctx 拷贝持有,删除时统一 FREE
 typedef struct dc_entry {
@@ -36,7 +36,8 @@ typedef struct dc_pending {
 } dc_pending;
 // DataCenter task 的 arg 上下文
 typedef struct dc_ctx {
-    uint64_t last_sweep_ms;   // 上次 sweep 时刻(节流用)
+    uint8_t sweep_armed;      // sweep 定时器是否在弦,保证同时最多一条自重挂链
+    task_ctx *task;           // 自身 task,给 sweep 定时器上弦用
     loader_ctx *loader;       // 所属 loader
     struct hashmap *kv;       // 元素 sizeof(dc_entry),by-value 存
     struct hashmap *pending;  // 元素 sizeof(dc_pending),by-value 存
@@ -164,9 +165,11 @@ static list_ctx _dc_pending_take(dc_ctx *ctx, const char *key) {
     }
     return taken;
 }
-// 把 key bytes 复制为 NUL 结尾 string(hashmap 比较走 strcmp,要求 NUL 终止)
+// 把 key bytes 复制为 NUL 结尾 string(hashmap 比较走 strcmp,要求 NUL 终止)。
+// 内嵌 NUL 一律拒绝:线上 key 按 u16 klen 定界而存储/比较按 strlen,含 NUL 会静默别名化到前缀
 static int _dc_key_to_cstr(const void *src, size_t len, char *dst, size_t dst_cap) {
-    if (0 == len || len + 1 > dst_cap) {
+    if (0 == len || len + 1 > dst_cap
+        || NULL != memchr(src, 0, len)) {
         return ERR_FAILED;
     }
     memcpy(dst, src, len);
@@ -308,14 +311,20 @@ static void _dc_pending_sweep(dc_ctx *ctx, uint64_t now_ms) {
     }
     array_free(&empty_keys);
 }
+// sweep 定时器:pending 非空则自重挂下一轮,扫空即撤销上弦,空闲态零 tick。
+// task 已销毁时 _task_message_timeout_push 按 handle grab 失败静默丢弃,不会回调到已释放 ctx
+static void _dc_sweep_timeout(task_ctx *task, uint64_t sess) {
+    (void)sess;
+    dc_ctx *ctx = (dc_ctx *)task->arg;
+    _dc_pending_sweep(ctx, timer_cur_ms(&ctx->timer));
+    if (hashmap_count(ctx->pending) > 0) {
+        task_timeout(task, 0, DC_SWEEP_INTERVAL_MS, _dc_sweep_timeout);
+    } else {
+        ctx->sweep_armed = 0;
+    }
+}
 // WAIT body 格式:| u16 klen | key |;命中立即返回,未命中挂 pending
 static void _dc_handle_wait(dc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *br) {
-    // 入口处节流驱逐超期残留 waiter;放在命中判断之前,命中的 WAIT 也能触发清理
-    uint64_t now_ms = timer_cur_ms(&ctx->timer);
-    if (now_ms - ctx->last_sweep_ms >= DC_SWEEP_THROTTLE_MS) {
-        ctx->last_sweep_ms = now_ms;
-        _dc_pending_sweep(ctx, now_ms);
-    }
     if (INVALID_TNAME == src) {
         return; // fire-and-forget:命中也无人接,未命中也不能挂 pending(永远无法唤醒,内存泄漏)
     }
@@ -352,6 +361,10 @@ static void _dc_handle_wait(dc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *
     // src 自身超时点即过期:SET 不再唤醒、sweep 回收
     w->deadline_ms = timer_cur_ms(&ctx->timer) + timeout_ms;
     _dc_pending_push(ctx, keybuf, w);
+    if (0 == ctx->sweep_armed && hashmap_count(ctx->pending) > 0) {
+        ctx->sweep_armed = 1;
+        task_timeout(ctx->task, 0, DC_SWEEP_INTERVAL_MS, _dc_sweep_timeout);
+    }
 }
 // DEL body 格式:| u16 klen | key |
 static void _dc_handle_del(dc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *br) {
@@ -472,6 +485,7 @@ int32_t dc_start(loader_ctx *loader, const char *name) {
                                               sizeof(dc_pending), ONEK, 0, 0,
                                               _dc_pending_hash, _dc_pending_compare, _dc_pending_free, NULL);
     task_ctx *task = task_new(loader, name, 4 * ONEK, NULL, _dc_free, ctx);
+    ctx->task = task;
     task_requested(task, _dc_requested);
     if (ERR_OK != task_register(task, NULL, NULL)) {
         // task_register 失败时 task 未进 maptasks,需手动 task_free;

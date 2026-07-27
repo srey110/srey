@@ -295,5 +295,27 @@ runner.run("sc_client", function(t)
         t:eq(1, ns, "unsub-rollback: 失败退订恢复共享 handler,仍收 publish")
         sc_client.unsubscribe_shared(SC, "t16/s", "g")
     end
+
+    do
+        local SINK = "sc_unsub_timeout_sink"
+        task.register("test.trap_target", SINK, 0)
+        local got = 0
+        sc_client.subscribe(SC, "t17/x", function() got = got + 1 end)
+        local ok = sc_client.unsubscribe(SINK, "t17/x")
+        t:eq(false, ok, "unsub-timeout: 超时 unsubscribe 返 false")
+        sc_client.publish(SC, "t17/x", "p")
+        _wait(function() return got >= 1 end)
+        t:eq(1, got, "unsub-timeout: 超时(服务端状态未知)也须恢复本地 handler")
+        sc_client.unsubscribe(SC, "t17/x")
+
+        local ns = 0
+        sc_client.subscribe_shared(SC, "t17/s", "g", function() ns = ns + 1 end)
+        local ok2 = sc_client.unsubscribe_shared(SINK, "t17/s", "g")
+        t:eq(false, ok2, "unsub-timeout: 超时 unsubscribe_shared 返 false")
+        sc_client.publish(SC, "t17/s", "p")
+        _wait(function() return ns >= 1 end)
+        t:eq(1, ns, "unsub-timeout: 超时也须恢复共享 handler,否则整组丢消息")
+        sc_client.unsubscribe_shared(SC, "t17/s", "g")
+    end
 end)
 end)

@@ -10,7 +10,7 @@
 // kcp 会话句柄(值类型,业务持有):仅标识一个会话,不持有会话对象本身。
 // 会话对象(含 ikcpcb)由框架在 event 线程内建/查/释放,业务只通过此句柄操作,不会悬空。
 typedef struct kcp_ctx {
-    uint8_t stopped;    // 是否已 kcp_stop(幂等标识,置 1 后 kcp_stop 不再重入)
+    uint8_t stopped;    // 1=无存活会话(kcp_init 与 kcp_stop 后置 1);kcp_start 成功发起后置 0
     uint32_t conv;      // 会话号(同一 socket 内唯一,两端约定一致)
     uint64_t sess;      // 唤醒 sess,每次 kcp_start 传入,会话内不变;0 表示不唤醒(纯异步)
     ev_ctx *netev;      // 事件上下文
@@ -64,7 +64,13 @@ void kcp_init(kcp_ctx *kcp, ev_ctx *netev, SOCKET fd, uint64_t skid, uint32_t co
 /// <param name="port">对端端口</param>
 /// <param name="cfg">KCP 可调参数;NULL 用库默认(见 kcp_config)</param>
 /// <returns>ERR_OK 请求已发起;ERR_FAILED 本地校验失败或请求未能发起(不代表 event 线程上的会话建立结果)。
-///   返 ERR_FAILED 时不改动句柄任何状态(sess / stopped / maxpack 保持原值),已有会话不受影响</returns>
+///   同一句柄 stopped 为 0 时先隐式 kcp_stop 再起新会话:旧会话按正规流程拆除并投 CLOSE,
+///   故 sess 键不会指向未入表的新会话而把上一个会话变成无法 stop 的孤儿。
+///   之所以不改为拒绝:event 线程拒建会话(conv 冲突 / fd 类型错)时 stopped 已停在 0 而会话从未存在,
+///   拒绝会让这种句柄永久起不来——async 调用方没有协程去消费那条合成 CLOSE 来复位 stopped。
+///   会话已不存在时该隐式 stop 是空操作(仅一条 can't find conv 的 WARN)。
+///   返 ERR_FAILED 时不改动 sess / maxpack;stopped 若已被上述隐式 stop 置 1 则保持 1
+///   (此时确实无存活会话,不会把句柄卡在"在跑"上)</returns>
 int32_t kcp_start(kcp_ctx *kcp, name_t handle, uint64_t sess,
                   const char *ip, uint16_t port, const kcp_config *cfg);
 /// <summary>

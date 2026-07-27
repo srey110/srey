@@ -15,7 +15,7 @@ static char *_lmongo_get_opts(lua_State *lua, int idx) {
 /// <param name="port" type="integer">服务器端口</param>
 /// <param name="evssl" type="lightuserdata|nil">SSL 上下文；nil 表示明文</param>
 /// <param name="db" type="string">初始数据库名</param>
-/// <returns type="_mongo_ctx">mongo 对象</returns>
+/// <returns type="_mongo_ctx?">mongo 对象；ip 或 db 超 63 字节导致初始化失败时返回 nil</returns>
 static int32_t _lmongo_new(lua_State *lua) {
     const char *ip = luaL_checkstring(lua, 1);
     uint16_t port = (uint16_t)luaL_checkinteger(lua, 2);
@@ -27,7 +27,11 @@ static int32_t _lmongo_new(lua_State *lua) {
     const char *db = luaL_checkstring(lua, 4);
     mongo_ctx *mongo;
     MALLOC(mongo, sizeof(mongo_ctx));
-    mongo_init(mongo, ip, port, evssl, db);
+    if (ERR_OK != mongo_init(mongo, ip, port, evssl, db)) {
+        FREE(mongo);
+        lua_pushnil(lua);
+        return 1;
+    }
     ATOMIC_SET(&mongo->ref, 1);// Lua 持有者份额
     // userdata 只持 ctx 指针；ctx 独立堆分配脱离 Lua GC，避免 __gc 后网络线程经 ud->context 悬空访问(跨线程 UAF)
     mongo_ctx **ud = lua_newuserdata(lua, sizeof(mongo_ctx *));
@@ -112,36 +116,36 @@ static int32_t _lmongo_set_auth_status(lua_State *lua) {
 /// </summary>
 /// <param name="self" type="userdata">mongo 对象</param>
 /// <param name="db" type="string">数据库名</param>
-/// <returns>无</returns>
+/// <returns type="boolean">设置成功 true；超 63 字节返 false 且不改动任何字段</returns>
 static int32_t _lmongo_db(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
     const char *db = luaL_checkstring(lua, 2);
-    mongo_db(*ud, db);
-    return 0;
+    lua_pushboolean(lua, ERR_OK == mongo_db(*ud, db));
+    return 1;
 }
 /// <summary>
 /// 设置认证数据库名
 /// </summary>
 /// <param name="self" type="userdata">mongo 对象</param>
 /// <param name="db" type="string">认证数据库名</param>
-/// <returns>无</returns>
+/// <returns type="boolean">设置成功 true；超 63 字节返 false 且不改动任何字段</returns>
 static int32_t _lmongo_authdb(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
     const char *db = luaL_checkstring(lua, 2);
-    mongo_authdb(*ud, db);
-    return 0;
+    lua_pushboolean(lua, ERR_OK == mongo_authdb(*ud, db));
+    return 1;
 }
 /// <summary>
 /// 设置当前集合名
 /// </summary>
 /// <param name="self" type="userdata">mongo 对象</param>
 /// <param name="col" type="string">集合名</param>
-/// <returns>无</returns>
+/// <returns type="boolean">设置成功 true；超 63 字节返 false 且不改动任何字段</returns>
 static int32_t _lmongo_collection(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
     const char *col = luaL_checkstring(lua, 2);
-    mongo_collection(*ud, col);
-    return 0;
+    lua_pushboolean(lua, ERR_OK == mongo_collection(*ud, col));
+    return 1;
 }
 /// <summary>
 /// 设置认证用户名和密码
@@ -149,13 +153,13 @@ static int32_t _lmongo_collection(lua_State *lua) {
 /// <param name="self" type="userdata">mongo 对象</param>
 /// <param name="user" type="string">用户名</param>
 /// <param name="pwd" type="string">密码</param>
-/// <returns>无</returns>
+/// <returns type="boolean">设置成功 true；超 63 字节返 false 且不改动任何字段</returns>
 static int32_t _lmongo_user_pwd(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
     const char *user = luaL_checkstring(lua, 2);
     const char *pwd = luaL_checkstring(lua, 3);
-    mongo_user_pwd(*ud, user, pwd);
-    return 0;
+    lua_pushboolean(lua, ERR_OK == mongo_user_pwd(*ud, user, pwd));
+    return 1;
 }
 /// <summary>
 /// 检查响应包错误并提取影响文档数

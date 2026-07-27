@@ -157,8 +157,7 @@ static void _ws_reorg(url_ctx *url, int32_t iswss, uint16_t port,
         uri[plen++] = '/';
         uri[plen] = '\0';
     }
-    if (!buf_empty(&url->param[0].key)
-        && plen + 1 < urilens) {
+    if (plen + 1 < urilens) {
         uri[plen] = '?';
         size_t qlen = url_reorg_param(url, uri + plen + 1, urilens - plen - 1);
         if (0 == qlen) {
@@ -205,9 +204,20 @@ SOCKET wbsock_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ws, c
     if (ERR_OK != _ws_resolve_addr(task, &url, host, iswss, ip, &port)) {
         return INVALID_SOCK;
     }
-    char uribuf[URL_BUF_LENS];
-    _ws_reorg(&url, iswss, port, host, sizeof(host), uribuf, sizeof(uribuf));
-    return _ws_handshake(task, evssl, ip, port, netev, host, uribuf, secprot, skid, spctx);
+    char uristack[URL_BUF_LENS];
+    char *uribuf = uristack;
+    size_t urilens = url.pathlens + url.paramlens + 3;
+    if (urilens > sizeof(uristack)) {
+        MALLOC(uribuf, urilens);
+    } else {
+        urilens = sizeof(uristack);
+    }
+    _ws_reorg(&url, iswss, port, host, sizeof(host), uribuf, urilens);
+    SOCKET fd = _ws_handshake(task, evssl, ip, port, netev, host, uribuf, secprot, skid, spctx);
+    if (uribuf != uristack) {
+        FREE(uribuf);
+    }
+    return fd;
 }
 SOCKET redis_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ip, uint16_t port,
     const char *key, int32_t netev, uint64_t *skid) {
@@ -258,6 +268,9 @@ static int32_t _mysql_call(mysql_ctx *mysql, void *pack, size_t size) {
 int32_t mysql_selectdb(mysql_ctx *mysql, const char *database) {
     size_t size;
     void *selectdb = mysql_pack_selectdb(mysql, database, &size);
+    if (NULL == selectdb) {
+        return ERR_FAILED;
+    }
     return _mysql_call(mysql, selectdb, size);
 }
 // 向 MySQL 服务器发送 ping 包并等待响应，失败返回 ERR_FAILED
@@ -573,9 +586,11 @@ static int32_t _mongo_auth(mongo_ctx *mongo, const char *authmod) {
 }
 int32_t mongo_auth(mongo_ctx *mongo, const char *authmod, const char *user, const char *pwd) {
     int32_t flags = mongo_clear_flag(mongo);
-    mongo_user_pwd(mongo, user, pwd);
-    safe_fill_str(mongo->authmod, sizeof(mongo->authmod), authmod);
-    int32_t rtn = _mongo_auth(mongo, authmod);
+    int32_t rtn = mongo_user_pwd(mongo, user, pwd);
+    if (ERR_OK == rtn) {
+        safe_fill_str(mongo->authmod, sizeof(mongo->authmod), authmod);
+        rtn = _mongo_auth(mongo, authmod);
+    }
     mongo_set_flag(mongo, flags);
     return rtn;
 }
@@ -878,11 +893,10 @@ int32_t mongo_rollback(mongo_session *session, char *options) {
 }
 int32_t kcp_synstart(task_ctx *task, struct kcp_ctx *kcp,
                      const char *ip, uint16_t port, const struct kcp_config *cfg) {
-    // event 线程若拒绝建会话(conv 重复),须整体还原到调用前——与 kcp_start 失败时不改句柄同一规则:
-    // sess 是 stop/send 定位会话的键,错位会让上一个存活会话永久无法 stop;stopped 若从 1 掉回 0,
-    // 下次 kcp_synsend 会绕过守卫投到已消失的会话,被静默丢弃却返 ERR_OK,继而空等满一个 netread 超时
-    uint64_t prev = kcp->sess;
-    uint8_t prevstopped = kcp->stopped;
+    // event 线程若拒绝建会话(conv 重复),此刻确定无存活会话:kcp_start 已隐式停掉先前的会话、本次的
+    // 也没建起来,故置回"无会话"而非还原调用前的 sess/stopped。stopped 若留在 0,下次 kcp_synsend 会
+    // 绕过守卫投到已消失的会话,被静默丢弃却返 ERR_OK,继而空等满一个 netread 超时;
+    // maxpack 仍还原,保持"失败的调用不改动句柄"这一契约(send 已被 stopped 挡住,该值实际不可达)
     size_t prevmaxpack = kcp->maxpack;
     uint64_t sess = createid();
     if (ERR_OK != kcp_start(kcp, task->handle, sess, ip, port, cfg)) {
@@ -897,8 +911,8 @@ int32_t kcp_synstart(task_ctx *task, struct kcp_ctx *kcp,
     }
     if (MSG_TYPE_CLOSE == msg->mtype
         || ERR_OK != msg->erro) {
-        kcp->sess = prev;
-        kcp->stopped = prevstopped;
+        kcp->sess = 0;
+        kcp->stopped = 1;
         kcp->maxpack = prevmaxpack;
         return ERR_FAILED;
     }

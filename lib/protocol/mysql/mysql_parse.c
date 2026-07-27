@@ -58,6 +58,55 @@ char *_mysql_payload(mysql_ctx *mysql, buffer_ctx *buf, size_t *payload_lens, in
     ASSERTAB(*payload_lens == buffer_remove(buf, payload, *payload_lens), "copy buffer failed.");
     return payload;
 }
+// OK 包尾部的 session-state-change：服务端切换当前库（USE / COM_INIT_DB / 存储过程内切库）都经此回带，
+// 是 client.database 的权威来源。SERVER_SESSION_STATE_CHANGED 只会由接受了 CLIENT_SESSION_TRACK 的
+// 服务端置位，故该位本身即可判定尾部是 lenenc 布局，不必再看协商结果；老服务端不置位就走原来的整段跳过。
+// 每个长度都先与剩余字节比过再用：binary_get_* 越界即 ASSERTAB abort，而本段只是可选信息，
+// 任何不自洽都该当"没带"静默放弃而不是拖垮进程（原来整段跳过的老路径本就不会 abort）
+static void _mpack_ok_track(mysql_ctx *mysql, binary_ctx *breader) {
+    int32_t rtn;
+    uint64_t lens = _mysql_get_lenenc(breader, &rtn);
+    if (ERR_OK != rtn
+        || lens > (uint64_t)(breader->size - breader->offset)) {
+        return;
+    }
+    binary_get_skip(breader, (size_t)lens);
+    uint64_t total = _mysql_get_lenenc(breader, &rtn);
+    if (ERR_OK != rtn
+        || total > (uint64_t)(breader->size - breader->offset)) {
+        return;
+    }
+    size_t end = breader->offset + (size_t)total;
+    size_t next;
+    uint64_t dlens;
+    uint8_t type;
+    char *name;
+    while (breader->offset < end) {
+        type = binary_get_uint8(breader);
+        dlens = _mysql_get_lenenc(breader, &rtn);
+        if (ERR_OK != rtn
+            || breader->offset > end
+            || dlens > (uint64_t)(end - breader->offset)) {
+            return;
+        }
+        next = breader->offset + (size_t)dlens;
+        if (SESSION_TRACK_SCHEMA == type) {
+            lens = _mysql_get_lenenc(breader, &rtn);
+            if (ERR_OK != rtn
+                || breader->offset > next
+                || lens > (uint64_t)(next - breader->offset)) {
+                return;
+            }
+            name = binary_get_binary(breader, (size_t)lens);
+            if (ERR_OK != _mysql_copy_bounded(name, (size_t)lens, mysql->client.database,
+                                              sizeof(mysql->client.database), 1)) {
+                LOG_ERROR("mysql tracked schema exceeds %zu bytes: %"PRIu64", keep the old one.",
+                          sizeof(mysql->client.database) - 1, lens);
+            }
+        }
+        binary_offset(breader, next);
+    }
+}
 int32_t _mpack_ok(mysql_ctx *mysql, binary_ctx *breader, mpack_ok *ok) {
     int32_t _rtn;
     uint64_t size = _mysql_get_lenenc(breader, &_rtn);
@@ -72,6 +121,9 @@ int32_t _mpack_ok(mysql_ctx *mysql, binary_ctx *breader, mpack_ok *ok) {
     ok->last_insert_id = (int64_t)size;
     ok->status_flags = (int16_t)binary_get_integer(breader, 2, 1);
     ok->warnings = (int16_t)binary_get_integer(breader, 2, 1);
+    if (BIT_CHECK(ok->status_flags, SERVER_SESSION_STATE_CHANGED)) {
+        _mpack_ok_track(mysql, breader);
+    }
     binary_get_skip(breader, breader->size - breader->offset);
     mysql->last_id = ok->last_insert_id;
     mysql->affected_rows = ok->affected_rows;
@@ -123,6 +175,13 @@ static mpack_ctx *_mpack_simple_response(mysql_ctx *mysql, binary_ctx *breader, 
     mysql->cur_cmd = 0;
     return mpack;
 }
+// 释放 mpack_field 数组各元素持有的列定义包 payload（由 _mpack_parse_field 转移而来）；
+// 数组本身由调用方 FREE。CALLOC 保证未解析槽位的 payload 为 NULL，FREE 对 NULL 安全
+static void _mpack_fields_free(mpack_field *fields, int32_t n) {
+    for (int32_t i = 0; i < n; i++) {
+        FREE(fields[i].payload);
+    }
+}
 void _mpack_reader_free(void *pack) {
     mpack_row *rows;
     mysql_reader_ctx *reader = pack;
@@ -132,6 +191,7 @@ void _mpack_reader_free(void *pack) {
         FREE(rows);
     }
     array_free(&reader->arr_rows);
+    _mpack_fields_free(reader->fields, reader->field_count);
     FREE(reader->fields);
 }
 // 初始化结果集读取器并挂载到 mysql->mpack，准备接收列字段描述
@@ -371,17 +431,17 @@ static mpack_ctx *_mpack_reader_rows(mysql_ctx *mysql, buffer_ctx *buf, binary_c
     }
     return NULL;
 }
-// 读取一个 lenenc 长度前缀 + 该长度的二进制数据，截断拷贝进定长字段并 NUL 结尾（超长静默截断，非错误）；
+// 读一个 lenenc 字符串：buf->data 指向 payload 内的原始字节（非 NUL 结尾），lens 为 0 时 data 为 NULL；
 // lenenc 本身读取失败返回 ERR_FAILED
-static int32_t _mpack_parse_lenenc_field(binary_ctx *breader, char *dst, size_t cap) {
+static int32_t _mpack_parse_lenenc_field(binary_ctx *breader, buf_ctx *buf) {
     int32_t rtn;
     uint64_t lens = _mysql_get_lenenc(breader, &rtn);
     if (ERR_OK != rtn) {
         return ERR_FAILED;
     }
-    size_t tlens = (size_t)lens;
-    char *val = binary_get_binary(breader, tlens);
-    return _mysql_copy_bounded(val, tlens, dst, cap, 0);
+    buf->lens = (size_t)lens;
+    buf->data = binary_get_binary(breader, buf->lens);
+    return ERR_OK;
 }
 // 解析单个列字段描述包（Column Definition），填充 mpack_field 结构体
 int32_t _mpack_parse_field(binary_ctx *breader, mpack_field *field) {
@@ -391,19 +451,19 @@ int32_t _mpack_parse_field(binary_ctx *breader, mpack_field *field) {
         return ERR_FAILED;
     }
     binary_get_skip(breader, (size_t)lens);//catalog（跳过 catalog 字段）
-    if (ERR_OK != _mpack_parse_lenenc_field(breader, field->schema, sizeof(field->schema))) {
+    if (ERR_OK != _mpack_parse_lenenc_field(breader, &field->schema)) {
         return ERR_FAILED;
     }
-    if (ERR_OK != _mpack_parse_lenenc_field(breader, field->table, sizeof(field->table))) {
+    if (ERR_OK != _mpack_parse_lenenc_field(breader, &field->table)) {
         return ERR_FAILED;
     }
-    if (ERR_OK != _mpack_parse_lenenc_field(breader, field->org_table, sizeof(field->org_table))) {
+    if (ERR_OK != _mpack_parse_lenenc_field(breader, &field->org_table)) {
         return ERR_FAILED;
     }
-    if (ERR_OK != _mpack_parse_lenenc_field(breader, field->name, sizeof(field->name))) {
+    if (ERR_OK != _mpack_parse_lenenc_field(breader, &field->name)) {
         return ERR_FAILED;
     }
-    if (ERR_OK != _mpack_parse_lenenc_field(breader, field->org_name, sizeof(field->org_name))) {
+    if (ERR_OK != _mpack_parse_lenenc_field(breader, &field->org_name)) {
         return ERR_FAILED;
     }
     _mysql_get_lenenc(breader, &_rtn);//length of fixed length fields（跳过固定长度字段的长度标志）
@@ -415,6 +475,7 @@ int32_t _mpack_parse_field(binary_ctx *breader, mpack_field *field) {
     field->type = binary_get_uint8(breader);
     field->flags = (uint16_t)binary_get_uinteger(breader, 2, 1);
     field->decimals = binary_get_uint8(breader);
+    field->payload = breader->data;
     return ERR_OK;
 }
 // 循环读取并解析结果集列字段描述，字段解析完毕后继续解析行数据
@@ -449,7 +510,6 @@ static mpack_ctx *_mpack_reader_fileds(mysql_ctx *mysql, buffer_ctx *buf, binary
             FREE(breader->data);
             return NULL;
         }
-        FREE(breader->data);
         ++reader->index;
         if (ERR_OK != _mpack_more_data(mysql, buf, breader, status)) {
             return NULL;
@@ -596,7 +656,6 @@ static mpack_ctx *_mpack_stmt(mysql_ctx *mysql, buffer_ctx *buf, binary_ctx *bre
                 return NULL;
             }
         }
-        FREE(breader->data);
         ++stmt->index;
         if (ERR_OK != _mpack_more_data(mysql, buf, breader, status)) {
             return NULL;
@@ -618,7 +677,9 @@ mysql_stmt_ctx *mysql_stmt_init(mpack_ctx *mpack) {
 }
 void _mpack_stm_free(void *pack) {
     mysql_stmt_ctx *stmt = pack;
+    _mpack_fields_free(stmt->params, (int32_t)stmt->params_count);
     FREE(stmt->params);
+    _mpack_fields_free(stmt->fields, (int32_t)stmt->field_count);
     FREE(stmt->fields);
 }
 // 分配并初始化预处理语句上下文，从 STMT_PREPARE OK 响应包中读取 stmt_id、字段数和参数数
@@ -682,6 +743,13 @@ mpack_ctx *_mpack_parser(mysql_ctx *mysql, buffer_ctx *buf, binary_ctx *breader,
         BIT_SET(*status, PROT_CLOSE);
         break;
     case MYSQL_INIT_DB:
+        mpack = _mpack_simple_response(mysql, breader, status);
+        if (NULL != mpack
+            && MPACK_OK == mpack->pack_type
+            && !EMPTYSTR(mysql->pending_db)) {
+            safe_fill_str(mysql->client.database, sizeof(mysql->client.database), mysql->pending_db);
+        }
+        break;
     case MYSQL_PING:
     case MYSQL_STMT_RESET:
         mpack = _mpack_simple_response(mysql, breader, status);

@@ -20,7 +20,8 @@ static mysql_reader_ctx *_reader_new(mpack_type pktype, int32_t field_count,
     if (field_count > 0) {
         CALLOC(reader->fields, 1, sizeof(mpack_field) * (size_t)field_count);
         for (int32_t i = 0; i < field_count; i++) {
-            safe_fill_str(reader->fields[i].name, sizeof(reader->fields[i].name), names[i]);
+            reader->fields[i].name.data = (void *)names[i];
+            reader->fields[i].name.lens = strlen(names[i]);
             reader->fields[i].type = types[i];
         }
     }
@@ -918,20 +919,20 @@ static void test_mysql_reader_copy_field_boundary(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_FAILED, err);
     mysql_reader_free(rt);
 }
-// _mpack_parse_lenenc_field 边界 (mysql_parse.c:356)：lens>=cap 时静默截断为 cap-1 字节 + NUL，
-// 不越界写入；经 _mpack_parse_field 的 schema 字段(cap=64)验证
-static void test_mpack_parse_field_truncation(CuTest *tc) {
+// _mpack_parse_lenenc_field：名字改为 buf_ctx 指向 payload 后，任意长度都完整保留不再截断；
+// 同时验证 _mpack_parse_field 成功时把 breader->data 的所有权转给 field->payload
+static void test_mpack_parse_field_long_name(CuTest *tc) {
     binary_ctx bw;
     binary_init(&bw, NULL, 0, 0);
     // catalog（任意值，_mpack_parse_field 内部只 skip）
     _mysql_set_lenenc(&bw, 3);
     binary_set_binary(&bw, "def", 3);
-    // schema：70 字节全 'a'，超过 field->schema[64] 的 cap=64 → 应截断为 63 字节 + '\0'
+    // schema：70 字节全 'a'，旧实现会截断为 63 字节，改用 buf_ctx 后须完整保留
     _mysql_set_lenenc(&bw, 70);
     char oversized[70];
     memset(oversized, 'a', sizeof(oversized));
     binary_set_binary(&bw, oversized, sizeof(oversized));
-    // table / org_table / name / org_name：正常长度，验证截断字段之后的解析未受影响
+    // table / org_table / name / org_name：正常长度，验证长名字段之后的解析未受影响
     _mysql_set_lenenc(&bw, 4);
     binary_set_binary(&bw, "tbl1", 4);
     _mysql_set_lenenc(&bw, 4);
@@ -955,17 +956,17 @@ static void test_mpack_parse_field_truncation(CuTest *tc) {
     ZERO(&field, sizeof(field));
     int32_t rtn = _mpack_parse_field(&br, &field);
     CuAssertIntEquals(tc, ERR_OK, rtn);
-    // 截断为 cap-1=63 字节，末尾正确 NUL 结尾，不越界写入第 64 字节之外
-    CuAssertIntEquals(tc, 63, (int)strlen(field.schema));
-    for (int i = 0; i < 63; i++) {
-        CuAssertTrue(tc, 'a' == field.schema[i]);
+    CuAssert(tc, "70 字节 schema 须完整保留不截断", 70 == field.schema.lens);
+    for (int i = 0; i < 70; i++) {
+        CuAssertTrue(tc, 'a' == ((const char *)field.schema.data)[i]);
     }
-    // 截断字段之后的其余字段未受影响
-    CuAssertTrue(tc, 0 == strcmp(field.table, "tbl1"));
-    CuAssertTrue(tc, 0 == strcmp(field.org_table, "tbl1"));
-    CuAssertTrue(tc, 0 == strcmp(field.name, "col"));
-    CuAssertTrue(tc, 0 == strcmp(field.org_name, "col"));
+    // 长名字段之后的其余字段未受影响
+    CuAssert(tc, "table", 4 == field.table.lens && 0 == memcmp(field.table.data, "tbl1", 4));
+    CuAssert(tc, "org_table", 4 == field.org_table.lens && 0 == memcmp(field.org_table.data, "tbl1", 4));
+    CuAssert(tc, "name", 3 == field.name.lens && 0 == memcmp(field.name.data, "col", 3));
+    CuAssert(tc, "org_name", 3 == field.org_name.lens && 0 == memcmp(field.org_name.data, "col", 3));
     CuAssertIntEquals(tc, MYSQL_TYPE_VARCHAR, field.type);
+    CuAssert(tc, "成功时 payload 所有权转给 field", bw.data == field.payload);
     binary_free(&bw);
 }
 void test_mysql_parse(CuSuite *suite) {
@@ -988,5 +989,5 @@ void test_mysql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mysql_reader_datetime_text);
     SUITE_ADD_TEST(suite, test_mysql_reader_datetime2_types);
     SUITE_ADD_TEST(suite, test_mysql_reader_copy_field_boundary);
-    SUITE_ADD_TEST(suite, test_mpack_parse_field_truncation);
+    SUITE_ADD_TEST(suite, test_mpack_parse_field_long_name);
 }

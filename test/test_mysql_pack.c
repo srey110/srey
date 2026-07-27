@@ -198,6 +198,23 @@ static void test_mysql_pack_simple_cmds(CuTest *tc) {
     /* payload = COM_INIT_DB + "mydb" */
     CuAssertTrue(tc, 0 == memcmp(p + 5, "mydb", 4));
     FREE(pack);
+
+    char longdb[80];
+    memset(longdb, 'a', sizeof(longdb));
+    longdb[64] = '\0';
+    size = 1;
+    pack = mysql_pack_selectdb(&mysql, longdb, &size);
+    CuAssert(tc, "64 字节库名须被拒(pending_db 只装得下 63)", NULL == pack);
+    CuAssert(tc, "被拒的 selectdb 须把 *size 置 0", 0 == size);
+    CuAssert(tc, "被拒的 selectdb 不得改动 pending_db", 0 == strcmp(mysql.pending_db, "mydb"));
+
+    longdb[63] = '\0';
+    pack = mysql_pack_selectdb(&mysql, longdb, &size);
+    CuAssertPtrNotNull(tc, pack);
+    p = (char *)pack;
+    CuAssert(tc, "63 字节库名须照旧组包", 0 == memcmp(p + 5, longdb, 63));
+    CuAssert(tc, "组包成功须把库名记入 pending_db 供响应 OK 后提交", 0 == strcmp(mysql.pending_db, longdb));
+    FREE(pack);
 }
 
 /* =======================================================================

@@ -88,6 +88,27 @@ runner.run("mqtt", function(t)
         end
     end
     do
+        local pp = mqtt.props()
+        pp:kv(mqtt.PROP.USER_PROPERTY, "pk", "pv")
+        local p0, s0 = mqtt.pack_publish(mqtt.VERSION.V50, 0, 1, 0, "/t", 1, "hello")
+        local p1, s1 = mqtt.pack_publish(mqtt.VERSION.V50, 0, 1, 0, "/t", 1, "hello", nil, pp)
+        t:check(p0 ~= nil and p1 ~= nil, "pack_publish v50 两次组包均成功")
+        t:check(s1 > s0, "string payload 按 9 位签名传 props 须生效(修复前槽位浮动到 8,props 静默丢弃)")
+        t:check(srey.ud_str(p1, s1):find("pv", 1, true) ~= nil, "props 内容须出现在 PUBLISH 属性块")
+        local slot8 = pcall(mqtt.pack_publish, mqtt.VERSION.V50, 0, 1, 0, "/t", 1, "hello", pp)
+        t:eq(false, slot8, "字符串负载时 props 误放槽 8 须报错,而非静默丢弃属性块")
+        utils.ud_free(p0)
+        utils.ud_free(p1)
+        local lud, ludsz = mqtt.pack_publish(mqtt.VERSION.V311, 0, 0, 0, "/x", 0, "payloadbytes")
+        local p2, s2 = mqtt.pack_publish(mqtt.VERSION.V50, 0, 1, 0, "/t", 1, lud, ludsz)
+        local p3, s3 = mqtt.pack_publish(mqtt.VERSION.V50, 0, 1, 0, "/t", 1, lud, ludsz, pp)
+        t:check(s3 > s2, "lightuserdata payload 的 props 仍在固定槽 9 生效")
+        utils.ud_free(lud)
+        utils.ud_free(p2)
+        utils.ud_free(p3)
+        pp:free()
+    end
+    do
         local pack, size = mqtt.pack_puback(mqtt.VERSION.V311, 42, 0, nil)
         t:check(pack ~= nil and size > 0, "pack_puback v311")
         t:eq(mqtt.PROT.PUBACK, _ptype(pack, size), "pack_puback type byte")

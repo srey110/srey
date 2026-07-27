@@ -42,6 +42,12 @@ void _pgsql_udfree(ud_cxt *ud) {
     scram_free(pg->scram);
     pg->scram = NULL;
     pg->sk.fd = INVALID_SOCK;
+    pg->readyforquery = 0;
+    pg->pid = 0;
+    pg->key = 0;
+#if WITH_SSL
+    pg->tls_cbind_len = 0;
+#endif
     ud->context = NULL;
     PROT_REF_RELEASE(pg);
 }
@@ -322,9 +328,7 @@ static int32_t _pgsql_scram_client_final(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *
 static void _pgsql_auth_process(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *breader, int32_t *status) {
     int32_t code = (int32_t)binary_get_integer(breader, 4, 0);
     switch (code) {
-    case 0x00: // AuthenticationOk：认证成功，释放 SCRAM 上下文
-        scram_free(pg->scram);
-        pg->scram = NULL;
+    case 0x00: // AuthenticationOk：仅表示服务端认为认证结束，是否真的通过由 'Z' 分支统一判定
         break;
     case 0x03: // AuthenticationCleartextPassword：明文密码认证
         if (NULL == pg->evssl) {
@@ -401,7 +405,16 @@ static void _pgsql_auth_response(pgsql_ctx *pg, ev_ctx *ev, buffer_ctx *buf, ud_
         pg->pid = (int32_t)binary_get_integer(&breader, 4, 0);
         pg->key = (uint32_t)binary_get_integer(&breader, 4, 0);
         break;
-    case 'Z': // ReadyForQuery：认证完成，服务端就绪，推送成功通知
+    case 'Z': // ReadyForQuery：服务端就绪，校验 SCRAM 已完成后推送成功通知
+        if (NULL != pg->scram) {
+            if (SCRAM_REMOTE_FINAL != pg->scram->status) {
+                LOG_WARN("ReadyForQuery before SCRAM server signature was verified.");
+                BIT_SET(*status, PROT_ERROR);
+                break;
+            }
+            scram_free(pg->scram);
+            pg->scram = NULL;
+        }
         pg->readyforquery = binary_get_int8(&breader);
         ud->status = COMMAND;
         _hs_push(pg->sk.fd, pg->sk.skid, 1, ud, ERR_OK, NULL, 0);
@@ -447,10 +460,21 @@ void *pgsql_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
 }
 int32_t pgsql_init(pgsql_ctx *pg, const char *ip, uint16_t port, struct evssl_ctx *evssl,
     const char *user, const char *password, const char *database) {
-    if (strlen(ip) > sizeof(pg->ip) - 1
-        || strlen(user) > sizeof(pg->user) - 1
-        || strlen(password) > sizeof(pg->password) - 1
-        || (NULL != database && strlen(database) > sizeof(pg->database) - 1)) {
+    if (strlen(ip) > sizeof(pg->ip) - 1) {
+        LOG_ERROR("pgsql ip exceeds %zu bytes: %zu.", sizeof(pg->ip) - 1, strlen(ip));
+        return ERR_FAILED;
+    }
+    if (strlen(user) > sizeof(pg->user) - 1) {
+        LOG_ERROR("pgsql user name exceeds %zu bytes: %zu.", sizeof(pg->user) - 1, strlen(user));
+        return ERR_FAILED;
+    }
+    if (strlen(password) > sizeof(pg->password) - 1) {
+        LOG_ERROR("pgsql password exceeds %zu bytes: %zu.", sizeof(pg->password) - 1, strlen(password));
+        return ERR_FAILED;
+    }
+    if (NULL != database
+        && strlen(database) > sizeof(pg->database) - 1) {
+        LOG_ERROR("pgsql database name exceeds %zu bytes: %zu.", sizeof(pg->database) - 1, strlen(database));
         return ERR_FAILED;
     }
     ZERO(pg, sizeof(pgsql_ctx));
@@ -464,9 +488,14 @@ int32_t pgsql_init(pgsql_ctx *pg, const char *ip, uint16_t port, struct evssl_ct
     return ERR_OK;
 }
 void pgsql_set_userpwd(pgsql_ctx *pg, const char *user, const char *password) {
-    if (strlen(user) > sizeof(pg->user) - 1
-        || strlen(password) > sizeof(pg->password) - 1) {
-        LOG_ERROR("%s", "user or password too long.");
+    if (strlen(user) > sizeof(pg->user) - 1) {
+        LOG_ERROR("pgsql user name exceeds %zu bytes: %zu, keep the old one.",
+                  sizeof(pg->user) - 1, strlen(user));
+        return;
+    }
+    if (strlen(password) > sizeof(pg->password) - 1) {
+        LOG_ERROR("pgsql password exceeds %zu bytes: %zu, keep the old one.",
+                  sizeof(pg->password) - 1, strlen(password));
         return;
     }
     secure_zero(pg->user, sizeof(pg->user));
@@ -476,7 +505,8 @@ void pgsql_set_userpwd(pgsql_ctx *pg, const char *user, const char *password) {
 }
 void pgsql_set_db(pgsql_ctx *pg, const char *database) {
     if (strlen(database) > sizeof(pg->database) - 1) {
-        LOG_ERROR("%s", "database name too long.");
+        LOG_ERROR("pgsql database name exceeds %zu bytes: %zu, keep the old one.",
+                  sizeof(pg->database) - 1, strlen(database));
         return;
     }
     safe_fill_str(pg->database, sizeof(pg->database), database);

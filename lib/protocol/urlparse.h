@@ -16,6 +16,7 @@ typedef struct url_ctx {
     int32_t decode;           // 是否解码
     int32_t npath;            // 拆分后的路径数量
     size_t pathlens;          // 重组后路径总长（含各段分隔符）；可据此预分配缓冲（>= pathlens+1）
+    size_t paramlens;         // 重组后查询串总长（含 '&' '='）；可据此预分配缓冲（>= paramlens+1）；0 表示无参数
     buf_ctx scheme;           // 协议类型（如 http、https）
     buf_ctx user;             // 用户名
     buf_ctx psw;              // 密码
@@ -52,7 +53,7 @@ size_t url_reorg_path(url_ctx *ctx, char *path, size_t cap);
 /// </summary>
 /// <param name="ctx">url_ctx（须先经 url_parse）</param>
 /// <param name="param">输出缓冲</param>
-/// <param name="cap">param 缓冲容量（字节）</param>
+/// <param name="cap">param 缓冲容量（字节）；不截断需 >= ctx->paramlens + 1</param>
 /// <returns>写入 param 的字节数（不含结尾 '\0'）；无参数时返回 0</returns>
 size_t url_reorg_param(url_ctx *ctx, char *param, size_t cap);
 /// <summary>

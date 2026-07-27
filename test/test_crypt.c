@@ -457,6 +457,25 @@ static void test_scram_plus(CuTest *tc) {
     }
 }
 
+// 伪造只有 i= 值不同的服务端首条消息（nonce 前缀取自客户端以绕过 nonce 校验），
+// 返回 scram_parse_first_message 的结果；outiter 非空时回带解析后的迭代轮数
+static int32_t _scram_parse_iter(CuTest *tc, const char *iter, int32_t *outiter) {
+    scram_ctx *cli = scram_init("SCRAM-SHA-256", 1);
+    CuAssertPtrNotNull(tc, cli);
+    scram_set_pwd(cli, "pass", 4);
+    char *first = scram_first_message(cli);
+    CuAssertPtrNotNull(tc, first);
+    FREE(first);
+    char fake_srv[256];
+    SNPRINTF(fake_srv, sizeof(fake_srv),
+        "r=%sFAKESUFFIX,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=%s", cli->local_nonce, iter);
+    int32_t ret = scram_parse_first_message(cli, fake_srv, strlen(fake_srv));
+    if (NULL != outiter) {
+        *outiter = cli->iter;
+    }
+    scram_free(cli);
+    return ret;
+}
 /* 各类失败情形 */
 static void test_scram_failures(CuTest *tc) {
     /* 不支持的方法 → NULL */
@@ -467,23 +486,16 @@ static void test_scram_failures(CuTest *tc) {
     CuAssertTrue(tc, ERR_OK != _scram_handshake(
         "SCRAM-SHA-256", "right", "wrong", NULL, NULL, 0));
 
-    /* 低迭代轮数 → 客户端解析时拒绝 */
-    {
-        scram_ctx *cli = scram_init("SCRAM-SHA-256", 1);
-        CuAssertPtrNotNull(tc, cli);
-        scram_set_pwd(cli, "pass", 4);
-        char *first = scram_first_message(cli);
-        CuAssertPtrNotNull(tc, first);
-        FREE(first);
-        /* 伪造含低迭代轮数的服务端消息，nonce 前缀与客户端一致以绕过 nonce 校验 */
-        char fake_srv[256];
-        SNPRINTF(fake_srv, sizeof(fake_srv),
-            "r=%sFAKESUFFIX,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=100",
-            cli->local_nonce);
-        CuAssertTrue(tc,
-            ERR_OK != scram_parse_first_message(cli, fake_srv, strlen(fake_srv)));
-        scram_free(cli);
-    }
+    CuAssert(tc, "i 低于下限须拒", ERR_OK != _scram_parse_iter(tc, "100", NULL));
+    CuAssert(tc, "i 为 INT32_MAX 须拒", ERR_OK != _scram_parse_iter(tc, "2147483647", NULL));
+    int32_t iter = 0;
+    CuAssert(tc, "i 在合法区间内须接受", ERR_OK == _scram_parse_iter(tc, "40960", &iter));
+    CuAssertIntEquals(tc, 40960, iter);
+    CuAssert(tc, "i 恰为 SCRAM_MAX_ITER(256 * 4096 = 1048576) 须接受",
+        ERR_OK == _scram_parse_iter(tc, "1048576", &iter));
+    CuAssertIntEquals(tc, 1048576, iter);
+    CuAssert(tc, "i 超 SCRAM_MAX_ITER 一轮须拒",
+        ERR_OK != _scram_parse_iter(tc, "1048577", NULL));
 
     /* 服务端签名被篡改 → 客户端拒绝 */
     {

@@ -143,8 +143,8 @@ LUAMOD_API int luaopen_dns(lua_State *lua) {
 /// <param name="pktype" type="integer">协议子类型</param>
 /// <param name="data" type="string|lightuserdata">载荷数据；字符串时长度自动取得</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
-/// <returns type="lightuserdata">打包后的数据指针</returns>
-/// <returns type="integer">数据长度</returns>
+/// <returns type="lightuserdata?">打包后的数据指针；载荷达到 MAX_PACK_SIZE 时返回 nil</returns>
+/// <returns type="integer">数据长度；返回 nil 时为 0</returns>
 static int32_t _lprot_custz_pack(lua_State *lua) {
     pack_type pktype = (pack_type)luaL_checkinteger(lua, 1);
     void *data;
@@ -969,7 +969,8 @@ static int32_t _lprot_mail_attach_clear(lua_State *lua) {
     return 0;
 }
 /// <summary>
-/// 清空邮件上下文中的所有内容（主题 / 正文 / 收件人 / 附件）
+/// 清空邮件上下文：内容（主题 / 正文 / 收件人 / 附件）与 reply 标志一并还原到 mail_init 后的状态。
+/// 注意 reply 会被复位为 1，同一对象复用时若需 No-Reply 须在每次 clear 后重新调 reply(0)
 /// </summary>
 /// <param name="self" type="userdata">邮件对象</param>
 /// <returns>无</returns>

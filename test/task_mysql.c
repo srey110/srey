@@ -205,6 +205,33 @@ static int32_t _multi_result(mysql_ctx *mysql) {
     return ERR_OK;
 }
 
+// 会话跟踪：query("USE x") 改的是服务端当前库，client.database 须由 OK 包尾部的
+// session-state-change 跟上，否则重连按旧库名握手会静默落到原库
+static int32_t _session_track(mysql_ctx *mysql, const char *back) {
+    int32_t code = 0;
+    mpack_ctx *mpack = mysql_query(mysql, "USE information_schema", NULL);
+    if (NULL == mpack || MPACK_OK != mpack->pack_type) {
+        LOG_ERROR("mysql USE information_schema error: %s (code=%d)", mysql_erro(mysql, &code), code);
+        return ERR_FAILED;
+    }
+    if (0 != strcmp(mysql->client.database, "information_schema")) {
+        LOG_ERROR("mysql session track failed, client.database=%s want information_schema.",
+                  mysql->client.database);
+        return ERR_FAILED;
+    }
+    char sql[64];
+    SNPRINTF(sql, sizeof(sql), "USE %s", back);
+    mpack = mysql_query(mysql, sql, NULL);
+    if (NULL == mpack || MPACK_OK != mpack->pack_type) {
+        LOG_ERROR("mysql USE %s error: %s (code=%d)", back, mysql_erro(mysql, &code), code);
+        return ERR_FAILED;
+    }
+    if (0 != strcmp(mysql->client.database, back)) {
+        LOG_ERROR("mysql session track failed, client.database=%s want %s.", mysql->client.database, back);
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
 static void _startup(task_ctx *task) {
     task_mysql_args *arg = (task_mysql_args *)coro_get_arg(task);
     if (ERR_OK != mysql_init(&arg->mysql, arg->host, arg->port, NULL,
@@ -252,6 +279,10 @@ static void _startup(task_ctx *task) {
         return;
     }
     if (ERR_OK != _multi_result(&arg->mysql)) {
+        mysql_quit(&arg->mysql);
+        return;
+    }
+    if (ERR_OK != _session_track(&arg->mysql, arg->database)) {
         mysql_quit(&arg->mysql);
         return;
     }

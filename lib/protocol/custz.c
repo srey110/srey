@@ -47,6 +47,10 @@ void *custz_unpack(pack_type pktype, buffer_ctx *buf, size_t *size, int32_t *sta
     return msg;
 }
 void *custz_pack(pack_type pktype, void *data, size_t lens, size_t *size) {
+    if (PACK_TOO_LONG(lens)) {
+        LOG_ERROR("custz pack body %zu exceeds MAX_PACK_SIZE %d.", lens, (int32_t)MAX_PACK_SIZE);
+        return NULL;
+    }
     size_t hlens;
     char *pack = NULL;
     // 根据包类型调用对应的头部编码函数，分配头部+数据体的连续内存

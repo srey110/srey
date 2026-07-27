@@ -260,28 +260,74 @@ void *mongo_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     }
     return NULL;
 }
-void mongo_init(mongo_ctx *mongo, const char *ip, uint16_t port, struct evssl_ctx *evssl, const char *db) {
+int32_t mongo_init(mongo_ctx *mongo, const char *ip, uint16_t port, struct evssl_ctx *evssl, const char *db) {
+    const char *initdb = EMPTYSTR(db) ? "admin" : db;
+    if (!EMPTYSTR(ip)
+        && strlen(ip) > sizeof(mongo->ip) - 1) {
+        LOG_ERROR("mongo ip exceeds %zu bytes: %zu.", sizeof(mongo->ip) - 1, strlen(ip));
+        return ERR_FAILED;
+    }
+    if (strlen(initdb) > sizeof(mongo->db) - 1) {
+        LOG_ERROR("mongo database name exceeds %zu bytes: %zu.", sizeof(mongo->db) - 1, strlen(initdb));
+        return ERR_FAILED;
+    }
     ZERO(mongo, sizeof(mongo_ctx));
     mongo->reqid = 1;
     mongo->sk.fd = INVALID_SOCK;
     safe_fill_str(mongo->ip, sizeof(mongo->ip), ip);
     mongo->port = 0 == port ? 27017 : port;
     mongo->evssl = evssl;
-    safe_fill_str(mongo->db, sizeof(mongo->db), EMPTYSTR(db) ? "admin" : db);
+    safe_fill_str(mongo->db, sizeof(mongo->db), initdb);
+    return ERR_OK;
 }
-void mongo_db(mongo_ctx *mongo, const char *db) {
+int32_t mongo_db(mongo_ctx *mongo, const char *db) {
+    if (!EMPTYSTR(db)
+        && strlen(db) > sizeof(mongo->db) - 1) {
+        LOG_ERROR("mongo database name exceeds %zu bytes: %zu.", sizeof(mongo->db) - 1, strlen(db));
+        return ERR_FAILED;
+    }
     safe_fill_str(mongo->db, sizeof(mongo->db), db);
     mongo->collection[0] = '\0';
+    return ERR_OK;
 }
-void mongo_authdb(mongo_ctx *mongo, const char *db) {
+int32_t mongo_authdb(mongo_ctx *mongo, const char *db) {
+    if (!EMPTYSTR(db)
+        && strlen(db) > sizeof(mongo->authdb) - 1) {
+        LOG_ERROR("mongo auth database name exceeds %zu bytes: %zu.",
+                  sizeof(mongo->authdb) - 1, strlen(db));
+        return ERR_FAILED;
+    }
     safe_fill_str(mongo->authdb, sizeof(mongo->authdb), db);
+    return ERR_OK;
 }
-void mongo_collection(mongo_ctx *mongo, const char *collection) {
+// 超长返 ERR_FAILED 且不改动字段：截断或沿用旧集合都会让后续 insert/find/update/delete 打到
+// 另一个集合上（写入还会自动建集合），调用方必须原地失败而不是继续发命令
+int32_t mongo_collection(mongo_ctx *mongo, const char *collection) {
+    if (!EMPTYSTR(collection)
+        && strlen(collection) > sizeof(mongo->collection) - 1) {
+        LOG_ERROR("mongo collection name exceeds %zu bytes: %zu.",
+                  sizeof(mongo->collection) - 1, strlen(collection));
+        return ERR_FAILED;
+    }
     safe_fill_str(mongo->collection, sizeof(mongo->collection), collection);
+    return ERR_OK;
 }
-void mongo_user_pwd(mongo_ctx *mongo, const char *user, const char *pwd) {
+int32_t mongo_user_pwd(mongo_ctx *mongo, const char *user, const char *pwd) {
+    if (!EMPTYSTR(user)
+        && strlen(user) > sizeof(mongo->user) - 1) {
+        LOG_ERROR("mongo user name exceeds %zu bytes: %zu.", sizeof(mongo->user) - 1, strlen(user));
+        return ERR_FAILED;
+    }
+    if (!EMPTYSTR(pwd)
+        && strlen(pwd) > sizeof(mongo->password) - 1) {
+        LOG_ERROR("mongo password exceeds %zu bytes: %zu.", sizeof(mongo->password) - 1, strlen(pwd));
+        return ERR_FAILED;
+    }
+    secure_zero(mongo->user, sizeof(mongo->user));
+    secure_zero(mongo->password, sizeof(mongo->password));
     safe_fill_str(mongo->user, sizeof(mongo->user), user);
     safe_fill_str(mongo->password, sizeof(mongo->password), pwd);
+    return ERR_OK;
 }
 int32_t mongo_requestid(mongo_ctx *mongo) {
     return mongo->reqid;

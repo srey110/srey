@@ -593,13 +593,18 @@ LUAMOD_API int luaopen_mysql_stmt(lua_State *lua) {
 /// </summary>
 /// <param name="self" type="userdata">mysql 对象</param>
 /// <param name="db" type="string">数据库名</param>
-/// <returns type="lightuserdata">命令数据指针</returns>
+/// <returns type="lightuserdata?">命令数据指针；库名超 63 字节时返回 nil</returns>
 /// <returns type="integer">数据长度</returns>
 static int32_t _lmysql_pack_selectdb(lua_State *lua) {
     LPUB_UD_ARG(lua, mysql_ctx, MT_MYSQL, ud, "mysql freed");
     const char *db = luaL_checkstring(lua, 2);
     size_t size;
     void *pack = mysql_pack_selectdb(*ud, db, &size);
+    if (NULL == pack) {
+        lua_pushnil(lua);
+        lua_pushinteger(lua, 0);
+        return 2;
+    }
     LPUB_RET_LUD(lua, pack, size);
 }
 /// <summary>

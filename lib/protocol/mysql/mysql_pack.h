@@ -16,7 +16,8 @@ void *mysql_pack_quit(mysql_ctx *mysql, size_t *size);
 /// <param name="mysql">mysql_ctx</param>
 /// <param name="database">目标数据库名</param>
 /// <param name="size">输出包大小（字节）</param>
-/// <returns>请求包数据，调用方负责释放</returns>
+/// <returns>请求包数据，调用方负责释放；库名超过 pending_db 容量(63 字节)时返回 NULL 且 size 置 0，
+/// 一律不组包——发了包服务端会切库成功而 client.database 无从跟踪，后续 get_db 与重连握手都会用错库名</returns>
 void *mysql_pack_selectdb(mysql_ctx *mysql, const char *database, size_t *size);
 /// <summary>
 /// 构造 COM_PING 请求包（检测连接是否存活）
@@ -32,7 +33,8 @@ void *mysql_pack_ping(mysql_ctx *mysql, size_t *size);
 /// <param name="sql">SQL 语句字符串</param>
 /// <param name="mbind">查询属性参数绑定，NULL 表示无参数</param>
 /// <param name="size">输出包大小（字节）</param>
-/// <returns>请求包数据，调用方负责释放</returns>
+/// <returns>请求包数据，调用方负责释放；SQL 长度达 INT3_MAX(16MB，MySQL 单包上限)时返回 NULL
+/// 且 size 置 0，一律不组包</returns>
 void *mysql_pack_query(mysql_ctx *mysql, const char *sql, mysql_bind_ctx *mbind, size_t *size);
 /// <summary>
 /// 构造 COM_STMT_PREPARE 请求包（预处理语句准备）

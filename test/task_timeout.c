@@ -160,7 +160,7 @@ erro:
 static int32_t _tcp_echo(task_ctx *task, SOCKET fd, uint64_t skid, pack_type curtype, int32_t count) {
     char buf[4096];
     int32_t lens;
-    size_t size;
+    size_t size = 0;
     void *pack, *resp;
     for (int32_t i = 0; i < count; i++) {
         lens = randrange(10, 4096 - 2);
@@ -198,7 +198,7 @@ static int32_t _tcp_switch_pktype(task_ctx *task, SOCKET fd, uint64_t skid,
     char buf[4];
     buf[0] = TEST_PKTYPE_CHANGE;
     buf[1] = (char)(uint8_t)newtype;
-    size_t size;
+    size_t size = 0;
     void *pack = custz_pack(curtype, buf, 2, &size);
     void *resp = coro_send(task, fd, skid, pack, size, &size, 0);
     if (NULL == resp) {
@@ -216,7 +216,7 @@ static int32_t _timeout_tcp(task_ctx *task) {
     SOCKET fd;
     uint64_t skid;
     char sslbuf[4];
-    size_t sslsize;
+    size_t sslsize = 0;
     void *sslpack;
     void *sslresp;
     task_timeout_ctx *ctx = coro_get_arg(task);
@@ -476,6 +476,17 @@ static int32_t _timeout_habor(task_ctx *task) {
         LOG_WARN("return code error.");
         goto erro;
     }
+    size_t cblen = 0;
+    void *cbody = http_data(rpack, &cblen);
+    if (NULL != cbody || 0 != cblen) {
+        LOG_WARN("harbor call resp body must be empty, got %zu bytes.", cblen);
+        goto erro;
+    }
+    size_t chlen = 0;
+    if (NULL != http_header(rpack, "X-Srey-Erro", &chlen)) {
+        LOG_WARN("%s", "harbor call resp must not carry X-Srey-Erro.");
+        goto erro;
+    }
     //request
     dlen = randrange(1, 256);
     randstr(data, (size_t)dlen);
@@ -494,6 +505,26 @@ static int32_t _timeout_habor(task_ctx *task) {
     if (dlen != (int32_t)rsize || 0 != memcmp(rdata, data, dlen)) {
         LOG_WARN("return data error.");
         goto erro;
+    }
+    size_t ehlen = 0;
+    char *ehv = http_header(rpack, "X-Srey-Erro", &ehlen);
+    if (NULL == ehv || 1 != ehlen || '0' != ehv[0]) {
+        LOG_WARN("harbor resp X-Srey-Erro missing or wrong.");
+        goto erro;
+    }
+    subtype_t reserved[] = { REQ_DEBUG, REQ_DC_SET, REQ_DC_LIST, REQ_SC_SUB, REQ_SC_DELIVER };
+    for (size_t i = 0; i < ARRAY_SIZE(reserved); i++) {
+        pack = harbor_pack(ctx->_rpcname, 0, reserved[i], data, dlen, &rsize);
+        rpack = coro_send(task, fd, skid, pack, rsize, NULL, 0);
+        if (NULL == rpack) {
+            LOG_WARN("coro_send error.");
+            goto erro;
+        }
+        status = http_status(rpack);
+        if (3 != status[1].lens || 0 != memcmp(status[1].data, "404", 3)) {
+            LOG_WARN("reserved subtype %d not rejected.", (int32_t)reserved[i]);
+            goto erro;
+        }
     }
     ev_close(&task->loader->netev, fd, skid, 1);
     return ERR_OK;

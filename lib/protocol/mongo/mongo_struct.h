@@ -23,7 +23,7 @@ typedef struct mongo_session {
     int32_t txnnumber;  //事务序号
     struct mongo_ctx *mongo; //所属连接上下文
     char *options;      //事务选项 BSON 数据（含 lsid/txnNumber/autocommit）
-    uint64_t timeout;   //会话超时时间戳（毫秒）
+    uint64_t timeout;   //会话超时时间戳（秒，nowsec() + timeoutmin * 60）
     char uuid[UUID_LENS]; //会话 UUID
 }mongo_session;
 typedef struct mongo_ctx {

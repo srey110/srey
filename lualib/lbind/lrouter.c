@@ -48,8 +48,9 @@ static int32_t _lrouter_add(lua_State *lua) {
 /// <param name="self" type="userdata">router_ctx 对象</param>
 /// <param name="method" type="string">HTTP 方法字符串</param>
 /// <param name="url" type="string">原始请求 URI（含查询字符串）</param>
-/// <returns type="boolean">true=命中；false=失败（400 url 解析失败 / 404 无匹配路由）</returns>
-/// <returns type="table?">url_table；解析成功时返回（400 时不返回）</returns>
+/// <returns type="boolean">true=命中；false=失败</returns>
+/// <returns type="integer">HTTP 状态码：200 命中 / 400 url 解析失败 / 404 无匹配路由 / 405 方法不在已知列表</returns>
+/// <returns type="table?">url_table；仅 200 与 404 返回（400/405 未解析 url，不返回）</returns>
 /// <returns type="integer?">路由索引（≥0）；仅命中时返回</returns>
 /// <returns type="table?">路径参数表；仅命中时返回</returns>
 static int32_t _lrouter_match(lua_State *lua) {
@@ -64,14 +65,17 @@ static int32_t _lrouter_match(lua_State *lua) {
     router_req ctx;
     ZERO(&ctx, sizeof(ctx));
     int32_t idx = router_match_index(*pr, method, mlen, url, ulen, &ctx);
-    if (-2 == idx) {
+    int32_t code = router_match_code(idx);
+    if (-3 == idx || -2 == idx) {
         lua_pushboolean(lua, 0);
-        return 1;
+        lua_pushinteger(lua, code);
+        return 2;
     }
     lua_pushboolean(lua, idx >= 0);
+    lua_pushinteger(lua, code);
     lpub_push_url_table(lua, &ctx.url_storage);
     if (idx < 0) {
-        return 2;
+        return 3;
     }
     lua_pushinteger(lua, idx);
     lua_createtable(lua, 0, ctx.params_n);
@@ -80,7 +84,7 @@ static int32_t _lrouter_match(lua_State *lua) {
         lua_pushlstring(lua, ctx.params[i].val, ctx.params[i].val_len);
         lua_rawset(lua, -3);
     }
-    return 4;
+    return 5;
 }
 //srey.router
 LUAMOD_API int luaopen_router(lua_State *lua) {

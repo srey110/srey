@@ -29,33 +29,39 @@ void *mongo_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status);
 /// <param name="ip">ip</param>
 /// <param name="port">端口</param>
 /// <param name="evssl">struct evssl_ctx</param>
-/// <param name="db">数据库</param>
-void mongo_init(mongo_ctx *mongo, const char *ip, uint16_t port, struct evssl_ctx *evssl, const char *db);
+/// <param name="db">数据库；空串用 "admin"</param>
+/// <returns>ERR_OK 成功；ip 或 db 超 63 字节返 ERR_FAILED 并记 LOG_ERROR，此时不改动 mongo 任何字段</returns>
+int32_t mongo_init(mongo_ctx *mongo, const char *ip, uint16_t port, struct evssl_ctx *evssl, const char *db);
 /// <summary>
 /// 设置当前数据库
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
 /// <param name="db">数据库</param>
-void mongo_db(mongo_ctx *mongo, const char *db);
+/// <returns>ERR_OK 成功；超 63 字节返 ERR_FAILED 并记 LOG_ERROR，不改动任何字段</returns>
+int32_t mongo_db(mongo_ctx *mongo, const char *db);
 /// <summary>
 /// 设置当前验证数据库
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
 /// <param name="db">数据库</param>
-void mongo_authdb(mongo_ctx *mongo, const char *db);
+/// <returns>ERR_OK 成功；超 63 字节返 ERR_FAILED 并记 LOG_ERROR，不改动任何字段</returns>
+int32_t mongo_authdb(mongo_ctx *mongo, const char *db);
 /// <summary>
 /// 设置当前集合
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
 /// <param name="collection">集合</param>
-void mongo_collection(mongo_ctx *mongo, const char *collection);
+/// <returns>ERR_OK 成功；超 63 字节返 ERR_FAILED 并记 LOG_ERROR，不改动任何字段。
+/// 调用方必须据此原地失败：继续发命令会打到上一个集合上（写入还会自动建集合）</returns>
+int32_t mongo_collection(mongo_ctx *mongo, const char *collection);
 /// <summary>
 /// 设置用户名 密码
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
 /// <param name="user">用户名</param>
 /// <param name="pwd">密码</param>
-void mongo_user_pwd(mongo_ctx *mongo, const char *user, const char *pwd);
+/// <returns>ERR_OK 成功；任一超 63 字节返 ERR_FAILED 并记 LOG_ERROR，两个字段都不改动</returns>
+int32_t mongo_user_pwd(mongo_ctx *mongo, const char *user, const char *pwd);
 /// <summary>
 /// 获取当前命令requestid
 /// </summary>
