@@ -6,8 +6,13 @@
 
 // 分布式读锁:per-thread cache-line slot 消除原子计数器争用,适合读极多写极少
 // 写锁开销与 reader 数线性相关(扫所有 slot),不适合写频繁场景
-// 同线程禁止: 1)递归 rdlock;2)持 rdlock 后调 wrlock(扫 active 自死锁);
-// 3)递归 wrlock(pthread_rwlock 默认不可重入)
+// 同线程禁止: 1)持 rdlock 后调 wrlock(扫 active 自死锁);2)递归 wrlock(pthread_rwlock 默认不可重入)
+// 递归 rdlock 仅对已注册线程可用: TLS 记嵌套层数,仅最外层 runlock 清 active,须等量配对;
+// 不配对的 runlock 由 runlock 入口的 ASSERTAB 拦下(否则层数会永久失衡,后续嵌套 rdlock 丢读保护)
+// 禁令 1 对已注册线程由 wrlock 入口的 ASSERTAB 精确拦下(depth 非 0 即命中);未注册线程走
+// fallback 无从记账,POSIX 下可能返 EDEADLK 触发 rwlock.h 的断言,Windows SRW 则静默死锁。
+// 递归 rdlock 在未注册线程上同样无从记账:两次都落到 fallback 的 rwlock_rdlock,
+// Windows SRW 有 writer 排队时即死锁,POSIX 写者优先实现下也可能阻塞或返 EDEADLK
 
 // 同线程支持注册到至多 RWLOCK_DISTR_MAX_TLS 个不同 ctx;超出上限的 ctx
 // 该线程走 fallback rwlock。每次 rdlock/runlock 多一次 N 元素线性扫描,
@@ -74,17 +79,19 @@ int32_t rwlock_distr_register(rwlock_distr_ctx *ctx);
 void rwlock_distr_unregister(rwlock_distr_ctx *ctx);
 /// <summary>
 /// 读锁定。已注册线程走 per-slot 快路径;未注册线程走 fallback
-/// 不支持递归(同线程对同 ctx 重复 rdlock 会卡 writer 路径)
+/// 支持同线程递归:嵌套层数记在 TLS,仅最外层实际占用 slot
 /// </summary>
 /// <param name="ctx">rwlock_distr_ctx</param>
 void rwlock_distr_rdlock(rwlock_distr_ctx *ctx);
 /// <summary>
-/// 读锁解锁。必须与 rwlock_distr_rdlock 配对
+/// 读锁解锁。必须与 rwlock_distr_rdlock 等量配对;递归时仅最后一次释放 slot
 /// </summary>
 /// <param name="ctx">rwlock_distr_ctx</param>
 void rwlock_distr_runlock(rwlock_distr_ctx *ctx);
 /// <summary>
 /// 写锁定。阻塞所有 reader,等已进入 reader 全部退出后独占
+/// 已注册线程若正持本 ctx 的读锁,此处 ASSERTAB 直接中止:排空循环要等的 active 正是它自己置的,
+/// 只有它自己能清,继续走必永久自旋。读锁升级写锁不被支持,调用方须先 runlock
 /// </summary>
 /// <param name="ctx">rwlock_distr_ctx</param>
 void rwlock_distr_wrlock(rwlock_distr_ctx *ctx);

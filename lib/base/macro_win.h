@@ -16,45 +16,21 @@
 #define STRICMP  _stricmp          // 不区分大小写字符串比较
 #define STRNCMP  _strnicmp         // 不区分大小写的前 n 字节字符串比较
 #define STRTOK   strtok_s          // 线程安全的字符串分割
-// MSVC _snprintf 满 fill 不补 NUL；包装保证 NUL 终止，签名与 snprintf 等价
-static inline int _snprintf_safe(char *buf, size_t size, const char *fmt, ...) {
-    va_list args;
-    va_start(args, fmt);
-    int n = _vsnprintf(buf, size, fmt, args);
-    va_end(args);
-    if (size > 0) {
-        buf[size - 1] = '\0';
-        if (n < 0) {
-            n = (int)strlen(buf);//MSVC < 2015 下 _vsnprintf 截断时返回 -1
-        }
-    }
-    return n;
-}
-#define SNPRINTF _snprintf_safe    // 格式化输出到缓冲区（自动补 NUL）
-// 老 VC swprintf 无 size 参数 + 新 VC C99 模式满 fill 时 buf 未定义；包装保证 NUL 终止
-static inline int _swprintf_safe(wchar_t *buf, size_t size, const wchar_t *fmt, ...) {
-    va_list args;
-    va_start(args, fmt);
-    int n = _vsnwprintf(buf, size, fmt, args);
-    va_end(args);
-    if (size > 0) {
-        buf[size - 1] = L'\0';
-    }
-    return n;
-}
-#define SWPRINTF _swprintf_safe    // 宽字符格式化输出（自动补 NUL）
+#define SNPRINTF snprintf          // 格式化输出到缓冲区
+#define SWPRINTF swprintf          // 宽字符格式化输出
 #define FSTAT    _stat             // 获取文件状态
 // 微秒级睡眠（Windows 使用可等待定时器实现）
 #define USLEEP(us)\
     do {\
-        LARGE_INTEGER ft;\
-        ft.QuadPart = -(10 * (__int64)us);\
-        HANDLE timer = CreateWaitableTimer(NULL, TRUE, NULL);\
-        if (NULL != timer) {\
-            if (SetWaitableTimer(timer, &ft, 0, NULL, NULL, 0)) {\
-                WaitForSingleObject(timer, INFINITE);\
+        uint64_t _slus = (uint64_t)(us);\
+        LARGE_INTEGER _slft;\
+        _slft.QuadPart = -(__int64)(_slus * 10ULL);\
+        HANDLE _sltimer = CreateWaitableTimer(NULL, TRUE, NULL);\
+        if (NULL != _sltimer) {\
+            if (SetWaitableTimer(_sltimer, &_slft, 0, NULL, NULL, 0)) {\
+                WaitForSingleObject(_sltimer, INFINITE);\
             }\
-            CloseHandle(timer);\
+            CloseHandle(_sltimer);\
         }\
     }while(0)
 

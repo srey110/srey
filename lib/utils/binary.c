@@ -40,11 +40,13 @@ void binary_offset(binary_ctx *ctx, size_t off) {
 }
 // 扩展缓冲区，确保有足够空间写入 size 字节（仅内部托管可扩容）
 static inline void _binary_expand(binary_ctx *ctx, size_t size) {
+    //inc==0 标记外部托管 buf：不接管所有权，任何 binary_set_* 都会从 offset 起改写调用方内存，
+    //超出容量时还要对栈/静态/异分配器内存调 REALLOC(UB)。守卫必须在容量判断之前——
+    //放在 if 内只挡得住写溢出的那次，写得下的同样非法却会静默损坏调用方数据
+    ASSERTAB(0 != ctx->inc, "external buffer is read-only: use binary_init(NULL,...) for writable mode");
     ASSERTAB(size <= SIZE_MAX - ctx->offset - 1, "binary buffer size overflow");
     size += ctx->offset + 1;
     if (size > ctx->size) {
-        //inc==0 标记外部托管 buf：对栈/静态/异分配器内存调 REALLOC 是 UB，必须明确拒绝
-        ASSERTAB(0 != ctx->inc, "external buffer cannot expand: use binary_init(NULL,...) for writable mode");
         size_t lens = ctx->size * 2;
         if (lens < size) {
             lens = size;

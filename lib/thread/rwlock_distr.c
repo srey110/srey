@@ -4,6 +4,7 @@
 // 通过线性扫描查找 ctx 对应的 slot,容量上限 RWLOCK_DISTR_MAX_TLS
 typedef struct rwlock_distr_tls_entry {
     int32_t slot;             // owner->slots 中的索引;owner=NULL 时无意义
+    int32_t depth;            // 本线程对该 ctx 的 rdlock 嵌套层数;线程私有,无需原子
     rwlock_distr_ctx *owner;  // 注册到的 ctx;NULL=空闲
 } rwlock_distr_tls_entry;
 static THREAD_LOCAL rwlock_distr_tls_entry _tls[RWLOCK_DISTR_MAX_TLS];
@@ -70,6 +71,8 @@ void rwlock_distr_unregister(rwlock_distr_ctx *ctx) {
     int32_t idx = _tls[i].slot;
     _tls[i].owner = NULL;
     _tls[i].slot = 0;
+    // depth 必须一并清零:TLS 条目会被后续 register 复用,残留层数会让下次最外层 rdlock 被当成嵌套
+    _tls[i].depth = 0;
     // 兜底清 active,即使调用方违反契约也不让 writer 卡死
     ATOMIC_SET(&ctx->slots[idx].active, 0);
     ATOMIC_SET(&ctx->slots[idx].in_use, 0);
@@ -77,6 +80,11 @@ void rwlock_distr_unregister(rwlock_distr_ctx *ctx) {
 void rwlock_distr_rdlock(rwlock_distr_ctx *ctx) {
     int32_t i = _rwlock_distr_tls_find(ctx);
     if (-1 != i) {
+        // 嵌套 rdlock:本线程已持读锁,writer 正被本 slot 的 active 挡在临界区外,计数后直接返回。
+        // 若在此重走握手,让步分支会清 active 把 writer 放进去,而外层读区仍在运行
+        if (_tls[i].depth++ > 0) {
+            return;
+        }
         int32_t slot = _tls[i].slot;
         // reader/writer 为 store-buffer(Dekker)握手,需 StoreLoad 顺序:store active=1(seq_cst)
         // 后必须以 seq_cst 载入 write_flag——acquire 载入在 ARMv8.3+ RCpc(LDAPR)下不保证该顺序,
@@ -99,12 +107,20 @@ void rwlock_distr_rdlock(rwlock_distr_ctx *ctx) {
 void rwlock_distr_runlock(rwlock_distr_ctx *ctx) {
     int32_t i = _rwlock_distr_tls_find(ctx);
     if (-1 != i) {
+        // 仅最外层解锁才清 active,内层只递减计数,否则外层读区会失去保护
+        ASSERTAB(_tls[i].depth > 0, "rwlock_distr: runlock without a matching rdlock");
+        if (--_tls[i].depth > 0) {
+            return;
+        }
         ATOMIC_SET(&ctx->slots[_tls[i].slot].active, 0);
         return;
     }
     rwlock_unlock(&ctx->fallback);
 }
 void rwlock_distr_wrlock(rwlock_distr_ctx *ctx) {
+    int32_t tls = _rwlock_distr_tls_find(ctx);
+    ASSERTAB(-1 == tls || 0 == _tls[tls].depth,
+        "rwlock_distr: wrlock while holding rdlock on the same ctx, self-deadlock");
     // 先拿 fallback 写锁:阻塞未注册 reader 与并发 writer
     rwlock_wrlock(&ctx->fallback);
     // 再置 write_flag:阻塞新 slot reader

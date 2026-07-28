@@ -4,11 +4,40 @@
 #include "utils/binary.h"
 #include "crypt/scram.h"
 
+// commitTransaction / abortTransaction 按规范只能发往 admin 库，与连接当前的 $db 无关；
+// 发错库服务端回 code 13 Unauthorized "may only be run against the admin database"
+#define MONGO_TXN_DB "admin"
 #define BSON_HEADROOM 256          // 大消息 cap 估算余量（命令名+集合名+元数据+session options 等）
+// 拼接 options：bson_cat 失败即源文档达 MAX_PACK_SIZE 被整篇丢弃，此时整条命令作废——
+// 继续打包会发出缺 options 的命令，服务端照常执行并返回错误结果集。
+// *size 显式置 0：调用方按"返回非 NULL 才读 size"约定，早退路径不能留未初始化值
+#define MONGO_PACK_CAT(doc) do { \
+        if (ERR_OK != bson_cat(&bson, (doc))) { \
+            *size = 0; \
+            BSON_FREE(&bson); \
+            return NULL; \
+        } \
+    } while (0)
 //事务和操作 https://www.mongodb.com/zh-cn/docs/manual/core/transactions-operations/#crud-operations
+// 只带事务上下文(lsid/txnNumber/autocommit)。hello 与 commit/abort 用：commitTransaction 与
+// abortTransaction 按规范不得携带 startTransaction，hello 则根本不是事务命令
 #define TRANSACTION_OPTIONS \
     if (NULL != mongo->session) {\
-        bson_cat(&bson, mongo->session->options);\
+        MONGO_PACK_CAT(mongo->session->options);\
+    }
+// 事务内 CRUD 用：事务的第一条命令必须带 startTransaction:true，服务端才真正开启事务；
+// 缺它则该操作以 NoSuchTransaction("active transaction number is -1")失败，整个事务无从开始。
+// 必须放在本函数所有 MONGO_PACK_CAT 之后——一旦置位 started 就不能再有失败早退，否则包没发出去
+// 而标志已消耗，后续操作都不带 startTransaction。此位置之后只剩 MONGO_PACK_RETURN，它不会失败。
+// 残留边界：置位后 coro_send 若网络失败，事务在服务端并未开启而 started 已为 1，该 session
+// 只能重新 begin；这与"连接断开后 session 失效需重建"的既有约定一致
+#define TRANSACTION_OPTIONS_START \
+    if (NULL != mongo->session) {\
+        MONGO_PACK_CAT(mongo->session->options);\
+        if (0 == mongo->session->started) {\
+            bson_append_bool(&bson, "startTransaction", 1);\
+            mongo->session->started = 1;\
+        }\
     }
 // 函数开头：声明并初始化局部 bson_ctx bson（必须置于函数体顶部）
 // cap：BSON 预估容量，0=默认；大消息传 dlens + BSON_HEADROOM 消除 doubling 重分配
@@ -50,6 +79,7 @@ static void *_mongo_pack_msg(mongo_ctx *mongo, int32_t kind, const char *docid, 
     return bwriter.data;
 }
 void *mongo_pack_scram_client_first(mongo_ctx *mongo, const char *method, size_t *size) {
+    *size = 0;
     if (0 == strlen(mongo->authdb)) {
         safe_fill_str(mongo->authdb, sizeof(mongo->authdb), mongo->db);
     }
@@ -63,7 +93,11 @@ void *mongo_pack_scram_client_first(mongo_ctx *mongo, const char *method, size_t
     if (NULL == mongo->scram) {
         return NULL;
     }
-    scram_set_user(mongo->scram, mongo->user, strlen(mongo->user));
+    if (ERR_OK != scram_set_user(mongo->scram, mongo->user, strlen(mongo->user))) {
+        scram_free(mongo->scram);
+        mongo->scram = NULL;
+        return NULL;
+    }
     char *first_message = scram_first_message(mongo->scram);
     if (NULL == first_message) {
         scram_free(mongo->scram);
@@ -96,7 +130,7 @@ void *mongo_pack_hello(mongo_ctx *mongo, char *options, size_t *size) {
     bson_append_utf8(&bson, "os", OS_NAME);
     bson_append_end(&bson);//comment
     TRANSACTION_OPTIONS
-    bson_cat(&bson, options);
+    MONGO_PACK_CAT(options);
     MONGO_PACK_RETURN(mongo->db);
 }
 void *mongo_pack_ping(mongo_ctx *mongo, size_t *size) {
@@ -107,31 +141,31 @@ void *mongo_pack_ping(mongo_ctx *mongo, size_t *size) {
 void *mongo_pack_drop(mongo_ctx *mongo, char *options, size_t *size) {
     MONGO_PACK_BEGIN(0);
     bson_append_utf8(&bson, "drop", mongo->collection);
-    bson_cat(&bson, options);
+    MONGO_PACK_CAT(options);
     MONGO_PACK_RETURN(mongo->db);
 }
 void *mongo_pack_insert(mongo_ctx *mongo, char *docs, size_t dlens, char *options, size_t *size) {
     MONGO_PACK_BEGIN(dlens + BSON_HEADROOM);
     bson_append_utf8(&bson, "insert", mongo->collection);
     bson_append_array(&bson, "documents", docs, dlens);
-    TRANSACTION_OPTIONS
-    bson_cat(&bson, options);
+    MONGO_PACK_CAT(options);
+    TRANSACTION_OPTIONS_START
     MONGO_PACK_RETURN(mongo->db);
 }
 void *mongo_pack_update(mongo_ctx *mongo, char *updates, size_t ulens, char *options, size_t *size) {
     MONGO_PACK_BEGIN(ulens + BSON_HEADROOM);
     bson_append_utf8(&bson, "update", mongo->collection);
     bson_append_array(&bson, "updates", updates, ulens);
-    TRANSACTION_OPTIONS
-    bson_cat(&bson, options);
+    MONGO_PACK_CAT(options);
+    TRANSACTION_OPTIONS_START
     MONGO_PACK_RETURN(mongo->db);
 }
 void *mongo_pack_delete(mongo_ctx *mongo, char *deletes, size_t dlens, char *options, size_t *size) {
     MONGO_PACK_BEGIN(dlens + BSON_HEADROOM);
     bson_append_utf8(&bson, "delete", mongo->collection);
     bson_append_array(&bson, "deletes", deletes, dlens);
-    TRANSACTION_OPTIONS
-    bson_cat(&bson, options);
+    MONGO_PACK_CAT(options);
+    TRANSACTION_OPTIONS_START
     MONGO_PACK_RETURN(mongo->db);
 }
 void *mongo_pack_bulkwrite(mongo_ctx *mongo, char *ops, size_t olens, char *nsinfo, size_t nlens, char *options, size_t *size) {
@@ -139,8 +173,8 @@ void *mongo_pack_bulkwrite(mongo_ctx *mongo, char *ops, size_t olens, char *nsin
     bson_append_int32(&bson, "bulkWrite", 1);
     bson_append_array(&bson, "ops", ops, olens);
     bson_append_array(&bson, "nsInfo", nsinfo, nlens);
-    TRANSACTION_OPTIONS
-    bson_cat(&bson, options);
+    MONGO_PACK_CAT(options);
+    TRANSACTION_OPTIONS_START
     MONGO_PACK_RETURN(mongo->db);
 }
 void *mongo_pack_find(mongo_ctx *mongo, char *filter, size_t flens, char *options, size_t *size) {
@@ -149,8 +183,8 @@ void *mongo_pack_find(mongo_ctx *mongo, char *filter, size_t flens, char *option
     if (NULL != filter) {
         bson_append_document(&bson, "filter", filter, flens);
     }
-    TRANSACTION_OPTIONS
-    bson_cat(&bson, options);
+    MONGO_PACK_CAT(options);
+    TRANSACTION_OPTIONS_START
     MONGO_PACK_RETURN(mongo->db);
 }
 void *mongo_pack_aggregate(mongo_ctx *mongo, char *pipeline, size_t pllens, char *options, size_t *size) {
@@ -159,24 +193,24 @@ void *mongo_pack_aggregate(mongo_ctx *mongo, char *pipeline, size_t pllens, char
     bson_append_array(&bson, "pipeline", pipeline, pllens);
     const char *cursor = bson_empty(size);
     bson_append_document(&bson, "cursor", (char *)cursor, *size);
-    TRANSACTION_OPTIONS
-    bson_cat(&bson, options);
+    MONGO_PACK_CAT(options);
+    TRANSACTION_OPTIONS_START
     MONGO_PACK_RETURN(mongo->db);
 }
 void *mongo_pack_getmore(mongo_ctx *mongo, int64_t cursorid, char *options, size_t *size) {
     MONGO_PACK_BEGIN(0);
     bson_append_int64(&bson, "getMore", cursorid);//事务外部创建的游标，无法在事务内部调用 getMore
     bson_append_utf8(&bson, "collection", mongo->collection);
-    TRANSACTION_OPTIONS
-    bson_cat(&bson, options);
+    MONGO_PACK_CAT(options);
+    TRANSACTION_OPTIONS_START
     MONGO_PACK_RETURN(mongo->db);
 }
 void *mongo_pack_killcursors(mongo_ctx *mongo, char *cursorids, size_t cslens, char *options, size_t *size) {
     MONGO_PACK_BEGIN(cslens + BSON_HEADROOM);
     bson_append_utf8(&bson, "killCursors", mongo->collection);//不能将killCursors 命令指定为ACID 事务中的第一个操作.killCursors 命令，服务器会立即停止指定的游标。它不会等待ACID 事务提交
     bson_append_array(&bson, "cursors", cursorids, cslens);
-    TRANSACTION_OPTIONS
-    bson_cat(&bson, options);
+    MONGO_PACK_CAT(options);
+    TRANSACTION_OPTIONS_START
     MONGO_PACK_RETURN(mongo->db);
 }
 void *mongo_pack_distinct(mongo_ctx *mongo, const char *key, char *query, size_t qlens, char *options, size_t *size) {
@@ -186,8 +220,8 @@ void *mongo_pack_distinct(mongo_ctx *mongo, const char *key, char *query, size_t
     if (NULL != query) {
         bson_append_document(&bson, "query", query, qlens);
     }
-    TRANSACTION_OPTIONS
-    bson_cat(&bson, options);
+    MONGO_PACK_CAT(options);
+    TRANSACTION_OPTIONS_START
     MONGO_PACK_RETURN(mongo->db);
 }
 void *mongo_pack_findandmodify(mongo_ctx *mongo, char *query, size_t qlens, int32_t remove, int32_t pipeline, char *update, size_t ulens,
@@ -206,8 +240,8 @@ void *mongo_pack_findandmodify(mongo_ctx *mongo, char *query, size_t qlens, int3
             bson_append_document(&bson, "update", update, ulens);
         }
     }
-    TRANSACTION_OPTIONS
-    bson_cat(&bson, options);
+    MONGO_PACK_CAT(options);
+    TRANSACTION_OPTIONS_START
     MONGO_PACK_RETURN(mongo->db);
 }
 void *mongo_pack_count(mongo_ctx *mongo, char *query, size_t qlens, char *options, size_t *size) {
@@ -216,23 +250,23 @@ void *mongo_pack_count(mongo_ctx *mongo, char *query, size_t qlens, char *option
     if (NULL != query) {
         bson_append_document(&bson, "query", query, qlens);
     }
-    TRANSACTION_OPTIONS
-    bson_cat(&bson, options);
+    MONGO_PACK_CAT(options);
+    TRANSACTION_OPTIONS_START
     MONGO_PACK_RETURN(mongo->db);
 }
 void *mongo_pack_createindexes(mongo_ctx *mongo, char *indexes, size_t ilens, char *options, size_t *size) {
     MONGO_PACK_BEGIN(ilens + BSON_HEADROOM);
     bson_append_utf8(&bson, "createIndexes", mongo->collection);
     bson_append_array(&bson, "indexes", indexes, ilens);
-    TRANSACTION_OPTIONS
-    bson_cat(&bson, options);
+    MONGO_PACK_CAT(options);
+    TRANSACTION_OPTIONS_START
     MONGO_PACK_RETURN(mongo->db);
 }
 void *mongo_pack_dropindexes(mongo_ctx *mongo, char *indexes, size_t ilens, char *options, size_t *size) {
     MONGO_PACK_BEGIN(ilens + BSON_HEADROOM);
     bson_append_utf8(&bson, "dropIndexes", mongo->collection);
     bson_append_array(&bson, "index", indexes, ilens);
-    bson_cat(&bson, options);
+    MONGO_PACK_CAT(options);
     MONGO_PACK_RETURN(mongo->db);
 }
 void *mongo_pack_startsession(mongo_ctx *mongo, size_t *size) {
@@ -275,14 +309,14 @@ void *mongo_pack_committransaction(mongo_session *session, char *options, size_t
     MONGO_PACK_BEGIN(0);
     bson_append_int32(&bson, "commitTransaction", 1);
     TRANSACTION_OPTIONS
-    bson_cat(&bson, options);
-    MONGO_PACK_RETURN(mongo->db);
+    MONGO_PACK_CAT(options);
+    MONGO_PACK_RETURN(MONGO_TXN_DB);
 }
 void *mongo_pack_aborttransaction(mongo_session *session, char *options, size_t *size) {
     mongo_ctx *mongo = session->mongo;
     MONGO_PACK_BEGIN(0);
     bson_append_int32(&bson, "abortTransaction", 1);
     TRANSACTION_OPTIONS
-    bson_cat(&bson, options);
-    MONGO_PACK_RETURN(mongo->db);
+    MONGO_PACK_CAT(options);
+    MONGO_PACK_RETURN(MONGO_TXN_DB);
 }

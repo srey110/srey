@@ -105,6 +105,12 @@ static int32_t _router_parse_seg(const char *src, size_t len, router_seg *out) {
     out->t = ROUTER_SEG_LIT;
     return ERR_OK;
 }
+// 释放段数组内每个 str(均由 _router_parse_seg MALLOC); 数组本身的所有权归调用方处置
+static void _router_segs_free_str(router_seg *segs, int32_t n) {
+    for (int32_t k = 0; k < n; k++) {
+        FREE(segs[k].str);
+    }
+}
 // 按 '/' 拆分 path, 调用 _router_parse_seg 逐段解析, 写入新分配的 *out_segs
 // 全部成功才落堆, 任一段失败时回滚已 MALLOC 的 str
 static int32_t _router_parse_path(const char *path, size_t path_len, router_seg **out_segs, int32_t *out_n) {
@@ -128,26 +134,19 @@ static int32_t _router_parse_path(const char *path, size_t path_len, router_seg 
         }
         if (n >= URL_MAX_PATH_DEPTH) {
             LOG_WARN("router: path segments exceed %d, rejected.", URL_MAX_PATH_DEPTH);
-            // 已申请 str 释放; buf 本身是栈缓冲无需 free
-            for (int32_t k = 0; k < n; k++) {
-                FREE(buf[k].str);
-            }
+            _router_segs_free_str(buf, n);
             return ERR_FAILED;
         }
         // WILD 段必须是最末段; 此时若上一段已是 WILD 却还有当前段, 说明 WILD 后还有内容, 拒绝
         // (router 默认会在 _router_match_path 命中 WILD 时立即返成功, 中间 WILD 会让后续段静默失效, 易掉坑)
         if (n > 0 && ROUTER_SEG_WILD == buf[n - 1].t) {
             LOG_WARN("router: wildcard '*' must be the last segment.");
-            for (int32_t k = 0; k < n; k++) {
-                FREE(buf[k].str);
-            }
+            _router_segs_free_str(buf, n);
             return ERR_FAILED;
         }
         if (ERR_OK != _router_parse_seg(path + start, i - start, &buf[n])) {
             LOG_WARN("router: invalid path segment.");
-            for (int32_t k = 0; k < n; k++) {
-                FREE(buf[k].str);
-            }
+            _router_segs_free_str(buf, n);
             return ERR_FAILED;
         }
         n++;
@@ -163,6 +162,23 @@ static int32_t _router_parse_path(const char *path, size_t path_len, router_seg 
     memcpy(*out_segs, buf, sizeof(router_seg) * (size_t)n);
     *out_n = n;
     return ERR_OK;
+}
+// 把请求段 qsegs[*qi] 作为 seg 命名的参数填入 ctx->params, 并推进 *pn / *qi。
+// 成功返 1; 超出 ROUTER_MAX_PARAMS 返 0, 此时不改动任何计数。
+// {name} 与 {name?} 共用本函数, 保证两者填参形状与上限判定始终一致
+static int32_t _router_param_take(router_req *ctx, const router_seg *seg,
+                                  const buf_ctx *qsegs, int32_t *pn, int32_t *qi) {
+    if (*pn >= ROUTER_MAX_PARAMS) {
+        LOG_WARN("router: params exceed %d, rejected.", ROUTER_MAX_PARAMS);
+        return 0;
+    }
+    ctx->params[*pn].key = seg->str;
+    ctx->params[*pn].key_len = seg->str_len;
+    ctx->params[*pn].val = qsegs[*qi].data;
+    ctx->params[*pn].val_len = (uint32_t)qsegs[*qi].lens;
+    (*pn)++;
+    (*qi)++;
+    return 1;
 }
 // 把 url_parse 拆好的请求段 qsegs 与 rsegs 对照, 成功填 ctx->params 并返回 1。
 // qsegs 已解码(%XX 已解、'+' 保持字面), data 指向 ctx->url_storage.buf;
@@ -195,17 +211,10 @@ static int32_t _router_match_path(const router_seg *rsegs, int32_t rn,
             if (qi >= qn) {
                 return 0;
             }
-            if (pn >= ROUTER_MAX_PARAMS) {
-                LOG_WARN("router: params exceed %d, rejected.", ROUTER_MAX_PARAMS);
+            if (!_router_param_take(ctx, seg, qsegs, &pn, &qi)) {
                 return 0;
             }
-            ctx->params[pn].key = seg->str;
-            ctx->params[pn].key_len = seg->str_len;
-            ctx->params[pn].val = qsegs[qi].data;
-            ctx->params[pn].val_len = (uint32_t)qsegs[qi].lens;
-            pn++;
             ri++;
-            qi++;
         } else /* ROUTER_SEG_OPT */ {
             // {name?} 有就吃, 没就跳, 不算匹配失败
             // 若下一路由段是 LIT 且与当前请求段字面完全匹配, 优先让 LIT 消耗, OPT 跳过
@@ -214,17 +223,9 @@ static int32_t _router_match_path(const router_seg *rsegs, int32_t rn,
                     && ROUTER_SEG_LIT == rsegs[ri + 1].t
                     && rsegs[ri + 1].str_len == (uint32_t)qsegs[qi].lens
                     && 0 == memcmp(rsegs[ri + 1].str, qsegs[qi].data, qsegs[qi].lens));
-                if (!skip_opt) {
-                    if (pn >= ROUTER_MAX_PARAMS) {
-                        LOG_WARN("router: params exceed %d, rejected.", ROUTER_MAX_PARAMS);
-                        return 0;
-                    }
-                    ctx->params[pn].key = seg->str;
-                    ctx->params[pn].key_len = seg->str_len;
-                    ctx->params[pn].val = qsegs[qi].data;
-                    ctx->params[pn].val_len = (uint32_t)qsegs[qi].lens;
-                    pn++;
-                    qi++;
+                if (!skip_opt
+                    && !_router_param_take(ctx, seg, qsegs, &pn, &qi)) {
+                    return 0;
                 }
             }
             ri++;
@@ -276,10 +277,7 @@ void router_free(router_ctx *r) {
     // 逐 entry 释放其内嵌的字符串和数组
     for (int32_t i = 0; i < r->routes_n; i++) {
         e = &r->routes[i];
-        // segs 内每个 str 都是 _router_parse_seg MALLOC 的
-        for (int32_t k = 0; k < e->segs_n; k++) {
-            FREE(e->segs[k].str);
-        }
+        _router_segs_free_str(e->segs, e->segs_n);
         FREE(e->segs);
         FREE(e->mws);
     }

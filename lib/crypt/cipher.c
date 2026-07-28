@@ -7,31 +7,23 @@ void cipher_init(cipher_ctx *cipher, engine_type engine, cipher_model model,
     cipher->encrypt = encrypt;
     cipher->model = model;
     cipher->padding = NoPadding;
+    ZERO(cipher->iv, sizeof(cipher->iv));
+    ZERO(cipher->cur_iv, sizeof(cipher->cur_iv));
+    int32_t fwdkey = (cipher->encrypt
+        || CFB == cipher->model
+        || OFB == cipher->model
+        || CTR == cipher->model);
     if (AES == engine) {
         cipher->block_lens = AES_BLOCK_SIZE;
         cipher->cur_ctx = &cipher->eng_ctx.aes;
         cipher->_cipher = (_cipher_cb)aes_crypt;
-        if (cipher->encrypt
-            || CFB == cipher->model
-            || OFB == cipher->model
-            || CTR == cipher->model) {
-            aes_init(cipher->cur_ctx, key, klens, keybits, 1);
-        } else {
-            aes_init(cipher->cur_ctx, key, klens, keybits, 0);
-        }
+        aes_init(cipher->cur_ctx, key, klens, keybits, fwdkey);
         return;
     }
     cipher->block_lens = DES_BLOCK_SIZE;
     cipher->cur_ctx = &cipher->eng_ctx.des;
     cipher->_cipher = (_cipher_cb)des_crypt;
-    if (cipher->encrypt
-        || CFB == cipher->model
-        || OFB == cipher->model
-        || CTR == cipher->model) {
-        des_init(cipher->cur_ctx, key, klens, DES3 == engine, 1);
-    } else {
-        des_init(cipher->cur_ctx, key, klens, DES3 == engine, 0);
-    }
+    des_init(cipher->cur_ctx, key, klens, DES3 == engine, fwdkey);
 }
 void cipher_free(cipher_ctx *cipher) {
     secure_zero(cipher, sizeof(cipher_ctx));

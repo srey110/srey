@@ -16,7 +16,7 @@ static char *_config_read(void) {
     size_t lens;
     char *info = readall(config, &lens);
     if (NULL == info) {
-        PRINT("%s", ERRORSTR(errno));
+        PRINT("%s", strerror(errno));
         return NULL;
     }
     return info;
@@ -122,7 +122,7 @@ static void _open_log(uint32_t capacity) {
     logstream = fopen(logfile, "a");
     if (NULL == logstream) {
         // fopen 失败时退化为终端输出；写 stderr 以便部署排查
-        fprintf(stderr, "open log file %s failed: %s\n", logfile, ERRORSTR(errno));
+        fprintf(stderr, "open log file %s failed: %s\n", logfile, strerror(errno));
     } else {
 #ifndef OS_WIN
         PRINT("tail -f \"%s\"", logfile);

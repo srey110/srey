@@ -22,7 +22,9 @@ typedef struct hash_ring_ctx {
 /// <param name="ring">hash_ring_ctx</param>
 void hash_ring_init(hash_ring_ctx *ring);
 /// <summary>
-/// 释放
+/// 释放。完成后 ring 复位为 hash_ring_init 后的状态，可安全重复调用；
+/// 复位是为了重复释放不崩、释放后 hash_ring_find 不越过 nitems 早退去解引用已置空的
+/// items，不是"清空并复用"的入口
 /// </summary>
 /// <param name="ring">hash_ring_ctx</param>
 void hash_ring_free(hash_ring_ctx *ring);

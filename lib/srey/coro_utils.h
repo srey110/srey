@@ -410,14 +410,15 @@ void mongo_begin(mongo_session *session);
 /// </summary>
 /// <param name="session">mongo_session</param>
 /// <param name="options">可选 其他参数 document (writeConcern comment)</param>
-/// <returns>ERR_OK 成功</returns>
+/// <returns>ERR_OK 成功。组包失败或网络失败时事务状态原样保留，可换参数重试同一事务；
+/// 服务端有响应即释放事务状态（命令本身失败也不再可重试），与 Lua 侧 mongo.lua 一致</returns>
 int32_t mongo_commit(mongo_session *session, char *options);
 /// <summary>
 /// 事务回滚
 /// </summary>
 /// <param name="session">mongo_session</param>
 /// <param name="options">可选 其他参数 document (writeConcern comment)</param>
-/// <returns>ERR_OK 成功</returns>
+/// <returns>ERR_OK 成功。状态保留/释放的时机同 mongo_commit</returns>
 int32_t mongo_rollback(mongo_session *session, char *options);
 /// <summary>
 /// kcp 同步建立会话:kcp_start 后挂起当前协程,等 event 线程实际建会话完成(或 conv 冲突失败)后返回;须在协程内调用。

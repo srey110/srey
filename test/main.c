@@ -19,6 +19,7 @@
 #include "bench_rwlock.h"
 #include "bench_mpq.h"
 #include "bench_evcmd.h"
+#include "bench_hashmap.h"
 #include "task_tcp_server.h"
 #include "task_udp_server.h"
 #include "task_rpc.h"
@@ -122,6 +123,9 @@ int main(int argc, char *argv[]) {
     LOG_INFO("--------------------------------------------------");
     //event 命令通道:pipe 直写 vs queue+spin vs fsqu(linux 下即 mpq),含触发信号合并对比
     bench_evcmd();
+    LOG_INFO("--------------------------------------------------");
+    //hashmap set/get/delete 吞吐:默认初始容量(全程扩容) vs 预留容量(无扩容)
+    bench_hashmap();
     LOG_INFO("*******************benchmark end*******************");
 #endif
     /* ── 层 1：纯内存单元测试套件 ── */

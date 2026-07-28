@@ -12,7 +12,7 @@ void sock_init(void) {
     if (ATOMIC_CAS(&_init_sock_ref, 0, 1)) {
         WSADATA wsdata;
         WORD ver = MAKEWORD(2, 2);
-        ASSERTAB(ERR_OK == WSAStartup(ver, &wsdata), ERRORSTR(ERRNO));
+        ASSERTAB_CODE(WSAStartup(ver, &wsdata));
         ATOMIC_SET(&_init_sock_ref, 2);
     } else {
         while (ATOMIC_GET(&_init_sock_ref) < 2) {

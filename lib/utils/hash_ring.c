@@ -40,11 +40,11 @@ void hash_ring_free(hash_ring_ctx *ring) {
         FREE(cur->node);
         FREE(cur);
     }
-    list_init(&ring->nodes);
     for (uint32_t i = 0; i < ring->nitems; i++) {
         FREE(ring->items[i]);
     }
     FREE(ring->items);
+    hash_ring_init(ring);
 }
 /* 计算数据的 MD5 哈希并取前 4 字节作为哈希值（小端）。
  * 使用栈上局部 digest_ctx，每次调用完全独立，线程安全。 */
@@ -69,7 +69,7 @@ static void _hash_ring_add_items(hash_ring_ctx *ring, hash_ring_node *node) {
     ASSERTAB(ring->nitems <= UINT32_MAX - node->nreplicas, "hash ring capacity overflow.");
     REALLOC(ring->items, ring->items, sizeof(hash_ring_item *) * ((size_t)ring->nitems + node->nreplicas));
     for (uint32_t i = 0; i < node->nreplicas; i++) {
-        concat_len = SNPRINTF(concat_buf, sizeof(concat_buf), "-%d", i);
+        concat_len = SNPRINTF(concat_buf, sizeof(concat_buf), "-%u", i);
         ASSERTAB(concat_len > 0, "snprintf failed.");
         name_len = node->lens + (size_t)concat_len;
         if (name_len <= NAME_STACK_LEN) {
@@ -227,7 +227,7 @@ void hash_ring_print(hash_ring_ctx *ring) {
     hash_ring_item *item;
     list_foreach(&ring->nodes, ln) {
         cur = UPCAST(ln, hash_ring_list, lnode);
-        printf("%d: ", x);
+        printf("%u: ", x);
         name = cur->node->name;
         for (y = 0; y < cur->node->lens; y++) {
             printf("%c", name[y]);
@@ -236,7 +236,7 @@ void hash_ring_print(hash_ring_ctx *ring) {
         x++;
     }
     printf("\n");
-    printf("Items (%d): \n\n", ring->nitems);
+    printf("Items (%u): \n\n", ring->nitems);
     for (x = 0; x < ring->nitems; x++) {
         item = ring->items[x];
         printf("%" PRIu64 " : ", item->digest);

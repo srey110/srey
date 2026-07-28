@@ -84,6 +84,35 @@ runner.run("db_mongo", function(t)
     mg:clear_flag()
     t:eq(3, cnt, "mongo count after MORETOCOME insert")
 
+    -- 事务：commit 后事务内插入可见，rollback 后不可见。同一 session 连做两个事务，
+    -- 覆盖 txnNumber 递增与 startTransaction 只附加于每个事务首个操作
+    local sess = mg:startsession()
+    if not sess then
+        t:fail("mongo startsession")
+    else
+        t:check(sess:refresh(), "session refresh")
+
+        t:check(sess:begin(), "txn begin (commit path)")
+        local tdoc = bson.encode({ { id = 300, name = "txn-commit", score = 7 } })
+        local tptr, tsz = tdoc:data()
+        local tok, tn = mg:insert("srey_test", tptr, tsz)
+        t:check(tok, "txn insert ok")
+        t:eq(1, tn, "txn insert n=1")
+        t:check(sess:commit(), "txn commit")
+        cnt = mg:count("srey_test", eptr, esz)
+        t:eq(4, cnt, "commit 后事务内插入可见")
+
+        t:check(sess:begin(), "txn begin (rollback path)")
+        local rdoc = bson.encode({ { id = 301, name = "txn-abort", score = 8 } })
+        local rptr, rsz = rdoc:data()
+        t:check(mg:insert("srey_test", rptr, rsz), "txn insert (rollback path) ok")
+        t:check(sess:rollback(), "txn rollback")
+        cnt = mg:count("srey_test", eptr, esz)
+        t:eq(4, cnt, "rollback 后事务内插入不可见")
+
+        sess:close()
+    end
+
     mg:quit()
 end)
 end)

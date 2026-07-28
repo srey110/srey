@@ -10,12 +10,19 @@ int32_t hug_init(hug_ctx *ctx) {
     // 先置 -1 兜底: pipe 失败时 hug_free 内 if (-1 != exit_pipe[0]) 不会 close 栈垃圾值误关其他 fd
     ctx->exit_pipe[0] = -1;
     ctx->exit_pipe[1] = -1;
-    if (-1 == pipe(ctx->exit_pipe)) {
+#if defined(HAVE_PIPE2)
+    int32_t rtn = pipe2(ctx->exit_pipe, O_CLOEXEC);
+#else
+    int32_t rtn = pipe(ctx->exit_pipe);
+#endif
+    if (-1 == rtn) {
         PRINT("hug pipe failed: %s", ERRORSTR(ERRNO));
         return ERR_FAILED;
     }
-    fcntl(ctx->exit_pipe[0], F_SETFD, FD_CLOEXEC);
-    fcntl(ctx->exit_pipe[1], F_SETFD, FD_CLOEXEC);
+#if !defined(HAVE_PIPE2)
+    SET_CLOEXEC(ctx->exit_pipe[0]);
+    SET_CLOEXEC(ctx->exit_pipe[1]);
+#endif
 #endif
     return ERR_OK;
 }

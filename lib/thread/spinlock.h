@@ -23,7 +23,7 @@ static inline void spin_init(spin_ctx *ctx, const uint32_t spcnt) {
     *ctx = OS_UNFAIR_LOCK_INIT;
 #else
     (void)spcnt;
-    ASSERTAB(ERR_OK == pthread_spin_init(ctx, PTHREAD_PROCESS_PRIVATE), ERRORSTR(ERRNO));
+    ASSERTAB_CODE(pthread_spin_init(ctx, PTHREAD_PROCESS_PRIVATE));
 #endif
 };
 /// <summary>
@@ -49,7 +49,7 @@ static inline void spin_lock(spin_ctx *ctx) {
 #elif defined(OS_DARWIN)
     os_unfair_lock_lock(ctx);
 #else
-    ASSERTAB(ERR_OK == pthread_spin_lock(ctx), ERRORSTR(ERRNO));
+    ASSERTAB_CODE(pthread_spin_lock(ctx));
 #endif
 };
 /// <summary>
@@ -76,7 +76,7 @@ static inline void spin_unlock(spin_ctx *ctx) {
 #elif defined(OS_DARWIN)
     os_unfair_lock_unlock(ctx);
 #else
-    ASSERTAB(ERR_OK == pthread_spin_unlock(ctx), ERRORSTR(ERRNO));
+    ASSERTAB_CODE(pthread_spin_unlock(ctx));
 #endif
 };
 

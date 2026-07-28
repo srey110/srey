@@ -254,13 +254,17 @@ static int32_t _lmongo_requestid(lua_State *lua) {
 /// </summary>
 /// <param name="self" type="userdata">mongo 对象</param>
 /// <param name="opts" type="lightuserdata?">附加 BSON 选项</param>
-/// <returns type="lightuserdata">命令数据指针</returns>
-/// <returns type="integer">数据长度</returns>
+/// <returns type="lightuserdata?">命令数据指针；options 达 MAX_PACK_SIZE 被丢弃时返回 nil</returns>
+/// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_hello(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
     char *opts = _lmongo_get_opts(lua, 2);
     size_t size;
     void *pack = mongo_pack_hello(*ud, opts, &size);
+    if (NULL == pack) {
+        lua_pushnil(lua);
+        return 1;
+    }
     LPUB_RET_LUD(lua, pack, (lua_Integer)size);
 }
 /// <summary>
@@ -280,13 +284,17 @@ static int32_t _lmongo_pack_ping(lua_State *lua) {
 /// </summary>
 /// <param name="self" type="userdata">mongo 对象</param>
 /// <param name="opts" type="lightuserdata?">附加 BSON 选项</param>
-/// <returns type="lightuserdata">命令数据指针</returns>
-/// <returns type="integer">数据长度</returns>
+/// <returns type="lightuserdata?">命令数据指针；options 达 MAX_PACK_SIZE 被丢弃时返回 nil</returns>
+/// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_drop(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
     char *opts = _lmongo_get_opts(lua, 2);
     size_t size;
     void *pack = mongo_pack_drop(*ud, opts, &size);
+    if (NULL == pack) {
+        lua_pushnil(lua);
+        return 1;
+    }
     LPUB_RET_LUD(lua, pack, (lua_Integer)size);
 }
 /// <summary>
@@ -296,8 +304,8 @@ static int32_t _lmongo_pack_drop(lua_State *lua) {
 /// <param name="docs" type="lightuserdata">BSON 数组格式文档列表指针</param>
 /// <param name="dlens" type="integer">docs 字节数</param>
 /// <param name="opts" type="lightuserdata?">附加 BSON 选项</param>
-/// <returns type="lightuserdata">命令数据指针</returns>
-/// <returns type="integer">数据长度</returns>
+/// <returns type="lightuserdata?">命令数据指针；options 达 MAX_PACK_SIZE 被丢弃时返回 nil</returns>
+/// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_insert(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
     LUACHECK_LUDATA(lua, 2);
@@ -306,6 +314,10 @@ static int32_t _lmongo_pack_insert(lua_State *lua) {
     char *opts = _lmongo_get_opts(lua, 4);
     size_t size;
     void *pack = mongo_pack_insert(*ud, docs, dlens, opts, &size);
+    if (NULL == pack) {
+        lua_pushnil(lua);
+        return 1;
+    }
     LPUB_RET_LUD(lua, pack, (lua_Integer)size);
 }
 /// <summary>
@@ -315,8 +327,8 @@ static int32_t _lmongo_pack_insert(lua_State *lua) {
 /// <param name="updates" type="lightuserdata">BSON 数组格式更新列表指针</param>
 /// <param name="ulens" type="integer">updates 字节数</param>
 /// <param name="opts" type="lightuserdata?">附加 BSON 选项</param>
-/// <returns type="lightuserdata">命令数据指针</returns>
-/// <returns type="integer">数据长度</returns>
+/// <returns type="lightuserdata?">命令数据指针；options 达 MAX_PACK_SIZE 被丢弃时返回 nil</returns>
+/// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_update(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
     LUACHECK_LUDATA(lua, 2);
@@ -325,6 +337,10 @@ static int32_t _lmongo_pack_update(lua_State *lua) {
     char *opts = _lmongo_get_opts(lua, 4);
     size_t size;
     void *pack = mongo_pack_update(*ud, updates, ulens, opts, &size);
+    if (NULL == pack) {
+        lua_pushnil(lua);
+        return 1;
+    }
     LPUB_RET_LUD(lua, pack, (lua_Integer)size);
 }
 /// <summary>
@@ -334,8 +350,8 @@ static int32_t _lmongo_pack_update(lua_State *lua) {
 /// <param name="deletes" type="lightuserdata">BSON 数组格式删除列表指针</param>
 /// <param name="dlens" type="integer">deletes 字节数</param>
 /// <param name="opts" type="lightuserdata?">附加 BSON 选项</param>
-/// <returns type="lightuserdata">命令数据指针</returns>
-/// <returns type="integer">数据长度</returns>
+/// <returns type="lightuserdata?">命令数据指针；options 达 MAX_PACK_SIZE 被丢弃时返回 nil</returns>
+/// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_delete(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
     LUACHECK_LUDATA(lua, 2);
@@ -344,6 +360,10 @@ static int32_t _lmongo_pack_delete(lua_State *lua) {
     char *opts = _lmongo_get_opts(lua, 4);
     size_t size;
     void *pack = mongo_pack_delete(*ud, deletes, dlens, opts, &size);
+    if (NULL == pack) {
+        lua_pushnil(lua);
+        return 1;
+    }
     LPUB_RET_LUD(lua, pack, (lua_Integer)size);
 }
 /// <summary>
@@ -355,8 +375,8 @@ static int32_t _lmongo_pack_delete(lua_State *lua) {
 /// <param name="nsinfo" type="lightuserdata">BSON 数组格式命名空间信息指针</param>
 /// <param name="nlens" type="integer">nsinfo 字节数</param>
 /// <param name="opts" type="lightuserdata?">附加 BSON 选项</param>
-/// <returns type="lightuserdata">命令数据指针</returns>
-/// <returns type="integer">数据长度</returns>
+/// <returns type="lightuserdata?">命令数据指针；options 达 MAX_PACK_SIZE 被丢弃时返回 nil</returns>
+/// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_bulkwrite(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
     LUACHECK_LUDATA(lua, 2);
@@ -368,6 +388,10 @@ static int32_t _lmongo_pack_bulkwrite(lua_State *lua) {
     char *opts = _lmongo_get_opts(lua, 6);
     size_t size;
     void *pack = mongo_pack_bulkwrite(*ud, ops, olens, nsinfo, nlens, opts, &size);
+    if (NULL == pack) {
+        lua_pushnil(lua);
+        return 1;
+    }
     LPUB_RET_LUD(lua, pack, (lua_Integer)size);
 }
 /// <summary>
@@ -377,8 +401,8 @@ static int32_t _lmongo_pack_bulkwrite(lua_State *lua) {
 /// <param name="filter" type="lightuserdata?">BSON 过滤条件；nil 表示全部</param>
 /// <param name="flens" type="integer?">filter 字节数</param>
 /// <param name="opts" type="lightuserdata?">附加 BSON 选项</param>
-/// <returns type="lightuserdata">命令数据指针</returns>
-/// <returns type="integer">数据长度</returns>
+/// <returns type="lightuserdata?">命令数据指针；options 达 MAX_PACK_SIZE 被丢弃时返回 nil</returns>
+/// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_find(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
     char *filter = NULL;
@@ -390,6 +414,10 @@ static int32_t _lmongo_pack_find(lua_State *lua) {
     char *opts = _lmongo_get_opts(lua, 4);
     size_t size;
     void *pack = mongo_pack_find(*ud, filter, flens, opts, &size);
+    if (NULL == pack) {
+        lua_pushnil(lua);
+        return 1;
+    }
     LPUB_RET_LUD(lua, pack, (lua_Integer)size);
 }
 /// <summary>
@@ -399,8 +427,8 @@ static int32_t _lmongo_pack_find(lua_State *lua) {
 /// <param name="pipeline" type="lightuserdata">BSON 数组格式聚合管道指针</param>
 /// <param name="pllens" type="integer">pipeline 字节数</param>
 /// <param name="opts" type="lightuserdata?">附加 BSON 选项</param>
-/// <returns type="lightuserdata">命令数据指针</returns>
-/// <returns type="integer">数据长度</returns>
+/// <returns type="lightuserdata?">命令数据指针；options 达 MAX_PACK_SIZE 被丢弃时返回 nil</returns>
+/// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_aggregate(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
     LUACHECK_LUDATA(lua, 2);
@@ -409,6 +437,10 @@ static int32_t _lmongo_pack_aggregate(lua_State *lua) {
     char *opts = _lmongo_get_opts(lua, 4);
     size_t size;
     void *pack = mongo_pack_aggregate(*ud, pipeline, pllens, opts, &size);
+    if (NULL == pack) {
+        lua_pushnil(lua);
+        return 1;
+    }
     LPUB_RET_LUD(lua, pack, (lua_Integer)size);
 }
 /// <summary>
@@ -417,14 +449,18 @@ static int32_t _lmongo_pack_aggregate(lua_State *lua) {
 /// <param name="self" type="userdata">mongo 对象</param>
 /// <param name="cursorid" type="integer">游标 ID</param>
 /// <param name="opts" type="lightuserdata?">附加 BSON 选项</param>
-/// <returns type="lightuserdata">命令数据指针</returns>
-/// <returns type="integer">数据长度</returns>
+/// <returns type="lightuserdata?">命令数据指针；options 达 MAX_PACK_SIZE 被丢弃时返回 nil</returns>
+/// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_getmore(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
     int64_t cursorid = (int64_t)luaL_checkinteger(lua, 2);
     char *opts = _lmongo_get_opts(lua, 3);
     size_t size;
     void *pack = mongo_pack_getmore(*ud, cursorid, opts, &size);
+    if (NULL == pack) {
+        lua_pushnil(lua);
+        return 1;
+    }
     LPUB_RET_LUD(lua, pack, (lua_Integer)size);
 }
 /// <summary>
@@ -434,8 +470,8 @@ static int32_t _lmongo_pack_getmore(lua_State *lua) {
 /// <param name="cursorids" type="lightuserdata">BSON 数组格式游标 ID 列表指针</param>
 /// <param name="cslens" type="integer">cursorids 字节数</param>
 /// <param name="opts" type="lightuserdata?">附加 BSON 选项</param>
-/// <returns type="lightuserdata">命令数据指针</returns>
-/// <returns type="integer">数据长度</returns>
+/// <returns type="lightuserdata?">命令数据指针；options 达 MAX_PACK_SIZE 被丢弃时返回 nil</returns>
+/// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_killcursors(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
     LUACHECK_LUDATA(lua, 2);
@@ -444,6 +480,10 @@ static int32_t _lmongo_pack_killcursors(lua_State *lua) {
     char *opts = _lmongo_get_opts(lua, 4);
     size_t size;
     void *pack = mongo_pack_killcursors(*ud, cursorids, cslens, opts, &size);
+    if (NULL == pack) {
+        lua_pushnil(lua);
+        return 1;
+    }
     LPUB_RET_LUD(lua, pack, (lua_Integer)size);
 }
 /// <summary>
@@ -454,8 +494,8 @@ static int32_t _lmongo_pack_killcursors(lua_State *lua) {
 /// <param name="query" type="lightuserdata?">BSON 过滤条件；nil 表示全部</param>
 /// <param name="qlens" type="integer?">query 字节数</param>
 /// <param name="opts" type="lightuserdata?">附加 BSON 选项</param>
-/// <returns type="lightuserdata">命令数据指针</returns>
-/// <returns type="integer">数据长度</returns>
+/// <returns type="lightuserdata?">命令数据指针；options 达 MAX_PACK_SIZE 被丢弃时返回 nil</returns>
+/// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_distinct(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
     const char *key = luaL_checkstring(lua, 2);
@@ -468,6 +508,10 @@ static int32_t _lmongo_pack_distinct(lua_State *lua) {
     char *opts = _lmongo_get_opts(lua, 5);
     size_t size;
     void *pack = mongo_pack_distinct(*ud, key, query, qlens, opts, &size);
+    if (NULL == pack) {
+        lua_pushnil(lua);
+        return 1;
+    }
     LPUB_RET_LUD(lua, pack, (lua_Integer)size);
 }
 /// <summary>
@@ -481,8 +525,8 @@ static int32_t _lmongo_pack_distinct(lua_State *lua) {
 /// <param name="update" type="lightuserdata?">BSON 更新文档或聚合数组；删除时可 nil</param>
 /// <param name="ulens" type="integer?">update 字节数</param>
 /// <param name="opts" type="lightuserdata?">附加 BSON 选项</param>
-/// <returns type="lightuserdata">命令数据指针</returns>
-/// <returns type="integer">数据长度</returns>
+/// <returns type="lightuserdata?">命令数据指针；options 达 MAX_PACK_SIZE 被丢弃时返回 nil</returns>
+/// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_findandmodify(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
     char *query = NULL;
@@ -502,6 +546,10 @@ static int32_t _lmongo_pack_findandmodify(lua_State *lua) {
     char *opts = _lmongo_get_opts(lua, 8);
     size_t size;
     void *pack = mongo_pack_findandmodify(*ud, query, qlens, remove, pipeline, update, ulens, opts, &size);
+    if (NULL == pack) {
+        lua_pushnil(lua);
+        return 1;
+    }
     LPUB_RET_LUD(lua, pack, (lua_Integer)size);
 }
 /// <summary>
@@ -511,8 +559,8 @@ static int32_t _lmongo_pack_findandmodify(lua_State *lua) {
 /// <param name="query" type="lightuserdata?">BSON 过滤条件；nil 表示全部</param>
 /// <param name="qlens" type="integer?">query 字节数</param>
 /// <param name="opts" type="lightuserdata?">附加 BSON 选项</param>
-/// <returns type="lightuserdata">命令数据指针</returns>
-/// <returns type="integer">数据长度</returns>
+/// <returns type="lightuserdata?">命令数据指针；options 达 MAX_PACK_SIZE 被丢弃时返回 nil</returns>
+/// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_count(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
     char *query = NULL;
@@ -524,6 +572,10 @@ static int32_t _lmongo_pack_count(lua_State *lua) {
     char *opts = _lmongo_get_opts(lua, 4);
     size_t size;
     void *pack = mongo_pack_count(*ud, query, qlens, opts, &size);
+    if (NULL == pack) {
+        lua_pushnil(lua);
+        return 1;
+    }
     LPUB_RET_LUD(lua, pack, (lua_Integer)size);
 }
 /// <summary>
@@ -533,8 +585,8 @@ static int32_t _lmongo_pack_count(lua_State *lua) {
 /// <param name="indexes" type="lightuserdata">BSON 数组格式索引定义指针</param>
 /// <param name="ilens" type="integer">indexes 字节数</param>
 /// <param name="opts" type="lightuserdata?">附加 BSON 选项</param>
-/// <returns type="lightuserdata">命令数据指针</returns>
-/// <returns type="integer">数据长度</returns>
+/// <returns type="lightuserdata?">命令数据指针；options 达 MAX_PACK_SIZE 被丢弃时返回 nil</returns>
+/// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_createindexes(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
     LUACHECK_LUDATA(lua, 2);
@@ -543,6 +595,10 @@ static int32_t _lmongo_pack_createindexes(lua_State *lua) {
     char *opts = _lmongo_get_opts(lua, 4);
     size_t size;
     void *pack = mongo_pack_createindexes(*ud, indexes, ilens, opts, &size);
+    if (NULL == pack) {
+        lua_pushnil(lua);
+        return 1;
+    }
     LPUB_RET_LUD(lua, pack, (lua_Integer)size);
 }
 /// <summary>
@@ -552,8 +608,8 @@ static int32_t _lmongo_pack_createindexes(lua_State *lua) {
 /// <param name="indexes" type="lightuserdata">BSON 数组格式索引名列表指针</param>
 /// <param name="ilens" type="integer">indexes 字节数</param>
 /// <param name="opts" type="lightuserdata?">附加 BSON 选项</param>
-/// <returns type="lightuserdata">命令数据指针</returns>
-/// <returns type="integer">数据长度</returns>
+/// <returns type="lightuserdata?">命令数据指针；options 达 MAX_PACK_SIZE 被丢弃时返回 nil</returns>
+/// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_pack_dropindexes(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
     LUACHECK_LUDATA(lua, 2);
@@ -562,6 +618,10 @@ static int32_t _lmongo_pack_dropindexes(lua_State *lua) {
     char *opts = _lmongo_get_opts(lua, 4);
     size_t size;
     void *pack = mongo_pack_dropindexes(*ud, indexes, ilens, opts, &size);
+    if (NULL == pack) {
+        lua_pushnil(lua);
+        return 1;
+    }
     LPUB_RET_LUD(lua, pack, (lua_Integer)size);
 }
 /// <summary>
@@ -855,13 +915,17 @@ static int32_t _lmongo_session_pack_endsession(lua_State *lua) {
 /// </summary>
 /// <param name="self" type="userdata">session 对象</param>
 /// <param name="opts" type="lightuserdata?">附加 BSON 选项</param>
-/// <returns type="lightuserdata">命令数据指针</returns>
-/// <returns type="integer">数据长度</returns>
+/// <returns type="lightuserdata?">命令数据指针；options 达 MAX_PACK_SIZE 被丢弃时返回 nil</returns>
+/// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_session_pack_commit(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_session, MT_MONGO_SESSION, psession, "session freed");
     char *opts = _lmongo_get_opts(lua, 2);
     size_t size;
     void *pack = mongo_pack_committransaction(*psession, opts, &size);
+    if (NULL == pack) {
+        lua_pushnil(lua);
+        return 1;
+    }
     LPUB_RET_LUD(lua, pack, (lua_Integer)size);
 }
 /// <summary>
@@ -869,13 +933,17 @@ static int32_t _lmongo_session_pack_commit(lua_State *lua) {
 /// </summary>
 /// <param name="self" type="userdata">session 对象</param>
 /// <param name="opts" type="lightuserdata?">附加 BSON 选项</param>
-/// <returns type="lightuserdata">命令数据指针</returns>
-/// <returns type="integer">数据长度</returns>
+/// <returns type="lightuserdata?">命令数据指针；options 达 MAX_PACK_SIZE 被丢弃时返回 nil</returns>
+/// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_session_pack_abort(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_session, MT_MONGO_SESSION, psession, "session freed");
     char *opts = _lmongo_get_opts(lua, 2);
     size_t size;
     void *pack = mongo_pack_aborttransaction(*psession, opts, &size);
+    if (NULL == pack) {
+        lua_pushnil(lua);
+        return 1;
+    }
     LPUB_RET_LUD(lua, pack, (lua_Integer)size);
 }
 //mongo.session

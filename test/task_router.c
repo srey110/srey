@@ -40,6 +40,21 @@ static void _h_file(router_req *ctx) {
         router_req_text(ctx, 200, p, n);
     }
 }
+// GET /pmax/... 与 /poptovf/... → 回最后一个参数 p16。三条路由共用本 handler,
+// 对应 bad 位 25(/pmax 命中) 26(/povf 溢出拒) 27(/poptovf 满 17 段拒) 28(/poptovf 16 段 OPT 跳过命中)。
+// 验 ROUTER_MAX_PARAMS(16) 边界: /pmax 给 16 个参数段恰好命中且末位参数可取;
+// /povf 给 17 个, PARAM 分支在第 17 个上被 _router_param_take 拒 → 无路由命中 → 404;
+// /poptovf 末段是 {p17?}, 走 OPT 分支的同一上限判定 —— 给满 17 段同样 404,
+// 只给 16 段时 OPT 跳过仍应命中。C5 把两个分支的填参收敛到单点后, 这四个请求同时覆盖两条路径
+static void _h_pmax(router_req *ctx) {
+    size_t n;
+    const char *v = router_req_param(ctx, "p16", &n);
+    if (NULL == v) {
+        router_req_text(ctx, 200, "nop16", 5);
+        return;
+    }
+    router_req_text(ctx, 200, v, n);
+}
 // GET /static/* → 固定回 "static-ok"; 覆盖 WILD 末尾通配 (任意后续段都匹配)
 static void _h_static(router_req *ctx) {
     router_req_text(ctx, 200, "static-ok", 9);
@@ -207,6 +222,9 @@ static void _server_startup(task_ctx *task) {
     router_get(r, NULL, "/forget",       _h_forget,      NULL, 0);
     router_post(r, NULL, "/only-post",    _h_only_post,   NULL, 0);
     router_get(r, NULL, "/__stats",      _h_stats,       NULL, 0);
+    router_get(r, NULL, "/pmax/{p1}/{p2}/{p3}/{p4}/{p5}/{p6}/{p7}/{p8}/{p9}/{p10}/{p11}/{p12}/{p13}/{p14}/{p15}/{p16}",          _h_pmax, NULL, 0);
+    router_get(r, NULL, "/povf/{p1}/{p2}/{p3}/{p4}/{p5}/{p6}/{p7}/{p8}/{p9}/{p10}/{p11}/{p12}/{p13}/{p14}/{p15}/{p16}/{p17}",    _h_pmax, NULL, 0);
+    router_get(r, NULL, "/poptovf/{p1}/{p2}/{p3}/{p4}/{p5}/{p6}/{p7}/{p8}/{p9}/{p10}/{p11}/{p12}/{p13}/{p14}/{p15}/{p16}/{p17?}", _h_pmax, NULL, 0);
 
     // 路由级中间件: auth 截断验证 + post-tag 后置验证
     const char *auth_mws[] = { "auth" };
@@ -465,7 +483,30 @@ static int32_t _run_all(task_ctx *task, uint16_t port) {
     if (task_isclosing(task)) return ERR_FAILED;
     // [24] chunked 请求体 → PROT_SLICE_START 分支调 router_reject_chunked 回 411
     if (ERR_OK != _do_chunked_req(task, port)) bad |= (1 << 24);
-
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
+    if (ERR_OK != _do_req(task, port, "GET", "/pmax/a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/p", NULL, NULL, 200, "p")) {
+        bad |= (1 << 25);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
+    if (ERR_OK != _do_req(task, port, "GET", "/povf/a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/p/q", NULL, NULL, 404, NULL)) {
+        bad |= (1 << 26);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
+    if (ERR_OK != _do_req(task, port, "GET", "/poptovf/a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/p/q", NULL, NULL, 404, NULL)) {
+        bad |= (1 << 27);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
+    if (ERR_OK != _do_req(task, port, "GET", "/poptovf/a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/p", NULL, NULL, 200, "p")) {
+        bad |= (1 << 28);
+    }
     return 0 == bad ? ERR_OK : ERR_FAILED;
 }
 

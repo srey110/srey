@@ -1,4 +1,5 @@
 ﻿#include "test_containers.h"
+#include "test_rand.h"
 #include "lib.h"
 
 /* =======================================================================
@@ -1354,7 +1355,7 @@ static void test_hashmap_scan_iter(CuTest *tc) {
 
 /* =======================================================================
  * hashmap 边界与高级 API：
- *   - hashmap_clear(true) 容量回缩到初始
+ *   - hashmap_clear(true) 保留当前桶数、不分配（不是回缩）
  *   - hashmap_*_with_hash 预算哈希变体（用 sip/murmur/xxhash3 计算后传入）
  *   - hashmap_probe 直接位置探针访问
  *   - hashmap_set_grow_by_power / hashmap_set_load_factor 配置
@@ -1413,8 +1414,157 @@ static void test_hashmap_murmur_no_ub(CuTest *tc) {
     CuAssertTrue(tc, h1 == h2);// 确定性;UBSan 下验证无溢出/未对齐 UB
 }
 
+// xxh3 尾部原本写作 p + 8 <= end / p + 4 <= end：剩余不足 8 字节时先构造出越过对象末尾的指针
+// 再比较，C99 §6.5.6p8 只定义到 one-past-the-end，优化器有权折掉该守卫。
+// 生产触达点是 subcenter 的 4 字节 name_t 与 path_trie 的 1-7 字节路径段。
+// 项目构建集里没有 sanitizer 会报这类 UB，只能靠"短长度下确定 + 逐字节敏感"兜住尾部路径
+static void test_hashmap_xxhash3_short(CuTest *tc) {
+    uint8_t buf[64];
+    uint64_t h[8];
+    uint64_t base;
+    uint8_t save;
+    size_t len;
+    int32_t i;
+
+    for (i = 0; i < 64; i++) {
+        buf[i] = (uint8_t)(0x80 + i);
+    }
+    /* buf+1 非对齐起始，覆盖 1..7 字节这一整段尾部路径 */
+    for (len = 1; len <= 7; len++) {
+        h[len] = hashmap_xxhash3(buf + 1, len, 0, 0);
+        CuAssertTrue(tc, h[len] == hashmap_xxhash3(buf + 1, len, 0, 0));
+    }
+    for (len = 2; len <= 7; len++) {
+        CuAssertTrue(tc, h[len] != h[len - 1]);
+    }
+
+    /* 4 字节即 subcenter 的 name_t：任一字节变化都必须改变哈希 */
+    base = hashmap_xxhash3(buf + 1, 4, 0, 0);
+    for (i = 0; i < 4; i++) {
+        save = buf[1 + i];
+        buf[1 + i] = (uint8_t)(save ^ 0xFF);
+        CuAssertTrue(tc, base != hashmap_xxhash3(buf + 1, 4, 0, 0));
+        buf[1 + i] = save;
+    }
+
+    /* 8 / 12 跨过 while 与 if 的分界 */
+    CuAssertTrue(tc, hashmap_xxhash3(buf + 1, 8, 0, 0) == hashmap_xxhash3(buf + 1, 8, 0, 0));
+    CuAssertTrue(tc, hashmap_xxhash3(buf + 1, 12, 0, 0) == hashmap_xxhash3(buf + 1, 12, 0, 0));
+    CuAssertTrue(tc, hashmap_xxhash3(buf + 1, 8, 0, 0) != hashmap_xxhash3(buf + 1, 12, 0, 0));
+}
+
+// hashmap_clear 的 update_cap 语义（hashset_clear 透传同一参数），与名字直觉相反：
+//   非 0 = 把 cap 抬到当前已增长的桶数，不做任何分配，峰值容量就此保留；
+//   0    = 重新分配桶数组缩回建表 cap，一次 malloc + 一次 free。
+// 桶数从外部读不到（struct hashmap 不透明），改用计数分配器观测分配行为；
+// 先 clear(true) 再 clear(false) 不分配，即证明前者确实把 cap 抬上去了
+static int32_t _hm_alloc_n;
+static int32_t _hm_free_n;
+static void *_hm_count_malloc(size_t n) {
+    _hm_alloc_n++;
+    return malloc(n);
+}
+static void *_hm_count_realloc(void *p, size_t n) {
+    return realloc(p, n);
+}
+static void _hm_count_free(void *p) {
+    _hm_free_n++;
+    free(p);
+}
+static struct hashmap *_hm_count_new_filled(void) {
+    struct hashmap *map = hashmap_new_with_allocator(_hm_count_malloc, _hm_count_realloc,
+                                                     _hm_count_free, sizeof(_kv), 16, 0, 0,
+                                                     _kv_hash, _kv_cmp, NULL, NULL);
+    _kv kv;
+    int32_t i;
+    if (NULL == map) {
+        return NULL;
+    }
+    for (i = 0; i < 256; i++) {
+        SNPRINTF(kv.key, sizeof(kv.key), "k_%d", i);
+        kv.val = i;
+        hashmap_set(map, &kv);
+    }
+    return map;
+}
+static void test_hashmap_clear_alloc(CuTest *tc) {
+    struct hashmap *map = _hm_count_new_filled();
+    CuAssertPtrNotNull(tc, map);
+
+    _hm_alloc_n = 0;
+    _hm_free_n = 0;
+    hashmap_clear(map, true);
+    CuAssertIntEquals(tc, 0, _hm_alloc_n);
+    CuAssertIntEquals(tc, 0, _hm_free_n);
+    CuAssertTrue(tc, 0 == (int)hashmap_count(map));
+
+    _hm_alloc_n = 0;
+    _hm_free_n = 0;
+    hashmap_clear(map, false);
+    CuAssertIntEquals(tc, 0, _hm_alloc_n);
+    CuAssertIntEquals(tc, 0, _hm_free_n);
+    hashmap_free(map);
+
+    map = _hm_count_new_filled();
+    CuAssertPtrNotNull(tc, map);
+    _hm_alloc_n = 0;
+    _hm_free_n = 0;
+    hashmap_clear(map, false);
+    CuAssertIntEquals(tc, 1, _hm_alloc_n);
+    CuAssertIntEquals(tc, 1, _hm_free_n);
+    CuAssertTrue(tc, 0 == (int)hashmap_count(map));
+    hashmap_free(map);
+}
+
+// hashmap_set_load_factor 设的负载因子必须在扩容后继续生效。
+// 修复前 resize0 从"用默认 60 建出来的临时 map"拷 growat/shrinkat，自定义因子被悄悄换回默认，
+// 而 map->loadfactor 字段仍报旧值——外部无从察觉。用计数分配器定位扩容发生的时机来观测
+static void test_hashmap_load_factor_survives_resize(CuTest *tc) {
+    struct hashmap *map = hashmap_new_with_allocator(_hm_count_malloc, _hm_count_realloc,
+                                                     _hm_count_free, sizeof(_kv), 16, 0, 0,
+                                                     _kv_hash, _kv_cmp, NULL, NULL);
+    _kv kv;
+    int32_t i;
+    CuAssertPtrNotNull(tc, map);
+    hashmap_set_load_factor(map, 0.90);
+
+    /* cap=16、loadfactor=90 → growat=14：前 14 次插入不扩容 */
+    for (i = 0; i < 14; i++) {
+        SNPRINTF(kv.key, sizeof(kv.key), "k_%d", i);
+        kv.val = i;
+        hashmap_set(map, &kv);
+    }
+    CuAssertTrue(tc, 14 == (int)hashmap_count(map));
+
+    /* 第 15 次插入时 count 已达 growat，触发扩容到 32 桶 */
+    _hm_alloc_n = 0;
+    SNPRINTF(kv.key, sizeof(kv.key), "k_14");
+    kv.val = 14;
+    hashmap_set(map, &kv);
+    CuAssertTrue(tc, _hm_alloc_n > 0);
+
+    /* 扩容后 growat 应按 90 重算为 32*90/100=28，count 到 27 都不该再扩容。
+       修复前被换成默认 60 算出的 19，count 到 19 就会再扩一次 */
+    _hm_alloc_n = 0;
+    for (i = 15; i < 28; i++) {
+        SNPRINTF(kv.key, sizeof(kv.key), "k_%d", i);
+        kv.val = i;
+        hashmap_set(map, &kv);
+    }
+    CuAssertTrue(tc, 28 == (int)hashmap_count(map));
+    CuAssertIntEquals(tc, 0, _hm_alloc_n);
+
+    /* count 达 28 才该扩容 */
+    SNPRINTF(kv.key, sizeof(kv.key), "k_28");
+    kv.val = 28;
+    hashmap_set(map, &kv);
+    CuAssertTrue(tc, _hm_alloc_n > 0);
+
+    hashmap_free(map);
+}
+
 static void test_hashmap_clear_update_cap(CuTest *tc) {
-    /* 大容量初始化后插入再 clear(true)：容量回缩到初始 */
+    /* 插入触发扩容后 clear(true)：计数清零，桶数原样保留（容量语义见 test_hashmap_clear_alloc） */
     struct hashmap *map = hashmap_new(sizeof(_kv), 16, 0, 0,
                                      _kv_hash, _kv_cmp, NULL, NULL);
     CuAssertPtrNotNull(tc, map);
@@ -1428,7 +1578,7 @@ static void test_hashmap_clear_update_cap(CuTest *tc) {
     }
     CuAssertTrue(tc, 256 == (int)hashmap_count(map));
 
-    /* clear(true) → 计数清零，并将容量降至初始 cap */
+    /* clear(true) → 计数清零，桶数保持在已增长的规模 */
     hashmap_clear(map, true);
     CuAssertTrue(tc, 0 == (int)hashmap_count(map));
 
@@ -1467,6 +1617,260 @@ static void test_hashmap_clear_update_cap(CuTest *tc) {
 
 /* ======================================================================= */
 
+/* =======================================================================
+ * hashmap 上游自检移植：原在 hashmap.c 的 #ifdef HASHMAP_TEST 块内，本工程从不编译该块，
+ * 这些断言在本树上从未跑过。struct hashmap 对外不透明，三处内部访问改写为公开 API 等价物：
+ *   map->count     → hashmap_count
+ *   deepcount(map) → hashmap_scan 计数（两者同为"活元素个数"）
+ *   map->cap       → 已由 test_hashmap_clear_alloc 用计数分配器覆盖，不在此重复
+ * 种子固定、PRNG 自带：上游以 time(NULL) 播种全局 rand()，会让失败不可复现并干扰其他用例
+ * ======================================================================= */
+#define UP_N         256
+#define UP_FAIL_ODDS 3
+
+static test_rng _up_rng;
+static int32_t _up_fail_on;
+static uintptr_t _up_allocs;
+// 带失败注入的分配器：块首 uintptr_t 存长度供 realloc 复用，_up_allocs 记未释放块数
+static void *_up_malloc(size_t size) {
+    void *mem;
+    if (0 != _up_fail_on
+        && 0 == test_rng_next(&_up_rng) % UP_FAIL_ODDS) {
+        return NULL;
+    }
+    mem = malloc(sizeof(uintptr_t) + size);
+    if (NULL == mem) {
+        return NULL;
+    }
+    *(uintptr_t *)mem = size;
+    _up_allocs++;
+    return (char *)mem + sizeof(uintptr_t);
+}
+static void _up_free(void *ptr) {
+    if (NULL != ptr) {
+        _up_allocs--;
+        free((char *)ptr - sizeof(uintptr_t));
+    }
+}
+static void *_up_realloc(void *ptr, size_t size) {
+    void *mem;
+    if (NULL == ptr) {
+        return _up_malloc(size);
+    }
+    mem = realloc((char *)ptr - sizeof(uintptr_t), sizeof(uintptr_t) + size);
+    if (NULL == mem) {
+        return NULL;
+    }
+    *(uintptr_t *)mem = size;
+    return (char *)mem + sizeof(uintptr_t);
+}
+// scan / iter 回调：以元素的整数值为下标打标记，用来验证两者都访问到全部元素
+static bool _up_mark(const void *item, void *udata) {
+    int32_t *marks = *(int32_t **)udata;
+    marks[*(const int32_t *)item] = 1;
+    return true;
+}
+// scan 回调：只累计访问次数，替代需要读内部桶的 deepcount
+static bool _up_tally(const void *item, void *udata) {
+    (void)item;
+    (*(size_t *)udata)++;
+    return true;
+}
+static int _up_cmp_int(const void *a, const void *b, void *udata) {
+    (void)udata;
+    return *(const int32_t *)a - *(const int32_t *)b;
+}
+static int _up_cmp_str(const void *a, const void *b, void *udata) {
+    (void)udata;
+    return strcmp(*(char *const *)a, *(char *const *)b);
+}
+static uint64_t _up_hash_int(const void *item, uint64_t seed0, uint64_t seed1) {
+    return hashmap_xxhash3(item, sizeof(int32_t), seed0, seed1);
+}
+static uint64_t _up_hash_str(const void *item, uint64_t seed0, uint64_t seed1) {
+    return hashmap_xxhash3(*(char *const *)item, strlen(*(char *const *)item), seed0, seed1);
+}
+static void _up_free_str(void *item) {
+    _up_free(*(char **)item);
+}
+static size_t _up_live(struct hashmap *map) {
+    size_t n = 0;
+    hashmap_scan(map, _up_tally, &n);
+    return n;
+}
+// 失败注入下建表须重试到成功
+static struct hashmap *_up_new(size_t elsize,
+                               uint64_t (*hash)(const void *item, uint64_t seed0, uint64_t seed1),
+                               int (*cmp)(const void *a, const void *b, void *udata),
+                               void (*elfree)(void *item)) {
+    struct hashmap *map = NULL;
+    while (NULL == map) {
+        map = hashmap_new_with_allocator(_up_malloc, _up_realloc, _up_free,
+                                         elsize, 0, 1, 2, hash, cmp, elfree, NULL);
+    }
+    return map;
+}
+
+// 上游 all() 的整数主循环：每插入一个元素都校验 count 与活元素数、此前所有键仍可取、
+// 重复 set 返回旧元素、delete 后不可再取；随后 scan 与 iter 须各自访问到全部元素；
+// 最后逐个删除再校验一遍剩余键。全程开启分配失败注入，set 遇 oom 重试
+static void test_hashmap_upstream_churn(CuTest *tc) {
+    int32_t *vals;
+    int32_t *marks;
+    struct hashmap *map;
+    const int32_t *v;
+    size_t iter;
+    void *item;
+    int32_t i, j;
+
+    test_rng_init(&_up_rng, 88172645463325252ULL);
+    _up_allocs = 0;
+    _up_fail_on = 1;
+    MALLOC(vals, sizeof(int32_t) * UP_N);
+    for (i = 0; i < UP_N; i++) {
+        vals[i] = i;
+    }
+    test_shuffle(&_up_rng, vals, UP_N);
+    map = _up_new(sizeof(int32_t), _up_hash_int, _up_cmp_int, NULL);
+
+    for (i = 0; i < UP_N; i++) {
+        CuAssertTrue(tc, (size_t)i == hashmap_count(map));
+        CuAssertTrue(tc, (size_t)i == _up_live(map));
+        CuAssertPtrEquals(tc, NULL, (void *)hashmap_get(map, &vals[i]));
+        CuAssertPtrEquals(tc, NULL, (void *)hashmap_delete(map, &vals[i]));
+        for (;;) {
+            CuAssertPtrEquals(tc, NULL, (void *)hashmap_set(map, &vals[i]));
+            if (!hashmap_oom(map)) {
+                break;
+            }
+        }
+        for (j = 0; j < i; j++) {
+            v = hashmap_get(map, &vals[j]);
+            CuAssertPtrNotNull(tc, (void *)v);
+            CuAssertIntEquals(tc, vals[j], *v);
+        }
+        for (;;) {
+            v = hashmap_set(map, &vals[i]);
+            if (NULL == v) {
+                CuAssertTrue(tc, hashmap_oom(map));
+                continue;
+            }
+            CuAssertTrue(tc, !hashmap_oom(map));
+            CuAssertIntEquals(tc, vals[i], *v);
+            break;
+        }
+        v = hashmap_get(map, &vals[i]);
+        CuAssertPtrNotNull(tc, (void *)v);
+        CuAssertIntEquals(tc, vals[i], *v);
+        v = hashmap_delete(map, &vals[i]);
+        CuAssertPtrNotNull(tc, (void *)v);
+        CuAssertIntEquals(tc, vals[i], *v);
+        CuAssertPtrEquals(tc, NULL, (void *)hashmap_get(map, &vals[i]));
+        CuAssertPtrEquals(tc, NULL, (void *)hashmap_delete(map, &vals[i]));
+        for (;;) {
+            CuAssertPtrEquals(tc, NULL, (void *)hashmap_set(map, &vals[i]));
+            if (!hashmap_oom(map)) {
+                break;
+            }
+        }
+        CuAssertTrue(tc, (size_t)(i + 1) == hashmap_count(map));
+        CuAssertTrue(tc, (size_t)(i + 1) == _up_live(map));
+    }
+
+    MALLOC(marks, sizeof(int32_t) * UP_N);
+    ZERO(marks, sizeof(int32_t) * UP_N);
+    CuAssertTrue(tc, hashmap_scan(map, _up_mark, &marks));
+    for (i = 0; i < UP_N; i++) {
+        CuAssertIntEquals(tc, 1, marks[i]);
+    }
+    ZERO(marks, sizeof(int32_t) * UP_N);
+    iter = 0;
+    while (hashmap_iter(map, &iter, &item)) {
+        CuAssertTrue(tc, _up_mark(item, &marks));
+    }
+    for (i = 0; i < UP_N; i++) {
+        CuAssertIntEquals(tc, 1, marks[i]);
+    }
+    FREE(marks);
+
+    test_shuffle(&_up_rng, vals, UP_N);
+    for (i = 0; i < UP_N; i++) {
+        v = hashmap_delete(map, &vals[i]);
+        CuAssertPtrNotNull(tc, (void *)v);
+        CuAssertIntEquals(tc, vals[i], *v);
+        CuAssertPtrEquals(tc, NULL, (void *)hashmap_get(map, &vals[i]));
+        CuAssertTrue(tc, (size_t)(UP_N - i - 1) == hashmap_count(map));
+        CuAssertTrue(tc, (size_t)(UP_N - i - 1) == _up_live(map));
+        for (j = UP_N - 1; j > i; j--) {
+            v = hashmap_get(map, &vals[j]);
+            CuAssertPtrNotNull(tc, (void *)v);
+            CuAssertIntEquals(tc, vals[j], *v);
+        }
+    }
+    hashmap_free(map);
+    FREE(vals);
+    _up_fail_on = 0;
+    CuAssertTrue(tc, 0 == _up_allocs);
+}
+
+// 上游 all() 的字符串段：elfree 必须在 clear 与 free 时对每个元素各调一次。
+// 结束时分配计数归零即证明元素、桶数组、map 自身三者都还回了分配器
+static void test_hashmap_upstream_elfree(CuTest *tc) {
+    struct hashmap *map;
+    char *str;
+    int32_t i;
+
+    test_rng_init(&_up_rng, 1234567890123ULL);
+    _up_allocs = 0;
+    _up_fail_on = 1;
+    map = _up_new(sizeof(char *), _up_hash_str, _up_cmp_str, _up_free_str);
+
+    for (i = 0; i < UP_N; i++) {
+        str = NULL;
+        while (NULL == str) {
+            str = (char *)_up_malloc(16);
+        }
+        SNPRINTF(str, 16, "s%d", i);
+        for (;;) {
+            (void)hashmap_set(map, &str);
+            if (!hashmap_oom(map)) {
+                break;
+            }
+        }
+    }
+    CuAssertTrue(tc, UP_N == (int32_t)hashmap_count(map));
+
+    hashmap_clear(map, false);
+    CuAssertTrue(tc, 0 == (int32_t)hashmap_count(map));
+
+    for (i = 0; i < UP_N; i++) {
+        str = NULL;
+        while (NULL == str) {
+            str = (char *)_up_malloc(16);
+        }
+        SNPRINTF(str, 16, "s%d", i);
+        for (;;) {
+            (void)hashmap_set(map, &str);
+            if (!hashmap_oom(map)) {
+                break;
+            }
+        }
+    }
+    CuAssertTrue(tc, UP_N == (int32_t)hashmap_count(map));
+
+    hashmap_free(map);
+    _up_fail_on = 0;
+    CuAssertTrue(tc, 0 == _up_allocs);
+}
+
+// 上游 all() 开头的三个已知答案向量。这些值在本树上从未被验证过：
+// hashmap.c 的 murmur 曾被改为正向遍历、xxh3 的尾部守卫也改过，都声称哈希值不变，此处钉住
+static void test_hashmap_upstream_vectors(CuTest *tc) {
+    CuAssertTrue(tc, 2957200328589801622ULL == hashmap_sip("hello", 5, 1, 2));
+    CuAssertTrue(tc, 1682575153221130884ULL == hashmap_murmur("hello", 5, 1, 2));
+    CuAssertTrue(tc, 2584346877953614258ULL == hashmap_xxhash3("hello", 5, 1, 2));
+}
+
 void test_containers(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mpq_basic);
     SUITE_ADD_TEST(suite, test_mpq_basic_sc);
@@ -1492,7 +1896,13 @@ void test_containers(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_hashmap_scan_iter);
     SUITE_ADD_TEST(suite, test_hashmap_with_hash_variants);
     SUITE_ADD_TEST(suite, test_hashmap_murmur_no_ub);
+    SUITE_ADD_TEST(suite, test_hashmap_xxhash3_short);
     SUITE_ADD_TEST(suite, test_hashmap_clear_update_cap);
+    SUITE_ADD_TEST(suite, test_hashmap_upstream_vectors);
+    SUITE_ADD_TEST(suite, test_hashmap_upstream_churn);
+    SUITE_ADD_TEST(suite, test_hashmap_upstream_elfree);
+    SUITE_ADD_TEST(suite, test_hashmap_clear_alloc);
+    SUITE_ADD_TEST(suite, test_hashmap_load_factor_survives_resize);
     SUITE_ADD_TEST(suite, test_heap);
     SUITE_ADD_TEST(suite, test_heap_remove_root);
     SUITE_ADD_TEST(suite, test_slist_basic);

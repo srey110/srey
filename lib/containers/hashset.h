@@ -25,9 +25,11 @@ hashset *hashset_new(size_t elsize, size_t cap,
 /// <summary>释放 hashset。若设置了 elfree,会对所有元素调用一次</summary>
 /// <param name="s">hashset 指针;NULL 安全</param>
 void hashset_free(hashset *s);
-/// <summary>清空所有元素;update_cap=非 0 同时缩回初始容量</summary>
+/// <summary>清空所有元素</summary>
 /// <param name="s">hashset 指针</param>
-/// <param name="update_cap">0 仅清条目;非 0 同时缩容</param>
+/// <param name="update_cap">语义与名字直觉相反:非 0 = 把 cap 抬到当前已增长的桶数,不做任何分配,
+/// 峰值容量就此保留且不再回缩;0 = 重新分配桶数组缩回建表时的 cap(一次 malloc + free)。
+/// 每次复用的 scratch 容器应传非 0</param>
 void hashset_clear(hashset *s, int32_t update_cap);
 /// <summary>当前元素数</summary>
 /// <param name="s">hashset 指针</param>

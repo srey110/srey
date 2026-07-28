@@ -490,14 +490,12 @@ static int32_t _mysql_full_auth(mysql_ctx *mysql, ev_ctx *ev, char *pubkey, size
     size_t lens;
     char *xorpsw = _mysql_password_xor_salt(mysql, &lens);
     if (ERR_OK != _mysql_sha2_rsa(&bwriter, pubkey, klens, xorpsw, lens)) {
-        secure_zero(xorpsw, lens);
-        FREE(xorpsw);
+        SECURE_FREE(xorpsw, lens);
         binary_free(&bwriter);
         LOG_ERROR("_mysql_sha2_rsa error.");
         return ERR_FAILED;
     }
-    secure_zero(xorpsw, lens);
-    FREE(xorpsw);
+    SECURE_FREE(xorpsw, lens);
     if (ERR_OK != _mysql_set_payload_lens(&bwriter)) {
         binary_free(&bwriter);
         return ERR_FAILED;

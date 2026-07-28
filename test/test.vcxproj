@@ -170,6 +170,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="bench_evcmd.c" />
+    <ClCompile Include="bench_hashmap.c" />
     <ClCompile Include="bench_lbytecache.c" />
     <ClCompile Include="bench_mpq.c" />
     <ClCompile Include="bench_rwlock.c" />
@@ -226,6 +227,8 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="bench_evcmd.h" />
+    <ClInclude Include="bench_hashmap.h" />
+    <ClInclude Include="test_rand.h" />
     <ClInclude Include="bench_lbytecache.h" />
     <ClInclude Include="bench_mpq.h" />
     <ClInclude Include="bench_rwlock.h" />

@@ -368,5 +368,35 @@ runner.run("bson", function(t)
         t:eq("int",      bson.type_tostring(bson.TYPE.INT32),      "type_tostring INT32")
         t:eq("uuid",     bson.subtype_tostring(bson.SUBTYPE.UUID), "subtype_tostring UUID")
     end
+
+    -- 23. bson.new(data, size) 只读对象：写入方法被拒而非 abort 进程，读取 / 迭代 / decode 照常
+    do
+        local w = bson.encode({ a = 1, s = "x" })
+        local ptr, sz = w:data()
+        t:eq("_bson_reader", getmetatable(bson.new(ptr, sz)), "只读对象挂独立元表且 __metatable 已保护")
+        t:eq("_bson_ctx",    getmetatable(w),                 "可写对象仍挂 MT_BSON")
+
+        -- 三类写入方法各取一个：标量 / 嵌套 / 拼接
+        local r = bson.new(ptr, sz)
+        local ok, err = pcall(function() r:int32("k", 1) end)
+        t:eq(false, ok, "只读对象 :int32 被拒")
+        t:check(type(err) == "string" and nil ~= err:find("read%-only"), "错误信息点明只读")
+        t:eq(false, pcall(function() r:doc_begin("d") end), "只读对象 :doc_begin 被拒")
+        t:eq(false, pcall(function() r:cat(ptr, sz) end),   "只读对象 :cat 被拒")
+        t:eq(false, pcall(function() r:complete() end),     "只读对象无 :complete（写入方专属概念）")
+
+        -- :data 取长走 doc.size 而非恒为 0 的 doc.offset
+        local rptr, rsz = r:data()
+        t:check(rptr ~= nil and rsz == sz, "只读对象 :data 返回原缓冲与真实长度")
+        t:check(type(r:tostring()) == "string", "只读对象 :tostring 可用")
+
+        local iter = bson.iter.new(r)
+        t:eq(true, iter:find("s"), "只读对象可交给 bson.iter.new")
+        t:eq("x",  iter:utf8(),    "只读对象经 iter 读值正确")
+        local rptr2, rsz2 = r:data()
+        t:check(rptr2 == rptr and rsz2 == sz, "iter 推进 offset 后 :data 长度不变")
+
+        t:eq(1, bson.decode(bson.new(ptr, sz)).a, "只读对象可交给 bson.decode")
+    end
 end)
 end)

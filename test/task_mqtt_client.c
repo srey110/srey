@@ -8,6 +8,9 @@ typedef struct mqtt_client_args {
     SOCKET fd;
     uint64_t skid;
     char host[64];
+    char clientid[24];// <task名>-<随机6字节>。同一 broker 上必须互异:MQTT 规定重名会让服务端踢掉旧会话,
+                      // 而 test1/test2 共用同一个 broker;随机尾巴则避开上一轮遗留的同名会话。
+                      // 3.1.1 只要求服务端至少接受 23 字节, 故上限取 23+NUL
 }mqtt_client_args;
 
 // TCP 连接建立后发送 CONNECT 包，MQTT 5.0 时携带扩展连接属性和遗嘱属性
@@ -28,9 +31,7 @@ static void _net_connect(task_ctx *task, sk_id *sk, subtype_t pktype, int32_t er
     mqtt_props_fixnum(&willprop, WILLDELAY_INTERVAL, 60);
     mqtt_props_kv(&willprop, USER_PROPERTY, "key2", 4, "val2", 4);
     size_t lens;
-    char clientid[9];
-    randstr(clientid, sizeof(clientid) - 1);
-    char *pk = mqtt_pack_connect(arg->version, 1, 120, clientid,
+    char *pk = mqtt_pack_connect(arg->version, 1, 120, arg->clientid,
                                  "admin", "123", 3,
                                  "srey/will", "will message", strlen("will message"), 1, 1,
                                  &connprop, &willprop, &lens);
@@ -246,5 +247,8 @@ void task_mqtt_client_start(loader_ctx *loader, const char *name,
     arg->prt = pt;
     arg->ok = ok;
     SNPRINTF(arg->host, sizeof(arg->host), "%s", host);
+    char tail[7];
+    randstr(tail, sizeof(tail) - 1);
+    SNPRINTF(arg->clientid, sizeof(arg->clientid), "%s-%s", name, tail);
     coro_task_register(loader, name, 0, _startup, NULL, _free, arg);
 }

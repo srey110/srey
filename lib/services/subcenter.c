@@ -710,7 +710,7 @@ static void _sc_publish_deliver(sc_ctx *ctx, name_t src, const char *topic,
     const void *meta = (NULL != pm) ? pm->meta : NULL;
     uint16_t mlen = (NULL != pm) ? (uint16_t)pm->size : 0;
     // 收集订阅者:normal 进 dedup hashset 去重;shared 每组挑首个活成员并 grab,死成员当场剔除
-    hashset_clear(ctx->publish_dedup, 0);
+    hashset_clear(ctx->publish_dedup, 1);
     array_ctx *shared_dsts = &ctx->pub_shared;
     array_clear(shared_dsts);
     sc_collect_ctx cc;

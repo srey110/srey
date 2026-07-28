@@ -141,6 +141,139 @@ static void test_bson_iter_no_next(CuTest *tc) {
     BSON_FREE(&bson);
 }
 
+// bson_iter_next 解析失败后迭代器必须回到哨兵态。否则 type 停在畸形元素的类型而 val 为 NULL,
+// _bson_iter_check 只认 type 会放行,getter 随即解引用 NULL。
+// 两份畸形样本:截断的 DOUBLE(val 保持 NULL)、未 NUL 结尾的 UTF8(val 被显式置 NULL 但 lens>0)
+static void test_bson_iter_malformed_poison(CuTest *tc) {
+    char trunc[] = { 0x0A, 0x00, 0x00, 0x00, 0x01, 'd', 0x00, 0x01, 0x02, 0x00 };
+    char badutf8[] = { 0x10, 0x00, 0x00, 0x00, 0x02, 's', 0x00,
+                       0x04, 0x00, 0x00, 0x00, 'a', 'b', 'c', 'd', 0x00 };
+    bson_ctx bson;
+    bson_iter iter, result;
+    int32_t err;
+
+    bson_init(&bson, trunc, sizeof(trunc));
+    bson_iter_init(&iter, &bson);
+    CuAssertTrue(tc, !bson_iter_next(&iter));
+    CuAssertIntEquals(tc, BSON_EOD, iter.type);
+    CuAssertTrue(tc, NULL == iter.val);
+    err = ERR_OK;
+    CuAssertDblEquals(tc, 0.0, bson_iter_double(&iter, &err), 1e-10);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    err = ERR_OK;
+    CuAssertIntEquals(tc, 0, bson_iter_bool(&iter, &err));
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    err = ERR_OK;
+    CuAssertTrue(tc, NULL == bson_iter_oid(&iter, &err));
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+
+    bson_init(&bson, badutf8, sizeof(badutf8));
+    bson_iter_init(&iter, &bson);
+    CuAssertTrue(tc, !bson_iter_next(&iter));
+    CuAssertIntEquals(tc, BSON_EOD, iter.type);
+    CuAssertTrue(tc, 0 == iter.lens);
+    err = ERR_OK;
+    CuAssertTrue(tc, NULL == bson_iter_utf8(&iter, &err));
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+
+    bson_init(&bson, trunc, sizeof(trunc));
+    bson_iter_init(&iter, &bson);
+    CuAssertIntEquals(tc, ERR_FAILED, bson_iter_find(&iter, "nope", &result));
+    CuAssertIntEquals(tc, BSON_EOD, iter.type);
+    CuAssertTrue(tc, 0 != bson_iter_error(&iter));
+    err = ERR_OK;
+    CuAssertDblEquals(tc, 0.0, bson_iter_double(&iter, &err), 1e-10);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+}
+
+// bson_iter_error 区分 bson_iter_next 返回 0 的两种含义:读到 EOD 正常结束 vs 元素非法被拒。
+// 毒化后两者的 type 都是 BSON_EOD,单看 type 分不出来
+static void test_bson_iter_error_flag(CuTest *tc) {
+    char trunc[] = { 0x0A, 0x00, 0x00, 0x00, 0x01, 'd', 0x00, 0x01, 0x02, 0x00 };
+    bson_ctx bson, rd;
+    bson_iter iter;
+
+    // 合法文档整轮遍历完:err 保持 0
+    bson_init(&bson, NULL, 0);
+    bson_append_int32(&bson, "a", 1);
+    bson_append_utf8(&bson, "b", "x");
+    bson_append_end(&bson);
+    bson_init(&rd, BSON_DOC(&bson), BSON_DOC_LENS(&bson));
+    bson_iter_init(&iter, &rd);
+    CuAssertTrue(tc, 0 == bson_iter_error(&iter));
+    while (bson_iter_next(&iter)) {
+        CuAssertTrue(tc, 0 == bson_iter_error(&iter));
+    }
+    CuAssertIntEquals(tc, BSON_EOD, iter.type);
+    CuAssertTrue(tc, 0 == bson_iter_error(&iter));
+    // reset 后可重新干净遍历
+    bson_iter_reset(&iter);
+    CuAssertTrue(tc, 0 == bson_iter_error(&iter));
+    CuAssertTrue(tc, bson_iter_next(&iter));
+    BSON_FREE(&bson);
+
+    // 畸形文档:next 同样返 0、type 同样是 BSON_EOD,但 err 置位
+    bson_init(&rd, trunc, sizeof(trunc));
+    bson_iter_init(&iter, &rd);
+    CuAssertTrue(tc, 0 == bson_iter_error(&iter));
+    CuAssertTrue(tc, !bson_iter_next(&iter));
+    CuAssertIntEquals(tc, BSON_EOD, iter.type);
+    CuAssertTrue(tc, 0 != bson_iter_error(&iter));
+
+    // 长度字段本身非法(声明 10 但只给 9 字节)
+    bson_init(&rd, trunc, sizeof(trunc) - 1);
+    bson_iter_init(&iter, &rd);
+    CuAssertTrue(tc, 0 != bson_iter_error(&iter));
+}
+
+// binary 的 subtype 是 wire 上的无符号字节,读取时必须窄化为 (uint8_t)。
+// 直接把 binary_get_int8 的 int8_t 赋给枚举,0x80-0xFF 的用户自定义子类型会变成
+// 4294967168 之类的垃圾值(枚举底层类型无符号),既匹配不上 BSON_SUBTYPE_USER 也无法往返。
+// 既有用例只用 BSON_SUBTYPE_BINARY(0x00),整个高半区从未被覆盖
+static void test_bson_binary_subtype_high(CuTest *tc) {
+    const uint8_t subs[] = { 0x00, 0x04, 0x7F, 0x80, 0xFF };
+    char payload[] = { 'a', 'b', 'c' };
+    bson_ctx bson, rd;
+    bson_iter iter;
+    bson_subtype got;
+    size_t i, blens;
+    int32_t err;
+    char *bdata;
+
+    for (i = 0; i < sizeof(subs) / sizeof(subs[0]); i++) {
+        bson_init(&bson, NULL, 0);
+        bson_append_binary(&bson, "b", (bson_subtype)subs[i], payload, sizeof(payload));
+        bson_append_end(&bson);
+
+        bson_init(&rd, BSON_DOC(&bson), BSON_DOC_LENS(&bson));
+        bson_iter_init(&iter, &rd);
+        CuAssertTrue(tc, bson_iter_next(&iter));
+        CuAssertIntEquals(tc, BSON_BINARY, iter.type);
+        got = BSON_SUBTYPE_BINARY;
+        blens = 0;
+        err = ERR_FAILED;
+        bdata = bson_iter_binary(&iter, &got, &blens, &err);
+        CuAssertIntEquals(tc, ERR_OK, err);
+        CuAssertTrue(tc, (bson_subtype)subs[i] == got);
+        CuAssertTrue(tc, sizeof(payload) == blens);
+        CuAssertTrue(tc, 0 == memcmp(payload, bdata, blens));
+        BSON_FREE(&bson);
+    }
+
+    bson_init(&bson, NULL, 0);
+    bson_append_binary(&bson, "u", BSON_SUBTYPE_USER, payload, sizeof(payload));
+    bson_append_end(&bson);
+    bson_init(&rd, BSON_DOC(&bson), BSON_DOC_LENS(&bson));
+    bson_iter_init(&iter, &rd);
+    CuAssertTrue(tc, bson_iter_next(&iter));
+    got = BSON_SUBTYPE_BINARY;
+    (void)bson_iter_binary(&iter, &got, &blens, &err);
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertTrue(tc, BSON_SUBTYPE_USER == got);
+    CuAssertStrEquals(tc, "user", bson_subtype_tostring(got));
+    BSON_FREE(&bson);
+}
+
 /* =======================================================================
  * 嵌套：DOCUMENT 字段 + ARRAY 字段
  * ======================================================================= */
@@ -266,7 +399,7 @@ static void test_bson_complete_cat(CuTest *tc) {
 
     bson_ctx dst;
     bson_init(&dst, NULL, 0);
-    bson_cat(&dst, BSON_DOC(&src));
+    CuAssertIntEquals(tc, ERR_OK, bson_cat(&dst, BSON_DOC(&src)));
     bson_append_end(&dst);
     CuAssertTrue(tc, bson_complete(&dst));
 
@@ -278,6 +411,57 @@ static void test_bson_complete_cat(CuTest *tc) {
     CuAssertStrEquals(tc, "x", bson_iter_utf8(&result, &err));
 
     BSON_FREE(&bson);
+    BSON_FREE(&src);
+    BSON_FREE(&dst);
+}
+
+// bson_cat 的三条早退与正常路径:NULL、空文档(lens==5)、超 MAX_PACK_SIZE(整篇丢弃返 ERR_FAILED)。
+// 空文档与超限必须分属不同分支——写空的 bson_ctx 与 bson_empty() 恰好都是 5 字节,
+// 两者若并进同一条判断,正常入参也会被报成失败
+static void test_bson_cat_bounds(CuTest *tc) {
+    size_t before;
+    char *big;
+    int32_t err;
+    bson_iter result;
+    bson_ctx dst, empty, src;
+
+    bson_init(&empty, NULL, 0);
+    bson_append_end(&empty);
+    CuAssertTrue(tc, bson_complete(&empty));
+    CuAssertTrue(tc, 5 == BSON_DOC_LENS(&empty));
+
+    bson_init(&dst, NULL, 0);
+    before = BSON_DOC_LENS(&dst);
+
+    CuAssertIntEquals(tc, ERR_OK, bson_cat(&dst, NULL));
+    CuAssertTrue(tc, before == BSON_DOC_LENS(&dst));
+
+    CuAssertIntEquals(tc, ERR_OK, bson_cat(&dst, BSON_DOC(&empty)));
+    CuAssertTrue(tc, before == BSON_DOC_LENS(&dst));
+
+    MALLOC(big, 70000);
+    ZERO(big, 70000);
+    big[0] = (char)0x70;
+    big[1] = (char)0x11;
+    big[2] = (char)0x01;
+    CuAssertIntEquals(tc, ERR_FAILED, bson_cat(&dst, big));
+    CuAssertTrue(tc, before == BSON_DOC_LENS(&dst));
+    FREE(big);
+
+    bson_init(&src, NULL, 0);
+    bson_append_int32(&src, "n", 7);
+    bson_append_end(&src);
+    CuAssertIntEquals(tc, ERR_OK, bson_cat(&dst, BSON_DOC(&src)));
+    CuAssertTrue(tc, before < BSON_DOC_LENS(&dst));
+    bson_append_end(&dst);
+    CuAssertTrue(tc, bson_complete(&dst));
+
+    BSON_ITER_FROM(dst, rd, iter);
+    CuAssertTrue(tc, ERR_OK == bson_iter_find(&iter, "n", &result));
+    CuAssertIntEquals(tc, 7, bson_iter_int32(&result, &err));
+    CuAssertIntEquals(tc, ERR_OK, err);
+
+    BSON_FREE(&empty);
     BSON_FREE(&src);
     BSON_FREE(&dst);
 }
@@ -409,7 +593,10 @@ static void test_bson_check_depth(CuTest *tc) {
 }
 
 /* =======================================================================
- * bson_tostring / bson_tostring2 —— 调试串化（验证非空 + 字段名出现）
+ * bson_tostring / bson_tostring2 —— 调试串化（验证非空 + 字段名出现）。
+ * ts 字段取两个最高位已置起的 uint32：timestamp 分支原先用 %d 打无符号量，
+ * 会渲染成 -2147483649 一类负数，而这份输出正是 mongo_parse 在命令失败时喂给
+ * LOG_WARN 的诊断内容。打印顺序是 inc 后 ts
  * ======================================================================= */
 static void test_bson_tostring(CuTest *tc) {
     bson_ctx bson;
@@ -428,10 +615,13 @@ static void test_bson_tostring(CuTest *tc) {
     bson_append_utf8(&bson, "0", "red");
     bson_append_end(&bson);
     bson_append_int64(&bson, "big", 1234567890123LL);
+    bson_append_timestamp(&bson, "ts", 0x80000000u, 0x80000001u);
     bson_append_end(&bson);
 
     char *s = bson_tostring(&bson);
     CuAssertPtrNotNull(tc, s);
+    CuAssertTrue(tc, NULL != strstr(s, "2147483649 2147483648"));
+    CuAssertTrue(tc, NULL == strstr(s, "-2147483"));
     CuAssertTrue(tc, NULL != strstr(s, "age"));
     CuAssertTrue(tc, NULL != strstr(s, "name"));
     CuAssertTrue(tc, NULL != strstr(s, "alice"));
@@ -540,6 +730,91 @@ static void test_bson_check_depth_boundary(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_OK, bson_check_depth(buf[18], blens[18]));
     // buf[19] 深度走到 19，超出 BSON_MAX_DEPTH 拒绝
     CuAssertIntEquals(tc, ERR_FAILED, bson_check_depth(buf[19], blens[19]));
+}
+
+// bson_check_depth 的契约是"深度未超限 且 文档结构合法"。此前它只能判前者：
+// bson_iter_next 对"读到 EOD"和"元素非法被拒"都返回 0，循环无从区分，
+// 于是结构非法的文档只被检查了坏元素之前的前缀却报 ERR_OK，按契约当校验闸门用就会放行垃圾
+static void test_bson_check_depth_malformed(CuTest *tc) {
+    char badtype[] = { 0x08, 0x00, 0x00, 0x00, 0x42, 'x', 0x00, 0x00 };
+    char trunc[] = { 0x0A, 0x00, 0x00, 0x00, 0x01, 'd', 0x00, 0x01, 0x02, 0x00 };
+    bson_ctx ok;
+
+    // 不支持的元素类型字节
+    CuAssertIntEquals(tc, ERR_FAILED, bson_check_depth(badtype, sizeof(badtype)));
+    // 截断的定长值：声明 DOUBLE 却只剩 3 字节
+    CuAssertIntEquals(tc, ERR_FAILED, bson_check_depth(trunc, sizeof(trunc)));
+    // 长度字段本身非法：声明 10 但只给 9 字节
+    CuAssertIntEquals(tc, ERR_FAILED, bson_check_depth(trunc, sizeof(trunc) - 1));
+
+    // 对照：合法文档仍返 ERR_OK
+    bson_init(&ok, NULL, 0);
+    bson_append_int32(&ok, "a", 1);
+    bson_append_end(&ok);
+    CuAssertIntEquals(tc, ERR_OK, bson_check_depth(BSON_DOC(&ok), BSON_DOC_LENS(&ok)));
+    BSON_FREE(&ok);
+}
+
+// ③ 声明长度被恰好耗尽却缺终止 EOD 字节：bson_iter_next 首行的 offset>=doclens 早退是唯一
+// 绕过 err 判定的出口，改前 err 保持 0，bson_check_depth 于是给截断文档发 ERR_OK。
+// noeod 声明 11 字节、含一个完整 INT32 元素、无尾部 0x00；withead 是同一文档补上 EOD 的对照。
+// ④ bson_iter_reset 须与 bson_iter_init 一样毒化当前元素：reset 后在下一次 next 之前
+// 调 getter 必须失败，而不是拿到 reset 前那个元素的值
+static void test_bson_truncated_and_reset(CuTest *tc) {
+    char noeod[] = { 0x0B, 0x00, 0x00, 0x00, 0x10, 'a', 0x00, 0x07, 0x00, 0x00, 0x00 };
+    char witheod[] = { 0x0C, 0x00, 0x00, 0x00, 0x10, 'a', 0x00, 0x07, 0x00, 0x00, 0x00, 0x00 };
+    bson_ctx bson;
+    bson_iter iter;
+    int32_t err;
+    const char *val;
+
+    CuAssertIntEquals(tc, ERR_FAILED, bson_check_depth(noeod, sizeof(noeod)));
+    CuAssertIntEquals(tc, ERR_OK, bson_check_depth(witheod, sizeof(witheod)));
+
+    bson_init(&bson, noeod, sizeof(noeod));
+    bson_iter_init(&iter, &bson);
+    CuAssertTrue(tc, 0 != bson_iter_next(&iter));
+    CuAssertIntEquals(tc, 0, bson_iter_error(&iter));
+    CuAssertIntEquals(tc, 0, bson_iter_next(&iter));
+    CuAssertTrue(tc, 0 != bson_iter_error(&iter));
+
+    bson_ctx wbson;
+    bson_init(&wbson, NULL, 0);
+    bson_append_utf8(&wbson, "s", "hello");
+    bson_append_end(&wbson);
+    BSON_ITER_FROM(wbson, rd, rditer);
+    CuAssertTrue(tc, 0 != bson_iter_next(&rditer));
+    err = ERR_OK;
+    val = bson_iter_utf8(&rditer, &err);
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertStrEquals(tc, "hello", val);
+    bson_iter_reset(&rditer);
+    CuAssertIntEquals(tc, 0, bson_iter_error(&rditer));
+    err = ERR_OK;
+    val = bson_iter_utf8(&rditer, &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    CuAssertTrue(tc, NULL == val);
+    CuAssertTrue(tc, 0 != bson_iter_next(&rditer));
+    err = ERR_FAILED;
+    val = bson_iter_utf8(&rditer, &err);
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertStrEquals(tc, "hello", val);
+    BSON_FREE(&wbson);
+}
+
+// 两个原始数据入口传 NULL 时必须直接失败：bson_init 把 data==NULL 重载为"新建可写文档"，
+// 于是会 MALLOC 一块无人持有的缓冲、再按未初始化内容遍历，既泄漏又可能把堆残渣当字段打印。
+// Lua 侧可达：_lbson_iter_binary 对零长 binary 会把 NULL 推成 lightuserdata，
+// 业务再把它交给 bson.tostring2 / bson.decode 就命中此路径。
+// 本用例兼作泄漏回归——修复前每轮漏 2 * BINARY_INCREASE(256) 字节，退出时 memcheck 必报非 0
+static void test_bson_null_data_entry(CuTest *tc) {
+    int32_t i;
+    for (i = 0; i < 64; i++) {
+        CuAssertPtrEquals(tc, NULL, bson_tostring2(NULL, 0));
+        CuAssertIntEquals(tc, ERR_FAILED, bson_check_depth(NULL, 0));
+        CuAssertPtrEquals(tc, NULL, bson_tostring2(NULL, 32));
+        CuAssertIntEquals(tc, ERR_FAILED, bson_check_depth(NULL, 32));
+    }
 }
 
 // BSN-2：doc->size > doclens 时，内层字段长度检查须以 doclens 为界而非 doc->size
@@ -672,15 +947,22 @@ static void test_bson_find_dotted_iter_continue(CuTest *tc) {
 void test_bson(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_bson_primitives);
     SUITE_ADD_TEST(suite, test_bson_iter_no_next);
+    SUITE_ADD_TEST(suite, test_bson_iter_malformed_poison);
+    SUITE_ADD_TEST(suite, test_bson_binary_subtype_high);
     SUITE_ADD_TEST(suite, test_bson_nested);
     SUITE_ADD_TEST(suite, test_bson_find);
     SUITE_ADD_TEST(suite, test_bson_complete_cat);
+    SUITE_ADD_TEST(suite, test_bson_cat_bounds);
     SUITE_ADD_TEST(suite, test_bson_extra_types);
     SUITE_ADD_TEST(suite, test_bson_check_depth);
     SUITE_ADD_TEST(suite, test_bson_iter_neg_lens);
     SUITE_ADD_TEST(suite, test_bson_iter_field_exceeds_doclens);
     SUITE_ADD_TEST(suite, test_bson_iter_utf8_no_terminator);
     SUITE_ADD_TEST(suite, test_bson_check_depth_boundary);
+    SUITE_ADD_TEST(suite, test_bson_check_depth_malformed);
+    SUITE_ADD_TEST(suite, test_bson_truncated_and_reset);
+    SUITE_ADD_TEST(suite, test_bson_null_data_entry);
+    SUITE_ADD_TEST(suite, test_bson_iter_error_flag);
     SUITE_ADD_TEST(suite, test_bson_tostring);
     SUITE_ADD_TEST(suite, test_bson_tostring_subtypes);
     SUITE_ADD_TEST(suite, test_bson_misc);

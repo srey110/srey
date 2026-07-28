@@ -594,9 +594,20 @@ int32_t mongo_auth(mongo_ctx *mongo, const char *authmod, const char *user, cons
     mongo_set_flag(mongo, flags);
     return rtn;
 }
-// 统一"发送+同步等待响应+校验错误"尾块(不受 MORETOCOME 影响,总是等待);成功返回 mgopack,失败返回 NULL
+// 统一"组包判空 + 发送 + 同步等待响应"(不受 MORETOCOME 影响,总是等待),不校验命令级错误:
+// 调用方各有各的用法——count 要 n 值、startsession 要 session、commit/rollback 要凭"服务端
+// 是否有响应"决定清不清事务状态。pack 为 NULL(组包被拒)在此一并吸收,与网络失败同样返回 NULL,
+// 两者的处置在全部调用方那里恰好相同。对应 Lua 侧 mongo.lua 的 _rsend
+static mgopack_ctx *_mongo_sendwait(mongo_ctx *mongo, void *pack, size_t lens) {
+    if (NULL == pack) {
+        return NULL;
+    }
+    return coro_send(mongo->task, mongo->sk.fd, mongo->sk.skid, pack, lens, NULL, 0);
+}
+// 在 _mongo_sendwait 之上加命令级错误校验(服务端原因由 mongo_parse_check_error 打印);
+// 成功返回 mgopack,失败返回 NULL
 static mgopack_ctx *_mongo_call(mongo_ctx *mongo, void *pack, size_t lens) {
-    mgopack_ctx *mgpack = coro_send(mongo->task, mongo->sk.fd, mongo->sk.skid, pack, lens, NULL, 0);
+    mgopack_ctx *mgpack = _mongo_sendwait(mongo, pack, lens);
     if (NULL == mgpack) {
         return NULL;
     }
@@ -640,8 +651,12 @@ int32_t mongo_ping(mongo_ctx *mongo) {
     }
     return ERR_OK;
 }
-// MongoDB 统一发送函数：设置了 MORETOCOME 标志时仅发送不等待响应，否则同步等待响应
+// MongoDB 统一发送函数：设置了 MORETOCOME 标志时仅发送不等待响应，否则同步等待响应。
+// pack 为 NULL(组包被拒)在此一并吸收,语义同 _mongo_call
 static inline int32_t _mongo_send(mongo_ctx *mongo, void *pack, size_t lens, mgopack_ctx **mgopack) {
+    if (NULL == pack) {
+        return ERR_FAILED;
+    }
     if (mongo_check_flag(mongo, MORETOCOME)) {
         if (ERR_OK != ev_send(&mongo->task->loader->netev, mongo->sk.fd, mongo->sk.skid, pack, lens, 0)) {
             return ERR_FAILED;
@@ -777,7 +792,7 @@ int32_t mongo_count(mongo_ctx *mongo, char *query, size_t qlens, char *options) 
     size_t lens;
     void *count = mongo_pack_count(mongo, query, qlens, options, &lens);
     mongo_set_flag(mongo, flags);
-    mgopack_ctx *mgpack = coro_send(mongo->task, mongo->sk.fd, mongo->sk.skid, count, lens, NULL, 0);
+    mgopack_ctx *mgpack = _mongo_sendwait(mongo, count, lens);
     if (NULL == mgpack) {
         return ERR_FAILED;
     }
@@ -818,7 +833,7 @@ mongo_session *mongo_startsession(mongo_ctx *mongo) {
     size_t lens;
     void *startsession = mongo_pack_startsession(mongo, &lens);
     mongo_set_flag(mongo, flags);
-    mgopack_ctx *mgpack = coro_send(mongo->task, mongo->sk.fd, mongo->sk.skid, startsession, lens, NULL, 0);
+    mgopack_ctx *mgpack = _mongo_sendwait(mongo, startsession, lens);
     if (NULL == mgpack) {
         return NULL;
     }
@@ -859,6 +874,7 @@ void mongo_freesession(mongo_session *session) {
 void mongo_begin(mongo_session *session) {
     mongo_ctx *mongo = session->mongo;
     session->txnnumber++;
+    session->started = 0;
     FREE(session->options);//防止重复调用漏释放
     session->options = mongo_transaction_options(session);
     mongo->session = session;
@@ -869,9 +885,13 @@ int32_t mongo_commit(mongo_session *session, char *options) {
     size_t lens;
     void *committransaction = mongo_pack_committransaction(session, options, &lens);
     mongo_set_flag(mongo, flags);
+    mgopack_ctx *mgpack = _mongo_sendwait(mongo, committransaction, lens);
+    if (NULL == mgpack) {
+        return ERR_FAILED;
+    }
     mongo->session = NULL;
     FREE(session->options);
-    if (NULL == _mongo_call(mongo, committransaction, lens)) {
+    if (ERR_FAILED == mongo_parse_check_error(mgpack)) {
         return ERR_FAILED;
     }
     session->timeout = nowsec() + session->timeoutmin * 60;
@@ -883,9 +903,13 @@ int32_t mongo_rollback(mongo_session *session, char *options) {
     size_t lens;
     void *aborttransaction = mongo_pack_aborttransaction(session, options, &lens);
     mongo_set_flag(mongo, flags);
+    mgopack_ctx *mgpack = _mongo_sendwait(mongo, aborttransaction, lens);
+    if (NULL == mgpack) {
+        return ERR_FAILED;
+    }
     mongo->session = NULL;
     FREE(session->options);
-    if (NULL == _mongo_call(mongo, aborttransaction, lens)) {
+    if (ERR_FAILED == mongo_parse_check_error(mgpack)) {
         return ERR_FAILED;
     }
     session->timeout = nowsec() + session->timeoutmin * 60;

@@ -20,8 +20,7 @@ static inline void rwlock_init(rwlock_ctx *ctx) {
     InitializeSRWLock(&ctx->rwlock);
     ctx->wlock = 0;
 #else
-    ASSERTAB((ERR_OK == pthread_rwlock_init(&ctx->rwlock, NULL)),
-        ERRORSTR(ERRNO));
+    ASSERTAB_CODE(pthread_rwlock_init(&ctx->rwlock, NULL));
 #endif
 };
 /// <summary>
@@ -42,7 +41,7 @@ static inline void rwlock_rdlock(rwlock_ctx *ctx) {
 #if defined(OS_WIN)
     AcquireSRWLockShared(&ctx->rwlock);
 #else
-    ASSERTAB(ERR_OK == pthread_rwlock_rdlock(&ctx->rwlock), ERRORSTR(ERRNO));
+    ASSERTAB_CODE(pthread_rwlock_rdlock(&ctx->rwlock));
 #endif
 };
 /// <summary>
@@ -66,7 +65,7 @@ static inline void rwlock_wrlock(rwlock_ctx *ctx) {
     AcquireSRWLockExclusive(&ctx->rwlock); /* 获取屏障 */
     ctx->wlock = 1; /* 写锁独占，此处无并发写者；AcquireSRWLockExclusive 阻止编译器跨调用缓存 */
 #else
-    ASSERTAB(ERR_OK == pthread_rwlock_wrlock(&ctx->rwlock), ERRORSTR(ERRNO));
+    ASSERTAB_CODE(pthread_rwlock_wrlock(&ctx->rwlock));
 #endif
 };
 /// <summary>
@@ -101,7 +100,7 @@ static inline void rwlock_unlock(rwlock_ctx *ctx) {
         ReleaseSRWLockShared(&ctx->rwlock);
     }
 #else
-    ASSERTAB(ERR_OK == pthread_rwlock_unlock(&ctx->rwlock), ERRORSTR(ERRNO));
+    ASSERTAB_CODE(pthread_rwlock_unlock(&ctx->rwlock));
 #endif
 };
 

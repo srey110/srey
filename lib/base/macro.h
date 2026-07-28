@@ -29,7 +29,12 @@
 
 #define CONCAT2(a, b) a b // 拼接两个字符串字面量
 #define CONCAT3(a, b, c) a b c // 拼接三个字符串字面量
-#define __FILENAME__(file) (strrchr(file, PATH_SEPARATOR) ? strrchr(file, PATH_SEPARATOR) + 1 : file) // 从路径中提取文件名
+// 从路径中提取文件名，无分隔符时原样返回
+static inline const char *_filename(const char *file) {
+    const char *sep = strrchr(file, PATH_SEPARATOR);
+    return NULL != sep ? sep + 1 : file;
+}
+#define __FILENAME__(file) _filename(file)
 #define PRINT(fmt, ...) printf(CONCAT3("[%s %s %d] ", fmt, "\n"),  __FILENAME__(__FILE__), __FUNCTION__, __LINE__, ##__VA_ARGS__) // 带位置信息的标准输出
 
 #ifndef offsetof
@@ -62,6 +67,20 @@
             ptr = NULL; \
         }\
     } while(0)
+/// <summary>
+/// 安全清零缓冲区。与 ZERO/memset 不同，保证写入不被编译器优化掉，
+/// 适用于密钥、密码、PBKDF2 中间值等使用后须立即抹除的敏感缓冲。
+/// 实现在 lib/utils/utils.c（声明置此以供下方 SECURE_FREE 展开，同 slog 与 LOG_* 的关系）。
+/// 实现使用 volatile 指针 + GCC/Clang 编译器屏障防 dead-store elimination 与 LTO 内联消除。
+/// </summary>
+/// <param name="buf">目标缓冲区（NULL 时直接返回）</param>
+/// <param name="len">字节数（0 时直接返回）</param>
+void secure_zero(void *buf, size_t len);
+#define SECURE_FREE(ptr, lens)\
+    do {\
+        secure_zero(ptr, lens);\
+        FREE(ptr);\
+    } while(0)
 // copy=0（本层已接管 data 所有权）时释放 data；copy!=0（复制语义）不释放。ev_send/task_* 接管失败或无接管的兜底
 #define CHECK_COPY_FREE(data, copy)\
     do {\
@@ -88,12 +107,20 @@
 #define ASSERTAB(exp, errstr)\
     do {\
         if (!(exp)) {\
-            if (!EMPTYSTR(errstr)) {\
-                fprintf(stderr, "[ABORT][%s %s %d] %s\n", __FILENAME__(__FILE__), __FUNCTION__, __LINE__, errstr);\
+            const char *_abstr = (errstr);\
+            if (!EMPTYSTR(_abstr)) {\
+                fprintf(stderr, "[ABORT][%s %s %d] %s\n", __FILENAME__(__FILE__), __FUNCTION__, __LINE__, _abstr);\
                 fflush(stderr);\
             }\
             abort();\
         }\
+    } while(0)
+// 断言"返回错误码而非设 errno"的调用：pthread 系与 WSAStartup 都属此类，
+// 失败信息须取自返回值，取 ERRNO 会打印无关的 strerror(errno)
+#define ASSERTAB_CODE(exp)\
+    do {\
+        int32_t _acode = (exp);\
+        ASSERTAB(ERR_OK == _acode, ERRORSTR(_acode));\
     } while(0)
 
 //日志级别

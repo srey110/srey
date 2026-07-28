@@ -43,8 +43,16 @@ static void _buffer_node_free(bufnode_ctx *node) {
     }
     FREE(node);
 }
-//通过偏移判断是否足够
-static int32_t _buffer_should_realign(bufnode_ctx *node, const size_t lens) {
+// 外部托管(零拷贝)节点判定:内部节点的 buffer 由 _buffer_node_new 与节点头一次分配、紧随其后,
+// 外部节点的 buffer 指向调用方内存。不用 _free 判定——buffer_external 允许 ext_free 传 NULL
+static inline int32_t _buffer_node_external(bufnode_ctx *node) {
+    return node->buffer != (char *)(node + 1);
+}
+//通过偏移判断是否足够。外部节点的 misalign 区属调用方内存,回收它等于改写调用方数据,一律拒绝
+static inline int32_t _buffer_should_realign(bufnode_ctx *node, const size_t lens) {
+    if (_buffer_node_external(node)) {
+        return 0;
+    }
     return node->buffer_lens - node->off >= lens &&
         (node->off < node->buffer_lens / 2) &&
         (node->off <= MAX_REALIGN_IN_EXPAND);
@@ -172,6 +180,9 @@ static bufnode_ctx *_buffer_expand_single(buffer_ctx *ctx, const size_t lens) {
     _buffer_node_free(node);
     return tmp;
 }
+// 外部托管节点必须占一条零长 iov 项而不能被跳过:_buffer_commit_expand 按"iov[i] 对应链上
+// 第 i 个节点"逐位校验,只容许跳过首个零空间节点,中途少记一项后续节点即全部错位并 abort;
+// 而记 buffer_lens 又会把调用方的外部缓冲当可写空间(排空后 off==0 时尤其致命)
 static uint32_t _buffer_expand(buffer_ctx *ctx, const size_t lens, IOV_TYPE *iov, const uint32_t cnt) {
     bufnode_ctx *tmp, *next, *node = ctx->tail;
     size_t avail, remain, used, space;
@@ -194,6 +205,9 @@ static uint32_t _buffer_expand(buffer_ctx *ctx, const size_t lens, IOV_TYPE *iov
                 ++used;
                 RECOED_IOV(node, space);
             }
+        } else if (_buffer_node_external(node)) {
+            ++used;
+            RECOED_IOV(node, 0);
         } else {
             node->misalign = 0;
             avail += node->buffer_lens;
@@ -320,6 +334,9 @@ void buffer_init(buffer_ctx *ctx) {
 }
 void buffer_free(buffer_ctx *ctx) {
     _buffer_free_all_node(ctx->head);
+    // 必须复位:否则 head/tail/tail_with_data/hint_node 全指向已释放节点,
+    // 重复调用即 double free,total_lens 也会让释放后的 buffer_size 报出旧字节数
+    buffer_init(ctx);
 }
 size_t buffer_size(buffer_ctx *ctx) {
     return ctx->total_lens;
@@ -576,6 +593,9 @@ static int32_t _buffer_search_memcmp(bufnode_ctx *node, cmp_func cmp, size_t off
 int32_t buffer_search(buffer_ctx *ctx, const int32_t ncs,
     const size_t start, size_t end, char *what, size_t wlens) {
     ASSERTAB(0 == ctx->freeze_read, "read freezed");
+    if (EMPTYPTR(what, wlens)) {
+        return ERR_FAILED;
+    }
     if (0 == ctx->total_lens) {
         return ERR_FAILED;
     }

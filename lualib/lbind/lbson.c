@@ -1,6 +1,7 @@
 ﻿#include "lbind/lpub.h"
 
 #define MT_BSON        "_bson_ctx"
+#define MT_BSON_READER "_bson_reader"
 #define MT_BSON_ITER   "_bson_iter_ctx"
 #define MT_BSON_OID    "_bson_oid"
 #define MT_BSON_DATE   "_bson_date"
@@ -13,23 +14,50 @@ typedef struct { bson_subtype subtype; size_t lens; } lbson_binary_t;
 // lbson_binary_t 后紧跟 lens 字节的二进制内容
 typedef struct { int64_t val; } lbson_int64_t;
 
+// 可写对象(bson.new() / bson.encode())与只读对象(bson.new(data, size))共用同一个 bson_ctx,
+// 但挂不同元表:只读对象一旦调写入方法会走到 binary.c "external buffer is read-only" 断言,
+// 直接 abort 掉整个进程,故只读元表不提供任何写入方法。本函数供两类对象都能调的方法
+// (data / tostring / __gc / iter.new / decode)校验第 1 个参数;complete 是写入方是否配平
+// doc_begin/end 的概念,只读元表上不提供,故仍只认可写元表
+static bson_ctx *_lbson_check(lua_State *lua) {
+    void *ud = luaL_testudata(lua, 1, MT_BSON);
+    if (NULL == ud) {
+        ud = luaL_checkudata(lua, 1, MT_BSON_READER);
+    }
+    return (bson_ctx *)ud;
+}
+// 文档字节数:可写对象取已写入的 doc.offset(doc.size 是含扩容余量的容量);只读对象是外部托管
+// 缓冲(inc==0),binary_init 恒把 offset 置 0,真实长度只在 doc.size 里,且不受 iter 推进影响
+static size_t _lbson_lens(bson_ctx *bson) {
+    return 0 == bson->doc.inc ? bson->doc.size : bson->doc.offset;
+}
+// 只读元表上所有写入方法名的占位:报 Lua 错(可被 pcall 捕获)而非任其走到 binary.c 的断言。
+// 将来给可写元表加写入方法却忘了在只读元表登记,退化为 "attempt to call a nil value",
+// 消息变差但同样不会 abort
+static int32_t _lbson_readonly(lua_State *lua) {
+    return luaL_error(lua, "bson: read-only document from bson.new(data, size), write methods unavailable");
+}
 // ---- bson builder ----
 /// <summary>
-/// 创建 bson 文档构建器
+/// 创建 bson 文档构建器。省略 data 得可写对象（MT_BSON，全部方法可用）；
+/// 传入 data 得只读对象（MT_BSON_READER），仅有 :data / :tostring / :free，可交给
+/// bson.iter.new 与 bson.decode；写入方法在只读元表上是报错占位——外部托管缓冲不可扩容，
+/// 若照可写元表调下去会撞上 binary.c 的断言 abort 掉整个进程
 /// </summary>
-/// <param name="data" type="lightuserdata?">已有 BSON 数据指针；省略时新建空文档</param>
+/// <param name="data" type="lightuserdata?">已有 BSON 数据指针；省略时新建可写空文档</param>
 /// <param name="size" type="integer?">data 提供时必填，表示已有数据字节数</param>
-/// <returns type="_bson_ctx">bson 对象</returns>
+/// <returns type="_bson_ctx|_bson_reader">可写对象或只读对象</returns>
 static int32_t _lbson_new(lua_State *lua) {
     bson_ctx *bson = lua_newuserdata(lua, sizeof(bson_ctx));
     if (lua_islightuserdata(lua, 1)) {
         char *data = lua_touserdata(lua, 1);
         size_t size = (size_t)luaL_checkinteger(lua, 2);
         bson_init(bson, data, size);
+        ASSOC_MTABLE(lua, MT_BSON_READER);
     } else {
         bson_init(bson, NULL, 0);
+        ASSOC_MTABLE(lua, MT_BSON);
     }
-    ASSOC_MTABLE(lua, MT_BSON);
     return 1;
 }
 /// <summary>
@@ -38,7 +66,7 @@ static int32_t _lbson_new(lua_State *lua) {
 /// <param name="self" type="userdata">bson 对象</param>
 /// <returns>无</returns>
 static int32_t _lbson_free(lua_State *lua) {
-    bson_ctx *bson = luaL_checkudata(lua, 1, MT_BSON);
+    bson_ctx *bson = _lbson_check(lua);
     BSON_FREE(bson);
     return 0;
 }
@@ -344,7 +372,7 @@ static int32_t _lbson_maxkey(lua_State *lua) {
 /// <param name="self" type="userdata">bson 对象</param>
 /// <param name="doc" type="string|lightuserdata">已完成 BSON 文档</param>
 /// <param name="size" type="integer?">doc 为 lightuserdata 时必填，表示 buffer 字节数</param>
-/// <returns>无</returns>
+/// <returns>无；doc 长度达 MAX_PACK_SIZE 时报错（内容会被整篇丢弃，不静默）</returns>
 static int32_t _lbson_cat(lua_State *lua) {
     bson_ctx *bson = luaL_checkudata(lua, 1, MT_BSON);
     char *doc;
@@ -365,7 +393,9 @@ static int32_t _lbson_cat(lua_State *lua) {
     if (bson_lens > (uint32_t)actual_lens) {
         return luaL_error(lua, "bson_cat: embedded length %u exceeds buffer size %zu", bson_lens, actual_lens);
     }
-    bson_cat(bson, doc);
+    if (ERR_OK != bson_cat(bson, doc)) {
+        return luaL_error(lua, "bson_cat: document length %u reaches max pack size, dropped", bson_lens);
+    }
     return 0;
 }
 /// <summary>
@@ -385,8 +415,8 @@ static int32_t _lbson_complete(lua_State *lua) {
 /// <returns type="lightuserdata">数据指针</returns>
 /// <returns type="integer">字节数</returns>
 static int32_t _lbson_data(lua_State *lua) {
-    bson_ctx *bson = luaL_checkudata(lua, 1, MT_BSON);
-    LPUB_RET_LUD(lua, BSON_DOC(bson), (lua_Integer)BSON_DOC_LENS(bson));
+    bson_ctx *bson = _lbson_check(lua);
+    LPUB_RET_LUD(lua, BSON_DOC(bson), (lua_Integer)_lbson_lens(bson));
 }
 /// <summary>
 /// 将当前文档转换为可读字符串
@@ -394,7 +424,7 @@ static int32_t _lbson_data(lua_State *lua) {
 /// <param name="self" type="userdata">bson 对象</param>
 /// <returns type="string?">可读字符串；转换失败返回 nil</returns>
 static int32_t _lbson_tostring(lua_State *lua) {
-    bson_ctx *bson = luaL_checkudata(lua, 1, MT_BSON);
+    bson_ctx *bson = _lbson_check(lua);
     char *str = bson_tostring(bson);
     if (NULL == str) {
         lua_pushnil(lua);
@@ -887,9 +917,9 @@ static int32_t _lbson_decode(lua_State *lua) {
     char *data;
     size_t lens;
     if (LUA_TUSERDATA == lua_type(lua, 1)) {
-        bson_ctx *bson = luaL_checkudata(lua, 1, MT_BSON);
+        bson_ctx *bson = _lbson_check(lua);
         data = BSON_DOC(bson);
-        lens = BSON_DOC_LENS(bson);
+        lens = _lbson_lens(bson);
     } else if (LUA_TSTRING == lua_type(lua, 1)) {
         data = (char *)luaL_checklstring(lua, 1, &lens);
     } else {
@@ -906,6 +936,8 @@ static void _lbson_reg_wrapper_mt(lua_State *lua, const char *name, luaL_Reg *me
     lua_pushvalue(lua, -1);
     lua_setfield(lua, -2, "__index");
     luaL_setfuncs(lua, methods, 0);
+    lua_pushstring(lua, name);
+    lua_setfield(lua, -2, "__metatable");
     lua_pop(lua, 1);
 }
 //bson
@@ -978,6 +1010,34 @@ LUAMOD_API int luaopen_bson(lua_State *lua) {
         { "__gc",        _lbson_free },
         { NULL, NULL }
     };
+    luaL_Reg reader_mt[] = {
+        { "double",      _lbson_readonly },
+        { "utf8",        _lbson_readonly },
+        { "doc_begin",   _lbson_readonly },
+        { "arr_begin",   _lbson_readonly },
+        { "end",         _lbson_readonly },
+        { "append_doc",  _lbson_readonly },
+        { "append_arr",  _lbson_readonly },
+        { "binary",      _lbson_readonly },
+        { "oid",         _lbson_readonly },
+        { "bool",        _lbson_readonly },
+        { "date",        _lbson_readonly },
+        { "null",        _lbson_readonly },
+        { "regex",       _lbson_readonly },
+        { "jscode",      _lbson_readonly },
+        { "int32",       _lbson_readonly },
+        { "timestamp",   _lbson_readonly },
+        { "int64",       _lbson_readonly },
+        { "minkey",      _lbson_readonly },
+        { "maxkey",      _lbson_readonly },
+        { "cat",         _lbson_readonly },
+        { "data",        _lbson_data },
+        { "tostring",    _lbson_tostring },
+        { "free",        _lbson_free },
+        { "__gc",        _lbson_free },
+        { NULL, NULL }
+    };
+    _lbson_reg_wrapper_mt(lua, MT_BSON_READER, reader_mt);
     REG_MTABLE(lua, MT_BSON, reg_new, reg_func);
     return 1;
 }
@@ -986,14 +1046,15 @@ LUAMOD_API int luaopen_bson(lua_State *lua) {
 /// 从 bson 上下文创建迭代器（以 uservalue 持有 bson 引用，防止 GC）。
 /// 一次性消费契约：iter 会推进底层 bson_ctx 的 doc.offset，且 new 时强制把 offset
 /// 重置到 0 以让 iter_init 正确读 doclens（encode 后 offset 在末尾，直接 init 读到 garbage）。
-/// 因此对同一 bson 调用 iter.new 后，原 bson 的 :data() / :complete() 不再可靠——
+/// 因此对同一个**可写**对象调用 iter.new 后，它的 :data() / :complete() 不再可靠——
 /// 需要保留原始数据时请先调用 :data() 取走再创建 iter，或直接走 bson.decode() 转 Lua table。
+/// 只读对象（bson.new(data, size)）不受此影响：它的 :data() 取长走 doc.size，与 offset 无关。
 /// 要求 bson 已闭合（depth==0，即写入模式下全部 doc_begin 均已配对 end）；否则报错
 /// </summary>
-/// <param name="bson" type="_bson_ctx">bson 对象</param>
+/// <param name="bson" type="_bson_ctx|_bson_reader">bson 对象，可写与只读均可</param>
 /// <returns type="_bson_iter_ctx">iter 对象</returns>
 static int32_t _lbson_iter_new(lua_State *lua) {
-    bson_ctx *bson = luaL_checkudata(lua, 1, MT_BSON);
+    bson_ctx *bson = _lbson_check(lua);
     if (0 != bson->depth) {
         // depth 非 0 表示存在未配对的 doc_begin（含隐式顶层文档），首 4 字节长度前缀
         // 仍是 MALLOC 未清零的堆内容，此时 iter_init 会把垃圾值当 doclens 解析出脏字段

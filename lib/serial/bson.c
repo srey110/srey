@@ -21,11 +21,8 @@ static void _bson_oid_init(void) {
         }
         h ^= i;
     }
-    _oid_header[0] = h & 0xff;
-    _oid_header[1] = (h >> 8) & 0xff;
-    _oid_header[2] = (h >> 16) & 0xff;
-    _oid_header[3] = pid & 0xff;
-    _oid_header[4] = (pid >> 8) & 0xff;
+    pack_integer((char *)_oid_header, h, 3, 1);
+    pack_integer((char *)_oid_header + 3, (uint64_t)(uint32_t)pid, 2, 1);
     _oid_counter = randrange(10000, 20000);
 }
 // 初始化静态空 BSON 文档（长度为5：4字节长度 + 1字节 EOD）
@@ -39,14 +36,9 @@ void bson_globle_init(void) {
 void bson_oid(char oid[BSON_OID_LENS]) {
     time_t ti = time(NULL);
     uint32_t id = ATOMIC_ADD(&_oid_counter, 1);
-    oid[0] = (ti >> 24) & 0xff;
-    oid[1] = (ti >> 16) & 0xff;
-    oid[2] = (ti >> 8) & 0xff;
-    oid[3] = ti & 0xff;
+    pack_integer(oid, (uint64_t)ti, 4, 0);
     memcpy(oid + 4, _oid_header, 5);
-    oid[9] = (id >> 16) & 0xff;
-    oid[10] = (id >> 8) & 0xff;
-    oid[11] = id & 0xff;
+    pack_integer(oid + 9, id, 3, 0);
 }
 const char *bson_empty(size_t *lens) {
     SET_PTR(lens, 5);
@@ -80,15 +72,19 @@ void bson_append_end(bson_ctx *bson) {
     binary_offset(&bson->doc, endoff);
     bson->depth--;
 }
-void bson_cat(bson_ctx *bson, char *doc) {
+int32_t bson_cat(bson_ctx *bson, char *doc) {
     if (NULL == doc) {
-        return;
+        return ERR_OK;
     }
     uint32_t lens = (uint32_t)unpack_integer(doc, 4, 1, 0);
-    if (lens <= 5 || PACK_TOO_LONG(lens)) {
-        return;
+    if (lens <= 5) {
+        return ERR_OK;
+    }
+    if (PACK_TOO_LONG(lens)) {
+        return ERR_FAILED;
     }
     binary_set_binary(&bson->doc, doc + 4, lens - 5);//4 + 1(eod)
+    return ERR_OK;
 }
 void bson_append_document_begain(bson_ctx *bson, const char *key) {
     BSON_APPEND_KEY(BSON_DOCUMENT);
@@ -195,10 +191,17 @@ void bson_append_maxkey(bson_ctx *bson, const char *key) {
 // 清空迭代器的当前字段信息（类型、长度、key、val 等）
 static void _bson_iter_clear(bson_iter *iter) {
     iter->subtype = 0;
+    iter->keylens = 0;
     iter->lens = 0;
     iter->key = NULL;
     iter->val = NULL;
     iter->val2 = NULL;
+}
+// 置"无有效当前元素":type 回 BSON_EOD 哨兵令 _bson_iter_check 对任何真实类型都失败。
+// 解析失败路径必须调用,否则 type 停在畸形元素的类型而 val 为 NULL,getter 会通过类型检查后解引用 NULL
+static void _bson_iter_poison(bson_iter *iter) {
+    _bson_iter_clear(iter);
+    iter->type = BSON_EOD;
 }
 void bson_iter_init(bson_iter *iter, bson_ctx *bson) {
     iter->doc = &bson->doc;
@@ -211,19 +214,29 @@ void bson_iter_init(bson_iter *iter, bson_ctx *bson) {
     } else {
         iter->doclens = lens;
     }
-    _bson_iter_clear(iter);
-    iter->type = BSON_EOD;
+    // doclens 为 0 即长度字段本身非法(< 5 或超出 buffer),属结构错误而非空文档
+    iter->err = (0 == iter->doclens) ? 1 : 0;
+    _bson_iter_poison(iter);
 }
 void bson_iter_reset(bson_iter *iter) {
     binary_offset(iter->doc, 4);
+    iter->err = (0 == iter->doclens) ? 1 : 0;
+    _bson_iter_poison(iter);
+}
+int32_t bson_iter_error(const bson_iter *iter) {
+    return iter->err;
 }
 static int32_t _bson_iter_read_key(bson_iter *iter) {
+    const char *start = iter->doc->data + iter->doc->offset;
     size_t avail = iter->doclens > iter->doc->offset ? iter->doclens - iter->doc->offset : 0;
-    if (NULL == memchr(iter->doc->data + iter->doc->offset, '\0', avail)) {
+    const char *nul = memchr(start, '\0', avail);
+    if (NULL == nul) {
         LOG_WARN("invalid bson key.");
         return 0;
     }
-    iter->key = binary_get_string(iter->doc);
+    iter->key = start;
+    iter->keylens = (uint32_t)(nul - start);
+    binary_offset(iter->doc, iter->doc->offset + iter->keylens + 1);
     return 1;
 }
 // 定长类型统一读取:read_key + 边界检查 + binary_get_binary;成功返 1,失败返 0
@@ -242,6 +255,10 @@ static int32_t _bson_iter_fixed(bson_iter *iter, size_t lens) {
 }
 int32_t bson_iter_next(bson_iter *iter) {
     if (iter->doc->offset >= iter->doclens) {
+        if (BSON_EOD != iter->type) {
+            iter->err = 1;
+        }
+        _bson_iter_poison(iter);
         return 0;
     }
     size_t off;
@@ -333,7 +350,7 @@ int32_t bson_iter_next(bson_iter *iter) {
             break;
         }
         iter->lens = (size_t)lens;
-        iter->subtype = binary_get_int8(iter->doc);
+        iter->subtype = (uint8_t)binary_get_int8(iter->doc);
         iter->val = binary_get_binary(iter->doc, iter->lens);
         break;
     case BSON_OID://e_name (byte*12)
@@ -395,12 +412,20 @@ int32_t bson_iter_next(bson_iter *iter) {
         LOG_WARN("unsupported bson type %d.", iter->type);
         break;
     }
+    if (0 == more) {
+        // switch 里唯一合法的 more=0 是 case BSON_EOD;其余都是解析失败。
+        // 必须在毒化之前判断——_bson_iter_poison 会把 type 置成 BSON_EOD
+        if (BSON_EOD != iter->type) {
+            iter->err = 1;
+        }
+        _bson_iter_poison(iter);
+    }
     return more;
 }
 // 在当前层级查找指定 key，找到时将 result 设为当前 iter
 static int32_t _bson_iter_find(bson_iter *iter, const char *key, size_t klens, bson_iter *result) {
     while (bson_iter_next(iter)) {
-        if (klens == strlen(iter->key)
+        if (klens == (size_t)iter->keylens
             && 0 == memcmp(iter->key, key, klens)) {
             *result = *iter;
             return ERR_OK;
@@ -640,9 +665,16 @@ static int32_t _bson_check_depth(char *data, size_t lens, int32_t depth) {
             }
         }
     }
+    // 循环退出有两种可能:读到 EOD 正常结束,或某个元素非法被拒。后者只检查了坏元素之前的前缀
+    if (0 != bson_iter_error(&iter)) {
+        return ERR_FAILED;
+    }
     return ERR_OK;
 }
 int32_t bson_check_depth(char *data, size_t lens) {
+    if (NULL == data) {
+        return ERR_FAILED;
+    }
     return _bson_check_depth(data, lens, 0);
 }
 // 递归将 BSON 文档格式化为带缩进的可读字符串，追加到 str 中
@@ -657,7 +689,6 @@ static void _bson_dump(bson_ctx *bson, int32_t index, int32_t depth, binary_ctx 
     bson_iter_init(&iter, bson);
     const char *strtype;
     bson_ctx child;
-    binary_ctx strchild;
     size_t lens;
     bson_subtype subtype;
     const char *subtstr;
@@ -666,7 +697,7 @@ static void _bson_dump(bson_ctx *bson, int32_t index, int32_t depth, binary_ctx 
     char *options;
     while (bson_iter_next(&iter)) {
         binary_set_fill(str, ' ', index * 4);
-        binary_set_binary(str, iter.key, strlen(iter.key));
+        binary_set_binary(str, iter.key, iter.keylens);
         binary_set_binary(str, "(", 1);
         strtype = bson_type_tostring(iter.type);
         binary_set_binary(str, strtype, strlen(strtype));
@@ -691,21 +722,18 @@ static void _bson_dump(bson_ctx *bson, int32_t index, int32_t depth, binary_ctx 
         case BSON_DOCUMENT:
         case BSON_ARRAY: {
             bson_init(&child, iter.val, iter.lens);
-            binary_init(&strchild, NULL, 0, 0);
             if (BSON_DOCUMENT == iter.type) {
-                binary_set_binary(&strchild, "{\r\n", 3);
+                binary_set_binary(str, "{\r\n", 3);
             } else {
-                binary_set_binary(&strchild, "[\r\n", 3);
+                binary_set_binary(str, "[\r\n", 3);
             }
-            _bson_dump(&child, index + 1, depth + 1, &strchild);
-            binary_set_fill(&strchild, ' ', index * 4);
+            _bson_dump(&child, index + 1, depth + 1, str);
+            binary_set_fill(str, ' ', index * 4);
             if (BSON_DOCUMENT == iter.type) {
-                binary_set_binary(&strchild, "}", 1);
+                binary_set_binary(str, "}", 1);
             } else {
-                binary_set_binary(&strchild, "]", 1);
+                binary_set_binary(str, "]", 1);
             }
-            binary_set_binary(str, strchild.data, strchild.offset);
-            binary_free(&strchild);
             break;
         }
         case BSON_BINARY: {
@@ -740,7 +768,7 @@ static void _bson_dump(bson_ctx *bson, int32_t index, int32_t depth, binary_ctx 
         case BSON_TIMESTAMP: {
             inc = 0;
             ts = bson_iter_timestamp(&iter, &inc, NULL);
-            binary_set_va(str, "%d %d", inc, ts);
+            binary_set_va(str, "%u %u", inc, ts);
             break;
         }
         case BSON_DATE: {
@@ -788,6 +816,9 @@ char *bson_tostring(bson_ctx *bson) {
     return str.data;
 }
 char *bson_tostring2(char *data, size_t lens) {
+    if (NULL == data) {
+        return NULL;
+    }
     bson_ctx bson;
     bson_init(&bson, data, lens);
     return bson_tostring(&bson);

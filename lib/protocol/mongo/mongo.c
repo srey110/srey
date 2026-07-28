@@ -47,8 +47,7 @@ static void _mongo_format_pwd(mongo_ctx *mongo, char fmtpwd[HEX_ENSIZE(MD5_BLOCK
     md5_ctx md5;
     md5_init(&md5);
     md5_update(&md5, buf, blen);
-    secure_zero(buf, blen);
-    FREE(buf);
+    SECURE_FREE(buf, blen);
     md5_final(&md5, hs);
     secure_zero(&md5, sizeof(md5));
     tohex(hs, sizeof(hs), fmtpwd, 1);
@@ -70,11 +69,16 @@ static int32_t _mongo_server_first_message(ev_ctx *ev, mongo_ctx *mongo, mgopack
     if (DG_SHA1 == mongo->scram->dtype) {
         char fmtpwd[HEX_ENSIZE(MD5_BLOCK_SIZE)];
         _mongo_format_pwd(mongo, fmtpwd);
-        scram_set_pwd(mongo->scram, fmtpwd, strlen(fmtpwd));
+        int32_t setrtn = scram_set_pwd(mongo->scram, fmtpwd, strlen(fmtpwd));
         secure_zero(fmtpwd, sizeof(fmtpwd));
+        if (ERR_OK != setrtn) {
+            return ERR_FAILED;
+        }
         client_final = scram_final_message(mongo->scram);
     } else {
-        scram_set_pwd(mongo->scram, mongo->password, strlen(mongo->password));
+        if (ERR_OK != scram_set_pwd(mongo->scram, mongo->password, strlen(mongo->password))) {
+            return ERR_FAILED;
+        }
         client_final = scram_final_message(mongo->scram);
     }
     if (NULL == client_final) {

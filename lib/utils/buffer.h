@@ -37,7 +37,9 @@ typedef struct buffer_ctx {
 /// <param name="ctx">buffer_ctx</param>
 void buffer_init(buffer_ctx *ctx);
 /// <summary>
-/// 分散内存释放
+/// 分散内存释放。调用后 ctx 回到 buffer_init 后的空状态，可安全重复调用；
+/// 复位是为了重复释放不变成 double free、释放后读不到陈旧节点与字节数，
+/// 不是"清空并复用"的入口——需要保留已分配节点的清空请用 buffer_drain。
 /// </summary>
 /// <param name="ctx">buffer_ctx</param>
 void buffer_free(buffer_ctx *ctx);
@@ -101,8 +103,8 @@ size_t buffer_remove(buffer_ctx *ctx, void *out, size_t lens);
 /// <param name="ncs">0 区分大小写</param>
 /// <param name="start">起始搜索位置</param>
 /// <param name="end">搜索结束位置, 0 直到数据结束</param>
-/// <param name="what">要搜索的数据</param>
-/// <param name="wlens">搜索数据长度</param>
+/// <param name="what">要搜索的数据，NULL 直接返回 ERR_FAILED</param>
+/// <param name="wlens">搜索数据长度，0 直接返回 ERR_FAILED（不按空串恒匹配处理）</param>
 /// <returns>ERR_FAILED 失败 否则返回搜索的起始位置</returns>
 int32_t buffer_search(buffer_ctx *ctx, const int32_t ncs,
     const size_t start, size_t end, char *what, size_t wlens);

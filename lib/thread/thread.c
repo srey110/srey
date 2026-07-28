@@ -42,10 +42,9 @@ pthread_t thread_creat_hooks(th_cb _cb, hook_cb _init, hook_cb _exit,
     pthread_t pthread;
 #if defined(OS_WIN)
     pthread = (HANDLE)_beginthreadex(NULL, 0, _thread_cb, (void*)th, 0, NULL);
-    ASSERTAB(NULL != pthread, ERRORSTR(ERRNO));
+    ASSERTAB(NULL != pthread, strerror(errno));
 #else
-    ASSERTAB((ERR_OK == pthread_create(&pthread, NULL, _thread_cb, (void*)th)),
-        ERRORSTR(ERRNO));
+    ASSERTAB_CODE(pthread_create(&pthread, NULL, _thread_cb, (void*)th));
 #endif
     return pthread;
 }
@@ -57,6 +56,6 @@ void thread_join(pthread_t th) {
     ASSERTAB(WAIT_OBJECT_0 == WaitForSingleObject(th, INFINITE), ERRORSTR(ERRNO));
     CloseHandle(th);
 #else
-    ASSERTAB(ERR_OK == pthread_join(th, NULL), ERRORSTR(ERRNO));
+    ASSERTAB_CODE(pthread_join(th, NULL));
 #endif
 }

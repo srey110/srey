@@ -16,8 +16,7 @@ static inline void mutex_init(mutex_ctx *ctx) {
 #if defined(OS_WIN)
     InitializeCriticalSection(ctx);
 #else
-    ASSERTAB(ERR_OK == pthread_mutex_init(ctx, (const pthread_mutexattr_t*)NULL),
-        ERRORSTR(ERRNO));
+    ASSERTAB_CODE(pthread_mutex_init(ctx, (const pthread_mutexattr_t*)NULL));
 #endif
 };
 /// <summary>
@@ -39,7 +38,7 @@ static inline void mutex_lock(mutex_ctx *ctx) {
 #if defined(OS_WIN)
     EnterCriticalSection(ctx);
 #else
-    ASSERTAB(ERR_OK == pthread_mutex_lock(ctx), ERRORSTR(ERRNO));
+    ASSERTAB_CODE(pthread_mutex_lock(ctx));
 #endif
 };
 /// <summary>
@@ -62,7 +61,7 @@ static inline void mutex_unlock(mutex_ctx *ctx) {
 #if defined(OS_WIN)
     LeaveCriticalSection(ctx);
 #else
-    ASSERTAB(ERR_OK == pthread_mutex_unlock(ctx), ERRORSTR(ERRNO));
+    ASSERTAB_CODE(pthread_mutex_unlock(ctx));
 #endif
 };
 

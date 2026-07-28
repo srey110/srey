@@ -89,7 +89,8 @@ const char *procpath(void);
 /// <returns>文件内容</returns>
 char *readall(const char *file, size_t *lens);
 /// <summary>
-/// timeofday
+/// timeofday。注意 Windows 的 struct timeval.tv_sec 是 32 位 long,2038-01-19 后回绕,
+/// 这是该结构体自身的容量上限;需要不截断的时间戳请用 nowms / nowsec
 /// </summary>
 /// <param name="tv">timeval</param>
 void timeofday(struct timeval *tv);
@@ -224,11 +225,13 @@ char *trim_right(char *data, size_t dlens, size_t *lens);
 /// <returns>指向剔除后首字节(仍在 data 内)，全为空字节则返回 NULL</returns>
 char *trim(char *data, size_t dlens, size_t *lens);
 /// <summary>
-/// 初始化用于 locale 无关数值解析的 C locale 句柄，须在启动期单线程调用一次（strtod_c 依赖）
+/// 初始化用于 locale 无关数值解析的 C locale 句柄，须在启动期单线程调用一次（strtod_c 依赖）。
+/// 创建失败直接 abort：句柄留空会让 strtod_l 在 glibc 上解引用空句柄崩在 DB 解包路径里，
+/// 而 Darwin 会静默回落到当前 locale，恰好抹掉 strtod_c 存在的意义
 /// </summary>
 void locale_init(void);
 /// <summary>
-/// 释放 locale_init 创建的 C locale 句柄
+/// 释放 locale_init 创建的 C locale 句柄；调用后句柄置空，不可再调 strtod_c
 /// </summary>
 void locale_free(void);
 /// <summary>
@@ -395,14 +398,6 @@ uint64_t htonll(uint64_t val);
 /// <param name="len">比较长度（字节）</param>
 /// <returns>相等返回 0，不相等返回非 0</returns>
 int32_t ct_memcmp(const void *a, const void *b, size_t len);
-/// <summary>
-/// 安全清零缓冲区。与 ZERO/memset 不同，保证写入不被编译器优化掉，
-/// 适用于密钥、密码、PBKDF2 中间值等使用后须立即抹除的敏感缓冲。
-/// 实现使用 volatile 指针 + GCC/Clang 编译器屏障防 dead-store elimination 与 LTO 内联消除。
-/// </summary>
-/// <param name="buf">目标缓冲区（NULL 时直接返回）</param>
-/// <param name="len">字节数（0 时直接返回）</param>
-void secure_zero(void *buf, size_t len);
 /// <summary>
 /// 用密码学安全随机数（CSPRNG）填充缓冲区。
 /// 各平台实现：Windows=BCryptGenRandom，Darwin/BSD=arc4random_buf，

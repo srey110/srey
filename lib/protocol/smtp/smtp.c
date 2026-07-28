@@ -240,8 +240,7 @@ static char *_smtp_loin_cmd(const char *up) {
     CALLOC(b64, 1, B64EN_SIZE(lens));
     lens = bs64_encode(up, lens, b64);
     char *cmd = format_va("%s%s", b64, FLAG_CRLF);
-    secure_zero(b64, lens);
-    FREE(b64);
+    SECURE_FREE(b64, lens);
     return cmd;
 }
 // AUTH LOGIN 认证阶段：解析服务端 334 挑战，按 "Username:"/"Password:" 顺序发送 Base64 凭据
@@ -319,11 +318,9 @@ static void _smtp_plain(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, bu
     char *b64;
     CALLOC(b64, 1, B64EN_SIZE(enlens));
     size_t b64lens = bs64_encode(enbuf, enlens, b64);
-    secure_zero(enbuf, enlens);
-    FREE(enbuf);
+    SECURE_FREE(enbuf, enlens);
     char *cmd = format_va("%s%s", b64, FLAG_CRLF);
-    secure_zero(b64, b64lens);
-    FREE(b64);
+    SECURE_FREE(b64, b64lens);
     ud->status = AUTH_CHECK;
     if (ERR_OK != ev_send(ev, fd, skid, cmd, strlen(cmd), 0)) {
         BIT_SET(*status, PROT_ERROR);

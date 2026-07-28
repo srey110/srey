@@ -188,6 +188,45 @@ static void test_mongo_pack_insert(CuTest *tc) {
     BSON_FREE(&doc);
 }
 
+// options 达 MAX_PACK_SIZE 时 bson_cat 整篇丢弃，MONGO_PACK_CAT 令整条命令作废：
+// 必须返回 NULL 且把 *size 置 0——旧行为是照常发出缺 options 的命令，服务端返回错误结果集。
+// *size 置 0 尤其关键：调用方(coro_utils / lmongo)的 lens/size 是未初始化栈变量
+static void test_mongo_pack_oversize_options(CuTest *tc) {
+    mongo_ctx mongo;
+    char *opts;
+    size_t size;
+    void *pack;
+
+    _mongo_test_init(&mongo);
+    MALLOC(opts, 70000);
+    ZERO(opts, 70000);
+    opts[0] = (char)0x70;
+    opts[1] = (char)0x11;
+    opts[2] = (char)0x01;
+
+    size = 12345;
+    pack = mongo_pack_insert(&mongo, NULL, 0, opts, &size);
+    CuAssertTrue(tc, NULL == pack);
+    CuAssertTrue(tc, 0 == size);
+
+    size = 12345;
+    pack = mongo_pack_find(&mongo, NULL, 0, opts, &size);
+    CuAssertTrue(tc, NULL == pack);
+    CuAssertTrue(tc, 0 == size);
+
+    size = 12345;
+    pack = mongo_pack_drop(&mongo, opts, &size);
+    CuAssertTrue(tc, NULL == pack);
+    CuAssertTrue(tc, 0 == size);
+
+    size = 0;
+    pack = mongo_pack_drop(&mongo, NULL, &size);
+    CuAssertTrue(tc, NULL != pack);
+    CuAssertTrue(tc, size > 0);
+    FREE(pack);
+    FREE(opts);
+}
+
 // mongo_pack_update + delete + bulkwrite：仅校验关键字段名
 static void test_mongo_pack_update_delete_bulk(CuTest *tc) {
     mongo_ctx mongo;
@@ -837,6 +876,7 @@ void test_mongo_pack(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mongo_pack_hello);
     SUITE_ADD_TEST(suite, test_mongo_pack_drop);
     SUITE_ADD_TEST(suite, test_mongo_pack_insert);
+    SUITE_ADD_TEST(suite, test_mongo_pack_oversize_options);
     SUITE_ADD_TEST(suite, test_mongo_pack_update_delete_bulk);
     SUITE_ADD_TEST(suite, test_mongo_pack_find);
     SUITE_ADD_TEST(suite, test_mongo_pack_misc);

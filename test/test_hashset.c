@@ -67,7 +67,7 @@ static void test_hs_clear(CuTest *tc) {
     CuAssertPtrEquals(tc, NULL, (void *)hashset_add(s, &v));
     CuAssertTrue(tc, 1 == hashset_count(s));
 
-    // clear(update_cap=true)缩回初始容量
+    // clear(update_cap=非 0)保留当前桶数、不分配
     hashset_clear(s, 1);
     CuAssertTrue(tc, 0 == hashset_count(s));
 
@@ -210,14 +210,14 @@ static void test_hs_invalid(CuTest *tc) {
     CuAssertPtrEquals(tc, NULL, hashset_new(sizeof(int32_t), 0, NULL, _int_cmp, NULL, NULL));
     CuAssertPtrEquals(tc, NULL, hashset_new(sizeof(int32_t), 0, _int_hash, NULL, NULL, NULL));
 }
-// 添加后 clear 不缩容 + 再次添加复用容量
-static void test_hs_clear_no_shrink(CuTest *tc) {
+// clear 后再次填满:验证清空后容器仍可用。容量语义本身不在此断言,见 test_hashmap_clear_alloc
+static void test_hs_clear_refill(CuTest *tc) {
     hashset *s = hashset_new(sizeof(int32_t), 64, _int_hash, _int_cmp, NULL, NULL);
     int32_t i;
     for (i = 0; i < 50; i++) {
         hashset_add(s, &i);
     }
-    hashset_clear(s, 0);   // 不更新容量
+    hashset_clear(s, 0);   // 重新分配桶数组缩回建表 cap
     CuAssertTrue(tc, 0 == hashset_count(s));
     // 再次填满,验证可用
     for (i = 0; i < 50; i++) {
@@ -239,5 +239,5 @@ void test_hashset(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_hs_replace_elfree);
     SUITE_ADD_TEST(suite, test_hs_stress);
     SUITE_ADD_TEST(suite, test_hs_invalid);
-    SUITE_ADD_TEST(suite, test_hs_clear_no_shrink);
+    SUITE_ADD_TEST(suite, test_hs_clear_refill);
 }

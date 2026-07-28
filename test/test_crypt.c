@@ -477,6 +477,89 @@ static int32_t _scram_parse_iter(CuTest *tc, const char *iter, int32_t *outiter)
     return ret;
 }
 /* 各类失败情形 */
+/* -----------------------------------------------------------------------
+ * scram —— 非 PLUS 服务端与发 "y,," 的客户端跑完整握手。
+ * RFC 5802 §5 规定客户端支持 channel binding 但未见到 -PLUS 通告时必须发 "y"，
+ * 此时服务端应正常继续；而 c= 是 base64(GS2头)，服务端必须按对端实际发来的头重算，
+ * 若按自身配置的 "n,," 重算则 c= 永不匹配，且失败与密码错误不可区分。
+ * 本仓客户端只会发 "n,,"，故用两处一字节改写模拟第三方 y 客户端：首消息的 flag 字节
+ * 与 cli->gs2_header[0]。"n,," 与 "y,," 等长，local_first_message 存的 bare 部分不受影响，
+ * 两端的 AuthMessage 仍然一致。若 _scram_cbind_b64 被改回按 cbind 选常量，
+ * 服务端会算出 base64("n,,") 而与客户端的 base64("y,,") 失配，本用例即失败
+ * ----------------------------------------------------------------------- */
+static void test_scram_gs2_y_handshake(CuTest *tc) {
+    char salt[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
+    scram_ctx *cli = scram_init("SCRAM-SHA-256", 1);
+    scram_ctx *srv = scram_init("SCRAM-SHA-256", 0);
+    CuAssertPtrNotNull(tc, cli);
+    CuAssertPtrNotNull(tc, srv);
+    scram_set_user(cli, "user", 4);
+    scram_set_pwd(cli, "pencil", 6);
+    scram_set_pwd(srv, "pencil", 6);
+    scram_set_salt(srv, salt, sizeof(salt));
+    scram_set_iter(srv, 4096);
+
+    char *clf = scram_first_message(cli);
+    CuAssertPtrNotNull(tc, clf);
+    CuAssertIntEquals(tc, 'n', clf[0]);
+    CuAssertStrEquals(tc, "n,,", cli->gs2_header);
+    clf[0] = 'y';
+    cli->gs2_header[0] = 'y';
+    CuAssertIntEquals(tc, ERR_OK, scram_parse_first_message(srv, clf, strlen(clf)));
+    CuAssertStrEquals(tc, "y,,", srv->gs2_header);
+
+    char *svf = scram_first_message(srv);
+    CuAssertPtrNotNull(tc, svf);
+    CuAssertIntEquals(tc, ERR_OK, scram_parse_first_message(cli, svf, strlen(svf)));
+
+    char *clfin = scram_final_message(cli);
+    CuAssertPtrNotNull(tc, clfin);
+    CuAssertIntEquals(tc, ERR_OK, scram_check_final_message(srv, clfin, strlen(clfin)));
+
+    char *svfin = scram_final_message(srv);
+    CuAssertPtrNotNull(tc, svfin);
+    CuAssertIntEquals(tc, ERR_OK, scram_check_final_message(cli, svfin, strlen(svfin)));
+
+    FREE(clf);
+    FREE(svf);
+    FREE(clfin);
+    FREE(svfin);
+    scram_free(cli);
+    scram_free(srv);
+}
+
+// 服务端解析 client-first-message 须按实际内容定位 GS2 头，而不是按自身配置推算长度：
+// 客户端可以合法发来别的 flag，按固定长度硬切会切错 bare 消息却仍返 ERR_OK；
+// PLUS 端收到 "y" 是降级攻击（RFC 5802 §6），authzid 非空本端无法遵从，二者都须拒绝
+static void test_scram_gs2_header(CuTest *tc) {
+    const struct { const char *method; const char *msg; int32_t want; const char *gs2; } cases[] = {
+        { "SCRAM-SHA-256", "n,,n=user,r=abcdefghijklmnop", ERR_OK, "n,," },
+        { "SCRAM-SHA-256", "y,,n=user,r=abcdefghijklmnop", ERR_OK, "y,," },
+        { "SCRAM-SHA-256", "p=tls-server-end-point,,n=user,r=abcdefghijklmnop", ERR_FAILED, NULL },
+        { "SCRAM-SHA-256", "n,a=other,n=user,r=abcdefghijklmnop", ERR_FAILED, NULL },
+        { "SCRAM-SHA-256", "n,", ERR_FAILED, NULL },
+        { "SCRAM-SHA-256", "z,,n=user,r=abcdefghijklmnop", ERR_FAILED, NULL },
+        { "SCRAM-SHA-256-PLUS", "p=tls-server-end-point,,n=user,r=abcdefghijklmnop", ERR_OK, "p=tls-server-end-point,," },
+        { "SCRAM-SHA-256-PLUS", "y,,n=user,r=abcdefghijklmnop", ERR_FAILED, NULL },
+        { "SCRAM-SHA-256-PLUS", "n,,n=user,r=abcdefghijklmnop", ERR_FAILED, NULL },
+        { "SCRAM-SHA-256-PLUS", "p=tls-unique,,n=user,r=abcdefghijklmnop", ERR_FAILED, NULL }
+    };
+    char msg[128];
+    scram_ctx *srv;
+    size_t i;
+
+    for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        SNPRINTF(msg, sizeof(msg), "%s", cases[i].msg);
+        srv = scram_init(cases[i].method, 0);
+        CuAssertPtrNotNull(tc, srv);
+        CuAssertIntEquals(tc, cases[i].want, scram_parse_first_message(srv, msg, strlen(msg)));
+        if (NULL != cases[i].gs2) {
+            CuAssertStrEquals(tc, cases[i].gs2, srv->gs2_header);
+        }
+        scram_free(srv);
+    }
+}
+
 static void test_scram_failures(CuTest *tc) {
     /* 不支持的方法 → NULL */
     CuAssertTrue(tc, NULL == scram_init("SCRAM-MD5", 1));
@@ -584,7 +667,9 @@ static void test_scram_failures(CuTest *tc) {
     }
 }
 
-// scram setter 角色拒绝路径 + scram_set_pwd 动态分配验证 + scram_free(NULL) NULL safety
+// scram setter 角色拒绝路径 + scram_set_pwd 动态分配验证 + scram_free(NULL) NULL safety。
+// 五个 setter 改返 int32_t 后每个拒绝分支都断言返回码；末段 set_cbind 覆盖非 PLUS 变体被拒、
+// PLUS 变体空数据被拒、PLUS 变体正常数据生效三态
 static void test_scram_setters(CuTest *tc) {
     // scram_free(NULL) 不崩
     scram_free(NULL);
@@ -596,7 +681,7 @@ static void test_scram_setters(CuTest *tc) {
         char pwd511[512];
         memset(pwd511, 'x', 511);
         pwd511[511] = '\0';
-        scram_set_pwd(cli, pwd511, 511);
+        CuAssertIntEquals(tc, ERR_OK, scram_set_pwd(cli, pwd511, 511));
         CuAssertIntEquals(tc, 511, (int)strlen(cli->pwd));
         scram_free(cli);
     }
@@ -619,44 +704,58 @@ static void test_scram_setters(CuTest *tc) {
         CuAssertIntEquals(tc, 10000, srv->iter);
         scram_free(srv);
     }
-    // scram_set_iter：客户端调用被忽略（iter 保持 0）
+    // scram_set_iter：客户端调用被拒（iter 保持 0）
     {
         scram_ctx *cli = scram_init("SCRAM-SHA-256", 1);
-        scram_set_iter(cli, 8192);
+        CuAssertIntEquals(tc, ERR_FAILED, scram_set_iter(cli, 8192));
         CuAssertIntEquals(tc, 0, cli->iter);
         scram_free(cli);
     }
-    // scram_set_salt：客户端调用被忽略
+    // scram_set_salt：客户端调用被拒
     {
         scram_ctx *cli = scram_init("SCRAM-SHA-256", 1);
         char salt[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
-        scram_set_salt(cli, salt, sizeof(salt));
+        CuAssertIntEquals(tc, ERR_FAILED, scram_set_salt(cli, salt, sizeof(salt)));
         CuAssertTrue(tc, NULL == cli->salt);
         CuAssertIntEquals(tc, 0, cli->saltlen);
         scram_free(cli);
     }
-    // scram_set_salt：服务端 NULL 或 0 长度被忽略
+    // scram_set_salt：服务端 NULL 或 0 长度被拒
     {
         scram_ctx *srv = scram_init("SCRAM-SHA-256", 0);
-        scram_set_salt(srv, NULL, 8);
+        CuAssertIntEquals(tc, ERR_FAILED, scram_set_salt(srv, NULL, 8));
         CuAssertTrue(tc, NULL == srv->salt);
         char salt[4] = { 9, 9, 9, 9 };
-        scram_set_salt(srv, salt, 0);
+        CuAssertIntEquals(tc, ERR_FAILED, scram_set_salt(srv, salt, 0));
         CuAssertTrue(tc, NULL == srv->salt);
         // 正常路径
-        scram_set_salt(srv, salt, sizeof(salt));
+        CuAssertIntEquals(tc, ERR_OK, scram_set_salt(srv, salt, sizeof(salt)));
         CuAssertPtrNotNull(tc, srv->salt);
         CuAssertIntEquals(tc, 4, srv->saltlen);
         // 再次设置覆盖之前
         char salt2[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
-        scram_set_salt(srv, salt2, sizeof(salt2));
+        CuAssertIntEquals(tc, ERR_OK, scram_set_salt(srv, salt2, sizeof(salt2)));
         CuAssertIntEquals(tc, 8, srv->saltlen);
         scram_free(srv);
+    }
+    {
+        scram_ctx *std = scram_init("SCRAM-SHA-256", 1);
+        char cb[4] = { 7, 7, 7, 7 };
+        CuAssertIntEquals(tc, ERR_FAILED, scram_set_cbind(std, cb, sizeof(cb)));
+        CuAssertTrue(tc, NULL == std->cbind_data);
+        scram_free(std);
+        scram_ctx *plus = scram_init("SCRAM-SHA-256-PLUS", 1);
+        CuAssertIntEquals(tc, ERR_FAILED, scram_set_cbind(plus, NULL, sizeof(cb)));
+        CuAssertIntEquals(tc, ERR_FAILED, scram_set_cbind(plus, cb, 0));
+        CuAssertTrue(tc, NULL == plus->cbind_data);
+        CuAssertIntEquals(tc, ERR_OK, scram_set_cbind(plus, cb, sizeof(cb)));
+        CuAssertIntEquals(tc, 4, plus->cbind_len);
+        scram_free(plus);
     }
     // scram_set_user：服务端可直接调用（parse_first_message 内部复用同一实现）
     {
         scram_ctx *srv = scram_init("SCRAM-SHA-256", 0);
-        scram_set_user(srv, "alice", 5);
+        CuAssertIntEquals(tc, ERR_OK, scram_set_user(srv, "alice", 5));
         CuAssertStrEquals(tc, "alice", srv->user);
         scram_free(srv);
     }
@@ -670,6 +769,99 @@ static void test_scram_setters(CuTest *tc) {
         CuAssertIntEquals(tc, 127, (int)strlen(cli->user));
         scram_free(cli);
     }
+}
+
+/* -----------------------------------------------------------------------
+ * scram —— 从未 scram_set_pwd 时两条最终消息路径都失败返回，而非解引用 NULL。
+ * 前半服务端有 salt/iter 但无密码，校验客户端证明须返 ERR_FAILED——这一路由远端消息触达；
+ * 后半客户端走完首轮交换但无密码，scram_final_message 须返 NULL。
+ * 两处原先都落到 _scram_salt_password 的 strlen(NULL) 上
+ * ----------------------------------------------------------------------- */
+static void test_scram_pwd_required(CuTest *tc) {
+    char salt[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
+
+    scram_ctx *cli = scram_init("SCRAM-SHA-256", 1);
+    scram_ctx *srv = scram_init("SCRAM-SHA-256", 0);
+    CuAssertPtrNotNull(tc, cli);
+    CuAssertPtrNotNull(tc, srv);
+    scram_set_user(cli, "user", 4);
+    scram_set_pwd(cli, "pass", 4);
+    scram_set_salt(srv, salt, sizeof(salt));
+    scram_set_iter(srv, 4096);
+    char *clf = scram_first_message(cli);
+    CuAssertPtrNotNull(tc, clf);
+    CuAssertIntEquals(tc, ERR_OK, scram_parse_first_message(srv, clf, strlen(clf)));
+    char *svf = scram_first_message(srv);
+    CuAssertPtrNotNull(tc, svf);
+    CuAssertIntEquals(tc, ERR_OK, scram_parse_first_message(cli, svf, strlen(svf)));
+    char *clfin = scram_final_message(cli);
+    CuAssertPtrNotNull(tc, clfin);
+    CuAssertTrue(tc, ERR_OK != scram_check_final_message(srv, clfin, strlen(clfin)));
+    FREE(clf);
+    FREE(svf);
+    FREE(clfin);
+    scram_free(cli);
+    scram_free(srv);
+
+    scram_ctx *cli2 = scram_init("SCRAM-SHA-256", 1);
+    scram_ctx *srv2 = scram_init("SCRAM-SHA-256", 0);
+    CuAssertPtrNotNull(tc, cli2);
+    CuAssertPtrNotNull(tc, srv2);
+    scram_set_user(cli2, "user", 4);
+    scram_set_pwd(srv2, "pass", 4);
+    scram_set_salt(srv2, salt, sizeof(salt));
+    scram_set_iter(srv2, 4096);
+    char *clf2 = scram_first_message(cli2);
+    CuAssertPtrNotNull(tc, clf2);
+    CuAssertIntEquals(tc, ERR_OK, scram_parse_first_message(srv2, clf2, strlen(clf2)));
+    char *svf2 = scram_first_message(srv2);
+    CuAssertPtrNotNull(tc, svf2);
+    CuAssertIntEquals(tc, ERR_OK, scram_parse_first_message(cli2, svf2, strlen(svf2)));
+    CuAssertTrue(tc, NULL == scram_final_message(cli2));
+    FREE(clf2);
+    FREE(svf2);
+    scram_free(cli2);
+    scram_free(srv2);
+}
+
+/* -----------------------------------------------------------------------
+ * scram —— 内嵌 NUL 的用户名/密码在三个入口整体拒绝且不改动原值。
+ * 下游 PBKDF2 与 secure_zero 一律按 strlen 取长，放行则 "ab\0cd" 与 "ab\0xy" 派生出
+ * 同一 ClientProof、NUL 之后的密钥尾字节还会留在释放后的堆上；服务端线路解析放行
+ * 则把 "ad\0in" 记成 "ad" 这另一个身份。每组先跑同一条消息的无 NUL 版本做正对照，
+ * 确认拒绝来自 NUL 本身而不是别的畸形
+ * ----------------------------------------------------------------------- */
+static void test_scram_embedded_nul(CuTest *tc) {
+    scram_ctx *cli = scram_init("SCRAM-SHA-256", 1);
+    CuAssertPtrNotNull(tc, cli);
+    CuAssertIntEquals(tc, ERR_FAILED, scram_set_pwd(cli, "ab\0cd", 5));
+    CuAssertTrue(tc, NULL == cli->pwd);
+    CuAssertIntEquals(tc, ERR_OK, scram_set_pwd(cli, "abcd", 4));
+    CuAssertStrEquals(tc, "abcd", cli->pwd);
+    CuAssertIntEquals(tc, ERR_FAILED, scram_set_pwd(cli, "ab\0cd", 5));
+    CuAssertStrEquals(tc, "abcd", cli->pwd);
+    CuAssertIntEquals(tc, ERR_FAILED, scram_set_user(cli, "al\0ice", 6));
+    CuAssertTrue(tc, NULL == cli->user);
+    CuAssertIntEquals(tc, ERR_OK, scram_set_user(cli, "alice", 5));
+    CuAssertStrEquals(tc, "alice", cli->user);
+    CuAssertIntEquals(tc, ERR_FAILED, scram_set_user(cli, "al\0ice", 6));
+    CuAssertStrEquals(tc, "alice", cli->user);
+    scram_free(cli);
+
+    char msg[] = "n,,n=admin,r=Ym9ndXNub25jZQ==";
+    size_t mlen = sizeof(msg) - 1;
+    scram_ctx *ok = scram_init("SCRAM-SHA-256", 0);
+    CuAssertPtrNotNull(tc, ok);
+    CuAssertIntEquals(tc, ERR_OK, scram_parse_first_message(ok, msg, mlen));
+    CuAssertStrEquals(tc, "admin", scram_get_user(ok));
+    scram_free(ok);
+
+    msg[7] = '\0';
+    scram_ctx *bad = scram_init("SCRAM-SHA-256", 0);
+    CuAssertPtrNotNull(tc, bad);
+    CuAssertTrue(tc, ERR_OK != scram_parse_first_message(bad, msg, mlen));
+    CuAssertTrue(tc, NULL == scram_get_user(bad));
+    scram_free(bad);
 }
 
 /* =======================================================================
@@ -1439,6 +1631,123 @@ static void test_cipher_block_reset(CuTest *tc) {
 }
 
 /* =======================================================================
+ * cipher 流模式解密方向 —— CFB/OFB/CTR 在 encrypt=0 时同样须建正向密钥表。
+ * cipher_init 里 fwdkey 只在"解密 + 流模式"这一格才为真，是该谓词唯一非平凡的输入组合；
+ * 若取反，aes_init / des_init 会去建逆向轮密钥，往返得不到原文而全程无任何报错。
+ * cipher_block 返回 ctx 内部缓冲指针，故每段都在 cipher_free 之前 memcpy 出来
+ * ======================================================================= */
+static void test_cipher_stream_decrypt(CuTest *tc) {
+    const char *key16 = "0123456789abcdef";
+    const char *iv16 = "abcdef0123456789";
+    const char *plain = "Hello, Cipher!!!";
+    const char *des_key = "8bytekey";
+    const char *iv8 = "12345678";
+    cipher_model modes[] = { CFB, OFB, CTR };
+    char enc_buf[64], dec_buf[64];
+    cipher_ctx enc, dec;
+    size_t elens, dlens;
+    void *p;
+    int32_t mi;
+
+    for (mi = 0; mi < (int32_t)ARRAY_SIZE(modes); mi++) {
+        cipher_init(&enc, AES, modes[mi], key16, 16, 128, 1);
+        cipher_iv(&enc, iv16, 16);
+        p = cipher_block(&enc, plain, 16, &elens);
+        CuAssertPtrNotNull(tc, p);
+        CuAssertTrue(tc, 16 == elens);
+        memcpy(enc_buf, p, elens);
+        cipher_free(&enc);
+
+        cipher_init(&dec, AES, modes[mi], key16, 16, 128, 0);
+        cipher_iv(&dec, iv16, 16);
+        p = cipher_block(&dec, enc_buf, elens, &dlens);
+        CuAssertPtrNotNull(tc, p);
+        CuAssertTrue(tc, 16 == dlens);
+        memcpy(dec_buf, p, dlens);
+        cipher_free(&dec);
+
+        CuAssertTrue(tc, 0 == memcmp(plain, dec_buf, 16));
+        CuAssertTrue(tc, 0 != memcmp(plain, enc_buf, 16));
+    }
+
+    cipher_init(&enc, DES, CFB, des_key, 8, 0, 1);
+    cipher_iv(&enc, iv8, 8);
+    p = cipher_block(&enc, plain, 8, &elens);
+    CuAssertPtrNotNull(tc, p);
+    CuAssertTrue(tc, 8 == elens);
+    memcpy(enc_buf, p, elens);
+    cipher_free(&enc);
+
+    cipher_init(&dec, DES, CFB, des_key, 8, 0, 0);
+    cipher_iv(&dec, iv8, 8);
+    p = cipher_block(&dec, enc_buf, elens, &dlens);
+    CuAssertPtrNotNull(tc, p);
+    CuAssertTrue(tc, 8 == dlens);
+    memcpy(dec_buf, p, dlens);
+    cipher_free(&dec);
+
+    CuAssertTrue(tc, 0 == memcmp(plain, dec_buf, 8));
+}
+
+/* =======================================================================
+ * cipher_init IV 初始化 —— 未调 cipher_iv 时 iv/cur_iv 必须为全零
+ * cipher_ctx 常落在未清零内存上（lcrypt.c 的 cipher.new 用 lua_newuserdata）；
+ * 若 cipher_init 不清零 iv/cur_iv，非 ECB 模式会拿堆残留当 IV：
+ * 同一 key+明文在不同残留上得到不同密文，加解密对象也互不匹配。
+ * cipher_block 这一路不经 cipher_dofinal 的 cipher_reset，是 cur_iv 读先于写的路径
+ * ======================================================================= */
+static void test_cipher_init_iv_zeroed(CuTest *tc) {
+    const char *key16 = "0123456789abcdef";
+    const char *plain = "srey cipher iv!!";
+    const cipher_model modes[] = { CBC, CFB, OFB, CTR };
+    const uint8_t zeroiv[CIPHER_BLOCK_SIZE] = { 0 };
+    cipher_ctx dirty_a, dirty_b, clean;
+    char out_a[64], out_b[64], out_c[64];
+    size_t mi, la, lb, lc;
+    void *p;
+
+    for (mi = 0; mi < sizeof(modes) / sizeof(modes[0]); mi++) {
+        memset(&dirty_a, 0xAA, sizeof(dirty_a));
+        memset(&dirty_b, 0x5C, sizeof(dirty_b));
+        memset(&clean, 0x00, sizeof(clean));
+        cipher_init(&dirty_a, AES, modes[mi], key16, 16, 128, 1);
+        cipher_init(&dirty_b, AES, modes[mi], key16, 16, 128, 1);
+        cipher_init(&clean, AES, modes[mi], key16, 16, 128, 1);
+
+        CuAssertTrue(tc, 0 == memcmp(dirty_a.iv, zeroiv, CIPHER_BLOCK_SIZE));
+        CuAssertTrue(tc, 0 == memcmp(dirty_a.cur_iv, zeroiv, CIPHER_BLOCK_SIZE));
+        CuAssertTrue(tc, 0 == memcmp(dirty_b.iv, zeroiv, CIPHER_BLOCK_SIZE));
+        CuAssertTrue(tc, 0 == memcmp(dirty_b.cur_iv, zeroiv, CIPHER_BLOCK_SIZE));
+
+        la = cipher_dofinal(&dirty_a, plain, 16, out_a);
+        lb = cipher_dofinal(&dirty_b, plain, 16, out_b);
+        lc = cipher_dofinal(&clean, plain, 16, out_c);
+        CuAssertTrue(tc, 16 == la);
+        CuAssertTrue(tc, la == lb && la == lc);
+        CuAssertTrue(tc, 0 == memcmp(out_a, out_b, la));
+        CuAssertTrue(tc, 0 == memcmp(out_a, out_c, la));
+
+        cipher_free(&dirty_a);
+        cipher_free(&dirty_b);
+        cipher_free(&clean);
+    }
+
+    memset(&dirty_a, 0xAA, sizeof(dirty_a));
+    memset(&dirty_b, 0x5C, sizeof(dirty_b));
+    cipher_init(&dirty_a, AES, CBC, key16, 16, 128, 1);
+    cipher_init(&dirty_b, AES, CBC, key16, 16, 128, 1);
+    p = cipher_block(&dirty_a, plain, 16, &la);
+    CuAssertPtrNotNull(tc, p);
+    memcpy(out_a, p, la);
+    p = cipher_block(&dirty_b, plain, 16, &lb);
+    CuAssertPtrNotNull(tc, p);
+    CuAssertTrue(tc, la == lb);
+    CuAssertTrue(tc, 0 == memcmp(out_a, p, la));
+    cipher_free(&dirty_a);
+    cipher_free(&dirty_b);
+}
+
+/* =======================================================================
  * cipher 流模式完整 round-trip —— CFB / OFB / CTR
  * 现有 test_cipher 仅覆盖 ECB/CBC + PKCS7 整套 dofinal 流程；
  * test_cipher_block_reset 仅触及流模式单分组 cipher_block + reset。
@@ -1635,7 +1944,9 @@ void test_crypt(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_cipher_padding_zeroed);
     SUITE_ADD_TEST(suite, test_cipher_decrypt_bad_padding);
     SUITE_ADD_TEST(suite, test_cipher_block_reset);
+    SUITE_ADD_TEST(suite, test_cipher_init_iv_zeroed);
     SUITE_ADD_TEST(suite, test_cipher_stream_modes);
+    SUITE_ADD_TEST(suite, test_cipher_stream_decrypt);
     SUITE_ADD_TEST(suite, test_padding);
     SUITE_ADD_TEST(suite, test_padding_extra);
     SUITE_ADD_TEST(suite, test_md5_nist);
@@ -1647,6 +1958,10 @@ void test_crypt(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_scram_handshake);
     SUITE_ADD_TEST(suite, test_scram_rfc_vectors);
     SUITE_ADD_TEST(suite, test_scram_plus);
+    SUITE_ADD_TEST(suite, test_scram_gs2_header);
+    SUITE_ADD_TEST(suite, test_scram_gs2_y_handshake);
     SUITE_ADD_TEST(suite, test_scram_failures);
     SUITE_ADD_TEST(suite, test_scram_setters);
+    SUITE_ADD_TEST(suite, test_scram_pwd_required);
+    SUITE_ADD_TEST(suite, test_scram_embedded_nul);
 }

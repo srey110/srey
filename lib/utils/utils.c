@@ -950,25 +950,6 @@ const char *procpath(void) {
     }
     return _path;
 }
-void timeofday(struct timeval *tv) {
-#if defined(OS_WIN)
-#define U64_LITERAL(n) n##ui64
-#define EPOCH_BIAS U64_LITERAL(116444736000000000) //Windows FILETIME 纪元与 Unix 纪元的差值（100ns 单位）
-#define UNITS_PER_SEC U64_LITERAL(10000000)//每秒的 100ns 单位数
-#define USEC_PER_SEC U64_LITERAL(1000000)//每秒的微秒数
-#define UNITS_PER_USEC U64_LITERAL(10)//每微秒的 100ns 单位数
-    union {
-        FILETIME ft_ft;
-        uint64_t ft_64;
-    } ft;
-    GetSystemTimeAsFileTime(&ft.ft_ft);
-    ft.ft_64 -= EPOCH_BIAS;
-    tv->tv_sec = (long)(ft.ft_64 / UNITS_PER_SEC);
-    tv->tv_usec = (long)((ft.ft_64 / UNITS_PER_USEC) % USEC_PER_SEC);
-#else
-    (void)gettimeofday(tv, NULL);
-#endif
-}
 char *readall(const char *file, size_t *lens) {
     FILE *fp = fopen(file, "rb");
     if (NULL == fp) {
@@ -1014,15 +995,40 @@ int32_t timeoffset(void) {
 #endif
     return ((int32_t)(now - gt) + (loc_tm.tm_isdst ? 3600 : 0)) / 60;
 }
-uint64_t nowms(void) {
+#if defined(OS_WIN)
+// 提到文件作用域:_now_usec 与 timeofday 都要用,定义在其中之一的函数体内会让另一个
+// 只因排在下方才编得过,而 Windows 分支在 macOS/Linux 上从不编译,挪动顺序即静默打断
+#define U64_LITERAL(n) n##ui64
+#define EPOCH_BIAS U64_LITERAL(116444736000000000) //Windows FILETIME 纪元与 Unix 纪元的差值（100ns 单位）
+#define UNITS_PER_USEC U64_LITERAL(10)//每微秒的 100ns 单位数
+#endif
+// Unix 纪元起的微秒数,全程 64 位。timeofday 反过来由它推导:Windows 的 struct timeval.tv_sec
+// 是 32 位 long(LLP64),2038-01-19 后回绕为负,再转 uint64 会符号扩展成约 1.8e19
+static uint64_t _now_usec(void) {
+#if defined(OS_WIN)
+    union {
+        FILETIME ft_ft;
+        uint64_t ft_64;
+    } ft;
+    GetSystemTimeAsFileTime(&ft.ft_ft);
+    ft.ft_64 -= EPOCH_BIAS;
+    return ft.ft_64 / UNITS_PER_USEC;
+#else
     struct timeval tv;
-    timeofday(&tv);
-    return (uint64_t)tv.tv_usec / 1000 + (uint64_t)tv.tv_sec * 1000;
+    (void)gettimeofday(&tv, NULL);
+    return (uint64_t)tv.tv_sec * 1000000 + (uint64_t)tv.tv_usec;
+#endif
+}
+uint64_t nowms(void) {
+    return _now_usec() / 1000;
 }
 uint64_t nowsec(void) {
-    struct timeval tv;
-    timeofday(&tv);
-    return (uint64_t)tv.tv_sec;
+    return _now_usec() / 1000000;
+}
+void timeofday(struct timeval *tv) {
+    uint64_t us = _now_usec();
+    tv->tv_sec = (long)(us / 1000000);
+    tv->tv_usec = (long)(us % 1000000);
 }
 int32_t sectostr(uint64_t sec, const char *fmt, char time[TIME_LENS]) {
     time_t t = (time_t)sec;
@@ -1200,8 +1206,10 @@ char *trim(char *data, size_t dlens, size_t *lens) {
 void locale_init(void) {
 #ifdef OS_WIN
     g_numeric_c = _create_locale(LC_NUMERIC, "C");
+    ASSERTAB(NULL != g_numeric_c, "_create_locale(LC_NUMERIC, \"C\") failed.");
 #else
     g_numeric_c = newlocale(LC_NUMERIC_MASK, "C", (locale_t)0);
+    ASSERTAB((locale_t)0 != g_numeric_c, ERRORSTR(ERRNO));
 #endif
 }
 void locale_free(void) {

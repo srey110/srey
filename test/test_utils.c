@@ -370,7 +370,10 @@ static void test_binary_extra(CuTest *tc) {
 }
 
 /* =======================================================================
- * buffer —— search 带起始偏移、drain 超量时的边界行为
+ * buffer —— search 带起始偏移、drain 超量时的边界行为。
+ * 末两条 search 验空 needle 与 NULL needle：改前 wlens=0 会先越界读 what[0]，
+ * 再因 _buffer_search_memcmp 的 while(wlen>0) 一次不执行而把首个等值字节报成命中（返 3）；
+ * what=NULL 则直接解引用空指针
  * ======================================================================= */
 static void test_buffer_extra(CuTest *tc) {
     buffer_ctx buf;
@@ -389,6 +392,11 @@ static void test_buffer_extra(CuTest *tc) {
 
     /* search 查找不存在的子串，返回 ERR_FAILED */
     pos = buffer_search(&buf, 0, 0, 0, "xyz", 3);
+    CuAssertTrue(tc, ERR_FAILED == pos);
+
+    pos = buffer_search(&buf, 0, 0, 0, "|", 0);
+    CuAssertTrue(tc, ERR_FAILED == pos);
+    pos = buffer_search(&buf, 0, 0, 0, NULL, 1);
     CuAssertTrue(tc, ERR_FAILED == pos);
 
     /* drain 请求量超出 buffer 大小时，仅删除实际数据 */
@@ -460,6 +468,84 @@ static void test_buffer_external_appendv(CuTest *tc) {
     readback[14] = '\0';
     CuAssertStrEquals(tc, "n=42 s=hi x=ab", readback);
 
+    buffer_free(&buf);
+}
+
+/* =======================================================================
+ * buffer_external 节点的 misalign 区属调用方内存，任何写入路径都不得回收它。
+ * 部分 drain 后 misalign>0 且 off>0，而 _buffer_should_realign 判的是
+ * buffer_lens-off（不计 misalign），对外部节点恒为真：修复前 _buffer_align 会在
+ * 调用方缓冲里 memmove，再把新数据 memcpy 进去，静默改写调用方仍要读的数据；
+ * 若外部内存是只读映射则直接 SIGSEGV。
+ * ext_free 传 NULL，同时覆盖"靠 _free 非空判定外部节点"会漏掉的情形
+ * ======================================================================= */
+static void test_buffer_external_not_writable(CuTest *tc) {
+    buffer_ctx buf;
+    char ext[1000];
+    char readback[128];
+    size_t i;
+
+    memset(ext, 'E', sizeof(ext));
+    buffer_init(&buf);
+    buffer_external(&buf, ext, sizeof(ext), NULL);
+    CuAssertTrue(tc, sizeof(ext) == buffer_size(&buf));
+    buffer_drain(&buf, 900);
+    CuAssertTrue(tc, 100 == buffer_size(&buf));
+
+    CuAssertIntEquals(tc, ERR_OK, buffer_append(&buf, "APPENDED", 8));
+    CuAssertTrue(tc, 108 == buffer_size(&buf));
+    for (i = 0; i < sizeof(ext); i++) {
+        CuAssertTrue(tc, 'E' == ext[i]);
+    }
+    CuAssertTrue(tc, 108 == buffer_copyout(&buf, 0, readback, 108));
+    for (i = 0; i < 100; i++) {
+        CuAssertTrue(tc, 'E' == readback[i]);
+    }
+    CuAssertTrue(tc, 0 == memcmp(readback + 100, "APPENDED", 8));
+    buffer_free(&buf);
+
+    memset(ext, 'E', sizeof(ext));
+    buffer_init(&buf);
+    buffer_external(&buf, ext, sizeof(ext), NULL);
+    buffer_drain(&buf, 900);
+    CuAssertIntEquals(tc, ERR_OK, buffer_appendv(&buf, "v=%d", 7));
+    CuAssertTrue(tc, 103 == buffer_size(&buf));
+    for (i = 0; i < sizeof(ext); i++) {
+        CuAssertTrue(tc, 'E' == ext[i]);
+    }
+    buffer_free(&buf);
+}
+
+/* =======================================================================
+ * buffer_free 复位语义：释放后 ctx 回到 buffer_init 后的空状态。
+ * 修复前只释放节点链，head/tail/tail_with_data/hint_node/total_lens 全留陈旧值：
+ * 二次调用是 double free，buffer_size 报释放前的字节数，copyout 从已释放节点 memcpy
+ * ======================================================================= */
+static void test_buffer_free_resets(CuTest *tc) {
+    buffer_ctx buf;
+    char readback[64];
+
+    buffer_init(&buf);
+    CuAssertIntEquals(tc, ERR_OK, buffer_append(&buf, "hello world", 11));
+    CuAssertTrue(tc, 11 == buffer_size(&buf));
+    /* start>0 的 copyout 会把游标缓存进 hint_node，确保释放时该字段也指向节点 */
+    CuAssertTrue(tc, 5 == buffer_copyout(&buf, 6, readback, 5));
+    CuAssertTrue(tc, 0 == memcmp("world", readback, 5));
+
+    buffer_free(&buf);
+    CuAssertTrue(tc, 0 == buffer_size(&buf));
+    /* 修复前 total_lens 仍是 11，这里会从已释放的 head 节点 memcpy 出 8 字节 */
+    CuAssertTrue(tc, 0 == buffer_copyout(&buf, 0, readback, 8));
+
+    /* 重复释放安全 */
+    buffer_free(&buf);
+    CuAssertTrue(tc, 0 == buffer_size(&buf));
+
+    /* 释放后可继续当空 buffer 复用 */
+    CuAssertIntEquals(tc, ERR_OK, buffer_append(&buf, "again", 5));
+    CuAssertTrue(tc, 5 == buffer_size(&buf));
+    CuAssertTrue(tc, 5 == buffer_copyout(&buf, 0, readback, 5));
+    CuAssertTrue(tc, 0 == memcmp("again", readback, 5));
     buffer_free(&buf);
 }
 
@@ -548,6 +634,59 @@ static void test_varint(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_FAILED, varint_decode_mqtt(&b, 9, buffer_size(&b), &val));
     CuAssertTrue(tc, 0 == val);  // 失败路径仍清零 *value
     buffer_free(&b);
+
+    // 四段边界逐字节比对 + 往返：只验字节数的话,字节序或延续位标志写错照样通过
+    const struct { uint32_t val; int32_t n; unsigned char enc[4]; } vecs[] = {
+        { 0,         1, { 0x00 } },
+        { 1,         1, { 0x01 } },
+        { 127,       1, { 0x7F } },
+        { 128,       2, { 0x80, 0x01 } },
+        { 16383,     2, { 0xFF, 0x7F } },
+        { 16384,     3, { 0x80, 0x80, 0x01 } },
+        { 2097151,   3, { 0xFF, 0xFF, 0x7F } },
+        { 2097152,   4, { 0x80, 0x80, 0x80, 0x01 } },
+        { 268435455, 4, { 0xFF, 0xFF, 0xFF, 0x7F } }
+    };
+    buffer_ctx vb;
+    size_t vval;
+    int32_t vi, vk, vn;
+    for (vi = 0; vi < (int32_t)ARRAY_SIZE(vecs); vi++) {
+        ZERO(enc, sizeof(enc));
+        vn = varint_encode_mqtt(vecs[vi].val, enc);
+        CuAssertIntEquals(tc, vecs[vi].n, vn);
+        for (vk = 0; vk < vn; vk++) {
+            CuAssertIntEquals(tc, (int)vecs[vi].enc[vk], (int)(unsigned char)enc[vk]);
+        }
+        buffer_init(&vb);
+        buffer_append(&vb, enc, (size_t)vn);
+        CuAssertIntEquals(tc, vn, varint_decode_mqtt(&vb, 0, buffer_size(&vb), &vval));
+        CuAssertTrue(tc, (size_t)vecs[vi].val == vval);
+        buffer_free(&vb);
+    }
+
+    // 单字节延续位置起但可读量耗尽
+    char trunc1[1] = { (char)0x80 };
+    buffer_init(&vb);
+    buffer_append(&vb, trunc1, sizeof(trunc1));
+    CuAssertIntEquals(tc, ERR_FAILED, varint_decode_mqtt(&vb, 0, buffer_size(&vb), &vval));
+    buffer_free(&vb);
+
+    // 从非零 off 起解：前置两字节噪声不影响取值
+    char noise[6] = { (char)0xAA, (char)0xBB, (char)0xFF, (char)0xFF, (char)0xFF, (char)0x7F };
+    buffer_init(&vb);
+    buffer_append(&vb, noise, sizeof(noise));
+    CuAssertIntEquals(tc, 4, varint_decode_mqtt(&vb, 2, buffer_size(&vb), &vval));
+    CuAssertTrue(tc, 268435455 == vval);
+    buffer_free(&vb);
+
+    // blens 小于实际可读量：按 blens 判截断,而非按 buffer 真实长度
+    char two[2] = { (char)0x80, (char)0x01 };
+    buffer_init(&vb);
+    buffer_append(&vb, two, sizeof(two));
+    CuAssertIntEquals(tc, ERR_FAILED, varint_decode_mqtt(&vb, 0, 1, &vval));
+    CuAssertIntEquals(tc, 2, varint_decode_mqtt(&vb, 0, 2, &vval));
+    CuAssertTrue(tc, 128 == vval);
+    buffer_free(&vb);
 }
 
 /* =======================================================================
@@ -615,7 +754,26 @@ static void test_chan(CuTest *tc) {
 }
 
 /* =======================================================================
- * timer —— 初始化、当前时刻、计时
+ * timeofday —— 现已由 _now_usec 推导，须与 nowsec / nowms 同源。
+ * 三者取自同一次 gettimeofday/GetSystemTimeAsFileTime 换算，跨秒边界允许差 1 秒
+ * ======================================================================= */
+static void test_timeofday_consistent(CuTest *tc) {
+    struct timeval tv;
+    uint64_t sec, ms;
+
+    timeofday(&tv);
+    sec = nowsec();
+    ms = nowms();
+    CuAssertTrue(tc, tv.tv_sec > 0);
+    CuAssertTrue(tc, tv.tv_usec >= 0 && tv.tv_usec < 1000000);
+    CuAssertTrue(tc, (uint64_t)tv.tv_sec <= sec && sec - (uint64_t)tv.tv_sec <= 1);
+    CuAssertTrue(tc, ms / 1000 == sec || ms / 1000 == sec - 1 || ms / 1000 == sec + 1);
+}
+
+/* =======================================================================
+ * timer —— 初始化、当前时刻、计时。
+ * fresh 那两行验的是 timer_init 已把计时起点置为当前时刻：
+ * 未调 timer_start 就读 elapsed 也须是小值，而不是未初始化的 starttick 垃圾
  * ======================================================================= */
 static void test_timer(CuTest *tc) {
     timer_ctx t;
@@ -628,6 +786,11 @@ static void test_timer(CuTest *tc) {
     /* 连续两次调用，第二次 >= 第一次 */
     uint64_t ms2 = timer_cur_ms(&t);
     CuAssertTrue(tc, ms2 >= ms1);
+
+    timer_ctx fresh;
+    timer_init(&fresh);
+    CuAssertTrue(tc, timer_elapsed_ms(&fresh) < 1000);
+    CuAssertTrue(tc, timer_elapsed(&fresh) < 1000ULL * 1000ULL * 1000ULL);
 
     /* timer_start 后立即读取 elapsed，应 < 1000 ms（代码正常执行不会超过 1 秒）*/
     timer_start(&t);
@@ -768,6 +931,13 @@ static void test_utils_misc(CuTest *tc) {
     CuAssertTrue(tc, ms  > 0);
     CuAssertTrue(tc, sec > 0);
     CuAssertTrue(tc, ms >= sec * 1000);
+
+    /* 与 time() 这个独立时间源交叉校验：两者同源坏掉时"量级一致"仍成立，挡不住。
+       Windows 上若经 struct timeval 的 32 位 tv_sec，2038 后符号扩展成约 1.8e19，
+       与 time() 差十几个数量级。±2s 容差覆盖跨秒边界 */
+    uint64_t tsec = (uint64_t)time(NULL);
+    CuAssertTrue(tc, sec + 2 >= tsec && tsec + 2 >= sec);
+    CuAssertTrue(tc, ms / 1000 + 2 >= tsec && tsec + 2 >= ms / 1000);
 
     /* contenttype：已知扩展名返回含对应关键字的字符串 */
     const char *ct = contenttype(".html");
@@ -1499,7 +1669,11 @@ static void test_sfid_invalid(CuTest *tc) {
 }
 
 /* =======================================================================
- * hash_ring 边界场景：空环查找、NULL 入参、重复添加、replicas=0、移除不存在
+ * hash_ring 边界场景：空环查找、NULL 入参、重复添加、replicas=0、移除不存在。
+ * 末尾三组验 hash_ring_free 的完整复位：原实现只重置链表与 items 指针，
+ * nitems/nnodes 留旧值，于是 find 会越过 0 == nitems 早退再解引用已置空的 items、
+ * 二次 free 在 FREE(items[i]) 上崩、free 后重用则按旧计数分配却只填尾部，
+ * qsort 读到未初始化指针
  * ======================================================================= */
 static void test_hash_ring_edge(CuTest *tc) {
     hash_ring_ctx ring;
@@ -1536,6 +1710,17 @@ static void test_hash_ring_edge(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_OK, hash_ring_add(&ring, long_name, sizeof(long_name), 50));
     CuAssertTrue(tc, 1 == ring.nnodes);
 
+    hash_ring_free(&ring);
+    CuAssertTrue(tc, 0 == ring.nnodes);
+    CuAssertTrue(tc, 0 == ring.nitems);
+    CuAssertTrue(tc, NULL == hash_ring_find(&ring, "any", 3));
+
+    hash_ring_free(&ring);
+
+    CuAssertIntEquals(tc, ERR_OK, hash_ring_add(&ring, "reuse", 5, 10));
+    CuAssertTrue(tc, 1 == ring.nnodes);
+    CuAssertTrue(tc, 10 == ring.nitems);
+    CuAssertTrue(tc, NULL != hash_ring_find(&ring, "any", 3));
     hash_ring_free(&ring);
 }
 
@@ -1946,6 +2131,8 @@ void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_buffer);
     SUITE_ADD_TEST(suite, test_buffer_extra);
     SUITE_ADD_TEST(suite, test_buffer_external_appendv);
+    SUITE_ADD_TEST(suite, test_buffer_external_not_writable);
+    SUITE_ADD_TEST(suite, test_buffer_free_resets);
     SUITE_ADD_TEST(suite, test_buffer_hint_after_migrate);
     SUITE_ADD_TEST(suite, test_varint);
     SUITE_ADD_TEST(suite, test_sfid);
@@ -1955,6 +2142,7 @@ void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_netaddr);
     SUITE_ADD_TEST(suite, test_netaddr_extra);
     SUITE_ADD_TEST(suite, test_chan);
+    SUITE_ADD_TEST(suite, test_timeofday_consistent);
     SUITE_ADD_TEST(suite, test_timer);
     SUITE_ADD_TEST(suite, test_timer_extra);
     SUITE_ADD_TEST(suite, test_load_trend);

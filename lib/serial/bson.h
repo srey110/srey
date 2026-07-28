@@ -56,6 +56,8 @@ typedef struct bson_ctx {
 typedef struct bson_iter {
     bson_type type;
     bson_subtype subtype;
+    int32_t err;//解析失败标志。bson_iter_next 返回 0 有"读到 EOD 正常结束"和"元素非法被拒"两种含义,靠它区分
+    uint32_t keylens;//key 字节数(不含 NUL)。由 _bson_iter_read_key 顺手记下,省掉消费方重复 strlen
     size_t doclens;//文档长度
     size_t lens;//val长度
     const char *key;//key
@@ -81,8 +83,9 @@ void bson_oid(char oid[BSON_OID_LENS]);
 /// <returns>空 BSON 文档数据指针（静态存储，勿释放）</returns>
 const char *bson_empty(size_t *lens);
 /// <summary>
-/// 初始化 bson_ctx。data 为 NULL 时自动分配内存并开始写入根文档；
-/// data 非 NULL 时以只读/追加模式附加到已有数据
+/// 初始化 bson_ctx。data 为 NULL 时自动分配内存并开始写入根文档，可用全部 bson_append_*；
+/// data 非 NULL 时为只读模式，仅供 bson_iter_* 遍历——对只读 ctx 调 bson_append_* 会 ASSERT，
+/// 它并不追加到已有数据末尾，写入位置从第 0 字节起
 /// </summary>
 /// <param name="bson">bson_ctx</param>
 /// <param name="data">已有 BSON 数据缓冲区，NULL 表示新建</param>
@@ -109,9 +112,9 @@ const char *bson_subtype_tostring(bson_subtype type);
 /// <summary>
 /// 预检 BSON 文档的嵌套深度是否合法，用于消费者递归解码前的 DoS 防护
 /// </summary>
-/// <param name="data">BSON 原始数据</param>
+/// <param name="data">BSON 原始数据；NULL 直接返回 ERR_FAILED</param>
 /// <param name="lens">数据长度</param>
-/// <returns>ERR_OK 深度未超过 BSON_MAX_DEPTH 且文档结构合法；ERR_FAILED 超限或非法</returns>
+/// <returns>ERR_OK 深度未超过 BSON_MAX_DEPTH 且文档结构合法；ERR_FAILED 超限、非法或 data 为 NULL</returns>
 int32_t bson_check_depth(char *data, size_t lens);
 /// <summary>
 /// 将 bson_ctx 中的文档转换为可读字符串（需调用者 FREE）
@@ -124,7 +127,7 @@ char *bson_tostring(bson_ctx *bson);
 /// </summary>
 /// <param name="data">BSON 原始数据</param>
 /// <param name="lens">数据长度</param>
-/// <returns>格式化后的字符串，需 FREE</returns>
+/// <returns>格式化后的字符串，需 FREE；data 为 NULL 时返回 NULL</returns>
 char *bson_tostring2(char *data, size_t lens);
 /// <summary>
 /// 将另一个已完成的 BSON 文档的内容（不含外层包装）拼接到当前文档（bson 未写完前使用）。
@@ -133,7 +136,8 @@ char *bson_tostring2(char *data, size_t lens);
 /// </summary>
 /// <param name="bson">目标 bson_ctx</param>
 /// <param name="doc">源 BSON 文档数据;NULL 时 no-op</param>
-void bson_cat(bson_ctx *bson, char *doc);
+/// <returns>ERR_OK 已拼接(含 NULL / 空文档的 no-op);ERR_FAILED lens 达 MAX_PACK_SIZE,内容整篇未拼入</returns>
+int32_t bson_cat(bson_ctx *bson, char *doc);
 /// <summary>
 /// 开始写入一个嵌套文档字段，须配对调用 bson_append_end 结束
 /// </summary>
@@ -289,12 +293,24 @@ void bson_append_maxkey(bson_ctx *bson, const char *key);
 /// <param name="bson">bson_ctx</param>
 void bson_iter_init(bson_iter *iter, bson_ctx *bson);
 /// <summary>
-/// 将迭代器重置到文档起始位置
+/// 将迭代器重置到文档起始位置，并清掉当前元素（与 bson_iter_init 一致）。
+/// 不清的话 type/key/val 仍描述重置前那个元素，而 bson_iter_error 已归零，
+/// 于是在下一次 bson_iter_next 之前调 getter 会拿到陈旧值且 err 为 ERR_OK
 /// </summary>
 /// <param name="iter">bson_iter</param>
 void bson_iter_reset(bson_iter *iter);
 /// <summary>
-/// 迭代到下一个字段，返回非零表示有值，0 表示遍历结束
+/// 迭代过程中是否遇到过结构错误。bson_iter_next 返回 0 既可能是读到 EOD 正常结束，
+/// 也可能是元素非法被拒（此时只遍历到了坏元素之前的前缀），需要区分的调用方查此标志
+/// </summary>
+/// <param name="iter">bson_iter</param>
+/// <returns>非 0 表示文档结构非法</returns>
+int32_t bson_iter_error(const bson_iter *iter);
+/// <summary>
+/// 迭代到下一个字段，返回非零表示有值，0 表示遍历结束。
+/// 返回 0 的三种成因由 bson_iter_error 区分：读到 EOD 正常结束（err 保持 0）、
+/// 某个元素非法被拒、声明长度被耗尽却始终没读到终止 EOD（文档截断，后两者 err 置位）；
+/// 三种情况都会把当前元素毒化成 BSON_EOD，故 0 之后调任何 getter 都失败而非返回陈旧值
 /// </summary>
 /// <param name="iter">bson_iter</param>
 /// <returns>非零表示有值</returns>

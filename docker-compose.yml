@@ -70,11 +70,70 @@ services:
       MONGO_INITDB_ROOT_USERNAME: admin
       MONGO_INITDB_ROOT_PASSWORD: "12345678"
       MONGO_INITDB_DATABASE: test
+      # 默认 rs0：单节点副本集，事务可用。置空走单机（MONGO_REPLSET= docker compose up -d mongo），
+      # 等价于引入本开关之前的形态——故用不带冒号的 ${MONGO_REPLSET-rs0}，只在"未设置"时取默认；
+      # 写成 :- 的话空值也会被替换成 rs0，单机分支根本进不去。
+      # 空 volume 与已有 volume 都可直接用 rs0：空 dbpath 由下方 entrypoint 自行引导（见那里的注释），
+      # 已有 volume 若原是单机则由健康检查里的 rs.initiate 兜底转成副本集。两条都实测 PRIMARY + 事务提交成功
+      MONGO_REPLSET: "${MONGO_REPLSET-rs0}"
+    # 启用 --auth 的副本集必须同时配 --keyFile 做成员间内部认证；单成员下 keyfile 无需跨重启
+    # 保持，故每次启动现生成再交回官方 entrypoint。留空分支只是原封不动地 exec 官方 entrypoint。
+    # 空 dbpath 时先自行引导一次：rs.initiate 必须在认证关闭时完成——未 initiate 的成员拒绝一切读，
+    # 认证读不到 admin.system.users，而 rs.initiate 又要求认证，两者互锁。官方 entrypoint 的无认证
+    # 临时 server 用不上，因为它只在设了 MONGO_INITDB_ROOT_* 时才为临时 server 剥掉 --replSet
+    # （其 :316-318），带着 --replSet 的临时 server 同样写不进去。故这里无认证起一个带 --replSet 的
+    # mongod，initiate + 建 root 用户后停掉；RS 配置与用户都已落盘，正式 server 便能以 PRIMARY 起来
+    entrypoint:
+      - bash
+      - -c
+      - |
+        set -e
+        if [ -z "$${MONGO_REPLSET}" ]; then
+            exec docker-entrypoint.sh mongod
+        fi
+        openssl rand -base64 756 > /data/configdb/keyfile
+        chmod 400 /data/configdb/keyfile
+        chown mongodb:mongodb /data/configdb/keyfile
+        if [ ! -f /data/db/WiredTiger ]; then
+            echo "[rs-bootstrap] empty dbpath, initiating $${MONGO_REPLSET} before auth is enabled"
+            chown -R mongodb:mongodb /data/db
+            gosu mongodb mongod --replSet "$${MONGO_REPLSET}" --dbpath /data/db \
+                --bind_ip 127.0.0.1 --fork --logpath /tmp/rs-bootstrap.log
+            for i in $$(seq 60); do
+                mongosh --quiet --eval 'db.adminCommand({ping:1}).ok' >/dev/null 2>&1 && break
+                sleep 1
+            done
+            mongosh --quiet --eval "rs.initiate({ _id: '$${MONGO_REPLSET}', members: [{ _id: 0, host: '127.0.0.1:27017' }] })"
+            for i in $$(seq 60); do
+                mongosh --quiet --eval 'quit(db.hello().isWritablePrimary ? 0 : 1)' >/dev/null 2>&1 && break
+                sleep 1
+            done
+            mongosh --quiet admin --eval "db.createUser({ user: '$${MONGO_INITDB_ROOT_USERNAME}', pwd: '$${MONGO_INITDB_ROOT_PASSWORD}', roles: [{ role: 'root', db: 'admin' }] })"
+            mongosh --quiet admin --eval 'db.shutdownServer()' || true
+            for i in $$(seq 60); do
+                mongosh --quiet --eval 'db.adminCommand({ping:1}).ok' >/dev/null 2>&1 || break
+                sleep 1
+            done
+            echo "[rs-bootstrap] done"
+        fi
+        exec docker-entrypoint.sh mongod --replSet "$${MONGO_REPLSET}" --keyFile /data/configdb/keyfile
     volumes:
       - mongo_data:/data/db
+    # 副本集分支里 rs.initiate() 幂等地留在健康检查内，覆盖 entrypoint 引导覆盖不到的那种情形：
+    # dbpath 非空但原本是单机（本仓库既有 volume 即如此），此时引导被跳过，只能在这里补一次。
+    # 放健康检查而非独立 init 服务，是因为后者的 healthy 会在 initiate 之前就成立，客户端连上来是非
+    # primary。末句令未成为可写 primary 时退出码非 0，不像单机分支的 ping 那样在降级状态下仍报 healthy
     healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "-u", "admin", "-p", "12345678",
-             "--authenticationDatabase", "admin", "--eval", "db.adminCommand('ping').ok"]
+      test:
+        - CMD-SHELL
+        - >-
+          if [ -z "$${MONGO_REPLSET}" ]; then
+          mongosh --quiet -u admin -p 12345678 --authenticationDatabase admin
+          --eval "db.adminCommand('ping').ok";
+          else
+          mongosh --quiet -u admin -p 12345678 --authenticationDatabase admin
+          --eval "try { rs.status() } catch (e) { rs.initiate({ _id: '$${MONGO_REPLSET}', members: [{ _id: 0, host: '127.0.0.1:27017' }] }) } if (!db.hello().isWritablePrimary) { quit(1) }";
+          fi
       interval: 5s
       retries: 20
 

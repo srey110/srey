@@ -223,8 +223,10 @@ static path_node *_path_children_lookup(struct hashmap *children, const buf_ctx 
     path_node *const *found = (path_node *const *)hashmap_get(children, &qptr);
     return (NULL != found) ? *found : NULL;
 }
-// walk insert:从 root 沿 segs 创建路径,返回最终节点(NULL 失败)
-static path_node *_path_walk_insert(path_trie *t, const buf_ctx *segs, int32_t n) {
+// walk:从 root 沿 segs 逐段下行,返回最终节点。create 非 0 时缺失的段就地创建(insert 语义),
+// 此时恒非 NULL——_path_node_alloc 走 CALLOC,分配器 OOM 即 exit,三个分支都必定产出节点,
+// 故 path_insert / path_get_or_create 可直接解引用返回值;create 为 0 时任一段缺失即返 NULL
+static path_node *_path_walk(path_trie *t, const buf_ctx *segs, int32_t n, int32_t create) {
     path_node *cur = &t->root;
     const path_rules *r = t->rules;
     path_node *next, *found, *child;
@@ -232,19 +234,19 @@ static path_node *_path_walk_insert(path_trie *t, const buf_ctx *segs, int32_t n
         next = NULL;
         if (_seg_is_wc(&segs[i], r->single_wildcard)) {
             // single_wildcard 段:plus 子树
-            if (NULL == cur->plus) {
+            if (NULL == cur->plus && create) {
                 cur->plus = _path_node_alloc(&segs[i], cur);
             }
             next = cur->plus;
         } else if (_seg_is_wc(&segs[i], r->multi_wildcard)) {
             // multi_wildcard 段:hash 子树(叶)
-            if (NULL == cur->hash) {
+            if (NULL == cur->hash && create) {
                 cur->hash = _path_node_alloc(&segs[i], cur);
             }
             next = cur->hash;
         } else {
             // 精确分支
-            if (NULL == cur->children) {
+            if (NULL == cur->children && create) {
                 cur->children = hashmap_new_with_allocator(_malloc, _realloc, _free,
                                                            sizeof(path_node *), 4, 0, 0,
                                                            _path_child_hash, _path_child_cmp, NULL, NULL);
@@ -252,32 +254,11 @@ static path_node *_path_walk_insert(path_trie *t, const buf_ctx *segs, int32_t n
             found = _path_children_lookup(cur->children, &segs[i]);
             if (NULL != found) {
                 next = found;
-            } else {
+            } else if (create) {
                 child = _path_node_alloc(&segs[i], cur);
                 hashmap_set(cur->children, &child);
                 next = child;
             }
-        }
-        cur = next;
-    }
-    return cur;
-}
-// walk 精确路径(仅查询,不创建)
-static path_node *_path_walk_exact(path_trie *t, const buf_ctx *segs, int32_t n) {
-    path_node *cur = &t->root;
-    const path_rules *r = t->rules;
-    path_node *next;
-    for (int32_t i = 0; i < n; i++) {
-        next = NULL;
-        if (_seg_is_wc(&segs[i], r->single_wildcard)) {
-            // single_wildcard 段:plus 子树
-            next = cur->plus;
-        } else if (_seg_is_wc(&segs[i], r->multi_wildcard)) {
-            // multi_wildcard 段:hash 子树(叶)
-            next = cur->hash;
-        } else {
-            // 精确分支
-            next = _path_children_lookup(cur->children, &segs[i]);
         }
         if (NULL == next) {
             return NULL;
@@ -329,7 +310,7 @@ int32_t path_insert(path_trie *t, const char *path, void *payload) {
     }
     // payload 含通配模式时按 WILDCARD;不含通配的精确插入也允许,这里按"有什么校什么"用 WILDCARD 兼容
     PATH_PREP_SEGS(t, path, PATH_KIND_WILDCARD, ERR_FAILED);
-    path_node *target = _path_walk_insert(t, segs, n);
+    path_node *target = _path_walk(t, segs, n, 1);
     if (NULL != target->payload) {
         if (NULL != t->_free) {
             t->_free(target->payload);
@@ -347,10 +328,10 @@ void *path_get_or_create(path_trie *t, const char *path, void *init) {
     PATH_PREP_SEGS(t, path, PATH_KIND_WILDCARD, NULL);
     if (NULL == init) {
         // 仅查询
-        path_node *target = _path_walk_exact(t, segs, n);
+        path_node *target = _path_walk(t, segs, n, 0);
         return NULL == target ? NULL : target->payload;
     }
-    path_node *target = _path_walk_insert(t, segs, n);
+    path_node *target = _path_walk(t, segs, n, 1);
     if (NULL == target->payload) {
         target->payload = init;
         t->count++;
@@ -359,7 +340,7 @@ void *path_get_or_create(path_trie *t, const char *path, void *init) {
 }
 void *path_remove(path_trie *t, const char *path) {
     PATH_PREP_SEGS(t, path, PATH_KIND_WILDCARD, NULL);
-    path_node *target = _path_walk_exact(t, segs, n);
+    path_node *target = _path_walk(t, segs, n, 0);
     if (NULL == target || NULL == target->payload) {
         return NULL;
     }

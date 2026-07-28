@@ -19,12 +19,26 @@ ctx.FLAGS = {
     EXHAUSTALLOWED = 1 << 16,
 }
 
+-- 统一"发送 + 按 MORETOCOME 决定是否等待响应"。pack 为 nil(C 层组包被拒)在此一并吸收:
+-- 调用方不必各自守卫,新增的 pack_* 绑定也自动受保护。镜像 C 层 coro_utils.c 的 _mongo_send
 local function _wsend(mgo, fd, skid, pack, size)
+    if not pack then
+        return false, nil
+    end
     if mgo:check_flag(ctx.FLAGS.MORETOCOME) then
         return srey.send(fd, skid, pack, size, 0), nil
     end
     local mgopack, _ = srey.syn_send(fd, skid, pack, size, 0)
     return nil ~= mgopack, mgopack
+end
+-- 统一"发送 + 同步等待响应"(不受 MORETOCOME 影响)。组包被拒与网络失败都返回 nil,调用方判一次即可;
+-- 错误码校验留给调用方——有的直接把 mgopack 交给上层解析。镜像 C 层 _mongo_call 去掉 check_error 的部分
+local function _rsend(fd, skid, pack, size)
+    if not pack then
+        return nil
+    end
+    local mgopack, _ = srey.syn_send(fd, skid, pack, size, 0)
+    return mgopack
 end
 
 -- mongo_session_ctx：会话事务上下文，由 mongo_ctx:startsession() 创建。
@@ -69,7 +83,7 @@ function sess_ctx:commit(opts)
     local flags = self.mgoctx.mongo:clear_flag()
     local pack, size = self.session:pack_commit(opts)
     self.mgoctx.mongo:set_flag(flags)
-    local mgopack, _ = srey.syn_send(fd, skid, pack, size, 0)
+    local mgopack = _rsend(fd, skid, pack, size)
     if not mgopack then
         -- 网络失败：保留事务状态，不调用 done()，便于重试
         return false
@@ -94,7 +108,7 @@ function sess_ctx:rollback(opts)
     local flags = self.mgoctx.mongo:clear_flag()
     local pack, size = self.session:pack_abort(opts)
     self.mgoctx.mongo:set_flag(flags)
-    local mgopack, _ = srey.syn_send(fd, skid, pack, size, 0)
+    local mgopack = _rsend(fd, skid, pack, size)
     if not mgopack then
         -- 网络失败：保留事务状态，不调用 done()，便于重试
         return false
@@ -118,7 +132,7 @@ function sess_ctx:refresh()
     local flags = self.mgoctx.mongo:clear_flag()
     local pack, size = self.session:pack_refresh()
     self.mgoctx.mongo:set_flag(flags)
-    local mgopack, _ = srey.syn_send(fd, skid, pack, size, 0)
+    local mgopack = _rsend(fd, skid, pack, size)
     if not mgopack then
         return false
     end
@@ -204,7 +218,7 @@ function ctx:_connect()
     local flags = self.mongo:clear_flag()
     local pack, size = self.mongo:pack_hello()
     self.mongo:set_flag(flags)
-    local mgopack, _ = srey.syn_send(fd, skid, pack, size, 0)
+    local mgopack = _rsend(fd, skid, pack, size)
     if not mgopack then return _fail() end
     if self.mongo:check_error(mgopack) < 0 then return _fail() end
     if self.user then
@@ -235,7 +249,7 @@ function ctx:_ping()
     local flags = self.mongo:clear_flag()
     local pack, size = self.mongo:pack_ping()
     self.mongo:set_flag(flags)
-    local mgopack, _ = srey.syn_send(fd, skid, pack, size, 0)
+    local mgopack = _rsend(fd, skid, pack, size)
     if not mgopack then
         return false
     end
@@ -489,7 +503,7 @@ function ctx:find(col, filter, flens, opts)
     local flags = self.mongo:clear_flag()
     local pack, size = self.mongo:pack_find(filter, flens, opts)
     self.mongo:set_flag(flags)
-    local mgopack, _ = srey.syn_send(fd, skid, pack, size, 0)
+    local mgopack = _rsend(fd, skid, pack, size)
     return mgopack
 end
 
@@ -510,7 +524,7 @@ function ctx:aggregate(col, pipeline, pllens, opts)
     local flags = self.mongo:clear_flag()
     local pack, size = self.mongo:pack_aggregate(pipeline, pllens, opts)
     self.mongo:set_flag(flags)
-    local mgopack, _ = srey.syn_send(fd, skid, pack, size, 0)
+    local mgopack = _rsend(fd, skid, pack, size)
     return mgopack
 end
 
@@ -526,7 +540,7 @@ function ctx:getmore(cursorid, opts)
     local flags = self.mongo:clear_flag()
     local pack, size = self.mongo:pack_getmore(cursorid, opts)
     self.mongo:set_flag(flags)
-    local mgopack, _ = srey.syn_send(fd, skid, pack, size, 0)
+    local mgopack = _rsend(fd, skid, pack, size)
     return mgopack
 end
 
@@ -573,7 +587,7 @@ function ctx:distinct(col, key, query, qlens, opts)
     local flags = self.mongo:clear_flag()
     local pack, size = self.mongo:pack_distinct(key, query, qlens, opts)
     self.mongo:set_flag(flags)
-    local mgopack, _ = srey.syn_send(fd, skid, pack, size, 0)
+    local mgopack = _rsend(fd, skid, pack, size)
     return mgopack
 end
 
@@ -598,7 +612,7 @@ function ctx:findandmodify(col, query, qlens, remove, pipeline, update, ulens, o
     local flags = self.mongo:clear_flag()
     local pack, size = self.mongo:pack_findandmodify(query, qlens, remove, pipeline, update, ulens, opts)
     self.mongo:set_flag(flags)
-    local mgopack, _ = srey.syn_send(fd, skid, pack, size, 0)
+    local mgopack = _rsend(fd, skid, pack, size)
     return mgopack
 end
 
@@ -619,7 +633,7 @@ function ctx:count(col, query, qlens, opts)
     local flags = self.mongo:clear_flag()
     local pack, size = self.mongo:pack_count(query, qlens, opts)
     self.mongo:set_flag(flags)
-    local mgopack, _ = srey.syn_send(fd, skid, pack, size, 0)
+    local mgopack = _rsend(fd, skid, pack, size)
     if not mgopack then
         return false
     end
@@ -642,7 +656,7 @@ function ctx:startsession()
     local flags = self.mongo:clear_flag()
     local pack, size = self.mongo:pack_startsession()
     self.mongo:set_flag(flags)
-    local mgopack, _ = srey.syn_send(fd, skid, pack, size, 0)
+    local mgopack = _rsend(fd, skid, pack, size)
     if not mgopack then
         return nil
     end

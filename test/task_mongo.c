@@ -186,6 +186,35 @@ static int32_t _txn_flow(mongo_ctx *mongo) {
     return ERR_OK;
 }
 
+// 事务 pack 失败须原样保留事务状态。用"声明长度达 MAX_PACK_SIZE"的假 options 触发
+// bson_cat 拒绝——它只读前 4 字节的声明长度就返 ERR_FAILED,不会真去拷贝,故 4 字节缓冲即可。
+// 本流程不需要 replica set:mongo_begin 纯本地,pack 在 MONGO_PACK_CAT 处失败也不碰网络,
+// 判据取 mongo->session 是否仍指向本 session——若守卫仍放在状态拆除之后,它已被置空、
+// session->options 已 free,服务端事务会悬到 lsid 超时且无从重试。
+// 只压 commit 一侧,rollback 与之同构;mongo_freesession 自己会清 mongo->session
+static int32_t _txn_pack_fail_flow(mongo_ctx *mongo) {
+    char toolong[4];
+    mongo_session *sess = mongo_startsession(mongo);
+    if (NULL == sess) {
+        LOG_ERROR("mongo startsession(packfail) error.");
+        return ERR_FAILED;
+    }
+    mongo_begin(sess);
+    pack_integer(toolong, (uint64_t)MAX_PACK_SIZE, 4, 1);
+    if (ERR_OK == mongo_commit(sess, toolong)) {
+        LOG_ERROR("mongo commit(oversize options) should fail.");
+        mongo_freesession(sess);
+        return ERR_FAILED;
+    }
+    if (mongo->session != sess) {
+        LOG_ERROR("mongo commit(pack fail) must keep transaction state.");
+        mongo_freesession(sess);
+        return ERR_FAILED;
+    }
+    mongo_freesession(sess);
+    return ERR_OK;
+}
+
 // ping 自动重连（含 re-auth）：强制关闭连接后 mongo_ping 应重连并恢复可用，count 验证
 static int32_t _reconnect_flow(task_ctx *task, mongo_ctx *mongo) {
     ev_close(&task->loader->netev, mongo->sk.fd, mongo->sk.skid, 1);
@@ -277,13 +306,16 @@ static void _startup(task_ctx *task) {
         ev_close(&task->loader->netev, arg->mongo.sk.fd, arg->mongo.sk.skid, 1);
         return;
     }
-    // 事务路径需要 mongo 以 replica set / sharded 模式运行；docker-compose 单节点跳过。
-    // 启用方法：mongo 命令加 --replSet rs0 并通过 rs.initiate() 初始化后解开下面注释。
-    // if (ERR_OK != _txn_flow(&arg->mongo)) {
-    //     ev_close(&task->loader->netev, arg->mongo.sk.fd, arg->mongo.sk.skid, 1);
-    //     return;
-    // }
-    (void)_txn_flow;  // 抑制未使用函数告警
+    if (ERR_OK != _txn_pack_fail_flow(&arg->mongo)) {
+        ev_close(&task->loader->netev, arg->mongo.sk.fd, arg->mongo.sk.skid, 1);
+        return;
+    }
+    // 事务路径要求 mongo 以副本集运行：docker-compose 的 MONGO_REPLSET 默认 rs0 即满足。
+    // 排在全部计数断言之后，故它多插的一行不影响 _crud_flow / _reconnect_flow / _moretocome_flow
+    if (ERR_OK != _txn_flow(&arg->mongo)) {
+        ev_close(&task->loader->netev, arg->mongo.sk.fd, arg->mongo.sk.skid, 1);
+        return;
+    }
     mongo_quit(&arg->mongo);
     *(arg->ok) = 1;
     LOG_INFO("mongo tested.");

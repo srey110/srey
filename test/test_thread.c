@@ -310,6 +310,49 @@ static void test_rwlock_distr_multi_register(CuTest *tc) {
     rwlock_distr_free(&b);
 }
 
+// 同一 ctx 上递归 rdlock:整个嵌套期间 writer 必须一直被挡在临界区外。
+// 加 depth 计数之前 active 是布尔量,两条路径都会破坏互斥:
+//   1) 嵌套 rdlock 见 write_flag 走让步分支,清 active 把 writer 放进来,而外层读区仍在跑
+//   2) 内层 runlock 直接清 active,同样撤掉外层读区的保护
+static atomic_t _distr_writer_in;
+static void _distr_writer(void *arg) {
+    rwlock_distr_ctx *ctx = (rwlock_distr_ctx *)arg;
+    rwlock_distr_wrlock(ctx);
+    ATOMIC_SET(&_distr_writer_in, 1);
+    rwlock_distr_wrunlock(ctx);
+}
+static void test_rwlock_distr_recursive_rdlock(CuTest *tc) {
+    rwlock_distr_ctx ctx;
+    pthread_t th;
+
+    rwlock_distr_init(&ctx, 4);
+    CuAssertIntEquals(tc, ERR_OK, rwlock_distr_register(&ctx));
+    ATOMIC_SET(&_distr_writer_in, 0);
+
+    rwlock_distr_rdlock(&ctx);
+    th = thread_creat(_distr_writer, &ctx);
+    while (0 == ATOMIC_GET(&ctx.write_flag)) {
+        MSLEEP(1);
+    }
+    CuAssertIntEquals(tc, 0, ATOMIC_GET(&_distr_writer_in));
+
+    rwlock_distr_rdlock(&ctx);
+    CuAssertIntEquals(tc, 0, ATOMIC_GET(&_distr_writer_in));
+    rwlock_distr_runlock(&ctx);
+    CuAssertIntEquals(tc, 0, ATOMIC_GET(&_distr_writer_in));
+
+    rwlock_distr_runlock(&ctx);
+    thread_join(th);
+    CuAssertIntEquals(tc, 1, ATOMIC_GET(&_distr_writer_in));
+
+    rwlock_distr_rdlock(&ctx);
+    rwlock_distr_runlock(&ctx);
+    rwlock_distr_wrlock(&ctx);
+    rwlock_distr_wrunlock(&ctx);
+    rwlock_distr_unregister(&ctx);
+    rwlock_distr_free(&ctx);
+}
+
 // TLS 数组耗尽:超过 RWLOCK_DISTR_MAX_TLS 的 ctx 注册失败,rdlock 走 fallback 仍能工作;
 // 释放一个槽位后,新 ctx 可补位注册成功
 static void test_rwlock_distr_tls_exhaust(CuTest *tc) {
@@ -537,6 +580,7 @@ void test_thread(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_rwlock_distr_basic);
     SUITE_ADD_TEST(suite, test_rwlock_distr_idempotent);
     SUITE_ADD_TEST(suite, test_rwlock_distr_multi_register);
+    SUITE_ADD_TEST(suite, test_rwlock_distr_recursive_rdlock);
     SUITE_ADD_TEST(suite, test_rwlock_distr_tls_exhaust);
     SUITE_ADD_TEST(suite, test_rwlock_distr_pool_exhausted);
     SUITE_ADD_TEST(suite, test_rwlock_distr_fallback);

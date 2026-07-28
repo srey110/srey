@@ -30,9 +30,12 @@ typedef struct scram_ctx {
     char *salt;                             // 服务端 salt（原始字节）
     char *remote_nonce;                     // 对端 nonce（base64 字符串）
     char *cbind_data;                       // channel binding 原始数据（tls-server-end-point 时为证书哈希）
-    char *user;                             // 用户名（CALLOC，scram_free 释放）
-    char *pwd;                              // 密码（CALLOC，scram_free 释放）
+    char *user;                             // 用户名（dup_zero 分配，scram_free 释放）
+    char *pwd;                              // 密码（dup_zero 分配，scram_free 释放）
     char local_nonce[B64EN_SIZE(SCRAM_NONCE_LEN) + 1]; // 本端 nonce（base64 编码）
+    char gs2_header[25];                    // 计算 c= 所用的 GS2 头（最长 "p=tls-server-end-point,," 24 字节）。
+                                            // 客户端填本端选定的那个；服务端必须填对端实际发来的——
+                                            // RFC 5802 §5 允许非 PLUS 端收到 "y,,"，若仍按 "n,," 重算则 c= 永不匹配
     char saltedpwd[DG_BLOCK_SIZE];          // SaltedPassword（PBKDF 输出）
 }scram_ctx;
 /* SCRAM 握手流程（左列为客户端，右列为服务端）：
@@ -64,31 +67,40 @@ scram_ctx *scram_init(const char *method, int32_t client);
 void scram_free(scram_ctx *scram);
 /// <summary>
 /// 设置用户名（客户端握手前调用；服务端由 scram_parse_first_message 内部调用）
+/// 前 ulens 字节内含 0x00 时整体拒绝并保持原值：下游一律按 strlen 消费，
+/// 内嵌 NUL 会让用户名静默截断成另一个身份，而 RFC 5802 的 saslname 本就禁止 U+0000
 /// </summary>
 /// <param name="scram">scram_ctx</param>
 /// <param name="user">用户名</param>
 /// <param name="ulens">用户名长度（字节）</param>
-void scram_set_user(scram_ctx *scram, const char *user, size_t ulens);
+/// <returns>ERR_OK 已生效，ERR_FAILED 未生效（user 为空或含 0x00）</returns>
+int32_t scram_set_user(scram_ctx *scram, const char *user, size_t ulens);
 /// <summary>
-/// 设置密码（客户端和服务端均需调用）
+/// 设置密码（客户端和服务端均需调用；未调用则 scram_final_message 返回 NULL、
+/// scram_check_final_message 返回 ERR_FAILED）。pwd 可为 ""，但前 plens 字节内含 0x00 时
+/// 整体拒绝并保持原值：PBKDF2 按 strlen 取长会把 "a\0b" 与 "a\0c" 派生成同一 ClientProof，
+/// 且 secure_zero 抹不到 NUL 之后的尾部字节
 /// </summary>
 /// <param name="scram">scram_ctx</param>
 /// <param name="pwd">密码</param>
 /// <param name="plens">密码长度（字节）</param>
-void scram_set_pwd(scram_ctx *scram, const char *pwd, size_t plens);
+/// <returns>ERR_OK 已生效，ERR_FAILED 未生效（pwd 为 NULL 或含 0x00）</returns>
+int32_t scram_set_pwd(scram_ctx *scram, const char *pwd, size_t plens);
 /// <summary>
 /// 设置 salt（仅服务端调用）
 /// </summary>
 /// <param name="scram">scram_ctx</param>
 /// <param name="salt">salt 数据</param>
 /// <param name="lens">salt 长度</param>
-void scram_set_salt(scram_ctx *scram, char *salt, size_t lens);
+/// <returns>ERR_OK 已生效，ERR_FAILED 未生效（客户端角色调用，或 salt 为空）</returns>
+int32_t scram_set_salt(scram_ctx *scram, char *salt, size_t lens);
 /// <summary>
 /// 设置迭代轮数（仅服务端调用）
 /// </summary>
 /// <param name="scram">scram_ctx</param>
-/// <param name="iter">迭代轮数</param>
-void scram_set_iter(scram_ctx *scram, int32_t iter);
+/// <param name="iter">迭代轮数，低于 SCRAM_MIN_ITER 自动提升到该下限</param>
+/// <returns>ERR_OK 已生效，ERR_FAILED 未生效（客户端角色调用）</returns>
+int32_t scram_set_iter(scram_ctx *scram, int32_t iter);
 /// <summary>
 /// 设置 channel binding 数据（仅 PLUS 变体使用）
 /// 客户端传入 TLS 证书哈希；服务端传入同一哈希用于验证客户端的 c= 字段
@@ -96,7 +108,8 @@ void scram_set_iter(scram_ctx *scram, int32_t iter);
 /// <param name="scram">scram_ctx</param>
 /// <param name="data">channel binding 原始数据（tls-server-end-point 为服务端证书 SHA-256 哈希）</param>
 /// <param name="lens">数据长度</param>
-void scram_set_cbind(scram_ctx *scram, const char *data, size_t lens);
+/// <returns>ERR_OK 已生效，ERR_FAILED 未生效（非 PLUS 变体，或 data 为空）</returns>
+int32_t scram_set_cbind(scram_ctx *scram, const char *data, size_t lens);
 /// <summary>
 /// 获取客户端用户名（仅服务端调用）
 /// </summary>
@@ -121,7 +134,7 @@ int32_t scram_parse_first_message(scram_ctx *scram, char *msg, size_t mlens);
 /// 生成并返回最终消息（客户端: c=<cbind_b64>,r=,p=  服务端: [e=] v=）
 /// </summary>
 /// <param name="scram">scram_ctx</param>
-/// <returns>消息字符串（调用方负责释放）</returns>
+/// <returns>消息字符串（调用方负责释放）；状态不符或未设置密码返回 NULL</returns>
 char *scram_final_message(scram_ctx *scram);
 /// <summary>
 /// 验证对端最终消息（客户端验证 [e=] v=  服务端验证 c=<cbind_b64>,r=,p=）

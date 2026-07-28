@@ -4,7 +4,6 @@
 
 void timer_init(timer_ctx *ctx) {
 #if defined(OS_WIN)
-    ctx->freq = 0;
     LARGE_INTEGER freq;
     ASSERTAB(QueryPerformanceFrequency(&freq), ERRORSTR(ERRNO));
     ctx->freq = (uint64_t)freq.QuadPart;
@@ -17,9 +16,8 @@ void timer_init(timer_ctx *ctx) {
     if (NULL == ctx->timefunc) {
         ctx->timefunc = mach_absolute_time;
     }
-#else
-    (void)ctx;
 #endif
+    timer_start(ctx);
 }
 uint64_t timer_cur(timer_ctx *ctx) {
 #if defined(OS_WIN)
@@ -42,10 +40,10 @@ uint64_t timer_cur(timer_ctx *ctx) {
 #else
     (void)ctx;
     struct timespec ts;
-#if defined(OS_HPUX)
-    clock_gettime(CLOCK_VIRTUAL, &ts);
-#else
+#if defined(CLOCK_MONOTONIC)
     clock_gettime(CLOCK_MONOTONIC, &ts);
+#else
+    clock_gettime(CLOCK_REALTIME, &ts);
 #endif
     return (((uint64_t)ts.tv_sec) * NANOSEC + ts.tv_nsec);
 #endif

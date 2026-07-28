@@ -32,7 +32,7 @@ void _mqtt_connect_payload_free(void *data) {
     FREE(pl->willtopic);
     FREE(pl->willpayload);
     FREE(pl->user);
-    FREE(pl->password);
+    SECURE_FREE(pl->password, pl->pslens + 1);
     FREE(pl);
 }
 void _mqtt_connack_varhead_free(void *data) {

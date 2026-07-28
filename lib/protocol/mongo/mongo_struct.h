@@ -21,6 +21,7 @@ typedef struct mgopack_ctx {
 typedef struct mongo_session {
     int32_t timeoutmin; //会话超时时间（分钟）
     int32_t txnnumber;  //事务序号
+    int32_t started;    //本次事务的首个操作是否已发出（决定是否附带 startTransaction）
     struct mongo_ctx *mongo; //所属连接上下文
     char *options;      //事务选项 BSON 数据（含 lsid/txnNumber/autocommit）
     uint64_t timeout;   //会话超时时间戳（秒，nowsec() + timeoutmin * 60）
