@@ -556,10 +556,10 @@ static void test_http_chunked_trailer_limit(CuTest *tc) {
 
     status = PROT_INIT;
     pack = http_unpack(&buf, &ud, &status);
-    CuAssert(tc, "8 字节完整 trailer 跟 4089 字节流水线数据(合计 4097>4096)不得被误拒",
+    CuAssert(tc, "8-byte complete trailer plus 4089 bytes pipelined data (4097>4096 total) must not be rejected",
         NULL != pack && !BIT_CHECK(status, PROT_ERROR));
-    CuAssert(tc, "末尾块须置 PROT_SLICE_END", BIT_CHECK(status, PROT_SLICE_END));
-    CuAssert(tc, "只消费 trailer 自身，流水线数据须原样留在 buf",
+    CuAssert(tc, "final chunk must set PROT_SLICE_END", BIT_CHECK(status, PROT_SLICE_END));
+    CuAssert(tc, "only the trailer is consumed, pipelined data must stay in buf",
         sizeof(rest) == buffer_size(&buf));
     _http_pkfree(pack);
 
@@ -1336,8 +1336,8 @@ static void test_redis_nesting(CuTest *tc) {
         ZERO(&ud, sizeof(ud_cxt));
         status = PROT_INIT;
         pack = redis_unpack(&buf, &ud, &status);
-        CuAssert(tc, "扁平 70000 元素数组不得被节点数上限误拒", NULL != pack);
-        CuAssert(tc, "扁平大结果集不得置 PROT_ERROR", !BIT_CHECK(status, PROT_ERROR));
+        CuAssert(tc, "flat 70000-element array must not be rejected by the node-count limit", NULL != pack);
+        CuAssert(tc, "large flat result set must not set PROT_ERROR", !BIT_CHECK(status, PROT_ERROR));
         CuAssertTrue(tc, RESP_ARRAY == pack->prot);
         CuAssertTrue(tc, 70000 == pack->nelem);
         _redis_pkfree(pack);
@@ -1353,8 +1353,8 @@ static void test_redis_nesting(CuTest *tc) {
         ZERO(&ud, sizeof(ud_cxt));
         status = PROT_INIT;
         pack = redis_unpack(&buf, &ud, &status);
-        CuAssert(tc, "嵌套 17 层恰好用满 REDIS_MAX_DEPTH，须接受", NULL != pack);
-        CuAssert(tc, "深度未超限不得置 PROT_ERROR", !BIT_CHECK(status, PROT_ERROR));
+        CuAssert(tc, "17 nesting levels exactly fill REDIS_MAX_DEPTH, must be accepted", NULL != pack);
+        CuAssert(tc, "depth within limit must not set PROT_ERROR", !BIT_CHECK(status, PROT_ERROR));
         _redis_pkfree(pack);
         _redis_udfree(&ud);
         buffer_free(&buf);
@@ -1367,8 +1367,8 @@ static void test_redis_nesting(CuTest *tc) {
         ZERO(&ud, sizeof(ud_cxt));
         status = PROT_INIT;
         pack = redis_unpack(&buf, &ud, &status);
-        CuAssert(tc, "嵌套 18 层超深度上限，须拒绝", NULL == pack);
-        CuAssert(tc, "超深度须置 PROT_ERROR", BIT_CHECK(status, PROT_ERROR));
+        CuAssert(tc, "18 nesting levels exceed the depth limit, must be rejected", NULL == pack);
+        CuAssert(tc, "exceeding depth must set PROT_ERROR", BIT_CHECK(status, PROT_ERROR));
         _redis_udfree(&ud);
         buffer_free(&buf);
     }
@@ -1654,7 +1654,7 @@ static void test_custz_maxpack(CuTest *tc) {
     memset(big, 'z', MAX_PACK_SIZE);
     for (i = 0; i < ARRAY_SIZE(types); i++) {
         pksize = 0;
-        CuAssert(tc, "载荷达到 MAX_PACK_SIZE 须拒绝，不得造出解包侧必拒的包",
+        CuAssert(tc, "payload reaching MAX_PACK_SIZE must be rejected, must not build a pack the unpacker will reject",
             NULL == custz_pack(types[i], big, MAX_PACK_SIZE, &pksize));
         _custz_roundtrip(tc, types[i], big, MAX_PACK_SIZE - 1);
     }
@@ -1763,7 +1763,7 @@ static void test_smtp_clear_reply(CuTest *tc) {
     mail_reply(&mail, 0);
     char *out = mail_pack(&mail);
     CuAssertPtrNotNull(tc, out);
-    CuAssert(tc, "reply=0 时须出 No-Reply", NULL != strstr(out, "No-Reply: alice@example.com"));
+    CuAssert(tc, "reply=0 must emit No-Reply", NULL != strstr(out, "No-Reply: alice@example.com"));
     FREE(out);
 
     mail_clear(&mail);
@@ -1773,8 +1773,8 @@ static void test_smtp_clear_reply(CuTest *tc) {
     mail_msg(&mail, "body2");
     out = mail_pack(&mail);
     CuAssertPtrNotNull(tc, out);
-    CuAssert(tc, "clear 后须还原默认 Reply-To", NULL != strstr(out, "Reply-To: carol@example.com"));
-    CuAssert(tc, "clear 后不得沿用上一封的 No-Reply", NULL == strstr(out, "No-Reply:"));
+    CuAssert(tc, "after clear the default Reply-To must be restored", NULL != strstr(out, "Reply-To: carol@example.com"));
+    CuAssert(tc, "after clear the previous mail's No-Reply must not persist", NULL == strstr(out, "No-Reply:"));
     FREE(out);
     mail_free(&mail);
 }
@@ -1800,11 +1800,11 @@ static void test_http_value_trailing_ows(CuTest *tc) {
     size_t vlens = 0;
     char *v = http_header(pack, "Content-Type", &vlens);
     CuAssertPtrNotNull(tc, v);
-    CuAssert(tc, "value 尾随 OWS 须被剥掉,否则业务比较 application/json 必失配",
+    CuAssert(tc, "trailing OWS in value must be stripped, else comparing application/json always mismatches",
         strlen("application/json") == vlens && 0 == memcmp(v, "application/json", vlens));
     v = http_header(pack, "Sec-WebSocket-Key", &vlens);
     CuAssertPtrNotNull(tc, v);
-    CuAssert(tc, "带尾随 OWS 的 Sec-WebSocket-Key 剥后须仍是 24 字节 base64(否则握手被拒)",
+    CuAssert(tc, "Sec-WebSocket-Key with trailing OWS must stay 24-byte base64 after strip (else handshake is rejected)",
         strlen("dGhlIHNhbXBsZSBub25jZQ==") == vlens);
     _http_pkfree(pack);
     _http_udfree(&ud);
@@ -1842,7 +1842,7 @@ static void test_smtp_b64_fold(CuTest *tc) {
     if (cur > maxline) {
         maxline = cur;
     }
-    CuAssert(tc, "DATA 任一行不得超 998 octet(RFC 5321 计 CRLF 共 1000)", maxline <= 998);
+    CuAssert(tc, "no DATA line may exceed 998 octets (RFC 5321 counts CRLF, 1000 total)", maxline <= 998);
     FREE(out);
     mail_free(&mail);
 }

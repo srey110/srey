@@ -145,7 +145,7 @@ static inline void _fsqu_ovf_drain(fsqu_ctx *fsqu, char *dst, uint32_t max, uint
         return;
     }
     uint32_t elsize = fsqu->mpq.elsize;
-    uint32_t k = 0;
+    int32_t k = 0;
     void *elem;
     spin_lock(&fsqu->lck);
     while (*n < max
@@ -157,7 +157,7 @@ static inline void _fsqu_ovf_drain(fsqu_ctx *fsqu, char *dst, uint32_t max, uint
     }
     if (0 != k) {
         // 批量一次扣减，省 k-1 次原子操作
-        ATOMIC_ADD(&fsqu->novf, -(atomic_t)k);
+        ATOMIC_ADD(&fsqu->novf, -k);
     }
     spin_unlock(&fsqu->lck);
 }

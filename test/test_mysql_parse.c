@@ -956,7 +956,7 @@ static void test_mpack_parse_field_long_name(CuTest *tc) {
     ZERO(&field, sizeof(field));
     int32_t rtn = _mpack_parse_field(&br, &field);
     CuAssertIntEquals(tc, ERR_OK, rtn);
-    CuAssert(tc, "70 字节 schema 须完整保留不截断", 70 == field.schema.lens);
+    CuAssert(tc, "70-byte schema must be kept intact, not truncated", 70 == field.schema.lens);
     for (int i = 0; i < 70; i++) {
         CuAssertTrue(tc, 'a' == ((const char *)field.schema.data)[i]);
     }
@@ -966,7 +966,7 @@ static void test_mpack_parse_field_long_name(CuTest *tc) {
     CuAssert(tc, "name", 3 == field.name.lens && 0 == memcmp(field.name.data, "col", 3));
     CuAssert(tc, "org_name", 3 == field.org_name.lens && 0 == memcmp(field.org_name.data, "col", 3));
     CuAssertIntEquals(tc, MYSQL_TYPE_VARCHAR, field.type);
-    CuAssert(tc, "成功时 payload 所有权转给 field", bw.data == field.payload);
+    CuAssert(tc, "payload ownership transfers to field on success", bw.data == field.payload);
     binary_free(&bw);
 }
 void test_mysql_parse(CuSuite *suite) {

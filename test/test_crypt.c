@@ -569,15 +569,15 @@ static void test_scram_failures(CuTest *tc) {
     CuAssertTrue(tc, ERR_OK != _scram_handshake(
         "SCRAM-SHA-256", "right", "wrong", NULL, NULL, 0));
 
-    CuAssert(tc, "i 低于下限须拒", ERR_OK != _scram_parse_iter(tc, "100", NULL));
-    CuAssert(tc, "i 为 INT32_MAX 须拒", ERR_OK != _scram_parse_iter(tc, "2147483647", NULL));
+    CuAssert(tc, "i below lower bound must be rejected", ERR_OK != _scram_parse_iter(tc, "100", NULL));
+    CuAssert(tc, "i = INT32_MAX must be rejected", ERR_OK != _scram_parse_iter(tc, "2147483647", NULL));
     int32_t iter = 0;
-    CuAssert(tc, "i 在合法区间内须接受", ERR_OK == _scram_parse_iter(tc, "40960", &iter));
+    CuAssert(tc, "i within valid range must be accepted", ERR_OK == _scram_parse_iter(tc, "40960", &iter));
     CuAssertIntEquals(tc, 40960, iter);
-    CuAssert(tc, "i 恰为 SCRAM_MAX_ITER(256 * 4096 = 1048576) 须接受",
+    CuAssert(tc, "i exactly SCRAM_MAX_ITER(256 * 4096 = 1048576) must be accepted",
         ERR_OK == _scram_parse_iter(tc, "1048576", &iter));
     CuAssertIntEquals(tc, 1048576, iter);
-    CuAssert(tc, "i 超 SCRAM_MAX_ITER 一轮须拒",
+    CuAssert(tc, "i one round over SCRAM_MAX_ITER must be rejected",
         ERR_OK != _scram_parse_iter(tc, "1048577", NULL));
 
     /* 服务端签名被篡改 → 客户端拒绝 */

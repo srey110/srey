@@ -835,7 +835,7 @@ static void test_mongo_parse_startsession(CuTest *tc) {
     mg4.doc = b4.doc.data;
     mg4.dlens = (uint32_t)b4.doc.offset;
     ok = mongo_parse_startsession(&mg4, out_uuid, &timeout);
-    CuAssert(tc, "缺 id 字段须判失败,不得返回成功而留下未写入的 uid(上层会拿全零 UUID 当会话 id)",
+    CuAssert(tc, "missing id must fail, not return OK leaving uid unwritten (caller would use all-zero UUID as session id)",
         0 == ok);
     BSON_FREE(&b4);
 }

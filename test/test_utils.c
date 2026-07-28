@@ -1033,9 +1033,9 @@ static void test_popen2(CuTest *tc) {
     CuAssertIntEquals(tc, ERR_OK, popen_waitexit(&ctx, 3000));
     popen_free(&ctx);
     popen_free(&ctx);
-    CuAssert(tc, "popen_free 幂等: 重复释放不得二次关闭句柄",
+    CuAssert(tc, "popen_free idempotent: double free must not close the handle twice",
         ERR_FAILED == popen_read(&ctx, buf, sizeof(buf) - 1, NULL));
-    CuAssert(tc, "popen_free 幂等: 释放后 write 返回失败而非写已关闭句柄",
+    CuAssert(tc, "popen_free idempotent: write after free must fail, not write a closed handle",
         ERR_FAILED == popen_write(&ctx, "x", 1));
 }
 
@@ -1180,31 +1180,31 @@ static void test_mem_helpers(CuTest *tc) {
     size_t n = 0;
     char *r = trim_left(tbuf, tlen, &n);
     CuAssertPtrNotNull(tc, r);
-    CuAssert(tc, "trim_left 起点跳到首个非空白", 'a' == r[0]);
-    CuAssert(tc, "trim_left 只剥左端，右端空白仍计入长度", strlen("abc \t ") == n);
+    CuAssert(tc, "trim_left start jumps to first non-whitespace", 'a' == r[0]);
+    CuAssert(tc, "trim_left strips left only, trailing whitespace still counted", strlen("abc \t ") == n);
     r = trim_right(tbuf, tlen, &n);
     CuAssertPtrNotNull(tc, r);
-    CuAssert(tc, "trim_right 起点不变", r == tbuf);
-    CuAssert(tc, "trim_right 只剥右端", strlen(" \t abc") == n);
+    CuAssert(tc, "trim_right start unchanged", r == tbuf);
+    CuAssert(tc, "trim_right strips right only", strlen(" \t abc") == n);
     r = trim(tbuf, tlen, &n);
     CuAssertPtrNotNull(tc, r);
-    CuAssert(tc, "trim 两端都剥", 3 == n && 0 == memcmp(r, "abc", 3));
-    CuAssert(tc, "trim 不改源数据", 0 == memcmp(tbuf, " \t abc \t ", tlen));
+    CuAssert(tc, "trim strips both ends", 3 == n && 0 == memcmp(r, "abc", 3));
+    CuAssert(tc, "trim does not modify the source", 0 == memcmp(tbuf, " \t abc \t ", tlen));
     /* 全为空白 → 三者均返回 NULL 且写 0 */
     char wbuf[] = " \t \t";
     n = 99;
-    CuAssert(tc, "全空白 trim_left 返 NULL", NULL == trim_left(wbuf, sizeof(wbuf) - 1, &n) && 0 == n);
+    CuAssert(tc, "all-whitespace trim_left returns NULL", NULL == trim_left(wbuf, sizeof(wbuf) - 1, &n) && 0 == n);
     n = 99;
-    CuAssert(tc, "全空白 trim_right 返 NULL", NULL == trim_right(wbuf, sizeof(wbuf) - 1, &n) && 0 == n);
+    CuAssert(tc, "all-whitespace trim_right returns NULL", NULL == trim_right(wbuf, sizeof(wbuf) - 1, &n) && 0 == n);
     n = 99;
-    CuAssert(tc, "全空白 trim 返 NULL", NULL == trim(wbuf, sizeof(wbuf) - 1, &n) && 0 == n);
+    CuAssert(tc, "all-whitespace trim returns NULL", NULL == trim(wbuf, sizeof(wbuf) - 1, &n) && 0 == n);
     /* 零长度输入 */
     n = 99;
-    CuAssert(tc, "零长度 trim 返 NULL", NULL == trim(tbuf, 0, &n) && 0 == n);
+    CuAssert(tc, "zero-length trim returns NULL", NULL == trim(tbuf, 0, &n) && 0 == n);
     /* 无空白：起点与长度都不变 */
     char pbuf[] = "abc";
     r = trim(pbuf, 3, &n);
-    CuAssert(tc, "无空白 trim 原样返回", r == pbuf && 3 == n);
+    CuAssert(tc, "trim returns input as-is when there is no whitespace", r == pbuf && 3 == n);
 }
 
 /* =======================================================================

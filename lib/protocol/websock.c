@@ -44,7 +44,7 @@ typedef struct websock_secprot_pack {
     const char *secprot;
 }websock_secprot_pack;
 static _handshaked_push _hs_push; // 握手完成后的推送回调
-static const websock_secprot_pack _ws_secprot_pack[] = { {PACK_MQTT, strlen("mqtt"), "mqtt"} };
+static const websock_secprot_pack _ws_secprot_pack[] = { {PACK_MQTT, sizeof("mqtt") - 1, "mqtt"} };
 
 #if defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
     #include <emmintrin.h>

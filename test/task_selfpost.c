@@ -33,7 +33,7 @@ static void _requested(task_ctx *task, subtype_t reqtype, uint64_t sess, name_t 
 #if FSQU_MPQ
     LOG_INFO("selfpost tested, %d messages received.", SELFPOST_CNT);
 #else
-    LOG_INFO("selfpost tested, %d messages received (FSQU_MPQ=0: fsqu_push 本就无界, 未覆盖 mpq 溢出降级).",
+    LOG_INFO("selfpost tested, %d messages received (FSQU_MPQ=0: fsqu_push is unbounded, mpq overflow fallback not covered).",
              SELFPOST_CNT);
 #endif
 }
