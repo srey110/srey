@@ -218,6 +218,70 @@ static void test_mpq_concurrent_sc(CuTest *tc) {
     mpq_free(&q);
 }
 
+/* mpq_size 只高估不低估：队列恒非空时不得读出 0。
+ * churn 线程做 pop_sc → trypush 的往返，元素数只在两步之间降到 capacity-1，
+ * 恒 >= 1；watch 线程并发采样 mpq_size()。
+ * 修复前 mpq_size 先读 enq 后读 deq，得到的是 enq(旧) - deq(新)，系统性低估：
+ * 两次读取之间队列被消费再填满，就会把非空队列报成 0。日志线程(log.c:130/136)与
+ * worker(loader.c:247) 正是拿这个值判断"是否还有活要干"，报 0 即漏唤醒。
+ * 改为先读 deq 后读 enq 之后 enq(新) - deq(旧) >= 真实值，本断言恒成立不会偶发。
+ * 注：作为旧 bug 的检测器强度依赖 watch 线程恰在两次载入之间被抢占，
+ * 但作为新契约的守卫是确定性的 */
+#define _MPQ_SZ_CAP    4u
+#define _MPQ_SZ_ROUNDS 100000
+static atomic_t _mpq_sz_zero;// 采样到 0 的次数，应恒为 0
+static atomic_t _mpq_sz_stop;
+static void _mpq_size_churn(void *arg) {
+    mpq_ctx *q = (mpq_ctx *)arg;
+    uintptr_t p;
+    int32_t i;
+    for (i = 0; i < _MPQ_SZ_ROUNDS; i++) {
+        if (ERR_OK == mpq_pop_sc(q, &p)) {
+            while (ERR_OK != mpq_trypush(q, &p)) {
+                CPU_PAUSE();
+            }
+        }
+    }
+    ATOMIC_SET(&_mpq_sz_stop, 1);
+}
+static void _mpq_size_watch(void *arg) {
+    mpq_ctx *q = (mpq_ctx *)arg;
+    while (0 == ATOMIC_GET(&_mpq_sz_stop)) {
+        if (0 == mpq_size(q)) {
+            ATOMIC_ADD(&_mpq_sz_zero, 1);
+        }
+        // 纯热转会把 churn 线程要读写的那几条缓存行占死, 单核上更是直接饿着它;
+        // 采样密度掉一点无所谓, churn 的轮次是固定的, 样本量仍然够
+        CPU_PAUSE();
+    }
+}
+static void test_mpq_size_never_underreports(CuTest *tc) {
+    mpq_ctx q;
+    pthread_t churn, watch;
+    uintptr_t v;
+    uint32_t i;
+
+    mpq_init(&q, sizeof(uintptr_t), _MPQ_SZ_CAP);
+    // 先灌满：此后元素数只在 pop 与 push 之间短暂降到 capacity-1(>=1)
+    for (i = 0; i < _MPQ_SZ_CAP; i++) {
+        v = (uintptr_t)(i + 1);
+        CuAssertTrue(tc, ERR_OK == mpq_trypush(&q, &v));
+    }
+    CuAssertTrue(tc, _MPQ_SZ_CAP == mpq_size(&q));
+
+    ATOMIC_SET(&_mpq_sz_zero, 0);
+    ATOMIC_SET(&_mpq_sz_stop, 0);
+    watch = thread_creat(_mpq_size_watch, &q);
+    churn = thread_creat(_mpq_size_churn, &q);
+    thread_join(churn);
+    thread_join(watch);
+
+    // 往返是配平的，跑完应回到满
+    CuAssertTrue(tc, _MPQ_SZ_CAP == mpq_size(&q));
+    CuAssertIntEquals(tc, 0, (int32_t)ATOMIC_GET(&_mpq_sz_zero));
+    mpq_free(&q);
+}
+
 /* =======================================================================
  * spsc —— 无锁单生产者单消费者有界队列
  * ======================================================================= */
@@ -1877,6 +1941,7 @@ void test_containers(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mpq_boundary);
     SUITE_ADD_TEST(suite, test_mpq_concurrent_mc);
     SUITE_ADD_TEST(suite, test_mpq_concurrent_sc);
+    SUITE_ADD_TEST(suite, test_mpq_size_never_underreports);
     SUITE_ADD_TEST(suite, test_spsc_basic);
     SUITE_ADD_TEST(suite, test_spsc_boundary);
     SUITE_ADD_TEST(suite, test_spsc_concurrent);

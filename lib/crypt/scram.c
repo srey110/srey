@@ -485,17 +485,9 @@ static int32_t _scram_parse_server_first_message(scram_ctx *scram, char *msg, si
     if (NULL == iter) {
         return ERR_FAILED;
     }
-    char ibuf[12] = { 0 };
-    if (lens >= sizeof(ibuf)) {
-        return ERR_FAILED;
-    }
-    memcpy(ibuf, iter, lens);
-    // strtol 严格解析：拒绝空白前缀 / 尾随垃圾 / 溢出 / 负数
-    char *endptr;
-    errno = 0;
-    long val = strtol(ibuf, &endptr, 10);
-    if (endptr == ibuf || '\0' != *endptr || 0 != errno || val < 0 || val > INT32_MAX) {
-        LOG_WARN("scram iter parse failed: '%s'.", ibuf);
+    uint64_t val;
+    if (ERR_OK != str2u64(iter, lens, INT32_MAX, &val)) {
+        LOG_WARN("scram iter parse failed: '%.*s'.", (int32_t)lens, iter);
         return ERR_FAILED;
     }
     scram->iter = (int32_t)val;

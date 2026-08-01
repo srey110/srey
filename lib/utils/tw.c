@@ -45,7 +45,8 @@ void tw_free(tw_ctx *ctx) {
     cond_free(&ctx->cond);
     mutex_free(&ctx->mu);
 }
-/*  注意：reqadd 容量 4096，常规负载下不会触底（主线程 ≤5ms 排空一轮）。
+/*  注意：reqadd 容量 4096，常规负载下不会触底 —— 排空是信号驱动而非 tick 驱动：
+ *  pending 由 0→1 的那次 push 立刻唤醒轮线程，队列不会随轮线程睡得久而积压。
  *  极端突发或时间轮主线程被严重抢占时触底，fsqu_push 降级到无界溢出层，不阻塞调用方。*/
 void tw_add(tw_ctx *ctx, const uint32_t timeout, tw_cb _cb, free_cb _freecb, ud_cxt *ud) {
     if (0 == timeout) {
@@ -141,15 +142,32 @@ static void _tw_insert_all(tw_ctx *ctx, tw_node_ctx **nodes) {
         }
     }
 }
+// 距下一次必须醒来的 jiffy 有多少毫秒，取值 [0, TVR_MASK]。
+// tv1 的 256 个槽恰好覆盖 [jiffies, jiffies+255]（_tw_getslot 对 expires-jiffies < 256 的
+// 节点按 expires 低 8 位定槽，已过期节点落当前槽），故由近及远扫到第一个非空槽即最近到期。
+// 只需扫到 cascade 边界：tv2~tv5 的节点只能经 cascade 进 tv1, 而 cascade 只发生在
+// jiffies & TVR_MASK == 0 的 tick 上, 睡到边界必不过头。到期越密扫得越浅, 开销自限
+static uint32_t _tw_next_delta(tw_ctx *ctx) {
+    uint32_t d;
+    uint32_t bound = (uint32_t)((TVR_SIZE - (ctx->jiffies & TVR_MASK)) & TVR_MASK);
+    for (d = 0; d < bound; d++) {
+        if (!list_empty(&ctx->tv1[(ctx->jiffies + d) & TVR_MASK])) {
+            return d;
+        }
+    }
+    return bound;
+}
 // 时间轮工作线程入口：分发新任务、推进 jiffies、精确睡眠等待下一个到期
 static void _tw_loop(void *arg) {
     uint64_t curtick;
+    uint64_t wake_at;
     uint32_t sleep_ms;
     tw_ctx *ctx = (tw_ctx *)arg;
     tw_node_ctx *nodes[TW_REQADD_BATCH];
     ctx->jiffies = timer_cur_ms(&ctx->timer);
     uint64_t shrink_start = ctx->jiffies;
     while (0 == ATOMIC_GET(&ctx->exit)) {
+        ctx->nloop++;
         /*  将外部通过 tw_add 提交的节点分发到对应槽位（reqadd 仅 tw 主线程独占消费，走 pop_sc_batch）。
          *  节点链接由 list_push_tail 设置，无需 tw_add 预置。
          *  先排空，再清标志，再二次排空：避免清标志与生产者入队之间的竞态导致漏唤醒 */
@@ -166,17 +184,22 @@ static void _tw_loop(void *arg) {
             shrink_start = curtick;
             pool_shrink(&ctx->node_pool, shrink_nkeep(pool_size(&ctx->node_pool)), SHRINK_BUSY);
         }
-        /*  精确睡眠直到下一个 jiffy 到期，而非固定 1ms 空转。
-         *  sleep_ms = max(1, min(next_jiffy - now, 5))
-         *  上限 5ms：单次 OS 调度抖动最多影响 5ms，降低大延迟的概率。
-         *  tw_add / tw_free 会提前 cond_signal 唤醒。 */
+        /*  睡到下一个必须醒来的 jiffy：最近的 tv1 到期，或下一个 cascade 边界。
+         *  上界由 _tw_next_delta 的 bound <= TVR_MASK 结构性保证（最多 256ms），无需钳位。
+         *  wake_at 已过则说明本轮处理耗时超过了下一到期，不睡直接回追赶循环 —— jiffies
+         *  严格递增故不会空转。tw_add / tw_free 会提前 cond_signal 唤醒。 */
         curtick = timer_cur_ms(&ctx->timer);
-        sleep_ms = (ctx->jiffies > curtick) ? (uint32_t)(ctx->jiffies - curtick) : 1;
-        if (sleep_ms > 5) {
-            sleep_ms = 5;
+        wake_at = ctx->jiffies + _tw_next_delta(ctx);
+        if (wake_at <= curtick) {
+            continue;
         }
+        sleep_ms = (uint32_t)(wake_at - curtick);
         mutex_lock(&ctx->mu);
-        if (0 == ATOMIC_GET(&ctx->exit)) {
+        /*  必须在锁内复查 reqadd_pending：生产者 CAS 置位后要拿 ctx->mu 才能 signal，
+         *  若它落在本线程加锁之前，signal 打空 —— 睡 1ms 时最多晚 1ms 无害，
+         *  睡到 256ms 就是定时器迟到。查到已置位就跳过等待，回去排空即可 */
+        if (0 == ATOMIC_GET(&ctx->exit)
+            && 0 == ATOMIC_GET(&ctx->reqadd_pending)) {
             cond_timedwait(&ctx->cond, &ctx->mu, sleep_ms);
         }
         mutex_unlock(&ctx->mu);
@@ -186,6 +209,7 @@ static void _tw_loop(void *arg) {
 void tw_init(tw_ctx *ctx, uint32_t capacity, const thread_hooks *hooks) {
     ATOMIC_SET(&ctx->exit, 0);
     ctx->jiffies = 0;
+    ctx->nloop = 0;
     ATOMIC_SET(&ctx->reqadd_pending, 0);
     mutex_init(&ctx->mu);
     cond_init(&ctx->cond);

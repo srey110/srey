@@ -273,6 +273,10 @@ erro:
     return ERR_FAILED;
 }
 // 测试 HTTP GET 请求（验证 200 响应）+ chunked POST 请求三帧往返验证
+// 状态码断言: status[1] 是状态码的字符串形态, 按长度精确比对, 免得 "40" 被 "404" 误当命中
+static int32_t _status_is(struct http_pack_ctx *rpack, const char *code) {
+    return buf_compare(&http_status(rpack)[1], code, strlen(code));
+}
 static int32_t _timeout_http(task_ctx *task) {
     task_timeout_ctx *ctx = coro_get_arg(task);
     uint16_t httpport = (uint16_t)*_get_name_val(ctx->_ports, "http_sv");
@@ -280,7 +284,6 @@ static int32_t _timeout_http(task_ctx *task) {
     uint64_t skid;
     binary_ctx bwriter;
     struct http_pack_ctx *resp;
-    buf_ctx *st;
     size_t rsize;
     int32_t slend;
     // 普通 HTTP GET 请求，验证服务端返回 200
@@ -298,8 +301,7 @@ static int32_t _timeout_http(task_ctx *task) {
         ev_close(&task->loader->netev, fd, skid, 1);
         return ERR_FAILED;
     }
-    st = http_status(resp);
-    if (!buf_compare(&st[1], "200", 3)) {
+    if (!_status_is(resp, "200")) {
         LOG_WARN("http GET status error.");
         ev_close(&task->loader->netev, fd, skid, 1);
         return ERR_FAILED;
@@ -451,6 +453,34 @@ erro:
     ev_close(&task->loader->netev, fd, skid, 1);
     return ERR_FAILED;
 }
+// 用调用方给定的原始 URL 组 harbor POST 请求：harbor_pack 只会生成规范查询串，
+// 百分号编码 / 非法数值等畸形 URL 须在这里自行组包
+static void *_harbor_pack_url(const char *url, void *data, size_t size, size_t *lens) {
+    binary_ctx bwriter;
+    binary_init(&bwriter, NULL, 0, 0);
+    http_pack_req(&bwriter, "POST", url);
+    http_pack_head(&bwriter, "Connection", "Keep-Alive");
+    http_pack_head(&bwriter, "Content-Type", "application/octet-stream");
+    http_pack_content(&bwriter, data, size);
+    *lens = bwriter.offset;
+    return bwriter.data;
+}
+// 发一个 harbor 请求并断言响应状态码（code 为状态码字符串，如 "404"），不校验 body
+static int32_t _harbor_expect_code(task_ctx *task, SOCKET fd, uint64_t skid, const char *url,
+                                   void *data, size_t size, const char *code) {
+    size_t rsize = 0;
+    void *pack = _harbor_pack_url(url, data, size, &rsize);
+    struct http_pack_ctx *rpack = coro_send(task, fd, skid, pack, rsize, NULL, 0);
+    if (NULL == rpack) {
+        LOG_WARN("coro_send error.");
+        return ERR_FAILED;
+    }
+    if (!_status_is(rpack, code)) {
+        LOG_WARN("harbor \"%s\" expect %s.", url, code);
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
 static int32_t _timeout_habor(task_ctx *task) {
     task_timeout_ctx *ctx = coro_get_arg(task);
     uint16_t port = (uint16_t)*_get_name_val(ctx->_ports, "harbor");
@@ -471,8 +501,7 @@ static int32_t _timeout_habor(task_ctx *task) {
         LOG_WARN("coro_send error.");
         goto erro;
     }
-    buf_ctx *status = http_status(rpack);
-    if (3 != status[1].lens || 0 != memcmp(status[1].data, "200", 3)) {
+    if (!_status_is(rpack, "200")) {
         LOG_WARN("return code error.");
         goto erro;
     }
@@ -496,8 +525,7 @@ static int32_t _timeout_habor(task_ctx *task) {
         LOG_WARN("coro_send error.");
         goto erro;
     }
-    status = http_status(rpack);
-    if (3 != status[1].lens || 0 != memcmp(status[1].data, "200", 3)) {
+    if (!_status_is(rpack, "200")) {
         LOG_WARN("return code error.");
         goto erro;
     }
@@ -520,11 +548,54 @@ static int32_t _timeout_habor(task_ctx *task) {
             LOG_WARN("coro_send error.");
             goto erro;
         }
-        status = http_status(rpack);
-        if (3 != status[1].lens || 0 != memcmp(status[1].data, "404", 3)) {
+        if (!_status_is(rpack, "404")) {
             LOG_WARN("reserved subtype %d not rejected.", (int32_t)reserved[i]);
             goto erro;
         }
+    }
+    // 百分号编码的 dst/type：url_decode 就地压缩只缩短 lens、不搬移尾部字节，
+    // "%31"+"01" 解码为 "101" 后缓冲仍读作 "10101"，须按 lens 截断解析才拿得到真值。
+    // 首位数字编成 %3X（'0'-'9' 即 0x30-0x39），解码后与原 handle 完全一致，应正常路由并回显
+    char dstr[24];
+    char qurl[128];
+    SNPRINTF(dstr, sizeof(dstr), "%"PRIu64, (uint64_t)ctx->_rpcname);
+    SNPRINTF(qurl, sizeof(qurl), "/request?dst=%%3%c%s&type=%%3101", dstr[0], dstr + 1);
+    dlen = randrange(1, 256);
+    randstr(data, (size_t)dlen);
+    pack = _harbor_pack_url(qurl, data, (size_t)dlen, &rsize);
+    rpack = coro_send(task, fd, skid, pack, rsize, NULL, 0);
+    if (NULL == rpack) {
+        LOG_WARN("coro_send error.");
+        goto erro;
+    }
+    if (!_status_is(rpack, "200")) {
+        LOG_WARN("percent encoded dst/type not routed, decode residue read into value.");
+        goto erro;
+    }
+    rdata = http_data(rpack, &rsize);
+    if (dlen != (int32_t)rsize || 0 != memcmp(rdata, data, dlen)) {
+        LOG_WARN("percent encoded dst/type return data error.");
+        goto erro;
+    }
+    // 畸形查询值一律 404：非数字 dst
+    if (ERR_OK != _harbor_expect_code(task, fd, skid, "/request?dst=abc&type=101",
+                                      data, (size_t)dlen, "404")) {
+        goto erro;
+    }
+    // '+' 按 plus2space 解码成前导空格，strtoull 会跳过空白把它当合法数值
+    SNPRINTF(qurl, sizeof(qurl), "/request?dst=+%s&type=101", dstr);
+    if (ERR_OK != _harbor_expect_code(task, fd, skid, qurl, data, (size_t)dlen, "404")) {
+        goto erro;
+    }
+    // type 超 uint16：截断后会变成另一个合法 subtype（65537 -> 1）投给目标
+    SNPRINTF(qurl, sizeof(qurl), "/request?dst=%s&type=65537", dstr);
+    if (ERR_OK != _harbor_expect_code(task, fd, skid, qurl, data, (size_t)dlen, "404")) {
+        goto erro;
+    }
+    // 尾随垃圾字符
+    SNPRINTF(qurl, sizeof(qurl), "/request?dst=%s&type=1x", dstr);
+    if (ERR_OK != _harbor_expect_code(task, fd, skid, qurl, data, (size_t)dlen, "404")) {
+        goto erro;
     }
     ev_close(&task->loader->netev, fd, skid, 1);
     return ERR_OK;

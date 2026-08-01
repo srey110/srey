@@ -4,7 +4,6 @@
 #include "containers/sarray.h"
 #include "utils/utils.h"
 
-#define MAX_HEADLENS ONEK * 4 // HTTP 头部最大允许长度（4 KB）
 #define HEAD_REMAIN (pack->head.lens - (head - (char *)pack->head.data)) // 头部缓冲区剩余字节数
 
 typedef enum parse_status{
@@ -73,18 +72,8 @@ static int32_t _http_parse_content_length(http_header_ctx *field, size_t *out) {
     if (0 == vlen) {
         return ERR_FAILED;
     }
-    unsigned char c;
-    for (size_t i = 0; i < vlen; i++) {
-        c = (unsigned char)vbuf[i];
-        if (c < '0'
-            || c > '9') {
-            return ERR_FAILED;
-        }
-    }
-    char *endptr;
-    errno = 0;
-    unsigned long val = strtoul(vbuf, &endptr, 10);
-    if (endptr != vbuf + vlen || 0 != errno) {
+    uint64_t val;
+    if (ERR_OK != str2u64(vbuf, vlen, (uint64_t)SIZE_MAX, &val)) {
         return ERR_FAILED;
     }
     *out = (size_t)val;
@@ -608,12 +597,17 @@ void http_pack_resp(binary_ctx *bwriter, int32_t code) {
     binary_set_va(bwriter, "HTTP/1.1 %d %s"FLAG_CRLF, code, http_code_status(code));
 }
 void http_pack_head(binary_ctx *bwriter, const char *key, const char *val) {
-    ASSERTAB(NULL == strpbrk(key, FLAG_CRLF) && NULL == strpbrk(val, FLAG_CRLF), "HTTP header key/val must not contain CRLF.");
-    binary_set_va(bwriter, "%s: %s"FLAG_CRLF, key, val);
+    // 只是 head2 的 \0 结尾入口: 头的线格式与校验规则单点落在 head2, 免得两处各改一半
+    http_pack_head2(bwriter, key, val, strlen(val));
 }
 void http_pack_head2(binary_ctx *bwriter, const char *key, const char *val, size_t lens) {
+    // 逐字符挡 CR / LF 而非只挡 "\r\n" 连对：孤立 LF 也被相当多的解析器当行终止符，
+    // 放过它等于给按长度传值的这一路留下头注入口子
     ASSERTAB(NULL == strpbrk(key, FLAG_CRLF)
-        && NULL == memstr(0, val, lens, FLAG_CRLF, CRLF_SIZE), "HTTP header key/val must not contain CRLF.");
+        && (0 == lens
+            || (NULL != val
+                && NULL == memchr(val, '\r', lens) && NULL == memchr(val, '\n', lens))),
+        "HTTP header key/val must not contain CRLF.");
     binary_set_va(bwriter, "%s: ", key);
     binary_set_binary(bwriter, val, lens);
     binary_set_binary(bwriter, FLAG_CRLF, CRLF_SIZE);

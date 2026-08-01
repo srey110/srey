@@ -64,10 +64,12 @@ int32_t mpq_pop(mpq_ctx *q, void *out);
 /// <returns>ERR_OK 成功，ERR_FAILED 队列为空</returns>
 int32_t mpq_pop_sc(mpq_ctx *q, void *out);
 /// <summary>
-/// 返回当前队列元素数量的近似值，并发下不精确
+/// 返回当前队列元素数量的近似值，并发下不精确。
+/// 偏差方向有保证：只会高估不会低估（上限 capacity），故可安全用于
+/// "队列是否还有元素待处理"这类判断——不会把有元素报成 0 而导致漏唤醒
 /// </summary>
 /// <param name="q">mpq_ctx</param>
-/// <returns>元素数量</returns>
+/// <returns>元素数量，取值 [0, capacity]</returns>
 uint32_t mpq_size(mpq_ctx *q);
 /// <summary>
 /// 返回队列最大容量

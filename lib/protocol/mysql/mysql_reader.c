@@ -125,16 +125,10 @@ uint64_t mysql_reader_uinteger(mysql_reader_ctx *reader, const char *name, int32
         return 0;
     }
     if (MPACK_QUERY == reader->pack_type) {
-        // 文本协议：字段值为字符串，需转换为无符号整数
-        char tmp[64];
-        if (ERR_OK != _mysql_copy_bounded(row->val.data, row->val.lens, tmp, sizeof(tmp), 1)) {
-            SET_PTR(err, ERR_FAILED);
-            LOG_WARN("parse failed.");
-            return 0;
-        }
-        char *end;
-        uint64_t val = strtoull(tmp, &end, 10);
-        if ((size_t)(end - tmp) != row->val.lens) {
+        // 文本协议：字段值为字符串，需转换为无符号整数。按 lens 直接解析，
+        // 不再中转定长栈缓冲——原来的 strtoull 会把 "-1" 回绕成 UINT64_MAX 当合法值收下
+        uint64_t val;
+        if (ERR_OK != str2u64((const char *)row->val.data, row->val.lens, UINT64_MAX, &val)) {
             SET_PTR(err, ERR_FAILED);
             LOG_WARN("parse failed.");
             return 0;

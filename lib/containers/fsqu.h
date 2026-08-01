@@ -121,24 +121,9 @@ static inline void fsqu_push_batch(fsqu_ctx *fsqu, const void *data, uint32_t co
 #endif
 }
 #if FSQU_MPQ
-// 从溢出层取一个元素（快路径已空时调用）：novf 为 0 即判空免锁
-static inline int32_t _fsqu_ovf_pop(fsqu_ctx *fsqu, void *out) {
-    if (0 == ATOMIC_GET(&fsqu->novf)) {
-        return ERR_FAILED;
-    }
-    spin_lock(&fsqu->lck);
-    void *elem = queue_pop(&fsqu->qu);
-    if (NULL == elem) {
-        spin_unlock(&fsqu->lck);
-        return ERR_FAILED;// novf 为过期非 0，另一消费者已取走
-    }
-    memcpy(out, elem, fsqu->qu.elsize);// queue_pop 的指针仅在下次 push 前有效，须锁内拷出
-    ATOMIC_ADD(&fsqu->novf, (atomic_t)-1);
-    spin_unlock(&fsqu->lck);
-    return ERR_OK;
-}
 // 快路径取完后从溢出层续取补齐（否则调用方按 0 判空会漏掉溢出）：
-// dst 为快路径填完后的写入位置，*n 传入已取个数、返回补齐后的个数
+// dst 为快路径填完后的写入位置，*n 传入已取个数、返回补齐后的个数。
+// novf 为 0 即判空免锁；元素数取自 mpq.elsize，与 qu.elsize 同源于 fsqu_init 的实参
 static inline void _fsqu_ovf_drain(fsqu_ctx *fsqu, char *dst, uint32_t max, uint32_t *n) {
     if (*n >= max
         || 0 == ATOMIC_GET(&fsqu->novf)) {
@@ -150,7 +135,7 @@ static inline void _fsqu_ovf_drain(fsqu_ctx *fsqu, char *dst, uint32_t max, uint
     spin_lock(&fsqu->lck);
     while (*n < max
            && NULL != (elem = queue_pop(&fsqu->qu))) {
-        memcpy(dst, elem, elsize);
+        memcpy(dst, elem, elsize);// queue_pop 的指针仅在下次 push 前有效，须锁内拷出
         dst += elsize;
         (*n)++;
         k++;
@@ -160,6 +145,14 @@ static inline void _fsqu_ovf_drain(fsqu_ctx *fsqu, char *dst, uint32_t max, uint
         ATOMIC_ADD(&fsqu->novf, -k);
     }
     spin_unlock(&fsqu->lck);
+}
+// 从溢出层取一个元素（快路径已空时调用）：即 _fsqu_ovf_drain 取一个的返回码适配，
+// 不另写一份加锁出队逻辑。取不到有两种：novf 为 0 的免锁判空，或 novf 是过期非 0、
+// 元素已被另一消费者取走（此时 k 为 0，不扣减）
+static inline int32_t _fsqu_ovf_pop(fsqu_ctx *fsqu, void *out) {
+    uint32_t n = 0;
+    _fsqu_ovf_drain(fsqu, (char *)out, 1, &n);
+    return (0 != n) ? ERR_OK : ERR_FAILED;
 }
 #endif
 /// <summary>

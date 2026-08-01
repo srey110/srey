@@ -74,11 +74,13 @@ int32_t mpq_trypush(mpq_ctx *q, const void *data) {
         CPU_PAUSE();
     }
     /* 已独占该槽位，写入数据并发布（sequence = pos+1 通知消费者）。
-     * memcpy 为普通写，但其后的 ATOMIC_SET 是 full barrier（release），
+     * memcpy 为普通写，但其后的 ATOMIC_SET_RELEASE 保证它不会越到 store 之后，
      * 与消费者侧 ATOMIC_GET（acquire）构成 synchronizes-with 关系，
-     * 保证本次写对消费者可见，ARM 弱序架构下同样成立。*/
+     * 保证本次写对消费者可见，ARM 弱序架构下同样成立。
+     * 此处只需发布语义, 不需要 StoreLoad：调用方(log.c / loader.c)的 SB 握手
+     * 靠的是 enq.v 那个 ATOMIC_CAS 的全屏障, 与本 store 无关, 故不必用 seq_cst 交换。*/
     memcpy(cell->data, data, q->elsize);
-    ATOMIC_SET(&cell->sequence, pos + 1);
+    ATOMIC_SET_RELEASE(&cell->sequence, pos + 1);
     return ERR_OK;
 }
 /*
@@ -117,10 +119,12 @@ int32_t mpq_pop(mpq_ctx *q, void *out) {
         CPU_PAUSE();
     }
     /* 已独占该槽位，读取数据并释放槽位（sequence = pos+capacity 通知生产者下一轮可用）。
-     * ATOMIC_GET(sequence) 是 full barrier（acquire），保证此后 memcpy 能观察到
-     * 生产者在 ATOMIC_SET(sequence, pos+1) 之前写入的值，无需对 cell->data 本身加原子操作。*/
+     * ATOMIC_GET(sequence) 是 acquire，保证此后 memcpy 能观察到生产者
+     * 在发布 sequence = pos+1 之前写入的值，无需对 cell->data 本身加原子操作。
+     * 释放槽位用 release store：它同时挡住上面那次 memcpy 读被下沉，
+     * 否则生产者拿到空槽后可能在我们读完之前就把数据覆盖掉。*/
     memcpy(out, cell->data, q->elsize);
-    ATOMIC_SET(&cell->sequence, pos + q->capacity);
+    ATOMIC_SET_RELEASE(&cell->sequence, pos + q->capacity);
     return ERR_OK;
 }
 /*
@@ -144,23 +148,33 @@ int32_t mpq_pop_sc(mpq_ctx *q, void *out) {
         //diff < 0：队列为空；diff > 0：单消费者约束被违反（不应出现）
         return ERR_FAILED;
     }
-    /* 槽位就绪，拷出数据并释放槽位（sequence = pos+capacity 通知生产者下一轮可用）。
+    /* 槽位就绪，拷出数据后推进 deq.v，再释放槽位（sequence = pos+capacity 通知生产者下一轮可用）。
      * ATOMIC_GET(sequence) 是 acquire，保证此后 memcpy 能观察到生产者
-     * 在 ATOMIC_SET(sequence, pos+1) 之前写入的值，无需对 cell->data 本身加原子操作。
-     * deq.v 的推进用 ATOMIC_SET（release），让外部 mpq_size 读取一致。*/
+     * 在发布 sequence = pos+1 之前写入的值，无需对 cell->data 本身加原子操作。
+     * 这两步顺序不可颠倒：先释放槽位的话，两步之间生产者可抢占该槽把 enq.v 推到
+     * deq+capacity+1，mpq_size 随即触发 ">capacity 返 0" 的钳位，把满队列报成空。
+     * 生产者从不读 deq.v，先推进无副作用（mpq_pop 同样是先 CAS deq 再释放槽位）。
+     * 两处都用 release store：release 不允许先前的读写下沉，故 memcpy 读、deq.v 写、
+     * 槽位释放三者的先后关系全部保持；本函数的调用方在其后自带 fence(log.c / loader.c
+     * 的 SB 握手)，不依赖这里提供 StoreLoad。*/
     memcpy(out, cell->data, q->elsize);
-    ATOMIC_SET(&cell->sequence, pos + q->capacity);
-    ATOMIC_SET(&q->deq.v, pos + 1);
+    ATOMIC_SET_RELEASE(&q->deq.v, pos + 1);
+    ATOMIC_SET_RELEASE(&cell->sequence, pos + q->capacity);
     return ERR_OK;
 }
 /*
  * 返回当前队列元素数量的近似值。
- * 并发场景下 enq_pos 与 deq_pos 分两次读取，结果仅供参考。
+ * 并发场景下 deq_pos 与 enq_pos 分两次读取，结果仅供参考。
  * 无符号减法天然处理 uint32_t 绕回情形。
+ * 必须先读 deq 再读 enq：两者都单调递增且恒有 enq >= deq，于是后读的 enq 必不小于
+ * 先读的 deq，下溢在数学上不可能。两个出队实现又都保证瞬时 enq-deq <= capacity，
+ * 故 size > capacity 只可能是两次读取之间消费者推进了 deq 造成的高估——彼时队列刚刚还很满，
+ * 钳到 capacity 而非 0：调用方（日志线程、worker）用本值判断"是否还有活要干"，
+ * 高估最多多醒一次，低估则是漏唤醒。
  */
 uint32_t mpq_size(mpq_ctx *q) {
-    uint32_t enq = ATOMIC_GET(&q->enq.v);
     uint32_t deq = ATOMIC_GET(&q->deq.v);
+    uint32_t enq = ATOMIC_GET(&q->enq.v);
     uint32_t size = enq - deq;
-    return size > q->capacity ? 0 : size;
+    return size > q->capacity ? q->capacity : size;
 }

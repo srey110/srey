@@ -22,6 +22,8 @@
 //   /foo/bar         字面量精确匹配
 //   /user/{id}       {name} 必填路径参数, router_req_param("id", ...) 取
 //   /file/{path?}    {name?} 可选路径参数, 缺失时取不到值但仍匹配
+//                    匹配是精确的(非贪婪前瞻): 只要存在"某些 OPT 取值、其余缺失"的组合能让
+//                    整条路径对齐就算命中, 能取到值的 OPT 优先取值; 单条路由最多 ROUTER_MAX_OPT 个
 //   {name} 内部含 '?' (如 {a?b}) 视为非法参数名, 整段退化为字面量匹配 (与 Lua 端文法一致)
 //   /static/*        末尾通配, 一旦命中后续任意请求段都吃下
 //   多条同 path 不同 method 算独立路由, 方法位掩码 ROUTER_M_GET|ROUTER_M_POST 也支持
@@ -121,6 +123,8 @@
 // 路径参数 / chain 数组上限
 #define ROUTER_MAX_PARAMS  16
 #define ROUTER_MAX_CHAIN   16
+// 单条路由内 {name?} 段数上限; 匹配用的可行性表按本值定维, 超出即注册失败
+#define ROUTER_MAX_OPT     8
 
 // HTTP 方法位掩码; 单个路由可通过按位或组合 (ROUTER_M_ANY 匹配所有方法)
 typedef enum router_method {
@@ -241,7 +245,7 @@ void router_group_nest(const router_group *parent, router_group *g, const char *
 /// <param name="h">handler</param>
 /// <param name="mws">路由级中间件名数组, 可为 NULL</param>
 /// <param name="mws_n">mws 数量</param>
-/// <returns>路由条目, NULL 表示失败 (前缀或路径过长 / 段数超上限 / 通配符非末段 / 段格式非法); 返回指针仅即时有效, 下次 router_* 注册可能 realloc 路由表使其失效, 不可长期持有</returns>
+/// <returns>路由条目, NULL 表示失败 (前缀或路径过长 / 段数超上限 / 可选段超 ROUTER_MAX_OPT / 通配符非末段 / 段格式非法); 返回指针仅即时有效, 下次 router_* 注册可能 realloc 路由表使其失效, 不可长期持有</returns>
 router_entry *router_add(router_ctx *r, const router_group *g,
                          router_method method, const char *path,
                          router_cb h,
@@ -305,6 +309,8 @@ router_entry *router_any(router_ctx *r, const router_group *g, const char *path,
 /// <summary>
 /// 注册路由并返回索引；不经 group/mw 解析，handler 置 NULL
 /// method 支持 "GET"/"POST"/"PUT"/"DELETE"/"PATCH"/"HEAD"/"OPTIONS"/"ANY"
+/// 本函数注册的条目只能配 router_match_index 使用（调用方自己按索引派发）；
+/// 因 handler 为 NULL，同一 router_ctx 若再交给 router_dispatch，命中即回 500 拒绝
 /// </summary>
 /// <param name="r">router_ctx</param>
 /// <param name="method">HTTP 方法字符串</param>
@@ -323,7 +329,9 @@ int32_t router_add_index(router_ctx *r, const char *method, size_t method_len,
 /// <param name="method_len">method 长度</param>
 /// <param name="url">原始请求 URI（含查询字符串）</param>
 /// <param name="url_len">url 长度</param>
-/// <param name="ctx">调用方提供的 router_req（须已零初始化）</param>
+/// <param name="ctx">调用方提供的 router_req，**必须已整体零初始化**：匹配失败时本函数
+/// 不写 params_n（只有命中才写），ctx 带着脏 params_n 进来就会让 router_req_param
+/// 遍历到未初始化的 params[] 指针。同一个 ctx 也不可跨请求复用</param>
 /// <returns>路由索引（≥0）；-1 无匹配路由；-2 URL 解析失败；-3 方法不在已知列表(对应 405)</returns>
 int32_t router_match_index(router_ctx *r, const char *method, size_t method_len,
                            const char *url, size_t url_len, router_req *ctx);
@@ -418,7 +426,11 @@ void router_req_json(router_req *ctx, int32_t code, const char *json, size_t len
 void router_req_html(router_req *ctx, int32_t code, const char *body, size_t lens);
 /// <summary>
 /// 自定义响应; extra 为附加头, 不得包含 Content-Length / Content-Type / Transfer-Encoding
-/// (本函数按 body_len 自动写 Content-Length)
+/// (本函数按 body_len 自动写 Content-Length)。
+/// 附加头逐条校验, 不合规者整条丢弃(仅 LOG_WARN, 无返回值可查): 头名为空或 >= 128 字节、
+/// 头名不是合法 RFC 7230 token(非空、全 tchar, 故 NUL/CR/LF/':'/空格 都被挡)或 >= 128 字节、
+/// 头值 data 为 NULL 或含 NUL/CR/LF。截断头名等于改名发上线缆, 故一律不截断;
+/// 头值本身不限长, 但整个头部块受 http.c 的 MAX_HEADLENS 约束, 过大对端会解析失败
 /// </summary>
 /// <param name="ctx">router_req</param>
 /// <param name="code">状态码</param>

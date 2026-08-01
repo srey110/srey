@@ -76,8 +76,17 @@ static void _harbor_dispatch(router_req *ctx, int32_t is_call) {
     const char *ds = router_req_query(ctx, "dst", &dn);
     const char *tp = router_req_query(ctx, "type", &tn);
     void *body = http_data(ctx->pack, &blen);
-    name_t dst = (name_t)strtoull(ds, NULL, 10);
-    subtype_t type = (subtype_t)strtoul(tp, NULL, 10);
+    uint64_t dv = 0;
+    uint64_t tv = 0;
+    // 必须按 lens 截断解析：url_parse(decode=1) 就地解码只缩短 lens、不搬移后续字节，
+    // 切片尾部残留解码前的旧字节("%310" 解码为 "10" 但缓冲仍读作 "1010")
+    if (ERR_OK != str2u64(ds, dn, UINT64_MAX, &dv)
+        || ERR_OK != str2u64(tp, tn, UINT16_MAX, &tv)) {
+        _harbor_respond_text(ctx, 404);
+        return;
+    }
+    name_t dst = (name_t)dv;
+    subtype_t type = (subtype_t)tv;
     if (subtype_reserved(type)) {
         _harbor_respond_text(ctx, 404);
         return;

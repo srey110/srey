@@ -1232,6 +1232,32 @@ double strtod_c(const char *str, char **endptr) {
     return strtod_l(str, endptr, g_numeric_c);
 #endif
 }
+int32_t str2u64(const char *str, size_t lens, uint64_t max, uint64_t *out) {
+    uint64_t v = 0;
+    uint64_t d;
+    size_t i;
+    if (0 == lens
+        || NULL == str) {
+        return ERR_FAILED;
+    }
+    for (i = 0; i < lens; i++) {
+        if (str[i] < '0'
+            || str[i] > '9') {
+            return ERR_FAILED;
+        }
+        d = (uint64_t)(str[i] - '0');
+        // 先判后乘, 免得溢出之后再回头查; 顺带把 max 上界一并管了, 不必事后再比。
+        // d > max 要单独挡: max 小于当前位(如 max=4 撞上 '9')时 max - d 会回绕成巨值,
+        // 判定恒不成立, 超界值就被放过去了
+        if (d > max
+            || v > (max - d) / 10) {
+            return ERR_FAILED;
+        }
+        v = v * 10 + d;
+    }
+    *out = v;
+    return ERR_OK;
+}
 char *strupper(char *str) {
     if (NULL == str) {
         return NULL;

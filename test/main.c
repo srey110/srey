@@ -267,14 +267,15 @@ int main(int argc, char *argv[]) {
     task_mqtt_server_start(g_loader, "task_mqtt_server", 1883, 0);
     // mqtt_test1/2：连接 docker EMQX（端口 1884）
     task_mqtt_client_start(g_loader, "mqtt_test1", MQTT_311, "127.0.0.1", 1884,
-        0, _get_name_val(testlist, "mqtt_test1"));
+        0, 0, _get_name_val(testlist, "mqtt_test1"));
     task_mqtt_client_start(g_loader, "mqtt_test2", MQTT_50, "127.0.0.1", 1884,
-        0, _get_name_val(testlist, "mqtt_test2"));
-    // mqtt_test3/4：连接进程内的 task_mqtt_server（端口 1883）
+        0, 0, _get_name_val(testlist, "mqtt_test2"));
+    // mqtt_test3/4 连的是上面这个进程内 broker，故各自在协程里先等 200ms 再连（见头文件说明）；
+    // 1884 的 test1/test2 连的是外部 EMQX，不受 task_listen 落地时机影响，故不等
     task_mqtt_client_start(g_loader, "mqtt_test3", MQTT_311, "127.0.0.1", 1883,
-        0, _get_name_val(testlist, "mqtt_test3"));
+        200, 0, _get_name_val(testlist, "mqtt_test3"));
     task_mqtt_client_start(g_loader, "mqtt_test4", MQTT_50, "127.0.0.1", 1883,
-        0, _get_name_val(testlist, "mqtt_test4"));
+        200, 0, _get_name_val(testlist, "mqtt_test4"));
     //habor
     int32_t rtn = harbor_start(g_loader, "harbor", ssl_harbor, "0.0.0.0", (uint16_t)*(_get_name_val(portlist, "harbor")));
     if (ERR_OK != rtn) {

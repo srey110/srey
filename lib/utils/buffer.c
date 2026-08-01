@@ -48,6 +48,20 @@ static void _buffer_node_free(bufnode_ctx *node) {
 static inline int32_t _buffer_node_external(bufnode_ctx *node) {
     return node->buffer != (char *)(node + 1);
 }
+// 一个节点在 iov 登记里的贡献:返回可写字节数,*slot 置 1 表示它要占掉一条 iov。
+// 带数据的节点计空闲区(空闲为 0 时不占 iov),空外部节点不可写但仍占一条,空内部节点整块可写。
+// _buffer_expand 据此登记 iov、buffer_space 据此预估"不触发分配的最大 lens",两边必须同源——
+// 一旦分歧, buffer_from_sock 要么少读一截要么白扩一个节点
+static inline size_t _buffer_node_avail(bufnode_ctx *node, uint32_t *slot) {
+    size_t space;
+    if (0 != node->off) {
+        space = (size_t)NODE_SPACE_LEN(node);
+        *slot = (0 != space) ? 1 : 0;
+        return space;
+    }
+    *slot = 1;
+    return _buffer_node_external(node) ? 0 : node->buffer_lens;
+}
 //通过偏移判断是否足够。外部节点的 misalign 区属调用方内存,回收它等于改写调用方数据,一律拒绝
 static inline int32_t _buffer_should_realign(bufnode_ctx *node, const size_t lens) {
     if (_buffer_node_external(node)) {
@@ -177,6 +191,7 @@ static bufnode_ctx *_buffer_expand_single(buffer_ctx *ctx, const size_t lens) {
         ctx->hint_node = NULL;
         ctx->hint_base_off = 0;
     }
+    ASSERTAB(0 == node->used, "node in use.");
     _buffer_node_free(node);
     return tmp;
 }
@@ -186,6 +201,7 @@ static bufnode_ctx *_buffer_expand_single(buffer_ctx *ctx, const size_t lens) {
 static uint32_t _buffer_expand(buffer_ctx *ctx, const size_t lens, IOV_TYPE *iov, const uint32_t cnt) {
     bufnode_ctx *tmp, *next, *node = ctx->tail;
     size_t avail, remain, used, space;
+    uint32_t slot;
     uint32_t index = 0;
     ASSERTAB(cnt >= 2, "param error.");
     if (NULL == node) {
@@ -197,22 +213,17 @@ static uint32_t _buffer_expand(buffer_ctx *ctx, const size_t lens, IOV_TYPE *iov
     used = 0; //使用了多少个节点
     avail = 0;//可用空间
     for (node = *ctx->tail_with_data; NULL != node; node = node->next) {
+        // 登记的字节数与槽位归 _buffer_node_avail 统管, 这里只补 expand 独有的副作用
         if (0 != node->off) {
-            space = (size_t)NODE_SPACE_LEN(node);
-            ASSERTAB(node == *ctx->tail_with_data, "ail_with_data not equ pnode.");
-            if (0 != space) {
-                avail += space;
-                ++used;
-                RECOED_IOV(node, space);
-            }
-        } else if (_buffer_node_external(node)) {
+            ASSERTAB(node == *ctx->tail_with_data, "tail_with_data not equ pnode.");
+        } else if (!_buffer_node_external(node)) {
+            node->misalign = 0; //空的内部节点整块可写, 先把前缩量清掉
+        }
+        space = _buffer_node_avail(node, &slot);
+        if (0 != slot) {
+            avail += space;
             ++used;
-            RECOED_IOV(node, 0);
-        } else {
-            node->misalign = 0;
-            avail += node->buffer_lens;
-            ++used;
-            RECOED_IOV(node, node->buffer_lens);
+            RECOED_IOV(node, space);
         }
         if (avail >= lens) {
             return index;
@@ -246,7 +257,8 @@ static uint32_t _buffer_expand(buffer_ctx *ctx, const size_t lens, IOV_TYPE *iov
         }        
         node = node->next;
     }
-    //释放
+    //释放。这些节点第一趟被 RECOED_IOV 置过 used, 但那批 iov 已随 index 归零整体作废、
+    //调用方拿不到, 故此处释放不违反"外部持有 iov 的节点不可释放"
     for (; NULL != node; node = next) {
         next = node->next;
         ASSERTAB(0 == node->off, "node not empty.");
@@ -333,6 +345,10 @@ void buffer_init(buffer_ctx *ctx) {
     ctx->tail_with_data = &ctx->head;
 }
 void buffer_free(buffer_ctx *ctx) {
+    // 暂存期间释放会把调用方仍持有 iov 的节点一并释放, 且 buffer_init 随后抹掉标志、
+    // 事后无迹可寻; 其余入口都对误用大声 abort, 这里不该是唯一静默的那个
+    ASSERTAB(0 == ctx->freeze_read, "read freezed");
+    ASSERTAB(0 == ctx->freeze_write, "write freezed");
     _buffer_free_all_node(ctx->head);
     // 必须复位:否则 head/tail/tail_with_data/hint_node 全指向已释放节点,
     // 重复调用即 double free,total_lens 也会让释放后的 buffer_size 报出旧字节数
@@ -341,7 +357,28 @@ void buffer_free(buffer_ctx *ctx) {
 size_t buffer_size(buffer_ctx *ctx) {
     return ctx->total_lens;
 }
+// 按 _buffer_node_avail 逐节点累加(与 _buffer_expand 同源, 差别只在这里不改节点状态),
+// 同样受 cnt 条 iov 的上限约束, 故返回值恰是"expand 不会新建节点"的最大 lens
+size_t buffer_space(buffer_ctx *ctx, const uint32_t cnt) {
+    bufnode_ctx *node;
+    size_t avail = 0;
+    uint32_t slot;
+    uint32_t used = 0;
+    for (node = *ctx->tail_with_data; NULL != node && used < cnt; node = node->next) {
+        avail += _buffer_node_avail(node, &slot);
+        used += slot;
+    }
+    return avail;
+}
 void buffer_external(buffer_ctx *ctx, void *data, const size_t lens, free_cb ext_free) {
+    ASSERTAB(0 == ctx->freeze_write, "write freezed");
+    ASSERTAB(0 == ctx->freeze_read, "read freezed");
+    if (0 == lens) {
+        if (NULL != ext_free) {
+            ext_free(data);
+        }
+        return;
+    }
     bufnode_ctx *node;
     CALLOC(node, 1, sizeof(bufnode_ctx));
     node->buffer = (char *)data;
@@ -352,6 +389,7 @@ void buffer_external(buffer_ctx *ctx, void *data, const size_t lens, free_cb ext
 }
 int32_t buffer_append(buffer_ctx *ctx, void *data, const size_t lens) {
     ASSERTAB(0 == ctx->freeze_write, "write freezed");
+    ASSERTAB(0 == ctx->freeze_read, "read freezed");
     if (0 == lens
         || NULL == data) {
         return ERR_OK;
@@ -403,6 +441,7 @@ int32_t buffer_append(buffer_ctx *ctx, void *data, const size_t lens) {
 }
 int32_t buffer_appendv(buffer_ctx *ctx, const char *fmt, ...) {
     ASSERTAB(0 == ctx->freeze_write, "write freezed");
+    ASSERTAB(0 == ctx->freeze_read, "read freezed");
     va_list va;
     int32_t rtn, size;
     bufnode_ctx *node = _buffer_expand_single(ctx, FIRST_FORMAT_IN_EXPAND);
@@ -665,6 +704,7 @@ char buffer_at(buffer_ctx *ctx, size_t pos) {
 }
 uint32_t buffer_expand(buffer_ctx *ctx, const size_t lens, IOV_TYPE *iov, const uint32_t cnt) {
     ASSERTAB(0 == ctx->freeze_write, "write freezed");
+    ASSERTAB(0 == ctx->freeze_read, "read freezed");
     ctx->freeze_write = 1;
     return _buffer_expand(ctx, lens, iov, cnt);
 }
@@ -675,10 +715,14 @@ void buffer_commit_expand(buffer_ctx *ctx, size_t lens, IOV_TYPE *iov, const uin
 }
 uint32_t buffer_get(buffer_ctx *ctx, size_t atmost, IOV_TYPE *iov, const uint32_t cnt) {
     ASSERTAB(0 == ctx->freeze_read, "read freezed");
+    ASSERTAB(0 == ctx->freeze_write, "write freezed");
     if (atmost > ctx->total_lens) {
         atmost = ctx->total_lens;
     }
-    if (0 == atmost) {
+    // cnt 为 0 时下面的循环一条都填不出, 必须在置位之前退出：否则返回 0 却已进入暂存态，
+    // 调用方照契约不调 buffer_commit_get, freeze_read 再无人清, 后续读写全部断言失败
+    if (0 == atmost
+        || 0 == cnt) {
         return 0;
     }
     ctx->freeze_read = 1;
@@ -695,13 +739,25 @@ uint32_t buffer_get(buffer_ctx *ctx, size_t atmost, IOV_TYPE *iov, const uint32_
             iov[index].IOV_LEN_FIELD = (IOV_LEN_TYPE)atmost;
             atmost = 0;
         }
+        node->used = 1;
         index++;
         node = node->next;
     }
+    ctx->pinned_n = index;
     return index;
 }
+// used 须在 drain 之前清掉, 否则 drain 走"节点被锁定"分支把本该释放的节点留成零长节点。
+// 按 buffer_get 记下的 pinned_n 精确解锁, 而不是"从 head 扫到第一个未锁定节点"——后者
+// 只在锁定段恰好自 head 起连续时才等价, 一旦 buffer_get 将来跳过某个节点就会漏解锁
 void buffer_commit_get(buffer_ctx *ctx, size_t lens) {
     ASSERTAB(1 == ctx->freeze_read, "read unfreezed.");
+    bufnode_ctx *node = ctx->head;
+    uint32_t i;
+    for (i = 0; i < ctx->pinned_n && NULL != node; i++) {
+        node->used = 0;
+        node = node->next;
+    }
+    ctx->pinned_n = 0;
     ctx->freeze_read = 0;
     if (lens > 0) {
         buffer_drain(ctx, lens);
@@ -712,6 +768,7 @@ int32_t buffer_from_sock(buffer_ctx *ctx, SOCKET fd, size_t *nread,
     *nread = 0;
     size_t nbuf = MAX_RECV_SIZE;
     size_t readed;
+    size_t space;
     int32_t rtn;
     uint32_t niov;
     IOV_TYPE iov[MAX_EXPAND_NIOV];
@@ -732,6 +789,14 @@ int32_t buffer_from_sock(buffer_ctx *ctx, SOCKET fd, size_t *nread,
             break;
         }
 #endif
+        if (readed < nbuf) {
+            // 加地板: 残余空间太小时, 万一确认轮真读到了数据, 为省一次 malloc(~100ns)
+            // 反而要多付一次 readv 系统调用(~1-2us), 买卖倒挂
+            space = buffer_space(ctx, MAX_EXPAND_NIOV);
+            nbuf = (space >= MAX_RECV_SIZE / 4) ? space : MAX_RECV_SIZE;
+        } else {
+            nbuf = MAX_RECV_SIZE;
+        }
     }
     return rtn;
 }

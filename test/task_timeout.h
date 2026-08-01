@@ -12,7 +12,8 @@
 //   5. TCP：PACK_CUSTZ_FIXED / FLAG / VAR 各 ECHO_ROUNDS 轮，含 SSL 升级和协议切换
 //   6. HTTP：GET 请求验证 200 响应；chunked POST 请求收发验证（三帧往返）
 //   7. WS：纯 WebSocket 服务端文本帧、二进制帧回显，ping/pong 往返，三帧分片消息收发验证
-//   8. Harbor：跨节点 call(fire-and-forget) + request 收发校验，request 额外验证回显数据一致
+//   8. Harbor：跨节点 call(fire-and-forget) + request 收发校验，request 额外验证回显数据一致；
+//      另覆盖保留 subtype 拒绝、百分号编码的 dst/type 正常路由、畸形查询值一律 404
 // rpcname 为 INVALID_TNAME 时跳过 RPC 子测试；autoclose 非 0 时本任务负责驱动 auto_close 子测试
 void task_timeout_start(loader_ctx *loader, const char *name,
     const char *rpcname, name_val_ctx *ports, void *evssl, void *hbssl,

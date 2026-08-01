@@ -5,6 +5,9 @@
 #include "utils/binary.h"
 #include "utils/utils.h"
 
+// HTTP 头部块最大允许长度（4 KB）。解析侧据此拒收超长头部，打包侧也需要它：
+// 发出去的响应若超过本值，对端（含 srey 自己的 http 解析器）会整包解析失败
+#define MAX_HEADLENS ONEK * 4
 typedef struct http_header_ctx {
     buf_ctx key;
     buf_ctx value;
@@ -49,6 +52,15 @@ void http_pack_resp(binary_ctx *bwriter, int32_t code);
 /// <param name="key">键</param>
 /// <param name="val">值</param>
 void http_pack_head(binary_ctx *bwriter, const char *key, const char *val);
+/// <summary>
+/// http头（值按长度取，不要求 \0 结尾，可含 NUL 等非文本字节）；键仍须 \0 结尾。
+/// 键或值含 CR 或 LF 一律断言失败即退进程，故值若来自不可信来源，调用方必须先行过滤
+/// 而不能依赖本函数拒绝（router_req_respond 即在其上层先筛后调）
+/// </summary>
+/// <param name="bwriter">binary_ctx</param>
+/// <param name="key">键，\0 结尾</param>
+/// <param name="val">值</param>
+/// <param name="lens">值长度</param>
 void http_pack_head2(binary_ctx *bwriter, const char *key, const char *val, size_t lens);
 /// <summary>
 /// http结束包, 只有头部时使用

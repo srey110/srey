@@ -517,6 +517,246 @@ static void test_buffer_external_not_writable(CuTest *tc) {
 }
 
 /* =======================================================================
+ * 零长外部节点：buffer_external(lens=0) 不挂节点，data 即刻由 ext_free 归还。
+ * 修复前该节点会挂上链，随后两条路径都会炸：
+ *   写：_buffer_expand 给它记一条零长 iov，而 _buffer_commit_expand 的首节点跳过规则
+ *       （空闲空间为 0 即跳）把同一节点跳过，iov 与节点逐位校验错位 → commit 返 0
+ *       → buffer_append 的 ASSERTAB abort
+ *   读：夹在两个数据节点之间时，_buffer_search_start_cached 的游走以 off!=0 为继续
+ *       条件，在零长节点处提前终止，其后数据全部不可达 —— buffer_at / buffer_search
+ *       abort，buffer_copyout(start>0) 静默返 0
+ * ======================================================================= */
+static void test_buffer_external_zero(CuTest *tc) {
+    buffer_ctx buf;
+    char readback[64];
+    char *ext;
+
+    // 1. lens=0 不挂节点，所有权已转移故 data 即刻归还
+    ATOMIC_SET(&_ext_free_called, 0);
+    buffer_init(&buf);
+    MALLOC(ext, 8);
+    buffer_external(&buf, ext, 0, _ext_free);
+    CuAssertIntEquals(tc, 1, ATOMIC_GET(&_ext_free_called));
+    CuAssertTrue(tc, 0 == buffer_size(&buf));
+
+    // 2. 紧接着 append：修复前在此 abort "commit lens not equ buffer lens."
+    CuAssertIntEquals(tc, ERR_OK, buffer_append(&buf, "x", 1));
+    CuAssertTrue(tc, 1 == buffer_size(&buf));
+    CuAssertTrue(tc, 1 == buffer_copyout(&buf, 0, readback, 1));
+    CuAssertTrue(tc, 'x' == readback[0]);
+    buffer_free(&buf);
+    // 节点没挂上链，buffer_free 不应再次调用 ext_free
+    CuAssertIntEquals(tc, 1, ATOMIC_GET(&_ext_free_called));
+
+    // 3. 夹在两个数据节点之间：其后数据必须仍可 at / search / copyout
+    buffer_init(&buf);
+    CuAssertIntEquals(tc, ERR_OK, buffer_append(&buf, "0123456789", 10));
+    ATOMIC_SET(&_ext_free_called, 0);
+    MALLOC(ext, 8);
+    buffer_external(&buf, ext, 0, _ext_free);
+    CuAssertIntEquals(tc, 1, ATOMIC_GET(&_ext_free_called));
+    char big[2000];
+    memset(big, 'B', sizeof(big));
+    big[sizeof(big) - 1] = 'Z';
+    CuAssertIntEquals(tc, ERR_OK, buffer_append(&buf, big, sizeof(big)));
+    CuAssertTrue(tc, 2010 == buffer_size(&buf));
+    // 修复前 abort "index error."
+    CuAssertTrue(tc, 'Z' == buffer_at(&buf, 2009));
+    // 修复前 abort "can't search start node."
+    CuAssertIntEquals(tc, 2009, buffer_search(&buf, 0, 1500, 0, "Z", 1));
+    // 修复前静默返 0 丢数据
+    CuAssertTrue(tc, 10 == buffer_copyout(&buf, 2000, readback, 10));
+    CuAssertTrue(tc, 'Z' == readback[9]);
+    buffer_free(&buf);
+}
+
+/* =======================================================================
+ * buffer_get / buffer_commit_get 读暂存契约。
+ * 补全前的问题是：buffer_get 不置 node->used，暂存期间一次 append 触发的对齐 memmove 或
+ * _buffer_expand_single 节点迁移，就能让已暂存的 iov 指向被改写/已释放的内存
+ * （freeze_read 只挡读接口，append/appendv 只断言 freeze_write）。
+ * 现在：get 锁定节点、读写两族暂存态互斥（均以断言拦截）、commit_get 先解锁再 drain。
+ * 本用例守的是"锁定与解锁配对"这半边——used 置了不清，drain 就会走"节点被锁定"分支，
+ * 跨节点全量提交在 ASSERTAB(0 == remain) 处 abort。另半边（暂存期间的写入危害）
+ * 现在被 append 的断言挡在门外，无法在用例里构造，故本用例不覆盖
+ * ======================================================================= */
+static void test_buffer_get_commit(CuTest *tc) {
+    buffer_ctx buf;
+    IOV_TYPE iov[MAX_EXPAND_NIOV];
+    char big[2000];
+    char readback[16];
+    size_t total = 0;
+    uint32_t n, i;
+
+    memset(big, 'B', sizeof(big));
+    buffer_init(&buf);
+
+    // 空缓存返回 0 且不进入暂存态，故后续写接口不该被断言拦截
+    CuAssertTrue(tc, 0 == buffer_get(&buf, 16, iov, MAX_EXPAND_NIOV));
+    CuAssertIntEquals(tc, ERR_OK, buffer_append(&buf, "0123456789", 10));
+
+    // 第二次 append 放不进首节点余量，必然跨出第二个节点
+    CuAssertIntEquals(tc, ERR_OK, buffer_append(&buf, big, sizeof(big)));
+    CuAssertTrue(tc, 2010 == buffer_size(&buf));
+
+    // 暂存全部数据：iov 按节点切分，总长应等于 buffer_size
+    n = buffer_get(&buf, buffer_size(&buf), iov, MAX_EXPAND_NIOV);
+    CuAssertTrue(tc, n >= 2);
+    for (i = 0; i < n; i++) {
+        total += (size_t)iov[i].IOV_LEN_FIELD;
+    }
+    CuAssertTrue(tc, 2010 == total);
+    CuAssertTrue(tc, 0 == memcmp(iov[0].IOV_PTR_FIELD, "0123456789", 10));
+
+    // 解除暂存并全量删除：补全前在 drain 的 ASSERTAB 处 abort
+    buffer_commit_get(&buf, 2010);
+    CuAssertTrue(tc, 0 == buffer_size(&buf));
+
+    // 节点是真被释放而非留成零长节点，重新写入可正常读回
+    CuAssertIntEquals(tc, ERR_OK, buffer_append(&buf, "after", 5));
+    CuAssertTrue(tc, 5 == buffer_size(&buf));
+    CuAssertTrue(tc, 5 == buffer_copyout(&buf, 0, readback, 5));
+    CuAssertTrue(tc, 0 == memcmp(readback, "after", 5));
+    buffer_free(&buf);
+
+    // 部分提交：只删一部分，剩余数据仍可读且内容正确
+    buffer_init(&buf);
+    CuAssertIntEquals(tc, ERR_OK, buffer_append(&buf, "0123456789", 10));
+    CuAssertTrue(tc, 1 == buffer_get(&buf, 10, iov, MAX_EXPAND_NIOV));
+    buffer_commit_get(&buf, 4);
+    CuAssertTrue(tc, 6 == buffer_size(&buf));
+    CuAssertTrue(tc, 6 == buffer_copyout(&buf, 0, readback, 6));
+    CuAssertTrue(tc, 0 == memcmp(readback, "456789", 6));
+
+    // 暂存后只解锁不删除，数据应原样留下
+    CuAssertTrue(tc, 1 == buffer_get(&buf, 6, iov, MAX_EXPAND_NIOV));
+    buffer_commit_get(&buf, 0);
+    CuAssertTrue(tc, 6 == buffer_size(&buf));
+    CuAssertIntEquals(tc, ERR_OK, buffer_append(&buf, "Z", 1));
+    CuAssertTrue(tc, 7 == buffer_size(&buf));
+    buffer_free(&buf);
+}
+
+/* =======================================================================
+ * buffer_space：报出"不新建节点就能写入"的字节数。
+ * 契约是它与 buffer_expand 的登记规则严格对齐 —— 照它报的量写满，
+ * 可写空间应恰好归零，且中途不该冒出新节点
+ * ======================================================================= */
+static void test_buffer_space(CuTest *tc) {
+    buffer_ctx buf;
+    char *fill;
+    size_t sp;
+
+    buffer_init(&buf);
+    // 空链没有任何可写空间
+    CuAssertTrue(tc, 0 == buffer_space(&buf, MAX_EXPAND_NIOV));
+
+    // 首节点按 1KB 对齐分配，写 3 字节后必然还剩余量
+    CuAssertIntEquals(tc, ERR_OK, buffer_append(&buf, "abc", 3));
+    sp = buffer_space(&buf, MAX_EXPAND_NIOV);
+    CuAssertTrue(tc, sp > 0);
+
+    // 照报出的量正好写满：空间归零说明既没少报（否则还有剩）也没多报（否则会新建节点）
+    MALLOC(fill, sp);
+    memset(fill, 'F', sp);
+    CuAssertIntEquals(tc, ERR_OK, buffer_append(&buf, fill, sp));
+    FREE(fill);
+    CuAssertTrue(tc, (3 + sp) == buffer_size(&buf));
+    CuAssertTrue(tc, 0 == buffer_space(&buf, MAX_EXPAND_NIOV));
+    buffer_free(&buf);
+}
+
+/* =======================================================================
+ * buffer_from_sock 的读循环不再为确认性 readv 白分配节点。
+ * epoll 是 EPOLLET，必须读到无数据为止，所以短读后那一轮 readv 省不掉；
+ * 但它大概率直接 EAGAIN，没必要为它再要一个 MAX_RECV_SIZE 的新节点 ——
+ * 改为只用 buffer_space 报出的现成余量。读满的那轮说明还有数据，仍按
+ * MAX_RECV_SIZE 取，否则大流量下每轮只读几百字节，readv 次数翻倍
+ * ======================================================================= */
+#define FAKE_RV_MAX 3   // 场景二是最长的一路: 两轮读满 + 一轮确认
+static size_t _fake_rv_want[FAKE_RV_MAX];// 第 i 次调用要吐出的字节数
+static size_t _fake_rv_offer[FAKE_RV_MAX];// 第 i 次调用被提供的 iov 总空间
+static int32_t _fake_rv_calls;
+// 假 readv：无需真 socket 即可驱动 buffer_from_sock 的 ET 读循环
+static int32_t _fake_readv(SOCKET fd, IOV_TYPE *iov, uint32_t niov, void *arg, size_t *readed) {
+    (void)fd;
+    (void)arg;
+    size_t offer = 0;
+    size_t remain = 0;
+    size_t n;
+    uint32_t i;
+    for (i = 0; i < niov; i++) {
+        offer += (size_t)iov[i].IOV_LEN_FIELD;
+    }
+    if (_fake_rv_calls < FAKE_RV_MAX) {
+        _fake_rv_offer[_fake_rv_calls] = offer;
+        remain = _fake_rv_want[_fake_rv_calls];
+    }
+    _fake_rv_calls++;
+    if (remain > offer) {
+        remain = offer;
+    }
+    *readed = 0;
+    for (i = 0; i < niov && remain > 0; i++) {
+        n = (size_t)iov[i].IOV_LEN_FIELD;
+        if (n > remain) {
+            n = remain;
+        }
+        memset(iov[i].IOV_PTR_FIELD, 'R', n);
+        remain -= n;
+        *readed += n;
+    }
+    return ERR_OK;
+}
+static void _fake_rv_reset(void) {
+    memset(_fake_rv_want, 0, sizeof(_fake_rv_want));
+    memset(_fake_rv_offer, 0, sizeof(_fake_rv_offer));
+    _fake_rv_calls = 0;
+}
+static void test_buffer_from_sock_space(CuTest *tc) {
+#ifdef READV_EINVAL
+    // AIX 的 readv 无数据时返回 EINVAL，buffer_from_sock 在自适应 nbuf 那段之前就 break，
+    // 被测逻辑在该平台是死代码，下面断言的 readv 轮次与总字节数也都对不上，整体跳过
+    (void)tc;
+#else
+    buffer_ctx buf;
+    size_t nread;
+
+    // 场景一：一次短读后 EAGAIN
+    buffer_init(&buf);
+    _fake_rv_reset();
+    _fake_rv_want[0] = 2000;
+    CuAssertIntEquals(tc, ERR_OK, buffer_from_sock(&buf, 0, &nread, _fake_readv, NULL));
+    CuAssertTrue(tc, 2000 == nread);
+    CuAssertTrue(tc, 2000 == buffer_size(&buf));
+    // 确认轮确实发生了 —— 不能靠"不读"来省开销，那会违反 ET 契约
+    CuAssertIntEquals(tc, 2, _fake_rv_calls);
+    // 首轮无历史可依，仍按 MAX_RECV_SIZE 要空间
+    CuAssertTrue(tc, _fake_rv_offer[0] >= MAX_RECV_SIZE);
+    // 确认轮只拿首节点写剩的余量，不为它新建节点 —— 这一条才是被测行为本身
+    CuAssertTrue(tc, _fake_rv_offer[1] < MAX_RECV_SIZE);
+    // 首节点是为 MAX_RECV_SIZE 建的，写掉 2000 后余量必然小于 MAX_RECV_SIZE；
+    // 若确认轮又建了一个空节点，可写空间会被顶到 MAX_RECV_SIZE 以上
+    CuAssertTrue(tc, buffer_space(&buf, MAX_EXPAND_NIOV) < MAX_RECV_SIZE);
+    buffer_free(&buf);
+
+    // 场景二：连续两轮读满，后续轮次仍须按 MAX_RECV_SIZE 要空间
+    buffer_init(&buf);
+    _fake_rv_reset();
+    _fake_rv_want[0] = MAX_RECV_SIZE;
+    _fake_rv_want[1] = MAX_RECV_SIZE;
+    CuAssertIntEquals(tc, ERR_OK, buffer_from_sock(&buf, 0, &nread, _fake_readv, NULL));
+    CuAssertTrue(tc, (2 * MAX_RECV_SIZE) == nread);
+    CuAssertTrue(tc, (2 * MAX_RECV_SIZE) == buffer_size(&buf));
+    CuAssertIntEquals(tc, 3, _fake_rv_calls);
+    CuAssertTrue(tc, _fake_rv_offer[0] >= MAX_RECV_SIZE);
+    CuAssertTrue(tc, _fake_rv_offer[1] >= MAX_RECV_SIZE);
+    CuAssertTrue(tc, _fake_rv_offer[2] >= MAX_RECV_SIZE);
+    buffer_free(&buf);
+#endif
+}
+
+/* =======================================================================
  * buffer_free 复位语义：释放后 ctx 回到 buffer_init 后的空状态。
  * 修复前只释放节点链，head/tail/tail_with_data/hint_node/total_lens 全留陈旧值：
  * 二次调用是 double free，buffer_size 报释放前的字节数，copyout 从已释放节点 memcpy
@@ -1861,6 +2101,107 @@ static void test_tw_long_timeout(CuTest *tc) {
 }
 
 /* =======================================================================
+ * 时间轮自适应睡眠：睡到下一个真正到期的 jiffy，而非固定 1ms tick。
+ * 上面的 test_tw / test_tw_long_timeout 只断言"最终触发了"，一个迟到 250ms 的
+ * 回归照样全绿，所以这里三条分别守：
+ *   1) 各档超时按时触发（tv1 近端/远端、cascade 边界两侧、tv2 降级回捞）
+ *   2) 轮线程长睡期间新加的定时器能被 tw_add 的 CAS+signal 及时唤起（丢信号窗口）
+ *   3) 空闲时不再 1kHz 空转 —— 没有这条，将来退回固定 tick 不会有人发现
+ * ======================================================================= */
+// 8u 而非 8：下面多处与 size_t / uint64_t 比较，无符号常量免掉 -Wsign-compare
+#define TW_LAT_N 8u
+// 255/256 是 tv1 与 tv2 的分界（idx < TVR_SIZE 才留 tv1），两侧各取一档
+static const uint32_t _tw_lat_ms[TW_LAT_N] = { 1, 5, 50, 200, 255, 256, 300, 600 };
+static atomic64_t _tw_lat_fire[TW_LAT_N];// 各档实际触发时刻(绝对毫秒)，0 表示未触发
+static timer_ctx _tw_lat_timer;
+// 用 ud->sess 携带档位序号，回调里记下触发时刻
+static void _tw_lat_cb(ud_cxt *ud) {
+    if (ud->sess < TW_LAT_N) {
+        ATOMIC64_SET(&_tw_lat_fire[ud->sess], (atomic64_t)timer_cur_ms(&_tw_lat_timer));
+    }
+}
+static void test_tw_latency(CuTest *tc) {
+    tw_ctx tw;
+    ud_cxt ud;
+    uint64_t start;
+    int64_t fire, expect, late;
+    int32_t waited;
+    size_t i;
+
+    // timer_cur_ms 取的是单调绝对毫秒，与时间轮内部那份同刻度
+    timer_init(&_tw_lat_timer);
+    for (i = 0; i < TW_LAT_N; i++) {
+        ATOMIC64_SET(&_tw_lat_fire[i], 0);
+    }
+    tw_init(&tw, 0, NULL);
+    start = timer_cur_ms(&_tw_lat_timer);
+    for (i = 0; i < TW_LAT_N; i++) {
+        ZERO(&ud, sizeof(ud));
+        ud.sess = (uint64_t)i;
+        tw_add(&tw, _tw_lat_ms[i], _tw_lat_cb, NULL, &ud);
+    }
+    // 最长一档 600ms，等到它触发即说明全部触发
+    waited = 0;
+    while (waited < 2000 && 0 == ATOMIC64_GET(&_tw_lat_fire[TW_LAT_N - 1])) {
+        MSLEEP(20);
+        waited += 20;
+    }
+    tw_free(&tw);
+
+    for (i = 0; i < TW_LAT_N; i++) {
+        fire = (int64_t)ATOMIC64_GET(&_tw_lat_fire[i]);
+        CuAssertTrue(tc, 0 != fire);
+        expect = (int64_t)start + (int64_t)_tw_lat_ms[i];
+        late = fire - expect;
+        // 不可能早于到期(expires 由 tw_add 按 start 之后的时刻算出)
+        CuAssertTrue(tc, late >= 0);
+        // 迟到容忍 100ms 扛 CI 调度抖动；睡过头的回归是 250ms 量级，拦得住
+        CuAssertTrue(tc, late < 100);
+    }
+}
+static void test_tw_wakeup_after_idle(CuTest *tc) {
+    tw_ctx tw;
+    ud_cxt ud;
+    int32_t waited;
+
+    tw_init(&tw, 0, NULL);
+    ZERO(&ud, sizeof(ud));
+    // 先挂一个很远的定时器：tv1 长期为空，轮线程只在 cascade 边界醒，即处于长睡
+    tw_add(&tw, 5000, _tw_cb, NULL, &ud);
+    MSLEEP(300);
+    // 长睡中投一个近档：只能靠 tw_add 的 CAS+signal 唤起。若丢信号窗口没封，
+    // signal 会打空，这一档最坏要拖到下一个 cascade 边界(≤256ms)才被拾起
+    ATOMIC_SET(&_tw_fired, 0);
+    tw_add(&tw, 2, _tw_cb, NULL, &ud);
+    waited = 0;
+    while (waited < 500 && ATOMIC_GET(&_tw_fired) < 1) {
+        MSLEEP(5);
+        waited += 5;
+    }
+    tw_free(&tw);
+    CuAssertIntEquals(tc, 1, ATOMIC_GET(&_tw_fired));
+    CuAssertTrue(tc, waited < 100);
+}
+static void test_tw_idle_wakeup(CuTest *tc) {
+    tw_ctx tw;
+    ud_cxt ud;
+    uint64_t n0, n1;
+
+    tw_init(&tw, 0, NULL);
+    ZERO(&ud, sizeof(ud));
+    // 挂一个远定时器让轮子非空(贴近真实：框架里恒有周期任务)，但 tv1 长期为空
+    tw_add(&tw, 10000, _tw_cb, NULL, &ud);
+    MSLEEP(100);// 跳过启动那几轮
+    n0 = tw.nloop;
+    MSLEEP(500);
+    n1 = tw.nloop;
+    tw_free(&tw);
+    // 固定 1ms tick 时这 500ms 要转 ~500 次；自适应睡眠只在 cascade 边界醒，约 2~3 次。
+    // 放宽到 50 容忍偶发的条件变量伪唤醒，仍足以拦住退回固定 tick 的回归
+    CuAssertTrue(tc, (n1 - n0) < 50);
+}
+
+/* =======================================================================
  * pool —— 对象池:取/还/复用、满处理、收缩、释放(thsafe=0 queue / thsafe=1 fsqu)
  * ======================================================================= */
 // 带标记的测试对象:_elfree 收到真实对象时 magic 必为 POOL_T_MAGIC;
@@ -2124,6 +2465,53 @@ static void test_strtod_c(CuTest *tc) {
     }
 }
 
+// str2u64：按长度解析十进制无符号整数。收敛了原先散在 scram / http / mysql / coro_utils /
+// debug_console / harbor 六处的 strtoXX 用法，故这里把它们各自依赖的边界一次测全
+static void test_str2u64(CuTest *tc) {
+    uint64_t v;
+
+    // 1) 基本正确性 + 上界恰好命中
+    v = 0;
+    CuAssertIntEquals(tc, ERR_OK, str2u64("0", 1, UINT64_MAX, &v));
+    CuAssertTrue(tc, 0 == v);
+    CuAssertIntEquals(tc, ERR_OK, str2u64("65535", 5, UINT16_MAX, &v));
+    CuAssertTrue(tc, UINT16_MAX == v);
+    CuAssertIntEquals(tc, ERR_FAILED, str2u64("65536", 5, UINT16_MAX, &v));
+
+    // 2) 只吃 lens 个字节，尾部残留不参与——harbor 的 url_decode 场景
+    // ("%310" 解码成 "10" 只缩短 lens，缓冲里仍读得到 "1010")
+    CuAssertIntEquals(tc, ERR_OK, str2u64("1010", 2, UINT64_MAX, &v));
+    CuAssertTrue(tc, 10 == v);
+
+    // 3) strtoXX 会静默收下、这里必须拒的几种：前导空白 / 正负号 / 尾随垃圾 / 内嵌非数字
+    CuAssertIntEquals(tc, ERR_FAILED, str2u64(" 5", 2, UINT64_MAX, &v));
+    CuAssertIntEquals(tc, ERR_FAILED, str2u64("+5", 2, UINT64_MAX, &v));
+    CuAssertIntEquals(tc, ERR_FAILED, str2u64("-1", 2, UINT64_MAX, &v));
+    CuAssertIntEquals(tc, ERR_FAILED, str2u64("1x", 2, UINT64_MAX, &v));
+    CuAssertIntEquals(tc, ERR_FAILED, str2u64("1 2", 3, UINT64_MAX, &v));
+    CuAssertIntEquals(tc, ERR_FAILED, str2u64("abc", 3, UINT64_MAX, &v));
+
+    // 4) 空输入
+    CuAssertIntEquals(tc, ERR_FAILED, str2u64("", 0, UINT64_MAX, &v));
+    CuAssertIntEquals(tc, ERR_FAILED, str2u64(NULL, 0, UINT64_MAX, &v));
+    CuAssertIntEquals(tc, ERR_FAILED, str2u64(NULL, 3, UINT64_MAX, &v));
+
+    // 5) uint64 边界：恰好 UINT64_MAX 收下，末位再 +1 与多一位都要拒
+    CuAssertIntEquals(tc, ERR_OK, str2u64("18446744073709551615", 20, UINT64_MAX, &v));
+    CuAssertTrue(tc, UINT64_MAX == v);
+    CuAssertIntEquals(tc, ERR_FAILED, str2u64("18446744073709551616", 20, UINT64_MAX, &v));
+    CuAssertIntEquals(tc, ERR_FAILED, str2u64("99999999999999999999", 20, UINT64_MAX, &v));
+
+    // 6) 前导零不影响判定，也不该被当成溢出
+    CuAssertIntEquals(tc, ERR_OK, str2u64("000000000000000000000042", 24, UINT64_MAX, &v));
+    CuAssertTrue(tc, 42 == v);
+
+    // 7) 失败时不得写 out —— debug_console 的 loglv 依赖这一点(失败即整条拒绝)
+    v = 0x5a5a5a5a;
+    CuAssertIntEquals(tc, ERR_FAILED, str2u64("9", 1, 4, &v));
+    CuAssertTrue(tc, 0x5a5a5a5a == v);
+}
+
 void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_pack_unpack);
     SUITE_ADD_TEST(suite, test_binary);
@@ -2132,6 +2520,10 @@ void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_buffer_extra);
     SUITE_ADD_TEST(suite, test_buffer_external_appendv);
     SUITE_ADD_TEST(suite, test_buffer_external_not_writable);
+    SUITE_ADD_TEST(suite, test_buffer_external_zero);
+    SUITE_ADD_TEST(suite, test_buffer_get_commit);
+    SUITE_ADD_TEST(suite, test_buffer_space);
+    SUITE_ADD_TEST(suite, test_buffer_from_sock_space);
     SUITE_ADD_TEST(suite, test_buffer_free_resets);
     SUITE_ADD_TEST(suite, test_buffer_hint_after_migrate);
     SUITE_ADD_TEST(suite, test_varint);
@@ -2157,6 +2549,9 @@ void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_strptime_week_neg_yday);
     SUITE_ADD_TEST(suite, test_tw);
     SUITE_ADD_TEST(suite, test_tw_long_timeout);
+    SUITE_ADD_TEST(suite, test_tw_latency);
+    SUITE_ADD_TEST(suite, test_tw_wakeup_after_idle);
+    SUITE_ADD_TEST(suite, test_tw_idle_wakeup);
     SUITE_ADD_TEST(suite, test_mem_helpers);
     SUITE_ADD_TEST(suite, test_str_helpers);
     SUITE_ADD_TEST(suite, test_format_va);
@@ -2172,4 +2567,5 @@ void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_pool_default);
     SUITE_ADD_TEST(suite, test_tda_overflow);
     SUITE_ADD_TEST(suite, test_strtod_c);
+    SUITE_ADD_TEST(suite, test_str2u64);
 }

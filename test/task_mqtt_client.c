@@ -3,6 +3,7 @@
 typedef struct mqtt_client_args {
     uint16_t port;
     mqtt_protversion version;
+    uint32_t delay;   // 连接前先 coro_sleep 的毫秒数, 0 表示不等
     int32_t prt;
     int32_t *ok;
     SOCKET fd;
@@ -18,7 +19,7 @@ static void _net_connect(task_ctx *task, sk_id *sk, subtype_t pktype, int32_t er
     (void)pktype;
     mqtt_client_args *arg = coro_get_arg(task);
     if (ERR_OK != erro) {
-        LOG_ERROR("mqtt connect %s error.", arg->host);
+        LOG_ERROR("mqtt connect %s:%u error, clientid %s.", arg->host, arg->port, arg->clientid);
         return;
     }
     binary_ctx connprop;
@@ -218,6 +219,9 @@ static void _startup(task_ctx *task) {
 
     mqtt_client_args *arg = coro_get_arg(task);
     int32_t rtn;
+    if (0 != arg->delay) {
+        coro_sleep(task, arg->delay);// 等进程内 broker 的 task_listen 落地
+    }
     // 域名需先 DNS 解析，IP 直连
     if (ERR_OK != is_ipaddr(arg->host)) {
         size_t n;
@@ -236,7 +240,8 @@ static void _startup(task_ctx *task) {
     }
 }
 void task_mqtt_client_start(loader_ctx *loader, const char *name,
-     mqtt_protversion version, const char *host, uint16_t port, int32_t pt, int32_t *ok) {
+     mqtt_protversion version, const char *host, uint16_t port, uint32_t delay,
+     int32_t pt, int32_t *ok) {
     if (NULL == ok) {
         return;
     }
@@ -244,6 +249,7 @@ void task_mqtt_client_start(loader_ctx *loader, const char *name,
     MALLOC(arg, sizeof(mqtt_client_args));
     arg->port = port;
     arg->version = version;
+    arg->delay = delay;
     arg->prt = pt;
     arg->ok = ok;
     SNPRINTF(arg->host, sizeof(arg->host), "%s", host);

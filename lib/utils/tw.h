@@ -28,6 +28,9 @@ typedef struct tw_ctx {
     atomic_t exit;          //退出标志，非零时轮线程退出
     atomic_t reqadd_pending;  //入队脏标志：0 已感知，1 有待处理节点；仅在 0→1 时才唤醒轮线程
     uint64_t jiffies;       //当前时间轮逻辑时钟（毫秒）
+    uint64_t nloop;         //轮线程循环次数（仅诊断/测试用：守住"空闲时不再 1kHz 空转"这条不变式）
+                            //轮线程是唯一写者、读方只在静止后取值，故用普通整数：
+                            //ATOMIC64_ADD_RELAXED 只在 GCC/Clang 分支真正 relaxed，MSVC/Sun/AIX 都是全屏障
     pthread_t thtw;         //时间轮工作线程
     timer_ctx timer;        //高精度计时器
     mutex_ctx mu;

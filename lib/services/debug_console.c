@@ -165,17 +165,14 @@ static void _debug_forward(router_req *ctx, binary_ctx *cmd) {
         binary_free(cmd);
         return;
     }
-    char hbuf[64];
-    size_t hn = (n < sizeof(hbuf) - 1) ? n : (sizeof(hbuf) - 1);
-    memcpy(hbuf, ts, hn);
-    hbuf[hn] = '\0';
-    char *endp = NULL;
-    name_t handle = (name_t)strtoull(hbuf, &endp, 10);
-    if (endp == hbuf || '\0' != *endp) {
+    // 原来先截到 63 字节再 strtoull，且不看 errno：超长句柄会被当成 UINT64_MAX 收下
+    uint64_t hv;
+    if (ERR_OK != str2u64(ts, n, UINT64_MAX, &hv)) {
         router_req_text(ctx, 404, "invalid task handle\n", strlen("invalid task handle\n"));
         binary_free(cmd);
         return;
     }
+    name_t handle = (name_t)hv;
     if (0 == handle) {//广播
         _debug_broadcast(ctx, cmd->data, cmd->offset);
         binary_free(cmd);
@@ -269,24 +266,15 @@ static void _debug_coros(router_req *ctx) {
 static void _debug_loglv(router_req *ctx) {
     size_t n = 0;
     const char *lv_s = router_req_param(ctx, "lv", &n);
-    char lbuf[8];
-    int32_t lv = -1;
-    if (NULL != lv_s && n > 0 && n < sizeof(lbuf)) {
-        memcpy(lbuf, lv_s, n);
-        lbuf[n] = '\0';
-        char *endp = NULL;
-        lv = (int32_t)strtol(lbuf, &endp, 10);
-        if (endp == lbuf || '\0' != *endp) {
-            lv = -1;
-        }
-    }
-    if (lv < 0 || lv > LOGLV_DEBUG) {
+    // max 传 LOGLV_DEBUG，上界检查一并折进去；负号 / 空白 / 尾随垃圾都由 str2u64 挡掉
+    uint64_t lvv;
+    if (ERR_OK != str2u64(lv_s, n, LOGLV_DEBUG, &lvv)) {
         router_req_text(ctx, 400, "usage: /{handle}/loglv/<0-4>\n", strlen("usage: /{handle}/loglv/<0-4>\n"));
         return;
     }
     binary_ctx cmd;
     _debug_pack_cmd(&cmd, "loglv");
-    seri_append_int(&cmd, lv);
+    seri_append_int(&cmd, (int32_t)lvv);
     _debug_broadcast(ctx, cmd.data, cmd.offset);
     binary_free(&cmd);
 }

@@ -59,6 +59,15 @@ static void _h_pmax(router_req *ctx) {
 static void _h_static(router_req *ctx) {
     router_req_text(ctx, 200, "static-ok", 9);
 }
+// SNPRINTF 返回的是"本该写入"的长度而非实际写入的。路径段与 query 值的长度由客户端决定，
+// 内容一旦超出栈缓冲，直接拿返回值当 body 长度就会读过缓冲末尾并把相邻栈字节发上线缆，
+// 故凡是把用户输入格式化进定长缓冲的 handler 都用本函数钳一下
+static size_t _resp_len(int32_t k, size_t cap) {
+    if (k < 0) {
+        return 0;
+    }
+    return ((size_t)k < cap) ? (size_t)k : (cap - 1);
+}
 // GET /query?a=X&b=Y → 回 "a=X b=Y"; 覆盖 URL query 解析 (url_parse 已 url_decode)
 static void _h_query(router_req *ctx) {
     size_t alen, blen;
@@ -68,7 +77,7 @@ static void _h_query(router_req *ctx) {
     int32_t k = SNPRINTF(buf, sizeof(buf), "a=%.*s b=%.*s",
                          (int32_t)(NULL == a ? 0 : alen), NULL == a ? "" : a,
                          (int32_t)(NULL == b ? 0 : blen), NULL == b ? "" : b);
-    router_req_text(ctx, 200, buf, (size_t)k);
+    router_req_text(ctx, 200, buf, _resp_len(k, sizeof(buf)));
 }
 // GET /qexist?a=... → 区分 a 键不存在(NULL→"missing")/值空(非NULL+len0→"empty")/有值("value");
 // 验证 router_req_query 对 ?a= 返非 NULL 零长指针, 与 Lua query 子表 "" 对齐
@@ -107,7 +116,7 @@ static void _h_stats(router_req *ctx) {
     int32_t k = SNPRINTF(buf, sizeof(buf), "%d", cnt);
     router_req_text(ctx, 200, buf, (size_t)k);
 }
-// GET /a/{x?}/b → OPT 中置前瞻: 有值返 "x=<val>", 无值(前瞻跳过)返 "x=none"
+// GET /a/{x?}/b → OPT 中置: 有值返 "x=<val>", 无值(OPT 未取到段)返 "x=none"
 static void _h_opt_mid(router_req *ctx) {
     size_t n;
     const char *x = router_req_param(ctx, "x", &n);
@@ -116,8 +125,44 @@ static void _h_opt_mid(router_req *ctx) {
     } else {
         char buf[64];
         int32_t k = SNPRINTF(buf, sizeof(buf), "x=%.*s", (int32_t)n, x);
-        router_req_text(ctx, 200, buf, (size_t)k);
+        router_req_text(ctx, 200, buf, _resp_len(k, sizeof(buf)));
     }
+}
+// GET /optlead/{x?}/{y} → "x=<x|none>,y=<y>"; OPT 排在必填段之前,
+// 只前瞻一步的贪婪匹配会让 x 吃掉唯一请求段, 使 y 无段可用而误判 404
+static void _h_opt_lead(router_req *ctx) {
+    size_t xn = 0;
+    size_t yn = 0;
+    const char *x = router_req_param(ctx, "x", &xn);
+    const char *y = router_req_param(ctx, "y", &yn);
+    char buf[128];
+    int32_t k = SNPRINTF(buf, sizeof(buf), "x=%.*s,y=%.*s",
+                         NULL == x ? 4 : (int32_t)xn, NULL == x ? "none" : x,
+                         NULL == y ? 4 : (int32_t)yn, NULL == y ? "none" : y);
+    router_req_text(ctx, 200, buf, _resp_len(k, sizeof(buf)));
+}
+// GET /files/{ver?}/list → "ver=<ver|none>"; 请求段与后继字面量同名时(/files/list/list)
+// 前瞻会把 OPT 跳过, 末段剩余无处消耗而误判 404
+static void _h_opt_ambig(router_req *ctx) {
+    size_t n = 0;
+    const char *v = router_req_param(ctx, "ver", &n);
+    char buf[64];
+    int32_t k = SNPRINTF(buf, sizeof(buf), "ver=%.*s",
+                         NULL == v ? 4 : (int32_t)n, NULL == v ? "none" : v);
+    router_req_text(ctx, 200, buf, _resp_len(k, sizeof(buf)));
+}
+// 自定义头值长度, 取 >255 以越过旧实现的 v[256] 栈缓冲
+#define BIGHDR_LEN 300
+// GET /bighdr → 回一条 BIGHDR_LEN 字节的 X-Big 头; 覆盖头值改走 http_pack_head2 后不再截断
+static void _h_bighdr(router_req *ctx) {
+    char val[BIGHDR_LEN];
+    memset(val, 'a', sizeof(val));
+    http_header_ctx extra[1];
+    extra[0].key.data = (void *)"X-Big";
+    extra[0].key.lens = strlen("X-Big");
+    extra[0].value.data = val;
+    extra[0].value.lens = sizeof(val);
+    router_req_respond(ctx, 200, extra, 1, "ok", 2);
 }
 // GET /g1/g2/deep → "deep=11"; 嵌套 group 终点 handler:
 // g1mw 中间件先 ctx->user += 1, g2mw 中间件再 += 10, 累加值 11 由 handler 写出
@@ -218,6 +263,13 @@ static void _server_startup(task_ctx *task) {
     // {a?b} 参数名含内部 ?, 按 B2 文法当字面量段(对齐 Lua); 故 /litq/xyz 不命中参数 → 404
     router_get(r, NULL, "/litq/{a?b}",   _h_root,        NULL, 0);
     router_get(r, NULL, "/a/{x?}/b",    _h_opt_mid,     NULL, 0);
+    // OPT 精确匹配: 可选段排在必填段之前 / 取值与后继字面量同名, 两种形态贪婪前瞻都会误判 404
+    router_get(r, NULL, "/optlead/{x?}/{y}",  _h_opt_lead,  NULL, 0);
+    router_get(r, NULL, "/files/{ver?}/list", _h_opt_ambig, NULL, 0);
+    // 自定义头值超 256 字节, 验证不被截断
+    router_get(r, NULL, "/bighdr",            _h_bighdr,    NULL, 0);
+    // 9 个可选段 > ROUTER_MAX_OPT(8): 注册应失败, 该路径只能落到 404
+    router_get(r, NULL, "/optovf/{a?}/{b?}/{c?}/{d?}/{e?}/{f?}/{g?}/{h?}/{i?}", _h_root, NULL, 0);
     router_post(r, NULL, "/admin/stats",  _h_admin_stats, NULL, 0);
     router_get(r, NULL, "/forget",       _h_forget,      NULL, 0);
     router_post(r, NULL, "/only-post",    _h_only_post,   NULL, 0);
@@ -277,6 +329,37 @@ typedef struct task_router_client_ctx {
 // hk/hv 非 NULL 时附加一条 header (用于发 X-Token);
 // expect_body == NULL 表示只校验状态码, 不比对 body (常用于 404/500)
 // 每次都建独立连接, 不复用 keep-alive, 减少跨断言干扰
+// 响应公共断言: 状态码精确匹配 + Content-Length 唯一。所有走 router 的响应都该满足这两条,
+// 故收在一处, 免得某个 helper 漏掉其中一条(_do_req_hdr 原先就没查 Content-Length)
+static int32_t _resp_check(struct http_pack_ctx *resp, const char *method, const char *url,
+                           int32_t expect_code) {
+    // status[1] 是状态码 (字符串形态, 例 "200"); 长度精确匹配避免 "20"/"200" 误判
+    buf_ctx *st = http_status(resp);
+    char codestr[8];
+    SNPRINTF(codestr, sizeof(codestr), "%d", expect_code);
+    if (!buf_compare(&st[1], codestr, strlen(codestr))) {
+        LOG_WARN("router test: %s %s expected code %d, got %.*s.",
+                 method, url, expect_code, (int32_t)st[1].lens, (char *)st[1].data);
+        return ERR_FAILED;
+    }
+    // 响应头里 Content-Length 必须唯一 (router 曾手写一次 + http_pack_content 再写一次)
+    uint32_t nheader = http_nheader(resp);
+    int32_t clcnt = 0;
+    uint32_t hi;
+    http_header_ctx *hd;
+    for (hi = 0; hi < nheader; hi++) {
+        hd = http_header_at(resp, hi);
+        if (buf_compare(&hd->key, "Content-Length", sizeof("Content-Length") - 1)) {
+            clcnt++;
+        }
+    }
+    if (1 != clcnt) {
+        LOG_WARN("router test: %s %s expected 1 Content-Length header, got %d.", method, url, clcnt);
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+
 static int32_t _do_req(task_ctx *task, uint16_t port,
                        const char *method, const char *url,
                        const char *hk, const char *hv,
@@ -304,28 +387,7 @@ static int32_t _do_req(task_ctx *task, uint16_t port,
         LOG_WARN("router test: coro_send failed for %s %s.", method, url);
         goto done;
     }
-    // status[1] 是状态码 (字符串形态, 例 "200"); 长度精确匹配避免 "20"/"200" 误判
-    buf_ctx *st = http_status(resp);
-    char codestr[8];
-    SNPRINTF(codestr, sizeof(codestr), "%d", expect_code);
-    if (!buf_compare(&st[1], codestr, strlen(codestr))) {
-        LOG_WARN("router test: %s %s expected code %d, got %.*s.",
-                 method, url, expect_code, (int32_t)st[1].lens, (char *)st[1].data);
-        goto done;
-    }
-    // 响应头里 Content-Length 必须唯一 (router 曾手写一次 + http_pack_content 再写一次)
-    uint32_t nheader = http_nheader(resp);
-    int32_t clcnt = 0;
-    uint32_t hi;
-    http_header_ctx *hd;
-    for (hi = 0; hi < nheader; hi++) {
-        hd = http_header_at(resp, hi);
-        if (buf_compare(&hd->key, "Content-Length", sizeof("Content-Length") - 1)) {
-            clcnt++;
-        }
-    }
-    if (1 != clcnt) {
-        LOG_WARN("router test: %s %s expected 1 Content-Length header, got %d.", method, url, clcnt);
+    if (ERR_OK != _resp_check(resp, method, url, expect_code)) {
         goto done;
     }
     if (NULL != expect_body) {
@@ -337,6 +399,43 @@ static int32_t _do_req(task_ctx *task, uint16_t port,
                      method, url, expect_body, (int32_t)dlen, (char *)body);
             goto done;
         }
+    }
+    rtn = ERR_OK;
+done:
+    ev_close(&task->loader->netev, fd, skid, 1);
+    return rtn;
+}
+
+// 头值断言 helper: 发 GET, 按长度精确比对响应中 hk 这条头的完整值
+// (不能用 strlen 比, 截断后的值仍是合法 C 串, 只有长度能区分)
+static int32_t _do_req_hdr(task_ctx *task, uint16_t port, const char *url,
+                           const char *hk, const char *want, size_t wantlen) {
+    SOCKET fd;
+    uint64_t skid;
+    if (ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", port, 0, NULL, &fd, &skid)) {
+        LOG_WARN("router test: connect to %d failed for %s.", port, url);
+        return ERR_FAILED;
+    }
+    binary_ctx bw;
+    binary_init(&bw, NULL, 0, 0);
+    http_pack_req(&bw, "GET", url);
+    http_pack_head(&bw, "Host", "127.0.0.1");
+    http_pack_end(&bw);
+    size_t rsize;
+    struct http_pack_ctx *resp = coro_send(task, fd, skid, bw.data, bw.offset, &rsize, 0);
+    int32_t rtn = ERR_FAILED;
+    if (NULL == resp) {
+        LOG_WARN("router test: coro_send failed for %s.", url);
+        goto done;
+    }
+    if (ERR_OK != _resp_check(resp, "GET", url, 200)) {
+        goto done;
+    }
+    size_t hlen = 0;
+    char *hv = http_header(resp, hk, &hlen);
+    if (NULL == hv || hlen != wantlen || 0 != memcmp(hv, want, hlen)) {
+        LOG_WARN("router test: %s header %s expected %zu bytes, got %zu.", url, hk, wantlen, hlen);
+        goto done;
     }
     rtn = ERR_OK;
 done:
@@ -475,7 +574,7 @@ static int32_t _run_all(task_ctx *task, uint16_t port) {
     // [21] OPT 中置+有值: /a/42/b → param x 消耗后 LIT /b 匹配
     if (ERR_OK != _do_req(task, port, "GET", "/a/42/b", NULL, NULL, 200, "x=42")) bad |= (1 << 21);
     if (task_isclosing(task)) return ERR_FAILED;
-    // [22] OPT 中置+无值(前瞻跳过): /a/b → skip_opt 令 OPT 不消耗, LIT /b 吞当前段
+    // [22] OPT 中置+无值: /a/b → 唯一可行解是 OPT 不取值, 由 LIT /b 吞掉当前段
     if (ERR_OK != _do_req(task, port, "GET", "/a/b",    NULL, NULL, 200, "x=none")) bad |= (1 << 22);
     if (task_isclosing(task)) return ERR_FAILED;
     // [23] OPT 中置多余段: /a/b/c → 路由段消耗完但请求段剩余 → 404
@@ -510,11 +609,72 @@ static int32_t _run_all(task_ctx *task, uint16_t port) {
     return 0 == bad ? ERR_OK : ERR_FAILED;
 }
 
+// OPT 精确匹配 + 头值不截断的补充断言; 与 _run_all 分开是因为后者的 bad 位已用到 28,
+// 这里 7 条塞进去要占到 bit 35, 越过 int32_t 的位宽, 故另起一个 bad 从 bit 0 重数
+static int32_t _run_opt_extra(task_ctx *task, uint16_t port) {
+    int32_t bad = 0;
+    // [0] OPT 排在必填段之前: 唯一请求段须留给 {y}, {x?} 缺省
+    if (ERR_OK != _do_req(task, port, "GET", "/optlead/b", NULL, NULL, 200, "x=none,y=b")) {
+        bad |= (1 << 0);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
+    // [1] 两段都在: {x?} 与 {y} 各取一段
+    if (ERR_OK != _do_req(task, port, "GET", "/optlead/a/b", NULL, NULL, 200, "x=a,y=b")) {
+        bad |= (1 << 1);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
+    // [2] OPT 取值与后继字面量同名: ver 取 "list", 末段 list 由字面量吃
+    if (ERR_OK != _do_req(task, port, "GET", "/files/list/list", NULL, NULL, 200, "ver=list")) {
+        bad |= (1 << 2);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
+    // [3] 同一路由 OPT 缺省的常规形态仍命中
+    if (ERR_OK != _do_req(task, port, "GET", "/files/list", NULL, NULL, 200, "ver=none")) {
+        bad |= (1 << 3);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
+    // [4] /a/{x?}/b 的歧义形态: 前瞻实现在此误判 404, 精确匹配应取 x=b
+    if (ERR_OK != _do_req(task, port, "GET", "/a/b/b", NULL, NULL, 200, "x=b")) {
+        bad |= (1 << 4);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
+    // [5] 可选段超 ROUTER_MAX_OPT 的路由注册失败, 请求只能落 404
+    if (ERR_OK != _do_req(task, port, "GET", "/optovf/x", NULL, NULL, 404, NULL)) {
+        bad |= (1 << 5);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
+    // [6] 自定义头值 BIGHDR_LEN 字节完整上线缆 (旧实现截断到 255)
+    char want[BIGHDR_LEN];
+    memset(want, 'a', sizeof(want));
+    if (ERR_OK != _do_req_hdr(task, port, "/bighdr", "X-Big", want, sizeof(want))) {
+        bad |= (1 << 6);
+    }
+    if (0 != bad) {
+        LOG_WARN("router test: opt/header extra assertions failed, bad=0x%x.", bad);
+    }
+    return 0 == bad ? ERR_OK : ERR_FAILED;
+}
+
 // timeout 回调 (协程上下文中执行): 跑完一轮断言, 把 1/0 写入 result_slot
 static void _client_timeout(task_ctx *task, uint64_t sess) {
     (void)sess;
     task_router_client_ctx *ctx = coro_get_arg(task);
     if (ERR_OK != _run_all(task, ctx->port)) {
+        ctx->err = 1;
+    }
+    if (ERR_OK != _run_opt_extra(task, ctx->port)) {
         ctx->err = 1;
     }
     if (ctx->err) {

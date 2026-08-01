@@ -125,16 +125,10 @@ static int32_t _ws_resolve_addr(task_ctx *task, url_ctx *url, const char *host, 
     if (url->port.lens > 0) {
         // url_parse 只按冒号切分不校验字符,strtoul 会把 "80abc" 当 80 接受;
         // RFC 3986 §3.2.3 的 port 产生式只允许数字,与 Lua 侧 ^%d+$ 对齐
-        const char *pd = (const char *)url->port.data;
-        size_t i;
-        for (i = 0; i < url->port.lens; i++) {
-            if (pd[i] < '0'
-                || pd[i] > '9') {
-                return ERR_FAILED;
-            }
-        }
-        unsigned long p = strtoul(url->port.data, NULL, 10);
-        if (0 == p || p > UINT16_MAX) {
+        // port 是切片不带 \0，须按 lens 解析：strtoul 会一路读到缓冲里的下一个非数字
+        uint64_t p;
+        if (ERR_OK != str2u64((const char *)url->port.data, url->port.lens, UINT16_MAX, &p)
+            || 0 == p) {
             return ERR_FAILED;
         }
         *port = (uint16_t)p;
