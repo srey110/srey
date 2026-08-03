@@ -40,11 +40,15 @@ typedef struct sc_deliver {
     size_t plen;          // 载荷字节数
     size_t mlen;          // 元数据字节数
     size_t glen;          // 组名字节数;0 表示普通投递无组
+    size_t ptlen;         // 订阅模式字节数;0 表示普通投递无模式
     name_t publisher;     // 发布者 task 句柄;INVALID_TNAME 表示 publisher 已失效
     const char *topic;    // 匹配到的精确 topic(非 NUL 结尾)
     const char *payload;  // 载荷;plen=0 时 NULL
     const char *meta;     // 发布者元数据;mlen=0 时 NULL
     const char *group;    // 共享投递的组名(kind=SHARED 时非 NULL;NORMAL 时 NULL)
+    const char *pattern;  // 命中的订阅模式(kind=SHARED 时非 NULL;NORMAL 时 NULL)。
+                          // 接收方据 (pattern, group) 精确定位 handler;缺它只能对所有匹配模式
+                          // 扇出,而发送侧本就按(节点,组)逐条单发,相乘即平方级重复调用
 } sc_deliver;
 // query_retained / topics / retained_topics 响应的逐条解析结果;指针零拷贝指向源 data,生命周期与 data 一致,非 NUL 结尾。
 typedef struct sc_retained {

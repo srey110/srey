@@ -396,14 +396,18 @@ static void _iocp_free_acpex(ev_ctx *ctx) {
     LPOVERLAPPED overlap;
     sock_ctx *sock;
     uint32_t idle = 0;
+    BOOL got;
     while (ATOMIC_GET(&ctx->nlsn) > 0) {
         overlap = NULL;
-        (void)GetQueuedCompletionStatus(ctx->acpex[0].iocp, &bytes, &key, &overlap, EVENT_WAIT_TIMEOUT);
+        got = GetQueuedCompletionStatus(ctx->acpex[0].iocp, &bytes, &key, &overlap, EVENT_WAIT_TIMEOUT);
         if (NULL != overlap) {
             sock = UPCAST(overlap, sock_ctx, overlapped);
             _iocp_acpex_release(sock);
             idle = 0;
-        } else {
+        } else if (!got) {
+            // 只有真等满 EVENT_WAIT_TIMEOUT(或句柄出错)才算空转。取到 lpOverlapped==NULL 且
+            // 返回成功的是 _iocp_stop_acpex_thread 投的唤醒包(未被 acpex 线程取光的残留),
+            // 它是瞬时返回的,按超时计会白扣排空预算、让边界情形更早撞上下面的 break
             idle += EVENT_WAIT_TIMEOUT;
             if (idle >= IOCP_STOP_DRAIN_TIMEOUT) {
                 LOG_ERROR("ev_free acpex drain timeout, %d listener(s) leaked (AcceptEx cancel completion missing).",

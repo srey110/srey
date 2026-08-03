@@ -63,10 +63,29 @@ runner.run("db_pgsql", function(t)
     local data = "10\tcharlie\t60.0\n11\tdiana\t85.5\n12\teric\t95.25\n"
     local fmt = pg:copy_in_begin("copy srey_test (id, name, score) from stdin")
     if fmt then
-        pg:copy_in_data(data, #data)
+        -- 逐块检查返回值：服务端对少收几块无感知，某块被丢弃后 copy_in_done 照样回 CommandComplete，
+        -- 不检查的话一次残缺的 COPY 会被报成成功
+        t:check(pg:copy_in_data(data, #data), "copy_in_data 返 true")
         t:check(pg:copy_in_done(), "copy_in_done")
+        -- data 为 nil 属调用方错误，须返 false 且 erro() 说明原因
+        t:check(not pg:copy_in_data(nil), "copy_in_data(nil) 返 false")
+        t:check(pg:erro() ~= "", "copy_in_data(nil) 写了 err")
     else
         t:fail("copy_in_begin")
+    end
+
+    -- COPY IN 中止：CopyFail 的正常应答就是 ErrorResponse，所以"中止成功"也走 ERR 包。
+    -- 服务端文本走第二返回值而不写 err —— 写了的话 erro() 会把一次正常中止报成失败，
+    -- 成为本文件"err 非空 == 上一次操作失败"这条读法的唯一例外
+    if pg:copy_in_begin("copy srey_test (id, name, score) from stdin") then
+        local aok, areason = pg:copy_in_abort("aborted by test")
+        t:check(aok, "copy_in_abort 返 true")
+        t:check(areason and #areason > 0, "服务端 ErrorResponse 文本走第二返回值")
+        t:eq("", pg:erro(), "成功路径不写 err")
+        -- 中止后连接须仍可用（CopyFail 之后服务端会回 ReadyForQuery）
+        t:check(pg:query("select 1"), "abort 后连接仍可用")
+    else
+        t:fail("copy_in_begin (abort path)")
     end
 
     -- COPY OUT
@@ -84,6 +103,11 @@ runner.run("db_pgsql", function(t)
     -- selectdb：quit + 切库 + 重连（此处切回同库 test），重连后连接仍可用
     t:check(pg:selectdb("test"), "selectdb reconnect")
     t:check(pg:ping(), "ping after selectdb")
+
+    -- 库名超长：校验在 quit 之前，故必须直接返 false 且不动现有连接（不白断一条可用连接）
+    t:check(not pg:selectdb(string.rep("d", 64)), "selectdb 超长库名返 false")
+    t:check(pg:get_db() == "test", "selectdb 失败后库名不变")
+    t:check(pg:ping(), "selectdb 失败后原连接仍可用")
 
     -- ping 自动重连：quit 关闭连接后 ping 应检测到死连接并重连
     pg:quit()

@@ -1203,6 +1203,26 @@ char *trim(char *data, size_t dlens, size_t *lens) {
     }
     return trim_right(cur, n, lens);
 }
+// tchar 集合见 RFC 7230 §3.2.6：字母数字加这 15 个符号，其余一概不是
+#define TCHAR_PUNCT "!#$%&'*+-.^_`|~"
+int32_t is_token(const char *data, size_t lens) {
+    unsigned char c;
+    size_t i;
+    if (0 == lens
+        || NULL == data) {
+        return 0;
+    }
+    for (i = 0; i < lens; i++) {
+        c = (unsigned char)data[i];
+        if (!((c >= 'a' && c <= 'z')
+            || (c >= 'A' && c <= 'Z')
+            || (c >= '0' && c <= '9')
+            || NULL != memchr(TCHAR_PUNCT, c, sizeof(TCHAR_PUNCT) - 1))) {
+            return 0;
+        }
+    }
+    return 1;
+}
 void locale_init(void) {
 #ifdef OS_WIN
     g_numeric_c = _create_locale(LC_NUMERIC, "C");

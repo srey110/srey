@@ -168,6 +168,62 @@ static void test_mysql_reader_integer_text(CuTest *tc) {
     mysql_reader_free(r2);
 }
 
+// mysql_reader_integer 文本协议边界：空值 / 溢出 / 负数 / INT64_MIN / 前导空白 / 裸负号。
+// 修复前走 strtoll + "end - tmp == lens" 校验，空串(end 不动、lens 也是 0)与溢出(钳到
+// LLONG_MAX 但 end 走到串尾)两种都能骗过它，被当成功报给调用方；且同一个空值
+// uinteger 报 ERR_FAILED、integer 报 ERR_OK，同一行同一语义两个 API 结论相反
+static void test_mysql_reader_integer_text_bounds(CuTest *tc) {
+    char names[6][64] = { "empty", "over", "neg", "min", "space", "onlyminus" };
+    uint8_t types[6] = { MYSQL_TYPE_LONGLONG, MYSQL_TYPE_LONGLONG, MYSQL_TYPE_LONGLONG,
+                         MYSQL_TYPE_LONGLONG, MYSQL_TYPE_LONGLONG, MYSQL_TYPE_LONGLONG };
+    mysql_reader_ctx *r = _reader_new(MPACK_QUERY, 6, names, types);
+
+    // 单块 payload 里排布六个取值，各字段 buf_ctx 按偏移切片
+    const char *src = "99999999999999999999" "-42" "-9223372036854775808" " 4" "-";
+    char *p;
+    MALLOC(p, 64);
+    memcpy(p, src, strlen(src));
+    buf_ctx cols[6] = {
+        { .data = p,      .lens = 0  },// empty：非 NULL 但零长，nil 走的是另一条路(err=1)
+        { .data = p,      .lens = 20 },// over：20 个 9，超 INT64_MAX
+        { .data = p + 20, .lens = 3  },// neg："-42"
+        { .data = p + 23, .lens = 20 },// min："-9223372036854775808"，绝对值恰好越界须单独处理
+        { .data = p + 43, .lens = 2  },// space：" 4"，strtoll 会跳空白当合法
+        { .data = p + 45, .lens = 1  },// onlyminus：只有符号没有数字
+    };
+    _reader_push_row(r, p, cols, NULL);
+
+    int32_t err;
+    int64_t v = mysql_reader_integer(r, "empty", &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    CuAssertTrue(tc, 0 == v);
+    // 同一个空值两个 API 必须给出同一结论
+    uint64_t uv = mysql_reader_uinteger(r, "empty", &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    CuAssertTrue(tc, 0 == uv);
+
+    v = mysql_reader_integer(r, "over", &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    CuAssertTrue(tc, 0 == v);
+
+    v = mysql_reader_integer(r, "neg", &err);
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertTrue(tc, -42 == v);
+
+    v = mysql_reader_integer(r, "min", &err);
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertTrue(tc, INT64_MIN == v);
+
+    v = mysql_reader_integer(r, "space", &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    CuAssertTrue(tc, 0 == v);
+
+    v = mysql_reader_integer(r, "onlyminus", &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    CuAssertTrue(tc, 0 == v);
+
+    mysql_reader_free(r);
+}
 // mysql_reader_integer 二进制协议（MPACK_STMT_EXECUTE）：直接 unpack_integer
 static void test_mysql_reader_integer_binary(CuTest *tc) {
     char names[1][64] = { "x" };
@@ -873,13 +929,13 @@ static void _push_oversized_field(mysql_reader_ctx *reader, size_t cap) {
     buf_ctx c[1] = { { .data = p, .lens = cap } };
     _reader_push_row(reader, p, c, NULL);
 }
-// _mysql_copy_bounded strict=1 边界 (mysql_utils.c)：mysql_reader.c 5 个调用点(text 协议下
-// integer/uinteger cap=64、float/double 共用 cap=128、datetime/time 共用 cap=48)均应返回
-// ERR_FAILED 且不写入目标缓冲，而非截断或越界
+// 超长文本字段一律拒绝，不截断也不越界。integer/uinteger 已改走 str2u64 按 lens 解析，
+// 靠上界判定挡下；float/double(cap=128) 与 datetime/time(cap=48) 仍走 _mysql_copy_bounded
+// strict=1 (mysql_utils.c)，lens >= cap 直接返回 ERR_FAILED 且不写入目标缓冲
 static void test_mysql_reader_copy_field_boundary(CuTest *tc) {
     char names[1][64] = { "n" };
 
-    // integer/uinteger 共用 cap=64：构造 64 字节数字串 (lens==cap)
+    // 64 字节全 '1' 的数字串：远超 int64/uint64 量程，两个 API 都应报溢出
     uint8_t itypes[1] = { MYSQL_TYPE_LONGLONG };
     mysql_reader_ctx *r = _reader_new(MPACK_QUERY, 1, names, itypes);
     _push_oversized_field(r, 64);
@@ -973,6 +1029,7 @@ void test_mysql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mysql_reader_init);
     SUITE_ADD_TEST(suite, test_mysql_reader_cursor);
     SUITE_ADD_TEST(suite, test_mysql_reader_integer_text);
+    SUITE_ADD_TEST(suite, test_mysql_reader_integer_text_bounds);
     SUITE_ADD_TEST(suite, test_mysql_reader_integer_binary);
     SUITE_ADD_TEST(suite, test_mysql_reader_uinteger);
     SUITE_ADD_TEST(suite, test_mysql_reader_float_double_text);

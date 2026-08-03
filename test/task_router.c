@@ -164,6 +164,45 @@ static void _h_bighdr(router_req *ctx) {
     extra[0].value.lens = sizeof(val);
     router_req_respond(ctx, 200, extra, 1, "ok", 2);
 }
+#define HDRSUM_LEN 1800
+// GET /hdrsum → 三条各 HDRSUM_LEN 字节的头; 逐条都远在 MAX_HEADLENS(4KB) 之内,
+// 累计却超。逐条判定时三条全发, 整个头部块 ~5.4KB, 对端解析器直接 PROT_ERROR、
+// 客户端连响应都收不到; 累计判定应放行前两条、丢掉第三条
+static void _h_hdrsum(router_req *ctx) {
+    char val[HDRSUM_LEN];
+    memset(val, 'b', sizeof(val));
+    http_header_ctx extra[3];
+    static const char *keys[3] = { "X-P1", "X-P2", "X-P3" };
+    int32_t i;
+    for (i = 0; i < 3; i++) {
+        extra[i].key.data = (void *)keys[i];
+        extra[i].key.lens = strlen(keys[i]);
+        extra[i].value.data = val;
+        extra[i].value.lens = sizeof(val);
+    }
+    router_req_respond(ctx, 200, extra, 3, "ok", 2);
+}
+// GET /framing → handler 故意从 extra 塞 Content-Length 与 Transfer-Encoding。
+// 两者归 http_pack_content 独占, 放行就成了两条 Content-Length(或 TE 叠 CL)——
+// 典型的请求走私形态, 严格对端会拒收。应整条丢弃, 线缆上仍只有一条 Content-Length
+static void _h_framing(router_req *ctx) {
+    http_header_ctx extra[3];
+    // 大小写故意写乱: HTTP 头名大小写无关, 判定不能只认标准写法
+    extra[0].key.data = (void *)"content-LENGTH";
+    extra[0].key.lens = strlen("content-LENGTH");
+    extra[0].value.data = (void *)"999";
+    extra[0].value.lens = 3;
+    extra[1].key.data = (void *)"Transfer-Encoding";
+    extra[1].key.lens = strlen("Transfer-Encoding");
+    extra[1].value.data = (void *)"chunked";
+    extra[1].value.lens = 7;
+    // 正常头: 证明前两条被丢不是整批拒掉
+    extra[2].key.data = (void *)"X-Keep";
+    extra[2].key.lens = strlen("X-Keep");
+    extra[2].value.data = (void *)"1";
+    extra[2].value.lens = 1;
+    router_req_respond(ctx, 200, extra, 3, "ok", 2);
+}
 // GET /g1/g2/deep → "deep=11"; 嵌套 group 终点 handler:
 // g1mw 中间件先 ctx->user += 1, g2mw 中间件再 += 10, 累加值 11 由 handler 写出
 // 验证: (a) 嵌套 group 中间件按父→子顺序入链 (b) ctx->user 跨中间件传值
@@ -268,6 +307,10 @@ static void _server_startup(task_ctx *task) {
     router_get(r, NULL, "/files/{ver?}/list", _h_opt_ambig, NULL, 0);
     // 自定义头值超 256 字节, 验证不被截断
     router_get(r, NULL, "/bighdr",            _h_bighdr,    NULL, 0);
+    // 三条头单看合法、累计超 MAX_HEADLENS, 验证按整块判定
+    router_get(r, NULL, "/hdrsum",            _h_hdrsum,    NULL, 0);
+    // extra 里的帧长头须被丢弃, 验证不会发出两条 Content-Length
+    router_get(r, NULL, "/framing",           _h_framing,   NULL, 0);
     // 9 个可选段 > ROUTER_MAX_OPT(8): 注册应失败, 该路径只能落到 404
     router_get(r, NULL, "/optovf/{a?}/{b?}/{c?}/{d?}/{e?}/{f?}/{g?}/{h?}/{i?}", _h_root, NULL, 0);
     router_post(r, NULL, "/admin/stats",  _h_admin_stats, NULL, 0);
@@ -406,15 +449,16 @@ done:
     return rtn;
 }
 
-// 头值断言 helper: 发 GET, 按长度精确比对响应中 hk 这条头的完整值
-// (不能用 strlen 比, 截断后的值仍是合法 C 串, 只有长度能区分)
-static int32_t _do_req_hdr(task_ctx *task, uint16_t port, const char *url,
-                           const char *hk, const char *want, size_t wantlen) {
-    SOCKET fd;
-    uint64_t skid;
-    if (ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", port, 0, NULL, &fd, &skid)) {
+// 头部断言族的共用前导: 连上去发一条无 body 的 GET, 收响应并查状态码 200 与 Content-Length 唯一。
+// 无论成败都回填 fd/skid, 调用方一律在 done: 处 ev_close —— 连接失败时是 INVALID_SOCK
+// (ev_props 首行即挡, 无副作用), 连上之后才失败的则是真 fd, 必须靠这次 ev_close 收掉
+static struct http_pack_ctx *_do_get(task_ctx *task, uint16_t port, const char *url,
+                                     SOCKET *fd, uint64_t *skid) {
+    *fd = INVALID_SOCK;
+    *skid = 0;
+    if (ERR_OK != coro_connect(task, PACK_HTTP, NULL, "127.0.0.1", port, 0, NULL, fd, skid)) {
         LOG_WARN("router test: connect to %d failed for %s.", port, url);
-        return ERR_FAILED;
+        return NULL;
     }
     binary_ctx bw;
     binary_init(&bw, NULL, 0, 0);
@@ -422,19 +466,98 @@ static int32_t _do_req_hdr(task_ctx *task, uint16_t port, const char *url,
     http_pack_head(&bw, "Host", "127.0.0.1");
     http_pack_end(&bw);
     size_t rsize;
-    struct http_pack_ctx *resp = coro_send(task, fd, skid, bw.data, bw.offset, &rsize, 0);
-    int32_t rtn = ERR_FAILED;
+    struct http_pack_ctx *resp = coro_send(task, *fd, *skid, bw.data, bw.offset, &rsize, 0);
     if (NULL == resp) {
-        LOG_WARN("router test: coro_send failed for %s.", url);
-        goto done;
+        LOG_WARN("router test: %s got no response.", url);
+        return NULL;
     }
     if (ERR_OK != _resp_check(resp, "GET", url, 200)) {
-        goto done;
+        return NULL;
     }
+    return resp;
+}
+// 头值断言 helper: 发 GET, 按长度精确比对响应中 hk 这条头的完整值
+// (不能用 strlen 比, 截断后的值仍是合法 C 串, 只有长度能区分)
+// 单条头断言: want=NULL 断言该头不存在, 否则断言存在且值按长度精确相等
+// (不能用 strlen 比, 截断后的值仍是合法 C 串, 只有长度能区分)。
+// hlen 在函数内自己初始化 —— http_header 未命中时不写它, 由调用方各自记着重置的话,
+// 漏一次就会让"头不存在"的告警里报出上一条头的长度
+static int32_t _hdr_check(struct http_pack_ctx *resp, const char *url,
+                          const char *hk, const char *want, size_t wantlen) {
     size_t hlen = 0;
     char *hv = http_header(resp, hk, &hlen);
-    if (NULL == hv || hlen != wantlen || 0 != memcmp(hv, want, hlen)) {
+    if (NULL == want) {
+        if (NULL != hv) {
+            LOG_WARN("router test: %s header %s should have been dropped, got %zu bytes.", url, hk, hlen);
+            return ERR_FAILED;
+        }
+        return ERR_OK;
+    }
+    if (NULL == hv
+        || hlen != wantlen
+        || 0 != memcmp(hv, want, hlen)) {
         LOG_WARN("router test: %s header %s expected %zu bytes, got %zu.", url, hk, wantlen, hlen);
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+static int32_t _do_req_hdr(task_ctx *task, uint16_t port, const char *url,
+                           const char *hk, const char *want, size_t wantlen) {
+    SOCKET fd;
+    uint64_t skid;
+    struct http_pack_ctx *resp = _do_get(task, port, url, &fd, &skid);
+    int32_t rtn = ERR_FAILED;
+    if (NULL == resp) {
+        goto done;
+    }
+    if (ERR_OK != _hdr_check(resp, url, hk, want, wantlen)) {
+        goto done;
+    }
+    rtn = ERR_OK;
+done:
+    ev_close(&task->loader->netev, fd, skid, 1);
+    return rtn;
+}
+
+// /hdrsum 断言: 三条头逐条都在 MAX_HEADLENS 内、累计超, 应放行前两条丢掉第三条。
+// 逐条判定的旧实现三条全发, 头部块 ~5.4KB 越上限, 对端解析器判 PROT_ERROR ——
+// 那种情况下这里连响应都收不到, coro_send 返回 NULL
+static int32_t _do_req_hdrsum(task_ctx *task, uint16_t port) {
+    SOCKET fd;
+    uint64_t skid;
+    struct http_pack_ctx *resp = _do_get(task, port, "/hdrsum", &fd, &skid);
+    int32_t rtn = ERR_FAILED;
+    char want[HDRSUM_LEN];
+    if (NULL == resp) {
+        goto done;
+    }
+    // 与 _h_hdrsum 填的内容一致, 按内容精确比 —— 只比长度的话值被写坏也发现不了
+    memset(want, 'b', sizeof(want));
+    if (ERR_OK != _hdr_check(resp, "/hdrsum", "X-P1", want, sizeof(want))
+        || ERR_OK != _hdr_check(resp, "/hdrsum", "X-P2", want, sizeof(want))
+        || ERR_OK != _hdr_check(resp, "/hdrsum", "X-P3", NULL, 0)) {
+        goto done;
+    }
+    rtn = ERR_OK;
+done:
+    ev_close(&task->loader->netev, fd, skid, 1);
+    return rtn;
+}
+
+// /framing 断言: extra 里的 Content-Length / Transfer-Encoding 被丢弃, 同批的普通头不受牵连。
+// 放行的话线缆上会是两条 Content-Length 叠一条 TE, srey 自己的解析器判走私整包丢弃,
+// 这里同样收不到响应 —— 两种失败形态都会被下面的断言拦住
+static int32_t _do_req_framing(task_ctx *task, uint16_t port) {
+    SOCKET fd;
+    uint64_t skid;
+    // Content-Length 唯一性由 _do_get 里的 _resp_check 数, 正是本用例要守的那条
+    struct http_pack_ctx *resp = _do_get(task, port, "/framing", &fd, &skid);
+    int32_t rtn = ERR_FAILED;
+    if (NULL == resp) {
+        goto done;
+    }
+    if (ERR_OK != _hdr_check(resp, "/framing", "Transfer-Encoding", NULL, 0)
+        || ERR_OK != _hdr_check(resp, "/framing", "X-Keep", "1", 1)) {
         goto done;
     }
     rtn = ERR_OK;
@@ -660,6 +783,20 @@ static int32_t _run_opt_extra(task_ctx *task, uint16_t port) {
     memset(want, 'a', sizeof(want));
     if (ERR_OK != _do_req_hdr(task, port, "/bighdr", "X-Big", want, sizeof(want))) {
         bad |= (1 << 6);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
+    // [7] 三条头累计超 MAX_HEADLENS: 前两条上线缆, 第三条丢弃
+    if (ERR_OK != _do_req_hdrsum(task, port)) {
+        bad |= (1 << 7);
+    }
+    if (task_isclosing(task)) {
+        return ERR_FAILED;
+    }
+    // [8] extra 里的帧长头被丢弃, 线缆上仍只有一条 Content-Length
+    if (ERR_OK != _do_req_framing(task, port)) {
+        bad |= (1 << 8);
     }
     if (0 != bad) {
         LOG_WARN("router test: opt/header extra assertions failed, bad=0x%x.", bad);

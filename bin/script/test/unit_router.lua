@@ -274,9 +274,11 @@ runner.run("unit_router", function(t)
         r:get("/j", function(ctx) ctx:json(200, { ok = true }) end)
         local resp = dispatch(r, "GET", "/j")
         t:eq(200, resp and resp.code, "ctx:json code 200")
-        t:check(resp ~= nil and resp.headers ~= nil and
-                resp.headers["Content-Type"] == "application/json",
-                "ctx:json Content-Type: application/json")
+        -- Content-Type 由 http.response 的 table 分支自己写,ctx:json 不再重复传
+        -- (传了会在线缆上出现两条同名头);这里断言的是"交给了它去写"——body 原样是 table
+        t:eq(nil, resp and resp.headers, "ctx:json 不自带 Content-Type(交给 http 层)")
+        t:check(resp ~= nil and "table" == type(resp.body) and true == resp.body.ok,
+                "ctx:json body 原样传 table")
     end
 
     -- ctx:html

@@ -55,7 +55,9 @@ function sess_ctx:ctor(mgoctx, session_ud)
 end
 
 ---开始事务：递增 txnNumber，构建 lsid + txnNumber 事务选项 BSON，挂载到 mongo-&gt;session
----@return boolean ok 成功 true（所属 mongo_ctx 正在 connect() 中或 session 已因重连失效时返回 false）
+---一条连接同时只允许一个活跃事务，该连接上已有别的 session 在事务中时返回 false
+---@return boolean ok 成功 true（所属 mongo_ctx 正在 connect() 中、session 已因重连失效，
+---或该连接上已有别的 session 处于事务中时返回 false）
 function sess_ctx:begin()
     if self.mgoctx.connecting then
         return false
@@ -64,8 +66,7 @@ function sess_ctx:begin()
         WARN("mongo session invalidated by reconnect, please restart session.")
         return false
     end
-    self.session:begin()
-    return true
+    return self.session:begin()
 end
 
 ---提交事务；网络失败时保留事务状态供重试，仅服务端响应确认时清理
@@ -156,7 +157,7 @@ end
 ---@param sslname SSL_NAME SSL 上下文名；SSL_NAME.NONE 表示明文
 ---@param db string 初始数据库名
 ---@param user string? 认证用户名；nil 表示不认证
----@param password string? 认证密码
+---@param password string 认证密码；user 非 nil 时必填（C 层 user_pwd 对它是 luaL_checkstring）
 ---@param authdb string? 认证数据库；nil 时使用 db
 ---@param authmod string? SCRAM 算法，默认 "SCRAM-SHA-256"
 function ctx:ctor(ip, port, sslname, db, user, password, authdb, authmod)
@@ -172,6 +173,11 @@ function ctx:ctor(ip, port, sslname, db, user, password, authdb, authmod)
     self.user = user
     self.authmod = authmod or "SCRAM-SHA-256"
     if user then
+        -- 先自查再下发：user_pwd 的第 3 参在 C 层是 luaL_checkstring，password 为 nil 会先抛
+        -- "bad argument #3 ... (string expected, got nil)",压根走不到下面那句带解释的 error
+        if "string" ~= type(password) then
+            error("mongo ctor: password is required when user is given", 2)
+        end
         if not self.mongo:user_pwd(user, password) then
             error("mongo user_pwd failed: user or password too long", 2)
         end

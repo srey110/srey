@@ -14,6 +14,7 @@ local isipv6 = ("ipv6" == host_type(dns_ip))
 ---@param domain string 待解析的域名
 ---@param ipv6 boolean true 时查询 AAAA 记录，否则 A 记录
 ---@return string[]|nil ips IP 字符串数组；失败、无结果或响应被截断时返回 nil
+---@return boolean? nodata 第二返回值：true 表示服务端已明确答复"无此记录"，回退 TCP 也是同一结果
 local function nslookup_udp(domain, ipv6)
     -- 根据 DNS 服务器类型创建对应的 UDP socket（IPv6 本地地址为 "::"）
     local fd, skid
@@ -69,12 +70,17 @@ end
 ---@param domain string 待解析的域名
 ---@param ipv6 boolean true 时查询 AAAA 记录，否则 A 记录
 ---@param udp boolean? true 时优先 UDP（失败回退 TCP），否则（默认）仅 TCP
----@return string[]|nil ips IP 字符串数组；失败或无结果时返回 nil
+---@return string[]|nil ips IP 字符串数组；失败或无结果时返回 nil。
+---服务端明确答复"无此记录"（NOERROR/NODATA）时不再回退 TCP，与 C 侧 dns_lookup 行为一致
 function nslookup(domain, ipv6, udp)
     if udp then
-        local ips = nslookup_udp(domain, ipv6)
+        local ips, nodata = nslookup_udp(domain, ipv6)
         if ips then
             return ips
+        end
+        -- 服务端已明确答复"该域名没有这种记录"，换 TCP 重查拿到的是同一个答复，白跑一趟
+        if nodata then
+            return nil
         end
     end
     return nslookup_tcp(domain, ipv6)

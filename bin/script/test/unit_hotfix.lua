@@ -31,6 +31,27 @@ local function _setup_module()
     return mod
 end
 
+-- 带 chunk-local function 的测试 module(与上面那个隔离,免得多出的函数影响既有子段)。
+-- tag 是状态型 local,用来顺带确认类型判据没误伤路径 A 的嫁接
+local function _setup_localfn_module()
+    package.loaded.hotfix_localfn_mod = nil
+    local src = [[
+        local M = {}
+        local tag = "T"
+        local function _fmt(x)
+            return "old:" .. x
+        end
+        function M.render(x)
+            return _fmt(x) .. tag
+        end
+        return M
+    ]]
+    local fn = assert(load(src, "=hotfix_localfn_mod"))
+    local mod = fn()
+    package.loaded.hotfix_localfn_mod = mod
+    return mod
+end
+
 srey.startup(function()
 runner.run("hotfix", function(t)
     -- ── 子段 1:函数替换 + 行为变更 ─────────────────────────────────
@@ -200,6 +221,25 @@ runner.run("hotfix", function(t)
         t:eq(2, mod.bump(), "counter 回滚:1 + 1 = 2(未回滚则为 1000)")
     end
 
+    -- ── 子段 12b:patch 写出的真全局同样要回滚 ────────────────────────────
+    -- 未命中 upmap 的裸写落到 _G,旧版不记撤销日志 → chunk 抛错后 module upvalue 还原了,
+    -- 写出去的全局却永久留在该 task 的 _G 里,调用方以为"原状态未被污染"
+    do
+        _setup_module()
+        _G.hf_probe_flag = nil
+        _G.hf_probe_keep = "orig"
+        local patch = [[
+            hf_probe_flag = 1
+            hf_probe_keep = "patched"
+            error("boom after global write")
+        ]]
+        local ok = hotfix.apply("hotfix_unit_mod", patch)
+        t:eq(false, ok, "apply 执行错返回 false")
+        t:eq(nil, _G.hf_probe_flag, "原本不存在的全局回滚为 nil")
+        t:eq("orig", _G.hf_probe_keep, "原本有值的全局回滚为原值")
+        _G.hf_probe_keep = nil
+    end
+
     -- ── 子段 13:patch 仅裸写 counter 无函数替换 → "no matching" 失败同样回滚(F-HF-1) ───
     do
         local mod = _setup_module()
@@ -287,6 +327,53 @@ runner.run("hotfix", function(t)
         ]]), "二次 path-B apply ok")
         t:eq(23, m.bump(), "二次成功:peek 仍持 counter cell,3 + 20")
         package.loaded.hotfix_shared_uv = nil
+    end
+
+    -- ── 子段 19:patch 重新声明同名 local function,新实现必须生效(约束 4)──
+    -- 修复前 _join_upvalues 只按名嫁接不看值类型,把 patch 的 _fmt 槽接回原 module 的 cell,
+    -- patch 里新写的 _fmt 成了死代码 → 行为一点没变,而 apply 照样返回 true + "[OK]"
+    do
+        local mod = _setup_localfn_module()
+        t:eq("old:1T", mod.render(1), "原 render 用旧 _fmt")
+        local patch = [[
+            local function _fmt(x)
+                return "new:" .. x
+            end
+            function M.render(x)
+                return _fmt(x) .. tag
+            end
+        ]]
+        local ok = hotfix.apply("hotfix_localfn_mod", patch)
+        t:eq(true, ok, "apply ok")
+        -- new: 证明 patch 的 _fmt 生效;尾部 T 证明状态型 local 的路径 B 转发没被类型判据误伤
+        t:eq("new:1T", mod.render(1), "patch 的 _fmt 生效且 tag 仍解析到原 cell")
+        package.loaded.hotfix_localfn_mod = nil
+    end
+
+    -- ── 子段 20:值恰好是函数的"回调槽"仍须嫁接 ───────────────────────────
+    -- local cb 是状态(由 M.set 在运行期赋值),不是 patch 自带的 helper。若判据把原模块侧
+    -- 也算进去,cb 被赋过值之后 oval 就是函数 → 漏掉嫁接 → patch 绑到自己那份 nil 上,
+    -- 首次调用 attempt to call a nil value,而 apply 照样返回 true。
+    -- 且同一份 patch 的行为会取决于热修时 cb 有没有被赋过值,这本身就不可接受
+    do
+        package.loaded.hotfix_cb_mod = nil
+        local src = [[
+            local M = {}
+            local cb
+            function M.set(f) cb = f end
+            function M.run(x) return cb(x) end
+            return M
+        ]]
+        local m = assert(load(src, "=hotfix_cb_mod"))()
+        package.loaded.hotfix_cb_mod = m
+        m.set(function(x) return "cb:" .. x end)-- 关键:嫁接前先让 cb 持有函数
+        t:eq("cb:1", m.run(1), "原 run 用已设置的 cb")
+        t:eq(true, hotfix.apply("hotfix_cb_mod", [[
+            local cb
+            function M.run(x) return "v2/" .. cb(x) end
+        ]]), "apply ok")
+        t:eq("v2/cb:1", m.run(1), "patch 的 run 仍看到原 cb(未因值是函数而漏嫁接)")
+        package.loaded.hotfix_cb_mod = nil
     end
 end)
 end)

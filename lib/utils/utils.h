@@ -157,6 +157,16 @@ static inline int32_t is_ows(char ch) {
     return ' ' == ch || '\t' == ch;
 }
 /// <summary>
+/// 判断是否为合法 RFC 7230 token（全部字符为 tchar）。头名、WebSocket 子协议名等都按此校验；
+/// 空串不是 token，返 0。
+/// 组头名时只挡 NUL/CRLF 不够：键里混进 ':' 或 ' ' 同样会让对端把一行拆成两个字段，
+/// 攻击者借此就能塞进一个自选的头值，故按整个 tchar 集合校验
+/// </summary>
+/// <param name="data">源数据(可非 NUL 结尾)</param>
+/// <param name="lens">源数据长度</param>
+/// <returns>是合法 token 返回 1，否则 0</returns>
+int32_t is_token(const char *data, size_t lens);
+/// <summary>
 /// 64 位整数专用哈希（splitmix64
 /// </summary>
 /// <param name="x">整型 key</param>

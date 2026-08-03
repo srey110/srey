@@ -45,13 +45,15 @@ int32_t pgsql_init(pgsql_ctx *pg, const char *ip, uint16_t port, struct evssl_ct
 /// <param name="pg">pgsql_ctx 指针</param>
 /// <param name="user">新用户名</param>
 /// <param name="password">新密码</param>
-void pgsql_set_userpwd(pgsql_ctx *pg, const char *user, const char *password);
+/// <returns>ERR_OK 成功；任一项超 63 字节时返回 ERR_FAILED，用户名与密码均保持原值</returns>
+int32_t pgsql_set_userpwd(pgsql_ctx *pg, const char *user, const char *password);
 /// <summary>
 /// 更新目标数据库名
 /// </summary>
 /// <param name="pg">pgsql_ctx 指针</param>
 /// <param name="database">新数据库名</param>
-void pgsql_set_db(pgsql_ctx *pg, const char *database);
+/// <returns>ERR_OK 成功；超 63 字节时返回 ERR_FAILED，库名保持原值</returns>
+int32_t pgsql_set_db(pgsql_ctx *pg, const char *database);
 /// <summary>
 /// 获取当前配置的数据库名
 /// </summary>

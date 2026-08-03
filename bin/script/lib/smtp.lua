@@ -142,6 +142,10 @@ function ctx:quit()
         return
     end
     self:_quit(fd, skid)
+    fd, skid = self.smtp:sock_id()
+    if INVALID_SOCK == fd then
+        return
+    end
     srey.sync_close(fd, skid)
 end
 

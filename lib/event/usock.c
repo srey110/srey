@@ -173,11 +173,16 @@ static inline void _usk_close_tcp(watcher_ctx *watcher, tcp_ctx *tcp) {
     }
 #endif
     _usk_call_close_cb(watcher->ev, tcp);
+    // drop_changes 必须排在 del_event 之前：devpoll 下 del_event 只是把 POLLREMOVE 排进 changes
+    // 等下一轮 pwrite 提交，而 drop_changes 按 fd 无差别过滤，顺序反了会把它一起丢掉，
+    // fd 就没摘出 /dev/poll 直接被 close。
+    // 这个顺序对所有摘除点一律成立，另三处（_usk_close_udp / _usk_on_connect_cb_err /
+    // _uev_remove_lsn）引用本段；_usk_on_connect_cb_err 只是多一条自己的理由，顺序不变
+    _uev_drop_changes(watcher, tcp->sock.fd);
 #ifdef MANUAL_REMOVE
     _uev_del_event(watcher, tcp->sock.fd, &tcp->sock.events, tcp->sock.events, &tcp->sock);
 #endif
     _evpub_sockel_remove(watcher, tcp->sock.fd);
-    _uev_drop_changes(watcher, tcp->sock.fd);
     // 立即 close fd 把 fd 还给 OS（不延迟到 _evpub_sk_clear）；CLOSE_SOCK 设 fd=INVALID_SOCK,
     // 后续 _evpub_sk_clear 再次 CLOSE_SOCK 内宏判 INVALID_SOCK 跳过（幂等）
     CLOSE_SOCK(tcp->sock.fd);
@@ -197,11 +202,11 @@ static inline void _usk_close_udp(watcher_ctx *watcher, udp_ctx *udp) {
         return;
     }
     _usk_call_udp_close_cb(watcher->ev, udp);
+    _uev_drop_changes(watcher, udp->sock.fd);// 顺序理由见 _usk_close_tcp
 #ifdef MANUAL_REMOVE
     _uev_del_event(watcher, udp->sock.fd, &udp->sock.events, udp->sock.events, &udp->sock);
 #endif
     _evpub_sockel_remove(watcher, udp->sock.fd);
-    _uev_drop_changes(watcher, udp->sock.fd);
     CLOSE_SOCK(udp->sock.fd);
     udp->sock.ev_cb = NULL;
     _uev_qtn_push(watcher, &udp->sock, QTN_UDP);
@@ -527,6 +532,14 @@ void _uev_add_bufs_send(watcher_ctx *watcher, sock_ctx *skctx, off_buf_ctx *buf)
         _evpub_off_buf_release(buf);
         return;
     }
+    // 连接未完成(ev_cb 仍为 _usk_on_connect_cb)时 EVENT_WRITE 表示等待 connect 而非待发数据,
+    // 此时入队 _usk_on_connect_cb 会连同 EVENT_WRITE 一起删掉、只补回 READ,数据就再也发不出去
+    if (_usk_on_rw_cb != skctx->ev_cb) {
+        LOG_WARN("ev_send before connection established on fd %d, disconnect.", (int32_t)skctx->fd);
+        _evpub_off_buf_release(buf);
+        _uev_disconnect(watcher, skctx, 1);
+        return;
+    }
 #if WITH_SSL
     // SSL 握手期间禁止发送业务数据，否则会中断握手；命中即丢数据并立即关连接
     if (BIT_CHECK(tcp->status, STATUS_AUTHSSL)
@@ -574,7 +587,14 @@ void _uev_add_bufs_send(watcher_ctx *watcher, sock_ctx *skctx, off_buf_ctx *buf)
 static void _usk_on_connect_cb_err(watcher_ctx *watcher, tcp_ctx *tcp) {
     _usk_call_conn_cb(watcher->ev, tcp, ERR_FAILED);
     _evpub_sockel_remove(watcher, tcp->sock.fd);
+    // 顺序同 _usk_close_tcp（drop 在前 del 在后），但这里 drop 多担一件事：调用方
+    // _usk_on_connect_cb 进来前已排过一次 del_event，那条变更带着 skctx 当 udata，而 sock
+    // 紧接着回池，kqueue 下留着会落到复用同一 fd 号的新连接上，靠这次 drop 清掉。
+    // 代价是 devpoll 的 POLLREMOVE 也被一并清掉，故下面按平台补排一次
     _uev_drop_changes(watcher, tcp->sock.fd);
+#ifdef MANUAL_REMOVE
+    _uev_del_event(watcher, tcp->sock.fd, &tcp->sock.events, tcp->sock.events, &tcp->sock);
+#endif
     pool_push(&watcher->pool, &tcp->sock, 0);
 }
 // connect完成事件回调：检查连接结果，切换为读写回调，触发conn回调
@@ -786,9 +806,9 @@ static void _usk_on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev)
     }
     if (unremove && NULL == acpt->backoff_tick.cb) {
         if (ERR_OK != _usk_keep_event(watcher, &acpt->sock, EVENT_READ)) {
+            LOG_ERROR("%s", ERRORSTR(ERRNO));// 须在 CLOSE_SOCK 之前:close 会覆写 errno
             _evpub_sockel_remove(watcher, acpt->sock.fd);
             CLOSE_SOCK(acpt->sock.fd);
-            LOG_ERROR("%s", ERRORSTR(ERRNO));
         }
     }
 }
@@ -1014,14 +1034,12 @@ void ev_unlisten(ev_ctx *ctx, uint64_t id) {
 }
 void _uev_remove_lsn(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) {
     sock_ctx **skctx = _evpub_sockel_remove(watcher, fd);
+    if (NULL != skctx) {//防止关掉正确的socket
+        _uev_drop_changes(watcher, fd);// 顺序理由见 _usk_close_tcp
 #ifdef MANUAL_REMOVE
-    if (NULL != skctx) {
         lsnsock_ctx *acpt = UPCAST(*skctx, lsnsock_ctx, sock);
         _uev_del_event(watcher, fd, &acpt->sock.events, EVENT_READ, &acpt->sock);
-    }
 #endif
-    if (NULL != skctx) {//防止关掉正确的socket
-        _uev_drop_changes(watcher, fd);
         CLOSE_SOCK((*skctx)->fd);
     }
     lsnsock_ctx *curlsn = &lsn->lsnsock[watcher->index];

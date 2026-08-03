@@ -83,21 +83,27 @@ int64_t mysql_reader_integer(mysql_reader_ctx *reader, const char *name, int32_t
         return 0;
     }
     if (MPACK_QUERY == reader->pack_type) {
-        // 文本协议：字段值为字符串，需转换为整数
-        char tmp[64];
-        if (ERR_OK != _mysql_copy_bounded(row->val.data, row->val.lens, tmp, sizeof(tmp), 1)) {
+        // 文本协议：字段值为字符串。原来的 strtoll 有两个口子骗得过 end-tmp 校验：空串返 0
+        // 且 end 不动(lens 同为 0，判等通过)、溢出钳到 LLONG_MAX 而 end 照样走到串尾，
+        // 两者都被当成功报给调用方。改按符号拆开走 str2u64，判据与 uinteger 一致
+        const char *s = (const char *)row->val.data;
+        size_t n = row->val.lens;
+        int32_t neg = (n > 0 && NULL != s && '-' == s[0]);
+        uint64_t mag;
+        if (0 != neg) {
+            s++;
+            n--;
+        }
+        if (ERR_OK != str2u64(s, n, 0 != neg ? (uint64_t)INT64_MAX + 1 : (uint64_t)INT64_MAX, &mag)) {
             SET_PTR(err, ERR_FAILED);
             LOG_WARN("parse failed.");
             return 0;
         }
-        char *end;
-        int64_t val = strtoll(tmp, &end, 10);
-        if ((size_t)(end - tmp) != row->val.lens) {
-            SET_PTR(err, ERR_FAILED);
-            LOG_WARN("parse failed.");
-            return 0;
+        if (0 == neg) {
+            return (int64_t)mag;
         }
-        return val;
+        // INT64_MIN 的绝对值超出 int64_t，取负前先单独挑出来，免得 -(int64_t)mag 落进未定义行为
+        return (uint64_t)INT64_MAX + 1 == mag ? INT64_MIN : -(int64_t)mag;
     } else {
         // 二进制协议：字段值为原始二进制整数
         if (sizeof(int8_t) == row->val.lens) {

@@ -19,8 +19,12 @@
         } \
     } while (0)
 //事务和操作 https://www.mongodb.com/zh-cn/docs/manual/core/transactions-operations/#crud-operations
-// 只带事务上下文(lsid/txnNumber/autocommit)。hello 与 commit/abort 用：commitTransaction 与
-// abortTransaction 按规范不得携带 startTransaction，hello 则根本不是事务命令
+// 只带事务上下文(lsid/txnNumber/autocommit)，不带 startTransaction。hello 与 commit/abort 用：
+// 前两条按规范不得携带 startTransaction，hello 则根本不是事务命令。
+// 取的是连接当前绑定的 mongo->session：commit/abort 另有入参 session，两者本可分叉
+// (重连时 mongo_clear_session 清过绑定、或期间另一个 session 接管了这条连接)，取错就是
+// 拿别人的 lsid/txnNumber 去中止别人正在跑的事务；分叉已由 mongo_commit / mongo_rollback
+// 入口挡掉，走到这里两者必然相等
 #define TRANSACTION_OPTIONS \
     if (NULL != mongo->session) {\
         MONGO_PACK_CAT(mongo->session->options);\

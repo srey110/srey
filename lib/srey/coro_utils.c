@@ -13,7 +13,7 @@
 #include "utils/buffer.h"
 #include "utils/utils.h"
 
-static dns_ip *_dns_lookup_udp(task_ctx *task, const char *domain, int32_t ipv6, size_t *cnt) {
+static dns_ip *_dns_lookup_udp(task_ctx *task, const char *domain, int32_t ipv6, size_t *cnt, int32_t *nodata) {
     int32_t rtn;
     SOCKET fd;
     uint64_t skid;
@@ -39,7 +39,7 @@ static dns_ip *_dns_lookup_udp(task_ctx *task, const char *domain, int32_t ipv6,
     if (NULL == resp) {
         return NULL;
     }
-    return dns_parse_pack(resp, lens, cnt, id);
+    return dns_parse_pack(resp, lens, cnt, id, nodata);
 }
 static dns_ip *_dns_lookup_tcp(task_ctx *task, const char *domain, int32_t ipv6, size_t *cnt) {
     SOCKET fd;
@@ -61,13 +61,19 @@ static dns_ip *_dns_lookup_tcp(task_ctx *task, const char *domain, int32_t ipv6,
     if (NULL == resp) {
         return NULL;
     }
-    return dns_parse_pack(resp, rsize, cnt, id);
+    return dns_parse_pack(resp, rsize, cnt, id, NULL);
 }
 dns_ip *dns_lookup(task_ctx *task, const char *domain, int32_t ipv6, int32_t udp, size_t *cnt) {
+    *cnt = 0;// 任何失败路径都不再往下写 cnt,统一在此归零,保证"返回 NULL 时 cnt 为 0"
     if (udp) {
-        dns_ip *ips = _dns_lookup_udp(task, domain, ipv6, cnt);
+        int32_t nodata = 0;
+        dns_ip *ips = _dns_lookup_udp(task, domain, ipv6, cnt, &nodata);
         if (NULL != ips) {
             return ips;
+        }
+        // 服务端已明确答复"该域名没有这种记录",换 TCP 重查拿到的是同一个答复,白跑一趟
+        if (0 != nodata) {
+            return NULL;
         }
     }
     return _dns_lookup_tcp(task, domain, ipv6, cnt);
@@ -478,8 +484,12 @@ void pgsql_quit(pgsql_ctx *pg) {
     coro_close(pg->task, pg->sk.fd, pg->sk.skid, 0);
 }
 int32_t pgsql_selectdb(pgsql_ctx *pg, const char *database) {
+    // 先校验再断连：库名超长时 set_db 保留旧名,若照旧先 quit 就白断一条可用连接,
+    // 还会用原库名重连成功、把切库失败报成功
+    if (ERR_OK != pgsql_set_db(pg, database)) {
+        return ERR_FAILED;
+    }
     pgsql_quit(pg);
-    pgsql_set_db(pg, database);
     return pgsql_connect(pg->task, pg);
 }
 int32_t pgsql_ping(pgsql_ctx *pg) {
@@ -865,16 +875,35 @@ void mongo_freesession(mongo_session *session) {
     FREE(session->options);
     FREE(session);
 }
-void mongo_begin(mongo_session *session) {
+// 事务绑定规则,begin / commit / rollback 三处共用:
+// 组包侧 TRANSACTION_OPTIONS 与 TRANSACTION_OPTIONS_START 一律从 mongo->session 取事务上下文,
+// 所以"连接当前绑定的 session"必须与调用方手上那个是同一个,否则命令会挂到别人的事务上。
+// begin 靠拒绝第二个 session 维持它;commit/rollback 在入口挡掉已经分叉的情形——分叉来自
+// 重连时的 mongo_clear_session,或期间另一个 session 接管了这条连接。
+// 挡掉而不是改用入参的 lsid 发出去:MongoDB 要求 commit/abort 发在事务所在的那条连接上,
+// 连接已经换过,发什么都只会换回 NoSuchTransaction,不如省掉这个往返直接报失败。
+// 早退不释放 session->options 也不漏:重新 begin 会先 FREE 一次,mongo_freesession 也会释放
+int32_t mongo_begin(mongo_session *session) {
     mongo_ctx *mongo = session->mongo;
+    // 一条连接同时只能有一个活跃事务;放第二个 session 进来会让后续写静默改跟它走
+    if (NULL != mongo->session
+        && session != mongo->session) {
+        LOG_WARN("mongo connection already has an active transaction, begin rejected.");
+        return ERR_FAILED;
+    }
     session->txnnumber++;
     session->started = 0;
     FREE(session->options);//防止重复调用漏释放
     session->options = mongo_transaction_options(session);
     mongo->session = session;
+    return ERR_OK;
 }
 int32_t mongo_commit(mongo_session *session, char *options) {
     mongo_ctx *mongo = session->mongo;
+    if (mongo->session != session) {
+        LOG_WARN("mongo connection no longer bound to this session, commit rejected.");
+        return ERR_FAILED;
+    }
     int32_t flags = mongo_clear_flag(mongo);
     size_t lens;
     void *committransaction = mongo_pack_committransaction(session, options, &lens);
@@ -893,6 +922,10 @@ int32_t mongo_commit(mongo_session *session, char *options) {
 }
 int32_t mongo_rollback(mongo_session *session, char *options) {
     mongo_ctx *mongo = session->mongo;
+    if (mongo->session != session) {
+        LOG_WARN("mongo connection no longer bound to this session, rollback rejected.");
+        return ERR_FAILED;
+    }
     int32_t flags = mongo_clear_flag(mongo);
     size_t lens;
     void *aborttransaction = mongo_pack_aborttransaction(session, options, &lens);

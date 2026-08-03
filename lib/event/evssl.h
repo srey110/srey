@@ -24,7 +24,7 @@ void evssl_init(void);
 /// 加载ca cert key 创建 SSL 上下文。
 /// 默认 SSL_VERIFY_NONE（不验证对端）+ security_level=0；适合内网/自签证书场景。
 /// 公网客户端连 trusted CA 时务必显式：
-///   evssl_verify(ssl, 1)                 启用对端证书验证
+///   evssl_verify(ssl, SSL_VERIFY_PEER, NULL)  启用对端证书验证(第三参为自定义校验回调,不用就传 NULL)
 ///   evssl_seclevel(ssl, 2)               禁用 RSA<2048 / MD5 等弱算法
 ///   evssl_min_proto(ssl, TLS1_2_VERSION) 禁用 TLS 小于 1.2
 /// </summary>

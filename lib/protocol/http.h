@@ -7,7 +7,7 @@
 
 // HTTP 头部块最大允许长度（4 KB）。解析侧据此拒收超长头部，打包侧也需要它：
 // 发出去的响应若超过本值，对端（含 srey 自己的 http 解析器）会整包解析失败
-#define MAX_HEADLENS ONEK * 4
+#define MAX_HEADLENS (ONEK * 4)
 typedef struct http_header_ctx {
     buf_ctx key;
     buf_ctx value;

@@ -185,7 +185,10 @@ function ctx:prepare(sql)
     if not mpack then
         return false
     end
-    if MYSQL_PACK_TYPE.MPACK_ERR == mysql.pack_type(mpack) then
+    -- 必须正向判 MPACK_STMT_PREPARE 而不是"非 ERR 即成功"：连接因前一次多结果集没收干净而
+    -- 错位时,这里收到的可能是残留的 OK 包,mysql_stmt_init 对它返 NULL → stmt.new 返 nil →
+    -- mysql_stmt 的 ctor 直接 error 抛出、穿透本函数,调用方按注解写的 `if not stmt` 完全失效
+    if MYSQL_PACK_TYPE.MPACK_STMT_PREPARE ~= mysql.pack_type(mpack) then
         return false
     end
     return stmt.new(self, mpack)

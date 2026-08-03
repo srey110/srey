@@ -110,6 +110,16 @@ runner.run("db_mongo", function(t)
         cnt = mg:count("srey_test", eptr, esz)
         t:eq(4, cnt, "rollback 后事务内插入不可见")
 
+        -- 连接不再绑定该 session 时，pack_commit / pack_abort 须返回 nil：组包取的是
+        -- 连接当前绑定的 session，分叉时会把本次提交挂到别人的事务上。
+        -- 直接调 clear_session 造出分叉——真实来源是 _connect 在 clear_session 之后、
+        -- generation 递增之前失败退出，那个窗口里 sess 的 gen 校验仍会通过
+        t:check(sess:begin(), "txn begin (unbound path)")
+        mg.mongo:clear_session()
+        t:eq(nil, sess.session:pack_commit(), "绑定分叉后 pack_commit 返回 nil")
+        t:eq(nil, sess.session:pack_abort(), "绑定分叉后 pack_abort 返回 nil")
+        -- 绑定已被清掉，sess 手上那个事务已无从提交，直接释放它
+
         sess:close()
     end
 

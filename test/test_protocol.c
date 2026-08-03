@@ -2092,7 +2092,7 @@ static void test_dns_parse_pack(CuTest *tc) {
         0x01, 0x02, 0x03, 0x04
     };
     size_t cnt = 0;
-    dns_ip *ips = dns_parse_pack((char *)resp, sizeof(resp), &cnt, 0x1234);
+    dns_ip *ips = dns_parse_pack((char *)resp, sizeof(resp), &cnt, 0x1234, NULL);
     CuAssertPtrNotNull(tc, ips);
     CuAssertTrue(tc, cnt >= 1);
     CuAssertStrEquals(tc, "1.2.3.4", ips[0].ip);
@@ -2108,9 +2108,55 @@ static void test_dns_parse_pack(CuTest *tc) {
         0xFF, 0xFF                /* ar_count=65535 */
     };
     size_t ecnt = 0;
-    dns_ip *eips = dns_parse_pack((char *)evil, sizeof(evil), &ecnt, 0x0000);
+    dns_ip *eips = dns_parse_pack((char *)evil, sizeof(evil), &ecnt, 0x0000, NULL);
     CuAssertTrue(tc, NULL == eips);
     CuAssertTrue(tc, 0 == ecnt);
+}
+// NOERROR/NODATA：报文完全合法、RR 存在，但没有一条 A/AAAA（只有 AAAA/MX 的名字查 A 时最常见，
+// 应答段空、授权段带一条 SOA）。此前这种报文返回的是 MALLOC 出来、一个字节都没写过的缓冲 + cnt=0，
+// 调用方按"非 NULL 即成功"读 ips[0].ip 就读到未初始化内存
+static void test_dns_parse_pack_nodata(CuTest *tc) {
+    uint8_t resp[] = {
+        /* head: id=0x1234, flags=0x8180(response, rcode=0 NOERROR),
+         * qd=1, an=0, ns=1(一条 SOA), ar=0 */
+        0x12, 0x34, 0x81, 0x80, 0x00, 0x01, 0x00, 0x00,
+        0x00, 0x01, 0x00, 0x00,
+        /* query: \x07example\x03com\x00 + qtype=A(1) + qclass=IN(1) */
+        0x07, 'e','x','a','m','p','l','e',
+        0x03, 'c','o','m', 0x00,
+        0x00, 0x01, 0x00, 0x01,
+        /* authority: 压缩指针 \xc0\x0c + type=SOA(6) + class=IN + ttl=300 + rdlen=4
+         * rdata 内容对本用例无意义，_dns_parse_data 只按 rdlen 跳过非 A/AAAA 记录 */
+        0xc0, 0x0c, 0x00, 0x06, 0x00, 0x01, 0x00, 0x00,
+        0x01, 0x2c, 0x00, 0x04,
+        0x00, 0x00, 0x00, 0x00
+    };
+    size_t cnt = 12345;// 预置非 0，确认失败路径会把它归 0
+    int32_t nodata = 0;
+    dns_ip *ips = dns_parse_pack((char *)resp, sizeof(resp), &cnt, 0x1234, &nodata);
+    CuAssertTrue(tc, NULL == ips);
+    CuAssertTrue(tc, 0 == cnt);
+    // 完整答复只是没记录 → nodata=1，dns_lookup 据此跳过 TCP 回退
+    CuAssertTrue(tc, 1 == nodata);
+
+    // 反向：同一份报文改坏事务 ID，属"没拿到有效响应"，nodata 必须为 0（值得换 TCP 重试）
+    nodata = 1;
+    ips = dns_parse_pack((char *)resp, sizeof(resp), &cnt, 0x9999, &nodata);
+    CuAssertTrue(tc, NULL == ips);
+    CuAssertTrue(tc, 0 == nodata);
+
+    // 截断(TC 位)同样是 nodata=0：TCP 重试正是为这种情况准备的
+    resp[2] = 0x83;
+    nodata = 1;
+    ips = dns_parse_pack((char *)resp, sizeof(resp), &cnt, 0x1234, &nodata);
+    CuAssertTrue(tc, NULL == ips);
+    CuAssertTrue(tc, 0 == nodata);
+
+    // nodata 传 NULL（不关心该信息的调用方）不崩，其余行为不变
+    resp[2] = 0x81;
+    ips = dns_parse_pack((char *)resp, sizeof(resp), &cnt, 0x1234, NULL);
+    CuAssertTrue(tc, NULL == ips);
+    CuAssertTrue(tc, 0 == cnt);
 }
 // DNS-TC：响应头 TC 位置位时应直接返回 NULL，不产出部分记录
 static void test_dns_parse_pack_truncated_flag(CuTest *tc) {
@@ -2126,7 +2172,7 @@ static void test_dns_parse_pack_truncated_flag(CuTest *tc) {
         0x01, 0x02, 0x03, 0x04
     };
     size_t cnt = 0;
-    dns_ip *ips = dns_parse_pack((char *)resp, sizeof(resp), &cnt, 0x1234);
+    dns_ip *ips = dns_parse_pack((char *)resp, sizeof(resp), &cnt, 0x1234, NULL);
     CuAssertTrue(tc, NULL == ips);
 }
 
@@ -2141,7 +2187,7 @@ static void test_dns_parse_pack_truncated_query(CuTest *tc) {
         0xC0
     };
     cnt = 0;
-    ips = dns_parse_pack((char *)trunc_ptr, sizeof(trunc_ptr), &cnt, 0x0000);
+    ips = dns_parse_pack((char *)trunc_ptr, sizeof(trunc_ptr), &cnt, 0x0000, NULL);
     CuAssertTrue(tc, NULL == ips);
     // label 截断：length=5 但缓冲区仅剩 3 字节数据
     uint8_t trunc_label[] = {
@@ -2149,7 +2195,7 @@ static void test_dns_parse_pack_truncated_query(CuTest *tc) {
         0x05, 'a', 'b', 'c'
     };
     cnt = 0;
-    ips = dns_parse_pack((char *)trunc_label, sizeof(trunc_label), &cnt, 0x0000);
+    ips = dns_parse_pack((char *)trunc_label, sizeof(trunc_label), &cnt, 0x0000, NULL);
     CuAssertTrue(tc, NULL == ips);
 }
 // DNS-欺骗：事务 ID 不匹配的响应(伪造/错配)应直接返回 NULL，正确 ID 才解析
@@ -2167,11 +2213,11 @@ static void test_dns_parse_pack_wrong_id(CuTest *tc) {
     };
     size_t cnt = 0;
     // 期望 ID 错配(0x9999) → 视为伪造响应，拒绝
-    dns_ip *ips = dns_parse_pack((char *)resp, sizeof(resp), &cnt, 0x9999);
+    dns_ip *ips = dns_parse_pack((char *)resp, sizeof(resp), &cnt, 0x9999, NULL);
     CuAssertTrue(tc, NULL == ips);
     // 期望 ID 正确(0x1234) → 正常解析出 1.2.3.4
     cnt = 0;
-    ips = dns_parse_pack((char *)resp, sizeof(resp), &cnt, 0x1234);
+    ips = dns_parse_pack((char *)resp, sizeof(resp), &cnt, 0x1234, NULL);
     CuAssertPtrNotNull(tc, ips);
     CuAssertTrue(tc, cnt >= 1);
     CuAssertStrEquals(tc, "1.2.3.4", ips[0].ip);
@@ -3995,6 +4041,7 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_dns_request_pack_tcp);
     SUITE_ADD_TEST(suite, test_dns_unpack);
     SUITE_ADD_TEST(suite, test_dns_parse_pack);
+    SUITE_ADD_TEST(suite, test_dns_parse_pack_nodata);
     SUITE_ADD_TEST(suite, test_dns_parse_pack_truncated_query);
     SUITE_ADD_TEST(suite, test_dns_parse_pack_truncated_flag);
     SUITE_ADD_TEST(suite, test_dns_parse_pack_wrong_id);

@@ -182,10 +182,13 @@ void ev_unlisten(ev_ctx *ctx, uint64_t id);
 /// <param name="fd">socket句柄</param>
 /// <param name="skid">链接ID</param>
 /// <param name="ppcb">操作回调,仅当 fd/skid 有效时在事件线程内被调用,签名 (watcher, skctx, data, number)</param>
-/// <param name="fcb">data 释放回调,可为 NULL;仅在 data 非 NULL 时于 ppcb 执行后或各失败路径被调用释放 data</param>
-/// <param name="data">传给 ppcb 的指针参数(其生命周期由 fcb 负责释放),无指针载荷时传 NULL</param>
+/// <param name="fcb">data 释放回调,可为 NULL;仅在 data 非 NULL **且 ppcb 返回非 0** 时被调用。
+///   ppcb 返回 0 表示它已接管 data 所有权(如 _ev_send 把 data 转交发送队列),此时不会调 fcb;
+///   fd/skid 失配等未执行 ppcb 的失败路径一律调 fcb</param>
+/// <param name="data">传给 ppcb 的指针参数(其生命周期见 fcb 说明),无指针载荷时传 NULL</param>
 /// <param name="number">传给 ppcb 的整数参数,无整数载荷时传 0</param>
-/// <returns>ERR_OK 请求成功,stop 非0或参数非法失败</returns>
+/// <returns>ERR_OK 请求成功;仅 fd 为 INVALID_SOCK 或 ppcb 为 NULL 时返回 ERR_FAILED。
+///   命令入队恒成功,ev_free 已启动时同样返 ERR_OK(命令留在队里由 drain 清理),调用方无法据返回值判断 ev 是否在停</returns>
 int32_t ev_props(ev_ctx *ctx, SOCKET fd, uint64_t skid,
                  props_cb ppcb, free_cb fcb, void *data, uint64_t number);
 /// <summary>
@@ -195,7 +198,7 @@ int32_t ev_props(ev_ctx *ctx, SOCKET fd, uint64_t skid,
 /// <param name="fd">socket句柄</param>
 /// <param name="skid">链接ID</param>
 /// <param name="pktype">数据包类型 pack_type</param>
-/// <returns>ERR_OK 成功，stop 非0失败</returns>
+/// <returns>ERR_OK 成功;仅 fd 为 INVALID_SOCK 时返回 ERR_FAILED。命令入队恒成功,ev_free 已启动时同样返 ERR_OK</returns>
 int32_t ev_ud_pktype(ev_ctx *ctx, SOCKET fd, uint64_t skid, subtype_t pktype);
 /// <summary>
 /// 设置ud_cxt的状态
@@ -204,7 +207,7 @@ int32_t ev_ud_pktype(ev_ctx *ctx, SOCKET fd, uint64_t skid, subtype_t pktype);
 /// <param name="fd">socket句柄</param>
 /// <param name="skid">链接ID</param>
 /// <param name="status">状态</param>
-/// <returns>ERR_OK 成功，stop 非0失败</returns>
+/// <returns>ERR_OK 成功;仅 fd 为 INVALID_SOCK 时返回 ERR_FAILED。命令入队恒成功,ev_free 已启动时同样返 ERR_OK</returns>
 int32_t ev_ud_status(ev_ctx *ctx, SOCKET fd, uint64_t skid, uint8_t status);
 /// <summary>
 /// 设置ud_cxt的session
@@ -213,7 +216,7 @@ int32_t ev_ud_status(ev_ctx *ctx, SOCKET fd, uint64_t skid, uint8_t status);
 /// <param name="fd">socket句柄</param>
 /// <param name="skid">链接ID</param>
 /// <param name="sess">session</param>
-/// <returns>ERR_OK 成功，stop 非0失败</returns>
+/// <returns>ERR_OK 成功;仅 fd 为 INVALID_SOCK 时返回 ERR_FAILED。命令入队恒成功,ev_free 已启动时同样返 ERR_OK</returns>
 int32_t ev_ud_sess(ev_ctx *ctx, SOCKET fd, uint64_t skid, uint64_t sess);
 /// <summary>
 /// 设置ud_cxt的任务句柄
@@ -222,7 +225,7 @@ int32_t ev_ud_sess(ev_ctx *ctx, SOCKET fd, uint64_t skid, uint64_t sess);
 /// <param name="fd">socket句柄</param>
 /// <param name="skid">链接ID</param>
 /// <param name="handle">任务句柄</param>
-/// <returns>ERR_OK 成功，stop 非0失败</returns>
+/// <returns>ERR_OK 成功;仅 fd 为 INVALID_SOCK 时返回 ERR_FAILED。命令入队恒成功,ev_free 已启动时同样返 ERR_OK</returns>
 int32_t ev_ud_handle(ev_ctx *ctx, SOCKET fd, uint64_t skid, name_t handle);
 /// <summary>
 /// 设置ud_cxt的extra
@@ -231,7 +234,7 @@ int32_t ev_ud_handle(ev_ctx *ctx, SOCKET fd, uint64_t skid, name_t handle);
 /// <param name="fd">socket句柄</param>
 /// <param name="skid">链接ID</param>
 /// <param name="extra">extra</param>
-/// <returns>ERR_OK 成功，stop 非0失败</returns>
+/// <returns>ERR_OK 成功;仅 fd 为 INVALID_SOCK 时返回 ERR_FAILED。命令入队恒成功,ev_free 已启动时同样返 ERR_OK</returns>
 int32_t ev_ud_context(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *extra);
 
 #endif//EVENT_H_

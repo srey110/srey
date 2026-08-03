@@ -40,8 +40,12 @@ void *dns_unpack(buffer_ctx *buf, size_t *size, int32_t *status);
 /// <param name="buflen">数据包长度</param>
 /// <param name="cnt">解析到的 IP 数量</param>
 /// <param name="id">期望的事务 ID（dns_request_pack 输出）；响应事务 ID 不匹配即视为错配/伪造返回 NULL</param>
-/// <returns>dns_ip 需要FREE；事务 ID 不匹配、响应被截断(TC 位置位)或解析失败均返回 NULL</returns>
-dns_ip *dns_parse_pack(char *buf, size_t buflen, size_t *cnt, uint16_t id);
+/// <param name="nodata">输出，不需要可传 NULL：1 表示响应本身完整有效、只是没有任何 A/AAAA 记录
+/// （NOERROR/NODATA），换传输方式重查也是同一结果，调用方不必再试 TCP；
+/// 0 表示响应缺失/事务 ID 不符/被截断/解析失败，值得换 TCP 重试</param>
+/// <returns>dns_ip 需要FREE，返回非 NULL 时 cnt 恒 &gt;= 1；事务 ID 不匹配、响应被截断(TC 位置位)、
+/// 解析失败，或报文合法但没有任何 A/AAAA 记录(NOERROR/NODATA)均返回 NULL 并置 cnt 为 0</returns>
+dns_ip *dns_parse_pack(char *buf, size_t buflen, size_t *cnt, uint16_t id, int32_t *nodata);
 /// <summary>
 /// 设置dns服务器IP
 /// </summary>

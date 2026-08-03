@@ -16,9 +16,8 @@ int32_t pgsql_try_connect(task_ctx *task, pgsql_ctx *pg, int32_t setsess) {
 int32_t mongo_try_connect(task_ctx *task, mongo_ctx *mongo, int32_t setsess) {
     mongo->task = task;
     PROT_REF_ACQUIRE(mongo);
-    return task_connect(task, PACK_MONGO, NULL, mongo->ip, mongo->port,
-        NULL == mongo->evssl ? NETEV_NONE : NETEV_AUTHSSL,
-        mongo, setsess, &mongo->sk.fd, &mongo->sk.skid);
+    return task_connect(task, PACK_MONGO, mongo->evssl, mongo->ip, mongo->port,
+        NETEV_NONE, mongo, setsess, &mongo->sk.fd, &mongo->sk.skid);
 }
 int32_t smtp_try_connect(task_ctx *task, smtp_ctx *smtp, int32_t setsess) {
     smtp->task = task;

@@ -11,6 +11,10 @@
 --      若该 local 仅被本函数持有,二次热修 _collect_upvalues 扫不到 cell(转发回退 _G → nil)→ 反复迭代用路径 A
 --   4. patch 中的 local function _helper 是 patch chunk 独立 closure;仅被 patch 内同时重写的 M.xxx 使用,
 --      需要单独热修的 helper 应业务侧提升为 module 表字段(M._helper 而不是 local _helper)
+--      判据是"嫁接时 patch 侧该槽是否已持有函数",而 Lua 把 `local function f` 与 `local f = <函数>`
+--      编译成同一形态、运行期无从区分,故 patch 里**不要**给状态型 local 赋函数初值
+--      (写 `local logger = print` 会被当成 helper 跳过嫁接,patch 从此绑到自己那份上,
+--      原 module 的 M.set_logger 再怎么改都看不到);要默认值就留空由 path-B 读原值
 --   5. 已 yield 的协程持有旧 closure reference,继续跑旧逻辑;新调用从 mod[name] 取走新版
 -- 用法:
 --   local hotfix = require("lib.hotfix")
@@ -24,13 +28,22 @@ local M = {}
 local function _join_upvalues(patch_fn, upmap)
     local pi = 1
     while true do
-        local pname, _ = debug.getupvalue(patch_fn, pi)
+        local pname, pval = debug.getupvalue(patch_fn, pi)
         if not pname then break end
         -- _ENV 不嫁接:patch 与原 module 的 _ENV 是不同沙箱,共享会让 patch 写到原 module 全局
         if "_ENV" ~= pname then
             local entry = upmap[pname]
             if entry then
-                debug.upvaluejoin(patch_fn, pi, entry.fn, entry.idx)
+                -- 嫁接只对"状态型"local 有意义(counter 之类,共享同一份内存跨热修保留)。
+                -- 只看 patch 这一侧的当前值:patch 的 `local function _helper` 槽此刻必然持有
+                -- 它自己新建的闭包,嫁接回原 cell 等于把新实现整个丢弃、悄悄换回旧的(约束 4);
+                -- 而 patch 的状态型 `local x` 在 chunk 刚跑完时是 nil,照常嫁接。
+                -- 不能连原模块侧一起判:原模块的 local 完全可能是"值恰好为函数"的回调槽
+                -- (local cb; function M.set(f) cb = f end),那是状态不是代码,漏掉嫁接会让
+                -- patch 绑到自己那份 nil 上,且是否漏掉还取决于热修时 cb 有没有被赋过值
+                if "function" ~= type(pval) then
+                    debug.upvaluejoin(patch_fn, pi, entry.fn, entry.idx)
+                end
             end
         end
         pi = pi + 1
@@ -90,9 +103,15 @@ function M.apply(module_name, patch_source)
     end
     -- path-B 写入原 module UpVal 的撤销日志:k → {entry, orig};任一失败路径逐一回滚,避免半改污染
     local dirty = {}
+    -- patch 写出的真全局同样要能撤销:只回滚 upvalue 的话,chunk 执行到一半抛错时调用方以为
+    -- "原状态未被污染",而写出去的全局已经永久留在该 task 的 _G 里,后续任何裸标识符读都看得到
+    local dirty_g = {}
     local function _rollback_dirty()
         for _, d in pairs(dirty) do
             debug.setupvalue(d.entry.fn, d.entry.idx, d.orig)
+        end
+        for k, d in pairs(dirty_g) do
+            _G[k] = d.orig
         end
     end
     -- patch_env:M 注入 patch_M;裸标识符读写经 metatable 转发到原 UpVal(命中 upmap)
@@ -119,6 +138,10 @@ function M.apply(module_name, patch_source)
                 return
             end
             -- 未命中 upmap：与 __index 的 _G[k] 回退对称，写真正全局，而非困在一次性 env 沙箱里出不来
+            if nil == dirty_g[k] then
+                -- 同 dirty:orig 可能为 nil(该全局原本不存在),包一层 table 以区分"未记录"
+                dirty_g[k] = {orig = _G[k]}
+            end
             _G[k] = v
         end,
     })

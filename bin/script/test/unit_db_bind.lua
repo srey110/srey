@@ -106,7 +106,7 @@ runner.run("db_bind", function(t)
         utils.ud_free(pack)
 
         -- begin → pack_commit / pack_abort：commit/abort 依赖 begin 构造 options
-        sess:begin()
+        t:check(sess:begin(), "session begin (no active txn on conn)")
         pack, size = sess:pack_commit()
         t:check(pack ~= nil and size > 0, "session pack_commit (after begin)")
         txt = srey.ud_str(pack, size)
@@ -114,7 +114,7 @@ runner.run("db_bind", function(t)
         utils.ud_free(pack)
         sess:done()
 
-        sess:begin()
+        t:check(sess:begin(), "session begin again (after done)")
         pack, size = sess:pack_abort()
         t:check(pack ~= nil and size > 0, "session pack_abort (after begin)")
         txt = srey.ud_str(pack, size)
@@ -177,6 +177,17 @@ runner.run("db_bind", function(t)
     do
         local p = pgsql.new("127.0.0.1", 5432, nil, "admin", "x", "testdb")
         t:check(p ~= nil, "pgsql.new (无连接)")
+
+        -- setter 长度边界：字段是 char[64]，超 63 字节须返 false 且保持原值不变，
+        -- 否则 selectdb 会用旧库名重连成功、把切库失败报成功
+        local toolong = string.rep("d", 64)
+        t:check(p:set_db("okdb"), "pgsql set_db (63 字节内)")
+        t:check(p:get_db() == "okdb", "set_db 生效")
+        t:check(not p:set_db(toolong), "pgsql set_db 超长返 false")
+        t:check(p:get_db() == "okdb", "set_db 超长不改动原库名")
+        t:check(p:set_userpwd("u2", "p2"), "pgsql set_userpwd (63 字节内)")
+        t:check(not p:set_userpwd(toolong, "p2"), "set_userpwd 用户名超长返 false")
+        t:check(not p:set_userpwd("u2", toolong), "set_userpwd 密码超长返 false")
 
         local pack, size = pgsql.pack_query("SELECT 1")
         t:check(pack ~= nil and size > 0, "pgsql pack_query non-empty")

@@ -105,16 +105,20 @@ static int32_t _lprot_dns_pack_tcp(lua_State *lua) {
 /// <param name="packlen" type="integer">响应包字节数</param>
 /// <param name="id" type="integer">期望的事务 ID（dns.pack/dns.pack_tcp 返回）；响应事务 ID 不匹配即视为错配/伪造返回 nil</param>
 /// <returns type="string[]?">IP 字符串数组；事务 ID 不匹配、解析失败、RCODE 非 0 或响应被截断(TC 位置位)时均返回 nil</returns>
+/// <returns type="boolean">第二返回值 nodata：true 表示响应本身完整有效、只是没有任何 A/AAAA 记录
+/// （NOERROR/NODATA），换 TCP 重查也是同一结果，调用方不必再试；解析成功时恒为 false</returns>
 static int32_t _lprot_dns_unpack(lua_State *lua) {
     LUACHECK_LUDATA(lua, 1);
     void *pack = lua_touserdata(lua, 1);
     size_t packlen = (size_t)luaL_checkinteger(lua, 2);
     uint16_t id = (uint16_t)luaL_checkinteger(lua, 3);
     size_t n;
-    dns_ip *ips = dns_parse_pack(pack, packlen, &n, id);
+    int32_t nodata = 0;
+    dns_ip *ips = dns_parse_pack(pack, packlen, &n, id, &nodata);
     if (NULL == ips) {
         lua_pushnil(lua);
-        return 1;
+        lua_pushboolean(lua, 0 != nodata ? 1 : 0);
+        return 2;
     }
     lua_createtable(lua, (int32_t)n, 0);
     for (size_t i = 0; i < n; i++) {
@@ -123,7 +127,8 @@ static int32_t _lprot_dns_unpack(lua_State *lua) {
         lua_rawseti(lua, -2, (lua_Integer)(i + 1));
     }
     FREE(ips);
-    return 1;
+    lua_pushboolean(lua, 0);
+    return 2;
 }
 //srey.dns
 LUAMOD_API int luaopen_dns(lua_State *lua) {
@@ -503,6 +508,22 @@ static int32_t _lprot_http_datastr(lua_State *lua) {
     lua_pushlstring(lua, data, lens);
     return 1;
 }
+/// <summary>
+/// 是否合法 RFC 7230 token（全部字符为 tchar）；HTTP 头名按此校验
+/// </summary>
+/// <param name="s" type="string">待判字符串；非字符串或空串返回 false</param>
+/// <returns type="boolean">合法返回 true</returns>
+static int32_t _lprot_http_is_token(lua_State *lua) {
+    size_t lens = 0;
+    const char *s = NULL;
+    // 只认真字符串：lua_tolstring 会把数字就地转成字符串，那样 is_token(1) 返回 true，
+    // 而数字当不了 HTTP 头名，调用方按它组包会把 "1: v" 发上线缆
+    if (LUA_TSTRING == lua_type(lua, 1)) {
+        s = lua_tolstring(lua, 1, &lens);
+    }
+    lua_pushboolean(lua, NULL != s && 0 != is_token(s, lens) ? 1 : 0);
+    return 1;
+}
 //srey.http
 LUAMOD_API int luaopen_http(lua_State *lua) {
     luaL_Reg reg[] = {
@@ -513,9 +534,13 @@ LUAMOD_API int luaopen_http(lua_State *lua) {
         { "heads", _lprot_http_heads },
         { "data", _lprot_http_data },
         { "datastr", _lprot_http_datastr },
+        { "is_token", _lprot_http_is_token },
         { NULL, NULL },
     };
     luaL_newlib(lua, reg);
+    // 头部块上限：Lua 侧组包要按它累计判定，硬编码一份迟早与 http.h 分叉
+    lua_pushinteger(lua, (lua_Integer)MAX_HEADLENS);
+    lua_setfield(lua, -2, "max_headlens");
     return 1;
 }
 // 内部辅助：构造 Redis 聚合类型（array/set/map/push/attr）的 table，含 resp_type 和 resp_nelem 字段

@@ -158,7 +158,11 @@ static int32_t _txn_flow(mongo_ctx *mongo) {
         LOG_ERROR("mongo startsession error.");
         return ERR_FAILED;
     }
-    mongo_begin(sess);
+    if (ERR_OK != mongo_begin(sess)) {
+        LOG_ERROR("mongo begin error.");
+        mongo_freesession(sess);
+        return ERR_FAILED;
+    }
     mongo_collection(mongo, "srey_test");
 
     bson_ctx docs;
@@ -199,7 +203,11 @@ static int32_t _txn_pack_fail_flow(mongo_ctx *mongo) {
         LOG_ERROR("mongo startsession(packfail) error.");
         return ERR_FAILED;
     }
-    mongo_begin(sess);
+    if (ERR_OK != mongo_begin(sess)) {
+        LOG_ERROR("mongo begin(packfail) error.");
+        mongo_freesession(sess);
+        return ERR_FAILED;
+    }
     pack_integer(toolong, (uint64_t)MAX_PACK_SIZE, 4, 1);
     if (ERR_OK == mongo_commit(sess, toolong)) {
         LOG_ERROR("mongo commit(oversize options) should fail.");
@@ -213,6 +221,86 @@ static int32_t _txn_pack_fail_flow(mongo_ctx *mongo) {
     }
     mongo_freesession(sess);
     return ERR_OK;
+}
+
+// 一条连接同时只允许一个活跃事务：13 个 CRUD 命令的事务上下文都取自 mongo->session,
+// 放第二个 session 进来会让后续写静默改跟它走、commit 提交到错的事务上。
+// 同 _txn_pack_fail_flow 不需要 replica set：begin 纯本地,被拒时也不发包。
+// 三条断言：B 的 begin 被拒 / 被拒时不动已有绑定 / 同一 session 重开事务仍放行
+// 两个事务守卫用例共用的开场:开两个 session。任一失败即回滚已开的那个并返回 ERR_FAILED
+static int32_t _start_two_sessions(mongo_ctx *mongo, mongo_session **sessa, mongo_session **sessb) {
+    *sessa = mongo_startsession(mongo);
+    if (NULL == *sessa) {
+        LOG_ERROR("mongo startsession(a) error.");
+        return ERR_FAILED;
+    }
+    *sessb = mongo_startsession(mongo);
+    if (NULL == *sessb) {
+        LOG_ERROR("mongo startsession(b) error.");
+        mongo_freesession(*sessa);
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+static int32_t _txn_second_session_flow(mongo_ctx *mongo) {
+    mongo_session *sessa;
+    mongo_session *sessb;
+    if (ERR_OK != _start_two_sessions(mongo, &sessa, &sessb)) {
+        return ERR_FAILED;
+    }
+    int32_t rtn = ERR_FAILED;
+    if (ERR_OK != mongo_begin(sessa)) {
+        LOG_ERROR("mongo begin(a) error.");
+    } else if (ERR_OK == mongo_begin(sessb)) {
+        LOG_ERROR("mongo begin(b) should be rejected while a is active.");
+    } else if (mongo->session != sessa) {
+        LOG_ERROR("rejected begin must not touch the existing binding.");
+    } else if (ERR_OK != mongo_begin(sessa)) {
+        LOG_ERROR("same session re-begin must still be allowed.");
+    } else {
+        rtn = ERR_OK;
+    }
+    // b 从未绑定,其 freesession 的 mongo->session==session 守卫不会误清 a 的绑定;
+    // a 的 freesession 负责把绑定清干净,否则后面的 _txn_flow 会被新守卫拒掉
+    mongo_freesession(sessb);
+    mongo_freesession(sessa);
+    return rtn;
+}
+
+// 绑定分叉后 commit/rollback 必须在入口就拒掉,不能把 A 的请求挂到 B 的事务上。
+// 分叉在真实环境来自 mongo_ping 重连时的 mongo_clear_session,这里直接调它造出来。
+// 同样不需要 replica set：被拒时不发包,pack 都不做。
+// 三条断言：A 的 rollback 被拒 / A 的 commit 被拒 / 两次拒绝都不动 B 的绑定
+static int32_t _txn_unbound_flow(mongo_ctx *mongo) {
+    mongo_session *sessa;
+    mongo_session *sessb;
+    if (ERR_OK != _start_two_sessions(mongo, &sessa, &sessb)) {
+        return ERR_FAILED;
+    }
+    int32_t rtn = ERR_FAILED;
+    if (ERR_OK != mongo_begin(sessa)) {
+        LOG_ERROR("mongo begin(a) error.");
+    } else {
+        // 模拟重连：绑定被清掉,a 的事务在服务端已随旧连接消失,但 a 这个对象还活着
+        mongo_clear_session(mongo);
+        if (ERR_OK != mongo_begin(sessb)) {
+            LOG_ERROR("begin(b) should be allowed after the binding was cleared.");
+        } else if (ERR_OK == mongo_rollback(sessa, NULL)) {
+            LOG_ERROR("rollback on an unbound session must be rejected.");
+        } else if (mongo->session != sessb) {
+            LOG_ERROR("rejected rollback must not touch b's binding.");
+        } else if (ERR_OK == mongo_commit(sessa, NULL)) {
+            LOG_ERROR("commit on an unbound session must be rejected.");
+        } else if (mongo->session != sessb) {
+            LOG_ERROR("rejected commit must not touch b's binding.");
+        } else {
+            rtn = ERR_OK;
+        }
+    }
+    // a 已不是绑定方,其 freesession 守卫不会误清 b;b 的 freesession 负责清干净留给后续用例
+    mongo_freesession(sessa);
+    mongo_freesession(sessb);
+    return rtn;
 }
 
 // ping 自动重连（含 re-auth）：强制关闭连接后 mongo_ping 应重连并恢复可用，count 验证
@@ -307,6 +395,14 @@ static void _startup(task_ctx *task) {
         return;
     }
     if (ERR_OK != _txn_pack_fail_flow(&arg->mongo)) {
+        ev_close(&task->loader->netev, arg->mongo.sk.fd, arg->mongo.sk.skid, 1);
+        return;
+    }
+    if (ERR_OK != _txn_second_session_flow(&arg->mongo)) {
+        ev_close(&task->loader->netev, arg->mongo.sk.fd, arg->mongo.sk.skid, 1);
+        return;
+    }
+    if (ERR_OK != _txn_unbound_flow(&arg->mongo)) {
         ev_close(&task->loader->netev, arg->mongo.sk.fd, arg->mongo.sk.skid, 1);
         return;
     }

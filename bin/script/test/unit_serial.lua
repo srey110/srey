@@ -121,11 +121,9 @@ runner.run("serial", function(t)
         t:eq(0, in_cs, "两协程均已退出 cs")
     end
 
-    -- ── cs 出口 coro_running 还原（与 C 层 coro_serial_call B05 镜像）─
-    -- 触发条件：A 持锁 sleep 期间 B 排队入 cs；A 完成 _release 唤醒 B,B 在
-    -- cs 内 yield 后 _release 返回,A 的 cs 闭包返回；A 继续调 srey.sleep
-    -- —— 修复前 coro_running stale=B → _set_coro_sess 登记错协程 →
-    -- 后续消息按 B resume 触发 "attempt to call a table value" → A 永远完不成
+    -- ── cs 出口后 A 仍能正常 yield（历史上 coro_running 被写坏过的场景）──
+    -- 触发条件：A 持锁 sleep 期间 B 排队入 cs；A 退出 cs 完成交接后继续调 srey.sleep。
+    -- 唤醒摊平到 dispatch 末尾之后，_release 不再改写 coro_running，本用例作为回归护栏保留
     do
         local cs = srey.serial()
         local a_done = false
@@ -142,6 +140,28 @@ runner.run("serial", function(t)
         srey.sleep(80)
         t:eq(true, a_done, "A 在 cs 出口后的 srey.sleep 正常完成（coro_running 已还原）")
         t:eq(true, b_done, "B 正常完成")
+    end
+
+    -- ── 长等待链：N 个连续同步完成的等待者不得触顶 C 调用深度 ────────────
+    -- 修复前 _release 在持锁协程自己的栈上直接 resume 下一个，而 Lua 的 resume 是在同一条
+    -- C 栈上嵌帧、nCcalls 从 resume 方继承，一串不 yield 的等待者链式唤醒累加到
+    -- LUAI_MAXCCALLS(200) 就触顶，resume 返回 "C stack overflow"；此时 current/ref 已写死，
+    -- 那个等待者永远不被唤醒也永远不 _release → 整个 serial 永久死锁，done 会停在 60~90 附近。
+    -- 关键是等待者的 f 必须"不 yield"，一旦 yield 控制权就沿嵌套链回溯、链不会累积
+    do
+        local cs = srey.serial()
+        local N = 200
+        local done = 0
+        srey.fork(function()
+            cs(function() srey.sleep(20) end)-- 持锁 yield，逼后面 N 个全部排队
+        end)
+        for _ = 1, N do
+            srey.fork(function()
+                cs(function() done = done + 1 end) -- 同步完成，不 yield
+            end)
+        end
+        srey.sleep(120)
+        t:eq(N, done, "200 个连续同步完成的等待者全部执行（唤醒链已摊平）")
     end
 end)
 end)

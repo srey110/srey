@@ -34,10 +34,17 @@ local coro_running   = nil   -- 当前正在执行的协程（用于 _set_coro_s
 local coro_sess      = {}    -- 会话表：sess/skid → corosess，保存挂起协程的等待信息
 local func_cbs       = {}    -- 消息类型 → 用户注册回调函数
 local srey  = {}
-local nyield = 0             -- 当前挂起等待的协程数量（closing 时用于告警）
-local coro_pool       = {}            -- 空闲协程池
-local coro_pool_trend = trend.new()   -- 协程池负载趋势
-local fork_queue      = {}            -- srey.fork 待执行任务队列：{ func, args }，在 message_dispatch 末尾批量起协程
+local nyield = 0             -- 当前挂起等待的协程总数（closing 时用于告警）
+-- 上面那些里"登记进了 coro_sess、因而可能被超时扫描找到"的那部分。两个计数不能合并：
+-- nyield 还含 fork_wait 与 serial 排队的协程，它们裸 yield、不进 coro_sess，
+-- 拿 nyield 当扫描门槛的话，一个协程在 serial 队列里趴多久，就白扫多少秒整张 coro_sess。
+-- C 侧只有 nyield 一个计数不是漏改：coro.c 的 _coro_timeout_monitor 门禁还 AND 了
+-- timeout_heap.root，不入堆的挂起协程堆空时直接短路，且扫描体堆顶未到期即 break
+local nwait = 0
+local coro_pool       = {}-- 空闲协程池
+local coro_pool_trend = trend.new()-- 协程池负载趋势
+local fork_queue      = {}-- srey.fork 待执行任务队列：{ func, args }，在 message_dispatch 末尾批量起协程
+local serial_wakes    = {}-- srey.serial 待唤醒的队头等待者，同样在 message_dispatch 末尾摊平唤醒
 
 -- 消息类型枚举，与 C 层 MSG_TYPE 一一对应。
 ---@enum MSG_TYPE
@@ -215,7 +222,7 @@ function srey.fork_bind(f, ...)
 end
 
 ---立即在新协程中执行 func(...)（fire-and-forget）；当前协程不让出；
----新协程在本条消息 dispatch 完成后的 _drain_fork_queue 里被起，不走时间轮；
+---新协程在本条消息 dispatch 完成后由 message_dispatch 末尾的 _drain 起，不走时间轮；
 ---错误由 _coro_cb 的 xpcall 捕获并打 ERROR 日志（不会传播到主协程）。
 ---@param func fun(...) 协程任务函数
 ---@param ... any 传给 func 的参数
@@ -258,13 +265,19 @@ function srey.fork_wait(funcs)
             end
         end)
     end
+    -- 与 C 侧 coro_fork_wait 口径对齐：挂起期间计入 nyield,否则 task 关闭时只剩 fork_wait
+    -- 挂起的父协程,_closing_dispatch 会静默通过、少一条"还有协程没退"的告警
+    nyield = nyield + 1
     coroutine_yield()
+    nyield = nyield - 1
     return barrier.results
 end
 
 ---创建一个协程串行化执行器。同 task 内多协程对同一资源并发访问时串行进入，避免穿插；
 ---同一协程嵌套调用安全（ref 计数）；f 抛错由 srey.xpcall 捕获并打 ERROR 日志，锁照常释放，
 ---下个等待者继续。
+---调用返回时锁已交接给下一个等待者，但该等待者要到本条消息 dispatch 末尾才起跑
+---（与 C 侧 coro_serial_call 就地唤醒不同，原因见 _release 内注释）。
 ---@return fun(f:fun(...):any, ...):boolean,any serial 串行化调用器；返回 srey.xpcall 的 (ok, f 的首返回值)
 function srey.serial()
     local current = nil   -- 当前持锁协程
@@ -275,10 +288,17 @@ function srey.serial()
         if 0 == ref then
             local nxt = tremove(waiters, 1)
             if nxt then
-                -- 唤醒前先设 current/ref，nxt 内查询时拿到一致状态
+                -- 先设 current/ref 完成交接，nxt 醒来时拿到一致状态；此刻起其他协程进来一律排队
                 current = nxt
                 ref = 1
-                _coro_resume(nxt)
+                -- 只入队不就地 resume：Lua 协程的 resume 是在同一条 C 栈上嵌 C 帧，且 nCcalls
+                -- 从 resume 方继承（lua/ldo.c 的 lua_resume），一串不 yield 的等待者链式唤醒
+                -- 会累加到 LUAI_MAXCCALLS(200) 触顶，resume 返回 "C stack overflow"，而此处
+                -- current/ref 已写死、那个等待者永远不会被唤醒也永远不会 _release —— 整个
+                -- serial 永久死锁。改由 message_dispatch 末尾摊平唤醒，嵌套深度恒为 1。
+                -- C 侧 _coro_serial_release 就地 mco_resume 是对的：minicoro 切栈，N 层是
+                -- N 个协程各挂一帧，OS 线程栈不增长，没有这个上限
+                serial_wakes[#serial_wakes + 1] = nxt
             else
                 current = nil
             end
@@ -291,7 +311,12 @@ function srey.serial()
         local self = coro_running
         if current and current ~= self then
             waiters[#waiters + 1] = self
+            -- 与 fork_wait 同口径计入 nyield:排在 waiters 里的协程同样是"挂起没退"的,
+            -- 不计的话 task 关闭时 _closing_dispatch 看到 nyield==0 就静默通过,
+            -- 操作者拿不到"还有协程卡在临界区队列上"这条线索
+            nyield = nyield + 1
             coroutine_yield()
+            nyield = nyield - 1
             -- 被唤醒时 current=self, ref=1 已由 _release 设置
         else
             if not current then
@@ -301,32 +326,38 @@ function srey.serial()
         end
         local ok, ret = srey.xpcall(f, ...)
         _release()
-        -- _release 内若唤醒 waiter 且 waiter 在 cs 内 yield，_coro_resume 已把 coro_running 改写为 waiter；
-        -- 本协程返回上层前必须还原为 self，否则上层下次 srey.* yield 类 API 通过 _set_coro_sess 把
-        -- stale waiter 登记到 sess，后续消息错协程 resume 触发 "attempt to call a table value"
-        coro_running = self
-        -- active_lua 同样被 _coro_resume 切到 waiter，需一并还原 self，否则窗口内 task.trap 把中断 hook 装主 thread 致延迟
-        task.active(self)
         return ok, ret
     end
 end
 
----消费 fork_queue 中所有待执行任务（含嵌套 fork），逐个起新协程；
----嵌套 fork 写入同一队列尾，本次循环持续消费直到全部完成
-local function _drain_fork_queue()
-    if 0 == #fork_queue then
+---排空一条延迟队列：头索引推进而不清 nil（清了 #qu 会出 hole），末尾一次性清空，
+---O(N) 且不走 tremove 的 memmove。
+---处理 item 期间往同一队列尾追加是允许的（fork 里再 fork、被唤醒者出 cs 时再唤醒下一个），
+---本循环会继续消费到空，所以嵌套深度恒为 1
+---@param qu any[] 待排空的队列
+---@param act fun(item:any) 对每个元素执行的动作
+local function _drain(qu, act)
+    if 0 == #qu then
         return
     end
-    -- 头索引推进 + 不清 nil（避免 #fork_queue 出 hole），末尾一次性清空，O(N) 无 tremove memmove
     local i = 1
-    while i <= #fork_queue do
-        local item = fork_queue[i]
+    while i <= #qu do
+        local item = qu[i]
         i = i + 1
-        _coro_run(_coro_cb, item.func, nil, tunpack(item.args, 1, item.args.n))
+        act(item)
     end
     for j = 1, i - 1 do
-        fork_queue[j] = nil
+        qu[j] = nil
     end
+end
+---srey.fork 的排队项：待执行函数与它的参数（table.pack 形态，n 为参数个数，含 nil 洞）
+---@class ForkItem
+---@field func fun(...):any
+---@field args table  table.pack 结果：args.n 为参数个数，args[1..n] 为参数值
+---起一个 srey.fork 排队的新协程
+---@param item ForkItem
+local function _run_fork(item)
+    _coro_run(_coro_cb, item.func, nil, tunpack(item.args, 1, item.args.n))
 end
 
 ---生成全局唯一 64 位整数 ID（自增序列，由 C 层实现）
@@ -565,7 +596,9 @@ end
 function srey._coro_wait(sess, mtype, ms)
     _set_coro_sess(coro_running, sess, mtype, ms)
     nyield = nyield + 1
+    nwait = nwait + 1
     local msg = coroutine_yield()
+    nwait = nwait - 1
     nyield = nyield - 1
     assert(sess == msg.sess, "different session.")
     return msg
@@ -588,8 +621,13 @@ end
 ---@param ... any 传给 func 的参数
 function srey.timeout(ms, func, ...)
     local sess = srey.id()
-    _set_coro_sess(nil, sess, MSG_TYPE.TIMEOUT, 0, func, ...)
+    -- 顺序与 srey.sleep 对齐：core.timeout 的 ms 走 luaL_checkinteger,传 float/字符串会 longjmp,
+    -- 若先登记就留下一条 timeout==0、又无定时器、sess 也非 skid 的条目——_coro_timeout 的
+    -- timeout>0 扫描、_timeout_dispatch、_net_close_dispatch 三条清理路径全都够不着它。
+    -- 换序无副作用：ms<=0 时定时器虽当场回调,它只往消息队列 push,同 task 分发由 global CAS
+    -- 串行化,不会重入当前 Lua 栈
     core.timeout(sess, ms)
+    _set_coro_sess(nil, sess, MSG_TYPE.TIMEOUT, 0, func, ...)
 end
 
 ---@param msg Message
@@ -729,7 +767,15 @@ local function _request_dispatch(msg)
     else
         local func = func_cbs[MSG_TYPE.REQUEST]
         if not func then
-            srey.response(msg.src, msg.subtype, msg.sess, ERR_FAILED, "not register request function.")
+            -- srey.call 走 task_call,src 恒为 INVALID_TNAME、sess 恒为 0,压根回不了响应。
+            -- 此时若照旧调 srey.response,会被它自己的参数守卫拦下打出 "parameter error."，
+            -- 把"目标 task 没注册 on_requested"这个配置错误伪装成参数错误、带偏排查方向
+            if TASK_NAME.NONE == msg.src or 0 == msg.sess then
+                WARN("not register request function, subtype %s from %s.",
+                     tostring(msg.subtype), tostring(msg.src))
+            else
+                srey.response(msg.src, msg.subtype, msg.sess, ERR_FAILED, "not register request function.")
+            end
             return
         end
         _coro_run(_coro_cb, func, msg, msg.subtype, msg.sess, msg.src, msg.data, msg.size)
@@ -1372,7 +1418,9 @@ end
 local function _coro_timeout()
     local self = coro_running
     srey.xpcall(function()
-        if nyield > 0 then
+        -- 用 nwait 不用 nyield：只有 _coro_wait 挂起的协程才在 coro_sess 里，
+        -- 下面这趟走的就是它；fork_wait / serial 排队的协程扫也扫不到
+        if nwait > 0 then
             local now = srey.timer_ms()
             local cnt = 0
             local _timeout_buf = {}
@@ -1469,7 +1517,12 @@ function message_dispatch(msg)
     if dispatcher then
         dispatcher(msg)
     end
-    _drain_fork_queue()    -- srey.fork 在此起新协程
+    -- 两个队列互相喂：被唤醒的 serial 等待者可能 srey.fork，新起的协程也可能进 serial 排队并
+    -- 触发交接，故循环到两者都空为止
+    while 0 ~= #fork_queue or 0 ~= #serial_wakes do
+        _drain(fork_queue, _run_fork)-- srey.fork 在此起新协程
+        _drain(serial_wakes, _coro_resume)-- srey.serial 交接后的队头等待者在此起跑
+    end
 end
 
 return srey

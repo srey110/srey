@@ -47,6 +47,7 @@
     // 发布用的写：这条之前的读写都不会挪到它后面。x86 从 LOCK XCHG 变成一条 MOV，
     // ARM64 从 SWPAL 变成一条 STLR
     #define ATOMIC_SET_RELEASE(ptr, val) __atomic_store_n(ptr, val, __ATOMIC_RELEASE)
+    #define ATOMIC64_SET_RELEASE(ptr, val) __atomic_store_n(ptr, val, __ATOMIC_RELEASE)
     // 松散序：SET 是纯写不是 RMW，x86 上同样省掉 LOCK XCHG；
     // ADD 无论强弱都得 LOCK XADD，省的是 ARM 那边的 DMB
     #define ATOMIC_ADD_RELAXED(ptr, val) __atomic_fetch_add(ptr, val, __ATOMIC_RELAXED)
@@ -82,14 +83,21 @@
     #define ATOMIC64_GET_SEQCST(ptr) ATOMIC64_GET(ptr)
     // 发布用的写：按 CPU 分档，与上面的读一一对应
     #if defined(ARCH_ARM64)
-        // __stlr32 就是一条 store-release 指令，与 __ldar32 配对
+        // __stlr32/64 就是一条 store-release 指令，与 __ldar32/64 配对
         #define ATOMIC_SET_RELEASE(ptr, val) __stlr32((unsigned __int32 volatile *)(ptr), (unsigned __int32)(val))
+        #define ATOMIC64_SET_RELEASE(ptr, val) __stlr64((unsigned __int64 volatile *)(ptr), (unsigned __int64)(val))
     #elif defined(ARCH_ARM)
         // 32 位 ARM 默认 /volatile:iso，volatile 写不带任何顺序，只能退回 Interlocked
         #define ATOMIC_SET_RELEASE(ptr, val) ATOMIC_SET(ptr, val)
-    #else
-        // x86/x64：/volatile:ms 下 volatile 写自带 release，从 LOCK XCHG 变成一条 MOV
+        #define ATOMIC64_SET_RELEASE(ptr, val) ATOMIC64_SET(ptr, val)
+    #elif defined(ARCH_X86)
+        // 32 位 x86：volatile 写自带 release，但写 64 位会拆成两条 mov 而撕裂，64 位那条退回 Interlocked64
         #define ATOMIC_SET_RELEASE(ptr, val) (*(volatile atomic_t *)(ptr) = (val))
+        #define ATOMIC64_SET_RELEASE(ptr, val) ATOMIC64_SET(ptr, val)
+    #else
+        // x64：/volatile:ms 下 volatile 写自带 release，从 LOCK XCHG 变成一条 MOV
+        #define ATOMIC_SET_RELEASE(ptr, val) (*(volatile atomic_t *)(ptr) = (val))
+        #define ATOMIC64_SET_RELEASE(ptr, val) (*(volatile atomic64_t *)(ptr) = (val))
     #endif
     // 松散序：ADD 没有更便宜的指令，复用 Interlocked
     #define ATOMIC_ADD_RELAXED(ptr, val) ATOMIC_ADD(ptr, val)
@@ -176,6 +184,7 @@
     #define ATOMIC_SET_RELEASE(ptr, val) ATOMIC_SET(ptr, val)
     #define ATOMIC64_ADD_RELAXED(ptr, val) ATOMIC64_ADD(ptr, val)
     #define ATOMIC64_SET_RELAXED(ptr, val) ATOMIC64_SET(ptr, val)
+    #define ATOMIC64_SET_RELEASE(ptr, val) ATOMIC64_SET(ptr, val)
 #elif defined(OS_AIX)
     // xlC：AIX 原子服务同样不带内存序，用 __sync()（PowerPC 全屏障）前后夹住凑成 seq_cst。
     // AIX 没有原子交换服务，ATOMIC_SET 只能用 compare_and_swap 循环拼
@@ -251,6 +260,7 @@
     #define ATOMIC_SET_RELEASE(ptr, val) ATOMIC_SET(ptr, val)
     #define ATOMIC64_ADD_RELAXED(ptr, val) ATOMIC64_ADD(ptr, val)
     #define ATOMIC64_SET_RELAXED(ptr, val) ATOMIC64_SET(ptr, val)
+    #define ATOMIC64_SET_RELEASE(ptr, val) ATOMIC64_SET(ptr, val)
 #else
     #error "atomic ops: unsupported compiler (need GCC/Clang, MSVC, Sun Studio on Solaris, or xlC on AIX)"
 #endif

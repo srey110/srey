@@ -136,8 +136,7 @@ function CtxMethods:text(code, body)
     self.responded = true
 end
 function CtxMethods:json(code, tbl)
-    http.response(self.fd, self.skid, code,
-        { ["Content-Type"] = "application/json" }, tbl)
+    http.response(self.fd, self.skid, code, nil, tbl)
     self.responded = true
 end
 function CtxMethods:html(code, body)

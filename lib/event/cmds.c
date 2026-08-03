@@ -397,7 +397,13 @@ static int32_t _udp_opt_cb(struct watcher_ctx *watcher, struct sock_ctx *skctx,
         break;
     case UDP_OPT_TTL:
         if (AF_INET == family) {
+            // IPv4 这两个选项的 optval 宽度两边不一样,只能各按各的来:Winsock 要 4 字节,
+            // 给 1 字节直接 WSAEFAULT;BSD/macOS 的 ip(4) 约定是 u_char。IPv6 侧无此分歧,统一 4 字节
+#ifdef EV_IOCP
+            int32_t ttl = (int32_t)arg->ttl;
+#else
             uint8_t ttl = arg->ttl;
+#endif
             rtn = setsockopt(skctx->fd, IPPROTO_IP, IP_MULTICAST_TTL, (const char *)&ttl, sizeof(ttl));
         } else if (AF_INET6 == family) {
             int32_t hops = (int32_t)arg->ttl;
@@ -406,7 +412,12 @@ static int32_t _udp_opt_cb(struct watcher_ctx *watcher, struct sock_ctx *skctx,
         break;
     case UDP_OPT_LOOP:
         if (AF_INET == family) {
+            // optval 宽度分歧同 UDP_OPT_TTL
+#ifdef EV_IOCP
+            int32_t loop = arg->loop ? 1 : 0;
+#else
             uint8_t loop = (uint8_t)(arg->loop ? 1 : 0);
+#endif
             rtn = setsockopt(skctx->fd, IPPROTO_IP, IP_MULTICAST_LOOP, (const char *)&loop, sizeof(loop));
         } else if (AF_INET6 == family) {
             int32_t loop = arg->loop ? 1 : 0;

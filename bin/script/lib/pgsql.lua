@@ -8,6 +8,7 @@ local srey   = require("lib.srey")
 local stmt   = require("lib.pgsql_stmt")
 local pgsql  = require("pgsql")
 local reader = require("pgsql.reader")
+local ppub   = require("lib.pgsql_pub")-- 失败原因与 err 契约，见该模块头部
 
 -- pgsql_ctx：PostgreSQL 连接上下文，每实例对应一条持久连接。
 local ctx = class("pgsql_ctx")
@@ -98,12 +99,31 @@ function ctx:ping()
     return true
 end
 
+-- 带 err 契约的操作在入口共用的两件事：复位 err、挡下 connect() 进行中。
+-- 返回 true 表示调用方应立即失败返回。抄成一份份的话，改契约要手工改遍每个入口
+---@return boolean busy connect() 进行中返回 true（此时 err 已置 ppub.BUSY）
+function ctx:_busy()
+    self.err = ""
+    if self.connecting then
+        self.err = ppub.BUSY
+        return true
+    end
+    return false
+end
+-- 写 err 并返回 false 的合并写法，让"置原因"与"报失败"成为一步，不会只做一半
+---@param err string 失败原因
+---@return boolean always false
+function ctx:_fail(err)
+    self.err = err
+    return false
+end
+
 ---执行简单查询（Query 协议）
 ---@param sql string SQL 语句
 ---@param format PG_FORMAT? 已废弃：简单查询协议服务端恒以文本格式应答，传 BINARY 无效，结果固定按 TEXT 解析
 ---@return boolean|_pgsql_reader_ctx result reader=结果集；true=无结果集 OK；false=失败或 connect() 进行中
 function ctx:query(sql, format)
-    if self.connecting then
+    if self:_busy() then
         return false
     end
     if format and PG_FORMAT.TEXT ~= format then
@@ -113,16 +133,11 @@ function ctx:query(sql, format)
     local fd, skid = self.pg:sock_id()
     local pgpack, _ = srey.syn_send(fd, skid, pack, size, 0)
     if not pgpack then
-        return false
+        return self:_fail(ppub.SEND)
     end
-    local pktype = pgsql.pack_type(pgpack)
-    if PGPACK_TYPE.ERR == pktype then
-        self.err = pgsql.erro(pgpack) or ""
-        return false
-    end
-    if PGPACK_TYPE.OK ~= pktype then
-        self.err = string.format("unexpected pgsql response type: %s", tostring(pktype))
-        return false
+    local e = ppub.check_type(pgpack, PGPACK_TYPE.OK)
+    if e then
+        return self:_fail(e)
     end
     local rd = reader.new(pgpack, PG_FORMAT.TEXT)
     if rd then
@@ -140,18 +155,18 @@ end
 ---@param format PG_FORMAT? execute 时结果列格式，默认 BINARY
 ---@return any|false stmt pgsql_stmt_ctx 实例；失败或 connect() 进行中返回 false
 function ctx:prepare(name, sql, nparam, oids, format)
-    if self.connecting then
+    if self:_busy() then
         return false
     end
     local pack, size = pgsql.pack_stmt_prepare(name, sql, nparam or 0, oids)
     local fd, skid = self.pg:sock_id()
     local pgpack, _ = srey.syn_send(fd, skid, pack, size, 0)
     if not pgpack then
-        return false
+        return self:_fail(ppub.SEND)
     end
-    if PGPACK_TYPE.ERR == pgsql.pack_type(pgpack) then
-        self.err = pgsql.erro(pgpack) or ""
-        return false
+    local e = ppub.check_type(pgpack, PGPACK_TYPE.OK)
+    if e then
+        return self:_fail(e)
     end
     return stmt.new(self, name, format)
 end
@@ -163,74 +178,89 @@ end
 ---@return integer|false fmt 成功时为 format（0=TEXT / 1=BINARY）；失败或 connect() 进行中返回 false
 ---@return integer? ncol 列数（仅成功时返回）
 function ctx:copy_in_begin(sql)
-    if self.connecting then
+    if self:_busy() then
         return false
     end
     local pack, size = pgsql.pack_query(sql)
     local fd, skid = self.pg:sock_id()
     local pgpack, _ = srey.syn_send(fd, skid, pack, size, 0)
     if not pgpack then
-        return false
+        return self:_fail(ppub.SEND)
     end
-    local pktype = pgsql.pack_type(pgpack)
-    if PGPACK_TYPE.COPY_IN ~= pktype then
-        if PGPACK_TYPE.ERR == pktype then
-            self.err = pgsql.erro(pgpack) or ""
-            return false
-        end
-        return false
+    local e = ppub.check_type(pgpack, PGPACK_TYPE.COPY_IN)
+    if e then
+        return self:_fail(e)
     end
     return pgsql.copy_in_info(pgpack)
 end
 
 ---发送一块 CopyData（不等待响应，可多次调用）
+---调用方必须逐块检查返回值：服务端对"少收了几块"是无感知的，某块被丢弃后
+---copy_in_done() 仍会收到 CommandComplete，一次残缺的 COPY 会被报成成功
 ---@param data string|lightuserdata 数据；字符串时长度自动取得
 ---@param size integer? data 为 lightuserdata 时必填
+---@return boolean ok 已发出 true；data 为 nil、connect() 进行中或发送失败返回 false
 function ctx:copy_in_data(data, size)
-    if not data or self.connecting then
-        return
+    if self:_busy() then
+        return false
+    end
+    if not data then
+        return self:_fail("copy_in_data: data is nil")
     end
     local pack, psize = pgsql.pack_copy_data(data, size)
     local fd, skid = self.pg:sock_id()
-    srey.send(fd, skid, pack, psize, 0)
+    if not srey.send(fd, skid, pack, psize, 0) then
+        return self:_fail(ppub.SEND)
+    end
+    return true
 end
 
 ---发送 CopyDone，等待服务端 CommandComplete + ReadyForQuery
 ---@return boolean ok 成功 true；失败或 connect() 进行中 false
 function ctx:copy_in_done()
-    if self.connecting then
+    if self:_busy() then
         return false
     end
     local pack, size = pgsql.pack_copy_done()
     local fd, skid = self.pg:sock_id()
     local pgpack, _ = srey.syn_send(fd, skid, pack, size, 0)
     if not pgpack then
-        return false
+        return self:_fail(ppub.SEND)
     end
-    local pktype = pgsql.pack_type(pgpack)
-    if PGPACK_TYPE.OK == pktype then
-        self.affected = pgsql.affected_rows(pgpack)
-        return true
+    local e = ppub.check_type(pgpack, PGPACK_TYPE.OK)
+    if e then
+        return self:_fail(e)
     end
-    self.err = pgsql.erro(pgpack) or ""
-    return false
+    self.affected = pgsql.affected_rows(pgpack)
+    return true
 end
 
 ---发送 CopyFail 中止 COPY IN 流程，等待服务端 ErrorResponse + ReadyForQuery
 ---@param msg string? 错误原因描述
 ---@return boolean ok 服务端已确认中止返回 true；通信失败或 connect() 进行中返回 false
+---@return string? reason 成功时为服务端 ErrorResponse 文本（通常是所传 msg 的回显）；失败时为 nil，原因走 erro()
 function ctx:copy_in_abort(msg)
-    if self.connecting then
+    if self:_busy() then
         return false
     end
     local pack, size = pgsql.pack_copy_fail(msg or "")
     local fd, skid = self.pg:sock_id()
     local pgpack, _ = srey.syn_send(fd, skid, pack, size, 0)
     if not pgpack then
-        return false
+        return self:_fail(ppub.SEND)
     end
-    self.err = pgsql.erro(pgpack) or ""
-    return true
+    -- 本函数是文件里唯一漏掉正向类型判定的:原先对任何包都返 true。带 LISTEN 时一条抢先
+    -- 到达的 NOTIFICATION 会被当成"服务端已确认中止",真正的 ErrorResponse + ReadyForQuery
+    -- 留在流里被下一个请求的等待者接走,连接从此错位一格
+    -- 期望的就是 ERR 包：CopyFail 的正常应答即 ErrorResponse
+    local e = ppub.check_type(pgpack, PGPACK_TYPE.ERR)
+    if e then
+        return self:_fail(e)
+    end
+    -- 成功路径不写 err：CopyFail 的正常应答就是 ErrorResponse，把它塞进 err 会让本文件
+    -- "err 非空 == 上一次操作失败" 这条读法出现唯一例外——调用方随后查 erro() 就会把
+    -- 一次正常中止判成失败。服务端文本改由第二返回值给出，信息不丢
+    return true, pgsql.erro(pgpack)
 end
 
 -- COPY OUT --
@@ -240,22 +270,18 @@ end
 ---@return lightuserdata|false data 数据指针；失败或 connect() 进行中返回 false
 ---@return integer? size 成功时为字节数
 function ctx:copy_out(sql)
-    if self.connecting then
+    if self:_busy() then
         return false
     end
     local pack, size = pgsql.pack_query(sql)
     local fd, skid = self.pg:sock_id()
     local pgpack, _ = srey.syn_send(fd, skid, pack, size, 0)
     if not pgpack then
-        return false
+        return self:_fail(ppub.SEND)
     end
-    local pktype = pgsql.pack_type(pgpack)
-    if PGPACK_TYPE.COPY_OUT ~= pktype then
-        if PGPACK_TYPE.ERR == pktype then
-            self.err = pgsql.erro(pgpack) or ""
-            return false
-        end
-        return false
+    local e = ppub.check_type(pgpack, PGPACK_TYPE.COPY_OUT)
+    if e then
+        return self:_fail(e)
     end
     return pgsql.copy_out_data(pgpack)
 end
@@ -273,13 +299,19 @@ end
 
 ---切换数据库：关闭当前连接 → 更新库名 → 重连（重连后旧 prepare 语句失效，代次 +1）
 ---@param database string 目标数据库名
----@return boolean ok 切换并重连成功 true（connect() 进行中时 fail-fast 返回 false，避免 quit() 误挂外层正在建立的连接）
+---@return boolean ok 切换并重连成功 true（connect() 进行中时 fail-fast 返回 false，避免 quit() 误挂外层正在建立的连接；
+---库名超 63 字节时不断连直接返 false，原连接与原库名均保持不变）
 function ctx:selectdb(database)
-    if self.connecting then
+    if self:_busy() then
+        return false
+    end
+    -- 先校验再断连：库名超长时 set_db 保留旧名，若照旧先 quit 就白断一条可用连接，
+    -- 还会用原库名重连成功、把切库失败报成功
+    if not self.pg:set_db(database) then
+        self.err = "pgsql: database name exceeds 63 bytes"
         return false
     end
     self:quit()
-    self.pg:set_db(database)
     return self:connect()
 end
 
@@ -309,14 +341,16 @@ end
 ---更新连接认证信息（下次重连时生效）
 ---@param user string 新用户名
 ---@param password string 新密码
+---@return boolean ok 成功 true；用户名或密码超 63 字节时 false，两者均保持原值
 function ctx:set_userpwd(user, password)
-    self.pg:set_userpwd(user, password)
+    return self.pg:set_userpwd(user, password)
 end
 
 ---更新目标数据库名（下次重连时生效）
 ---@param database string 新数据库名
+---@return boolean ok 成功 true；库名超 63 字节时 false，库名保持原值
 function ctx:set_db(database)
-    self.pg:set_db(database)
+    return self.pg:set_db(database)
 end
 
 ---获取当前配置的数据库名

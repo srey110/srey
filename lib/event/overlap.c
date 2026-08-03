@@ -63,11 +63,15 @@ typedef struct overlap_udp_ctx {
     sock_ctx ol_s;          // 发送操作的OVERLAPPED上下文
     int32_t addrlen;        // netaddr_ctx中地址结构的长度
     int32_t status;         // 状态标志位
+    uint32_t retry_ms;      // 发送重试当前退避间隔(ms)
     DWORD bytes_r;          // 接收字节数
     DWORD bytes_s;          // 发送字节数
     DWORD flag;             // WSARecvFrom标志
     size_t wb_size;         // 当前 buf_s 中字节累计
     uint64_t skid;          // 连接唯一ID
+    uint64_t retry_until;   // 发送重试的下次到期时刻（ms 绝对时间），0=未退避
+    watcher_ctx *watcher;   // 所属 watcher（发送重试 tick 自摘用）
+    ev_tick send_tick;      // 发送资源紧张时的重试节点（cb 非 NULL 表示已挂）
     tda_ctx tda;            // 字节告警翻倍状态
     cbs_ctx cbs;            // 回调函数集合
     IOV_TYPE wsabuf_s;      // 发送缓冲区描述符
@@ -658,6 +662,13 @@ void _iocp_add_bufs_trypost(sock_ctx *skctx, off_buf_ctx *buf) {
         _evpub_off_buf_release(buf);
         return;
     }
+    // ConnectEx 未完成就 WSASend 会以 WSAENOTCONN 失败,与 unix 侧保持同一条拒绝规则
+    if (_olp_on_recv_cb != skctx->ev_cb) {
+        LOG_WARN("ev_send before connection established on fd %d, disconnect.", (int32_t)oltcp->ol_s.fd);
+        _evpub_off_buf_release(buf);
+        _iocp_disconnect(&oltcp->ol_r, 1);
+        return;
+    }
 #if WITH_SSL
     // SSL 握手期间禁止发送业务数据，否则会中断握手；命中即丢数据并立即关连接
     if (BIT_CHECK(oltcp->status, STATUS_AUTHSSL)
@@ -734,7 +745,8 @@ static void _olp_on_connect_cb_err(watcher_ctx *watcher, overlap_tcp_ctx *oltcp)
 static void _olp_on_connect_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes) {
     skctx->ev_cb = _olp_on_recv_cb;
     overlap_tcp_ctx *oltcp = UPCAST(skctx, overlap_tcp_ctx, ol_r);
-    if (ERROR_SUCCESS != oltcp->ol_r.overlapped.Internal
+    if (BIT_CHECK(oltcp->status, STATUS_ERROR)
+        || ERROR_SUCCESS != oltcp->ol_r.overlapped.Internal
         || ERR_OK != setsockopt(oltcp->ol_r.fd, SOL_SOCKET, SO_UPDATE_CONNECT_CONTEXT, NULL, 0)) {
         _olp_on_connect_cb_err(watcher, oltcp);
         return;
@@ -1236,6 +1248,15 @@ static void _olp_on_recvfrom_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD byt
     }
 }
 // 提交WSASendTo异步UDP发送请求；addr 拷到 oludp->addr_s 持久化(队列元素异步期间可能被复用)
+// 四种返回:
+//   ERR_OK      已投递,完成包稍后到,调用方停手等它
+//   1           这一条彻底毁了、fd 还能用,丢掉接着发队列里的下一条
+//   2           这一条只是暂时发不出去(资源紧张之类),原样留在队头等下次驱动
+//   ERR_FAILED  fd 本身已废,须关连接
+// 1 与 2 必须分开:混成一种就等于拿资源紧张当丢数据的理由。
+// 报文超长(WSAEMSGSIZE)、目标地址族与 socket 不符、未开广播权限这类只毁一条包,而整条 UDP 端点
+// 是所有对端共用的,不能因为一个包就拆掉。分类与 unix 的 _usk_udp_sendmsg_once 一一对应:
+// 那边 ERR_RW_RETRIABLE 一族对应这里的 2,其余软错误对应 1
 static int32_t _olp_post_sendto(overlap_udp_ctx *oludp, sendto_ctx *buf) {
     ZERO(&oludp->ol_s.overlapped, sizeof(oludp->ol_s.overlapped));
     oludp->bytes_s = 0;
@@ -1251,10 +1272,111 @@ static int32_t _olp_post_sendto(overlap_udp_ctx *oludp, sendto_ctx *buf) {
                             netaddr_size(&oludp->addr_s),
                             &oludp->ol_s.overlapped,
                             NULL)) {
-        if (ERROR_IO_PENDING != ERRNO) {
+        int32_t erro = (int32_t)ERRNO;
+        if (ERROR_IO_PENDING != erro) {
+            if (WSAEBADF == erro
+                || WSAENOTSOCK == erro) {
+                return ERR_FAILED;
+            }
+            // 资源紧张(非分页池吃紧、未决重叠 I/O 过多)是瞬时的,数据还好好的。
+            // 与 unix 侧一致不打日志:重试路径会反复经过这里,记一条就是刷屏
+            if (WSAEWOULDBLOCK == erro
+                || WSAENOBUFS == erro) {
+                return 2;
+            }
+            LOG_WARN("UDP sendto dropped one datagram on fd %d: %s.",
+                     (int32_t)oludp->ol_s.fd, ERRORSTR(erro));
+            return 1;
+        }
+    }
+    return ERR_OK;
+}
+// 摘除重试节点;幂等,未挂时直接返回。释放 oludp 前必须调用,否则 watcher->ticks 里留悬空节点
+static inline void _olp_sendto_retry_stop(overlap_udp_ctx *oludp) {
+    if (NULL == oludp->send_tick.cb) {
+        return;
+    }
+    oludp->send_tick.cb = NULL;
+    _evpub_tick_remove(oludp->watcher, &oludp->send_tick);
+}
+static int32_t _olp_sendto_drain(watcher_ctx *watcher, overlap_udp_ctx *oludp); // 前向声明：与下面的重试 tick 互相调用
+// 重试 tick:再排一次队。drain 内部按结果自行摘除或续挂,这里只负责退避与致命错误善后
+static uint32_t _olp_on_sendto_retry(void *ud, uint64_t now_ms) {
+    overlap_udp_ctx *oludp = ud;
+    // 已进关闭流程:不再投递,摘掉自己等在途完成包把 oludp 释放掉
+    if (BIT_CHECK(oludp->status, STATUS_ERROR)) {
+        _olp_sendto_retry_stop(oludp);
+        return EVENT_WAIT_TIMEOUT;
+    }
+    if (now_ms < oludp->retry_until) {
+        return (uint32_t)(oludp->retry_until - now_ms);
+    }
+    BIT_SET(oludp->status, STATUS_SENDING);
+    if (ERR_FAILED == _olp_sendto_drain(oludp->watcher, oludp)) {
+        BIT_REMOVE(oludp->status, STATUS_SENDING);
+        _iocp_disconnect(&oludp->ol_r, 1);
+        return EVENT_WAIT_TIMEOUT;
+    }
+    // drain 已摘除:投出去了或队列空了,不必再来
+    if (NULL == oludp->send_tick.cb) {
+        return EVENT_WAIT_TIMEOUT;
+    }
+    if (oludp->retry_ms < EVENT_WAIT_TIMEOUT) {
+        oludp->retry_ms *= 2;
+        if (oludp->retry_ms > EVENT_WAIT_TIMEOUT) {
+            oludp->retry_ms = EVENT_WAIT_TIMEOUT;
+        }
+    }
+    oludp->retry_until = now_ms + oludp->retry_ms;
+    return oludp->retry_ms;
+}
+// 队头因资源紧张发不出去时挂上周期重试。IOCP 没有"可写"事件可等,不自驱就只能等下一次
+// ev_sendto —— 队头堵住等于该 fd 整条发送路径停摆(后来的包全排在它后面),业务若就此不再
+// 发送就一直停到关连接。做法与 usock.c 的 accept EMFILE 退避同构:cb 非 NULL 表示已挂。
+// 从 EVENT_TICK_MIN 起步、翻倍到 EVENT_WAIT_TIMEOUT 封顶,免得资源持续紧张时 10ms 空转
+static void _olp_sendto_retry(watcher_ctx *watcher, overlap_udp_ctx *oludp) {
+    if (NULL != oludp->send_tick.cb) {
+        return;
+    }
+    oludp->watcher = watcher;
+    oludp->retry_ms = EVENT_TICK_MIN;
+    oludp->retry_until = timer_cur_ms(&watcher->timer) + EVENT_TICK_MIN;
+    oludp->send_tick.cb = _olp_on_sendto_retry;
+    oludp->send_tick.ud = oludp;
+    _evpub_tick_add(watcher, &oludp->send_tick);
+}
+// 从发送队列取下一条投递:毁掉的就地丢掉再取下一条,直到有一条投递出去(此时 data 归完成
+// 回调释放,STATUS_SENDING 保持置位)、队列发空(清掉 STATUS_SENDING),或撞上 fd 级错误。
+// 软错误不产生完成包,所以后续的包必须在这里接着发,不能坐等完成回调驱动。
+// 暂时发不出去(_olp_post_sendto 返回 2)的那条原样留在队头,清掉 STATUS_SENDING 并挂上重试 tick
+// 自驱;因此改用 peek:投递成功或确认丢弃才出队,期间不会有别的线程 push(IOCP 完成包由本 watcher 取)。
+// 返回 ERR_FAILED 表示 fd 已废,由调用方关连接
+static int32_t _olp_sendto_drain(watcher_ctx *watcher, overlap_udp_ctx *oludp) {
+    int32_t rtn;
+    void *data;
+    sendto_ctx *sendbuf;
+    while (NULL != (sendbuf = queue_peek(&oludp->buf_s))) {
+        rtn = _olp_post_sendto(oludp, sendbuf);
+        if (2 == rtn) {
+            _olp_sendto_retry(watcher, oludp);
+            BIT_REMOVE(oludp->status, STATUS_SENDING);
+            return ERR_OK;
+        }
+        oludp->wb_size -= sendbuf->len;
+        data = sendbuf->data;
+        queue_pop(&oludp->buf_s);
+        if (ERR_OK == rtn) {
+            _olp_sendto_retry_stop(oludp);
+            return ERR_OK;
+        }
+        FREE(data);
+        if (ERR_FAILED == rtn) {
+            _olp_sendto_retry_stop(oludp);
             return ERR_FAILED;
         }
     }
+    _olp_sendto_retry_stop(oludp);
+    BIT_REMOVE(oludp->status, STATUS_SENDING);
     return ERR_OK;
 }
 // WSASendTo完成回调：释放当前缓冲区，继续发送队列中下一条或清除发送标志
@@ -1282,19 +1404,12 @@ static void _olp_on_sendto_cb(watcher_ctx *watcher, sock_ctx *skctx, DWORD bytes
         }
         LOG_WARN("UDP sendto dropped one datagram on fd %d: %s.", (int32_t)oludp->ol_s.fd, ERRORSTR(err));
     }
-    if (0 == queue_size(&oludp->buf_s)) {
-        BIT_REMOVE(oludp->status, STATUS_SENDING);
-        return;
-    }
-    sendto_ctx *sendbuf = queue_pop(&oludp->buf_s);
-    oludp->wb_size -= sendbuf->len;
-    if (ERR_OK != _olp_post_sendto(oludp, sendbuf)) {
-        FREE(sendbuf->data);
+    if (ERR_OK != _olp_sendto_drain(watcher, oludp)) {
         BIT_REMOVE(oludp->status, STATUS_SENDING);
         _iocp_disconnect(&oludp->ol_r, 1);
     }
 }
-void _iocp_add_bufs_trysendto(sock_ctx *skctx, sendto_ctx *buf) {
+void _iocp_add_bufs_trysendto(watcher_ctx *watcher, sock_ctx *skctx, sendto_ctx *buf) {
     overlap_udp_ctx *oludp = UPCAST(skctx, overlap_udp_ctx, ol_r);
     // 已在 error 关闭流程：拒收新数据。
     if (BIT_CHECK(oludp->status, STATUS_ERROR)) {
@@ -1315,14 +1430,12 @@ void _iocp_add_bufs_trysendto(sock_ctx *skctx, sendto_ctx *buf) {
                  (int32_t)oludp->ol_s.fd, oludp->wb_size);
     }
     queue_push(&oludp->buf_s, buf);
-    if (BIT_CHECK(oludp->status, STATUS_SENDING)) {
+    if (NULL != oludp->send_tick.cb
+        || BIT_CHECK(oludp->status, STATUS_SENDING)) {
         return;
     }
     BIT_SET(oludp->status, STATUS_SENDING);
-    sendto_ctx *sendbuf = queue_pop(&oludp->buf_s);
-    oludp->wb_size -= sendbuf->len;
-    if (ERR_OK != _olp_post_sendto(oludp, sendbuf)) {
-        FREE(sendbuf->data);
+    if (ERR_OK != _olp_sendto_drain(watcher, oludp)) {
         BIT_REMOVE(oludp->status, STATUS_SENDING);
         _iocp_disconnect(&oludp->ol_r, 1);
     }
@@ -1347,11 +1460,16 @@ static sock_ctx *_olp_new_udp(SOCKET fd, cbs_ctx *cbs, ud_cxt *ud) {
     oludp->wsabuf_r.len = sizeof(oludp->buf);
     queue_init(&oludp->buf_s, sizeof(sendto_ctx), INIT_SENDBUF_LEN);
     oludp->wb_size = 0;
+    oludp->watcher = NULL;
+    oludp->retry_ms = 0;
+    oludp->retry_until = 0;
+    oludp->send_tick.cb = NULL;
     tda_init(&oludp->tda, WB_WARN_INIT_SIZE);
     return &oludp->ol_r;
 }
 void _iocp_free_udp(sock_ctx *skctx) {
     overlap_udp_ctx *oludp = UPCAST(skctx, overlap_udp_ctx, ol_r);
+    _olp_sendto_retry_stop(oludp);// 先摘重试节点,否则 watcher->ticks 里留一个指向已释放内存的节点
     CLOSE_SOCK(oludp->ol_r.fd);
     _evpub_sendto_clear(&oludp->buf_s);
     queue_free(&oludp->buf_s);

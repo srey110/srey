@@ -167,7 +167,6 @@ static void _tw_loop(void *arg) {
     ctx->jiffies = timer_cur_ms(&ctx->timer);
     uint64_t shrink_start = ctx->jiffies;
     while (0 == ATOMIC_GET(&ctx->exit)) {
-        ctx->nloop++;
         /*  将外部通过 tw_add 提交的节点分发到对应槽位（reqadd 仅 tw 主线程独占消费，走 pop_sc_batch）。
          *  节点链接由 list_push_tail 设置，无需 tw_add 预置。
          *  先排空，再清标志，再二次排空：避免清标志与生产者入队之间的竞态导致漏唤醒 */
@@ -209,7 +208,6 @@ static void _tw_loop(void *arg) {
 void tw_init(tw_ctx *ctx, uint32_t capacity, const thread_hooks *hooks) {
     ATOMIC_SET(&ctx->exit, 0);
     ctx->jiffies = 0;
-    ctx->nloop = 0;
     ATOMIC_SET(&ctx->reqadd_pending, 0);
     mutex_init(&ctx->mu);
     cond_init(&ctx->cond);

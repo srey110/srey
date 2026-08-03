@@ -704,23 +704,6 @@ const char *router_req_query(router_req *ctx, const char *key, size_t *lens) {
 void *router_req_body(router_req *ctx, size_t *lens) {
     return http_data(ctx->pack, lens);
 }
-// [data,lens) 是否为合法 RFC 7230 field-name(非空且全为 tchar)。只挡 NUL/CRLF 不够:
-// 键里混进 ':' 或 ' ' 会让对端把一行拆成两个字段, 攻击者可借此塞进一个自选的头值
-static int32_t _router_is_token(const char *data, size_t lens) {
-    unsigned char c;
-    size_t i;
-    if (0 == lens) {
-        return 0;
-    }
-    for (i = 0; i < lens; i++) {
-        c = (unsigned char)data[i];
-        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
-            || NULL != memchr("!#$%&'*+-.^_`|~", c, sizeof("!#$%&'*+-.^_`|~") - 1))) {
-            return 0;
-        }
-    }
-    return 1;
-}
 // 组装完整 HTTP 响应并通过 ev_send 推出去; 自动写 Content-Length, content_type 非 NULL 时
 // 自动写 Content-Type, extra 由调用方追加 (不可重复 CL / CT / Transfer-Encoding)
 // bw 内部托管 (binary_init(NULL,...) 模式), ev_send copy=0 转移 bw.data 所有权给框架,
@@ -740,6 +723,9 @@ static void _router_send_core(task_ctx *task, SOCKET fd, uint64_t skid, int32_t 
     // 非法头一律整条丢弃而不截断、更不 abort: 截断头名等于把它改成另一个名字发上线缆, 比不发更糟;
     // 而 http_pack_head2 对 CR/LF 是断言退进程, 让业务数据能打死服务端不可接受, 故在此先筛掉
     char k[128];
+    // 尾部 http_pack_content 还要写 "Content-Length: %zu" 加两个 CRLF, 判定时先扣掉这段。
+    // 20 是 %zu 的最长十进制位数(UINT64_MAX 有 20 位), 32 位平台上只会多留不会少留
+    const size_t tail = sizeof("Content-Length: ") - 1 + 20 + CRLF_SIZE * 2;
     for (int32_t i = 0; i < extra_n; i++) {
         if (NULL == extra[i].key.data
             || 0 == extra[i].key.lens
@@ -747,15 +733,26 @@ static void _router_send_core(task_ctx *task, SOCKET fd, uint64_t skid, int32_t 
             LOG_WARN("router: header key length %zu invalid, dropped.", extra[i].key.lens);
             continue;
         }
-        if (!_router_is_token((const char *)extra[i].key.data, extra[i].key.lens)) {
+        if (!is_token((const char *)extra[i].key.data, extra[i].key.lens)) {
             LOG_WARN("router: header key is not a valid token, dropped.");
             continue;
         }
-        // 单条头就撑爆 MAX_HEADLENS 的话, 对端(含 srey 自己的 http 解析器)会整包解析失败,
-        // 发出去等于白发; 与其让两端都静默不如在这里丢掉并留下告警
-        if (extra[i].key.lens + extra[i].value.lens + sizeof(": \r\n") - 1 > MAX_HEADLENS) {
-            LOG_WARN("router: header %zu bytes exceeds MAX_HEADLENS, dropped.",
-                     extra[i].key.lens + extra[i].value.lens);
+        // 帧长头归 http_pack_content 独占: 再叠一条 Content-Length 或补一条 Transfer-Encoding,
+        // 对端(含 srey 自己的解析器)判为请求走私、整包丢弃并断连。
+        // 去 const 是因为 buf_icompare 收非 const 指针, 它只读不写
+        if (buf_icompare((buf_ctx *)&extra[i].key, "Content-Length", sizeof("Content-Length") - 1)
+            || buf_icompare((buf_ctx *)&extra[i].key, "Transfer-Encoding", sizeof("Transfer-Encoding") - 1)) {
+            LOG_WARN("router: framing header must not come from extra, dropped.");
+            continue;
+        }
+        // MAX_HEADLENS 管的是整个头部块, 逐条判不够: 三条各 2000 字节的头单看都合法, 拼起来
+        // 6000 字节, 对端(含 srey 自己的 http 解析器)照样整包解析失败, 发出去等于白发。
+        // 故按已写入的 bw.offset 累计判。超长值先单独挡一道: 直接相加会在 lens 接近 SIZE_MAX
+        // 时回绕成小值放行, 让下面的 memchr 读飞
+        if (extra[i].value.lens > MAX_HEADLENS
+            || bw.offset + tail + extra[i].key.lens + extra[i].value.lens
+               + sizeof(": \r\n") - 1 > MAX_HEADLENS) {
+            LOG_WARN("router: header would push head block past MAX_HEADLENS, dropped.");
             continue;
         }
         if (extra[i].value.lens > 0

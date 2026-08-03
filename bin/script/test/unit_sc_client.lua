@@ -250,6 +250,25 @@ runner.run("sc_client", function(t)
         sc_client.unsubscribe_shared(SC, "t14/x", "g2")
     end
 
+    -- ── 子段 14b(本次修复):重叠 pattern 复用同一 group 名,各调一次而非平方级 ──
+    -- C 侧按(命中节点, group)逐条单发,Lua 侧旧实现再对所有匹配 pattern 扇出,两次扇出相乘:
+    -- 两个重叠 pattern 同名 group → 2 条 deliver × 2 个 handler = 每个各被调 2 次(共 4 次)。
+    -- 修复后 deliver wire 带回命中的 pattern,按 (pattern, group) 直查唯一 handler
+    do
+        local nwide = 0
+        local nexact = 0
+        sc_client.subscribe_shared(SC, "t14b/#", "gw", function() nwide = nwide + 1 end)
+        sc_client.subscribe_shared(SC, "t14b/temp", "gw", function() nexact = nexact + 1 end)
+        sc_client.publish(SC, "t14b/temp", "p")
+        _wait(function() return nwide >= 1 and nexact >= 1 end)
+        -- 必须多等一轮:重复投递与首次是同一批发出的,_wait 一满足就返回会在重复到达前就断言完
+        srey.sleep(100)
+        t:eq(1, nwide, "overlap+同 group: 通配 pattern 的 handler 只调 1 次")
+        t:eq(1, nexact, "overlap+同 group: 精确 pattern 的 handler 只调 1 次")
+        sc_client.unsubscribe_shared(SC, "t14b/#", "gw")
+        sc_client.unsubscribe_shared(SC, "t14b/temp", "gw")
+    end
+
     -- ── 子段 15(本次修复):请求失败回滚不误删已成功的旧 handler ──────────
     -- 旧版失败无条件置 nil,会连带抹掉之前成功订阅的 handler(C 端仍 deliver→Lua 静默丢弃)。
     -- 用 TASK_NAME.NONE 让 srey.request 在 task_grab 前早退返 nil,稳定触发失败分支。

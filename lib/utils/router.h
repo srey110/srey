@@ -425,12 +425,14 @@ void router_req_json(router_req *ctx, int32_t code, const char *json, size_t len
 /// <param name="lens">长度</param>
 void router_req_html(router_req *ctx, int32_t code, const char *body, size_t lens);
 /// <summary>
-/// 自定义响应; extra 为附加头, 不得包含 Content-Length / Content-Type / Transfer-Encoding
-/// (本函数按 body_len 自动写 Content-Length)。
+/// 自定义响应; extra 为附加头。Content-Type 就经 extra 传(本函数自己不写, 与 router_req_text /
+/// _json / _html 不同 —— 那三个各自写死类型且不收 extra); Content-Length / Transfer-Encoding
+/// 不能传, 本函数按 body_len 自动写 Content-Length, 再叠一条对端会判为请求走私。
 /// 附加头逐条校验, 不合规者整条丢弃(仅 LOG_WARN, 无返回值可查): 头名为空或 >= 128 字节、
-/// 头名不是合法 RFC 7230 token(非空、全 tchar, 故 NUL/CR/LF/':'/空格 都被挡)或 >= 128 字节、
-/// 头值 data 为 NULL 或含 NUL/CR/LF。截断头名等于改名发上线缆, 故一律不截断;
-/// 头值本身不限长, 但整个头部块受 http.c 的 MAX_HEADLENS 约束, 过大对端会解析失败
+/// 头名不是合法 RFC 7230 token(非空、全 tchar, 故 NUL/CR/LF/':'/空格 都被挡)、
+/// 头名为 Content-Length / Transfer-Encoding、头值 data 为 NULL 或含 NUL/CR/LF、
+/// 以及该条会让整个头部块越过 http.c 的 MAX_HEADLENS(按已写入字节累计判, 不是逐条判)。
+/// 截断头名等于改名发上线缆, 故一律不截断; 头值本身不限长, 只受上面那条累计上限约束
 /// </summary>
 /// <param name="ctx">router_req</param>
 /// <param name="code">状态码</param>

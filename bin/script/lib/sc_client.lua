@@ -90,6 +90,7 @@ end
 ---@field payload string 载荷(空为 "")
 ---@field meta string? 发布者元数据(无则 nil)
 ---@field group string 共享投递组名;普通投递为 ""
+---@field pattern string 命中的订阅模式;普通投递为 ""。共享投递按 (pattern, group) 直查唯一 handler
 ---@param data lightuserdata
 ---@param size integer
 function sc_client._on_deliver(data, size)
@@ -102,25 +103,25 @@ function sc_client._on_deliver(data, size)
         return   -- wire 截断/损坏
     end
     local topic = d.topic
+    if 1 == d.kind then
+        -- 共享:wire 带回命中的 pattern,按 (pattern, group) 直查唯一 handler。
+        -- 发送侧本就按(节点,组)逐条单发,这里若再对所有匹配 pattern 扇出,两次扇出相乘
+        -- 会让重叠 pattern 复用同一 group 名时 handler 被调 N² 次
+        local groups = _shared_handlers[d.pattern]
+        local handler = groups and groups[d.group]
+        if handler then
+            srey.xpcall(handler, topic, d.payload, d.publisher, d.meta)
+        end
+        return
+    end
+    -- 普通:同 topic 可命中多个 pattern,各自的 handler 都要调(重复由业务自行去重)
     -- topic 段切分对本次投递内所有 pattern 一致,提到循环外只做一次
     local lits = split(topic, "/")
     -- snapshot 匹配 handler 列表,避免 handler 内 subscribe/unsubscribe 改表触发迭代 UB
     local matched = {}
-    if 1 == d.kind then
-        -- 共享:按 (匹配 pattern, 投递 group) 精确取 handler,多 group 同 topic 互不串
-        for pattern, groups in pairs(_shared_handlers) do
-            if _topic_match(pattern, lits) then
-                local handler = groups[d.group]
-                if handler then
-                    matched[#matched + 1] = handler
-                end
-            end
-        end
-    else
-        for pattern, handler in pairs(_handlers) do
-            if _topic_match(pattern, lits) then
-                matched[#matched + 1] = handler
-            end
+    for pattern, handler in pairs(_handlers) do
+        if _topic_match(pattern, lits) then
+            matched[#matched + 1] = handler
         end
     end
     for i = 1, #matched do

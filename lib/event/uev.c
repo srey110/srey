@@ -612,15 +612,13 @@ static void _uev_free_pipe(watcher_ctx *watcher) {
                 }
                 break;
             case CMD_UNLSN:
-                // CMD_UNLSN：减 _cmd_listen 时建立的每 watcher 监听占位 ref
-                // CMD_ADDACP：减 _on_accept_cb 跨投递前的 ref 占位
-                // 两者都需关闭 fd（listen 端口 / 未注册的 accept 连接）+ _uev_try_freelsn
-            case CMD_ADDACP:
-                CLOSE_SOCK(cmds[j].sk.fd);
+            case CMD_LSN_UNREF:
                 _uev_try_freelsn(cmds[j].args.lsn);
                 break;
-            case CMD_LSN_UNREF:
-                // ev_unlisten 末尾减占位 ref: worker 已退出 loop, 无 events[] 迭代, 立即释放安全
+            case CMD_ADDACP:
+                // 与上面两条相反：这条的 fd 是刚 accept 出来、尚未注册到任何结构的连接，
+                // 除命令自身外无人持有，必须在此关掉
+                CLOSE_SOCK(cmds[j].sk.fd);
                 _uev_try_freelsn(cmds[j].args.lsn);
                 break;
             case CMD_PROPS:

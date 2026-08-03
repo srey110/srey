@@ -494,29 +494,31 @@ int32_t pgsql_init(pgsql_ctx *pg, const char *ip, uint16_t port, struct evssl_ct
     pg->evssl = evssl;
     return ERR_OK;
 }
-void pgsql_set_userpwd(pgsql_ctx *pg, const char *user, const char *password) {
+int32_t pgsql_set_userpwd(pgsql_ctx *pg, const char *user, const char *password) {
     if (strlen(user) > sizeof(pg->user) - 1) {
         LOG_ERROR("pgsql user name exceeds %zu bytes: %zu, keep the old one.",
                   sizeof(pg->user) - 1, strlen(user));
-        return;
+        return ERR_FAILED;
     }
     if (strlen(password) > sizeof(pg->password) - 1) {
         LOG_ERROR("pgsql password exceeds %zu bytes: %zu, keep the old one.",
                   sizeof(pg->password) - 1, strlen(password));
-        return;
+        return ERR_FAILED;
     }
     secure_zero(pg->user, sizeof(pg->user));
     secure_zero(pg->password, sizeof(pg->password));
     safe_fill_str(pg->user, sizeof(pg->user), user);
     safe_fill_str(pg->password, sizeof(pg->password), password);
+    return ERR_OK;
 }
-void pgsql_set_db(pgsql_ctx *pg, const char *database) {
+int32_t pgsql_set_db(pgsql_ctx *pg, const char *database) {
     if (strlen(database) > sizeof(pg->database) - 1) {
         LOG_ERROR("pgsql database name exceeds %zu bytes: %zu, keep the old one.",
                   sizeof(pg->database) - 1, strlen(database));
-        return;
+        return ERR_FAILED;
     }
     safe_fill_str(pg->database, sizeof(pg->database), database);
+    return ERR_OK;
 }
 const char *pgsql_get_db(pgsql_ctx *pg) {
     return pg->database;

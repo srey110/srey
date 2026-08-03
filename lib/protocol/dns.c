@@ -257,7 +257,12 @@ static char *_dns_parse_data(char *buf, size_t buflen, char *reader, uint16_t n,
     }
     return reader;
 }
-dns_ip *dns_parse_pack(char *buf, size_t buflen, size_t *cnt, uint16_t id) {
+dns_ip *dns_parse_pack(char *buf, size_t buflen, size_t *cnt, uint16_t id, int32_t *nodata) {
+    // 入口统一归零：往下所有失败路径都不再单独写 cnt(写了也是无操作),
+    // "返回 NULL 时 cnt 恒为 0"这条对外契约由这一句独家保证；
+    // 唯一的非零写入是函数末尾成功路径的 *cnt = index
+    *cnt = 0;
+    SET_PTR(nodata, 0);
     if (buflen < sizeof(dns_head)) {
         return NULL;
     }
@@ -280,7 +285,11 @@ dns_ip *dns_parse_pack(char *buf, size_t buflen, size_t *cnt, uint16_t id) {
     uint16_t nadd = ntohs(head.add_count);
     uint32_t total = (uint32_t)nans + nauth + nadd;
     if (0 == total) {
-        *cnt = 0;
+        // 走到这里 TC 与 rcode 都已查过,三段计数全零就是最常见的 NOERROR/NODATA 形态:
+        // AUTHORITY 里那条 SOA 是 SHOULD 不是 MUST,缓存转发器普遍不带。漏置 nodata 的话
+        // 这个最常见的形状仍会白跑一次 TCP 重查(下面那个 0 == total 是 maxrec 钳零,
+        // 属报文声称有记录却没有字节的畸形,不能当 NODATA)
+        SET_PTR(nodata, 1);
         return NULL;
     }
     /* 按 DNS label 格式安全跳过全部查询问题 */
@@ -326,7 +335,6 @@ dns_ip *dns_parse_pack(char *buf, size_t buflen, size_t *cnt, uint16_t id) {
         total = (uint32_t)maxrec;
     }
     if (0 == total) {
-        *cnt = 0;
         return NULL;
     }
     dns_ip *dnsips;
@@ -343,7 +351,15 @@ dns_ip *dns_parse_pack(char *buf, size_t buflen, size_t *cnt, uint16_t id) {
     if (NULL != reader) {
         reader = _dns_parse_data(buf, buflen, reader, nadd, dnsips, &index, &jump_budget);
     }
-    if (NULL == reader) {
+    // index==0 是报文合法但一条 A/AAAA 都没解出来（最常见是 NOERROR/NODATA：只有 AAAA 或 MX
+    // 记录的名字查 A，应答段空、授权段带一条 SOA）。dnsips 是 MALLOC 出来的、一个字节都没写过，
+    // 连同解析失败一起返 NULL，免得调用方按"非 NULL 即成功"去读 ips[0].ip 读到未初始化内存。
+    // 两者对调用方的意义不同，用 nodata 区分：它是服务端给出的完整答复，换传输方式重查也是同一结果
+    if (NULL == reader
+        || 0 == index) {
+        if (NULL != reader) {
+            SET_PTR(nodata, 1);
+        }
         FREE(dnsips);
         return NULL;
     }

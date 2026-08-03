@@ -6,6 +6,7 @@
 local srey   = require("lib.srey")
 local pgsql  = require("pgsql")
 local reader = require("pgsql.reader")
+local ppub   = require("lib.pgsql_pub")-- 与 pgsql.lua 共用的失败原因，见该模块头部
 
 ---@enum PGPACK_TYPE
 PGPACK_TYPE = {
@@ -29,6 +30,15 @@ PG_FORMAT = {
 -- self.affected  ：最近一次执行影响的行数。
 -- self.err       ：最近一次错误信息。
 local ctx = class("pgsql_stmt_ctx")
+-- 与 pgsql.lua 的同名方法同义：写 err 并返回 false，让"置原因"与"报失败"成为一步。
+-- 这边只有 execute 一个带 err 契约的入口，且 busy 判定读的是 owner.connecting，
+-- 故不设 _busy，入口的复位仍写在 execute 里
+---@param err string 失败原因
+---@return boolean always false
+function ctx:_fail(err)
+    self.err = err
+    return false
+end
 
 ---构造函数
 ---@param owner any pgsql_ctx Lua 包装实例（持有实时 generation 与 C pgsql 对象）
@@ -49,26 +59,23 @@ end
 ---@param bind any? pgsql_bind_ctx 参数绑定上下文
 ---@return boolean|_pgsql_reader_ctx result reader=结果集；true=无结果集 OK；false=失败、语句失效或 owner 正在 connect() 中
 function ctx:execute(bind)
+    self.err = ""
     if self.owner.connecting then
-        return false
+        return self:_fail(ppub.BUSY)
     end
     if self.gen ~= self.owner.generation then
         WARN("pgsql stmt invalidated by reconnect, please re-prepare.")
-        return false
+        return self:_fail("pgsql: stmt invalidated by reconnect")
     end
     local fd, skid = self.pg:sock_id()
     local pack, size = pgsql.pack_stmt_execute(self.name, bind, self.format)
     local pgpack, _ = srey.syn_send(fd, skid, pack, size, 0)
     if not pgpack then
-        return false
+        return self:_fail(ppub.SEND)
     end
-    local pktype = pgsql.pack_type(pgpack)
-    if PGPACK_TYPE.ERR == pktype then
-        self.err = pgsql.erro(pgpack) or ""
-        return false
-    end
-    if PGPACK_TYPE.OK ~= pktype then
-        return false
+    local e = ppub.check_type(pgpack, PGPACK_TYPE.OK)
+    if e then
+        return self:_fail(e)
     end
     local rd = reader.new(pgpack, self.format)
     if rd then

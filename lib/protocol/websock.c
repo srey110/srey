@@ -227,21 +227,6 @@ int32_t websock_secprot_match(const char *data, size_t lens, pack_type *sectype)
     }
     return ERR_FAILED;
 }
-// 判断 [data,lens) 是否为合法 RFC 7230 token(非空且全为 tchar)
-static int32_t _ws_is_token(const char *data, size_t lens) {
-    if (0 == lens) {
-        return 0;
-    }
-    unsigned char c;
-    for (size_t i = 0; i < lens; i++) {
-        c = (unsigned char)data[i];
-        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
-            || NULL != memchr("!#$%&'*+-.^_`|~", c, sizeof("!#$%&'*+-.^_`|~") - 1))) {
-            return 0;
-        }
-    }
-    return 1;
-}
 // 每段去前后 OWS、跳过空段、校验为合法 token(非法整体拒绝),压实后返回有效数量,ERR_FAILED失败
 static int32_t _websock_check_secprot(buf_ctx *segs, int32_t cnt) {
     int32_t n = 0;
@@ -252,7 +237,7 @@ static int32_t _websock_check_secprot(buf_ctx *segs, int32_t cnt) {
         if (NULL == data) {
             continue;
         }
-        if (!_ws_is_token(data, lens)) {
+        if (!is_token(data, lens)) {
             return ERR_FAILED;
         }
         segs[n].data = data;

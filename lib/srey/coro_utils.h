@@ -17,7 +17,8 @@
 /// <param name="ipv6">1 ipv6 0 ipv4</param>
 /// <param name="udp">1 优先使用udp查询，0 只使用tcp</param>
 /// <param name="cnt">ip数量</param>
-/// <returns>dns_ip 需要FREE</returns>
+/// <returns>dns_ip 需要FREE，返回非 NULL 时 cnt 恒 &gt;= 1；解析失败或该域名没有对应记录时返回 NULL 并置 cnt 为 0。
+/// 服务端明确答复"无此记录"（NOERROR/NODATA，如只有 AAAA 记录的名字查 A）时不再回退 TCP，直接返 NULL</returns>
 struct dns_ip *dns_lookup(task_ctx *task, const char *domain, int32_t ipv6, int32_t udp, size_t *cnt);
 /// <summary>
 /// websocket链接
@@ -150,11 +151,11 @@ int32_t pgsql_cancel(pgsql_ctx *pg);
 /// <param name="pg">pgsql_ctx</param>
 void pgsql_quit(pgsql_ctx *pg);
 /// <summary>
-/// 选择数据库
+/// 选择数据库（断开重连，库名在重连握手时生效）
 /// </summary>
 /// <param name="pg">pgsql_ctx</param>
 /// <param name="database">数据库</param>
-/// <returns>ERR_OK 成功</returns>
+/// <returns>ERR_OK 成功；库名超 63 字节时不断连直接返 ERR_FAILED，原连接与原库名均保持不变</returns>
 int32_t pgsql_selectdb(pgsql_ctx *pg, const char *database);
 /// <summary>
 /// ping
@@ -401,24 +402,31 @@ int32_t mongo_refreshsession(mongo_session *session);
 /// <param name="session">mongo_session</param>
 void mongo_freesession(mongo_session *session);
 /// <summary>
-/// 事务开始
+/// 事务开始。一条连接同时只允许一个活跃事务（CRUD 命令的事务上下文取自连接上的当前绑定），
+/// 同一 session 重复调用视为开新事务（递增 txnNumber）
 /// </summary>
 /// <param name="session">mongo_session</param>
-void mongo_begin(mongo_session *session);
+/// <returns>ERR_OK 成功；该连接上已有别的 session 处于事务中时返回 ERR_FAILED，且不改动任何状态</returns>
+int32_t mongo_begin(mongo_session *session);
 /// <summary>
 /// 事务提交
 /// </summary>
 /// <param name="session">mongo_session</param>
 /// <param name="options">可选 其他参数 document (writeConcern comment)</param>
 /// <returns>ERR_OK 成功。组包失败或网络失败时事务状态原样保留，可换参数重试同一事务；
-/// 服务端有响应即释放事务状态（命令本身失败也不再可重试），与 Lua 侧 mongo.lua 一致</returns>
+/// 服务端有响应即释放事务状态（命令本身失败也不再可重试），与 Lua 侧 mongo.lua 一致。
+/// 连接已不再绑定该 session（重连清过绑定，或另一个 session 接管了这条连接）时不发送、
+/// 直接返回 ERR_FAILED：commit/abort 必须发在事务所在的那条连接上，换了连接发也是白发。
+/// 被这条拒绝后 session 的本地事务状态（options / started / txnNumber）原样保留，不漏也不脏，
+/// 但那个事务在服务端已随旧连接消失、无从挽回：调用方应 mongo_freesession 丢弃该 session，
+/// 或等连接空闲后 mongo_begin 开一个新事务（begin 会递增 txnNumber 并重建 options）</returns>
 int32_t mongo_commit(mongo_session *session, char *options);
 /// <summary>
 /// 事务回滚
 /// </summary>
 /// <param name="session">mongo_session</param>
 /// <param name="options">可选 其他参数 document (writeConcern comment)</param>
-/// <returns>ERR_OK 成功。状态保留/释放的时机同 mongo_commit</returns>
+/// <returns>ERR_OK 成功。状态保留/释放的时机、以及连接不再绑定该 session 时的处置同 mongo_commit</returns>
 int32_t mongo_rollback(mongo_session *session, char *options);
 /// <summary>
 /// kcp 同步建立会话:kcp_start 后挂起当前协程,等 event 线程实际建会话完成(或 conv 冲突失败)后返回;须在协程内调用。

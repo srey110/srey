@@ -155,8 +155,8 @@ SOCKET _evpub_udp(netaddr_ctx *addr) {
                  &bytes,
                  NULL,
                  NULL) < ERR_OK) {
-        CLOSE_SOCK(fd);
         LOG_ERROR("WSAIoctl(%d, SIO_UDP_CONNRESET...) failed. %s", (int32_t)fd, ERRORSTR(ERRNO));
+        CLOSE_SOCK(fd);
         return INVALID_SOCK;
     }
 #endif
@@ -167,8 +167,8 @@ SOCKET _evpub_udp(netaddr_ctx *addr) {
         return INVALID_SOCK;
     }
     if (ERR_OK != bind(fd, netaddr_addr(addr), netaddr_size(addr))) {
-        CLOSE_SOCK(fd);
         LOG_ERROR("%s", ERRORSTR(ERRNO));
+        CLOSE_SOCK(fd);
         return INVALID_SOCK;
     }
     return fd;
@@ -373,10 +373,10 @@ int32_t _evpub_sock_send(SOCKET fd, queue_ctx *buf_s, size_t *nsend, void *arg) 
 }
 void _evpub_add_bufs_sendto(watcher_ctx *watcher, sock_ctx *skctx, sendto_ctx *buf, int32_t tried) {
 #ifdef EV_IOCP
-    // IOCP 侧 _iocp_add_bufs_trysendto 本身已是独立的 try-then-queue 实现，不需要外部传入的尝试状态
-    (void)watcher;
+    // IOCP 侧 _iocp_add_bufs_trysendto 本身已是独立的 try-then-queue 实现，不需要外部传入的尝试状态；
+    // watcher 要用：发送卡在资源紧张上时靠它挂重试 tick
     (void)tried;
-    _iocp_add_bufs_trysendto(skctx, buf);
+    _iocp_add_bufs_trysendto(watcher, skctx, buf);
 #else
     _uev_add_bufs_sendto(watcher, skctx, buf, tried);
 #endif

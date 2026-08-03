@@ -932,25 +932,25 @@ static int32_t _lpgsql_try_connect(lua_State *lua) {
 /// <param name="self" type="userdata">pgsql 对象</param>
 /// <param name="user" type="string">新用户名</param>
 /// <param name="password" type="string">新密码</param>
-/// <returns>无</returns>
+/// <returns type="boolean">成功 true；用户名或密码超 63 字节时 false，两者均保持原值</returns>
 static int32_t _lpgsql_set_userpwd(lua_State *lua) {
     LPUB_UD_ARG(lua, pgsql_ctx, MT_PGSQL, ud, "pgsql freed");
     const char *user = luaL_checkstring(lua, 2);
     const char *password = luaL_checkstring(lua, 3);
-    pgsql_set_userpwd(*ud, user, password);
-    return 0;
+    lua_pushboolean(lua, ERR_OK == pgsql_set_userpwd(*ud, user, password) ? 1 : 0);
+    return 1;
 }
 /// <summary>
 /// 更新目标数据库名（下次重连时生效）
 /// </summary>
 /// <param name="self" type="userdata">pgsql 对象</param>
 /// <param name="database" type="string">新数据库名</param>
-/// <returns>无</returns>
+/// <returns type="boolean">成功 true；库名超 63 字节时 false，库名保持原值</returns>
 static int32_t _lpgsql_set_db(lua_State *lua) {
     LPUB_UD_ARG(lua, pgsql_ctx, MT_PGSQL, ud, "pgsql freed");
     const char *database = luaL_checkstring(lua, 2);
-    pgsql_set_db(*ud, database);
-    return 0;
+    lua_pushboolean(lua, ERR_OK == pgsql_set_db(*ud, database) ? 1 : 0);
+    return 1;
 }
 /// <summary>
 /// 获取当前配置的数据库名

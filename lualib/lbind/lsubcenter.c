@@ -166,9 +166,10 @@ static int32_t _lsc_set_meta(lua_State *lua) {
 /// </summary>
 /// <param name="data" type="lightuserdata">REQ_SC_DELIVER 消息 data 指针</param>
 /// <param name="size" type="integer">data 字节数</param>
-/// <returns type="table?">解析结果表 { kind, publisher, topic, payload, meta?, group }:
+/// <returns type="table?">解析结果表 { kind, publisher, topic, payload, meta?, group, pattern }:
 ///     kind 0 普通/1 共享;publisher 0=已失效;topic/payload 空为 "";meta 无则字段缺省;
-///     group 共享投递组名,普通投递为 "";wire 截断/损坏返 nil</returns>
+///     group 共享投递组名,普通投递为 "";pattern 命中的订阅模式,普通投递为 "",
+///     共享投递用 (pattern, group) 精确定位 handler;wire 截断/损坏返 nil</returns>
 static int32_t _lsc_parse_deliver(lua_State *lua) {
     LUACHECK_LUDATA(lua, 1);
     const void *data = lua_touserdata(lua, 1);
@@ -178,7 +179,7 @@ static int32_t _lsc_parse_deliver(lua_State *lua) {
         lua_pushnil(lua);
         return 1;
     }
-    lua_createtable(lua, 0, 6);
+    lua_createtable(lua, 0, 7);
     lua_pushinteger(lua, d.kind);
     lua_setfield(lua, -2, "kind");
     lua_pushinteger(lua, (lua_Integer)d.publisher);
@@ -193,6 +194,8 @@ static int32_t _lsc_parse_deliver(lua_State *lua) {
     }
     lua_pushlstring(lua, d.glen > 0 ? d.group : "", d.glen);
     lua_setfield(lua, -2, "group");
+    lua_pushlstring(lua, d.ptlen > 0 ? d.pattern : "", d.ptlen);
+    lua_setfield(lua, -2, "pattern");
     return 1;
 }
 /// <summary>解析 query_retained 响应 buffer 为数组,内部逐条 sc_parse_retained;取代 Lua string.unpack。</summary>

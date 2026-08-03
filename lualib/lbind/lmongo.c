@@ -862,11 +862,11 @@ static int32_t _lmongo_session_free(lua_State *lua) {
 /// 开始事务（递增 txnNumber，构建事务选项 BSON，设置 mongo->session）
 /// </summary>
 /// <param name="self" type="userdata">session 对象</param>
-/// <returns>无</returns>
+/// <returns type="boolean">成功 true；该连接上已有别的 session 处于事务中时 false</returns>
 static int32_t _lmongo_session_begin(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_session, MT_MONGO_SESSION, psession, "session freed");
-    mongo_begin(*psession);
-    return 0;
+    lua_pushboolean(lua, ERR_OK == mongo_begin(*psession) ? 1 : 0);
+    return 1;
 }
 /// <summary>
 /// 事务操作完成后清理（释放 options 并解除 mongo->session 绑定）
@@ -915,10 +915,19 @@ static int32_t _lmongo_session_pack_endsession(lua_State *lua) {
 /// </summary>
 /// <param name="self" type="userdata">session 对象</param>
 /// <param name="opts" type="lightuserdata?">附加 BSON 选项</param>
-/// <returns type="lightuserdata?">命令数据指针；options 达 MAX_PACK_SIZE 被丢弃时返回 nil</returns>
+/// <returns type="lightuserdata?">命令数据指针；options 达 MAX_PACK_SIZE 被丢弃、
+/// 或连接已不再绑定该 session 时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_session_pack_commit(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_session, MT_MONGO_SESSION, psession, "session freed");
+    // 组包取的是连接当前绑定的 session（组包侧 TRANSACTION_OPTIONS），与入参分叉时
+    // 会把本次提交挂到别人的事务上。C 侧同一道守卫在 mongo_commit 入口，Lua 走
+    // pack + 自行发送不经过它，故在此重复一遍，理由见 coro_utils.c 的 mongo_begin
+    if ((*psession)->mongo->session != *psession) {
+        LOG_WARN("mongo connection no longer bound to this session, commit rejected.");
+        lua_pushnil(lua);
+        return 1;
+    }
     char *opts = _lmongo_get_opts(lua, 2);
     size_t size;
     void *pack = mongo_pack_committransaction(*psession, opts, &size);
@@ -933,10 +942,17 @@ static int32_t _lmongo_session_pack_commit(lua_State *lua) {
 /// </summary>
 /// <param name="self" type="userdata">session 对象</param>
 /// <param name="opts" type="lightuserdata?">附加 BSON 选项</param>
-/// <returns type="lightuserdata?">命令数据指针；options 达 MAX_PACK_SIZE 被丢弃时返回 nil</returns>
+/// <returns type="lightuserdata?">命令数据指针；options 达 MAX_PACK_SIZE 被丢弃、
+/// 或连接已不再绑定该 session 时返回 nil</returns>
 /// <returns type="integer?">数据长度</returns>
 static int32_t _lmongo_session_pack_abort(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_session, MT_MONGO_SESSION, psession, "session freed");
+    // 同 pack_commit：Lua 侧不经过 mongo_rollback，那道守卫在此重复
+    if ((*psession)->mongo->session != *psession) {
+        LOG_WARN("mongo connection no longer bound to this session, rollback rejected.");
+        lua_pushnil(lua);
+        return 1;
+    }
     char *opts = _lmongo_get_opts(lua, 2);
     size_t size;
     void *pack = mongo_pack_aborttransaction(*psession, opts, &size);
