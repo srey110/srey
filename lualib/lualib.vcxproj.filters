@@ -147,6 +147,18 @@
     <ClCompile Include="lbind\lmysql.c">
       <Filter>lbind</Filter>
     </ClCompile>
+    <ClCompile Include="lbind\lpgsql.c">
+      <Filter>lbind</Filter>
+    </ClCompile>
+    <ClCompile Include="lbind\lmqtt.c">
+      <Filter>lbind</Filter>
+    </ClCompile>
+    <ClCompile Include="lbind\lbson.c">
+      <Filter>lbind</Filter>
+    </ClCompile>
+    <ClCompile Include="lbind\lmongo.c">
+      <Filter>lbind</Filter>
+    </ClCompile>
     <ClCompile Include="lbind\lprot.c">
       <Filter>lbind</Filter>
     </ClCompile>

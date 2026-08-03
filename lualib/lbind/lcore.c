@@ -1,5 +1,13 @@
 ﻿#include "lbind/lpub.h"
 
+// multi_request / multi_call 投递一次所需的全部东西。两个 int32 挨着放在 8 字节字段之前,不留 padding
+typedef struct {
+    int32_t    count; // grab 成功数;0 表示无处可投
+    int32_t    copy;  // 载荷 copy 语义,透传给 task_multi_*
+    task_ctx **dsts;  // grab 到的目标数组
+    void      *data;  // 载荷,可为 NULL
+    size_t     size;  // 载荷字节数
+}_multi_args;
 typedef struct _task_entry {
     name_t handle;
     char name[64];
@@ -33,11 +41,6 @@ static int32_t _lcore_timeout(lua_State *lua) {
     task_timeout(task, sess, time, NULL);
     return 0;
 }
-static name_t _task_handle(lua_State *lua, int32_t idx) {
-    return (LUA_TSTRING == lua_type(lua, idx))
-        ? task_find_name(g_loader, lua_tostring(lua, idx))
-        : (name_t)luaL_checkinteger(lua, idx);
-}
 // data 参数可选:nil/none 视为无载荷(NULL,0,copy=1);否则同 lpub_check_buf(string/lightuserdata,非法类型 argerror)
 static void *_lcore_opt_buf(lua_State *lua, int32_t idx, size_t *size, int32_t *copy) {
     int32_t type = lua_type(lua, idx);
@@ -59,7 +62,7 @@ static void *_lcore_opt_buf(lua_State *lua, int32_t idx, size_t *size, int32_t *
 /// <param name="copy" type="integer?">是否复制数据，默认 1（复制）</param>
 /// <returns type="boolean">grab 到目标并投递 true；目标不存在 false</returns>
 static int32_t _lcore_call(lua_State *lua) {
-    name_t handle = _task_handle(lua, 1);
+    name_t handle = lpub_task_handle(lua, 1);
     subtype_t reqtype = (subtype_t)luaL_checkinteger(lua, 2);
     void *data;
     size_t size;
@@ -77,7 +80,8 @@ static int32_t _lcore_call(lua_State *lua) {
     return 1;
 }
 // 校验 dsts table 类型 + 逐元素类型(string/integer 名或 nil)。成功返回长度(>=0);
-// dsts 非 table 或含非法元素返回 -1(不 longjmp,由调用方释放 copy=0 后 luaL_error)。
+// dsts 非 table 或含非法元素返回 -1。内部的 luaL_len 会走 __len 元方法、也会对非整数结果自行抛错,
+// 所以调用方必须在接管 copy=0 缓冲之前调它——抛出时那块内存还没有主人。
 static int32_t _check_multi_names(lua_State *lua, int32_t idx) {
     if (LUA_TTABLE != lua_type(lua, idx)) {
         return -1;
@@ -98,7 +102,7 @@ static int32_t _check_multi_names(lua_State *lua, int32_t idx) {
 }
 // 按 _check_multi_names 已校验的长度 n(>0) 从 dsts table(栈位置 idx)逐元素 grab,填充 task_ctx*[n],
 // *cnt 出参为实际 grab 成功数(跳过 nil/NONE/不存在)。调用方 FREE 返回值并对前 *cnt 个 ungrab。
-// 元素类型已校验,循环内 _task_handle/task_grab 不 longjmp,可在其它资源就绪后安全调用。
+// 元素类型已校验,循环内 lpub_task_handle/task_grab 不 longjmp,可在其它资源就绪后安全调用。
 static task_ctx **_grab_multi_names(lua_State *lua, int32_t idx, int32_t n, int32_t *cnt) {
     task_ctx **dsts;
     MALLOC(dsts, sizeof(task_ctx *) * (size_t)n);
@@ -107,7 +111,7 @@ static task_ctx **_grab_multi_names(lua_State *lua, int32_t idx, int32_t n, int3
     for (int32_t i = 0; i < n; i++) {
         lua_rawgeti(lua, idx, i + 1);
         if (LUA_TNIL != lua_type(lua, -1)) {
-            t = task_grab(g_loader, _task_handle(lua, -1));
+            t = task_grab(g_loader, lpub_task_handle(lua, -1));
             if (NULL != t) {
                 dsts[count++] = t;
             }
@@ -116,6 +120,34 @@ static task_ctx **_grab_multi_names(lua_State *lua, int32_t idx, int32_t n, int3
     }
     *cnt = count;
     return dsts;
+}
+// multi_request / multi_call 的共同前半段:校验 dsts、取载荷、逐个 grab。
+// 返回 grab 成功数;返回 0 表示无处可投,此时载荷已按 copy 释放、数组已 FREE,调用方直接返回即可,
+// 非 0 时调用方投递完必须调 _multi_done。
+// 校验必须排在取载荷之前,理由见 _check_multi_names
+static int32_t _multi_prepare(lua_State *lua, int32_t bufidx, _multi_args *ma) {
+    int32_t n = _check_multi_names(lua, 1);
+    if (n < 0) {
+        return luaL_error(lua, "dsts must be a table of task name(string/integer) or nil");
+    }
+    ma->count = 0;
+    ma->dsts = NULL;
+    ma->data = _lcore_opt_buf(lua, bufidx, &ma->size, &ma->copy);
+    if (n > 0) {
+        ma->dsts = _grab_multi_names(lua, 1, n, &ma->count);
+    }
+    if (0 == ma->count) {
+        CHECK_COPY_FREE(ma->data, ma->copy);
+        FREE(ma->dsts);
+    }
+    return ma->count;
+}
+// 投递之后的收尾:逐个 ungrab 并释放数组
+static void _multi_done(_multi_args *ma) {
+    for (int32_t i = 0; i < ma->count; i++) {
+        task_ungrab(ma->dsts[i]);
+    }
+    FREE(ma->dsts);
 }
 /// <summary>
 /// 广播请求：把同一份 data 投递给多个 task,各 dst 在 _request 回调中独立 task_response 回 src(共用 sess)。
@@ -132,32 +164,14 @@ static int32_t _lcore_multi_request(lua_State *lua) {
     LPUB_CUR_TASK(lua, src);
     subtype_t reqtype = (subtype_t)luaL_checkinteger(lua, 2);
     uint64_t sess = (uint64_t)luaL_checkinteger(lua, 3);
-    void *data;
-    size_t size;
-    int32_t copy;
-    data = _lcore_opt_buf(lua, 4, &size, &copy);
-    int32_t n = _check_multi_names(lua, 1);
-    if (n <= 0) {
-        CHECK_COPY_FREE(data, copy);
-        if (n < 0) {
-            return luaL_error(lua, "dsts must be a table of task name(string/integer) or nil");
-        }
+    _multi_args ma;
+    if (0 == _multi_prepare(lua, 4, &ma)) {
         lua_pushinteger(lua, 0);
         return 1;
     }
-    int32_t count;
-    task_ctx **dsts = _grab_multi_names(lua, 1, n, &count);
-    if (0 == count) {
-        CHECK_COPY_FREE(data, copy);
-        FREE(dsts);
-        lua_pushinteger(lua, 0);
-        return 1;
-    }
-    int32_t valid = task_multi_request(dsts, count, src, reqtype, sess, data, size, copy);
-    for (int32_t i = 0; i < count; i++) {
-        task_ungrab(dsts[i]);
-    }
-    FREE(dsts);
+    int32_t valid = task_multi_request(ma.dsts, ma.count, src, reqtype, sess,
+                                       ma.data, ma.size, ma.copy);
+    _multi_done(&ma);
     lua_pushinteger(lua, valid);
     return 1;
 }
@@ -172,30 +186,12 @@ static int32_t _lcore_multi_request(lua_State *lua) {
 /// <returns>无</returns>
 static int32_t _lcore_multi_call(lua_State *lua) {
     subtype_t reqtype = (subtype_t)luaL_checkinteger(lua, 2);
-    void *data;
-    size_t size;
-    int32_t copy;
-    data = _lcore_opt_buf(lua, 3, &size, &copy);
-    int32_t n = _check_multi_names(lua, 1);
-    if (n <= 0) {
-        CHECK_COPY_FREE(data, copy);
-        if (n < 0) {
-            return luaL_error(lua, "dsts must be a table of task name(string/integer) or nil");
-        }
+    _multi_args ma;
+    if (0 == _multi_prepare(lua, 3, &ma)) {
         return 0;
     }
-    int32_t count;
-    task_ctx **dsts = _grab_multi_names(lua, 1, n, &count);
-    if (0 == count) {
-        CHECK_COPY_FREE(data, copy);
-        FREE(dsts);
-        return 0;
-    }
-    task_multi_call(dsts, count, reqtype, data, size, copy);
-    for (int32_t i = 0; i < count; i++) {
-        task_ungrab(dsts[i]);
-    }
-    FREE(dsts);
+    task_multi_call(ma.dsts, ma.count, reqtype, ma.data, ma.size, ma.copy);
+    _multi_done(&ma);
     return 0;
 }
 /// <summary>
@@ -209,7 +205,7 @@ static int32_t _lcore_multi_call(lua_State *lua) {
 /// <param name="copy" type="integer?">是否复制数据，默认 1（复制）</param>
 /// <returns type="boolean">grab 到目标并投递 true；目标不存在 false</returns>
 static int32_t _lcore_request(lua_State *lua) {
-    name_t handle = _task_handle(lua, 1);
+    name_t handle = lpub_task_handle(lua, 1);
     subtype_t reqtype = (subtype_t)luaL_checkinteger(lua, 2);
     uint64_t sess = (uint64_t)luaL_checkinteger(lua, 3);
     void *data;
@@ -240,7 +236,7 @@ static int32_t _lcore_request(lua_State *lua) {
 /// <param name="copy" type="integer?">是否复制数据，默认 1（复制）</param>
 /// <returns type="boolean">grab 到目标并投递 true；目标不存在 false</returns>
 static int32_t _lcore_response(lua_State *lua) {
-    name_t handle = _task_handle(lua, 1);
+    name_t handle = lpub_task_handle(lua, 1);
     subtype_t reqtype = (subtype_t)luaL_checkinteger(lua, 2);
     uint64_t sess = (uint64_t)luaL_checkinteger(lua, 3);
     int32_t erro = (int32_t)luaL_checkinteger(lua, 4);
@@ -438,16 +434,16 @@ static int32_t _lcore_send_multi(lua_State *lua) {
     lua_Integer i;
     for (i = 0; i < n_fds; i++) {
         lua_rawgeti(lua, 1, i + 1);
-        if (!lua_isnumber(lua, -1)) {
+        if (!lua_isinteger(lua, -1)) {
             CHECK_COPY_FREE(data, copy);
-            return luaL_error(lua, "fds[%d] must be a number, got %s",
+            return luaL_error(lua, "fds[%d] must be an integer, got %s",
                               (int)(i + 1), lua_typename(lua, lua_type(lua, -1)));
         }
         lua_pop(lua, 1);
         lua_rawgeti(lua, 2, i + 1);
-        if (!lua_isnumber(lua, -1)) {
+        if (!lua_isinteger(lua, -1)) {
             CHECK_COPY_FREE(data, copy);
-            return luaL_error(lua, "skids[%d] must be a number, got %s",
+            return luaL_error(lua, "skids[%d] must be an integer, got %s",
                               (int)(i + 1), lua_typename(lua, lua_type(lua, -1)));
         }
         lua_pop(lua, 1);
@@ -535,13 +531,16 @@ static int32_t _lcore_udp_leave(lua_State *lua) {
 /// </summary>
 /// <param name="fd" type="integer">UDP socket fd</param>
 /// <param name="skid" type="integer">连接 skid</param>
-/// <param name="ttl" type="integer">1-255,默认 1 仅本网段</param>
+/// <param name="ttl" type="integer">0-255；0 只到本机，1(默认) 只到本网段，逐跳递减。
+/// 越界即抛错——直接窄化到 uint8_t 的话 256 会静默变成 0，多播从此出不了本机，
+/// 是语义反转而不是"值不对"，排查起来比报错难得多</param>
 /// <returns type="boolean">成功 true</returns>
 static int32_t _lcore_udp_ttl(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    uint8_t ttl = (uint8_t)luaL_checkinteger(lua, 3);
-    lua_pushboolean(lua, ERR_OK == ev_udp_ttl(&g_loader->netev, fd, skid, ttl) ? 1 : 0);
+    lua_Integer val = luaL_checkinteger(lua, 3);
+    luaL_argcheck(lua, val >= 0 && val <= 255, 3, "ttl out of range [0, 255]");
+    lua_pushboolean(lua, ERR_OK == ev_udp_ttl(&g_loader->netev, fd, skid, (uint8_t)val) ? 1 : 0);
     return 1;
 }
 /// <summary>
@@ -619,8 +618,8 @@ static int32_t _lcore_status(lua_State *lua) {
 static int32_t _lcore_bind_task(lua_State *lua) {
     SOCKET fd = (SOCKET)luaL_checkinteger(lua, 1);
     uint64_t skid = (uint64_t)luaL_checkinteger(lua, 2);
-    name_t handle = _task_handle(lua, 3);
-    // 与 core.call/request/response 一致用 grab 探存在性:_task_handle 仅对字符串形式查表,
+    name_t handle = lpub_task_handle(lua, 3);
+    // 与 core.call/request/response 一致用 grab 探存在性:lpub_task_handle 仅对字符串形式查表,
     // 数字句柄原样返回,业务缓存的旧句柄在目标退出后照样非 INVALID_TNAME,单查该值会放行。
     // task_grab 首行已挡 INVALID_TNAME,故一次 grab 覆盖两种无效来源。
     // 但它只保证此刻目标在:目标若在 ev_ud_handle 投递后退出,该连接下一条消息仍会因 task_grab

@@ -69,10 +69,17 @@ function sess_ctx:begin()
     return self.session:begin()
 end
 
----提交事务；网络失败时保留事务状态供重试，仅服务端响应确认时清理
----@param opts lightuserdata? 附加 writeConcern 等 BSON 选项
----@return boolean ok 提交成功 true（所属 mongo_ctx 正在 connect() 时 fail-fast 返回 false）
-function sess_ctx:commit(opts)
+---commit / rollback 的共同流程，两者只差组包用哪个 C 接口和日志里的动作名。
+---事务状态一路保留到服务端真的回了包为止：组包被拒（options 超 MAX_PACK_SIZE、或连接已不再
+---绑定该 session）和网络失败都可能只是这一次不成，状态还在就能重试或改走另一条收尾路径。
+---这里若提前 done() 会解绑并 FREE options，之后另一条撞上绑定守卫也只能放弃，
+---服务端那个事务就一直持锁到超时
+---@param self any mongo_session_ctx 实例
+---@param opts lightuserdata? 附加 BSON 选项
+---@param pack_fn fun(session:any, opts:lightuserdata?):(lightuserdata|nil, integer?) 组包接口（pack_commit / pack_abort）
+---@param what string 动作名，仅用于组包被拒时的日志
+---@return boolean ok 服务端确认且未报错 true
+local function _txn_finish(self, opts, pack_fn, what)
     if self.mgoctx.connecting then
         return false
     end
@@ -82,41 +89,32 @@ function sess_ctx:commit(opts)
     end
     local fd, skid = self.mgoctx.mongo:sock_id()
     local flags = self.mgoctx.mongo:clear_flag()
-    local pack, size = self.session:pack_commit(opts)
+    local pack, size = pack_fn(self.session, opts)
     self.mgoctx.mongo:set_flag(flags)
-    local mgopack = _rsend(fd, skid, pack, size)
-    if not mgopack then
-        -- 网络失败：保留事务状态，不调用 done()，便于重试
+    if not pack then
+        WARN("mongo %s packing rejected, transaction state kept.", what)
         return false
     end
-    -- 服务端有响应：清理事务状态（无论成功或失败）
+    local mgopack = _rsend(fd, skid, pack, size)
+    if not mgopack then
+        return false
+    end
     self.session:done()
     return self.mgoctx.mongo:check_error(mgopack) >= 0
 end
 
----回滚事务；网络失败时保留事务状态供重试，仅服务端响应确认时清理
+---提交事务；网络失败或组包被拒时保留事务状态供重试，仅服务端响应确认时清理（见 _txn_finish）
+---@param opts lightuserdata? 附加 writeConcern 等 BSON 选项
+---@return boolean ok 提交成功 true（所属 mongo_ctx 正在 connect() 时 fail-fast 返回 false）
+function sess_ctx:commit(opts)
+    return _txn_finish(self, opts, self.session.pack_commit, "commit")
+end
+
+---回滚事务；状态保留与清理时机同 commit（见 _txn_finish）
 ---@param opts lightuserdata? 附加 BSON 选项
 ---@return boolean ok 回滚成功 true（所属 mongo_ctx 正在 connect() 时 fail-fast 返回 false）
 function sess_ctx:rollback(opts)
-    if self.mgoctx.connecting then
-        return false
-    end
-    if self.gen ~= self.mgoctx.generation then
-        WARN("mongo session invalidated by reconnect, please restart session.")
-        return false
-    end
-    local fd, skid = self.mgoctx.mongo:sock_id()
-    local flags = self.mgoctx.mongo:clear_flag()
-    local pack, size = self.session:pack_abort(opts)
-    self.mgoctx.mongo:set_flag(flags)
-    local mgopack = _rsend(fd, skid, pack, size)
-    if not mgopack then
-        -- 网络失败：保留事务状态，不调用 done()，便于重试
-        return false
-    end
-    -- 服务端有响应：清理事务状态（无论成功或失败）
-    self.session:done()
-    return self.mgoctx.mongo:check_error(mgopack) >= 0
+    return _txn_finish(self, opts, self.session.pack_abort, "rollback")
 end
 
 ---刷新会话超时（refreshSessions），延续会话存活时间
@@ -219,7 +217,8 @@ function ctx:_connect()
         srey.sync_close(cfd, cskid, 1)
         return false
     end
-    -- 清掉上一代残留事务会话，避免跨代 lsid/txnNumber 经 TRANSACTION_OPTIONS 附加进 hello 及后续命令
+    -- 解绑上一代事务会话，否则 pack_hello 及后续命令会带上旧的 lsid/txnNumber。
+    -- Lua 侧走 try_connect 不经 C 的 mongo_connect，那边同一句在 coro_utils.c 的 mongo_connect 里
     self.mongo:clear_session()
     local flags = self.mongo:clear_flag()
     local pack, size = self.mongo:pack_hello()

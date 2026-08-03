@@ -119,23 +119,24 @@ int64_t pgsql_reader_integer(pgsql_reader_ctx *reader, const char *name, int32_t
         return 0;
     }
     if (FORMAT_TEXT == reader->format) {
-        // 文本格式：将字符串转为 int64
-        char tmp[64];
-        if (row->lens >= (int32_t)sizeof(tmp)) {
+        const char *s = row->val;
+        size_t n = (size_t)row->lens;
+        int32_t neg = (n > 0 && NULL != s && '-' == s[0]);
+        uint64_t mag;
+        if (0 != neg) {
+            s++;
+            n--;
+        }
+        if (ERR_OK != str2u64(s, n, 0 != neg ? (uint64_t)INT64_MAX + 1 : (uint64_t)INT64_MAX, &mag)) {
             SET_PTR(err, ERR_FAILED);
             LOG_WARN("parse failed.");
             return 0;
         }
-        memcpy(tmp, row->val, row->lens);
-        tmp[row->lens] = '\0';
-        char *end;
-        int64_t val = strtoll(tmp, &end, 10);
-        if ((int32_t)(end - tmp) != row->lens) {
-            SET_PTR(err, ERR_FAILED);
-            LOG_WARN("parse failed.");
-            return 0;
+        if (0 == neg) {
+            return (int64_t)mag;
         }
-        return val;
+        // INT64_MIN 的绝对值超出 int64_t，取负前先单独挑出来，免得 -(int64_t)mag 落进未定义行为
+        return (uint64_t)INT64_MAX + 1 == mag ? INT64_MIN : -(int64_t)mag;
     }
     // 二进制格式：大端序整数解包
     int32_t expect = (INT2OID == field->type_oid) ? 2 : ((INT4OID == field->type_oid) ? 4 : 8);
@@ -165,7 +166,8 @@ double pgsql_reader_double(pgsql_reader_ctx *reader, const char *name, int32_t *
     if (FORMAT_TEXT == reader->format) {
         // 文本格式：将字符串转为 double
         char tmp[128];
-        if (row->lens >= (int32_t)sizeof(tmp)) {
+        if (0 == row->lens
+            || row->lens >= (int32_t)sizeof(tmp)) {
             SET_PTR(err, ERR_FAILED);
             LOG_WARN("parse failed.");
             return 0.0;

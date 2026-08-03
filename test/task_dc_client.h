@@ -12,7 +12,8 @@
 //   6) delete:set + delete + get → nil;delete 不动 pending(已挂起 waiter 继续等)
 //   7) list_keys:set 3 key + list_keys → 收到 u16 长度前缀帧格式的 3 个 key
 //   8) set value=NULL:get 返回 NULL(软清空)
-//   9) 超长 key:client helper 校验 key 长度 >= DC_KEY_MAX 时不下发(set/get/del 均早返失败)
+//   9) key 长度边界:DC_KEY_MAX 是缓冲容量含 NUL,511 字节须一路通到服务端并取回,
+//      512 字节被 client helper 早返不下发(set/get/del 均失败)
 //  10) waiter 超时过期后迟到 set 不再唤醒它(不产生幽灵响应)
 // ASan 不报 leak 即证明 dc_entry/dc_waiter/dc_pending 释放路径正确。
 // dc_name 由 main.c 传入,与 dc_start 注册的 name 一致。

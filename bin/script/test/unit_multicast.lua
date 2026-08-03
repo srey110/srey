@@ -33,6 +33,15 @@ runner.run("multicast", function(t)
         t:eq(false, ok, "非数字元素抛 error")
     end
 
+    -- ── 边界: 非整数浮点与数字字符串同样要抛错 ────────────────────
+    -- 校验若用 lua_isnumber 会放行这两类,而取值的 lua_tointeger 对非整数浮点返回 0,
+    -- 于是"校验通过"之后朝 fd 0 / skid 0 发了出去
+    do
+        t:eq(false, pcall(function() srey.send_multi({1.5}, {1}, "") end),  "fds 非整数浮点抛 error")
+        t:eq(false, pcall(function() srey.send_multi({1}, {2.5}, "") end),  "skids 非整数浮点抛 error")
+        t:eq(false, pcall(function() srey.send_multi({"1"}, {1}, "") end),  "fds 数字字符串抛 error")
+    end
+
     -- ── 集成: 自启 server + N 个 client + 广播验证 ────────────────
     -- accept 端累积 server-side fd/skid;集齐后 send_multi;每个 client 收到 +1
     local server_fds = {}

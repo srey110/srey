@@ -47,6 +47,15 @@ runner.run("websock_client", function(t)
         srey.close(fdy, skidy)
     end
 
+    -- 非内建子协议走透传：服务端回显客户端提的第一个，sectype 保持 PACK_NONE，
+    -- 由应用层自己实现该子协议（C 侧 task_timeout.c 的 chat 用例是同一条路径）
+    local fdn, skidn, spn = wbsk.connect("ws://127.0.0.1:" .. PORT .. "/", SSL_NAME.NONE, "chat")
+    t:check(fdn and INVALID_SOCK ~= fdn, "非内建子协议可握手")
+    t:check(spn ~= nil, "非内建子协议(chat)按透传回显")
+    if fdn and INVALID_SOCK ~= fdn then
+        srey.close(fdn, skidn)
+    end
+
     srey.unlisten(lid)-- 释放端口给后续测试
 end)
 end)

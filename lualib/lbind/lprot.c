@@ -36,7 +36,7 @@ static int32_t _lprot_harbor_pack(lua_State *lua) {
         return luaL_argerror(lua, 4, "nil, string or light userdata expected");
     }
     data = harbor_pack(task, call, reqtype, data, size, &size);
-    LPUB_RET_LUD(lua, data, size);
+    return lpub_rtn_lud(lua, data, size);
 }
 //srey.harbor
 LUAMOD_API int luaopen_harbor(lua_State *lua) {
@@ -161,7 +161,7 @@ static int32_t _lprot_custz_pack(lua_State *lua) {
         lua_pushinteger(lua, 0);
         return 2;
     }
-    LPUB_RET_LUD(lua, data, size);
+    return lpub_rtn_lud(lua, data, size);
 }
 //srey.custz
 LUAMOD_API int luaopen_custz(lua_State *lua) {
@@ -247,7 +247,7 @@ static int32_t _lprot_websock_pack_ping(lua_State *lua) {
     int32_t mask = (int32_t)luaL_checkinteger(lua, 1);
     size_t lens;
     void *pack = websock_pack_ping(mask, &lens);
-    LPUB_RET_LUD(lua, pack, lens);
+    return lpub_rtn_lud(lua, pack, lens);
 }
 /// <summary>
 /// 构造 WebSocket Pong 控制帧
@@ -259,7 +259,7 @@ static int32_t _lprot_websock_pack_pong(lua_State *lua) {
     int32_t mask = (int32_t)luaL_checkinteger(lua, 1);
     size_t lens;
     void *pack = websock_pack_pong(mask, &lens);
-    LPUB_RET_LUD(lua, pack, lens);
+    return lpub_rtn_lud(lua, pack, lens);
 }
 /// <summary>
 /// 构造 WebSocket Close 控制帧
@@ -271,7 +271,7 @@ static int32_t _lprot_websock_pack_close(lua_State *lua) {
     int32_t mask = (int32_t)luaL_checkinteger(lua, 1);
     size_t lens;
     void *pack = websock_pack_close(mask, &lens);
-    LPUB_RET_LUD(lua, pack, lens);
+    return lpub_rtn_lud(lua, pack, lens);
 }
 /// <summary>
 /// 构造 WebSocket 文本帧（首帧）
@@ -289,7 +289,7 @@ static int32_t _lprot_websock_pack_text(lua_State *lua) {
     int32_t fin = (int32_t)luaL_checkinteger(lua, 2);
     data = lpub_check_buf(lua, 3, &dlens, NULL);
     void *pack = websock_pack_text(mask, fin, data, dlens, &dlens);
-    LPUB_RET_LUD(lua, pack, dlens);
+    return lpub_rtn_lud(lua, pack, dlens);
 }
 /// <summary>
 /// 构造 WebSocket 二进制帧（首帧）
@@ -307,7 +307,7 @@ static int32_t _lprot_websock_pack_binary(lua_State *lua) {
     int32_t fin = (int32_t)luaL_checkinteger(lua, 2);
     data = lpub_check_buf(lua, 3, &dlens, NULL);
     void *pack = websock_pack_binary(mask, fin, data, dlens, &dlens);
-    LPUB_RET_LUD(lua, pack, dlens);
+    return lpub_rtn_lud(lua, pack, dlens);
 }
 /// <summary>
 /// 构造 WebSocket Continuation 帧（分片消息的中间或最后帧）
@@ -337,7 +337,7 @@ static int32_t _lprot_websock_pack_continua(lua_State *lua) {
         return luaL_argerror(lua, 3, "string or light userdata expected");
     }
     void *pack = websock_pack_continua(mask, fin, data, dlens, &dlens);
-    LPUB_RET_LUD(lua, pack, dlens);
+    return lpub_rtn_lud(lua, pack, dlens);
 }
 /// <summary>
 /// 解析 HANDSHAKED 交付的 ws_secprots_ctx，返回匹配到的子协议下标与全部子协议名列表
@@ -474,10 +474,12 @@ static int32_t _lprot_http_heads(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// 返回 HTTP body 数据指针和长度
+/// 返回 HTTP body 数据指针和长度。
+/// 注意与本文件各 pack_* 的返回值形状相同但语义相反：这里返回的是 pack 内部的**借用**指针，
+/// 随 pack 一起失效，调用方既不拥有它、也不能对它调 utils.ud_free
 /// </summary>
 /// <param name="pack" type="lightuserdata">http_pack_ctx 指针</param>
-/// <returns type="lightuserdata?">body 数据指针；空时返回 nil</returns>
+/// <returns type="lightuserdata?">body 数据指针（借用，勿释放）；空时返回 nil</returns>
 /// <returns type="integer">body 字节数；空时为 0</returns>
 static int32_t _lprot_http_data(lua_State *lua) {
     LUACHECK_LUDATA(lua, 1);
@@ -489,7 +491,7 @@ static int32_t _lprot_http_data(lua_State *lua) {
         lua_pushinteger(lua, 0);
         return 2;
     }
-    LPUB_RET_LUD(lua, data, lens);
+    return lpub_rtn_lud(lua, data, lens);
 }
 /// <summary>
 /// 以 Lua 字符串形式返回 HTTP body 内容
@@ -659,14 +661,14 @@ static int32_t _lprot_smtp_new(lua_State *lua) {
     }
     const char *user = luaL_checkstring(lua, 4);
     const char *psw = luaL_checkstring(lua, 5);
+    smtp_ctx **ud = lua_newuserdata(lua, sizeof(smtp_ctx *));
+    *ud = NULL;
+    ASSOC_MTABLE(lua, MT_SMTP);
     smtp_ctx *smtp;
     MALLOC(smtp, sizeof(smtp_ctx));
     smtp_init(smtp, ip, port, evssl, user, psw);
     ATOMIC_SET(&smtp->ref, 1);// Lua 持有者份额
-    // userdata 只持 ctx 指针；ctx 独立堆分配脱离 Lua GC，避免 __gc 后网络线程经 ud->context 悬空访问(跨线程 UAF)
-    smtp_ctx **ud = lua_newuserdata(lua, sizeof(smtp_ctx *));
     *ud = smtp;
-    ASSOC_MTABLE(lua, MT_SMTP);
     return 1;
 }
 /// <summary>
@@ -765,7 +767,7 @@ static int32_t _lprot_smtp_check_ok(lua_State *lua) {
 static int32_t _lprot_smtp_pack_reset(lua_State *lua) {
     LPUB_UD_ARG(lua, smtp_ctx, MT_SMTP, ud, "smtp freed");
     char *cmd = smtp_pack_reset();
-    LPUB_RET_LUD(lua, (void *)cmd, strlen(cmd));
+    return lpub_rtn_lud(lua, (void *)cmd, strlen(cmd));
 }
 /// <summary>
 /// 构造 SMTP MAIL FROM 命令（CRLF 注入防御：地址含 CRLF 时返回 nil）
@@ -783,7 +785,7 @@ static int32_t _lprot_smtp_pack_from(lua_State *lua) {
         lua_pushinteger(lua, 0);
         return 2;
     }
-    LPUB_RET_LUD(lua, cmd, strlen(cmd));
+    return lpub_rtn_lud(lua, cmd, strlen(cmd));
 }
 /// <summary>
 /// 构造 SMTP RCPT TO 命令（CRLF 注入防御：地址含 CRLF 时返回 nil）
@@ -801,7 +803,7 @@ static int32_t _lprot_smtp_pack_rcpt(lua_State *lua) {
         lua_pushinteger(lua, 0);
         return 2;
     }
-    LPUB_RET_LUD(lua, cmd, strlen(cmd));
+    return lpub_rtn_lud(lua, cmd, strlen(cmd));
 }
 /// <summary>
 /// 构造 SMTP DATA 命令（开始传输邮件内容）
@@ -812,7 +814,7 @@ static int32_t _lprot_smtp_pack_rcpt(lua_State *lua) {
 static int32_t _lprot_smtp_pack_data(lua_State *lua) {
     LPUB_UD_ARG(lua, smtp_ctx, MT_SMTP, ud, "smtp freed");
     char *cmd = smtp_pack_data();
-    LPUB_RET_LUD(lua, cmd, strlen(cmd));
+    return lpub_rtn_lud(lua, cmd, strlen(cmd));
 }
 /// <summary>
 /// 构造 SMTP QUIT 断连命令
@@ -823,7 +825,7 @@ static int32_t _lprot_smtp_pack_data(lua_State *lua) {
 static int32_t _lprot_smtp_pack_quit(lua_State *lua) {
     LPUB_UD_ARG(lua, smtp_ctx, MT_SMTP, ud, "smtp freed");
     char *cmd = smtp_pack_quit();
-    LPUB_RET_LUD(lua, cmd, strlen(cmd));
+    return lpub_rtn_lud(lua, cmd, strlen(cmd));
 }
 /// <summary>
 /// 构造 SMTP NOOP 心跳命令（保持连接）
@@ -834,7 +836,7 @@ static int32_t _lprot_smtp_pack_quit(lua_State *lua) {
 static int32_t _lprot_smtp_pack_ping(lua_State *lua) {
     LPUB_UD_ARG(lua, smtp_ctx, MT_SMTP, ud, "smtp freed");
     char *cmd = smtp_pack_ping();
-    LPUB_RET_LUD(lua, cmd, strlen(cmd));
+    return lpub_rtn_lud(lua, cmd, strlen(cmd));
 }
 LUAMOD_API int luaopen_smtp(lua_State *lua) {
     luaL_Reg reg_new[] = {
@@ -865,19 +867,27 @@ LUAMOD_API int luaopen_smtp(lua_State *lua) {
 /// <param>无</param>
 /// <returns type="_smtp_mail_ctx">邮件对象</returns>
 static int32_t _lprot_mail_new(lua_State *lua) {
-    mail_ctx *mail = lua_newuserdata(lua, sizeof(mail_ctx));
-    mail_init(mail);
+    mail_ctx **ud = lua_newuserdata(lua, sizeof(mail_ctx *));
+    *ud = NULL;
     ASSOC_MTABLE(lua, MT_SMTP_MAIL);
+    mail_ctx *mail;
+    MALLOC(mail, sizeof(mail_ctx));
+    mail_init(mail);
+    *ud = mail;
     return 1;
 }
 /// <summary>
-/// 释放邮件上下文内部资源（绑定为 __gc，由 Lua GC 自动调用）
+/// 释放邮件上下文内部资源（绑定为 __gc，由 Lua GC 自动调用）；重复调用安全
 /// </summary>
 /// <param name="self" type="userdata">邮件对象</param>
 /// <returns>无</returns>
 static int32_t _lprot_mail_free(lua_State *lua) {
-    mail_ctx *mail = luaL_checkudata(lua, 1, MT_SMTP_MAIL);
-    mail_free(mail);
+    mail_ctx **ud = luaL_checkudata(lua, 1, MT_SMTP_MAIL);
+    if (NULL == *ud) {
+        return 0;
+    }
+    mail_free(*ud);
+    FREE(*ud);
     return 0;
 }
 /// <summary>
@@ -887,14 +897,14 @@ static int32_t _lprot_mail_free(lua_State *lua) {
 /// <param name="reply" type="integer?">0 不需要，其他值请求回执；nil 视为 0</param>
 /// <returns>无</returns>
 static int32_t _lprot_mail_reply(lua_State *lua) {
-    mail_ctx *mail = luaL_checkudata(lua, 1, MT_SMTP_MAIL);
+    LPUB_UD_ARG(lua, mail_ctx, MT_SMTP_MAIL, ud, "mail already freed");
     int32_t reply;
     if (LUA_TNIL == lua_type(lua, 2)) {
         reply = 0;
     } else {
         reply = (int32_t)luaL_checkinteger(lua, 2);
     }
-    mail_reply(mail, reply);
+    mail_reply(*ud, reply);
     return 0;
 }
 /// <summary>
@@ -904,9 +914,9 @@ static int32_t _lprot_mail_reply(lua_State *lua) {
 /// <param name="subject" type="string">邮件主题</param>
 /// <returns>无</returns>
 static int32_t _lprot_mail_subject(lua_State *lua) {
-    mail_ctx *mail = luaL_checkudata(lua, 1, MT_SMTP_MAIL);
+    LPUB_UD_ARG(lua, mail_ctx, MT_SMTP_MAIL, ud, "mail already freed");
     const char *subject = luaL_checkstring(lua, 2);
-    mail_subject(mail, subject);
+    mail_subject(*ud, subject);
     return 0;
 }
 /// <summary>
@@ -916,9 +926,9 @@ static int32_t _lprot_mail_subject(lua_State *lua) {
 /// <param name="msg" type="string">纯文本正文</param>
 /// <returns>无</returns>
 static int32_t _lprot_mail_msg(lua_State *lua) {
-    mail_ctx *mail = luaL_checkudata(lua, 1, MT_SMTP_MAIL);
+    LPUB_UD_ARG(lua, mail_ctx, MT_SMTP_MAIL, ud, "mail already freed");
     const char *msg = luaL_checkstring(lua, 2);
-    mail_msg(mail, msg);
+    mail_msg(*ud, msg);
     return 0;
 }
 /// <summary>
@@ -928,9 +938,9 @@ static int32_t _lprot_mail_msg(lua_State *lua) {
 /// <param name="html" type="string">HTML 正文</param>
 /// <returns>无</returns>
 static int32_t _lprot_mail_html(lua_State *lua) {
-    mail_ctx *mail = luaL_checkudata(lua, 1, MT_SMTP_MAIL);
+    LPUB_UD_ARG(lua, mail_ctx, MT_SMTP_MAIL, ud, "mail already freed");
     const char *html = luaL_checkstring(lua, 2);
-    mail_html(mail, html, strlen(html));
+    mail_html(*ud, html, strlen(html));
     return 0;
 }
 /// <summary>
@@ -941,10 +951,10 @@ static int32_t _lprot_mail_html(lua_State *lua) {
 /// <param name="email" type="string">发件人邮箱地址</param>
 /// <returns>无</returns>
 static int32_t _lprot_mail_from(lua_State *lua) {
-    mail_ctx *mail = luaL_checkudata(lua, 1, MT_SMTP_MAIL);
+    LPUB_UD_ARG(lua, mail_ctx, MT_SMTP_MAIL, ud, "mail already freed");
     const char *name = luaL_checkstring(lua, 2);
     const char *email = luaL_checkstring(lua, 3);
-    mail_from(mail, name, email);
+    mail_from(*ud, name, email);
     return 0;
 }
 /// <summary>
@@ -955,10 +965,10 @@ static int32_t _lprot_mail_from(lua_State *lua) {
 /// <param name="type" type="integer">收件人类型（TO / CC / BCC，对应 mail_addr_type 枚举）</param>
 /// <returns>无</returns>
 static int32_t _lprot_mail_addrs_add(lua_State *lua) {
-    mail_ctx *mail = luaL_checkudata(lua, 1, MT_SMTP_MAIL);
+    LPUB_UD_ARG(lua, mail_ctx, MT_SMTP_MAIL, ud, "mail already freed");
     const char *email = luaL_checkstring(lua, 2);
     mail_addr_type type = (mail_addr_type)luaL_checkinteger(lua, 3);
-    mail_addrs_add(mail, email, type);
+    mail_addrs_add(*ud, email, type);
     return 0;
 }
 /// <summary>
@@ -967,8 +977,8 @@ static int32_t _lprot_mail_addrs_add(lua_State *lua) {
 /// <param name="self" type="userdata">邮件对象</param>
 /// <returns>无</returns>
 static int32_t _lprot_mail_addrs_clear(lua_State *lua) {
-    mail_ctx *mail = luaL_checkudata(lua, 1, MT_SMTP_MAIL);
-    mail_addrs_clear(mail);
+    LPUB_UD_ARG(lua, mail_ctx, MT_SMTP_MAIL, ud, "mail already freed");
+    mail_addrs_clear(*ud);
     return 0;
 }
 /// <summary>
@@ -978,9 +988,9 @@ static int32_t _lprot_mail_addrs_clear(lua_State *lua) {
 /// <param name="file" type="string">附件文件路径</param>
 /// <returns>无</returns>
 static int32_t _lprot_mail_attach_add(lua_State *lua) {
-    mail_ctx *mail = luaL_checkudata(lua, 1, MT_SMTP_MAIL);
+    LPUB_UD_ARG(lua, mail_ctx, MT_SMTP_MAIL, ud, "mail already freed");
     const char *file = luaL_checkstring(lua, 2);
-    mail_attach_add(mail, file);
+    mail_attach_add(*ud, file);
     return 0;
 }
 /// <summary>
@@ -989,8 +999,8 @@ static int32_t _lprot_mail_attach_add(lua_State *lua) {
 /// <param name="self" type="userdata">邮件对象</param>
 /// <returns>无</returns>
 static int32_t _lprot_mail_attach_clear(lua_State *lua) {
-    mail_ctx *mail = luaL_checkudata(lua, 1, MT_SMTP_MAIL);
-    mail_attach_clear(mail);
+    LPUB_UD_ARG(lua, mail_ctx, MT_SMTP_MAIL, ud, "mail already freed");
+    mail_attach_clear(*ud);
     return 0;
 }
 /// <summary>
@@ -1000,8 +1010,8 @@ static int32_t _lprot_mail_attach_clear(lua_State *lua) {
 /// <param name="self" type="userdata">邮件对象</param>
 /// <returns>无</returns>
 static int32_t _lprot_mail_clear(lua_State *lua) {
-    mail_ctx *mail = luaL_checkudata(lua, 1, MT_SMTP_MAIL);
-    mail_clear(mail);
+    LPUB_UD_ARG(lua, mail_ctx, MT_SMTP_MAIL, ud, "mail already freed");
+    mail_clear(*ud);
     return 0;
 }
 /// <summary>
@@ -1011,9 +1021,9 @@ static int32_t _lprot_mail_clear(lua_State *lua) {
 /// <returns type="lightuserdata">MIME 字符串指针</returns>
 /// <returns type="integer">字符串长度</returns>
 static int32_t _lprot_mail_pack(lua_State *lua) {
-    mail_ctx *mail = luaL_checkudata(lua, 1, MT_SMTP_MAIL);
-    char *content = mail_pack(mail);
-    LPUB_RET_LUD(lua, content, strlen(content));
+    LPUB_UD_ARG(lua, mail_ctx, MT_SMTP_MAIL, ud, "mail already freed");
+    char *content = mail_pack(*ud);
+    return lpub_rtn_lud(lua, content, strlen(content));
 }
 LUAMOD_API int luaopen_mail(lua_State *lua) {
     luaL_Reg reg_new[] = {

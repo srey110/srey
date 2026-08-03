@@ -30,7 +30,7 @@ end
 
 ---执行预处理语句（COM_STMT_EXECUTE）
 ---@param mbind any? mysql_bind_ctx 参数绑定上下文
----@return (_mysql_reader_ctx|boolean)[]|nil results 结果集数组（元素 reader=结果集 / true=OK 包 / false=ERR 包）；网络失败、多结果集中途断连、语句失效或 owner 正在 connect() 中返回 nil
+---@return (_mysql_reader_ctx|boolean)[]|nil results 结果集数组（元素 reader=结果集 / true=OK 包 / false=ERR 包）；网络失败、多结果集中途断连、语句失效、绑定参数个数与语句声明不符或 owner 正在 connect() 中返回 nil
 function ctx:execute(mbind)
     if self.owner.connecting then
         return nil
@@ -41,6 +41,10 @@ function ctx:execute(mbind)
     end
     local fd, skid = self.stmt:sock_id()
     local pack, size = self.stmt:pack_stmt_execute(mbind)
+    if not pack then
+        WARN("mysql stmt_execute bind mismatch, please check parameter count.")
+        return nil
+    end
     local mpack = srey.syn_send(fd, skid, pack, size, 0)
     if not mpack then
         return nil

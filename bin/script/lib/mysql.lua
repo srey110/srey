@@ -164,6 +164,10 @@ function ctx:query(sql, mbind)
         return nil
     end
     local pack, size = self.mysql:pack_query(sql, mbind)
+    if not pack then
+        WARN("mysql query payload exceeds 16MB.")
+        return nil
+    end
     local fd, skid = self.mysql:sock_id()
     local mpack = srey.syn_send(fd, skid, pack, size, 0)
     if not mpack then
@@ -180,6 +184,10 @@ function ctx:prepare(sql)
         return false
     end
     local pack, size = self.mysql:pack_stmt_prepare(sql)
+    if not pack then
+        WARN("mysql stmt_prepare payload exceeds 16MB.")
+        return false
+    end
     local fd, skid = self.mysql:sock_id()
     local mpack, _ =  srey.syn_send(fd, skid, pack, size, 0)
     if not mpack then

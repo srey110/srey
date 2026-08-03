@@ -268,7 +268,7 @@ static int32_t _txn_second_session_flow(mongo_ctx *mongo) {
 }
 
 // 绑定分叉后 commit/rollback 必须在入口就拒掉,不能把 A 的请求挂到 B 的事务上。
-// 分叉在真实环境来自 mongo_ping 重连时的 mongo_clear_session,这里直接调它造出来。
+// 分叉在真实环境来自重连:mongo_connect 入口会解绑,这里直接调 mongo_clear_session 造出来。
 // 同样不需要 replica set：被拒时不发包,pack 都不做。
 // 三条断言：A 的 rollback 被拒 / A 的 commit 被拒 / 两次拒绝都不动 B 的绑定
 static int32_t _txn_unbound_flow(mongo_ctx *mongo) {

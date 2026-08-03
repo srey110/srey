@@ -254,7 +254,10 @@ static int32_t _websock_secprot_split(char *data, size_t lens, buf_ctx prots[WS_
     }
     return _websock_check_secprot(prots, n);
 }
-// 服务端子协议校验
+// 服务端子协议校验。一个都没匹配上内建协议时兜底选客户端提的第一个:这是透传设计,不是漏选——
+// sectype 保持 PACK_NONE(照原样按纯 WS 投递帧),协商到的名字经 spctx 交给应用层自己实现。
+// 去掉这个兜底会让服务端只能协商内建的那几个,应用自定义子协议直接用不了
+// (回显值取自客户端自己的 offer 列表,RFC 6455 §4.1 的客户端校验能过)
 static int32_t _websock_secprot_check_server(char *secprots, size_t lens, pack_type *sectype, ws_secprots_ctx **spctx) {
     ws_secprots_ctx *ctx;
     CALLOC(ctx, 1, sizeof(ws_secprots_ctx) + lens + 1);
@@ -272,7 +275,6 @@ static int32_t _websock_secprot_check_server(char *secprots, size_t lens, pack_t
             break;
         }
     }
-    // 无匹配的，默认选第一个
     if (-1 == ctx->index && ctx->cnt > 0) {
         ctx->index = 0;
     }

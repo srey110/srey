@@ -31,11 +31,6 @@
     lua_pushstring(lua, name);\
     lua_setfield(lua, -2, "__metatable");\
     luaL_newlib(lua, regnew)
-// 收尾:push lightuserdata(pack) + push integer(size) + return 2
-#define LPUB_RET_LUD(lua, pack, size) \
-    lua_pushlightuserdata((lua), (pack)); \
-    lua_pushinteger((lua), (lua_Integer)(size)); \
-    return 2
 // 声明 task_ctx *var 并从当前 Lua 全局变量取值；取不到直接 luaL_error(longjmp，不返回)
 #define LPUB_CUR_TASK(lua, var) \
     task_ctx *var = global_userdata((lua), CUR_TASK_NAME); \
@@ -80,7 +75,8 @@ int32_t global_string(lua_State *lua, const char *name, char *buf, size_t bufsiz
 /// <summary>
 /// 解析栈位 idx 的 (string|lightuserdata, size [, copy]) 参数,返回 data 指针。
 /// string: 返回字符串首址, size 自动取长度, copy(若非 NULL)=1;
-/// lightuserdata: 返回指针, size 从 idx+1 读 integer, copy(若非 NULL)从 idx+2 读 integer(缺失/非 integer 默认 1);
+/// lightuserdata: 返回指针, size 从 idx+1 读 integer(负数 argerror——转成 size_t 会变成 SIZE_MAX,
+///   让下游按天文数字去读那块内存), copy(若非 NULL)从 idx+2 读 integer(缺失/非 integer 默认 1);
 /// 其他类型: luaL_argerror(longjmp,不返回)。
 /// </summary>
 /// <param name="lua">Lua 栈</param>
@@ -100,6 +96,27 @@ int32_t global_string(lua_State *lua, const char *name, char *buf, size_t bufsiz
 /// <returns>data 指针</returns>
 void *lpub_check_buf_idx(lua_State *lua, int32_t *idx, size_t *size, int32_t *copy);
 void *lpub_check_buf(lua_State *lua, int32_t idx, size_t *size, int32_t *copy);
+/// <summary>
+/// 取栈位 idx 的 task 标识：string 视为 task 名，经 task_find_name 换成句柄（查不到得 INVALID_TNAME，
+/// 由调用方后续的 task_grab 判空）；其余按 integer 当句柄直取（非整数由 luaL_checkinteger 抛错）。
+/// 各绑定对外都是"名字或句柄二选一"，判定收在这一处
+/// </summary>
+/// <param name="lua">Lua 虚拟机状态</param>
+/// <param name="idx">参数在栈中的位置</param>
+/// <returns>task 句柄；名字查不到时为 INVALID_TNAME</returns>
+name_t lpub_task_handle(lua_State *lua, int32_t idx);
+/// <summary>
+/// 组包类绑定的统一收尾：pack 非空时压 (lightuserdata, 长度) 返 2，为空时压单个 nil 返 1。
+/// 用法固定为 return lpub_rtn_lud(lua, pack, size);
+/// 何时用它、何时改用 luaL_error：数据相关、调用方能降级的失败（载荷超协议上限、
+/// 会话绑定已分叉等）走本函数返 nil，让调用方判一次；调用方契约违反、没有运行期恢复动作的
+/// （如 stmt 绑定参数个数与 prepare 时声明的不符）直接 luaL_error 抛出，别让它被忽略。
+/// </summary>
+/// <param name="lua">Lua 虚拟机状态</param>
+/// <param name="pack">组包结果；NULL 表示组包被拒</param>
+/// <param name="size">pack 字节数（pack 为 NULL 时不使用）</param>
+/// <returns>压栈的返回值个数：2 或 1</returns>
+int32_t lpub_rtn_lud(lua_State *lua, void *pack, size_t size);
 /// <summary>
 /// 将 url_ctx 字段打包为 Lua 表并压栈（scheme/user/psw/host/port/path/query/segs/param）
 /// </summary>

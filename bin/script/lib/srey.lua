@@ -176,8 +176,9 @@ end
 ---所有唤醒协程的入口必须走此函数，禁止裸调 coroutine.resume：
 ---否则 coro_running 不同步，被唤醒协程内的 _coro_wait/sleep/call 会把已归还池的旧 coro 登记到 coro_sess，
 ---后续消息按错误协程 resume，触发 yield#1 注入 msg 表 → "attempt to call a table value" 类型错。
----此处还通过 task.active 通知 C 层 active_lua 字段，使跨 task 的 task.trap(name) 能定位到
----正在执行字节码的 thread 并安装中断 hook；resume 结束后还原回主 thread。
+---此处还通过 task.active 通知 C 层 active_lua 字段：声明过 srey.interruptible 的 task，
+---C 层借这个切换点给协程补挂中断 hook（协程池里比声明更早建出来的那些不会自动带上）；
+---resume 结束后还原回主 thread。
 ---@param coro thread 协程对象
 ---@param ... any 传给协程的参数
 local function _coro_resume(coro, ...)
@@ -259,7 +260,8 @@ function srey.fork_wait(funcs)
                 local self = coro_running
                 _coro_resume(barrier.waiter)
                 -- _coro_resume 把 coro_running/active_lua 切到 barrier.waiter，本协程还要继续跑
-                -- task_ungrab 等收尾代码，须还原为 self，否则窗口内 task.trap 把中断 hook 装错协程
+                -- task_ungrab 等收尾代码，须还原为 self，否则 coro_running 记成别人、后续
+                -- _coro_wait/sleep 会把错误的协程登记进 coro_sess
                 coro_running = self
                 task.active(self)
             end
@@ -415,6 +417,15 @@ srey.task_name = task.name
 ---返回 task 的数字句柄（createid 生成，用于与消息回调里的 src 比对）
 ---@type fun(taskctx:lightuserdata?):integer
 srey.task_handle = task.handle
+
+---声明当前 task 可被 task.trap 中断（卡在不 yield 的死循环里时，别的 task 能把它打断）。
+---须由 task 自己在 startup 内调用：中断 hook 只能挂在属主线程上。
+---代价是本 task 的 Lua 字节码会多绕一趟 hook 检查（纯计算约 1.5-3 倍，调 C 接口为主的代码远低于此），
+---没调过这个函数的 task 不受任何影响。
+---与 debug.sethook 互斥：Lua 每个 thread 只允许一个 hook，已被占用时本函数报错而不是装作声明成功——
+---静默让路的话 srey.trap 会返回成功却永远不触发
+---@type fun()
+srey.interruptible = task.interruptible
 
 ---返回当前单调时钟毫秒数（用于超时计算）
 ---@type fun():integer
@@ -1453,7 +1464,8 @@ local function _coro_timeout()
                         cur_coro = cur_coroinfo.coro
                         _coro_resume(cur_coro, msg)
                         -- _coro_resume 把 coro_running/active_lua 切到 cur_coro，本协程(_coro_timeout 自身)
-                        -- 还要继续跑循环剩余部分，须还原为 self，否则窗口内 task.trap 把中断 hook 装错协程
+                        -- 还要继续跑循环剩余部分，须还原为 self，否则 coro_running 记成别人、
+                        -- 后续 _coro_wait/sleep 会把错误的协程登记进 coro_sess
                         coro_running = self
                         task.active(self)
                         WARN("resume timeout session %s.", tostring(cur_sess))
@@ -1471,6 +1483,10 @@ local function _coro_timeout()
     _coro_pool_shrink()
     srey.timeout(1 * 1000, _coro_timeout)
 end
+---消息表：全部字段只读。带载荷的消息（RECV/RECVFROM/HANDSHAKED/REQUEST/RESPONSE）挂了 __gc，
+---回收时按 mtype 选释放函数、按 data/shared 取指针——改写它们等于换掉 C 侧的释放契约：
+---mtype 写成别的类型会用错释放器（例如 RECV 的 http_pack_ctx 被当成裸 buffer 直接 FREE），
+---data 换成别的指针则是拿它去做一次任意释放。元表本身已由 __metatable 挡住，字段挡不住。
 ---@class Message
 ---@field mtype   MSG_TYPE       消息类型（MSG_TYPE.*），始终存在
 ---@field sess    integer?       会话 id；TIMEOUT/RECV/CLOSE/CONNECT/SSLEXCHANGED/HANDSHAKED/RECVFROM/REQUEST/RESPONSE 携带

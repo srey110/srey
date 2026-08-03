@@ -233,7 +233,7 @@ static int32_t _router_match_linear(const router_seg *rsegs, int32_t rn,
     return 1;
 }
 // 把 url_parse 拆好的请求段 qsegs 与 rsegs 对照, 成功填 ctx->params 并返回 1。
-// qsegs 已解码(%XX 已解、'+' 保持字面), data 指向 ctx->url_storage.buf;
+// qsegs 已解码(%XX 已解、'+' 保持字面), data 指向 ctx->url->buf;
 // ctx->params[i].key 指向 rsegs[].str(router_ctx 持有), val 指向 qsegs 内部。
 // nopt 为该路由的 OPT 段数, 注册期算好存在 router_entry 上, 不在这里重数;
 // 恒 > 0 —— nopt == 0 由 _router_find 分给 _router_match_linear, 不进这里。
@@ -608,17 +608,17 @@ int32_t router_add_index(router_ctx *r, const char *method, size_t method_len,
     e->segs_nopt = segs_nopt;
     return r->routes_n++;//后自增：调用方拿到旧值即新条目的稳定索引
 }
-// 在已 url_parse 的 ctx->url_storage 上匹配：就地剔除空段（RFC 允许 /a//b）后线性
+// 在已 url_parse 的 ctx->url 上匹配：就地剔除空段（RFC 允许 /a//b）后线性
 // 扫描路由表，方法掩码命中 + 路径匹配，返回首条命中索引，无命中返回 -1
 static int32_t _router_find(router_ctx *r, router_method m, router_req *ctx) {
     int32_t qn = 0;
     router_entry *e;
-    for (int32_t i = 0; i < ctx->url_storage.npath; i++) {
-        if (ctx->url_storage.segs[i].lens > 0) {
-            ctx->url_storage.segs[qn++] = ctx->url_storage.segs[i];
+    for (int32_t i = 0; i < ctx->url->npath; i++) {
+        if (ctx->url->segs[i].lens > 0) {
+            ctx->url->segs[qn++] = ctx->url->segs[i];
         }
     }
-    ctx->url_storage.npath = qn;
+    ctx->url->npath = qn;
     for (int32_t i = 0; i < r->routes_n; i++) {
         e = &r->routes[i];
         if (0 == (e->method_mask & m)) {
@@ -627,12 +627,12 @@ static int32_t _router_find(router_ctx *r, router_method m, router_req *ctx) {
         // 无可选段的路由(绝大多数)走线性匹配, 不进 _router_match_path,
         // 它那张 (URL_MAX_PATH_DEPTH+1)*(ROUTER_MAX_OPT+1) 的可行性表就不会压上协程栈
         if (0 == e->segs_nopt) {
-            if (_router_match_linear(e->segs, e->segs_n, ctx->url_storage.segs, qn, ctx)) {
+            if (_router_match_linear(e->segs, e->segs_n, ctx->url->segs, qn, ctx)) {
                 return i;
             }
             continue;
         }
-        if (_router_match_path(e->segs, e->segs_n, e->segs_nopt, ctx->url_storage.segs, qn, ctx)) {
+        if (_router_match_path(e->segs, e->segs_n, e->segs_nopt, ctx->url->segs, qn, ctx)) {
             return i;
         }
     }
@@ -645,8 +645,8 @@ int32_t router_match_index(router_ctx *r, const char *method, size_t method_len,
         return -3;
     }
     ctx->method = m;
-    //url_parse 解码后段写入 ctx->url_storage；params.val 指向该缓冲，ctx 生命周期须覆盖 params 使用
-    if (ERR_OK != url_parse(&ctx->url_storage, url, url_len, '/', 1)) {
+    //url_parse 解码后段写入 ctx->url；params.val 指向该缓冲，ctx 生命周期须覆盖 params 使用
+    if (ERR_OK != url_parse(ctx->url, url, url_len, '/', 1)) {
         return -2;
     }
     return _router_find(r, m, ctx);
@@ -692,7 +692,7 @@ const char *router_req_param(router_req *ctx, const char *key, size_t *lens) {
 }
 const char *router_req_query(router_req *ctx, const char *key, size_t *lens) {
     // url_parse 已完成 url_decode, 这里直接返底层 buf_ctx
-    buf_ctx *v = url_get_param(&ctx->url_storage, key);
+    buf_ctx *v = url_get_param(ctx->url, key);
     if (NULL == v) {
         *lens = 0;
         return NULL;
@@ -820,7 +820,9 @@ void router_dispatch(router_ctx *r, task_ctx *task,
     }
     // 解方法 + URL parse + 扫表与 Lua 侧走同一个 router_match_index，
     // 状态码也由同一个 router_match_code 映射，避免 C / Lua 两个 HTTP 面对同一请求给出不同码
+    url_ctx url;
     router_req ctx = { 0 };
+    ctx.url = &url;
     ctx.task = task;
     ctx.sk.fd = fd;
     ctx.sk.skid = skid;

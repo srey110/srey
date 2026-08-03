@@ -122,6 +122,12 @@ runner.run("dc_client", function(t)
         t:eq(false, dc_client.set(DC, nil, "v"), "set nil key 返 false")
         t:eq(nil, _val(dc_client.get(DC, "")), "get 空 key 返 nil")
         t:eq(false, dc_client.del(DC, ""), "del 空 key 返 false")
+        -- DC_KEY_MAX(512) 是缓冲容量含 NUL，511 合法、512 起被拒。两侧都测：只测拒绝侧的话，
+        -- C 侧判定写成 > DC_KEY_MAX 也一样过
+        local ok_key = string.rep("k", 511)
+        t:eq(true, dc_client.set(DC, ok_key, "v"), "set 511 字节 key 返 true")
+        t:eq("v", _val(dc_client.get(DC, ok_key)), "get 511 字节 key 取回原值")
+        t:eq(true, dc_client.del(DC, ok_key), "del 511 字节 key 返 true")
         local long_key = string.rep("k", 512)  -- >= DC_KEY_MAX(512)
         t:eq(false, dc_client.set(DC, long_key, "v"), "set 超长 key 返 false")
         t:eq(nil, _val(dc_client.get(DC, long_key)), "get 超长 key 返 nil")

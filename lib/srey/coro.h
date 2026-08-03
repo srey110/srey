@@ -59,8 +59,8 @@ void coro_sleep(task_ctx *task, uint32_t ms);
 /// <param name="data">数据</param>
 /// <param name="size">数据长度</param>
 /// <param name="copy">1 拷贝数据 0 不拷贝数据</param>
-/// <param name="erro">错误码</param>
-/// <param name="lens">返回数据长度</param>
+/// <param name="erro">错误码；必须非 NULL，函数内裸解引用</param>
+/// <param name="lens">返回数据长度；可传 NULL 不写</param>
 /// <returns>响应数据；仅在当前协程下次 yield（再调任意 coro_* API）前有效，
 ///   下次 resume 时框架自动释放，需要保留请自行拷贝</returns>
 void *coro_request(task_ctx *dst, task_ctx *src,

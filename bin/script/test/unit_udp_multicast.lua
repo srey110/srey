@@ -26,6 +26,13 @@ runner.run("udp_multicast", function(t)
 
     -- 4 个多播 API 路径验证
     t:eq(true, srey.udp_ttl(fd, skid, 1), "udp_ttl 返回 true")
+    t:eq(true, srey.udp_ttl(fd, skid, 255), "udp_ttl 上界 255 合法")
+    -- 0 是 host-local 作用域(只到本机)，合法值，不能因为要挡 256 就连它一起拒
+    t:eq(true, srey.udp_ttl(fd, skid, 0), "udp_ttl 0(仅本机)合法")
+    -- 直接窄化到 uint8_t 的话 256 会静默变成 0，多播从此出不了本机——是语义反转而非"值不对"
+    t:eq(false, pcall(function() srey.udp_ttl(fd, skid, 256) end), "udp_ttl 256 抛 error")
+    t:eq(false, pcall(function() srey.udp_ttl(fd, skid, -1) end),  "udp_ttl 负值抛 error")
+    t:eq(true, srey.udp_ttl(fd, skid, 1), "还原 TTL 1 供后续用例")
     t:eq(true, srey.udp_loop(fd, skid, 1), "udp_loop 返回 true")
     t:eq(true, srey.udp_join(fd, skid, GROUP), "udp_join 返回 true")
     srey.sleep(200)  -- 等 4 cmd 投递到事件线程执行 setsockopt

@@ -7,6 +7,9 @@
 
 local srey   = require("lib.srey")
 local runner = require("test.runner")
+local utils  = require("srey.utils")
+local custz  = require("srey.custz")
+local core   = require("srey.core")
 
 local SUBS = {
     "multi_call_sub_a",
@@ -47,6 +50,56 @@ runner.run("multi_call", function(t)
             srey.multi_call({}, 100, "noop")
         end)
         t:eq(true, ok, "空 dsts 不抛错")
+    end
+
+    -- ── 边界: 无处可投 + copy=0,载荷得由 C 侧释放 ───────────────────
+    -- 上面两个边界用的都是字符串(copy=1,C 侧不接管),走不到这条路。copy=0 时所有权已经
+    -- 转过去了,空表/全 NONE 两条早退分支各自都得释放,漏一条就每调一次泄漏一次
+    do
+        local ud1, usz1 = custz.pack(PACK_TYPE.CUSTZ_FIXED, "orphan_empty")
+        srey.multi_call({}, 100, ud1, usz1, 0)
+        local ud2, usz2 = custz.pack(PACK_TYPE.CUSTZ_FIXED, "orphan_none")
+        srey.multi_call({TASK_NAME.NONE, TASK_NAME.NONE}, 100, ud2, usz2, 0)
+        local ud3, usz3 = custz.pack(PACK_TYPE.CUSTZ_FIXED, "orphan_req")
+        t:eq(0, srey.multi_request({}, 100, srey.id(), ud3, usz3, 0),
+             "空 dsts + copy=0 返回 0")
+        local ud4, usz4 = custz.pack(PACK_TYPE.CUSTZ_FIXED, "orphan_req_none")
+        t:eq(0, srey.multi_request({TASK_NAME.NONE}, 100, srey.id(), ud4, usz4, 0),
+             "全 NONE dsts + copy=0 返回 0")
+    end
+
+    -- ── 边界: dsts 的 __len 抛错时,copy=0 的载荷不能被吞掉 ───────────
+    -- luaL_len 会走 __len 元方法、也会对非整数结果自行抛错。校验必须排在
+    -- _lcore_opt_buf 之前,否则抛出时 C 侧已经接管了 copy=0 那块内存却来不及释放,
+    -- 每调一次泄漏一次(泄漏本身由退出时的内存检查报出)
+    do
+        local bad = setmetatable({}, { __len = function() return 1.5 end })
+        local ud, usize = custz.pack(PACK_TYPE.CUSTZ_FIXED, "leakcheck")
+        t:check(ud ~= nil and usize > 0, "custz.pack 拿到一块 C 堆缓冲")
+        t:eq(false, pcall(function() srey.multi_call(bad, 100, ud, usize, 0) end),
+             "__len 返回非整数时 multi_call 抛错")
+        t:eq(false, pcall(function() srey.multi_request(bad, 100, srey.id(), ud, usize, 0) end),
+             "__len 返回非整数时 multi_request 抛错")
+        -- 抛错发生在接管之前,所有权仍在调用方手上,由这里释放
+        utils.ud_free(ud)
+
+        local raiser = setmetatable({}, { __len = function() error("boom") end })
+        t:eq(false, pcall(function() srey.multi_call(raiser, 100, "x") end),
+             "__len 自身抛错时 multi_call 抛错")
+    end
+
+    -- ── 消息表的共享元表受保护 ──────────────────────────────────────
+    -- 该元表全 task 共用且只挂 __gc，业务若能经 getmetatable 拿到真表并清掉 __gc，
+    -- 此后每条带载荷的消息都不再释放 C 侧 payload
+    do
+        local sess = srey.id()
+        if core.request(SUBS[1], 102, sess, MSG) then
+            local msg = srey._coro_wait(sess, srey.MSG_TYPE.RESPONSE, 3000)
+            t:eq(srey.MSG_TYPE.RESPONSE, msg.mtype, "拿到 RESPONSE 消息表")
+            t:eq("msg", getmetatable(msg), "消息元表被 __metatable 挡住")
+            t:eq(false, pcall(function() setmetatable(msg, {}) end), "消息表不可被换元表")
+            t:check(msg.data ~= nil and msg.size > 0, "RESPONSE 载荷字段齐全")
+        end
     end
 
     -- ── 边界: dsts 混 valid + NONE 占位,仅 valid 收到 ────────────────

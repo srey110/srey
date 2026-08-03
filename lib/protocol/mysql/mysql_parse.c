@@ -53,6 +53,11 @@ char *_mysql_payload(mysql_ctx *mysql, buffer_ctx *buf, size_t *payload_lens, in
         BIT_SET(*status, PROT_ERROR);
         return NULL;
     }
+    if (0 == *payload_lens) {
+        LOG_ERROR("mysql zero-length packet.");
+        BIT_SET(*status, PROT_ERROR);
+        return NULL;
+    }
     char *payload;
     MALLOC(payload, *payload_lens);
     ASSERTAB(*payload_lens == buffer_remove(buf, payload, *payload_lens), "copy buffer failed.");
@@ -689,6 +694,7 @@ static void _mpack_stmt_new(mysql_ctx *mysql, binary_ctx *breader) {
     mysql_stmt_ctx *stmt;
     CALLOC(stmt, 1, sizeof(mysql_stmt_ctx));
     stmt->mysql = mysql;
+    stmt->skid = mysql->client.sk.skid;
     stmt->stmt_id = (int32_t)binary_get_integer(breader, 4, 1);
     stmt->field_count = (uint16_t)binary_get_uinteger(breader, 2, 1);
     stmt->params_count = (uint16_t)binary_get_uinteger(breader, 2, 1);

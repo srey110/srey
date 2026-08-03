@@ -398,5 +398,169 @@ runner.run("bson", function(t)
 
         t:eq(1, bson.decode(bson.new(ptr, sz)).a, "只读对象可交给 bson.decode")
     end
+
+    -- 24. binary 长度越界：lightuserdata 分支的 lens 直接参与 userdata 尺寸计算，
+    --     负数转 size_t 后会让加法回绕出一个装不下头部的小块，须在入口就拒掉
+    do
+        local src = bson.encode({ a = 1 })
+        local ptr, sz = src:data()
+
+        t:eq(false, pcall(function() return bson.mkbinary(0, ptr, -1) end),         "mkbinary 负长度被拒")
+        t:eq(false, pcall(function() return bson.mkbinary(0, ptr, 0x80000000) end), "mkbinary 超 INT32_MAX 被拒")
+        local ok, err = pcall(function() return bson.mkbinary(0, ptr, -1) end)
+        t:check(type(err) == "string" and nil ~= err:find("out of range"), "错误信息点明长度越界")
+
+        -- 同形状的写入方法一并挡住，不再落到 bson_append_binary 的断言上 abort 进程
+        local w = bson.new()
+        t:eq(false, pcall(function() w:binary("k", 0, ptr, -1) end), "b:binary 负长度被拒")
+        t:eq(false, pcall(function() w:binary("k", 0, ptr, 0x80000000) end), "b:binary 超 INT32_MAX 被拒")
+
+        -- 合法路径不受影响：字符串分支自带长度，lightuserdata 分支按给定长度截取
+        local bin = bson.mkbinary(bson.SUBTYPE.BINARY, "abc")
+        t:eq("abc", bin:data(), "mkbinary 字符串分支照常")
+        t:eq(0, #bson.mkbinary(0, ptr, 0):data(), "mkbinary 零长度合法")
+        t:eq(sz, #bson.mkbinary(0, ptr, sz):data(), "mkbinary lightuserdata 分支照常")
+        ok = pcall(function() w:binary("k", 0, ptr, sz) end)
+        t:eq(true, ok, "b:binary 合法长度照常")
+    end
+
+    -- 25. iter 与源 bson 的生命周期：iter 的 val / doc / nested_doc 全是指向源缓冲的裸指针，
+    --     源对象 :free() 后必须报错，不能继续读已释放的堆
+    do
+        local b = bson.encode({ s = "hello", n = 42, sub = { x = 7 } })
+        local it = bson.iter.new(b)
+        t:eq(true, it:next(), "free 前 iter:next 正常")
+
+        -- find 走点分路径会把 iter->doc 指向 nested_doc（源缓冲的别名视图），
+        -- 源缓冲释放后它仍是非 NULL 的悬垂指针，故判活只能查源对象自己
+        local it2 = bson.iter.new(bson.encode({ sub = { x = 7 } }))
+        t:eq(true, it2:find("sub.x"), "free 前点分 find 正常")
+
+        b:free()
+        t:eq(false, pcall(function() return it:next() end),     "free 后 iter:next 被拒")
+        t:eq(false, pcall(function() return it:key() end),      "free 后 iter:key 被拒")
+        t:eq(false, pcall(function() return it:utf8() end),     "free 后 iter:utf8 被拒")
+        t:eq(false, pcall(function() return it:type() end),     "free 后 iter:type 被拒")
+        t:eq(false, pcall(function() return it:document() end), "free 后 iter:document 被拒")
+        t:eq(false, pcall(function() return it:find("s") end),  "free 后 iter:find 被拒")
+        t:eq(false, pcall(function() it:reset() end),           "free 后 iter:reset 被拒")
+        local ok, err = pcall(function() return it:utf8() end)
+        t:check(type(err) == "string" and nil ~= err:find("freed"), "错误信息点明源已释放")
+
+        -- 已 free 的对象不能再造 iter
+        t:eq(false, pcall(function() return bson.iter.new(b) end), "free 后 iter.new 被拒")
+        -- 另一个 iter 的源没被释放，不受牵连
+        t:eq(7, it2:int32(), "未释放的源上 iter 照常可读")
+    end
+
+    -- 26. 未闭合文档不得交出数据：bson.new() 建的是隐式顶层文档(depth=1)，首 4 字节长度前缀
+    --     要等 end() 才写；此前那 4 字节是 MALLOC 来的未初始化堆
+    do
+        local b = bson.new()
+        b:int32("a", 1)
+        t:eq(false, b:complete(), "未 end() 时 complete 为假")
+
+        local ok, err = pcall(function() return b:data() end)
+        t:eq(false, ok, "未闭合时 :data 被拒")
+        t:check(type(err) == "string" and nil ~= err:find("not complete"), "错误信息点明未闭合")
+        t:eq(false, pcall(function() return b:tostring() end),   "未闭合时 :tostring 被拒")
+        t:eq(false, pcall(function() return bson.decode(b) end), "未闭合时 bson.decode 被拒")
+        t:eq(false, pcall(function() return bson.iter.new(b) end), "未闭合时 iter.new 被拒")
+
+        -- 嵌套只配平一层仍算未闭合
+        local n = bson.new()
+        n:doc_begin("m")
+        n:int32("v", 1)
+        n["end"](n)
+        t:eq(false, pcall(function() return n:data() end), "顶层未配平时 :data 仍被拒")
+        n["end"](n)
+        t:eq(true, n:complete(), "顶层配平后 complete")
+        t:eq(1, bson.decode(n).m.v, "配平后 decode 正常")
+
+        -- 配平后原对象照常可用
+        b["end"](b)
+        local ptr, sz = b:data()
+        t:check(ptr ~= nil and sz > 0, "配平后 :data 正常")
+        t:eq(1, bson.decode(b).a, "配平后 decode 正常")
+    end
+
+    -- 27. 已释放对象不得再交出数据：free 后 doc.data 为 NULL，:data 原先照样返回一个
+    --     NULL lightuserdata（在 Lua 里是真值，`if not p` 拦不住），喂给 decode 会让内部
+    --     bson_init 走分配分支泄漏 256 字节并解析未初始化堆
+    do
+        local b = bson.encode({ a = 1 })
+        b:free()
+        local ok, err = pcall(function() return b:data() end)
+        t:eq(false, ok, "free 后 :data 被拒")
+        t:check(type(err) == "string" and nil ~= err:find("freed"), "错误信息点明已释放")
+        t:eq(false, pcall(function() return b:tostring() end),   "free 后 :tostring 被拒")
+        t:eq(false, pcall(function() return bson.decode(b) end), "free 后 bson.decode 被拒")
+        t:eq(false, pcall(function() return bson.iter.new(b) end), "free 后 iter.new 被拒")
+        t:eq(true, pcall(function() b:free() end), "重复 free 安全")
+    end
+
+    -- 28. (指针, 长度) 形式的长度必须在 [0, INT32_MAX]：负数转成 size_t 是 SIZE_MAX，
+    --     而 bson_iter_init 唯一的边界就是拿文档头声明的长度跟 doc.size 比，doc.size 成了
+    --     SIZE_MAX 那道判定永不触发，文档头写多长就往堆里读多长；cat 的
+    --     "内嵌长度 > buffer 长度" 校验同样被 (uint32_t)SIZE_MAX 架空
+    do
+        local src = bson.encode({ a = 1 })
+        local ptr, sz = src:data()
+        local big = 2147483648  -- INT32_MAX + 1
+
+        t:eq(false, pcall(function() return bson.new(ptr, -1) end),  "bson.new 负长度被拒")
+        t:eq(false, pcall(function() return bson.new(ptr, big) end), "bson.new 超 INT32_MAX 被拒")
+        t:eq(true,  pcall(function() return bson.new(ptr, sz) end),  "bson.new 真实长度正常")
+
+        t:eq(false, pcall(function() return bson.tostring2(ptr, -1) end),  "tostring2 负长度被拒")
+        t:eq(false, pcall(function() return bson.tostring2(ptr, big) end), "tostring2 超 INT32_MAX 被拒")
+        t:check(nil ~= bson.tostring2(ptr, sz), "tostring2 真实长度正常")
+        t:check(nil ~= bson.tostring2(srey.ud_str(ptr, sz)), "tostring2 string 形式正常")
+
+        t:eq(false, pcall(function() return bson.decode(ptr, -1) end),  "decode 负长度被拒")
+        -- 取值折到 lpub_check_buf 之后，报错文案仍须是 BSON 的口径，不能漏出 lpub 那句只提非负的
+        local _, derr = pcall(function() return bson.decode(ptr, -1) end)
+        t:check(type(derr) == "string" and nil ~= derr:find("out of range"), "decode 负长度报错点明越界")
+        t:eq(false, pcall(function() return bson.decode(ptr, big) end), "decode 超 INT32_MAX 被拒")
+
+        local b = bson.new()
+        t:eq(false, pcall(function() b:append_doc("d", ptr, -1) end), "append_doc 负长度被拒")
+        t:eq(false, pcall(function() b:append_arr("r", ptr, -1) end), "append_arr 负长度被拒")
+        t:eq(false, pcall(function() b:cat(ptr, -1) end),             "cat 负长度被拒")
+        -- 被拒的调用不得写进 builder：长度校验发生在任何 append 之前
+        b["end"](b)
+        t:eq(nil, bson.decode(b).d, "被拒的 append_doc 未落盘")
+        t:eq(nil, bson.decode(b).r, "被拒的 append_arr 未落盘")
+        t:eq(nil, bson.decode(b).a, "被拒的 cat 未落盘")
+
+        t:eq(true, pcall(function() bson.new():cat(ptr, sz) end), "cat 真实长度正常")
+
+        -- 六处取值都折到 lpub_check_buf 上了，非 string/lightuserdata 仍须被拒
+        t:eq(false, pcall(function() return bson.decode(42) end),           "decode 类型错被拒")
+        t:eq(false, pcall(function() return bson.tostring2(42) end),        "tostring2 类型错被拒")
+        t:eq(false, pcall(function() bson.new():cat(42) end),               "cat 类型错被拒")
+        t:eq(false, pcall(function() bson.new():append_doc("d", 42) end),   "append_doc 类型错被拒")
+        t:eq(false, pcall(function() bson.new():append_arr("r", 42) end),   "append_arr 类型错被拒")
+    end
+
+    -- 29. 建 iter 后往源对象写入撑破容量：REALLOC 搬走缓冲，iter 的 key/val 裸指针集体悬垂。
+    --     iter.new 已把 doc.offset 重置为 0，所以写入从头开始，得写够超出容量才会触发扩容
+    do
+        local b = bson.encode({ a = 1 })
+        local before = b:data()
+        local it = bson.iter.new(b)
+        t:eq(true, it:next(), "搬移前 iter 正常")
+        b:utf8("z", string.rep("x", 1 << 20))
+        local after = b:data()
+        if after ~= before then
+            local ok, err = pcall(function() return it:next() end)
+            t:eq(false, ok, "缓冲被搬走后 iter 拒绝访问")
+            t:check(type(err) == "string" and nil ~= err:find("realloc"), "错误信息点明缓冲被搬移")
+            t:eq(false, pcall(function() return it:key() end), "取 key 同样被拒")
+        else
+            -- REALLOC 原地扩容返回同一地址：内存没被释放，不构成 UAF，本轮无从验证
+            t:check(true, "本次扩容未搬移地址，跳过")
+        end
+    end
 end)
 end)

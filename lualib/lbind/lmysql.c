@@ -498,7 +498,6 @@ static int32_t _lmysql_stmt_new(lua_State *lua) {
         lua_pushnil(lua);
         return 1;
     }
-    stmt->skid = stmt->mysql->client.sk.skid;// 快照 prepare 连接的 skid,供 __gc 比对
     mysql_stmt_ctx **st = lua_newuserdata(lua, sizeof(mysql_stmt_ctx *));
     *st = stmt;
     ASSOC_MTABLE(lua, MT_MYSQL_STMT);
@@ -514,16 +513,7 @@ static int32_t _lmysql_stmt_new(lua_State *lua) {
 static int32_t _lmysql_stmt_free(lua_State *lua) {
     mysql_stmt_ctx **stmt = luaL_checkudata(lua, 1, MT_MYSQL_STMT);
     if (NULL != *stmt) {
-        size_t size;
-        mysql_ctx *mysql = (*stmt)->mysql;
-        uint64_t skid = (*stmt)->skid;
-        void *close = mysql_pack_stmt_close(*stmt, &size);
-        if (INVALID_SOCK == mysql->client.sk.fd
-            || skid != mysql->client.sk.skid) {// 连接已关或已重连(skid 变):stmt_id 属旧连接,发到新连接会误关同 id 语句
-            FREE(close);
-        } else {
-            ev_send(&mysql->task->loader->netev, mysql->client.sk.fd, mysql->client.sk.skid, close, size, 0);
-        }
+        mysql_stmt_close(*stmt);
         *stmt = NULL;
     }
     return 0;
@@ -533,8 +523,8 @@ static int32_t _lmysql_stmt_free(lua_State *lua) {
 /// </summary>
 /// <param name="self" type="userdata">stmt 对象</param>
 /// <param name="bind" type="userdata?">参数绑定上下文；nil 表示无参数</param>
-/// <returns type="lightuserdata">命令数据指针</returns>
-/// <returns type="integer">数据长度</returns>
+/// <returns type="lightuserdata?">命令数据指针；语句声明了参数而 bind 为 nil 或参数个数对不上时返回 nil</returns>
+/// <returns type="integer?">数据长度</returns>
 static int32_t _lmysql_pack_stmt_execute(lua_State *lua) {
     LPUB_UD_ARG(lua, mysql_stmt_ctx, MT_MYSQL_STMT, stmt, "stmt freed");
     mysql_bind_ctx *mbind = NULL;
@@ -546,7 +536,7 @@ static int32_t _lmysql_pack_stmt_execute(lua_State *lua) {
     if (NULL == pack) {
         return luaL_error(lua, "stmt_execute: bind count does not match params count.");
     }
-    LPUB_RET_LUD(lua, pack, size);
+    return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
 /// 打包预处理语句重置请求
@@ -558,7 +548,7 @@ static int32_t _lmysql_pack_stmt_reset(lua_State *lua) {
     LPUB_UD_ARG(lua, mysql_stmt_ctx, MT_MYSQL_STMT, stmt, "stmt freed");
     size_t size;
     void *pack = mysql_pack_stmt_reset(*stmt, &size);
-    LPUB_RET_LUD(lua, pack, size);
+    return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
 /// 获取预处理语句所属连接的 fd 和 skid
@@ -605,7 +595,7 @@ static int32_t _lmysql_pack_selectdb(lua_State *lua) {
         lua_pushinteger(lua, 0);
         return 2;
     }
-    LPUB_RET_LUD(lua, pack, size);
+    return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
 /// 打包 COM_PING 心跳命令
@@ -617,7 +607,7 @@ static int32_t _lmysql_pack_ping(lua_State *lua) {
     LPUB_UD_ARG(lua, mysql_ctx, MT_MYSQL, ud, "mysql freed");
     size_t size;
     void *pack = mysql_pack_ping(*ud, &size);
-    LPUB_RET_LUD(lua, pack, size);
+    return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
 /// 打包查询命令（支持参数化绑定）
@@ -625,7 +615,7 @@ static int32_t _lmysql_pack_ping(lua_State *lua) {
 /// <param name="self" type="userdata">mysql 对象</param>
 /// <param name="sql" type="string">SQL 语句</param>
 /// <param name="bind" type="userdata?">参数绑定上下文；nil 表示无参数</param>
-/// <returns type="lightuserdata">命令数据指针</returns>
+/// <returns type="lightuserdata?">命令数据指针；载荷超 16MB 时返回 nil</returns>
 /// <returns type="integer">数据长度</returns>
 static int32_t _lmysql_pack_query(lua_State *lua) {
     LPUB_UD_ARG(lua, mysql_ctx, MT_MYSQL, ud, "mysql freed");
@@ -636,10 +626,7 @@ static int32_t _lmysql_pack_query(lua_State *lua) {
     }
     size_t size;
     void *pack = mysql_pack_query(*ud, sql, mbind, &size);
-    if (NULL == pack) {
-        return luaL_error(lua, "pack_query: payload exceeds 16MB.");
-    }
-    LPUB_RET_LUD(lua, pack, size);
+    return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
 /// 打包 COM_QUIT 断连命令
@@ -651,24 +638,21 @@ static int32_t _lmysql_pack_quit(lua_State *lua) {
     LPUB_UD_ARG(lua, mysql_ctx, MT_MYSQL, ud, "mysql freed");
     size_t size;
     void *pack = mysql_pack_quit(*ud, &size);
-    LPUB_RET_LUD(lua, pack, size);
+    return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
 /// 打包预处理语句准备命令（COM_STMT_PREPARE）
 /// </summary>
 /// <param name="self" type="userdata">mysql 对象</param>
 /// <param name="sql" type="string">SQL 语句模板（含 ? 占位符）</param>
-/// <returns type="lightuserdata">命令数据指针</returns>
+/// <returns type="lightuserdata?">命令数据指针；载荷超 16MB 时返回 nil</returns>
 /// <returns type="integer">数据长度</returns>
 static int32_t _lmysql_pack_stmt_prepare(lua_State *lua) {
     LPUB_UD_ARG(lua, mysql_ctx, MT_MYSQL, ud, "mysql freed");
     const char *sql = luaL_checkstring(lua, 2);
     size_t size;
     void *pack = mysql_pack_stmt_prepare(*ud, sql, &size);
-    if (NULL == pack) {
-        return luaL_error(lua, "pack_stmt_prepare: payload exceeds 16MB.");
-    }
-    LPUB_RET_LUD(lua, pack, size);
+    return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
 /// 创建 MySQL 客户端上下文（不立即建立连接）
@@ -698,6 +682,9 @@ static int32_t _lmysql_new(lua_State *lua) {
     if (LUA_TNUMBER == lua_type(lua, 8)) {
         maxpk = (uint32_t)luaL_checkinteger(lua, 8);
     }
+    mysql_ctx **ud = lua_newuserdata(lua, sizeof(mysql_ctx *));
+    *ud = NULL;
+    ASSOC_MTABLE(lua, MT_MYSQL);
     mysql_ctx *mysql;
     MALLOC(mysql, sizeof(mysql_ctx));
     if (ERR_OK != mysql_init(mysql, ip, port, evssl, user, password, database, charset, maxpk)) {
@@ -706,10 +693,7 @@ static int32_t _lmysql_new(lua_State *lua) {
         return 1;
     }
     ATOMIC_SET(&mysql->ref, 1);// Lua 持有者份额
-    // userdata 只持 ctx 指针；ctx 独立堆分配脱离 Lua GC，避免 __gc 后网络线程经 ud->context 悬空访问(跨线程 UAF)
-    mysql_ctx **ud = lua_newuserdata(lua, sizeof(mysql_ctx *));
     *ud = mysql;
-    ASSOC_MTABLE(lua, MT_MYSQL);
     return 1;
 }
 /// <summary>

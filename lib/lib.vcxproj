@@ -104,6 +104,7 @@
     <ClInclude Include="services\debug_console.h" />
     <ClInclude Include="services\harbor.h" />
     <ClInclude Include="services\subcenter.h" />
+    <ClInclude Include="services\sv_pub.h" />
     <ClInclude Include="srey\coro.h" />
     <ClInclude Include="srey\coro_utils.h" />
     <ClInclude Include="srey\prots_wrap.h" />
@@ -212,6 +213,7 @@
     <ClCompile Include="services\debug_console.c" />
     <ClCompile Include="services\harbor.c" />
     <ClCompile Include="services\subcenter.c" />
+    <ClCompile Include="services\sv_pub.c" />
     <ClCompile Include="srey\coro.c" />
     <ClCompile Include="srey\coro_utils.c" />
     <ClCompile Include="srey\prots_wrap.c" />

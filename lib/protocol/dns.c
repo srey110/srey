@@ -131,7 +131,8 @@ static int32_t _dns_decode_domain(unsigned char *name, size_t namelen,
     unsigned char *buf_end = buffer + buflen;
     *count = 1;
     name[0] = '\0';
-    while (reader < buf_end && *reader != 0) {
+    while (reader < buf_end
+        && !(0 == label_remaining && 0 == *reader)) {
         if (label_remaining > 0) {
             // 标签内容字节，直接拷入
             if (p >= namelen - 1) {

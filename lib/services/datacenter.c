@@ -1,4 +1,5 @@
 ﻿#include "services/datacenter.h"
+#include "services/sv_pub.h"
 #include "srey/task.h"
 #include "containers/hashmap.h"
 #include "containers/sarray.h"
@@ -494,6 +495,12 @@ int32_t dc_start(loader_ctx *loader, const char *name) {
     }
     return ERR_OK;
 }
+// 客户端入口的 key 校验。注意与 subcenter 的 _sc_check_topic 用的是相反的比较符:
+// DC_KEY_MAX 是 keybuf 的容量(含 NUL),合法长度只到 511;SC_TOPIC_MAX 是长度上限本身,
+// 等于它仍合法。两边各自的宏注释写了各自口径,照抄另一边的写法就会差一个字节
+static int32_t _dc_check_key(const char *key) {
+    return (!EMPTYSTR(key) && strlen(key) < DC_KEY_MAX) ? ERR_OK : ERR_FAILED;
+}
 // payload 构造(请求不再带 op,reqtype 标识子命令):
 //   SET(_dc_pack_kv):           u16 klen(网络序) + key + u32 vlen(网络序) + val(可选)
 //   GET/WAIT/DEL(_dc_pack_key): u16 klen + key
@@ -525,185 +532,101 @@ static char *_dc_pack_key(const char *key, size_t *out_total) {
 }
 // ── 业务侧 helper:C 端业务通过这些函数调 DataCenter,内部包 coro_request ──
 // reqtype 直接标识子命令(REQ_DC_*),请求 payload 不再带 op 字节
+// set 与其它入口不同,先 grab 再组包:value 可以很大,组包就是整块拷一遍,
+// 目标不在时那份拷贝纯属白做(理由见 sv_pub.h 的 _svpub_*_dst)
 int32_t coro_dc_set(task_ctx *task, name_t dc_name, const char *key, void *val, size_t size) {
-    if (EMPTYSTR(key)
-        || strlen(key) >= DC_KEY_MAX
+    if (ERR_OK != _dc_check_key(key)
         || size > UINT32_MAX) {
         return ERR_FAILED;
     }
-    task_ctx *dc = task_grab(task->loader, dc_name);
-    if (NULL == dc) {
+    task_ctx *dst = task_grab(task->loader, dc_name);
+    if (NULL == dst) {
         return ERR_FAILED;
     }
     size_t total;
     char *buf = _dc_pack_kv(key, val, size, &total);
-    int32_t erro = 0;
-    size_t rsize = 0;
-    coro_request(dc, task, REQ_DC_SET, buf, total, 0, &erro, &rsize); // copy=0 转移所有权
-    task_ungrab(dc);
-    return erro;
+    return _svpub_call_dst(dst, task, REQ_DC_SET, buf, total);
 }
 void *coro_dc_get(task_ctx *task, name_t dc_name, const char *key,
                   size_t *size, int32_t *erro) {
-    if (EMPTYSTR(key) || strlen(key) >= DC_KEY_MAX) {
-        SET_PTR(size, 0);
-        *erro = ERR_FAILED;
-        return NULL;
-    }
-    task_ctx *dc = task_grab(task->loader, dc_name);
-    if (NULL == dc) {
+    if (ERR_OK != _dc_check_key(key)) {
         SET_PTR(size, 0);
         *erro = ERR_FAILED;
         return NULL;
     }
     size_t total;
     char *buf = _dc_pack_key(key, &total);
-    void *resp = coro_request(dc, task, REQ_DC_GET, buf, total, 0, erro, size); // copy=0 转移所有权
-    task_ungrab(dc);
-    if (ERR_OK != *erro) {
-        SET_PTR(size, 0);
-        return NULL;
-    }
-    return resp;
+    return _svpub_call_resp(task, dc_name, REQ_DC_GET, buf, total, size, erro);
 }
 void *coro_dc_wait(task_ctx *task, name_t dc_name, const char *key,
                    size_t *size, int32_t *erro) {
-    if (EMPTYSTR(key) || strlen(key) >= DC_KEY_MAX) {
-        SET_PTR(size, 0);
-        *erro = ERR_FAILED;
-        return NULL;
-    }
-    task_ctx *dc = task_grab(task->loader, dc_name);
-    if (NULL == dc) {
+    if (ERR_OK != _dc_check_key(key)) {
         SET_PTR(size, 0);
         *erro = ERR_FAILED;
         return NULL;
     }
     size_t total;
     char *buf = _dc_pack_key(key, &total);
-    void *resp = coro_request(dc, task, REQ_DC_WAIT, buf, total, 0, erro, size); // copy=0 转移所有权
-    task_ungrab(dc);
-    if (ERR_OK != *erro) {
-        SET_PTR(size, 0);
-        return NULL;
-    }
-    return resp;
+    return _svpub_call_resp(task, dc_name, REQ_DC_WAIT, buf, total, size, erro);
 }
 int32_t coro_dc_del(task_ctx *task, name_t dc_name, const char *key) {
-    if (EMPTYSTR(key) || strlen(key) >= DC_KEY_MAX) {
-        return ERR_FAILED;
-    }
-    task_ctx *dc = task_grab(task->loader, dc_name);
-    if (NULL == dc) {
+    if (ERR_OK != _dc_check_key(key)) {
         return ERR_FAILED;
     }
     size_t total;
     char *buf = _dc_pack_key(key, &total);
-    int32_t erro = 0;
-    size_t rsize = 0;
-    coro_request(dc, task, REQ_DC_DEL, buf, total, 0, &erro, &rsize); // copy=0 转移所有权
-    task_ungrab(dc);
-    return erro;
+    return _svpub_call(task, dc_name, REQ_DC_DEL, buf, total);
 }
 void *coro_dc_keys(task_ctx *task, name_t dc_name,
                    size_t *size, int32_t *erro) {
-    task_ctx *dc = task_grab(task->loader, dc_name);
-    if (NULL == dc) {
-        SET_PTR(size, 0);
-        *erro = ERR_FAILED;
-        return NULL;
-    }
-    void *resp = coro_request(dc, task, REQ_DC_LIST, NULL, 0, 0, erro, size); // LIST 无 body,copy=0
-    task_ungrab(dc);
-    if (ERR_OK != *erro) {
-        SET_PTR(size, 0);
-        return NULL;
-    }
-    return resp;
+    return _svpub_call_resp(task, dc_name, REQ_DC_LIST, NULL, 0, size, erro);
 }
 // ── 无协程版本:直接 task_request 不挂起;sess=0 走 fire-and-forget(src=NULL),sess!=0 业务自管响应配对 ──
 // reqtype 直接标识子命令(REQ_DC_*),请求 payload 不再带 op 字节;copy=0 转移所有权
 int32_t dc_set(task_ctx *task, name_t dc_name, uint64_t sess, const char *key, void *val, size_t size) {
-    if (EMPTYSTR(key)
-        || strlen(key) >= DC_KEY_MAX
+    if (ERR_OK != _dc_check_key(key)
         || size > UINT32_MAX) {
         return ERR_FAILED;
     }
-    task_ctx *dc = task_grab(task->loader, dc_name);
-    if (NULL == dc) {
+    task_ctx *dst = task_grab(task->loader, dc_name);
+    if (NULL == dst) {
         return ERR_FAILED;
     }
     size_t total;
     char *buf = _dc_pack_kv(key, val, size, &total);
-    if (0 == sess) {
-        task_call(dc, REQ_DC_SET, buf, total, 0);
-    } else {
-        task_request(dc, task, REQ_DC_SET, sess, buf, total, 0);
-    }
-    task_ungrab(dc);
-    return ERR_OK;
+    return _svpub_send_dst(dst, task, REQ_DC_SET, sess, buf, total);
 }
 int32_t dc_del(task_ctx *task, name_t dc_name, uint64_t sess, const char *key) {
-    if (EMPTYSTR(key) || strlen(key) >= DC_KEY_MAX) {
-        return ERR_FAILED;
-    }
-    task_ctx *dc = task_grab(task->loader, dc_name);
-    if (NULL == dc) {
+    if (ERR_OK != _dc_check_key(key)) {
         return ERR_FAILED;
     }
     size_t total;
     char *buf = _dc_pack_key(key, &total);
-    if (0 == sess) {
-        task_call(dc, REQ_DC_DEL, buf, total, 0);
-    } else {
-        task_request(dc, task, REQ_DC_DEL, sess, buf, total, 0);
-    }
-    task_ungrab(dc);
-    return ERR_OK;
+    return _svpub_send(task, dc_name, REQ_DC_DEL, sess, buf, total);
 }
 int32_t dc_get(task_ctx *task, name_t dc_name, uint64_t sess, const char *key) {
-    if (EMPTYSTR(key)
-        || strlen(key) >= DC_KEY_MAX
+    if (ERR_OK != _dc_check_key(key)
         || 0 == sess) {
-        return ERR_FAILED;
-    }
-    task_ctx *dc = task_grab(task->loader, dc_name);
-    if (NULL == dc) {
         return ERR_FAILED;
     }
     size_t total;
     char *buf = _dc_pack_key(key, &total);
-    task_request(dc, task, REQ_DC_GET, sess, buf, total, 0);
-    task_ungrab(dc);
-    return ERR_OK;
+    return _svpub_send(task, dc_name, REQ_DC_GET, sess, buf, total);
 }
 int32_t dc_wait(task_ctx *task, name_t dc_name, uint64_t sess, const char *key) {
-    if (EMPTYSTR(key)
-        || strlen(key) >= DC_KEY_MAX
+    if (ERR_OK != _dc_check_key(key)
         || 0 == sess) {
-        return ERR_FAILED;
-    }
-    task_ctx *dc = task_grab(task->loader, dc_name);
-    if (NULL == dc) {
         return ERR_FAILED;
     }
     size_t total;
     char *buf = _dc_pack_key(key, &total);
-    task_request(dc, task, REQ_DC_WAIT, sess, buf, total, 0);
-    task_ungrab(dc);
-    return ERR_OK;
+    return _svpub_send(task, dc_name, REQ_DC_WAIT, sess, buf, total);
 }
 int32_t dc_keys(task_ctx *task, name_t dc_name, uint64_t sess) {
     if (0 == sess) {
         return ERR_FAILED;
     }
-    task_ctx *dc = task_grab(task->loader, dc_name);
-    if (NULL == dc) {
-        return ERR_FAILED;
-    }
-    task_request(dc, task, REQ_DC_LIST, sess, NULL, 0, 0);
-    task_ungrab(dc);
-    return ERR_OK;
+    return _svpub_send(task, dc_name, REQ_DC_LIST, sess, NULL, 0);
 }
 // 游标式解析 dc_keys 响应:每条 | u16 klen | key |
 int32_t dc_parse_keys(binary_ctx *br, dc_key *out) {

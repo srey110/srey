@@ -129,6 +129,15 @@ static int32_t _prepare_execute(mysql_ctx *mysql) {
         LOG_ERROR("mysql stmt_prepare error.");
         return ERR_FAILED;
     }
+    // stmt_id 是服务端按连接分配的,关闭时要靠 skid 判断"中途有没有重连过"。
+    // 分配点漏填的话这里恒为 0,重连后 mysql_stmt_close 就会把新连接上同 id 的语句关掉
+    if (0 == stmt->skid
+        || stmt->skid != mysql->client.sk.skid) {
+        LOG_ERROR("mysql stmt skid not snapshotted at prepare: %"PRIu64" vs %"PRIu64,
+                  stmt->skid, mysql->client.sk.skid);
+        mysql_stmt_close(stmt);
+        return ERR_FAILED;
+    }
     mysql_bind_ctx bind;
     mysql_bind_init(&bind);
     mysql_bind_integer(&bind, NULL, 2);

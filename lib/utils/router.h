@@ -115,8 +115,8 @@
 //                    生命周期需跨过所有相关 router_add 调用 (用字面量 / 静态数组即可)
 //   router_req       栈对象, dispatch 调用期间有效, 不可跨 yield 持有
 //   params[].key     指向 router_ctx 内部路径模板, 跟 router_new ~ router_free 同生命周期
-//   params[].val     指向 ctx->url_storage 内部, 跟 dispatch 调用同生命周期
-//   query 返回值     指向 ctx->url_storage 内部, 跟 dispatch 调用同生命周期
+//   params[].val     指向 ctx->url 内部, 跟 dispatch 调用同生命周期
+//   query 返回值     指向 ctx->url 内部, 跟 dispatch 调用同生命周期
 //   header / body    指向 pack 内部, pack 在 _net_recv 返回后失效
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -145,7 +145,7 @@ typedef struct router_req router_req;
 typedef void (*router_cb)(router_req *ctx);
 // 路径参数键值对 (仅用于 router_req::params);
 // key 指向 router_entry::segs[].str  (router_ctx 持有, 跟 router_new ~ router_free 同生命周期)
-// val 指向 ctx->url_storage.buf 内部 (栈对象, 跟 dispatch 调用同生命周期)
+// val 指向 ctx->url->buf 内部 (栈对象, 跟 dispatch 调用同生命周期)
 // 调用方不得释放
 typedef struct router_kv {
     uint32_t key_len;
@@ -169,7 +169,10 @@ struct router_req {
     sk_id sk;                 // 连接标识 fd+skid
     router_cb chain[ROUTER_MAX_CHAIN]; // 中间件 + handler 拼接链
     router_kv params[ROUTER_MAX_PARAMS]; // {name} / {name?} 提取结果
-    url_ctx url_storage; // URL 解析结果 (内部使用)
+    // URL 解析结果 (内部使用)。存储由调用方提供并在调用 router_match_index 前赋值:
+    // url_ctx 有 4KB 出头, 内嵌进来会让本结构每次零初始化都白清一遍 —— url_parse 自己
+    // 第一件事就是把它整体清零。指针化后两边各清各的, 谁也不重复
+    url_ctx *url;
 };
 // 分组对象 (栈分配, 调用方持有);  prefix / mws 仅持引用, 调用方需保证生命周期
 // 跨过所有 router_* 注册调用。嵌套通过 router_group_nest 派生, 父对象不可变
@@ -321,8 +324,8 @@ router_entry *router_any(router_ctx *r, const router_group *g, const char *path,
 int32_t router_add_index(router_ctx *r, const char *method, size_t method_len,
                          const char *path, size_t path_len);
 /// <summary>
-/// 路径匹配（不执行 handler/中间件）；调用方提供已零初始化的 ctx
-/// 成功后 ctx->params/params_n 已填充，ctx->url_storage 为 backing store
+/// 路径匹配（不执行 handler/中间件）；调用方提供已零初始化的 ctx 与 url 存储。
+/// 成功后 ctx->params/params_n 已填充，ctx->url 为 backing store
 /// </summary>
 /// <param name="r">router_ctx</param>
 /// <param name="method">HTTP 方法字符串</param>
@@ -331,7 +334,10 @@ int32_t router_add_index(router_ctx *r, const char *method, size_t method_len,
 /// <param name="url_len">url 长度</param>
 /// <param name="ctx">调用方提供的 router_req，**必须已整体零初始化**：匹配失败时本函数
 /// 不写 params_n（只有命中才写），ctx 带着脏 params_n 进来就会让 router_req_param
-/// 遍历到未初始化的 params[] 指针。同一个 ctx 也不可跨请求复用</param>
+/// 遍历到未初始化的 params[] 指针。同一个 ctx 也不可跨请求复用。
+/// ctx->url 须在调用前指向一块调用方持有的 url_ctx，**不必**预先清零——本函数内部
+/// url_parse 会先整体清一遍；反过来说返回 -3（方法未知，压根没解析 URL）时它仍是未初始化的，
+/// 只有返回值 != -3 才可以读 ctx->url</param>
 /// <returns>路由索引（≥0）；-1 无匹配路由；-2 URL 解析失败；-3 方法不在已知列表(对应 405)</returns>
 int32_t router_match_index(router_ctx *r, const char *method, size_t method_len,
                            const char *url, size_t url_len, router_req *ctx);

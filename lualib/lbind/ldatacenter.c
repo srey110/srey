@@ -10,9 +10,7 @@
 /// <returns type="boolean">成功投递 true;key 非法/datacenter 不可达 false</returns>
 static int32_t _ldc_set(lua_State *lua) {
     LPUB_CUR_TASK(lua, task);
-    name_t dc_name = (LUA_TSTRING == lua_type(lua, 1))
-        ? task_find_name(g_loader, lua_tostring(lua, 1))
-        : (name_t)luaL_checkinteger(lua, 1);
+    name_t dc_name = lpub_task_handle(lua, 1);
     uint64_t sess = (uint64_t)luaL_checkinteger(lua, 2);
     const char *key = (LUA_TSTRING == lua_type(lua, 3)) ? lua_tostring(lua, 3) : NULL;
     size_t vlen = 0;
@@ -29,9 +27,7 @@ static int32_t _ldc_set(lua_State *lua) {
 /// <returns type="boolean">成功投递 true;key 非法/sess=0/datacenter 不可达 false</returns>
 static int32_t _ldc_get(lua_State *lua) {
     LPUB_CUR_TASK(lua, task);
-    name_t dc_name = (LUA_TSTRING == lua_type(lua, 1))
-        ? task_find_name(g_loader, lua_tostring(lua, 1))
-        : (name_t)luaL_checkinteger(lua, 1);
+    name_t dc_name = lpub_task_handle(lua, 1);
     uint64_t sess = (uint64_t)luaL_checkinteger(lua, 2);
     const char *key = (LUA_TSTRING == lua_type(lua, 3)) ? lua_tostring(lua, 3) : NULL;
     lua_pushboolean(lua, ERR_OK == dc_get(task, dc_name, sess, key));
@@ -46,9 +42,7 @@ static int32_t _ldc_get(lua_State *lua) {
 /// <returns type="boolean">成功投递 true;key 非法/sess=0/datacenter 不可达 false</returns>
 static int32_t _ldc_wait(lua_State *lua) {
     LPUB_CUR_TASK(lua, task);
-    name_t dc_name = (LUA_TSTRING == lua_type(lua, 1))
-        ? task_find_name(g_loader, lua_tostring(lua, 1))
-        : (name_t)luaL_checkinteger(lua, 1);
+    name_t dc_name = lpub_task_handle(lua, 1);
     uint64_t sess = (uint64_t)luaL_checkinteger(lua, 2);
     const char *key = (LUA_TSTRING == lua_type(lua, 3)) ? lua_tostring(lua, 3) : NULL;
     lua_pushboolean(lua, ERR_OK == dc_wait(task, dc_name, sess, key));
@@ -63,9 +57,7 @@ static int32_t _ldc_wait(lua_State *lua) {
 /// <returns type="boolean">成功投递 true;key 非法/datacenter 不可达 false</returns>
 static int32_t _ldc_del(lua_State *lua) {
     LPUB_CUR_TASK(lua, task);
-    name_t dc_name = (LUA_TSTRING == lua_type(lua, 1))
-        ? task_find_name(g_loader, lua_tostring(lua, 1))
-        : (name_t)luaL_checkinteger(lua, 1);
+    name_t dc_name = lpub_task_handle(lua, 1);
     uint64_t sess = (uint64_t)luaL_checkinteger(lua, 2);
     const char *key = (LUA_TSTRING == lua_type(lua, 3)) ? lua_tostring(lua, 3) : NULL;
     lua_pushboolean(lua, ERR_OK == dc_del(task, dc_name, sess, key));
@@ -79,9 +71,7 @@ static int32_t _ldc_del(lua_State *lua) {
 /// <returns type="boolean">成功投递 true;sess=0/datacenter 不可达 false</returns>
 static int32_t _ldc_keys(lua_State *lua) {
     LPUB_CUR_TASK(lua, task);
-    name_t dc_name = (LUA_TSTRING == lua_type(lua, 1))
-        ? task_find_name(g_loader, lua_tostring(lua, 1))
-        : (name_t)luaL_checkinteger(lua, 1);
+    name_t dc_name = lpub_task_handle(lua, 1);
     uint64_t sess = (uint64_t)luaL_checkinteger(lua, 2);
     lua_pushboolean(lua, ERR_OK == dc_keys(task, dc_name, sess));
     return 1;

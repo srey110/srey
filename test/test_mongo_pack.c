@@ -871,6 +871,35 @@ static void test_mongo_unpack_kind1_empty_section(CuTest *tc) {
     buffer_free(&buf);
 }
 
+// 事务会话的绑定不能跨连接存活,否则 mongo_commit/rollback 那道 mongo->session != session 的
+// 守卫形同虚设,会拿旧的 lsid/txnNumber 往新连接上发 commit。但解绑不能放在 _mongo_udfree:
+// 它跑在网络线程,而组包侧在属主线程上判 mongo->session 非空后解引用它的 options/started,
+// 跨线程置空会让那两步之间读到 NULL。所以断开时只清连接自身的状态,session 留给 mongo_connect
+// 在属主线程上解绑(见 coro_utils.c 的 mongo_connect)
+static void test_mongo_udfree_keeps_session(CuTest *tc) {
+    mongo_ctx mongo;
+    _mongo_test_init(&mongo);// 内部 ZERO 过,ref=0 → PROT_REF_RELEASE 短路,不会 FREE 栈上对象
+    mongo.sk.fd = (SOCKET)7;
+    mongo_session sess;
+    ZERO(&sess, sizeof(sess));
+    sess.mongo = &mongo;
+    sess.started = 1;
+    mongo.session = &sess;
+
+    ud_cxt ud;
+    ZERO(&ud, sizeof(ud));
+    ud.context = &mongo;
+    _mongo_udfree(&ud);
+
+    CuAssertTrue(tc, NULL == ud.context);
+    CuAssertTrue(tc, INVALID_SOCK == mongo.sk.fd);
+    // session 必须原样留着:改回在这里置空就是把跨线程写又加回来了
+    CuAssertTrue(tc, &sess == mongo.session);
+    CuAssertTrue(tc, 1 == sess.started);
+    // 重复调用安全(context 已置空直接返回)
+    _mongo_udfree(&ud);
+    CuAssertTrue(tc, &sess == mongo.session);
+}
 void test_mongo_pack(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mongo_pack_ping);
     SUITE_ADD_TEST(suite, test_mongo_pack_hello);
@@ -891,4 +920,5 @@ void test_mongo_pack(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mongo_parse_check_error);
     SUITE_ADD_TEST(suite, test_mongo_parse_startsession);
     SUITE_ADD_TEST(suite, test_mongo_unpack_kind1_empty_section);
+    SUITE_ADD_TEST(suite, test_mongo_udfree_keeps_session);
 }

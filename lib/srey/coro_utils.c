@@ -319,10 +319,13 @@ int32_t mysql_stmt_reset(mysql_stmt_ctx *stmt) {
 void mysql_stmt_close(mysql_stmt_ctx *stmt) {
     size_t size;
     mysql_ctx *mysql = stmt->mysql;
+    uint64_t skid = stmt->skid;
     void *close = mysql_pack_stmt_close(stmt, &size);
-    /* mysql_pack_stmt_close 已释放 stmt，此后只能访问 mysql（已在 free 前捕获）。
-     * fd == INVALID_SOCK 表示连接已关闭（或 mysql_ctx 已失效），跳过发包直接释放。 */
-    if (INVALID_SOCK == mysql->client.sk.fd) {
+    /* mysql_pack_stmt_close 已释放 stmt，此后只能访问 mysql / skid（都已在 free 前捕获）。
+     * fd == INVALID_SOCK 表示连接已关闭；skid 变了表示中途重连过——stmt_id 是服务端按连接
+     * 分配的，旧 id 发到新连接上会把恰好占用该 id 的语句关掉。两种情况都跳过发包直接释放。 */
+    if (INVALID_SOCK == mysql->client.sk.fd
+        || skid != mysql->client.sk.skid) {
         FREE(close);
         return;
     }
@@ -559,10 +562,16 @@ pgpack_ctx *pgsql_copy_out(pgsql_ctx *pg, const char *sql) {
     void *query = pgsql_pack_query(sql, &qsize);
     return coro_send(pg->task, pg->sk.fd, pg->sk.skid, query, qsize, NULL, 0);
 }
+// 事务会话的绑定不能跨连接存活：新连接一建立就解绑，之后组包侧的 TRANSACTION_OPTIONS 才不会
+// 把上一代的 lsid/txnNumber 附到 hello 及后续命令上。
+// 清在这里而不是断开时的 _mongo_udfree：那个回调跑在网络线程，而组包侧是在属主线程上
+// 判 mongo->session 非空后解引用它的 options/started，跨线程置空会让那两步之间读到 NULL。
+// 放在连接入口还顺带覆盖"在一条仍打开的连接上重入 connect"——那种情况根本不会触发 udfree
 int32_t mongo_connect(task_ctx *task, mongo_ctx *mongo) {
     if (ERR_OK != mongo_try_connect(task, mongo, 1)) {
         return ERR_FAILED;
     }
+    mongo_clear_session(mongo);
     return coro_wait_connect(task, mongo->sk.fd, mongo->sk.skid, mongo->evssl);
 }
 void mongo_quit(mongo_ctx *mongo) {
@@ -640,8 +649,6 @@ int32_t mongo_ping(mongo_ctx *mongo) {
         if (ERR_OK != mongo_connect(mongo->task, mongo)) {
             return ERR_FAILED;
         }
-        // 清跨代残留事务会话，避免旧 lsid/txnNumber 经 TRANSACTION_OPTIONS 附加进 hello 及后续命令
-        mongo_clear_session(mongo);
         if (NULL == mongo_hello(mongo, NULL)) {
             return ERR_FAILED;
         }
@@ -879,7 +886,7 @@ void mongo_freesession(mongo_session *session) {
 // 组包侧 TRANSACTION_OPTIONS 与 TRANSACTION_OPTIONS_START 一律从 mongo->session 取事务上下文,
 // 所以"连接当前绑定的 session"必须与调用方手上那个是同一个,否则命令会挂到别人的事务上。
 // begin 靠拒绝第二个 session 维持它;commit/rollback 在入口挡掉已经分叉的情形——分叉来自
-// 重连时的 mongo_clear_session,或期间另一个 session 接管了这条连接。
+// 重连入口 mongo_connect 的解绑,或期间另一个 session 接管了这条连接。
 // 挡掉而不是改用入参的 lsid 发出去:MongoDB 要求 commit/abort 发在事务所在的那条连接上,
 // 连接已经换过,发什么都只会换回 NoSuchTransaction,不如省掉这个往返直接报失败。
 // 早退不释放 session->options 也不漏:重新 begin 会先 FREE 一次,mongo_freesession 也会释放

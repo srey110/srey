@@ -189,7 +189,9 @@ Router.__index = Router
 function Router.new()
     return setmetatable({
         _c_router  = _srey_router_new(), -- C 路由器（持有路径段数组，匹配在 C 侧完成）
-        _routes    = {},    -- [C索引] = {handler, mws, raw}，与 C 路由表索引对齐
+        -- [C索引] = {handler, mws, raw}。C 侧索引只增不回收也没有删除接口，add 成功即在此写入，
+        -- 中间无失败点，所以 match 命中的 idx 必然取得到 entry
+        _routes    = {},
         _named     = {},    -- 命名路由索引：name → entry，由 :name("key") 写入
         _global_mw = {},    -- 全局中间件列表，对所有路由生效
         _mw_reg    = {},    -- 具名中间件注册表：name → fun，由 :define() 写入
@@ -234,8 +236,10 @@ _bad_entry.name = function(_, n) WARN("router: :name(%s) on rejected entry.", to
 ---@class RouteEntry
 ---@field method  string                          HTTP 方法（"GET"/"POST"/... 或 "ANY"）
 ---@field raw     string                          注册时的完整路径（含 prefix），调试用
----@field handler fun(ctx:Ctx)                    路由处理函数
----@field mws     fun(ctx:Ctx,next:fun())[]        路由级中间件列表（分组中间件已静态合并）
+---@field handler fun(ctx:Ctx)                    路由处理函数。注册后只读：首次 dispatch 会把它连同
+---                                               中间件拼成执行链缓存起来，之后改这个字段不会生效
+---@field mws     fun(ctx:Ctx,next:fun())[]        路由级中间件列表（分组中间件已静态合并）。
+---                                               同 handler，注册后只读
 ---@field _name   string?                         命名路由键，由 :name("key") 写入
 ---@field name    fun(self:RouteEntry,n:string):RouteEntry  链式命名方法
 
@@ -391,10 +395,10 @@ function Router:dispatch(fd, skid, pack, client)
         route._chain_ver = self._mw_version
     end
     -- 链内任意位置抛出异常均由 srey.xpcall 兜底（自动 ERROR + traceback），避免 handler/中间件崩溃丢失响应
-    local ok, err = srey.xpcall(_run_chain, chain, ctx, 1)
+    local run_ok, err = srey.xpcall(_run_chain, chain, ctx, 1)
     -- 仅未响应时补 500
     if not ctx.responded then
-        local errmsg = ok and "Internal Server Error\n"
+        local errmsg = run_ok and "Internal Server Error\n"
             or string.format("Internal Server Error. %s\n", tostring(err))
         pcall(http.response, fd, skid, 500, _PLAIN_HEADERS, errmsg)
     end

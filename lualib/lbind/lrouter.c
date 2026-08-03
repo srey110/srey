@@ -62,8 +62,10 @@ static int32_t _lrouter_match(lua_State *lua) {
     const char *method = luaL_checklstring(lua, 2, &mlen);
     size_t ulen;
     const char *url = luaL_checklstring(lua, 3, &ulen);
+    url_ctx urlstorage;
     router_req ctx;
     ZERO(&ctx, sizeof(ctx));
+    ctx.url = &urlstorage;
     int32_t idx = router_match_index(*pr, method, mlen, url, ulen, &ctx);
     int32_t code = router_match_code(idx);
     if (-3 == idx || -2 == idx) {
@@ -73,7 +75,7 @@ static int32_t _lrouter_match(lua_State *lua) {
     }
     lua_pushboolean(lua, idx >= 0);
     lua_pushinteger(lua, code);
-    lpub_push_url_table(lua, &ctx.url_storage);
+    lpub_push_url_table(lua, ctx.url);
     if (idx < 0) {
         return 3;
     }

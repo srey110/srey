@@ -469,6 +469,11 @@ static int32_t _test_wildcard_dead_sub_cleanup(task_ctx *task) {
     for (poll = 0; poll < 40; poll++) {
         lsize = 0;
         ldata = coro_sc_topics(task, _sc_name, &lsize, &erro);
+        // 查询失败时 ldata=NULL/lsize=0，_topics_contains 恒返 0，"!contains" 立刻成立会误判通过
+        if (ERR_OK != erro) {
+            LOG_ERROR("dead_sub_cleanup: topics query failed");
+            return ERR_FAILED;
+        }
         if (!_topics_contains(ldata, lsize, "tw/+")) {
             return ERR_OK;
         }
@@ -531,6 +536,11 @@ static int32_t _test_shared_dead_member_cleanup(task_ctx *task) {
     for (poll = 0; poll < 40; poll++) {
         lsize = 0;
         ldata = coro_sc_topics(task, _sc_name, &lsize, &erro);
+        // 查询失败时 ldata=NULL/lsize=0，_topics_contains 恒返 0，"!contains" 立刻成立会误判通过
+        if (ERR_OK != erro) {
+            LOG_ERROR("shared_dead_cleanup: topics query failed");
+            return ERR_FAILED;
+        }
         if (!_topics_contains(ldata, lsize, "tsw/m")) {
             return ERR_OK;
         }
@@ -646,6 +656,11 @@ static int32_t _test_async_sess_zero_reject(task_ctx *task) {
     size_t lsize = 0;
     int32_t erro = 0;
     void *ldata = coro_sc_topics(task, _sc_name, &lsize, &erro);
+    // 查询失败时列表恒判为空，下面"不该在列表里"的断言会空过
+    if (ERR_OK != erro) {
+        LOG_ERROR("async sess=0: topics query failed");
+        return ERR_FAILED;
+    }
     if (_topics_contains(ldata, lsize, "z/a")) {
         LOG_ERROR("async sess=0: 'z/a' should not be subscribed");
         return ERR_FAILED;
@@ -752,6 +767,68 @@ static int32_t _test_parse_helpers(task_ctx *task) {
     return ERR_OK;
 }
 
+// 子段 22:topic / group 长度上界。线格式的长度前缀只有 2 字节,不挡就被 pack_integer 静默截断——
+// 0x10005 字节的 topic 前缀会写成 5,服务端照着建了个 5 字符的节点还回成功,调用方订到了别的 topic
+static int32_t _test_topic_len_bound(task_ctx *task) {
+    // 与 subcenter.c 的 SC_TOPIC_MAX / SC_GROUP_MAX 对齐(两个宏在 .c 里,测试侧看不到)
+    const size_t topic_max = 256;
+    const size_t group_max = 64;
+    char *topic;
+    MALLOC(topic, topic_max + 2);
+    memset(topic, 'a', topic_max + 1);
+    // 恰好等于上界:合法
+    topic[topic_max] = '\0';
+    if (ERR_OK != coro_sc_subscribe(task, _sc_name, topic)) {
+        LOG_ERROR("topic_len_bound: topic at limit should be accepted");
+        FREE(topic);
+        return ERR_FAILED;
+    }
+    coro_sc_unsubscribe(task, _sc_name, topic);
+    // 超上界 1 字节:协程版与非协程版都得拒(sess 给个非 0 值即可,拒绝发生在组包之前)
+    topic[topic_max] = 'a';
+    topic[topic_max + 1] = '\0';
+    if (ERR_OK == coro_sc_subscribe(task, _sc_name, topic)
+        || ERR_FAILED != sc_subscribe(task, _sc_name, 1, topic)) {
+        LOG_ERROR("topic_len_bound: over-limit topic should be rejected on both paths");
+        FREE(topic);
+        return ERR_FAILED;
+    }
+    FREE(topic);
+    // 长度低 16 位落在合法区间:不挡的话前缀被截成 5,订阅"成功"但订的是 "bbbbb"
+    size_t evil_lens = 0x10005;
+    char *evil;
+    MALLOC(evil, evil_lens + 1);
+    memset(evil, 'b', evil_lens);
+    evil[evil_lens] = '\0';
+    int32_t rtn = coro_sc_subscribe(task, _sc_name, evil);
+    FREE(evil);
+    if (ERR_OK == rtn) {
+        LOG_ERROR("topic_len_bound: 0x10005-byte topic should be rejected");
+        return ERR_FAILED;
+    }
+    size_t lsize = 0;
+    int32_t erro = 0;
+    void *ldata = coro_sc_topics(task, _sc_name, &lsize, &erro);
+    // 查询失败时列表恒判为空，下面"不该在列表里"的断言会空过
+    if (ERR_OK != erro) {
+        LOG_ERROR("topic_len_bound: topics query failed");
+        return ERR_FAILED;
+    }
+    if (_topics_contains(ldata, lsize, "bbbbb")) {
+        LOG_ERROR("topic_len_bound: truncated topic 'bbbbb' must not be subscribed");
+        return ERR_FAILED;
+    }
+    // group 走同一套判定
+    char group[128];
+    memset(group, 'g', group_max + 1);
+    group[group_max + 1] = '\0';
+    if (ERR_OK == coro_sc_subscribe_shared(task, _sc_name, "t22/x", group)) {
+        LOG_ERROR("topic_len_bound: over-limit group should be rejected");
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+
 static void _startup(task_ctx *task) {
     task_sc_client_args *arg = (task_sc_client_args *)coro_get_arg(task);
     _sc_name = task_find_name(task->loader, arg->sc_name);
@@ -778,9 +855,10 @@ static void _startup(task_ctx *task) {
     if (ERR_OK != _test_shared_multi_group(task))    { return; }
     if (ERR_OK != _test_async_sess_zero_reject(task)) { return; }
     if (ERR_OK != _test_parse_helpers(task))         { return; }
+    if (ERR_OK != _test_topic_len_bound(task))       { return; }
 
     *(arg->ok) = 1;
-    LOG_INFO("sc_client tested: 21/21 subtests passed.");
+    LOG_INFO("sc_client tested: 22/22 subtests passed.");
 }
 
 void task_sc_client_start(loader_ctx *loader, const char *base_name, const char *sc_name, int32_t *ok) {

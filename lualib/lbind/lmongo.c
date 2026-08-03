@@ -25,6 +25,9 @@ static int32_t _lmongo_new(lua_State *lua) {
         evssl = lua_touserdata(lua, 3);
     }
     const char *db = luaL_checkstring(lua, 4);
+    mongo_ctx **ud = lua_newuserdata(lua, sizeof(mongo_ctx *));
+    *ud = NULL;
+    ASSOC_MTABLE(lua, MT_MONGO);
     mongo_ctx *mongo;
     MALLOC(mongo, sizeof(mongo_ctx));
     if (ERR_OK != mongo_init(mongo, ip, port, evssl, db)) {
@@ -33,10 +36,7 @@ static int32_t _lmongo_new(lua_State *lua) {
         return 1;
     }
     ATOMIC_SET(&mongo->ref, 1);// Lua 持有者份额
-    // userdata 只持 ctx 指针；ctx 独立堆分配脱离 Lua GC，避免 __gc 后网络线程经 ud->context 悬空访问(跨线程 UAF)
-    mongo_ctx **ud = lua_newuserdata(lua, sizeof(mongo_ctx *));
     *ud = mongo;
-    ASSOC_MTABLE(lua, MT_MONGO);
     return 1;
 }
 /// <summary>
@@ -261,11 +261,7 @@ static int32_t _lmongo_pack_hello(lua_State *lua) {
     char *opts = _lmongo_get_opts(lua, 2);
     size_t size;
     void *pack = mongo_pack_hello(*ud, opts, &size);
-    if (NULL == pack) {
-        lua_pushnil(lua);
-        return 1;
-    }
-    LPUB_RET_LUD(lua, pack, (lua_Integer)size);
+    return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
 /// 构造 ping 心跳命令包
@@ -277,7 +273,7 @@ static int32_t _lmongo_pack_ping(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
     size_t size;
     void *pack = mongo_pack_ping(*ud, &size);
-    LPUB_RET_LUD(lua, pack, (lua_Integer)size);
+    return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
 /// 构造 drop 删集合命令包
@@ -291,11 +287,7 @@ static int32_t _lmongo_pack_drop(lua_State *lua) {
     char *opts = _lmongo_get_opts(lua, 2);
     size_t size;
     void *pack = mongo_pack_drop(*ud, opts, &size);
-    if (NULL == pack) {
-        lua_pushnil(lua);
-        return 1;
-    }
-    LPUB_RET_LUD(lua, pack, (lua_Integer)size);
+    return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
 /// 构造 insert 插入命令包
@@ -314,11 +306,7 @@ static int32_t _lmongo_pack_insert(lua_State *lua) {
     char *opts = _lmongo_get_opts(lua, 4);
     size_t size;
     void *pack = mongo_pack_insert(*ud, docs, dlens, opts, &size);
-    if (NULL == pack) {
-        lua_pushnil(lua);
-        return 1;
-    }
-    LPUB_RET_LUD(lua, pack, (lua_Integer)size);
+    return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
 /// 构造 update 更新命令包
@@ -337,11 +325,7 @@ static int32_t _lmongo_pack_update(lua_State *lua) {
     char *opts = _lmongo_get_opts(lua, 4);
     size_t size;
     void *pack = mongo_pack_update(*ud, updates, ulens, opts, &size);
-    if (NULL == pack) {
-        lua_pushnil(lua);
-        return 1;
-    }
-    LPUB_RET_LUD(lua, pack, (lua_Integer)size);
+    return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
 /// 构造 delete 删除命令包
@@ -360,11 +344,7 @@ static int32_t _lmongo_pack_delete(lua_State *lua) {
     char *opts = _lmongo_get_opts(lua, 4);
     size_t size;
     void *pack = mongo_pack_delete(*ud, deletes, dlens, opts, &size);
-    if (NULL == pack) {
-        lua_pushnil(lua);
-        return 1;
-    }
-    LPUB_RET_LUD(lua, pack, (lua_Integer)size);
+    return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
 /// 构造 bulkWrite 批量写操作命令包（MongoDB 8.0+）
@@ -388,11 +368,7 @@ static int32_t _lmongo_pack_bulkwrite(lua_State *lua) {
     char *opts = _lmongo_get_opts(lua, 6);
     size_t size;
     void *pack = mongo_pack_bulkwrite(*ud, ops, olens, nsinfo, nlens, opts, &size);
-    if (NULL == pack) {
-        lua_pushnil(lua);
-        return 1;
-    }
-    LPUB_RET_LUD(lua, pack, (lua_Integer)size);
+    return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
 /// 构造 find 查询命令包
@@ -414,11 +390,7 @@ static int32_t _lmongo_pack_find(lua_State *lua) {
     char *opts = _lmongo_get_opts(lua, 4);
     size_t size;
     void *pack = mongo_pack_find(*ud, filter, flens, opts, &size);
-    if (NULL == pack) {
-        lua_pushnil(lua);
-        return 1;
-    }
-    LPUB_RET_LUD(lua, pack, (lua_Integer)size);
+    return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
 /// 构造 aggregate 聚合命令包
@@ -437,11 +409,7 @@ static int32_t _lmongo_pack_aggregate(lua_State *lua) {
     char *opts = _lmongo_get_opts(lua, 4);
     size_t size;
     void *pack = mongo_pack_aggregate(*ud, pipeline, pllens, opts, &size);
-    if (NULL == pack) {
-        lua_pushnil(lua);
-        return 1;
-    }
-    LPUB_RET_LUD(lua, pack, (lua_Integer)size);
+    return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
 /// 构造 getMore 获取游标后续批次命令包
@@ -457,11 +425,7 @@ static int32_t _lmongo_pack_getmore(lua_State *lua) {
     char *opts = _lmongo_get_opts(lua, 3);
     size_t size;
     void *pack = mongo_pack_getmore(*ud, cursorid, opts, &size);
-    if (NULL == pack) {
-        lua_pushnil(lua);
-        return 1;
-    }
-    LPUB_RET_LUD(lua, pack, (lua_Integer)size);
+    return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
 /// 构造 killCursors 关闭游标命令包
@@ -480,11 +444,7 @@ static int32_t _lmongo_pack_killcursors(lua_State *lua) {
     char *opts = _lmongo_get_opts(lua, 4);
     size_t size;
     void *pack = mongo_pack_killcursors(*ud, cursorids, cslens, opts, &size);
-    if (NULL == pack) {
-        lua_pushnil(lua);
-        return 1;
-    }
-    LPUB_RET_LUD(lua, pack, (lua_Integer)size);
+    return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
 /// 构造 distinct 去重查询命令包
@@ -508,11 +468,7 @@ static int32_t _lmongo_pack_distinct(lua_State *lua) {
     char *opts = _lmongo_get_opts(lua, 5);
     size_t size;
     void *pack = mongo_pack_distinct(*ud, key, query, qlens, opts, &size);
-    if (NULL == pack) {
-        lua_pushnil(lua);
-        return 1;
-    }
-    LPUB_RET_LUD(lua, pack, (lua_Integer)size);
+    return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
 /// 构造 findAndModify 原子查找并修改/删除命令包
@@ -546,11 +502,7 @@ static int32_t _lmongo_pack_findandmodify(lua_State *lua) {
     char *opts = _lmongo_get_opts(lua, 8);
     size_t size;
     void *pack = mongo_pack_findandmodify(*ud, query, qlens, remove, pipeline, update, ulens, opts, &size);
-    if (NULL == pack) {
-        lua_pushnil(lua);
-        return 1;
-    }
-    LPUB_RET_LUD(lua, pack, (lua_Integer)size);
+    return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
 /// 构造 count 文档计数命令包
@@ -572,11 +524,7 @@ static int32_t _lmongo_pack_count(lua_State *lua) {
     char *opts = _lmongo_get_opts(lua, 4);
     size_t size;
     void *pack = mongo_pack_count(*ud, query, qlens, opts, &size);
-    if (NULL == pack) {
-        lua_pushnil(lua);
-        return 1;
-    }
-    LPUB_RET_LUD(lua, pack, (lua_Integer)size);
+    return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
 /// 构造 createIndexes 创建索引命令包
@@ -595,11 +543,7 @@ static int32_t _lmongo_pack_createindexes(lua_State *lua) {
     char *opts = _lmongo_get_opts(lua, 4);
     size_t size;
     void *pack = mongo_pack_createindexes(*ud, indexes, ilens, opts, &size);
-    if (NULL == pack) {
-        lua_pushnil(lua);
-        return 1;
-    }
-    LPUB_RET_LUD(lua, pack, (lua_Integer)size);
+    return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
 /// 构造 dropIndexes 删除索引命令包
@@ -618,11 +562,7 @@ static int32_t _lmongo_pack_dropindexes(lua_State *lua) {
     char *opts = _lmongo_get_opts(lua, 4);
     size_t size;
     void *pack = mongo_pack_dropindexes(*ud, indexes, ilens, opts, &size);
-    if (NULL == pack) {
-        lua_pushnil(lua);
-        return 1;
-    }
-    LPUB_RET_LUD(lua, pack, (lua_Integer)size);
+    return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
 /// 构造 startSession 命令包
@@ -634,7 +574,7 @@ static int32_t _lmongo_pack_startsession(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
     size_t size;
     void *pack = mongo_pack_startsession(*ud, &size);
-    LPUB_RET_LUD(lua, pack, (lua_Integer)size);
+    return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
 /// 构造 SCRAM 认证第一步（saslStart）请求包
@@ -648,11 +588,7 @@ static int32_t _lmongo_pack_auth_first(lua_State *lua) {
     const char *authmod = luaL_checkstring(lua, 2);
     size_t size;
     void *pack = mongo_pack_scram_client_first(*ud, authmod, &size);
-    if (NULL == pack) {
-        lua_pushnil(lua);
-        return 1;
-    }
-    LPUB_RET_LUD(lua, pack, (lua_Integer)size);
+    return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
 /// 构造 SCRAM 认证第二步（saslContinue）请求包
@@ -669,7 +605,7 @@ static int32_t _lmongo_pack_auth_final(lua_State *lua) {
     char *payload = lua_touserdata(lua, 3);
     size_t size;
     void *pack = mongo_pack_scram_client_final(*ud, convid, payload, &size);
-    LPUB_RET_LUD(lua, pack, (lua_Integer)size);
+    return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
 /// 解析消息包 Section 类型
@@ -691,7 +627,7 @@ static int32_t _lmongo_pack_type(lua_State *lua) {
 static int32_t _lmongo_doc(lua_State *lua) {
     LUACHECK_LUDATA(lua, 1);
     mgopack_ctx *mgopack = lua_touserdata(lua, 1);
-    LPUB_RET_LUD(lua, mgopack->doc, (lua_Integer)mgopack->dlens);
+    return lpub_rtn_lud(lua, mgopack->doc, mgopack->dlens);
 }
 /// <summary>
 /// 返回消息包请求 ID
@@ -896,7 +832,7 @@ static int32_t _lmongo_session_pack_refresh(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_session, MT_MONGO_SESSION, psession, "session freed");
     size_t size;
     void *pack = mongo_pack_refreshsession(*psession, &size);
-    LPUB_RET_LUD(lua, pack, (lua_Integer)size);
+    return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
 /// 构造 endSessions 结束会话命令包
@@ -908,7 +844,7 @@ static int32_t _lmongo_session_pack_endsession(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_session, MT_MONGO_SESSION, psession, "session freed");
     size_t size;
     void *pack = mongo_pack_endsession(*psession, &size);
-    LPUB_RET_LUD(lua, pack, (lua_Integer)size);
+    return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
 /// 构造 commitTransaction 提交事务命令包
@@ -931,11 +867,7 @@ static int32_t _lmongo_session_pack_commit(lua_State *lua) {
     char *opts = _lmongo_get_opts(lua, 2);
     size_t size;
     void *pack = mongo_pack_committransaction(*psession, opts, &size);
-    if (NULL == pack) {
-        lua_pushnil(lua);
-        return 1;
-    }
-    LPUB_RET_LUD(lua, pack, (lua_Integer)size);
+    return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
 /// 构造 abortTransaction 回滚事务命令包
@@ -956,11 +888,7 @@ static int32_t _lmongo_session_pack_abort(lua_State *lua) {
     char *opts = _lmongo_get_opts(lua, 2);
     size_t size;
     void *pack = mongo_pack_aborttransaction(*psession, opts, &size);
-    if (NULL == pack) {
-        lua_pushnil(lua);
-        return 1;
-    }
-    LPUB_RET_LUD(lua, pack, (lua_Integer)size);
+    return lpub_rtn_lud(lua, pack, size);
 }
 //mongo.session
 LUAMOD_API int luaopen_mongo_session(lua_State *lua) {

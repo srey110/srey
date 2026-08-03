@@ -85,6 +85,10 @@ typedef struct sc_retained_topic {
 ///     NULL 时返 ERR_FAILED。规则生命周期需 ≥ subcenter task</param>
 /// <returns>ERR_OK 成功(含跳过);ERR_FAILED 注册失败</returns>
 int32_t sc_start(loader_ctx *loader, const char *name, const path_rules *rules);
+// 下面所有客户端接口共用一条入参约束：topic / pattern 上限 256 字节、group 上限 64 字节
+// (不含结尾 NUL,取等号仍合法),空串或超限一律返 ERR_FAILED 且不发出请求。
+// 上限不是随便定的——线格式的长度前缀只有 2 字节,放超限值进去会被静默截断成另一个 topic,
+// 服务端还会照着截断后的名字建节点并回成功。各函数不再逐条重复这条
 /// <summary>
 /// 订阅 topic(可含通配)。重复订阅相同 src+topic 幂等返 OK。必须在协程中调用。
 /// </summary>
@@ -150,7 +154,7 @@ int32_t coro_sc_publish_retained(task_ctx *task, name_t sc_name, const char *top
 /// <param name="sc_name">subcenter task name</param>
 /// <param name="pattern">查询模式;可含通配</param>
 /// <param name="size">出参:返回 buffer 字节数;NULL 不写</param>
-/// <param name="erro">出参:ERR_OK 成功(含无匹配);ERR_FAILED subcenter 不可达/超时</param>
+/// <param name="erro">出参(必须非 NULL,函数内裸解引用):ERR_OK 成功(含无匹配);ERR_FAILED subcenter 不可达/超时</param>
 /// <returns>多条 retained 拼接 buffer,下次 yield 前有效;每条格式:
 ///     | name_t retained_publisher | u16 mlen | meta | u16 tlen | topic | u32 plen | payload |
 ///     无匹配返 NULL 且 size=0(erro=ERR_OK),失败返 NULL 且 erro=ERR_FAILED;
@@ -164,7 +168,7 @@ void *coro_sc_query_retained(task_ctx *task, name_t sc_name, const char *pattern
 /// <param name="task">当前 task</param>
 /// <param name="sc_name">subcenter task name</param>
 /// <param name="size">出参:返回 buffer 字节数;NULL 不写</param>
-/// <param name="erro">出参:ERR_OK 成功(含空);ERR_FAILED subcenter 不可达/超时</param>
+/// <param name="erro">出参(必须非 NULL,函数内裸解引用):ERR_OK 成功(含空);ERR_FAILED subcenter 不可达/超时</param>
 /// <returns>binary buffer,每条格式:
 ///     | u16 tlen | topic | u32 normal_count | u32 shared_groups_count |
 ///     空时返 NULL 且 size=0(erro=ERR_OK),失败返 NULL 且 erro=ERR_FAILED;下次 yield 前有效;
@@ -178,7 +182,7 @@ void *coro_sc_topics(task_ctx *task, name_t sc_name,
 /// <param name="task">当前 task</param>
 /// <param name="sc_name">subcenter task name</param>
 /// <param name="size">出参:返回 buffer 字节数;NULL 不写</param>
-/// <param name="erro">出参:ERR_OK 成功(含空);ERR_FAILED subcenter 不可达/超时</param>
+/// <param name="erro">出参(必须非 NULL,函数内裸解引用):ERR_OK 成功(含空);ERR_FAILED subcenter 不可达/超时</param>
 /// <returns>binary buffer,每条格式:
 ///     | u16 tlen | topic | name_t retained_publisher | u32 retained_size | u16 retained_meta_size |
 ///     空时返 NULL 且 size=0(erro=ERR_OK),失败返 NULL 且 erro=ERR_FAILED;下次 yield 前有效;

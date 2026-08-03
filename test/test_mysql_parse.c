@@ -1025,6 +1025,30 @@ static void test_mpack_parse_field_long_name(CuTest *tc) {
     CuAssert(tc, "payload ownership transfers to field on success", bw.data == field.payload);
     binary_free(&bw);
 }
+// _mysql_udfree 必须把整组解析状态一起复位。mysql_ctx 会活过连接(还有别的持有者引用着),
+// 只清 mpack 而留下 parse_status/cur_cmd 的话,重连后一个非请求包就会带着上一代的
+// "还在读结果集行"状态走进 reader,去解引用已经是 NULL 的 mpack
+static void test_mysql_udfree_reset(CuTest *tc) {
+    mysql_ctx mysql;
+    ZERO(&mysql, sizeof(mysql));
+    // ref=0 表示"C 借用",PROT_REF_RELEASE 会短路,不会去 FREE 这个栈上对象
+    mysql.client.sk.fd = (SOCKET)7;
+    mysql.parse_status = 3;// 任意非 0:代表结果集读到一半
+    mysql.cur_cmd = MYSQL_QUERY;
+
+    ud_cxt ud;
+    ZERO(&ud, sizeof(ud));
+    ud.context = &mysql;
+    _mysql_udfree(&ud);
+
+    CuAssertTrue(tc, NULL == ud.context);
+    CuAssertTrue(tc, INVALID_SOCK == mysql.client.sk.fd);
+    CuAssertTrue(tc, NULL == mysql.mpack);
+    CuAssertIntEquals(tc, 0, (int)mysql.parse_status);
+    CuAssertIntEquals(tc, 0, (int)mysql.cur_cmd);
+    // 重复调用安全(context 已置空直接返回)
+    _mysql_udfree(&ud);
+}
 void test_mysql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mysql_reader_init);
     SUITE_ADD_TEST(suite, test_mysql_reader_cursor);
@@ -1047,4 +1071,5 @@ void test_mysql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mysql_reader_datetime2_types);
     SUITE_ADD_TEST(suite, test_mysql_reader_copy_field_boundary);
     SUITE_ADD_TEST(suite, test_mpack_parse_field_long_name);
+    SUITE_ADD_TEST(suite, test_mysql_udfree_reset);
 }

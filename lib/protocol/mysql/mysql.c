@@ -65,6 +65,8 @@ void _mysql_udfree(ud_cxt *ud) {
     mysql_ctx *mysql = ud->context;
     _mysql_pkfree(mysql->mpack);
     mysql->mpack = NULL;
+    mysql->parse_status = 0;
+    mysql->cur_cmd = 0;
     mysql->client.sk.fd = INVALID_SOCK;
     ud->context = NULL;
     PROT_REF_RELEASE(mysql);

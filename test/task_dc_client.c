@@ -216,8 +216,29 @@ static int32_t _test_set_null(task_ctx *task) {
     return ERR_OK;
 }
 
-// 子段 9:超长 key 早返 — client helper 校验 key 长度 >= DC_KEY_MAX 时不下发(mirror unit_dc_client.lua)
+// 子段 9:key 长度边界 — DC_KEY_MAX 是 keybuf 容量(含 NUL),511 合法、512 被 client helper 早返
+// 不下发。两侧都测:只测拒绝侧的话,把判定写成 > DC_KEY_MAX 也一样过(mirror unit_dc_client.lua)
 static int32_t _test_key_too_long(task_ctx *task) {
+    // DC_KEY_MAX-1 字节(上限内最长),须一路通到服务端并能取回
+    char ok_key[DC_KEY_MAX];
+    memset(ok_key, 'k', DC_KEY_MAX - 1);
+    ok_key[DC_KEY_MAX - 1] = '\0';
+    size_t oksz;
+    int32_t okerro;
+    void *okval;
+    if (ERR_OK != coro_dc_set(task, _dc_name, ok_key, "v", 1)) {
+        LOG_ERROR("dc set max-1 key: expect ERR_OK");
+        return ERR_FAILED;
+    }
+    okval = coro_dc_get(task, _dc_name, ok_key, &oksz, &okerro);
+    if (NULL == okval || ERR_OK != okerro || 1 != oksz) {
+        LOG_ERROR("dc get max-1 key: expect 1 byte back, erro=%d", okerro);
+        return ERR_FAILED;
+    }
+    if (ERR_OK != coro_dc_del(task, _dc_name, ok_key)) {
+        LOG_ERROR("dc del max-1 key: expect ERR_OK");
+        return ERR_FAILED;
+    }
     // DC_KEY_MAX 字节 key(达到上限),helper 应早返不下发到 datacenter
     char long_key[DC_KEY_MAX + 1];
     memset(long_key, 'k', DC_KEY_MAX);

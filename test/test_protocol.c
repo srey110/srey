@@ -110,12 +110,11 @@ static void test_http_pack_req(CuTest *tc) {
     buffer_free(&buf);
 }
 
-// HTTP smuggling 辅助：输入 raw HTTP 字节，断言解析是否触发 PROT_ERROR
-// expect_error=1 期望 _check_transfer 拒绝；0 期望成功解析
-static void _http_smuggle_check(CuTest *tc, const char *raw, int32_t expect_error) {
+// 同下，但显式给长度，可构造含 NUL 的报文（_bput 走 strlen，喂不进 NUL）
+static void _http_smuggle_checkn(CuTest *tc, const char *raw, size_t rlens, int32_t expect_error) {
     buffer_ctx buf;
     buffer_init(&buf);
-    _bput(&buf, raw);
+    buffer_append(&buf, (void *)raw, rlens);
 
     ud_cxt ud;
     ZERO(&ud, sizeof(ud_cxt));
@@ -132,6 +131,12 @@ static void _http_smuggle_check(CuTest *tc, const char *raw, int32_t expect_erro
     }
     _http_udfree(&ud);
     buffer_free(&buf);
+}
+
+// HTTP smuggling 辅助：输入 raw HTTP 字节，断言解析是否触发 PROT_ERROR
+// expect_error=1 期望被拒；0 期望成功解析
+static void _http_smuggle_check(CuTest *tc, const char *raw, int32_t expect_error) {
+    _http_smuggle_checkn(tc, raw, strlen(raw), expect_error);
 }
 
 // RFC 7230 §3.3.2 / §3.3.3 — HTTP Request Smuggling 防御
@@ -321,6 +326,60 @@ static void test_http_smuggling(CuTest *tc) {
         "\r\n"
         "hello",
         0);
+    // 19. 字段值里的裸 LF：按 CRLF 收行会把后面那条 TE 折进 X 的值里，本模块的四道 TE/CL
+    //     守卫按字段名精确比长匹配，一条都看不见它；上游若按裸 LF 切行就看得见 → 边界分歧 → 拒绝
+    _http_smuggle_check(tc,
+        "POST / HTTP/1.1\r\n"
+        "Host: x\r\n"
+        "X: a\nTransfer-Encoding: chunked\r\n"
+        "Content-Length: 5\r\n"
+        "\r\n"
+        "hello",
+        1);
+    // 20. 字段名里的裸 LF，同理拒绝
+    _http_smuggle_check(tc,
+        "POST / HTTP/1.1\r\n"
+        "Host: x\r\n"
+        "X\nY: 1\r\n"
+        "\r\n",
+        1);
+    // 21. 字段行里的裸 CR（后面不是 LF）→ 拒绝
+    _http_smuggle_check(tc,
+        "POST / HTTP/1.1\r\n"
+        "Host: x\r\n"
+        "X: a\rb\r\n"
+        "\r\n",
+        1);
+    // 22. 字段名含 SP，不是 RFC 7230 §3.2.6 的 token → 拒绝
+    _http_smuggle_check(tc,
+        "POST / HTTP/1.1\r\n"
+        "Host: x\r\n"
+        "X Y: 1\r\n"
+        "\r\n",
+        1);
+    // 23. 字段名含分隔符 '(' → 拒绝
+    _http_smuggle_check(tc,
+        "POST / HTTP/1.1\r\n"
+        "Host: x\r\n"
+        "X(Y): 1\r\n"
+        "\r\n",
+        1);
+    // 24. 字段行里的 NUL → 拒绝（长度与字面量同源，避免两处手抄的字节数走样）
+    static const char nul_field[] =
+        "POST / HTTP/1.1\r\n"
+        "Host: x\r\n"
+        "X: a\0b\r\n"
+        "\r\n";
+    _http_smuggle_checkn(tc, nul_field, sizeof(nul_field) - 1, 1);
+    // 25. 全部 tchar 都得放行，别把合法头名误伤了
+    _http_smuggle_check(tc,
+        "POST / HTTP/1.1\r\n"
+        "Host: x\r\n"
+        "X-Foo_bar.baz!#$%&'*+^`|~9: 1\r\n"
+        "Content-Length: 5\r\n"
+        "\r\n"
+        "hello",
+        0);
 }
 
 // 首行三段拆分必须限定在首行内，空格不足的畸形首行不得越行吞并头部字段
@@ -381,11 +440,49 @@ static void test_http_status_line(CuTest *tc) {
         "Host: a\r\n"
         "\r\n",
         1);
+    // 7. 请求行前导裸 LF：本端读成方法名带前导 LF 的一个请求，按裸 LF 切行的上游读成两个 → 拒绝
+    _http_smuggle_check(tc,
+        "\nGET / HTTP/1.1\r\n"
+        "Host: a\r\n"
+        "\r\n",
+        1);
+    // 8. 请求行中间的裸 CR（后面不是 LF）→ 拒绝
+    _http_smuggle_check(tc,
+        "GET /a\rb HTTP/1.1\r\n"
+        "Host: a\r\n"
+        "\r\n",
+        1);
+    // 9. 请求行里的 NUL → 拒绝
+    static const char nul_line[] =
+        "GET /a\0b HTTP/1.1\r\n"
+        "Host: a\r\n"
+        "\r\n";
+    _http_smuggle_checkn(tc, nul_line, sizeof(nul_line) - 1, 1);
     _http_smuggle_check(tc,
         "GET /a HTTP/1.0\r\n"
         "Content-Length: 0\r\n"
         "\r\n",
         0);
+    // 10. 状态行 reason-phrase 含空格 → 合法。首行只按前两个 SP 切三段，多出来的空格全归 reason；
+    //     若切分实现改成"必须恰好两个 SP",这类再常见不过的响应会被整片拒掉
+    buffer_ctx rbuf;
+    buffer_init(&rbuf);
+    _bput(&rbuf, "HTTP/1.1 404 Not Found\r\n");
+    _bput(&rbuf, "Content-Length: 0\r\n");
+    _bput(&rbuf, "\r\n");
+    ud_cxt rud;
+    ZERO(&rud, sizeof(ud_cxt));
+    int32_t rstatus = PROT_INIT;
+    struct http_pack_ctx *rpack = http_unpack(&rbuf, &rud, &rstatus);
+    CuAssertPtrNotNull(tc, rpack);
+    CuAssertTrue(tc, !BIT_CHECK(rstatus, PROT_ERROR));
+    buf_ctx *rst = http_status(rpack);
+    CuAssertTrue(tc, buf_compare(&rst[0], "HTTP/1.1", 8));
+    CuAssertTrue(tc, buf_compare(&rst[1], "404", 3));
+    CuAssertTrue(tc, buf_compare(&rst[2], "Not Found", 9));
+    _http_pkfree(rpack);
+    _http_udfree(&rud);
+    buffer_free(&rbuf);
 }
 
 // chunked chunk-size 走私：第一次 unpack 解析 header(chunked)，第二次 unpack 解析 chunk-size 行；断言其是否被拒

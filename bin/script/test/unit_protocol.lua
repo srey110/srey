@@ -146,5 +146,28 @@ runner.run("protocol", function(t)
         t:check(txt:find("text/html", 1, true) ~= nil, "mail has text/html header")
         utils.ud_free(pack)
     end
+
+    -- ── mail 释放后再调用 ─────────────────────────────────────────────
+    -- REG_MTABLE 令 __gc 经 __index 也是个普通方法，业务一行 m:__gc() 就能提前释放；
+    -- 此后任何方法都必须报可捕获的 Lua 错，而不是拿着已释放的 mail_ctx 往下走
+    do
+        local m = mail.new()
+        m:from("Srey", "srey@example.com")
+        m:addrs_add("alice@example.com", 1)
+        m:__gc()
+
+        -- array_free 只置空 ptr 不复位 size/maxsize，无守卫时 array_push_back 跳过扩容分支
+        -- 直接往 NULL 基址 memcpy，是空指针写而非断言
+        t:eq(false, pcall(function() m:addrs_add("bob@example.com", 1) end), "释放后 addrs_add 被拒")
+        t:eq(false, pcall(function() m:attach_clear() end), "释放后 attach_clear 被拒")
+        t:eq(false, pcall(function() m:subject("x") end),   "释放后 subject 被拒")
+        t:eq(false, pcall(function() m:clear() end),        "释放后 clear 被拒")
+        local ok, err = pcall(function() return m:pack() end)
+        t:eq(false, ok, "释放后 pack 被拒")
+        t:check(type(err) == "string" and nil ~= err:find("freed"), "错误信息点明已释放")
+
+        -- 显式释放后真正的 __gc 仍会跑一遍，必须幂等
+        t:eq(true, pcall(function() m:__gc() end), "重复 __gc 安全")
+    end
 end)
 end)

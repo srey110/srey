@@ -709,7 +709,7 @@ static int32_t _lpgsql_copy_out_data(lua_State *lua) {
         return 1;
     }
     pgpack_copy_out_ctx *co = (pgpack_copy_out_ctx *)pgpack->pack;
-    LPUB_RET_LUD(lua, co->data.data, co->data.offset);
+    return lpub_rtn_lud(lua, co->data.data, co->data.offset);
 }
 /// <summary>
 /// 打包简单查询消息（Query）
@@ -721,7 +721,7 @@ static int32_t _lpgsql_pack_query(lua_State *lua) {
     const char *sql = luaL_checkstring(lua, 1);
     size_t size;
     void *pack = pgsql_pack_query(sql, &size);
-    LPUB_RET_LUD(lua, pack, size);
+    return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
 /// 打包 Terminate 消息（通知服务端关闭连接）
@@ -733,7 +733,7 @@ static int32_t _lpgsql_pack_terminate(lua_State *lua) {
     (void)lua;
     size_t size;
     void *pack = pgsql_pack_terminate(&size);
-    LPUB_RET_LUD(lua, pack, size);
+    return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
 /// 打包预处理语句 Parse + Sync 消息
@@ -761,7 +761,7 @@ static int32_t _lpgsql_pack_stmt_prepare(lua_State *lua) {
     size_t size;
     void *pack = pgsql_pack_stmt_prepare(name, sql, nparam, oids, &size);
     FREE(oids);
-    LPUB_RET_LUD(lua, pack, size);
+    return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
 /// 打包预处理语句 Bind + Describe + Execute + Sync 消息
@@ -783,7 +783,7 @@ static int32_t _lpgsql_pack_stmt_execute(lua_State *lua) {
     }
     size_t size;
     void *pack = pgsql_pack_stmt_execute(name, bind, fmt, &size);
-    LPUB_RET_LUD(lua, pack, size);
+    return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
 /// 打包预处理语句 Close + Sync 消息
@@ -795,7 +795,7 @@ static int32_t _lpgsql_pack_stmt_close(lua_State *lua) {
     const char *name = luaL_checkstring(lua, 1);
     size_t size;
     void *pack = pgsql_pack_stmt_close(name, &size);
-    LPUB_RET_LUD(lua, pack, size);
+    return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
 /// 打包 CopyData 消息
@@ -826,7 +826,7 @@ static int32_t _lpgsql_pack_copy_data(lua_State *lua) {
     }
     size_t size;
     void *pack = pgsql_pack_copy_data(data, lens, &size);
-    LPUB_RET_LUD(lua, pack, size);
+    return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
 /// 打包 CopyDone 消息（通知服务端 COPY FROM STDIN 发送完毕）
@@ -838,7 +838,7 @@ static int32_t _lpgsql_pack_copy_done(lua_State *lua) {
     (void)lua;
     size_t size;
     void *pack = pgsql_pack_copy_done(&size);
-    LPUB_RET_LUD(lua, pack, size);
+    return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
 /// 打包 CopyFail 消息（中止 COPY FROM STDIN）
@@ -850,7 +850,7 @@ static int32_t _lpgsql_pack_copy_fail(lua_State *lua) {
     const char *msg = luaL_checkstring(lua, 1);
     size_t size;
     void *pack = pgsql_pack_copy_fail(msg, &size);
-    LPUB_RET_LUD(lua, pack, size);
+    return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
 /// 创建 pgsql 客户端连接上下文（不立即建立连接）
@@ -873,6 +873,9 @@ static int32_t _lpgsql_new(lua_State *lua) {
     const char *user = luaL_checkstring(lua, 4);
     const char *password = luaL_checkstring(lua, 5);
     const char *database = luaL_checkstring(lua, 6);
+    pgsql_ctx **ud = lua_newuserdata(lua, sizeof(pgsql_ctx *));
+    *ud = NULL;
+    ASSOC_MTABLE(lua, MT_PGSQL);
     pgsql_ctx *pg;
     MALLOC(pg, sizeof(pgsql_ctx));
     if (ERR_OK != pgsql_init(pg, ip, port, evssl, user, password, database)) {
@@ -881,10 +884,7 @@ static int32_t _lpgsql_new(lua_State *lua) {
         return 1;
     }
     ATOMIC_SET(&pg->ref, 1);// Lua 持有者份额
-    // userdata 只持 ctx 指针；ctx 独立堆分配脱离 Lua GC，避免 __gc 后网络线程经 ud->context 悬空访问(跨线程 UAF)
-    pgsql_ctx **ud = lua_newuserdata(lua, sizeof(pgsql_ctx *));
     *ud = pg;
-    ASSOC_MTABLE(lua, MT_PGSQL);
     return 1;
 }
 /// <summary>

@@ -14,6 +14,15 @@ end
 
 srey.startup(function()
 runner.run("mqtt", function(t)
+    -- ── props 共享元表受保护 ───────────────────────────────────────────
+    -- 元表是全类型共享的，getmetatable 若能拿到真表，业务一行 __gc = nil
+    -- 就能让此后每个 props 都不再释放内部 binary_ctx
+    do
+        local p = mqtt.props()
+        t:eq("_mqtt_props_ctx", getmetatable(p), "props 元表被 __metatable 挡住")
+        t:eq(false, pcall(function() setmetatable(p, {}) end), "props 不可被换元表")
+    end
+
     -- ── props 写入 ─────────────────────────────────────────────────────
     do
         local p = mqtt.props()

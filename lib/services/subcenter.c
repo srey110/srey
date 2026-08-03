@@ -1,4 +1,5 @@
 ﻿#include "services/subcenter.h"
+#include "services/sv_pub.h"
 #include "srey/task.h"
 #include "containers/hashmap.h"
 #include "containers/hashset.h"
@@ -215,14 +216,17 @@ static int32_t _sc_read_lp16_max(binary_ctx *br, const char **out_data, uint16_t
     }
     return ERR_OK;
 }
-// 从 br 读取一个长度上限受限的 NUL 终结字符串(拷贝到 dst)
+// 从 br 读取一个长度上限受限的 NUL 终结字符串(拷贝到 dst)。
+// 内嵌 NUL 一律拒绝：它会让 dst 这个 C 串在 NUL 处截断，实际用到的是另一个更短的 topic /
+// group，与 datacenter 的 _dc_key_to_cstr 同口径
 static int32_t _sc_read_cstr_max(binary_ctx *br, char *dst, size_t dst_cap, uint16_t max_len) {
     const char *p;
     uint16_t n;
     if (ERR_OK != _sc_read_lp16_max(br, &p, &n, max_len)) {
         return ERR_FAILED;
     }
-    if (0 == n || n + 1u > dst_cap) {
+    if (0 == n || n + 1u > dst_cap
+        || NULL != memchr(p, 0, n)) {
         return ERR_FAILED;
     }
     memcpy(dst, p, n);
@@ -1170,6 +1174,17 @@ int32_t sc_start(loader_ctx *loader, const char *name, const path_rules *rules) 
     }
     return ERR_OK;
 }
+// 客户端入口的 topic / group 校验。线格式的长度前缀只有 2 字节，binary_set_uinteger 走
+// pack_integer 逐字节写、超出部分静默丢掉：65541 字节的 topic 前缀会写成 5，服务端照着建了个
+// 5 字符的节点还回 ERR_OK——调用方订阅到了另一个 topic，却被告知成功。上界取值与服务端
+// _sc_read_lp16_max 一致：SC_TOPIC_MAX / SC_GROUP_MAX 是长度上限本身，等于它仍合法。
+// 与 datacenter 的 DC_KEY_MAX 相反——那个是缓冲容量(含 NUL)，所以它那边判的是 <
+static int32_t _sc_check_topic(const char *topic) {
+    return (!EMPTYSTR(topic) && strlen(topic) <= SC_TOPIC_MAX) ? ERR_OK : ERR_FAILED;
+}
+static int32_t _sc_check_group(const char *group) {
+    return (!EMPTYSTR(group) && strlen(group) <= SC_GROUP_MAX) ? ERR_OK : ERR_FAILED;
+}
 // SUB/UNSUB/QUERY_RETAINED body(不带 op): u16 tlen | topic
 static char *_sc_pack_topic(const char *topic, size_t *out_total) {
     binary_ctx bw;
@@ -1222,317 +1237,151 @@ static char *_sc_pack_meta(const void *meta, size_t mlen, size_t *out_total) {
     return bw.data;
 }
 // ── 业务侧 helper:协程版,内部包 coro_request 挂起等响应 ──
-int32_t coro_sc_subscribe(task_ctx *task, name_t sc_name, const char *topic) {
-    if (EMPTYSTR(topic)) {
-        return ERR_FAILED;
-    }
-    task_ctx *sc = task_grab(task->loader, sc_name);
-    if (NULL == sc) {
-        return ERR_FAILED;
-    }
-    size_t total;
-    char *buf = _sc_pack_topic(topic, &total);
-    int32_t erro = 0;
-    size_t rsize = 0;
-    coro_request(sc, task, REQ_SC_SUB, buf, total, 0, &erro, &rsize);
-    task_ungrab(sc);
-    return erro;
-}
-int32_t coro_sc_subscribe_shared(task_ctx *task, name_t sc_name,
-                                 const char *topic, const char *group) {
-    if (EMPTYSTR(topic) || EMPTYSTR(group)) {
-        return ERR_FAILED;
-    }
-    task_ctx *sc = task_grab(task->loader, sc_name);
-    if (NULL == sc) {
-        return ERR_FAILED;
-    }
-    size_t total;
-    char *buf = _sc_pack_topic_group(topic, group, &total);
-    int32_t erro = 0;
-    size_t rsize = 0;
-    coro_request(sc, task, REQ_SC_SUB_SHARED, buf, total, 0, &erro, &rsize);
-    task_ungrab(sc);
-    return erro;
-}
-int32_t coro_sc_unsubscribe(task_ctx *task, name_t sc_name, const char *topic) {
-    if (EMPTYSTR(topic)) {
-        return ERR_FAILED;
-    }
-    task_ctx *sc = task_grab(task->loader, sc_name);
-    if (NULL == sc) {
+// 每条命令的协程版与非协程版只差投递方式:前者挂起等响应,后者由业务按 sess 自管配对。
+// 校验、组包、REQ 常量三者的搭配放在这四个按"入参形状"分的实现里,免得两个入口各写一遍——
+// 漏改一边就成了"一条路径拒、另一条放行"。
+// coro 非 0 走 _svpub_call(不用 sess);为 0 走 _svpub_send,且要求 sess 非 0:
+// subcenter 每条命令都要回执,不接受 sess=0 那种 fire-and-forget
+static int32_t _sc_cmd_topic(task_ctx *task, name_t sc_name, subtype_t req,
+                             uint64_t sess, int32_t coro, const char *topic) {
+    if (ERR_OK != _sc_check_topic(topic)
+        || (0 == coro && 0 == sess)) {
         return ERR_FAILED;
     }
     size_t total;
     char *buf = _sc_pack_topic(topic, &total);
-    int32_t erro = 0;
-    size_t rsize = 0;
-    coro_request(sc, task, REQ_SC_UNSUB, buf, total, 0, &erro, &rsize);
-    task_ungrab(sc);
-    return erro;
+    return (0 != coro) ? _svpub_call(task, sc_name, req, buf, total)
+                       : _svpub_send(task, sc_name, req, sess, buf, total);
 }
-int32_t coro_sc_unsubscribe_shared(task_ctx *task, name_t sc_name,
+static int32_t _sc_cmd_topic_group(task_ctx *task, name_t sc_name, subtype_t req,
+                                   uint64_t sess, int32_t coro,
                                    const char *topic, const char *group) {
-    if (EMPTYSTR(topic) || EMPTYSTR(group)) {
-        return ERR_FAILED;
-    }
-    task_ctx *sc = task_grab(task->loader, sc_name);
-    if (NULL == sc) {
+    if (ERR_OK != _sc_check_topic(topic)
+        || ERR_OK != _sc_check_group(group)
+        || (0 == coro && 0 == sess)) {
         return ERR_FAILED;
     }
     size_t total;
     char *buf = _sc_pack_topic_group(topic, group, &total);
-    int32_t erro = 0;
-    size_t rsize = 0;
-    coro_request(sc, task, REQ_SC_UNSUB_SHARED, buf, total, 0, &erro, &rsize);
-    task_ungrab(sc);
-    return erro;
+    return (0 != coro) ? _svpub_call(task, sc_name, req, buf, total)
+                       : _svpub_send(task, sc_name, req, sess, buf, total);
 }
-int32_t coro_sc_publish(task_ctx *task, name_t sc_name, const char *topic,
-                        void *data, size_t size) {
-    if (EMPTYSTR(topic) || size > UINT32_MAX) {
+// 与另外三个不同,这里先 grab 再组包:publish 的载荷可以很大,组包就是整块拷一遍,
+// 目标不在时那份拷贝纯属白做(理由见 sv_pub.h 的 _svpub_*_dst)
+static int32_t _sc_cmd_topic_payload(task_ctx *task, name_t sc_name, subtype_t req,
+                                     uint64_t sess, int32_t coro,
+                                     const char *topic, void *data, size_t size) {
+    if (ERR_OK != _sc_check_topic(topic)
+        || size > UINT32_MAX
+        || (0 == coro && 0 == sess)) {
         return ERR_FAILED;
     }
-    task_ctx *sc = task_grab(task->loader, sc_name);
-    if (NULL == sc) {
-        return ERR_FAILED;
-    }
-    size_t total;
-    char *buf = _sc_pack_topic_payload(topic, data, size, &total);
-    int32_t erro = 0;
-    size_t rsize = 0;
-    coro_request(sc, task, REQ_SC_PUB, buf, total, 0, &erro, &rsize);
-    task_ungrab(sc);
-    return erro;
-}
-int32_t coro_sc_publish_retained(task_ctx *task, name_t sc_name, const char *topic,
-                                 void *data, size_t size) {
-    if (EMPTYSTR(topic) || size > UINT32_MAX) {
-        return ERR_FAILED;
-    }
-    task_ctx *sc = task_grab(task->loader, sc_name);
-    if (NULL == sc) {
+    task_ctx *dst = task_grab(task->loader, sc_name);
+    if (NULL == dst) {
         return ERR_FAILED;
     }
     size_t total;
     char *buf = _sc_pack_topic_payload(topic, data, size, &total);
-    int32_t erro = 0;
-    size_t rsize = 0;
-    coro_request(sc, task, REQ_SC_PUB_RETAINED, buf, total, 0, &erro, &rsize);
-    task_ungrab(sc);
-    return erro;
+    return (0 != coro) ? _svpub_call_dst(dst, task, req, buf, total)
+                       : _svpub_send_dst(dst, task, req, sess, buf, total);
 }
-void *coro_sc_query_retained(task_ctx *task, name_t sc_name, const char *pattern,
-                             size_t *size, int32_t *erro) {
-    if (EMPTYSTR(pattern)) {
-        SET_PTR(size, 0);
-        *erro = ERR_FAILED;
-        return NULL;
-    }
-    task_ctx *sc = task_grab(task->loader, sc_name);
-    if (NULL == sc) {
-        SET_PTR(size, 0);
-        *erro = ERR_FAILED;
-        return NULL;
-    }
-    size_t total;
-    char *buf = _sc_pack_topic(pattern, &total);
-    void *resp = coro_request(sc, task, REQ_SC_QUERY_RETAINED, buf, total, 0, erro, size);
-    task_ungrab(sc);
-    if (ERR_OK != *erro) {
-        SET_PTR(size, 0);
-        return NULL;
-    }
-    return resp;
-}
-void *coro_sc_topics(task_ctx *task, name_t sc_name,
-                     size_t *size, int32_t *erro) {
-    task_ctx *sc = task_grab(task->loader, sc_name);
-    if (NULL == sc) {
-        SET_PTR(size, 0);
-        *erro = ERR_FAILED;
-        return NULL;
-    }
-    void *resp = coro_request(sc, task, REQ_SC_LIST, NULL, 0, 0, erro, size);
-    task_ungrab(sc);
-    if (ERR_OK != *erro) {
-        SET_PTR(size, 0);
-        return NULL;
-    }
-    return resp;
-}
-void *coro_sc_retained_topics(task_ctx *task, name_t sc_name,
-                              size_t *size, int32_t *erro) {
-    task_ctx *sc = task_grab(task->loader, sc_name);
-    if (NULL == sc) {
-        SET_PTR(size, 0);
-        *erro = ERR_FAILED;
-        return NULL;
-    }
-    void *resp = coro_request(sc, task, REQ_SC_RETAINED_LIST, NULL, 0, 0, erro, size);
-    task_ungrab(sc);
-    if (ERR_OK != *erro) {
-        SET_PTR(size, 0);
-        return NULL;
-    }
-    return resp;
-}
-int32_t coro_sc_set_meta(task_ctx *task, name_t sc_name,
-                         const void *meta, size_t size) {
-    if (size > SC_META_MAX_SIZE) {
-        return ERR_FAILED;
-    }
-    task_ctx *sc = task_grab(task->loader, sc_name);
-    if (NULL == sc) {
+static int32_t _sc_cmd_meta(task_ctx *task, name_t sc_name, subtype_t req,
+                            uint64_t sess, int32_t coro,
+                            const void *meta, size_t size) {
+    if (size > SC_META_MAX_SIZE
+        || (0 == coro && 0 == sess)) {
         return ERR_FAILED;
     }
     size_t total;
     char *buf = _sc_pack_meta(meta, size, &total);
-    int32_t erro = 0;
-    size_t rsize = 0;
-    coro_request(sc, task, REQ_SC_SET_META, buf, total, 0, &erro, &rsize);
-    task_ungrab(sc);
-    return erro;
+    return (0 != coro) ? _svpub_call(task, sc_name, req, buf, total)
+                       : _svpub_send(task, sc_name, req, sess, buf, total);
 }
-// ── 无协程版:task_request 不挂起,sess 由业务自管配对 ──
-int32_t sc_subscribe(task_ctx *task, name_t sc_name, uint64_t sess, const char *topic) {
-    if (EMPTYSTR(topic) || 0 == sess) {
-        return ERR_FAILED;
-    }
-    task_ctx *sc = task_grab(task->loader, sc_name);
-    if (NULL == sc) {
-        return ERR_FAILED;
-    }
-    size_t total;
-    char *buf = _sc_pack_topic(topic, &total);
-    task_request(sc, task, REQ_SC_SUB, sess, buf, total, 0);
-    task_ungrab(sc);
-    return ERR_OK;
+int32_t coro_sc_subscribe(task_ctx *task, name_t sc_name, const char *topic) {
+    return _sc_cmd_topic(task, sc_name, REQ_SC_SUB, 0, 1, topic);
 }
-int32_t sc_subscribe_shared(task_ctx *task, name_t sc_name, uint64_t sess,
-                            const char *topic, const char *group) {
-    if (EMPTYSTR(topic) || EMPTYSTR(group) || 0 == sess) {
-        return ERR_FAILED;
-    }
-    task_ctx *sc = task_grab(task->loader, sc_name);
-    if (NULL == sc) {
-        return ERR_FAILED;
-    }
-    size_t total;
-    char *buf = _sc_pack_topic_group(topic, group, &total);
-    task_request(sc, task, REQ_SC_SUB_SHARED, sess, buf, total, 0);
-    task_ungrab(sc);
-    return ERR_OK;
+int32_t coro_sc_subscribe_shared(task_ctx *task, name_t sc_name,
+                                 const char *topic, const char *group) {
+    return _sc_cmd_topic_group(task, sc_name, REQ_SC_SUB_SHARED, 0, 1, topic, group);
 }
-int32_t sc_unsubscribe(task_ctx *task, name_t sc_name, uint64_t sess, const char *topic) {
-    if (EMPTYSTR(topic) || 0 == sess) {
-        return ERR_FAILED;
-    }
-    task_ctx *sc = task_grab(task->loader, sc_name);
-    if (NULL == sc) {
-        return ERR_FAILED;
-    }
-    size_t total;
-    char *buf = _sc_pack_topic(topic, &total);
-    task_request(sc, task, REQ_SC_UNSUB, sess, buf, total, 0);
-    task_ungrab(sc);
-    return ERR_OK;
+int32_t coro_sc_unsubscribe(task_ctx *task, name_t sc_name, const char *topic) {
+    return _sc_cmd_topic(task, sc_name, REQ_SC_UNSUB, 0, 1, topic);
 }
-int32_t sc_unsubscribe_shared(task_ctx *task, name_t sc_name, uint64_t sess,
-                              const char *topic, const char *group) {
-    if (EMPTYSTR(topic) || EMPTYSTR(group) || 0 == sess) {
-        return ERR_FAILED;
-    }
-    task_ctx *sc = task_grab(task->loader, sc_name);
-    if (NULL == sc) {
-        return ERR_FAILED;
-    }
-    size_t total;
-    char *buf = _sc_pack_topic_group(topic, group, &total);
-    task_request(sc, task, REQ_SC_UNSUB_SHARED, sess, buf, total, 0);
-    task_ungrab(sc);
-    return ERR_OK;
+int32_t coro_sc_unsubscribe_shared(task_ctx *task, name_t sc_name,
+                                   const char *topic, const char *group) {
+    return _sc_cmd_topic_group(task, sc_name, REQ_SC_UNSUB_SHARED, 0, 1, topic, group);
 }
-int32_t sc_publish(task_ctx *task, name_t sc_name, uint64_t sess, const char *topic,
-                   void *data, size_t size) {
-    if (EMPTYSTR(topic) || size > UINT32_MAX || 0 == sess) {
-        return ERR_FAILED;
-    }
-    task_ctx *sc = task_grab(task->loader, sc_name);
-    if (NULL == sc) {
-        return ERR_FAILED;
-    }
-    size_t total;
-    char *buf = _sc_pack_topic_payload(topic, data, size, &total);
-    task_request(sc, task, REQ_SC_PUB, sess, buf, total, 0);
-    task_ungrab(sc);
-    return ERR_OK;
+int32_t coro_sc_publish(task_ctx *task, name_t sc_name, const char *topic,
+                        void *data, size_t size) {
+    return _sc_cmd_topic_payload(task, sc_name, REQ_SC_PUB, 0, 1, topic, data, size);
 }
-int32_t sc_publish_retained(task_ctx *task, name_t sc_name, uint64_t sess,
-                            const char *topic, void *data, size_t size) {
-    if (EMPTYSTR(topic) || size > UINT32_MAX || 0 == sess) {
-        return ERR_FAILED;
-    }
-    task_ctx *sc = task_grab(task->loader, sc_name);
-    if (NULL == sc) {
-        return ERR_FAILED;
-    }
-    size_t total;
-    char *buf = _sc_pack_topic_payload(topic, data, size, &total);
-    task_request(sc, task, REQ_SC_PUB_RETAINED, sess, buf, total, 0);
-    task_ungrab(sc);
-    return ERR_OK;
+int32_t coro_sc_publish_retained(task_ctx *task, name_t sc_name, const char *topic,
+                                 void *data, size_t size) {
+    return _sc_cmd_topic_payload(task, sc_name, REQ_SC_PUB_RETAINED, 0, 1, topic, data, size);
 }
-int32_t sc_query_retained(task_ctx *task, name_t sc_name, uint64_t sess, const char *pattern) {
-    if (EMPTYSTR(pattern) || 0 == sess) {
-        return ERR_FAILED;
-    }
-    task_ctx *sc = task_grab(task->loader, sc_name);
-    if (NULL == sc) {
-        return ERR_FAILED;
+// 协程版比非协程版多取一段响应,返回类型也不同,无法与 _sc_cmd_topic 共用
+void *coro_sc_query_retained(task_ctx *task, name_t sc_name, const char *pattern,
+                             size_t *size, int32_t *erro) {
+    if (ERR_OK != _sc_check_topic(pattern)) {
+        SET_PTR(size, 0);
+        *erro = ERR_FAILED;
+        return NULL;
     }
     size_t total;
     char *buf = _sc_pack_topic(pattern, &total);
-    task_request(sc, task, REQ_SC_QUERY_RETAINED, sess, buf, total, 0);
-    task_ungrab(sc);
-    return ERR_OK;
+    return _svpub_call_resp(task, sc_name, REQ_SC_QUERY_RETAINED, buf, total, size, erro);
+}
+void *coro_sc_topics(task_ctx *task, name_t sc_name,
+                     size_t *size, int32_t *erro) {
+    return _svpub_call_resp(task, sc_name, REQ_SC_LIST, NULL, 0, size, erro);
+}
+void *coro_sc_retained_topics(task_ctx *task, name_t sc_name,
+                              size_t *size, int32_t *erro) {
+    return _svpub_call_resp(task, sc_name, REQ_SC_RETAINED_LIST, NULL, 0, size, erro);
+}
+int32_t coro_sc_set_meta(task_ctx *task, name_t sc_name,
+                         const void *meta, size_t size) {
+    return _sc_cmd_meta(task, sc_name, REQ_SC_SET_META, 0, 1, meta, size);
+}
+// ── 无协程版:task_request 不挂起,sess 由业务自管配对 ──
+int32_t sc_subscribe(task_ctx *task, name_t sc_name, uint64_t sess, const char *topic) {
+    return _sc_cmd_topic(task, sc_name, REQ_SC_SUB, sess, 0, topic);
+}
+int32_t sc_subscribe_shared(task_ctx *task, name_t sc_name, uint64_t sess,
+                            const char *topic, const char *group) {
+    return _sc_cmd_topic_group(task, sc_name, REQ_SC_SUB_SHARED, sess, 0, topic, group);
+}
+int32_t sc_unsubscribe(task_ctx *task, name_t sc_name, uint64_t sess, const char *topic) {
+    return _sc_cmd_topic(task, sc_name, REQ_SC_UNSUB, sess, 0, topic);
+}
+int32_t sc_unsubscribe_shared(task_ctx *task, name_t sc_name, uint64_t sess,
+                              const char *topic, const char *group) {
+    return _sc_cmd_topic_group(task, sc_name, REQ_SC_UNSUB_SHARED, sess, 0, topic, group);
+}
+int32_t sc_publish(task_ctx *task, name_t sc_name, uint64_t sess, const char *topic,
+                   void *data, size_t size) {
+    return _sc_cmd_topic_payload(task, sc_name, REQ_SC_PUB, sess, 0, topic, data, size);
+}
+int32_t sc_publish_retained(task_ctx *task, name_t sc_name, uint64_t sess,
+                            const char *topic, void *data, size_t size) {
+    return _sc_cmd_topic_payload(task, sc_name, REQ_SC_PUB_RETAINED, sess, 0, topic, data, size);
+}
+int32_t sc_query_retained(task_ctx *task, name_t sc_name, uint64_t sess, const char *pattern) {
+    return _sc_cmd_topic(task, sc_name, REQ_SC_QUERY_RETAINED, sess, 0, pattern);
 }
 int32_t sc_topics(task_ctx *task, name_t sc_name, uint64_t sess) {
     if (0 == sess) {
         return ERR_FAILED;
     }
-    task_ctx *sc = task_grab(task->loader, sc_name);
-    if (NULL == sc) {
-        return ERR_FAILED;
-    }
-    task_request(sc, task, REQ_SC_LIST, sess, NULL, 0, 0);
-    task_ungrab(sc);
-    return ERR_OK;
+    return _svpub_send(task, sc_name, REQ_SC_LIST, sess, NULL, 0);
 }
 int32_t sc_retained_topics(task_ctx *task, name_t sc_name, uint64_t sess) {
     if (0 == sess) {
         return ERR_FAILED;
     }
-    task_ctx *sc = task_grab(task->loader, sc_name);
-    if (NULL == sc) {
-        return ERR_FAILED;
-    }
-    task_request(sc, task, REQ_SC_RETAINED_LIST, sess, NULL, 0, 0);
-    task_ungrab(sc);
-    return ERR_OK;
+    return _svpub_send(task, sc_name, REQ_SC_RETAINED_LIST, sess, NULL, 0);
 }
 int32_t sc_set_meta(task_ctx *task, name_t sc_name, uint64_t sess,
                     const void *meta, size_t size) {
-    if (size > SC_META_MAX_SIZE || 0 == sess) {
-        return ERR_FAILED;
-    }
-    task_ctx *sc = task_grab(task->loader, sc_name);
-    if (NULL == sc) {
-        return ERR_FAILED;
-    }
-    size_t total;
-    char *buf = _sc_pack_meta(meta, size, &total);
-    task_request(sc, task, REQ_SC_SET_META, sess, buf, total, 0);
-    task_ungrab(sc);
-    return ERR_OK;
+    return _sc_cmd_meta(task, sc_name, REQ_SC_SET_META, sess, 0, meta, size);
 }

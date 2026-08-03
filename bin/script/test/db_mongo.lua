@@ -112,8 +112,8 @@ runner.run("db_mongo", function(t)
 
         -- 连接不再绑定该 session 时，pack_commit / pack_abort 须返回 nil：组包取的是
         -- 连接当前绑定的 session，分叉时会把本次提交挂到别人的事务上。
-        -- 直接调 clear_session 造出分叉——真实来源是 _connect 在 clear_session 之后、
-        -- generation 递增之前失败退出，那个窗口里 sess 的 gen 校验仍会通过
+        -- 直接调 clear_session 造出分叉——真实来源是重连：_connect 入口会解绑，
+        -- 而调用方手上那个 sess 对象还在，gen 校验也仍会通过
         t:check(sess:begin(), "txn begin (unbound path)")
         mg.mongo:clear_session()
         t:eq(nil, sess.session:pack_commit(), "绑定分叉后 pack_commit 返回 nil")

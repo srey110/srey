@@ -159,6 +159,40 @@ static int32_t _http_is_version(buf_ctx *seg) {
         && '.' == ver[6]
         && ver[7] >= '0' && ver[7] <= '9';
 }
+// 首行与字段行共用的单趟行扫描：扫到行尾 CRLF 为止，顺带记下行内出现的分隔符位置。
+// 只有 CRLF 才算收行，裸 CR、裸 LF 和 NUL 一律拒（RFC 9110 §5.5 把这三个列为非法且危险的字节）：
+// 放行裸 LF 的话，上游按它切行、本端按 CRLF 切行，两边就切出不同的头部边界——
+// `X: a\nTransfer-Encoding: chunked` 会被本端读成单个 key 为 X 的头，那条走私的 TE 折进了值里，
+// 而本模块四道 TE/CL 走私守卫都按字段名精确比长匹配，一条都看不见它。
+// mark 为要记录的分隔符（首行传 ' '，字段行传 ':'），按出现顺序最多记 nmark 个写入 marks，
+// 实到个数写回 *nout（行内超过 nmark 个时只记前 nmark 个，多出来的归调用方自行处理）。
+// 返回行尾 CRLF 的起始位置；未收到完整行或撞上非法字节返回 NULL
+static char *_http_scan_line(const char *head, size_t remain, char mark,
+                             char **marks, int32_t nmark, int32_t *nout) {
+    const char *cur = head;
+    size_t scanned = 0;
+    *nout = 0;
+    while (scanned < remain) {
+        if (mark == *cur
+            && *nout < nmark) {
+            marks[(*nout)++] = (char *)cur;
+        }
+        if ('\r' == *cur) {
+            if (scanned + 1 >= remain
+                || '\n' != *(cur + 1)) {
+                return NULL;
+            }
+            return (char *)cur;
+        }
+        if ('\n' == *cur
+            || '\0' == *cur) {
+            return NULL;
+        }
+        cur++;
+        scanned++;
+    }
+    return NULL;
+}
 // 解析 HTTP 第一行（请求行或状态行），填充 pack->status[0..2]，返回指向第一个头部字段的指针。
 // 状态行 HTTP-version 在首段、请求行在末段，故两段须恰有一段是 HTTP-version：
 // 请求行末段因此不能含多余 SP，也不能是任意垃圾串
@@ -168,56 +202,28 @@ static char *_http_parse_status(http_pack_ctx *pack) {
         || is_ows(*head)) {
         return NULL;
     }
-    char *pcrlf = memstr(0, head, HEAD_REMAIN, FLAG_CRLF, CRLF_SIZE);
-    if (NULL == pcrlf) {
-        return NULL;
-    }
-    char *pos = memstr(0, head, (size_t)(pcrlf - head), " ", 1);
-    if (NULL == pos) {
+    char *sp[2];
+    int32_t nsp;
+    char *pcrlf = _http_scan_line(head, HEAD_REMAIN, ' ', sp, 2, &nsp);
+    if (NULL == pcrlf
+        || 2 != nsp) {
         return NULL;
     }
     pack->status[0].data = head;
-    pack->status[0].lens = pos - head;
-    if (0 == pack->status[0].lens) {
+    pack->status[0].lens = (size_t)(sp[0] - head);
+    pack->status[1].data = sp[0] + 1;
+    pack->status[1].lens = (size_t)(sp[1] - sp[0] - 1);
+    pack->status[2].data = sp[1] + 1;
+    pack->status[2].lens = (size_t)(pcrlf - sp[1] - 1);
+    if (0 == pack->status[0].lens
+        || 0 == pack->status[1].lens) {
         return NULL;
     }
-    head = pos + 1;
-    pos = memstr(0, head, (size_t)(pcrlf - head), " ", 1);
-    if (NULL == pos) {
-        return NULL;
-    }
-    pack->status[1].data = head;
-    pack->status[1].lens = pos - head;
-    if (0 == pack->status[1].lens) {
-        return NULL;
-    }
-    head = pos + 1;
-    pack->status[2].data = head;
-    pack->status[2].lens = pcrlf - head;
     if (!_http_is_version(&pack->status[0])
         && !_http_is_version(&pack->status[2])) {
         return NULL;
     }
     return pcrlf + CRLF_SIZE;
-}
-// 在单次扫描中同时找到冒号和 CRLF，减少内存扫描次数
-static int32_t _http_parse_field_fast(const char *head, size_t remain, char **pcolon, char **pcrlf) {
-    *pcolon = NULL;
-    *pcrlf = NULL;
-    const char *cur = head;
-    size_t scanned = 0;
-    while (scanned < remain) {
-        if (':' == *cur && NULL == *pcolon) {
-            *pcolon = (char *)cur;
-        }
-        if ('\r' == *cur && scanned + 1 < remain && '\n' == *(cur + 1)) {
-            *pcrlf = (char *)cur;
-            return (NULL != *pcolon && *pcolon < *pcrlf) ? ERR_OK : ERR_FAILED;
-        }
-        cur++;
-        scanned++;
-    }
-    return ERR_FAILED;
 }
 // 解析单个头部字段行（key ":" OWS value CRLF），拒绝空 key 与 obs-fold 续行，成功后 *phead 推进到下一行行首
 static int32_t _http_parse_field(http_pack_ctx *pack, char **phead, http_header_ctx *field) {
@@ -227,17 +233,18 @@ static int32_t _http_parse_field(http_pack_ctx *pack, char **phead, http_header_
         return ERR_FAILED;
     }
     char *pcolon;
-    char *pcrlf;
-    if (ERR_OK != _http_parse_field_fast(head, HEAD_REMAIN, &pcolon, &pcrlf)) {
+    int32_t ncolon;
+    char *pcrlf = _http_scan_line(head, HEAD_REMAIN, ':', &pcolon, 1, &ncolon);
+    if (NULL == pcrlf
+        || 1 != ncolon) {
         return ERR_FAILED;
     }
     field->key.data = head;
-    field->key.lens = pcolon - head;
-    if (0 == field->key.lens) {
-        return ERR_FAILED;
-    }
-    // RFC 7230 §3.2.4：字段名与冒号间不允许空白(OWS)，须拒绝；防 `Transfer-Encoding :chunked` 尾随空格绕过 TE/CL 精确长度匹配构成请求走私
-    if (is_ows(pcolon[-1])) {
+    field->key.lens = (size_t)(pcolon - head);
+    // RFC 7230 §3.2.6：字段名只能由 token 字符组成（长度为 0 时 is_token 也返回假，一并挡掉）。
+    // 这一条同时覆盖了"字段名与冒号之间不许有空白"：SP/HTAB 都不是 token 字符，放行的话
+    // `Transfer-Encoding :chunked` 就带着尾随空格绕过 TE/CL 的精确比长匹配，构成请求走私
+    if (!is_token((const char *)field->key.data, field->key.lens)) {
         return ERR_FAILED;
     }
     head = pcolon + 1;

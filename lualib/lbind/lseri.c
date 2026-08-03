@@ -113,7 +113,7 @@ static int32_t _lseri_pack(lua_State *lua) {
     bw.size = 0;
     bw.offset = 0;
     binary_free(&bw);
-    LPUB_RET_LUD(lua, buf, (lua_Integer)size);
+    return lpub_rtn_lud(lua, buf, size);
 }
 static void _lseri_unpack_one(lua_State *lua, seri_iter *iter, int32_t depth) {
     seri_item item;

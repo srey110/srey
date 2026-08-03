@@ -409,6 +409,9 @@
     <ClInclude Include="services\subcenter.h">
       <Filter>services</Filter>
     </ClInclude>
+    <ClInclude Include="services\sv_pub.h">
+      <Filter>services</Filter>
+    </ClInclude>
     <ClInclude Include="utils\chan.h">
       <Filter>utils</Filter>
     </ClInclude>
@@ -697,6 +700,9 @@
       <Filter>services</Filter>
     </ClCompile>
     <ClCompile Include="services\subcenter.c">
+      <Filter>services</Filter>
+    </ClCompile>
+    <ClCompile Include="services\sv_pub.c">
       <Filter>services</Filter>
     </ClCompile>
     <ClCompile Include="utils\chan.c">

@@ -9,9 +9,7 @@
 /// <returns type="boolean">成功投递 true;topic 非法/sess=0/subcenter 不可达 false</returns>
 static int32_t _lsc_subscribe(lua_State *lua) {
     LPUB_CUR_TASK(lua, task);
-    name_t sc_name = (LUA_TSTRING == lua_type(lua, 1))
-        ? task_find_name(g_loader, lua_tostring(lua, 1))
-        : (name_t)luaL_checkinteger(lua, 1);
+    name_t sc_name = lpub_task_handle(lua, 1);
     uint64_t sess = (uint64_t)luaL_checkinteger(lua, 2);
     const char *topic = (LUA_TSTRING == lua_type(lua, 3)) ? lua_tostring(lua, 3) : NULL;
     lua_pushboolean(lua, ERR_OK == sc_subscribe(task, sc_name, sess, topic));
@@ -27,9 +25,7 @@ static int32_t _lsc_subscribe(lua_State *lua) {
 /// <returns type="boolean">成功投递 true;参数非法/sess=0/subcenter 不可达 false</returns>
 static int32_t _lsc_subscribe_shared(lua_State *lua) {
     LPUB_CUR_TASK(lua, task);
-    name_t sc_name = (LUA_TSTRING == lua_type(lua, 1))
-        ? task_find_name(g_loader, lua_tostring(lua, 1))
-        : (name_t)luaL_checkinteger(lua, 1);
+    name_t sc_name = lpub_task_handle(lua, 1);
     uint64_t sess = (uint64_t)luaL_checkinteger(lua, 2);
     const char *topic = (LUA_TSTRING == lua_type(lua, 3)) ? lua_tostring(lua, 3) : NULL;
     const char *group = (LUA_TSTRING == lua_type(lua, 4)) ? lua_tostring(lua, 4) : NULL;
@@ -43,9 +39,7 @@ static int32_t _lsc_subscribe_shared(lua_State *lua) {
 /// <returns type="boolean">成功投递 true;topic 非法/sess=0/subcenter 不可达 false</returns>
 static int32_t _lsc_unsubscribe(lua_State *lua) {
     LPUB_CUR_TASK(lua, task);
-    name_t sc_name = (LUA_TSTRING == lua_type(lua, 1))
-        ? task_find_name(g_loader, lua_tostring(lua, 1))
-        : (name_t)luaL_checkinteger(lua, 1);
+    name_t sc_name = lpub_task_handle(lua, 1);
     uint64_t sess = (uint64_t)luaL_checkinteger(lua, 2);
     const char *topic = (LUA_TSTRING == lua_type(lua, 3)) ? lua_tostring(lua, 3) : NULL;
     lua_pushboolean(lua, ERR_OK == sc_unsubscribe(task, sc_name, sess, topic));
@@ -59,9 +53,7 @@ static int32_t _lsc_unsubscribe(lua_State *lua) {
 /// <returns type="boolean">成功投递 true;参数非法/sess=0/subcenter 不可达 false</returns>
 static int32_t _lsc_unsubscribe_shared(lua_State *lua) {
     LPUB_CUR_TASK(lua, task);
-    name_t sc_name = (LUA_TSTRING == lua_type(lua, 1))
-        ? task_find_name(g_loader, lua_tostring(lua, 1))
-        : (name_t)luaL_checkinteger(lua, 1);
+    name_t sc_name = lpub_task_handle(lua, 1);
     uint64_t sess = (uint64_t)luaL_checkinteger(lua, 2);
     const char *topic = (LUA_TSTRING == lua_type(lua, 3)) ? lua_tostring(lua, 3) : NULL;
     const char *group = (LUA_TSTRING == lua_type(lua, 4)) ? lua_tostring(lua, 4) : NULL;
@@ -76,9 +68,7 @@ static int32_t _lsc_unsubscribe_shared(lua_State *lua) {
 /// <returns type="boolean">成功投递 true;topic 非法/sess=0/subcenter 不可达 false</returns>
 static int32_t _lsc_publish(lua_State *lua) {
     LPUB_CUR_TASK(lua, task);
-    name_t sc_name = (LUA_TSTRING == lua_type(lua, 1))
-        ? task_find_name(g_loader, lua_tostring(lua, 1))
-        : (name_t)luaL_checkinteger(lua, 1);
+    name_t sc_name = lpub_task_handle(lua, 1);
     uint64_t sess = (uint64_t)luaL_checkinteger(lua, 2);
     const char *topic = (LUA_TSTRING == lua_type(lua, 3)) ? lua_tostring(lua, 3) : NULL;
     size_t plen = 0;
@@ -94,9 +84,7 @@ static int32_t _lsc_publish(lua_State *lua) {
 /// <returns type="boolean">成功投递 true;参数非法/超长/sess=0/subcenter 不可达 false</returns>
 static int32_t _lsc_publish_retained(lua_State *lua) {
     LPUB_CUR_TASK(lua, task);
-    name_t sc_name = (LUA_TSTRING == lua_type(lua, 1))
-        ? task_find_name(g_loader, lua_tostring(lua, 1))
-        : (name_t)luaL_checkinteger(lua, 1);
+    name_t sc_name = lpub_task_handle(lua, 1);
     uint64_t sess = (uint64_t)luaL_checkinteger(lua, 2);
     const char *topic = (LUA_TSTRING == lua_type(lua, 3)) ? lua_tostring(lua, 3) : NULL;
     size_t plen = 0;
@@ -111,9 +99,7 @@ static int32_t _lsc_publish_retained(lua_State *lua) {
 /// <returns type="boolean">成功投递 true;pattern 非法/sess=0/subcenter 不可达 false</returns>
 static int32_t _lsc_query_retained(lua_State *lua) {
     LPUB_CUR_TASK(lua, task);
-    name_t sc_name = (LUA_TSTRING == lua_type(lua, 1))
-        ? task_find_name(g_loader, lua_tostring(lua, 1))
-        : (name_t)luaL_checkinteger(lua, 1);
+    name_t sc_name = lpub_task_handle(lua, 1);
     uint64_t sess = (uint64_t)luaL_checkinteger(lua, 2);
     const char *pattern = (LUA_TSTRING == lua_type(lua, 3)) ? lua_tostring(lua, 3) : NULL;
     lua_pushboolean(lua, ERR_OK == sc_query_retained(task, sc_name, sess, pattern));
@@ -125,9 +111,7 @@ static int32_t _lsc_query_retained(lua_State *lua) {
 /// <returns type="boolean">成功投递 true;sess=0/subcenter 不可达 false</returns>
 static int32_t _lsc_topics(lua_State *lua) {
     LPUB_CUR_TASK(lua, task);
-    name_t sc_name = (LUA_TSTRING == lua_type(lua, 1))
-        ? task_find_name(g_loader, lua_tostring(lua, 1))
-        : (name_t)luaL_checkinteger(lua, 1);
+    name_t sc_name = lpub_task_handle(lua, 1);
     uint64_t sess = (uint64_t)luaL_checkinteger(lua, 2);
     lua_pushboolean(lua, ERR_OK == sc_topics(task, sc_name, sess));
     return 1;
@@ -138,9 +122,7 @@ static int32_t _lsc_topics(lua_State *lua) {
 /// <returns type="boolean">成功投递 true;sess=0/subcenter 不可达 false</returns>
 static int32_t _lsc_retained_topics(lua_State *lua) {
     LPUB_CUR_TASK(lua, task);
-    name_t sc_name = (LUA_TSTRING == lua_type(lua, 1))
-        ? task_find_name(g_loader, lua_tostring(lua, 1))
-        : (name_t)luaL_checkinteger(lua, 1);
+    name_t sc_name = lpub_task_handle(lua, 1);
     uint64_t sess = (uint64_t)luaL_checkinteger(lua, 2);
     lua_pushboolean(lua, ERR_OK == sc_retained_topics(task, sc_name, sess));
     return 1;
@@ -152,9 +134,7 @@ static int32_t _lsc_retained_topics(lua_State *lua) {
 /// <returns type="boolean">成功投递 true;超长/sess=0/subcenter 不可达 false</returns>
 static int32_t _lsc_set_meta(lua_State *lua) {
     LPUB_CUR_TASK(lua, task);
-    name_t sc_name = (LUA_TSTRING == lua_type(lua, 1))
-        ? task_find_name(g_loader, lua_tostring(lua, 1))
-        : (name_t)luaL_checkinteger(lua, 1);
+    name_t sc_name = lpub_task_handle(lua, 1);
     uint64_t sess = (uint64_t)luaL_checkinteger(lua, 2);
     size_t mlen = 0;
     const void *meta = (LUA_TSTRING == lua_type(lua, 3)) ? lua_tolstring(lua, 3, &mlen) : NULL;

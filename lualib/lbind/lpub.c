@@ -44,7 +44,9 @@ void *lpub_check_buf_idx(lua_State *lua, int32_t *idx, size_t *size, int32_t *co
     }
     if (LUA_TLIGHTUSERDATA == type) {
         void *ud = lua_touserdata(lua, *idx);
-        *size = (size_t)luaL_checkinteger(lua, *idx + 1);
+        lua_Integer lens = luaL_checkinteger(lua, *idx + 1);
+        luaL_argcheck(lua, lens >= 0, *idx + 1, "size must be >= 0");
+        *size = (size_t)lens;
         *idx += 2;// 先吃掉 data + size,*idx 转到 copy 位
         if (NULL != copy) {
             if (lua_isinteger(lua, *idx)) {
@@ -62,6 +64,20 @@ void *lpub_check_buf_idx(lua_State *lua, int32_t *idx, size_t *size, int32_t *co
 // idx 按值的兼容包装,丢弃推进位置
 void *lpub_check_buf(lua_State *lua, int32_t idx, size_t *size, int32_t *copy) {
     return lpub_check_buf_idx(lua, &idx, size, copy);
+}
+name_t lpub_task_handle(lua_State *lua, int32_t idx) {
+    return (LUA_TSTRING == lua_type(lua, idx))
+        ? task_find_name(g_loader, lua_tostring(lua, idx))
+        : (name_t)luaL_checkinteger(lua, idx);
+}
+int32_t lpub_rtn_lud(lua_State *lua, void *pack, size_t size) {
+    if (NULL == pack) {
+        lua_pushnil(lua);
+        return 1;
+    }
+    lua_pushlightuserdata(lua, pack);
+    lua_pushinteger(lua, (lua_Integer)size);
+    return 2;
 }
 void lpub_push_url_table(lua_State *lua, url_ctx *url) {
     lua_createtable(lua, 0, 9);

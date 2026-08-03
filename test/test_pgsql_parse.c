@@ -188,6 +188,92 @@ static void test_pgsql_reader_integer(CuTest *tc) {
     pgsql_reader_free(r3);
 }
 
+// 文本协议下取一个 int8 字段，val/lens 由用例给；返回值经 out 带出，err 直接返回
+static int32_t _pg_int_text(const char *val, int32_t lens, int64_t *out) {
+    int32_t oids[1] = { INT8OID };
+    char names[1][64] = { "n" };
+    pgsql_reader_ctx *r = _pg_reader_new(1, oids, names);
+    r->format = FORMAT_TEXT;
+    char *p;
+    MALLOC(p, (lens > 0) ? (size_t)lens : 1);
+    if (lens > 0) {
+        memcpy(p, val, (size_t)lens);
+    }
+    pgpack_row cols[1] = { { lens, p, NULL } };
+    _pg_reader_push_row(r, p, cols);
+    int32_t err;
+    int64_t v = pgsql_reader_integer(r, "n", &err);
+    SET_PTR(out, v);
+    pgsql_reader_free(r);
+    return err;
+}
+
+// 文本整数的边界：空串与溢出原先都骗得过 end-tmp 判等被当成解析成功
+static void test_pgsql_reader_integer_bounds(CuTest *tc) {
+    int64_t v = -1;
+    // 空串是合法线格式(lens=0，与 -1 的 NULL 不同)，但不是一个数 → 必须失败
+    CuAssertIntEquals(tc, ERR_FAILED, _pg_int_text("", 0, &v));
+    // 溢出：strtoll 会钳到 LLONG_MAX 且 end 走到串尾，旧判据放行
+    CuAssertIntEquals(tc, ERR_FAILED, _pg_int_text("99999999999999999999", 20, &v));
+    CuAssertIntEquals(tc, ERR_FAILED, _pg_int_text("9223372036854775808", 19, &v));// INT64_MAX + 1
+    // strtoll 静默接受的前导空白 / '+' / 尾随垃圾，一律拒
+    CuAssertIntEquals(tc, ERR_FAILED, _pg_int_text(" 1", 2, &v));
+    CuAssertIntEquals(tc, ERR_FAILED, _pg_int_text("+1", 2, &v));
+    CuAssertIntEquals(tc, ERR_FAILED, _pg_int_text("1x", 2, &v));
+    CuAssertIntEquals(tc, ERR_FAILED, _pg_int_text("-", 1, &v));
+    // 合法边界值照常
+    CuAssertIntEquals(tc, ERR_OK, _pg_int_text("9223372036854775807", 19, &v));
+    CuAssertTrue(tc, INT64_MAX == v);
+    CuAssertIntEquals(tc, ERR_OK, _pg_int_text("-9223372036854775808", 20, &v));
+    CuAssertTrue(tc, INT64_MIN == v);
+    CuAssertIntEquals(tc, ERR_OK, _pg_int_text("-42", 3, &v));
+    CuAssertTrue(tc, -42 == v);
+    CuAssertIntEquals(tc, ERR_OK, _pg_int_text("0", 1, &v));
+    CuAssertTrue(tc, 0 == v);
+}
+
+// 文本浮点：空串同样骗得过判等；但 Infinity / NaN 是 PostgreSQL 真会发的值，必须放行
+static void test_pgsql_reader_double_bounds(CuTest *tc) {
+    int32_t oids[1] = { FLOAT8OID };
+    char names[1][64] = { "d" };
+    int32_t err;
+
+    pgsql_reader_ctx *r = _pg_reader_new(1, oids, names);
+    r->format = FORMAT_TEXT;
+    char *p;
+    MALLOC(p, 1);
+    pgpack_row cols[1] = { { 0, p, NULL } };// lens=0：合法空字符串，但不是一个数
+    _pg_reader_push_row(r, p, cols);
+    pgsql_reader_double(r, "d", &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    pgsql_reader_free(r);
+
+    pgsql_reader_ctx *r2 = _pg_reader_new(1, oids, names);
+    r2->format = FORMAT_TEXT;
+    char *p2;
+    MALLOC(p2, 8);
+    memcpy(p2, "Infinity", 8);
+    pgpack_row cols2[1] = { { 8, p2, NULL } };
+    _pg_reader_push_row(r2, p2, cols2);
+    double d = pgsql_reader_double(r2, "d", &err);
+    CuAssertIntEquals(tc, ERR_OK, err);// PostgreSQL float8 文本格式就发这个，拒了是回归
+    CuAssertTrue(tc, d > 0 && d * 2 == d);// 无穷大
+    pgsql_reader_free(r2);
+
+    // NaN 单独一行：塞在 Infinity 那块 buffer 的尾部不算测到，列长度只声明了 8 字节
+    pgsql_reader_ctx *r3 = _pg_reader_new(1, oids, names);
+    r3->format = FORMAT_TEXT;
+    char *p3;
+    MALLOC(p3, 3);
+    memcpy(p3, "NaN", 3);
+    pgpack_row cols3[1] = { { 3, p3, NULL } };
+    _pg_reader_push_row(r3, p3, cols3);
+    double dn = pgsql_reader_double(r3, "d", &err);
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertTrue(tc, dn != dn);// NaN 是唯一不等于自己的值
+    pgsql_reader_free(r3);
+}
+
 // pgsql_reader_double 文本 + 二进制（float4=4 字节 / float8=8 字节）
 static void test_pgsql_reader_double(CuTest *tc) {
     int32_t oids[1] = { FLOAT8OID };
@@ -573,7 +659,9 @@ void test_pgsql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_pgsql_reader_cursor);
     SUITE_ADD_TEST(suite, test_pgsql_reader_bool);
     SUITE_ADD_TEST(suite, test_pgsql_reader_integer);
+    SUITE_ADD_TEST(suite, test_pgsql_reader_integer_bounds);
     SUITE_ADD_TEST(suite, test_pgsql_reader_double);
+    SUITE_ADD_TEST(suite, test_pgsql_reader_double_bounds);
     SUITE_ADD_TEST(suite, test_pgsql_reader_isnull_text);
     SUITE_ADD_TEST(suite, test_pgsql_reader_bytea);
     SUITE_ADD_TEST(suite, test_pgsql_reader_timestamp_text);

@@ -119,8 +119,9 @@ runner.run("framework", function(t)
     end
 
     -- ── srey.task: trap (跨 task 中断卡死协程) ────────────────────────
-    -- 起一个 helper task 接收 "spin" 进入死循环，验证 task.trap 能从外部
-    -- 安装 hook 中断协程；中断后 task 应能恢复处理新请求（"ping" → "pong"）。
+    -- 起一个 helper task 接收 "spin" 进入死循环，验证 task.trap 能从外部把它打断；
+    -- 中断后 task 应能恢复处理新请求（"ping" → "pong"）。
+    -- helper 在自己 startup 里调了 srey.interruptible()，没调的 task 一律拒绝中断。
     do
         -- 选用一个不在 TASK_NAME 表中的字符串名，与其他单测错开
         local TRAP_TARGET = "trap_target"
@@ -144,6 +145,18 @@ runner.run("framework", function(t)
 
         -- 无效 name 返回 false
         t:eq(false, task.trap("__no_such_task__"), "task.trap 无效 name 返回 false")
+
+        -- reporter 是 Lua task 但没调过 srey.interruptible()：hook 没挂，标志置了也永远
+        -- 触发不了，所以直接返回 false 让调用方知道，而不是回 true 后干等
+        t:eq(false, task.trap("reporter"), "task.trap 未声明可中断的 task 返回 false")
+
+        -- Lua 每个 thread 只能挂一个 hook。debug.sethook 占着的时候，interruptible 必须报错：
+        -- 静默让路的话标志照样置位，task.trap 会返回成功却永远不触发，调用方只能干等
+        debug.sethook(function() end, "c")
+        local armed, err = pcall(function() srey.interruptible() end)
+        debug.sethook()
+        t:eq(false, armed, "已有 debug hook 时 srey.interruptible 报错")
+        t:check(type(err) == "string" and nil ~= err:find("debug hook"), "错误信息点明 hook 被占用")
 
         -- 收尾：关闭 helper
         local helper = task.grab(TRAP_TARGET)
