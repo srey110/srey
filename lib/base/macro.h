@@ -25,7 +25,10 @@
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof(*(a))) // 获取静态数组元素个数
 #define EMPTYSTR(str) ((NULL == (str)) || ('\0' == *(const char *)(str))) // 判断字符串是否为空
 #define EMPTYPTR(ptr, lens) ((NULL == (ptr)) || (0 == (lens)))
-#define ROUND_UP(s, n) (((s) + (n) - 1) & (~((n) - 1))) //s向上 取n(n 为2的倍数)的整数倍
+// s 向上取整。掩码 ~(n-1) 只在 n 是 2 的幂时才等价于"取 n 的整数倍",
+// n 取别的值（比如 6）结果不会是 n 的倍数；但任何 n 下结果都 >= s（被清掉的低位至多 n-1），
+// 所以拿它算"够不够装"的场景仍然安全，只是别指望对齐到 n
+#define ROUND_UP(s, n) (((s) + (n) - 1) & (~((n) - 1)))
 
 #define CONCAT2(a, b) a b // 拼接两个字符串字面量
 #define CONCAT3(a, b, c) a b c // 拼接三个字符串字面量

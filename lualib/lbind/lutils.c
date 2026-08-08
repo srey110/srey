@@ -432,7 +432,8 @@ static int32_t _lpopen_read(lua_State *lua) {
 /// </summary>
 /// <param name="self" type="userdata">popen 对象</param>
 /// <param name="data" type="string">待写入数据</param>
-/// <returns type="integer">实际写入的字节数；失败返回 -1</returns>
+/// <returns type="integer">实际写入的字节数，**可能少于 data 长度**——写端非阻塞，
+/// 对端缓冲写满即返回，剩余部分由调用方决定重试还是放弃；一个字节都没写进去且出错时返回 -1</returns>
 static int32_t _lpopen_write(lua_State *lua) {
     popen_ctx *ctx = luaL_checkudata(lua, 1, MT_POPEN);
     size_t lens;

@@ -176,19 +176,43 @@ static void _des_key_setup(const uint8_t *key, int32_t encrypt, uint8_t schedule
         }
     }
 }
+// 3DES 的密钥是三段独立的 8 字节子密钥，短密钥不能像单密钥算法那样整体补零：
+// K2、K3 同时为零时 E_0(D_0(x)) 是恒等变换，3DES 会塌回单重 DES；K3 单独为零虽不减弱强度，
+// 但密文与所有合规实现都对不上。按 NIST SP 800-67 的三种取法补齐——24 字节三段独立，
+// 16 字节 K3 取 K1，8 字节三段相同（该取法本身即等价于单重 DES）。非标准长度按低一档补零
+static void _des3_padding_key(const char *key, size_t klens, uint8_t pdkey[24]) {
+    if (klens >= 24) {
+        memcpy(pdkey, key, 24);
+        return;
+    }
+    if (klens > 16) {
+        memcpy(pdkey, key, klens);
+        ZERO(pdkey + klens, 24 - klens);
+        return;
+    }
+    if (klens > 8) {
+        memcpy(pdkey, key, klens);
+        ZERO(pdkey + klens, 16 - klens);
+    } else {
+        memcpy(pdkey, key, klens);
+        ZERO(pdkey + klens, 8 - klens);
+        memcpy(pdkey + 8, pdkey, 8);
+    }
+    memcpy(pdkey + 16, pdkey, 8);
+}
 void des_init(des_ctx *des, const char *key, size_t klens, int32_t des3, int32_t encrypt) {
     des->des3 = des3;
     if (des->des3) {
         uint8_t pdkey[24];
-        uint8_t *k = _padding_key(key, klens, pdkey, 24);
+        _des3_padding_key(key, klens, pdkey);
         if (encrypt) {
-            _des_key_setup(k, encrypt, des->schedule);
-            _des_key_setup(k + 8, !encrypt, des->schedule + 16 * 6);
-            _des_key_setup(k + 16, encrypt, des->schedule + 2 * 16 * 6);
+            _des_key_setup(pdkey, encrypt, des->schedule);
+            _des_key_setup(pdkey + 8, !encrypt, des->schedule + 16 * 6);
+            _des_key_setup(pdkey + 16, encrypt, des->schedule + 2 * 16 * 6);
         } else {
-            _des_key_setup(k + 16, encrypt, des->schedule);
-            _des_key_setup(k + 8, !encrypt, des->schedule + 16 * 6);
-            _des_key_setup(k, encrypt, des->schedule + 2 * 16 * 6);
+            _des_key_setup(pdkey + 16, encrypt, des->schedule);
+            _des_key_setup(pdkey + 8, !encrypt, des->schedule + 16 * 6);
+            _des_key_setup(pdkey, encrypt, des->schedule + 2 * 16 * 6);
         }
         secure_zero(pdkey, sizeof(pdkey));
     } else {

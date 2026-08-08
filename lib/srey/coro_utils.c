@@ -241,7 +241,7 @@ SOCKET redis_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ip, ui
     }
     return fd;
 }
-int32_t mysql_connect(task_ctx *task, mysql_ctx *mysql) {
+static int32_t _mysql_do_connect(task_ctx *task, mysql_ctx *mysql) {
     if (ERR_OK != mysql_try_connect(task, mysql, 1)) {
         return ERR_FAILED;
     }
@@ -257,6 +257,38 @@ int32_t mysql_connect(task_ctx *task, mysql_ctx *mysql) {
     }
     return err;
 }
+// 命令串行化的进出，成对使用：调用方进函数时先 held = xxx->serial 捏住指针，加锁解锁都用它。
+// held 为 NULL 表示这条连接不由 coro_utils 这套 API 管（经 Lua 绑定的 *_try_connect 建立时
+// 就是这样），此时退化为原来的无锁行为。
+// 之所以捏指针而不是解锁时重读 xxx->serial：*_quit 会先把字段置空，重读就会跳过 leave，
+// 而 coro_serial_free 撞上持锁者时正指望那次 leave 来释放。
+// lock 失败（不在协程内 / 连接正在销毁）时调用方一律按失败返回，不得再调 unlock。
+// mysql / pgsql / mongo / smtp 四家同一套语义，故只此一份
+static int32_t _serial_lock(coro_serial_ctx *held) {
+    return NULL == held ? ERR_OK : coro_serial_enter(held);
+}
+static void _serial_unlock(coro_serial_ctx *held) {
+    if (NULL != held) {
+        coro_serial_leave(held);
+    }
+}
+// serial 建在 try_connect 之前并立刻上锁:它一装上就对别的协程可见,而握手要多次挂起,
+// 中间放人进来就是往半成品连接上发命令——而且等待按 (skid, mtype) 严格队头匹配,
+// 它那条 RECV 会排在握手的 HANDSHAKED 之前,握手消息队头不匹配被丢弃,连接方挂到超时。
+// try_connect 还会无条件覆写 sk.fd/skid,两个并发 connect 会互相孤立对方的 socket。
+// 重连路径(ping 内)进来时已持锁,按 ref 计数嵌套;serial 只在首次创建,重建会把排队者连同锁一起丢掉
+int32_t mysql_connect(task_ctx *task, mysql_ctx *mysql) {
+    if (NULL == mysql->serial) {
+        mysql->serial = coro_serial_new(task);
+    }
+    coro_serial_ctx *held = mysql->serial;
+    if (ERR_OK != _serial_lock(held)) {
+        return ERR_FAILED;
+    }
+    int32_t rtn = _mysql_do_connect(task, mysql);
+    _serial_unlock(held);
+    return rtn;
+}
 // 统一"发送+同步等待响应+校验 MPACK_OK"尾块;成功返回 ERR_OK,失败返回 ERR_FAILED
 static int32_t _mysql_call(mysql_ctx *mysql, void *pack, size_t size) {
     mpack_ctx *mpack = coro_send(mysql->task, mysql->client.sk.fd, mysql->client.sk.skid, pack, size, NULL, 0);
@@ -265,13 +297,22 @@ static int32_t _mysql_call(mysql_ctx *mysql, void *pack, size_t size) {
     }
     return MPACK_OK == mpack->pack_type ? ERR_OK : ERR_FAILED;
 }
-int32_t mysql_selectdb(mysql_ctx *mysql, const char *database) {
+static int32_t _mysql_selectdb(mysql_ctx *mysql, const char *database) {
     size_t size;
     void *selectdb = mysql_pack_selectdb(mysql, database, &size);
     if (NULL == selectdb) {
         return ERR_FAILED;
     }
     return _mysql_call(mysql, selectdb, size);
+}
+int32_t mysql_selectdb(mysql_ctx *mysql, const char *database) {
+    coro_serial_ctx *held = mysql->serial;
+    if (ERR_OK != _serial_lock(held)) {
+        return ERR_FAILED;
+    }
+    int32_t rtn = _mysql_selectdb(mysql, database);
+    _serial_unlock(held);
+    return rtn;
 }
 // 向 MySQL 服务器发送 ping 包并等待响应，失败返回 ERR_FAILED
 static int32_t _mysql_ping(mysql_ctx *mysql) {
@@ -280,13 +321,21 @@ static int32_t _mysql_ping(mysql_ctx *mysql) {
     return _mysql_call(mysql, ping, size);
 }
 int32_t mysql_ping(mysql_ctx *mysql) {
+    coro_serial_ctx *held = mysql->serial;
+    if (ERR_OK != _serial_lock(held)) {
+        return ERR_FAILED;
+    }
+    // 重连整段也在锁内：连接正在重建时别人不该往上发命令,而 fd/skid 换掉之后
+    // 排队者醒来拿到的自然是新连接
+    int32_t rtn = ERR_OK;
     if (ERR_OK != _mysql_ping(mysql)) {
         coro_close(mysql->task, mysql->client.sk.fd, mysql->client.sk.skid, 1);
-        return mysql_connect(mysql->task, mysql);
+        rtn = mysql_connect(mysql->task, mysql);
     }
-    return ERR_OK;
+    _serial_unlock(held);
+    return rtn;
 }
-mpack_ctx *mysql_query(mysql_ctx *mysql, const char *sql, mysql_bind_ctx *mbind) {
+static mpack_ctx *_mysql_query(mysql_ctx *mysql, const char *sql, mysql_bind_ctx *mbind) {
     size_t size;
     void *query = mysql_pack_query(mysql, sql, mbind, &size);
     if (NULL == query) {
@@ -294,7 +343,47 @@ mpack_ctx *mysql_query(mysql_ctx *mysql, const char *sql, mysql_bind_ctx *mbind)
     }
     return coro_send(mysql->task, mysql->client.sk.fd, mysql->client.sk.skid, query, size, NULL, 0);
 }
-mysql_stmt_ctx *mysql_stmt_prepare(mysql_ctx *mysql, const char *sql) {
+// 逐个结果集回调,直到 more 为 0。四条约定:
+// 1) more 在 cb 之前读——cb 里若调 mysql_reader_init 会把 mpack->pack 摘走,与 Lua 侧
+//    _read_results 的"has_more 须在 reader.new 前读"同口径
+// 2) cb 返回失败只记标志、循环照常把剩余包排空:半途不读完会把包留在连接缓冲里,
+//    下一次查询直接 desync（Lua 侧踩过这个坑,见 mysql.lua 的同名注释）
+// 3) 续读断连则无从排空,连接已废,直接失败返回
+// 4) cb 为 NULL 表示只排空不回调,给 INSERT/UPDATE 这类不关心结果集的调用省一个空回调
+static int32_t _mysql_read_results(mysql_ctx *mysql, mpack_ctx *mpack, mysql_result_cb cb, void *udata) {
+    int32_t failed = 0;
+    int32_t more;
+    for (;;) {
+        more = mysql_more(mpack);
+        if (NULL != cb
+            && ERR_OK != cb(mpack, udata)) {
+            failed = 1;
+        }
+        if (0 == more) {
+            break;
+        }
+        mpack = (mpack_ctx *)coro_recv(mysql->task, mysql->client.sk.fd, mysql->client.sk.skid, NULL);
+        if (NULL == mpack) {
+            return ERR_FAILED;
+        }
+    }
+    return 0 != failed ? ERR_FAILED : ERR_OK;
+}
+int32_t mysql_query(mysql_ctx *mysql, const char *sql, mysql_bind_ctx *mbind,
+                    mysql_result_cb cb, void *udata) {
+    coro_serial_ctx *held = mysql->serial;
+    if (ERR_OK != _serial_lock(held)) {
+        return ERR_FAILED;
+    }
+    int32_t rtn = ERR_FAILED;
+    mpack_ctx *mpack = _mysql_query(mysql, sql, mbind);
+    if (NULL != mpack) {
+        rtn = _mysql_read_results(mysql, mpack, cb, udata);
+    }
+    _serial_unlock(held);
+    return rtn;
+}
+static mysql_stmt_ctx *_mysql_stmt_prepare(mysql_ctx *mysql, const char *sql) {
     size_t size;
     void *prepare = mysql_pack_stmt_prepare(mysql, sql, &size);
     if (NULL == prepare) {
@@ -303,7 +392,16 @@ mysql_stmt_ctx *mysql_stmt_prepare(mysql_ctx *mysql, const char *sql) {
     mpack_ctx *mpack = coro_send(mysql->task, mysql->client.sk.fd, mysql->client.sk.skid, prepare, size, NULL, 0);
     return mysql_stmt_init(mpack);
 }
-mpack_ctx *mysql_stmt_execute(mysql_stmt_ctx *stmt, mysql_bind_ctx *mbind) {
+mysql_stmt_ctx *mysql_stmt_prepare(mysql_ctx *mysql, const char *sql) {
+    coro_serial_ctx *held = mysql->serial;
+    if (ERR_OK != _serial_lock(held)) {
+        return NULL;
+    }
+    mysql_stmt_ctx *rtn = _mysql_stmt_prepare(mysql, sql);
+    _serial_unlock(held);
+    return rtn;
+}
+static mpack_ctx *_mysql_stmt_execute(mysql_stmt_ctx *stmt, mysql_bind_ctx *mbind) {
     size_t size;
     void *exec = mysql_pack_stmt_execute(stmt, mbind, &size);
     if (NULL == exec) {
@@ -311,36 +409,95 @@ mpack_ctx *mysql_stmt_execute(mysql_stmt_ctx *stmt, mysql_bind_ctx *mbind) {
     }
     return coro_send(stmt->mysql->task, stmt->mysql->client.sk.fd, stmt->mysql->client.sk.skid, exec, size, NULL, 0);
 }
+int32_t mysql_stmt_execute(mysql_stmt_ctx *stmt, mysql_bind_ctx *mbind,
+                           mysql_result_cb cb, void *udata) {
+    mysql_ctx *mysql = stmt->mysql;
+    coro_serial_ctx *held = mysql->serial;
+    if (ERR_OK != _serial_lock(held)) {
+        return ERR_FAILED;
+    }
+    int32_t rtn = ERR_FAILED;
+    mpack_ctx *mpack = _mysql_stmt_execute(stmt, mbind);
+    if (NULL != mpack) {
+        rtn = _mysql_read_results(mysql, mpack, cb, udata);
+    }
+    _serial_unlock(held);
+    return rtn;
+}
 int32_t mysql_stmt_reset(mysql_stmt_ctx *stmt) {
+    coro_serial_ctx *held = stmt->mysql->serial;
+    if (ERR_OK != _serial_lock(held)) {
+        return ERR_FAILED;
+    }
     size_t size;
     void *resetpk = mysql_pack_stmt_reset(stmt, &size);
-    return _mysql_call(stmt->mysql, resetpk, size);
+    int32_t rtn = _mysql_call(stmt->mysql, resetpk, size);
+    _serial_unlock(held);
+    return rtn;
+}
+// 组包发送并释放 stmt。fd == INVALID_SOCK 表示连接已关闭;skid 变了表示中途重连过——
+// stmt_id 是服务端按连接分配的,旧 id 发到新连接上会把恰好占用该 id 的语句关掉。
+// 两种情况都跳过发包,但本地照样释放
+static void _mysql_stmt_close(mysql_stmt_ctx *stmt) {
+    mysql_ctx *mysql = stmt->mysql;
+    size_t size;
+    void *close = mysql_pack_stmt_close(stmt, &size);
+    if (INVALID_SOCK == mysql->client.sk.fd
+        || stmt->skid != mysql->client.sk.skid) {
+        FREE(close);
+    } else {
+        ev_send(&mysql->task->loader->netev, mysql->client.sk.fd, mysql->client.sk.skid, close, size, 0);
+    }
+    mysql_stmt_free(stmt);
 }
 void mysql_stmt_close(mysql_stmt_ctx *stmt) {
-    size_t size;
     mysql_ctx *mysql = stmt->mysql;
-    uint64_t skid = stmt->skid;
-    void *close = mysql_pack_stmt_close(stmt, &size);
-    /* mysql_pack_stmt_close 已释放 stmt，此后只能访问 mysql / skid（都已在 free 前捕获）。
-     * fd == INVALID_SOCK 表示连接已关闭；skid 变了表示中途重连过——stmt_id 是服务端按连接
-     * 分配的，旧 id 发到新连接上会把恰好占用该 id 的语句关掉。两种情况都跳过发包直接释放。 */
-    if (INVALID_SOCK == mysql->client.sk.fd
-        || skid != mysql->client.sk.skid) {
-        FREE(close);
+    coro_serial_ctx *held = mysql->serial;
+    // 两种"发不得"的情形都只做本地释放。COM_STMT_CLOSE 虽无响应,插在别人结果集流
+    // 中间同样违反半双工;而组包那一步还会把连接的包序号清零,更不能在没有发言权时做。
+    // 服务端那份语句会随连接关闭一并回收。
+    // held 为 NULL 是关键的一种:那表示这条连接不由本套 API 串行化(Lua 绑定建的都是),
+    // 而本函数正是 Lua 侧 stmt 的 __gc。__gc 在任意一次分配上同步触发、跑在工作线程,
+    // 握手期间网络线程恰好也在递增 mysql->id —— 走发包路径就是一次跨线程写,
+    // 表现为下一个握手包序号错位、报 "Got packets out of order"
+    if (NULL == held
+        || ERR_OK != coro_serial_enter(held)) {
+        mysql_stmt_free(stmt);
         return;
     }
-    ev_send(&mysql->task->loader->netev, mysql->client.sk.fd, mysql->client.sk.skid, close, size, 0);
+    _mysql_stmt_close(stmt);
+    coro_serial_leave(held);
 }
+// 摘指针紧跟捕获、中间不能有挂起：拿到非 NULL 的只会是一个协程，它独占回收权。
+// 本协程若正持着锁(如在结果集回调里调到这儿)，free 只标记不释放，真正回收落在紧随的 unlock
 void mysql_quit(mysql_ctx *mysql) {
-    if (INVALID_SOCK == mysql->client.sk.fd) {
+    coro_serial_ctx *held = mysql->serial;
+    mysql->serial = NULL;
+    // 摘到 NULL 说明另一个协程已经把执行器拿走、正在销毁同一条连接，断连与回收都归先到的
+    // 那一方，本次直接退——再往下走会拿 _serial_lock(NULL) 的"无需串行化"放行，
+    // 把命令无锁插进别人正在进行的交换里。
+    // 拿不到锁（held 非 NULL 却 enter 失败，只可能是不在协程内）时不发命令只断连：
+    // 组包那一步会把连接的包序号清零，没有发言权时不能做
+    if (NULL == held) {
         return;
     }
-    size_t size;
-    void *quit = mysql_pack_quit(mysql, &size);
-    ev_send(&mysql->task->loader->netev, mysql->client.sk.fd, mysql->client.sk.skid, quit, size, 0);
-    coro_close(mysql->task, mysql->client.sk.fd, mysql->client.sk.skid, 0);
+    if (ERR_OK != _serial_lock(held)) {
+        // 只可能是不在协程内(held 非 NULL 就排除了"别人正在销毁")——而往下的 coro_close
+        // 内部要 mco_yield，同样得在协程里，硬走会撞断言。至少把执行器回收掉再退，
+        // socket 留给对端关或 task 关闭时兜底
+        coro_serial_free(held);
+        return;
+    }
+    if (INVALID_SOCK != mysql->client.sk.fd) {
+        size_t size;
+        void *quit = mysql_pack_quit(mysql, &size);
+        ev_send(&mysql->task->loader->netev, mysql->client.sk.fd, mysql->client.sk.skid, quit, size, 0);
+        coro_close(mysql->task, mysql->client.sk.fd, mysql->client.sk.skid, 0);
+    }
+    coro_serial_free(held);
+    _serial_unlock(held);
 }
-int32_t smtp_connect(task_ctx *task, smtp_ctx *smtp) {
+static int32_t _smtp_do_connect(task_ctx *task, smtp_ctx *smtp) {
     if (ERR_OK != smtp_try_connect(task, smtp, 1)) {
         return ERR_FAILED;
     }
@@ -356,6 +513,19 @@ int32_t smtp_connect(task_ctx *task, smtp_ctx *smtp) {
     }
     return err;
 }
+// 建 serial 与整段握手都在锁内,理由同 mysql_connect
+int32_t smtp_connect(task_ctx *task, smtp_ctx *smtp) {
+    if (NULL == smtp->serial) {
+        smtp->serial = coro_serial_new(task);
+    }
+    coro_serial_ctx *held = smtp->serial;
+    if (ERR_OK != _serial_lock(held)) {
+        return ERR_FAILED;
+    }
+    int32_t rtn = _smtp_do_connect(task, smtp);
+    _serial_unlock(held);
+    return rtn;
+}
 // 发送 SMTP QUIT 命令并等待响应（不关闭 socket）
 static void _smtp_quit(smtp_ctx *smtp) {
     char *cmd = smtp_pack_quit();
@@ -366,11 +536,29 @@ static void _smtp_quit(smtp_ctx *smtp) {
     smtp_check_code(pack, "221");
 }
 void smtp_quit(smtp_ctx *smtp) {
-    if (INVALID_SOCK == smtp->sk.fd) {
+    coro_serial_ctx *held = smtp->serial;
+    smtp->serial = NULL;
+    // 摘到 NULL 说明另一个协程已经把执行器拿走、正在销毁同一条连接。这里必须直接退:
+    // 再往下走会拿 _serial_lock(NULL) 的"无需串行化"放行,把一条 QUIT 无锁插进
+    // 那位或别人正在进行的邮件流里,随后的 coro_close 还会把对方半途的等待打断。
+    // 断连与回收都归先到的那一方,本次什么都不用做
+    if (NULL == held) {
         return;
     }
-    _smtp_quit(smtp);
-    coro_close(smtp->task, smtp->sk.fd, smtp->sk.skid, 0);
+    if (ERR_OK != _serial_lock(held)) {
+        // 只可能是不在协程内(held 非 NULL 就排除了"别人正在销毁")——而往下的 coro_close
+        // 内部要 mco_yield，同样得在协程里，硬走会撞断言。至少把执行器回收掉再退，
+        // socket 留给对端关或 task 关闭时兜底
+        coro_serial_free(held);
+        return;
+    }
+    if (INVALID_SOCK != smtp->sk.fd) {
+        _smtp_quit(smtp);
+        coro_close(smtp->task, smtp->sk.fd, smtp->sk.skid, 0);
+    }
+    // 持锁时 free 只标记不释放,真正回收落在紧随的 unlock
+    coro_serial_free(held);
+    _serial_unlock(held);
 }
 // 发送 SMTP NOOP 命令检测连接是否存活，失败返回 ERR_FAILED
 static int32_t _smtp_ping(smtp_ctx *smtp) {
@@ -382,11 +570,19 @@ static int32_t _smtp_ping(smtp_ctx *smtp) {
     return smtp_check_ok(pack);
 }
 int32_t smtp_ping(smtp_ctx *smtp) {
+    coro_serial_ctx *held = smtp->serial;
+    if (ERR_OK != _serial_lock(held)) {
+        return ERR_FAILED;
+    }
+    // 重连整段也在锁内：连接正在重建时别人不该往上发命令,而 fd/skid 换掉之后
+    // 排队者醒来拿到的自然是新连接
+    int32_t rtn = ERR_OK;
     if (ERR_OK != _smtp_ping(smtp)) {
         coro_close(smtp->task, smtp->sk.fd, smtp->sk.skid, 1);
-        return smtp_connect(smtp->task, smtp);
+        rtn = smtp_connect(smtp->task, smtp);
     }
-    return ERR_OK;
+    _serial_unlock(held);
+    return rtn;
 }
 // 执行 SMTP 邮件发送流程（MAIL FROM → RCPT TO → DATA → 正文）
 static int32_t _smtp_send(smtp_ctx *smtp, mail_ctx *mail) {
@@ -439,11 +635,18 @@ static int32_t _smtp_reset(smtp_ctx *smtp) {
     return smtp_check_ok(pack);
 }
 int32_t smtp_send(smtp_ctx *smtp, mail_ctx *mail) {
+    coro_serial_ctx *held = smtp->serial;
+    if (ERR_OK != _serial_lock(held)) {
+        return ERR_FAILED;
+    }
+    // 锁覆盖 _smtp_send + _smtp_reset 整段:RSET 清的是本次投递在服务端留下的会话状态,
+    // 与发送是同一笔事。分开各包一次的话,别人的 MAIL FROM 会挤在中间被我们的 RSET 清掉
     int32_t rtn = _smtp_send(smtp, mail);
     _smtp_reset(smtp);
+    _serial_unlock(held);
     return rtn;
 }
-int32_t pgsql_connect(task_ctx *task, pgsql_ctx *pg) {
+static int32_t _pgsql_do_connect(task_ctx *task, pgsql_ctx *pg) {
     if (ERR_OK != pgsql_try_connect(task, pg, 1)) {
         return ERR_FAILED;
     }
@@ -461,6 +664,19 @@ int32_t pgsql_connect(task_ctx *task, pgsql_ctx *pg) {
     }
     return code;
 }
+// 建 serial 与整段握手都在锁内,理由同 mysql_connect
+int32_t pgsql_connect(task_ctx *task, pgsql_ctx *pg) {
+    if (NULL == pg->serial) {
+        pg->serial = coro_serial_new(task);
+    }
+    coro_serial_ctx *held = pg->serial;
+    if (ERR_OK != _serial_lock(held)) {
+        return ERR_FAILED;
+    }
+    int32_t rtn = _pgsql_do_connect(task, pg);
+    _serial_unlock(held);
+    return rtn;
+}
 int32_t pgsql_cancel(pgsql_ctx *pg) {
     if (INVALID_SOCK == pg->sk.fd || 0 == pg->pid) {
         return ERR_FAILED;
@@ -477,7 +693,9 @@ int32_t pgsql_cancel(pgsql_ctx *pg) {
     ev_close(&pg->task->loader->netev, fd, skid, 0);
     return rtn;
 }
-void pgsql_quit(pgsql_ctx *pg) {
+// 断开连接但不动 serial：selectdb 靠断连重连来换库,那期间锁还在本协程手上,
+// 顺手把执行器销毁掉就把自己的锁毁了
+static void _pgsql_disconnect(pgsql_ctx *pg) {
     if (INVALID_SOCK == pg->sk.fd) {
         return;
     }
@@ -486,32 +704,71 @@ void pgsql_quit(pgsql_ctx *pg) {
     ev_send(&pg->task->loader->netev, pg->sk.fd, pg->sk.skid, quit, lens, 0);
     coro_close(pg->task, pg->sk.fd, pg->sk.skid, 0);
 }
+// 摘指针、包锁、推迟释放的道理同 mysql_quit，不重复
+void pgsql_quit(pgsql_ctx *pg) {
+    coro_serial_ctx *held = pg->serial;
+    pg->serial = NULL;
+    if (NULL == held) {
+        return;
+    }
+    if (ERR_OK != _serial_lock(held)) {
+        // 只可能是不在协程内(held 非 NULL 就排除了"别人正在销毁")——而往下的 coro_close
+        // 内部要 mco_yield，同样得在协程里，硬走会撞断言。至少把执行器回收掉再退，
+        // socket 留给对端关或 task 关闭时兜底
+        coro_serial_free(held);
+        return;
+    }
+    _pgsql_disconnect(pg);
+    coro_serial_free(held);
+    _serial_unlock(held);
+}
 int32_t pgsql_selectdb(pgsql_ctx *pg, const char *database) {
-    // 先校验再断连：库名超长时 set_db 保留旧名,若照旧先 quit 就白断一条可用连接,
-    // 还会用原库名重连成功、把切库失败报成功
-    if (ERR_OK != pgsql_set_db(pg, database)) {
+    // 换库整段在锁内(含 set_db)：它改的 pg->database 是连接级状态,搁在锁外的话拿不到锁那次
+    // 会留下"库名已换、连接还在旧库上",之后随便哪次 ping 重连就悄悄换了库
+    coro_serial_ctx *held = pg->serial;
+    if (ERR_OK != _serial_lock(held)) {
         return ERR_FAILED;
     }
-    pgsql_quit(pg);
-    return pgsql_connect(pg->task, pg);
-}
-int32_t pgsql_ping(pgsql_ctx *pg) {
-    pgpack_ctx *pgpack = pgsql_query(pg, ";");
-    if (NULL == pgpack) {
-        coro_close(pg->task, pg->sk.fd, pg->sk.skid, 1);
-        return pgsql_connect(pg->task, pg);
+    // 先校验再断连：库名超长时 set_db 保留旧名,若照旧先断就白断一条可用连接,
+    // 还会用原库名重连成功、把切库失败报成功
+    int32_t rtn = pgsql_set_db(pg, database);
+    if (ERR_OK == rtn) {
+        // fd/skid 换掉之后排队者醒来拿到的自然是新连接
+        _pgsql_disconnect(pg);
+        rtn = pgsql_connect(pg->task, pg);
     }
-    return ERR_OK;
+    _serial_unlock(held);
+    return rtn;
 }
-pgpack_ctx *pgsql_query(pgsql_ctx *pg, const char *sql) {
+// 一条 simple query：发出去等到 ReadyForQuery 才算一次完整往返
+static pgpack_ctx *_pgsql_query(pgsql_ctx *pg, const char *sql) {
     size_t lens;
     void *query = pgsql_pack_query(sql, &lens);
     return coro_send(pg->task, pg->sk.fd, pg->sk.skid, query, lens, NULL, 0);
 }
-int32_t pgsql_stmt_prepare(pgsql_ctx *pg, const char *name, const char *sql, int16_t nparam, uint32_t *oids) {
-    if (EMPTYSTR(sql)) {
+int32_t pgsql_ping(pgsql_ctx *pg) {
+    coro_serial_ctx *held = pg->serial;
+    if (ERR_OK != _serial_lock(held)) {
         return ERR_FAILED;
     }
+    int32_t rtn = ERR_OK;
+    if (NULL == _pgsql_query(pg, ";")) {
+        coro_close(pg->task, pg->sk.fd, pg->sk.skid, 1);
+        rtn = pgsql_connect(pg->task, pg);
+    }
+    _serial_unlock(held);
+    return rtn;
+}
+pgpack_ctx *pgsql_query(pgsql_ctx *pg, const char *sql) {
+    coro_serial_ctx *held = pg->serial;
+    if (ERR_OK != _serial_lock(held)) {
+        return NULL;
+    }
+    pgpack_ctx *rtn = _pgsql_query(pg, sql);
+    _serial_unlock(held);
+    return rtn;
+}
+static int32_t _pgsql_stmt_prepare(pgsql_ctx *pg, const char *name, const char *sql, int16_t nparam, uint32_t *oids) {
     size_t lens;
     void *parse = pgsql_pack_stmt_prepare(name, sql, nparam, oids, &lens);
     pgpack_ctx *pgpack = coro_send(pg->task, pg->sk.fd, pg->sk.skid, parse, lens, NULL, 0);
@@ -524,17 +781,40 @@ int32_t pgsql_stmt_prepare(pgsql_ctx *pg, const char *name, const char *sql, int
     }
     return PGPACK_OK == pgpack->type ? ERR_OK : ERR_FAILED;
 }
+int32_t pgsql_stmt_prepare(pgsql_ctx *pg, const char *name, const char *sql, int16_t nparam, uint32_t *oids) {
+    if (EMPTYSTR(sql)) {
+        return ERR_FAILED;
+    }
+    coro_serial_ctx *held = pg->serial;
+    if (ERR_OK != _serial_lock(held)) {
+        return ERR_FAILED;
+    }
+    int32_t rtn = _pgsql_stmt_prepare(pg, name, sql, nparam, oids);
+    _serial_unlock(held);
+    return rtn;
+}
 pgpack_ctx *pgsql_stmt_execute(pgsql_ctx *pg, const char *name, pgsql_bind_ctx *bind, pgpack_format resultformat) {
+    coro_serial_ctx *held = pg->serial;
+    if (ERR_OK != _serial_lock(held)) {
+        return NULL;
+    }
     size_t lens;
     void *exec = pgsql_pack_stmt_execute(name, bind, resultformat, &lens);
-    return coro_send(pg->task, pg->sk.fd, pg->sk.skid, exec, lens, NULL, 0);
+    pgpack_ctx *rtn = coro_send(pg->task, pg->sk.fd, pg->sk.skid, exec, lens, NULL, 0);
+    _serial_unlock(held);
+    return rtn;
 }
 void pgsql_stmt_close(pgsql_ctx *pg, const char *name) {
+    coro_serial_ctx *held = pg->serial;
+    if (ERR_OK != _serial_lock(held)) {
+        return;// Close 也要等 CloseComplete,拿不到锁就别发,服务端那份随连接关闭一并回收
+    }
     size_t lens;
     void *close = pgsql_pack_stmt_close(name, &lens);
     coro_send(pg->task, pg->sk.fd, pg->sk.skid, close, lens, NULL, 0);
+    _serial_unlock(held);
 }
-pgpack_ctx *pgsql_copy_in(pgsql_ctx *pg, const char *sql, const void *data, size_t lens) {
+static pgpack_ctx *_pgsql_copy_in(pgsql_ctx *pg, const char *sql, const void *data, size_t lens) {
     // 第一步：发送 COPY SQL，等待服务端返回 CopyInResponse（PGPACK_COPY_IN）
     size_t qsize;
     void *query = pgsql_pack_query(sql, &qsize);
@@ -556,26 +836,73 @@ pgpack_ctx *pgsql_copy_in(pgsql_ctx *pg, const char *sql, const void *data, size
     FREE(copy_done);
     return coro_send(pg->task, pg->sk.fd, pg->sk.skid, bwriter.data, bwriter.offset, NULL, 0);
 }
+pgpack_ctx *pgsql_copy_in(pgsql_ctx *pg, const char *sql, const void *data, size_t lens) {
+    // 本函数是两次往返:服务端进 COPY IN 模式后,在 CopyDone 之前它只认 CopyData/CopyFail,
+    // 中间插进别人一条普通查询就整条连接报错。锁必须覆盖两次往返,不能各自包一次
+    coro_serial_ctx *held = pg->serial;
+    if (ERR_OK != _serial_lock(held)) {
+        return NULL;
+    }
+    pgpack_ctx *rtn = _pgsql_copy_in(pg, sql, data, lens);
+    _serial_unlock(held);
+    return rtn;
+}
 pgpack_ctx *pgsql_copy_out(pgsql_ctx *pg, const char *sql) {
+    coro_serial_ctx *held = pg->serial;
+    if (ERR_OK != _serial_lock(held)) {
+        return NULL;
+    }
     // 发送 COPY SQL，解析器在收到所有 CopyData + CopyDone 后于 ReadyForQuery 时返回累积结果
     size_t qsize;
     void *query = pgsql_pack_query(sql, &qsize);
-    return coro_send(pg->task, pg->sk.fd, pg->sk.skid, query, qsize, NULL, 0);
+    pgpack_ctx *rtn = coro_send(pg->task, pg->sk.fd, pg->sk.skid, query, qsize, NULL, 0);
+    _serial_unlock(held);
+    return rtn;
 }
 // 事务会话的绑定不能跨连接存活：新连接一建立就解绑，之后组包侧的 TRANSACTION_OPTIONS 才不会
 // 把上一代的 lsid/txnNumber 附到 hello 及后续命令上。
 // 清在这里而不是断开时的 _mongo_udfree：那个回调跑在网络线程，而组包侧是在属主线程上
 // 判 mongo->session 非空后解引用它的 options/started，跨线程置空会让那两步之间读到 NULL。
 // 放在连接入口还顺带覆盖"在一条仍打开的连接上重入 connect"——那种情况根本不会触发 udfree
-int32_t mongo_connect(task_ctx *task, mongo_ctx *mongo) {
+static int32_t _mongo_do_connect(task_ctx *task, mongo_ctx *mongo) {
     if (ERR_OK != mongo_try_connect(task, mongo, 1)) {
         return ERR_FAILED;
     }
     mongo_clear_session(mongo);
     return coro_wait_connect(task, mongo->sk.fd, mongo->sk.skid, mongo->evssl);
 }
+// 建 serial 与整段握手都在锁内,理由同 mysql_connect
+int32_t mongo_connect(task_ctx *task, mongo_ctx *mongo) {
+    if (NULL == mongo->serial) {
+        mongo->serial = coro_serial_new(task);
+    }
+    coro_serial_ctx *held = mongo->serial;
+    if (ERR_OK != _serial_lock(held)) {
+        return ERR_FAILED;
+    }
+    int32_t rtn = _mongo_do_connect(task, mongo);
+    _serial_unlock(held);
+    return rtn;
+}
+// 摘指针、包锁、推迟释放的道理同 mysql_quit，不重复。
+// mongo 没有 QUIT 命令，只有断连，所以拿不拿得到锁都照断——加锁是为了别把
+// 别人半途的等待拦腰打断
 void mongo_quit(mongo_ctx *mongo) {
+    coro_serial_ctx *held = mongo->serial;
+    mongo->serial = NULL;
+    if (NULL == held) {
+        return;
+    }
+    if (ERR_OK != _serial_lock(held)) {
+        // 只可能是不在协程内(held 非 NULL 就排除了"别人正在销毁")——而往下的 coro_close
+        // 内部要 mco_yield，同样得在协程里，硬走会撞断言。至少把执行器回收掉再退，
+        // socket 留给对端关或 task 关闭时兜底
+        coro_serial_free(held);
+        return;
+    }
     coro_close(mongo->task, mongo->sk.fd, mongo->sk.skid, 0);
+    coro_serial_free(held);
+    _serial_unlock(held);
 }
 // 执行 MongoDB SCRAM 认证流程（发送 client-first 消息并等待握手结果）
 static int32_t _mongo_auth(mongo_ctx *mongo, const char *authmod) {
@@ -598,6 +925,12 @@ static int32_t _mongo_auth(mongo_ctx *mongo, const char *authmod) {
     return err;
 }
 int32_t mongo_auth(mongo_ctx *mongo, const char *authmod, const char *user, const char *pwd) {
+    // _mongo_auth 绕开两个漏斗(直接 ev_send + coro_handshaked 走协议层的 SCRAM 状态机),
+    // 锁只能加在这里；期间连接处于 AUTH 态,别人的普通命令挤进来会被当成认证响应解析
+    coro_serial_ctx *held = mongo->serial;
+    if (ERR_OK != _serial_lock(held)) {
+        return ERR_FAILED;
+    }
     int32_t flags = mongo_clear_flag(mongo);
     int32_t rtn = mongo_user_pwd(mongo, user, pwd);
     if (ERR_OK == rtn) {
@@ -605,17 +938,28 @@ int32_t mongo_auth(mongo_ctx *mongo, const char *authmod, const char *user, cons
         rtn = _mongo_auth(mongo, authmod);
     }
     mongo_set_flag(mongo, flags);
+    _serial_unlock(held);
     return rtn;
 }
 // 统一"组包判空 + 发送 + 同步等待响应"(不受 MORETOCOME 影响,总是等待),不校验命令级错误:
 // 调用方各有各的用法——count 要 n 值、startsession 要 session、commit/rollback 要凭"服务端
 // 是否有响应"决定清不清事务状态。pack 为 NULL(组包被拒)在此一并吸收,与网络失败同样返回 NULL,
-// 两者的处置在全部调用方那里恰好相同。对应 Lua 侧 mongo.lua 的 _rsend
+// 两者的处置在全部调用方那里恰好相同。对应 Lua 侧 mongo.lua 的 _rsend。
+// 串行化也落在这里(与 _mongo_send 两处覆盖全部命令站点):各命令函数在 sendwait 之后只做纯解析,
+// 不再有 I/O,所以锁到本函数为止与锁整个命令函数等效。mongo_auth / mongo_ping 另有外层锁,
+// 它们走多次往返或绕开本漏斗,靠 ref 计数嵌套
 static mgopack_ctx *_mongo_sendwait(mongo_ctx *mongo, void *pack, size_t lens) {
     if (NULL == pack) {
         return NULL;
     }
-    return coro_send(mongo->task, mongo->sk.fd, mongo->sk.skid, pack, lens, NULL, 0);
+    coro_serial_ctx *held = mongo->serial;
+    if (ERR_OK != _serial_lock(held)) {
+        FREE(pack);
+        return NULL;
+    }
+    mgopack_ctx *rtn = coro_send(mongo->task, mongo->sk.fd, mongo->sk.skid, pack, lens, NULL, 0);
+    _serial_unlock(held);
+    return rtn;
 }
 // 在 _mongo_sendwait 之上加命令级错误校验(服务端原因由 mongo_parse_check_error 打印);
 // 成功返回 mgopack,失败返回 NULL
@@ -629,10 +973,10 @@ static mgopack_ctx *_mongo_call(mongo_ctx *mongo, void *pack, size_t lens) {
     }
     return mgpack;
 }
-mgopack_ctx *mongo_hello(mongo_ctx *mongo, char *options) {
+mgopack_ctx *mongo_hello(mongo_ctx *mongo, char *options, size_t optlens) {
     int32_t flags = mongo_clear_flag(mongo);
     size_t lens;
-    void *hello = mongo_pack_hello(mongo, options, &lens);
+    void *hello = mongo_pack_hello(mongo, options, optlens, &lens);
     mongo_set_flag(mongo, flags);
     return _mongo_call(mongo, hello, lens);
 }
@@ -644,46 +988,57 @@ static int32_t _mongo_ping(mongo_ctx *mongo) {
     return NULL == _mongo_call(mongo, ping, lens) ? ERR_FAILED : ERR_OK;
 }
 int32_t mongo_ping(mongo_ctx *mongo) {
+    // 重连 + hello + re-auth 整段在锁内:这几步是一笔不可分的重建,别人的命令插在中间
+    // 会打在半成品连接上。内层的 _mongo_ping / mongo_hello 走漏斗,按 ref 计数嵌套
+    coro_serial_ctx *held = mongo->serial;
+    if (ERR_OK != _serial_lock(held)) {
+        return ERR_FAILED;
+    }
+    int32_t rtn = ERR_OK;
     if (ERR_OK != _mongo_ping(mongo)) {
         coro_close(mongo->task, mongo->sk.fd, mongo->sk.skid, 1);
         if (ERR_OK != mongo_connect(mongo->task, mongo)) {
-            return ERR_FAILED;
-        }
-        if (NULL == mongo_hello(mongo, NULL)) {
-            return ERR_FAILED;
-        }
-        if (0 != mongo->user[0]) {
+            rtn = ERR_FAILED;
+        } else if (NULL == mongo_hello(mongo, NULL, 0)) {
+            rtn = ERR_FAILED;
+        } else if (0 != mongo->user[0]) {
             int32_t flags = mongo_clear_flag(mongo);
-            int32_t rtn = _mongo_auth(mongo, mongo->authmod);// 不使用mongo_auth，它里面有psw user赋值
+            rtn = _mongo_auth(mongo, mongo->authmod);// 不使用mongo_auth，它里面有psw user赋值
             mongo_set_flag(mongo, flags);
-            return rtn;
         }
-        return ERR_OK;
     }
-    return ERR_OK;
+    _serial_unlock(held);
+    return rtn;
 }
 // MongoDB 统一发送函数：设置了 MORETOCOME 标志时仅发送不等待响应，否则同步等待响应。
 // pack 为 NULL(组包被拒)在此一并吸收,语义同 _mongo_call
-static inline int32_t _mongo_send(mongo_ctx *mongo, void *pack, size_t lens, mgopack_ctx **mgopack) {
+// MORETOCOME 变体:置位时只发不等。同样在锁内发——不等响应也不能乱序,
+// 后面那条 find 得看得见前面这批 insert
+static int32_t _mongo_send(mongo_ctx *mongo, void *pack, size_t lens, mgopack_ctx **mgopack) {
     if (NULL == pack) {
         return ERR_FAILED;
     }
-    if (mongo_check_flag(mongo, MORETOCOME)) {
-        if (ERR_OK != ev_send(&mongo->task->loader->netev, mongo->sk.fd, mongo->sk.skid, pack, lens, 0)) {
-            return ERR_FAILED;
-        }
-        return ERR_OK;
-    }
-    mgopack_ctx *rtnpack = coro_send(mongo->task, mongo->sk.fd, mongo->sk.skid, pack, lens, NULL, 0);
-    if (NULL == rtnpack) {
+    coro_serial_ctx *held = mongo->serial;
+    if (ERR_OK != _serial_lock(held)) {
+        FREE(pack);
         return ERR_FAILED;
     }
-    SET_PTR(mgopack, rtnpack);
-    return ERR_OK;
+    int32_t rtn = ERR_FAILED;
+    if (mongo_check_flag(mongo, MORETOCOME)) {
+        rtn = ev_send(&mongo->task->loader->netev, mongo->sk.fd, mongo->sk.skid, pack, lens, 0);
+    } else {
+        mgopack_ctx *rtnpack = coro_send(mongo->task, mongo->sk.fd, mongo->sk.skid, pack, lens, NULL, 0);
+        if (NULL != rtnpack) {
+            SET_PTR(mgopack, rtnpack);
+            rtn = ERR_OK;
+        }
+    }
+    _serial_unlock(held);
+    return rtn;
 }
-int32_t mongo_drop(mongo_ctx *mongo, char *options) {
+int32_t mongo_drop(mongo_ctx *mongo, char *options, size_t optlens) {
     size_t lens;
-    void *drop = mongo_pack_drop(mongo, options, &lens);
+    void *drop = mongo_pack_drop(mongo, options, optlens, &lens);
     mgopack_ctx *mgpack = NULL;
     if (ERR_OK != _mongo_send(mongo, drop, lens, &mgpack)) {
         return ERR_FAILED;
@@ -696,9 +1051,9 @@ int32_t mongo_drop(mongo_ctx *mongo, char *options) {
     }
     return ERR_OK;
 }
-int32_t mongo_insert(mongo_ctx *mongo, char *docs, size_t dlens, char *options) {
+int32_t mongo_insert(mongo_ctx *mongo, char *docs, size_t dlens, char *options, size_t optlens) {
     size_t lens;
-    void *insert = mongo_pack_insert(mongo, docs, dlens, options, &lens);
+    void *insert = mongo_pack_insert(mongo, docs, dlens, options, optlens, &lens);
     mgopack_ctx *mgpack = NULL;
     if (ERR_OK != _mongo_send(mongo, insert, lens, &mgpack)) {
         return ERR_FAILED;
@@ -708,9 +1063,9 @@ int32_t mongo_insert(mongo_ctx *mongo, char *docs, size_t dlens, char *options) 
     }
     return mongo_parse_check_error(mgpack);
 }
-int32_t mongo_update(mongo_ctx *mongo, char *updates, size_t ulens, char *options) {
+int32_t mongo_update(mongo_ctx *mongo, char *updates, size_t ulens, char *options, size_t optlens) {
     size_t lens;
-    void *update = mongo_pack_update(mongo, updates, ulens, options, &lens);
+    void *update = mongo_pack_update(mongo, updates, ulens, options, optlens, &lens);
     mgopack_ctx *mgpack = NULL;
     if (ERR_OK != _mongo_send(mongo, update, lens, &mgpack)) {
         return ERR_FAILED;
@@ -720,9 +1075,9 @@ int32_t mongo_update(mongo_ctx *mongo, char *updates, size_t ulens, char *option
     }
     return mongo_parse_check_error(mgpack);
 }
-int32_t mongo_delete(mongo_ctx *mongo, char *deletes, size_t dlens, char *options) {
+int32_t mongo_delete(mongo_ctx *mongo, char *deletes, size_t dlens, char *options, size_t optlens) {
     size_t lens;
-    void *del = mongo_pack_delete(mongo, deletes, dlens, options, &lens);
+    void *del = mongo_pack_delete(mongo, deletes, dlens, options, optlens, &lens);
     mgopack_ctx *mgpack = NULL;
     if (ERR_OK != _mongo_send(mongo, del, lens, &mgpack)) {
         return ERR_FAILED;
@@ -732,9 +1087,9 @@ int32_t mongo_delete(mongo_ctx *mongo, char *deletes, size_t dlens, char *option
     }
     return mongo_parse_check_error(mgpack);
 }
-mgopack_ctx *mongo_bulkwrite(mongo_ctx *mongo, char *ops, size_t olens, char *nsinfo, size_t nlens, char *options) {
+mgopack_ctx *mongo_bulkwrite(mongo_ctx *mongo, char *ops, size_t olens, char *nsinfo, size_t nlens, char *options, size_t optlens) {
     size_t lens;
-    void *bulkwrite = mongo_pack_bulkwrite(mongo, ops, olens, nsinfo, nlens, options, &lens);
+    void *bulkwrite = mongo_pack_bulkwrite(mongo, ops, olens, nsinfo, nlens, options, optlens, &lens);
     mgopack_ctx *mgpack = NULL;
     if (ERR_OK != _mongo_send(mongo, bulkwrite, lens, &mgpack)) {
         return NULL;
@@ -747,30 +1102,30 @@ mgopack_ctx *mongo_bulkwrite(mongo_ctx *mongo, char *ops, size_t olens, char *ns
     }
     return mgpack;
 }
-mgopack_ctx *mongo_find(mongo_ctx *mongo, char *filter, size_t flens, char *options) {
+mgopack_ctx *mongo_find(mongo_ctx *mongo, char *filter, size_t flens, char *options, size_t optlens) {
     int32_t flags = mongo_clear_flag(mongo);
     size_t lens;
-    void *find = mongo_pack_find(mongo, filter, flens, options, &lens);
+    void *find = mongo_pack_find(mongo, filter, flens, options, optlens, &lens);
     mongo_set_flag(mongo, flags);
     return _mongo_call(mongo, find, lens);
 }
-mgopack_ctx *mongo_aggregate(mongo_ctx *mongo, char *pipeline, size_t pllens, char *options) {
+mgopack_ctx *mongo_aggregate(mongo_ctx *mongo, char *pipeline, size_t pllens, char *options, size_t optlens) {
     int32_t flags = mongo_clear_flag(mongo);
     size_t lens;
-    void *aggt = mongo_pack_aggregate(mongo, pipeline, pllens, options, &lens);
+    void *aggt = mongo_pack_aggregate(mongo, pipeline, pllens, options, optlens, &lens);
     mongo_set_flag(mongo, flags);
     return _mongo_call(mongo, aggt, lens);
 }
-mgopack_ctx *mongo_getmore(mongo_ctx *mongo, int64_t cursorid, char *options) {
+mgopack_ctx *mongo_getmore(mongo_ctx *mongo, int64_t cursorid, char *options, size_t optlens) {
     int32_t flags = mongo_clear_flag(mongo);
     size_t lens;
-    void *getmore = mongo_pack_getmore(mongo, cursorid, options, &lens);
+    void *getmore = mongo_pack_getmore(mongo, cursorid, options, optlens, &lens);
     mongo_set_flag(mongo, flags);
     return _mongo_call(mongo, getmore, lens);
 }
-mgopack_ctx *mongo_killcursors(mongo_ctx *mongo, char *cursorids, size_t cslens, char *options) {
+mgopack_ctx *mongo_killcursors(mongo_ctx *mongo, char *cursorids, size_t cslens, char *options, size_t optlens) {
     size_t lens;
-    void *killcursors = mongo_pack_killcursors(mongo, cursorids, cslens, options, &lens);
+    void *killcursors = mongo_pack_killcursors(mongo, cursorids, cslens, options, optlens, &lens);
     mgopack_ctx *mgpack = NULL;
     if (ERR_OK != _mongo_send(mongo, killcursors, lens, &mgpack)) {
         return NULL;
@@ -783,25 +1138,25 @@ mgopack_ctx *mongo_killcursors(mongo_ctx *mongo, char *cursorids, size_t cslens,
     }
     return mgpack;
 }
-mgopack_ctx *mongo_distinct(mongo_ctx *mongo, const char *key, char *query, size_t qlens, char *options) {
+mgopack_ctx *mongo_distinct(mongo_ctx *mongo, const char *key, char *query, size_t qlens, char *options, size_t optlens) {
     int32_t flags = mongo_clear_flag(mongo);
     size_t lens;
-    void *distinct = mongo_pack_distinct(mongo, key, query, qlens, options, &lens);
+    void *distinct = mongo_pack_distinct(mongo, key, query, qlens, options, optlens, &lens);
     mongo_set_flag(mongo, flags);
     return _mongo_call(mongo, distinct, lens);
 }
 mgopack_ctx *mongo_findandmodify(mongo_ctx *mongo, char *query, size_t qlens,
-    int32_t remove, int32_t pipeline, char *update, size_t ulens, char *options) {
+    int32_t remove, int32_t pipeline, char *update, size_t ulens, char *options, size_t optlens) {
     int32_t flags = mongo_clear_flag(mongo);
     size_t lens;
-    void *findandmodify = mongo_pack_findandmodify(mongo, query, qlens, remove, pipeline, update, ulens, options, &lens);
+    void *findandmodify = mongo_pack_findandmodify(mongo, query, qlens, remove, pipeline, update, ulens, options, optlens, &lens);
     mongo_set_flag(mongo, flags);
     return _mongo_call(mongo, findandmodify, lens);
 }
-int32_t mongo_count(mongo_ctx *mongo, char *query, size_t qlens, char *options) {
+int32_t mongo_count(mongo_ctx *mongo, char *query, size_t qlens, char *options, size_t optlens) {
     int32_t flags = mongo_clear_flag(mongo);
     size_t lens;
-    void *count = mongo_pack_count(mongo, query, qlens, options, &lens);
+    void *count = mongo_pack_count(mongo, query, qlens, options, optlens, &lens);
     mongo_set_flag(mongo, flags);
     mgopack_ctx *mgpack = _mongo_sendwait(mongo, count, lens);
     if (NULL == mgpack) {
@@ -809,9 +1164,9 @@ int32_t mongo_count(mongo_ctx *mongo, char *query, size_t qlens, char *options) 
     }
     return mongo_parse_check_error(mgpack);
 }
-int32_t mongo_createindexes(mongo_ctx *mongo, char *indexes, size_t ilens, char *options) {
+int32_t mongo_createindexes(mongo_ctx *mongo, char *indexes, size_t ilens, char *options, size_t optlens) {
     size_t lens;
-    void *createindexes = mongo_pack_createindexes(mongo, indexes, ilens, options, &lens);
+    void *createindexes = mongo_pack_createindexes(mongo, indexes, ilens, options, optlens, &lens);
     mgopack_ctx *mgpack = NULL;
     if (ERR_OK != _mongo_send(mongo, createindexes, lens, &mgpack)) {
         return ERR_FAILED;
@@ -824,9 +1179,9 @@ int32_t mongo_createindexes(mongo_ctx *mongo, char *indexes, size_t ilens, char 
     }
     return ERR_OK;
 }
-int32_t mongo_dropindexes(mongo_ctx *mongo, char *indexes, size_t ilens, char *options) {
+int32_t mongo_dropindexes(mongo_ctx *mongo, char *indexes, size_t ilens, char *options, size_t optlens) {
     size_t lens;
-    void *dropindexes = mongo_pack_dropindexes(mongo, indexes, ilens, options, &lens);
+    void *dropindexes = mongo_pack_dropindexes(mongo, indexes, ilens, options, optlens, &lens);
     mgopack_ctx *mgpack = NULL;
     if (ERR_OK != _mongo_send(mongo, dropindexes, lens, &mgpack)) {
         return ERR_FAILED;
@@ -901,11 +1256,11 @@ int32_t mongo_begin(mongo_session *session) {
     session->txnnumber++;
     session->started = 0;
     FREE(session->options);//防止重复调用漏释放
-    session->options = mongo_transaction_options(session);
+    session->options = mongo_transaction_options(session, &session->optionslens);
     mongo->session = session;
     return ERR_OK;
 }
-int32_t mongo_commit(mongo_session *session, char *options) {
+int32_t mongo_commit(mongo_session *session, char *options, size_t optlens) {
     mongo_ctx *mongo = session->mongo;
     if (mongo->session != session) {
         LOG_WARN("mongo connection no longer bound to this session, commit rejected.");
@@ -913,7 +1268,7 @@ int32_t mongo_commit(mongo_session *session, char *options) {
     }
     int32_t flags = mongo_clear_flag(mongo);
     size_t lens;
-    void *committransaction = mongo_pack_committransaction(session, options, &lens);
+    void *committransaction = mongo_pack_committransaction(session, options, optlens, &lens);
     mongo_set_flag(mongo, flags);
     mgopack_ctx *mgpack = _mongo_sendwait(mongo, committransaction, lens);
     if (NULL == mgpack) {
@@ -927,7 +1282,7 @@ int32_t mongo_commit(mongo_session *session, char *options) {
     session->timeout = nowsec() + session->timeoutmin * 60;
     return ERR_OK;
 }
-int32_t mongo_rollback(mongo_session *session, char *options) {
+int32_t mongo_rollback(mongo_session *session, char *options, size_t optlens) {
     mongo_ctx *mongo = session->mongo;
     if (mongo->session != session) {
         LOG_WARN("mongo connection no longer bound to this session, rollback rejected.");
@@ -935,7 +1290,7 @@ int32_t mongo_rollback(mongo_session *session, char *options) {
     }
     int32_t flags = mongo_clear_flag(mongo);
     size_t lens;
-    void *aborttransaction = mongo_pack_aborttransaction(session, options, &lens);
+    void *aborttransaction = mongo_pack_aborttransaction(session, options, optlens, &lens);
     mongo_set_flag(mongo, flags);
     mgopack_ctx *mgpack = _mongo_sendwait(mongo, aborttransaction, lens);
     if (NULL == mgpack) {

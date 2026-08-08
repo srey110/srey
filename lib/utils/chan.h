@@ -16,6 +16,14 @@ chan_ctx *chan_init(uint32_t capacity);
 /// <summary>
 /// 释放。buffered chan 须在调用前排空(反复 chan_recv 取尽残留并自行释放 copy=1 堆数据):
 /// chan_free 不析构队列残留元素,未消费的 copy=1 元素会泄漏。
+///
+/// 调用方契约:调用时不得有任何线程还停在 chan_send / chan_recv 里。
+/// 正确收尾是 chan_close 之后 thread_join 掉所有收发线程,确认它们真的返回了再 free——
+/// 光 close 不够,被 broadcast 唤醒的线程还要重新抢 m_mu 才能走完各自的函数。
+/// 违反的后果不是报错而是直接踩内存:销毁尚有等待者的条件变量本身是未定义行为,
+/// 且 FREE(chan) 之后醒来的线程会去访问已释放的 chan。
+/// 函数内按 r_waiting / w_waiting 断言了这一条,但那只是拦住"忘了 join"这类静态错误——
+/// 真正并发地一边收发一边 free,断言也来不及拦
 /// </summary>
 /// <param name="chan">chan_ctx</param>
 void chan_free(chan_ctx *chan);

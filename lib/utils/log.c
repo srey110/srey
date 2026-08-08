@@ -48,21 +48,21 @@ static void _log_write_item(const log_item *item) {
         case LOGLV_ERROR:
             if (NULL != _console) {
                 SetConsoleTextAttribute(_console, 0xc);
-                fprintf(stdout, LOG_FMT, item->time, _log_lvstr(item->lv), item->msg);
-                fflush(stdout);
+            }
+            fprintf(stdout, LOG_FMT, item->time, _log_lvstr(item->lv), item->msg);
+            fflush(stdout);
+            if (NULL != _console) {
                 SetConsoleTextAttribute(_console, _def_console.wAttributes);
-            } else {
-                fprintf(stdout, LOG_FMT, item->time, _log_lvstr(item->lv), item->msg);
             }
             break;
         case LOGLV_WARN:
             if (NULL != _console) {
                 SetConsoleTextAttribute(_console, 0x6);
-                fprintf(stdout, LOG_FMT, item->time, _log_lvstr(item->lv), item->msg);
-                fflush(stdout);
+            }
+            fprintf(stdout, LOG_FMT, item->time, _log_lvstr(item->lv), item->msg);
+            fflush(stdout);
+            if (NULL != _console) {
                 SetConsoleTextAttribute(_console, _def_console.wAttributes);
-            } else {
-                fprintf(stdout, LOG_FMT, item->time, _log_lvstr(item->lv), item->msg);
             }
             break;
         default:
@@ -159,7 +159,7 @@ void log_init(FILE *file, uint32_t capacity) {
 #endif
     uint32_t cap = 0 == capacity ? 4 * ONEK : capacity;
     fsqu_init(&_que, sizeof(log_item *), cap);
-    el_cbs _logitem_cbs = { NULL, NULL, NULL, _log_item_clear };
+    pool_cbs _logitem_cbs = { NULL, NULL, NULL, _log_item_clear };
     pool_init(&_itempool, sizeof(log_item), cap, cap / 4, 1, &_logitem_cbs);
     mutex_init(&_mtx);
     cond_init(&_cond);

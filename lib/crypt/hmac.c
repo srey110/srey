@@ -59,10 +59,14 @@ size_t hmac_size(hmac_ctx *hmac) {
 void hmac_update(hmac_ctx *hmac, const void *data, size_t lens) {
     digest_update(&hmac->inside, data, lens);
 }
+// digest_final 只把两个 digest 复位到算法 IV，而 HMAC 要的是 ipad/opad 吸收之后的状态,
+// 少这一步则第二次 final 变成"无密钥"的摘要，对任何密钥都得到同一个常量
 size_t hmac_final(hmac_ctx *hmac, char *hash) {
     size_t lens = digest_final(&hmac->inside, hash);
     digest_update(&hmac->outside, hash, lens);
-    return digest_final(&hmac->outside, hash);
+    lens = digest_final(&hmac->outside, hash);
+    hmac_reset(hmac);
+    return lens;
 }
 void hmac_reset(hmac_ctx *hmac) {
     memcpy(&hmac->inside.eng_ctx, &hmac->inside_init.eng_ctx, sizeof(hmac->inside_init.eng_ctx));

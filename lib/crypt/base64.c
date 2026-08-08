@@ -68,6 +68,7 @@ size_t bs64_decode(const char *data, const size_t lens, char *out) {
                 if ('=' != data[k]
                     && '\r' != data[k]
                     && '\n' != data[k]) {
+                    out[0] = '\0';
                     return 0;
                 }
             }
@@ -76,6 +77,7 @@ size_t bs64_decode(const char *data, const size_t lens, char *out) {
         if (data[i] < '+'
             || data[i] > 'z'
             || (c = b64de[data[i] - '+']) == -1) {
+            out[0] = '\0';
             return 0;
         }
         block[n++] = (uint32_t)c;
@@ -89,6 +91,7 @@ size_t bs64_decode(const char *data, const size_t lens, char *out) {
     // 尾组（无填充或 '=' 提前结束）：2 字符→1 字节，3 字符→2 字节；单字符无法构成字节，非法
     switch (n) {
     case 1:
+        out[0] = '\0';
         return 0;
     case 2:
         out[j++] = ((block[0] << 2) | (block[1] >> 4)) & 0xFF;

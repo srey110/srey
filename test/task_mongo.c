@@ -58,12 +58,12 @@ static int32_t _crud_flow(mongo_ctx *mongo) {
     mongo_collection(mongo, "srey_test");
 
     // drop 已存在的集合（忽略错误，集合可能不存在）
-    mongo_drop(mongo, NULL);
+    mongo_drop(mongo, NULL, 0);
 
     // insert 3 文档
     bson_ctx docs;
     _build_docs_array(&docs);
-    int32_t rtn = mongo_insert(mongo, BSON_DOC(&docs), BSON_DOC_LENS(&docs), NULL);
+    int32_t rtn = mongo_insert(mongo, BSON_DOC(&docs), BSON_DOC_LENS(&docs), NULL, 0);
     BSON_FREE(&docs);
     if (rtn < 0) {
         LOG_ERROR("mongo insert error.");
@@ -77,7 +77,7 @@ static int32_t _crud_flow(mongo_ctx *mongo) {
     // find（filter 为空文档表示返回所有）
     bson_ctx empty;
     _build_empty_doc(&empty);
-    mgopack_ctx *p = mongo_find(mongo, BSON_DOC(&empty), BSON_DOC_LENS(&empty), NULL);
+    mgopack_ctx *p = mongo_find(mongo, BSON_DOC(&empty), BSON_DOC_LENS(&empty), NULL, 0);
     if (NULL == p) {
         LOG_ERROR("mongo find error.");
         BSON_FREE(&empty);
@@ -88,7 +88,7 @@ static int32_t _crud_flow(mongo_ctx *mongo) {
     // count
     bson_ctx empty2;
     _build_empty_doc(&empty2);
-    int32_t cnt = mongo_count(mongo, BSON_DOC(&empty2), BSON_DOC_LENS(&empty2), NULL);
+    int32_t cnt = mongo_count(mongo, BSON_DOC(&empty2), BSON_DOC_LENS(&empty2), NULL, 0);
     BSON_FREE(&empty2);
     if (cnt < 0) {
         LOG_ERROR("mongo count error.");
@@ -102,7 +102,7 @@ static int32_t _crud_flow(mongo_ctx *mongo) {
     // update：将 id=1 的 score 改为 100
     bson_ctx updates;
     _build_updates_array(&updates);
-    rtn = mongo_update(mongo, BSON_DOC(&updates), BSON_DOC_LENS(&updates), NULL);
+    rtn = mongo_update(mongo, BSON_DOC(&updates), BSON_DOC_LENS(&updates), NULL, 0);
     BSON_FREE(&updates);
     if (rtn < 0) {
         LOG_ERROR("mongo update error.");
@@ -118,7 +118,7 @@ static int32_t _crud_flow(mongo_ctx *mongo) {
 // 用同一 _id 重复插入触发 E11000，校验 wire 上的 writeErrors 解析路径
 static int32_t _duplicate_key_error(mongo_ctx *mongo) {
     mongo_collection(mongo, "srey_test_dup");
-    mongo_drop(mongo, NULL);
+    mongo_drop(mongo, NULL, 0);
 
     bson_ctx docs;
     bson_init(&docs, NULL, 0);
@@ -127,7 +127,7 @@ static int32_t _duplicate_key_error(mongo_ctx *mongo) {
     bson_append_utf8(&docs, "name", "first");
     bson_append_end(&docs);
     bson_append_end(&docs);
-    int32_t rtn = mongo_insert(mongo, BSON_DOC(&docs), BSON_DOC_LENS(&docs), NULL);
+    int32_t rtn = mongo_insert(mongo, BSON_DOC(&docs), BSON_DOC_LENS(&docs), NULL, 0);
     BSON_FREE(&docs);
     if (1 != rtn) {
         LOG_ERROR("mongo dup_key: first insert expected 1 row, got %d.", rtn);
@@ -142,7 +142,7 @@ static int32_t _duplicate_key_error(mongo_ctx *mongo) {
     bson_append_utf8(&dup, "name", "second");
     bson_append_end(&dup);
     bson_append_end(&dup);
-    rtn = mongo_insert(mongo, BSON_DOC(&dup), BSON_DOC_LENS(&dup), NULL);
+    rtn = mongo_insert(mongo, BSON_DOC(&dup), BSON_DOC_LENS(&dup), NULL, 0);
     BSON_FREE(&dup);
     if (ERR_FAILED != rtn) {
         LOG_ERROR("mongo dup_key: expected ERR_FAILED, got %d.", rtn);
@@ -174,14 +174,14 @@ static int32_t _txn_flow(mongo_ctx *mongo) {
     bson_append_end(&docs);
     bson_append_end(&docs);
 
-    int32_t inserted = mongo_insert(mongo, BSON_DOC(&docs), BSON_DOC_LENS(&docs), NULL);
+    int32_t inserted = mongo_insert(mongo, BSON_DOC(&docs), BSON_DOC_LENS(&docs), NULL, 0);
     BSON_FREE(&docs);
     if (1 != inserted) {
         LOG_ERROR("mongo insert(txn) error.");
         mongo_freesession(sess);
         return ERR_FAILED;
     }
-    if (ERR_OK != mongo_commit(sess, NULL)) {
+    if (ERR_OK != mongo_commit(sess, NULL, 0)) {
         LOG_ERROR("mongo commit error.");
         mongo_freesession(sess);
         return ERR_FAILED;
@@ -191,13 +191,13 @@ static int32_t _txn_flow(mongo_ctx *mongo) {
 }
 
 // 事务 pack 失败须原样保留事务状态。用"声明长度达 MAX_PACK_SIZE"的假 options 触发
-// bson_cat 拒绝——它只读前 4 字节的声明长度就返 ERR_FAILED,不会真去拷贝,故 4 字节缓冲即可。
+// bson_cat 拒绝。缓冲得真按声明长度分配:bson_cat 先判声明长度是否超出传入的缓冲字节数,
+// 短缓冲会先被那道挡掉,压不到本用例要的 MAX_PACK_SIZE 那条路径上。
 // 本流程不需要 replica set:mongo_begin 纯本地,pack 在 MONGO_PACK_CAT 处失败也不碰网络,
 // 判据取 mongo->session 是否仍指向本 session——若守卫仍放在状态拆除之后,它已被置空、
 // session->options 已 free,服务端事务会悬到 lsid 超时且无从重试。
 // 只压 commit 一侧,rollback 与之同构;mongo_freesession 自己会清 mongo->session
 static int32_t _txn_pack_fail_flow(mongo_ctx *mongo) {
-    char toolong[4];
     mongo_session *sess = mongo_startsession(mongo);
     if (NULL == sess) {
         LOG_ERROR("mongo startsession(packfail) error.");
@@ -208,8 +208,12 @@ static int32_t _txn_pack_fail_flow(mongo_ctx *mongo) {
         mongo_freesession(sess);
         return ERR_FAILED;
     }
+    char *toolong;
+    CALLOC(toolong, 1, MAX_PACK_SIZE);
     pack_integer(toolong, (uint64_t)MAX_PACK_SIZE, 4, 1);
-    if (ERR_OK == mongo_commit(sess, toolong)) {
+    int32_t commited = mongo_commit(sess, toolong, MAX_PACK_SIZE);
+    FREE(toolong);
+    if (ERR_OK == commited) {
         LOG_ERROR("mongo commit(oversize options) should fail.");
         mongo_freesession(sess);
         return ERR_FAILED;
@@ -285,11 +289,11 @@ static int32_t _txn_unbound_flow(mongo_ctx *mongo) {
         mongo_clear_session(mongo);
         if (ERR_OK != mongo_begin(sessb)) {
             LOG_ERROR("begin(b) should be allowed after the binding was cleared.");
-        } else if (ERR_OK == mongo_rollback(sessa, NULL)) {
+        } else if (ERR_OK == mongo_rollback(sessa, NULL, 0)) {
             LOG_ERROR("rollback on an unbound session must be rejected.");
         } else if (mongo->session != sessb) {
             LOG_ERROR("rejected rollback must not touch b's binding.");
-        } else if (ERR_OK == mongo_commit(sessa, NULL)) {
+        } else if (ERR_OK == mongo_commit(sessa, NULL, 0)) {
             LOG_ERROR("commit on an unbound session must be rejected.");
         } else if (mongo->session != sessb) {
             LOG_ERROR("rejected commit must not touch b's binding.");
@@ -313,7 +317,7 @@ static int32_t _reconnect_flow(task_ctx *task, mongo_ctx *mongo) {
     mongo_collection(mongo, "srey_test");
     bson_ctx empty;
     _build_empty_doc(&empty);
-    int32_t cnt = mongo_count(mongo, BSON_DOC(&empty), BSON_DOC_LENS(&empty), NULL);
+    int32_t cnt = mongo_count(mongo, BSON_DOC(&empty), BSON_DOC_LENS(&empty), NULL, 0);
     BSON_FREE(&empty);
     if (3 != cnt) {
         LOG_ERROR("mongo count after reconnect expected 3, got %d.", cnt);
@@ -335,7 +339,7 @@ static int32_t _moretocome_flow(mongo_ctx *mongo) {
     bson_append_int32(&doc, "score", 1);
     bson_append_end(&doc);
     bson_append_end(&doc);
-    int32_t rtn = mongo_insert(mongo, BSON_DOC(&doc), BSON_DOC_LENS(&doc), NULL);
+    int32_t rtn = mongo_insert(mongo, BSON_DOC(&doc), BSON_DOC_LENS(&doc), NULL, 0);
     BSON_FREE(&doc);
     if (ERR_OK != rtn) {
         mongo_clear_flag(mongo);
@@ -344,7 +348,7 @@ static int32_t _moretocome_flow(mongo_ctx *mongo) {
     }
     bson_ctx empty;
     _build_empty_doc(&empty);
-    int32_t cnt = mongo_count(mongo, BSON_DOC(&empty), BSON_DOC_LENS(&empty), NULL);
+    int32_t cnt = mongo_count(mongo, BSON_DOC(&empty), BSON_DOC_LENS(&empty), NULL, 0);
     BSON_FREE(&empty);
     mongo_clear_flag(mongo);
     if (4 != cnt) {
@@ -363,7 +367,7 @@ static void _startup(task_ctx *task) {
         LOG_ERROR("mongo connect error.");
         return;
     }
-    if (NULL == mongo_hello(&arg->mongo, NULL)) {
+    if (NULL == mongo_hello(&arg->mongo, NULL, 0)) {
         LOG_ERROR("mongo hello error.");
         ev_close(&task->loader->netev, arg->mongo.sk.fd, arg->mongo.sk.skid, 1);
         return;

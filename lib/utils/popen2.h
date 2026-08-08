@@ -61,7 +61,8 @@ int32_t popen_read(popen_ctx *ctx, char *output, size_t lens, int32_t *eof);
 /// <param name="ctx">popen_ctx</param>
 /// <param name="input">输入</param>
 /// <param name="lens">长度</param>
-/// <returns>写入的字节数, ERR_FAILED 失败</returns>
+/// <returns>写入的字节数，可能少于 lens——写端非阻塞，对端缓冲写满即返回，
+/// 剩余部分由调用方决定重试还是放弃；一个字节都没写进去且出错时返回 ERR_FAILED</returns>
 int32_t popen_write(popen_ctx *ctx, const char *input, size_t lens);
 
 #endif//POPEN2_H_

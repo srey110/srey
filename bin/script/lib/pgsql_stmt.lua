@@ -31,8 +31,7 @@ PG_FORMAT = {
 -- self.err       ：最近一次错误信息。
 local ctx = class("pgsql_stmt_ctx")
 -- 与 pgsql.lua 的同名方法同义：写 err 并返回 false，让"置原因"与"报失败"成为一步。
--- 这边只有 execute 一个带 err 契约的入口，且 busy 判定读的是 owner.connecting，
--- 故不设 _busy，入口的复位仍写在 execute 里
+-- 这边只有 execute 一个带 err 契约的入口，故不设 _busy，入口的复位写在 execute 里
 ---@param err string 失败原因
 ---@return boolean always false
 function ctx:_fail(err)
@@ -57,12 +56,13 @@ end
 
 ---执行预处理语句（Bind + Describe + Execute + Sync）
 ---@param bind any? pgsql_bind_ctx 参数绑定上下文
----@return boolean|_pgsql_reader_ctx result reader=结果集；true=无结果集 OK；false=失败、语句失效或 owner 正在 connect() 中
+---@return boolean|_pgsql_reader_ctx result reader=结果集；true=无结果集 OK；false=失败或语句失效
 function ctx:execute(bind)
-    self.err = ""
-    if self.owner.connecting then
-        return self:_fail(ppub.BUSY)
-    end
+    -- 借宿主连接的执行器：语句和普通查询走的是同一条连接，两者之间也不能交错
+    return srey.serial_ret(false, self.owner.serial(self._execute, self, bind))
+end
+function ctx:_execute(bind)
+    self.err = ""-- 复位:erro() 只反映最近一次操作
     if self.gen ~= self.owner.generation then
         WARN("pgsql stmt invalidated by reconnect, please re-prepare.")
         return self:_fail("pgsql: stmt invalidated by reconnect")
@@ -88,8 +88,11 @@ end
 ---发送 Close + Sync，通知服务端释放该预处理语句
 ---@return boolean ok 关闭成功 true
 function ctx:close()
-    if self.owner.connecting or self.gen ~= self.owner.generation then
-        -- 重连后服务端已自动清理旧语句，或 owner 正在 connect() 中尚不可发送，均视为无需再发 Close
+    return srey.serial_ret(false, self.owner.serial(self._close, self))
+end
+function ctx:_close()
+    if self.gen ~= self.owner.generation then
+        -- 重连后服务端已自动清理旧语句，无需再发 Close
         return true
     end
     local fd, skid = self.pg:sock_id()

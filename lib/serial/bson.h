@@ -131,13 +131,15 @@ char *bson_tostring(bson_ctx *bson);
 char *bson_tostring2(char *data, size_t lens);
 /// <summary>
 /// 将另一个已完成的 BSON 文档的内容（不含外层包装）拼接到当前文档（bson 未写完前使用）。
-/// 调用方契约: doc 必须是合法 BSON, 前 4 字节 lens 字段必须 ≤ doc 实际分配字节数;
-/// 内部按 lens 字段复制 lens-5 字节, 不校验 doc 实际长度
+/// 复制多少由 doc 自己头 4 字节声明的长度决定,故必须同时给出 doc 缓冲的实际字节数:
+/// 声明长度超出 lens 一律拒绝,否则会照着头里写的长度读到缓冲之外
 /// </summary>
 /// <param name="bson">目标 bson_ctx</param>
 /// <param name="doc">源 BSON 文档数据;NULL 时 no-op</param>
-/// <returns>ERR_OK 已拼接(含 NULL / 空文档的 no-op);ERR_FAILED lens 达 MAX_PACK_SIZE,内容整篇未拼入</returns>
-int32_t bson_cat(bson_ctx *bson, char *doc);
+/// <param name="lens">doc 缓冲的实际字节数;0 时 no-op</param>
+/// <returns>ERR_OK 已拼接(含 NULL / 空文档的 no-op);ERR_FAILED 缓冲不足 5 字节、
+/// 头声明长度超出缓冲、或声明长度达 MAX_PACK_SIZE,三种情况内容都整篇未拼入</returns>
+int32_t bson_cat(bson_ctx *bson, char *doc, size_t lens);
 /// <summary>
 /// 开始写入一个嵌套文档字段，须配对调用 bson_append_end 结束
 /// </summary>

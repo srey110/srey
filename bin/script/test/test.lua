@@ -32,6 +32,7 @@ local TESTS = {
     "test.unit_kcp",
     "test.unit_http",
     "test.unit_websock",
+    "test.smtp_fake",    -- 自带假 SMTP 服务端,不依赖外网账号
     "test.e2e_runner",   -- 用 srey.popen 跑 bin/py_assist/test_*.py 自动收集 exit code
     -- 集成测试(依赖 docker-compose)
     "test.db_mysql",
@@ -87,6 +88,10 @@ local function register()
     task.register("test.server_http", "server_http", 0)
     task.register("test.server_ws",   "server_ws", 0)
     task.register("test.server_mqtt", "server_mqtt", 0)
+
+    -- 假 SMTP 服务端 + 并发投递:同一 task 内起服务端再用 4 个协程并发投递,
+    -- 验证 smtp.lua 的命令串行化(镜像 C 层 task_smtp.c 的同名用例)
+    task.register("test.smtp_fake", "smtp_fake", 0, 12526)
 
     -- SMTP 客户端测试(仿照 test/task_smtp.c 参数风格)。
     -- 默认禁用:用户名/密码/邮箱地址需根据实际邮箱服务填写后再去掉注释。

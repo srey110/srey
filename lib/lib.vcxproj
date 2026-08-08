@@ -140,6 +140,7 @@
     <ClInclude Include="utils\timer.h" />
     <ClInclude Include="utils\tw.h" />
     <ClInclude Include="utils\utils.h" />
+    <ClInclude Include="utils\contenttype.h" />
     <ClInclude Include="serial\bson.h" />
     <ClInclude Include="serial\seri.h" />
   </ItemGroup>
@@ -241,6 +242,7 @@
     <ClCompile Include="utils\timer.c" />
     <ClCompile Include="utils\tw.c" />
     <ClCompile Include="utils\utils.c" />
+    <ClCompile Include="utils\contenttype.c" />
     <ClCompile Include="serial\bson.c" />
     <ClCompile Include="serial\seri.c" />
   </ItemGroup>

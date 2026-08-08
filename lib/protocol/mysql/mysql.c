@@ -164,10 +164,8 @@ static void _mysql_native_sign(mysql_ctx *mysql, char sh1[SHA1_BLOCK_SIZE]) {
     digest_init(&digest, DG_SHA1);
     digest_update(&digest, mysql->client.password, strlen(mysql->client.password));
     digest_final(&digest, shpsw);
-    digest_reset(&digest);
     digest_update(&digest, shpsw, SHA1_BLOCK_SIZE);
     digest_final(&digest, sh1);
-    digest_reset(&digest);
     digest_update(&digest, mysql->server.salt, sizeof(mysql->server.salt));
     digest_update(&digest, sh1, SHA1_BLOCK_SIZE);
     digest_final(&digest, shscr);
@@ -186,10 +184,8 @@ static void _mysql_caching_sha2_sign(mysql_ctx *mysql, char sh2[SHA256_BLOCK_SIZ
     digest_init(&digest, DG_SHA256);
     digest_update(&digest, mysql->client.password, strlen(mysql->client.password));
     digest_final(&digest, shpsw);
-    digest_reset(&digest);
     digest_update(&digest, shpsw, SHA256_BLOCK_SIZE);
     digest_final(&digest, sh2);
-    digest_reset(&digest);
     digest_update(&digest, sh2, SHA256_BLOCK_SIZE);
     digest_update(&digest, mysql->server.salt, sizeof(mysql->server.salt));
     digest_final(&digest, shscr);

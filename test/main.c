@@ -206,6 +206,7 @@ int main(int argc, char *argv[]) {
         {"mqtt_test3", 0},
         {"mqtt_test4", 0},
         //{"smtp_test", 0},
+        {"smtp_fake", 0},
         {"mysql_test", 0},
         {"pgsql_test", 0},
         {"redis_test", 0},
@@ -293,7 +294,8 @@ int main(int argc, char *argv[]) {
     if (ERR_OK != sc_start(g_loader, sc_name, &sc_rules)) {
         LOG_WARN("sc_start error.");
     }
-    //smtp
+    //smtp:假服务端 + 并发投递(不依赖外网账号)
+    task_smtp_fake_start(g_loader, "smtp_fake", 12525, _get_name_val(testlist, "smtp_fake"));
     task_smtp_start(g_loader, "task_smtp", ssl_clientnull, "smtp.gmail.com", 465,
          "test@gmail.com", "12345678", "test@gmail.com",
          "test@163.com", "test@qq.com", pandan,

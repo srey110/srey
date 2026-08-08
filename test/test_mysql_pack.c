@@ -337,7 +337,7 @@ static void test_mysql_pack_stmt_close(CuTest *tc) {
     mysql_ctx mysql;
     ZERO(&mysql, sizeof(mysql));
 
-    /* stmt 必须 CALLOC 分配（close 内部 FREE stmt） */
+    /* pack_stmt_close 只组包，stmt 由本用例自己释放 */
     mysql_stmt_ctx *stmt;
     CALLOC(stmt, 1, sizeof(*stmt));
     stmt->mysql = &mysql;
@@ -345,8 +345,10 @@ static void test_mysql_pack_stmt_close(CuTest *tc) {
 
     size_t size = 0;
     void *pack = mysql_pack_stmt_close(stmt, &size);
-    /* stmt 至此已被释放，不可再访问 */
     CuAssertPtrNotNull(tc, pack);
+    /* 只组包不销毁：stmt 及其字段仍然可读 */
+    CuAssertTrue(tc, 0x77665544 == stmt->stmt_id);
+    CuAssertTrue(tc, &mysql == stmt->mysql);
     char *p = (char *)pack;
     CuAssertTrue(tc, 9 == size);
     CuAssertTrue(tc, 0x19 == (uint8_t)p[4]);                    /* COM_STMT_CLOSE */
@@ -355,6 +357,7 @@ static void test_mysql_pack_stmt_close(CuTest *tc) {
     CuAssertTrue(tc, 0x66 == (uint8_t)p[7]);
     CuAssertTrue(tc, 0x77 == (uint8_t)p[8]);
     FREE(pack);
+    mysql_stmt_free(stmt);
 }
 
 /* ======================================================================= */

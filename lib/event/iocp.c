@@ -275,7 +275,7 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
     MALLOC(ctx->watcher, sizeof(watcher_ctx) * ctx->nthreads);
     watcher_ctx *watcher;
     uint32_t i;
-    el_cbs skcbs = { _evpub_sk_new, _evpub_sk_free, _evpub_sk_reset, _evpub_sk_clear };
+    pool_cbs skcbs = { _evpub_sk_new, _evpub_sk_free, _evpub_sk_reset, _evpub_sk_clear };
     for (i = 0; i < ctx->nthreads; i++) {
         watcher = &ctx->watcher[i];
         watcher->index = i;

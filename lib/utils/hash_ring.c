@@ -6,6 +6,11 @@
  * 超出时回退为单次堆分配。 */
 #define NAME_STACK_LEN  512
 
+/* 单节点虚拟副本数上限。一致性哈希实际用量在几十到几百（本仓库测试用 10 ~ 100），
+ * 这里留了三个数量级的余量；设上限是因为 nreplicas 可由 Lua 直接给（hashring:add），
+ * 不设的话一个离谱的值会让 items 数组要几十 GB，而 _realloc 分配失败是直接 exit 整个进程 */
+#define MAX_REPLICAS    65536
+
 typedef struct hash_ring_list {
     list_node lnode;                //slist 节点（UPCAST 复原）
     hash_ring_node *node;           //指向真实节点数据
@@ -66,7 +71,6 @@ static void _hash_ring_add_items(hash_ring_ctx *ring, hash_ring_node *node) {
     char *name;
     size_t name_len;
     int32_t heap;
-    ASSERTAB(ring->nitems <= UINT32_MAX - node->nreplicas, "hash ring capacity overflow.");
     REALLOC(ring->items, ring->items, sizeof(hash_ring_item *) * ((size_t)ring->nitems + node->nreplicas));
     for (uint32_t i = 0; i < node->nreplicas; i++) {
         concat_len = SNPRINTF(concat_buf, sizeof(concat_buf), "-%u", i);
@@ -106,11 +110,20 @@ static hash_ring_node *_hash_ring_get_node(hash_ring_ctx *ring, void *name, size
 void hash_ring_sort(hash_ring_ctx *ring) {
     qsort((void **)ring->items, ring->nitems, sizeof(hash_ring_item *), _hash_ring_sort);
 }
+// 容量判定放在这里而不是 _hash_ring_add_items：那里已经 MALLOC 过 node 并挂进链表,再失败就得回滚。
+// 两道顺序不能颠倒——先挡住元素总数溢出 uint32,才能保证下面那个加法在 32 位 size_t 下不回绕;
+// 第二道判的是字节数,32 位下 sizeof(指针) * 元素数 会悄悄回绕,4 * 2^30 正好是 0,
+// 而 _realloc(ptr, 0) 按契约是释放并返回 NULL,循环随即往 NULL 上写
 int32_t hash_ring_add_nosort(hash_ring_ctx *ring, void *name, size_t lens, uint32_t nreplicas) {
     if (NULL == ring
         || NULL == name
         || 0 == lens
-        || 0 == nreplicas) {
+        || 0 == nreplicas
+        || nreplicas > MAX_REPLICAS) {
+        return ERR_FAILED;
+    }
+    if (ring->nitems > UINT32_MAX - nreplicas
+        || (size_t)ring->nitems + nreplicas > SIZE_MAX / sizeof(hash_ring_item *)) {
         return ERR_FAILED;
     }
     if (NULL != _hash_ring_get_node(ring, name, lens)) {

@@ -280,7 +280,7 @@ end
 ---下个等待者继续。
 ---调用返回时锁已交接给下一个等待者，但该等待者要到本条消息 dispatch 末尾才起跑
 ---（与 C 侧 coro_serial_call 就地唤醒不同，原因见 _release 内注释）。
----@return fun(f:fun(...):any, ...):boolean,any serial 串行化调用器；返回 srey.xpcall 的 (ok, f 的首返回值)
+---@return fun(f:fun(...):any, ...):boolean,... serial 串行化调用器；返回 ok 加上 f 的全部返回值
 function srey.serial()
     local current = nil   -- 当前持锁协程
     local ref = 0         -- 嵌套深度（同协程多次进入累加）
@@ -298,13 +298,20 @@ function srey.serial()
                 -- 会累加到 LUAI_MAXCCALLS(200) 触顶，resume 返回 "C stack overflow"，而此处
                 -- current/ref 已写死、那个等待者永远不会被唤醒也永远不会 _release —— 整个
                 -- serial 永久死锁。改由 message_dispatch 末尾摊平唤醒，嵌套深度恒为 1。
-                -- C 侧 _coro_serial_release 就地 mco_resume 是对的：minicoro 切栈，N 层是
+                -- C 侧 coro_serial_leave 就地 mco_resume 是对的：minicoro 切栈，N 层是
                 -- N 个协程各挂一帧，OS 线程栈不增长，没有这个上限
                 serial_wakes[#serial_wakes + 1] = nxt
             else
                 current = nil
             end
         end
+    end
+    -- 先解锁再原样吐出 f 的全部返回值。不用 table.pack 中转是因为变参走的是栈,
+    -- 每条命令省一个临时表；写成 local ok, ret = ... 则会把第二个之后的返回值悄悄丢掉,
+    -- 而 mongo 的命令普遍返 (ok, n) 双值
+    local function _done(...)
+        _release()
+        return ...
     end
     return function(f, ...)
         if not coroutine_isyieldable() then
@@ -326,10 +333,22 @@ function srey.serial()
             end
             ref = ref + 1
         end
-        local ok, ret = srey.xpcall(f, ...)
-        _release()
-        return ok, ret
+        return _done(srey.xpcall(f, ...))
     end
+end
+
+---收敛 serial 执行器的返回值：执行器返回 (ok, f 的全部返回值)，ok=false 表示 f 内抛了错
+---（已由 srey.xpcall 打过 ERROR 日志）。把那种情形折成调用方约定的失败值，其余原样透传。
+---用法 `return srey.serial_ret(nil, self.serial(self._query, self, sql))`——
+---失败值各模块不同（有的 nil 有的 false），故由调用方传入而不是写死
+---@param fail any f 抛错时代替返回的值
+---@param ok boolean 执行器的第一个返回值
+---@return any ... ok 为真时是 f 的全部返回值，否则是 fail
+function srey.serial_ret(fail, ok, ...)
+    if not ok then
+        return fail
+    end
+    return ...
 end
 
 ---排空一条延迟队列：头索引推进而不清 nil（清了 #qu 会出 hole），末尾一次性清空，

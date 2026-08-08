@@ -35,6 +35,8 @@ chan_ctx *chan_init(uint32_t capacity) {
     return chan;
 }
 void chan_free(chan_ctx *chan) {
+    ASSERTAB(0 == ATOMIC_GET(&chan->r_waiting)
+             && 0 == ATOMIC_GET(&chan->w_waiting), "chan_free with blocked sender/receiver.");
     if (chan->buffered) {
         queue_free(&chan->qudata);
     } else {

@@ -329,6 +329,154 @@ static int32_t _test_serial_pool_reuse(task_ctx *task) {
     return ERR_OK;
 }
 
+// ── 测试 9：销毁时另有协程持锁 ──────────────────────────────────────────
+// A 持锁 sleep，B/C 排在队列里，D 中途 coro_serial_free：
+// B/C 被唤醒后 enter 返回失败（锁不交接给它们），A 不受影响照常跑完临界区，
+// 对象由 A 最后那次 leave 释放——free 返回时并没有真正释放
+typedef struct sfree_arg {
+    coro_serial_ctx *s;
+    int32_t *nfail;    // 排队者拿到失败返回的次数
+    int32_t *nhold;    // 持锁者跑完临界区的次数
+    uint32_t hold_ms;  // 非 0 = 持锁者，进临界区后睡这么久；killer 借它当起手延时
+}sfree_arg;
+
+static void _sfree_worker(task_ctx *task, void *arg) {
+    sfree_arg *a = (sfree_arg *)arg;
+    if (ERR_OK != coro_serial_enter(a->s)) {
+        ++(*a->nfail);
+        return;
+    }
+    if (0 != a->hold_ms) {
+        coro_sleep(task, a->hold_ms);
+        // 睡醒时 killer 那次 free 已经发生：对象必须还活着（释放推迟到下面这次 leave），
+        // 且已标记 closed，故连本协程的嵌套 enter 也该被拒——两者都对才算跑完
+        if (ERR_OK != coro_serial_enter(a->s)) {
+            ++(*a->nhold);
+        }
+    }
+    coro_serial_leave(a->s);
+}
+
+static void _sfree_killer(task_ctx *task, void *arg) {
+    sfree_arg *a = (sfree_arg *)arg;
+    coro_sleep(task, a->hold_ms);// 等 A 拿到锁、B/C 排进队列
+    coro_serial_free(a->s);
+}
+
+static int32_t _test_serial_free_busy(task_ctx *task) {
+    enum { HOLD_MS = 30, KILL_MS = 5 };
+    coro_serial_ctx *s = coro_serial_new(task);
+    int32_t nfail = 0;
+    int32_t nhold = 0;
+    sfree_arg holder = { .s = s, .nfail = &nfail, .nhold = &nhold, .hold_ms = HOLD_MS };
+    sfree_arg waiter = { .s = s, .nfail = &nfail, .nhold = &nhold, .hold_ms = 0 };
+    sfree_arg killer = { .s = s, .nfail = &nfail, .nhold = &nhold, .hold_ms = KILL_MS };
+    fork_serial_cb funcs[4] = { _sfree_worker, _sfree_worker, _sfree_worker, _sfree_killer };
+    void *args[4] = { &holder, &waiter, &waiter, &killer };
+    if (ERR_OK != coro_fork_wait(task, 4, funcs, args)) {
+        LOG_ERROR("serial free busy: fork_wait failed.");
+        coro_serial_free(s);// 没有协程跑起来，killer 那次 free 也就没发生
+        return ERR_FAILED;
+    }
+    // s 已由持锁者的 leave 释放，此处不能再 free
+    if (2 != nfail || 1 != nhold) {
+        LOG_ERROR("serial free busy: nfail=%d nhold=%d, want 2,1.", nfail, nhold);
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+
+// ── 测试 10：持锁者在自己临界区内销毁 ───────────────────────────────────
+// 结果集回调里调 mysql_quit 就是这个形状：free 只标记不释放，推迟到本次 leave；
+// 标记之后连本协程的嵌套 enter 也一并拒绝
+static int32_t _test_serial_free_self(task_ctx *task) {
+    coro_serial_ctx *s = coro_serial_new(task);
+    if (ERR_OK != coro_serial_enter(s)) {
+        LOG_ERROR("serial free self: enter failed.");
+        coro_serial_free(s);
+        return ERR_FAILED;
+    }
+    coro_serial_free(s);// 持锁中销毁：只标记，此处不得释放
+    int32_t nested = coro_serial_enter(s);
+    coro_serial_leave(s);// ref 归 0，对象在这里才真正释放
+    if (ERR_OK == nested) {
+        LOG_ERROR("serial free self: nested enter should fail after free.");
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+
+// ── 测试 11：销毁排在在途命令之后（四个 *_quit 包锁后的形状）───────────────
+// A 持锁 sleep 期间 B 走"先摘指针再上锁再销毁"那一套：B 必须等 A 的临界区跑完才动手，
+// 而不是把 A 拦腰打断；A 出来时执行器仍在（B 的 free 只标记），由 B 的 leave 真正回收。
+// 第三个协程 C 模拟"第二次 quit"——它摘到 NULL，什么都不该做
+typedef struct sq_arg {
+    coro_serial_ctx **slot;   // 指向共享的执行器槽位，模拟 xxx->serial 字段
+    int32_t *order;           // 记录事件顺序的游标
+    int32_t *ev;              // 事件序列
+    int32_t *cnoop;           // C 走"摘到 NULL 直接退"的次数
+    uint32_t hold_ms;
+}sq_arg;
+
+static void _sq_holder(task_ctx *task, void *arg) {
+    sq_arg *a = (sq_arg *)arg;
+    // 进来就把指针捏住:销毁方会在我们 sleep 期间把槽位置空,leave 时再去读槽位
+    // 拿到的是 NULL —— 正是 coro_serial_free 文档里那条"加解锁须捏同一个指针"的反面
+    coro_serial_ctx *held = *a->slot;
+    if (ERR_OK != coro_serial_enter(held)) {
+        return;
+    }
+    coro_sleep(task, a->hold_ms);
+    a->ev[(*a->order)++] = 1;// 1 = 持锁者跑完临界区
+    coro_serial_leave(held);
+}
+// 与 mysql_quit / smtp_quit 等同一套：摘指针 → NULL 则退 → 上锁 → 干活 → free → unlock
+static void _sq_quit(task_ctx *task, void *arg) {
+    sq_arg *a = (sq_arg *)arg;
+    coro_sleep(task, a->hold_ms);// 让持锁者先进临界区
+    coro_serial_ctx *held = *a->slot;
+    *a->slot = NULL;
+    if (NULL == held) {
+        ++(*a->cnoop);// 别人已接手销毁，本次什么都不做
+        return;
+    }
+    if (ERR_OK != coro_serial_enter(held)) {
+        coro_serial_free(held);
+        return;
+    }
+    a->ev[(*a->order)++] = 2;// 2 = 销毁方拿到锁开始干活
+    coro_serial_free(held);
+    coro_serial_leave(held);
+}
+
+static int32_t _test_serial_quit_order(task_ctx *task) {
+    enum { HOLD_MS = 30, QUIT_MS = 5 };
+    coro_serial_ctx *slot = coro_serial_new(task);
+    int32_t order = 0;
+    int32_t ev[4] = { 0 };
+    int32_t cnoop = 0;
+    sq_arg holder = { .slot = &slot, .order = &order, .ev = ev, .cnoop = &cnoop, .hold_ms = HOLD_MS };
+    sq_arg quitter = { .slot = &slot, .order = &order, .ev = ev, .cnoop = &cnoop, .hold_ms = QUIT_MS };
+    fork_serial_cb funcs[3] = { _sq_holder, _sq_quit, _sq_quit };
+    void *args[3] = { &holder, &quitter, &quitter };
+    if (ERR_OK != coro_fork_wait(task, 3, funcs, args)) {
+        LOG_ERROR("serial quit order: fork_wait failed.");
+        coro_serial_free(slot);
+        return ERR_FAILED;
+    }
+    // slot 已被销毁方回收，此处不能再 free
+    if (2 != order || 1 != ev[0] || 2 != ev[1]) {
+        LOG_ERROR("serial quit order: ev=%d,%d (order=%d), want 1,2 —— 销毁抢在持锁者前面了.",
+                  ev[0], ev[1], order);
+        return ERR_FAILED;
+    }
+    if (1 != cnoop) {
+        LOG_ERROR("serial quit order: second quit noop=%d, want 1.", cnoop);
+        return ERR_FAILED;
+    }
+    return ERR_OK;
+}
+
 static void _startup(task_ctx *task) {
     task_serial_args *arg = (task_serial_args *)coro_get_arg(task);
     if (ERR_OK != _test_single(task)) {
@@ -368,6 +516,24 @@ static void _startup(task_ctx *task) {
         return;
     }
     if (ERR_OK != _test_serial_pool_reuse(task)) {
+        return;
+    }
+    if (task_isclosing(task)) {
+        return;
+    }
+    if (ERR_OK != _test_serial_free_busy(task)) {
+        return;
+    }
+    if (task_isclosing(task)) {
+        return;
+    }
+    if (ERR_OK != _test_serial_free_self(task)) {
+        return;
+    }
+    if (task_isclosing(task)) {
+        return;
+    }
+    if (ERR_OK != _test_serial_quit_order(task)) {
         return;
     }
     *(arg->ok) = 1;

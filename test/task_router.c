@@ -43,7 +43,8 @@ static void _h_file(router_req *ctx) {
 // GET /pmax/... 与 /poptovf/... → 回最后一个参数 p16。三条路由共用本 handler,
 // 对应 bad 位 25(/pmax 命中) 26(/povf 溢出拒) 27(/poptovf 满 17 段拒) 28(/poptovf 16 段 OPT 跳过命中)。
 // 验 ROUTER_MAX_PARAMS(16) 边界: /pmax 给 16 个参数段恰好命中且末位参数可取;
-// /povf 给 17 个, PARAM 分支在第 17 个上被 _router_param_take 拒 → 无路由命中 → 404;
+// /povf 的 17 个必填段在注册期就被拒(它无论如何都用不满 16 的上限, 留着只会每个请求
+// 换一个 404 加一行 WARN) → 请求落 404;
 // /poptovf 末段是 {p17?}, 走 OPT 分支的同一上限判定 —— 给满 17 段同样 404,
 // 只给 16 段时 OPT 跳过仍应命中。C5 把两个分支的填参收敛到单点后, 这四个请求同时覆盖两条路径
 static void _h_pmax(router_req *ctx) {

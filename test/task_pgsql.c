@@ -161,6 +161,77 @@ static int32_t _copy_out(pgsql_ctx *pg) {
     return ERR_OK;
 }
 
+// 并发：多个协程同时在同一条连接上查询。没有串行化时命令会交错上线——pgsql 一条命令
+// 要读到 ReadyForQuery 才算完，交错会让响应对错协程，表现为读回别人的值或整条连接报错。
+// 每个协程查一个只属于自己的常量，回读必须原样拿回来
+typedef struct {
+    int32_t want;   // 本协程期望读回的值
+    int32_t got;    // 实际读回
+    int32_t done;   // 1 = 已跑完，-1 = 失败
+    pgsql_ctx *pg;
+} _conc_arg;
+
+static void _conc_worker(task_ctx *task, void *arg) {
+    (void)task;
+    _conc_arg *a = (_conc_arg *)arg;
+    char sql[96];
+    // pg_sleep(0) 让服务端把每条查询的响应拉开，放大交错窗口
+    SNPRINTF(sql, sizeof(sql), "select %d as v, pg_sleep(0)", a->want);
+    int32_t err;
+    pgpack_ctx *p;
+    pgsql_reader_ctx *rd;
+    for (int32_t i = 0; i < 8; i++) {
+        a->got = -1;
+        p = pgsql_query(a->pg, sql);
+        if (NULL == p || PGPACK_OK != p->type) {
+            a->done = -1;
+            return;
+        }
+        rd = pgsql_reader_init(p, FORMAT_TEXT);
+        if (NULL == rd) {
+            a->done = -1;
+            return;
+        }
+        if (!pgsql_reader_eof(rd)) {
+            a->got = (int32_t)pgsql_reader_integer(rd, "v", &err);
+        }
+        pgsql_reader_free(rd);
+        if (a->got != a->want) {
+            a->done = -1;
+            return;
+        }
+    }
+    a->done = 1;
+}
+
+#define _CONC_N 4
+static int32_t _concurrent_query(pgsql_ctx *pg) {
+    _conc_arg args[_CONC_N];
+    fork_serial_cb funcs[_CONC_N];
+    void *argp[_CONC_N];
+    int32_t i;
+    for (i = 0; i < _CONC_N; i++) {
+        args[i].want = 1000 + i;
+        args[i].got = -1;
+        args[i].done = 0;
+        args[i].pg = pg;
+        funcs[i] = _conc_worker;
+        argp[i] = &args[i];
+    }
+    if (ERR_OK != coro_fork_wait(pg->task, _CONC_N, funcs, argp)) {
+        LOG_ERROR("pgsql concurrent: fork_wait error.");
+        return ERR_FAILED;
+    }
+    for (i = 0; i < _CONC_N; i++) {
+        if (1 != args[i].done) {
+            LOG_ERROR("pgsql concurrent: coro %d got %d want %d (commands interleaved).",
+                      i, args[i].got, args[i].want);
+            return ERR_FAILED;
+        }
+    }
+    return ERR_OK;
+}
+
 static void _startup(task_ctx *task) {
     task_pgsql_args *arg = (task_pgsql_args *)coro_get_arg(task);
     if (ERR_OK != pgsql_init(&arg->pg, arg->host, arg->port, NULL,
@@ -206,6 +277,10 @@ static void _startup(task_ctx *task) {
         return;
     }
     if (ERR_OK != _query_syntax_error(&arg->pg)) {
+        pgsql_quit(&arg->pg);
+        return;
+    }
+    if (ERR_OK != _concurrent_query(&arg->pg)) {
         pgsql_quit(&arg->pg);
         return;
     }

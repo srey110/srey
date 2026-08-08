@@ -9,6 +9,15 @@
 #include "protocol/kcp/kcp.h"
 #include "protocol/websock.h"
 
+// 结果集回调：一次 query / stmt_execute 可能产生多个结果集(多语句、CALL),库内部逐个回调。
+// mpack 只在本次回调内有效——下一个结果集的续读会让它失效,要留数据请就地取走
+// (mysql_reader_init 会把解析结果的所有权转移给调用方,拿走后不受此限)。
+// 返回 ERR_FAILED 不会中断循环:剩余包仍会被读完,否则残留在连接缓冲里会让下次查询 desync;
+// 该返回值只决定 mysql_query / mysql_stmt_execute 最终报成功还是失败。
+// 回调跑在连接的串行化临界区内,但允许在其中调 mysql_quit 销毁本连接:
+// 连接对象的回收会推迟到本次命令走完,剩余结果集则因为连接已关而读不到,按失败返回
+typedef int32_t (*mysql_result_cb)(mpack_ctx *mpack, void *udata);
+
 /// <summary>
 /// dns域名解析：先 UDP 查询，失败时回退到 TCP 查询
 /// </summary>
@@ -74,8 +83,12 @@ int32_t mysql_ping(mysql_ctx *mysql);
 /// <param name="mysql">mysql_ctx</param>
 /// <param name="sql">SQL语句</param>
 /// <param name="mbind">mysql_bind_ctx</param>
-/// <returns>mpack_ctx NULL 失败</returns>
-mpack_ctx *mysql_query(mysql_ctx *mysql, const char *sql, mysql_bind_ctx *mbind);
+/// <param name="cb">结果集回调；NULL 表示只把结果集读完不回调（INSERT/UPDATE 这类）</param>
+/// <param name="udata">透传给 cb</param>
+/// <returns>ERR_OK 全部结果集读完且回调都成功；ERR_FAILED 组包失败、网络失败、
+/// 未持锁(不在协程内或连接正在销毁)、或任一回调返回失败</returns>
+int32_t mysql_query(mysql_ctx *mysql, const char *sql, mysql_bind_ctx *mbind,
+                    mysql_result_cb cb, void *udata);
 /// <summary>
 /// 预处理
 /// </summary>
@@ -88,8 +101,11 @@ mysql_stmt_ctx *mysql_stmt_prepare(mysql_ctx *mysql, const char *sql);
 /// </summary>
 /// <param name="stmt">mysql_stmt_ctx</param>
 /// <param name="mbind">mysql_bind_ctx</param>
-/// <returns>mpack_ctx NULL 失败</returns>
-mpack_ctx *mysql_stmt_execute(mysql_stmt_ctx *stmt, mysql_bind_ctx *mbind);
+/// <param name="cb">结果集回调；NULL 的含义同 mysql_query</param>
+/// <param name="udata">透传给 cb</param>
+/// <returns>ERR_OK 全部结果集读完且回调都成功；失败含义同 mysql_query</returns>
+int32_t mysql_stmt_execute(mysql_stmt_ctx *stmt, mysql_bind_ctx *mbind,
+                           mysql_result_cb cb, void *udata);
 /// <summary>
 /// 预处理重置
 /// </summary>
@@ -97,15 +113,23 @@ mpack_ctx *mysql_stmt_execute(mysql_stmt_ctx *stmt, mysql_bind_ctx *mbind);
 /// <returns>ERR_OK 成功</returns>
 int32_t mysql_stmt_reset(mysql_stmt_ctx *stmt);
 /// <summary>
-/// 关闭预处理语句并释放相关资源
+/// 关闭预处理语句并释放相关资源。拿不到该连接的串行化执行权时（不在协程内、连接正在销毁，
+/// 或这条连接根本不受本套 API 管——Lua 绑定建的都是）只做本地释放、不发 COM_STMT_CLOSE，
+/// 服务端那份语句随连接关闭一并回收
 /// </summary>
-/// <param name="stmt">mysql_stmt_ctx</param>
+/// <param name="stmt">mysql_stmt_ctx，调用后失效</param>
 void mysql_stmt_close(mysql_stmt_ctx *stmt);
 /// <summary>
-/// 退出关闭链接
+/// 关闭链接，并回收该连接的串行化执行器（排队中的命令被唤醒并失败返回）。
+/// 先排在在途命令之后再退出：直接断连会把别人半途的等待拦腰打断，一次已发出的命令
+/// 会因此报失败。**须在协程内调用**（内部要等断连确认）。
+/// 另一个协程已在销毁同一条连接时本次直接返回，善后归先到的那一方
 /// </summary>
 /// <param name="mysql">mysql_ctx</param>
 void mysql_quit(mysql_ctx *mysql);
+// 以下 smtp 接口经连接内的串行化执行器串行：一封邮件是 MAIL FROM → N×RCPT TO → DATA →
+// 正文 → RSET 一长串往返，两个协程同时发信会把收件人混到一起。因此 ping / send 多一种失败：
+// 调用方不在协程内、或该连接正在 smtp_quit 销毁
 /// <summary>
 /// 电子邮件建立链接
 /// </summary>
@@ -114,7 +138,10 @@ void mysql_quit(mysql_ctx *mysql);
 /// <returns>ERR_OK 成功</returns>
 int32_t smtp_connect(task_ctx *task, smtp_ctx *smtp);
 /// <summary>
-/// 邮件关闭
+/// 关闭链接，并回收该连接的串行化执行器（排队中的投递被唤醒并失败返回）。
+/// 先排在在途命令之后再退出：QUIT 要等服务端 221，插在别人的邮件流中间会把响应对错位，
+/// 随后的断连更会把对方半途的等待打断。**须在协程内调用**。
+/// 另一个协程已在销毁同一条连接时本次直接返回，善后归先到的那一方
 /// </summary>
 /// <param name="smtp">smtp_ctx</param>
 void smtp_quit(smtp_ctx *smtp);
@@ -125,12 +152,17 @@ void smtp_quit(smtp_ctx *smtp);
 /// <returns>ERR_OK 成功</returns>
 int32_t smtp_ping(smtp_ctx *smtp);
 /// <summary>
-/// 邮件发送
+/// 邮件发送。锁覆盖整封邮件（含收尾的 RSET），期间其他协程的投递排队等待
 /// </summary>
 /// <param name="smtp">smtp_ctx</param>
 /// <param name="mail">mail_ctx</param>
 /// <returns>ERR_OK 成功</returns>
 int32_t smtp_send(smtp_ctx *smtp, mail_ctx *mail);
+// 以下 pgsql 命令接口全部经连接内的串行化执行器串行发出：pgsql 一条命令要读到 ReadyForQuery
+// 才算完，copy_in 更是两次往返，多协程共用一条连接时命令交错会让整条连接报错。
+// 因此每个命令都多一种失败：调用方不在协程内、或该连接正在 pgsql_quit 销毁（失败值同各自的
+// 网络失败，不额外区分）。经 Lua 绑定的 pgsql_try_connect 建立的连接不受管，行为与从前一致。
+// 唯一有意不串行化的是 pgsql_cancel——见该函数说明
 /// <summary>
 /// pgsql链接
 /// </summary>
@@ -140,13 +172,18 @@ int32_t smtp_send(smtp_ctx *smtp, mail_ctx *mail);
 int32_t pgsql_connect(task_ctx *task, pgsql_ctx *pg);
 /// <summary>
 /// 在独立 TCP 连接上向服务端发送 CancelRequest，中止当前正在执行的查询
-/// 服务端处理后主动关闭该连接，无任何响应；原连接会收到错误回包
+/// 服务端处理后主动关闭该连接，无任何响应；原连接会收到错误回包。
+/// 有意不参与命令串行化：它要中止的就是当前持锁那条查询，排队等锁会等到那条查询自己结束，
+/// 取消也就失去意义；它也不往原连接上写任何字节，不存在交错问题
 /// </summary>
 /// <param name="pg">pgsql_ctx 指针，须已成功连接（pid/key 已初始化）</param>
 /// <returns>ERR_OK 发送成功，ERR_FAILED 连接未建立或网络失败</returns>
 int32_t pgsql_cancel(pgsql_ctx *pg);
 /// <summary>
-/// 关闭链接
+/// 关闭链接，并回收该连接的串行化执行器（排队中的命令被唤醒并失败返回）。
+/// 先排在在途命令之后再退出：直接断连会把别人半途的等待拦腰打断，一次已发出的命令
+/// 会因此报失败。**须在协程内调用**（内部要等断连确认）。
+/// 另一个协程已在销毁同一条连接时本次直接返回，善后归先到的那一方
 /// </summary>
 /// <param name="pg">pgsql_ctx</param>
 void pgsql_quit(pgsql_ctx *pg);
@@ -212,6 +249,14 @@ pgpack_ctx *pgsql_copy_in(pgsql_ctx *pg, const char *sql, const void *data, size
 /// <param name="sql">包含 TO STDOUT 的 COPY SQL 语句</param>
 /// <returns>NULL 失败，pgpack_ctx（PGPACK_COPY_OUT / PGPACK_ERR），pack 字段为 pgpack_copy_out_ctx*</returns>
 pgpack_ctx *pgsql_copy_out(pgsql_ctx *pg, const char *sql);
+// 以下 mongo 命令接口全部经连接内的串行化执行器串行发出（含 MORETOCOME 的只发不等——
+// 不等响应也不能乱序，后面那条 find 得看得见前面这批 insert）。因此每个命令都多一种失败：
+// 调用方不在协程内、或该连接正在 mongo_quit 销毁（失败值同各自的网络失败，不额外区分）。
+// 经 Lua 绑定的 mongo_try_connect 建立的连接不受管，行为与从前一致。
+// 注意串行化只保证**单条命令**原子，不保证**事务**原子：事务上下文挂在连接上
+// （mongo_ctx.session），别人的命令挤在 mongo_begin 与 commit/rollback 之间时，
+// 组包侧照样会给它附上本事务的 lsid/txnNumber。要事务隔离，须由调用方在
+// begin..commit 外面自己套一层 coro_serial（或干脆给事务用独占连接）
 /// <summary>
 /// 链接mongodb
 /// </summary>
@@ -220,7 +265,11 @@ pgpack_ctx *pgsql_copy_out(pgsql_ctx *pg, const char *sql);
 /// <returns>ERR_OK 成功</returns>
 int32_t mongo_connect(task_ctx *task, mongo_ctx *mongo);
 /// <summary>
-/// 关闭链接
+/// 关闭链接，并回收该连接的串行化执行器（排队中的命令被唤醒并失败返回）。
+/// 先排在在途命令之后再退出：直接断连会把别人半途的等待拦腰打断，一次已发出的命令
+/// 会因此报失败。**须在协程内调用**（内部要等断连确认）。
+/// 另一个协程已在销毁同一条连接时本次直接返回，善后归先到的那一方
+/// mongo 没有退出命令，只有断连，故拿不拿得到执行权都照断
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
 void mongo_quit(mongo_ctx *mongo);
@@ -238,8 +287,9 @@ int32_t mongo_auth(mongo_ctx *mongo, const char *authmod, const char *user, cons
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
 /// <param name="options">可选 其他参数 document (saslSupportedMechs)</param>
+/// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
 /// <returns>NULL 失败</returns>
-mgopack_ctx *mongo_hello(mongo_ctx *mongo, char *options);
+mgopack_ctx *mongo_hello(mongo_ctx *mongo, char *options, size_t optlens);
 /// <summary>
 /// ping 命令
 /// </summary>
@@ -251,8 +301,9 @@ int32_t mongo_ping(mongo_ctx *mongo);
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
 /// <param name="options">可选 其他参数 document (writeConcern comment)</param>
+/// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
 /// <returns>ERR_OK 成功</returns>
-int32_t mongo_drop(mongo_ctx *mongo, char *options);
+int32_t mongo_drop(mongo_ctx *mongo, char *options, size_t optlens);
 /// <summary>
 /// insert 命令 插入一个或多个文档 MORETOCOME 可用
 /// </summary>
@@ -260,8 +311,9 @@ int32_t mongo_drop(mongo_ctx *mongo, char *options);
 /// <param name="docs">[ document, ... ]</param>
 /// <param name="dlens">docs长度</param>
 /// <param name="options">可选 其他参数 document (ordered maxTimeMS writeConcern bypassDocumentValidation comment)</param>
+/// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
 /// <returns>ERR_FAILED 失败  其他 插入的数量</returns>
-int32_t mongo_insert(mongo_ctx *mongo, char *docs, size_t dlens, char *options);
+int32_t mongo_insert(mongo_ctx *mongo, char *docs, size_t dlens, char *options, size_t optlens);
 /// <summary>
 /// update 命令 更新一个或多个文档 MORETOCOME 可用
 /// </summary>
@@ -269,8 +321,9 @@ int32_t mongo_insert(mongo_ctx *mongo, char *docs, size_t dlens, char *options);
 /// <param name="updates">[{q:u:...}, ...]</param>
 /// <param name="ulens">updates长度</param>
 /// <param name="options">可选 其他参数 document (ordered maxTimeMS writeConcern bypassDocumentValidation comment let)</param>
+/// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
 /// <returns>ERR_FAILED 失败  其他 更新的数量</returns>
-int32_t mongo_update(mongo_ctx *mongo, char *updates, size_t ulens, char *options);
+int32_t mongo_update(mongo_ctx *mongo, char *updates, size_t ulens, char *options, size_t optlens);
 /// <summary>
 /// delete 命令 删除一个或多个文档 MORETOCOME 可用
 /// </summary>
@@ -278,8 +331,9 @@ int32_t mongo_update(mongo_ctx *mongo, char *updates, size_t ulens, char *option
 /// <param name="deletes">[{q:...}, ...]</param>
 /// <param name="dlens">deletes长度</param>
 /// <param name="options">可选 其他参数 document (comment let ordered writeConcern maxTimeMS)</param>
+/// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
 /// <returns>ERR_FAILED 失败  其他 删除的数量</returns>
-int32_t mongo_delete(mongo_ctx *mongo, char *deletes, size_t dlens, char *options);
+int32_t mongo_delete(mongo_ctx *mongo, char *deletes, size_t dlens, char *options, size_t optlens);
 /// <summary>
 /// bulkwrite 命令 在一个请求中对多个集合执行多次插入、更新和删除操作  MORETOCOME 可用
 /// </summary>
@@ -289,8 +343,9 @@ int32_t mongo_delete(mongo_ctx *mongo, char *deletes, size_t dlens, char *option
 /// <param name="nsinfo">[ns...] 操作的命名空间（数据库和集合）.将ops中每个操作的命名空间ID索引设置为ns中匹配的命名空间大量索引.索引从0开始</param>
 /// <param name="nlens">nsinfo长度</param>
 /// <param name="options">可选 其他参数 document (ordered bypassDocumentValidation comment let errorsOnly cursor writeConcern)</param>
+/// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
 /// <returns>设置MORETOCOME始终返回NULL, 未设置则 NULL 失败</returns>
-mgopack_ctx *mongo_bulkwrite(mongo_ctx *mongo, char *ops, size_t olens, char *nsinfo, size_t nlens, char *options);
+mgopack_ctx *mongo_bulkwrite(mongo_ctx *mongo, char *ops, size_t olens, char *nsinfo, size_t nlens, char *options, size_t optlens);
 /// <summary>
 /// find 命令 选择集合或视图中的文档
 /// </summary>
@@ -301,8 +356,9 @@ mgopack_ctx *mongo_bulkwrite(mongo_ctx *mongo, char *ops, size_t olens, char *ns
 /// (sort projection hint skip limit batchSize singleBatch comment maxTimeMS readConcern max min returnKey
 /// showRecordId tailable oplogReplay noCursorTimeout awaitData allowPartialResults collation allowDiskUse let) 
 /// </param>
+/// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
 /// <returns>NULL 失败</returns>
-mgopack_ctx *mongo_find(mongo_ctx *mongo, char *filter, size_t flens, char *options);
+mgopack_ctx *mongo_find(mongo_ctx *mongo, char *filter, size_t flens, char *options, size_t optlens);
 /// <summary>
 /// aggregate 命令 聚合
 /// </summary>
@@ -312,16 +368,18 @@ mgopack_ctx *mongo_find(mongo_ctx *mongo, char *filter, size_t flens, char *opti
 /// <param name="options">可选 其他参数 document 
 /// (explain allowDiskUse maxTimeMS bypassDocumentValidation readConcern collation hint comment writeConcern let)
 /// </param>
+/// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
 /// <returns>NULL 失败</returns>
-mgopack_ctx *mongo_aggregate(mongo_ctx *mongo, char *pipeline, size_t pllens, char *options);
+mgopack_ctx *mongo_aggregate(mongo_ctx *mongo, char *pipeline, size_t pllens, char *options, size_t optlens);
 /// <summary>
 /// getMore 命令 返回游标当前指向的文档的后续批次
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
 /// <param name="cursorid">游标标识符</param>
 /// <param name="options">可选 其他参数 document (collection batchSize maxTimeMS comment)</param>
+/// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
 /// <returns>NULL 失败</returns>
-mgopack_ctx *mongo_getmore(mongo_ctx *mongo, int64_t cursorid, char *options);
+mgopack_ctx *mongo_getmore(mongo_ctx *mongo, int64_t cursorid, char *options, size_t optlens);
 /// <summary>
 /// killCursors 命令 终止集合的一个或多个指定游标  MORETOCOME 可用
 /// </summary>
@@ -329,8 +387,9 @@ mgopack_ctx *mongo_getmore(mongo_ctx *mongo, int64_t cursorid, char *options);
 /// <param name="cursorids">游标标识符 [cursorid, ...]</param>
 /// <param name="cslens">cursorids长度</param>
 /// <param name="options">可选 其他参数 document (comment)</param>
+/// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
 /// <returns>设置MORETOCOME始终返回NULL, 未设置则 NULL 失败</returns>
-mgopack_ctx *mongo_killcursors(mongo_ctx *mongo, char *cursorids, size_t cslens, char *options);
+mgopack_ctx *mongo_killcursors(mongo_ctx *mongo, char *cursorids, size_t cslens, char *options, size_t optlens);
 /// <summary>
 /// distinct 命令 查找单个集合中指定字段的不同值
 /// </summary>
@@ -339,8 +398,9 @@ mgopack_ctx *mongo_killcursors(mongo_ctx *mongo, char *cursorids, size_t cslens,
 /// <param name="query">可选 查询 document </param>
 /// <param name="qlens">query长度</param>
 /// <param name="options">可选 其他参数 document (readConcern collation comment hint)</param>
+/// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
 /// <returns>NULL 失败</returns>
-mgopack_ctx *mongo_distinct(mongo_ctx *mongo, const char *key, char *query, size_t qlens, char *options);
+mgopack_ctx *mongo_distinct(mongo_ctx *mongo, const char *key, char *query, size_t qlens, char *options, size_t optlens);
 /// <summary>
 /// findandmodify 命令 返回并修改单个文档
 /// </summary>
@@ -354,9 +414,10 @@ mgopack_ctx *mongo_distinct(mongo_ctx *mongo, const char *key, char *query, size
 /// <param name="options">可选 其他参数 document
 /// (sort new fields upsert bypassDocumentValidation writeConcern maxTimeMS collation arrayFilters hint comment let)
 /// </param>
+/// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
 /// <returns>NULL 失败</returns>
 mgopack_ctx *mongo_findandmodify(mongo_ctx *mongo, char *query, size_t qlens,
-    int32_t remove, int32_t pipeline, char *update, size_t ulens, char *options);
+    int32_t remove, int32_t pipeline, char *update, size_t ulens, char *options, size_t optlens);
 /// <summary>
 /// count 命令 计算集合或视图中的文档数量
 /// </summary>
@@ -364,8 +425,9 @@ mgopack_ctx *mongo_findandmodify(mongo_ctx *mongo, char *query, size_t qlens,
 /// <param name="query">可选 查询，选择哪些文档要在集合或视图中计数</param>
 /// <param name="qlens">query长度</param>
 /// <param name="options">可选 其他参数 document (limit skip hint readConcern maxTimeMS collation comment)</param>
+/// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
 /// <returns>ERR_FAILED 失败  其他 文档数量</returns>
-int32_t mongo_count(mongo_ctx *mongo, char *query, size_t qlens, char *options);
+int32_t mongo_count(mongo_ctx *mongo, char *query, size_t qlens, char *options, size_t optlens);
 /// <summary>
 /// createindexes 命令 为集合构建一个或多个索引  MORETOCOME 可用
 /// </summary>
@@ -373,8 +435,9 @@ int32_t mongo_count(mongo_ctx *mongo, char *query, size_t qlens, char *options);
 /// <param name="indexes">指定要创建的索引[{key:{...},name:}...]</param>
 /// <param name="ilens">indexes长度</param>
 /// <param name="options">可选 其他参数 document (writeConcern commitQuorum comment)</param>
+/// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
 /// <returns>ERR_OK 成功</returns>
-int32_t mongo_createindexes(mongo_ctx *mongo, char *indexes, size_t ilens, char *options);
+int32_t mongo_createindexes(mongo_ctx *mongo, char *indexes, size_t ilens, char *options, size_t optlens);
 /// <summary>
 /// dropindexes 命令 从集合中删除索引  MORETOCOME 可用
 /// </summary>
@@ -382,8 +445,9 @@ int32_t mongo_createindexes(mongo_ctx *mongo, char *indexes, size_t ilens, char 
 /// <param name="indexes">要删除的一个或多个索引 <arrayofstrings></param>
 /// <param name="ilens">indexes长度</param>
 /// <param name="options">可选 其他参数 document (writeConcern comment)</param>
+/// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
 /// <returns>ERR_OK 成功</returns>
-int32_t mongo_dropindexes(mongo_ctx *mongo, char *indexes, size_t ilens, char *options);
+int32_t mongo_dropindexes(mongo_ctx *mongo, char *indexes, size_t ilens, char *options, size_t optlens);
 /// <summary>
 /// startsession 命令 启动新会话
 /// </summary>
@@ -413,6 +477,7 @@ int32_t mongo_begin(mongo_session *session);
 /// </summary>
 /// <param name="session">mongo_session</param>
 /// <param name="options">可选 其他参数 document (writeConcern comment)</param>
+/// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
 /// <returns>ERR_OK 成功。组包失败或网络失败时事务状态原样保留，可换参数重试同一事务；
 /// 服务端有响应即释放事务状态（命令本身失败也不再可重试），与 Lua 侧 mongo.lua 一致。
 /// 连接已不再绑定该 session（重连清过绑定，或另一个 session 接管了这条连接）时不发送、
@@ -420,14 +485,15 @@ int32_t mongo_begin(mongo_session *session);
 /// 被这条拒绝后 session 的本地事务状态（options / started / txnNumber）原样保留，不漏也不脏，
 /// 但那个事务在服务端已随旧连接消失、无从挽回：调用方应 mongo_freesession 丢弃该 session，
 /// 或等连接空闲后 mongo_begin 开一个新事务（begin 会递增 txnNumber 并重建 options）</returns>
-int32_t mongo_commit(mongo_session *session, char *options);
+int32_t mongo_commit(mongo_session *session, char *options, size_t optlens);
 /// <summary>
 /// 事务回滚
 /// </summary>
 /// <param name="session">mongo_session</param>
 /// <param name="options">可选 其他参数 document (writeConcern comment)</param>
+/// <param name="optlens">options 缓冲的实际字节数;options 为 NULL 时忽略</param>
 /// <returns>ERR_OK 成功。状态保留/释放的时机、以及连接不再绑定该 session 时的处置同 mongo_commit</returns>
-int32_t mongo_rollback(mongo_session *session, char *options);
+int32_t mongo_rollback(mongo_session *session, char *options, size_t optlens);
 /// <summary>
 /// kcp 同步建立会话:kcp_start 后挂起当前协程,等 event 线程实际建会话完成(或 conv 冲突失败)后返回;须在协程内调用。
 /// 唤醒 sess 由本函数内部生成(每次新会话一个,故 stop 后重启不会被上一会话的 CLOSE 击穿)。

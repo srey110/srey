@@ -112,7 +112,7 @@ static void test_mongo_pack_hello(CuTest *tc) {
     mongo_ctx mongo;
     _mongo_test_init(&mongo);
     size_t size = 0;
-    void *pack = mongo_pack_hello(&mongo, NULL, &size);
+    void *pack = mongo_pack_hello(&mongo, NULL, 0, &size);
     char *bson = _assert_msg_head(tc, pack, size);
     size_t blens = size - _MSG_HEAD_LENS;
     int32_t err;
@@ -142,7 +142,7 @@ static void test_mongo_pack_drop(CuTest *tc) {
     mongo_ctx mongo;
     _mongo_test_init(&mongo);
     size_t size = 0;
-    void *pack = mongo_pack_drop(&mongo, NULL, &size);
+    void *pack = mongo_pack_drop(&mongo, NULL, 0, &size);
     char *bson = _assert_msg_head(tc, pack, size);
     size_t blens = size - _MSG_HEAD_LENS;
     CuAssertStrEquals(tc, "testcoll", _bson_find_utf8(bson, blens, "drop"));
@@ -165,7 +165,7 @@ static void test_mongo_pack_insert(CuTest *tc) {
     bson_append_end(&doc);
 
     size_t size = 0;
-    void *pack = mongo_pack_insert(&mongo, doc.doc.data, doc.doc.offset, NULL, &size);
+    void *pack = mongo_pack_insert(&mongo, doc.doc.data, doc.doc.offset, NULL, 0, &size);
     char *bson = _assert_msg_head(tc, pack, size);
     size_t blens = size - _MSG_HEAD_LENS;
     CuAssertStrEquals(tc, "testcoll", _bson_find_utf8(bson, blens, "insert"));
@@ -205,22 +205,22 @@ static void test_mongo_pack_oversize_options(CuTest *tc) {
     opts[2] = (char)0x01;
 
     size = 12345;
-    pack = mongo_pack_insert(&mongo, NULL, 0, opts, &size);
+    pack = mongo_pack_insert(&mongo, NULL, 0, opts, 70000, &size);
     CuAssertTrue(tc, NULL == pack);
     CuAssertTrue(tc, 0 == size);
 
     size = 12345;
-    pack = mongo_pack_find(&mongo, NULL, 0, opts, &size);
+    pack = mongo_pack_find(&mongo, NULL, 0, opts, 70000, &size);
     CuAssertTrue(tc, NULL == pack);
     CuAssertTrue(tc, 0 == size);
 
     size = 12345;
-    pack = mongo_pack_drop(&mongo, opts, &size);
+    pack = mongo_pack_drop(&mongo, opts, 70000, &size);
     CuAssertTrue(tc, NULL == pack);
     CuAssertTrue(tc, 0 == size);
 
     size = 0;
-    pack = mongo_pack_drop(&mongo, NULL, &size);
+    pack = mongo_pack_drop(&mongo, NULL, 0, &size);
     CuAssertTrue(tc, NULL != pack);
     CuAssertTrue(tc, size > 0);
     FREE(pack);
@@ -241,20 +241,20 @@ static void test_mongo_pack_update_delete_bulk(CuTest *tc) {
 
     size_t size = 0;
     // update
-    void *pack = mongo_pack_update(&mongo, arr.doc.data, arr.doc.offset, NULL, &size);
+    void *pack = mongo_pack_update(&mongo, arr.doc.data, arr.doc.offset, NULL, 0, &size);
     char *bson = _assert_msg_head(tc, pack, size);
     CuAssertStrEquals(tc, "testcoll", _bson_find_utf8(bson, size - _MSG_HEAD_LENS, "update"));
     FREE(pack);
 
     // delete
-    pack = mongo_pack_delete(&mongo, arr.doc.data, arr.doc.offset, NULL, &size);
+    pack = mongo_pack_delete(&mongo, arr.doc.data, arr.doc.offset, NULL, 0, &size);
     bson = _assert_msg_head(tc, pack, size);
     CuAssertStrEquals(tc, "testcoll", _bson_find_utf8(bson, size - _MSG_HEAD_LENS, "delete"));
     FREE(pack);
 
     // bulkwrite：bulkWrite:1 而非 utf8
     pack = mongo_pack_bulkwrite(&mongo, arr.doc.data, arr.doc.offset,
-                                arr.doc.data, arr.doc.offset, NULL, &size);
+                                arr.doc.data, arr.doc.offset, NULL, 0, &size);
     bson = _assert_msg_head(tc, pack, size);
     int32_t err;
     CuAssertTrue(tc, 1.0 == _bson_find_number(bson, size - _MSG_HEAD_LENS, "bulkWrite", &err));
@@ -271,7 +271,7 @@ static void test_mongo_pack_find(CuTest *tc) {
     size_t size = 0;
 
     // filter=NULL：仅含 find 字段
-    void *pack = mongo_pack_find(&mongo, NULL, 0, NULL, &size);
+    void *pack = mongo_pack_find(&mongo, NULL, 0, NULL, 0, &size);
     char *bson = _assert_msg_head(tc, pack, size);
     CuAssertStrEquals(tc, "testcoll", _bson_find_utf8(bson, size - _MSG_HEAD_LENS, "find"));
     FREE(pack);
@@ -282,7 +282,7 @@ static void test_mongo_pack_find(CuTest *tc) {
     bson_append_utf8(&f, "name", "tom");
     bson_append_end(&f);
 
-    pack = mongo_pack_find(&mongo, f.doc.data, f.doc.offset, NULL, &size);
+    pack = mongo_pack_find(&mongo, f.doc.data, f.doc.offset, NULL, 0, &size);
     bson = _assert_msg_head(tc, pack, size);
     size_t blens = size - _MSG_HEAD_LENS;
     bson_ctx b;
@@ -316,32 +316,32 @@ static void test_mongo_pack_misc(CuTest *tc) {
 
     size_t size = 0;
     // aggregate：含 aggregate + pipeline array + cursor document
-    void *pack = mongo_pack_aggregate(&mongo, arr.doc.data, arr.doc.offset, NULL, &size);
+    void *pack = mongo_pack_aggregate(&mongo, arr.doc.data, arr.doc.offset, NULL, 0, &size);
     char *bson = _assert_msg_head(tc, pack, size);
     CuAssertStrEquals(tc, "testcoll", _bson_find_utf8(bson, size - _MSG_HEAD_LENS, "aggregate"));
     FREE(pack);
 
     // getmore：含 getMore (int64) + collection
-    pack = mongo_pack_getmore(&mongo, 0x12345678abcdLL, NULL, &size);
+    pack = mongo_pack_getmore(&mongo, 0x12345678abcdLL, NULL, 0, &size);
     bson = _assert_msg_head(tc, pack, size);
     CuAssertStrEquals(tc, "testcoll", _bson_find_utf8(bson, size - _MSG_HEAD_LENS, "collection"));
     FREE(pack);
 
     // killcursors：utf8 "killCursors":"<collection>"
-    pack = mongo_pack_killcursors(&mongo, arr.doc.data, arr.doc.offset, NULL, &size);
+    pack = mongo_pack_killcursors(&mongo, arr.doc.data, arr.doc.offset, NULL, 0, &size);
     bson = _assert_msg_head(tc, pack, size);
     CuAssertStrEquals(tc, "testcoll", _bson_find_utf8(bson, size - _MSG_HEAD_LENS, "killCursors"));
     FREE(pack);
 
     // distinct：query=NULL 分支
-    pack = mongo_pack_distinct(&mongo, "name", NULL, 0, NULL, &size);
+    pack = mongo_pack_distinct(&mongo, "name", NULL, 0, NULL, 0, &size);
     bson = _assert_msg_head(tc, pack, size);
     CuAssertStrEquals(tc, "testcoll", _bson_find_utf8(bson, size - _MSG_HEAD_LENS, "distinct"));
     CuAssertStrEquals(tc, "name",     _bson_find_utf8(bson, size - _MSG_HEAD_LENS, "key"));
     FREE(pack);
 
     // count：query=NULL
-    pack = mongo_pack_count(&mongo, NULL, 0, NULL, &size);
+    pack = mongo_pack_count(&mongo, NULL, 0, NULL, 0, &size);
     bson = _assert_msg_head(tc, pack, size);
     CuAssertStrEquals(tc, "testcoll", _bson_find_utf8(bson, size - _MSG_HEAD_LENS, "count"));
     FREE(pack);
@@ -362,7 +362,7 @@ static void test_mongo_pack_findandmodify(CuTest *tc) {
     size_t size = 0;
     // remove=1 分支
     void *pack = mongo_pack_findandmodify(&mongo, body.doc.data, body.doc.offset,
-                                          1 /*remove*/, 0, NULL, 0, NULL, &size);
+                                          1 /*remove*/, 0, NULL, 0, NULL, 0, &size);
     char *bson = _assert_msg_head(tc, pack, size);
     CuAssertStrEquals(tc, "testcoll",
         _bson_find_utf8(bson, size - _MSG_HEAD_LENS, "findAndModify"));
@@ -370,7 +370,7 @@ static void test_mongo_pack_findandmodify(CuTest *tc) {
 
     // remove=0, pipeline=0：update 为 document
     pack = mongo_pack_findandmodify(&mongo, body.doc.data, body.doc.offset,
-                                    0, 0 /*pipeline*/, body.doc.data, body.doc.offset, NULL, &size);
+                                    0, 0 /*pipeline*/, body.doc.data, body.doc.offset, NULL, 0, &size);
     bson = _assert_msg_head(tc, pack, size);
     bson_ctx b;
     bson_init(&b, bson, size - _MSG_HEAD_LENS);
@@ -389,7 +389,7 @@ static void test_mongo_pack_findandmodify(CuTest *tc) {
 
     // remove=0, pipeline=1：update 为 array
     pack = mongo_pack_findandmodify(&mongo, body.doc.data, body.doc.offset,
-                                    0, 1 /*pipeline*/, body.doc.data, body.doc.offset, NULL, &size);
+                                    0, 1 /*pipeline*/, body.doc.data, body.doc.offset, NULL, 0, &size);
     bson = _assert_msg_head(tc, pack, size);
     bson_init(&b, bson, size - _MSG_HEAD_LENS);
     bson_iter_init(&it, &b);
@@ -405,7 +405,7 @@ static void test_mongo_pack_findandmodify(CuTest *tc) {
     FREE(pack);
 
     // query=NULL 分支
-    pack = mongo_pack_findandmodify(&mongo, NULL, 0, 1, 0, NULL, 0, NULL, &size);
+    pack = mongo_pack_findandmodify(&mongo, NULL, 0, 1, 0, NULL, 0, NULL, 0, &size);
     bson = _assert_msg_head(tc, pack, size);
     CuAssertStrEquals(tc, "testcoll",
         _bson_find_utf8(bson, size - _MSG_HEAD_LENS, "findAndModify"));
@@ -427,13 +427,13 @@ static void test_mongo_pack_indexes(CuTest *tc) {
     bson_append_end(&arr);
 
     size_t size = 0;
-    void *pack = mongo_pack_createindexes(&mongo, arr.doc.data, arr.doc.offset, NULL, &size);
+    void *pack = mongo_pack_createindexes(&mongo, arr.doc.data, arr.doc.offset, NULL, 0, &size);
     char *bson = _assert_msg_head(tc, pack, size);
     CuAssertStrEquals(tc, "testcoll",
         _bson_find_utf8(bson, size - _MSG_HEAD_LENS, "createIndexes"));
     FREE(pack);
 
-    pack = mongo_pack_dropindexes(&mongo, arr.doc.data, arr.doc.offset, NULL, &size);
+    pack = mongo_pack_dropindexes(&mongo, arr.doc.data, arr.doc.offset, NULL, 0, &size);
     bson = _assert_msg_head(tc, pack, size);
     CuAssertStrEquals(tc, "testcoll",
         _bson_find_utf8(bson, size - _MSG_HEAD_LENS, "dropIndexes"));
@@ -470,11 +470,13 @@ static void test_mongo_pack_session(CuTest *tc) {
     }
 
     // mongo_transaction_options：含 lsid/txnNumber/autocommit
-    char *opts = mongo_transaction_options(&session);
+    size_t topts_lens = 0;
+    char *opts = mongo_transaction_options(&session, &topts_lens);
     CuAssertPtrNotNull(tc, opts);
-    // BSON 头 4 字节即为文档长度
+    // BSON 头 4 字节即为文档长度，出参给的缓冲长度须与之一致
     int32_t opts_lens = _read_le32(opts, 0);
     CuAssertTrue(tc, opts_lens > 0);
+    CuAssertTrue(tc, topts_lens == (size_t)opts_lens);
     bson_ctx b;
     bson_iter it;
     bson_iter found;
@@ -528,14 +530,14 @@ static void test_mongo_pack_session(CuTest *tc) {
     FREE(pack);
 
     // commit/abort transaction
-    pack = mongo_pack_committransaction(&session, NULL, &size);
+    pack = mongo_pack_committransaction(&session, NULL, 0, &size);
     bson = _assert_msg_head(tc, pack, size);
     int32_t err;
     CuAssertTrue(tc, 1.0 == _bson_find_number(bson, size - _MSG_HEAD_LENS, "commitTransaction", &err));
     CuAssertIntEquals(tc, 0, err);
     FREE(pack);
 
-    pack = mongo_pack_aborttransaction(&session, NULL, &size);
+    pack = mongo_pack_aborttransaction(&session, NULL, 0, &size);
     bson = _assert_msg_head(tc, pack, size);
     CuAssertTrue(tc, 1.0 == _bson_find_number(bson, size - _MSG_HEAD_LENS, "abortTransaction", &err));
     CuAssertIntEquals(tc, 0, err);

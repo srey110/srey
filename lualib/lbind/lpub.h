@@ -97,6 +97,30 @@ int32_t global_string(lua_State *lua, const char *name, char *buf, size_t bufsiz
 void *lpub_check_buf_idx(lua_State *lua, int32_t *idx, size_t *size, int32_t *copy);
 void *lpub_check_buf(lua_State *lua, int32_t idx, size_t *size, int32_t *copy);
 /// <summary>
+/// 校验随 lightuserdata 一起传进来的字节数。负数转成 size_t 后是个天文数字:bson_iter_init 唯一的
+/// 边界就是拿文档头声明的长度跟 doc.size 比,doc.size 一旦成了 SIZE_MAX 那道判定永不触发,
+/// 文档头写多长就往后读多长;超 INT32_MAX 则在组包侧撞断言。两者都在这里挡成可被 pcall 捕获的 Lua 错
+/// </summary>
+/// <param name="lua">Lua 栈</param>
+/// <param name="idx">长度在栈中的位置</param>
+/// <returns>字节数;越界走 luaL_argerror(longjmp,不返回)</returns>
+size_t lpub_check_bson_lens(lua_State *lua, int32_t idx);
+/// <summary>
+/// 取 BSON 二进制参数:string 自带长度;lightuserdata 从 idx+1 读长度。取值本身走 lpub_check_buf,
+/// 这里只补它没有的上界——它服务的是收发缓冲,只要求非负。
+/// 上界两条分支都得卡:Lua 字符串自身能远超 INT32_MAX,只卡 lightuserdata 等于给字符串留了后门。
+/// lightuserdata 那条先自己把长度验一遍,是为了让越界报错统一说 BSON 的口径,而不是先撞上
+/// lpub_check_buf 那句只提非负的 "size must be >= 0";验过之后 lpub 那道判定必然通过。
+/// 末尾那道只对 string 分支有意义,越界的就是参数本身,故报在 idx 上。
+/// 注意只挡得住"长度本身非法",挡不住"长度合法但比缓冲实际长"——(指针, 长度) 这种入参形状
+/// 天然只能信调用方
+/// </summary>
+/// <param name="lua">Lua 栈</param>
+/// <param name="idx">data 在栈中的位置</param>
+/// <param name="lens">输出:字节数</param>
+/// <returns>data 指针;不合格走 luaL_argerror(longjmp,不返回)</returns>
+char *lpub_check_bson_bin(lua_State *lua, int32_t idx, size_t *lens);
+/// <summary>
 /// 取栈位 idx 的 task 标识：string 视为 task 名，经 task_find_name 换成句柄（查不到得 INVALID_TNAME，
 /// 由调用方后续的 task_grab 判空）；其余按 integer 当句柄直取（非整数由 luaL_checkinteger 抛错）。
 /// 各绑定对外都是"名字或句柄二选一"，判定收在这一处

@@ -52,7 +52,11 @@ int32_t mpq_trypush(mpq_ctx *q, const void *data);
 /// </summary>
 /// <param name="q">mpq_ctx</param>
 /// <param name="out">出参：接收出队元素的缓冲（至少 elsize 字节），仅 ERR_OK 时有效</param>
-/// <returns>ERR_OK 成功，ERR_FAILED 队列为空</returns>
+/// <returns>ERR_OK 出队成功；ERR_FAILED 队列确实为空；
+/// 1 队列看似空，但有槽位已被生产者抢占、尚未发布——更早入队的元素还在路上。
+/// 只关心"有没有取到"的调用方按 ERR_OK 判即可，两种非 OK 都当空处理；
+/// 队列之外另有一层数据源的调用方（如 fsqu 的溢出层）必须区分：报 1 时那一层里
+/// 更晚入队的元素不能抢在这个在途元素之前取，否则顺序就反了</returns>
 int32_t mpq_pop(mpq_ctx *q, void *out);
 /// <summary>
 /// 出队（单消费者）：拷贝 elsize 字节到 out。消费者侧独占 deq.v、无 CAS，
@@ -61,7 +65,11 @@ int32_t mpq_pop(mpq_ctx *q, void *out);
 /// </summary>
 /// <param name="q">mpq_ctx</param>
 /// <param name="out">出参：接收出队元素的缓冲（至少 elsize 字节），仅 ERR_OK 时有效</param>
-/// <returns>ERR_OK 成功，ERR_FAILED 队列为空</returns>
+/// <returns>ERR_OK 出队成功；ERR_FAILED 队列确实为空；
+/// 1 队列看似空，但有槽位已被生产者抢占、尚未发布——更早入队的元素还在路上。
+/// 只关心"有没有取到"的调用方按 ERR_OK 判即可，两种非 OK 都当空处理；
+/// 队列之外另有一层数据源的调用方（如 fsqu 的溢出层）必须区分：报 1 时那一层里
+/// 更晚入队的元素不能抢在这个在途元素之前取，否则顺序就反了</returns>
 int32_t mpq_pop_sc(mpq_ctx *q, void *out);
 /// <summary>
 /// 返回当前队列元素数量的近似值，并发下不精确。

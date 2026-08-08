@@ -7,6 +7,7 @@
 #include "protocol/mysql/mysql_macro.h"
 
 struct mpack_ctx;
+struct coro_serial_ctx;
 
 // 客户端连接参数
 typedef struct mysql_client_param {
@@ -40,6 +41,7 @@ typedef struct mysql_ctx {
     int64_t affected_rows;  // 最近一次操作影响的行数
     struct mpack_ctx *mpack; // 正在积累的数据包上下文（多包场景）
     struct task_ctx *task;   // 所属任务上下文
+    struct coro_serial_ctx *serial;// 命令串行化执行器，多协程共用一条连接时按 FIFO 排队
     atomic_t ref;            // Lua handle 引用计数：0=C 借用(事件层不 free 块)，>0=Lua 堆持有者数
     mysql_server_param server; // 服务器握手参数
     mysql_client_param client; // 客户端连接参数

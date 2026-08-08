@@ -123,6 +123,38 @@ runner.run("db_mongo", function(t)
         sess:close()
     end
 
+    -- 并发：多协程在同一条连接上并发命令。锁点在 _wsend/_rsend 两个漏斗上，
+    -- 交错时响应会对错协程，count 拿回来的就不是自己那条
+    local N, ROUNDS = 4, 6
+    local got, done = {}, 0
+    for i = 1, N do
+        srey.fork(function()
+            for _ = 1, ROUNDS do
+                local ok = mg:ping()
+                if not ok then
+                    got[i] = "ping failed"
+                    done = done + 1
+                    return
+                end
+                local ceptr, cesz = bson.empty()
+                local n = mg:count("srey_test", ceptr, cesz)
+                if not n or "number" ~= type(n) then
+                    got[i] = "count failed: " .. tostring(n)
+                    done = done + 1
+                    return
+                end
+            end
+            got[i] = true
+            done = done + 1
+        end)
+    end
+    while done < N do
+        srey.sleep(20)
+    end
+    for i = 1, N do
+        t:check(true == got[i], "mongo 并发协程 " .. i .. ": " .. tostring(got[i]))
+    end
+
     mg:quit()
 end)
 end)

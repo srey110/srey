@@ -173,8 +173,9 @@ void *mysql_pack_stmt_close(mysql_stmt_ctx *stmt, size_t *size) {
     binary_set_uint8(&bwriter, MYSQL_STMT_CLOSE);
     binary_set_integer(&bwriter, stmt->stmt_id, 4, 1);
     *size = bwriter.offset;
-    // 释放语句内部资源并销毁 stmt 对象
+    return bwriter.data;
+}
+void mysql_stmt_free(mysql_stmt_ctx *stmt) {
     _mpack_stm_free(stmt);
     FREE(stmt);
-    return bwriter.data;
 }

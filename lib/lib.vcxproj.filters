@@ -205,6 +205,9 @@
     <ClInclude Include="utils\utils.h">
       <Filter>utils</Filter>
     </ClInclude>
+    <ClInclude Include="utils\contenttype.h">
+      <Filter>utils</Filter>
+    </ClInclude>
     <ClInclude Include="protocol\mysql\mysql.h">
       <Filter>protocol\mysql</Filter>
     </ClInclude>
@@ -529,6 +532,9 @@
       <Filter>utils</Filter>
     </ClCompile>
     <ClCompile Include="utils\utils.c">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="utils\contenttype.c">
       <Filter>utils</Filter>
     </ClCompile>
     <ClCompile Include="protocol\mysql\mysql.c">

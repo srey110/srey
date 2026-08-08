@@ -61,32 +61,46 @@ runner.run("db_pgsql", function(t)
 
     -- COPY IN
     local data = "10\tcharlie\t60.0\n11\tdiana\t85.5\n12\teric\t95.25\n"
-    local fmt = pg:copy_in_begin("copy srey_test (id, name, score) from stdin")
-    if fmt then
-        -- 逐块检查返回值：服务端对少收几块无感知，某块被丢弃后 copy_in_done 照样回 CommandComplete，
-        -- 不检查的话一次残缺的 COPY 会被报成成功
-        t:check(pg:copy_in_data(data, #data), "copy_in_data 返 true")
-        t:check(pg:copy_in_done(), "copy_in_done")
-        -- data 为 nil 属调用方错误，须返 false 且 erro() 说明原因
-        t:check(not pg:copy_in_data(nil), "copy_in_data(nil) 返 false")
-        t:check(pg:erro() ~= "", "copy_in_data(nil) 写了 err")
-    else
-        t:fail("copy_in_begin")
-    end
+    -- copy_in 已折叠为一个方法：producer 返回数据块，返回 nil 收尾
+    local sent = false
+    local gotncol
+    t:check(pg:copy_in("copy srey_test (id, name, score) from stdin", function(_, ncol)
+        gotncol = ncol
+        if sent then
+            return nil
+        end
+        sent = true
+        return data, #data
+    end), "copy_in 正常完成")
+    t:eq(3, gotncol, "producer 收到服务端 CopyInResponse 的列数")
+    -- producer 抛错：库须替调用方发 CopyFail 把服务端拉出 COPY IN 模式，连接仍可用
+    t:check(not pg:copy_in("copy srey_test (id, name, score) from stdin", function()
+        error("producer boom")
+    end), "producer 抛错返 false")
+    t:check(pg:erro() ~= "", "producer 抛错写了 err")
+    t:check(pg:query("select 1"), "producer 抛错后连接仍可用")
+    -- producer 不是函数属调用方错误
+    t:check(not pg:copy_in("copy srey_test (id, name, score) from stdin", nil),
+            "producer 非函数返 false")
+    t:check(pg:erro() ~= "", "producer 非函数写了 err")
+    -- producer 返回的块类型不对：抛点在组包/发送而不在 producer 内，同样要走 CopyFail
+    t:check(not pg:copy_in("copy srey_test (id, name, score) from stdin", function()
+        return 42
+    end), "producer 返回非法块返 false")
+    t:check(pg:erro() ~= "", "非法块写了 err")
+    t:check(pg:query("select 1"), "非法块后连接仍可用")
 
     -- COPY IN 中止：CopyFail 的正常应答就是 ErrorResponse，所以"中止成功"也走 ERR 包。
     -- 服务端文本走第二返回值而不写 err —— 写了的话 erro() 会把一次正常中止报成失败，
     -- 成为本文件"err 非空 == 上一次操作失败"这条读法的唯一例外
-    if pg:copy_in_begin("copy srey_test (id, name, score) from stdin") then
-        local aok, areason = pg:copy_in_abort("aborted by test")
-        t:check(aok, "copy_in_abort 返 true")
-        t:check(areason and #areason > 0, "服务端 ErrorResponse 文本走第二返回值")
-        t:eq("", pg:erro(), "成功路径不写 err")
-        -- 中止后连接须仍可用（CopyFail 之后服务端会回 ReadyForQuery）
-        t:check(pg:query("select 1"), "abort 后连接仍可用")
-    else
-        t:fail("copy_in_begin (abort path)")
-    end
+    local aok, areason = pg:copy_in("copy srey_test (id, name, score) from stdin", function()
+        return false, "aborted by test"-- producer 返 (false, reason) 即主动中止
+    end)
+    t:check(aok, "copy_in 主动中止返 true")
+    t:check(areason and #areason > 0, "服务端 ErrorResponse 文本走第二返回值")
+    t:eq("", pg:erro(), "成功路径不写 err")
+    -- 中止后连接须仍可用（CopyFail 之后服务端会回 ReadyForQuery）
+    t:check(pg:query("select 1"), "abort 后连接仍可用")
 
     -- COPY OUT
     local out, outlen = pg:copy_out("copy srey_test to stdout")
@@ -112,6 +126,38 @@ runner.run("db_pgsql", function(t)
     -- ping 自动重连：quit 关闭连接后 ping 应检测到死连接并重连
     pg:quit()
     t:check(pg:ping(), "pgsql ping auto-reconnect after quit")
+
+    -- 并发：多协程同一条连接各查自己的常量，回读必须原样。没有串行化时命令交错，
+    -- 一条 pgsql 命令要读到 ReadyForQuery 才算完，交错会让响应对错协程
+    local N, ROUNDS = 4, 6
+    local got, done = {}, 0
+    for i = 1, N do
+        srey.fork(function()
+            local want = 1000 + i
+            for _ = 1, ROUNDS do
+                local rd = pg:query(string.format("select %d as v", want))
+                if not rd or "boolean" == type(rd) then
+                    got[i] = "query failed"
+                    done = done + 1
+                    return
+                end
+                local rok, v = rd:integer("v")
+                if not rok or v ~= want then
+                    got[i] = string.format("got %s want %d", tostring(v), want)
+                    done = done + 1
+                    return
+                end
+            end
+            got[i] = true
+            done = done + 1
+        end)
+    end
+    while done < N do
+        srey.sleep(20)
+    end
+    for i = 1, N do
+        t:check(true == got[i], "pgsql 并发协程 " .. i .. ": " .. tostring(got[i]))
+    end
 
     pg:quit()
 end)

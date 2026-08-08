@@ -807,7 +807,10 @@ static void *_websock_pack_frame(int32_t mask, uint8_t fin, uint8_t prot,
         return _websock_create_pack(fin, prot, NULL, data, dlens, size);
     }
     char key[MASK_KEY_LENS];
-    csprng_rand(key, MASK_KEY_LENS);
+    if (ERR_OK != csprng_rand(key, MASK_KEY_LENS)) {
+        *size = 0;
+        return NULL;
+    }
     return _websock_create_pack(fin, prot, key, data, dlens, size);
 }
 void *websock_pack_ping(int32_t mask, size_t *size) {
@@ -844,12 +847,17 @@ char *websock_data(websock_pack_ctx *pack, size_t *lens) {
     *lens = pack->dlens;
     return pack->data;
 }
-//生成握手签名
-static void _websock_sign_keys(char bs64key[B64EN_SIZE(SIGN_KEY_LENS)], char bs64sha1key[B64EN_SIZE(SHA1_BLOCK_SIZE)]) {
-    char key[SIGN_KEY_LENS + 1];
-    randstr(key, SIGN_KEY_LENS);
+// 生成握手签名。nonce 走 csprng_rand 而非 randstr：后者底层是 xorshift64,种子只有
+// 线程 ID 异或时间戳,不是密码学随机源；同文件的掩码 key 一直用的就是 csprng_rand。
+// 取不到熵就让整条握手失败（调用方已在判 NULL），既不 abort 也不退化到弱随机源
+static int32_t _websock_sign_keys(char bs64key[B64EN_SIZE(SIGN_KEY_LENS)], char bs64sha1key[B64EN_SIZE(SHA1_BLOCK_SIZE)]) {
+    char key[SIGN_KEY_LENS];
+    if (ERR_OK != csprng_rand(key, SIGN_KEY_LENS)) {
+        return ERR_FAILED;
+    }
     bs64_encode(key, SIGN_KEY_LENS, bs64key);
     _websock_sign(bs64key, strlen(bs64key), bs64sha1key);
+    return ERR_OK;
 }
 // ws_hs_ctx 初始化
 static ws_hs_ctx *_websock_hsctx_init(const char *secprot, size_t splens) {
@@ -881,7 +889,11 @@ char *websock_pack_handshake(const char *host, const char *uri, const char *secp
     http_pack_head(&bwriter, "Upgrade", "websocket");
     http_pack_head(&bwriter, "Connection", "Upgrade,Keep-Alive");
     char bs64key[B64EN_SIZE(SIGN_KEY_LENS)];
-    _websock_sign_keys(bs64key, ctx->signkey);
+    if (ERR_OK != _websock_sign_keys(bs64key, ctx->signkey)) {
+        binary_free(&bwriter);
+        FREE(ctx);
+        return NULL;
+    }
     http_pack_head(&bwriter, "Sec-WebSocket-Key", bs64key);
     http_pack_head(&bwriter, "Sec-WebSocket-Version", "13");
     if (splens > 0) {

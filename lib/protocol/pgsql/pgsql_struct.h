@@ -7,6 +7,8 @@
 #include "utils/binary.h"
 #include "protocol/pgsql/pgsql_macro.h"
 
+struct coro_serial_ctx;
+
 // pgsql 数据包上下文
 typedef struct pgpack_ctx {
     pgpack_type type;               // 数据包类型（成功/错误/通知）
@@ -61,6 +63,7 @@ typedef struct pgsql_ctx {
     struct evssl_ctx *evssl;    // SSL 上下文（不使用 SSL 时为 NULL）
     struct scram_ctx *scram;    // SCRAM 认证上下文（认证完成后释放）
     pgpack_ctx *pack;           // 当前正在累积的数据包
+    struct coro_serial_ctx *serial;// 命令串行化执行器，多协程共用一条连接时按 FIFO 排队
     sk_id sk;                   // 连接标识 fd+skid
     char ip[IP_LENS];           // 服务端 IP 地址
     char user[64];              // 登录用户名

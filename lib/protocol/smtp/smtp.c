@@ -270,8 +270,15 @@ static void _smtp_loin(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buf
     buffer_drain(buf, (size_t)crlf + CRLF_SIZE);
     char *flag;
     CALLOC(flag, 1, B64DE_SIZE(lens));
-    bs64_decode(b64flag, lens, flag);
+    // 必须查返回值：解码在中途撞上非法字符会就地返回 0，而合法前缀已经写进 flag 了。
+    // 服务端答 "334 dXNlcm5hbWU6!!!" 时前缀正好解出 "username:"，不查就照着把账号发出去
+    size_t declens = bs64_decode(b64flag, lens, flag);
     FREE(b64flag);
+    if (0 == declens) {
+        FREE(flag);
+        BIT_SET(*status, PROT_ERROR);
+        return;
+    }
     flag = strlower(flag);
     if (0 == strcmp(flag, "username:")) {
         FREE(flag);

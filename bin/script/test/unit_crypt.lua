@@ -71,6 +71,11 @@ runner.run("crypt", function(t)
         -- 二进制安全（含 \0）
         local bin = "\x00\x01\x02\xff"
         t:eq(bin, base64.decode(base64.encode(bin)), "base64 binary safe")
+        -- 畸形输入返 nil，而不是空串——空串是"空输入"的合法结果，两者必须分得开，
+        -- 否则调用方那句 if d then use(d) end 会把损坏数据当成合法内容收下
+        t:eq(nil, base64.decode("dXNlcm5hbWU6!!!"), "base64 非法字符返 nil")
+        t:eq(nil, base64.decode("SGVs=bG8="), "base64 填充后仍有数据返 nil")
+        t:eq("", base64.decode(""), "base64 空输入仍解出空串")
     end
 
     -- ── crc ────────────────────────────────────────────────────────────
@@ -135,6 +140,29 @@ runner.run("crypt", function(t)
         h:update("Hi There")
         local out2 = h:final()
         t:eq(srey.hex(out, #out, true), srey.hex(out2, #out2, true), "HMAC reset round-trip")
+
+        -- final 之后上下文自动复位且密钥仍在：不 reset 直接算下一条消息也对。
+        -- 修复前这里对任何密钥都返回同一个常量，`for m in msgs do h:update(m); h:final() end`
+        -- 这种写法会给每条消息发出相同的 tag
+        h:update("Hi There")
+        local out3 = h:final()
+        t:eq(srey.hex(out, #out, true), srey.hex(out3, #out3, true), "HMAC final 后无需 reset")
+        local h2 = hmac.new(DIGEST_TYPE.SHA256, string.rep("\x0c", 20))
+        h2:update("Hi There")
+        h2:final()
+        h2:update("Hi There")
+        local other = h2:final()
+        t:check(srey.hex(out3, #out3, true) ~= srey.hex(other, #other, true), "不同密钥的第二轮 final 不相同")
+    end
+    do
+        -- digest:final 同样自动复位，第二条消息不必先 reset
+        local d = digest.new(DIGEST_TYPE.SHA256)
+        d:update("abc")
+        d:final()
+        d:update("abc")
+        local again = d:final()
+        t:eq("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+             srey.hex(again, #again, true), "digest final 后无需 reset")
     end
 
     -- ── cipher ─────────────────────────────────────────────────────────
@@ -151,6 +179,18 @@ runner.run("crypt", function(t)
         dec:padding(PADDING_MODEL.PKCS57)
         local pt = dec:dofinal(ct)
         t:eq(plain, pt, "AES-128 ECB round-trip")
+
+        -- 填充校验失败返 nil 而不是空串：加密空明文再解回来本就是空串，
+        -- 两者都当"长度 0"的话，伪造的密文能通过 `if pt then` 这种判断
+        local empty_enc = cipher.new(CIPHER_TYPE.AES, CIPHER_MODEL.ECB, key, 128, 1)
+        empty_enc:padding(PADDING_MODEL.PKCS57)
+        local empty_ct = empty_enc:dofinal("")
+        t:eq(16, #empty_ct, "空明文加密得一个整填充块")
+        local empty_dec = cipher.new(CIPHER_TYPE.AES, CIPHER_MODEL.ECB, key, 128, 0)
+        empty_dec:padding(PADDING_MODEL.PKCS57)
+        t:eq("", empty_dec:dofinal(empty_ct), "空明文解回来是空串（成功）")
+        local forged = string.char(empty_ct:byte(1) ~ 0xFF) .. empty_ct:sub(2)
+        t:eq(nil, empty_dec:dofinal(forged), "填充校验失败返 nil")
     end
     do
         -- AES-128 CBC with IV

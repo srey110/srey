@@ -218,7 +218,6 @@ static void _scram_salt_password(scram_ctx *scram, const char *password) {
     memcpy(scram->saltedpwd, hash, scram->hslens);
     int32_t j;
     for (int32_t i = 1; i < scram->iter; i++) {
-        hmac_reset(&hmac);
         hmac_update(&hmac, hash, scram->hslens);
         hmac_final(&hmac, hash);
         for (j = 0; j < scram->hslens; j++) {
@@ -462,7 +461,9 @@ static int32_t _scram_parse_server_first_message(scram_ctx *scram, char *msg, si
     if (NULL == nonce) {
         return ERR_FAILED;
     }
-    if (lens < strlen(scram->local_nonce)
+    // 判 <= 而非 <：r= 恰好等于本地 nonce 意味着服务端一个随机字节都没贡献，
+    // 前缀校验照样通过。RFC 5802 客户端侧的显式 MUST 只有前缀这一条，这里多挡一道
+    if (lens <= strlen(scram->local_nonce)
         || 0 != memcmp(nonce, scram->local_nonce, strlen(scram->local_nonce))) {
         return ERR_FAILED;
     }

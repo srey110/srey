@@ -343,6 +343,18 @@ runner.run("bson", function(t)
         t:eq(true, iter:find("js"), "iter find js")
         t:eq("function(){return 1;}", iter:jscode(), "iter:jscode code")
 
+        -- jscode 与 utf8 一样按长度取：Lua 字符串能装 NUL，用 lua_pushstring 会截在 NUL 处
+        local nb = bson.new()
+        nb:jscode("j", "a\0b")
+        nb:utf8("s", "x\0y")
+        nb["end"](nb)
+        local nit = bson.iter.new(nb)
+        t:eq(true, nit:find("j"), "iter find 含 NUL 的 js")
+        t:eq("a\0b", nit:jscode(), "iter:jscode 内嵌 NUL 不截断")
+        nit = bson.iter.new(nb)
+        t:eq(true, nit:find("s"), "iter find 含 NUL 的 utf8")
+        t:eq("x\0y", nit:utf8(), "iter:utf8 内嵌 NUL 不截断")
+
         iter = bson.iter.new(b)
         t:eq(true, iter:find("ts"), "iter find ts")
         local ts, inc = iter:timestamp()
@@ -534,6 +546,16 @@ runner.run("bson", function(t)
         t:eq(nil, bson.decode(b).a, "被拒的 cat 未落盘")
 
         t:eq(true, pcall(function() bson.new():cat(ptr, sz) end), "cat 真实长度正常")
+
+        -- cat 的拷贝长度取自文档自身的 4 字节头,故长度合法还不够,还得确认那个自声明值没超出缓冲
+        t:eq(false, pcall(function() bson.new():cat(ptr, 5) end),   "cat 文档头声明长度超出缓冲被拒")
+        t:eq(false, pcall(function() bson.new():cat("abcd") end),   "cat 不足 5 字节被拒")
+        -- 零长在 C 层是有意的空操作，但对绑定调用方是错：不拒的话会拼出个格式合法却
+        -- 一个字段都没有的文档，直到服务端才发现
+        t:eq(false, pcall(function() bson.new():cat("") end),       "cat 零长被拒")
+        t:eq(false, pcall(function() bson.new():cat(ptr, 0) end),   "cat 零长(lightuserdata)被拒")
+        local _, cerr = pcall(function() bson.new():cat(ptr, 5) end)
+        t:check(type(cerr) == "string" and nil ~= cerr:find("document rejected", 1, true), "cat 越界报错点明整篇被拒")
 
         -- 六处取值都折到 lpub_check_buf 上了，非 string/lightuserdata 仍须被拒
         t:eq(false, pcall(function() return bson.decode(42) end),           "decode 类型错被拒")

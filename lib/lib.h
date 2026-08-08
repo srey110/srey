@@ -35,6 +35,7 @@
 #include "utils/buffer.h"
 #include "utils/hash_ring.h"
 #include "utils/utils.h"
+#include "utils/contenttype.h"
 #include "utils/netaddr.h"
 #include "utils/netutils.h"
 #include "utils/load_trend.h"

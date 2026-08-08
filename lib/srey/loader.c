@@ -286,7 +286,12 @@ static void _loader_monitor_loop(void *arg) {
     uint64_t now, shrink_start = timer_cur_ms(&timer);
     while (0 == ATOMIC_GET(&loader->monitor.stop)) {
         mutex_lock(&loader->monitor.mutex);
-        cond_timedwait(&loader->monitor.cond, &loader->monitor.mutex, 5000);
+        // 必须在锁内重查 stop 再等：外层那次判定与这里加锁之间有窗口（中间还夹着
+        // _loader_monitor_check 与 pool_shrink），loader_free 若在窗口内置位并 signal，
+        // 此刻没有等待者，signal 是空操作，这里会白等满 5 秒，loader_free 卡在 thread_join
+        if (0 == ATOMIC_GET(&loader->monitor.stop)) {
+            cond_timedwait(&loader->monitor.cond, &loader->monitor.mutex, 5000);
+        }
         mutex_unlock(&loader->monitor.mutex);
         if (0 != ATOMIC_GET(&loader->monitor.stop)) {
             break;
@@ -439,8 +444,8 @@ void loader_free(loader_ctx *loader) {
         worker = &loader->worker[i];
         thread_join(worker->thread_worker);
     }
-    ATOMIC_SET(&loader->monitor.stop, 1);
     mutex_lock(&loader->monitor.mutex);
+    ATOMIC_SET(&loader->monitor.stop, 1);
     cond_signal(&loader->monitor.cond);
     mutex_unlock(&loader->monitor.mutex);
     thread_join(loader->monitor.thread_monitor);

@@ -661,6 +661,59 @@ static void test_fsqu_trypush_sticky(CuTest *tc) {
     fsqu_free(&q);
 }
 
+/* mpq_pop / mpq_pop_sc 的第三种返回值：1 表示"看似空但有槽位已被抢占尚未发布"。
+   单线程造不出抢占窗口，这里验的是它的确定端点——单线程下永远不该出现 1，
+   空队列必须是 ERR_FAILED，fsqu 的溢出层守卫就建在这个区分上 */
+static void test_mpq_pop_empty_vs_inflight(CuTest *tc) {
+    mpq_ctx q;
+    uintptr_t v, out;
+    mpq_init(&q, sizeof(uintptr_t), 8);
+
+    CuAssertIntEquals(tc, ERR_FAILED, mpq_pop(&q, &out));     /* 真空：enq == deq */
+    CuAssertIntEquals(tc, ERR_FAILED, mpq_pop_sc(&q, &out));
+    v = 1;
+    CuAssertTrue(tc, ERR_OK == mpq_trypush(&q, &v));
+    CuAssertTrue(tc, ERR_OK == mpq_pop(&q, &out) && 1 == out);
+    CuAssertIntEquals(tc, ERR_FAILED, mpq_pop(&q, &out));     /* 取完复归真空 */
+    v = 2;
+    CuAssertTrue(tc, ERR_OK == mpq_trypush(&q, &v));
+    CuAssertTrue(tc, ERR_OK == mpq_pop_sc(&q, &out) && 2 == out);
+    CuAssertIntEquals(tc, ERR_FAILED, mpq_pop_sc(&q, &out));
+    mpq_free(&q);
+}
+
+/* 溢出层守卫不得误伤正常路径：mpq 确实空了（enq == deq）时，溢出层必须照常排空。
+   守卫写错方向的话这里会一个都取不出来 */
+static void test_fsqu_ovf_drain_after_mpq_empty(CuTest *tc) {
+    fsqu_ctx q;
+    int32_t v, out;
+    uint32_t i, n;
+    int32_t batch[4];
+    fsqu_init(&q, sizeof(int32_t), 4);
+
+    for (v = 1; v <= 6; v++) {    /* 1..4 快路径，5、6 溢出层 */
+        fsqu_push(&q, &v);
+    }
+    for (v = 1; v <= 4; v++) {    /* 排空快路径，mpq 回到 enq == deq */
+        CuAssertTrue(tc, ERR_OK == fsqu_pop(&q, &out) && out == v);
+    }
+    CuAssertTrue(tc, ERR_OK == fsqu_pop(&q, &out) && 5 == out);
+    CuAssertTrue(tc, ERR_OK == fsqu_pop(&q, &out) && 6 == out);
+    fsqu_free(&q);
+
+    /* 批量路径同样：快路径与溢出层在一次 pop_batch 里按序拼齐 */
+    fsqu_init(&q, sizeof(int32_t), 2);
+    for (v = 1; v <= 4; v++) {
+        fsqu_push(&q, &v);
+    }
+    n = fsqu_pop_batch(&q, batch, 4);
+    CuAssertTrue(tc, 4 == n);
+    for (i = 0; i < 4; i++) {
+        CuAssertTrue(tc, batch[i] == (int32_t)i + 1);
+    }
+    fsqu_free(&q);
+}
+
 /* trypush 语义不受溢出层影响：满时仍返 ERR_FAILED 且不落溢出层
    （pool / log 依赖这个丢弃语义，被污染会让它们变成无界增长） */
 static void test_fsqu_trypush_no_overflow(CuTest *tc) {
@@ -1374,6 +1427,17 @@ static bool _scan_stop_cb(const void *item, void *udata) {
     return (*count < 3); /* 访问 3 个后停止 */
 }
 
+/* 故意在回调里往被扫的表里插一条，验证 scan 能检出并中止 */
+static bool _scan_insert_cb(const void *item, void *udata) {
+    struct hashmap *map = (struct hashmap *)udata;
+    (void)item;
+    _kv kv;
+    SNPRINTF(kv.key, sizeof(kv.key), "in_scan");
+    kv.val = 100;
+    hashmap_set(map, &kv);
+    return true;
+}
+
 static void test_hashmap_scan_iter(CuTest *tc) {
     struct hashmap *map = hashmap_new(sizeof(_kv), 0, 0, 0,
                                      _kv_hash, _kv_cmp, NULL, NULL);
@@ -1396,6 +1460,23 @@ static void test_hashmap_scan_iter(CuTest *tc) {
     hashmap_scan(map, _scan_stop_cb, &count);
     CuAssertTrue(tc, 3 == count);
 
+    /* 回调里增删被扫的表会让后续桶被跳过或重复访问，扩容更会换掉 buckets 数组；
+       scan 须按 version 检出并中止，而不是拿着旧数组接着扫。
+       用独立的表做，免得插进去的那条影响后面对 map 的计数断言 */
+    {
+        struct hashmap *m2 = hashmap_new(sizeof(_kv), 0, 0, 0,
+                                         _kv_hash, _kv_cmp, NULL, NULL);
+        _kv seed;
+        SNPRINTF(seed.key, sizeof(seed.key), "seed");
+        seed.val = 1;
+        hashmap_set(m2, &seed);
+        CuAssertTrue(tc, !hashmap_scan(m2, _scan_insert_cb, m2));
+        /* 不改表的回调照常走完 */
+        _scan_sum = 0;
+        CuAssertTrue(tc, hashmap_scan(m2, _scan_cb, NULL));
+        hashmap_free(m2);
+    }
+
     /* iter：用游标方式遍历所有元素 */
     size_t i = 0;
     void *item;
@@ -1404,6 +1485,30 @@ static void test_hashmap_scan_iter(CuTest *tc) {
         iter_count++;
     }
     CuAssertTrue(tc, 5 == iter_count);
+
+    /* 迭代途中新增：robin-hood 插入会把已有条目往后挪，被挪到游标之前的那个会被整个跳过，
+       所以 hashmap_iter 必须能报出"被改过"。不涨 version 时它会一声不吭地漏元素 */
+    i = 0;
+    CuAssertTrue(tc, hashmap_iter(map, &i, &item));
+    _kv mid;
+    SNPRINTF(mid.key, sizeof(mid.key), "mid");
+    mid.val = 42;
+    hashmap_set(map, &mid);
+    CuAssertTrue(tc, !hashmap_iter(map, &i, &item));
+    /* 游标归零后重新遍历一切正常，且新元素已在其中 */
+    i = 0;
+    iter_count = 0;
+    while (hashmap_iter(map, &i, &item)) {
+        iter_count++;
+    }
+    CuAssertTrue(tc, 6 == iter_count);
+
+    /* 替换不挪位置，不该判为结构性改动 */
+    i = 0;
+    CuAssertTrue(tc, hashmap_iter(map, &i, &item));
+    mid.val = 43;
+    CuAssertTrue(tc, NULL != hashmap_set(map, &mid));// 返回被替换的旧值
+    CuAssertTrue(tc, hashmap_iter(map, &i, &item));
 
     /* clear(false) 后计数为 0，仍可重新插入 */
     hashmap_clear(map, false);
@@ -1956,6 +2061,8 @@ void test_containers(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_fsqu_trypush_no_overflow);
     SUITE_ADD_TEST(suite, test_fsqu_trypush_sticky);
     SUITE_ADD_TEST(suite, test_fsqu_never_overflow_free);
+    SUITE_ADD_TEST(suite, test_mpq_pop_empty_vs_inflight);
+    SUITE_ADD_TEST(suite, test_fsqu_ovf_drain_after_mpq_empty);
     SUITE_ADD_TEST(suite, test_chan_buffered_race);
     SUITE_ADD_TEST(suite, test_hashmap);
     SUITE_ADD_TEST(suite, test_hashmap_scan_iter);

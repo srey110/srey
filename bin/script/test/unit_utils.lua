@@ -53,6 +53,14 @@ runner.run("utils", function(t)
         -- 重复添加：当前实现下重复名称应失败
         t:eq(false, ring:add(64, "node1"), "hashring add dup")
 
+        -- nreplicas 无上限时能让 C 层去要几十 GB，而 _realloc 分配失败是直接 exit 整个进程；
+        -- 负数经 (uint32_t) 转换就是 4294967295，是最容易踩到的写法
+        t:eq(false, ring:add(-1, "toobig"), "hashring add 负 nreplicas 被拒")
+        t:eq(false, ring:add(1073741824, "toobig"), "hashring add 超上限 nreplicas 被拒")
+        t:eq(false, ring:add(0, "zero"), "hashring add 零 nreplicas 被拒")
+        -- 被拒的添加不得留下残节点：同名再按合法值添加须成功
+        t:eq(true, ring:add(8, "toobig"), "被拒后同名合法添加仍成功")
+
         -- find 落点一致性（同 key 多次查询返回同一节点）
         local hit1 = ring:find("user:42")
         local hit2 = ring:find("user:42")

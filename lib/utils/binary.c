@@ -9,7 +9,11 @@ void binary_init(binary_ctx *ctx, char *buf, size_t lens, size_t inc) {
         if (0 == inc) {
             ctx->inc = BINARY_INCREASE;
         } else {
-            ctx->inc = ROUND_UP(inc, 2);
+            // 上界必须挡：inc 是 size_t，直接转 uint32_t 时 2^32 会截成 0，
+            // 而 inc==0 是"外部托管"的标记——data 从此不再被 binary_free 释放，
+            // 且任何 binary_set_* 都会撞上只读断言
+            ASSERTAB(inc <= INT32_MAX, ERRSTR_INVPARAM);
+            ctx->inc = pow2_ceil((uint32_t)(inc < 2 ? 2 : inc));
         }
         if (0 == lens) {
             ctx->size = ctx->inc;

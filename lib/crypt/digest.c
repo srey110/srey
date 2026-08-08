@@ -60,8 +60,11 @@ size_t digest_size(digest_ctx *digest) {
 void digest_update(digest_ctx *digest, const void *data, size_t lens) {
     digest->_update(digest->cur_ctx, data, lens);
 }
+// 各引擎的 _final 末尾都会 secure_zero 掉自己的 ctx（擦除中间状态），不重建 IV 的话
+// 第二次 final 就是"拿全零 IV 算空消息"，返回一个与输入无关的常量。故这里出完摘要即复位
 size_t digest_final(digest_ctx *digest, char *hash) {
     digest->_final(digest->cur_ctx, hash);
+    digest_reset(digest);
     return digest->block_lens;
 }
 void digest_reset(digest_ctx *digest) {

@@ -1277,6 +1277,48 @@ static void test_popen2(CuTest *tc) {
         ERR_FAILED == popen_read(&ctx, buf, sizeof(buf) - 1, NULL));
     CuAssert(tc, "popen_free idempotent: write after free must fail, not write a closed handle",
         ERR_FAILED == popen_write(&ctx, "x", 1));
+
+    /* 子进程不读 stdin 时的大块写：写端非阻塞，写满对端缓冲即返回已写字节数。
+       回归表现为整个测试进程挂在 write 上不返回（socketpair 发送缓冲通常只有几十 KB，
+       而这里写 1 MiB），生产环境下卡住的是派发该调用的 worker 线程 */
+#ifndef OS_WIN
+    /* 没调过 popen_waitexit 就直接 popen_close：子进程早已自己正常退完，
+       kill 打在僵尸上无效果，waitpid 拿到的是真实退出码。
+       原先无条件写 ERR_FAILED，会把 exit(7) 报成 -1。
+       先读到 EOF 再 close：EOF 意味着子进程已关掉它那端(即已 _exit)，退出状态此刻已定死，
+       随后的 SIGKILL 改不了它，所以不靠 sleep 也是确定的 */
+    CuAssertIntEquals(tc, ERR_OK, popen_startup(&ctx, "exit 7", "r"));
+    int32_t eof = 0;
+    int32_t spin = 0;
+    while (0 == eof && spin++ < 3000) {
+        n = popen_read(&ctx, buf, sizeof(buf) - 1, &eof);
+        if (ERR_FAILED == n) {
+            break;
+        }
+        if (0 == n && 0 == eof) {
+            MSLEEP(1);
+        }
+    }
+    CuAssertIntEquals(tc, 1, eof);
+    popen_close(&ctx);
+    CuAssertIntEquals(tc, 7, popen_exitcode(&ctx));
+    popen_free(&ctx);
+
+    CuAssertIntEquals(tc, ERR_OK, popen_startup(&ctx, "sleep 30", "w"));
+    size_t big = ONEK * ONEK;
+    char *payload;
+    MALLOC(payload, big);
+    memset(payload, 'x', big);
+    n = popen_write(&ctx, payload, big);
+    FREE(payload);
+    CuAssertTrue(tc, n > 0);
+    CuAssertTrue(tc, (size_t)n < big);// 一次写不完，返回部分
+    // 必须 close 再 free：kill + waitpid 在 close 里，free 只关 socket。
+    // 少这一句，sleep 30 会活过本用例成为没人回收的子进程，而 ./bin/test 要阻塞等 SIGINT，
+    // 它就一直挂到整个会话结束，每跑一轮再漏一个
+    popen_close(&ctx);
+    popen_free(&ctx);
+#endif
 }
 
 /* =======================================================================
@@ -1514,6 +1556,14 @@ static void test_str_helpers(CuTest *tc) {
     CuAssertTrue(tc, 1 == n);
     CuAssertTrue(tc, 5 == parts[0].lens);
     FREE(parts);
+
+    /* split：守卫路径也必须写出参，否则调用方先读 n 拿到的是未初始化栈值 */
+    n = 12345;
+    CuAssertTrue(tc, NULL == split(NULL, 5, ",", 1, &n));
+    CuAssertTrue(tc, 0 == n);
+    n = 12345;
+    CuAssertTrue(tc, NULL == split("aa", 0, ",", 1, &n));
+    CuAssertTrue(tc, 0 == n);
 
     /* split2：栈数组切分,无堆分配,保留空段,段数 = sep 数 + 1 */
     buf_ctx segs[8];
@@ -1929,6 +1979,20 @@ static void test_hash_ring_edge(CuTest *tc) {
     CuAssertTrue(tc, NULL == hash_ring_find(&ring, NULL, 3));
     CuAssertTrue(tc, NULL == hash_ring_find(&ring, "k", 0));
 
+    /* nreplicas 上限：超限拒绝且不留残节点；上限本身可用。
+       32 位下 sizeof(指针) * 元素数 会回绕（4 * 2^30 恰为 0，_realloc(ptr,0) 释放并返回 NULL，
+       循环随即往 NULL 上写）；64 位不回绕但 8 * 4294967295 ≈ 34GB 分配失败会 exit 掉整个进程。
+       两条都能从 Lua 的 ring:add(nreplicas, name) 直接够到——-1 转 uint32 就是 4294967295 */
+    CuAssertIntEquals(tc, ERR_FAILED, hash_ring_add(&ring, "huge", 4, 65537u));
+    CuAssertIntEquals(tc, ERR_FAILED, hash_ring_add(&ring, "huge", 4, 1073741824u));
+    CuAssertIntEquals(tc, ERR_FAILED, hash_ring_add(&ring, "huge", 4, UINT32_MAX));
+    CuAssertTrue(tc, 0 == ring.nnodes);
+    CuAssertTrue(tc, 0 == ring.nitems);
+    CuAssertTrue(tc, NULL == ring.items);
+    CuAssertIntEquals(tc, ERR_OK, hash_ring_add(&ring, "atcap", 5, 65536u));
+    CuAssertTrue(tc, 65536u == ring.nitems);
+    hash_ring_free(&ring);
+
     /* 添加 + 重复添加同名 → 拒绝 */
     CuAssertIntEquals(tc, ERR_OK,     hash_ring_add(&ring, "nodeA", 5, 100));
     CuAssertIntEquals(tc, ERR_FAILED, hash_ring_add(&ring, "nodeA", 5, 100));
@@ -2228,7 +2292,7 @@ static void _pt_elclear(void *data) {
     ((pool_t_obj *)data)->clear_cnt++;
     _pt_clear++;
 }
-static el_cbs _pt_cbs = { _pt_elnew, _pt_elfree, _pt_elreset, _pt_elclear };
+static pool_cbs _pt_cbs = { _pt_elnew, _pt_elfree, _pt_elreset, _pt_elclear };
 
 // 取/还/复用:空池 pop 走 _elnew,push 走 _elclear,命中 pop 走 _elreset(不再 new),args 透传
 static void _pool_basic_check(CuTest *tc, int32_t thsafe) {

@@ -19,7 +19,8 @@ typedef struct binary_ctx {
 /// <param name="ctx">binary_ctx</param>
 /// <param name="buf">外部缓冲区指针；NULL 时切换为内部托管模式</param>
 /// <param name="lens">外部模式下为 buf 长度；内部模式下为初始容量提示</param>
-/// <param name="inc">扩容增量基数；外部模式下被忽略并标记为 0</param>
+/// <param name="inc">扩容增量基数，取值 [0, INT32_MAX]，超界断言。内部会向上取到 2 的幂
+/// （下限 2）——它随后当对齐模数用，非 2 的幂对不齐；0 表示用默认值。外部模式下被忽略并标记为 0</param>
 void binary_init(binary_ctx *ctx, char *buf, size_t lens, size_t inc);
 /// <summary>
 /// 释放内部托管缓冲区；对外部托管 buf（inc==0）不做任何操作。

@@ -66,6 +66,11 @@ static int32_t _popen_pipe(HANDLE pipe[2]) {
         return ERR_FAILED;
     }
     CloseHandle(event);
+    // 父端设非阻塞:与 POSIX 侧那句 sock_nonblock 对应。不设的话子进程不读时
+    // popen_write 的 WriteFile 会把派发线程一直挂住,正是 POSIX 侧修掉的那个死法。
+    // 读侧本来就先 PeekNamedPipe 再读,不受影响
+    DWORD nowait = PIPE_NOWAIT;
+    SetNamedPipeHandleState(client, &nowait, NULL, NULL);
     pipe[0] = server;
     pipe[1] = client;
     return ERR_OK;
@@ -123,7 +128,8 @@ int32_t popen_startup(popen_ctx *ctx, const char *cmd, const char *mode) {
 #else
     SOCKET sock[2];
     if (r || w) {
-        // AF_UNIX socketpair：阻塞、进程私有、不耗端口，close 带未读数据是干净 EOF（TCP 环回会发 RST 破坏 popen_read 的 eof 语义）
+        // AF_UNIX socketpair：进程私有、不耗端口，close 带未读数据是干净 EOF（TCP 环回会发 RST 破坏 popen_read 的 eof 语义）。
+        // 建好后由下面那句 sock_nonblock 转为非阻塞——阻塞的话子进程不读就会把派发线程挂住
 #if defined(SOCK_CLOEXEC)
         int32_t sprc = socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sock);
 #else
@@ -165,6 +171,7 @@ int32_t popen_startup(popen_ctx *ctx, const char *cmd, const char *mode) {
         if (r || w) {
             close(sock[0]);
             ctx->sock = sock[1];
+            sock_nonblock(ctx->sock);
         }
         return ERR_OK;
     } else {
@@ -178,6 +185,29 @@ int32_t popen_startup(popen_ctx *ctx, const char *cmd, const char *mode) {
 #endif
     return ERR_OK;
 }
+#ifndef OS_WIN
+// 解析 waitpid 返回的 wstatus，判断子进程是否已退出并记录退出码
+static int32_t _popen_child_exited(popen_ctx *ctx, int wstatus) {
+    if (WIFEXITED(wstatus)) {//正常结束
+        ctx->exited = 1;
+        ctx->exitcode = WEXITSTATUS(wstatus);
+        return ERR_OK;
+    }
+    if (WIFSIGNALED(wstatus)) {//信号而终止
+        ctx->exited = 1;
+        ctx->exitcode = ERR_FAILED;
+        return ERR_OK;
+    }
+#ifdef WCOREDUMP
+    if (WCOREDUMP(wstatus)) {//core dump
+        ctx->exited = 1;
+        ctx->exitcode = ERR_FAILED;
+        return ERR_OK;
+    }
+#endif
+    return ERR_FAILED;
+}
+#endif
 void popen_close(popen_ctx *ctx) {
 #ifdef OS_WIN
     if (NULL == ctx->process.hProcess
@@ -219,12 +249,21 @@ void popen_close(popen_ctx *ctx) {
 #else
     if (0 != ctx->pid && !ctx->exited) {
         kill(ctx->pid, SIGKILL);
-        // SIGKILL 后必须 waitpid 收尸，否则进程残留为 <defunct> 直至父进程退出
-        int wstatus;
-        while (-1 == waitpid(ctx->pid, &wstatus, 0) && EINTR == errno) {
+        // SIGKILL 后必须 waitpid 收尸，否则进程残留为 <defunct> 直至父进程退出。
+        // wstatus 得按真值解析：没人调过 popen_waitexit 时，子进程完全可能早已自己正常退完，
+        // 此刻 kill 打在僵尸上无效果，而 waitpid 拿到的是它真实的退出码——
+        // 无条件写 ERR_FAILED 会把 exit(0) 报成 -1。真被 SIGKILL 打死的走 WIFSIGNALED，
+        // 由 _popen_child_exited 照旧记 ERR_FAILED
+        int wstatus = 0;
+        pid_t reaped;
+        do {
+            reaped = waitpid(ctx->pid, &wstatus, 0);
+        } while (-1 == reaped && EINTR == errno);
+        if (reaped != ctx->pid
+            || ERR_OK != _popen_child_exited(ctx, wstatus)) {
+            ctx->exited = 1;
+            ctx->exitcode = ERR_FAILED;
         }
-        ctx->exited = 1;
-        ctx->exitcode = ERR_FAILED;
     }
 #endif
 }
@@ -255,27 +294,6 @@ void popen_free(popen_ctx *ctx) {
 #endif
 }
 #ifndef OS_WIN
-// 解析 waitpid 返回的 wstatus，判断子进程是否已退出并记录退出码
-static int32_t _popen_child_exited(popen_ctx *ctx, int wstatus) {
-    if (WIFEXITED(wstatus)) {//正常结束
-        ctx->exited = 1;
-        ctx->exitcode = WEXITSTATUS(wstatus);
-        return ERR_OK;
-    }
-    if (WIFSIGNALED(wstatus)) {//信号而终止
-        ctx->exited = 1;
-        ctx->exitcode = ERR_FAILED;
-        return ERR_OK;
-    }
-#ifdef WCOREDUMP
-    if (WCOREDUMP(wstatus)) {//core dump
-        ctx->exited = 1;
-        ctx->exitcode = ERR_FAILED;
-        return ERR_OK;
-    }
-#endif
-    return ERR_FAILED;
-}
 // 非阻塞探测 sock 是否可读：1=就绪可读，0=未就绪，ERR_FAILED=poll 出错（EINTR 已重试）
 static int32_t _popen_poll_readable(int32_t sock) {
     struct pollfd pfd = { .fd = sock, .events = POLLIN };
@@ -438,22 +456,43 @@ int32_t popen_write(popen_ctx *ctx, const char *input, size_t lens) {
     if (NULL == ctx->pipe[1]) {
         return ERR_FAILED;
     }
+    // 与 POSIX 侧同一套语义:管道已设 PIPE_NOWAIT,写满即返回已写字节数(可能少于 lens),
+    // 由调用方决定重试还是放弃
     DWORD nwrite;
-    if (!WriteFile(ctx->pipe[1], input, (DWORD)lens, &nwrite, NULL)) {
-        return ERR_FAILED;
+    DWORD total = 0;
+    DWORD remain = (DWORD)lens;
+    while (total < remain) {
+        if (!WriteFile(ctx->pipe[1], input + total, remain - total, &nwrite, NULL)) {
+            return 0 == total ? ERR_FAILED : (int32_t)total;
+        }
+        if (0 == nwrite) {
+            break;// PIPE_NOWAIT 下缓冲已满,本次写到这
+        }
+        total += nwrite;
     }
-    return (int32_t)nwrite;
+    return (int32_t)total;
 #else
     if (INVALID_SOCK == ctx->sock) {
         return ERR_FAILED;
     }
+    // 非阻塞 + 补写循环：一次 write 只写进对端缓冲剩下的那点空间是常态，
+    // 写满即返回已写字节数（可能少于 lens），由调用方决定是重试还是放弃
     ssize_t nwrite;
-    do {
-        nwrite = write(ctx->sock, input, lens);
-    } while (-1 == nwrite && EINTR == errno);
-    if (-1 == nwrite) {
-        return ERR_FAILED;
+    size_t total = 0;
+    while (total < lens) {
+        nwrite = write(ctx->sock, input + total, lens - total);
+        if (nwrite > 0) {
+            total += (size_t)nwrite;
+            continue;
+        }
+        if (-1 == nwrite && EINTR == errno) {
+            continue;
+        }
+        if (-1 == nwrite && ERR_RW_RETRIABLE(errno)) {
+            break;// 对端缓冲已满，本次写到这
+        }
+        return 0 == total ? ERR_FAILED : (int32_t)total;
     }
-    return (int32_t)nwrite;
+    return (int32_t)total;
 #endif
 }

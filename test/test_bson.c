@@ -399,7 +399,7 @@ static void test_bson_complete_cat(CuTest *tc) {
 
     bson_ctx dst;
     bson_init(&dst, NULL, 0);
-    CuAssertIntEquals(tc, ERR_OK, bson_cat(&dst, BSON_DOC(&src)));
+    CuAssertIntEquals(tc, ERR_OK, bson_cat(&dst, BSON_DOC(&src), BSON_DOC_LENS(&src)));
     bson_append_end(&dst);
     CuAssertTrue(tc, bson_complete(&dst));
 
@@ -415,7 +415,8 @@ static void test_bson_complete_cat(CuTest *tc) {
     BSON_FREE(&dst);
 }
 
-// bson_cat 的三条早退与正常路径:NULL、空文档(lens==5)、超 MAX_PACK_SIZE(整篇丢弃返 ERR_FAILED)。
+// bson_cat 的各条早退与正常路径:NULL / lens==0、缓冲不足 5 字节、头声明长度超出缓冲、
+// 空文档(声明 5)、超 MAX_PACK_SIZE,后三者整篇丢弃返 ERR_FAILED 或 no-op 返 ERR_OK。
 // 空文档与超限必须分属不同分支——写空的 bson_ctx 与 bson_empty() 恰好都是 5 字节,
 // 两者若并进同一条判断,正常入参也会被报成失败
 static void test_bson_cat_bounds(CuTest *tc) {
@@ -433,10 +434,10 @@ static void test_bson_cat_bounds(CuTest *tc) {
     bson_init(&dst, NULL, 0);
     before = BSON_DOC_LENS(&dst);
 
-    CuAssertIntEquals(tc, ERR_OK, bson_cat(&dst, NULL));
+    CuAssertIntEquals(tc, ERR_OK, bson_cat(&dst, NULL, 0));
     CuAssertTrue(tc, before == BSON_DOC_LENS(&dst));
 
-    CuAssertIntEquals(tc, ERR_OK, bson_cat(&dst, BSON_DOC(&empty)));
+    CuAssertIntEquals(tc, ERR_OK, bson_cat(&dst, BSON_DOC(&empty), BSON_DOC_LENS(&empty)));
     CuAssertTrue(tc, before == BSON_DOC_LENS(&dst));
 
     MALLOC(big, 70000);
@@ -444,14 +445,25 @@ static void test_bson_cat_bounds(CuTest *tc) {
     big[0] = (char)0x70;
     big[1] = (char)0x11;
     big[2] = (char)0x01;
-    CuAssertIntEquals(tc, ERR_FAILED, bson_cat(&dst, big));
+    CuAssertIntEquals(tc, ERR_FAILED, bson_cat(&dst, big, 70000));
+    CuAssertTrue(tc, before == BSON_DOC_LENS(&dst));
+    // 缓冲够大但只报 5 字节:声明长度超出传入长度,拒收。旧实现只信头里的 70000,
+    // 会照着它从 big 之后一路读出去
+    CuAssertIntEquals(tc, ERR_FAILED, bson_cat(&dst, big, 5));
     CuAssertTrue(tc, before == BSON_DOC_LENS(&dst));
     FREE(big);
+
+    // 非 NULL 但长度为 0:当 no-op,不去碰那 4 字节头
+    CuAssertIntEquals(tc, ERR_OK, bson_cat(&dst, BSON_DOC(&empty), 0));
+    CuAssertTrue(tc, before == BSON_DOC_LENS(&dst));
+    // 不足最小文档(4 字节长度头 + EOD)
+    CuAssertIntEquals(tc, ERR_FAILED, bson_cat(&dst, BSON_DOC(&empty), 4));
+    CuAssertTrue(tc, before == BSON_DOC_LENS(&dst));
 
     bson_init(&src, NULL, 0);
     bson_append_int32(&src, "n", 7);
     bson_append_end(&src);
-    CuAssertIntEquals(tc, ERR_OK, bson_cat(&dst, BSON_DOC(&src)));
+    CuAssertIntEquals(tc, ERR_OK, bson_cat(&dst, BSON_DOC(&src), BSON_DOC_LENS(&src)));
     CuAssertTrue(tc, before < BSON_DOC_LENS(&dst));
     bson_append_end(&dst);
     CuAssertTrue(tc, bson_complete(&dst));
@@ -639,6 +651,22 @@ static void test_bson_tostring(CuTest *tc) {
     FREE(s2);
 
     BSON_FREE(&bson);
+
+    /* 内嵌 NUL 的字符串不得被截断：写入侧是长度感知的(bson_append_utf8_n)，
+       串化侧原先按 strlen 取长度，会把 NUL 之后整段切掉。这条路径是 mongo 失败命令的
+       诊断输出，截短等于让运维看半截错误。NUL 转义成可见的 "\0"，
+       因为两个消费者(LOG_WARN 的 %s、Lua 的 :tostring)都按 NUL 结尾读 */
+    bson_ctx nb;
+    bson_init(&nb, NULL, 0);
+    bson_append_utf8_n(&nb, "s", "x\0y", 3);
+    bson_append_jscode_n(&nb, "j", "a\0b", 3);
+    bson_append_end(&nb);
+    char *s3 = bson_tostring(&nb);
+    CuAssertPtrNotNull(tc, s3);
+    CuAssertTrue(tc, NULL != strstr(s3, "x\\0y"));
+    CuAssertTrue(tc, NULL != strstr(s3, "a\\0b"));
+    FREE(s3);
+    BSON_FREE(&nb);
 }
 
 /* =======================================================================

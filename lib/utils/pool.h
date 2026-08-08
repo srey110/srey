@@ -15,12 +15,12 @@ typedef void *(*_el_new)(void *args);// 新建
 typedef void (*_el_reset)(void *data, void *args);// 重置
 typedef void (*_el_clear)(void *data);// 清理
 // 对象回调;_elnew 与 _elfree 须成对:要么都为 NULL(默认 CALLOC/FREE),要么都自定义(同一分配器),否则分配/释放器不匹配
-typedef struct el_cbs {
+typedef struct pool_cbs {
     _el_new _elnew;
     free_cb _elfree;
     _el_reset _elreset;
     _el_clear _elclear;
-}el_cbs;
+}pool_cbs;
 // 对象池
 typedef struct pool_ctx {
     uint32_t elsize;// 对象大小
@@ -33,7 +33,7 @@ typedef struct pool_ctx {
     void (*_qu_nelfree)(struct pool_ctx *pool, uint32_t nfree);
     uint32_t (*_qu_size)(void *qu);
     uint32_t (*_qu_capacity)(void *qu);
-    el_cbs elcbs;
+    pool_cbs elcbs;
     union {
         queue_ctx normal_qu;// 非线程安全
         fsqu_ctx safe_qu;// 线程安全
@@ -77,7 +77,7 @@ static inline void _pool_elclear(pool_ctx *pool, void *data) {
 /// <param name="thsafe">非 0 启用线程安全(fsqu 底层);0 用普通 queue(非线程安全)</param>
 /// <param name="elcbs">对象回调(new/free/reset/clear),NULL 走默认 CALLOC/FREE</param>
 void pool_init(pool_ctx *pool, size_t elsize, uint32_t capacity,
-               uint32_t nkeep, int32_t thsafe, el_cbs *elcbs);
+               uint32_t nkeep, int32_t thsafe, pool_cbs *elcbs);
 /// <summary>
 /// 释放池内所有空闲对象(经 _elfree)并销毁底层队列;不释放 pool 本身
 /// </summary>

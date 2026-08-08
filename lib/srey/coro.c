@@ -52,13 +52,15 @@ typedef struct fork_wait_ctx {
     int32_t waited;             // 未完成的 fork 子协程数；_coro_fork_run 跑完递减 1，归零唤醒 waiter
     mco_coro *waiter;           // 等待归零的父协程；waited=0 时 mco_resume 唤醒
 } fork_wait_ctx;
-// serial waiter 链表节点：cs 挂起协程的 FIFO 元素，进队时 pool_pop、出队由前一个协程的 _coro_serial_release pool_push
+// serial waiter 链表节点：cs 挂起协程的 FIFO 元素，进队时 pool_pop、出队由前一个协程的 coro_serial_leave pool_push
 typedef struct serial_node {
-    list_node node;           // 侵入式 FIFO 链表节点（slist，UPCAST 复原外层）
+    list_node node;           // 侵入式 FIFO 链表节点（slist，UPCAST 复原外层），须在首位
     mco_coro *co;             // 等待中的协程
+    int32_t aborted;          // 1 = 被 coro_serial_free 唤醒，锁未交接给本协程，须失败返回
 } serial_node;
 struct coro_serial_ctx {
     int32_t ref;           // 嵌套深度（同协程多次进入累加）
+    int32_t closed;        // 1 = 已关闭，此后任何 enter 一律失败，不再有人能拿到锁
     task_ctx *task;        // 所属 task；resume 时同步 coctx->curco 需要
     mco_coro *current;     // 当前持锁协程；NULL 表示无锁
     list_ctx waiters;      // 挂起 waiter 的 FIFO（元素 serial_node，UPCAST 复原）
@@ -221,7 +223,7 @@ static void _coro_free(void *co) {
 }
 // 初始化协程任务运行时上下文
 static coro_ctx *_coro_ctx_init(free_cb _argfree, void *arg) {
-    el_cbs _coro_pool_cbs = { _coro_new, _coro_free, NULL, NULL };
+    pool_cbs _coro_pool_cbs = { _coro_new, _coro_free, NULL, NULL };
     coro_ctx *coctx;
     CALLOC(coctx, 1, sizeof(coro_ctx));
     coctx->arg = arg;
@@ -310,7 +312,7 @@ static void _coro_mco_create(task_dispatch_arg *arg) {
 // curco 是"当前在跑的协程"这一唯一标识:被唤醒者醒来后靠它进 cosess、调 mco_yield;
 // 调用者拿回控制权后同样靠它。漏还原就会把 curco 留在已挂起(甚至已随池收缩销毁)的协程上,
 // 调用者下一次 coro_sleep / coro_send 对着它 mco_yield,撞 MCO_NOT_RUNNING 断言。
-// 三处唤醒点(_coro_mco_resume / _coro_fork_run / _coro_serial_release)共用本函数,
+// 四处唤醒点(_coro_mco_resume / _coro_fork_run / coro_serial_leave / coro_serial_free)共用本函数,
 // 别再各写一份 —— 漏一处就是上面那个 abort,而且只在特定唤醒时序下才现形。
 // 第四处 _coro_mco_create 有意不走本函数:它是"起一个新协程",不是"切过去再切回来",
 // 五个调用点(消息分发表各项与 _coro_drain_forks)全在顶层、外面没有协程可还原
@@ -702,6 +704,16 @@ void *coro_send(task_ctx *task, SOCKET fd, uint64_t skid,
     SET_PTR(size, msg->size);
     return msg->data;
 }
+// 只收不发:一次请求产生多个响应时续读后续包(如 MySQL 多结果集)。
+// 与 coro_send 一样,返回的指针只在本协程下次挂起前有效
+void *coro_recv(task_ctx *task, SOCKET fd, uint64_t skid, size_t *size) {
+    message_ctx *msg = _coro_wait_recved(task, fd, skid);
+    if (NULL == msg) {
+        return NULL;
+    }
+    SET_PTR(size, msg->size);
+    return msg->data;
+}
 void *coro_slice(task_ctx *task, SOCKET fd, uint64_t skid, size_t *size, int32_t *end) {
     if (INVALID_SOCK == fd) {
         return NULL;
@@ -804,20 +816,109 @@ coro_serial_ctx *coro_serial_new(task_ctx *task) {
     return s;
 }
 void coro_serial_free(coro_serial_ctx *serial) {
-    // 销毁前调用方应保证无 in-flight：current/ref/waiters 全清空
-    ASSERTAB(NULL == serial->current && 0 == serial->ref && list_empty(&serial->waiters),
-             "coro_serial_free with active holders or waiters");
-    FREE(serial);
+    // closed 先于 drain 置位,一举两用:
+    // 一是挡住排队者的错误路径再调 enter(拿到 ERR_FAILED,不会又排进已在清空的队列);
+    // 二是挡住它们重入本函数——看到 closed 直接返回,FREE 由外层这次完成,不会双重释放
+    if (0 != serial->closed) {
+        return;
+    }
+    serial->closed = 1;
+    // 逐个唤醒排队者并标记 aborted：它们醒来即失败返回,锁不交接给任何一个
+    coro_ctx *coctx = (coro_ctx *)serial->task->arg;
+    list_node *ln;
+    serial_node *nd;
+    mco_coro *wco;
+    mco_result rtn;
+    while (NULL != (ln = list_pop_head(&serial->waiters))) {
+        nd = UPCAST(ln, serial_node, node);
+        nd->aborted = 1;
+        wco = nd->co;
+        rtn = _coro_resume_switch(coctx, wco);
+        ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
+        pool_push(&coctx->serial_node_pool, nd, 0);
+        if (MCO_DEAD == mco_status(wco)) {// 池满导致 _coro_mco_cb 返回，协程已死亡，须在此释放
+            mco_destroy(wco);
+        }
+    }
+    // 排队者能唤醒,持锁者不能——锁抢不走,它还在临界区里跑,后面还要 leave。
+    // 所以有持锁者时本函数不释放,只把 closed 留在那儿当交接凭据:
+    // 队列已排空且 closed 之后再没人能入队,那位最后一次 leave 走的必是"队列空"分支,由它关灯
+    if (NULL == serial->current) {
+        FREE(serial);
+    }
 }
-// 临界区出口：ref 归 0 时取队头 waiter，先同步 current/ref 再 mco_resume；与 fork_wait_stub 同模式
-static void _coro_serial_release(coro_serial_ctx *serial) {
+int32_t coro_serial_enter(coro_serial_ctx *serial) {
+    coro_ctx *coctx = (coro_ctx *)serial->task->arg;
+    if (NULL == coctx->curco) {
+        // 非协程上下文
+        LOG_WARN("task %s, coro_serial_enter called outside coroutine context.", _NAME_OR(serial->task->name));
+        return ERR_FAILED;
+    }
+    if (0 != serial->closed) {
+        // 已关闭：连锁都不再发放，免得关闭流程等一个永远不会归还的持有者
+        return ERR_FAILED;
+    }
+    // 缓存 self 到局部变量：mco_yield 期间 coctx->curco 被 coro_serial_leave
+    // 改写为下一个被唤醒的协程；本协程被再次唤醒时 coctx->curco 会被还原指回 self,
+    mco_coro *self = coctx->curco;
+    if (NULL != serial->current && serial->current != self) {
+        // ── 跨协程路径：锁被其他协程持有，需排队等待 ─────────────────────
+        // 1) pool_pop 取 waiter 节点，list_push_tail 入队保证 FIFO 顺序
+        // 2) mco_yield(self) 挂起当前协程，控制权交回 task 消息循环
+        // 3) 唤醒由前一个持锁协程在 coro_serial_leave 内完成：
+        //    - current=self → ref=1 → coctx->curco=self → mco_resume(self)
+        // 4) 所以本路径不重复 current/ref 赋值，唤醒方已代劳。
+        //    nd 则要等本协程再次 yield 或跑完、mco_resume 返回后，唤醒方才 pool_push 归还——
+        //    整个临界区内它既不在 waiters 也不在池里，只被唤醒方的栈局部变量持有
+        // waiter 节点走 serial_node_pool 复用，避免高频 MALLOC/FREE
+        serial_node *nd = (serial_node *)pool_pop(&coctx->serial_node_pool, NULL, 0);
+        nd->co = self;
+        nd->aborted = 0;
+        list_push_tail(&serial->waiters, &nd->node);
+        // 排在 waiters 里的协程同样是"挂起没退"的,与 _coro_wait / coro_fork_wait 同口径计入,
+        // 否则 task 关闭时 _coro_handle_closing 看到 nyield==0 就静默通过,操作者拿不到
+        // "还有协程卡在临界区队列上"这条线索。
+        // 不必像 Lua 侧那样再拆一个"可被超时扫描找到"的计数:那边的门禁只有 nyield 一项、
+        // 且要走一遍 coro_sess 全表;这边 _coro_timeout_monitor 还 AND 了 timeout_heap.root,
+        // 本协程不入堆,堆空时短路,堆非空时本就有真到期条目该扫
+        ++coctx->nyield;
+        mco_result rtn = mco_yield(self);
+        --coctx->nyield;
+        ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
+        // 醒来有两种来源,必须靠自己那个节点上的 aborted 区分,不能读 serial->closed——
+        // 正常交接与"交接后别人才关闭"这两种情形下 closed 都可能为 1,
+        // 那时锁其实已经在自己手上,误判成失败返回就把锁永久漏掉了
+        if (0 != nd->aborted) {
+            return ERR_FAILED;
+        }
+        // 唤醒后状态：serial->current==self, serial->ref==1；nd 尚未归还池(见上)
+    } else {
+        // ── 无锁或同协程嵌套路径 ─────────────────────────────────────
+        // current==NULL：占据锁，current=self, ref 从 0 → 1
+        // current==self：同协程嵌套调用（如 cs 内再 cs），仅 ref++ 不死锁,
+        //                 由 coro_serial_leave 内 ref 计数管理出口
+        if (NULL == serial->current) {
+            serial->current = self;
+        }
+        serial->ref++;
+    }
+    return ERR_OK;
+}
+void coro_serial_leave(coro_serial_ctx *serial) {
     serial->ref--;
-    if (0 != serial->ref) {
+    // 负数说明有人没持锁就调了 leave。放着不管的话 ref 再也回不到 0,
+    // 这个 serial 既不会交接也不会释放,是一条不报错的死路
+    ASSERTAB(serial->ref >= 0, "coro_serial_leave without a matching enter");
+    if (0 != serial->ref) {// 嵌套层，current 留给外层
         return;
     }
     list_node *ln = list_pop_head(&serial->waiters);
     if (NULL == ln) {
         serial->current = NULL;
+        // coro_serial_free 撞上本协程持锁,把释放推给了这里(见该函数末尾)
+        if (0 != serial->closed) {
+            FREE(serial);
+        }
         return;
     }
     serial_node *nxt = UPCAST(ln, serial_node, node);
@@ -830,9 +931,11 @@ static void _coro_serial_release(coro_serial_ctx *serial) {
     serial->current = wco;
     serial->ref = 1;
     coro_ctx *coctx = (coro_ctx *)serial->task->arg;
-    // 唯一调用点 coro_serial_call 在此处 curco 恒为它自己(跨协程被唤醒时由唤醒方设回、
-    // 无锁路径没动过、func 内各种 yield 返回时也已还原),所以还原的目标就是它,不必外传
+    // 本函数返回时控制权回到调用方那个协程,curco 恒为它自己(跨协程被唤醒时由唤醒方设回、
+    // 无锁路径没动过、临界区内各种 yield 返回时也已还原),所以还原的目标就是它,不必外传
     mco_result rtn = _coro_resume_switch(coctx, wco);
+    // 这行之后不许再碰 serial:锁已交给 wco,它在自己的临界区里可以 coro_serial_free
+    // （标记后由它那次 leave 释放）,回到这里时对象可能已经没了。下面只用 coctx / nxt / wco
     ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
     pool_push(&coctx->serial_node_pool, nxt, 0);
     if (MCO_DEAD == mco_status(wco)) {// 池满导致 _coro_mco_cb 返回，协程已死亡，须在此释放
@@ -840,56 +943,16 @@ static void _coro_serial_release(coro_serial_ctx *serial) {
     }
 }
 int32_t coro_serial_call(coro_serial_ctx *serial, fork_serial_cb func, void *arg) {
-    coro_ctx *coctx = (coro_ctx *)serial->task->arg;
-    if (NULL == coctx->curco) {
-        // 非协程上下文
-        LOG_WARN("task %s, coro_serial_call called outside coroutine context.", _NAME_OR(serial->task->name));
+    if (ERR_OK != coro_serial_enter(serial)) {
         return ERR_FAILED;
-    }
-    // 缓存 self 到局部变量：mco_yield 期间 coctx->curco 被 _coro_serial_release
-    // 改写为下一个被唤醒的协程；本协程被再次唤醒时 coctx->curco 会被还原指回 self,
-    mco_coro *self = coctx->curco;
-    if (NULL != serial->current && serial->current != self) {
-        // ── 跨协程路径：锁被其他协程持有，需排队等待 ─────────────────────
-        // 1) pool_pop 取 waiter 节点，list_push_tail 入队保证 FIFO 顺序
-        // 2) mco_yield(self) 挂起当前协程，控制权交回 task 消息循环
-        // 3) 唤醒由前一个持锁协程在 _coro_serial_release 内完成：
-        //    - current=self → ref=1 → coctx->curco=self → mco_resume(self)
-        // 4) 所以本路径不重复 current/ref 赋值，唤醒方已代劳。
-        //    nd 则要等本协程再次 yield 或跑完、mco_resume 返回后，唤醒方才 pool_push 归还——
-        //    整个临界区内它既不在 waiters 也不在池里，只被唤醒方的栈局部变量持有
-        // waiter 节点走 serial_node_pool 复用，避免高频 MALLOC/FREE
-        serial_node *nd = (serial_node *)pool_pop(&coctx->serial_node_pool, NULL, 0);
-        nd->co = self;
-        list_push_tail(&serial->waiters, &nd->node);
-        // 排在 waiters 里的协程同样是"挂起没退"的,与 _coro_wait / coro_fork_wait 同口径计入,
-        // 否则 task 关闭时 _coro_handle_closing 看到 nyield==0 就静默通过,操作者拿不到
-        // "还有协程卡在临界区队列上"这条线索。
-        // 不必像 Lua 侧那样再拆一个"可被超时扫描找到"的计数:那边的门禁只有 nyield 一项、
-        // 且要走一遍 coro_sess 全表;这边 _coro_timeout_monitor 还 AND 了 timeout_heap.root,
-        // 本协程不入堆,堆空时短路,堆非空时本就有真到期条目该扫
-        ++coctx->nyield;
-        mco_result rtn = mco_yield(self);
-        --coctx->nyield;
-        ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
-        // 唤醒后状态：serial->current==self, serial->ref==1；nd 尚未归还池(见上)
-    } else {
-        // ── 无锁或同协程嵌套路径 ─────────────────────────────────────
-        // current==NULL：占据锁，current=self, ref 从 0 → 1
-        // current==self：同协程嵌套调用（如 cs 内再 cs），仅 ref++ 不死锁,
-        //                 由 _coro_serial_release 内 ref 计数管理出口
-        if (NULL == serial->current) {
-            serial->current = self;
-        }
-        serial->ref++;
     }
     // 临界区主体：func 内任意 yield（coro_sleep / coro_send / coro_request 等）期间，
     // 锁仍由 self 持有（serial->current 不变），其他协程进 cs 走"跨协程路径"挂起。
     // C 无 xpcall：func 内 abort/segfault 直接终止进程，本函数不兜底（与 coro_fork 同约定）
-    func(serial->task, arg);
-    // 出口：ref--；归 0 时取队头 waiter 唤醒下一位，未归 0（嵌套层）保留 current 给外层。
-    // 唤醒走 _coro_resume_switch，curco 由它还原回本协程，此处不必再补
-    _coro_serial_release(serial);
+    if (NULL != func) {
+        func(serial->task, arg);
+    }
+    coro_serial_leave(serial);
     return ERR_OK;
 }
 // 把一条挂起协程信息追加到 binary；C 协程无栈回溯,仅 sess / mtype / 挂起时长

@@ -60,11 +60,17 @@ void *mysql_pack_stmt_execute(mysql_stmt_ctx *stmt, mysql_bind_ctx *mbind, size_
 /// <returns>请求包数据，调用方负责释放</returns>
 void *mysql_pack_stmt_reset(mysql_stmt_ctx *stmt, size_t *size);
 /// <summary>
-/// 构造 COM_STMT_CLOSE 请求包并释放语句资源
+/// 构造 COM_STMT_CLOSE 请求包。只组包，stmt 仍然有效，由调用方另行 mysql_stmt_free
 /// </summary>
-/// <param name="stmt">mysql_stmt_ctx，调用后 stmt 将被释放，不可再使用</param>
+/// <param name="stmt">mysql_stmt_ctx</param>
 /// <param name="size">输出包大小（字节）</param>
 /// <returns>请求包数据，调用方负责释放</returns>
 void *mysql_pack_stmt_close(mysql_stmt_ctx *stmt, size_t *size);
+/// <summary>
+/// 只释放语句的本地资源，不组包、不发送、不触碰连接状态（尤其是包序号 id）。
+/// 用于"拿不到连接的串行化执行权"的场合：服务端那份语句会随连接关闭一并回收
+/// </summary>
+/// <param name="stmt">mysql_stmt_ctx，调用后失效</param>
+void mysql_stmt_free(mysql_stmt_ctx *stmt);
 
 #endif//MYSQL_PACK_H_

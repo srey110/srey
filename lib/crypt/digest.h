@@ -66,7 +66,7 @@ void digest_update(digest_ctx *digest, const void *data, size_t lens);
 /// </summary>
 /// <param name="digest">digest_ctx</param>
 /// <param name="hash">hash, hash[DG_BLOCK_SIZE]</param>
-/// <returns>长度</returns>
+/// <returns>长度。返回后上下文已自动复位到初始状态，可直接开始下一条消息（无需再调 digest_reset）</returns>
 size_t digest_final(digest_ctx *digest, char *hash);
 /// <summary>
 /// 重置,准备新一轮计算

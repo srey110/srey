@@ -123,9 +123,16 @@ static inline void fsqu_push_batch(fsqu_ctx *fsqu, const void *data, uint32_t co
 #if FSQU_MPQ
 // 快路径取完后从溢出层续取补齐（否则调用方按 0 判空会漏掉溢出）：
 // dst 为快路径填完后的写入位置，*n 传入已取个数、返回补齐后的个数。
-// novf 为 0 即判空免锁；元素数取自 mpq.elsize，与 qu.elsize 同源于 fsqu_init 的实参
-static inline void _fsqu_ovf_drain(fsqu_ctx *fsqu, char *dst, uint32_t max, uint32_t *n) {
+// novf 为 0 即判空免锁；元素数取自 mpq.elsize，与 qu.elsize 同源于 fsqu_init 的实参。
+// 四条 pop 路径都经这里，故"在途就别排溢出层"这道守卫收在此处，由调用方把手上那个
+// mpq 返回码(mpqrtn)递进来：mpq 报 1 表示槽位已被抢占尚未发布,躺在里面的是更早入队的元素,
+// 此刻去排溢出层就会把更晚入队的先吐出来——入队侧的粘滞 novf 守着"新元素不插到更早的
+// 溢出元素之前",这是它的对称面。
+// 少取不会漏唤醒：生产者是发布完再唤醒(_task_message_push / _send_cmd 皆然),
+// 且 fsqu_size 走 mpq_size 把在途也算在内,消费者据此会自己重调度
+static inline void _fsqu_ovf_drain(fsqu_ctx *fsqu, char *dst, uint32_t max, uint32_t *n, int32_t mpqrtn) {
     if (*n >= max
+        || 1 == mpqrtn
         || 0 == ATOMIC_GET(&fsqu->novf)) {
         return;
     }
@@ -149,9 +156,9 @@ static inline void _fsqu_ovf_drain(fsqu_ctx *fsqu, char *dst, uint32_t max, uint
 // 从溢出层取一个元素（快路径已空时调用）：即 _fsqu_ovf_drain 取一个的返回码适配，
 // 不另写一份加锁出队逻辑。取不到有两种：novf 为 0 的免锁判空，或 novf 是过期非 0、
 // 元素已被另一消费者取走（此时 k 为 0，不扣减）
-static inline int32_t _fsqu_ovf_pop(fsqu_ctx *fsqu, void *out) {
+static inline int32_t _fsqu_ovf_pop(fsqu_ctx *fsqu, void *out, int32_t mpqrtn) {
     uint32_t n = 0;
-    _fsqu_ovf_drain(fsqu, (char *)out, 1, &n);
+    _fsqu_ovf_drain(fsqu, (char *)out, 1, &n, mpqrtn);
     return (0 != n) ? ERR_OK : ERR_FAILED;
 }
 #endif
@@ -163,10 +170,11 @@ static inline int32_t _fsqu_ovf_pop(fsqu_ctx *fsqu, void *out) {
 /// <returns>ERR_OK 成功，ERR_FAILED 队列为空</returns>
 static inline int32_t fsqu_pop(fsqu_ctx *fsqu, void *out) {
 #if FSQU_MPQ
-    if (ERR_OK == mpq_pop(&fsqu->mpq, out)) {
+    int32_t rtn = mpq_pop(&fsqu->mpq, out);
+    if (ERR_OK == rtn) {
         return ERR_OK;
     }
-    return _fsqu_ovf_pop(fsqu, out);
+    return _fsqu_ovf_pop(fsqu, out, rtn);
 #else
     spin_lock(&fsqu->lck);
     void *elem = queue_pop(&fsqu->qu);
@@ -191,11 +199,14 @@ static inline uint32_t fsqu_pop_batch(fsqu_ctx *fsqu, void *out, uint32_t max) {
     char *dst = (char *)out;
 #if FSQU_MPQ
     uint32_t elsize = fsqu->mpq.elsize;
-    while (n < max && ERR_OK == mpq_pop(&fsqu->mpq, dst)) {
+    // rtn 在每个出口都有确定值：取满 max 退出时是最后一次成功的 ERR_OK（drain 由 *n >= max 早退），
+    // max 为 0 时是这里的初值
+    int32_t rtn = ERR_FAILED;
+    while (n < max && ERR_OK == (rtn = mpq_pop(&fsqu->mpq, dst))) {
         dst += elsize;
         n++;
     }
-    _fsqu_ovf_drain(fsqu, dst, max, &n);
+    _fsqu_ovf_drain(fsqu, dst, max, &n, rtn);
     return n;
 #else
     void *elem;
@@ -217,10 +228,11 @@ static inline uint32_t fsqu_pop_batch(fsqu_ctx *fsqu, void *out, uint32_t max) {
 /// <returns>ERR_OK 成功，ERR_FAILED 队列为空</returns>
 static inline int32_t fsqu_pop_sc(fsqu_ctx *fsqu, void *out) {
 #if FSQU_MPQ
-    if (ERR_OK == mpq_pop_sc(&fsqu->mpq, out)) {
+    int32_t rtn = mpq_pop_sc(&fsqu->mpq, out);
+    if (ERR_OK == rtn) {
         return ERR_OK;
     }
-    return _fsqu_ovf_pop(fsqu, out);
+    return _fsqu_ovf_pop(fsqu, out, rtn);
 #else
     return fsqu_pop(fsqu, out);
 #endif
@@ -237,11 +249,12 @@ static inline uint32_t fsqu_pop_sc_batch(fsqu_ctx *fsqu, void *out, uint32_t max
     uint32_t n = 0;
     uint32_t elsize = fsqu->mpq.elsize;
     char *dst = (char *)out;
-    while (n < max && ERR_OK == mpq_pop_sc(&fsqu->mpq, dst)) {
+    int32_t rtn = ERR_FAILED;
+    while (n < max && ERR_OK == (rtn = mpq_pop_sc(&fsqu->mpq, dst))) {
         dst += elsize;
         n++;
     }
-    _fsqu_ovf_drain(fsqu, dst, max, &n);
+    _fsqu_ovf_drain(fsqu, dst, max, &n, rtn);
     return n;
 #else
     return fsqu_pop_batch(fsqu, out, max);

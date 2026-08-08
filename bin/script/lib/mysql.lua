@@ -34,23 +34,27 @@ function ctx:ctor(ip, port, sslname, user, password, database, charset, maxpk)
     -- 连接代次：每次 connect 成功后 +1，prepare 出来的 stmt 持有创建时的代次，
     -- execute 前比对，重连后旧 statement_id 已被服务端清理时返 false 明确提示重新 prepare
     self.generation = 0
-    -- connect() 进行中标志：握手/认证完成前 fd/skid 尚不可用，其余方法须 fail-fast 拒绝，避免并发协程读到未就绪的连接
-    self.connecting = false
+    -- 命令串行化执行器：多协程共用一条连接时按 FIFO 排队。MySQL 半双工，一条命令的响应
+    -- 没收完就发下一条会串包，而 mysql_ctx 的解析状态又是每连接一份，交错即互相覆盖。
+    -- 建在 ctor 而非 connect：connect 会被 ping 的重连路径重入，建在那儿会在重连时
+    -- 换掉执行器，把排队者连同锁一起丢掉
+    self.serial = srey.serial()
 end
 
 ---建立 TCP 连接并完成 MySQL 握手（Handshake/AuthResponse）；成功后 skid 设为会话键
----@return boolean ok 握手成功 true，失败 false（含并发期间已有 connect() 在进行中）
+---@return boolean ok 握手成功 true，失败 false。多协程并发调用时按 FIFO 串行，
+---排在后面那个若发现连接已被前一个重建好（代次已变）直接返 true，不再白拆一次
 function ctx:connect()
-    if self.connecting then
-        return false
+    -- 排队前记下代次：等锁期间别人可能已经把连接重建好了，那就不必再拆一次重连
+    -- （每次 _connect 成功都会让 generation 递增）
+    local gen = self.generation
+    return srey.serial_ret(false, self.serial(self._doconnect, self, gen))
+end
+function ctx:_doconnect(gen)
+    if gen ~= self.generation then
+        return true
     end
-    self.connecting = true
-    local ok, rtn = pcall(self._connect, self)
-    self.connecting = false
-    if not ok then
-        error(rtn, 0)
-    end
-    return rtn
+    return self:_connect()
 end
 function ctx:_connect()
     if not self.mysql:try_connect() then
@@ -69,11 +73,11 @@ end
 
 ---切换当前数据库（COM_INIT_DB）
 ---@param database string 目标数据库名
----@return boolean ok 切换成功 true（connect() 进行中、或库名超 63 字节时 fail-fast 返回 false）
+---@return boolean ok 切换成功 true（库名超 63 字节时不发包直接返 false）
 function ctx:selectdb(database)
-    if self.connecting then
-        return false
-    end
+    return srey.serial_ret(false, self.serial(self._selectdb, self, database))
+end
+function ctx:_selectdb(database)
     local pack, size = self.mysql:pack_selectdb(database)
     if nil == pack then
         return false
@@ -87,11 +91,8 @@ function ctx:selectdb(database)
 end
 
 ---内部 ping（COM_PING），不自动重连
----@return boolean ok 服务端响应即 true（connect() 进行中时 fail-fast 返回 false；仅供 ping() 内部调用，不要直接调用）
+---@return boolean ok 服务端响应即 true（仅供 ping() 内部调用，不要直接调用；调用方须已持锁）
 function ctx:_ping()
-    if self.connecting then
-        return false
-    end
     local pack, size = self.mysql:pack_ping()
     local fd, skid = self.mysql:sock_id()
     local mpack, _ =  srey.syn_send(fd, skid, pack, size, 0)
@@ -102,11 +103,13 @@ function ctx:_ping()
 end
 
 ---连接保活：ping 失败时自动重连，建议在执行查询前调用
----@return boolean ok 连接可用 true（connect() 进行中时 fail-fast 返回 false，避免与外层 connect() 抢同一 fd/skid）
+---@return boolean ok 连接可用 true；ping 失败时在锁内重连，重连也失败返 false
 function ctx:ping()
-    if self.connecting then
-        return false
-    end
+    return srey.serial_ret(false, self.serial(self._pingreconn, self))
+end
+-- 重连整段也在锁内：连接正在重建时别人不该往上发命令，而 fd/skid 换掉之后
+-- 排队者醒来拿到的自然是新连接
+function ctx:_pingreconn()
     if not self:_ping() then
         local fd, skid = self.mysql:sock_id()
         srey.sync_close(fd, skid, 1)
@@ -158,11 +161,13 @@ end
 ---否则 ping 失败自动重连会按旧库名握手，之后未限定库名的语句全部打到原库上
 ---@param sql string SQL 语句
 ---@param mbind any? mysql_bind_ctx 参数绑定上下文
----@return (_mysql_reader_ctx|boolean)[]|nil results 结果集数组（元素 reader=SELECT 结果集 / true=OK 包 / false=ERR 包）；网络失败、多结果集中途断连或 connect() 进行中返回 nil
+---@return (_mysql_reader_ctx|boolean)[]|nil results 结果集数组（元素 reader=SELECT 结果集 / true=OK 包 / false=ERR 包）；网络失败或多结果集中途断连返回 nil
 function ctx:query(sql, mbind)
-    if self.connecting then
-        return nil
-    end
+    return srey.serial_ret(nil, self.serial(self._query, self, sql, mbind))
+end
+-- 锁覆盖到 _read_results 的续读循环为止：多结果集是"一次请求多个响应"，
+-- 中途放别人进来，它的响应会被我们的 syn_recv 收走
+function ctx:_query(sql, mbind)
     local pack, size = self.mysql:pack_query(sql, mbind)
     if not pack then
         WARN("mysql query payload exceeds 16MB.")
@@ -178,11 +183,11 @@ end
 
 ---准备预处理语句（COM_STMT_PREPARE）
 ---@param sql string 含 ? 占位符的 SQL 语句
----@return any|false stmt mysql_stmt_ctx 实例；失败或 connect() 进行中返回 false
+---@return any|false stmt mysql_stmt_ctx 实例；失败返回 false
 function ctx:prepare(sql)
-    if self.connecting then
-        return false
-    end
+    return srey.serial_ret(false, self.serial(self._prepare, self, sql))
+end
+function ctx:_prepare(sql)
     local pack, size = self.mysql:pack_stmt_prepare(sql)
     if not pack then
         WARN("mysql stmt_prepare payload exceeds 16MB.")
@@ -204,6 +209,11 @@ end
 
 ---发送 COM_QUIT 并关闭连接
 function ctx:quit()
+    self.serial(self._doquit, self)
+end
+-- 走锁:COM_QUIT 虽不等响应,但插进别人正在进行的交换会串包,随后的 sync_close 更会
+-- 把对方半途的等待直接打断——一次首结果集已完整到达的查询会因此报失败
+function ctx:_doquit()
     local fd, skid = self.mysql:sock_id()
     if INVALID_SOCK == fd then
         return
@@ -220,18 +230,25 @@ function ctx:version()
 end
 
 ---返回最近一次错误信息并清除错误状态
+---**须在命令返回后、本协程下次挂起之前读取**：这是每连接一份的状态，被最近一条完成的
+---命令覆盖。一旦让出，别的协程可能已在同一连接上跑完自己的命令并把它改掉
+---（读取即清除，更要紧挨着命令读——别的协程先读一次就把它清空了）
 ---@return string err 错误描述
 function ctx:erro()
     return self.mysql:erro()
 end
 
 ---返回最近一次 INSERT 操作产生的自增 ID
+---**须在命令返回后、本协程下次挂起之前读取**：这是每连接一份的状态，被最近一条完成的
+---命令覆盖。一旦让出，别的协程可能已在同一连接上跑完自己的命令并把它改掉
 ---@return integer id last insert id
 function ctx:last_id()
     return self.mysql:last_id()
 end
 
 ---返回最近一次 UPDATE/DELETE/INSERT 影响的行数
+---**须在命令返回后、本协程下次挂起之前读取**：这是每连接一份的状态，被最近一条完成的
+---命令覆盖。一旦让出，别的协程可能已在同一连接上跑完自己的命令并把它改掉
 ---@return integer rows affected rows
 function ctx:affectd_rows()
     return self.mysql:affectd_rows()

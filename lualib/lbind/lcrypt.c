@@ -99,7 +99,8 @@ static int32_t _lcrypt_bs64_encode(lua_State *lua) {
 /// </summary>
 /// <param name="data" type="string|lightuserdata">Base64 数据；字符串时长度自动取得</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
-/// <returns type="string">解码后的原始二进制字符串</returns>
+/// <returns type="string?">解码后的原始二进制字符串；输入含非法字符或填充被伪造截断时返回 nil。
+/// 不能拿空串当失败信号——空输入本来就合法解出空串，两者必须分得开</returns>
 static int32_t _lcrypt_bs64_decode(lua_State *lua) {
     void *data;
     size_t size;
@@ -107,8 +108,17 @@ static int32_t _lcrypt_bs64_decode(lua_State *lua) {
     size_t lens = B64DE_SIZE(size);
     luaL_Buffer lbuf;
     char *out = luaL_buffinitsize(lua, &lbuf, lens);
-    size = bs64_decode(data, size, out);
-    luaL_pushresultsize(&lbuf, size);
+    size_t declens = bs64_decode(data, size, out);
+    // bs64_decode 返 0 即畸形(见 base64.h),唯一例外是本来就空的输入。
+    // 不区分的话 decode("dXNlcm5hbWU6!!!") 与 decode("") 都得到空串,
+    // 调用方那句 if d then use(d) end 会把损坏数据当成合法凭据收下
+    int32_t bad = (0 == declens && 0 != size);
+    //失败也得先把 luaL_Buffer 收掉,它在栈上留着中间对象,不能直接丢下去压 nil
+    luaL_pushresultsize(&lbuf, declens);
+    if (bad) {
+        lua_pop(lua, 1);
+        lua_pushnil(lua);
+    }
     return 1;
 }
 //srey.base64
@@ -420,7 +430,8 @@ static int32_t _lcrypt_cipher_block(lua_State *lua) {
 /// <param name="self" type="userdata">cipher 对象</param>
 /// <param name="data" type="string|lightuserdata">数据；字符串时长度自动取得</param>
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
-/// <returns type="string">加解密最终结果</returns>
+/// <returns type="string?">加解密最终结果；输入非对齐 / 长度不足一个分组 / 填充校验不通过时返回 nil。
+/// 不能拿空串当失败判据——加密空明文再解回来本就是空串</returns>
 static int32_t _lcrypt_cipher_dofinal(lua_State *lua) {
     cipher_ctx *cipher = luaL_checkudata(lua, 1, MT_CIPHER);
     void *data;
@@ -429,8 +440,13 @@ static int32_t _lcrypt_cipher_dofinal(lua_State *lua) {
     size_t outlen = size + cipher_size(cipher);
     luaL_Buffer lbuf;
     char *out = luaL_buffinitsize(lua, &lbuf, outlen);
-    size = cipher_dofinal(cipher, data, size, out);
-    luaL_pushresultsize(&lbuf, size);
+    int32_t rtn = cipher_dofinal(cipher, data, size, out, &size);
+    //失败也得先把 luaL_Buffer 收掉,它在栈上留着中间对象,不能直接丢下去压 nil
+    luaL_pushresultsize(&lbuf, ERR_OK == rtn ? size : 0);
+    if (ERR_OK != rtn) {
+        lua_pop(lua, 1);
+        lua_pushnil(lua);
+    }
     return 1;
 }
 static int32_t _lcrypt_cipher_gc(lua_State *lua) {

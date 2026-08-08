@@ -127,6 +127,38 @@ runner.run("db_mysql", function(t)
     local rcafter = mctx:query("select 7 as v")
     t:check(rcafter and 1 == #rcafter and rcafter[1], "single query after CALL multi-result: no misalignment")
 
+    -- 并发：多协程同一条连接各查自己的常量，回读必须原样。没有串行化时命令交错，
+    -- MySQL 半双工加上每连接一份的解析状态，表现为串号、少行乃至解析崩掉
+    local N, ROUNDS = 4, 6
+    local got, done = {}, 0
+    for i = 1, N do
+        srey.fork(function()
+            local want = 1000 + i
+            for _ = 1, ROUNDS do
+                local r = mctx:query(string.format("select %d as v", want))
+                if not (r and 1 == #r and r[1]) then
+                    got[i] = "query failed"
+                    done = done + 1
+                    return
+                end
+                local rok, v = r[1]:integer("v")
+                if not rok or v ~= want then
+                    got[i] = string.format("got %s want %d", tostring(v), want)
+                    done = done + 1
+                    return
+                end
+            end
+            got[i] = true
+            done = done + 1
+        end)
+    end
+    while done < N do
+        srey.sleep(20)
+    end
+    for i = 1, N do
+        t:check(true == got[i], "mysql 并发协程 " .. i .. ": " .. tostring(got[i]))
+    end
+
     mctx:quit()
 end)
 end)

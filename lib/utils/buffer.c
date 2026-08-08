@@ -277,6 +277,20 @@ static uint32_t _buffer_expand(buffer_ctx *ctx, const size_t lens, IOV_TYPE *iov
     }
     return index;
 }
+// 清掉 _buffer_expand 经 RECOED_IOV 打在节点上的 used 标记, 起点与"填充"循环一致
+// (跳过零空间首节点之后的 first), 两边清的是同一批节点。
+// 校验失败的早退路径必须调它: 那些节点只在"填充"循环里才会解锁, 直接 return 会让它们
+// 永远停在 used=1 —— buffer_drain / 节点回收都跳过 used 非零的节点, 等于这块内存再不释放。
+// 别指望调用方那句 ASSERTAB(lens == _buffer_commit_expand(...)) 兜底: 它比的是 lens 不是 0,
+// 而 buffer_from_sock 每次 EAGAIN/EOF 传进来的 readed 就是 0, 那时 0 == 0 静默通过,
+// 一次返回 0 会把 pin 原样漏掉且不 abort
+static void _buffer_unpin(bufnode_ctx **first, const uint32_t cnt) {
+    bufnode_ctx **cur = first;
+    for (uint32_t i = 0; i < cnt && NULL != *cur; ++i) {
+        (*cur)->used = 0;
+        cur = &(*cur)->next;
+    }
+}
 //cnt _buffer_expand_iov 的数组数量
 static size_t _buffer_commit_expand(buffer_ctx *ctx, size_t lens, IOV_TYPE *iov, const uint32_t cnt) {
     if (0 == cnt) {
@@ -298,6 +312,9 @@ static size_t _buffer_commit_expand(buffer_ctx *ctx, size_t lens, IOV_TYPE *iov,
     uint32_t i;
     bufnode_ctx *node, **first, **fill;
     first = ctx->tail_with_data;
+    // 这里无需 unpin: _buffer_expand 打 pin 也是从 *tail_with_data 起步的
+    // (唯一的例外是它开头"缓冲全空"那条分支, 但那条 insert 完 *tail_with_data 必非 NULL),
+    // 所以 *first 为 NULL 就意味着一个节点都没被 pin 过
     if (NULL == *first) {
         return 0;
     }
@@ -308,9 +325,11 @@ static size_t _buffer_commit_expand(buffer_ctx *ctx, size_t lens, IOV_TYPE *iov,
     node = *first;
     for (i = 0; i < cnt; ++i) {
         if (NULL == node) {
+            _buffer_unpin(first, cnt);
             return 0;
         }
         if (iov[i].IOV_PTR_FIELD != (void *)NODE_SPACE_PTR(node)) {
+            _buffer_unpin(first, cnt);
             return 0;
         }
         node = node->next;
@@ -448,8 +467,12 @@ int32_t buffer_appendv(buffer_ctx *ctx, const char *fmt, ...) {
     node->used = 1;
     va_list tmp;
     va_start(va, fmt);
+    size_t space;
     while (1) {
-        size = (int32_t)NODE_SPACE_LEN(node);
+        // 收窄前钳一下: 节点空闲区超 INT32_MAX 时直接转 int32_t 会变负数,
+        // 再 (size_t)size 传给 vsnprintf 就是个天文数字
+        space = NODE_SPACE_LEN(node);
+        size = space > (size_t)INT32_MAX ? INT32_MAX : (int32_t)space;
         va_copy(tmp, va);
         rtn = vsnprintf(NODE_SPACE_PTR(node), (size_t)size, fmt, tmp);
         va_end(tmp);
@@ -660,6 +683,7 @@ int32_t buffer_search(buffer_ctx *ctx, const int32_t ncs,
     bufnode_ctx *node = _buffer_search_start_cached(ctx, start, &totaloff);
     ASSERTAB(NULL != node && 0 != node->off, "can't search start node.");
     char *pschar, *pstart;
+    size_t hit;
     size_t uioff = node->off - (totaloff - start);
     while (NULL != node && 0 != node->off) {
         if (totaloff - node->off + uioff + wlens > end) {
@@ -673,7 +697,13 @@ int32_t buffer_search(buffer_ctx *ctx, const int32_t ncs,
                 break;
             }
             if (ERR_OK == _buffer_search_memcmp(node, cmp, uioff, what, wlens)) {
-                return (int32_t)(totaloff - node->off + uioff);
+                hit = totaloff - node->off + uioff;
+                // 返回类型是 int32_t, 装不下的位置只能报未找到: 截断会得到一个负数或
+                // 别的位置, 而调用方普遍只判 ERR_FAILED, 别的负值会被当成有效下标用下去
+                if (hit > (size_t)INT32_MAX) {
+                    return ERR_FAILED;
+                }
+                return (int32_t)hit;
             }
             uioff++;
             if (node->off == uioff) {

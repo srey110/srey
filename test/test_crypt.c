@@ -882,14 +882,14 @@ static void test_cipher(CuTest *tc) {
     cipher_init(&dec, AES, ECB, key16, 16, 128, 0);
     cipher_padding(&dec, PKCS57);
 
-    enc_len = cipher_dofinal(&enc, plain, 16, enc_buf);
-    dec_len = cipher_dofinal(&dec, enc_buf, enc_len, dec_buf);
+    CuAssertIntEquals(tc, ERR_OK, cipher_dofinal(&enc, plain, 16, enc_buf, &enc_len));
+    CuAssertIntEquals(tc, ERR_OK, cipher_dofinal(&dec, enc_buf, enc_len, dec_buf, &dec_len));
     CuAssertTrue(tc, 16 == (int)dec_len);
     CuAssertTrue(tc, 0 == memcmp(plain, dec_buf, 16));
 
     /* 非整块数据（5 字节），填充后可正确还原 */
-    enc_len = cipher_dofinal(&enc, plain2, strlen(plain2), enc_buf);
-    dec_len = cipher_dofinal(&dec, enc_buf, enc_len, dec_buf);
+    CuAssertIntEquals(tc, ERR_OK, cipher_dofinal(&enc, plain2, strlen(plain2), enc_buf, &enc_len));
+    CuAssertIntEquals(tc, ERR_OK, cipher_dofinal(&dec, enc_buf, enc_len, dec_buf, &dec_len));
     CuAssertTrue(tc, (int)strlen(plain2) == (int)dec_len);
     CuAssertTrue(tc, 0 == memcmp(plain2, dec_buf, dec_len));
 
@@ -901,8 +901,8 @@ static void test_cipher(CuTest *tc) {
     cipher_padding(&dec, PKCS57);
     cipher_iv(&dec, iv16, 16);
 
-    enc_len = cipher_dofinal(&enc, plain, 16, enc_buf);
-    dec_len = cipher_dofinal(&dec, enc_buf, enc_len, dec_buf);
+    CuAssertIntEquals(tc, ERR_OK, cipher_dofinal(&enc, plain, 16, enc_buf, &enc_len));
+    CuAssertIntEquals(tc, ERR_OK, cipher_dofinal(&dec, enc_buf, enc_len, dec_buf, &dec_len));
     CuAssertTrue(tc, 16 == (int)dec_len);
     CuAssertTrue(tc, 0 == memcmp(plain, dec_buf, 16));
 
@@ -910,12 +910,12 @@ static void test_cipher(CuTest *tc) {
     char ecb_enc[64], cbc_enc[64];
     cipher_init(&enc, AES, ECB, key16, 16, 128, 1);
     cipher_padding(&enc, PKCS57);
-    cipher_dofinal(&enc, plain, 16, ecb_enc);
+    CuAssertIntEquals(tc, ERR_OK, cipher_dofinal(&enc, plain, 16, ecb_enc, &enc_len));
 
     cipher_init(&enc, AES, CBC, key16, 16, 128, 1);
     cipher_padding(&enc, PKCS57);
     cipher_iv(&enc, iv16, 16);
-    cipher_dofinal(&enc, plain, 16, cbc_enc);
+    CuAssertIntEquals(tc, ERR_OK, cipher_dofinal(&enc, plain, 16, cbc_enc, &enc_len));
     CuAssertTrue(tc, 0 != memcmp(ecb_enc, cbc_enc, 16));
 
     /* ── DES ECB + PKCS7 往返（DES 密钥 8 字节，分组 8 字节）── */
@@ -925,8 +925,8 @@ static void test_cipher(CuTest *tc) {
     cipher_init(&dec, DES, ECB, des_key, 8, 0, 0);
     cipher_padding(&dec, PKCS57);
 
-    enc_len = cipher_dofinal(&enc, plain2, strlen(plain2), enc_buf);
-    dec_len = cipher_dofinal(&dec, enc_buf, enc_len, dec_buf);
+    CuAssertIntEquals(tc, ERR_OK, cipher_dofinal(&enc, plain2, strlen(plain2), enc_buf, &enc_len));
+    CuAssertIntEquals(tc, ERR_OK, cipher_dofinal(&dec, enc_buf, enc_len, dec_buf, &dec_len));
     CuAssertTrue(tc, (int)strlen(plain2) == (int)dec_len);
     CuAssertTrue(tc, 0 == memcmp(plain2, dec_buf, dec_len));
 
@@ -948,11 +948,13 @@ static void test_cipher_padding_zeroed(CuTest *tc) {
     cipher_init(&dec, AES, ECB, key16, 16, 128, 0);
     cipher_padding(&dec, PKCS57);
 
-    size_t enc_len = cipher_dofinal(&enc, plain, 16, enc_buf);
+    size_t enc_len;
+    CuAssertIntEquals(tc, ERR_OK, cipher_dofinal(&enc, plain, 16, enc_buf, &enc_len));
     CuAssertTrue(tc, 32 == (int)enc_len);                 /* 16 数据 + 16 填充块 */
 
     memset(dec_buf, 0x5a, sizeof(dec_buf));
-    size_t dec_len = cipher_dofinal(&dec, enc_buf, enc_len, dec_buf);
+    size_t dec_len;
+    CuAssertIntEquals(tc, ERR_OK, cipher_dofinal(&dec, enc_buf, enc_len, dec_buf, &dec_len));
     CuAssertTrue(tc, 16 == (int)dec_len);
     CuAssertTrue(tc, 0 == memcmp(plain, dec_buf, 16));
     /* 剥离的 16 字节 padding(原值 0x10)修复后应已清零 */
@@ -977,13 +979,13 @@ static void test_cipher_decrypt_bad_padding(CuTest *tc) {
     cipher_init(&dec, AES, ECB, key16, 16, 128, 0);
     cipher_padding(&dec, PKCS57);
 
-    enc_len = cipher_dofinal(&enc, plain, 16, enc_buf);
+    CuAssertIntEquals(tc, ERR_OK, cipher_dofinal(&enc, plain, 16, enc_buf, &enc_len));
     CuAssertTrue(tc, 32 == (int)enc_len); /* 16 数据块 + 16 PKCS7 整填充块 */
 
     /* 只取首个密文块(16B 数据块)解密:还原 "Hello, Cipher!!!",
      * 末字节当 pad=0x21=33 > 块长 16 → padding 非法 → 拒绝,返回 0 且 output 清零 */
     memset(dec_buf, 0x5a, sizeof(dec_buf));
-    dec_len = cipher_dofinal(&dec, enc_buf, 16, dec_buf);
+    CuAssertIntEquals(tc, ERR_FAILED, cipher_dofinal(&dec, enc_buf, 16, dec_buf, &dec_len));
     CuAssertTrue(tc, 0 == (int)dec_len);
     CuAssertTrue(tc, 0 == memcmp(dec_buf, zero, 16));
 
@@ -1397,6 +1399,48 @@ static void test_des_direct(CuTest *tc) {
         CuAssertTrue(tc, 0 == memcmp(pt2, pt, 8));
     }
 
+    // ── 3DES 双密钥：16 字节密钥须等价于 24 字节的 K1|K2|K1（NIST SP 800-67 取法二）
+    // 早先整体补零使 K3 全零，密文与任何合规实现都对不上
+    {
+        uint8_t key16[16], key24[24], pt[8] = { 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h' };
+        _hex_to_bytes("0123456789ABCDEF23456789ABCDEF01", key16, 16);
+        memcpy(key24, key16, 16);
+        memcpy(key24 + 16, key16, 8);
+        des_init(&des, (char *)key16, 16, 1, 1);
+        char ct16[DES_BLOCK_SIZE];
+        memcpy(ct16, des_crypt(&des, pt), DES_BLOCK_SIZE);
+        des_init(&des, (char *)key24, 24, 1, 1);
+        CuAssertTrue(tc, 0 == memcmp(ct16, des_crypt(&des, pt), DES_BLOCK_SIZE));
+        // 解密方向同样按 K3=K1 取，能还原明文
+        des_init(&des, (char *)key16, 16, 1, 0);
+        char *pt2 = des_crypt(&des, ct16);
+        CuAssertTrue(tc, 0 == memcmp(pt2, pt, 8));
+    }
+
+    // ── 3DES 单密钥：8 字节按 K1=K2=K3 取，E-D-E 抵消后须等同单重 DES 的 FIPS 向量（取法三）──
+    {
+        uint8_t key[8], pt[8];
+        _hex_to_bytes("0123456789ABCDEF", key, 8);
+        _hex_to_bytes("4E6F772069732074", pt, 8);
+        des_init(&des, (char *)key, 8, 1, 1);
+        char hex[DES_BLOCK_SIZE * 2 + 1];
+        _to_hex(des_crypt(&des, pt), DES_BLOCK_SIZE, hex);
+        CuAssertStrEquals(tc, "3fa40e8a984d4815", hex);
+    }
+
+    // ── 3DES 非标准长度：10 字节补零到 16 后仍按 K3=K1 取 ──
+    {
+        uint8_t key24[24], pt[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
+        memset(key24, 0, sizeof(key24));
+        memcpy(key24, "0123456789", 10);
+        memcpy(key24 + 16, key24, 8);
+        des_init(&des, "0123456789", 10, 1, 1);
+        char ct_a[DES_BLOCK_SIZE];
+        memcpy(ct_a, des_crypt(&des, pt), DES_BLOCK_SIZE);
+        des_init(&des, (char *)key24, 24, 1, 1);
+        CuAssertTrue(tc, 0 == memcmp(ct_a, des_crypt(&des, pt), DES_BLOCK_SIZE));
+    }
+
     // ── 短密钥自动零填充：klens < 8 时填充 ──
     {
         uint8_t pt[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
@@ -1719,9 +1763,9 @@ static void test_cipher_init_iv_zeroed(CuTest *tc) {
         CuAssertTrue(tc, 0 == memcmp(dirty_b.iv, zeroiv, CIPHER_BLOCK_SIZE));
         CuAssertTrue(tc, 0 == memcmp(dirty_b.cur_iv, zeroiv, CIPHER_BLOCK_SIZE));
 
-        la = cipher_dofinal(&dirty_a, plain, 16, out_a);
-        lb = cipher_dofinal(&dirty_b, plain, 16, out_b);
-        lc = cipher_dofinal(&clean, plain, 16, out_c);
+        CuAssertIntEquals(tc, ERR_OK, cipher_dofinal(&dirty_a, plain, 16, out_a, &la));
+        CuAssertIntEquals(tc, ERR_OK, cipher_dofinal(&dirty_b, plain, 16, out_b, &lb));
+        CuAssertIntEquals(tc, ERR_OK, cipher_dofinal(&clean, plain, 16, out_c, &lc));
         CuAssertTrue(tc, 16 == la);
         CuAssertTrue(tc, la == lb && la == lc);
         CuAssertTrue(tc, 0 == memcmp(out_a, out_b, la));
@@ -1777,13 +1821,13 @@ static void test_cipher_stream_modes(CuTest *tc) {
             cipher_init(&dec, AES, modes[mi], key16, 16, 128, 0);
             cipher_iv(&dec, iv16, 16);
 
-            elen = cipher_dofinal(&enc, plain, plen, enc_buf);
+            CuAssertIntEquals(tc, ERR_OK, cipher_dofinal(&enc, plain, plen, enc_buf, &elen));
             // 流模式：密文长度严格等于明文长度（无填充）
             CuAssertTrue(tc, plen == elen);
             // 密文与明文不同
             CuAssertTrue(tc, 0 != memcmp(plain, enc_buf, plen));
 
-            dlen = cipher_dofinal(&dec, enc_buf, elen, dec_buf);
+            CuAssertIntEquals(tc, ERR_OK, cipher_dofinal(&dec, enc_buf, elen, dec_buf, &dlen));
             CuAssertTrue(tc, plen == dlen);
             CuAssertTrue(tc, 0 == memcmp(plain, dec_buf, plen));
 
@@ -1873,6 +1917,139 @@ static void test_base64_invalid(CuTest *tc) {
     size_t dlen = bs64_decode(with_lf, strlen(with_lf), out);
     CuAssertTrue(tc, 1 == dlen);
     CuAssertTrue(tc, 'f' == out[0]);
+
+    /* 拒收时不得留下"合法前缀已解出的那段"：三条拒收路径都要把 out 置空。
+       调用方常拿 CALLOC 的缓冲直接 strcmp（smtp 的 AUTH LOGIN 挑战就是），
+       留着前缀就等于让 "dXNlcm5hbWU6!!!" 冒充完整的 "username:" */
+    memset(out, 0x5a, sizeof(out));
+    CuAssertTrue(tc, 0 == bs64_decode("dXNlcm5hbWU6!!!", 15, out));  /* 非法字符 */
+    CuAssertTrue(tc, '\0' == out[0]);
+    memset(out, 0x5a, sizeof(out));
+    CuAssertTrue(tc, 0 == bs64_decode("cGFzc3dvcmQ6=X==", 16, out)); /* '=' 后有正文 */
+    CuAssertTrue(tc, '\0' == out[0]);
+    memset(out, 0x5a, sizeof(out));
+    CuAssertTrue(tc, 0 == bs64_decode("TWFuTWFuT", 9, out));         /* 尾组只剩 1 个字符 */
+    CuAssertTrue(tc, '\0' == out[0]);
+}
+
+/* =======================================================================
+ * digest / hmac 的 final 之后可直接开始下一条消息
+ * 各引擎 *_final 末尾都 secure_zero 掉自己的 ctx，不重建 IV 的话第二次 final
+ * 是"全零 IV 算空消息"，得到一个与输入、与密钥都无关的常量
+ * ======================================================================= */
+static void test_digest_hmac_final_resets(CuTest *tc) {
+    char h1[DG_BLOCK_SIZE], h2[DG_BLOCK_SIZE];
+    size_t l1, l2;
+
+    /* digest：final 后直接跑第二条消息，须与全新上下文一致 */
+    digest_ctx d, fresh;
+    digest_init(&d, DG_SHA256);
+    digest_update(&d, "abc", 3);
+    l1 = digest_final(&d, h1);
+    digest_update(&d, "hello world", 11);
+    l1 = digest_final(&d, h1);
+    digest_init(&fresh, DG_SHA256);
+    digest_update(&fresh, "hello world", 11);
+    l2 = digest_final(&fresh, h2);
+    CuAssertTrue(tc, l1 == l2 && 0 == memcmp(h1, h2, l1));
+
+    /* 连着两次 final：第二次是空消息的摘要，不是与输入无关的常量 */
+    digest_init(&d, DG_SHA256);
+    digest_update(&d, "abc", 3);
+    digest_final(&d, h1);
+    l1 = digest_final(&d, h1);
+    digest_init(&fresh, DG_SHA256);
+    l2 = digest_final(&fresh, h2);
+    CuAssertTrue(tc, l1 == l2 && 0 == memcmp(h1, h2, l1));
+
+    /* hmac：final 后密钥仍在。不 reset 直接算同一条消息，须得到同一个 tag
+       （修复前这里对任何密钥都返回同一个常量） */
+    hmac_ctx m;
+    hmac_init(&m, DG_SHA256, "key", 3);
+    hmac_update(&m, "Hi There", 8);
+    l1 = hmac_final(&m, h1);
+    hmac_update(&m, "Hi There", 8);
+    l2 = hmac_final(&m, h2);
+    CuAssertTrue(tc, l1 == l2 && 0 == memcmp(h1, h2, l1));
+
+    /* 不同密钥的第二次 final 必须不同 */
+    hmac_ctx m2;
+    hmac_init(&m2, DG_SHA256, "COMPLETELY-OTHER-KEY", 20);
+    hmac_update(&m2, "Hi There", 8);
+    hmac_final(&m2, h2);
+    hmac_update(&m2, "Hi There", 8);
+    hmac_final(&m2, h2);
+    CuAssertTrue(tc, 0 != memcmp(h1, h2, l1));
+
+    hmac_free(&m);
+    hmac_free(&m2);
+    digest_free(&d);
+    digest_free(&fresh);
+}
+
+/* =======================================================================
+ * cipher_dofinal 的"失败"与"结果长度 0"必须分得开：
+ * 加密空明文再解回来本就是 0 字节，与填充校验失败同为 0，靠返回值区分
+ * ======================================================================= */
+static void test_cipher_dofinal_empty_vs_fail(CuTest *tc) {
+    const char key[16] = { 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+                           0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10 };
+    char ct[64], pt[64];
+    size_t ctlen, ptlen;
+
+    cipher_ctx enc, dec;
+    cipher_init(&enc, AES, ECB, key, sizeof(key), 128, 1);
+    cipher_padding(&enc, PKCS57);
+    CuAssertIntEquals(tc, ERR_OK, cipher_dofinal(&enc, "", 0, ct, &ctlen));
+    CuAssertTrue(tc, 16 == ctlen);// 空明文也产出一个整填充块
+
+    /* 合法密文 → ERR_OK 且长度 0 */
+    cipher_init(&dec, AES, ECB, key, sizeof(key), 128, 0);
+    cipher_padding(&dec, PKCS57);
+    CuAssertIntEquals(tc, ERR_OK, cipher_dofinal(&dec, ct, ctlen, pt, &ptlen));
+    CuAssertTrue(tc, 0 == ptlen);
+
+    /* 篡改一个字节 → ERR_FAILED，长度同样是 0 */
+    ct[0] = (char)(ct[0] ^ 0xFF);
+    CuAssertIntEquals(tc, ERR_FAILED, cipher_dofinal(&dec, ct, ctlen, pt, &ptlen));
+    CuAssertTrue(tc, 0 == ptlen);
+
+    cipher_free(&enc);
+    cipher_free(&dec);
+}
+
+/* =======================================================================
+ * SCRAM：服务端 r= 恰好等于客户端 nonce（一个随机字节都没贡献）须被拒
+ * ======================================================================= */
+static void test_scram_server_nonce_required(CuTest *tc) {
+    const char *cli_nonce = "fyko+d2lbbFgONRv9qkxdawL";
+    char srv_first[256];
+
+    scram_ctx *cli = scram_init("SCRAM-SHA-1", 1);
+    CuAssertPtrNotNull(tc, cli);
+    scram_set_user(cli, "user", 4);
+    scram_set_pwd(cli, "pencil", 6);
+    char *first = scram_first_message(cli);
+    FREE(first);
+    _scram_inject_nonce(cli, cli_nonce, "user");
+
+    /* r= 原样回灌：前缀校验能过，但服务端 nonce 为空 */
+    SNPRINTF(srv_first, sizeof(srv_first), "r=%s,s=QSXCR+Q6sek8bf92,i=4096", cli_nonce);
+    CuAssertIntEquals(tc, ERR_FAILED,
+        scram_parse_first_message(cli, srv_first, strlen(srv_first)));
+    scram_free(cli);
+
+    /* 只要多一个字符就合法 */
+    cli = scram_init("SCRAM-SHA-1", 1);
+    scram_set_user(cli, "user", 4);
+    scram_set_pwd(cli, "pencil", 6);
+    first = scram_first_message(cli);
+    FREE(first);
+    _scram_inject_nonce(cli, cli_nonce, "user");
+    SNPRINTF(srv_first, sizeof(srv_first), "r=%sX,s=QSXCR+Q6sek8bf92,i=4096", cli_nonce);
+    CuAssertIntEquals(tc, ERR_OK,
+        scram_parse_first_message(cli, srv_first, strlen(srv_first)));
+    scram_free(cli);
 }
 
 /* =======================================================================
@@ -1964,4 +2141,7 @@ void test_crypt(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_scram_setters);
     SUITE_ADD_TEST(suite, test_scram_pwd_required);
     SUITE_ADD_TEST(suite, test_scram_embedded_nul);
+    SUITE_ADD_TEST(suite, test_scram_server_nonce_required);
+    SUITE_ADD_TEST(suite, test_digest_hmac_final_resets);
+    SUITE_ADD_TEST(suite, test_cipher_dofinal_empty_vs_fail);
 }

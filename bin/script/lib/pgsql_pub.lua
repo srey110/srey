@@ -14,8 +14,6 @@ local pgsql = require("pgsql")-- C 绑定，只用 pack_type / erro
 
 local M = {}
 
----connect() 进行中，操作被 fail-fast 拒绝
-M.BUSY = "pgsql: connect() in progress"
 ---发送失败或连接已断
 M.SEND = "pgsql: send failed or connection closed"
 

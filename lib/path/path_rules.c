@@ -18,9 +18,6 @@ static int32_t _path_rules_mqtt_validate(const char *path, path_kind kind, void 
     return ERR_OK;
 }
 void path_rules_mqtt(path_rules *rule) {
-    ZERO(rule, sizeof(path_rules));
-    rule->sep = '/';
-    rule->single_wildcard = '+';
-    rule->multi_wildcard = '#';
+    path_rules_def(rule);
     rule->validate_path = _path_rules_mqtt_validate;
 }

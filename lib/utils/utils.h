@@ -47,12 +47,6 @@ void sighandle(void(*cb)(int32_t, void *), void *data);
 /// <returns>核心数</returns>
 uint32_t procscnt(void);
 /// <summary>
-/// 获取Content-Type
-/// </summary>
-/// <param name="extension">扩展名字.xx</param>
-/// <returns>Content-Type</returns>
-const char *contenttype(const char *extension);
-/// <summary>
 /// 是否为文件
 /// </summary>
 /// <param name="file">路径</param>
@@ -294,7 +288,7 @@ int32_t randrange(int32_t min, int32_t max);
 /// <param name="len">随机字符数</param>
 /// <returns>char *</returns>
 char *randstr(char *buf, size_t len);
-#define HEX_ENSIZE(s) (s * 2 + 1)
+#define HEX_ENSIZE(s) ((s) * 2 + 1)
 /// <summary>
 /// 转16进制
 /// </summary>
@@ -311,8 +305,8 @@ char *tohex(const void *buf, size_t len, char *out, int32_t lower);
 /// <param name="plens">数据长度</param>
 /// <param name="sep">拆分标记</param>
 /// <param name="seplens">拆分标记长度</param>
-/// <param name="n">拆分后的长度</param>
-/// <returns>buf_ctx *, 需要free</returns>
+/// <param name="n">输出:拆分后的段数;任何路径都会写,返回 NULL 时置 0</param>
+/// <returns>buf_ctx *, 需要free;ptr 为 NULL 或 plens 为 0 时返回 NULL</returns>
 struct buf_ctx *split(const void *ptr, size_t plens, const void *sep, size_t seplens, size_t *n);
 /// <summary>
 /// 按单字节 sep 就地拆分到调用方栈数组,不堆分配;标准切分保留空段(连续/尾随 sep 产生 len==0 段,段数 = sep 数 + 1)。

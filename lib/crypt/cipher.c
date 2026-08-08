@@ -171,16 +171,17 @@ void *cipher_block(cipher_ctx *cipher, const void *data, size_t lens, size_t *si
     }
     return rtn;
 }
-size_t cipher_dofinal(cipher_ctx *cipher, const void *data, size_t lens, char *output) {
+int32_t cipher_dofinal(cipher_ctx *cipher, const void *data, size_t lens, char *output, size_t *outlens) {
     void *buf;
     size_t enlens, size = 0;
+    *outlens = 0;
     cipher_reset(cipher);
     for (size_t i = 0; i < lens; i += cipher->block_lens) {
         enlens = (i + cipher->block_lens > lens ? lens - i : cipher->block_lens);
         buf = cipher_block(cipher, (const char *)data + i, enlens, &enlens);
         if (NULL == buf) {
             secure_zero(output, size);
-            return 0;
+            return ERR_FAILED;
         }
         memcpy(output + size, buf, enlens);
         size += enlens;
@@ -196,7 +197,7 @@ size_t cipher_dofinal(cipher_ctx *cipher, const void *data, size_t lens, char *o
                 //此处与 line 205 同款防御 NULL，避免未来扩展 model 时静默段错误。
                 if (NULL == buf) {
                     secure_zero(output, size);
-                    return 0;
+                    return ERR_FAILED;
                 }
                 memcpy(output + size, buf, enlens);
                 size += enlens;
@@ -206,12 +207,12 @@ size_t cipher_dofinal(cipher_ctx *cipher, const void *data, size_t lens, char *o
             //size < block_lens（含 size==0）属解密失败，避免 output[size-1] 下溢越界
             if (size < cipher->block_lens) {
                 secure_zero(output, size);
-                return 0;
+                return ERR_FAILED;
             }
             uint8_t pad = (uint8_t)output[size - 1];
             if (pad < 1 || pad > cipher->block_lens) {
                 secure_zero(output, size);
-                return 0;
+                return ERR_FAILED;
             }
             if (ISO10126 == cipher->padding) {
                 //ISO 10126 前 N-1 字节为随机数无法校验，长度字节已由上界检查覆盖
@@ -241,12 +242,13 @@ size_t cipher_dofinal(cipher_ctx *cipher, const void *data, size_t lens, char *o
                 }
                 if (0 != bad) {
                     secure_zero(output, size);
-                    return 0;
+                    return ERR_FAILED;
                 }
                 size -= pad;
                 secure_zero(output + size, pad);
             }
         }
     }
-    return size;
+    *outlens = size;
+    return ERR_OK;
 }

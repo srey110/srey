@@ -28,13 +28,15 @@ function ctx:ctor(owner, mpack)
     self.gen = owner.generation
 end
 
+
 ---执行预处理语句（COM_STMT_EXECUTE）
 ---@param mbind any? mysql_bind_ctx 参数绑定上下文
----@return (_mysql_reader_ctx|boolean)[]|nil results 结果集数组（元素 reader=结果集 / true=OK 包 / false=ERR 包）；网络失败、多结果集中途断连、语句失效、绑定参数个数与语句声明不符或 owner 正在 connect() 中返回 nil
+---@return (_mysql_reader_ctx|boolean)[]|nil results 结果集数组（元素 reader=结果集 / true=OK 包 / false=ERR 包）；网络失败、多结果集中途断连、语句失效或绑定参数个数与语句声明不符返回 nil
 function ctx:execute(mbind)
-    if self.owner.connecting then
-        return nil
-    end
+    -- 借宿主连接的执行器：语句和普通查询走的是同一条连接，两者之间也不能交错
+    return srey.serial_ret(nil, self.owner.serial(self._execute, self, mbind))
+end
+function ctx:_execute(mbind)
     if self.gen ~= self.owner.generation then
         WARN("mysql stmt invalidated by reconnect, please re-prepare.")
         return nil
@@ -53,11 +55,11 @@ function ctx:execute(mbind)
 end
 
 ---发送 COM_STMT_RESET：清除服务端语句执行状态，保留 prepare 结果，下次 execute 可绑定新参数
----@return boolean ok 重置成功 true（语句失效或 owner 正在 connect() 中返回 false）
+---@return boolean ok 重置成功 true（语句失效返回 false）
 function ctx:reset()
-    if self.owner.connecting then
-        return false
-    end
+    return srey.serial_ret(false, self.owner.serial(self._reset, self))
+end
+function ctx:_reset()
     if self.gen ~= self.owner.generation then
         WARN("mysql stmt invalidated by reconnect, please re-prepare.")
         return false
@@ -72,12 +74,16 @@ function ctx:reset()
 end
 
 ---返回最近一次 INSERT 操作产生的自增 ID
+---**须在命令返回后、本协程下次挂起之前读取**：这是每连接一份的状态，被最近一条完成的
+---命令覆盖。一旦让出，别的协程可能已在同一连接上跑完自己的命令并把它改掉
 ---@return integer id last insert id
 function ctx:last_id()
     return self.mysql:last_id()
 end
 
 ---返回最近一次 UPDATE/DELETE/INSERT 影响的行数
+---**须在命令返回后、本协程下次挂起之前读取**：这是每连接一份的状态，被最近一条完成的
+---命令覆盖。一旦让出，别的协程可能已在同一连接上跑完自己的命令并把它改掉
 ---@return integer rows affected rows
 function ctx:affectd_rows()
     return self.mysql:affectd_rows()

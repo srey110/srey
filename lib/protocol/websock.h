@@ -79,28 +79,28 @@ struct websock_pack_ctx *websock_unpack(ev_ctx *ev, SOCKET fd, uint64_t skid, in
 /// <param name="uri">HTTP request-target（path?query）；NULL 或空字符串时使用 "/"</param>
 /// <param name="secprot">Sec-WebSocket-Protocol；NULL 或空表示不带子协议</param>
 /// <param name="hsctx">out 握手上下文(含签名与子协议)，作为 task_connect extra 参数传入交协议层管理</param>
-/// <returns>握手包；secprot校验失败返回 NULL(此时 *hsctx 不写入)</returns>
+/// <returns>握手包；secprot 校验失败、或取不到 CSPRNG 熵生成 nonce 时返回 NULL(此时 *hsctx 不写入)</returns>
 char *websock_pack_handshake(const char *host, const char *uri, const char *secprot, ws_hs_ctx **hsctx);
 /// <summary>
 /// ping包
 /// </summary>
 /// <param name="mask">1 掩码, 客户端向服务器发送数据都需要掩码, 0 无掩码</param>
 /// <param name="size">包长度</param>
-/// <returns>ping包</returns>
+/// <returns>ping包；mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 NULL(*size 置 0)</returns>
 void *websock_pack_ping(int32_t mask, size_t *size);
 /// <summary>
 /// pong包
 /// </summary>
 /// <param name="mask">1 掩码, 客户端向服务器发送数据都需要掩码, 0 无掩码</param>
 /// <param name="size">包长度</param>
-/// <returns>pong包</returns>
+/// <returns>pong包；mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 NULL(*size 置 0)</returns>
 void *websock_pack_pong(int32_t mask, size_t *size);
 /// <summary>
 /// close包
 /// </summary>
 /// <param name="mask">1 掩码, 客户端向服务器发送数据都需要掩码, 0 无掩码</param>
 /// <param name="size">包长度</param>
-/// <returns>close包</returns>
+/// <returns>close包；mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 NULL(*size 置 0)</returns>
 void *websock_pack_close(int32_t mask, size_t *size);
 /// <summary>
 /// 文本消息包
@@ -110,7 +110,7 @@ void *websock_pack_close(int32_t mask, size_t *size);
 /// <param name="data">数据</param>
 /// <param name="dlens">数据长度</param>
 /// <param name="size">包长度</param>
-/// <returns>文本消息包</returns>
+/// <returns>文本消息包；mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 NULL(*size 置 0)</returns>
 void *websock_pack_text(int32_t mask, int32_t fin, void *data, size_t dlens, size_t *size);
 /// <summary>
 /// 二进制消息包
@@ -120,7 +120,7 @@ void *websock_pack_text(int32_t mask, int32_t fin, void *data, size_t dlens, siz
 /// <param name="data">数据</param>
 /// <param name="dlens">数据长度</param>
 /// <param name="size">包长度</param>
-/// <returns>二进制消息包</returns>
+/// <returns>二进制消息包；mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 NULL(*size 置 0)</returns>
 void *websock_pack_binary(int32_t mask, int32_t fin, void *data, size_t dlens, size_t *size);
 /// <summary>
 /// 分片消息包
@@ -130,7 +130,7 @@ void *websock_pack_binary(int32_t mask, int32_t fin, void *data, size_t dlens, s
 /// <param name="data">数据</param>
 /// <param name="dlens">数据长度</param>
 /// <param name="size">包长度</param>
-/// <returns>分片消息包</returns>
+/// <returns>分片消息包；mask 非 0 且取不到 CSPRNG 熵生成掩码 key 时返回 NULL(*size 置 0)</returns>
 void *websock_pack_continua(int32_t mask, int32_t fin, void *data, size_t dlens, size_t *size);
 /// <summary>
 /// 获取fin值

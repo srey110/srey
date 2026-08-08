@@ -154,16 +154,27 @@ static int32_t _router_parse_path(const char *path, size_t path_len, router_seg 
         n++;
     }
     // 可选段数决定 _router_match_path 可行性表的第二维, 超出即拒绝注册
-    int32_t nopt = 0;
+    int32_t nopt = 0, nparam = 0;
     for (int32_t k = 0; k < n; k++) {
         if (ROUTER_SEG_OPT == buf[k].t) {
             nopt++;
+        } else if (ROUTER_SEG_PARAM == buf[k].t) {
+            nparam++;
         }
     }
+    // 注册失败只能靠返回值反映, 而 router_get/post 这类包装的返回值调用方普遍不看,
+    // 路由会就此静默消失成 404, 故下面两条都用 ERROR 而非 WARN
     if (nopt > ROUTER_MAX_OPT) {
-        // 注册失败只能靠返回值反映, 而 router_get/post 这类包装的返回值调用方普遍不看,
-        // 路由会就此静默消失成 404, 故这里用 ERROR 而非 WARN
         LOG_ERROR("router: optional segments %d exceed %d, route rejected.", nopt, ROUTER_MAX_OPT);
+        _router_segs_free_str(buf, n);
+        return ERR_FAILED;
+    }
+    // 只按必填段判上限: 派发时 _router_param_take 超过 ROUTER_MAX_PARAMS 就返回 0 令整条匹配失败,
+    // 故必填段本身超限的路由能注册成功却永远匹配不上, 每个请求换来一个 404 加一行 WARN。
+    // 不把 OPT 算进来是因为 OPT 可以不取值——"16 必填 + 1 可选"这种路由在可选段被跳过时
+    // 恰好用满 16 个, 是能命中的, 按最坏情形拒会连它一起误杀
+    if (nparam > ROUTER_MAX_PARAMS) {
+        LOG_ERROR("router: required path params %d exceed %d, route rejected.", nparam, ROUTER_MAX_PARAMS);
         _router_segs_free_str(buf, n);
         return ERR_FAILED;
     }

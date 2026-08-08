@@ -41,7 +41,7 @@ void hmac_update(hmac_ctx *hmac, const void *data, size_t lens);
 /// </summary>
 /// <param name="hmac">hmac_ctx</param>
 /// <param name="hash">hash, hash[DG_BLOCK_SIZE]</param>
-/// <returns>hash长度</returns>
+/// <returns>hash长度。返回后上下文已自动复位（密钥仍在），可直接开始下一条消息（无需再调 hmac_reset）</returns>
 size_t hmac_final(hmac_ctx *hmac, char *hash);
 /// <summary>
 /// 重置,准备新一轮计算

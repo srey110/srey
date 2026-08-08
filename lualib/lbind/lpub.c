@@ -1,5 +1,8 @@
 ﻿#include "lbind/lpub.h"
 
+// BSON 的文档长度与 binary 长度前缀都是 int32,下面三个入口共用同一条上下界与同一句报错
+#define BSON_LENS_RANGE "length out of range [0, INT32_MAX]"
+
 // 从 Lua 全局变量表中取轻量用户数据，类型不符则弹栈返回 NULL
 void *global_userdata(lua_State *lua, const char *name) {
     if (LUA_TLIGHTUSERDATA != lua_getglobal(lua, name)) {
@@ -64,6 +67,19 @@ void *lpub_check_buf_idx(lua_State *lua, int32_t *idx, size_t *size, int32_t *co
 // idx 按值的兼容包装,丢弃推进位置
 void *lpub_check_buf(lua_State *lua, int32_t idx, size_t *size, int32_t *copy) {
     return lpub_check_buf_idx(lua, &idx, size, copy);
+}
+size_t lpub_check_bson_lens(lua_State *lua, int32_t idx) {
+    lua_Integer val = luaL_checkinteger(lua, idx);
+    luaL_argcheck(lua, val >= 0 && val <= INT32_MAX, idx, BSON_LENS_RANGE);
+    return (size_t)val;
+}
+char *lpub_check_bson_bin(lua_State *lua, int32_t idx, size_t *lens) {
+    if (LUA_TLIGHTUSERDATA == lua_type(lua, idx)) {
+        lpub_check_bson_lens(lua, idx + 1);
+    }
+    char *data = lpub_check_buf(lua, idx, lens, NULL);
+    luaL_argcheck(lua, *lens <= INT32_MAX, idx, BSON_LENS_RANGE);
+    return data;
 }
 name_t lpub_task_handle(lua_State *lua, int32_t idx) {
     return (LUA_TSTRING == lua_type(lua, idx))

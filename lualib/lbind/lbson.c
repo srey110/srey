@@ -7,8 +7,6 @@
 #define MT_BSON_DATE   "_bson_date"
 #define MT_BSON_BINARY "_bson_binary"
 #define MT_BSON_INT64  "_bson_int64"
-// BSON 的文档长度与 binary 长度前缀都是 int32,下面两处共用同一条上下界与同一句报错
-#define BSON_LENS_RANGE "length out of range [0, INT32_MAX]"
 
 typedef struct { char data[BSON_OID_LENS]; } lbson_oid_t;
 typedef struct { int64_t ms; } lbson_date_t;
@@ -61,31 +59,6 @@ static size_t _lbson_lens(bson_ctx *bson) {
 static int32_t _lbson_readonly(lua_State *lua) {
     return luaL_error(lua, "bson: read-only document from bson.new(data, size), write methods unavailable");
 }
-// 校验随 lightuserdata 一起传进来的字节数。负数转成 size_t 后是个天文数字:bson_iter_init 唯一的
-// 边界就是拿文档头声明的长度跟 doc.size 比,doc.size 一旦成了 SIZE_MAX 那道判定永不触发,
-// 文档头写多长就往后读多长;超 INT32_MAX 则在组包侧撞断言。两者都在这里挡成可被 pcall 捕获的
-// Lua 错(同 _lbson_readonly 的取舍)。
-// 注意只挡得住"长度本身非法",挡不住"长度合法但比缓冲实际长"——(指针, 长度) 这种入参形状
-// 天然只能信调用方
-static size_t _lbson_check_lens(lua_State *lua, int32_t idx) {
-    lua_Integer val = luaL_checkinteger(lua, idx);
-    luaL_argcheck(lua, val >= 0 && val <= INT32_MAX, idx, BSON_LENS_RANGE);
-    return (size_t)val;
-}
-// 取二进制参数:string 自带长度;lightuserdata 从 idx+1 读长度。取值本身走 lpub_check_buf,
-// 这里只补它没有的上界——它服务的是收发缓冲,只要求非负。
-// 上界两条分支都得卡:Lua 字符串自身能远超 INT32_MAX,只卡 lightuserdata 等于给字符串留了后门。
-// lightuserdata 那条先自己把长度验一遍,是为了让越界报错统一说 BSON 的口径,而不是先撞上
-// lpub_check_buf 那句只提非负的 "size must be >= 0";验过之后 lpub 那道判定必然通过。
-// 末尾那道只对 string 分支有意义,越界的就是参数本身,故报在 idx 上
-static char *_lbson_opt_bin(lua_State *lua, int32_t idx, size_t *lens) {
-    if (LUA_TLIGHTUSERDATA == lua_type(lua, idx)) {
-        _lbson_check_lens(lua, idx + 1);
-    }
-    char *data = lpub_check_buf(lua, idx, lens, NULL);
-    luaL_argcheck(lua, *lens <= INT32_MAX, idx, BSON_LENS_RANGE);
-    return data;
-}
 // ---- bson builder ----
 /// <summary>
 /// 创建 bson 文档构建器。省略 data 得可写对象（MT_BSON，全部方法可用）；
@@ -100,7 +73,7 @@ static int32_t _lbson_new(lua_State *lua) {
     bson_ctx *bson = lua_newuserdata(lua, sizeof(bson_ctx));
     if (lua_islightuserdata(lua, 1)) {
         char *data = lua_touserdata(lua, 1);
-        bson_init(bson, data, _lbson_check_lens(lua, 2));
+        bson_init(bson, data, lpub_check_bson_lens(lua, 2));
         ASSOC_MTABLE(lua, MT_BSON_READER);
     } else {
         bson_init(bson, NULL, 0);
@@ -193,7 +166,7 @@ static int32_t _lbson_append_doc(lua_State *lua) {
     bson_ctx *bson = luaL_checkudata(lua, 1, MT_BSON);
     const char *key = luaL_checkstring(lua, 2);
     size_t lens;
-    char *doc = _lbson_opt_bin(lua, 3, &lens);
+    char *doc = lpub_check_bson_bin(lua, 3, &lens);
     bson_append_document(bson, key, doc, lens);
     return 0;
 }
@@ -209,7 +182,7 @@ static int32_t _lbson_append_arr(lua_State *lua) {
     bson_ctx *bson = luaL_checkudata(lua, 1, MT_BSON);
     const char *key = luaL_checkstring(lua, 2);
     size_t lens;
-    char *doc = _lbson_opt_bin(lua, 3, &lens);
+    char *doc = lpub_check_bson_bin(lua, 3, &lens);
     bson_append_array(bson, key, doc, lens);
     return 0;
 }
@@ -227,7 +200,7 @@ static int32_t _lbson_binary(lua_State *lua) {
     const char *key = luaL_checkstring(lua, 2);
     bson_subtype subtype = (bson_subtype)luaL_checkinteger(lua, 3);
     size_t lens;
-    char *data = _lbson_opt_bin(lua, 4, &lens);
+    char *data = lpub_check_bson_bin(lua, 4, &lens);
     bson_append_binary(bson, key, subtype, data, lens);
     return 0;
 }
@@ -321,8 +294,9 @@ static int32_t _lbson_regex(lua_State *lua) {
 static int32_t _lbson_jscode(lua_State *lua) {
     bson_ctx *bson = luaL_checkudata(lua, 1, MT_BSON);
     const char *key = luaL_checkstring(lua, 2);
-    const char *code = luaL_checkstring(lua, 3);
-    bson_append_jscode(bson, key, code);
+    size_t clen;
+    const char *code = luaL_checklstring(lua, 3, &clen);
+    bson_append_jscode_n(bson, key, code, clen);
     return 0;
 }
 /// <summary>
@@ -399,20 +373,19 @@ static int32_t _lbson_maxkey(lua_State *lua) {
 /// <param name="self" type="userdata">bson 对象</param>
 /// <param name="doc" type="string|lightuserdata">已完成 BSON 文档</param>
 /// <param name="size" type="integer?">doc 为 lightuserdata 时必填，buffer 字节数，取值 [0, INT32_MAX]，越界报错</param>
-/// <returns>无；doc 长度达 MAX_PACK_SIZE 时报错（内容会被整篇丢弃，不静默）</returns>
+/// <returns>无；doc 不是落在缓冲内的完整文档、或长度达 MAX_PACK_SIZE 时报错
+/// （三种情形内容都整篇丢弃，不静默）</returns>
 static int32_t _lbson_cat(lua_State *lua) {
     bson_ctx *bson = luaL_checkudata(lua, 1, MT_BSON);
     size_t actual_lens;
-    char *doc = _lbson_opt_bin(lua, 2, &actual_lens);
-    if (actual_lens < 5) {
-        return luaL_error(lua, "bson_cat: invalid bson document size %zu (minimum 5)", actual_lens);
+    char *doc = lpub_check_bson_bin(lua, 2, &actual_lens);
+    if (0 == actual_lens) {
+        return luaL_error(lua, "bson_cat: empty document (need at least 5 bytes)");
     }
-    uint32_t bson_lens = (uint32_t)unpack_integer(doc, 4, 1, 0);
-    if (bson_lens > (uint32_t)actual_lens) {
-        return luaL_error(lua, "bson_cat: embedded length %u exceeds buffer size %zu", bson_lens, actual_lens);
-    }
-    if (ERR_OK != bson_cat(bson, doc)) {
-        return luaL_error(lua, "bson_cat: document length %u reaches max pack size, dropped", bson_lens);
+    if (ERR_OK != bson_cat(bson, doc, actual_lens)) {
+        return luaL_error(lua, "bson_cat: document rejected, buffer %I bytes"
+            " (need at least 5 bytes, header length within the buffer and below max pack size)",
+            (lua_Integer)actual_lens);
     }
     return 0;
 }
@@ -482,7 +455,7 @@ static int32_t _lbson_empty(lua_State *lua) {
 /// <returns type="string?">可读字符串；转换失败返回 nil</returns>
 static int32_t _lbson_tostring2(lua_State *lua) {
     size_t lens;
-    char *data = _lbson_opt_bin(lua, 1, &lens);
+    char *data = lpub_check_bson_bin(lua, 1, &lens);
     char *str = bson_tostring2(data, lens);
     if (NULL == str) {
         lua_pushnil(lua);
@@ -571,7 +544,7 @@ static int32_t _lbson_mkdate_gc(lua_State *lua) {
 static int32_t _lbson_mkbinary(lua_State *lua) {
     bson_subtype subtype = (bson_subtype)luaL_checkinteger(lua, 1);
     size_t lens;
-    char *data = _lbson_opt_bin(lua, 2, &lens);
+    char *data = lpub_check_bson_bin(lua, 2, &lens);
     lbson_binary_t *ud = lua_newuserdata(lua, sizeof(lbson_binary_t) + lens);
     ud->subtype = subtype;
     ud->lens = lens;
@@ -930,7 +903,7 @@ static int32_t _lbson_decode(lua_State *lua) {
         data = BSON_DOC(bson);
         lens = _lbson_lens(bson);
     } else {
-        data = _lbson_opt_bin(lua, 1, &lens);
+        data = lpub_check_bson_bin(lua, 1, &lens);
     }
     _lbson_decode_document(lua, data, lens, 0, 0);
     return 1;
@@ -1323,7 +1296,7 @@ static int32_t _lbson_iter_jscode(lua_State *lua) {
         lua_pushnil(lua);
         return 1;
     }
-    lua_pushstring(lua, code);
+    lua_pushlstring(lua, code, iter->lens);
     return 1;
 }
 /// <summary>

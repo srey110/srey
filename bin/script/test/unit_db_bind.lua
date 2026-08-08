@@ -378,5 +378,46 @@ runner.run("db_bind", function(t)
         collectgarbage()
         t:check(true, "mongo packer GC roundtrip ok")
     end
+
+    -- ── mongo opts 参数校验：组包侧 bson_cat 按文档自身的 4 字节头决定拷贝多少，
+    --    没有外部长度就判断不出那个自声明值有没有超出缓冲。
+    --    绑定层只验长度本身合法（报 Lua 错），"是不是完整文档"由 bson_cat 判（返 nil）──
+    do
+        local mg = mongo.new("127.0.0.1", 27017, nil, "testdb")
+        mg:collection("coll1")
+        local opts = bson.encode({ comment = "hi" })
+        local o_ptr, o_sz = opts:data()
+
+        -- 合法三形态：nil / (指针,长度) / string
+        local pack, size = mg:pack_find()
+        t:check(pack ~= nil and size > 0, "opts 省略：组包正常")
+        utils.ud_free(pack)
+        pack, size = mg:pack_find(nil, nil, o_ptr, o_sz)
+        t:check(pack ~= nil and size > 0, "opts 为 (指针,长度)：组包正常")
+        t:check(srey.ud_str(pack, size):find("comment", 1, true) ~= nil, "opts 内容确实拼进了 wire")
+        utils.ud_free(pack)
+        pack, size = mg:pack_find(nil, nil, srey.ud_str(o_ptr, o_sz))
+        t:check(pack ~= nil and size > 0, "opts 为 string：组包正常")
+        utils.ud_free(pack)
+
+        -- 长度本身非法在绑定层就报 Lua 错：缺长度、负长度
+        t:eq(false, pcall(function() return mg:pack_find(nil, nil, o_ptr) end), "opts 为 lightuserdata 却不给长度被拒")
+        t:eq(false, pcall(function() return mg:pack_find(nil, nil, o_ptr, -1) end), "opts 负长度被拒")
+
+        -- 关键用例：缓冲比文档头声明的长度短。旧实现会照着头里的长度往后读，
+        -- 把相邻堆内存拼进随后发出的 OP_MSG。这道判定在组包侧的 bson_cat，
+        -- 故不抛错而是整条命令作废返 nil（*size 一并置 0）
+        t:eq(nil, mg:pack_find(nil, nil, o_ptr, 5), "opts 文档头声明长度超出缓冲：组包返 nil")
+        t:eq(nil, mg:pack_find(nil, nil, srey.ud_str(o_ptr, o_sz):sub(1, 8)), "string 形态的截断 opts 同样返 nil")
+        -- 不足最小文档（4 字节长度头 + EOD）
+        t:eq(nil, mg:pack_find(nil, nil, "abc"), "opts 不足 5 字节：组包返 nil")
+
+        -- opts 位置在各 pack_* 上不同，抽样确认走的是同一条组包路径
+        t:eq(nil, mg:pack_drop(o_ptr, 5), "pack_drop 的 opts 同样返 nil")
+        t:eq(nil, mg:pack_count(nil, nil, o_ptr, 5), "pack_count 的 opts 同样返 nil")
+
+        mg = nil
+        collectgarbage()
+    end
 end)
 end)

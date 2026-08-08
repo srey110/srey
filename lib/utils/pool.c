@@ -70,7 +70,7 @@ static uint32_t _pool_normal_capacity(void *qu) {
     return queue_maxsize((queue_ctx *)qu);
 }
 void pool_init(pool_ctx *pool, size_t elsize, uint32_t capacity,
-               uint32_t nkeep, int32_t thsafe, el_cbs *elcbs) {
+               uint32_t nkeep, int32_t thsafe, pool_cbs *elcbs) {
     ZERO(pool, sizeof(pool_ctx));
     capacity = (0 == capacity ? POOL_DEFAULT_CAP : capacity);
     pool->elsize = (uint32_t)elsize;

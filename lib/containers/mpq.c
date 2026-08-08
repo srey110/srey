@@ -109,8 +109,9 @@ int32_t mpq_pop(mpq_ctx *q, void *out) {
             //CAS 失败说明其他消费者已抢先，重新加载
             pos = ATOMIC_GET(&q->deq.v);
         } else if (diff < 0) {
-            //队列为空，立即返回
-            return ERR_FAILED;
+            //槽位未发布。这里手上的 pos 就是刚用来索引 cell 的 deq，直接拿它跟 enq 比：
+            //相等说明没人抢过这个槽位，队列真空；不等说明已被抢占、只是还没发布
+            return (ATOMIC_GET(&q->enq.v) != pos) ? 1 : ERR_FAILED;
         } else {
             //deq_pos 已过时，重新加载后重试
             pos = ATOMIC_GET(&q->deq.v);
@@ -145,7 +146,12 @@ int32_t mpq_pop_sc(mpq_ctx *q, void *out) {
     mpq_cell *cell = _mpq_cell_at(q, pos);
     int32_t diff = (int32_t)(ATOMIC_GET(&cell->sequence) - (pos + 1));
     if (0 != diff) {
-        //diff < 0：队列为空；diff > 0：单消费者约束被违反（不应出现）
+        //diff < 0：槽位未发布，再拿 pos 跟 enq 比分清真空与已抢占未发布（同 mpq_pop）；
+        //diff > 0：单消费者约束被违反（不应出现）
+        if (diff < 0
+            && ATOMIC_GET(&q->enq.v) != pos) {
+            return 1;
+        }
         return ERR_FAILED;
     }
     /* 槽位就绪，拷出数据后推进 deq.v，再释放槽位（sequence = pos+capacity 通知生产者下一轮可用）。

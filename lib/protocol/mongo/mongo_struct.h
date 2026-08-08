@@ -4,6 +4,8 @@
 #include "base/structs.h"
 #include "protocol/mongo/mongo_macro.h"
 
+struct coro_serial_ctx;
+
 typedef struct mgopack_ctx {
     int8_t kind;     //消息 Section 类型：0 正文，1 文档序列
     uint32_t total;  //整个消息的总字节数（含消息头）
@@ -22,11 +24,13 @@ typedef struct mongo_session {
     int32_t timeoutmin; //会话超时时间（分钟）
     int32_t txnnumber;  //事务序号
     int32_t started;    //本次事务的首个操作是否已发出（决定是否附带 startTransaction）
+    size_t optionslens; //options 字节数（bson_cat 要求随指针给出缓冲长度；options 为 NULL 时该值无意义）
+    uint64_t timeout;   //会话超时时间戳（秒，nowsec() + timeoutmin * 60）
     struct mongo_ctx *mongo; //所属连接上下文
     char *options;      //事务选项 BSON 数据（含 lsid/txnNumber/autocommit）
-    uint64_t timeout;   //会话超时时间戳（秒，nowsec() + timeoutmin * 60）
     char uuid[UUID_LENS]; //会话 UUID
 }mongo_session;
+
 typedef struct mongo_ctx {
     uint16_t port;              //服务器端口
     int32_t reqid;              //当前请求 ID（自增）
@@ -36,6 +40,7 @@ typedef struct mongo_ctx {
     struct task_ctx *task;      //所属任务上下文
     struct evssl_ctx *evssl;    //TLS 上下文，NULL 表示不加密
     struct scram_ctx *scram;    //SCRAM 认证上下文
+    struct coro_serial_ctx *serial;// 命令串行化执行器，多协程共用一条连接时按 FIFO 排队
     sk_id sk;                   //连接标识 fd+skid
     char ip[IP_LENS];           //服务器 IP 地址
     char db[64];                //当前数据库名

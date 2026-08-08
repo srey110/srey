@@ -72,18 +72,25 @@ void bson_append_end(bson_ctx *bson) {
     binary_offset(&bson->doc, endoff);
     bson->depth--;
 }
-int32_t bson_cat(bson_ctx *bson, char *doc) {
-    if (NULL == doc) {
+int32_t bson_cat(bson_ctx *bson, char *doc, size_t lens) {
+    if (NULL == doc
+        || 0 == lens) {
         return ERR_OK;
     }
-    uint32_t lens = (uint32_t)unpack_integer(doc, 4, 1, 0);
-    if (lens <= 5) {
-        return ERR_OK;
-    }
-    if (PACK_TOO_LONG(lens)) {
+    if (lens < 5) {
         return ERR_FAILED;
     }
-    binary_set_binary(&bson->doc, doc + 4, lens - 5);//4 + 1(eod)
+    uint32_t doclens = (uint32_t)unpack_integer(doc, 4, 1, 0);
+    if ((size_t)doclens > lens) {
+        return ERR_FAILED;
+    }
+    if (doclens <= 5) {
+        return ERR_OK;
+    }
+    if (PACK_TOO_LONG(doclens)) {
+        return ERR_FAILED;
+    }
+    binary_set_binary(&bson->doc, doc + 4, doclens - 5);//4 + 1(eod)
     return ERR_OK;
 }
 void bson_append_document_begain(bson_ctx *bson, const char *key) {
@@ -677,6 +684,22 @@ int32_t bson_check_depth(char *data, size_t lens) {
     }
     return _bson_check_depth(data, lens, 0);
 }
+// 按已知长度写入串化文本，内嵌 NUL 转义成可见的 "\\0"。
+// BSON 字符串允许内嵌 NUL（写入侧 bson_append_utf8_n 就是长度感知的），而串化结果的两个
+// 消费者都按 NUL 结尾读——mongo_parse 的 LOG_WARN("%s", ...) 与 Lua 的 :tostring()——
+// 原样写进去后半段谁也看不到，等于让运维只拿到半截错误
+static void _bson_dump_text(binary_ctx *str, const char *val, size_t lens) {
+    size_t beg = 0;
+    for (size_t i = 0; i < lens; i++) {
+        if ('\0' != val[i]) {
+            continue;
+        }
+        binary_set_binary(str, val + beg, i - beg);
+        binary_set_binary(str, "\\0", 2);
+        beg = i + 1;
+    }
+    binary_set_binary(str, val + beg, lens - beg);
+}
 // 递归将 BSON 文档格式化为带缩进的可读字符串，追加到 str 中
 // depth 用于限制递归深度，超过 BSON_MAX_DEPTH 时截断，防止恶意深嵌套触发栈溢出
 static void _bson_dump(bson_ctx *bson, int32_t index, int32_t depth, binary_ctx *str) {
@@ -711,12 +734,12 @@ static void _bson_dump(bson_ctx *bson, int32_t index, int32_t depth, binary_ctx 
         }
         case BSON_UTF8: {
             const char *val = bson_iter_utf8(&iter, NULL);
-            binary_set_binary(str, val, strlen(val));
+            _bson_dump_text(str, val, iter.lens);
             break;
         }
         case BSON_JSCODE: {
             const char *val = bson_iter_jscode(&iter, NULL);
-            binary_set_binary(str, val, strlen(val));
+            _bson_dump_text(str, val, iter.lens);
             break;
         }
         case BSON_DOCUMENT:
