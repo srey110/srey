@@ -2,15 +2,13 @@
 #include "protocol/mysql/mysql_utils.h"
 #include "protocol/mysql/mysql_parse.h"
 
-void *mysql_pack_quit(mysql_ctx *mysql, size_t *size) {
-    mysql->id = 0;
+void *mysql_pack_quit(size_t *size) {
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
     binary_set_integer(&bwriter, 1, 3, 1);
-    binary_set_int8(&bwriter, mysql->id);
+    binary_set_int8(&bwriter, 0);
     binary_set_uint8(&bwriter, MYSQL_QUIT);
     *size = bwriter.offset;
-    mysql->cur_cmd = MYSQL_QUIT;
     return bwriter.data;
 }
 void *mysql_pack_selectdb(mysql_ctx *mysql, const char *database, size_t *size) {

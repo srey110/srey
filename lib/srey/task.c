@@ -3,6 +3,17 @@
 #include "containers/hashmap.h"
 #include "utils/utils.h"
 
+// 消息 data 的归属方式。"哪些消息类型持有需要释放的堆数据"只在这一个 switch 里定义：
+// _message_should_clean 与 _message_clean 都问它，新增带数据的消息类型只改这一处，
+// 不会出现"清理加了、__gc 判定漏了"这种只在 Lua 那条路上泄漏、编译器与测试都不相关的分歧
+typedef enum msgdata_kind {
+    MSGDATA_NONE = 0,   // 不持有堆数据
+    MSGDATA_PROT,       // 协议层收包，prots_pkfree
+    MSGDATA_UDP,        // UDP 收包，prots_udp_pkfree
+    MSGDATA_HS,         // 握手数据，prots_hsfree
+    MSGDATA_RAW         // 裸 MALLOC，FREE
+}msgdata_kind;
+
 // 将任务名指针插入任务哈希表（重复时触发断言）
 static void _task_map_set(struct hashmap *map, task_ctx *task) {
     name_t *key = &task->handle;
@@ -177,7 +188,7 @@ void _message_run(task_ctx *task, message_ctx *msg) {
 static void _task_message_dispatch(task_dispatch_arg *arg) {
     _message_run(arg->task, &arg->msg);
 }
-task_ctx *task_new(loader_ctx *loader, const char *name, size_t quecap,
+task_ctx *task_new(loader_ctx *loader, const char *name, uint32_t quecap,
                    _task_dispatch_cb _dispatch, free_cb _argfree, void *arg) {
     task_ctx *task;
     CALLOC(task, 1, sizeof(task_ctx));
@@ -198,7 +209,7 @@ task_ctx *task_new(loader_ctx *loader, const char *name, size_t quecap,
     }
     task->_arg_free = _argfree;
     task->arg = arg;
-    fsqu_init(&task->qumsg, sizeof(message_ctx *), 0 == quecap ? ONEK : (uint32_t)quecap);
+    fsqu_init(&task->qumsg, sizeof(message_ctx *), 0 == quecap ? ONEK : quecap);
     tda_init(&task->tda, (size_t)(fsqu_capacity(&task->qumsg) / QUEUE_OVERLOAD_RATIO));
     return task;
 }
@@ -282,6 +293,10 @@ name_t task_find_name(loader_ctx *loader, const char *name) {
 void task_incref(task_ctx *task) {
     ATOMIC_ADD(&task->ref, 1);
 }
+// 摘除后唤醒 _loader_task_closing：这是全仓唯一从 maptasks 摘 task 的地方，
+// 也就是"计数可能归零"的唯一发布点。signal 必须排在 wrunlock 之后——
+// 等待方的锁序是 closing_mutex → lckmaptasks，放进写锁内就反过来了。
+// closing 为 0 时（正常运行期）没有等待者，一条 atomic load 就短路掉
 void task_ungrab(task_ctx *task) {
     loader_ctx *loader = task->loader;
     name_t handle = task->handle;
@@ -302,6 +317,26 @@ void task_ungrab(task_ctx *task) {
     rwlock_distr_wrunlock(&loader->lckmaptasks);
     if (NULL != ptr) {
         task_free(task);
+        if (0 != ATOMIC_GET(&loader->closing)) {
+            mutex_lock(&loader->closing_mutex);
+            cond_signal(&loader->closing_cond);
+            mutex_unlock(&loader->closing_mutex);
+        }
+    }
+}
+static msgdata_kind _message_data_kind(msg_type mtype) {
+    switch (mtype) {
+    case MSG_TYPE_RECV:
+        return MSGDATA_PROT;
+    case MSG_TYPE_RECVFROM:
+        return MSGDATA_UDP;
+    case MSG_TYPE_HANDSHAKED:
+        return MSGDATA_HS;
+    case MSG_TYPE_REQUEST:
+    case MSG_TYPE_RESPONSE:
+        return MSGDATA_RAW;
+    default:
+        return MSGDATA_NONE;
     }
 }
 int32_t _message_should_clean(message_ctx *msg) {
@@ -309,11 +344,7 @@ int32_t _message_should_clean(message_ctx *msg) {
     if (NULL != msg->shared) {
         return ERR_OK;
     }
-    if ((MSG_TYPE_RECV == msg->mtype
-        || MSG_TYPE_RECVFROM == msg->mtype
-        || MSG_TYPE_REQUEST == msg->mtype
-        || MSG_TYPE_RESPONSE == msg->mtype
-        || MSG_TYPE_HANDSHAKED == msg->mtype)
+    if (MSGDATA_NONE != _message_data_kind(msg->mtype)
         && NULL != msg->data) {
         return ERR_OK;
     }
@@ -325,21 +356,20 @@ void _message_clean(message_ctx *msg) {
         shared_data_free(msg->shared, _free);
         return;
     }
-    switch (msg->mtype) {
-    case MSG_TYPE_RECV:
+    switch (_message_data_kind(msg->mtype)) {
+    case MSGDATA_PROT:
         prots_pkfree(msg->subtype, msg->data);
         break;
-    case MSG_TYPE_RECVFROM:
+    case MSGDATA_UDP:
         prots_udp_pkfree(msg->subtype, msg->data);
         break;
-    case MSG_TYPE_HANDSHAKED:
+    case MSGDATA_HS:
         prots_hsfree(msg->subtype, msg->data);
         break;
-    case MSG_TYPE_REQUEST:
-    case MSG_TYPE_RESPONSE:
+    case MSGDATA_RAW:
         FREE(msg->data);
         break;
-    default:
+    case MSGDATA_NONE:
         break;
     }
 }

@@ -49,7 +49,7 @@ static evssl_ctx *_evssl_new(void) {
         SSLCTX_ERRO();
         return NULL;
     }
-    SSL_CTX_set_security_level(evssl->ssl, 0);//ca md too weak
+    SSL_CTX_set_security_level(evssl->ssl, 0);//降到 0:有些 CA 证书的摘要算法(如 SHA1)在默认安全等级下会被拒
     return evssl;
 }
 evssl_ctx *evssl_new(const char *ca, const char *cert, const char *key, int32_t type) {

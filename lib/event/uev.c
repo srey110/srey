@@ -584,8 +584,6 @@ timer_ctx *_evpub_watcher_timer(watcher_ctx *watcher) {
 }
 // 排空管道中未处理的命令并关闭管道fd（释放watcher前调用）
 static void _uev_free_pipe(watcher_ctx *watcher) {
-    void *data;
-    sock_ctx *skctx;
     int32_t j, cnt;
     cmd_ctx cmds[CMD_MAX_NREAD];
     for (;;) {
@@ -594,39 +592,7 @@ static void _uev_free_pipe(watcher_ctx *watcher) {
             break;
         }
         for (j = 0; j < cnt; j++) {
-            switch (cmds[j].cmd) {
-            case CMD_SENDTO:
-                data = cmds[j].args.sendto.data;
-                FREE(data);
-                break;
-            case CMD_CONN:
-                skctx = cmds[j].args.conn.skctx;
-                _evpub_sk_free(skctx);
-                break;
-            case CMD_ADD:
-                skctx = cmds[j].args.skctx;
-                if (SOCK_STREAM == skctx->type) {
-                    _evpub_sk_free(skctx);
-                } else {
-                    _uev_free_udp(skctx);
-                }
-                break;
-            case CMD_UNLSN:
-            case CMD_LSN_UNREF:
-                _uev_try_freelsn(cmds[j].args.lsn);
-                break;
-            case CMD_ADDACP:
-                // 与上面两条相反：这条的 fd 是刚 accept 出来、尚未注册到任何结构的连接，
-                // 除命令自身外无人持有，必须在此关掉
-                CLOSE_SOCK(cmds[j].sk.fd);
-                _uev_try_freelsn(cmds[j].args.lsn);
-                break;
-            case CMD_PROPS:
-                UD_FREE(cmds[j].args.props.fcb, cmds[j].args.props.data);
-                break;
-            default:
-                break;
-            }
+            _cmd_drain_free(&cmds[j]);
         }
     }
     close(watcher->pipe.pipes[0]);
@@ -635,7 +601,7 @@ static void _uev_free_pipe(watcher_ctx *watcher) {
 }
 static void _uev_stop_watcher(ev_ctx *ctx) {
     uint32_t i;
-    cmd_ctx cmd;
+    cmd_ctx cmd = { 0 };
     cmd.cmd = CMD_STOP;
     watcher_ctx *watcher;
     for (i = 0; i < ctx->nthreads; i++) {

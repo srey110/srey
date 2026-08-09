@@ -261,7 +261,7 @@ runner.run("hotfix", function(t)
         t:check(err2 and nil ~= err2:find("source"), "err 含 'source'")
     end
 
-    -- ── 子段 15:同名遮蔽 upvalue(同名不同 cell)→ 拒绝热修(df27021)─────
+    -- ── 子段 15:同名遮蔽 upvalue(同名不同 cell)→ 补丁碰到那个名字才拒绝 ─────
     do
         package.loaded.hotfix_shadow_mod = nil
         -- 两个 do 块各声明同名 local v,M.f1/M.f2 捕获不同 cell;按名嫁接无法判定目标
@@ -271,10 +271,26 @@ runner.run("hotfix", function(t)
             do local v = 2; function M.f2() return v end end
             return M
         ]]
-        package.loaded.hotfix_shadow_mod = assert(load(src, "=hotfix_shadow_mod"))()
-        local ok, err = hotfix.apply("hotfix_shadow_mod", "function M.f1() return 9 end")
-        t:eq(false, ok, "同名遮蔽 upvalue 拒绝热修")
-        t:check(err and nil ~= err:find("shadowed"), "err 含 'shadowed'")
+        -- 每个用例都重建:f1 一旦被换成不捕获 v 的新版,同名遮蔽就只剩一个 cell,后面再测就测了个空
+        local function _fresh()
+            package.loaded.hotfix_shadow_mod = assert(load(src, "=hotfix_shadow_mod"))()
+        end
+        -- 补丁不碰 v:遮蔽与这次热修无关,照常替换
+        _fresh()
+        local ok0 = hotfix.apply("hotfix_shadow_mod", "function M.f1() return 9 end")
+        t:eq(true, ok0, "补丁不碰遮蔽名字时照常热修")
+        t:eq(9, package.loaded.hotfix_shadow_mod.f1(), "不碰遮蔽名字的替换已生效")
+        -- 路径 A:补丁声明同名 local,嫁接前的整体校验挡下
+        _fresh()
+        local ok1, err1 = hotfix.apply("hotfix_shadow_mod", "local v; function M.f1() return v end")
+        t:eq(false, ok1, "补丁声明同名遮蔽 upvalue → 拒绝")
+        t:check(err1 and nil ~= err1:find("shadowed"), "err 含 'shadowed'")
+        t:eq(1, package.loaded.hotfix_shadow_mod.f1(), "拒绝后原函数未被半改")
+        -- 路径 B:补丁在 chunk 顶层裸读同名变量,env 转发时撞上
+        _fresh()
+        local ok2, err2 = hotfix.apply("hotfix_shadow_mod", "local x = v; function M.f2() return x end")
+        t:eq(false, ok2, "补丁裸读同名遮蔽 upvalue → 拒绝")
+        t:check(err2 and nil ~= err2:find("shadowed"), "err 含 'shadowed'")
         package.loaded.hotfix_shadow_mod = nil
     end
 
@@ -350,6 +366,51 @@ runner.run("hotfix", function(t)
         package.loaded.hotfix_localfn_mod = nil
     end
 
+    -- ── 子段 19b:只被非导出 helper 捕获的模块级 local ──────────────────────
+    -- pre 不是 mod 表的值,也不被任何导出函数直接捕获,只有 local function _fmt 持有它。
+    -- 扫描不往函数型 upvalue 里递归的话,upmap 里根本没有 pre:patch 裸读它会一路回退到
+    -- _G 拿 nil,裸写则落到 _G,而 apply 照样报"替换成功"——操作者以为热更生效了
+    do
+        package.loaded.hotfix_deepup_mod = nil
+        local src = [[
+            local M = {}
+            local pre = "old:"
+            local function _fmt(x)
+                return pre .. x
+            end
+            function M.render(x)
+                return _fmt(x)
+            end
+            function M.render2(x)
+                return _fmt(x)
+            end
+            return M
+        ]]
+        local mod = assert(load(src, "=hotfix_deepup_mod"))()
+        package.loaded.hotfix_deepup_mod = mod
+        t:eq("old:1", mod.render(1), "原 render")
+        -- 读:必须拿到模块里那份 "old:",不是 _G 的 nil
+        local ok = hotfix.apply("hotfix_deepup_mod", [[
+            function M.render(x)
+                return "[" .. pre .. x .. "]"
+            end
+        ]])
+        t:eq(true, ok, "apply ok(读)")
+        local rok, rv = pcall(mod.render, 1)
+        t:check(rok and "[old:1]" == rv, "patch 读到只被 _fmt 捕获的 pre: " .. tostring(rv))
+        -- 写:必须落到同一个 cell。render2 没被替换、仍走原 _fmt,它看得到才算真的写对了
+        ok = hotfix.apply("hotfix_deepup_mod", [[
+            function M.render(x)
+                pre = "new:"
+                return "done"
+            end
+        ]])
+        t:eq(true, ok, "apply ok(写)")
+        mod.render(0)
+        t:eq("new:1", mod.render2(1), "写入落到原 cell,未替换的 render2 也看得到")
+        package.loaded.hotfix_deepup_mod = nil
+    end
+
     -- ── 子段 20:值恰好是函数的"回调槽"仍须嫁接 ───────────────────────────
     -- local cb 是状态(由 M.set 在运行期赋值),不是 patch 自带的 helper。若判据把原模块侧
     -- 也算进去,cb 被赋过值之后 oval 就是函数 → 漏掉嫁接 → patch 绑到自己那份 nil 上,
@@ -374,6 +435,41 @@ runner.run("hotfix", function(t)
         ]]), "apply ok")
         t:eq("v2/cb:1", m.run(1), "patch 的 run 仍看到原 cb(未因值是函数而漏嫁接)")
         package.loaded.hotfix_cb_mod = nil
+    end
+
+    -- ── 子段 21:mod 表里混入别的 chunk 编译的函数 → 不拿它当扫描起点 ─────────
+    do
+        package.loaded.hotfix_bmod = nil
+        package.loaded.hotfix_amod = nil
+        package.loaded.hotfix_cmod = nil
+        -- secret 只被非导出的 _inner 捕获:递归扫描够得着它,正因如此更要卡住模块边界
+        local srcb = [[
+            local M = {}
+            local secret = "B-secret"
+            local function _inner() return secret end
+            function M.helper() return _inner() end
+            function M.peek() return secret end
+            return M
+        ]]
+        package.loaded.hotfix_bmod = assert(load(srcb, "=hotfix_bmod"))()
+        package.loaded.hotfix_amod = assert(load(
+            "local M = {} function M.own() return 1 end return M", "=hotfix_amod"))()
+        -- A 把 B 的函数挂到自己表上(re-export);它的 source 是 B,不该成为 A 的扫描起点
+        package.loaded.hotfix_amod.helper = package.loaded.hotfix_bmod.helper
+        local ok = hotfix.apply("hotfix_amod",
+            'secret = "OVERWRITTEN" function M.own() return 2 end')
+        t:eq(true, ok, "A 的补丁照常应用")
+        t:eq("B-secret", package.loaded.hotfix_bmod.peek(), "B 的 upvalue 未被 A 的补丁改写")
+        t:eq(2, package.loaded.hotfix_amod.own(), "A 自己的函数已替换")
+        _G.secret = nil-- 未命中 upmap 的裸写按设计落到 _G,清掉免得影响别的用例
+        -- 整张表都是外来函数:upmap 必为空,与其静默把补丁的写全丢给 _G,不如明确失败
+        package.loaded.hotfix_cmod = {helper = package.loaded.hotfix_bmod.helper}
+        local ok2, err2 = hotfix.apply("hotfix_cmod", "function M.helper() return 0 end")
+        t:eq(false, ok2, "认不出自家 chunk 时拒绝")
+        t:check(err2 and nil ~= err2:find("locate module chunk"), "err 含 'locate module chunk'")
+        package.loaded.hotfix_amod = nil
+        package.loaded.hotfix_bmod = nil
+        package.loaded.hotfix_cmod = nil
     end
 end)
 end)

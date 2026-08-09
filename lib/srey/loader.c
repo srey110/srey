@@ -5,6 +5,7 @@
 #include "utils/timer.h"
 
 #define TASK_MSG_BATCH  128
+#define CLOSING_WARN_MS 15000// 关闭期每隔这么久把还没退的 task 打一遍
 
 typedef struct _task_each_arg {
     task_each_cb cb;
@@ -319,6 +320,8 @@ loader_ctx *loader_init(uint16_t nnet, uint16_t nworker, uint32_t twcap) {
     CALLOC(loader->monitor.version, 1, sizeof(worker_version) * loader->nworker);
     mutex_init(&loader->monitor.mutex);
     cond_init(&loader->monitor.cond);
+    mutex_init(&loader->closing_mutex);
+    cond_init(&loader->closing_cond);
     pool_init(&loader->msg_pool, sizeof(message_ctx),
               (uint32_t)INIT_EVENTS_CNT * loader->nworker * 2, INIT_EVENTS_CNT, 1, NULL);
     rwlock_distr_init(&loader->lckmaptasks, (uint32_t)loader->nworker * 4);
@@ -393,7 +396,7 @@ static bool _loader_closing_timeout(const void *item, void *udata) {
     LOG_WARN("task %s close timeout, ref %d.", _NAME_OR(task->name), ATOMIC_GET(&task->ref));
     return true;
 }
-// 广播关闭消息给所有任务，并等待所有任务退出（最长 15 秒超时告警）
+// 广播关闭消息给所有任务，并等待所有任务退出（每 CLOSING_WARN_MS 秒打一次仍在的 task）
 static void _loader_task_closing(loader_ctx *loader) {
     message_ctx closing = { 0 };
     closing.mtype = MSG_TYPE_CLOSING;
@@ -405,23 +408,33 @@ static void _loader_task_closing(loader_ctx *loader) {
     ATOMIC_SET(&loader->closing, 1);
     hashmap_scan(loader->maptasks, _loader_closing_push, &closing);
     rwlock_distr_runlock(&loader->lckmaptasks);
+    // 全程持 closing_mutex：查计数与 cond_timedwait 必须在同一临界区内，否则
+    // "查到非 0 → 发布方摘掉最后一个并 signal → 本线程才开始 wait" 会永久睡死。
+    // 发布方见 task_ungrab
+    timer_ctx timer;
+    timer_init(&timer);
+    uint64_t next_warn = timer_cur_ms(&timer) + CLOSING_WARN_MS;
     size_t n;
-    uint32_t time = 0;
+    uint64_t now;
+    mutex_lock(&loader->closing_mutex);
     for (;;) {
         rwlock_distr_rdlock(&loader->lckmaptasks);
         n = hashmap_count(loader->maptasks);
+        rwlock_distr_runlock(&loader->lckmaptasks);
         if (0 == n) {
-            rwlock_distr_runlock(&loader->lckmaptasks);
             break;
         }
-        if (time >= 15 * 1000) {
-            time = 0;
+        now = timer_cur_ms(&timer);
+        if (now >= next_warn) {
+            next_warn = now + CLOSING_WARN_MS;
+            rwlock_distr_rdlock(&loader->lckmaptasks);
             hashmap_scan(loader->maptasks, _loader_closing_timeout, NULL);
+            rwlock_distr_runlock(&loader->lckmaptasks);
+            continue;
         }
-        rwlock_distr_runlock(&loader->lckmaptasks);
-        MSLEEP(50);
-        time += 50;
+        cond_timedwait(&loader->closing_cond, &loader->closing_mutex, (uint32_t)(next_warn - now));
     }
+    mutex_unlock(&loader->closing_mutex);
 }
 static bool _loader_task_each_scan(const void *item, void *udata) {
     _task_each_arg *w = (_task_each_arg *)udata;
@@ -453,6 +466,8 @@ void loader_free(loader_ctx *loader) {
     cond_free(&loader->monitor.cond);
     ev_free(&loader->netev);
     tw_free(&loader->tw);
+    mutex_free(&loader->closing_mutex);
+    cond_free(&loader->closing_cond);
     for (uint16_t i = 0; i < loader->nworker; i++) {
         worker = &loader->worker[i];
         fsqu_free(&worker->qutasks);

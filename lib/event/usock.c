@@ -384,7 +384,7 @@ static int32_t _usk_tcp_recv(watcher_ctx *watcher, tcp_ctx *tcp) {
     if (ERR_OK == rtn
         && NULL != tcp->ssl
         && SSL_want_write(tcp->ssl)) {// tls1.3 KeyUpdate探测
-        BIT_SET(tcp->status, STATUS_KEYUPDATE);
+        BIT_SET(tcp->status, STATUS_KEYUPDATE_WRITE);
         rtn = _uev_add_event(watcher, tcp->sock.fd, &tcp->sock.events, EVENT_WRITE, &tcp->sock);
     }
 #else
@@ -409,7 +409,20 @@ static int32_t _usk_tcp_send(watcher_ctx *watcher, tcp_ctx *tcp) {
     if (ERR_OK != rtn) {
         return rtn;
     }
-    if (0 == queue_size(&tcp->buf_s)) {
+    uint32_t cnt = queue_size(&tcp->buf_s);
+#if WITH_SSL
+    // 这里挂读不挂写：ET 下 socket 本就可写、事件位也已置上，挂写不会有新边沿，白等
+    if (NULL != tcp->ssl
+        && 0 != cnt
+        && SSL_want_read(tcp->ssl)) {
+        if (BIT_CHECK(tcp->status, STATUS_GRACEFUL_CLOSE)) {
+            return ERR_FAILED;
+        }
+        BIT_SET(tcp->status, STATUS_KEYUPDATE_READ);
+        return _usk_keep_event(watcher, &tcp->sock, EVENT_READ);
+    }
+#endif
+    if (0 == cnt) {
         if (BIT_CHECK(tcp->status, STATUS_GRACEFUL_CLOSE)) {
             return ERR_FAILED;
         }
@@ -495,8 +508,8 @@ static void _usk_on_rw_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
                 return;
             }
         } else {
-            if (evwrite && BIT_CHECK(tcp->status, STATUS_KEYUPDATE)) {// tls1.3 KeyUpdate 处理
-                BIT_REMOVE(tcp->status, STATUS_KEYUPDATE);
+            if (evwrite && BIT_CHECK(tcp->status, STATUS_KEYUPDATE_WRITE)) {// tls1.3 KeyUpdate 处理
+                BIT_REMOVE(tcp->status, STATUS_KEYUPDATE_WRITE);
                 // graceful 已 SHUT_RD 读端,再 SSL_read 重试必收 EOF 提前断连丢 buf_s;此时跳过读重试,
                 // 落到下方 _usk_tcp_send 排空 buf_s(SSL_write 会先 flush 挂起的 KeyUpdate 写),空则触发关闭
                 if (!BIT_CHECK(tcp->status, STATUS_GRACEFUL_CLOSE)) {
@@ -514,8 +527,19 @@ static void _usk_on_rw_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
     int32_t rtn = ERR_OK;
     if (evread && (kuread || !BIT_CHECK(tcp->status, STATUS_GRACEFUL_CLOSE))) {// KeyUpdate 重试或非关闭
         rtn = _usk_tcp_recv(watcher, tcp);
+#if WITH_SSL
+        // 刚读到的对端数据已喂进 OpenSSL，回头重试上次没发出去的。KEYUPDATE_WRITE 也挂着时让它先跑，
+        // 免得在挂起的 SSL_read 之前调 SSL_write
+        if (ERR_OK == rtn
+            && BIT_CHECK(tcp->status, STATUS_KEYUPDATE_READ)
+            && !BIT_CHECK(tcp->status, STATUS_KEYUPDATE_WRITE)) {
+            BIT_REMOVE(tcp->status, STATUS_KEYUPDATE_READ);
+            rtn = _usk_tcp_send(watcher, tcp);
+            evwrite = 0;
+        }
+#endif
     }
-    if (ERR_OK == rtn && evwrite && !BIT_CHECK(tcp->status, STATUS_KEYUPDATE)) {
+    if (ERR_OK == rtn && evwrite && !BIT_CHECK(tcp->status, STATUS_KEYUPDATE_WRITE)) {
         rtn = _usk_tcp_send(watcher, tcp);
     }
     if (ERR_OK != rtn) {
@@ -572,8 +596,10 @@ void _uev_add_bufs_send(watcher_ctx *watcher, sock_ctx *skctx, off_buf_ctx *buf)
     }
 #if WITH_SSL
     // KeyUpdate 期间有挂起的 SSL_read 待重试，此时调用 SSL_write 违反 OpenSSL 必须先重试同一操作的约定；
-    // EVENT_WRITE 在设置 STATUS_KEYUPDATE 时已注册，数据留在队列里等 _usk_on_rw_cb 完成重试后按正确顺序处理
-    if (BIT_CHECK(tcp->status, STATUS_KEYUPDATE)) {
+    // EVENT_WRITE 在设置 STATUS_KEYUPDATE_WRITE 时已注册，数据留在队列里等 _usk_on_rw_cb 完成重试后按正确顺序处理。
+    // STATUS_KEYUPDATE_READ 同理：挂起的是 SSL_write，要等读就绪才能重试，这里再调一次同样违约
+    if (BIT_CHECK(tcp->status, STATUS_KEYUPDATE_WRITE)
+        || BIT_CHECK(tcp->status, STATUS_KEYUPDATE_READ)) {
         return;
     }
 #endif
@@ -595,6 +621,7 @@ static void _usk_on_connect_cb_err(watcher_ctx *watcher, tcp_ctx *tcp) {
 #ifdef MANUAL_REMOVE
     _uev_del_event(watcher, tcp->sock.fd, &tcp->sock.events, tcp->sock.events, &tcp->sock);
 #endif
+    tcp->sock.ev_cb = NULL;
     pool_push(&watcher->pool, &tcp->sock, 0);
 }
 // connect完成事件回调：检查连接结果，切换为读写回调，触发conn回调
@@ -710,7 +737,6 @@ void _uev_add_conn_inloop(watcher_ctx *watcher, sock_ctx *skctx) {
     if (ERR_OK != _uev_add_event(watcher, skctx->fd, &skctx->events, EVENT_WRITE, skctx)) {
         tcp_ctx *tcp = UPCAST(skctx, tcp_ctx, sock);
         _usk_call_conn_cb(watcher->ev, tcp, ERR_FAILED);
-        skctx->ev_cb = _usk_on_rw_cb;
         _evpub_sockel_remove(watcher, skctx->fd);
         pool_push(&watcher->pool, skctx, 0);
     }
@@ -774,7 +800,10 @@ static int32_t _usk_check_accept(watcher_ctx *watcher, lsnsock_ctx *acpt) {
     }
     return ERR_FAILED;
 }
-// 监听socket可读事件回调：循环accept新连接并分发给对应watcher
+// 监听socket可读事件回调：循环accept新连接并分发给对应watcher。
+// 末尾重挂 READ 失败时这条监听 socket 从此收不到事件，只能弃掉：cbs_ctx 里没有"监听失效"
+// 这类回调，通知不到业务，故把后果写进日志——SO_REUSEPORT 下每个 watcher 一条，掉一条只是
+// 少一份 accept 容量，端口照常可连，不打出来没人会发现。清 ev_cb 的理由同 _usk_close_tcp
 static void _usk_on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev) {
     (void)ev;
     lsnsock_ctx *acpt = UPCAST(skctx, lsnsock_ctx, sock);
@@ -806,9 +835,11 @@ static void _usk_on_accept_cb(watcher_ctx *watcher, sock_ctx *skctx, int32_t ev)
     }
     if (unremove && NULL == acpt->backoff_tick.cb) {
         if (ERR_OK != _usk_keep_event(watcher, &acpt->sock, EVENT_READ)) {
-            LOG_ERROR("%s", ERRORSTR(ERRNO));// 须在 CLOSE_SOCK 之前:close 会覆写 errno
+            LOG_ERROR("watcher %d listener fd %d re-arm READ failed (%s), no longer accepts.",
+                      watcher->index, (int32_t)acpt->sock.fd, ERRORSTR(ERRNO));// 须在 CLOSE_SOCK 之前:close 会覆写 errno
             _evpub_sockel_remove(watcher, acpt->sock.fd);
             CLOSE_SOCK(acpt->sock.fd);
+            acpt->sock.ev_cb = NULL;
         }
     }
 }
@@ -1023,7 +1054,7 @@ void ev_unlisten(ev_ctx *ctx, uint64_t id) {
     ATOMIC_ADD(&lsn->ref, 1);
     ATOMIC_SET(&lsn->remove, 1);
     for (int32_t i = 0; i < lsn->nlsn; i++) {
-        _cmd_unlisten(&ctx->watcher[i], lsn->lsnsock[i].sock.fd, lsn);
+        _cmd_unlisten(&ctx->watcher[i], lsn);
     }
     // 占位减发 CMD 给 worker[0] 在 _uev_cmd_loop 内执行 (_on_cmd_lsn_unref 内归 0 时
     // 入 watcher->qtn 隔离队列); 主线程直接 _uev_try_freelsn 在 ref 归 0 时立即 FREE,
@@ -1032,17 +1063,21 @@ void ev_unlisten(ev_ctx *ctx, uint64_t id) {
     // 读 skctx->ev_cb UAF。走 worker 上下文则 FREE 跨过 QTN_MS 隔离期, events 已遍历完
     _cmd_lsn_unref(&ctx->watcher[0], lsn);
 }
-void _uev_remove_lsn(watcher_ctx *watcher, SOCKET fd, listener_ctx *lsn) {
-    sock_ctx **skctx = _evpub_sockel_remove(watcher, fd);
-    if (NULL != skctx) {//防止关掉正确的socket
+// fd 就地从 lsnsock 上取:这个字段归本 watcher 写(出错路径的 CLOSE_SOCK 会把它置 INVALID_SOCK),
+// 由业务线程在 ev_unlisten 里读了再传进来的话，读到的可能是刚被关掉、fd 号又被新 accept 的连接
+// 占用的旧值——那样只按"在不在元素表里"判就会误关那条无辜连接,而它既不入池也不入隔离队列、
+// close 回调也不触发。在本线程读就没有这个时间差
+void _uev_remove_lsn(watcher_ctx *watcher, listener_ctx *lsn) {
+    lsnsock_ctx *curlsn = &lsn->lsnsock[watcher->index];
+    SOCKET fd = curlsn->sock.fd;
+    if (INVALID_SOCK != fd) {
+        _evpub_sockel_remove(watcher, fd);
         _uev_drop_changes(watcher, fd);// 顺序理由见 _usk_close_tcp
 #ifdef MANUAL_REMOVE
-        lsnsock_ctx *acpt = UPCAST(*skctx, lsnsock_ctx, sock);
-        _uev_del_event(watcher, fd, &acpt->sock.events, EVENT_READ, &acpt->sock);
+        _uev_del_event(watcher, fd, &curlsn->sock.events, EVENT_READ, &curlsn->sock);
 #endif
-        CLOSE_SOCK((*skctx)->fd);
+        CLOSE_SOCK(curlsn->sock.fd);
     }
-    lsnsock_ctx *curlsn = &lsn->lsnsock[watcher->index];
     // lsnsock 释放前必须摘掉退避 tick，否则 tick 节点随 lsnsock 数组释放悬空
     if (NULL != curlsn->backoff_tick.cb) {
         _evpub_tick_remove(watcher, &curlsn->backoff_tick);

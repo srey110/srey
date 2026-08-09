@@ -13,6 +13,8 @@ local BODY = "hello"
 local PROBE = "hdrprobe"
 local FRAME = "frameprobe"
 local INJ = "a\r\nX-Evil: 1"-- 头值里塞 CRLF：未过滤时会把一条响应劈成两条
+local URL_INJ = "/x HTTP/1.1\r\nX-Evil: 1\r\n\r\nGET /y"-- 请求目标里塞 CRLF：未过滤时线缆上是两条请求
+local PROBE2 = "afterinj"-- 拒绝之后的回显探针，验证连接没被污染
 -- 名 + ": " + 值 + CRLF 超 MAX_HEADLENS(4096)：整条头会被丢弃，不截断也不发出
 local BIG = string.rep("b", 4096)
 
@@ -75,6 +77,18 @@ runner.run("http_client", function(t)
     t:check(nil ~= pack, "后续请求拿到响应")
     if pack then
         t:eq(BODY, pack.data, "响应属于本次请求(未错认上一条残留)")
+    end
+
+    -- url 里塞 CRLF 就是请求拆分：放行的话对端会看到两条完整请求、回两条响应，
+    -- 多出来那条被下一次请求的等待者接走，连接从此错开一位。
+    -- 必须在写 socket 之前就拒，故断言"下一次正常请求仍拿到属于自己的响应"
+    t:eq(nil, http.get(cli_fd, cli_skid, URL_INJ), "url 含 CRLF 的 GET 被拒")
+    t:eq(nil, http.post(cli_fd, cli_skid, URL_INJ, nil, nil, BODY), "url 含 CRLF 的 POST 被拒")
+    t:eq(nil, http.get(cli_fd, cli_skid, "/x\0y"), "url 含 NUL 被拒")
+    local after = http.post(cli_fd, cli_skid, "/", nil, nil, PROBE2)
+    t:check(nil ~= after, "被拒后连接仍可用(一个字节都没写出去)")
+    if after then
+        t:eq(PROBE2, after.data, "拒绝的请求未在连接上留下任何残留")
     end
 
     -- 裸连接读原始字节：srey 自己的解析器对"无 CL 无 chunked"是宽容的，

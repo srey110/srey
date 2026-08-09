@@ -154,6 +154,11 @@ runner.run("smtp_fake", function(t)
     t:eq(0, interleave, "服务端未检出命令交错")
     t:eq(CONC_N * ROUNDS, mails, "服务端收下的邮件数")
 
+    -- quit 之后 ping 走重连：ping 只认"连接是否可用"，不区分连接是被谁关的
+    ctx:quit()
+    local gen = ctx.generation
+    t:check(ctx:ping(), "quit 后 ping 自动重连")
+    t:check(gen < ctx.generation, "重连让代次前进")
     ctx:quit()
 end)
 end)

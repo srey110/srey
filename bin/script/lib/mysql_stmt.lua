@@ -2,6 +2,7 @@
 -- 由 mysql_ctx:prepare() 返回，持有 C 层 stmt 句柄。
 -- 同一 stmt 可多次调用 execute（每次绑定不同参数），
 -- 执行完毕后调用 reset 让服务端恢复到 prepare 后的就绪状态。
+-- 不再使用时调用 close 通知服务端释放句柄——GC 只做本地释放，不会替你发 COM_STMT_CLOSE。
 
 local srey   = require("lib.srey")
 local mysql  = require("mysql")
@@ -12,6 +13,7 @@ local MYSQL_PACK_TYPE = MYSQL_PACK_TYPE
 -- self.stmt      ：C 层 stmt 对象，持有服务端 statement_id；动态调用 sock_id() 感知重连。
 -- self.owner     ：mysql_ctx Lua 包装实例，守卫读其实时 generation，多结果集收包复用其 _read_results。
 -- self.mysql     ：C 层 mysql 对象引用（= owner.mysql），用于 last_id / affectd_rows 查询。
+-- self.closed    ：close() 已发出 COM_STMT_CLOSE，此后 execute / reset 一律拒绝。
 local ctx = class("mysql_stmt_ctx")
 
 ---构造函数
@@ -31,22 +33,24 @@ end
 
 ---执行预处理语句（COM_STMT_EXECUTE）
 ---@param mbind any? mysql_bind_ctx 参数绑定上下文
----@return (_mysql_reader_ctx|boolean)[]|nil results 结果集数组（元素 reader=结果集 / true=OK 包 / false=ERR 包）；网络失败、多结果集中途断连、语句失效或绑定参数个数与语句声明不符返回 nil
+---@return (_mysql_reader_ctx|boolean)[]|nil results 结果集数组（元素 reader=结果集 / true=OK 包 / false=ERR 包）；
+---网络失败、多结果集中途断连、语句失效返回 nil。
+---绑定参数个数与语句声明不符属调用方契约违反，C 侧直接抛出，经 serial 的 xpcall 记 ERROR 后同样返回 nil
 function ctx:execute(mbind)
     -- 借宿主连接的执行器：语句和普通查询走的是同一条连接，两者之间也不能交错
     return srey.serial_ret(nil, self.owner.serial(self._execute, self, mbind))
 end
 function ctx:_execute(mbind)
+    if self.closed then
+        WARN("mysql stmt already closed, please re-prepare.")
+        return nil
+    end
     if self.gen ~= self.owner.generation then
         WARN("mysql stmt invalidated by reconnect, please re-prepare.")
         return nil
     end
     local fd, skid = self.stmt:sock_id()
     local pack, size = self.stmt:pack_stmt_execute(mbind)
-    if not pack then
-        WARN("mysql stmt_execute bind mismatch, please check parameter count.")
-        return nil
-    end
     local mpack = srey.syn_send(fd, skid, pack, size, 0)
     if not mpack then
         return nil
@@ -60,6 +64,10 @@ function ctx:reset()
     return srey.serial_ret(false, self.owner.serial(self._reset, self))
 end
 function ctx:_reset()
+    if self.closed then
+        WARN("mysql stmt already closed, please re-prepare.")
+        return false
+    end
     if self.gen ~= self.owner.generation then
         WARN("mysql stmt invalidated by reconnect, please re-prepare.")
         return false
@@ -71,6 +79,28 @@ function ctx:_reset()
         return false
     end
     return MYSQL_PACK_TYPE.MPACK_OK == mysql.pack_type(mpack)
+end
+
+---发送 COM_STMT_CLOSE，通知服务端释放该语句句柄。
+---不调用则句柄要留到连接关闭才回收，长连接上每请求 prepare 一次会逐步撞满
+---max_prepared_stmt_count（默认 16382），此后 prepare 一律失败。
+---服务端不回响应，故只发不等；关闭后本 stmt 不可再 execute / reset。
+---重连后服务端已随旧连接清掉该语句，此时不再发包（发出去就是拿旧 id 打新连接）
+---@return boolean ok 已发出 true（语句已关闭或重连后已失效返回 false）
+function ctx:close()
+    return srey.serial_ret(false, self.owner.serial(self._close, self))
+end
+function ctx:_close()
+    if self.closed then
+        return false
+    end
+    self.closed = true
+    if self.gen ~= self.owner.generation then
+        return false
+    end
+    local fd, skid = self.stmt:sock_id()
+    local pack, size = self.stmt:pack_stmt_close()
+    return srey.send(fd, skid, pack, size, 0)
 end
 
 ---返回最近一次 INSERT 操作产生的自增 ID

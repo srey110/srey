@@ -27,7 +27,7 @@ void coro_desc_init(size_t stack_size);
 /// <param name="_argfree">用户参数释放函数</param>
 /// <param name="arg">用户参数</param>
 /// <returns>task_ctx，失败返回 NULL</returns>
-task_ctx *coro_task_register(loader_ctx *loader, const char *name, size_t quecap,
+task_ctx *coro_task_register(loader_ctx *loader, const char *name, uint32_t quecap,
                              _task_startup_cb _startup, _task_closing_cb _closing,
                              free_cb _argfree, void *arg);
 /// <summary>
@@ -211,9 +211,11 @@ coro_serial_ctx *coro_serial_new(task_ctx *task);
 /// 允许在有协程正持锁时调用，包括持锁者在自己临界区内调用；锁抢不走，那位仍会跑完临界区，
 /// 内存改由它最后一次 coro_serial_leave 释放，**故本函数返回时对象未必已经释放**。
 /// 调用方两条义务：
-/// 1) 调用前先把自己那个 serial 字段置空。本函数会在唤醒等待者时就地跑它们的错误路径，
-///    那些代码常常反手再销毁一次同一个连接，字段还挂着就会拿到已释放的指针
-///    （销毁流程内的重入本身安全，会被挡下直接返回）；
+/// 1) 把自己那个 serial 字段置空要排在本函数之后，且置空前先认一下字段仍是自己捏的那个。
+///    本函数唤醒排队者时会就地跑它们的错误路径：提前置空的话它们读到 NULL，会当成
+///    "这条连接不归本套 API 管"直接放行，命令就插进了正在进行的交换；而那些错误路径可能
+///    先销毁（把字段置空）再重连（新装一个上去），事后无条件置空就把新装的抹掉了。
+///    对象在这期间不会失效——有持锁者时本函数并不释放，见上；
 /// 2) 加锁与解锁必须捏着同一个指针配对，不能解锁时去重读那个已被置空的字段——
 ///    重读会让持锁者跳过 leave，推迟的释放就永远等不到了
 /// </summary>
@@ -248,7 +250,10 @@ void coro_serial_leave(coro_serial_ctx *serial);
 /// <returns>ERR_OK 成功；ERR_FAILED 调用方不在协程内、或该执行器正在 coro_serial_free 销毁</returns>
 int32_t coro_serial_call(coro_serial_ctx *serial, fork_serial_cb func, void *arg);
 /// <summary>
-/// 转储当前 task 所有挂起协程为文本 buffer(调试用)。C 协程无栈回溯,每条仅 sess / mtype / 挂起时长(ms)。
+/// 转储当前 task 挂起协程为文本 buffer(调试用)。C 协程无栈回溯,能给的只有等待原因与时长。
+/// 三类挂起分别列出:等消息的(sess/mtype/时长)、等 fork_wait 的(未完成子协程数)、
+/// 等 serial 交接的(执行器地址/是否有人持锁/排队时长)。末行的四个计数满足
+/// suspended + fork_wait + serial == yield total,与 task 关闭时打印的 "yield N" 对得上号。
 /// 返回 binary 内部 MALLOC 的 buffer,所有权转给调用方,用完 FREE。
 /// </summary>
 /// <param name="task">task_ctx</param>

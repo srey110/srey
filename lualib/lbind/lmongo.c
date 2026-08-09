@@ -203,7 +203,7 @@ static int32_t _lmongo_parse_startsession(lua_State *lua) {
     return 2;
 }
 /// <summary>
-/// 设置下一条命令的消息标志位
+/// 置上消息标志位；置上就一直有效直到 clear_flag，语义与后果见 C 层 mongo_set_flag
 /// </summary>
 /// <param name="self" type="userdata">mongo 对象</param>
 /// <param name="flag" type="integer">mongo_flags 枚举值</param>
@@ -224,6 +224,22 @@ static int32_t _lmongo_check_flag(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
     mongo_flags flag = (mongo_flags)luaL_checkinteger(lua, 2);
     lua_pushboolean(lua, mongo_check_flag(*ud, flag));
+    return 1;
+}
+/// <summary>
+/// 读回已组好的数据包里写着的消息标志位。
+/// "要不要等回包"必须问这个而不是 check_flag：后者读的是连接级可变字段，而组包与真正发送
+/// 之间隔着一次会挂起的加锁，那期间公开的 set_flag / clear_flag 一改，包里写的和判定读的
+/// 就成了两回事。详细后果见 C 层 mongo_pack_check_flag
+/// </summary>
+/// <param name="pack" type="lightuserdata">pack_* 组出的数据包</param>
+/// <param name="flag" type="integer">mongo_flags 枚举值</param>
+/// <returns type="boolean">该包写着此标志位 true，否则 false</returns>
+static int32_t _lmongo_pack_check_flag(lua_State *lua) {
+    LUACHECK_LUDATA(lua, 1);
+    void *pack = lua_touserdata(lua, 1);
+    mongo_flags flag = (mongo_flags)luaL_checkinteger(lua, 2);
+    lua_pushboolean(lua, mongo_pack_check_flag(pack, flag));
     return 1;
 }
 /// <summary>
@@ -735,6 +751,7 @@ LUAMOD_API int luaopen_mongo(lua_State *lua) {
         { "doc",                  _lmongo_doc },
         { "reqid",                _lmongo_reqid },
         { "flags",                _lmongo_flags },
+        { "pack_check_flag",      _lmongo_pack_check_flag },
         { "cursorid",             _lmongo_cursorid },
         { "parse_auth_response",  _lmongo_parse_auth_response },
         { NULL, NULL }

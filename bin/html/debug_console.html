@@ -171,7 +171,7 @@ function Y(){var t=tk();if(t!==null)get('/'+t+'/coros')}
 function A(){get('/__alive')}
 function W(){get('/__cmem')}
 function L(lv){
-  // loglv 后端恒广播到全部 task,与任务选择框无关,固定走 handle=0
+  // loglv 是进程级设置,与任务选择框无关,固定走 handle=0(后端忽略这一段)
   document.querySelectorAll('#lvg .lv').forEach(function(b,i){b.classList.toggle('on',i===lv)});
   get('/0/loglv/'+lv);
 }

@@ -60,7 +60,8 @@ SOCKET redis_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ip, ui
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="mysql">mysql_ctx, mysql_init</param>
-/// <returns>ERR_OK 成功</returns>
+/// <returns>ERR_OK 成功；失败时若命令串行化执行器是本次建链新建的，已就地回收，
+/// 调用方直接返回即可，无须为了释放它补调 mysql_quit</returns>
 int32_t mysql_connect(task_ctx *task, mysql_ctx *mysql);
 /// <summary>
 /// 选择数据库
@@ -103,14 +104,16 @@ mysql_stmt_ctx *mysql_stmt_prepare(mysql_ctx *mysql, const char *sql);
 /// <param name="mbind">mysql_bind_ctx</param>
 /// <param name="cb">结果集回调；NULL 的含义同 mysql_query</param>
 /// <param name="udata">透传给 cb</param>
-/// <returns>ERR_OK 全部结果集读完且回调都成功；失败含义同 mysql_query</returns>
+/// <returns>ERR_OK 全部结果集读完且回调都成功；失败含义同 mysql_query。
+/// 连接已关闭、或中途重连过（stmt_id 属于旧连接）时不发包直接返回 ERR_FAILED，
+/// 此时须重新 mysql_stmt_prepare</returns>
 int32_t mysql_stmt_execute(mysql_stmt_ctx *stmt, mysql_bind_ctx *mbind,
                            mysql_result_cb cb, void *udata);
 /// <summary>
 /// 预处理重置
 /// </summary>
 /// <param name="stmt">mysql_stmt_ctx</param>
-/// <returns>ERR_OK 成功</returns>
+/// <returns>ERR_OK 成功；连接已关闭或中途重连过时的行为同 mysql_stmt_execute</returns>
 int32_t mysql_stmt_reset(mysql_stmt_ctx *stmt);
 /// <summary>
 /// 关闭预处理语句并释放相关资源。拿不到该连接的串行化执行权时（不在协程内、连接正在销毁，
@@ -135,7 +138,7 @@ void mysql_quit(mysql_ctx *mysql);
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="smtp">smtp_ctx</param>
-/// <returns>ERR_OK 成功</returns>
+/// <returns>ERR_OK 成功；失败时的清理契约同 mysql_connect</returns>
 int32_t smtp_connect(task_ctx *task, smtp_ctx *smtp);
 /// <summary>
 /// 关闭链接，并回收该连接的串行化执行器（排队中的投递被唤醒并失败返回）。
@@ -168,7 +171,7 @@ int32_t smtp_send(smtp_ctx *smtp, mail_ctx *mail);
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="pg">pgsql_ctx, pgsql_init</param>
-/// <returns>ERR_OK 成功</returns>
+/// <returns>ERR_OK 成功；失败时的清理契约同 mysql_connect</returns>
 int32_t pgsql_connect(task_ctx *task, pgsql_ctx *pg);
 /// <summary>
 /// 在独立 TCP 连接上向服务端发送 CancelRequest，中止当前正在执行的查询
@@ -262,7 +265,7 @@ pgpack_ctx *pgsql_copy_out(pgsql_ctx *pg, const char *sql);
 /// </summary>
 /// <param name="task">task_ctx</param>
 /// <param name="mongo">mongo_ctx</param>
-/// <returns>ERR_OK 成功</returns>
+/// <returns>ERR_OK 成功；失败时的清理契约同 mysql_connect</returns>
 int32_t mongo_connect(task_ctx *task, mongo_ctx *mongo);
 /// <summary>
 /// 关闭链接，并回收该连接的串行化执行器（排队中的命令被唤醒并失败返回）。

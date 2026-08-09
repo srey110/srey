@@ -55,10 +55,13 @@ typedef struct fork_wait_ctx {
 // serial waiter 链表节点：cs 挂起协程的 FIFO 元素，进队时 pool_pop、出队由前一个协程的 coro_serial_leave pool_push
 typedef struct serial_node {
     list_node node;           // 侵入式 FIFO 链表节点（slist，UPCAST 复原外层），须在首位
-    mco_coro *co;             // 等待中的协程
     int32_t aborted;          // 1 = 被 coro_serial_free 唤醒，锁未交接给本协程，须失败返回
+    mco_coro *co;             // 等待中的协程
+    uint64_t since;           // 入队时刻(ms)，coro_dump 据此报"排了多久"
 } serial_node;
 struct coro_serial_ctx {
+    list_node node;        // 挂 coctx->serials（侵入式，须在首位）；仅供 coro_dump 遍历，
+                           // 摘挂点严格对齐三处生死：coro_serial_new 挂、两处 FREE(serial) 前摘
     int32_t ref;           // 嵌套深度（同协程多次进入累加）
     int32_t closed;        // 1 = 已关闭，此后任何 enter 一律失败，不再有人能拿到锁
     task_ctx *task;        // 所属 task；resume 时同步 coctx->curco 需要
@@ -73,8 +76,9 @@ typedef struct coro_ctx {
     void *arg;                   // 用户自定义数据
     free_cb _arg_free;           // 用户数据释放回调
     uint64_t shrink_ms;          // 上次协程池收缩的时间戳(ms)，按 SHRINK_TIME 门控
-    list_ctx fork_waited;        // 挂起的 fork_wait 父协程链表（slist，元素 fork_wait_ctx）；task 关闭时由 _coro_ctx_free 兜底 destroy
     list_ctx fork_pending;       // 待起协程的 fork_item FIFO（slist，task-local 无界无锁）；每次 dispatch 末尾 drain 到空
+    list_ctx fork_waited;        // 挂起的 fork_wait 父协程链表（slist，元素 fork_wait_ctx）；task 关闭时由 _coro_ctx_free 兜底 destroy
+    list_ctx serials;            // 活跃的命令串行化执行器链表（slist，元素 coro_serial_ctx）；只给 coro_dump 用，不参与释放
     pool_ctx copool;             // 空闲协程对象池（元素 mco_coro *，含负载趋势）
     pool_ctx te_pool;            // 空闲 timeout_entry 对象池，容量 NODEPOOL_CAP，不参与周期性收缩
     pool_ctx coinfo_pool;        // 空闲 coro_info 节点池，容量 NODEPOOL_CAP，不参与周期性收缩
@@ -294,7 +298,12 @@ static mco_coro *_coro_pool_get(task_ctx *task) {
     coro_ctx *coctx = task->arg;
     return (mco_coro *)pool_pop(&coctx->copool, NULL, 0);
 }
-// 从对象池取出协程并推入分发参数，开始执行新的消息处理流程
+// 从对象池取出协程并推入分发参数，开始执行新的消息处理流程。
+// resume 返回后把 curco 清回 NULL：本函数在顶层调用，外面本就没有协程在跑。
+// 漏这一步的话 curco 会一直指着刚挂起(甚至已随池收缩销毁)的那个协程,
+// coro_fork / coro_fork_wait / coro_serial_enter 三处"不在协程里就拒绝"的守卫
+// 从第一条消息起就永远不成立,真的从非协程上下文调进来时不再是失败返回,
+// 而是对着一个不在跑的协程 mco_yield
 static void _coro_mco_create(task_dispatch_arg *arg) {
     coro_ctx *coctx = arg->task->arg;
     mco_coro *co = _coro_pool_get(arg->task);
@@ -303,6 +312,7 @@ static void _coro_mco_create(task_dispatch_arg *arg) {
     mco_result rtn = mco_push(co, &arg, sizeof(arg));
     ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
     rtn = mco_resume(co);
+    coctx->curco = NULL;
     ASSERTAB(MCO_SUCCESS == rtn, mco_result_description(rtn));
     if (MCO_DEAD == mco_status(co)) {
         mco_destroy(co); // 池满导致 _coro_mco_cb 返回，协程已死亡，须在此释放
@@ -315,7 +325,8 @@ static void _coro_mco_create(task_dispatch_arg *arg) {
 // 四处唤醒点(_coro_mco_resume / _coro_fork_run / coro_serial_leave / coro_serial_free)共用本函数,
 // 别再各写一份 —— 漏一处就是上面那个 abort,而且只在特定唤醒时序下才现形。
 // 第四处 _coro_mco_create 有意不走本函数:它是"起一个新协程",不是"切过去再切回来",
-// 五个调用点(消息分发表各项与 _coro_drain_forks)全在顶层、外面没有协程可还原
+// 五个调用点(消息分发表各项与 _coro_drain_forks)全在顶层、外面没有协程可存;
+// 但回来同样要还原——顶层的"原值"就是 NULL，它自己清
 static mco_result _coro_resume_switch(coro_ctx *coctx, mco_coro *co) {
     mco_coro *self = coctx->curco;
     coctx->curco = co;
@@ -362,13 +373,9 @@ static inline void _coro_dispatch(task_dispatch_arg *arg, int32_t miss_create, i
 static void _coro_handle_timeout(task_dispatch_arg *arg) {
     _coro_dispatch(arg, 0, 1);
 }
-static void _coro_handle_connect(task_dispatch_arg *arg) {
-    _coro_dispatch(arg, 1, 0);
-}
-static void _coro_handle_sslexchanged(task_dispatch_arg *arg) {
-    _coro_dispatch(arg, 1, 0);
-}
-static void _coro_handle_handshaked(task_dispatch_arg *arg) {
+// CONNECT / SSLEXCHANGED / HANDSHAKED / RECVFROM 共用：找不到等待者静默新建协程，不告警。
+// 语义差异只在分发表那几行的注释里，函数体没有可写的区别，故不再各留一个同体空壳
+static void _coro_handle_miss_create(task_dispatch_arg *arg) {
     _coro_dispatch(arg, 1, 0);
 }
 static void _coro_handle_response(task_dispatch_arg *arg) {
@@ -414,11 +421,6 @@ static void _coro_handle_closed(task_dispatch_arg *arg) {
     if (NULL != cofind && list_empty(&cofind->waiters)) {
         _coro_cosess_delete(coctx, arg->msg.sess);
     }
-}
-// 处理 UDP 数据接收消息：UDP 本身不保证顺序与送达，找不到等待者（迟到/孤儿包）是正常场景，不告警；
-// sess==0 由 _coro_dispatch 内部自行新建协程处理
-static void _coro_handle_recvfrom(task_dispatch_arg *arg) {
-    _coro_dispatch(arg, 1, 0);
 }
 // 定期（每 1 秒）扫描超时堆，唤醒所有已到期的挂起协程并注入超时消息
 static void _coro_timeout_monitor(task_ctx *task, uint64_t sess) {
@@ -501,13 +503,13 @@ static const _coro_msg_handler_t _coro_msg_handlers[MSG_TYPE_ALL] = {
     [MSG_TYPE_CLOSING]      = _coro_handle_closing,// 新建
     [MSG_TYPE_TIMEOUT]      = _coro_handle_timeout,// 新建或唤醒
     [MSG_TYPE_ACCEPT]       = _coro_mco_create,// 新建
-    [MSG_TYPE_CONNECT]      = _coro_handle_connect, // 连接建立；未找到静默新建
-    [MSG_TYPE_SSLEXCHANGED] = _coro_handle_sslexchanged, // SSL 握手；未找到静默新建
-    [MSG_TYPE_HANDSHAKED]   = _coro_handle_handshaked, // 应用层握手；未找到静默新建
+    [MSG_TYPE_CONNECT]      = _coro_handle_miss_create, // 连接建立；未找到静默新建
+    [MSG_TYPE_SSLEXCHANGED] = _coro_handle_miss_create, // SSL 握手；未找到静默新建
+    [MSG_TYPE_HANDSHAKED]   = _coro_handle_miss_create, // 应用层握手；未找到静默新建
     [MSG_TYPE_RECV]         = _coro_handle_recved,// sess==0 或协议不允许 创建；未找到新建，否则唤醒
     [MSG_TYPE_SEND]         = _coro_mco_create,// 新建
     [MSG_TYPE_CLOSE]        = _coro_handle_closed,// sess直接赋值skid,尝试唤醒所有
-    [MSG_TYPE_RECVFROM]     = _coro_handle_recvfrom,// sess 0新建；未找到静默新建，不告警
+    [MSG_TYPE_RECVFROM]     = _coro_handle_miss_create,// sess 0新建；未找到静默新建，不告警(UDP 不保证顺序与送达，迟到/孤儿包是常态)
     [MSG_TYPE_REQUEST]      = _coro_mco_create,// 新建
     [MSG_TYPE_RESPONSE]     = _coro_handle_response,// 未找到告警后新建，否则唤醒
 };
@@ -534,7 +536,7 @@ static void _coro_message_dispatch(task_dispatch_arg *arg) {
     }
     _coro_drain_forks(arg->task);// 镜像 Lua message_dispatch 末尾的 _drain_fork_queue
 }
-task_ctx *coro_task_register(loader_ctx *loader, const char *name, size_t quecap,
+task_ctx *coro_task_register(loader_ctx *loader, const char *name, uint32_t quecap,
                              _task_startup_cb _startup, _task_closing_cb _closing,
                              free_cb _argfree, void *arg) {
     coro_ctx *coctx = _coro_ctx_init(_argfree, arg);
@@ -813,6 +815,7 @@ coro_serial_ctx *coro_serial_new(task_ctx *task) {
     coro_serial_ctx *s;
     CALLOC(s, 1, sizeof(coro_serial_ctx));
     s->task = task;
+    list_push_head(&((coro_ctx *)task->arg)->serials, &s->node);
     return s;
 }
 void coro_serial_free(coro_serial_ctx *serial) {
@@ -844,6 +847,7 @@ void coro_serial_free(coro_serial_ctx *serial) {
     // 所以有持锁者时本函数不释放,只把 closed 留在那儿当交接凭据:
     // 队列已排空且 closed 之后再没人能入队,那位最后一次 leave 走的必是"队列空"分支,由它关灯
     if (NULL == serial->current) {
+        list_remove(&coctx->serials, &serial->node);
         FREE(serial);
     }
 }
@@ -874,6 +878,7 @@ int32_t coro_serial_enter(coro_serial_ctx *serial) {
         serial_node *nd = (serial_node *)pool_pop(&coctx->serial_node_pool, NULL, 0);
         nd->co = self;
         nd->aborted = 0;
+        nd->since = timer_cur_ms(&coctx->timer);
         list_push_tail(&serial->waiters, &nd->node);
         // 排在 waiters 里的协程同样是"挂起没退"的,与 _coro_wait / coro_fork_wait 同口径计入,
         // 否则 task 关闭时 _coro_handle_closing 看到 nyield==0 就静默通过,操作者拿不到
@@ -917,6 +922,7 @@ void coro_serial_leave(coro_serial_ctx *serial) {
         serial->current = NULL;
         // coro_serial_free 撞上本协程持锁,把释放推给了这里(见该函数末尾)
         if (0 != serial->closed) {
+            list_remove(&((coro_ctx *)serial->task->arg)->serials, &serial->node);
             FREE(serial);
         }
         return;
@@ -986,7 +992,27 @@ char *coro_dump(task_ctx *task, size_t *size) {
             }
         }
     }
-    binary_set_va(&bw, "%d suspended coro(s).", total);
+    int32_t nfork = 0;
+    fork_wait_ctx *fw;
+    list_foreach(&coctx->fork_waited, fit) {
+        fw = UPCAST(fit, fork_wait_ctx, node);
+        binary_set_va(&bw, "fork_wait pending=%d\n", fw->waited);
+        nfork++;
+    }
+    int32_t nserial = 0;
+    coro_serial_ctx *sl;
+    serial_node *nd;
+    list_foreach(&coctx->serials, sit) {
+        sl = UPCAST(sit, coro_serial_ctx, node);
+        list_foreach(&sl->waiters, wit) {
+            nd = UPCAST(wit, serial_node, node);
+            binary_set_va(&bw, "serial=%p held=%d age=%" PRIu64 "ms\n",
+                (void *)sl, NULL != sl->current, now - nd->since);
+            nserial++;
+        }
+    }
+    binary_set_va(&bw, "%d suspended, %d fork_wait, %d serial, %d yield total.",
+                  total, nfork, nserial, coctx->nyield);
     SET_PTR(size, bw.offset);
     return bw.data;
 }

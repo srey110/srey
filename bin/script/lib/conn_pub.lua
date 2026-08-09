@@ -1,0 +1,78 @@
+-- mysql / pgsql / mongo / smtp 四个长连接客户端共用的连接生命周期：
+-- 建链、ping 保活兼重连、主动断开。这三段的排队与代次维护四家逐字相同，
+-- 差异只在各自的协议动作上，故收在这里一份。
+--
+-- 子类须做两件事：
+--   1) ctor 里建好 C 层句柄之后调 conn_pub.init(self, handle)；
+--   2) 实现三个钩子（都在锁内被调用，不要自己再进 self.serial，虽然可重入但没必要）：
+--      _connect()  建链 + 协议握手，成功返 true；代次由本模块统一递增，钩子内不要动它
+--      _ping()     探活，服务端有正常响应返 true；不要在里面重连
+--      _doquit()   发协议的断开命令并关 socket；连接已关（fd 为 INVALID_SOCK）时自行早退
+--
+-- 为什么句柄要在 init 里另存一份 self.conn：基类只在重连前取一次 sock_id，
+-- 而四家各自的字段名不同（self.mysql / self.pg / self.smtp / self.mongo），
+-- 统一改名要动上百处调用点，存个别名便宜得多。
+
+local srey = require("lib.srey")
+local pub = class("conn_pub")
+
+---初始化连接生命周期所需的共用字段；须在 C 层句柄建好之后调用
+---@param self any 子类实例
+---@param handle any C 层连接句柄，本模块只用它取 sock_id
+function pub.init(self, handle)
+    self.conn = handle
+    -- 连接代次：每次握手成功 +1。prepare 出来的 stmt / 事务 session 持有创建时的代次，
+    -- 用前比对，重连后服务端已清掉的旧句柄就能明确报失效而不是拿旧 id 去打新连接
+    self.generation = 0
+    -- 命令串行化执行器：多协程共用一条连接时按 FIFO 排队。建在 ctor 而非 connect——
+    -- connect 会被 ping / selectdb 的重连路径重入，建在那儿会在重连时换掉执行器，
+    -- 把排队者连同锁一起丢掉
+    self.serial = srey.serial()
+end
+
+---建立连接并完成协议握手
+---@return boolean ok 握手成功 true，失败 false。多协程并发调用时按 FIFO 串行，
+---排在后面那个若发现连接已被前一个重建好（代次已变）直接返 true，不再白拆一次
+function pub:connect()
+    -- 排队前记下代次：等锁期间别人可能已经把连接重建好了
+    local gen = self.generation
+    return srey.serial_ret(false, self.serial(self._doconnect, self, gen))
+end
+-- 整段握手在锁内：try_connect 会无条件覆写 sk.fd/skid，别人正在这条连接上发命令的话
+-- 那个 socket 就被孤立了；握手期间连接也还不能收普通命令。
+-- 代次统一在这里递增，子类的 _connect 只管返回成败
+function pub:_doconnect(gen)
+    if gen ~= self.generation then
+        return true
+    end
+    local ok = self:_connect()
+    if ok then
+        self.generation = self.generation + 1
+    end
+    return ok
+end
+
+---连接保活：探活失败时自动重连，建议在执行命令前调用
+---@return boolean ok 连接可用 true；探活失败时在锁内重连，重连也失败返 false
+function pub:ping()
+    return srey.serial_ret(false, self.serial(self._pingreconn, self))
+end
+-- 重连整段也在锁内：连接正在重建时别人不该往上发命令，而 fd/skid 换掉之后
+-- 排队者醒来拿到的自然是新连接
+function pub:_pingreconn()
+    if not self:_ping() then
+        local fd, skid = self.conn:sock_id()
+        srey.sync_close(fd, skid, 1)
+        return self:connect()
+    end
+    return true
+end
+
+---主动断开连接；此后再调 ping() 会把连接重新建起来
+-- 走锁：断开命令插进别人正在进行的交换会串包，随后的 sync_close 更会把对方半途的等待
+-- 直接打断——一次响应已完整到达的命令会因此报失败
+function pub:quit()
+    self.serial(self._doquit, self)
+end
+
+return pub

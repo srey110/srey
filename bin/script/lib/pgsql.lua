@@ -9,9 +9,11 @@ local stmt   = require("lib.pgsql_stmt")
 local pgsql  = require("pgsql")
 local reader = require("pgsql.reader")
 local ppub   = require("lib.pgsql_pub")-- 失败原因与 err 契约，见该模块头部
+local pub    = require("lib.conn_pub")-- connect / ping / quit 的共用骨架
 
 -- pgsql_ctx：PostgreSQL 连接上下文，每实例对应一条持久连接。
-local ctx = class("pgsql_ctx")
+-- 建链、保活、断开三段继承自 conn_pub，本文件只实现 _connect / _ping / _doquit 三个钩子。
+local ctx = class("pgsql_ctx", pub)
 
 ---构造函数
 ---@param ip string 服务器 IP
@@ -34,30 +36,12 @@ function ctx:ctor(ip, port, sslname, user, password, database)
     self.ip = ip
     self.port = port
     self.sslname = sslname
-    -- 连接代次：每次 connect 成功后 +1，prepare 出来的 stmt 持有创建时的代次，
-    -- execute 前比对，重连后旧 statement name 已被服务端清理时返 false 明确提示重新 prepare
-    self.generation = 0
-    -- 命令串行化执行器：多协程共用一条连接时按 FIFO 排队。一条 pgsql 命令要读到
-    -- ReadyForQuery 才算完，copy_in 更是整段会话，交错会让整条连接错位。
-    -- 建在 ctor 而非 connect：connect 会被 ping / selectdb 的重连路径重入，
-    -- 建在那儿会在重连时换掉执行器，把排队者连同锁一起丢掉
-    self.serial = srey.serial()
+    -- 一条 pgsql 命令要读到 ReadyForQuery 才算完，copy_in 更是整段会话，交错会让整条
+    -- 连接错位——串行化执行器由 conn_pub 建
+    pub.init(self, self.pg)
 end
 
----建立 TCP 连接并完成 PostgreSQL 握手；成功后 skid 设为会话键
----@return boolean ok 握手成功 true，失败 false。多协程并发调用时按 FIFO 串行，
----排在后面那个若发现连接已被前一个重建好（代次已变）直接返 true，不再白拆一次
-function ctx:connect()
-    -- 排队前记下代次：等锁期间别人可能已经把连接重建好了（每次 _connect 成功都会递增）
-    local gen = self.generation
-    return srey.serial_ret(false, self.serial(self._doconnect, self, gen))
-end
-function ctx:_doconnect(gen)
-    if gen ~= self.generation then
-        return true
-    end
-    return self:_connect()
-end
+-- conn_pub 的建链钩子：TCP 连接 + PostgreSQL 握手，成功后 skid 设为会话键
 function ctx:_connect()
     if not self.pg:try_connect() then
         return false
@@ -67,14 +51,10 @@ function ctx:_connect()
         return false
     end
     local ok, _, _ = srey.wait_handshaked(fd, skid)
-    if ok then
-        self.generation = self.generation + 1
-    end
     return ok
 end
 
----内部 ping：发送 "SELECT 1" 简单查询探活，不自动重连
----@return boolean ok 服务端响应 OK 时 true（仅供 ping() 内部调用，不要直接调用；调用方须已持锁）
+-- conn_pub 的探活钩子：发 "SELECT 1" 简单查询，不自动重连
 function ctx:_ping()
     local pack, size = pgsql.pack_query("SELECT 1")
     local fd, skid = self.pg:sock_id()
@@ -83,22 +63,6 @@ function ctx:_ping()
         return false
     end
     return PGPACK_TYPE.OK == pgsql.pack_type(pgpack)
-end
-
----连接保活：ping 失败时自动重连，建议在执行查询前调用
----@return boolean ok 连接可用 true；ping 失败时在锁内重连，重连也失败返 false
-function ctx:ping()
-    return srey.serial_ret(false, self.serial(self._pingreconn, self))
-end
--- 重连整段也在锁内：连接正在重建时别人不该往上发命令，而 fd/skid 换掉之后
--- 排队者醒来拿到的自然是新连接
-function ctx:_pingreconn()
-    if not self:_ping() then
-        local fd, skid = self.pg:sock_id()
-        srey.sync_close(fd, skid, 1)
-        return self:connect()
-    end
-    return true
 end
 
 -- 写 err 并返回 false 的合并写法，让"置原因"与"报失败"成为一步，不会只做一半
@@ -183,12 +147,25 @@ end
 function ctx:copy_in(sql, producer)
     return srey.serial_ret(false, self.serial(self._copy_in, self, sql, producer))
 end
+-- producer 抛出或返回的值由业务代码决定，可能是个带 __tostring 的对象，而那个元方法自己
+-- 也会抛（返回非字符串同样抛）。_copy_fail 与它的调用方是把服务端拉出 COPY IN 模式的唯一
+-- 路径，转字符串在那里失手就等于谁也拉不出来了，故一律走这里兜住
+local function _safe_str(v)
+    if nil == v then
+        return ""
+    end
+    local ok, s = pcall(tostring, v)
+    return ok and s or "copy aborted"
+end
 -- 发 CopyFail 并等服务端确认。中止本身成功时返回 (true, 服务端文本)：
 -- CopyFail 的正常应答就是 ErrorResponse，所以"中止成功"也走 ERR 包。
 -- 成功路径不写 err —— 写了的话 erro() 会把一次正常中止报成失败，
--- 成为本文件"err 非空 == 上一次操作失败"这条读法的唯一例外
+-- 成为本文件"err 非空 == 上一次操作失败"这条读法的唯一例外。
+-- msg 一律转成字符串再交出去：pack_copy_fail 内部是 luaL_checkstring，
+-- 拿到 producer 给的 table/boolean 会当场抛。本函数是把服务端拉出 COPY IN 模式的
+-- 唯一手段，在这里抛就等于谁也拉不出来了——服务端攥着开放事务和表锁，而 err 还是空的
 function ctx:_copy_fail(msg)
-    local pack, size = pgsql.pack_copy_fail(msg or "")
+    local pack, size = pgsql.pack_copy_fail(_safe_str(msg))
     local fd, skid = self.pg:sock_id()
     local pgpack, _ = srey.syn_send(fd, skid, pack, size, 0)
     if not pgpack then
@@ -247,8 +224,8 @@ function ctx:_copy_in(sql, producer)
     -- 留下服务端停在 copy-in 模式攥着开放事务和表锁，而 err 还是空的
     local ok, more, reason = pcall(self._copy_stream, self, fd, skid, producer, cfmt, cncol)
     if not ok then
-        self:_copy_fail(tostring(more))
-        return self:_fail("copy_in: " .. tostring(more))
+        self:_copy_fail(more)
+        return self:_fail("copy_in: " .. _safe_str(more))
     end
     if not more then
         return self:_copy_fail(reason)-- producer 主动中止
@@ -291,12 +268,7 @@ function ctx:_copy_out(sql)
     return pgsql.copy_out_data(pgpack)
 end
 
----发送 Terminate 消息并关闭连接
-function ctx:quit()
-    self.serial(self._doquit, self)
-end
--- 走锁:Terminate 虽不等响应,但插进别人正在进行的交换会串包,随后的 sync_close 更会
--- 把对方半途的等待直接打断
+-- conn_pub 的断开钩子：Terminate 不等响应，发完直接关
 function ctx:_doquit()
     local fd, skid = self.pg:sock_id()
     if INVALID_SOCK == fd then

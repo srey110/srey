@@ -7,6 +7,7 @@
 #include "event/event.h"
 #include "utils/binary.h"
 #include "utils/utils.h"
+#include "utils/log.h"
 
 // task 列表收集项 + 动态数组（用于 /__alive 与广播）
 typedef struct dbg_task {
@@ -261,8 +262,8 @@ static void _debug_coros(router_req *ctx) {
     _debug_pack_cmd(&cmd, "coros");
     _debug_forward(ctx, &cmd);
 }
-// GET /{handle}/loglv/{lv}：lv 须 0-4；日志级别是进程级设置(C 全局 + 每 task Lua 侧 _curlv 缓存)，
-// 忽略 URL 中的 {handle}，恒走广播，否则其余 task 的 Lua 缓存会与新级别脱节，DEBUG/INFO 在 Lua 层被永久短路
+// GET /{handle}/loglv/{lv}：lv 须 0-4；日志级别是进程级的一份原子变量，就地设掉即可，
+// URL 里的 {handle} 忽略。曾经恒走广播是为了同步各 task 的 Lua 侧级别缓存，那份缓存已经去掉
 static void _debug_loglv(router_req *ctx) {
     size_t n = 0;
     const char *lv_s = router_req_param(ctx, "lv", &n);
@@ -272,11 +273,10 @@ static void _debug_loglv(router_req *ctx) {
         router_req_text(ctx, 400, "usage: /{handle}/loglv/<0-4>\n", strlen("usage: /{handle}/loglv/<0-4>\n"));
         return;
     }
-    binary_ctx cmd;
-    _debug_pack_cmd(&cmd, "loglv");
-    seri_append_int(&cmd, (int32_t)lvv);
-    _debug_broadcast(ctx, cmd.data, cmd.offset);
-    binary_free(&cmd);
+    log_setlv((log_level)lvv);
+    char buf[32];
+    int32_t rn = SNPRINTF(buf, sizeof(buf), "log level => %d\n", (int32_t)lvv);
+    router_req_text(ctx, 200, buf, (size_t)rn);
 }
 // POST /{handle}/inject：body 为 Lua 源码
 static void _debug_inject(router_req *ctx) {

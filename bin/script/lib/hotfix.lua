@@ -22,6 +22,34 @@
 
 local M = {}
 
+-- 同名遮蔽(同名不同 cell)时按名嫁接找不准目标,只在 patch 真的碰到那个名字时才拒绝。
+-- 曾是"整个模块有一处遮蔽就整体拒收",而模块级工厂被调两次(local a, b = mk(), mk())
+-- 就足以造出两个同名 cell,补丁明明只改别的名字也被挡在 load 之前
+local _AMBIGUOUS = "patch touches shadowed upvalue: "
+-- 补丁 chunk 的 chunkname 前缀，load 时给它；_is_self_chunk 也认这个形态——
+-- 上一轮 apply 换上去的函数正是从补丁 chunk 编译出来的，反复热修同一模块时它就是"自家的"
+local _PATCH_CHUNK = "=hotfix:"
+
+-- 找 patch 里会走嫁接、而原模块侧同名 cell 有歧义的 upvalue;有则返回名字。
+-- 判定与 _join_upvalues 的嫁接条件保持一致:只有非函数值才嫁接,函数值是 patch 自己的 helper
+local function _find_ambiguous(patch_fn, upmap)
+    local pi = 1
+    while true do
+        local pname, pval = debug.getupvalue(patch_fn, pi)
+        if not pname then
+            break
+        end
+        if "_ENV" ~= pname and "function" ~= type(pval) then
+            local entry = upmap[pname]
+            if entry and entry.ambiguous then
+                return pname
+            end
+        end
+        pi = pi + 1
+    end
+    return nil
+end
+
 -- 把 patch_fn 的同名 upvalue 槽嫁接到 mod 内任一持有该 UpVal 的 closure(upmap 提供索引,路径 A)
 -- 同 chunk 内 chunk-local 是单一 UpVal 对象,任意持有它的 closure 都能定位,不必限制嫁接到当前 orig_fn —
 -- 例如 patch_handle 引用 counter 但原 handle 不引用 counter,counter UpVal 仍存在于原 bump,通过 upmap 命中
@@ -50,30 +78,77 @@ local function _join_upvalues(patch_fn, upmap)
     end
 end
 
--- 扫 mod 表所有 function 的 upvalue,收集 name → {fn, idx, id}(_ENV 排除)
--- upvalueid 辨 cell 身份:同名不同 cell(chunk 内 local 遮蔽)按名无法判定嫁接目标,标记 ambiguous 供 apply 拒绝
-local function _collect_upvalues(mod)
+-- 扫一个 closure 的 upvalue 收进 map,再顺着同 chunk 的函数型 upvalue 往下扫。
+-- 必须往下扫:模块里 `local function _helper` 不是 mod 表的值,pairs(mod) 看不见它,
+-- 而只被它捕获的模块级 local(local cache 之类)就进不了 map——patch 里读那个名字会
+-- 一路回退到 _G 拿到 nil,写则落到 _G,而 apply 照样报"替换成功"。
+-- 只跟同 chunk 的:`local cb; function M.set(f) cb = f end` 这种业务回调槽也是函数型 upvalue,
+-- 顺着它扫进去就是把别人 closure 的 local 名字混进 map(Lua 把 `local function f` 与
+-- `local f = <函数>` 编译成同一形态,运行期只能靠 source 分辨)。
+-- src 由调用方一次算好往下传,不能每层拿当前 fn 重算:重算等于每跟一步就把基准挪到刚踩进去的
+-- 那个 chunk 上,A 模块 re-export 了 B 的函数就顺势把 B 整棵闭包树扫进 A 的 map,
+-- 补丁写同名变量会经 __newindex 落到 B 的 cell 上。
+-- seen 防互相递归的 helper 打转
+local function _scan_upvalues(fn, map, seen, src)
+    if seen[fn] then
+        return
+    end
+    seen[fn] = true
+    local i = 1
+    while true do
+        local name, val = debug.getupvalue(fn, i)
+        if not name then break end
+        if "_ENV" ~= name then
+            local id = debug.upvalueid(fn, i)
+            local entry = map[name]
+            if nil == entry then
+                map[name] = {fn = fn, idx = i, id = id}
+            elseif entry.id ~= id then
+                entry.ambiguous = true
+            end
+            if "function" == type(val)
+                and src == debug.getinfo(val, "S").source then
+                _scan_upvalues(val, map, seen, src)
+            end
+        end
+        i = i + 1
+    end
+end
+-- 判定 src 是不是 module_name 自己那个 chunk。
+-- 之所以要认准:mod 表里混得进别人编译的函数(A.helper = require"b".helper 这种 re-export,
+-- 以及 utils 的 class() 塞进每个类表的 cls.new),拿它当出发点就会把那个模块整棵闭包树
+-- 收进本模块的 map,补丁写同名变量就直接改到别人家的状态上去了。
+-- 只比路径尾巴,不要求 "@" 前缀:同一个模块的 source 有两种形态——bytecache 未命中走
+-- luaL_loadfilex 得到 "@路径",命中走 luaL_loadbufferx 而 chunkname 传的是裸路径(见
+-- lbytecache.c);要求前缀会让所有走缓存的模块认不出自己。load(src,"=名字") 另走全等
+local function _is_self_chunk(src, module_name)
+    if "=" .. module_name == src
+        or _PATCH_CHUNK .. module_name == src then
+        return true
+    end
+    local tail = "/" .. module_name:gsub("%.", "/") .. ".lua"
+    return tail == src:gsub("\\", "/"):sub(-#tail)
+end
+-- 收集 name → {fn, idx, id}(_ENV 排除)
+-- upvalueid 辨 cell 身份:同名不同 cell(chunk 内 local 遮蔽)按名无法判定嫁接目标,标记 ambiguous;
+-- 拒不拒推迟到 patch 真的碰那个名字时判,见 _AMBIGUOUS
+-- 返回 map、mod 里的函数个数、其中出自本模块 chunk 的个数
+local function _collect_upvalues(mod, module_name)
     local map = {}
+    local seen = {}
+    local nfn = 0
+    local nself = 0
     for _, fn in pairs(mod) do
         if "function" == type(fn) then
-            local i = 1
-            while true do
-                local name, _ = debug.getupvalue(fn, i)
-                if not name then break end
-                if "_ENV" ~= name then
-                    local id = debug.upvalueid(fn, i)
-                    local entry = map[name]
-                    if nil == entry then
-                        map[name] = {fn = fn, idx = i, id = id}
-                    elseif entry.id ~= id then
-                        entry.ambiguous = true
-                    end
-                end
-                i = i + 1
+            nfn = nfn + 1
+            local src = debug.getinfo(fn, "S").source
+            if _is_self_chunk(src, module_name) then
+                nself = nself + 1
+                _scan_upvalues(fn, map, seen, src)
             end
         end
     end
-    return map
+    return map, nfn, nself
 end
 
 ---对 module 应用 hotfix patch;成功后下次调用走新版,upvalue 状态保留。
@@ -94,12 +169,11 @@ function M.apply(module_name, patch_source)
     -- patch 读 `M._helper` 透传 mod(__index = mod),让 patch 内部能引用原 module 未替换字段
     local patch_M = setmetatable({}, {__index = mod})
     -- 收集 mod 所有 closure 的 upvalue 索引,供 patch_env metatable 转发(路径 B)
-    local upmap = _collect_upvalues(mod)
-    -- 含同名遮蔽 upvalue(同名不同 cell)时按名嫁接无法判定目标,拒绝处理避免静默接错 cell
-    for _, entry in pairs(upmap) do
-        if entry.ambiguous then
-            return false, "module has shadowed upvalues, hotfix unsupported"
-        end
+    local upmap, nfn, nself = _collect_upvalues(mod, module_name)
+    -- 有函数却一个都认不出是自家的:upmap 必然为空,补丁裸读写会全部悄悄落到 _G,
+    -- 而 apply 照报"替换成功"。宁可在这里失败,也别让调用方以为状态改进去了
+    if 0 < nfn and 0 == nself then
+        return false, "cannot locate module chunk: " .. module_name
     end
     -- path-B 写入原 module UpVal 的撤销日志:k → {entry, orig};任一失败路径逐一回滚,避免半改污染
     local dirty = {}
@@ -121,6 +195,9 @@ function M.apply(module_name, patch_source)
         __index = function(_, k)
             local entry = upmap[k]
             if entry then
+                if entry.ambiguous then
+                    error(_AMBIGUOUS .. k, 2)
+                end
                 local _, v = debug.getupvalue(entry.fn, entry.idx)
                 return v
             end
@@ -129,6 +206,9 @@ function M.apply(module_name, patch_source)
         __newindex = function(t, k, v)
             local entry = upmap[k]
             if entry then
+                if entry.ambiguous then
+                    error(_AMBIGUOUS .. k, 2)
+                end
                 if nil == dirty[k] then
                     -- 首次写入前记录原值供失败回滚(orig 可能为 nil,包一层 table 以区分"未记录")
                     local _, orig = debug.getupvalue(entry.fn, entry.idx)
@@ -145,7 +225,7 @@ function M.apply(module_name, patch_source)
             _G[k] = v
         end,
     })
-    local chunk, err = load(patch_source, "=hotfix:" .. module_name, "t", env)
+    local chunk, err = load(patch_source, _PATCH_CHUNK .. module_name, "t", env)
     if not chunk then
         return false, "load: " .. tostring(err)
     end
@@ -156,6 +236,16 @@ function M.apply(module_name, patch_source)
     end
     -- 遍历 patch_M:同名 function 嫁接 upvalue 后写回 mod;只替换已有函数,不新增不删除
     -- 嫁接走 upmap(覆盖整个 mod 的 UpVal 索引),不局限于当前 orig_fn 自身的 upvalue 列表
+    -- 先整体验一遍再动手:嫁接与写回是逐个进行的,做到一半才发现遮蔽就得回滚已经换上去的函数
+    for name, patch_fn in pairs(patch_M) do
+        if "function" == type(patch_fn) and "function" == type(mod[name]) then
+            local bad = _find_ambiguous(patch_fn, upmap)
+            if bad then
+                _rollback_dirty()
+                return false, _AMBIGUOUS .. bad
+            end
+        end
+    end
     local replaced = 0
     for name, patch_fn in pairs(patch_M) do
         if "function" == type(patch_fn) and "function" == type(mod[name]) then

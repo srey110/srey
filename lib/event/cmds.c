@@ -99,15 +99,15 @@ void _cmd_listen(watcher_ctx *watcher, sock_ctx *skctx) {
 void _on_cmd_lsn(watcher_ctx *watcher, cmd_ctx *cmd) {
     _uev_add_lsn_inloop(watcher, cmd->args.skctx);
 }
-void _cmd_unlisten(watcher_ctx *watcher, SOCKET fd, struct listener_ctx *lsn) {
+// 不带 fd:该 listener 在本 watcher 上的 fd 由 watcher 自己持有,理由见 _uev_remove_lsn
+void _cmd_unlisten(watcher_ctx *watcher, struct listener_ctx *lsn) {
     cmd_ctx cmd = { 0 };
     cmd.cmd = CMD_UNLSN;
-    cmd.sk.fd = fd;
     cmd.args.lsn = lsn;
     _send_cmd(watcher, &cmd);
 }
 void _on_cmd_unlsn(watcher_ctx *watcher, cmd_ctx *cmd) {
-    _uev_remove_lsn(watcher, cmd->sk.fd, cmd->args.lsn);
+    _uev_remove_lsn(watcher, cmd->args.lsn);
 }
 void _cmd_lsn_unref(watcher_ctx *watcher, struct listener_ctx *lsn) {
     cmd_ctx cmd = { 0 };
@@ -431,29 +431,26 @@ static int32_t _udp_opt_cb(struct watcher_ctx *watcher, struct sock_ctx *skctx,
     return 1;
 }
 // UDP 多播 4 个公开 API 走同一 cmd 投递路径,差异只在 udp_opt_arg 字段填充
-int32_t ev_udp_join(ev_ctx *ctx, SOCKET fd, uint64_t skid,
-                    const char *group_ip, const char *iface_str) {
+// JOIN 与 LEAVE 除了 op 完全一样，合到一处
+static int32_t _ev_udp_group(ev_ctx *ctx, SOCKET fd, uint64_t skid, udp_opt_type op,
+                             const char *group_ip, const char *iface_str) {
     if (INVALID_SOCK == fd || NULL == group_ip) {
         return ERR_FAILED;
     }
     udp_opt_arg *arg;
     CALLOC(arg, 1, sizeof(udp_opt_arg));
-    arg->op = UDP_OPT_JOIN;
+    arg->op = op;
     safe_fill_str(arg->group_ip, sizeof(arg->group_ip), group_ip);
     safe_fill_str(arg->iface_str, sizeof(arg->iface_str), iface_str);
     return ev_props(ctx, fd, skid, _udp_opt_cb, _free, arg, 0);
 }
+int32_t ev_udp_join(ev_ctx *ctx, SOCKET fd, uint64_t skid,
+                    const char *group_ip, const char *iface_str) {
+    return _ev_udp_group(ctx, fd, skid, UDP_OPT_JOIN, group_ip, iface_str);
+}
 int32_t ev_udp_leave(ev_ctx *ctx, SOCKET fd, uint64_t skid,
                      const char *group_ip, const char *iface_str) {
-    if (INVALID_SOCK == fd || NULL == group_ip) {
-        return ERR_FAILED;
-    }
-    udp_opt_arg *arg;
-    CALLOC(arg, 1, sizeof(udp_opt_arg));
-    arg->op = UDP_OPT_LEAVE;
-    safe_fill_str(arg->group_ip, sizeof(arg->group_ip), group_ip);
-    safe_fill_str(arg->iface_str, sizeof(arg->iface_str), iface_str);
-    return ev_props(ctx, fd, skid, _udp_opt_cb, _free, arg, 0);
+    return _ev_udp_group(ctx, fd, skid, UDP_OPT_LEAVE, group_ip, iface_str);
 }
 int32_t ev_udp_ttl(ev_ctx *ctx, SOCKET fd, uint64_t skid, uint8_t ttl) {
     if (INVALID_SOCK == fd) {
@@ -524,4 +521,55 @@ static int32_t _cmd_ud_context(struct watcher_ctx *watcher, struct sock_ctx *skc
 }
 int32_t ev_ud_context(ev_ctx *ctx, SOCKET fd, uint64_t skid, void *extra) {
     return ev_props(ctx, fd, skid, _cmd_ud_context, NULL, extra, 0);
+}
+void _cmd_drain_free(cmd_ctx *cmd) {
+    sock_ctx *skctx;
+    void *data;
+    switch ((ev_cmds)cmd->cmd) {
+    case CMD_SENDTO:
+        data = cmd->args.sendto.data;
+        FREE(data);
+        break;
+    case CMD_CONN:
+        skctx = cmd->args.conn.skctx;
+        _evpub_sk_free(skctx);
+        break;
+    case CMD_ADD:
+        skctx = cmd->args.skctx;
+        if (SOCK_STREAM == skctx->type) {
+            _evpub_sk_free(skctx);
+        } else {
+#ifdef EV_IOCP
+            _iocp_free_udp(skctx);
+#else
+            _uev_free_udp(skctx);
+#endif
+        }
+        break;
+    case CMD_ADDACP:
+        // 这条的 fd 是刚 accept 出来、还没注册进任何结构的连接，除命令自身外无人持有，必须在此关掉；
+        // 减 ref 配对的是投递前那次 ++ 占位，归零即释放 lsn
+        CLOSE_SOCK(cmd->sk.fd);
+#ifdef EV_IOCP
+        _iocp_try_freelsn(cmd->args.lsn);
+#else
+        _uev_try_freelsn(cmd->args.lsn);
+#endif
+        break;
+    case CMD_PROPS:
+        UD_FREE(cmd->args.props.fcb, cmd->args.props.data);
+        break;
+#ifndef EV_IOCP
+    case CMD_UNLSN:
+    case CMD_LSN_UNREF:
+        _uev_try_freelsn(cmd->args.lsn);
+        break;
+    case CMD_LSN:
+        // skctx 指向 lsn->lsnsock[i]，归 listener 所有；lsn 本身随后由 _uev_free_alllsn 释放
+        break;
+#endif
+    case CMD_STOP:
+    case CMD_TOTAL:
+        break;
+    }
 }

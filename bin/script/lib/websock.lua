@@ -302,6 +302,9 @@ end
 ---@param client integer 1=客户端，0=服务端
 ---@param func fun(...):(string|lightuserdata|nil, integer?) 取数据回调；返回 nil 或空块终止；
 ---lightuserdata 必须同时给出 size，返回其他类型或缺 size 记 ERROR 并按失败返回（消息已截断）
+---**func 内不得挂起**（不要 syn_send / sleep / 等任何消息）：分片是一整条消息，两帧之间让出
+---控制权，别的协程往同一 fd 上发的帧就插进这条消息中间，对端按 RFC 6455 §5.4 会直接断连。
+---这里没有连接级锁可加——本函数只拿到 fd/skid，不像 pgsql copy_in 那样手里有 ctx 的 serial
 ---@param ... any 传给 func 的额外参数
 ---@return boolean ok 是否成功（包括所有帧和终止帧的发送）；func 违约时为 false
 function wbsk.text_continua(fd, skid, client, func, ...)
@@ -314,6 +317,9 @@ end
 ---@param client integer 1=客户端，0=服务端
 ---@param func fun(...):(string|lightuserdata|nil, integer?) 取数据回调；返回 nil 或空块终止；
 ---lightuserdata 必须同时给出 size，返回其他类型或缺 size 记 ERROR 并按失败返回（消息已截断）
+---**func 内不得挂起**（不要 syn_send / sleep / 等任何消息）：分片是一整条消息，两帧之间让出
+---控制权，别的协程往同一 fd 上发的帧就插进这条消息中间，对端按 RFC 6455 §5.4 会直接断连。
+---这里没有连接级锁可加——本函数只拿到 fd/skid，不像 pgsql copy_in 那样手里有 ctx 的 serial
 ---@param ... any 传给 func 的额外参数
 ---@return boolean ok 是否成功（包括所有帧和终止帧的发送）；func 违约时为 false
 function wbsk.binary_continua(fd, skid, client, func, ...)

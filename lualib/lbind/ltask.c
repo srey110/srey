@@ -444,7 +444,9 @@ static void _ltask_run(task_dispatch_arg *arg) {
 /// </summary>
 /// <param name="file" type="string">脚本文件名（不含 .lua 后缀，支持 a.b 形式映射到目录）</param>
 /// <param name="name" type="string?">字符串 task 名；nil 或空串=匿名（仅有句柄）</param>
-/// <param name="quecap" type="integer">消息队列容量；0 用默认 ONEK</param>
+/// <param name="quecap" type="integer">消息队列容量；0 用默认 ONEK。
+/// 取值须在 [0, UINT32_MAX]，越界直接报错而不是截断——截断的话 0x100000000 会变成 0、
+/// 再被 fsqu_init 悄悄换成默认 1K，调用方从返回值看不出自己要的容量根本没生效</param>
 /// <param name="..." type="any">传给脚本的可变参数（nil/bool/number/string）</param>
 /// <returns type="lightuserdata?">task 指针；失败返回 nil</returns>
 static int32_t _ltask_register(lua_State *lua) {
@@ -454,7 +456,10 @@ static int32_t _ltask_register(lua_State *lua) {
     if (cap_arg < 0) {
         return luaL_argerror(lua, 3, "quecap must be non-negative");
     }
-    size_t quecap = (size_t)cap_arg;
+    if (cap_arg > UINT32_MAX) {
+        return luaL_argerror(lua, 3, "quecap exceeds UINT32_MAX");
+    }
+    uint32_t quecap = (uint32_t)cap_arg;
     int32_t arg_top = lua_gettop(lua);
     ltask_ctx *ltask;
     CALLOC(ltask, 1, sizeof(ltask_ctx));

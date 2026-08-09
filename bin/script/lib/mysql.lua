@@ -7,10 +7,12 @@ local srey  = require("lib.srey")
 local stmt  = require("lib.mysql_stmt")
 local mysql = require("mysql")
 local reader = require("mysql.reader")
+local pub   = require("lib.conn_pub")-- connect / ping / quit 的共用骨架
 local MYSQL_PACK_TYPE = MYSQL_PACK_TYPE
 
 -- mysql_ctx：MySQL 连接上下文，每实例对应一条持久连接。
-local ctx = class("mysql_ctx")
+-- 建链、保活、断开三段继承自 conn_pub，本文件只实现 _connect / _ping / _doquit 三个钩子。
+local ctx = class("mysql_ctx", pub)
 
 ---构造函数
 ---@param ip string 服务器 IP
@@ -31,31 +33,12 @@ function ctx:ctor(ip, port, sslname, user, password, database, charset, maxpk)
         error(string.format("mysql.new failed: %s:%d db=%s", ip, port, tostring(database)), 2)
     end
     self.sslname = sslname
-    -- 连接代次：每次 connect 成功后 +1，prepare 出来的 stmt 持有创建时的代次，
-    -- execute 前比对，重连后旧 statement_id 已被服务端清理时返 false 明确提示重新 prepare
-    self.generation = 0
-    -- 命令串行化执行器：多协程共用一条连接时按 FIFO 排队。MySQL 半双工，一条命令的响应
-    -- 没收完就发下一条会串包，而 mysql_ctx 的解析状态又是每连接一份，交错即互相覆盖。
-    -- 建在 ctor 而非 connect：connect 会被 ping 的重连路径重入，建在那儿会在重连时
-    -- 换掉执行器，把排队者连同锁一起丢掉
-    self.serial = srey.serial()
+    -- MySQL 半双工，一条命令的响应没收完就发下一条会串包，而 mysql_ctx 的解析状态
+    -- 又是每连接一份，交错即互相覆盖——串行化执行器由 conn_pub 建
+    pub.init(self, self.mysql)
 end
 
----建立 TCP 连接并完成 MySQL 握手（Handshake/AuthResponse）；成功后 skid 设为会话键
----@return boolean ok 握手成功 true，失败 false。多协程并发调用时按 FIFO 串行，
----排在后面那个若发现连接已被前一个重建好（代次已变）直接返 true，不再白拆一次
-function ctx:connect()
-    -- 排队前记下代次：等锁期间别人可能已经把连接重建好了，那就不必再拆一次重连
-    -- （每次 _connect 成功都会让 generation 递增）
-    local gen = self.generation
-    return srey.serial_ret(false, self.serial(self._doconnect, self, gen))
-end
-function ctx:_doconnect(gen)
-    if gen ~= self.generation then
-        return true
-    end
-    return self:_connect()
-end
+-- conn_pub 的建链钩子：TCP 连接 + MySQL 握手（Handshake/AuthResponse），成功后 skid 设为会话键
 function ctx:_connect()
     if not self.mysql:try_connect() then
         return false
@@ -65,9 +48,6 @@ function ctx:_connect()
         return false
     end
     local ok,_,_ = srey.wait_handshaked(fd, skid)
-    if ok then
-        self.generation = self.generation + 1
-    end
     return ok
 end
 
@@ -90,30 +70,13 @@ function ctx:_selectdb(database)
     return MYSQL_PACK_TYPE.MPACK_OK == mysql.pack_type(mpack)
 end
 
----内部 ping（COM_PING），不自动重连
----@return boolean ok 服务端响应即 true（仅供 ping() 内部调用，不要直接调用；调用方须已持锁）
+-- conn_pub 的探活钩子：COM_PING，不自动重连
 function ctx:_ping()
     local pack, size = self.mysql:pack_ping()
     local fd, skid = self.mysql:sock_id()
     local mpack, _ =  srey.syn_send(fd, skid, pack, size, 0)
     if not mpack then
         return false
-    end
-    return true
-end
-
----连接保活：ping 失败时自动重连，建议在执行查询前调用
----@return boolean ok 连接可用 true；ping 失败时在锁内重连，重连也失败返 false
-function ctx:ping()
-    return srey.serial_ret(false, self.serial(self._pingreconn, self))
-end
--- 重连整段也在锁内：连接正在重建时别人不该往上发命令，而 fd/skid 换掉之后
--- 排队者醒来拿到的自然是新连接
-function ctx:_pingreconn()
-    if not self:_ping() then
-        local fd, skid = self.mysql:sock_id()
-        srey.sync_close(fd, skid, 1)
-        return self:connect()
     end
     return true
 end
@@ -182,6 +145,8 @@ function ctx:_query(sql, mbind)
 end
 
 ---准备预处理语句（COM_STMT_PREPARE）
+---用完须调 stmt:close() 释放服务端句柄：GC 只做本地释放，不发 COM_STMT_CLOSE，
+---长连接上每请求 prepare 一次会逐步撞满 max_prepared_stmt_count（默认 16382）
 ---@param sql string 含 ? 占位符的 SQL 语句
 ---@return any|false stmt mysql_stmt_ctx 实例；失败返回 false
 function ctx:prepare(sql)
@@ -207,12 +172,7 @@ function ctx:_prepare(sql)
     return stmt.new(self, mpack)
 end
 
----发送 COM_QUIT 并关闭连接
-function ctx:quit()
-    self.serial(self._doquit, self)
-end
--- 走锁:COM_QUIT 虽不等响应,但插进别人正在进行的交换会串包,随后的 sync_close 更会
--- 把对方半途的等待直接打断——一次首结果集已完整到达的查询会因此报失败
+-- conn_pub 的断开钩子：COM_QUIT 不等响应，发完直接关
 function ctx:_doquit()
     local fd, skid = self.mysql:sock_id()
     if INVALID_SOCK == fd then

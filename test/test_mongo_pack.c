@@ -188,6 +188,51 @@ static void test_mongo_pack_insert(CuTest *tc) {
     BSON_FREE(&doc);
 }
 
+// mongo_pack_check_flag 读的是包里那份 flagBits，不是连接上的 mongo->flags。
+// 组包在锁外做、发送前的加锁又会挂起，期间公开的 set_flag / clear_flag 一改，
+// 包里写的和"要不要等回包"的判定就对不上：置位方向让回包没人接、被下一条命令的等待者
+// 取走（此后整条连接错开一位），清位方向则去等一个永远不来的回包。
+// 两个方向各验一次：组完包再改连接标志，判定必须纹丝不动
+static void test_mongo_pack_check_flag(CuTest *tc) {
+    mongo_ctx mongo;
+    _mongo_test_init(&mongo);
+
+    bson_ctx doc;
+    bson_init(&doc, NULL, 0);
+    bson_append_document_begain(&doc, "0");
+    bson_append_utf8(&doc, "name", "tom");
+    bson_append_end(&doc);
+    bson_append_end(&doc);
+
+    // 置位 → 组包：包里写着 MORETOCOME
+    mongo_set_flag(&mongo, MORETOCOME);
+    size_t size = 0;
+    void *pack = mongo_pack_insert(&mongo, doc.doc.data, doc.doc.offset, NULL, 0, &size);
+    _assert_msg_head(tc, pack, size);
+    CuAssertIntEquals(tc, MORETOCOME, _read_le32((char *)pack, _MSG_OFF_FLAGS));
+    CuAssertTrue(tc, 0 != mongo_pack_check_flag(pack, MORETOCOME));
+    // 别的协程在这条包还没发出去时清了标志，包不受影响
+    mongo_clear_flag(&mongo);
+    CuAssertIntEquals(tc, 0, mongo_check_flag(&mongo, MORETOCOME));
+    CuAssertTrue(tc, 0 != mongo_pack_check_flag(pack, MORETOCOME));
+    FREE(pack);
+
+    // 未置位 → 组包：包里没有标志，之后别人置位也不能把它变成"只发不等"
+    size = 0;
+    pack = mongo_pack_insert(&mongo, doc.doc.data, doc.doc.offset, NULL, 0, &size);
+    _assert_msg_head(tc, pack, size);
+    CuAssertIntEquals(tc, 0, _read_le32((char *)pack, _MSG_OFF_FLAGS));
+    mongo_set_flag(&mongo, MORETOCOME);
+    CuAssertTrue(tc, 0 != mongo_check_flag(&mongo, MORETOCOME));
+    CuAssertIntEquals(tc, 0, mongo_pack_check_flag(pack, MORETOCOME));
+    FREE(pack);
+
+    // NULL 直接返回 0，不落到 binary_init 的内部托管分支去 MALLOC
+    CuAssertIntEquals(tc, 0, mongo_pack_check_flag(NULL, MORETOCOME));
+
+    BSON_FREE(&doc);
+}
+
 // options 达 MAX_PACK_SIZE 时 bson_cat 整篇丢弃，MONGO_PACK_CAT 令整条命令作废：
 // 必须返回 NULL 且把 *size 置 0——旧行为是照常发出缺 options 的命令，服务端返回错误结果集。
 // *size 置 0 尤其关键：调用方(coro_utils / lmongo)的 lens/size 是未初始化栈变量
@@ -907,6 +952,7 @@ void test_mongo_pack(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mongo_pack_hello);
     SUITE_ADD_TEST(suite, test_mongo_pack_drop);
     SUITE_ADD_TEST(suite, test_mongo_pack_insert);
+    SUITE_ADD_TEST(suite, test_mongo_pack_check_flag);
     SUITE_ADD_TEST(suite, test_mongo_pack_oversize_options);
     SUITE_ADD_TEST(suite, test_mongo_pack_update_delete_bulk);
     SUITE_ADD_TEST(suite, test_mongo_pack_find);

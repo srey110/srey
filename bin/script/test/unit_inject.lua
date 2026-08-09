@@ -28,6 +28,58 @@ runner.run("inject", function(t)
         t:eq("table", out and out[1], "_U 始终是 table")
     end
 
+    -- ── 子段 3b:_U 的限定名 / 短名唯一性 / _ENV 排除 ────────────────
+    do
+        -- _ENV 挂在几乎每个函数上，收进来就是一条等同 _G 的噪声条目，且会被反复覆盖
+        local ok, out = inject("print(_U._ENV == nil)")
+        t:eq(true, ok, "inject 查 _U._ENV ok")
+        t:eq("true", out and out[1], "_ENV 不进 _U")
+        -- 每个表恒有 "名字@文件" 限定名：短名撞车时它是唯一能说清是谁的键
+        ok, out = inject([[
+            local n = 0
+            for k in pairs(_U) do
+                if string.find(k, "@", 1, true) then n = n + 1 end
+            end
+            print(n > 0)
+        ]])
+        t:eq(true, ok, "inject 数限定名 ok")
+        t:eq("true", out and out[1], "_U 里存在限定名键")
+        -- 自洽：_UDUP 里的名字短名必须已被撤掉，反之短名还在的就不该出现在 _UDUP
+        ok, out = inject([[
+            local bad = 0
+            for _, name in ipairs(_UDUP) do
+                if nil ~= _U[name] then bad = bad + 1 end
+            end
+            print(bad, #_UDUP)
+        ]])
+        t:eq(true, ok, "inject 查 _UDUP ok")
+        t:check(out and out[1] and string.find(out[1], "^0\t"),
+                "重名的短名已撤掉(_UDUP 与 _U 自洽): " .. tostring(out and out[1]))
+        -- 同一文件里多个同名 local(各自 do 块)：限定名也分辨不开，须逐个缀 #2/#3，一个都不能丢。
+        -- 临时换掉 message_dispatch 造一棵受控的闭包树；inject 内部是纯计算不 yield，
+        -- 单线程协作式下这中间不会有消息进来撞见假的分发函数
+        local saved_dispatch = message_dispatch
+        message_dispatch = assert(load([[
+            local a, b, c
+            do local waiters = {1}; a = function() return waiters end end
+            do local waiters = {2}; b = function() return waiters end end
+            do local waiters = {3}; c = function() return waiters end end
+            local only = {9}
+            local function d() return only end
+            return function() return a(), b(), c(), d() end
+        ]], "=inject_dup_mod"))()
+        ok, out = inject([[
+            print(_U["waiters@inject_dup_mod"][1],
+                  _U["waiters@inject_dup_mod#2"][1],
+                  _U["waiters@inject_dup_mod#3"][1],
+                  tostring(_U.waiters), _U["only@inject_dup_mod"][1], _U.only[1])
+        ]])
+        message_dispatch = saved_dispatch
+        t:eq(true, ok, "inject 查同名限定名 ok")
+        t:eq("1\t2\t3\tnil\t9\t9", out and out[1],
+             "同名表逐个可达(#2/#3)、短名已撤、唯一名两种键都在")
+    end
+
     -- ── 子段 4:_G 读透传(env __index = _G) ────────────────────────
     do
         local ok, out = inject("print(type(string))")

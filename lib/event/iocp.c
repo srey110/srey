@@ -5,7 +5,7 @@
 
 #ifdef EV_IOCP
 
-#define IOCP_STOP_DRAIN_TIMEOUT  3000  // 停止排空整体截止(ms);超时说明有 socket close 后未从 map 摘除(bug)
+#define IOCP_STOP_DRAIN_TIMEOUT 3000// 停止排空整体截止(ms);超时说明有 socket close 后未从 map 摘除(bug)
 exfuncs_ctx _exfuncs;// 全局扩展函数指针（AcceptEx/ConnectEx）
 static atomic_t _init_once = 0;// 保证扩展函数只初始化一次
 static void(*cmd_cbs[CMD_TOTAL])(watcher_ctx *watcher, cmd_ctx *cmd);// 命令回调函数表
@@ -319,39 +319,9 @@ void ev_init(ev_ctx *ctx, uint32_t nthreads, const thread_hooks *hooks) {
 // 释放watcher的命令通道（排空队列中未处理的命令，释放内存，关闭socket对）
 static void _iocp_free_cmd(watcher_ctx *watcher) {
     cmd_ctx cmd_local;
-    void *data;
-    sock_ctx *skctx;
     overlap_cmd_ctx *olcmd = &watcher->cmd;
     while (ERR_OK == fsqu_pop_sc(&olcmd->qu, &cmd_local)) {
-        switch (cmd_local.cmd) {
-        case CMD_SENDTO:
-            data = cmd_local.args.sendto.data;
-            FREE(data);
-            break;
-        case CMD_CONN:
-            skctx = cmd_local.args.conn.skctx;
-            _evpub_sk_free(skctx);
-            break;
-        case CMD_ADD:
-            skctx = cmd_local.args.skctx;
-            if (SOCK_STREAM == skctx->type) {
-                _evpub_sk_free(skctx);
-            } else {
-                _iocp_free_udp(skctx);
-            }
-            break;
-        case CMD_ADDACP:
-            // fd 是 accept 到的连接，未能加入事件循环；同时配对 _on_accept_cb
-            // path 3 投递前 ref++ 占位的减法，ref 归零时释放 lsn
-            CLOSE_SOCK(cmd_local.sk.fd);
-            _iocp_try_freelsn(cmd_local.args.lsn);
-            break;
-        case CMD_PROPS:
-            UD_FREE(cmd_local.args.props.fcb, cmd_local.args.props.data);
-            break;
-        default:
-            break;
-        }
+        _cmd_drain_free(&cmd_local);
     }
     CLOSE_SOCK(olcmd->ol_r.fd);
     CLOSE_SOCK(olcmd->fd);
@@ -373,7 +343,7 @@ static void _iocp_stop_acpex_thread(ev_ctx *ctx) {
 }
 static void _iocp_free_watcher(ev_ctx *ctx) {
     uint32_t i;
-    cmd_ctx cmd;
+    cmd_ctx cmd = { 0 };
     cmd.cmd = CMD_STOP;
     watcher_ctx *watcher;
     for (i = 0; i < ctx->nthreads; i++) {

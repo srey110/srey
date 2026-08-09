@@ -5,10 +5,12 @@
 
 local srey = require("lib.srey")
 local smtp = require("srey.smtp")
+local pub  = require("lib.conn_pub")-- connect / ping / quit 的共用骨架
 
 -- smtp_ctx：SMTP 连接上下文。
 -- 每个实例对应一条到 SMTP 服务器的持久连接。
-local ctx = class("smtp_ctx")
+-- 建链、保活、断开三段继承自 conn_pub，本文件只实现 _connect / _ping / _doquit 三个钩子。
+local ctx = class("smtp_ctx", pub)
 
 ---构造函数
 ---@param ip string 服务器 IP
@@ -23,28 +25,13 @@ function ctx:ctor(ip, port, sslname, user, password)
     end
     self.smtp = smtp.new(ip, port, ssl, user, password)
     self.sslname = sslname
-    -- 命令串行化执行器：多协程共用一条连接时按 FIFO 排队。一封邮件是
-    -- MAIL FROM → N×RCPT TO → DATA → 正文 → RSET 一长串往返，两个协程同时发信
-    -- 会把收件人混到一起。建在 ctor 而非 connect，理由同 mysql/pgsql
-    self.serial = srey.serial()
-    -- 连接代次：每次握手成功 +1。connect() 排队期间别人可能已经把连接重建好了，
-    -- 靠它短路掉第二次白拆重连（与 mysql/pgsql/mongo 同一形状）
-    self.generation = 0
+    -- 一封邮件是 MAIL FROM → N×RCPT TO → DATA → 正文 → RSET 一长串往返，两个协程
+    -- 同时发信会把收件人混到一起——串行化执行器由 conn_pub 建
+    pub.init(self, self.smtp)
 end
 
----建立 TCP 连接并完成 SMTP 握手（等待 220 欢迎行及 AUTH 协商）
----@return boolean ok 握手成功 true，失败 false
-function ctx:connect()
-    -- 整段在锁内：try_connect 会无条件覆写 sk.fd/skid，别人正在这条连接上发信的话
-    -- 那个 socket 就被孤立了；握手期间连接也还不能收普通命令。
-    -- 排队前记下代次，等锁期间别人已重建好就直接返回
-    local gen = self.generation
-    return srey.serial_ret(false, self.serial(self._doconnect, self, gen))
-end
-function ctx:_doconnect(gen)
-    if gen ~= self.generation then
-        return true
-    end
+-- conn_pub 的建链钩子：TCP 连接 + SMTP 握手（等待 220 欢迎行及 AUTH 协商）
+function ctx:_connect()
     if not self.smtp:try_connect() then
         return false
     end
@@ -55,9 +42,6 @@ function ctx:_doconnect(gen)
     local ok, err, elens = srey.wait_handshaked(fd, skid)
     if not ok and err then
         WARN("%s", srey.ud_str(err, elens))
-    end
-    if ok then
-        self.generation = self.generation + 1
     end
     return ok
 end
@@ -79,8 +63,7 @@ function ctx:_reset()
     return self.smtp:check_ok(pack)
 end
 
----发送 NOOP 探测连接是否存活（内部使用）
----@return boolean ok 服务端返回 2xx 时 true
+-- conn_pub 的探活钩子：NOOP，服务端返回 2xx 即存活
 function ctx:_ping()
     local fd, skid = self.smtp:sock_id()
     local cmd, csize = self.smtp:pack_ping()
@@ -89,21 +72,6 @@ function ctx:_ping()
         return false
     end
     return self.smtp:check_ok(pack)
-end
-
----连接保活检测：NOOP 失败时自动重连，建议在每次发送邮件前调用
----@return boolean ok 连接可用 true，否则 false
-function ctx:ping()
-    return srey.serial_ret(false, self.serial(self._pingreconn, self))
-end
--- 重连整段也在锁内：连接正在重建时别人不该往上发命令
-function ctx:_pingreconn()
-    if not self:_ping() then
-        local fd, skid = self.smtp:sock_id()
-        srey.sync_close(fd, skid, 1)
-        return self:connect()
-    end
-    return true
 end
 
 ---内部邮件发送流程（不含 reset）：MAIL FROM → RCPT TO × N → DATA(354) → MIME 正文；任一步失败即返回
@@ -169,11 +137,7 @@ function ctx:_quit(fd, skid)
     srey.syn_send(fd, skid, cmd, csize, 0)
 end
 
----优雅关闭：先发 QUIT 等待服务端确认，再关闭 TCP 连接
-function ctx:quit()
-    self.serial(self._doquit, self)
-end
--- QUIT 要等服务端 221，插在别人的邮件流中间会把响应对错位，故也走锁
+-- conn_pub 的断开钩子：QUIT 要等服务端 221，等完再关 TCP
 function ctx:_doquit()
     local fd, skid = self.smtp:sock_id()
     if INVALID_SOCK == fd then

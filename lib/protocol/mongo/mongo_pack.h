@@ -5,6 +5,17 @@
 //https://www.mongodb.com/zh-cn/docs/manual/reference/command/
 
 /// <summary>
+/// 读回已组好的数据包里写着的消息标志位。
+/// "要不要等回包"必须问这个而不是 mongo_check_flag：后者读的 mongo->flags 是连接级可变字段，
+/// 而组包与真正发送之间隔着一次会挂起的加锁，那期间公开的 set_flag / clear_flag 一改，
+/// 包里写的和判定读的就成了两回事——置位方向会让回包没人接、被下一条命令的等待者取走，
+/// 此后整条连接的请求与响应永久错开一位；清位方向则去等一个永远不来的回包。
+/// </summary>
+/// <param name="pack">mongo_pack_* 组出的数据包；NULL 返回 0</param>
+/// <param name="flag">mongo_flags 标志位</param>
+/// <returns>非零表示该包写着此标志位</returns>
+int32_t mongo_pack_check_flag(void *pack, mongo_flags flag);
+/// <summary>
 /// 构造 SCRAM 认证第一步（saslStart）请求包
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>

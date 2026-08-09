@@ -4,12 +4,11 @@
 #include "protocol/mysql/mysql_bind.h"
 
 /// <summary>
-/// 构造 COM_QUIT 请求包（断开连接）
+/// 构造 COM_QUIT 请求包（断开连接）。
 /// </summary>
-/// <param name="mysql">mysql_ctx</param>
 /// <param name="size">输出包大小（字节）</param>
 /// <returns>请求包数据，调用方负责释放</returns>
-void *mysql_pack_quit(mysql_ctx *mysql, size_t *size);
+void *mysql_pack_quit(size_t *size);
 /// <summary>
 /// 构造 COM_INIT_DB 请求包（切换数据库）
 /// </summary>

@@ -21,7 +21,10 @@ local tinsert          = table.insert
 local coroutine_create = coroutine.create
 local coroutine_yield  = coroutine.yield
 local coroutine_resume = coroutine.resume
-local coroutine_isyieldable = coroutine.isyieldable
+-- 判"是否在框架协程里"一律比 coroutine.running() 与 coro_running，不用 coroutine.isyieldable()：
+-- 业务在框架协程内再套一个裸 coroutine.create/wrap 时 isyieldable 照样为真，而 coro_running
+-- 仍指着外层那个——据此把"自己"登记进等待队列，登记的就是外层协程，醒来 resume 的也是它
+local coroutine_running = coroutine.running
 local message_may_keep = core.message_may_keep
 local cur_task  = _curtask   -- 当前 task 的 C 层指针，由 loader 注入
 local TASK_NAME = TASK_NAME
@@ -241,8 +244,8 @@ function srey.fork_wait(funcs)
     if 0 == n then
         return {}
     end
-    if not coroutine_isyieldable() then
-        error("srey.fork_wait must be called from within a coroutine", 2)
+    if coroutine_running() ~= coro_running then
+        error("srey.fork_wait must be called from within a srey coroutine", 2)
     end
     local barrier = {
         results = {},
@@ -314,8 +317,8 @@ function srey.serial()
         return ...
     end
     return function(f, ...)
-        if not coroutine_isyieldable() then
-            error("srey.serial executor must be called from within a coroutine", 2)
+        if coroutine_running() ~= coro_running then
+            error("srey.serial executor must be called from within a srey coroutine", 2)
         end
         local self = coro_running
         if current and current ~= self then
@@ -599,7 +602,9 @@ local function _coro_sess_del_empty(sess)
 end
 
 ---统一唤醒尾部：找到匹配等待者则唤醒；否则 warn 为 true 时先告警（未找到即逻辑异常，与是否调用 func 无关），
----再调用 func(...)（如果注册了）；sess==0 的入口判断由各 dispatch 函数自行处理，不在此函数内
+---再调用 func(...)（如果注册了）。
+---sess==0 不必由调用方另判：sess 只可能来自 srey.id() 或 skid，两者都出自 C 的 createid，
+---而 createid 的低位计数从 1 起、恒非 0，coro_sess[0] 永远不存在，落到这里必走 miss 分支
 ---@param msg Message
 ---@param mtype integer 期望匹配的消息类型
 ---@param warn boolean 找不到等待者时是否告警
@@ -618,12 +623,18 @@ local function _dispatch_wait(msg, mtype, warn, func, ...)
     end
 end
 
----挂起当前协程，等待指定会话的消息
+---挂起当前协程，等待指定会话的消息。
+---不在框架协程里调用直接抛出：否则会拿 coro_running（此刻是上一个跑过的、多半已归还池的协程）
+---去登记 coro_sess，随后 coroutine_yield 才抛，而 nyield/nwait 的自减再也执行不到——
+---nwait 从此恒大于 0，1 秒超时扫描每次都白扫一遍全表；等那个 sess 的消息到了还会按错协程 resume
 ---@param sess integer 会话 id
 ---@param mtype integer 期望唤醒的消息类型
 ---@param ms integer 超时毫秒数；0 表示永不超时
 ---@return Message msg 触发 resume 的消息表
 function srey._coro_wait(sess, mtype, ms)
+    if coroutine_running() ~= coro_running then
+        error("srey._coro_wait must be called from within a srey coroutine", 2)
+    end
     _set_coro_sess(coro_running, sess, mtype, ms)
     nyield = nyield + 1
     nwait = nwait + 1
@@ -984,14 +995,8 @@ end
 
 ---@param msg Message
 local function _net_connect_dispatch(msg)
-    local func = func_cbs[MSG_TYPE.CONNECT]
-    if 0 == msg.sess then
-        if func then
-            _coro_run(_coro_cb, func, nil, msg.subtype, msg.fd, msg.skid, msg.erro)
-        end
-        return
-    end
-    _dispatch_wait(msg, MSG_TYPE.CONNECT, false, func, msg.subtype, msg.fd, msg.skid, msg.erro)
+    _dispatch_wait(msg, MSG_TYPE.CONNECT, false, func_cbs[MSG_TYPE.CONNECT],
+                   msg.subtype, msg.fd, msg.skid, msg.erro)
 end
 
 ---注册 TLS 握手完成回调；仅在没有协程等待该事件时触发
@@ -1054,14 +1059,8 @@ end
 
 ---@param msg Message
 local function _net_ssl_exchanged_dispatch(msg)
-    local func = func_cbs[MSG_TYPE.SSLEXCHANGED]
-    if 0 == msg.sess then
-        if func then
-            _coro_run(_coro_cb, func, nil, msg.subtype, msg.fd, msg.skid, msg.client)
-        end
-        return
-    end
-    _dispatch_wait(msg, MSG_TYPE.SSLEXCHANGED, false, func, msg.subtype, msg.fd, msg.skid, msg.client)
+    _dispatch_wait(msg, MSG_TYPE.SSLEXCHANGED, false, func_cbs[MSG_TYPE.SSLEXCHANGED],
+                   msg.subtype, msg.fd, msg.skid, msg.client)
 end
 
 ---注册应用层握手完成回调；适用于 MySQL 认证 / SMTP 欢迎行 / WebSocket Upgrade 等协议
@@ -1095,14 +1094,8 @@ end
 
 ---@param msg Message
 local function _net_handshaked_dispatch(msg)
-    local func = func_cbs[MSG_TYPE.HANDSHAKED]
-    if 0 == msg.sess then
-        if func then
-            _coro_run(_coro_cb, func, msg, msg.subtype, msg.fd, msg.skid, msg.client, msg.erro, msg.data, msg.size)
-        end
-        return
-    end
-    _dispatch_wait(msg, MSG_TYPE.HANDSHAKED, false, func, msg.subtype, msg.fd, msg.skid, msg.client, msg.erro, msg.data, msg.size)
+    _dispatch_wait(msg, MSG_TYPE.HANDSHAKED, false, func_cbs[MSG_TYPE.HANDSHAKED],
+                   msg.subtype, msg.fd, msg.skid, msg.client, msg.erro, msg.data, msg.size)
 end
 
 ---注册数据接收回调；仅在没有协程通过 syn_send 等待该 socket 时触发
@@ -1432,20 +1425,20 @@ end
 
 ---@param msg Message
 local function _net_recvfrom_dispatch(msg)
-    local func = func_cbs[MSG_TYPE.RECVFROM]
-    if 0 == msg.sess then
-        if func then
-            _coro_run(_coro_cb, func, msg, msg.subtype, msg.fd, msg.skid, msg.ip, msg.port, msg.udata, msg.size)
-        end
-        return
-    end
-    -- UDP 本身不保证顺序与送达，找不到等待者（迟到/孤儿包）是正常场景，不告警
-    _dispatch_wait(msg, MSG_TYPE.RECVFROM, false, func, msg.subtype, msg.fd, msg.skid, msg.ip, msg.port, msg.udata, msg.size)
+    -- UDP 本身不保证顺序与送达，找不到等待者（迟到/孤儿包）是正常场景，故 warn 传 false
+    _dispatch_wait(msg, MSG_TYPE.RECVFROM, false, func_cbs[MSG_TYPE.RECVFROM],
+                   msg.subtype, msg.fd, msg.skid, msg.ip, msg.port, msg.udata, msg.size)
 end
 
 ---定时扫描所有挂起的协程，将已超时者强制 resume（携带 TIMEOUT 消息）；每 1 秒触发一次，
----通过 srey.timeout 自我调度形成循环；扫描主体用 xpcall 包裹保证循环不被异常中断
+---通过 srey.timeout 自我调度形成循环；扫描主体用 xpcall 包裹保证循环不被异常中断。
+---续下一拍必须排在最前：本函数以 func 模式经 _coro_cb 的 xpcall 跑，抛出只记一条 ERROR 日志，
+---而全仓另一处挂表点只在启动时跑一次。放在末尾的话，扫描体或 _coro_pool_shrink 抛一次
+---(task.trap 的字节码钩子可以在任意指令处抛)，这条 1 秒链就此永久断掉，再没有补挂路径：
+---此后每个丢了唤醒消息的 syn_send / request 都永久挂起，而它们停在 task_incref 与
+---task_ungrab 之间，task 引用回不到 0，task_close 的等待循环也就永远出不来
 local function _coro_timeout()
+    srey.timeout(1 * 1000, _coro_timeout)
     local self = coro_running
     srey.xpcall(function()
         -- 用 nwait 不用 nyield：只有 _coro_wait 挂起的协程才在 coro_sess 里，
@@ -1500,7 +1493,6 @@ local function _coro_timeout()
         end
     end)
     _coro_pool_shrink()
-    srey.timeout(1 * 1000, _coro_timeout)
 end
 ---消息表：全部字段只读。带载荷的消息（RECV/RECVFROM/HANDSHAKED/REQUEST/RESPONSE）挂了 __gc，
 ---回收时按 mtype 选释放函数、按 data/shared 取指针——改写它们等于换掉 C 侧的释放契约：
@@ -1545,12 +1537,16 @@ local _dispatchers = {
     [MSG_TYPE.RESPONSE] = _response_dispatch,
 }
 
----全局消息分发入口，由 C 层 loader 在每条消息到达时调用；按 msg.mtype 查表路由到对应内部分发函数
+---全局消息分发入口，由 C 层 loader 在每条消息到达时调用；按 msg.mtype 查表路由到对应内部分发函数。
+---dispatcher 包 xpcall 是为了让下面两个 drain 无条件跑到：分发过程中可能已有协程走完
+---srey.serial 的 _release，此时 current/ref 已写死、后继者只是排进 serial_wakes 等着被起跑，
+---抛出跳过 drain 就把锁留给一个没在跑的协程。抛出点确实存在——_request_dispatch 里有惰性 require，
+---模块或其依赖加载失败即抛，而它跑在协程外，没有 _coro_cb 的 xpcall 兜着
 ---@param msg Message 由 C 层 _ltask_pack_msg 打包的消息表
 function message_dispatch(msg)
     local dispatcher = _dispatchers[msg.mtype]
     if dispatcher then
-        dispatcher(msg)
+        srey.xpcall(dispatcher, msg)
     end
     -- 两个队列互相喂：被唤醒的 serial 等待者可能 srey.fork，新起的协程也可能进 serial 排队并
     -- 触发交接，故循环到两者都空为止

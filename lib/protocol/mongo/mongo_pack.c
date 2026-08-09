@@ -4,6 +4,8 @@
 #include "utils/binary.h"
 #include "crypt/scram.h"
 
+// OP_MSG 头里 flagBits 的字节偏移：size / reqid / respto / opcode 各占 4 字节，见 _mongo_pack_msg
+#define MSG_FLAGS_OFF 16
 // commitTransaction / abortTransaction 按规范只能发往 admin 库，与连接当前的 $db 无关；
 // 发错库服务端回 code 13 Unauthorized "may only be run against the admin database"
 #define MONGO_TXN_DB "admin"
@@ -81,6 +83,15 @@ static void *_mongo_pack_msg(mongo_ctx *mongo, int32_t kind, const char *docid, 
     binary_set_integer(&bwriter, *size, 4, 1);
     binary_offset(&bwriter, *size);
     return bwriter.data;
+}
+int32_t mongo_pack_check_flag(void *pack, mongo_flags flag) {
+    if (NULL == pack) {
+        return 0;
+    }
+    binary_ctx breader;
+    binary_init(&breader, (char *)pack, MSG_FLAGS_OFF + 4, 0);
+    binary_offset(&breader, MSG_FLAGS_OFF);
+    return BIT_CHECK((int32_t)binary_get_integer(&breader, 4, 1), flag);
 }
 void *mongo_pack_scram_client_first(mongo_ctx *mongo, const char *method, size_t *size) {
     *size = 0;

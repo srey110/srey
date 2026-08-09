@@ -12,8 +12,8 @@
 #include "utils/tda.h"
 #include "utils/pool.h"
 
-#define INVALID_TNAME         0  // 无效任务名（空值）
-#define _NAME_OR(s)           ((s) ? (s) : "?")  // 日志打印任务名；匿名(NULL)回退 "?"
+#define INVALID_TNAME 0// 无效任务名（空值）
+#define _NAME_OR(s) ((s) ? (s) : "?")// 日志打印任务名；匿名(NULL)回退 "?"
 
 typedef enum task_type {
     TASK_NORMAL = 0x00,
@@ -112,6 +112,9 @@ struct loader_ctx {
     rwlock_distr_ctx lckcache; //lua bytecache 锁
 #endif
     monitor_ctx monitor;       // 监控线程上下文
+    // 关闭期等 maptasks 排空。
+    mutex_ctx closing_mutex;   // 与 closing_cond 配对；同时保护"查计数→wait"这一步不丢唤醒
+    cond_ctx closing_cond;     // 最后一个 task 摘除时唤醒 _loader_task_closing
     tw_ctx tw;                 // 时间轮（超时调度）
     ev_ctx netev;              // 网络事件驱动上下文
     pool_ctx msg_pool;        // message_ctx 对象回收池（减少跨线程 malloc/free 开销）

@@ -7,8 +7,10 @@
 local srey = require("lib.srey")
 local mongo = require("mongo")
 local mongo_session = require("mongo.session")
+local pub = require("lib.conn_pub")-- connect / ping / quit 的共用骨架
 -- mongo_ctx：MongoDB 连接上下文，每实例对应一条持久连接。
-local ctx = class("mongo_ctx")
+-- 建链、保活、断开三段继承自 conn_pub，本文件只实现 _connect / _ping / _doquit 三个钩子。
+local ctx = class("mongo_ctx", pub)
 
 -- MongoDB OP_MSG 消息标志位（与 C 层 mongo_flags 枚举对应）。
 -- 仅 MORETOCOME 已被 C 层 mongo_set_flag 实现；CHECKSUM/EXHAUSTALLOWED 保留常量供协议完整性参考，
@@ -22,11 +24,12 @@ ctx.FLAGS = {
 -- fd/skid 必须在锁内才读:排队期间前一个协程可能已经 ping 重连、换掉了这一对,
 -- 锁外读的是退休的那个 skid。往退休 skid 上发,MORETOCOME 路径会被静默丢弃却报成功,
 -- 同步路径则空等满一个 netread 超时。组包不受此影响——集合名/库名在组包时已写进包体,
--- 而"设集合名→组包"之间没有让出点
+-- 而"设集合名→组包"之间没有让出点。
+-- MORETOCOME 问包不问 mgo:check_flag，理由见 C 层 mongo_pack_check_flag
 local function _wdo(mgoctx, pack, size)
     local mgo = mgoctx.mongo
     local fd, skid = mgo:sock_id()
-    if mgo:check_flag(ctx.FLAGS.MORETOCOME) then
+    if mongo.pack_check_flag(pack, ctx.FLAGS.MORETOCOME) then
         return srey.send(fd, skid, pack, size, 0), nil
     end
     local mgopack, _ = srey.syn_send(fd, skid, pack, size, 0)
@@ -196,33 +199,16 @@ function ctx:ctor(ip, port, sslname, db, user, password, authdb, authmod)
             error(string.format("mongo authdb failed: %s too long", tostring(authdb or db)), 2)
         end
     end
-    -- 连接代次：每次 connect 成功 +1，session 持有创建时的代次以感知重连
-    self.generation = 0
-    -- 命令串行化执行器：多协程共用一条连接时按 FIFO 排队。锁点在 _wsend / _rsend 两个漏斗上。
-    -- 建在 ctor 而非 connect：connect 会被 ping 的重连路径重入，建在那儿会在重连时
-    -- 换掉执行器，把排队者连同锁一起丢掉。
-    -- 注意它只保证单条命令原子，不保证事务原子——事务上下文挂在连接上，别人的命令挤在
+    -- 串行化执行器由 conn_pub 建，锁点在 _wsend / _rsend 两个漏斗上。
+    -- 它只保证单条命令原子，不保证事务原子——事务上下文挂在连接上，别人的命令挤在
     -- begin 与 commit 之间时组包侧照样给它附上本事务的 lsid/txnNumber，与 C 侧同一结论：
     -- 要事务隔离请给事务用独占连接
-    self.serial = srey.serial()
+    pub.init(self, self.mongo)
 end
 
----建立 TCP 连接（含可选 SSL 握手）→ 发 hello → 可选 SCRAM 身份验证
----@return boolean ok 连接和认证均成功时 true，失败 false。多协程并发调用时按 FIFO 串行，
----排在后面那个若发现连接已被前一个重建好（代次已变）直接返 true，不再白拆一次
-function ctx:connect()
-    -- 整段在锁内：_connect 里的认证走 srey.send + wait_handshaked 绕开了漏斗，
-    -- 而那期间连接处于 AUTH 态，别人的普通命令挤进来会被当成认证响应解析。
-    -- 排队前记下代次：等锁期间别人可能已经把连接重建好了（每次 _connect 成功都会递增）
-    local gen = self.generation
-    return srey.serial_ret(false, self.serial(self._doconnect, self, gen))
-end
-function ctx:_doconnect(gen)
-    if gen ~= self.generation then
-        return true
-    end
-    return self:_connect()
-end
+-- conn_pub 的建链钩子：TCP 连接（含可选 SSL 握手）→ 发 hello → 可选 SCRAM 身份验证。
+-- 认证走 srey.send + wait_handshaked 绕开了漏斗，而那期间连接处于 AUTH 态，
+-- 别人的普通命令挤进来会被当成认证响应解析——靠 conn_pub 把整段包在锁内
 function ctx:_connect()
     local fd, skid = self.mongo:try_connect()
     if INVALID_SOCK == fd then
@@ -259,8 +245,6 @@ function ctx:_connect()
         self.mongo:set_flag(aflags)
         if not ok then return _fail() end
     end
-    -- 重连成功：递增连接代次，使上一代 session 的 gen 校验失效
-    self.generation = self.generation + 1
     return true
 end
 
@@ -277,22 +261,6 @@ function ctx:_ping()
     return self.mongo:check_error(mgopack) >= 0
 end
 
----连接保活：ping 失败时自动重连，建议在执行操作前调用
----@return boolean ok 连接可用 true；ping 失败时在锁内重连，重连也失败返 false
-function ctx:ping()
-    return srey.serial_ret(false, self.serial(self._pingreconn, self))
-end
--- 重连整段也在锁内：这几步是一笔不可分的重建，别人的命令插在中间会打在半成品连接上。
--- 内层的 _ping 走漏斗、connect 有自己的外层锁，都按 ref 计数嵌套
-function ctx:_pingreconn()
-    if not self:_ping() then
-        local fd, skid = self.mongo:sock_id()
-        srey.sync_close(fd, skid, 1)
-        return self:connect()
-    end
-    return true
-end
-
 ---切换当前数据库
 ---@param name string 数据库名
 ---@return boolean ok 成功 true；库名超 63 字节返 false 且当前库不变
@@ -307,7 +275,11 @@ function ctx:collection(name)
     return self.mongo:collection(name)
 end
 
----设置下一条命令的消息标志位（C 层当前仅实现 MORETOCOME；CHECKSUM/EXHAUSTALLOWED 未实现，设置无效果）
+---置上消息标志位（C 层当前仅实现 MORETOCOME；CHECKSUM/EXHAUSTALLOWED 未实现，设置无效果）。
+---置上就一直有效，直到自己调 clear_flag——不是只管下一条命令：此后每条写命令都只发不等，
+---服务端的失败（重复键、校验不过）因为没有响应可解析而一律报成功；读命令内部会临时清掉再恢复。
+---标志挂在连接上而不是命令上，多协程共用一条连接时别人的写也会跟着变成 fire-and-forget，
+---批量写完请及时清掉
 ---@param flag integer ctx.FLAGS 枚举值
 function ctx:set_flag(flag)
     if ctx.FLAGS.MORETOCOME ~= flag then
@@ -648,11 +620,7 @@ function ctx:startsession()
     return sess_ctx.new(self, session_ud)
 end
 
----关闭连接（MongoDB 无专用断开命令，直接 close socket）
-function ctx:quit()
-    self.serial(self._doquit, self)
-end
--- 走锁:sync_close 会把别人半途的等待直接打断,一次已发出的命令会因此报失败
+-- conn_pub 的断开钩子：MongoDB 无专用断开命令，直接 close socket
 function ctx:_doquit()
     local fd, skid = self.mongo:sock_id()
     srey.sync_close(fd, skid)

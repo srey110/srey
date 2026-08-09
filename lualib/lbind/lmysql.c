@@ -506,7 +506,10 @@ static int32_t _lmysql_stmt_new(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// 关闭预处理语句并释放资源（绑定为 __gc，由 Lua GC 自动调用）
+/// 释放预处理语句的本地资源（绑定为 __gc，由 Lua GC 自动调用）。
+/// 只做本地释放，不发 COM_STMT_CLOSE——Lua 建的连接没有命令串行化执行器，
+/// 发包会插进别的协程正在进行的半双工交换里。服务端那份句柄要么由业务显式
+/// 调 stmt:close() 释放，要么留到连接关闭
 /// </summary>
 /// <param name="self" type="userdata">stmt 对象</param>
 /// <returns>无</returns>
@@ -523,8 +526,9 @@ static int32_t _lmysql_stmt_free(lua_State *lua) {
 /// </summary>
 /// <param name="self" type="userdata">stmt 对象</param>
 /// <param name="bind" type="userdata?">参数绑定上下文；nil 表示无参数</param>
-/// <returns type="lightuserdata?">命令数据指针；语句声明了参数而 bind 为 nil 或参数个数对不上时返回 nil</returns>
-/// <returns type="integer?">数据长度</returns>
+/// <returns type="lightuserdata">命令数据指针；语句声明了参数而 bind 为 nil 或参数个数对不上时
+/// 直接抛出（调用方契约违反，运行期无从降级，判定依据见 lpub_rtn_lud 的说明），不返回 nil</returns>
+/// <returns type="integer">数据长度</returns>
 static int32_t _lmysql_pack_stmt_execute(lua_State *lua) {
     LPUB_UD_ARG(lua, mysql_stmt_ctx, MT_MYSQL_STMT, stmt, "stmt freed");
     mysql_bind_ctx *mbind = NULL;
@@ -551,6 +555,20 @@ static int32_t _lmysql_pack_stmt_reset(lua_State *lua) {
     return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
+/// 打包预处理语句关闭请求（COM_STMT_CLOSE，服务端不回响应）。
+/// 不发这条则服务端那份语句句柄要留到连接关闭才回收，长连接上逐次累积会撞
+/// max_prepared_stmt_count（默认 16382），此后每次 prepare 都失败
+/// </summary>
+/// <param name="self" type="userdata">stmt 对象</param>
+/// <returns type="lightuserdata">命令数据指针</returns>
+/// <returns type="integer">数据长度</returns>
+static int32_t _lmysql_pack_stmt_close(lua_State *lua) {
+    LPUB_UD_ARG(lua, mysql_stmt_ctx, MT_MYSQL_STMT, stmt, "stmt freed");
+    size_t size;
+    void *pack = mysql_pack_stmt_close(*stmt, &size);
+    return lpub_rtn_lud(lua, pack, size);
+}
+/// <summary>
 /// 获取预处理语句所属连接的 fd 和 skid
 /// </summary>
 /// <param name="self" type="userdata">stmt 对象</param>
@@ -571,6 +589,7 @@ LUAMOD_API int luaopen_mysql_stmt(lua_State *lua) {
     luaL_Reg reg_func[] = {
         { "pack_stmt_execute", _lmysql_pack_stmt_execute },
         { "pack_stmt_reset", _lmysql_pack_stmt_reset },
+        { "pack_stmt_close", _lmysql_pack_stmt_close },
         { "sock_id", _lmysql_stmt_sock_id },
         { "__gc", _lmysql_stmt_free },
         { NULL, NULL }
@@ -637,7 +656,7 @@ static int32_t _lmysql_pack_query(lua_State *lua) {
 static int32_t _lmysql_pack_quit(lua_State *lua) {
     LPUB_UD_ARG(lua, mysql_ctx, MT_MYSQL, ud, "mysql freed");
     size_t size;
-    void *pack = mysql_pack_quit(*ud, &size);
+    void *pack = mysql_pack_quit(&size);
     return lpub_rtn_lud(lua, pack, size);
 }
 /// <summary>
@@ -732,7 +751,7 @@ static int32_t _lmysql_free(lua_State *lua) {
     if (NULL != mysql->task
         && INVALID_SOCK != mysql->client.sk.fd) {
         size_t size;
-        void *pack = mysql_pack_quit(mysql, &size);
+        void *pack = mysql_pack_quit(&size);
         ev_send(&mysql->task->loader->netev, mysql->client.sk.fd, mysql->client.sk.skid, pack, size, 0);
         // 主动关连接：触发该 socket 的 udfree 释放事件侧份额，否则弃用的活连接块滞留至对端关
         ev_close(&mysql->task->loader->netev, mysql->client.sk.fd, mysql->client.sk.skid, 0);

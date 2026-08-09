@@ -18,8 +18,8 @@
 #define GET_POS(fd, n) ((fd) % (n))// 根据fd计算索引位置
 #endif
 #define GET_PTR(p, n, fd) (1 == (n) ? (p) : &(p)[GET_POS((fd), (n))])// 根据fd获取对应的指针
-#define EVENT_TICK_MIN 10          // event 线程周期驱动(ev_tick)的最小间隔(毫秒),防 tick 返回 0 忙轮询
-#define ACCEPT_BACKOFF_MS 500 // accept 遇 EMFILE/ENFILE 后暂停监听、退避重试的间隔(毫秒)
+#define EVENT_TICK_MIN 10// event 线程周期驱动(ev_tick)的最小间隔(毫秒),防 tick 返回 0 忙轮询
+#define ACCEPT_BACKOFF_MS 500// accept 遇 EMFILE/ENFILE 后暂停监听、退避重试的间隔(毫秒)
 #define UDP_RECV_MAX_ERRS 8// 单次唤醒内 recvmsg 连续失败上限；超限认定 fd 异常转关闭，防不消耗 datagram 的错误原地打转
 
 struct evssl_ctx;
@@ -37,8 +37,10 @@ typedef enum sock_status {
     STATUS_CLIENT = 0x10,       // 作为客户端
     STATUS_SSLEXCHANGE = 0x20,  // 是否切换成SSL链接，发送队列为空时移除该标识，并开始SSL握手
     STATUS_AUTHSSL = 0x40,      // SSL握手中
-    STATUS_KEYUPDATE = 0x80,    // 数据期 TLS1.3 KeyUpdate 等写就绪(两平台均仅数据期)；Unix 注册 EVENT_WRITE，IOCP 投 0 字节 WSASend 探针
-    STATUS_GRACEFUL_CLOSE = 0x100// ev_close(immed=0) 标记，buf_s 发完后 _close_tcp
+    // 下面两个是数据期 TLS1.3 的读写互卡，后缀表示"在等哪一边就绪"
+    STATUS_KEYUPDATE_WRITE = 0x80,// 读的时候 SSL 说要先写：Unix 注册 EVENT_WRITE，IOCP 投 0 字节 WSASend 探针
+    STATUS_KEYUPDATE_READ = 0x100,// 发的时候 SSL 说要先读到对端数据，挂着等读就绪再重试发送(仅 Unix)
+    STATUS_GRACEFUL_CLOSE = 0x200 // ev_close(immed=0) 标记，buf_s 发完后 _close_tcp
 }sock_status;
 // UDP 多播 setsockopt 操作类型,由 ev_udp_join/leave/ttl/loop 经 ev_props 投递时填写
 typedef enum udp_opt_type {

@@ -69,7 +69,12 @@ int32_t mongo_user_pwd(mongo_ctx *mongo, const char *user, const char *pwd);
 /// <returns>requestid</returns>
 int32_t mongo_requestid(mongo_ctx *mongo);
 /// <summary>
-/// 设置下一条命令的消息标志位（目前仅支持 MORETOCOME）
+/// 置上消息标志位（目前仅支持 MORETOCOME）。
+/// 置上就一直有效，直到调用方自己 mongo_clear_flag——不是只管下一条命令：
+/// 此后每条写命令都变成只发不等，服务端的失败(重复键、校验不过)因为没有响应可解析
+/// 而一律报成功；读命令(find/count 等)内部会临时清掉再恢复，不受影响。
+/// 标志挂在连接上而不是命令上，多协程共用一条连接时别人的写也会跟着变成 fire-and-forget，
+/// 批量写完请及时清掉
 /// </summary>
 /// <param name="mongo">mongo_ctx</param>
 /// <param name="flag">mongo_flags 标志位</param>

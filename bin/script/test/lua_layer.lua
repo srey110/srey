@@ -1,5 +1,5 @@
 -- Lua 层单元测试：lib/utils.lua（split/host_type/table_size/randstr/class/dump 等）
---                  + lib/log.lua（_curlv 缓存 / log_setlv round-trip）
+--                  + lib/log.lua（级别短路现读 C 层 / log_setlv round-trip）
 
 local srey   = require("lib.srey")
 local runner = require("test.runner")
@@ -106,12 +106,24 @@ runner.run("lua_layer", function(t)
         t:check(s:find("<circular>", 1, true) ~= nil, "dump circular safe")
     end
 
-    -- ── lib/log.lua: _curlv 缓存与 log_setlv 同步 ──────────────────────
+    -- ── lib/log.lua: 级别读取与 log_setlv 同步 ──────────────────────
     do
         local saved = utils.log_getlv()
+        -- Lua 侧短路必须现问 C 层，不能缓存：级别是进程级一份，而每个 task 一个 lua_State，
+        -- 缓存就成了每 VM 一份，调试台调高只对收到命令的那个 task 生效。
+        -- 这里绕过 log_setlv 直接改 C 层（模拟"命令打给了别的 task / C task"），
+        -- 再用一个会让 string.format 抛错的调用探测短路有没有放行：
+        -- 被短路则 format 根本不执行、不抛；放行则抛
+        -- 只降到 WARN 不降到 FATAL：级别是进程级一份，而 runner/reporter 的 FAIL 走 WARN 输出，
+        -- 压到 FATAL 会把这几行之间其他 task 的失败明细一起吞掉。WARN 已低于 DEBUG，短路照样验得了
+        utils.log_setlv(2)-- WARN
+        t:eq(true, pcall(DEBUG, "%d", {}), "低级别下 DEBUG 被短路(未走到 string.format)")
+        utils.log_setlv(4)-- 绕过 log_setlv 调到 DEBUG
+        t:eq(false, pcall(DEBUG, "%d", {}), "绕过 log_setlv 调高级别后 Lua 侧立刻生效")
+        utils.log_setlv(saved)
         -- 调 log_setlv（lib/log.lua 中函数）应同步更新 C 层
-        log_setlv(0)
-        t:eq(0, utils.log_getlv(), "log_setlv sync to C 层 (FATAL only)")
+        log_setlv(2)
+        t:eq(2, utils.log_getlv(), "log_setlv sync to C 层")
         log_setlv(saved)
         t:eq(saved, utils.log_getlv(), "log_setlv restore")
         -- 非法级别（非整数 / 越界）返回 false 且不改变当前级别

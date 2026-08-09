@@ -183,11 +183,18 @@ static void test_mysql_pack_simple_cmds(CuTest *tc) {
     CuAssertTrue(tc, 0x0e == (uint8_t)p[4]);
     FREE(pack);
 
-    /* COM_QUIT = 0x01 */
-    pack = mysql_pack_quit(&mysql, &size);
+    /* COM_QUIT = 0x01；组包不得触碰 id / cur_cmd —— Lua 侧 __gc 在工作线程调它，
+       而网络线程正拿这两个字段解析来包，写一下就是无同步的跨线程写 */
+    mysql.id = 7;
+    mysql.cur_cmd = MYSQL_PING;
+    pack = mysql_pack_quit(&size);
     CuAssertPtrNotNull(tc, pack);
     p = (char *)pack;
+    CuAssertTrue(tc, 5 == size);
+    CuAssertIntEquals(tc, 0, (int)(uint8_t)p[3]);
     CuAssertTrue(tc, 0x01 == (uint8_t)p[4]);
+    CuAssertIntEquals(tc, 7, (int)mysql.id);
+    CuAssertIntEquals(tc, MYSQL_PING, (int)mysql.cur_cmd);
     FREE(pack);
 
     /* COM_INIT_DB = 0x02 */

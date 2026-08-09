@@ -20,12 +20,13 @@ typedef enum task_netev {
 /// </summary>
 /// <param name="loader">loader_ctx</param>
 /// <param name="name">字符串任务名；NULL 或空串表示匿名（仅有句柄，不进名表）</param>
-/// <param name="quecap">消息队列容量；0 用默认 ONEK</param>
+/// <param name="quecap">消息队列容量；0 用默认 ONEK。类型即底层 fsqu 的容量类型，
+/// 调用方若持有更宽的值须自行判上界，不要靠这里截断</param>
 /// <param name="_dispatch">消息分发函数, NULL默认分发函数</param>
 /// <param name="_argfree">用户参数释放函数</param>
 /// <param name="arg">用户参数</param>
 /// <returns>task_ctx</returns>
-task_ctx *task_new(loader_ctx *loader, const char *name, size_t quecap,
+task_ctx *task_new(loader_ctx *loader, const char *name, uint32_t quecap,
                    _task_dispatch_cb _dispatch, free_cb _argfree, void *arg);
 /// <summary>
 /// 任务释放

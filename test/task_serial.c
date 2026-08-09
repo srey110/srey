@@ -407,9 +407,13 @@ static int32_t _test_serial_free_self(task_ctx *task) {
 }
 
 // ── 测试 11：销毁排在在途命令之后（四个 *_quit 包锁后的形状）───────────────
-// A 持锁 sleep 期间 B 走"先摘指针再上锁再销毁"那一套：B 必须等 A 的临界区跑完才动手，
+// A 持锁 sleep 期间 B 走"上锁再销毁再摘指针"那一套：B 必须等 A 的临界区跑完才动手，
 // 而不是把 A 拦腰打断；A 出来时执行器仍在（B 的 free 只标记），由 B 的 leave 真正回收。
-// 第三个协程 C 模拟"第二次 quit"——它摘到 NULL，什么都不该做
+// 另外两个协程模拟"第二次 quit"的两条无操作路径：
+//   C 与 B 同时发起，槽位还没被摘掉，它拿到的是已 closed 的执行器，enter 失败后什么都不做；
+//   D 迟到，读到的槽位已是 NULL，直接退。
+// 槽位置空排在 free 之后是生产代码的硬要求（见 coro_utils.c mysql_quit 的规则说明）：
+// 反过来写的话，free 同步唤醒的排队者会读到 NULL，把命令无锁发出去
 typedef struct sq_arg {
     coro_serial_ctx **slot;   // 指向共享的执行器槽位，模拟 xxx->serial 字段
     int32_t *order;           // 记录事件顺序的游标
@@ -430,36 +434,40 @@ static void _sq_holder(task_ctx *task, void *arg) {
     a->ev[(*a->order)++] = 1;// 1 = 持锁者跑完临界区
     coro_serial_leave(held);
 }
-// 与 mysql_quit / smtp_quit 等同一套：摘指针 → NULL 则退 → 上锁 → 干活 → free → unlock
+// 与 mysql_quit / smtp_quit 等同一套：摘指针 → NULL 则退 → 上锁 → 干活 → free → 摘指针 → unlock
 static void _sq_quit(task_ctx *task, void *arg) {
     sq_arg *a = (sq_arg *)arg;
     coro_sleep(task, a->hold_ms);// 让持锁者先进临界区
     coro_serial_ctx *held = *a->slot;
-    *a->slot = NULL;
     if (NULL == held) {
-        ++(*a->cnoop);// 别人已接手销毁，本次什么都不做
+        ++(*a->cnoop);// 别人已接手销毁并摘掉了槽位，本次什么都不做
         return;
     }
     if (ERR_OK != coro_serial_enter(held)) {
+        // 另一次 quit 已经把它关掉：free 见 closed 直接返回，回收归先到的那位
+        ++(*a->cnoop);
         coro_serial_free(held);
+        *a->slot = NULL;
         return;
     }
     a->ev[(*a->order)++] = 2;// 2 = 销毁方拿到锁开始干活
     coro_serial_free(held);
+    *a->slot = NULL;
     coro_serial_leave(held);
 }
 
 static int32_t _test_serial_quit_order(task_ctx *task) {
-    enum { HOLD_MS = 30, QUIT_MS = 5 };
+    enum { HOLD_MS = 30, QUIT_MS = 5, LATE_MS = HOLD_MS + 20 };
     coro_serial_ctx *slot = coro_serial_new(task);
     int32_t order = 0;
     int32_t ev[4] = { 0 };
     int32_t cnoop = 0;
     sq_arg holder = { .slot = &slot, .order = &order, .ev = ev, .cnoop = &cnoop, .hold_ms = HOLD_MS };
     sq_arg quitter = { .slot = &slot, .order = &order, .ev = ev, .cnoop = &cnoop, .hold_ms = QUIT_MS };
-    fork_serial_cb funcs[3] = { _sq_holder, _sq_quit, _sq_quit };
-    void *args[3] = { &holder, &quitter, &quitter };
-    if (ERR_OK != coro_fork_wait(task, 3, funcs, args)) {
+    sq_arg late = { .slot = &slot, .order = &order, .ev = ev, .cnoop = &cnoop, .hold_ms = LATE_MS };
+    fork_serial_cb funcs[4] = { _sq_holder, _sq_quit, _sq_quit, _sq_quit };
+    void *args[4] = { &holder, &quitter, &quitter, &late };
+    if (ERR_OK != coro_fork_wait(task, 4, funcs, args)) {
         LOG_ERROR("serial quit order: fork_wait failed.");
         coro_serial_free(slot);
         return ERR_FAILED;
@@ -470,8 +478,9 @@ static int32_t _test_serial_quit_order(task_ctx *task) {
                   ev[0], ev[1], order);
         return ERR_FAILED;
     }
-    if (1 != cnoop) {
-        LOG_ERROR("serial quit order: second quit noop=%d, want 1.", cnoop);
+    // 两条无操作路径各命中一次：并发那位 enter 失败，迟到那位读到 NULL
+    if (2 != cnoop) {
+        LOG_ERROR("serial quit order: redundant quit noop=%d, want 2.", cnoop);
         return ERR_FAILED;
     }
     return ERR_OK;

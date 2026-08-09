@@ -102,6 +102,21 @@ runner.run("db_pgsql", function(t)
     -- 中止后连接须仍可用（CopyFail 之后服务端会回 ReadyForQuery）
     t:check(pg:query("select 1"), "abort 后连接仍可用")
 
+    -- reason 不是字符串：pack_copy_fail 内部是 luaL_checkstring，不转换就在发出 CopyFail
+    -- 之前抛出，而这条抛出在 pcall 作用域之外，会一路掠到 serial 的 xpcall——
+    -- 服务端从此停在 COPY IN 模式攥着开放事务和表锁，err 还是空的。
+    -- 所以这里真正要验的是最后那条"连接仍可用"
+    local tok = pg:copy_in("copy srey_test (id, name, score) from stdin", function()
+        return false, { code = 5 }
+    end)
+    t:check(tok, "reason 为 table 时中止照常完成")
+    t:check(pg:query("select 1"), "table reason 中止后连接仍可用(服务端未卡在 COPY IN)")
+    local bok = pg:copy_in("copy srey_test (id, name, score) from stdin", function()
+        return false, true
+    end)
+    t:check(bok, "reason 为 boolean 时中止照常完成")
+    t:check(pg:query("select 1"), "boolean reason 中止后连接仍可用")
+
     -- COPY OUT
     local out, outlen = pg:copy_out("copy srey_test to stdout")
     if out then

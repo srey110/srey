@@ -162,6 +162,9 @@ end
 ---       严格实现与 smuggling 防御代理会拒收。info 非 table 时 Content-Type 正是经此传入
 ---@param ckfunc fun(fin:boolean, data:lightuserdata|nil, size:integer)? chunked 接收回调
 ---@param info string|table|fun(...):string?|nil 报文体；string 直接发送，table 自动 JSON 编码，function 流式分块（返回 nil 或空串终止流）
+---       function 形态下**不得在回调内挂起**（不要 syn_send / sleep / 等任何消息）：chunked 各块之间
+---       让出控制权，别的协程往同一 fd 上发的数据就插进本次报文体中间，对端解析必错。
+---       这里没有连接级锁可加——只拿到 fd/skid，不像 pgsql copy_in 那样手里有 ctx 的 serial
 ---@param ... any 传给 info 函数的额外参数
 ---@return HttpPack|nil pack 解包后的响应表；rsp=true 或失败时返回 nil
 local function _http_msg(rsp, nocl, fd, skid, status, headers, ckfunc, info, ...)
@@ -267,33 +270,57 @@ local function _http_msg(rsp, nocl, fd, skid, status, headers, ckfunc, info, ...
     end
 end
 
+-- 拼请求行前校验 url。不校验就是 HTTP 请求拆分：url 里塞一段 CRLF 能在同一条连接上
+-- 再拼出一个完整请求，多出来的那条响应会被下一次请求的等待者取走，此后整条连接错开一位。
+-- 头名头值那边是丢弃单条继续发，请求目标坏了整条请求都不能发，故返回 nil 让调用方失败返回。
+-- C 侧 http_pack_req 把这视为硬契约违约直接 ASSERTAB，Lua 这条路径此前是静默放行
+local function _req_status(method, url)
+    url = url or "/"
+    if string.find(url, "[\0\r\n]") then
+        WARN("http url contains NUL or CRLF, request dropped.")
+        return nil
+    end
+    return string.format("%s %s HTTP/%s\r\n", method, url, HTTP_VERSION)
+end
+
 -- ── 公共 API ──────────────────────────────────────────────────────────────
 
 ---同步 GET 请求
 ---@param fd integer socket fd
 ---@param skid integer 连接 skid
----@param url string? URL 路径，默认 "/"
+---@param url string? URL 路径，默认 "/"；含 NUL/CRLF 时整条请求被拒（HTTP 请求拆分）
 ---@param headers table<string,any>? 附加头部
 ---@param ckfunc fun(fin:boolean, data:lightuserdata|nil, size:integer)? chunked 接收回调
 ---@return HttpPack|nil pack 解包后的响应表；失败返回 nil（超时/分片中断时响应可能未收完，
----此连接不应继续复用，应关闭——等待按 skid 匹配，残留响应会被下一次请求错认）
+---此连接不应继续复用，应关闭——等待按 skid 匹配，残留响应会被下一次请求错认）。
+---url 非法时同样返回 nil，但一个字节都没发出，连接可继续复用
 function http.get(fd, skid, url, headers, ckfunc)
-    local status = string.format("GET %s HTTP/%s\r\n", url or "/", HTTP_VERSION)
+    local status = _req_status("GET", url)
+    if not status then
+        return nil
+    end
     return _http_msg(false, false, fd, skid, status, headers, ckfunc)
 end
 
 ---同步 POST 请求；info 为报文体（string/table/function），用法同 _http_msg
 ---@param fd integer socket fd
 ---@param skid integer 连接 skid
----@param url string? URL 路径，默认 "/"
+---@param url string? URL 路径，默认 "/"；含 NUL/CRLF 时整条请求被拒（HTTP 请求拆分）
 ---@param headers table<string,any>? 附加头部
 ---@param ckfunc fun(fin:boolean, data:lightuserdata|nil, size:integer)? chunked 接收回调
 ---@param info string|table|fun(...):string?|nil 报文体；string 直接发送，table 自动 JSON 编码，function 流式分块（返回 nil 或空串终止流）
+---       function 形态下**不得在回调内挂起**（不要 syn_send / sleep / 等任何消息）：chunked 各块之间
+---       让出控制权，别的协程往同一 fd 上发的数据就插进本次报文体中间，对端解析必错。
+---       这里没有连接级锁可加——只拿到 fd/skid，不像 pgsql copy_in 那样手里有 ctx 的 serial
 ---@param ... any 传给 info 函数的额外参数
 ---@return HttpPack|nil pack 解包后的响应表；失败返回 nil（超时/分片中断时响应可能未收完，
----此连接不应继续复用，应关闭——等待按 skid 匹配，残留响应会被下一次请求错认）
+---此连接不应继续复用，应关闭——等待按 skid 匹配，残留响应会被下一次请求错认）。
+---url 非法时同样返回 nil，但一个字节都没发出，连接可继续复用
 function http.post(fd, skid, url, headers, ckfunc, info, ...)
-    local status = string.format("POST %s HTTP/%s\r\n", url or "/", HTTP_VERSION)
+    local status = _req_status("POST", url)
+    if not status then
+        return nil
+    end
     return _http_msg(false, false, fd, skid, status, headers, ckfunc, info, ...)
 end
 
@@ -303,6 +330,9 @@ end
 ---@param code integer 状态码（如 200、404）
 ---@param headers table<string,any>? 附加头部
 ---@param info string|table|fun(...):string?|nil 报文体；string 直接发送，table 自动 JSON 编码，function 流式分块（返回 nil 或空串终止流）
+---       function 形态下**不得在回调内挂起**（不要 syn_send / sleep / 等任何消息）：chunked 各块之间
+---       让出控制权，别的协程往同一 fd 上发的数据就插进本次报文体中间，对端解析必错。
+---       这里没有连接级锁可加——只拿到 fd/skid，不像 pgsql copy_in 那样手里有 ctx 的 serial
 ---@param ... any 传给 info 函数的额外参数
 function http.response(fd, skid, code, headers, info, ...)
     local status = string.format("HTTP/%s %03d %s\r\n", HTTP_VERSION, code, http.code_status(code))
