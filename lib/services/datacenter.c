@@ -359,7 +359,12 @@ static void _dc_handle_wait(dc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *
     MALLOC(w, sizeof(dc_waiter));
     w->src = src;
     w->sess = sess;
-    // src 自身超时点即过期:SET 不再唤醒、sweep 回收
+    // 过期点：SET 不再唤醒、sweep 回收。
+    // 注意这是"尽力而为"而非精确对齐 src 的超时点——src 的 coro_request 从它发出 WAIT 那刻
+    // 起算，这里从 datacenter 收到那刻起算，两者差一个消息排队延迟，所以本地这个 deadline
+    // 总是偏晚。落在这段差值里的 SET 仍会被唤醒并回一条 src 早已放弃的响应（对方那边表现为
+    // 一条告警 + 一个多余协程）。真正的超时保证在 src 的 coro_request 上，这里只是减少幽灵响应；
+    // 要精确就得把 src 的发出时刻随 WAIT 上线，为一个亚毫秒级窗口改协议不划算
     w->deadline_ms = timer_cur_ms(&ctx->timer) + timeout_ms;
     _dc_pending_push(ctx, keybuf, w);
     if (0 == ctx->sweep_armed && hashmap_count(ctx->pending) > 0) {

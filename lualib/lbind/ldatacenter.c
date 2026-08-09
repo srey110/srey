@@ -83,7 +83,7 @@ static int32_t _ldc_keys(lua_State *lua) {
 static int32_t _ldc_parse_keys(lua_State *lua) {
     LUACHECK_LUDATA(lua, 1);
     const void *data = lua_touserdata(lua, 1);
-    size_t size = (size_t)luaL_checkinteger(lua, 2);
+    size_t size = lpub_check_lens(lua, 2, 0);
     binary_ctx br;
     binary_init(&br, (char *)data, size, 0);
     lua_newtable(lua);

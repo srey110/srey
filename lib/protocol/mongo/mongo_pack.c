@@ -96,6 +96,7 @@ int32_t mongo_pack_check_flag(void *pack, mongo_flags flag) {
 void *mongo_pack_scram_client_first(mongo_ctx *mongo, const char *method, size_t *size) {
     *size = 0;
     if (0 == strlen(mongo->authdb)) {
+        // authdb 与 db 等长，db 在 mongo_init / mongo_db 已校验过，装得下
         safe_fill_str(mongo->authdb, sizeof(mongo->authdb), mongo->db);
     }
     if (0 == strlen(mongo->user)
@@ -217,7 +218,11 @@ void *mongo_pack_getmore(mongo_ctx *mongo, int64_t cursorid, char *options, size
     bson_append_int64(&bson, "getMore", cursorid);//事务外部创建的游标，无法在事务内部调用 getMore
     bson_append_utf8(&bson, "collection", mongo->collection);
     MONGO_PACK_CAT(options, optlens);
-    TRANSACTION_OPTIONS_START
+    // 用不带 START 的那个：游标是别的命令建出来的，事务真要开也该由那条命令开。
+    // 挂 _START 的话，begin 后第一条就是 getMore 时会给它带上 startTransaction 并把 started 消耗掉，
+    // 这条命令服务端本来就要拒，而真正的首条 CRUD 从此不再带 startTransaction，整段事务连环
+    // NoSuchTransaction，只能重新 begin
+    TRANSACTION_OPTIONS
     MONGO_PACK_RETURN(mongo->db);
 }
 void *mongo_pack_killcursors(mongo_ctx *mongo, char *cursorids, size_t cslens, char *options, size_t optlens, size_t *size) {
@@ -225,7 +230,9 @@ void *mongo_pack_killcursors(mongo_ctx *mongo, char *cursorids, size_t cslens, c
     bson_append_utf8(&bson, "killCursors", mongo->collection);//不能将killCursors 命令指定为ACID 事务中的第一个操作.killCursors 命令，服务器会立即停止指定的游标。它不会等待ACID 事务提交
     bson_append_array(&bson, "cursors", cursorids, cslens);
     MONGO_PACK_CAT(options, optlens);
-    TRANSACTION_OPTIONS_START
+    // 同 getMore：上一行注释说的"不能作为事务第一个操作"，靠的就是这里不挂 _START——
+    // 否则它自己会去当那个第一操作，还顺手把 started 吃掉
+    TRANSACTION_OPTIONS
     MONGO_PACK_RETURN(mongo->db);
 }
 void *mongo_pack_distinct(mongo_ctx *mongo, const char *key, char *query, size_t qlens, char *options, size_t optlens, size_t *size) {

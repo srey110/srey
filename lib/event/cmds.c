@@ -440,8 +440,13 @@ static int32_t _ev_udp_group(ev_ctx *ctx, SOCKET fd, uint64_t skid, udp_opt_type
     udp_opt_arg *arg;
     CALLOC(arg, 1, sizeof(udp_opt_arg));
     arg->op = op;
-    safe_fill_str(arg->group_ip, sizeof(arg->group_ip), group_ip);
-    safe_fill_str(arg->iface_str, sizeof(arg->iface_str), iface_str);
+    // 装不下不能截断后继续：截出来的地址要么 setsockopt 报个看不懂的错，要么加入了别的组
+    if (ERR_OK != safe_fill_str(arg->group_ip, sizeof(arg->group_ip), group_ip)
+        || ERR_OK != safe_fill_str(arg->iface_str, sizeof(arg->iface_str), iface_str)) {
+        LOG_ERROR("udp group ip / iface too long: %s, %s.", group_ip, EMPTYSTR(iface_str) ? "" : iface_str);
+        FREE(arg);
+        return ERR_FAILED;
+    }
     return ev_props(ctx, fd, skid, _udp_opt_cb, _free, arg, 0);
 }
 int32_t ev_udp_join(ev_ctx *ctx, SOCKET fd, uint64_t skid,

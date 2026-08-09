@@ -1,6 +1,8 @@
 ﻿#include "protocol/mysql/mysql_reader.h"
 #include "protocol/mysql/mysql_parse.h"
 #include "protocol/mysql/mysql_utils.h"
+#include "protocol/prots_pub.h"
+#include "utils/strptime.h"
 
 mysql_reader_ctx *mysql_reader_init(mpack_ctx *mpack) {
     if ((MPACK_QUERY != mpack->pack_type && MPACK_STMT_EXECUTE != mpack->pack_type)
@@ -149,17 +151,11 @@ uint64_t mysql_reader_uinteger(mysql_reader_ctx *reader, const char *name, int32
         }
     }
 }
-// 文本协议浮点解析公共逻辑
+// 文本协议浮点解析公共逻辑：空串 / 有残留字符 / 上溢的判定全在 parse_double_strict 里，
+// 与 pgsql 侧共用同一份（见 prots_pub.h），这里只负责写 err 和打日志
 static double _mysql_reader_parse_text_float(mpack_row *row, int32_t *err) {
-    char tmp[128];
-    if (ERR_OK != _mysql_copy_bounded(row->val.data, row->val.lens, tmp, sizeof(tmp), 1)) {
-        SET_PTR(err, ERR_FAILED);
-        LOG_WARN("parse failed.");
-        return 0.0;
-    }
-    char *end;
-    double val = strtod_c(tmp, &end);
-    if ((size_t)(end - tmp) != row->val.lens) {
+    double val;
+    if (ERR_OK != parse_double_strict(row->val.data, row->val.lens, &val)) {
         SET_PTR(err, ERR_FAILED);
         LOG_WARN("parse failed.");
         return 0.0;
@@ -238,18 +234,6 @@ char *mysql_reader_string(mysql_reader_ctx *reader, const char *name, size_t *le
     *lens = row->val.lens;
     return row->val.data;
 }
-static uint32_t _parse_usec_frac(const char *s) {
-    uint32_t usec = 0;
-    const char *dot = strchr(s, '.');
-    if (NULL != dot) {
-        dot++;
-        int32_t mult = 100000;
-        for (int32_t i = 0; i < 6 && dot[i] >= '0' && dot[i] <= '9'; i++, mult /= 10) {
-            usec += (uint32_t)((dot[i] - '0') * mult);
-        }
-    }
-    return usec;
-}
 int64_t mysql_reader_datetime(mysql_reader_ctx *reader, const char *name, int32_t *err) {
     SET_PTR(err, ERR_OK);
     mpack_field *field;
@@ -268,25 +252,39 @@ int64_t mysql_reader_datetime(mysql_reader_ctx *reader, const char *name, int32_
     }
     if (MPACK_QUERY == reader->pack_type) {
         char tmp[48];
-        if (ERR_OK != _mysql_copy_bounded(row->val.data, row->val.lens, tmp, sizeof(tmp), 1)) {
+        if (ERR_OK != copy_bounded(row->val.data, row->val.lens, tmp, sizeof(tmp), 1)) {
             SET_PTR(err, ERR_FAILED);
             return 0;
         }
-        int32_t y, mo, d, h = 0, mi = 0, sec = 0;
-        int32_t n = sscanf(tmp, "%d-%d-%d %d:%d:%d", &y, &mo, &d, &h, &mi, &sec);
-        if (n != 3 && n != 6) {
-            SET_PTR(err, ERR_FAILED);
+        // 零日期 0000-00-00[ 00:00:00] 是非严格 sql_mode 下的合法值，二进制协议用长度前缀 0
+        // 表示它、按 0 返回且 err 为 ERR_OK；文本协议这边 _strptime 的 %m 卡 1..12 会把它判成
+        // 解析失败，同一列同一值两条执行路径结果相反，所以在进解析器前先单独认掉。
+        // 两条路径都把它折成 0（即 1970-01-01），与真实的 1970-01-01 分不开——现有契约
+        // (int64 值 + 三态 err) 留不出第四种状态，要区分得先改接口
+        if (row->val.lens >= 10
+            && 0 == memcmp(tmp, "0000-00-00", 10)) {
             return 0;
         }
-        uint32_t usec = _parse_usec_frac(tmp);
         struct tm dt = { 0 };
         dt.tm_isdst = -1;// 由 mktime 依日期/本地时区自行判定夏令时，否则 DST 期恒按标准时解释偏 1 小时
-        dt.tm_year = y - 1900;
-        dt.tm_mon = mo - 1;
-        dt.tm_mday = d;
-        dt.tm_hour = h;
-        dt.tm_min = mi;
-        dt.tm_sec = sec;
+        // 用 _strptime 而不是 sscanf("%d-%d-%d %d:%d:%d")，是为了拿到逐字段的量程校验：
+        // 那个 %d 什么都收，月/日/时越界会被 mktime 静默归一成另一个日期当成功报出去。
+        // 日期与时间分两段：DATE 列只有日期，DATETIME/TIMESTAMP 后面还跟时间。
+        // 日期后面还有东西就必须是完整时间，不能当没看见——否则 "2024-05-21 24:00:00"
+        // 这种时间越界的值会被当成合法 DATE 收下、把时间整段丢掉
+        const char *end = _strptime(tmp, "%Y-%m-%d", &dt);
+        if (NULL == end) {
+            SET_PTR(err, ERR_FAILED);
+            return 0;
+        }
+        if ('\0' != *end) {
+            end = _strptime(end, " %H:%M:%S", &dt);
+            if (NULL == end) {
+                SET_PTR(err, ERR_FAILED);
+                return 0;
+            }
+        }
+        uint32_t usec = parse_usec_frac(end);
         errno = 0;
         time_t ts = mktime(&dt);
         if ((time_t)-1 == ts && 0 != errno) {
@@ -343,7 +341,7 @@ int32_t mysql_reader_time(mysql_reader_ctx *reader, const char *name, struct tm 
     *usec = 0;
     if (MPACK_QUERY == reader->pack_type) {
         char tmp[48];
-        if (ERR_OK != _mysql_copy_bounded(row->val.data, row->val.lens, tmp, sizeof(tmp), 1)) {
+        if (ERR_OK != copy_bounded(row->val.data, row->val.lens, tmp, sizeof(tmp), 1)) {
             SET_PTR(err, ERR_FAILED);
             return 0;
         }
@@ -357,7 +355,7 @@ int32_t mysql_reader_time(mysql_reader_ctx *reader, const char *name, struct tm 
             SET_PTR(err, ERR_FAILED);
             return 0;
         }
-        *usec = _parse_usec_frac(p);
+        *usec = parse_usec_frac(p);
         time->tm_mday = h / 24;
         time->tm_hour = h % 24;
         time->tm_min = mi;

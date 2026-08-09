@@ -218,16 +218,7 @@ static int32_t _lhash_ring_add(lua_State *lua) {
     hash_ring_ctx *ring = luaL_checkudata(lua, 1, MT_HASH_RING);
     uint32_t nreplicas = (uint32_t)luaL_checkinteger(lua, 2);
     size_t lens;
-    void *name = NULL;
-    int32_t type = lua_type(lua, 3);
-    if (LUA_TSTRING == type) {
-        name = (void *)luaL_checklstring(lua, 3, &lens);
-    } else if (LUA_TLIGHTUSERDATA == type) {
-        name = lua_touserdata(lua, 3);
-        lens = (size_t)luaL_checkinteger(lua, 4);
-    } else {
-        return luaL_argerror(lua, 3, "string or light userdata expected");
-    }
+    void *name = lpub_check_buf(lua, 3, &lens, NULL);
     if (ERR_OK == hash_ring_add(ring, name, lens, nreplicas)) {
         lua_pushboolean(lua, 1);
     } else {
@@ -245,16 +236,7 @@ static int32_t _lhash_ring_add(lua_State *lua) {
 static int32_t _lhash_ring_remove(lua_State *lua) {
     hash_ring_ctx *ring = luaL_checkudata(lua, 1, MT_HASH_RING);
     size_t lens;
-    void *name = NULL;
-    int32_t type = lua_type(lua, 2);
-    if (LUA_TSTRING == type) {
-        name = (void *)luaL_checklstring(lua, 2, &lens);
-    } else if (LUA_TLIGHTUSERDATA == type) {
-        name = lua_touserdata(lua, 2);
-        lens = (size_t)luaL_checkinteger(lua, 3);
-    } else {
-        return luaL_argerror(lua, 2, "string or light userdata expected");
-    }
+    void *name = lpub_check_buf(lua, 2, &lens, NULL);
     hash_ring_remove(ring, name, lens);
     return 0;
 }
@@ -268,16 +250,7 @@ static int32_t _lhash_ring_remove(lua_State *lua) {
 static int32_t _lhash_ring_find(lua_State *lua) {
     hash_ring_ctx *ring = luaL_checkudata(lua, 1, MT_HASH_RING);
     size_t lens;
-    void *key = NULL;
-    int32_t type = lua_type(lua, 2);
-    if (LUA_TSTRING == type) {
-        key = (void *)luaL_checklstring(lua, 2, &lens);
-    } else if (LUA_TLIGHTUSERDATA == type) {
-        key = lua_touserdata(lua, 2);
-        lens = (size_t)luaL_checkinteger(lua, 3);
-    } else {
-        return luaL_argerror(lua, 2, "string or light userdata expected");
-    }
+    void *key = lpub_check_buf(lua, 2, &lens, NULL);
     hash_ring_node *node = hash_ring_find(ring, key, lens);
     if (NULL == node) {
         lua_pushnil(lua);

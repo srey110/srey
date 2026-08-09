@@ -3,6 +3,8 @@
 void pgsql_bind_init(pgsql_bind_ctx *bind, uint16_t nparam) {
     bind->nparam = nparam;
     if (0 == bind->nparam) {
+        ZERO(&bind->format, sizeof(bind->format));
+        ZERO(&bind->values, sizeof(bind->values));
         return;
     }
     binary_init(&bind->format, NULL, 0, 0);
@@ -14,8 +16,9 @@ void pgsql_bind_free(pgsql_bind_ctx *bind) {
     if (0 == bind->nparam) {
         return;
     }
-    FREE(bind->format.data);
-    FREE(bind->values.data);
+    binary_free(&bind->format);
+    binary_free(&bind->values);
+    bind->nparam = 0;
 }
 void pgsql_bind_clear(pgsql_bind_ctx *bind) {
     if (0 == bind->nparam) {

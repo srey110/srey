@@ -450,6 +450,132 @@ static void test_pgsql_reader_date(CuTest *tc) {
     pgsql_reader_free(r);
 }
 
+// float8 文本值的严格判定与 mysql 侧共用 parse_double_strict：整段消费完 + 拒上溢 + 放行下溢。
+// 改造前这里只查"消费长度相符"，"1e400" 会带着 inf 和 ERR_OK 交出去，同一个值在 mysql 侧却被拒
+static void test_pgsql_reader_double_text_bounds(CuTest *tc) {
+    int32_t oids[1] = { FLOAT8OID };
+    char names[1][64] = { "d" };
+    int32_t err;
+    const char *cases[] = { "1e400", "-1e400", "", "1.5x" };
+    pgsql_reader_ctx *r;
+    char *p;
+    size_t n;
+
+    // 上溢 / 空串 / 有残留字符：一律拒
+    for (size_t i = 0; i < ARRAY_SIZE(cases); i++) {
+        r = _pg_reader_new(1, oids, names);
+        r->format = FORMAT_TEXT;
+        n = strlen(cases[i]);
+        MALLOC(p, n + 1);
+        memcpy(p, cases[i], n);
+        pgpack_row cols[1] = { { (int32_t)n, p, NULL } };
+        _pg_reader_push_row(r, p, cols);
+        (void)pgsql_reader_double(r, "d", &err);
+        CuAssertIntEquals(tc, ERR_FAILED, err);
+        pgsql_reader_free(r);
+    }
+
+    // 下溢：ERANGE 也置位，但返回的是正确的次正规数，必须放行
+    r = _pg_reader_new(1, oids, names);
+    r->format = FORMAT_TEXT;
+    MALLOC(p, 8);
+    memcpy(p, "1e-320", 6);
+    pgpack_row sub[1] = { { 6, p, NULL } };
+    _pg_reader_push_row(r, p, sub);
+    double dv = pgsql_reader_double(r, "d", &err);
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertTrue(tc, dv > 0.0 && dv < 1e-300);
+    pgsql_reader_free(r);
+
+    // 常规值不受影响
+    r = _pg_reader_new(1, oids, names);
+    r->format = FORMAT_TEXT;
+    MALLOC(p, 8);
+    memcpy(p, "-2.25", 5);
+    pgpack_row ok[1] = { { 5, p, NULL } };
+    _pg_reader_push_row(r, p, ok);
+    CuAssertTrue(tc, -2.25 == pgsql_reader_double(r, "d", &err));
+    CuAssertIntEquals(tc, ERR_OK, err);
+    pgsql_reader_free(r);
+}
+
+// 造一条文本行读 timestamp，返回值经 err 判定；用例多，抽出来省掉重复的 reader 搭建
+static int64_t _pg_text_ts(const char *s, int32_t *err) {
+    int32_t oids[1] = { TIMESTAMPOID };
+    char names[1][64] = { "ts" };
+    pgsql_reader_ctx *r = _pg_reader_new(1, oids, names);
+    r->format = FORMAT_TEXT;
+    size_t n = strlen(s);
+    char *p;
+    MALLOC(p, n);
+    memcpy(p, s, n);
+    pgpack_row cols[1] = { { (int32_t)n, p, NULL } };
+    _pg_reader_push_row(r, p, cols);
+    int64_t v = pgsql_reader_timestamp(r, "ts", err);
+    pgsql_reader_free(r);
+    return v;
+}
+// 同上，读 date
+static int32_t _pg_text_date(const char *s, int32_t *err) {
+    int32_t oids[1] = { DATEOID };
+    char names[1][64] = { "d" };
+    pgsql_reader_ctx *r = _pg_reader_new(1, oids, names);
+    r->format = FORMAT_TEXT;
+    size_t n = strlen(s);
+    char *p;
+    MALLOC(p, n);
+    memcpy(p, s, n);
+    pgpack_row cols[1] = { { (int32_t)n, p, NULL } };
+    _pg_reader_push_row(r, p, cols);
+    int32_t v = pgsql_reader_date(r, "d", err);
+    pgsql_reader_free(r);
+    return v;
+}
+
+// 文本时间戳/日期改走 _strptime 后的边界：逐字段量程由 _conv_num 校验，
+// 原来的 sscanf("%d-%d-%d ...") 什么都收，越界值会被 _pgsql_date_to_days 算成垃圾天数
+static void test_pgsql_reader_temporal_text_range(CuTest *tc) {
+    int32_t err;
+
+    // 1) 时区偏移：从日期时间之后起扫，不再按固定下标 11 起跳
+    //    PG 纪元 2000-01-01 00:00:00+08 → UTC 侧早 8 小时
+    int64_t usec = _pg_text_ts("2000-01-01 00:00:00+08", &err);
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertTrue(tc, -8LL * 3600 * 1000000LL == usec);
+
+    // 2) 带秒的历史 LMT 偏移 "+05:30:00"（%z 认不了，仍走手写扫描）
+    usec = _pg_text_ts("2000-01-01 00:00:00+05:30:00", &err);
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertTrue(tc, -(5LL * 3600 + 30 * 60) * 1000000LL == usec);
+
+    // 3) 小数秒 + 时区同时出现，两段各取各的
+    usec = _pg_text_ts("2000-01-01 00:00:00.000500+01", &err);
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertTrue(tc, 500LL - 3600LL * 1000000LL == usec);
+
+    // 4) 月 / 日 / 时越界一律拒绝（改造前 sscanf 全收，mktime / date_to_days 算出别的日期）
+    (void)_pg_text_ts("2000-13-01 00:00:00", &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    (void)_pg_text_ts("2000-01-32 00:00:00", &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    (void)_pg_text_ts("2000-01-01 24:00:00", &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    (void)_pg_text_ts("2000-01-01 00:60:00", &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+
+    // 5) 日期侧同样校验；BC 后缀不受影响，仍取补数年份（公元前 44 年 → 负天数）
+    int32_t days = _pg_text_date("0044-03-15 BC", &err);
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertTrue(tc, days < 0);
+    (void)_pg_text_date("2000-13-01", &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+
+    // 6) 已知功能收窄：%Y 量程 0..9999，PG 支持到 5874897 AD 的年份现在被拒
+    //    换来的是上面那组越界值不再被静默接受，取舍见 pgsql_reader.c 注释
+    (void)_pg_text_date("10000-01-01", &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+}
+
 // pgsql_reader_timestamp/date 二进制协议：大端定长（timestamp=8 / date=4），长度不符拒绝
 // 回归：此前仅文本路径有覆盖，二进制路径与长度校验无单测
 static void test_pgsql_reader_temporal_binary(CuTest *tc) {
@@ -654,6 +780,38 @@ static void test_pgsql_affected_rows(CuTest *tc) {
     CuAssertTrue(tc, 3000000000LL == pgsql_affected_rows(&pg));
 }
 
+// pgsql_set_userpwd 的契约是"任一项超长则两个字段都保持原值"。这条不能靠 safe_fill_str
+// 边填边判来实现：函数里 secure_zero 排在两次填充之前，一旦折掉前置校验，密码超长的那次
+// 调用会留下"新用户名 + 空密码"。单字段的 set_db 没这个问题，靠 safe_fill_str 自身即可
+static void test_pgsql_setter_atomic(CuTest *tc) {
+    char toolong[128];
+    memset(toolong, 'x', sizeof(toolong) - 1);
+    toolong[sizeof(toolong) - 1] = '\0';
+
+    pgsql_ctx pg;
+    CuAssertIntEquals(tc, ERR_OK, pgsql_init(&pg, "127.0.0.1", 5432, NULL, "u1", "p1", "db1"));
+    CuAssertStrEquals(tc, "u1", pg.user);
+    CuAssertStrEquals(tc, "p1", pg.password);
+
+    // 用户名超长：两个字段都不动
+    CuAssertIntEquals(tc, ERR_FAILED, pgsql_set_userpwd(&pg, toolong, "p2"));
+    CuAssertStrEquals(tc, "u1", pg.user);
+    CuAssertStrEquals(tc, "p1", pg.password);
+    // 密码超长：同样两个都不动（折掉前置校验后这里会变成 u2 + 空串）
+    CuAssertIntEquals(tc, ERR_FAILED, pgsql_set_userpwd(&pg, "u2", toolong));
+    CuAssertStrEquals(tc, "u1", pg.user);
+    CuAssertStrEquals(tc, "p1", pg.password);
+    // 合法则两个一起换
+    CuAssertIntEquals(tc, ERR_OK, pgsql_set_userpwd(&pg, "u2", "p2"));
+    CuAssertStrEquals(tc, "u2", pg.user);
+    CuAssertStrEquals(tc, "p2", pg.password);
+
+    // 单字段 setter：超长不改动原值，由 safe_fill_str "装不下就不写" 保证
+    CuAssertIntEquals(tc, ERR_FAILED, pgsql_set_db(&pg, toolong));
+    CuAssertStrEquals(tc, "db1", pg.database);
+    CuAssertIntEquals(tc, ERR_OK, pgsql_set_db(&pg, "db2"));
+    CuAssertStrEquals(tc, "db2", pg.database);
+}
 void test_pgsql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_pgsql_reader_init);
     SUITE_ADD_TEST(suite, test_pgsql_reader_cursor);
@@ -666,10 +824,13 @@ void test_pgsql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_pgsql_reader_bytea);
     SUITE_ADD_TEST(suite, test_pgsql_reader_timestamp_text);
     SUITE_ADD_TEST(suite, test_pgsql_reader_date);
+    SUITE_ADD_TEST(suite, test_pgsql_reader_temporal_text_range);
+    SUITE_ADD_TEST(suite, test_pgsql_reader_double_text_bounds);
     SUITE_ADD_TEST(suite, test_pgsql_reader_temporal_binary);
     SUITE_ADD_TEST(suite, test_pgsql_reader_uuid);
     SUITE_ADD_TEST(suite, test_pgsql_reader_index);
     SUITE_ADD_TEST(suite, test_pgpack_error_notice);
     SUITE_ADD_TEST(suite, test_pgpack_error_notice_empty);
     SUITE_ADD_TEST(suite, test_pgsql_affected_rows);
+    SUITE_ADD_TEST(suite, test_pgsql_setter_atomic);
 }

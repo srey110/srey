@@ -516,20 +516,38 @@ void *memichr(const void *ptr, int32_t val, size_t maxlen) {
     }
     return NULL;
 }
-void safe_fill_str(char *dst, size_t dstsz, const char *src) {
+int32_t safe_fill_str(char *dst, size_t dstsz, const char *src) {
     if (0 == dstsz) {
-        return;
+        return ERR_FAILED;
     }
     if (NULL == src) {
         dst[0] = '\0';
-        return;
+        return ERR_OK;
     }
     size_t n = strlen(src);
     if (n >= dstsz) {
-        n = dstsz - 1;
+        return ERR_FAILED;
     }
     memcpy(dst, src, n);
     dst[n] = '\0';
+    return ERR_OK;
+}
+int32_t copy_bounded(const void *data, size_t lens, char *dst, size_t cap, int32_t strict) {
+    if (0 == cap) {
+        return ERR_FAILED;
+    }
+    size_t cplen = lens;
+    if (lens >= cap) {
+        if (0 != strict) {
+            return ERR_FAILED;
+        }
+        cplen = cap - 1;
+    }
+    if (cplen > 0) {
+        memcpy(dst, data, cplen);
+    }
+    dst[cplen] = '\0';
+    return ERR_OK;
 }
 char *dup_zero(const void *src, size_t lens) {
     char *dst;

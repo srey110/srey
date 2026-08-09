@@ -391,19 +391,39 @@ static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_t *status
     if (NULL == pack) {
         int32_t pos = buffer_search(buf, 0, 0, 0, FLAG_CRLF, CRLF_SIZE);
         if (pos < 0) {
-            BIT_SET(*status, PROT_MOREDATA);
+            // 长度行还没收全时，缓冲里的字节全都属于这一行。没有上限的话，对端只要一直发
+            // 不带 CRLF 的数据就能让接收缓冲无限涨，一条连接即可耗尽内存；头块与 trailer
+            // 块都是按 MAX_HEADLENS 这么挡的
+            if (buffer_size(buf) > MAX_HEADLENS) {
+                BIT_SET(*status, PROT_ERROR);
+            } else {
+                BIT_SET(*status, PROT_MOREDATA);
+            }
             return NULL;
         }
         if (0 == pos) {
             BIT_SET(*status, PROT_ERROR);
             return NULL;
         }
-        char lensbuf[16] = { 0 };
-        if (pos >= (int32_t)sizeof(lensbuf)) {
+        // 整行长度按 MAX_HEADLENS 卡（同头块与 trailer 块）。行内的 chunk-ext 多长都不影响
+        // chunk-size 的解析，故只在这里卡总长，不拿它去限制下面那个栈缓冲
+        if (pos > (int32_t)MAX_HEADLENS) {
             BIT_SET(*status, PROT_ERROR);
             return NULL;
         }
-        ASSERTAB(pos == (int32_t)buffer_copyout(buf, 0, lensbuf, pos), "copy buffer failed.");
+        // RFC 7230 §4.1：chunk = chunk-size [ chunk-ext ] CRLF。只截出 ';' 之前的 chunk-size，
+        // ext 原样跳过——原来拿整行长度去卡 16 字节的栈缓冲，AWS 的 aws-chunked 一条
+        // "400;chunk-signature=<64 位 hex>" 有 80 多字节，零填充写法 "0000000000000005"
+        // 正好 16 字节，两者都是合法传输却被当协议错断连
+        int32_t semi = buffer_search(buf, 0, 0, (size_t)pos, ";", 1);
+        int32_t hexlens = (semi >= 0) ? semi : pos;
+        char lensbuf[17] = { 0 };// 64 位十六进制最多 16 位 + NUL
+        if (hexlens <= 0
+            || hexlens >= (int32_t)sizeof(lensbuf)) {
+            BIT_SET(*status, PROT_ERROR);
+            return NULL;
+        }
+        ASSERTAB(hexlens == (int32_t)buffer_copyout(buf, 0, lensbuf, (size_t)hexlens), "copy buffer failed.");
         // RFC 7230 §4.1：chunk-size = 1*HEXDIG。首字符必须是 HEXDIG，否则 strtoul 会跳过前导空白、
         // 吞 '+'/'-'、或在空白后接受 "0x" 前缀，造成与上下游对 chunk 边界解析分歧（请求走私）
         unsigned char c0 = (unsigned char)lensbuf[0];
@@ -418,12 +438,13 @@ static http_pack_ctx *_http_chunked(buffer_ctx *buf, ud_cxt *ud, int32_t *status
             return NULL;
         }
         char *_endptr;
+        errno = 0;
         size_t dlens = (size_t)strtoul(lensbuf, &_endptr, 16);
-        // _endptr == lensbuf：未消耗任何十六进制字符
-        // *_endptr != '\0' && *_endptr != ';'：hex 后跟非法字符
-        //   （RFC 7230 §4.1 仅允许 ';' 引导的 chunk-ext，其余均为非法）
+        // 截出来的这段必须整段都是 hex：_endptr 要停在 NUL 上（ext 已在上面切掉，不再放行 ';'）。
+        // ERANGE 也要判：MAX_PACK_SIZE 配成 0(不限制)时 PACK_TOO_LONG 恒假，回绕值就进去了
         if (_endptr == lensbuf
-            || (*_endptr != '\0' && *_endptr != ';')) {
+            || '\0' != *_endptr
+            || ERANGE == errno) {
             BIT_SET(*status, PROT_ERROR);
             return NULL;
         }

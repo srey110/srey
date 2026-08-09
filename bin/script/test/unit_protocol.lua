@@ -10,6 +10,7 @@ local redis   = require("lib.redis")
 local harbor  = require("srey.harbor")
 local smtp    = require("srey.smtp")
 local mail    = require("srey.smtp.mail")
+local base64  = require("srey.base64")
 
 srey.startup(function()
 runner.run("protocol", function(t)
@@ -89,6 +90,15 @@ runner.run("protocol", function(t)
     -- ── smtp pack 系列 ─────────────────────────────────────────────────
     do
         local s = smtp.new("127.0.0.1", 25, nil, "user", "psw")
+        t:check(s ~= nil, "smtp.new 合法参数")
+        -- ip / user / psw 超长返回 nil 而不是静默截断：截断后的密码拿去认证只换回
+        -- 服务端一句 535，调用方看不出是自己传长了（同 mysql.new / pgsql.new / mongo.new）
+        local toolong = string.rep("x", 96)
+        t:eq(nil, smtp.new("127.0.0.1", 25, nil, "user", toolong), "smtp.new 密码超长返 nil")
+        t:eq(nil, smtp.new("127.0.0.1", 25, nil, toolong, "psw"),  "smtp.new 用户名超长返 nil")
+        t:eq(nil, smtp.new(toolong, 25, nil, "user", "psw"),       "smtp.new ip 超长返 nil")
+        t:check(smtp.new("127.0.0.1", 25, nil, "user", string.rep("y", 63)) ~= nil,
+                "smtp.new 正好 63 字节仍合法")
         -- 正常地址
         local pack, size = s:pack_from("alice@example.com")
         t:check(pack ~= nil and size > 0, "smtp pack_from")
@@ -139,11 +149,15 @@ runner.run("protocol", function(t)
         t:check(txt:find("Subject:", 1, true) ~= nil, "mail has Subject")
         t:check(txt:find("From:", 1, true) ~= nil, "mail has From")
         t:check(txt:find("To:", 1, true) ~= nil, "mail has To")
-        t:check(txt:find("plain text body", 1, true) ~= nil, "mail has text body")
-        -- html 段在 multipart/alternative 之下的 base64 段（header 标 base64 但实际未编码），
-        -- 仅验证含 multipart 边界即可
+        -- 正文与 html 段都是 base64：8bit 原样写出时一段没换行的长正文会造出超过
+        -- RFC 5321 §4.5.3.1.6 那 1000 octet 上限的 DATA 行，纯文本单段还会因为缺
+        -- Content-Type 被按 us-ascii 解释
+        t:check(txt:find("plain text body", 1, true) == nil, "正文不再以明文出现")
+        t:check(txt:find(base64.encode("plain text body"), 1, true) ~= nil, "正文以 base64 出现")
         t:check(txt:find("multipart/alternative", 1, true) ~= nil, "mail has multipart/alternative")
         t:check(txt:find("text/html", 1, true) ~= nil, "mail has text/html header")
+        -- RFC 5322 §3.4 的 name-addr 形式
+        t:check(txt:find("From: Srey <srey@example.com>", 1, true) ~= nil, "From 用 display-name <addr>")
         utils.ud_free(pack)
     end
 

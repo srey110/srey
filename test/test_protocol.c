@@ -517,6 +517,73 @@ static void test_http_chunked_size_smuggle(CuTest *tc) {
     _chunked_size_check(tc, "a\r\n", 0);        // 合法 hex，不误拒（解析成功后等 data）
 }
 
+// RFC 7230 §4.1：chunk = chunk-size [ chunk-ext ] CRLF。ext 有多长都不该影响 chunk-size 的解析。
+// 原来是把整行拷进 lensbuf[16] 再解析，于是 AWS 的 aws-chunked（"400;chunk-signature=<64 位 hex>"，
+// 80 多字节）和零填充写法（"0000000000000005" 正好 16 字节）这两种合法传输都被当协议错断连
+static void test_http_chunked_ext(CuTest *tc) {
+    // 1. AWS aws-chunked 风格：长 chunk-ext
+    char line[256];
+    char sig[65];
+    memset(sig, 'a', sizeof(sig) - 1);
+    sig[sizeof(sig) - 1] = '\0';
+    SNPRINTF(line, sizeof(line), "400;chunk-signature=%s\r\n", sig);
+    _chunked_size_check(tc, line, 0);
+    // 2. 零填充到 16 字节：旧实现正好卡在 lensbuf[16] 的边界上
+    _chunked_size_check(tc, "0000000000000005\r\n", 0);
+    // 3. 空 ext
+    _chunked_size_check(tc, "5;\r\n", 0);
+    // 4. 只有 ext 没有 chunk-size → 拒
+    _chunked_size_check(tc, ";chunk-signature=x\r\n", 1);
+    // 5. hex 段里混进非 hex（ext 已切走，这里不再放行 ';' 之外的任何尾巴）→ 拒
+    _chunked_size_check(tc, "5g;ext=1\r\n", 1);
+    // 6. hex 段超过 16 位（64 位十六进制的上限）→ 拒
+    _chunked_size_check(tc, "00000000000000005\r\n", 1);
+    // 7. 整行超过 MAX_HEADLENS → 拒（ext 再长也有个头）
+    char *big;
+    MALLOC(big, MAX_HEADLENS + 64);
+    memset(big, 'e', MAX_HEADLENS + 8);
+    memcpy(big, "5;x=", 4);
+    memcpy(big + MAX_HEADLENS + 8, "\r\n", 3);
+    _chunked_size_check(tc, big, 1);
+    FREE(big);
+}
+
+// chunk-size 行迟迟等不到 CRLF 时必须有上限。没有的话对端只要一直发不带 CRLF 的字节，
+// 接收缓冲就一直涨，一条连接、不用认证就能把内存吃光；头块与 trailer 块都是按 MAX_HEADLENS 挡的
+static void test_http_chunked_size_no_crlf_bound(CuTest *tc) {
+    buffer_ctx buf;
+    buffer_init(&buf);
+    _bput(&buf, "GET / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n");
+    ud_cxt ud;
+    ZERO(&ud, sizeof(ud_cxt));
+    int32_t status = PROT_INIT;
+    struct http_pack_ctx *pack = http_unpack(&buf, &ud, &status);
+    CuAssertPtrNotNull(tc, pack);
+    _http_pkfree(pack);
+
+    char filler[1024];
+    memset(filler, 'a', sizeof(filler));
+    // 未超上限：仍然是"等更多数据"，不能误拒
+    buffer_append(&buf, filler, sizeof(filler));
+    status = PROT_INIT;
+    pack = http_unpack(&buf, &ud, &status);
+    CuAssertTrue(tc, NULL == pack);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_MOREDATA));
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+
+    // 累计超过 MAX_HEADLENS 仍无 CRLF：判协议错，不再继续收
+    while (buffer_size(&buf) <= MAX_HEADLENS) {
+        buffer_append(&buf, filler, sizeof(filler));
+    }
+    status = PROT_INIT;
+    pack = http_unpack(&buf, &ud, &status);
+    CuAssertTrue(tc, NULL == pack);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+
+    _http_udfree(&ud);
+    buffer_free(&buf);
+}
+
 // _http_check_keyval value 按 token 严格匹配(RFC 7230 §3.3.1)
 static void test_http_check_keyval_token(CuTest *tc) {
     http_header_ctx head;
@@ -967,6 +1034,49 @@ static void test_redis_array(CuTest *tc) {
 }
 
 /* redis_pack 组包，再解包验证 */
+// 认不出的转换整条拒掉：之前是"抄成字面量继续走"，既不取走对应的可变参数、也不跳过转换符，
+// 后面每个转换都读到错位一格的参数——%s 拿到整数当指针实测就是段错误
+static void test_redis_pack_bad_format(CuTest *tc) {
+    size_t size = 1;
+
+    // %j / %t / %L 都不在支持列表里
+    CuAssertTrue(tc, NULL == redis_pack(&size, "SETEX %s %jd %s", "k", 3600, "v"));
+    CuAssertTrue(tc, 0 == size);
+    size = 1;
+    CuAssertTrue(tc, NULL == redis_pack(&size, "SET %s %td", "k", 1));
+    CuAssertTrue(tc, 0 == size);
+
+    // 长度修饰后面跟的不是整数转换
+    size = 1;
+    CuAssertTrue(tc, NULL == redis_pack(&size, "SET %s %lq", "k", 1));
+    CuAssertTrue(tc, 0 == size);
+    size = 1;
+    CuAssertTrue(tc, NULL == redis_pack(&size, "SET %s %zq", "k", 1));
+    CuAssertTrue(tc, 0 == size);
+
+    // 只有标志/宽度没有转换符就到串尾
+    size = 1;
+    CuAssertTrue(tc, NULL == redis_pack(&size, "GET %"));
+    CuAssertTrue(tc, 0 == size);
+    size = 1;
+    CuAssertTrue(tc, NULL == redis_pack(&size, "GET %-8"));
+    CuAssertTrue(tc, 0 == size);
+
+    // 支持列表里的照常成功，别把好的一起拒了
+    char *cmd = redis_pack(&size, "SETEX %s %zu %s", "k", (size_t)3600, "v");
+    CuAssertPtrNotNull(tc, cmd);
+    CuAssertTrue(tc, size > 0);
+    FREE(cmd);
+    cmd = redis_pack(&size, "SET %s %lld", "k", (long long)-1);
+    CuAssertPtrNotNull(tc, cmd);
+    FREE(cmd);
+    cmd = redis_pack(&size, "SET %s %.2f", "k", 1.5);
+    CuAssertPtrNotNull(tc, cmd);
+    FREE(cmd);
+    cmd = redis_pack(&size, "SET %s 100%%", "k");
+    CuAssertPtrNotNull(tc, cmd);
+    FREE(cmd);
+}
 static void test_redis_pack(CuTest *tc) {
     /* "SET key value" → *3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n */
     size_t size = 0;
@@ -1944,138 +2054,228 @@ static void test_smtp_b64_fold(CuTest *tc) {
     mail_free(&mail);
 }
 
-// mail_pack 必须对 mail->msg 做 dot-stuffing（RFC 5321 §4.5.2）
-// 防 SMTP Smuggling 攻击（CVE-2023-51764 / CVE-2023-51765 同模式）
-static void test_smtp_dot_stuffing(CuTest *tc) {
-    // 1. 攻击载荷：用户输入含 <CRLF>.<CRLF> + 伪造 SMTP 命令
-    {
-        mail_ctx mail;
+// 正文改走 base64 之后，SMTP smuggling 的入口从根上没了：base64 行首只可能是 base64 字符，
+// <CRLF>.<CRLF> 在正文里根本无法表达，也就不再需要 dot-stuffing。所以这里不再断言具体手法，
+// 改断言那条不变式本身——整封信里 "\r\n.\r\n" 只出现一次（末尾的 DATA 终止符），
+// 且正文解码回来与 mail_msg 规范化后的原文逐字相同（内容无损）
+static void _smtp_body_check(CuTest *tc, const char *msg, const char *expect) {
+    mail_ctx mail;
+    mail_init(&mail);
+    mail_from(&mail, NULL, "alice@example.com");
+    mail_addrs_add(&mail, "bob@example.com", TO);
+    mail_subject(&mail, "test");
+    mail_msg(&mail, msg);
+    char *out = mail_pack(&mail);
+    CuAssertPtrNotNull(tc, out);
+
+    // 1) DATA 终止符全文只此一处，且正好在末尾
+    const char *term = strstr(out, "\r\n.\r\n");
+    CuAssertPtrNotNull(tc, term);
+    CuAssert(tc, "DATA terminator must appear exactly once", NULL == strstr(term + 1, "\r\n.\r\n"));
+    CuAssertTrue(tc, '\0' == term[5]);
+
+    // 2) 头部空行之后到终止符之间是折行的 base64 正文，去掉 CRLF 再解码
+    const char *body = strstr(out, "\r\n\r\n");
+    CuAssertPtrNotNull(tc, body);
+    body += 4;
+    char b64[ONEK];
+    char plain[ONEK];
+    size_t n = 0;
+    const char *p;
+    for (p = body; p < term; p++) {
+        if ('\r' != *p && '\n' != *p) {
+            CuAssertTrue(tc, n < sizeof(b64) - 1);
+            b64[n++] = *p;
+        }
+    }
+    b64[n] = '\0';
+    size_t plens = bs64_decode(b64, n, plain);
+    CuAssertTrue(tc, strlen(expect) == plens);
+    CuAssertTrue(tc, 0 == memcmp(plain, expect, plens));
+
+    FREE(out);
+    mail_free(&mail);
+}
+static void test_smtp_body_transparency(CuTest *tc) {
+    // 1. 攻击载荷：正文里带 <CRLF>.<CRLF> + 伪造 SMTP 命令，编码后原样还原、不构成终止符
+    _smtp_body_check(tc, "hello\r\n.\r\nMAIL FROM:<evil@attacker>\r\nRCPT TO:<victim>\r\nDATA\r\nworld",
+                         "hello\r\n.\r\nMAIL FROM:<evil@attacker>\r\nRCPT TO:<victim>\r\nDATA\r\nworld");
+    // 2. 正文以 '.' 开头
+    _smtp_body_check(tc, ".dotted line", ".dotted line");
+    // 3. 普通文本
+    _smtp_body_check(tc, "hello\r\nworld", "hello\r\nworld");
+    // 4. 连续多行以 '.' 开头
+    _smtp_body_check(tc, "line1\r\n.line2\r\n.line3", "line1\r\n.line2\r\n.line3");
+    // 5. bare LF：mail_msg 入口规范化为 CRLF（容错 server 会把裸 \n 当行终止）
+    _smtp_body_check(tc, "hello\n.\r\nMAIL FROM:<evil@attacker>\r\nDATA\r\nworld",
+                         "hello\r\n.\r\nMAIL FROM:<evil@attacker>\r\nDATA\r\nworld");
+    // 6. bare CR：同上
+    _smtp_body_check(tc, "hello\r.\r\nMAIL FROM:<evil@attacker>\r\nDATA",
+                         "hello\r\n.\r\nMAIL FROM:<evil@attacker>\r\nDATA");
+    // 7. 合法 CRLF 原样保留，不被复述成 \r\n\r\n
+    _smtp_body_check(tc, "line1\r\nline2\r\nline3", "line1\r\nline2\r\nline3");
+}
+
+// 单段纯文本邮件也必须带 MIME 头。只在多段时才写的话，最常见的那类信整封没有 Content-Type，
+// 按 RFC 2045 缺省成 us-ascii，UTF-8 正文到严格客户端上就是乱码
+static void test_smtp_plain_mime_headers(CuTest *tc) {
+    mail_ctx mail;
+    mail_init(&mail);
+    mail_from(&mail, NULL, "alice@example.com");
+    mail_addrs_add(&mail, "bob@example.com", TO);
+    mail_subject(&mail, "test");
+    mail_msg(&mail, "\xe4\xb8\xad\xe6\x96\x87");// UTF-8 "中文"
+    char *out = mail_pack(&mail);
+    CuAssertPtrNotNull(tc, out);
+    CuAssertTrue(tc, NULL != strstr(out, "MIME-Version: 1.0"));
+    CuAssertTrue(tc, NULL != strstr(out, "Content-Type: text/plain; charset=utf-8"));
+    CuAssertTrue(tc, NULL != strstr(out, "Content-Transfer-Encoding: base64"));
+    // 没有 html / 附件就不该出现 multipart
+    CuAssertTrue(tc, NULL == strstr(out, "multipart"));
+    FREE(out);
+    mail_free(&mail);
+}
+
+// 长正文不带换行时，8bit 原样写出会造出一条几千 octet 的 DATA 行（RFC 5321 §4.5.3.1.6 限 1000）
+static void test_smtp_plain_line_fold(CuTest *tc) {
+    char msg[4096];
+    memset(msg, 'm', sizeof(msg) - 1);
+    msg[sizeof(msg) - 1] = '\0';
+    mail_ctx mail;
+    mail_init(&mail);
+    mail_from(&mail, NULL, "alice@example.com");
+    mail_addrs_add(&mail, "bob@example.com", TO);
+    mail_subject(&mail, "test");
+    mail_msg(&mail, msg);
+    char *out = mail_pack(&mail);
+    CuAssertPtrNotNull(tc, out);
+    size_t maxline = 0;
+    size_t cur = 0;
+    const char *p = out;
+    while ('\0' != *p) {
+        if ('\r' == p[0] && '\n' == p[1]) {
+            if (cur > maxline) {
+                maxline = cur;
+            }
+            cur = 0;
+            p += 2;
+            continue;
+        }
+        cur++;
+        p++;
+    }
+    if (cur > maxline) {
+        maxline = cur;
+    }
+    CuAssert(tc, "plain-text body must be folded too, not just base64 attachments", maxline <= 998);
+    FREE(out);
+    mail_free(&mail);
+}
+
+// MIME boundary 必须每封随机。写死的字面量摆在源码里，正文放一行 "--<boundary>" 就能提前
+// 终结 text 段、再伪造出一个附件或 text/html 替代段（RFC 2046 §5.1.1 要求 boundary 不得
+// 出现在任何 body part 中，常量做不到）
+static void test_smtp_boundary_random(CuTest *tc) {
+    char b1[128] = { 0 };
+    char b2[128] = { 0 };
+    const char *html = "<p>hi</p>";
+    mail_ctx mail;
+    const char *tag;
+    const char *end;
+    char *out;
+    for (int32_t i = 0; i < 2; i++) {
         mail_init(&mail);
         mail_from(&mail, NULL, "alice@example.com");
         mail_addrs_add(&mail, "bob@example.com", TO);
         mail_subject(&mail, "test");
-        mail_msg(&mail, "hello\r\n.\r\nMAIL FROM:<evil@attacker>\r\nRCPT TO:<victim>\r\nDATA\r\nworld");
-
-        char *out = mail_pack(&mail);
+        mail_html(&mail, html, strlen(html));
+        out = mail_pack(&mail);
         CuAssertPtrNotNull(tc, out);
-        // 攻击 pattern（\r\n.\r\nMAIL）不应出现 — 否则 SMTP smuggling
-        CuAssertTrue(tc, NULL == strstr(out, "\r\n.\r\nMAIL FROM:<evil@attacker>"));
-        // 转义后（\r\n..\r\nMAIL）应出现
-        CuAssertTrue(tc, NULL != strstr(out, "\r\n..\r\nMAIL FROM:<evil@attacker>"));
-
+        tag = strstr(out, "boundary=\"");
+        CuAssertPtrNotNull(tc, tag);
+        tag += strlen("boundary=\"");
+        end = strchr(tag, '"');
+        CuAssertPtrNotNull(tc, end);
+        CuAssertTrue(tc, (size_t)(end - tag) < sizeof(b1) - 1);
+        memcpy(0 == i ? b1 : b2, tag, (size_t)(end - tag));
         FREE(out);
         mail_free(&mail);
     }
-    // 2. 正文以 '.' 开头 — 应转为 ".."
-    {
-        mail_ctx mail;
-        mail_init(&mail);
-        mail_from(&mail, NULL, "alice@example.com");
-        mail_addrs_add(&mail, "bob@example.com", TO);
-        mail_subject(&mail, "test");
-        mail_msg(&mail, ".dotted line");
+    CuAssertTrue(tc, strlen(b1) > 0);
+    CuAssert(tc, "each message must get its own boundary", 0 != strcmp(b1, b2));
+}
 
-        char *out = mail_pack(&mail);
-        CuAssertPtrNotNull(tc, out);
-        // Subject: test\r\n\r\n 之后即 body 起始
-        char *body = strstr(out, "Subject: test\r\n\r\n");
-        CuAssertPtrNotNull(tc, body);
-        body += strlen("Subject: test\r\n\r\n");
-        // body 首字符应是 ".."（转义后）而非孤立 "."
-        CuAssertTrue(tc, '.' == body[0] && '.' == body[1] && 'd' == body[2]);
+// display-name 含 RFC 5322 §3.2.3 的 specials 时必须整体加引号：裸写的话
+// "Doe, John <a@b>" 会被解析成 "Doe" 与 "John <a@b>" 两个地址
+static void _smtp_from_check(CuTest *tc, const char *name, const char *expect) {
+    mail_ctx mail;
+    mail_init(&mail);
+    mail_from(&mail, name, "alice@example.com");
+    mail_addrs_add(&mail, "bob@example.com", TO);
+    mail_subject(&mail, "test");
+    mail_msg(&mail, "body");
+    char *out = mail_pack(&mail);
+    CuAssertPtrNotNull(tc, out);
+    CuAssert(tc, expect, NULL != strstr(out, expect));
+    FREE(out);
+    mail_free(&mail);
+}
+static void test_smtp_display_name_quote(CuTest *tc) {
+    // 纯 atom：不加引号
+    _smtp_from_check(tc, "srey", "From: srey <alice@example.com>\r\n");
+    // 含逗号：整体加引号
+    _smtp_from_check(tc, "Doe, John", "From: \"Doe, John\" <alice@example.com>\r\n");
+    // 含点号（RFC 5322 把 '.' 也列为 specials）
+    _smtp_from_check(tc, "J. Doe", "From: \"J. Doe\" <alice@example.com>\r\n");
+    // 含引号：quoted-string 内需转义
+    _smtp_from_check(tc, "a\"b", "From: \"a\\\"b\" <alice@example.com>\r\n");
+    // 无显示名：裸 addr-spec，不带尖括号
+    _smtp_from_check(tc, NULL, "From: alice@example.com\r\n");
+}
 
-        FREE(out);
-        mail_free(&mail);
+// 非 ASCII 头字段必须编成 RFC 2047 encoded-word：RFC 5322 §2.2 只允许 US-ASCII，
+// 而本实现从不协商 SMTPUTF8，裸 UTF-8 主题在严格服务端上会被改写
+static void test_smtp_header_encoded_word(CuTest *tc) {
+    mail_ctx mail;
+    mail_init(&mail);
+    mail_from(&mail, "\xe5\x8f\x91\xe4\xbb\xb6\xe4\xba\xba", "alice@example.com");// "发件人"
+    mail_addrs_add(&mail, "bob@example.com", TO);
+    // "中文主题" 重复 20 次，逼出多个 encoded-word + 折行
+    char subject[256] = { 0 };
+    for (int32_t i = 0; i < 20; i++) {
+        strcat(subject, "\xe4\xb8\xad\xe6\x96\x87\xe4\xb8\xbb\xe9\xa2\x98");
     }
-    // 3. 普通文本（无行首 '.'）— 不应被修改
-    {
-        mail_ctx mail;
-        mail_init(&mail);
-        mail_from(&mail, NULL, "alice@example.com");
-        mail_addrs_add(&mail, "bob@example.com", TO);
-        mail_subject(&mail, "test");
-        mail_msg(&mail, "hello\r\nworld");
-
-        char *out = mail_pack(&mail);
-        CuAssertPtrNotNull(tc, out);
-        // 原文应原样出现
-        CuAssertTrue(tc, NULL != strstr(out, "hello\r\nworld"));
-        // 不应有额外 '.' 插入
-        CuAssertTrue(tc, NULL == strstr(out, "hello\r\n."));
-
-        FREE(out);
-        mail_free(&mail);
+    mail_subject(&mail, subject);
+    char *out = mail_pack(&mail);
+    CuAssertPtrNotNull(tc, out);
+    // 裸 UTF-8 不得出现在头部
+    const char *hdrend = strstr(out, "\r\n\r\n");
+    CuAssertPtrNotNull(tc, hdrend);
+    const char *p;
+    for (p = out; p < hdrend; p++) {
+        CuAssertTrue(tc, 0 == (0x80 & (unsigned char)*p));
     }
-    // 4. 连续多行均以 '.' 开头 — 每行都应转义
-    {
-        mail_ctx mail;
-        mail_init(&mail);
-        mail_from(&mail, NULL, "alice@example.com");
-        mail_addrs_add(&mail, "bob@example.com", TO);
-        mail_subject(&mail, "test");
-        mail_msg(&mail, "line1\r\n.line2\r\n.line3");
-
-        char *out = mail_pack(&mail);
-        CuAssertPtrNotNull(tc, out);
-        // 两处行首 '.' 都应转义
-        CuAssertTrue(tc, NULL != strstr(out, "line1\r\n..line2\r\n..line3"));
-
-        FREE(out);
-        mail_free(&mail);
+    CuAssertTrue(tc, NULL != strstr(out, "Subject: =?utf-8?B?"));
+    // RFC 5322 §3.4 的 name-addr：display-name <addr-spec>，非 ASCII 名字编成 encoded-word
+    CuAssertTrue(tc, NULL != strstr(out, "From: =?utf-8?B?"));
+    CuAssertTrue(tc, NULL != strstr(out, "?= <alice@example.com>\r\n"));
+    // RFC 2047 §2：单个 encoded-word 连同 "=?utf-8?B?" 与 "?=" 不得超过 75 字符
+    const char *ew = out;
+    const char *ewend;
+    int32_t nword = 0;
+    while (NULL != (ew = strstr(ew, "=?utf-8?B?"))) {
+        ewend = strstr(ew, "?=");
+        CuAssertPtrNotNull(tc, ewend);
+        CuAssertTrue(tc, (size_t)(ewend + 2 - ew) <= 75);
+        nword++;
+        ew = ewend + 2;
     }
-    // 5. bare LF 注入：mail_msg 入口规范化为 CRLF，后续 dot-stuffing 才拦截到攻击
-    {
-        mail_ctx mail;
-        mail_init(&mail);
-        mail_from(&mail, NULL, "alice@example.com");
-        mail_addrs_add(&mail, "bob@example.com", TO);
-        mail_subject(&mail, "test");
-        // 容错 server 把 \n 视为行终止 → \n. 被识别为行首 '.' → \r\n 终止 DATA → smuggling
-        mail_msg(&mail, "hello\n.\r\nMAIL FROM:<evil@attacker>\r\nDATA\r\nworld");
-
-        char *out = mail_pack(&mail);
-        CuAssertPtrNotNull(tc, out);
-        // 攻击 pattern 不应残留：bare LF 已规范化为 CRLF，行首 . 已 dot-stuff
-        CuAssertTrue(tc, NULL == strstr(out, "\n.\r\nMAIL FROM:<evil@attacker>"));
-        CuAssertTrue(tc, NULL != strstr(out, "hello\r\n..\r\nMAIL FROM:<evil@attacker>"));
-
-        FREE(out);
-        mail_free(&mail);
-    }
-    // 6. bare CR 注入：同上
-    {
-        mail_ctx mail;
-        mail_init(&mail);
-        mail_from(&mail, NULL, "alice@example.com");
-        mail_addrs_add(&mail, "bob@example.com", TO);
-        mail_subject(&mail, "test");
-        mail_msg(&mail, "hello\r.\r\nMAIL FROM:<evil@attacker>\r\nDATA");
-
-        char *out = mail_pack(&mail);
-        CuAssertPtrNotNull(tc, out);
-        CuAssertTrue(tc, NULL != strstr(out, "hello\r\n..\r\nMAIL FROM:<evil@attacker>"));
-
-        FREE(out);
-        mail_free(&mail);
-    }
-    // 7. 合法 CRLF 不应被复述（规范化不破坏既有 CRLF）
-    {
-        mail_ctx mail;
-        mail_init(&mail);
-        mail_from(&mail, NULL, "alice@example.com");
-        mail_addrs_add(&mail, "bob@example.com", TO);
-        mail_subject(&mail, "test");
-        mail_msg(&mail, "line1\r\nline2\r\nline3");
-
-        char *out = mail_pack(&mail);
-        CuAssertPtrNotNull(tc, out);
-        // 合法 CRLF 原样保留，不变形为 \r\n\r\n
-        CuAssertTrue(tc, NULL != strstr(out, "line1\r\nline2\r\nline3"));
-        CuAssertTrue(tc, NULL == strstr(out, "line1\r\n\r\nline2"));
-
-        FREE(out);
-        mail_free(&mail);
-    }
+    // 240 字节主题按每段 45 字节切，加上发件人显示名，至少 6 段
+    CuAssertTrue(tc, nword >= 6);
+    // 多段之间按 RFC 5322 §2.2.3 折行（CRLF + 一个空格）
+    CuAssertTrue(tc, NULL != strstr(out, "?=\r\n =?utf-8?B?"));
+    FREE(out);
+    mail_free(&mail);
 }
 
 /* =======================================================================
@@ -3246,6 +3446,40 @@ static void test_mail_html_and_clear(CuTest *tc) {
     mail_free(&mail);
 }
 
+// smtp_init 超长必须整体拒绝而不是让 safe_fill_str 悄悄截断：psw 只有 64 字节，
+// OAuth token 之类轻松超过，截断后拿去认证只换回服务端一句 535，调用方看不出是自己传长了。
+// 同 mysql_init / pgsql_init / mongo_init 的口径
+static void test_smtp_init_bounds(CuTest *tc) {
+    smtp_ctx smtp;
+    char toolong[IP_LENS + 32];
+    memset(toolong, 'x', sizeof(toolong) - 1);
+    toolong[sizeof(toolong) - 1] = '\0';
+
+    // 合法参数
+    CuAssertIntEquals(tc, ERR_OK, smtp_init(&smtp, "127.0.0.1", 25, NULL, "user", "psw"));
+    CuAssertTrue(tc, 0 == strcmp(smtp.ip, "127.0.0.1"));
+    CuAssertTrue(tc, 0 == strcmp(smtp.user, "user"));
+    CuAssertTrue(tc, 0 == strcmp(smtp.psw, "psw"));
+
+    // 三个字段各自超长都要被拒。失败时 smtp 已被 ZERO 且可能填了前几个字段，
+    // 按 init 失败处理即可，不保证"原样不动"——所以这里只验返回值
+    CuAssertIntEquals(tc, ERR_FAILED, smtp_init(&smtp, "127.0.0.1", 25, NULL, "user", toolong));
+    CuAssertIntEquals(tc, ERR_FAILED, smtp_init(&smtp, "127.0.0.1", 25, NULL, toolong, "psw"));
+    CuAssertIntEquals(tc, ERR_FAILED, smtp_init(&smtp, toolong, 25, NULL, "user", "psw"));
+
+    // 边界：正好填满（容量 - 1）仍然合法
+    char just[64];
+    memset(just, 'y', sizeof(just) - 1);
+    just[sizeof(just) - 1] = '\0';
+    CuAssertIntEquals(tc, ERR_OK, smtp_init(&smtp, "127.0.0.1", 25, NULL, "user", just));
+    CuAssertTrue(tc, 0 == strcmp(smtp.psw, just));
+    // 再多一个字节就越界
+    char over[65];
+    memset(over, 'y', sizeof(over) - 1);
+    over[sizeof(over) - 1] = '\0';
+    CuAssertIntEquals(tc, ERR_FAILED, smtp_init(&smtp, "127.0.0.1", 25, NULL, "user", over));
+}
+
 /* =======================================================================
  * SMTP 命令组包：RSET / QUIT / NOOP / DATA / MAIL FROM / RCPT TO
  * smtp_pack_from / smtp_pack_rcpt 拒绝含 CR/LF 的输入（防 CRLF 注入）
@@ -4098,6 +4332,8 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_http_smuggling);
     SUITE_ADD_TEST(suite, test_http_status_line);
     SUITE_ADD_TEST(suite, test_http_chunked_size_smuggle);
+    SUITE_ADD_TEST(suite, test_http_chunked_size_no_crlf_bound);
+    SUITE_ADD_TEST(suite, test_http_chunked_ext);
     SUITE_ADD_TEST(suite, test_http_check_keyval_token);
     SUITE_ADD_TEST(suite, test_http_chunked_trailer_limit);
     SUITE_ADD_TEST(suite, test_http_moredata);
@@ -4109,6 +4345,7 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_redis_null_bulk);
     SUITE_ADD_TEST(suite, test_redis_array);
     SUITE_ADD_TEST(suite, test_redis_pack);
+    SUITE_ADD_TEST(suite, test_redis_pack_bad_format);
     SUITE_ADD_TEST(suite, test_redis_moredata);
     SUITE_ADD_TEST(suite, test_redis_oversize_no_crlf);
     SUITE_ADD_TEST(suite, test_redis_resp3_scalar);
@@ -4120,10 +4357,16 @@ void test_protocol(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_custz);
     SUITE_ADD_TEST(suite, test_custz_maxpack);
     SUITE_ADD_TEST(suite, test_smtp_full_response);
-    SUITE_ADD_TEST(suite, test_smtp_dot_stuffing);
+    SUITE_ADD_TEST(suite, test_smtp_body_transparency);
+    SUITE_ADD_TEST(suite, test_smtp_plain_mime_headers);
+    SUITE_ADD_TEST(suite, test_smtp_plain_line_fold);
+    SUITE_ADD_TEST(suite, test_smtp_boundary_random);
+    SUITE_ADD_TEST(suite, test_smtp_display_name_quote);
+    SUITE_ADD_TEST(suite, test_smtp_header_encoded_word);
     SUITE_ADD_TEST(suite, test_smtp_b64_fold);
     SUITE_ADD_TEST(suite, test_smtp_clear_reply);
     SUITE_ADD_TEST(suite, test_http_value_trailing_ows);
+    SUITE_ADD_TEST(suite, test_smtp_init_bounds);
     SUITE_ADD_TEST(suite, test_smtp_pack_cmds);
     SUITE_ADD_TEST(suite, test_smtp_pack_crlf_inject);
     SUITE_ADD_TEST(suite, test_smtp_check_code);

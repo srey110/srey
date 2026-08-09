@@ -97,6 +97,11 @@ typedef struct sc_sg_prune_ctx {
     array_ctx *prune;        // 死订阅 name 列表(与 normal 共用)
     array_ctx *empty_groups; // 删空后待移除的 group 名(char*,指向 sc_shared_group.group)
 }sc_sg_prune_ctx;
+// publisher_meta 懒清理用：scan 期间只收集 grab 不到的 name，删除放到 scan 之后
+typedef struct sc_pm_prune_ctx {
+    sc_ctx *ctx;
+    array_ctx *dead;
+}sc_pm_prune_ctx;
 
 // publisher_meta hashmap
 static uint64_t _sc_pm_hash(const void *item, uint64_t s0, uint64_t s1) {
@@ -112,6 +117,17 @@ static int _sc_pm_cmp(const void *a, const void *b, void *ud) {
 static void _sc_pm_free(void *item) {
     sc_publisher_meta *e = (sc_publisher_meta *)item;
     FREE(e->meta);
+}
+static bool _sc_pm_prune_iter(const void *item, void *udata) {
+    const sc_publisher_meta *e = (const sc_publisher_meta *)item;
+    sc_pm_prune_ctx *pp = (sc_pm_prune_ctx *)udata;
+    task_ctx *t = task_grab(pp->ctx->loader, e->publisher);
+    if (NULL == t) {
+        array_push_back(pp->dead, &e->publisher);
+        return true;
+    }
+    task_ungrab(t);
+    return true;
 }
 // shared_groups hashmap
 static uint64_t _sc_sg_hash(const void *item, uint64_t s0, uint64_t s1) {
@@ -872,6 +888,33 @@ static void _sc_handle_pub(sc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *b
 }
 // handler:SET_META。mlen=0 删除 publisher_meta 条目(等价"清除");
 // 否则 MALLOC + memcpy 覆盖现有 entry,或新建条目入 hashmap
+// 摘掉所有已经死掉的 publisher 的 meta。key 是 name_t，publisher 若没在 _closing 里调
+// set_meta(NULL, 0) 就死了，这条 entry 从此再没人碰得到（unsub 不碰它，投递侧只读不删）。
+// 只在"新 publisher 首次登记 meta"那一步调用：那是这张表唯一的增长点，在增长点清理就能保证
+// 表大小不会随时间单调上涨；publish 路径一次都不付（那是热路径，每次全扫 + 逐个 task_grab 太贵）
+static void _sc_pm_prune(sc_ctx *ctx) {
+    if (0 == hashmap_count(ctx->publisher_meta)) {
+        return;
+    }
+    array_ctx dead;
+    array_init(&dead, sizeof(name_t), 0);
+    sc_pm_prune_ctx pp;
+    pp.ctx = ctx;
+    pp.dead = &dead;
+    hashmap_scan(ctx->publisher_meta, _sc_pm_prune_iter, &pp);
+    name_t *dn = (name_t *)dead.ptr;
+    sc_publisher_meta q;
+    sc_publisher_meta *removed;
+    for (uint32_t i = 0; i < dead.size; i++) {
+        q.publisher = dn[i];
+        // hashmap_delete 只摘不释放，meta 缓冲要自己 free
+        removed = (sc_publisher_meta *)hashmap_delete(ctx->publisher_meta, &q);
+        if (NULL != removed) {
+            _sc_pm_free(removed);
+        }
+    }
+    array_free(&dead);
+}
 static void _sc_handle_set_meta(sc_ctx *ctx, name_t src, uint64_t sess, binary_ctx *br) {
     const char *meta;
     uint16_t mlen;
@@ -897,6 +940,8 @@ static void _sc_handle_set_meta(sc_ctx *ctx, name_t src, uint64_t sess, binary_c
         memcpy(e->meta, meta, mlen);
         e->size = mlen;
     } else {
+        // 新增条目 = 这张表唯一的增长点，先把死掉的摘掉再插
+        _sc_pm_prune(ctx);
         sc_publisher_meta ne;
         ne.publisher = src;
         MALLOC(ne.meta, mlen);

@@ -10,7 +10,11 @@
 /// <param name="nparam">参数数量</param>
 void pgsql_bind_init(pgsql_bind_ctx *bind, uint16_t nparam);
 /// <summary>
-/// 释放参数绑定上下文内部缓冲区
+/// 释放参数绑定上下文内部缓冲区。释放后 nparam 归零，本文件所有绑定接口都靠这个值早退，
+/// 于是可重复调用、且释放后再绑定只会静默无视。
+/// 之所以要做到可重复调用：Lua 绑定把它挂在 __gc 上，而 REG_MTABLE 让元表自身兼作 __index，
+/// 脚本能直接调 b:__gc()（元表里没有 free 方法），于是同一个 ctx 可能被释放两次。
+/// 若只置空缓冲指针而留着 nparam 与旧的 size/offset，下一次写入会以为"还写得下"从而写到空指针上
 /// </summary>
 /// <param name="bind">pgsql_bind_ctx 指针</param>
 void pgsql_bind_free(pgsql_bind_ctx *bind);

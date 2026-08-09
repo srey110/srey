@@ -36,14 +36,28 @@ void _smtp_udfree(ud_cxt *ud) {
 void _smtp_closed(ud_cxt *ud) {
     _smtp_udfree(ud);
 }
-void smtp_init(smtp_ctx *smtp, const char *ip, uint16_t port, struct evssl_ctx *evssl, const char *user, const char *psw) {
+int32_t smtp_init(smtp_ctx *smtp, const char *ip, uint16_t port, struct evssl_ctx *evssl, const char *user, const char *psw) {
     ZERO(smtp, sizeof(smtp_ctx));
-    safe_fill_str(smtp->ip, sizeof(smtp->ip), ip);
     smtp->port = port;
     smtp->evssl = evssl;
     smtp->sk.fd = INVALID_SOCK;
-    safe_fill_str(smtp->user, sizeof(smtp->user), user);
-    safe_fill_str(smtp->psw, sizeof(smtp->psw), psw);
+    // safe_fill_str 装不下即拒绝写入并返回 ERR_FAILED：psw 只有 64 字节，OAuth token 之类
+    // 轻松超过，截断后拿去认证只换回服务端一句 535，本地一点线索都没有。
+    // 失败时 smtp 已被 ZERO 且可能填了前几个字段，调用方按 init 失败处理（丢弃或 FREE），不得继续用
+    if (ERR_OK != safe_fill_str(smtp->ip, sizeof(smtp->ip), ip)) {
+        LOG_ERROR("smtp ip exceeds %zu bytes: %zu.", sizeof(smtp->ip) - 1, strlen(ip));
+        return ERR_FAILED;
+    }
+    if (ERR_OK != safe_fill_str(smtp->user, sizeof(smtp->user), user)) {
+        LOG_ERROR("smtp user name exceeds %zu bytes: %zu.", sizeof(smtp->user) - 1, strlen(user));
+        return ERR_FAILED;
+    }
+    // 只报长度，不打印密码本身
+    if (ERR_OK != safe_fill_str(smtp->psw, sizeof(smtp->psw), psw)) {
+        LOG_ERROR("smtp password exceeds %zu bytes: %zu.", sizeof(smtp->psw) - 1, strlen(psw));
+        return ERR_FAILED;
+    }
+    return ERR_OK;
 }
 int32_t smtp_check_code(char *pack, const char *code) {
     if (0 == strncmp(pack, code, strlen(code))) {

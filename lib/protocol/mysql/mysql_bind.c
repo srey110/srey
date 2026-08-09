@@ -9,10 +9,11 @@ void mysql_bind_init(mysql_bind_ctx *mbind) {
     binary_init(&mbind->value, NULL, 0, 0);
 }
 void mysql_bind_free(mysql_bind_ctx *mbind) {
-    FREE(mbind->bitmap.data);
-    FREE(mbind->type.data);
-    FREE(mbind->type_name.data);
-    FREE(mbind->value.data);
+    mbind->count = 0;
+    binary_free(&mbind->bitmap);
+    binary_free(&mbind->type);
+    binary_free(&mbind->type_name);
+    binary_free(&mbind->value);
 }
 void mysql_bind_clear(mysql_bind_ctx *mbind) {
     mbind->count = 0;

@@ -30,7 +30,7 @@ static int32_t _lprot_harbor_pack(lua_State *lua) {
         break;
     case LUA_TLIGHTUSERDATA:
         data = lua_touserdata(lua, 4);
-        size = (size_t)luaL_checkinteger(lua, 5);
+        size = lpub_check_lens(lua, 5, 0);
         break;
     default:
         return luaL_argerror(lua, 4, "nil, string or light userdata expected");
@@ -110,7 +110,7 @@ static int32_t _lprot_dns_pack_tcp(lua_State *lua) {
 static int32_t _lprot_dns_unpack(lua_State *lua) {
     LUACHECK_LUDATA(lua, 1);
     void *pack = lua_touserdata(lua, 1);
-    size_t packlen = (size_t)luaL_checkinteger(lua, 2);
+    size_t packlen = lpub_check_lens(lua, 2, 0);
     uint16_t id = (uint16_t)luaL_checkinteger(lua, 3);
     size_t n;
     int32_t nodata = 0;
@@ -211,9 +211,10 @@ static int32_t _lprot_websock_unpack(lua_State *lua) {
 /// <param name="host" type="string?">Host 头字段；nil 表示省略</param>
 /// <param name="uri" type="string?">HTTP request-target（path?query）；nil 或空字符串时使用 "/"</param>
 /// <param name="secprot" type="string?">Sec-WebSocket-Protocol 字段；nil 表示省略</param>
-/// <returns type="lightuserdata">握手包数据指针；secprot 超长时返回 nil。业务通过 srey.send copy=0 接管或 utils.ud_free 释放</returns>
-/// <returns type="integer">数据长度</returns>
-/// <returns type="lightuserdata">握手上下文 hsctx，须作为 srey.connect 的 extra 传入；所有权转交协议层(握手成功或 connect 失败时释放)，业务不得 ud_free</returns>
+/// <returns type="lightuserdata?">握手包数据指针；secprot 超长时返回 nil。业务通过 srey.send copy=0 接管或 utils.ud_free 释放</returns>
+/// <returns type="integer?">数据长度</returns>
+/// <returns type="lightuserdata?">握手上下文 hsctx，须作为 srey.connect 的 extra 传入；所有权转交协议层(握手成功或 connect 失败时释放)，业务不得 ud_free。
+/// 失败时三个返回值都是 nil，个数恒为 3</returns>
 static int32_t _lprot_websock_pack_handshake(lua_State *lua) {
     char *host = NULL;
     if (LUA_TSTRING == lua_type(lua, 1)) {
@@ -230,7 +231,7 @@ static int32_t _lprot_websock_pack_handshake(lua_State *lua) {
     ws_hs_ctx *hsctx;
     char *hspack = websock_pack_handshake(host, uri, secprot, &hsctx);
     if (NULL == hspack) {
-        return 0;
+        return lpub_rtn_nil(lua, 3);
     }
     lua_pushlightuserdata(lua, hspack);
     lua_pushinteger(lua, strlen(hspack));
@@ -315,7 +316,7 @@ static int32_t _lprot_websock_pack_binary(lua_State *lua) {
 /// <param name="mask" type="integer">是否启用掩码（客户端 1，服务端 0）</param>
 /// <param name="fin" type="integer">1 表示最后帧（PROT_SLICE_END），0 表示中间帧</param>
 /// <param name="data" type="string|lightuserdata">载荷数据；字符串时长度自动取得</param>
-/// <param name="size" type="integer?">data 为 lightuserdata 时可选，缺省按 0 处理</param>
+/// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
 /// <returns type="lightuserdata">数据指针</returns>
 /// <returns type="integer">数据长度</returns>
 static int32_t _lprot_websock_pack_continua(lua_State *lua) {
@@ -323,19 +324,7 @@ static int32_t _lprot_websock_pack_continua(lua_State *lua) {
     size_t dlens;
     int32_t mask = (int32_t)luaL_checkinteger(lua, 1);
     int32_t fin = (int32_t)luaL_checkinteger(lua, 2);
-    int32_t type = lua_type(lua, 3);
-    if (LUA_TSTRING == type) {
-        data = (void *)luaL_checklstring(lua, 3, &dlens);
-    } else if (LUA_TLIGHTUSERDATA == type) {
-        data = lua_touserdata(lua, 3);
-        if (LUA_TNUMBER == lua_type(lua, 4)) {
-            dlens = (size_t)luaL_checkinteger(lua, 4);
-        } else {
-            dlens = 0;
-        }
-    } else {
-        return luaL_argerror(lua, 3, "string or light userdata expected");
-    }
+    data = lpub_check_buf(lua, 3, &dlens, NULL);
     void *pack = websock_pack_continua(mask, fin, data, dlens, &dlens);
     return lpub_rtn_lud(lua, pack, dlens);
 }
@@ -344,16 +333,15 @@ static int32_t _lprot_websock_pack_continua(lua_State *lua) {
 /// </summary>
 /// <param name="spctx" type="lightuserdata">握手交付的 ws_secprots_ctx 指针；仅本协程下次挂起前有效，勿保留</param>
 /// <returns type="integer?">匹配到的子协议下标(0 起，-1 表示无)；spctx 为空返回 nil</returns>
-/// <returns type="string[]">全部子协议名列表（1 起）</returns>
+/// <returns type="string[]?">全部子协议名列表（1 起）；spctx 为空时同为 nil，返回值个数恒为 2
+/// （wbsk.connect 明说了 spctx 可能为 nil，业务确实会走到这条）</returns>
 static int32_t _lprot_websock_secprots(lua_State *lua) {
     if (!lua_islightuserdata(lua, 1)) {
-        lua_pushnil(lua);
-        return 1;
+        return lpub_rtn_nil(lua, 2);
     }
     ws_secprots_ctx *spctx = lua_touserdata(lua, 1);
     if (NULL == spctx) {
-        lua_pushnil(lua);
-        return 1;
+        return lpub_rtn_nil(lua, 2);
     }
     lua_pushinteger(lua, spctx->index);
     lua_createtable(lua, spctx->cnt, 0);
@@ -648,9 +636,10 @@ LUAMOD_API int luaopen_redis(lua_State *lua) {
 /// <param name="ip" type="string">SMTP 服务器 IP</param>
 /// <param name="port" type="integer">SMTP 服务器端口</param>
 /// <param name="evssl" type="lightuserdata|nil">SSL 上下文；nil 表示明文</param>
-/// <param name="user" type="string">认证用户名</param>
-/// <param name="psw" type="string">认证密码</param>
-/// <returns type="_smtp_ctx">SMTP 对象</returns>
+/// <param name="user" type="string">认证用户名，最长 63 字节</param>
+/// <param name="psw" type="string">认证密码，最长 63 字节</param>
+/// <returns type="_smtp_ctx?">SMTP 对象；ip / user / psw 任一超长返回 nil
+/// （同 mysql.new / pgsql.new / mongo.new，不静默截断）</returns>
 static int32_t _lprot_smtp_new(lua_State *lua) {
     const char *ip = luaL_checkstring(lua, 1);
     uint16_t port = (uint16_t)luaL_checkinteger(lua, 2);
@@ -666,7 +655,11 @@ static int32_t _lprot_smtp_new(lua_State *lua) {
     ASSOC_MTABLE(lua, MT_SMTP);
     smtp_ctx *smtp;
     MALLOC(smtp, sizeof(smtp_ctx));
-    smtp_init(smtp, ip, port, evssl, user, psw);
+    if (ERR_OK != smtp_init(smtp, ip, port, evssl, user, psw)) {
+        FREE(smtp);
+        lua_pushnil(lua);
+        return 1;
+    }
     ATOMIC_SET(&smtp->ref, 1);// Lua 持有者份额
     *ud = smtp;
     return 1;
@@ -689,7 +682,8 @@ static int32_t _lprot_smtp_free(lua_State *lua) {
         ev_close(&smtp->task->loader->netev, smtp->sk.fd, smtp->sk.skid, 0);
     }
     *ud = NULL;
-    secure_zero(smtp->psw, sizeof(smtp->psw));
+    // 密码不在这里擦：ev_close 只是投命令，网络线程可能正读着它组认证串。
+    // 擦除已挪进 PROT_REF_RELEASE，由最后一个放手的线程整块抹掉
     PROT_REF_RELEASE(smtp);
     return 0;
 }
@@ -1018,11 +1012,14 @@ static int32_t _lprot_mail_clear(lua_State *lua) {
 /// 将邮件上下文序列化为 MIME 格式内容字符串
 /// </summary>
 /// <param name="self" type="userdata">邮件对象</param>
-/// <returns type="lightuserdata">MIME 字符串指针</returns>
-/// <returns type="integer">字符串长度</returns>
+/// <returns type="lightuserdata?">MIME 字符串指针；生成 MIME boundary 取不到熵时返回 nil</returns>
+/// <returns type="integer?">字符串长度；失败时两个返回值都是 nil，个数恒为 2</returns>
 static int32_t _lprot_mail_pack(lua_State *lua) {
     LPUB_UD_ARG(lua, mail_ctx, MT_SMTP_MAIL, ud, "mail already freed");
     char *content = mail_pack(*ud);
+    if (NULL == content) {
+        return lpub_rtn_lud(lua, NULL, 0);
+    }
     return lpub_rtn_lud(lua, content, strlen(content));
 }
 LUAMOD_API int luaopen_mail(lua_State *lua) {

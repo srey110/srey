@@ -113,21 +113,24 @@ static void _mongo_scram_auth(ev_ctx *ev, mgopack_ctx *mgopack, ud_cxt *ud) {
         return;
     }
     switch (mongo->scram->status) {
+    // 两条分支都是先清 scram 再 _hs_push：push 一落地，worker 线程就能唤醒等在
+    // coro_handshaked 上的协程，它接着调 mongo_auth / mongo_pack_* 又会读写 mongo->scram，
+    // 和本线程随后的 scram_free 撞在一起（同 prots_closed 的"先清理后唤醒"顺序）
     case SCRAM_LOCAL_FIRST:
         rtn = _mongo_server_first_message(ev, mongo, mgopack);
         if (ERR_OK != rtn) {
-            ud->status = COMMAND;
-            _hs_push(mongo->sk.fd, mongo->sk.skid, 1, ud, rtn, NULL, 0);
             scram_free(mongo->scram);
             mongo->scram = NULL;
+            ud->status = COMMAND;
+            _hs_push(mongo->sk.fd, mongo->sk.skid, 1, ud, rtn, NULL, 0);
         }
         break;
     case SCRAM_LOCAL_FINAL:
-        ud->status = COMMAND;
         rtn = _mongo_server_final_message(mongo, mgopack);
-        _hs_push(mongo->sk.fd, mongo->sk.skid, 1, ud, rtn, NULL, 0);
         scram_free(mongo->scram);
         mongo->scram = NULL;
+        ud->status = COMMAND;
+        _hs_push(mongo->sk.fd, mongo->sk.skid, 1, ud, rtn, NULL, 0);
         break;
     default:
         break;
@@ -266,56 +269,53 @@ void *mongo_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
 }
 int32_t mongo_init(mongo_ctx *mongo, const char *ip, uint16_t port, struct evssl_ctx *evssl, const char *db) {
     const char *initdb = EMPTYSTR(db) ? "admin" : db;
-    if (!EMPTYSTR(ip)
-        && strlen(ip) > sizeof(mongo->ip) - 1) {
-        LOG_ERROR("mongo ip exceeds %zu bytes: %zu.", sizeof(mongo->ip) - 1, strlen(ip));
-        return ERR_FAILED;
-    }
-    if (strlen(initdb) > sizeof(mongo->db) - 1) {
-        LOG_ERROR("mongo database name exceeds %zu bytes: %zu.", sizeof(mongo->db) - 1, strlen(initdb));
-        return ERR_FAILED;
-    }
     ZERO(mongo, sizeof(mongo_ctx));
     mongo->reqid = 1;
     mongo->sk.fd = INVALID_SOCK;
-    safe_fill_str(mongo->ip, sizeof(mongo->ip), ip);
+    // safe_fill_str 装不下即拒绝写入并返回 ERR_FAILED。失败时 mongo 已被 ZERO 且可能填了
+    // 前一个字段，调用方按 init 失败处理（丢弃或 FREE），不得继续用
+    if (ERR_OK != safe_fill_str(mongo->ip, sizeof(mongo->ip), ip)) {
+        LOG_ERROR("mongo ip exceeds %zu bytes: %zu.", sizeof(mongo->ip) - 1, strlen(ip));
+        return ERR_FAILED;
+    }
+    if (ERR_OK != safe_fill_str(mongo->db, sizeof(mongo->db), initdb)) {
+        LOG_ERROR("mongo database name exceeds %zu bytes: %zu.", sizeof(mongo->db) - 1, strlen(initdb));
+        return ERR_FAILED;
+    }
     mongo->port = 0 == port ? 27017 : port;
     mongo->evssl = evssl;
-    safe_fill_str(mongo->db, sizeof(mongo->db), initdb);
     return ERR_OK;
 }
 int32_t mongo_db(mongo_ctx *mongo, const char *db) {
-    if (!EMPTYSTR(db)
-        && strlen(db) > sizeof(mongo->db) - 1) {
+    // 装不下时 safe_fill_str 一个字节都不写，"被拒时不改动字段"这条契约由它本身保证
+    if (ERR_OK != safe_fill_str(mongo->db, sizeof(mongo->db), db)) {
         LOG_ERROR("mongo database name exceeds %zu bytes: %zu.", sizeof(mongo->db) - 1, strlen(db));
         return ERR_FAILED;
     }
-    safe_fill_str(mongo->db, sizeof(mongo->db), db);
     mongo->collection[0] = '\0';
     return ERR_OK;
 }
 int32_t mongo_authdb(mongo_ctx *mongo, const char *db) {
-    if (!EMPTYSTR(db)
-        && strlen(db) > sizeof(mongo->authdb) - 1) {
+    if (ERR_OK != safe_fill_str(mongo->authdb, sizeof(mongo->authdb), db)) {
         LOG_ERROR("mongo auth database name exceeds %zu bytes: %zu.",
                   sizeof(mongo->authdb) - 1, strlen(db));
         return ERR_FAILED;
     }
-    safe_fill_str(mongo->authdb, sizeof(mongo->authdb), db);
     return ERR_OK;
 }
 // 超长返 ERR_FAILED 且不改动字段：截断或沿用旧集合都会让后续 insert/find/update/delete 打到
 // 另一个集合上（写入还会自动建集合），调用方必须原地失败而不是继续发命令
 int32_t mongo_collection(mongo_ctx *mongo, const char *collection) {
-    if (!EMPTYSTR(collection)
-        && strlen(collection) > sizeof(mongo->collection) - 1) {
+    if (ERR_OK != safe_fill_str(mongo->collection, sizeof(mongo->collection), collection)) {
         LOG_ERROR("mongo collection name exceeds %zu bytes: %zu.",
                   sizeof(mongo->collection) - 1, strlen(collection));
         return ERR_FAILED;
     }
-    safe_fill_str(mongo->collection, sizeof(mongo->collection), collection);
     return ERR_OK;
 }
+// 两个字段要么一起换掉、要么都不动：只换成一半会拿新用户名配旧密码去认证。
+// 所以这里必须自己先把两个长度都验过，不能靠 safe_fill_str 边填边判——那样第一个填成功、
+// 第二个失败就已经改了一半
 int32_t mongo_user_pwd(mongo_ctx *mongo, const char *user, const char *pwd) {
     if (!EMPTYSTR(user)
         && strlen(user) > sizeof(mongo->user) - 1) {
@@ -329,6 +329,7 @@ int32_t mongo_user_pwd(mongo_ctx *mongo, const char *user, const char *pwd) {
     }
     secure_zero(mongo->user, sizeof(mongo->user));
     secure_zero(mongo->password, sizeof(mongo->password));
+    // 两个长度都在函数开头验过，这里必然装得下
     safe_fill_str(mongo->user, sizeof(mongo->user), user);
     safe_fill_str(mongo->password, sizeof(mongo->password), pwd);
     return ERR_OK;

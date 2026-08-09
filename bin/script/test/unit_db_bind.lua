@@ -65,6 +65,17 @@ runner.run("db_bind", function(t)
         b2:null()        -- 显式 NULL
         b2 = nil
 
+        -- nparam 越界报错而不是截断：Bind/Parse 报文里的参数个数是 Int16。
+        -- 65536 截成 0 会得到一个"绑什么都无视"的 bind，-1 截成 65535 反过来按最大参数数
+        -- 建头部，两种情况调用方从返回值上都看不出来
+        t:eq(false, pcall(pbind.new, -1),    "pgsql.bind.new 负 nparam 被拒")
+        t:eq(false, pcall(pbind.new, 65536), "pgsql.bind.new 超 INT16_MAX 被拒")
+        t:eq(true,  pcall(pbind.new, 0),     "pgsql.bind.new(0) 合法")
+        t:eq(false, pcall(pgsql.pack_stmt_prepare, "st", "select 1", -1),
+             "pack_stmt_prepare 负 nparam 被拒")
+        t:eq(false, pcall(pgsql.pack_stmt_prepare, "st", "select 1", 32768),
+             "pack_stmt_prepare 超 INT16_MAX 被拒")
+
         -- 时间相关
         local b3 = pbind.new(3)
         b3:timestamp(os.time())
@@ -73,6 +84,43 @@ runner.run("db_bind", function(t)
         b3 = nil
         collectgarbage()
         t:check(true, "pgsql.bind GC roundtrip ok")
+    end
+
+    -- ── bind 显式析构后再复用 ──────────────────────────────────────────
+    -- REG_MTABLE 把 __gc 和 __index 放在同一张表里，脚本能直接调 b:__gc()。
+    -- 旧实现只把缓冲指针置空却留着 size/offset，下一次写入会以为"还写得下"从而
+    -- 跳过扩容、往空指针上 memset —— 段错误，且是脚本一行就能触发的自伤路径
+    do
+        local b = mbind.new()
+        b:string("k", "v")
+        b:__gc()
+        b:__gc()  -- 重复析构幂等
+        -- 析构后再绑定：等同刚 new 出来的空上下文，不炸也不留旧数据
+        b:integer("k2", 1)
+        b:string("k3", "after-free")
+        b:null()
+        b:clear()
+        t:check(true, "mysql.bind __gc 后复用不崩")
+
+        local p = pbind.new(2)
+        p:int32(1)
+        p:__gc()
+        p:__gc()
+        -- 析构后 nparam 归零，后续绑定被统一早退挡住，静默无视
+        p:int32(2)
+        p:text("after-free")
+        p:null()
+        p:clear()
+        t:check(true, "pgsql.bind __gc 后复用不崩")
+
+        -- 组包侧同样按 nparam 早退，不会发出半截 Bind 消息
+        local pack, size = pgsql.pack_stmt_execute("st_af", p)
+        t:check(pack ~= nil and size > 0, "已析构的 bind 交给 pack_stmt_execute 仍得到完整报文")
+        utils.ud_free(pack)
+
+        b = nil
+        p = nil
+        collectgarbage()
     end
 
     -- ── mongo.session ──────────────────────────────────────────────────

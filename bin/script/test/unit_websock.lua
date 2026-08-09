@@ -56,6 +56,27 @@ runner.run("websock_client", function(t)
         srey.close(fdn, skidn)
     end
 
+    -- ── 绑定层的返回值个数必须恒定 ──────────────────────────────────────
+    -- 标注里 secprots 的第二个返回值是 string[]、pack_handshake 是三个，业务照标注
+    -- 按位置取值。失败时少返几个的话，多赋值会静默补 nil（还能撑住），但直接把返回值
+    -- 塞进另一个调用（srey.send(fd, skid, websock.pack_handshake(...))）就整体错位了
+    do
+        local websock = require("srey.websock")
+        local idx, prots = websock.secprots(nil)
+        t:eq(nil, idx,   "secprots(nil) 第一个返回值为 nil")
+        t:eq(nil, prots, "secprots(nil) 第二个返回值也是 nil，个数仍为 2")
+        t:eq(2, select("#", websock.secprots(nil)), "secprots 失败时返回值个数为 2")
+
+        -- 子协议名不是 RFC 7230 token（括号是分隔符）→ websock_pack_handshake 返 NULL
+        local badprot = "bad(proto)"
+        t:eq(3, select("#", websock.pack_handshake("h", "/", badprot)),
+             "pack_handshake 失败时返回值个数为 3")
+        local hp, hs, hc = websock.pack_handshake("h", "/", badprot)
+        t:check(hp == nil and hs == nil and hc == nil, "pack_handshake 失败时三个返回值均为 nil")
+        -- 成功路径不在这里验：hsctx 的所有权只能由 srey.connect 接走，不连的话没有合法的
+        -- 释放途径，测下来就是一处必然泄漏。上面 wbsk.connect 的用例已覆盖成功路径
+    end
+
     srey.unlisten(lid)-- 释放端口给后续测试
 end)
 end)

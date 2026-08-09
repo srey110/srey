@@ -947,6 +947,100 @@ static void test_mongo_udfree_keeps_session(CuTest *tc) {
     _mongo_udfree(&ud);
     CuAssertTrue(tc, &sess == mongo.session);
 }
+// mongo_user_pwd 的契约是"任一项超长则两个字段都保持原值"。这条不能靠 safe_fill_str
+// 边填边判来实现：函数里 secure_zero 排在两次填充之前，一旦折掉前置校验，密码超长的那次
+// 调用会留下"新用户名 + 空密码"。单字段的 mongo_db / authdb / collection 没这个问题，
+// 靠 safe_fill_str "装不下就不写" 自身即可
+static void test_mongo_setter_atomic(CuTest *tc) {
+    char toolong[128];
+    memset(toolong, 'x', sizeof(toolong) - 1);
+    toolong[sizeof(toolong) - 1] = '\0';
+
+    mongo_ctx mongo;
+    _mongo_test_init(&mongo);
+    CuAssertStrEquals(tc, "alice", mongo.user);
+    CuAssertStrEquals(tc, "secret", mongo.password);
+
+    // 用户名超长：两个字段都不动
+    CuAssertIntEquals(tc, ERR_FAILED, mongo_user_pwd(&mongo, toolong, "p2"));
+    CuAssertStrEquals(tc, "alice", mongo.user);
+    CuAssertStrEquals(tc, "secret", mongo.password);
+    // 密码超长：同样两个都不动（折掉前置校验后这里会变成 u2 + 空串）
+    CuAssertIntEquals(tc, ERR_FAILED, mongo_user_pwd(&mongo, "u2", toolong));
+    CuAssertStrEquals(tc, "alice", mongo.user);
+    CuAssertStrEquals(tc, "secret", mongo.password);
+    // 合法则两个一起换
+    CuAssertIntEquals(tc, ERR_OK, mongo_user_pwd(&mongo, "u2", "p2"));
+    CuAssertStrEquals(tc, "u2", mongo.user);
+    CuAssertStrEquals(tc, "p2", mongo.password);
+
+    // 单字段 setter：超长不改动原值
+    CuAssertIntEquals(tc, ERR_FAILED, mongo_db(&mongo, toolong));
+    CuAssertStrEquals(tc, "testdb", mongo.db);
+    CuAssertIntEquals(tc, ERR_FAILED, mongo_collection(&mongo, toolong));
+    CuAssertStrEquals(tc, "testcoll", mongo.collection);
+    // mongo_db 成功时会顺带清掉 collection（切库后旧集合名不再有意义）
+    CuAssertIntEquals(tc, ERR_OK, mongo_db(&mongo, "db2"));
+    CuAssertStrEquals(tc, "db2", mongo.db);
+    CuAssertStrEquals(tc, "", mongo.collection);
+    CuAssertIntEquals(tc, ERR_FAILED, mongo_authdb(&mongo, toolong));
+    CuAssertIntEquals(tc, ERR_OK, mongo_authdb(&mongo, "admin"));
+    CuAssertStrEquals(tc, "admin", mongo.authdb);
+}
+// getMore / killCursors 不能去当事务的第一个操作：游标是别的命令建出来的，事务真要开也该
+// 由那条命令开。这两个原来挂的是 TRANSACTION_OPTIONS_START，begin 之后第一条若是它们，
+// 会给自己带上 startTransaction 并把 started 吃掉——这条命令服务端本来就要拒，而真正的首条
+// CRUD 从此不再带 startTransaction，整段事务连环 NoSuchTransaction，只能重新 begin
+static void test_mongo_pack_getmore_not_start_txn(CuTest *tc) {
+    mongo_ctx mongo;
+    _mongo_test_init(&mongo);
+    mongo_session session;
+    ZERO(&session, sizeof(session));
+    session.mongo = &mongo;
+    session.txnnumber = 3;
+    for (int32_t i = 0; i < UUID_LENS; i++) {
+        session.uuid[i] = (char)(i + 1);
+    }
+    session.options = mongo_transaction_options(&session, &session.optionslens);
+    CuAssertPtrNotNull(tc, session.options);
+    mongo.session = &session;
+
+    // startTransaction 是 bool 字段，_bson_find_utf8 找不到它，直接在原始 BSON 里找键名
+    size_t size = 0;
+    size_t idslens = 0;
+    const char *ids = bson_empty(&idslens);
+    // 事务刚 begin（started=0），第一条发 getMore
+    void *pack = mongo_pack_getmore(&mongo, 12345, NULL, 0, &size);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssert(tc, "getMore must not carry startTransaction",
+             NULL == memstr(0, pack, size, "startTransaction", strlen("startTransaction")));
+    CuAssert(tc, "getMore must not consume the started flag", 0 == session.started);
+    // 会话字段仍要带上（lsid/txnNumber/autocommit 来自 session->options）
+    CuAssertTrue(tc, NULL != memstr(0, pack, size, "txnNumber", strlen("txnNumber")));
+    FREE(pack);
+
+    // killCursors 同理
+    pack = mongo_pack_killcursors(&mongo, (char *)ids, idslens, NULL, 0, &size);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssert(tc, "killCursors must not carry startTransaction",
+             NULL == memstr(0, pack, size, "startTransaction", strlen("startTransaction")));
+    CuAssert(tc, "killCursors must not consume the started flag", 0 == session.started);
+    FREE(pack);
+
+    // 真正的首条 CRUD 才带 startTransaction，并在此刻消耗掉 started
+    pack = mongo_pack_find(&mongo, NULL, 0, NULL, 0, &size);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, NULL != memstr(0, pack, size, "startTransaction", strlen("startTransaction")));
+    CuAssertIntEquals(tc, 1, session.started);
+    FREE(pack);
+    // 已消耗后第二条 CRUD 不再带
+    pack = mongo_pack_find(&mongo, NULL, 0, NULL, 0, &size);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, NULL == memstr(0, pack, size, "startTransaction", strlen("startTransaction")));
+    FREE(pack);
+
+    FREE(session.options);
+}
 void test_mongo_pack(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mongo_pack_ping);
     SUITE_ADD_TEST(suite, test_mongo_pack_hello);
@@ -969,4 +1063,6 @@ void test_mongo_pack(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mongo_parse_startsession);
     SUITE_ADD_TEST(suite, test_mongo_unpack_kind1_empty_section);
     SUITE_ADD_TEST(suite, test_mongo_udfree_keeps_session);
+    SUITE_ADD_TEST(suite, test_mongo_setter_atomic);
+    SUITE_ADD_TEST(suite, test_mongo_pack_getmore_not_start_txn);
 }

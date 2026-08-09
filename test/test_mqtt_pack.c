@@ -58,6 +58,40 @@ static void test_mqtt_connect_311(CuTest *tc) {
     buffer_free(&buf);
 }
 
+/* CONNECT 遗嘱载荷指针为空但长度非零：剩余长度按 wplens 记账，而 _mqtt_pack_lenstr 里的
+ * binary_set_binary 遇 NULL 直接返回、只写出 2 字节长度前缀，对不上的字节会让对端把
+ * 后一个报文的开头当成本包内容。组包侧须把长度归零，让报文自洽 */
+static void test_mqtt_connect_will_null_payload(CuTest *tc) {
+    size_t lens = 0;
+    char *pack = mqtt_pack_connect(MQTT_311, 1, 60,
+        "client_wnp", NULL, NULL, 0,
+        "last/will", NULL, 7 /*指针为空却给了长度*/, 0, 0,
+        NULL, NULL, &lens);
+    CuAssertPtrNotNull(tc, pack);
+
+    buffer_ctx buf;
+    _mq_to_buf(&buf, pack, lens);
+    ud_cxt ud;
+    ZERO(&ud, sizeof(ud));
+    ud.status = _MQ_INIT;
+    int32_t status = PROT_INIT;
+    mqtt_pack_ctx *p = mqtt_unpack(0, &buf, &ud, &status);
+    /* 解包侧的全局兜底是"消费掉的字节数须正好等于剩余长度"，错位会在那里被判协议错 */
+    CuAssertPtrNotNull(tc, p);
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    mqtt_connect_varhead *vh = (mqtt_connect_varhead *)p->varhead;
+    CuAssertIntEquals(tc, 1, vh->willflag);
+    /* 报文里的遗嘱载荷就是零长度 */
+    mqtt_connect_payload *pl = (mqtt_connect_payload *)p->payload;
+    CuAssertIntEquals(tc, 0, (int)pl->wplens);
+    /* 整包被完整消费，缓冲不留残字节 */
+    CuAssertIntEquals(tc, 0, (int)buffer_size(&buf));
+
+    _mqtt_pkfree(p);
+    _mqtt_udfree(&ud);
+    buffer_free(&buf);
+}
+
 /* CONNECT 5.0 with user + password + will + keepalive */
 static void test_mqtt_connect_50_full(CuTest *tc) {
     size_t lens = 0;
@@ -906,6 +940,7 @@ static void test_mqtt_connect_empty_clientid(CuTest *tc) {
 void test_mqtt_pack(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mqtt_connect_311);
     SUITE_ADD_TEST(suite, test_mqtt_connect_empty_clientid);
+    SUITE_ADD_TEST(suite, test_mqtt_connect_will_null_payload);
     SUITE_ADD_TEST(suite, test_mqtt_connect_50_full);
     SUITE_ADD_TEST(suite, test_mqtt_connack);
     SUITE_ADD_TEST(suite, test_mqtt_acks);

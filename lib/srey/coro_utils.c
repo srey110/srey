@@ -228,6 +228,10 @@ SOCKET redis_connect(task_ctx *task, struct evssl_ctx *evssl, const char *ip, ui
     if (!EMPTYSTR(key)) {
         size_t size;
         char *auth = redis_pack(&size, "AUTH %s", key);
+        if (NULL == auth) {
+            ev_close(&task->loader->netev, fd, *skid, 1);
+            return INVALID_SOCK;
+        }
         redis_pack_ctx *rtn = coro_send(task, fd, *skid, auth, size, NULL, 0);
         if (NULL == rtn) {
             return INVALID_SOCK;
@@ -659,6 +663,9 @@ static int32_t _smtp_send(smtp_ctx *smtp, mail_ctx *mail) {
         return ERR_FAILED;
     }
     cmd = mail_pack(mail);
+    if (NULL == cmd) {
+        return ERR_FAILED;
+    }
     pack = coro_send(smtp->task, smtp->sk.fd, smtp->sk.skid, cmd, strlen(cmd), NULL, 0);
     if (NULL == pack
         || ERR_OK != smtp_check_ok(pack)) {
@@ -971,6 +978,8 @@ int32_t mongo_auth(mongo_ctx *mongo, const char *authmod, const char *user, cons
     int32_t flags = mongo_clear_flag(mongo);
     int32_t rtn = mongo_user_pwd(mongo, user, pwd);
     if (ERR_OK == rtn) {
+        // 装不下就不写、authmod 保持旧值：能装不下的名字必然不是 SCRAM-SHA-1/256，
+        // 下一行 _mongo_auth 里的 scram_init 认不出来会直接失败，不会拿旧名字去认证
         safe_fill_str(mongo->authmod, sizeof(mongo->authmod), authmod);
         rtn = _mongo_auth(mongo, authmod);
     }

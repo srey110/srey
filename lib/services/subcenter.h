@@ -192,7 +192,10 @@ void *coro_sc_retained_topics(task_ctx *task, name_t sc_name,
 /// <summary>
 /// 注册或更新当前 task 的发布者元数据。
 /// 后续该 task 所有 publish/publish_retained 都自动携带 meta 投递给订阅者。
-/// publisher 应在 _closing 钩子调 set_meta(NULL, 0) 主动清理。必须在协程中调用。
+/// publisher 宜在 _closing 钩子调 set_meta(NULL, 0) 主动清理；漏了也不会随时间一直攒下去——
+/// 每当有新 publisher 首次登记 meta（这张表唯一的增长点），subcenter 会先把 task_grab 不到的
+/// 旧条目连同 meta 一并摘掉。注意这只保证不单调增长，不保证死条目立刻消失：
+/// 若此后再没有新 publisher 登记，已死的那些会留到 subcenter 关闭。必须在协程中调用。
 /// </summary>
 /// <param name="task">当前 task</param>
 /// <param name="sc_name">subcenter task name</param>

@@ -14,7 +14,7 @@ typedef struct dns_ip {
 /// <param name="domain">要解析的域名</param>
 /// <param name="ipv6">1 ipv6 0 ipv4</param>
 /// <param name="id">输出：本次查询的随机事务 ID（主机序），供 dns_parse_pack 回验响应</param>
-/// <returns>请求包长度</returns>
+/// <returns>请求包长度，0 表示失败（取不到随机事务 ID）</returns>
 size_t dns_request_pack(char *buf, const char *domain, int32_t ipv6, uint16_t *id);
 /// <summary>
 /// dns 域名解析请求包（TCP 传输，前置 2 字节大端长度，RFC 1035 §4.2.2）

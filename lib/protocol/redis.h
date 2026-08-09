@@ -42,9 +42,13 @@ void _redis_udfree(ud_cxt *ud);
 /// 构造 Redis RESP 请求包
 /// </summary>
 /// <param name="size">输出：请求包长度</param>
-/// <param name="fmt">格式字符串，参数以空格分隔；%b 表示二进制（需跟 size_t 长度参数），%% 表示 %，其余同 C printf</param>
+/// <param name="fmt">格式字符串，参数以空格分隔；%b 表示二进制（需跟 size_t 长度参数），%% 表示 %。
+/// 其余支持 %s、%c、%p、diouxX（含 hh/h/l/ll/z 长度修饰）、eEfFgGaA，语义同 C printf。
+/// 不在此列的转换（如 %j、%t、%L，以及只有标志没有转换符的末尾 %）一律整条拒绝并返回 NULL：
+/// 认不出的转换既取不走对应的可变参数、也无法跳过转换符，继续走下去后面每个转换都会读到
+/// 错位一格的参数（%s 拿到整数当指针即段错误），没有能安全继续的解释</param>
 /// <param name="...">可变参数</param>
-/// <returns>请求包数据（调用方负责释放）</returns>
+/// <returns>请求包数据（调用方负责释放）；格式串含不支持的转换时返回 NULL 且 *size 置 0</returns>
 char *redis_pack(size_t *size, const char *fmt, ...);
 /// <summary>
 /// Redis RESP 解包：从缓冲区解析一条完整响应（含嵌套聚合类型）

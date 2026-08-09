@@ -1492,6 +1492,26 @@ static void test_mem_helpers(CuTest *tc) {
 /* =======================================================================
  * strupper / strlower / strreverse / tohex / split
  * ======================================================================= */
+// safe_fill_str 的契约：装得下才写，装不下一个字节都不动并返回 ERR_FAILED
+static void test_safe_fill_str(CuTest *tc) {
+    char buf[8];
+    memset(buf, 'Z', sizeof(buf));
+
+    // 正好填满（容量 - 1）
+    CuAssertIntEquals(tc, ERR_OK, safe_fill_str(buf, sizeof(buf), "1234567"));
+    CuAssertStrEquals(tc, "1234567", buf);
+    // 再多一个字节就拒绝，且 buf 保持上一次的内容不动
+    CuAssertIntEquals(tc, ERR_FAILED, safe_fill_str(buf, sizeof(buf), "12345678"));
+    CuAssertStrEquals(tc, "1234567", buf);
+    // NULL 视为空串，算成功
+    CuAssertIntEquals(tc, ERR_OK, safe_fill_str(buf, sizeof(buf), NULL));
+    CuAssertStrEquals(tc, "", buf);
+    // 空串
+    CuAssertIntEquals(tc, ERR_OK, safe_fill_str(buf, sizeof(buf), ""));
+    CuAssertStrEquals(tc, "", buf);
+    // dstsz 为 0：不写不越界，直接失败
+    CuAssertIntEquals(tc, ERR_FAILED, safe_fill_str(buf, 0, "x"));
+}
 static void test_str_helpers(CuTest *tc) {
     /* strupper / strlower：原地修改 */
     char s1[16];
@@ -2600,6 +2620,7 @@ void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_tw_latency);
     SUITE_ADD_TEST(suite, test_tw_wakeup_after_idle);
     SUITE_ADD_TEST(suite, test_mem_helpers);
+    SUITE_ADD_TEST(suite, test_safe_fill_str);
     SUITE_ADD_TEST(suite, test_str_helpers);
     SUITE_ADD_TEST(suite, test_format_va);
     SUITE_ADD_TEST(suite, test_misc_helpers);

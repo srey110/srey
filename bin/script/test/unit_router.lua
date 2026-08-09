@@ -700,5 +700,79 @@ runner.run("unit_router", function(t)
         t:eq(404, (dispatch(r, "GET", "/a/b/c") or {}).code, "opt mid: extra seg → 404")
     end
 
+    -- ── 注册期的两类误用必须当场可见 ────────────────────────────────────────
+    do
+        -- handler 漏传：dispatch 时表现为"中间件跑完没人响应"→ 兜底 500，且 run_ok 为真
+        -- 所以连错误文本都没有，线上完全查不出来。注册期直接拒掉
+        local r = Route.new()
+        local e = r:get("/noh")
+        t:check(e ~= nil, "handler 缺失返回占位 entry 而非报错")
+        t:eq(404, (dispatch(r, "GET", "/noh") or {}).code, "handler 缺失的路由未被注册 → 404")
+        -- 占位 entry 上继续链式 :name() 也不炸
+        t:check(e:name("noh") ~= nil, "占位 entry 的 :name 可链式调用")
+
+        -- 非函数同样拒掉
+        r:get("/noh2", "not-a-function")
+        t:eq(404, (dispatch(r, "GET", "/noh2") or {}).code, "handler 非函数 → 未注册")
+    end
+    do
+        -- 重复注册：C 侧 add 不去重、match 返回首条命中，后注册的永远够不着。
+        -- 两个模块各注册一次、或热更重跑注册块都会撞上，静默丢弃极难查
+        local r = Route.new()
+        r:get("/dup", function(ctx) ctx:text(200, "first") end)
+        r:get("/dup", function(ctx) ctx:text(200, "second") end)
+        local resp = dispatch(r, "GET", "/dup") or {}
+        t:eq(200, resp.code, "重复注册后原路由仍可用")
+        t:eq("first", resp.body, "生效的是先注册的那个（后者已告警并丢弃）")
+        -- 方法不同不算重复
+        r:post("/dup", function(ctx) ctx:text(201, "post") end)
+        t:eq(201, (dispatch(r, "POST", "/dup") or {}).code, "同路径不同方法不算重复注册")
+    end
+    do
+        -- 去重下沉到 C 之后新覆盖的两类：Lua 侧原来用 "方法\0路径" 字符串做 key，这两类看不出来
+        -- (a) ANY 的掩码含所有具体方法，先注册的 ANY 会让后注册的 GET 永远够不着
+        local r = Route.new()
+        r:any("/shadow", function(ctx) ctx:text(200, "any") end)
+        r:get("/shadow", function(ctx) ctx:text(201, "get") end)
+        local resp = dispatch(r, "GET", "/shadow") or {}
+        t:eq(200, resp.code, "ANY 已注册时 GET 同路径被拒")
+        t:eq("any", resp.body, "生效的仍是 ANY 那条")
+        -- 反向：先具体方法再 ANY，掩码同样有交集，也该拒
+        local r2 = Route.new()
+        r2:get("/shadow2", function(ctx) ctx:text(200, "get") end)
+        r2:any("/shadow2", function(ctx) ctx:text(201, "any") end)
+        t:eq(200, (dispatch(r2, "GET", "/shadow2") or {}).code, "GET 已注册时 ANY 同路径被拒")
+        -- 掩码无交集就不算遮蔽：GET 挡不住 POST，这条照常注册
+        r2:post("/shadow2", function(ctx) ctx:text(202, "post") end)
+        t:eq(202, (dispatch(r2, "POST", "/shadow2") or {}).code,
+             "GET 与 POST 掩码无交集，POST 同路径可注册")
+    end
+    do
+        -- (b) 参数名不同但路由等价：匹配时参数名不参与比对，两条完全一样
+        local r = Route.new()
+        r:get("/user/{id}", function(ctx) ctx:text(200, ctx.params.id or "") end)
+        r:get("/user/{uid}", function(ctx) ctx:text(201, "second") end)
+        local resp = dispatch(r, "GET", "/user/7") or {}
+        t:eq(200, resp.code, "{id} 与 {uid} 视为同一条路由，后者被拒")
+        t:eq("7", resp.body, "生效的是先注册的 {id}")
+        -- 段数不同不算等价
+        r:get("/user/{id}/edit", function(ctx) ctx:text(202, "edit") end)
+        t:eq(202, (dispatch(r, "GET", "/user/7/edit") or {}).code, "段数不同不算重复")
+        -- 字面量段内容不同也不算等价
+        r:get("/other/{id}", function(ctx) ctx:text(203, "other") end)
+        t:eq(203, (dispatch(r, "GET", "/other/7") or {}).code, "字面量不同不算重复")
+    end
+    do
+        -- 已知未覆盖：通配段吞并。/s/* 会让后注册的 /s/css 永远够不着，但"谁比谁宽泛"
+        -- 在 OPT 与 WILD 组合下是偏序判定，判宽了会误杀合法注册，故不做——本用例把这个
+        -- 缺口钉成显式行为，哪天补上了这里会红，是提醒不是回归
+        local r = Route.new()
+        r:get("/s/*", function(ctx) ctx:text(200, "wild") end)
+        r:get("/s/css", function(ctx) ctx:text(201, "css") end)
+        local resp = dispatch(r, "GET", "/s/css") or {}
+        t:eq(200, resp.code, "通配段吞并暂不检测：/s/css 注册成功但被 /s/* 遮住")
+        t:eq("wild", resp.body, "命中的仍是先注册的通配路由")
+    end
+
 end)
 end)

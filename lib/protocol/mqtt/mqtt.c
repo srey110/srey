@@ -452,7 +452,7 @@ static int32_t _mqtt_connack(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *bu
     return ERR_OK;
 }
 //两个方向都允许  发布消息
-static int32_t _mqtt_publish(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
+static int32_t _mqtt_publish(mqtt_pack_ctx *pack, buffer_ctx *buf, int32_t *status) {
     //可变报头 主题名（Topic Name），报文标识符（Packet Identifier），属性（Properties MQTT_50）
     int32_t num;
     char *topic = _mqtt_data_string2(buf, &num);//主题名
@@ -483,7 +483,6 @@ static int32_t _mqtt_publish(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, i
         off += 2;
         vh->packid = (uint16_t)num;
     }
-    pack->version = ((mqtt_ctx *)ud->context)->version;
     if (pack->version >= MQTT_50) {
         vh->properties = _mqtt_properties(buf, status, &num);//属性
         if (NULL == vh->properties
@@ -511,7 +510,7 @@ static int32_t _mqtt_publish(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, i
     pl->lens = remain;
     return ERR_OK;
 }
-static int32_t _mqtt_pubackrel_common(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud,
+static int32_t _mqtt_pubackrel_common(mqtt_pack_ctx *pack, buffer_ctx *buf,
                                       int32_t *status, uint8_t expected_flags) {
     if (expected_flags != pack->fixhead.flags) {
         BIT_SET(*status, PROT_ERROR);
@@ -527,7 +526,6 @@ static int32_t _mqtt_pubackrel_common(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_c
     CALLOC(vh, 1, sizeof(mqtt_pubackrel_varhead));
     pack->varhead = vh;
     vh->packid = (uint16_t)num;
-    pack->version = ((mqtt_ctx *)ud->context)->version;
     if (pack->version < MQTT_50
         || 2 == pack->fixhead.remaining_lens) {//剩余长度为2，则表示使用原因码0x00（成功）
         return ERR_OK;
@@ -552,23 +550,23 @@ static int32_t _mqtt_pubackrel_common(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_c
     return ERR_OK;
 }
 //两个方向都允许  QoS 1消息发布收到确认
-static int32_t _mqtt_puback(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
-    return _mqtt_pubackrel_common(pack, buf, ud, status, 0);
+static int32_t _mqtt_puback(mqtt_pack_ctx *pack, buffer_ctx *buf, int32_t *status) {
+    return _mqtt_pubackrel_common(pack, buf, status, 0);
 }
 //两个方向都允许  发布收到（保证交付第一步）
-static int32_t _mqtt_pubrec(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
-    return _mqtt_pubackrel_common(pack, buf, ud, status, 0);
+static int32_t _mqtt_pubrec(mqtt_pack_ctx *pack, buffer_ctx *buf, int32_t *status) {
+    return _mqtt_pubackrel_common(pack, buf, status, 0);
 }
 //两个方向都允许  发布释放（保证交付第二步），3，2，1，0位是保留位且必须分别设置为0，0，1，0
-static int32_t _mqtt_pubrel(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
-    return _mqtt_pubackrel_common(pack, buf, ud, status, 0x02);
+static int32_t _mqtt_pubrel(mqtt_pack_ctx *pack, buffer_ctx *buf, int32_t *status) {
+    return _mqtt_pubackrel_common(pack, buf, status, 0x02);
 }
 //两个方向都允许  QoS 2消息发布完成（保证交互第三步）
-static int32_t _mqtt_pubcomp(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
-    return _mqtt_pubackrel_common(pack, buf, ud, status, 0);
+static int32_t _mqtt_pubcomp(mqtt_pack_ctx *pack, buffer_ctx *buf, int32_t *status) {
+    return _mqtt_pubackrel_common(pack, buf, status, 0);
 }
 //客户端到服务端  客户端订阅请求
-static int32_t _mqtt_subscribe(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
+static int32_t _mqtt_subscribe(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf, int32_t *status) {
     if (client
         || 0x02 != pack->fixhead.flags) {
         BIT_SET(*status, PROT_ERROR);
@@ -585,7 +583,6 @@ static int32_t _mqtt_subscribe(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *
     pack->varhead = vh;
     vh->packid = (uint16_t)num;
     num = 0;
-    pack->version = ((mqtt_ctx *)ud->context)->version;
     if (pack->version >= MQTT_50) {
         vh->properties = _mqtt_properties(buf, status, &num);//属性
         if (NULL == vh->properties
@@ -645,7 +642,7 @@ static int32_t _mqtt_subscribe(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *
     return ERR_OK;
 }
 //服务端到客户端  订阅请求报文确认
-static int32_t _mqtt_suback(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
+static int32_t _mqtt_suback(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf, int32_t *status) {
     if (!client || 0 != pack->fixhead.flags) {
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
@@ -661,7 +658,6 @@ static int32_t _mqtt_suback(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf
     pack->varhead = vh;
     vh->packid = (uint16_t)num;
     num = 0;
-    pack->version = ((mqtt_ctx *)ud->context)->version;
     if (pack->version >= MQTT_50) {
         vh->properties = _mqtt_properties(buf, status, &num);//属性
         if (NULL == vh->properties
@@ -686,7 +682,7 @@ static int32_t _mqtt_suback(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf
     return ERR_OK;
 }
 //客户端到服务端  客户端取消订阅请求
-static int32_t _mqtt_unsubscribe(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
+static int32_t _mqtt_unsubscribe(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf, int32_t *status) {
     if (client
         || 0x02 != pack->fixhead.flags) {
         BIT_SET(*status, PROT_ERROR);
@@ -703,7 +699,6 @@ static int32_t _mqtt_unsubscribe(mqtt_pack_ctx *pack, int32_t client, buffer_ctx
     pack->varhead = vh;
     vh->packid = (uint16_t)num;
     num = 0;
-    pack->version = ((mqtt_ctx *)ud->context)->version;
     if (pack->version >= MQTT_50) {
         vh->properties = _mqtt_properties(buf, status, &num);//属性
         if (NULL == vh->properties
@@ -739,7 +734,7 @@ static int32_t _mqtt_unsubscribe(mqtt_pack_ctx *pack, int32_t client, buffer_ctx
     return ERR_OK;
 }
 //服务端到客户端  取消订阅确认
-static int32_t _mqtt_unsuback(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
+static int32_t _mqtt_unsuback(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf, int32_t *status) {
     if (!client
         || 0 != pack->fixhead.flags) {
         BIT_SET(*status, PROT_ERROR);
@@ -755,7 +750,6 @@ static int32_t _mqtt_unsuback(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *b
     CALLOC(vh, 1, sizeof(mqtt_subreqresp_varhead));
     pack->varhead = vh;
     vh->packid = (uint16_t)num;
-    pack->version = ((mqtt_ctx *)ud->context)->version;
     if (pack->version < MQTT_50) {
         return ERR_OK;
     }
@@ -781,27 +775,25 @@ static int32_t _mqtt_unsuback(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *b
     return ERR_OK;
 }
 //客户端到服务端  心跳请求
-static int32_t _mqtt_ping(mqtt_pack_ctx *pack, int32_t client, ud_cxt *ud, int32_t *status) {
+static int32_t _mqtt_ping(mqtt_pack_ctx *pack, int32_t client, int32_t *status) {
     if (client
         || 0 != pack->fixhead.flags) {
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
-    pack->version = ((mqtt_ctx *)ud->context)->version;
     return ERR_OK;
 }
 //服务端到客户端  心跳响应
-static int32_t _mqtt_pong(mqtt_pack_ctx *pack, int32_t client, ud_cxt *ud, int32_t *status) {
+static int32_t _mqtt_pong(mqtt_pack_ctx *pack, int32_t client, int32_t *status) {
     if (!client
         || 0 != pack->fixhead.flags) {
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
     }
-    pack->version = ((mqtt_ctx *)ud->context)->version;
     return ERR_OK;
 }
 //两个方向都允许  断开连接通知
-static int32_t _mqtt_disconnect(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
+static int32_t _mqtt_disconnect(mqtt_pack_ctx *pack, buffer_ctx *buf, int32_t *status) {
     if (0 != pack->fixhead.flags) {
         BIT_SET(*status, PROT_ERROR);
         return ERR_FAILED;
@@ -810,7 +802,6 @@ static int32_t _mqtt_disconnect(mqtt_pack_ctx *pack, buffer_ctx *buf, ud_cxt *ud
     CALLOC(vh, 1, sizeof(mqtt_reason_varhead));
     pack->varhead = vh;
     BIT_SET(*status, PROT_CLOSE);
-    pack->version = ((mqtt_ctx *)ud->context)->version;
     if (pack->version < MQTT_50
         || 0 == pack->fixhead.remaining_lens) {//如果剩余长度小于1，则表示使用原因码0x00（正常断开）. 如果剩余长度小于2，属性长度使用0。
         return ERR_OK;
@@ -895,42 +886,47 @@ static int32_t _mqtt_init(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf, 
 // 命令阶段分发：处理 PUBLISH / PUB* / SUBSCRIBE / UNSUBSCRIBE / PING / DISCONNECT / AUTH 报文
 static int32_t _mqtt_commands(mqtt_pack_ctx *pack, int32_t client, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
     int32_t rtn = ERR_FAILED;
+    // 版本在这里统一填，不由各 handler 自己抄：mqtt_unpack 是 CALLOC，漏抄一处就静默得
+    // version==0，下游按 3.1.1 处理而不是报错，而这个不变式本来只靠十来个作者各自记得。
+    // connack 不走这里——它正是确立版本的那条；auth 两条路都能到(_mqtt_init 的握手期与这里)，
+    // 所以它自己那份保留，两处赋的是同一个值
+    pack->version = ((mqtt_ctx *)ud->context)->version;
     switch (pack->fixhead.prot) {
     case MQTT_PUBLISH:
-        rtn = _mqtt_publish(pack, buf, ud, status);
+        rtn = _mqtt_publish(pack, buf, status);
         break;
     case MQTT_PUBACK:
-        rtn = _mqtt_puback(pack, buf, ud, status);
+        rtn = _mqtt_puback(pack, buf, status);
         break;
     case MQTT_PUBREC:
-        rtn = _mqtt_pubrec(pack, buf, ud, status);
+        rtn = _mqtt_pubrec(pack, buf, status);
         break;
     case MQTT_PUBREL:
-        rtn = _mqtt_pubrel(pack, buf, ud, status);
+        rtn = _mqtt_pubrel(pack, buf, status);
         break;
     case MQTT_PUBCOMP:
-        rtn = _mqtt_pubcomp(pack, buf, ud, status);
+        rtn = _mqtt_pubcomp(pack, buf, status);
         break;
     case MQTT_SUBSCRIBE:
-        rtn = _mqtt_subscribe(pack, client, buf, ud, status);
+        rtn = _mqtt_subscribe(pack, client, buf, status);
         break;
     case MQTT_SUBACK:
-        rtn = _mqtt_suback(pack, client, buf, ud, status);
+        rtn = _mqtt_suback(pack, client, buf, status);
         break;
     case MQTT_UNSUBSCRIBE:
-        rtn = _mqtt_unsubscribe(pack, client, buf, ud, status);
+        rtn = _mqtt_unsubscribe(pack, client, buf, status);
         break;
     case MQTT_UNSUBACK:
-        rtn = _mqtt_unsuback(pack, client, buf, ud, status);
+        rtn = _mqtt_unsuback(pack, client, buf, status);
         break;
     case MQTT_PINGREQ:
-        rtn = _mqtt_ping(pack, client, ud, status);
+        rtn = _mqtt_ping(pack, client, status);
         break;
     case MQTT_PINGRESP:
-        rtn = _mqtt_pong(pack, client, ud, status);
+        rtn = _mqtt_pong(pack, client, status);
         break;
     case MQTT_DISCONNECT:
-        rtn = _mqtt_disconnect(pack, buf, ud, status);
+        rtn = _mqtt_disconnect(pack, buf, status);
         break;
     case MQTT_AUTH:
         rtn = _mqtt_auth(pack, buf, ud, status);

@@ -236,9 +236,15 @@ static int32_t _ltask_dofile_args(lua_State *lua, const char *file,
     }
     int32_t nargs = 0;
     if (NULL != from && arg_top >= arg_start) {
+        nargs = arg_top - arg_start + 1;
+        // 新建的 lua_State 只有 45 个栈位，而 nargs 由业务脚本随便给。lua_push* 系列只推进栈顶
+        // 不扩容，release 构建下越界那道 api_check 又是空操作，写满就直接写到栈数组外面去了
+        if (!lua_checkstack(lua, nargs)) {
+            LOG_ERROR("cannot run %s: stack overflow, %d args.", file, nargs);
+            return ERR_FAILED;
+        }
         for (int32_t i = arg_start; i <= arg_top; i++) {
             _ltask_copy_arg(from, i, lua);
-            nargs++;
         }
     }
     if (LUA_OK != lua_pcall(lua, nargs, 0, 0)) {

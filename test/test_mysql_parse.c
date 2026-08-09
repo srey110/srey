@@ -1,5 +1,6 @@
 ﻿#include "test_mysql_parse.h"
 #include "lib.h"
+#include "protocol/mysql/mysql.h"
 #include "protocol/mysql/mysql_parse.h"
 #include "protocol/mysql/mysql_reader.h"
 #include "protocol/mysql/mysql_utils.h"
@@ -313,6 +314,73 @@ static void test_mysql_reader_float_double_text(CuTest *tc) {
     mysql_reader_free(r);
 }
 
+// 文本协议浮点的两个"骗过 end-tmp 校验"的输入：空值与溢出。
+// 空值时 strtod 一个字符都不消耗，end-tmp 与 lens 同为 0，那道相等判定反而放行；
+// 上溢时 strtod 钳到 ±HUGE_VAL 但 end 照样走到串尾，只有 errno 认得出来。
+// 与 mysql_reader_integer 改用 str2u64 挡掉的是同一类。
+// 反过来下溢也置 ERANGE，但那时返回的是正确的次正规数，必须放行（用例 4）
+static void test_mysql_reader_float_text_bounds(CuTest *tc) {
+    char names[2][64] = { "f", "d" };
+    uint8_t types[2] = { MYSQL_TYPE_FLOAT, MYSQL_TYPE_DOUBLE };
+    int32_t err;
+
+    // 1) 空值（lens=0，非 NULL 列）
+    mysql_reader_ctx *r = _reader_new(MPACK_QUERY, 2, names, types);
+    char *p1;
+    MALLOC(p1, 8);
+    buf_ctx empty[2] = { { .data = p1, .lens = 0 }, { .data = p1, .lens = 0 } };
+    _reader_push_row(r, p1, empty, NULL);
+    CuAssertTrue(tc, 0.0f == mysql_reader_float(r, "f", &err));
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    CuAssertTrue(tc, 0.0 == mysql_reader_double(r, "d", &err));
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    mysql_reader_free(r);
+
+    // 2) 溢出（超 double 表示范围）
+    r = _reader_new(MPACK_QUERY, 2, names, types);
+    char *p2;
+    MALLOC(p2, 32);
+    memcpy(p2, "1e400", 5);
+    memcpy(p2 + 5, "-1e400", 6);
+    buf_ctx ovf[2] = { { .data = p2, .lens = 5 }, { .data = p2 + 5, .lens = 6 } };
+    _reader_push_row(r, p2, ovf, NULL);
+    CuAssertTrue(tc, 0.0f == mysql_reader_float(r, "f", &err));
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    CuAssertTrue(tc, 0.0 == mysql_reader_double(r, "d", &err));
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    mysql_reader_free(r);
+
+    // 3) 合法值不受影响
+    r = _reader_new(MPACK_QUERY, 2, names, types);
+    char *p3;
+    MALLOC(p3, 16);
+    memcpy(p3, "1.5", 3);
+    memcpy(p3 + 3, "-2.25", 5);
+    buf_ctx ok[2] = { { .data = p3, .lens = 3 }, { .data = p3 + 3, .lens = 5 } };
+    _reader_push_row(r, p3, ok, NULL);
+    CuAssertTrue(tc, 1.5f == mysql_reader_float(r, "f", &err));
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertTrue(tc, -2.25 == mysql_reader_double(r, "d", &err));
+    CuAssertIntEquals(tc, ERR_OK, err);
+    mysql_reader_free(r);
+
+    // 4) 下溢不算失败：ERANGE 是上溢下溢共用的，但下溢时 strtod 返回的是正确的次正规数，
+    //    而 DOUBLE 列里 1e-320 这种值是服务端的常规输出（实测 MySQL 8.4 文本协议原样回 "1e-320"）
+    r = _reader_new(MPACK_QUERY, 2, names, types);
+    char *p4;
+    MALLOC(p4, 16);
+    memcpy(p4, "1e-320", 6);
+    buf_ctx sub[2] = { { .data = p4, .lens = 6 }, { .data = p4, .lens = 6 } };
+    _reader_push_row(r, p4, sub, NULL);
+    double dv = mysql_reader_double(r, "d", &err);
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertTrue(tc, dv > 0.0 && dv < 1e-300);
+    // float 列同样按 double 解析后再窄化，窄化到 0.0f 是 IEEE 的正常结果，不是解析失败
+    (void)mysql_reader_float(r, "f", &err);
+    CuAssertIntEquals(tc, ERR_OK, err);
+    mysql_reader_free(r);
+}
+
 // mysql_reader_string：返回指针 + 长度，多种合法类型
 static void test_mysql_reader_string(CuTest *tc) {
     char names[2][64] = { "s", "i" };
@@ -370,6 +438,97 @@ static void test_mysql_reader_datetime_binary(CuTest *tc) {
     (void)mysql_reader_datetime(r2, "dt", &err);
     CuAssertIntEquals(tc, ERR_FAILED, err);
     mysql_reader_free(r2);
+}
+
+// 造一条文本 DATETIME 行并读出，用例多，抽出来省掉重复的 reader 搭建
+static int64_t _my_text_dt(const char *s, int32_t *err) {
+    char names[1][64] = { "dt" };
+    uint8_t types[1] = { MYSQL_TYPE_DATETIME };
+    mysql_reader_ctx *r = _reader_new(MPACK_QUERY, 1, names, types);
+    size_t n = strlen(s);
+    char *p;
+    MALLOC(p, n);
+    memcpy(p, s, n);
+    buf_ctx c[1] = { { .data = p, .lens = n } };
+    _reader_push_row(r, p, c, NULL);
+    int64_t v = mysql_reader_datetime(r, "dt", err);
+    mysql_reader_free(r);
+    return v;
+}
+
+// 文本 DATETIME 改走 _strptime 后的边界：逐字段量程由 _conv_num 校验。
+// 只断言 err 与微秒余数，不断言绝对时间戳——mktime 依赖本地时区/DST
+static void test_mysql_reader_datetime_text_range(CuTest *tc) {
+    int32_t err;
+
+    // 1) 完整 "日期 时间.小数秒"：小数秒仍由 parse_usec_frac 从解析终点接着取
+    int64_t ts = _my_text_dt("2024-05-21 13:45:30.123456", &err);
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertTrue(tc, ts > 0);
+    CuAssertTrue(tc, 123456 == ts % 1000000);
+
+    // 2) DATE 列只有日期，第二段不解析
+    ts = _my_text_dt("2024-05-21", &err);
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertTrue(tc, ts > 0);
+    CuAssertTrue(tc, 0 == ts % 1000000);
+
+    // 2b) 日期后面有东西就必须是完整时间：残缺时间不能当成合法 DATE 收下、把时间悄悄丢掉
+    (void)_my_text_dt("2024-05-21 13:45", &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+
+    // 3) 零日期不在本用例范围：它是非严格 SQL 模式下的合法值，两条协议路径都返 0 + ERR_OK，
+    //    见 test_mysql_reader_datetime_zero_date
+
+    // 4) 月 / 日 / 时 / 分越界一律拒绝
+    (void)_my_text_dt("2024-13-01 00:00:00", &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    (void)_my_text_dt("2024-05-32 00:00:00", &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    (void)_my_text_dt("2024-05-21 24:00:00", &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    (void)_my_text_dt("2024-05-21 13:60:00", &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+
+    // 5) 分隔符不对 / 整串非日期：第一段就匹配不上
+    (void)_my_text_dt("2024/05/21 13:45:30", &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+    (void)_my_text_dt("not-a-date", &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
+}
+
+// 零日期 0000-00-00[ 00:00:00] 在文本与二进制两条路径上必须给出相同结果：
+// 二进制用长度前缀 0 表示它，一直是 err=ERR_OK + 返回 0；文本侧改走 _strptime 后
+// %m 的 1..12 会把它判成解析失败，两边就对不上了，故在解析前单独认掉
+static void test_mysql_reader_datetime_zero_date(CuTest *tc) {
+    char names[1][64] = { "dt" };
+    uint8_t types[1] = { MYSQL_TYPE_DATETIME };
+    int32_t err;
+
+    // 文本协议：完整零日期时间
+    int64_t ts = _my_text_dt("0000-00-00 00:00:00", &err);
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertTrue(tc, 0 == ts);
+
+    // 文本协议：DATE 列的零日期（无时间段）
+    ts = _my_text_dt("0000-00-00", &err);
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertTrue(tc, 0 == ts);
+
+    // 二进制协议：长度前缀 0，同样是 ERR_OK + 0
+    mysql_reader_ctx *r = _reader_new(MPACK_STMT_EXECUTE, 1, names, types);
+    char *p;
+    MALLOC(p, 4);
+    buf_ctx c[1] = { { .data = p, .lens = 0 } };
+    _reader_push_row(r, p, c, NULL);
+    ts = mysql_reader_datetime(r, "dt", &err);
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertTrue(tc, 0 == ts);
+    mysql_reader_free(r);
+
+    // 只有年份是零的部分零日期不在此列，仍按解析失败处理（mktime 也表示不了）
+    (void)_my_text_dt("2024-00-15 00:00:00", &err);
+    CuAssertIntEquals(tc, ERR_FAILED, err);
 }
 
 // mysql_reader_time 文本协议：正/负 "HH:MM:SS" 格式 + 二进制协议 8 字节
@@ -930,8 +1089,8 @@ static void _push_oversized_field(mysql_reader_ctx *reader, size_t cap) {
     _reader_push_row(reader, p, c, NULL);
 }
 // 超长文本字段一律拒绝，不截断也不越界。integer/uinteger 已改走 str2u64 按 lens 解析，
-// 靠上界判定挡下；float/double(cap=128) 与 datetime/time(cap=48) 仍走 _mysql_copy_bounded
-// strict=1 (mysql_utils.c)，lens >= cap 直接返回 ERR_FAILED 且不写入目标缓冲
+// 靠上界判定挡下；float/double(cap=128) 与 datetime/time(cap=48) 仍走 copy_bounded
+// strict=1 (utils.c)，lens >= cap 直接返回 ERR_FAILED 且不写入目标缓冲
 static void test_mysql_reader_copy_field_boundary(CuTest *tc) {
     char names[1][64] = { "n" };
 
@@ -1025,6 +1184,103 @@ static void test_mpack_parse_field_long_name(CuTest *tc) {
     CuAssert(tc, "payload ownership transfers to field on success", bw.data == field.payload);
     binary_free(&bw);
 }
+// 往 buf 追加一个完整 MySQL 包：3 字节小端长度 + 1 字节 sequence_id + payload
+static void _push_packet(buffer_ctx *buf, const void *payload, size_t lens, uint8_t seq) {
+    char head[4];
+    pack_integer(head, (uint64_t)lens, 3, 1);
+    head[3] = (char)seq;
+    buffer_append(buf, head, sizeof(head));
+    if (lens > 0) {
+        buffer_append(buf, (void *)payload, lens);
+    }
+}
+// 一条合法的列定义包体（catalog/schema/table/org_table/name/org_name + 定长段）
+static void _build_field_packet(binary_ctx *bw) {
+    binary_init(bw, NULL, 0, 0);
+    _mysql_set_lenenc(bw, 3);
+    binary_set_binary(bw, "def", 3);
+    _mysql_set_lenenc(bw, 2);
+    binary_set_binary(bw, "db", 2);
+    _mysql_set_lenenc(bw, 4);
+    binary_set_binary(bw, "tbl1", 4);
+    _mysql_set_lenenc(bw, 4);
+    binary_set_binary(bw, "tbl1", 4);
+    _mysql_set_lenenc(bw, 3);
+    binary_set_binary(bw, "col", 3);
+    _mysql_set_lenenc(bw, 3);
+    binary_set_binary(bw, "col", 3);
+    // 以下是 ColumnDefinition41 的定长区，lenenc 先声明它一共 0x0c 字节
+    _mysql_set_lenenc(bw, 0x0c);
+    binary_set_integer(bw, 0x21, 2, 1);// character_set，0x21 = utf8_general_ci
+    binary_set_integer(bw, 100, 4, 1);// column_length，列的最大显示宽度
+    binary_set_uint8(bw, MYSQL_TYPE_VARCHAR);
+    binary_set_uinteger(bw, 0, 2, 1);// flags，本用例不关心列属性，给 0
+    binary_set_uint8(bw, 0);// decimals，小数位数
+}
+// 字段阶段的列定义条数少于声明的列数：服务端声明 2 列却只送 1 条列定义就发 EOF。
+// 没收到的那列还是 CALLOC 的全零，type 0 恰好是合法枚举 MYSQL_TYPE_DECIMAL、name 长度为 0，
+// 行解析会照着这份假元数据把整行拆错位，故须在转入行阶段前判定为协议错
+static void test_mpack_fields_short_of_count(CuTest *tc) {
+    // 首包 payload 已由调用方读出放进 breader（对齐 _mpack_resultset_response 的形状）：列数 = 2
+    char *first;
+    MALLOC(first, 1);
+    first[0] = 2;
+    binary_ctx breader;
+    binary_init(&breader, first, 1, 0);
+
+    // 后续包排进 buf：只有 1 条列定义，紧接着就是 EOF
+    binary_ctx fw;
+    _build_field_packet(&fw);
+    buffer_ctx buf;
+    buffer_init(&buf);
+    _push_packet(&buf, fw.data, fw.offset, 1);
+    binary_free(&fw);
+    // EOF 包：首字节 0xfe + warnings(2 字节) + status_flags(2 字节)
+    char eof[5] = { (char)MYSQL_EOF, 0, 0, 0, 0 };
+    _push_packet(&buf, eof, sizeof(eof), 2);
+
+    mysql_ctx mysql;
+    ZERO(&mysql, sizeof(mysql));
+    mysql.cur_cmd = MYSQL_QUERY;
+    int32_t status = PROT_INIT;
+    mpack_ctx *mpack = _mpack_parser(&mysql, &buf, &breader, &status);
+    CuAssertTrue(tc, NULL == mpack);
+    CuAssertTrue(tc, BIT_CHECK(status, PROT_ERROR));
+    // 报错路径把半成品 reader 一起回收，不留给下一个包接着用
+    CuAssertTrue(tc, NULL == mysql.mpack);
+    CuAssertIntEquals(tc, 0, (int)mysql.parse_status);
+    buffer_free(&buf);
+}
+// 同上的对照组：列定义条数与声明一致时正常转入行阶段，EOF 之后返回完整 mpack
+static void test_mpack_fields_match_count(CuTest *tc) {
+    char *first;
+    MALLOC(first, 1);
+    first[0] = 1;// 声明 1 列
+    binary_ctx breader;
+    binary_init(&breader, first, 1, 0);
+
+    binary_ctx fw;
+    _build_field_packet(&fw);
+    buffer_ctx buf;
+    buffer_init(&buf);
+    _push_packet(&buf, fw.data, fw.offset, 1);
+    binary_free(&fw);
+    char eof[5] = { (char)MYSQL_EOF, 0, 0, 0, 0 };
+    _push_packet(&buf, eof, sizeof(eof), 2);// 字段阶段 EOF
+    _push_packet(&buf, eof, sizeof(eof), 3);// 行阶段 EOF：空结果集
+
+    mysql_ctx mysql;
+    ZERO(&mysql, sizeof(mysql));
+    mysql.cur_cmd = MYSQL_QUERY;
+    int32_t status = PROT_INIT;
+    mpack_ctx *mpack = _mpack_parser(&mysql, &buf, &breader, &status);
+    CuAssertPtrNotNull(tc, mpack);
+    CuAssertTrue(tc, !BIT_CHECK(status, PROT_ERROR));
+    mysql_reader_ctx *reader = mpack->pack;
+    CuAssertIntEquals(tc, 1, reader->field_count);
+    _mysql_pkfree(mpack);
+    buffer_free(&buf);
+}
 // _mysql_udfree 必须把整组解析状态一起复位。mysql_ctx 会活过连接(还有别的持有者引用着),
 // 只清 mpack 而留下 parse_status/cur_cmd 的话,重连后一个非请求包就会带着上一代的
 // "还在读结果集行"状态走进 reader,去解引用已经是 NULL 的 mpack
@@ -1057,8 +1313,11 @@ void test_mysql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mysql_reader_integer_binary);
     SUITE_ADD_TEST(suite, test_mysql_reader_uinteger);
     SUITE_ADD_TEST(suite, test_mysql_reader_float_double_text);
+    SUITE_ADD_TEST(suite, test_mysql_reader_float_text_bounds);
     SUITE_ADD_TEST(suite, test_mysql_reader_string);
     SUITE_ADD_TEST(suite, test_mysql_reader_datetime_binary);
+    SUITE_ADD_TEST(suite, test_mysql_reader_datetime_text_range);
+    SUITE_ADD_TEST(suite, test_mysql_reader_datetime_zero_date);
     SUITE_ADD_TEST(suite, test_mysql_reader_time);
     SUITE_ADD_TEST(suite, test_mysql_reader_binary_lens);
     SUITE_ADD_TEST(suite, test_mpack_ok_parse);
@@ -1071,5 +1330,7 @@ void test_mysql_parse(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mysql_reader_datetime2_types);
     SUITE_ADD_TEST(suite, test_mysql_reader_copy_field_boundary);
     SUITE_ADD_TEST(suite, test_mpack_parse_field_long_name);
+    SUITE_ADD_TEST(suite, test_mpack_fields_short_of_count);
+    SUITE_ADD_TEST(suite, test_mpack_fields_match_count);
     SUITE_ADD_TEST(suite, test_mysql_udfree_reset);
 }

@@ -20,11 +20,6 @@ int32_t task_startup(loader_ctx *loader, config_ctx *config) {
     if (ERR_OK != rtn) {
         return rtn;
     }
-    rtn = harbor_start(loader, config->harbor.name, config->harbor.ssl,
-        config->harbor.ip, config->harbor.port);
-    if (ERR_OK != rtn) {
-        return rtn;
-    }
     // debug_console 调试控制台:debug.port 0 / debug.name 空串时 debug_console_start 跳过
     rtn = debug_console_start(loader, config->debug.name, config->debug.ip, config->debug.port);
     if (ERR_OK != rtn) {
@@ -36,5 +31,15 @@ int32_t task_startup(loader_ctx *loader, config_ctx *config) {
         return rtn;
     }
 #endif
+    // harbor 必须排在 ltask_startup 之后:harbor.ssl 是往 evssl 注册表里查的名字,而这个二进制里
+    // 唯一的注册入口是 Lua 的 core.cert_register / p12_register,由 startup.lua 顶层同步调用,
+    // ltask_startup 跑完才存在。排在前面的话 evssl_qury 恒查不到,harbor 要么静默降级成明文
+    // (跨节点鉴权全指望这张证书)、要么按 fail-closed 让整个进程起不来,两条都不对。
+    // 没有 task 按名字找 harbor(它只对外收 HTTP 再按 handle 转投),放到最后不影响别人
+    rtn = harbor_start(loader, config->harbor.name, config->harbor.ssl,
+        config->harbor.ip, config->harbor.port);
+    if (ERR_OK != rtn) {
+        return rtn;
+    }
     return rtn;
 }

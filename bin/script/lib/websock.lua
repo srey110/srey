@@ -212,8 +212,9 @@ function wbsk.binary(client, data, size)
     return wbsk.binary_fin(client, 1, data, size)
 end
 
----构造延续帧（CONTINUATION）；fin=1 终止帧可 data=nil
----@type fun(client:integer, fin:integer, data:string|lightuserdata|nil, size:integer?):lightuserdata, integer
+---构造延续帧（CONTINUATION）；data 须为 string 或 lightuserdata（nil 报错），
+---lightuserdata 形态必须给 size，空载荷传 "" 即可
+---@type fun(client:integer, fin:integer, data:string|lightuserdata, size:integer?):lightuserdata, integer
 wbsk.continua = websock.pack_continua
 
 -- ── 流式分片发送 ──────────────────────────────────────────────────────────
@@ -239,8 +240,15 @@ end
 
 ---内部流式发送：将 func(...) 产生的数据按 WebSocket 分片协议逐帧发送；
 ---发送 fin=1 空 continuation 帧标记消息结束
+-- 客户端帧要一份掩码 key，取不到熵时 websock_pack_* 返 nil（Linux 上 getrandom 被 seccomp 挡、
+-- Windows 上 BCryptGenRandom 失败都会走到）。不判空的话 nil 一路走到 srey.send 里的
+-- lpub_check_buf，撞 "string or light userdata expected" 把整条协程打断
 local function _send_end_frame(fd, skid, client)
     local data, size = wbsk.continua(client, 1, "", 0)
+    if nil == data then
+        ERROR("websock pack end frame failed, cannot get entropy for mask key.")
+        return false
+    end
     return srey.send(fd, skid, data, size, 0)
 end
 
@@ -269,6 +277,11 @@ local function _continua(fd, skid, prot, client, func, ...)
     else
         return false
     end
+    if nil == data then
+        -- 首帧都没组出来，一帧未发，对端没有 continuation 状态要清
+        ERROR("websock pack first frame failed, cannot get entropy for mask key.")
+        return false
+    end
     if not srey.send(fd, skid, data, size, 0) then
         return false   -- 首帧失败 socket 已坏，不发终止帧
     end
@@ -288,6 +301,12 @@ local function _continua(fd, skid, prot, client, func, ...)
             return _send_end_frame(fd, skid, client)
         end
         data, size = wbsk.continua(client, 0, data, size)
+        if nil == data then
+            -- 已发出部分帧，仍补终止帧让对端退出累积状态，再按失败返回
+            ERROR("websock pack continuation frame failed, cannot get entropy for mask key.")
+            _send_end_frame(fd, skid, client)
+            return false
+        end
         if not srey.send(fd, skid, data, size, 0) then
             -- 中间帧失败仍尝试发终止帧让 server 退出 continuation 累积状态
             _send_end_frame(fd, skid, client)

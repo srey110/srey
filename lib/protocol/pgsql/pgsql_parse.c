@@ -139,12 +139,15 @@ static int32_t _pgpack_row_description(pgpack_ctx *pgpack, binary_ctx *breader) 
         field = &reader->fields[i];
         fname = binary_get_string(breader);
         nlens = strlen(fname);
-        if (nlens > sizeof(field->name) - 1) {
-            LOG_ERROR("pgsql field name exceeds %zu bytes: %zu, truncated (lookup by full name will miss); "
+        if (ERR_OK != safe_fill_str(field->name, sizeof(field->name), fname)) {
+            // fields 是 MALLOC 出来的，而 safe_fill_str 装不下时一个字节都不写：留着就是
+            // 未初始化内存被 _pgsql_reader_index 的 strcmp 读，还未必有 NUL。置空串，
+            // 效果是这一列按名查不到（按下标仍可取）
+            field->name[0] = '\0';
+            LOG_ERROR("pgsql field name exceeds %zu bytes: %zu, column dropped from name lookup; "
                       "stock servers truncate at NAMEDATALEN-1 = 63, this one was built with a larger one.",
                       sizeof(field->name) - 1, nlens);
         }
-        safe_fill_str(field->name, sizeof(field->name), fname);
         field->table_oid = (int32_t)binary_get_integer(breader, 4, 0);
         field->index = (int16_t)binary_get_integer(breader, 2, 0);
         field->type_oid = (int32_t)binary_get_integer(breader, 4, 0);
@@ -315,8 +318,10 @@ pgpack_ctx *_pgpack_parser(pgsql_ctx *pg, binary_ctx *breader, ud_cxt *ud, int32
             _pgpack_init(pg, PGPACK_OK);
         }
         char *complete = binary_get_string(breader);
-        if (!EMPTYSTR(complete)) {
-            safe_fill_str(pg->pack->complete, sizeof(pg->pack->complete), complete);
+        if (!EMPTYSTR(complete)
+            && ERR_OK != safe_fill_str(pg->pack->complete, sizeof(pg->pack->complete), complete)) {
+            LOG_ERROR("pgsql command tag exceeds %zu bytes: %zu, affected_rows unavailable.",
+                      sizeof(pg->pack->complete) - 1, strlen(complete));
         }
         FREE(breader->data);
         break;

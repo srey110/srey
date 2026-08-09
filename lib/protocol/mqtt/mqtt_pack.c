@@ -180,6 +180,9 @@ char *mqtt_pack_connect(mqtt_protversion version, int8_t cleanstart, uint16_t ke
         wtlens = strlen(willtopic);
     }
     int8_t willflag = 0 == wtlens ? 0 : 1;
+    if (NULL == willpayload) {
+        wplens = 0;
+    }
     int8_t connflags = 0;//连接标志
     BIT_SETN(connflags, 1, cleanstart);//Clean Start
     BIT_SETN(connflags, 2, willflag);//Will Flag

@@ -530,7 +530,7 @@ runner.run("bson", function(t)
         t:check(nil ~= bson.tostring2(srey.ud_str(ptr, sz)), "tostring2 string 形式正常")
 
         t:eq(false, pcall(function() return bson.decode(ptr, -1) end),  "decode 负长度被拒")
-        -- 取值折到 lpub_check_buf 之后，报错文案仍须是 BSON 的口径，不能漏出 lpub 那句只提非负的
+        -- 取值折到 lpub_check_buf 之后，报错文案仍须点明是长度越界而不是别的参数问题
         local _, derr = pcall(function() return bson.decode(ptr, -1) end)
         t:check(type(derr) == "string" and nil ~= derr:find("out of range"), "decode 负长度报错点明越界")
         t:eq(false, pcall(function() return bson.decode(ptr, big) end), "decode 超 INT32_MAX 被拒")
@@ -583,6 +583,33 @@ runner.run("bson", function(t)
             -- REALLOC 原地扩容返回同一地址：内存没被释放，不构成 UAF，本轮无从验证
             t:check(true, "本次扩容未搬移地址，跳过")
         end
+    end
+
+    -- 29. :free() 之后的写入方法必须报错。binary_free 只清 data/size/offset 却留着 inc，
+    --     所以下一次写入照样能扩容出一块新缓冲、一声不吭地写进去；而这块新缓冲从没经过
+    --     bson.new() 那次 append_start，缺开头 4 字节长度前缀与结尾 EOD，:data() 的两道
+    --     守卫(非空 + depth==0)又恰好都能过 —— 交出去的是一份结构非法、原有字段也没了的文档，
+    --     要等对端解析失败才暴露
+    do
+        local b = bson.new()
+        b:utf8("k", "v")
+        b["end"](b)
+        b:free()
+
+        t:eq(false, pcall(function() b:utf8("k2", "v2") end), "free 后 :utf8 被拒")
+        t:eq(false, pcall(function() b:int32("k2", 1) end),   "free 后 :int32 被拒")
+        t:eq(false, pcall(function() b:doc_begin("d") end),   "free 后 :doc_begin 被拒")
+        t:eq(false, pcall(function() b:arr_begin("a") end),   "free 后 :arr_begin 被拒")
+        t:eq(false, pcall(function() b["end"](b) end),        "free 后 :end 被拒")
+        t:eq(false, pcall(function() b:cat("\5\0\0\0\0") end), "free 后 :cat 被拒")
+        local ok, err = pcall(function() b:utf8("k2", "v2") end)
+        t:eq(false, ok, "free 后写入返回失败")
+        t:check(type(err) == "string" and nil ~= err:find("freed"), "错误信息点明已释放")
+
+        -- 写入既然全被挡住，:data() 也就不会交出那份半成品
+        t:eq(false, pcall(function() return b:data() end), "free 后 :data 仍被拒")
+        b:free()  -- 重复 free 幂等
+        t:check(true, "bson 重复 free 幂等")
     end
 end)
 end)

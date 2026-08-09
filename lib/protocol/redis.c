@@ -85,6 +85,7 @@ static inline void _redis_create_sds(binary_ctx *fbuf, binary_ctx *sdsbuf, size_
 static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
     size_t lens, n = 0;
     int32_t pending = 0;
+    int32_t fmterr = 0;
     binary_ctx fbuf, sdsbuf;
     binary_init(&fbuf, NULL, 0, 0);
     binary_init(&sdsbuf, NULL, 0, 0);
@@ -153,11 +154,8 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
                 f++;
                 while ('\0' != *f && isdigit((unsigned char)*f)) f++;
             }
-            if ('\0' == *f) {
-                lens = (size_t)(f - p);
-                if (lens >= 2) {
-                    binary_set_binary(&fbuf, p + 1, lens - 1);
-                }
+            if ('\0' == *f) {// '%' 之后只有标志/宽度就到串尾，没有转换符
+                fmterr = 1;
                 break;
             }
             //double
@@ -177,8 +175,8 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
                 if ('\0' != *f && NULL != strchr(FMT_INTEGER_FLAG, *f)) {
                     FMT_TYPE(int);
                     f++;
-                } else {
-                    binary_set_binary(&fbuf, p + 1, (size_t)(f - p) - 1);
+                } else {// 长度修饰后面不是整数转换
+                    fmterr = 1;
                 }
                 break;
             }
@@ -187,8 +185,8 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
                 if ('\0' != *f && NULL != strchr(FMT_INTEGER_FLAG, *f)) {
                     FMT_TYPE(int);
                     f++;
-                } else {
-                    binary_set_binary(&fbuf, p + 1, (size_t)(f - p) - 1);
+                } else {// 长度修饰后面不是整数转换
+                    fmterr = 1;
                 }
                 break;
             }
@@ -197,8 +195,8 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
                 if ('\0' != *f && NULL != strchr(FMT_INTEGER_FLAG, *f)) {
                     FMT_TYPE(long long);
                     f++;
-                } else {
-                    binary_set_binary(&fbuf, p + 1, (size_t)(f - p) - 1);
+                } else {// 长度修饰后面不是整数转换
+                    fmterr = 1;
                 }
                 break;
             }
@@ -207,17 +205,33 @@ static char *_redis_pack(size_t *size, const char *fmt, va_list args) {
                 if ('\0' != *f && NULL != strchr(FMT_INTEGER_FLAG, *f)) {
                     FMT_TYPE(long);
                     f++;
-                } else {
-                    binary_set_binary(&fbuf, p + 1, (size_t)(f - p) - 1);
+                } else {// 长度修饰后面不是整数转换
+                    fmterr = 1;
                 }
                 break;
             }
-            lens = (size_t)(f - p);
-            if (lens >= 2) {
-                binary_set_binary(&fbuf, p + 1, lens - 1);
+            // size_t %zu 是调用方最自然的写法，单独认一下；不认的话它会掉进末尾那条整体拒绝
+            if ('z' == *f) {
+                f++;
+                if ('\0' != *f && NULL != strchr(FMT_INTEGER_FLAG, *f)) {
+                    FMT_TYPE(size_t);
+                    f++;
+                } else {// 长度修饰后面不是整数转换
+                    fmterr = 1;
+                }
+                break;
             }
+            fmterr = 1;
             break;
         }
+        }
+        if (0 != fmterr) {
+            LOG_ERROR("redis_pack: unsupported conversion at offset %zu of format \"%s\".",
+                      (size_t)(p - fmt), fmt);
+            binary_free(&fbuf);
+            binary_free(&sdsbuf);
+            *size = 0;
+            return NULL;
         }
     }
     _redis_create_sds(&fbuf, &sdsbuf, &n, &pending);

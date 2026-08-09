@@ -236,6 +236,44 @@ static void test_pgsql_pack_helpers(CuTest *tc) {
 }
 
 /* =======================================================================
+ * pgsql_bind_free —— 可重复调用；释放后 nparam 归零，后续绑定被本文件既有的
+ * "0 == nparam 即早退"统一挡住，不会拿着旧 size/offset 往空指针上写
+ * ======================================================================= */
+static void test_pgsql_bind_free_reuse(CuTest *tc) {
+    pgsql_bind_ctx bind;
+    pgsql_bind_init(&bind, 2);
+    pgsql_bind_int32(&bind, 42);
+    pgsql_bind_text(&bind, "hello", 5);
+    CuAssertTrue(tc, bind.values.offset > 2);
+
+    pgsql_bind_free(&bind);
+    CuAssertIntEquals(tc, 0, bind.nparam);
+    CuAssertPtrEquals(tc, NULL, bind.format.data);
+    CuAssertPtrEquals(tc, NULL, bind.values.data);
+
+    /* 重复 free 不炸 */
+    pgsql_bind_free(&bind);
+    CuAssertPtrEquals(tc, NULL, bind.values.data);
+
+    /* free 后再绑定全部静默无视，缓冲不会被重新写出来 */
+    pgsql_bind_int32(&bind, 7);
+    pgsql_bind_null(&bind);
+    pgsql_bind_text(&bind, "x", 1);
+    CuAssertPtrEquals(tc, NULL, bind.format.data);
+    CuAssertPtrEquals(tc, NULL, bind.values.data);
+
+    /* 组包侧同样按 nparam 早退，不会发出半截 Bind 消息 */
+    size_t size = 0;
+    char *pack = pgsql_pack_stmt_execute("stmt1", &bind, FORMAT_BINARY, &size);
+    CuAssertPtrNotNull(tc, pack);
+    CuAssertTrue(tc, 'B' == pack[0]);
+    FREE(pack);
+
+    pgsql_bind_clear(&bind);
+    pgsql_bind_free(&bind);
+}
+
+/* =======================================================================
  * 测试套件注册
  * ======================================================================= */
 void test_pgsql_pack(CuSuite *suite) {
@@ -248,5 +286,6 @@ void test_pgsql_pack(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_pgsql_stmt_execute);
     SUITE_ADD_TEST(suite, test_pgsql_bind_basic);
     SUITE_ADD_TEST(suite, test_pgsql_bind_extra_types);
+    SUITE_ADD_TEST(suite, test_pgsql_bind_free_reuse);
     SUITE_ADD_TEST(suite, test_pgsql_pack_helpers);
 }

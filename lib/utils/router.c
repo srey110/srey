@@ -498,6 +498,39 @@ static int32_t _router_group_collect_mws(const router_group *g, char **out) {
     }
     return k + g->mw_names_n;
 }
+// 新条目会不会被已注册的某条永远遮住：方法掩码有交集 + 段序列在"匹配意义上"完全相同。
+// 匹配意义上相同 = 段数相同、逐段类型相同、LIT 段文本相同——参数名不参与匹配
+// (_router_param_take 吃掉任意非空段、不比对名字)，所以 /u/{id} 与 /u/{uid} 是同一条路由；
+// ANY 与 GET 的掩码有交集，所以先注册 ANY /x 会让后注册的 GET /x 永远够不着。
+// _router_find 返回首条命中，被遮住的那条静默不可达、极难查，故在注册期就拒掉。
+// 不做更一般的"谁比谁宽泛"判定：/s/* 确实会遮住后注册的 /s/css，但那在 OPT 与 WILD 组合下
+// 是个偏序问题，判宽了会误杀合法注册，本函数不覆盖
+static int32_t _router_shadowed(router_ctx *r, router_method m,
+                                const router_seg *segs, int32_t segs_n) {
+    router_entry *e;
+    int32_t k;
+    for (int32_t i = 0; i < r->routes_n; i++) {
+        e = &r->routes[i];
+        if (0 == (e->method_mask & m)
+            || e->segs_n != segs_n) {
+            continue;
+        }
+        for (k = 0; k < segs_n; k++) {
+            if (e->segs[k].t != segs[k].t) {
+                break;
+            }
+            if (ROUTER_SEG_LIT == segs[k].t
+                && (e->segs[k].str_len != segs[k].str_len
+                    || 0 != memcmp(e->segs[k].str, segs[k].str, segs[k].str_len))) {
+                break;
+            }
+        }
+        if (k == segs_n) {
+            return i;
+        }
+    }
+    return -1;
+}
 router_entry *router_add(router_ctx *r, const router_group *g,
                          router_method method, const char *path,
                          router_cb h,
@@ -524,6 +557,13 @@ router_entry *router_add(router_ctx *r, const router_group *g,
     int32_t segs_n = 0;
     int32_t segs_nopt = 0;
     if (ERR_OK != _router_parse_path(full_buf, full_len, &segs, &segs_n, &segs_nopt)) {
+        return NULL;
+    }
+    int32_t shadow = _router_shadowed(r, method, segs, segs_n);
+    if (shadow >= 0) {
+        LOG_WARN("router: route shadowed by the one registered at index %d, this registration is ignored.", shadow);
+        _router_segs_free_str(segs, segs_n);
+        FREE(segs);
         return NULL;
     }
     // 3) 合并中间件: group (root→leaf) → 路由级; 未注册的名字 _router_resolve_mw 已 LOG_WARN, 跳过
@@ -609,6 +649,13 @@ int32_t router_add_index(router_ctx *r, const char *method, size_t method_len,
     int32_t segs_nopt = 0;
     if (ERR_OK != _router_parse_path(path, path_len, &segs, &segs_n, &segs_nopt)) {
         return -1;
+    }
+    int32_t shadow = _router_shadowed(r, m, segs, segs_n);
+    if (shadow >= 0) {
+        LOG_WARN("router: route shadowed by the one registered at index %d, this registration is ignored.", shadow);
+        _router_segs_free_str(segs, segs_n);
+        FREE(segs);
+        return -2;
     }
     _router_grow((void **)&r->routes, &r->routes_cap, r->routes_n + 1, sizeof(router_entry));
     router_entry *e = &r->routes[r->routes_n];
@@ -881,4 +928,20 @@ void router_dispatch(router_ctx *r, task_ctx *task,
     if (!ctx.responded) {
         _router_send_simple(task, fd, skid, 500, "Internal Server Error\n");
     }
+}
+// _net_recv 回调的标准实现：分片一律拒绝(router 只认一次到齐的完整请求)，其余交 dispatch。
+// harbor / debug_console 各自的回调只负责从 task 参数里取出自己的 router 再转到这里
+void router_net_recv(router_ctx *r, task_ctx *task, sk_id *sk,
+                     subtype_t pktype, uint8_t client, uint8_t slice, void *data, size_t size) {
+    (void)pktype;
+    (void)client;
+    (void)size;
+    if (0 != slice) {
+        // 只在首帧回 411 并关连接；后续分片帧此时连接已关，静默丢弃
+        if (PROT_SLICE_START == slice) {
+            router_reject_chunked(task, sk->fd, sk->skid);
+        }
+        return;
+    }
+    router_dispatch(r, task, sk->fd, sk->skid, (struct http_pack_ctx *)data);
 }

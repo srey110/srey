@@ -51,7 +51,10 @@ static void _refcnt_smtp(task_ctx *task) {
     smtp_ctx *ctx;
     int32_t i;
     MALLOC(ctx, sizeof(smtp_ctx));
-    smtp_init(ctx, DBREFCNT_BADIP, 25, NULL, "u", "p");
+    if (ERR_OK != smtp_init(ctx, DBREFCNT_BADIP, 25, NULL, "u", "p")) {
+        FREE(ctx);
+        return;
+    }
     ATOMIC_SET(&ctx->ref, 1);
     for (i = 0; i < DBREFCNT_ROUNDS; i++) {
         smtp_try_connect(task, ctx, 1);

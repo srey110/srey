@@ -73,10 +73,23 @@ void *global_userdata(lua_State *lua, const char *name);
 /// <returns>ERR_OK 成功;ERR_FAILED 变量缺失/类型不符/buf 不足</returns>
 int32_t global_string(lua_State *lua, const char *name, char *buf, size_t bufsize);
 /// <summary>
+/// 校验跟 lightuserdata 一起传进来的字节数。凡是 (指针, 长度) 形状的入口都从这里取长度,
+/// 别再各写一句 (size_t)luaL_checkinteger。
+/// 下界恒为 0：负数转成 size_t 是个天文数字,而下游的边界判定几乎都是"剩余长度 &lt; 需要长度"
+/// 这种形式,长度一大就全部恒假,于是照着缓冲后面的堆内存一路读下去。
+/// 上界由调用方按自己的线格式给:BSON 传 INT32_MAX(文档长度与 binary 长度前缀就是 int32);
+/// 收发缓冲这类没有协议上界的传 0,表示只校验下界
+/// </summary>
+/// <param name="lua">Lua 栈</param>
+/// <param name="idx">长度在栈中的位置</param>
+/// <param name="max">允许的最大字节数;传 0 表示不校验上界</param>
+/// <returns>字节数;越界走 luaL_argerror(longjmp,不返回)</returns>
+size_t lpub_check_lens(lua_State *lua, int32_t idx, size_t max);
+/// <summary>
 /// 解析栈位 idx 的 (string|lightuserdata, size [, copy]) 参数,返回 data 指针。
 /// string: 返回字符串首址, size 自动取长度, copy(若非 NULL)=1;
-/// lightuserdata: 返回指针, size 从 idx+1 读 integer(负数 argerror——转成 size_t 会变成 SIZE_MAX,
-///   让下游按天文数字去读那块内存), copy(若非 NULL)从 idx+2 读 integer(缺失/非 integer 默认 1);
+/// lightuserdata: 返回指针, size 从 idx+1 经 lpub_check_lens 取,
+///   copy(若非 NULL)从 idx+2 读 integer(缺失/非 integer 默认 1);
 /// 其他类型: luaL_argerror(longjmp,不返回)。
 /// </summary>
 /// <param name="lua">Lua 栈</param>
@@ -84,6 +97,7 @@ int32_t global_string(lua_State *lua, const char *name, char *buf, size_t bufsiz
 /// <param name="size">输出: size 字节数</param>
 /// <param name="copy">输出 copy 标志的指针;传 NULL 表示不解析 copy</param>
 /// <returns>data 指针</returns>
+void *lpub_check_buf(lua_State *lua, int32_t idx, size_t *size, int32_t *copy);
 /// <summary>
 /// 同 lpub_check_buf,但 idx 为 in/out:返回后 *idx 推进到下一个未消费的参数位
 /// (string 消费 1 位;lightuserdata 消费 data+size 2 位,copy 命中再 +1),
@@ -95,23 +109,11 @@ int32_t global_string(lua_State *lua, const char *name, char *buf, size_t bufsiz
 /// <param name="copy">输出 copy 标志的指针;传 NULL 表示不解析 copy</param>
 /// <returns>data 指针</returns>
 void *lpub_check_buf_idx(lua_State *lua, int32_t *idx, size_t *size, int32_t *copy);
-void *lpub_check_buf(lua_State *lua, int32_t idx, size_t *size, int32_t *copy);
 /// <summary>
-/// 校验随 lightuserdata 一起传进来的字节数。负数转成 size_t 后是个天文数字:bson_iter_init 唯一的
-/// 边界就是拿文档头声明的长度跟 doc.size 比,doc.size 一旦成了 SIZE_MAX 那道判定永不触发,
-/// 文档头写多长就往后读多长;超 INT32_MAX 则在组包侧撞断言。两者都在这里挡成可被 pcall 捕获的 Lua 错
-/// </summary>
-/// <param name="lua">Lua 栈</param>
-/// <param name="idx">长度在栈中的位置</param>
-/// <returns>字节数;越界走 luaL_argerror(longjmp,不返回)</returns>
-size_t lpub_check_bson_lens(lua_State *lua, int32_t idx);
-/// <summary>
-/// 取 BSON 二进制参数:string 自带长度;lightuserdata 从 idx+1 读长度。取值本身走 lpub_check_buf,
-/// 这里只补它没有的上界——它服务的是收发缓冲,只要求非负。
-/// 上界两条分支都得卡:Lua 字符串自身能远超 INT32_MAX,只卡 lightuserdata 等于给字符串留了后门。
-/// lightuserdata 那条先自己把长度验一遍,是为了让越界报错统一说 BSON 的口径,而不是先撞上
-/// lpub_check_buf 那句只提非负的 "size must be >= 0";验过之后 lpub 那道判定必然通过。
-/// 末尾那道只对 string 分支有意义,越界的就是参数本身,故报在 idx 上。
+/// 取 BSON 二进制参数:string 自带长度;lightuserdata 从 idx+1 读长度。取值走 lpub_check_buf,
+/// 而它服务的是收发缓冲、不带上界,所以两条分支的 INT32_MAX 都得在这里补:lightuserdata
+/// 那条先单独验一遍,为的是把越界报在长度那个参数上而不是 data 上;string 那条的长度取自
+/// 字符串自身,而 Lua 字符串能超 INT32_MAX,只卡 lightuserdata 等于给字符串留了后门。
 /// 注意只挡得住"长度本身非法",挡不住"长度合法但比缓冲实际长"——(指针, 长度) 这种入参形状
 /// 天然只能信调用方
 /// </summary>
@@ -130,7 +132,17 @@ char *lpub_check_bson_bin(lua_State *lua, int32_t idx, size_t *lens);
 /// <returns>task 句柄；名字查不到时为 INVALID_TNAME</returns>
 name_t lpub_task_handle(lua_State *lua, int32_t idx);
 /// <summary>
-/// 组包类绑定的统一收尾：pack 非空时压 (lightuserdata, 长度) 返 2，为空时压单个 nil 返 1。
+/// 失败路径压 n 个 nil 并返回 n。全仓的规矩是**失败与成功的返回值个数必须一致**：
+/// local a, b = f() 这种写法少返几个能靠 nil 补齐撑住，但把返回值直接塞进另一个调用
+/// （srey.send(fd, skid, websock.pack_text(...))）就整体错位了，而类型标注上写的是 N 个值。
+/// n 都是个位数，不必 lua_checkstack——进 C 函数时 Lua 保证有 LUA_MINSTACK 个空位
+/// </summary>
+/// <param name="lua">Lua 虚拟机状态</param>
+/// <param name="n">要压的 nil 个数，须与成功路径的返回值个数相同</param>
+/// <returns>压栈的返回值个数，即 n</returns>
+int32_t lpub_rtn_nil(lua_State *lua, int32_t n);
+/// <summary>
+/// 组包类绑定的统一收尾：pack 非空时压 (lightuserdata, 长度)，为空时压 2 个 nil，两条路径都返 2。
 /// 用法固定为 return lpub_rtn_lud(lua, pack, size);
 /// 何时用它、何时改用 luaL_error：数据相关、调用方能降级的失败（载荷超协议上限、
 /// 会话绑定已分叉等）走本函数返 nil，让调用方判一次；调用方契约违反、没有运行期恢复动作的
@@ -141,6 +153,16 @@ name_t lpub_task_handle(lua_State *lua, int32_t idx);
 /// <param name="size">pack 字节数（pack 为 NULL 时不使用）</param>
 /// <returns>压栈的返回值个数：2 或 1</returns>
 int32_t lpub_rtn_lud(lua_State *lua, void *pack, size_t size);
+/// <summary>
+/// reader 取值类绑定的失败/NULL 收尾：err 为 1(字段是 SQL NULL) 压 true 返 1；其余(读取失败)压 false 返 1。
+/// 用法固定为：读到值的分支自己压 true + 值并 return N，其余情况一律 return lpub_rtn_reader(lua, err)。
+/// 这条三态契约(ERR_OK 有值 / 1 为 NULL / 其余失败)由 mysql_reader / pgsql_reader 两侧共同产出，
+/// 收在一处才不至于改契约时漏改某个字段类型
+/// </summary>
+/// <param name="lua">Lua 虚拟机状态</param>
+/// <param name="err">reader 取值函数写回的错误码</param>
+/// <returns>压栈的返回值个数，恒为 1</returns>
+int32_t lpub_rtn_reader(lua_State *lua, int32_t err);
 /// <summary>
 /// 将 url_ctx 字段打包为 Lua 表并压栈（scheme/user/psw/host/port/path/query/segs/param）
 /// </summary>

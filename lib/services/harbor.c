@@ -48,25 +48,6 @@ static void _harbor_respond_text(router_req *ctx, int32_t code) {
     const char *txt = http_code_status(code);
     _harbor_respond(ctx, code, NULL, "text/plain; charset=utf-8", (void *)txt, strlen(txt));
 }
-// 参数校验中间件（router_group 承载）：非法请求静默关连接（不暴露），合法则 router_next
-static void _harbor_check(router_req *ctx) {
-    struct http_pack_ctx *pack = ctx->pack;
-    // 仅拒分片(harbor 不支持);空 body 放行(无参 RPC)
-    if (0 != http_chunked(pack)) {
-        ev_close(&ctx->task->loader->netev, ctx->sk.fd, ctx->sk.skid, 1);
-        ctx->responded = 1;
-        return;
-    }
-    size_t dn = 0;
-    size_t tn = 0;
-    if (NULL == router_req_query(ctx, "dst", &dn) || 0 == dn
-        || NULL == router_req_query(ctx, "type", &tn) || 0 == tn) {
-        ev_close(&ctx->task->loader->netev, ctx->sk.fd, ctx->sk.skid, 1);
-        ctx->responded = 1;
-        return;
-    }
-    router_next(ctx);
-}
 // /call 与 /request 共用：解析 dst/type/body，grab 目标 task，404 兜底；
 // is_call!=0 走 task_call(单向投递不等响应)，否则走 coro_request(请求-响应，本协程内 yield 等待)
 static void _harbor_dispatch(router_req *ctx, int32_t is_call) {
@@ -116,33 +97,23 @@ static void _harbor_call(router_req *ctx) {
 static void _harbor_request(router_req *ctx) {
     _harbor_dispatch(ctx, 0);
 }
-// HTTP 接收回调：完整请求到达后交 router 派发（参数校验在 group 中间件，转发在 handler）；不支持 chunked，收到即拒绝并关闭连接
+// HTTP 接收回调：取出本服务的 router 后转 router_net_recv（分片拒绝与派发都在那里）
 static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype,
     uint8_t client, uint8_t slice, void *data, size_t size) {
-    (void)pktype;
-    (void)client;
-    (void)size;
-    if (0 != slice) {
-        if (PROT_SLICE_START == slice) {
-            router_reject_chunked(task, sk->fd, sk->skid);
-        }
-        return;
-    }
     harbor_ctx *ctx = (harbor_ctx *)coro_get_arg(task);
-    router_dispatch(ctx->router, task, sk->fd, sk->skid, (struct http_pack_ctx *)data);
+    router_net_recv(ctx->router, task, sk, pktype, client, slice, data, size);
 }
-// harbor任务启动回调：建路由器 + 注册参数校验中间件的 group + 监听
+// harbor任务启动回调：建路由器 + 注册 /call 与 /request + 监听
 static void _harbor_startup(task_ctx *harbor) {
     harbor_ctx *ctx = (harbor_ctx *)coro_get_arg(harbor);
     task_recved(harbor, _net_recv);
     ctx->router = router_new();
-    // 参数校验统一放 group 中间件，/call 与 /request 共享
-    router_define(ctx->router, "check", _harbor_check);
-    const char *mws[] = { "check" };
-    router_group g;
-    router_group_root(ctx->router, &g, "", mws, 1);
-    router_post(ctx->router, &g, "/call", _harbor_call, NULL, 0);
-    router_post(ctx->router, &g, "/request", _harbor_request, NULL, 0);
+    // 参数校验不再单设中间件：那里的 chunked 分支永远走不到（_net_recv 见 slice 非 0 就返回了，
+    // 分片包到不了 dispatch），dst/type 的存在性判定又与 _harbor_dispatch 的 str2u64 重复，
+    // 结果同一类坏请求分两处决定、给出两种行为（缺参数静默关连接 vs 畸形参数回 404）。
+    // 统一收到 _harbor_dispatch 一处：一律 404
+    router_post(ctx->router, NULL, "/call", _harbor_call, NULL, 0);
+    router_post(ctx->router, NULL, "/request", _harbor_request, NULL, 0);
     if (ERR_OK != task_listen(harbor, PACK_HTTP, ctx->ssl, ctx->ip, ctx->port, &ctx->lsnid, 0)) {
         LOG_ERROR("task_listen %s:%d error", ctx->ip, ctx->port);
     }
@@ -176,14 +147,27 @@ int32_t harbor_start(loader_ctx *loader, const char *tname, const char *ssl, con
     if (NULL == ip || strlen(ip) >= IP_LENS) {
         return ERR_FAILED;
     }
+    struct evssl_ctx *evssl = NULL;
+    if (!EMPTYSTR(ssl)) {
+#if WITH_SSL
+        evssl = evssl_qury(ssl);
+#endif
+        // 配了名字却拿不到证书就直接拒绝启动，不能静默退化成明文：跨节点鉴权全指望这张证书，
+        // 而 /call、/request 能往任意 handle 的 task 投递消息，运维只会以为链路是加密的。
+        // 名字来自 evssl 注册表，注册入口在 Lua 侧(core.cert_register / p12_register)，
+        // 所以调用方必须排在 ltask_startup 之后(见 srey/startup.c)
+        if (NULL == evssl) {
+            LOG_ERROR("harbor: evssl '%s' not registered "
+                      "(register it from the lua startup script before harbor starts), "
+                      "refuse to listen in plaintext.", ssl);
+            return ERR_FAILED;
+        }
+    }
     harbor_ctx *ctx;
     CALLOC(ctx, 1, sizeof(harbor_ctx));
     ctx->port = port;
-#if WITH_SSL
-    ctx->ssl = evssl_qury(ssl);
-#else
-    (void)ssl;
-#endif
+    ctx->ssl = evssl;
+    // 上面的 strlen(ip) >= IP_LENS 已挡过，ctx->ip 正好 IP_LENS，装得下
     safe_fill_str(ctx->ip, sizeof(ctx->ip), ip);
     if (NULL == coro_task_register(loader, tname, 4 * ONEK,
                                    _harbor_startup, _harbor_closing,

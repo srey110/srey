@@ -205,6 +205,7 @@
     <ClCompile Include="protocol\pgsql\pgsql_parse.c" />
     <ClCompile Include="protocol\pgsql\pgsql_reader.c" />
     <ClCompile Include="protocol\prots.c" />
+    <ClCompile Include="protocol\prots_pub.c" />
     <ClCompile Include="protocol\redis.c" />
     <ClCompile Include="protocol\smtp\mail.c" />
     <ClCompile Include="protocol\smtp\smtp.c" />

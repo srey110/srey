@@ -9,7 +9,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // HTTP 路由器 (基于 task + http_pack_ctx)
 // 用途
-//   task 内监听 PACK_HTTP, _net_recv 收到完整 HTTP 包后调 router_dispatch,
+//   task 内监听 PACK_HTTP, _net_recv 整串转 router_net_recv (内部拒 chunked + 调 router_dispatch),
 //   按方法 + 路径模板派发到 handler, 期间穿过若干中间件 (前置 / 后置都行)。
 //   对标 Express / Laravel Route, 但 C 风格 + 同步执行。
 // 核心概念
@@ -52,8 +52,7 @@
 //   static void _net_recv(task_ctx *task, sk_id *sk,
 //                         subtype_t pktype, uint8_t client, uint8_t slice,
 //                         void *data, size_t size) {
-//       if (0 != slice) { return; }
-//       router_dispatch(g_router, task, sk->fd, sk->skid, (struct http_pack_ctx *)data);
+//       router_net_recv(g_router, task, sk, pktype, client, slice, data, size);
 //   }
 //   static void _startup(task_ctx *task) {
 //       task_recved(task, _net_recv);
@@ -310,7 +309,8 @@ router_entry *router_options(router_ctx *r, const router_group *g, const char *p
 router_entry *router_any(router_ctx *r, const router_group *g, const char *path,
                          router_cb h, const char *const *mws, int32_t mws_n);
 /// <summary>
-/// 注册路由并返回索引；不经 group/mw 解析，handler 置 NULL
+/// 注册路由并返回索引；不经 group/mw 解析，handler 置 NULL。
+/// 与已注册条目等价时拒绝注册（见返回值）：dispatch 取首条命中，后注册的那条永远够不着
 /// method 支持 "GET"/"POST"/"PUT"/"DELETE"/"PATCH"/"HEAD"/"OPTIONS"/"ANY"
 /// 本函数注册的条目只能配 router_match_index 使用（调用方自己按索引派发）；
 /// 因 handler 为 NULL，同一 router_ctx 若再交给 router_dispatch，命中即回 500 拒绝
@@ -320,7 +320,9 @@ router_entry *router_any(router_ctx *r, const router_group *g, const char *path,
 /// <param name="method_len">method 长度</param>
 /// <param name="path">路由完整路径（调用方已拼好前缀）</param>
 /// <param name="path_len">path 长度</param>
-/// <returns>路由索引（≥0）；-1 表示路径非法或方法未知</returns>
+/// <returns>路由索引（≥0）；-1 路径非法或方法未知；-2 已有一条等价路由把它遮住
+/// （方法掩码有交集 + 段序列在匹配意义上相同，如先注册的 ANY /x 之于 GET /x、
+/// 或 /u/{id} 之于 /u/{uid}——参数名不参与匹配）</returns>
 int32_t router_add_index(router_ctx *r, const char *method, size_t method_len,
                          const char *path, size_t path_len);
 /// <summary>
@@ -369,6 +371,21 @@ void router_dispatch(router_ctx *r, task_ctx *task,
 /// <param name="fd">socket fd</param>
 /// <param name="skid">连接 skid</param>
 void router_reject_chunked(task_ctx *task, SOCKET fd, uint64_t skid);
+/// <summary>
+/// _net_recv 回调的标准实现 —— 分片(chunked)一律拒绝: 首帧回 411 并关连接, 后续帧静默丢;
+/// slice == 0 的完整请求转 router_dispatch。参数与 _net_recv_cb 一一对应, 只在最前面多一个
+/// router_ctx: 各服务的回调按自己的 ctx 类型取出 router 后整串转发即可
+/// </summary>
+/// <param name="r">router_ctx</param>
+/// <param name="task">task</param>
+/// <param name="sk">连接标识 (fd + skid)</param>
+/// <param name="pktype">协议类型 (未使用)</param>
+/// <param name="client">是否客户端连接 (未使用)</param>
+/// <param name="slice">分片标志; 0 表示完整消息</param>
+/// <param name="data">http_pack_ctx 指针</param>
+/// <param name="size">数据字节数 (未使用)</param>
+void router_net_recv(router_ctx *r, task_ctx *task, sk_id *sk,
+                     subtype_t pktype, uint8_t client, uint8_t slice, void *data, size_t size);
 /// <summary>
 /// 中间件链推进; 中间件内调用即执行下一节点 (handler 或下一个中间件),
 /// next 返回后可继续做后置处理。handler 不应调用

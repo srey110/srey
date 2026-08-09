@@ -1,5 +1,6 @@
 ﻿#include "protocol/pgsql/pgsql_reader.h"
 #include "protocol/pgsql/pgsql_parse.h"
+#include "utils/strptime.h"
 
 pgsql_reader_ctx *pgsql_reader_init(pgpack_ctx *pgpack, pgpack_format format) {
     if (NULL == pgpack->pack
@@ -65,20 +66,41 @@ pgpack_row *pgsql_reader_name(pgsql_reader_ctx *reader, const char *name, pgpack
     }
     return pgsql_reader_index(reader, index, field);
 }
-int32_t pgsql_reader_bool(pgsql_reader_ctx *reader, const char *name, int32_t *err) {
-    SET_PTR(err, ERR_OK);
-    pgpack_field *field;
-    pgpack_row *row = pgsql_reader_name(reader, name, &field);
+// 与 mysql_reader.c 的 _mysql_reader_row 对称：把每个取值函数开头那三段（取行 → 类型 OID
+// 白名单 → NULL 判定）收成一处。原来 8 个函数各抄一遍，其中"row 非 NULL 就直接解引用 field"
+// 这条安全性完全依赖 pgsql_reader_name 提前挡掉 fields == NULL——那个不变式散在 8 处默默依赖，
+// 谁将来改成直接调 pgsql_reader_index 就是未初始化指针解引用；收进来之后只在这一处成立。
+// 返回 NULL 时 err 已写好（ERR_FAILED=取不到/类型不符，1=字段是 NULL），调用方只管返自己的零值
+static pgpack_row *_pgsql_reader_row(pgsql_reader_ctx *reader, const char *name,
+                                     const int32_t *oids, int32_t noid,
+                                     pgpack_field **field, int32_t *err) {
+    pgpack_row *row = pgsql_reader_name(reader, name, field);
     if (NULL == row) {
         SET_PTR(err, ERR_FAILED);
-        return 0;
+        return NULL;
     }
-    if (BOOLOID != field->type_oid) { // 字段类型不是 bool
+    int32_t i;
+    for (i = 0; i < noid; i++) {
+        if (oids[i] == (*field)->type_oid) {
+            break;
+        }
+    }
+    if (i == noid) {// 字段类型不在白名单里
         SET_PTR(err, ERR_FAILED);
-        return 0;
+        return NULL;
     }
-    if (-1 == row->lens) { // NULL 值
+    if (-1 == row->lens) {// NULL 值
         SET_PTR(err, 1);
+        return NULL;
+    }
+    return row;
+}
+int32_t pgsql_reader_bool(pgsql_reader_ctx *reader, const char *name, int32_t *err) {
+    SET_PTR(err, ERR_OK);
+    static const int32_t _oids[] = { BOOLOID };
+    pgpack_field *field;
+    pgpack_row *row = _pgsql_reader_row(reader, name, _oids, (int32_t)ARRAY_SIZE(_oids), &field, err);
+    if (NULL == row) {
         return 0;
     }
     if (FORMAT_TEXT == reader->format) {
@@ -102,20 +124,10 @@ int32_t pgsql_reader_bool(pgsql_reader_ctx *reader, const char *name, int32_t *e
 }
 int64_t pgsql_reader_integer(pgsql_reader_ctx *reader, const char *name, int32_t *err) {
     SET_PTR(err, ERR_OK);
+    static const int32_t _oids[] = { INT2OID, INT4OID, INT8OID };
     pgpack_field *field;
-    pgpack_row *row = pgsql_reader_name(reader, name, &field);
+    pgpack_row *row = _pgsql_reader_row(reader, name, _oids, (int32_t)ARRAY_SIZE(_oids), &field, err);
     if (NULL == row) {
-        SET_PTR(err, ERR_FAILED);
-        return 0;
-    }
-    if (INT2OID != field->type_oid
-        && INT4OID != field->type_oid
-        && INT8OID != field->type_oid) { // 字段类型不是整数类型
-        SET_PTR(err, ERR_FAILED);
-        return 0;
-    }
-    if (-1 == row->lens) { // NULL 值
-        SET_PTR(err, 1);
         return 0;
     }
     if (FORMAT_TEXT == reader->format) {
@@ -148,35 +160,18 @@ int64_t pgsql_reader_integer(pgsql_reader_ctx *reader, const char *name, int32_t
 }
 double pgsql_reader_double(pgsql_reader_ctx *reader, const char *name, int32_t *err) {
     SET_PTR(err, ERR_OK);
+    static const int32_t _oids[] = { FLOAT4OID, FLOAT8OID };
     pgpack_field *field;
-    pgpack_row *row = pgsql_reader_name(reader, name, &field);
+    pgpack_row *row = _pgsql_reader_row(reader, name, _oids, (int32_t)ARRAY_SIZE(_oids), &field, err);
     if (NULL == row) {
-        SET_PTR(err, ERR_FAILED);
-        return 0;
-    }
-    if (FLOAT4OID != field->type_oid
-        && FLOAT8OID != field->type_oid) { // 字段类型不是浮点类型
-        SET_PTR(err, ERR_FAILED);
-        return 0;
-    }
-    if (-1 == row->lens) { // NULL 值
-        SET_PTR(err, 1);
         return 0;
     }
     if (FORMAT_TEXT == reader->format) {
-        // 文本格式：将字符串转为 double
-        char tmp[128];
-        if (0 == row->lens
-            || row->lens >= (int32_t)sizeof(tmp)) {
-            SET_PTR(err, ERR_FAILED);
-            LOG_WARN("parse failed.");
-            return 0.0;
-        }
-        memcpy(tmp, row->val, row->lens);
-        tmp[row->lens] = '\0';
-        char *end;
-        double val = strtod_c(tmp, &end);
-        if ((int32_t)(end - tmp) != row->lens) {
+        // 文本格式：空串 / 有残留字符 / 上溢的判定与 mysql 侧共用 parse_double_strict。
+        // 原先这里只查"消费长度相符"，"1e400" 会带着 inf 和 ERR_OK 交出去，而同一个值在
+        // mysql 侧是被拒的——两个镜像实现各写一份必然分叉，收到 prots_pub 一处
+        double val;
+        if (ERR_OK != parse_double_strict(row->val, (size_t)row->lens, &val)) {
             SET_PTR(err, ERR_FAILED);
             LOG_WARN("parse failed.");
             return 0.0;
@@ -201,22 +196,10 @@ int32_t pgsql_reader_isnull(pgsql_reader_ctx *reader, const char *name) {
 const char *pgsql_reader_text(pgsql_reader_ctx *reader, const char *name, int32_t *lens, int32_t *err) {
     SET_PTR(lens, 0);
     SET_PTR(err, ERR_OK);
+    static const int32_t _oids[] = { TEXTOID, VARCHAROID, BPCHAROID, NAMEOID, UNKNOWNOID };
     pgpack_field *field;
-    pgpack_row *row = pgsql_reader_name(reader, name, &field);
+    pgpack_row *row = _pgsql_reader_row(reader, name, _oids, (int32_t)ARRAY_SIZE(_oids), &field, err);
     if (NULL == row) {
-        SET_PTR(err, ERR_FAILED);
-        return NULL;
-    }
-    if (TEXTOID != field->type_oid
-        && VARCHAROID != field->type_oid
-        && BPCHAROID != field->type_oid
-        && NAMEOID != field->type_oid
-        && UNKNOWNOID != field->type_oid) {
-        SET_PTR(err, ERR_FAILED);
-        return NULL;
-    }
-    if (-1 == row->lens) { // NULL 值
-        SET_PTR(err, 1);
         return NULL;
     }
     // 文本/二进制格式均为 UTF-8 字节流，直接返回指针，不含 '\0' 结尾
@@ -226,18 +209,10 @@ const char *pgsql_reader_text(pgsql_reader_ctx *reader, const char *name, int32_
 const char *pgsql_reader_bytea(pgsql_reader_ctx *reader, const char *name, int32_t *lens, int32_t *err) {
     SET_PTR(lens, 0);
     SET_PTR(err, ERR_OK);
+    static const int32_t _oids[] = { BYTEAOID };
     pgpack_field *field;
-    pgpack_row *row = pgsql_reader_name(reader, name, &field);
+    pgpack_row *row = _pgsql_reader_row(reader, name, _oids, (int32_t)ARRAY_SIZE(_oids), &field, err);
     if (NULL == row) {
-        SET_PTR(err, ERR_FAILED);
-        return NULL;
-    }
-    if (BYTEAOID != field->type_oid) {
-        SET_PTR(err, ERR_FAILED);
-        return NULL;
-    }
-    if (-1 == row->lens) { // NULL 值
-        SET_PTR(err, 1);
         return NULL;
     }
     // 二进制格式：原始字节；文本格式：'\x' 前缀 + 十六进制字符串（调用方自行解码）
@@ -258,69 +233,71 @@ static int32_t _pgsql_date_to_days(int32_t y, int32_t m, int32_t d) {
     julian += 7834 * m / 256 + d;
     return julian - 2451545;
 }
-// 将文本格式时间戳 "YYYY-MM-DD HH:MM:SS[.ffffff]" 解析为相对 PG 纪元的微秒数
+// 将文本格式时间戳 "YYYY-MM-DD HH:MM:SS[.ffffff]" 解析为相对 PG 纪元的微秒数。
+// 用 _strptime 而不是 sscanf("%d-%d-%d ...")，是为了拿到逐字段的量程校验：%d 什么都收，
+// "9999999-1-1" 会原样进 _pgsql_date_to_days 算出一个垃圾天数当成功返回。
+// 代价是一处已知的功能收窄：strptime 的 %Y 上界是 9999（strptime.c 的 _conv_num 按上界的
+// 位数决定最多吃几位数字），而 PG 的 timestamp 支持到 294276 AD、date 到 5874897 AD，
+// 5 位及以上的年份从此解析失败——返回类型装得下（实测 5874897-12-31 的天数
+// 2145031948 < INT32_MAX），纯粹是解析器的限制。取舍是"拒掉垃圾值"比"支持公元一万年后的
+// 日期"现实，由 test_pgsql_parse.c 的 test_pgsql_reader_temporal_text_range 钉住。
+// 下面的 _pgsql_days_from_text 同此
 static int64_t _pgsql_usec_from_text(const char *s, int32_t slen, int32_t *err) {
     char tmp[48];
-    if (slen >= (int32_t)sizeof(tmp)) {
+    if (ERR_OK != copy_bounded(s, (size_t)slen, tmp, sizeof(tmp), 1)) {
         SET_PTR(err, ERR_FAILED);
         return 0;
     }
-    memcpy(tmp, s, slen);
-    tmp[slen] = '\0';
-    int32_t y, mo, d, h, mi, sec;
-    if (6 != sscanf(tmp, "%d-%d-%d %d:%d:%d", &y, &mo, &d, &h, &mi, &sec)) {
+    struct tm dt = { 0 };
+    const char *end = _strptime(tmp, "%Y-%m-%d %H:%M:%S", &dt);
+    if (NULL == end) {
         SET_PTR(err, ERR_FAILED);
         return 0;
     }
-    // 手动解析小数秒（sscanf 解析整数会丢失位数信息），按 6 位对齐为微秒
-    int32_t usec = 0;
-    const char *dot = strchr(tmp, '.');
-    if (NULL != dot) {
-        dot++;
-        int32_t mult = 100000;
-        for (int32_t i = 0; i < 6 && dot[i] >= '0' && dot[i] <= '9'; i++, mult /= 10) {
-            usec += (dot[i] - '0') * mult;
-        }
-    }
-    if (NULL != strstr(tmp, " BC")) {
+    // 小数秒 / " BC" / 时区偏移这三段 _strptime 表达不了：前两者没有对应转换符，
+    // %z 在本仓库(TM_GMTOFF 从未定义)只吃掉时区文本、不保存偏移量，且它也不认 "+hh:mm:ss"
+    uint32_t usec = parse_usec_frac(end);
+    int32_t y = dt.tm_year + 1900;
+    if (NULL != strstr(end, " BC")) {
         y = 1 - y;
     }
-    int64_t days = _pgsql_date_to_days(y, mo, d);
+    int64_t days = _pgsql_date_to_days(y, dt.tm_mon + 1, dt.tm_mday);
     int64_t total = days * 86400000000LL
-         + (int64_t)h * 3600000000LL
-         + (int64_t)mi * 60000000LL
-         + (int64_t)sec * 1000000LL
+         + (int64_t)dt.tm_hour * 3600000000LL
+         + (int64_t)dt.tm_min * 60000000LL
+         + (int64_t)dt.tm_sec * 1000000LL
          + usec;
     int32_t zh = 0, zm = 0, zs = 0;
     int64_t offset;
-    for (int32_t i = 11; i < slen; i++) {
-        if ('+' == tmp[i] || '-' == tmp[i]) {
-            sscanf(tmp + i + 1, "%d:%d:%d", &zh, &zm, &zs);
+    // 从日期时间之后起扫，不再按固定下标 11 跳过 "YYYY-MM-DD" 的两个减号——年份不是 4 位就跳错位
+    for (const char *p = end; '\0' != *p; p++) {
+        if ('+' == *p || '-' == *p) {
+            sscanf(p + 1, "%d:%d:%d", &zh, &zm, &zs);
             offset = ((int64_t)zh * 3600 + zm * 60 + zs) * 1000000LL;
-            total -= ('-' == tmp[i]) ? -offset : offset;
+            total -= ('-' == *p) ? -offset : offset;
             break;
         }
     }
     return total;
 }
-// 将文本格式日期 "YYYY-MM-DD" 解析为相对 PG 纪元的天数
+// 将文本格式日期 "YYYY-MM-DD" 解析为相对 PG 纪元的天数；%Y 的年份上界见 _pgsql_usec_from_text
 static int32_t _pgsql_days_from_text(const char *s, int32_t slen, int32_t *err) {
     char tmp[16];
-    if (slen >= (int32_t)sizeof(tmp)) {
+    if (ERR_OK != copy_bounded(s, (size_t)slen, tmp, sizeof(tmp), 1)) {
         SET_PTR(err, ERR_FAILED);
         return 0;
     }
-    memcpy(tmp, s, slen);
-    tmp[slen] = '\0';
-    int32_t y, m, d;
-    if (3 != sscanf(tmp, "%d-%d-%d", &y, &m, &d)) {
+    struct tm dt = { 0 };
+    const char *end = _strptime(tmp, "%Y-%m-%d", &dt);
+    if (NULL == end) {
         SET_PTR(err, ERR_FAILED);
         return 0;
     }
-    if (NULL != strstr(tmp, " BC")) {
+    int32_t y = dt.tm_year + 1900;
+    if (NULL != strstr(end, " BC")) {
         y = 1 - y;
     }
-    return _pgsql_date_to_days(y, m, d);
+    return _pgsql_date_to_days(y, dt.tm_mon + 1, dt.tm_mday);
 }
 // 将十六进制字符转为整数值，无效字符返回 -1
 static int32_t _pgsql_hex_digit(char c) {
@@ -337,19 +314,10 @@ static int32_t _pgsql_hex_digit(char c) {
 }
 int64_t pgsql_reader_timestamp(pgsql_reader_ctx *reader, const char *name, int32_t *err) {
     SET_PTR(err, ERR_OK);
+    static const int32_t _oids[] = { TIMESTAMPOID, TIMESTAMPTZOID };
     pgpack_field *field;
-    pgpack_row *row = pgsql_reader_name(reader, name, &field);
+    pgpack_row *row = _pgsql_reader_row(reader, name, _oids, (int32_t)ARRAY_SIZE(_oids), &field, err);
     if (NULL == row) {
-        SET_PTR(err, ERR_FAILED);
-        return 0;
-    }
-    if (TIMESTAMPOID != field->type_oid
-        && TIMESTAMPTZOID != field->type_oid) {
-        SET_PTR(err, ERR_FAILED);
-        return 0;
-    }
-    if (-1 == row->lens) { // NULL 值
-        SET_PTR(err, 1);
         return 0;
     }
     if (FORMAT_TEXT == reader->format) {
@@ -364,18 +332,10 @@ int64_t pgsql_reader_timestamp(pgsql_reader_ctx *reader, const char *name, int32
 }
 int32_t pgsql_reader_date(pgsql_reader_ctx *reader, const char *name, int32_t *err) {
     SET_PTR(err, ERR_OK);
+    static const int32_t _oids[] = { DATEOID };
     pgpack_field *field;
-    pgpack_row *row = pgsql_reader_name(reader, name, &field);
+    pgpack_row *row = _pgsql_reader_row(reader, name, _oids, (int32_t)ARRAY_SIZE(_oids), &field, err);
     if (NULL == row) {
-        SET_PTR(err, ERR_FAILED);
-        return 0;
-    }
-    if (DATEOID != field->type_oid) {
-        SET_PTR(err, ERR_FAILED);
-        return 0;
-    }
-    if (-1 == row->lens) { // NULL 值
-        SET_PTR(err, 1);
         return 0;
     }
     if (FORMAT_TEXT == reader->format) {
@@ -415,18 +375,10 @@ static int32_t _pgsql_uuid_from_text(const char *s, int32_t lens, char uuid[16])
 }
 int32_t pgsql_reader_uuid(pgsql_reader_ctx *reader, const char *name, char uuid[16], int32_t *err) {
     SET_PTR(err, ERR_OK);
+    static const int32_t _oids[] = { UUIDOID };
     pgpack_field *field;
-    pgpack_row *row = pgsql_reader_name(reader, name, &field);
+    pgpack_row *row = _pgsql_reader_row(reader, name, _oids, (int32_t)ARRAY_SIZE(_oids), &field, err);
     if (NULL == row) {
-        SET_PTR(err, ERR_FAILED);
-        return ERR_FAILED;
-    }
-    if (UUIDOID != field->type_oid) {
-        SET_PTR(err, ERR_FAILED);
-        return ERR_FAILED;
-    }
-    if (-1 == row->lens) { // NULL 值
-        SET_PTR(err, 1);
         return ERR_FAILED;
     }
     if (FORMAT_BINARY == reader->format) {

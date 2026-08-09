@@ -118,6 +118,20 @@ runner.run("framework", function(t)
         t:eq(nil, task.grab("__no_such_task__"), "task.grab missing returns nil")
     end
 
+    -- ── srey.task: register 的可变参数个数 ─────────────────────────────
+    -- 这些参数是逐个 push 进新建 lua_State 的，而新 state 的栈只有 45 个位置，
+    -- 个数却完全由调用脚本给。lua_push* 只推进栈顶不扩容，release 构建下越界那道
+    -- api_check 又是空操作，没有 lua_checkstack 的话 44 个参数就已经写到栈数组外面了
+    do
+        local args = {}
+        for i = 1, 256 do
+            args[i] = i
+        end
+        -- trap_target 不读 ...，这里只关心参数搬运本身不越界
+        local tk = task.register("test.trap_target", "argstress", 0, table.unpack(args))
+        t:check(tk ~= nil, "task.register 256 个参数不越界")
+    end
+
     -- ── srey.task: trap (跨 task 中断卡死协程) ────────────────────────
     -- 起一个 helper task 接收 "spin" 进入死循环，验证 task.trap 能从外部把它打断；
     -- 中断后 task 应能恢复处理新请求（"ping" → "pong"）。

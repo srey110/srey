@@ -48,6 +48,18 @@ static bson_ctx *_lbson_check_complete(lua_State *lua) {
     }
     return bson;
 }
+// 可写对象专用的第 1 参数校验:除了元表,还得挡住已经 :free() 掉的对象。
+// binary_free 只把 data 置空、size/offset 归零,却留着 inc,于是下一次写入照样能扩容出一块新缓冲、
+// 一声不吭地写进去;而这块新缓冲从没经过 bson.new() 那次 _bson_append_start,开头 4 字节长度前缀
+// 与结尾的 EOD 都没有,:data() 那两道守卫(非空 + depth==0)又恰好都能过,最后交出去的是一份
+// 结构非法的文档,对端解析失败才暴露,原有字段也随旧缓冲一起没了
+static bson_ctx *_lbson_check_writable(lua_State *lua) {
+    bson_ctx *bson = luaL_checkudata(lua, 1, MT_BSON);
+    if (NULL == BSON_DOC(bson)) {
+        luaL_error(lua, "bson: document already freed");
+    }
+    return bson;
+}
 // 文档字节数:可写对象取已写入的 doc.offset(doc.size 是含扩容余量的容量);只读对象是外部托管
 // 缓冲(inc==0),binary_init 恒把 offset 置 0,真实长度只在 doc.size 里,且不受 iter 推进影响
 static size_t _lbson_lens(bson_ctx *bson) {
@@ -73,7 +85,7 @@ static int32_t _lbson_new(lua_State *lua) {
     bson_ctx *bson = lua_newuserdata(lua, sizeof(bson_ctx));
     if (lua_islightuserdata(lua, 1)) {
         char *data = lua_touserdata(lua, 1);
-        bson_init(bson, data, lpub_check_bson_lens(lua, 2));
+        bson_init(bson, data, lpub_check_lens(lua, 2, INT32_MAX));
         ASSOC_MTABLE(lua, MT_BSON_READER);
     } else {
         bson_init(bson, NULL, 0);
@@ -82,7 +94,8 @@ static int32_t _lbson_new(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// 释放内部 doc.data（仅 owned=1 时生效；同时作为 __gc / free 调用）
+/// 释放内部 doc.data（仅 owned=1 时生效；同时作为 __gc / free 调用）。
+/// 可重复调用；释放后再调任何写入方法一律报错，不会静默写出一份缺长度前缀与 EOD 的非法文档
 /// </summary>
 /// <param name="self" type="userdata">bson 对象</param>
 /// <returns>无</returns>
@@ -98,7 +111,7 @@ static int32_t _lbson_free(lua_State *lua) {
 /// <param name="key" type="string">字段名</param>
 /// <returns>无</returns>
 static int32_t _lbson_doc_begin(lua_State *lua) {
-    bson_ctx *bson = luaL_checkudata(lua, 1, MT_BSON);
+    bson_ctx *bson = _lbson_check_writable(lua);
     const char *key = luaL_checkstring(lua, 2);
     bson_append_document_begain(bson, key);
     return 0;
@@ -110,7 +123,7 @@ static int32_t _lbson_doc_begin(lua_State *lua) {
 /// <param name="key" type="string">字段名</param>
 /// <returns>无</returns>
 static int32_t _lbson_arr_begin(lua_State *lua) {
-    bson_ctx *bson = luaL_checkudata(lua, 1, MT_BSON);
+    bson_ctx *bson = _lbson_check_writable(lua);
     const char *key = luaL_checkstring(lua, 2);
     bson_append_array_begain(bson, key);
     return 0;
@@ -121,7 +134,7 @@ static int32_t _lbson_arr_begin(lua_State *lua) {
 /// <param name="self" type="userdata">bson 对象</param>
 /// <returns>无</returns>
 static int32_t _lbson_end(lua_State *lua) {
-    bson_ctx *bson = luaL_checkudata(lua, 1, MT_BSON);
+    bson_ctx *bson = _lbson_check_writable(lua);
     bson_append_end(bson);
     return 0;
 }
@@ -133,7 +146,7 @@ static int32_t _lbson_end(lua_State *lua) {
 /// <param name="val" type="number">double 值</param>
 /// <returns>无</returns>
 static int32_t _lbson_double(lua_State *lua) {
-    bson_ctx *bson = luaL_checkudata(lua, 1, MT_BSON);
+    bson_ctx *bson = _lbson_check_writable(lua);
     const char *key = luaL_checkstring(lua, 2);
     double val = luaL_checknumber(lua, 3);
     bson_append_double(bson, key, val);
@@ -147,7 +160,7 @@ static int32_t _lbson_double(lua_State *lua) {
 /// <param name="val" type="string">UTF-8 字符串值</param>
 /// <returns>无</returns>
 static int32_t _lbson_utf8(lua_State *lua) {
-    bson_ctx *bson = luaL_checkudata(lua, 1, MT_BSON);
+    bson_ctx *bson = _lbson_check_writable(lua);
     const char *key = luaL_checkstring(lua, 2);
     size_t vlen;
     const char *val = luaL_checklstring(lua, 3, &vlen);
@@ -163,7 +176,7 @@ static int32_t _lbson_utf8(lua_State *lua) {
 /// <param name="lens" type="integer?">doc 为 lightuserdata 时必填，取值 [0, INT32_MAX]，越界报错</param>
 /// <returns>无</returns>
 static int32_t _lbson_append_doc(lua_State *lua) {
-    bson_ctx *bson = luaL_checkudata(lua, 1, MT_BSON);
+    bson_ctx *bson = _lbson_check_writable(lua);
     const char *key = luaL_checkstring(lua, 2);
     size_t lens;
     char *doc = lpub_check_bson_bin(lua, 3, &lens);
@@ -179,7 +192,7 @@ static int32_t _lbson_append_doc(lua_State *lua) {
 /// <param name="lens" type="integer?">doc 为 lightuserdata 时必填，取值 [0, INT32_MAX]，越界报错</param>
 /// <returns>无</returns>
 static int32_t _lbson_append_arr(lua_State *lua) {
-    bson_ctx *bson = luaL_checkudata(lua, 1, MT_BSON);
+    bson_ctx *bson = _lbson_check_writable(lua);
     const char *key = luaL_checkstring(lua, 2);
     size_t lens;
     char *doc = lpub_check_bson_bin(lua, 3, &lens);
@@ -196,7 +209,7 @@ static int32_t _lbson_append_arr(lua_State *lua) {
 /// <param name="lens" type="integer?">data 为 lightuserdata 时必填，取值 [0, INT32_MAX]，越界报错</param>
 /// <returns>无</returns>
 static int32_t _lbson_binary(lua_State *lua) {
-    bson_ctx *bson = luaL_checkudata(lua, 1, MT_BSON);
+    bson_ctx *bson = _lbson_check_writable(lua);
     const char *key = luaL_checkstring(lua, 2);
     bson_subtype subtype = (bson_subtype)luaL_checkinteger(lua, 3);
     size_t lens;
@@ -212,7 +225,7 @@ static int32_t _lbson_binary(lua_State *lua) {
 /// <param name="oid" type="string|lightuserdata">12 字节 ObjectId</param>
 /// <returns>无</returns>
 static int32_t _lbson_oid(lua_State *lua) {
-    bson_ctx *bson = luaL_checkudata(lua, 1, MT_BSON);
+    bson_ctx *bson = _lbson_check_writable(lua);
     const char *key = luaL_checkstring(lua, 2);
     char *oid;
     if (LUA_TSTRING == lua_type(lua, 3)) {
@@ -236,7 +249,7 @@ static int32_t _lbson_oid(lua_State *lua) {
 /// <param name="val" type="boolean">布尔值</param>
 /// <returns>无</returns>
 static int32_t _lbson_bool(lua_State *lua) {
-    bson_ctx *bson = luaL_checkudata(lua, 1, MT_BSON);
+    bson_ctx *bson = _lbson_check_writable(lua);
     const char *key = luaL_checkstring(lua, 2);
     int8_t b = (int8_t)lua_toboolean(lua, 3);
     bson_append_bool(bson, key, b);
@@ -250,7 +263,7 @@ static int32_t _lbson_bool(lua_State *lua) {
 /// <param name="ms" type="integer">UTC 毫秒时间戳</param>
 /// <returns>无</returns>
 static int32_t _lbson_date(lua_State *lua) {
-    bson_ctx *bson = luaL_checkudata(lua, 1, MT_BSON);
+    bson_ctx *bson = _lbson_check_writable(lua);
     const char *key = luaL_checkstring(lua, 2);
     int64_t ms = (int64_t)luaL_checkinteger(lua, 3);
     bson_append_date(bson, key, ms);
@@ -263,7 +276,7 @@ static int32_t _lbson_date(lua_State *lua) {
 /// <param name="key" type="string">字段名</param>
 /// <returns>无</returns>
 static int32_t _lbson_null(lua_State *lua) {
-    bson_ctx *bson = luaL_checkudata(lua, 1, MT_BSON);
+    bson_ctx *bson = _lbson_check_writable(lua);
     const char *key = luaL_checkstring(lua, 2);
     bson_append_null(bson, key);
     return 0;
@@ -277,7 +290,7 @@ static int32_t _lbson_null(lua_State *lua) {
 /// <param name="options" type="string">选项字符串（如 "i"、"m"）</param>
 /// <returns>无</returns>
 static int32_t _lbson_regex(lua_State *lua) {
-    bson_ctx *bson = luaL_checkudata(lua, 1, MT_BSON);
+    bson_ctx *bson = _lbson_check_writable(lua);
     const char *key = luaL_checkstring(lua, 2);
     const char *pattern = luaL_checkstring(lua, 3);
     const char *options = luaL_checkstring(lua, 4);
@@ -292,7 +305,7 @@ static int32_t _lbson_regex(lua_State *lua) {
 /// <param name="code" type="string">JavaScript 代码</param>
 /// <returns>无</returns>
 static int32_t _lbson_jscode(lua_State *lua) {
-    bson_ctx *bson = luaL_checkudata(lua, 1, MT_BSON);
+    bson_ctx *bson = _lbson_check_writable(lua);
     const char *key = luaL_checkstring(lua, 2);
     size_t clen;
     const char *code = luaL_checklstring(lua, 3, &clen);
@@ -307,7 +320,7 @@ static int32_t _lbson_jscode(lua_State *lua) {
 /// <param name="val" type="integer">int32 值</param>
 /// <returns>无</returns>
 static int32_t _lbson_int32(lua_State *lua) {
-    bson_ctx *bson = luaL_checkudata(lua, 1, MT_BSON);
+    bson_ctx *bson = _lbson_check_writable(lua);
     const char *key = luaL_checkstring(lua, 2);
     int32_t val = (int32_t)luaL_checkinteger(lua, 3);
     bson_append_int32(bson, key, val);
@@ -322,7 +335,7 @@ static int32_t _lbson_int32(lua_State *lua) {
 /// <param name="inc" type="integer">同秒内自增量</param>
 /// <returns>无</returns>
 static int32_t _lbson_timestamp(lua_State *lua) {
-    bson_ctx *bson = luaL_checkudata(lua, 1, MT_BSON);
+    bson_ctx *bson = _lbson_check_writable(lua);
     const char *key = luaL_checkstring(lua, 2);
     uint32_t ts = (uint32_t)luaL_checkinteger(lua, 3);
     uint32_t inc = (uint32_t)luaL_checkinteger(lua, 4);
@@ -337,7 +350,7 @@ static int32_t _lbson_timestamp(lua_State *lua) {
 /// <param name="val" type="integer">int64 值</param>
 /// <returns>无</returns>
 static int32_t _lbson_int64(lua_State *lua) {
-    bson_ctx *bson = luaL_checkudata(lua, 1, MT_BSON);
+    bson_ctx *bson = _lbson_check_writable(lua);
     const char *key = luaL_checkstring(lua, 2);
     int64_t val = (int64_t)luaL_checkinteger(lua, 3);
     bson_append_int64(bson, key, val);
@@ -350,7 +363,7 @@ static int32_t _lbson_int64(lua_State *lua) {
 /// <param name="key" type="string">字段名</param>
 /// <returns>无</returns>
 static int32_t _lbson_minkey(lua_State *lua) {
-    bson_ctx *bson = luaL_checkudata(lua, 1, MT_BSON);
+    bson_ctx *bson = _lbson_check_writable(lua);
     const char *key = luaL_checkstring(lua, 2);
     bson_append_minkey(bson, key);
     return 0;
@@ -362,7 +375,7 @@ static int32_t _lbson_minkey(lua_State *lua) {
 /// <param name="key" type="string">字段名</param>
 /// <returns>无</returns>
 static int32_t _lbson_maxkey(lua_State *lua) {
-    bson_ctx *bson = luaL_checkudata(lua, 1, MT_BSON);
+    bson_ctx *bson = _lbson_check_writable(lua);
     const char *key = luaL_checkstring(lua, 2);
     bson_append_maxkey(bson, key);
     return 0;
@@ -376,7 +389,7 @@ static int32_t _lbson_maxkey(lua_State *lua) {
 /// <returns>无；doc 不是落在缓冲内的完整文档、或长度达 MAX_PACK_SIZE 时报错
 /// （三种情形内容都整篇丢弃，不静默）</returns>
 static int32_t _lbson_cat(lua_State *lua) {
-    bson_ctx *bson = luaL_checkudata(lua, 1, MT_BSON);
+    bson_ctx *bson = _lbson_check_writable(lua);
     size_t actual_lens;
     char *doc = lpub_check_bson_bin(lua, 2, &actual_lens);
     if (0 == actual_lens) {
@@ -393,8 +406,10 @@ static int32_t _lbson_cat(lua_State *lua) {
 /// 检查文档是否已完整写入（depth 为 0）
 /// </summary>
 /// <param name="self" type="userdata">bson 对象</param>
-/// <returns type="boolean">完整 true，否则 false</returns>
+/// <returns type="boolean">完整 true，否则 false；已 :free() 的对象返回 false 而不是报错</returns>
 static int32_t _lbson_complete(lua_State *lua) {
+    // 纯查询不该抛错，所以不走 _lbson_check_writable：bson_complete 只读 depth 与 doc.offset，
+    // 不碰 doc.data，而 :free() 走的 binary_free 把 offset 清成 0，free 后求值天然得到 false
     bson_ctx *bson = luaL_checkudata(lua, 1, MT_BSON);
     lua_pushboolean(lua, bson_complete(bson));
     return 1;

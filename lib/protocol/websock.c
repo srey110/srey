@@ -96,13 +96,18 @@ static inline void _websock_mask_xor(char *data, size_t lens, const char key[4])
     }
 }
 
+// 与 _redis_pkfree 同契约：整条链一起释放。当前唯一的消费路径 prots_net_recv 会先用
+// _websock_pack_next 把节点逐个摘下来（摘时置 next 为 NULL），所以实际每次只释放一个；
+// 遍历是为了将来出现"拿到链头就整条丢弃"的路径（错误 unwind 之类）时不会漏掉尾部节点
 void _websock_pkfree(void *data) {
-    if (NULL == data) {
-        return;
-    }
     websock_pack_ctx *pack = (websock_pack_ctx *)data;
-    prots_pkfree(pack->secprot, pack->secpack);
-    FREE(data);
+    websock_pack_ctx *next;
+    while (NULL != pack) {
+        next = pack->next;
+        prots_pkfree(pack->secprot, pack->secpack);
+        FREE(pack);
+        pack = next;
+    }
 }
 // 取出并断开单帧多包链表的下一个节点,供 prots_next_pack 分派调用
 void *_websock_pack_next(void *pack) {
@@ -599,19 +604,13 @@ static websock_pack_ctx *_websock_parse_data(buffer_ctx *buf, int32_t client, ud
 // 根据 payloadlen 字段（7位）解析真实数据长度并分配 websock_pack_ctx
 static websock_pack_ctx *_websock_parse_pllens(buffer_ctx *buf, size_t blens,
     uint8_t mask, uint8_t payloadlen, int32_t *status) {
-    websock_pack_ctx *pack = NULL;
+    size_t dlens;// 载荷字节数
+    size_t atlest = HEAD_LESN;// 帧头 + 扩展长度字段，最后一并丢弃
     if (payloadlen <= 125) {
-        MALLOC(pack, sizeof(websock_pack_ctx) + payloadlen);
-        pack->dlens = payloadlen;
-        if (0 == mask) {
-            pack->remain = payloadlen;
-        } else {
-            pack->remain = sizeof(pack->key) + payloadlen;
-        }
-        ASSERTAB(HEAD_LESN == buffer_drain(buf, HEAD_LESN), "drain buffer failed.");
+        dlens = payloadlen;// 7 位就是长度本身，无扩展字段
     } else if (126 == payloadlen) {
         uint16_t pllens;
-        size_t atlest = HEAD_LESN + sizeof(pllens);
+        atlest += sizeof(pllens);
         if (blens < atlest) {
             BIT_SET(*status, PROT_MOREDATA);
             return NULL;
@@ -622,17 +621,10 @@ static websock_pack_ctx *_websock_parse_pllens(buffer_ctx *buf, size_t blens,
             BIT_SET(*status, PROT_ERROR);
             return NULL;
         }
-        MALLOC(pack, sizeof(websock_pack_ctx) + pllens);
-        pack->dlens = pllens;
-        if (0 == mask) {
-            pack->remain = pllens;
-        } else {
-            pack->remain = sizeof(pack->key) + pllens;
-        }
-        ASSERTAB(atlest == buffer_drain(buf, atlest), "drain buffer failed.");
+        dlens = pllens;
     } else if (127 == payloadlen) {
         uint64_t pllens;
-        size_t atlest = HEAD_LESN + sizeof(pllens);
+        atlest += sizeof(pllens);
         if (blens < atlest) {
             BIT_SET(*status, PROT_MOREDATA);
             return NULL;
@@ -648,19 +640,17 @@ static websock_pack_ctx *_websock_parse_pllens(buffer_ctx *buf, size_t blens,
             BIT_SET(*status, PROT_ERROR);
             return NULL;
         }
-        MALLOC(pack, sizeof(websock_pack_ctx) + (size_t)pllens);
-        pack->dlens = (size_t)pllens;
-        if (0 == mask) {
-            pack->remain = (size_t)pllens;
-        } else {
-            pack->remain = sizeof(pack->key) + (size_t)pllens;
-        }
-        ASSERTAB(atlest == buffer_drain(buf, atlest), "drain buffer failed.");
+        dlens = (size_t)pllens;
     } else {
         BIT_SET(*status, PROT_ERROR);
         return NULL;
     }
+    websock_pack_ctx *pack;
+    MALLOC(pack, sizeof(websock_pack_ctx) + dlens);
+    pack->dlens = dlens;
+    pack->remain = (0 == mask) ? dlens : sizeof(pack->key) + dlens;
     pack->next = NULL;// MALLOC 不清零,显式初始化避免 prots_next_pack 读到垃圾值
+    ASSERTAB(atlest == buffer_drain(buf, atlest), "drain buffer failed.");
     return pack;
 }
 // 解析 WebSocket 帧头（FIN/RSV/opcode/MASK/payloadlen），校验 RSV 位和掩码要求

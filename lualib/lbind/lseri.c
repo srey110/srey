@@ -188,21 +188,9 @@ static void _lseri_push_item(lua_State *lua, seri_iter *iter, const seri_item *i
 /// <param name="size" type="integer?">data 为 lightuserdata 时必填，表示数据字节数</param>
 /// <returns type="...">解码后的 Lua 值（多返回值）</returns>
 static int32_t _lseri_unpack(lua_State *lua) {
-    const char *buf;
     size_t size;
-    int32_t type = lua_type(lua, 1);
-    if (LUA_TSTRING == type) {
-        buf = luaL_checklstring(lua, 1, &size);
-    } else if (LUA_TLIGHTUSERDATA == type) {
-        buf = (const char *)lua_touserdata(lua, 1);
-        size = (size_t)luaL_checkinteger(lua, 2);
-        if (NULL == buf) {
-            return 0;
-        }
-    } else {
-        return luaL_argerror(lua, 1, "string or light userdata expected");
-    }
-    if (0 == size) {
+    const char *buf = (const char *)lpub_check_buf(lua, 1, &size, NULL);
+    if (NULL == buf || 0 == size) {
         return 0;
     }
     seri_iter iter;

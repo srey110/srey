@@ -64,10 +64,12 @@ void mail_msg(mail_ctx *mail, const char *msg);
 /// <param name="lens">html长度</param>
 void mail_html(mail_ctx *mail, const char *html, size_t lens);
 /// <summary>
-/// 发件人邮箱
+/// 发件人邮箱。组包时按 RFC 5322 §3.4 的 name-addr 形式写出：display-name &lt;addr-spec&gt;；
+/// name 为空则只写地址。name 含 specials 时自动加引号、含非 ASCII 时自动编成 RFC 2047
+/// encoded-word，调用方按原文传即可
 /// </summary>
 /// <param name="mail">mail_ctx</param>
-/// <param name="name">发件人</param>
+/// <param name="name">发件人显示名，可为 NULL</param>
 /// <param name="email">邮箱</param>
 void mail_from(mail_ctx *mail, const char *name, const char *email);
 /// <summary>
@@ -99,10 +101,13 @@ void mail_attach_clear(mail_ctx *mail);
 /// <param name="mail">mail_ctx</param>
 void mail_clear(mail_ctx *mail);
 /// <summary>
-/// 邮件内容数据包
+/// 邮件内容数据包（含 DATA 终止符，NUL 结尾，调用方以 strlen 取长度并负责释放）。
+/// 正文一律按 base64 编码写出：RFC 5321 §4.5.3.1.6 限单行 1000 octet，8bit 原样写出时
+/// 一段没有换行的长正文会被服务端拒收；base64 折行后顺带免掉 dot-stuffing。
+/// 多段邮件（有 html 或附件）的 MIME boundary 每封随机生成，取不到熵时返回 NULL
 /// </summary>
 /// <param name="mail">mail_ctx</param>
-/// <returns>数据包</returns>
+/// <returns>数据包；生成 boundary 失败返回 NULL</returns>
 char *mail_pack(mail_ctx *mail);
 
 #endif//MAIL_H_

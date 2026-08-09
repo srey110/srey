@@ -127,6 +127,7 @@
 #include <stdint.h>
 #include <limits.h>
 #include <ctype.h>
+#include <errno.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <inttypes.h>
@@ -154,7 +155,6 @@
 #else
     #include <unistd.h>
     #include <signal.h>    
-    #include <errno.h>
     #include <dirent.h>
     #include <libgen.h>
     #include <dlfcn.h>

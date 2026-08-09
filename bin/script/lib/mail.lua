@@ -105,8 +105,8 @@ function ctx:clear()
 end
 
 ---将邮件序列化为 SMTP DATA 正文字节串
----@return lightuserdata data MIME 字节串指针
----@return integer size 字节数
+---@return lightuserdata? data MIME 字节串指针；取不到熵生成 MIME boundary 时为 nil（此时无第二个返回值）
+---@return integer? size 字节数
 function ctx:pack()
     return self.mail:pack()
 end

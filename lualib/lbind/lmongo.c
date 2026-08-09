@@ -62,9 +62,8 @@ static int32_t _lmongo_free(lua_State *lua) {
         ev_close(&mongo->task->loader->netev, mongo->sk.fd, mongo->sk.skid, 0);
     }
     *ud = NULL;
-    secure_zero(mongo->user, sizeof(mongo->user));
-    secure_zero(mongo->password, sizeof(mongo->password));
-    // scram 由网络线程 udfree 释放，__gc 不碰(防跨线程 UAF)
+    // scram 由网络线程 udfree 释放，__gc 不碰(防跨线程 UAF)；
+    // 用户名与密码同理不在这里擦，擦除已挪进 PROT_REF_RELEASE
     PROT_REF_RELEASE(mongo);
     return 0;
 }
@@ -330,7 +329,7 @@ static int32_t _lmongo_pack_insert(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
     LUACHECK_LUDATA(lua, 2);
     char *docs = lua_touserdata(lua, 2);
-    size_t dlens = lpub_check_bson_lens(lua, 3);
+    size_t dlens = lpub_check_lens(lua, 3, INT32_MAX);
     size_t optlens;
     char *opts = _lmongo_get_opts(lua, 4, &optlens);
     size_t size;
@@ -351,7 +350,7 @@ static int32_t _lmongo_pack_update(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
     LUACHECK_LUDATA(lua, 2);
     char *updates = lua_touserdata(lua, 2);
-    size_t ulens = lpub_check_bson_lens(lua, 3);
+    size_t ulens = lpub_check_lens(lua, 3, INT32_MAX);
     size_t optlens;
     char *opts = _lmongo_get_opts(lua, 4, &optlens);
     size_t size;
@@ -372,7 +371,7 @@ static int32_t _lmongo_pack_delete(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
     LUACHECK_LUDATA(lua, 2);
     char *deletes = lua_touserdata(lua, 2);
-    size_t dlens = lpub_check_bson_lens(lua, 3);
+    size_t dlens = lpub_check_lens(lua, 3, INT32_MAX);
     size_t optlens;
     char *opts = _lmongo_get_opts(lua, 4, &optlens);
     size_t size;
@@ -395,10 +394,10 @@ static int32_t _lmongo_pack_bulkwrite(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
     LUACHECK_LUDATA(lua, 2);
     char *ops = lua_touserdata(lua, 2);
-    size_t olens = lpub_check_bson_lens(lua, 3);
+    size_t olens = lpub_check_lens(lua, 3, INT32_MAX);
     LUACHECK_LUDATA(lua, 4);
     char *nsinfo = lua_touserdata(lua, 4);
-    size_t nlens = lpub_check_bson_lens(lua, 5);
+    size_t nlens = lpub_check_lens(lua, 5, INT32_MAX);
     size_t optlens;
     char *opts = _lmongo_get_opts(lua, 6, &optlens);
     size_t size;
@@ -421,7 +420,7 @@ static int32_t _lmongo_pack_find(lua_State *lua) {
     size_t flens = 0;
     if (lua_islightuserdata(lua, 2)) {
         filter = lua_touserdata(lua, 2);
-        flens = lpub_check_bson_lens(lua, 3);
+        flens = lpub_check_lens(lua, 3, INT32_MAX);
     }
     size_t optlens;
     char *opts = _lmongo_get_opts(lua, 4, &optlens);
@@ -443,7 +442,7 @@ static int32_t _lmongo_pack_aggregate(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
     LUACHECK_LUDATA(lua, 2);
     char *pipeline = lua_touserdata(lua, 2);
-    size_t pllens = lpub_check_bson_lens(lua, 3);
+    size_t pllens = lpub_check_lens(lua, 3, INT32_MAX);
     size_t optlens;
     char *opts = _lmongo_get_opts(lua, 4, &optlens);
     size_t size;
@@ -482,7 +481,7 @@ static int32_t _lmongo_pack_killcursors(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
     LUACHECK_LUDATA(lua, 2);
     char *cursorids = lua_touserdata(lua, 2);
-    size_t cslens = lpub_check_bson_lens(lua, 3);
+    size_t cslens = lpub_check_lens(lua, 3, INT32_MAX);
     size_t optlens;
     char *opts = _lmongo_get_opts(lua, 4, &optlens);
     size_t size;
@@ -507,7 +506,7 @@ static int32_t _lmongo_pack_distinct(lua_State *lua) {
     size_t qlens = 0;
     if (lua_islightuserdata(lua, 3)) {
         query = lua_touserdata(lua, 3);
-        qlens = lpub_check_bson_lens(lua, 4);
+        qlens = lpub_check_lens(lua, 4, INT32_MAX);
     }
     size_t optlens;
     char *opts = _lmongo_get_opts(lua, 5, &optlens);
@@ -535,7 +534,7 @@ static int32_t _lmongo_pack_findandmodify(lua_State *lua) {
     size_t qlens = 0;
     if (lua_islightuserdata(lua, 2)) {
         query = lua_touserdata(lua, 2);
-        qlens = lpub_check_bson_lens(lua, 3);
+        qlens = lpub_check_lens(lua, 3, INT32_MAX);
     }
     int32_t remove = (int32_t)luaL_checkinteger(lua, 4);
     int32_t pipeline = (int32_t)luaL_checkinteger(lua, 5);
@@ -543,7 +542,7 @@ static int32_t _lmongo_pack_findandmodify(lua_State *lua) {
     size_t ulens = 0;
     if (lua_islightuserdata(lua, 6)) {
         update = lua_touserdata(lua, 6);
-        ulens = lpub_check_bson_lens(lua, 7);
+        ulens = lpub_check_lens(lua, 7, INT32_MAX);
     }
     size_t optlens;
     char *opts = _lmongo_get_opts(lua, 8, &optlens);
@@ -567,7 +566,7 @@ static int32_t _lmongo_pack_count(lua_State *lua) {
     size_t qlens = 0;
     if (lua_islightuserdata(lua, 2)) {
         query = lua_touserdata(lua, 2);
-        qlens = lpub_check_bson_lens(lua, 3);
+        qlens = lpub_check_lens(lua, 3, INT32_MAX);
     }
     size_t optlens;
     char *opts = _lmongo_get_opts(lua, 4, &optlens);
@@ -589,7 +588,7 @@ static int32_t _lmongo_pack_createindexes(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
     LUACHECK_LUDATA(lua, 2);
     char *indexes = lua_touserdata(lua, 2);
-    size_t ilens = lpub_check_bson_lens(lua, 3);
+    size_t ilens = lpub_check_lens(lua, 3, INT32_MAX);
     size_t optlens;
     char *opts = _lmongo_get_opts(lua, 4, &optlens);
     size_t size;
@@ -610,7 +609,7 @@ static int32_t _lmongo_pack_dropindexes(lua_State *lua) {
     LPUB_UD_ARG(lua, mongo_ctx, MT_MONGO, ud, "mongo freed");
     LUACHECK_LUDATA(lua, 2);
     char *indexes = lua_touserdata(lua, 2);
-    size_t ilens = lpub_check_bson_lens(lua, 3);
+    size_t ilens = lpub_check_lens(lua, 3, INT32_MAX);
     size_t optlens;
     char *opts = _lmongo_get_opts(lua, 4, &optlens);
     size_t size;

@@ -26,15 +26,18 @@ void _smtp_udfree(ud_cxt *ud);
 // 连接关闭时的清理回调，等同于 _smtp_udfree
 void _smtp_closed(ud_cxt *ud);
 /// <summary>
-/// 简单邮件传输协议smtp初始化
+/// 简单邮件传输协议smtp初始化。ip / user / psw 超出对应字段容量时返回 ERR_FAILED，
+/// 不做截断——截断后的密码拿去认证只会换回服务端一句 535，调用方看不出是自己传长了。
+/// 失败时 smtp 已被清零且可能填了前几个字段，按 init 失败处理（丢弃或 FREE），不得继续用
 /// </summary>
 /// <param name="smtp">smtp_ctx</param>
-/// <param name="ip">smtp服务器</param>
+/// <param name="ip">smtp服务器，最长 IP_LENS-1</param>
 /// <param name="port">smtp端口</param>
 /// <param name="evssl">evssl_ctx</param>
-/// <param name="user">用户名</param>
-/// <param name="psw">密码</param>
-void smtp_init(smtp_ctx *smtp, const char *ip, uint16_t port, struct evssl_ctx *evssl, const char *user, const char *psw);
+/// <param name="user">用户名，最长 63 字节</param>
+/// <param name="psw">密码，最长 63 字节</param>
+/// <returns>ERR_OK 成功；ERR_FAILED 某个字段超长</returns>
+int32_t smtp_init(smtp_ctx *smtp, const char *ip, uint16_t port, struct evssl_ctx *evssl, const char *user, const char *psw);
 /// <summary>
 /// 检查返回码是否匹配
 /// </summary>

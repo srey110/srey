@@ -103,7 +103,7 @@ static void _mpack_ok_track(mysql_ctx *mysql, binary_ctx *breader) {
                 return;
             }
             name = binary_get_binary(breader, (size_t)lens);
-            if (ERR_OK != _mysql_copy_bounded(name, (size_t)lens, mysql->client.database,
+            if (ERR_OK != copy_bounded(name, (size_t)lens, mysql->client.database,
                                               sizeof(mysql->client.database), 1)) {
                 LOG_ERROR("mysql tracked schema exceeds %zu bytes: %"PRIu64", keep the old one.",
                           sizeof(mysql->client.database) - 1, lens);
@@ -146,9 +146,8 @@ void _mpack_err(mysql_ctx *mysql, binary_ctx *breader, mpack_err *err) {
     mysql->error_code = err->error_code;
     if (err->error_msg.lens > 0) {
         err->error_msg.data = binary_get_binary(breader, err->error_msg.lens);
-        size_t lens = err->error_msg.lens <= sizeof(mysql->error_msg) - 1 ? err->error_msg.lens : sizeof(mysql->error_msg) - 1;
-        memcpy(mysql->error_msg, err->error_msg.data, lens);
-        mysql->error_msg[lens] = '\0';
+        copy_bounded(err->error_msg.data, err->error_msg.lens,
+                     mysql->error_msg, sizeof(mysql->error_msg), 0);
     } else {
         mysql->error_msg[0] = '\0';
     }
@@ -500,6 +499,13 @@ static mpack_ctx *_mpack_reader_fileds(mysql_ctx *mysql, buffer_ctx *buf, binary
         if (_mysql_is_eof_packet(breader)) {
             // 字段阶段 EOF 仅标记列定义结束，无条件转入行阶段：SERVER_MORE_RESULTS 是结果集级状态，
             // 须在行阶段 EOF 判定；多语句 / CALL 时字段 EOF 同样带 more 位，此处若据 more 报错会误判断连
+            if (reader->index != reader->field_count) {
+                // 列定义比声明的列数少：没收到的那几列还是 CALLOC 的全零，而 type 0 恰好是合法枚举
+                // MYSQL_TYPE_DECIMAL、name 长度为 0，行解析会照着这份假元数据把整行拆错位
+                BIT_SET(*status, PROT_ERROR);
+                FREE(breader->data);
+                return NULL;
+            }
             FREE(breader->data);
             reader->index = 0;
             mysql->parse_status = RST_ROW; // 字段解析完成，切换到行解析阶段
@@ -598,6 +604,7 @@ static mpack_ctx *_mpack_resultset_response(mysql_ctx *mysql, buffer_ctx *buf, b
 // 循环读取并解析 STMT_PREPARE 响应中的参数字段和结果集字段描述
 static mpack_ctx *_mpack_stmt(mysql_ctx *mysql, buffer_ctx *buf, binary_ctx *breader, int32_t *status) {
     mpack_ctx *mpack;
+    int32_t declared;
     mysql_stmt_ctx *stmt = mysql->mpack->pack;
     for (;;) {
         // 与 _mpack_reader_fileds / _mpack_reader_rows 风格一致：恶意/受损服务端发空
@@ -609,6 +616,15 @@ static mpack_ctx *_mpack_stmt(mysql_ctx *mysql, buffer_ctx *buf, binary_ctx *bre
         }
         if (_mysql_is_eof_packet(breader)) {
             if (ERR_OK != _mpack_check_final(breader, status)) {
+                BIT_SET(*status, PROT_ERROR);
+                FREE(breader->data);
+                return NULL;
+            }
+            // 同 _mpack_reader_fileds：本阶段收到的定义条数必须正好等于声明数，
+            // 少了就会留下全零的假元数据被后续按合法字段用
+            declared = (STMT_PREPARE_PARAMS == mysql->parse_status)
+                ? (int32_t)stmt->params_count : (int32_t)stmt->field_count;
+            if (stmt->index != declared) {
                 BIT_SET(*status, PROT_ERROR);
                 FREE(breader->data);
                 return NULL;
@@ -741,18 +757,20 @@ static mpack_ctx *_mpack_prepare_response(mysql_ctx *mysql, buffer_ctx *buf, bin
         return _mpack_stmt(mysql, buf, breader, status);
     }
 }
+// 这里没有 MYSQL_QUIT 分支，也不该加：mysql_pack_quit 是唯一的 COM_QUIT 组包入口，而它
+// 刻意不接 mysql_ctx、不写 cur_cmd —— Lua 侧 __gc 在工作线程调它，网络线程同时正拿
+// id / cur_cmd 解析来包，写一下就是无同步的跨线程写（test_mysql_pack 有用例钉着这条）。
+// 所以 cur_cmd 永远不会是 MYSQL_QUIT，写了也是死代码。
+// 真实情况也用不上：服务端收到 COM_QUIT 直接断连不回包，走不到解析
 mpack_ctx *_mpack_parser(mysql_ctx *mysql, buffer_ctx *buf, binary_ctx *breader, int32_t *status) {
     mpack_ctx *mpack = NULL;
     switch (mysql->cur_cmd) {
-    case MYSQL_QUIT:
-        FREE(breader->data);
-        BIT_SET(*status, PROT_CLOSE);
-        break;
     case MYSQL_INIT_DB:
         mpack = _mpack_simple_response(mysql, breader, status);
         if (NULL != mpack
             && MPACK_OK == mpack->pack_type
             && !EMPTYSTR(mysql->pending_db)) {
+            // pending_db 与 client.database 等长，且 pending_db 在 mysql_pack_selectdb 已校验过，装得下
             safe_fill_str(mysql->client.database, sizeof(mysql->client.database), mysql->pending_db);
         }
         break;

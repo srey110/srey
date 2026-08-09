@@ -17,7 +17,8 @@ static int32_t _lmysql_bind_new(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// 释放绑定上下文内部资源（绑定为 __gc，由 Lua GC 自动调用）
+/// 释放绑定上下文内部资源（绑定为 __gc，由 Lua GC 自动调用）。
+/// 可重复调用；释放后再绑定参数等同于刚 new 出来的空上下文
 /// </summary>
 /// <param name="self" type="userdata">bind 对象</param>
 /// <returns>无</returns>
@@ -74,7 +75,7 @@ static int32_t _lmysql_bind_string(lua_State *lua) {
     case LUA_TUSERDATA:
     case LUA_TLIGHTUSERDATA:
         data = lua_touserdata(lua, 3);
-        size = (size_t)luaL_checkinteger(lua, 4);
+        size = lpub_check_lens(lua, 4, 0);
         break;
     default:
         break;
@@ -314,13 +315,7 @@ static int32_t _lmysql_reader_integer(lua_State *lua) {
         lua_pushinteger(lua, val);
         return 2;
     }
-    if (1 == err) {
-        // 字段值为 NULL
-        lua_pushboolean(lua, 1);
-        return 1;
-    }
-    lua_pushboolean(lua, 0);
-    return 1;
+    return lpub_rtn_reader(lua, err);
 }
 /// <summary>
 /// 读取当前行指定字段的单精度浮点值
@@ -339,12 +334,7 @@ static int32_t _lmysql_reader_float(lua_State *lua) {
         lua_pushnumber(lua, (double)val);
         return 2;
     }
-    if (1 == err) {
-        lua_pushboolean(lua, 1);
-        return 1;
-    }
-    lua_pushboolean(lua, 0);
-    return 1;
+    return lpub_rtn_reader(lua, err);
 }
 /// <summary>
 /// 读取当前行指定字段的双精度浮点值
@@ -363,12 +353,7 @@ static int32_t _lmysql_reader_double(lua_State *lua) {
         lua_pushnumber(lua, val);
         return 2;
     }
-    if (1 == err) {
-        lua_pushboolean(lua, 1);
-        return 1;
-    }
-    lua_pushboolean(lua, 0);
-    return 1;
+    return lpub_rtn_reader(lua, err);
 }
 /// <summary>
 /// 读取当前行指定字段的字符串值（返回 lightuserdata + 长度）
@@ -390,13 +375,7 @@ static int32_t _lmysql_reader_string(lua_State *lua) {
         lua_pushinteger(lua, lens);
         return 3;
     }
-    if (1 == err) {
-        // 字段值为 NULL
-        lua_pushboolean(lua, 1);
-        return 1;
-    }
-    lua_pushboolean(lua, 0);
-    return 1;
+    return lpub_rtn_reader(lua, err);
 }
 /// <summary>
 /// 读取当前行指定字段的 DATETIME 值（微秒精度）
@@ -415,13 +394,7 @@ static int32_t _lmysql_reader_datetime(lua_State *lua) {
         lua_pushinteger(lua, val);
         return 2;
     }
-    if (1 == err) {
-        // 字段值为 NULL
-        lua_pushboolean(lua, 1);
-        return 1;
-    }
-    lua_pushboolean(lua, 0);
-    return 1;
+    return lpub_rtn_reader(lua, err);
 }
 /// <summary>
 /// 读取当前行指定字段的 TIME 值
@@ -452,13 +425,7 @@ static int32_t _lmysql_reader_time(lua_State *lua) {
         lua_pushinteger(lua, usec);
         return 7;
     }
-    if (1 == err) {
-        // 字段值为 NULL
-        lua_pushboolean(lua, 1);
-        return 1;
-    }
-    lua_pushboolean(lua, 0);
-    return 1;
+    return lpub_rtn_reader(lua, err);
 }
 //mysql.reader
 LUAMOD_API int luaopen_mysql_reader(lua_State *lua) {
@@ -757,9 +724,8 @@ static int32_t _lmysql_free(lua_State *lua) {
         ev_close(&mysql->task->loader->netev, mysql->client.sk.fd, mysql->client.sk.skid, 0);
     }
     *ud = NULL;
-    secure_zero(mysql->server.salt, sizeof(mysql->server.salt));
-    secure_zero(mysql->client.password, sizeof(mysql->client.password));
-    // mpack 由网络线程 udfree 释放，__gc 不碰(防跨线程 UAF)
+    // mpack 由网络线程 udfree 释放，__gc 不碰(防跨线程 UAF)；
+    // 密码与 salt 同理不在这里擦，擦除已挪进 PROT_REF_RELEASE
     PROT_REF_RELEASE(mysql);
     return 0;
 }

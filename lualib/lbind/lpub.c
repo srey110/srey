@@ -1,7 +1,7 @@
 ﻿#include "lbind/lpub.h"
 
-// BSON 的文档长度与 binary 长度前缀都是 int32,下面三个入口共用同一条上下界与同一句报错
-#define BSON_LENS_RANGE "length out of range [0, INT32_MAX]"
+// 所有 (指针, 长度) 入口共用同一句越界报错
+#define LENS_RANGE "length out of range"
 
 // 从 Lua 全局变量表中取轻量用户数据，类型不符则弹栈返回 NULL
 void *global_userdata(lua_State *lua, const char *name) {
@@ -35,6 +35,11 @@ int32_t global_string(lua_State *lua, const char *name, char *buf, size_t bufsiz
     lua_pop(lua, 1);
     return ERR_OK;
 }
+size_t lpub_check_lens(lua_State *lua, int32_t idx, size_t max) {
+    lua_Integer lens = luaL_checkinteger(lua, idx);
+    luaL_argcheck(lua, lens >= 0 && (0 == max || (size_t)lens <= max), idx, LENS_RANGE);
+    return (size_t)lens;
+}
 void *lpub_check_buf_idx(lua_State *lua, int32_t *idx, size_t *size, int32_t *copy) {
     int32_t type = lua_type(lua, *idx);
     if (LUA_TSTRING == type) {
@@ -47,9 +52,7 @@ void *lpub_check_buf_idx(lua_State *lua, int32_t *idx, size_t *size, int32_t *co
     }
     if (LUA_TLIGHTUSERDATA == type) {
         void *ud = lua_touserdata(lua, *idx);
-        lua_Integer lens = luaL_checkinteger(lua, *idx + 1);
-        luaL_argcheck(lua, lens >= 0, *idx + 1, "size must be >= 0");
-        *size = (size_t)lens;
+        *size = lpub_check_lens(lua, *idx + 1, 0);
         *idx += 2;// 先吃掉 data + size,*idx 转到 copy 位
         if (NULL != copy) {
             if (lua_isinteger(lua, *idx)) {
@@ -68,17 +71,16 @@ void *lpub_check_buf_idx(lua_State *lua, int32_t *idx, size_t *size, int32_t *co
 void *lpub_check_buf(lua_State *lua, int32_t idx, size_t *size, int32_t *copy) {
     return lpub_check_buf_idx(lua, &idx, size, copy);
 }
-size_t lpub_check_bson_lens(lua_State *lua, int32_t idx) {
-    lua_Integer val = luaL_checkinteger(lua, idx);
-    luaL_argcheck(lua, val >= 0 && val <= INT32_MAX, idx, BSON_LENS_RANGE);
-    return (size_t)val;
-}
 char *lpub_check_bson_bin(lua_State *lua, int32_t idx, size_t *lens) {
+    // lightuserdata 那条先自己把长度验一遍,为的是把越界报在长度那个参数上而不是 data 上;
+    // lpub_check_buf 不带上界,验过之后它那道判定必然通过
     if (LUA_TLIGHTUSERDATA == lua_type(lua, idx)) {
-        lpub_check_bson_lens(lua, idx + 1);
+        lpub_check_lens(lua, idx + 1, INT32_MAX);
     }
     char *data = lpub_check_buf(lua, idx, lens, NULL);
-    luaL_argcheck(lua, *lens <= INT32_MAX, idx, BSON_LENS_RANGE);
+    // string 分支的长度取自字符串自身,不经 lpub_check_lens,而 Lua 字符串是能超 INT32_MAX 的,
+    // 只卡 lightuserdata 等于给字符串留了后门;越界的就是参数本身,故报在 idx 上
+    luaL_argcheck(lua, *lens <= INT32_MAX, idx, LENS_RANGE);
     return data;
 }
 name_t lpub_task_handle(lua_State *lua, int32_t idx) {
@@ -86,14 +88,27 @@ name_t lpub_task_handle(lua_State *lua, int32_t idx) {
         ? task_find_name(g_loader, lua_tostring(lua, idx))
         : (name_t)luaL_checkinteger(lua, idx);
 }
+int32_t lpub_rtn_nil(lua_State *lua, int32_t n) {
+    for (int32_t i = 0; i < n; i++) {
+        lua_pushnil(lua);
+    }
+    return n;
+}
 int32_t lpub_rtn_lud(lua_State *lua, void *pack, size_t size) {
     if (NULL == pack) {
-        lua_pushnil(lua);
-        return 1;
+        return lpub_rtn_nil(lua, 2);
     }
     lua_pushlightuserdata(lua, pack);
     lua_pushinteger(lua, (lua_Integer)size);
     return 2;
+}
+int32_t lpub_rtn_reader(lua_State *lua, int32_t err) {
+    if (1 == err) {
+        lua_pushboolean(lua, 1);// 字段值为 NULL：算读取成功，但不给第二个返回值
+        return 1;
+    }
+    lua_pushboolean(lua, 0);
+    return 1;
 }
 void lpub_push_url_table(lua_State *lua, url_ctx *url) {
     lua_createtable(lua, 0, 9);

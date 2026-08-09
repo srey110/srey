@@ -247,6 +247,12 @@ _bad_entry.name = function(_, n) WARN("router: :name(%s) on rejected entry.", to
 function Router:_add(method, path, handler, extra_mws)
     local prefix, ctx_mws = self:_ctx()
     local full = prefix .. path
+    -- handler 漏传（一个笔误就够了）在 dispatch 时表现为：chain 里少一项 → 中间件跑完没人响应
+    -- → 兜底 500，且 run_ok 为真所以连错误文本都没有。C 侧同款情形是打日志拒掉的，这里对齐
+    if "function" ~= type(handler) then
+        WARN("router: %s '%s' handler must be a function, got %s.", method, full, type(handler))
+        return _bad_entry
+    end
     local mws  = {}
     for _, mw in ipairs(ctx_mws) do
         mws[#mws + 1] = mw
@@ -256,11 +262,19 @@ function Router:_add(method, path, handler, extra_mws)
             mws[#mws + 1] = self:_resolve(mw)
         end
     end
-    local ok, idx = self._c_router:add(method, full)
+    -- 去重由 C 侧 router_add_index 做：它按 (方法掩码有交集, 匹配意义上的段序列) 比对，
+    -- 能覆盖这里用字符串 key 看不出来的两类——先注册的 ANY /x 遮住后注册的 GET /x、
+    -- /u/{id} 与 /u/{uid} 参数名不同但路由等价。dispatch 取首条命中，被遮的那条永远够不着
+    local ok, code = self._c_router:add(method, full)
     if not ok then
-        WARN("router: path '%s' rejected.", full)
+        if -2 == code then
+            WARN("router: %s '%s' is shadowed by an existing route, this registration is ignored.", method, full)
+        else
+            WARN("router: path '%s' rejected.", full)
+        end
         return _bad_entry
     end
+    local idx = code
     local router = self
     local entry  = {
         raw     = full,     -- 原始完整路径字符串（含前缀），调试用

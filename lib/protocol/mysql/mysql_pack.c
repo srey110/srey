@@ -2,6 +2,18 @@
 #include "protocol/mysql/mysql_utils.h"
 #include "protocol/mysql/mysql_parse.h"
 
+// 组包收尾：回填 3 字节长度头 → 失败即释放缓冲并把 *size 归零 → 成功交出缓冲长度。
+// 调用方固定写 if (ERR_OK != _mysql_pack_finish(...)) { return NULL; }，别在各处再抄一遍 binary_free。
+// 与 mysql.c 的 _mysql_send_pack 是同一件事的两种收尾：那边直接 ev_send，这边把缓冲交回调用方
+static int32_t _mysql_pack_finish(binary_ctx *bwriter, size_t *size) {
+    if (ERR_OK != _mysql_set_payload_lens(bwriter)) {
+        binary_free(bwriter);
+        *size = 0;
+        return ERR_FAILED;
+    }
+    *size = bwriter->offset;
+    return ERR_OK;
+}
 void *mysql_pack_quit(size_t *size) {
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
@@ -13,13 +25,12 @@ void *mysql_pack_quit(size_t *size) {
 }
 void *mysql_pack_selectdb(mysql_ctx *mysql, const char *database, size_t *size) {
     size_t lens = strlen(database);
-    if (lens > sizeof(mysql->pending_db) - 1) {
+    if (ERR_OK != safe_fill_str(mysql->pending_db, sizeof(mysql->pending_db), database)) {
         LOG_ERROR("mysql database name exceeds %zu bytes: %zu.", sizeof(mysql->pending_db) - 1, lens);
         *size = 0;
         return NULL;
     }
     mysql->id = 0;
-    safe_fill_str(mysql->pending_db, sizeof(mysql->pending_db), database);
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
     binary_set_integer(&bwriter, lens + 1, 3, 1);
@@ -73,12 +84,9 @@ void *mysql_pack_query(mysql_ctx *mysql, const char *sql, mysql_bind_ctx *mbind,
         }
     }
     binary_set_binary(&bwriter, sql, sqllen);//query
-    if (ERR_OK != _mysql_set_payload_lens(&bwriter)) {
-        binary_free(&bwriter);
-        *size = 0;
+    if (ERR_OK != _mysql_pack_finish(&bwriter, size)) {
         return NULL;
     }
-    *size = bwriter.offset;
     mysql->cur_cmd = MYSQL_QUERY;
     mysql->parse_status = 0;
     return bwriter.data;
@@ -92,12 +100,9 @@ void *mysql_pack_stmt_prepare(mysql_ctx *mysql, const char *sql, size_t *size) {
     binary_set_int8(&bwriter, mysql->id);
     binary_set_uint8(&bwriter, MYSQL_PREPARE);
     binary_set_binary(&bwriter, sql, lens);
-    if (ERR_OK != _mysql_set_payload_lens(&bwriter)) {
-        binary_free(&bwriter);
-        *size = 0;
+    if (ERR_OK != _mysql_pack_finish(&bwriter, size)) {
         return NULL;
     }
-    *size = bwriter.offset;
     mysql->cur_cmd = MYSQL_PREPARE;
     mysql->parse_status = 0;
     return bwriter.data;
@@ -140,12 +145,9 @@ void *mysql_pack_stmt_execute(mysql_stmt_ctx *stmt, mysql_bind_ctx *mbind, size_
             binary_set_binary(&bwriter, mbind->value.data, mbind->value.offset);//parameter_values
         }
     }
-    if (ERR_OK != _mysql_set_payload_lens(&bwriter)) {
-        binary_free(&bwriter);
-        *size = 0;
+    if (ERR_OK != _mysql_pack_finish(&bwriter, size)) {
         return NULL;
     }
-    *size = bwriter.offset;
     stmt->mysql->cur_cmd = MYSQL_EXECUTE;
     stmt->mysql->parse_status = 0;
     return bwriter.data;

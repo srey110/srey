@@ -1,4 +1,5 @@
 -- utils 绑定层单元测试：hashring / trend / srey.utils (id/hex/ud_str/csprng_rand)
+-- 外加一组跨模块的 (指针,长度) 入口负长度回归
 
 local srey    = require("lib.srey")
 local runner  = require("test.runner")
@@ -6,6 +7,11 @@ local utils   = require("srey.utils")
 local hashring = require("srey.hashring")
 local trend   = require("srey.trend")
 local cjson   = require("cjson")
+local seri    = require("srey.seri")
+local dns     = require("srey.dns")
+local websock = require("srey.websock")
+local datacenter = require("srey.datacenter")
+local subcenter  = require("srey.subcenter")
 
 srey.startup(function()
 runner.run("utils", function(t)
@@ -90,6 +96,50 @@ runner.run("utils", function(t)
         t:eq(false, tr:busy(20, 4, 5), "trend rising not busy")
         -- 跌幅 > 20% 视为忙（20 → 10，跌 50%）
         t:eq(true, tr:busy(10, 4, 5), "trend drop >20% busy")
+    end
+
+    -- ── (指针,长度) 入口：长度必须挡住负数 ─────────────────────────────
+    -- 负数转 size_t 是个天文数字，下游"剩余长度 < 需要长度"那类判定会全部恒假，
+    -- 于是照着缓冲后面的堆内存一路读下去（hashring:find 更是直接喂进 md5 的裸读循环，
+    -- 沿途没有任何分配失败或上限判断可以兜底）。这些入口现在统一走 lpub_check_lens /
+    -- lpub_check_buf，一律报可被 pcall 捕获的 Lua 错。
+    -- 这些都是收发缓冲，没有协议上界，故 max 传 0 只校验下界；BSON 那边传 INT32_MAX
+    do
+        local function rejects(fn, ...)
+            return not pcall(fn, ...)
+        end
+        local ptr, size = seri.pack("probe")
+        t:check(ptr ~= nil and size > 0, "取一块合法的 (指针,长度) 当探针")
+
+        t:eq(true, rejects(seri.unpack, ptr, -1), "seri.unpack 负长度被拒")
+        local _, err = pcall(seri.unpack, ptr, -1)
+        t:check(type(err) == "string" and nil ~= err:find("out of range"),
+                "通用入口与 BSON 入口共用同一句越界报错")
+        t:eq(true, rejects(dns.unpack, ptr, -1, 0), "dns.unpack 负长度被拒")
+        t:eq(true, rejects(datacenter.parse_keys, ptr, -1), "datacenter.parse_keys 负长度被拒")
+        t:eq(true, rejects(subcenter.parse_deliver, ptr, -1), "subcenter.parse_deliver 负长度被拒")
+        t:eq(true, rejects(subcenter.parse_retained, ptr, -1), "subcenter.parse_retained 负长度被拒")
+        t:eq(true, rejects(subcenter.parse_topics, ptr, -1), "subcenter.parse_topics 负长度被拒")
+        t:eq(true, rejects(subcenter.parse_retained_topics, ptr, -1),
+             "subcenter.parse_retained_topics 负长度被拒")
+        -- 唯一能写出界的那个：长度回绕后 MALLOC 只要到 13 字节，紧接着的 memcpy 却按
+        -- SIZE_MAX 拷，从这个小堆块起一路覆写相邻内存
+        t:eq(true, rejects(websock.pack_continua, 1, 0, ptr, -1), "websock.pack_continua 负长度被拒")
+        -- 与 pack_text / pack_binary 对齐：lightuserdata 形态的长度是必填，不再默认按 0
+        t:eq(true, rejects(websock.pack_continua, 1, 0, ptr), "websock.pack_continua 缺长度被拒")
+
+        local ring = hashring.new()
+        ring:add(8, "n1")
+        t:eq(true, rejects(ring.find, ring, ptr, -1), "hashring:find 负长度被拒")
+        t:eq(true, rejects(ring.add, ring, 8, ptr, -1), "hashring:add 负长度被拒")
+        t:eq(true, rejects(ring.remove, ring, ptr, -1), "hashring:remove 负长度被拒")
+
+        -- 合法长度照常工作，别把正常路径一起挡了
+        t:eq("probe", (seri.unpack(ptr, size)), "合法长度不受影响")
+        local frame, flens = websock.pack_continua(0, 1, ptr, size)
+        t:check(frame ~= nil and flens > size, "pack_continua 合法长度仍可组帧")
+        utils.ud_free(frame)
+        utils.ud_free(ptr)
     end
 
     -- ── lib/utils.lua 纯 lua 函数（实际依赖 srey.utils.csprng_rand 等）

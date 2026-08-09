@@ -654,6 +654,9 @@
     <ClCompile Include="protocol\prots.c">
       <Filter>protocol</Filter>
     </ClCompile>
+    <ClCompile Include="protocol\prots_pub.c">
+      <Filter>protocol</Filter>
+    </ClCompile>
     <ClCompile Include="protocol\pgsql\pgsql.c">
       <Filter>protocol\pgsql</Filter>
     </ClCompile>

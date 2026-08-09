@@ -307,20 +307,11 @@ static void _debug_hotfix(router_req *ctx) {
     seri_append_string(&cmd, (const char *)body, blen);
     _debug_forward(ctx, &cmd);
 }
-// HTTP 接收回调：完整请求到达后交 router 派发；不支持 chunked，收到即拒绝并关闭连接
+// HTTP 接收回调：取出本服务的 router 后转 router_net_recv（分片拒绝与派发都在那里）
 static void _net_recv(task_ctx *task, sk_id *sk, subtype_t pktype,
                       uint8_t client, uint8_t slice, void *data, size_t size) {
-    (void)pktype;
-    (void)client;
-    (void)size;
-    if (0 != slice) {
-        if (PROT_SLICE_START == slice) {
-            router_reject_chunked(task, sk->fd, sk->skid);
-        }
-        return;
-    }
     debug_console_ctx *ctx = coro_get_arg(task);
-    router_dispatch(ctx->router, task, sk->fd, sk->skid, (struct http_pack_ctx *)data);
+    router_net_recv(ctx->router, task, sk, pktype, client, slice, data, size);
 }
 // 启动回调：建路由器 + 注册路由 + 监听 HTTP
 static void _debug_startup(task_ctx *task) {
@@ -381,6 +372,7 @@ int32_t debug_console_start(loader_ctx *loader, const char *name, const char *ip
     debug_console_ctx *ctx;
     CALLOC(ctx, 1, sizeof(debug_console_ctx));
     ctx->port = port;
+    // 上面的 iplens >= IP_LENS 已挡过，ctx->ip 正好 IP_LENS，装得下
     safe_fill_str(ctx->ip, sizeof(ctx->ip), ip);
     // 读取调试 UI （html/debug_console.html）；失败仅警告，/ 端点回提示
     char path[PATH_LENS];

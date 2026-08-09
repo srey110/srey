@@ -25,8 +25,9 @@ static void _startup(task_ctx *task) {
     }
 #endif
     // 域名需先 DNS 解析，IP 直连
+    int32_t inited;
     if (ERR_OK == is_ipaddr(ctx->smtp_sv)) {
-        smtp_init(&ctx->smtp, ctx->smtp_sv, ctx->smtp_port, ssl, ctx->smtp_user, ctx->smtp_psw);
+        inited = smtp_init(&ctx->smtp, ctx->smtp_sv, ctx->smtp_port, ssl, ctx->smtp_user, ctx->smtp_psw);
     } else {
         size_t n;
         dns_ip *ips = dns_lookup(task, ctx->smtp_sv, 0, 1, &n);
@@ -34,8 +35,12 @@ static void _startup(task_ctx *task) {
             LOG_ERROR("dns_lookup error.");
             return;
         }
-        smtp_init(&ctx->smtp, ips[0].ip, ctx->smtp_port, ssl, ctx->smtp_user, ctx->smtp_psw);
+        inited = smtp_init(&ctx->smtp, ips[0].ip, ctx->smtp_port, ssl, ctx->smtp_user, ctx->smtp_psw);
         FREE(ips);
+    }
+    if (ERR_OK != inited) {
+        LOG_ERROR("smtp_init error.");
+        return;
     }
     if (ERR_OK != smtp_connect(task, &ctx->smtp)) {
         LOG_WARN("smtp_connect error.");
@@ -385,7 +390,10 @@ static void _fake_startup(task_ctx *task) {
         LOG_ERROR("fake smtp: listen %u failed.", ctx->port);
         return;
     }
-    smtp_init(&ctx->smtp, "127.0.0.1", ctx->port, NULL, "user", "psw");
+    if (ERR_OK != smtp_init(&ctx->smtp, "127.0.0.1", ctx->port, NULL, "user", "psw")) {
+        LOG_ERROR("fake smtp: smtp_init failed.");
+        return;
+    }
     if (ERR_OK != smtp_connect(task, &ctx->smtp)) {
         LOG_ERROR("fake smtp: smtp_connect failed.");
         return;

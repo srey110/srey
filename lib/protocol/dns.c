@@ -30,7 +30,10 @@ typedef struct dns_question {
 static char _dns_ip[IP_LENS]; // 全局 DNS 服务器 IP 地址
 
 void dns_set_ip(const char *ip) {
-    safe_fill_str(_dns_ip, sizeof(_dns_ip), ip);
+    // 装不下就保持原值不动：截断出来的 IP 连不上任何东西，还不如让上一次的配置继续生效
+    if (ERR_OK != safe_fill_str(_dns_ip, sizeof(_dns_ip), ip)) {
+        LOG_ERROR("dns ip exceeds %zu bytes: %zu, keep the old one.", sizeof(_dns_ip) - 1, strlen(ip));
+    }
 }
 const char *dns_get_ip(void) {
     return _dns_ip;
@@ -66,7 +69,9 @@ static int32_t _dns_encode_domain(char *qname, const char *domain, size_t *lenou
 size_t dns_request_pack(char *buf, const char *domain, int32_t ipv6, uint16_t *id) {
     dns_head head;
     uint16_t rid;
-    csprng_rand(&rid, sizeof(rid));
+    if (ERR_OK != csprng_rand(&rid, sizeof(rid))) {
+        return 0;
+    }
     *id = rid;
     head.id = (uint16_t)htons(rid);
     head.flags1 = DNS_FLAG1_RD;

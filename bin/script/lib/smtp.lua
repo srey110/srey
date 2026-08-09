@@ -24,6 +24,11 @@ function ctx:ctor(ip, port, sslname, user, password)
         error(string.format("ssl_qury not find ssl name %s", sslname), 2)
     end
     self.smtp = smtp.new(ip, port, ssl, user, password)
+    -- ip / user / password 任一超出 C 侧字段容量时 smtp.new 返回 nil（不静默截断——
+    -- 截断后的密码拿去认证只换回服务端一句 535，调用方看不出是自己传长了）
+    if not self.smtp then
+        error("smtp.new failed: ip / user / password too long", 2)
+    end
     self.sslname = sslname
     -- 一封邮件是 MAIL FROM → N×RCPT TO → DATA → 正文 → RSET 一长串往返，两个协程
     -- 同时发信会把收件人混到一起——串行化执行器由 conn_pub 建
@@ -103,6 +108,12 @@ function ctx:_send(mail)
         return false
     end
     cmd, csize = mail:pack()
+    -- 取不到熵生成 MIME boundary 时 pack 返 nil。这里已经收过 354、连接处于 DATA 态，
+    -- 后续 _reset 的 RSET 会被当成正文行、等不到响应而超时断连——与 C 侧 _smtp_send 同样处理，
+    -- 系统随机源坏掉时丢一条连接是可接受的降级
+    if nil == cmd then
+        return false
+    end
     pack =  srey.syn_send(fd, skid, cmd, csize, 0)
     if nil == pack or not self.smtp:check_ok(pack) then
         return false

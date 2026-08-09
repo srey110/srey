@@ -4,20 +4,31 @@
 #define MT_PGSQL_READER "_pgsql_reader_ctx"
 #define MT_PGSQL        "_pgsql_ctx"
 
+// 参数个数（bind.new 与 pack_stmt_prepare 共用）：越界直接报错，不截断。
+// 65536 截成 0 会得到一个"绑什么都无视"的 bind，-1 截成 65535 反过来按最大参数数建头部，
+// 两种情况调用方从返回值上都看不出来。上界取 INT16_MAX 而非 UINT16_MAX——
+// Bind 与 Parse 报文里的参数个数字段都是 Int16，超了在服务端就是个负数。
+// 这里不复用 lpub_check_lens：那个是 (指针, 长度) 入口的字节数，报错也只说 length
+static int16_t _lpgsql_check_nparam(lua_State *lua, int32_t idx) {
+    lua_Integer np = luaL_checkinteger(lua, idx);
+    luaL_argcheck(lua, np >= 0 && np <= INT16_MAX, idx, "nparam out of range [0, INT16_MAX]");
+    return (int16_t)np;
+}
 /// <summary>
 /// 创建 pgsql 参数绑定上下文
 /// </summary>
-/// <param name="nparam" type="integer">预期绑定参数数量</param>
+/// <param name="nparam" type="integer">预期绑定参数数量，取值 [0, INT16_MAX]，越界报错</param>
 /// <returns type="_pgsql_bind_ctx">bind 对象</returns>
 static int32_t _lpgsql_bind_new(lua_State *lua) {
-    uint16_t nparam = (uint16_t)luaL_checkinteger(lua, 1);
+    uint16_t nparam = (uint16_t)_lpgsql_check_nparam(lua, 1);
     pgsql_bind_ctx *bind = lua_newuserdata(lua, sizeof(pgsql_bind_ctx));
     pgsql_bind_init(bind, nparam);
     ASSOC_MTABLE(lua, MT_PGSQL_BIND);
     return 1;
 }
 /// <summary>
-/// 释放绑定上下文内部缓冲区（绑定为 __gc）
+/// 释放绑定上下文内部缓冲区（绑定为 __gc）。
+/// 可重复调用；释放后 nparam 归零，后续绑定与组包都按"零参数"处理，不再写出参数序列
 /// </summary>
 /// <param name="self" type="userdata">bind 对象</param>
 /// <returns>无</returns>
@@ -161,7 +172,7 @@ static int32_t _lpgsql_bind_text(lua_State *lua) {
     case LUA_TUSERDATA:
     case LUA_TLIGHTUSERDATA:
         data = lua_touserdata(lua, 2);
-        size = (size_t)luaL_checkinteger(lua, 3);
+        size = lpub_check_lens(lua, 3, 0);
         break;
     default:
         break;
@@ -191,7 +202,7 @@ static int32_t _lpgsql_bind_bytea(lua_State *lua) {
     case LUA_TUSERDATA:
     case LUA_TLIGHTUSERDATA:
         data = lua_touserdata(lua, 2);
-        size = (size_t)luaL_checkinteger(lua, 3);
+        size = lpub_check_lens(lua, 3, 0);
         break;
     default:
         break;
@@ -389,12 +400,7 @@ static int32_t _lpgsql_reader_bool(lua_State *lua) {
         lua_pushboolean(lua, val);
         return 2;
     }
-    if (1 == err) {
-        lua_pushboolean(lua, 1);
-        return 1;
-    }
-    lua_pushboolean(lua, 0);
-    return 1;
+    return lpub_rtn_reader(lua, err);
 }
 /// <summary>
 /// 读取当前行指定字段的整数值（支持 int2/int4/int8）
@@ -413,12 +419,7 @@ static int32_t _lpgsql_reader_integer(lua_State *lua) {
         lua_pushinteger(lua, val);
         return 2;
     }
-    if (1 == err) {
-        lua_pushboolean(lua, 1);
-        return 1;
-    }
-    lua_pushboolean(lua, 0);
-    return 1;
+    return lpub_rtn_reader(lua, err);
 }
 /// <summary>
 /// 读取当前行指定字段的浮点值（支持 float4/float8）
@@ -437,12 +438,7 @@ static int32_t _lpgsql_reader_double(lua_State *lua) {
         lua_pushnumber(lua, val);
         return 2;
     }
-    if (1 == err) {
-        lua_pushboolean(lua, 1);
-        return 1;
-    }
-    lua_pushboolean(lua, 0);
-    return 1;
+    return lpub_rtn_reader(lua, err);
 }
 /// <summary>
 /// 读取当前行指定字段的文本值
@@ -464,12 +460,7 @@ static int32_t _lpgsql_reader_text(lua_State *lua) {
         lua_pushinteger(lua, lens);
         return 3;
     }
-    if (1 == err) {
-        lua_pushboolean(lua, 1);
-        return 1;
-    }
-    lua_pushboolean(lua, 0);
-    return 1;
+    return lpub_rtn_reader(lua, err);
 }
 /// <summary>
 /// 读取当前行指定字段的 BYTEA 值
@@ -491,12 +482,7 @@ static int32_t _lpgsql_reader_bytea(lua_State *lua) {
         lua_pushinteger(lua, lens);
         return 3;
     }
-    if (1 == err) {
-        lua_pushboolean(lua, 1);
-        return 1;
-    }
-    lua_pushboolean(lua, 0);
-    return 1;
+    return lpub_rtn_reader(lua, err);
 }
 /// <summary>
 /// 读取当前行指定字段的 TIMESTAMP / TIMESTAMPTZ 值（相对 PG 纪元的微秒数）
@@ -515,12 +501,7 @@ static int32_t _lpgsql_reader_timestamp(lua_State *lua) {
         lua_pushinteger(lua, val);
         return 2;
     }
-    if (1 == err) {
-        lua_pushboolean(lua, 1);
-        return 1;
-    }
-    lua_pushboolean(lua, 0);
-    return 1;
+    return lpub_rtn_reader(lua, err);
 }
 /// <summary>
 /// 读取当前行指定字段的 DATE 值（相对 PG 纪元的天数）
@@ -539,12 +520,7 @@ static int32_t _lpgsql_reader_date(lua_State *lua) {
         lua_pushinteger(lua, val);
         return 2;
     }
-    if (1 == err) {
-        lua_pushboolean(lua, 1);
-        return 1;
-    }
-    lua_pushboolean(lua, 0);
-    return 1;
+    return lpub_rtn_reader(lua, err);
 }
 /// <summary>
 /// 读取当前行指定字段的 UUID 值（16 字节），以 Lua 字符串返回
@@ -558,18 +534,15 @@ static int32_t _lpgsql_reader_uuid(lua_State *lua) {
     const char *name = luaL_checkstring(lua, 2);
     int32_t err;
     char uuid[16];
-    int32_t rtn = pgsql_reader_uuid(*reader, name, uuid, &err);
-    if (1 == err) {
-        lua_pushboolean(lua, 1);
-        return 1;
-    }
-    if (ERR_OK == rtn && ERR_OK == err) {
+    // 返回值不看：pgsql_reader_uuid 每条 return ERR_FAILED 都配了 SET_PTR(err,...)，
+    // 每条 return ERR_OK 都让 err 保持初始的 ERR_OK，两者互为充要，判 err 一个就够
+    (void)pgsql_reader_uuid(*reader, name, uuid, &err);
+    if (ERR_OK == err) {
         lua_pushboolean(lua, 1);
         lua_pushlstring(lua, uuid, 16);
         return 2;
     }
-    lua_pushboolean(lua, 0);
-    return 1;
+    return lpub_rtn_reader(lua, err);
 }
 /// <summary>
 /// 判断当前行指定字段是否为 NULL
@@ -740,14 +713,14 @@ static int32_t _lpgsql_pack_terminate(lua_State *lua) {
 /// </summary>
 /// <param name="name" type="string">语句名（""= 未命名）</param>
 /// <param name="sql" type="string">SQL 语句</param>
-/// <param name="nparam" type="integer">参数数量</param>
+/// <param name="nparam" type="integer">参数数量，取值 [0, INT16_MAX]，越界报错</param>
 /// <param name="oids" type="integer[]?">OID 整数数组（按参数顺序）；nil 表示由服务端推断</param>
 /// <returns type="lightuserdata">命令数据指针</returns>
 /// <returns type="integer">数据长度</returns>
 static int32_t _lpgsql_pack_stmt_prepare(lua_State *lua) {
     const char *name = luaL_checkstring(lua, 1);
     const char *sql = luaL_checkstring(lua, 2);
-    int16_t nparam = (int16_t)luaL_checkinteger(lua, 3);
+    int16_t nparam = _lpgsql_check_nparam(lua, 3);
     uint32_t *oids = NULL;
     int16_t i;
     if (LUA_TTABLE == lua_type(lua, 4) && nparam > 0) {
@@ -814,7 +787,7 @@ static int32_t _lpgsql_pack_copy_data(lua_State *lua) {
     case LUA_TUSERDATA:
     case LUA_TLIGHTUSERDATA:
         data = lua_touserdata(lua, 1);
-        lens = (size_t)luaL_checkinteger(lua, 2);
+        lens = lpub_check_lens(lua, 2, 0);
         break;
     default:
         break;
@@ -906,8 +879,8 @@ static int32_t _lpgsql_free(lua_State *lua) {
         ev_close(&pg->task->loader->netev, pg->sk.fd, pg->sk.skid, 0);
     }
     *ud = NULL;
-    secure_zero(pg->password, sizeof(pg->password));
-    // pack/scram 由网络线程 udfree 释放，__gc 不碰(防跨线程 UAF)
+    // pack/scram 由网络线程 udfree 释放，__gc 不碰(防跨线程 UAF)；
+    // 密码同理不在这里擦，擦除已挪进 PROT_REF_RELEASE
     PROT_REF_RELEASE(pg);
     return 0;
 }

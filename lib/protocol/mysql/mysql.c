@@ -212,6 +212,15 @@ static void _mysql_connect_attrs(binary_ctx *battrs) {
         binary_set_binary(battrs, attrs[i].val, lens);
     }
 }
+// 组包收尾：回填 3 字节长度头 → 失败即释放缓冲 → 成功把缓冲交给 ev_send(copy=0，所有权转移)。
+// 认证阶段五处发包共用，别在调用点再各写一遍那个 binary_free
+static int32_t _mysql_send_pack(mysql_ctx *mysql, ev_ctx *ev, binary_ctx *bwriter) {
+    if (ERR_OK != _mysql_set_payload_lens(bwriter)) {
+        binary_free(bwriter);
+        return ERR_FAILED;
+    }
+    return ev_send(ev, mysql->client.sk.fd, mysql->client.sk.skid, bwriter->data, bwriter->offset, 0);
+}
 // 发送客户端认证响应包（HandshakeResponse），包含用户名、密码签名、连接属性等
 static int32_t _mysql_auth_response(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
     mysql->id++;
@@ -268,12 +277,8 @@ static int32_t _mysql_auth_response(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
         binary_set_binary(&bwriter, battrs.data, battrs.offset);
         binary_free(&battrs);
     }
-    if (ERR_OK != _mysql_set_payload_lens(&bwriter)) {
-        binary_free(&bwriter);
-        return ERR_FAILED;
-    }
     ud->status = AUTH_PROCESS;
-    return ev_send(ev, mysql->client.sk.fd, mysql->client.sk.skid, bwriter.data, bwriter.offset, 0);
+    return _mysql_send_pack(mysql, ev, &bwriter);
 }
 // 发送 SSL 握手请求包（SSLRequest），触发后续 SSL 升级
 static int32_t _mysql_ssl_exchange(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
@@ -286,12 +291,8 @@ static int32_t _mysql_ssl_exchange(mysql_ctx *mysql, ev_ctx *ev, ud_cxt *ud) {
     binary_set_integer(&bwriter, mysql->client.maxpack, 4, 1);//max_packet_size
     binary_set_uint8(&bwriter, mysql->client.charset);//character_set
     binary_set_fill(&bwriter, 0, 23);//filler
-    if (ERR_OK != _mysql_set_payload_lens(&bwriter)) {
-        binary_free(&bwriter);
-        return ERR_FAILED;
-    }
     ud->status = SSL_EXCHANGE;
-    if (ERR_OK != ev_send(ev, mysql->client.sk.fd, mysql->client.sk.skid, bwriter.data, bwriter.offset, 0)
+    if (ERR_OK != _mysql_send_pack(mysql, ev, &bwriter)
         || ERR_OK != ev_ssl(ev, mysql->client.sk.fd, mysql->client.sk.skid, 1, mysql->client.evssl)) {
         return ERR_FAILED;
     }
@@ -317,13 +318,12 @@ static void _mysql_auth_request(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t
         return;
     }
     char *val = binary_get_string(&breader);//server version
-    if (strlen(val) > sizeof(mysql->version) - 1) {
+    if (ERR_OK != safe_fill_str(mysql->version, sizeof(mysql->version), val)) {
         BIT_SET(*status, PROT_ERROR);
         FREE(payload);
         LOG_ERROR("server version string too long.");
         return;
     }
-    safe_fill_str(mysql->version, sizeof(mysql->version), val);
     binary_get_skip(&breader, 4);//thread id
     val = binary_get_binary(&breader, 8);//auth-plugin-data-part-1
     memcpy(mysql->server.salt, val, 8);
@@ -349,12 +349,6 @@ static void _mysql_auth_request(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t
     val = binary_get_binary(&breader, 13);//auth-plugin-data-part-2
     memcpy(mysql->server.salt + 8, val, 12);
     val = binary_get_string(&breader);//auth_plugin_name
-    if (strlen(val) > sizeof(mysql->server.plugin) - 1) {
-        BIT_SET(*status, PROT_ERROR);
-        LOG_ERROR("auth plugin name %s too long.", val);
-        FREE(payload);
-        return;
-    }
     if (0 != strcmp(val, CACHING_SHA2_PASSWORLD)
         && 0 != strcmp(val, MYSQL_NATIVE_PASSWORLD)) {
         BIT_SET(*status, PROT_ERROR);
@@ -455,6 +449,13 @@ static int32_t _mysql_sha2_rsa(binary_ctx *bwriter, char *pubkey, size_t klens, 
         return ERR_FAILED;
     }
     //RSA_size(rsa) - 11 for the PKCS #1  RSA_size(rsa) - 42 for RSA_PKCS1_OAEP_PADDING
+    // enlens 是服务端公钥的 RSA_size，由对端单方面决定。42 是 OAEP 的填充开销，密钥小到
+    // 正好 42 字节时 block_size 为 0，下面的 i += block_size 就在原地打转、每轮还往 bwriter
+    // 多塞 enlens 字节，整条网络线程连同它上面的其他连接一起卡死到 OOM；再小则下溢成天文数字
+    if (enlens <= 42) {
+        EVP_PKEY_CTX_free(evpctx);
+        return ERR_FAILED;
+    }
     size_t offset, outlens, block_size = enlens - 42;
     for (size_t i = 0; i < xlens; i += block_size) {
         offset = bwriter->offset;
@@ -494,11 +495,7 @@ static int32_t _mysql_full_auth(mysql_ctx *mysql, ev_ctx *ev, char *pubkey, size
         return ERR_FAILED;
     }
     SECURE_FREE(xorpsw, lens);
-    if (ERR_OK != _mysql_set_payload_lens(&bwriter)) {
-        binary_free(&bwriter);
-        return ERR_FAILED;
-    }
-    return ev_send(ev, mysql->client.sk.fd, mysql->client.sk.skid, bwriter.data, bwriter.offset, 0);
+    return _mysql_send_pack(mysql, ev, &bwriter);
 }
 // 在 SSL 已建立的情况下，直接明文发送密码给服务器（caching_sha2 完整认证 SSL 路径）
 static int32_t _mysql_password_send(mysql_ctx *mysql, ev_ctx *ev) {
@@ -508,22 +505,17 @@ static int32_t _mysql_password_send(mysql_ctx *mysql, ev_ctx *ev) {
     binary_set_skip(&bwriter, 3);
     binary_set_int8(&bwriter, mysql->id);
     binary_set_string(&bwriter, mysql->client.password);
-    if (ERR_OK != _mysql_set_payload_lens(&bwriter)) {
-        binary_free(&bwriter);
-        return ERR_FAILED;
-    }
-    return ev_send(ev, mysql->client.sk.fd, mysql->client.sk.skid, bwriter.data, bwriter.offset, 0);
+    return _mysql_send_pack(mysql, ev, &bwriter);
 }
 // 处理服务器发起的认证插件切换请求，重新计算签名并发送响应
 static int32_t _mysql_auth_switch_response(mysql_ctx *mysql, ev_ctx *ev, mpack_auth_switch *auswitch) {
-    if (strlen(auswitch->plugin) >= sizeof(mysql->server.plugin)
-        || auswitch->provided.lens < sizeof(mysql->server.salt)
+    if (auswitch->provided.lens < sizeof(mysql->server.salt)
         || (0 != strcmp(auswitch->plugin, CACHING_SHA2_PASSWORLD)
             && 0 != strcmp(auswitch->plugin, MYSQL_NATIVE_PASSWORLD))) {
         return ERR_FAILED;
     }
-    mysql->id++;
     safe_fill_str(mysql->server.plugin, sizeof(mysql->server.plugin), auswitch->plugin);
+    mysql->id++;
     memcpy(mysql->server.salt, auswitch->provided.data, sizeof(mysql->server.salt));
     binary_ctx bwriter;
     binary_init(&bwriter, NULL, 0, 0);
@@ -542,11 +534,7 @@ static int32_t _mysql_auth_switch_response(mysql_ctx *mysql, ev_ctx *ev, mpack_a
         binary_set_binary(&bwriter, sign, sizeof(sign));
         secure_zero(sign, sizeof(sign));
     }
-    if (ERR_OK != _mysql_set_payload_lens(&bwriter)) {
-        binary_free(&bwriter);
-        return ERR_FAILED;
-    }
-    return ev_send(ev, mysql->client.sk.fd, mysql->client.sk.skid, bwriter.data, bwriter.offset, 0);
+    return _mysql_send_pack(mysql, ev, &bwriter);
 }
 // 认证成功：通知上层握手完成，切换到命令阶段
 static void _mysql_auth_ok(mysql_ctx *mysql, ud_cxt *ud, int32_t *status) {
@@ -684,29 +672,24 @@ void *mysql_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
 }
 int32_t mysql_init(mysql_ctx *mysql, const char *ip, uint16_t port, struct evssl_ctx *evssl,
     const char *user, const char *password, const char *database, const char *charset, uint32_t maxpk) {
-    if (strlen(ip) > sizeof(mysql->client.ip) - 1) {
+    ZERO(mysql, sizeof(mysql_ctx));
+    // safe_fill_str 装不下即拒绝写入并返回 ERR_FAILED，超长字段在这里当场报出来。
+    // 失败时 mysql 已被 ZERO 且可能填了前几个字段，调用方按 init 失败处理（丢弃或 FREE），不得继续用
+    if (ERR_OK != safe_fill_str(mysql->client.ip, sizeof(mysql->client.ip), ip)) {
         LOG_ERROR("mysql ip exceeds %zu bytes: %zu.", sizeof(mysql->client.ip) - 1, strlen(ip));
         return ERR_FAILED;
     }
-    if (strlen(user) > sizeof(mysql->client.user) - 1) {
+    if (ERR_OK != safe_fill_str(mysql->client.user, sizeof(mysql->client.user), user)) {
         LOG_ERROR("mysql user name exceeds %zu bytes: %zu.", sizeof(mysql->client.user) - 1, strlen(user));
         return ERR_FAILED;
     }
-    if (strlen(password) > sizeof(mysql->client.password) - 1) {
+    if (ERR_OK != safe_fill_str(mysql->client.password, sizeof(mysql->client.password), password)) {
         LOG_ERROR("mysql password exceeds %zu bytes: %zu.", sizeof(mysql->client.password) - 1, strlen(password));
         return ERR_FAILED;
     }
-    if (NULL != database
-        && strlen(database) > sizeof(mysql->client.database) - 1) {
+    if (ERR_OK != safe_fill_str(mysql->client.database, sizeof(mysql->client.database), database)) {
         LOG_ERROR("mysql database name exceeds %zu bytes: %zu.", sizeof(mysql->client.database) - 1, strlen(database));
         return ERR_FAILED;
-    }
-    ZERO(mysql, sizeof(mysql_ctx));
-    safe_fill_str(mysql->client.ip, sizeof(mysql->client.ip), ip);
-    safe_fill_str(mysql->client.user, sizeof(mysql->client.user), user);
-    safe_fill_str(mysql->client.password, sizeof(mysql->client.password), password);
-    if (!EMPTYSTR(database)) {
-        safe_fill_str(mysql->client.database, sizeof(mysql->client.database), database);
     }
     mysql->client.port = 0 == port ? 3306 : port;
     mysql->client.evssl = evssl;

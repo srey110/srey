@@ -157,29 +157,33 @@ int32_t _pgsql_ssl_exchanged(ev_ctx *ev, ud_cxt *ud, void *ssl) {
 #endif
     return _pgsql_startup(ev, ud);
 }
-// 从接收缓冲区读取一个完整的 pgsql 消息（含类型码+长度+数据），返回堆上的数据指针
-static char *_pgsql_payload(buffer_ctx *buf, int32_t *lens, int32_t *status) {
+// 从接收缓冲区读取一个完整的 pgsql 消息（含类型码+长度+数据），返回堆上的数据指针。
+// total 输出的是整包字节数（类型码 1 + 消息体），调用方直接拿它 binary_init，别再自己 +1：
+// 协议长度字段是 int32，服务端发 INT32_MAX 时那次加法有符号溢出，回绕成负数再转 size_t
+// 就是个天文数字，binary 的越界断言从此全部失效
+static char *_pgsql_payload(buffer_ctx *buf, size_t *total, int32_t *status) {
     size_t blens = buffer_size(buf);
     if (5 > blens) {
         // 数据不足一个完整消息头（1字节类型码 + 4字节长度）
         BIT_SET(*status, PROT_MOREDATA);
         return NULL;
     }
-    ASSERTAB((size_t)sizeof(*lens) == buffer_copyout(buf, 1, lens, sizeof(*lens)), "copy buffer failed.");
-    *lens = (int32_t)unpack_integer((const char*)lens, 4, 0, 0);
-    if (*lens < 4) {
+    int32_t lens;
+    ASSERTAB((size_t)sizeof(lens) == buffer_copyout(buf, 1, &lens, sizeof(lens)), "copy buffer failed.");
+    lens = (int32_t)unpack_integer((const char*)&lens, 4, 0, 0);
+    if (lens < 4) {
         // pgsql 协议规定 length 字段含自身 4 字节，合法值 ≥ 4；非法值会让后续解析下溢/越界
         BIT_SET(*status, PROT_ERROR);
         return NULL;
     }
-    uint32_t total = (uint32_t)(*lens) + 1; // 消息总长度 = 类型码(1) + 消息体(lens)
-    if ((size_t)total > blens) {
+    *total = (size_t)(uint32_t)lens + 1; // 消息总长度 = 类型码(1) + 消息体(lens)
+    if (*total > blens) {
         BIT_SET(*status, PROT_MOREDATA);
         return NULL;
     }
     char *pack;
-    MALLOC(pack, total);
-    ASSERTAB(total == (uint32_t)buffer_remove(buf, pack, total), "copy buffer failed.");
+    MALLOC(pack, *total);
+    ASSERTAB(*total == buffer_remove(buf, pack, *total), "copy buffer failed.");
     return pack;
 }
 // 从服务端 SASL 方法列表中按优先级选择本端支持的认证方法
@@ -258,7 +262,10 @@ static int32_t _pgsql_md5_auth(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *breader) {
     md5_update(&md5, inner_hex, MD5_BLOCK_SIZE * 2);
     md5_update(&md5, salt, 4);
     md5_final(&md5, hash);
-    safe_fill_str(response, sizeof(response), "md5");
+    // 这里不是"填一个字符串字段"，而是按 "md5" + hex 拼一个定长应答：前 3 字节是固定前缀，
+    // 剩下的由 tohex 从 response+3 起写满并补 NUL。用 safe_fill_str 反而会先写一个
+    // 随即被 tohex 覆盖掉的 NUL，读起来像是在填字符串
+    memcpy(response, "md5", 3);
     tohex(hash, MD5_BLOCK_SIZE, response + 3, 1);
     secure_zero(hash, sizeof(hash));
     secure_zero(inner_hex, sizeof(inner_hex));
@@ -387,13 +394,13 @@ static void _pgsql_auth_process(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *breader, 
 }
 // 处理认证阶段收到的服务端消息（R/S/K/Z/E）
 static void _pgsql_auth_response(pgsql_ctx *pg, ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
-    int32_t lens;
-    char *pack = _pgsql_payload(buf, &lens, status);
+    size_t total;
+    char *pack = _pgsql_payload(buf, &total, status);
     if (NULL == pack) {
         return;
     }
     binary_ctx breader;
-    binary_init(&breader, pack, lens + 1, 0); // +1 为类型码字节
+    binary_init(&breader, pack, total, 0);
     binary_get_skip(&breader, 5); // 跳过类型码(1) + 长度(4)
     switch (pack[0]) {
     case 'E': { // ErrorResponse：认证失败，推送错误消息
@@ -423,8 +430,13 @@ static void _pgsql_auth_response(pgsql_ctx *pg, ev_ctx *ev, buffer_ctx *buf, ud_
             pg->scram = NULL;
         }
         pg->readyforquery = binary_get_int8(&breader);
+        // 同 _mysql_auth_ok / smtp：push 失败说明目标 task 已经没了，此时不能把状态推进到
+        // COMMAND——那会留下一条"握手完成却没有任何协程在等"的半死连接
+        if (ERR_OK != _hs_push(pg->sk.fd, pg->sk.skid, 1, ud, ERR_OK, NULL, 0)) {
+            BIT_SET(*status, PROT_ERROR);
+            break;
+        }
         ud->status = COMMAND;
-        _hs_push(pg->sk.fd, pg->sk.skid, 1, ud, ERR_OK, NULL, 0);
         break;
     default:
         BIT_SET(*status, PROT_ERROR);
@@ -434,13 +446,13 @@ static void _pgsql_auth_response(pgsql_ctx *pg, ev_ctx *ev, buffer_ctx *buf, ud_
 }
 // 处理命令阶段收到的服务端消息，返回在 ReadyForQuery 时累积完成的 pgpack_ctx
 static pgpack_ctx *_pgsql_command_response(pgsql_ctx *pg, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
-    int32_t lens;
-    char *payload = _pgsql_payload(buf, &lens, status);
+    size_t total;
+    char *payload = _pgsql_payload(buf, &total, status);
     if (NULL == payload) {
         return NULL;
     }
     binary_ctx breader;
-    binary_init(&breader, payload, lens + 1, 0); // +1 为类型码字节
+    binary_init(&breader, payload, total, 0);
     return _pgpack_parser(pg, &breader, ud, status);
 }
 void *pgsql_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
@@ -467,57 +479,58 @@ void *pgsql_unpack(ev_ctx *ev, buffer_ctx *buf, ud_cxt *ud, int32_t *status) {
 }
 int32_t pgsql_init(pgsql_ctx *pg, const char *ip, uint16_t port, struct evssl_ctx *evssl,
     const char *user, const char *password, const char *database) {
-    if (strlen(ip) > sizeof(pg->ip) - 1) {
+    ZERO(pg, sizeof(pgsql_ctx));
+    // safe_fill_str 装不下即拒绝写入并返回 ERR_FAILED，超长字段在这里当场报出来。
+    // 失败时 pg 已被 ZERO 且可能填了前几个字段，调用方按 init 失败处理（丢弃或 FREE），不得继续用
+    if (ERR_OK != safe_fill_str(pg->ip, sizeof(pg->ip), ip)) {
         LOG_ERROR("pgsql ip exceeds %zu bytes: %zu.", sizeof(pg->ip) - 1, strlen(ip));
         return ERR_FAILED;
     }
-    if (strlen(user) > sizeof(pg->user) - 1) {
+    if (ERR_OK != safe_fill_str(pg->user, sizeof(pg->user), user)) {
         LOG_ERROR("pgsql user name exceeds %zu bytes: %zu.", sizeof(pg->user) - 1, strlen(user));
         return ERR_FAILED;
     }
-    if (strlen(password) > sizeof(pg->password) - 1) {
+    if (ERR_OK != safe_fill_str(pg->password, sizeof(pg->password), password)) {
         LOG_ERROR("pgsql password exceeds %zu bytes: %zu.", sizeof(pg->password) - 1, strlen(password));
         return ERR_FAILED;
     }
-    if (NULL != database
-        && strlen(database) > sizeof(pg->database) - 1) {
+    if (ERR_OK != safe_fill_str(pg->database, sizeof(pg->database), database)) {
         LOG_ERROR("pgsql database name exceeds %zu bytes: %zu.", sizeof(pg->database) - 1, strlen(database));
         return ERR_FAILED;
     }
-    ZERO(pg, sizeof(pgsql_ctx));
-    safe_fill_str(pg->ip, sizeof(pg->ip), ip);
-    safe_fill_str(pg->user, sizeof(pg->user), user);
-    safe_fill_str(pg->password, sizeof(pg->password), password);
-    safe_fill_str(pg->database, sizeof(pg->database), NULL != database ? database : "");
     pg->port = 0 == port ? 5432 : port;
     pg->sk.fd = INVALID_SOCK;
     pg->evssl = evssl;
     return ERR_OK;
 }
+// 两个字段要么一起换掉、要么都不动：只换成一半会拿新用户名配旧密码去认证。
+// 所以这里必须自己先把两个长度都验过，不能靠 safe_fill_str 边填边判——那样第一个填成功、
+// 第二个失败就已经改了一半
 int32_t pgsql_set_userpwd(pgsql_ctx *pg, const char *user, const char *password) {
-    if (strlen(user) > sizeof(pg->user) - 1) {
+    if (!EMPTYSTR(user) && strlen(user) > sizeof(pg->user) - 1) {
         LOG_ERROR("pgsql user name exceeds %zu bytes: %zu, keep the old one.",
                   sizeof(pg->user) - 1, strlen(user));
         return ERR_FAILED;
     }
-    if (strlen(password) > sizeof(pg->password) - 1) {
+    if (!EMPTYSTR(password) && strlen(password) > sizeof(pg->password) - 1) {
         LOG_ERROR("pgsql password exceeds %zu bytes: %zu, keep the old one.",
                   sizeof(pg->password) - 1, strlen(password));
         return ERR_FAILED;
     }
     secure_zero(pg->user, sizeof(pg->user));
     secure_zero(pg->password, sizeof(pg->password));
+    // 两个长度都在函数开头验过，这里必然装得下
     safe_fill_str(pg->user, sizeof(pg->user), user);
     safe_fill_str(pg->password, sizeof(pg->password), password);
     return ERR_OK;
 }
 int32_t pgsql_set_db(pgsql_ctx *pg, const char *database) {
-    if (strlen(database) > sizeof(pg->database) - 1) {
+    // 装不下时 safe_fill_str 一个字节都不写，"保留旧库名"这条契约由它本身保证
+    if (ERR_OK != safe_fill_str(pg->database, sizeof(pg->database), database)) {
         LOG_ERROR("pgsql database name exceeds %zu bytes: %zu, keep the old one.",
                   sizeof(pg->database) - 1, strlen(database));
         return ERR_FAILED;
     }
-    safe_fill_str(pg->database, sizeof(pg->database), database);
     return ERR_OK;
 }
 const char *pgsql_get_db(pgsql_ctx *pg) {

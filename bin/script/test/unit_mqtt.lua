@@ -77,6 +77,20 @@ runner.run("mqtt", function(t)
         utils.ud_free(pack)
     end
     do
+        -- 组包失败（clientid 超 UINT16_MAX，mqtt_pack_connect 返 NULL）时，lpub_rtn_lud
+        -- 压 2 个 nil 而不是 1 个：返回值个数与成功路径一致，业务把它整段塞进
+        -- srey.send(fd, skid, mqtt.pack_connect(...)) 才不会错位
+        local pack, size = mqtt.pack_connect(
+            mqtt.VERSION.V311, 1, 60, string.rep("a", 70000),
+            "user", "psw", nil, nil, 0, 0, nil, nil)
+        t:eq(nil, pack, "pack_connect clientid 超长返 nil")
+        t:eq(nil, size, "pack_connect 失败时第二个返回值也是 nil")
+        t:eq(2, select("#", mqtt.pack_connect(
+            mqtt.VERSION.V311, 1, 60, string.rep("a", 70000),
+            "user", "psw", nil, nil, 0, 0, nil, nil)),
+            "pack_connect 失败时返回值个数为 2")
+    end
+    do
         local pack, size = mqtt.pack_connack(mqtt.VERSION.V311, 1, 0, nil)
         t:check(pack ~= nil and size > 0, "pack_connack v311")
         t:eq(mqtt.PROT.CONNACK, _ptype(pack, size), "pack_connack type byte")

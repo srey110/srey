@@ -9,7 +9,7 @@
 /// <param name="mbind">mysql_bind_ctx</param>
 void mysql_bind_init(mysql_bind_ctx *mbind);
 /// <summary>
-/// 参数绑定 释放
+/// 参数绑定 释放。可重复调用；释放后再绑定参数等同于刚 init 的空上下文
 /// </summary>
 /// <param name="mbind">mysql_bind_ctx</param>
 void mysql_bind_free(mysql_bind_ctx *mbind);

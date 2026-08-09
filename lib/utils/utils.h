@@ -179,13 +179,30 @@ static inline uint64_t hash_u64(uint64_t x) {
 /// <returns>void * 字符出现的指针, NULL无</returns>
 void *memichr(const void *ptr, int32_t val, size_t maxlen);
 /// <summary>
-/// 安全填充定长字符串缓冲：src 为 NULL 时 dst 写空串；src 长度超 dstsz-1 时截断；
-/// 始终保证 dst[dstsz-1]='\0'。dstsz 须 大于等于 1。
+/// 安全填充定长字符串缓冲：src 为 NULL 时 dst 写空串；成功时保证 dst 以 '\0' 结尾。
+/// 装不下（strlen(src) >= dstsz）时 dst 一个字节都不写、保持原样，返回 ERR_FAILED——
+/// 截断后的值拿去用往往是静默出错，调用方从 dst 上看不出发生过什么。
+/// 报错文案由调用方在判返回值后自己打，只有它知道这是哪个字段
 /// </summary>
 /// <param name="dst">目标缓冲，dstsz 字节</param>
 /// <param name="dstsz">目标缓冲总字节数（含末尾终止符）</param>
 /// <param name="src">源字符串，可为 NULL</param>
-void safe_fill_str(char *dst, size_t dstsz, const char *src);
+/// <returns>ERR_OK 成功；ERR_FAILED dstsz 为 0 或 src 装不下（此时 dst 未被改动）</returns>
+int32_t safe_fill_str(char *dst, size_t dstsz, const char *src);
+/// <summary>
+/// 把 (指针, 长度) 的字节段复制进定长栈缓冲并补 NUL。协议层把对端给的定长切片转成 C 串时用，
+/// 这类地方是不可信字节进固定缓冲的唯一屏障，散着写容易各自漏一个 -1。
+/// strict 非 0：装不下即失败且不写 dst；strict 为 0：截断到 cap-1。
+/// **默认用 strict 非 0**。截断只在"这段字节纯粹给人看、没有任何逻辑解析它"时才成立
+/// （全仓仅 _mpack_err 的服务端错误文本一处）；只要有人 parse 它，截出来的值就是静默出错，
+/// 调用方从 dst 上还看不出发生过什么——safe_fill_str 当初删掉截断语义就是这个原因
+/// <param name="data">源字节段(可非 NUL 结尾)</param>
+/// <param name="lens">源字节数</param>
+/// <param name="dst">目标缓冲</param>
+/// <param name="cap">目标缓冲总字节数(含 NUL)</param>
+/// <param name="strict">非 0 装不下即返 ERR_FAILED；0 则截断</param>
+/// <returns>ERR_OK 成功；ERR_FAILED：cap 为 0，或 strict 且装不下</returns>
+int32_t copy_bounded(const void *data, size_t lens, char *dst, size_t cap, int32_t strict);
 /// <summary>
 /// 复制 src 的 lens 字节为新分配的 NUL 结尾字符串，返回堆缓冲，调用方负责 FREE；
 /// 按定长字节复制，不依赖 src 含 NUL；分配失败时底层 _malloc 终止进程。

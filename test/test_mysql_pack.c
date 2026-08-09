@@ -367,6 +367,42 @@ static void test_mysql_pack_stmt_close(CuTest *tc) {
     mysql_stmt_free(stmt);
 }
 
+/* =======================================================================
+ * mysql_bind_free —— 可重复调用；释放后再绑定等同刚 init 的空上下文
+ * Lua 侧 __gc 与 bind:free 同一入口，脚本能显式调，故这两条必须成立
+ * ======================================================================= */
+static void test_mysql_bind_free_reuse(CuTest *tc) {
+    mysql_bind_ctx mb;
+    mysql_bind_init(&mb);
+    mysql_bind_string(&mb, "s1", "hello", 5);
+    mysql_bind_integer(&mb, "i1", 7);
+    CuAssertIntEquals(tc, 2, mb.count);
+
+    mysql_bind_free(&mb);
+    /* 四个缓冲全部回到"未分配"状态，count 归零 */
+    CuAssertIntEquals(tc, 0, mb.count);
+    CuAssertPtrEquals(tc, NULL, mb.bitmap.data);
+    CuAssertPtrEquals(tc, NULL, mb.type.data);
+    CuAssertPtrEquals(tc, NULL, mb.type_name.data);
+    CuAssertPtrEquals(tc, NULL, mb.value.data);
+    CuAssertTrue(tc, 0 == mb.bitmap.size && 0 == mb.bitmap.offset);
+    CuAssertTrue(tc, 0 == mb.value.size && 0 == mb.value.offset);
+
+    /* 重复 free 不炸 */
+    mysql_bind_free(&mb);
+    CuAssertPtrEquals(tc, NULL, mb.value.data);
+
+    /* free 后再绑定：旧实现留着 size=256/offset，_binary_expand 会认为"还写得下"
+       从而跳过 REALLOC，data 仍是 NULL，_mysql_bind_bitmap 的 memset 直接段错误 */
+    mysql_bind_string(&mb, "s2", "world", 5);
+    CuAssertIntEquals(tc, 1, mb.count);
+    CuAssertPtrNotNull(tc, mb.bitmap.data);
+    CuAssertPtrNotNull(tc, mb.value.data);
+    CuAssertTrue(tc, mb.value.offset > 0);
+
+    mysql_bind_free(&mb);
+}
+
 /* ======================================================================= */
 
 void test_mysql_pack(CuSuite *suite) {
@@ -374,6 +410,7 @@ void test_mysql_pack(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_mysql_set_payload_lens);
     SUITE_ADD_TEST(suite, test_mysql_bind_basic);
     SUITE_ADD_TEST(suite, test_mysql_bind_temporal);
+    SUITE_ADD_TEST(suite, test_mysql_bind_free_reuse);
     SUITE_ADD_TEST(suite, test_mysql_pack_query_no_bind);
     SUITE_ADD_TEST(suite, test_mysql_pack_simple_cmds);
     SUITE_ADD_TEST(suite, test_mysql_pack_stmt_prepare);

@@ -22,7 +22,7 @@ static void _lmqtt_get_payload(lua_State *lua, int idx, char **data, size_t *len
     }
     if (LUA_TLIGHTUSERDATA == t) {
         *data = lua_touserdata(lua, idx);
-        *lens = (size_t)luaL_checkinteger(lua, idx + 1);
+        *lens = lpub_check_lens(lua, idx + 1, 0);
     }
 }
 // ---- mqtt.props (binary_ctx 构建器：属性 / 主题列表) ----
