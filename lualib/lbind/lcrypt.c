@@ -175,9 +175,10 @@ LUAMOD_API int luaopen_crc(lua_State *lua) {
 /// <param name="dtype" type="integer">算法类型（MD5 / SHA1 / SHA256 等）</param>
 /// <returns type="_digest_ctx">摘要对象</returns>
 static int32_t _lcrypt_digest_new(lua_State *lua) {
-    int32_t dtype = (int32_t)luaL_checkinteger(lua, 1);
+    lua_Integer dtype = luaL_checkinteger(lua, 1);
+    luaL_argcheck(lua, dtype >= DG_MD2 && dtype <= DG_SHA512, 1, "invalid digest type");
     digest_ctx *digest = lua_newuserdata(lua, sizeof(digest_ctx));
-    digest_init(digest, dtype);
+    digest_init(digest, (digest_type)dtype);
     ASSOC_MTABLE(lua, MT_DIGEST);
     return 1;
 }
@@ -259,10 +260,11 @@ LUAMOD_API int luaopen_digest(lua_State *lua) {
 /// <returns type="_hmac_ctx">HMAC 对象</returns>
 static int32_t _lcrypt_hmac_new(lua_State *lua) {
     size_t lens;
-    int32_t dtype = (int32_t)luaL_checkinteger(lua, 1);
+    lua_Integer dtype = luaL_checkinteger(lua, 1);
+    luaL_argcheck(lua, dtype >= DG_MD2 && dtype <= DG_SHA512, 1, "invalid digest type");
     const char *key = luaL_checklstring(lua, 2, &lens);
     hmac_ctx *hmac = lua_newuserdata(lua, sizeof(hmac_ctx));
-    hmac_init(hmac, dtype, key, lens);
+    hmac_init(hmac, (digest_type)dtype, key, lens);
     ASSOC_MTABLE(lua, MT_HMAC);
     return 1;
 }
@@ -369,15 +371,16 @@ static int32_t _lcrypt_cipher_size(lua_State *lua) {
     return 1;
 }
 /// <summary>
-/// 设置填充模式
+/// 设置填充模式；取值须落在 padding_model 枚举内，越界报错
 /// </summary>
 /// <param name="self" type="userdata">cipher 对象</param>
 /// <param name="padding" type="integer">填充模式（PKCS7 / ANSIX923 / ISO10126 / NOPAD 等）</param>
 /// <returns>无</returns>
 static int32_t _lcrypt_cipher_padding(lua_State *lua) {
     cipher_ctx *cipher = luaL_checkudata(lua, 1, MT_CIPHER);
-    int32_t padding = (int32_t)luaL_checkinteger(lua, 2);
-    cipher_padding(cipher, padding);
+    lua_Integer padding = luaL_checkinteger(lua, 2);
+    luaL_argcheck(lua, padding >= NoPadding && padding <= ANSIX923, 2, "invalid padding model");
+    cipher_padding(cipher, (padding_model)padding);
     return 0;
 }
 /// <summary>

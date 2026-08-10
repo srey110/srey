@@ -55,7 +55,6 @@ void bson_init(bson_ctx *bson, char *data, size_t lens) {
     bson->depth = 0;
     binary_init(&bson->doc, data, lens, 0);
     if (NULL == data) {
-        ZERO(bson->offsets, sizeof(bson->offsets));
         _bson_append_start(bson);
     }
 }
@@ -212,6 +211,7 @@ static void _bson_iter_poison(bson_iter *iter) {
 }
 void bson_iter_init(bson_iter *iter, bson_ctx *bson) {
     iter->doc = &bson->doc;
+    binary_offset(iter->doc, 0);
     size_t lens = 0;
     if (iter->doc->size >= 4) {
         lens = (size_t)binary_get_integer(iter->doc, 4, 1);
@@ -226,7 +226,11 @@ void bson_iter_init(bson_iter *iter, bson_ctx *bson) {
     _bson_iter_poison(iter);
 }
 void bson_iter_reset(bson_iter *iter) {
-    binary_offset(iter->doc, 4);
+    // doclens 为 0 时 bson_iter_init 已判定长度字段非法,缓冲可能连 4 字节都不到,
+    // 再跳过去会撞 binary_offset 的越界断言;非 0 则长度字段已校验过 >= 5,跳 4 必在界内
+    if (0 != iter->doclens) {
+        binary_offset(iter->doc, 4);
+    }
     iter->err = (0 == iter->doclens) ? 1 : 0;
     _bson_iter_poison(iter);
 }
@@ -260,6 +264,52 @@ static int32_t _bson_iter_fixed(bson_iter *iter, size_t lens) {
     iter->val = binary_get_binary(iter->doc, iter->lens);
     return ERR_OK;
 }
+// 变长类型统一前导:read_key + 确认还剩 4 字节 + 读 int32 长度 + 校验可读空间;成功返 ERR_OK。
+// 下限与修正量由类型定死,不当参数传:调用处填成数字的话搭错一对照样编过,只是长度校验静默出错;
+// 收进来以后新增类型漏写 case 直接落 default 报错。修正量是长度值之外还要占的字节数——
+// 字符串的结尾 \0 与 binary 的 subtype 各 +1,document/array 的声明长度把长度字段自身那 4 字节
+// 也算进去了故 -4。out_off 为长度字段起点,document/array 靠它回退把长度前缀一起带走,不需要可传 NULL
+static int32_t _bson_iter_lenprefix(bson_iter *iter, size_t *out_lens, size_t *out_off) {
+    int64_t min, adjust;
+    switch (iter->type) {
+    case BSON_UTF8:
+    case BSON_JSCODE:
+        min = 1;
+        adjust = 1;
+        break;
+    case BSON_DOCUMENT:
+    case BSON_ARRAY:
+        min = 5;
+        adjust = -4;
+        break;
+    case BSON_BINARY:
+        min = 0;
+        adjust = 1;
+        break;
+    default:
+        LOG_WARN("bson type %d has no length prefix.", iter->type);
+        return ERR_FAILED;
+    }
+    if (0 == _bson_iter_read_key(iter)) {
+        return ERR_FAILED;
+    }
+    if (iter->doc->offset > iter->doclens
+        || 4 > iter->doclens - iter->doc->offset) {
+        LOG_WARN("invalid bson %s length.", bson_type_tostring(iter->type));
+        return ERR_FAILED;
+    }
+    size_t off = iter->doc->offset;
+    int64_t lens = binary_get_integer(iter->doc, 4, 1);
+    if (lens < min
+        || iter->doc->offset > iter->doclens
+        || (size_t)(lens + adjust) > iter->doclens - iter->doc->offset) {
+        LOG_WARN("invalid bson %s length %" PRId64 ".", bson_type_tostring(iter->type), lens);
+        return ERR_FAILED;
+    }
+    *out_lens = (size_t)lens;
+    SET_PTR(out_off, off);
+    return ERR_OK;
+}
 int32_t bson_iter_next(bson_iter *iter) {
     if (iter->doc->offset >= iter->doclens) {
         if (BSON_EOD != iter->type) {
@@ -269,8 +319,8 @@ int32_t bson_iter_next(bson_iter *iter) {
         return 0;
     }
     size_t off;
+    size_t vlens;
     int32_t more = 1;
-    int64_t lens;
     _bson_iter_clear(iter);
     iter->type = (uint8_t)binary_get_int8(iter->doc);//signed_byte(type)
     switch (iter->type) {
@@ -284,27 +334,13 @@ int32_t bson_iter_next(bson_iter *iter) {
         break;
     case BSON_UTF8://e_name string
     case BSON_JSCODE://e_name string
-        if (0 == _bson_iter_read_key(iter)) {
+        /* 长度字段含末尾 \0，合法值 >= 1；为 0 或负数时 (size_t)(lens-1) 下溢，
+         * binary_get_binary 读越界。*/
+        if (ERR_OK != _bson_iter_lenprefix(iter, &vlens, NULL)) {
             more = 0;
             break;
         }
-        if (iter->doc->offset > iter->doclens
-            || 4 > iter->doclens - iter->doc->offset) {
-            more = 0;
-            LOG_WARN("invalid bson string length.");
-            break;
-        }
-        lens = binary_get_integer(iter->doc, 4, 1);
-        if (lens < 1
-            || iter->doc->offset > iter->doclens
-            || (size_t)(lens + 1) > iter->doclens - iter->doc->offset) {
-            /* BSON 字符串长度字段含末尾 \0，合法值 >= 1；
-             * 为 0 或负数时 (size_t)(lens-1) 下溢，binary_get_binary 读越界。*/
-            more = 0;
-            LOG_WARN("invalid bson string length %" PRId64 ".", lens);
-            break;
-        }
-        iter->lens = (size_t)lens - 1;
+        iter->lens = vlens - 1;
         iter->val = binary_get_binary(iter->doc, iter->lens + 1);
         if ('\0' != iter->val[iter->lens]) {
             iter->val = NULL;
@@ -314,50 +350,21 @@ int32_t bson_iter_next(bson_iter *iter) {
         break;
     case BSON_DOCUMENT://e_name document
     case BSON_ARRAY://e_name document
-        if (0 == _bson_iter_read_key(iter)) {
+        if (ERR_OK != _bson_iter_lenprefix(iter, &vlens, &off)) {
             more = 0;
             break;
         }
-        if (iter->doc->offset > iter->doclens
-            || 4 > iter->doclens - iter->doc->offset) {
-            more = 0;
-            LOG_WARN("invalid bson document length.");
-            break;
-        }
-        off = iter->doc->offset;
-        lens = binary_get_integer(iter->doc, 4, 1);
-        if (lens < 5
-            || iter->doc->offset > iter->doclens
-            || (size_t)lens > iter->doclens - off) {
-            more = 0;
-            LOG_WARN("invalid bson document length %" PRId64 ".", lens);
-            break;
-        }
-        iter->lens = (size_t)lens;
-        binary_offset(iter->doc, off);
+        iter->lens = vlens;
+        binary_offset(iter->doc, off);//回退到长度字段起点，子文档要连长度前缀一起带走
         iter->val = binary_get_binary(iter->doc, iter->lens);
         break;
     case BSON_BINARY://e_name binary
-        if (0 == _bson_iter_read_key(iter)) {
+        if (ERR_OK != _bson_iter_lenprefix(iter, &vlens, NULL)) {
             more = 0;
             break;
         }
-        if (iter->doc->offset > iter->doclens
-            || 4 > iter->doclens - iter->doc->offset) {
-            more = 0;
-            LOG_WARN("invalid bson binary length.");
-            break;
-        }
-        lens = binary_get_integer(iter->doc, 4, 1);
-        if (lens < 0
-            || iter->doc->offset > iter->doclens
-            || (size_t)lens + 1 > iter->doclens - iter->doc->offset) {
-            more = 0;
-            LOG_WARN("invalid bson binary length %" PRId64 ".", lens);
-            break;
-        }
-        iter->lens = (size_t)lens;
-        iter->subtype = (uint8_t)binary_get_int8(iter->doc);
+        iter->lens = vlens;
+        iter->subtype = (uint8_t)binary_get_int8(iter->doc);//adjust 的 +1 就是这个字节
         iter->val = binary_get_binary(iter->doc, iter->lens);
         break;
     case BSON_OID://e_name (byte*12)
@@ -460,28 +467,31 @@ int32_t bson_iter_find(bson_iter *iter, const char *keys, bson_iter *result) {
         return ERR_FAILED;
     }
     bson_iter cur_iter = *iter;
+    bson_iter found;
     bson_ctx bson;
     for (int32_t i = 0; i < n; i++) {
         if (0 == segs[i].lens) {
             rtn = ERR_FAILED;
             break;
         }
-        rtn = _bson_iter_find(&cur_iter, segs[i].data, segs[i].lens, result);
+        rtn = _bson_iter_find(&cur_iter, segs[i].data, segs[i].lens, &found);
         if (ERR_OK != rtn) {
             break;
         }
         if (i == n - 1) {//最后一层
             break;
         }
-        if (BSON_DOCUMENT != result->type
-            && BSON_ARRAY != result->type) {
+        if (BSON_DOCUMENT != found.type
+            && BSON_ARRAY != found.type) {
             rtn = ERR_FAILED;
             break;
         }
-        bson_init(&bson, result->val, result->lens);
+        bson_init(&bson, found.val, found.lens);
         bson_iter_init(&cur_iter, &bson);
     }
     if (ERR_OK == rtn) {
+        // n >= 2(有点号才走到这里),成功即至少跑过一次非末层分支,bson 必已初始化
+        *result = found;
         result->nested_doc = bson.doc;
         result->doc = &result->nested_doc;
     }

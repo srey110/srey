@@ -45,13 +45,17 @@ static int32_t _lrouter_add(lua_State *lua) {
 // 以及重组一遍 query 串——对每个 HTTP 请求都白付一次
 static void _lrouter_push_url(lua_State *lua, url_ctx *url) {
     lua_createtable(lua, 0, 2);
+    // "/" 与 "//" 的段全是空段，被 router_match_index 剔光后 npath 归零，
+    // 此时 url_reorg_path 只会吐出空串，直接给 "/"，别让 path 字段缺席
     if (url->npath > 0) {
         luaL_Buffer pbuf;
         size_t pcap = url->pathlens + 1;
         char *pp = luaL_buffinitsize(lua, &pbuf, pcap);
         luaL_pushresultsize(&pbuf, url_reorg_path(url, pp, pcap));
-        lua_setfield(lua, -2, "path");
+    } else {
+        lua_pushliteral(lua, "/");
     }
+    lua_setfield(lua, -2, "path");
     // 按实际参数个数建表，不按 URL_MAX_PARAM 预留
     int32_t n = 0;
     while (n < URL_MAX_PARAM && NULL != url->param[n].key.data) {

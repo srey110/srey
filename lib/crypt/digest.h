@@ -23,7 +23,6 @@ typedef enum digest_type {
 }digest_type;
 typedef struct digest_ctx {
     size_t block_lens;      // 当前摘要算法的输出长度（字节）
-    void *cur_ctx;          // 指向当前算法上下文
     _init_cb _init;         // 初始化回调
     _update_cb _update;     // 数据输入回调
     _final_cb _final;       // 结果输出回调
@@ -43,8 +42,10 @@ typedef struct digest_ctx {
 /// <param name="dtype">摘要算法</param>
 void digest_init(digest_ctx *digest, digest_type dtype);
 /// <summary>
-/// 清零 digest_ctx 中的全部哈希计算状态，防止密钥派生材料残留于栈内存；
-/// 每次 digest_init 完成并使用后均应调用，无论 digest_ctx 分配于栈还是堆。
+/// 清零整个 digest_ctx，含三个分发回调——调用后上下文即失效，要复用须重新 digest_init。
+/// 处理过口令 / 密钥派生材料的上下文必须调用，防止残留于栈或堆内存；
+/// 只哈希公开数据（节点名、Sec-WebSocket-Key 之类）的可省——secure_zero 是编译器不能优化掉的
+/// 逐字节 volatile 写，整个 digest_ctx 约 240 字节，摊到每请求路径上并不便宜。
 /// </summary>
 /// <param name="digest">digest_ctx</param>
 void digest_free(digest_ctx *digest);
@@ -65,7 +66,8 @@ void digest_update(digest_ctx *digest, const void *data, size_t lens);
 /// 计算hash
 /// </summary>
 /// <param name="digest">digest_ctx</param>
-/// <param name="hash">hash, hash[DG_BLOCK_SIZE]</param>
+/// <param name="hash">输出缓冲，容量须 >= digest_init 所选算法的输出长度（即 digest_size 的返回值）；
+/// 算法在编译期不确定时按 DG_BLOCK_SIZE 给，那是所有支持算法里最长的一个</param>
 /// <returns>长度。返回后上下文已自动复位到初始状态，可直接开始下一条消息（无需再调 digest_reset）</returns>
 size_t digest_final(digest_ctx *digest, char *hash);
 /// <summary>

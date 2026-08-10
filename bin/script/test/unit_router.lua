@@ -172,9 +172,17 @@ runner.run("unit_router", function(t)
     -- 1.12 根路径 /
     do
         local r = Route.new()
-        r:get("/", function(ctx) ctx:text(200, "root") end)
+        local got
+        r:get("/", function(ctx) got = ctx.path; ctx:text(200, "root") end)
         t:eq(200,    (dispatch(r, "GET", "/") or {}).code, "root / matches")
         t:eq("root", (dispatch(r, "GET", "/") or {}).body, "root / body")
+        -- "/" 的段全是空段，C 侧压完 npath 归零，url_reorg_path 只吐得出空串；
+        -- ctx.path 仍须是 "/" 全靠绑定层 _lrouter_push_url 的 npath==0 分支兜住
+        t:eq("/", got, "root / 的 ctx.path")
+        -- "//" 同样压成 0 段，命中同一条路由、走同一个分支
+        got = nil
+        t:eq(200, (dispatch(r, "GET", "//") or {}).code, "// 也命中根路由")
+        t:eq("/", got, "// 的 ctx.path 也是 /")
     end
 
     -- 1.13 %2F 不当分隔符(A3):段内 %2F 解成字面 '/', 不重新分段

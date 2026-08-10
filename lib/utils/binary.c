@@ -59,6 +59,23 @@ static inline void _binary_expand(binary_ctx *ctx, size_t size) {
         REALLOC(ctx->data, ctx->data, ctx->size);
     }
 }
+// 追加 lens 字节到末尾。reserve 是本次除 lens 外还要一次扩够的容量,给 binary_set_string 的结尾 NUL 用,
+// 分两次扩容会在容量刚好卡住时多 REALLOC 一趟。
+// buf 允许指向 ctx 自己的缓冲:扩容的 REALLOC 会把它搬走,所以先换算成下标,拷贝也随之改走 memmove。
+// 判定走 uintptr_t 减法而非指针关系比较:buf 多数时候与 ctx->data 不属同一对象,直接比 C99 §6.5.8p5 未定义,
+// -O2 -flto 下允许被折成恒假、把 memmove 分支整个删掉。无符号回绕让 buf 在缓冲之前时也自然落到界外
+static inline void _binary_append(binary_ctx *ctx, const char *buf, size_t lens, size_t reserve) {
+    uintptr_t aoff = (uintptr_t)buf - (uintptr_t)ctx->data;
+    if (NULL != ctx->data
+        && aoff < ctx->size) {
+        _binary_expand(ctx, lens + reserve);
+        memmove(ctx->data + ctx->offset, ctx->data + aoff, lens);
+    } else {
+        _binary_expand(ctx, lens + reserve);
+        memcpy(ctx->data + ctx->offset, buf, lens);
+    }
+    ctx->offset += lens;
+}
 void binary_set_int8(binary_ctx *ctx, int8_t val) {
     _binary_expand(ctx, sizeof(val));
     (ctx->data + ctx->offset)[0] = val;
@@ -93,10 +110,7 @@ void binary_set_string(binary_ctx *ctx, const char *buf) {
     if (NULL == buf) {
         return;
     }
-    size_t lens = strlen(buf);
-    _binary_expand(ctx, lens + 1);
-    memcpy(ctx->data + ctx->offset, buf, lens);
-    ctx->offset += lens;
+    _binary_append(ctx, buf, strlen(buf), 1);
     ctx->data[ctx->offset] = '\0';
     ctx->offset++;
 }
@@ -104,9 +118,7 @@ void binary_set_binary(binary_ctx *ctx, const char *buf, size_t lens) {
     if (NULL == buf || 0 == lens) {
         return;
     }
-    _binary_expand(ctx, lens);
-    memcpy(ctx->data + ctx->offset, buf, lens);
-    ctx->offset += lens;
+    _binary_append(ctx, buf, lens, 0);
 }
 void binary_set_fill(binary_ctx *ctx, char val, size_t lens) {
     _binary_expand(ctx, lens);

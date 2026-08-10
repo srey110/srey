@@ -4,26 +4,23 @@
 
 void cipher_init(cipher_ctx *cipher, engine_type engine, cipher_model model,
     const char *key, size_t klens, int32_t keybits, int32_t encrypt) {
+    ZERO(cipher, sizeof(cipher_ctx));
     cipher->encrypt = encrypt;
     cipher->model = model;
     cipher->padding = NoPadding;
-    ZERO(cipher->iv, sizeof(cipher->iv));
-    ZERO(cipher->cur_iv, sizeof(cipher->cur_iv));
     int32_t fwdkey = (cipher->encrypt
         || CFB == cipher->model
         || OFB == cipher->model
         || CTR == cipher->model);
     if (AES == engine) {
         cipher->block_lens = AES_BLOCK_SIZE;
-        cipher->cur_ctx = &cipher->eng_ctx.aes;
         cipher->_cipher = (_cipher_cb)aes_crypt;
-        aes_init(cipher->cur_ctx, key, klens, keybits, fwdkey);
+        aes_init(&cipher->eng_ctx.aes, key, klens, keybits, fwdkey);
         return;
     }
     cipher->block_lens = DES_BLOCK_SIZE;
-    cipher->cur_ctx = &cipher->eng_ctx.des;
     cipher->_cipher = (_cipher_cb)des_crypt;
-    des_init(cipher->cur_ctx, key, klens, DES3 == engine, fwdkey);
+    des_init(&cipher->eng_ctx.des, key, klens, DES3 == engine, fwdkey);
 }
 void cipher_free(cipher_ctx *cipher) {
     secure_zero(cipher, sizeof(cipher_ctx));
@@ -101,24 +98,24 @@ static void _cipher_inc_iv(uint8_t *iv, int32_t block_lens) {
 }
 // ECB 模式：直接对数据块进行加解密
 static inline void *_cipher_ecb_model(cipher_ctx *cipher, const void *data) {
-    return (void *)cipher->_cipher(cipher->cur_ctx, data);
+    return (void *)cipher->_cipher(&cipher->eng_ctx, data);
 }
 // CBC 模式：加密时先与 IV 异或再加密，解密时先解密再与 IV 异或
 static inline void *_cipher_cbc_model(cipher_ctx *cipher, const void *data) {
     if (cipher->encrypt) {
         _cipher_xor_data(cipher, data, cipher->cur_iv, cipher->block_lens);
-        void *en = (void *)cipher->_cipher(cipher->cur_ctx, cipher->xor_data);
+        void *en = (void *)cipher->_cipher(&cipher->eng_ctx, cipher->xor_data);
         memcpy(cipher->cur_iv, en, cipher->block_lens);
         return en;
     }
-    void *de = (void *)cipher->_cipher(cipher->cur_ctx, data);
+    void *de = (void *)cipher->_cipher(&cipher->eng_ctx, data);
     _cipher_xor_data(cipher, de, cipher->cur_iv, cipher->block_lens);
     memcpy(cipher->cur_iv, data, cipher->block_lens);
     return (void *)cipher->xor_data;
 }
 // CFB 模式：加密 IV 得到密钥流，与数据异或；移位寄存器更新为密文块
 static inline void *_cipher_cfb_model(cipher_ctx *cipher, const void *data, size_t lens) {
-    void *en = (void *)cipher->_cipher(cipher->cur_ctx, cipher->cur_iv);
+    void *en = (void *)cipher->_cipher(&cipher->eng_ctx, cipher->cur_iv);
     _cipher_xor_data(cipher, data, en, lens);
     if (lens == cipher->block_lens) {
         if (cipher->encrypt) {
@@ -131,14 +128,14 @@ static inline void *_cipher_cfb_model(cipher_ctx *cipher, const void *data, size
 }
 // OFB 模式：将数据与加密后的 IV 异或，加解密共用同一逻辑
 static inline void *_cipher_ofb_model(cipher_ctx *cipher, const void *data, size_t lens) {
-    void *en = (void *)cipher->_cipher(cipher->cur_ctx, cipher->cur_iv);
+    void *en = (void *)cipher->_cipher(&cipher->eng_ctx, cipher->cur_iv);
     _cipher_xor_data(cipher, data, en, lens);
     memcpy(cipher->cur_iv, en, cipher->block_lens);
     return (void *)cipher->xor_data;
 }
 // CTR 模式：加密计数器后与数据异或，并自增计数器
 static inline void *_cipher_ctr_model(cipher_ctx *cipher, const void *data, size_t lens) {
-    void *en = (void *)cipher->_cipher(cipher->cur_ctx, cipher->cur_iv);
+    void *en = (void *)cipher->_cipher(&cipher->eng_ctx, cipher->cur_iv);
     _cipher_xor_data(cipher, data, en, lens);
     _cipher_inc_iv(cipher->cur_iv, (int32_t)cipher->block_lens);
     return (void *)cipher->xor_data;

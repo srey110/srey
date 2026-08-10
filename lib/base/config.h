@@ -3,7 +3,7 @@
 
 #include "base/os.h"
 
-//是否启用内存检测
+//是否启用内存检测，开发环境监测是否有内存泄漏，可与MEMORY_TRACE配合使用
 #define MEMORY_CHECK        1
 //是否追踪分配调用栈,退出时 dump 未释放块的 backtrace(需 MEMORY_CHECK 同时为 1,有性能开销)
 #define MEMORY_TRACE        0

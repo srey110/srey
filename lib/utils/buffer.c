@@ -666,7 +666,9 @@ int32_t buffer_search(buffer_ctx *ctx, const int32_t ncs,
     } else {
         end++;
     }
-    if (start + wlens > end) {
+    // 拆两步比,start + wlens 在 start 接近 SIZE_MAX 时会回绕
+    if (start >= end
+        || wlens > end - start) {
         return ERR_FAILED;
     }
     chr_func chr;

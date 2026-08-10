@@ -289,7 +289,10 @@ void bson_append_minkey(bson_ctx *bson, const char *key);
 /// <param name="key">字段名</param>
 void bson_append_maxkey(bson_ctx *bson, const char *key);
 /// <summary>
-/// 初始化迭代器，绑定到指定 bson_ctx
+/// 初始化迭代器，绑定到指定 bson_ctx。
+/// 会就地改写 bson->doc.offset（先归零再推过 4 字节长度前缀），而 BSON_DOC_LENS 取的就是 offset——
+/// 写入模式的 bson 一旦建过 iter，它就不再是文档长度了。需要两者兼得的先把 data/lens 取走，
+/// 或像 bson_tostring 那样自行存取 offset
 /// </summary>
 /// <param name="iter">bson_iter</param>
 /// <param name="bson">bson_ctx</param>

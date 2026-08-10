@@ -2,7 +2,10 @@
 #include "crypt/padding.h"
 #include "utils/utils.h"
 
-#define FULL_UNROLL                                                    // 启用循环完全展开以提升性能
+// 轮函数是否完全展开：1 展开(快、代码大)，0 用循环(小、慢)，可由构建侧 -DFULL_UNROLL=0 覆盖
+#ifndef FULL_UNROLL
+#define FULL_UNROLL 1
+#endif
 #define KEYLENGTH(keybits) ((keybits) / 8)                            // 将密钥位数转换为字节数
 // 从字节数组大端读取 uint32
 #define GETU32(plaintext) (((uint32_t)(plaintext)[0] << 24) ^ \
@@ -797,14 +800,14 @@ static int32_t _aes_key_setup_decrypt(const uint8_t *key, int32_t keybits, uint3
 // AES 核心加密，将 16 字节明文加密为密文
 static void _aes_encrypt(const uint32_t *rk, int32_t nrounds, const uint8_t *plaintext, uint8_t ciphertext[16]) {
     uint32_t s0, s1, s2, s3, t0, t1, t2, t3;
-#ifndef FULL_UNROLL
+#if !FULL_UNROLL
     int32_t r;
 #endif
     s0 = GETU32(plaintext) ^ rk[0];
     s1 = GETU32(plaintext + 4) ^ rk[1];
     s2 = GETU32(plaintext + 8) ^ rk[2];
     s3 = GETU32(plaintext + 12) ^ rk[3];
-#ifdef FULL_UNROLL
+#if FULL_UNROLL
     // 第 1 轮:
     t0 = te0[s0 >> 24] ^ te1[(s1 >> 16) & 0xff] ^ te2[(s2 >> 8) & 0xff] ^ te3[s3 & 0xff] ^ rk[4];
     t1 = te0[s1 >> 24] ^ te1[(s2 >> 16) & 0xff] ^ te2[(s3 >> 8) & 0xff] ^ te3[s0 & 0xff] ^ rk[5];
@@ -952,14 +955,14 @@ static void _aes_encrypt(const uint32_t *rk, int32_t nrounds, const uint8_t *pla
 // AES 核心解密，将 16 字节密文解密为明文
 static void _aes_decrypt(const uint32_t *rk, int32_t nrounds, const uint8_t *ciphertext, uint8_t plaintext[16]) {
     uint32_t s0, s1, s2, s3, t0, t1, t2, t3;
-#ifndef FULL_UNROLL
+#if !FULL_UNROLL
     int32_t r;
 #endif
     s0 = GETU32(ciphertext) ^ rk[0];
     s1 = GETU32(ciphertext + 4) ^ rk[1];
     s2 = GETU32(ciphertext + 8) ^ rk[2];
     s3 = GETU32(ciphertext + 12) ^ rk[3];
-#ifdef FULL_UNROLL
+#if FULL_UNROLL
     // 第 1 轮:
     t0 = td0[s0 >> 24] ^ td1[(s3 >> 16) & 0xff] ^ td2[(s2 >> 8) & 0xff] ^ td3[s1 & 0xff] ^ rk[4];
     t1 = td0[s1 >> 24] ^ td1[(s0 >> 16) & 0xff] ^ td2[(s3 >> 8) & 0xff] ^ td3[s2 & 0xff] ^ rk[5];

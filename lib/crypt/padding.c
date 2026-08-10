@@ -14,6 +14,8 @@ void _padding_data(padding_model padding, const void *data, size_t dlens, uint8_
     }
     size_t remain = reqlens - dlens;
     switch (padding) {
+    case NoPadding:
+        break;// 有意不动填充区,保持调用方原样
     case ZeroPadding:
         ZERO(output, remain);
         break;
@@ -27,8 +29,6 @@ void _padding_data(padding_model padding, const void *data, size_t dlens, uint8_
     case ANSIX923:
         ZERO(output, remain - 1);
         output[remain - 1] = (uint8_t)remain;
-        break;
-    default:
         break;
     }
 }

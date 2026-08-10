@@ -17,7 +17,8 @@ int32_t varint_encode_mqtt(uint32_t value, char buf[4]);
 /// </summary>
 /// <param name="buf">输入缓冲</param>
 /// <param name="off">起始偏移</param>
-/// <param name="blens">可读字节上限</param>
+/// <param name="blens">可读字节上限，须 &lt;= buffer_size(buf)。本函数按它逐字节 buffer_at，
+/// 传协议自称的长度而非缓冲实际长度时会越界撞断言，不是返回 ERR_FAILED</param>
 /// <param name="value">输出解码值</param>
 /// <returns>占用字节数（1-4）；可读字节不足或越 4 字节未结束返回 ERR_FAILED</returns>
 int32_t varint_decode_mqtt(buffer_ctx *buf, size_t off, size_t blens, size_t *value);

@@ -291,11 +291,10 @@ static int32_t _pgsql_scram_client_first(pgsql_ctx *pg, ev_ctx *ev, const char *
         return ERR_FAILED;
     }
 #if WITH_SSL
-    // PLUS 变体：注入 tls-server-end-point 通道绑定数据
-    if (pg->scram->cbind && pg->tls_cbind_len > 0) {
-        if (ERR_OK != scram_set_cbind(pg->scram, pg->tls_cbind, (size_t)pg->tls_cbind_len)) {
-            return ERR_FAILED;
-        }
+    // 有 tls-server-end-point 就交给 scram：PLUS 机制存下来算 c=，非 PLUS 机制转成 "y,," 报降级
+    if (pg->tls_cbind_len > 0
+        && ERR_OK != scram_set_cbind(pg->scram, pg->tls_cbind, (size_t)pg->tls_cbind_len)) {
+        return ERR_FAILED;
     }
 #endif
     char *first_message = scram_first_message(pg->scram);
@@ -333,8 +332,9 @@ static int32_t _pgsql_scram_client_final(pgsql_ctx *pg, ev_ctx *ev, binary_ctx *
     }
     binary_ctx bwriter;
     pgsql_pack_start(&bwriter, 'p');
-    binary_set_binary(&bwriter, final_message, strlen(final_message));
-    FREE(final_message);
+    size_t mlens = strlen(final_message);
+    binary_set_binary(&bwriter, final_message, mlens);
+    SECURE_FREE(final_message, mlens + 1);
     pgsql_pack_end(&bwriter);
     return ev_send(ev, pg->sk.fd, pg->sk.skid, bwriter.data, bwriter.offset, 0);
 }

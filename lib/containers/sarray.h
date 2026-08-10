@@ -8,7 +8,6 @@ typedef struct array_ctx {
     uint32_t size;        // 当前元素数量
     uint32_t maxsize;     // 当前分配容量
     void    *ptr;         // 数据存储数组
-    void    *tmp;         // array_swap 复用交换缓冲（大小 = elsize）
 }array_ctx;
 /// <summary>
 /// 初始化数组

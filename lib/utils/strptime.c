@@ -641,6 +641,7 @@ char *_strptime(const char *buf, const char *fmt, struct tm *tm) {
         if (neg)
             offs = -offs;
         tm->tm_isdst = 0;/* XXX */
+        /* TM_GMTOFF 本仓库从未定义，offs 到此丢弃，后果见 strtots 声明 */
 #ifdef TM_GMTOFF
         tm->TM_GMTOFF = offs;
 #endif

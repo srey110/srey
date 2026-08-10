@@ -4,6 +4,7 @@
 #define DefMachineBitLen 10      //机器 ID 默认位数
 #define DefSequenceBitLen 12     //自增序列默认位数
 #define DefCustomEpoch 1704067200000llu //默认自定义纪元（2024-01-01 00:00:00 UTC 毫秒时间戳）
+#define SFID_CLOCKBACK_WAIT 1000 //ctx->clockback_wait 的默认值
 
 sfid_ctx *sfid_init(sfid_ctx *ctx, int32_t machineid, int32_t machinebitlen, int32_t sequencebitlen, uint64_t customepoch) {
     ctx->machineid = machineid;
@@ -26,6 +27,7 @@ sfid_ctx *sfid_init(sfid_ctx *ctx, int32_t machineid, int32_t machinebitlen, int
     ctx->timestampshift = ctx->machinebitlen + ctx->sequencebitlen;
     ctx->machineidshift = ctx->sequencebitlen;
     ctx->clockback_warned = 0;
+    ctx->clockback_wait = SFID_CLOCKBACK_WAIT;
     if ((ctx->lasttimestamp >> (63 - ctx->timestampshift)) != 0) {
         return NULL;
     }
@@ -33,46 +35,45 @@ sfid_ctx *sfid_init(sfid_ctx *ctx, int32_t machineid, int32_t machinebitlen, int
 }
 /* sfid_id 无锁设计：每个线程持有独立的 sfid_ctx，禁止多线程共享同一 ctx。
  * lasttimestamp/sequence 字段未加原子保护，属于有意为之——调用方保证单线程访问。*/
+// 时钟回拨时退避一格：首次打印告警，睡 1ms 等时钟追上来。
+// 超过 deadline 返 ERR_FAILED 让调用方放弃——回拨多少就阻塞多少的话，一次跳表能把线程卡住几十分钟。
+// deadline 按时刻算而不是数睡眠次数：MSLEEP(1) 的实际粒度各平台差着十几倍
+static int32_t _sfid_clockback_wait(sfid_ctx *ctx, uint64_t curms, uint64_t *deadline) {
+    if (0 == ctx->clockback_warned) {
+        LOG_ERROR("clock rollback detected: cur=%"PRIu64" last=%"PRIu64" diff=%"PRIu64"ms.",
+                  curms, ctx->lasttimestamp, ctx->lasttimestamp - curms);
+        ctx->clockback_warned = 1;
+    }
+    if (0 == *deadline) {
+        *deadline = nowms() + (uint64_t)ctx->clockback_wait;
+    }
+    if (nowms() >= *deadline) {
+        LOG_ERROR("clock rollback exceeds %dms, give up.", ctx->clockback_wait);
+        ctx->clockback_warned = 0;
+        return ERR_FAILED;
+    }
+    MSLEEP(1);
+    return ERR_OK;
+}
 uint64_t sfid_id(sfid_ctx *ctx) {
     uint64_t id, curms;
+    uint64_t deadline = 0;
     for (;;) {
         curms = nowms() - ctx->customepoch;
         if (curms < ctx->lasttimestamp) {
-            // 时钟回拨：仅首次打印错误，避免高频日志
-            if (0 == ctx->clockback_warned) {
-                LOG_ERROR("clock rollback detected: cur=%"PRIu64" last=%"PRIu64" diff=%"PRIu64"ms.",
-                          curms, ctx->lasttimestamp, ctx->lasttimestamp - curms);
-                ctx->clockback_warned = 1;
+            if (ERR_OK != _sfid_clockback_wait(ctx, curms, &deadline)) {
+                return 0;
             }
-            MSLEEP(1); // 让出 CPU 等待时钟追上 lasttimestamp，避免 busy loop 烧 CPU
             continue;
         } else if (curms == ctx->lasttimestamp) {
             if (ctx->sequence >= ctx->sequencemask) {
-                // 序列号耗尽：自旋等待 ms 跳跃，最长 < 1ms（正常单调时钟下），避免 MSLEEP 在粗粒度时钟下反复短睡眠；
-                // 若自旋期间发生时钟回拨，改走 MSLEEP 让出 CPU 并打日志，不忙等烧核
-                for (;;) {
-                    curms = nowms() - ctx->customepoch;
-                    if (curms > ctx->lasttimestamp) {
-                        break;
-                    }
-                    if (curms < ctx->lasttimestamp) {
-                        if (0 == ctx->clockback_warned) {
-                            LOG_ERROR("clock rollback detected: cur=%"PRIu64" last=%"PRIu64" diff=%"PRIu64"ms.",
-                                      curms, ctx->lasttimestamp, ctx->lasttimestamp - curms);
-                            ctx->clockback_warned = 1;
-                        }
-                        MSLEEP(1);
-                    } else {
-                        CPU_PAUSE();
-                    }
-                }
-                ctx->sequence = 0;
-                ctx->lasttimestamp = curms;
-                break;
-            } else {
-                ctx->sequence++;
-                break;
+                // 序列号耗尽：自旋等 ms 跳变（正常单调时钟下 < 1ms），比 MSLEEP 在粗粒度时钟上
+                // 反复短睡强。回外层重判，ms 跳变与时钟回拨两条出口都复用外层已有的分支
+                CPU_PAUSE();
+                continue;
             }
+            ctx->sequence++;
+            break;
         } else {
             ctx->sequence = 0;
             ctx->lasttimestamp = curms;

@@ -250,11 +250,12 @@ static void _smtp_ehlo(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, buf
 // 对字符串进行 Base64 编码并追加 CRLF，构造 AUTH LOGIN 认证命令行
 static char *_smtp_loin_cmd(const char *up) {
     size_t lens = strlen(up);
+    size_t b64size = B64EN_SIZE(lens);//擦除按分配量算,bs64_encode 的返回值不含结尾 NUL
     char *b64;
-    CALLOC(b64, 1, B64EN_SIZE(lens));
-    lens = bs64_encode(up, lens, b64);
+    CALLOC(b64, 1, b64size);
+    bs64_encode(up, lens, b64);
     char *cmd = format_va("%s%s", b64, FLAG_CRLF);
-    SECURE_FREE(b64, lens);
+    SECURE_FREE(b64, b64size);
     return cmd;
 }
 // AUTH LOGIN 认证阶段：解析服务端 334 挑战，按 "Username:"/"Password:" 顺序发送 Base64 凭据
@@ -337,11 +338,12 @@ static void _smtp_plain(smtp_ctx *smtp, ev_ctx *ev, SOCKET fd, uint64_t skid, bu
     memcpy(enbuf + 1, smtp->user, ulens);
     memcpy(enbuf + 1 + ulens + 1, smtp->psw, plens);
     char *b64;
-    CALLOC(b64, 1, B64EN_SIZE(enlens));
-    size_t b64lens = bs64_encode(enbuf, enlens, b64);
+    size_t b64size = B64EN_SIZE(enlens);
+    CALLOC(b64, 1, b64size);
+    bs64_encode(enbuf, enlens, b64);
     SECURE_FREE(enbuf, enlens);
     char *cmd = format_va("%s%s", b64, FLAG_CRLF);
-    SECURE_FREE(b64, b64lens);
+    SECURE_FREE(b64, b64size);
     ud->status = AUTH_CHECK;
     if (ERR_OK != ev_send(ev, fd, skid, cmd, strlen(cmd), 0)) {
         BIT_SET(*status, PROT_ERROR);

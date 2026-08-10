@@ -77,13 +77,13 @@ void binary_set_float(binary_ctx *ctx, float val, int32_t islittle);
 /// <param name="islittle">1 小端序列 0大端序列</param>
 void binary_set_double(binary_ctx *ctx, double val, int32_t islittle);
 /// <summary>
-/// 写入以'\0'结束的字符串
+/// 写入以'\0'结束的字符串。buf 允许指向本 ctx 自己的缓冲，规则同 binary_set_binary
 /// </summary>
 /// <param name="ctx">binary_ctx</param>
 /// <param name="buf">值</param>
 void binary_set_string(binary_ctx *ctx, const char *buf);
 /// <summary>
-/// 写入char *
+/// 写入char *。buf 允许指向本 ctx 自己的缓冲：扩容搬走后会自动换算成新地址，重叠也按 memmove 处理
 /// </summary>
 /// <param name="ctx">binary_ctx</param>
 /// <param name="buf">值</param>

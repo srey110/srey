@@ -8,12 +8,23 @@
 #define LOG_FMT "[%s][%s]%s\n"
 #define LOG_INLINE_SIZE 256
 #define LOG_POP_BATCH   128
+#ifdef OS_WIN
+#define LOG_COLOR_SUFFIX ""
+#else
+#define LOG_COLOR_SUFFIX "\033[0m"
+#endif
 
+// 哪个级别配什么颜色只判这一次，两个平台各自负责怎么上色
+typedef enum log_color {
+    LOG_COLOR_NONE = 0,
+    LOG_COLOR_RED,
+    LOG_COLOR_YELLOW
+}log_color;
 typedef struct {
     int32_t lv;
-    char   *msg;                       // 指向 inline_buf 或独立 heap 分配
-    char    time[TIME_LENS];
-    char    inline_buf[LOG_INLINE_SIZE]; // 短消息内嵌，避免 _format_va 第二次 malloc
+    uint64_t ms;// 入队时刻；格式化推迟到日志线程，不占业务线程
+    char *msg;// 指向 inline_buf 或独立 heap 分配
+    char inline_buf[LOG_INLINE_SIZE]; // 短消息内嵌，避免 _format_va 第二次 malloc
 } log_item;
 
 static FILE *_handle = NULL;
@@ -40,56 +51,69 @@ static const char *_log_lvstr(int32_t lv) {
     }
     return "";
 }
-static void _log_write_item(const log_item *item) {
-    if (NULL == _handle) {
+static log_color _log_color_of(int32_t lv) {
+    switch (lv) {
+    case LOGLV_FATAL:
+    case LOGLV_ERROR:
+        return LOG_COLOR_RED;
+    case LOGLV_WARN:
+        return LOG_COLOR_YELLOW;
+    }
+    return LOG_COLOR_NONE;
+}
+// 上色分两半：进字节流的前后缀交给同一次 fprintf 打出去，不进字节流的（Windows 控制台属性）
+// 由 _log_color_begin / _log_color_end 处理。stdio 每次调用只锁一次流，整行必须走一次 fprintf——
+// stdout 不归日志线程独占，PRINT 就是裸 printf，插在转义头与复位码之间会让终端一直停在彩色
 #ifdef OS_WIN
-        switch (item->lv) {
-        case LOGLV_FATAL:
-        case LOGLV_ERROR:
-            if (NULL != _console) {
-                SetConsoleTextAttribute(_console, 0xc);
-            }
-            fprintf(stdout, LOG_FMT, item->time, _log_lvstr(item->lv), item->msg);
-            fflush(stdout);
-            if (NULL != _console) {
-                SetConsoleTextAttribute(_console, _def_console.wAttributes);
-            }
-            break;
-        case LOGLV_WARN:
-            if (NULL != _console) {
-                SetConsoleTextAttribute(_console, 0x6);
-            }
-            fprintf(stdout, LOG_FMT, item->time, _log_lvstr(item->lv), item->msg);
-            fflush(stdout);
-            if (NULL != _console) {
-                SetConsoleTextAttribute(_console, _def_console.wAttributes);
-            }
-            break;
-        default:
-            fprintf(stdout, LOG_FMT, item->time, _log_lvstr(item->lv), item->msg);
-            break;
-        }
+static const char *_log_color_begin(log_color color) {
+    if (NULL != _console) {
+        SetConsoleTextAttribute(_console, LOG_COLOR_RED == color ? 0xc : 0x6);
+    }
+    return "";
+}
+// 控制台属性作用于字节写出去的那一刻，得先把缓冲刷到控制台，再改回默认色
+static void _log_color_end(void) {
+    fflush(stdout);
+    if (NULL != _console) {
+        SetConsoleTextAttribute(_console, _def_console.wAttributes);
+    }
+}
 #else
-        switch (item->lv) {
-        case LOGLV_FATAL:
-        case LOGLV_ERROR:
-            fprintf(stdout, "\033[0;31m"LOG_FMT"\033[0m", item->time, _log_lvstr(item->lv), item->msg);
-            fflush(stdout);
-            break;
-        case LOGLV_WARN:
-            fprintf(stdout, "\033[0;33m"LOG_FMT"\033[0m", item->time, _log_lvstr(item->lv), item->msg);
-            fflush(stdout);
-            break;
-        default:
-            fprintf(stdout, LOG_FMT, item->time, _log_lvstr(item->lv), item->msg);
-            break;
-        }
+static const char *_log_color_begin(log_color color) {
+    return LOG_COLOR_RED == color ? "\033[0;31m" : "\033[0;33m";
+}
+static void _log_color_end(void) {
+    fflush(stdout);
+}
 #endif
-    } else {
-        fprintf(_handle, LOG_FMT, item->time, _log_lvstr(item->lv), item->msg);
+// 唯一的成行出口。时间串在这里才组装：mstostr 里的 localtime_r 要过 libc 的时区锁，
+// N 个业务线程一起写日志就在一把与本程序无关的锁上串起来，所以正常路径推迟到日志线程；
+// 业务线程只在 _log_stderr 那两条兜底上碰得到它。
+// pre/post 是上色前后缀，必须与正文同一次 fprintf 打出去，整行才不会被别的 stdout 写方插断
+static void _log_fprint(FILE *f, const log_item *item, const char *msg,
+                        const char *pre, const char *post) {
+    char time[TIME_LENS];
+    (void)mstostr(item->ms, "%Y-%m-%d %H:%M:%S", time);
+    fprintf(f, "%s"LOG_FMT"%s", pre, time, _log_lvstr(item->lv), msg, post);
+}
+static void _log_write_item(const log_item *item) {
+    if (NULL != _handle) {
+        _log_fprint(_handle, item, item->msg, "", "");
         if (item->lv <= LOGLV_WARN) {
             fflush(_handle);
         }
+        return;
+    }
+    log_color color = _log_color_of(item->lv);
+    const char *pre = "";
+    const char *post = "";
+    if (LOG_COLOR_NONE != color) {
+        pre = _log_color_begin(color);
+        post = LOG_COLOR_SUFFIX;
+    }
+    _log_fprint(stdout, item, item->msg, pre, post);
+    if (LOG_COLOR_NONE != color) {
+        _log_color_end();
     }
 }
 // 对象池 _elclear：归还前释放长消息独立缓冲（短消息走 inline_buf 不分配）
@@ -143,7 +167,7 @@ static void _log_loop(void *arg) {
     //打印日志线程退出
     log_item logexit;
     logexit.lv = LOGLV_INFO;
-    (void)mstostr(nowms(), "%Y-%m-%d %H:%M:%S", logexit.time);
+    logexit.ms = nowms();
     SNPRINTF(logexit.inline_buf, sizeof(logexit.inline_buf),
         "[%s %s %d] %s", __FILENAME__(__FILE__), __FUNCTION__, __LINE__, "log thread exited.");
     logexit.msg = logexit.inline_buf;
@@ -189,6 +213,11 @@ void log_setlv(log_level lv) {
 log_level log_getlv(void) {
     return (log_level)ATOMIC_GET(&_log_lv);
 }
+// stderr 兜底：格式化失败或队列满时走这里，跑在业务线程上，进不了日志线程那条路径
+static void _log_stderr(const log_item *item, const char *msg) {
+    _log_fprint(stderr, item, msg, "", "");
+    fflush(stderr);
+}
 void slog(int32_t lv, const char *fmt, ...) {
     if (lv > (int32_t)ATOMIC_GET(&_log_lv)
         || 0 == ATOMIC_GET(&_running)) {
@@ -196,7 +225,7 @@ void slog(int32_t lv, const char *fmt, ...) {
     }
     log_item *item = (log_item *)pool_pop(&_itempool, NULL, 0);
     item->lv = lv;
-    (void)mstostr(nowms(), "%Y-%m-%d %H:%M:%S", item->time);
+    item->ms = nowms();
     //先尝试写入 inline_buf，短消息（典型场景）至此完成单次 malloc；
     //超长消息再单独 heap 分配，行为与原 _format_va 等价。
     va_list args, args2;
@@ -206,8 +235,7 @@ void slog(int32_t lv, const char *fmt, ...) {
     va_end(args);
     if (rtn < 0) {
         va_end(args2);
-        fprintf(stderr, LOG_FMT, item->time, _log_lvstr(item->lv), fmt);
-        fflush(stderr);
+        _log_stderr(item, fmt);
         pool_push(&_itempool, item, 0);
         return;
     }
@@ -220,8 +248,7 @@ void slog(int32_t lv, const char *fmt, ...) {
         rtn = vsnprintf(heap_msg, (size_t)rtn + 1, fmt, args2);
         va_end(args2);
         if (rtn < 0) {
-            fprintf(stderr, LOG_FMT, item->time, _log_lvstr(item->lv), fmt);
-            fflush(stderr);
+            _log_stderr(item, fmt);
             FREE(heap_msg);
             pool_push(&_itempool, item, 0);
             return;
@@ -230,8 +257,7 @@ void slog(int32_t lv, const char *fmt, ...) {
     }
     //队列满时不阻塞业务线程，直接丢弃并写 stderr 兜底
     if (ERR_OK != fsqu_trypush(&_que, &item)) {
-        fprintf(stderr, LOG_FMT, item->time, _log_lvstr(item->lv), item->msg);
-        fflush(stderr);
+        _log_stderr(item, item->msg);
         pool_push(&_itempool, item, 0);
         return;
     }

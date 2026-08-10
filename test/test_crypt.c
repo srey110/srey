@@ -263,6 +263,14 @@ static void _scram_inject_nonce(scram_ctx *cli, const char *nonce, const char *u
 }
 
 /* 执行完整双端握手，cli/srv 使用独立的 cbind 数据（用于测试不匹配情形）*/
+/* scram_final_message 的返回值含 ClientProof，scram.h 声明处要求擦除后释放、不可裸 FREE。
+ * 与 scram.c 的 _scram_free_str 同形：自守 NULL，放在 goto out 的收尾里也安全。
+ * first_message 只有用户名和 nonce，不走这里，仍用裸 FREE */
+static void _scram_free_msg(char **pmsg) {
+    if (NULL != *pmsg) {
+        SECURE_FREE(*pmsg, strlen(*pmsg) + 1);
+    }
+}
 static int _scram_handshake(const char *method,
     const char *pwd_cli, const char *pwd_srv,
     const char *cbind_cli, const char *cbind_srv, size_t cbind_len) {
@@ -294,11 +302,11 @@ static int _scram_handshake(const char *method,
 
     clf = scram_final_message(cli);
     if (!clf || ERR_OK != scram_check_final_message(srv, clf, strlen(clf))) goto out;
-    FREE(clf); clf = NULL;
+    _scram_free_msg(&clf);
 
     svf = scram_final_message(srv);
     if (!svf || ERR_OK != scram_check_final_message(cli, svf, strlen(svf))) goto out;
-    FREE(svf); svf = NULL;
+    _scram_free_msg(&svf);
 
     /* 握手完成后的期望状态：
      * - 客户端已验证服务端签名 → SCRAM_REMOTE_FINAL
@@ -309,7 +317,8 @@ static int _scram_handshake(const char *method,
     rtn = (SCRAM_REMOTE_FINAL == cli->status && SCRAM_LOCAL_FINAL == srv->status)
           ? ERR_OK : ERR_FAILED;
 out:
-    FREE(cf); FREE(sf); FREE(clf); FREE(svf);
+    FREE(cf); FREE(sf);
+    _scram_free_msg(&clf); _scram_free_msg(&svf);
     scram_free(cli);
     scram_free(srv);
     return rtn;
@@ -375,7 +384,7 @@ static void test_scram_rfc_vectors(CuTest *tc) {
         char *cli_final = scram_final_message(cli);
         CuAssertPtrNotNull(tc, cli_final);
         CuAssertStrEquals(tc, exp_cli_final, cli_final);
-        FREE(cli_final);
+        _scram_free_msg(&cli_final);
 
         CuAssertIntEquals(tc, ERR_OK,
             scram_check_final_message(cli, (char *)srv_final, strlen(srv_final)));
@@ -409,7 +418,7 @@ static void test_scram_rfc_vectors(CuTest *tc) {
         char *cli_final = scram_final_message(cli);
         CuAssertPtrNotNull(tc, cli_final);
         CuAssertStrEquals(tc, exp_cli_final, cli_final);
-        FREE(cli_final);
+        _scram_free_msg(&cli_final);
 
         CuAssertIntEquals(tc, ERR_OK,
             scram_check_final_message(cli, (char *)srv_final, strlen(srv_final)));
@@ -457,6 +466,54 @@ static void test_scram_plus(CuTest *tc) {
     }
 }
 
+/* PLUS 变体漏调 scram_set_cbind 时不能按"绑定到零字节"算：两端都缺数据的话，
+ * 两边算出的 c= 反而对得上，握手照常成功，双方都以为通道绑定生效 */
+static void test_scram_plus_requires_cbind(CuTest *tc) {
+    const char cbind[32] = {
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+        0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
+        0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
+        0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20
+    };
+
+    /* 两端都没设：改前这一条会握手成功 */
+    CuAssertTrue(tc, ERR_OK != _scram_handshake(
+        "SCRAM-SHA-256-PLUS", "pass", "pass", NULL, NULL, 0));
+    /* 只有一端设，同样必须失败 */
+    CuAssertTrue(tc, ERR_OK != _scram_handshake(
+        "SCRAM-SHA-256-PLUS", "pass", "pass", cbind, NULL, sizeof(cbind)));
+    CuAssertTrue(tc, ERR_OK != _scram_handshake(
+        "SCRAM-SHA-256-PLUS", "pass", "pass", NULL, cbind, sizeof(cbind)));
+
+    /* 客户端缺数据时在自己的 final 就返 NULL，不用等服务端算出失配 */
+    {
+        char salt[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
+        scram_ctx *cli = scram_init("SCRAM-SHA-256-PLUS", 1);
+        scram_ctx *srv = scram_init("SCRAM-SHA-256-PLUS", 0);
+        CuAssertPtrNotNull(tc, cli);
+        CuAssertPtrNotNull(tc, srv);
+        scram_set_user(cli, "user", 4);
+        scram_set_pwd(cli, "pass", 4);
+        scram_set_pwd(srv, "pass", 4);
+        scram_set_salt(srv, salt, sizeof(salt));
+        scram_set_iter(srv, 4096);
+        scram_set_cbind(srv, cbind, sizeof(cbind));
+
+        char *cf = scram_first_message(cli);
+        CuAssertPtrNotNull(tc, cf);
+        CuAssertIntEquals(tc, ERR_OK, scram_parse_first_message(srv, cf, strlen(cf)));
+        char *sf = scram_first_message(srv);
+        CuAssertPtrNotNull(tc, sf);
+        CuAssertIntEquals(tc, ERR_OK, scram_parse_first_message(cli, sf, strlen(sf)));
+        CuAssertTrue(tc, NULL == scram_final_message(cli));
+
+        FREE(cf);
+        FREE(sf);
+        scram_free(cli);
+        scram_free(srv);
+    }
+}
+
 // 伪造只有 i= 值不同的服务端首条消息（nonce 前缀取自客户端以绕过 nonce 校验），
 // 返回 scram_parse_first_message 的结果；outiter 非空时回带解析后的迭代轮数
 static int32_t _scram_parse_iter(CuTest *tc, const char *iter, int32_t *outiter) {
@@ -482,10 +539,8 @@ static int32_t _scram_parse_iter(CuTest *tc, const char *iter, int32_t *outiter)
  * RFC 5802 §5 规定客户端支持 channel binding 但未见到 -PLUS 通告时必须发 "y"，
  * 此时服务端应正常继续；而 c= 是 base64(GS2头)，服务端必须按对端实际发来的头重算，
  * 若按自身配置的 "n,," 重算则 c= 永不匹配，且失败与密码错误不可区分。
- * 本仓客户端只会发 "n,,"，故用两处一字节改写模拟第三方 y 客户端：首消息的 flag 字节
- * 与 cli->gs2_header[0]。"n,," 与 "y,," 等长，local_first_message 存的 bare 部分不受影响，
- * 两端的 AuthMessage 仍然一致。若 _scram_cbind_b64 被改回按 cbind 选常量，
- * 服务端会算出 base64("n,,") 而与客户端的 base64("y,,") 失配，本用例即失败
+ * 若 _scram_cbind_b64 被改回按 cbind 选常量，服务端会算出 base64("n,,")
+ * 而与客户端的 base64("y,,") 失配，本用例即失败
  * ----------------------------------------------------------------------- */
 static void test_scram_gs2_y_handshake(CuTest *tc) {
     char salt[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
@@ -498,13 +553,14 @@ static void test_scram_gs2_y_handshake(CuTest *tc) {
     scram_set_pwd(srv, "pencil", 6);
     scram_set_salt(srv, salt, sizeof(salt));
     scram_set_iter(srv, 4096);
+    // 非 PLUS 客户端拿到绑定材料 → 转 CAPABLE，GS2 头发 "y,,"
+    char cb[32] = { 0x5a };
+    CuAssertIntEquals(tc, ERR_OK, scram_set_cbind(cli, cb, sizeof(cb)));
 
     char *clf = scram_first_message(cli);
     CuAssertPtrNotNull(tc, clf);
-    CuAssertIntEquals(tc, 'n', clf[0]);
-    CuAssertStrEquals(tc, "n,,", cli->gs2_header);
-    clf[0] = 'y';
-    cli->gs2_header[0] = 'y';
+    CuAssertIntEquals(tc, 'y', clf[0]);
+    CuAssertStrEquals(tc, "y,,", cli->gs2_header);
     CuAssertIntEquals(tc, ERR_OK, scram_parse_first_message(srv, clf, strlen(clf)));
     CuAssertStrEquals(tc, "y,,", srv->gs2_header);
 
@@ -522,10 +578,81 @@ static void test_scram_gs2_y_handshake(CuTest *tc) {
 
     FREE(clf);
     FREE(svf);
-    FREE(clfin);
-    FREE(svfin);
+    _scram_free_msg(&clfin);
+    _scram_free_msg(&svfin);
     scram_free(cli);
     scram_free(srv);
+}
+
+// scram_set_cbind 的三态分流：PLUS 存数据、非 PLUS 转 CAPABLE、空数据一律拒；
+// 以及非 PLUS 那条的状态守卫——首条消息一发 GS2 头就定了，再设来不及
+static void test_scram_cbind_modes(CuTest *tc) {
+    char cb[8] = { 7, 7, 7, 7, 7, 7, 7, 7 };
+
+    // PLUS：数据存进 cbind_data，姿态不变
+    scram_ctx *plus = scram_init("SCRAM-SHA-256-PLUS", 1);
+    CuAssertPtrNotNull(tc, plus);
+    CuAssertIntEquals(tc, SCRAM_CB_PLUS, plus->cbind);
+    CuAssertIntEquals(tc, ERR_FAILED, scram_set_cbind(plus, NULL, sizeof(cb)));
+    CuAssertIntEquals(tc, ERR_FAILED, scram_set_cbind(plus, cb, 0));
+    CuAssertTrue(tc, NULL == plus->cbind_data);
+    CuAssertIntEquals(tc, ERR_OK, scram_set_cbind(plus, cb, sizeof(cb)));
+    CuAssertIntEquals(tc, 8, plus->cbind_len);
+    CuAssertIntEquals(tc, SCRAM_CB_PLUS, plus->cbind);
+    scram_free(plus);
+
+    // 非 PLUS：数据用不上但姿态升到 CAPABLE，两个角色都适用（服务端靠它拒 "y"）
+    scram_ctx *cli = scram_init("SCRAM-SHA-256", 1);
+    CuAssertPtrNotNull(tc, cli);
+    CuAssertIntEquals(tc, SCRAM_CB_NONE, cli->cbind);
+    CuAssertIntEquals(tc, ERR_OK, scram_set_cbind(cli, cb, sizeof(cb)));
+    CuAssertIntEquals(tc, SCRAM_CB_CAPABLE, cli->cbind);
+    CuAssertTrue(tc, NULL == cli->cbind_data);// 数据没被存
+    scram_free(cli);
+
+    scram_ctx *srv = scram_init("SCRAM-SHA-256", 0);
+    CuAssertPtrNotNull(tc, srv);
+    CuAssertIntEquals(tc, ERR_OK, scram_set_cbind(srv, cb, sizeof(cb)));
+    CuAssertIntEquals(tc, SCRAM_CB_CAPABLE, srv->cbind);
+    scram_free(srv);
+
+    // 状态守卫：首条消息发过之后再设无效，默认仍是 "n,,"
+    scram_ctx *late = scram_init("SCRAM-SHA-256", 1);
+    CuAssertPtrNotNull(tc, late);
+    scram_set_user(late, "user", 4);
+    scram_set_pwd(late, "pass", 4);
+    char *first = scram_first_message(late);
+    CuAssertPtrNotNull(tc, first);
+    CuAssertIntEquals(tc, 'n', first[0]);
+    CuAssertStrEquals(tc, "n,,", late->gs2_header);
+    CuAssertIntEquals(tc, ERR_FAILED, scram_set_cbind(late, cb, sizeof(cb)));
+    CuAssertIntEquals(tc, SCRAM_CB_NONE, late->cbind);
+    FREE(first);
+    scram_free(late);
+}
+
+// RFC 5802 §6：本端也通告了 -PLUS（CAPABLE）却收到 "y"，说明通告在路上被剥，必须拒绝握手。
+// 对照组是同一条消息发给未通告 -PLUS 的服务端（NONE），那里 "y" 是合法的、须照常放行
+static void test_scram_server_reject_downgrade(CuTest *tc) {
+    char cb[32] = { 0x5a };
+    const char *ymsg = "y,,n=user,r=abcdefghijklmnop";
+    size_t ylens = strlen(ymsg);
+    char buf[64];
+
+    scram_ctx *plusadv = scram_init("SCRAM-SHA-256", 0);
+    CuAssertPtrNotNull(tc, plusadv);
+    CuAssertIntEquals(tc, ERR_OK, scram_set_cbind(plusadv, cb, sizeof(cb)));
+    memcpy(buf, ymsg, ylens + 1);
+    CuAssertIntEquals(tc, ERR_FAILED, scram_parse_first_message(plusadv, buf, ylens));
+    scram_free(plusadv);
+
+    scram_ctx *plain = scram_init("SCRAM-SHA-256", 0);
+    CuAssertPtrNotNull(tc, plain);
+    CuAssertIntEquals(tc, SCRAM_CB_NONE, plain->cbind);
+    memcpy(buf, ymsg, ylens + 1);
+    CuAssertIntEquals(tc, ERR_OK, scram_parse_first_message(plain, buf, ylens));
+    CuAssertStrEquals(tc, "y,,", plain->gs2_header);
+    scram_free(plain);
 }
 
 // 服务端解析 client-first-message 须按实际内容定位 GS2 头，而不是按自身配置推算长度：
@@ -599,13 +726,13 @@ static void test_scram_failures(CuTest *tc) {
         char *sf = scram_first_message(srv);
         scram_parse_first_message(cli, sf, strlen(sf)); FREE(sf);
         char *clf = scram_final_message(cli);
-        scram_check_final_message(srv, clf, strlen(clf)); FREE(clf);
+        scram_check_final_message(srv, clf, strlen(clf)); _scram_free_msg(&clf);
 
         char *svf = scram_final_message(srv);
         CuAssertPtrNotNull(tc, svf);
         svf[2]++; /* 篡改签名首字节 */
         CuAssertTrue(tc, ERR_OK != scram_check_final_message(cli, svf, strlen(svf)));
-        FREE(svf);
+        _scram_free_msg(&svf);
         scram_free(cli);
         scram_free(srv);
     }
@@ -623,10 +750,11 @@ static void test_scram_failures(CuTest *tc) {
         scram_free(cli);
     }
 
-    /* 非 PLUS 变体调用 scram_set_cbind 应被忽略 */
+    /* 非 PLUS 变体调用 scram_set_cbind：数据不入 cbind_data，只把姿态升到 CAPABLE */
     {
         scram_ctx *cli = scram_init("SCRAM-SHA-256", 1);
-        scram_set_cbind(cli, "binddata", 8);
+        CuAssertIntEquals(tc, ERR_OK, scram_set_cbind(cli, "binddata", 8));
+        CuAssertIntEquals(tc, SCRAM_CB_CAPABLE, cli->cbind);
         CuAssertTrue(tc, NULL == cli->cbind_data);
         scram_free(cli);
     }
@@ -739,9 +867,11 @@ static void test_scram_setters(CuTest *tc) {
         scram_free(srv);
     }
     {
+        // 非 PLUS 不再是"被拒"，而是转成 CAPABLE；三态分流细节见 test_scram_cbind_modes
         scram_ctx *std = scram_init("SCRAM-SHA-256", 1);
         char cb[4] = { 7, 7, 7, 7 };
-        CuAssertIntEquals(tc, ERR_FAILED, scram_set_cbind(std, cb, sizeof(cb)));
+        CuAssertIntEquals(tc, ERR_OK, scram_set_cbind(std, cb, sizeof(cb)));
+        CuAssertIntEquals(tc, SCRAM_CB_CAPABLE, std->cbind);
         CuAssertTrue(tc, NULL == std->cbind_data);
         scram_free(std);
         scram_ctx *plus = scram_init("SCRAM-SHA-256-PLUS", 1);
@@ -799,7 +929,7 @@ static void test_scram_pwd_required(CuTest *tc) {
     CuAssertTrue(tc, ERR_OK != scram_check_final_message(srv, clfin, strlen(clfin)));
     FREE(clf);
     FREE(svf);
-    FREE(clfin);
+    _scram_free_msg(&clfin);
     scram_free(cli);
     scram_free(srv);
 
@@ -1143,6 +1273,50 @@ static void test_md4(CuTest *tc) {
     md4_update(&ctx, "fghij", 5);
     md4_final(&ctx, h2);
     CuAssertTrue(tc, 0 == memcmp(h1, h2, MD4_BLOCK_SIZE));
+}
+
+// md4_update 从"分支判定用 (uint32_t)lens、末尾 memcpy 用完整 size_t"改为全程 size_t 之后的
+// 等价性守卫。真正的溢出要单次喂 >=4GiB 才触发，测不起；这里钉住改写没有动缓冲推进逻辑：
+// 各种切分（不足一块 / 正好一块 / 跨块 / 跨多块 / 尾块不齐）都要与一次性喂入同摘要。
+// 顺带钉住 lens==0 是空操作——改前它落到 memcpy(dst, p, 0)，data 传 NULL 时属 UB
+static void test_md4_update_chunked(CuTest *tc) {
+    uint8_t buf[200];
+    size_t chunks[] = { 1, 7, 63, 64, 65, 100, 199, 200 };
+    char whole[MD4_BLOCK_SIZE], part[MD4_BLOCK_SIZE];
+    md4_ctx ctx;
+    size_t i, off, step;
+
+    for (i = 0; i < sizeof(buf); i++) {
+        buf[i] = (uint8_t)(i * 7 + 1);
+    }
+    md4_init(&ctx);
+    md4_update(&ctx, buf, sizeof(buf));
+    md4_final(&ctx, whole);
+
+    for (i = 0; i < ARRAY_SIZE(chunks); i++) {
+        md4_init(&ctx);
+        off = 0;
+        while (off < sizeof(buf)) {
+            step = chunks[i];
+            if (off + step > sizeof(buf)) {
+                step = sizeof(buf) - off;
+            }
+            md4_update(&ctx, buf + off, step);
+            off += step;
+        }
+        md4_final(&ctx, part);
+        CuAssertTrue(tc, 0 == memcmp(whole, part, MD4_BLOCK_SIZE));
+    }
+
+    // 零长 update 穿插在任意位置都不该改变结果
+    md4_init(&ctx);
+    md4_update(&ctx, NULL, 0);
+    md4_update(&ctx, buf, 64);
+    md4_update(&ctx, buf, 0);
+    md4_update(&ctx, buf + 64, sizeof(buf) - 64);
+    md4_update(&ctx, NULL, 0);
+    md4_final(&ctx, part);
+    CuAssertTrue(tc, 0 == memcmp(whole, part, MD4_BLOCK_SIZE));
 }
 
 // md5 直调 RFC 1321 标准测试向量集
@@ -2111,6 +2285,7 @@ void test_crypt(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_digest);
     SUITE_ADD_TEST(suite, test_md2);
     SUITE_ADD_TEST(suite, test_md4);
+    SUITE_ADD_TEST(suite, test_md4_update_chunked);
     SUITE_ADD_TEST(suite, test_hmac);
     SUITE_ADD_TEST(suite, test_hmac_variants);
     SUITE_ADD_TEST(suite, test_hmac_free);
@@ -2135,8 +2310,11 @@ void test_crypt(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_scram_handshake);
     SUITE_ADD_TEST(suite, test_scram_rfc_vectors);
     SUITE_ADD_TEST(suite, test_scram_plus);
+    SUITE_ADD_TEST(suite, test_scram_plus_requires_cbind);
     SUITE_ADD_TEST(suite, test_scram_gs2_header);
     SUITE_ADD_TEST(suite, test_scram_gs2_y_handshake);
+    SUITE_ADD_TEST(suite, test_scram_cbind_modes);
+    SUITE_ADD_TEST(suite, test_scram_server_reject_downgrade);
     SUITE_ADD_TEST(suite, test_scram_failures);
     SUITE_ADD_TEST(suite, test_scram_setters);
     SUITE_ADD_TEST(suite, test_scram_pwd_required);

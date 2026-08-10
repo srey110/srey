@@ -47,7 +47,7 @@ static void _mongo_format_pwd(mongo_ctx *mongo, char fmtpwd[HEX_ENSIZE(MD5_BLOCK
     md5_ctx md5;
     md5_init(&md5);
     md5_update(&md5, buf, blen);
-    SECURE_FREE(buf, blen);
+    SECURE_FREE(buf, blen + 1);//format_va 分配的是 lens + 1
     md5_final(&md5, hs);
     secure_zero(&md5, sizeof(md5));
     tohex(hs, sizeof(hs), fmtpwd, 1);
@@ -85,7 +85,7 @@ static int32_t _mongo_server_first_message(ev_ctx *ev, mongo_ctx *mongo, mgopack
         return ERR_FAILED;
     }
     void *data = mongo_pack_scram_client_final(mongo, convid, client_final, &size);
-    FREE(client_final);
+    SECURE_FREE(client_final, strlen(client_final) + 1);
     return ev_send(ev, mongo->sk.fd, mongo->sk.skid, data, size, 0);
 }
 // 处理 SCRAM 服务端最终消息：验证服务端签名，确认认证完成

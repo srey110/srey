@@ -13,7 +13,7 @@ typedef enum padding_model {
 /// <summary>
 /// 数据填充
 /// </summary>
-/// <param name="padding">填充模式</param>
+/// <param name="padding">填充模式；NoPadding 只拷贝 data，填充区保持调用方原样不写</param>
 /// <param name="data">需要填充的数据</param>
 /// <param name="dlens">数据长度</param>
 /// <param name="output">输出填充后的数据</param>

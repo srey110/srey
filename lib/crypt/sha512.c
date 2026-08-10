@@ -3,7 +3,9 @@
 
 #define SHA512_BLOCK_LENGTH 128                                                        // SHA-512 输入块长度（字节）
 #define SHA512_SHORT_BLOCK_LENGTH (SHA512_BLOCK_LENGTH - 16)                          // 末尾块长度阈值（留出 128 位存放长度）
-#define SHA512_DIGEST_STRING_LENGTH (SHA512_DIGEST_LENGTH * 2 + 1)                    // 摘要十六进制字符串长度
+// 摘要十六进制字符串长度。原先写的 SHA512_DIGEST_LENGTH 全仓不存在，展开即编译失败；
+// 摘要长度这边叫 SHA512_BLOCK_SIZE（sha512.h），别跟上面输入块长的 SHA512_BLOCK_LENGTH 弄混
+#define SHA512_DIGEST_STRING_LENGTH (SHA512_BLOCK_SIZE * 2 + 1)
 // 64 位大端/小端字节序互转
 #define REVERSE64(w,x) { uint64_t tmp = (w); \
     tmp = (tmp >> 32) | (tmp << 32); \

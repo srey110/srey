@@ -7,28 +7,36 @@
 // 取 256 倍下限即约 100 万轮，最坏约 1 秒 worker 线程 CPU，高于 OWASP 对 PBKDF2-HMAC-SHA256
 // 建议的 60 万，故任何加固过的服务端配置(如 PostgreSQL 的 scram_iterations)都能通过
 #define SCRAM_MAX_ITER  (256 * SCRAM_MIN_ITER)
-/* GS2 头：标准变体不声明 channel binding；PLUS 变体使用 tls-server-end-point 绑定类型。*/
-#define SCRAM_GS2_STD   "n,,"
-#define SCRAM_GS2_PLUS  "p=tls-server-end-point,,"
+/* GS2 头三态（RFC 5802 §5.1）：本端不支持绑定发 "n"；支持但对端未通告 -PLUS 发 "y"，
+ * 让真支持 PLUS 的对端能发现通告被剥；PLUS 变体发 "p=" 加绑定类型。*/
+#define SCRAM_GS2_STD     "n,,"
+#define SCRAM_GS2_CAPABLE "y,,"
+#define SCRAM_GS2_PLUS    "p=tls-server-end-point,,"
+/* 姿态 → 客户端要发的 GS2 头。用指定初始化器绑定下标，枚举怎么改都不会与表错位 */
+static const char *const _scram_gs2[] = {
+    [SCRAM_CB_NONE]    = SCRAM_GS2_STD,
+    [SCRAM_CB_CAPABLE] = SCRAM_GS2_CAPABLE,
+    [SCRAM_CB_PLUS]    = SCRAM_GS2_PLUS
+};
 
 scram_ctx *scram_init(const char *method, int32_t client) {
     digest_type type;
-    int32_t cbind = 0;
+    scram_cbind_mode cbind = SCRAM_CB_NONE;
     if (0 == strcmp(method, "SCRAM-SHA-1")) {
         type = DG_SHA1;
     } else if (0 == strcmp(method, "SCRAM-SHA-1-PLUS")) {
         type = DG_SHA1;
-        cbind = 1;
+        cbind = SCRAM_CB_PLUS;
     } else if (0 == strcmp(method, "SCRAM-SHA-256")) {
         type = DG_SHA256;
     } else if (0 == strcmp(method, "SCRAM-SHA-256-PLUS")) {
         type = DG_SHA256;
-        cbind = 1;
+        cbind = SCRAM_CB_PLUS;
     } else if (0 == strcmp(method, "SCRAM-SHA-512")) {
         type = DG_SHA512;
     } else if (0 == strcmp(method, "SCRAM-SHA-512-PLUS")) {
         type = DG_SHA512;
-        cbind = 1;
+        cbind = SCRAM_CB_PLUS;
     } else {
         LOG_WARN("unsupported verification methods.");
         return NULL;
@@ -106,8 +114,17 @@ int32_t scram_set_iter(scram_ctx *scram, int32_t iter) {
     return ERR_OK;
 }
 int32_t scram_set_cbind(scram_ctx *scram, const char *data, size_t lens) {
-    if (!scram->cbind || EMPTYPTR(data, lens)) {
+    if (EMPTYPTR(data, lens)) {
         return ERR_FAILED;
+    }
+    if (SCRAM_CB_PLUS != scram->cbind) {
+        // 非 PLUS 机制用不上数据本身,只记下"本端有材料"。客户端据此发 "y,,"、服务端据此拒 "y",
+        // 两者都发生在首条消息上,状态过了 SCRAM_INIT 再设已来不及
+        if (SCRAM_INIT != scram->status) {
+            return ERR_FAILED;
+        }
+        scram->cbind = SCRAM_CB_CAPABLE;
+        return ERR_OK;
     }
     SECURE_FREE(scram->cbind_data, (size_t)scram->cbind_len);
     MALLOC(scram->cbind_data, lens);
@@ -292,11 +309,17 @@ static void _scram_challenge_serverkey(scram_ctx *scram, char result[B64EN_SIZE(
     secure_zero(serverkey, sizeof(serverkey));
     secure_zero(whole, sizeof(whole));
 }
-// 生成 c= 字段的 base64 值：base64(GS2头 + channel_binding_data)，调用方负责释放
+// 生成 c= 字段的 base64 值：base64(GS2头 + channel_binding_data)，调用方负责释放；
+// PLUS 变体未设置绑定数据返回 NULL
 static char *_scram_cbind_b64(scram_ctx *scram) {
+    if (SCRAM_CB_PLUS == scram->cbind
+        && NULL == scram->cbind_data) {
+        LOG_WARN("scram channel binding data not set.");
+        return NULL;
+    }
     const char *gs2 = scram->gs2_header;
     size_t gs2_len = strlen(gs2);
-    size_t data_len = (scram->cbind && NULL != scram->cbind_data) ? (size_t)scram->cbind_len : 0;
+    size_t data_len = SCRAM_CB_PLUS == scram->cbind ? (size_t)scram->cbind_len : 0;
     size_t total = gs2_len + data_len;
     char *input;
     MALLOC(input, total);
@@ -321,7 +344,7 @@ static char *_scram_client_first_message(scram_ctx *scram) {
         return NULL;
     }
     bs64_encode(nonce, SCRAM_NONCE_LEN, scram->local_nonce);
-    const char *gs2 = scram->cbind ? SCRAM_GS2_PLUS : SCRAM_GS2_STD;
+    const char *gs2 = _scram_gs2[scram->cbind];
     size_t gs2_len = strlen(gs2);
     memcpy(scram->gs2_header, gs2, gs2_len + 1);
     char *buf;
@@ -363,7 +386,7 @@ static size_t _scram_gs2_header_lens(scram_ctx *scram, const char *msg, size_t m
         return 0;
     }
     size_t flens = (size_t)(c1 - msg);
-    if (scram->cbind) {
+    if (SCRAM_CB_PLUS == scram->cbind) {
         size_t want = strlen(SCRAM_GS2_PLUS) - 2;
         if (flens != want
             || 0 != memcmp(msg, SCRAM_GS2_PLUS, want)) {
@@ -372,6 +395,12 @@ static size_t _scram_gs2_header_lens(scram_ctx *scram, const char *msg, size_t m
     } else {
         if (1 != flens
             || ('n' != msg[0] && 'y' != msg[0])) {
+            return 0;
+        }
+        // RFC 5802 §6:本端也通告了 -PLUS,对端却说"你不支持"(y),只可能是通告在路上被剥掉了
+        if (SCRAM_CB_CAPABLE == scram->cbind
+            && 'y' == msg[0]) {
+            LOG_WARN("scram downgrade detected: peer sent 'y' while this end advertises -PLUS.");
             return 0;
         }
     }
@@ -529,6 +558,9 @@ static char *_scram_client_final_message(scram_ctx *scram) {
         return NULL;
     }
     char *cbind_b64 = _scram_cbind_b64(scram);
+    if (NULL == cbind_b64) {
+        return NULL;
+    }
     scram->final_message_without_proof = format_va("c=%s,r=%s", cbind_b64, scram->remote_nonce);
     FREE(cbind_b64);
     char proof[B64EN_SIZE(DG_BLOCK_SIZE)];
@@ -553,6 +585,9 @@ static int32_t _scram_server_check_final_message(scram_ctx *scram, char *msg, si
         return ERR_FAILED;
     }
     char *cbind_b64 = _scram_cbind_b64(scram);
+    if (NULL == cbind_b64) {
+        return ERR_FAILED;
+    }
     int32_t mismatch = (strlen(cbind_b64) != lens || 0 != ct_memcmp(cbind_val, cbind_b64, lens));
     if (mismatch) {
         FREE(cbind_b64);

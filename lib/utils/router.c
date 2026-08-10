@@ -531,6 +531,37 @@ static int32_t _router_shadowed(router_ctx *r, router_method m,
     }
     return -1;
 }
+// 解析路径并做影子检查。成功返 ERR_OK，段数组所有权转给调用方；
+// 路径非法返 -1，被已注册路由遮蔽返 -2（此时段数组已就地释放并置空）
+static int32_t _router_segs_prepare(router_ctx *r, router_method m, const char *path, size_t path_len,
+                                    router_seg **out_segs, int32_t *out_n, int32_t *out_nopt) {
+    *out_segs = NULL;
+    *out_n = 0;
+    *out_nopt = 0;
+    if (ERR_OK != _router_parse_path(path, path_len, out_segs, out_n, out_nopt)) {
+        return -1;
+    }
+    int32_t shadow = _router_shadowed(r, m, *out_segs, *out_n);
+    if (shadow >= 0) {
+        LOG_WARN("router: route shadowed by the one registered at index %d, this registration is ignored.", shadow);
+        _router_segs_free_str(*out_segs, *out_n);
+        FREE(*out_segs);
+        return -2;
+    }
+    return ERR_OK;
+}
+// 段数组入路由表尾。填 method_mask 与三个 segs 字段，其余清零留给调用方补
+static int32_t _router_entry_push(router_ctx *r, router_method m,
+                                  router_seg *segs, int32_t segs_n, int32_t segs_nopt) {
+    _router_grow((void **)&r->routes, &r->routes_cap, r->routes_n + 1, sizeof(router_entry));
+    router_entry *e = &r->routes[r->routes_n];
+    ZERO(e, sizeof(*e));
+    e->method_mask = m;
+    e->segs = segs;
+    e->segs_n = segs_n;
+    e->segs_nopt = segs_nopt;
+    return r->routes_n++;//后自增：返回值即新条目的稳定下标
+}
 router_entry *router_add(router_ctx *r, const router_group *g,
                          router_method method, const char *path,
                          router_cb h,
@@ -556,14 +587,7 @@ router_entry *router_add(router_ctx *r, const router_group *g,
     router_seg *segs = NULL;
     int32_t segs_n = 0;
     int32_t segs_nopt = 0;
-    if (ERR_OK != _router_parse_path(full_buf, full_len, &segs, &segs_n, &segs_nopt)) {
-        return NULL;
-    }
-    int32_t shadow = _router_shadowed(r, method, segs, segs_n);
-    if (shadow >= 0) {
-        LOG_WARN("router: route shadowed by the one registered at index %d, this registration is ignored.", shadow);
-        _router_segs_free_str(segs, segs_n);
-        FREE(segs);
+    if (ERR_OK != _router_segs_prepare(r, method, full_buf, full_len, &segs, &segs_n, &segs_nopt)) {
         return NULL;
     }
     // 3) 合并中间件: group (root→leaf) → 路由级; 未注册的名字 _router_resolve_mw 已 LOG_WARN, 跳过
@@ -605,17 +629,13 @@ router_entry *router_add(router_ctx *r, const router_group *g,
         LOG_WARN("router: chain will exceed %d (global=%d, route=%d) at dispatch.",
                  ROUTER_MAX_CHAIN, r->global_mw_n, total_mws);
     }
-    _router_grow((void **)&r->routes, &r->routes_cap, r->routes_n + 1, sizeof(router_entry));
-    router_entry *e = &r->routes[r->routes_n];
-    ZERO(e, sizeof(*e));
-    e->segs = segs;
-    e->segs_n = segs_n;
-    e->segs_nopt = segs_nopt;
+    // 下标与取址必须分成两条语句：&r->routes[f()] 里 r->routes 与 f() 的求值顺序未定义，
+    // 而 _router_entry_push 内部的 _router_grow 可能 REALLOC 掉 r->routes
+    int32_t idx = _router_entry_push(r, method, segs, segs_n, segs_nopt);
+    router_entry *e = &r->routes[idx];
     e->mws = mws_arr;
     e->mws_n = total_mws;
     e->handler = h;
-    e->method_mask = method;
-    r->routes_n++;
     return e;
 }
 // 按 method 生成 router_get / router_post / ... 等便捷包装, 内部一律转发到 router_add
@@ -647,36 +667,28 @@ int32_t router_add_index(router_ctx *r, const char *method, size_t method_len,
     router_seg *segs = NULL;
     int32_t segs_n = 0;
     int32_t segs_nopt = 0;
-    if (ERR_OK != _router_parse_path(path, path_len, &segs, &segs_n, &segs_nopt)) {
-        return -1;
+    int32_t rtn = _router_segs_prepare(r, m, path, path_len, &segs, &segs_n, &segs_nopt);
+    if (ERR_OK != rtn) {
+        return rtn;//-1 路径非法 / -2 被已注册路由遮蔽
     }
-    int32_t shadow = _router_shadowed(r, m, segs, segs_n);
-    if (shadow >= 0) {
-        LOG_WARN("router: route shadowed by the one registered at index %d, this registration is ignored.", shadow);
-        _router_segs_free_str(segs, segs_n);
-        FREE(segs);
-        return -2;
-    }
-    _router_grow((void **)&r->routes, &r->routes_cap, r->routes_n + 1, sizeof(router_entry));
-    router_entry *e = &r->routes[r->routes_n];
-    ZERO(e, sizeof(*e));
-    e->method_mask = m;
-    e->segs = segs;
-    e->segs_n = segs_n;
-    e->segs_nopt = segs_nopt;
-    return r->routes_n++;//后自增：调用方拿到旧值即新条目的稳定索引
+    return _router_entry_push(r, m, segs, segs_n, segs_nopt);
 }
 // 在已 url_parse 的 ctx->url 上匹配：就地剔除空段（RFC 允许 /a//b）后线性
 // 扫描路由表，方法掩码命中 + 路径匹配，返回首条命中索引，无命中返回 -1
 static int32_t _router_find(router_ctx *r, router_method m, router_req *ctx) {
     int32_t qn = 0;
+    size_t plens = 0;
     router_entry *e;
     for (int32_t i = 0; i < ctx->url->npath; i++) {
         if (ctx->url->segs[i].lens > 0) {
+            plens += (ctx->url->segs[i].lens + 1);
             ctx->url->segs[qn++] = ctx->url->segs[i];
         }
     }
     ctx->url->npath = qn;
+    // pathlens 得跟着段数一起收,url_ctx 声明的是 pathlens == Σ(segs[i].lens + 1),
+    // 下游按它预分配重组缓冲
+    ctx->url->pathlens = plens;
     for (int32_t i = 0; i < r->routes_n; i++) {
         e = &r->routes[i];
         if (0 == (e->method_mask & m)) {

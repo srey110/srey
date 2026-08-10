@@ -525,7 +525,8 @@ static void test_mongo_pack_session(CuTest *tc) {
     bson_ctx b;
     bson_iter it;
     bson_iter found;
-    // 每个 find 前都重新 bson_init，因为 bson_iter_init 会推进 doc->offset
+    // 每个 find 前重新 bson_init：bson_iter_init 现在自己会把 doc->offset 归零，
+    // 这里保留只是让各段互不依赖，不再是必需
     bson_init(&b, opts, (size_t)opts_lens);
     bson_iter_init(&it, &b);
     CuAssertIntEquals(tc, ERR_OK, bson_iter_find(&it, "lsid", &found));

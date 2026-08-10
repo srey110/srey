@@ -61,14 +61,8 @@ static int32_t _path_builtin_validate_seg(const path_rules *r, const buf_ctx *sv
     if (0 == sv->lens) {
         return ERR_FAILED;
     }
-    // 段内含 NUL,会被 strdup 截断
-    if (NULL != memchr(sv->data, '\0', sv->lens)) {
-        return ERR_FAILED;
-    }
-    // 段内混入分隔符
-    if (NULL != memchr(sv->data, r->sep, sv->lens)) {
-        return ERR_FAILED;
-    }
+    // 不查段内 NUL 与分隔符:段来自 _path_validate 对 strlen(path) 范围做的 split2,
+    // 前者取不到 NUL,后者按分隔符切且超 cap 直接失败,两种字符都进不来
     // 通配符出现即必须独占整段,不能作为段内普通字符
     if (0 != r->single_wildcard 
         && ERR_OK != _wildcard_must_own_seg(sv, r->single_wildcard)) {
@@ -351,7 +345,7 @@ void *path_remove(path_trie *t, const char *path) {
     return old;
 }
 // DFS 匹配
-static void _path_match_recurse(path_node *node, const path_rules *r,
+static void _path_match_recurse(path_node *node,
                             const buf_ctx *segs, int32_t n, int32_t idx,
                             match_visit_cb cb, void *ud) {
     // multi_wildcard 终端:匹配剩余任意层(含 0 层)
@@ -368,12 +362,12 @@ static void _path_match_recurse(path_node *node, const path_rules *r,
     if (NULL != node->children) {
         path_node *child = _path_children_lookup(node->children, &segs[idx]);
         if (NULL != child) {
-            _path_match_recurse(child, r, segs, n, idx + 1, cb, ud);
+            _path_match_recurse(child, segs, n, idx + 1, cb, ud);
         }
     }
     // single_wildcard:消耗单层
     if (NULL != node->plus) {
-        _path_match_recurse(node->plus, r, segs, n, idx + 1, cb, ud);
+        _path_match_recurse(node->plus, segs, n, idx + 1, cb, ud);
     }
 }
 void path_match(path_trie *t, const char *literal_path, match_visit_cb cb, void *udata) {
@@ -382,7 +376,7 @@ void path_match(path_trie *t, const char *literal_path, match_visit_cb cb, void 
     }
     // publish 必须精确,LITERAL 校验拒绝通配
     PATH_PREP_SEGS(t, literal_path, PATH_KIND_LITERAL, );
-    _path_match_recurse(&t->root, t->rules, segs, n, 0, cb, udata);
+    _path_match_recurse(&t->root, segs, n, 0, cb, udata);
 }
 // 反向匹配:精确 literal 是否匹配 pattern(含通配)
 // 算法:切分两边为 segs,逐段比较,处理 + / # 通配

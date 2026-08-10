@@ -10,11 +10,9 @@ void array_init(array_ctx *arr, uint32_t elsize, uint32_t maxsize) {
     arr->maxsize = (0 == maxsize) ? ARRAY_INIT_SIZE : ROUND_UP(maxsize, 2);
     ASSERTAB((size_t)arr->maxsize <= SIZE_MAX / elsize, "byte size overflow.");
     MALLOC(arr->ptr, (size_t)elsize * arr->maxsize);
-    MALLOC(arr->tmp, elsize);
 }
 void array_free(array_ctx *arr) {
     FREE(arr->ptr);
-    FREE(arr->tmp);
 }
 void array_resize(array_ctx *arr, uint32_t maxsize) {
     ASSERTAB(maxsize < UINT32_MAX, "maxsize overflow.");
@@ -67,7 +65,10 @@ void array_swap(array_ctx *arr, int32_t pos1, int32_t pos2) {
     }
     char *a = (char *)arr->ptr + (size_t)pos1 * arr->elsize;
     char *b = (char *)arr->ptr + (size_t)pos2 * arr->elsize;
-    memcpy(arr->tmp, a, arr->elsize);
-    memcpy(a, b, arr->elsize);
-    memcpy(b, arr->tmp, arr->elsize);
+    char tmp;
+    for (uint32_t i = 0; i < arr->elsize; i++) {
+        tmp = a[i];
+        a[i] = b[i];
+        b[i] = tmp;
+    }
 }

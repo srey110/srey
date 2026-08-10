@@ -1063,9 +1063,7 @@ static bson_iter *_lbson_iter_check(lua_State *lua) {
 /// <returns type="_bson_iter_ctx">iter 对象</returns>
 static int32_t _lbson_iter_new(lua_State *lua) {
     bson_ctx *bson = _lbson_check_complete(lua);
-    // encode/write 模式下 doc.offset 在末尾，bson_iter_init 假定 offset=0 才能正确
-    // 读首 4 字节 doclens；强制 reset 让 iter 在两种来源（encode / raw bytes）下行为一致
-    binary_offset(&bson->doc, 0);
+    // 归零 doc.offset 已收进 bson_iter_init，这里不再重复
     lbson_iter_t *wrap = lua_newuserdata(lua, sizeof(lbson_iter_t));
     wrap->owner = bson;
     wrap->data = BSON_DOC(bson);

@@ -379,6 +379,75 @@ static void test_bson_find(CuTest *tc) {
     BSON_FREE(&bson);
 }
 
+// 点分路径的中间层命中不能直接写调用方的 result：第 2 层起它的 doc 指向 bson_iter_find
+// 自己栈上的 bson_ctx，末层失败会跳过末尾那两行重绑定，result->doc 就带着已死栈地址返回。
+// 两段路径碰不到（失败时 _bson_iter_find 根本不写 result），要三段起才走得到那一步
+static void test_bson_iter_find_deep_miss(CuTest *tc) {
+    int32_t err;
+    bson_ctx bson;
+    bson_init(&bson, NULL, 0);
+    bson_append_document_begain(&bson, "a");
+    bson_append_document_begain(&bson, "b");
+    bson_append_int32(&bson, "c", 42);
+    bson_append_end(&bson);
+    bson_append_end(&bson);
+    bson_append_end(&bson);
+
+    bson_iter result;
+    ZERO(&result, sizeof(result));
+
+    // 末层缺失。每个子用例前都重新 ZERO：失败路径压根不写 result，不重置的话后面两条
+    // 分不清"没被写"和"被上一条清空过"，等于白跑
+    ZERO(&result, sizeof(result));
+    BSON_ITER_FROM(bson, rd1, iter1);
+    CuAssertTrue(tc, ERR_OK != bson_iter_find(&iter1, "a.b.x", &result));
+    CuAssertPtrEquals(tc, NULL, result.doc);
+    CuAssertIntEquals(tc, BSON_EOD, result.type);
+
+    // 中间层类型不对（a.b.c 是 int32，还想往下钻一层）
+    ZERO(&result, sizeof(result));
+    BSON_ITER_FROM(bson, rd2, iter2);
+    CuAssertTrue(tc, ERR_OK != bson_iter_find(&iter2, "a.b.c.d", &result));
+    CuAssertPtrEquals(tc, NULL, result.doc);
+
+    // 成功路径照旧：doc 指向 result 自己的 nested_doc
+    ZERO(&result, sizeof(result));
+    BSON_ITER_FROM(bson, rd3, iter3);
+    CuAssertTrue(tc, ERR_OK == bson_iter_find(&iter3, "a.b.c", &result));
+    CuAssertTrue(tc, &result.nested_doc == result.doc);
+    CuAssertIntEquals(tc, BSON_INT32, result.type);
+    CuAssertIntEquals(tc, 42, bson_iter_int32(&result, &err));
+    CuAssertIntEquals(tc, ERR_OK, err);
+
+    BSON_FREE(&bson);
+}
+
+// bson_cat 的源指向目标自身时，binary_set_binary 里的 REALLOC 会把源搬走。
+// Lua 侧 b:cat(b:data()) 就是这条路径。断言"追加进去的字节等于原文档去掉头和 EOD"，
+// 产物本身不是合法 bson，这里只守 UAF 不守结构
+static void test_bson_cat_self_alias(CuTest *tc) {
+    char big[220];
+    char snap[512];
+    memset(big, 'v', sizeof(big) - 1);
+    big[sizeof(big) - 1] = '\0';
+
+    bson_ctx bson;
+    bson_init(&bson, NULL, 0);
+    bson_append_utf8(&bson, "k", big);
+    bson_append_end(&bson);
+
+    size_t doclens = BSON_DOC_LENS(&bson);
+    CuAssertTrue(tc, doclens > 0 && doclens <= sizeof(snap));
+    memcpy(snap, BSON_DOC(&bson), doclens);
+
+    CuAssertTrue(tc, ERR_OK == bson_cat(&bson, BSON_DOC(&bson), doclens));
+    CuAssertTrue(tc, doclens + (doclens - 5) == BSON_DOC_LENS(&bson));
+    CuAssertTrue(tc, 0 == memcmp(BSON_DOC(&bson), snap, doclens));
+    CuAssertTrue(tc, 0 == memcmp(BSON_DOC(&bson) + doclens, snap + 4, doclens - 5));
+
+    BSON_FREE(&bson);
+}
+
 /* =======================================================================
  * bson_complete / bson_cat
  * ======================================================================= */
@@ -830,6 +899,75 @@ static void test_bson_truncated_and_reset(CuTest *tc) {
     BSON_FREE(&wbson);
 }
 
+// bson_iter_init 对 size < 4 的缓冲是降级处理：读不到长度字段就置 doclens=0 / err=1 后正常返回；
+// bson_iter_reset 从前无守卫直接 binary_offset(doc, 4)，缓冲不足 4 字节时撞越界断言 abort。
+// Lua 侧一路可达：lpub_check_lens 只挡负数、_lbson_check_complete 只查 data 非空 + depth==0，
+// bson.new(ptr, 0..3) → bson.iter.new(b) → it:reset() 中间没有任何一道拦得住。
+// 修复后 reset 与 init 表现一致：err 保持置位、当前元素被毒化、getter 依旧失败。
+static void test_bson_iter_reset_short_buffer(CuTest *tc) {
+    char buf[4] = { 0x03, 0x00, 0x00, 0x00 };
+    bson_ctx rd;
+    bson_iter iter;
+    int32_t err;
+    size_t n;
+
+    for (n = 0; n <= 3; n++) {
+        bson_init(&rd, buf, n);
+        bson_iter_init(&iter, &rd);
+        CuAssertTrue(tc, 0 != bson_iter_error(&iter));
+        bson_iter_reset(&iter);// 改前此行 abort
+        CuAssertTrue(tc, 0 != bson_iter_error(&iter));
+        CuAssertIntEquals(tc, BSON_EOD, iter.type);
+        CuAssertTrue(tc, !bson_iter_next(&iter));
+        err = ERR_OK;
+        CuAssertTrue(tc, NULL == bson_iter_utf8(&iter, &err));
+        CuAssertIntEquals(tc, ERR_FAILED, err);
+    }
+    // 对照：长度字段合法的最小空文档，reset 仍应正常跳到 4 并可重新遍历
+    char emptydoc[] = { 0x05, 0x00, 0x00, 0x00, 0x00 };
+    bson_init(&rd, emptydoc, sizeof(emptydoc));
+    bson_iter_init(&iter, &rd);
+    CuAssertIntEquals(tc, 0, bson_iter_error(&iter));
+    CuAssertTrue(tc, !bson_iter_next(&iter));
+    bson_iter_reset(&iter);
+    CuAssertIntEquals(tc, 0, bson_iter_error(&iter));
+    CuAssertTrue(tc, !bson_iter_next(&iter));
+}
+
+// bson_iter_init 从前只挡 size >= 4，挡不住 size - offset < 4：doc.offset 停在离缓冲末尾
+// 不足 4 字节处时，binary_get_integer 当场断言。归零游标收进 bson_iter_init 后，
+// 写入模式的 bson 可以直接建 iter，调用方不必再自己 binary_offset(&doc, 0)
+static void test_bson_iter_init_offset_reset(CuTest *tc) {
+    int32_t err;
+    bson_ctx bson;
+    bson_iter iter;
+
+    // 写入模式：offset 停在末尾，直接建 iter 应能正常遍历
+    bson_init(&bson, NULL, 0);
+    bson_append_int32(&bson, "n", 7);
+    bson_append_end(&bson);
+    CuAssertTrue(tc, bson.doc.offset > 0);
+    bson_iter_init(&iter, &bson);
+    CuAssertIntEquals(tc, 0, bson_iter_error(&iter));
+    CuAssertTrue(tc, bson_iter_next(&iter));
+    CuAssertIntEquals(tc, BSON_INT32, iter.type);
+    CuAssertIntEquals(tc, 7, bson_iter_int32(&iter, &err));
+    CuAssertIntEquals(tc, ERR_OK, err);
+    CuAssertTrue(tc, !bson_iter_next(&iter));
+    CuAssertIntEquals(tc, 0, bson_iter_error(&iter));
+    BSON_FREE(&bson);
+
+    // size - offset < 4：改前此处断言 abort
+    char raw[] = { 0x05, 0x00, 0x00, 0x00, 0x00 };
+    bson_ctx tight;
+    bson_init(&tight, raw, sizeof(raw));
+    binary_offset(&tight.doc, 3);
+    bson_iter_init(&iter, &tight);
+    CuAssertIntEquals(tc, 0, bson_iter_error(&iter));
+    CuAssertTrue(tc, !bson_iter_next(&iter));
+    CuAssertIntEquals(tc, 0, bson_iter_error(&iter));
+}
+
 // 两个原始数据入口传 NULL 时必须直接失败：bson_init 把 data==NULL 重载为"新建可写文档"，
 // 于是会 MALLOC 一块无人持有的缓冲、再按未初始化内容遍历，既泄漏又可能把堆残渣当字段打印。
 // Lua 侧可达：_lbson_iter_binary 对零长 binary 会把 NULL 推成 lightuserdata，
@@ -979,6 +1117,8 @@ void test_bson(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_bson_binary_subtype_high);
     SUITE_ADD_TEST(suite, test_bson_nested);
     SUITE_ADD_TEST(suite, test_bson_find);
+    SUITE_ADD_TEST(suite, test_bson_iter_find_deep_miss);
+    SUITE_ADD_TEST(suite, test_bson_cat_self_alias);
     SUITE_ADD_TEST(suite, test_bson_complete_cat);
     SUITE_ADD_TEST(suite, test_bson_cat_bounds);
     SUITE_ADD_TEST(suite, test_bson_extra_types);
@@ -989,6 +1129,8 @@ void test_bson(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_bson_check_depth_boundary);
     SUITE_ADD_TEST(suite, test_bson_check_depth_malformed);
     SUITE_ADD_TEST(suite, test_bson_truncated_and_reset);
+    SUITE_ADD_TEST(suite, test_bson_iter_reset_short_buffer);
+    SUITE_ADD_TEST(suite, test_bson_iter_init_offset_reset);
     SUITE_ADD_TEST(suite, test_bson_null_data_entry);
     SUITE_ADD_TEST(suite, test_bson_iter_error_flag);
     SUITE_ADD_TEST(suite, test_bson_tostring);

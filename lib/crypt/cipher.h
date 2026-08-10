@@ -26,7 +26,6 @@ typedef struct cipher_ctx {
     padding_model padding;              // 填充模式
     int32_t encrypt;                    // 1 加密，0 解密
     size_t block_lens;                  // 分组长度（字节）
-    void *cur_ctx;                      // 指向当前引擎上下文（aes 或 des）
     _cipher_cb _cipher;                 // 当前引擎的加解密回调
     uint8_t iv[CIPHER_BLOCK_SIZE];      // 初始 IV
     uint8_t cur_iv[CIPHER_BLOCK_SIZE];  // 当前 IV（每次分组后更新）
@@ -50,7 +49,8 @@ typedef struct cipher_ctx {
 void cipher_init(cipher_ctx *cipher, engine_type engine, cipher_model model,
     const char *key, size_t klens, int32_t keybits, int32_t encrypt);
 /// <summary>
-/// 清零加解密上下文中的敏感数据（密钥调度表、IV、中间缓冲区）
+/// 清零加解密上下文中的敏感数据（密钥调度表、IV、中间缓冲区）。
+/// 连引擎回调一起抹掉，调用后上下文即失效，要复用须重新 cipher_init
 /// </summary>
 /// <param name="cipher">cipher_ctx</param>
 void cipher_free(cipher_ctx *cipher);

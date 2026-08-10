@@ -191,6 +191,15 @@ runner.run("crypt", function(t)
         t:eq("", empty_dec:dofinal(empty_ct), "空明文解回来是空串（成功）")
         local forged = string.char(empty_ct:byte(1) ~ 0xFF) .. empty_ct:sub(2)
         t:eq(nil, empty_dec:dofinal(forged), "填充校验失败返 nil")
+
+        -- padding 取值必须落在枚举内。越界值会让 C 侧 _padding_data 的 switch 一个分支都不命中，
+        -- 填充区一个字节都不写；而 cipher_ctx 出自 lua_newuserdata 不清零、pd_data 也从没清过，
+        -- 于是整块未初始化堆内存被加密后当密文返回——脚本里写错一个常量就变成堆内容泄漏
+        local pad = cipher.new(CIPHER_TYPE.AES, CIPHER_MODEL.ECB, key, 128, 1)
+        t:eq(false, (pcall(pad.padding, pad, 99)), "越界 padding 报错")
+        t:eq(false, (pcall(pad.padding, pad, -1)), "负 padding 报错")
+        t:eq(true, (pcall(pad.padding, pad, PADDING_MODEL.NoPadding)), "NoPadding 合法")
+        t:eq(true, (pcall(pad.padding, pad, PADDING_MODEL.ANSIX923)), "ANSIX923 合法")
     end
     do
         -- AES-128 CBC with IV

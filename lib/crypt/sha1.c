@@ -3,6 +3,11 @@
 
 #define ROTLEFT(a, b) (((a) << (b)) | ((a) >> (32 - (b))))
 
+// 四轮常量，与 sha256.c 的 k[64] 同样放文件作用域，不必每个上下文各存一份
+static const uint32_t k[4] = {
+    0x5a827999, 0x6ed9eba1, 0x8f1bbcdc, 0xca62c1d6
+};
+
 // SHA-1 核心变换：对 64 字节块执行 80 轮操作并更新状态
 static void _sha1_transform(sha1_ctx *sha1, const uint8_t *data) {
     uint32_t a, b, c, d, e, i, j, t, m[80];
@@ -19,7 +24,7 @@ static void _sha1_transform(sha1_ctx *sha1, const uint8_t *data) {
     d = sha1->state[3];
     e = sha1->state[4];
     for (i = 0; i < 20; ++i) {
-        t = ROTLEFT(a, 5) + ((b & c) ^ (~b & d)) + e + sha1->k[0] + m[i];
+        t = ROTLEFT(a, 5) + ((b & c) ^ (~b & d)) + e + k[0] + m[i];
         e = d;
         d = c;
         c = ROTLEFT(b, 30);
@@ -27,7 +32,7 @@ static void _sha1_transform(sha1_ctx *sha1, const uint8_t *data) {
         a = t;
     }
     for (; i < 40; ++i) {
-        t = ROTLEFT(a, 5) + (b ^ c ^ d) + e + sha1->k[1] + m[i];
+        t = ROTLEFT(a, 5) + (b ^ c ^ d) + e + k[1] + m[i];
         e = d;
         d = c;
         c = ROTLEFT(b, 30);
@@ -35,7 +40,7 @@ static void _sha1_transform(sha1_ctx *sha1, const uint8_t *data) {
         a = t;
     }
     for (; i < 60; ++i) {
-        t = ROTLEFT(a, 5) + ((b & c) ^ (b & d) ^ (c & d)) + e + sha1->k[2] + m[i];
+        t = ROTLEFT(a, 5) + ((b & c) ^ (b & d) ^ (c & d)) + e + k[2] + m[i];
         e = d;
         d = c;
         c = ROTLEFT(b, 30);
@@ -43,7 +48,7 @@ static void _sha1_transform(sha1_ctx *sha1, const uint8_t *data) {
         a = t;
     }
     for (; i < 80; ++i) {
-        t = ROTLEFT(a, 5) + (b ^ c ^ d) + e + sha1->k[3] + m[i];
+        t = ROTLEFT(a, 5) + (b ^ c ^ d) + e + k[3] + m[i];
         e = d;
         d = c;
         c = ROTLEFT(b, 30);
@@ -65,10 +70,6 @@ void sha1_init(sha1_ctx *sha1) {
     sha1->state[2] = 0x98badcfe;
     sha1->state[3] = 0x10325476;
     sha1->state[4] = 0xc3d2e1f0;
-    sha1->k[0] = 0x5a827999;
-    sha1->k[1] = 0x6ed9eba1;
-    sha1->k[2] = 0x8f1bbcdc;
-    sha1->k[3] = 0xca62c1d6;
 }
 void sha1_update(sha1_ctx *sha1, const void *data, size_t lens) {
     const uint8_t *p = (const uint8_t *)data;

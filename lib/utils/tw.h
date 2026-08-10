@@ -53,10 +53,12 @@ void tw_init(tw_ctx *ctx, uint32_t capacity, const thread_hooks *hooks);
 /// <param name="ctx">tw_ctx</param>
 void tw_free(tw_ctx *ctx);
 /// <summary>
-/// 添加计时任务
+/// 添加计时任务。
+/// _cb 一律在时间轮线程执行，唯独 timeout 为 0 是就地同步调用、跑在调用方线程上，
+/// 所以 timeout 可能为 0 时，_cb 里不能碰调用方此刻已经持有的锁
 /// </summary>
 /// <param name="ctx">tw_ctx</param>
-/// <param name="timeout">超时 毫秒</param>
+/// <param name="timeout">超时 毫秒；0 表示不入轮，直接在当前线程调 _cb</param>
 /// <param name="_cb">超时回调函数</param>
 /// <param name="_freecb">参数释放函数，tw退出未触发 _cb 的时候调用</param>
 /// <param name="ud">参数</param>

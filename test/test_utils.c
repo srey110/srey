@@ -106,6 +106,64 @@ static void test_binary(CuTest *tc) {
     binary_free(&bw);
 }
 
+/* buf 指向 ctx 自己的缓冲时，_binary_expand 的 REALLOC 会把源搬走，
+ * 改前 memcpy 读的是已释放的旧块（ASan 下直接报 heap-use-after-free）。
+ * 初始容量 256，先写 200 再自追加 200 必然触发扩容。
+ * set_binary 与 set_string 共用 _binary_append，两条入口都要覆盖 */
+static void test_binary_set_binary_self_alias(CuTest *tc) {
+    binary_ctx bin;
+    char pad[200];
+    char snap[200];
+    memset(pad, 'x', sizeof(pad));
+    binary_init(&bin, NULL, 0, 0);
+    binary_set_binary(&bin, pad, sizeof(pad));
+    memcpy(snap, bin.data, bin.offset);
+    size_t before = bin.offset;
+
+    binary_set_binary(&bin, bin.data, before);
+    CuAssertTrue(tc, 2 * before == bin.offset);
+    CuAssertTrue(tc, 0 == memcmp(bin.data, snap, before));
+    CuAssertTrue(tc, 0 == memcmp(bin.data + before, snap, before));
+    binary_free(&bin);
+
+    /* set_string：源是缓冲里那截自己刚写进去的字符串 */
+    binary_ctx bs;
+    char str[200];
+    memset(str, 'y', sizeof(str) - 1);
+    str[sizeof(str) - 1] = '\0';
+    binary_init(&bs, NULL, 0, 0);
+    binary_set_string(&bs, str);
+    CuAssertTrue(tc, sizeof(str) == bs.offset);
+
+    binary_set_string(&bs, bs.data);
+    CuAssertTrue(tc, 2 * sizeof(str) == bs.offset);
+    CuAssertTrue(tc, 0 == memcmp(bs.data, str, sizeof(str)));
+    CuAssertTrue(tc, 0 == memcmp(bs.data + sizeof(str), str, sizeof(str)));
+    binary_free(&bs);
+
+    /* 源与目标真正重叠的一路——上面两段都先触发了 REALLOC，之后 src/dst 必然不相交，
+     * 换回 memcpy 也照样通过。重叠要求 offset - aoff < lens，而"源全在已写区内"要求
+     * offset - aoff >= lens，两者互斥；所以先写满再把写游标退回去，才能既不越界读又造出重叠。
+     * 初始容量 256，写 200 后退到 100 再自追加 100 字节，不触发扩容 */
+    binary_ctx bov;
+    uint8_t seq[200];
+    uint32_t k;
+    binary_init(&bov, NULL, 0, 0);
+    for (k = 0; k < sizeof(seq); k++) {
+        seq[k] = (uint8_t)k;
+    }
+    binary_set_binary(&bov, (const char *)seq, sizeof(seq));
+    binary_offset(&bov, 100);
+    binary_set_binary(&bov, bov.data + 50, 100);/* dst [100,200) 与 src [50,150) 重叠 */
+    CuAssertTrue(tc, 200 == bov.offset);
+    /* memmove 语义：结果整段等于搬移前的 [50,150)。memcpy 正向拷会在后半段读到刚被自己
+     * 覆盖过的字节，[150,200) 将变成 50..99 而不是 100..149，下面这条即可分辨 */
+    for (k = 0; k < 100; k++) {
+        CuAssertIntEquals(tc, (int32_t)(50 + k), (int32_t)(uint8_t)bov.data[100 + k]);
+    }
+    binary_free(&bov);
+}
+
 /* =======================================================================
  * buffer —— 分散内存读写
  * ======================================================================= */
@@ -168,6 +226,81 @@ static void test_buffer(CuTest *tc) {
     buffer_free(&buf);
 }
 
+/* buffer_search 的范围守卫从前写作 start + wlens > end，start 接近 SIZE_MAX 时相加回绕、
+ * 守卫失效，_buffer_search_start_cached 找不到起始节点后卡在 ASSERTAB 崩掉，
+ * 而不是像 buffer_at / buffer_copyout 那样干净地拒掉越界 */
+static void test_buffer_search_start_overflow(CuTest *tc) {
+    buffer_ctx buf;
+    const char *s = "Hello, World!";
+    buffer_init(&buf);
+    CuAssertTrue(tc, ERR_OK == buffer_append(&buf, (void *)s, strlen(s)));
+
+    /* 正常查找不受影响 */
+    CuAssertTrue(tc, 5 == buffer_search(&buf, 0, 0, 0, ", ", 2));
+    /* 回绕值：改前在此 abort */
+    CuAssertTrue(tc, ERR_FAILED == buffer_search(&buf, 0, (size_t)-1, 0, ", ", 2));
+    CuAssertTrue(tc, ERR_FAILED == buffer_search(&buf, 0, (size_t)-2, 0, ", ", 2));
+    /* 不回绕但同样越界的边界 */
+    CuAssertTrue(tc, ERR_FAILED == buffer_search(&buf, 0, strlen(s), 0, ", ", 2));
+    CuAssertTrue(tc, ERR_FAILED == buffer_search(&buf, 0, strlen(s) - 1, 0, ", ", 2));
+
+    buffer_free(&buf);
+}
+
+/* router_match_index 会就地压掉 ctx->url 的空段。npath 收了而 pathlens 没收的话，
+ * url_ctx 声明的 pathlens == Σ(segs[i].lens + 1) 就不成立，下游按它预分配的缓冲会偏大；
+ * "/" 这种全空段的请求压完 npath 归零，也要一并盯住 */
+static void test_router_url_normalize(CuTest *tc) {
+    router_ctx *r = router_new();
+    url_ctx url;
+    router_req ctx;
+    size_t want;
+    int32_t i;
+    char buf[64];
+
+    CuAssertPtrNotNull(tc, r);
+    CuAssertTrue(tc, router_add_index(r, "GET", 3, "/a/b", 4) >= 0);
+
+    /* /a//b 压成两段 */
+    ZERO(&ctx, sizeof(ctx));
+    ctx.url = &url;
+    CuAssertTrue(tc, router_match_index(r, "GET", 3, "/a//b", 5, &ctx) >= 0);
+    CuAssertIntEquals(tc, 2, url.npath);
+    want = 0;
+    for (i = 0; i < url.npath; i++) {
+        want += (url.segs[i].lens + 1);
+    }
+    CuAssertTrue(tc, want == url.pathlens);
+    /* pathlens + 1 必须是重组的精确容量 */
+    CuAssertTrue(tc, url.pathlens == url_reorg_path(&url, buf, url.pathlens + 1));
+    CuAssertStrEquals(tc, "/a/b", buf);
+
+    /* 段本来就没空的，压缩前后一致 */
+    ZERO(&ctx, sizeof(ctx));
+    ctx.url = &url;
+    CuAssertTrue(tc, router_match_index(r, "GET", 3, "/a/b", 4, &ctx) >= 0);
+    CuAssertIntEquals(tc, 2, url.npath);
+    CuAssertTrue(tc, 4 == url.pathlens);
+
+    router_free(r);
+
+    /* "/" 的段全是空段，压完 npath 与 pathlens 都归零 */
+    router_ctx *root = router_new();
+    CuAssertPtrNotNull(tc, root);
+    CuAssertTrue(tc, router_add_index(root, "GET", 3, "/", 1) >= 0);
+    ZERO(&ctx, sizeof(ctx));
+    ctx.url = &url;
+    CuAssertTrue(tc, router_match_index(root, "GET", 3, "/", 1, &ctx) >= 0);
+    CuAssertIntEquals(tc, 0, url.npath);
+    CuAssertTrue(tc, 0 == url.pathlens);
+    /* 这个形状下 url_reorg_path 只吐得出空串——正是 _lrouter_push_url 要单独给 "/" 的原因，
+     * 而且容量只有 pathlens + 1 == 1 字节，想在这一层补 "/" 也没地方放 */
+    buf[0] = 'x';
+    CuAssertTrue(tc, 0 == url_reorg_path(&url, buf, url.pathlens + 1));
+    CuAssertStrEquals(tc, "", buf);
+    router_free(root);
+}
+
 /* =======================================================================
  * sfid —— 雪花 ID
  * ======================================================================= */
@@ -190,6 +323,22 @@ static void test_sfid(CuTest *tc) {
     sfid_decode(&ctx, prev, &ts, &mid, &seq);
     CuAssertTrue(tc, 1 == mid);
     CuAssertTrue(tc, ts > 0);
+}
+
+/* sfid_id 取的是墙钟，时钟往回跳时它等时钟追上来。等待必须有上限：不设上限的话回拨多少
+ * 就阻塞多少，一次 NTP 跳表能把调用线程卡住几十分钟。把 lasttimestamp 直接推到远未来
+ * 模拟一次大幅回拨；预算调到 10ms，免得整套 C 测试为这一条白等一秒 */
+static void test_sfid_clockback_giveup(CuTest *tc) {
+    sfid_ctx ctx;
+    CuAssertPtrNotNull(tc, sfid_init(&ctx, 1, 0, 0, 0));
+    CuAssertIntEquals(tc, 1000, ctx.clockback_wait);/* sfid_init 的默认预算 */
+    CuAssertTrue(tc, 0 != sfid_id(&ctx));
+
+    ctx.clockback_wait = 10;
+    ctx.lasttimestamp += 3600llu * 1000;/* 相当于时钟往回跳一小时 */
+    CuAssertTrue(tc, 0 == sfid_id(&ctx));
+    /* 预算是每次调用重新计的，第二次同样放弃而不是记住上次已超时 */
+    CuAssertTrue(tc, 0 == sfid_id(&ctx));
 }
 
 /* =======================================================================
@@ -1206,6 +1355,15 @@ static void test_utils_misc(CuTest *tc) {
     CuAssertTrue(tc, t0 > 0 && t1 > 0);
     CuAssertTrue(tc, 1 == t1 - t0);
     CuAssertTrue(tc, 0 == strtots("not-a-date", "%Y-%m-%d %H:%M:%S"));
+
+    /* %z 只吃掉时区文本、偏移量不生效（TM_GMTOFF 全仓未定义），所以同一时刻配不同偏移
+     * 必然解析成同一个时间戳。这是 strtots 声明处所述行为的守卫：哪天真把偏移接上，
+     * 本断言会失败并提醒同步改文档；用相等而非绝对值断言，不受进程时区影响 */
+    uint64_t z0 = strtots("2026-06-15 12:00:00+0000", "%Y-%m-%d %H:%M:%S%z");
+    uint64_t z8 = strtots("2026-06-15 12:00:00+0800", "%Y-%m-%d %H:%M:%S%z");
+    CuAssertTrue(tc, z0 > 0 && z8 > 0);
+    CuAssertTrue(tc, z0 == z8);
+    CuAssertTrue(tc, z0 == t0);
 }
 
 /* =======================================================================
@@ -2584,7 +2742,11 @@ void test_utils(CuSuite *suite) {
     SUITE_ADD_TEST(suite, test_pack_unpack);
     SUITE_ADD_TEST(suite, test_binary);
     SUITE_ADD_TEST(suite, test_binary_extra);
+    SUITE_ADD_TEST(suite, test_binary_set_binary_self_alias);
     SUITE_ADD_TEST(suite, test_buffer);
+    SUITE_ADD_TEST(suite, test_buffer_search_start_overflow);
+    SUITE_ADD_TEST(suite, test_router_url_normalize);
+    SUITE_ADD_TEST(suite, test_sfid_clockback_giveup);
     SUITE_ADD_TEST(suite, test_buffer_extra);
     SUITE_ADD_TEST(suite, test_buffer_external_appendv);
     SUITE_ADD_TEST(suite, test_buffer_external_not_writable);

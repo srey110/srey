@@ -120,7 +120,10 @@ int32_t sectostr(uint64_t sec, const char *fmt, char time[TIME_LENS]);
 /// <returns>ERR_OK 成功，ERR_FAILED 失败</returns>
 int32_t mstostr(uint64_t ms, const char *fmt, char time[TIME_LENS]);
 /// <summary>
-/// 字符串转时间戳
+/// 字符串转时间戳。
+/// fmt 里的 %z / %Z 只吃掉时区文本，偏移量不生效：本仓库从未定义 TM_GMTOFF，
+/// strptime 解析出的偏移进不了 struct tm，最终一律按本地时间 mktime。
+/// 所以带时区的串解析结果会差“串里的偏移 − 本地偏移”秒，需要按时区换算的调用方得自己取偏移补回去
 /// </summary>
 /// <param name="time">时间字符串</param>
 /// <param name="fmt">格式化</param>

@@ -103,25 +103,34 @@ void md4_init(md4_ctx *md4) {
     md4->state[3] = 0x10325476;
 }
 void md4_update(md4_ctx *md4, const void *data, size_t lens) {
-    uint32_t i, index, partlens;
-    uint8_t *p = (uint8_t *)data;
-    index = (uint32_t)((md4->count[0] >> 3) & 0x3f);
-    if ((md4->count[0] += ((uint32_t)lens << 3)) < ((uint32_t)lens << 3)) {
+    const uint8_t *p = (const uint8_t *)data;
+    // 已缓存字节数藏在位计数器低位,必须赶在累加本次长度之前取
+    uint32_t index = (uint32_t)((md4->count[0] >> 3) & 0x3f);
+    // 位数先按 64 位算再拆进 count[0]/count[1]。原先低位取 (uint32_t)lens << 3、
+    // 高位取 (uint32_t)lens >> 29,lens 一过 4GiB 高位就丢了;更要命的是那时分支判定
+    // 用截断值而末尾 memcpy 用完整 lens,能往 64 字节的 data[] 里写下整段输入
+    uint64_t bits = (uint64_t)lens << 3;
+    uint32_t low = (uint32_t)bits;
+    if ((md4->count[0] += low) < low) {
         md4->count[1]++;
     }
-    md4->count[1] += ((uint32_t)lens >> 29);
-    partlens = 64 - index;
-    if ((uint32_t)lens >= partlens) {
-        memcpy(&md4->data[index], p, partlens);
+    md4->count[1] += (uint32_t)(bits >> 32);
+    size_t left = 64 - index;
+    if (lens >= left) {
+        memcpy(&md4->data[index], p, left);
         _md4_transform(md4, md4->data);
-        for (i = partlens; i + 63 < (uint32_t)lens; i += 64) {
-            _md4_transform(md4, &p[i]);
-        }
+        p += left;
+        lens -= left;
         index = 0;
-    } else {
-        i = 0;
+        while (lens >= 64) {
+            _md4_transform(md4, p);
+            p += 64;
+            lens -= 64;
+        }
     }
-    memcpy(&md4->data[index], &p[i], lens - i);
+    if (lens > 0) {
+        memcpy(&md4->data[index], p, lens);
+    }
 }
 // 将 uint32 数组按小端序编码为字节数组
 static void _md4_encode(const uint32_t *data, uint32_t lens, uint8_t *out) {

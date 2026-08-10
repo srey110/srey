@@ -15,11 +15,19 @@ typedef enum scram_status {
     SCRAM_REMOTE_FINAL,   // 已发送/接收对端最终消息（认证完成）
     SCRAM_ERROR = 0xFF    // 解析失败终态：各入口 == 守卫均不匹配，拒绝重入与后续操作
 }scram_status;
+// 本端的通道绑定姿态。两端语义对称：都表示"本端具备多少绑定能力"，只是客户端据此决定发什么
+// GS2 头，服务端据此决定收到什么 GS2 头该拒。由 scram_init（按机制名）与 scram_set_cbind 维护
+typedef enum scram_cbind_mode {
+    SCRAM_CB_NONE = 0,  // 无能力。客户端发 "n,,"；服务端不通告 -PLUS，"n"/"y" 都收
+    SCRAM_CB_CAPABLE,   // 有材料但走的是非 PLUS 机制。客户端发 "y,,"；
+                        // 服务端表示自己也通告了 -PLUS，此时收到 "y" 即降级攻击，必须拒（RFC 5802 §6）
+    SCRAM_CB_PLUS       // PLUS 变体。客户端发 "p=<绑定类型>,,"；服务端只接受同一个头
+}scram_cbind_mode;
 typedef struct scram_ctx {
     scram_status status;                    // 当前握手状态
     digest_type dtype;                      // 摘要算法类型
+    scram_cbind_mode cbind;                 // 通道绑定姿态
     int32_t client;                         // 1 为客户端，0 为服务端
-    int32_t cbind;                          // 1 为 PLUS 变体（需要 channel binding），0 为标准
     int32_t saltlen;                        // salt 长度（字节）
     int32_t iter;                           // 迭代轮数
     int32_t hslens;                         // 摘要输出长度（字节）
@@ -102,13 +110,21 @@ int32_t scram_set_salt(scram_ctx *scram, char *salt, size_t lens);
 /// <returns>ERR_OK 已生效，ERR_FAILED 未生效（客户端角色调用）</returns>
 int32_t scram_set_iter(scram_ctx *scram, int32_t iter);
 /// <summary>
-/// 设置 channel binding 数据（仅 PLUS 变体使用）
-/// 客户端传入 TLS 证书哈希；服务端传入同一哈希用于验证客户端的 c= 字段
+/// 交给 scram 本端拿到的 channel binding 材料（tls-server-end-point 即服务端证书 SHA-256 哈希），
+/// 由它按机制决定怎么用，调用方不必自己判断走哪条路：
+///   PLUS 变体   —— 存下来用于计算 / 校验 c=。两端都必须调，漏调时 scram_final_message 返回 NULL、
+///                  scram_check_final_message 返回 ERR_FAILED；不这么挡的话两端都按"绑定到零字节"算，
+///                  c= 反而对得上，握手通过而通道绑定其实不存在
+///   非 PLUS 变体 —— 数据本身用不上，但"本端有材料"这件事要记下（转为 SCRAM_CB_CAPABLE）：
+///                  客户端据此把 GS2 头从 "n,," 改成 "y,,"，对端若其实支持 PLUS 就知道自己的通告
+///                  被人剥掉了；服务端据此在收到 "y" 时判定降级并拒绝握手
+/// 注意这挡不住"中间人已持有本端信任的证书"——那种情况 TLS 本身已破；本机制让通道绑定的失效
+/// 变得可检测，而不是让它不可绕过
 /// </summary>
 /// <param name="scram">scram_ctx</param>
-/// <param name="data">channel binding 原始数据（tls-server-end-point 为服务端证书 SHA-256 哈希）</param>
+/// <param name="data">channel binding 原始数据</param>
 /// <param name="lens">数据长度</param>
-/// <returns>ERR_OK 已生效，ERR_FAILED 未生效（非 PLUS 变体，或 data 为空）</returns>
+/// <returns>ERR_OK 已生效；ERR_FAILED 未生效（data 为空，或非 PLUS 变体下状态已过 SCRAM_INIT）</returns>
 int32_t scram_set_cbind(scram_ctx *scram, const char *data, size_t lens);
 /// <summary>
 /// 获取客户端用户名（仅服务端调用）
@@ -134,7 +150,9 @@ int32_t scram_parse_first_message(scram_ctx *scram, char *msg, size_t mlens);
 /// 生成并返回最终消息（客户端: c=<cbind_b64>,r=,p=  服务端: [e=] v=）
 /// </summary>
 /// <param name="scram">scram_ctx</param>
-/// <returns>消息字符串（调用方负责释放）；状态不符或未设置密码返回 NULL</returns>
+/// <returns>消息字符串；状态不符、未设置密码、PLUS 变体未设置 channel binding 数据均返回 NULL。
+/// 客户端侧返回值含 ClientProof（配上线上抓到的 AuthMessage 即可还原 ClientKey），
+/// 调用方须用 SECURE_FREE(msg, strlen(msg) + 1) 释放，不可裸 FREE</returns>
 char *scram_final_message(scram_ctx *scram);
 /// <summary>
 /// 验证对端最终消息（客户端验证 [e=] v=  服务端验证 c=<cbind_b64>,r=,p=）

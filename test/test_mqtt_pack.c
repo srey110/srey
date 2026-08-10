@@ -715,6 +715,7 @@ static void test_mqtt_auth_scram_sha256(CuTest *tc) {
     /* ── step 3：客户端发 clientFinal ─────────────────────────── */
     char *clf = scram_final_message(cli);
     CuAssertPtrNotNull(tc, clf);
+    /* clf 是 client-final，含 ClientProof；按 scram.h 的契约擦除后释放 */
     _mqtt_pack_auth_sasl(&buf, 0x18, METHOD, clf, strlen(clf));
 
     p = _mqtt_unpack_auth_sasl(tc, &buf, &mq_srv, 0,
@@ -728,7 +729,7 @@ static void test_mqtt_auth_scram_sha256(CuTest *tc) {
     FREE(copy);
     _mqtt_pkfree(p);
     buffer_free(&buf);
-    FREE(clf);
+    SECURE_FREE(clf, strlen(clf) + 1);
 
     /* ── step 4：服务端发 serverFinal（reason=0x00=Success）──── */
     char *svf = scram_final_message(srv);
@@ -748,7 +749,7 @@ static void test_mqtt_auth_scram_sha256(CuTest *tc) {
     FREE(copy);
     _mqtt_pkfree(p);
     buffer_free(&buf);
-    FREE(svf);
+    SECURE_FREE(svf, strlen(svf) + 1);
 
     /* 终态：客户端验证完服务端签名 = REMOTE_FINAL；
      *       服务端发出 v= 消息后 = LOCAL_FINAL */

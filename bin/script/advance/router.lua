@@ -158,7 +158,7 @@ local function _make_ctx(fd, skid, pack, client, method, parsed, version)
         client  = client,
         method  = method,
         version = version,
-        path    = parsed.path or "/",
+        path    = parsed.path,
         query   = parsed.param or {},
         body    = http.datastr(pack),
         headers = http.heads(pack) or {},

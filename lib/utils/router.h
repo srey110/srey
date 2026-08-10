@@ -27,6 +27,10 @@
 //   {name} 内部含 '?' (如 {a?b}) 视为非法参数名, 整段退化为字面量匹配 (与 Lua 端文法一致)
 //   /static/*        末尾通配, 一旦命中后续任意请求段都吃下
 //   多条同 path 不同 method 算独立路由, 方法位掩码 ROUTER_M_GET|ROUTER_M_POST 也支持
+// 线程约定
+//   注册期 (router_add / router_use / router_define 等) 与派发期 (router_dispatch) 不可并发:
+//   路由表是连续数组, 扩容会 realloc 整块, 派发方手里的 router_entry * 和正在扫的下标都会失效;
+//   条目也是先入表后补 handler/中间件, 中途被读到就是半成品。按"启动期注册完再开始服务"用即可
 // 中间件 (洋葱模型)
 //   注册顺序:        全局中间件 → 分组中间件 (父→子) → 路由级中间件 → handler
 //   每个中间件主动调 router_next(ctx) 进入下一层, 不调即截断 (后续不执行)
@@ -339,7 +343,11 @@ int32_t router_add_index(router_ctx *r, const char *method, size_t method_len,
 /// 遍历到未初始化的 params[] 指针。同一个 ctx 也不可跨请求复用。
 /// ctx->url 须在调用前指向一块调用方持有的 url_ctx，**不必**预先清零——本函数内部
 /// url_parse 会先整体清一遍；反过来说返回 -3（方法未知，压根没解析 URL）时它仍是未初始化的，
-/// 只有返回值 != -3 才可以读 ctx->url</param>
+/// 返回 -2（url_parse 失败）时它已被写过但内容不可信。
+/// 返回 ≥0 或 -1 时 ctx->url 是**规范化后**的：空段一律剔除（RFC 允许 /a//b），
+/// segs / npath / pathlens 三者同步收缩，读到的不是原样解析结果——"/a//b" 读出来是 "/a/b"，
+/// "/" 与 "//" 读出来 npath 与 pathlens 均为 0（此时 url_reorg_path 只吐得出空串，
+/// 需要 "/" 得由调用方补）</param>
 /// <returns>路由索引（≥0）；-1 无匹配路由；-2 URL 解析失败；-3 方法不在已知列表(对应 405)</returns>
 int32_t router_match_index(router_ctx *r, const char *method, size_t method_len,
                            const char *url, size_t url_len, router_req *ctx);
